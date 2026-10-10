@@ -2,7 +2,7 @@
 //! port.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod common;
+use crate::common;
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

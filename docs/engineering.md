@@ -1094,6 +1094,8 @@ AI 辅助变更必须遵循与人类编写变更相同的工程要求。AI 工�
 
 工作区应按归属与范围组织测试。
 
+**物理布局（当前）：** 仓库根 `tests/` 下的全部套件是单一集成测试目标 `tests/it/` 的模块。`tests/it/main.rs` 以 `mod` 声明各套件与共享夹具 `tests/it/common.rs`，因此 `tests/` 只产生一个测试二进制，而非每个套件文件一个；各套件经 `crate::common` 访问共享夹具。整合的理由、被否决方案与测量见 §8.22。2026-10-10 之前的历史验证记录仍以 `tests/<name>.rs` 书写，其当前磁盘位置为 `tests/it/<name>.rs`。
+
 **单元测试：** 单元测试位于仓库根 `tests/`，仅通过 crate 的公开 `pub` 接口触达 crate。`crates/*/src` 下的生产源码不得包含 `#[cfg(test)]` 模块、`#[test]` 函数或 `#[cfg(test)]` 门控项（见本章黑盒契约优先测试决策；门为 `scripts/checksrctests.sh`）。
 
 单元测试用于：公开不变量与契约；通过公开入口可达的小算法；校验逻辑与错误变体；通过公开接口可达的边界条件；通过公开接口可观察的局部状态转换。
@@ -1421,6 +1423,33 @@ cargo bench --workspace --no-run                             # exit 0（7 个基
 ```
 
 `scripts/check.sh` 与 `scripts/test.sh` 成功完成，`cargo bench --workspace --no-run` 构建 `cpuops`、`kernels`、`metadata`、`autograd`、`nn`、`models` 与 `optim`。不作出性能声明；基准目标只确立可测量性（PF1/VF5）。
+
+### 8.22 单一测试目标整合决策
+
+**状态：** 已接受。**日期：** 2026-10-10。**范围：** 仓库根 `tests/` 的物理布局与根 `llm` 包的测试目标。
+
+**背景：** 根 `tests/` 原为 41 个套件文件，每个文件是一个独立集成测试目标（41 个测试二进制）。Cargo 顺序执行测试二进制，因此同一时刻只有一个二进制的用例在使用线程池，短套件无法占满机器。针对「减少测试编译时间」的优化请求，先测量后优化（PF1）显示：编译不是瓶颈，顺序执行 41 个二进制的运行期开销才是。
+
+**决策：** 把 41 个套件与共享夹具整合为单一目标 `tests/it/`。`tests/it/main.rs` 声明 41 个 `mod` 与 `mod common`；`tests/common/mod.rs` 更名为 `tests/it/common.rs`。原先自行声明 `mod common;` 的 5 个套件（`generation`、`isolation`、`server`、`serveunits`、`service`）改为经 `crate::common` 访问夹具。测试内容不变，仍全部经公开接口触达。
+
+**被否决的替代方案：**
+
+- **引入 `cargo-nextest`。** 否决：它是测试运行器，不减少编译量，也不减少测试代码量；且默认不运行 doctest，需额外保留一步 `cargo test --workspace --doc`。本工作区存在 doctest（如 `train`）。
+- **调低 `[profile.test]` 的 `debug` 等级。** 否决：A/B 测量显示 `debug=1`、`debug=0` 与 `line-tables-only` 的冷构建差异落在噪声带内，且 `debug=1` 保留测试失败时的回溯信息。
+- **改用 `lld` / `mold` 链接器。** 否决：环境未安装该链接器，且无证据表明其收益超出噪声带。
+
+**后果：** `tests/` 只产生一个测试目标。`cargo test --workspace` 端到端耗时约减半，来源是测试运行的并行度提升（单个二进制的全部用例共享线程池），而非编译。纯编译时间在噪声带内不变。增量重编单个套件文件需重编该共享二进制，与原先重编单个小二进制相当。文档中 2026-10-10 之前的历史验证记录仍以 `tests/<name>.rs` 书写，其当前磁盘位置为 `tests/it/<name>.rs`。
+
+**验证：** 于 2026-10-10 在同一机器（macOS 27.0.1、18 核、rustc 1.99.0、edition 2024），每次先 `cargo clean`：
+
+| 场景 | 整合前 | 整合后 |
+| --- | --- | --- |
+| `cargo test --workspace`（编译 + 运行） | 30.57s / 29.91s | 15.28s |
+| 冷构建 `--all-targets --no-run` | 7.3–7.7s | 7.55s |
+| 增量改单个套件文件 | 0.60s | 0.74s |
+| 通过 / 失败 | 735 / 0 | 735 / 0 |
+
+`cargo fmt --all -- --check`、`cargo check --workspace --all-targets`、`cargo clippy --workspace --all-targets -- -D warnings`、`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` 与 `bash scripts/check.sh` 均通过（证据等级 E1）。运行期耗时的下降超出噪声带；编译时间的差异未超出噪声带，故不声称编译改进。
 
 ---
 

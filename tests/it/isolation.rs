@@ -2,10 +2,9 @@
 //! concurrent generation over one shared model.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod common;
-
+use crate::common;
+use crate::common::{argmaxlast, model, provider};
 use ::tensor::{shape, tensor};
-use common::{argmaxlast, model, provider};
 use context::{executionconfig, executioncontext};
 use cpu::cpuexecutor;
 use infer::{

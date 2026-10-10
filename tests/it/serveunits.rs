@@ -7,8 +7,6 @@
 //! `docs/engineering.md`).
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
-mod common;
-
 /// Tests relocated from `crates/serve/src/admit.rs`.
 mod admit {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

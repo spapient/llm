@@ -2,9 +2,8 @@
 //! the `infer` engine.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-mod common;
-
-use common::{argmaxlast, model, provider};
+use crate::common;
+use crate::common::{argmaxlast, model, provider};
 use context::{cancellation, executionconfig, executioncontext};
 use infer::{
     collectingsink, generationengine, generationparams, generationrequest, infererror,
