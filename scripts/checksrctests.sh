@@ -5,7 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # Mechanical gate for the black-box testing paradigm
-# (docs/decision-records/blackboxtesting.md).
+# (docs/engineering.md).
 #
 # Rule: production source under `crates/*/src` MUST NOT contain any
 # `#[cfg(test)]` (or `#[test]`) inline test code. All unit, integration,

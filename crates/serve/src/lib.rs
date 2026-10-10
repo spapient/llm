@@ -48,7 +48,7 @@
 //! [`std::net::TcpListener`]; no async runtime or HTTP framework is used. The
 //! routing/handler/application layer is transport-neutral and independently
 //! testable without opening a socket. The decision and the rejected `tokio`
-//! alternative are recorded in `docs/decision-records/serve.md`.
+//! alternative are recorded in `docs/design.md`.
 //!
 //! # Dependencies
 //!

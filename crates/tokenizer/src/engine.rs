@@ -16,7 +16,7 @@ use crate::vocab::vocabulary;
 /// `model.merges`, `model.byte_fallback`, `model.unk_token`, and
 /// `added_tokens`. Unknown fields are ignored. Pre-tokenization, the GPT-2
 /// byte-to-unicode alphabet, and Jinja chat-template evaluation are not
-/// implemented; see `docs/decision-records/tokenizer.md` for the exact subset
+/// implemented; see `docs/design.md` for the exact subset
 /// and its limitations.
 #[derive(Clone, Debug)]
 pub struct tokenizer {

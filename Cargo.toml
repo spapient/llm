@@ -15,7 +15,7 @@ members = ["crates/*"]
 
 # The root package has no library or binary target. It exists so that the
 # repository-root `tests/` and `benches/` directories are real Cargo targets
-# (see docs/decision-records/workspacelayout.md), matching the `m.md` layout.
+# (see docs/architecture.md), matching the `m.md` layout.
 # Every dependency below is a dev-dependency used only by those targets.
 [dev-dependencies]
 criterion.workspace = true

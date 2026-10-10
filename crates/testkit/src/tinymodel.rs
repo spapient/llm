@@ -6,6 +6,6 @@
 //! live once those layers land, keeping the reservation visible in the type
 //! system rather than only in prose.
 //!
-//! See [model-support.md](../../../docs/model-support.md) for the model-support
-//! contract and [testing.md](../../../docs/testing.md) section 6.3 for the role
+//! See [design.md](../../../docs/design.md) for the model-support
+//! contract and [engineering.md](../../../docs/engineering.md) for the role
 //! of shared test utilities.

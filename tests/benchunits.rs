@@ -5,7 +5,7 @@
 //! public workload constructors and constants; the crate-private `VOCAB` and
 //! `OPLIMITS` are intentionally not exported (A4 interface minimality), so the
 //! embedding row count is asserted with the fixed literal the workload uses
-//! (see `docs/decision-records/blackboxtesting.md`).
+//! (see `docs/engineering.md`).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ::bench::{

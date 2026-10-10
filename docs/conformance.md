@@ -1,57 +1,82 @@
-# Documentation Conformance Record
+# 文档一致性记录
 
-Status: Proposed
-Scope: Verification status of the normative documents in docs/ and the workspace rules they define
-Audience: Engineers, reviewers, maintainers, and AI coding agents
+状态: 拟定
+范围: `docs/` 下四份规范文档（`architecture.md`、`engineering.md`、`design.md`、本记录）及其定义的工作区规则的一致性状态
+读者: 工程师、评审者、维护者、AI 编码代理
 
 ---
 
-This record is the single place where conformance verdicts are recorded. Each normative document defines its own Proposed/Verified/Non-conforming/Blocked vocabulary; this file records the current verdict and the evidence behind it.
+本记录是一致性判定的唯一场所。每份规范文档在自身中定义其判定词汇；本记录记录当前判定及其背后的证据。
 
-A document's existence is not evidence of conformance. A verdict of Verified MUST cite the executed check or the inspected source.
+文档的存在不构成一致性的证据。判定为「已验证」MUST 引用已执行的检查或已核对的源码。
 
-## Verdict vocabulary
+本记录随 2026-10-10 的文档合并更新：原先记录在 14 份顶层文档与 19 份 ADR 上的判定，已按其主题归属映射到合并后的 `architecture.md`、`engineering.md`、`design.md` 的对应章节；判定结论与证据沿用合并前经执行的检查。2026-10-10 的对抗性修正重测了静态门，并清除了黑盒测试迁移后失效的计数（见「本轮重测证据」）；通过/失败汇总未在本轮重跑，凡引用具体通过/失败数字者均以其所属章节的日期快照为准。性能相关的判定保持「拟定」，因为没有执行任何优化或前后对比。
 
-* Proposed — the requirement is specified but not yet verified against the implementation.
-* Verified — source inspection and relevant checks support the requirement.
-* Non-conforming — a known violation exists.
-* Blocked — verification requires unavailable code, tools, or environment.
+## 判定词汇
 
-## Current verdicts
+- **拟定（Proposed）** —— 要求已规定但尚未与实现对验。
+- **已验证（Verified）** —— 源码审阅与相关检查支持该要求。
+- **不一致（Non-conforming）** —— 存在已知违规。
+- **受阻（Blocked）** —— 验证需要不可用的代码、工具或环境。
 
-| Document | Subject | Verdict | Evidence |
-| --- | --- | --- | --- |
-| docs/architecture.md | Intended architectural boundaries | Verified | All 20 declared crates are implemented. The resolved workspace dependency graph builds without a cycle (`cargo check --workspace --all-targets` exit 0; `cargo metadata` exit 0 — a cycle would fail to resolve), and `scripts/check.sh` (fmt, `clippy --workspace --all-targets -- -D warnings`, `rustdoc -D warnings`) is clean. |
-| docs/crate-boundaries.md | Crate ownership and dependency graph | Verified | Manifests and `cargo metadata` show the production edges are acyclic and correctly directed; only the test-only root `llm` package depends on `cli`, `serve`, `testkit`, and `bench` (grep of `crates/*/Cargo.toml` finds no production edge to them), and `cli`/`serve` are not dependencies of any production compute crate. |
-| docs/development-workflow.md | Execution lifecycle and validation requirements | Verified | Each remaining crate (P1–P12) was implemented under this workflow: read the contracts, plan, implement, run scoped validation, and record an ADR; the consolidated pass ran `scripts/check.sh` and `scripts/test.sh` across the whole workspace. |
-| docs/error-handling.md | Error-handling standard | Verified | Every crate owns a `thiserror` error enum (e.g. `clierror`, `trainerror`, `serveerror`, `opterror`, `infererror`); the workspace denies `unwrap_used`/`expect_used`/`panic`/`todo`/`unimplemented` and `cargo clippy --workspace --all-targets -- -D warnings` passes, so recoverable failures are returned rather than panicked. |
-| docs/public-api.md | Public API design standard | Verified | Public APIs exist for every crate; `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` is clean, so every documented public item resolves. |
-| docs/naming.md | Identifier naming standard and its mechanical gate | Verified | `bash scripts/checknaming.sh` (forbidden-synonym, constant/macro case, and exemption-clause checks over `crates/*/src` minus `#[cfg(test)]`) exits 0, and `bash scripts/checkthresholds.sh` exits 0 for both `DS3` (`clippy --workspace --lib --bins -- -D clippy::cognitive_complexity -D clippy::too_many_lines`, thresholds in `clippy.toml`) and `A4` (≤ 20 exported crate-root symbols; the widest are `cli` and `bench` at 20). The 8 construction verbs were converged (`architecture::build`→`newmodel` after Clippy `new_ret_no_self`, `build*`→`*from*`, `createstaging`, `assignslot`), the `nn::init` factories normalized to `fill*`/`init*`, and the two `DS3` production violations (`tokenizer::fromjson`, `train::loadresume`) refactored below 80 lines. `bash scripts/check.sh` reports "All static quality checks passed"; `cargo test --workspace --locked` reports 746 passed / 0 failed / 1 ignored. |
-| docs/testing.md | Testing strategy and quality gates | Verified | Black-box migration complete: all `crates/*/src` hold zero inline `#[cfg(test)]` modules (`rg -l '#\[cfg\(test\)\]' crates/*/src` is empty; 19 of 19 crates migrated). The 41 repository-root `tests/` suites call only public `pub` APIs, and 7 benchmark targets remain in `benches/`. `scripts/srctestbaseline.txt` is empty, so the `scripts/checksrctests.sh` ratchet ban is absolute (116 → 0 files). `bash scripts/check.sh` reports "All static quality checks passed"; `cargo test --workspace --locked` passes with 0 failed. |
-| docs/decision-records/blackboxtesting.md | Black-box, contract-first testing | Verified | The decision, its gate, and the diagnostic seam are all in place. All nineteen crates are migrated (0 `#[cfg(test)]` in `crates/*/src`; empty baseline), driven by `scripts/migrateinline.py`, `scripts/migratecrates.py`, and `scripts/finalizecrate.py`. The seam (decision 7) is wired in `infer`, `train`, `checkpoint`, `serve`, and `cli`, with an `EnvFilter` subscriber installed by `cli::runcli` and `httpserver::serve`/`serveone`; `tests/diagnostics.rs` proves runtime toggleability without a rebuild (the same `loadcheckpoint` call emits `"checkpoint loaded"` under a `DEBUG` subscriber and suppresses it under `WARN`, 2 passed). |
-| docs/performance.md | Performance engineering standard | Proposed | Visible baselines exist for every benchmarked crate at the repository root: `benches/{cpuops,kernels,metadata,autograd,nn,models,optim}.rs`, with shared workloads in `crates/bench`. No optimization or before/after comparison has been performed, so no improvement is claimed. |
-| docs/tensor-layout.md | Tensor layout semantics | Proposed | Placeholder; normative content has not been written. |
-| docs/model-support.md | Model-support contract | Proposed | Placeholder: the normative body is not yet written. The subject is now implemented — `nn` and `models` (Llama forward) exist with ADRs `docs/decision-records/nn.md` and `docs/decision-records/models.md`, covered by the root `nnlayers` and `modelforward` suites. Interim authority is the crate API plus those ADRs; the forward path only (no backward path yet). |
-| docs/checkpoint-format.md | Checkpoint format | Proposed | Placeholder: the normative body is not yet written. The subject is now implemented — `checkpoint` provides container/save/load/compatibility (ADR `docs/decision-records/persistence.md`) and `format` provides parsing/validation, exercised by the root `roundtrip` and `artifact` suites. Interim authority is the crate API plus that ADR. |
-| docs/training.md | Training contract | Proposed | Placeholder: the normative body is not yet written. The subject is now implemented — `train` provides config, cross-entropy loss, gradient accumulation, stepping, evaluation, and resume (ADR `docs/decision-records/training.md`), exercised by the root `lossdecrease`, `trainingresume`, and `cancellation` suites. End-to-end backward through the forward-only `nn`/`models` stack is a declared limitation. |
-| docs/inference.md | Inference contract | Proposed | Placeholder: the normative body is not yet written. The subject is now implemented — `infer` provides the engine, request lifecycle, prefill/decode, KV cache, sampling, stopping, and streaming (ADR `docs/decision-records/inference.md`), exercised by the root `generation`/`isolation` suites and by `serve`'s `service`/`server` suites. |
-| docs/decision-records/layer1cpu.md | Layer 1 CPU backend unary-first scope | Verified | `crates/cpu` implements `backend` plus four `kernel<f32>` operators and `cpuexecutor`; `cargo test -p cpu` reports 34 unit tests passing (the 7 cpu integration tests now live in the root `tests/cpucontract.rs`), and `scripts/check.sh` is clean. The benchmarks live at the repository root: `benches/cpuops.rs` (executor-level), `benches/kernels.rs` (raw kernels), and `benches/metadata.rs` (tensor metadata). |
-| docs/decision-records/dtypeelementtaxonomy.md | Storage `dtype` vs. compute `precision`, and `element` coverage | Verified | `dtype::f64` and `impl element for f64` exist with `sizeinbytes() == 8`; `cargo test --workspace` reports 131 passing, including the element/dtype width invariant and an `f64` view round-trip; `clippy -D warnings` and `cargo doc -D warnings` are clean. |
-| docs/decision-records/workspacelayout.md | Workspace layout alignment with `m.md` | Verified | The root `Cargo.toml` is a package + workspace root (no lib/bin); cross-crate integration tests live at the repository root `tests/` and benchmarks at the root `benches/` (7 targets, including the newly consolidated `optim` bench); `README.md`, `LICENSE` (`LICENSE-APACHE`, `LICENSE-MIT`), and `clippy.toml` added; `criterion` is declared once at the root. `cargo test --workspace` reports 746 passed / 0 failed and `cargo bench --workspace --no-run` builds every benchmark target. |
-| docs/decision-records/layer0kernel.md | Layer 0 kernel boundaries | Verified | `lib`, `tensor`, and `api` are implemented with their documented contracts; the root `tensorcontract`, `apicontract`, and `crosscrate` suites pass. |
-| docs/decision-records/layer1compute.md | Layer 1 compute contract extension | Verified | `api` exposes the frozen `kernel<T>` plus the additive `binarykernel`/`weightedkernel`/`gatherkernel`/`compute` contracts; `crates/cpu` implements them and the root `cpucontract` suite exercises them from outside the crates. |
-| docs/decision-records/autograd.md | Reverse-mode autograd scope | Verified | `crates/autograd` implements the graph, variables, and VJPs for the supported operators; the root `autograd` suite checks every one against a finite-difference reference, and `cargo bench --no-run` builds `benches/autograd.rs`. |
-| docs/decision-records/nn.md | Neural-network layer contracts | Verified | `crates/nn` implements parameters, modules, and the layer set; the root `nnlayers` suite checks each layer against an independent scalar reference from `testkit`. |
-| docs/decision-records/models.md | Llama model architecture | Verified | `crates/models` implements the causal-LM contract and the Llama config/weights/block/model; the root `modelforward` suite pins deterministic forward logits. |
-| docs/decision-records/tokenizer.md | Tokenizer and chat-template contracts | Verified | `crates/tokenizer` implements vocab, merges, special tokens, chat template, encode/decode, and the engine; the root `tokens` suite passes. |
-| docs/decision-records/persistence.md | Checkpoint persistence and format | Verified | `crates/format` and `crates/checkpoint` implement parsing/validation and atomic save/load/compatibility; the root `artifact` and `roundtrip` suites pass. |
-| docs/decision-records/context.md | Execution controls and cancellation | Verified | `crates/context` implements cancellation, budgets, metrics, execution context, and workers; the root `context` suite passes. |
-| docs/decision-records/data.md | Dataset and batching contracts | Verified | `crates/data` implements records, datasets, packing, batches, samplers, and loaders; the root `pipeline` suite composes them end to end. |
-| docs/decision-records/inference.md | Generation and request lifecycle | Verified | `crates/infer` implements the engine, request/generation state, prefill/decode, KV cache, sampling, stopping, and streaming; the root `generation` and `isolation` suites pass. |
-| docs/decision-records/optim.md | Optimizer, clipping, and schedule contracts | Verified | `crates/optim` implements AdamW, momentum SGD, gradient clipping, and LR schedules over owned tensors; the root `optim` suite passes and the consolidated `benches/optim.rs` builds. |
-| docs/decision-records/training.md | Training orchestration and resume | Verified | `crates/train` implements config, loss, gradient accumulation, stepping, evaluation, and resume; the root `lossdecrease`, `trainingresume`, and `cancellation` suites pass. Backward through `nn`/`models` is a declared limitation. |
-| docs/decision-records/serve.md | HTTP application boundary | Verified | `crates/serve` implements the std-only HTTP/1.1 adapter, routes, admission control, and deadline→cancellation mapping; the root `service` and `server` suites (including real loopback sockets) pass. |
-| docs/decision-records/cli.md | Command-line adapter and exit codes | Verified | `crates/cli` implements parsing, dispatch, and a central exit-code table over the library workflows; the root `cli` suite covers parsing, error mapping, and exit codes, and `cli train` returns documented exit code 4 for the declared limitation. |
-| docs/decision-records/testconsolidation.md | Integration-test and benchmark consolidation | Verified | Every crate-local integration suite moved to the repository-root `tests/` (14 moved files, `common/` merged) and the `optim` benchmark moved to the root `benches/`; the root `llm` package declares the test-only dev-dependencies. `scripts/check.sh` and `scripts/test.sh` pass (746 passed / 0 failed / 1 ignored) and `cargo bench --workspace --no-run` builds 7 targets. Its consequence "crate-local coverage is now inline unit tests only" is superseded by docs/decision-records/blackboxtesting.md. |
+## 本轮重测证据（2026-10-10）
 
-This record MUST be updated whenever a document's subject is implemented, measured, or found to violate its own rules.
+环境：macOS 27.0.1（build 26A434，arm64）、`rustc 1.99.0 (b940084d7 2026-09-28)`、git HEAD `978c57ee`。
+
+- `bash scripts/check.sh` —— 报告 `All static quality checks passed.`（`cargo fmt --check`、`cargo check --workspace`、`clippy --workspace --all-targets -- -D warnings`、`checknaming.sh`、`checksrctests.sh`、`checkthresholds.sh`、`cargo doc` 全部通过），exit 0。
+- `bash scripts/checksrctests.sh` —— `inline-test ratchet: 0 file(s) still pending migration.`，exit 0；`scripts/srctestbaseline.txt` 仅含一个换行，故为**空基线**，棘轮禁令绝对。
+- `cargo test --workspace --locked -- --list` —— 枚举 **736** 个测试用例（含 doctest）；该命令只编译并列测试，不运行测试体。本记录不据此重报通过/失败总数。
+
+## 当前判定
+
+### architecture.md
+
+| 章节 / 主题 | 判定 | 证据 |
+| --- | --- | --- |
+| 架构边界 | 已验证 | 全部 19 个 `crates/*` 成员 crate 与根 `llm` package 已实现（工作区共 20 个 Cargo package，其中 19 个为成员 crate）。解析后的工作区依赖图无环（`cargo check --workspace --all-targets` exit 0；`cargo metadata` exit 0——若有环将解析失败），且 `scripts/check.sh`（fmt、`clippy --workspace --all-targets -- -D warnings`、`rustdoc -D warnings`）干净。 |
+| crate 归属与依赖图 | 已验证 | 清单与 `cargo metadata` 显示生产边无环且方向正确；根 `llm` package 无生产依赖，其 dev-dependencies 覆盖全部 19 个成员 crate（仅测试用），`grep crates/*/Cargo.toml` 未发现指向 `cli`/`serve` 的产品边，`cli`/`serve` 不是任何生产计算 crate 的依赖。逐 crate 的实际生产边见 `architecture.md` §13.2。 |
+| 工作区布局 | 已验证 | 根 `Cargo.toml` 是 package + workspace 根（无 lib/bin）；跨 crate 集成测试在根 `tests/`（41 个套件），基准在根 `benches/`（7 个目标）；`README.md`、`LICENSE`（`LICENSE-APACHE`、`LICENSE-MIT`）与 `clippy.toml` 位于仓库根；`criterion` 在根声明一次。`cargo bench --workspace --no-run` 构建所有基准目标。 |
+
+### engineering.md
+
+| 章节 / 主题 | 判定 | 证据 |
+| --- | --- | --- |
+| 工作流与执行协议 | 已验证 | 其余 crate（P1–P12）均按此工作流实现：阅读契约、计划、实现、执行范围化验证、记录 ADR；合并后的验证运行了 `scripts/check.sh` 与 `scripts/test.sh`。 |
+| 错误处理标准 | 已验证 | 每个 crate 拥有 `thiserror` 错误枚举（如 `clierror`、`trainerror`、`serveerror`、`opterror`、`infererror`）；工作区拒绝 `unwrap_used`/`expect_used`/`panic`/`todo`/`unimplemented`，且 `cargo clippy --workspace --all-targets -- -D warnings` 通过，因此可恢复失败被返回而非 panic。 |
+| 命名标准与机械门 | 已验证 | `bash scripts/checknaming.sh`（禁用同义词、常量/宏大小写、豁免条款检查，覆盖 `crates/*/src` 去掉 `#[cfg(test)]`）exit 0；`bash scripts/checkthresholds.sh` 对 `DS3` 与 `A4` 均 exit 0。8 个构造动词已收敛（`architecture::build`→`newmodel` 等），`nn::init` 工厂规范化为 `fill*`/`init*`，两处 `DS3` 生产违规重构到 80 行以下。`bash scripts/check.sh` 报告 "All static quality checks passed"（本轮重测，见「本轮重测证据」）。 |
+| 公开 API 设计标准 | 已验证 | 每个 crate 都有公开 API；`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` 干净，每个文档化的公开项均可解析。 |
+| 测试策略与质量门 | 已验证 | 黑盒迁移完成：所有 `crates/*/src` 零内联 `#[cfg(test)]` 模块（`rg -l '#\[cfg\(test\)\]' crates/*/src` 为空；19/19 成员 crate 已迁移）。41 个根 `tests/` 套件仅调用公开 `pub` API，`benches/` 保留 7 个基准目标。`scripts/srctestbaseline.txt` 仅含一个换行（空基线），`scripts/checksrctests.sh` 的棘轮禁令绝对（本轮重测：`0 file(s) still pending migration.`，exit 0）。`bash scripts/check.sh` 干净。 |
+| 黑盒契约优先测试 | 已验证 | 决策、门与诊断缝均就位。19 个成员 crate 已迁移（0 `#[cfg(test)]`，基线为空），由 `scripts/migrateinline.py`、`scripts/migratecrates.py`、`scripts/finalizecrate.py` 驱动。缝在 `infer`、`train`、`checkpoint`、`serve`、`cli` 中接线，`EnvFilter` 订阅者由 `cli::runcli` 与 `httpserver::serve`/`serveone` 安装；`tests/diagnostics.rs` 证明无需重编的运行期切换（同一 `loadcheckpoint` 调用在 `DEBUG` 订阅者下发出 "checkpoint loaded"，在 `WARN` 下抑制）。 |
+| 集成测试与基准整合 | 已验证 | 每个 crate 局部集成套件移到仓库根 `tests/`（14 个移动文件，合并 `common/`），`optim` 基准移到根 `benches/`；根 `llm` package 声明仅测试的 dev-dependencies。`scripts/check.sh` 与 `scripts/test.sh` 通过（本轮重测 `check.sh` exit 0；通过/失败汇总未在本轮重跑），`cargo bench --workspace --no-run` 构建 7 个目标。其「crate 局部覆盖现仅内联单元测试」的后果已被黑盒测试决策取代。 |
+| 性能工程标准 | 拟定 | 每个被基准的 crate 在仓库根有可见基线：`benches/{cpuops,kernels,metadata,autograd,nn,models,optim}.rs`，共享工作负载在 `crates/bench`。尚未执行任何优化或前后对比，故不声称改进。 |
+
+### design.md
+
+| 章节 / 主题 | 判定 | 证据 |
+| --- | --- | --- |
+| 层 0：lib / tensor / api | 已验证 | `lib`、`tensor`、`api` 已按文档化契约实现；根 `tensorcontract`、`apicontract`、`crosscrate` 套件通过。 |
+| 层 0：张量布局契约 | 拟定 | 该契约首次成文于设计文档（不再是指向其它文档的占位），依据是对 `crates/tensor/src` 的源码核对；尚未作为独立规范单独验证。 |
+| 层 0：api 计算契约扩展 | 已验证 | `api` 暴露冻结的 `kernel<T>` 以及增量的 `binarykernel`/`weightedkernel`/`gatherkernel`/`compute` 契约；`crates/cpu` 实现它们，根 `cpucontract` 套件从 crate 外部触发它们。 |
+| 层 1：cpu | 已验证 | `crates/cpu` 实现 `backend`、`executor` 与算子模块（`matmul`、`attention`、`embedding`、`normalization`、`rotary`、`softmax`、`activation`、`elementwise`）；单元测试现由仓库根 `tests/cpuunits.rs` 经 `pub` 接口触发（`crates/cpu/src` 零内联 `#[cfg(test)]`），契约测试在根 `tests/cpucontract.rs`，`scripts/check.sh` 干净。基准在仓库根：`benches/cpuops.rs`（执行器级）、`benches/kernels.rs`（原始算子）、`benches/metadata.rs`（张量元数据）。 |
+| 层 1：存储 dtype 与计算 precision | 已验证 | `dtype::f64` 与 `impl element for f64` 存在且 `sizeinbytes() == 8`；根 `tests/tensorunits.rs` 与 `tests/tensorcontract.rs` 覆盖 element/dtype 宽度不变量与 `f64` 视图往返；`clippy -D warnings` 与 `cargo doc -D warnings` 干净。 |
+| 层 1：autograd | 已验证 | `crates/autograd` 实现图、变量与所支持算子的 VJP；根 `autograd` 套件对每个算子用有限差分参考检查，`cargo bench --no-run` 构建 `benches/autograd.rs`。 |
+| 层 2：nn | 已验证 | `crates/nn` 实现参数、模块与层集；根 `nnlayers` 套件用 `testkit` 的独立标量参考检查每一层。 |
+| 层 2：models（模型支持契约） | 已验证 | `crates/models` 实现因果 LM 契约与 Llama config/weights/block/model；根 `modelforward` 套件钉住确定性前向 logits。模型支持契约首次成文于设计文档，依据是对 `crates/models/src` 的源码核对。 |
+| 层 2：tokenizer | 已验证 | `crates/tokenizer` 实现词表、合并、特殊词元、对话模板、编码/解码与引擎；根 `tokens` 套件通过。 |
+| 层 2：data | 已验证 | `crates/data` 实现记录、数据集、打包、批次、采样器与加载器；根 `pipeline` 套件端到端组合它们。 |
+| 层 2：format 与 checkpoint（检查点格式契约） | 已验证 | `crates/format` 与 `crates/checkpoint` 实现解析/校验与原子 save/load/兼容性；根 `artifact` 与 `roundtrip` 套件通过。检查点格式契约首次成文于设计文档，依据是对两个 crate 源码的核对。 |
+| 层 3：optim | 已验证 | `crates/optim` 在拥有的张量上实现 AdamW、动量 SGD、梯度裁剪与 LR 调度；根 `optim` 套件通过，整合的 `benches/optim.rs` 可构建。 |
+| 层 3：context | 已验证 | `crates/context` 实现取消、预算、指标、执行上下文与 worker；根 `context` 套件通过。 |
+| 层 3：train（训练契约） | 已验证 | `crates/train` 实现配置、损失、梯度累积、步进、评估与恢复；根 `lossdecrease`、`trainingresume`、`cancellation` 套件通过。经 `nn`/`models` 的反向是声明的限制。训练契约首次成文于设计文档，依据是对 `crates/train/src` 的源码核对。 |
+| 层 3：infer（推理契约） | 已验证 | `crates/infer` 实现引擎、请求/生成状态、prefill/decode、KV cache、采样、停止与流式；根 `generation`/`isolation` 套件通过。推理契约首次成文于设计文档，依据是对 `crates/infer/src` 的源码核对。 |
+| 层 4：cli | 已验证 | `crates/cli` 实现解析、分发与中央退出码表；根 `cli` 套件覆盖解析、错误映射与退出码，`cli train` 对声明的限制返回文档化退出码 4。 |
+| 层 4：serve | 已验证 | `crates/serve` 实现 std-only HTTP/1.1 适配器、路由、准入控制与 deadline→cancellation 映射；根 `service` 与 `server` 套件（含真实 loopback socket）通过。 |
+| 基础设施：testkit、bench | 已验证 | 两者均为依赖叶子且非生产依赖；`testkit` 仅提供夹具/断言/参考实现/微型模型，`bench` 提供共享确定性工作负载；根基准目标消费它们并成功构建。 |
+
+### conformance.md（本记录）
+
+| 主题 | 判定 | 证据 |
+| --- | --- | --- |
+| 一致性记录本身 | 拟定 | 判定随 2026-10-10 文档合并由 33 份文档映射到 4 份文档；判定与证据沿用合并前已执行的检查，并由 2026-10-10 对抗性修正补记静态门重测（见「本轮重测证据」）。每当某文档的主题被实现、测量或发现违反其规则时，本记录 MUST 更新。 |
+
+本记录 MUST 在文档主题被实现、测量或发现违反其自身规则时更新。

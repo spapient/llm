@@ -3,8 +3,7 @@
 //!
 //! `testkit` is development and test infrastructure. It MUST NOT become a
 //! production dependency and it MUST NOT enter the production dependency
-//! closure (see `AGENTS.md` section 3.1 and `docs/crate-boundaries.md`
-//! section 5.18).
+//! closure (see `AGENTS.md` section 3.1 and `docs/architecture.md`).
 //!
 //! It provides three narrow pieces:
 //!

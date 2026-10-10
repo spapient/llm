@@ -1,7 +1,7 @@
 //! Black-box evidence for the production diagnostic seam.
 //!
 //! The seam is a production capability, not test code (see
-//! `docs/decision-records/blackboxtesting.md`): workflow crates emit `tracing`
+//! `docs/engineering.md`): workflow crates emit `tracing`
 //! events at decision points, and the events are discarded unless an
 //! application installs a subscriber with a matching filter. These tests drive
 //! a public workflow under a thread-local subscriber and assert that the

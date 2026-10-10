@@ -2,7 +2,7 @@
 //!
 //! Every workload fixes its dimensions and dtype so results are reproducible.
 //! These measurements establish the initial baseline required by
-//! `docs/performance.md`; no improvement is claimed and no allocation is
+//! `docs/engineering.md`; no improvement is claimed and no allocation is
 //! performed inside the timed region beyond the output the kernel contract
 //! returns.
 //!

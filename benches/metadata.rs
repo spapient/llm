@@ -3,7 +3,7 @@
 //! These benchmarks cover the O(rank) metadata operations that every tensor
 //! creation and view passes through: shape validation, element-count checking,
 //! contiguous-layout construction, and tensor ownership. They establish a
-//! baseline required by `docs/performance.md`; no improvement is claimed.
+//! baseline required by `docs/engineering.md`; no improvement is claimed.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(missing_docs)]
 

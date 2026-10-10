@@ -34,7 +34,7 @@ scripts/    check, test, and benchmark entry points
 
 The repository root is a Cargo package without a library or binary target; it
 exists so that the root `tests/` and `benches/` directories are real Cargo
-targets. See [`docs/decision-records/workspacelayout.md`](docs/decision-records/workspacelayout.md).
+targets. See [`docs/architecture.md`](docs/architecture.md).
 
 ## Requirements
 

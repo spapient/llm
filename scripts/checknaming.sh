@@ -4,13 +4,13 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Mechanical naming gate. The authoritative rules live in docs/naming.md; this
+# Mechanical naming gate. The authoritative rules live in docs/engineering.md; this
 # script only enforces the mechanical subset defined there (rule.md NM1/NM3/NM5).
 #
 # Scope: crates/*/src/**.rs, excluding #[cfg(test)] regions (NM4 permits terse
 # local names and test helpers are not part of any contract).
 
-# Leading tokens that duplicate a canonical verb (docs/naming.md section 4).
+# Leading tokens that duplicate a canonical verb (docs/engineering.md).
 FORBIDDEN_VERBS=(
   build create make construct instantiate assemble
   fetch retrieve obtain acquire query
@@ -54,7 +54,7 @@ while IFS= read -r source; do
     }' "$source"
 done < <(find crates -path '*/src/*.rs' -not -path '*/target/*') >"$tmp"
 
-log "Checking naming conformance (docs/naming.md)"
+log "Checking naming conformance (docs/engineering.md)"
 
 violations=0
 
@@ -69,7 +69,7 @@ while read -r kind file line name; do
       for bad in "${FORBIDDEN_VERBS[@]}"; do
         case "$name" in
           "$bad"*)
-            report "$file:$line: forbidden synonym '$bad' in fn '$name' (see docs/naming.md s4)"
+            report "$file:$line: forbidden synonym '$bad' in fn '$name' (see docs/engineering.md)"
             break
             ;;
         esac
@@ -85,7 +85,7 @@ while read -r kind file line name; do
 done <"$tmp"
 
 # A naming-lint exemption MUST cite the rule.md clause it relies on
-# (docs/naming.md section 8).
+# (docs/engineering.md).
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   case "$hit" in
@@ -94,13 +94,13 @@ while IFS= read -r hit; do
       file="${hit%%:*}"
       rest="${hit#*:}"
       line="${rest%%:*}"
-      report "$file:$line: naming #[allow] must cite its NM clause (docs/naming.md s8)"
+      report "$file:$line: naming #[allow] must cite its NM clause (docs/engineering.md)"
       ;;
   esac
 done < <(grep -rnE '#\[allow\([^]]*(non_snake_case|non_camel_case_types|non_upper_case_globals)' crates/*/src 2>/dev/null || true)
 
 if [ "$violations" -ne 0 ]; then
-  fail "$violations naming conformance violation(s); see docs/naming.md"
+  fail "$violations naming conformance violation(s); see docs/engineering.md"
 fi
 
 log "Naming conformance passed."

@@ -5,7 +5,7 @@
 //! reproducibility metadata. It MUST NOT own production operator
 //! implementations or alternative implementations that diverge from production
 //! behavior, and it MUST NOT become a production dependency (see
-//! `docs/crate-boundaries.md` section 5.19).
+//! `docs/architecture.md`).
 //!
 //! Workloads are exposed as deterministic constructors so that every benchmark
 //! target builds identical inputs. No allocation happens inside a timed region

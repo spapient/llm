@@ -4,7 +4,7 @@
 //! production sources under `crates/serve/src` hold no test code. Where a test
 //! previously reached a crate-private helper, it now drives the public
 //! `httprequest::parse` or `inferenceservice::handle` seam (see
-//! `docs/decision-records/blackboxtesting.md`).
+//! `docs/engineering.md`).
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
 mod common;

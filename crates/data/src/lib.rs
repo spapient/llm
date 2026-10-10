@@ -12,8 +12,7 @@
 //! depend on `tokenizer`: converting raw text to token identifiers is a
 //! composition owned by a higher layer, so a [`textdataset`] is built from
 //! already-tokenized documents. This keeps the dependency direction one-way and
-//! avoids a low-level reverse dependency (see `docs/crate-boundaries.md`
-//! section 5.9).
+//! avoids a low-level reverse dependency (see `docs/architecture.md`).
 //!
 //! # Ownership
 //!

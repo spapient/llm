@@ -4,7 +4,7 @@
 //! production sources under `crates/context/src` hold no test code. Each source
 //! module's tests are wrapped in a nested module to keep helper and test names
 //! isolated. Every assertion reaches the crate through its public interface
-//! (see `docs/decision-records/blackboxtesting.md`).
+//! (see `docs/engineering.md`).
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
 /// Tests relocated from `crates/context/src/budget.rs`.

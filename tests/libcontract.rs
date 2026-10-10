@@ -4,7 +4,7 @@
 //! `seed`, and `tokenid` through the crate's public interface only. It replaces
 //! the former `#[cfg(test)]` unit modules so that every assertion in the
 //! workspace runs through the same public boundary (see
-//! `docs/decision-records/blackboxtesting.md`).
+//! `docs/engineering.md`).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use lib::limiterror;

@@ -1,251 +1,1113 @@
-# Architecture — Minimal Composable LLM Runtime
+# 架构 — 极简可组合 LLM 运行时
 
-Status: Proposed
-Scope: Intended architectural boundaries of the Rust LLM workspace
-Audience: Engineers, reviewers, maintainers, and AI coding agents
+状态: 拟定
+范围: llm/ 工作区的架构边界、分层、crate 归属、依赖方向、公开 API 边界、工作区布局与架构校验
+读者: 工程师、评审者、维护者、AI 编码代理
 
 ---
 
-## 1. Purpose
+## 1. 目的
 
-This document defines the intended architectural boundaries of the Rust LLM workspace.
+本文档定义 llm/ Rust 工作区的目标架构边界。
 
-The architecture is based on a minimal kernel, static crate composition, narrow traits, explicit ownership, and one-way dependencies.
+架构建立在极简内核、静态 crate 组合、窄 trait、显式所有权与单向依赖之上。
 
-It is a target architecture. Existing source code and Cargo manifests must be audited before claiming conformance.
+这是一份**目标架构**。在声称一致性之前，必须先审计现有源代码与 Cargo 清单。本文档的存在不构成实现已符合其要求的证据。
 
-## 2. Design Principles
+工作区遵循五项根本原则：
 
-### 2.1 Minimal Kernel
+1. **极简内核**：基础层只包含上层所需的抽象，不含模型特定工作流、请求调度、应用逻辑或后端特定算法。
+2. **单一职责**：每个 crate 拥有一个内聚的领域及其不变量。
+3. **有向依赖**：依赖关系构成有向无环图。
+4. **静态组合**：通过具体类型与窄 trait 组装实现，默认优先静态分发；仅当存在文档化的运行期多态需求时才使用动态分发。
+5. **可验证边界**：架构规则必须能通过源码审查、自动化检查与测试来强制。
 
-The foundational layer contains only stable, reusable primitives.
+## 2. 规范用语
 
-It MUST NOT contain model-specific workflows, request scheduling, application logic, or backend-specific algorithms.
+术语 MUST、MUST NOT、REQUIRED、SHOULD、SHOULD NOT、MAY 表达要求强度：
 
-### 2.2 Explicit Composition
+- MUST / MUST NOT：强制的架构约束。
+- SHOULD / SHOULD NOT：默认规则，仅在有文档化理由时方可偏离。
+- MAY：允许的设计选择。
 
-Capabilities are composed through narrow interfaces and concrete implementations.
+对强制规则的偏离必须记录明确的架构决策与文档化例外，并经过项目的评审流程批准。例外不得静默地改变其他 crate 适用的规则。
 
-Prefer static dispatch unless runtime polymorphism is required by a documented use case.
+## 3. 工作区清单与分层
 
-### 2.3 One-Way Dependencies
+### 3.1 crate 清单
 
-Dependencies flow from higher-level workflows toward lower-level capabilities.
+| crate | 主要职责 |
+| --- | --- |
+| `lib` | 共享基础类型与原语 |
+| `tensor` | 张量元数据、存储、形状、布局与视图 |
+| `api` | 后端、设备、能力与算子契约 |
+| `cpu` | CPU 执行与数值算子 |
+| `autograd` | 自动微分与梯度传播 |
+| `nn` | 神经网络模块与参数 |
+| `models` | 具体模型架构 |
+| `tokenizer` | 分词、词表、解码与对话模板 |
+| `data` | 数据集抽象、记录、采样与批处理 |
+| `format` | 外部模型格式与结构校验 |
+| `checkpoint` | 模型与训练状态持久化 |
+| `optim` | 优化器、更新规则与学习率调度 |
+| `context` | 执行控制、取消、资源预算与指标 |
+| `train` | 训练工作流、损失、评估与恢复编排 |
+| `infer` | 自回归生成、请求生命周期与 KV Cache |
+| `cli` | 命令行应用 |
+| `serve` | 可选 HTTP 应用 |
+| `testkit` | 仅测试用的夹具与参考实现 |
+| `bench` | 基准可执行程序与测量编排 |
 
-Lower-level crates MUST NOT import higher-level application or workflow crates.
+这些名称代表领域边界，并不要求每个未来能力都停留在其最初分配的文件中。
 
-### 2.4 Explicit Ownership
+当出现稳定的、可独立测试的职责时，crate MAY 被拆分；但 MUST NOT 仅仅为了增加 crate 数量而拆分。
 
-Every mutable resource has a defined owner, lifecycle, and failure behavior.
+### 3.2 层 0：基础契约
 
-Request-scoped state MUST remain separate from shared model weights.
+crate：`lib`、`tensor`、`api`。
 
-### 2.5 Evidence-Based Optimization
+职责：
 
-Correctness is established through contracts and tests. Performance is established through reproducible measurements.
+- 共享标识符、配置原语、资源上限、精度与随机种子类型。
+- 张量形状、布局、存储抽象与视图。
+- 设备、能力与执行契约。
 
-Neither can substitute for the other.
+约束：
 
-## 3. Architectural Layers
+- 不依赖任何应用层。
+- 不含模型特定逻辑。
+- 不含隐藏的全局执行状态。
+- 除非抽象本身要求，公开契约不得暴露后端特定实现细节。
 
-### Layer 0: Foundational Contracts
+`tensor` 与 `api` 之间的精确依赖关系 MUST 被显式选定并文档化。
 
-Crates: `lib`, `tensor`, `api`.
+### 3.3 层 1：计算与微分
 
-Responsibilities:
+crate：`cpu`、`autograd`、`nn`。
 
-* Shared identifiers, configuration primitives, limits, precision, and seed types.
-* Tensor shapes, layouts, storage abstractions, and views.
-* Device, capability, and execution contracts.
+职责：
 
-Constraints:
+- CPU 算子实现。
+- 自动微分。
+- 神经网络模块与参数抽象。
 
-* No application dependencies.
-* No model-specific logic.
-* No hidden global execution state.
-* No backend-specific implementation details in public contracts unless required by the abstraction.
+约束：
 
-The precise dependency relationship between `tensor` and `api` MUST be explicitly selected and documented.
+- 后端实现依赖契约，而非反向。
+- 算子语义必须能独立测试。
+- 梯度行为必须对照数学或数值参考验证。
+- 模型特定的编排不属于计算内核。
 
-### Layer 1: Compute and Differentiation
+### 3.4 层 2：模型与工作流
 
-Crates: `cpu`, `autograd`, `nn`.
+crate：`models`、`infer`、`train`、`optim`、`context`、`data`、`tokenizer`、`format`、`checkpoint`。
 
-Responsibilities:
+职责：
 
-* CPU operator implementations.
-* Automatic differentiation.
-* Neural network modules and parameter abstractions.
+- 模型架构组合。
+- 推理与训练工作流。
+- 优化状态与更新规则。
+- 执行预算、取消与可观测性。
+- 数据准备、分词、格式校验与持久化。
+
+约束：
+
+- 每个 crate 拥有一个明确的领域职责。
+- 共享概念不构成循环依赖的理由。
+- 跨领域工作流由更高层的所有者组合。
+- 模型权重不得包含可变的请求级状态。
+
+这些 crate 之间的确切边必须由公开 API 需求决定，并对照实际工作区验证。
+
+### 3.5 层 3：应用与工具
+
+crate：`cli`、`serve`、`bench`、`testkit`。
+
+职责：
+
+- 应用入口点与外部接口。
+- HTTP 集成。
+- 基准执行。
+- 测试支持与参考实现。
+
+约束：
+
+- 应用 crate 不得成为运行时内核的依赖。
+- `testkit` 不得进入生产依赖图。
+- 基准必须运行真实代码路径并披露其工作负载。
+
+## 4. 依赖图策略
 
-Constraints:
+### 4.1 根本规则
 
-* Backend implementations depend on contracts, not the reverse.
-* Operator semantics must be testable independently.
-* Gradient behavior must be validated against mathematical or numerical references.
-* Model-specific orchestration does not belong in the compute kernel.
+只有当依赖遵循某个所需能力或契约的归属时，一个 crate 才可以依赖另一个 crate。
 
-### Layer 2: Models and Workflows
+MUST NOT 仅因实现细节方便访问而引入依赖。
+
+工作区依赖图 MUST 保持无环。
 
-Crates: `models`, `infer`, `train`, `optim`, `context`, `data`, `tokenizer`, `format`, `checkpoint`.
+高层 crate 可以组合低层能力；低层 crate MUST NOT 为了回调而依赖高层工作流。
 
-Responsibilities:
+在引入边 `A → B` 之前，必须验证：
 
-* Model architecture composition.
-* Inference and training workflows.
-* Optimization state and update rules.
-* Execution budgets, cancellation, and observability.
-* Data preparation, tokenization, format validation, and persistence.
+1. `B` 拥有所需的抽象或能力。
+2. `A` 不要求 `B` 反向导入 `A`。
+3. 该边不引入依赖环。
+4. 该边不会不必要地扩大基础依赖闭包。
+5. 该边能通过编译与架构检查验证。
 
-Constraints:
+### 4.2 目标依赖图
 
-* Each crate owns a distinct domain responsibility.
-* Shared concepts do not justify circular dependencies.
-* Cross-domain workflows are composed by a higher-level owner.
-* Model weights do not contain mutable request state.
+下图描述**目标**依赖结构，是设计目标而非对现有 `Cargo.toml` 的已验证快照。图中省略了可选边与部分共享低层依赖以保持可读性；每条实际边 MUST 在 crate 级依赖清单中列出并说明理由。
 
-The exact edges between these crates must be determined from public API requirements and verified against the actual workspace.
+```text
+lib
+├── tensor
+│   └── api
+│       └── cpu
+├── context
+├── tokenizer
+├── data
+└── format
 
-### Layer 3: Application and Tooling
+api ───────────────────────────────┐
+tensor ────────────────────────────┤
+lib ──────────────────────────────┤
+                                   ▼
+                                autograd
+                                   │
+                                   ▼
+                                   nn
+                                   │
+                                   ▼
+                                 models
+                                   │
+                         ┌─────────┴─────────┐
+                         ▼                   ▼
+                        infer               train
+optim ──────────────────────────────── train
+data ───────────────────────────────── train
+checkpoint ─────────────────────────── train
+checkpoint ─────────────────────────── infer
+tokenizer ──────────────────────────── infer
+models ─────────────────────────────── infer
+context ────────────────────────────── infer
+context ────────────────────────────── train
+infer ──────────────────────────────── cli
+train ──────────────────────────────── cli
+models ─────────────────────────────── cli
+```
 
-Crates: `cli`, `serve`, `bench`, `testkit`.
+该图在分层上刻意保守，但 `autograd`、`nn`、`models`、`infer`、`train` 之间的确切关系 MUST 在强制执行前对照公开 API 与实现需求验证。
 
-Responsibilities:
+### 4.3 强制依赖约束
 
-* Application entry points and external interfaces.
-* HTTP integration.
-* Benchmark execution.
-* Test support and reference implementations.
+以下规则是强制的：
 
-Constraints:
+1. `lib` MUST NOT 依赖任何其他工作区 crate。
+2. `tensor` MUST NOT 依赖模型、训练、推理或应用 crate。
+3. `api` MUST NOT 依赖 `cpu` 等具体后端实现。
+4. `api` 定义契约时 MUST NOT 要求 `cpu`。
+5. `models` MUST NOT 依赖 `infer`、`train`、`cli` 或 `serve`。
+6. `infer` MUST NOT 依赖 `train` 来完成推理。
+7. `train` MUST NOT 依赖 `infer` 来完成训练。
+8. `cli` 与 `serve` MUST NOT 成为生产计算 crate 的依赖。
+9. `testkit` MUST NOT 进入常规生产依赖闭包。
+10. `bench` MUST NOT 被生产运行时 crate 依赖。
+11. 任何 crate 不得引入依赖环（包括通过可选特性形成的环）。
+12. 任何 crate 不得通过替代路径导入另一 crate 的私有实现，或用重复的内部代码绕过既有边界。
 
-* Application crates must not become dependencies of the runtime kernel.
-* `testkit` must not enter production dependency graphs.
-* Benchmarks must exercise real code paths and disclose their workload.
+开发依赖不会自动免于架构评审。仅当测试或基准需要时，才允许开发期边；但它 MUST NOT 变成生产依赖。
 
-## 4. Dependency Graph Policy
+### 4.4 当两个 crate 互相需要
 
-The intended dependency graph is a directed acyclic graph.
+双向需求是架构告警，而非自动创建新共享 crate 的理由。
 
-Before introducing an edge A → B, verify:
+在抽取共享抽象之前：
 
-1. B owns the required abstraction or capability.
-2. A does not require B to import A.
-3. The edge does not introduce a dependency cycle.
-4. The edge does not unnecessarily enlarge the foundational dependency closure.
-5. The edge can be validated through compilation and architecture checks.
+1. 明确两个看似互相需要的职责。
+2. 判定哪个 crate 拥有该领域不变量。
+3. 找出双方所需的最小稳定契约。
+4. 检查现有低层 crate 是否能拥有该契约。
+5. 仅当该契约具有内聚的独立目的时才抽取新 crate。
+6. 变更后重新验证依赖图与公开 API。
 
-If two crates appear to require each other, do not immediately extract a large shared crate.
+不要创建累积无关类型与行为的通用 `common`、`core` 或 `shared` crate。
 
-First identify the minimal shared contract and determine which layer should own it.
+### 4.5 当两个 crate 需要互相调用时的处理顺序
 
-Any abstraction extraction must have a clear purpose and a limited public API.
+若确需抽取抽象，必须按以下优先顺序考虑最小改动：
 
-## 5. Tensor and Backend Boundary
+1. 复用现有公开契约。
+2. 收窄现有接口。
+3. 把归属移动到正确的既有 crate。
+4. 抽取最小共享抽象。
+5. 仅当独立职责成立时才引入新 crate。
 
-Tensor metadata and storage must have explicit semantics.
+## 5. crate 契约
 
-The architecture must document:
+每个 crate MUST 定义其公开职责、依赖、错误行为与排除项。本节是逐 crate 的**职责摘要**；逐 crate 的权威设计记录（DS1–DS5 设计门、不变量、错误路径与领域契约）见 `design.md` 对应章，两者冲突时以 `design.md` 结合源码为准。
 
-* Shape and dimension validation.
-* Element type and storage representation.
-* Layout and stride behavior.
-* Ownership and view lifetimes.
-* Device association.
-* Allocation and resource-limit failures.
-* Operator input and output contracts.
+### 5.1 lib — 基础类型
 
-Backend traits must define observable behavior rather than exposing internal implementation details.
+拥有：
 
-A backend implementation must not silently change the mathematical contract of an operator.
+- 共享标识符（如 `TokenId`、`RequestId`）。
+- 基础配置类型与校验原语。
+- 资源上限类型。
+- 精度描述符。
+- 可复现随机种子表示。
+- 当共享抽象确实必要时，最小的跨 crate 错误原语。
 
-## 6. Model and Request Lifecycles
+MUST NOT 拥有：
 
-Model-level state includes architecture configuration and model parameters.
+- 张量计算。
+- 模型架构。
+- 设备执行。
+- 请求调度。
+- 序列化工作流。
+- 属于特定应用的应用配置解析。
 
-Request-level state may include:
+依赖：默认仅 Rust 标准库；外部依赖需明确理由。
 
-* Request identity.
-* Input and generated token state.
-* KV Cache ownership.
-* Sampling state.
-* Cancellation and stop conditions.
-* Per-request resource accounting.
+验收标准：
 
-The inference workflow coordinates these resources without storing request-specific mutable state in shared weights.
+- 公开类型具有清晰不变量。
+- 需要时拒绝非法值。
+- 无应用特定概念泄漏进基础 API。
+- 不引入工作区依赖。
 
-Request termination must define how resources are released after successful completion, cancellation, or failure.
+### 5.2 tensor — 张量表示
 
-## 7. Error Boundaries
+拥有：
 
-Each crate defines errors for failures within its responsibility.
+- 形状与维度校验。
+- 数据类型与布局元数据。
+- 存储抽象。
+- 张量所有权与视图。
+- 形状算术与相关存储大小计算。
 
-Examples include:
+MUST NOT 拥有：
 
-* Invalid tensor shape.
-* Unsupported operator configuration.
-* Backend execution failure.
-* Invalid model configuration.
-* Malformed external data.
-* Checkpoint incompatibility.
-* Resource budget exhaustion.
-* Request cancellation.
+- 模型层。
+- 自动微分图语义。
+- 具体 CPU 算法。
+- 生成状态。
+- HTTP 或 CLI 行为。
 
-Errors must preserve sufficient context for diagnosis without coupling foundational crates to application-specific error types.
+依赖：`lib` 以及有窄理由的低层依赖。
 
-Ordinary runtime failures must propagate through explicit error handling.
+验收标准：
 
-## 8. Resource Management
+- 可能溢出时，形状计算使用可检出溢出的算术。
+- 存储所有权与视图生命周期显式。
+- 非法布局与不兼容形状产生已定义的错误。
+- 张量元数据不得静默暗示不支持的设备或存储能力。
 
-Resource limits are architectural contracts, not optional conveniences.
+### 5.3 api — 执行契约
 
-All externally influenced dimensions, sizes, and offsets require appropriate validation.
+拥有：
 
-The implementation must define ownership and cleanup behavior for:
+- 后端接口。
+- 设备描述。
+- 能力声明。
+- 算子调用契约。
 
-* Tensor allocations.
-* Model-loading buffers.
-* KV Cache allocations.
-* Concurrent requests.
-* Checkpoint writes.
-* Training state.
+MUST NOT 拥有：
 
-Where resource exhaustion is possible, failure behavior must be explicit and testable.
+- CPU 算子实现。
+- 模型特定编排。
+- 应用级调度。
+- 请求特定可变状态。
 
-## 9. Performance Architecture
+依赖：`lib`，以及（若公开契约要求）`tensor`。
 
-Optimization proceeds in this order:
+`api` 与 `tensor` 的依赖关系 MUST 被显式选定：若算子签名直接接受张量，则 `api -> tensor` 可接受；否则二者 SHOULD 保持可独立组合。
 
-1. Establish correctness.
-2. Establish a reproducible baseline.
-3. Identify a measured bottleneck.
-4. Select the smallest relevant change.
-5. Re-run correctness tests.
-6. Measure the change under comparable conditions.
-7. Record results and limitations.
+验收标准：
 
-The architecture must not assume that SIMD, parallelism, caching, or additional abstraction automatically improves performance.
+- trait 描述稳定的可观察行为。
+- 不支持的操作具有已定义的失败语义。
+- 后端选择不需要反向依赖。
+- trait 不混合无关职责。
 
-## 10. Architectural Decision Records
+### 5.4 cpu — CPU 后端
 
-Significant decisions should record:
+拥有：
 
-* Context and problem.
-* Constraints.
-* Options considered.
-* Decision and rationale.
-* Consequences and trade-offs.
-* Validation requirements.
-* Conditions that would justify revisiting the decision.
+- CPU 算子实现。
+- CPU 后端内的执行分发。
+- CPU 特定数值策略。
+- SIMD 实现（**尚未实现**；当前 `crates/cpu/src` 无数值 SIMD 路径，任何引入 MUST 先按 §12 建立基线并附正确性计划与前后对比）。
+- CPU 特定能力上报。
 
-Architectural decisions must be based on demonstrated requirements rather than fashion or hypothetical future extensibility.
+MUST NOT 拥有：
 
-## 11. Conformance Status
+- 公开后端契约。
+- 模型权重生命周期。
+- 请求管理。
+- 训练编排。
 
-Every architectural rule must be classified as one of:
+依赖：`api`、`tensor`、`lib`，取决于选定的契约设计。
 
-* Proposed: intended but not yet verified.
-* Verified: supported by source inspection and relevant checks.
-* Non-conforming: existing implementation violates the rule.
-* Blocked: verification requires missing code, tools, or environment.
+验收标准：
 
-Do not classify the repository as conforming solely because this document exists.
+- 算子行为符合文档化契约。
+- 数值正确性在可行时对照独立参考测试。
+- 不引入不安全代码。
+- 新算子包含边界测试、数值测试与至少一个基准。
+
+### 5.5 autograd — 自动微分
+
+拥有：
+
+- 计算图表示。
+- 微分节点与变量。
+- 梯度存储与累积语义。
+- 反向遍历。
+- 梯度抑制 / 无梯度执行语义。
+
+MUST NOT 拥有：
+
+- 模型特定架构。
+- 优化器更新策略。
+- 训练循环调度。
+- 具体应用工作流。
+
+依赖：`tensor`、`lib` 以及所需的窄计算契约。
+
+验收标准：
+
+- 图所有权与生命周期行为显式。
+- 梯度累积与图复用语义文档化。
+- 反向操作对照解析或数值参考测试。
+- 非法图状态通过已定义错误路径失败。
+
+### 5.6 nn — 神经网络组件
+
+拥有：
+
+- 参数与模块抽象。
+- 线性层与嵌入层。
+- 归一化层。
+- 旋转位置变换。
+- 注意力与 MLP 组件。
+- 模块级初始化契约。
+
+MUST NOT 拥有：
+
+- 具体全模型架构注册。
+- 训练循环控制。
+- HTTP 请求。
+- 请求级生成状态。
+
+依赖：`tensor`、`autograd`、`api`、`lib`，以实现需要为准。
+
+验收标准：
+
+- 参数所有权与梯度语义显式。
+- 层契约规定预期形状与支持的数据类型。
+- 给定显式种子时初始化行为可复现。
+- 层测试覆盖数值正确性与非法配置。
+
+### 5.7 models — 具体架构
+
+拥有：
+
+- 模型架构配置。
+- 模型特定层组合。
+- 模型权重结构与不可变权重访问。
+- 模型注册表与支持架构的元数据。
+- 因果语言模型接口。
+
+MUST NOT 拥有：
+
+- 请求级 KV Cache 状态。
+- 采样状态。
+- HTTP 或 CLI 逻辑。
+- 训练编排。
+- 后端特定算子实现。
+
+依赖：`nn`、`tensor`、`api`、`lib`，以及明确说明理由的低层能力。
+
+验收标准：
+
+- 架构配置经过校验。
+- 权重形状与名称经过检查。
+- 共享模型参数不得为表示单个请求而被修改。
+- 模型前向行为由确定性测试覆盖。
+
+### 5.8 tokenizer — 文本与词元转换
+
+拥有：
+
+- 词表表示。
+- 编码与解码。
+- 适用的字节对编码（BPE）。
+- 特殊词元处理。
+- 对话模板处理。
+
+MUST NOT 拥有：
+
+- 张量执行。
+- 模型权重。
+- KV Cache。
+- 请求调度。
+
+依赖：`lib` 以及有窄理由的文本处理依赖。
+
+验收标准：
+
+- 编码与解码行为文档化。
+- 特殊词元行为经过测试。
+- 畸形输入与不支持的模板产生已定义错误。
+- 词元 ID 对照相关词表契约校验。
+
+### 5.9 data — 数据集与批处理
+
+拥有：
+
+- 数据集接口。
+- 记录与文本数据集表示。
+- 打包与批处理。
+- 采样。
+- 数据加载器生命周期与错误传播。
+
+MUST NOT 拥有：
+
+- 模型前向执行。
+- 优化器更新。
+- 推理请求状态。
+- 检查点文件格式。
+
+依赖：`lib` 及其公开 API 所需的数据表示。
+
+验收标准：
+
+- 采样可复现性有明确规定。
+- 批次形状与边界行为经过测试。
+- 数据加载器失败与终止语义显式。
+- 在输入大小或缓冲可能无界增长处施加资源上限。
+
+### 5.10 format — 外部格式校验
+
+拥有：
+
+- 外部模型配置解析。
+- Safetensors 格式处理。
+- 张量元数据校验。
+- 外部模型制品的结构校验。
+
+MUST NOT 拥有：
+
+- 模型执行。
+- 优化器状态迁移。
+- 请求调度。
+- 应用特定命令处理。
+
+依赖：`lib`，以及（需要时）`tensor` 与有理由的格式解析依赖。
+
+验收标准：
+
+- 文件与元数据校验显式。
+- 畸形与截断输入在无运行期 panic 的前提下处理。
+- 大小、偏移与形状计算经过检查。
+- 不支持的格式与特性显式上报。
+
+### 5.11 checkpoint — 持久化
+
+拥有：
+
+- 检查点加载与保存工作流。
+- 清单（manifest）表示。
+- 训练状态持久化。
+- 受支持时的原子写行为。
+- 持久化状态的兼容性校验。
+
+MUST NOT 拥有：
+
+- 训练循环。
+- 优化器数学更新规则。
+- 推理调度器。
+- 应用级 HTTP 行为。
+
+依赖：`lib`，以及（所选持久化设计需要时）`tensor` 与 `format`。
+
+验收标准：
+
+- 不完整的写不会静默地表现为有效检查点。
+- 兼容性失败显式。
+- 加载与保存通过往返与失败场景测试。
+- 原子性保证按实际使用的文件系统操作文档化。
+
+### 5.12 optim — 优化算法
+
+拥有：
+
+- 优化器契约。
+- AdamW 与 SGD 实现。
+- 梯度裁剪。
+- 学习率调度。
+- 优化器特定的可变状态。
+
+MUST NOT 拥有：
+
+- 模型架构。
+- 数据集加载。
+- 检查点文件编码。
+- 训练循环编排。
+
+依赖：`tensor`、`nn` 或更小的参数/梯度抽象、`lib`。
+
+验收标准：
+
+- 更新方程文档化。
+- 优化器状态与模型架构分离。
+- 数值测试覆盖代表性更新与边界条件。
+- 状态恢复与检查点契约兼容。
+
+### 5.13 context — 执行控制
+
+拥有：
+
+- 执行配置。
+- 取消契约。
+- 内存预算抽象。
+- 需要时的 worker 协调原语。
+- 指标接口。
+
+MUST NOT 拥有：
+
+- 模型架构。
+- 领域特定采样算法。
+- 用于无关应用状态的通用容器。
+- 被所有 crate 使用的隐藏全局可变状态。
+
+依赖：`lib` 以及有理由的最小并发或插桩依赖。
+
+验收标准：
+
+- 取消语义文档化。
+- 预算所有权与并发记账规则显式。
+- 指标不对基础 crate 施加不必要耦合。
+- 在调用者需要区分时，资源耗尽与取消可区分。
+
+### 5.14 train — 训练工作流
+
+拥有：
+
+- 训练循环编排。
+- 训练配置。
+- 损失计算与工作流集成。
+- 梯度累积调度。
+- 评估工作流。
+- 恢复编排。
+
+MUST NOT 拥有：
+
+- 低层 CPU 算子。
+- 张量存储实现。
+- 优化器数学内部。
+- 外部检查点编码。
+
+依赖：`models`、`nn`、`autograd`、`optim`、`data`、`context`、`checkpoint`、`lib`，以实现需要为准。
+
+验收标准：
+
+- 训练步行为可独立测试。
+- 损失与梯度传播经过验证。
+- 失败与取消不会静默推进训练状态。
+- 恢复行为对照持久化状态测试。
+
+### 5.15 infer — 自回归推理
+
+拥有：
+
+- 生成引擎编排。
+- 请求参数与生命周期。
+- 预填充（prefill）与解码（decode）工作流。
+- KV Cache 分配与状态迁移。
+- 采样与停止条件。
+- 输出流式契约。
+
+MUST NOT 拥有：
+
+- 为请求特定行为而修改共享模型权重。
+- CPU 算子实现。
+- 外部检查点编码。
+- HTTP 传输实现。
+
+依赖：`models`、`api`、`tensor`、`context`，以及（需要时）`tokenizer` 与 `lib`。
+
+验收标准：
+
+- 请求级可变状态有显式所有者。
+- 独立请求不会意外共享可变 KV Cache 状态。
+- 取消、错误与完成都正确释放资源。
+- 生成行为在可行时被确定性测试。
+- 并发测试验证请求隔离。
+
+### 5.16 cli — 命令行应用
+
+拥有：
+
+- 参数解析。
+- 面向用户的命令分发。
+- 人类可读输出与退出行为。
+- 应用级配置选择。
+
+MUST NOT 拥有：
+
+- 张量算法。
+- 模型架构内部。
+- 重复的训练或推理引擎。
+
+依赖：相关工作流 crate 与 `lib`。
+
+验收标准：
+
+- 非法参数产生有用诊断。
+- 命令委托给库工作流。
+- 应用错误映射为有意义的退出行为。
+- 不得仅为了支持某 CLI 命令而重复业务逻辑。
+
+### 5.17 serve — 可选 HTTP 应用
+
+拥有：
+
+- HTTP 路由与请求/响应映射。
+- 传输层校验。
+- 服务集成。
+- 请求准入与传输取消映射。
+
+MUST NOT 拥有：
+
+- 模型算子实现。
+- 模型权重定义。
+- 重复的生成算法。
+
+依赖：`infer`、相关模型加载能力、`context`，以及有理由的 HTTP 依赖。
+
+验收标准：
+
+- 传输错误与模型执行错误分离。
+- 请求生命周期与取消映射文档化。
+- 并发请求保持隔离。
+- 在可行处在昂贵工作之前强制资源上限。
+
+### 5.18 testkit — 测试基础设施
+
+拥有：
+
+- 参考实现。
+- 微型测试模型。
+- 夹具与确定性测试数据。
+- 共享断言辅助。
+
+MUST NOT 成为生产依赖。
+
+MAY 依赖构造夹具所需的生产 crate。
+
+验收标准：
+
+- 测试工具不掩盖正确性失败。
+- 参考实现保持足够独立，以能检出优化实现中的错误。
+- 需要可复现时夹具是确定性的。
+- 仅测试依赖与生产构建隔离。
+
+### 5.19 bench — 基准可执行程序
+
+拥有：
+
+- 基准工作负载搭建。
+- 基准执行与结果上报。
+- 可复现性元数据。
+- 受支持时与记录基线的对比。
+
+MUST NOT 拥有：
+
+- 生产算子实现。
+- 会静默偏离生产行为的替代实现。
+- 无同条件测量支持的改进声明。
+
+依赖：被测量的生产 API，以及有理由的基准依赖。
+
+验收标准：
+
+- 基准运行预期的生产代码路径。
+- 记录工作负载维度与测量条件。
+- 正确性检查防止对无效输出做基准。
+- 性能声明指明对比基线与相关局限。
+
+## 6. 公开 API 规则
+
+### 6.1 默认可见性
+
+每个条目都从最窄的可行可见性开始。
+
+- 默认使用私有函数与类型。
+- 使用 `pub(crate)` 进行 crate 内部协作。
+- 仅当类型是所需跨 crate 契约的一部分时才公开。
+- 有选择地重导出公开 API，而非暴露每个模块。
+- 不得仅为简化内部导入而把实现模块设为公开。
+
+公开可见性产生兼容性义务，必须由实际调用方或文档化的扩展点来证成。
+
+### 6.2 trait 设计
+
+trait MUST 表示内聚的能力。
+
+一个 trait SHOULD 定义：
+
+- 它所抽象的职责。
+- 要求的不变量。
+- 错误行为。
+- 所有权与借用预期。
+- 支持的输入与输出。
+- 相关的并发保证。
+
+trait SHOULD NOT 仅因某个实现当前支持全部能力就混合无关能力。
+
+当泛型参数与关联类型能改善静态组合并保持可管理的 API 时，优先使用它们。
+
+不要为每个具体类型都引入 trait。当抽象表达有意义的契约或支持所需的组合形式时，才值得抽象。
+
+### 6.3 错误归属
+
+每个 crate 拥有与其职责相关的错误。
+
+低层 crate MUST NOT 依赖应用特定的错误枚举。
+
+跨越 crate 边界的错误 SHOULD 保留有用的源信息与上下文。
+
+当语义确实共享时，MAY 存在共享错误类型；它 MUST NOT 成为无关失败的堆放处。
+
+### 6.4 特性开关
+
+特性开关 MUST NOT 被用于隐藏依赖环或绕过架构规则。
+
+可选依赖 MUST 在启用它们的配置下接受评审。
+
+当一个 crate 支持多个特性时，项目 SHOULD 测试相关的最小与组合特性配置。
+
+## 7. 跨 crate 契约规则
+
+### 7.1 张量与 API
+
+项目 MUST 文档化执行契约是接受具体 `tensor` 值，还是更通用的存储与视图抽象。该决定必须考虑：
+
+- 形状与布局语义。
+- 所有权与借用。
+- 设备兼容性。
+- 输出分配。
+- 错误上报。
+- 未来后端需求。
+
+不得仅为规避依赖而引入额外的张量抽象，除非它能实质性改善隔离或支持所需实现。
+
+### 7.2 自动微分与 NN
+
+项目 MUST 定义谁拥有图节点、参数存储与梯度缓冲。
+
+层 API 不得隐藏意外的图变更，或保留超出其文档化生命周期的资源。
+
+若 `nn` 依赖 `autograd`，该方向必须保持显式。若双方都需要更低的参数抽象，仅当共享的所有权与语义清晰时才抽取。
+
+### 7.3 模型与推理
+
+模型架构与模型权重独立于请求执行。
+
+模型 API MUST NOT 要求将可变请求状态存储在共享权重对象内部。
+
+推理特定的缓存状态属于请求，或属于具有文档化所有权的显式缓存管理器。
+
+任何共享缓存管理器都必须通过显式键、所有权规则与同步来强制请求隔离。
+
+### 7.4 训练与检查点
+
+`train` 协调保存与恢复操作；`checkpoint` 拥有持久化语义。
+
+`checkpoint` MUST NOT 依赖训练循环来解释低层持久化格式。
+
+兼容性检查必须区分结构性不兼容与可恢复的 I/O 失败。
+
+### 7.5 应用边界
+
+`cli` 与 `serve` 是围绕可复用库工作流的适配器。
+
+应用特定的输入/输出格式应在应用边界处翻译，而非贯穿整个计算栈传播。
+
+## 8. 张量与后端边界
+
+张量元数据与存储必须具有显式语义。架构必须文档化：
+
+- 形状与维度校验。
+- 元素类型与存储表示。
+- 布局与步幅（stride）行为。
+- 所有权与视图生命周期。
+- 设备关联。
+- 分配与资源上限失败。
+- 算子输入与输出契约。
+
+后端 trait 必须定义可观察行为，而非暴露内部实现细节。
+
+后端实现不得静默改变算子的数学契约。
+
+## 9. 模型与请求生命周期
+
+模型级状态包括架构配置与模型参数。
+
+请求级状态 MAY 包括：
+
+- 请求标识。
+- 输入与已生成词元状态。
+- KV Cache 所有权。
+- 采样状态。
+- 取消与停止条件。
+- 每请求资源记账。
+
+推理工作流协调这些资源，而不把请求特定可变状态存入共享权重。
+
+请求终止必须定义在成功完成、取消或失败后如何释放资源。
+
+## 10. 错误边界
+
+每个 crate 为其职责范围内的失败定义错误。示例包括：
+
+- 非法张量形状。
+- 不支持的算子配置。
+- 后端执行失败。
+- 非法模型配置。
+- 畸形外部数据。
+- 检查点不兼容。
+- 资源预算耗尽。
+- 请求取消。
+
+错误必须保留足以诊断的上下文，同时不把基础 crate 耦合到应用特定错误类型。
+
+常规运行期失败必须通过显式错误处理传播。
+
+## 11. 资源管理
+
+资源上限是架构契约，而非可选的便利。
+
+所有受外部影响的维度、大小与偏移都需要适当校验。
+
+实现必须为以下项定义所有权与清理行为：
+
+- 张量分配。
+- 模型加载缓冲。
+- KV Cache 分配。
+- 并发请求。
+- 检查点写入。
+- 训练状态。
+
+在可能发生资源耗尽处，失败行为必须显式且可测试。
+
+## 12. 性能架构
+
+优化按此顺序推进：
+
+1. 确立正确性。
+2. 确立可复现基线。
+3. 识别已测量的瓶颈。
+4. 选择最小的相关改动。
+5. 重跑正确性测试。
+6. 在可比条件下测量改动。
+7. 记录结果与局限。
+
+架构不得假定 SIMD、并行、缓存或额外抽象会自动改善性能。
+
+详细方法见 `engineering.md` 的性能工程章节；实证结论记录于 `conformance.md`。
+
+## 13. 工作区布局
+
+工作区遵循 `m.md` 的目标仓库布局，并记录如下经核实的决策：
+
+1. **仓库根 `Cargo.toml` 同时是 package 与 workspace 根。** 它定义 package `llm`，无库或二进制目标、无运行期依赖；其唯一依赖是根 `tests/` 与 `benches/` 目标所用的 dev-dependencies。这是让根 `tests/` 与 `benches/` 成为真实 Cargo 目标的最小机制。
+2. **全部跨 crate 集成测试位于仓库根 `tests/`**，通过 crate 的公开 `pub` 接口触发。测试组织以 `engineering.md` 的测试章节为准。
+3. **全部 criterion 基准位于仓库根 `benches/`**，`criterion` 在根处声明一次。
+4. **`crates/bench` 拥有共享基准工作负载。** 根基准 harness 消费 `bench` 的确定性工作负载构造器，因此测量 harness 保持轻薄，工作负载保持可复用。`bench` 是库（`src/lib.rs`）而非 `src/main.rs`，因为 Cargo 二进制无法被根基准目标导入。
+5. **`crates/testkit` 只承载共享测试基础设施**，是依赖叶子，MUST NOT 成为生产依赖。
+6. **文档位于 `docs/`。**
+7. **`m.md` 要求的根文件**：`README.md`、`LICENSE`（含 `LICENSE-APACHE`、`LICENSE-MIT`）、`clippy.toml`。
+
+### 13.1 模块文件名刻意不同于 `m.md`
+
+`m.md` 列出诸如 `tensor/src/shape.rs`、`api/src/backend.rs`、`lib/src/limits.rs` 之类的模块文件名。在本仓库的“无分隔符标识符约定”下，模块与其重导出的同名小写类型共享一个命名空间，因此 `mod shape` 加 `pub use shape::shape;` 会以 `E0255` 失败（已验证）。现有模块因此采用无碰撞名称（`shapes`、`tensors`、`views`、`layouts`、`dtypes`、`backends`、`devices`、`limit`、`prec`、`seeds`），每个 crate 的 `lib.rs` 都记录这一点。这是本仓库把 `m.md` 文件名翻译到 Rust 机制的结果；照搬 `m.md` 的名称将要求放弃 crate 根重导出并改动所有公开路径。
+
+### 13.2 依赖图（已核实）
+
+下图是依据各 `crates/*/Cargo.toml` 的实际 `[dependencies]`（生产依赖）核实的完整依赖图。权威来源是各清单本身；`cargo metadata --workspace --format-version 1` 可复核。开发依赖单独列出，不计入生产闭包。
+
+生产边（`A -> B` 表示 `A` 的 `[dependencies]` 含工作区 crate `B`）：
+
+```text
+lib        -> (无)
+tensor     -> lib
+api        -> lib, tensor
+cpu        -> lib, tensor, api
+autograd   -> lib, tensor, api
+nn         -> lib, tensor, api
+models     -> lib, tensor, api, nn
+tokenizer  -> lib
+data       -> lib
+format     -> lib, tensor
+checkpoint -> tensor, format
+optim      -> lib, tensor
+context    -> lib
+train      -> lib, tensor, optim, checkpoint, context
+infer      -> lib, tensor, api, models, context
+cli        -> lib, cpu, optim, context, format, checkpoint, models, infer, train, tokenizer
+serve      -> lib, api, models, context, infer
+bench      -> lib, tensor, cpu
+testkit    -> tensor
+llm (根 package) -> (无生产依赖；仅 dev-dependencies)
+```
+
+该生产图无环。`lib` 是唯一无出边的生产叶；`testkit` 与 `bench` 是仅有的两个入度为 0 的辅助 crate（无任何生产 crate 依赖它们）。开发依赖（仅用于根 `tests/`、`benches/` 或 crate 内测试/基准）：
+
+```text
+autograd, nn, models -> proptest
+testkit              -> lib, api, cpu   (dev-dependencies)
+llm (根 package)     -> 全部 19 个成员 crate  (dev-dependencies)
+```
+
+本图与 §4.2 的**目标**图存在差异：目标图声明的若干边尚未实现（例如 `train -> models`/`nn`/`data`、`infer -> tokenizer`、`checkpoint -> train` 在当前生产清单中并不存在，`autograd` 当前无任何生产依赖方）。§4.2 是设计目标，本图是当前状态；任何目标边在落地前 MUST 按 §14 流程验证。
+
+### 13.3 工作区布局的后果
+
+- `cargo test --workspace` 与 `cargo bench --workspace` 从仓库根构建并运行跨 crate 套件与每个基准。
+- 根 package 无库或二进制目标，因此 `cargo build --workspace` 编译成员 crate 并跳过根 package。根 package 永不发布（`publish = false`）。
+- `crates/*` 不再含 `tests/` 或 `benches/` 目录。
+- `testkit::reference` 中的参考实现刻意重复 CPU 算子的标量数学，以便检出其中的错误；这是唯一“重复即是目的”的地方。
+
+## 14. 架构变更流程
+
+对 crate 归属或依赖方向的任何变更 MUST 遵循此流程。
+
+**步骤 1：确立现状。** 阅读相关清单、源代码、测试与公开 API。记录当前依赖路径以及既有边界不足的原因。
+
+**步骤 2：陈述问题。** 描述具体的耦合、重复或归属歧义。不得仅以“更干净、更可扩展、更面向未来”作为架构变更的理由。
+
+**步骤 3：识别最小有效改动。** 按顺序考虑：复用现有公开契约；收窄现有接口；把归属移动到正确的既有 crate；抽取最小共享抽象；仅当独立职责成立时引入新 crate。
+
+**步骤 4：定义验收标准。** 明确：预期的依赖变更、公开 API 变更、所需测试、兼容性影响、错误行为、资源生命周期影响。
+
+**步骤 5：实现并验证。** 只做一个可独立测试的改动。运行相关检查并检视生成的依赖图。
+
+**步骤 6：记录结果。** 记录改变了什么、验证了什么、仍未验证什么，以及任何遗留局限。重大架构决策 SHOULD 记录在 `design.md` 中。
+
+## 15. 自动化架构校验
+
+架构规则 SHOULD 在持续集成中检查，而非仅依赖评审。
+
+### 15.1 依赖清单
+
+从 Cargo metadata 生成工作区依赖图。检查器必须区分：普通依赖、构建依赖、开发依赖、可选依赖与特性启用的边。它还必须识别工作区包关系，并为每条被禁止的依赖报告完整路径。
+
+### 15.2 环检测
+
+检查器 MUST 在相关依赖图中拒斥依赖环。环 MUST 在相关可选特性配置下检查，而非仅默认构建。
+
+### 15.3 禁止的边
+
+初始策略 MUST 至少拒斥：
+
+- `lib` 依赖任何其他工作区 crate。
+- `api` 依赖 `cpu`。
+- `models` 依赖 `infer`、`train`、`cli` 或 `serve`。
+- `infer` 依赖 `train`。
+- `train` 依赖 `infer`。
+- 生产依赖 `testkit`。
+- 生产计算 crate 依赖 `cli` 或 `serve`。
+
+任何附加规则都必须以最终批准的依赖图为依据。
+
+### 15.4 公开 API 评审
+
+公开 API 变更 SHOULD 评审：不必要的公开可见性；泄漏的实现细节；不稳定或有歧义的归属；过大的 trait；不一致的错误语义；层间的意外耦合。自动化工具能识别部分问题，但不能替代语义评审。
+
+### 15.5 基线命令
+
+```sh
+cargo metadata --workspace --format-version 1
+cargo tree --workspace
+cargo check --workspace --all-targets
+cargo test --workspace
+```
+
+这些命令提供有用的基线信息，但本身并不强制本文档的每条架构规则。仓库 SHOULD 增加专门的架构检查脚本或等价 CI 作业，把实际依赖图与显式的允许/禁止清单对照；检查必须以可操作的违规依赖路径说明失败。
+
+## 16. 每个 crate 的文档要求
+
+每个 crate SHOULD 维护简洁的 crate 级 README 或模块文档，覆盖：
+
+1. 目的与范围。
+2. 该 crate 拥有的职责。
+3. 明确排除的职责。
+4. 公开 API 与重要不变量。
+5. 允许的工作区依赖。
+6. 错误与资源生命周期语义。
+7. 相关测试与验证命令。
+8. 已知局限。
+
+crate 文档 MUST 与本文档一致。若某 crate 的职责变化，在同一可独立评审的阶段更新文档与依赖规则。
+
+不要把本文档整篇复制到每个 crate。本地文档应引用权威规则，只描述 crate 特定细节。
+
+## 17. 一致性定义与状态
+
+一个 crate 只有在相关条件被验证后才视为一致。
+
+**结构一致性**
+
+- 职责清晰定义。
+- 实际依赖符合批准图。
+- 无被禁止的依赖环。
+- 公开接口适当收窄。
+
+**行为一致性**
+
+- 错误遵循文档化契约。
+- 资源所有权与生命周期显式。
+- 共享状态与请求级状态分离。
+- 相关正确性与隔离测试通过。
+
+**过程一致性**
+
+- 变更具有文档化目标。
+- 所需验证已实际执行。
+- 结果与局限被准确上报。
+- 架构例外具有文档化理由。
+
+一致性状态 MUST 记录为以下之一：
+
+- **拟定（Proposed）**：规则已规定但未验证。
+- **已验证（Verified）**：源码审查与相关检查支持该规则。
+- **不一致（Non-conforming）**：实现违反该规则。
+- **受阻（Blocked）**：验证需要不可用的源码、工具或环境。
+
+文档的存在不构成实现一致性的证据。
+
+## 18. 最终规则
+
+crate 边界的目的不是不惜代价地最大化抽象或最小化依赖数量。
+
+目的是让职责、所有权与失败行为显式，同时保持一个小而可组合的执行内核。
+
+当两个设计都满足所需的正确性与安全性时，优先选择：
+
+- 更少的不必要依赖边。
+- 更小的公开接口。
+- 更清晰的归属。
+- 更少的重复策略。
+- 更易独立测试。
+- 更直接的失败传播。
+- 对其正确性与性能更好的证据。
+
+每条架构边界都必须证成其引入的复杂度。
+
+每个例外都必须显式。
+
+每条声称的不变量都必须可验证。

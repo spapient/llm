@@ -5,7 +5,7 @@
 //! `capabilities`, `device`, `backenderror`, and the additive
 //! `binarykernel`/`weightedkernel`/`gatherkernel`/`compute` contracts through the
 //! crate's public interface only. It replaces the former `#[cfg(test)]` unit
-//! modules (see `docs/decision-records/blackboxtesting.md`).
+//! modules (see `docs/engineering.md`).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ::tensor::{dtype, element, shape, tensor, tensorview};

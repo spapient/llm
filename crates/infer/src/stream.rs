@@ -6,7 +6,7 @@ use crate::stopping::stopreason;
 /// order, and [`Self::onstop`] exactly once when generation ends normally. A
 /// failed or cancelled generation does not call [`Self::onstop`]; the error is
 /// returned from the engine instead, so a stream never silently terminates in a
-/// way that implies success (`docs/error-handling.md` section 16.3).
+/// way that implies success (`docs/engineering.md`).
 pub trait streamsink {
     /// Receives generated token `token` at zero-based position `index`.
     ///

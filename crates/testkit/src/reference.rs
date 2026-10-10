@@ -3,7 +3,7 @@
 //! These functions are deliberately written with plain `f32` arithmetic and
 //! standard-library math, independent of the `cpu` crate, so that they can
 //! detect errors in the optimized kernels they cross-check
-//! (see `docs/crate-boundaries.md` section 5.18). They are not a production
+//! (see `docs/architecture.md`). They are not a production
 //! operator implementation and are not used on any runtime path.
 
 /// Scalar ReLU: `max(0, x)`.

@@ -11,7 +11,7 @@ crate-internal paths to the crate's *public* surface:
   `mod <mangled path> { ... }` block so helper and test names stay isolated.
 
 Modules that still reach a truly non-`pub` item fail to compile; those crates are
-handled by hand. See docs/decision-records/blackboxtesting.md.
+handled by hand. See docs/engineering.md.
 
 Usage: python3 scripts/migrateinline.py <crate> [<crate> ...]
 """
@@ -29,7 +29,7 @@ HEADER = """//! Relocated unit tests for the `{crate}` crate.
 //! production sources under `crates/{crate}/src` hold no test code. Each source
 //! module's tests are wrapped in a nested module to keep helper and test names
 //! isolated. Every assertion reaches the crate through its public interface
-//! (see `docs/decision-records/blackboxtesting.md`).
+//! (see `docs/engineering.md`).
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
 """

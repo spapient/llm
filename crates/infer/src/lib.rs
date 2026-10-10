@@ -28,7 +28,7 @@
 //! request-owned structure implementing the `models` cache contract; it is not
 //! yet wired into the forward pass, and no speedup is claimed for it. Wiring the
 //! cache requires a cache-aware forward entry point and a measured baseline
-//! (`rule.md` PF1/PF5); see `docs/decision-records/inference.md`.
+//! (`rule.md` PF1/PF5); see `docs/design.md`.
 //!
 //! # Dependencies
 //!

@@ -10,7 +10,7 @@ use lib::tokenid;
 /// of records and the accumulated token count. Converting raw text to token
 /// identifiers is deliberately not performed here: that composition belongs to
 /// a higher layer that owns the tokenizer, so this crate never depends on
-/// tokenization (see `docs/crate-boundaries.md` section 5.9). Callers pass
+/// tokenization (see `docs/architecture.md`). Callers pass
 /// already-tokenized documents via [`Self::new`] or [`Self::fromtokens`].
 ///
 /// # Resource limits
