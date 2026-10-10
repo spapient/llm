@@ -1451,6 +1451,50 @@ cargo bench --workspace --no-run                             # exit 0（7 个基
 
 `cargo fmt --all -- --check`、`cargo check --workspace --all-targets`、`cargo clippy --workspace --all-targets -- -D warnings`、`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` 与 `bash scripts/check.sh` 均通过（证据等级 E1）。运行期耗时的下降超出噪声带；编译时间的差异未超出噪声带，故不声称编译改进。
 
+### 8.23 测试减量与参数化依赖决策
+
+**状态：** 已接受。**日期：** 2026-10-10。**范围：** 仓库根 `tests/` 的组织、共享 helper 与测试依赖。
+
+**背景：** `tests/it/` 为 43 个文件、11,790 行、725 个 `#[test]` 的单一测试目标。机械清点发现三类可归约的重复：同一函数体在多个模块重复声明（如 `build(dims, data)` 共 36 份完全相同、`tokens` 6 份、`close` 5 份、`approx`/`permissive` 4 份）、每模块重复的冗余 `#![allow(clippy::unwrap_used, clippy::expect_used)]`（108 行，已全部被文件级 allow 覆盖）、以及"仅输入不同、断言形状相同"的拒绝类测试集群。
+
+**决策：**
+
+1. **共享 helper 归入根套件模块 `tests/it/support.rs`**，经 `crate::common` 之外的 `crate::support` 访问。凡归一化函数体相同的 helper 只保留一份。跨 crate 的参考实现与断言仍归 `crate::testkit`（`testkit::fixtures`/`reference`/`assertions`），本决策不改变该定位。
+2. **引入 `rstest`（仅开发依赖）表达参数化用例。** 用 `#[rstest]` + `#[case]` 把"仅输入不同"的集群改写为表驱动，每个原用例保留为独立 `#[case]`（含独立名字与独立失败）。这优于手写 `for` 循环：失败仍指向具体用例，且不牺牲用例名。
+3. **删除真正重复的跨文件测试**，保留各契约/单元分层的独立断言。表面重复（不同 crate 各自的 `From` 转换、参考实现与内核对不同主体）不删。
+
+**被否决的替代方案：**
+
+- **手写 `for` 循环表格（零新依赖）。** 否决：会丢失每个用例的名字与独立失败定位，降低调试价值；新增依赖的收益（保留用例粒度）大于成本。
+- **`test-case`。** 否决：功能与 `rstest` 重叠但生态与 fixture 能力更弱；只保留一个参数化依赖。
+- **`pretty_assertions`。** 否决：仅改善失败输出，不减少测试代码量，与本决策目标不符。
+- **`insta`（快照测试）。** 否决：本仓库的断言多为结构化错误等值比较，快照会引入需要审查的基准文件，收益不明。
+- **再次评估 `cargo-nextest`。** 仍否决，理由同 §8.22。
+
+**依赖约束声明（M4 / A8）：** AGENTS.md 规定"当既有更小抽象已足够时，MUST NOT 仅为方便而引入依赖"。此处按 M1 优先级全序，由用户显式指令覆盖该 L1 约束，用于达成"减少测试代码"的目标；偏离仅限 `rstest` 一个开发依赖，不引入 `pretty_assertions`/`insta`/`nextest`。
+
+**后果：** `tests/` 引入一个过程宏开发依赖（`rstest` 及 `rstest_macros`），并更新 `Cargo.lock`。测试行数与 `#[test]` 计数下降，断言覆盖不减少（每个原用例以 `#[case]` 或保留测试存在）。`crates/*/src` 不变，仍无任何内联测试。
+
+**验证：** 于 2026-10-10 在同一机器（macOS 27.0.1、18 核、rustc 1.99.0、edition 2024）实施并测量（证据等级 E1）：
+
+| 指标 | 变更前 | 变更后 |
+| --- | --- | --- |
+| `tests/it` 行数 | 11,790 | 11,228（−562，−4.8%） |
+| `tests/it` 文件数 | 43 | 44（新增 `support.rs`，79 行并合并 70 处重复定义） |
+| `it` 目标用例数 | 725 | 718（删除 7 个经核实的跨文件重复用例） |
+| 冗余嵌套 `#![allow]` | 108 行 | 0 |
+| `#[test]` 属性 | 725 | 685 |
+| rstest 表 / 命名 `#[case]` | 0 / 0 | 8 / 55 |
+
+- **删除的 7 个重复（均逐字核对断言主体，覆盖不减少）：** `tensorcontract` 的 `empty_shape_is_rejected`、`element_count_overflow_is_reported`、`length_mismatch_is_reported`、`checklimits_maps_limiterror_and_accepts_bound` 与 `tensorunits` 的 `new_rejects_empty_dimensions`、`elementcount_overflow_is_reported`、`checklimits_accepts_bound_and_rejects_above`、`new_rejects_length_mismatch` 等价；`cliunits` 的 `help_is_written_to_stdout_and_succeeds` 与 `cli.rs` 同名测试等价；`formatunits::safetensor` 的 `unsupported_dtype_is_rejected` 与 `metadata` 同名测试逐字相同、`overlapping_tensors_are_rejected` 与 `validation::overlapping_ranges_are_rejected` 逐字相同（按 A1 归属由 `metadata`/`validation` 拥有）；`tokens.rs` 的 malformed 用例收敛为"不 panic"属性（精确错误变体已由 `tokenizerunits` 表覆盖）。
+- **rstest 表保留用例粒度：** 每个原用例成为独立命名 `#[case]`（如 `libcontract::checks_accept_the_ceiling_and_reject_above::case_1_elements`、`formatunits::safetensor::malformed_artifacts_are_rejected::case_5_element_budget`），`cargo test <模块>` 仍可定位到具体用例。`libcontract` 的四个有界检查由函数指针表驱动（`fn(&limits, usize) -> Result<(), limiterror>`）；`formatunits::safetensor` 用局部不可匹配枚举命名期望变体后匹配（`formaterror` 实现了 `PartialEq`，但字段值不宜硬编码）。
+- **按 GOV1 回退的尝试：** 曾把 `checkpointunits` 的 5 个 `decode_rejects_*` 改为闭包判别表，实测使该文件净增 23 行且无覆盖收益，遂回退（保留原独立用例）。
+- **命令与退出码：** `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（718 + 1 doctest = 719 通过、0 失败）、`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`、`bash scripts/check.sh`（含 `checksrctests`/`checknaming`/`checkthresholds`）全部通过。`crates/*/src` 未改动，`tests/it` 无内联测试，未为测试放宽可见性。
+
+**proptest 评估（阶段五）：** 跳过。把手写枚举用例改写为 `proptest!` 会引入生成器、收缩配置与 `prop_assert` 样板，在此规模下净增行而无覆盖收益；现有 3 处 `proptest!`（`cpuunits` 与 `tensorunits`）保留不变。
+
+**算子名表评估：** 跳过。`cpuunits::executor::operator_names_are_stable` 与 `cpucontract::operator_names_match_the_enum` 的断言均为单行 `assert_eq!(op.getname(), "…")`；改为 `#[case]` 表会为每行断言引入 `#[case]` 包装与表签名，净增行且无覆盖收益，故保留原有单行断言。
+
 ---
 
 ## 9. 性能工程与基准
