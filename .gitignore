@@ -46,6 +46,10 @@ Rust Analyzer local state
 
 .rust-analyzer/
 
+Uncommitted spike and draft workspace (see docs/engineering.md run discipline).
+
+/work/
+
 Local Cargo configuration may contain machine-specific paths or credentials.
 
 Keep shared project configuration under version control when appropriate.
