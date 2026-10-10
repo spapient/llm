@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/tensor/src/dtypes.rs`.
 mod dtypes {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::dtype;
     use lib::precision;
 
@@ -48,8 +46,6 @@ mod dtypes {
 
 /// Tests relocated from `crates/tensor/src/elements.rs`.
 mod elements {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::dtype;
     use ::tensor::element;
 
@@ -94,8 +90,6 @@ mod elements {
 
 /// Tests relocated from `crates/tensor/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::dtype;
     use ::tensor::tensorerror;
 
@@ -131,8 +125,6 @@ mod error {
 
 /// Tests relocated from `crates/tensor/src/layouts.rs`.
 mod layouts {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::layout;
     use ::tensor::shape;
 
@@ -185,8 +177,6 @@ mod layouts {
 
 /// Tests relocated from `crates/tensor/src/shapes.rs`.
 mod shapes {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::shape;
     use ::tensor::tensorerror;
     use lib::limits;
@@ -289,8 +279,6 @@ mod shapes {
 
 /// Tests relocated from `crates/tensor/src/tensors.rs`.
 mod tensors {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::dtype;
     use ::tensor::shape;
     use ::tensor::tensor;
@@ -346,8 +334,6 @@ mod tensors {
 
 /// Tests relocated from `crates/tensor/src/views.rs`.
 mod views {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::shape;
     use ::tensor::tensor;
 

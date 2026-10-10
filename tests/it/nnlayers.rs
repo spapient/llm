@@ -5,25 +5,18 @@
 //! also pin the shape-validation errors a caller must be able to rely on.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use ::tensor::{shape, tensor};
+use crate::support::{build, wide};
+use ::tensor::shape;
 use cpu::cpuexecutor;
-use lib::{limits, seed};
+use lib::seed;
 use nn::{
     DEFAULTBASE, DEFAULTEPS, attention, embedding, linear, mlp, module, nnerror, parameter,
     rmsnorm, rotary,
 };
 use testkit::{assertions::assertallclose, reference};
 
-fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-    tensor::new(shape::new(dims).unwrap(), data).unwrap()
-}
-
 fn param(name: &str, dims: Vec<usize>, data: Vec<f32>) -> parameter {
     parameter::new(name, build(dims, data))
-}
-
-fn wide() -> limits {
-    limits::new(1 << 24, 1 << 28, 1 << 20, 1 << 16)
 }
 
 fn exec() -> cpuexecutor {

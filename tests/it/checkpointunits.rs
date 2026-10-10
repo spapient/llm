@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/checkpoint/src/atomicwrite.rs`.
 mod atomicwrite {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -85,35 +83,38 @@ mod atomicwrite {
 
 /// Tests relocated from `crates/checkpoint/src/compatibility.rs`.
 mod compatibility {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::shapeof;
     use ::checkpoint::checkcompat;
     use ::checkpoint::checkpoint;
     use ::checkpoint::checkpointerror;
     use ::checkpoint::checkversion;
     use ::checkpoint::tensorspec;
-    use tensor::{dtype, shape};
-
-    fn s(dims: &[usize]) -> shape {
-        shape::new(dims.to_vec()).unwrap()
-    }
+    use tensor::dtype;
 
     fn ckpt() -> checkpoint {
         let mut ckpt = checkpoint::new(1);
-        ckpt.addtensor("w".to_string(), dtype::f32, s(&[2, 2]), &[0u8; 16])
+        ckpt.addtensor("w".to_string(), dtype::f32, shapeof(&[2, 2]), &[0u8; 16])
             .unwrap();
         ckpt
     }
 
     #[test]
     fn matching_tensor_specs_pass() {
-        let specs = [tensorspec::new("w".to_string(), dtype::f32, s(&[2, 2]))];
+        let specs = [tensorspec::new(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[2, 2]),
+        )];
         assert!(checkcompat(&ckpt(), &specs).is_ok());
     }
 
     #[test]
     fn missing_tensor_is_an_incompatibility() {
-        let specs = [tensorspec::new("b".to_string(), dtype::f32, s(&[2, 2]))];
+        let specs = [tensorspec::new(
+            "b".to_string(),
+            dtype::f32,
+            shapeof(&[2, 2]),
+        )];
         let err = checkcompat(&ckpt(), &specs).unwrap_err();
         assert!(matches!(err, checkpointerror::missingtensor { .. }));
         assert!(err.isincompatibility());
@@ -122,7 +123,11 @@ mod compatibility {
 
     #[test]
     fn dtype_mismatch_is_an_incompatibility() {
-        let specs = [tensorspec::new("w".to_string(), dtype::f64, s(&[2, 2]))];
+        let specs = [tensorspec::new(
+            "w".to_string(),
+            dtype::f64,
+            shapeof(&[2, 2]),
+        )];
         let err = checkcompat(&ckpt(), &specs).unwrap_err();
         assert!(matches!(err, checkpointerror::dtypemismatch { .. }));
         assert!(err.isincompatibility());
@@ -130,7 +135,7 @@ mod compatibility {
 
     #[test]
     fn shape_mismatch_is_an_incompatibility() {
-        let specs = [tensorspec::new("w".to_string(), dtype::f32, s(&[4]))];
+        let specs = [tensorspec::new("w".to_string(), dtype::f32, shapeof(&[4]))];
         let err = checkcompat(&ckpt(), &specs).unwrap_err();
         assert!(matches!(err, checkpointerror::shapemismatch { .. }));
         assert!(err.isincompatibility());
@@ -152,8 +157,6 @@ mod compatibility {
 
 /// Tests relocated from `crates/checkpoint/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::checkpoint::checkpointerror;
 
     #[test]
@@ -215,26 +218,21 @@ mod error {
 
 /// Tests relocated from `crates/checkpoint/src/manifests.rs`.
 mod manifests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::shapeof;
     use ::checkpoint::checkpoint;
     use ::checkpoint::checkpointerror;
     use ::checkpoint::manifest;
     use ::checkpoint::trainingstate;
-    use tensor::{dtype, shape};
-
-    fn s(dims: &[usize]) -> shape {
-        shape::new(dims.to_vec()).unwrap()
-    }
+    use tensor::dtype;
 
     #[test]
     fn encode_decode_roundtrip_preserves_all_state() {
         let mut ckpt = checkpoint::new(1);
         ckpt.settraining(trainingstate::new(42, 2));
         ckpt.addmetadata("source".to_string(), "test".to_string());
-        ckpt.addtensor("w".to_string(), dtype::f32, s(&[2, 2]), &[0u8; 16])
+        ckpt.addtensor("w".to_string(), dtype::f32, shapeof(&[2, 2]), &[0u8; 16])
             .unwrap();
-        ckpt.addtensor("b".to_string(), dtype::i64, s(&[2]), &[0u8; 16])
+        ckpt.addtensor("b".to_string(), dtype::i64, shapeof(&[2]), &[0u8; 16])
             .unwrap();
         let bytes = ckpt.encode().unwrap();
         let back = checkpoint::decode(&bytes).unwrap();
@@ -258,7 +256,7 @@ mod manifests {
     fn addtensor_rejects_length_mismatch() {
         let mut ckpt = checkpoint::new(1);
         assert!(matches!(
-            ckpt.addtensor("w".to_string(), dtype::f32, s(&[2, 2]), &[0u8; 8]),
+            ckpt.addtensor("w".to_string(), dtype::f32, shapeof(&[2, 2]), &[0u8; 8]),
             Err(checkpointerror::lengthmismatch {
                 expected: 16,
                 actual: 8,
@@ -271,10 +269,10 @@ mod manifests {
     #[test]
     fn addtensor_rejects_duplicate_names() {
         let mut ckpt = checkpoint::new(1);
-        ckpt.addtensor("w".to_string(), dtype::f32, s(&[1]), &[0u8; 4])
+        ckpt.addtensor("w".to_string(), dtype::f32, shapeof(&[1]), &[0u8; 4])
             .unwrap();
         assert!(matches!(
-            ckpt.addtensor("w".to_string(), dtype::f32, s(&[1]), &[0u8; 4]),
+            ckpt.addtensor("w".to_string(), dtype::f32, shapeof(&[1]), &[0u8; 4]),
             Err(checkpointerror::duplicatetensor { .. })
         ));
         assert_eq!(ckpt.getdata().len(), 4);
@@ -332,7 +330,7 @@ mod manifests {
     #[test]
     fn decode_rejects_offset_past_data_section() {
         let mut ckpt = checkpoint::new(1);
-        ckpt.addtensor("w".to_string(), dtype::f32, s(&[2]), &[0u8; 8])
+        ckpt.addtensor("w".to_string(), dtype::f32, shapeof(&[2]), &[0u8; 8])
             .unwrap();
         let mut bytes = ckpt.encode().unwrap();
         // Truncate the data section, keeping the manifest intact.
@@ -377,8 +375,6 @@ mod manifests {
 
 /// Tests relocated from `crates/checkpoint/src/training.rs`.
 mod training {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::checkpoint::trainingstate;
 
     #[test]

@@ -9,16 +9,13 @@
 //! cross-entropy loss and its analytic gradient on a separable classification
 //! problem.
 
-use ::tensor::{shape, tensor};
+use crate::support::build;
+use ::tensor::tensor;
 use autograd::graph;
 use cpu::cpuexecutor;
 use lib::{limits, seed};
 use optim::{sgd, sgdconfig};
 use train::{crossentropy, trainconfig, trainer, trainerror};
-
-fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-    tensor::new(shape::new(dims).unwrap(), data).unwrap()
-}
 
 #[test]
 fn autograd_least_squares_decreases_the_loss() {

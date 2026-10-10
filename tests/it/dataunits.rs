@@ -9,17 +9,12 @@
 
 /// Tests relocated from `crates/data/src/batches.rs`.
 mod batches {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::tokens;
     use data::batch;
     use data::dataerror;
     use data::record;
     use lib::limits;
     use lib::tokenid;
-
-    fn tokens(vals: &[u32]) -> Vec<tokenid> {
-        vals.iter().copied().map(tokenid::new).collect()
-    }
 
     fn lim() -> limits {
         limits::new(64, 1024, 8, 4)
@@ -140,8 +135,6 @@ mod batches {
 
 /// Tests relocated from `crates/data/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use data::dataerror;
 
     #[test]
@@ -182,8 +175,7 @@ mod error {
 
 /// Tests relocated from `crates/data/src/loaders.rs`.
 mod loaders {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::tokens;
     use data::dataerror;
     use data::dataset;
     use data::record;
@@ -192,10 +184,6 @@ mod loaders {
     use lib::limits;
     use lib::seed;
     use lib::tokenid;
-
-    fn tokens(vals: &[u32]) -> Vec<tokenid> {
-        vals.iter().copied().map(tokenid::new).collect()
-    }
 
     fn lim() -> limits {
         limits::new(64, 1024, 16, 8)
@@ -363,17 +351,11 @@ mod loaders {
 
 /// Tests relocated from `crates/data/src/packings.rs`.
 mod packings {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::tokens;
     use data::dataerror;
     use data::packing;
     use data::record;
     use lib::limits;
-    use lib::tokenid;
-
-    fn tokens(vals: &[u32]) -> Vec<tokenid> {
-        vals.iter().copied().map(tokenid::new).collect()
-    }
 
     fn lim() -> limits {
         limits::new(64, 1024, 8, 4)
@@ -468,14 +450,8 @@ mod packings {
 
 /// Tests relocated from `crates/data/src/records.rs`.
 mod records {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::tokens;
     use data::record;
-    use lib::tokenid;
-
-    fn tokens(vals: &[u32]) -> Vec<tokenid> {
-        vals.iter().copied().map(tokenid::new).collect()
-    }
 
     #[test]
     fn exposes_tokens_in_order() {
@@ -496,8 +472,6 @@ mod records {
 
 /// Tests relocated from `crates/data/src/samplers.rs`.
 mod samplers {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use data::dataerror;
     use data::sampler;
     use lib::limits;
@@ -599,18 +573,12 @@ mod samplers {
 
 /// Tests relocated from `crates/data/src/textdatasets.rs`.
 mod textdatasets {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::tokens;
     use data::dataerror;
     use data::dataset;
     use data::record;
     use data::textdataset;
     use lib::limits;
-    use lib::tokenid;
-
-    fn tokens(vals: &[u32]) -> Vec<tokenid> {
-        vals.iter().copied().map(tokenid::new).collect()
-    }
 
     fn lim() -> limits {
         limits::new(16, 1024, 8, 4)

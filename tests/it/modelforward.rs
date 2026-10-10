@@ -7,8 +7,8 @@
 //! model from the same seed and comparing logits.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use cpu::cpuexecutor;
-use lib::{limits, seed};
+use crate::common::provider;
+use lib::seed;
 use models::{causallm, llamaconfig, llamamodel, llamaweights};
 use testkit::{assertions::assertallclose, reference};
 
@@ -29,10 +29,6 @@ fn model(seedvalue: u64) -> llamamodel {
     let c = config();
     let w = llamaweights::random(&c, seed::new(seedvalue)).unwrap();
     llamamodel::new(c, w).unwrap()
-}
-
-fn engine() -> cpuexecutor {
-    cpuexecutor::new(limits::new(1 << 20, 1 << 24, 1 << 12, 1 << 8))
 }
 
 /// RMS-normalizes every row of a flat `[rows, width]` slice.
@@ -198,7 +194,7 @@ fn referencelogits(m: &llamamodel, tokens: &[usize]) -> Vec<f32> {
 fn tiny_forward_matches_an_independent_scalar_reference() {
     let m = model(99);
     let tokens = [0usize, 1];
-    let logits = m.forward(&engine(), &tokens).unwrap();
+    let logits = m.forward(&provider(), &tokens).unwrap();
     assert_eq!(logits.getshape().getdims(), &[2, VOCAB]);
 
     let want = referencelogits(&m, &tokens);
@@ -208,9 +204,9 @@ fn tiny_forward_matches_an_independent_scalar_reference() {
 #[test]
 fn forward_is_deterministic_for_a_fixed_seed() {
     let tokens = [3usize, 1, 4];
-    let a = model(7).forward(&engine(), &tokens).unwrap();
-    let b = model(7).forward(&engine(), &tokens).unwrap();
-    let c = model(8).forward(&engine(), &tokens).unwrap();
+    let a = model(7).forward(&provider(), &tokens).unwrap();
+    let b = model(7).forward(&provider(), &tokens).unwrap();
+    let c = model(8).forward(&provider(), &tokens).unwrap();
     assert_eq!(a.getdata(), b.getdata());
     assert_ne!(a.getdata(), c.getdata());
     assert_eq!(a.getshape().getdims(), &[3, VOCAB]);
@@ -219,7 +215,7 @@ fn forward_is_deterministic_for_a_fixed_seed() {
 #[test]
 fn every_position_produces_finite_logits() {
     let tokens = [0usize, 4, 2, 3];
-    let logits = model(3).forward(&engine(), &tokens).unwrap();
+    let logits = model(3).forward(&provider(), &tokens).unwrap();
     assert_eq!(logits.getshape().getdims(), &[4, VOCAB]);
     assert!(logits.getdata().iter().all(|v| v.is_finite()));
 }
@@ -227,15 +223,15 @@ fn every_position_produces_finite_logits() {
 #[test]
 fn an_out_of_range_token_is_rejected() {
     let m = model(1);
-    assert!(m.forward(&engine(), &[VOCAB + 10]).is_err());
+    assert!(m.forward(&provider(), &[VOCAB + 10]).is_err());
 }
 
 #[test]
 fn the_first_token_uses_only_its_own_value_for_causal_attention() {
     // With a one-token input there is nothing to attend to but position zero.
     let m = model(5);
-    let single = m.forward(&engine(), &[2]).unwrap();
-    let multi = m.forward(&engine(), &[2, 0]).unwrap();
+    let single = m.forward(&provider(), &[2]).unwrap();
+    let multi = m.forward(&provider(), &[2, 0]).unwrap();
     // The first position of the longer sequence sees the same single position.
     assertallclose(&multi.getdata()[..VOCAB], single.getdata(), 1e-4, 1e-4);
 }

@@ -13,6 +13,7 @@ use lib::precision;
 use lib::requestid;
 use lib::seed;
 use lib::tokenid;
+use rstest::rstest;
 
 /// The bound set shared by the `limits` assertions: 8 elements, 64 bytes,
 /// 16 sequence length, 4 batch.
@@ -29,56 +30,43 @@ fn getters_report_configured_bounds() {
     assert_eq!(l.getmaxbatch(), 4);
 }
 
-#[test]
-fn element_check_accepts_bound_and_rejects_overflow() {
+/// Each case pairs one bounded check with its ceiling: the value exactly at the
+/// ceiling is accepted, and the next value is rejected with the field-specific
+/// error. Every check keeps its own case name, so a failure names the field.
+#[rstest]
+#[case::elements(
+    limits::checkelements,
+    8,
+    9,
+    limiterror::maxelementsexceeded { requested: 9, limit: 8 }
+)]
+#[case::bytes(
+    limits::checkbytes,
+    64,
+    65,
+    limiterror::maxbytesexceeded { requested: 65, limit: 64 }
+)]
+#[case::sequence(
+    limits::checksequencelen,
+    16,
+    17,
+    limiterror::maxsequencelenexceeded { requested: 17, limit: 16 }
+)]
+#[case::batch(
+    limits::checkbatch,
+    4,
+    5,
+    limiterror::maxbatchexceeded { requested: 5, limit: 4 }
+)]
+fn checks_accept_the_ceiling_and_reject_above(
+    #[case] check: fn(&limits, usize) -> Result<(), limiterror>,
+    #[case] ceiling: usize,
+    #[case] over: usize,
+    #[case] expected: limiterror,
+) {
     let l = lim();
-    assert_eq!(l.checkelements(8), Ok(()));
-    assert_eq!(
-        l.checkelements(9),
-        Err(limiterror::maxelementsexceeded {
-            requested: 9,
-            limit: 8,
-        })
-    );
-}
-
-#[test]
-fn byte_check_accepts_bound_and_rejects_overflow() {
-    let l = lim();
-    assert_eq!(l.checkbytes(64), Ok(()));
-    assert_eq!(
-        l.checkbytes(65),
-        Err(limiterror::maxbytesexceeded {
-            requested: 65,
-            limit: 64,
-        })
-    );
-}
-
-#[test]
-fn sequence_check_accepts_bound_and_rejects_overflow() {
-    let l = lim();
-    assert_eq!(l.checksequencelen(16), Ok(()));
-    assert_eq!(
-        l.checksequencelen(17),
-        Err(limiterror::maxsequencelenexceeded {
-            requested: 17,
-            limit: 16,
-        })
-    );
-}
-
-#[test]
-fn batch_check_accepts_bound_and_rejects_overflow() {
-    let l = lim();
-    assert_eq!(l.checkbatch(4), Ok(()));
-    assert_eq!(
-        l.checkbatch(5),
-        Err(limiterror::maxbatchexceeded {
-            requested: 5,
-            limit: 4,
-        })
-    );
+    assert_eq!(check(&l, ceiling), Ok(()));
+    assert_eq!(check(&l, over), Err(expected));
 }
 
 #[test]

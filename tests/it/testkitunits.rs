@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/testkit/src/assertions.rs`.
 mod assertions {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use testkit::assertions::assertallclose;
 
     #[test]
@@ -44,8 +42,6 @@ mod assertions {
 
 /// Tests relocated from `crates/testkit/src/fixtures.rs`.
 mod fixtures {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use {
         testkit::fixtures::constant, testkit::fixtures::matrix, testkit::fixtures::ramp,
         testkit::fixtures::sequential,
@@ -84,8 +80,6 @@ mod fixtures {
 
 /// Tests relocated from `crates/testkit/src/reference.rs`.
 mod reference {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use {
         testkit::reference::embedding, testkit::reference::gelutanh, testkit::reference::map,
         testkit::reference::matmul, testkit::reference::relu, testkit::reference::rmsnorm,

@@ -8,14 +8,11 @@
 //! the forward operators actually compute.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use ::tensor::{shape, tensor};
+use crate::support::build;
+use ::tensor::tensor;
 use autograd::{autoggraderror, graph, variableid};
 use cpu::cpuexecutor;
 use lib::limits;
-
-fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-    tensor::new(shape::new(dims).unwrap(), data).unwrap()
-}
 
 fn engine() -> cpuexecutor {
     cpuexecutor::new(limits::new(1 << 20, 1 << 24, 1 << 16, 1 << 8))

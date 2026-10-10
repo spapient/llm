@@ -7,16 +7,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use ::tensor::{dtype, shape, tensor};
+use crate::support::build;
+use ::tensor::dtype;
 use checkpoint::checkpoint;
 use optim::{
     adamw, adamwconfig, clipconfig, lrschedule, optimizer, optimizerstate, sgd, sgdconfig,
     statetensor,
 };
-
-fn build(dims: &[usize], data: Vec<f32>) -> tensor<f32> {
-    tensor::new(shape::new(dims.to_vec()).unwrap(), data).unwrap()
-}
 
 /// Persists a snapshot through the checkpoint tensor contract and reads it back.
 fn roundtrip(state: &optimizerstate) -> optimizerstate {
@@ -58,8 +55,8 @@ fn roundtrip(state: &optimizerstate) -> optimizerstate {
 fn adamw_state_survives_a_checkpoint_roundtrip() {
     let cfg = adamwconfig::new(0.05, 0.9, 0.98, 1e-8, 0.01).unwrap();
     let mut original = adamw::new(cfg);
-    let mut params = [build(&[3], vec![1.0, -2.0, 0.5])];
-    let mut grads = [build(&[3], vec![0.2, -0.1, 0.3])];
+    let mut params = [build([3], vec![1.0, -2.0, 0.5])];
+    let mut grads = [build([3], vec![0.2, -0.1, 0.3])];
     for _ in 0..5 {
         original.update(&mut params, &mut grads).unwrap();
     }
@@ -87,8 +84,8 @@ fn adamw_state_survives_a_checkpoint_roundtrip() {
 fn sgd_state_survives_a_checkpoint_roundtrip() {
     let cfg = sgdconfig::new(0.1, 0.9, 0.0).unwrap();
     let mut original = sgd::new(cfg);
-    let mut params = [build(&[2, 2], vec![0.1, 0.2, 0.3, 0.4])];
-    let mut grads = [build(&[2, 2], vec![0.4, 0.3, 0.2, 0.1])];
+    let mut params = [build([2, 2], vec![0.1, 0.2, 0.3, 0.4])];
+    let mut grads = [build([2, 2], vec![0.4, 0.3, 0.2, 0.1])];
     original.update(&mut params, &mut grads).unwrap();
 
     let restored_state = roundtrip(&original.getstate());
@@ -111,8 +108,8 @@ fn a_schedule_drives_the_optimizer_learning_rate() {
         .unwrap()
         .withclip(clipconfig::byvalue(-1.0, 1.0).unwrap());
     let mut opt = adamw::new(cfg);
-    let mut params = [build(&[1], vec![0.0])];
-    let mut grads = [build(&[1], vec![1.0])];
+    let mut params = [build([1], vec![0.0])];
+    let mut grads = [build([1], vec![1.0])];
     for step in 0..4_u64 {
         opt.setlr(schedule.getlr(step)).unwrap();
         opt.update(&mut params, &mut grads).unwrap();

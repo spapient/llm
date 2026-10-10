@@ -9,8 +9,7 @@
 
 /// Tests relocated from `crates/cpu/src/activation.rs`.
 mod activation {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::close;
     use ::tensor::{shape, tensor};
     use api::kernel;
     use proptest::collection;
@@ -19,10 +18,6 @@ mod activation {
 
     fn build(data: Vec<f32>) -> tensor<f32> {
         tensor::new(shape::new(vec![data.len()]).unwrap(), data).unwrap()
-    }
-
-    fn close(got: f32, want: f32) -> bool {
-        (got - want).abs() <= 1.0e-5 * (1.0 + want.abs())
     }
 
     #[test]
@@ -151,19 +146,10 @@ mod activation {
 
 /// Tests relocated from `crates/cpu/src/attention.rs`.
 mod attention {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::{build, close};
     use api::backenderror;
     use cpu::cpuattention;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
-
-    fn close(got: f32, want: f32) -> bool {
-        (got - want).abs() <= 1.0e-5 * (1.0 + want.abs())
-    }
+    use rstest::rstest;
 
     #[test]
     fn single_position_returns_the_value() {
@@ -215,53 +201,33 @@ mod attention {
         assert!(close(out.getdata()[1], 5.0));
     }
 
-    #[test]
-    fn head_count_mismatch_is_rejected() {
-        let q = build(vec![1, 4], vec![0.0; 4]);
-        let k = build(vec![1, 2], vec![0.0; 2]);
-        let v = build(vec![1, 2], vec![0.0; 2]);
+    /// Every shape or head-count violation must be reported as the same
+    /// `shapemismatch` for the `attention` operator.
+    #[rstest]
+    #[case::head_count(&[1, 4], &[1, 2], &[1, 2], 2, 3)]
+    #[case::sequence_length(&[2, 2], &[1, 2], &[1, 2], 1, 1)]
+    #[case::key_width(&[1, 2], &[1, 3], &[1, 3], 1, 1)]
+    #[case::zero_kvheads(&[1, 1], &[1, 1], &[1, 1], 1, 0)]
+    fn mismatches_are_rejected(
+        #[case] qdims: &[usize],
+        #[case] kdims: &[usize],
+        #[case] vdims: &[usize],
+        #[case] heads: usize,
+        #[case] kvheads: usize,
+    ) {
+        let q = build(qdims, vec![0.0; qdims.iter().product()]);
+        let k = build(kdims, vec![0.0; kdims.iter().product()]);
+        let v = build(vdims, vec![0.0; vdims.iter().product()]);
         assert_eq!(
             cpuattention
-                .apply(&q.getview(), &k.getview(), &v.getview(), 2, 3, true)
-                .map(|_| ()),
-            Err(backenderror::shapemismatch { op: "attention" })
-        );
-    }
-
-    #[test]
-    fn sequence_length_mismatch_is_rejected() {
-        let q = build(vec![2, 2], vec![0.0; 4]);
-        let k = build(vec![1, 2], vec![0.0; 2]);
-        let v = build(vec![1, 2], vec![0.0; 2]);
-        assert_eq!(
-            cpuattention
-                .apply(&q.getview(), &k.getview(), &v.getview(), 1, 1, true)
-                .map(|_| ()),
-            Err(backenderror::shapemismatch { op: "attention" })
-        );
-    }
-
-    #[test]
-    fn key_width_mismatch_is_rejected() {
-        let q = build(vec![1, 2], vec![0.0; 2]);
-        let k = build(vec![1, 3], vec![0.0; 3]);
-        let v = build(vec![1, 3], vec![0.0; 3]);
-        assert_eq!(
-            cpuattention
-                .apply(&q.getview(), &k.getview(), &v.getview(), 1, 1, true)
-                .map(|_| ()),
-            Err(backenderror::shapemismatch { op: "attention" })
-        );
-    }
-
-    #[test]
-    fn zero_kvheads_is_rejected_without_panicking() {
-        let q = build(vec![1, 1], vec![1.0]);
-        let k = build(vec![1, 1], vec![1.0]);
-        let v = build(vec![1, 1], vec![1.0]);
-        assert_eq!(
-            cpuattention
-                .apply(&q.getview(), &k.getview(), &v.getview(), 1, 0, true)
+                .apply(
+                    &q.getview(),
+                    &k.getview(),
+                    &v.getview(),
+                    heads,
+                    kvheads,
+                    true
+                )
                 .map(|_| ()),
             Err(backenderror::shapemismatch { op: "attention" })
         );
@@ -281,8 +247,6 @@ mod attention {
 
 /// Tests relocated from `crates/cpu/src/backend.rs`.
 mod backend {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::dtype;
     use api::{backend, device};
     use lib::limits;
@@ -325,15 +289,9 @@ mod backend {
 
 /// Tests relocated from `crates/cpu/src/elementwise.rs`.
 mod elementwise {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use api::{backenderror, binarykernel};
     use {cpu::cpuadd, cpu::cpumul};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn add_is_elementwise() {
@@ -391,15 +349,9 @@ mod elementwise {
 
 /// Tests relocated from `crates/cpu/src/embedding.rs`.
 mod embedding {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use api::{backenderror, gatherkernel};
     use cpu::cpuembedding;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn gathers_rows_in_index_order() {
@@ -442,8 +394,6 @@ mod embedding {
 
 /// Tests relocated from `crates/cpu/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use api::backenderror;
     use cpu::cpuerror;
     use lib::limiterror;
@@ -493,17 +443,12 @@ mod error {
 
 /// Tests relocated from `crates/cpu/src/executor.rs`.
 mod executor {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use api::{backend, backenderror, compute};
     use cpu::cpuerror;
     use lib::{limiterror, limits};
+    use rstest::rstest;
     use {cpu::cpuexecutor, cpu::cpuop};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     fn wide() -> cpuexecutor {
         cpuexecutor::new(limits::new(1 << 24, 1 << 28, 1 << 20, 1 << 16))
@@ -581,39 +526,34 @@ mod executor {
         assert_eq!(gathered.getdata(), &[2.0, 3.0, 0.0, 1.0]);
     }
 
-    #[test]
-    fn enforces_rank_budget() {
-        let exec = cpuexecutor::new(limits::new(1024, 1 << 20, 64, 8));
-        let t = build(vec![1, 1, 1, 1, 1, 1, 1, 1, 1], vec![0.0]);
+    /// Each case lowers one resource ceiling below the operator's demand and
+    /// pins the exact budget error the executor must report.
+    #[rstest]
+    #[case::rank(
+        limits::new(1024, 1 << 20, 64, 8),
+        &[1, 1, 1, 1, 1, 1, 1, 1, 1],
+        cpuerror::rankexceeded { rank: 9, max: 8 }
+    )]
+    #[case::elements(
+        limits::new(2, 1 << 20, 64, 8),
+        &[4],
+        cpuerror::limit(limiterror::maxelementsexceeded { requested: 4, limit: 2 })
+    )]
+    #[case::bytes(
+        limits::new(1024, 8, 64, 8),
+        &[4],
+        cpuerror::limit(limiterror::maxbytesexceeded { requested: 16, limit: 8 })
+    )]
+    fn enforces_the_budget(
+        #[case] lim: limits,
+        #[case] dims: &[usize],
+        #[case] expected: cpuerror,
+    ) {
+        let exec = cpuexecutor::new(lim);
+        let t = build(dims, vec![0.0; dims.iter().product()]);
         assert_eq!(
             exec.apply(cpuop::relu, &t.getview()).map(|_| ()),
-            Err(cpuerror::rankexceeded { rank: 9, max: 8 })
-        );
-    }
-
-    #[test]
-    fn enforces_element_budget() {
-        let exec = cpuexecutor::new(limits::new(2, 1 << 20, 64, 8));
-        let t = build(vec![4], vec![1.0; 4]);
-        assert_eq!(
-            exec.apply(cpuop::relu, &t.getview()).map(|_| ()),
-            Err(cpuerror::limit(limiterror::maxelementsexceeded {
-                requested: 4,
-                limit: 2,
-            }))
-        );
-    }
-
-    #[test]
-    fn enforces_byte_budget() {
-        let exec = cpuexecutor::new(limits::new(1024, 8, 64, 8));
-        let t = build(vec![4], vec![1.0; 4]);
-        assert_eq!(
-            exec.apply(cpuop::relu, &t.getview()).map(|_| ()),
-            Err(cpuerror::limit(limiterror::maxbytesexceeded {
-                requested: 16,
-                limit: 8,
-            }))
+            Err(expected)
         );
     }
 
@@ -676,15 +616,9 @@ mod executor {
 
 /// Tests relocated from `crates/cpu/src/matmul.rs`.
 mod matmul {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use api::{backenderror, binarykernel};
     use cpu::cpumatmul;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn two_by_two_identity_multiplies_to_self() {
@@ -764,19 +698,9 @@ mod matmul {
 
 /// Tests relocated from `crates/cpu/src/normalization.rs`.
 mod normalization {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::{build, close};
     use api::{backenderror, weightedkernel};
     use cpu::cpurmsnorm;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
-
-    fn close(got: f32, want: f32) -> bool {
-        (got - want).abs() <= 1.0e-5 * (1.0 + want.abs())
-    }
 
     #[test]
     fn matches_hand_computed_unit_weight() {
@@ -864,19 +788,10 @@ mod normalization {
 
 /// Tests relocated from `crates/cpu/src/rotary.rs`.
 mod rotary {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::{build, close};
     use api::{backenderror, kernel};
     use cpu::cpurope;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
-
-    fn close(got: f32, want: f32) -> bool {
-        (got - want).abs() <= 1.0e-5 * (1.0 + want.abs())
-    }
+    use rstest::rstest;
 
     #[test]
     fn position_zero_is_identity() {
@@ -920,29 +835,16 @@ mod rotary {
         assert!(out.isempty());
     }
 
-    #[test]
-    fn odd_head_dimension_is_rejected() {
-        let x = build(vec![2, 3], vec![0.0; 6]);
+    /// Every malformed rotary input must be reported as the same
+    /// `shapemismatch` for the `rope` operator.
+    #[rstest]
+    #[case::odd_head_dimension(&[2, 3], 1)]
+    #[case::indivisible_last_axis(&[2, 3], 2)]
+    #[case::rank_one(&[4], 1)]
+    fn malformed_inputs_are_rejected(#[case] dims: &[usize], #[case] heads: usize) {
+        let x = build(dims, vec![0.0; dims.iter().product()]);
         assert_eq!(
-            cpurope::new(1, 10000.0).apply(&x.getview()).map(|_| ()),
-            Err(backenderror::shapemismatch { op: "rope" })
-        );
-    }
-
-    #[test]
-    fn indivisible_last_axis_is_rejected() {
-        let x = build(vec![2, 3], vec![0.0; 6]);
-        assert_eq!(
-            cpurope::new(2, 10000.0).apply(&x.getview()).map(|_| ()),
-            Err(backenderror::shapemismatch { op: "rope" })
-        );
-    }
-
-    #[test]
-    fn rank_one_is_rejected() {
-        let x = build(vec![4], vec![0.0; 4]);
-        assert_eq!(
-            cpurope::new(1, 10000.0).apply(&x.getview()).map(|_| ()),
+            cpurope::new(heads, 10000.0).apply(&x.getview()).map(|_| ()),
             Err(backenderror::shapemismatch { op: "rope" })
         );
     }
@@ -958,17 +860,11 @@ mod rotary {
 
 /// Tests relocated from `crates/cpu/src/softmax.rs`.
 mod softmax {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use api::{backenderror, kernel};
     use cpu::cpusoftmax;
     use proptest::collection;
     use proptest::prelude::*;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     fn run(dims: Vec<usize>, data: Vec<f32>) -> Vec<f32> {
         let t = build(dims, data);

@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/train/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tensor::tensorerror;
     use ::train::trainerror;
     use optim::opterror;
@@ -47,16 +45,10 @@ mod error {
 
 /// Tests relocated from `crates/train/src/evaluation.rs`.
 mod evaluation {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use ::train::evalsample;
     use ::train::evaluate;
     use ::train::trainerror;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn evaluation_is_row_weighted() {
@@ -79,15 +71,9 @@ mod evaluation {
 
 /// Tests relocated from `crates/train/src/gradientaccumulation.rs`.
 mod gradientaccumulation {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use ::train::gradientaccumulator;
     use ::train::trainerror;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn zero_capacity_is_rejected() {
@@ -187,15 +173,9 @@ mod gradientaccumulation {
 
 /// Tests relocated from `crates/train/src/loss.rs`.
 mod loss {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::tensor::{shape, tensor};
+    use crate::support::build;
     use ::train::crossentropy;
     use ::train::trainerror;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn uniform_logits_produce_log_classes() {
@@ -303,15 +283,10 @@ mod loss {
 /// which reports the applied rate in its `stepresult`; the `stepresult` fields
 /// are covered by the `trainers` block.
 mod step {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::optim::{lrschedule, sgd, sgdconfig};
-    use ::tensor::{shape, tensor};
+    use ::tensor::tensor;
     use ::train::{trainconfig, trainer, trainerror};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     /// Loss `w^2` with gradient `2 * w` on a single-element parameter.
     fn quadratic(params: &[tensor<f32>]) -> Result<(f32, Vec<tensor<f32>>), trainerror> {
@@ -350,8 +325,6 @@ mod step {
 
 /// Tests relocated from `crates/train/src/trainconfigs.rs`.
 mod trainconfigs {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::train::trainconfig;
     use lib::seed;
     use optim::lrschedule;
@@ -386,21 +359,16 @@ mod trainconfigs {
 
 /// Tests relocated from `crates/train/src/trainers.rs`.
 mod trainers {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use core::cell::Cell;
 
-    use ::tensor::{shape, tensor};
+    use ::tensor::tensor;
     use context::cancellation;
     use optim::{optimizer, sgd, sgdconfig};
 
     use ::train::trainconfig;
     use ::train::trainer;
     use ::train::trainerror;
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     fn sgdoptimizer(lr: f32) -> sgd {
         sgd::new(sgdconfig::new(lr, 0.0, 0.0).unwrap())

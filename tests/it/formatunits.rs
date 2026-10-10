@@ -9,10 +9,9 @@
 
 /// Tests relocated from `crates/format/src/configs.rs`.
 mod configs {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::format::formaterror;
     use ::format::modelconfig;
+    use rstest::rstest;
     use tensor::dtype;
 
     fn valid() -> &'static str {
@@ -71,15 +70,55 @@ mod configs {
         assert_eq!(c.gettiewordembeddings(), None);
     }
 
-    #[test]
-    fn unsupported_model_type_is_rejected() {
-        let json = valid().replace("\"llama\"", "\"gpt2\"");
-        assert_eq!(
-            modelconfig::parse(json.as_bytes()),
-            Err(formaterror::unsupportedmodeltype {
-                found: "gpt2".to_string(),
-            })
-        );
+    /// Each case patches one field of a valid configuration into an invalid
+    /// value and pins the exact error the parser must report.
+    #[rstest]
+    #[case::unsupported_model_type(
+        "\"llama\"",
+        "\"gpt2\"",
+        formaterror::unsupportedmodeltype { found: "gpt2".to_string() }
+    )]
+    #[case::zero_size(
+        "\"hidden_size\": 64",
+        "\"hidden_size\": 0",
+        formaterror::invalidvalue { field: "hidden_size", reason: "must be non-zero".to_string() }
+    )]
+    #[case::indivisible_head_count(
+        "\"num_attention_heads\": 8",
+        "\"num_attention_heads\": 7",
+        formaterror::invalidvalue {
+            field: "hidden_size",
+            reason: "not divisible by num_attention_heads".to_string()
+        }
+    )]
+    #[case::indivisible_key_value_heads(
+        "\"num_key_value_heads\": 2",
+        "\"num_key_value_heads\": 3",
+        formaterror::invalidvalue {
+            field: "num_attention_heads",
+            reason: "not divisible by num_key_value_heads".to_string()
+        }
+    )]
+    #[case::non_positive_epsilon(
+        "\"rms_norm_eps\": 1e-5",
+        "\"rms_norm_eps\": 0.0",
+        formaterror::invalidvalue {
+            field: "rms_norm_eps",
+            reason: "must be finite and positive".to_string()
+        }
+    )]
+    #[case::unsupported_torch_dtype(
+        "float32",
+        "int8",
+        formaterror::unsupportedtorchdtype { found: "int8".to_string() }
+    )]
+    fn invalid_configurations_are_rejected(
+        #[case] from: &str,
+        #[case] to: &str,
+        #[case] expected: formaterror,
+    ) {
+        let json = valid().replace(from, to);
+        assert_eq!(modelconfig::parse(json.as_bytes()), Err(expected));
     }
 
     #[test]
@@ -89,65 +128,6 @@ mod configs {
             modelconfig::parse(json.as_bytes()),
             Err(formaterror::invalidjson { .. })
         ));
-    }
-
-    #[test]
-    fn zero_size_is_rejected() {
-        let json = valid().replace("\"hidden_size\": 64", "\"hidden_size\": 0");
-        assert_eq!(
-            modelconfig::parse(json.as_bytes()),
-            Err(formaterror::invalidvalue {
-                field: "hidden_size",
-                reason: "must be non-zero".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn indivisible_head_count_is_rejected() {
-        let json = valid().replace("\"num_attention_heads\": 8", "\"num_attention_heads\": 7");
-        assert_eq!(
-            modelconfig::parse(json.as_bytes()),
-            Err(formaterror::invalidvalue {
-                field: "hidden_size",
-                reason: "not divisible by num_attention_heads".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn indivisible_key_value_heads_is_rejected() {
-        let json = valid().replace("\"num_key_value_heads\": 2", "\"num_key_value_heads\": 3");
-        assert_eq!(
-            modelconfig::parse(json.as_bytes()),
-            Err(formaterror::invalidvalue {
-                field: "num_attention_heads",
-                reason: "not divisible by num_key_value_heads".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn non_positive_epsilon_is_rejected() {
-        let json = valid().replace("\"rms_norm_eps\": 1e-5", "\"rms_norm_eps\": 0.0");
-        assert_eq!(
-            modelconfig::parse(json.as_bytes()),
-            Err(formaterror::invalidvalue {
-                field: "rms_norm_eps",
-                reason: "must be finite and positive".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn unsupported_torch_dtype_is_rejected() {
-        let json = valid().replace("float32", "int8");
-        assert_eq!(
-            modelconfig::parse(json.as_bytes()),
-            Err(formaterror::unsupportedtorchdtype {
-                found: "int8".to_string(),
-            })
-        );
     }
 
     #[test]
@@ -161,8 +141,6 @@ mod configs {
 
 /// Tests relocated from `crates/format/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::format::formaterror;
 
     #[test]
@@ -194,23 +172,11 @@ mod error {
 /// metadata rules are exercised through the public `safetensorfile::parse`
 /// seam; the dtype-token maps are public functions and are tested directly.
 mod metadata {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::{framed, permissive};
     use ::format::{dtypetoken, formaterror, safetensorfile, tokendtype};
     use ::lib::limits;
     use ::tensor::dtype;
-
-    fn permissive() -> limits {
-        limits::new(usize::MAX, usize::MAX, usize::MAX, usize::MAX)
-    }
-
-    fn artifact(header: &str, data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(data);
-        out
-    }
+    use rstest::rstest;
 
     #[test]
     fn token_roundtrips_for_every_supported_dtype() {
@@ -238,7 +204,7 @@ mod metadata {
     #[test]
     fn valid_entry_reports_all_fields() {
         let header = r#"{"w":{"dtype":"F32","shape":[2,3],"data_offsets":[4,28]}}"#;
-        let bytes = artifact(header, &[0u8; 28]);
+        let bytes = framed(header, &[0u8; 28]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         let m = file.gettensor("w").unwrap();
         assert_eq!(m.getname(), "w");
@@ -253,7 +219,7 @@ mod metadata {
     #[test]
     fn unsupported_dtype_is_rejected() {
         let header = r#"{"w":{"dtype":"BOOL","shape":[1],"data_offsets":[0,1]}}"#;
-        let bytes = artifact(header, &[1u8]);
+        let bytes = framed(header, &[1u8]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::unsupporteddtype { .. })
@@ -263,7 +229,7 @@ mod metadata {
     #[test]
     fn empty_shape_is_rejected() {
         let header = r#"{"w":{"dtype":"F32","shape":[],"data_offsets":[0,0]}}"#;
-        let bytes = artifact(header, &[]);
+        let bytes = framed(header, &[]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::emptyshape { .. })
@@ -274,7 +240,7 @@ mod metadata {
     fn element_count_overflow_is_rejected() {
         let header =
             r#"{"w":{"dtype":"I64","shape":[18446744073709551615,2],"data_offsets":[0,0]}}"#;
-        let bytes = artifact(header, &[]);
+        let bytes = framed(header, &[]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::shapeoverflow { .. })
@@ -284,7 +250,7 @@ mod metadata {
     #[test]
     fn element_budget_is_enforced() {
         let header = r#"{"w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
-        let bytes = artifact(header, &[0u8; 24]);
+        let bytes = framed(header, &[0u8; 24]);
         let lim = limits::new(4, usize::MAX, usize::MAX, usize::MAX);
         assert!(matches!(
             safetensorfile::parse(&bytes, &lim),
@@ -292,20 +258,16 @@ mod metadata {
         ));
     }
 
-    #[test]
-    fn offset_past_data_section_is_rejected() {
-        let header = r#"{"w":{"dtype":"F32","shape":[17],"data_offsets":[0,68]}}"#;
-        let bytes = artifact(header, &[0u8; 64]);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &permissive()),
-            Err(formaterror::offsetsoutofrange { .. })
-        ));
-    }
-
-    #[test]
-    fn reversed_offsets_are_rejected() {
-        let header = r#"{"w":{"dtype":"F32","shape":[1],"data_offsets":[8,4]}}"#;
-        let bytes = artifact(header, &[0u8; 8]);
+    /// Two ways to address bytes outside the declared data range must both be
+    /// reported as `offsetsoutofrange`.
+    #[rstest]
+    #[case::offset_past_data_section(
+        r#"{"w":{"dtype":"F32","shape":[17],"data_offsets":[0,68]}}"#,
+        &[0u8; 64]
+    )]
+    #[case::reversed_offsets(r#"{"w":{"dtype":"F32","shape":[1],"data_offsets":[8,4]}}"#, &[0u8; 8])]
+    fn offsets_outside_the_data_section_are_rejected(#[case] header: &str, #[case] data: &[u8]) {
+        let bytes = framed(header, data);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::offsetsoutofrange { .. })
@@ -315,7 +277,7 @@ mod metadata {
     #[test]
     fn byte_length_mismatch_is_rejected() {
         let header = r#"{"w":{"dtype":"F32","shape":[2],"data_offsets":[0,4]}}"#;
-        let bytes = artifact(header, &[0u8; 8]);
+        let bytes = framed(header, &[0u8; 8]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::bytelengthmismatch { .. })
@@ -325,7 +287,7 @@ mod metadata {
     #[test]
     fn zero_element_tensor_is_accepted() {
         let header = r#"{"w":{"dtype":"F32","shape":[0],"data_offsets":[0,0]}}"#;
-        let bytes = artifact(header, &[]);
+        let bytes = framed(header, &[]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         let m = file.gettensor("w").unwrap();
         assert_eq!(m.getelementcount(), 0);
@@ -335,31 +297,18 @@ mod metadata {
 
 /// Tests relocated from `crates/format/src/safetensor.rs`.
 mod safetensor {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::{framed, permissive};
     use ::format::HEADERLENGTHSIZE;
     use ::format::formaterror;
     use ::format::safetensorfile;
     use lib::limits;
+    use rstest::rstest;
     use tensor::dtype;
-
-    fn permissive() -> limits {
-        limits::new(usize::MAX, usize::MAX, usize::MAX, usize::MAX)
-    }
-
-    /// Builds a safetensors buffer from a header JSON string and data bytes.
-    fn build(header: &str, data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(data);
-        out
-    }
 
     #[test]
     fn parses_a_well_formed_artifact() {
         let header = r#"{"__metadata__":{"format":"pt"},"w":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]}}"#;
-        let bytes = build(header, &[0u8; 16]);
+        let bytes = framed(header, &[0u8; 16]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         assert_eq!(file.getheaderlength(), header.len());
         assert_eq!(file.getdatalength(), 16);
@@ -376,7 +325,7 @@ mod safetensor {
     #[test]
     fn empty_data_section_is_accepted() {
         let header = r#"{"w":{"dtype":"F32","shape":[0],"data_offsets":[0,0]}}"#;
-        let bytes = build(header, &[]);
+        let bytes = framed(header, &[]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         assert_eq!(file.getdatalength(), 0);
     }
@@ -394,7 +343,7 @@ mod safetensor {
 
     #[test]
     fn oversized_header_length_is_rejected() {
-        let bytes = build("{}", &[0u8; 4]);
+        let bytes = framed("{}", &[0u8; 4]);
         let mut corrupted = bytes.clone();
         corrupted[..8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
@@ -403,70 +352,73 @@ mod safetensor {
         ));
     }
 
-    #[test]
-    fn invalid_json_header_is_rejected() {
-        let bytes = build("{not-json", &[]);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &permissive()),
-            Err(formaterror::invalidjson { .. })
-        ));
+    /// The variant a malformed artifact must be rejected with. `formaterror`
+    /// carries values the parser does not fully pin here, so each case names
+    /// the variant and the body matches it.
+    #[derive(Clone, Copy)]
+    enum rejection {
+        invalidjson,
+        offsetsoutofrange,
+        bytelengthmismatch,
+        invalidmetadata,
+        elementlimitexceeded,
     }
 
-    #[test]
-    fn unsupported_dtype_is_rejected() {
-        let header = r#"{"w":{"dtype":"BOOL","shape":[1],"data_offsets":[0,1]}}"#;
-        let bytes = build(header, &[1u8]);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &permissive()),
-            Err(formaterror::unsupporteddtype { .. })
-        ));
-    }
-
-    #[test]
-    fn offset_past_data_section_is_rejected() {
-        let header = r#"{"w":{"dtype":"F32","shape":[4],"data_offsets":[0,16]}}"#;
-        let bytes = build(header, &[0u8; 8]);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &permissive()),
-            Err(formaterror::offsetsoutofrange { .. })
-        ));
-    }
-
-    #[test]
-    fn byte_length_mismatch_is_rejected() {
-        let header = r#"{"w":{"dtype":"F32","shape":[4],"data_offsets":[0,8]}}"#;
-        let bytes = build(header, &[0u8; 8]);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &permissive()),
-            Err(formaterror::bytelengthmismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn overlapping_tensors_are_rejected() {
-        let header = r#"{"a":{"dtype":"F32","shape":[8],"data_offsets":[0,32]},"b":{"dtype":"F32","shape":[4],"data_offsets":[16,32]}}"#;
-        let bytes = build(header, &[0u8; 32]);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &permissive()),
-            Err(formaterror::overlappingtensors { .. })
-        ));
-    }
-
-    #[test]
-    fn malformed_metadata_is_rejected() {
-        let header =
-            r#"{"__metadata__":{"k":1},"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
-        let bytes = build(header, &[0u8; 4]);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &permissive()),
-            Err(formaterror::invalidmetadata { .. })
-        ));
+    /// Each case frames a header and data section and pins the rejection the
+    /// parser must produce. The dtype (`metadata`) and overlap (`validation`)
+    /// rejections are asserted by their owning suites.
+    #[rstest]
+    #[case::invalid_json_header("{not-json", &[], permissive(), rejection::invalidjson)]
+    #[case::offset_past_data_section(
+        r#"{"w":{"dtype":"F32","shape":[4],"data_offsets":[0,16]}}"#,
+        &[0u8; 8],
+        permissive(),
+        rejection::offsetsoutofrange
+    )]
+    #[case::byte_length_mismatch(
+        r#"{"w":{"dtype":"F32","shape":[4],"data_offsets":[0,8]}}"#,
+        &[0u8; 8],
+        permissive(),
+        rejection::bytelengthmismatch
+    )]
+    #[case::malformed_metadata(
+        r#"{"__metadata__":{"k":1},"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#,
+        &[0u8; 4],
+        permissive(),
+        rejection::invalidmetadata
+    )]
+    #[case::element_budget(
+        r#"{"w":{"dtype":"F32","shape":[16],"data_offsets":[0,64]}}"#,
+        &[0u8; 64],
+        limits::new(8, usize::MAX, usize::MAX, usize::MAX),
+        rejection::elementlimitexceeded
+    )]
+    fn malformed_artifacts_are_rejected(
+        #[case] header: &str,
+        #[case] data: &[u8],
+        #[case] lim: limits,
+        #[case] want: rejection,
+    ) {
+        let bytes = framed(header, data);
+        let error = safetensorfile::parse(&bytes, &lim).unwrap_err();
+        let matched = match want {
+            rejection::invalidjson => matches!(error, formaterror::invalidjson { .. }),
+            rejection::offsetsoutofrange => matches!(error, formaterror::offsetsoutofrange { .. }),
+            rejection::bytelengthmismatch => {
+                matches!(error, formaterror::bytelengthmismatch { .. })
+            }
+            rejection::invalidmetadata => matches!(error, formaterror::invalidmetadata { .. }),
+            rejection::elementlimitexceeded => {
+                matches!(error, formaterror::elementlimitexceeded { .. })
+            }
+        };
+        assert!(matched, "unexpected rejection: {error:?}");
     }
 
     #[test]
     fn readtensor_with_unknown_name_is_rejected() {
         let header = r#"{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
-        let bytes = build(header, &[0u8; 4]);
+        let bytes = framed(header, &[0u8; 4]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         assert!(matches!(
             file.readtensor(&bytes, "missing"),
@@ -477,24 +429,13 @@ mod safetensor {
     #[test]
     fn readtensor_revalidates_against_supplied_buffer() {
         let header = r#"{"w":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
-        let bytes = build(header, &[0u8; 8]);
+        let bytes = framed(header, &[0u8; 8]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         // A shorter buffer no longer contains the validated range.
         let short = &bytes[..bytes.len() - 1];
         assert!(matches!(
             file.readtensor(short, "w"),
             Err(formaterror::offsetsoutofrange { .. })
-        ));
-    }
-
-    #[test]
-    fn element_budget_rejects_an_oversized_tensor() {
-        let header = r#"{"w":{"dtype":"F32","shape":[16],"data_offsets":[0,64]}}"#;
-        let bytes = build(header, &[0u8; 64]);
-        let lim = limits::new(8, usize::MAX, usize::MAX, usize::MAX);
-        assert!(matches!(
-            safetensorfile::parse(&bytes, &lim),
-            Err(formaterror::elementlimitexceeded { .. })
         ));
     }
 }
@@ -505,27 +446,13 @@ mod safetensor {
 /// through the public parser, so they are exercised via `safetensorfile::parse`
 /// plus the public `checkoverlaps` over parsed metadata.
 mod validation {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::{framed, permissive};
     use ::format::{checkoverlaps, formaterror, safetensorfile};
-    use ::lib::limits;
-
-    fn permissive() -> limits {
-        limits::new(usize::MAX, usize::MAX, usize::MAX, usize::MAX)
-    }
-
-    fn artifact(header: &str, data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(data);
-        out
-    }
 
     #[test]
     fn well_formed_entry_is_accepted() {
         let header = r#"{"w":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]}}"#;
-        let bytes = artifact(header, &[0u8; 16]);
+        let bytes = framed(header, &[0u8; 16]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         assert_eq!(file.gettensor("w").unwrap().getnbytes(), 16);
     }
@@ -533,7 +460,7 @@ mod validation {
     #[test]
     fn entry_missing_a_field_is_rejected() {
         let header = r#"{"w":{"dtype":"F32","shape":[2,2]}}"#;
-        let bytes = artifact(header, &[0u8; 16]);
+        let bytes = framed(header, &[0u8; 16]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::invalidentry { .. })
@@ -543,7 +470,7 @@ mod validation {
     #[test]
     fn non_object_entry_is_rejected() {
         let header = r#"{"w":[1,2,3]}"#;
-        let bytes = artifact(header, &[]);
+        let bytes = framed(header, &[]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::invalidentry { .. })
@@ -553,7 +480,7 @@ mod validation {
     #[test]
     fn disjoint_ranges_are_accepted() {
         let header = r#"{"a":{"dtype":"F32","shape":[4],"data_offsets":[0,16]},"b":{"dtype":"F32","shape":[4],"data_offsets":[16,32]}}"#;
-        let bytes = artifact(header, &[0u8; 32]);
+        let bytes = framed(header, &[0u8; 32]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         assert_eq!(checkoverlaps(file.gettensors()), Ok(()));
     }
@@ -561,7 +488,7 @@ mod validation {
     #[test]
     fn overlapping_ranges_are_rejected() {
         let header = r#"{"a":{"dtype":"F32","shape":[8],"data_offsets":[0,32]},"b":{"dtype":"F32","shape":[4],"data_offsets":[16,32]}}"#;
-        let bytes = artifact(header, &[0u8; 32]);
+        let bytes = framed(header, &[0u8; 32]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::overlappingtensors { .. })
@@ -573,7 +500,7 @@ mod validation {
         // Outer range listed first; the sort inside the check must still catch
         // the enclosed inner range.
         let header = r#"{"outer":{"dtype":"F32","shape":[8],"data_offsets":[0,32]},"inner":{"dtype":"F32","shape":[2],"data_offsets":[16,24]}}"#;
-        let bytes = artifact(header, &[0u8; 32]);
+        let bytes = framed(header, &[0u8; 32]);
         assert!(matches!(
             safetensorfile::parse(&bytes, &permissive()),
             Err(formaterror::overlappingtensors { .. })
@@ -583,7 +510,7 @@ mod validation {
     #[test]
     fn zero_length_tensors_are_ignored() {
         let header = r#"{"a":{"dtype":"F32","shape":[4],"data_offsets":[0,16]},"z":{"dtype":"F32","shape":[0],"data_offsets":[16,16]},"b":{"dtype":"F32","shape":[4],"data_offsets":[16,32]}}"#;
-        let bytes = artifact(header, &[0u8; 32]);
+        let bytes = framed(header, &[0u8; 32]);
         let file = safetensorfile::parse(&bytes, &permissive()).unwrap();
         assert_eq!(checkoverlaps(file.gettensors()), Ok(()));
     }

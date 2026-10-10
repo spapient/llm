@@ -9,15 +9,9 @@
 
 /// Tests relocated from `crates/autograd/src/arena.rs`.
 mod arena {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::autograd::autoggraderror;
     use ::autograd::graph;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn leaf_and_constant_are_recorded() {
@@ -63,16 +57,10 @@ mod arena {
 
 /// Tests relocated from `crates/autograd/src/backward.rs`.
 mod backward {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::autograd::autoggraderror;
     use ::autograd::graph;
     use ::autograd::variableid;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn backward_on_a_leaf_seeds_its_gradient() {
@@ -116,8 +104,6 @@ mod backward {
 
 /// Tests relocated from `crates/autograd/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::autograd::autoggraderror;
     use ::tensor::tensorerror;
     use api::backenderror;
@@ -154,16 +140,10 @@ mod error {
 
 /// Tests relocated from `crates/autograd/src/gradient.rs`.
 mod gradient {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::autograd::autoggraderror;
     use ::autograd::graph;
     use ::autograd::variableid;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn zeroing_one_gradient_leaves_others_untouched() {
@@ -199,8 +179,6 @@ mod gradient {
 
 /// Tests relocated from `crates/autograd/src/node.rs`.
 mod node {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::autograd::op;
     use ::autograd::variableid;
 
@@ -254,14 +232,8 @@ mod node {
 
 /// Tests relocated from `crates/autograd/src/nograd.rs`.
 mod nograd {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::autograd::graph;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn scope_disables_and_restores_recording() {
@@ -289,14 +261,8 @@ mod nograd {
 
 /// Tests relocated from `crates/autograd/src/ops/activation.rs`.
 mod ops_activation {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::autograd::graph;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn gelu_matches_known_constants() {
@@ -313,14 +279,8 @@ mod ops_activation {
 
 /// Tests relocated from `crates/autograd/src/variables.rs`.
 mod variables {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::autograd::graph;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn reports_identity_value_and_producer() {

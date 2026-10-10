@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/tokenizer/src/chat.rs`.
 mod chat {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::chatmessage;
     use ::tokenizer::chatrole;
     use ::tokenizer::chattemplate;
@@ -91,8 +89,6 @@ mod chat {
 /// `parsebytetoken`. Both are reachable through the public `tokenizer::decode`,
 /// so the decode contract is verified there.
 mod decode {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::{tokenizer, tokenizererror};
     use lib::tokenid;
 
@@ -171,8 +167,6 @@ mod decode {
 /// `encodespecial`. Both are reachable through `tokenizer::encode` and
 /// `tokenizer::encodespecial`, so the encode contract is verified there.
 mod encode {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::{tokenizer, tokenizererror};
     use lib::tokenid;
 
@@ -275,11 +269,10 @@ mod encode {
 
 /// Tests relocated from `crates/tokenizer/src/engine.rs`.
 mod engine {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::tokenizer;
     use ::tokenizer::tokenizererror;
     use lib::tokenid;
+    use rstest::rstest;
 
     const SAMPLE: &str = r#"{
     "model": {
@@ -315,66 +308,32 @@ mod engine {
         ));
     }
 
-    #[test]
-    fn rejects_non_object_root() {
-        assert_eq!(
-            tokenizer::fromjson("[]").unwrap_err(),
-            tokenizererror::rootnotobject
-        );
-    }
-
-    #[test]
-    fn rejects_missing_model_type() {
-        let json = r#"{"model": {"vocab": {}}}"#;
-        assert_eq!(
-            tokenizer::fromjson(json).unwrap_err(),
-            tokenizererror::missingfield {
-                field: "model.type"
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_non_bpe_model() {
-        let json = r#"{"model": {"type": "WordPiece", "vocab": {}}}"#;
-        assert_eq!(
-            tokenizer::fromjson(json).unwrap_err(),
-            tokenizererror::unsupportedmodel {
-                modeltype: "WordPiece".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_non_integer_vocab_id() {
-        let json = r#"{"model": {"type": "BPE", "vocab": {"a": "x"}}}"#;
-        assert_eq!(
-            tokenizer::fromjson(json).unwrap_err(),
-            tokenizererror::unexpectedtype {
-                field: "model.vocab",
-                expected: "integer"
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_out_of_range_id() {
-        let json = r#"{"model": {"type": "BPE", "vocab": {"a": 4294967296}}}"#;
-        assert_eq!(
-            tokenizer::fromjson(json).unwrap_err(),
-            tokenizererror::idoutofrange { id: 4294967296 }
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_configured_unknown_token() {
-        let json = r#"{"model": {"type": "BPE", "vocab": {"a": 0}, "unk_token": "<unk>"}}"#;
-        assert_eq!(
-            tokenizer::fromjson(json).unwrap_err(),
-            tokenizererror::unknowntoken {
-                token: "<unk>".to_string()
-            }
-        );
+    /// Each case is a malformed document and the exact error the parser must
+    /// report for it.
+    #[rstest]
+    #[case::non_object_root("[]", tokenizererror::rootnotobject)]
+    #[case::missing_model_type(
+        r#"{"model": {"vocab": {}}}"#,
+        tokenizererror::missingfield { field: "model.type" }
+    )]
+    #[case::non_bpe_model(
+        r#"{"model": {"type": "WordPiece", "vocab": {}}}"#,
+        tokenizererror::unsupportedmodel { modeltype: "WordPiece".to_string() }
+    )]
+    #[case::non_integer_vocab_id(
+        r#"{"model": {"type": "BPE", "vocab": {"a": "x"}}}"#,
+        tokenizererror::unexpectedtype { field: "model.vocab", expected: "integer" }
+    )]
+    #[case::out_of_range_id(
+        r#"{"model": {"type": "BPE", "vocab": {"a": 4294967296}}}"#,
+        tokenizererror::idoutofrange { id: 4294967296 }
+    )]
+    #[case::unknown_configured_unknown_token(
+        r#"{"model": {"type": "BPE", "vocab": {"a": 0}, "unk_token": "<unk>"}}"#,
+        tokenizererror::unknowntoken { token: "<unk>".to_string() }
+    )]
+    fn rejects_malformed_documents(#[case] json: &str, #[case] expected: tokenizererror) {
+        assert_eq!(tokenizer::fromjson(json).unwrap_err(), expected);
     }
 
     #[test]
@@ -406,8 +365,6 @@ mod engine {
 
 /// Tests relocated from `crates/tokenizer/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::tokenizererror;
 
     #[test]
@@ -449,8 +406,6 @@ mod error {
 
 /// Tests relocated from `crates/tokenizer/src/merges.rs`.
 mod merges {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::bytepair;
     use ::tokenizer::tokenizererror;
 
@@ -521,8 +476,6 @@ mod merges {
 
 /// Tests relocated from `crates/tokenizer/src/special.rs`.
 mod special {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::specialtokens;
     use lib::tokenid;
 
@@ -568,8 +521,6 @@ mod special {
 
 /// Tests relocated from `crates/tokenizer/src/vocab.rs`.
 mod vocab {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::tokenizer::tokenizererror;
     use ::tokenizer::vocabulary;
     use lib::tokenid;

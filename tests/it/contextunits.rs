@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/context/src/budget.rs`.
 mod budget {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Barrier;
 
@@ -102,8 +100,6 @@ mod budget {
 
 /// Tests relocated from `crates/context/src/cancel.rs`.
 mod cancel {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use context::cancellation;
     use context::contexterror;
 
@@ -150,8 +146,6 @@ mod cancel {
 
 /// Tests relocated from `crates/context/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use context::contexterror;
 
     #[test]
@@ -183,8 +177,6 @@ mod error {
 
 /// Tests relocated from `crates/context/src/execution.rs`.
 mod execution {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use std::sync::Arc;
 
     use context::collectingmetrics;
@@ -262,8 +254,6 @@ mod execution {
 
 /// Tests relocated from `crates/context/src/metric.rs`.
 mod metric {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use context::{collectingmetrics, metrics, noopmetrics};
 
     #[test]
@@ -294,8 +284,6 @@ mod metric {
 
 /// Tests relocated from `crates/context/src/worker.rs`.
 mod worker {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use context::contexterror;
     use context::{executionconfig, executioncontext};
     use context::{workererror, workergroup};

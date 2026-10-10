@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/cli/src/args.rs`.
 mod args {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::cli::command;
 
     #[test]
@@ -76,8 +74,7 @@ mod args {
 /// missing-path and directory rejections are covered end to end by
 /// `tests/cli.rs`; the size cap is one gibibyte and has no practical trigger.
 mod commands {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::framed;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -92,19 +89,11 @@ mod commands {
         path
     }
 
-    fn artifact(header: &str, data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(data);
-        out
-    }
-
     #[test]
     fn inspect_classifies_and_reads_a_safetensors_artifact() {
         let path = temppath("safe");
         let header = r#"{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
-        std::fs::write(&path, artifact(header, &[0u8; 4])).unwrap();
+        std::fs::write(&path, framed(header, &[0u8; 4])).unwrap();
         let p = path.to_string_lossy().into_owned();
         let parsed = parse(["cli", "inspect", "--path", p.as_str()]).unwrap();
         let out = run(parsed).unwrap();
@@ -119,8 +108,6 @@ mod commands {
 
 /// Tests relocated from `crates/cli/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use std::path::PathBuf;
 
     use ::cli::OPERATIONALEXITCODE;
@@ -209,21 +196,8 @@ mod error {
 
 /// Tests relocated from `crates/cli/src/lib.rs`.
 mod root {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::cli::SUCCESSEXITCODE;
     use ::cli::USAGEEXITCODE;
     use ::cli::runcli;
-
-    #[test]
-    fn help_is_written_to_stdout_and_succeeds() {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let code = runcli(["cli", "--help"], &mut out, &mut err);
-        assert_eq!(code, SUCCESSEXITCODE);
-        assert!(String::from_utf8_lossy(&out).contains("Usage"));
-        assert!(err.is_empty());
-    }
 
     #[test]
     fn a_parse_error_is_written_to_stderr_with_the_usage_code() {

@@ -7,14 +7,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::support::tokens;
 use data::{batch, dataset, loader, loaderconfig, packing, record, sampler, textdataset};
 use lib::limits;
 use lib::seed;
 use lib::tokenid;
-
-fn tokens(values: &[u32]) -> Vec<tokenid> {
-    values.iter().copied().map(tokenid::new).collect()
-}
 
 fn budget() -> limits {
     limits::new(64, 4096, 16, 8)

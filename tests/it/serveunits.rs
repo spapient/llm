@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/serve/src/admit.rs`.
 mod admit {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Barrier;
 
@@ -76,11 +74,10 @@ mod admit {
 
 /// Tests relocated from `crates/serve/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::common::requestlimits;
     use std::io::{BufRead, Read};
 
-    use ::serve::{httprequest, serveerror, transportlimits};
+    use ::serve::{httprequest, serveerror};
     use infer::infererror;
 
     #[test]
@@ -130,13 +127,9 @@ mod error {
         fn consume(&mut self, _amount: usize) {}
     }
 
-    fn limits() -> transportlimits {
-        transportlimits::new(1024, 128, 8, 256, 8, 64, 16, 16)
-    }
-
     #[test]
     fn wraps_io_kind_without_the_original_error() {
-        let error = httprequest::parse(&mut failingreader, &limits()).unwrap_err();
+        let error = httprequest::parse(&mut failingreader, &requestlimits()).unwrap_err();
         assert_eq!(
             error,
             serveerror::io {
@@ -149,18 +142,13 @@ mod error {
 
 /// Tests relocated from `crates/serve/src/request.rs`.
 mod request {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::common::requestlimits;
     use std::io::Cursor;
 
     use ::serve::{httpmethod, httprequest, serveerror, transportlimits};
 
-    fn limits() -> transportlimits {
-        transportlimits::new(1024, 128, 8, 256, 8, 64, 16, 16)
-    }
-
     fn parse(bytes: &[u8]) -> Result<httprequest, serveerror> {
-        httprequest::parse(&mut Cursor::new(bytes), &limits())
+        httprequest::parse(&mut Cursor::new(bytes), &requestlimits())
     }
 
     #[test]
@@ -274,8 +262,6 @@ mod request {
 /// status mapping is exercised end to end through `inferenceservice::handle`,
 /// which routes each service error through that same mapping.
 mod response {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::serve::{httpresponse, inferenceservice};
 
     use crate::common;
@@ -341,8 +327,6 @@ mod response {
 /// `parsetokens`, and `inputfromrequest` helpers. Their behavior is the request
 /// contract of `inferenceservice::handle`, so it is verified there.
 mod routes {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::serve::{httpresponse, inferenceservice};
 
     use crate::common;

@@ -3,16 +3,13 @@
 //! Resume orchestration: round-trip persistence of parameters, optimizer state,
 //! and progress, and continued-training equivalence.
 
+use crate::support::build;
 use std::path::PathBuf;
 
-use ::tensor::{shape, tensor};
+use ::tensor::tensor;
 use lib::seed;
 use optim::{adamw, adamwconfig, optimizer};
 use train::{loadresume, saveresume, trainconfig, trainer, trainerror};
-
-fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-    tensor::new(shape::new(dims).unwrap(), data).unwrap()
-}
 
 fn path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("train-{}-{label}.ckpt", std::process::id()))

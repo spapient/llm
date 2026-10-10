@@ -4,17 +4,14 @@
 //! optimizer state, whether cancellation is observed between steps or in the
 //! middle of a gradient-accumulation window.
 
+use crate::support::build;
 use core::cell::Cell;
 
-use ::tensor::{shape, tensor};
+use ::tensor::tensor;
 use context::cancellation;
 use lib::seed;
 use optim::{optimizer, sgd, sgdconfig};
 use train::{trainconfig, trainer, trainerror};
-
-fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-    tensor::new(shape::new(dims).unwrap(), data).unwrap()
-}
 
 fn optimizer() -> sgd {
     sgd::new(sgdconfig::new(0.1, 0.0, 0.0).unwrap())

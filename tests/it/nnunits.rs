@@ -9,17 +9,11 @@
 
 /// Tests relocated from `crates/nn/src/dictionary.rs`.
 mod dictionary {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::nn::joinname;
     use ::nn::nnerror;
     use ::nn::parameter;
     use ::nn::statedict;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn joinname_composes_and_omits_an_empty_prefix() {
@@ -69,8 +63,6 @@ mod dictionary {
 
 /// Tests relocated from `crates/nn/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::nn::nnerror;
     use ::tensor::{shape, tensorerror};
     use api::backenderror;
@@ -121,8 +113,6 @@ mod error {
 
 /// Tests relocated from `crates/nn/src/init.rs`.
 mod init {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::nn::fillnormal;
     use ::nn::fillone;
     use ::nn::filluniform;
@@ -192,17 +182,11 @@ mod init {
 
 /// Tests relocated from `crates/nn/src/layers/gated.rs`.
 mod layers_gated {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::nn::linear;
     use ::nn::mlp;
     use ::nn::module;
     use ::nn::parameter;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     fn projection(name: &str, in_features: usize, out_features: usize) -> linear {
         linear::new(
@@ -259,16 +243,10 @@ mod layers_gated {
 
 /// Tests relocated from `crates/nn/src/layers/lookup.rs`.
 mod layers_lookup {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::nn::embedding;
     use ::nn::module;
     use ::nn::parameter;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn reports_vocab_and_width() {
@@ -303,20 +281,9 @@ mod layers_lookup {
 /// broadcast, and input-shape rejection. The helpers' overflow paths have no
 /// public trigger, so they carry no contract test.
 mod layers {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use ::cpu::cpuexecutor;
-    use ::lib::limits;
+    use crate::common::provider;
+    use crate::support::build;
     use ::nn::{linear, parameter};
-    use ::tensor::{shape, tensor};
-
-    fn engine() -> cpuexecutor {
-        cpuexecutor::new(limits::new(1 << 20, 1 << 24, 1 << 12, 1 << 8))
-    }
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn forward_broadcasts_one_bias_row_across_a_batch() {
@@ -325,7 +292,7 @@ mod layers {
         let b = parameter::new("bias", build(vec![3], vec![10.0, 20.0, 30.0]));
         let layer = linear::new(w, Some(b)).unwrap();
         let input = build(vec![2, 2], vec![1.0, 1.0, 1.0, 1.0]);
-        let out = layer.forward(&engine(), &input).unwrap();
+        let out = layer.forward(&provider(), &input).unwrap();
         assert_eq!(out.getshape().getdims(), &[2, 3]);
         assert_eq!(out.getdata(), &[12.0, 22.0, 32.0, 12.0, 22.0, 32.0]);
     }
@@ -335,7 +302,7 @@ mod layers {
         let w = parameter::new("weight", build(vec![2, 3], vec![1.0; 6]));
         let layer = linear::new(w, None).unwrap();
         let input = build(vec![2, 2, 2], vec![1.0; 8]);
-        let out = layer.forward(&engine(), &input).unwrap();
+        let out = layer.forward(&provider(), &input).unwrap();
         assert_eq!(out.getshape().getdims(), &[2, 2, 3]);
         assert_eq!(out.getdata(), &[2.0; 12]);
     }
@@ -345,14 +312,12 @@ mod layers {
         let w = parameter::new("weight", build(vec![2, 3], vec![1.0; 6]));
         let layer = linear::new(w, None).unwrap();
         let input = build(vec![4], vec![1.0; 4]);
-        assert!(layer.forward(&engine(), &input).is_err());
+        assert!(layer.forward(&provider(), &input).is_err());
     }
 }
 
 /// Tests relocated from `crates/nn/src/layers/multihead.rs`.
 mod layers_multihead {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::nn::attention;
     use ::nn::module;
 
@@ -374,17 +339,11 @@ mod layers_multihead {
 
 /// Tests relocated from `crates/nn/src/layers/normalize.rs`.
 mod layers_normalize {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::nn::DEFAULTEPS;
     use ::nn::module;
     use ::nn::parameter;
     use ::nn::rmsnorm;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn reports_features_and_epsilon() {
@@ -406,16 +365,10 @@ mod layers_normalize {
 
 /// Tests relocated from `crates/nn/src/layers/projection.rs`.
 mod layers_projection {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::nn::linear;
     use ::nn::module;
     use ::nn::parameter;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn reports_feature_counts() {
@@ -453,8 +406,6 @@ mod layers_projection {
 
 /// Tests relocated from `crates/nn/src/layers/rotate.rs`.
 mod layers_rotate {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::nn::DEFAULTBASE;
     use ::nn::module;
     use ::nn::rotary;
@@ -476,8 +427,6 @@ mod layers_rotate {
 
 /// Tests relocated from `crates/nn/src/modules.rs`.
 mod modules {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::nn::module;
     use ::nn::nnerror;
     use ::nn::parameter;
@@ -515,14 +464,8 @@ mod modules {
 
 /// Tests relocated from `crates/nn/src/parameters.rs`.
 mod parameters {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::nn::parameter;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
 
     #[test]
     fn reports_name_shape_and_length() {

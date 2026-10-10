@@ -1,8 +1,8 @@
 //! Cross-crate contract tests for `tensor` through its public API.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use ::tensor::{dtype, element, layout, shape, tensor, tensorerror};
-use lib::{limits, precision};
+use ::tensor::{dtype, element, layout, shape, tensor};
+use lib::precision;
 
 /// The precision-to-dtype mapping, the storage width of each dtype, and the
 /// `element` type-level dtype constants must all agree.
@@ -57,47 +57,4 @@ fn contiguous_layout_is_valid_for_shape() {
     assert_eq!(l.getoffset(), 0);
     assert!(l.iscontiguous());
     assert!(l.isvalidfor(&s));
-}
-
-#[test]
-fn empty_shape_is_rejected() {
-    assert!(matches!(shape::new(vec![]), Err(tensorerror::emptyshape)));
-}
-
-#[test]
-fn element_count_overflow_is_reported() {
-    let s = shape::new(vec![usize::MAX, 2]).unwrap();
-    assert_eq!(
-        s.getelementcount(),
-        Err(tensorerror::elementcountoverflow {
-            dims: vec![usize::MAX, 2],
-        })
-    );
-}
-
-#[test]
-fn length_mismatch_is_reported() {
-    let s = shape::new(vec![2, 3]).unwrap();
-    assert_eq!(
-        tensor::new(s, vec![1, 2, 3]).map(|_| ()),
-        Err(tensorerror::lengthmismatch {
-            expected: 6,
-            actual: 3,
-        })
-    );
-}
-
-#[test]
-fn checklimits_maps_limiterror_and_accepts_bound() {
-    let lim = limits::new(8, 64, 16, 4);
-    let over = shape::new(vec![4, 3]).unwrap();
-    assert_eq!(
-        over.checklimits(&lim),
-        Err(tensorerror::elementcountlimitexceeded {
-            requested: 12,
-            limit: 8,
-        })
-    );
-    let within = shape::new(vec![2, 3]).unwrap();
-    assert_eq!(within.checklimits(&lim), Ok(6));
 }

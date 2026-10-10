@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/infer/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::infer::infererror;
     use context::contexterror;
     use models::modelerror;
@@ -47,8 +45,6 @@ mod error {
 
 /// Tests relocated from `crates/infer/src/kvcache.rs`.
 mod kvcache {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::infer::kvstate;
     use ::tensor::{shape, tensor};
     use models::kvcache;
@@ -127,8 +123,6 @@ mod kvcache {
 
 /// Tests relocated from `crates/infer/src/request.rs`.
 mod request {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::infer::generationparams;
     use ::infer::generationrequest;
     use ::infer::infererror;
@@ -205,8 +199,6 @@ mod request {
 
 /// Tests relocated from `crates/infer/src/sampling.rs`.
 mod sampling {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::infer::infererror;
     use ::infer::sampler;
     use ::infer::samplingparams;
@@ -287,8 +279,6 @@ mod sampling {
 
 /// Tests relocated from `crates/infer/src/stopping.rs`.
 mod stopping {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::infer::infererror;
     use ::infer::stopcondition;
 
@@ -315,8 +305,6 @@ mod stopping {
 
 /// Tests relocated from `crates/infer/src/stream.rs`.
 mod stream {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::infer::collectingsink;
     use ::infer::stopreason;
     use ::infer::streamsink;

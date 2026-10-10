@@ -9,25 +9,16 @@
 
 /// Tests relocated from `crates/optim/src/adamws.rs`.
 mod adamws {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::{approx, build};
     use ::optim::adamw;
     use ::optim::adamwconfig;
     use ::optim::clipconfig;
     use ::optim::optimizer;
     use ::optim::{optimizerstate, statetensor};
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
+    use ::tensor::shape;
 
     fn config() -> adamwconfig {
         adamwconfig::new(0.1, 0.9, 0.999, 1e-8, 0.0).unwrap()
-    }
-
-    fn approx(a: f32, b: f32, tol: f32) -> bool {
-        (a - b).abs() <= tol
     }
 
     #[test]
@@ -173,8 +164,6 @@ mod adamws {
 
 /// Tests relocated from `crates/optim/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::optim::opterror;
     use ::tensor::tensorerror;
 
@@ -213,20 +202,10 @@ mod error {
 
 /// Tests relocated from `crates/optim/src/gradientclip.rs`.
 mod gradientclip {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::{approx, build};
     use ::optim::clipconfig;
     use ::optim::clipgradients;
     use ::optim::opterror;
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
-
-    fn approx(a: f32, b: f32, tol: f32) -> bool {
-        (a - b).abs() <= tol
-    }
 
     #[test]
     fn none_leaves_gradients_unchanged() {
@@ -300,14 +279,9 @@ mod gradientclip {
 /// `sgdconfig::new`. Internal-only helpers with no public seam (`zerolike`,
 /// `slotindex`) are covered by the state round-trip tests instead.
 mod optimizers {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::build;
     use ::optim::{opterror, optimizer, sgd, sgdconfig};
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
+    use ::tensor::tensor;
 
     fn sgd_with_momentum() -> sgd {
         sgd::new(sgdconfig::new(0.1, 0.9, 0.0).unwrap())
@@ -387,13 +361,8 @@ mod optimizers {
 
 /// Tests relocated from `crates/optim/src/scheduler.rs`.
 mod scheduler {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::approx;
     use ::optim::lrschedule;
-
-    fn approx(a: f32, b: f32, tol: f32) -> bool {
-        (a - b).abs() <= tol
-    }
 
     #[test]
     fn constant_never_changes() {
@@ -461,22 +430,13 @@ mod scheduler {
 
 /// Tests relocated from `crates/optim/src/sgds.rs`.
 mod sgds {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::{approx, build};
     use ::optim::clipconfig;
     use ::optim::optimizer;
     use ::optim::sgd;
     use ::optim::sgdconfig;
     use ::optim::{optimizerstate, statetensor};
-    use ::tensor::{shape, tensor};
-
-    fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-        tensor::new(shape::new(dims).unwrap(), data).unwrap()
-    }
-
-    fn approx(a: f32, b: f32, tol: f32) -> bool {
-        (a - b).abs() <= tol
-    }
+    use ::tensor::shape;
 
     #[test]
     fn plain_sgd_moves_against_the_gradient() {
@@ -573,20 +533,14 @@ mod sgds {
 
 /// Tests relocated from `crates/optim/src/state.rs`.
 mod state {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
+    use crate::support::shapeof;
     use ::optim::opterror;
     use ::optim::optimizerstate;
     use ::optim::statetensor;
-    use ::tensor::shape;
-
-    fn s(dims: &[usize]) -> shape {
-        shape::new(dims.to_vec()).unwrap()
-    }
 
     #[test]
     fn new_accepts_a_matching_length() {
-        let t = statetensor::new("m.0", s(&[2, 3]), vec![0.0; 6]).unwrap();
+        let t = statetensor::new("m.0", shapeof(&[2, 3]), vec![0.0; 6]).unwrap();
         assert_eq!(t.getname(), "m.0");
         assert_eq!(t.getshape().getdims(), &[2, 3]);
         assert_eq!(t.getdata(), &[0.0; 6]);
@@ -595,31 +549,31 @@ mod state {
     #[test]
     fn new_rejects_a_length_mismatch() {
         assert!(matches!(
-            statetensor::new("m.0", s(&[2, 3]), vec![0.0; 5]),
+            statetensor::new("m.0", shapeof(&[2, 3]), vec![0.0; 5]),
             Err(opterror::invalidstate { .. })
         ));
     }
 
     #[test]
     fn byte_roundtrip_preserves_values() {
-        let t = statetensor::new("v.0", s(&[3]), vec![-1.5, 0.0, f32::MAX]).unwrap();
+        let t = statetensor::new("v.0", shapeof(&[3]), vec![-1.5, 0.0, f32::MAX]).unwrap();
         let bytes = t.tobytes();
         assert_eq!(bytes.len(), 12);
-        let back = statetensor::frombytes("v.0", s(&[3]), &bytes).unwrap();
+        let back = statetensor::frombytes("v.0", shapeof(&[3]), &bytes).unwrap();
         assert_eq!(back, t);
     }
 
     #[test]
     fn frombytes_rejects_a_short_buffer() {
         assert!(matches!(
-            statetensor::frombytes("v.0", s(&[3]), &[0u8; 8]),
+            statetensor::frombytes("v.0", shapeof(&[3]), &[0u8; 8]),
             Err(opterror::invalidstate { .. })
         ));
     }
 
     #[test]
     fn state_reports_its_scalars_and_tensors() {
-        let t = statetensor::new("m.0", s(&[1]), vec![1.0]).unwrap();
+        let t = statetensor::new("m.0", shapeof(&[1]), vec![1.0]).unwrap();
         let st = optimizerstate::new(7, 0.25, 1, vec![t]);
         assert_eq!(st.getstep(), 7);
         assert_eq!(st.getlr(), 0.25);

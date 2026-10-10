@@ -9,8 +9,6 @@
 
 /// Tests relocated from `crates/models/src/causal.rs`.
 mod causal {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::models::kvcache;
     use ::models::modelerror;
     use ::tensor::{shape, tensor};
@@ -84,8 +82,6 @@ mod causal {
 
 /// Tests relocated from `crates/models/src/error.rs`.
 mod error {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::models::modelerror;
     use ::tensor::tensorerror;
 
@@ -131,8 +127,6 @@ mod error {
 /// (per-head rotary for query and key, GQA) is covered end to end by
 /// `tests/modelforward.rs`.
 mod llama_block {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::models::{llamablock, llamaconfig};
 
     #[test]
@@ -150,8 +144,6 @@ mod llama_block {
 
 /// Tests relocated from `crates/models/src/llama/config.rs`.
 mod llama_config {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::models::llamaconfig;
 
     fn tiny() -> llamaconfig {
@@ -187,8 +179,6 @@ mod llama_config {
 
 /// Tests relocated from `crates/models/src/llama/model.rs`.
 mod llama_model {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::models::causallm;
     use ::models::llamaconfig;
     use ::models::llamamodel;
@@ -219,8 +209,6 @@ mod llama_model {
 
 /// Tests relocated from `crates/models/src/llama/weights.rs`.
 mod llama_weights {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::models::llamaconfig;
     use ::models::llamaweights;
     use lib::seed;
@@ -263,8 +251,6 @@ mod llama_weights {
 
 /// Tests relocated from `crates/models/src/registry.rs`.
 mod registry {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
     use ::models::architecture;
     use ::models::causallm;
     use ::models::getarchitecture;

@@ -5,8 +5,9 @@
 //! which removes the per-file link and monomorphization cost that previously
 //! scaled with the number of suite files.
 //!
-//! Shared fixtures live in [`common`]; each suite reaches them through
-//! `crate::common` rather than declaring its own private copy.
+//! Shared fixtures live in [`common`] and small cross-suite helpers in
+//! [`support`]; each suite reaches them through `crate::common` / `crate::support`
+//! rather than declaring its own private copy.
 
 mod apicontract;
 mod apikernelcontract;
@@ -43,6 +44,7 @@ mod roundtrip;
 mod server;
 mod serveunits;
 mod service;
+mod support;
 mod tensorcontract;
 mod tensorunits;
 mod testkitunits;

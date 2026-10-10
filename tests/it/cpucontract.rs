@@ -5,7 +5,8 @@
 //! tensor, takes a view, and dispatches an operator through the executor.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use ::tensor::{dtype, shape, tensor};
+use crate::support::{build, wide};
+use ::tensor::dtype;
 use api::{backend, binarykernel, compute, gatherkernel, kernel, weightedkernel};
 use cpu::{
     CPUMAXRANK, cpuadd, cpuattention, cpubackend, cpuembedding, cpuexecutor, cpugelutanh,
@@ -13,14 +14,6 @@ use cpu::{
 };
 use lib::{limiterror, limits};
 use testkit::{assertions::assertallclose, reference};
-
-fn build(dims: Vec<usize>, data: Vec<f32>) -> tensor<f32> {
-    tensor::new(shape::new(dims).unwrap(), data).unwrap()
-}
-
-fn wide() -> limits {
-    limits::new(1 << 24, 1 << 28, 1 << 20, 1 << 16)
-}
 
 #[test]
 fn backend_exposes_identity_device_and_f32_capability() {

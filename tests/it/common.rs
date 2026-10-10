@@ -18,7 +18,7 @@ use context::executionconfig;
 use cpu::cpuexecutor;
 use lib::{limits, seed};
 use models::{causallm, llamaconfig, llamamodel, llamaweights};
-use serve::{httprequest, serviceconfig, transportlimits};
+use serve::{httprequest, httpresponse, inferenceservice, serviceconfig, transportlimits};
 
 /// Vocabulary size.
 pub const VOCAB: usize = 5;
@@ -150,4 +150,17 @@ pub fn reasonof(response: &serve::httpresponse) -> String {
         }
     }
     String::new()
+}
+
+/// Transport bounds used by the `serve` request-parsing suites.
+pub fn requestlimits() -> transportlimits {
+    transportlimits::new(1024, 128, 8, 256, 8, 64, 16, 16)
+}
+
+/// Handles one raw request against a fresh service admitting four requests.
+pub fn respond(raw: &[u8]) -> httpresponse {
+    let model = model(1);
+    let provider = provider();
+    let service = inferenceservice::new(&model, &provider, serviceconfig(4));
+    service.handle(&parse(raw))
 }

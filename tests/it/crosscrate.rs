@@ -6,8 +6,9 @@
 //! end-to-end integration test for the currently implemented layers.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use crate::common::provider;
 use api::{backend, device};
-use cpu::{cpubackend, cpuexecutor, cpuop};
+use cpu::{cpubackend, cpuop};
 use lib::limits;
 use tensor::dtype;
 use testkit::{assertions::assertallclose, fixtures, reference};
@@ -20,10 +21,6 @@ const EWREL: f32 = 1e-5;
 
 /// Tolerance for softmax rows on `f32`.
 const SOFTMAXTOL: f32 = 1e-6;
-
-fn exec() -> cpuexecutor {
-    cpuexecutor::new(limits::new(1 << 20, 1 << 24, 1 << 12, 1 << 8))
-}
 
 #[test]
 fn cpu_backend_declares_cpu_identity_and_f32_only() {
@@ -42,7 +39,7 @@ fn cpu_backend_declares_cpu_identity_and_f32_only() {
 fn relu_matches_reference() {
     let input = fixtures::ramp(64).unwrap();
     let expected = reference::map(input.getdata(), reference::relu);
-    let out = exec().apply(cpuop::relu, &input.getview()).unwrap();
+    let out = provider().apply(cpuop::relu, &input.getview()).unwrap();
     assertallclose(out.getdata(), &expected, EWABS, EWREL);
 }
 
@@ -50,7 +47,7 @@ fn relu_matches_reference() {
 fn silu_matches_reference() {
     let input = fixtures::ramp(64).unwrap();
     let expected = reference::map(input.getdata(), reference::silu);
-    let out = exec().apply(cpuop::silu, &input.getview()).unwrap();
+    let out = provider().apply(cpuop::silu, &input.getview()).unwrap();
     assertallclose(out.getdata(), &expected, EWABS, EWREL);
 }
 
@@ -58,7 +55,7 @@ fn silu_matches_reference() {
 fn gelutanh_matches_reference() {
     let input = fixtures::ramp(64).unwrap();
     let expected = reference::map(input.getdata(), reference::gelutanh);
-    let out = exec().apply(cpuop::gelutanh, &input.getview()).unwrap();
+    let out = provider().apply(cpuop::gelutanh, &input.getview()).unwrap();
     assertallclose(out.getdata(), &expected, EWABS, EWREL);
 }
 
@@ -67,7 +64,7 @@ fn softmax_matches_reference_per_row() {
     let rows = 8;
     let cols = 16;
     let input = fixtures::sequential(rows, cols).unwrap();
-    let out = exec().apply(cpuop::softmax, &input.getview()).unwrap();
+    let out = provider().apply(cpuop::softmax, &input.getview()).unwrap();
 
     assert_eq!(out.getshape().getdims(), &[rows, cols]);
     for r in 0..rows {
@@ -86,7 +83,7 @@ fn softmax_matches_reference_per_row() {
 #[test]
 fn softmax_rows_sum_to_one() {
     let input = fixtures::matrix(4, 8, 0.3).unwrap();
-    let out = exec().apply(cpuop::softmax, &input.getview()).unwrap();
+    let out = provider().apply(cpuop::softmax, &input.getview()).unwrap();
     for row in out.getdata().chunks(8) {
         let sum: f32 = row.iter().sum();
         assert!((sum - 1.0).abs() <= SOFTMAXTOL, "row sum {sum}");
