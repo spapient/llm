@@ -40,6 +40,9 @@ bash scripts/checknaming.sh
 log "Checking inline-test gate"
 bash scripts/checksrctests.sh
 
+log "Checking unsafe exemption gate"
+bash scripts/checkunsafe.sh
+
 log "Checking quality thresholds"
 bash scripts/checkthresholds.sh
 

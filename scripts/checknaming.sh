@@ -32,13 +32,19 @@ fail() {
 
 # Extract, per production line, either a function, a const, or a macro name.
 # `#[cfg(test)]` starts a test region that extends to the end of the file.
+# Raw string literals (r#"..."#) hold embedded foreign source — MSL, CUDA C —
+# which is not Rust and MUST NOT be scanned for Rust identifiers; `raw` carries
+# that state across lines.
 while IFS= read -r source; do
   awk '
-    FNR == 1 { intest = 0 }
+    FNR == 1 { intest = 0; raw = 0 }
+    raw { if ($0 ~ /"#/) raw = 0; next }
     /#\[cfg\(test\)\]/ { intest = 1 }
     intest { next }
     /^[[:space:]]*(\/\/|\*|\/\*)/ { next }
     {
+      gsub(/r#"[^"]*"#/, "")
+      if ($0 ~ /r#"/) { sub(/r#".*$/, ""); raw = 1 }
       if (match($0, /fn[ \t]+[a-z_][a-z0-9_]*/)) {
         s = substr($0, RSTART, RLENGTH); sub(/fn[ \t]+/, "", s)
         print "fn", FILENAME, FNR, s
