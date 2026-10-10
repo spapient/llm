@@ -20,6 +20,7 @@ members = ["crates/*"]
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+rstest.workspace = true
 serde_json.workspace = true
 lib = { path = "crates/lib" }
 tensor = { path = "crates/tensor" }
@@ -102,6 +103,9 @@ tracing-subscriber = { version = "0.3", features = [
 # 质量保障依赖仅在对应 crate 的开发依赖中引入。
 proptest = "1"
 criterion = "0.7"
+# 参数化测试：以 `#[case]` 表驱动表达"仅输入不同、断言形状相同"的用例，
+# 保留每个用例的独立名字与独立失败（见 docs/engineering.md 测试依赖决策）。
+rstest = "0.27"
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"
