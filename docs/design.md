@@ -269,6 +269,8 @@ cpu    -> tensor
 cpu    -> lib
 ```
 
+`metal` 与 `cuda` GPU 后端（第 21 章）对同一 `compute` 契约做累加式实现，不改动本章任何决策；`devicekind` 因它们新增两个变体，`api` 的公共接口宽度与依赖边均不变。
+
 ### 5.2 决策
 
 1. **采纳 `api -> tensor` 边。** `kernel` trait 的调用契约接受 `tensorview<'_, T>` 作为输入并返回 `tensor<T>`：
@@ -302,7 +304,7 @@ cpu    -> lib
 
 8. **朴素、确定性的 attention。** `cpuattention` 实现分组查询缩放的 dot-product attention（`scale = 1/sqrt(headdim)`）与可选 causal masking，作为 O(seq^2 * heads * headdim) 循环。全掩码行保持为零。不引入融合、tiling、SIMD 或线程。
 
-9. **仅 f32，无 `unsafe`。** 后端声明 `[dtype::f32]`。每个新 crate 保持 `#![forbid(unsafe_code)]`；内核使用形状校验已界定范围的安全索引。
+9. **仅 f32，无 `unsafe`。** 后端声明 `[dtype::f32]`。`api` 与 `cpu` 以及全部非 GPU crate 保持 `#![forbid(unsafe_code)]`；内核使用形状校验已界定范围的安全索引。原生 GPU 后端（第 21 章）因平台 FFI 适用一条受限的 `unsafe` 豁免，不改变本层与 `cpu` 的约束。
 
 10. **错误映射显式且在关键处无损。** 内核失败保持 `backenderror`。executor 的 CPU 策略错误保持 `cpuerror`；`compute` 实现把被拒的预算映射到 `backenderror::resourceexhausted`，并原样透传内核错误，因此 `compute` 的调用方只看到抽象层的区分。
 
@@ -327,7 +329,7 @@ cpu    -> lib
 
 `api::kernels` 导出四个 trait（`binarykernel`、`weightedkernel`、`gatherkernel`、`compute`），共 16 个 trait 方法，低于 A4 上界 20。两者都是纯累加接口，无既有符号移动。`api` 依赖 `lib` 与 `tensor`；`lib` 与 `tensor` 都不得依赖 `api`。
 
-`capabilities` 字段公有，便于后端所有者直接组装声明：`dtypes: Vec<dtype>`、`maxrank: usize`、`limits: limits`；访问器 `supports(dtype)`、`getdtypes`、`getmaxrank`、`getlimits`。`device`/`devicekind` 目前只有 `cpu` 一种设备。
+`capabilities` 字段公有，便于后端所有者直接组装声明：`dtypes: Vec<dtype>`、`maxrank: usize`、`limits: limits`；访问器 `supports(dtype)`、`getdtypes`、`getmaxrank`、`getlimits`。`device`/`devicekind` 目前支持 `cpu`、`metal`、`cuda` 三类设备，各配 `device::{cpu,metal,cuda}()` 构造与 `device::{iscpu,ismetal,iscuda}()` 判定；`metal` 与 `cuda` 变体是 GPU 后端的累加式扩展（见第 21 章），不改变 `cpu` 语义，也不加 `#[non_exhaustive]`。
 
 `kernels.rs` 四个 trait 的 `apply` 签名：`binarykernel<T>::apply(&self, lhs: &tensorview<'_, T>, rhs: &tensorview<'_, T>) -> Result<tensor<T>, backenderror>`；`weightedkernel<T>::apply(&self, input, weight)`；`gatherkernel<T>::apply(&self, table, indices: &[usize])`；`compute` 的方法均为拥有 `f32` 张量，见下。
 
@@ -2368,16 +2370,230 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 * 当出现新的、被多个基准共享的负载时，把生成器加入本库而非在各目标中重复。
 * 当资源预算或负载维度改变时，重新确认 `OPLIMITS` 仍准入每个负载且计时区内无分配。
 
-## 21. 跨领域主题与声明局限
+## 21. 层 1：GPU 后端（metal 与 cuda）
 
-### 21.1 请求隔离（OW2 / OW3 在层间的体现）
+本章是一次**累加式**扩展：新增两个 Layer 1 后端 crate `metal`（macOS）与 `cuda`（Linux/Windows），二者都实现 Layer 0 已冻结的 `backend`、`kernel` 与 `compute` 契约，因此不修改任何既有 crate 的公共符号。本章同时记录工作区 `unsafe` 禁令的**唯一**一次修订。为不重编既有章号（第 7–20 章为冻结的 crate 章），本章与两个元章节顺次后移一位。
+
+### 21.1 上下文
+
+`cpu` 是当前唯一后端，无法利用 GPU。要在不牺牲既有纯洁性的前提下接入 GPU，有两个硬约束：
+
+1. **工具链是稳定版。** 工作区固定 `1.99.0`（`rust-toolchain.toml`）。以 nightly 为前提的 `rust-cuda` / `rustc_codegen_nvvm` 直接排除；CUDA 只能走运行时编译（NVRTC）加运行时加载。
+2. **原生 GPU 派发处必然需要 `unsafe`。** 这不是偏好问题，而是已取证的平台事实（证据等级 E1）：`objc2-metal` 0.3.2 的 crate 文档自述着色器「调用不安全」、含偏移/长度的 API 常为 `unsafe`、`MTLBuffer` 的 CPU/GPU 同步 "often unsafe"、且 `MTLBuffer` 无类型；`cudarc` 0.19.10 的 `LaunchArgs::launch` 与 cuBLAS `gemm` 均为 `pub unsafe fn`。二者都无法在全仓 `forbid(unsafe_code)` 下实现，因为 `forbid` 不可被内层 `allow` 覆盖，故本章附带一次受限的宪法修订（见 21.8）。
+
+已执行的一次性尖刺验证（代码置于被 git 忽略的 `work/`，不提交；证据等级 E1）：
+
+* **Metal 在本机真实运行成功。** 设备 `Apple M5 Pro`；MSL 经 `newLibraryWithSource_options_error` **运行时编译成功且无需 Xcode**；2×3 乘 3×2 的 f32 matmul 输出 `[58, 64, 139, 154]` 与参考一致。
+* **Metal 的真实 `unsafe` 面仅 4 处**：host→device 上传、device→host 下载、`setBuffer_offset_atIndex`、`setBytes_length_atIndex`。`MTLCreateSystemDefaultDevice`、`newLibraryWithSource_options_error`、`newComputePipelineStateWithFunction_error`、`newBufferWithLength_options`、`newCommandQueue`、`commandBuffer`、`computeCommandEncoder`、`setComputePipelineState`、`dispatchThreads_threadsPerThreadgroup`、`endEncoding`、`commit`、`waitUntilCompleted` 全部是**安全**的（实测判据：编译器对多余的 `unsafe` 块报 `unused_unsafe`）。
+* **cudarc 可在无 CUDA 工具链的 macOS 上类型检查通过。** feature 为 `driver`、`cublas`、`cudnn`、`nvrtc`、`dynamic-loading`，且**必须**显式指定一个 `cuda-<version>`（本仓库取 `cuda-12060`；缺省时 `build.rs` 直接失败）。因此 `cargo check -p cuda` 可作为无 GPU 的 CI 门禁。
+* **cuDNN 同样可在无工具链的宿主上类型检查。** `dynamic-loading` 下 `cudarc` 的 `build.rs` 不发出任何 `rustc-link-lib`，`cudnn` 的符号改由 `libloading` 在运行时解析（`src/cudnn/sys` 的 `culib()`），故 cuDNN 头文件与库都不参与本机构建。代价是符号缺失从链接期错误变为 `cudarc` 内部的 `panic!`，我们无法消除，只如实记录（证据等级 E1，读源码所得）。
+* CUDA 的运行时数值验证**未执行**（本机与默认 CI 均无 NVIDIA GPU），声明为 E4。
+
+两个 crate 都只在目标平台编译出实体代码：`metal` 仅在 `cfg(target_os = "macos")` 下启用依赖并导出实现，其他平台编译为空 lib；`cuda` 仅在 `cfg(target_os = "linux")` 下列表依赖，其他平台编译为空 lib。这样 `cargo check --workspace --all-targets` 在任何宿主与 CI 上都保持通过。
+
+### 21.2 决策
+
+1. **采纳原生双后端，不引入 `wgpu`。** 用户要求 CUDA 专用能力（cuBLAS，后续可扩 cuDNN），`wgpu` 的 Vulkan 后端不满足该诉求；且 `wgpu` 只是把 `unsafe` 移入第三方，并未消除，同时引入一层与 `api` 契约不直接对应的抽象。
+2. **单文件 `unsafe` 豁免模型。** 两个 crate 使用 `#![deny(unsafe_code)]`，crate 内恰好一个文件 `src/ffi.rs` 声明 `#![allow(unsafe_code)]`；所有平台调用被封在此文件内，对外只暴露安全 Rust 函数。详见 21.8。
+3. **Metal 走 `objc2-metal`，不走 `metal-rs`。** 实测 `objc2-metal` 的绝大多数 API 是安全的，`unsafe` 面仅 4 处；`metal-rs` 0.33 把大量 API 标为 `unsafe`，暴露面显著更大。
+4. **CUDA 走 `cudarc`，feature 固定为 `driver` + `cublas` + `cudnn` + `nvrtc` + `dynamic-loading` + `cuda-12060`。** `dynamic-loading` 使 `cargo check` 无需 CUDA 工具链；`cuda-12060` 是 `cudarc` 的强制要求；`cudnn`（即 `cudnn-09021`）提供 `SoftmaxForward` 等安全封装。
+5. **条件编译为空 lib。** 非目标平台不引入任何平台依赖，也不导出实现类型，保证跨平台 workspace 绿。
+6. **同步、运行至完成的执行语义。** 与 `tensor` 与 `cpu` 的同步模型一致：每次算子调用完成 host→device→dispatch→device→host 全流程后返回拥有张量；不引入流式或异步 API。
+7. **首个算子为 `f32` matmul。** MSL 与 CUDA C 源码以字符串内嵌并在运行时编译，避免构建期依赖 `xcrun`/`nvcc`。
+8. **设备身份在 `api` 侧累加。** `devicekind` 新增 `metal` 与 `cuda` 变体，`device` 新增对应构造与判定；不改动既有 `cpu` 语义，也不加 `#[non_exhaustive]`（工作区内需要穷举 match 以获得编译期完整性）。
+9. **依赖边仅为后端到 `api`/`tensor`/`lib`。** `api` MUST NOT 依赖 `metal` 或 `cuda`；上层（`models`/`infer`）通过既有的 `C: compute` 泛型槽接入，零改动。
+10. **CUDA 的 `unsafe` 站点收于三类平台交互、共三处。** NVRTC 内核启动一处（以闭包注入实参，服务于全部在仓内核）、cuBLAS `gemm` 一处、cuDNN 末轴 softmax 一处；不做 `unsafe` 的通用化封装，仅按 21.8 登记的三处具体调用。
+11. **算子按机制分工。** `matmul` 走 cuBLAS（并保留 NVRTC 路径作独立参考）；`softmax` 走 cuDNN；其余算子（`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention`）走内嵌 CUDA C++ 源码经 NVRTC 运行时编译。`silu` 刻意**不**走 cuDNN 的 `CUDNN_ACTIVATION_SWISH`：它坐落于 `ActivationForward::launch` 这一自带 `unsafe` 的入口，为一个逐元素算子新增一类平台交互不值得，而 NVRTC 内核族复用同一站点、零成本。
+
+### 21.3 接口边界（DS1）
+
+`metal` 在 crate root 导出 3 个公共项，`cuda` 导出 5 个，均远低于 A4 上界 20：
+
+| crate | 公共项 | 模块文件 | 职责 |
+| --- | --- | --- | --- |
+| `metal` | `METALMAXRANK` | `backend.rs` | 后端接受的最大张量秩 |
+| `metal` | `metalbackend` | `backend.rs` | macOS 后端身份与能力声明，返回 `device::metal()` |
+| `metal` | `metalexecutor` | `executor.rs` | 实现 `api::compute` 的 f32 算子集 |
+| `cuda` | `CUDAMAXRANK` | `backend.rs` | 后端接受的最大张量秩 |
+| `cuda` | `CUDAMAXHEADDIM` | `backend.rs` | 单个注意力头的最大宽度，由内核的共享内存预算决定 |
+| `cuda` | `cudabackend` | `backend.rs` | Linux 后端身份与能力声明，返回 `device::cuda()` |
+| `cuda` | `cudaexecutor` | `executor.rs` | 实现 `api::compute` 的 f32 算子集 |
+| `cuda` | `matmulpath` | `executor.rs` | `matmul` 走 cuBLAS 还是 NVRTC，构造期固定 |
+
+`src/ffi.rs` 是私有模块，不导出任何符号；它只向 `executor.rs` 提供安全的封装函数，`backend.rs` 不接触它。模块文件名刻意不同于导出的类型名以满足 E0255 守卫。
+
+依赖图（累加，无环）：
+
+```text
+metal -> lib
+metal -> tensor
+metal -> api
+cuda  -> lib
+cuda  -> tensor
+cuda  -> api
+```
+
+`api`、`tensor`、`lib` 均不依赖 `metal` 或 `cuda`。目标平台的表驱动依赖（`[target.'cfg(...)'.dependencies]`）不产生新的 workspace 内边。
+
+### 21.4 不变量与错误路径（DS2）
+
+算法级不变量（每个算子都复用 `cpu` 同名契约的形状规则，逐条对应）：
+
+* `matmul`：相等 rank `r >= 2`，前导批维逐一相等，尾两维 `[m,k]` 与 `[k,n]` 相乘得 `[batch..., m, n]`；无广播。
+* `add`/`mul`：两侧维度逐一相等，无广播；输出形状等于操作数形状。
+* `rmsnorm`：末轴非空；权重元素计数等于末轴长度（比较的是元素计数而非形状，故 `[width]` 与 `[1, width]` 均合法）。
+* `softmax`：末轴非空；输出与输入同形。
+* `rope`：rank ≥ 2、`heads ≥ 1`、末轴为 `heads` 的倍数，且每头宽度为正偶数；位置是该行在倒数第二轴上的下标（`seqaxis == 0` 时恒为 0）。
+* `embedding`：表的第一轴是行空间，每个下标须落在 `[0, vocab)`；输出形状为 `[indices.len(), table.shape[1..]]`。
+* `attention`：query/key/value 均为 rank 2；key 与 value 同形且序列长度等于 query 的；`heads ≥ 1` 且是 `kvheads` 的倍数；query 末轴是 `heads` 的倍数；key/value 末轴等于 `kvheads * headdim`。
+* 输出元素计数等于输出维度之积，且在任何分配之前完成溢出检查。
+
+实现级不变量：
+
+* 设备缓冲的元素类型与长度由 Rust 侧 `CudaSlice<f32>` / Metal 缓冲长度确定；GPU 侧索引由内核内的显式边界判断收束（`row < m`、`col < n`、平铺的 `index < total`）。
+* `attention` 的每头宽度不超过各后端上限（`metal` 为 `METALMAXHEADDIM`、`cuda` 为 `CUDAMAXHEADDIM`），因为内核为每个头维保留一个累加槽；超出是设备容量不足，不是契约违规。
+* 每次调用结束后设备缓冲与命令对象随作用域析构释放；无跨调用的设备状态残留（与 `tensor`/`cpu` 的 OW1/OW3 一致）。
+* `unsafe` 站点只在 `ffi.rs`，且每个站点的安全前置在 `// SAFETY:` 中显式陈述。
+
+错误分支与返回语义（复用 `backenderror`，不新增错误类型，遵循 ER2）：
+
+* 形状不匹配（上述任一形状规则不满足）→ `shapemismatch { op }`；
+* `embedding` 下标越界 → `indexoutofrange { index, len }`；
+* 末轴为空（`softmax`、`rmsnorm`）→ `unsupportedoperation { op }`；
+* 元素计数溢出（秩、批、元素数、字节数任一算不出）→ `sizeoverflow`；
+* 秩超过 `METALMAXRANK`/`CUDAMAXRANK` → `executionfailed`；
+* 超出能力声明的元素或字节预算（`embedding` 的按其 gather 输出 `rows * width` 计）→ `resourceexhausted`；
+* 每头宽度超过 `METALMAXHEADDIM`/`CUDAMAXHEADDIM` → `resourceexhausted`；
+* 设备初始化失败 / MSL 或 NVRTC 编译失败 / 模块或内核解析失败 / 缓冲分配失败 / 内核启动失败 / cuBLAS 调用失败 / cuDNN 调用失败 / host-device 传输失败 → `executionfailed`（诊断文本保留在 crate 私有的 `metalerror`/`cudaerror` 中，不泄入 `api` 契约）；
+* `metal` 与 `cuda` 都已实现 `compute` 的全部算子（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`），故两者唯一的 `unsupportedoperation` 来源是上一条的空末轴（`softmax`、`rmsnorm`）。
+
+`compute` 契约的每个方法都只接受 `f32` 张量视图，故 GPU 后端不可能因 dtype 失败；`capabilities` 声明 `f32` 是为了让上层在派发前就能判定，`unsupporteddtype` 不由这两个后端产生。
+
+资源回滚：任何失败在构造输出张量之前返回；已获取的设备缓冲、命令缓冲、库与管线对象按作用域逆序析构（ER4）。
+
+### 21.5 复杂度（DS3）
+
+各 crate 的单函数圈复杂度 ≤ 10、有效行数 ≤ 80：
+
+* `geometry.rs` 把每个算子的形状推理与拒绝条件收进单个函数，使 `ffi.rs` 的每个启动封装只做「取已验证的几何 → 一次平台调用 → 一次错误映射」，判定点不超过 3 个。
+* `executor.rs` 的每个算子在预算校验后委派给 `geometry` 与 `ffi`，自身不做算术。
+* `source.rs` 只存放 MSL/CUDA 原文串与 entry 名常量，不参与 Rust 复杂度；两个后端的 `ffi.rs` 都只有一条通用 `execute` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
+
+宿主 macOS 的 `scripts/checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的 CUDA 代码，因此 CUDA 侧以同一组阈值单独在 Linux 目标上核对（`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --lib --locked -- -D clippy::cognitive_complexity -D clippy::too_many_lines`，exit 0）。两者均为机械检查（证据等级 E1）。
+
+### 21.6 并发设计（DS4）
+
+两个后端都**不引入**共享可变状态与同步原语。`metalbackend`/`cudabackend` 只持有不可变的能力声明。`metalexecutor` 只持有它那个 backend；`cudaexecutor` 只持有 backend 与一个构造期固定、之后只读的 `matmulpath`。两者都不持有请求作用域状态，因此都可被跨请求不可变共享（与 `cpu` 的 executor 同形）。每次调用（`matmul` 或任一算子）在调用作用域内创建命令队列、命令缓冲与设备缓冲，调用返回即析构。设备上下文（`CudaContext`、`MTLDevice`）由调用内局部持有，不跨请求共享。
+
+因此不存在锁，也不存在锁序；并发安全源自「无共享可变状态 + 每调用独占所有权」，与 `cpu` 一致。GPU 驱动内部对设备的序列化不在本契约内，且因每次调用独占而无需声明锁序。
+
+### 21.7 被否决方案（DS5）
+
+* **改用 `wgpu` 纯安全抽象。** 被否决：用户显式要求 CUDA 专用能力（cuBLAS/cuDNN），Vulkan 不满足；且 `wgpu` 不消除 `unsafe`，只是把它移入第三方。
+* **工作区级放宽 `unsafe_code = "deny"`。** 被否决：会静默影响全部 crate，无法机械区分「预期的 FFI `unsafe`」与「意外引入的 `unsafe`」。
+* **整 crate 级豁免（`#![allow(unsafe_code)]` 置于 lib.rs）。** 被否决：豁免面覆盖整个 crate 的所有未来代码，无法收敛。
+* **推迟 CUDA 至出现纯安全绑定。** 被否决：用户已具备 NVIDIA GPU 环境且明确要求 CUDA；`cudarc` 的 `safe` 模块已把大部分生命周期与同步责任收拢，剩余 `unsafe` 面仅 2 处，可被精确登记。
+* **以 nightly `rust-cuda` 在编译期生成 PTX。** 被否决：工作区固定稳定版工具链；且会引入 nightly 与 `unsafe` 之外的构建复杂度。
+* **`#![forbid(unsafe_code)]` 加内层函数级 `#[allow]`。** 被否决（技术上不可行）：`forbid` 不可被内层 `allow` 覆盖，编译期即拒绝；这正是豁免必须精确到 crate 边界的原因。
+
+### 21.8 `unsafe` 禁令的受限修订与站点登记
+
+这是工作区 `unsafe` 禁令的**唯一**一次修订，范围严格受限：
+
+* 工作区 lint 保持 `unsafe_code = "deny"`（`Cargo.toml`），一行不改。
+* 全部既有 crate 保持 `#![forbid(unsafe_code)]`，一行不改。
+* `metal` 与 `cuda` 使用 `#![deny(unsafe_code)]`，且每个 crate 内**恰好一个文件** `src/ffi.rs` 声明 `#![allow(unsafe_code)]`；其余模块仍受 `deny` 约束。
+* `src/ffi.rs` 中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
+* 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。实测登记（证据等级 E1，来自 21.1 的尖刺）：
+
+| crate | 站点 | 位置 |
+| --- | --- | --- |
+| `metal` | host→device 上传（写 `contents` 指针） | `ffi.rs` |
+| `metal` | device→host 下载（读 `contents` 指针） | `ffi.rs` |
+| `metal` | `setBuffer_offset_atIndex`（绑定设备缓冲） | `ffi.rs` |
+| `metal` | `setBytes_length_atIndex`（绑定标量参数） | `ffi.rs` |
+| `cuda` | `LaunchArgs::launch`（NVRTC 内核启动） | `ffi.rs` |
+| `cuda` | `CudaBlas::gemm`（cuBLAS 矩阵乘） | `ffi.rs` |
+| `cuda` | `SoftmaxForward::launch`（cuDNN 末轴 softmax） | `ffi.rs` |
+
+站点登记：`metal` = 4，`cuda` = 3；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
+
+依据：这些数字由**调用面结构**推导，而非经验取值。Metal 一次 `matmul` 的最小平台交互面固定为 4 处——上传主机数据、下载设备结果、绑定设备缓冲、绑定标量参数。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
+
+* `LaunchArgs::launch` 只登记一次，因为整个在仓内核族共用它。启动辅助以闭包注入实参、以 `(source, entry)` 选择内核，故 `matmul`/`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention` 八个内核**不增加站点**。这是设计选择而非巧合：把「一类平台交互」而非「一个算子」作为登记的原子单位，使豁免面不随算子数增长。
+* `CudaBlas::gemm` 与 `SoftmaxForward::launch` 各一处，因为二者是各自库里唯一自带 `unsafe` 的入口。
+
+任何使数字上升的改动都意味着引入了一类新的平台交互或一个自带 `unsafe` 入口的第三方库（例如 cuDNN 的 attention frontend、cuDNN 的 `ActivationForward`），属于豁免扩散，必须先改本表并说明理由；数字下降则意味着某类交互被移除，表也必须同步。
+
+机械门禁 `scripts/checkunsafe.sh` 断言四项：白名单文件是唯一出现 `allow(unsafe_code)` 之处；全部既有 crate 根仍含 `forbid(unsafe_code)`；代码中每处 `unsafe` 前一行（含注释块）含 `// SAFETY:`；`unsafe` 站点计数与本表条目数**恰好相等**（非上界语义：多一处或少一处均失败，本表与代码不允许单向漂移）。该脚本接入 `scripts/check.sh`。
+
+回滚：删除 `crates/metal` 与 `crates/cuda`、撤销 `api` 的设备变体与门禁条目，即完全恢复修订前状态。
+
+### 21.9 后果
+
+* GPU 能力以两个独立、可单独删除的 crate 提供；删除任一 crate 不影响 `cpu` 路径与依赖图。
+* `unsafe` 面被压缩到 7 个已登记站点（`metal` 4 + `cuda` 3），且由机械门禁强制；既有 19 个 crate 的 `forbid` 未被触碰。
+* `api` 与上层（`models`/`infer`）零改动即可通过 `C: compute` 使用 GPU。
+* CUDA 的运行时正确性在无 GPU 环境下**不可验证**，本文件与 `docs/conformance.md` 如实标注为未执行，绝不声称通过。
+* 维护成本：两个 crate 各自绑定一个易变的第三方 GPU 绑定（`objc2-metal`、`cudarc`），版本升级需重新核对 21.8 的站点表。
+
+### 21.10 验证
+
+* **Metal（E1）。** `tests/it/metalcontract.rs` 的 30 个契约测试在本机 Apple GPU 上全部真实运行并通过（MSL 经 `newLibraryWithSource` 运行期编译）：身份/设备/能力声明；`matmul` 数值（含前导批维）与形状/预算拒绝；`add`/`mul`/`silu` 数值、形状不匹配与预算拒绝、空操作数；`softmax` 逐行数值、极端 logits 稳定性、空末轴拒绝、零行空输出；`rmsnorm` 逐行数值、空末轴与权重长度拒绝、单行权重接受；`rope` 逐位置数值与零头数/奇数头宽/秩一拒绝；`embedding` 数值、越界下标拒绝、gather 预算拒绝、空下标输出；`attention` 因果与非因果数值、单位置恒等、形状不一致拒绝、每头宽度超设备上限拒绝。数值用例均对照 `testkit::reference` 的同名标量参考，容差 1e-6–1e-5。首轮运行时 `rope` 内核因把局部变量命名为 `half`（与 MSL 内建标量类型同名）而编译失败并报 `executionfailed`；改名为 `pairs` 后通过，该失败与修复均在本机复现（E1）。
+* **CUDA 编译与静态门禁（E1）。** `cargo check -p cuda --target x86_64-unknown-linux-gnu --all-targets`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets -- -D warnings`，以及 `-p llm --target x86_64-unknown-linux-gnu --test it`、`--bench cuda` 的同名检查均 exit 0。全部在无 CUDA toolkit、无 NVIDIA 驱动的 macOS 宿主上完成，`dynamic-loading` 使其不必要。
+* **CUDA 设备无关契约（E1 编译；运行未执行）。** `tests/it/cudacontract.rs` 共 33 例，其中 18 例在 executor 的任何设备调用之前就已由宿主侧校验定案：身份与能力声明、matmul 路径选择、八个算子的形状/下标/空末轴拒绝、元素与 gather 预算、`CUDAMAXHEADDIM` 上限，以及 `matmul` 零收缩、空输入、零行等退化用例。逐一核对 `executor.rs` 的校验顺序确认这 18 例不会进入 `ffi` 的设备路径（证据等级 E1 的代码审计）。本机没有 Linux 运行环境，故该套件的**运行时结果未在此处执行**：18 例的通过/失败将在 Linux CI（`quality` 的 `cargo test --workspace` 与 `cuda-check`）上产出。
+* **CUDA 数值（E4）。** 其余 15 例需要设备，均以与标量参考对照；本机与默认 CI 均无 NVIDIA GPU，未执行。它们在探测不到 `nvidia-smi -L` 时打印 `E4 未执行` 并返回，真实运行依赖 `cuda-test` 的自托管 GPU runner。
+* **CUDA 基准（E4）。** `benches/cuda.rs` 已在宿主（`cargo bench --workspace --no-run`）与 Linux 目标上编译通过，但**没有任何 CUDA 测量**：本机无 GPU。该目标在同一轮内测量 CPU 与 CUDA 两侧的八个算子，待 GPU runner 可用时产出可比基线；在此之前不声称任何加速（VF5）。
+* **门禁（E1）。** `scripts/checkunsafe.sh` 四项断言全绿（`metal` 4/4 站点、`cuda` 3/3 站点，各有 SAFETY 注释）；`scripts/checknaming.sh`、`scripts/checkthresholds.sh` 与汇总的 `scripts/check.sh`（fmt、全工作区 check/clippy、命名、内联测试、unsafe、阈值、文档）全部通过。
+* **回归（E1）。** `cargo test --workspace` 在 macOS 宿主上 44 个测试目标全部 `test result: ok`、0 failed（exit 0），其中 `tests/it/main.rs` 单个二进制 748 passed / 0 failed；`metalcontract` 的 30 例真实运行，`cudacontract` 因平台 cfg 不参与本机构建。
+
+基线（E1；`cargo bench -p llm --bench metal`，release profile，criterion 0.7.0，warm-up 0.5 s，measurement 1.0 s，10 samples；环境 macOS、arm64、Apple M5 Pro、`rustc 1.99.0`）：
+
+| Benchmark | Workload | Time (median) | Throughput |
+| --- | --- | --- | --- |
+| gpu/matmul/cpu256 | 256×256×256 f32（`cpu` 基线） | 957.31 µs | 68.458 Melem/s |
+| gpu/matmul/metal256 | 256×256×256 f32 | 2.5830 ms | 25.372 Melem/s |
+
+该尺寸下 Metal **慢于** CPU（约 2.7×）。原因是本阶段每次调用都重新创建设备上下文并运行时编译 MSL，固定开销远超 256³ 的计算量；这不是 GPU 的计算劣势，而是未做编译器缓存与管线复用的直接后果。本阶段**不声明任何加速**（VF5），该表是后续优化必须击败的基线；缓存与管线复用是复审条件之一（见 21.11）。
+
+### 21.11 复审条件
+
+* 若某种纯安全的 GPU 绑定成熟且能满足 CUDA 专用能力诉求 → 评估撤销 21.8 的豁免。
+* 若 `metal` 或 `cuda` 的 `unsafe` 站点数需要增长 → 先更新 21.8 的登记表并说明理由，再改动代码。
+* 若再引入第三个自带 `unsafe` 入口的 CUDA 专用库（例如 cuDNN 的 attention frontend 或 `ActivationForward`）→ 先更新 21.8 的登记表并说明理由，再改动代码。
+* 若出现流式/异步执行需求 → 复审 21.2 决策 6 的同步语义与 21.6 的并发设计。
+* 若需消除每调用 MSL 编译与设备上下文创建开销 → 引入由显式所有权持有的编译产物/上下文缓存（而非全局单例），并对照 21.10 的基线测量前后差异。
+* 若 `objc2-metal` 或 `cudarc` 的主版本升级 → 重新执行尖刺并核对 21.1 与 21.8 的实测结论。
+
+### 21.12 CI 门禁
+
+在既有 `quality` job 之外新增三个 job：
+
+| job | runner | 作用 | 现状 |
+| --- | --- | --- | --- |
+| `quality` | `ubuntu-latest` | 不变：fmt、全工作区 check/clippy/test/doc 与基准编译。因 `cuda` 在 Linux 上非空，它在 Linux 上已覆盖 CUDA 的编译与 lint | 既有 |
+| `macos` | `macos-14` | `cargo test --workspace`，使 `metal` 真实编译并运行 MSL 内核 | 新增 |
+| `cuda-check` | `ubuntu-latest` | `cargo check -p cuda --all-targets`；运行 `cudacontract` 的设备无关一半；外加 `scripts/checkunsafe.sh` 与 `scripts/checkthresholds.sh`。**故意不安装 CUDA toolkit**，`dynamic-loading` 使其不必要 | 新增 |
+| `cuda-test` | `[self-hosted, linux, x64, cuda]` | `cargo test -p llm --test it cudacontract`，并设 `LLM_CUDA_REQUIRE_DEVICE=1`，使「探测不到设备」成为硬失败而非静默通过 | **未激活** |
+
+`cuda-check` 为何仍需单独存在：宿主 macOS 的 `checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的代码，而 `checkunsafe.sh` 与 `checkthresholds.sh` 本来就不在 `quality` 的步骤里；该 job 把这两项放到 CUDA 代码确实非空的平台上以求值——在该 runner 上 `checkthresholds.sh` 的 `cargo clippy --workspace --lib --bins` 原生覆盖 CUDA 的 Linux 代码，故 DS3 在那里是机械强制的，而非仅在宿主上另跑一次交叉目标 clippy。此外 `quality` 的 `cargo test --workspace` 与 `cuda-check` 的 `cudacontract` 步骤都会执行该套件的设备无关一半。
+
+`cuda-test` 当前只在 `workflow_dispatch` 下运行，因为自托管 runner 尚未注册，而在 `push`/PR 上加入一个无法调度的 job 会让整个工作流永久处于 pending。runner 注册后删除该 job 的 `if:` 一行即可启用。
+
+默认 feature 不引入任何 GPU 依赖，故 `quality` job 的语义未变。
+
+未决（需仓库所有者提供）：自托管 CUDA runner 的标签与配置。
+
+## 22. 跨领域主题与声明局限
+
+### 22.1 请求隔离（OW2 / OW3 在层间的体现）
 
 * **infer。** 模型权重不可变且不持请求状态。所有生成状态（prompt、累积上下文、采样器位置、停止准则、`kvstate`）活在 `generationrequest` 中，由引擎借用的模型与提供者不持每请求状态。故两个请求可对一个模型值并发运行而不共享可变状态。`reset` 在成功、取消、失败三条路径后都恢复请求到新尝试，使残留状态不可被错误复用。
 * **serve。** `inferenceservice` 只借用不可变模型与提供者，拥有不可变 `serviceconfig` 加原子计数器；每请求的 `executioncontext`/`generationrequest`/sink 是请求作用域并在 drop 时释放。每个响应 `connection: close`，故无会话状态在请求间保留。取消经请求的 `cancellation` 句柄映射，不存入服务或全局。
 * **cli。** `generate` 的请求使用请求作用域 `generationrequest`、调用方拥有的 `executioncontext` 与 `collectingsink`；所有可变状态是请求作用域且 drop 时释放。进程级单线程一次处理一个命令。
 * **train。** `trainer` 拥有其参数、优化器、累加器与计数器并只经 `&mut self` 被变更；取消是唯一共享信号且经显式 `context::cancellation` 句柄。失败的加载对 trainer 是 no-op，失败或取消的步骤丢弃窗口且不推进任何计数器。
 
-### 21.2 资源上限在层间的体现
+### 22.2 资源上限在层间的体现
 
 * **context** 是上限的原语所有者：`executionconfig { memorybytes, maxworkers, maxsteps }`（零 `maxworkers` 被拒）、`memorybudget` 的字节记账（`reserved ≤ capacity`，溢出与超容量均显式失败）、`workergroup` 的有界扇出、`cancellation`。
 * **infer** 显式限定：`generationparams { maxseq, kvlayers, kvwidth }` 全非零；`stopcondition` 的非零 `maxnewtokens`；`generationrequest` 拒绝 prompt 超过 `maxseq` 或 prompt 加 cap 超过 `maxseq`，且 `pushgenerated` 在上下文达到 `maxseq` 后拒绝；`kvstate` 每次 append 校验容量。每次循环起点 `executioncontext.checkpoint()` 强制步骤预算。
@@ -2385,7 +2601,7 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 * **cli** 使用显式常量：`DEFAULTLIMITS`（元素/字节/序列/批）、`MAXNEWTOKENSLIMIT`、`MAXPROMPTTOKENS`、`DEFAULTMAXARTIFACTBYTES`、`DEFAULTMEMORYBYTES`、`DEFAULTMAXWORKERS`；路径在读前按大小检查、读后复核（复制-校验-使用）。
 * **optim / train** 以经校验构造器限定超参数与配置域；`trainconfig` 拒绝零累积窗口，`trainer::step` 强制 `maxsteps` 预算，`gradientaccumulator` 拒绝零容量与满窗口。
 
-### 21.3 错误归属在层间的体现（ER2）
+### 22.3 错误归属在层间的体现（ER2）
 
 每个 crate 拥有其职责的错误类型，跨层传播时以 transparent 方式保留上下文，不把底层错误类型泄入上层契约：
 
@@ -2400,7 +2616,7 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 
 应用边界在各自层做协议映射：`clierror::exitcode` 是到退出码的单一映射；`httpresponse::fromerror`（经 `statusfor` 与 `inferstatus`）是到 HTTP status 的单一映射。传输失败与模型失败永不互相折叠：`serveerror` 的协议变体保持独立，而 `serveerror::inference(#[from] infererror)` 保持 `infererror` 的可操作区分。
 
-### 21.4 声明局限汇总
+### 22.4 声明局限汇总
 
 * **`nn`/`models` 是 forward-only，无反向路径。** `autograd` 只为 `matmul`、`add`、`mul`、`rmsnorm`、`softmax`、`relu`、`silu`、`gelutanh` 提供 VJP。因此不存在从 Llama 前向回到其权重的可微图；端到端 Llama 训练不可达，`train` 与 `cli train` 均不捏造它。`cli train` 在无 `--check-only` 时返回 `clierror::notsupported` 并 exit 4。
 * **KV cache 已实现但尚未被前向读取。** `kvstate` 满足 `models::kvcache` 并由请求拥有、重置，但 `causallm::forward` 无缓存参数，故 decode 重算完整上下文。缓存路径尚无前后对比数字，不声称加速。
@@ -2410,32 +2626,32 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 * **数值与并行范围。** `optim` 是 `f32`-only 且单进程；不支持 Nesterov 动量、dampening 或 AdamW 之外的自适应方法。`train` 的 loss、累加器与 checkpoint 编码是 `f32`-only。分布式、混合精度与多设备训练均未实现。
 * **`train` 尚不能从 CLI 选择学习率调度文件字段。** `trainconfig` 接受可选 `lrschedule`，但 CLI schema 省略它。
 
-## 22. 复审条件汇总
+## 23. 复审条件汇总
 
-以下汇总第 13–20 章的复审触发点，按 crate 归类。当任一条件出现时，回到对应章节并对照本节的验收标准复核。
+以下汇总第 13–21 章的复审触发点，按 crate 归类。当任一条件出现时，回到对应章节并对照本节的验收标准复核。
 
-### 22.1 optim（见 13.10）
+### 23.1 optim（见 13.10）
 
 * `autograd` 暴露稳定公共梯度访问器 → 把图变量到 `tensor` 切片的薄适配器放入 `train`（优先），而非新增 `optim → autograd` 边。
 * 需要 Nesterov、dampening 或第二种自适应方法 → 在现有 `optimizer` trait 后扩展规则集，而非拓宽 `update`。
 * 训练层持久化优化器状态 → 对照 checkpoint 张量契约确认 `m.{i}`/`v.{i}`/`momentum.{i}` 命名与 `optimizerstate` 布局；改名是兼容性变更。
 * 需要分布式或混合精度优化器 → 复审 `f32`-only 与单进程假设。
 
-### 22.2 context（见 14.10）
+### 23.2 context（见 14.10）
 
 * 需在共享结构上持有多于一把锁 → 定义并记录全局锁序（`CC1`/`DS4`）。
 * 取消需中断阻塞叶子调用 → 新增可取消等待原语而非全局注册表。
 * 需要生产指标后端 → 作为新 `metrics` 实现加入，保持 trait 无后端耦合。
 * 工作者协调需要异步执行或带优先级的 work stealing → 复审 `std::thread::scope` 设计并论证新增依赖。
 
-### 22.3 train（见 15.12）
+### 23.3 train（见 15.12）
 
 * `nn`/`models` 获得反向路径，或 `autograd` 获得缺失算子 → 把真实前向接进每步 loss 闭包，并用 `models` 端到端 loss 下降测试替换最小二乘演示。
 * 训练循环直接从 `autograd` 图获得梯度 → 在 `train`（而非 `optim`）加入图到 `tensor` 适配器。
 * 需要数据并行或多设备训练 → 复审单所有者 trainer 并加入梯度归约的显式同步。
 * 需要混合精度 → 复审 `f32`-only 的 loss、累加器与 checkpoint 编码。
 
-### 22.4 infer（见 16.11）
+### 23.4 infer（见 16.11）
 
 * 存在缓存感知的 forward 入口 → 把 `kvstate` 接进 decode 并对照全重算路径记录前后基线。
 * `format`/`checkpoint` 提供序列化模型 → 加入 load 路径与黄金 token 生成测试。
@@ -2443,28 +2659,36 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 * 流式 sink 需拥有模型或跨调用存活 → 复审调用作用域的 `S: streamsink` 约束。
 * 根 `tests/`/`benches/` 整合发生 → 移动集成测试到位并加入生成基准。
 
-### 22.5 cli（见 17.10）
+### 23.5 cli（见 17.10）
 
 * `nn`/`models` 的反向路径落地 → `train` 在同一命令后长出真实权重更新路径，移除 `notsupported` 局限。
 * `generate` 的真实工件加载器落地 → 加入 `--checkpoint`/`--weights` 并重新测量。
 * 根 `tests/`/`benches/` 整合发生 → 移动集成测试到位。
 * 加入第二个具体后端 → 复审后端选择决策。
 
-### 22.6 serve（见 18.10）
+### 23.6 serve（见 18.10）
 
 * 部署目标需要异步 I/O 或 TLS → 在相同 `inferenceservice` 边界后加入异步传输，并对照本基线测量吞吐变化。
 * 根 `tests/`/`benches/` 整合发生 → 移动集成测试到位并加入请求吞吐基准。
 * 需要流式响应 → 扩展 `httpresponse`/sink 契约而非传输解析器。
 * 缓存感知的 `infer` decode 落地 → 在不改变本边界的前提下重新测量请求延迟。
 
-### 22.7 testkit（见 19.10）
+### 23.7 testkit（见 19.10）
 
 * `nn`/`models` 落地且需要共享微小确定性模型夹具 → 在 `tinymodel` 中定义，并与 `tests/common/mod.rs` 既有夹具不重复。
 * 出现被多个 crate 共享的新确定性输入或独立参考实现 → 优先加入 `fixtures`/`reference`。
 * 需要新的数值比较语义 → 扩展 `assertions` 并保持其仅用于测试基础设施。
 
-### 22.8 bench（见 20.10）
+### 23.8 bench（见 20.10）
 
 * 加入新的生产算子 → 在根 `benches/` 添加基准目标并复用 `bench` 的确定性负载生成器。
 * 出现被多个基准共享的新负载 → 把生成器加入 `bench` 库而非在各目标中重复。
 * 资源预算或负载维度改变 → 重新确认 `OPLIMITS` 仍准入每个负载且计时区内无分配。
+
+### 23.9 metal 与 cuda（见 21.11）
+
+* 出现可满足 CUDA 专用能力的纯安全 GPU 绑定 → 评估撤销 21.8 的 `unsafe` 豁免。
+* `metal` 或 `cuda` 需新增 `unsafe` 站点 → 先更新 21.8 登记表再改代码。
+* 再引入第三个自带 `unsafe` 入口的 CUDA 专用库 → 先更新 21.8 登记表并说明理由，再改代码。
+* 出现流式/异步执行需求 → 复审 21.2 决策 6 与 21.6。
+* `objc2-metal` 或 `cudarc` 主版本升级 → 重跑尖刺并核对 21.1/21.8。

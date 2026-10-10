@@ -109,12 +109,21 @@
 
 ## 6. 不安全代码
 
-workspace 完全禁止 `unsafe` 代码。该禁令由 workspace lint 配置强制（根 `Cargo.toml` 中的 `unsafe_code = "deny"`）。
+workspace 默认完全禁止 `unsafe` 代码。该禁令由 workspace lint 配置强制（根 `Cargo.toml` 中的 `unsafe_code = "deny"`），且每个 crate 在 crate 根声明 `#![forbid(unsafe_code)]`。
 
 * 不得引入 `unsafe` 块、`unsafe fn`、`unsafe trait`、`unsafe impl`、`unsafe extern` 或任何其他 `unsafe` 构造。
 * 不得添加 `#[allow(unsafe_code)]` 或以其他方式放宽 lint 以接纳 `unsafe`。
 * 若某需求看似需要 `unsafe`，请用安全 Rust 重新设计，或停止并上报该限制，而不是放宽本规则。
-* 不得声称通过测试即已建立内存安全；该禁令是绝对的，与测试证据无关。
+* 不得声称通过测试即已建立内存安全；该禁令的默认强度与测试证据无关。
+
+**受限豁免（唯一例外）。** 原生 GPU 后端 crate（`crates/metal`、`crates/cuda`）因平台 FFI 无法在安全 Rust 内实现，适用一条范围严格受限的豁免：
+
+* 豁免 crate 使用 `#![deny(unsafe_code)]`（不是 `forbid`），且 crate 内**恰好一个文件** `src/ffi.rs` 声明 `#![allow(unsafe_code)]`；其余模块仍受 `deny` 约束。
+* `src/ffi.rs` 中每处 `unsafe` 构造前必须有 `// SAFETY:` 注释陈述该 API 的安全前置为何被满足。
+* `unsafe` 站点数必须**恰好等于**登记数（`metal` = 4，`cuda` = 3），由 `scripts/checkunsafe.sh` 机械强制；多一处或少一处都失败。
+  依据：数字由**调用面结构**推导而非经验取值 —— Metal 一次 `matmul` 的最小平台交互面是 上传 + 下载 + 绑定设备缓冲 + 绑定标量参数 = 4；CUDA 是**每类平台交互恰一处**：NVRTC 内核启动 1（一处 `LaunchArgs::launch`，以闭包注入实参，故其服务于全部 8 个在仓内核而不随内核数增长）+ cuBLAS 矩阵乘 1 + cuDNN softmax 1 = 3。任何使数字上升的改动都意味着新增了一类平台交互或一个自带 `unsafe` 入口的第三方库，因此必须评审。
+* 权威的豁免范围、站点登记表与回滚方案见 docs/design.md §21.8；新增站点 MUST 先更新该表并在设计中说明理由。
+* 其余全部 crate MUST 保持 `#![forbid(unsafe_code)]`，一行不改。
 
 ## 7. 算子开发
 

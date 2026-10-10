@@ -42,6 +42,8 @@
 | `tensor` | 张量元数据、存储、形状、布局与视图 |
 | `api` | 后端、设备、能力与算子契约 |
 | `cpu` | CPU 执行与数值算子 |
+| `metal` | Apple Metal GPU 执行与 MSL 算子（macOS） |
+| `cuda` | NVIDIA CUDA GPU 执行与 cuBLAS 算子（Linux） |
 | `autograd` | 自动微分与梯度传播 |
 | `nn` | 神经网络模块与参数 |
 | `models` | 具体模型架构 |
@@ -83,11 +85,12 @@ crate：`lib`、`tensor`、`api`。
 
 ### 3.3 层 1：计算与微分
 
-crate：`cpu`、`autograd`、`nn`。
+crate：`cpu`、`metal`、`cuda`、`autograd`、`nn`。
 
 职责：
 
 - CPU 算子实现。
+- GPU 算子实现（`metal` 面向 macOS，`cuda` 面向 Linux；均只在目标平台编译出实体代码）。
 - 自动微分。
 - 神经网络模块与参数抽象。
 
@@ -97,6 +100,7 @@ crate：`cpu`、`autograd`、`nn`。
 - 算子语义必须能独立测试。
 - 梯度行为必须对照数学或数值参考验证。
 - 模型特定的编排不属于计算内核。
+- `metal` 与 `cuda` 是工作区 `unsafe` 禁令受限豁免的唯一载体；其豁免范围、站点登记表与门禁见 docs/design.md §21.8。
 
 ### 3.4 层 2：模型与工作流
 
@@ -164,7 +168,9 @@ MUST NOT 仅因实现细节方便访问而引入依赖。
 lib
 ├── tensor
 │   └── api
-│       └── cpu
+│       ├── cpu
+│       ├── metal
+│       └── cuda
 ├── context
 ├── tokenizer
 ├── data
@@ -206,8 +212,8 @@ models ────────────────────────�
 
 1. `lib` MUST NOT 依赖任何其他工作区 crate。
 2. `tensor` MUST NOT 依赖模型、训练、推理或应用 crate。
-3. `api` MUST NOT 依赖 `cpu` 等具体后端实现。
-4. `api` 定义契约时 MUST NOT 要求 `cpu`。
+3. `api` MUST NOT 依赖 `cpu`、`metal`、`cuda` 等具体后端实现。
+4. `api` 定义契约时 MUST NOT 要求 `cpu`、`metal` 或 `cuda`。
 5. `models` MUST NOT 依赖 `infer`、`train`、`cli` 或 `serve`。
 6. `infer` MUST NOT 依赖 `train` 来完成推理。
 7. `train` MUST NOT 依赖 `infer` 来完成训练。
@@ -330,6 +336,7 @@ MUST NOT 拥有：
 - 不支持的操作具有已定义的失败语义。
 - 后端选择不需要反向依赖。
 - trait 不混合无关职责。
+- 设备类别为 `cpu`、`metal`、`cuda`；`metal`/`cuda` 为累加式扩展，不强迫任何既有实现者改变（见 §5.5）。
 
 ### 5.4 cpu — CPU 后端
 
@@ -357,7 +364,32 @@ MUST NOT 拥有：
 - 不引入不安全代码。
 - 新算子包含边界测试、数值测试与至少一个基准。
 
-### 5.5 autograd — 自动微分
+### 5.5 metal 与 cuda — GPU 后端
+
+拥有：
+
+- GPU 算子实现（`metal` 用 Metal Shading Language，`cuda` 用 CUDA C 经 NVRTC，另有 cuBLAS 矩阵乘与 cuDNN softmax 快速路径）。
+- 各自后端内的执行分发与设备上下文生命周期。
+- 平台 FFI 封装，收敛于 `crate::ffi`。
+- 各自后端的能力上报。
+
+MUST NOT 拥有：
+
+- 公开后端契约（属于 `api`）。
+- 模型权重生命周期。
+- 请求管理。
+- 训练编排。
+
+依赖：`api`、`tensor`、`lib`。平台依赖经 `[target.'cfg(target_os = ...)'.dependencies]` 限定，非目标平台编译为空 lib。
+
+验收标准：
+
+- 算子行为符合 `api::compute` 的文档化契约，并与 `cpu` 的数值结果对照。
+- `unsafe` 仅存在于 `src/ffi.rs`，每处均有 `// SAFETY:` 注释，且站点数恰好等于 docs/design.md §21.8 的登记数（`metal` = 4，`cuda` = 3；非上界语义，多一处或少一处均失败），由 `scripts/checkunsafe.sh` 强制。
+- `api`、`tensor`、`lib` MUST NOT 反向依赖 `metal` 或 `cuda`。
+- 非目标平台（例如无 GPU 的 CI）上 `cargo check --workspace --all-targets` 仍通过。
+
+### 5.6 autograd — 自动微分
 
 拥有：
 
@@ -383,7 +415,7 @@ MUST NOT 拥有：
 - 反向操作对照解析或数值参考测试。
 - 非法图状态通过已定义错误路径失败。
 
-### 5.6 nn — 神经网络组件
+### 5.7 nn — 神经网络组件
 
 拥有：
 
@@ -410,7 +442,7 @@ MUST NOT 拥有：
 - 给定显式种子时初始化行为可复现。
 - 层测试覆盖数值正确性与非法配置。
 
-### 5.7 models — 具体架构
+### 5.8 models — 具体架构
 
 拥有：
 
@@ -437,7 +469,7 @@ MUST NOT 拥有：
 - 共享模型参数不得为表示单个请求而被修改。
 - 模型前向行为由确定性测试覆盖。
 
-### 5.8 tokenizer — 文本与词元转换
+### 5.9 tokenizer — 文本与词元转换
 
 拥有：
 
@@ -463,7 +495,7 @@ MUST NOT 拥有：
 - 畸形输入与不支持的模板产生已定义错误。
 - 词元 ID 对照相关词表契约校验。
 
-### 5.9 data — 数据集与批处理
+### 5.10 data — 数据集与批处理
 
 拥有：
 
@@ -489,7 +521,7 @@ MUST NOT 拥有：
 - 数据加载器失败与终止语义显式。
 - 在输入大小或缓冲可能无界增长处施加资源上限。
 
-### 5.10 format — 外部格式校验
+### 5.11 format — 外部格式校验
 
 拥有：
 
@@ -514,7 +546,7 @@ MUST NOT 拥有：
 - 大小、偏移与形状计算经过检查。
 - 不支持的格式与特性显式上报。
 
-### 5.11 checkpoint — 持久化
+### 5.12 checkpoint — 持久化
 
 拥有：
 
@@ -540,7 +572,7 @@ MUST NOT 拥有：
 - 加载与保存通过往返与失败场景测试。
 - 原子性保证按实际使用的文件系统操作文档化。
 
-### 5.12 optim — 优化算法
+### 5.13 optim — 优化算法
 
 拥有：
 
@@ -566,7 +598,7 @@ MUST NOT 拥有：
 - 数值测试覆盖代表性更新与边界条件。
 - 状态恢复与检查点契约兼容。
 
-### 5.13 context — 执行控制
+### 5.14 context — 执行控制
 
 拥有：
 
@@ -592,7 +624,7 @@ MUST NOT 拥有：
 - 指标不对基础 crate 施加不必要耦合。
 - 在调用者需要区分时，资源耗尽与取消可区分。
 
-### 5.14 train — 训练工作流
+### 5.15 train — 训练工作流
 
 拥有：
 
@@ -619,7 +651,7 @@ MUST NOT 拥有：
 - 失败与取消不会静默推进训练状态。
 - 恢复行为对照持久化状态测试。
 
-### 5.15 infer — 自回归推理
+### 5.16 infer — 自回归推理
 
 拥有：
 
@@ -647,7 +679,7 @@ MUST NOT 拥有：
 - 生成行为在可行时被确定性测试。
 - 并发测试验证请求隔离。
 
-### 5.16 cli — 命令行应用
+### 5.17 cli — 命令行应用
 
 拥有：
 
@@ -671,7 +703,7 @@ MUST NOT 拥有：
 - 应用错误映射为有意义的退出行为。
 - 不得仅为了支持某 CLI 命令而重复业务逻辑。
 
-### 5.17 serve — 可选 HTTP 应用
+### 5.18 serve — 可选 HTTP 应用
 
 拥有：
 
@@ -695,7 +727,7 @@ MUST NOT 拥有：
 - 并发请求保持隔离。
 - 在可行处在昂贵工作之前强制资源上限。
 
-### 5.18 testkit — 测试基础设施
+### 5.19 testkit — 测试基础设施
 
 拥有：
 
@@ -715,7 +747,7 @@ MAY 依赖构造夹具所需的生产 crate。
 - 需要可复现时夹具是确定性的。
 - 仅测试依赖与生产构建隔离。
 
-### 5.19 bench — 基准可执行程序
+### 5.20 bench — 基准可执行程序
 
 拥有：
 
@@ -947,6 +979,8 @@ lib        -> (无)
 tensor     -> lib
 api        -> lib, tensor
 cpu        -> lib, tensor, api
+metal      -> lib, tensor, api  (target macOS；其他平台为空 lib)
+cuda       -> lib, tensor, api  (target Linux；其他平台为空 lib)
 autograd   -> lib, tensor, api
 nn         -> lib, tensor, api
 models     -> lib, tensor, api, nn
@@ -970,7 +1004,7 @@ llm (根 package) -> (无生产依赖；仅 dev-dependencies)
 ```text
 autograd, nn, models -> proptest
 testkit              -> lib, api, cpu   (dev-dependencies)
-llm (根 package)     -> 全部 19 个成员 crate  (dev-dependencies)
+llm (根 package)     -> 全部 21 个成员 crate  (dev-dependencies)
 ```
 
 本图与 §4.2 的**目标**图存在差异：目标图声明的若干边尚未实现（例如 `train -> models`/`nn`/`data`、`infer -> tokenizer`、`checkpoint -> train` 在当前生产清单中并不存在，`autograd` 当前无任何生产依赖方）。§4.2 是设计目标，本图是当前状态；任何目标边在落地前 MUST 按 §14 流程验证。
@@ -1016,6 +1050,7 @@ llm (根 package)     -> 全部 19 个成员 crate  (dev-dependencies)
 
 - `lib` 依赖任何其他工作区 crate。
 - `api` 依赖 `cpu`。
+- `api` 依赖 `metal` 或 `cuda`。
 - `models` 依赖 `infer`、`train`、`cli` 或 `serve`。
 - `infer` 依赖 `train`。
 - `train` 依赖 `infer`。

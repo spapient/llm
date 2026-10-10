@@ -12,6 +12,8 @@
 
 本记录随 2026-10-10 的文档合并更新：原先记录在 14 份顶层文档与 19 份 ADR 上的判定，已按其主题归属映射到合并后的 `architecture.md`、`engineering.md`、`design.md` 的对应章节；判定结论与证据沿用合并前经执行的检查。2026-10-10 的对抗性修正重测了静态门，并清除了黑盒测试迁移后失效的计数（见「本轮重测证据」）；通过/失败汇总未在本轮重跑，凡引用具体通过/失败数字者均以其所属章节的日期快照为准。性能相关的判定保持「拟定」，因为没有执行任何优化或前后对比。
 
+2026-10-11 新增 `crates/metal` 与 `crates/cuda` 两个 Layer 1 GPU 后端（工作区成员 crate 由 19 增至 21），并首次引入受限的 `unsafe` 豁免模型与机械门禁 `scripts/checkunsafe.sh`。本节判定按 2026-10-11 的实测更新：Metal 的运行时数值验证已在本机执行并通过；CUDA 的运行时数值验证因本机与默认 CI 均无 NVIDIA GPU 而判定为**受阻**，只有编译门禁与设备无关的校验用例可作为静态证据。同日稍后 CUDA 侧补齐了 `compute` 契约的全部算子（cuBLAS `matmul`、cuDNN `softmax`、NVRTC CUDA C++ 的其余七个），`unsafe` 登记数由 2 增至 3，`cudacontract` 由 9 例增至 33 例。
+
 ## 判定词汇
 
 - **拟定（Proposed）** —— 要求已规定但尚未与实现对验。
@@ -27,15 +29,31 @@
 - `bash scripts/checksrctests.sh` —— `inline-test ratchet: 0 file(s) still pending migration.`，exit 0；`scripts/srctestbaseline.txt` 仅含一个换行，故为**空基线**，棘轮禁令绝对。
 - `cargo test --workspace --locked -- --list` —— 枚举 **736** 个测试用例（含 doctest）；该命令只编译并列测试，不运行测试体。本记录不据此重报通过/失败总数。
 
+## 本轮重测证据（2026-10-11）
+
+环境：macOS 27.0.0（arm64，Apple M5 Pro）、`rustc 1.99.0 (b940084d7 2026-09-28)`。本轮唯一新增的交叉编译目标是 `x86_64-unknown-linux-gnu`（由 `rustup target add` 安装的 `rust-std`）。
+
+- `cargo test --workspace` —— 44 个测试目标全部 `test result: ok`，**0 failed**（exit 0），在具备 GPU 访问的环境下连续 3 次运行结果一致。其中 `metalcontract` 的 30 个用例在本机 Apple GPU 上真实运行并通过，覆盖九个算子的数值对照与形状/边界/错误路径（E1）。同一二进制在拒绝设备访问的沙箱内运行时，需要派发的用例报 `executionfailed` 而宿主侧定案的拒绝用例仍通过；`tests/it/metalcontract.rs` 的环境假设已记录该差异，故该套件必须在允许 GPU 访问的环境下运行。
+- **Metal 全算子补齐（E1）。** `crates/metal` 的 `compute` 契约现全部实现（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`），MSL 全部内嵌于 `source.rs` 并在运行期以 `newLibraryWithSource` 编译，`metalcontract` 由 6 例增至 30 例。首轮运行发现 `rope` 内核把局部变量命名为 `half`（与 MSL 内建标量类型同名）导致编译失败、调用报 `executionfailed`；改名 `pairs` 后通过，失败与修复均在本机复现。`unsafe` 站点计数未随算子数增长：所有新内核都复用「上传 / 下载 / 绑定缓冲 / 绑定标量参数」这同一组四站点（`checkunsafe.sh` 仍报 `metal 4/4`）。
+- `bash scripts/check.sh` —— 报告 `All static quality checks passed.`，exit 0（`fmt --check`、`cargo check --workspace --all-targets --locked`、`clippy --workspace --all-targets --locked -- -D warnings`、`checknaming.sh`、`checksrctests.sh`、`checkunsafe.sh`、`checkthresholds.sh`、`cargo doc -D warnings`）。
+- `bash scripts/checkunsafe.sh` —— exit 0，输出 `crates/metal/src/ffi.rs: 4/4 unsafe site(s) (exact)` 与 `crates/cuda/src/ffi.rs: 3/3 unsafe site(s) (exact)`，即两处豁免的站点数与 `docs/design.md` §21.8 登记表的条目数**恰好相等**，且每站均有前置 `// SAFETY:` 注释（E1）。
+- `bash scripts/checkunsafe.sh` 的**证伪性验证**（本日新增）：门在本次修订中由「站点数 ≤ 上界」收紧为「站点数 == 登记数」，因 §21.8 原文已声明门禁断言「站点计数与本表条目数一致」，而实现此前弱于文档。验证方式为在 gitignored 的 `work/` 内复制该脚本并分别把 `metal` 的登记数改为 5 与 3：两个方向均以 `exit 1` 失败并报出 `4 unsafe site(s) but docs/design.md §21.8 registers {5|3}`；未修改的副本 `exit 0`。三个探针脚本随后删除（E1）。
+- `bash scripts/checknaming.sh` —— exit 0。本轮修正了该门的一处**误报**：其原先把内嵌在 `r#"..."#` 原文串里的 MSL / CUDA C 源码当作 Rust 标识符扫描，因而对 `device const float* a` 报出 `const 'float' must be uppercase compact`。新增的原料串状态机使其只扫描 Rust 代码。
+- 命名门**证伪性验证** —— 临时加入一个含 `const badlower: usize = 1;` 与一个含 `const float*` 的原料串的文件：门正确报出 `badlower` 一处违规（exit 1）且未报原料串内的 `const float`；探针文件随后删除（E1）。
+- `cargo check -p cuda --target x86_64-unknown-linux-gnu --all-targets` —— exit 0；`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets -- -D warnings` —— exit 0（E1）。这证明 Linux 侧的 CUDA 代码在没有 CUDA toolkit、没有 NVIDIA 驱动的 macOS 主机上也能完成类型检查与 lint。
+- `cargo check -p llm --target x86_64-unknown-linux-gnu --test it` 与 `--bench cuda` —— exit 0。这证明 `tests/it/cudacontract.rs` 的全部 33 个用例与 `benches/cuda.rs` 在 Linux 上均可编译（**仅为编译证据；该命令不运行测试体，也未产生任何通过/失败结果**）。
+- `cargo clippy -p cuda --target x86_64-unknown-linux-gnu --lib --locked -- -D clippy::cognitive_complexity -D clippy::too_many_lines` —— exit 0，即 CUDA 侧在 Linux 上也满足 DS3 预算（宿主 macOS 的 `checkthresholds.sh` 看不到这些被 `cfg(target_os = "linux")` 门控的代码，故单列）。
+- **未执行（E4）** —— CUDA 的运行时数值验证。本机无 NVIDIA GPU，`tests/it/cudacontract.rs` 的 15 个需要设备的用例在探测不到 `nvidia-smi -L` 时打印 `E4 未执行` 并返回。该套件其余 18 例在 executor 的任何设备调用之前就已由宿主侧校验定案（形状/下标/空末轴拒绝、元素与 gather 预算、`CUDAMAXHEADDIM` 上限、退化空输入），因此它们在 Linux 上无需设备即可断言；本机没有 Linux 运行环境，这 18 例的**运行时结果同样未在此处执行**，将在 Linux CI（`quality` 的 `cargo test --workspace` 与 `cuda-check`）上产出。`.github/workflows/ci.yml` 的 `cuda-test` job 在自托管 GPU runner 上设置 `LLM_CUDA_REQUIRE_DEVICE=1`，届时缺设备会成为硬失败而非静默通过；该 job 目前仅在手动触发时运行，因为自托管 runner 尚未注册（见 `docs/design.md` §21 的未决项）。
+
 ## 当前判定
 
 ### architecture.md
 
 | 章节 / 主题 | 判定 | 证据 |
 | --- | --- | --- |
-| 架构边界 | 已验证 | 全部 19 个 `crates/*` 成员 crate 与根 `llm` package 已实现（工作区共 20 个 Cargo package，其中 19 个为成员 crate）。解析后的工作区依赖图无环（`cargo check --workspace --all-targets` exit 0；`cargo metadata` exit 0——若有环将解析失败），且 `scripts/check.sh`（fmt、`clippy --workspace --all-targets -- -D warnings`、`rustdoc -D warnings`）干净。 |
-| crate 归属与依赖图 | 已验证 | 清单与 `cargo metadata` 显示生产边无环且方向正确；根 `llm` package 无生产依赖，其 dev-dependencies 覆盖全部 19 个成员 crate（仅测试用），`grep crates/*/Cargo.toml` 未发现指向 `cli`/`serve` 的产品边，`cli`/`serve` 不是任何生产计算 crate 的依赖。逐 crate 的实际生产边见 `architecture.md` §13.2。 |
-| 工作区布局 | 已验证 | 根 `Cargo.toml` 是 package + workspace 根（无 lib/bin）；跨 crate 集成测试在根 `tests/`（41 个套件），基准在根 `benches/`（7 个目标）；`README.md`、`LICENSE`（`LICENSE-APACHE`、`LICENSE-MIT`）与 `clippy.toml` 位于仓库根；`criterion` 在根声明一次。`cargo bench --workspace --no-run` 构建所有基准目标。 |
+| 架构边界 | 已验证 | 全部 21 个 `crates/*` 成员 crate 与根 `llm` package 已实现（工作区共 22 个 Cargo package，其中 21 个为成员 crate）。解析后的工作区依赖图无环（`cargo check --workspace --all-targets` exit 0；`cargo metadata` exit 0——若有环将解析失败），且 `scripts/check.sh`（fmt、`clippy --workspace --all-targets -- -D warnings`、`rustdoc -D warnings`）干净。`metal` 与 `cuda` 都是「后端 → api」方向，`api` 未新增指向任何具体后端的边。 |
+| crate 归属与依赖图 | 已验证 | 清单与 `cargo metadata` 显示生产边无环且方向正确；根 `llm` package 无生产依赖，其 dev-dependencies 覆盖全部成员 crate（仅测试用），`grep crates/*/Cargo.toml` 未发现指向 `cli`/`serve` 的产品边，`cli`/`serve` 不是任何生产计算 crate 的依赖。逐 crate 的实际生产边见 `architecture.md` §13.2。`objc2-*` 仅在 macOS 条件下、`cudarc` 仅在 Linux 条件下被引入，故默认 feature 不引入任何 GPU 依赖。 |
+| 工作区布局 | 已验证 | 根 `Cargo.toml` 是 package + workspace 根（无 lib/bin）；跨 crate 集成测试在根 `tests/`（43 个套件），基准在根 `benches/`（9 个目标）；`README.md`、`LICENSE`（`LICENSE-APACHE`、`LICENSE-MIT`）与 `clippy.toml` 位于仓库根；`criterion` 在根声明一次。`cargo bench --workspace --no-run` 构建所有基准目标（`benches/metal.rs` 在非 macOS 上、`benches/cuda.rs` 在非 Linux 上均编译为 `fn main() {}`）。 |
 
 ### engineering.md
 
@@ -43,12 +61,13 @@
 | --- | --- | --- |
 | 工作流与执行协议 | 已验证 | 其余 crate（P1–P12）均按此工作流实现：阅读契约、计划、实现、执行范围化验证、记录 ADR；合并后的验证运行了 `scripts/check.sh` 与 `scripts/test.sh`。 |
 | 错误处理标准 | 已验证 | 每个 crate 拥有 `thiserror` 错误枚举（如 `clierror`、`trainerror`、`serveerror`、`opterror`、`infererror`）；工作区拒绝 `unwrap_used`/`expect_used`/`panic`/`todo`/`unimplemented`，且 `cargo clippy --workspace --all-targets -- -D warnings` 通过，因此可恢复失败被返回而非 panic。 |
-| 命名标准与机械门 | 已验证 | `bash scripts/checknaming.sh`（禁用同义词、常量/宏大小写、豁免条款检查，覆盖 `crates/*/src` 去掉 `#[cfg(test)]`）exit 0；`bash scripts/checkthresholds.sh` 对 `DS3` 与 `A4` 均 exit 0。8 个构造动词已收敛（`architecture::build`→`newmodel` 等），`nn::init` 工厂规范化为 `fill*`/`init*`，两处 `DS3` 生产违规重构到 80 行以下。`bash scripts/check.sh` 报告 "All static quality checks passed"（本轮重测，见「本轮重测证据」）。 |
-| 公开 API 设计标准 | 已验证 | 每个 crate 都有公开 API；`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` 干净，每个文档化的公开项均可解析。 |
-| 测试策略与质量门 | 已验证 | 黑盒迁移完成：所有 `crates/*/src` 零内联 `#[cfg(test)]` 模块（`rg -l '#\[cfg\(test\)\]' crates/*/src` 为空；19/19 成员 crate 已迁移）。41 个根 `tests/` 套件仅调用公开 `pub` API，`benches/` 保留 7 个基准目标。`scripts/srctestbaseline.txt` 仅含一个换行（空基线），`scripts/checksrctests.sh` 的棘轮禁令绝对（本轮重测：`0 file(s) still pending migration.`，exit 0）。`bash scripts/check.sh` 干净。 |
-| 黑盒契约优先测试 | 已验证 | 决策、门与诊断缝均就位。19 个成员 crate 已迁移（0 `#[cfg(test)]`，基线为空），由 `scripts/migrateinline.py`、`scripts/migratecrates.py`、`scripts/finalizecrate.py` 驱动。缝在 `infer`、`train`、`checkpoint`、`serve`、`cli` 中接线，`EnvFilter` 订阅者由 `cli::runcli` 与 `httpserver::serve`/`serveone` 安装；`tests/diagnostics.rs` 证明无需重编的运行期切换（同一 `loadcheckpoint` 调用在 `DEBUG` 订阅者下发出 "checkpoint loaded"，在 `WARN` 下抑制）。 |
-| 集成测试与基准整合 | 已验证 | 每个 crate 局部集成套件移到仓库根 `tests/`（14 个移动文件，合并 `common/`），`optim` 基准移到根 `benches/`；根 `llm` package 声明仅测试的 dev-dependencies。`scripts/check.sh` 与 `scripts/test.sh` 通过（本轮重测 `check.sh` exit 0；通过/失败汇总未在本轮重跑），`cargo bench --workspace --no-run` 构建 7 个目标。其「crate 局部覆盖现仅内联单元测试」的后果已被黑盒测试决策取代。 |
-| 性能工程标准 | 拟定 | 每个被基准的 crate 在仓库根有可见基线：`benches/{cpuops,kernels,metadata,autograd,nn,models,optim}.rs`，共享工作负载在 `crates/bench`。尚未执行任何优化或前后对比，故不声称改进。 |
+| 命名标准与机械门 | 已验证 | `bash scripts/checknaming.sh`（禁用同义词、常量/宏大小写、豁免条款检查，覆盖 `crates/*/src` 去掉 `#[cfg(test)]`）exit 0；`bash scripts/checkthresholds.sh` 对 `DS3` 与 `A4` 均 exit 0。8 个构造动词已收敛（`architecture::build`→`newmodel` 等），`nn::init` 工厂规范化为 `fill*`/`init*`，两处 `DS3` 生产违规重构到 80 行以下。`bash scripts/check.sh` 报告 "All static quality checks passed"（本轮重测，见「本轮重测证据」）。2026-10-11 修正了该门对内嵌原料串的误报，并做了证伪性验证（见「本轮重测证据（2026-10-11）」）。 |
+| 公开 API 设计标准 | 已验证 | 每个 crate 都有公开 API；`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` 干净，每个文档化的公开项均可解析。`metal`/`cuda` 的 crate 文档不链接被 `cfg` 门控掉或私有的条目（`ffi`、`cudaexecutor::newnvrtc` 用代码跨度而非文档链接），因此交叉平台构建文档仍然干净。 |
+| 测试策略与质量门 | 已验证 | 黑盒迁移完成：所有 `crates/*/src` 零内联 `#[cfg(test)]` 模块（`rg -l '#\[cfg\(test\)\]' crates/*/src` 为空；21/21 成员 crate 已迁移）。43 个根 `tests/` 套件仅调用公开 `pub` API，`benches/` 保留 9 个基准目标。`scripts/srctestbaseline.txt` 仅含一个换行（空基线），`scripts/checksrctests.sh` 的棘轮禁令绝对（本轮重测：`0 file(s) still pending migration.`，exit 0）。`bash scripts/check.sh` 干净。GPU 套件同为黑盒：`metalcontract` 与 `cudacontract` 只经 `pub` 接口触发，且各自用 `#![cfg]` 限定平台。 |
+| 黑盒契约优先测试 | 已验证 | 决策、门与诊断缝均就位。21 个成员 crate 已迁移（0 `#[cfg(test)]`，基线为空），由 `scripts/migrateinline.py`、`scripts/migratecrates.py`、`scripts/finalizecrate.py` 驱动。缝在 `infer`、`train`、`checkpoint`、`serve`、`cli` 中接线，`EnvFilter` 订阅者由 `cli::runcli` 与 `httpserver::serve`/`serveone` 安装；`tests/diagnostics.rs` 证明无需重编的运行期切换（同一 `loadcheckpoint` 调用在 `DEBUG` 订阅者下发出 "checkpoint loaded"，在 `WARN` 下抑制）。 |
+| 集成测试与基准整合 | 已验证 | 每个 crate 局部集成套件移到仓库根 `tests/`（14 个移动文件，合并 `common/`），`optim` 基准移到根 `benches/`；根 `llm` package 声明仅测试的 dev-dependencies。`scripts/check.sh` 与 `scripts/test.sh` 通过（本轮重测 `check.sh` exit 0；通过/失败汇总未在本轮重跑），`cargo bench --workspace --no-run` 构建 8 个目标。其「crate 局部覆盖现仅内联单元测试」的后果已被黑盒测试决策取代。 |
+| unsafe 豁免与机械门禁 | 已验证 | 其余 19 个 crate 的 `#![forbid(unsafe_code)]` 一行未改；`metal` 与 `cuda` 用 `#![deny(unsafe_code)]`，各自恰好一个文件 `src/ffi.rs` 声明 `#![allow(unsafe_code)]`。`bash scripts/checkunsafe.sh` exit 0，报 `metal 4/4 (exact)`、`cuda 3/3 (exact)`，与 `docs/design.md` §21.8 登记表的条目数恰好相等（非上界语义：多一处或少一处均失败，已由双向证伪性探针验证）；工作区 lint `unsafe_code = "deny"` 未变动。豁免条款、白名单、站点登记表与其依据（GOV7）与回滚方案见 `AGENTS.md` §6、`docs/engineering.md` 规则 14 与 `docs/design.md` §21.8。 |
+| 性能工程标准 | 拟定 | 每个被基准的 crate 在仓库根有可见基线：`benches/{cpuops,kernels,metadata,autograd,nn,models,optim,metal,cuda}.rs`，共享工作负载在 `crates/bench`。`benches/metal.rs` 已在同一轮内测量 CPU（256³ matmul ≈ 957.31 µs）与 Metal（≈ 2.5830 ms），并如实记录 Metal 更慢的原因（每次调用的运行期 MSL 编译与设备上下文初始化，见 `docs/design.md` §21.10），未据此声称任何改进。`benches/cuda.rs` 已建立并在宿主与 Linux 目标上编译通过，但**没有任何 CUDA 测量**（本机无 NVIDIA GPU），故同样不声称任何改进。 |
 
 ### design.md
 
@@ -59,6 +78,8 @@
 | 层 0：api 计算契约扩展 | 已验证 | `api` 暴露冻结的 `kernel<T>` 以及增量的 `binarykernel`/`weightedkernel`/`gatherkernel`/`compute` 契约；`crates/cpu` 实现它们，根 `cpucontract` 套件从 crate 外部触发它们。 |
 | 层 1：cpu | 已验证 | `crates/cpu` 实现 `backend`、`executor` 与算子模块（`matmul`、`attention`、`embedding`、`normalization`、`rotary`、`softmax`、`activation`、`elementwise`）；单元测试现由仓库根 `tests/cpuunits.rs` 经 `pub` 接口触发（`crates/cpu/src` 零内联 `#[cfg(test)]`），契约测试在根 `tests/cpucontract.rs`，`scripts/check.sh` 干净。基准在仓库根：`benches/cpuops.rs`（执行器级）、`benches/kernels.rs`（原始算子）、`benches/metadata.rs`（张量元数据）。 |
 | 层 1：存储 dtype 与计算 precision | 已验证 | `dtype::f64` 与 `impl element for f64` 存在且 `sizeinbytes() == 8`；根 `tests/tensorunits.rs` 与 `tests/tensorcontract.rs` 覆盖 element/dtype 宽度不变量与 `f64` 视图往返；`clippy -D warnings` 与 `cargo doc -D warnings` 干净。 |
+| 层 1：metal（GPU 后端） | 已验证 | `crates/metal` 实现 `api::backend` 与 `api::compute` 的**全部**算子：`matmul` 与 `add`/`mul`/`silu`/`rmsnorm`/`softmax`/`rope`/`embedding`/`attention` 均由内嵌于 `source.rs` 的 MSL 经 `newLibraryWithSource` 在运行期编译执行，无需 Xcode；`attention` 是单个融合内核（不物化 score 矩阵）。根 `tests/it/metalcontract.rs` 的 30 个黑盒用例在本机 Apple M5 Pro 上真实运行并通过，覆盖九个算子的数值对照（对照 `testkit::reference`）与形状/边界/错误路径；`unsafe` 站点仍为 4/4。基准 `benches/metal.rs` 同轮测量 CPU 与 Metal（`cargo test --workspace` exit 0；见「本轮重测证据（2026-10-11）」）。 |
+| 层 1：cuda（GPU 后端） | 受阻 | `crates/cuda` 实现 `api::backend` 与 `api::compute` 的**全部**算子：`matmul` 默认走 cuBLAS `gemm`（并经 `cudaexecutor::newnvrtc` 提供 NVRTC 内核作独立参考路径），`softmax` 走 cuDNN，`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention` 走内嵌 CUDA C++ 经 NVRTC 运行期编译。**编译侧已验证**：`cargo check`/`clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets -- -D warnings` 与 `-p llm --test it --bench cuda` 均 exit 0，且不需要 CUDA toolkit 或 cuDNN 头文件（`cudarc` 使用 `dynamic-loading`）。**运行侧受阻**：本机与默认 CI 均无 NVIDIA GPU，`tests/it/cudacontract.rs` 的 15 个需设备用例报告 `E4 未执行`，其余 18 个设备无关用例在 Linux 上执行（本机无 Linux 运行环境，故其运行时结果亦未在此执行）；真实数值验证等待 `cuda-test` job 所依赖的自托管 GPU runner。 |
 | 层 1：autograd | 已验证 | `crates/autograd` 实现图、变量与所支持算子的 VJP；根 `autograd` 套件对每个算子用有限差分参考检查，`cargo bench --no-run` 构建 `benches/autograd.rs`。 |
 | 层 2：nn | 已验证 | `crates/nn` 实现参数、模块与层集；根 `nnlayers` 套件用 `testkit` 的独立标量参考检查每一层。 |
 | 层 2：models（模型支持契约） | 已验证 | `crates/models` 实现因果 LM 契约与 Llama config/weights/block/model；根 `modelforward` 套件钉住确定性前向 logits。模型支持契约首次成文于设计文档，依据是对 `crates/models/src` 的源码核对。 |
