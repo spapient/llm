@@ -48,3 +48,81 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Compile benchmarks
         run: cargo bench --workspace --no-run
+
+  macos:
+    name: Metal backend on macOS
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      # The `metal` crate is non-empty only on this target, so this is the only
+      # job that compiles and runs the MSL kernel for real. A green run here is
+      # the numerical evidence docs/design.md 第 21 章 cites for Metal.
+      - name: Run tests
+        run: cargo test --workspace
+
+  cuda-check:
+    name: CUDA backend compile and exemption gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo clippy --version
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      # No CUDA toolkit is installed on purpose: `cudarc` is pulled in with
+      # `dynamic-loading`, so this job type-checks the real Linux code of the
+      # `cuda` crate without any driver or toolkit (verified locally with
+      # `cargo check -p cuda --target x86_64-unknown-linux-gnu`, evidence E1).
+      # The workspace-wide Linux compile is already covered by `quality`; what
+      # this job adds is the mechanical gates evaluated where the CUDA crate is
+      # non-empty, because a macOS host cannot see that code at all.
+      - name: Check CUDA crate
+        run: cargo check -p cuda --all-targets
+      # The device-free half of `cudacontract` (shape/index/empty-axis
+      # rejection, element and gather budgets, the head-dimension limit, and
+      # degenerate empty inputs) is settled on the host before any device call,
+      # so it asserts here on a GPU-less runner. The device-gated half prints
+      # `E4 未执行` and returns. Running it under this job rather than only
+      # inside the generic `quality` test step keeps the CUDA evidence colocated
+      # with the CUDA gates.
+      - name: Run the device-free CUDA contract cases
+        run: cargo test -p llm --test it cudacontract
+      - name: Check unsafe exemption gate
+        run: bash scripts/checkunsafe.sh
+      - name: Check complexity and interface-width budgets
+        run: bash scripts/checkthresholds.sh
+
+  cuda-test:
+    name: CUDA backend on a self-hosted GPU
+    # Requires a runner registered with the labels below; see docs/design.md
+    # 第 21 章 for the activation note. Until that runner exists, restricting
+    # this job to manual runs keeps every push from queuing forever on an
+    # unschedulable job.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, x64, cuda]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Run the CUDA contract suite
+        env:
+          # Turns "no device detected" into a failure, so a misconfigured runner
+          # can never be mistaken for a passing numerical check.
+          LLM_CUDA_REQUIRE_DEVICE: "1"
+        run: cargo test -p llm --test it cudacontract
