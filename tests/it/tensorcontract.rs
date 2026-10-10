@@ -4,8 +4,10 @@
 use ::tensor::{dtype, element, layout, shape, tensor, tensorerror};
 use lib::{limits, precision};
 
+/// The precision-to-dtype mapping, the storage width of each dtype, and the
+/// `element` type-level dtype constants must all agree.
 #[test]
-fn dtype_maps_from_precision() {
+fn dtype_maps_from_precision_and_element_constants_agree() {
     assert_eq!(dtype::from(precision::f32), dtype::f32);
     assert_eq!(dtype::from(precision::f16), dtype::f16);
     assert_eq!(dtype::from(precision::bf16), dtype::bf16);
@@ -13,10 +15,6 @@ fn dtype_maps_from_precision() {
     assert_eq!(dtype::f64.sizeinbytes(), 8);
     assert_eq!(dtype::f16.sizeinbytes(), 2);
     assert_eq!(dtype::i64.sizeinbytes(), 8);
-}
-
-#[test]
-fn element_dtype_constants_match() {
     assert_eq!(<f32 as element>::DTYPE, dtype::f32);
     assert_eq!(<f64 as element>::DTYPE, dtype::f64);
     assert_eq!(<i8 as element>::DTYPE, dtype::i8);

@@ -92,19 +92,14 @@ mod reference {
         testkit::reference::rope, testkit::reference::silu, testkit::reference::softmax,
     };
 
+    /// The reference activations must match hand-checked values: `relu` clamps
+    /// negatives, `silu` of zero is zero, and `gelutanh` matches known
+    /// constants within the stated tolerance.
     #[test]
-    fn relu_clamps_negatives() {
+    fn activation_references_match_known_values() {
         assert_eq!(relu(-2.0), 0.0);
         assert_eq!(relu(3.0), 3.0);
-    }
-
-    #[test]
-    fn silu_of_zero_is_zero() {
         assert_eq!(silu(0.0), 0.0);
-    }
-
-    #[test]
-    fn gelutanh_matches_known_constants() {
         assert!((gelutanh(1.0) - 0.841_192).abs() < 1e-6);
         assert!((gelutanh(-1.0) + 0.158_808).abs() < 1e-6);
         assert!((gelutanh(2.0) - 1.954_597).abs() < 1e-5);

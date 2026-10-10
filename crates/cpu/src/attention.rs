@@ -15,9 +15,13 @@ const ATTENTIONOP: &str = "attention";
 /// positions `t <= s`; masked positions are removed before normalization.
 ///
 /// The scale is `1 / sqrt(headdim)`. Rows whose attention weights would be
-/// entirely masked are left as zeros rather than dividing by zero. The
-/// implementation is the naive O(seq^2 * heads * headdim) algorithm; a
-/// device-specific fused kernel is a later, measured optimization.
+/// entirely masked are left as zeros rather than dividing by zero.
+///
+/// Causal attention evaluates only the keys `0..=s` of query position `s`, so
+/// the key positions a row cannot attend to are never scored, exponentiated, or
+/// normalized. The worst-case complexity is still `O(seq^2 * heads * headdim)`
+/// for a non-causal call; a device-specific fused kernel is a later, measured
+/// optimization.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct cpuattention;
 
@@ -38,7 +42,7 @@ impl cpuattention {
         kvheads: usize,
         causal: bool,
     ) -> Result<tensor<f32>, backenderror> {
-        let plan = attentionplan(query, key, value, heads, kvheads)?;
+        let plan = attentionplan(query, key, value, heads, kvheads, causal)?;
         let mut data = vec![0.0_f32; plan.seq * plan.qstride];
         let mut weights = vec![0.0_f32; plan.seq];
         let q = query.getdata();
@@ -47,6 +51,7 @@ impl cpuattention {
         for head in 0..heads {
             let kvhead = head / plan.group;
             for s in 0..plan.seq {
+                let limit = attentionlimit(plan.causal, s, plan.seq);
                 attentionrow(
                     Attention {
                         q: &q[s * plan.qstride + head * plan.headdim..][..plan.headdim],
@@ -55,14 +60,12 @@ impl cpuattention {
                         kvhead,
                         headdim: plan.headdim,
                         scale: plan.scale,
-                        causal,
                     },
-                    s,
-                    plan.seq,
+                    limit,
                     &mut weights,
                 );
                 let out = &mut data[s * plan.qstride + head * plan.headdim..][..plan.headdim];
-                for (t, &p) in weights.iter().enumerate() {
+                for (t, &p) in weights[..limit].iter().enumerate() {
                     if p != 0.0 {
                         let vrow = &v[t * plan.vstride + kvhead * plan.headdim..][..plan.headdim];
                         for (o, &x) in out.iter_mut().zip(vrow.iter()) {
@@ -87,37 +90,44 @@ struct Attention<'a> {
     kvhead: usize,
     headdim: usize,
     scale: f32,
-    causal: bool,
 }
 
-/// Computes the attention weights of one query position into `weights`.
-fn attentionrow(att: Attention<'_>, s: usize, seq: usize, weights: &mut [f32]) {
+/// Returns how many key positions a query position may attend to.
+///
+/// Causal attention lets position `s` see keys `0..=s`; keys after `s` are
+/// excluded, so their dot products are never computed and their weight slots
+/// are never written. Non-causal attention attends to every key.
+fn attentionlimit(causal: bool, s: usize, seq: usize) -> usize {
+    if causal && s + 1 < seq { s + 1 } else { seq }
+}
+
+/// Computes the attention weights of one query position into `weights[..limit]`.
+///
+/// Only the first `limit` entries are written or read; the caller only reads
+/// `weights[..limit]`, so entries beyond `limit` keep stale values harmlessly.
+fn attentionrow(att: Attention<'_>, limit: usize, weights: &mut [f32]) {
     let mut max = f32::NEG_INFINITY;
-    for (t, w) in weights.iter_mut().enumerate().take(seq) {
-        let value = if att.causal && t > s {
-            f32::NEG_INFINITY
-        } else {
-            let krow = &att.k[t * att.kstride + att.kvhead * att.headdim..][..att.headdim];
-            let dot: f32 = att.q.iter().zip(krow.iter()).map(|(&a, &b)| a * b).sum();
-            dot * att.scale
-        };
+    for (t, w) in weights.iter_mut().enumerate().take(limit) {
+        let krow = &att.k[t * att.kstride + att.kvhead * att.headdim..][..att.headdim];
+        let dot: f32 = att.q.iter().zip(krow.iter()).map(|(&a, &b)| a * b).sum();
+        let value = dot * att.scale;
         *w = value;
         if value > max {
             max = value;
         }
     }
     let mut sum = 0.0_f32;
-    for w in weights.iter_mut().take(seq) {
+    for w in weights.iter_mut().take(limit) {
         let e = (*w - max).exp();
         *w = e;
         sum += e;
     }
     if sum > 0.0 {
-        for w in weights.iter_mut().take(seq) {
+        for w in weights.iter_mut().take(limit) {
             *w /= sum;
         }
     } else {
-        for w in weights.iter_mut().take(seq) {
+        for w in weights.iter_mut().take(limit) {
             *w = 0.0;
         }
     }
@@ -132,6 +142,7 @@ struct attentionshape {
     headdim: usize,
     group: usize,
     scale: f32,
+    causal: bool,
 }
 
 fn attentionplan(
@@ -140,6 +151,7 @@ fn attentionplan(
     value: &tensorview<'_, f32>,
     heads: usize,
     kvheads: usize,
+    causal: bool,
 ) -> Result<attentionshape, backenderror> {
     let qd = query.getshape().getdims();
     let kd = key.getshape().getdims();
@@ -174,5 +186,6 @@ fn attentionplan(
         headdim,
         group: heads / kvheads,
         scale: 1.0 / (headdim as f32).sqrt(),
+        causal,
     })
 }

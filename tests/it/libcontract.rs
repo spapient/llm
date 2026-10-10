@@ -104,35 +104,18 @@ fn precision_sizeinbytes_matches_storage_width() {
     assert_eq!(precision::bf16.sizeinbytes(), 2);
 }
 
+/// Every id newtype returns exactly the value it was constructed with,
+/// including the zero and maximum boundary values. Each assertion is
+/// independent, so a failure points at the specific constructor and value.
 #[test]
-fn tokenid_new_and_get_roundtrip() {
+fn id_newtypes_roundtrip_at_boundaries() {
     assert_eq!(tokenid::new(42).get(), 42);
-}
-
-#[test]
-fn tokenid_boundary_values_roundtrip() {
+    assert_eq!(seed::new(1234).get(), 1234);
+    assert_eq!(requestid::new(7).get(), 7);
     assert_eq!(tokenid::new(0).get(), 0);
     assert_eq!(tokenid::new(u32::MAX).get(), u32::MAX);
-}
-
-#[test]
-fn seed_new_and_get_roundtrip() {
-    assert_eq!(seed::new(1234).get(), 1234);
-}
-
-#[test]
-fn seed_boundary_values_roundtrip() {
     assert_eq!(seed::new(0).get(), 0);
     assert_eq!(seed::new(u64::MAX).get(), u64::MAX);
-}
-
-#[test]
-fn requestid_new_and_get_roundtrip() {
-    assert_eq!(requestid::new(7).get(), 7);
-}
-
-#[test]
-fn requestid_boundary_values_roundtrip() {
     assert_eq!(requestid::new(0).get(), 0);
     assert_eq!(requestid::new(u64::MAX).get(), u64::MAX);
 }

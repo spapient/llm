@@ -14,8 +14,10 @@ mod dtypes {
     use ::tensor::dtype;
     use lib::precision;
 
+    /// The storage width of each dtype and the precision-to-dtype mapping are
+    /// two views of the same table and must agree.
     #[test]
-    fn sizeinbytes_matches_storage_width() {
+    fn dtype_storage_width_and_precision_mapping_agree() {
         assert_eq!(dtype::f32.sizeinbytes(), 4);
         assert_eq!(dtype::f64.sizeinbytes(), 8);
         assert_eq!(dtype::f16.sizeinbytes(), 2);
@@ -24,10 +26,6 @@ mod dtypes {
         assert_eq!(dtype::u8.sizeinbytes(), 1);
         assert_eq!(dtype::i32.sizeinbytes(), 4);
         assert_eq!(dtype::i64.sizeinbytes(), 8);
-    }
-
-    #[test]
-    fn from_precision_maps_each_precision() {
         assert_eq!(dtype::from(precision::f32), dtype::f32);
         assert_eq!(dtype::from(precision::f16), dtype::f16);
         assert_eq!(dtype::from(precision::bf16), dtype::bf16);
