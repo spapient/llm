@@ -1,245 +1,245 @@
-# AGENTS.md — Engineering Constitution
+# AGENTS.md — 工程宪法
 
-## 1. Mission
+## 1. 使命
 
-Build a minimal, reliable, composable LLM system in Rust.
+用 Rust 构建一个极简、可靠、可组合的 LLM 系统。
 
-The system MUST prioritize:
+系统 MUST 遵循以下优先级：
 
-1. Correctness over premature optimization.
-2. Explicit ownership over implicit shared state.
-3. Minimal interfaces over oversized abstractions.
-4. Static dispatch over unnecessary dynamic dispatch.
-5. One-way dependencies over cross-layer coupling.
-6. Measurable evidence over unsupported claims.
-7. Small, independently verifiable changes over large rewrites.
-8. Resource safety and deterministic failure handling.
-9. Documentation and tests as part of implementation.
-10. Simplicity that preserves correctness, not simplicity that removes necessary safeguards.
+1. 正确性优先于过早优化。
+2. 显式所有权优先于隐式共享状态。
+3. 最小接口优先于臃肿抽象。
+4. 静态分发优先于不必要的动态分发。
+5. 单向依赖优先于跨层耦合。
+6. 可度量证据优先于无支撑的断言。
+7. 小而可独立验证的变更优先于大规模重写。
+8. 资源安全与确定性失败处理。
+9. 文档与测试是实现的组成部分。
+10. 保留正确性的简洁，而非删除必要防护的简洁。
 
-The architectural foundation is a minimal kernel composed of static crates and narrow traits.
+架构基础是由静态 crate 与狭窄 trait 组成的最小内核。
 
-## 2. Mandatory Preflight
+## 2. 强制预检
 
-Before modifying any crate:
+在修改任何 crate 之前：
 
-1. Read the repository-level instructions.
-2. Read the workspace `Cargo.toml`, toolchain configuration, and relevant build configuration.
-3. Read the target crate's `Cargo.toml` and public API.
-4. Read the target crate's source code and tests.
-5. Inspect direct and transitive workspace dependency relationships.
-6. Identify ownership boundaries, error propagation, resource limits, and existing invariants.
-7. Establish the existing test and performance baseline when relevant.
-8. Write a minimal change plan with explicit acceptance criteria.
+1. 阅读仓库级说明。
+2. 阅读 workspace `Cargo.toml`、工具链配置及相关构建配置。
+3. 阅读目标 crate 的 `Cargo.toml` 与公共 API。
+4. 阅读目标 crate 的源码与测试。
+5. 检查直接与传递的 workspace 依赖关系。
+6. 识别所有权边界、错误传播、资源限制与既有不变量。
+7. 在相关时建立既有测试与性能基线。
+8. 编写带显式验收标准的最小变更计划。
 
-Do not assume that the directory structure accurately represents the implemented architecture.
+不得假设目录结构准确反映已实现的架构。
 
-Do not rewrite existing implementations before understanding their responsibilities and dependencies.
+在理解既有实现的职责与依赖之前，不得重写它们。
 
-If repository contents are unavailable, document the uncertainty. Never claim that an audit, implementation, or test has been completed without evidence.
+若无法获取仓库内容，须记录该不确定性。没有证据，永远不得声称审计、实现或测试已完成。
 
-## 3. Architecture Rules
+## 3. 架构规则
 
-### 3.1 Dependency Direction
+### 3.1 依赖方向
 
-* `lib` defines shared foundational types and MUST NOT depend on other workspace crates.
-* `tensor` owns tensor metadata, storage abstractions, shape validation, and tensor views.
-* `api` defines backend and execution contracts.
-* `cpu` implements supported execution contracts without introducing reverse dependencies into foundational crates.
-* `autograd` owns differentiation mechanics.
-* `nn` owns reusable neural network components and parameter abstractions.
-* `models` owns concrete model architectures.
-* `infer` owns generation workflows and request-scoped inference state.
-* `train` owns training workflows.
-* `checkpoint` owns persistence of model and training state.
-* `format` owns external format parsing and validation.
-* `tokenizer` owns tokenization and text-template behavior.
-* `data` owns dataset and batching abstractions.
-* `optim` owns optimization algorithms and optimizer state.
-* `context` owns explicitly defined execution controls and resource-management contracts.
-* `cli` and `serve` are application-facing layers.
-* `testkit` is development and test infrastructure, not a production dependency.
-* `bench` owns benchmark executables and measurement orchestration, and MUST NOT be a production dependency.
+* `lib` 定义共享的基础类型，MUST NOT 依赖其他 workspace crate。
+* `tensor` 拥有张量元数据、存储抽象、形状校验与张量视图。
+* `api` 定义后端与执行契约。
+* `cpu` 实现受支持的执行契约，且不得向基础 crate 引入反向依赖。
+* `autograd` 拥有自动微分机制。
+* `nn` 拥有可复用神经网络组件与参数抽象。
+* `models` 拥有具体模型架构。
+* `infer` 拥有生成工作流与请求作用域内的推理状态。
+* `train` 拥有训练工作流。
+* `checkpoint` 拥有模型与训练状态的持久化。
+* `format` 拥有外部格式的解析与校验。
+* `tokenizer` 拥有分词与文本模板行为。
+* `data` 拥有数据集与批处理抽象。
+* `optim` 拥有优化算法与优化器状态。
+* `context` 拥有显式定义的执行控制与资源管理契约。
+* `cli` 与 `serve` 是面向应用层。
+* `testkit` 是开发与测试基础设施，不是生产依赖。
+* `bench` 拥有基准可执行文件与测量编排，且 MUST NOT 成为生产依赖。
 
-These are intended responsibilities. Only `crates/tensor` currently exists in the workspace; the other members are declared in the root `Cargo.toml` but not yet implemented. Actual dependency edges MUST be verified against source code and manifests.
+以上是预期职责。当前 workspace 中仅存在 `crates/tensor`；其余成员已在根 `Cargo.toml` 中声明但尚未实现。实际依赖边 MUST 依据源码与清单进行核实。
 
-### 3.2 Dependency Constraints
+### 3.2 依赖约束
 
-* Workspace dependency cycles MUST NOT be introduced.
-* Foundational crates MUST NOT depend on application-facing crates.
-* Backend implementations MUST NOT become dependencies of their own abstraction layer.
-* Production crates MUST NOT depend on `testkit`.
-* Dependencies MUST NOT be introduced solely for convenience when a smaller existing abstraction is sufficient.
-* Cross-layer calls MUST use explicit interfaces and ownership rules.
-* Shared types MUST NOT become a justification for moving unrelated responsibilities into `lib`.
+* MUST NOT 引入 workspace 依赖环。
+* 基础 crate MUST NOT 依赖面向应用层的 crate。
+* 后端实现 MUST NOT 成为其自身抽象层的依赖。
+* 生产 crate MUST NOT 依赖 `testkit`。
+* 当既有更小的抽象已足够时，MUST NOT 仅为方便而引入依赖。
+* 跨层调用 MUST 使用显式接口与所有权规则。
+* 共享类型 MUST NOT 成为将无关职责移入 `lib` 的理由。
 
-Every new dependency edge requires a clear architectural justification.
+每一条新的依赖边都需要清晰的架构论证。
 
-### 3.3 Static Composition
+### 3.3 静态组合
 
-* Prefer generic traits and compile-time composition when runtime selection is unnecessary.
-* Use dynamic dispatch only when it solves a demonstrated runtime extensibility requirement.
-* Keep traits narrow and responsibility-specific.
-* Avoid universal backend traits that combine unrelated execution, memory, synchronization, and model responsibilities.
-* Avoid premature plugin systems, service locators, global mutable registries, and unnecessary indirection.
-* Keep implementation details private unless they are required by a supported public contract.
+* 当无需运行期选择时，优先使用泛型 trait 与编译期组合。
+* 仅当能解决已被验证的运行期可扩展性需求时，才使用动态分发。
+* 保持 trait 狭窄且职责单一。
+* 避免将执行、内存、同步与模型职责混在一起的万能后端 trait。
+* 避免过早的插件系统、服务定位器、全局可变注册表与不必要的间接层。
+* 除非是受支持的公共契约所需，否则保持实现细节私有。
 
-Static dispatch is a design preference, not an excuse to create excessively generic APIs.
+静态分发是一种设计偏好，不是制造过度泛化 API 的借口。
 
-## 4. Error Handling
+## 4. 错误处理
 
-Production runtime paths MUST NOT use `panic!`, `unwrap()`, or `expect()` to handle runtime errors. Recoverable failures MUST use `Result`, and each crate owns the errors for its own responsibilities.
+生产运行路径 MUST NOT 使用 `panic!`、`unwrap()` 或 `expect()` 处理运行时错误。可恢复的失败 MUST 使用 `Result`，每个 crate 为自己的职责拥有错误类型。
 
-The authoritative error-handling standard is docs/error-handling.md. This section states only the non-negotiable repository-level rule; the full taxonomy, conversion, retry, cancellation, validation, and diagnostics rules are defined there.
+权威的错误处理标准是 docs/engineering.md。本节仅陈述不可协商的仓库级规则；完整的错误分类、转换、重试、取消、校验与诊断规则定义于该文档。
 
-Do not introduce custom error frameworks when standard Rust error types are sufficient.
+当标准 Rust 错误类型已经足够时，不得引入自定义错误框架。
 
-## 5. Ownership and Concurrency
+## 5. 所有权与并发
 
-* Model weights MUST NOT contain request-scoped mutable state.
-* Request state MUST have an explicit owner and lifecycle.
-* KV caches, sampling state, cancellation state, and generation counters MUST NOT be implicitly shared between independent requests.
-* Shared immutable data SHOULD be preferred when safe and practical.
-* Mutable shared state MUST have documented synchronization and ownership semantics.
-* Resource acquisition and release MUST be explicit and testable.
-* Cancellation, errors, and early termination MUST not leave request state incorrectly reusable.
-* Avoid global mutable state unless a concrete system requirement justifies it.
+* 模型权重 MUST NOT 包含请求作用域的可变状态。
+* 请求状态 MUST 有显式的所有者与生命周期。
+* KV 缓存、采样状态、取消状态与生成计数器 MUST NOT 在独立请求之间被隐式共享。
+* 在安全且可行时，SHOULD 优先使用共享不可变数据。
+* 可变共享状态 MUST 有文档化的同步与所有权语义。
+* 资源的获取与释放 MUST 显式且可测试。
+* 取消、错误与提前终止 MUST NOT 使请求状态被错误地复用。
+* 除非有具体的系统需求支撑，否则避免全局可变状态。
 
-Concurrency safety must follow from ownership, synchronization, and lifecycle design, not assumptions about call order.
+并发安全必须源自所有权、同步与生命周期设计，而非对调用顺序的假设。
 
-## 6. Unsafe Code
+## 6. 不安全代码
 
-The workspace prohibits `unsafe` code entirely. This prohibition is enforced by the workspace lint configuration (`unsafe_code = "deny"` in the root `Cargo.toml`).
+workspace 完全禁止 `unsafe` 代码。该禁令由 workspace lint 配置强制（根 `Cargo.toml` 中的 `unsafe_code = "deny"`）。
 
-* Do not introduce `unsafe` blocks, `unsafe fn`, `unsafe trait`, `unsafe impl`, `unsafe extern`, or any other `unsafe` construct.
-* Do not add `#[allow(unsafe_code)]` or otherwise weaken the lint to admit `unsafe`.
-* If a requirement appears to need `unsafe`, redesign it with safe Rust, or stop and report the limitation instead of weakening this rule.
-* Do not claim that passing tests establish memory safety; the prohibition is absolute and independent of test evidence.
+* 不得引入 `unsafe` 块、`unsafe fn`、`unsafe trait`、`unsafe impl`、`unsafe extern` 或任何其他 `unsafe` 构造。
+* 不得添加 `#[allow(unsafe_code)]` 或以其他方式放宽 lint 以接纳 `unsafe`。
+* 若某需求看似需要 `unsafe`，请用安全 Rust 重新设计，或停止并上报该限制，而不是放宽本规则。
+* 不得声称通过测试即已建立内存安全；该禁令是绝对的，与测试证据无关。
 
-## 7. Operator Development
+## 7. 算子开发
 
-Every new computational operator MUST include:
+每个新的计算算子 MUST 包含：
 
-1. A documented contract covering inputs, outputs, shapes, dtypes, layouts, and supported devices.
-2. Explicit validation of invalid inputs and boundary conditions.
-3. Numerical correctness tests against an independent reference where practical.
-4. Tests for relevant degenerate sizes and floating-point edge cases.
-5. Error-path tests.
-6. At least one reproducible performance benchmark.
-7. A documented benchmark configuration and baseline.
-8. A clear statement of unsupported behavior.
+1. 覆盖输入、输出、形状、数据类型、布局与受支持设备的文档化契约。
+2. 对非法输入与边界条件的显式校验。
+3. 在可行时，针对独立参考实现的数值正确性测试。
+4. 相关退化尺寸与浮点边界情况的测试。
+5. 错误路径测试。
+6. 至少一个可复现的性能基准。
+7. 文档化的基准配置与基线。
+8. 对不支持行为的清晰说明。
 
-A benchmark is required even when no optimization claim is made.
+即使不作任何优化声明，基准也是必需的。
 
-Do not claim performance improvement without comparable measurements under documented conditions.
+没有在文档化条件下可比的测量，不得声称性能提升。
 
-## 8. Performance Engineering
+## 8. 性能工程
 
-* Establish a baseline before optimization.
-* Change one meaningful variable at a time where practical.
-* Keep benchmark inputs and compiler settings reproducible.
-* Record hardware, operating system, Rust toolchain, build profile, workload dimensions, and measurement method.
-* Distinguish latency, throughput, memory consumption, and startup cost.
-* Separate microbenchmarks from end-to-end measurements.
-* Investigate measurement noise and run-to-run variance.
-* Avoid accepting a slower implementation solely because it is more complicated or theoretically faster.
-* Do not introduce SIMD or parallelism without a clear correctness and measurement plan.
+* 在优化之前建立基线。
+* 在可行时，一次只改变一个有意义的变量。
+* 保持基准输入与编译器设置可复现。
+* 记录硬件、操作系统、Rust 工具链、构建 profile、工作负载维度与测量方法。
+* 区分延迟、吞吐、内存消耗与启动成本。
+* 将微基准与端到端测量分离。
+* 调查测量噪声与运行间方差。
+* 避免仅因更复杂或理论更快就接受更慢的实现。
+* 没有清晰的正确性与测量计划，不得引入 SIMD 或并行。
 
-Performance statements MUST match the evidence collected.
+性能陈述 MUST 与所收集的证据一致。
 
-## 9. Testing and Validation
+## 9. 测试与验证
 
-Use the narrowest relevant test scope during development, followed by broader checks when appropriate.
+开发期间使用最窄的相关测试范围，随后在适当时候执行更广的检查。
 
-Expected validation categories include:
+预期验证类别包括：
 
-* Unit tests.
-* API and backend contract tests.
-* Shape and boundary tests.
-* Numerical reference tests.
-* Integration tests.
-* Request-isolation tests.
-* Serialization and checkpoint round-trip tests.
-* Concurrency and resource-lifecycle tests.
-* Performance benchmarks.
+* 单元测试。
+* API 与后端契约测试。
+* 形状与边界测试。
+* 数值参考测试。
+* 集成测试。
+* 请求隔离测试。
+* 序列化与检查点往返测试。
+* 并发与资源生命周期测试。
+* 性能基准。
 
-Do not report a check as passing unless it was actually executed and its result was observed.
+除非检查确实被执行且其结果被观察到，否则不得报告为通过。
 
-Distinguish between:
+区分以下状态：
 
-* Not run.
-* Failed.
-* Passed.
-* Blocked by environment or missing prerequisites.
+* 未运行。
+* 失败。
+* 通过。
+* 被环境或缺失前置条件阻塞。
 
-A passing compilation does not establish numerical correctness. Passing tests do not establish performance improvement.
+编译通过并不能建立数值正确性。测试通过并不能建立性能提升。
 
-## 10. Documentation
+## 10. 文档
 
-* Update documentation when a public contract or architectural boundary changes.
-* Document ownership, errors, resource limits, and unsupported behavior.
-* Keep examples consistent with the actual implementation.
-* Record significant architectural decisions, alternatives, and consequences.
-* Avoid duplicating normative rules across multiple documents.
-* Identify the authoritative document for each policy.
-* Mark proposed designs as proposed until verified against implementation.
-* Record conformance verdicts in docs/conformance.md.
+* 当公共契约或架构边界变化时更新文档。
+* 记录所有权、错误、资源限制与不支持的行为。
+* 保持示例与实际实现一致。
+* 记录重大架构决策、备选方案与后果。
+* 避免在多个文档中重复规范性规则。
+* 为每项策略标明权威文档。
+* 在对照实现验证之前，将提议设计标记为“提议”。
+* 在 docs/conformance.md 中记录符合性判定。
 
-Documentation MUST NOT claim that unimplemented capabilities exist.
+文档 MUST NOT 声称存在未实现的能力。
 
-## 11. Change and Commit Discipline
+## 11. 变更与提交纪律
 
-Each commit MUST complete one independently testable stage.
+每个提交 MUST 完成一个可独立测试的阶段。
 
-A stage should have:
+一个阶段应具备：
 
-* One primary objective.
-* A defined change boundary.
-* Explicit acceptance criteria.
-* Relevant tests.
-* Recorded validation results.
-* A clear explanation of remaining limitations.
+* 一个主要目标。
+* 一个明确的变更边界。
+* 显式的验收标准。
+* 相关测试。
+* 记录的验证结果。
+* 对剩余限制的清晰说明。
 
-Do not combine unrelated refactoring, feature development, performance optimization, and formatting changes into one commit.
+不得将无关的重构、特性开发、性能优化与格式化变更合并到同一个提交中。
 
-Do not modify unrelated files merely to make a change appear more comprehensive.
+不得仅为使变更显得更全面而修改无关文件。
 
-If a change reveals a separate architectural problem, document it and create a separate task unless it blocks correctness or safety.
+若某变更揭示出独立的架构问题，请记录它并创建单独任务，除非它阻塞正确性或安全性。
 
-## 12. Linux and Rust Engineering Discipline
+## 12. Linux 与 Rust 工程纪律
 
-Use Linux kernel engineering principles as guidance for:
+以下列 Linux 内核工程原则作为指导：
 
-* Small functions and clear control flow.
-* Explicit error paths.
-* Narrow interfaces.
-* Ownership of resources.
-* Reviewable patches.
-* Avoidance of unnecessary complexity.
-* Clear invariants and failure handling.
+* 小函数与清晰控制流。
+* 显式错误路径。
+* 狭窄接口。
+* 资源所有权。
+* 可评审的补丁。
+* 避免不必要的复杂性。
+* 清晰的不变量与失败处理。
 
-Apply Rust-specific ownership, borrowing, lifetime, type-safety, and memory-safety principles rather than mechanically copying C kernel conventions.
+应用 Rust 特有的所有权、借用、生命周期、类型安全与内存安全原则，而不是机械照搬 C 内核约定。
 
-Do not claim kernel compliance unless the relevant requirements have actually been evaluated.
+除非相关需求已实际被评估，否则不得声称符合内核规范。
 
-## 13. Definition of Done
+## 13. 完成定义
 
-A task is complete only when all applicable conditions hold:
+仅当所有适用条件都成立时，任务才算完成：
 
-* The change meets its stated objective.
-* Dependency direction remains valid.
-* Public contracts and error behavior are documented.
-* Relevant tests are present and have been run.
-* Formatting and applicable lint checks pass.
-* Performance claims, if any, are supported by reproducible measurements.
-* No `unsafe` code has been introduced.
-* No unrelated behavior has been silently changed.
-* Remaining limitations are stated.
-* The implementation and validation status are reported accurately.
+* 变更达成其既定目标。
+* 依赖方向仍然有效。
+* 公共契约与错误行为已文档化。
+* 相关测试已存在且已运行。
+* 格式化与适用的 lint 检查通过。
+* 若有性能声明，须有可复现的测量支撑。
+* 未引入任何 `unsafe` 代码。
+* 未静默改变无关行为。
+* 已陈述剩余限制。
+* 如实报告实现与验证状态。
 
-When a requirement cannot be satisfied, report the reason and the exact remaining work instead of silently weakening the requirement.
+当某需求无法满足时，报告原因与确切的剩余工作，而不是静默放宽该需求。
 
-All engineering tasks MUST follow docs/development-workflow.md. Repository-level instructions define the global constraints; this document defines the execution lifecycle, validation requirements, and completion criteria.
+所有工程任务 MUST 遵循 docs/engineering.md。仓库级说明定义全局约束；本文档定义执行生命周期、验证要求与完成标准。
 
 - 修改前先阅读目标 crate 的职责和依赖方向。
 - 不得新增循环依赖。
@@ -251,4 +251,4 @@ All engineering tasks MUST follow docs/development-workflow.md. Repository-level
 - 每个提交只完成一个可测试的阶段。
 - 严格按照 Linux / Unix 内核编码规范、顶级系统工程设计思想,组合式开发
 - 整体架构遵循极简内核设计哲学，静态 Crate + Trait
-- 测试组织以 docs/testing.md 为准：`crates/*/src` 禁止任何 `#[cfg(test)]` 内联测试（由 `scripts/checksrctests.sh` 机械门禁强制），全部单元/集成/回归测试置于仓库根 `tests/`，仅通过 crate 的公共 `pub` 接口触发，不得为测试目的放宽可见性；基准置于仓库根 `benches/`（共享工作负载由 `crates/bench` 提供），共享夹具与参考实现放入 `testkit`。
+- 测试组织以 docs/engineering.md 为准：`crates/*/src` 禁止任何 `#[cfg(test)]` 内联测试（由 `scripts/checksrctests.sh` 机械门禁强制），全部单元/集成/回归测试置于仓库根 `tests/`，仅通过 crate 的公共 `pub` 接口触发，不得为测试目的放宽可见性；基准置于仓库根 `benches/`（共享工作负载由 `crates/bench` 提供），共享夹具与参考实现放入 `testkit`。
