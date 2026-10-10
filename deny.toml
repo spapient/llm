@@ -1,0 +1,52 @@
+# Dependency, license, and supply-chain policy for cargo-deny.
+
+# Validate this policy against the repository's actual dependency graph.
+
+[advisories]
+
+# Reject dependencies with applicable security advisories.
+
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+"Apache-2.0",
+"MIT",
+"BSD-2-Clause",
+"BSD-3-Clause",
+"ISC",
+"Unicode-3.0",
+"Zlib",
+]
+exceptions = []
+
+# Review newly encountered licenses instead of silently accepting them.
+
+unlicensed = "deny"
+
+[bans]
+
+# Detect duplicate crate versions and require deliberate review.
+
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+
+# Crates.io is the default approved registry source.
+
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

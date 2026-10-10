@@ -1,0 +1,12 @@
+# Clippy configuration for the workspace.
+#
+# The minimum supported Rust version mirrors `rust-version` in the root
+# `Cargo.toml` so Clippy does not suggest standard-library APIs newer than the
+# toolchain the workspace targets.
+msrv = "1.99"
+
+# rule.md DS3: a function must be reviewable in one pass. Cyclomatic
+# complexity <= 10 and effective lines <= 80 are declared upper bounds; the
+# cognitive-complexity and line lints are the Clippy proxy for them (A8).
+cognitive-complexity-threshold = 10
+too-many-lines-threshold = 80

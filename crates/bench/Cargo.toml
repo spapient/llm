@@ -1,0 +1,19 @@
+[package]
+name = "bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Benchmark workloads and measurement orchestration for the LLM runtime"
+
+[lib]
+name = "bench"
+
+[dependencies]
+lib = { path = "../lib" }
+tensor = { path = "../tensor" }
+cpu = { path = "../cpu" }
+
+[lints]
+workspace = true

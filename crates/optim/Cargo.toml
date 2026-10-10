@@ -1,0 +1,19 @@
+[package]
+name = "optim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Optimizers, update rules, gradient clipping, and learning-rate schedules for the LLM runtime"
+
+[lib]
+name = "optim"
+
+[dependencies]
+thiserror.workspace = true
+lib = { path = "../lib" }
+tensor = { path = "../tensor" }
+
+[lints]
+workspace = true

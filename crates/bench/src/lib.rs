@@ -1,0 +1,172 @@
+#![forbid(unsafe_code)]
+//! Reusable benchmark workloads for the LLM runtime.
+//!
+//! `bench` owns benchmark workload setup, execution harnesses, and
+//! reproducibility metadata. It MUST NOT own production operator
+//! implementations or alternative implementations that diverge from production
+//! behavior, and it MUST NOT become a production dependency (see
+//! `docs/crate-boundaries.md` section 5.19).
+//!
+//! Workloads are exposed as deterministic constructors so that every benchmark
+//! target builds identical inputs. No allocation happens inside a timed region
+//! beyond the output that the measured contract returns.
+//!
+//! # Layout
+//!
+//! Benchmark executables live under `benches/`. This library holds the shared
+//! workload generators they compose; it depends only on `lib`, `tensor`, and
+//! `cpu`, so the crate remains a dependency leaf.
+
+use ::tensor::{shape, tensor, tensorerror};
+use cpu::cpuexecutor;
+use lib::limits;
+
+/// Element count for the elementwise activation workloads.
+pub const ELEMENTWISE: usize = 1 << 20;
+
+/// Row count for the softmax workload.
+pub const SOFTMAXROWS: usize = 512;
+
+/// Row width for the softmax workload.
+pub const SOFTMAXCOLS: usize = 4096;
+
+/// Resource budget that admits every benchmark workload without rejecting it.
+///
+/// The budget is deliberately large: benchmarks measure kernel cost, not limit
+/// enforcement, which is covered by the `cpu` contract tests. It is an internal
+/// detail of [`cpuexec`], so it stays crate-private (A4 interface minimality).
+pub(crate) const OPLIMITS: limits = limits::new(1 << 28, 1 << 31, 1 << 20, 1 << 18);
+
+/// Builds a CPU executor with the benchmark resource budget.
+#[must_use]
+pub fn cpuexec() -> cpuexecutor {
+    cpuexecutor::new(OPLIMITS)
+}
+
+/// Builds the fixed elementwise input of [`ELEMENTWISE`] `f32` values.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn elementwiseinput() -> Result<tensor<f32>, tensorerror> {
+    tensor::new(shape::new(vec![ELEMENTWISE])?, vec![0.5_f32; ELEMENTWISE])
+}
+
+/// Builds the fixed `SOFTMAXROWS` by `SOFTMAXCOLS` softmax input.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn softmaxinput() -> Result<tensor<f32>, tensorerror> {
+    let elements = SOFTMAXROWS * SOFTMAXCOLS;
+    tensor::new(
+        shape::new(vec![SOFTMAXROWS, SOFTMAXCOLS])?,
+        vec![0.25_f32; elements],
+    )
+}
+
+/// Square dimension of the matrix-multiplication workload.
+pub const MATMULDIM: usize = 256;
+
+/// Row count of the RMS normalization workload.
+pub const NORMROWS: usize = 512;
+
+/// Row width of the RMS normalization workload.
+pub const NORMCOLS: usize = 4096;
+
+/// Sequence length of the RoPE and attention workloads.
+pub const SEQLEN: usize = 128;
+
+/// Query head count of the RoPE and attention workloads.
+pub const HEADS: usize = 8;
+
+/// Per-head width of the RoPE and attention workloads.
+pub const HEADDIM: usize = 64;
+
+/// Vocabulary size of the embedding workload.
+///
+/// It is only read by [`embeddinginput`], so it stays crate-private (A4).
+pub(crate) const VOCAB: usize = 4096;
+
+/// Row width of the embedding workload.
+pub const EMBEDDIM: usize = 1024;
+
+/// Number of rows gathered per embedding call.
+pub const GATHER: usize = 128;
+
+/// Builds the two fixed `[MATMULDIM, MATMULDIM]` matmul operands.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn matmulinput() -> Result<(tensor<f32>, tensor<f32>), tensorerror> {
+    let elements = MATMULDIM * MATMULDIM;
+    let lhs = tensor::new(
+        shape::new(vec![MATMULDIM, MATMULDIM])?,
+        vec![0.5_f32; elements],
+    )?;
+    let rhs = tensor::new(
+        shape::new(vec![MATMULDIM, MATMULDIM])?,
+        vec![0.25_f32; elements],
+    )?;
+    Ok((lhs, rhs))
+}
+
+/// Builds the fixed `[NORMROWS, NORMCOLS]` RMS normalization input.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn norminput() -> Result<(tensor<f32>, tensor<f32>), tensorerror> {
+    let elements = NORMROWS * NORMCOLS;
+    let x = tensor::new(
+        shape::new(vec![NORMROWS, NORMCOLS])?,
+        vec![0.5_f32; elements],
+    )?;
+    let w = tensor::new(shape::new(vec![NORMCOLS])?, vec![1.0_f32; NORMCOLS])?;
+    Ok((x, w))
+}
+
+/// Builds the fixed `[SEQLEN, HEADS * HEADDIM]` RoPE input.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn ropeinput() -> Result<tensor<f32>, tensorerror> {
+    let width = HEADS * HEADDIM;
+    tensor::new(
+        shape::new(vec![SEQLEN, width])?,
+        vec![0.5_f32; SEQLEN * width],
+    )
+}
+
+/// Builds the fixed `[VOCAB, EMBEDDIM]` table and gather indices.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn embeddinginput() -> Result<(tensor<f32>, Vec<usize>), tensorerror> {
+    let table = tensor::new(
+        shape::new(vec![VOCAB, EMBEDDIM])?,
+        vec![0.5_f32; VOCAB * EMBEDDIM],
+    )?;
+    let indices = (0..GATHER).map(|i| (i * 7) % VOCAB).collect();
+    Ok((table, indices))
+}
+
+/// The three attention operands returned by [`attentioninput`].
+pub type attentionoperands = (tensor<f32>, tensor<f32>, tensor<f32>);
+
+/// Builds the fixed query/key/value attention operands.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn attentioninput() -> Result<attentionoperands, tensorerror> {
+    let width = HEADS * HEADDIM;
+    let elements = SEQLEN * width;
+    let q = tensor::new(shape::new(vec![SEQLEN, width])?, vec![0.1_f32; elements])?;
+    let k = tensor::new(shape::new(vec![SEQLEN, width])?, vec![0.2_f32; elements])?;
+    let v = tensor::new(shape::new(vec![SEQLEN, width])?, vec![0.3_f32; elements])?;
+    Ok((q, k, v))
+}

@@ -1,0 +1,18 @@
+[package]
+name = "context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Execution controls, cancellation, memory budgets, worker coordination, and metrics"
+
+[lib]
+name = "context"
+
+[dependencies]
+thiserror.workspace = true
+lib = { path = "../lib" }
+
+[lints]
+workspace = true

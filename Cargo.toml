@@ -1,0 +1,128 @@
+[package]
+name = "llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Workspace root: hosts the cross-crate integration tests and the criterion benchmarks"
+
+[workspace]
+resolver = "3"
+# Glob membership: every crate under crates/ is a workspace member, so creating
+# a new crate does not require editing this shared manifest.
+members = ["crates/*"]
+
+# The root package has no library or binary target. It exists so that the
+# repository-root `tests/` and `benches/` directories are real Cargo targets
+# (see docs/decision-records/workspacelayout.md), matching the `m.md` layout.
+# Every dependency below is a dev-dependency used only by those targets.
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+serde_json.workspace = true
+lib = { path = "crates/lib" }
+tensor = { path = "crates/tensor" }
+api = { path = "crates/api" }
+cpu = { path = "crates/cpu" }
+autograd = { path = "crates/autograd" }
+nn = { path = "crates/nn" }
+models = { path = "crates/models" }
+tokenizer = { path = "crates/tokenizer" }
+format = { path = "crates/format" }
+checkpoint = { path = "crates/checkpoint" }
+context = { path = "crates/context" }
+infer = { path = "crates/infer" }
+data = { path = "crates/data" }
+optim = { path = "crates/optim" }
+train = { path = "crates/train" }
+serve = { path = "crates/serve" }
+cli = { path = "crates/cli" }
+bench = { path = "crates/bench" }
+testkit = { path = "crates/testkit" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bench]]
+name = "cpuops"
+harness = false
+
+[[bench]]
+name = "autograd"
+harness = false
+
+[[bench]]
+name = "nn"
+harness = false
+
+[[bench]]
+name = "models"
+harness = false
+
+[[bench]]
+name = "kernels"
+harness = false
+
+[[bench]]
+name = "metadata"
+harness = false
+
+[[bench]]
+name = "optim"
+harness = false
+
+[lints]
+workspace = true
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0 OR MIT"
+publish = false
+[workspace.dependencies]
+# 序列化：由确实需要序列化的 crate 显式引入。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 错误建模：优先使用 Result 和明确的错误类型。
+thiserror = "2"
+# 日志与诊断：由需要日志能力的 crate 显式引入。
+tracing = "0.1"
+# CLI 和服务端依赖按需使用。
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+    "net",
+] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+] }
+# 质量保障依赖仅在对应 crate 的开发依赖中引入。
+proptest = "1"
+criterion = "0.7"
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+missing_docs = "warn"
+# M4 declaration: strict no-separator naming (all-lowercase concatenated type,
+# trait, enum, and variant identifiers) requires relaxing the Rust naming
+# conventions. Scope is limited to Layer 0 identifier style; it does not relax
+# unsafe_code, unwrap_used, expect_used, panic, todo, or unimplemented.
+non_camel_case_types = "allow"
+non_snake_case = "allow"
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+[profile.dev]
+debug = 1
+[profile.test]
+debug = 1
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 1

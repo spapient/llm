@@ -1,0 +1,23 @@
+[package]
+name = "train"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Training orchestration: configuration, loss, gradient accumulation, step scheduling, evaluation, and resume"
+
+[lib]
+name = "train"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+lib = { path = "../lib" }
+tensor = { path = "../tensor" }
+optim = { path = "../optim" }
+checkpoint = { path = "../checkpoint" }
+context = { path = "../context" }
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "serve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Optional HTTP application: routes, request/response mapping, admission control, and transport cancellation mapping"
+
+[lib]
+name = "serve"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+lib = { path = "../lib" }
+api = { path = "../api" }
+models = { path = "../models" }
+context = { path = "../context" }
+infer = { path = "../infer" }
+
+[lints]
+workspace = true

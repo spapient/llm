@@ -1,0 +1,18 @@
+[package]
+name = "data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Dataset, record, packing, batching, sampling, and data-loader abstractions"
+
+[lib]
+name = "data"
+
+[dependencies]
+lib = { path = "../lib" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

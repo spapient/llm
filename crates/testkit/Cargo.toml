@@ -1,0 +1,22 @@
+[package]
+name = "testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Test fixtures, assertions, and reference implementations for the LLM runtime"
+
+[lib]
+name = "testkit"
+
+[dependencies]
+tensor = { path = "../tensor" }
+
+[dev-dependencies]
+lib = { path = "../lib" }
+api = { path = "../api" }
+cpu = { path = "../cpu" }
+
+[lints]
+workspace = true

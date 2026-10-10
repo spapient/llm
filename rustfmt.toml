@@ -1,0 +1,23 @@
+# Stable Rust formatting policy for the workspace.
+
+edition = "2024"
+style_edition = "2024"
+
+# Keep formatting predictable and diffs easy to review.
+
+use_small_heuristics = "Default"
+
+# Preserve readable imports and expressions.
+
+reorder_imports = true
+reorder_modules = true
+
+# Make formatting behavior explicit.
+
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+
+# Avoid unstable nightly-only formatting options.
+
+# This configuration is intended for stable rustfmt.

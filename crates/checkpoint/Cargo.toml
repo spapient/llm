@@ -1,0 +1,22 @@
+[package]
+name = "checkpoint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Model and training-state persistence for the LLM runtime"
+
+[lib]
+name = "checkpoint"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tensor = { path = "../tensor" }
+format = { path = "../format" }
+
+[lints]
+workspace = true

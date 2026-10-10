@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+# Mechanical naming gate. The authoritative rules live in docs/naming.md; this
+# script only enforces the mechanical subset defined there (rule.md NM1/NM3/NM5).
+#
+# Scope: crates/*/src/**.rs, excluding #[cfg(test)] regions (NM4 permits terse
+# local names and test helpers are not part of any contract).
+
+# Leading tokens that duplicate a canonical verb (docs/naming.md section 4).
+FORBIDDEN_VERBS=(
+  build create make construct instantiate assemble
+  fetch retrieve obtain acquire query
+  assign put
+  dispose free release dealloc
+)
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+log() {
+  printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
+}
+
+fail() {
+  printf '\nERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+# Extract, per production line, either a function, a const, or a macro name.
+# `#[cfg(test)]` starts a test region that extends to the end of the file.
+while IFS= read -r source; do
+  awk '
+    FNR == 1 { intest = 0 }
+    /#\[cfg\(test\)\]/ { intest = 1 }
+    intest { next }
+    /^[[:space:]]*(\/\/|\*|\/\*)/ { next }
+    {
+      if (match($0, /fn[ \t]+[a-z_][a-z0-9_]*/)) {
+        s = substr($0, RSTART, RLENGTH); sub(/fn[ \t]+/, "", s)
+        print "fn", FILENAME, FNR, s
+      }
+      if (match($0, /const[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+        s = substr($0, RSTART, RLENGTH); sub(/const[ \t]+/, "", s)
+        if (s != "fn") { print "const", FILENAME, FNR, s }
+      }
+      if (match($0, /macro_rules![ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+        s = substr($0, RSTART, RLENGTH); sub(/macro_rules![ \t]+/, "", s)
+        print "macro", FILENAME, FNR, s
+      }
+    }' "$source"
+done < <(find crates -path '*/src/*.rs' -not -path '*/target/*') >"$tmp"
+
+log "Checking naming conformance (docs/naming.md)"
+
+violations=0
+
+report() {
+  printf '  %s\n' "$1" >&2
+  violations=$((violations + 1))
+}
+
+while read -r kind file line name; do
+  case "$kind" in
+    fn)
+      for bad in "${FORBIDDEN_VERBS[@]}"; do
+        case "$name" in
+          "$bad"*)
+            report "$file:$line: forbidden synonym '$bad' in fn '$name' (see docs/naming.md s4)"
+            break
+            ;;
+        esac
+      done
+      ;;
+    const | macro)
+      case "$name" in
+        [A-Z][A-Z0-9_]*) ;;
+        *) report "$file:$line: $kind '$name' must be uppercase compact (NM5)" ;;
+      esac
+      ;;
+  esac
+done <"$tmp"
+
+# A naming-lint exemption MUST cite the rule.md clause it relies on
+# (docs/naming.md section 8).
+while IFS= read -r hit; do
+  [ -n "$hit" ] || continue
+  case "$hit" in
+    *NM*) ;;
+    *)
+      file="${hit%%:*}"
+      rest="${hit#*:}"
+      line="${rest%%:*}"
+      report "$file:$line: naming #[allow] must cite its NM clause (docs/naming.md s8)"
+      ;;
+  esac
+done < <(grep -rnE '#\[allow\([^]]*(non_snake_case|non_camel_case_types|non_upper_case_globals)' crates/*/src 2>/dev/null || true)
+
+if [ "$violations" -ne 0 ]; then
+  fail "$violations naming conformance violation(s); see docs/naming.md"
+fi
+
+log "Naming conformance passed."

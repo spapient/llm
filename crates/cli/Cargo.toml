@@ -1,0 +1,36 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Command-line application: argument parsing, command dispatch, human-readable output, and exit-code mapping over the library workflows"
+
+[lib]
+name = "cli"
+
+[[bin]]
+name = "cli"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lib = { path = "../lib" }
+cpu = { path = "../cpu" }
+optim = { path = "../optim" }
+context = { path = "../context" }
+format = { path = "../format" }
+checkpoint = { path = "../checkpoint" }
+models = { path = "../models" }
+infer = { path = "../infer" }
+train = { path = "../train" }
+tokenizer = { path = "../tokenizer" }
+
+[lints]
+workspace = true

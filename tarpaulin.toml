@@ -1,0 +1,9 @@
+[default]
+workspace = true
+all-features = true
+engine = "llvm"
+out = ["Html", "Xml"]
+output-dir = "target/coverage"
+timeout = "120"
+follow-exec = false
+avoid-cfg-tarpaulin = false

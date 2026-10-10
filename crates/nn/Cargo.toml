@@ -1,0 +1,23 @@
+[package]
+name = "nn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Reusable neural-network layers and parameter containers for the LLM runtime"
+
+[lib]
+name = "nn"
+
+[dependencies]
+thiserror.workspace = true
+lib = { path = "../lib" }
+tensor = { path = "../tensor" }
+api = { path = "../api" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

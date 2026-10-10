@@ -1,0 +1,21 @@
+[package]
+name = "tensor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Core tensor types and numerical primitives for the LLM runtime"
+
+[lib]
+name = "tensor"
+
+[dependencies]
+thiserror.workspace = true
+lib = { path = "../lib" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

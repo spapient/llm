@@ -1,0 +1,12 @@
+[term]
+color = "auto"
+verbose = false
+
+[build]
+
+#统一并发构建的行为；不固定 jobs，让 Cargo 根据环境自动调度。
+
+incremental = true
+
+[future-incompat-report]
+frequency = "always"

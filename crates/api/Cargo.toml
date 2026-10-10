@@ -1,0 +1,19 @@
+[package]
+name = "api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Backend and execution contracts for the LLM runtime"
+
+[lib]
+name = "api"
+
+[dependencies]
+thiserror.workspace = true
+lib = { path = "../lib" }
+tensor = { path = "../tensor" }
+
+[lints]
+workspace = true

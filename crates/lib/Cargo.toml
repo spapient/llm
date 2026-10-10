@@ -1,0 +1,17 @@
+[package]
+name = "lib"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Foundational shared types and validation primitives for the LLM runtime"
+
+[lib]
+name = "lib"
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

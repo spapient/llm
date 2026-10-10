@@ -1,0 +1,53 @@
+Rust build artifacts
+
+/target/
+
+Coverage and profiling output
+
+/coverage/
+/.profraw/
+/*.profdata
+/cobertura.xml
+/tarpaulin-report.html
+
+Benchmark output
+
+/criterion/
+**/criterion/
+
+Local environment and secrets
+
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+secrets/
+.secrets/
+
+Local editor and operating system files
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+Logs and temporary files
+
+*.log
+*.tmp
+*.bak
+
+Rust Analyzer local state
+
+.rust-analyzer/
+
+Local Cargo configuration may contain machine-specific paths or credentials.
+
+Keep shared project configuration under version control when appropriate.
+
+/.cargo/config.local.toml
