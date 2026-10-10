@@ -26,6 +26,8 @@ lib = { path = "crates/lib" }
 tensor = { path = "crates/tensor" }
 api = { path = "crates/api" }
 cpu = { path = "crates/cpu" }
+metal = { path = "crates/metal" }
+cuda = { path = "crates/cuda" }
 autograd = { path = "crates/autograd" }
 nn = { path = "crates/nn" }
 models = { path = "crates/models" }
@@ -72,6 +74,14 @@ harness = false
 name = "optim"
 harness = false
 
+[[bench]]
+name = "metal"
+harness = false
+
+[[bench]]
+name = "cuda"
+harness = false
+
 [lints]
 workspace = true
 [workspace.package]
@@ -106,6 +116,13 @@ criterion = "0.7"
 # 参数化测试：以 `#[case]` 表驱动表达"仅输入不同、断言形状相同"的用例，
 # 保留每个用例的独立名字与独立失败（见 docs/engineering.md 测试依赖决策）。
 rstest = "0.27"
+# 平台 GPU 绑定：仅由对应平台的 Layer 1 后端 crate 在目标平台条件下引入
+# （见 docs/design.md 第 21 章）。任何非目标平台都不会构建它们。
+objc2 = "0.6"
+objc2-metal = "0.3"
+objc2-foundation = "0.3"
+objc2-core-graphics = "0.3"
+cudarc = "0.19"
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"

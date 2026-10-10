@@ -3,6 +3,10 @@
 pub enum devicekind {
     /// Host CPU execution.
     cpu,
+    /// Apple Metal execution.
+    metal,
+    /// NVIDIA CUDA execution.
+    cuda,
 }
 
 /// An execution device handle.
@@ -24,6 +28,22 @@ impl device {
         }
     }
 
+    /// Returns the Apple Metal device.
+    #[must_use]
+    pub const fn metal() -> Self {
+        Self {
+            kind: devicekind::metal,
+        }
+    }
+
+    /// Returns the NVIDIA CUDA device.
+    #[must_use]
+    pub const fn cuda() -> Self {
+        Self {
+            kind: devicekind::cuda,
+        }
+    }
+
     /// Returns the kind of this device.
     #[must_use]
     pub const fn getkind(self) -> devicekind {
@@ -34,5 +54,17 @@ impl device {
     #[must_use]
     pub const fn iscpu(self) -> bool {
         matches!(self.kind, devicekind::cpu)
+    }
+
+    /// Reports whether this device is Apple Metal.
+    #[must_use]
+    pub const fn ismetal(self) -> bool {
+        matches!(self.kind, devicekind::metal)
+    }
+
+    /// Reports whether this device is NVIDIA CUDA.
+    #[must_use]
+    pub const fn iscuda(self) -> bool {
+        matches!(self.kind, devicekind::cuda)
     }
 }
