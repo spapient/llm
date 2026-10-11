@@ -266,12 +266,29 @@ mod tests {
         let mut cache = kvstate::new(2, 2, 1)?;
         let key = row(&[1.0, 2.0])?;
         let value = row(&[3.0, 4.0])?;
-        cache.append(1, &key, &value)?;
+
+        // Fill every layer uniformly so the next append fails specifically
+        // because the cache is at capacity, not because layer lengths differ.
+        cache.appendall(&key, &value)?;
+        let keys_before: Vec<Option<Vec<f32>>> = (0..cache.getlayers())
+            .map(|layer| cache.keys(layer).map(|tensor| tensor.getdata().to_vec()))
+            .collect();
+        let values_before: Vec<Option<Vec<f32>>> = (0..cache.getlayers())
+            .map(|layer| cache.values(layer).map(|tensor| tensor.getdata().to_vec()))
+            .collect();
 
         assert!(cache.appendall(&key, &value).is_err());
-        assert_eq!(cache.keys(0), None);
-        assert_eq!(cache.values(0), None);
-        assert_eq!(cache.keys(1).map(|t| t.getshape().getdims()), Some(&[1, 2][..]));
+        assert_eq!(cache.getlen(), 1);
+        for layer in 0..cache.getlayers() {
+            assert_eq!(
+                cache.keys(layer).map(|tensor| tensor.getdata().to_vec()),
+                keys_before[layer]
+            );
+            assert_eq!(
+                cache.values(layer).map(|tensor| tensor.getdata().to_vec()),
+                values_before[layer]
+            );
+        }
         Ok(())
     }
 }
