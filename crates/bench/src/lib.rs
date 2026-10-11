@@ -112,6 +112,34 @@ pub fn matmulinput() -> Result<(tensor<f32>, tensor<f32>), tensorerror> {
     Ok((lhs, rhs))
 }
 
+/// Block count of the batched matrix-multiplication workload.
+///
+/// It is what a `matmul` pays per-block dispatch cost on, so the benchmark
+/// suite measures it separately from the single square case. It stays
+/// crate-private (A4 interface minimality): callers read the workload's shape
+/// from the tensor they are handed, exactly as they do for the other fixed
+/// workloads whose extents are not exported either.
+const MATMULBATCH: usize = 8;
+
+/// Builds the two fixed `[MATMULBATCH, MATMULDIM, MATMULDIM]` batched matmul
+/// operands.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn matmulbatchinput() -> Result<(tensor<f32>, tensor<f32>), tensorerror> {
+    let elements = MATMULBATCH * MATMULDIM * MATMULDIM;
+    let lhs = tensor::new(
+        shape::new(vec![MATMULBATCH, MATMULDIM, MATMULDIM])?,
+        vec![0.5_f32; elements],
+    )?;
+    let rhs = tensor::new(
+        shape::new(vec![MATMULBATCH, MATMULDIM, MATMULDIM])?,
+        vec![0.25_f32; elements],
+    )?;
+    Ok((lhs, rhs))
+}
+
 /// Builds the fixed `[NORMROWS, NORMCOLS]` RMS normalization input.
 ///
 /// # Errors
@@ -155,7 +183,9 @@ pub fn embeddinginput() -> Result<(tensor<f32>, Vec<usize>), tensorerror> {
 }
 
 /// The three attention operands returned by [`attentioninput`].
-pub type attentionoperands = (tensor<f32>, tensor<f32>, tensor<f32>);
+/// The three operands of one attention call. Crate-private because callers
+/// destructure the tuple rather than naming the type (A4 interface minimality).
+type attentionoperands = (tensor<f32>, tensor<f32>, tensor<f32>);
 
 /// Builds the fixed query/key/value attention operands.
 ///

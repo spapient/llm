@@ -13,9 +13,10 @@ pub enum metalerror {
     #[error("no Metal device is available")]
     nodevice,
 
-    /// A Metal buffer could not be allocated.
-    #[error("failed to allocate a Metal buffer")]
-    bufferallocation,
+    /// A Metal buffer, or the host buffer that mirrors it, could not be
+    /// allocated.
+    #[error("failed to allocate memory for a Metal buffer")]
+    allocation,
 
     /// Metal Shading Language compilation failed.
     #[error("Metal Shading Language compilation failed: {message}")]

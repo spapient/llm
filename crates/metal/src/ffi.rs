@@ -15,9 +15,11 @@
 //! sites, so the count does not grow with the operator count.
 //!
 //! The safe functions expose a narrow, run-to-completion interface: upload host
-//! slices, dispatch one kernel, download the result. All device, command, and
-//! library objects are created locally and released by scope, so no GPU state
-//! outlives a call.
+//! slices, dispatch one kernel, download the result. Buffers, command buffers,
+//! and encoders are created locally and released by scope, so no operand or
+//! result survives a call. The only state that does survive is [`cache`] — the
+//! device and the compiled pipelines — which the executor owns and which holds
+//! no request-scoped value (docs/design.md §21.6).
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -26,6 +28,8 @@ use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
     MTLComputePipelineState, MTLDevice, MTLLibrary, MTLResourceOptions, MTLSize,
 };
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use crate::error::metalerror;
 use crate::geometry::attentionshape;
@@ -34,11 +38,136 @@ use crate::source;
 /// The threadgroup edge used when dispatching the matmul kernel.
 const THREADEDGE: usize = 16;
 
-/// Computes `[m, k] * [k, n]` on the default Metal device.
+/// The device state and compiled pipelines one executor owns.
 ///
-/// `lhs` holds `m * k` row-major elements and `rhs` holds `k * n`. The result
-/// has `m * n` elements. The call is synchronous: it returns only after the
-/// kernel has completed and the result has been copied back to the host.
+/// Compiling MSL at run time costs on the order of a millisecond, which
+/// dominated every operator call this backend served before the cache existed:
+/// `docs/design.md` §21.10.1 records `gpu/embedding` at 3.97 ms against 6.7 µs
+/// for the CPU — a fixed cost independent of the work. The cache is owned by the
+/// executor and shared by its clones, deliberately *not* kept in a process-wide
+/// singleton: two independently constructed executors compile independently,
+/// and nothing here outlives the executor that owns it.
+///
+/// What the cache holds is device state and compiled code, never an operand, a
+/// result, or any other request-scoped value, so sharing it across requests
+/// cannot pass data between them.
+pub(crate) struct cache {
+    state: Mutex<cachestate>,
+}
+
+/// The mutable half of [`cache`], guarded by a single lock that is never
+/// acquired while another is held (the crate has exactly one).
+#[derive(Default)]
+struct cachestate {
+    /// The system default device, opened on first use.
+    ///
+    /// `None` means "not opened yet or the last attempt failed", so an
+    /// unavailable device is retried on the next call rather than latched.
+    device: Option<Retained<ProtocolObject<dyn MTLDevice>>>,
+    /// One compiled compute pipeline per `(source, entry)` pair.
+    ///
+    /// The key carries the MSL **source text**, so editing a kernel in
+    /// [`crate::source`] can never reuse a stale binary. The map is
+    /// device-specific by construction: it lives beside the one device it was
+    /// compiled for, so no device belongs in the key.
+    pipelines: HashMap<
+        (&'static str, &'static str),
+        Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    >,
+}
+
+impl cache {
+    /// Creates an empty cache.
+    ///
+    /// Opening the device is deferred to the first operator call, so
+    /// construction cannot fail and the error still surfaces per call.
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Mutex::new(cachestate::default()),
+        }
+    }
+
+    /// Returns the system default device, opening it once.
+    fn device(&self) -> Result<Retained<ProtocolObject<dyn MTLDevice>>, metalerror> {
+        let mut state = self.lock();
+        state.device()
+    }
+
+    /// Returns how many compiled pipelines the cache currently holds.
+    ///
+    /// Exposed so that the executor can report it and the contract suite can
+    /// assert that a second call reuses the binary instead of recompiling it.
+    pub(crate) fn pipelinecount(&self) -> usize {
+        self.lock().pipelines.len()
+    }
+
+    /// Returns the compiled pipeline for `(source, entry)`, compiling it once.
+    ///
+    /// The lock is held across a miss and its compilation. That serializes
+    /// concurrent first calls for the same kernel instead of compiling it
+    /// several times over, and it is released before the caller creates a
+    /// command buffer, so no transfer or GPU wait happens under the lock.
+    fn pipeline(
+        &self,
+        source: &'static str,
+        entry: &'static str,
+    ) -> Result<Retained<ProtocolObject<dyn MTLComputePipelineState>>, metalerror> {
+        let mut state = self.lock();
+        if let Some(compiled) = state.pipelines.get(&(source, entry)) {
+            return Ok(compiled.clone());
+        }
+        let device = state.device()?;
+        let compiled = compile(&device, source, entry)?;
+        state.pipelines.insert((source, entry), compiled.clone());
+        Ok(compiled)
+    }
+
+    /// Acquires the lock, recovering the contents if an earlier holder panicked.
+    ///
+    /// The map holds no invariant a panic could break — the worst case is a
+    /// partially filled cache, which is still a valid one — so recovering is
+    /// strictly better than turning a panic into a permanently unusable
+    /// backend. This is also why no call site uses `unwrap`.
+    fn lock(&self) -> std::sync::MutexGuard<'_, cachestate> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl cachestate {
+    /// Returns the cached device, opening and caching it if absent.
+    fn device(&mut self) -> Result<Retained<ProtocolObject<dyn MTLDevice>>, metalerror> {
+        if let Some(device) = &self.device {
+            return Ok(device.clone());
+        }
+        let opened = objc2_metal::MTLCreateSystemDefaultDevice().ok_or(metalerror::nodevice)?;
+        self.device = Some(opened.clone());
+        Ok(opened)
+    }
+}
+
+impl core::fmt::Debug for cache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The count is the only property of the cache worth printing, and it
+        // needs the lock; the platform handles themselves have no useful
+        // rendering and are not exposed.
+        f.debug_struct("cache")
+            .field("pipelines", &self.lock().pipelines.len())
+            .finish()
+    }
+}
+
+/// Computes `batch` blocks of `[m, k] * [k, n]` on the default Metal device.
+///
+/// `lhs` holds `batch * m * k` row-major elements and `rhs` holds `batch * k *
+/// n`; the result holds `batch * m * n`. The call is synchronous: it returns
+/// only after the kernel has completed and the result has been copied back to
+/// the host.
+///
+/// The whole call is **one** dispatch whose grid depth is the block count. That
+/// is not a micro-optimization: a command buffer round trip costs the same for
+/// one dispatch as for many (docs/design.md §21.10.2), so dispatching a block at
+/// a time would pay that cost once per block and multiply the call's latency by
+/// the batch size.
 ///
 /// # Errors
 ///
@@ -46,31 +175,40 @@ const THREADEDGE: usize = 16;
 /// allocated, the MSL source fails to compile, the compute pipeline cannot be
 /// built, a dimension does not fit a `u32`, or the kernel fails to execute.
 pub(crate) fn matmul(
+    cache: &cache,
     lhs: &[f32],
     rhs: &[f32],
+    batch: usize,
     m: usize,
     k: usize,
     n: usize,
 ) -> Result<Vec<f32>, metalerror> {
+    let total = batch
+        .checked_mul(m)
+        .and_then(|value| value.checked_mul(n))
+        .ok_or(metalerror::sizeoverflow)?;
     if m == 0 || n == 0 {
         return Ok(Vec::new());
     }
     if k == 0 {
-        return Ok(vec![0.0_f32; m * n]);
+        return Ok(vec![0.0_f32; total]);
     }
     let dims = Extents::new(m, k, n)?;
+    let bytes = total
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
 
-    let device = opendevice()?;
+    let device = cache.device()?;
     let bufa = alloc(&device, core::mem::size_of_val(lhs))?;
     let bufb = alloc(&device, core::mem::size_of_val(rhs))?;
-    let bufc = alloc(&device, m * n * core::mem::size_of::<f32>())?;
+    let bufc = alloc(&device, bytes)?;
     write(&bufa, lhs);
     write(&bufb, rhs);
 
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&bufa, &bufb, &bufc];
     let params = [dims.m, dims.k, dims.n];
     execute(
-        &device,
+        cache,
         source::MATMULMSL,
         source::MATMULENTRY,
         &buffers,
@@ -78,11 +216,11 @@ pub(crate) fn matmul(
         MTLSize {
             width: dims.cols,
             height: dims.rows,
-            depth: 1,
+            depth: batch,
         },
         dims.threadgroup(),
     )?;
-    read(&bufc, m * n)
+    read(&bufc, total)
 }
 
 /// The matmul extents as device-side `u32` values.
@@ -132,8 +270,8 @@ impl Extents {
 /// Returns [`metalerror`] when no device is available, a buffer cannot be
 /// allocated, the source fails to compile, the length does not fit `u32`, or
 /// the kernel fails to execute.
-pub(crate) fn add(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metalerror> {
-    elementwise2(source::ADDENTRY, lhs, rhs)
+pub(crate) fn add(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metalerror> {
+    elementwise2(cache, source::ADDENTRY, lhs, rhs)
 }
 
 /// Multiplies two equal-length `f32` operands elementwise.
@@ -141,8 +279,8 @@ pub(crate) fn add(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metalerror> {
 /// # Errors
 ///
 /// See [`add`].
-pub(crate) fn mul(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metalerror> {
-    elementwise2(source::MULENTRY, lhs, rhs)
+pub(crate) fn mul(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metalerror> {
+    elementwise2(cache, source::MULENTRY, lhs, rhs)
 }
 
 /// Applies the sigmoid linear unit elementwise.
@@ -150,12 +288,12 @@ pub(crate) fn mul(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metalerror> {
 /// # Errors
 ///
 /// See [`add`].
-pub(crate) fn silu(input: &[f32]) -> Result<Vec<f32>, metalerror> {
+pub(crate) fn silu(cache: &cache, input: &[f32]) -> Result<Vec<f32>, metalerror> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
     let count = asu32(input.len())?;
-    let device = opendevice()?;
+    let device = cache.device()?;
     let da = alloc(&device, core::mem::size_of_val(input))?;
     let dc = alloc(&device, core::mem::size_of_val(input))?;
     write(&da, input);
@@ -163,7 +301,7 @@ pub(crate) fn silu(input: &[f32]) -> Result<Vec<f32>, metalerror> {
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [&da, &dc];
     let params = [count];
     execute(
-        &device,
+        cache,
         source::ELEMENTWISE,
         source::SILUENTRY,
         &buffers,
@@ -175,12 +313,17 @@ pub(crate) fn silu(input: &[f32]) -> Result<Vec<f32>, metalerror> {
 }
 
 /// Runs the two-operand elementwise kernel named `entry` in [`ELEMENTWISE`].
-fn elementwise2(entry: &str, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metalerror> {
+fn elementwise2(
+    cache: &cache,
+    entry: &'static str,
+    lhs: &[f32],
+    rhs: &[f32],
+) -> Result<Vec<f32>, metalerror> {
     if lhs.is_empty() {
         return Ok(Vec::new());
     }
     let count = asu32(lhs.len())?;
-    let device = opendevice()?;
+    let device = cache.device()?;
     let da = alloc(&device, core::mem::size_of_val(lhs))?;
     let db = alloc(&device, core::mem::size_of_val(rhs))?;
     let dc = alloc(&device, core::mem::size_of_val(lhs))?;
@@ -190,7 +333,7 @@ fn elementwise2(entry: &str, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metal
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&da, &db, &dc];
     let params = [count];
     execute(
-        &device,
+        cache,
         source::ELEMENTWISE,
         entry,
         &buffers,
@@ -215,7 +358,12 @@ fn elementwise2(entry: &str, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metal
 /// Returns [`metalerror`] when no device is available, a buffer cannot be
 /// allocated, the source fails to compile, an extent does not fit `u32`, or the
 /// kernel fails to execute.
-pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f32>, metalerror> {
+pub(crate) fn softmax(
+    cache: &cache,
+    input: &[f32],
+    rows: usize,
+    width: usize,
+) -> Result<Vec<f32>, metalerror> {
     if rows == 0 {
         return Ok(Vec::new());
     }
@@ -223,7 +371,7 @@ pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f3
     let bytes = total
         .checked_mul(core::mem::size_of::<f32>())
         .ok_or(metalerror::sizeoverflow)?;
-    let device = opendevice()?;
+    let device = cache.device()?;
     let dx = alloc(&device, bytes)?;
     let dy = alloc(&device, bytes)?;
     write(&dx, input);
@@ -231,7 +379,7 @@ pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f3
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [&dx, &dy];
     let params = [asu32(width)?];
     execute(
-        &device,
+        cache,
         source::SOFTMAXMSL,
         source::SOFTMAXENTRY,
         &buffers,
@@ -250,6 +398,7 @@ pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f3
 /// allocated, the source fails to compile, an extent does not fit `u32`, or the
 /// kernel fails to execute.
 pub(crate) fn rmsnorm(
+    cache: &cache,
     input: &[f32],
     weight: &[f32],
     rows: usize,
@@ -263,7 +412,7 @@ pub(crate) fn rmsnorm(
     let bytes = total
         .checked_mul(core::mem::size_of::<f32>())
         .ok_or(metalerror::sizeoverflow)?;
-    let device = opendevice()?;
+    let device = cache.device()?;
     let dx = alloc(&device, bytes)?;
     let dw = alloc(&device, core::mem::size_of_val(weight))?;
     let dy = alloc(&device, bytes)?;
@@ -273,7 +422,7 @@ pub(crate) fn rmsnorm(
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&dx, &dw, &dy];
     let params = [asu32(width)?, eps.to_bits()];
     execute(
-        &device,
+        cache,
         source::RMSNORMMSL,
         source::RMSNORMENTRY,
         &buffers,
@@ -292,6 +441,7 @@ pub(crate) fn rmsnorm(
 /// allocated, the source fails to compile, an extent does not fit `u32`, or the
 /// kernel fails to execute.
 pub(crate) fn rope(
+    cache: &cache,
     input: &[f32],
     rows: usize,
     seqaxis: usize,
@@ -306,7 +456,7 @@ pub(crate) fn rope(
         .checked_mul(heads)
         .and_then(|value| value.checked_mul(headdim / 2))
         .ok_or(metalerror::sizeoverflow)?;
-    let device = opendevice()?;
+    let device = cache.device()?;
     let dx = alloc(&device, core::mem::size_of_val(input))?;
     let dy = alloc(&device, core::mem::size_of_val(input))?;
     write(&dx, input);
@@ -320,7 +470,7 @@ pub(crate) fn rope(
         base.to_bits(),
     ];
     execute(
-        &device,
+        cache,
         source::ROPEMSL,
         source::ROPEENTRY,
         &buffers,
@@ -343,6 +493,7 @@ pub(crate) fn rope(
 /// allocated, the source fails to compile, an extent does not fit `u32`, or the
 /// kernel fails to execute.
 pub(crate) fn embedding(
+    cache: &cache,
     table: &[f32],
     indices: &[usize],
     width: usize,
@@ -356,7 +507,7 @@ pub(crate) fn embedding(
         .checked_mul(core::mem::size_of::<f32>())
         .ok_or(metalerror::sizeoverflow)?;
     let devindices: Vec<u64> = indices.iter().map(|&index| index as u64).collect();
-    let device = opendevice()?;
+    let device = cache.device()?;
     let dtable = alloc(&device, core::mem::size_of_val(table))?;
     let dindices = alloc(&device, core::mem::size_of_val(&devindices))?;
     let dout = alloc(&device, bytes)?;
@@ -366,7 +517,7 @@ pub(crate) fn embedding(
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&dtable, &dindices, &dout];
     let params = [rows as u64, width as u64];
     execute(
-        &device,
+        cache,
         source::EMBEDDINGMSL,
         source::EMBEDDINGENTRY,
         &buffers,
@@ -393,6 +544,7 @@ pub(crate) fn embedding(
 /// allocated, the source fails to compile, an extent does not fit `u32`, or the
 /// kernel fails to execute.
 pub(crate) fn attention(
+    cache: &cache,
     query: &[f32],
     key: &[f32],
     value: &[f32],
@@ -413,7 +565,7 @@ pub(crate) fn attention(
     let groups = seq
         .checked_mul(geometry.heads)
         .ok_or(metalerror::sizeoverflow)?;
-    let device = opendevice()?;
+    let device = cache.device()?;
     let dquery = alloc(&device, core::mem::size_of_val(query))?;
     let dkey = alloc(&device, core::mem::size_of_val(key))?;
     let dvalue = alloc(&device, core::mem::size_of_val(value))?;
@@ -431,7 +583,7 @@ pub(crate) fn attention(
         u32::from(causal),
     ];
     execute(
-        &device,
+        cache,
         source::ATTENTIONMSL,
         source::ATTENTIONENTRY,
         &buffers,
@@ -440,11 +592,6 @@ pub(crate) fn attention(
         fullthreads(source::ATTENTIONLANES),
     )?;
     read(&dout, queryelements)
-}
-
-/// Opens the system default Metal device.
-fn opendevice() -> Result<Retained<ProtocolObject<dyn MTLDevice>>, metalerror> {
-    objc2_metal::MTLCreateSystemDefaultDevice().ok_or(metalerror::nodevice)
 }
 
 /// Compiles `source` and builds the compute pipeline for `entry`.
@@ -484,16 +631,19 @@ fn compile(
 /// the device, queue, or command buffer declines to hand out the resources the
 /// dispatch needs.
 fn execute<T>(
-    device: &ProtocolObject<dyn MTLDevice>,
-    source: &str,
-    entry: &str,
+    cache: &cache,
+    source: &'static str,
+    entry: &'static str,
     buffers: &[&ProtocolObject<dyn MTLBuffer>],
     params: &T,
     grid: MTLSize,
     threads: MTLSize,
 ) -> Result<(), metalerror> {
-    let pipeline = compile(device, source, entry)?;
-    let queue = newqueue(device)?;
+    // The device, the pipeline, and the queue all come from the same cache, so
+    // the pipeline cannot be built for one device and used on another.
+    let device = cache.device()?;
+    let pipeline = cache.pipeline(source, entry)?;
+    let queue = newqueue(&device)?;
     let command = newcommand(&queue)?;
     let encoder = newencoder(&command)?;
     encoder.setComputePipelineState(&pipeline);
@@ -577,7 +727,7 @@ fn alloc(
 ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, metalerror> {
     device
         .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
-        .ok_or(metalerror::bufferallocation)
+        .ok_or(metalerror::allocation)
 }
 
 /// Copies `data` into a shared-storage buffer of matching byte length.
@@ -600,8 +750,15 @@ fn write<T>(target: &ProtocolObject<dyn MTLBuffer>, data: &[T]) {
 }
 
 /// Copies `len` f32 elements out of a completed shared-storage buffer.
+///
+/// The host mirror is reserved before the copy so that a host allocation
+/// failure is reported as [`metalerror::allocation`] rather than aborting the
+/// process, matching the device side.
 fn read(source: &ProtocolObject<dyn MTLBuffer>, len: usize) -> Result<Vec<f32>, metalerror> {
-    let mut out = vec![0.0_f32; len];
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| metalerror::allocation)?;
+    out.resize(len, 0.0_f32);
     // SAFETY: `source` was allocated with at least `len` f32 elements and the
     // dispatch that wrote it has completed (the command buffer was waited on),
     // so its `contents` pointer yields exactly `len` initialized elements,

@@ -16,7 +16,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::support::{build, wide};
-use ::tensor::dtype;
+use ::tensor::{dtype, tensor};
 use api::{backend, backenderror, compute};
 use cpu::cpuexecutor;
 use lib::limits;
@@ -741,4 +741,109 @@ fn embedding_accepts_the_first_and_last_row() {
     assert_eq!(out.getshape().getdims(), &[3, 2]);
     let want = reference::embedding(&table, 2, &[0, 2, 2]);
     assertallclose(out.getdata(), &want, 0.0, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime compilation cache and concurrency
+// ---------------------------------------------------------------------------
+
+/// Runs one call of every operator, so the executor must hold one compiled
+/// pipeline per distinct `(source, entry)` pair the crate ships.
+fn runeverykernel(exec: &metalexecutor) {
+    let a = build(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+    let b = build(vec![2, 2], vec![5.0, 6.0, 7.0, 8.0]);
+    let weight = build(vec![2], vec![1.0, 1.0]);
+    let table = build(vec![3, 2], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    let q = build(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0]);
+    let k = build(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0]);
+    let v = build(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+
+    exec.matmul(&a.getview(), &b.getview()).unwrap();
+    exec.add(&a.getview(), &b.getview()).unwrap();
+    exec.mul(&a.getview(), &b.getview()).unwrap();
+    exec.silu(&a.getview()).unwrap();
+    exec.softmax(&a.getview()).unwrap();
+    exec.rmsnorm(&a.getview(), &weight.getview(), 1.0e-5)
+        .unwrap();
+    exec.rope(&a.getview(), 1, 10_000.0).unwrap();
+    exec.embedding(&table.getview(), &[2, 0]).unwrap();
+    exec.attention(&q.getview(), &k.getview(), &v.getview(), 1, 1, true)
+        .unwrap();
+}
+
+#[test]
+fn every_kernel_is_compiled_once_and_then_reused() {
+    // The nine operators map onto nine distinct `(source, entry)` pairs, so the
+    // count after one call of each is the exact number of kernels in the crate.
+    // Repeating the pass must not compile anything: that is the machine-checkable
+    // form of "the run-time compilation is cached", independent of timing.
+    let exec = metalexecutor::new(wide());
+
+    runeverykernel(&exec);
+    assert_eq!(
+        exec.getcachedpipelinecount(),
+        9,
+        "one pass over the operator set must compile exactly one pipeline per kernel"
+    );
+
+    runeverykernel(&exec);
+    assert_eq!(
+        exec.getcachedpipelinecount(),
+        9,
+        "a second pass recompiled a kernel instead of reusing its pipeline"
+    );
+}
+
+#[test]
+fn a_clone_shares_the_compiled_pipelines() {
+    let exec = metalexecutor::new(wide());
+    let a = build(vec![2, 2], vec![1.0; 4]);
+
+    exec.silu(&a.getview()).unwrap();
+    let clone = exec.clone();
+    assert_eq!(clone.getcachedpipelinecount(), 1);
+
+    clone.add(&a.getview(), &a.getview()).unwrap();
+
+    assert_eq!(
+        exec.getcachedpipelinecount(),
+        2,
+        "a clone must share the cache rather than compile into its own"
+    );
+}
+
+#[test]
+fn the_executor_is_shareable_across_threads() {
+    // The concurrency claim in docs/design.md §21.6, asserted rather than
+    // assumed: the executor is `Send + Sync`, and concurrent calls on one value
+    // return identical results without compiling the kernel more than once.
+    fn assertsendandsync<T: Send + Sync>() {}
+    assertsendandsync::<metalexecutor>();
+
+    let exec = metalexecutor::new(wide());
+    let x = build(
+        vec![64, 64],
+        (0..64 * 64).map(|i| (i % 17) as f32 * 0.25).collect(),
+    );
+    let want = exec.softmax(&x.getview()).unwrap();
+
+    let got: Vec<tensor<f32>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| scope.spawn(|| exec.softmax(&x.getview()).unwrap()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+
+    assert_eq!(got.len(), 4);
+    for one in &got {
+        assertallclose(one.getdata(), want.getdata(), 0.0, 0.0);
+    }
+    assert_eq!(
+        exec.getcachedpipelinecount(),
+        1,
+        "concurrent first calls must not each compile their own pipeline"
+    );
 }

@@ -16,11 +16,19 @@
 
 /// The Metal Shading Language source of the `f32` matrix-multiply kernel.
 ///
-/// `a` is `[m, k]`, `b` is `[k, n]`, `c` is `[m, n]`, all row-major. The
-/// parameter buffer `p` carries `m`, `k`, and `n` as three `uint` values at
-/// indices `0`, `1`, and `2`. Threads outside the output bounds return early,
-/// so the same source is correct for any positive `m` and `n`; the host guards
-/// the degenerate `m == 0`, `n == 0`, and `k == 0` cases before dispatching.
+/// One dispatch carries every batch block: `a` is `[batch, m, k]`, `b` is
+/// `[batch, k, n]`, and `c` is `[batch, m, n]`, all row-major, and the third
+/// grid dimension is the block index. The parameter buffer `p` carries `m`,
+/// `k`, and `n` as three `uint` values at indices `0`, `1`, and `2`; the block
+/// count travels in the grid rather than in a parameter, so a block's operands
+/// and its result are reached by pointer arithmetic over the same buffers.
+///
+/// A command buffer round trip costs the same for one dispatch as for many
+/// (docs/design.md §21.10.2), so one dispatch per call is what makes a batched
+/// multiplication cost one round trip instead of one per block. Threads outside
+/// the output bounds return early, so the same source is correct for any
+/// positive `m` and `n`, and for `batch == 1` it degenerates to the unbatched
+/// case; the host guards `m == 0`, `n == 0`, and `k == 0` before dispatching.
 ///
 /// The source is compiled at run time through `newLibraryWithSource`, so the
 /// build never needs `xcrun` or a Metal toolchain.
@@ -32,18 +40,21 @@ kernel void matmul(device const float* a [[buffer(0)]],
                    device const float* b [[buffer(1)]],
                    device float* c [[buffer(2)]],
                    constant uint* p [[buffer(3)]],
-                   uint2 gid [[thread_position_in_grid]]) {
+                   uint3 gid [[thread_position_in_grid]]) {
     uint m = p[0];
     uint k = p[1];
     uint n = p[2];
     if (gid.x >= n || gid.y >= m) {
         return;
     }
+    device const float* ab = a + (size_t)gid.z * m * k;
+    device const float* bb = b + (size_t)gid.z * k * n;
+    device float* cb = c + (size_t)gid.z * m * n;
     float acc = 0.0f;
     for (uint i = 0; i < k; ++i) {
-        acc += a[gid.y * k + i] * b[i * n + gid.x];
+        acc += ab[gid.y * k + i] * bb[i * n + gid.x];
     }
-    c[gid.y * n + gid.x] = acc;
+    cb[gid.y * n + gid.x] = acc;
 }
 "#;
 

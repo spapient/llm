@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ::tensor::{shape, tensor, tensorview};
 use api::{backend, backenderror, checkbudget, checkgatherbudget, compute};
 use lib::limits;
@@ -23,14 +25,20 @@ use crate::geometry::{
 #[derive(Clone, Debug)]
 pub struct metalexecutor {
     backend: metalbackend,
+    cache: Arc<ffi::cache>,
 }
 
 impl metalexecutor {
     /// Creates an executor over a Metal backend configured with `lim`.
+    ///
+    /// The executor owns the device state and the compiled pipelines: a clone
+    /// shares them, while an independently constructed executor compiles its own
+    /// (docs/design.md §21.6).
     #[must_use]
     pub fn new(lim: limits) -> Self {
         Self {
             backend: metalbackend::new(lim),
+            cache: Arc::new(ffi::cache::new()),
         }
     }
 
@@ -38,6 +46,18 @@ impl metalexecutor {
     #[must_use]
     pub fn getbackend(&self) -> &metalbackend {
         &self.backend
+    }
+
+    /// Returns how many compute pipelines this executor has compiled so far.
+    ///
+    /// The MSL sources are compiled at run time, once per `(source, entry)`
+    /// pair, and reused by every later call; the count therefore rises to the
+    /// number of distinct kernels a workload exercises and then stops. It is the
+    /// observable that makes "compiled once" checkable from outside the crate
+    /// rather than only by timing.
+    #[must_use]
+    pub fn getcachedpipelinecount(&self) -> usize {
+        self.cache.pipelinecount()
     }
 
     /// Validates a shape's rank, element count, and byte size against the
@@ -77,7 +97,7 @@ fn maptobackend(error: metalerror) -> backenderror {
     match error {
         metalerror::sizeoverflow => backenderror::sizeoverflow,
         metalerror::nodevice
-        | metalerror::bufferallocation
+        | metalerror::allocation
         | metalerror::compile { .. }
         | metalerror::pipeline { .. }
         | metalerror::execution { .. } => backenderror::executionfailed,
@@ -97,22 +117,19 @@ impl compute for metalexecutor {
         // the check runs before the host buffer and any device buffer exist.
         let outshape = geometry.outshape()?;
         self.checkbudget(&outshape)?;
-        let outelements = outshape
-            .getelementcount()
-            .map_err(|_| backenderror::sizeoverflow)?;
-
-        let lhsdata = lhs.getdata();
-        let rhsdata = rhs.getdata();
-        let mut data = Vec::new();
-        data.try_reserve_exact(outelements)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        for b in 0..geometry.batch {
-            let lblock = &lhsdata[b * geometry.m * geometry.k..(b + 1) * geometry.m * geometry.k];
-            let rblock = &rhsdata[b * geometry.k * geometry.n..(b + 1) * geometry.k * geometry.n];
-            let block = ffi::matmul(lblock, rblock, geometry.m, geometry.k, geometry.n)
-                .map_err(maptobackend)?;
-            data.extend_from_slice(&block);
-        }
+        // One dispatch covers every batch block, so the operands are handed
+        // over whole rather than sliced per block: the block index travels in
+        // the grid (docs/design.md §21.10.2).
+        let data = ffi::matmul(
+            &self.cache,
+            lhs.getdata(),
+            rhs.getdata(),
+            geometry.batch,
+            geometry.m,
+            geometry.k,
+            geometry.n,
+        )
+        .map_err(maptobackend)?;
 
         wrap(outshape, data)
     }
@@ -125,7 +142,7 @@ impl compute for metalexecutor {
         self.checkbudget(lhs.getshape())?;
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), ADDOP)?;
-        let data = ffi::add(lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
+        let data = ffi::add(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
         wrap(outshape, data)
     }
 
@@ -137,7 +154,7 @@ impl compute for metalexecutor {
         self.checkbudget(lhs.getshape())?;
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), MULOP)?;
-        let data = ffi::mul(lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
+        let data = ffi::mul(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
         wrap(outshape, data)
     }
 
@@ -151,6 +168,7 @@ impl compute for metalexecutor {
         self.checkbudget(weight.getshape())?;
         let geometry = axisshape::rmsnorm(input.getshape(), weight.getshape())?;
         let data = ffi::rmsnorm(
+            &self.cache,
             input.getdata(),
             weight.getdata(),
             geometry.rows,
@@ -164,14 +182,14 @@ impl compute for metalexecutor {
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
         let geometry = axisshape::softmax(input.getshape())?;
-        let data =
-            ffi::softmax(input.getdata(), geometry.rows, geometry.width).map_err(maptobackend)?;
+        let data = ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width)
+            .map_err(maptobackend)?;
         wrap(input.getshape().clone(), data)
     }
 
     fn silu(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
-        let data = ffi::silu(input.getdata()).map_err(maptobackend)?;
+        let data = ffi::silu(&self.cache, input.getdata()).map_err(maptobackend)?;
         wrap(input.getshape().clone(), data)
     }
 
@@ -183,8 +201,8 @@ impl compute for metalexecutor {
         self.checkbudget(table.getshape())?;
         let geometry = embeddingshape::new(table.getshape(), indices)?;
         self.checkgatherbudget(geometry.rows, geometry.width)?;
-        let data =
-            ffi::embedding(table.getdata(), indices, geometry.width).map_err(maptobackend)?;
+        let data = ffi::embedding(&self.cache, table.getdata(), indices, geometry.width)
+            .map_err(maptobackend)?;
 
         let mut outdims = Vec::with_capacity(table.getshape().getrank());
         outdims.push(geometry.rows);
@@ -202,6 +220,7 @@ impl compute for metalexecutor {
         self.checkbudget(input.getshape())?;
         let geometry = ropeshape::new(input.getshape(), heads)?;
         let data = ffi::rope(
+            &self.cache,
             input.getdata(),
             geometry.rows,
             geometry.seqaxis,
@@ -233,6 +252,7 @@ impl compute for metalexecutor {
             kvheads,
         )?;
         let data = ffi::attention(
+            &self.cache,
             query.getdata(),
             key.getdata(),
             value.getdata(),

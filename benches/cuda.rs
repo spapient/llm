@@ -24,8 +24,8 @@ mod linux {
     use api::compute;
     use bench::{
         ELEMENTWISE, EMBEDDIM, GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN,
-        SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput, matmulinput,
-        norminput, ropeinput, softmaxinput,
+        SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput,
+        matmulbatchinput, matmulinput, norminput, ropeinput, softmaxinput,
     };
     use cpu::cpuexecutor;
     use criterion::{
@@ -74,6 +74,22 @@ mod linux {
             &mut group,
             "256",
             MATMULDIM * MATMULDIM,
+            || cpuexec.matmul(&lv, &rv).unwrap(),
+            || cudaexec.matmul(&lv, &rv).unwrap(),
+        );
+        group.finish();
+    }
+
+    fn matmul_batch(c: &mut Criterion) {
+        let (lhs, rhs) = matmulbatchinput().unwrap();
+        let (lv, rv) = (lhs.getview(), rhs.getview());
+        let cpuexec = cpuexecutor::new(LIMIT);
+        let cudaexec = cudaexecutor::new(LIMIT);
+        let mut group = c.benchmark_group("gpu/matmulbatch");
+        pair(
+            &mut group,
+            "8x256",
+            lhs.getlen(),
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || cudaexec.matmul(&lv, &rv).unwrap(),
         );
@@ -203,6 +219,7 @@ mod linux {
     criterion_group!(
         benches,
         matmul,
+        matmul_batch,
         elementwise,
         softmax,
         rmsnorm,

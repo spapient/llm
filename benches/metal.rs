@@ -29,15 +29,16 @@ mod macos {
     use api::compute;
     use bench::{
         ELEMENTWISE, EMBEDDIM, GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN,
-        SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput, matmulinput,
-        norminput, ropeinput, softmaxinput,
+        SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput,
+        matmulbatchinput, matmulinput, norminput, ropeinput, softmaxinput,
     };
     use cpu::cpuexecutor;
     use criterion::{
         BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
     };
-    use lib::limits;
+    use lib::{limits, seed};
     use metal::metalexecutor;
+    use models::{causallm, llamaconfig, llamamodel, llamaweights};
 
     /// Resource budget that admits every workload without rejecting it.
     const LIMIT: limits = limits::new(1 << 28, 1 << 31, 1 << 20, 1 << 18);
@@ -47,6 +48,21 @@ mod macos {
 
     /// Rotary base used by both sides of the RoPE comparison.
     const BASE: f32 = 10_000.0;
+
+    /// Vocabulary size of the forwarded model.
+    const VOCAB: usize = 256;
+    /// Model dimension.
+    const DIM: usize = 64;
+    /// Transformer layer count.
+    const LAYERS: usize = 2;
+    /// Query head count.
+    const NHEADS: usize = 4;
+    /// Key/value head count.
+    const KVHEADS: usize = 2;
+    /// Feed-forward hidden dimension.
+    const HIDDEN: usize = 170;
+    /// Sequence length of the forwarded model.
+    const SEQ: usize = 16;
 
     /// Measures the `cpu` and `metal` closures of one workload back to back.
     ///
@@ -79,6 +95,22 @@ mod macos {
             &mut group,
             "256",
             MATMULDIM * MATMULDIM,
+            || cpuexec.matmul(&lv, &rv).unwrap(),
+            || metalexec.matmul(&lv, &rv).unwrap(),
+        );
+        group.finish();
+    }
+
+    fn matmul_batch(c: &mut Criterion) {
+        let (lhs, rhs) = matmulbatchinput().unwrap();
+        let (lv, rv) = (lhs.getview(), rhs.getview());
+        let cpuexec = cpuexecutor::new(LIMIT);
+        let metalexec = metalexecutor::new(LIMIT);
+        let mut group = c.benchmark_group("gpu/matmulbatch");
+        pair(
+            &mut group,
+            "8x256",
+            lhs.getlen(),
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || metalexec.matmul(&lv, &rv).unwrap(),
         );
@@ -205,15 +237,48 @@ mod macos {
         group.finish();
     }
 
+    /// End-to-end forward pass of the same tiny Llama `benches/models.rs`
+    /// measures, run on both providers in one process.
+    ///
+    /// This is the workload the backend exists for, and the one where the
+    /// per-call cost of a synchronous submission dominates: a forward pass is a
+    /// *chain* of operator calls, each of which pays the command-buffer round
+    /// trip measured in docs/design.md §21.10.2. The ratio this prints is the
+    /// tax that chain pays, and the number any batching execution context must
+    /// beat.
+    fn model_forward(c: &mut Criterion) {
+        let config = llamaconfig::new(
+            VOCAB, DIM, LAYERS, NHEADS, KVHEADS, HIDDEN, 1.0e-5, 10_000.0, SEQ,
+        )
+        .unwrap();
+        let weights = llamaweights::random(&config, seed::new(42)).unwrap();
+        let model = llamamodel::new(config, weights).unwrap();
+        let tokens: Vec<usize> = (0..SEQ).map(|i| i % VOCAB).collect();
+        let cpuexec = cpuexecutor::new(LIMIT);
+        let metalexec = metalexecutor::new(LIMIT);
+
+        let mut group = c.benchmark_group("gpu/modelforward");
+        group.throughput(Throughput::Elements(SEQ as u64));
+        group.bench_function("cpu", |b| {
+            b.iter(|| black_box(model.forward(&cpuexec, black_box(&tokens)).unwrap()));
+        });
+        group.bench_function("metal", |b| {
+            b.iter(|| black_box(model.forward(&metalexec, black_box(&tokens)).unwrap()));
+        });
+        group.finish();
+    }
+
     criterion_group!(
         benches,
         matmul,
+        matmul_batch,
         elementwise,
         softmax,
         rmsnorm,
         rope,
         embedding,
-        attention
+        attention,
+        model_forward
     );
 }
 

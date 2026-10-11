@@ -10,12 +10,16 @@
 
 use ::bench::{
     ELEMENTWISE, GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN, SOFTMAXCOLS,
-    SOFTMAXROWS, attentioninput, cpuexec, elementwiseinput, embeddinginput, matmulinput, norminput,
-    ropeinput, softmaxinput,
+    SOFTMAXROWS, attentioninput, cpuexec, elementwiseinput, embeddinginput, matmulbatchinput,
+    matmulinput, norminput, ropeinput, softmaxinput,
 };
 
 /// Row count of the fixed embedding workload (`bench` keeps this crate-private).
 const EMBEDDINGVOCAB: usize = 4096;
+
+/// Block count of the fixed batched matmul workload (`bench` keeps it
+/// crate-private).
+const MATMULBATCH: usize = 8;
 
 #[test]
 fn elementwise_input_has_fixed_shape() {
@@ -36,6 +40,16 @@ fn operator_inputs_have_fixed_shapes() {
     let (a, b) = matmulinput().unwrap();
     assert_eq!(a.getshape().getdims(), &[MATMULDIM, MATMULDIM]);
     assert_eq!(b.getshape().getdims(), &[MATMULDIM, MATMULDIM]);
+
+    let (ba, bb) = matmulbatchinput().unwrap();
+    assert_eq!(
+        ba.getshape().getdims(),
+        &[MATMULBATCH, MATMULDIM, MATMULDIM]
+    );
+    assert_eq!(
+        bb.getshape().getdims(),
+        &[MATMULBATCH, MATMULDIM, MATMULDIM]
+    );
 
     let (x, w) = norminput().unwrap();
     assert_eq!(x.getshape().getdims(), &[NORMROWS, NORMCOLS]);
