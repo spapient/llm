@@ -270,18 +270,24 @@ mod tests {
         // Fill every layer uniformly so the next append fails specifically
         // because the cache is at capacity, not because layer lengths differ.
         cache.appendall(&key, &value)?;
-        let keys_before: Vec<Vec<f32>> = (0..cache.getlayers())
-            .map(|layer| cache.keys(layer).expect("filled cache has keys").getdata().to_vec())
+        let keys_before: Vec<Option<Vec<f32>>> = (0..cache.getlayers())
+            .map(|layer| cache.keys(layer).map(|tensor| tensor.getdata().to_vec()))
             .collect();
-        let values_before: Vec<Vec<f32>> = (0..cache.getlayers())
-            .map(|layer| cache.values(layer).expect("filled cache has values").getdata().to_vec())
+        let values_before: Vec<Option<Vec<f32>>> = (0..cache.getlayers())
+            .map(|layer| cache.values(layer).map(|tensor| tensor.getdata().to_vec()))
             .collect();
 
         assert!(cache.appendall(&key, &value).is_err());
         assert_eq!(cache.getlen(), 1);
         for layer in 0..cache.getlayers() {
-            assert_eq!(cache.keys(layer).map(|t| t.getdata()), Some(keys_before[layer].as_slice()));
-            assert_eq!(cache.values(layer).map(|t| t.getdata()), Some(values_before[layer].as_slice()));
+            assert_eq!(
+                cache.keys(layer).map(|tensor| tensor.getdata().to_vec()),
+                keys_before[layer]
+            );
+            assert_eq!(
+                cache.values(layer).map(|tensor| tensor.getdata().to_vec()),
+                values_before[layer]
+            );
         }
         Ok(())
     }
