@@ -33,10 +33,13 @@
 use crate::support::{build, wide};
 use ::tensor::dtype;
 use api::{backend, backenderror, compute};
+use cpu::cpuexecutor;
 use cuda::{CUDAMAXHEADDIM, CUDAMAXRANK, cudabackend, cudaexecutor, matmulpath};
 use lib::limits;
 use testkit::assertions::assertallclose;
 use testkit::reference;
+
+use crate::gpucontract;
 
 /// Reports whether an NVIDIA device is reachable, failing when it is required.
 ///
@@ -669,5 +672,37 @@ fn attention_rejects_a_head_dimension_beyond_the_device_limit() {
         exec.attention(&q.getview(), &k.getview(), &v.getview(), 1, 1, true)
             .map(|_| ()),
         Err(backenderror::resourceexhausted)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Shared device-free contract vectors
+// ---------------------------------------------------------------------------
+
+#[test]
+fn device_free_contract_vectors_conform() {
+    // Every case is settled on the host before a device call, so the
+    // `cuda-check` CI job evaluates this without a GPU.
+    gpucontract::assertconforms("cuda", cudaexecutor::new);
+}
+
+#[test]
+fn device_free_contract_vectors_match_the_cpu_backend() {
+    // The contract is device-independent: the same operand must produce the
+    // same public error on the host and on the GPU.
+    assert_eq!(
+        gpucontract::run(&cudaexecutor::new),
+        gpucontract::run(&cpuexecutor::new),
+        "the cuda and cpu backends disagree on a device-free contract vector"
+    );
+}
+
+#[test]
+fn the_reference_path_agrees_with_the_cublas_path_on_the_contract_vectors() {
+    // A path selector must not change what the backend accepts or rejects.
+    assert_eq!(
+        gpucontract::run(&cudaexecutor::new),
+        gpucontract::run(&cudaexecutor::newnvrtc),
+        "the cublas and nvrtc matmul paths disagree on a device-free contract vector"
     );
 }

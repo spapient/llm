@@ -1,5 +1,5 @@
 use ::tensor::{shape, tensor, tensorview};
-use api::{backend, backenderror, compute};
+use api::{backend, backenderror, checkbudget, checkgatherbudget, compute};
 use lib::limits;
 
 use crate::backend::cudabackend;
@@ -78,24 +78,15 @@ impl cudaexecutor {
 
     /// Validates a shape's rank, element count, and byte size against the
     /// backend budget.
+    ///
+    /// The predicate itself lives in `api` so that this crate and `metal`
+    /// cannot classify the same operand differently (docs/design.md §21.4).
     fn checkbudget(&self, s: &shape) -> Result<(), backenderror> {
-        let caps = self.backend.getcapabilities();
-        if s.getrank() > caps.getmaxrank() {
-            return Err(backenderror::executionfailed);
-        }
-        let elements = s
-            .getelementcount()
-            .map_err(|_| backenderror::sizeoverflow)?;
-        caps.getlimits()
-            .checkelements(elements)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        let bytes = elements
-            .checked_mul(core::mem::size_of::<f32>())
-            .ok_or(backenderror::sizeoverflow)?;
-        caps.getlimits()
-            .checkbytes(bytes)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        Ok(())
+        checkbudget(
+            self.backend.getcapabilities(),
+            s,
+            core::mem::size_of::<f32>(),
+        )
     }
 
     /// Validates a gathered output against the backend budget.
@@ -103,18 +94,12 @@ impl cudaexecutor {
     /// The gather's output size is `rows * width`, where `rows` comes from the
     /// index list rather than from any operand shape, so it needs its own check.
     fn checkgatherbudget(&self, rows: usize, width: usize) -> Result<(), backenderror> {
-        let elements = rows.checked_mul(width).ok_or(backenderror::sizeoverflow)?;
-        let caps = self.backend.getcapabilities();
-        caps.getlimits()
-            .checkelements(elements)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        let bytes = elements
-            .checked_mul(core::mem::size_of::<f32>())
-            .ok_or(backenderror::sizeoverflow)?;
-        caps.getlimits()
-            .checkbytes(bytes)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        Ok(())
+        checkgatherbudget(
+            self.backend.getcapabilities(),
+            rows,
+            width,
+            core::mem::size_of::<f32>(),
+        )
     }
 
     /// Runs one block of `[m, k] * [k, n]` on the configured path.
@@ -161,12 +146,13 @@ impl compute for cudaexecutor {
         self.checkbudget(lhs.getshape())?;
         self.checkbudget(rhs.getshape())?;
         let geometry = matmulshape::new(lhs.getshape(), rhs.getshape())?;
-
-        let outelements = geometry
-            .batch
-            .checked_mul(geometry.m)
-            .and_then(|value| value.checked_mul(geometry.n))
-            .ok_or(backenderror::sizeoverflow)?;
+        // The result is allocated by this crate, so the budget covers it too:
+        // the check runs before the host buffer and any device buffer exist.
+        let outshape = geometry.outshape()?;
+        self.checkbudget(&outshape)?;
+        let outelements = outshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
 
         let lhsdata = lhs.getdata();
         let rhsdata = rhs.getdata();
@@ -184,10 +170,6 @@ impl compute for cudaexecutor {
             data.extend_from_slice(&block);
         }
 
-        let mut outdims = geometry.batchdims;
-        outdims.push(geometry.m);
-        outdims.push(geometry.n);
-        let outshape = shape::new(outdims).map_err(|_| backenderror::executionfailed)?;
         wrap(outshape, data)
     }
 

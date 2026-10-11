@@ -17,17 +17,26 @@
 //! `api` depends on `lib` for resource limits and on `tensor` for the
 //! element, view, and owned tensor types used by the kernel contract. Neither
 //! of those crates may depend on `api`.
+//!
+//! # Shared resource policy
+//!
+//! [`checkbudget`] and [`checkgatherbudget`] are the one implementation of the
+//! rank, element, and byte bounds every backend declares through
+//! [`capabilities`]. Backends MUST validate through them so that the same
+//! operand shape is rejected, with the same [`backenderror`], on every device.
 
 // Module file names are chosen to differ from the public types they export: a
 // module and a re-exported type share a single name namespace at the crate
 // root, so `mod device` and `pub use device::device;` cannot coexist.
 mod backends;
+mod budget;
 mod capability;
 mod devices;
 mod error;
 mod kernels;
 
 pub use backends::{backend, kernel};
+pub use budget::{checkbudget, checkgatherbudget};
 pub use capability::capabilities;
 pub use devices::{device, devicekind};
 pub use error::backenderror;

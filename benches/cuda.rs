@@ -82,7 +82,9 @@ mod linux {
 
     fn elementwise(c: &mut Criterion) {
         let x = elementwiseinput().unwrap();
+        let y = elementwiseinput().unwrap();
         let v = x.getview();
+        let w = y.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
         let mut group = c.benchmark_group("gpu/elementwise");
@@ -92,6 +94,20 @@ mod linux {
             ELEMENTWISE,
             || cpuexec.silu(&v).unwrap(),
             || cudaexec.silu(&v).unwrap(),
+        );
+        pair(
+            &mut group,
+            "add",
+            ELEMENTWISE,
+            || cpuexec.add(&v, &w).unwrap(),
+            || cudaexec.add(&v, &w).unwrap(),
+        );
+        pair(
+            &mut group,
+            "mul",
+            ELEMENTWISE,
+            || cpuexec.mul(&v, &w).unwrap(),
+            || cudaexec.mul(&v, &w).unwrap(),
         );
         group.finish();
     }

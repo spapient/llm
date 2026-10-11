@@ -104,6 +104,18 @@ impl matmulshape {
             n,
         })
     }
+
+    /// Returns the output shape `[batch..., m, n]`.
+    ///
+    /// The plan carries the batch dimensions so the output shape is rebuilt
+    /// here rather than re-derived by the executor; the constructor of a `shape`
+    /// fails only for an empty dimension list, which a plan cannot hold.
+    pub(crate) fn outshape(&self) -> Result<shape, backenderror> {
+        let mut dims = self.batchdims.clone();
+        dims.push(self.m);
+        dims.push(self.n);
+        shape::new(dims).map_err(|_| backenderror::sizeoverflow)
+    }
 }
 
 /// The validated geometry of a last-axis normalization.

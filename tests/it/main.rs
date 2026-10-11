@@ -30,6 +30,7 @@ mod dataunits;
 mod diagnostics;
 mod formatunits;
 mod generation;
+mod gpucontract;
 mod inferunits;
 mod isolation;
 mod libcontract;

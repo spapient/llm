@@ -1,16 +1,13 @@
 use ::tensor::{shape, tensor, tensorview};
-use api::{backend, backenderror, compute};
+use api::{backend, backenderror, checkbudget, checkgatherbudget, compute};
 use lib::limits;
 
 use crate::backend::metalbackend;
 use crate::error::metalerror;
 use crate::ffi;
 use crate::geometry::{
-    ADDOP, MULOP, attentionshape, axisshape, binaryshape, embeddingshape, ropeshape,
+    ADDOP, MULOP, attentionshape, axisshape, binaryshape, embeddingshape, matmulshape, ropeshape,
 };
-
-/// The stable name of the matrix-multiply operator.
-const MATMULOP: &str = "matmul";
 
 /// A Metal executor: the crate's [`compute`](api::compute) provider.
 ///
@@ -45,24 +42,15 @@ impl metalexecutor {
 
     /// Validates a shape's rank, element count, and byte size against the
     /// backend budget.
+    ///
+    /// The predicate itself lives in `api` so that this crate and `cuda` cannot
+    /// classify the same operand differently (docs/design.md §21.4).
     fn checkbudget(&self, s: &shape) -> Result<(), backenderror> {
-        let caps = self.backend.getcapabilities();
-        if s.getrank() > caps.getmaxrank() {
-            return Err(backenderror::executionfailed);
-        }
-        let elements = s
-            .getelementcount()
-            .map_err(|_| backenderror::sizeoverflow)?;
-        caps.getlimits()
-            .checkelements(elements)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        let bytes = elements
-            .checked_mul(core::mem::size_of::<f32>())
-            .ok_or(backenderror::sizeoverflow)?;
-        caps.getlimits()
-            .checkbytes(bytes)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        Ok(())
+        checkbudget(
+            self.backend.getcapabilities(),
+            s,
+            core::mem::size_of::<f32>(),
+        )
     }
 
     /// Validates a gathered output against the backend budget.
@@ -70,18 +58,12 @@ impl metalexecutor {
     /// The gather's output size is `rows * width`, where `rows` comes from the
     /// index list rather than from any operand shape, so it needs its own check.
     fn checkgatherbudget(&self, rows: usize, width: usize) -> Result<(), backenderror> {
-        let elements = rows.checked_mul(width).ok_or(backenderror::sizeoverflow)?;
-        let caps = self.backend.getcapabilities();
-        caps.getlimits()
-            .checkelements(elements)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        let bytes = elements
-            .checked_mul(core::mem::size_of::<f32>())
-            .ok_or(backenderror::sizeoverflow)?;
-        caps.getlimits()
-            .checkbytes(bytes)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        Ok(())
+        checkgatherbudget(
+            self.backend.getcapabilities(),
+            rows,
+            width,
+            core::mem::size_of::<f32>(),
+        )
     }
 }
 
@@ -110,49 +92,28 @@ impl compute for metalexecutor {
     ) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(lhs.getshape())?;
         self.checkbudget(rhs.getshape())?;
-
-        let ld = lhs.getshape().getdims();
-        let rd = rhs.getshape().getdims();
-        if ld.len() < 2 || rd.len() < 2 {
-            return Err(backenderror::shapemismatch { op: MATMULOP });
-        }
-        let batchdims = &ld[..ld.len() - 2];
-        if batchdims != &rd[..rd.len() - 2] {
-            return Err(backenderror::shapemismatch { op: MATMULOP });
-        }
-        let m = ld[ld.len() - 2];
-        let k = ld[ld.len() - 1];
-        let rk = rd[rd.len() - 2];
-        let n = rd[rd.len() - 1];
-        if k != rk {
-            return Err(backenderror::shapemismatch { op: MATMULOP });
-        }
-
-        let batch = batchdims
-            .iter()
-            .try_fold(1usize, |acc, &d| acc.checked_mul(d))
-            .ok_or(backenderror::sizeoverflow)?;
-        let outelements = batch
-            .checked_mul(m)
-            .and_then(|x| x.checked_mul(n))
-            .ok_or(backenderror::sizeoverflow)?;
+        let geometry = matmulshape::new(lhs.getshape(), rhs.getshape())?;
+        // The result is allocated by this crate, so the budget covers it too:
+        // the check runs before the host buffer and any device buffer exist.
+        let outshape = geometry.outshape()?;
+        self.checkbudget(&outshape)?;
+        let outelements = outshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
 
         let lhsdata = lhs.getdata();
         let rhsdata = rhs.getdata();
         let mut data = Vec::new();
         data.try_reserve_exact(outelements)
             .map_err(|_| backenderror::resourceexhausted)?;
-        for b in 0..batch {
-            let lblock = &lhsdata[b * m * k..(b + 1) * m * k];
-            let rblock = &rhsdata[b * k * n..(b + 1) * k * n];
-            let block = ffi::matmul(lblock, rblock, m, k, n).map_err(maptobackend)?;
+        for b in 0..geometry.batch {
+            let lblock = &lhsdata[b * geometry.m * geometry.k..(b + 1) * geometry.m * geometry.k];
+            let rblock = &rhsdata[b * geometry.k * geometry.n..(b + 1) * geometry.k * geometry.n];
+            let block = ffi::matmul(lblock, rblock, geometry.m, geometry.k, geometry.n)
+                .map_err(maptobackend)?;
             data.extend_from_slice(&block);
         }
 
-        let mut outdims = batchdims.to_vec();
-        outdims.push(m);
-        outdims.push(n);
-        let outshape = shape::new(outdims).map_err(|_| backenderror::executionfailed)?;
         wrap(outshape, data)
     }
 

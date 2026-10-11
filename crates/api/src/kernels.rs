@@ -98,11 +98,16 @@ pub trait compute {
     /// dimensions; the last two dimensions are `[m, k]` and `[k, n]`. The
     /// result has shape `[batch..., m, n]`.
     ///
+    /// The backend budget applies to the result as well as to the operands: a
+    /// result whose element count or byte size exceeds the declared bound is
+    /// rejected before the backend allocates it. An implementation MUST NOT
+    /// accept a call whose result it cannot hold within its own budget.
+    ///
     /// # Errors
     ///
     /// Returns [`backenderror::shapemismatch`] for incompatible shapes,
-    /// [`backenderror::resourceexhausted`] when a budget rejects the inputs, or
-    /// another [`backenderror`] when execution fails.
+    /// [`backenderror::resourceexhausted`] when a budget rejects an operand or
+    /// the result, or another [`backenderror`] when execution fails.
     fn matmul(
         &self,
         lhs: &tensorview<'_, f32>,

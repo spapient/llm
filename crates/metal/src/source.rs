@@ -164,8 +164,11 @@ pub(crate) const RMSNORMTILE: usize = 256;
 /// One threadgroup per row; the row maximum and the shifted-exponential sum are
 /// each reduced across the threadgroup in threadgroup memory. The kernel
 /// subtracts the row maximum before exponentiating, matching `cpu`'s
-/// numerically stable form and leaving an all-underflow row at zero because it
-/// writes the shifted exponential and only divides when the sum is positive.
+/// numerically stable form and only dividing when the sum is positive, so a
+/// zero-sum row keeps the shifted exponential it already wrote instead of
+/// dividing by zero. That branch is unreachable for a finite row (the
+/// maximum's own shifted exponential is one); a row of negative infinity
+/// propagates NaN, because the shift itself is undefined.
 /// The parameter buffer carries `width` as a single `uint` at index `0`.
 ///
 /// The row extent is taken from `threads_per_threadgroup`, so the caller MUST

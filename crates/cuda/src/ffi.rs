@@ -266,6 +266,11 @@ pub(crate) fn matmul_cublas(
 /// standard contiguous NCHW strides of that shape, so the descriptor describes
 /// the buffer as it already lies in memory.
 ///
+/// cuDNN computes the same max-subtracting formulation, so it agrees with the
+/// scalar reference on finite rows. The behavior of a row of negative infinity
+/// under `CUDNN_SOFTMAX_ACCURATE` is not asserted: no NVIDIA GPU was reachable
+/// where this was written, so the case is recorded as not executed (E4).
+///
 /// # Errors
 ///
 /// Returns [`cudaerror`] when the device cannot be opened, cuDNN cannot be

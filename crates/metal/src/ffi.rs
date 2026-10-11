@@ -205,7 +205,10 @@ fn elementwise2(entry: &str, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, metal
 ///
 /// `input` is read as `[rows, width]`. The row maximum is subtracted before
 /// exponentiating, matching the scalar reference, and a row whose shifted
-/// exponents all underflow to zero is left as zeros.
+/// exponents sum to zero keeps the shifted exponential it already wrote rather
+/// than dividing by zero. That branch is unreachable for a finite row, because
+/// the maximum's own shifted exponential is one; a row of negative infinity is
+/// not zeroed either, because the shift itself is undefined and yields NaN.
 ///
 /// # Errors
 ///

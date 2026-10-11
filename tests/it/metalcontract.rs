@@ -18,10 +18,13 @@
 use crate::support::{build, wide};
 use ::tensor::dtype;
 use api::{backend, backenderror, compute};
+use cpu::cpuexecutor;
 use lib::limits;
 use metal::{METALMAXHEADDIM, METALMAXRANK, metalbackend, metalexecutor};
 use testkit::assertions::assertallclose;
 use testkit::reference;
+
+use crate::gpucontract;
 
 /// Scalar reference for grouped-query scaled dot-product attention.
 ///
@@ -549,4 +552,193 @@ fn attention_rejects_a_head_dimension_beyond_the_device_limit() {
             .map(|_| ()),
         Err(backenderror::resourceexhausted)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Shared device-free contract vectors
+// ---------------------------------------------------------------------------
+
+#[test]
+fn device_free_contract_vectors_conform() {
+    // Every case is settled on the host before a device call, so this runs
+    // without a GPU and pins the classification the `api` contract requires.
+    gpucontract::assertconforms("metal", metalexecutor::new);
+}
+
+#[test]
+fn device_free_contract_vectors_match_the_cpu_backend() {
+    // The contract is device-independent: the same operand must produce the
+    // same public error on the host and on the GPU.
+    assert_eq!(
+        gpucontract::run(&metalexecutor::new),
+        gpucontract::run(&cpuexecutor::new),
+        "the metal and cpu backends disagree on a device-free contract vector"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Numerical coverage beyond the first fixture size
+// ---------------------------------------------------------------------------
+
+#[test]
+fn matmul_with_distinct_extents_matches_the_reference() {
+    // Extents that are neither square nor equal to the threadgroup edge, so the
+    // dispatch covers several threadgroups in both directions with a partial
+    // edge in each.
+    let (m, k, n) = (17, 19, 13);
+    let a: Vec<f32> = (1..=m * k).map(|x| x as f32 * 0.01).collect();
+    let b: Vec<f32> = (1..=k * n).map(|x| x as f32 * -0.02).collect();
+    let lhs = build(vec![m, k], a.clone());
+    let rhs = build(vec![k, n], b.clone());
+    let exec = metalexecutor::new(wide());
+
+    let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
+
+    assert_eq!(out.getshape().getdims(), &[m, n]);
+    assertallclose(
+        out.getdata(),
+        &reference::matmul(&a, &b, m, k, n),
+        1.0e-4,
+        1.0e-4,
+    );
+}
+
+#[test]
+fn matmul_of_a_single_element_matches_the_reference() {
+    let lhs = build(vec![1, 1], vec![0.5]);
+    let rhs = build(vec![1, 1], vec![2.0]);
+    let exec = metalexecutor::new(wide());
+
+    let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
+
+    assertallclose(out.getdata(), &[1.0], 0.0, 0.0);
+}
+
+#[test]
+fn rmsnorm_handles_a_row_wider_than_one_threadgroup() {
+    // The reduction threadgroup is 256 wide; a row of 1000 exercises the
+    // strided pre-pass and a width that is not a power of two.
+    let width = 1000;
+    let rows = 3;
+    let input: Vec<f32> = (0..rows * width)
+        .map(|i| ((i % 37) as f32 - 18.0) * 0.25)
+        .collect();
+    let weight: Vec<f32> = (0..width).map(|i| 1.0 + (i % 5) as f32 * 0.1).collect();
+    let x = build(vec![rows, width], input.clone());
+    let w = build(vec![width], weight.clone());
+    let exec = metalexecutor::new(wide());
+
+    let out = exec.rmsnorm(&x.getview(), &w.getview(), 1.0e-5).unwrap();
+
+    assert_eq!(out.getshape().getdims(), &[rows, width]);
+    let mut want = Vec::new();
+    for r in 0..rows {
+        want.extend(reference::rmsnorm(
+            &input[r * width..(r + 1) * width],
+            &weight,
+            1.0e-5,
+        ));
+    }
+    assertallclose(out.getdata(), &want, 1.0e-5, 1.0e-5);
+}
+
+#[test]
+fn softmax_handles_a_row_wider_than_one_threadgroup() {
+    let width = 1000;
+    let rows = 3;
+    let input: Vec<f32> = (0..rows * width)
+        .map(|i| ((i % 53) as f32 - 26.0) * 0.3)
+        .collect();
+    let x = build(vec![rows, width], input.clone());
+    let exec = metalexecutor::new(wide());
+
+    let out = exec.softmax(&x.getview()).unwrap();
+
+    assert_eq!(out.getshape().getdims(), &[rows, width]);
+    let mut want = Vec::new();
+    for r in 0..rows {
+        want.extend(reference::softmax(&input[r * width..(r + 1) * width]));
+    }
+    assertallclose(out.getdata(), &want, 1.0e-6, 1.0e-6);
+    for r in 0..rows {
+        let sum: f32 = out.getdata()[r * width..(r + 1) * width].iter().sum();
+        assert!((sum - 1.0).abs() <= 1.0e-5, "row {r} sums to {sum}");
+    }
+}
+
+#[test]
+fn softmax_of_a_negative_infinity_row_is_not_a_number() {
+    // Pinned because the shift is undefined: subtracting a row maximum of
+    // negative infinity from itself is NaN, not a finite underflow, so the row
+    // propagates NaN. The kernel's `total > 0` guard cannot rescue it, because
+    // that comparison is false for NaN as well. `cpu` behaves identically.
+    let x = build(vec![1, 3], vec![f32::NEG_INFINITY; 3]);
+    let exec = metalexecutor::new(wide());
+
+    let out = exec.softmax(&x.getview()).unwrap();
+
+    assert!(
+        out.getdata().iter().all(|value| value.is_nan()),
+        "expected NaN propagation, got {:?}",
+        out.getdata()
+    );
+}
+
+#[test]
+fn attention_with_equal_head_counts_matches_the_reference() {
+    // `heads == kvheads` is the group size one case, where every query head
+    // reads its own key/value head.
+    let (seq, heads, kvheads, headdim) = (3, 2, 2, 4);
+    let width = heads * headdim;
+    let q: Vec<f32> = (0..seq * width).map(|i| (i as f32 * 0.1) - 1.2).collect();
+    let k: Vec<f32> = (0..seq * width).map(|i| 0.9 - i as f32 * 0.07).collect();
+    let v: Vec<f32> = (0..seq * width).map(|i| (i as f32 * 0.3) - 2.0).collect();
+    let query = build(vec![seq, width], q.clone());
+    let key = build(vec![seq, width], k.clone());
+    let value = build(vec![seq, width], v.clone());
+    let exec = metalexecutor::new(wide());
+
+    let out = exec
+        .attention(
+            &query.getview(),
+            &key.getview(),
+            &value.getview(),
+            heads,
+            kvheads,
+            true,
+        )
+        .unwrap();
+
+    assert_eq!(out.getshape().getdims(), &[seq, width]);
+    let want = attend(&q, &k, &v, heads, kvheads, headdim, true);
+    assertallclose(out.getdata(), &want, 1.0e-5, 1.0e-5);
+}
+
+#[test]
+fn rope_of_a_single_position_is_the_identity_rotation() {
+    // Position zero has angle zero, so the rotation must return the input
+    // unchanged to within the cosine's rounding.
+    let heads = 2;
+    let headdim = 4;
+    let width = heads * headdim;
+    let input: Vec<f32> = (0..width).map(|i| i as f32 * 0.5 - 2.0).collect();
+    let x = build(vec![1, width], input.clone());
+    let exec = metalexecutor::new(wide());
+
+    let out = exec.rope(&x.getview(), heads, 10_000.0).unwrap();
+
+    assertallclose(out.getdata(), &input, 1.0e-6, 1.0e-6);
+}
+
+#[test]
+fn embedding_accepts_the_first_and_last_row() {
+    let table = [0.0_f32, 1.0, 2.0, 3.0, 4.0, 5.0];
+    let t = build(vec![3, 2], table.to_vec());
+    let exec = metalexecutor::new(wide());
+
+    let out = exec.embedding(&t.getview(), &[0, 2, 2]).unwrap();
+
+    assert_eq!(out.getshape().getdims(), &[3, 2]);
+    let want = reference::embedding(&table, 2, &[0, 2, 2]);
+    assertallclose(out.getdata(), &want, 0.0, 0.0);
 }

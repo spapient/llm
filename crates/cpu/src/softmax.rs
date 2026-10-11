@@ -17,9 +17,12 @@ const SOFTMAXOP: &str = "softmax";
 /// reason, such as shape `[0, 3]`, has no rows and produces an empty output of
 /// the same shape.
 ///
-/// A row whose shifted exponents all underflow to zero, such as a row of
-/// negative infinity, is left as all zeros instead of dividing by zero.
-/// Non-finite inputs are neither clamped nor rejected; they follow ordinary
+/// A row whose shifted exponents sum to zero is left as all zeros rather than
+/// divided by zero. That branch is unreachable for a finite row, because the
+/// maximum's own shifted exponential is one; it is also why a row of negative
+/// infinity is *not* a zero row: subtracting the maximum from itself yields
+/// NaN, and the same guard propagates it instead of masking it. Non-finite
+/// inputs are neither clamped nor rejected; they follow ordinary
 /// floating-point propagation.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct cpusoftmax;

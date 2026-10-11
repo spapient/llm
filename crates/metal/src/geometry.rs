@@ -10,14 +10,16 @@
 //! No plan allocates or touches the device, so every one of them is exercised
 //! unconditionally by the contract suite, on a machine with or without a GPU.
 //!
-//! `matmul` keeps its shape reasoning in the executor (it was the first
-//! operator and its plan never needed splitting out), so this module covers the
-//! operators added afterwards.
+//! `matmul` carries a plan here too, mirroring the CUDA backend so that a
+//! boundary fix cannot cover one backend and miss the other.
 
 use api::backenderror;
 use tensor::shape;
 
 use crate::backend::METALMAXHEADDIM;
+
+/// The stable name of the matrix-multiply operator.
+pub(crate) const MATMULOP: &str = "matmul";
 
 /// The stable name of the elementwise addition operator.
 pub(crate) const ADDOP: &str = "add";
@@ -59,6 +61,64 @@ pub(crate) fn binaryshape(
         return Err(backenderror::shapemismatch { op });
     }
     Ok(lhs.clone())
+}
+
+/// The validated geometry of a batched `matmul`.
+pub(crate) struct matmulshape {
+    /// The leading dimensions of every operand, shared by both sides.
+    pub(crate) batchdims: Vec<usize>,
+    /// The product of `batchdims`, or 1 for unbatched operands.
+    pub(crate) batch: usize,
+    /// The left operand's row count.
+    pub(crate) m: usize,
+    /// The shared contraction extent.
+    pub(crate) k: usize,
+    /// The right operand's column count.
+    pub(crate) n: usize,
+}
+
+impl matmulshape {
+    /// Validates the `matmul` contract's shape preconditions.
+    pub(crate) fn new(lhs: &shape, rhs: &shape) -> Result<Self, backenderror> {
+        let ld = lhs.getdims();
+        let rd = rhs.getdims();
+        if ld.len() < 2 || rd.len() < 2 {
+            return Err(backenderror::shapemismatch { op: MATMULOP });
+        }
+        let batchdims = &ld[..ld.len() - 2];
+        if batchdims != &rd[..rd.len() - 2] {
+            return Err(backenderror::shapemismatch { op: MATMULOP });
+        }
+        let m = ld[ld.len() - 2];
+        let k = ld[ld.len() - 1];
+        if k != rd[rd.len() - 2] {
+            return Err(backenderror::shapemismatch { op: MATMULOP });
+        }
+        let n = rd[rd.len() - 1];
+        let batch = batchdims
+            .iter()
+            .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+            .ok_or(backenderror::sizeoverflow)?;
+        Ok(Self {
+            batchdims: batchdims.to_vec(),
+            batch,
+            m,
+            k,
+            n,
+        })
+    }
+
+    /// Returns the output shape `[batch..., m, n]`.
+    ///
+    /// The plan carries the batch dimensions so the output shape is rebuilt
+    /// here rather than re-derived by the executor; the constructor of a `shape`
+    /// fails only for an empty dimension list, which a plan cannot hold.
+    pub(crate) fn outshape(&self) -> Result<shape, backenderror> {
+        let mut dims = self.batchdims.clone();
+        dims.push(self.m);
+        dims.push(self.n);
+        shape::new(dims).map_err(|_| backenderror::sizeoverflow)
+    }
 }
 
 /// The validated geometry of a last-axis normalization.

@@ -8,7 +8,7 @@ use crate::backend::cpubackend;
 use crate::elementwise::{cpuadd, cpumul};
 use crate::embedding::cpuembedding;
 use crate::error::cpuerror;
-use crate::matmul::cpumatmul;
+use crate::matmul::{cpumatmul, matmulplan};
 use crate::normalization::cpurmsnorm;
 use crate::rotary::cpurope;
 use crate::softmax::cpusoftmax;
@@ -129,7 +129,12 @@ impl cpuexecutor {
         match op {
             cpuop::matmul => {
                 self.checkbudget(rhs.getshape())?;
-                Ok(cpumatmul.apply(lhs, rhs)?)
+                // The result is allocated by this executor's kernel, so the
+                // backend budget covers it too; the check runs before the
+                // output vector exists.
+                let plan = matmulplan(lhs, rhs)?;
+                self.checkbudget(&plan.outshape()?)?;
+                Ok(cpumatmul.applyplan(plan, lhs, rhs)?)
             }
             cpuop::add => {
                 self.checkbudget(rhs.getshape())?;
