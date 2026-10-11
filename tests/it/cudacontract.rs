@@ -707,6 +707,134 @@ fn the_reference_path_agrees_with_the_cublas_path_on_the_contract_vectors() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Run-time compilation cache
+// ---------------------------------------------------------------------------
+
+/// Runs one call of each of the nine operators against `exec`.
+///
+/// The operands are minimal but legal: what matters here is which kernels the
+/// call touches, not the numbers, which the numeric suites already cover.
+fn runeveryoperator(exec: &cudaexecutor) {
+    let a = build(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+    let b = build(vec![2, 2], vec![5.0, 6.0, 7.0, 8.0]);
+    let weight = build(vec![2], vec![1.0, 1.0]);
+    let table = build(vec![3, 2], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    let q = build(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0]);
+    let k = build(vec![2, 2], vec![1.0, 0.0, 0.0, 1.0]);
+    let v = build(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+
+    exec.matmul(&a.getview(), &b.getview()).unwrap();
+    exec.add(&a.getview(), &b.getview()).unwrap();
+    exec.mul(&a.getview(), &b.getview()).unwrap();
+    exec.silu(&a.getview()).unwrap();
+    exec.softmax(&a.getview()).unwrap();
+    exec.rmsnorm(&a.getview(), &weight.getview(), 1.0e-5)
+        .unwrap();
+    exec.rope(&a.getview(), 1, 10_000.0).unwrap();
+    exec.embedding(&table.getview(), &[2, 0]).unwrap();
+    exec.attention(&q.getview(), &k.getview(), &v.getview(), 1, 1, true)
+        .unwrap();
+}
+
+#[test]
+fn every_kernel_is_compiled_once_and_then_reused() {
+    // Seven `(source, entry)` pairs serve the nine operators on the cuBLAS path:
+    // `add`/`mul`/`silu` share ELEMENTWISE with three entries, and `matmul` is
+    // served by cuBLAS so it compiles nothing. Compiling is the dominant
+    // per-call cost (docs/design.md §21.10.3), so "compiled once" is asserted
+    // mechanically rather than inferred from timing.
+    if !hasdevice("every_kernel_is_compiled_once_and_then_reused") {
+        return;
+    }
+    let cublas = cudaexecutor::new(wide());
+
+    runeveryoperator(&cublas);
+    assert_eq!(
+        cublas.getcachedkernelcount(),
+        7,
+        "one pass over the operator set must compile exactly one kernel per (source, entry) pair"
+    );
+
+    runeveryoperator(&cublas);
+    assert_eq!(
+        cublas.getcachedkernelcount(),
+        7,
+        "a second pass recompiled a kernel instead of reusing it"
+    );
+
+    // The NVRTC path serves `matmul` from the in-repo kernel, which is one more
+    // pair; it must be reached only when that path is selected.
+    let nvrtc = cudaexecutor::newnvrtc(wide());
+    runeveryoperator(&nvrtc);
+    assert_eq!(
+        nvrtc.getcachedkernelcount(),
+        8,
+        "the NVRTC matmul kernel must be compiled on exactly one path"
+    );
+}
+
+#[test]
+fn a_clone_shares_the_compiled_kernels() {
+    if !hasdevice("a_clone_shares_the_compiled_kernels") {
+        return;
+    }
+    let exec = cudaexecutor::new(wide());
+    let a = build(vec![2, 2], vec![1.0; 4]);
+
+    exec.silu(&a.getview()).unwrap();
+    let clone = exec.clone();
+    assert_eq!(clone.getcachedkernelcount(), 1);
+
+    clone.add(&a.getview(), &a.getview()).unwrap();
+
+    assert_eq!(
+        exec.getcachedkernelcount(),
+        2,
+        "a clone must share the cache rather than compile into its own"
+    );
+}
+
+#[test]
+fn the_executor_is_shareable_across_threads() {
+    // The concurrency claim of docs/design.md §21.6, asserted rather than
+    // assumed: the executor is `Send + Sync`, four threads may call it at once,
+    // the results are identical, and the concurrent first calls compile the
+    // kernel once rather than once per thread.
+    if !hasdevice("the_executor_is_shareable_across_threads") {
+        return;
+    }
+    fn assertsendandsync<T: Send + Sync>() {}
+    assertsendandsync::<cudaexecutor>();
+
+    let exec = cudaexecutor::new(wide());
+    let x = build(
+        vec![64, 64],
+        (0..64 * 64).map(|i| (i % 17) as f32 * 0.25).collect(),
+    );
+    let want = exec.silu(&x.getview()).unwrap();
+
+    let got = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| scope.spawn(|| exec.silu(&x.getview()).unwrap()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(got.len(), 4);
+    for one in &got {
+        assertallclose(one.getdata(), want.getdata(), 0.0, 0.0);
+    }
+    assert_eq!(
+        exec.getcachedkernelcount(),
+        1,
+        "concurrent first calls must not each compile their own kernel"
+    );
+}
+
 #[test]
 fn softmax_of_a_negative_infinity_row_is_not_a_number() {
     // Pinned for the same reason as in `metalcontract`: subtracting a row

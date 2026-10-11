@@ -16,15 +16,18 @@
 //! * [`softmax`] — the cuDNN softmax call.
 //!
 //! The safe functions expose a narrow, run-to-completion interface: upload host
-//! slices, run one kernel or one library call, download the result. Every
-//! device, stream, module, and handle object is created locally and released by
-//! scope, so no device state outlives a call.
+//! slices, run one kernel or one library call, download the result. Every stream
+//! and library handle is created locally and released by scope, so no execution
+//! state outlives a call. The only state that does survive is [`cache`] — the
+//! retained device context and the compiled kernels — which the executor owns
+//! and which holds no request-scoped value (docs/design.md §21.6).
 //!
 //! The launch helpers take the validated plans produced by [`crate::geometry`]
 //! rather than loose extents, so no number is re-derived after it was checked.
 
 use core::ffi::c_int;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys::cublasOperation_t};
 use cudarc::cudnn::{
@@ -41,24 +44,143 @@ use crate::error::cudaerror;
 use crate::geometry::attentionshape;
 use crate::source;
 
-/// Opens CUDA device 0 and returns its context with the default stream.
+/// The device state and compiled kernels one executor owns.
 ///
-/// The stream carries its own `Arc` of the context, so a caller that only needs
-/// the stream may drop the context immediately.
-fn opendevice() -> Result<(Arc<CudaContext>, Arc<CudaStream>), cudaerror> {
-    let ctx = CudaContext::new(0).map_err(|error| cudaerror::device {
-        message: error.to_string(),
-    })?;
-    let stream = ctx.default_stream();
-    Ok((ctx, stream))
+/// Retaining device 0's primary context costs about 1.5 ms and compiling one
+/// kernel with NVRTC about 10.8 ms, both per call, before this cache existed
+/// (docs/design.md §21.10.3): `gpu/embedding` measured 15.9 ms against 26 µs for
+/// the CPU — a fixed cost independent of the work. The cache is owned by the
+/// executor and shared by its clones, deliberately *not* kept in a process-wide
+/// singleton: two independently constructed executors retain and compile
+/// independently, and nothing here outlives the executor that owns it.
+///
+/// What the cache holds is device state and compiled code, never an operand, a
+/// result, or any other request-scoped value, so sharing it across requests
+/// cannot pass data between them. The execution stream is deliberately *not*
+/// cached: one stream shared by concurrent calls would serialize their GPU work
+/// (the same reason `metal` does not cache its command queue, docs/design.md
+/// §21.6), so every call takes a fresh stream from the cached context and
+/// releases it when it returns.
+pub(crate) struct cache {
+    state: Mutex<cachestate>,
+}
+
+/// The mutable half of [`cache`], guarded by a single lock that is never
+/// acquired while another is held (the crate has exactly one).
+#[derive(Default)]
+struct cachestate {
+    /// Device 0's retained primary context, opened on first use.
+    ///
+    /// `None` means "not opened yet or the last attempt failed", so an
+    /// unavailable device is retried on the next call rather than latched.
+    device: Option<Arc<CudaContext>>,
+    /// One resolved kernel per `(source, entry)` pair.
+    ///
+    /// The key carries the kernel **source text**, so editing a kernel in
+    /// [`crate::source`] can never reuse a stale module. The map is
+    /// device-specific by construction: it lives beside the one device whose
+    /// module it was resolved from, so no device belongs in the key. Every
+    /// `CudaFunction` keeps its `CudaModule` — and through it the context —
+    /// alive, so a cached kernel cannot outlive the device it was compiled for.
+    functions: HashMap<(&'static str, &'static str), CudaFunction>,
+}
+
+impl cache {
+    /// Creates an empty cache.
+    ///
+    /// Retaining the device is deferred to the first operator call, so
+    /// construction cannot fail and the error still surfaces per call.
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Mutex::new(cachestate::default()),
+        }
+    }
+
+    /// Returns how many kernels the cache currently holds.
+    ///
+    /// Exposed so that the executor can report it and the contract suite can
+    /// assert that a second call reuses the compiled kernel instead of
+    /// compiling it again.
+    pub(crate) fn kernelcount(&self) -> usize {
+        self.lock().functions.len()
+    }
+
+    /// Takes a fresh execution stream on the cached device.
+    ///
+    /// The stream carries its own reference to the context, so it stays valid
+    /// for the whole call even though the caller holds no device handle.
+    fn stream(&self) -> Result<Arc<CudaStream>, cudaerror> {
+        let device = self.device()?;
+        device.new_stream().map_err(|error| cudaerror::device {
+            message: error.to_string(),
+        })
+    }
+
+    /// Returns the retained device, opening it once.
+    fn device(&self) -> Result<Arc<CudaContext>, cudaerror> {
+        self.lock().device()
+    }
+
+    /// Returns the resolved kernel for `(text, entry)`, compiling it once.
+    ///
+    /// The lock is held across a miss, its NVRTC compilation, and the module
+    /// load. That serializes concurrent first calls for the same kernel instead
+    /// of compiling it several times over, and it is released before the caller
+    /// moves any operand: no transfer, launch, or synchronization ever happens
+    /// under the lock.
+    fn function(&self, text: &'static str, entry: &'static str) -> Result<CudaFunction, cudaerror> {
+        let mut state = self.lock();
+        if let Some(compiled) = state.functions.get(&(text, entry)) {
+            return Ok(compiled.clone());
+        }
+        let device = state.device()?;
+        let function = compile(&device, text, entry)?;
+        state.functions.insert((text, entry), function.clone());
+        Ok(function)
+    }
+
+    /// Acquires the lock, recovering the contents if an earlier holder panicked.
+    ///
+    /// The map holds no invariant a panic could break — the worst case is a
+    /// partially filled cache, which is still a valid one — so recovering is
+    /// strictly better than turning a panic into a permanently unusable
+    /// backend. This is also why no call site uses `unwrap`.
+    fn lock(&self) -> std::sync::MutexGuard<'_, cachestate> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl cachestate {
+    /// Returns the cached device, retaining it if absent.
+    fn device(&mut self) -> Result<Arc<CudaContext>, cudaerror> {
+        if let Some(device) = &self.device {
+            return Ok(device.clone());
+        }
+        let opened = CudaContext::new(0).map_err(|error| cudaerror::device {
+            message: error.to_string(),
+        })?;
+        self.device = Some(opened.clone());
+        Ok(opened)
+    }
+}
+
+impl core::fmt::Debug for cache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The count is the only property of the cache worth printing, and it
+        // needs the lock; the platform handles themselves have no useful
+        // rendering and are not exposed.
+        f.debug_struct("cache")
+            .field("functions", &self.lock().functions.len())
+            .finish()
+    }
 }
 
 /// Compiles `text` with NVRTC, loads the module, and resolves `entry`.
-fn loadkernel(ctx: &Arc<CudaContext>, text: &str, entry: &str) -> Result<CudaFunction, cudaerror> {
+fn compile(device: &Arc<CudaContext>, text: &str, entry: &str) -> Result<CudaFunction, cudaerror> {
     let ptx = compile_ptx(text).map_err(|error| cudaerror::compile {
         message: error.to_string(),
     })?;
-    let module = ctx.load_module(ptx).map_err(|error| cudaerror::module {
+    let module = device.load_module(ptx).map_err(|error| cudaerror::module {
         message: error.to_string(),
     })?;
     module
@@ -156,6 +278,7 @@ fn submit(args: &mut LaunchArgs<'_>, config: LaunchConfig) -> Result<(), cudaerr
 /// compile, the kernel cannot be resolved, a transfer fails, a dimension does
 /// not fit its device type, or the launch fails.
 pub(crate) fn matmul_nvrtc(
+    cache: &cache,
     lhs: &[f32],
     rhs: &[f32],
     m: usize,
@@ -169,8 +292,8 @@ pub(crate) fn matmul_nvrtc(
         return Ok(vec![0.0_f32; m * n]);
     }
     let dims = devicedims::new(m, k, n)?;
-    let (ctx, stream) = opendevice()?;
-    let function = loadkernel(&ctx, source::MATMULCUDA, source::MATMULENTRY)?;
+    let stream = cache.stream()?;
+    let function = cache.function(source::MATMULCUDA, source::MATMULENTRY)?;
     let da = upload(&stream, lhs)?;
     let db = upload(&stream, rhs)?;
     let mut dc = alloc(&stream, m * n)?;
@@ -197,6 +320,7 @@ pub(crate) fn matmul_nvrtc(
 /// Returns [`cudaerror`] when the device cannot be opened, a transfer fails, a
 /// dimension does not fit `c_int`, or the cuBLAS call fails.
 pub(crate) fn matmul_cublas(
+    cache: &cache,
     lhs: &[f32],
     rhs: &[f32],
     m: usize,
@@ -210,7 +334,7 @@ pub(crate) fn matmul_cublas(
         return Ok(vec![0.0_f32; m * n]);
     }
     let dims = devicedims::new(m, k, n)?;
-    let (_ctx, stream) = opendevice()?;
+    let stream = cache.stream()?;
     let blas = CudaBlas::new(stream.clone()).map_err(|error| cudaerror::blas {
         message: error.to_string(),
     })?;
@@ -279,7 +403,12 @@ pub(crate) fn matmul_cublas(
 /// Returns [`cudaerror`] when the device cannot be opened, cuDNN cannot be
 /// loaded or set up, a transfer fails, a dimension does not fit `c_int`, or the
 /// softmax call fails.
-pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f32>, cudaerror> {
+pub(crate) fn softmax(
+    cache: &cache,
+    input: &[f32],
+    rows: usize,
+    width: usize,
+) -> Result<Vec<f32>, cudaerror> {
     if rows == 0 {
         return Ok(Vec::new());
     }
@@ -287,7 +416,7 @@ pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f3
     if input.iter().any(|value| !value.is_finite()) {
         return Ok(scalarsoftmax(input, width));
     }
-    let (_ctx, stream) = opendevice()?;
+    let stream = cache.stream()?;
     let handle = Cudnn::new(stream.clone()).map_err(cudnnfail)?;
     let operation = handle
         .create_softmax::<f32>(cudnnSoftmaxMode_t::CUDNN_SOFTMAX_MODE_CHANNEL)
@@ -361,8 +490,8 @@ fn scalarsoftmax(input: &[f32], width: usize) -> Vec<f32> {
 /// Returns [`cudaerror`] when the device cannot be opened, the source fails to
 /// compile, a transfer fails, the length does not fit `unsigned`, or the launch
 /// fails.
-pub(crate) fn add(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudaerror> {
-    elementwise2(source::ADDENTRY, lhs, rhs)
+pub(crate) fn add(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudaerror> {
+    elementwise2(cache, source::ADDENTRY, lhs, rhs)
 }
 
 /// Multiplies two equal-length `f32` operands elementwise.
@@ -370,8 +499,8 @@ pub(crate) fn add(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudaerror> {
 /// # Errors
 ///
 /// See [`add`].
-pub(crate) fn mul(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudaerror> {
-    elementwise2(source::MULENTRY, lhs, rhs)
+pub(crate) fn mul(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudaerror> {
+    elementwise2(cache, source::MULENTRY, lhs, rhs)
 }
 
 /// Applies the sigmoid linear unit elementwise.
@@ -379,13 +508,13 @@ pub(crate) fn mul(lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudaerror> {
 /// # Errors
 ///
 /// See [`add`].
-pub(crate) fn silu(input: &[f32]) -> Result<Vec<f32>, cudaerror> {
+pub(crate) fn silu(cache: &cache, input: &[f32]) -> Result<Vec<f32>, cudaerror> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
     let count = asunsigned(input.len())?;
-    let (ctx, stream) = opendevice()?;
-    let function = loadkernel(&ctx, source::ELEMENTWISE, source::SILUENTRY)?;
+    let stream = cache.stream()?;
+    let function = cache.function(source::ELEMENTWISE, source::SILUENTRY)?;
     let da = upload(&stream, input)?;
     let mut dc = alloc(&stream, input.len())?;
     let mut args = stream.launch_builder(&function);
@@ -395,13 +524,18 @@ pub(crate) fn silu(input: &[f32]) -> Result<Vec<f32>, cudaerror> {
 }
 
 /// Runs the two-operand elementwise kernel named `entry` in [`ELEMENTWISE`].
-fn elementwise2(entry: &str, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudaerror> {
+fn elementwise2(
+    cache: &cache,
+    entry: &'static str,
+    lhs: &[f32],
+    rhs: &[f32],
+) -> Result<Vec<f32>, cudaerror> {
     if lhs.is_empty() {
         return Ok(Vec::new());
     }
     let count = asunsigned(lhs.len())?;
-    let (ctx, stream) = opendevice()?;
-    let function = loadkernel(&ctx, source::ELEMENTWISE, entry)?;
+    let stream = cache.stream()?;
+    let function = cache.function(source::ELEMENTWISE, entry)?;
     let da = upload(&stream, lhs)?;
     let db = upload(&stream, rhs)?;
     let mut dc = alloc(&stream, lhs.len())?;
@@ -419,6 +553,7 @@ fn elementwise2(entry: &str, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, cudae
 /// compile, a transfer fails, an extent does not fit its device type, or the
 /// launch fails.
 pub(crate) fn rmsnorm(
+    cache: &cache,
     input: &[f32],
     weight: &[f32],
     rows: usize,
@@ -429,8 +564,8 @@ pub(crate) fn rmsnorm(
         return Ok(Vec::new());
     }
     let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
-    let (ctx, stream) = opendevice()?;
-    let function = loadkernel(&ctx, source::RMSNORMCUDA, source::RMSNORMENTRY)?;
+    let stream = cache.stream()?;
+    let function = cache.function(source::RMSNORMCUDA, source::RMSNORMENTRY)?;
     let dx = upload(&stream, input)?;
     let dw = upload(&stream, weight)?;
     let mut dy = alloc(&stream, total)?;
@@ -454,6 +589,7 @@ pub(crate) fn rmsnorm(
 /// compile, a transfer fails, an extent does not fit its device type, or the
 /// launch fails.
 pub(crate) fn rope(
+    cache: &cache,
     input: &[f32],
     rows: usize,
     seqaxis: usize,
@@ -468,8 +604,8 @@ pub(crate) fn rope(
         .checked_mul(heads)
         .and_then(|value| value.checked_mul(headdim / 2))
         .ok_or(cudaerror::sizeoverflow)?;
-    let (ctx, stream) = opendevice()?;
-    let function = loadkernel(&ctx, source::ROPECUDA, source::ROPEENTRY)?;
+    let stream = cache.stream()?;
+    let function = cache.function(source::ROPECUDA, source::ROPEENTRY)?;
     let dx = upload(&stream, input)?;
     let mut dy = alloc(&stream, input.len())?;
     let rowsu = asunsigned(rows)?;
@@ -500,6 +636,7 @@ pub(crate) fn rope(
 /// compile, a transfer fails, an extent does not fit its device type, or the
 /// launch fails.
 pub(crate) fn embedding(
+    cache: &cache,
     table: &[f32],
     indices: &[usize],
     width: usize,
@@ -510,8 +647,8 @@ pub(crate) fn embedding(
     }
     let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
     let devindices: Vec<u64> = indices.iter().map(|&index| index as u64).collect();
-    let (ctx, stream) = opendevice()?;
-    let function = loadkernel(&ctx, source::EMBEDDINGCUDA, source::EMBEDDINGENTRY)?;
+    let stream = cache.stream()?;
+    let function = cache.function(source::EMBEDDINGCUDA, source::EMBEDDINGENTRY)?;
     let dtable = upload(&stream, table)?;
     let dindices = upload(&stream, &devindices)?;
     let mut dout = alloc(&stream, total)?;
@@ -543,6 +680,7 @@ pub(crate) fn embedding(
 /// compile, a transfer fails, the launch geometry or the shared-memory request
 /// overflows, or the launch fails.
 pub(crate) fn attention(
+    cache: &cache,
     query: &[f32],
     key: &[f32],
     value: &[f32],
@@ -557,8 +695,8 @@ pub(crate) fn attention(
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(cudaerror::sizeoverflow)?;
-    let (ctx, stream) = opendevice()?;
-    let function = loadkernel(&ctx, source::ATTENTIONCUDA, source::ATTENTIONENTRY)?;
+    let stream = cache.stream()?;
+    let function = cache.function(source::ATTENTIONCUDA, source::ATTENTIONENTRY)?;
     let dquery = upload(&stream, query)?;
     let dkey = upload(&stream, key)?;
     let dvalue = upload(&stream, value)?;

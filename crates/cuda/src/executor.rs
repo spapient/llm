@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ::tensor::{shape, tensor, tensorview};
 use api::{backend, backenderror, checkbudget, checkgatherbudget, compute};
 use lib::limits;
@@ -26,9 +28,9 @@ pub enum matmulpath {
 /// A CUDA executor: the crate's [`compute`](api::compute) provider.
 ///
 /// `cudaexecutor` owns a [`cudabackend`] and is the single place where its
-/// declared rank and byte budget is enforced. It is stateless between calls and
-/// holds no request-scoped state, so one value can be shared immutably across
-/// requests.
+/// declared rank and byte budget is enforced. Besides the budget it holds only
+/// device state and compiled kernels (kept in `ffi.rs`), never a request-scoped
+/// value, so one value can be shared immutably across requests.
 ///
 /// The operator set is complete: `matmul` is served by cuBLAS (or, on the
 /// reference path, by an NVRTC kernel), `softmax` by cuDNN, and every remaining
@@ -39,15 +41,21 @@ pub enum matmulpath {
 pub struct cudaexecutor {
     backend: cudabackend,
     path: matmulpath,
+    cache: Arc<ffi::cache>,
 }
 
 impl cudaexecutor {
     /// Creates an executor whose `matmul` is served by cuBLAS.
+    ///
+    /// The executor owns the device state and the compiled kernels: a clone
+    /// shares them, while an independently constructed executor retains its own
+    /// device handle and compiles its own kernels (docs/design.md §21.6).
     #[must_use]
     pub fn new(lim: limits) -> Self {
         Self {
             backend: cudabackend::new(lim),
             path: matmulpath::cublas,
+            cache: Arc::new(ffi::cache::new()),
         }
     }
 
@@ -61,7 +69,20 @@ impl cudaexecutor {
         Self {
             backend: cudabackend::new(lim),
             path: matmulpath::nvrtc,
+            cache: Arc::new(ffi::cache::new()),
         }
+    }
+
+    /// Returns how many kernels this executor has compiled so far.
+    ///
+    /// The kernel sources are compiled at run time, once per `(source, entry)`
+    /// pair, and reused by every later call; the count therefore rises to the
+    /// number of distinct kernels a workload exercises and then stops. It is the
+    /// observable that makes "compiled once" checkable from outside the crate
+    /// rather than only by timing.
+    #[must_use]
+    pub fn getcachedkernelcount(&self) -> usize {
+        self.cache.kernelcount()
     }
 
     /// Returns the backend whose budget this executor enforces.
@@ -112,8 +133,8 @@ impl cudaexecutor {
         n: usize,
     ) -> Result<Vec<f32>, cudaerror> {
         match self.path {
-            matmulpath::cublas => ffi::matmul_cublas(lhs, rhs, m, k, n),
-            matmulpath::nvrtc => ffi::matmul_nvrtc(lhs, rhs, m, k, n),
+            matmulpath::cublas => ffi::matmul_cublas(&self.cache, lhs, rhs, m, k, n),
+            matmulpath::nvrtc => ffi::matmul_nvrtc(&self.cache, lhs, rhs, m, k, n),
         }
     }
 }
@@ -181,7 +202,7 @@ impl compute for cudaexecutor {
         self.checkbudget(lhs.getshape())?;
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), ADDOP)?;
-        let data = ffi::add(lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
+        let data = ffi::add(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
         wrap(outshape, data)
     }
 
@@ -193,7 +214,7 @@ impl compute for cudaexecutor {
         self.checkbudget(lhs.getshape())?;
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), MULOP)?;
-        let data = ffi::mul(lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
+        let data = ffi::mul(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
         wrap(outshape, data)
     }
 
@@ -207,6 +228,7 @@ impl compute for cudaexecutor {
         self.checkbudget(weight.getshape())?;
         let geometry = axisshape::rmsnorm(input.getshape(), weight.getshape())?;
         let data = ffi::rmsnorm(
+            &self.cache,
             input.getdata(),
             weight.getdata(),
             geometry.rows,
@@ -220,14 +242,14 @@ impl compute for cudaexecutor {
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
         let geometry = axisshape::softmax(input.getshape())?;
-        let data =
-            ffi::softmax(input.getdata(), geometry.rows, geometry.width).map_err(maptobackend)?;
+        let data = ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width)
+            .map_err(maptobackend)?;
         wrap(input.getshape().clone(), data)
     }
 
     fn silu(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
-        let data = ffi::silu(input.getdata()).map_err(maptobackend)?;
+        let data = ffi::silu(&self.cache, input.getdata()).map_err(maptobackend)?;
         wrap(input.getshape().clone(), data)
     }
 
@@ -239,8 +261,8 @@ impl compute for cudaexecutor {
         self.checkbudget(table.getshape())?;
         let geometry = embeddingshape::new(table.getshape(), indices)?;
         self.checkgatherbudget(geometry.rows, geometry.width)?;
-        let data =
-            ffi::embedding(table.getdata(), indices, geometry.width).map_err(maptobackend)?;
+        let data = ffi::embedding(&self.cache, table.getdata(), indices, geometry.width)
+            .map_err(maptobackend)?;
 
         let mut outdims = Vec::with_capacity(table.getshape().getrank());
         outdims.push(geometry.rows);
@@ -258,6 +280,7 @@ impl compute for cudaexecutor {
         self.checkbudget(input.getshape())?;
         let geometry = ropeshape::new(input.getshape(), heads)?;
         let data = ffi::rope(
+            &self.cache,
             input.getdata(),
             geometry.rows,
             geometry.seqaxis,
@@ -289,6 +312,7 @@ impl compute for cudaexecutor {
             kvheads,
         )?;
         let data = ffi::attention(
+            &self.cache,
             query.getdata(),
             key.getdata(),
             value.getdata(),

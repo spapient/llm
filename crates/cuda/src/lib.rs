@@ -3,8 +3,10 @@
 //!
 //! `cuda` is a Layer 1 backend: it implements the frozen [`api::backend`] and
 //! [`api::compute`] contracts for `f32` operands on GPU device 0. It owns no
-//! request state and holds no model weights; every operator call creates, uses,
-//! and releases its own device resources.
+//! request state and holds no model weights. An executor owns the retained
+//! device context and the kernels compiled from `source.rs`, while every operator
+//! call takes, uses, and releases its own execution stream (docs/design.md
+//! §21.6), so no operand or result survives a call.
 //!
 //! # Platform
 //!

@@ -404,3 +404,12 @@ bash scripts/checkthresholds.sh
 * **首次执行暴露的缺陷（E1）。** `the_two_matmul_paths_agree_on_a_non_square_case` 以 shape `[7, 4]` 描述右操作数却只给 20 个元素，报 `lengthmismatch { expected: 28, actual: 20 }`。该套件整体 `#[cfg(target_os = "linux")]` 且无设备时提前返回，故自 67ff611 起从未执行；Linux 目标上的编译绿灯掩盖了它。已修正（28 个元素）。
 * **基准（E1，不含任何加速声明）。** `cargo bench -p llm --bench cuda --locked -- --measurement-time 2 --warm-up-time 0.5` 的十个工作负载全部产出数字：CUDA 在当时由 cuBLAS/cuDNN 服务的三项（`matmul` 1.88×、`matmulbatch` 1.81×、`softmax` 1.73×）上快于 CPU，其余由 NVRTC 服务的工作负载仍慢于 CPU（`rope` 37.8×、`embedding` 607×）。
 * **每调用固定成本的分解（E1，临时探针后已删除）。** NVRTC 服务的算子每调用约 **12.3 ms** 且与负载无关（2×2 `matmul` 与 2 元素 `add` 同为 12.3 ms；2^20 元素只多 3.4 ms）；其中约 1.5 ms 是设备上下文与库句柄，约 **10.8 ms 是 `compile_ptx` 加模块装载**。故 CUDA 侧的 G4 整改（缓存编译产物与设备上下文）收益大于 Metal 同类改动，其次是 G5 的跨调用 dispatch 批处理。两项均**尚未实施**。
+
+### 10.7 CUDA 的 G4 整改（编译产物与设备上下文缓存，2026-10-12 实施）
+
+按 10.6 的测量实施：device 0 的已 retain 主上下文与按 `(source, entry)` 索引的已解析内核收进由 executor 拥有、clone 经 `Arc` 共享的 `ffi::cache`；执行流**故意不缓存**（共享流会串行化并发调用），每次调用取一条新流并在返回前释放。设计、锁序、失败与中毒语义见 `docs/design.md` §21.6，数据见 §21.10.3 第 7 条。
+
+* **性能（E1，同机前后对比）。** 由 NVRTC 服务的七个工作负载 median 下降 **74–92%**（`rope` 12.402 → 0.95834 ms、`attention` 14.309 → 1.2974 ms、`embedding` 15.941 → 4.1326 ms）；两个 cuBLAS 工作负载不变（该路径本就不编译）。CUDA 快于 CPU 的工作负载由 3 个增至 **5 个**。**不声明超出该表范围的加速。**
+* **缓存后固定成本（E1）。** NVRTC 算子 2 元素 0.98–1.08 ms/调用（缓存前 12.3 ms）；cuBLAS 1.47–1.59 ms、cuDNN 2.85–2.98 ms——后者如今由句柄创建主导，是下一项。
+* **一致性缺陷（E1，已修）。** 真机执行发现 cuDNN 的 `CUDNN_SOFTMAX_ACCURATE` 对全 `-inf` 行返回全零，而契约要求传播 NaN；已改为「输入含非有限值时不委托 cuDNN」，代价约 +1.9 ms/2^21 元素。下一步把 `softmax` 改由在仓 NVRTC 内核服务，可同时去掉该守卫与句柄创建（涉及 §21.2 决策 11、§21.8 站点表 3 → 2）。
+* **验证（E1）。** `cudacontract` 41 passed / 0 failed（含三个缓存断言：编译一次、clone 共享、四线程并发只编译一次）；`unsafe` 站点仍为 3/3。
