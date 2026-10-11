@@ -150,7 +150,13 @@ impl generationrequest {
             });
         }
         let maxnew = params.stop.getmaxnewtokens();
-        if prompt.len() + maxnew > params.maxseq {
+        let requested_len = prompt.len().checked_add(maxnew).ok_or_else(|| {
+            infererror::invalidrequest {
+                field: "maxnewtokens",
+                detail: "prompt length plus maxnewtokens overflows usize".to_string(),
+            }
+        })?;
+        if requested_len > params.maxseq {
             return Err(infererror::invalidrequest {
                 field: "maxnewtokens",
                 detail: format!(
@@ -297,13 +303,32 @@ impl generationrequest {
                 return Err(infererror::tokenoutofrange { token, vocab });
             }
         }
-        if self.prompt.len() > config.getmaxseq() {
+        let model_maxseq = config.getmaxseq();
+        if self.maxseq > model_maxseq {
             return Err(infererror::invalidrequest {
-                field: "prompt",
+                field: "maxseq",
                 detail: format!(
-                    "length {} exceeds model maxseq {}",
+                    "request maxseq {} exceeds model maxseq {}",
+                    self.maxseq, model_maxseq
+                ),
+            });
+        }
+        let requested_len = self
+            .prompt
+            .len()
+            .checked_add(self.getmaxnewtokens())
+            .ok_or_else(|| infererror::invalidrequest {
+                field: "maxnewtokens",
+                detail: "prompt length plus maxnewtokens overflows usize".to_string(),
+            })?;
+        if requested_len > model_maxseq {
+            return Err(infererror::invalidrequest {
+                field: "maxnewtokens",
+                detail: format!(
+                    "prompt length {} plus maxnewtokens {} exceeds model maxseq {}",
                     self.prompt.len(),
-                    config.getmaxseq()
+                    self.getmaxnewtokens(),
+                    model_maxseq
                 ),
             });
         }
