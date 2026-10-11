@@ -184,7 +184,7 @@ fn the_two_matmul_paths_agree_on_a_non_square_case() {
         return;
     }
     let a: Vec<f32> = (1..=35).map(|x| 0.125 * x as f32).collect();
-    let b: Vec<f32> = (1..=20).map(|x| -0.25 * x as f32).collect();
+    let b: Vec<f32> = (1..=28).map(|x| -0.25 * x as f32).collect();
     let lhs = build(vec![5, 7], a);
     let rhs = build(vec![7, 4], b);
 
