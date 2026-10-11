@@ -2387,7 +2387,7 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 * **Metal 的真实 `unsafe` 面仅 4 处**：host→device 上传、device→host 下载、`setBuffer_offset_atIndex`、`setBytes_length_atIndex`。`MTLCreateSystemDefaultDevice`、`newLibraryWithSource_options_error`、`newComputePipelineStateWithFunction_error`、`newBufferWithLength_options`、`newCommandQueue`、`commandBuffer`、`computeCommandEncoder`、`setComputePipelineState`、`dispatchThreads_threadsPerThreadgroup`、`endEncoding`、`commit`、`waitUntilCompleted` 全部是**安全**的（实测判据：编译器对多余的 `unsafe` 块报 `unused_unsafe`）。
 * **cudarc 可在无 CUDA 工具链的 macOS 上类型检查通过。** feature 为 `driver`、`cublas`、`cudnn`、`nvrtc`、`dynamic-loading`，且**必须**显式指定一个 `cuda-<version>`（本仓库取 `cuda-12060`；缺省时 `build.rs` 直接失败）。因此 `cargo check -p cuda` 可作为无 GPU 的 CI 门禁。
 * **cuDNN 同样可在无工具链的宿主上类型检查。** `dynamic-loading` 下 `cudarc` 的 `build.rs` 不发出任何 `rustc-link-lib`，`cudnn` 的符号改由 `libloading` 在运行时解析（`src/cudnn/sys` 的 `culib()`），故 cuDNN 头文件与库都不参与本机构建。代价是符号缺失从链接期错误变为 `cudarc` 内部的 `panic!`，我们无法消除，只如实记录（证据等级 E1，读源码所得）。
-* CUDA 的运行时数值验证**未执行**（本机与默认 CI 均无 NVIDIA GPU），声明为 E4。
+* CUDA 的运行时数值验证**已于 2026-10-12 在真机执行**（RTX 2080 Ti；`cudacontract` 36 passed / 0 failed、`cargo test --workspace` 758 passed / 0 failed、输出 0 条 `E4 未执行`），见 21.10.3。
 
 两个 crate 都只在目标平台编译出实体代码：`metal` 仅在 `cfg(target_os = "macos")` 下启用依赖并导出实现，其他平台编译为空 lib；`cuda` 仅在 `cfg(target_os = "linux")` 下列表依赖，其他平台编译为空 lib。这样 `cargo check --workspace --all-targets` 在任何宿主与 CI 上都保持通过。
 
@@ -2553,16 +2553,15 @@ cuda  -> api
 * GPU 能力以两个独立、可单独删除的 crate 提供；删除任一 crate 不影响 `cpu` 路径与依赖图。
 * `unsafe` 面被压缩到 7 个已登记站点（`metal` 4 + `cuda` 3），且由机械门禁强制；既有 19 个 crate 的 `forbid` 未被触碰。
 * `api` 与上层（`models`/`infer`）零改动即可通过 `C: compute` 使用 GPU。
-* CUDA 的运行时正确性在无 GPU 环境下**不可验证**，本文件与 `docs/conformance.md` 如实标注为未执行，绝不声称通过。
+* CUDA 的运行时正确性依赖 NVIDIA 驱动与设备：本文件与 `docs/conformance.md` 只声明**真机执行过**的部分（2026-10-12 的 RTX 2080 Ti 会话，见 21.10.3），未执行的部分仍如实标注，绝不声称通过。
 * 维护成本：两个 crate 各自绑定一个易变的第三方 GPU 绑定（`objc2-metal`、`cudarc`），版本升级需重新核对 21.8 的站点表。
 
 ### 21.10 验证
 
 * **Metal（E1）。** `tests/it/metalcontract.rs` 的 43 个契约测试在本机 Apple GPU 上全部真实运行并通过（MSL 经 `newLibraryWithSource` 运行期编译）：身份/设备/能力声明；`matmul` 数值（含前导批维）与形状/预算拒绝；`add`/`mul`/`silu` 数值、形状不匹配与预算拒绝、空操作数；`softmax` 逐行数值、极端 logits 稳定性、空末轴拒绝、零行空输出；`rmsnorm` 逐行数值、空末轴与权重长度拒绝、单行权重接受；`rope` 逐位置数值与零头数/奇数头宽/秩一拒绝；`embedding` 数值、越界下标拒绝、gather 预算拒绝、空下标输出；`attention` 因果与非因果数值、单位置恒等、形状不一致拒绝、每头宽度超设备上限拒绝。数值用例均对照 `testkit::reference` 的同名标量参考，容差 1e-6–1e-5。首轮运行时 `rope` 内核因把局部变量命名为 `half`（与 MSL 内建标量类型同名）而编译失败并报 `executionfailed`；改名为 `pairs` 后通过，该失败与修复均在本机复现（E1）。
 * **CUDA 编译与静态门禁（E1）。** `cargo check -p cuda --target x86_64-unknown-linux-gnu --all-targets`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets -- -D warnings`，以及 `-p llm --target x86_64-unknown-linux-gnu --test it`、`--bench cuda` 的同名检查均 exit 0。全部在无 CUDA toolkit、无 NVIDIA 驱动的 macOS 宿主上完成，`dynamic-loading` 使其不必要。
-* **CUDA 设备无关契约（E1 编译；运行未执行）。** `tests/it/cudacontract.rs` 共 33 例，其中 18 例在 executor 的任何设备调用之前就已由宿主侧校验定案：身份与能力声明、matmul 路径选择、八个算子的形状/下标/空末轴拒绝、元素与 gather 预算、`CUDAMAXHEADDIM` 上限，以及 `matmul` 零收缩、空输入、零行等退化用例。逐一核对 `executor.rs` 的校验顺序确认这 18 例不会进入 `ffi` 的设备路径（证据等级 E1 的代码审计）。本机没有 Linux 运行环境，故该套件的**运行时结果未在此处执行**：18 例的通过/失败将在 Linux CI（`quality` 的 `cargo test --workspace` 与 `cuda-check`）上产出。
-* **CUDA 数值（E4）。** 其余 15 例需要设备，均以与标量参考对照；本机与默认 CI 均无 NVIDIA GPU，未执行。它们在探测不到 `nvidia-smi -L` 时打印 `E4 未执行` 并返回，真实运行依赖 `cuda-test` 的自托管 GPU runner。
-* **CUDA 基准（E4）。** `benches/cuda.rs` 已在宿主（`cargo bench --workspace --no-run`）与 Linux 目标上编译通过，但**没有任何 CUDA 测量**：本机无 GPU。该目标在同一轮内测量 CPU 与 CUDA 两侧的八个算子，待 GPU runner 可用时产出可比基线；在此之前不声称任何加速（VF5）。
+* **CUDA 契约（E1，2026-10-12 真机）。** `tests/it/cudacontract.rs` 共 36 例，在 RTX 2080 Ti 主机上以 `LLM_CUDA_REQUIRE_DEVICE=1` 全部执行通过（36 passed / 0 failed，输出中 0 条 `E4 未执行`）：18 例定案于宿主侧（身份与能力声明、matmul 路径选择、八个算子的形状/下标/空末轴拒绝、元素与 gather 预算、`CUDAMAXHEADDIM` 上限、退化空输入），15 例走设备并与 `testkit::reference` 的标量参考对照（cuBLAS 与 NVRTC 两条 `matmul` 路径、`softmax`、`rmsnorm`、`rope`、`embedding`、`attention`、逐元素，容差 1e-4–1e-5），其余 3 例断言与共享向量列表一致。首次执行暴露并修正了一个用例缺陷，命令与结果见 21.10.3。
+* **CUDA 基准（E1，2026-10-12 真机）。** `benches/cuda.rs` 的十个工作负载在真机上运行，CPU 与 CUDA 两侧在同一进程、同一轮内测量；数字、每调用固定成本的分解与结论见 21.10.3。**不声明任何加速**（VF5）：CUDA 只在三个由 cuBLAS/cuDNN 服务的工作负载上快于 CPU，其余（由 NVRTC 服务）仍慢于 CPU，原因已由测量定位到每次调用的固定成本。
 * **门禁（E1）。** `scripts/checkunsafe.sh` 四项断言全绿（`metal` 4/4 站点、`cuda` 3/3 站点，各有 SAFETY 注释）；`scripts/checknaming.sh`、`scripts/checkthresholds.sh` 与汇总的 `scripts/check.sh`（fmt、全工作区 check/clippy、命名、内联测试、unsafe、阈值、文档）全部通过。
 * **回归（E1）。** `cargo test --workspace` 在 macOS 宿主上 44 个测试目标全部 `test result: ok`、0 failed（exit 0），其中 `tests/it/main.rs` 单个二进制 748 passed / 0 failed；`metalcontract` 的 30 例真实运行，`cudacontract` 因平台 cfg 不参与本机构建。
 
@@ -2584,7 +2583,7 @@ cuda  -> api
 * **共享的无设备契约向量（E1）。** `tests/it/gpucontract.rs` 定义 30 个在任何机器上都定案于宿主侧的向量（秩/元素/字节预算、`matmul` 结果预算与其 inclusive 边界、七个算子的形状与下标拒绝、gather 输出预算），`metal` 与 `cuda` 两个套件各自断言「与本列表一致」，并各自断言「与 `cpu` 的观测逐项相同」。
 * **证伪性验证（E1）。** 把 `api::checkbudget` 的秩分类改回 `executionfailed`：`metal` 的两个向量用例都变红，报文为 `case \`silu/rank\` returned Some(executionfailed), the contract requires Some(resourceexhausted)`；把 `metal` executor 里 `self.checkbudget(&outshape)?` 一行删掉：`case \`matmul/outelements\` returned None, the contract requires Some(resourceexhausted)`。两处探针随后还原。
 * **Metal 真机数值扩展（E1）。** `metalcontract` 由 30 增至 40 例并在本机 Apple GPU 上全部通过：非方阵且各维互不相同（17×19×13，网格在两方向都跨越多个 threadgroup）、单元素 matmul、宽度 1000（跨 threadgroup 且非 2 的幂）的 `rmsnorm`/`softmax`、`heads == kvheads` 的 attention、位置 0 的 `rope` 恒等、embedding 首尾行。新增的 `softmax_of_a_negative_infinity_row_is_not_a_number` 钉住全 `-inf` 行传播 NaN（既有文档声称「保持全零」与此不符，已更正，见 6.3）。
-* **CUDA 侧（E1 编译；运行 E4 未执行）。** `cargo check -p llm --target x86_64-unknown-linux-gnu --test it --locked`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets --locked -- -D warnings` 与同目标的 `-D clippy::cognitive_complexity -D clippy::too_many_lines` 均 exit 0；`cudacontract` 新增的 3 例（与向量列表一致、与 `cpu` 一致、cuBLAS 与 NVRTC 两条路径一致）在 Linux 上编译通过，运行结果仍待 GPU runner。
+* **CUDA 侧（E1）。** `cargo check -p llm --target x86_64-unknown-linux-gnu --test it --locked`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets --locked -- -D warnings` 与同目标的 `-D clippy::cognitive_complexity -D clippy::too_many_lines` 均 exit 0；`cudacontract` 新增的 3 例（与向量列表一致、与 `cpu` 一致、cuBLAS 与 NVRTC 两条路径一致）随后在 2026-10-12 的真机上与其余 33 例一同运行通过（36 passed / 0 failed），见 21.10.3。
 * **门禁（E1）。** `bash scripts/check.sh` 报 `All static quality checks passed.`（exit 0）；`cargo test --workspace` 758 passed / 0 failed。
 
 * **Metal 全算子基线（E1）。** `benches/metal.rs` 由只测 `matmul` 扩为九个算子，其工作负载与组名与 `benches/cuda.rs` 一致（共享语义、各自内核）。命令：`cargo bench -p llm --bench metal -- --warm-up-time 0.5 --measurement-time 1.0 --sample-size 10`，release profile，criterion 0.7；环境同上表。数值为 2026-10-12 一次运行的 median：
@@ -2655,7 +2654,61 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 **4. 端到端代价（E1）。** `benches/metal.rs` 新增 `gpu/modelforward`：同一微型 Llama（2 层、`dim=64`、`seq=16`）的前向在**同一进程内**分别跑 CPU 与 Metal 两个 provider。median：**CPU 129–130 µs，Metal 50.5–53.5 ms（约 390–414×）**。该前向是一条约 35 次 `compute` 调用的链，53.5 ms ÷ 35 ≈ 1.5 ms/调用，与第 1 条的往返地板一致。这是 21.13 的直接依据，也是任何批处理实现必须击败的基线。
 
-**5. 验证（E1）。** `metalcontract` 43 例在本机 Apple GPU 上全部通过，其中 `every_kernel_is_compiled_once_and_then_reused` 断言「九个算子恰好九个 pipeline，重复一遍仍为九」；`a_clone_shares_the_compiled_pipelines` 断言 clone 共享；`the_executor_is_shareable_across_threads` 断言 `Send + Sync` 且四线程并发结果逐位一致、只编译一次。`unsafe` 站点仍为 4/4（本次改动未新增任何 `unsafe`）。CUDA 侧未随动：其实测基线不存在（E4），且其每 block 只是一次内核启动而非一次命令缓冲往返，收益量级不同，按 21.7 的「各后端独立调优」保留现状并记录。
+**5. 验证（E1）。** `metalcontract` 43 例在本机 Apple GPU 上全部通过，其中 `every_kernel_is_compiled_once_and_then_reused` 断言「九个算子恰好九个 pipeline，重复一遍仍为九」；`a_clone_shares_the_compiled_pipelines` 断言 clone 共享；`the_executor_is_shareable_across_threads` 断言 `Send + Sync` 且四线程并发结果逐位一致、只编译一次。`unsafe` 站点仍为 4/4（本次改动未新增任何 `unsafe`）。CUDA 侧当时未随动，理由是其实测基线不存在（E4）。21.10.3 现已建立该基线：CUDA 的每调用固定成本约 12.3 ms，其中约 10.8 ms 是 NVRTC 编译，故同一类优化（复用编译产物与设备上下文）对 CUDA 的收益比 Metal 更大；实施次序见 21.11。
+
+#### 21.10.3 CUDA 真机验证与基线（2026-10-12）
+
+环境（E1）：Linux 5.4.0-182-generic x86_64，96 vCPU，375 GiB RAM；GPU 为 NVIDIA GeForce RTX 2080 Ti（`sm_75`，11264 MiB），驱动 580.105.08；CUDA runtime 13.0（libcudart / libnvrtc / libcublas / libcublasLt 13.0、libcudnn.so.9），**无 `nvcc`**（内核由 libnvrtc 在运行期编译）；`rustc 1.99.0 (b940084d7)` 与宿主一致。被测树以 `git archive` 传输并按 sha256 校验（`3cc4fae` → `95d6c494…`；含本次用例修正的树 → `88da3d95…`），故下面每个数字都对应一个可复核的提交。
+
+**1. 契约（E1）。** `LLM_CUDA_REQUIRE_DEVICE=1 cargo test -p llm --test it cudacontract`：
+
+| 轮次 | 结果 |
+| --- | --- |
+| 首次真机执行（用例修正前） | 35 passed / **1 failed** |
+| 用例修正后 | **36 passed / 0 failed** |
+
+失败用例为 `the_two_matmul_paths_agree_on_a_non_square_case`，报文 `lengthmismatch { expected: 28, actual: 20 }`：用例以 shape `[7, 4]` 描述右操作数，却只提供 20 个元素。该套件整体 `#[cfg(target_os = "linux")]`，且设备用例在探测不到 GPU 时提前返回，因此该缺陷自 67ff611 起潜伏，在无 NVIDIA GPU 的开发机上从未被执行。已修正为 28 个元素（提交 `test(cuda): 修正非方阵 matmul 对照用例的右操作数长度`）。这正是「未执行不得记为通过」的价值：Linux 目标上的编译绿灯掩盖了一个必然失败的用例。
+
+全量执行：`LLM_CUDA_REQUIRE_DEVICE=1 cargo test --workspace --locked` → **758 passed / 0 failed**，输出中 **0 条 `E4 未执行`**（即 15 个需要设备的用例确实运行）；`bash scripts/check.sh` → `All static quality checks passed.`（exit 0）。同一树在宿主 macOS 上为 765 passed / 0 failed，两侧均 0 failed。
+
+**2. 每调用固定成本的分解（E1，临时探针，随后从被检树删除）。** 探针只经 `compute` 公共接口计时（每项 20 次取均值，先做一次预热），把与负载无关的部分与负载相关的部分分开：
+
+| 调用 | 工作量 | 每调用耗时 |
+| --- | --- | ---: |
+| `cudaexecutor::new` | 不触碰设备 | 0.000 ms |
+| `matmul` 2×2（cuBLAS） | 4 次乘加 | 1.468 ms |
+| `softmax` 1×64（cuDNN） | 64 元素 | 2.373 ms |
+| `matmul` 2×2（NVRTC） | 4 次乘加 | 12.255 ms |
+| `add` 2×2（NVRTC） | 2 个元素 | 12.309 ms |
+| `add` 2^20（NVRTC） | 2^20 元素、8 MiB 往返 | 15.711 ms |
+
+同一进程、同一设备、同一次运行给出的结论：
+
+* `cudaexecutor::new` 不触碰设备，构造本身没有成本；设备上下文是在**每次算子调用内部**创建的。
+* 由 NVRTC 服务的算子每调用约 **12.3 ms**，且与内核和负载都无关（2×2 的 `matmul` 与 2 个元素的 `add` 同为 12.3 ms）。其中约 1.5 ms 是设备上下文与库句柄——该量由 cuBLAS 2×2 的 1.468 ms 与 cuDNN 1×64 的 2.373 ms 界定——其余约 **10.8 ms 是 `compile_ptx` 加模块装载**。
+* 负载相关部分是二阶项：2^20 元素的 `add` 只比 2 元素的 `add` 多 3.4 ms，其中已包含 8 MiB 的 htod/dtoh 往返与一次 dispatch。
+* 结构与 Metal 同构（21.10.2 第 1 条：往返约 1.9–2.0 ms 且与负载无关），但 CUDA 的固定成本高约 6–7 倍，且最大的一项是**运行期编译**而不是提交往返。
+
+**3. 基准（E1）。** `cargo bench -p llm --bench cuda --locked -- --measurement-time 2 --warm-up-time 0.5`，release profile，criterion 0.7.0；每项取一次运行的 median，CPU 与 CUDA 在同一进程、同一轮内测量（故环境漂移同时移动两侧，比值仍可比）：
+
+| Benchmark | 工作负载 | CPU median | CUDA median | 比值 |
+| --- | --- | ---: | ---: | ---: |
+| `gpu/matmul/…256` | 256×256×256 f32 | 2.7010 ms | 1.4363 ms | CUDA 快 1.88× |
+| `gpu/matmulbatch/…8x256` | 8 × 256³ | 20.912 ms | 11.535 ms | CUDA 快 1.81× |
+| `gpu/softmax/…rows512cols4096` | 512×4096 f32 | 10.871 ms | 6.2688 ms | CUDA 快 1.73× |
+| `gpu/elementwise/…silu` | 2^20 f32 | 4.5173 ms | 13.927 ms | 慢 3.08× |
+| `gpu/rmsnorm/…rows512cols4096` | 512×4096 f32 | 3.6619 ms | 16.713 ms | 慢 4.57× |
+| `gpu/attention/…seq128heads8dim64` | 128×8×64 f32 | 5.0748 ms | 14.309 ms | 慢 2.82× |
+| `gpu/elementwise/…add` | 2^20 f32 | 499.31 µs | 14.859 ms | 慢 29.8× |
+| `gpu/elementwise/…mul` | 2^20 f32 | 501.92 µs | 14.829 ms | 慢 29.5× |
+| `gpu/rope/…seq128heads8dim64` | 128×8×64 f32 | 327.98 µs | 12.402 ms | 慢 37.8× |
+| `gpu/embedding/…gather128` | 128 行 × 1024 | 26.264 µs | 15.941 ms | 慢 607× |
+
+该表与第 2 条一致：CUDA 胜出的三项（`matmul`、`matmulbatch`、`softmax`）全部由 cuBLAS/cuDNN 服务，固定成本约 1.5–2.4 ms；每一个劣于 CPU 的工作负载都由 NVRTC 服务，其 12.3 ms 固定成本中约 10.8 ms 是运行期编译。`embedding` 的 CPU 侧仅 26 µs，故表现为 607×；而 2^20 元素的 `add`（14.9 ms）与 128×8×64 的 `rope`（12.4 ms）耗时几乎相同，正是「固定成本与负载无关」的直接体现。**不声明任何加速**（VF5）：本表是 CUDA 侧下一步优化必须击败的基线。
+
+**4. 与 Metal 的差异（E1）。** 两者都是「一次调用一个提交边界」的后果，但支配项不同：Metal 的地板是命令缓冲往返（约 1.9–2.0 ms，21.10.2 第 1 条），CUDA 的地板是「设备上下文 + NVRTC 编译 + 模块装载」（约 12.3 ms，其中约 10.8 ms 是编译）。故 CUDA 侧收益最大的第一步是**缓存编译产物与设备上下文**（即 21.10.2 第 2 条对 Metal 所做的同类改动），跨调用 dispatch 批处理（21.13）是第二步。
+
+**5. 声明局限。** 上述数字来自单台 RTX 2080 Ti 主机的一次会话，未做多次运行的散布统计（Metal 侧的散布见 21.10.1）；`gpu/modelforward` 的 CUDA 侧未测量（该基准目前只在 `benches/metal.rs`）；`cuda-test` CI job 仍未激活（自托管 runner 未注册，见 21.12），本次为手工执行。
 
 ### 21.11 复审条件
 
@@ -2665,6 +2718,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * 若出现流式/异步执行需求 → 复审 21.2 决策 6 的同步语义与 21.6 的并发设计。
 * 若需消除每调用 MSL 编译与设备上下文创建开销 → 引入由显式所有权持有的编译产物/上下文缓存（而非全局单例），并对照 21.10 的基线测量前后差异。**已于 2026-10-12 实施**（21.10.2）：设备与 pipeline 缓存属于 executor，命令队列**故意不缓存**（共享队列会串行化并发调用的 GPU 工作；被否决的备选）。残余开销已是命令缓冲往返本身。
 * 若需要跨过「每次调用一次命令缓冲往返」的地板（21.10.2 第 1 条）→ 需要把多次 dispatch 合入同一命令缓冲，即一个跨调用的执行上下文。**设计已于 2026-10-12 提出（见 21.13），实现分三阶段、尚未开始**；在实施前不得改动冻结的 `compute` 语义。
+* 若需消除 CUDA 每次调用的设备上下文创建与 NVRTC 编译开销 → 引入由显式所有权持有的编译产物/上下文缓存（而非全局单例），并对照 21.10.3 的基线测量前后差异。**条件已成立**（2026-10-12 真机测得约 10.8 ms/调用为 `compile_ptx` 加模块装载），排在 21.13 阶段 3 之前。
 * 若设备在运行期可能消失（eGPU 移除、GPU 重置）→ 复审 21.6 的「设备缓存不重新探测」局限，设计失效重建与已编译 pipeline 的作废规则。
 * 若 `objc2-metal` 或 `cudarc` 的主版本升级 → 重新执行尖刺并核对 21.1 与 21.8 的实测结论。
 
@@ -2677,7 +2731,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 | `quality` | `ubuntu-latest` | 不变：fmt、全工作区 check/clippy/test/doc 与基准编译。因 `cuda` 在 Linux 上非空，它在 Linux 上已覆盖 CUDA 的编译与 lint | 既有 |
 | `macos` | `macos-14` | `cargo test --workspace`，使 `metal` 真实编译并运行 MSL 内核 | 新增 |
 | `cuda-check` | `ubuntu-latest` | `cargo check -p cuda --all-targets`；运行 `cudacontract` 的设备无关一半；外加 `scripts/checkunsafe.sh` 与 `scripts/checkthresholds.sh`。**故意不安装 CUDA toolkit**，`dynamic-loading` 使其不必要 | 新增 |
-| `cuda-test` | `[self-hosted, linux, x64, cuda]` | `cargo test -p llm --test it cudacontract`，并设 `LLM_CUDA_REQUIRE_DEVICE=1`，使「探测不到设备」成为硬失败而非静默通过 | **未激活** |
+| `cuda-test` | `[self-hosted, linux, x64, cuda]` | `cargo test -p llm --test it cudacontract`，并设 `LLM_CUDA_REQUIRE_DEVICE=1`，使「探测不到设备」成为硬失败而非静默通过 | **未激活**（runner 未注册；2026-10-12 已在 RTX 2080 Ti 上手工执行同一命令，见 21.10.3） |
 
 `cuda-check` 为何仍需单独存在：宿主 macOS 的 `checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的代码，而 `checkunsafe.sh` 与 `checkthresholds.sh` 本来就不在 `quality` 的步骤里；该 job 把这两项放到 CUDA 代码确实非空的平台上以求值——在该 runner 上 `checkthresholds.sh` 的 `cargo clippy --workspace --lib --bins` 原生覆盖 CUDA 的 Linux 代码，故 DS3 在那里是机械强制的，而非仅在宿主上另跑一次交叉目标 clippy。此外 `quality` 的 `cargo test --workspace` 与 `cuda-check` 的 `cudacontract` 步骤都会执行该套件的设备无关一半。
 
@@ -2746,7 +2800,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 ### 21.13.6 验收标准与回滚
 
 * **正确性。** 任何链经上下文与经 `compute` 逐位相同（同一内核、同一累加顺序）；全部既有测试保持通过。
-* **性能。** `gpu/modelforward` 的 Metal 数字相对约 51 ms 的基线至少改善 10×；CUDA 侧在没有设备前不作任何声明（E4）。
+* **性能。** `gpu/modelforward` 的 Metal 数字相对约 51 ms 的基线至少改善 10×；CUDA 侧以 21.10.3 的真机基线为准，且应先实施 21.11 的编译产物/上下文缓存（≈10.8 ms/调用），否则跨调用批处理的收益会被该固定成本掩盖。
 * **门禁。** `unsafe` 站点数不变；`api`/`metal` 的 A4 导出宽度仍在上界内；`check.sh` 全绿。
 * **回滚。** 该契约是累加式的：删除上下文类型与其实现即完全回到当前状态，调用方无迁移成本。
 

@@ -7,12 +7,12 @@
 //! `api::compute` contract with identical `bench` operands, so the comparison
 //! is reproducible.
 //!
-//! No improvement is claimed: no NVIDIA GPU is reachable from the environment
-//! this file was authored in, so no measurement has been taken (docs/design.md
-//! §21.10 records CUDA as *not executed*, E4). Establishing the baseline is
-//! required by docs/engineering.md, and every call's cost still includes the
+//! No improvement is claimed: these numbers are a baseline (E1, RTX 2080 Ti /
+//! CUDA 13.0 / `rustc 1.99.0`, 2026-10-12; docs/design.md §21.10.3), not a
+//! comparison against an earlier revision. Every call's cost still includes the
 //! per-call device context creation and run-time NVRTC compilation this stage
-//! performs.
+//! performs, which §21.10.3 measures at ≈12.3 ms per NVRTC-served call (about
+//! 10.8 ms of it `compile_ptx` plus module load) on that host.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(missing_docs)]
 

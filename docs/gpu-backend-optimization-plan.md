@@ -347,25 +347,26 @@ bash scripts/checkthresholds.sh
 | 基线 commit / 分支 | `55d8efb` / `docs/gpu-backend-optimization-plan`（PR #1） |
 | 工具链 | `rustc 1.99.0 (b940084d7 2026-09-28)`、`cargo 1.99.0`，由 `rust-toolchain.toml` 固定 |
 | 宿主 | macOS 27.0.1（build 26A434），arm64，Apple M5 Pro |
-| CUDA 设备 | 无（`nvidia-smi` 不可用）。`x86_64-unknown-linux-gnu` 目标仅用于编译与 lint |
+| CUDA 设备（宿主 macOS） | 无（`nvidia-smi` 不可用）。`x86_64-unknown-linux-gnu` 目标仅用于编译与 lint |
+| CUDA 真机（2026-10-12） | NVIDIA GeForce RTX 2080 Ti（`sm_75`，11264 MiB），驱动 580.105.08，CUDA runtime 13.0（**无 `nvcc`**），Linux 5.4.0-182 x86_64、96 vCPU；`rustc 1.99.0`，见 `docs/design.md` §21.10.3 |
 | `bash scripts/check.sh` | PASS（exit 0） |
 | `cargo test --workspace` | PASS：758 passed / 0 failed；其中 `metalcontract` 40 例在本机 Apple GPU 上真实运行 |
-| CUDA 运行时数值 | **NOT RUN（E4）**：本机无 NVIDIA GPU |
+| CUDA 运行时数值 | **RUN（E1，2026-10-12 真机）**：`LLM_CUDA_REQUIRE_DEVICE=1` 下 `cudacontract` 36 passed / 0 failed、`cargo test --workspace` 758 passed / 0 failed、输出 0 条 `E4 未执行`；首次执行即暴露并修正一个用例缺陷（见 10.6） |
 | CUDA 编译与静态门禁 | PASS（E1）：`cargo check`/`cargo clippy` 针对 `x86_64-unknown-linux-gnu`，含 `-D clippy::cognitive_complexity -D clippy::too_many_lines` |
 
 ### 10.2 算子覆盖表
 
 | 算子 | 无设备契约向量（`tests/it/gpucontract.rs`） | Metal 真机数值用例 | CUDA 真机数值 | 数值容差 | 基准（同轮 CPU 对照） |
 | --- | --- | --- | --- | --- | --- |
-| `matmul` | `matmul/rank`、`/contraction`、`/batchdims`、`/outelements`、`/outbytes`、`/k0/{elements-at-bound,bytes-at-bound,elements-over,bytes-over}` | `matmul_matches_the_scalar_reference`、`matmul_handles_a_leading_batch_dimension`、`matmul_with_distinct_extents_matches_the_reference`、`matmul_of_a_single_element_matches_the_reference`、`matmul_rejects_incompatible_shapes`、`matmul_rejects_operands_beyond_the_element_budget` | 已有（cuBLAS 与 NVRTC 各一例 + 两路径一致），**未运行** | 1e-4 | `gpu/matmul/{cpu,metal}256` |
-| `add` | `add/shape` | `add_matches_the_elementwise_sum`、`elementwise_rejects_mismatched_shapes`、`elementwise_rejects_operands_beyond_the_element_budget`、`empty_elementwise_inputs_produce_empty_output` | 同构，**未运行** | 逐位相等 | `gpu/elementwise/{cpu,metal}add` |
-| `mul` | `mul/shape`、`mul/elements` | `mul_matches_the_elementwise_product`、同上三个边界用例 | 同构，**未运行** | 逐位相等 | `gpu/elementwise/{cpu,metal}mul` |
-| `silu` | `silu/rank`、`silu/elements`、`silu/bytes` | `silu_matches_the_scalar_reference`、`empty_elementwise_inputs_produce_empty_output` | 同构，**未运行** | 1e-6 | `gpu/elementwise/{cpu,metal}silu` |
-| `rmsnorm` | `rmsnorm/emptylastaxis`、`rmsnorm/weightlength` | `rmsnorm_matches_the_scalar_reference_per_row`、`rmsnorm_handles_a_row_wider_than_one_threadgroup`（宽 1000）、`rmsnorm_rejects_an_empty_last_axis`、`rmsnorm_rejects_a_weight_of_the_wrong_length`、`rmsnorm_accepts_a_one_row_weight` | 同构（含宽度假设），**未运行** | 1e-5 | `gpu/rmsnorm/{cpu,metal}rows512cols4096` |
-| `softmax` | `softmax/emptylastaxis` | `softmax_matches_the_scalar_reference_per_row`、`softmax_handles_a_row_wider_than_one_threadgroup`、`softmax_is_numerically_stable_for_extreme_logits`、`softmax_of_a_negative_infinity_row_is_not_a_number`、`softmax_over_zero_rows_yields_an_empty_output`、`softmax_rejects_an_empty_last_axis` | 同构，**未运行** | 1e-6 | `gpu/softmax/{cpu,metal}rows512cols4096` |
-| `rope` | `rope/heads0`、`rope/oddhead`、`rope/raggedheads`、`rope/rank1` | `rope_matches_the_scalar_reference_per_position`、`rope_of_a_single_position_is_the_identity_rotation`、`rope_rejects_a_zero_head_count_or_an_odd_head_dimension` | 同构，**未运行** | 1e-5 | `gpu/rope/{cpu,metal}seq128heads8dim64` |
-| `embedding` | `embedding/index`、`embedding/gatherbudget` | `embedding_matches_the_scalar_reference`、`embedding_accepts_the_first_and_last_row`、`embedding_rejects_an_out_of_range_index`、`embedding_rejects_a_gather_beyond_the_element_budget`、`embedding_with_no_indices_yields_an_empty_output` | 同构，**未运行** | 逐位相等 | `gpu/embedding/{cpu,metal}gather128` |
-| `attention` | `attention/rank1`、`/seq`、`/kvshape`、`/headsplit`、`/kvheads0`、`/kvwidth` | `attention_matches_a_scalar_reference`、`attention_non_causal_matches_a_scalar_reference`、`attention_with_equal_head_counts_matches_the_reference`、`attention_single_position_returns_the_value`、`attention_rejects_inconsistent_operands`、`attention_rejects_a_head_dimension_beyond_the_device_limit` | 同构，**未运行** | 1e-5 | `gpu/attention/{cpu,metal}seq128heads8dim64` |
+| `matmul` | `matmul/rank`、`/contraction`、`/batchdims`、`/outelements`、`/outbytes`、`/k0/{elements-at-bound,bytes-at-bound,elements-over,bytes-over}` | `matmul_matches_the_scalar_reference`、`matmul_handles_a_leading_batch_dimension`、`matmul_with_distinct_extents_matches_the_reference`、`matmul_of_a_single_element_matches_the_reference`、`matmul_rejects_incompatible_shapes`、`matmul_rejects_operands_beyond_the_element_budget` | `cublas_matmul_matches_the_scalar_reference`、`nvrtc_matmul_matches_the_scalar_reference`、`the_two_matmul_paths_agree_on_a_non_square_case`、`matmul_handles_a_leading_batch_dimension`、`matmul_with_a_zero_contraction_yields_the_additive_identity`：**已运行（E1，2026-10-12）** | 1e-4 | `gpu/matmul/{cpu,cuda}256`、`gpu/matmulbatch/{cpu,cuda}8x256` |
+| `add` | `add/shape` | `add_matches_the_elementwise_sum`、`elementwise_rejects_mismatched_shapes`、`elementwise_rejects_operands_beyond_the_element_budget`、`empty_elementwise_inputs_produce_empty_output` | `add_matches_the_elementwise_sum`：**已运行（E1）** | 逐位相等 | `gpu/elementwise/{cpu,cuda}add` |
+| `mul` | `mul/shape`、`mul/elements` | `mul_matches_the_elementwise_product`、同上三个边界用例 | `mul_matches_the_elementwise_product`：**已运行（E1）** | 逐位相等 | `gpu/elementwise/{cpu,cuda}mul` |
+| `silu` | `silu/rank`、`silu/elements`、`silu/bytes` | `silu_matches_the_scalar_reference`、`empty_elementwise_inputs_produce_empty_output` | `silu_matches_the_scalar_reference`：**已运行（E1）** | 1e-6 | `gpu/elementwise/{cpu,cuda}silu` |
+| `rmsnorm` | `rmsnorm/emptylastaxis`、`rmsnorm/weightlength` | `rmsnorm_matches_the_scalar_reference_per_row`、`rmsnorm_handles_a_row_wider_than_one_threadgroup`（宽 1000）、`rmsnorm_rejects_an_empty_last_axis`、`rmsnorm_rejects_a_weight_of_the_wrong_length`、`rmsnorm_accepts_a_one_row_weight` | `rmsnorm_matches_the_scalar_reference_per_row`、`rmsnorm_accepts_a_one_row_weight`：**已运行（E1）** | 1e-5 | `gpu/rmsnorm/{cpu,cuda}rows512cols4096` |
+| `softmax` | `softmax/emptylastaxis` | `softmax_matches_the_scalar_reference_per_row`、`softmax_handles_a_row_wider_than_one_threadgroup`、`softmax_is_numerically_stable_for_extreme_logits`、`softmax_of_a_negative_infinity_row_is_not_a_number`、`softmax_over_zero_rows_yields_an_empty_output`、`softmax_rejects_an_empty_last_axis` | `softmax_matches_the_scalar_reference_per_row`、`softmax_is_numerically_stable_for_extreme_logits`：**已运行（E1）** | 1e-6 | `gpu/softmax/{cpu,cuda}rows512cols4096` |
+| `rope` | `rope/heads0`、`rope/oddhead`、`rope/raggedheads`、`rope/rank1` | `rope_matches_the_scalar_reference_per_position`、`rope_of_a_single_position_is_the_identity_rotation`、`rope_rejects_a_zero_head_count_or_an_odd_head_dimension` | `rope_matches_the_scalar_reference_per_position`：**已运行（E1）** | 1e-5 | `gpu/rope/{cpu,cuda}seq128heads8dim64` |
+| `embedding` | `embedding/index`、`embedding/gatherbudget` | `embedding_matches_the_scalar_reference`、`embedding_accepts_the_first_and_last_row`、`embedding_rejects_an_out_of_range_index`、`embedding_rejects_a_gather_beyond_the_element_budget`、`embedding_with_no_indices_yields_an_empty_output` | `embedding_matches_the_scalar_reference`：**已运行（E1）** | 逐位相等 | `gpu/embedding/{cpu,cuda}gather128` |
+| `attention` | `attention/rank1`、`/seq`、`/kvshape`、`/headsplit`、`/kvheads0`、`/kvwidth` | `attention_matches_a_scalar_reference`、`attention_non_causal_matches_a_scalar_reference`、`attention_with_equal_head_counts_matches_the_reference`、`attention_single_position_returns_the_value`、`attention_rejects_inconsistent_operands`、`attention_rejects_a_head_dimension_beyond_the_device_limit` | `attention_matches_a_scalar_reference`、`attention_single_position_returns_the_value`：**已运行（E1）** | 1e-5 | `gpu/attention/{cpu,cuda}seq128heads8dim64` |
 
 每头宽度的设备上限（`METALMAXHEADDIM` = 4096、`CUDAMAXHEADDIM` = 8192）是**设备**限制而非契约限制，允许两个后端不同，故不进入共享向量表，各套件单独断言各自的边界。
 
@@ -394,3 +395,12 @@ bash scripts/checkthresholds.sh
 按第 3 节的编号，下列条目在本轮**未实施**，不得视为已完成：G3 的剩余部分（失败路径与生命周期测试）、G5 中显存与传输次数的系统统计（往返成本已测，但逐算子的分配/传输计数尚未系统化）、G7 的结构化 CI 结果、G8 的 attention/KV cache 契约设计、G9 中除本表以外的可维护性条目；PR-C、PR-E、PR-G 未开始。PR-F（性能优化）的前置设计与端到端基线见 10.4。
 
 **已由测量排除的方向**：继续逐个调优 Metal kernel **不会**缩小它与 CPU 在小/中工作负载上的差距，因为该差距由每次调用一次命令缓冲往返（约 1.7–2.4 ms，与负载大小和 dispatch 次数无关）决定。可用的下一步是把多次 dispatch 合入同一命令缓冲，即一个跨调用的执行上下文——这是对同步契约的改动，必须先出设计（见 `docs/design.md` §21.11）。
+
+### 10.6 CUDA 真机验证（2026-10-12，原 E4 已解除）
+
+在一台 RTX 2080 Ti 主机上（环境见 10.1）以 `LLM_CUDA_REQUIRE_DEVICE=1` 执行 CUDA 侧的全部验证，原始日志与传输校验见 `docs/design.md` §21.10.3：
+
+* **契约（E1）。** `cargo test -p llm --test it cudacontract` → 36 passed / 0 failed（18 例宿主侧定案 + 15 例走设备并对照标量参考 + 3 例与共享向量列表一致）；`cargo test --workspace --locked` → 758 passed / 0 failed，0 条 `E4 未执行`；`bash scripts/check.sh` → exit 0。
+* **首次执行暴露的缺陷（E1）。** `the_two_matmul_paths_agree_on_a_non_square_case` 以 shape `[7, 4]` 描述右操作数却只给 20 个元素，报 `lengthmismatch { expected: 28, actual: 20 }`。该套件整体 `#[cfg(target_os = "linux")]` 且无设备时提前返回，故自 67ff611 起从未执行；Linux 目标上的编译绿灯掩盖了它。已修正（28 个元素）。
+* **基准（E1，不含任何加速声明）。** `cargo bench -p llm --bench cuda --locked -- --measurement-time 2 --warm-up-time 0.5` 的十个工作负载全部产出数字：CUDA 在当时由 cuBLAS/cuDNN 服务的三项（`matmul` 1.88×、`matmulbatch` 1.81×、`softmax` 1.73×）上快于 CPU，其余由 NVRTC 服务的工作负载仍慢于 CPU（`rope` 37.8×、`embedding` 607×）。
+* **每调用固定成本的分解（E1，临时探针后已删除）。** NVRTC 服务的算子每调用约 **12.3 ms** 且与负载无关（2×2 `matmul` 与 2 元素 `add` 同为 12.3 ms；2^20 元素只多 3.4 ms）；其中约 1.5 ms 是设备上下文与库句柄，约 **10.8 ms 是 `compile_ptx` 加模块装载**。故 CUDA 侧的 G4 整改（缓存编译产物与设备上下文）收益大于 Metal 同类改动，其次是 G5 的跨调用 dispatch 批处理。两项均**尚未实施**。
