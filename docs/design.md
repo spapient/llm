@@ -495,7 +495,7 @@ cpu    -> lib
 
 `cpuexecutor` 的派发入口：`apply(op, input)`（单目）、`applybinary(op, lhs, rhs)`、`applyweighted(op, input, weight)`、`applygather(op, table, indices)`，以及 `compute` 实现（`matmul`/`add`/`mul`/`softmax`/`silu`/`embedding` 走上述路径，`rmsnorm`/`rope`/`attention` 走预算检查加具体内核）。`cpuop` 变体为 `relu`、`silu`、`gelutanh`、`softmax`、`matmul`、`add`、`mul`、`rmsnorm`、`embedding`；`rope`/`attention` 带逐调用属性，只经 `compute` 触达。
 
-逻辑/算法内核语义：`matmul` 无广播、左到右 f32 累加、确定性；`add`/`mul` 要求形状完全相等，NaN/无穷按普通浮点传播；`rmsnorm` 对每行 `x` 与权重 `w` 计算 `rms = sqrt(mean(x_i^2) + eps)`、`out_i = (x_i/rms)*w_i`；`softmax` 减行最大值后指数化，全下溢行保持全零；`relu` 为 `if x < 0.0 { 0.0 } else { x }`；`silu` 为 `x/(1+exp(-x))`；`gelutanh` 为 `0.5*x*(1+tanh(c*(x+0.044715*x^3)))`，`c=sqrt(2/pi)`（tanh 形式，非 erf 形式，两者约差 `1e-3`）；`embedding` 输出 `[indices.len(), table.shape[1..]]`；`rope` 对每段 `headdim` 切片按 `theta_i = base^(-2i/headdim)` 旋转 `(2i, 2i+1)`；`attention` 使用 `scale = 1/sqrt(headdim)`，`heads` 是 `kvheads` 的正整数倍，每对 query head 复用 `heads/kvheads` 个 kv head。
+逻辑/算法内核语义：`matmul` 无广播、左到右 f32 累加、确定性；`add`/`mul` 要求形状完全相等，NaN/无穷按普通浮点传播；`rmsnorm` 对每行 `x` 与权重 `w` 计算 `rms = sqrt(mean(x_i^2) + eps)`、`out_i = (x_i/rms)*w_i`；`softmax` 减行最大值后指数化，和为 0 时保持全零（对有限行不可达：最大项自身的指数为 1），全 `-inf` 行因 `max - max` 为 NaN 而传播 NaN；`relu` 为 `if x < 0.0 { 0.0 } else { x }`；`silu` 为 `x/(1+exp(-x))`；`gelutanh` 为 `0.5*x*(1+tanh(c*(x+0.044715*x^3)))`，`c=sqrt(2/pi)`（tanh 形式，非 erf 形式，两者约差 `1e-3`）；`embedding` 输出 `[indices.len(), table.shape[1..]]`；`rope` 对每段 `headdim` 切片按 `theta_i = base^(-2i/headdim)` 旋转 `(2i, 2i+1)`；`attention` 使用 `scale = 1/sqrt(headdim)`，`heads` 是 `kvheads` 的正整数倍，每对 query head 复用 `heads/kvheads` 个 kv head。
 
 ### 6.4 不变量与错误路径（DS2）
 
@@ -2407,13 +2407,14 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 
 ### 21.3 接口边界（DS1）
 
-`metal` 在 crate root 导出 3 个公共项，`cuda` 导出 5 个，均远低于 A4 上界 20：
+`metal` 在 crate root 导出 4 个公共项，`cuda` 导出 5 个，均远低于 A4 上界 20：
 
 | crate | 公共项 | 模块文件 | 职责 |
 | --- | --- | --- | --- |
 | `metal` | `METALMAXRANK` | `backend.rs` | 后端接受的最大张量秩 |
 | `metal` | `metalbackend` | `backend.rs` | macOS 后端身份与能力声明，返回 `device::metal()` |
 | `metal` | `metalexecutor` | `executor.rs` | 实现 `api::compute` 的 f32 算子集 |
+| `metal` | `metalexecutor::getcachedpipelinecount` | `executor.rs` | 已缓存的编译产物数，使「每内核只编译一次」可从 crate 外机械核对 |
 | `cuda` | `CUDAMAXRANK` | `backend.rs` | 后端接受的最大张量秩 |
 | `cuda` | `CUDAMAXHEADDIM` | `backend.rs` | 单个注意力头的最大宽度，由内核的共享内存预算决定 |
 | `cuda` | `cudabackend` | `backend.rs` | Linux 后端身份与能力声明，返回 `device::cuda()` |
@@ -2435,6 +2436,8 @@ cuda  -> api
 
 `api`、`tensor`、`lib` 均不依赖 `metal` 或 `cuda`。目标平台的表驱动依赖（`[target.'cfg(...)'.dependencies]`）不产生新的 workspace 内边。
 
+两个后端的预算与秩判定不各自实现：`api` 的 `checkbudget`/`checkgatherbudget` 是唯一实现，二者在 `executor.rs` 中各持一个转发包装。`api` 的 crate root 导出项由 10 增至 12，仍低于 A4 上界 20。
+
 ### 21.4 不变量与错误路径（DS2）
 
 算法级不变量（每个算子都复用 `cpu` 同名契约的形状规则，逐条对应）：
@@ -2453,6 +2456,8 @@ cuda  -> api
 * 设备缓冲的元素类型与长度由 Rust 侧 `CudaSlice<f32>` / Metal 缓冲长度确定；GPU 侧索引由内核内的显式边界判断收束（`row < m`、`col < n`、平铺的 `index < total`）。
 * `attention` 的每头宽度不超过各后端上限（`metal` 为 `METALMAXHEADDIM`、`cuda` 为 `CUDAMAXHEADDIM`），因为内核为每个头维保留一个累加槽；超出是设备容量不足，不是契约违规。
 * 每次调用结束后设备缓冲与命令对象随作用域析构释放；无跨调用的设备状态残留（与 `tensor`/`cpu` 的 OW1/OW3 一致）。
+* `metal` 的 `ffi::cache` 是唯一跨调用存活的对象，它只持有设备句柄与已编译的 pipeline，**不持有**张量、缓冲、索引或任何请求作用域的值，因此跨请求共享它不可能传递数据（OW2/OW3）。
+* 一个算子调用的输出元素计数由输出形状给出，且其结果预算在任何分配之前校验；`matmul` 的**全部** batch block 在一次 dispatch 内完成，故其成本与 block 数无关（见 21.10.2）。
 * `unsafe` 站点只在 `ffi.rs`，且每个站点的安全前置在 `// SAFETY:` 中显式陈述。
 
 错误分支与返回语义（复用 `backenderror`，不新增错误类型，遵循 ER2）：
@@ -2461,13 +2466,17 @@ cuda  -> api
 * `embedding` 下标越界 → `indexoutofrange { index, len }`；
 * 末轴为空（`softmax`、`rmsnorm`）→ `unsupportedoperation { op }`；
 * 元素计数溢出（秩、批、元素数、字节数任一算不出）→ `sizeoverflow`；
-* 秩超过 `METALMAXRANK`/`CUDAMAXRANK` → `executionfailed`；
-* 超出能力声明的元素或字节预算（`embedding` 的按其 gather 输出 `rows * width` 计）→ `resourceexhausted`；
+* 秩超过 `METALMAXRANK`/`CUDAMAXRANK` → `resourceexhausted`（与 `cpu` 对 `CPUMAXRANK` 的分类一致：被拒绝的是声明的能力上界，不是执行失败）；
+* 超出能力声明的元素或字节预算（`embedding` 的按其 gather 输出 `rows * width` 计；`matmul` 的除两个操作数外还含其**结果**）→ `resourceexhausted`；
 * 每头宽度超过 `METALMAXHEADDIM`/`CUDAMAXHEADDIM` → `resourceexhausted`；
 * 设备初始化失败 / MSL 或 NVRTC 编译失败 / 模块或内核解析失败 / 缓冲分配失败 / 内核启动失败 / cuBLAS 调用失败 / cuDNN 调用失败 / host-device 传输失败 → `executionfailed`（诊断文本保留在 crate 私有的 `metalerror`/`cudaerror` 中，不泄入 `api` 契约）；
 * `metal` 与 `cuda` 都已实现 `compute` 的全部算子（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`），故两者唯一的 `unsupportedoperation` 来源是上一条的空末轴（`softmax`、`rmsnorm`）。
 
 `compute` 契约的每个方法都只接受 `f32` 张量视图，故 GPU 后端不可能因 dtype 失败；`capabilities` 声明 `f32` 是为了让上层在派发前就能判定，`unsupporteddtype` 不由这两个后端产生。
+
+预算与秩的判定由 `api::checkbudget` / `api::checkgatherbudget` 单点实现：两个 GPU 后端在 `executor.rs` 只保留转发到该谓词的私有包装，因此同一操作数不可能在两个后端得到不同的分类；`cpu` 保留自己更丰富的策略类型（`cpuerror` 携带 `limiterror` 的 `requested`/`limit` 与 `rankexceeded`），但把这两类拒绝映射到同一个 `backenderror`，故三个后端的**可观测**分类一致。
+
+`matmul` 的结果由后端自行分配，故其结果形状在**任何分配之前**也过同一预算谓词；这是 `embedding` 早已有的输出预算检查在 `matmul` 上的对齐（此前 `matmul` 只受操作数约束，`m*k <= max` 且 `k*n <= max` 仍可要求 `m*n` 级别的输出）。
 
 资源回滚：任何失败在构造输出张量之前返回；已获取的设备缓冲、命令缓冲、库与管线对象按作用域逆序析构（ER4）。
 
@@ -2476,16 +2485,26 @@ cuda  -> api
 各 crate 的单函数圈复杂度 ≤ 10、有效行数 ≤ 80：
 
 * `geometry.rs` 把每个算子的形状推理与拒绝条件收进单个函数，使 `ffi.rs` 的每个启动封装只做「取已验证的几何 → 一次平台调用 → 一次错误映射」，判定点不超过 3 个。
-* `executor.rs` 的每个算子在预算校验后委派给 `geometry` 与 `ffi`，自身不做算术。
+* `executor.rs` 的每个算子在预算校验后委派给 `geometry` 与 `ffi`，自身不做算术；`matmul` 不再在宿主侧切分 batch block，因此不含逐块循环。
+* 预算与秩判定不是 `executor.rs` 自己的逻辑：两个后端都转发到 `api::checkbudget`，连判定顺序都无法分歧；`geometry.rs` 的 `matmulshape` 在两侧同形，并各自提供 `outshape()` 以在分配前校验结果预算。
 * `source.rs` 只存放 MSL/CUDA 原文串与 entry 名常量，不参与 Rust 复杂度；两个后端的 `ffi.rs` 都只有一条通用 `execute` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
 
 宿主 macOS 的 `scripts/checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的 CUDA 代码，因此 CUDA 侧以同一组阈值单独在 Linux 目标上核对（`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --lib --locked -- -D clippy::cognitive_complexity -D clippy::too_many_lines`，exit 0）。两者均为机械检查（证据等级 E1）。
 
 ### 21.6 并发设计（DS4）
 
-两个后端都**不引入**共享可变状态与同步原语。`metalbackend`/`cudabackend` 只持有不可变的能力声明。`metalexecutor` 只持有它那个 backend；`cudaexecutor` 只持有 backend 与一个构造期固定、之后只读的 `matmulpath`。两者都不持有请求作用域状态，因此都可被跨请求不可变共享（与 `cpu` 的 executor 同形）。每次调用（`matmul` 或任一算子）在调用作用域内创建命令队列、命令缓冲与设备缓冲，调用返回即析构。设备上下文（`CudaContext`、`MTLDevice`）由调用内局部持有，不跨请求共享。
+`cudaexecutor` **不引入**共享可变状态与同步原语：它只持有 backend 与一个构造期固定、之后只读的 `matmulpath`。
 
-因此不存在锁，也不存在锁序；并发安全源自「无共享可变状态 + 每调用独占所有权」，与 `cpu` 一致。GPU 驱动内部对设备的序列化不在本契约内，且因每次调用独占而无需声明锁序。
+`metalexecutor` 引入**恰好一个**锁。MSL 的运行时编译成本（实测约 0.85–1.0 ms/内核实，见 21.10.2）此前落在每次调用上，要消除它必须让编译产物跨调用存活，因此 `metal` 持有一个 `ffi::cache`：
+
+* **内容与所有权。** `ffi::cache` 只含设备句柄与按 `(source, entry)` 索引的 pipeline；它由 executor 拥有，executor 的 clone 通过 `Arc` 共享同一份，独立构造的 executor 各编译一份。它不是全局单例，故 §21.11 的「显式所有权而非全局单例」得到满足。
+* **锁序。** 全 crate 只有一个锁，且从不在持锁期间申请第二个锁，故锁序为平凡单元素偏序，不存在环。
+* **持锁时间。** 锁内只做查表、可能的编译、以及句柄的 retain 克隆；命令缓冲创建、dispatch、commit 与 `waitUntilCompleted` 都在**锁外**执行，因此并发调用不会在 GPU 等待上互相阻塞。命中缓存的稳态调用持锁约百纳秒量级。
+* **首次并发。** 同一内核的并发首次调用在锁内串行编译一次，而不是各自重复编译；`tests/it/metalcontract.rs` 的 `the_executor_is_shareable_across_threads` 与 `every_kernel_is_compiled_once_and_then_reused` 分别钉住「并发结果一致且只编译一次」与「九次调用恰好九个 pipeline、重复调用不增长」。
+* **失败与中毒。** 设备打开失败时不缓存 `None`，下次调用重试（瞬态失败可恢复）；锁中毒后取回内部值继续使用，因为缓存不持有任何可被 panic 破坏的不变量——最坏情况是一个部分填充但仍合法的映射。
+* **声明局限。** 设备在进程生命周期内被缓存，**不重新探测**：eGPU 移除或 GPU 重置后，本 crate 只如实上报底层 Metal 错误，不自动重建上下文。该行为记录为复审条件（见 21.11）。
+
+每次调用仍在调用作用域内创建命令缓冲、命令队列与设备缓冲，调用返回即析构；请求作用域状态不进入缓存。设备上下文（`CudaContext`、`MTLDevice`）对 `cuda` 仍是调用内局部，对 `metal` 由 executor 持有。
 
 ### 21.7 被否决方案（DS5）
 
@@ -2539,7 +2558,7 @@ cuda  -> api
 
 ### 21.10 验证
 
-* **Metal（E1）。** `tests/it/metalcontract.rs` 的 30 个契约测试在本机 Apple GPU 上全部真实运行并通过（MSL 经 `newLibraryWithSource` 运行期编译）：身份/设备/能力声明；`matmul` 数值（含前导批维）与形状/预算拒绝；`add`/`mul`/`silu` 数值、形状不匹配与预算拒绝、空操作数；`softmax` 逐行数值、极端 logits 稳定性、空末轴拒绝、零行空输出；`rmsnorm` 逐行数值、空末轴与权重长度拒绝、单行权重接受；`rope` 逐位置数值与零头数/奇数头宽/秩一拒绝；`embedding` 数值、越界下标拒绝、gather 预算拒绝、空下标输出；`attention` 因果与非因果数值、单位置恒等、形状不一致拒绝、每头宽度超设备上限拒绝。数值用例均对照 `testkit::reference` 的同名标量参考，容差 1e-6–1e-5。首轮运行时 `rope` 内核因把局部变量命名为 `half`（与 MSL 内建标量类型同名）而编译失败并报 `executionfailed`；改名为 `pairs` 后通过，该失败与修复均在本机复现（E1）。
+* **Metal（E1）。** `tests/it/metalcontract.rs` 的 43 个契约测试在本机 Apple GPU 上全部真实运行并通过（MSL 经 `newLibraryWithSource` 运行期编译）：身份/设备/能力声明；`matmul` 数值（含前导批维）与形状/预算拒绝；`add`/`mul`/`silu` 数值、形状不匹配与预算拒绝、空操作数；`softmax` 逐行数值、极端 logits 稳定性、空末轴拒绝、零行空输出；`rmsnorm` 逐行数值、空末轴与权重长度拒绝、单行权重接受；`rope` 逐位置数值与零头数/奇数头宽/秩一拒绝；`embedding` 数值、越界下标拒绝、gather 预算拒绝、空下标输出；`attention` 因果与非因果数值、单位置恒等、形状不一致拒绝、每头宽度超设备上限拒绝。数值用例均对照 `testkit::reference` 的同名标量参考，容差 1e-6–1e-5。首轮运行时 `rope` 内核因把局部变量命名为 `half`（与 MSL 内建标量类型同名）而编译失败并报 `executionfailed`；改名为 `pairs` 后通过，该失败与修复均在本机复现（E1）。
 * **CUDA 编译与静态门禁（E1）。** `cargo check -p cuda --target x86_64-unknown-linux-gnu --all-targets`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets -- -D warnings`，以及 `-p llm --target x86_64-unknown-linux-gnu --test it`、`--bench cuda` 的同名检查均 exit 0。全部在无 CUDA toolkit、无 NVIDIA 驱动的 macOS 宿主上完成，`dynamic-loading` 使其不必要。
 * **CUDA 设备无关契约（E1 编译；运行未执行）。** `tests/it/cudacontract.rs` 共 33 例，其中 18 例在 executor 的任何设备调用之前就已由宿主侧校验定案：身份与能力声明、matmul 路径选择、八个算子的形状/下标/空末轴拒绝、元素与 gather 预算、`CUDAMAXHEADDIM` 上限，以及 `matmul` 零收缩、空输入、零行等退化用例。逐一核对 `executor.rs` 的校验顺序确认这 18 例不会进入 `ffi` 的设备路径（证据等级 E1 的代码审计）。本机没有 Linux 运行环境，故该套件的**运行时结果未在此处执行**：18 例的通过/失败将在 Linux CI（`quality` 的 `cargo test --workspace` 与 `cuda-check`）上产出。
 * **CUDA 数值（E4）。** 其余 15 例需要设备，均以与标量参考对照；本机与默认 CI 均无 NVIDIA GPU，未执行。它们在探测不到 `nvidia-smi -L` 时打印 `E4 未执行` 并返回，真实运行依赖 `cuda-test` 的自托管 GPU runner。
@@ -2554,7 +2573,89 @@ cuda  -> api
 | gpu/matmul/cpu256 | 256×256×256 f32（`cpu` 基线） | 957.31 µs | 68.458 Melem/s |
 | gpu/matmul/metal256 | 256×256×256 f32 | 2.5830 ms | 25.372 Melem/s |
 
-该尺寸下 Metal **慢于** CPU（约 2.7×）。原因是本阶段每次调用都重新创建设备上下文并运行时编译 MSL，固定开销远超 256³ 的计算量；这不是 GPU 的计算劣势，而是未做编译器缓存与管线复用的直接后果。本阶段**不声明任何加速**（VF5），该表是后续优化必须击败的基线；缓存与管线复用是复审条件之一（见 21.11）。
+该尺寸下 Metal **慢于** CPU（约 2.7×）。21.10.1 把同一基线扩展到九个算子与运行间方差。原因是本阶段每次调用都重新创建设备上下文并运行时编译 MSL，固定开销远超 256³ 的计算量；这不是 GPU 的计算劣势，而是未做编译器缓存与管线复用的直接后果。本阶段**不声明任何加速**（VF5），该表是后续优化必须击败的基线；缓存与管线复用是复审条件之一（见 21.11）。
+
+#### 21.10.1 一致性与边界整改（2026-10-12）
+
+环境与 2026-10-11 相同（macOS 27.0.1 arm64 / Apple M5 Pro / `rustc 1.99.0`）；基线 commit `55d8efb`。
+
+* **共享的预算与秩谓词（E1）。** `api` 新增 `checkbudget`/`checkgatherbudget`，`metal` 与 `cuda` 的 `executor.rs` 改为转发；此前两处逐字节重复的 32 行策略（含「秩超限 → `executionfailed`」）被删除，取而代之的是与 `cpu` 一致的 `resourceexhausted`。
+* **`matmul` 结果预算（E1）。** 三个后端（`cpu`/`metal`/`cuda`）此前只校验操作数，`m*k <= max` 且 `k*n <= max` 仍可要求 `m*n` 级别的输出分配；现在结果形状在**任何分配之前**过同一谓词。`cpu` 侧的改动是把 `matmulplan` 与 `cpumatmul` 的计划拆开，使 executor 能在内核分配输出前校验，`cpuerror` 的公开语义未变。
+* **共享的无设备契约向量（E1）。** `tests/it/gpucontract.rs` 定义 30 个在任何机器上都定案于宿主侧的向量（秩/元素/字节预算、`matmul` 结果预算与其 inclusive 边界、七个算子的形状与下标拒绝、gather 输出预算），`metal` 与 `cuda` 两个套件各自断言「与本列表一致」，并各自断言「与 `cpu` 的观测逐项相同」。
+* **证伪性验证（E1）。** 把 `api::checkbudget` 的秩分类改回 `executionfailed`：`metal` 的两个向量用例都变红，报文为 `case \`silu/rank\` returned Some(executionfailed), the contract requires Some(resourceexhausted)`；把 `metal` executor 里 `self.checkbudget(&outshape)?` 一行删掉：`case \`matmul/outelements\` returned None, the contract requires Some(resourceexhausted)`。两处探针随后还原。
+* **Metal 真机数值扩展（E1）。** `metalcontract` 由 30 增至 40 例并在本机 Apple GPU 上全部通过：非方阵且各维互不相同（17×19×13，网格在两方向都跨越多个 threadgroup）、单元素 matmul、宽度 1000（跨 threadgroup 且非 2 的幂）的 `rmsnorm`/`softmax`、`heads == kvheads` 的 attention、位置 0 的 `rope` 恒等、embedding 首尾行。新增的 `softmax_of_a_negative_infinity_row_is_not_a_number` 钉住全 `-inf` 行传播 NaN（既有文档声称「保持全零」与此不符，已更正，见 6.3）。
+* **CUDA 侧（E1 编译；运行 E4 未执行）。** `cargo check -p llm --target x86_64-unknown-linux-gnu --test it --locked`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets --locked -- -D warnings` 与同目标的 `-D clippy::cognitive_complexity -D clippy::too_many_lines` 均 exit 0；`cudacontract` 新增的 3 例（与向量列表一致、与 `cpu` 一致、cuBLAS 与 NVRTC 两条路径一致）在 Linux 上编译通过，运行结果仍待 GPU runner。
+* **门禁（E1）。** `bash scripts/check.sh` 报 `All static quality checks passed.`（exit 0）；`cargo test --workspace` 758 passed / 0 failed。
+
+* **Metal 全算子基线（E1）。** `benches/metal.rs` 由只测 `matmul` 扩为九个算子，其工作负载与组名与 `benches/cuda.rs` 一致（共享语义、各自内核）。命令：`cargo bench -p llm --bench metal -- --warm-up-time 0.5 --measurement-time 1.0 --sample-size 10`，release profile，criterion 0.7；环境同上表。数值为 2026-10-12 一次运行的 median：
+
+| Benchmark | 工作负载 | CPU median | Metal median |
+| --- | --- | ---: | ---: |
+| `gpu/matmul/…256` | 256×256×256 f32 | 954.92 µs | 2.3370 ms |
+| `gpu/elementwise/…silu` | 2^20 f32 | 1.0953 ms | 3.2692 ms |
+| `gpu/elementwise/…add` | 2^20 f32 | 101.50 µs | 3.6305 ms |
+| `gpu/elementwise/…mul` | 2^20 f32 | 101.59 µs | 3.7550 ms |
+| `gpu/softmax/…rows512cols4096` | 512×4096 f32 | 2.5660 ms | 4.2474 ms |
+| `gpu/rmsnorm/…rows512cols4096` | 512×4096 f32 | 1.1909 ms | 4.0132 ms |
+| `gpu/rope/…seq128heads8dim64` | 128×8×64 f32 | 81.416 µs | 2.3351 ms |
+| `gpu/embedding/…gather128` | 128 行 × 1024 | 6.7247 µs | 3.9703 ms |
+| `gpu/attention/…seq128heads8dim64` | 128×8×64 f32 | 1.0883 ms | 2.9206 ms |
+
+Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的一致：每次调用都重新编译 MSL 并重新创建命令队列与设备上下文，该固定开销与工作负载无关，故在 `embedding`（CPU 6.7 µs）上表现为约 590×。**不声明任何加速**（VF5）；这张表是 G4/G5 优化必须击败的基线。
+
+* **运行间方差（E1）。** 同一二进制重复测量 `gpu/matmul/metal256` 四次得到 2.337 / 2.617 / 2.672 / 2.850 ms（散布约 ±10%），而 `cpu256` 四次为 954.9 / 956.4 / 958.6 / 974.3 µs（约 ±1%）。Metal 侧的高方差与「每次调用重新编译并重新初始化设备」一致，故任何后续的 Metal 性能声明 MUST 报告多次运行的散布，而不是单次 median。
+
+#### 21.10.2 运行时编译缓存与 dispatch 几何（2026-10-12）
+
+环境同上（macOS 27.0.1 arm64 / Apple M5 Pro / `rustc 1.99.0`），基线为 21.10.1 的测量。
+
+**1. 逐阶段分解（E1，临时插桩后已移除）。** 对 `silu` 的 2^20 元素调用（读 4 MiB、写 4 MiB、一次 dispatch）在稳态下各阶段耗时：
+
+| 阶段 | 稳态耗时 | 说明 |
+| --- | ---: | --- |
+| 取设备 | 0 µs | 已缓存 |
+| 分配 2 个缓冲 | 15 µs | |
+| host→device 4 MiB | 265 µs | |
+| 取/编译 pipeline | 0 µs | 已缓存；冷启动首次为 846 µs |
+| 创建命令队列 | 60 µs | 每次调用新建 |
+| 编码器建立 | 56 µs | |
+| `commit` | 20 µs | |
+| `waitUntilCompleted` | **2088 µs** | 唯一的支配项 |
+| device→host 4 MiB | 230 µs | |
+
+同一插桩在 **6 元素**输入上给出 `htod` 5 µs、`dtoh` 9 µs、`wait` 2088 µs：等待时间与负载大小无关。把同一内核在一次命令缓冲内 dispatch 1/2/4/8/16 次，`wait` 分别为 2163 / 2456 / 2280 / 1744 / 2432 µs：**与 dispatch 次数无关**。故该环境下一次命令缓冲往返的固定成本为 **约 1.7–2.4 ms**，且 `commit` 与第二次 `wait`（缓冲已完成）分别为 20 µs 与 4–16 µs，排除「等待实现低效」的解释。
+
+结论：这是 §21.2 决策 6（同步、运行至完成）施加在**每次算子调用**上的地板，不是内核质量问题。跨过它需要把多次 dispatch 合入同一命令缓冲，即一个跨调用的执行上下文——那是契约改动（见 21.11）。
+
+**2. 编译缓存前后对比（E1，`cargo bench -p llm --bench metal -- --warm-up-time 0.5 --measurement-time 1.0 --sample-size 10`）。** median，同一二进制、同一机器：
+
+| Benchmark | 基线（每次调用重编译） | 缓存后 | 变化 | CPU 对照 |
+| --- | ---: | ---: | ---: | ---: |
+| `gpu/matmul/…256` | 2.3370 ms | 1.779 ms | −24% | 0.951 ms |
+| `gpu/elementwise/…silu` | 3.2692 ms | 2.606 ms | −20% | 1.106 ms |
+| `gpu/elementwise/…add` | 3.6305 ms | 2.920 ms | −20% | 0.100 ms |
+| `gpu/elementwise/…mul` | 3.7550 ms | 2.934 ms | −22% | 0.101 ms |
+| `gpu/softmax/…rows512cols4096` | 4.2474 ms | 3.444 ms | −19% | 2.500 ms |
+| `gpu/rmsnorm/…rows512cols4096` | 4.0132 ms | 3.410 ms | −15% | 1.147 ms |
+| `gpu/rope/…seq128heads8dim64` | 2.3351 ms | 1.534 ms | −34% | 0.087 ms |
+| `gpu/embedding/…gather128` | 3.9703 ms | 3.000 ms | −24% | 0.0067 ms |
+| `gpu/attention/…seq128heads8dim64` | 2.9206 ms | 2.199 ms | −25% | 1.101 ms |
+
+缓存把编译成本移出关键路径（每个内核一次，而非每次调用），但每个工作负载的残余成本仍由第 1 条的往返地板决定，故 Metal 仍慢于 CPU——**这不是内核劣势**。此前 21.10 把 Metal 更慢归因于「未做编译器缓存」，该归因已被本次测量修正：编译约 0.85–1.0 ms/内核，往返约 1.7–2.4 ms/调用，后者更大且与负载无关。
+
+**3. dispatch 几何（E1）。** `matmul` 的 batch 循环此前每 block 提交一个命令缓冲，即在往返地板上乘以 batch。改为**一次 dispatch、batch 作为网格第三维**（内核以 `gid.z` 计算三个指针偏移）。同内核、同数据、同机器的对照测量（临时恢复旧调用模式，随后还原）：
+
+| `gpu/matmulbatch/…8x256`（8 × 256³） | median |
+| --- | ---: |
+| 每 block 一个命令缓冲 | 13.969 ms |
+| 一次 dispatch（batch 在网格第三维） | **2.878 ms** |
+| CPU 对照 | 7.519 ms |
+
+即 **−79.4%（×4.85）**，且该工作负载下 Metal 由「慢于 CPU」转为**快于 CPU 约 2.6×**。这是本轮唯一一处 Metal 超过 CPU 的测量点，其原因正是它把 8 次往返压缩为 1 次。
+
+**4. 端到端代价（E1）。** `benches/metal.rs` 新增 `gpu/modelforward`：同一微型 Llama（2 层、`dim=64`、`seq=16`）的前向在**同一进程内**分别跑 CPU 与 Metal 两个 provider。median：**CPU 129–130 µs，Metal 50.5–53.5 ms（约 390–414×）**。该前向是一条约 35 次 `compute` 调用的链，53.5 ms ÷ 35 ≈ 1.5 ms/调用，与第 1 条的往返地板一致。这是 21.13 的直接依据，也是任何批处理实现必须击败的基线。
+
+**5. 验证（E1）。** `metalcontract` 43 例在本机 Apple GPU 上全部通过，其中 `every_kernel_is_compiled_once_and_then_reused` 断言「九个算子恰好九个 pipeline，重复一遍仍为九」；`a_clone_shares_the_compiled_pipelines` 断言 clone 共享；`the_executor_is_shareable_across_threads` 断言 `Send + Sync` 且四线程并发结果逐位一致、只编译一次。`unsafe` 站点仍为 4/4（本次改动未新增任何 `unsafe`）。CUDA 侧未随动：其实测基线不存在（E4），且其每 block 只是一次内核启动而非一次命令缓冲往返，收益量级不同，按 21.7 的「各后端独立调优」保留现状并记录。
 
 ### 21.11 复审条件
 
@@ -2562,7 +2663,9 @@ cuda  -> api
 * 若 `metal` 或 `cuda` 的 `unsafe` 站点数需要增长 → 先更新 21.8 的登记表并说明理由，再改动代码。
 * 若再引入第三个自带 `unsafe` 入口的 CUDA 专用库（例如 cuDNN 的 attention frontend 或 `ActivationForward`）→ 先更新 21.8 的登记表并说明理由，再改动代码。
 * 若出现流式/异步执行需求 → 复审 21.2 决策 6 的同步语义与 21.6 的并发设计。
-* 若需消除每调用 MSL 编译与设备上下文创建开销 → 引入由显式所有权持有的编译产物/上下文缓存（而非全局单例），并对照 21.10 的基线测量前后差异。
+* 若需消除每调用 MSL 编译与设备上下文创建开销 → 引入由显式所有权持有的编译产物/上下文缓存（而非全局单例），并对照 21.10 的基线测量前后差异。**已于 2026-10-12 实施**（21.10.2）：设备与 pipeline 缓存属于 executor，命令队列**故意不缓存**（共享队列会串行化并发调用的 GPU 工作；被否决的备选）。残余开销已是命令缓冲往返本身。
+* 若需要跨过「每次调用一次命令缓冲往返」的地板（21.10.2 第 1 条）→ 需要把多次 dispatch 合入同一命令缓冲，即一个跨调用的执行上下文。**设计已于 2026-10-12 提出（见 21.13），实现分三阶段、尚未开始**；在实施前不得改动冻结的 `compute` 语义。
+* 若设备在运行期可能消失（eGPU 移除、GPU 重置）→ 复审 21.6 的「设备缓存不重新探测」局限，设计失效重建与已编译 pipeline 的作废规则。
 * 若 `objc2-metal` 或 `cudarc` 的主版本升级 → 重新执行尖刺并核对 21.1 与 21.8 的实测结论。
 
 ### 21.12 CI 门禁
@@ -2583,6 +2686,69 @@ cuda  -> api
 默认 feature 不引入任何 GPU 依赖，故 `quality` job 的语义未变。
 
 未决（需仓库所有者提供）：自托管 CUDA runner 的标签与配置。
+
+## 21.13 执行上下文与 dispatch 批处理（**提议**，未实施）
+
+> 状态：**提议（Proposed）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。它**不是**已实现的代码：在按 21.13.5 的顺序实施并通过评审之前，不得据此声称任何改进。
+
+### 21.13.1 上下文（测量事实）
+
+一次同步算子调用的固定成本是**一次命令缓冲往返**，实测约 1.9–2.0 ms，且与下列因素**无关**：
+
+| 变量 | 取值 | 完成延迟 |
+| --- | --- | --- |
+| 负载大小 | 6 元素 / 2^20 元素 | 1689 / 2088 µs |
+| 一次命令缓冲内的 dispatch 数 | 1 / 2 / 4 / 8 / 16 | 2163 / 2456 / 2280 / 1744 / 2432 µs |
+| 等待方式 | `waitUntilCompleted` / 忙等 `status()` | 2088 / 1754–2001 µs |
+| 缓冲存储模式 | `StorageModeShared` / `StorageModePrivate` | 2037 / 1920 µs |
+| 宿主虚拟化 | `kern.hv_vmm_present = 0`（Apple M5 Pro 裸机） | — |
+
+`commit` 仅 20 µs，缓冲完成后的第二次等待仅 1–16 µs，故该延迟是提交到完成的真实往返，不是等待实现的产物。
+
+因此**调优 kernel 与「小/中工作负载慢于 CPU」无关**：256³ matmul（17M 次乘加）与 6 元素 `silu` 的总耗时几乎相同（1.79 ms 与 1.75 ms）。
+
+端到端代价（`benches/metal.rs` 的 `gpu/modelforward`，2 层、`dim=64`、`seq=16` 的 Llama 前向）：**CPU 129–130 µs，Metal 50.5–53.5 ms（约 390–414×）**。该前向是一条算子**链**，每层 16 次 `compute` 调用（`rmsnorm` ×2、`matmul` ×6、`rope` ×2、`attention` ×1、`add` ×2、`silu` ×1、`mul` ×1），两层加模型头共约 35 次；53.5 ms ÷ 35 ≈ 1.5 ms/调用，与往返地板一致。
+
+结论：**在「一次调用一次提交、返回拥有张量」的语义下，GPU 后端无法在小/中工作负载上胜过 CPU，与内核质量无关**。要改变这一点，只能把多次 dispatch 合入同一命令缓冲。
+
+### 21.13.2 决策（提议）
+
+新增一个**累加式**的执行上下文契约，`compute` 本身保持冻结、一行不改：
+
+* **位置。** 契约定义在 Layer 0（`api`），因为它是「后端无关的提交边界」，与 `compute` 同级；具体实现分散到各后端。
+* **形状。** 调用方先**声明**一串步骤（每个步骤引用先前步骤的结果或自己提供的输入），再提交一次；提交返回被声明为输出的那些张量。步骤的操作集合是 `compute` 已有算子的复述，不引入新数值语义。
+* **可选性。** `compute` 是默认路径；上下文只在调用方明确选择时使用。CPU 以「按序调用既有 `compute`」实现同一契约，因此三个后端语义一致，性能上按各自硬件取最优。
+
+### 21.13.3 不变量与所有权（提议）
+
+* **所有权。** 上下文由调用方拥有、请求作用域；它拥有该请求的全部中间设备缓冲与一次提交的命令缓冲。它**不**拥有模型权重，也不得把请求数据写入任何跨请求存活的结构。
+* **请求隔离（OW2/OW3）。** 两个并发上下文不共享任何可变状态；executor 的编译缓存（只含设备句柄与已编译 pipeline，见 21.6）可继续共享，因为它不含请求数据。
+* **预算。** 每个中间结果的形状在**声明时**校验（复用 `api::checkbudget`），因此没有任何分配发生在预算校验之前；声明阶段的失败不产生设备操作。
+* **顺序。** 步骤按声明顺序执行；同一 encoder 内相邻 dispatch 之间的依赖由 Metal 对 `MTLResource` 的默认 hazard tracking 保证，不依赖调用顺序假设。
+* **错误归属（ER2）。** 任一步失败即中止本次提交并返回该步的算子名与既有 `backenderror` 变体，不新增错误类型；已获取的设备资源由上下文析构释放，不泄漏、不跨请求复用。
+* **取消。** 提交前丢弃上下文即释放全部资源；提交**期间**的取消不由同步契约表达，明确列为范围之外。
+* **上限。** 上下文可声明的步骤数与中间元素总量都受调用方提供的 `limits` 约束；超限在声明时拒绝。
+
+### 21.13.4 被否决方案（DS5）
+
+* **继续调优 kernel / 提高 kernel 并行度。** 被否决：实测固定成本与负载无关，256³ matmul 与 6 元素 `silu` 同价，内核改进无法触及该成本。
+* **缓冲池或改变存储模式。** 被否决：实测存储模式对完成延迟无影响（2037 对 1920 µs）；传输仅占大负载总耗时的约 19%（4 MiB 上传 265 µs + 下载 230 µs 于 2.6 ms 中），且对 `embedding` 这类小负载为 0%。它是二阶项，不是瓶颈。
+* **把 `compute` 改成异步/流式。** 被否决：那会改动一个所有后端与所有上层都已依赖的冻结契约，并要求每个调用方改为管理未完成结果的生命周期；累加式上下文以零破坏达成同一目标。
+* **全局单例上下文 / 进程级设备管理器。** 被否决：破坏测试隔离与所有权（21.6 已排除全局单例），且无法为不同请求提供不同的预算。
+* **为特定算子对新增融合算子（如 `rmsnorm`+`matmul`）。** 被否决：需要每对一次 API 扩张，且对 16 步的链缺乏一般性；批处理把任意长度的链都压缩为一次提交。
+
+### 21.13.5 分阶段实施顺序（每阶段独立可测、可回滚）
+
+1. **契约与 CPU 实现。** 在 `api` 定义提交边界；`cpu` 以「按序调用既有 `compute`」实现之。验收：同一链经上下文与经 `compute` 的结果**逐位相同**；声明阶段的拒绝（形状、下标、预算、秩）与 `compute` 一致。
+2. **Metal 实现。** 把 `ffi.rs` 的每个算子拆成「分配槽位 → 编码进 encoder → 下载 sink」三段，全部步骤共用一个 compute encoder 与一次 commit/wait。验收：`unsafe` 站点仍为 4/4（复用同一组上传/下载/绑定站点）；结果与阶段 1 逐位相同；`gpu/modelforward` 的 Metal 数字相对约 51 ms 的基线至少改善 10×。
+3. **CUDA 实现。** 在自托管 GPU runner 可用后以其自身提交语义实现同一契约（不预设与 Metal 相同的机制）。
+
+### 21.13.6 验收标准与回滚
+
+* **正确性。** 任何链经上下文与经 `compute` 逐位相同（同一内核、同一累加顺序）；全部既有测试保持通过。
+* **性能。** `gpu/modelforward` 的 Metal 数字相对约 51 ms 的基线至少改善 10×；CUDA 侧在没有设备前不作任何声明（E4）。
+* **门禁。** `unsafe` 站点数不变；`api`/`metal` 的 A4 导出宽度仍在上界内；`check.sh` 全绿。
+* **回滚。** 该契约是累加式的：删除上下文类型与其实现即完全回到当前状态，调用方无迁移成本。
 
 ## 22. 跨领域主题与声明局限
 

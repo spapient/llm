@@ -1,6 +1,6 @@
 # CUDA 与 Metal 后端全量审查与优化执行计划
 
-- 状态：**审查计划（尚未实施代码整改）**
+- 状态：**审查计划**；G0 基线、G1 契约一致化与部分 G2 测试补强已实施（见第 10 节），其余条目仍未实施。
 - 仓库：`spapient/llm`
 - 基线分支：`main`
 - 计划日期：2026-10-12
@@ -335,3 +335,62 @@ bash scripts/checkthresholds.sh
 本文件根据当前可读取的主要源码、crate manifest、公共 API、质量脚本和 CI workflow 制定。它是**面向实施的审查计划，不是已经完成的代码整改，也不是所有 GPU 源码逐行审计的替代品**。尤其是 FFI 生命周期、具体 kernel 的全部边界条件和真实设备性能，仍必须在执行阶段逐项核验。
 
 建议下一步从 PR-A 开始：先建立可重复的测试基线，再处理 G1 的 shape/预算校验一致化。这样能先固定行为和失败证据，避免一边大规模改代码、一边失去判断正确性的参照。
+
+## 10. 执行状态与算子覆盖表（2026-10-12）
+
+本节记录 G0 要求的基线与覆盖表，以及截至该日期已实施的条目。未列出的条目一律视为**未实施**。
+
+### 10.1 基线（G0）
+
+| 项 | 记录 |
+| --- | --- |
+| 基线 commit / 分支 | `55d8efb` / `docs/gpu-backend-optimization-plan`（PR #1） |
+| 工具链 | `rustc 1.99.0 (b940084d7 2026-09-28)`、`cargo 1.99.0`，由 `rust-toolchain.toml` 固定 |
+| 宿主 | macOS 27.0.1（build 26A434），arm64，Apple M5 Pro |
+| CUDA 设备 | 无（`nvidia-smi` 不可用）。`x86_64-unknown-linux-gnu` 目标仅用于编译与 lint |
+| `bash scripts/check.sh` | PASS（exit 0） |
+| `cargo test --workspace` | PASS：758 passed / 0 failed；其中 `metalcontract` 40 例在本机 Apple GPU 上真实运行 |
+| CUDA 运行时数值 | **NOT RUN（E4）**：本机无 NVIDIA GPU |
+| CUDA 编译与静态门禁 | PASS（E1）：`cargo check`/`cargo clippy` 针对 `x86_64-unknown-linux-gnu`，含 `-D clippy::cognitive_complexity -D clippy::too_many_lines` |
+
+### 10.2 算子覆盖表
+
+| 算子 | 无设备契约向量（`tests/it/gpucontract.rs`） | Metal 真机数值用例 | CUDA 真机数值 | 数值容差 | 基准（同轮 CPU 对照） |
+| --- | --- | --- | --- | --- | --- |
+| `matmul` | `matmul/rank`、`/contraction`、`/batchdims`、`/outelements`、`/outbytes`、`/k0/{elements-at-bound,bytes-at-bound,elements-over,bytes-over}` | `matmul_matches_the_scalar_reference`、`matmul_handles_a_leading_batch_dimension`、`matmul_with_distinct_extents_matches_the_reference`、`matmul_of_a_single_element_matches_the_reference`、`matmul_rejects_incompatible_shapes`、`matmul_rejects_operands_beyond_the_element_budget` | 已有（cuBLAS 与 NVRTC 各一例 + 两路径一致），**未运行** | 1e-4 | `gpu/matmul/{cpu,metal}256` |
+| `add` | `add/shape` | `add_matches_the_elementwise_sum`、`elementwise_rejects_mismatched_shapes`、`elementwise_rejects_operands_beyond_the_element_budget`、`empty_elementwise_inputs_produce_empty_output` | 同构，**未运行** | 逐位相等 | `gpu/elementwise/{cpu,metal}add` |
+| `mul` | `mul/shape`、`mul/elements` | `mul_matches_the_elementwise_product`、同上三个边界用例 | 同构，**未运行** | 逐位相等 | `gpu/elementwise/{cpu,metal}mul` |
+| `silu` | `silu/rank`、`silu/elements`、`silu/bytes` | `silu_matches_the_scalar_reference`、`empty_elementwise_inputs_produce_empty_output` | 同构，**未运行** | 1e-6 | `gpu/elementwise/{cpu,metal}silu` |
+| `rmsnorm` | `rmsnorm/emptylastaxis`、`rmsnorm/weightlength` | `rmsnorm_matches_the_scalar_reference_per_row`、`rmsnorm_handles_a_row_wider_than_one_threadgroup`（宽 1000）、`rmsnorm_rejects_an_empty_last_axis`、`rmsnorm_rejects_a_weight_of_the_wrong_length`、`rmsnorm_accepts_a_one_row_weight` | 同构（含宽度假设），**未运行** | 1e-5 | `gpu/rmsnorm/{cpu,metal}rows512cols4096` |
+| `softmax` | `softmax/emptylastaxis` | `softmax_matches_the_scalar_reference_per_row`、`softmax_handles_a_row_wider_than_one_threadgroup`、`softmax_is_numerically_stable_for_extreme_logits`、`softmax_of_a_negative_infinity_row_is_not_a_number`、`softmax_over_zero_rows_yields_an_empty_output`、`softmax_rejects_an_empty_last_axis` | 同构，**未运行** | 1e-6 | `gpu/softmax/{cpu,metal}rows512cols4096` |
+| `rope` | `rope/heads0`、`rope/oddhead`、`rope/raggedheads`、`rope/rank1` | `rope_matches_the_scalar_reference_per_position`、`rope_of_a_single_position_is_the_identity_rotation`、`rope_rejects_a_zero_head_count_or_an_odd_head_dimension` | 同构，**未运行** | 1e-5 | `gpu/rope/{cpu,metal}seq128heads8dim64` |
+| `embedding` | `embedding/index`、`embedding/gatherbudget` | `embedding_matches_the_scalar_reference`、`embedding_accepts_the_first_and_last_row`、`embedding_rejects_an_out_of_range_index`、`embedding_rejects_a_gather_beyond_the_element_budget`、`embedding_with_no_indices_yields_an_empty_output` | 同构，**未运行** | 逐位相等 | `gpu/embedding/{cpu,metal}gather128` |
+| `attention` | `attention/rank1`、`/seq`、`/kvshape`、`/headsplit`、`/kvheads0`、`/kvwidth` | `attention_matches_a_scalar_reference`、`attention_non_causal_matches_a_scalar_reference`、`attention_with_equal_head_counts_matches_the_reference`、`attention_single_position_returns_the_value`、`attention_rejects_inconsistent_operands`、`attention_rejects_a_head_dimension_beyond_the_device_limit` | 同构，**未运行** | 1e-5 | `gpu/attention/{cpu,metal}seq128heads8dim64` |
+
+每头宽度的设备上限（`METALMAXHEADDIM` = 4096、`CUDAMAXHEADDIM` = 8192）是**设备**限制而非契约限制，允许两个后端不同，故不进入共享向量表，各套件单独断言各自的边界。
+
+### 10.3 截至 2026-10-12 已实施的整改
+
+1. **秩与预算谓词单点化（G1）。** 新增 `api::checkbudget`/`api::checkgatherbudget`；`metal` 与 `cuda` 的 `executor.rs` 删除各自那份逐字节重复的实现，改为转发。秩超过声明上限的分类由 `executionfailed` 改为 `resourceexhausted`，与 `cpu` 一致——此前同一操作数在三个后端得到两种不同的公共错误。
+2. **`matmul` 结果预算（G1）。** 三个后端此前只校验操作数；`m*k <= max` 且 `k*n <= max` 仍可要求 `m*n` 级别的输出分配。现在结果形状在任何分配之前过同一谓词。`cpu` 为此把 `matmulplan` 与 `cpumatmul` 拆开，`cpuerror` 的公开语义未变。
+3. **Metal `matmul` shape plan 抽出（G1 第 4 条）。** `matmulshape` 由 executor 移入 `metal/src/geometry.rs`，与 CUDA 侧同形，两侧各自提供 `outshape()`。
+4. **共享的无设备契约向量（G1 第 2 条 / PR-A）。** `tests/it/gpucontract.rs` 定义 30 个向量；`metal` 与 `cuda` 两个套件各自断言「与列表一致」与「与 `cpu` 逐项相同」。
+5. **Metal 真机数值扩展（G2 / PR-A）。** `metalcontract` 由 30 例增至 40 例：互异维度的非方阵、单元素 matmul、宽度 1000 的 `rmsnorm`/`softmax`、`heads == kvheads` 的 attention、位置 0 的 `rope`、embedding 首尾行、全 `-inf` 行的 softmax 行为。
+6. **Metal 全算子基准（G6 的前置基线 / PR-A）。** `benches/metal.rs` 由只测 `matmul` 扩为覆盖九个算子，与 `benches/cuda.rs` 的工作负载与组名一致，使 AGENTS.md 第 7 节「每个算子至少一个可复现基准」对两个后端成立。
+7. **Metal 运行时编译缓存（G4 / PR-D）。** 设备句柄与 MSL pipeline 由 executor 拥有的缓存持有（非全局单例，`Arc` 共享给 clone），每个内核只编译一次：九个算子的 median 提升 15–34%，`unsafe` 站点仍为 4/4。公开 `metalexecutor::getcachedpipelinecount` 使「只编译一次」可从 crate 外机械断言。
+8. **dispatch 几何（G5 的一半 / PR-D）。** 逐阶段插桩测出每次调用一次命令缓冲往返约 1.7–2.4 ms，且与负载大小和 dispatch 次数无关；据此把 `matmul` 的全部 batch block 合入一次 dispatch（batch 作为网格第三维）。8×256³ 由 13.969 ms 降至 2.878 ms（−79.4%），成为唯一一处 Metal 快于 CPU 的测量点。
+9. **文档更正。** `softmax` 的「全下溢行保持全零」不成立（全 `-inf` 行的 `max - max` 是 NaN），已在 `cpu`/`metal`/`cuda` 的文档与 `docs/design.md` 中更正，并由用例钉住。
+
+**证伪性验证（E1）。** ① 把秩分类改回 `executionfailed` → `metal` 的两个向量用例变红，报文指出具体用例名与两侧值；② 删除 `metal` executor 的结果预算校验 → `matmul/outelements` 变红。两处探针随后还原。
+
+### 10.4 端到端代价与下一步（2026-10-12 第三轮）
+
+新增 `benches/metal.rs` 的 `gpu/modelforward`（同一微型 Llama 前向跑 CPU 与 Metal 两个 provider）：**CPU 约 130 µs，Metal 约 50.5–53.5 ms（约 390–414×）**。归因已由四组对照锁定为「每次 `compute` 调用一次命令缓冲往返」（负载大小、dispatch 次数、等待方式、存储模式、是否虚拟化均不影响），前向约 35 次调用 × 约 1.5 ms 与之一致。
+
+这直接决定 G6 的结论：**在内核层面继续优化无法改变该差距**。唯一的一阶杠杆是把多次 dispatch 合入同一命令缓冲，对应 `docs/design.md` §21.13 的**提议**设计（累加式执行上下文：所有权、请求隔离、预算、错误归属、被否决方案、三阶段实施与验收标准）。该设计**尚未实施**，实施前不得改动冻结的 `compute` 语义。
+
+### 10.5 仍未实施
+
+按第 3 节的编号，下列条目在本轮**未实施**，不得视为已完成：G3 的剩余部分（失败路径与生命周期测试）、G5 中显存与传输次数的系统统计（往返成本已测，但逐算子的分配/传输计数尚未系统化）、G7 的结构化 CI 结果、G8 的 attention/KV cache 契约设计、G9 中除本表以外的可维护性条目；PR-C、PR-E、PR-G 未开始。PR-F（性能优化）的前置设计与端到端基线见 10.4。
+
+**已由测量排除的方向**：继续逐个调优 Metal kernel **不会**缩小它与 CPU 在小/中工作负载上的差距，因为该差距由每次调用一次命令缓冲往返（约 1.7–2.4 ms，与负载大小和 dispatch 次数无关）决定。可用的下一步是把多次 dispatch 合入同一命令缓冲，即一个跨调用的执行上下文——这是对同步契约的改动，必须先出设计（见 `docs/design.md` §21.11）。
