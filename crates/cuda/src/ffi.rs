@@ -267,9 +267,12 @@ pub(crate) fn matmul_cublas(
 /// the buffer as it already lies in memory.
 ///
 /// cuDNN computes the same max-subtracting formulation, so it agrees with the
-/// scalar reference on finite rows. The behavior of a row of negative infinity
-/// under `CUDNN_SOFTMAX_ACCURATE` is not asserted: no NVIDIA GPU was reachable
-/// where this was written, so the case is recorded as not executed (E4).
+/// scalar reference on finite rows. It does **not** agree outside that domain:
+/// measured on an RTX 2080 Ti (E1), a row of negative infinity comes back as
+/// zeros under `CUDNN_SOFTMAX_ACCURATE`, whereas `cpu` and `metal` propagate
+/// NaN. The contract is device-independent, so an input containing any
+/// non-finite value is computed by [`scalarsoftmax`] — the same formulation the
+/// other two backends implement — instead of being delegated to cuDNN.
 ///
 /// # Errors
 ///
@@ -281,6 +284,9 @@ pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f3
         return Ok(Vec::new());
     }
     let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
+    if input.iter().any(|value| !value.is_finite()) {
+        return Ok(scalarsoftmax(input, width));
+    }
     let (_ctx, stream) = opendevice()?;
     let handle = Cudnn::new(stream.clone()).map_err(cudnnfail)?;
     let operation = handle
@@ -320,6 +326,32 @@ pub(crate) fn softmax(input: &[f32], rows: usize, width: usize) -> Result<Vec<f3
             .map_err(cudnnfail)?;
     }
     syncanddownload(&stream, &dy)
+}
+
+/// The scalar max-subtracting softmax `cpu` and `metal` implement.
+///
+/// Private to this file: it exists so the cuDNN path can step aside for inputs
+/// outside the finite domain, not as a second public softmax. The row rule is
+/// the one `crates/cpu/src/softmax.rs` documents — subtract the row maximum,
+/// exponentiate, and divide only when the shifted exponents sum above zero, so a
+/// row of negative infinity propagates NaN instead of being masked to zeros.
+fn scalarsoftmax(input: &[f32], width: usize) -> Vec<f32> {
+    let mut out = vec![0.0_f32; input.len()];
+    for (dst, row) in out.chunks_mut(width).zip(input.chunks(width)) {
+        let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mut sum = 0.0_f32;
+        for (d, &x) in dst.iter_mut().zip(row.iter()) {
+            let e = (x - max).exp();
+            *d = e;
+            sum += e;
+        }
+        if sum > 0.0 {
+            for d in dst.iter_mut() {
+                *d /= sum;
+            }
+        }
+    }
+    out
 }
 
 /// Adds two equal-length `f32` operands elementwise.

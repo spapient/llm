@@ -59,6 +59,7 @@
 - **Metal 全算子基准与运行间方差（E1）。** `benches/metal.rs` 由只测 `matmul` 扩为九个算子（工作负载与组名与 `benches/cuda.rs` 一致），`cargo bench -p llm --bench metal -- --warm-up-time 0.5 --measurement-time 1.0 --sample-size 10` 测得 Metal 在每个工作负载上都慢于 CPU；同一二进制的 `gpu/matmul/metal256` 四次 median 为 2.337/2.617/2.672/2.850 ms（散布约 ±10%），而 `cpu256` 四次为 954.9/956.4/958.6/974.3 µs（约 ±1%）。未声明任何加速（见 `docs/design.md` §21.10.1）。
 - `cargo check -p llm --target x86_64-unknown-linux-gnu --test it --locked`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets --locked -- -D warnings`、同目标 `--lib` 的 DS3 阈值检查 —— 均 exit 0（E1，编译证据）。
 - **已执行（E1，2026-10-12 真机）** —— CUDA 运行时数值验证：在 RTX 2080 Ti 主机上以 `LLM_CUDA_REQUIRE_DEVICE=1` 得到 `cudacontract` 36 passed / 0 failed 与 `cargo test --workspace` 758 passed / 0 failed（0 条 `E4 未执行`），`check.sh` exit 0；首次执行即暴露并修正了一个用例缺陷（非方阵 matmul 对照用例的元素数不足）。见 `docs/design.md` §21.10.3。
+- **CUDA 与 `cpu`/`metal` 的一处不一致（E1，已修）。** 首次真机执行发现 `softmax` 在整行 `-inf` 的输入上与契约不符：cuDNN 的 `CUDNN_SOFTMAX_ACCURATE` 返回全零，而契约（`crates/cpu/src/softmax.rs` 与 `metal` 的实现）传播 NaN。现由「输入含任何非有限值时不委托 cuDNN，改用与 `cpu`/`metal` 相同的标量式」修正；`tests/it/cudacontract.rs` 以两例钉住：全 `-inf` 行传播 NaN，五个非有限行（全 `-inf`、含 `+inf`、含 NaN、`-inf` 与有限混合）与 `cpu` 逐元素一致。同机 A/B 测得该守卫在 2^21 元素上约 +1.9 ms（4.9417 ms → 6.8184 ms），并记录了它的替代方案与下一步（`docs/design.md` §21.10.3 第 6 条）。
 
 ## 当前判定
 

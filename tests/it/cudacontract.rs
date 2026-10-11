@@ -706,3 +706,59 @@ fn the_reference_path_agrees_with_the_cublas_path_on_the_contract_vectors() {
         "the cublas and nvrtc matmul paths disagree on a device-free contract vector"
     );
 }
+
+#[test]
+fn softmax_of_a_negative_infinity_row_is_not_a_number() {
+    // Pinned for the same reason as in `metalcontract`: subtracting a row
+    // maximum of negative infinity from itself is NaN, not a finite underflow,
+    // so the row propagates NaN, and `cpu` behaves identically. cuDNN computes
+    // the same max-subtracting formulation, so the third backend must agree.
+    if !hasdevice("softmax_of_a_negative_infinity_row_is_not_a_number") {
+        return;
+    }
+    let x = build(vec![1, 3], vec![f32::NEG_INFINITY; 3]);
+    let exec = cudaexecutor::new(wide());
+
+    let out = exec.softmax(&x.getview()).unwrap();
+
+    assert!(
+        out.getdata().iter().all(|value| value.is_nan()),
+        "expected NaN propagation, got {:?}",
+        out.getdata()
+    );
+}
+
+#[test]
+fn softmax_matches_the_cpu_backend_outside_the_finite_domain() {
+    // The measured divergence this suite found: cuDNN's `CUDNN_SOFTMAX_ACCURATE`
+    // returns zeros for a row of negative infinity, where `cpu` and `metal`
+    // propagate NaN. Every case is settled by comparing the device result with
+    // the host backend on the same input, so neither side can drift alone.
+    if !hasdevice("softmax_matches_the_cpu_backend_outside_the_finite_domain") {
+        return;
+    }
+    let cases: [&[f32]; 5] = [
+        &[f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY],
+        &[1.0, f32::INFINITY, 2.0],
+        &[f32::NAN, 1.0, 2.0],
+        &[f32::NEG_INFINITY, 0.0, 1.0],
+        &[f32::INFINITY, f32::NEG_INFINITY, 0.0],
+    ];
+    let gpu = cudaexecutor::new(wide());
+    let host = cpuexecutor::new(wide());
+
+    for (index, row) in cases.iter().enumerate() {
+        let x = build(vec![1, row.len()], row.to_vec());
+
+        let want = host.softmax(&x.getview()).unwrap();
+        let got = gpu.softmax(&x.getview()).unwrap();
+
+        assert_eq!(got.getdata().len(), want.getdata().len());
+        for (position, (g, w)) in got.getdata().iter().zip(want.getdata()).enumerate() {
+            assert!(
+                (g.is_nan() && w.is_nan()) || g == w,
+                "case {index} element {position}: cuda {g} but cpu {w}"
+            );
+        }
+    }
+}
