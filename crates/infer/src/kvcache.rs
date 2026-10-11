@@ -1,5 +1,4 @@
 use ::tensor::{shape, tensor};
-use models::kvcache;
 use models::modelerror;
 
 use crate::error::infererror;
@@ -102,12 +101,7 @@ impl kvstate {
         let newlen = current + 1;
         let mut replacements = Vec::with_capacity(self.layers);
         for layer in 0..self.layers {
-            let newkey = concatrow(
-                self.keys[layer].as_ref(),
-                key.getdata(),
-                newlen,
-                self.width,
-            )?;
+            let newkey = concatrow(self.keys[layer].as_ref(), key.getdata(), newlen, self.width)?;
             let newvalue = concatrow(
                 self.values[layer].as_ref(),
                 value.getdata(),
@@ -157,12 +151,7 @@ impl models::kvcache for kvstate {
         }
         let newlen = current + 1;
         // Build both tensors before committing either side.
-        let newkey = concatrow(
-            self.keys[layer].as_ref(),
-            key.getdata(),
-            newlen,
-            self.width,
-        )?;
+        let newkey = concatrow(self.keys[layer].as_ref(), key.getdata(), newlen, self.width)?;
         let newvalue = concatrow(
             self.values[layer].as_ref(),
             value.getdata(),

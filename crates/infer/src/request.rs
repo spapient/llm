@@ -150,12 +150,14 @@ impl generationrequest {
             });
         }
         let maxnew = params.stop.getmaxnewtokens();
-        let requested_len = prompt.len().checked_add(maxnew).ok_or_else(|| {
-            infererror::invalidrequest {
-                field: "maxnewtokens",
-                detail: "prompt length plus maxnewtokens overflows usize".to_string(),
-            }
-        })?;
+        let requested_len =
+            prompt
+                .len()
+                .checked_add(maxnew)
+                .ok_or_else(|| infererror::invalidrequest {
+                    field: "maxnewtokens",
+                    detail: "prompt length plus maxnewtokens overflows usize".to_string(),
+                })?;
         if requested_len > params.maxseq {
             return Err(infererror::invalidrequest {
                 field: "maxnewtokens",
