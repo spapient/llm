@@ -50,8 +50,10 @@ jobs:
         run: cargo bench --workspace --no-run
 
   macos:
-    name: Metal backend on macOS
-    runs-on: macos-14
+    name: Metal backend on self-hosted macOS
+    # Requires the repository's Mac runner to be registered and online.
+    # The generic macOS label avoids assuming Apple Silicon vs Intel.
+    runs-on: [self-hosted, macOS]
     timeout-minutes: 30
 
     steps:
