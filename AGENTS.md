@@ -61,7 +61,7 @@
 * `testkit` 是开发与测试基础设施，不是生产依赖。
 * `bench` 拥有基准可执行文件与测量编排，且 MUST NOT 成为生产依赖。
 
-以上是预期职责。当前 workspace 中仅存在 `crates/tensor`；其余成员已在根 `Cargo.toml` 中声明但尚未实现。实际依赖边 MUST 依据源码与清单进行核实。
+以上是预期职责，不代表当前实现状态。工作区通过根 `Cargo.toml` 的 `members = ["crates/*"]` 纳入实际 crate；根清单中的路径依赖、磁盘目录与 `cargo metadata --no-deps` 结果共同决定当前成员。旧版“当前 workspace 中仅存在 `crates/tensor`”的状态描述已过时，不得沿用。每次任务开始都 MUST 现场核对 crate 目录、Cargo 清单、源码与测试；实际依赖边 MUST 依据源码与清单进行核实。
 
 ### 3.2 依赖约束
 
