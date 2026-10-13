@@ -2765,17 +2765,15 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 | job | runner | 作用 | 现状 |
 | --- | --- | --- | --- |
 | `quality` | `ubuntu-latest` | 不变：fmt、全工作区 check/clippy/test/doc 与基准编译。因 `cuda` 在 Linux 上非空，它在 Linux 上已覆盖 CUDA 的编译与 lint | 既有 |
-| `macos` | `macos-14` | `cargo test --workspace`，使 `metal` 真实编译并运行 MSL 内核 | 新增 |
+| `macos` | `[self-hosted, macOS]` | `cargo test --workspace`，使 `metal` 在仓库所有者的 Mac 上真实编译并运行 MSL 内核 | **已配置，待手动触发验证**（仅 `workflow_dispatch`） |
 | `cuda-check` | `ubuntu-latest` | `cargo check -p cuda --all-targets`；运行 `cudacontract` 的设备无关一半；外加 `scripts/checkunsafe.sh` 与 `scripts/checkthresholds.sh`。**故意不安装 CUDA toolkit**，`dynamic-loading` 使其不必要 | 新增 |
 | `cuda-test` | `[self-hosted, linux, x64, cuda]` | `cargo test -p llm --test it cudacontract`，并设 `LLM_CUDA_REQUIRE_DEVICE=1`，使「探测不到设备」成为硬失败而非静默通过 | **未激活**（runner 未注册；2026-10-12 已在 RTX 2080 Ti 上手工执行同一命令，见 21.10.3） |
 
 `cuda-check` 为何仍需单独存在：宿主 macOS 的 `checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的代码，而 `checkunsafe.sh` 与 `checkthresholds.sh` 本来就不在 `quality` 的步骤里；该 job 把这两项放到 CUDA 代码确实非空的平台上以求值——在该 runner 上 `checkthresholds.sh` 的 `cargo clippy --workspace --lib --bins` 原生覆盖 CUDA 的 Linux 代码，故 DS3 在那里是机械强制的，而非仅在宿主上另跑一次交叉目标 clippy。此外 `quality` 的 `cargo test --workspace` 与 `cuda-check` 的 `cudacontract` 步骤都会执行该套件的设备无关一半。
 
-`cuda-test` 当前只在 `workflow_dispatch` 下运行，因为自托管 runner 尚未注册，而在 `push`/PR 上加入一个无法调度的 job 会让整个工作流永久处于 pending。runner 注册后删除该 job 的 `if:` 一行即可启用。
+`macos` 与 `cuda-test` 当前都只在 `workflow_dispatch` 下运行，避免自托管机器离线或标签不匹配时让 push/PR 工作流永久 pending。Metal job 要求 runner 同时具有 `self-hosted` 与 `macOS` 标签；CUDA job 要求 `self-hosted`、`linux`、`x64`、`cuda`。触发手动工作流后，必须从 Actions 日志确认实际分配的 runner 名称、执行步骤与设备测试结果；仅本机显示 runner 进程运行，不代表 GitHub 已注册、在线且标签匹配。
 
-默认 feature 不引入任何 GPU 依赖，故 `quality` job 的语义未变。
-
-未决（需仓库所有者提供）：自托管 CUDA runner 的标签与配置。
+默认 feature 不引入任何 GPU 依赖，故 `quality` job 的语义未变。Metal 自托管任务当前已写入 workflow，但尚未由本次会话触发或验证；CUDA runner 的注册、在线状态与标签匹配也仍待 Actions 实测确认。
 
 ## 21.13 执行上下文与 dispatch 批处理（**提议**，未实施）
 
