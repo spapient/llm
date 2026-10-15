@@ -120,28 +120,7 @@ impl bytepair {
         }
 
         while let Some(step) = heap.pop() {
-            let Some(right) = next[step.left] else {
-                continue;
-            };
-            if !alive[step.left] || !alive[right] {
-                continue;
-            }
-            if self.getrank(&work[step.left], &work[right]) != Some(step.rank) {
-                continue;
-            }
-
-            let absorbed = std::mem::take(&mut work[right]);
-            work[step.left].push_str(&absorbed);
-            alive[right] = false;
-            let following = next[right];
-            next[step.left] = following;
-            if let Some(after) = following {
-                prev[after] = Some(step.left);
-            }
-            if let Some(before) = prev[step.left] {
-                self.queuecandidate(&work, &next, &alive, &mut heap, before);
-            }
-            self.queuecandidate(&work, &next, &alive, &mut heap, step.left);
+            self.trymerge(&mut work, &mut prev, &mut next, &mut alive, &mut heap, step);
         }
 
         let mut out = Vec::with_capacity(count);
@@ -154,6 +133,41 @@ impl bytepair {
             }
         }
         out
+    }
+
+    /// Applies one heap-selected merge step when it is still live and its rank
+    /// is still current; otherwise it is a stale candidate and is skipped.
+    fn trymerge(
+        &self,
+        work: &mut [String],
+        prev: &mut [Option<usize>],
+        next: &mut [Option<usize>],
+        alive: &mut [bool],
+        heap: &mut BinaryHeap<mergestep>,
+        step: mergestep,
+    ) {
+        let Some(right) = next[step.left] else {
+            return;
+        };
+        if !alive[step.left] || !alive[right] {
+            return;
+        }
+        if self.getrank(&work[step.left], &work[right]) != Some(step.rank) {
+            return;
+        }
+
+        let absorbed = std::mem::take(&mut work[right]);
+        work[step.left].push_str(&absorbed);
+        alive[right] = false;
+        let following = next[right];
+        next[step.left] = following;
+        if let Some(after) = following {
+            prev[after] = Some(step.left);
+        }
+        if let Some(before) = prev[step.left] {
+            self.queuecandidate(&*work, &*next, &*alive, heap, before);
+        }
+        self.queuecandidate(&*work, &*next, &*alive, heap, step.left);
     }
 
     /// Queues the mergeable pair starting at `left`, if one exists and both of
