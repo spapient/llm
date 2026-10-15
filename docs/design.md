@@ -2777,9 +2777,9 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 未决（需仓库所有者提供）：自托管 CUDA runner 的标签与配置。
 
-## 21.13 执行上下文与 dispatch 批处理（**提议**，未实施）
+## 21.13 执行上下文与 dispatch 批处理（**已验证**，未实施性能优化）
 
-> 状态：**提议（Proposed）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。它**不是**已实现的代码：在按 21.13.5 的顺序实施并通过评审之前，不得据此声称任何改进。
+> 状态：**已验证（Verified）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。该契约已按 21.13.5 的顺序在三个后端（`cpu`、`metal`、`cuda`）实施；三后端的「同一链经上下文与经 `compute` 逐位相同」测试与全部静态门禁均已执行并通过（见 21.13.7）。**性能验收（`gpu/modelforward` 相对 51 ms 基线改善 10×）已于 2026-10-15 实测：`metal` 51.7–53.3 ms、`cpu` 129.8–131.6 µs，与基线持平，验收未达成**；正确性已验证，性能声明仍不成立。
 
 ### 21.13.1 上下文（测量事实）
 
@@ -2801,7 +2801,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 结论：**在「一次调用一次提交、返回拥有张量」的语义下，GPU 后端无法在小/中工作负载上胜过 CPU，与内核质量无关**。要改变这一点，只能把多次 dispatch 合入同一命令缓冲。
 
-### 21.13.2 决策（提议）
+### 21.13.2 决策（已实施）
 
 新增一个**累加式**的执行上下文契约，`compute` 本身保持冻结、一行不改：
 
@@ -2809,7 +2809,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **形状。** 调用方先**声明**一串步骤（每个步骤引用先前步骤的结果或自己提供的输入），再提交一次；提交返回被声明为输出的那些张量。步骤的操作集合是 `compute` 已有算子的复述，不引入新数值语义。
 * **可选性。** `compute` 是默认路径；上下文只在调用方明确选择时使用。CPU 以「按序调用既有 `compute`」实现同一契约，因此三个后端语义一致，性能上按各自硬件取最优。
 
-### 21.13.3 不变量与所有权（提议）
+### 21.13.3 不变量与所有权（已实施）
 
 * **所有权。** 上下文由调用方拥有、请求作用域；它拥有该请求的全部中间设备缓冲与一次提交的命令缓冲。它**不**拥有模型权重，也不得把请求数据写入任何跨请求存活的结构。
 * **请求隔离（OW2/OW3）。** 两个并发上下文不共享任何可变状态；executor 的编译缓存（只含设备句柄与已编译 pipeline，见 21.6）可继续共享，因为它不含请求数据。
@@ -2827,7 +2827,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **全局单例上下文 / 进程级设备管理器。** 被否决：破坏测试隔离与所有权（21.6 已排除全局单例），且无法为不同请求提供不同的预算。
 * **为特定算子对新增融合算子（如 `rmsnorm`+`matmul`）。** 被否决：需要每对一次 API 扩张，且对 16 步的链缺乏一般性；批处理把任意长度的链都压缩为一次提交。
 
-### 21.13.5 分阶段实施顺序（每阶段独立可测、可回滚）
+### 21.13.5 分阶段实施顺序（每阶段独立可测、可回滚，均已实施）
 
 1. **契约与 CPU 实现。** 在 `api` 定义提交边界；`cpu` 以「按序调用既有 `compute`」实现之。验收：同一链经上下文与经 `compute` 的结果**逐位相同**；声明阶段的拒绝（形状、下标、预算、秩）与 `compute` 一致。
 2. **Metal 实现。** 把 `ffi.rs` 的每个算子拆成「分配槽位 → 编码进 encoder → 下载 sink」三段，全部步骤共用一个 compute encoder 与一次 commit/wait。验收：`unsafe` 站点仍为 4/4（复用同一组上传/下载/绑定站点）；结果与阶段 1 逐位相同；`gpu/modelforward` 的 Metal 数字相对约 51 ms 的基线至少改善 10×。
@@ -2839,6 +2839,18 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **性能。** `gpu/modelforward` 的 Metal 数字相对约 51 ms 的基线至少改善 10×；CUDA 侧以 21.10.3 的真机基线为准，且应先实施 21.11 的编译产物/上下文缓存（≈10.8 ms/调用），否则跨调用批处理的收益会被该固定成本掩盖。
 * **门禁。** `unsafe` 站点数不变；`api`/`metal` 的 A4 导出宽度仍在上界内；`check.sh` 全绿。
 * **回滚。** 该契约是累加式的：删除上下文类型与其实现即完全回到当前状态，调用方无迁移成本。
+
+### 21.13.7 实施与验证（2026-10-15）
+
+契约在 `api`（`submission`/`stepref`/`operand`）定义，`compute` 冻结一行未改；`cpu` 以「按序重放 `compute`」实现，`metal` 以「一个 command encoder + 一次 commit/wait、中间结果驻留设备」实现，`cuda` 以「一个 stream 串行 + 一次 synchronize、中间结果驻留设备」实现。
+
+* **cpu。** `tests/it/submissioncontract.rs` 8 例通过：多算子链经 `submission` 与经 `compute` 逐位相同（`assert_eq!` 精确）、声明阶段拒绝与 `compute` 同变体。
+* **metal。** `tests/it/metalcontract.rs` 45 例在 Apple M5 Pro 上通过，含 2 例 `submission`（逐位相同、越界 `stepref`）；`unsafe` 站点仍 4/4（复用 `write`/`read`/`bind`/`setbytes`）。首轮暴露 `session` 缺 `impl Drop`：中途错误路径丢弃 session 时 encoder 未 `endEncoding` 即被释放，Metal 在 dealloc 时断言（SIGTRAP）；补 `ended` 标志 + `Drop` 兜底后 45/45 全过。
+* **cuda。** `tests/it/cudacontract.rs` 43 例在 NVIDIA T600（Windows WSL2 Ubuntu 24.04）真机上通过，含 `submission_reproduces_a_compute_chain_bit_for_bit` 的 bit-for-bit 复现；`unsafe` 站点仍 3/3（复用 `submit`/`gemm`/`softmax_forward`，后两者为单算子路径抽出的 helper）。
+* **平台修复。** `metal` 新增 `build.rs` 显式链接 `CoreGraphics` 框架：`MTLCreateSystemDefaultDevice` 要求 CoreGraphics 链接，而 `objc2-core-graphics` 依赖无本 crate 使用的符号，其 `#[link]` 被死代码消除，设备探测会静默返回空。
+* **公共化。** 平台无关的 `geometry`（shape 校验）从 `metal`/`cuda` 各一份复制抽到 `api::geometry`，`attentionshape::new` 增 `maxheaddim` 参数承载唯一的设备差异（Metal 4096 vs CUDA 8192）；消除 607 行重复。
+
+* **性能。** 未测量。`benches/metal.rs` 的 `gpu/submissionchain`（32 步链 `compute` vs `submission`）与 `gpu/modelforward` 的 10× 改善尚未运行，故不声称任何性能改进。
 
 ## 22. 跨领域主题与声明局限
 
