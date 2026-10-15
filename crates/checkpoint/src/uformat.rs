@@ -5,6 +5,7 @@ use crate::blocks::{blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
+use crate::signature;
 
 /// Magic identifying a `.u` snapshot artifact.
 pub(crate) const MAGIC: [u8; 8] = *b"UWFSNAP1";
@@ -17,6 +18,9 @@ pub(crate) const FLAGSFULL: u32 = 2;
 
 /// Flags value for an incremental (delta) snapshot.
 pub(crate) const FLAGDELTA: u32 = 1;
+
+/// Flags value for a snapshot carrying an Ed25519 signature.
+pub(crate) const FLAGSIGNED: u32 = 4;
 
 /// One entry of the physical block table: where a stored block lives.
 pub(crate) struct storedentry {
@@ -148,6 +152,7 @@ pub struct snapshot {
     version: u32,
     tensors: Vec<tensorentry>,
     data: Vec<u8>,
+    signature: Option<[u8; 64]>,
 }
 
 impl snapshot {
@@ -158,6 +163,7 @@ impl snapshot {
             version,
             tensors: Vec::new(),
             data: Vec::new(),
+            signature: None,
         }
     }
 
@@ -167,6 +173,7 @@ impl snapshot {
             version,
             tensors,
             data,
+            signature: None,
         }
     }
 
@@ -194,6 +201,30 @@ impl snapshot {
     pub fn roothash(&self) -> [u8; 32] {
         let blocks = chunk(&self.data);
         blake3hash(&canonicalmanifest(self.version, &self.tensors, &blocks))
+    }
+
+    /// Returns the Ed25519 signature carried by the snapshot, when present.
+    #[must_use]
+    pub fn getsignature(&self) -> Option<[u8; 64]> {
+        self.signature
+    }
+
+    /// Verifies the snapshot's Ed25519 signature over its root hash against a
+    /// caller-supplied public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::signaturemissing`] when the snapshot carries
+    /// no signature, or [`checkpointerror::signaturemismatch`] when the
+    /// signature does not verify.
+    pub fn verifysignature(&self, public: &[u8; 32]) -> Result<(), checkpointerror> {
+        let signature = self.signature.ok_or(checkpointerror::signaturemissing)?;
+        let root = self.roothash();
+        if signature::verify(public, &root, &signature) {
+            Ok(())
+        } else {
+            Err(checkpointerror::signaturemismatch)
+        }
     }
 
     /// Appends a tensor's bytes and records its metadata.
@@ -274,21 +305,48 @@ impl snapshot {
         self.data.get(start..end).map(<[u8]>::to_vec)
     }
 
-    /// Encodes the snapshot as a full (self-contained) artifact.
+    /// Encodes the snapshot as a full (self-contained) artifact with no
+    /// signature.
     ///
     /// # Errors
     ///
     /// Returns [`checkpointerror::invalidmanifest`] if the total length
     /// overflows `usize`.
     pub fn encode(&self) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(None)
+    }
+
+    /// Encodes the snapshot as a full artifact signed with `seed`.
+    ///
+    /// The signature covers the snapshot's root hash, which commits to every
+    /// block through the Merkle DAG.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::invalidsignaturekey`] for an all-zero seed,
+    /// or [`checkpointerror::invalidmanifest`] if the total length overflows
+    /// `usize`.
+    pub fn encode_signed(&self, seed: &[u8; 32]) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(Some(seed))
+    }
+
+    /// Encodes the snapshot, signing it when `seed` is provided.
+    fn encode_with(&self, seed: Option<&[u8; 32]>) -> Result<Vec<u8>, checkpointerror> {
         let blocks = chunk(&self.data);
         let canonical = canonicalmanifest(self.version, &self.tensors, &blocks);
         let root = blake3hash(&canonical);
+        let (flags, signature) = match seed {
+            Some(seed) => (FLAGSFULL | FLAGSIGNED, Some(signature::sign(seed, &root)?)),
+            None => (FLAGSFULL, None),
+        };
 
         let mut manifest = canonical;
-        pushu32(&mut manifest, FLAGSFULL);
+        pushu32(&mut manifest, flags);
         manifest.extend_from_slice(&[0u8; 32]);
         manifest.extend_from_slice(&root);
+        if let Some(sig) = signature {
+            manifest.extend_from_slice(&sig);
+        }
         pushu64(&mut manifest, blocks.len() as u64);
         let mut storeddata = Vec::new();
         let mut offset = 0usize;
@@ -329,11 +387,7 @@ impl snapshot {
     /// [`checkpointerror::blockoutofrange`], or the tensor validation failures.
     pub fn decode(bytes: &[u8]) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(bytes)?;
-        if parsed.flags != FLAGSFULL {
-            return Err(checkpointerror::invalidmanifest {
-                reason: format!("unsupported snapshot flags {}", parsed.flags),
-            });
-        }
+        checkflags(parsed.flags, FLAGSFULL)?;
         if parsed.base_id.iter().any(|&b| b != 0) {
             return Err(checkpointerror::invalidmanifest {
                 reason: "full snapshot has a non-zero base identity".to_string(),
@@ -346,6 +400,7 @@ impl snapshot {
             version: parsed.version,
             tensors: parsed.tensors,
             data: rawdata,
+            signature: parsed.signature,
         })
     }
 }
@@ -358,6 +413,7 @@ pub(crate) struct parsedmanifest {
     pub(crate) flags: u32,
     pub(crate) base_id: [u8; 32],
     pub(crate) root_hash: [u8; 32],
+    pub(crate) signature: Option<[u8; 64]>,
     pub(crate) stored: Vec<storedentry>,
     pub(crate) dataoffset: usize,
 }
@@ -421,6 +477,14 @@ pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointer
             found: root_hash,
         });
     }
+    let signature = if flags & FLAGSIGNED != 0 {
+        let sigbytes = readbytes(manifest, &mut pos, 64)?;
+        let mut sig = [0u8; 64];
+        sig.copy_from_slice(sigbytes);
+        Some(sig)
+    } else {
+        None
+    };
     let stored = readstored(manifest, &mut pos)?;
     Ok(parsedmanifest {
         version,
@@ -429,9 +493,32 @@ pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointer
         flags,
         base_id,
         root_hash,
+        signature,
         stored,
         dataoffset: manifestend,
     })
+}
+
+/// Validates snapshot flags against an expected kind (full or delta), rejecting
+/// unknown bits and a mixed full/delta declaration.
+pub(crate) fn checkflags(flags: u32, expected: u32) -> Result<(), checkpointerror> {
+    let known = FLAGSFULL | FLAGDELTA | FLAGSIGNED;
+    if flags & !known != 0 {
+        return Err(checkpointerror::invalidmanifest {
+            reason: format!("unsupported snapshot flags {flags}"),
+        });
+    }
+    if flags & FLAGSFULL != 0 && flags & FLAGDELTA != 0 {
+        return Err(checkpointerror::invalidmanifest {
+            reason: "snapshot is both full and delta".to_string(),
+        });
+    }
+    if flags & expected == 0 {
+        return Err(checkpointerror::invalidmanifest {
+            reason: format!("expected snapshot flags {expected}, found {flags}"),
+        });
+    }
+    Ok(())
 }
 
 /// Builds the canonical (hashed) manifest bytes: version, tensors, and the

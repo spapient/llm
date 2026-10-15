@@ -4,9 +4,10 @@ use crate::blocks::{blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
+use crate::signature;
 use crate::uformat::{
-    FLAGDELTA, MAGIC, PREFIXLEN, canonicalmanifest, parseartifact, pushu32, pushu64, snapshot,
-    storedentry, tensorentry,
+    FLAGDELTA, FLAGSIGNED, MAGIC, PREFIXLEN, canonicalmanifest, checkflags, parseartifact,
+    pushu32, pushu64, snapshot, storedentry, tensorentry,
 };
 
 /// One block physically stored in a delta artifact.
@@ -44,6 +45,7 @@ pub struct delta {
     blocks: Vec<blockref>,
     stored: Vec<storedblock>,
     root_hash: [u8; 32],
+    signature: Option<[u8; 64]>,
 }
 
 impl delta {
@@ -79,6 +81,7 @@ impl delta {
             blocks: newblocks,
             stored,
             root_hash,
+            signature: None,
         }
     }
 
@@ -100,6 +103,29 @@ impl delta {
         self.root_hash
     }
 
+    /// Returns the Ed25519 signature carried by the delta, when present.
+    #[must_use]
+    pub fn getsignature(&self) -> Option<[u8; 64]> {
+        self.signature
+    }
+
+    /// Verifies the delta's Ed25519 signature over its root hash against a
+    /// caller-supplied public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::signaturemissing`] when the delta carries no
+    /// signature, or [`checkpointerror::signaturemismatch`] when the signature
+    /// does not verify.
+    pub fn verifysignature(&self, public: &[u8; 32]) -> Result<(), checkpointerror> {
+        let signature = self.signature.ok_or(checkpointerror::signaturemissing)?;
+        if signature::verify(public, &self.root_hash, &signature) {
+            Ok(())
+        } else {
+            Err(checkpointerror::signaturemismatch)
+        }
+    }
+
     /// Returns the snapshot version.
     #[must_use]
     pub fn getversion(&self) -> u32 {
@@ -118,7 +144,7 @@ impl delta {
         &self.blocks
     }
 
-    /// Encodes the delta into its on-disk byte layout.
+    /// Encodes the delta into its on-disk byte layout with no signature.
     ///
     /// The layout is magic, a little-endian `u64` manifest length, a binary
     /// manifest (tensors, block list, delta flag, base identity, root hash,
@@ -129,13 +155,39 @@ impl delta {
     /// Returns [`checkpointerror::invalidmanifest`] if the total length
     /// overflows `usize`.
     pub fn encode(&self) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(None)
+    }
+
+    /// Encodes the delta signed with `seed`.
+    ///
+    /// The signature covers the delta's root hash, which commits to every block
+    /// through the Merkle DAG.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::invalidsignaturekey`] for an all-zero seed,
+    /// or [`checkpointerror::invalidmanifest`] if the total length overflows
+    /// `usize`.
+    pub fn encode_signed(&self, seed: &[u8; 32]) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(Some(seed))
+    }
+
+    /// Encodes the delta, signing it when `seed` is provided.
+    fn encode_with(&self, seed: Option<&[u8; 32]>) -> Result<Vec<u8>, checkpointerror> {
         let canonical = canonicalmanifest(self.version, &self.tensors, &self.blocks);
         let root = blake3hash(&canonical);
+        let (flags, signature) = match seed {
+            Some(seed) => (FLAGDELTA | FLAGSIGNED, Some(signature::sign(seed, &root)?)),
+            None => (FLAGDELTA, None),
+        };
 
         let mut manifest = canonical;
-        pushu32(&mut manifest, FLAGDELTA);
+        pushu32(&mut manifest, flags);
         manifest.extend_from_slice(&self.base_id);
         manifest.extend_from_slice(&root);
+        if let Some(sig) = signature {
+            manifest.extend_from_slice(&sig);
+        }
         pushu64(&mut manifest, self.stored.len() as u64);
         let mut storeddata = Vec::new();
         for block in &self.stored {
@@ -173,11 +225,7 @@ impl delta {
     /// [`checkpointerror::truncatedblock`], or [`checkpointerror::blockoutofrange`].
     pub fn decode(bytes: &[u8]) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(bytes)?;
-        if parsed.flags != FLAGDELTA {
-            return Err(checkpointerror::invalidmanifest {
-                reason: format!("unsupported snapshot flags {}", parsed.flags),
-            });
-        }
+        checkflags(parsed.flags, FLAGDELTA)?;
         let data = &bytes[parsed.dataoffset..];
         let stored = verifystored(data, &parsed.blocks, &parsed.stored)?;
         Ok(Self {
@@ -187,6 +235,7 @@ impl delta {
             blocks: parsed.blocks,
             stored,
             root_hash: parsed.root_hash,
+            signature: parsed.signature,
         })
     }
 }

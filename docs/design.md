@@ -1475,7 +1475,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 ### 12.12 《.u 增量检查点契约》
 
-> 状态：**已验证（Verified）**。`.u` 格式的合并/恢复逻辑与哈希/校验体系已在 `checkpoint` crate 实现并有测试覆盖：内容寻址分块（CDC）、增量创建/合并/按需读取、LZ4 逐块压缩、链压缩与溯源（`compact`/`verifyprovenance`）、`checkpointerror` 的损坏分类（`iscorruption()`）。本节描述的固定 64 字节条目与量化/稀疏/多排布字段布局为设计草案，实际 manifest 采用变长二进制序列化（以 §12.4 与源码为准）。
+> 状态：**已验证（Verified）**。`.u` 格式的合并/恢复逻辑与哈希/校验体系已在 `checkpoint` crate 实现并有测试覆盖：内容寻址分块（CDC）、增量创建/合并/按需读取、LZ4 逐块压缩、链压缩与溯源（`compact`/`verifyprovenance`）、`checkpointerror` 的损坏分类（`iscorruption()`），以及 Ed25519 签名（`encode_signed`/`verifysignature`，`FLAGSIGNED` 标志位）。本节描述的固定 64 字节条目与量化/稀疏/多排布字段布局为设计草案，实际 manifest 采用变长二进制序列化（以 §12.4 与源码为准）。
 
 **上下文。** 增量检查点通过「仅存相对基础快照变化的块」降低训练存储冗余，通过「块级随机访问」支撑按需加载与显存调度。实现方式是**内容寻址 + 梅克尔 DAG**：块身份 = 内容哈希，快照身份 = 根哈希，溯源链由 `base_id` 显式记录。
 
@@ -1490,15 +1490,16 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `version` | `u32` | 格式版本 |
-| `flags` | `u32` | bit0 增量 / bit1 全量，其余保留 |
+| `flags` | `u32` | bit0 增量 / bit1 全量 / bit2 签名，其余保留 |
 | `base_id` | `[u8; 32]` | 全 0 = 无基础；否则 = 基础根哈希（BLAKE3-256） |
 | `training` | 可选 `trainingstate` | 复用 §12.4 |
 | `metadata` | `BTreeMap<String, String>` | 复用 §12.4，键序确定 |
 | `tensors` | `manifestentry[]` | 复用 §12.4，`offset` 相对逻辑数据段 |
 | `blocks` | `blockref[]` | 有序块引用 `{ hash: [u8; 16], len: u32 }` |
 | `root_hash` | `[u8; 32]` | BLAKE3-256，见下 |
+| `signature` | 可选 `[u8; 64]` | Ed25519，覆盖 `root_hash`，由 `flags` bit2 标记 |
 
-**根哈希与溯源。** `root_hash = BLAKE3_256(canonical(manifest 除 root_hash、base_id、物理块表外的全部字段))`。根哈希是逻辑状态的内容身份，不覆盖 `base_id` 与物理块表（那是「如何存放/产生」，非「是什么状态」），故同一逻辑状态的全量/增量根哈希相同、可互换；溯源链由 `base_id` 显式记录，与内容身份正交。块列表本身是 128 位内容哈希，`root_hash` 经块哈希传递承诺到全部张量字节（梅克尔 DAG）。根哈希是全局锚点、无兜底，用密码学级 BLAKE3-256（128 位碰撞安全界）。
+**根哈希与溯源。** `root_hash = BLAKE3_256(canonical(manifest 除 root_hash、base_id、物理块表外的全部字段))`。根哈希是逻辑状态的内容身份，不覆盖 `base_id` 与物理块表（那是「如何存放/产生」，非「是什么状态」），故同一逻辑状态的全量/增量根哈希相同、可互换；溯源链由 `base_id` 显式记录，与内容身份正交。块列表本身是 128 位内容哈希，`root_hash` 经块哈希传递承诺到全部张量字节（梅克尔 DAG）。根哈希是全局锚点、无兜底，用密码学级 BLAKE3-256（128 位碰撞安全界）。Ed25519 签名覆盖 `root_hash` 而非 canonical 本身：root_hash 已承诺全部块内容，对根签名即对整个快照签名；签名与 `base_id`、物理块表同列存储元数据、不参与 root_hash 计算，故签名只认证「这是什么状态」，不认证「从哪产生」，与全量/增量可互换不变量一致。
 
 **物理块表（每文件，哈希键）。** 全量文件覆盖全部逻辑块，增量文件仅覆盖本文件新块：
 
@@ -1519,6 +1520,8 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 | 保存期去重过滤 | BLAKE3-64 | 8B | 否（仅内存） | 快速筛选，不做最终判定 |
 | 块/张量内容身份 | BLAKE3-128 | 16B | 是 | 跨文件解析、去重、版本比对 |
 | 快照根锚点 | BLAKE3-256 | 32B | 是 | 快照身份、溯源、完整性公证 |
+
+**签名（Ed25519 认证）。** 签名是「认证」层，叠加在哈希「完整性」层之上：`signature = Ed25519(seed, root_hash)`，64 字节，由 `flags` bit2（`FLAGSIGNED`）标记存在性，manifest 中紧随 `root_hash`。`encode_signed(seed)` 写入签名，`decode` 解析并保留（不验签）；`verifysignature(public)` 由调用方外部提供公钥、显式验签（离线分发，文件不自含公钥——内嵌公钥不提供真实性，反徒增自证语义）。验签失败报 `signaturemismatch`（归 `iscorruption()`），无签名验签报 `signaturemissing`（归 `isincompatibility()`），全零 seed 报 `invalidsignaturekey`（不归三类，与 `invalidmanifest` 同列）。merge 产物无签名（纯内容变换），由调用方决定是否重签；reader 只解析不验签（职责仍是按需读块）。AES-256-GCM 分块加密仍属后续。
 
 **字段布局（设计草案）。** 下列固定字节步长的条目为早期设计草案；实际 manifest 采用变长二进制序列化（`version`/`flags`/张量/块列表按 `pushu*`/`read*` 编解码，见 §12.4 与 `crates/checkpoint/src/uformat.rs`）。草案张量条目 64 B 定长：
 
@@ -1552,11 +1555,11 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **并发。** 训练写 = 新文件 + 原子 rename；读者按名打开持 fd 读旧完整内容（POSIX，`writeatomic` 既有保证）。基础删除由 GC 宽限期 + 打开时验根哈希兜底；不做锁/引用计数（§12.7）。
 
-**错误分类。** `checkpointerror` 新增 8 变体（15 → 23）：`rootmismatch`、`blockcrcmismatch`、`blockhashmismatch`、`truncatedblock`、`missingblock`、`blockoutofrange`（归入新访问器 `iscorruption()`）；`missingbase`、`basehashmismatch`（并入 `isincompatibility()`）。`isrecoverable()` 不变（仅 `io`）。`iscorruption()` 区分「损坏」于「不兼容」与「可重试 I/O」（engineering.md §5.11）。
+**错误分类。** `checkpointerror` 新增 11 变体（15 → 26）：`rootmismatch`、`blockcrcmismatch`、`blockhashmismatch`、`truncatedblock`、`missingblock`、`blockoutofrange`、`signaturemismatch`（归入新访问器 `iscorruption()`）；`missingbase`、`basehashmismatch`、`signaturemissing`（并入 `isincompatibility()`）；`invalidsignaturekey`（不归三类，与 `invalidmanifest` 同列 malformed input）。`isrecoverable()` 不变（仅 `io`）。`iscorruption()` 区分「损坏」于「不兼容」与「可重试 I/O」（engineering.md §5.11）。
 
 **不变量（验收判据）。** 块 `len` 与 BLAKE3-128/CRC32C 一致；块列表总长 = 逻辑数据段长（受检算术，`blockoutofrange` 兜底）；逻辑数据段 = 张量字节连续拼接且区间不重叠（复用 `checkoverlaps`）；合并输出根哈希 == 增量根哈希、数据段与原始全量字节相等；校验失败不发布部分产物；恢复只读目标块；所有文件不可变。
 
-**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Zstd、mmap 零拷贝、多文件分片、多排布共存、稀疏存储、量化内核、安全增强层（Ed25519 签名、AES-256-GCM 分块加密）仍属后续。块来源以 `blocksource` trait 预留扩展点。
+**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）。Zstd、mmap 零拷贝、多文件分片、多排布共存、稀疏存储、量化内核、AES-256-GCM 分块加密仍属后续。块来源以 `blocksource` trait 预留扩展点。
 
 ---
 

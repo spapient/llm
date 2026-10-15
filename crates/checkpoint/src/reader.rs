@@ -12,7 +12,8 @@ use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::contenthash;
 use crate::uformat::{
-    FLAGDELTA, FLAGSFULL, MAGIC, PREFIXLEN, parseartifact, parsedmanifest, storedentry, tensorentry,
+    FLAGDELTA, FLAGSFULL, MAGIC, PREFIXLEN, checkflags, parseartifact, parsedmanifest,
+    storedentry, tensorentry,
 };
 
 /// A source of block bytes addressed by an absolute offset within a data
@@ -200,11 +201,7 @@ impl checkpointreader {
     /// when the bytes are not a full snapshot.
     pub fn openfull(bytes: Vec<u8>) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(&bytes)?;
-        if parsed.flags != FLAGSFULL {
-            return Err(checkpointerror::invalidmanifest {
-                reason: "expected a full snapshot".to_string(),
-            });
-        }
+        checkflags(parsed.flags, FLAGSFULL)?;
         if parsed.base_id.iter().any(|&b| b != 0) {
             return Err(checkpointerror::invalidmanifest {
                 reason: "full snapshot has a non-zero base identity".to_string(),
@@ -239,17 +236,9 @@ impl checkpointreader {
     /// when a logical block resolves to neither, or the parse failures.
     pub fn opendelta(base: Vec<u8>, delta: Vec<u8>) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(&delta)?;
-        if parsed.flags != FLAGDELTA {
-            return Err(checkpointerror::invalidmanifest {
-                reason: "expected a delta snapshot".to_string(),
-            });
-        }
+        checkflags(parsed.flags, FLAGDELTA)?;
         let baseparsed = parseartifact(&base)?;
-        if baseparsed.flags != FLAGSFULL {
-            return Err(checkpointerror::invalidmanifest {
-                reason: "expected a full base snapshot".to_string(),
-            });
-        }
+        checkflags(baseparsed.flags, FLAGSFULL)?;
         if baseparsed.root_hash != parsed.base_id {
             return Err(checkpointerror::basehashmismatch {
                 expected: parsed.base_id,
@@ -284,11 +273,7 @@ impl checkpointreader {
             source,
         })?;
         let parsed = parsefileartifact(&file, path)?;
-        if parsed.flags != FLAGSFULL {
-            return Err(checkpointerror::invalidmanifest {
-                reason: "expected a full snapshot".to_string(),
-            });
-        }
+        checkflags(parsed.flags, FLAGSFULL)?;
         if parsed.base_id.iter().any(|&b| b != 0) {
             return Err(checkpointerror::invalidmanifest {
                 reason: "full snapshot has a non-zero base identity".to_string(),
@@ -330,21 +315,13 @@ impl checkpointreader {
             source,
         })?;
         let parsed = parsefileartifact(&deltafile, delta_path)?;
-        if parsed.flags != FLAGDELTA {
-            return Err(checkpointerror::invalidmanifest {
-                reason: "expected a delta snapshot".to_string(),
-            });
-        }
+        checkflags(parsed.flags, FLAGDELTA)?;
         let basefile = File::open(base_path).map_err(|source| checkpointerror::io {
             path: base_path.to_path_buf(),
             source,
         })?;
         let baseparsed = parsefileartifact(&basefile, base_path)?;
-        if baseparsed.flags != FLAGSFULL {
-            return Err(checkpointerror::invalidmanifest {
-                reason: "expected a full base snapshot".to_string(),
-            });
-        }
+        checkflags(baseparsed.flags, FLAGSFULL)?;
         if baseparsed.root_hash != parsed.base_id {
             return Err(checkpointerror::basehashmismatch {
                 expected: parsed.base_id,

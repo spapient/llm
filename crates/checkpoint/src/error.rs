@@ -225,6 +225,18 @@ pub enum checkpointerror {
         found: [u8; 32],
     },
 
+    /// The Ed25519 signing seed is invalid (all zero).
+    #[error("invalid ed25519 signing seed (all zero)")]
+    invalidsignaturekey,
+
+    /// A snapshot carries no Ed25519 signature but verification was requested.
+    #[error("snapshot has no ed25519 signature")]
+    signaturemissing,
+
+    /// The Ed25519 signature over the snapshot's root hash does not verify.
+    #[error("ed25519 signature does not match the snapshot's root hash")]
+    signaturemismatch,
+
     /// An error owned by the `format` crate propagated unchanged.
     #[error(transparent)]
     format(#[from] format::formaterror),
@@ -257,6 +269,7 @@ impl checkpointerror {
                 | Self::shapemismatch { .. }
                 | Self::missingbase { .. }
                 | Self::basehashmismatch { .. }
+                | Self::signaturemissing
         )
     }
 
@@ -275,6 +288,7 @@ impl checkpointerror {
                 | Self::blockoutofrange { .. }
                 | Self::missingblock { .. }
                 | Self::tensorcrcmismatch { .. }
+                | Self::signaturemismatch
         )
     }
 }

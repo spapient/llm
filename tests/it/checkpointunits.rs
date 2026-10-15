@@ -491,6 +491,8 @@ mod uformat {
     use crate::support::shapeof;
     use ::checkpoint::blocks::BLOCKSIZE;
     use ::checkpoint::checkpointerror;
+    use ::checkpoint::checkpointreader;
+    use ::checkpoint::signature::publickey;
     use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
 
@@ -597,6 +599,74 @@ mod uformat {
         assert!(matches!(err, checkpointerror::rootmismatch { .. }));
         assert!(err.iscorruption());
     }
+
+    #[test]
+    fn signed_encode_decode_roundtrips_and_verifies() {
+        const SEED: [u8; 32] = [0x42; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_signed(&SEED).unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        assert_eq!(back.gettensors(), snap.gettensors());
+        assert_eq!(back.getdata(), snap.getdata());
+        let pk = publickey(&SEED).unwrap();
+        back.verifysignature(&pk).unwrap();
+    }
+
+    #[test]
+    fn unsigned_snapshot_reports_signaturemissing() {
+        let snap = onesnap();
+        let pk = publickey(&[0x42; 32]).unwrap();
+        let err = snap.verifysignature(&pk).unwrap_err();
+        assert!(matches!(err, checkpointerror::signaturemissing));
+        assert!(err.isincompatibility());
+        assert!(!err.iscorruption());
+    }
+
+    #[test]
+    fn wrong_key_reports_signaturemismatch() {
+        const SEED: [u8; 32] = [0x42; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_signed(&SEED).unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        let wrong_pk = publickey(&[0x24; 32]).unwrap();
+        let err = back.verifysignature(&wrong_pk).unwrap_err();
+        assert!(matches!(err, checkpointerror::signaturemismatch));
+        assert!(err.iscorruption());
+        assert!(!err.isincompatibility());
+    }
+
+    #[test]
+    fn encode_signed_rejects_all_zero_seed() {
+        let snap = onesnap();
+        let err = snap.encode_signed(&[0u8; 32]).unwrap_err();
+        assert!(matches!(err, checkpointerror::invalidsignaturekey));
+        assert!(!err.iscorruption());
+        assert!(!err.isincompatibility());
+        assert!(!err.isrecoverable());
+    }
+
+    #[test]
+    fn decode_rejects_unknown_flags() {
+        let snap = onesnap();
+        let root = snap.roothash();
+        let mut bytes = snap.encode().unwrap();
+        let pos = bytes.windows(32).position(|w| w == root.as_slice()).unwrap();
+        bytes[pos - 32 - 4] |= 0x08;
+        assert!(matches!(
+            snapshot::decode(&bytes),
+            Err(checkpointerror::invalidmanifest { .. })
+        ));
+    }
+
+    #[test]
+    fn reader_opens_a_signed_snapshot() {
+        const SEED: [u8; 32] = [0x42; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_signed(&SEED).unwrap();
+        let reader = checkpointreader::openfull(bytes).unwrap();
+        let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(t.getdtype(), dtype::f32);
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/delta.rs`.
@@ -604,7 +674,9 @@ mod delta {
     use crate::support::shapeof;
     use ::checkpoint::blocks::BLOCKSIZE;
     use ::checkpoint::blocks::chunk;
+    use ::checkpoint::checkpointerror;
     use ::checkpoint::deltas::delta;
+    use ::checkpoint::signature::publickey;
     use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
 
@@ -696,6 +768,42 @@ mod delta {
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
         assert!(d.getstored().is_empty());
+    }
+
+    #[test]
+    fn signed_delta_roundtrips_and_verifies() {
+        const SEED: [u8; 32] = [0x42; 32];
+        let mut base = snapshot::new(1);
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[1u8; 100])
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[2u8; 100])
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        let bytes = d.encode_signed(&SEED).unwrap();
+        let back = delta::decode(&bytes).unwrap();
+        assert_eq!(back.getroothash(), d.getroothash());
+        let pk = publickey(&SEED).unwrap();
+        back.verifysignature(&pk).unwrap();
+        assert!(matches!(
+            d.verifysignature(&pk),
+            Err(checkpointerror::signaturemissing)
+        ));
+    }
+
+    #[test]
+    fn signed_delta_rejects_all_zero_seed() {
+        let mut base = snapshot::new(1);
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[1u8; 100])
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[2u8; 100])
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        assert!(matches!(
+            d.encode_signed(&[0u8; 32]),
+            Err(checkpointerror::invalidsignaturekey)
+        ));
     }
 }
 
@@ -1147,6 +1255,7 @@ mod compression {
 /// Tests for Ed25519 signatures over a snapshot's root hash.
 mod signature {
     use crate::support::shapeof;
+    use ::checkpoint::checkpointerror;
     use ::checkpoint::signature::{publickey, sign, verify};
     use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
@@ -1155,31 +1264,43 @@ mod signature {
 
     #[test]
     fn sign_and_verify_roundtrip() {
-        let pk = publickey(&SEED);
-        let sig = sign(&SEED, b"a snapshot root hash");
+        let pk = publickey(&SEED).unwrap();
+        let sig = sign(&SEED, b"a snapshot root hash").unwrap();
         assert!(verify(&pk, b"a snapshot root hash", &sig));
     }
 
     #[test]
     fn tampered_message_fails() {
-        let pk = publickey(&SEED);
-        let sig = sign(&SEED, b"a snapshot root hash");
+        let pk = publickey(&SEED).unwrap();
+        let sig = sign(&SEED, b"a snapshot root hash").unwrap();
         assert!(!verify(&pk, b"a tampered root hash", &sig));
     }
 
     #[test]
     fn tampered_signature_fails() {
-        let pk = publickey(&SEED);
-        let mut sig = sign(&SEED, b"a snapshot root hash");
+        let pk = publickey(&SEED).unwrap();
+        let mut sig = sign(&SEED, b"a snapshot root hash").unwrap();
         sig[0] ^= 1;
         assert!(!verify(&pk, b"a snapshot root hash", &sig));
     }
 
     #[test]
     fn wrong_key_fails() {
-        let sig = sign(&SEED, b"a snapshot root hash");
-        let other = publickey(&[0x24; 32]);
+        let sig = sign(&SEED, b"a snapshot root hash").unwrap();
+        let other = publickey(&[0x24; 32]).unwrap();
         assert!(!verify(&other, b"a snapshot root hash", &sig));
+    }
+
+    #[test]
+    fn all_zero_seed_is_rejected() {
+        assert!(matches!(
+            publickey(&[0u8; 32]),
+            Err(checkpointerror::invalidsignaturekey)
+        ));
+        assert!(matches!(
+            sign(&[0u8; 32], b"a snapshot root hash"),
+            Err(checkpointerror::invalidsignaturekey)
+        ));
     }
 
     #[test]
@@ -1188,8 +1309,8 @@ mod signature {
         snap.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[1u8; 100])
             .unwrap();
         let root = snap.roothash();
-        let pk = publickey(&SEED);
-        let sig = sign(&SEED, &root);
+        let pk = publickey(&SEED).unwrap();
+        let sig = sign(&SEED, &root).unwrap();
         assert!(verify(&pk, &root, &sig));
 
         let mut other = snapshot::new(1);
