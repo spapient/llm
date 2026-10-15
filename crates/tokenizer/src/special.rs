@@ -13,6 +13,7 @@ use lib::tokenid;
 pub struct specialtokens {
     bycontent: BTreeMap<String, u32>,
     byid: BTreeMap<u32, String>,
+    longest: Vec<(String, u32)>,
 }
 
 impl specialtokens {
@@ -30,7 +31,22 @@ impl specialtokens {
             bycontent.insert(content.clone(), id);
             byid.insert(id, content);
         }
-        Self { bycontent, byid }
+        let mut longest: Vec<(String, u32)> = bycontent
+            .iter()
+            .map(|(content, id)| (content.clone(), *id))
+            .collect();
+        longest.sort_by(|left, right| {
+            right
+                .0
+                .len()
+                .cmp(&left.0.len())
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        Self {
+            bycontent,
+            byid,
+            longest,
+        }
     }
 
     /// Returns the id assigned to the special token `content`, if any.
@@ -60,6 +76,14 @@ impl specialtokens {
     /// Iterates over `(content, id)` pairs in content order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, tokenid)> + '_ {
         self.bycontent
+            .iter()
+            .map(|(content, id)| (content.as_str(), tokenid::new(*id)))
+    }
+
+    /// Iterates over `(content, id)` pairs with the longest literal first, so
+    /// a left-to-right scan resolves overlapping markers deterministically.
+    pub fn iterlongest(&self) -> impl Iterator<Item = (&str, tokenid)> + '_ {
+        self.longest
             .iter()
             .map(|(content, id)| (content.as_str(), tokenid::new(*id)))
     }
