@@ -7,13 +7,24 @@ use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
 
 /// Magic identifying a `.u` snapshot artifact.
-const MAGIC: [u8; 8] = *b"UWFSNAP1";
+pub(crate) const MAGIC: [u8; 8] = *b"UWFSNAP1";
 
 /// The number of bytes in the fixed prefix: magic plus manifest length.
-const PREFIXLEN: usize = 16;
+pub(crate) const PREFIXLEN: usize = 16;
 
 /// Flags value for a full (self-contained) snapshot.
-const FLAGSFULL: u32 = 2;
+pub(crate) const FLAGSFULL: u32 = 2;
+
+/// Flags value for an incremental (delta) snapshot.
+pub(crate) const FLAGDELTA: u32 = 1;
+
+/// One entry of the physical block table: where a stored block lives.
+pub(crate) struct storedentry {
+    pub(crate) hash: [u8; 16],
+    pub(crate) offset: u64,
+    pub(crate) size: u32,
+    pub(crate) crc32c: u32,
+}
 
 /// Describes one tensor persisted in a `.u` snapshot.
 ///
@@ -70,9 +81,9 @@ impl tensorentry {
 /// An in-memory block-addressed `.u` snapshot: tensors plus their concatenated
 /// bytes, persisted with per-block CRC32C and BLAKE3 verification.
 ///
-/// The data section is split into [`BLOCKSIZE`]-sized blocks; the on-disk
-/// layout is magic, a little-endian `u64` manifest length, a binary manifest
-/// (tensors, block list, root hash, block checksums), and the data section.
+/// The on-disk layout is magic, a little-endian `u64` manifest length, a binary
+/// manifest (tensors, block list, flags, base identity, root hash, physical
+/// block table), and the data section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct snapshot {
     version: u32,
@@ -107,6 +118,14 @@ impl snapshot {
     #[must_use]
     pub fn getdata(&self) -> &[u8] {
         &self.data
+    }
+
+    /// Returns the snapshot's root hash: the BLAKE3-256 content identity of its
+    /// tensors and block list, independent of storage form (full or delta).
+    #[must_use]
+    pub fn roothash(&self) -> [u8; 32] {
+        let blocks = chunk(&self.data);
+        blake3hash(&canonicalmanifest(self.version, &self.tensors, &blocks))
     }
 
     /// Appends a tensor's bytes and records its metadata.
@@ -169,11 +188,7 @@ impl snapshot {
         self.data.get(start..end).map(<[u8]>::to_vec)
     }
 
-    /// Encodes the snapshot into its on-disk byte layout.
-    ///
-    /// The layout is the 8-byte magic, the little-endian `u64` manifest length,
-    /// the binary manifest, and the data section. The manifest carries the
-    /// tensors, the ordered block list, the root hash, and a CRC32C per block.
+    /// Encodes the snapshot as a full (self-contained) artifact.
     ///
     /// # Errors
     ///
@@ -181,16 +196,22 @@ impl snapshot {
     /// overflows `usize`.
     pub fn encode(&self) -> Result<Vec<u8>, checkpointerror> {
         let blocks = chunk(&self.data);
-        let canonical = self.canonicalmanifest(&blocks);
+        let canonical = canonicalmanifest(self.version, &self.tensors, &blocks);
         let root = blake3hash(&canonical);
 
         let mut manifest = canonical;
+        pushu32(&mut manifest, FLAGSFULL);
+        manifest.extend_from_slice(&[0u8; 32]);
         manifest.extend_from_slice(&root);
+        pushu64(&mut manifest, blocks.len() as u64);
         let mut offset = 0usize;
         for block in &blocks {
             let len = block.getlen() as usize;
             let checksum = crc32c(&self.data[offset..offset + len]);
-            manifest.extend_from_slice(&checksum.to_le_bytes());
+            manifest.extend_from_slice(&block.gethash());
+            pushu64(&mut manifest, offset as u64);
+            pushu32(&mut manifest, block.getlen());
+            pushu32(&mut manifest, checksum);
             offset += len;
         }
 
@@ -208,11 +229,7 @@ impl snapshot {
         Ok(out)
     }
 
-    /// Decodes and validates a snapshot from its on-disk byte layout.
-    ///
-    /// The magic, manifest length, root hash, every block's CRC32C and content
-    /// identity, and every tensor's byte range are all validated with checked
-    /// arithmetic before any bytes are trusted.
+    /// Decodes and validates a full snapshot from its on-disk byte layout.
     ///
     /// # Errors
     ///
@@ -260,17 +277,22 @@ impl snapshot {
 
         let mut pos = 0usize;
         let version = readu32(manifest, &mut pos)?;
+        let tensors = readtensors(manifest, &mut pos)?;
+        let blocks = readblocks(manifest, &mut pos)?;
+        let canonical = &manifest[..pos];
+
         let flags = readu32(manifest, &mut pos)?;
         if flags != FLAGSFULL {
             return Err(checkpointerror::invalidmanifest {
                 reason: format!("unsupported snapshot flags {flags}"),
             });
         }
-
-        let tensors = readtensors(manifest, &mut pos)?;
-        let blocks = readblocks(manifest, &mut pos)?;
-
-        let canonical = &manifest[..pos];
+        let basebytes = readbytes(manifest, &mut pos, 32)?;
+        if basebytes.iter().any(|&b| b != 0) {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "full snapshot has a non-zero base identity".to_string(),
+            });
+        }
         let rootbytes = readbytes(manifest, &mut pos, 32)?;
         let mut root = [0u8; 32];
         root.copy_from_slice(rootbytes);
@@ -282,12 +304,8 @@ impl snapshot {
             });
         }
 
-        let mut checksums = Vec::with_capacity(blocks.len());
-        for _ in 0..blocks.len() {
-            checksums.push(readu32(manifest, &mut pos)?);
-        }
-
-        verifyblocks(data, &blocks, &checksums)?;
+        let stored = readstored(manifest, &mut pos)?;
+        verifyfull(data, &blocks, &stored)?;
         verifytensors(data, &tensors)?;
 
         Ok(Self {
@@ -296,32 +314,37 @@ impl snapshot {
             data: data.to_vec(),
         })
     }
+}
 
-    /// Builds the canonical (hashed) manifest bytes: everything in the manifest
-    /// except the root hash and the block checksums.
-    fn canonicalmanifest(&self, blocks: &[blockref]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        pushu32(&mut buf, self.version);
-        pushu32(&mut buf, FLAGSFULL);
-        pushu64(&mut buf, self.tensors.len() as u64);
-        for entry in &self.tensors {
-            pushstring(&mut buf, &entry.name);
-            pushstring(&mut buf, dtypetoken(entry.dtype));
-            let dims = entry.shape.getdims();
-            pushu64(&mut buf, dims.len() as u64);
-            for &dim in dims {
-                pushu64(&mut buf, dim as u64);
-            }
-            pushu64(&mut buf, entry.offset);
-            pushu64(&mut buf, entry.nbytes);
+/// Builds the canonical (hashed) manifest bytes: version, tensors, and the
+/// ordered block list. Flags, base identity, and the physical block table are
+/// storage metadata and are excluded so a full snapshot and its delta share a
+/// root hash.
+pub(crate) fn canonicalmanifest(
+    version: u32,
+    tensors: &[tensorentry],
+    blocks: &[blockref],
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    pushu32(&mut buf, version);
+    pushu64(&mut buf, tensors.len() as u64);
+    for entry in tensors {
+        pushstring(&mut buf, &entry.name);
+        pushstring(&mut buf, dtypetoken(entry.dtype));
+        let dims = entry.shape.getdims();
+        pushu64(&mut buf, dims.len() as u64);
+        for &dim in dims {
+            pushu64(&mut buf, dim as u64);
         }
-        pushu64(&mut buf, blocks.len() as u64);
-        for block in blocks {
-            buf.extend_from_slice(&block.gethash());
-            pushu32(&mut buf, block.getlen());
-        }
-        buf
+        pushu64(&mut buf, entry.offset);
+        pushu64(&mut buf, entry.nbytes);
     }
+    pushu64(&mut buf, blocks.len() as u64);
+    for block in blocks {
+        buf.extend_from_slice(&block.gethash());
+        pushu32(&mut buf, block.getlen());
+    }
+    buf
 }
 
 /// Parses and validates the tensor entries.
@@ -388,15 +411,54 @@ fn readblocks(manifest: &[u8], pos: &mut usize) -> Result<Vec<blockref>, checkpo
     Ok(blocks)
 }
 
-/// Verifies every block's CRC32C and content identity against the data section.
-fn verifyblocks(
+/// Parses the physical block table.
+pub(crate) fn readstored(
+    manifest: &[u8],
+    pos: &mut usize,
+) -> Result<Vec<storedentry>, checkpointerror> {
+    let count = readcount(manifest, pos)?;
+    let mut stored = Vec::with_capacity(count);
+    for _ in 0..count {
+        let hashbytes = readbytes(manifest, pos, 16)?;
+        let mut hash = [0u8; 16];
+        hash.copy_from_slice(hashbytes);
+        let offset = readu64(manifest, pos)?;
+        let size = readu32(manifest, pos)?;
+        let crc32c = readu32(manifest, pos)?;
+        stored.push(storedentry {
+            hash,
+            offset,
+            size,
+            crc32c,
+        });
+    }
+    Ok(stored)
+}
+
+/// Verifies a full snapshot: every stored entry matches its logical block and
+/// the data section passes CRC32C and content-identity checks.
+fn verifyfull(
     data: &[u8],
     blocks: &[blockref],
-    checksums: &[u32],
+    stored: &[storedentry],
 ) -> Result<(), checkpointerror> {
+    if stored.len() != blocks.len() {
+        return Err(checkpointerror::invalidmanifest {
+            reason: "stored block count does not match the block list".to_string(),
+        });
+    }
     let mut offset = 0usize;
     for (position, block) in blocks.iter().enumerate() {
+        let entry = &stored[position];
         let len = block.getlen() as usize;
+        if entry.hash != block.gethash()
+            || entry.size != block.getlen()
+            || entry.offset != offset as u64
+        {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("stored entry {position} is inconsistent with the block list"),
+            });
+        }
         let end = offset
             .checked_add(len)
             .ok_or(checkpointerror::blockoutofrange {
@@ -411,7 +473,7 @@ fn verifyblocks(
             });
         }
         let bytes = &data[offset..end];
-        if crc32c(bytes) != checksums[position] {
+        if crc32c(bytes) != entry.crc32c {
             return Err(checkpointerror::blockcrcmismatch { position });
         }
         let hash = contenthash(bytes);
@@ -477,11 +539,11 @@ fn readstring(bytes: &[u8], pos: &mut usize) -> Result<String, checkpointerror> 
     })
 }
 
-fn pushu32(buf: &mut Vec<u8>, value: u32) {
+pub(crate) fn pushu32(buf: &mut Vec<u8>, value: u32) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
-fn pushu64(buf: &mut Vec<u8>, value: u64) {
+pub(crate) fn pushu64(buf: &mut Vec<u8>, value: u64) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 

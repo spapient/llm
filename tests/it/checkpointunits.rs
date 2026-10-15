@@ -588,3 +588,72 @@ mod uformat {
         assert!(err.iscorruption());
     }
 }
+
+/// Tests relocated from `crates/checkpoint/src/delta.rs`.
+mod delta {
+    use crate::support::shapeof;
+    use ::checkpoint::{delta, snapshot, BLOCKSIZE};
+    use tensor::dtype;
+
+    #[test]
+    fn unchanged_tensor_stores_no_blocks() {
+        let mut base = snapshot::new(1);
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &vec![1u8; 100])
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &vec![1u8; 100])
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        assert!(d.getstored().is_empty());
+        assert_eq!(d.getbaseid(), base.roothash());
+        assert_eq!(d.getroothash(), new.roothash());
+    }
+
+    #[test]
+    fn changed_tensor_stores_only_its_blocks() {
+        let mut base = snapshot::new(1);
+        base.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
+            .unwrap();
+        base.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+            .unwrap();
+        new.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        assert_eq!(d.getstored().len(), 1);
+        assert_eq!(d.getstored()[0].getbytes(), &vec![9u8; BLOCKSIZE][..]);
+    }
+
+    #[test]
+    fn insertion_shift_is_content_addressed() {
+        let mut base = snapshot::new(1);
+        base.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("c".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        new.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        // "a" shifts to a new offset but its block content is unchanged, so only
+        // "c"'s block is stored.
+        assert_eq!(d.getstored().len(), 1);
+        assert_eq!(d.getstored()[0].getbytes(), &vec![2u8; BLOCKSIZE][..]);
+    }
+
+    #[test]
+    fn identical_tensors_are_deduped() {
+        let mut base = snapshot::new(1);
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("w1".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+            .unwrap();
+        new.addtensor("w2".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        assert!(d.getstored().is_empty());
+    }
+}
