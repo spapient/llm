@@ -289,3 +289,38 @@ fn train_rejects_zero_accumulation_steps() {
     assert_eq!(code, OPERATIONALEXITCODE);
     std::fs::remove_file(&path).unwrap();
 }
+
+#[test]
+fn decode_prints_text_for_a_token_list() {
+    let tokenizer = r#"{"model":{"type":"BPE","vocab":{"hello":0," ":1,"world":2},"merges":[]}}"#;
+    let path = writeartifact("tokenizer.json", tokenizer.as_bytes());
+    let (code, out, err) = run(&[
+        "cli",
+        "decode",
+        "--tokenizer",
+        path.to_str().unwrap(),
+        "--tokens",
+        "0,1,2",
+    ]);
+    assert_eq!(code, SUCCESSEXITCODE);
+    assert_eq!(out, "hello world\n");
+    assert!(err.is_empty(), "stderr was {err:?}");
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn decode_rejects_a_non_numeric_id() {
+    let tokenizer = r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]}}"#;
+    let path = writeartifact("tokenizer.json", tokenizer.as_bytes());
+    let (code, _out, err) = run(&[
+        "cli",
+        "decode",
+        "--tokenizer",
+        path.to_str().unwrap(),
+        "--tokens",
+        "a",
+    ]);
+    assert_eq!(code, USAGEEXITCODE);
+    assert!(err.contains("non-numeric"), "stderr was {err:?}");
+    std::fs::remove_file(&path).unwrap();
+}

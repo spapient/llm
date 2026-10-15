@@ -1,3 +1,4 @@
+mod decode;
 mod generate;
 mod inspect;
 mod train;
@@ -30,6 +31,7 @@ pub(crate) fn dispatch(command: command) -> Result<commandoutput, clierror> {
         command::inspect(args) => inspect::run(&args),
         command::validate(args) => validate::run(&args),
         command::generate(args) => generate::run(&args),
+        command::decode(args) => decode::run(&args),
         command::train(args) => train::run(&args),
     }
 }

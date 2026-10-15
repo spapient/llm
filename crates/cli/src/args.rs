@@ -27,6 +27,9 @@ pub enum command {
     /// model.
     generate(generateargs),
 
+    /// Decode a comma-separated list of token ids to text with a tokenizer.
+    decode(decodeargs),
+
     /// Load and validate a training configuration.
     train(trainargs),
 }
@@ -112,4 +115,16 @@ pub struct trainargs {
     /// Validate the configuration and stop, instead of attempting a run.
     #[arg(long)]
     pub check_only: bool,
+}
+
+/// Arguments for `decode`.
+#[derive(Debug, Args)]
+pub struct decodeargs {
+    /// A `tokenizer.json` path used to decode `--tokens`.
+    #[arg(long, value_name = "PATH")]
+    pub tokenizer: PathBuf,
+
+    /// A comma-separated list of token ids to decode.
+    #[arg(long, value_name = "IDS")]
+    pub tokens: String,
 }

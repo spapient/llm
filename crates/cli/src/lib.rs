@@ -17,6 +17,8 @@
 //! * `generate` — drive the real [`infer`] engine over a deterministic tiny
 //!   Llama built from a fixed configuration and an explicit seed, using the
 //!   real [`cpu`] provider and optionally the real [`tokenizer`].
+//! * `decode` — decode a comma-separated token-id list to text with a real
+//!   [`tokenizer`] loaded from a `tokenizer.json`.
 //! * `train` — load and validate a training configuration through
 //!   [`train::trainconfig`] and [`optim`].
 //!
@@ -57,7 +59,7 @@ use std::io::Write;
 use lib::limits;
 use tracing::debug;
 
-pub use args::{cli, command, generateargs, inspectargs, trainargs, validateargs};
+pub use args::{cli, command, decodeargs, generateargs, inspectargs, trainargs, validateargs};
 pub use error::{
     OPERATIONALEXITCODE, SUCCESSEXITCODE, UNSUPPORTEDEXITCODE, USAGEEXITCODE, VALIDATIONEXITCODE,
     clierror, exitcode,
