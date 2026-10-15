@@ -884,6 +884,25 @@ mod reader {
         assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn readtensorcow_returns_borrowed_for_a_single_raw_block() {
+        let mut data = vec![0u8; 4096];
+        let mut state = 0x9E37_79B9u32;
+        for byte in &mut data {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = (state >> 24) as u8;
+        }
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::u8, shapeof(&[data.len()]), &data)
+            .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        let cow = reader.readtensorcow("w").unwrap().unwrap();
+        assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(cow.as_ref(), data.as_slice());
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/compact.rs`.

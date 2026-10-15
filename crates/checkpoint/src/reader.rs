@@ -4,7 +4,7 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
-use crate::blocks::{blockref, decompressblock};
+use crate::blocks::{CODECRAW, blockref, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::contenthash;
@@ -379,6 +379,22 @@ impl checkpointreader {
     /// or [`checkpointerror::offsetoutofrange`] when the tensor's range exceeds
     /// the data section.
     pub fn readtensor(&self, name: &str) -> Result<Option<Vec<u8>>, checkpointerror> {
+        Ok(self.readtensorcow(name)?.map(Cow::into_owned))
+    }
+
+    /// Reads a tensor's bytes, returning a borrowed slice when the tensor is a
+    /// single uncompressed block from a zero-copy source, and an owned buffer
+    /// otherwise.
+    ///
+    /// Returns `Ok(None)` when the tensor is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::blockcrcmismatch`] or
+    /// [`checkpointerror::blockhashmismatch`] when a touched block is corrupt,
+    /// or [`checkpointerror::offsetoutofrange`] when the tensor's range exceeds
+    /// the data section.
+    pub fn readtensorcow(&self, name: &str) -> Result<Option<Cow<'_, [u8]>>, checkpointerror> {
         let entry = match self.tensors.iter().find(|t| t.getname() == name) {
             Some(entry) => entry,
             None => return Ok(None),
@@ -422,21 +438,38 @@ impl checkpointreader {
             if crc32c(&blockbytes) != location.crc32c {
                 return Err(checkpointerror::blockcrcmismatch { position });
             }
-            let raw = decompressblock(location.codec, &blockbytes)?;
-            let hash = contenthash(&raw);
-            if hash != block.gethash() {
-                return Err(checkpointerror::blockhashmismatch {
-                    position,
-                    expected: block.gethash(),
-                    found: hash,
-                });
-            }
             let from = start.saturating_sub(running);
             let to = if blockend > end { end - running } else { len };
-            out.extend_from_slice(&raw[from..to]);
+            match blockbytes {
+                Cow::Borrowed(slice)
+                    if out.is_empty() && blockend >= end && location.codec == CODECRAW =>
+                {
+                    let hash = contenthash(slice);
+                    if hash != block.gethash() {
+                        return Err(checkpointerror::blockhashmismatch {
+                            position,
+                            expected: block.gethash(),
+                            found: hash,
+                        });
+                    }
+                    return Ok(Some(Cow::Borrowed(&slice[from..to])));
+                }
+                bytes => {
+                    let raw = decompressblock(location.codec, &bytes)?;
+                    let hash = contenthash(&raw);
+                    if hash != block.gethash() {
+                        return Err(checkpointerror::blockhashmismatch {
+                            position,
+                            expected: block.gethash(),
+                            found: hash,
+                        });
+                    }
+                    out.extend_from_slice(&raw[from..to]);
+                }
+            }
             running = blockend;
         }
-        Ok(Some(out))
+        Ok(Some(Cow::Owned(out)))
     }
 
     /// Returns the total logical data length in bytes.
