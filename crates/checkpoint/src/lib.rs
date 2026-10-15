@@ -64,7 +64,7 @@ pub use hash::{blake3hash, contenthash};
 pub use load::loadcheckpoint;
 pub use manifests::{checkpoint, manifest, manifestentry};
 pub use merge::{merge, mergefiles};
-pub use reader::{blocksource, bytesource, checkpointreader};
+pub use reader::{blocksource, bytesource, checkpointreader, filesource};
 pub use save::savecheckpoint;
 pub use training::trainingstate;
 pub use uformat::{snapshot, tensorentry};

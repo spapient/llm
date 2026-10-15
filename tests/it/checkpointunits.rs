@@ -755,6 +755,9 @@ mod merge {
 
 /// Tests relocated from `crates/checkpoint/src/reader.rs`.
 mod reader {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crate::support::shapeof;
     use ::checkpoint::{checkpointerror, checkpointreader, delta, snapshot, BLOCKSIZE};
     use tensor::dtype;
@@ -808,6 +811,46 @@ mod reader {
         assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; BLOCKSIZE]);
         let err = reader.readtensor("b").unwrap_err();
         assert!(matches!(err, checkpointerror::blockcrcmismatch { .. }));
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "llm-reader-{}-{tag}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn openfullfile_reads_tensors() {
+        let dir = scratch("full");
+        let path = dir.join("snap.u");
+        let snap = base();
+        std::fs::write(&path, snap.encode().unwrap()).unwrap();
+        let reader = checkpointreader::openfullfile(&path).unwrap();
+        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; BLOCKSIZE]);
+        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opendeltafile_reads_tensors() {
+        let dir = scratch("delta");
+        let base_path = dir.join("base.u");
+        let delta_path = dir.join("delta.u");
+        let base = base();
+        let new = changed();
+        std::fs::write(&base_path, base.encode().unwrap()).unwrap();
+        std::fs::write(&delta_path, delta::fromsnapshots(&base, &new).encode().unwrap()).unwrap();
+        let reader = checkpointreader::opendeltafile(&base_path, &delta_path).unwrap();
+        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![9u8; BLOCKSIZE]);
+        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

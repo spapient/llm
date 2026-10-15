@@ -1,10 +1,15 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
 
 use crate::blocks::{blockref, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::contenthash;
-use crate::uformat::{FLAGDELTA, FLAGSFULL, parseartifact, tensorentry};
+use crate::uformat::{
+    FLAGDELTA, FLAGSFULL, MAGIC, PREFIXLEN, parseartifact, parsedmanifest, storedentry, tensorentry,
+};
 
 /// A source of block bytes addressed by an absolute offset within a data
 /// section. The abstraction reserves the extension point for mmap and
@@ -47,6 +52,117 @@ impl blocksource for bytesource {
                 blockcount: self.bytes.len(),
             })
     }
+}
+
+/// A block source backed by a file, read at absolute offsets.
+pub struct filesource {
+    file: File,
+    base: u64,
+    path: PathBuf,
+}
+
+impl filesource {
+    /// Wraps an opened file; `base` is the file offset of the data section.
+    #[must_use]
+    pub fn new(file: File, base: u64, path: PathBuf) -> Self {
+        Self { file, base, path }
+    }
+}
+
+impl blocksource for filesource {
+    fn read(&self, offset: u64, size: usize) -> Result<Vec<u8>, checkpointerror> {
+        let at = self
+            .base
+            .checked_add(offset)
+            .ok_or(checkpointerror::blockoutofrange {
+                position: 0,
+                blockcount: 0,
+            })?;
+        let mut buf = vec![0u8; size];
+        self.file
+            .read_exact_at(&mut buf, at)
+            .map_err(|source| checkpointerror::io {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(buf)
+    }
+}
+
+/// Parses an artifact's manifest from a file without loading its data section.
+fn parsefileartifact(file: &File, path: &Path) -> Result<parsedmanifest, checkpointerror> {
+    let mut prefix = [0u8; PREFIXLEN];
+    readat(file, &mut prefix, 0, path)?;
+    let mut lenbytes = [0u8; 8];
+    lenbytes.copy_from_slice(&prefix[MAGIC.len()..PREFIXLEN]);
+    let manifestlen = u64::from_le_bytes(lenbytes);
+    let manifestlen = usize::try_from(manifestlen).map_err(|_| checkpointerror::truncated {
+        needed: usize::MAX,
+        available: 0,
+    })?;
+    let mut manifest = vec![0u8; manifestlen];
+    readat(file, &mut manifest, PREFIXLEN as u64, path)?;
+    let mut bytes = Vec::with_capacity(PREFIXLEN + manifestlen);
+    bytes.extend_from_slice(&prefix);
+    bytes.extend_from_slice(&manifest);
+    parseartifact(&bytes)
+}
+
+/// Reads exactly into `buf` at `offset`, mapping failures to an I/O error.
+fn readat(file: &File, buf: &mut [u8], offset: u64, path: &Path) -> Result<(), checkpointerror> {
+    file.read_exact_at(buf, offset)
+        .map_err(|source| checkpointerror::io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+/// Resolves each logical block to a source, delta first then base.
+fn resolvelocations(
+    delta: &[storedentry],
+    base: &[storedentry],
+    blocks: &[blockref],
+) -> Result<Vec<blocklocation>, checkpointerror> {
+    let mut deltamap: HashMap<[u8; 16], blocklocation> = HashMap::new();
+    for entry in delta {
+        deltamap.insert(
+            entry.hash,
+            blocklocation {
+                source: 0,
+                offset: entry.offset,
+                size: entry.size,
+                crc32c: entry.crc32c,
+                codec: entry.codec,
+            },
+        );
+    }
+    let mut basemap: HashMap<[u8; 16], blocklocation> = HashMap::new();
+    for entry in base {
+        basemap.insert(
+            entry.hash,
+            blocklocation {
+                source: 1,
+                offset: entry.offset,
+                size: entry.size,
+                crc32c: entry.crc32c,
+                codec: entry.codec,
+            },
+        );
+    }
+    let mut locations = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let location = if let Some(location) = deltamap.get(&block.gethash()) {
+            *location
+        } else if let Some(location) = basemap.get(&block.gethash()) {
+            *location
+        } else {
+            return Err(checkpointerror::missingblock {
+                hash: block.gethash(),
+            });
+        };
+        locations.push(location);
+    }
+    Ok(locations)
 }
 
 /// Where a logical block's bytes live.
@@ -134,45 +250,7 @@ impl checkpointreader {
             });
         }
 
-        let mut deltamap: HashMap<[u8; 16], blocklocation> = HashMap::new();
-        for entry in &parsed.stored {
-            deltamap.insert(
-                entry.hash,
-                blocklocation {
-                    source: 0,
-                    offset: entry.offset,
-                    size: entry.size,
-                    crc32c: entry.crc32c,
-                    codec: entry.codec,
-                },
-            );
-        }
-        let mut basemap: HashMap<[u8; 16], blocklocation> = HashMap::new();
-        for entry in &baseparsed.stored {
-            basemap.insert(
-                entry.hash,
-                blocklocation {
-                    source: 1,
-                    offset: entry.offset,
-                    size: entry.size,
-                    crc32c: entry.crc32c,
-                    codec: entry.codec,
-                },
-            );
-        }
-        let mut locations = Vec::with_capacity(parsed.blocks.len());
-        for block in &parsed.blocks {
-            let location = if let Some(location) = deltamap.get(&block.gethash()) {
-                *location
-            } else if let Some(location) = basemap.get(&block.gethash()) {
-                *location
-            } else {
-                return Err(checkpointerror::missingblock {
-                    hash: block.gethash(),
-                });
-            };
-            locations.push(location);
-        }
+        let locations = resolvelocations(&parsed.stored, &baseparsed.stored, &parsed.blocks)?;
 
         let deltadata = delta[parsed.dataoffset..].to_vec();
         let basedata = base[baseparsed.dataoffset..].to_vec();
@@ -183,6 +261,105 @@ impl checkpointreader {
             sources: vec![
                 Box::new(bytesource::new(deltadata)),
                 Box::new(bytesource::new(basedata)),
+            ],
+        })
+    }
+
+    /// Opens a full snapshot file, reading blocks on demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O or manifest parse failures, or
+    /// [`checkpointerror::invalidmanifest`] when the file is not a full snapshot.
+    pub fn openfullfile(path: &Path) -> Result<Self, checkpointerror> {
+        let file = File::open(path).map_err(|source| checkpointerror::io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let parsed = parsefileartifact(&file, path)?;
+        if parsed.flags != FLAGSFULL {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "expected a full snapshot".to_string(),
+            });
+        }
+        if parsed.base_id.iter().any(|&b| b != 0) {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "full snapshot has a non-zero base identity".to_string(),
+            });
+        }
+        let locations = parsed
+            .stored
+            .iter()
+            .map(|entry| blocklocation {
+                source: 0,
+                offset: entry.offset,
+                size: entry.size,
+                crc32c: entry.crc32c,
+                codec: entry.codec,
+            })
+            .collect();
+        Ok(Self {
+            tensors: parsed.tensors,
+            blocks: parsed.blocks,
+            locations,
+            sources: vec![Box::new(filesource::new(
+                file,
+                parsed.dataoffset as u64,
+                path.to_path_buf(),
+            ))],
+        })
+    }
+
+    /// Opens a delta file together with its base file, reading blocks on demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::basehashmismatch`] when the base's root hash
+    /// does not match the delta's reference, [`checkpointerror::missingblock`]
+    /// when a logical block resolves to neither, or the I/O and parse failures.
+    pub fn opendeltafile(base_path: &Path, delta_path: &Path) -> Result<Self, checkpointerror> {
+        let deltafile = File::open(delta_path).map_err(|source| checkpointerror::io {
+            path: delta_path.to_path_buf(),
+            source,
+        })?;
+        let parsed = parsefileartifact(&deltafile, delta_path)?;
+        if parsed.flags != FLAGDELTA {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "expected a delta snapshot".to_string(),
+            });
+        }
+        let basefile = File::open(base_path).map_err(|source| checkpointerror::io {
+            path: base_path.to_path_buf(),
+            source,
+        })?;
+        let baseparsed = parsefileartifact(&basefile, base_path)?;
+        if baseparsed.flags != FLAGSFULL {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "expected a full base snapshot".to_string(),
+            });
+        }
+        if baseparsed.root_hash != parsed.base_id {
+            return Err(checkpointerror::basehashmismatch {
+                expected: parsed.base_id,
+                found: baseparsed.root_hash,
+            });
+        }
+        let locations = resolvelocations(&parsed.stored, &baseparsed.stored, &parsed.blocks)?;
+        Ok(Self {
+            tensors: parsed.tensors,
+            blocks: parsed.blocks,
+            locations,
+            sources: vec![
+                Box::new(filesource::new(
+                    deltafile,
+                    parsed.dataoffset as u64,
+                    delta_path.to_path_buf(),
+                )),
+                Box::new(filesource::new(
+                    basefile,
+                    baseparsed.dataoffset as u64,
+                    base_path.to_path_buf(),
+                )),
             ],
         })
     }
