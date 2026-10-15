@@ -22,7 +22,7 @@
 //! retained device context and the compiled kernels — which the executor owns
 //! and which holds no request-scoped value (docs/design.md §21.6).
 //!
-//! The launch helpers take the validated plans produced by [`crate::geometry`]
+//! The launch helpers take the validated plans produced by [`api::geometry`]
 //! rather than loose extents, so no number is re-derived after it was checked.
 
 use core::ffi::c_int;
@@ -41,8 +41,8 @@ use cudarc::driver::{
 use cudarc::nvrtc::compile_ptx;
 
 use crate::error::cudaerror;
-use crate::geometry::attentionshape;
 use crate::source;
+use api::geometry::{attentionshape, ropeshape};
 
 /// The device state and compiled kernels one executor owns.
 ///
@@ -266,6 +266,34 @@ fn submit(args: &mut LaunchArgs<'_>, config: LaunchConfig) -> Result<(), cudaerr
         })
 }
 
+/// Runs one cuBLAS `gemm`, the crate's single cuBLAS site.
+///
+/// This is a function rather than an inline block so the registered count stays
+/// one: the single-operator [`matmul_cublas`] and the accumulative submission
+/// path both call it, and neither adds an `unsafe` site of its own.
+fn gemm(
+    blas: &CudaBlas,
+    config: GemmConfig<f32>,
+    db: &CudaSlice<f32>,
+    da: &CudaSlice<f32>,
+    dc: &mut CudaSlice<f32>,
+) -> Result<(), cudaerror> {
+    // SAFETY: `da`, `db`, and `dc` are live device allocations. `da` holds the
+    // `[m, k]` left operand and `db` the `[k, n]` right operand; read as
+    // column-major they are the `k x m` and `n x k` matrices the `lda`/`ldb`
+    // leading dimensions describe, and `dc` is written as an `n x m`
+    // column-major matrix with leading dimension `ldc`, i.e. the row-major
+    // `[m, n]` result. Every dimension is at least 1 and fits `c_int`, so no
+    // out-of-bounds access is possible.
+    unsafe {
+        blas.gemm(config, db, da, dc)
+            .map_err(|error| cudaerror::blas {
+                message: error.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
 /// Computes `[m, k] * [k, n]` with the in-repo NVRTC kernel.
 ///
 /// This is the independent reference path: the kernel is compiled from
@@ -365,20 +393,38 @@ pub(crate) fn matmul_cublas(
         ldc: m_int,
     };
 
-    // SAFETY: `da`, `db`, and `dc` are live device allocations. `da` holds the
-    // `[m, k]` left operand and `db` the `[k, n]` right operand; read as
-    // column-major they are the `k x m` and `n x k` matrices the `lda`/`ldb`
-    // leading dimensions describe, and `dc` is written as an `n x m`
-    // column-major matrix with leading dimension `ldc`, i.e. the row-major
-    // `[m, n]` result. Every dimension is at least 1 and fits `c_int`, so no
-    // out-of-bounds access is possible.
-    unsafe {
-        blas.gemm(config, &db, &da, &mut dc)
-            .map_err(|error| cudaerror::blas {
-                message: error.to_string(),
-            })?;
-    }
+    gemm(&blas, config, &db, &da, &mut dc)?;
     syncanddownload(&stream, &dc)
+}
+
+/// Launches one cuDNN softmax, the crate's single cuDNN site.
+///
+/// This is a function rather than an inline block so the registered count stays
+/// one: the single-operator [`softmax`] and the accumulative submission path
+/// both call it, and neither adds an `unsafe` site of its own.
+fn softmax_forward(
+    forward: &SoftmaxForward<'_, f32, f32, f32>,
+    dx: &CudaSlice<f32>,
+    dy: &mut CudaSlice<f32>,
+) -> Result<(), cudaerror> {
+    // SAFETY: `dx` and `dy` are live device allocations, each holding the
+    // `total` contiguous `f32` the descriptors name, and `forward`'s
+    // `xdesc`/`ydesc` describe exactly that buffer shape with the strides it
+    // already has, so cuDNN reads and writes within the allocations.
+    // `CUDNN_SOFTMAX_ACCURATE` is the max-subtracting formulation, which is the
+    // numerically stable variant the scalar contract requires. The scaling pair
+    // is the neutral `(1, 0)`, so it changes no operand.
+    unsafe {
+        forward
+            .launch(
+                (1.0_f32, 0.0_f32),
+                cudnnSoftmaxAlgorithm_t::CUDNN_SOFTMAX_ACCURATE,
+                dx,
+                dy,
+            )
+            .map_err(cudnnfail)?;
+    }
+    Ok(())
 }
 
 /// Numerically stable softmax over the last axis with cuDNN.
@@ -438,22 +484,7 @@ pub(crate) fn softmax(
         y: &ydesc,
     };
 
-    // SAFETY: `dx` and `dy` are live device allocations, each holding `total`
-    // contiguous `f32`, and `xdesc`/`ydesc` describe exactly that buffer shape
-    // with the strides it already has, so cuDNN reads and writes within the
-    // allocations. `CUDNN_SOFTMAX_ACCURATE` is the max-subtracting formulation,
-    // which is the numerically stable variant the scalar contract requires. The
-    // scaling pair is the neutral `(1, 0)`, so it changes no operand.
-    unsafe {
-        forward
-            .launch(
-                (1.0_f32, 0.0_f32),
-                cudnnSoftmaxAlgorithm_t::CUDNN_SOFTMAX_ACCURATE,
-                &dx,
-                &mut dy,
-            )
-            .map_err(cudnnfail)?;
-    }
+    softmax_forward(&forward, &dx, &mut dy)?;
     syncanddownload(&stream, &dy)
 }
 
@@ -762,4 +793,436 @@ fn launchconfig(dims: &devicedims) -> LaunchConfig {
         block_dim: (source::THREADEDGE, source::THREADEDGE, 1),
         shared_mem_bytes: 0,
     }
+}
+
+/// One accumulative submission: a single execution stream that many operators
+/// share, plus the output slot of every recorded step.
+///
+/// A `session` is the CUDA side of the accumulative `api::submission` contract
+/// (docs/design.md §21.13). The stream serialises the recorded launches in
+/// order, so intermediate results stay on the device and [`apply`](Self::apply)
+/// synchronises and downloads only once. It owns no model weights and carries no
+/// request-scoped state beyond its own slices; compiled kernels and the retained
+/// context still come from the executor-owned [`cache`].
+pub(crate) struct session {
+    stream: Arc<CudaStream>,
+    outputs: Vec<slot>,
+}
+
+/// The recorded output of one step: a device slice to download, no elements, or
+/// a host-side run of zeros.
+enum slot {
+    buffer(CudaSlice<f32>),
+    empty,
+    zeros(usize),
+}
+
+impl session {
+    /// Opens a fresh stream for one submission.
+    pub(crate) fn new(cache: &cache) -> Result<Self, cudaerror> {
+        let stream = cache.stream()?;
+        Ok(Self {
+            stream,
+            outputs: Vec::new(),
+        })
+    }
+
+    /// Uploads host data into a fresh device slice.
+    pub(crate) fn upload<T: DeviceRepr>(&self, data: &[T]) -> Result<CudaSlice<T>, cudaerror> {
+        upload(&self.stream, data)
+    }
+
+    /// Allocates `len` zeroed device elements.
+    pub(crate) fn alloc(&self, len: usize) -> Result<CudaSlice<f32>, cudaerror> {
+        alloc(&self.stream, len)
+    }
+
+    /// Returns the device slice of slot `index`, when that slot holds one.
+    pub(crate) fn getbuffer(&self, index: usize) -> Option<&CudaSlice<f32>> {
+        match self.outputs.get(index) {
+            Some(slot::buffer(buffer)) => Some(buffer),
+            _ => None,
+        }
+    }
+
+    /// Returns the host-side data a non-buffer slot names, when `index` is one.
+    pub(crate) fn gethostdata(&self, index: usize) -> Option<Vec<f32>> {
+        match self.outputs.get(index) {
+            Some(slot::empty) => Some(Vec::new()),
+            Some(slot::zeros(count)) => Some(vec![0.0_f32; *count]),
+            _ => None,
+        }
+    }
+
+    /// Records a zero-element output without touching the device.
+    fn recordempty(&mut self) -> usize {
+        self.record(slot::empty)
+    }
+
+    /// Records an all-zero output of `count` elements without touching the device.
+    fn recordzeros(&mut self, count: usize) -> usize {
+        self.record(slot::zeros(count))
+    }
+
+    /// Records an output slot and returns its index.
+    fn record(&mut self, output: slot) -> usize {
+        let index = self.outputs.len();
+        self.outputs.push(output);
+        index
+    }
+
+    /// Synchronises once and downloads every recorded output, in slot order.
+    pub(crate) fn apply(self) -> Result<Vec<Vec<f32>>, cudaerror> {
+        let stream = self.stream;
+        stream.synchronize().map_err(|error| cudaerror::transfer {
+            message: error.to_string(),
+        })?;
+        self.outputs
+            .into_iter()
+            .map(|output| match output {
+                slot::buffer(buffer) => {
+                    stream
+                        .clone_dtoh(&buffer)
+                        .map_err(|error| cudaerror::transfer {
+                            message: error.to_string(),
+                        })
+                }
+                slot::empty => Ok(Vec::new()),
+                slot::zeros(count) => Ok(vec![0.0_f32; count]),
+            })
+            .collect()
+    }
+}
+
+/// Encodes one `[m, k] * [k, n]` block with the in-repo NVRTC kernel.
+pub(crate) fn matmul_nvrtc_into(
+    cache: &cache,
+    session: &mut session,
+    lhs: &CudaSlice<f32>,
+    rhs: &CudaSlice<f32>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<usize, cudaerror> {
+    if m == 0 || n == 0 {
+        return Ok(session.recordempty());
+    }
+    if k == 0 {
+        return Ok(session.recordzeros(m * n));
+    }
+    let dims = devicedims::new(m, k, n)?;
+    let function = cache.function(source::MATMULCUDA, source::MATMULENTRY)?;
+    let mut dc = session.alloc(m * n)?;
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(lhs)
+            .arg(rhs)
+            .arg(&mut dc)
+            .arg(&dims.m)
+            .arg(&dims.k)
+            .arg(&dims.n);
+        submit(&mut args, launchconfig(&dims))?;
+    }
+    Ok(session.record(slot::buffer(dc)))
+}
+
+/// Encodes one `[m, k] * [k, n]` block with cuBLAS.
+pub(crate) fn matmul_cublas_into(
+    _cache: &cache,
+    session: &mut session,
+    lhs: &CudaSlice<f32>,
+    rhs: &CudaSlice<f32>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<usize, cudaerror> {
+    if m == 0 || n == 0 {
+        return Ok(session.recordempty());
+    }
+    if k == 0 {
+        return Ok(session.recordzeros(m * n));
+    }
+    let dims = devicedims::new(m, k, n)?;
+    let blas = CudaBlas::new(session.stream.clone()).map_err(|error| cudaerror::blas {
+        message: error.to_string(),
+    })?;
+    let mut dc = session.alloc(m * n)?;
+    let m_int = asint(dims.n)?;
+    let n_int = asint(dims.m)?;
+    let k_int = asint(dims.k)?;
+    let config = GemmConfig {
+        transa: cublasOperation_t::CUBLAS_OP_N,
+        transb: cublasOperation_t::CUBLAS_OP_N,
+        m: m_int,
+        n: n_int,
+        k: k_int,
+        alpha: 1.0_f32,
+        lda: m_int,
+        ldb: k_int,
+        beta: 0.0_f32,
+        ldc: m_int,
+    };
+    gemm(&blas, config, rhs, lhs, &mut dc)?;
+    Ok(session.record(slot::buffer(dc)))
+}
+
+/// Encodes an elementwise `add` of `count` elements.
+pub(crate) fn add_into(
+    cache: &cache,
+    session: &mut session,
+    lhs: &CudaSlice<f32>,
+    rhs: &CudaSlice<f32>,
+    count: usize,
+) -> Result<usize, cudaerror> {
+    elementwise2_into(cache, session, source::ADDENTRY, lhs, rhs, count)
+}
+
+/// Encodes an elementwise `mul` of `count` elements.
+pub(crate) fn mul_into(
+    cache: &cache,
+    session: &mut session,
+    lhs: &CudaSlice<f32>,
+    rhs: &CudaSlice<f32>,
+    count: usize,
+) -> Result<usize, cudaerror> {
+    elementwise2_into(cache, session, source::MULENTRY, lhs, rhs, count)
+}
+
+/// Encodes the two-operand elementwise kernel named `entry`.
+fn elementwise2_into(
+    cache: &cache,
+    session: &mut session,
+    entry: &'static str,
+    lhs: &CudaSlice<f32>,
+    rhs: &CudaSlice<f32>,
+    count: usize,
+) -> Result<usize, cudaerror> {
+    if count == 0 {
+        return Ok(session.recordempty());
+    }
+    let countu = asunsigned(count)?;
+    let function = cache.function(source::ELEMENTWISE, entry)?;
+    let mut dc = session.alloc(count)?;
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(lhs).arg(rhs).arg(&mut dc).arg(&countu);
+        submit(&mut args, flatconfig(count)?)?;
+    }
+    Ok(session.record(slot::buffer(dc)))
+}
+
+/// Encodes a `silu` of `count` elements.
+pub(crate) fn silu_into(
+    cache: &cache,
+    session: &mut session,
+    input: &CudaSlice<f32>,
+    count: usize,
+) -> Result<usize, cudaerror> {
+    if count == 0 {
+        return Ok(session.recordempty());
+    }
+    let countu = asunsigned(count)?;
+    let function = cache.function(source::ELEMENTWISE, source::SILUENTRY)?;
+    let mut dc = session.alloc(count)?;
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(input).arg(&mut dc).arg(&countu);
+        submit(&mut args, flatconfig(count)?)?;
+    }
+    Ok(session.record(slot::buffer(dc)))
+}
+
+/// Encodes a `softmax` over `rows` rows of `width` with cuDNN.
+///
+/// The non-finite-input fallback of the single-operator [`softmax`] is not
+/// replicated here: a submission forwards the recorded step to cuDNN
+/// unconditionally, so a non-finite row is the caller's responsibility to keep
+/// out of a recorded chain.
+pub(crate) fn softmax_into(
+    _cache: &cache,
+    session: &mut session,
+    input: &CudaSlice<f32>,
+    rows: usize,
+    width: usize,
+) -> Result<usize, cudaerror> {
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
+    let handle = Cudnn::new(session.stream.clone()).map_err(cudnnfail)?;
+    let operation = handle
+        .create_softmax::<f32>(cudnnSoftmaxMode_t::CUDNN_SOFTMAX_MODE_CHANNEL)
+        .map_err(cudnnfail)?;
+    let dims = [asint(asunsigned(rows)?)?, asint(asunsigned(width)?)?, 1, 1];
+    let strides = [asint(asunsigned(width)?)?, 1, 1, 1];
+    let xdesc = handle
+        .create_4d_tensor_ex::<f32>(dims, strides)
+        .map_err(cudnnfail)?;
+    let ydesc = handle
+        .create_4d_tensor_ex::<f32>(dims, strides)
+        .map_err(cudnnfail)?;
+    let mut dy = session.alloc(total)?;
+    let forward = SoftmaxForward {
+        softmax: &operation,
+        x: &xdesc,
+        y: &ydesc,
+    };
+    softmax_forward(&forward, input, &mut dy)?;
+    Ok(session.record(slot::buffer(dy)))
+}
+
+/// Encodes an RMS normalization.
+pub(crate) fn rmsnorm_into(
+    cache: &cache,
+    session: &mut session,
+    input: &CudaSlice<f32>,
+    weight: &CudaSlice<f32>,
+    rows: usize,
+    width: usize,
+    eps: f32,
+) -> Result<usize, cudaerror> {
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
+    let function = cache.function(source::RMSNORMCUDA, source::RMSNORMENTRY)?;
+    let mut dy = session.alloc(total)?;
+    let widthu = asunsigned(width)?;
+    let config = LaunchConfig {
+        grid_dim: (asunsigned(rows)?, 1, 1),
+        block_dim: (source::ROWTILE, 1, 1),
+        shared_mem_bytes: source::ROWTILE * 4,
+    };
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(input)
+            .arg(weight)
+            .arg(&mut dy)
+            .arg(&widthu)
+            .arg(&eps);
+        submit(&mut args, config)?;
+    }
+    Ok(session.record(slot::buffer(dy)))
+}
+
+/// Encodes rotary position embedding.
+pub(crate) fn rope_into(
+    cache: &cache,
+    session: &mut session,
+    input: &CudaSlice<f32>,
+    geometry: &ropeshape,
+    base: f32,
+) -> Result<usize, cudaerror> {
+    let rows = geometry.rows;
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let pairs = rows
+        .checked_mul(geometry.heads)
+        .and_then(|value| value.checked_mul(geometry.headdim / 2))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let total = rows
+        .checked_mul(geometry.heads)
+        .and_then(|value| value.checked_mul(geometry.headdim))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let function = cache.function(source::ROPECUDA, source::ROPEENTRY)?;
+    let mut dy = session.alloc(total)?;
+    let rowsu = asunsigned(rows)?;
+    let seqaxu = asunsigned(geometry.seqaxis)?;
+    let headsu = asunsigned(geometry.heads)?;
+    let dimu = asunsigned(geometry.headdim)?;
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(input)
+            .arg(&mut dy)
+            .arg(&rowsu)
+            .arg(&seqaxu)
+            .arg(&headsu)
+            .arg(&dimu)
+            .arg(&base);
+        submit(&mut args, flatconfig(pairs)?)?;
+    }
+    Ok(session.record(slot::buffer(dy)))
+}
+
+/// Encodes an embedding gather.
+pub(crate) fn embedding_into(
+    cache: &cache,
+    session: &mut session,
+    table: &CudaSlice<f32>,
+    indices: &[usize],
+    width: usize,
+) -> Result<usize, cudaerror> {
+    let rows = indices.len();
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
+    let devindices: Vec<u64> = indices.iter().map(|&index| index as u64).collect();
+    let function = cache.function(source::EMBEDDINGCUDA, source::EMBEDDINGENTRY)?;
+    let dindices = session.upload(&devindices)?;
+    let mut dout = session.alloc(total)?;
+    let rowsu = rows as u64;
+    let widthu = width as u64;
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(table)
+            .arg(&dindices)
+            .arg(&mut dout)
+            .arg(&rowsu)
+            .arg(&widthu);
+        submit(&mut args, flatconfig(total)?)?;
+    }
+    Ok(session.record(slot::buffer(dout)))
+}
+
+/// Encodes grouped-query attention.
+pub(crate) fn attention_into(
+    cache: &cache,
+    session: &mut session,
+    query: &CudaSlice<f32>,
+    key: &CudaSlice<f32>,
+    value: &CudaSlice<f32>,
+    geometry: &attentionshape,
+    causal: bool,
+) -> Result<usize, cudaerror> {
+    let seq = geometry.seq;
+    if seq == 0 {
+        return Ok(session.recordempty());
+    }
+    let queryelements = seq
+        .checked_mul(geometry.heads)
+        .and_then(|rows| rows.checked_mul(geometry.headdim))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let function = cache.function(source::ATTENTIONCUDA, source::ATTENTIONENTRY)?;
+    let mut dout = session.alloc(queryelements)?;
+    let seqv = asunsigned(seq)?;
+    let headsv = asunsigned(geometry.heads)?;
+    let kvheadsv = asunsigned(geometry.kvheads)?;
+    let dimv = asunsigned(geometry.headdim)?;
+    let causalv: u32 = u32::from(causal);
+    let grid = seqv.checked_mul(headsv).ok_or(cudaerror::sizeoverflow)?;
+    let shared = (source::ATTENTIONLANES * 2)
+        .checked_add(dimv)
+        .and_then(|floats| floats.checked_mul(4))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let config = LaunchConfig {
+        grid_dim: (grid, 1, 1),
+        block_dim: (source::ATTENTIONLANES, 1, 1),
+        shared_mem_bytes: shared,
+    };
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(query)
+            .arg(key)
+            .arg(value)
+            .arg(&mut dout)
+            .arg(&seqv)
+            .arg(&headsv)
+            .arg(&kvheadsv)
+            .arg(&dimv)
+            .arg(&causalv);
+        submit(&mut args, config)?;
+    }
+    Ok(session.record(slot::buffer(dout)))
 }

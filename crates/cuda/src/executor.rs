@@ -1,15 +1,19 @@
 use std::sync::Arc;
 
 use ::tensor::{shape, tensor, tensorview};
-use api::{backend, backenderror, checkbudget, checkgatherbudget, compute};
+use api::{
+    backend, backenderror, checkbudget, checkgatherbudget, compute, operand, stepref, submission,
+};
+use cudarc::driver::CudaSlice;
 use lib::limits;
 
-use crate::backend::cudabackend;
-use crate::error::cudaerror;
-use crate::ffi;
-use crate::geometry::{
+use api::geometry::{
     ADDOP, MULOP, attentionshape, axisshape, binaryshape, embeddingshape, matmulshape, ropeshape,
 };
+
+use crate::backend::{CUDAMAXHEADDIM, cudabackend};
+use crate::error::cudaerror;
+use crate::ffi;
 
 /// Which CUDA implementation serves `matmul`.
 ///
@@ -310,6 +314,7 @@ impl compute for cudaexecutor {
             value.getshape(),
             heads,
             kvheads,
+            CUDAMAXHEADDIM,
         )?;
         let data = ffi::attention(
             &self.cache,
@@ -321,5 +326,367 @@ impl compute for cudaexecutor {
         )
         .map_err(maptobackend)?;
         wrap(query.getshape().clone(), data)
+    }
+}
+
+impl cudaexecutor {
+    /// Creates a single-use accumulative submission over this executor's backend,
+    /// matmul path, and compiled-kernel cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns `cudaerror::device` when no CUDA device is available, the same
+    /// first-call condition as any operator dispatch.
+    pub fn newsubmission(&self) -> Result<cudasubmission, cudaerror> {
+        cudasubmission::new(self.backend.clone(), self.cache.clone(), self.path)
+    }
+}
+
+/// A CUDA submission: one execution stream shared by every recorded step, so a
+/// whole operator chain launches in order and synchronises once
+/// (docs/design.md §21.13).
+///
+/// `cudasubmission` is the CUDA implementation of [`submission`]. It owns its
+/// stream and the device slices of its intermediate results; it owns no model
+/// weights and shares no mutable state between requests. Compiled kernels and
+/// the retained context still come from the executor-owned cache.
+///
+/// Each recorded step resolves its operands to device slices — uploading caller
+/// inputs and reusing earlier results in place — then launches its kernel into
+/// the shared stream. [`apply`](submission::apply) synchronises once and
+/// downloads only the requested outputs.
+///
+/// A batched `matmul` (a leading batch dimension greater than one) is rejected:
+/// the stream-serialised path records one launch per contraction block, and
+/// joining those blocks back into one tensor would re-introduce host round trips,
+/// so it is left to the single-operator [`compute`] path.
+pub struct cudasubmission {
+    backend: cudabackend,
+    cache: Arc<ffi::cache>,
+    path: matmulpath,
+    session: ffi::session,
+    results: Vec<(usize, shape)>,
+}
+
+impl cudasubmission {
+    /// Creates a submission over `backend` using `cache` and `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `cudaerror::device` when no CUDA device is available.
+    pub(crate) fn new(
+        backend: cudabackend,
+        cache: Arc<ffi::cache>,
+        path: matmulpath,
+    ) -> Result<Self, cudaerror> {
+        let session = ffi::session::new(&cache)?;
+        Ok(Self {
+            backend,
+            cache,
+            path,
+            session,
+            results: Vec::new(),
+        })
+    }
+
+    fn checkbudget(&self, s: &shape) -> Result<(), backenderror> {
+        checkbudget(
+            self.backend.getcapabilities(),
+            s,
+            core::mem::size_of::<f32>(),
+        )
+    }
+
+    fn checkgatherbudget(&self, rows: usize, width: usize) -> Result<(), backenderror> {
+        checkgatherbudget(
+            self.backend.getcapabilities(),
+            rows,
+            width,
+            core::mem::size_of::<f32>(),
+        )
+    }
+
+    /// Resolves an operand to its output shape, without touching the device.
+    fn shapeof(&self, op: operand<'_>) -> Result<shape, backenderror> {
+        match op {
+            operand::input(view) => Ok(view.getshape().clone()),
+            operand::result(reference) => {
+                let index = reference.getindex();
+                self.results
+                    .get(index)
+                    .map(|(_, outshape)| outshape.clone())
+                    .ok_or(backenderror::indexoutofrange {
+                        index,
+                        len: self.results.len(),
+                    })
+            }
+        }
+    }
+
+    /// Resolves an operand to a device slice, uploading caller inputs and
+    /// reusing or re-uploading recorded results in place.
+    fn resolve(&self, op: operand<'_>) -> Result<CudaSlice<f32>, backenderror> {
+        match op {
+            operand::input(view) => self.session.upload(view.getdata()).map_err(maptobackend),
+            operand::result(reference) => {
+                let index = reference.getindex();
+                let (slot, _) = self
+                    .results
+                    .get(index)
+                    .ok_or(backenderror::indexoutofrange {
+                        index,
+                        len: self.results.len(),
+                    })?;
+                if let Some(buffer) = self.session.getbuffer(*slot) {
+                    Ok(buffer.clone())
+                } else {
+                    let data =
+                        self.session
+                            .gethostdata(*slot)
+                            .ok_or(backenderror::indexoutofrange {
+                                index,
+                                len: self.results.len(),
+                            })?;
+                    self.session.upload(&data).map_err(maptobackend)
+                }
+            }
+        }
+    }
+
+    fn push(&mut self, slot: usize, outshape: shape) -> stepref {
+        let index = self.results.len();
+        self.results.push((slot, outshape));
+        stepref::fromindex(index)
+    }
+
+    /// Records one `matmul` block through the configured path.
+    fn recordmatmulblock(
+        &mut self,
+        lhs: &CudaSlice<f32>,
+        rhs: &CudaSlice<f32>,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Result<usize, backenderror> {
+        match self.path {
+            matmulpath::cublas => {
+                ffi::matmul_cublas_into(&self.cache, &mut self.session, lhs, rhs, m, k, n)
+            }
+            matmulpath::nvrtc => {
+                ffi::matmul_nvrtc_into(&self.cache, &mut self.session, lhs, rhs, m, k, n)
+            }
+        }
+        .map_err(maptobackend)
+    }
+}
+
+impl submission for cudasubmission {
+    fn recordmatmul(
+        &mut self,
+        lhs: operand<'_>,
+        rhs: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        let lhsshape = self.shapeof(lhs)?;
+        let rhsshape = self.shapeof(rhs)?;
+        self.checkbudget(&lhsshape)?;
+        self.checkbudget(&rhsshape)?;
+        let geometry = matmulshape::new(&lhsshape, &rhsshape)?;
+        let outshape = geometry.outshape()?;
+        self.checkbudget(&outshape)?;
+        if geometry.batch != 1 {
+            return Err(backenderror::unsupportedoperation { op: "matmul" });
+        }
+        let lhs = self.resolve(lhs)?;
+        let rhs = self.resolve(rhs)?;
+        let slot = self.recordmatmulblock(&lhs, &rhs, geometry.m, geometry.k, geometry.n)?;
+        Ok(self.push(slot, outshape))
+    }
+
+    fn recordadd(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
+        let lhsshape = self.shapeof(lhs)?;
+        let rhsshape = self.shapeof(rhs)?;
+        self.checkbudget(&lhsshape)?;
+        self.checkbudget(&rhsshape)?;
+        let outshape = binaryshape(&lhsshape, &rhsshape, ADDOP)?;
+        let count = lhsshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let lhs = self.resolve(lhs)?;
+        let rhs = self.resolve(rhs)?;
+        let slot = ffi::add_into(&self.cache, &mut self.session, &lhs, &rhs, count)
+            .map_err(maptobackend)?;
+        Ok(self.push(slot, outshape))
+    }
+
+    fn recordmul(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
+        let lhsshape = self.shapeof(lhs)?;
+        let rhsshape = self.shapeof(rhs)?;
+        self.checkbudget(&lhsshape)?;
+        self.checkbudget(&rhsshape)?;
+        let outshape = binaryshape(&lhsshape, &rhsshape, MULOP)?;
+        let count = lhsshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let lhs = self.resolve(lhs)?;
+        let rhs = self.resolve(rhs)?;
+        let slot = ffi::mul_into(&self.cache, &mut self.session, &lhs, &rhs, count)
+            .map_err(maptobackend)?;
+        Ok(self.push(slot, outshape))
+    }
+
+    fn recordrmsnorm(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror> {
+        let inshape = self.shapeof(input)?;
+        let weightshape = self.shapeof(weight)?;
+        self.checkbudget(&inshape)?;
+        self.checkbudget(&weightshape)?;
+        let geometry = axisshape::rmsnorm(&inshape, &weightshape)?;
+        let input = self.resolve(input)?;
+        let weight = self.resolve(weight)?;
+        let slot = ffi::rmsnorm_into(
+            &self.cache,
+            &mut self.session,
+            &input,
+            &weight,
+            geometry.rows,
+            geometry.width,
+            eps,
+        )
+        .map_err(maptobackend)?;
+        Ok(self.push(slot, inshape))
+    }
+
+    fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
+        let inshape = self.shapeof(input)?;
+        self.checkbudget(&inshape)?;
+        let geometry = axisshape::softmax(&inshape)?;
+        let input = self.resolve(input)?;
+        let slot = ffi::softmax_into(
+            &self.cache,
+            &mut self.session,
+            &input,
+            geometry.rows,
+            geometry.width,
+        )
+        .map_err(maptobackend)?;
+        Ok(self.push(slot, inshape))
+    }
+
+    fn recordsilu(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
+        let inshape = self.shapeof(input)?;
+        self.checkbudget(&inshape)?;
+        let count = inshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let input = self.resolve(input)?;
+        let slot =
+            ffi::silu_into(&self.cache, &mut self.session, &input, count).map_err(maptobackend)?;
+        Ok(self.push(slot, inshape))
+    }
+
+    fn recordembedding(
+        &mut self,
+        table: operand<'_>,
+        indices: &[usize],
+    ) -> Result<stepref, backenderror> {
+        let tableshape = self.shapeof(table)?;
+        self.checkbudget(&tableshape)?;
+        let geometry = embeddingshape::new(&tableshape, indices)?;
+        self.checkgatherbudget(geometry.rows, geometry.width)?;
+        let table = self.resolve(table)?;
+        let slot = ffi::embedding_into(
+            &self.cache,
+            &mut self.session,
+            &table,
+            indices,
+            geometry.width,
+        )
+        .map_err(maptobackend)?;
+        let mut outdims = Vec::with_capacity(tableshape.getrank());
+        outdims.push(geometry.rows);
+        outdims.extend_from_slice(&tableshape.getdims()[1..]);
+        let outshape = shape::new(outdims).map_err(|_| backenderror::sizeoverflow)?;
+        Ok(self.push(slot, outshape))
+    }
+
+    fn recordrope(
+        &mut self,
+        input: operand<'_>,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror> {
+        let inshape = self.shapeof(input)?;
+        self.checkbudget(&inshape)?;
+        let geometry = ropeshape::new(&inshape, heads)?;
+        let input = self.resolve(input)?;
+        let slot = ffi::rope_into(&self.cache, &mut self.session, &input, &geometry, base)
+            .map_err(maptobackend)?;
+        Ok(self.push(slot, inshape))
+    }
+
+    fn recordattention(
+        &mut self,
+        query: operand<'_>,
+        key: operand<'_>,
+        value: operand<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror> {
+        let queryshape = self.shapeof(query)?;
+        let keyshape = self.shapeof(key)?;
+        let valueshape = self.shapeof(value)?;
+        self.checkbudget(&queryshape)?;
+        self.checkbudget(&keyshape)?;
+        self.checkbudget(&valueshape)?;
+        let geometry = attentionshape::new(
+            &queryshape,
+            &keyshape,
+            &valueshape,
+            heads,
+            kvheads,
+            CUDAMAXHEADDIM,
+        )?;
+        let query = self.resolve(query)?;
+        let key = self.resolve(key)?;
+        let value = self.resolve(value)?;
+        let slot = ffi::attention_into(
+            &self.cache,
+            &mut self.session,
+            &query,
+            &key,
+            &value,
+            &geometry,
+            causal,
+        )
+        .map_err(maptobackend)?;
+        Ok(self.push(slot, queryshape))
+    }
+
+    fn apply(self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
+        let slots = self.session.apply().map_err(maptobackend)?;
+        let results = self.results;
+        outputs
+            .iter()
+            .map(|reference| {
+                let index = reference.getindex();
+                let (slot, outshape) = results.get(index).ok_or(backenderror::indexoutofrange {
+                    index,
+                    len: results.len(),
+                })?;
+                let data = slots
+                    .get(*slot)
+                    .cloned()
+                    .ok_or(backenderror::indexoutofrange {
+                        index,
+                        len: results.len(),
+                    })?;
+                wrap(outshape.clone(), data)
+            })
+            .collect()
     }
 }

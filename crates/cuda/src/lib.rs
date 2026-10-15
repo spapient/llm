@@ -57,11 +57,9 @@ mod executor;
 #[cfg(target_os = "linux")]
 mod ffi;
 #[cfg(target_os = "linux")]
-mod geometry;
-#[cfg(target_os = "linux")]
 mod source;
 
 #[cfg(target_os = "linux")]
 pub use backend::{CUDAMAXHEADDIM, CUDAMAXRANK, cudabackend};
 #[cfg(target_os = "linux")]
-pub use executor::{cudaexecutor, matmulpath};
+pub use executor::{cudaexecutor, cudasubmission, matmulpath};

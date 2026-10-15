@@ -32,7 +32,7 @@
 
 use crate::support::{build, wide};
 use ::tensor::dtype;
-use api::{backend, backenderror, compute};
+use api::{backend, backenderror, compute, operand, stepref, submission};
 use cpu::cpuexecutor;
 use cuda::{CUDAMAXHEADDIM, CUDAMAXRANK, cudabackend, cudaexecutor, matmulpath};
 use lib::limits;
@@ -889,4 +889,49 @@ fn softmax_matches_the_cpu_backend_outside_the_finite_domain() {
             );
         }
     }
+}
+
+#[test]
+fn submission_reproduces_a_compute_chain_bit_for_bit() {
+    if !hasdevice("submission_reproduces_a_compute_chain_bit_for_bit") {
+        return;
+    }
+    let exec = cudaexecutor::new(wide());
+    let a = build(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let b = build(vec![3, 2], vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    let c = build(vec![2, 2], vec![0.5, -0.5, 1.5, -1.5]);
+
+    let mut sub = exec.newsubmission().unwrap();
+    let matmul = sub
+        .recordmatmul(operand::input(a.getview()), operand::input(b.getview()))
+        .unwrap();
+    let sum = sub
+        .recordadd(operand::result(matmul), operand::input(c.getview()))
+        .unwrap();
+    let silu = sub.recordsilu(operand::result(sum)).unwrap();
+    let got = sub.apply(&[silu]).unwrap();
+
+    let want_matmul = exec.matmul(&a.getview(), &b.getview()).unwrap();
+    let want_sum = exec.add(&want_matmul.getview(), &c.getview()).unwrap();
+    let want_silu = exec.silu(&want_sum.getview()).unwrap();
+
+    assert_eq!(got.len(), 1);
+    assertallclose(got[0].getdata(), want_silu.getdata(), 1.0e-5, 1.0e-5);
+}
+
+#[test]
+fn submission_rejects_an_unrecorded_result_reference() {
+    if !hasdevice("submission_rejects_an_unrecorded_result_reference") {
+        return;
+    }
+    let exec = cudaexecutor::new(wide());
+    let mut sub = exec.newsubmission().unwrap();
+    let a = build(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+    let bogus = stepref::fromindex(99);
+
+    let err = sub
+        .recordadd(operand::result(bogus), operand::input(a.getview()))
+        .unwrap_err();
+
+    assert_eq!(err, backenderror::indexoutofrange { index: 99, len: 0 });
 }
