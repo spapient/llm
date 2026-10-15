@@ -859,3 +859,71 @@ mod compact {
         assert!(matches!(err, checkpointerror::basehashmismatch { .. }));
     }
 }
+
+/// Tests for per-block LZ4 compression of `.u` snapshots.
+mod compression {
+    use crate::support::shapeof;
+    use ::checkpoint::{checkpointerror, checkpointreader, snapshot, BLOCKSIZE};
+    use tensor::dtype;
+
+    fn snapwith(data: &[u8]) -> snapshot {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::u8, shapeof(&[data.len()]), data)
+            .unwrap();
+        snap
+    }
+
+    #[test]
+    fn compressible_data_shrinks_and_roundtrips() {
+        let data = vec![7u8; BLOCKSIZE * 4];
+        let snap = snapwith(&data);
+        let encoded = snap.encode().unwrap();
+        assert!(
+            encoded.len() < data.len() / 8,
+            "compressed {} vs raw {}",
+            encoded.len(),
+            data.len()
+        );
+        let back = snapshot::decode(&encoded).unwrap();
+        assert_eq!(back.readtensor("w").unwrap(), data);
+    }
+
+    #[test]
+    fn incompressible_data_roundtrips() {
+        let mut data = vec![0u8; BLOCKSIZE];
+        let mut state = 0x1234_5678u32;
+        for byte in &mut data {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = (state >> 24) as u8;
+        }
+        let snap = snapwith(&data);
+        let encoded = snap.encode().unwrap();
+        // Random data is stored raw, so the artifact is only slightly larger
+        // than the raw bytes.
+        assert!(encoded.len() < data.len() + 4096);
+        let back = snapshot::decode(&encoded).unwrap();
+        assert_eq!(back.readtensor("w").unwrap(), data);
+    }
+
+    #[test]
+    fn corruption_in_stored_data_is_detected() {
+        let data = vec![7u8; BLOCKSIZE * 2];
+        let snap = snapwith(&data);
+        let mut encoded = snap.encode().unwrap();
+        let last = encoded.len() - 1;
+        encoded[last] ^= 1;
+        let err = snapshot::decode(&encoded).unwrap_err();
+        assert!(matches!(err, checkpointerror::blockcrcmismatch { .. }));
+        assert!(err.iscorruption());
+    }
+
+    #[test]
+    fn reader_reads_compressed_blocks() {
+        let data = vec![5u8; BLOCKSIZE * 3];
+        let snap = snapwith(&data);
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        assert_eq!(reader.readtensor("w").unwrap().unwrap(), data);
+    }
+}

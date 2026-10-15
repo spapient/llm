@@ -1,7 +1,7 @@
 use format::{dtypetoken, tokendtype};
 use tensor::{dtype, shape};
 
-use crate::blocks::{blockref, chunk};
+use crate::blocks::{blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
@@ -24,6 +24,7 @@ pub(crate) struct storedentry {
     pub(crate) offset: u64,
     pub(crate) size: u32,
     pub(crate) crc32c: u32,
+    pub(crate) codec: u8,
 }
 
 /// Describes one tensor persisted in a `.u` snapshot.
@@ -213,20 +214,24 @@ impl snapshot {
         manifest.extend_from_slice(&[0u8; 32]);
         manifest.extend_from_slice(&root);
         pushu64(&mut manifest, blocks.len() as u64);
+        let mut storeddata = Vec::new();
         let mut offset = 0usize;
         for block in &blocks {
             let len = block.getlen() as usize;
-            let checksum = crc32c(&self.data[offset..offset + len]);
+            let (codec, stored) = compressblock(&self.data[offset..offset + len]);
+            let checksum = crc32c(&stored);
             manifest.extend_from_slice(&block.gethash());
-            pushu64(&mut manifest, offset as u64);
-            pushu32(&mut manifest, block.getlen());
+            pushu64(&mut manifest, storeddata.len() as u64);
+            pushu32(&mut manifest, stored.len() as u32);
             pushu32(&mut manifest, checksum);
+            manifest.push(codec);
+            storeddata.extend_from_slice(&stored);
             offset += len;
         }
 
         let total = PREFIXLEN
             .checked_add(manifest.len())
-            .and_then(|v| v.checked_add(self.data.len()))
+            .and_then(|v| v.checked_add(storeddata.len()))
             .ok_or_else(|| checkpointerror::invalidmanifest {
                 reason: "snapshot size overflows usize".to_string(),
             })?;
@@ -234,7 +239,7 @@ impl snapshot {
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&(manifest.len() as u64).to_le_bytes());
         out.extend_from_slice(&manifest);
-        out.extend_from_slice(&self.data);
+        out.extend_from_slice(&storeddata);
         Ok(out)
     }
 
@@ -259,12 +264,12 @@ impl snapshot {
             });
         }
         let data = &bytes[parsed.dataoffset..];
-        verifyfull(data, &parsed.blocks, &parsed.stored)?;
-        verifytensors(data, &parsed.tensors)?;
+        let rawdata = verifyfull(data, &parsed.blocks, &parsed.stored)?;
+        verifytensors(&rawdata, &parsed.tensors)?;
         Ok(Self {
             version: parsed.version,
             tensors: parsed.tensors,
-            data: data.to_vec(),
+            data: rawdata,
         })
     }
 }
@@ -468,11 +473,13 @@ pub(crate) fn readstored(
         let offset = readu64(manifest, pos)?;
         let size = readu32(manifest, pos)?;
         let crc32c = readu32(manifest, pos)?;
+        let codec = readbytes(manifest, pos, 1)?[0];
         stored.push(storedentry {
             hash,
             offset,
             size,
             crc32c,
+            codec,
         });
     }
     Ok(stored)
@@ -484,42 +491,46 @@ fn verifyfull(
     data: &[u8],
     blocks: &[blockref],
     stored: &[storedentry],
-) -> Result<(), checkpointerror> {
+) -> Result<Vec<u8>, checkpointerror> {
     if stored.len() != blocks.len() {
         return Err(checkpointerror::invalidmanifest {
             reason: "stored block count does not match the block list".to_string(),
         });
     }
+    let mut rawdata = Vec::new();
     let mut offset = 0usize;
     for (position, block) in blocks.iter().enumerate() {
         let entry = &stored[position];
-        let len = block.getlen() as usize;
-        if entry.hash != block.gethash()
-            || entry.size != block.getlen()
-            || entry.offset != offset as u64
-        {
+        if entry.hash != block.gethash() || entry.offset != offset as u64 {
             return Err(checkpointerror::invalidmanifest {
                 reason: format!("stored entry {position} is inconsistent with the block list"),
             });
         }
-        let end = offset
-            .checked_add(len)
-            .ok_or(checkpointerror::blockoutofrange {
-                position,
-                blockcount: blocks.len(),
-            })?;
+        let end =
+            offset
+                .checked_add(entry.size as usize)
+                .ok_or(checkpointerror::blockoutofrange {
+                    position,
+                    blockcount: blocks.len(),
+                })?;
         if end > data.len() {
             return Err(checkpointerror::truncatedblock {
                 position,
-                needed: len,
-                available: data.len() - offset,
+                needed: entry.size as usize,
+                available: data.len().saturating_sub(offset),
             });
         }
         let bytes = &data[offset..end];
         if crc32c(bytes) != entry.crc32c {
             return Err(checkpointerror::blockcrcmismatch { position });
         }
-        let hash = contenthash(bytes);
+        let raw = decompressblock(entry.codec, bytes)?;
+        if raw.len() != block.getlen() as usize {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("block {position} decompressed length mismatch"),
+            });
+        }
+        let hash = contenthash(&raw);
         if hash != block.gethash() {
             return Err(checkpointerror::blockhashmismatch {
                 position,
@@ -527,6 +538,7 @@ fn verifyfull(
                 found: hash,
             });
         }
+        rawdata.extend_from_slice(&raw);
         offset = end;
     }
     if offset != data.len() {
@@ -535,7 +547,7 @@ fn verifyfull(
             blockcount: data.len(),
         });
     }
-    Ok(())
+    Ok(rawdata)
 }
 
 /// Verifies every tensor's byte range lies within the data section without

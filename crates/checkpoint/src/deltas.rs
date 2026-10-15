@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::blocks::{blockref, chunk};
+use crate::blocks::{blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
@@ -137,24 +137,21 @@ impl delta {
         manifest.extend_from_slice(&self.base_id);
         manifest.extend_from_slice(&root);
         pushu64(&mut manifest, self.stored.len() as u64);
-        let mut offset = 0u64;
+        let mut storeddata = Vec::new();
         for block in &self.stored {
-            let checksum = crc32c(&block.bytes);
+            let (codec, stored) = compressblock(&block.bytes);
+            let checksum = crc32c(&stored);
             manifest.extend_from_slice(&block.hash);
-            pushu64(&mut manifest, offset);
-            // block.bytes.len() <= BLOCKSIZE < u32::MAX, so the cast is safe.
-            pushu32(&mut manifest, block.bytes.len() as u32);
+            pushu64(&mut manifest, storeddata.len() as u64);
+            pushu32(&mut manifest, stored.len() as u32);
             pushu32(&mut manifest, checksum);
-            offset += block.bytes.len() as u64;
+            manifest.push(codec);
+            storeddata.extend_from_slice(&stored);
         }
 
-        let mut datalen = 0usize;
-        for block in &self.stored {
-            datalen += block.bytes.len();
-        }
         let total = PREFIXLEN
             .checked_add(manifest.len())
-            .and_then(|v| v.checked_add(datalen))
+            .and_then(|v| v.checked_add(storeddata.len()))
             .ok_or_else(|| checkpointerror::invalidmanifest {
                 reason: "delta size overflows usize".to_string(),
             })?;
@@ -162,9 +159,7 @@ impl delta {
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&(manifest.len() as u64).to_le_bytes());
         out.extend_from_slice(&manifest);
-        for block in &self.stored {
-            out.extend_from_slice(&block.bytes);
-        }
+        out.extend_from_slice(&storeddata);
         Ok(out)
     }
 
@@ -225,14 +220,15 @@ fn verifystored(
             return Err(checkpointerror::truncatedblock {
                 position,
                 needed: size,
-                available: data.len() - offset,
+                available: data.len().saturating_sub(offset),
             });
         }
         let bytes = &data[offset..end];
         if crc32c(bytes) != entry.crc32c {
             return Err(checkpointerror::blockcrcmismatch { position });
         }
-        let hash = contenthash(bytes);
+        let raw = decompressblock(entry.codec, bytes)?;
+        let hash = contenthash(&raw);
         if hash != entry.hash {
             return Err(checkpointerror::blockhashmismatch {
                 position,
@@ -242,7 +238,7 @@ fn verifystored(
         }
         stored.push(storedblock {
             hash: entry.hash,
-            bytes: bytes.to_vec(),
+            bytes: raw,
         });
     }
     Ok(stored)

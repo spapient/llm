@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::blocks::blockref;
+use crate::blocks::{blockref, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::contenthash;
@@ -56,6 +56,7 @@ struct blocklocation {
     offset: u64,
     size: u32,
     crc32c: u32,
+    codec: u8,
 }
 
 /// Reads tensors from a full snapshot or a base plus a delta, touching only the
@@ -95,6 +96,7 @@ impl checkpointreader {
                 offset: entry.offset,
                 size: entry.size,
                 crc32c: entry.crc32c,
+                codec: entry.codec,
             })
             .collect();
         Ok(Self {
@@ -141,6 +143,7 @@ impl checkpointreader {
                     offset: entry.offset,
                     size: entry.size,
                     crc32c: entry.crc32c,
+                    codec: entry.codec,
                 },
             );
         }
@@ -153,6 +156,7 @@ impl checkpointreader {
                     offset: entry.offset,
                     size: entry.size,
                     crc32c: entry.crc32c,
+                    codec: entry.codec,
                 },
             );
         }
@@ -237,7 +241,8 @@ impl checkpointreader {
             if crc32c(&blockbytes) != location.crc32c {
                 return Err(checkpointerror::blockcrcmismatch { position });
             }
-            let hash = contenthash(&blockbytes);
+            let raw = decompressblock(location.codec, &blockbytes)?;
+            let hash = contenthash(&raw);
             if hash != block.gethash() {
                 return Err(checkpointerror::blockhashmismatch {
                     position,
@@ -247,7 +252,7 @@ impl checkpointreader {
             }
             let from = start.saturating_sub(running);
             let to = if blockend > end { end - running } else { len };
-            out.extend_from_slice(&blockbytes[from..to]);
+            out.extend_from_slice(&raw[from..to]);
             running = blockend;
         }
         Ok(Some(out))

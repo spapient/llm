@@ -125,6 +125,8 @@ objc2-core-graphics = "0.3"
 cudarc = "0.19"
 # 密码学哈希：.u 格式的块内容身份与根锚点（BLAKE3-128/256）。
 blake3 = "1"
+# 分块无损压缩：.u 格式的默认编解码（纯 Rust、无 unsafe、极速解压）。
+lz4_flex = "0.11"
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"

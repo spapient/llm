@@ -1,4 +1,11 @@
+use crate::error::checkpointerror;
 use crate::hash::contenthash;
+
+/// Codec byte for an uncompressed (raw) block.
+pub(crate) const CODECRAW: u8 = 0;
+
+/// Codec byte for an LZ4-compressed block.
+pub(crate) const CODECLZ4: u8 = 1;
 
 /// The fixed block size for `.u` block addressing, in bytes.
 ///
@@ -50,4 +57,36 @@ pub fn chunk(data: &[u8]) -> Vec<blockref> {
             blockref::new(contenthash(block), block.len() as u32)
         })
         .collect()
+}
+
+/// Compresses a block, returning its codec byte and the stored bytes.
+///
+/// The block is stored raw when compression does not shrink it.
+pub(crate) fn compressblock(bytes: &[u8]) -> (u8, Vec<u8>) {
+    let compressed = lz4_flex::compress_prepend_size(bytes);
+    if compressed.len() < bytes.len() {
+        (CODECLZ4, compressed)
+    } else {
+        (CODECRAW, bytes.to_vec())
+    }
+}
+
+/// Decompresses a block's stored bytes back to its uncompressed form.
+///
+/// # Errors
+///
+/// Returns [`checkpointerror::invalidmanifest`] when the codec is unknown or
+/// the stored bytes do not decode.
+pub(crate) fn decompressblock(codec: u8, stored: &[u8]) -> Result<Vec<u8>, checkpointerror> {
+    match codec {
+        CODECRAW => Ok(stored.to_vec()),
+        CODECLZ4 => lz4_flex::decompress_size_prepended(stored).map_err(|_| {
+            checkpointerror::invalidmanifest {
+                reason: "lz4 decompression failed".to_string(),
+            }
+        }),
+        _ => Err(checkpointerror::invalidmanifest {
+            reason: format!("unknown block codec {codec}"),
+        }),
+    }
 }
