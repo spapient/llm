@@ -80,11 +80,28 @@ pub(crate) fn parsepostprocessor(
                 field: "post_processor.type",
             })?;
     match posttype {
-        // ByteLevel post-processing inserts the BOS token; it only affects
-        // `add_special_tokens=true`, so it is accepted as a no-op here (the
-        // raw encoding used by alignment is unaffected). A `Sequence` wrapping
-        // a ByteLevel is likewise flattened to a no-op for the same reason.
-        "ByteLevel" | "Sequence" => Ok(None),
+        // ByteLevel post-processing is a no-op for token ids (it only adjusts
+        // offsets in HF); a `Sequence` is flattened to its TemplateProcessing
+        // child, which is the member that actually inserts BOS/EOS.
+        "ByteLevel" => Ok(None),
+        "Sequence" => {
+            let Some(processors) = object.get("processors").and_then(Value::as_array) else {
+                return Ok(None);
+            };
+            for processor in processors {
+                let Some(child) = processor.as_object() else {
+                    continue;
+                };
+                if child.get("type").and_then(Value::as_str) != Some("TemplateProcessing") {
+                    continue;
+                }
+                let single =
+                    parsetemplate(child.get("single"), vocab, "post_processor.single", false)?;
+                let pair = parsetemplate(child.get("pair"), vocab, "post_processor.pair", true)?;
+                return Ok(Some(postprocessor { single, pair }));
+            }
+            Ok(None)
+        }
         "TemplateProcessing" => {
             let single =
                 parsetemplate(object.get("single"), vocab, "post_processor.single", false)?;

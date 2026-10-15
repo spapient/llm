@@ -120,3 +120,31 @@ fn o200k_matches_the_tiktoken_reference() {
         );
     }
 }
+
+#[test]
+fn postprocess_matches_the_wrapped_reference() {
+    // `wrapped_ids` is the `add_special_tokens = true` encoding: the raw ids
+    // with the post-processor applied (BOS/EOS insertion). Only the models that
+    // carry a TemplateProcessing post-processor emit a BOS prefix; ByteLevel
+    // alone (qwen3/deepseek) is a no-op, so wrapped == raw.
+    for model in MODELS {
+        let tok = loadtokenizer(model);
+        let golden = loadsamples(model);
+        for sample in golden["samples"].as_array().unwrap() {
+            let Some(wrapped) = sample
+                .get("wrapped_ids")
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+            let text = sampletext(sample);
+            let expected: Vec<u32> = wrapped
+                .iter()
+                .map(|value| value.as_u64().unwrap() as u32)
+                .collect();
+            let raw = tok.encodespecial(text).unwrap();
+            let got: Vec<u32> = tok.postprocess(&raw).iter().map(|id| id.get()).collect();
+            assert_eq!(got, expected, "{model} postprocess mismatch for {text:?}");
+        }
+    }
+}

@@ -394,3 +394,14 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 **验证**：临时 example 实测 o200k encode 8/8 + decode 8/8 逐位对齐 tiktoken 0.14.0 黄金；clippy `-D warnings` + fmt 通过。**7 个模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）全部逐位对齐。**
 
 **字节级合并优化（2026-10-16）**：`encode_chunk` 由 O(n²) 朴素实现（每轮全扫 + `Vec::remove` 搬移）复用 T6 的最小堆 + 双向链表算法——`tiktokenstep` 按"拼接结果 rank"排序、`trymerge` 惰性删除、`queue_pair` 只重插受影响邻居。基准 `tokenizer/encode/tiktoken/{512,4096}`（重复模式，短键）实测 **118.9 µs / 945.1 µs**，8× 输入 ≈ 8× 耗时（线性，佐证 O(n log n) 堆操作主导）。**诚实边界**：拼接仍按字节键查 `HashMap`（O(键长)），敌对"键无限增长"输入叠加 O(总键长) 项——与 `bytepair::apply` 同款限制，真实文本键短不主导。
+
+### 12.14 post_processor 补齐（2026-10-16）
+
+修正 `parsepostprocessor`：`Sequence` 不再压平为 no-op，而是提取其 `TemplateProcessing` 子段（ByteLevel 子段在 HF 里本就只调 offsets、不插 token）。`postprocess()`（`add_special_tokens=true`）现对 llama2/llama3/gemma 正确插入 BOS、对 qwen3/deepseek 正确保持 no-op（`wrapped_ids` 逐位对齐，5 模型各 8/8）。新增 `postprocess_matches_the_wrapped_reference` 测试。
+
+**剩余诚实缺口（未实现，需能触发差异的黄金语料才暴露）**：`ignore_merges`（llama3，我仍照常应用 merges 表）、`fuse_unk`（gemma，未知 token 融合解码语义）。二者在现有 8 条语料上不产生差异，故 7 模型仍逐位对齐。
+
+### 12.15 ignore_merges / fuse_unk 收口（2026-10-16）
+
+- **① `ignore_merges`（llama3）**：已实现。`encodeplainsegment` 在 `ignore_merges=true` 时改用 `rankmerge`（按"相邻符号拼接结果在词表内的最低 id"贪心合并，最小堆 + 双向链表），等价于 tiktoken 派生 merges 表、但直接查词表。6 模型 encode 仍全对齐（llama3 8/8）。
+- **② `fuse_unk`（gemma）**：确认为 **no-op**。gemma 同时 `byte_fallback=true` + `<unk>`（id 3），解析顺序 exact → byte_fallback → unk，故 `<unk>` 永不触发、fuse 无对象；Fuse decoder 早已按 no-op 处理（`"ByteFallback" | "Fuse" => {}`）。无需行为改动。

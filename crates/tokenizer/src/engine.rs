@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use lib::tokenid;
 use serde_json::{Map, Value};
 
@@ -12,6 +14,30 @@ use crate::postprocess::{parsepostprocessor, postprocessor};
 use crate::pretoken::{parsepretokenizer, pretokenizer};
 use crate::special::specialtokens;
 use crate::vocab::vocabulary;
+
+/// A candidate rank-based merge: the id of the concatenation starting at `left`
+/// and that pair's left-symbol position.
+#[derive(PartialEq, Eq)]
+struct rankstep {
+    rank: u32,
+    left: usize,
+}
+
+impl Ord for rankstep {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Pop the smallest rank first, then the leftmost position.
+        other
+            .rank
+            .cmp(&self.rank)
+            .then_with(|| other.left.cmp(&self.left))
+    }
+}
+
+impl PartialOrd for rankstep {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// A byte-pair-encoding tokenizer loaded from a HuggingFace `tokenizer.json`
 /// subset.
@@ -33,6 +59,7 @@ pub struct tokenizer {
     pretokenizer: Option<pretokenizer>,
     decoder: decoder,
     bytefallback: bool,
+    ignoremerges: bool,
     postprocessor: Option<postprocessor>,
     unk: Option<tokenid>,
 }
@@ -100,6 +127,7 @@ impl tokenizer {
         let bostokencontent = parseoptionalstring(rootobject, "bos_token")?;
         let eostokencontent = parseoptionalstring(rootobject, "eos_token")?;
         let normalizer = parsenormalizer(rootobject)?;
+        let ignoremerges = parseignoremerges(model)?;
         Ok(Self {
             vocabulary: vocab,
             bytepair: bpe,
@@ -112,6 +140,7 @@ impl tokenizer {
             pretokenizer,
             decoder,
             bytefallback,
+            ignoremerges,
             postprocessor,
             unk,
         })
@@ -254,12 +283,134 @@ impl tokenizer {
         };
         for pretoken in &pretokens {
             let symbols: Vec<String> = pretoken.chars().map(|ch| ch.to_string()).collect();
-            let merged = self.bytepair.apply(&symbols);
-            for symbol in &merged {
-                resolvetoken(&self.vocabulary, self.bytefallback, self.unk, symbol, out)?;
+            if self.ignoremerges {
+                self.rankmerge(&symbols, out)?;
+            } else {
+                let merged = self.bytepair.apply(&symbols);
+                for symbol in &merged {
+                    resolvetoken(&self.vocabulary, self.bytefallback, self.unk, symbol, out)?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// Rank-based greedy merge: repeatedly merge the adjacent symbol pair whose
+    /// concatenation is in the vocabulary with the lowest id. This is the
+    /// `ignore_merges` path (tiktoken-derived vocabularies) and is equivalent
+    /// to applying the derived merge table, but probes the vocabulary directly.
+    fn rankmerge(&self, symbols: &[String], out: &mut Vec<tokenid>) -> Result<(), tokenizererror> {
+        let count = symbols.len();
+        if count == 0 {
+            return Ok(());
+        }
+        if count == 1 {
+            resolvetoken(
+                &self.vocabulary,
+                self.bytefallback,
+                self.unk,
+                &symbols[0],
+                out,
+            )?;
+            return Ok(());
+        }
+
+        let mut work: Vec<String> = symbols.to_vec();
+        let mut prev = Vec::with_capacity(count);
+        let mut next = Vec::with_capacity(count);
+        for index in 0..count {
+            prev.push(index.checked_sub(1));
+            next.push((index + 1 < count).then_some(index + 1));
+        }
+        let mut alive = vec![true; count];
+        let mut heap = std::collections::BinaryHeap::new();
+        for index in 0..count - 1 {
+            self.queue_rank_pair(&work, &next, &alive, &mut heap, index);
+        }
+
+        while let Some(step) = heap.pop() {
+            self.try_rank_merge(&mut work, &mut prev, &mut next, &mut alive, &mut heap, step);
+        }
+
+        let mut cursor = 0usize;
+        loop {
+            resolvetoken(
+                &self.vocabulary,
+                self.bytefallback,
+                self.unk,
+                &work[cursor],
+                out,
+            )?;
+            match next[cursor] {
+                Some(following) => cursor = following,
+                None => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies one heap-selected rank merge when it is still live and its id is
+    /// still current; otherwise it is a stale candidate and is skipped.
+    fn try_rank_merge(
+        &self,
+        work: &mut [String],
+        prev: &mut [Option<usize>],
+        next: &mut [Option<usize>],
+        alive: &mut [bool],
+        heap: &mut std::collections::BinaryHeap<rankstep>,
+        step: rankstep,
+    ) {
+        let Some(right) = next[step.left] else {
+            return;
+        };
+        if !alive[step.left] || !alive[right] {
+            return;
+        }
+        let mut merged = work[step.left].clone();
+        merged.push_str(&work[right]);
+        if self.vocabulary.getid(&merged).map(tokenid::get) != Some(step.rank) {
+            return;
+        }
+        work[step.left] = merged;
+        alive[right] = false;
+        let following = next[right];
+        next[step.left] = following;
+        if let Some(after) = following {
+            prev[after] = Some(step.left);
+        }
+        if let Some(before) = prev[step.left] {
+            self.queue_rank_pair(work, next, alive, heap, before);
+        }
+        self.queue_rank_pair(work, next, alive, heap, step.left);
+    }
+
+    /// Queues the mergeable pair starting at `left`, if its concatenation is in
+    /// the vocabulary and both symbols are live.
+    fn queue_rank_pair(
+        &self,
+        work: &[String],
+        next: &[Option<usize>],
+        alive: &[bool],
+        heap: &mut std::collections::BinaryHeap<rankstep>,
+        left: usize,
+    ) {
+        if !alive[left] {
+            return;
+        }
+        let Some(right) = next[left] else {
+            return;
+        };
+        if !alive[right] {
+            return;
+        }
+        let mut merged = work[left].clone();
+        merged.push_str(&work[right]);
+        if let Some(id) = self.vocabulary.getid(&merged) {
+            heap.push(rankstep {
+                rank: id.get(),
+                left,
+            });
+        }
     }
 
     /// Applies the loaded normalizer, or borrows `text` unchanged.
@@ -381,6 +532,17 @@ fn parsebytefallback(model: &Map<String, Value>) -> Result<bool, tokenizererror>
     match model.get("byte_fallback") {
         Some(value) => value.as_bool().ok_or(tokenizererror::unexpectedtype {
             field: "model.byte_fallback",
+            expected: "boolean",
+        }),
+        None => Ok(false),
+    }
+}
+
+/// Returns the `model.ignore_merges` flag, defaulting to `false`.
+fn parseignoremerges(model: &Map<String, Value>) -> Result<bool, tokenizererror> {
+    match model.get("ignore_merges") {
+        Some(value) => value.as_bool().ok_or(tokenizererror::unexpectedtype {
+            field: "model.ignore_merges",
             expected: "boolean",
         }),
         None => Ok(false),
