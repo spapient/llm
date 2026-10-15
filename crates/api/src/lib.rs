@@ -33,7 +33,9 @@ mod budget;
 mod capability;
 mod devices;
 mod error;
+pub mod geometry;
 mod kernels;
+mod submissions;
 
 pub use backends::{backend, kernel};
 pub use budget::{checkbudget, checkgatherbudget};
@@ -41,3 +43,4 @@ pub use capability::capabilities;
 pub use devices::{device, devicekind};
 pub use error::backenderror;
 pub use kernels::{binarykernel, compute, gatherkernel, weightedkernel};
+pub use submissions::{operand, stepref, submission};

@@ -47,6 +47,7 @@ mod roundtrip;
 mod server;
 mod serveunits;
 mod service;
+mod submissioncontract;
 mod support;
 mod tensorcontract;
 mod tensorunits;

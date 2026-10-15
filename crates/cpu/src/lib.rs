@@ -58,6 +58,7 @@ mod matmul;
 mod normalization;
 mod rotary;
 mod softmax;
+mod submission;
 mod support;
 
 pub use activation::{cpugelutanh, cpurelu, cpusilu};
@@ -71,3 +72,4 @@ pub use matmul::cpumatmul;
 pub use normalization::cpurmsnorm;
 pub use rotary::cpurope;
 pub use softmax::cpusoftmax;
+pub use submission::cpusubmission;
