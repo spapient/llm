@@ -287,6 +287,9 @@ impl tokenizer {
 }
 
 /// Returns the `model` object after checking the model type is `"BPE"`.
+///
+/// Some real `tokenizer.json` files (e.g. GPT-2) omit `model.type`; the only
+/// supported model is BPE, so an absent type is treated as BPE.
 fn parsemodel(root: &Map<String, Value>) -> Result<&Map<String, Value>, tokenizererror> {
     let model = root
         .get("model")
@@ -296,20 +299,16 @@ fn parsemodel(root: &Map<String, Value>) -> Result<&Map<String, Value>, tokenize
             field: "model",
             expected: "object",
         })?;
-    let modeltype = model
-        .get("type")
-        .ok_or(tokenizererror::missingfield {
-            field: "model.type",
-        })?
-        .as_str()
-        .ok_or(tokenizererror::unexpectedtype {
+    if let Some(value) = model.get("type") {
+        let modeltype = value.as_str().ok_or(tokenizererror::unexpectedtype {
             field: "model.type",
             expected: "string",
         })?;
-    if modeltype != "BPE" {
-        return Err(tokenizererror::unsupportedmodel {
-            modeltype: modeltype.to_string(),
-        });
+        if modeltype != "BPE" {
+            return Err(tokenizererror::unsupportedmodel {
+                modeltype: modeltype.to_string(),
+            });
+        }
     }
     Ok(model)
 }
@@ -342,6 +341,7 @@ fn parsebytefallback(model: &Map<String, Value>) -> Result<bool, tokenizererror>
 /// Returns the optional `model.unk_token` string.
 fn parseunkcontent(model: &Map<String, Value>) -> Result<Option<String>, tokenizererror> {
     match model.get("unk_token") {
+        Some(value) if value.is_null() => Ok(None),
         Some(value) => Ok(Some(
             value
                 .as_str()

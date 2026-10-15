@@ -79,14 +79,21 @@ pub(crate) fn parsepostprocessor(
             .ok_or(tokenizererror::missingfield {
                 field: "post_processor.type",
             })?;
-    if posttype != "TemplateProcessing" {
-        return Err(tokenizererror::unsupportedpostprocessor {
-            posttype: posttype.to_string(),
-        });
+    match posttype {
+        // ByteLevel post-processing inserts the BOS token; it only affects
+        // `add_special_tokens=true`, so it is accepted as a no-op here (the
+        // raw encoding used by alignment is unaffected).
+        "ByteLevel" => Ok(None),
+        "TemplateProcessing" => {
+            let single =
+                parsetemplate(object.get("single"), vocab, "post_processor.single", false)?;
+            let pair = parsetemplate(object.get("pair"), vocab, "post_processor.pair", true)?;
+            Ok(Some(postprocessor { single, pair }))
+        }
+        other => Err(tokenizererror::unsupportedpostprocessor {
+            posttype: other.to_string(),
+        }),
     }
-    let single = parsetemplate(object.get("single"), vocab, "post_processor.single", false)?;
-    let pair = parsetemplate(object.get("pair"), vocab, "post_processor.pair", true)?;
-    Ok(Some(postprocessor { single, pair }))
 }
 
 /// Parses a template array. `allowb` gates whether a `B` sequence placeholder

@@ -1,6 +1,6 @@
 # tokenizer 深度分析与优化执行计划
 
-- 状态：**优化计划（实施中）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 的 GPT-2 ByteLevel 基础、T2+T3（字节级编解码接入）、T4（TemplateProcessing post_processor）与 T5（最小 Jinja 子集 chat_template）已实施（见 §12.6–§12.8）；P1/T10（normalizer）与 T12（cli decode）已实施（见 §12.10）；其余条目（P0/T1 的其它预分词类型、P1 T11 依赖显式化）均**未实施**。
+- 状态：**优化计划（已基本完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 的 GPT-2 ByteLevel 基础、T2+T3（字节级编解码接入）、T4（TemplateProcessing post_processor）与 T5（最小 Jinja 子集 chat_template）已实施（见 §12.6–§12.8）；P1/T10（normalizer）与 T12（cli decode）已实施（见 §12.10）；**D3 逐位对齐 HF 已达成（见 §12.11）**。剩余条目（P0/T1 其它预分词类型、P1 T11 依赖显式化）均**未实施**。
 - 仓库：`llm` workspace（`crates/tokenizer`）
 - 基线分支：`main`
 - 计划日期：2026-10-16
@@ -346,3 +346,16 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 - **T12（cli decode）**：新增 `decode` 子命令（`--tokenizer` + `--tokens`），加载 tokenizer 将 token id 列表解码为文本。
 
 **验证**：`tokenizerunits` → 66 passed / 0 failed（新增 `normalize` 5 例）；`tokens` → 21 passed；`cli` → 46 passed（新增 decode 2 例）；clippy `-D warnings` + fmt 通过。**并发会话的 `scan` 断裂已修复，`tests/it` 集成测试恢复可运行**——此前被阻塞的全部永久测试已随套件通过。
+
+### 12.11 D3 逐位对齐 HF（2026-10-16，验收达成）
+
+真实 GPT-2 全量 `tokenizer.json`（~1.35MB）vendor 到 `tests/fixtures/gpt2/`，外加 HF `tokenizers` 0.23.3 黄金输出（10 条语料：ASCII/CJK/重音/特殊词元/多空格/长文/空串，`add_special_tokens=false`）。对齐测试 `tests/it/tokenizergolden.rs` 断言 `encodespecial` 与 `decode` 逐位相等。
+
+**修复的加载/编码缺陷**：
+
+1. `model.type` 缺省 → 视为 BPE（GPT-2 的 `model` 段无 `type` 字段）。
+2. `model.unk_token: null` → 视为无 unk token（原报 `unexpectedtype`）。
+3. `post_processor.type == "ByteLevel"` → 接受为 no-op（BOS 插入仅影响 `add_special_tokens=true`）。
+4. `gpt2split` 空白语义：`\s+(?!\S)` 对"后跟非空白的空白串"回溯为"串去掉最后一个空白"——修复前多空格语料编码错误（`"  multiple"` 应为 `[" ", " multiple"]` 而非 `["  ", "multiple"]`）。
+
+**结果**：`tokenizergolden` → **2 passed**（encode 10/10、decode 10/10 逐位对齐 HF）。全套：`tokenizerunits` 65、`tokens` 21、`tokenizergolden` 2，clippy `-D warnings` + fmt 通过。

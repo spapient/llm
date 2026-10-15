@@ -57,6 +57,7 @@ mod support;
 mod tensorcontract;
 mod tensorunits;
 mod testkitunits;
+mod tokenizergolden;
 mod tokenizerunits;
 mod tokens;
 mod trainingresume;

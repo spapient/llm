@@ -95,7 +95,15 @@ fn gpt2toklen(rest: &str) -> usize {
     if !first.is_whitespace() {
         return classrun(rest, otherchar);
     }
-    classrun(rest, |ch| ch.is_whitespace())
+    // `\s+(?!\S)` is tried before `\s+`: a whitespace run followed by a
+    // non-space backtracks to exclude its last whitespace, which the
+    // ` ?\p{L}+`/` ?\p{N}+`/` ?[^...]+` alternatives then absorb as the
+    // optional leading space of the next token.
+    let runlen = classrun(rest, |ch| ch.is_whitespace());
+    match rest[runlen..].chars().next() {
+        Some(_) => runlen.saturating_sub(1).max(1),
+        None => runlen,
+    }
 }
 
 /// Returns the byte length of the leading run of characters satisfying `pred`.

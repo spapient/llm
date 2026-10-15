@@ -312,10 +312,6 @@ mod engine {
     /// report for it.
     #[rstest]
     #[case::non_object_root("[]", tokenizererror::rootnotobject)]
-    #[case::missing_model_type(
-        r#"{"model": {"vocab": {}}}"#,
-        tokenizererror::missingfield { field: "model.type" }
-    )]
     #[case::non_bpe_model(
         r#"{"model": {"type": "WordPiece", "vocab": {}}}"#,
         tokenizererror::unsupportedmodel { modeltype: "WordPiece".to_string() }
@@ -666,7 +662,7 @@ mod pretoken {
         assert_eq!(gpt2split("don't"), ["don", "'t"]);
         assert_eq!(gpt2split("I've"), ["I", "'ve"]);
         assert_eq!(gpt2split("hello world"), ["hello", " world"]);
-        assert_eq!(gpt2split("hello  world"), ["hello", "  ", "world"]);
+        assert_eq!(gpt2split("hello  world"), ["hello", " ", " world"]);
         assert_eq!(gpt2split("2 cats"), ["2", " cats"]);
         assert_eq!(gpt2split("你好"), ["你好"]);
         assert_eq!(gpt2split("中文 test"), ["中文", " test"]);
