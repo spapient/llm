@@ -78,7 +78,7 @@
 
 - **attention 契约扩展（E1）。** `attend` 标量参考此前假设 `qseq == kvseq`，现支持 `offset`（query 起点），三后端一致；`tests/it/metalcontract.rs` 与 `tests/it/cudacontract.rs` 各增 `attention_accepts_a_shorter_query_than_the_keys`（qseq=1 < kvseq=3）。Metal **46/46**（M5 Pro）、CUDA **44/44**（T600 真机）全绿。
 - **KV cache 接线（E1）。** `llamamodel::forward_cached`/`llamablock::forward_cached` 读并追加 `kvcache`（仅处理新 token 位置），`infer` 的 `kvstate` 接线（`decode.rs`/`engine.rs`/`generation.rs`/`prefill.rs`）。CPU 侧 `incrementalattention` 2、`kvcacheforward` 1、`generation` 10 全绿；`forward_cached` 与全量 `forward` 逐位相同。
-- **decode 基准（如实，无收益声明）。** `gpu/decode` 首测不对称（`metalcached` 把 prefill 计入计时：1.671 s vs `metalrecompute` 0.825 s）；已用 `iter_batched` 对称化（剥离 prefill、只计时 decode 阶段）：`metalcached` 868.85 ms vs `metalrecompute` 830.37 ms（cached 略慢 ≈4.6%）。**结论：同步往返（≈52 ms/前向，35 次 submit+wait）主导，seq=16 下 O(seq) vs O(seq²) 的计算差被完全淹没，KV cache 性能收益未实测**，不声称任何加速；`forward_cached` 尚未走 `forwardsubmission`（整链一次提交），后者 + 长序列（seq=128/256）是收益显现的必要条件（独立阶段）。
+- **decode 基准（submission 版，2026-10-16 复测）。** compute 路径首测不对称（`metalcached` 把 prefill 计入计时：1.671 s vs `metalrecompute` 0.825 s），`iter_batched` 对称化后 868.85 ms vs 830.37 ms（同步往返主导、无收益）；`forwardsubmission_cached` 接入后复测：`metalcached` **45.03 ms** vs `metalrecompute` **47.26 ms**（相对 compute 版整组 −94.8%），**增量 vs 全量快 ≈4.7%**。结论：单次提交收益兑现（每前向 35 次 submit+wait → 1 次提交，≈52 ms → ≈2.8 ms）；seq=16 规模下增量 vs 全量的计算差被每前向固定开销压制，**加速比由长序列（seq=128/256）阶段兑现**。
 
 ## 当前判定
 
@@ -120,7 +120,7 @@
 | 层 1：autograd | 已验证 | `crates/autograd` 实现图、变量与所支持算子的 VJP；根 `autograd` 套件对每个算子用有限差分参考检查，`cargo bench --no-run` 构建 `benches/autograd.rs`。 |
 | 层 2：nn | 已验证 | `crates/nn` 实现参数、模块与层集；根 `nnlayers` 套件用 `testkit` 的独立标量参考检查每一层。 |
 | 层 2：models（模型支持契约） | 已验证 | `crates/models` 实现因果 LM 契约与 Llama config/weights/block/model；根 `modelforward` 套件钉住确定性前向 logits。模型支持契约首次成文于设计文档，依据是对 `crates/models/src` 的源码核对。 |
-| 层 2/3：KV cache 接线（`forward_cached`） | 已验证（正确性） | `llamamodel::forward_cached`/`llamablock::forward_cached` 增量前向读/追加 `kvcache`，`infer` 的 `kvstate` 接线；attention 契约扩展支持 `qseq ≤ kvseq`，三后端一致。`metalcontract` 46/46（M5 Pro）、`cudacontract` 44/44（T600 真机）、CPU `incrementalattention` 2 + `kvcacheforward` 1 + `generation` 10 全绿。**性能收益未实测**：`gpu/decode` 对称化后 `metalcached` 868.85 ms vs `metalrecompute` 830.37 ms，同步往返主导，不声称任何加速（见「本轮重测证据（2026-10-16）」）。 |
+| 层 2/3：KV cache 接线（`forward_cached`） | 已验证（正确性 + 性能方向） | `llamamodel::forward_cached`/`llamablock::forward_cached` 增量前向读/追加 `kvcache`，`infer` 的 `kvstate` 接线；attention 契约扩展支持 `qseq ≤ kvseq`，三后端一致。`metalcontract` 46/46（M5 Pro）、`cudacontract` 44/44（T600 真机）、CPU `incrementalattention` 2 + `kvcacheforward` 1 + `generation` 10 全绿。**性能**：接入 `forwardsubmission_cached` 后 `gpu/decode` 整组 −94.8%（每前向 52→2.8 ms），seq=16 增量快 ≈4.7%（方向正确；加速比由长序列阶段兑现，见「本轮重测证据（2026-10-16）」）。 |
 | 层 2：tokenizer | 已验证 | `crates/tokenizer` 实现词表、合并、特殊词元、对话模板、编码/解码与引擎；根 `tokens` 套件通过。 |
 | 层 2：data | 已验证 | `crates/data` 实现记录、数据集、打包、批次、采样器与加载器；根 `pipeline` 套件端到端组合它们。 |
 | 层 2：format 与 checkpoint（检查点格式契约） | 已验证 | `crates/format` 与 `crates/checkpoint` 实现解析/校验与原子 save/load/兼容性；根 `artifact` 与 `roundtrip` 套件通过。检查点格式契约首次成文于设计文档，依据是对两个 crate 源码的核对。 |
