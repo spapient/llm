@@ -164,7 +164,7 @@ normalizer ──▶ pre_tokenizer ──▶ model(BPE) ──▶ post_processor
 | --- | --- | --- | --- |
 | D1 | pre_tokenizer 实现：手写 splitter vs `regex` | **手写**（`std::char` 分类 + 收缩词表 `'s/'t/'re/'ve/'m/'ll/'d` + 静态 256 字节表） | HF v1 首条技巧即"手写 splitter 替代 regex"；`regex` 已是传递依赖但非生产依赖，手写免去新增生产依赖面，符合 AGENTS.md §3.2。**caveat**：`char::is_alphabetic()` ⊃ `\p{L}`（含 Other_Alphabetic），对异体字符可能微差，须由对照测试钉住；若钉不住再评估专用 Unicode 表 |
 | D2 | normalizer/NFKC：现在做 vs 推迟 | **推迟**，仅当真实模型带 `normalizer` 段时引入 `unicode-normalization` | GPT-2/Llama/Mistral/Qwen 的 tokenizer 均 `normalizer: null`；NFKC 无 `std` 等价，手写不可行 |
-| D3 | 真实 tokenizer.json 夹具（P0 对照测试硬依赖） | **必须先解决**：vendor 一个 GPT-2 或 Llama 3 小词表 + HF Python 产出的黄金 `tokenize` 输出，存入 `testkit` 或 `tests/fixtures/` | 当前仓内无任何真实 tokenizer.json（仅有 target 指纹产物）；无黄金输出则 U1–U5 的"逐位对齐"无法验证，只能标"未验证" |
+| D3 | 真实 tokenizer.json 夹具（P0 对照测试硬依赖） | **必须先解决**：vendor 一份**完整**真实 `tokenizer.json`（GPT-2 全量约 1.6MB；`model.vocab`/`model.merges`/`added_tokens` 内嵌随文件，无需另备词表）到 `tests/fixtures/`，外加 HF Python 对固定语料产出的黄金 token ID 序列 | 当前仓内无任何真实 tokenizer.json（仅 target 指纹产物）；裁剪词表会改变 ID 编号与合并结果、逐位对齐必失败，故须全量；无黄金输出则 U1–U5 的"逐位对齐"无法验证，只能标"未验证" |
 | D4 | `bytepair::apply(&[String]) -> Vec<String>` 公共签名 | **保留为薄包装**，内部换字节路径 | "公开 API 不变"是既定目标；签名改动连带 design.md §10.3/conformance/architecture 重审 |
 | D5 | Jinja 子集范围 | **自研最小子集**（变量/循环/if），不做完整 Jinja | 完整 Jinja 需模板引擎依赖与不可信求值，违背极简内核；子集覆盖主流 `chat_template` |
 | D6 | 词缓存作用域 | **不得引入跨请求可变共享缓存**（违 `OW2`/`OW4`）；优先 per-encode 的 scratch 缓存，或对静态 pre-token 片段的不可变预计算缓存 | tokenizer 以 `&self` 跨线程共享；全局可变缓存破坏无锁共享假设，需另行论证同步 |
