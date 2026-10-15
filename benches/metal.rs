@@ -265,6 +265,15 @@ mod macos {
         group.bench_function("metal", |b| {
             b.iter(|| black_box(model.forward(&metalexec, black_box(&tokens)).unwrap()));
         });
+        group.bench_function("metal_submission", |b| {
+            b.iter(|| {
+                let mut sub = metalexec.newsubmission().unwrap();
+                let logits = model
+                    .forward_submitted(&mut sub, black_box(&tokens))
+                    .unwrap();
+                black_box(sub.apply(&[logits]).unwrap())
+            });
+        });
         group.finish();
     }
 

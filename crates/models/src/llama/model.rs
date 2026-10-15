@@ -1,5 +1,5 @@
 use ::tensor::tensor;
-use api::compute;
+use api::{compute, operand, stepref, submission};
 
 use crate::causal::causallm;
 use crate::error::modelerror;
@@ -73,6 +73,35 @@ impl llamamodel {
     #[must_use]
     pub fn getweights(&self) -> &llamaweights {
         &self.weights
+    }
+
+    /// Records a full forward pass into a submission, mirroring
+    /// [`causallm::forward`] operator for operator, and returns the output
+    /// projection's handle.
+    ///
+    /// The caller submits the whole chain once and resolves the returned
+    /// [`stepref`]; every intermediate activation stays on the backend's device.
+    pub fn forward_submitted<S: submission>(
+        &self,
+        sub: &mut S,
+        tokens: &[usize],
+    ) -> Result<stepref, modelerror> {
+        let mut x = sub.recordembedding(
+            operand::input(self.weights.getembedding().getweight().getvalue().getview()),
+            tokens,
+        )?;
+        for layer in self.weights.getlayers() {
+            x = self.block.forward_submitted(sub, layer, x)?;
+        }
+        let normalized = sub.recordrmsnorm(
+            operand::result(x),
+            operand::input(self.weights.getnorm().getweight().getvalue().getview()),
+            self.weights.getnorm().geteps(),
+        )?;
+        Ok(sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(self.weights.getoutput().getweight().getvalue().getview()),
+        )?)
     }
 }
 

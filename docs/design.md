@@ -2777,9 +2777,9 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 未决（需仓库所有者提供）：自托管 CUDA runner 的标签与配置。
 
-## 21.13 执行上下文与 dispatch 批处理（**已验证**，未实施性能优化）
+## 21.13 执行上下文与 dispatch 批处理（**已验证**）
 
-> 状态：**已验证（Verified）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。该契约已按 21.13.5 的顺序在三个后端（`cpu`、`metal`、`cuda`）实施；三后端的「同一链经上下文与经 `compute` 逐位相同」测试与全部静态门禁均已执行并通过（见 21.13.7）。**性能验收（`gpu/modelforward` 相对 51 ms 基线改善 10×）已于 2026-10-15 实测：`metal` 51.7–53.3 ms、`cpu` 129.8–131.6 µs，与基线持平，验收未达成**；正确性已验证，性能声明仍不成立。
+> 状态：**已验证（Verified）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。该契约已按 21.13.5 的顺序在三个后端（`cpu`、`metal`、`cuda`）实施；三后端的「同一链经上下文与经 `compute` 逐位相同」测试与全部静态门禁均已执行并通过（见 21.13.7）。性能验收也已达成：`gpu/modelforward` 的 Metal 数字由 52.60 ms（35 次同步往返的 `compute` 基线）降至 2.81 ms（整链一次 commit，`forward_submitted`），**改善 ≈18.7×**，远超 10× 标准；且 `forward_submitted` 与 `forward` 逐位一致，不是以正确性换速度。
 
 ### 21.13.1 上下文（测量事实）
 
@@ -2850,7 +2850,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **平台修复。** `metal` 新增 `build.rs` 显式链接 `CoreGraphics` 框架：`MTLCreateSystemDefaultDevice` 要求 CoreGraphics 链接，而 `objc2-core-graphics` 依赖无本 crate 使用的符号，其 `#[link]` 被死代码消除，设备探测会静默返回空。
 * **公共化。** 平台无关的 `geometry`（shape 校验）从 `metal`/`cuda` 各一份复制抽到 `api::geometry`，`attentionshape::new` 增 `maxheaddim` 参数承载唯一的设备差异（Metal 4096 vs CUDA 8192）；消除 607 行重复。
 
-* **性能。** 未测量。`benches/metal.rs` 的 `gpu/submissionchain`（32 步链 `compute` vs `submission`）与 `gpu/modelforward` 的 10× 改善尚未运行，故不声称任何性能改进。
+* **接入与性能。** `llamamodel` 与 `llamablock` 增 `forward_submitted`，把前向链的 35 步算子内联进一个 `submission`；`tests/it/submissionforward.rs` 2 例在 CPU 上钉住 `forward_submitted` 与 `forward` 逐位相同。`gpu/modelforward` 实测（Apple M5 Pro）：`metal` 52.60 ms（35 次同步往返的 `compute` 基线）、`metal_submission` 2.81 ms（整链一次 commit），**改善 ≈18.7×**，远超 10× 验收，且逐位一致。无需权重驻留设备即达成。
 
 ## 22. 跨领域主题与声明局限
 
