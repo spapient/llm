@@ -1,6 +1,6 @@
 # tokenizer 深度分析与优化执行计划
 
-- 状态：**优化计划（实施中）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）与 P1/T8（热路径去分配）已实施并测得加速（见 §12.4、§12.5）；P0/T1 的 GPT-2 ByteLevel 基础、T2+T3（字节级编解码接入）、T4（TemplateProcessing post_processor）与 T5（最小 Jinja 子集 chat_template）已实施（见 §12.6–§12.8）；其余条目（P0/T1 的其它预分词类型、P1 T7、T9–T12）均**未实施**。
+- 状态：**优化计划（实施中）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 的 GPT-2 ByteLevel 基础、T2+T3（字节级编解码接入）、T4（TemplateProcessing post_processor）与 T5（最小 Jinja 子集 chat_template）已实施（见 §12.6–§12.8）；P1/T10（normalizer）与 T12（cli decode）已实施（见 §12.10）；其余条目（P0/T1 的其它预分词类型、P1 T11 依赖显式化）均**未实施**。
 - 仓库：`llm` workspace（`crates/tokenizer`）
 - 基线分支：`main`
 - 计划日期：2026-10-16
@@ -330,3 +330,19 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 - **T5（`chat_template`）**：`jinja.rs` 实现最小 Jinja 子集——`{{ expr }}` 插值、`for ... in messages`、`if`/`elif`/`else`、`message.role`/`message['content']`、`loop.last/first/index/index0`、`bos_token`/`eos_token`、字符串字面量、`==`/`!=`/`not`/`and`/`or`；`fromjson` 读 `chat_template`/`bos_token`/`eos_token`；`tokenizer::renderchat` 渲染，`applychattemplate` 优先走 Jinja。新增错误变体 `malformedtemplate`。
 
 **验证**：tokenizer crate 编译 + clippy `-D warnings` + fmt 通过；经临时独立测试目标实测 3 例全过（post_processor single/pair、Jinja 循环+插值、Jinja if/else 分支）。修复一处 `tokenize` 缺陷（原只按 `{{` 优先，先出现的 `{%` 被误吞为文本）。**`tests/it` 集成测试（含新增 `postprocess`/`jinja` 模块）仍被并发会话 `scan` 阻塞**。
+
+### 12.9 P1/T7+T9 实施结果（2026-10-16）
+
+- **T9（special 前缀匹配去分配）**：`specialtokens` 在构造时预计算最长优先列表 `longest`，`encodespecial` 改用 `iterlongest()`——去掉每次调用 `specials.iter().collect()` + `sort_by` 的 Vec 分配与排序。
+- **T7（per-encode 词缓存）**：`encodebytelevel` 加调用级 `HashMap<&str, Vec<tokenid>>` 缓存，同一 pre-token 在单次 encode 内重复出现时复用编码结果，**无跨调用共享状态**（D6 约束）。
+
+**验证**：tokenizer crate 编译 + clippy `-D warnings` + fmt 通过；临时独立测试 2 例过（special 最长匹配 `<s>` 胜过 `<`、字节级重复词往返）。新增字节级基准 `tokenizer/encode/bytelevel/{512,4096}`（重复词工作负载）实测 **5.33 µs / 15.88 µs**。
+
+**诚实边界**：T9 是纯去分配重构（无行为变化）。T7 的缓存是 per-encode 的，收益仅在单次 encode 内出现重复 pre-token 时成立，且给非重复文本带来每 chunk 一次哈希开销；共享缓存方案已被 OW2/OW4 否决（D6）。未做无缓存对照（需临时禁缓存重建，未执行）。
+
+### 12.10 P1/T10+T12 实施结果（2026-10-16）
+
+- **T10（normalizer）**：`normalize.rs` 实现 `normalizer`（`lowercase`/`strip`/`sequence`，均 std 可实现）；`fromjson` 解析 `normalizer` 段（`null`/缺省 → 无归一化）；`encode`/`encodespecial` 先归一化再预分词。Unicode 归一化形式（NFC/NFD/NFKC/NFKD）返回 `unsupportednormalizer`——需 `unicode-normalization` 依赖，按 D2 推迟（真实 GPT-2/Llama 均 `normalizer: null`）。新增错误变体 `unsupportednormalizer`。
+- **T12（cli decode）**：新增 `decode` 子命令（`--tokenizer` + `--tokens`），加载 tokenizer 将 token id 列表解码为文本。
+
+**验证**：`tokenizerunits` → 66 passed / 0 failed（新增 `normalize` 5 例）；`tokens` → 21 passed；`cli` → 46 passed（新增 decode 2 例）；clippy `-D warnings` + fmt 通过。**并发会话的 `scan` 断裂已修复，`tests/it` 集成测试恢复可运行**——此前被阻塞的全部永久测试已随套件通过。

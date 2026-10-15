@@ -17,7 +17,7 @@
 
 use std::hint::black_box;
 
-use ::tokenizer::{bytepair, tokenizer};
+use ::tokenizer::{bytepair, bytetounicode, tokenizer};
 use criterion::{Criterion, criterion_group, criterion_main};
 
 /// Text pattern for the byte-fallback workloads: ASCII plus a CJK run so the
@@ -72,6 +72,33 @@ fn repeatpattern(len: usize) -> String {
     out
 }
 
+/// Builds a GPT-2 ByteLevel tokenizer whose vocabulary is exactly the 256
+/// byte-to-unicode characters, with no merge rules.
+fn byteleveltok() -> tokenizer {
+    let table = bytetounicode();
+    let mut vocab = serde_json::Map::new();
+    for (byte, character) in table.iter().enumerate() {
+        vocab.insert(character.to_string(), serde_json::json!(byte));
+    }
+    let doc = serde_json::json!({
+        "model": {"type": "BPE", "vocab": vocab, "merges": [], "byte_fallback": false},
+        "pre_tokenizer": {"type": "ByteLevel"},
+        "decoder": {"type": "ByteLevel"},
+    });
+    tokenizer::fromjson(&doc.to_string()).unwrap()
+}
+
+/// Repeats `phrase` until `len` characters are produced, so its pre-tokens
+/// repeat and exercise the byte-level per-call cache.
+fn repeatphrase(phrase: &str, len: usize) -> String {
+    let mut out = String::with_capacity(len);
+    let mut chars = phrase.chars().cycle();
+    for _ in 0..len {
+        out.push(chars.next().unwrap());
+    }
+    out
+}
+
 fn applychain(c: &mut Criterion) {
     for len in [64usize, 512, 4096] {
         let (bpe, symbols) = chainfixture(len);
@@ -100,5 +127,21 @@ fn decodebytefallback(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, applychain, encodebytefallback, decodebytefallback);
+fn encodebytelevel(c: &mut Criterion) {
+    let tok = byteleveltok();
+    for len in [512usize, 4096] {
+        let input = repeatphrase("the quick brown fox jumps over ", len);
+        c.bench_function(&format!("tokenizer/encode/bytelevel/{len}"), |b| {
+            b.iter(|| black_box(tok.encode(&input).unwrap()));
+        });
+    }
+}
+
+criterion_group!(
+    benches,
+    applychain,
+    encodebytefallback,
+    decodebytefallback,
+    encodebytelevel
+);
 criterion_main!(benches);
