@@ -2486,7 +2486,7 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 4. **CUDA 走 `cudarc`，feature 固定为 `driver` + `cublas` + `cudnn` + `nvrtc` + `dynamic-loading` + `cuda-12060`。** `dynamic-loading` 使 `cargo check` 无需 CUDA 工具链；`cuda-12060` 是 `cudarc` 的强制要求；`cudnn`（即 `cudnn-09021`）提供 `SoftmaxForward` 等安全封装。
 5. **条件编译为空 lib。** 非目标平台不引入任何平台依赖，也不导出实现类型，保证跨平台 workspace 绿。
 6. **同步、运行至完成的执行语义。** 与 `tensor` 与 `cpu` 的同步模型一致：每次算子调用完成 host→device→dispatch→device→host 全流程后返回拥有张量；不引入流式或异步 API。
-7. **首个算子为 `f32` matmul。** MSL 与 CUDA C 源码以字符串内嵌并在运行时编译，避免构建期依赖 `xcrun`/`nvcc`。
+7. **首个算子为 `f32` matmul。** MSL 与 CUDA C 源码以独立文件（`kernels/*.metal` / `kernels/*.cu`）经 `include_str!` 内嵌并在运行时编译，避免构建期依赖 `xcrun`/`nvcc`。
 8. **设备身份在 `api` 侧累加。** `devicekind` 新增 `metal` 与 `cuda` 变体，`device` 新增对应构造与判定；不改动既有 `cpu` 语义，也不加 `#[non_exhaustive]`（工作区内需要穷举 match 以获得编译期完整性）。
 9. **依赖边仅为后端到 `api`/`tensor`/`lib`。** `api` MUST NOT 依赖 `metal` 或 `cuda`；上层（`models`/`infer`）通过既有的 `C: compute` 泛型槽接入，零改动。
 10. **CUDA 的 `unsafe` 站点收于三类平台交互、共三处。** NVRTC 内核启动一处（以闭包注入实参，服务于全部在仓内核）、cuBLAS `gemm` 一处、cuDNN 末轴 softmax 一处；不做 `unsafe` 的通用化封装，仅按 21.8 登记的三处具体调用。
@@ -2574,7 +2574,7 @@ cuda  -> api
 * `geometry.rs` 把每个算子的形状推理与拒绝条件收进单个函数，使 `ffi.rs` 的每个启动封装只做「取已验证的几何 → 一次平台调用 → 一次错误映射」，判定点不超过 3 个。
 * `executor.rs` 的每个算子在预算校验后委派给 `geometry` 与 `ffi`，自身不做算术；`matmul` 不再在宿主侧切分 batch block，因此不含逐块循环。
 * 预算与秩判定不是 `executor.rs` 自己的逻辑：两个后端都转发到 `api::checkbudget`，连判定顺序都无法分歧；`geometry.rs` 的 `matmulshape` 在两侧同形，并各自提供 `outshape()` 以在分配前校验结果预算。
-* `source.rs` 只存放 MSL/CUDA 原文串与 entry 名常量，不参与 Rust 复杂度；两个后端的 `ffi.rs` 都只有一条通用 `execute` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
+* `source.rs` 只存放 `include_str!` 引用与 entry 名常量，不参与 Rust 复杂度（MSL/CUDA 原文在 `kernels/` 目录）；两个后端的 `ffi.rs` 都只有一条通用 `execute` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
 
 宿主 macOS 的 `scripts/checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的 CUDA 代码，因此 CUDA 侧以同一组阈值单独在 Linux 目标上核对（`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --lib --locked -- -D clippy::cognitive_complexity -D clippy::too_many_lines`，exit 0）。两者均为机械检查（证据等级 E1）。
 
@@ -2593,7 +2593,7 @@ cuda  -> api
 
 `cuda` 的缓存与 `metal` 同构，差异只在被缓存的对象与「执行队列故意不缓存」的实现方式：
 
-* **内容与所有权。** `ffi::cache` 只含 device 0 的**已 retain 主上下文**与按 `(source, entry)` 索引的已解析内核；键里带着内核**原文**，因此改动 `source.rs` 不可能复用陈旧模块；每个 `CudaFunction` 持有其 `CudaModule`、进而持有上下文，故缓存的内核不可能比它编译所在的设备活得更久。它同样由 executor 拥有、clone 经 `Arc` 共享，不是全局单例。
+* **内容与所有权。** `ffi::cache` 只含 device 0 的**已 retain 主上下文**与按 `(source, entry)` 索引的已解析内核；键里带着内核**原文**，因此改动 `kernels/` 源码不可能复用陈旧模块；每个 `CudaFunction` 持有其 `CudaModule`、进而持有上下文，故缓存的内核不可能比它编译所在的设备活得更久。它同样由 executor 拥有、clone 经 `Arc` 共享，不是全局单例。
 * **执行队列不缓存。** 每次调用从缓存上下文取一条**新流**并在返回前释放（`metal` 的对应选择是不缓存命令队列）：共享一条流会把并发调用的 GPU 工作排成队，而这正是 §21.6 在 Metal 侧否决过的做法。新流的创建/销毁成本记账在下面的前后对比里。
 * **锁与持锁时间。** 全 crate 一个锁，从不在持锁期间申请第二个；锁内只做查表、可能的 NVRTC 编译与模块装载；传输、内核启动与同步**都在锁外**。同一内核的并发首次调用在锁内编译一次，命中缓存的稳态调用持锁约百纳秒量级。
 * **失败与中毒。** 与 `metal` 相同：设备打开失败不缓存 `None`（下次调用重试），锁中毒后取回内部值继续使用。
