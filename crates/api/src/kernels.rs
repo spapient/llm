@@ -2,6 +2,14 @@ use ::tensor::{element, tensor, tensorview};
 
 use crate::backenderror;
 
+/// A cached history and a new row of an incremental attention operand.
+pub struct kvpair<'a> {
+    /// The accumulated `[pos, width]` history.
+    pub cached: tensorview<'a, f32>,
+    /// The new `[1, width]` row.
+    pub new: tensorview<'a, f32>,
+}
+
 /// A kernel contract over two operands of the same element type.
 ///
 /// `binarykernel` extends the frozen unary [`kernel`](crate::kernel) contract
@@ -192,6 +200,25 @@ pub trait compute {
         base: f32,
     ) -> Result<tensor<f32>, backenderror>;
 
+    /// Rotary position embedding of a single `[1, heads * headdim]` token at the
+    /// absolute `position`.
+    ///
+    /// This is the decode-step form of [`rope`](Self::rope): the position axis
+    /// is not read from the input, so a one-token query or key can be rotated at
+    /// its absolute context position without materialising the padded history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`backenderror::shapemismatch`] when the input is not a single
+    /// row, the last axis is not divisible by `heads`, or `headdim` is not even.
+    fn rope_at(
+        &self,
+        input: &tensorview<'_, f32>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<tensor<f32>, backenderror>;
+
     /// Multi-head scaled dot-product attention with grouped-query key/value
     /// heads.
     ///
@@ -209,6 +236,30 @@ pub trait compute {
         query: &tensorview<'_, f32>,
         key: &tensorview<'_, f32>,
         value: &tensorview<'_, f32>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<tensor<f32>, backenderror>;
+
+    /// Incremental multi-head attention for a single new token.
+    ///
+    /// `query` holds one token (shape `[1, heads * headdim]`). Each of `key` and
+    /// `value` pairs the accumulated `[pos, kvwidth]` history with the new
+    /// `[1, kvwidth]` row; the effective operand is the cached rows followed by
+    /// the new row, so the query attends over `pos + 1` positions under the
+    /// causal mask. This is the decode-step shape [`attention`](Self::attention)
+    /// supports with a shorter query, expressed as a pair so the cache and the
+    /// new token stay in their own address spaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`backenderror::shapemismatch`] for inconsistent shapes or head
+    /// counts.
+    fn attention_cached(
+        &self,
+        query: &tensorview<'_, f32>,
+        key: kvpair<'_>,
+        value: kvpair<'_>,
         heads: usize,
         kvheads: usize,
         causal: bool,

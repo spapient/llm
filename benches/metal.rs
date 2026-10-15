@@ -39,7 +39,7 @@ mod macos {
     use infer::kvstate;
     use lib::{limits, seed};
     use metal::metalexecutor;
-    use models::{causallm, llamaconfig, llamamodel, llamaweights};
+    use models::{causallm, kvcache, llamaconfig, llamamodel, llamaweights};
 
     /// Resource budget that admits every workload without rejecting it.
     const LIMIT: limits = limits::new(1 << 28, 1 << 31, 1 << 20, 1 << 18);
@@ -362,8 +362,23 @@ mod macos {
                     cache
                 },
                 |mut cache| {
+                    let layers = config.getnlayers();
                     for &token in &decode_tokens {
-                        black_box(model.forward_cached(&metalexec, &mut cache, token).unwrap());
+                        let mut sub = metalexec.newsubmission().unwrap();
+                        let handles = model
+                            .forwardsubmission_cached(&mut sub, &cache, token)
+                            .unwrap();
+                        let mut outputs = Vec::with_capacity(1 + 2 * layers);
+                        outputs.push(handles.logits);
+                        outputs.extend(handles.keys.iter().copied());
+                        outputs.extend(handles.values.iter().copied());
+                        let got = sub.apply(&outputs).unwrap();
+                        for layer in 0..layers {
+                            cache
+                                .append(layer, &got[1 + layer], &got[1 + layers + layer])
+                                .unwrap();
+                        }
+                        black_box(&got[0]);
                     }
                 },
                 criterion::BatchSize::SmallInput,
@@ -375,7 +390,9 @@ mod macos {
                 |mut context| {
                     for &token in &decode_tokens {
                         context.push(token);
-                        black_box(model.forward(&metalexec, &context).unwrap());
+                        let mut sub = metalexec.newsubmission().unwrap();
+                        let logits = model.forwardsubmission(&mut sub, &context).unwrap();
+                        black_box(sub.apply(&[logits]).unwrap());
                     }
                 },
                 criterion::BatchSize::SmallInput,

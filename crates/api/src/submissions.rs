@@ -49,6 +49,15 @@ pub enum operand<'a> {
     result(stepref),
 }
 
+/// A cached history and a new operand of an incremental attention step.
+#[derive(Clone, Copy, Debug)]
+pub struct operandpair<'a> {
+    /// The accumulated cached operand.
+    pub cached: operand<'a>,
+    /// The new operand.
+    pub new: operand<'a>,
+}
+
 /// An accumulative submission boundary over the [`compute`](crate::compute)
 /// operator set.
 ///
@@ -119,12 +128,37 @@ pub trait submission {
         base: f32,
     ) -> Result<stepref, backenderror>;
 
+    /// Records absolute-position rotary embedding, mirroring
+    /// [`compute::rope_at`](crate::compute::rope_at).
+    fn recordrope_at(
+        &mut self,
+        input: operand<'_>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror>;
+
     /// Records grouped-query attention, mirroring [`compute::attention`](crate::compute::attention).
     fn recordattention(
         &mut self,
         query: operand<'_>,
         key: operand<'_>,
         value: operand<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records incremental attention, mirroring
+    /// [`compute::attention_cached`](crate::compute::attention_cached).
+    ///
+    /// `query` is the new token's operand; `key` and `value` each pair the
+    /// accumulated history with the new operand.
+    fn recordattention_cached(
+        &mut self,
+        query: operand<'_>,
+        key: operandpair<'_>,
+        value: operandpair<'_>,
         heads: usize,
         kvheads: usize,
         causal: bool,

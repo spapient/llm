@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use ::tensor::{shape, tensor, tensorview};
 use api::{
-    backend, backenderror, checkbudget, checkgatherbudget, compute, operand, stepref, submission,
+    backend, backenderror, checkbudget, checkgatherbudget, compute, kvpair, operand, operandpair,
+    stepref, submission,
 };
 use cudarc::driver::CudaSlice;
 use lib::limits;
@@ -296,6 +297,31 @@ impl compute for cudaexecutor {
         wrap(input.getshape().clone(), data)
     }
 
+    fn rope_at(
+        &self,
+        input: &tensorview<'_, f32>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<tensor<f32>, backenderror> {
+        let width = input.getshape().getdims()[1];
+        let mut data = vec![0.0_f32; (position + 1) * width];
+        data[position * width..].copy_from_slice(input.getdata());
+        let padded = tensor::new(
+            shape::new(vec![position + 1, width]).map_err(|_| backenderror::sizeoverflow)?,
+            data,
+        )
+        .map_err(|_| backenderror::executionfailed)?;
+        let rotated = self.rope(&padded.getview(), heads, base)?;
+        let start = position * width;
+        let last = rotated.getdata()[start..start + width].to_vec();
+        tensor::new(
+            shape::new(vec![1, width]).map_err(|_| backenderror::sizeoverflow)?,
+            last,
+        )
+        .map_err(|_| backenderror::executionfailed)
+    }
+
     fn attention(
         &self,
         query: &tensorview<'_, f32>,
@@ -327,6 +353,47 @@ impl compute for cudaexecutor {
         .map_err(maptobackend)?;
         wrap(query.getshape().clone(), data)
     }
+
+    fn attention_cached(
+        &self,
+        query: &tensorview<'_, f32>,
+        key: kvpair<'_>,
+        value: kvpair<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<tensor<f32>, backenderror> {
+        let key = concat(&key.cached, &key.new)?;
+        let value = concat(&value.cached, &value.new)?;
+        self.attention(
+            query,
+            &key.getview(),
+            &value.getview(),
+            heads,
+            kvheads,
+            causal,
+        )
+    }
+}
+
+/// Concatenates two `[_, width]` views into one `[a + b, width]` tensor.
+fn concat(a: &tensorview<'_, f32>, b: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
+    let width = a.getshape().getdims()[1];
+    let mut data = a.getdata().to_vec();
+    data.extend_from_slice(b.getdata());
+    let len = data.len() / width;
+    let outshape = shape::new(vec![len, width]).map_err(|_| backenderror::sizeoverflow)?;
+    tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
+}
+
+/// Concatenates two rank-two shapes along their sequence axis.
+fn concatshape(a: &shape, b: &shape) -> Result<shape, backenderror> {
+    let ad = a.getdims();
+    let bd = b.getdims();
+    if ad.len() != 2 || bd.len() != 2 || ad[1] != bd[1] {
+        return Err(backenderror::shapemismatch { op: "attention" });
+    }
+    shape::new(vec![ad[0] + bd[0], ad[1]]).map_err(|_| backenderror::sizeoverflow)
 }
 
 impl cudaexecutor {
@@ -628,6 +695,30 @@ impl submission for cudasubmission {
         Ok(self.push(slot, inshape))
     }
 
+    fn recordrope_at(
+        &mut self,
+        input: operand<'_>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror> {
+        let inshape = self.shapeof(input)?;
+        self.checkbudget(&inshape)?;
+        let geometry = ropeshape::new(&inshape, heads)?;
+        let input = self.resolve(input)?;
+        let slot = ffi::rope_at_into(
+            &self.cache,
+            &mut self.session,
+            &input,
+            position,
+            geometry.heads,
+            geometry.headdim,
+            base,
+        )
+        .map_err(maptobackend)?;
+        Ok(self.push(slot, inshape))
+    }
+
     fn recordattention(
         &mut self,
         query: operand<'_>,
@@ -660,6 +751,59 @@ impl submission for cudasubmission {
             &query,
             &key,
             &value,
+            &geometry,
+            causal,
+        )
+        .map_err(maptobackend)?;
+        Ok(self.push(slot, queryshape))
+    }
+
+    fn recordattention_cached(
+        &mut self,
+        query: operand<'_>,
+        key: operandpair<'_>,
+        value: operandpair<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror> {
+        let queryshape = self.shapeof(query)?;
+        let cachedkeyshape = self.shapeof(key.cached)?;
+        let cachedvalueshape = self.shapeof(value.cached)?;
+        let newkeyshape = self.shapeof(key.new)?;
+        let newvalueshape = self.shapeof(value.new)?;
+        self.checkbudget(&queryshape)?;
+        self.checkbudget(&cachedkeyshape)?;
+        self.checkbudget(&cachedvalueshape)?;
+        self.checkbudget(&newkeyshape)?;
+        self.checkbudget(&newvalueshape)?;
+        let keyshape = concatshape(&cachedkeyshape, &newkeyshape)?;
+        let valueshape = concatshape(&cachedvalueshape, &newvalueshape)?;
+        let geometry = attentionshape::new(
+            &queryshape,
+            &keyshape,
+            &valueshape,
+            heads,
+            kvheads,
+            CUDAMAXHEADDIM,
+        )?;
+        let query = self.resolve(query)?;
+        let cachedkey = self.resolve(key.cached)?;
+        let cachedvalue = self.resolve(value.cached)?;
+        let newkey = self.resolve(key.new)?;
+        let newvalue = self.resolve(value.new)?;
+        let slot = ffi::attention_cached_into(
+            &self.cache,
+            &mut self.session,
+            &query,
+            ffi::bufferpair {
+                cached: &cachedkey,
+                new: &newkey,
+            },
+            ffi::bufferpair {
+                cached: &cachedvalue,
+                new: &newvalue,
+            },
             &geometry,
             causal,
         )

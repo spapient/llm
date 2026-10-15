@@ -1208,6 +1208,37 @@ pub(crate) fn rope_into(
     session.dispatch(cache, &spec, &buffers, &params, &out, total)
 }
 
+/// Encodes absolute-position rotary embedding of a single token.
+pub(crate) fn rope_at_into(
+    cache: &cache,
+    session: &mut session,
+    input: &ProtocolObject<dyn MTLBuffer>,
+    position: usize,
+    heads: usize,
+    headdim: usize,
+    base: f32,
+) -> Result<usize, metalerror> {
+    let total = heads.checked_mul(headdim).ok_or(metalerror::sizeoverflow)?;
+    let bytes = total
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let params = [
+        asu32(heads)?,
+        asu32(headdim)?,
+        asu32(position)?,
+        base.to_bits(),
+    ];
+    let spec = dispatchspec {
+        source: source::ROPEATMSL,
+        entry: source::ROPEATENTRY,
+        grid: flatgrid(heads * headdim / 2)?,
+        threads: flatthreads(heads * headdim / 2),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+}
+
 /// Encodes an embedding gather, returning the slot index.
 pub(crate) fn embedding_into(
     cache: &cache,
@@ -1277,6 +1308,56 @@ pub(crate) fn attention_into(
         source: source::ATTENTIONMSL,
         entry: source::ATTENTIONENTRY,
         grid: rowgrid(groups, source::ATTENTIONLANES)?,
+        threads: fullthreads(source::ATTENTIONLANES),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, queryelements)
+}
+
+/// A cached and a new device buffer of an incremental attention operand.
+pub(crate) struct bufferpair<'a> {
+    /// The accumulated cached operand.
+    pub(crate) cached: &'a ProtocolObject<dyn MTLBuffer>,
+    /// The new operand.
+    pub(crate) new: &'a ProtocolObject<dyn MTLBuffer>,
+}
+
+/// Encodes incremental-decode attention: one query token attends over a cached
+/// key/value buffer plus one new row, without materialising the concatenation.
+pub(crate) fn attention_cached_into(
+    cache: &cache,
+    session: &mut session,
+    query: &ProtocolObject<dyn MTLBuffer>,
+    key: bufferpair<'_>,
+    value: bufferpair<'_>,
+    geometry: &attentionshape,
+    causal: bool,
+) -> Result<usize, metalerror> {
+    let kvseq = geometry.kvseq;
+    if kvseq == 0 {
+        return Ok(session.recordempty());
+    }
+    let queryelements = geometry
+        .qseq
+        .checked_mul(geometry.heads)
+        .and_then(|rows| rows.checked_mul(geometry.headdim))
+        .ok_or(metalerror::sizeoverflow)?;
+    let bytes = queryelements
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 6] =
+        [query, key.cached, key.new, value.cached, value.new, &out];
+    let params = [
+        asu32(kvseq)?,
+        asu32(geometry.heads)?,
+        asu32(geometry.kvheads)?,
+        asu32(geometry.headdim)?,
+        u32::from(causal),
+    ];
+    let spec = dispatchspec {
+        source: source::ATTENTIONCACHEDMSL,
+        entry: source::ATTENTIONCACHEDENTRY,
+        grid: rowgrid(geometry.heads, source::ATTENTIONLANES)?,
         threads: fullthreads(source::ATTENTIONLANES),
     };
     session.dispatch(cache, &spec, &buffers, &params, &out, queryelements)

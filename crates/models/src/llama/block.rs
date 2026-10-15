@@ -1,5 +1,5 @@
 use ::tensor::{shape, tensor};
-use api::{compute, operand, stepref, submission};
+use api::{compute, operand, operandpair, stepref, submission};
 use nn::{attention, rotary};
 
 use crate::causal::kvcache;
@@ -141,6 +141,95 @@ impl llamablock {
             operand::input(weights.getmlp().getdown().getweight().getvalue().getview()),
         )?;
         Ok(sub.recordadd(operand::result(residual), operand::result(feedforward))?)
+    }
+
+    /// Records one pre-norm transformer block for a single new token into a
+    /// submission, reading the cached keys and values and returning the new
+    /// key/value handles for the caller to append after `apply`.
+    pub fn forwardsubmission_cached<S: submission, K: kvcache>(
+        &self,
+        sub: &mut S,
+        cache: &K,
+        weights: &llamalayerweights,
+        x: stepref,
+        layer: usize,
+        position: usize,
+    ) -> Result<(stepref, stepref, stepref), modelerror> {
+        let normalized = sub.recordrmsnorm(
+            operand::result(x),
+            operand::input(weights.getattnnorm().getweight().getvalue().getview()),
+            weights.getattnnorm().geteps(),
+        )?;
+        let q = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getwq().getweight().getvalue().getview()),
+        )?;
+        let k = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getwk().getweight().getvalue().getview()),
+        )?;
+        let v = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getwv().getweight().getvalue().getview()),
+        )?;
+        let q = sub.recordrope_at(
+            operand::result(q),
+            position,
+            self.rotaryq.getheads(),
+            self.rotaryq.getbase(),
+        )?;
+        let k = sub.recordrope_at(
+            operand::result(k),
+            position,
+            self.rotaryk.getheads(),
+            self.rotaryk.getbase(),
+        )?;
+        let cached_key = cache
+            .keys(layer)
+            .ok_or_else(|| modelerror::config("kv cache", "missing cached key"))?;
+        let cached_value = cache
+            .values(layer)
+            .ok_or_else(|| modelerror::config("kv cache", "missing cached value"))?;
+        let attended = sub.recordattention_cached(
+            operand::result(q),
+            operandpair {
+                cached: operand::input(cached_key.getview()),
+                new: operand::result(k),
+            },
+            operandpair {
+                cached: operand::input(cached_value.getview()),
+                new: operand::result(v),
+            },
+            self.attention.getheads(),
+            self.attention.getkvheads(),
+            self.attention.getcausal(),
+        )?;
+        let projected = sub.recordmatmul(
+            operand::result(attended),
+            operand::input(weights.getwo().getweight().getvalue().getview()),
+        )?;
+        let residual = sub.recordadd(operand::result(x), operand::result(projected))?;
+        let normalized = sub.recordrmsnorm(
+            operand::result(residual),
+            operand::input(weights.getffnnorm().getweight().getvalue().getview()),
+            weights.getffnnorm().geteps(),
+        )?;
+        let gate = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getmlp().getgate().getweight().getvalue().getview()),
+        )?;
+        let up = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getmlp().getup().getweight().getvalue().getview()),
+        )?;
+        let silu = sub.recordsilu(operand::result(gate))?;
+        let gated = sub.recordmul(operand::result(silu), operand::result(up))?;
+        let feedforward = sub.recordmatmul(
+            operand::result(gated),
+            operand::input(weights.getmlp().getdown().getweight().getvalue().getview()),
+        )?;
+        let out = sub.recordadd(operand::result(residual), operand::result(feedforward))?;
+        Ok((out, k, v))
     }
 
     /// Runs one pre-norm transformer block for a single new token, reading the

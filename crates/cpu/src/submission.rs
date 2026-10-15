@@ -1,5 +1,5 @@
 use ::tensor::{tensor, tensorview};
-use api::{backenderror, compute, operand, stepref, submission};
+use api::{backenderror, compute, kvpair, operand, operandpair, stepref, submission};
 
 /// A CPU submission that records steps by replaying [`compute`] in order.
 ///
@@ -143,6 +143,20 @@ impl<C: compute> submission for cpusubmission<C> {
         Ok(self.push(out))
     }
 
+    fn recordrope_at(
+        &mut self,
+        input: operand<'_>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror> {
+        let out = {
+            let input = self.view(input)?;
+            self.backend.rope_at(&input, position, heads, base)?
+        };
+        Ok(self.push(out))
+    }
+
     fn recordattention(
         &mut self,
         query: operand<'_>,
@@ -158,6 +172,39 @@ impl<C: compute> submission for cpusubmission<C> {
             let value = self.view(value)?;
             self.backend
                 .attention(&query, &key, &value, heads, kvheads, causal)?
+        };
+        Ok(self.push(out))
+    }
+
+    fn recordattention_cached(
+        &mut self,
+        query: operand<'_>,
+        key: operandpair<'_>,
+        value: operandpair<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror> {
+        let out = {
+            let query = self.view(query)?;
+            let cachedkey = self.view(key.cached)?;
+            let cachedvalue = self.view(value.cached)?;
+            let newkey = self.view(key.new)?;
+            let newvalue = self.view(value.new)?;
+            self.backend.attention_cached(
+                &query,
+                kvpair {
+                    cached: cachedkey,
+                    new: newkey,
+                },
+                kvpair {
+                    cached: cachedvalue,
+                    new: newvalue,
+                },
+                heads,
+                kvheads,
+                causal,
+            )?
         };
         Ok(self.push(out))
     }

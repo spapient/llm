@@ -1,5 +1,7 @@
 use ::tensor::{shape, tensor, tensorview};
-use api::{backend, backenderror, binarykernel, compute, gatherkernel, kernel, weightedkernel};
+use api::{
+    backend, backenderror, binarykernel, compute, gatherkernel, kernel, kvpair, weightedkernel,
+};
 use lib::limits;
 
 use crate::activation::{cpugelutanh, cpurelu, cpusilu};
@@ -302,6 +304,31 @@ impl compute for cpuexecutor {
         cpurope::new(heads, base).apply(input)
     }
 
+    fn rope_at(
+        &self,
+        input: &tensorview<'_, f32>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<tensor<f32>, backenderror> {
+        let width = input.getshape().getdims()[1];
+        let mut data = vec![0.0_f32; (position + 1) * width];
+        data[position * width..].copy_from_slice(input.getdata());
+        let padded = tensor::new(
+            shape::new(vec![position + 1, width]).map_err(|_| backenderror::sizeoverflow)?,
+            data,
+        )
+        .map_err(|_| backenderror::executionfailed)?;
+        let rotated = self.rope(&padded.getview(), heads, base)?;
+        let start = position * width;
+        let last = rotated.getdata()[start..start + width].to_vec();
+        tensor::new(
+            shape::new(vec![1, width]).map_err(|_| backenderror::sizeoverflow)?,
+            last,
+        )
+        .map_err(|_| backenderror::executionfailed)
+    }
+
     fn attention(
         &self,
         query: &tensorview<'_, f32>,
@@ -316,6 +343,37 @@ impl compute for cpuexecutor {
         self.checkbudget(value.getshape()).map_err(maptobackend)?;
         cpuattention.apply(query, key, value, heads, kvheads, causal)
     }
+
+    fn attention_cached(
+        &self,
+        query: &tensorview<'_, f32>,
+        key: kvpair<'_>,
+        value: kvpair<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<tensor<f32>, backenderror> {
+        let key = concat(&key.cached, &key.new)?;
+        let value = concat(&value.cached, &value.new)?;
+        self.attention(
+            query,
+            &key.getview(),
+            &value.getview(),
+            heads,
+            kvheads,
+            causal,
+        )
+    }
+}
+
+/// Concatenates two `[_, width]` views into one `[a + b, width]` tensor.
+fn concat(a: &tensorview<'_, f32>, b: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
+    let width = a.getshape().getdims()[1];
+    let mut data = a.getdata().to_vec();
+    data.extend_from_slice(b.getdata());
+    let len = data.len() / width;
+    let outshape = shape::new(vec![len, width]).map_err(|_| backenderror::sizeoverflow)?;
+    tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
 }
 
 /// Maps a CPU policy error onto the backend contract enforced by `api`.

@@ -155,6 +155,33 @@ extern "C" __global__ void rope(const float* x, float* y, unsigned rows,
 /// The stable symbol name of the kernel in [`ROPECUDA`].
 pub(crate) const ROPEENTRY: &str = "rope";
 
+/// Absolute-position rotary embedding of a single token. The position is a
+/// scalar parameter rather than a row index modulo `seqaxis`.
+pub(crate) const ROPEATCUDA: &str = r#"
+extern "C" __global__ void rope_at(const float* x, float* y, unsigned heads,
+                                   unsigned headdim, unsigned position, float base) {
+    unsigned half = headdim / 2;
+    unsigned long long total = (unsigned long long)heads * half;
+    unsigned long long index = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= total) {
+        return;
+    }
+    unsigned i = (unsigned)(index % half);
+    unsigned h = (unsigned)(index / half);
+    float angle = (float)position * powf(base, -2.0f * (float)i / (float)headdim);
+    float s = sinf(angle);
+    float c = cosf(angle);
+    unsigned long long offset = ((unsigned long long)h) * headdim + 2u * i;
+    float even = x[offset];
+    float odd = x[offset + 1u];
+    y[offset] = even * c - odd * s;
+    y[offset + 1u] = even * s + odd * c;
+}
+"#;
+
+/// The stable symbol name of the kernel in [`ROPEATCUDA`].
+pub(crate) const ROPEATENTRY: &str = "rope_at";
+
 /// The CUDA C source of the `f32` embedding-gather kernel.
 ///
 /// `table` is `[vocab, width]`, `indices` holds `rows` row numbers already
@@ -305,6 +332,125 @@ extern "C" __global__ void attention(const float* q, const float* k, const float
 
 /// The stable symbol name of the kernel in [`ATTENTIONCUDA`].
 pub(crate) const ATTENTIONENTRY: &str = "attention";
+
+/// The incremental-decode attention kernel: one query token attends over a
+/// cached key/value buffer followed by one new row, without materialising the
+/// concatenation. The query has a single position, so the grid is `heads`.
+pub(crate) const ATTENTIONCACHEDCUDA: &str = r#"
+#define NEGLARGE (-3.402823466e+38f)
+
+__device__ float cachedmax(float* scratch, float value) {
+    __syncthreads();
+    scratch[threadIdx.x] = value;
+    __syncthreads();
+    for (unsigned s = blockDim.x >> 1; s > 0; s >>= 1) {
+        if (threadIdx.x < s && scratch[threadIdx.x + s] > scratch[threadIdx.x]) {
+            scratch[threadIdx.x] = scratch[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    return scratch[0];
+}
+
+__device__ float cachedsum(float* scratch, float value) {
+    __syncthreads();
+    scratch[threadIdx.x] = value;
+    __syncthreads();
+    for (unsigned s = blockDim.x >> 1; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            scratch[threadIdx.x] += scratch[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    return scratch[0];
+}
+
+__device__ float cachedscore(const float* qrow, const float* ck, const float* nk,
+                             unsigned key, unsigned pos, unsigned kvheads,
+                             unsigned kvhead, unsigned headdim, float scale) {
+    const float* krow = (key < pos)
+        ? (ck + ((size_t)key * kvheads + kvhead) * headdim)
+        : (nk + ((size_t)kvhead) * headdim);
+    float dot = 0.0f;
+    for (unsigned d = 0; d < headdim; ++d) {
+        dot += qrow[d] * krow[d];
+    }
+    return dot * scale;
+}
+
+extern "C" __global__ void attention_cached(
+    const float* q, const float* ck, const float* cv,
+    const float* nk, const float* nv, float* out,
+    unsigned kvseq, unsigned heads, unsigned kvheads, unsigned headdim,
+    unsigned causal) {
+    extern __shared__ float scratch[];
+    float* reduce = scratch;
+    float* weights = scratch + blockDim.x;
+    float* accum = weights + blockDim.x;
+
+    const unsigned tid = threadIdx.x;
+    const unsigned head = blockIdx.x % heads;
+    const unsigned kvhead = head / (heads / kvheads);
+    const unsigned pos = kvseq - 1u;
+    const unsigned limit = kvseq;
+    const float* qrow = q + ((size_t)head) * headdim;
+    const float scale = 1.0f / sqrtf((float)headdim);
+
+    float localmax = NEGLARGE;
+    for (unsigned key = tid; key < limit; key += blockDim.x) {
+        float score = cachedscore(qrow, ck, nk, key, pos, kvheads, kvhead, headdim, scale);
+        if (score > localmax) {
+            localmax = score;
+        }
+    }
+    const float maxv = cachedmax(reduce, localmax);
+
+    float localsum = 0.0f;
+    for (unsigned key = tid; key < limit; key += blockDim.x) {
+        localsum += expf(cachedscore(qrow, ck, nk, key, pos, kvheads, kvhead, headdim, scale) - maxv);
+    }
+    const float total = cachedsum(reduce, localsum);
+
+    for (unsigned d = tid; d < headdim; d += blockDim.x) {
+        accum[d] = 0.0f;
+    }
+    __syncthreads();
+
+    for (unsigned base = 0; base < limit; base += blockDim.x) {
+        unsigned span = limit - base;
+        if (span > blockDim.x) {
+            span = blockDim.x;
+        }
+        if (tid < span) {
+            float score = cachedscore(qrow, ck, nk, base + tid, pos, kvheads, kvhead, headdim, scale);
+            weights[tid] = expf(score - maxv);
+        } else {
+            weights[tid] = 0.0f;
+        }
+        __syncthreads();
+        for (unsigned d = tid; d < headdim; d += blockDim.x) {
+            float partial = 0.0f;
+            for (unsigned j = 0; j < span; ++j) {
+                unsigned key = base + j;
+                const float* vrow = (key < pos)
+                    ? (cv + ((size_t)key * kvheads + kvhead) * headdim)
+                    : (nv + ((size_t)kvhead) * headdim);
+                partial += weights[j] * vrow[d];
+            }
+            accum[d] += partial;
+        }
+        __syncthreads();
+    }
+
+    for (unsigned d = tid; d < headdim; d += blockDim.x) {
+        out[((size_t)head) * headdim + d] =
+            (total > 0.0f) ? (accum[d] / total) : 0.0f;
+    }
+}
+"#;
+
+/// The stable symbol name of the kernel in [`ATTENTIONCACHEDCUDA`].
+pub(crate) const ATTENTIONCACHEDENTRY: &str = "attention_cached";
 
 /// The threadgroup width of the attention kernel.
 ///

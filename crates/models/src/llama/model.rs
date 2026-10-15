@@ -104,6 +104,54 @@ impl llamamodel {
         )?)
     }
 
+    /// Records a cache-aware forward pass for a single new token into a
+    /// submission, reading `cache` and returning the logits and each layer's new
+    /// key/value handles.
+    ///
+    /// The caller submits once and appends the downloaded new keys/values to the
+    /// cache, so the submission itself stays a pure encoding of the decode step.
+    pub fn forwardsubmission_cached<S: submission, K: kvcache>(
+        &self,
+        sub: &mut S,
+        cache: &K,
+        token: usize,
+    ) -> Result<cachedsubmission, modelerror> {
+        let position = cache.getlen();
+        let mut x = sub.recordembedding(
+            operand::input(self.weights.getembedding().getweight().getvalue().getview()),
+            &[token],
+        )?;
+        let mut keys = Vec::with_capacity(self.weights.getlayers().len());
+        let mut values = Vec::with_capacity(self.weights.getlayers().len());
+        for (layer, layerweights) in self.weights.getlayers().iter().enumerate() {
+            let (out, key, value) = self.block.forwardsubmission_cached(
+                sub,
+                cache,
+                layerweights,
+                x,
+                layer,
+                position,
+            )?;
+            x = out;
+            keys.push(key);
+            values.push(value);
+        }
+        let normalized = sub.recordrmsnorm(
+            operand::result(x),
+            operand::input(self.weights.getnorm().getweight().getvalue().getview()),
+            self.weights.getnorm().geteps(),
+        )?;
+        let logits = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(self.weights.getoutput().getweight().getvalue().getview()),
+        )?;
+        Ok(cachedsubmission {
+            logits,
+            keys,
+            values,
+        })
+    }
+
     /// Runs one cache-aware forward pass for a single new token, reading and
     /// appending `cache`, and returns the next-token logits.
     ///
@@ -149,6 +197,18 @@ impl llamamodel {
             .ok_or_else(|| modelerror::config("output", "degenerate logits"))?;
         Ok(data[start..].to_vec())
     }
+}
+
+/// The step handles a cache-aware submission forward produces: the logits and
+/// one new key/value handle per layer, to be downloaded by `apply` and appended
+/// to the cache by the caller.
+pub struct cachedsubmission {
+    /// The output projection's handle.
+    pub logits: stepref,
+    /// The new key of each layer, in layer order.
+    pub keys: Vec<stepref>,
+    /// The new value of each layer, in layer order.
+    pub values: Vec<stepref>,
 }
 
 impl causallm for llamamodel {

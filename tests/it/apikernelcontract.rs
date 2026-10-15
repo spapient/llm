@@ -10,7 +10,7 @@
 
 use ::tensor::{dtype, element, shape, tensor, tensorview};
 use api::{
-    backenderror, binarykernel, capabilities, compute, device, devicekind, gatherkernel,
+    backenderror, binarykernel, capabilities, compute, device, devicekind, gatherkernel, kvpair,
     weightedkernel,
 };
 use lib::limits;
@@ -244,6 +244,16 @@ impl compute for refusecompute {
         Err(backenderror::unsupportedoperation { op: "rope" })
     }
 
+    fn rope_at(
+        &self,
+        _input: &tensorview<'_, f32>,
+        _position: usize,
+        _heads: usize,
+        _base: f32,
+    ) -> Result<tensor<f32>, backenderror> {
+        Err(backenderror::unsupportedoperation { op: "rope_at" })
+    }
+
     fn attention(
         &self,
         _query: &tensorview<'_, f32>,
@@ -254,6 +264,20 @@ impl compute for refusecompute {
         _causal: bool,
     ) -> Result<tensor<f32>, backenderror> {
         Err(backenderror::unsupportedoperation { op: "attention" })
+    }
+
+    fn attention_cached(
+        &self,
+        _query: &tensorview<'_, f32>,
+        _key: kvpair<'_>,
+        _value: kvpair<'_>,
+        _heads: usize,
+        _kvheads: usize,
+        _causal: bool,
+    ) -> Result<tensor<f32>, backenderror> {
+        Err(backenderror::unsupportedoperation {
+            op: "attention_cached",
+        })
     }
 }
 

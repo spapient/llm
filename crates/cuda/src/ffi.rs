@@ -1147,6 +1147,38 @@ pub(crate) fn rope_into(
     Ok(session.record(slot::buffer(dy)))
 }
 
+/// Encodes absolute-position rotary embedding of a single token.
+pub(crate) fn rope_at_into(
+    cache: &cache,
+    session: &mut session,
+    input: &CudaSlice<f32>,
+    position: usize,
+    heads: usize,
+    headdim: usize,
+    base: f32,
+) -> Result<usize, cudaerror> {
+    let total = heads.checked_mul(headdim).ok_or(cudaerror::sizeoverflow)?;
+    let function = cache.function(source::ROPEATCUDA, source::ROPEATENTRY)?;
+    let mut dy = session.alloc(total)?;
+    let headsu = asunsigned(heads)?;
+    let dimu = asunsigned(headdim)?;
+    let posu = asunsigned(position)?;
+    let pairs = heads
+        .checked_mul(headdim / 2)
+        .ok_or(cudaerror::sizeoverflow)?;
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(input)
+            .arg(&mut dy)
+            .arg(&headsu)
+            .arg(&dimu)
+            .arg(&posu)
+            .arg(&base);
+        submit(&mut args, flatconfig(pairs)?)?;
+    }
+    Ok(session.record(slot::buffer(dy)))
+}
+
 /// Encodes an embedding gather.
 pub(crate) fn embedding_into(
     cache: &cache,
@@ -1221,6 +1253,69 @@ pub(crate) fn attention_into(
             .arg(value)
             .arg(&mut dout)
             .arg(&qseqv)
+            .arg(&kvseqv)
+            .arg(&headsv)
+            .arg(&kvheadsv)
+            .arg(&dimv)
+            .arg(&causalv);
+        submit(&mut args, config)?;
+    }
+    Ok(session.record(slot::buffer(dout)))
+}
+
+/// A cached and a new device slice of an incremental attention operand.
+pub(crate) struct bufferpair<'a> {
+    /// The accumulated cached operand.
+    pub(crate) cached: &'a CudaSlice<f32>,
+    /// The new operand.
+    pub(crate) new: &'a CudaSlice<f32>,
+}
+
+/// Encodes incremental-decode attention: one query token attends over a cached
+/// key/value buffer plus one new row, without materialising the concatenation.
+pub(crate) fn attention_cached_into(
+    cache: &cache,
+    session: &mut session,
+    query: &CudaSlice<f32>,
+    key: bufferpair<'_>,
+    value: bufferpair<'_>,
+    geometry: &attentionshape,
+    causal: bool,
+) -> Result<usize, cudaerror> {
+    let kvseq = geometry.kvseq;
+    if kvseq == 0 {
+        return Ok(session.recordempty());
+    }
+    let queryelements = geometry
+        .qseq
+        .checked_mul(geometry.heads)
+        .and_then(|rows| rows.checked_mul(geometry.headdim))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let function = cache.function(source::ATTENTIONCACHEDCUDA, source::ATTENTIONCACHEDENTRY)?;
+    let mut dout = session.alloc(queryelements)?;
+    let kvseqv = asunsigned(kvseq)?;
+    let headsv = asunsigned(geometry.heads)?;
+    let kvheadsv = asunsigned(geometry.kvheads)?;
+    let dimv = asunsigned(geometry.headdim)?;
+    let causalv: u32 = u32::from(causal);
+    let grid = headsv;
+    let shared = (source::ATTENTIONLANES * 2)
+        .checked_add(dimv)
+        .and_then(|floats| floats.checked_mul(4))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let config = LaunchConfig {
+        grid_dim: (grid, 1, 1),
+        block_dim: (source::ATTENTIONLANES, 1, 1),
+        shared_mem_bytes: shared,
+    };
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(query)
+            .arg(key.cached)
+            .arg(key.new)
+            .arg(value.cached)
+            .arg(value.new)
+            .arg(&mut dout)
             .arg(&kvseqv)
             .arg(&headsv)
             .arg(&kvheadsv)
