@@ -112,3 +112,41 @@ pub fn embedding(table: &[f32], width: usize, indices: &[usize]) -> Vec<f32> {
     }
     out
 }
+
+/// Scalar serial semigroup scan (diagonal `a`): `h_t = a ⊙ h_{t-1} + b ⊙ x_t`,
+/// `y_t = c · h_t + skip ⊙ x_t`, per channel, elementwise over the state width.
+///
+/// `input` is `[n, d]`, `init`/`a`/`b`/`c` are `[d, N]` (row-major: channel
+/// then state), and `skip` is `[d]`. Returns the `[n, d]` output and the
+/// `[d, N]` final state; for `n == 0` the output is empty and the final state
+/// is `init` unchanged. This is the serial reference the parallel scan must
+/// match within tolerance.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn scan(
+    input: &[f32],
+    init: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    skip: &[f32],
+    n: usize,
+    d: usize,
+    statewidth: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut state = init.to_vec();
+    let mut out = vec![0.0_f32; n * d];
+    for t in 0..n {
+        for i in 0..d {
+            let x = input[t * d + i];
+            let mut acc = 0.0_f32;
+            for j in 0..statewidth {
+                let idx = i * statewidth + j;
+                state[idx] = a[idx] * state[idx] + b[idx] * x;
+                acc += c[idx] * state[idx];
+            }
+            out[t * d + i] = acc + skip[i] * x;
+        }
+    }
+    (out, state)
+}
