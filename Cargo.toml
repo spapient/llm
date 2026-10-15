@@ -43,6 +43,8 @@ serve = { path = "crates/serve" }
 cli = { path = "crates/cli" }
 bench = { path = "crates/bench" }
 testkit = { path = "crates/testkit" }
+half.workspace = true
+bytemuck.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
@@ -80,6 +82,14 @@ harness = false
 
 [[bench]]
 name = "cuda"
+harness = false
+
+[[bench]]
+name = "tokenizer"
+harness = false
+
+[[bench]]
+name = "checkpointload"
 harness = false
 
 [lints]
@@ -127,6 +137,10 @@ cudarc = "0.19"
 blake3 = "1"
 # 分块无损压缩：.u 格式的默认编解码（纯 Rust、无 unsafe、极速解压）。
 lz4_flex = "0.11"
+# 半精度浮点元素类型（f16/bf16）：LLM 权重的现实存储 dtype。
+half = { version = "2", features = ["bytemuck"] }
+# 安全的字节↔类型重解释；unsafe 封装在依赖内部，workspace 保持零 unsafe。
+bytemuck = "1"
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"

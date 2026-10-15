@@ -19,6 +19,7 @@ blake3.workspace = true
 lz4_flex.workspace = true
 tensor = { path = "../tensor" }
 format = { path = "../format" }
+bytemuck.workspace = true
 
 [lints]
 workspace = true

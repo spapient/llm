@@ -186,6 +186,13 @@ pub enum checkpointerror {
         available: usize,
     },
 
+    /// A raw tensor section's CRC32C does not match its declared checksum.
+    #[error("tensor {name:?} crc32c mismatch")]
+    tensorcrcmismatch {
+        /// The tensor name.
+        name: String,
+    },
+
     /// A block's declared byte range is inconsistent with the data section.
     #[error("block {position} out of range for {blockcount} blocks")]
     blockoutofrange {
@@ -221,6 +228,14 @@ pub enum checkpointerror {
     /// An error owned by the `format` crate propagated unchanged.
     #[error(transparent)]
     format(#[from] format::formaterror),
+
+    /// A tensor decoding failure propagated from the `tensor` crate unchanged.
+    ///
+    /// The underlying [`tensor::tensorerror`] records which validation failed
+    /// (element count, byte length, or alignment), so the caller does not lose
+    /// the precise cause.
+    #[error(transparent)]
+    tensor(#[from] tensor::tensorerror),
 }
 
 impl checkpointerror {
@@ -259,6 +274,7 @@ impl checkpointerror {
                 | Self::truncatedblock { .. }
                 | Self::blockoutofrange { .. }
                 | Self::missingblock { .. }
+                | Self::tensorcrcmismatch { .. }
         )
     }
 }

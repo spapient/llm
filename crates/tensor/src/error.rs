@@ -52,4 +52,15 @@ pub enum tensorerror {
         /// The storage type that was expected.
         dtype: dtype,
     },
+
+    /// A byte view is not aligned to the element type's alignment.
+    #[error("byte view is not aligned to {align} bytes")]
+    viewmisaligned {
+        /// The required alignment, in bytes.
+        align: usize,
+    },
+
+    /// A supplied layout is not valid for the supplied shape.
+    #[error("layout is not valid for the shape")]
+    invalidlayout,
 }

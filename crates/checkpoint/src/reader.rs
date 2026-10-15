@@ -4,6 +4,9 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
+use ::tensor::{element, tensor};
+use format::dtypetoken;
+
 use crate::blocks::{CODECRAW, blockref, decompressblock};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
@@ -470,6 +473,43 @@ impl checkpointreader {
             running = blockend;
         }
         Ok(Some(Cow::Owned(out)))
+    }
+
+    /// Reads a tensor as a typed, owned tensor.
+    ///
+    /// Verifies that the stored storage dtype equals `T::DTYPE` before
+    /// decoding, and carries the manifest shape into the returned tensor, so a
+    /// caller cannot observe a silently wrong dtype or shape.
+    ///
+    /// Returns `Ok(None)` when the tensor is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::dtypemismatch`] when the stored dtype
+    /// differs, the corruption and range errors of [`Self::readtensorcow`], or
+    /// the decoding error from [`tensor::tryfrombytes`] propagated as
+    /// [`checkpointerror::tensor`].
+    pub fn readtensortyped<T: element + bytemuck::Pod>(
+        &self,
+        name: &str,
+    ) -> Result<Option<tensor<T>>, checkpointerror> {
+        let entry = match self.tensors.iter().find(|t| t.getname() == name) {
+            Some(entry) => entry,
+            None => return Ok(None),
+        };
+        if entry.getdtype() != T::DTYPE {
+            return Err(checkpointerror::dtypemismatch {
+                name: name.to_string(),
+                expected: dtypetoken(T::DTYPE).to_string(),
+                actual: dtypetoken(entry.getdtype()).to_string(),
+            });
+        }
+        let bytes = match self.readtensorcow(name)? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        let decoded = tensor::tryfrombytes(entry.getshape().clone(), &bytes)?;
+        Ok(Some(decoded))
     }
 
     /// Returns the total logical data length in bytes.

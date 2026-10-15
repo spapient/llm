@@ -3,17 +3,17 @@ use crate::dtype;
 /// A primitive type that can be stored as a tensor element.
 ///
 /// `element` is implemented for every primitive type with a native Rust
-/// representation: `f32`, `f64`, `i8`, `u8`, `i32`, and `i64`. `f16` and `bf16`
-/// are intentionally not implemented because the standard library provides no
-/// native half-precision type; supporting them requires a dedicated wrapper
-/// type owned by a later layer.
+/// representation: `f32`, `f64`, `i8`, `u8`, `i32`, and `i64`, plus the
+/// half-precision types [`half::f16`] and [`half::bf16`] provided by the
+/// `half` crate. The half-precision types are storage-only: no backend
+/// currently declares their execution.
 ///
 /// [`element::DTYPE`] is total over the implemented types, and each
 /// implementation's [`dtype::sizeinbytes`] MUST equal `size_of::<Self>()`. The
 /// `dtype` taxonomy is a superset of [`precision`](lib::precision): integer
-/// storage types and `dtype::f64` are storage-only and have no compute
-/// precision, so `f64` values may be held in a tensor even though no backend
-/// declares `f64` execution.
+/// storage types, `dtype::f64`, `dtype::f16`, and `dtype::bf16` are
+/// storage-only and have no compute precision, so their values may be held in a
+/// tensor even though no backend declares their execution.
 pub trait element: Copy + 'static {
     /// The storage data type of this element.
     const DTYPE: dtype;
@@ -41,4 +41,12 @@ impl element for i32 {
 
 impl element for i64 {
     const DTYPE: dtype = dtype::i64;
+}
+
+impl element for half::f16 {
+    const DTYPE: dtype = dtype::f16;
+}
+
+impl element for half::bf16 {
+    const DTYPE: dtype = dtype::bf16;
 }

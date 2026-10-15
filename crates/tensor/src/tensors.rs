@@ -84,3 +84,47 @@ impl<T: element> tensor<T> {
         tensorview::new(&self.shape, &self.layout, &self.data)
     }
 }
+
+impl<T: element + bytemuck::Pod> tensor<T> {
+    /// Builds an owned tensor by copying a byte slice into typed elements.
+    ///
+    /// Unlike [`tensorview::tryfrombytes`], the source bytes may have any
+    /// alignment; each element is read with an unaligned, checked read. The
+    /// byte length must equal the shape's element count multiplied by the
+    /// element width.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`shape::getelementcount`],
+    /// [`tensorerror::lengthmismatch`] when the byte length is wrong, or the
+    /// error from [`tensor::new`] (which cannot occur for a validated length).
+    pub fn tryfrombytes(s: shape, bytes: &[u8]) -> Result<Self, tensorerror> {
+        let count = s.getelementcount()?;
+        let expected = count
+            .checked_mul(core::mem::size_of::<T>())
+            .ok_or_else(|| tensorerror::elementcountoverflow {
+                dims: s.getdims().to_vec(),
+            })?;
+        if bytes.len() != expected {
+            return Err(tensorerror::lengthmismatch {
+                expected,
+                actual: bytes.len(),
+            });
+        }
+        let data = bytes
+            .chunks_exact(core::mem::size_of::<T>())
+            .map(|c| bytemuck::pod_read_unaligned(c))
+            .collect::<Vec<T>>();
+        Self::new(s, data)
+    }
+
+    /// Returns the element data as raw bytes in storage order.
+    ///
+    /// The returned slice's length equals the shape's element count multiplied
+    /// by the element width, and its byte representation matches the storage
+    /// dtype (IEEE-754 bits for floating-point types).
+    #[must_use]
+    pub fn getbytes(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.data)
+    }
+}
