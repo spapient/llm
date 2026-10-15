@@ -728,6 +728,30 @@ mod pretoken {
             Err(tokenizererror::unsupporteddecoder { .. })
         ));
     }
+
+    #[test]
+    fn special_longest_match_wins() {
+        let doc = r#"{
+            "model": {"type": "BPE", "vocab": {"a": 0, "b": 1}, "merges": []},
+            "added_tokens": [
+                {"id": 2, "content": "<", "special": true},
+                {"id": 3, "content": "<s>", "special": true}
+            ]
+        }"#;
+        let tok = tokenizer::fromjson(doc).unwrap();
+        assert_eq!(
+            tok.encodespecial("<s>").unwrap(),
+            vec![lib::tokenid::new(3)]
+        );
+    }
+
+    #[test]
+    fn bytelevel_roundtrip_with_repeated_words() {
+        let tok = tokenizer::fromjson(&byteleveljson()).unwrap();
+        let text = "the cat and the dog and the cat";
+        let ids = tok.encode(text).unwrap();
+        assert_eq!(tok.decode(&ids).unwrap(), text);
+    }
 }
 
 /// Tests for the TemplateProcessing post-processor.
@@ -835,5 +859,55 @@ mod jinja {
             },
         ];
         assert_eq!(tok.renderchat(&messages).unwrap(), "SYS:be briefuser:hi");
+    }
+}
+
+/// Tests for the `normalizer` section.
+mod normalize {
+    use ::tokenizer::{normalizer, tokenizer, tokenizererror};
+    use lib::tokenid;
+
+    #[test]
+    fn applies_lowercase() {
+        let doc = r#"{"model":{"type":"BPE","vocab":{"a":0,"b":1},"merges":[]},"normalizer":{"type":"Lowercase"}}"#;
+        let tok = tokenizer::fromjson(doc).unwrap();
+        assert_eq!(tok.encode("A").unwrap(), vec![tokenid::new(0)]);
+    }
+
+    #[test]
+    fn applies_a_sequence_in_order() {
+        let doc = r#"{
+            "model": {"type": "BPE", "vocab": {"a":0,"b":1}, "merges": []},
+            "normalizer": {"type": "Sequence", "normalizers": [{"type": "Strip"}, {"type": "Lowercase"}]}
+        }"#;
+        let tok = tokenizer::fromjson(doc).unwrap();
+        assert_eq!(tok.encode("  A  ").unwrap(), vec![tokenid::new(0)]);
+    }
+
+    #[test]
+    fn rejects_unicode_normalization_forms() {
+        let doc =
+            r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"normalizer":{"type":"NFKC"}}"#;
+        assert!(matches!(
+            tokenizer::fromjson(doc),
+            Err(tokenizererror::unsupportednormalizer { .. })
+        ));
+    }
+
+    #[test]
+    fn null_normalizer_is_ignored() {
+        let doc = r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"normalizer":null}"#;
+        let tok = tokenizer::fromjson(doc).unwrap();
+        assert_eq!(tok.encode("a").unwrap(), vec![tokenid::new(0)]);
+    }
+
+    #[test]
+    fn normalizer_applies_directly() {
+        assert_eq!(normalizer::lowercase.apply("AbC"), "abc");
+        assert_eq!(normalizer::strip.apply("  x  "), "x");
+        assert_eq!(
+            normalizer::sequence(vec![normalizer::strip, normalizer::lowercase]).apply("  AbC  "),
+            "abc"
+        );
     }
 }

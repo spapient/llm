@@ -7,6 +7,7 @@ use crate::encode::{encodeplain, encodespecial};
 use crate::error::tokenizererror;
 use crate::jinja::renderjinja;
 use crate::merges::bytepair;
+use crate::normalize::{normalizer, parsenormalizer};
 use crate::postprocess::{parsepostprocessor, postprocessor};
 use crate::special::specialtokens;
 use crate::vocab::vocabulary;
@@ -15,11 +16,10 @@ use crate::vocab::vocabulary;
 /// subset.
 ///
 /// Supported model type is `"BPE"`. The loaded subset covers `model.vocab`,
-/// `model.merges`, `model.byte_fallback`, `model.unk_token`, and
-/// `added_tokens`. Unknown fields are ignored. Pre-tokenization, the GPT-2
-/// byte-to-unicode alphabet, and Jinja chat-template evaluation are not
-/// implemented; see `docs/design.md` for the exact subset
-/// and its limitations.
+/// `model.merges`, `model.byte_fallback`, `model.unk_token`, `added_tokens`,
+/// an optional `normalizer`, a ByteLevel `pre_tokenizer`/`decoder`, a
+/// `TemplateProcessing` `post_processor`, and a Jinja `chat_template`. Unknown
+/// fields are ignored.
 #[derive(Clone, Debug)]
 pub struct tokenizer {
     vocabulary: vocabulary,
@@ -29,6 +29,7 @@ pub struct tokenizer {
     chattemplatejinja: Option<String>,
     bostokencontent: Option<String>,
     eostokencontent: Option<String>,
+    normalizer: Option<normalizer>,
     bytefallback: bool,
     bytelevelencode: bool,
     byteleveldecode: bool,
@@ -95,6 +96,7 @@ impl tokenizer {
             parseoptionalstring(rootobject, "chat_template")?.filter(|s| !s.is_empty());
         let bostokencontent = parseoptionalstring(rootobject, "bos_token")?;
         let eostokencontent = parseoptionalstring(rootobject, "eos_token")?;
+        let normalizer = parsenormalizer(rootobject)?;
         Ok(Self {
             vocabulary: vocab,
             bytepair: bpe,
@@ -103,6 +105,7 @@ impl tokenizer {
             chattemplatejinja,
             bostokencontent,
             eostokencontent,
+            normalizer,
             bytefallback,
             bytelevelencode,
             byteleveldecode,
@@ -178,13 +181,14 @@ impl tokenizer {
     /// Returns [`tokenizererror::unknowntoken`] when a symbol has no vocabulary
     /// entry, no complete byte fallback, and no configured unknown token.
     pub fn encode(&self, text: &str) -> Result<Vec<tokenid>, tokenizererror> {
+        let normalized = self.normalized(text);
         encodeplain(
             &self.vocabulary,
             &self.bytepair,
             self.bytefallback,
             self.unk,
             self.bytelevelencode,
-            text,
+            normalized.as_ref(),
         )
     }
 
@@ -194,6 +198,7 @@ impl tokenizer {
     ///
     /// Returns the same errors as [`Self::encode`] for the non-special segments.
     pub fn encodespecial(&self, text: &str) -> Result<Vec<tokenid>, tokenizererror> {
+        let normalized = self.normalized(text);
         encodespecial(
             &self.vocabulary,
             &self.bytepair,
@@ -201,8 +206,16 @@ impl tokenizer {
             self.unk,
             self.bytelevelencode,
             &self.specialtokens,
-            text,
+            normalized.as_ref(),
         )
+    }
+
+    /// Applies the loaded normalizer, or borrows `text` unchanged.
+    fn normalized<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        match &self.normalizer {
+            Some(normalizer) => std::borrow::Cow::Owned(normalizer.apply(text)),
+            None => std::borrow::Cow::Borrowed(text),
+        }
     }
 
     /// Decodes token ids to a string.

@@ -81,6 +81,13 @@ pub enum tokenizererror {
         detail: String,
     },
 
+    /// The declared normalizer type is not supported.
+    #[error("unsupported normalizer type: {normaltype}")]
+    unsupportednormalizer {
+        /// The unsupported normalizer type string.
+        normaltype: String,
+    },
+
     /// A token id did not fit in the supported `u32` range.
     #[error("token id {id} is out of range")]
     idoutofrange {
