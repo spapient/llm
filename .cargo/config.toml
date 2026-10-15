@@ -11,11 +11,8 @@ incremental = true
 [future-incompat-report]
 frequency = "always"
 
-# --- Vendored offline sources (added 2026-10-15) -----------------------------
-# 沙箱网络锁死 rsproxy.cn 时无需联网；依赖已由 `cargo vendor` 拉取到 vendor/。
-# Rollback: 删除以下两段即可恢复联网解析（rsproxy.cn 镜像）。
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
+# --- Vendored offline sources (removed 2026-10-16) ---------------------------
+# 原为应对 Claude Code 会话沙箱锁死 rsproxy.cn 而设（2026-10-15 加入）。
+# 该限制是会话沙箱的，不是机器的；当前环境网络直连 crates.io 正常，
+# 强制 vendor 反而使 blake3/crc32c 等新依赖无法解析。已恢复默认 crates.io
+# 解析，vendor/（139M）不再参与解析，可随时删除释放空间。
