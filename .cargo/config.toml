@@ -10,3 +10,12 @@ incremental = true
 
 [future-incompat-report]
 frequency = "always"
+
+# --- Vendored offline sources (added 2026-10-15) -----------------------------
+# 沙箱网络锁死 rsproxy.cn 时无需联网；依赖已由 `cargo vendor` 拉取到 vendor/。
+# Rollback: 删除以下两段即可恢复联网解析（rsproxy.cn 镜像）。
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

@@ -18,7 +18,9 @@ FORBIDDEN_VERBS=(
   dispose free release dealloc
 )
 
-tmp="$(mktemp)"
+# macOS 沙箱（如 Claude Code）会拦截默认 TMPDIR（/var/folders/...）的临时文件；
+# 改为在仓库内创建 scratch 文件，保证各环境可写。
+tmp="$(mktemp "$ROOT_DIR/.checknaming.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
 log() {
