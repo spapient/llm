@@ -239,6 +239,40 @@ mod error {
     }
 }
 
+/// Tests relocated from `crates/checkpoint/src/hash.rs`.
+mod hash {
+    use ::checkpoint::blake3hash;
+    use ::checkpoint::contenthash;
+
+    #[test]
+    fn empty_input_matches_the_blake3_known_answer() {
+        let digest = blake3hash(b"");
+        let expected = [
+            0xAF, 0x13, 0x49, 0xB9, 0xF5, 0xF9, 0xA1, 0xA6, 0xA0, 0x40, 0x4D, 0xEA, 0x36, 0xDC,
+            0xC9, 0x49, 0x9B, 0xCB, 0x25, 0xC9, 0xAD, 0xC1, 0x12, 0xB7, 0xCC, 0x9A, 0x93, 0xCA,
+            0xE4, 0x1F, 0x32, 0x62,
+        ];
+        assert_eq!(digest, expected);
+    }
+
+    #[test]
+    fn contenthash_is_the_leading_digest_bytes() {
+        let digest = blake3hash(b"abc");
+        let content = contenthash(b"abc");
+        assert_eq!(content.as_slice(), &digest[..16]);
+    }
+
+    #[test]
+    fn contenthash_has_sixteen_bytes() {
+        assert_eq!(contenthash(b"anything").len(), 16);
+    }
+
+    #[test]
+    fn distinct_inputs_produce_distinct_hashes() {
+        assert_ne!(blake3hash(b"a"), blake3hash(b"b"));
+    }
+}
+
 /// Tests relocated from `crates/checkpoint/src/manifests.rs`.
 mod manifests {
     use crate::support::shapeof;
