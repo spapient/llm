@@ -25,8 +25,8 @@
 mod macos {
     use std::hint::black_box;
 
-    use ::tensor::tensor;
-    use api::compute;
+    use ::tensor::{shape, tensor};
+    use api::{compute, operand, submission};
     use bench::{
         ELEMENTWISE, EMBEDDIM, GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN,
         SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput,
@@ -268,6 +268,50 @@ mod macos {
         group.finish();
     }
 
+    /// A 32-step elementwise chain run through `compute` (32 synchronous
+    /// submissions) and through `submission` (one submission), isolating the
+    /// per-call command-buffer round trip that dominates a GPU forward pass.
+    ///
+    /// This is a representative chain, not the exact Llama forward: it proves
+    /// the one lever `submission` exists to pull — collapsing N round trips into
+    /// one — without re-deriving the model's operator sequence here.
+    fn submission_chain(c: &mut Criterion) {
+        let metalexec = metalexecutor::new(LIMIT);
+        let base = tensor::new(shape::new(vec![DIM, DIM]).unwrap(), vec![0.5; DIM * DIM]).unwrap();
+        let delta =
+            tensor::new(shape::new(vec![DIM, DIM]).unwrap(), vec![0.25; DIM * DIM]).unwrap();
+
+        let mut group = c.benchmark_group("gpu/submissionchain");
+        group.throughput(Throughput::Elements((DIM * DIM) as u64));
+        group.bench_function("compute32", |bench| {
+            bench.iter(|| {
+                let mut x = base.clone();
+                for _ in 0..32 {
+                    x = metalexec.add(&x.getview(), &delta.getview()).unwrap();
+                }
+                black_box(x)
+            });
+        });
+        group.bench_function("submission32", |bench| {
+            bench.iter(|| {
+                let mut sub = metalexec.newsubmission().unwrap();
+                let mut prev = sub
+                    .recordadd(
+                        operand::input(base.getview()),
+                        operand::input(delta.getview()),
+                    )
+                    .unwrap();
+                for _ in 1..32 {
+                    prev = sub
+                        .recordadd(operand::result(prev), operand::input(delta.getview()))
+                        .unwrap();
+                }
+                black_box(sub.apply(&[prev]).unwrap())
+            });
+        });
+        group.finish();
+    }
+
     criterion_group!(
         benches,
         matmul,
@@ -278,7 +322,8 @@ mod macos {
         rope,
         embedding,
         attention,
-        model_forward
+        model_forward,
+        submission_chain
     );
 }
 

@@ -38,11 +38,9 @@ mod executor;
 #[cfg(target_os = "macos")]
 mod ffi;
 #[cfg(target_os = "macos")]
-mod geometry;
-#[cfg(target_os = "macos")]
 mod source;
 
 #[cfg(target_os = "macos")]
 pub use backend::{METALMAXHEADDIM, METALMAXRANK, metalbackend};
 #[cfg(target_os = "macos")]
-pub use executor::metalexecutor;
+pub use executor::{metalexecutor, metalsubmission};

@@ -32,8 +32,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
 use crate::error::metalerror;
-use crate::geometry::attentionshape;
 use crate::source;
+use api::geometry::{attentionshape, matmulshape, ropeshape};
 
 /// The threadgroup edge used when dispatching the matmul kernel.
 const THREADEDGE: usize = 16;
@@ -827,4 +827,455 @@ fn fullthreads(tile: usize) -> MTLSize {
 /// Renders an `NSError` as a diagnostic string.
 fn describe(error: &NSError) -> String {
     error.localizedDescription().to_string()
+}
+
+/// The pipeline key and thread geometry of one dispatch, packed so a launch
+/// reads as one argument rather than four.
+struct dispatchspec {
+    source: &'static str,
+    entry: &'static str,
+    grid: MTLSize,
+    threads: MTLSize,
+}
+
+/// One accumulative submission: a command buffer and compute encoder that many
+/// operators share, plus the output slot of every recorded step.
+///
+/// A `session` is the Metal side of the accumulative `api::submission` contract
+/// (docs/design.md §21.13). It owns its command buffer and encoder, so its
+/// lifetime bounds the single `commit` + `waitUntilCompleted` that all recorded
+/// dispatches share. It owns no model weights and carries no request-scoped
+/// state beyond its own buffers; the compiled pipelines still come from the
+/// executor-owned [`cache`], which holds no operand or result.
+pub(crate) struct session {
+    device: Retained<ProtocolObject<dyn MTLDevice>>,
+    command: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    encoder: Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>,
+    outputs: Vec<slot>,
+    /// True once `endEncoding` has been called, so `Drop` ends an encoder that
+    /// an error path dropped mid-submission exactly once.
+    ended: bool,
+}
+
+/// The recorded output of one step: a device buffer to download, no elements,
+/// or a host-side run of zeros.
+enum slot {
+    buffer(Retained<ProtocolObject<dyn MTLBuffer>>, usize),
+    empty,
+    zeros(usize),
+}
+
+impl session {
+    /// Opens a device, queue, command buffer, and encoder for one submission.
+    pub(crate) fn new(cache: &cache) -> Result<Self, metalerror> {
+        let device = cache.device()?;
+        let queue = newqueue(&device)?;
+        let command = newcommand(&queue)?;
+        let encoder = newencoder(&command)?;
+        Ok(Self {
+            device,
+            command,
+            encoder,
+            outputs: Vec::new(),
+            ended: false,
+        })
+    }
+
+    /// Uploads host data into a fresh device buffer.
+    ///
+    /// The returned buffer is owned by the caller; the encoder records only a
+    /// reference to it, so an input buffer may be dropped after the dispatch
+    /// that reads it has been encoded.
+    pub(crate) fn upload(
+        &self,
+        data: &[f32],
+    ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, metalerror> {
+        let buffer = alloc(&self.device, core::mem::size_of_val(data))?;
+        write(&buffer, data);
+        Ok(buffer)
+    }
+
+    /// Encodes one dispatch into the shared encoder and records its output slot.
+    fn dispatch<T>(
+        &mut self,
+        cache: &cache,
+        spec: &dispatchspec,
+        buffers: &[&ProtocolObject<dyn MTLBuffer>],
+        params: &T,
+        out: &Retained<ProtocolObject<dyn MTLBuffer>>,
+        outlen: usize,
+    ) -> Result<usize, metalerror> {
+        let pipeline = cache.pipeline(spec.source, spec.entry)?;
+        self.encoder.setComputePipelineState(&pipeline);
+        bind(&self.encoder, buffers);
+        setbytes(&self.encoder, params, buffers.len());
+        self.encoder
+            .dispatchThreads_threadsPerThreadgroup(spec.grid, spec.threads);
+        let index = self.outputs.len();
+        self.outputs.push(slot::buffer(out.clone(), outlen));
+        Ok(index)
+    }
+
+    /// Records a zero-element output without touching the device.
+    fn recordempty(&mut self) -> usize {
+        let index = self.outputs.len();
+        self.outputs.push(slot::empty);
+        index
+    }
+
+    /// Records an all-zero output of `count` elements without touching the device.
+    fn recordzeros(&mut self, count: usize) -> usize {
+        let index = self.outputs.len();
+        self.outputs.push(slot::zeros(count));
+        index
+    }
+
+    /// Returns the device buffer of slot `index`, when that slot holds one.
+    pub(crate) fn getbuffer(
+        &self,
+        index: usize,
+    ) -> Option<&Retained<ProtocolObject<dyn MTLBuffer>>> {
+        match self.outputs.get(index) {
+            Some(slot::buffer(buffer, _)) => Some(buffer),
+            _ => None,
+        }
+    }
+
+    /// Returns the host-side data a non-buffer slot names, when `index` is one.
+    ///
+    /// An empty slot yields an empty vector and a zeros slot its zero run; a
+    /// buffer slot yields `None`. This lets a later step read an empty or zero
+    /// result back off the host rather than off the device.
+    pub(crate) fn gethostdata(&self, index: usize) -> Option<Vec<f32>> {
+        match self.outputs.get(index) {
+            Some(slot::empty) => Some(Vec::new()),
+            Some(slot::zeros(count)) => Some(vec![0.0_f32; *count]),
+            _ => None,
+        }
+    }
+
+    /// Ends encoding, commits, waits, then downloads every recorded output.
+    ///
+    /// The returned vectors are in slot order, so a slot index obtained from a
+    /// `dispatch` / `recordempty` / `recordzeros` call indexes into this result.
+    pub(crate) fn apply(mut self) -> Result<Vec<Vec<f32>>, metalerror> {
+        self.encoder.endEncoding();
+        self.ended = true;
+        self.command.commit();
+        self.command.waitUntilCompleted();
+        // `session` implements `Drop`, so fields cannot be moved out of `self`;
+        // `take` leaves an empty vector behind and hands the slots over.
+        let outputs = core::mem::take(&mut self.outputs);
+        outputs
+            .into_iter()
+            .map(|output| match output {
+                slot::buffer(buffer, len) => read(&buffer, len),
+                slot::empty => Ok(Vec::new()),
+                slot::zeros(count) => Ok(vec![0.0_f32; count]),
+            })
+            .collect()
+    }
+}
+
+impl Drop for session {
+    fn drop(&mut self) {
+        // An error path can drop the session before `apply`; end the encoder
+        // here so Metal never sees a compute encoder released mid-submission.
+        if !self.ended {
+            self.encoder.endEncoding();
+        }
+    }
+}
+
+/// Encodes a batched `matmul` into `session`, returning its output slot index.
+///
+/// `lhs` and `rhs` are already on the device; the result buffer is allocated
+/// here and its slot recorded. The zero-element and zero-contraction cases are
+/// recorded without a dispatch, matching [`matmul`].
+pub(crate) fn matmul_into(
+    cache: &cache,
+    session: &mut session,
+    lhs: &ProtocolObject<dyn MTLBuffer>,
+    rhs: &ProtocolObject<dyn MTLBuffer>,
+    geometry: &matmulshape,
+) -> Result<usize, metalerror> {
+    let batch = geometry.batch;
+    let m = geometry.m;
+    let k = geometry.k;
+    let n = geometry.n;
+    let total = batch
+        .checked_mul(m)
+        .and_then(|value| value.checked_mul(n))
+        .ok_or(metalerror::sizeoverflow)?;
+    if m == 0 || n == 0 {
+        return Ok(session.recordempty());
+    }
+    if k == 0 {
+        return Ok(session.recordzeros(total));
+    }
+    let dims = Extents::new(m, k, n)?;
+    let bytes = total
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [lhs, rhs, &out];
+    let params = [dims.m, dims.k, dims.n];
+    let spec = dispatchspec {
+        source: source::MATMULMSL,
+        entry: source::MATMULENTRY,
+        grid: MTLSize {
+            width: dims.cols,
+            height: dims.rows,
+            depth: batch,
+        },
+        threads: dims.threadgroup(),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+}
+
+/// Encodes an elementwise `add` of `count` elements, returning the slot index.
+pub(crate) fn add_into(
+    cache: &cache,
+    session: &mut session,
+    lhs: &ProtocolObject<dyn MTLBuffer>,
+    rhs: &ProtocolObject<dyn MTLBuffer>,
+    count: usize,
+) -> Result<usize, metalerror> {
+    elementwise2_into(cache, session, source::ADDENTRY, lhs, rhs, count)
+}
+
+/// Encodes an elementwise `mul` of `count` elements, returning the slot index.
+pub(crate) fn mul_into(
+    cache: &cache,
+    session: &mut session,
+    lhs: &ProtocolObject<dyn MTLBuffer>,
+    rhs: &ProtocolObject<dyn MTLBuffer>,
+    count: usize,
+) -> Result<usize, metalerror> {
+    elementwise2_into(cache, session, source::MULENTRY, lhs, rhs, count)
+}
+
+/// Encodes the two-operand elementwise kernel named `entry`.
+fn elementwise2_into(
+    cache: &cache,
+    session: &mut session,
+    entry: &'static str,
+    lhs: &ProtocolObject<dyn MTLBuffer>,
+    rhs: &ProtocolObject<dyn MTLBuffer>,
+    count: usize,
+) -> Result<usize, metalerror> {
+    if count == 0 {
+        return Ok(session.recordempty());
+    }
+    let bytes = count
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [lhs, rhs, &out];
+    let params = [asu32(count)?];
+    let spec = dispatchspec {
+        source: source::ELEMENTWISE,
+        entry,
+        grid: flatgrid(count)?,
+        threads: flatthreads(count),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, count)
+}
+
+/// Encodes a `silu` of `count` elements, returning the slot index.
+pub(crate) fn silu_into(
+    cache: &cache,
+    session: &mut session,
+    input: &ProtocolObject<dyn MTLBuffer>,
+    count: usize,
+) -> Result<usize, metalerror> {
+    if count == 0 {
+        return Ok(session.recordempty());
+    }
+    let bytes = count
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let params = [asu32(count)?];
+    let spec = dispatchspec {
+        source: source::ELEMENTWISE,
+        entry: source::SILUENTRY,
+        grid: flatgrid(count)?,
+        threads: flatthreads(count),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, count)
+}
+
+/// Encodes a `softmax` over `rows` rows of `width`, returning the slot index.
+pub(crate) fn softmax_into(
+    cache: &cache,
+    session: &mut session,
+    input: &ProtocolObject<dyn MTLBuffer>,
+    rows: usize,
+    width: usize,
+) -> Result<usize, metalerror> {
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
+    let bytes = total
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let params = [asu32(width)?];
+    let spec = dispatchspec {
+        source: source::SOFTMAXMSL,
+        entry: source::SOFTMAXENTRY,
+        grid: rowgrid(rows, source::SOFTMAXTILE)?,
+        threads: fullthreads(source::SOFTMAXTILE),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+}
+
+/// Encodes an RMS normalization, returning the slot index.
+pub(crate) fn rmsnorm_into(
+    cache: &cache,
+    session: &mut session,
+    input: &ProtocolObject<dyn MTLBuffer>,
+    weight: &ProtocolObject<dyn MTLBuffer>,
+    rows: usize,
+    width: usize,
+    eps: f32,
+) -> Result<usize, metalerror> {
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
+    let bytes = total
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [input, weight, &out];
+    let params = [asu32(width)?, eps.to_bits()];
+    let spec = dispatchspec {
+        source: source::RMSNORMMSL,
+        entry: source::RMSNORMENTRY,
+        grid: rowgrid(rows, source::RMSNORMTILE)?,
+        threads: fullthreads(source::RMSNORMTILE),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+}
+
+/// Encodes rotary position embedding, returning the slot index.
+pub(crate) fn rope_into(
+    cache: &cache,
+    session: &mut session,
+    input: &ProtocolObject<dyn MTLBuffer>,
+    geometry: &ropeshape,
+    base: f32,
+) -> Result<usize, metalerror> {
+    let rows = geometry.rows;
+    let seqaxis = geometry.seqaxis;
+    let heads = geometry.heads;
+    let headdim = geometry.headdim;
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let pairs = rows
+        .checked_mul(heads)
+        .and_then(|value| value.checked_mul(headdim / 2))
+        .ok_or(metalerror::sizeoverflow)?;
+    let total = rows
+        .checked_mul(heads)
+        .and_then(|value| value.checked_mul(headdim))
+        .ok_or(metalerror::sizeoverflow)?;
+    let bytes = total
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let params = [
+        asu32(rows)?,
+        asu32(seqaxis)?,
+        asu32(heads)?,
+        asu32(headdim)?,
+        base.to_bits(),
+    ];
+    let spec = dispatchspec {
+        source: source::ROPEMSL,
+        entry: source::ROPEENTRY,
+        grid: flatgrid(pairs)?,
+        threads: flatthreads(pairs),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+}
+
+/// Encodes an embedding gather, returning the slot index.
+pub(crate) fn embedding_into(
+    cache: &cache,
+    session: &mut session,
+    table: &ProtocolObject<dyn MTLBuffer>,
+    indices: &[usize],
+    width: usize,
+) -> Result<usize, metalerror> {
+    let rows = indices.len();
+    if rows == 0 {
+        return Ok(session.recordempty());
+    }
+    let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
+    let bytes = total
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let devindices: Vec<u64> = indices.iter().map(|&index| index as u64).collect();
+    let dindices = alloc(&session.device, core::mem::size_of_val(&devindices))?;
+    write(&dindices, &devindices);
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [table, &dindices, &out];
+    let params = [rows as u64, width as u64];
+    let spec = dispatchspec {
+        source: source::EMBEDDINGMSL,
+        entry: source::EMBEDDINGENTRY,
+        grid: flatgrid(total)?,
+        threads: flatthreads(total),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+}
+
+/// Encodes grouped-query attention, returning the slot index.
+pub(crate) fn attention_into(
+    cache: &cache,
+    session: &mut session,
+    query: &ProtocolObject<dyn MTLBuffer>,
+    key: &ProtocolObject<dyn MTLBuffer>,
+    value: &ProtocolObject<dyn MTLBuffer>,
+    geometry: &attentionshape,
+    causal: bool,
+) -> Result<usize, metalerror> {
+    let seq = geometry.seq;
+    if seq == 0 {
+        return Ok(session.recordempty());
+    }
+    let queryelements = seq
+        .checked_mul(geometry.heads)
+        .and_then(|rows| rows.checked_mul(geometry.headdim))
+        .ok_or(metalerror::sizeoverflow)?;
+    let bytes = queryelements
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let groups = seq
+        .checked_mul(geometry.heads)
+        .ok_or(metalerror::sizeoverflow)?;
+    let out = alloc(&session.device, bytes)?;
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 4] = [query, key, value, &out];
+    let params = [
+        asu32(seq)?,
+        asu32(geometry.heads)?,
+        asu32(geometry.kvheads)?,
+        asu32(geometry.headdim)?,
+        u32::from(causal),
+    ];
+    let spec = dispatchspec {
+        source: source::ATTENTIONMSL,
+        entry: source::ATTENTIONENTRY,
+        grid: rowgrid(groups, source::ATTENTIONLANES)?,
+        threads: fullthreads(source::ATTENTIONLANES),
+    };
+    session.dispatch(cache, &spec, &buffers, &params, &out, queryelements)
 }
