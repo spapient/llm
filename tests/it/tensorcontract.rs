@@ -58,3 +58,23 @@ fn contiguous_layout_is_valid_for_shape() {
     assert!(l.iscontiguous());
     assert!(l.isvalidfor(&s));
 }
+
+#[test]
+fn f16_tensor_roundtrips_through_bytes_and_view() {
+    use half::f16;
+    let s = shape::new(vec![2, 2]).unwrap();
+    let t = tensor::new(
+        s.clone(),
+        vec![
+            f16::from_f32(0.5),
+            f16::from_f32(-1.0),
+            f16::from_f32(2.25),
+            f16::from_f32(4.0),
+        ],
+    )
+    .unwrap();
+    assert_eq!(t.getdtype(), dtype::f16);
+    let rebuilt: tensor<f16> = tensor::tryfrombytes(s.clone(), t.getbytes()).unwrap();
+    assert_eq!(rebuilt.getdata(), t.getdata());
+    assert_eq!(rebuilt.getview().getdata(), t.getdata());
+}

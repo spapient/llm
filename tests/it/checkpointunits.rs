@@ -452,7 +452,7 @@ mod training {
 
 /// Tests relocated from `crates/checkpoint/src/blocks.rs`.
 mod blocks {
-    use ::checkpoint::{chunk, BLOCKSIZE, MAXBLOCK, MINBLOCK};
+    use ::checkpoint::{BLOCKSIZE, MAXBLOCK, MINBLOCK, chunk};
 
     #[test]
     fn empty_input_yields_no_blocks() {
@@ -489,7 +489,7 @@ mod blocks {
 /// Tests relocated from `crates/checkpoint/src/uformat.rs`.
 mod uformat {
     use crate::support::shapeof;
-    use ::checkpoint::{checkpointerror, snapshot, BLOCKSIZE};
+    use ::checkpoint::{BLOCKSIZE, checkpointerror, snapshot};
     use tensor::dtype;
 
     fn onesnap() -> snapshot {
@@ -510,8 +510,13 @@ mod uformat {
     #[test]
     fn block_boundary_falls_mid_tensor() {
         let mut snap = snapshot::new(1);
-        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[1000]), &vec![1u8; 1000])
-            .unwrap();
+        snap.addtensor(
+            "a".to_string(),
+            dtype::u8,
+            shapeof(&[1000]),
+            &vec![1u8; 1000],
+        )
+        .unwrap();
         snap.addtensor(
             "b".to_string(),
             dtype::u8,
@@ -544,8 +549,7 @@ mod uformat {
         let cut = &bytes[..bytes.len() - 3];
         assert!(matches!(
             snapshot::decode(cut),
-            Err(checkpointerror::truncated { .. })
-                | Err(checkpointerror::truncatedblock { .. })
+            Err(checkpointerror::truncated { .. }) | Err(checkpointerror::truncatedblock { .. })
         ));
     }
 
@@ -596,7 +600,7 @@ mod uformat {
 /// Tests relocated from `crates/checkpoint/src/delta.rs`.
 mod delta {
     use crate::support::shapeof;
-    use ::checkpoint::{chunk, delta, snapshot, BLOCKSIZE};
+    use ::checkpoint::{BLOCKSIZE, chunk, delta, snapshot};
     use tensor::dtype;
 
     fn pseudorandom(len: usize) -> Vec<u8> {
@@ -614,10 +618,10 @@ mod delta {
     #[test]
     fn unchanged_tensor_stores_no_blocks() {
         let mut base = snapshot::new(1);
-        base.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &vec![1u8; 100])
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[1u8; 100])
             .unwrap();
         let mut new = snapshot::new(1);
-        new.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &vec![1u8; 100])
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[1u8; 100])
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
         assert!(d.getstored().is_empty());
@@ -640,7 +644,7 @@ mod delta {
         new.addtensor("w".to_string(), dtype::u8, shapeof(&[len]), &new_data)
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
-        let total = chunk(&new.getdata()).len();
+        let total = chunk(new.getdata()).len();
         assert!(
             d.getstored().len() < total / 2,
             "stored {} vs total {}",
@@ -657,12 +661,17 @@ mod delta {
         base.addtensor("w".to_string(), dtype::u8, shapeof(&[len]), &data)
             .unwrap();
         let mut new = snapshot::new(1);
-        new.addtensor("prefix".to_string(), dtype::u8, shapeof(&[1000]), &vec![0u8; 1000])
-            .unwrap();
+        new.addtensor(
+            "prefix".to_string(),
+            dtype::u8,
+            shapeof(&[1000]),
+            &vec![0u8; 1000],
+        )
+        .unwrap();
         new.addtensor("w".to_string(), dtype::u8, shapeof(&[len]), &data)
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
-        let total = chunk(&new.getdata()).len();
+        let total = chunk(new.getdata()).len();
         assert!(
             d.getstored().len() < total / 2,
             "stored {} vs total {}",
@@ -691,24 +700,44 @@ mod merge {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::support::shapeof;
-    use ::checkpoint::{checkpointerror, delta, merge, mergefiles, snapshot, BLOCKSIZE};
+    use ::checkpoint::{BLOCKSIZE, checkpointerror, delta, merge, mergefiles, snapshot};
     use tensor::dtype;
 
     fn base() -> snapshot {
         let mut base = snapshot::new(1);
-        base.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
-            .unwrap();
-        base.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
-            .unwrap();
+        base.addtensor(
+            "a".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![1u8; BLOCKSIZE],
+        )
+        .unwrap();
+        base.addtensor(
+            "b".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![2u8; BLOCKSIZE],
+        )
+        .unwrap();
         base
     }
 
     fn new() -> snapshot {
         let mut new = snapshot::new(1);
-        new.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
-            .unwrap();
-        new.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
-            .unwrap();
+        new.addtensor(
+            "a".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![9u8; BLOCKSIZE],
+        )
+        .unwrap();
+        new.addtensor(
+            "b".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![2u8; BLOCKSIZE],
+        )
+        .unwrap();
         new
     }
 
@@ -717,10 +746,8 @@ mod merge {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "llm-merge-{}-{tag}-{nanos}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("llm-merge-{}-{tag}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -757,7 +784,11 @@ mod merge {
         let base = base();
         let new = new();
         std::fs::write(&base_path, base.encode().unwrap()).unwrap();
-        std::fs::write(&delta_path, delta::fromsnapshots(&base, &new).encode().unwrap()).unwrap();
+        std::fs::write(
+            &delta_path,
+            delta::fromsnapshots(&base, &new).encode().unwrap(),
+        )
+        .unwrap();
         mergefiles(&base_path, &delta_path, &out_path).unwrap();
         let merged = snapshot::decode(&std::fs::read(&out_path).unwrap()).unwrap();
         assert_eq!(merged, new);
@@ -772,7 +803,11 @@ mod merge {
         let out_path = dir.join("out.u");
         let base = base();
         let new = new();
-        std::fs::write(&delta_path, delta::fromsnapshots(&base, &new).encode().unwrap()).unwrap();
+        std::fs::write(
+            &delta_path,
+            delta::fromsnapshots(&base, &new).encode().unwrap(),
+        )
+        .unwrap();
         let err = mergefiles(&base_path, &delta_path, &out_path).unwrap_err();
         assert!(matches!(err, checkpointerror::missingbase { .. }));
         assert!(!out_path.exists());
@@ -786,24 +821,44 @@ mod reader {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::support::shapeof;
-    use ::checkpoint::{checkpointerror, checkpointreader, delta, snapshot, BLOCKSIZE, MAXBLOCK};
+    use ::checkpoint::{BLOCKSIZE, MAXBLOCK, checkpointerror, checkpointreader, delta, snapshot};
     use tensor::dtype;
 
     fn base() -> snapshot {
         let mut snap = snapshot::new(1);
-        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
-            .unwrap();
-        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
-            .unwrap();
+        snap.addtensor(
+            "a".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![1u8; BLOCKSIZE],
+        )
+        .unwrap();
+        snap.addtensor(
+            "b".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![2u8; BLOCKSIZE],
+        )
+        .unwrap();
         snap
     }
 
     fn changed() -> snapshot {
         let mut snap = snapshot::new(1);
-        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
-            .unwrap();
-        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
-            .unwrap();
+        snap.addtensor(
+            "a".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![9u8; BLOCKSIZE],
+        )
+        .unwrap();
+        snap.addtensor(
+            "b".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![2u8; BLOCKSIZE],
+        )
+        .unwrap();
         snap
     }
 
@@ -811,8 +866,14 @@ mod reader {
     fn reads_from_a_full_snapshot() {
         let snap = base();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
-        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; BLOCKSIZE]);
-        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+        assert_eq!(
+            reader.readtensor("a").unwrap().unwrap(),
+            vec![1u8; BLOCKSIZE]
+        );
+        assert_eq!(
+            reader.readtensor("b").unwrap().unwrap(),
+            vec![2u8; BLOCKSIZE]
+        );
         assert!(reader.readtensor("absent").unwrap().is_none());
     }
 
@@ -823,8 +884,14 @@ mod reader {
         let d = delta::fromsnapshots(&base, &new);
         let reader =
             checkpointreader::opendelta(base.encode().unwrap(), d.encode().unwrap()).unwrap();
-        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![9u8; BLOCKSIZE]);
-        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+        assert_eq!(
+            reader.readtensor("a").unwrap().unwrap(),
+            vec![9u8; BLOCKSIZE]
+        );
+        assert_eq!(
+            reader.readtensor("b").unwrap().unwrap(),
+            vec![2u8; BLOCKSIZE]
+        );
     }
 
     #[test]
@@ -832,15 +899,28 @@ mod reader {
         let mut snap = snapshot::new(1);
         // "a" is MAXBLOCK so the forced cut puts it in its own block; corrupting
         // "b"'s byte must not affect reading "a".
-        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[MAXBLOCK]), &vec![1u8; MAXBLOCK])
-            .unwrap();
-        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
-            .unwrap();
+        snap.addtensor(
+            "a".to_string(),
+            dtype::u8,
+            shapeof(&[MAXBLOCK]),
+            &vec![1u8; MAXBLOCK],
+        )
+        .unwrap();
+        snap.addtensor(
+            "b".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![2u8; BLOCKSIZE],
+        )
+        .unwrap();
         let mut bytes = snap.encode().unwrap();
         let last = bytes.len() - 1;
         bytes[last] ^= 1;
         let reader = checkpointreader::openfull(bytes).unwrap();
-        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; MAXBLOCK]);
+        assert_eq!(
+            reader.readtensor("a").unwrap().unwrap(),
+            vec![1u8; MAXBLOCK]
+        );
         let err = reader.readtensor("b").unwrap_err();
         assert!(matches!(err, checkpointerror::blockcrcmismatch { .. }));
     }
@@ -850,10 +930,8 @@ mod reader {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "llm-reader-{}-{tag}-{nanos}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("llm-reader-{}-{tag}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -865,8 +943,14 @@ mod reader {
         let snap = base();
         std::fs::write(&path, snap.encode().unwrap()).unwrap();
         let reader = checkpointreader::openfullfile(&path).unwrap();
-        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; BLOCKSIZE]);
-        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+        assert_eq!(
+            reader.readtensor("a").unwrap().unwrap(),
+            vec![1u8; BLOCKSIZE]
+        );
+        assert_eq!(
+            reader.readtensor("b").unwrap().unwrap(),
+            vec![2u8; BLOCKSIZE]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -878,10 +962,20 @@ mod reader {
         let base = base();
         let new = changed();
         std::fs::write(&base_path, base.encode().unwrap()).unwrap();
-        std::fs::write(&delta_path, delta::fromsnapshots(&base, &new).encode().unwrap()).unwrap();
+        std::fs::write(
+            &delta_path,
+            delta::fromsnapshots(&base, &new).encode().unwrap(),
+        )
+        .unwrap();
         let reader = checkpointreader::opendeltafile(&base_path, &delta_path).unwrap();
-        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![9u8; BLOCKSIZE]);
-        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+        assert_eq!(
+            reader.readtensor("a").unwrap().unwrap(),
+            vec![9u8; BLOCKSIZE]
+        );
+        assert_eq!(
+            reader.readtensor("b").unwrap().unwrap(),
+            vec![2u8; BLOCKSIZE]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -908,15 +1002,25 @@ mod reader {
 /// Tests relocated from `crates/checkpoint/src/compact.rs`.
 mod compact {
     use crate::support::shapeof;
-    use ::checkpoint::{checkpointerror, compact, delta, snapshot, verifyprovenance, BLOCKSIZE};
+    use ::checkpoint::{BLOCKSIZE, checkpointerror, compact, delta, snapshot, verifyprovenance};
     use tensor::dtype;
 
     fn full(v: u8) -> snapshot {
         let mut snap = snapshot::new(1);
-        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![v; BLOCKSIZE])
-            .unwrap();
-        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
-            .unwrap();
+        snap.addtensor(
+            "a".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![v; BLOCKSIZE],
+        )
+        .unwrap();
+        snap.addtensor(
+            "b".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![2u8; BLOCKSIZE],
+        )
+        .unwrap();
         snap
     }
 
@@ -957,7 +1061,7 @@ mod compact {
 /// Tests for per-block LZ4 compression of `.u` snapshots.
 mod compression {
     use crate::support::shapeof;
-    use ::checkpoint::{checkpointerror, checkpointreader, snapshot, BLOCKSIZE};
+    use ::checkpoint::{BLOCKSIZE, checkpointerror, checkpointreader, snapshot};
     use tensor::dtype;
 
     fn snapwith(data: &[u8]) -> snapshot {
@@ -1031,10 +1135,20 @@ mod quant {
     #[test]
     fn quantized_tensor_roundtrips_with_its_scale() {
         let mut snap = snapshot::new(1);
-        snap.addtensor("w".to_string(), dtype::i8, shapeof(&[4096]), &vec![1u8; 4096])
-            .unwrap();
-        snap.addtensor("w_scale".to_string(), dtype::f32, shapeof(&[32]), &[0u8; 128])
-            .unwrap();
+        snap.addtensor(
+            "w".to_string(),
+            dtype::i8,
+            shapeof(&[4096]),
+            &vec![1u8; 4096],
+        )
+        .unwrap();
+        snap.addtensor(
+            "w_scale".to_string(),
+            dtype::f32,
+            shapeof(&[32]),
+            &[0u8; 128],
+        )
+        .unwrap();
         snap.addtensor("w_zp".to_string(), dtype::i8, shapeof(&[32]), &[0u8; 32])
             .unwrap();
         snap.setquant(
@@ -1059,17 +1173,37 @@ mod quant {
     #[test]
     fn quantdesc_survives_a_delta() {
         let mut base = snapshot::new(1);
-        base.addtensor("w".to_string(), dtype::i8, shapeof(&[4096]), &vec![1u8; 4096])
-            .unwrap();
-        base.addtensor("w_scale".to_string(), dtype::f32, shapeof(&[32]), &[0u8; 128])
-            .unwrap();
+        base.addtensor(
+            "w".to_string(),
+            dtype::i8,
+            shapeof(&[4096]),
+            &vec![1u8; 4096],
+        )
+        .unwrap();
+        base.addtensor(
+            "w_scale".to_string(),
+            dtype::f32,
+            shapeof(&[32]),
+            &[0u8; 128],
+        )
+        .unwrap();
         base.setquant("w", quantdesc::new(128, "w_scale".to_string()))
             .unwrap();
         let mut new = snapshot::new(1);
-        new.addtensor("w".to_string(), dtype::i8, shapeof(&[4096]), &vec![2u8; 4096])
-            .unwrap();
-        new.addtensor("w_scale".to_string(), dtype::f32, shapeof(&[32]), &[0u8; 128])
-            .unwrap();
+        new.addtensor(
+            "w".to_string(),
+            dtype::i8,
+            shapeof(&[4096]),
+            &vec![2u8; 4096],
+        )
+        .unwrap();
+        new.addtensor(
+            "w_scale".to_string(),
+            dtype::f32,
+            shapeof(&[32]),
+            &[0u8; 128],
+        )
+        .unwrap();
         new.setquant("w", quantdesc::new(128, "w_scale".to_string()))
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
@@ -1080,5 +1214,345 @@ mod quant {
             .find(|t| t.getname() == "w")
             .unwrap();
         assert_eq!(entry.getquant().unwrap().getscale(), "w_scale");
+    }
+}
+
+/// Tests for the typed checkpoint-to-tensor bridge (`readtensortyped`).
+mod tensorbridge {
+    use crate::support::shapeof;
+    use ::checkpoint::{checkpointerror, checkpointreader, snapshot};
+    use half::f16;
+    use tensor::dtype;
+
+    #[test]
+    fn typed_f32_reads_from_a_full_snapshot() {
+        let values = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[2, 3]),
+            bytemuck::cast_slice(&values),
+        )
+        .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(t.getdata(), &values);
+        assert_eq!(t.getdtype(), dtype::f32);
+        assert_eq!(t.getshape().getdims(), &[2, 3]);
+    }
+
+    #[test]
+    fn typed_f16_reads_with_precision() {
+        let values = vec![
+            f16::from_f32(0.5),
+            f16::from_f32(-1.0),
+            f16::from_f32(2.25),
+            f16::from_f32(4.0),
+        ];
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "h".to_string(),
+            dtype::f16,
+            shapeof(&[4]),
+            bytemuck::cast_slice(&values),
+        )
+        .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        let h = reader.readtensortyped::<f16>("h").unwrap().unwrap();
+        assert_eq!(h.getdata(), &values);
+        assert_eq!(h.getdtype(), dtype::f16);
+    }
+
+    #[test]
+    fn dtype_mismatch_is_reported_as_incompatibility() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[2]),
+            bytemuck::cast_slice(&[1.0f32, 2.0]),
+        )
+        .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        let err = reader.readtensortyped::<f16>("w").unwrap_err();
+        assert!(matches!(err, checkpointerror::dtypemismatch { .. }));
+        assert!(err.isincompatibility());
+    }
+
+    #[test]
+    fn absent_tensor_returns_none() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[1]),
+            bytemuck::cast_slice(&[1.0f32]),
+        )
+        .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        assert!(reader.readtensortyped::<f32>("absent").unwrap().is_none());
+    }
+
+    #[test]
+    fn typed_read_reassembles_multiblock_tensors() {
+        let values = (0..70_000).map(|i| i as f32).collect::<Vec<f32>>();
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[values.len()]),
+            bytemuck::cast_slice(&values),
+        )
+        .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(t.getdata(), &values);
+    }
+
+    #[test]
+    fn typed_read_decodes_compressed_blocks() {
+        let values = vec![3.5f32; 70_000];
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[values.len()]),
+            bytemuck::cast_slice(&values),
+        )
+        .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(t.getdata(), &values);
+    }
+}
+
+/// Tests for the inference-only raw weights format.
+mod rawformat {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::support::shapeof;
+    use ::checkpoint::{
+        PAGESIZE, RAWFORMATVERSION, checkpoint, checkpointerror, rawreader, rawsnapshot,
+    };
+    use half::f16;
+    use tensor::dtype;
+
+    fn sample() -> checkpoint {
+        let mut ckpt = checkpoint::new(1);
+        ckpt.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[2, 3]),
+            bytemuck::cast_slice(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]),
+        )
+        .unwrap();
+        ckpt.addtensor(
+            "h".to_string(),
+            dtype::f16,
+            shapeof(&[2]),
+            bytemuck::cast_slice(&[f16::from_f32(0.5), f16::from_f32(-1.0)]),
+        )
+        .unwrap();
+        ckpt
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("llm-raw-{}-{tag}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn fromcheckpoint_exports_and_decode_roundtrips() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let encoded = raw.encode().unwrap();
+        let back = rawsnapshot::decode(&encoded).unwrap();
+        assert_eq!(back.getversion(), RAWFORMATVERSION);
+        assert_eq!(back.gettensors().len(), 2);
+        let w = back
+            .gettensors()
+            .iter()
+            .find(|t| t.getname() == "w")
+            .unwrap();
+        assert_eq!(w.getdtype(), dtype::f32);
+        assert_eq!(w.getshape().getdims(), &[2, 3]);
+        assert_eq!(w.getnbytes(), 24);
+        let start = w.getoffset() as usize;
+        let end = (w.getoffset() + w.getnbytes()) as usize;
+        assert_eq!(
+            back.getdata()[start..end].to_vec(),
+            bytemuck::cast_slice::<f32, u8>(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]).to_vec()
+        );
+    }
+
+    #[test]
+    fn sections_and_data_offset_are_page_aligned() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let encoded = raw.encode().unwrap();
+        let dataoffset = u64::from_le_bytes(encoded[16..24].try_into().unwrap());
+        assert_eq!(dataoffset % PAGESIZE as u64, 0);
+        let back = rawsnapshot::decode(&encoded).unwrap();
+        for t in back.gettensors() {
+            assert_eq!(t.getoffset() % PAGESIZE as u64, 0);
+        }
+    }
+
+    #[test]
+    fn reader_reads_sections_with_crc() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let reader = rawreader::open(raw.encode().unwrap()).unwrap();
+        let w = reader.readtensor("w").unwrap().unwrap();
+        assert_eq!(
+            w,
+            bytemuck::cast_slice::<f32, u8>(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0])
+        );
+        assert!(reader.readtensor("absent").unwrap().is_none());
+    }
+
+    #[test]
+    fn typed_read_validates_dtype_and_shape() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let reader = rawreader::open(raw.encode().unwrap()).unwrap();
+        let w = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(w.getdata(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(w.getdtype(), dtype::f32);
+        assert_eq!(w.getshape().getdims(), &[2, 3]);
+        let err = reader.readtensortyped::<f16>("w").unwrap_err();
+        assert!(matches!(err, checkpointerror::dtypemismatch { .. }));
+        assert!(err.isincompatibility());
+    }
+
+    #[test]
+    fn corruption_in_a_section_is_detected() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let mut encoded = raw.encode().unwrap();
+        let last = encoded.len() - 1;
+        encoded[last] ^= 1;
+        let reader = rawreader::open(encoded).unwrap();
+        let err = reader.readtensor("h").unwrap_err();
+        assert!(matches!(err, checkpointerror::tensorcrcmismatch { .. }));
+        assert!(err.iscorruption());
+    }
+
+    #[test]
+    fn decode_rejects_bad_magic() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let mut encoded = raw.encode().unwrap();
+        encoded[0] = b'X';
+        let err = rawsnapshot::decode(&encoded).unwrap_err();
+        assert!(matches!(err, checkpointerror::badmagic));
+    }
+
+    #[test]
+    fn large_sections_cross_page_boundaries() {
+        let mut ckpt = checkpoint::new(1);
+        let values = (0..70_000).map(|i| i as f32).collect::<Vec<f32>>();
+        ckpt.addtensor(
+            "big".to_string(),
+            dtype::f32,
+            shapeof(&[values.len()]),
+            bytemuck::cast_slice(&values),
+        )
+        .unwrap();
+        let raw = rawsnapshot::fromcheckpoint(&ckpt).unwrap();
+        let reader = rawreader::open(raw.encode().unwrap()).unwrap();
+        let big = reader.readtensortyped::<f32>("big").unwrap().unwrap();
+        assert_eq!(big.getdata(), &values);
+    }
+
+    #[test]
+    fn fromfile_reads_sections_on_demand() {
+        let dir = scratch("rawfile");
+        let path = dir.join("weights.raw");
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        std::fs::write(&path, raw.encode().unwrap()).unwrap();
+        let reader = rawreader::fromfile(&path).unwrap();
+        assert_eq!(reader.getcount(), 2);
+        let w = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(w.getdata(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(w.getdtype(), dtype::f32);
+        assert_eq!(w.getshape().getdims(), &[2, 3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn readall_returns_every_section_in_directory_order() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let reader = rawreader::open(raw.encode().unwrap()).unwrap();
+        let all = reader.readall().unwrap();
+        assert_eq!(all.len(), 2);
+        let (name, bytes) = &all[0];
+        assert_eq!(name, "w");
+        assert_eq!(
+            bytes,
+            bytemuck::cast_slice::<f32, u8>(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0])
+        );
+        let (name, _) = &all[1];
+        assert_eq!(name, "h");
+    }
+
+    #[test]
+    fn readall_detects_corruption_in_any_section() {
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        let mut encoded = raw.encode().unwrap();
+        let last = encoded.len() - 1;
+        encoded[last] ^= 1;
+        let reader = rawreader::open(encoded).unwrap();
+        let err = reader.readall().unwrap_err();
+        assert!(matches!(err, checkpointerror::tensorcrcmismatch { .. }));
+        assert!(err.iscorruption());
+    }
+
+    #[test]
+    fn saveraw_publishes_an_atomic_file() {
+        use ::checkpoint::saveraw;
+        let dir = scratch("saveraw");
+        let path = dir.join("weights.raw");
+        let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
+        saveraw(&path, &raw).unwrap();
+        let reader = rawreader::fromfile(&path).unwrap();
+        let w = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(w.getdata(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rawexport_converts_a_checkpoint_file() {
+        use ::checkpoint::{checkpoint as uckpt, rawexport, savecheckpoint};
+        let dir = scratch("export");
+        let ckpt_path = dir.join("train.u");
+        let raw_path = dir.join("infer.raw");
+        let mut ckpt = uckpt::new(1);
+        let values = (0..70_000).map(|i| i as f32).collect::<Vec<f32>>();
+        ckpt.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[values.len()]),
+            bytemuck::cast_slice(&values),
+        )
+        .unwrap();
+        ckpt.addtensor(
+            "h".to_string(),
+            dtype::f16,
+            shapeof(&[2]),
+            bytemuck::cast_slice(&[f16::from_f32(0.5), f16::from_f32(-1.0)]),
+        )
+        .unwrap();
+        savecheckpoint(&ckpt_path, &ckpt).unwrap();
+        rawexport(&ckpt_path, &raw_path).unwrap();
+        let reader = rawreader::fromfile(&raw_path).unwrap();
+        assert_eq!(reader.getcount(), 2);
+        let w = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(w.getdata(), &values);
+        let h = reader.readtensortyped::<f16>("h").unwrap().unwrap();
+        assert_eq!(h.getdata(), &[f16::from_f32(0.5), f16::from_f32(-1.0)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

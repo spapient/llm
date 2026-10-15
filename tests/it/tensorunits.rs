@@ -355,3 +355,158 @@ mod views {
         assert_eq!(v.getdata(), w.getdata());
     }
 }
+
+/// Tests for the half-precision element implementations.
+mod halfelements {
+    use ::tensor::dtype;
+    use ::tensor::element;
+    use half::{bf16, f16};
+
+    #[test]
+    fn half_dtype_constants_match_storage_type() {
+        assert_eq!(<f16 as element>::DTYPE, dtype::f16);
+        assert_eq!(<bf16 as element>::DTYPE, dtype::bf16);
+    }
+
+    #[test]
+    fn half_width_matches_native_size() {
+        assert_eq!(
+            <f16 as element>::DTYPE.sizeinbytes(),
+            core::mem::size_of::<f16>()
+        );
+        assert_eq!(
+            <bf16 as element>::DTYPE.sizeinbytes(),
+            core::mem::size_of::<bf16>()
+        );
+    }
+
+    #[test]
+    fn half_elements_are_copy() {
+        fn assertcopy<T: element>() {}
+        assertcopy::<f16>();
+        assertcopy::<bf16>();
+    }
+}
+
+/// Tests for the byte-to-tensor conversion primitives.
+mod bytetensor {
+    use ::tensor::dtype;
+    use ::tensor::layout;
+    use ::tensor::shape;
+    use ::tensor::tensor;
+    use ::tensor::tensorerror;
+    use ::tensor::tensorview;
+    use half::{bf16, f16};
+
+    fn bytesfrom<T: bytemuck::Pod>(values: &[T]) -> Vec<u8> {
+        bytemuck::cast_slice(values).to_vec()
+    }
+
+    #[test]
+    fn owned_f32_roundtrips_through_bytes() {
+        let s = shape::new(vec![2, 3]).unwrap();
+        let t = tensor::new(s.clone(), vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        let rebuilt: tensor<f32> = tensor::tryfrombytes(s, t.getbytes()).unwrap();
+        assert_eq!(rebuilt.getdata(), t.getdata());
+        assert_eq!(rebuilt.getdtype(), dtype::f32);
+        assert_eq!(rebuilt.getshape().getdims(), &[2, 3]);
+    }
+
+    #[test]
+    fn owned_f16_roundtrips_through_bytes() {
+        let s = shape::new(vec![2, 2]).unwrap();
+        let values = vec![
+            f16::from_f32(1.5),
+            f16::from_f32(-2.0),
+            f16::from_f32(0.25),
+            f16::from_f32(4.0),
+        ];
+        let t = tensor::new(s.clone(), values).unwrap();
+        let rebuilt: tensor<f16> = tensor::tryfrombytes(s, t.getbytes()).unwrap();
+        assert_eq!(rebuilt.getdata(), t.getdata());
+        assert_eq!(rebuilt.getdtype(), dtype::f16);
+    }
+
+    #[test]
+    fn owned_bf16_roundtrips_through_bytes() {
+        let s = shape::new(vec![2]).unwrap();
+        let values = vec![bf16::from_f32(1.0), bf16::from_f32(-0.5)];
+        let t = tensor::new(s.clone(), values).unwrap();
+        let rebuilt: tensor<bf16> = tensor::tryfrombytes(s, t.getbytes()).unwrap();
+        assert_eq!(rebuilt.getdata(), t.getdata());
+        assert_eq!(rebuilt.getdtype(), dtype::bf16);
+    }
+
+    #[test]
+    fn owned_frombytes_accepts_unaligned_sources() {
+        let s = shape::new(vec![4]).unwrap();
+        let mut bytes = vec![0xAA, 0xBB];
+        bytes.extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0, 4.0]));
+        let t: tensor<f32> = tensor::tryfrombytes(s, &bytes[2..]).unwrap();
+        assert_eq!(t.getdata(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn owned_frombytes_rejects_length_mismatch() {
+        let s = shape::new(vec![2, 3]).unwrap();
+        let bytes = vec![0u8; 5];
+        assert_eq!(
+            tensor::<f32>::tryfrombytes(s, &bytes).map(|_| ()),
+            Err(tensorerror::lengthmismatch {
+                expected: 24,
+                actual: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn owned_frombytes_propagates_shape_overflow() {
+        let s = shape::new(vec![usize::MAX, 2]).unwrap();
+        let bytes = vec![0u8; 8];
+        assert!(matches!(
+            tensor::<u8>::tryfrombytes(s, &bytes),
+            Err(tensorerror::elementcountoverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn aligned_view_borrows_bytes_without_copy() {
+        let s = shape::new(vec![3]).unwrap();
+        let l = layout::contiguous(&s);
+        let bytes = bytesfrom(&[1.0f32, 2.0, 3.0]);
+        let v: tensorview<f32> = tensorview::tryfrombytes(&s, &l, &bytes).unwrap();
+        assert_eq!(v.getdata(), &[1.0, 2.0, 3.0]);
+        assert_eq!(v.getshape().getdims(), &[3]);
+        assert_eq!(v.getlayout().getstrides(), &[1]);
+    }
+
+    #[test]
+    fn misaligned_view_is_rejected() {
+        let s = shape::new(vec![4]).unwrap();
+        let l = layout::contiguous(&s);
+        let mut bytes = vec![0u8];
+        bytes.extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0, 4.0]));
+        let err = tensorview::<f32>::tryfrombytes(&s, &l, &bytes[1..]).unwrap_err();
+        assert!(matches!(err, tensorerror::viewmisaligned { .. }));
+    }
+
+    #[test]
+    fn view_rejects_layout_not_valid_for_shape() {
+        let s = shape::new(vec![2, 3]).unwrap();
+        let other = shape::new(vec![6]).unwrap();
+        let l = layout::contiguous(&other);
+        let bytes = bytesfrom(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            tensorview::<f32>::tryfrombytes(&s, &l, &bytes).map(|_| ()),
+            Err(tensorerror::invalidlayout)
+        );
+    }
+
+    #[test]
+    fn empty_view_is_accepted() {
+        let s = shape::new(vec![0]).unwrap();
+        let l = layout::contiguous(&s);
+        let v = tensorview::<f32>::tryfrombytes(&s, &l, &[]).unwrap();
+        assert_eq!(v.getlen(), 0);
+    }
+}
