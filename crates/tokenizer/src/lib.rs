@@ -33,7 +33,10 @@ mod decode;
 mod encode;
 mod engine;
 mod error;
+mod jinja;
 mod merges;
+mod postprocess;
+mod pretoken;
 mod special;
 mod vocab;
 
@@ -41,5 +44,7 @@ pub use chat::{chatmessage, chatrole, chattemplate, chattemplateentry};
 pub use engine::tokenizer;
 pub use error::tokenizererror;
 pub use merges::bytepair;
+pub use postprocess::postprocessor;
+pub use pretoken::{bytetounicode, gpt2split, unicodetobyte};
 pub use special::specialtokens;
 pub use vocab::vocabulary;

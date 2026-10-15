@@ -1,0 +1,332 @@
+# tokenizer 深度分析与优化执行计划
+
+- 状态：**优化计划（实施中）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）与 P1/T8（热路径去分配）已实施并测得加速（见 §12.4、§12.5）；P0/T1 的 GPT-2 ByteLevel 基础、T2+T3（字节级编解码接入）、T4（TemplateProcessing post_processor）与 T5（最小 Jinja 子集 chat_template）已实施（见 §12.6–§12.8）；其余条目（P0/T1 的其它预分词类型、P1 T7、T9–T12）均**未实施**。
+- 仓库：`llm` workspace（`crates/tokenizer`）
+- 基线分支：`main`
+- 计划日期：2026-10-16
+- 覆盖范围：`crates/tokenizer`（9 模块，约 1013 行）、`crates/cli` 的 tokenizer 接线、`benches/tokenizer.rs`、`tests/it/{tokenizerunits,tokens}.rs`。
+- 目标：**代码更少、架构更先进、质量更优秀、性能更好**，同时保持自研与最小依赖，不绑定 HuggingFace `tokenizers` crate。
+- 约束：`#![forbid(unsafe_code)]`；生产路径无 `panic`/`unwrap`/`expect`；无分隔符命名约定；`crates/tokenizer/src` 禁止内联 `#[cfg(test)]`；性能结论必须有可复现基准支撑；每个提交完成一个可独立测试的阶段（AGENTS.md §11）。
+
+## 1. 结论摘要
+
+1. **当前 tokenizer 是"正确性优先、性能未处理"的基线**：双向 `BTreeMap` 词表、`Result` 错误模型、`IN4` 稀疏 id 防护、确定性合并语义都已到位并测试覆盖，这些是必须保住的正确性资产。
+2. **两个正交缺口，不可混为一谈**：
+   - **正确性缺口（相对 HF）**：缺 `pre_tokenizer`、`byte-to-unicode` 字母表、`normalizer`、`post_processor`、`decoder` 各段，以及 Jinja 对话模板。后果是**对真实 GPT-2 / Llama 3 词表编码输出与 HF 不一致**——token 是错的，快慢失去意义。
+   - **性能缺口**：核心 BPE 合并是 O(n²)（[merges.rs:67](crates/tokenizer/src/merges.rs:67)），`bytepair::getrank` 每次候选分配两个 `String`，`resolvetoken` 每字节 `format!`。
+3. **"BPE 不是计算算子、故无基准"的既有声明（design.md §10.8）必须推翻**：编码一旦在推理热路径上并作为优化目标，AGENTS.md §7/§8 与 engineering.md §3.3/§8.15 强制"先基线后优化"。
+4. **最高杠杆**：① 补 pre_tokenizer + decoder 使真实 HF tokenizer.json 可正确编解码（P0）；② BPE 合并换"相邻对 + 优先队列 + 字节缓冲符号"，O(n²)→O(n log n)（P1/T6）。二者共享同一符号表示（字节缓冲），应一次落地、共同演进。
+5. **执行顺序**：G0 建基线 → P0 正确性主线 → P1 性能与完善。性能工作严格置于正确性之后、且每步附基准对比。
+
+## 2. 目标与不可妥协的正确性标准
+
+1. **语义对齐**：对真实 HF `tokenizer.json`（GPT-2 / Llama 3 等），编码输出与 HF 逐 token 一致；`decode(encode(x)) == x` 字节精确。任何"对齐"结论必须以对照测试的黄金输出为证据，不得凭代码外观声称。
+2. **边界安全**：恶意/越界 token id 不触发大分配（`IN4`）；超预算在分配前返回错误；合并循环不产生越界索引。
+3. **资源生命周期正确**：失败路径不泄漏、不误复用请求状态；并发请求之间不共享可变请求状态（`OW2`）。
+4. **确定性**：合并保持"最低 rank 优先、平局取最左"；重叠特殊字面量取最长；编码/解码往返确定。
+5. **依赖最小**：新增生产依赖必须逐项论证（AGENTS.md §3.2）。`serde_json` 之外，优先用 `std` 手写实现；`regex` 与 `unicode-normalization` 仅在对照测试证明确有必要时引入。
+6. **性能可证**：先建基线再改实现；固定环境、profile、工作负载、预热与统计方式；报告 median、变异、绝对与相对差；不接受无数据"提升"结论。
+7. **回归可追踪**：每个优化对应对拍测试 + 基准证据；任何回归阻断合入。
+
+## 3. 现状深度分析（源码核查）
+
+### 3.1 已实现（正确性基线，全部有测试覆盖）
+
+| 能力 | 位置 | 说明 |
+| --- | --- | --- |
+| BPE 模型加载 | `engine.rs::fromjson` | 解析 `model.type=="BPE"`、`vocab`、`merges`、`byte_fallback`、`unk_token`、`added_tokens` |
+| 普通编码 | `encode.rs::encodeplain` | 按 Unicode 字符切分初始符号 → BPE 合并 → 查 vocab |
+| 特殊 token 编码 | `encode.rs::encodespecial` | 最长字面量优先，扫描分段 |
+| 解码 | `decode.rs::decodetokens` | 含 `<0xNN>` 字节回退还原 + UTF-8 校验 |
+| 简单 chat 模板 | `chat.rs` | 固定 role prefix/suffix 子集（非 Jinja） |
+| 数据结构 | `vocab.rs`/`special.rs`/`merges.rs` | 双向 `BTreeMap`，`forbid(unsafe_code)` |
+| cli 接线 | `cli/src/commands/generate.rs` | `--tokenizer` + `--text` 经 `fromjson` + `encode` 真实走通 |
+
+> 更正此前方案中的 U7：**cli 已接线**，非"参数声明但无实际调用"。`generate.rs:148-149` 调用 `tokenizer::fromjson(document)` 与 `loaded.encode(text)`；`args.rs:62-74` 声明参数，`generate.rs:134-137` 强制"text requires --tokenizer"。缺失的仅是**独立 decode 命令**，不属本计划核心。
+
+### 3.2 与 HF 不兼容的缺口（U）
+
+这些是**正确性缺口**——当前 tokenizer 无法对真实 HF tokenizer.json 做正确编码。
+
+| # | 缺口 | 后果 | 证据 |
+| --- | --- | --- | --- |
+| U1 | `pre_tokenizer` 段被忽略 | 按字符切分而非字节级预分词 → 与 HF 输出不一致。Llama 3 的 `Ġword`（空格前缀）体系无法对齐；GPT-2 的 byte-to-unicode 映射缺失 | `engine.rs` 只读 `model`/`added_tokens`；`encodeplain` 直接 `text.chars()` |
+| U2 | byte-to-unicode 映射未实现 | GPT-2 标准 256 字节→Unicode 表缺失，BPE 初始符号错误 | `encode.rs` 以 `char` 为初始符号 |
+| U3 | `normalizer` 段被忽略 | NFKC/lowercase 等清洗未做，与 HF 预处理不一致 | `fromjson` 不读 `normalizer` |
+| U4 | `post_processor` 段被忽略 | TemplateProcessing/ByteLevel 后处理（BOS/EOS、type ids）缺失，只能靠 `chattemplate` 手动拼 | `fromjson` 不读 `post_processor` |
+| U5 | `decoder` 段被忽略 | 解码不还原 `Ġ`→空格等 ByteLevel 逆映射 → 输出带 `Ġ` 伪字符 | `decodetokens` 直接 `out.push_str(content)` |
+| U6 | Jinja chat template 未实现 | 只能表达 Llama 式 role 包裹，任意 Jinja 模板（`apply_chat_template`）不可用 | `chat.rs` 固定 prefix/suffix |
+
+### 3.3 性能与工程问题（P）
+
+| # | 问题 | 现状 | 复杂度 | 位置 |
+| --- | --- | --- | --- | --- |
+| P1 | BPE 合并 O(n²) | 每轮全表扫描找最低 rank 相邻对；每次 `getrank` 分配两个 `String`；`work.remove(index+1)` 为 O(n) 搬移 | 合并密集最坏 Θ(n²) 时间与分配 | `merges.rs::apply` |
+| P2 | vocab 热路径 O(log n) | `getid` 走 `BTreeMap` 查找（**零分配**，`&str` Borrow）；分配在别处 | encode 每符号 O(log V) | `vocab.rs` |
+| P3 | special 扫描 O(n·k) | 每字符位置对全部 special 字面量线性 `starts_with`，且每次调用重排 | O(n·k·avg_len) | `encode.rs::encodespecial` |
+| P4 | 无词缓存 | 重复 pre-token 每次都重跑合并 | — | `encode.rs` |
+| P5 | `regex` 依赖未显式声明 | 已在传递树（经 dev 依赖），未入 workspace 依赖 | — | `Cargo.toml` |
+| P6 | `unicode-normalization` 未引入 | normalizer 段的 NFKC 需要 | — | `Cargo.toml` |
+
+> 更正此前方案中的 P2：`vocabulary::getid(&str)` 用 `BTreeMap::get` 的 `Borrow<&str>`，**不分配**。真正按符号/字节分配的是 `bytepair::getrank`（[merges.rs:56-60](crates/tokenizer/src/merges.rs:56) 构造 `(left.to_string(), right.to_string())`）与 `resolvetoken`（[encode.rs:120](crates/tokenizer/src/encode.rs:120) 的 `format!("<0x{byte:02X}>")`）。
+
+## 4. 借鉴 HF 的架构基准
+
+### 4.1 Pipeline 五段（HF 官方架构）
+
+HF tokenizers 围绕中心 `Tokenizer` 类，实现五段管线，从 `tokenizer.json` 按类型读取各段，**不做任何硬编码**：
+
+```
+normalizer → pre_tokenizer → model(BPE/Unigram/WordPiece) → post_processor → decoder
+```
+
+- **normalizer**：NFKC、lowercase、strip accents 等清洗。
+- **pre_tokenizer**：按词切分（ByteLevel / Whitespace / Metaspace / Sequence / Digits）。
+- **model**：BPE 等在 pre-token 内做子词合并（**合并永不跨越 pre-token 边界**）。
+- **post_processor**：TemplateProcessing（`$A`/`$B` + special token + type ids）、ByteLevel 后处理。
+- **decoder**：ByteLevel decoder（`Ġ`→空格）、Metaspace 还原等。
+
+### 4.2 HF v1 的顶级性能技巧（v1 相对 v0.23 在 M4 Max 上 BPE 编码快 3–30×）
+
+1. **手写 splitter 替代 regex 引擎**：BPE 正则预切分是模型固定参数，可用手写状态机实现，不需通用 regex 引擎。
+2. **共享词缓存**：重复词直接命中缓存，跳过合并。
+3. **零分配 merge 循环**：符号存扁平数组 + 相邻位置链接；候选 pair 打包进单个 64 位值（rank 高位），比较即整数比较，"无合并"为最大值 → 循环无分支；scratch buffer 由调用方持有。
+4. **batch 模型调用**：一批 pre-token 一次 model 调用，而非逐个。
+
+学术基线（SuperBPE 复杂度分析、HF 算法文档）佐证：BPE 编码期用**相邻对 + 优先队列**（每步取最小 rank、只更新受影响邻居）是业界标准，摊还 O(n)。
+
+## 5. 目标架构与设计原则
+
+```
+tokenizer.json
+   │ 类型分发（按 type 字段构造各段，不硬编码具体模型）
+   ▼
+normalizer ──▶ pre_tokenizer ──▶ model(BPE) ──▶ post_processor ──▶ decoder
+   (可选)        (ByteLevel/Whitespace/   (合并+查表)  (TemplateProcessing)  (ByteLevel 还原)
+                  Metaspace/Sequence)
+```
+
+设计原则：
+
+- **每段 = 一个 trait + 按 type 分发的实现**：新增模型类型只加实现不改管线。
+- **保持 `forbid(unsafe_code)`**：HF 内核含 unsafe；本 crate 以纯 Rust 实现同等语义。
+- **最小依赖**：`serde_json` + 按需 `unicode-normalization`（NFKC 段才用），**pre_tokenizer 用 `std::char` 手写，不引入 `regex`**（见 §7 D1）。
+- **公开 API 不变**：`tokenizer`/`tokenizererror`/`vocabulary`/`bytepair`/`specialtokens`/chat 类型保持，下游 `cli` 的 `From` 转换不变；`bytepair::apply` 保留为薄包装（见 §7 D4）。
+- **符号表示统一为字节缓冲**：`String` 符号 → `Vec<u8>` 符号，同时服务 P0 的字节级预分词与 P1 的零分配合并，一次落地。
+
+### 与 HF 的目标对比（达成标准）
+
+| 维度 | HF tokenizers v0.23/v1 | 本项目目标 | 判定方式 |
+| --- | --- | --- | --- |
+| 代码量 | v0 单 crate 数万行（+ 训练/序列化/转换子 crate）；v1 拆 4 crate | **~1500 行内**（9 模块 → pipeline 各段，无训练/序列化） | `wc -l` |
+| 架构 | 五段 pipeline，v1 拆 tk-encode/tk-serialize/tk-convert/tk-train | **五段 pipeline 类型分发**，单 crate 分模块，`forbid(unsafe)` | 结构评审 |
+| 质量 | 与 HF 输出逐 token 对齐（官方回归保障） | **与真实 HF tokenizer.json 逐位对齐**（GPT-2/Llama 3 对照套件） | 对照测试 |
+| 性能 | v1：BPE 3–30× over v0.23（M4 Max） | **同语义下 merge O(n²)→O(n log n)** + 零分配热路径 + 词缓存 | 基准（tokbench 风格） |
+
+> 不声称性能超越 HF v1（无同机对照证据）。主张是：**相同语义、更少代码、无 unsafe、渐进式性能提升**——性能结论以实测为准，逐阶段记录。
+
+## 6. 执行分级与顺序
+
+优先级：**G0**（基线，前置）→ **P0**（正确性主线）→ **P1**（性能与完善）。
+
+### G0 — 建立可审计基线（先做，见第 12 节）
+
+- 记录 commit SHA、Rust/Cargo 版本、宿主（CPU/OS/内存）。
+- 运行 tokenizer 现有正确性测试（`tests/it/tokenizerunits.rs`、`tests/it/tokens.rs`），保存结果。
+- 新增 `benches/tokenizer.rs` 建立性能基线（合成夹具：链式合并 + 字节回退）。
+- 验收：基线报告能区分 PASS/FAIL/NOT RUN；性能基线可复现；未跑的命令如实标注。
+
+### P0 — 打通「真实 HF tokenizer.json 正确编解码」主线
+
+| 步骤 | 内容 | 借鉴 HF 的什么 | 验证方式 | 代码影响 |
+| --- | --- | --- | --- | --- |
+| T1 | `pre_tokenizer` 解析：ByteLevel（256 字节→Unicode 表 + GPT-2 手写切分）、Whitespace、Metaspace、Sequence 类型分发 | pre_tokenizer 段按类型构造 | 真实 GPT-2/Llama 3 tokenizer.json 编码对照（与 HF 输出逐位一致） | 新模块 `pretoken.rs`，`engine::fromjson` 接线 |
+| T2 | BPE 合并限定在 pre-token 内（不跨边界），初始符号改为 byte-to-unicode 字符 | v1「merge never crosses a pre-token boundary」 | T1 对照测试全绿 | `encode.rs` 重构 + 字节符号 |
+| T3 | `decoder` 段：ByteLevel decoder（`Ġ`→空格还原 + 字节拼接） | decoder 段 | `decode(encode(x)) == x` 字节成立 + HF 对照 | 新模块 `decoder.rs` |
+| T4 | `post_processor` 段：TemplateProcessing 解析与执行 | post_processor 段 | BOS/EOS/type-id 与 HF 一致 | 新模块 `postprocess.rs` |
+| T5 | `chat` 升级：读 `chat_template` 字段，自研最小 Jinja 子集（变量插值 + 循环 + if） | HF apply_chat_template | 主流模型模板渲染对照 | `chat.rs` 重构 |
+
+### P1 — 性能与完善（在 P0 正确性之上）
+
+| 步骤 | 内容 | 借鉴 HF 的什么 | 复杂度影响 | 验证方式 |
+| --- | --- | --- | --- | --- |
+| T6 | BPE merge 循环：相邻对 + 优先队列；符号扁平数组 + 位置链表；pair 打包 64 位（rank 高位）；scratch 复用 | v1 merge loop / SuperBPE 摊还分析 | **O(n²)→O(n log n)** | 对拍（`proptest` 对照旧 `apply` 逐字节一致）+ 大文本基准 |
+| T7 | 词缓存：pre-token → 编码结果，重复词命中（作用域见 §7 D6） | v1 shared word cache | 重复文本提速 | 重复词基准 |
+| T8 | vocab 热路径去分配：`HashMap`（保留入站校验防大分配）或零拷贝键 | v1 allocation-conscious 路径 | getid O(1) | 全测试 + clippy |
+| T9 | `encodespecial` 换前缀匹配结构（trie / 按首字节哈希） | — | O(n·k)→O(n·log k) | special 用例全绿 |
+| T10 | normalizer 段（NFKC + Sequence） | normalizer 段 | — | 对照测试 |
+| T11 | 依赖显式化：仅引入确有必要者（见 §7 D1/D2） | — | — | `cargo tree` |
+| T12 | cli 补独立 decode 命令（可选，视需求） | — | — | cli 集成测试 |
+
+## 7. 关键决策点（带建议）
+
+| # | 决策 | 建议 | 理由 |
+| --- | --- | --- | --- |
+| D1 | pre_tokenizer 实现：手写 splitter vs `regex` | **手写**（`std::char` 分类 + 收缩词表 `'s/'t/'re/'ve/'m/'ll/'d` + 静态 256 字节表） | HF v1 首条技巧即"手写 splitter 替代 regex"；`regex` 已是传递依赖但非生产依赖，手写免去新增生产依赖面，符合 AGENTS.md §3.2。**caveat**：`char::is_alphabetic()` ⊃ `\p{L}`（含 Other_Alphabetic），对异体字符可能微差，须由对照测试钉住；若钉不住再评估专用 Unicode 表 |
+| D2 | normalizer/NFKC：现在做 vs 推迟 | **推迟**，仅当真实模型带 `normalizer` 段时引入 `unicode-normalization` | GPT-2/Llama/Mistral/Qwen 的 tokenizer 均 `normalizer: null`；NFKC 无 `std` 等价，手写不可行 |
+| D3 | 真实 tokenizer.json 夹具（P0 对照测试硬依赖） | **必须先解决**：vendor 一个 GPT-2 或 Llama 3 小词表 + HF Python 产出的黄金 `tokenize` 输出，存入 `testkit` 或 `tests/fixtures/` | 当前仓内无任何真实 tokenizer.json（仅有 target 指纹产物）；无黄金输出则 U1–U5 的"逐位对齐"无法验证，只能标"未验证" |
+| D4 | `bytepair::apply(&[String]) -> Vec<String>` 公共签名 | **保留为薄包装**，内部换字节路径 | "公开 API 不变"是既定目标；签名改动连带 design.md §10.3/conformance/architecture 重审 |
+| D5 | Jinja 子集范围 | **自研最小子集**（变量/循环/if），不做完整 Jinja | 完整 Jinja 需模板引擎依赖与不可信求值，违背极简内核；子集覆盖主流 `chat_template` |
+| D6 | 词缓存作用域 | **不得引入跨请求可变共享缓存**（违 `OW2`/`OW4`）；优先 per-encode 的 scratch 缓存，或对静态 pre-token 片段的不可变预计算缓存 | tokenizer 以 `&self` 跨线程共享；全局可变缓存破坏无锁共享假设，需另行论证同步 |
+
+## 8. PR 拆分与强制门禁
+
+### 建议的 PR 序列（每个提交一个可独立测试的阶段）
+
+1. **PR-0（Phase 0）**：`benches/tokenizer.rs` + `Cargo.toml` `[[bench]]` 项 + 基线结果记录（本文档 §12）。
+2. **PR-A（T1+T2）**：pre_tokenizer + 边界内合并 + 字节符号，对照套件建立。
+3. **PR-B（T3+T4）**：decoder + post_processor，编解码闭环。
+4. **PR-C（T5）**：Jinja 子集 chat template。
+5. **PR-D（T6+T7）**：BPE 优先队列 + 词缓存（附基准对比）。
+6. **PR-E（T8+T9）**：热路径去分配 + special 匹配。
+7. **PR-F（T10–T12）**：normalizer + 依赖显式化 + cli decode。
+
+### 每个 PR 的强制门禁
+
+```
+cargo fmt --all -- --check
+cargo check -p tokenizer --all-targets --locked
+cargo clippy -p tokenizer --all-targets --locked -- -D warnings
+cargo test --test it tokenizerunits tokens        # 正确性回归
+bash scripts/checknaming.sh                       # 无分隔符命名
+bash scripts/checksrctests.sh                     # crates/tokenizer/src 无内联测试
+bash scripts/checkunsafe.sh                       # unsafe 站点不变
+RUSTDOCFLAGS="-D warnings" cargo doc -p tokenizer --no-deps
+cargo bench --bench tokenizer                     # P1 各步必须附前后对比
+```
+
+## 9. 风险与回滚策略
+
+- **最大风险**：P1/T6 重写的合并循环在边界上与原算法分叉（字节拼接 vs 字符串拼接的 UTF-8 语义、平局规则、rank 首次出现）。**缓解**：`proptest` 对拍旧 `apply` 逐字节一致 + 现有 `merges` 用例全保留，二者是权威参考；任一分叉即回滚该提交。
+- **正确性风险**：P0 各段（pre_tokenizer/decoder/post_processor）的语义与 HF 分叉。**缓解**：对照套件以真实 tokenizer.json + 黄金输出为准（D3）；无黄金输出则阶段标"未验证"，不得声称对齐。
+- **依赖风险**：新增生产依赖（`unicode-normalization` 等）改变依赖图。**缓解**：仅当 D1/D2 判据满足时引入，且 `cargo tree` 复核。
+- **并发风险**：词缓存（T7）若实现为全局可变状态破坏 `OW2/OW4`。**缓解**：D6 限定作用域，接受 per-encode scratch 缓存的上限。
+- **回滚**：每个 PR 独立提交；基线（PR-0）先落地，后续任一步回滚不影响基线可复现。
+
+## 10. 退出条件（完成定义）
+
+仅当下列全部成立，任务才算完成：
+
+- P0 各段对真实 HF tokenizer.json 的编码/解码输出与 HF 逐 token 一致（对照套件全绿）。
+- P1/T6 合并循环复杂度降至 O(n log n)，且 `proptest` 对拍逐字节一致。
+- 性能声明附可复现基准（median、变异、前后相对差），无数据不称"提升"。
+- `forbid(unsafe_code)` 保持，生产路径无 `panic`/`unwrap`/`expect`。
+- 公共契约变化同步 design.md §10 / conformance.md / architecture.md §5.9。
+- 未实施项在文档中如实标注，不静默放宽需求。
+
+## 11. 边界与后续动作
+
+本计划基于已读取的 tokenizer/cli 源码、crate 清单、现有测试与质量脚本制定，是**面向实施的优化计划，不是已完成的整改**。P0 的"逐位对齐"结论依赖真实 tokenizer.json 夹具（D3）；在夹具落地前，P0 各步只能验证内部一致性（`decode(encode(x))==x`），不能声称与 HF 对齐。
+
+建议下一步：完成 PR-0（Phase 0 基线）后，先解决 D3 的夹具问题，再进入 PR-A（T1+T2）。
+
+## 12. 执行状态（2026-10-16，Phase 0）
+
+本节记录 G0 的基线与正确性结果。除本节外，其余条目（P0 T1–T5、P1 T6–T12）一律视为**未实施**。
+
+### 12.1 基线（G0）
+
+| 项 | 记录 |
+| --- | --- |
+| 基线 commit / 分支 | `2478f0a1b882385a58a7e4681da7f25097fbef60` / `main`（`spapient/llm`） |
+| 工具链 | `rustc 1.99.0 (b940084d7 2026-09-28)`、`cargo 1.99.0`，由 `rust-toolchain.toml` 固定 |
+| 宿主 | MacBook Pro（`Mac17,9`），Apple M5 Pro，18 核（6 Super + 12 Performance），24 GiB 内存（`hw.memsize=25769803776`），arm64e，Darwin 27.0.0（`RELEASE_ARM64_T6050`） |
+| 环境采集 | 会话沙箱拦截 `sysctl`（`Operation not permitted`）；改用 `hostinfo` / `system_profiler SPHardwareDataType` 采得（二者可用），与豆包侧完全访问环境的 `sysctl` 采集（`hw.ncpu=18`）一致 |
+| 构建 profile | `bench`（optimized + debuginfo），继承 root `[profile.release]` 的 `lto = "thin"`、`codegen-units = 1` |
+| 正确性基线 | `cargo test --test it tokenizerunits` → **47 passed / 0 failed**；`cargo test --test it tokens` → **21 passed / 0 failed** |
+| 基准夹具 | 合成且确定（无外部 PRNG、无真实 tokenizer.json，仓内未 vendor） |
+
+### 12.2 性能基线（median，100 samples）
+
+| 基准 | median | 区间 [low, high] |
+| --- | --- | --- |
+| `tokenizer/bytepair/apply_chain/64` | 134.84 µs | [133.45, 136.14] µs |
+| `tokenizer/bytepair/apply_chain/512` | 12.091 ms | [11.956, 12.236] ms |
+| `tokenizer/bytepair/apply_chain/4096` | 883.79 ms | [877.87, 889.69] ms |
+| `tokenizer/encode/bytefallback/512` | 84.720 µs | [84.480, 84.966] µs |
+| `tokenizer/encode/bytefallback/4096` | 701.03 µs | [694.66, 709.28] µs |
+| `tokenizer/decode/bytefallback/4096` | 37.091 µs | [36.930, 37.239] µs |
+
+### 12.3 复杂度读数（从基线直接观察）
+
+- **`bytepair/apply_chain` 呈平方级**：输入 64→512（8×）耗时 134.84 µs → 12.091 ms（约 **90×**）；512→4096（8×）耗时 12.091 ms → 883.79 ms（约 **73×**）。这与 `apply` 每轮全表扫描 + `Vec::remove` O(n) 搬移 + 每候选对分配两个 `String` 的分析一致，是 P1/T6 的目标。
+- **`encode/bytefallback`（无合并）呈线性**：512→4096（8×）耗时 84.720 µs → 701.03 µs（约 **8.3×**），佐证瓶颈确在合并循环而非逐符号解析。
+- **`decode/bytefallback` 已属合理**：4096 字符 37.1 µs，`parsebytetoken` 无分配，非本轮优先项。
+
+> 以上为基线，**不构成任何性能提升声明**。P1 各步须在相同环境、profile、工作负载下与此表对比。
+
+### 12.4 T6 实施结果（2026-10-16）
+
+`bytepair::apply`（`crates/tokenizer/src/merges.rs`）由每轮全表重扫 + `Vec::remove` 搬移的 O(n²) 重写为**双向链表 + 最小堆 + 惰性删除**：每次合并只触及相邻符号，全局最优对由堆弹出。公共 API 不变；`getrank` 仍是字符串键 `BTreeMap` 探针（敌对长键输入会叠加键长项，见 merges.rs 文档注释，属 T8 的后续微优化项）。
+
+**对拍**：新增 `tokenizerunits::merges::apply_matches_an_independent_naive_reference`（proptest，独立朴素参考实现，与 `bytepair::apply` 零共享代码）。
+
+**验证**：`cargo test --test it tokenizerunits` → **48 passed / 0 failed**（含新对拍）；`cargo clippy -p tokenizer --all-targets --locked -- -D warnings` → 通过；`cargo fmt` 通过。
+
+**基准（同环境、同 profile、同工作负载，mean，100 samples）**：
+
+| 基准 | T6 前 | T6 后 | 加速比 |
+| --- | --- | --- | --- |
+| `bytepair/apply_chain/64` | 134.84 µs | 12.16 µs | ≈ 11.1× |
+| `bytepair/apply_chain/512` | 12.091 ms | 311.3 µs | ≈ 38.8× |
+| `bytepair/apply_chain/4096` | 883.79 ms | 16.89 ms | ≈ 52.3× |
+| `encode/bytefallback/512` | 84.72 µs | 85.67 µs | ≈ 0.99×（噪声） |
+| `encode/bytefallback/4096` | 701.03 µs | 670.7 µs | ≈ 1.05×（噪声） |
+| `decode/bytefallback/4096` | 37.09 µs | 33.45 µs | ≈ 1.11×（噪声，decode 不经 `apply`） |
+
+加速比随输入规模增长（11× → 39× → 52×），与 O(n²)→O(n log n) 堆操作一致；`apply_chain/4096` 剩余的 16.89 ms 主要来自合并键随链增长而变长导致的字符串比较（O(总键长)），真实词表键短、此项不主导。`encode/bytefallback` 无合并，旧算法本是一扫即退，±5% 属测量噪声、无回归。**以上加速为实测结论，仅在本文档记录的环境与合成工作负载下成立。**
+
+### 12.5 T8 实施结果（2026-10-16）
+
+词表/合并热路径去分配，公共 API 不变：
+
+1. `bytepair::getrank`：`BTreeMap<(String, String), usize>` → 两层 `BTreeMap<String, BTreeMap<String, usize>>`，两层均用借用的 `&str` 键探测，**零分配**（原每次构造两个 `String`）。
+2. `vocabulary` 增 256 项 byte-fallback 表（`getbytetokenid`），`resolvetoken` 不再每字节 `format!("<0x{byte:02X}>")`。
+3. `vocabulary.byid` 仍为稀疏 `BTreeMap`（`IN4`）；`bycontent` 未改 `HashMap`——`getid` 本就 `Borrow<&str>` 零分配，`HashMap` 的 SipHash 对短键无净收益。
+
+**验证**：`cargo test --test it tokenizerunits` → 48 passed / 0 failed；`tokens` → 21 passed / 0 failed；clippy `-D warnings` 通过；fmt 通过。
+
+**基准（同环境/profile/工作负载，mean）**：
+
+| 基准 | T8 前（§12.4 后） | T8 后 | 变化 |
+| --- | --- | --- | --- |
+| `encode/bytefallback/512` | 85.67 µs | 41.40 µs | −51.5%（≈2×） |
+| `encode/bytefallback/4096` | 670.7 µs | 328.1 µs | −51.3%（≈2×） |
+| `apply_chain/64` | 12.16 µs | 9.05 µs | −25.3% |
+| `apply_chain/512` | 311.3 µs | 318.8 µs | +2.7%（噪声） |
+| `apply_chain/4096` | 16.89 ms | 16.73 ms | −1.0%（p=0.21，不显著） |
+| `decode/bytefallback/4096` | 33.45 µs | 33.24 µs | −0.1%（decode 不经此路径） |
+
+`encode/bytefallback` 减半来自 `resolvetoken` 去 `format!`。`apply_chain` 大 n 仍由字符串键比较主导（O(总键长)），去分配只在小 n 显著；彻底消除需符号→整数 id（HF v1 的 pair 打包 64 位），涉及滚动哈希与碰撞风险，非真实词表（键短）的瓶颈，留待后续评估。
+
+**T6+T8 累计（相对 Phase 0 基线）**：`apply_chain/4096` 883.79 ms → 16.73 ms（≈52.8×）；`encode/bytefallback/4096` 701.03 µs → 328.1 µs（≈2.14×）。
+
+### 12.6 P0/T1 部分实施（2026-10-16）
+
+GPT-2 ByteLevel 基础（[`crates/tokenizer/src/pretoken.rs`](crates/tokenizer/src/pretoken.rs)，纯函数，**未接线** encode/decode、未做 pre_tokenizer 类型分发）：
+
+- `bytetounicode()`：GPT-2 256 项 byte→unicode 表（188 可打印字节映射自身，68 字节映射 U+0100..=U+0143，双射）。
+- `unicodetobyte()`：逆表（≤U+0143）。
+- `gpt2split()`：手写 GPT-2 切分（`'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+`）；`\p{L}` 用 `char::is_alphabetic`（`Alphabetic` 派生属性 ⊃ `Letter` 类，D1 已记录）。
+
+**验证**：`tokenizerunits` → 51 passed / 0 failed（新增 `pretoken` 3 例：双射、已知向量、切分向量）；`tokens` → 21 passed；clippy `-D warnings` 通过；fmt 通过。
+
+**未完成**：`pre_tokenizer` 段其它类型分发（T1 其余）、HF 逐位对齐（受 D3 夹具阻塞）。
+
+### 12.7 P0/T2+T3 实施结果（2026-10-16）
+
+ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`encode.rs`/`decode.rs` 增加字节级路径）：
+
+- `fromjson` 解析 `pre_tokenizer.type`/`decoder.type`：`ByteLevel` → 启用字节级；缺省 → 字符级（既有行为）；其它类型 → `unsupportedpretokenizer`/`unsupporteddecoder`。
+- 编码（T2）：`gpt2split` 切分 → 每 chunk 字节映射 byte-to-unicode → 合并不跨 chunk 边界。
+- 解码（T3）：token 每字符经逆表还原字节 → UTF-8；越界/非字母表字符 → `invalidbytelevel`。
+- 错误 enum 15 → 18：`unsupportedpretokenizer`、`unsupporteddecoder`、`invalidbytelevel`。
+
+**验证**：tokenizer crate 编译 + clippy `-D warnings` + fmt 通过；字节级往返经临时独立测试目标（只依赖 tokenizer+lib）实测 `decode(encode(x))==x`（ASCII/收缩/CJK/数字/空），"你好" 2 标量→6 token 证实字节级。**`tests/it` 集成测试（含 `pretoken` 新增 5 例）暂被并发会话的 `scan` 特性（tensor/api）未完成改动阻塞**（E0046 缺 `scan`/`scan_cached` 实现、E0283），待其修复后即可运行。
+
+### 12.8 P0/T4+T5 实施结果（2026-10-16）
+
+- **T4（`post_processor`）**：`postprocess.rs` 解析 `post_processor.type == "TemplateProcessing"` 的 `single`/`pair` 模板；`tokenizer::postprocess`/`postprocesspair` 按模板插入特殊 token（type_id 忽略——本 tokenizer 只产 tokenid）。无 post_processor 时为恒等。新增错误变体 `unsupportedpostprocessor`、`malformedpostprocessor`。
+- **T5（`chat_template`）**：`jinja.rs` 实现最小 Jinja 子集——`{{ expr }}` 插值、`for ... in messages`、`if`/`elif`/`else`、`message.role`/`message['content']`、`loop.last/first/index/index0`、`bos_token`/`eos_token`、字符串字面量、`==`/`!=`/`not`/`and`/`or`；`fromjson` 读 `chat_template`/`bos_token`/`eos_token`；`tokenizer::renderchat` 渲染，`applychattemplate` 优先走 Jinja。新增错误变体 `malformedtemplate`。
+
+**验证**：tokenizer crate 编译 + clippy `-D warnings` + fmt 通过；经临时独立测试目标实测 3 例全过（post_processor single/pair、Jinja 循环+插值、Jinja if/else 分支）。修复一处 `tokenize` 缺陷（原只按 `{{` 优先，先出现的 `{%` 被误吞为文本）。**`tests/it` 集成测试（含新增 `postprocess`/`jinja` 模块）仍被并发会话 `scan` 阻塞**。

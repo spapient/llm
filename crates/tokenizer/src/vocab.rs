@@ -12,11 +12,24 @@ use crate::error::tokenizererror;
 /// id to token direction is stored in a `BTreeMap` rather than a dense vector
 /// so that an out-of-range id from untrusted input cannot cause a large
 /// allocation (rule `IN4`); ids are validated against the inserted entries,
-/// never against their numeric magnitude.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// never against their numeric magnitude. A 256-entry byte-fallback table maps
+/// each byte to its `<0xNN>` token id when present, so byte-fallback encoding
+/// does not allocate per byte.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct vocabulary {
     bycontent: BTreeMap<String, u32>,
     byid: BTreeMap<u32, String>,
+    bytetokens: [Option<tokenid>; 256],
+}
+
+impl Default for vocabulary {
+    fn default() -> Self {
+        Self {
+            bycontent: BTreeMap::new(),
+            byid: BTreeMap::new(),
+            bytetokens: [None; 256],
+        }
+    }
 }
 
 impl vocabulary {
@@ -45,7 +58,16 @@ impl vocabulary {
             byid.insert(raw, content.clone());
             bycontent.insert(content, raw);
         }
-        Ok(Self { bycontent, byid })
+        let mut bytetokens = [None; 256];
+        for (byte, slot) in bytetokens.iter_mut().enumerate() {
+            let token = format!("<0x{byte:02X}>");
+            *slot = bycontent.get(&token).copied().map(tokenid::new);
+        }
+        Ok(Self {
+            bycontent,
+            byid,
+            bytetokens,
+        })
     }
 
     /// Returns the id assigned to `content`, if any.
@@ -58,6 +80,12 @@ impl vocabulary {
     #[must_use]
     pub fn getcontent(&self, id: tokenid) -> Option<&str> {
         self.byid.get(&id.get()).map(String::as_str)
+    }
+
+    /// Returns the byte-fallback token id for `byte`, if the `<0xNN>` token is
+    /// present in the vocabulary.
+    pub(crate) fn getbytetokenid(&self, byte: u8) -> Option<tokenid> {
+        self.bytetokens[byte as usize]
     }
 
     /// Returns the number of distinct tokens in the vocabulary.

@@ -2,16 +2,35 @@ use lib::tokenid;
 
 use crate::error::tokenizererror;
 use crate::merges::bytepair;
+use crate::pretoken::{bytetounicode, gpt2split};
 use crate::special::specialtokens;
 use crate::vocab::vocabulary;
 
-/// Encodes `text` as ordinary text: every Unicode scalar is an initial symbol,
-/// byte-pair merges are applied, and each resulting symbol is resolved to one
-/// or more token ids.
+/// Encodes `text` as ordinary text.
+///
+/// When `bytelevel` is set the GPT-2 ByteLevel pipeline is used: the text is
+/// split with the GPT-2 splitter, each chunk's bytes are mapped to the
+/// byte-to-unicode alphabet, and merges run within each chunk without crossing
+/// a chunk boundary. Otherwise every Unicode scalar is an initial symbol.
 ///
 /// Special-token literals in `text` are not treated as structural here; use
 /// [`encodespecial`] for that.
 pub(crate) fn encodeplain(
+    vocab: &vocabulary,
+    bpe: &bytepair,
+    bytefallback: bool,
+    unk: Option<tokenid>,
+    bytelevel: bool,
+    text: &str,
+) -> Result<Vec<tokenid>, tokenizererror> {
+    if bytelevel {
+        return encodebytelevel(vocab, bpe, bytefallback, unk, text);
+    }
+    encodechars(vocab, bpe, bytefallback, unk, text)
+}
+
+/// Char-level encoding: every Unicode scalar is an initial symbol.
+fn encodechars(
     vocab: &vocabulary,
     bpe: &bytepair,
     bytefallback: bool,
@@ -33,6 +52,41 @@ pub(crate) fn encodeplain(
     Ok(out)
 }
 
+/// Byte-level encoding: split with the GPT-2 splitter, map each chunk's bytes
+/// to the byte-to-unicode alphabet, and apply merges within each chunk.
+///
+/// The per-call cache reuses a chunk's encoding when the same pre-token appears
+/// more than once in `text`; it is call-local so it adds no shared state.
+fn encodebytelevel(
+    vocab: &vocabulary,
+    bpe: &bytepair,
+    bytefallback: bool,
+    unk: Option<tokenid>,
+    text: &str,
+) -> Result<Vec<tokenid>, tokenizererror> {
+    let table = bytetounicode();
+    let mut out = Vec::new();
+    let mut cache: std::collections::HashMap<&str, Vec<tokenid>> = std::collections::HashMap::new();
+    for chunk in gpt2split(text) {
+        if let Some(ids) = cache.get(chunk) {
+            out.extend_from_slice(ids);
+            continue;
+        }
+        let symbols: Vec<String> = chunk
+            .bytes()
+            .map(|byte| table[byte as usize].to_string())
+            .collect();
+        let merged = bpe.apply(&symbols);
+        let mut ids = Vec::with_capacity(merged.len());
+        for symbol in &merged {
+            resolvetoken(vocab, bytefallback, unk, symbol, &mut ids)?;
+        }
+        out.extend_from_slice(&ids);
+        cache.insert(chunk, ids);
+    }
+    Ok(out)
+}
+
 /// Encodes `text`, recognizing special-token literals as structural markers.
 ///
 /// The input is scanned left to right. At each position the longest special
@@ -43,29 +97,28 @@ pub(crate) fn encodespecial(
     bpe: &bytepair,
     bytefallback: bool,
     unk: Option<tokenid>,
+    bytelevel: bool,
     specials: &specialtokens,
     text: &str,
 ) -> Result<Vec<tokenid>, tokenizererror> {
-    let mut literals: Vec<(&str, tokenid)> = specials.iter().collect();
-    // Longest literal first so that overlapping markers resolve deterministically.
-    literals.sort_by(|left, right| {
-        right
-            .0
-            .len()
-            .cmp(&left.0.len())
-            .then_with(|| left.0.cmp(right.0))
-    });
-
     let mut out = Vec::new();
     let mut segment = String::new();
     let mut index = 0;
     while index < text.len() {
-        if let Some((literal, id)) = literals
-            .iter()
+        if let Some((literal, id)) = specials
+            .iterlongest()
             .find(|(literal, _)| text[index..].starts_with(literal))
         {
-            flushsegment(vocab, bpe, bytefallback, unk, &mut segment, &mut out)?;
-            out.push(*id);
+            flushsegment(
+                vocab,
+                bpe,
+                bytefallback,
+                unk,
+                bytelevel,
+                &mut segment,
+                &mut out,
+            )?;
+            out.push(id);
             index += literal.len();
             continue;
         }
@@ -76,7 +129,15 @@ pub(crate) fn encodespecial(
         segment.push(character);
         index += character.len_utf8();
     }
-    flushsegment(vocab, bpe, bytefallback, unk, &mut segment, &mut out)?;
+    flushsegment(
+        vocab,
+        bpe,
+        bytefallback,
+        unk,
+        bytelevel,
+        &mut segment,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -85,13 +146,14 @@ fn flushsegment(
     bpe: &bytepair,
     bytefallback: bool,
     unk: Option<tokenid>,
+    bytelevel: bool,
     segment: &mut String,
     out: &mut Vec<tokenid>,
 ) -> Result<(), tokenizererror> {
     if segment.is_empty() {
         return Ok(());
     }
-    let mut ids = encodeplain(vocab, bpe, bytefallback, unk, segment)?;
+    let mut ids = encodeplain(vocab, bpe, bytefallback, unk, bytelevel, segment)?;
     out.append(&mut ids);
     segment.clear();
     Ok(())
@@ -114,12 +176,11 @@ fn resolvetoken(
         return Ok(());
     }
     if bytefallback {
-        let mut bytes = Vec::new();
+        let mut ids = Vec::new();
         let mut complete = true;
         for byte in symbol.bytes() {
-            let token = format!("<0x{byte:02X}>");
-            match vocab.getid(&token) {
-                Some(id) => bytes.push(id),
+            match vocab.getbytetokenid(byte) {
+                Some(id) => ids.push(id),
                 None => {
                     complete = false;
                     break;
@@ -127,7 +188,7 @@ fn resolvetoken(
             }
         }
         if complete {
-            out.extend(bytes);
+            out.extend(ids);
             return Ok(());
         }
     }

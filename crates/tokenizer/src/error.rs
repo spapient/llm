@@ -46,6 +46,41 @@ pub enum tokenizererror {
         modeltype: String,
     },
 
+    /// The declared pre-tokenizer type is not supported.
+    #[error("unsupported pre_tokenizer type: {pretype}")]
+    unsupportedpretokenizer {
+        /// The unsupported pre-tokenizer type string.
+        pretype: String,
+    },
+
+    /// The declared decoder type is not supported.
+    #[error("unsupported decoder type: {decodertype}")]
+    unsupporteddecoder {
+        /// The unsupported decoder type string.
+        decodertype: String,
+    },
+
+    /// The declared post-processor type is not supported.
+    #[error("unsupported post_processor type: {posttype}")]
+    unsupportedpostprocessor {
+        /// The unsupported post-processor type string.
+        posttype: String,
+    },
+
+    /// A post-processor template entry was malformed.
+    #[error("malformed post_processor entry at index {index}")]
+    malformedpostprocessor {
+        /// Position of the offending entry in the template array.
+        index: usize,
+    },
+
+    /// A chat template could not be rendered by the Jinja subset.
+    #[error("cannot render chat template: {detail}")]
+    malformedtemplate {
+        /// The rendering failure.
+        detail: String,
+    },
+
     /// A token id did not fit in the supported `u32` range.
     #[error("token id {id} is out of range")]
     idoutofrange {
@@ -98,6 +133,14 @@ pub enum tokenizererror {
     /// Byte tokens did not reconstruct valid UTF-8.
     #[error("token bytes do not form valid UTF-8")]
     invalidutf8,
+
+    /// A byte-level token contained a character outside the byte-to-unicode
+    /// alphabet.
+    #[error("byte-level token {token:?} contains a character outside the byte-to-unicode alphabet")]
+    invalidbytelevel {
+        /// The offending token string.
+        token: String,
+    },
 
     /// A chat-template operation was requested but no template was installed.
     #[error("no chat template is installed")]

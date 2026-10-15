@@ -1,6 +1,7 @@
 use lib::tokenid;
 
 use crate::error::tokenizererror;
+use crate::pretoken::unicodetobyte;
 use crate::vocab::vocabulary;
 
 /// Decodes token ids to a string.
@@ -28,6 +29,38 @@ pub(crate) fn decodetokens(vocab: &vocabulary, ids: &[tokenid]) -> Result<String
     }
     flushbytes(&mut bytes, &mut out)?;
     Ok(out)
+}
+
+/// Byte-level decoding: every character of every token maps through the
+/// byte-to-unicode alphabet back to a byte, and the bytes reconstruct UTF-8.
+pub(crate) fn decodebytelevel(
+    vocab: &vocabulary,
+    ids: &[tokenid],
+) -> Result<String, tokenizererror> {
+    let table = unicodetobyte();
+    let mut bytes = Vec::new();
+    for id in ids {
+        let content = vocab
+            .getcontent(*id)
+            .ok_or(tokenizererror::unknowntokenid { id: id.get() })?;
+        for character in content.chars() {
+            let codepoint = character as usize;
+            if codepoint >= table.len() {
+                return Err(tokenizererror::invalidbytelevel {
+                    token: content.to_string(),
+                });
+            }
+            match table[codepoint] {
+                Some(byte) => bytes.push(byte),
+                None => {
+                    return Err(tokenizererror::invalidbytelevel {
+                        token: content.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    String::from_utf8(bytes).map_err(|_| tokenizererror::invalidutf8)
 }
 
 /// Parses a `<0xNN>` byte-fallback token to its byte value, if it is well formed.

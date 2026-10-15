@@ -408,6 +408,7 @@ mod error {
 mod merges {
     use ::tokenizer::bytepair;
     use ::tokenizer::tokenizererror;
+    use proptest::prelude::*;
 
     fn symbols(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_string()).collect()
@@ -471,6 +472,55 @@ mod merges {
             bpe.apply(&symbols(&["a", "b", "a", "b"])),
             symbols(&["ab", "ab"])
         );
+    }
+
+    /// One of `a`..`h`, chosen uniformly as a `String`.
+    fn alpha() -> impl Strategy<Value = String> {
+        (0u8..8).prop_map(|index| ((b'a' + index) as char).to_string())
+    }
+
+    /// Independent naive reference: rescans the whole sequence each step and
+    /// resolves each rank by linear search, so it shares no code with
+    /// `bytepair::apply`.
+    fn naiveapply(merges: &[String], input: &[String]) -> Vec<String> {
+        let mut work: Vec<String> = input.to_vec();
+        loop {
+            let mut best: Option<(usize, usize)> = None;
+            for (index, pair) in work.windows(2).enumerate() {
+                let needle = format!("{} {}", pair[0], pair[1]);
+                if let Some(rank) = merges
+                    .iter()
+                    .position(|entry| entry.as_str() == needle.as_str())
+                    && best.is_none_or(|(bestrank, _)| rank < bestrank)
+                {
+                    best = Some((rank, index));
+                }
+            }
+            match best {
+                Some((_, index)) => {
+                    let merged = format!("{}{}", work[index], work[index + 1]);
+                    work[index] = merged;
+                    work.remove(index + 1);
+                }
+                None => break,
+            }
+        }
+        work
+    }
+
+    proptest! {
+        #[test]
+        fn apply_matches_an_independent_naive_reference(
+            input in proptest::collection::vec(alpha(), 0..24),
+            pairs in proptest::collection::vec((alpha(), alpha()), 0..40),
+        ) {
+            let merges: Vec<String> = pairs
+                .iter()
+                .map(|(left, right)| format!("{left} {right}"))
+                .collect();
+            let bpe = bytepair::frommerges(&merges).unwrap();
+            prop_assert_eq!(bpe.apply(&input), naiveapply(&merges, &input));
+        }
     }
 }
 
@@ -583,5 +633,207 @@ mod vocab {
         assert_eq!(v.getcount(), 0);
         assert_eq!(v.getminid(), None);
         assert_eq!(v.getmaxid(), None);
+    }
+}
+
+/// Tests relocated from `crates/tokenizer/src/pretoken.rs`.
+mod pretoken {
+    use ::tokenizer::{bytetounicode, gpt2split, tokenizer, tokenizererror, unicodetobyte};
+    use serde_json::json;
+
+    #[test]
+    fn byte_to_unicode_is_a_bijection() {
+        let forward = bytetounicode();
+        let inverse = unicodetobyte();
+        for (byte, &character) in forward.iter().enumerate() {
+            assert_eq!(inverse[character as usize], Some(byte as u8), "byte {byte}");
+        }
+    }
+
+    #[test]
+    fn byte_to_unicode_matches_known_vectors() {
+        let table = bytetounicode();
+        assert_eq!(table[0], '\u{100}');
+        assert_eq!(table[32], '\u{120}');
+        assert_eq!(table[33], '!');
+        assert_eq!(table[65], 'A');
+        assert_eq!(table[255], '\u{ff}');
+    }
+
+    #[test]
+    fn gpt2_splitter_matches_known_vectors() {
+        assert_eq!(gpt2split("it's"), ["it", "'s"]);
+        assert_eq!(gpt2split("don't"), ["don", "'t"]);
+        assert_eq!(gpt2split("I've"), ["I", "'ve"]);
+        assert_eq!(gpt2split("hello world"), ["hello", " world"]);
+        assert_eq!(gpt2split("hello  world"), ["hello", "  ", "world"]);
+        assert_eq!(gpt2split("2 cats"), ["2", " cats"]);
+        assert_eq!(gpt2split("你好"), ["你好"]);
+        assert_eq!(gpt2split("中文 test"), ["中文", " test"]);
+        assert_eq!(gpt2split(""), Vec::<&str>::new());
+    }
+
+    /// Builds a GPT-2-style tokenizer whose vocabulary is exactly the 256
+    /// byte-to-unicode characters, with ByteLevel pre-tokenization and
+    /// decoding and no merge rules.
+    fn byteleveljson() -> String {
+        let mut vocab = serde_json::Map::new();
+        for (byte, character) in bytetounicode().iter().enumerate() {
+            vocab.insert(character.to_string(), json!(byte));
+        }
+        json!({
+            "model": {
+                "type": "BPE",
+                "vocab": vocab,
+                "merges": [],
+                "byte_fallback": false,
+            },
+            "pre_tokenizer": {"type": "ByteLevel"},
+            "decoder": {"type": "ByteLevel"},
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn bytelevel_encode_decode_roundtrip() {
+        let tok = tokenizer::fromjson(&byteleveljson()).unwrap();
+        for text in ["hello world", "it's a test", "你好，世界！", "123 456", ""] {
+            let ids = tok.encode(text).unwrap();
+            assert_eq!(tok.decode(&ids).unwrap(), text, "roundtrip for {text:?}");
+        }
+    }
+
+    #[test]
+    fn bytelevel_encodes_bytes_not_characters() {
+        let tok = tokenizer::fromjson(&byteleveljson()).unwrap();
+        // "你好" is two scalars but six UTF-8 bytes; byte-level encoding yields
+        // one token per byte.
+        assert_eq!(tok.encode("你好").unwrap().len(), 6);
+    }
+
+    #[test]
+    fn rejects_unsupported_pre_tokenizer() {
+        let doc = r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"pre_tokenizer":{"type":"Metaspace"}}"#;
+        assert!(matches!(
+            tokenizer::fromjson(doc),
+            Err(tokenizererror::unsupportedpretokenizer { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_unsupported_decoder() {
+        let doc = r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"decoder":{"type":"Metaspace"}}"#;
+        assert!(matches!(
+            tokenizer::fromjson(doc),
+            Err(tokenizererror::unsupporteddecoder { .. })
+        ));
+    }
+}
+
+/// Tests for the TemplateProcessing post-processor.
+mod postprocess {
+    use ::tokenizer::tokenizer;
+    use lib::tokenid;
+
+    const DOC: &str = r#"{
+        "model": {"type": "BPE", "vocab": {"a": 0, "b": 1, "c": 2}, "merges": []},
+        "added_tokens": [
+            {"id": 3, "content": "<s>", "special": true},
+            {"id": 4, "content": "</s>", "special": true}
+        ],
+        "post_processor": {
+            "type": "TemplateProcessing",
+            "single": [
+                {"SpecialToken": {"id": "<s>", "type_id": 0}},
+                {"Sequence": {"id": "A", "type_id": 0}},
+                {"SpecialToken": {"id": "</s>", "type_id": 0}}
+            ],
+            "pair": [
+                {"SpecialToken": {"id": "<s>", "type_id": 0}},
+                {"Sequence": {"id": "A", "type_id": 0}},
+                {"SpecialToken": {"id": "</s>", "type_id": 0}},
+                {"Sequence": {"id": "B", "type_id": 1}},
+                {"SpecialToken": {"id": "</s>", "type_id": 0}}
+            ]
+        }
+    }"#;
+
+    fn ids(raw: &[u32]) -> Vec<tokenid> {
+        raw.iter().map(|r| tokenid::new(*r)).collect()
+    }
+
+    #[test]
+    fn applies_single_and_pair_templates() {
+        let tok = tokenizer::fromjson(DOC).unwrap();
+        let encoded = tok.encode("ab").unwrap();
+        assert_eq!(encoded, ids(&[0, 1]));
+        assert_eq!(tok.postprocess(&encoded), ids(&[3, 0, 1, 4]));
+        assert_eq!(
+            tok.postprocesspair(&encoded, &ids(&[2])),
+            ids(&[3, 0, 1, 4, 2, 4])
+        );
+    }
+
+    #[test]
+    fn is_the_identity_without_a_post_processor() {
+        let tok =
+            tokenizer::fromjson(r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]}}"#).unwrap();
+        let encoded = tok.encode("a").unwrap();
+        assert_eq!(tok.postprocess(&encoded), encoded);
+    }
+}
+
+/// Tests for the Jinja chat-template subset.
+mod jinja {
+    use ::tokenizer::{chatmessage, chatrole, tokenizer};
+
+    const LOOP: &str = r#"{
+        "model": {"type": "BPE", "vocab": {"a": 0}, "merges": []},
+        "bos_token": "<s>",
+        "eos_token": "</s>",
+        "chat_template": "{{ bos_token }}{% for message in messages %}{{ message['role'] }}:{{ message['content'] }}{% if not loop.last %}|{% endif %}{% endfor %}"
+    }"#;
+
+    const BRANCH: &str = r#"{
+        "model": {"type": "BPE", "vocab": {"a": 0}, "merges": []},
+        "chat_template": "{% for message in messages %}{% if message['role'] == 'system' %}SYS:{% else %}{{ message['role'] }}:{% endif %}{{ message['content'] }}{% endfor %}"
+    }"#;
+
+    fn conversation() -> Vec<chatmessage> {
+        vec![
+            chatmessage {
+                role: chatrole::user,
+                content: "hi".to_string(),
+            },
+            chatmessage {
+                role: chatrole::assistant,
+                content: "hello".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn renders_loop_and_interpolation() {
+        let tok = tokenizer::fromjson(LOOP).unwrap();
+        assert_eq!(
+            tok.renderchat(&conversation()).unwrap(),
+            "<s>user:hi|assistant:hello"
+        );
+    }
+
+    #[test]
+    fn renders_if_else_branching() {
+        let tok = tokenizer::fromjson(BRANCH).unwrap();
+        let messages = vec![
+            chatmessage {
+                role: chatrole::system,
+                content: "be brief".to_string(),
+            },
+            chatmessage {
+                role: chatrole::user,
+                content: "hi".to_string(),
+            },
+        ];
+        assert_eq!(tok.renderchat(&messages).unwrap(), "SYS:be briefuser:hi");
     }
 }
