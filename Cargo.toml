@@ -145,8 +145,12 @@ lz4_flex = "0.11"
 half = { version = "2", features = ["bytemuck"] }
 # 安全的字节↔类型重解释；unsafe 封装在依赖内部，workspace 保持零 unsafe。
 bytemuck = "1"
-# 预分词 Split 段的正则切分（llama3/qwen3/deepseek 等）。
-regex = "1"
+# Ed25519 签名：对 .u 根哈希签名，纯 Rust、无 unsafe。
+ed25519-compact = "2"
+# 预分词 Split 段的正则切分（llama3/qwen3/deepseek 等），需 look-around。
+fancy-regex = "0.15"
+# normalizer 段的 Unicode 归一化（NFC/NFD/NFKC/NFKD，qwen3 需要 NFC）。
+unicode-normalization = "0.1"
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"

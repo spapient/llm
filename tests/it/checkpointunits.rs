@@ -1144,6 +1144,62 @@ mod compression {
     }
 }
 
+/// Tests for Ed25519 signatures over a snapshot's root hash.
+mod signature {
+    use crate::support::shapeof;
+    use ::checkpoint::signature::{publickey, sign, verify};
+    use ::checkpoint::uformat::snapshot;
+    use tensor::dtype;
+
+    const SEED: [u8; 32] = [0x42; 32];
+
+    #[test]
+    fn sign_and_verify_roundtrip() {
+        let pk = publickey(&SEED);
+        let sig = sign(&SEED, b"a snapshot root hash");
+        assert!(verify(&pk, b"a snapshot root hash", &sig));
+    }
+
+    #[test]
+    fn tampered_message_fails() {
+        let pk = publickey(&SEED);
+        let sig = sign(&SEED, b"a snapshot root hash");
+        assert!(!verify(&pk, b"a tampered root hash", &sig));
+    }
+
+    #[test]
+    fn tampered_signature_fails() {
+        let pk = publickey(&SEED);
+        let mut sig = sign(&SEED, b"a snapshot root hash");
+        sig[0] ^= 1;
+        assert!(!verify(&pk, b"a snapshot root hash", &sig));
+    }
+
+    #[test]
+    fn wrong_key_fails() {
+        let sig = sign(&SEED, b"a snapshot root hash");
+        let other = publickey(&[0x24; 32]);
+        assert!(!verify(&other, b"a snapshot root hash", &sig));
+    }
+
+    #[test]
+    fn snapshot_roothash_signs_end_to_end() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[1u8; 100])
+            .unwrap();
+        let root = snap.roothash();
+        let pk = publickey(&SEED);
+        let sig = sign(&SEED, &root);
+        assert!(verify(&pk, &root, &sig));
+
+        let mut other = snapshot::new(1);
+        other
+            .addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[2u8; 100])
+            .unwrap();
+        assert!(!verify(&pk, &other.roothash(), &sig));
+    }
+}
+
 /// Tests for the quantization descriptor and scale-as-tensor.
 mod quant {
     use crate::support::shapeof;

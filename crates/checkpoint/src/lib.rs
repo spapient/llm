@@ -67,6 +67,9 @@ pub mod rawfmt;
 pub mod rawio;
 mod reader;
 mod save;
+
+/// Ed25519 signatures over a snapshot's root hash.
+pub mod signature;
 mod training;
 
 /// The training `.u` snapshot format: content-addressed, chunked, compressed.

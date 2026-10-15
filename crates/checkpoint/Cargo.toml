@@ -20,6 +20,7 @@ lz4_flex.workspace = true
 tensor = { path = "../tensor" }
 format = { path = "../format" }
 bytemuck.workspace = true
+ed25519-compact.workspace = true
 
 [lints]
 workspace = true
