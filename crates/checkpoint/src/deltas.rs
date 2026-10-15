@@ -238,7 +238,7 @@ fn verifystored(
         }
         stored.push(storedblock {
             hash: entry.hash,
-            bytes: raw,
+            bytes: raw.into_owned(),
         });
     }
     Ok(stored)

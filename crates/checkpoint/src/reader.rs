@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::fs::FileExt;
@@ -16,7 +17,10 @@ use crate::uformat::{
 /// compressed blocks.
 pub trait blocksource {
     /// Reads `size` bytes starting at `offset`.
-    fn read(&self, offset: u64, size: usize) -> Result<Vec<u8>, checkpointerror>;
+    ///
+    /// Sources may return a borrowed slice (zero-copy mmap or buffer) or an
+    /// owned buffer.
+    fn read(&self, offset: u64, size: usize) -> Result<Cow<'_, [u8]>, checkpointerror>;
 }
 
 /// A block source backed by an owned byte buffer.
@@ -33,7 +37,7 @@ impl bytesource {
 }
 
 impl blocksource for bytesource {
-    fn read(&self, offset: u64, size: usize) -> Result<Vec<u8>, checkpointerror> {
+    fn read(&self, offset: u64, size: usize) -> Result<Cow<'_, [u8]>, checkpointerror> {
         let start = usize::try_from(offset).map_err(|_| checkpointerror::blockoutofrange {
             position: 0,
             blockcount: self.bytes.len(),
@@ -46,7 +50,7 @@ impl blocksource for bytesource {
             })?;
         self.bytes
             .get(start..end)
-            .map(<[u8]>::to_vec)
+            .map(Cow::Borrowed)
             .ok_or(checkpointerror::blockoutofrange {
                 position: start,
                 blockcount: self.bytes.len(),
@@ -70,7 +74,7 @@ impl filesource {
 }
 
 impl blocksource for filesource {
-    fn read(&self, offset: u64, size: usize) -> Result<Vec<u8>, checkpointerror> {
+    fn read(&self, offset: u64, size: usize) -> Result<Cow<'_, [u8]>, checkpointerror> {
         let at = self
             .base
             .checked_add(offset)
@@ -85,7 +89,7 @@ impl blocksource for filesource {
                 path: self.path.clone(),
                 source,
             })?;
-        Ok(buf)
+        Ok(Cow::Owned(buf))
     }
 }
 

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::error::checkpointerror;
 use crate::hash::contenthash;
 
@@ -116,18 +118,24 @@ pub(crate) fn compressblock(bytes: &[u8]) -> (u8, Vec<u8>) {
 
 /// Decompresses a block's stored bytes back to its uncompressed form.
 ///
+/// Raw blocks are returned borrowed (zero-copy); compressed blocks are
+/// decompressed into an owned buffer.
+///
 /// # Errors
 ///
 /// Returns [`checkpointerror::invalidmanifest`] when the codec is unknown or
 /// the stored bytes do not decode.
-pub(crate) fn decompressblock(codec: u8, stored: &[u8]) -> Result<Vec<u8>, checkpointerror> {
+pub(crate) fn decompressblock<'a>(
+    codec: u8,
+    stored: &'a [u8],
+) -> Result<Cow<'a, [u8]>, checkpointerror> {
     match codec {
-        CODECRAW => Ok(stored.to_vec()),
-        CODECLZ4 => lz4_flex::decompress_size_prepended(stored).map_err(|_| {
-            checkpointerror::invalidmanifest {
+        CODECRAW => Ok(Cow::Borrowed(stored)),
+        CODECLZ4 => lz4_flex::decompress_size_prepended(stored)
+            .map(Cow::Owned)
+            .map_err(|_| checkpointerror::invalidmanifest {
                 reason: "lz4 decompression failed".to_string(),
-            }
-        }),
+            }),
         _ => Err(checkpointerror::invalidmanifest {
             reason: format!("unknown block codec {codec}"),
         }),
