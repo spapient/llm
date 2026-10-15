@@ -54,7 +54,7 @@ mod uformat;
 pub const CHECKPOINTVERSION: u32 = 1;
 
 pub use atomicwrite::writeatomic;
-pub use blocks::{BLOCKSIZE, blockref, chunk};
+pub use blocks::{BLOCKSIZE, MAXBLOCK, MINBLOCK, blockref, chunk};
 pub use compact::{compact, verifyprovenance};
 pub use compatibility::{checkcompat, checkversion, tensorspec};
 pub use crc32c::crc32c;

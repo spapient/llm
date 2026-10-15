@@ -7,12 +7,35 @@ pub(crate) const CODECRAW: u8 = 0;
 /// Codec byte for an LZ4-compressed block.
 pub(crate) const CODECLZ4: u8 = 1;
 
-/// The fixed block size for `.u` block addressing, in bytes.
+/// The target average block size for content-defined chunking, in bytes.
 ///
-/// `256 * 1024 = 2^18`. The power of two keeps block-boundary arithmetic a
-/// shift and a mask and keeps blocks 4 KiB page-aligned (see
-/// `docs/design.md` §12.12).
+/// `256 * 1024 = 2^18`; the actual block lengths vary between [`MINBLOCK`] and
+/// [`MAXBLOCK`] according to the rolling-hash cut condition.
 pub const BLOCKSIZE: usize = 256 * 1024;
+
+/// Minimum block size for content-defined chunking: 64 KiB.
+pub const MINBLOCK: usize = 64 * 1024;
+
+/// Maximum block size for content-defined chunking: 1 MiB.
+pub const MAXBLOCK: usize = 1024 * 1024;
+
+/// Cut mask: the 18 low bits, for a 256 KiB average block size.
+const CUTMASK: u64 = (1 << 18) - 1;
+
+/// The deterministic Gear hash table, built once at compile time.
+const GEAR: [u64; 256] = {
+    let mut table = [0u64; 256];
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut i = 0;
+    while i < 256 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        table[i] = state;
+        i += 1;
+    }
+    table
+};
 
 /// A reference to one block of a `.u` data section.
 ///
@@ -44,19 +67,39 @@ impl blockref {
     }
 }
 
-/// Splits `data` into [`BLOCKSIZE`]-sized blocks and computes each block's
-/// content identity.
+/// Advances the Gear rolling hash by one byte.
+fn gearroll(hash: u64, byte: u8) -> u64 {
+    (hash << 1).wrapping_add(GEAR[byte as usize])
+}
+
+/// Splits `data` into content-defined blocks and computes each block's content
+/// identity.
 ///
-/// Empty input yields no blocks. Block boundaries fall on [`BLOCKSIZE`]
-/// multiples, never mid-tensor.
+/// Block boundaries are chosen by a Gear rolling hash, so an insertion or
+/// deletion shifts only the few boundaries near the change; the blocks after it
+/// keep their content and deduplicate. Block lengths stay within
+/// [`MINBLOCK`]..=[`MAXBLOCK`], except the final block, which may be shorter.
 #[must_use]
 pub fn chunk(data: &[u8]) -> Vec<blockref> {
-    data.chunks(BLOCKSIZE)
-        .map(|block| {
-            // block.len() <= BLOCKSIZE < u32::MAX, so the cast cannot truncate.
-            blockref::new(contenthash(block), block.len() as u32)
-        })
-        .collect()
+    let mut blocks = Vec::new();
+    let mut start = 0usize;
+    let mut hash = 0u64;
+    for (i, &byte) in data.iter().enumerate() {
+        hash = gearroll(hash, byte);
+        let len = i + 1 - start;
+        if len >= MAXBLOCK || (len >= MINBLOCK && hash & CUTMASK == 0) {
+            blocks.push(blockref::new(contenthash(&data[start..i + 1]), len as u32));
+            start = i + 1;
+            hash = 0;
+        }
+    }
+    if start < data.len() {
+        blocks.push(blockref::new(
+            contenthash(&data[start..]),
+            (data.len() - start) as u32,
+        ));
+    }
+    blocks
 }
 
 /// Compresses a block, returning its codec byte and the stored bytes.

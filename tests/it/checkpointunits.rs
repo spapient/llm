@@ -452,7 +452,7 @@ mod training {
 
 /// Tests relocated from `crates/checkpoint/src/blocks.rs`.
 mod blocks {
-    use ::checkpoint::{chunk, BLOCKSIZE};
+    use ::checkpoint::{chunk, BLOCKSIZE, MAXBLOCK, MINBLOCK};
 
     #[test]
     fn empty_input_yields_no_blocks() {
@@ -467,11 +467,15 @@ mod blocks {
     }
 
     #[test]
-    fn multiple_blocks_with_short_tail() {
-        let data = vec![0u8; BLOCKSIZE * 2 + 7];
+    fn blocks_cover_data_and_respect_bounds() {
+        let data = vec![0u8; BLOCKSIZE * 4 + 123];
         let blocks = chunk(&data);
-        assert_eq!(blocks.len(), 3);
-        assert_eq!(blocks[2].getlen(), 7);
+        let total: usize = blocks.iter().map(|b| b.getlen() as usize).sum();
+        assert_eq!(total, data.len());
+        for block in &blocks[..blocks.len() - 1] {
+            assert!(block.getlen() as usize >= MINBLOCK);
+            assert!(block.getlen() as usize <= MAXBLOCK);
+        }
     }
 
     #[test]
@@ -592,8 +596,20 @@ mod uformat {
 /// Tests relocated from `crates/checkpoint/src/delta.rs`.
 mod delta {
     use crate::support::shapeof;
-    use ::checkpoint::{delta, snapshot, BLOCKSIZE};
+    use ::checkpoint::{chunk, delta, snapshot, BLOCKSIZE};
     use tensor::dtype;
+
+    fn pseudorandom(len: usize) -> Vec<u8> {
+        let mut data = vec![0u8; len];
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        for byte in &mut data {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = (state >> 56) as u8;
+        }
+        data
+    }
 
     #[test]
     fn unchanged_tensor_stores_no_blocks() {
@@ -610,48 +626,59 @@ mod delta {
     }
 
     #[test]
-    fn changed_tensor_stores_only_its_blocks() {
+    fn prefix_change_dedups_the_unchanged_suffix() {
+        let len = BLOCKSIZE * 8;
+        let base_data = pseudorandom(len);
+        let mut new_data = base_data.clone();
+        for byte in &mut new_data[..100] {
+            *byte ^= 0xFF;
+        }
         let mut base = snapshot::new(1);
-        base.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
-            .unwrap();
-        base.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[len]), &base_data)
             .unwrap();
         let mut new = snapshot::new(1);
-        new.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
-            .unwrap();
-        new.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[len]), &new_data)
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
-        assert_eq!(d.getstored().len(), 1);
-        assert_eq!(d.getstored()[0].getbytes(), &vec![9u8; BLOCKSIZE][..]);
+        let total = chunk(&new.getdata()).len();
+        assert!(
+            d.getstored().len() < total / 2,
+            "stored {} vs total {}",
+            d.getstored().len(),
+            total
+        );
     }
 
     #[test]
-    fn insertion_shift_is_content_addressed() {
+    fn insertion_shift_dedups_the_unchanged_suffix() {
+        let len = BLOCKSIZE * 8;
+        let data = pseudorandom(len);
         let mut base = snapshot::new(1);
-        base.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[len]), &data)
             .unwrap();
         let mut new = snapshot::new(1);
-        new.addtensor("c".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+        new.addtensor("prefix".to_string(), dtype::u8, shapeof(&[1000]), &vec![0u8; 1000])
             .unwrap();
-        new.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[len]), &data)
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
-        // "a" shifts to a new offset but its block content is unchanged, so only
-        // "c"'s block is stored.
-        assert_eq!(d.getstored().len(), 1);
-        assert_eq!(d.getstored()[0].getbytes(), &vec![2u8; BLOCKSIZE][..]);
+        let total = chunk(&new.getdata()).len();
+        assert!(
+            d.getstored().len() < total / 2,
+            "stored {} vs total {}",
+            d.getstored().len(),
+            total
+        );
     }
 
     #[test]
-    fn identical_tensors_are_deduped() {
+    fn unchanged_large_tensor_stores_no_blocks() {
+        let data = pseudorandom(BLOCKSIZE * 4);
         let mut base = snapshot::new(1);
-        base.addtensor("w".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[data.len()]), &data)
             .unwrap();
         let mut new = snapshot::new(1);
-        new.addtensor("w1".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
-            .unwrap();
-        new.addtensor("w2".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[data.len()]), &data)
             .unwrap();
         let d = delta::fromsnapshots(&base, &new);
         assert!(d.getstored().is_empty());
@@ -759,7 +786,7 @@ mod reader {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::support::shapeof;
-    use ::checkpoint::{checkpointerror, checkpointreader, delta, snapshot, BLOCKSIZE};
+    use ::checkpoint::{checkpointerror, checkpointreader, delta, snapshot, BLOCKSIZE, MAXBLOCK};
     use tensor::dtype;
 
     fn base() -> snapshot {
@@ -802,13 +829,18 @@ mod reader {
 
     #[test]
     fn touches_only_the_requested_blocks() {
-        let snap = base();
+        let mut snap = snapshot::new(1);
+        // "a" is MAXBLOCK so the forced cut puts it in its own block; corrupting
+        // "b"'s byte must not affect reading "a".
+        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[MAXBLOCK]), &vec![1u8; MAXBLOCK])
+            .unwrap();
+        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
         let mut bytes = snap.encode().unwrap();
         let last = bytes.len() - 1;
         bytes[last] ^= 1;
         let reader = checkpointreader::openfull(bytes).unwrap();
-        // "a" lives in block 0, untouched by the corruption in block 1.
-        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; BLOCKSIZE]);
+        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; MAXBLOCK]);
         let err = reader.readtensor("b").unwrap_err();
         assert!(matches!(err, checkpointerror::blockcrcmismatch { .. }));
     }
