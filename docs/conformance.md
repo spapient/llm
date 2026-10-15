@@ -124,6 +124,7 @@
 | 层 2：tokenizer | 已验证 | `crates/tokenizer` 实现词表、合并、特殊词元、对话模板、编码/解码与引擎；根 `tokens` 套件通过。 |
 | 层 2：data | 已验证 | `crates/data` 实现记录、数据集、打包、批次、采样器与加载器；根 `pipeline` 套件端到端组合它们。 |
 | 层 2：format 与 checkpoint（检查点格式契约） | 已验证 | `crates/format` 与 `crates/checkpoint` 实现解析/校验与原子 save/load/兼容性；根 `artifact` 与 `roundtrip` 套件通过。检查点格式契约首次成文于设计文档，依据是对两个 crate 源码的核对。 |
+| 层 2：format 与 checkpoint（.u 增量检查点契约 §12.12） | 拟定 | `.u` 通用权重格式的增量检查点合并/恢复逻辑与哈希/校验体系仅成文于 `docs/design.md` §12.12，标「提议（未实现）」；`checkpoint` crate 当前仅有 `LLMCKPT1`（无哈希/分块/增量/压缩/mmap），无对应实现与测试。落地实现并验证后翻「已验证」。 |
 | 层 3：optim | 已验证 | `crates/optim` 在拥有的张量上实现 AdamW、动量 SGD、梯度裁剪与 LR 调度；根 `optim` 套件通过，整合的 `benches/optim.rs` 可构建。 |
 | 层 3：context | 已验证 | `crates/context` 实现取消、预算、指标、执行上下文与 worker；根 `context` 套件通过。 |
 | 层 3：train（训练契约） | 已验证 | `crates/train` 实现配置、损失、梯度累积、步进、评估与恢复；根 `lossdecrease`、`trainingresume`、`cancellation` 套件通过。经 `nn`/`models` 的反向是声明的限制。训练契约首次成文于设计文档，依据是对 `crates/train/src` 的源码核对。 |

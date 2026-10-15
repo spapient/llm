@@ -1463,6 +1463,93 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 当检查点构件获得多文件分片、内存映射加载或二进制 manifest 时；当加入第二种外部格式（例如 GGUF）且共享校验应下移到更低 crate 时；当检查点必须对照活的模型对象而非显式 `tensorspec` 列表验证时，重新审议本章。
 
+新增 `.u` 增量检查点契约（§12.12，提议）落地实现时，本章整体复审。
+
+### 12.12 《.u 增量检查点契约（提议）》
+
+> 状态：**提议（Proposed，未实现）**。本节定义 `.u` 通用权重格式的增量检查点合并/恢复逻辑与哈希/校验体系。当前 `checkpoint` crate 仅有单文件、整读内存、JSON manifest 的 `LLMCKPT1`（§12.4），无哈希、分块、增量、压缩或 mmap；本节为设计基准，尚未对照实现验证，落地实现时本章整体复审（§12.11）。
+
+**上下文。** 增量检查点通过「仅存相对基础快照变化的块」降低训练存储冗余，通过「块级随机访问」支撑按需加载与显存调度。实现方式是**内容寻址 + 梅克尔 DAG**：块身份 = 内容哈希，快照身份 = 根哈希，溯源链由 `base_id` 显式记录。
+
+**内容寻址数据模型。**
+
+- `BLOCKSIZE = 256 * 1024 = 262144 = 2^18` 字节（未压缩内容），跨版本不可变；2 的幂保证块边界为移位/掩码运算（`offset >> 18`、`offset & 0x3FFFF`）且 4 KB 页对齐。
+- 逻辑数据段 = manifest 张量按插入序拼接的字节序列（延续 §12.4「插入序即布局序」不变量），按 `BLOCKSIZE` 切块，末块可短。
+- 块身份 = BLAKE3-128 内容哈希（对未压缩内容计算，BLAKE3-256 的前 128 位截断），与所在文件、偏移无关。
+
+**快照 manifest（逻辑真值）。**
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `version` | `u32` | 格式版本 |
+| `flags` | `u32` | bit0 增量 / bit1 全量，其余保留 |
+| `base_id` | `[u8; 32]` | 全 0 = 无基础；否则 = 基础根哈希（BLAKE3-256） |
+| `training` | 可选 `trainingstate` | 复用 §12.4 |
+| `metadata` | `BTreeMap<String, String>` | 复用 §12.4，键序确定 |
+| `tensors` | `manifestentry[]` | 复用 §12.4，`offset` 相对逻辑数据段 |
+| `blocks` | `blockref[]` | 有序块引用 `{ hash: [u8; 16], len: u32 }` |
+| `root_hash` | `[u8; 32]` | BLAKE3-256，见下 |
+
+**根哈希与溯源。** `root_hash = BLAKE3_256(canonical(manifest 除 root_hash、base_id、物理块表外的全部字段))`。根哈希是逻辑状态的内容身份，不覆盖 `base_id` 与物理块表（那是「如何存放/产生」，非「是什么状态」），故同一逻辑状态的全量/增量根哈希相同、可互换；溯源链由 `base_id` 显式记录，与内容身份正交。块列表本身是 128 位内容哈希，`root_hash` 经块哈希传递承诺到全部张量字节（梅克尔 DAG）。根哈希是全局锚点、无兜底，用密码学级 BLAKE3-256（128 位碰撞安全界）。
+
+**物理块表（每文件，哈希键）。** 全量文件覆盖全部逻辑块，增量文件仅覆盖本文件新块：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `block_offset` | `u64` | 数据区绝对偏移（16 EiB 寻址） |
+| `compressed_size` | `u32` | 压缩后长度 |
+| `crc32c` | `u32` | 块存储态 CRC32C |
+| `content_hash` | `[u8; 16]` | BLAKE3-128 内容身份 |
+
+键是内容哈希（非位置），故解析某逻辑位置时先查增量自身再查基础，偏移漂移不受影响。每条 32 字节；70B FP16（140 GB、256 KiB 块）约 53 万块，表约 17 MB（≈0.01%）。
+
+**哈希/校验四层体系。** 原则：不跨级滥用；校验/去重/溯源三类需求不混用。BLAKE3-64/128/256 是同一次 BLAKE3-256 的不同截断，成本一致。
+
+| 层 | 算法 | 长度 | 持久化 | 职责 |
+| --- | --- | --- | --- | --- |
+| 块级检错 | CRC32C（Castagnoli） | 4B | 是 | 随机位翻转/坏块定位，不参与身份判定 |
+| 保存期去重过滤 | BLAKE3-64 | 8B | 否（仅内存） | 快速筛选，不做最终判定 |
+| 块/张量内容身份 | BLAKE3-128 | 16B | 是 | 跨文件解析、去重、版本比对 |
+| 快照根锚点 | BLAKE3-256 | 32B | 是 | 快照身份、溯源、完整性公证 |
+
+**字段布局（定稿，字节步长已对齐）。** 文件头（32 B）与元数据区结构不变，元数据区新增 `root_hash`（32 B）。张量条目 64 B 定长：
+
+| 长度 | 字段 | 类型 |
+| --- | --- | --- |
+| 8 | `name_hash` | `u64`（FNV-1a） |
+| 1 | `dims` | `u8` |
+| 16 | `shape` | `[u16; 8]` |
+| 1 | `dtype` | `u8` |
+| 1 | `quant_granularity` | `u8` |
+| 1 | `layout_id` | `u8` |
+| 1 | `sparse_type` | `u8` |
+| 2 | `group_id` | `u16` |
+| 8 | `data_offset` | `u64` |
+| 4 | `total_size` | `u32` |
+| 2 | `block_count` | `u16` |
+| 16 | `content_hash` | `[u8; 16]` |
+| 3 | `_reserved` | `[u8; 3]` |
+
+字节和 = 64。已知限制：`total_size: u32` 单张量上限 4 GiB（当前前沿模型最大单张量 < 2 GiB，满足；超限需扩展字段，保留位预留升级空间）。
+
+**增量 checkpoint 语义。** 增量 = 完整逻辑 manifest（含全部块 128 位哈希列表）+ 仅新块物理数据 + `base_id`。**无删除列表**：逻辑内容由块列表完全决定，未引用块自然消失。保存去重：新块哈希已存在于基础块集（64 位过滤键匹配 + 128 位身份一致）即不重复写，仅在 manifest 保留引用；相同张量（嵌入层/输出层）全局去重。
+
+**防静默错误。** 默认生产模式以 CRC32C（检损坏）+ BLAKE3-128（身份判定）为最终依据，不逐块字节比对（与 ZFS、Git LFS 默认一致）。字节精确比对为可选严格模式（张量级、一次性），用于发布前终验、基础不可信等场景。
+
+**合并（物化）。** `merge(base, delta, out)`：校验 delta 根哈希 → 校验 base 存在且 `root_hash(base) == delta.base_id` → staging 写 out（`base_id := 0`，物理块表全量，`root_hash(out) == root_hash(delta)`）→ 逐逻辑块按「delta 自身 → base」解析来源并校验 CRC32C + BLAKE3-128 → 存储态字节原样拷贝（不重新编码）→ flush + fsync + 原子 rename（复用 `writeatomic`）。任一校验失败即中止并删 staging，源文件不变；合并是复制 + 校验的纯变换，绝不把损坏 base 传播进 out。
+
+**恢复（按需读取）。** `checkpointreader` 提供与 `checkpoint::readtensor` 同构接口：载入 manifest 并验根哈希 → 建块解析表（逻辑位置 → 来源/偏移/CRC32C）→ `readtensor` 仅读被请求张量覆盖的块（受检算术算块区间），验 CRC32C（首次验 BLAKE3-128 并缓存）。首版 `File::read_at`，无 mmap。
+
+**压缩 / 保留 / 溯源。** 文件一旦 rename 即不可变（copy-on-write），压缩只产新文件、不原地改。链长上限（连续增量 > 32 或增量体积 > 全量 50%）触发压缩。GC 仅删不可达且过宽限期的文件。`verifyprovenance` 沿 `base_id` 链验证各根哈希。
+
+**并发。** 训练写 = 新文件 + 原子 rename；读者按名打开持 fd 读旧完整内容（POSIX，`writeatomic` 既有保证）。基础删除由 GC 宽限期 + 打开时验根哈希兜底；不做锁/引用计数（§12.7）。
+
+**错误分类。** `checkpointerror` 新增 8 变体（15 → 23）：`rootmismatch`、`blockcrcmismatch`、`blockhashmismatch`、`truncatedblock`、`missingblock`、`blockoutofrange`（归入新访问器 `iscorruption()`）；`missingbase`、`basehashmismatch`（并入 `isincompatibility()`）。`isrecoverable()` 不变（仅 `io`）。`iscorruption()` 区分「损坏」于「不兼容」与「可重试 I/O」（engineering.md §5.11）。
+
+**不变量（验收判据）。** 块 `len` 与 BLAKE3-128/CRC32C 一致；块列表总长 = 逻辑数据段长（受检算术，`blockoutofrange` 兜底）；逻辑数据段 = 张量字节连续拼接且区间不重叠（复用 `checkoverlaps`）；合并输出根哈希 == 增量根哈希、数据段与原始全量字节相等；校验失败不发布部分产物；恢复只读目标块；所有文件不可变。
+
+**明确排除（本契约范围外）。** 压缩（LZ4/Zstd）、mmap 零拷贝、多文件分片、多排布共存、稀疏存储、统一量化抽象层；安全增强层（Ed25519 签名、AES-256-GCM 分块加密）。块来源与解压以 `BlockSource` / 可选解压点预留接口，首版不实现。
+
 ---
 
 ## 13. 层 3：optim
