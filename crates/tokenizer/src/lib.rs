@@ -39,6 +39,7 @@ mod normalize;
 mod postprocess;
 mod pretoken;
 mod special;
+mod tiktoken;
 mod vocab;
 
 pub use chat::{chatmessage, chatrole, chattemplate, chattemplateentry};
@@ -50,4 +51,5 @@ pub use normalize::normalizer;
 pub use postprocess::postprocessor;
 pub use pretoken::{bytetounicode, gpt2split, pretokenizer, unicodetobyte};
 pub use special::specialtokens;
+pub use tiktoken::tiktokenizer;
 pub use vocab::vocabulary;

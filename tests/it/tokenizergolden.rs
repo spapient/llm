@@ -86,3 +86,37 @@ fn decodes_match_the_hf_reference() {
         }
     }
 }
+
+#[test]
+fn o200k_matches_the_tiktoken_reference() {
+    use ::tokenizer::tiktokenizer;
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/o200k");
+    let content = std::fs::read_to_string(format!("{dir}/o200k_base.tiktoken")).unwrap();
+    let specials = [
+        ("<|endoftext|>".to_string(), 199_999u32),
+        ("<|endofprompt|>".to_string(), 200_018u32),
+    ];
+    let tok = tiktokenizer::fromfile(&content, &specials).unwrap();
+    let golden: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/o200k_golden.json")).unwrap())
+            .unwrap();
+    for sample in golden["samples"].as_array().unwrap() {
+        let text = sample["text"].as_str().unwrap();
+        let expected: Vec<u32> = sample["raw_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u32)
+            .collect();
+        let ids = tok.encode(text).unwrap();
+        let got: Vec<u32> = ids.iter().map(|id| id.get()).collect();
+        assert_eq!(got, expected, "o200k encode mismatch for {text:?}");
+        let ids: Vec<tokenid> = expected.iter().map(|rank| tokenid::new(*rank)).collect();
+        let decoded = tok.decode(&ids).unwrap();
+        assert_eq!(
+            decoded,
+            sample["decoded"].as_str().unwrap(),
+            "o200k decode mismatch for {text:?}"
+        );
+    }
+}

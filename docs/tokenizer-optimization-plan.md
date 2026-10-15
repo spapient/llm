@@ -1,6 +1,6 @@
 # tokenizer 深度分析与优化执行计划
 
-- 状态：**优化计划（已基本完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 全管线类型分发（ByteLevel/Split/Sequence + NFC/Replace/Prepend + 全 decoder）、T2+T3、T4、T5 已实施（见 §12.6–§12.8、§12.12）；P1/T10（normalizer）与 T12（cli decode）已实施（见 §12.10）；**D3 逐位对齐 HF 已达成——6 个真实模型 encode+decode 全对齐（见 §12.11、§12.12）**。剩余条目：o200k（tiktoken 格式）未实施。
+- 状态：**优化计划（已完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 全管线类型分发、T2+T3、T4、T5 已实施（见 §12.6–§12.8、§12.12）；P1/T10 与 T12 已实施（见 §12.10）；**D3 逐位对齐达成——7 个真实模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）encode+decode 全对齐（见 §12.11–§12.13）**。无剩余条目。
 - 仓库：`llm` workspace（`crates/tokenizer`）
 - 基线分支：`main`
 - 计划日期：2026-10-16
@@ -385,4 +385,12 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 
 **新增生产依赖**（推翻 D1/D2 推迟决策，真实模型需求驱动）：`fancy-regex 0.15`（Split 正则 look-around）、`unicode-normalization 0.1`（NFC）。均已 vendor 进 `vendor/`，完全离线构建。
 
-**诚实边界**：o200k（tiktoken 格式，非 tokenizer.json）未实施，需独立解析 `.tiktoken` 文件。
+**诚实边界**：~~o200k（tiktoken 格式，非 tokenizer.json）未实施，需独立解析 `.tiktoken` 文件。~~ **已实施**（§12.13）。
+
+### 12.13 o200k（tiktoken 格式）实施结果（2026-10-16）
+
+新增 `tiktoken` 类型（`crates/tokenizer/src/tiktoken.rs`）：解析 `.tiktoken` 文件（每行 `base64(token_bytes) rank`，199998 个可合并 token），字节级贪心合并（相邻字节拼接结果在词表内取最低 rank），内置 o200k 正则预分词，特殊词元由调用方传入（`<|endoftext|>`=199999、`<|endofprompt|>`=200018）。手写 base64 解码，零新增依赖。
+
+**验证**：临时 example 实测 o200k encode 8/8 + decode 8/8 逐位对齐 tiktoken 0.14.0 黄金；clippy `-D warnings` + fmt 通过。**7 个模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）全部逐位对齐。**
+
+**诚实边界**：字节级合并是 O(n²) 朴素实现（每轮全扫），对齐用短文本足够；长文本可复用 T6 的最小堆算法优化，但当前未做（无性能声明）。

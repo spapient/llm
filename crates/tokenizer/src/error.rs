@@ -95,6 +95,13 @@ pub enum tokenizererror {
         detail: String,
     },
 
+    /// A `.tiktoken` file or token could not be parsed.
+    #[error("invalid tiktoken: {detail}")]
+    invalidtiktoken {
+        /// The parse failure.
+        detail: String,
+    },
+
     /// A token id did not fit in the supported `u32` range.
     #[error("token id {id} is out of range")]
     idoutofrange {
