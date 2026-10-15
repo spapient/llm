@@ -5,8 +5,8 @@ use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
 use crate::uformat::{
-    FLAGDELTA, MAGIC, PREFIXLEN, canonicalmanifest, pushu32, pushu64, readblocks, readbytes,
-    readstored, readtensors, readu32, snapshot, storedentry, tensorentry,
+    FLAGDELTA, MAGIC, PREFIXLEN, canonicalmanifest, parseartifact, pushu32, pushu64, snapshot,
+    storedentry, tensorentry,
 };
 
 /// One block physically stored in a delta artifact.
@@ -177,79 +177,21 @@ impl delta {
     /// [`checkpointerror::blockcrcmismatch`], [`checkpointerror::blockhashmismatch`],
     /// [`checkpointerror::truncatedblock`], or [`checkpointerror::blockoutofrange`].
     pub fn decode(bytes: &[u8]) -> Result<Self, checkpointerror> {
-        if bytes.len() < MAGIC.len() {
-            return Err(checkpointerror::truncated {
-                needed: MAGIC.len(),
-                available: bytes.len(),
-            });
-        }
-        if bytes[..MAGIC.len()] != MAGIC {
-            return Err(checkpointerror::badmagic);
-        }
-        if bytes.len() < PREFIXLEN {
-            return Err(checkpointerror::truncated {
-                needed: PREFIXLEN,
-                available: bytes.len(),
-            });
-        }
-        let mut lengthbytes = [0u8; 8];
-        lengthbytes.copy_from_slice(&bytes[MAGIC.len()..PREFIXLEN]);
-        let manifestlen = u64::from_le_bytes(lengthbytes);
-        let manifestlen = usize::try_from(manifestlen).map_err(|_| checkpointerror::truncated {
-            needed: usize::MAX,
-            available: bytes.len(),
-        })?;
-        let manifestend = PREFIXLEN
-            .checked_add(manifestlen)
-            .ok_or(checkpointerror::truncated {
-                needed: usize::MAX,
-                available: bytes.len(),
-            })?;
-        if manifestend > bytes.len() {
-            return Err(checkpointerror::truncated {
-                needed: manifestend,
-                available: bytes.len(),
-            });
-        }
-        let manifest = &bytes[PREFIXLEN..manifestend];
-        let data = &bytes[manifestend..];
-
-        let mut pos = 0usize;
-        let version = readu32(manifest, &mut pos)?;
-        let tensors = readtensors(manifest, &mut pos)?;
-        let blocks = readblocks(manifest, &mut pos)?;
-        let canonical = &manifest[..pos];
-
-        let flags = readu32(manifest, &mut pos)?;
-        if flags != FLAGDELTA {
+        let parsed = parseartifact(bytes)?;
+        if parsed.flags != FLAGDELTA {
             return Err(checkpointerror::invalidmanifest {
-                reason: format!("unsupported snapshot flags {flags}"),
+                reason: format!("unsupported snapshot flags {}", parsed.flags),
             });
         }
-        let basebytes = readbytes(manifest, &mut pos, 32)?;
-        let mut base_id = [0u8; 32];
-        base_id.copy_from_slice(basebytes);
-        let rootbytes = readbytes(manifest, &mut pos, 32)?;
-        let mut root_hash = [0u8; 32];
-        root_hash.copy_from_slice(rootbytes);
-        let expectedroot = blake3hash(canonical);
-        if root_hash != expectedroot {
-            return Err(checkpointerror::rootmismatch {
-                expected: expectedroot,
-                found: root_hash,
-            });
-        }
-
-        let entries = readstored(manifest, &mut pos)?;
-        let stored = verifystored(data, &blocks, &entries)?;
-
+        let data = &bytes[parsed.dataoffset..];
+        let stored = verifystored(data, &parsed.blocks, &parsed.stored)?;
         Ok(Self {
-            version,
-            base_id,
-            tensors,
-            blocks,
+            version: parsed.version,
+            base_id: parsed.base_id,
+            tensors: parsed.tensors,
+            blocks: parsed.blocks,
             stored,
-            root_hash,
+            root_hash: parsed.root_hash,
         })
     }
 }

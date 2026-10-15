@@ -752,3 +752,61 @@ mod merge {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// Tests relocated from `crates/checkpoint/src/reader.rs`.
+mod reader {
+    use crate::support::shapeof;
+    use ::checkpoint::{checkpointerror, checkpointreader, delta, snapshot, BLOCKSIZE};
+    use tensor::dtype;
+
+    fn base() -> snapshot {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
+            .unwrap();
+        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        snap
+    }
+
+    fn changed() -> snapshot {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+            .unwrap();
+        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        snap
+    }
+
+    #[test]
+    fn reads_from_a_full_snapshot() {
+        let snap = base();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; BLOCKSIZE]);
+        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+        assert!(reader.readtensor("absent").unwrap().is_none());
+    }
+
+    #[test]
+    fn reads_from_a_delta_without_merging() {
+        let base = base();
+        let new = changed();
+        let d = delta::fromsnapshots(&base, &new);
+        let reader =
+            checkpointreader::opendelta(base.encode().unwrap(), d.encode().unwrap()).unwrap();
+        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![9u8; BLOCKSIZE]);
+        assert_eq!(reader.readtensor("b").unwrap().unwrap(), vec![2u8; BLOCKSIZE]);
+    }
+
+    #[test]
+    fn touches_only_the_requested_blocks() {
+        let snap = base();
+        let mut bytes = snap.encode().unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        let reader = checkpointreader::openfull(bytes).unwrap();
+        // "a" lives in block 0, untouched by the corruption in block 1.
+        assert_eq!(reader.readtensor("a").unwrap().unwrap(), vec![1u8; BLOCKSIZE]);
+        let err = reader.readtensor("b").unwrap_err();
+        assert!(matches!(err, checkpointerror::blockcrcmismatch { .. }));
+    }
+}

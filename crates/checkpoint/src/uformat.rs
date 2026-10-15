@@ -247,82 +247,110 @@ impl snapshot {
     /// [`checkpointerror::blockhashmismatch`], [`checkpointerror::truncatedblock`],
     /// [`checkpointerror::blockoutofrange`], or the tensor validation failures.
     pub fn decode(bytes: &[u8]) -> Result<Self, checkpointerror> {
-        if bytes.len() < MAGIC.len() {
-            return Err(checkpointerror::truncated {
-                needed: MAGIC.len(),
-                available: bytes.len(),
-            });
-        }
-        if bytes[..MAGIC.len()] != MAGIC {
-            return Err(checkpointerror::badmagic);
-        }
-        if bytes.len() < PREFIXLEN {
-            return Err(checkpointerror::truncated {
-                needed: PREFIXLEN,
-                available: bytes.len(),
-            });
-        }
-        let mut lengthbytes = [0u8; 8];
-        lengthbytes.copy_from_slice(&bytes[MAGIC.len()..PREFIXLEN]);
-        let manifestlen = u64::from_le_bytes(lengthbytes);
-        let manifestlen = usize::try_from(manifestlen).map_err(|_| checkpointerror::truncated {
-            needed: usize::MAX,
-            available: bytes.len(),
-        })?;
-        let manifestend = PREFIXLEN
-            .checked_add(manifestlen)
-            .ok_or(checkpointerror::truncated {
-                needed: usize::MAX,
-                available: bytes.len(),
-            })?;
-        if manifestend > bytes.len() {
-            return Err(checkpointerror::truncated {
-                needed: manifestend,
-                available: bytes.len(),
-            });
-        }
-        let manifest = &bytes[PREFIXLEN..manifestend];
-        let data = &bytes[manifestend..];
-
-        let mut pos = 0usize;
-        let version = readu32(manifest, &mut pos)?;
-        let tensors = readtensors(manifest, &mut pos)?;
-        let blocks = readblocks(manifest, &mut pos)?;
-        let canonical = &manifest[..pos];
-
-        let flags = readu32(manifest, &mut pos)?;
-        if flags != FLAGSFULL {
+        let parsed = parseartifact(bytes)?;
+        if parsed.flags != FLAGSFULL {
             return Err(checkpointerror::invalidmanifest {
-                reason: format!("unsupported snapshot flags {flags}"),
+                reason: format!("unsupported snapshot flags {}", parsed.flags),
             });
         }
-        let basebytes = readbytes(manifest, &mut pos, 32)?;
-        if basebytes.iter().any(|&b| b != 0) {
+        if parsed.base_id.iter().any(|&b| b != 0) {
             return Err(checkpointerror::invalidmanifest {
                 reason: "full snapshot has a non-zero base identity".to_string(),
             });
         }
-        let rootbytes = readbytes(manifest, &mut pos, 32)?;
-        let mut root = [0u8; 32];
-        root.copy_from_slice(rootbytes);
-        let expectedroot = blake3hash(canonical);
-        if root != expectedroot {
-            return Err(checkpointerror::rootmismatch {
-                expected: expectedroot,
-                found: root,
-            });
-        }
-
-        let stored = readstored(manifest, &mut pos)?;
-        verifyfull(data, &blocks, &stored)?;
-        verifytensors(data, &tensors)?;
-
+        let data = &bytes[parsed.dataoffset..];
+        verifyfull(data, &parsed.blocks, &parsed.stored)?;
+        verifytensors(data, &parsed.tensors)?;
         Ok(Self {
-            version,
-            tensors,
+            version: parsed.version,
+            tensors: parsed.tensors,
             data: data.to_vec(),
         })
     }
+}
+
+/// The parsed manifest of a `.u` artifact: everything except the data section.
+pub(crate) struct parsedmanifest {
+    pub(crate) version: u32,
+    pub(crate) tensors: Vec<tensorentry>,
+    pub(crate) blocks: Vec<blockref>,
+    pub(crate) flags: u32,
+    pub(crate) base_id: [u8; 32],
+    pub(crate) root_hash: [u8; 32],
+    pub(crate) stored: Vec<storedentry>,
+    pub(crate) dataoffset: usize,
+}
+
+/// Parses an artifact's manifest — magic, manifest length, tensors, block list,
+/// flags, base identity, root hash, and physical block table — without loading
+/// the data section, so a reader can access blocks on demand.
+pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointerror> {
+    if bytes.len() < MAGIC.len() {
+        return Err(checkpointerror::truncated {
+            needed: MAGIC.len(),
+            available: bytes.len(),
+        });
+    }
+    if bytes[..MAGIC.len()] != MAGIC {
+        return Err(checkpointerror::badmagic);
+    }
+    if bytes.len() < PREFIXLEN {
+        return Err(checkpointerror::truncated {
+            needed: PREFIXLEN,
+            available: bytes.len(),
+        });
+    }
+    let mut lengthbytes = [0u8; 8];
+    lengthbytes.copy_from_slice(&bytes[MAGIC.len()..PREFIXLEN]);
+    let manifestlen = u64::from_le_bytes(lengthbytes);
+    let manifestlen = usize::try_from(manifestlen).map_err(|_| checkpointerror::truncated {
+        needed: usize::MAX,
+        available: bytes.len(),
+    })?;
+    let manifestend = PREFIXLEN
+        .checked_add(manifestlen)
+        .ok_or(checkpointerror::truncated {
+            needed: usize::MAX,
+            available: bytes.len(),
+        })?;
+    if manifestend > bytes.len() {
+        return Err(checkpointerror::truncated {
+            needed: manifestend,
+            available: bytes.len(),
+        });
+    }
+    let manifest = &bytes[PREFIXLEN..manifestend];
+
+    let mut pos = 0usize;
+    let version = readu32(manifest, &mut pos)?;
+    let tensors = readtensors(manifest, &mut pos)?;
+    let blocks = readblocks(manifest, &mut pos)?;
+    let canonical = &manifest[..pos];
+    let flags = readu32(manifest, &mut pos)?;
+    let basebytes = readbytes(manifest, &mut pos, 32)?;
+    let mut base_id = [0u8; 32];
+    base_id.copy_from_slice(basebytes);
+    let rootbytes = readbytes(manifest, &mut pos, 32)?;
+    let mut root_hash = [0u8; 32];
+    root_hash.copy_from_slice(rootbytes);
+    let expectedroot = blake3hash(canonical);
+    if root_hash != expectedroot {
+        return Err(checkpointerror::rootmismatch {
+            expected: expectedroot,
+            found: root_hash,
+        });
+    }
+    let stored = readstored(manifest, &mut pos)?;
+    Ok(parsedmanifest {
+        version,
+        tensors,
+        blocks,
+        flags,
+        base_id,
+        root_hash,
+        stored,
+        dataoffset: manifestend,
+    })
 }
 
 /// Builds the canonical (hashed) manifest bytes: version, tensors, and the
