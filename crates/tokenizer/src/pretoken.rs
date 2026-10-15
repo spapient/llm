@@ -118,3 +118,161 @@ fn classrun(rest: &str, pred: impl Fn(char) -> bool) -> usize {
 fn otherchar(ch: char) -> bool {
     !ch.is_whitespace() && !ch.is_alphabetic() && !ch.is_numeric()
 }
+
+/// A pre-tokenizer: splits and/or transforms text before byte-pair encoding.
+///
+/// The result of [`pretokenize`](pretokenizer::pretokenize) is a list of
+/// pre-token strings. A ByteLevel pre-tokenizer maps each byte to a
+/// byte-to-unicode character, so the BPE then treats each of those characters
+/// as one initial symbol; a Split or raw sequence leaves the text unmodified
+/// so the BPE treats each Unicode scalar as one initial symbol.
+#[derive(Clone, Debug)]
+pub enum pretokenizer {
+    /// ByteLevel: map bytes to the byte-to-unicode alphabet; with `useregex`
+    /// also split by the GPT-2 regex first.
+    bytelevel {
+        /// Whether to apply the GPT-2 regex before byte-mapping.
+        useregex: bool,
+    },
+    /// Split: isolate each regex match as its own segment.
+    split {
+        /// The compiled split pattern.
+        pattern: fancy_regex::Regex,
+    },
+    /// Sequence: apply the children in order.
+    sequence(Vec<pretokenizer>),
+}
+
+impl pretokenizer {
+    /// Splits `text` into pre-token strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`tokenizererror::invalidregex`](crate::tokenizererror::invalidregex)
+    /// when a Split pattern hits a runtime matching error.
+    pub fn pretokenize(&self, text: &str) -> Result<Vec<String>, crate::error::tokenizererror> {
+        match self {
+            Self::bytelevel { useregex } => {
+                if *useregex {
+                    Ok(gpt2split(text).into_iter().map(bytemap).collect())
+                } else {
+                    Ok(vec![bytemap(text)])
+                }
+            }
+            Self::split { pattern } => splitisolated(pattern, text)
+                .map(|segments| segments.into_iter().map(str::to_string).collect()),
+            Self::sequence(children) => {
+                let mut chunks = vec![text.to_string()];
+                for child in children {
+                    let mut next = Vec::new();
+                    for chunk in &chunks {
+                        next.extend(child.pretokenize(chunk)?);
+                    }
+                    chunks = next;
+                }
+                Ok(chunks)
+            }
+        }
+    }
+}
+
+/// Maps `text`'s bytes to the byte-to-unicode alphabet.
+fn bytemap(text: &str) -> String {
+    let table = bytetounicode();
+    text.bytes().map(|byte| table[byte as usize]).collect()
+}
+
+/// Splits `text`, isolating each regex match as its own segment.
+///
+/// Uses `fancy-regex`, which supports the look-around in the Split patterns
+/// (the Rust `regex` crate does not).
+fn splitisolated<'a>(
+    pattern: &fancy_regex::Regex,
+    text: &'a str,
+) -> Result<Vec<&'a str>, crate::error::tokenizererror> {
+    let mut out = Vec::new();
+    let mut last = 0;
+    for found in pattern.find_iter(text) {
+        let found = found.map_err(|error| crate::error::tokenizererror::invalidregex {
+            detail: error.to_string(),
+        })?;
+        if found.start() > last {
+            out.push(&text[last..found.start()]);
+        }
+        out.push(&text[found.start()..found.end()]);
+        last = found.end();
+    }
+    if last < text.len() {
+        out.push(&text[last..]);
+    }
+    Ok(out)
+}
+
+/// Parses the `pre_tokenizer` section, if present.
+pub(crate) fn parsepretokenizer(
+    root: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<pretokenizer>, crate::error::tokenizererror> {
+    let Some(value) = root.get("pre_tokenizer") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(parseone(value)?))
+}
+
+/// Parses one pre-tokenizer object.
+fn parseone(value: &serde_json::Value) -> Result<pretokenizer, crate::error::tokenizererror> {
+    use crate::error::tokenizererror;
+    use serde_json::Value;
+
+    let object = value.as_object().ok_or(tokenizererror::unexpectedtype {
+        field: "pre_tokenizer",
+        expected: "object",
+    })?;
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or(tokenizererror::missingfield {
+            field: "pre_tokenizer.type",
+        })?;
+    match kind {
+        "ByteLevel" => Ok(pretokenizer::bytelevel {
+            useregex: object
+                .get("use_regex")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        }),
+        "Split" => {
+            let pattern = object
+                .get("pattern")
+                .and_then(|p| p.as_object())
+                .and_then(|p| p.get("Regex"))
+                .and_then(Value::as_str)
+                .ok_or(tokenizererror::unsupportedpretokenizer {
+                    pretype: "Split without Regex pattern".to_string(),
+                })?;
+            let compiled =
+                fancy_regex::Regex::new(pattern).map_err(|error| tokenizererror::invalidregex {
+                    detail: error.to_string(),
+                })?;
+            Ok(pretokenizer::split { pattern: compiled })
+        }
+        "Sequence" => {
+            let children = object
+                .get("pretokenizers")
+                .and_then(Value::as_array)
+                .ok_or(tokenizererror::missingfield {
+                    field: "pre_tokenizer.pretokenizers",
+                })?;
+            let mut parsed = Vec::with_capacity(children.len());
+            for child in children {
+                parsed.push(parseone(child)?);
+            }
+            Ok(pretokenizer::sequence(parsed))
+        }
+        other => Err(tokenizererror::unsupportedpretokenizer {
+            pretype: other.to_string(),
+        }),
+    }
+}

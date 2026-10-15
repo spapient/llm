@@ -1,0 +1,276 @@
+{
+  "meta": {
+    "model": "llama2",
+    "source": "https://huggingface.co/NousResearch/Llama-2-7b-hf/resolve/main/tokenizer.json",
+    "tokenizer_sha256": "f7b50bcf6d6672eade5e43514d48e9c1e4e63a56aef7b14acdaca94ce93436f7",
+    "tokenizers_version": "0.23.3",
+    "note": "golden output from HuggingFace tokenizers (Python) for Rust tokenizer alignment; ids (raw/wrapped) are authoritative. Llama 2: Metaspace semantics live in the NORMALIZER (Prepend '▁' + Replace ' '->'▁'), pre_tokenizer is null; byte_fallback=true; wrapped adds <s>=1 ... </s>=2."
+  },
+  "samples": [
+    {
+      "text": "",
+      "raw_ids": [],
+      "wrapped_ids": [
+        1
+      ],
+      "tokens": [],
+      "decoded": "",
+      "decoded_wrapped": "<s>"
+    },
+    {
+      "text": "Hello, world!",
+      "raw_ids": [
+        15043,
+        29892,
+        3186,
+        29991
+      ],
+      "wrapped_ids": [
+        1,
+        15043,
+        29892,
+        3186,
+        29991
+      ],
+      "tokens": [
+        "▁Hello",
+        ",",
+        "▁world",
+        "!"
+      ],
+      "decoded": "Hello, world!",
+      "decoded_wrapped": "<s> Hello, world!"
+    },
+    {
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "raw_ids": [
+        450,
+        4996,
+        17354,
+        1701,
+        29916,
+        432,
+        17204,
+        975,
+        278,
+        17366,
+        11203,
+        29889
+      ],
+      "wrapped_ids": [
+        1,
+        450,
+        4996,
+        17354,
+        1701,
+        29916,
+        432,
+        17204,
+        975,
+        278,
+        17366,
+        11203,
+        29889
+      ],
+      "tokens": [
+        "▁The",
+        "▁quick",
+        "▁brown",
+        "▁fo",
+        "x",
+        "▁j",
+        "umps",
+        "▁over",
+        "▁the",
+        "▁lazy",
+        "▁dog",
+        "."
+      ],
+      "decoded": "The quick brown fox jumps over the lazy dog.",
+      "decoded_wrapped": "<s> The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "text": "  multiple   spaces   here  ",
+      "raw_ids": [
+        259,
+        2999,
+        259,
+        8162,
+        259,
+        1244,
+        259
+      ],
+      "wrapped_ids": [
+        1,
+        259,
+        2999,
+        259,
+        8162,
+        259,
+        1244,
+        259
+      ],
+      "tokens": [
+        "▁▁",
+        "▁multiple",
+        "▁▁",
+        "▁spaces",
+        "▁▁",
+        "▁here",
+        "▁▁"
+      ],
+      "decoded": "  multiple   spaces   here  ",
+      "decoded_wrapped": "<s>   multiple   spaces   here  "
+    },
+    {
+      "text": "中文测试：你好，世界！",
+      "raw_ids": [
+        29871,
+        30275,
+        30333,
+        31851,
+        31787,
+        30383,
+        30919,
+        31076,
+        30214,
+        30793,
+        30967,
+        30584
+      ],
+      "wrapped_ids": [
+        1,
+        29871,
+        30275,
+        30333,
+        31851,
+        31787,
+        30383,
+        30919,
+        31076,
+        30214,
+        30793,
+        30967,
+        30584
+      ],
+      "tokens": [
+        "▁",
+        "中",
+        "文",
+        "测",
+        "试",
+        "：",
+        "你",
+        "好",
+        "，",
+        "世",
+        "界",
+        "！"
+      ],
+      "decoded": "中文测试：你好，世界！",
+      "decoded_wrapped": "<s> 中文测试：你好，世界！"
+    },
+    {
+      "text": "café naïve — 100% ✓ 你好",
+      "raw_ids": [
+        274,
+        28059,
+        1055,
+        30085,
+        345,
+        813,
+        29871,
+        29896,
+        29900,
+        29900,
+        29995,
+        29871,
+        30706,
+        29871,
+        30919,
+        31076
+      ],
+      "wrapped_ids": [
+        1,
+        274,
+        28059,
+        1055,
+        30085,
+        345,
+        813,
+        29871,
+        29896,
+        29900,
+        29900,
+        29995,
+        29871,
+        30706,
+        29871,
+        30919,
+        31076
+      ],
+      "tokens": [
+        "▁c",
+        "afé",
+        "▁na",
+        "ï",
+        "ve",
+        "▁—",
+        "▁",
+        "1",
+        "0",
+        "0",
+        "%",
+        "▁",
+        "✓",
+        "▁",
+        "你",
+        "好"
+      ],
+      "decoded": "café naïve — 100% ✓ 你好",
+      "decoded_wrapped": "<s> café naïve — 100% ✓ 你好"
+    },
+    {
+      "text": "lowest lower lowe lower",
+      "raw_ids": [
+        19604,
+        5224,
+        4482,
+        29872,
+        5224
+      ],
+      "wrapped_ids": [
+        1,
+        19604,
+        5224,
+        4482,
+        29872,
+        5224
+      ],
+      "tokens": [
+        "▁lowest",
+        "▁lower",
+        "▁low",
+        "e",
+        "▁lower"
+      ],
+      "decoded": "lowest lower lowe lower",
+      "decoded_wrapped": "<s> lowest lower lowe lower"
+    },
+    {
+      "text": "</s>",
+      "raw_ids": [
+        2
+      ],
+      "wrapped_ids": [
+        1,
+        2
+      ],
+      "tokens": [
+        "▁</s>"
+      ],
+      "decoded": "</s>",
+      "decoded_wrapped": "<s> </s>"
+    }
+  ]
+}

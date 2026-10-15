@@ -1,6 +1,7 @@
 //! Normalization: the `normalizer` section of a `tokenizer.json`.
 
 use serde_json::{Map, Value};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::error::tokenizererror;
 
@@ -17,6 +18,23 @@ pub enum normalizer {
     lowercase,
     /// Strips leading and trailing whitespace.
     strip,
+    /// Prepends a literal string.
+    prepend(String),
+    /// Replaces every occurrence of a literal string.
+    replace {
+        /// The literal string to replace.
+        pattern: String,
+        /// The replacement string.
+        content: String,
+    },
+    /// NFC normalization.
+    nfc,
+    /// NFD normalization.
+    nfd,
+    /// NFKC normalization.
+    nfkc,
+    /// NFKD normalization.
+    nfkd,
     /// Applies the children in order.
     sequence(Vec<normalizer>),
 }
@@ -28,6 +46,12 @@ impl normalizer {
         match self {
             Self::lowercase => text.to_lowercase(),
             Self::strip => text.trim().to_string(),
+            Self::prepend(prefix) => format!("{prefix}{text}"),
+            Self::replace { pattern, content } => text.replace(pattern, content),
+            Self::nfc => text.nfc().collect(),
+            Self::nfd => text.nfd().collect(),
+            Self::nfkc => text.nfkc().collect(),
+            Self::nfkd => text.nfkd().collect(),
             Self::sequence(children) => {
                 let mut out = text.to_string();
                 for child in children {
@@ -65,6 +89,37 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
     match kind {
         "Lowercase" => Ok(normalizer::lowercase),
         "Strip" => Ok(normalizer::strip),
+        "NFC" => Ok(normalizer::nfc),
+        "NFD" => Ok(normalizer::nfd),
+        "NFKC" => Ok(normalizer::nfkc),
+        "NFKD" => Ok(normalizer::nfkd),
+        "Prepend" => {
+            let prefix = object.get("prepend").and_then(Value::as_str).ok_or(
+                tokenizererror::missingfield {
+                    field: "normalizer.prepend",
+                },
+            )?;
+            Ok(normalizer::prepend(prefix.to_string()))
+        }
+        "Replace" => {
+            let pattern = object
+                .get("pattern")
+                .and_then(Value::as_object)
+                .and_then(|p| p.get("String"))
+                .and_then(Value::as_str)
+                .ok_or(tokenizererror::unsupportednormalizer {
+                    normaltype: "Replace without a String pattern".to_string(),
+                })?;
+            let content = object.get("content").and_then(Value::as_str).ok_or(
+                tokenizererror::missingfield {
+                    field: "normalizer.content",
+                },
+            )?;
+            Ok(normalizer::replace {
+                pattern: pattern.to_string(),
+                content: content.to_string(),
+            })
+        }
         "Sequence" => {
             let children = object
                 .get("normalizers")

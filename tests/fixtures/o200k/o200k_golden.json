@@ -1,0 +1,223 @@
+{
+  "meta": {
+    "model": "o200k",
+    "source": "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken (GPT-4o)",
+    "tokenizer_sha256": "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d",
+    "tiktoken_version": "0.14.0",
+    "note": "tiktoken-format file (NOT HF tokenizer.json): each line '<token_bytes> <rank>'; 199998 mergeable ranks + 21 special tokens (incl <|endoftext|>, <|endofprompt|>); no BOS/EOS prefixing, wrapped==raw. ids authoritative; bytes shown as hex."
+  },
+  "samples": [
+    {
+      "text": "",
+      "raw_ids": [],
+      "wrapped_ids": [],
+      "tokens_bytes_hex": [],
+      "decoded": ""
+    },
+    {
+      "text": "Hello, world!",
+      "raw_ids": [
+        13225,
+        11,
+        2375,
+        0
+      ],
+      "wrapped_ids": [
+        13225,
+        11,
+        2375,
+        0
+      ],
+      "tokens_bytes_hex": [
+        "48656c6c6f",
+        "2c",
+        "20776f726c64",
+        "21"
+      ],
+      "decoded": "Hello, world!"
+    },
+    {
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "raw_ids": [
+        976,
+        4853,
+        19705,
+        68347,
+        65613,
+        1072,
+        290,
+        29082,
+        6446,
+        13
+      ],
+      "wrapped_ids": [
+        976,
+        4853,
+        19705,
+        68347,
+        65613,
+        1072,
+        290,
+        29082,
+        6446,
+        13
+      ],
+      "tokens_bytes_hex": [
+        "546865",
+        "20717569636b",
+        "2062726f776e",
+        "20666f78",
+        "206a756d7073",
+        "206f766572",
+        "20746865",
+        "206c617a79",
+        "20646f67",
+        "2e"
+      ],
+      "decoded": "The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "text": "  multiple   spaces   here  ",
+      "raw_ids": [
+        220,
+        7598,
+        256,
+        18608,
+        256,
+        2105,
+        256
+      ],
+      "wrapped_ids": [
+        220,
+        7598,
+        256,
+        18608,
+        256,
+        2105,
+        256
+      ],
+      "tokens_bytes_hex": [
+        "20",
+        "206d756c7469706c65",
+        "2020",
+        "20737061636573",
+        "2020",
+        "2068657265",
+        "2020"
+      ],
+      "decoded": "  multiple   spaces   here  "
+    },
+    {
+      "text": "中文测试：你好，世界！",
+      "raw_ids": [
+        10667,
+        82843,
+        1817,
+        177519,
+        979,
+        28428,
+        3393
+      ],
+      "wrapped_ids": [
+        10667,
+        82843,
+        1817,
+        177519,
+        979,
+        28428,
+        3393
+      ],
+      "tokens_bytes_hex": [
+        "e4b8ade69687",
+        "e6b58be8af95",
+        "efbc9a",
+        "e4bda0e5a5bd",
+        "efbc8c",
+        "e4b896e7958c",
+        "efbc81"
+      ],
+      "decoded": "中文测试：你好，世界！"
+    },
+    {
+      "text": "café naïve — 100% ✓ 你好",
+      "raw_ids": [
+        66,
+        103112,
+        153475,
+        737,
+        2733,
+        220,
+        1353,
+        4,
+        81033,
+        220,
+        177519
+      ],
+      "wrapped_ids": [
+        66,
+        103112,
+        153475,
+        737,
+        2733,
+        220,
+        1353,
+        4,
+        81033,
+        220,
+        177519
+      ],
+      "tokens_bytes_hex": [
+        "63",
+        "6166c3a9",
+        "206e61c3af",
+        "7665",
+        "20e28094",
+        "20",
+        "313030",
+        "25",
+        "20e29c93",
+        "20",
+        "e4bda0e5a5bd"
+      ],
+      "decoded": "café naïve — 100% ✓ 你好"
+    },
+    {
+      "text": "lowest lower lowe lower",
+      "raw_ids": [
+        183722,
+        6931,
+        4465,
+        68,
+        6931
+      ],
+      "wrapped_ids": [
+        183722,
+        6931,
+        4465,
+        68,
+        6931
+      ],
+      "tokens_bytes_hex": [
+        "6c6f77657374",
+        "206c6f776572",
+        "206c6f77",
+        "65",
+        "206c6f776572"
+      ],
+      "decoded": "lowest lower lowe lower"
+    },
+    {
+      "text": "<|endoftext|>",
+      "raw_ids": [
+        199999
+      ],
+      "wrapped_ids": [
+        199999
+      ],
+      "tokens_bytes_hex": [
+        "3c7c656e646f66746578747c3e"
+      ],
+      "decoded": "<|endoftext|>"
+    }
+  ]
+}

@@ -42,11 +42,12 @@ mod special;
 mod vocab;
 
 pub use chat::{chatmessage, chatrole, chattemplate, chattemplateentry};
+pub use decode::decoder;
 pub use engine::tokenizer;
 pub use error::tokenizererror;
 pub use merges::bytepair;
 pub use normalize::normalizer;
 pub use postprocess::postprocessor;
-pub use pretoken::{bytetounicode, gpt2split, unicodetobyte};
+pub use pretoken::{bytetounicode, gpt2split, pretokenizer, unicodetobyte};
 pub use special::specialtokens;
 pub use vocab::vocabulary;

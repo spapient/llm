@@ -2,13 +2,14 @@ use lib::tokenid;
 use serde_json::{Map, Value};
 
 use crate::chat::{chatmessage, chattemplate};
-use crate::decode::{decodebytelevel, decodetokens};
-use crate::encode::{encodeplain, encodespecial};
+use crate::decode::{decoder, parsedecoder};
+use crate::encode::resolvetoken;
 use crate::error::tokenizererror;
 use crate::jinja::renderjinja;
 use crate::merges::bytepair;
 use crate::normalize::{normalizer, parsenormalizer};
 use crate::postprocess::{parsepostprocessor, postprocessor};
+use crate::pretoken::{parsepretokenizer, pretokenizer};
 use crate::special::specialtokens;
 use crate::vocab::vocabulary;
 
@@ -17,9 +18,8 @@ use crate::vocab::vocabulary;
 ///
 /// Supported model type is `"BPE"`. The loaded subset covers `model.vocab`,
 /// `model.merges`, `model.byte_fallback`, `model.unk_token`, `added_tokens`,
-/// an optional `normalizer`, a ByteLevel `pre_tokenizer`/`decoder`, a
-/// `TemplateProcessing` `post_processor`, and a Jinja `chat_template`. Unknown
-/// fields are ignored.
+/// an optional `normalizer`/`pre_tokenizer`, a `decoder`, a `post_processor`,
+/// and a Jinja `chat_template`. Unknown fields are ignored.
 #[derive(Clone, Debug)]
 pub struct tokenizer {
     vocabulary: vocabulary,
@@ -30,9 +30,9 @@ pub struct tokenizer {
     bostokencontent: Option<String>,
     eostokencontent: Option<String>,
     normalizer: Option<normalizer>,
+    pretokenizer: Option<pretokenizer>,
+    decoder: decoder,
     bytefallback: bool,
-    bytelevelencode: bool,
-    byteleveldecode: bool,
     postprocessor: Option<postprocessor>,
     unk: Option<tokenid>,
 }
@@ -89,8 +89,11 @@ impl tokenizer {
             ),
             None => None,
         };
-        let bytelevelencode = parsebytelevelencode(rootobject)?;
-        let byteleveldecode = parsebyteleveldecode(rootobject)?;
+        let pretokenizer = parsepretokenizer(rootobject)?;
+        let decoder = parsedecoder(rootobject)?.unwrap_or(decoder::bytefallback {
+            replace: None,
+            stripleading: 0,
+        });
         let postprocessor = parsepostprocessor(rootobject, &vocab)?;
         let chattemplatejinja =
             parseoptionalstring(rootobject, "chat_template")?.filter(|s| !s.is_empty());
@@ -106,9 +109,9 @@ impl tokenizer {
             bostokencontent,
             eostokencontent,
             normalizer,
+            pretokenizer,
+            decoder,
             bytefallback,
-            bytelevelencode,
-            byteleveldecode,
             postprocessor,
             unk,
         })
@@ -181,33 +184,82 @@ impl tokenizer {
     /// Returns [`tokenizererror::unknowntoken`] when a symbol has no vocabulary
     /// entry, no complete byte fallback, and no configured unknown token.
     pub fn encode(&self, text: &str) -> Result<Vec<tokenid>, tokenizererror> {
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
         let normalized = self.normalized(text);
-        encodeplain(
-            &self.vocabulary,
-            &self.bytepair,
-            self.bytefallback,
-            self.unk,
-            self.bytelevelencode,
-            normalized.as_ref(),
-        )
+        let mut out = Vec::new();
+        self.encodeplainsegment(normalized.as_ref(), &mut out)?;
+        Ok(out)
     }
 
     /// Encodes `text`, recognizing special-token literals as structural markers.
+    ///
+    /// Special tokens are split on the raw text before normalization, so a
+    /// normalizer that prepends or rewrites never touches a special literal.
     ///
     /// # Errors
     ///
     /// Returns the same errors as [`Self::encode`] for the non-special segments.
     pub fn encodespecial(&self, text: &str) -> Result<Vec<tokenid>, tokenizererror> {
-        let normalized = self.normalized(text);
-        encodespecial(
-            &self.vocabulary,
-            &self.bytepair,
-            self.bytefallback,
-            self.unk,
-            self.bytelevelencode,
-            &self.specialtokens,
-            normalized.as_ref(),
-        )
+        let mut out = Vec::new();
+        let mut segment = String::new();
+        let mut index = 0;
+        while index < text.len() {
+            if let Some((literal, id)) = self
+                .specialtokens
+                .iterlongest()
+                .find(|(literal, _)| text[index..].starts_with(literal))
+            {
+                self.encodenormalizedsegment(&segment, &mut out)?;
+                segment.clear();
+                out.push(id);
+                index += literal.len();
+                continue;
+            }
+            let character = text[index..]
+                .chars()
+                .next()
+                .ok_or(tokenizererror::invalidutf8)?;
+            segment.push(character);
+            index += character.len_utf8();
+        }
+        self.encodenormalizedsegment(&segment, &mut out)?;
+        Ok(out)
+    }
+
+    /// Normalizes one non-special segment, then encodes it through the
+    /// pre-tokenizer pipeline.
+    fn encodenormalizedsegment(
+        &self,
+        segment: &str,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
+        if segment.is_empty() {
+            return Ok(());
+        }
+        let normalized = self.normalized(segment);
+        self.encodeplainsegment(normalized.as_ref(), out)
+    }
+
+    /// Encodes one non-special text segment through the pre-tokenizer pipeline.
+    fn encodeplainsegment(
+        &self,
+        segment: &str,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
+        let pretokens = match &self.pretokenizer {
+            Some(pretokenizer) => pretokenizer.pretokenize(segment)?,
+            None => vec![segment.to_string()],
+        };
+        for pretoken in &pretokens {
+            let symbols: Vec<String> = pretoken.chars().map(|ch| ch.to_string()).collect();
+            let merged = self.bytepair.apply(&symbols);
+            for symbol in &merged {
+                resolvetoken(&self.vocabulary, self.bytefallback, self.unk, symbol, out)?;
+            }
+        }
+        Ok(())
     }
 
     /// Applies the loaded normalizer, or borrows `text` unchanged.
@@ -226,10 +278,7 @@ impl tokenizer {
     /// vocabulary and [`tokenizererror::invalidutf8`] when byte-fallback tokens
     /// do not reconstruct valid UTF-8.
     pub fn decode(&self, ids: &[tokenid]) -> Result<String, tokenizererror> {
-        if self.byteleveldecode {
-            return decodebytelevel(&self.vocabulary, ids);
-        }
-        decodetokens(&self.vocabulary, ids)
+        self.decoder.decode(&self.vocabulary, ids)
     }
 
     /// Renders the installed chat template (Jinja or explicit) to a string.
@@ -355,56 +404,6 @@ fn parseunkcontent(model: &Map<String, Value>) -> Result<Option<String>, tokeniz
     }
 }
 
-/// Returns whether the `pre_tokenizer` section requests ByteLevel encoding.
-fn parsebytelevelencode(root: &Map<String, Value>) -> Result<bool, tokenizererror> {
-    let Some(value) = root.get("pre_tokenizer") else {
-        return Ok(false);
-    };
-    let object = value.as_object().ok_or(tokenizererror::unexpectedtype {
-        field: "pre_tokenizer",
-        expected: "object",
-    })?;
-    let pretype =
-        object
-            .get("type")
-            .and_then(Value::as_str)
-            .ok_or(tokenizererror::missingfield {
-                field: "pre_tokenizer.type",
-            })?;
-    if pretype == "ByteLevel" {
-        Ok(true)
-    } else {
-        Err(tokenizererror::unsupportedpretokenizer {
-            pretype: pretype.to_string(),
-        })
-    }
-}
-
-/// Returns whether the `decoder` section requests ByteLevel decoding.
-fn parsebyteleveldecode(root: &Map<String, Value>) -> Result<bool, tokenizererror> {
-    let Some(value) = root.get("decoder") else {
-        return Ok(false);
-    };
-    let object = value.as_object().ok_or(tokenizererror::unexpectedtype {
-        field: "decoder",
-        expected: "object",
-    })?;
-    let decodertype =
-        object
-            .get("type")
-            .and_then(Value::as_str)
-            .ok_or(tokenizererror::missingfield {
-                field: "decoder.type",
-            })?;
-    if decodertype == "ByteLevel" {
-        Ok(true)
-    } else {
-        Err(tokenizererror::unsupporteddecoder {
-            decodertype: decodertype.to_string(),
-        })
-    }
-}
-
 /// Returns the optional top-level string field `field`.
 fn parseoptionalstring(
     root: &Map<String, Value>,
@@ -442,10 +441,22 @@ fn parsemerges(value: &Value) -> Result<Vec<String>, tokenizererror> {
     })?;
     let mut merges = Vec::with_capacity(array.len());
     for (index, item) in array.iter().enumerate() {
-        let merge = item
-            .as_str()
-            .ok_or(tokenizererror::malformedmerge { index })?;
-        merges.push(merge.to_string());
+        // Two in-the-wild shapes: `"left right"` strings and `["left", "right"]`
+        // pairs (qwen3 uses the latter).
+        if let Some(merge) = item.as_str() {
+            merges.push(merge.to_string());
+            continue;
+        }
+        if let Some(pair) = item.as_array()
+            && let (Some(left), Some(right)) = (
+                pair.first().and_then(Value::as_str),
+                pair.get(1).and_then(Value::as_str),
+            )
+        {
+            merges.push(format!("{left} {right}"));
+            continue;
+        }
+        return Err(tokenizererror::malformedmerge { index });
     }
     Ok(merges)
 }

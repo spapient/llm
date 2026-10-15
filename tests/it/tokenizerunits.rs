@@ -881,13 +881,12 @@ mod normalize {
     }
 
     #[test]
-    fn rejects_unicode_normalization_forms() {
+    fn nfc_normalizes_combining_sequences() {
+        // "é" as e + U+0301 combining acute must NFC-normalize to U+00E9.
         let doc =
-            r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"normalizer":{"type":"NFKC"}}"#;
-        assert!(matches!(
-            tokenizer::fromjson(doc),
-            Err(tokenizererror::unsupportednormalizer { .. })
-        ));
+            r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"normalizer":{"type":"NFC"}}"#;
+        let tok = tokenizer::fromjson(doc).unwrap();
+        assert_eq!(normalizer::nfc.apply("e\u{0301}"), "\u{e9}");
     }
 
     #[test]

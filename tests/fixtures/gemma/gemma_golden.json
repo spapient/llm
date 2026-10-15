@@ -1,0 +1,240 @@
+{
+  "meta": {
+    "model": "gemma",
+    "source": "google/gemma-2b-it via AI-ModelScope mirror",
+    "tokenizer_sha256": "c15eb04bc5ad609fb26533e8525302c5640a945e5f67f65b7c849900acda7d99",
+    "tokenizers_version": "0.23.3",
+    "note": "golden output from HuggingFace tokenizers (Python); ids (raw/wrapped) authoritative. BPE(580604 merges)+byte_fallback; Metaspace semantics in normalizer Replace(' '->'▁'); decoder Sequence[Replace(▁->' '), ByteFallback, Fuse]; wrapped adds <bos>; vocab 256000. Quirk: tokenizers 0.23.3 decodes a sequence of ONLY special tokens to '' (ids authoritative)."
+  },
+  "samples": [
+    {
+      "text": "",
+      "raw_ids": [],
+      "wrapped_ids": [
+        2
+      ],
+      "tokens": [],
+      "decoded": "",
+      "decoded_wrapped": ""
+    },
+    {
+      "text": "Hello, world!",
+      "raw_ids": [
+        4521,
+        235269,
+        2134,
+        235341
+      ],
+      "wrapped_ids": [
+        2,
+        4521,
+        235269,
+        2134,
+        235341
+      ],
+      "tokens": [
+        "Hello",
+        ",",
+        "▁world",
+        "!"
+      ],
+      "decoded": "Hello, world!",
+      "decoded_wrapped": "Hello, world!"
+    },
+    {
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "raw_ids": [
+        651,
+        4320,
+        8426,
+        25341,
+        36271,
+        1163,
+        573,
+        27894,
+        5929,
+        235265
+      ],
+      "wrapped_ids": [
+        2,
+        651,
+        4320,
+        8426,
+        25341,
+        36271,
+        1163,
+        573,
+        27894,
+        5929,
+        235265
+      ],
+      "tokens": [
+        "The",
+        "▁quick",
+        "▁brown",
+        "▁fox",
+        "▁jumps",
+        "▁over",
+        "▁the",
+        "▁lazy",
+        "▁dog",
+        "."
+      ],
+      "decoded": "The quick brown fox jumps over the lazy dog.",
+      "decoded_wrapped": "The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "text": "  multiple   spaces   here  ",
+      "raw_ids": [
+        139,
+        38571,
+        140,
+        46633,
+        140,
+        1828,
+        139
+      ],
+      "wrapped_ids": [
+        2,
+        139,
+        38571,
+        140,
+        46633,
+        140,
+        1828,
+        139
+      ],
+      "tokens": [
+        "▁▁",
+        "multiple",
+        "▁▁▁",
+        "spaces",
+        "▁▁▁",
+        "here",
+        "▁▁"
+      ],
+      "decoded": "  multiple   spaces   here  ",
+      "decoded_wrapped": "  multiple   spaces   here  "
+    },
+    {
+      "text": "中文测试：你好，世界！",
+      "raw_ids": [
+        50039,
+        28991,
+        235465,
+        87139,
+        235365,
+        9979,
+        235482
+      ],
+      "wrapped_ids": [
+        2,
+        50039,
+        28991,
+        235465,
+        87139,
+        235365,
+        9979,
+        235482
+      ],
+      "tokens": [
+        "中文",
+        "测试",
+        "：",
+        "你好",
+        "，",
+        "世界",
+        "！"
+      ],
+      "decoded": "中文测试：你好，世界！",
+      "decoded_wrapped": "中文测试：你好，世界！"
+    },
+    {
+      "text": "café naïve — 100% ✓ 你好",
+      "raw_ids": [
+        81453,
+        155245,
+        2062,
+        235248,
+        235274,
+        235276,
+        235276,
+        235358,
+        65272,
+        30485,
+        235607
+      ],
+      "wrapped_ids": [
+        2,
+        81453,
+        155245,
+        2062,
+        235248,
+        235274,
+        235276,
+        235276,
+        235358,
+        65272,
+        30485,
+        235607
+      ],
+      "tokens": [
+        "café",
+        "▁naïve",
+        "▁—",
+        "▁",
+        "1",
+        "0",
+        "0",
+        "%",
+        "▁✓",
+        "▁你",
+        "好"
+      ],
+      "decoded": "café naïve — 100% ✓ 你好",
+      "decoded_wrapped": "café naïve — 100% ✓ 你好"
+    },
+    {
+      "text": "lowest lower lowe lower",
+      "raw_ids": [
+        105225,
+        4581,
+        3178,
+        235249,
+        4581
+      ],
+      "wrapped_ids": [
+        2,
+        105225,
+        4581,
+        3178,
+        235249,
+        4581
+      ],
+      "tokens": [
+        "lowest",
+        "▁lower",
+        "▁low",
+        "e",
+        "▁lower"
+      ],
+      "decoded": "lowest lower lowe lower",
+      "decoded_wrapped": "lowest lower lowe lower"
+    },
+    {
+      "text": "<eos>",
+      "raw_ids": [
+        1
+      ],
+      "wrapped_ids": [
+        2,
+        1
+      ],
+      "tokens": [
+        "<eos>"
+      ],
+      "decoded": "",
+      "decoded_wrapped": ""
+    }
+  ]
+}

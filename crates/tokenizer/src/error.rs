@@ -88,6 +88,13 @@ pub enum tokenizererror {
         normaltype: String,
     },
 
+    /// A pre-tokenizer Split pattern could not be compiled.
+    #[error("cannot compile pre-tokenizer regex: {detail}")]
+    invalidregex {
+        /// The regex compilation failure.
+        detail: String,
+    },
+
     /// A token id did not fit in the supported `u32` range.
     #[error("token id {id} is out of range")]
     idoutofrange {

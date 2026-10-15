@@ -1,0 +1,243 @@
+{
+  "meta": {
+    "model": "llama3",
+    "source": "https://huggingface.co/NousResearch/Meta-Llama-3-8B/resolve/main/tokenizer.json",
+    "tokenizer_sha256": "e134af98b985517b4f068e3755ae90d4e9cd2d45d328325dc503f1c6b2d06cc7",
+    "tokenizers_version": "0.23.3",
+    "note": "golden output from HuggingFace tokenizers (Python) for Rust tokenizer alignment; ids (raw/wrapped) are authoritative. Llama 3 quirk: with tokenizers 0.23.3, decoding a sequence that contains ONLY special tokens (e.g. [128001]) returns empty string; ids are authoritative. byte_fallback in this file is false; pre_tokenizer = Split(LLaMA regex)+ByteLevel(add_prefix_space=false)."
+  },
+  "samples": [
+    {
+      "text": "",
+      "raw_ids": [],
+      "wrapped_ids": [
+        128000
+      ],
+      "tokens": [],
+      "decoded": "",
+      "decoded_wrapped": ""
+    },
+    {
+      "text": "Hello, world!",
+      "raw_ids": [
+        9906,
+        11,
+        1917,
+        0
+      ],
+      "wrapped_ids": [
+        128000,
+        9906,
+        11,
+        1917,
+        0
+      ],
+      "tokens": [
+        "Hello",
+        ",",
+        "Ġworld",
+        "!"
+      ],
+      "decoded": "Hello, world!",
+      "decoded_wrapped": "Hello, world!"
+    },
+    {
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "raw_ids": [
+        791,
+        4062,
+        14198,
+        39935,
+        35308,
+        927,
+        279,
+        16053,
+        5679,
+        13
+      ],
+      "wrapped_ids": [
+        128000,
+        791,
+        4062,
+        14198,
+        39935,
+        35308,
+        927,
+        279,
+        16053,
+        5679,
+        13
+      ],
+      "tokens": [
+        "The",
+        "Ġquick",
+        "Ġbrown",
+        "Ġfox",
+        "Ġjumps",
+        "Ġover",
+        "Ġthe",
+        "Ġlazy",
+        "Ġdog",
+        "."
+      ],
+      "decoded": "The quick brown fox jumps over the lazy dog.",
+      "decoded_wrapped": "The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "text": "  multiple   spaces   here  ",
+      "raw_ids": [
+        220,
+        5361,
+        256,
+        12908,
+        256,
+        1618,
+        256
+      ],
+      "wrapped_ids": [
+        128000,
+        220,
+        5361,
+        256,
+        12908,
+        256,
+        1618,
+        256
+      ],
+      "tokens": [
+        "Ġ",
+        "Ġmultiple",
+        "ĠĠ",
+        "Ġspaces",
+        "ĠĠ",
+        "Ġhere",
+        "ĠĠ"
+      ],
+      "decoded": "  multiple   spaces   here  ",
+      "decoded_wrapped": "  multiple   spaces   here  "
+    },
+    {
+      "text": "中文测试：你好，世界！",
+      "raw_ids": [
+        108891,
+        82805,
+        5232,
+        57668,
+        53901,
+        3922,
+        102616,
+        6447
+      ],
+      "wrapped_ids": [
+        128000,
+        108891,
+        82805,
+        5232,
+        57668,
+        53901,
+        3922,
+        102616,
+        6447
+      ],
+      "tokens": [
+        "ä¸Ńæĸĩ",
+        "æµĭè¯ķ",
+        "ï¼ļ",
+        "ä½ł",
+        "å¥½",
+        "ï¼Į",
+        "ä¸ĸçķĮ",
+        "ï¼ģ"
+      ],
+      "decoded": "中文测试：你好，世界！",
+      "decoded_wrapped": "中文测试：你好，世界！"
+    },
+    {
+      "text": "café naïve — 100% ✓ 你好",
+      "raw_ids": [
+        936,
+        59958,
+        95980,
+        588,
+        2001,
+        220,
+        1041,
+        4,
+        53475,
+        118195,
+        53901
+      ],
+      "wrapped_ids": [
+        128000,
+        936,
+        59958,
+        95980,
+        588,
+        2001,
+        220,
+        1041,
+        4,
+        53475,
+        118195,
+        53901
+      ],
+      "tokens": [
+        "ca",
+        "fÃ©",
+        "ĠnaÃ¯",
+        "ve",
+        "ĠâĢĶ",
+        "Ġ",
+        "100",
+        "%",
+        "Ġâľĵ",
+        "Ġä½ł",
+        "å¥½"
+      ],
+      "decoded": "café naïve — 100% ✓ 你好",
+      "decoded_wrapped": "café naïve — 100% ✓ 你好"
+    },
+    {
+      "text": "lowest lower lowe lower",
+      "raw_ids": [
+        90998,
+        4827,
+        3428,
+        68,
+        4827
+      ],
+      "wrapped_ids": [
+        128000,
+        90998,
+        4827,
+        3428,
+        68,
+        4827
+      ],
+      "tokens": [
+        "lowest",
+        "Ġlower",
+        "Ġlow",
+        "e",
+        "Ġlower"
+      ],
+      "decoded": "lowest lower lowe lower",
+      "decoded_wrapped": "lowest lower lowe lower"
+    },
+    {
+      "text": "<|end_of_text|>",
+      "raw_ids": [
+        128001
+      ],
+      "wrapped_ids": [
+        128000,
+        128001
+      ],
+      "tokens": [
+        "<|end_of_text|>"
+      ],
+      "decoded": "",
+      "decoded_wrapped": ""
+    }
+  ]
+}

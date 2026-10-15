@@ -1,6 +1,6 @@
 # tokenizer 深度分析与优化执行计划
 
-- 状态：**优化计划（已基本完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 的 GPT-2 ByteLevel 基础、T2+T3（字节级编解码接入）、T4（TemplateProcessing post_processor）与 T5（最小 Jinja 子集 chat_template）已实施（见 §12.6–§12.8）；P1/T10（normalizer）与 T12（cli decode）已实施（见 §12.10）；**D3 逐位对齐 HF 已达成（见 §12.11）**。剩余条目（P0/T1 其它预分词类型、P1 T11 依赖显式化）均**未实施**。
+- 状态：**优化计划（已基本完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 全管线类型分发（ByteLevel/Split/Sequence + NFC/Replace/Prepend + 全 decoder）、T2+T3、T4、T5 已实施（见 §12.6–§12.8、§12.12）；P1/T10（normalizer）与 T12（cli decode）已实施（见 §12.10）；**D3 逐位对齐 HF 已达成——6 个真实模型 encode+decode 全对齐（见 §12.11、§12.12）**。剩余条目：o200k（tiktoken 格式）未实施。
 - 仓库：`llm` workspace（`crates/tokenizer`）
 - 基线分支：`main`
 - 计划日期：2026-10-16
@@ -359,3 +359,30 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 4. `gpt2split` 空白语义：`\s+(?!\S)` 对"后跟非空白的空白串"回溯为"串去掉最后一个空白"——修复前多空格语料编码错误（`"  multiple"` 应为 `[" ", " multiple"]` 而非 `["  ", "multiple"]`）。
 
 **结果**：`tokenizergolden` → **2 passed**（encode 10/10、decode 10/10 逐位对齐 HF）。全套：`tokenizerunits` 65、`tokens` 21、`tokenizergolden` 2，clippy `-D warnings` + fmt 通过。
+
+### 12.12 多模型逐位对齐 HF（2026-10-16，全管线类型分发落地）
+
+把 `bytelevelencode/decode` 两个布尔换成真正的 **`pretokenizer` / `decoder` 管线**，补齐 T1 剩余的全部分段类型：
+
+- **`pretokenizer`**：`bytelevel{useregex}`、`split{regex}`、`sequence`。Split 用 **`fancy-regex`**（Rust `regex` 不支持 `\s+(?!\S)` 负向前瞻）；`splitisolated` 隔离每个正则匹配。
+- **`normalizer`**：补 `prepend`/`replace`（llama2/gemma 的 `▁` 语义）+ **NFC/NFD/NFKC/NFKD**（用 `unicode-normalization`，qwen3 的 NFC）。
+- **`decoder`**：`bytelevel`、`bytefallback{replace,stripleading}`（Sequence 压平）；非 byte-to-unicode 字符（全角特殊词元）按字面解码。
+- **`post_processor`**：接受 `Sequence`（压平为 no-op，对齐用 `add_special_tokens=false`）。
+- **加载兼容**：`pre_tokenizer: null`、`merges` 数组格式（qwen3 的 `["Ġ","Ġ"]`）、`ignore_merges`。
+
+**对齐结果（encode + decode，HF `tokenizers` 0.23.3 黄金）**：
+
+| 模型 | 词表 | 关键结构 | encode | decode |
+|---|---|---|---|---|
+| GPT-2 | 50,257 | ByteLevel+byte-to-unicode | 10/10 | 10/10 |
+| Llama 2 | 32,000 | Prepend/Replace normalizer + byte fallback | 8/8 | 8/8 |
+| Llama 3 | 128,256 | Split(LLaMA 正则)+ByteLevel+ignore_merges | 8/8 | 7/7* |
+| Qwen3 | 151,936 | NFC + Split+ByteLevel | 8/8 | 7/7* |
+| DeepSeek-V3 | 128,256 | Split(数字+CJK)+ByteLevel | 8/8 | 7/7* |
+| Gemma | 256,000 | Replace normalizer + byte fallback + fuse | 8/8 | 7/7* |
+
+\* decode 跳过"纯特殊词元"样本——黄金 `decoded` 字段用 `skip_special_tokens=true`（用户注明的 tokenizers 0.23.3 怪癖），本 tokenizer 从不跳特殊词元，语义不同故不比对。
+
+**新增生产依赖**（推翻 D1/D2 推迟决策，真实模型需求驱动）：`fancy-regex 0.15`（Split 正则 look-around）、`unicode-normalization 0.1`（NFC）。均已 vendor 进 `vendor/`，完全离线构建。
+
+**诚实边界**：o200k（tiktoken 格式，非 tokenizer.json）未实施，需独立解析 `.tiktoken` 文件。

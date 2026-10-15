@@ -82,8 +82,9 @@ pub(crate) fn parsepostprocessor(
     match posttype {
         // ByteLevel post-processing inserts the BOS token; it only affects
         // `add_special_tokens=true`, so it is accepted as a no-op here (the
-        // raw encoding used by alignment is unaffected).
-        "ByteLevel" => Ok(None),
+        // raw encoding used by alignment is unaffected). A `Sequence` wrapping
+        // a ByteLevel is likewise flattened to a no-op for the same reason.
+        "ByteLevel" | "Sequence" => Ok(None),
         "TemplateProcessing" => {
             let single =
                 parsetemplate(object.get("single"), vocab, "post_processor.single", false)?;
