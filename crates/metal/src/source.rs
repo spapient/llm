@@ -388,15 +388,17 @@ kernel void attention(device const float* q [[buffer(0)]],
     threadgroup float weights[256];
     threadgroup float accum[4096];
 
-    uint seq = p[0];
-    uint heads = p[1];
-    uint kvheads = p[2];
-    uint headdim = p[3];
-    uint causal = p[4];
+    uint qseq = p[0];
+    uint kvseq = p[1];
+    uint heads = p[2];
+    uint kvheads = p[3];
+    uint headdim = p[4];
+    uint causal = p[5];
+    uint offset = kvseq - qseq;
     uint head = tgid % heads;
     uint position = tgid / heads;
     uint kvhead = head / (heads / kvheads);
-    uint limit = (causal != 0u && position + 1u < seq) ? (position + 1u) : seq;
+    uint limit = (causal != 0u && offset + position + 1u < kvseq) ? (offset + position + 1u) : kvseq;
     device const float* qrow = q + ((size_t)position * heads + head) * headdim;
     float scale = 1.0f / sqrt((float)headdim);
 

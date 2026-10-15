@@ -718,11 +718,11 @@ pub(crate) fn attention(
     geometry: &attentionshape,
     causal: bool,
 ) -> Result<Vec<f32>, cudaerror> {
-    let seq = geometry.seq;
-    if seq == 0 {
+    let qseq = geometry.qseq;
+    if qseq == 0 {
         return Ok(Vec::new());
     }
-    let queryelements = seq
+    let queryelements = qseq
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(cudaerror::sizeoverflow)?;
@@ -732,12 +732,13 @@ pub(crate) fn attention(
     let dkey = upload(&stream, key)?;
     let dvalue = upload(&stream, value)?;
     let mut dout = alloc(&stream, queryelements)?;
-    let seqv = asunsigned(seq)?;
+    let qseqv = asunsigned(qseq)?;
+    let kvseqv = asunsigned(geometry.kvseq)?;
     let headsv = asunsigned(geometry.heads)?;
     let kvheadsv = asunsigned(geometry.kvheads)?;
     let dimv = asunsigned(geometry.headdim)?;
     let causalv: u32 = u32::from(causal);
-    let grid = seqv.checked_mul(headsv).ok_or(cudaerror::sizeoverflow)?;
+    let grid = qseqv.checked_mul(headsv).ok_or(cudaerror::sizeoverflow)?;
     let shared = (source::ATTENTIONLANES * 2)
         .checked_add(dimv)
         .and_then(|floats| floats.checked_mul(4))
@@ -752,7 +753,8 @@ pub(crate) fn attention(
         .arg(&dkey)
         .arg(&dvalue)
         .arg(&mut dout)
-        .arg(&seqv)
+        .arg(&qseqv)
+        .arg(&kvseqv)
         .arg(&headsv)
         .arg(&kvheadsv)
         .arg(&dimv)
@@ -1186,22 +1188,23 @@ pub(crate) fn attention_into(
     geometry: &attentionshape,
     causal: bool,
 ) -> Result<usize, cudaerror> {
-    let seq = geometry.seq;
-    if seq == 0 {
+    let qseq = geometry.qseq;
+    if qseq == 0 {
         return Ok(session.recordempty());
     }
-    let queryelements = seq
+    let queryelements = qseq
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(cudaerror::sizeoverflow)?;
     let function = cache.function(source::ATTENTIONCUDA, source::ATTENTIONENTRY)?;
     let mut dout = session.alloc(queryelements)?;
-    let seqv = asunsigned(seq)?;
+    let qseqv = asunsigned(qseq)?;
+    let kvseqv = asunsigned(geometry.kvseq)?;
     let headsv = asunsigned(geometry.heads)?;
     let kvheadsv = asunsigned(geometry.kvheads)?;
     let dimv = asunsigned(geometry.headdim)?;
     let causalv: u32 = u32::from(causal);
-    let grid = seqv.checked_mul(headsv).ok_or(cudaerror::sizeoverflow)?;
+    let grid = qseqv.checked_mul(headsv).ok_or(cudaerror::sizeoverflow)?;
     let shared = (source::ATTENTIONLANES * 2)
         .checked_add(dimv)
         .and_then(|floats| floats.checked_mul(4))
@@ -1217,7 +1220,8 @@ pub(crate) fn attention_into(
             .arg(key)
             .arg(value)
             .arg(&mut dout)
-            .arg(&seqv)
+            .arg(&qseqv)
+            .arg(&kvseqv)
             .arg(&headsv)
             .arg(&kvheadsv)
             .arg(&dimv)

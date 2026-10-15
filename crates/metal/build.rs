@@ -7,7 +7,8 @@
 
 fn main() {
     // The crate only compiles its real body on macOS; on other targets it is an
-    // empty library, where an extra framework link is harmless. Emitting the link
-    // unconditionally keeps every target (tests, examples, benches) consistent.
-    println!("cargo:rustc-link-lib=framework=CoreGraphics");
+    // empty library and a framework link would be rejected by the linker.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-lib=framework=CoreGraphics");
+    }
 }

@@ -1,7 +1,7 @@
 use ::tensor::tensor;
 use api::{compute, operand, stepref, submission};
 
-use crate::causal::causallm;
+use crate::causal::{causallm, kvcache};
 use crate::error::modelerror;
 use crate::llama::block::llamablock;
 use crate::llama::config::llamaconfig;
@@ -81,7 +81,7 @@ impl llamamodel {
     ///
     /// The caller submits the whole chain once and resolves the returned
     /// [`stepref`]; every intermediate activation stays on the backend's device.
-    pub fn forward_submitted<S: submission>(
+    pub fn forwardsubmission<S: submission>(
         &self,
         sub: &mut S,
         tokens: &[usize],
@@ -91,7 +91,7 @@ impl llamamodel {
             tokens,
         )?;
         for layer in self.weights.getlayers() {
-            x = self.block.forward_submitted(sub, layer, x)?;
+            x = self.block.forwardsubmission(sub, layer, x)?;
         }
         let normalized = sub.recordrmsnorm(
             operand::result(x),
@@ -102,6 +102,52 @@ impl llamamodel {
             operand::result(normalized),
             operand::input(self.weights.getoutput().getweight().getvalue().getview()),
         )?)
+    }
+
+    /// Runs one cache-aware forward pass for a single new token, reading and
+    /// appending `cache`, and returns the next-token logits.
+    ///
+    /// The token sits at absolute position `cache.getlen()`; every layer
+    /// projects only that token, attends over the cached keys/values plus its
+    /// own, and appends its new key/value. The caller must prefill the cache by
+    /// processing the prompt tokens in order before the first decode step.
+    pub fn forward_cached<C: compute, K: kvcache>(
+        &self,
+        provider: &C,
+        cache: &mut K,
+        token: usize,
+    ) -> Result<Vec<f32>, modelerror> {
+        let position = cache.getlen();
+        let mut x = provider.embedding(
+            &self.weights.getembedding().getweight().getvalue().getview(),
+            &[token],
+        )?;
+        for (layer, layerweights) in self.weights.getlayers().iter().enumerate() {
+            x = self
+                .block
+                .forward_cached(provider, cache, layerweights, &x, layer, position)?;
+        }
+        let normalized = provider.rmsnorm(
+            &x.getview(),
+            &self.weights.getnorm().getweight().getvalue().getview(),
+            self.weights.getnorm().geteps(),
+        )?;
+        let logits = provider.matmul(
+            &normalized.getview(),
+            &self.weights.getoutput().getweight().getvalue().getview(),
+        )?;
+        let vocab = logits
+            .getshape()
+            .getdims()
+            .last()
+            .copied()
+            .ok_or_else(|| modelerror::config("output", "empty logits"))?;
+        let data = logits.getdata();
+        let start = data
+            .len()
+            .checked_sub(vocab)
+            .ok_or_else(|| modelerror::config("output", "degenerate logits"))?;
+        Ok(data[start..].to_vec())
     }
 }
 
@@ -117,5 +163,14 @@ impl causallm for llamamodel {
         }
         let normalized = self.weights.getnorm().forward(engine, &x)?;
         Ok(self.weights.getoutput().forward(engine, &normalized)?)
+    }
+
+    fn forward_cached<C: compute, K: kvcache>(
+        &self,
+        engine: &C,
+        cache: &mut K,
+        token: usize,
+    ) -> Result<Vec<f32>, modelerror> {
+        llamamodel::forward_cached(self, engine, cache, token)
     }
 }

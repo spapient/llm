@@ -12,13 +12,13 @@ use cpu::cpusubmission;
 use models::causallm;
 
 #[test]
-fn forward_submitted_matches_forward_bit_for_bit() {
+fn forwardsubmission_matches_forward_bit_for_bit() {
     let exec = provider();
     let model = model(42);
     let tokens: Vec<usize> = vec![0, 1, 2, 3];
 
     let mut sub = cpusubmission::new(exec.clone());
-    let logits = model.forward_submitted(&mut sub, &tokens).unwrap();
+    let logits = model.forwardsubmission(&mut sub, &tokens).unwrap();
     let got = sub.apply(&[logits]).unwrap();
 
     let want = model.forward(&exec, &tokens).unwrap();
@@ -28,13 +28,13 @@ fn forward_submitted_matches_forward_bit_for_bit() {
 }
 
 #[test]
-fn forward_submitted_matches_forward_for_a_single_token() {
+fn forwardsubmission_matches_forward_for_a_single_token() {
     let exec = provider();
     let model = model(7);
     let tokens: Vec<usize> = vec![1];
 
     let mut sub = cpusubmission::new(exec.clone());
-    let logits = model.forward_submitted(&mut sub, &tokens).unwrap();
+    let logits = model.forwardsubmission(&mut sub, &tokens).unwrap();
     let got = sub.apply(&[logits]).unwrap();
 
     let want = model.forward(&exec, &tokens).unwrap();

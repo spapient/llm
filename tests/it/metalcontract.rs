@@ -40,17 +40,23 @@ fn attend(
     headdim: usize,
     causal: bool,
 ) -> Vec<f32> {
-    let seq = q.len() / (heads * headdim);
     let stride = heads * headdim;
     let kstride = kvheads * headdim;
+    let qseq = q.len() / stride;
+    let kvseq = k.len() / kstride;
+    let offset = kvseq - qseq;
     let group = heads / kvheads;
     let scale = 1.0 / (headdim as f32).sqrt();
-    let mut out = vec![0.0_f32; seq * stride];
+    let mut out = vec![0.0_f32; qseq * stride];
     for head in 0..heads {
         let kvhead = head / group;
-        for s in 0..seq {
+        for s in 0..qseq {
             let qrow = &q[s * stride + head * headdim..][..headdim];
-            let limit = if causal && s + 1 < seq { s + 1 } else { seq };
+            let limit = if causal && offset + s + 1 < kvseq {
+                offset + s + 1
+            } else {
+                kvseq
+            };
             let mut logits = vec![f32::NEG_INFINITY; limit];
             for (t, slot) in logits.iter_mut().enumerate() {
                 let krow = &k[t * kstride + kvhead * headdim..][..headdim];
@@ -492,6 +498,22 @@ fn attention_single_position_returns_the_value() {
         .unwrap();
 
     assertallclose(out.getdata(), &[3.0, 4.0], 1.0e-6, 1.0e-6);
+}
+
+#[test]
+fn attention_accepts_a_shorter_query_than_the_keys() {
+    let q = build(vec![1, 4], vec![0.5, -1.0, 1.5, 0.25]);
+    let k = build(vec![3, 2], vec![1.0, 0.0, 0.0, 1.0, 0.5, 0.5]);
+    let v = build(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, -1.0, 0.5]);
+    let exec = metalexecutor::new(wide());
+
+    let out = exec
+        .attention(&q.getview(), &k.getview(), &v.getview(), 2, 1, true)
+        .unwrap();
+
+    assert_eq!(out.getshape().getdims(), &[1, 4]);
+    let want = attend(q.getdata(), k.getdata(), v.getdata(), 2, 1, 2, true);
+    assertallclose(out.getdata(), &want, 1.0e-5, 1.0e-5);
 }
 
 #[test]

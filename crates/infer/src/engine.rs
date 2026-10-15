@@ -59,7 +59,11 @@ impl<'a, M: causallm, C: compute> generationengine<'a, M, C> {
             maxnewtokens = request.getmaxnewtokens(),
             "generation started"
         );
-        let mut logits = prefillprompt(self.model, self.provider, request.getprompt())?;
+        let prompt = request.getprompt().to_vec();
+        let mut logits = {
+            let cache = request.getkvcachemut();
+            prefillprompt(self.model, self.provider, cache, &prompt)?
+        };
         let mut steps = 0usize;
         let reason = loop {
             exec.checkpoint()?;
@@ -77,7 +81,10 @@ impl<'a, M: causallm, C: compute> generationengine<'a, M, C> {
             if request.getgeneratedlen() >= request.getmaxnewtokens() {
                 break stopreason::maxlength;
             }
-            logits = decodestep(self.model, self.provider, request.getcontext())?;
+            logits = {
+                let cache = request.getkvcachemut();
+                decodestep(self.model, self.provider, cache, token)?
+            };
         };
         debug!(
             steps,

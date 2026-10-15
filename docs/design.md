@@ -910,7 +910,7 @@ crate root 导出 9 个公共类型（`modelerror`、`causallm`、`kvcache`、`a
 
 - 仅 `f32`；`f16`/`bf16` 是存储 dtype，但无后端执行。
 - 仅 `llama` 一个架构；无第二个架构。
-- 前向路径只做全序列前向；本阶段不接 KV cache，`forward` 不接收也不填充缓存（见「偏离」）。全序列前向每次调用重算每个位置，是 KV-cache decode 阶段必须击败的正确性基线。
+- 前向路径提供全序列 `forward` 与增量 `forward_cached`（读/追加 `kvcache`，2026-10-16 接线：`incrementalattention` 2 + `kvcacheforward` 1 + `generation` 10 全绿，Metal 46/46、CUDA 44/44，见 `docs/conformance.md`「本轮重测证据（2026-10-16）」）。全序列 `forward` 每次调用重算每个位置，是 KV-cache decode 阶段必须击败的正确性基线；`forward_cached` 的性能收益尚未实测（同步往返主导），不声称任何加速。
 - 无采样、无训练路径；`models` 生产依赖集为 `nn`/`api`/`tensor`/`lib`（无 `autograd`）。
 - 注册表解析架构名，不解析序列化配置；`format` 拥有的 `config.json` 解析器在推理里程碑接入前不接线。
 - 输出投影是显式、单独校验的权重；不支持绑定输入/输出嵌入。
@@ -2779,7 +2779,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 ## 21.13 执行上下文与 dispatch 批处理（**已验证**）
 
-> 状态：**已验证（Verified）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。该契约已按 21.13.5 的顺序在三个后端（`cpu`、`metal`、`cuda`）实施；三后端的「同一链经上下文与经 `compute` 逐位相同」测试与全部静态门禁均已执行并通过（见 21.13.7）。性能验收也已达成：`gpu/modelforward` 的 Metal 数字由 52.60 ms（35 次同步往返的 `compute` 基线）降至 2.81 ms（整链一次 commit，`forward_submitted`），**改善 ≈18.7×**，远超 10× 标准；且 `forward_submitted` 与 `forward` 逐位一致，不是以正确性换速度。
+> 状态：**已验证（Verified）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。该契约已按 21.13.5 的顺序在三个后端（`cpu`、`metal`、`cuda`）实施；三后端的「同一链经上下文与经 `compute` 逐位相同」测试与全部静态门禁均已执行并通过（见 21.13.7）。性能验收也已达成：`gpu/modelforward` 的 Metal 数字由 52.60 ms（35 次同步往返的 `compute` 基线）降至 2.81 ms（整链一次 commit，`forwardsubmission`），**改善 ≈18.7×**，远超 10× 标准；且 `forwardsubmission` 与 `forward` 逐位一致，不是以正确性换速度。
 
 ### 21.13.1 上下文（测量事实）
 
@@ -2850,7 +2850,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **平台修复。** `metal` 新增 `build.rs` 显式链接 `CoreGraphics` 框架：`MTLCreateSystemDefaultDevice` 要求 CoreGraphics 链接，而 `objc2-core-graphics` 依赖无本 crate 使用的符号，其 `#[link]` 被死代码消除，设备探测会静默返回空。
 * **公共化。** 平台无关的 `geometry`（shape 校验）从 `metal`/`cuda` 各一份复制抽到 `api::geometry`，`attentionshape::new` 增 `maxheaddim` 参数承载唯一的设备差异（Metal 4096 vs CUDA 8192）；消除 607 行重复。
 
-* **接入与性能。** `llamamodel` 与 `llamablock` 增 `forward_submitted`，把前向链的 35 步算子内联进一个 `submission`；`tests/it/submissionforward.rs` 2 例在 CPU 上钉住 `forward_submitted` 与 `forward` 逐位相同。`gpu/modelforward` 实测（Apple M5 Pro）：`metal` 52.60 ms（35 次同步往返的 `compute` 基线）、`metal_submission` 2.81 ms（整链一次 commit），**改善 ≈18.7×**，远超 10× 验收，且逐位一致。无需权重驻留设备即达成。
+* **接入与性能。** `llamamodel` 与 `llamablock` 增 `forwardsubmission`，把前向链的 35 步算子内联进一个 `submission`；`tests/it/submissionforward.rs` 2 例在 CPU 上钉住 `forwardsubmission` 与 `forward` 逐位相同。`gpu/modelforward` 实测（Apple M5 Pro）：`metal` 52.60 ms（35 次同步往返的 `compute` 基线）、`metalsubmission` 2.81 ms（整链一次 commit），**改善 ≈18.7×**，远超 10× 验收，且逐位一致。无需权重驻留设备即达成。
 
 ## 22. 跨领域主题与声明局限
 

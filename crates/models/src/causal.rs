@@ -22,6 +22,24 @@ pub trait causallm {
     /// Returns a [`modelerror`] when a token is out of range, an operand shape
     /// is inconsistent with the configuration, or a provider operation fails.
     fn forward<C: compute>(&self, engine: &C, tokens: &[usize]) -> Result<tensor<f32>, modelerror>;
+
+    /// Runs one cache-aware forward pass for a single new token.
+    ///
+    /// The token sits at absolute position [`kvcache::getlen`], and the call
+    /// appends that position's key and value to `cache`. The caller prefill's
+    /// the cache by processing the prompt tokens in order before the first
+    /// decode step. Returns the next-token logits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`modelerror`] when a token is out of range, an operand shape
+    /// is inconsistent with the configuration, or a provider operation fails.
+    fn forward_cached<C: compute, K: kvcache>(
+        &self,
+        engine: &C,
+        cache: &mut K,
+        token: usize,
+    ) -> Result<Vec<f32>, modelerror>;
 }
 
 /// A key/value cache for incremental decoding, owned by `models` and

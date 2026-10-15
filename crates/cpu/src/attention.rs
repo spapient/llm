@@ -43,15 +43,15 @@ impl cpuattention {
         causal: bool,
     ) -> Result<tensor<f32>, backenderror> {
         let plan = attentionplan(query, key, value, heads, kvheads, causal)?;
-        let mut data = vec![0.0_f32; plan.seq * plan.qstride];
-        let mut weights = vec![0.0_f32; plan.seq];
+        let mut data = vec![0.0_f32; plan.qseq * plan.qstride];
+        let mut weights = vec![0.0_f32; plan.kvseq];
         let q = query.getdata();
         let k = key.getdata();
         let v = value.getdata();
         for head in 0..heads {
             let kvhead = head / plan.group;
-            for s in 0..plan.seq {
-                let limit = attentionlimit(plan.causal, s, plan.seq);
+            for s in 0..plan.qseq {
+                let limit = attentionlimit(plan.causal, s, plan.kvseq, plan.qseq);
                 attentionrow(
                     Attention {
                         q: &q[s * plan.qstride + head * plan.headdim..][..plan.headdim],
@@ -76,7 +76,7 @@ impl cpuattention {
             }
         }
         let outshape =
-            shape::new(vec![plan.seq, plan.qstride]).map_err(|_| backenderror::sizeoverflow)?;
+            shape::new(vec![plan.qseq, plan.qstride]).map_err(|_| backenderror::sizeoverflow)?;
         finish(&outshape, data)
     }
 }
@@ -94,11 +94,17 @@ struct Attention<'a> {
 
 /// Returns how many key positions a query position may attend to.
 ///
-/// Causal attention lets position `s` see keys `0..=s`; keys after `s` are
-/// excluded, so their dot products are never computed and their weight slots
-/// are never written. Non-causal attention attends to every key.
-fn attentionlimit(causal: bool, s: usize, seq: usize) -> usize {
-    if causal && s + 1 < seq { s + 1 } else { seq }
+/// Causal attention lets query position `s` see keys up to `offset + s`, where
+/// `offset = kvseq - qseq` is the gap between the query and key lengths; keys
+/// after that are excluded, so their dot products are never computed and their
+/// weight slots are never written. Non-causal attention attends to every key.
+fn attentionlimit(causal: bool, s: usize, kvseq: usize, qseq: usize) -> usize {
+    if causal {
+        let offset = kvseq - qseq;
+        (offset + s + 1).min(kvseq)
+    } else {
+        kvseq
+    }
 }
 
 /// Computes the attention weights of one query position into `weights[..limit]`.
@@ -135,7 +141,8 @@ fn attentionrow(att: Attention<'_>, limit: usize, weights: &mut [f32]) {
 
 /// The validated shape plan of one attention call.
 struct attentionshape {
-    seq: usize,
+    qseq: usize,
+    kvseq: usize,
     qstride: usize,
     kstride: usize,
     vstride: usize,
@@ -159,7 +166,7 @@ fn attentionplan(
     if qd.len() != 2 || kd.len() != 2 || vd.len() != 2 {
         return Err(backenderror::shapemismatch { op: ATTENTIONOP });
     }
-    if kd != vd || kd[0] != qd[0] {
+    if kd != vd || qd[0] > kd[0] {
         return Err(backenderror::shapemismatch { op: ATTENTIONOP });
     }
     if heads == 0 || kvheads == 0 || !heads.is_multiple_of(kvheads) {
@@ -179,7 +186,8 @@ fn attentionplan(
         return Err(backenderror::shapemismatch { op: ATTENTIONOP });
     }
     Ok(attentionshape {
-        seq: qd[0],
+        qseq: qd[0],
+        kvseq: kd[0],
         qstride: qd[1],
         kstride: kd[1],
         vstride: vd[1],

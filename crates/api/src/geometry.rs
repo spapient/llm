@@ -240,8 +240,10 @@ impl embeddingshape {
 /// dot-product scale is the one quantity deliberately absent: the kernel
 /// computes `1 / sqrt(headdim)` itself from the head dimension it is given.
 pub struct attentionshape {
-    /// The shared sequence length of query, key, and value.
-    pub seq: usize,
+    /// The query sequence length.
+    pub qseq: usize,
+    /// The key/value sequence length, always at least [`qseq`](Self::qseq).
+    pub kvseq: usize,
     /// How many query heads the last axis is split into.
     pub heads: usize,
     /// How many key and value heads the last axis is split into.
@@ -252,6 +254,12 @@ pub struct attentionshape {
 
 impl attentionshape {
     /// Validates the three operand shapes and the head split.
+    ///
+    /// The query may be shorter than the key/value operands, which is the
+    /// incremental-decode shape: query position `s` attends to key positions up
+    /// to `(kvseq - qseq) + s` under the causal mask. A query at least as long
+    /// as the keys is rejected, because a query position would then have no key
+    /// window to attend to.
     ///
     /// The last check is a device limit, not a contract limit: the kernel keeps
     /// one accumulator slot per head dimension in shared memory, so a head
@@ -274,7 +282,7 @@ impl attentionshape {
         if qd.len() != 2 || kd.len() != 2 || vd.len() != 2 {
             return Err(backenderror::shapemismatch { op: ATTENTIONOP });
         }
-        if kd != vd || kd[0] != qd[0] {
+        if kd != vd || qd[0] > kd[0] {
             return Err(backenderror::shapemismatch { op: ATTENTIONOP });
         }
         if heads == 0 || kvheads == 0 || !heads.is_multiple_of(kvheads) {
@@ -294,7 +302,8 @@ impl attentionshape {
             return Err(backenderror::resourceexhausted);
         }
         Ok(Self {
-            seq: qd[0],
+            qseq: qd[0],
+            kvseq: kd[0],
             heads,
             kvheads,
             headdim,

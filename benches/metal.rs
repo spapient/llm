@@ -36,6 +36,7 @@ mod macos {
     use criterion::{
         BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
     };
+    use infer::kvstate;
     use lib::{limits, seed};
     use metal::metalexecutor;
     use models::{causallm, llamaconfig, llamamodel, llamaweights};
@@ -265,11 +266,11 @@ mod macos {
         group.bench_function("metal", |b| {
             b.iter(|| black_box(model.forward(&metalexec, black_box(&tokens)).unwrap()));
         });
-        group.bench_function("metal_submission", |b| {
+        group.bench_function("metalsubmission", |b| {
             b.iter(|| {
                 let mut sub = metalexec.newsubmission().unwrap();
                 let logits = model
-                    .forward_submitted(&mut sub, black_box(&tokens))
+                    .forwardsubmission(&mut sub, black_box(&tokens))
                     .unwrap();
                 black_box(sub.apply(&[logits]).unwrap())
             });
@@ -321,6 +322,68 @@ mod macos {
         group.finish();
     }
 
+    /// KV-cache decode: prefill the prompt token by token, then decode the rest
+    /// token by token. The cache-aware path processes only the new token each
+    /// step, while the recompute path runs a full forward over the whole context.
+    fn decode(c: &mut Criterion) {
+        let config = llamaconfig::new(
+            VOCAB,
+            DIM,
+            LAYERS,
+            NHEADS,
+            KVHEADS,
+            HIDDEN,
+            1.0e-5,
+            10_000.0,
+            SEQ * 2,
+        )
+        .unwrap();
+        let weights = llamaweights::random(&config, seed::new(42)).unwrap();
+        let model = llamamodel::new(config, weights).unwrap();
+        let prompt: Vec<usize> = (0..SEQ).map(|i| i % VOCAB).collect();
+        let decode_tokens: Vec<usize> = (SEQ..2 * SEQ).map(|i| i % VOCAB).collect();
+        let metalexec = metalexecutor::new(LIMIT);
+
+        let mut group = c.benchmark_group("gpu/decode");
+        group.throughput(Throughput::Elements(SEQ as u64));
+        // Both paths time only the decode phase (iter_batched setup is untimed):
+        // `metalcached` prefills in setup, `metalrecompute` starts from the prompt.
+        // Symmetric token counts make the numbers honest; at seq=16 the per-call
+        // command-buffer round trip dominates, so no speedup is claimed here.
+        group.bench_function("metalcached", |bench| {
+            bench.iter_batched(
+                || {
+                    let mut cache =
+                        kvstate::new(config.getnlayers(), config.getkvwidth(), config.getmaxseq())
+                            .unwrap();
+                    for &token in &prompt {
+                        model.forward_cached(&metalexec, &mut cache, token).unwrap();
+                    }
+                    cache
+                },
+                |mut cache| {
+                    for &token in &decode_tokens {
+                        black_box(model.forward_cached(&metalexec, &mut cache, token).unwrap());
+                    }
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("metalrecompute", |bench| {
+            bench.iter_batched(
+                || prompt.clone(),
+                |mut context| {
+                    for &token in &decode_tokens {
+                        context.push(token);
+                        black_box(model.forward(&metalexec, &context).unwrap());
+                    }
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
+        group.finish();
+    }
+
     criterion_group!(
         benches,
         matmul,
@@ -332,7 +395,8 @@ mod macos {
         embedding,
         attention,
         model_forward,
-        submission_chain
+        submission_chain,
+        decode
     );
 }
 

@@ -551,18 +551,18 @@ pub(crate) fn attention(
     geometry: &attentionshape,
     causal: bool,
 ) -> Result<Vec<f32>, metalerror> {
-    let seq = geometry.seq;
-    if seq == 0 {
+    let qseq = geometry.qseq;
+    if qseq == 0 {
         return Ok(Vec::new());
     }
-    let queryelements = seq
+    let queryelements = qseq
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(metalerror::sizeoverflow)?;
     let bytes = queryelements
         .checked_mul(core::mem::size_of::<f32>())
         .ok_or(metalerror::sizeoverflow)?;
-    let groups = seq
+    let groups = qseq
         .checked_mul(geometry.heads)
         .ok_or(metalerror::sizeoverflow)?;
     let device = cache.device()?;
@@ -576,7 +576,8 @@ pub(crate) fn attention(
 
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 4] = [&dquery, &dkey, &dvalue, &dout];
     let params = [
-        asu32(seq)?,
+        asu32(qseq)?,
+        asu32(geometry.kvseq)?,
         asu32(geometry.heads)?,
         asu32(geometry.kvheads)?,
         asu32(geometry.headdim)?,
@@ -1248,24 +1249,25 @@ pub(crate) fn attention_into(
     geometry: &attentionshape,
     causal: bool,
 ) -> Result<usize, metalerror> {
-    let seq = geometry.seq;
-    if seq == 0 {
+    let qseq = geometry.qseq;
+    if qseq == 0 {
         return Ok(session.recordempty());
     }
-    let queryelements = seq
+    let queryelements = qseq
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(metalerror::sizeoverflow)?;
     let bytes = queryelements
         .checked_mul(core::mem::size_of::<f32>())
         .ok_or(metalerror::sizeoverflow)?;
-    let groups = seq
+    let groups = qseq
         .checked_mul(geometry.heads)
         .ok_or(metalerror::sizeoverflow)?;
     let out = alloc(&session.device, bytes)?;
     let buffers: [&ProtocolObject<dyn MTLBuffer>; 4] = [query, key, value, &out];
     let params = [
-        asu32(seq)?,
+        asu32(qseq)?,
+        asu32(geometry.kvseq)?,
         asu32(geometry.heads)?,
         asu32(geometry.kvheads)?,
         asu32(geometry.headdim)?,

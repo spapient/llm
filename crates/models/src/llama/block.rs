@@ -1,7 +1,8 @@
-use ::tensor::tensor;
+use ::tensor::{shape, tensor};
 use api::{compute, operand, stepref, submission};
 use nn::{attention, rotary};
 
+use crate::causal::kvcache;
 use crate::error::modelerror;
 use crate::llama::config::llamaconfig;
 use crate::llama::weights::llamalayerweights;
@@ -74,7 +75,7 @@ impl llamablock {
     ///
     /// The caller submits the whole chain once and resolves the returned
     /// [`stepref`]; intermediate results stay on the backend's device.
-    pub fn forward_submitted<S: submission>(
+    pub fn forwardsubmission<S: submission>(
         &self,
         sub: &mut S,
         weights: &llamalayerweights,
@@ -141,4 +142,123 @@ impl llamablock {
         )?;
         Ok(sub.recordadd(operand::result(residual), operand::result(feedforward))?)
     }
+
+    /// Runs one pre-norm transformer block for a single new token, reading the
+    /// cached keys and values and appending the new ones.
+    ///
+    /// The cached context length is `position`, so the new token sits at
+    /// absolute position `position`; the query is `[1, dim]` while the key and
+    /// value are the cached `[position, kvwidth]` concatenated with the new row.
+    pub fn forward_cached<C: compute, K: kvcache>(
+        &self,
+        provider: &C,
+        cache: &mut K,
+        weights: &llamalayerweights,
+        x: &tensor<f32>,
+        layer: usize,
+        position: usize,
+    ) -> Result<tensor<f32>, modelerror> {
+        let normalized = provider.rmsnorm(
+            &x.getview(),
+            &weights.getattnnorm().getweight().getvalue().getview(),
+            weights.getattnnorm().geteps(),
+        )?;
+        let q = provider.matmul(
+            &normalized.getview(),
+            &weights.getwq().getweight().getvalue().getview(),
+        )?;
+        let k = provider.matmul(
+            &normalized.getview(),
+            &weights.getwk().getweight().getvalue().getview(),
+        )?;
+        let v = provider.matmul(
+            &normalized.getview(),
+            &weights.getwv().getweight().getvalue().getview(),
+        )?;
+        let q = ropeat(
+            provider,
+            &q,
+            position,
+            self.rotaryq.getheads(),
+            self.rotaryq.getbase(),
+        )?;
+        let k = ropeat(
+            provider,
+            &k,
+            position,
+            self.rotaryk.getheads(),
+            self.rotaryk.getbase(),
+        )?;
+        let kfull = concatkv(cache.keys(layer), &k)?;
+        let vfull = concatkv(cache.values(layer), &v)?;
+        let attended = provider.attention(
+            &q.getview(),
+            &kfull.getview(),
+            &vfull.getview(),
+            self.attention.getheads(),
+            self.attention.getkvheads(),
+            self.attention.getcausal(),
+        )?;
+        cache.append(layer, &k, &v)?;
+        let projected = provider.matmul(
+            &attended.getview(),
+            &weights.getwo().getweight().getvalue().getview(),
+        )?;
+        let residual = provider.add(&x.getview(), &projected.getview())?;
+        let normalized = provider.rmsnorm(
+            &residual.getview(),
+            &weights.getffnnorm().getweight().getvalue().getview(),
+            weights.getffnnorm().geteps(),
+        )?;
+        let gate = provider.matmul(
+            &normalized.getview(),
+            &weights.getmlp().getgate().getweight().getvalue().getview(),
+        )?;
+        let up = provider.matmul(
+            &normalized.getview(),
+            &weights.getmlp().getup().getweight().getvalue().getview(),
+        )?;
+        let silu = provider.silu(&gate.getview())?;
+        let gated = provider.mul(&silu.getview(), &up.getview())?;
+        let feedforward = provider.matmul(
+            &gated.getview(),
+            &weights.getmlp().getdown().getweight().getvalue().getview(),
+        )?;
+        provider
+            .add(&residual.getview(), &feedforward.getview())
+            .map_err(modelerror::from)
+    }
+}
+
+/// Applies rotary position embedding to a single `[1, width]` token at absolute
+/// `position`, by padding a `[position + 1, width]` operand and taking the last
+/// row. Reuses the `rope` contract unchanged; a dedicated absolute-position
+/// kernel is a later optimization.
+fn ropeat<C: compute>(
+    provider: &C,
+    x: &tensor<f32>,
+    position: usize,
+    heads: usize,
+    base: f32,
+) -> Result<tensor<f32>, modelerror> {
+    let width = x.getshape().getdims()[1];
+    let mut data = vec![0.0_f32; (position + 1) * width];
+    data[position * width..].copy_from_slice(x.getdata());
+    let padded = tensor::new(shape::new(vec![position + 1, width])?, data)?;
+    let rotated = provider.rope(&padded.getview(), heads, base)?;
+    let start = position * width;
+    let last = rotated.getdata()[start..start + width].to_vec();
+    tensor::new(shape::new(vec![1, width])?, last).map_err(modelerror::from)
+}
+
+/// Concatenates a cached `[len, width]` tensor with a new `[1, width]` row.
+fn concatkv(existing: Option<&tensor<f32>>, new: &tensor<f32>) -> Result<tensor<f32>, modelerror> {
+    let width = new.getshape().getdims()[1];
+    let mut data = match existing {
+        Some(t) => t.getdata().to_vec(),
+        None => Vec::new(),
+    };
+    data.extend_from_slice(new.getdata());
+    let len = data.len() / width;
+    tensor::new(shape::new(vec![len, width])?, data).map_err(modelerror::from)
 }

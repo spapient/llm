@@ -235,8 +235,9 @@ __device__ float attentionscore(const float* qrow, const float* k, unsigned key,
 }
 
 extern "C" __global__ void attention(const float* q, const float* k, const float* v,
-                                     float* out, unsigned seq, unsigned heads,
-                                     unsigned kvheads, unsigned headdim, unsigned causal) {
+                                     float* out, unsigned qseq, unsigned kvseq,
+                                     unsigned heads, unsigned kvheads, unsigned headdim,
+                                     unsigned causal) {
     extern __shared__ float scratch[];
     float* reduce = scratch;
     float* weights = scratch + blockDim.x;
@@ -246,7 +247,9 @@ extern "C" __global__ void attention(const float* q, const float* k, const float
     const unsigned head = blockIdx.x % heads;
     const unsigned position = blockIdx.x / heads;
     const unsigned kvhead = head / (heads / kvheads);
-    const unsigned limit = (causal != 0u && position + 1u < seq) ? (position + 1u) : seq;
+    const unsigned offset = kvseq - qseq;
+    const unsigned limit = (causal != 0u && offset + position + 1u < kvseq)
+        ? (offset + position + 1u) : kvseq;
     const float* qrow = q + ((size_t)position * heads + head) * headdim;
     const float scale = 1.0f / sqrtf((float)headdim);
 
