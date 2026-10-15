@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ::checkpoint::{
-    checkcompat, checkpoint, checkversion, loadcheckpoint, savecheckpoint, tensorspec,
-    trainingstate,
-};
+use ::checkpoint::compatibility::{checkcompat, checkversion, tensorspec};
+use ::checkpoint::{checkpoint, loadcheckpoint, savecheckpoint, trainingstate};
 use ::tensor::{dtype, tensor};
 use optim::{optimizer, optimizerstate, statetensor};
 

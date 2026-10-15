@@ -72,19 +72,24 @@ pub fn saveraw(path: &Path, snap: &rawsnapshot) -> Result<(), checkpointerror> {
     Ok(())
 }
 
-/// Exports a checkpoint file to the inference raw weights format.
+/// Exports a `.u` snapshot file to the inference raw weights format.
 ///
-/// The checkpoint is loaded and validated in memory, its tensors are laid out
-/// page-aligned and uncompressed, and the artifact is published atomically at
-/// `raw_path`.
+/// The training `.u` artifact is read and validated in memory, its tensors are
+/// laid out page-aligned and uncompressed, and the raw artifact is published
+/// atomically at `raw_path`.
 ///
 /// # Errors
 ///
-/// Returns the load errors of [`loadcheckpoint`], the export errors of
-/// [`rawsnapshot::fromcheckpoint`], or the save errors of [`saveraw`].
-pub fn rawexport(checkpoint_path: &Path, raw_path: &Path) -> Result<(), checkpointerror> {
-    let ckpt = crate::load::loadcheckpoint(checkpoint_path)?;
-    let raw = rawsnapshot::fromcheckpoint(&ckpt)?;
+/// Returns the I/O error when the `.u` file cannot be read, the decode errors
+/// of [`crate::uformat::snapshot::decode`], the export errors of
+/// [`rawsnapshot::fromsnapshot`], or the save errors of [`saveraw`].
+pub fn rawexport(u_path: &Path, raw_path: &Path) -> Result<(), checkpointerror> {
+    let bytes = std::fs::read(u_path).map_err(|source| checkpointerror::io {
+        path: u_path.to_path_buf(),
+        source,
+    })?;
+    let snap = crate::uformat::snapshot::decode(&bytes)?;
+    let raw = rawsnapshot::fromsnapshot(&snap)?;
     saveraw(raw_path, &raw)
 }
 
@@ -234,6 +239,72 @@ impl rawsnapshot {
                     name: name.to_string(),
                 })?;
             let bytes = ckpt
+                .readtensor(name)
+                .ok_or_else(|| checkpointerror::missingtensor {
+                    name: name.to_string(),
+                })?;
+            if bytes.len() as u64 != expected {
+                return Err(checkpointerror::lengthmismatch {
+                    name: name.to_string(),
+                    expected,
+                    actual: bytes.len() as u64,
+                });
+            }
+            tensors.push(rawtensorentry {
+                name: name.to_string(),
+                dtype: entry.getdtype(),
+                shape: entry.getshape().clone(),
+                offset: cursor,
+                nbytes: expected,
+                crc: crc32c(&bytes),
+            });
+            data.resize(cursor as usize, 0);
+            data.extend_from_slice(&bytes);
+            cursor = alignup(cursor.checked_add(expected).ok_or_else(|| {
+                checkpointerror::shapeoverflow {
+                    name: name.to_string(),
+                }
+            })?)?;
+        }
+        Ok(Self {
+            version: RAWFORMATVERSION,
+            tensors,
+            data,
+        })
+    }
+
+    /// Exports a `.u` snapshot's tensors into a page-aligned raw artifact.
+    ///
+    /// This is the training-path entry point: the training `.u` snapshot is the
+    /// source of inference weights, so [`rawexport`] uses it. The layout rules
+    /// and validation are identical to [`rawsnapshot::fromcheckpoint`], which
+    /// covers the separate full-state checkpoint artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::shapeoverflow`] when an element count or
+    /// length overflows, [`checkpointerror::lengthmismatch`] when a tensor's
+    /// stored bytes disagree with its manifest, or
+    /// [`checkpointerror::missingtensor`] when a manifest entry has no bytes.
+    pub fn fromsnapshot(snap: &crate::uformat::snapshot) -> Result<Self, checkpointerror> {
+        let mut tensors = Vec::new();
+        let mut data = Vec::new();
+        let mut cursor = 0u64;
+        for entry in snap.gettensors() {
+            let name = entry.getname();
+            let count =
+                entry
+                    .getshape()
+                    .getelementcount()
+                    .map_err(|_| checkpointerror::shapeoverflow {
+                        name: name.to_string(),
+                    })?;
+            let expected = (count as u64)
+                .checked_mul(entry.getdtype().sizeinbytes() as u64)
+                .ok_or_else(|| checkpointerror::shapeoverflow {
+                    name: name.to_string(),
+                })?;
+            let bytes = snap
                 .readtensor(name)
                 .ok_or_else(|| checkpointerror::missingtensor {
                     name: name.to_string(),

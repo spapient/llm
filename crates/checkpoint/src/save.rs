@@ -8,7 +8,7 @@ use crate::manifests::checkpoint;
 /// Saves a checkpoint to `path` atomically.
 ///
 /// The checkpoint is encoded to its on-disk layout and then published through
-/// [`writeatomic`](crate::writeatomic), so a reader never observes a partial
+/// [`crate::writeatomic`], so a reader never observes a partial
 /// artifact and an existing checkpoint is replaced only after the new bytes are
 /// fully written and synced.
 ///

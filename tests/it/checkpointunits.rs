@@ -84,11 +84,11 @@ mod atomicwrite {
 /// Tests relocated from `crates/checkpoint/src/compatibility.rs`.
 mod compatibility {
     use crate::support::shapeof;
-    use ::checkpoint::checkcompat;
     use ::checkpoint::checkpoint;
     use ::checkpoint::checkpointerror;
-    use ::checkpoint::checkversion;
-    use ::checkpoint::tensorspec;
+    use ::checkpoint::compatibility::checkcompat;
+    use ::checkpoint::compatibility::checkversion;
+    use ::checkpoint::compatibility::tensorspec;
     use tensor::dtype;
 
     fn ckpt() -> checkpoint {
@@ -157,7 +157,7 @@ mod compatibility {
 
 /// Tests relocated from `crates/checkpoint/src/crc32c.rs`.
 mod crc32c {
-    use ::checkpoint::crc32c;
+    use ::checkpoint::crc32c::crc32c;
 
     #[test]
     fn empty_input_has_zero_checksum() {
@@ -241,8 +241,8 @@ mod error {
 
 /// Tests relocated from `crates/checkpoint/src/hash.rs`.
 mod hash {
-    use ::checkpoint::blake3hash;
-    use ::checkpoint::contenthash;
+    use ::checkpoint::hash::blake3hash;
+    use ::checkpoint::hash::contenthash;
 
     #[test]
     fn empty_input_matches_the_blake3_known_answer() {
@@ -452,7 +452,7 @@ mod training {
 
 /// Tests relocated from `crates/checkpoint/src/blocks.rs`.
 mod blocks {
-    use ::checkpoint::{BLOCKSIZE, MAXBLOCK, MINBLOCK, chunk};
+    use ::checkpoint::blocks::{BLOCKSIZE, MAXBLOCK, MINBLOCK, chunk};
 
     #[test]
     fn empty_input_yields_no_blocks() {
@@ -489,7 +489,9 @@ mod blocks {
 /// Tests relocated from `crates/checkpoint/src/uformat.rs`.
 mod uformat {
     use crate::support::shapeof;
-    use ::checkpoint::{BLOCKSIZE, checkpointerror, snapshot};
+    use ::checkpoint::blocks::BLOCKSIZE;
+    use ::checkpoint::checkpointerror;
+    use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
 
     fn onesnap() -> snapshot {
@@ -600,7 +602,10 @@ mod uformat {
 /// Tests relocated from `crates/checkpoint/src/delta.rs`.
 mod delta {
     use crate::support::shapeof;
-    use ::checkpoint::{BLOCKSIZE, chunk, delta, snapshot};
+    use ::checkpoint::blocks::BLOCKSIZE;
+    use ::checkpoint::blocks::chunk;
+    use ::checkpoint::deltas::delta;
+    use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
 
     fn pseudorandom(len: usize) -> Vec<u8> {
@@ -700,7 +705,11 @@ mod merge {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::support::shapeof;
-    use ::checkpoint::{BLOCKSIZE, checkpointerror, delta, merge, mergefiles, snapshot};
+    use ::checkpoint::blocks::BLOCKSIZE;
+    use ::checkpoint::checkpointerror;
+    use ::checkpoint::deltas::delta;
+    use ::checkpoint::merge::{merge, mergefiles};
+    use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
 
     fn base() -> snapshot {
@@ -821,7 +830,10 @@ mod reader {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::support::shapeof;
-    use ::checkpoint::{BLOCKSIZE, MAXBLOCK, checkpointerror, checkpointreader, delta, snapshot};
+    use ::checkpoint::blocks::{BLOCKSIZE, MAXBLOCK};
+    use ::checkpoint::deltas::delta;
+    use ::checkpoint::uformat::snapshot;
+    use ::checkpoint::{checkpointerror, checkpointreader};
     use tensor::dtype;
 
     fn base() -> snapshot {
@@ -1002,7 +1014,11 @@ mod reader {
 /// Tests relocated from `crates/checkpoint/src/compact.rs`.
 mod compact {
     use crate::support::shapeof;
-    use ::checkpoint::{BLOCKSIZE, checkpointerror, compact, delta, snapshot, verifyprovenance};
+    use ::checkpoint::blocks::BLOCKSIZE;
+    use ::checkpoint::checkpointerror;
+    use ::checkpoint::compact::{compact, verifyprovenance};
+    use ::checkpoint::deltas::delta;
+    use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
 
     fn full(v: u8) -> snapshot {
@@ -1061,7 +1077,9 @@ mod compact {
 /// Tests for per-block LZ4 compression of `.u` snapshots.
 mod compression {
     use crate::support::shapeof;
-    use ::checkpoint::{BLOCKSIZE, checkpointerror, checkpointreader, snapshot};
+    use ::checkpoint::blocks::BLOCKSIZE;
+    use ::checkpoint::uformat::snapshot;
+    use ::checkpoint::{checkpointerror, checkpointreader};
     use tensor::dtype;
 
     fn snapwith(data: &[u8]) -> snapshot {
@@ -1129,7 +1147,8 @@ mod compression {
 /// Tests for the quantization descriptor and scale-as-tensor.
 mod quant {
     use crate::support::shapeof;
-    use ::checkpoint::{delta, quantdesc, snapshot};
+    use ::checkpoint::deltas::delta;
+    use ::checkpoint::uformat::{quantdesc, snapshot};
     use tensor::dtype;
 
     #[test]
@@ -1220,7 +1239,8 @@ mod quant {
 /// Tests for the typed checkpoint-to-tensor bridge (`readtensortyped`).
 mod tensorbridge {
     use crate::support::shapeof;
-    use ::checkpoint::{checkpointerror, checkpointreader, snapshot};
+    use ::checkpoint::uformat::snapshot;
+    use ::checkpoint::{checkpointerror, checkpointreader};
     use half::f16;
     use tensor::dtype;
 
@@ -1333,9 +1353,9 @@ mod rawformat {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::support::shapeof;
-    use ::checkpoint::{
-        PAGESIZE, RAWFORMATVERSION, checkpoint, checkpointerror, rawreader, rawsnapshot,
-    };
+    use ::checkpoint::rawfmt::{PAGESIZE, RAWFORMATVERSION, rawsnapshot};
+    use ::checkpoint::rawio::rawreader;
+    use ::checkpoint::{checkpoint, checkpointerror};
     use half::f16;
     use tensor::dtype;
 
@@ -1512,7 +1532,7 @@ mod rawformat {
 
     #[test]
     fn saveraw_publishes_an_atomic_file() {
-        use ::checkpoint::saveraw;
+        use ::checkpoint::rawfmt::saveraw;
         let dir = scratch("saveraw");
         let path = dir.join("weights.raw");
         let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
@@ -1525,27 +1545,28 @@ mod rawformat {
 
     #[test]
     fn rawexport_converts_a_checkpoint_file() {
-        use ::checkpoint::{checkpoint as uckpt, rawexport, savecheckpoint};
+        use ::checkpoint::rawfmt::rawexport;
+        use ::checkpoint::uformat::snapshot as usnap;
         let dir = scratch("export");
         let ckpt_path = dir.join("train.u");
         let raw_path = dir.join("infer.raw");
-        let mut ckpt = uckpt::new(1);
+        let mut snap = usnap::new(1);
         let values = (0..70_000).map(|i| i as f32).collect::<Vec<f32>>();
-        ckpt.addtensor(
+        snap.addtensor(
             "w".to_string(),
             dtype::f32,
             shapeof(&[values.len()]),
             bytemuck::cast_slice(&values),
         )
         .unwrap();
-        ckpt.addtensor(
+        snap.addtensor(
             "h".to_string(),
             dtype::f16,
             shapeof(&[2]),
             bytemuck::cast_slice(&[f16::from_f32(0.5), f16::from_f32(-1.0)]),
         )
         .unwrap();
-        savecheckpoint(&ckpt_path, &ckpt).unwrap();
+        std::fs::write(&ckpt_path, snap.encode().unwrap()).unwrap();
         rawexport(&ckpt_path, &raw_path).unwrap();
         let reader = rawreader::fromfile(&raw_path).unwrap();
         assert_eq!(reader.getcount(), 2);

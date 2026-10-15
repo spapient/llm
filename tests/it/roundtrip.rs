@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ::checkpoint::compatibility::{checkcompat, checkversion, tensorspec};
 use ::checkpoint::{
-    CHECKPOINTVERSION, checkcompat, checkpoint, checkpointerror, checkversion, loadcheckpoint,
-    savecheckpoint, tensorspec, trainingstate,
+    CHECKPOINTVERSION, checkpoint, checkpointerror, loadcheckpoint, savecheckpoint, trainingstate,
 };
 use tensor::{dtype, shape};
 

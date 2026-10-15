@@ -1414,7 +1414,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **配置解析（`modelconfig`）。** `modelconfig::parse(bytes)` 解析并校验 `config.json`：未知字段忽略；`model_type` 必须是 `"llama"`；每个尺寸非零；`hidden_size` 可被 `num_attention_heads` 整除；`num_key_value_heads`（默认为 `num_attention_heads`）可整除前者；`rms_norm_eps` 与 `rope_theta` 有限且为正；可选 `torch_dtype` 映射到存储 `dtype`（`float32`/`f32`、`float16`/`f16`/`half`、`bfloat16`/`bf16`、`float64`/`f64`/`double`）否则拒绝。无未检查的公共构造器：值只由 `parse` 产生。派生 getter `getheadsize`（`hidden_size/num_attention_heads`）与 `getkeyvaluegroups`（`num_attention_heads/num_key_value_heads`）。
 
-**推理 raw 权重格式（`rawsnapshot`/`rawreader`）。** 推理侧独立格式，与 `.u` 训练快照并存：`.u` 优先空间与增量（内容寻址、LZ4、delta），raw 优先加载速度与可寻址性（不压缩、页对齐、区段 CRC32C）。构件布局：8 字节 magic `LLMRAW01`、`u32` 版本（`RAWFORMATVERSION = 1`）、`u32` 张量数、`u64` 数据段偏移（页对齐，`PAGESIZE = 4096`）、二进制目录（每张量：`u32` 名字长 + UTF-8 名、`u8` 存储 dtype token、`u32` 秩 + `u64` 各维度、`u64` 区段偏移、`u64` 字节长、`u32` CRC32C）、页对齐 padding、数据段（区段按目录顺序、每区段起始页对齐）。`rawsnapshot::fromcheckpoint` 从内存检查点导出，重新校验每张量字节长等于元素计数乘 dtype 宽度；`encode`/`decode` 全程受检算术；`decode` 校验结构、区段范围、页对齐与重叠，不验 CRC（留给 reader 按需）。`rawreader` 复用 `blocksource`：`open`（内存缓冲）与 `fromfile`（文件按需读区段）在读时验 CRC32C（失败报 `tensorcrcmismatch`，归类损坏）；`readtensortyped<T>` 先校验存储 dtype 等于 `T::DTYPE`（不符报 `dtypemismatch`，归类结构不兼容），再把目录形状与字节交给 `tensor::tryfrombytes` 解码。raw 格式不携带量化描述符、训练状态与 delta/base 关系；scale/zero-point 张量按普通张量导出，关联由加载器按命名约定推导。
+**推理 raw 权重格式（`rawsnapshot`/`rawreader`）。** 推理侧独立格式，与 `.u` 训练快照并存：`.u` 优先空间与增量（内容寻址、LZ4、delta），raw 优先加载速度与可寻址性（不压缩、页对齐、区段 CRC32C）。构件布局：8 字节 magic `LLMRAW01`、`u32` 版本（`RAWFORMATVERSION = 1`）、`u32` 张量数、`u64` 数据段偏移（页对齐，`PAGESIZE = 4096`）、二进制目录（每张量：`u32` 名字长 + UTF-8 名、`u8` 存储 dtype token、`u32` 秩 + `u64` 各维度、`u64` 区段偏移、`u64` 字节长、`u32` CRC32C）、页对齐 padding、数据段（区段按目录顺序、每区段起始页对齐）。`rawsnapshot::fromcheckpoint`（内存检查点）与 `rawsnapshot::fromsnapshot`（训练 `.u` 快照，推理导出的主源）导出，重新校验每张量字节长等于元素计数乘 dtype 宽度；`rawexport` 读 `.u` 文件 → `snapshot::decode` → `fromsnapshot` → `saveraw` 原子发布；`encode`/`decode` 全程受检算术；`decode` 校验结构、区段范围、页对齐与重叠，不验 CRC（留给 reader 按需）。`rawreader` 复用 `blocksource`：`open`（内存缓冲）与 `fromfile`（文件按需读区段）在读时验 CRC32C（失败报 `tensorcrcmismatch`，归类损坏）；`readall` 经 `blocksource` 一次性顺序读整个数据段（零 unsafe 下的顺序预读语义）再逐区段验 CRC；`readtensortyped<T>` 先校验存储 dtype 等于 `T::DTYPE`（不符报 `dtypemismatch`，归类结构不兼容），再把目录形状与字节交给 `tensor::tryfrombytes` 解码。raw 格式不携带量化描述符、训练状态与 delta/base 关系；scale/zero-point 张量按普通张量导出，关联由加载器按命名约定推导。
 
 **限制（已声明）。** 检查点为单文件、内存内、未加密；`f16`/`bf16` 作为存储 dtype 接受但不声称后端执行；兼容性对照显式 `tensorspec` 列表而非检查模型对象。
 
@@ -1422,7 +1422,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 本节的不变量与错误路径集中在 12.4 的《检查点格式契约》，此处补充跨切面条目。
 
-错误分支枚举（整体）：截断、header 过大、非法 JSON、非法条目、不支持 dtype、空 shape、shape 溢出、超元素预算、偏移越界、字节长度不符、张量重叠、非法 `__metadata__`、缺字段、非法值、不支持模型类型、不支持 torch dtype；以及检查点侧的坏 magic、不支持版本、非法 manifest JSON、非法 manifest、张量重名、张量区间越界、区间重叠、缺张量、dtype 不符、shape 不符。
+错误分支枚举（整体）：截断、header 过大、非法 JSON、非法条目、不支持 dtype、空 shape、shape 溢出、超元素预算、偏移越界、字节长度不符、张量重叠、非法 `__metadata__`、缺字段、非法值、不支持模型类型、不支持 torch dtype；以及检查点侧的坏 magic、不支持版本、非法 manifest JSON、非法 manifest、张量重名、张量区间越界、区间重叠、缺张量、dtype 不符、shape 不符、区段 CRC 损坏（`tensorcrcmismatch`）、`tensor` 层校验错误传播（`tensor(#[from])`）。
 
 实现级不变量：`checkpointerror` 的 `isrecoverable`/`isincompatibility` 语义见 12.4；`safetensorfile::readtensor` 从解析 header 长度与张量偏移以受检算术重算绝对字节区间，再对照传入缓冲校验后复制（copy-validate-use），因此字节不因早先解析过而被信任。
 

@@ -4,10 +4,10 @@
 //! `checkpoint` owns the checkpoint artifact: its [`manifest`], the in-memory
 //! [`checkpoint`] container with load and save workflows, best-effort
 //! atomic persistence ([`writeatomic`]), and compatibility validation
-//! ([`checkcompat`], [`checkversion`]). It depends on `format` for the storage
-//! dtype token mapping, `tensor` for the shape and dtype taxonomy, and `lib` for
-//! resource limits. It MUST NOT own the training loop, optimizer update rules,
-//! or the inference scheduler.
+//! ([`compatibility::checkcompat`], [`compatibility::checkversion`]). It
+//! depends on `format` for the storage dtype token mapping, `tensor` for the
+//! shape and dtype taxonomy, and `lib` for resource limits. It MUST NOT own the
+//! training loop, optimizer update rules, or the inference scheduler.
 //!
 //! # Artifact Layout
 //!
@@ -35,40 +35,50 @@
 //! the crate root.
 
 mod atomicwrite;
-mod blocks;
-mod compact;
-mod compatibility;
-mod crc32c;
-mod deltas;
+
+/// Content-defined chunking primitives of the `.u` snapshot format.
+pub mod blocks;
+
+/// Provenance compaction and verification for `.u` block graphs.
+pub mod compact;
+
+/// Checkpoint compatibility validation against explicit tensor specs.
+pub mod compatibility;
+
+/// CRC32C checksums used by the `.u` and raw artifacts.
+pub mod crc32c;
+
+/// Delta/base resolution primitives for incremental `.u` snapshots.
+pub mod deltas;
 mod error;
-mod hash;
+
+/// BLAKE3 content identity and root-hash primitives.
+pub mod hash;
 mod load;
 mod manifests;
-mod merge;
-mod rawfmt;
-mod rawio;
+
+/// Incremental snapshot merge and merge-file workflows.
+pub mod merge;
+
+/// The inference-only raw weights format: page-aligned sections and CRC32C.
+pub mod rawfmt;
+
+/// The raw format's on-demand reader, including the sequential `readall`.
+pub mod rawio;
 mod reader;
 mod save;
 mod training;
-mod uformat;
+
+/// The training `.u` snapshot format: content-addressed, chunked, compressed.
+pub mod uformat;
 
 /// The checkpoint artifact version this build writes and accepts.
 pub const CHECKPOINTVERSION: u32 = 1;
 
 pub use atomicwrite::writeatomic;
-pub use blocks::{BLOCKSIZE, MAXBLOCK, MINBLOCK, blockref, chunk};
-pub use compact::{compact, verifyprovenance};
-pub use compatibility::{checkcompat, checkversion, tensorspec};
-pub use crc32c::crc32c;
-pub use deltas::{delta, storedblock};
 pub use error::checkpointerror;
-pub use hash::{blake3hash, contenthash};
 pub use load::loadcheckpoint;
-pub use manifests::{checkpoint, manifest, manifestentry};
-pub use merge::{merge, mergefiles};
-pub use rawfmt::{PAGESIZE, RAWFORMATVERSION, rawexport, rawsnapshot, rawtensorentry, saveraw};
-pub use rawio::rawreader;
-pub use reader::{blocksource, bytesource, checkpointreader, filesource};
+pub use manifests::{checkpoint, manifest};
+pub use reader::checkpointreader;
 pub use save::savecheckpoint;
 pub use training::trainingstate;
-pub use uformat::{quantdesc, snapshot, tensorentry};

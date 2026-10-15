@@ -23,7 +23,10 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ::checkpoint::{checkpoint, checkpointreader, rawexport, rawreader, savecheckpoint};
+use ::checkpoint::checkpointreader;
+use ::checkpoint::rawfmt::rawexport;
+use ::checkpoint::rawio::rawreader;
+use ::checkpoint::uformat::snapshot;
 use ::tensor::{dtype, shape, tensor};
 use criterion::{Criterion, criterion_group, criterion_main};
 use half::f16;
@@ -71,12 +74,12 @@ fn lcgfill(bytes: &mut [u8]) {
     }
 }
 
-/// Builds the deterministic model workload as a training checkpoint.
-fn workload() -> checkpoint {
-    let mut ckpt = checkpoint::new(1);
+/// Builds the deterministic model workload as a training `.u` snapshot.
+fn workload() -> snapshot {
+    let mut snap = snapshot::new(1);
     let mut bytes = vec![0u8; VOCAB * DIM * 4];
     lcgfill(&mut bytes);
-    ckpt.addtensor(
+    snap.addtensor(
         "embed".to_string(),
         dtype::f32,
         shape::new(vec![VOCAB, DIM]).unwrap(),
@@ -87,7 +90,7 @@ fn workload() -> checkpoint {
         for suffix in ["q", "k", "v"] {
             let mut bytes = vec![0u8; DIM * DIM * 4];
             lcgfill(&mut bytes);
-            ckpt.addtensor(
+            snap.addtensor(
                 format!("layer{i}.{suffix}"),
                 dtype::f32,
                 shape::new(vec![DIM, DIM]).unwrap(),
@@ -99,7 +102,7 @@ fn workload() -> checkpoint {
     for i in 0..F16COUNT {
         let mut bytes = vec![0u8; DIM * DIM * 2];
         lcgfill(&mut bytes);
-        ckpt.addtensor(
+        snap.addtensor(
             format!("fp16{i}"),
             dtype::f16,
             shape::new(vec![DIM, DIM]).unwrap(),
@@ -107,7 +110,7 @@ fn workload() -> checkpoint {
         )
         .unwrap();
     }
-    ckpt
+    snap
 }
 
 /// A scratch directory holding the two workload artifacts.
@@ -127,8 +130,8 @@ impl scratch {
         std::fs::create_dir_all(&dir).unwrap();
         let u_path = dir.join("workload.u");
         let raw_path = dir.join("workload.raw");
-        let ckpt = workload();
-        savecheckpoint(&u_path, &ckpt).unwrap();
+        let snap = workload();
+        std::fs::write(&u_path, snap.encode().unwrap()).unwrap();
         rawexport(&u_path, &raw_path).unwrap();
         Self { u_path, raw_path }
     }

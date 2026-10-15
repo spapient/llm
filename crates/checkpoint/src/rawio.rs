@@ -1,10 +1,8 @@
 //! On-demand reader for the raw weights artifact.
 //!
-//! [`rawreader`] reads a raw artifact's sections through a [`blocksource`],
-//! verifying each section's CRC32C as it is read, so a file-backed reader
-//! touches only the sections a caller requests. It mirrors
-//! [`checkpointreader`](crate::checkpointreader) but without block tables,
-//! deltas, or compression.
+//! The reader touches only the sections a caller requests, verifying each
+//! section's CRC32C as it is read. It mirrors [`crate::checkpointreader`] but
+//! without block tables, deltas, or compression.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
