@@ -17,7 +17,7 @@
 
 use std::hint::black_box;
 
-use ::tokenizer::{bytepair, bytetounicode, tokenizer};
+use ::tokenizer::{bytepair, bytetounicode, tiktokenizer, tokenizer};
 use criterion::{Criterion, criterion_group, criterion_main};
 
 /// Text pattern for the byte-fallback workloads: ASCII plus a CJK run so the
@@ -137,11 +137,27 @@ fn encodebytelevel(c: &mut Criterion) {
     }
 }
 
+fn encodetiktoken(c: &mut Criterion) {
+    let content = std::fs::read_to_string("tests/fixtures/o200k/o200k_base.tiktoken").unwrap();
+    let specials = [
+        ("<|endoftext|>".to_string(), 199_999u32),
+        ("<|endofprompt|>".to_string(), 200_018u32),
+    ];
+    let tok = tiktokenizer::fromfile(&content, &specials).unwrap();
+    for len in [512usize, 4096] {
+        let input = repeatpattern(len);
+        c.bench_function(&format!("tokenizer/encode/tiktoken/{len}"), |b| {
+            b.iter(|| black_box(tok.encode(&input).unwrap()));
+        });
+    }
+}
+
 criterion_group!(
     benches,
     applychain,
     encodebytefallback,
     decodebytefallback,
-    encodebytelevel
+    encodebytelevel,
+    encodetiktoken
 );
 criterion_main!(benches);

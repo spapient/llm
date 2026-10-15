@@ -7,11 +7,36 @@
 //! concatenation is a vocabulary token (lowest resulting rank first). Special
 //! tokens are supplied by the caller because they are not in the file.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 use lib::tokenid;
 
 use crate::error::tokenizererror;
+
+/// A candidate byte merge: the rank of the concatenation starting at `left`
+/// and that pair's left-symbol position.
+#[derive(PartialEq, Eq)]
+struct tiktokenstep {
+    rank: u32,
+    left: usize,
+}
+
+impl Ord for tiktokenstep {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Pop the smallest rank first, then the leftmost position.
+        other
+            .rank
+            .cmp(&self.rank)
+            .then_with(|| other.left.cmp(&self.left))
+    }
+}
+
+impl PartialOrd for tiktokenstep {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// The o200k_base pre-tokenizer regex (from tiktoken's openai_public module).
 const O200KREGEX: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
@@ -171,41 +196,126 @@ impl tiktokenizer {
     }
 
     /// Encodes one chunk by greedily merging adjacent bytes.
+    ///
+    /// The next merge is selected from a binary heap and symbols live in a
+    /// linked list, so each merge touches only its two neighbours instead of
+    /// rescanning the whole chunk.
     fn encode_chunk(&self, chunk: &str, out: &mut Vec<tokenid>) -> Result<(), tokenizererror> {
         let bytes = chunk.as_bytes();
-        if bytes.is_empty() {
+        let count = bytes.len();
+        if count == 0 {
             return Ok(());
         }
-        let mut tokens: Vec<Vec<u8>> = bytes.iter().map(|byte| vec![*byte]).collect();
+        if count == 1 {
+            let rank = self
+                .ranks
+                .get(bytes)
+                .ok_or_else(|| tokenizererror::invalidtiktoken {
+                    detail: "single byte is absent from the vocabulary".to_string(),
+                })?;
+            out.push(tokenid::new(*rank));
+            return Ok(());
+        }
+
+        let mut symbols: Vec<Vec<u8>> = bytes.iter().map(|byte| vec![*byte]).collect();
+        let mut prev = Vec::with_capacity(count);
+        let mut next = Vec::with_capacity(count);
+        for index in 0..count {
+            prev.push(index.checked_sub(1));
+            next.push((index + 1 < count).then_some(index + 1));
+        }
+        let mut alive = vec![true; count];
+        let mut heap = BinaryHeap::new();
+        for index in 0..count - 1 {
+            self.queue_pair(&symbols, &next, &alive, &mut heap, index);
+        }
+
+        while let Some(step) = heap.pop() {
+            self.trymerge(
+                &mut symbols,
+                &mut prev,
+                &mut next,
+                &mut alive,
+                &mut heap,
+                step,
+            );
+        }
+
+        let mut cursor = 0usize;
         loop {
-            let mut best: Option<(u32, usize)> = None;
-            for index in 0..tokens.len().saturating_sub(1) {
-                let mut merged = tokens[index].clone();
-                merged.extend_from_slice(&tokens[index + 1]);
-                if let Some(rank) = self.ranks.get(&merged)
-                    && best.is_none_or(|(bestrank, _)| *rank < bestrank)
-                {
-                    best = Some((*rank, index));
+            let rank = self.ranks.get(&symbols[cursor]).ok_or_else(|| {
+                tokenizererror::invalidtiktoken {
+                    detail: "merged token is absent from the vocabulary".to_string(),
                 }
-            }
-            match best {
-                Some((_, index)) => {
-                    let right = tokens.remove(index + 1);
-                    tokens[index].extend_from_slice(&right);
-                }
+            })?;
+            out.push(tokenid::new(*rank));
+            match next[cursor] {
+                Some(following) => cursor = following,
                 None => break,
             }
         }
-        for token in &tokens {
-            let rank = self
-                .ranks
-                .get(token)
-                .ok_or_else(|| tokenizererror::invalidtiktoken {
-                    detail: "merged token is absent from the vocabulary".to_string(),
-                })?;
-            out.push(tokenid::new(*rank));
-        }
         Ok(())
+    }
+
+    /// Applies one heap-selected merge when it is still live and its rank is
+    /// still current; otherwise it is a stale candidate and is skipped.
+    fn trymerge(
+        &self,
+        symbols: &mut [Vec<u8>],
+        prev: &mut [Option<usize>],
+        next: &mut [Option<usize>],
+        alive: &mut [bool],
+        heap: &mut BinaryHeap<tiktokenstep>,
+        step: tiktokenstep,
+    ) {
+        let Some(right) = next[step.left] else {
+            return;
+        };
+        if !alive[step.left] || !alive[right] {
+            return;
+        }
+        let mut merged = symbols[step.left].clone();
+        merged.extend_from_slice(&symbols[right]);
+        if self.ranks.get(&merged) != Some(&step.rank) {
+            return;
+        }
+        symbols[step.left] = merged;
+        alive[right] = false;
+        let following = next[right];
+        next[step.left] = following;
+        if let Some(after) = following {
+            prev[after] = Some(step.left);
+        }
+        if let Some(before) = prev[step.left] {
+            self.queue_pair(symbols, next, alive, heap, before);
+        }
+        self.queue_pair(symbols, next, alive, heap, step.left);
+    }
+
+    /// Queues the mergeable pair starting at `left`, if its concatenation is a
+    /// vocabulary token and both symbols are live.
+    fn queue_pair(
+        &self,
+        symbols: &[Vec<u8>],
+        next: &[Option<usize>],
+        alive: &[bool],
+        heap: &mut BinaryHeap<tiktokenstep>,
+        left: usize,
+    ) {
+        if !alive[left] {
+            return;
+        }
+        let Some(right) = next[left] else {
+            return;
+        };
+        if !alive[right] {
+            return;
+        }
+        let mut merged = symbols[left].clone();
+        merged.extend_from_slice(&symbols[right]);
+        if let Some(rank) = self.ranks.get(&merged) {
+            heap.push(tiktokenstep { rank: *rank, left });
+        }
     }
 }
 

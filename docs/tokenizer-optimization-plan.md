@@ -393,4 +393,4 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 
 **验证**：临时 example 实测 o200k encode 8/8 + decode 8/8 逐位对齐 tiktoken 0.14.0 黄金；clippy `-D warnings` + fmt 通过。**7 个模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）全部逐位对齐。**
 
-**诚实边界**：字节级合并是 O(n²) 朴素实现（每轮全扫），对齐用短文本足够；长文本可复用 T6 的最小堆算法优化，但当前未做（无性能声明）。
+**字节级合并优化（2026-10-16）**：`encode_chunk` 由 O(n²) 朴素实现（每轮全扫 + `Vec::remove` 搬移）复用 T6 的最小堆 + 双向链表算法——`tiktokenstep` 按"拼接结果 rank"排序、`trymerge` 惰性删除、`queue_pair` 只重插受影响邻居。基准 `tokenizer/encode/tiktoken/{512,4096}`（重复模式，短键）实测 **118.9 µs / 945.1 µs**，8× 输入 ≈ 8× 耗时（线性，佐证 O(n log n) 堆操作主导）。**诚实边界**：拼接仍按字节键查 `HashMap`（O(键长)），敌对"键无限增长"输入叠加 O(总键长) 项——与 `bytepair::apply` 同款限制，真实文本键短不主导。
