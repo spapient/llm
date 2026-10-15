@@ -657,3 +657,98 @@ mod delta {
         assert!(d.getstored().is_empty());
     }
 }
+
+/// Tests relocated from `crates/checkpoint/src/merge.rs`.
+mod merge {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::support::shapeof;
+    use ::checkpoint::{checkpointerror, delta, merge, mergefiles, snapshot, BLOCKSIZE};
+    use tensor::dtype;
+
+    fn base() -> snapshot {
+        let mut base = snapshot::new(1);
+        base.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![1u8; BLOCKSIZE])
+            .unwrap();
+        base.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        base
+    }
+
+    fn new() -> snapshot {
+        let mut new = snapshot::new(1);
+        new.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![9u8; BLOCKSIZE])
+            .unwrap();
+        new.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        new
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "llm-merge-{}-{tag}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn merge_reconstructs_the_full_snapshot() {
+        let base = base();
+        let new = new();
+        let d = delta::fromsnapshots(&base, &new);
+        let merged = merge(&base, &d).unwrap();
+        assert_eq!(merged.roothash(), d.getroothash());
+        assert_eq!(merged.getdata(), new.getdata());
+        assert_eq!(merged, new);
+    }
+
+    #[test]
+    fn wrong_base_is_an_incompatibility() {
+        let base = base();
+        let new = new();
+        let d = delta::fromsnapshots(&base, &new);
+        let other = snapshot::new(1);
+        let err = merge(&other, &d).unwrap_err();
+        assert!(matches!(err, checkpointerror::basehashmismatch { .. }));
+        assert!(err.isincompatibility());
+        assert!(!err.isrecoverable());
+    }
+
+    #[test]
+    fn mergefiles_writes_and_roundtrips() {
+        let dir = scratch("roundtrip");
+        let base_path = dir.join("base.u");
+        let delta_path = dir.join("delta.u");
+        let out_path = dir.join("out.u");
+        let base = base();
+        let new = new();
+        std::fs::write(&base_path, base.encode().unwrap()).unwrap();
+        std::fs::write(&delta_path, delta::fromsnapshots(&base, &new).encode().unwrap()).unwrap();
+        mergefiles(&base_path, &delta_path, &out_path).unwrap();
+        let merged = snapshot::decode(&std::fs::read(&out_path).unwrap()).unwrap();
+        assert_eq!(merged, new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_base_file_reports_missingbase() {
+        let dir = scratch("missing");
+        let base_path = dir.join("absent.u");
+        let delta_path = dir.join("delta.u");
+        let out_path = dir.join("out.u");
+        let base = base();
+        let new = new();
+        std::fs::write(&delta_path, delta::fromsnapshots(&base, &new).encode().unwrap()).unwrap();
+        let err = mergefiles(&base_path, &delta_path, &out_path).unwrap_err();
+        assert!(matches!(err, checkpointerror::missingbase { .. }));
+        assert!(!out_path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

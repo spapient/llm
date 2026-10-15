@@ -102,6 +102,15 @@ impl snapshot {
         }
     }
 
+    /// Constructs a snapshot from its parts (used by the merge path).
+    pub(crate) fn fromparts(version: u32, tensors: Vec<tensorentry>, data: Vec<u8>) -> Self {
+        Self {
+            version,
+            tensors,
+            data,
+        }
+    }
+
     /// Returns the snapshot version.
     #[must_use]
     pub fn getversion(&self) -> u32 {
@@ -348,7 +357,10 @@ pub(crate) fn canonicalmanifest(
 }
 
 /// Parses and validates the tensor entries.
-fn readtensors(manifest: &[u8], pos: &mut usize) -> Result<Vec<tensorentry>, checkpointerror> {
+pub(crate) fn readtensors(
+    manifest: &[u8],
+    pos: &mut usize,
+) -> Result<Vec<tensorentry>, checkpointerror> {
     let count = readcount(manifest, pos)?;
     let mut tensors = Vec::with_capacity(count);
     for _ in 0..count {
@@ -398,7 +410,10 @@ fn readtensors(manifest: &[u8], pos: &mut usize) -> Result<Vec<tensorentry>, che
 }
 
 /// Parses the ordered block list.
-fn readblocks(manifest: &[u8], pos: &mut usize) -> Result<Vec<blockref>, checkpointerror> {
+pub(crate) fn readblocks(
+    manifest: &[u8],
+    pos: &mut usize,
+) -> Result<Vec<blockref>, checkpointerror> {
     let count = readcount(manifest, pos)?;
     let mut blocks = Vec::with_capacity(count);
     for _ in 0..count {
@@ -552,21 +567,21 @@ fn pushstring(buf: &mut Vec<u8>, value: &str) {
     buf.extend_from_slice(value.as_bytes());
 }
 
-fn readu32(bytes: &[u8], pos: &mut usize) -> Result<u32, checkpointerror> {
+pub(crate) fn readu32(bytes: &[u8], pos: &mut usize) -> Result<u32, checkpointerror> {
     let slice = readbytes(bytes, pos, 4)?;
     let mut arr = [0u8; 4];
     arr.copy_from_slice(slice);
     Ok(u32::from_le_bytes(arr))
 }
 
-fn readu64(bytes: &[u8], pos: &mut usize) -> Result<u64, checkpointerror> {
+pub(crate) fn readu64(bytes: &[u8], pos: &mut usize) -> Result<u64, checkpointerror> {
     let slice = readbytes(bytes, pos, 8)?;
     let mut arr = [0u8; 8];
     arr.copy_from_slice(slice);
     Ok(u64::from_le_bytes(arr))
 }
 
-fn readbytes<'a>(
+pub(crate) fn readbytes<'a>(
     bytes: &'a [u8],
     pos: &mut usize,
     len: usize,

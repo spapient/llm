@@ -195,6 +195,29 @@ pub enum checkpointerror {
         blockcount: usize,
     },
 
+    /// A block's content identity resolves neither to the delta nor to the base.
+    #[error("block {hash:?} is missing from both the delta and the base")]
+    missingblock {
+        /// The unresolved content identity.
+        hash: [u8; 16],
+    },
+
+    /// The base snapshot a delta references is absent.
+    #[error("base snapshot {base_id:?} is missing")]
+    missingbase {
+        /// The base snapshot's root hash.
+        base_id: [u8; 32],
+    },
+
+    /// A base snapshot's root hash does not match the delta's reference.
+    #[error("base root hash mismatch: expected {expected:?}, found {found:?}")]
+    basehashmismatch {
+        /// The root hash the delta references.
+        expected: [u8; 32],
+        /// The root hash of the base that was found.
+        found: [u8; 32],
+    },
+
     /// An error owned by the `format` crate propagated unchanged.
     #[error(transparent)]
     format(#[from] format::formaterror),
@@ -217,6 +240,8 @@ impl checkpointerror {
                 | Self::missingtensor { .. }
                 | Self::dtypemismatch { .. }
                 | Self::shapemismatch { .. }
+                | Self::missingbase { .. }
+                | Self::basehashmismatch { .. }
         )
     }
 
@@ -233,6 +258,7 @@ impl checkpointerror {
                 | Self::blockhashmismatch { .. }
                 | Self::truncatedblock { .. }
                 | Self::blockoutofrange { .. }
+                | Self::missingblock { .. }
         )
     }
 }

@@ -3,9 +3,10 @@ use std::collections::HashSet;
 use crate::blocks::{blockref, chunk};
 use crate::crc32c::crc32c;
 use crate::error::checkpointerror;
-use crate::hash::blake3hash;
+use crate::hash::{blake3hash, contenthash};
 use crate::uformat::{
-    FLAGDELTA, MAGIC, PREFIXLEN, canonicalmanifest, pushu32, pushu64, snapshot, tensorentry,
+    FLAGDELTA, MAGIC, PREFIXLEN, canonicalmanifest, pushu32, pushu64, readblocks, readbytes,
+    readstored, readtensors, readu32, snapshot, storedentry, tensorentry,
 };
 
 /// One block physically stored in a delta artifact.
@@ -99,6 +100,24 @@ impl delta {
         self.root_hash
     }
 
+    /// Returns the snapshot version.
+    #[must_use]
+    pub fn getversion(&self) -> u32 {
+        self.version
+    }
+
+    /// Returns the tensor entries in insertion order.
+    #[must_use]
+    pub fn gettensors(&self) -> &[tensorentry] {
+        &self.tensors
+    }
+
+    /// Returns the full logical block list.
+    #[must_use]
+    pub fn getblocks(&self) -> &[blockref] {
+        &self.blocks
+    }
+
     /// Encodes the delta into its on-disk byte layout.
     ///
     /// The layout is magic, a little-endian `u64` manifest length, a binary
@@ -148,4 +167,141 @@ impl delta {
         }
         Ok(out)
     }
+
+    /// Decodes and validates a delta from its on-disk byte layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::badmagic`], [`checkpointerror::truncated`],
+    /// [`checkpointerror::rootmismatch`], [`checkpointerror::missingblock`],
+    /// [`checkpointerror::blockcrcmismatch`], [`checkpointerror::blockhashmismatch`],
+    /// [`checkpointerror::truncatedblock`], or [`checkpointerror::blockoutofrange`].
+    pub fn decode(bytes: &[u8]) -> Result<Self, checkpointerror> {
+        if bytes.len() < MAGIC.len() {
+            return Err(checkpointerror::truncated {
+                needed: MAGIC.len(),
+                available: bytes.len(),
+            });
+        }
+        if bytes[..MAGIC.len()] != MAGIC {
+            return Err(checkpointerror::badmagic);
+        }
+        if bytes.len() < PREFIXLEN {
+            return Err(checkpointerror::truncated {
+                needed: PREFIXLEN,
+                available: bytes.len(),
+            });
+        }
+        let mut lengthbytes = [0u8; 8];
+        lengthbytes.copy_from_slice(&bytes[MAGIC.len()..PREFIXLEN]);
+        let manifestlen = u64::from_le_bytes(lengthbytes);
+        let manifestlen = usize::try_from(manifestlen).map_err(|_| checkpointerror::truncated {
+            needed: usize::MAX,
+            available: bytes.len(),
+        })?;
+        let manifestend = PREFIXLEN
+            .checked_add(manifestlen)
+            .ok_or(checkpointerror::truncated {
+                needed: usize::MAX,
+                available: bytes.len(),
+            })?;
+        if manifestend > bytes.len() {
+            return Err(checkpointerror::truncated {
+                needed: manifestend,
+                available: bytes.len(),
+            });
+        }
+        let manifest = &bytes[PREFIXLEN..manifestend];
+        let data = &bytes[manifestend..];
+
+        let mut pos = 0usize;
+        let version = readu32(manifest, &mut pos)?;
+        let tensors = readtensors(manifest, &mut pos)?;
+        let blocks = readblocks(manifest, &mut pos)?;
+        let canonical = &manifest[..pos];
+
+        let flags = readu32(manifest, &mut pos)?;
+        if flags != FLAGDELTA {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("unsupported snapshot flags {flags}"),
+            });
+        }
+        let basebytes = readbytes(manifest, &mut pos, 32)?;
+        let mut base_id = [0u8; 32];
+        base_id.copy_from_slice(basebytes);
+        let rootbytes = readbytes(manifest, &mut pos, 32)?;
+        let mut root_hash = [0u8; 32];
+        root_hash.copy_from_slice(rootbytes);
+        let expectedroot = blake3hash(canonical);
+        if root_hash != expectedroot {
+            return Err(checkpointerror::rootmismatch {
+                expected: expectedroot,
+                found: root_hash,
+            });
+        }
+
+        let entries = readstored(manifest, &mut pos)?;
+        let stored = verifystored(data, &blocks, &entries)?;
+
+        Ok(Self {
+            version,
+            base_id,
+            tensors,
+            blocks,
+            stored,
+            root_hash,
+        })
+    }
+}
+
+/// Verifies the stored blocks against the data section and the logical block
+/// list, returning the stored blocks with their bytes.
+fn verifystored(
+    data: &[u8],
+    blocks: &[blockref],
+    entries: &[storedentry],
+) -> Result<Vec<storedblock>, checkpointerror> {
+    let known: HashSet<[u8; 16]> = blocks.iter().map(|b| b.gethash()).collect();
+    let mut stored = Vec::with_capacity(entries.len());
+    for (position, entry) in entries.iter().enumerate() {
+        if !known.contains(&entry.hash) {
+            return Err(checkpointerror::missingblock { hash: entry.hash });
+        }
+        let offset =
+            usize::try_from(entry.offset).map_err(|_| checkpointerror::blockoutofrange {
+                position,
+                blockcount: blocks.len(),
+            })?;
+        let size = entry.size as usize;
+        let end = offset
+            .checked_add(size)
+            .ok_or(checkpointerror::blockoutofrange {
+                position,
+                blockcount: blocks.len(),
+            })?;
+        if end > data.len() {
+            return Err(checkpointerror::truncatedblock {
+                position,
+                needed: size,
+                available: data.len() - offset,
+            });
+        }
+        let bytes = &data[offset..end];
+        if crc32c(bytes) != entry.crc32c {
+            return Err(checkpointerror::blockcrcmismatch { position });
+        }
+        let hash = contenthash(bytes);
+        if hash != entry.hash {
+            return Err(checkpointerror::blockhashmismatch {
+                position,
+                expected: entry.hash,
+                found: hash,
+            });
+        }
+        stored.push(storedblock {
+            hash: entry.hash,
+            bytes: bytes.to_vec(),
+        });
+    }
+    Ok(stored)
 }
