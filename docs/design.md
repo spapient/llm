@@ -327,7 +327,7 @@ cpu    -> lib
 | `devicekind` | `devices.rs` | 设备类别 enum |
 | `backenderror` | `error.rs` | 内核/派发错误 enum |
 
-`api::kernels` 导出四个 trait（`binarykernel`、`weightedkernel`、`gatherkernel`、`compute`），共 16 个 trait 方法，低于 A4 上界 20。两者都是纯累加接口，无既有符号移动。`api` 依赖 `lib` 与 `tensor`；`lib` 与 `tensor` 都不得依赖 `api`。
+`api::kernels` 导出四个 trait（`binarykernel`、`weightedkernel`、`gatherkernel`、`compute`），共 17 个 trait 方法（前三个各 `getname` + `apply`，`compute` 11 个），低于 A4 上界 20。两者都是纯累加接口，无既有符号移动。`api` 依赖 `lib` 与 `tensor`；`lib` 与 `tensor` 都不得依赖 `api`。
 
 `capabilities` 字段公有，便于后端所有者直接组装声明：`dtypes: Vec<dtype>`、`maxrank: usize`、`limits: limits`；访问器 `supports(dtype)`、`getdtypes`、`getmaxrank`、`getlimits`。`device`/`devicekind` 目前支持 `cpu`、`metal`、`cuda` 三类设备，各配 `device::{cpu,metal,cuda}()` 构造与 `device::{iscpu,ismetal,iscuda}()` 判定；`metal` 与 `cuda` 变体是 GPU 后端的累加式扩展（见第 21 章），不改变 `cpu` 语义，也不加 `#[non_exhaustive]`。
 
@@ -345,7 +345,11 @@ cpu    -> lib
 | `silu(input)` | 逐元素 SiLU | 无 |
 | `embedding(table, indices)` | 按索引 gather 行 | 每个索引 `< table` 第一轴 |
 | `rope(input, heads, base)` | 旋转位置嵌入 | rank `>= 2`，最后一轴可被 `heads` 整除，`headdim` 偶 |
+| `rope_at(input, position, heads, base)` | 单 token 在**绝对** `position` 的旋转位置嵌入（decode 步形态） | rank 1 `[1, heads * headdim]`，最后一轴可被 `heads` 整除，`headdim` 偶 |
 | `attention(query, key, value, heads, kvheads, causal)` | 分组查询注意力 | rank 2，序列长度相等，`heads` 是 `kvheads` 正整数倍，query 最后一轴可被 `heads` 整除 |
+| `attention_cached(query, key, value, heads, kvheads, causal)` | 单 token 增量注意力（decode 步形态） | query 为 `[1, heads * headdim]`，key/value 各为 `kvpair`（cached `[pos, kvwidth]` + new `[1, kvwidth]`），cached 与 new 宽度相等，`heads` 是 `kvheads` 正整数倍 |
+
+`kvpair` 是 `api::kernels` 的 `{ cached: tensorview<'_, f32>, new: tensorview<'_, f32> }`。`attention_cached` 的有效操作数是 cached 行后随 new 行（query 在因果掩码下关注 `pos + 1` 个位置），但两部分各居其址、由后端就地拼接语义，**不要求调用方把历史复制进新缓冲**——这是它与 `attention`（物理拼接后的全量形态）的分工，也是 `forwardsubmission_cached` 每次 decode 把该算子与 `rope_at`、`embedding`、`rmsnorm`、`matmul` 组合进**一次提交**、不产生跨步拷贝的组成部分。`rope_at` 独立于 `rope`：`rope` 从输入行索引推导位置（`row % seqaxis`），单行输入行号恒为 0，无法表达 decode 步的绝对上下文位置；`rope_at` 显式接收 `position`，单 token 的 query/key 即可在其绝对位置旋转，无需物化历史行。
 
 ### 5.4 不变量与错误路径（DS2）
 
