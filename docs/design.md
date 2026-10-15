@@ -327,7 +327,7 @@ cpu    -> lib
 | `devicekind` | `devices.rs` | 设备类别 enum |
 | `backenderror` | `error.rs` | 内核/派发错误 enum |
 
-`api::kernels` 导出四个 trait（`binarykernel`、`weightedkernel`、`gatherkernel`、`compute`），共 17 个 trait 方法（前三个各 `getname` + `apply`，`compute` 11 个），低于 A4 上界 20。两者都是纯累加接口，无既有符号移动。`api` 依赖 `lib` 与 `tensor`；`lib` 与 `tensor` 都不得依赖 `api`。
+`api::kernels` 导出四个 trait（`binarykernel`、`weightedkernel`、`gatherkernel`、`compute`），共 19 个 trait 方法（前三个各 `getname` + `apply`，`compute` 13 个），低于 A4 上界 20。两者都是纯累加接口，无既有符号移动。`api` 依赖 `lib` 与 `tensor`；`lib` 与 `tensor` 都不得依赖 `api`。
 
 `capabilities` 字段公有，便于后端所有者直接组装声明：`dtypes: Vec<dtype>`、`maxrank: usize`、`limits: limits`；访问器 `supports(dtype)`、`getdtypes`、`getmaxrank`、`getlimits`。`device`/`devicekind` 目前支持 `cpu`、`metal`、`cuda` 三类设备，各配 `device::{cpu,metal,cuda}()` 构造与 `device::{iscpu,ismetal,iscuda}()` 判定；`metal` 与 `cuda` 变体是 GPU 后端的累加式扩展（见第 21 章），不改变 `cpu` 语义，也不加 `#[non_exhaustive]`。
 
@@ -348,6 +348,8 @@ cpu    -> lib
 | `rope_at(input, position, heads, base)` | 单 token 在**绝对** `position` 的旋转位置嵌入（decode 步形态） | rank 1 `[1, heads * headdim]`，最后一轴可被 `heads` 整除，`headdim` 偶 |
 | `attention(query, key, value, heads, kvheads, causal)` | 分组查询注意力 | rank 2，序列长度相等，`heads` 是 `kvheads` 正整数倍，query 最后一轴可被 `heads` 整除 |
 | `attention_cached(query, key, value, heads, kvheads, causal)` | 单 token 增量注意力（decode 步形态） | query 为 `[1, heads * headdim]`，key/value 各为 `kvpair`（cached `[pos, kvwidth]` + new `[1, kvwidth]`），cached 与 new 宽度相等，`heads` 是 `kvheads` 正整数倍 |
+| `scan(input, init, a, b, c, skip)` | 结合律半群扫描（prefill 形态）：`h_t = A h_{t-1} + B x_t`、`y_t = C h_t + D x_t` | `input` `[n, d]`，`init/a/b/c` `[d, N]`，`skip` `[d]`；`a` 对角或 2×2 块对角（谱半径 ≤1）；返回 `([n,d] 输出, [d,N] 末态)` |
+| `scan_cached(input, state, a, b, c, skip)` | 单 token 增量扫描（decode 步形态），与**串行** `scan` 逐位一致 | `input` `[1, d]`，`state/a/b/c` `[d, N]`，`skip` `[d]`；返回 `([1,d] 输出, [d,N] 更新态)` |
 
 `kvpair` 是 `api::kernels` 的 `{ cached: tensorview<'_, f32>, new: tensorview<'_, f32> }`。`attention_cached` 的有效操作数是 cached 行后随 new 行（query 在因果掩码下关注 `pos + 1` 个位置），但两部分各居其址、由后端就地拼接语义，**不要求调用方把历史复制进新缓冲**——这是它与 `attention`（物理拼接后的全量形态）的分工，也是 `forwardsubmission_cached` 每次 decode 把该算子与 `rope_at`、`embedding`、`rmsnorm`、`matmul` 组合进**一次提交**、不产生跨步拷贝的组成部分。`rope_at` 独立于 `rope`：`rope` 从输入行索引推导位置（`row % seqaxis`），单行输入行号恒为 0，无法表达 decode 步的绝对上下文位置；`rope_at` 显式接收 `position`，单 token 的 query/key 即可在其绝对位置旋转，无需物化历史行。
 
@@ -361,7 +363,7 @@ cpu    -> lib
 
 资源回滚：失败的内核在构造输出张量之前返回，不逃逸任何部分分配（所有者：内核；生命期：该次调用）。
 
-`backenderror`（7 个 variant）：`unsupporteddtype { dtype }`、`unsupportedoperation { op }`、`sizeoverflow`、`executionfailed`、`shapemismatch { op }`、`indexoutofrange { index, len }`、`resourceexhausted`。`compute` 的边界映射约定：被拒预算 -> `resourceexhausted`；内核错误 -> 原样透传。
+`backenderror`（8 个 variant）：`unsupporteddtype { dtype }`、`unsupportedoperation { op }`、`sizeoverflow`、`executionfailed`、`shapemismatch { op }`、`indexoutofrange { index, len }`、`invalidparameter { op }`、`resourceexhausted`。`compute` 的边界映射约定：被拒预算 -> `resourceexhausted`；内核错误 -> 原样透传。
 
 Layer 0 一侧的 `kernel`/`backend` 错误契约：`kernel::apply` 在元素 dtype 不受支持、操作不受支持、元素计数溢出或执行失败时返回 `backenderror`。`backend` 不做校验也不分配，只陈述后端接受什么。
 
@@ -1089,7 +1091,7 @@ crate 暴露 9 个公共项，根于 crate root 并从无冲突模块文件重�
 - 词表 id 对照已插入条目校验，id 到 token map 是稀疏的（`BTreeMap`），因此恶意 id 不会导致超大分配（IN4）。
 - `fromjson` 除调用方提供的 `&str` 外不做额外字节大小上限；限定文档大小是加载方（后续 `format`/`infer` 关切）的责任，此处记录为限制。
 - byte-fallback 扩展受输入符号的 UTF-8 长度界定。
-- 不提供基准：字节对编码不是 AGENTS.md §7 意义上的计算算子，且不声明任何性能改进。
+- BPE 合并循环为最小堆 + 双向链表（`bytepair::apply`）：每次合并只触及相邻符号，替换原先每轮全表重扫的 O(n²) 实现。基准见 `benches/tokenizer.rs`，基线与加速记录见 `docs/tokenizer-optimization-plan.md` §12。
 
 ### 10.9 复杂度（DS3）
 
@@ -1402,7 +1404,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 `formaterror`（16 个 variant）：`truncated`、`headertoolarge`、`invalidjson`、`invalidentry`、`unsupporteddtype`、`emptyshape`、`shapeoverflow`、`elementlimitexceeded`、`offsetsoutofrange`、`bytelengthmismatch`、`overlappingtensors`、`invalidmetadata`、`missingfield`、`invalidvalue`、`unsupportedmodeltype`、`unsupportedtorchdtype`。
 
-`checkpointerror`（15 个 variant）：`io { path, source }`、`badmagic`、`unsupportedversion { found, supported }`、`truncated { needed, available }`、`invalidmanifestjson { line, column, message }`、`invalidmanifest { reason }`、`shapeoverflow { name }`、`lengthmismatch { name, expected, actual }`、`dtypeunsupported { name, dtype }`、`duplicatetensor { name }`、`offsetoutofrange { offset, nbytes, datalength }`、`overlappingtensors`、`missingtensor { name }`、`dtypemismatch { name, expected, actual }`、`shapemismatch { name, expected, actual }`，以及 `format(#[from] formaterror)`。`format` 错误以保留的上下文传播，而非被压平。
+`checkpointerror`（17 个 variant）：`io { path, source }`、`badmagic`、`unsupportedversion { found, supported }`、`truncated { needed, available }`、`invalidmanifestjson { line, column, message }`、`invalidmanifest { reason }`、`shapeoverflow { name }`、`lengthmismatch { name, expected, actual }`、`dtypeunsupported { name, dtype }`、`duplicatetensor { name }`、`offsetoutofrange { offset, nbytes, datalength }`、`overlappingtensors`、`missingtensor { name }`、`dtypemismatch { name, expected, actual }`、`shapemismatch { name, expected, actual }`、`tensorcrcmismatch { name }`，以及 `format(#[from] formaterror)`、`tensor(#[from] tensor::tensorerror)`。`format` 与 `tensor` 错误以保留的上下文传播，而非被压平。
 
 `checkpointerror::isrecoverable()` 只对 `io` 为真；`isincompatibility()` 只对 `unsupportedversion`、`missingtensor`、`dtypemismatch`、`shapemismatch` 为真；其余为畸形构件。
 
@@ -1411,6 +1413,8 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 **上传/加载工作流。** `savecheckpoint(path, ckpt)` 先 `ckpt.encode()` 再经 `writeatomic` 发布；`loadcheckpoint(path)` 读文件为内存再经 `checkpoint::decode` 校验，可恢复文件系统失败报为 `io`，畸形或结构非法构件报为解码错误。
 
 **配置解析（`modelconfig`）。** `modelconfig::parse(bytes)` 解析并校验 `config.json`：未知字段忽略；`model_type` 必须是 `"llama"`；每个尺寸非零；`hidden_size` 可被 `num_attention_heads` 整除；`num_key_value_heads`（默认为 `num_attention_heads`）可整除前者；`rms_norm_eps` 与 `rope_theta` 有限且为正；可选 `torch_dtype` 映射到存储 `dtype`（`float32`/`f32`、`float16`/`f16`/`half`、`bfloat16`/`bf16`、`float64`/`f64`/`double`）否则拒绝。无未检查的公共构造器：值只由 `parse` 产生。派生 getter `getheadsize`（`hidden_size/num_attention_heads`）与 `getkeyvaluegroups`（`num_attention_heads/num_key_value_heads`）。
+
+**推理 raw 权重格式（`rawsnapshot`/`rawreader`）。** 推理侧独立格式，与 `.u` 训练快照并存：`.u` 优先空间与增量（内容寻址、LZ4、delta），raw 优先加载速度与可寻址性（不压缩、页对齐、区段 CRC32C）。构件布局：8 字节 magic `LLMRAW01`、`u32` 版本（`RAWFORMATVERSION = 1`）、`u32` 张量数、`u64` 数据段偏移（页对齐，`PAGESIZE = 4096`）、二进制目录（每张量：`u32` 名字长 + UTF-8 名、`u8` 存储 dtype token、`u32` 秩 + `u64` 各维度、`u64` 区段偏移、`u64` 字节长、`u32` CRC32C）、页对齐 padding、数据段（区段按目录顺序、每区段起始页对齐）。`rawsnapshot::fromcheckpoint` 从内存检查点导出，重新校验每张量字节长等于元素计数乘 dtype 宽度；`encode`/`decode` 全程受检算术；`decode` 校验结构、区段范围、页对齐与重叠，不验 CRC（留给 reader 按需）。`rawreader` 复用 `blocksource`：`open`（内存缓冲）与 `fromfile`（文件按需读区段）在读时验 CRC32C（失败报 `tensorcrcmismatch`，归类损坏）；`readtensortyped<T>` 先校验存储 dtype 等于 `T::DTYPE`（不符报 `dtypemismatch`，归类结构不兼容），再把目录形状与字节交给 `tensor::tryfrombytes` 解码。raw 格式不携带量化描述符、训练状态与 delta/base 关系；scale/zero-point 张量按普通张量导出，关联由加载器按命名约定推导。
 
 **限制（已声明）。** 检查点为单文件、内存内、未加密；`f16`/`bf16` 作为存储 dtype 接受但不声称后端执行；兼容性对照显式 `tensorspec` 列表而非检查模型对象。
 
@@ -1542,7 +1546,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **合并（物化）。** `merge(base, delta, out)`：校验 delta 根哈希 → 校验 base 存在且 `root_hash(base) == delta.base_id` → staging 写 out（`base_id := 0`，物理块表全量，`root_hash(out) == root_hash(delta)`）→ 逐逻辑块按「delta 自身 → base」解析来源并校验 CRC32C + BLAKE3-128 → 存储态字节原样拷贝（不重新编码）→ flush + fsync + 原子 rename（复用 `writeatomic`）。任一校验失败即中止并删 staging，源文件不变；合并是复制 + 校验的纯变换，绝不把损坏 base 传播进 out。
 
-**恢复（按需读取）。** `checkpointreader` 提供与 `checkpoint::readtensor` 同构接口：载入 manifest 并验根哈希 → 建块解析表（逻辑位置 → 来源/偏移/CRC32C）→ `readtensor` 仅读被请求张量覆盖的块（受检算术算块区间），验 CRC32C（首次验 BLAKE3-128 并缓存）。首版 `File::read_at`，无 mmap。
+**恢复（按需读取）。** `checkpointreader` 提供与 `checkpoint::readtensor` 同构接口：载入 manifest 并验根哈希 → 建块解析表（逻辑位置 → 来源/偏移/CRC32C）→ `readtensor` 仅读被请求张量覆盖的块（受检算术算块区间），验 CRC32C（首次验 BLAKE3-128 并缓存）。类型化读取 `readtensortyped<T>` 在同一路径上先校验存储 `dtype` 等于 `T::DTYPE`（不符报 `dtypemismatch`，归类结构不兼容），再把 manifest shape 与字节交给 `tensor::tryfrombytes` 解码为 `tensor<T>`，调用方不可能观察到静默错误的 dtype 或 shape；解码失败经 `checkpointerror::tensor` 传播。首版 `File::read_at`，无 mmap。
 
 **压缩 / 保留 / 溯源。** 文件一旦 rename 即不可变（copy-on-write），压缩只产新文件、不原地改。链长上限（连续增量 > 32 或增量体积 > 全量 50%）触发压缩。GC 仅删不可达且过宽限期的文件。`verifyprovenance` 沿 `base_id` 链验证各根哈希。
 
