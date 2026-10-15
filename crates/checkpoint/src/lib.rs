@@ -36,6 +36,7 @@
 
 mod atomicwrite;
 mod compatibility;
+mod crc32c;
 mod error;
 mod load;
 mod manifests;
@@ -47,6 +48,7 @@ pub const CHECKPOINTVERSION: u32 = 1;
 
 pub use atomicwrite::writeatomic;
 pub use compatibility::{checkcompat, checkversion, tensorspec};
+pub use crc32c::crc32c;
 pub use error::checkpointerror;
 pub use load::loadcheckpoint;
 pub use manifests::{checkpoint, manifest, manifestentry};

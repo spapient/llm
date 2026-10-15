@@ -155,6 +155,29 @@ mod compatibility {
     }
 }
 
+/// Tests relocated from `crates/checkpoint/src/crc32c.rs`.
+mod crc32c {
+    use ::checkpoint::crc32c;
+
+    #[test]
+    fn empty_input_has_zero_checksum() {
+        assert_eq!(crc32c(b""), 0);
+    }
+
+    #[test]
+    fn matches_the_castagnoli_known_answer() {
+        assert_eq!(crc32c(b"123456789"), 0xE306_9283);
+    }
+
+    #[test]
+    fn detects_a_single_bit_flip() {
+        let mut data = vec![0u8; 64];
+        let before = crc32c(&data);
+        data[37] ^= 1;
+        assert_ne!(crc32c(&data), before);
+    }
+}
+
 /// Tests relocated from `crates/checkpoint/src/error.rs`.
 mod error {
     use ::checkpoint::checkpointerror;
