@@ -810,3 +810,52 @@ mod reader {
         assert!(matches!(err, checkpointerror::blockcrcmismatch { .. }));
     }
 }
+
+/// Tests relocated from `crates/checkpoint/src/compact.rs`.
+mod compact {
+    use crate::support::shapeof;
+    use ::checkpoint::{checkpointerror, compact, delta, snapshot, verifyprovenance, BLOCKSIZE};
+    use tensor::dtype;
+
+    fn full(v: u8) -> snapshot {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![v; BLOCKSIZE])
+            .unwrap();
+        snap.addtensor("b".to_string(), dtype::u8, shapeof(&[BLOCKSIZE]), &vec![2u8; BLOCKSIZE])
+            .unwrap();
+        snap
+    }
+
+    #[test]
+    fn compact_materializes_a_chain() {
+        let f0 = full(1);
+        let f1 = full(3);
+        let f2 = full(5);
+        let d1 = delta::fromsnapshots(&f0, &f1);
+        let d2 = delta::fromsnapshots(&f1, &f2);
+        let result = compact(&f0, &[&d1, &d2]).unwrap();
+        assert_eq!(result, f2);
+        assert_eq!(result.roothash(), f2.roothash());
+    }
+
+    #[test]
+    fn verifyprovenance_accepts_a_valid_chain() {
+        let f0 = full(1);
+        let f1 = full(3);
+        let f2 = full(5);
+        let d1 = delta::fromsnapshots(&f0, &f1);
+        let d2 = delta::fromsnapshots(&f1, &f2);
+        verifyprovenance(&f0, &[&d1, &d2]).unwrap();
+    }
+
+    #[test]
+    fn verifyprovenance_rejects_a_broken_chain() {
+        let f0 = full(1);
+        let f1 = full(3);
+        let f2 = full(5);
+        let d1 = delta::fromsnapshots(&f0, &f1);
+        let d2 = delta::fromsnapshots(&f0, &f2);
+        let err = verifyprovenance(&f0, &[&d1, &d2]).unwrap_err();
+        assert!(matches!(err, checkpointerror::basehashmismatch { .. }));
+    }
+}
