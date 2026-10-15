@@ -164,6 +164,30 @@ pub trait submission {
         causal: bool,
     ) -> Result<stepref, backenderror>;
 
+    /// Records a full semigroup scan, mirroring
+    /// [`compute::scan`](crate::compute::scan).
+    fn recordscan(
+        &mut self,
+        input: operand<'_>,
+        init: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records a single-step incremental scan, mirroring
+    /// [`compute::scan_cached`](crate::compute::scan_cached).
+    fn recordscan_cached(
+        &mut self,
+        input: operand<'_>,
+        state: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror>;
+
     /// Executes every recorded step and returns the declared outputs.
     ///
     /// The returned tensors match `outputs` in order and count. Consuming `self`

@@ -209,6 +209,30 @@ impl<C: compute> submission for cpusubmission<C> {
         Ok(self.push(out))
     }
 
+    fn recordscan(
+        &mut self,
+        _input: operand<'_>,
+        _init: operand<'_>,
+        _a: operand<'_>,
+        _b: operand<'_>,
+        _c: operand<'_>,
+        _skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan" })
+    }
+
+    fn recordscan_cached(
+        &mut self,
+        _input: operand<'_>,
+        _state: operand<'_>,
+        _a: operand<'_>,
+        _b: operand<'_>,
+        _c: operand<'_>,
+        _skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan_cached" })
+    }
+
     fn apply(self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
         outputs
             .iter()

@@ -279,6 +279,30 @@ impl compute for refusecompute {
             op: "attention_cached",
         })
     }
+
+    fn scan(
+        &self,
+        _input: &tensorview<'_, f32>,
+        _init: &tensorview<'_, f32>,
+        _a: &tensorview<'_, f32>,
+        _b: &tensorview<'_, f32>,
+        _c: &tensorview<'_, f32>,
+        _skip: &tensorview<'_, f32>,
+    ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan" })
+    }
+
+    fn scan_cached(
+        &self,
+        _input: &tensorview<'_, f32>,
+        _state: &tensorview<'_, f32>,
+        _a: &tensorview<'_, f32>,
+        _b: &tensorview<'_, f32>,
+        _c: &tensorview<'_, f32>,
+        _skip: &tensorview<'_, f32>,
+    ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan_cached" })
+    }
 }
 
 #[test]

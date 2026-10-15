@@ -264,4 +264,53 @@ pub trait compute {
         kvheads: usize,
         causal: bool,
     ) -> Result<tensor<f32>, backenderror>;
+
+    /// Associative-semigroup scan (prefill form): `h_t = A h_{t-1} + B x_t`,
+    /// `y_t = C h_t + D x_t`.
+    ///
+    /// `input` is `[n, d]`, `init` is `[d, N]`, and `a`/`b`/`c` are `[d, N]`;
+    /// `skip` is the `[d]` feedthrough term. `a` MUST be diagonal or 2×2
+    /// block-diagonal — a dense recurrence kernel is outside this operator
+    /// (see `docs/beta-scan-plan.md` §3.2). The recurrence is computed as a
+    /// prefix scan over the sequence axis, returning the `[n, d]` output and
+    /// the `[d, N]` final state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`backenderror::shapemismatch`] for inconsistent shapes or rank,
+    /// [`backenderror::invalidparameter`] when the spectral precondition on `a`
+    /// is violated, or another [`backenderror`] when execution fails.
+    fn scan(
+        &self,
+        input: &tensorview<'_, f32>,
+        init: &tensorview<'_, f32>,
+        a: &tensorview<'_, f32>,
+        b: &tensorview<'_, f32>,
+        c: &tensorview<'_, f32>,
+        skip: &tensorview<'_, f32>,
+    ) -> Result<(tensor<f32>, tensor<f32>), backenderror>;
+
+    /// Single-step incremental scan (decode form) for one new token at the
+    /// current absolute position.
+    ///
+    /// `input` is `[1, d]` and `state` is the current `[d, N]` state. The
+    /// semantics are to append `x` at the position and continue the recurrence;
+    /// this is bitwise-equal to the **serial** [`scan`](Self::scan) over the
+    /// same prefix (M11), but not to a parallel scan, whose reassociated
+    /// floating point order only agrees within tolerance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`backenderror::shapemismatch`] for inconsistent shapes or rank,
+    /// [`backenderror::invalidparameter`] when the spectral precondition on `a`
+    /// is violated, or another [`backenderror`] when execution fails.
+    fn scan_cached(
+        &self,
+        input: &tensorview<'_, f32>,
+        state: &tensorview<'_, f32>,
+        a: &tensorview<'_, f32>,
+        b: &tensorview<'_, f32>,
+        c: &tensorview<'_, f32>,
+        skip: &tensorview<'_, f32>,
+    ) -> Result<(tensor<f32>, tensor<f32>), backenderror>;
 }

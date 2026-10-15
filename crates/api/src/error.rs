@@ -47,6 +47,13 @@ pub enum backenderror {
         len: usize,
     },
 
+    /// An attribute value lies outside the domain the operation accepts.
+    #[error("invalid parameter for {op}")]
+    invalidparameter {
+        /// The stable name of the operation whose parameter was rejected.
+        op: &'static str,
+    },
+
     /// A configured resource budget rejected the operation before execution.
     #[error("resource limit exceeded")]
     resourceexhausted,

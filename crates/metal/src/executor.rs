@@ -316,6 +316,30 @@ impl compute for metalexecutor {
             causal,
         )
     }
+
+    fn scan(
+        &self,
+        _input: &tensorview<'_, f32>,
+        _init: &tensorview<'_, f32>,
+        _a: &tensorview<'_, f32>,
+        _b: &tensorview<'_, f32>,
+        _c: &tensorview<'_, f32>,
+        _skip: &tensorview<'_, f32>,
+    ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan" })
+    }
+
+    fn scan_cached(
+        &self,
+        _input: &tensorview<'_, f32>,
+        _state: &tensorview<'_, f32>,
+        _a: &tensorview<'_, f32>,
+        _b: &tensorview<'_, f32>,
+        _c: &tensorview<'_, f32>,
+        _skip: &tensorview<'_, f32>,
+    ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan_cached" })
+    }
 }
 
 /// Concatenates two `[_, width]` views into one `[a + b, width]` tensor.
@@ -721,6 +745,30 @@ impl submission for metalsubmission {
         )
         .map_err(maptobackend)?;
         Ok(self.push(slot, queryshape))
+    }
+
+    fn recordscan(
+        &mut self,
+        _input: operand<'_>,
+        _init: operand<'_>,
+        _a: operand<'_>,
+        _b: operand<'_>,
+        _c: operand<'_>,
+        _skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan" })
+    }
+
+    fn recordscan_cached(
+        &mut self,
+        _input: operand<'_>,
+        _state: operand<'_>,
+        _a: operand<'_>,
+        _b: operand<'_>,
+        _c: operand<'_>,
+        _skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        Err(backenderror::unsupportedoperation { op: "scan_cached" })
     }
 
     fn apply(self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
