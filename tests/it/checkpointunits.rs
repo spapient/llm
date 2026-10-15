@@ -449,3 +449,142 @@ mod training {
         assert_eq!(back, s);
     }
 }
+
+/// Tests relocated from `crates/checkpoint/src/blocks.rs`.
+mod blocks {
+    use ::checkpoint::{chunk, BLOCKSIZE};
+
+    #[test]
+    fn empty_input_yields_no_blocks() {
+        assert!(chunk(b"").is_empty());
+    }
+
+    #[test]
+    fn single_short_block() {
+        let blocks = chunk(b"hello");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].getlen(), 5);
+    }
+
+    #[test]
+    fn multiple_blocks_with_short_tail() {
+        let data = vec![0u8; BLOCKSIZE * 2 + 7];
+        let blocks = chunk(&data);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[2].getlen(), 7);
+    }
+
+    #[test]
+    fn identical_content_has_identical_hash() {
+        let a = chunk(&[0u8; BLOCKSIZE]);
+        let b = chunk(&[0u8; BLOCKSIZE]);
+        assert_eq!(a[0].gethash(), b[0].gethash());
+    }
+}
+
+/// Tests relocated from `crates/checkpoint/src/uformat.rs`.
+mod uformat {
+    use crate::support::shapeof;
+    use ::checkpoint::{checkpointerror, snapshot, BLOCKSIZE};
+    use tensor::dtype;
+
+    fn onesnap() -> snapshot {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::f32, shapeof(&[2, 2]), &[0u8; 16])
+            .unwrap();
+        snap
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let snap = onesnap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        assert_eq!(back, snap);
+    }
+
+    #[test]
+    fn block_boundary_falls_mid_tensor() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("a".to_string(), dtype::u8, shapeof(&[1000]), &vec![1u8; 1000])
+            .unwrap();
+        snap.addtensor(
+            "b".to_string(),
+            dtype::u8,
+            shapeof(&[BLOCKSIZE]),
+            &vec![2u8; BLOCKSIZE],
+        )
+        .unwrap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        assert_eq!(back, snap);
+        assert_eq!(back.readtensor("a").unwrap().len(), 1000);
+        assert_eq!(back.readtensor("b").unwrap().len(), BLOCKSIZE);
+    }
+
+    #[test]
+    fn single_bit_flip_reports_crc_mismatch() {
+        let snap = onesnap();
+        let mut bytes = snap.encode().unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        let err = snapshot::decode(&bytes).unwrap_err();
+        assert!(matches!(err, checkpointerror::blockcrcmismatch { .. }));
+        assert!(err.iscorruption());
+    }
+
+    #[test]
+    fn truncated_input_reports_truncation() {
+        let snap = onesnap();
+        let bytes = snap.encode().unwrap();
+        let cut = &bytes[..bytes.len() - 3];
+        assert!(matches!(
+            snapshot::decode(cut),
+            Err(checkpointerror::truncated { .. })
+                | Err(checkpointerror::truncatedblock { .. })
+        ));
+    }
+
+    #[test]
+    fn zero_length_tensor() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("empty".to_string(), dtype::u8, shapeof(&[0]), &[])
+            .unwrap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        assert_eq!(back.readtensor("empty").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn multi_block_large_tensor() {
+        let len = BLOCKSIZE * 3 + 100;
+        let data = vec![7u8; len];
+        let mut snap = snapshot::new(1);
+        snap.addtensor("big".to_string(), dtype::u8, shapeof(&[len]), &data)
+            .unwrap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        assert_eq!(back.readtensor("big").unwrap(), data);
+    }
+
+    #[test]
+    fn decode_rejects_bad_magic() {
+        let snap = onesnap();
+        let mut bytes = snap.encode().unwrap();
+        bytes[0] = b'X';
+        assert!(matches!(
+            snapshot::decode(&bytes),
+            Err(checkpointerror::badmagic)
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_manifest_root_tamper() {
+        let snap = onesnap();
+        let mut bytes = snap.encode().unwrap();
+        bytes[16] ^= 1;
+        let err = snapshot::decode(&bytes).unwrap_err();
+        assert!(matches!(err, checkpointerror::rootmismatch { .. }));
+        assert!(err.iscorruption());
+    }
+}

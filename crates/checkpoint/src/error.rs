@@ -148,6 +148,53 @@ pub enum checkpointerror {
         actual: Vec<usize>,
     },
 
+    /// The snapshot's root hash does not match its declared value.
+    #[error("root hash mismatch: expected {expected:?}, found {found:?}")]
+    rootmismatch {
+        /// The root hash computed over the canonical manifest.
+        expected: [u8; 32],
+        /// The root hash the artifact declared.
+        found: [u8; 32],
+    },
+
+    /// A block's CRC32C does not match its declared checksum.
+    #[error("block {position} crc32c mismatch")]
+    blockcrcmismatch {
+        /// The zero-based block index.
+        position: usize,
+    },
+
+    /// A block's BLAKE3-128 content identity does not match its declaration.
+    #[error("block {position} content hash mismatch")]
+    blockhashmismatch {
+        /// The zero-based block index.
+        position: usize,
+        /// The expected content identity.
+        expected: [u8; 16],
+        /// The content identity computed over the stored bytes.
+        found: [u8; 16],
+    },
+
+    /// A block's bytes are shorter than its declared length.
+    #[error("block {position} truncated: needed {needed} bytes, {available} available")]
+    truncatedblock {
+        /// The zero-based block index.
+        position: usize,
+        /// The block's declared byte length.
+        needed: usize,
+        /// The bytes actually remaining.
+        available: usize,
+    },
+
+    /// A block's declared byte range is inconsistent with the data section.
+    #[error("block {position} out of range for {blockcount} blocks")]
+    blockoutofrange {
+        /// The zero-based block index.
+        position: usize,
+        /// The total number of blocks declared.
+        blockcount: usize,
+    },
+
     /// An error owned by the `format` crate propagated unchanged.
     #[error(transparent)]
     format(#[from] format::formaterror),
@@ -170,6 +217,22 @@ impl checkpointerror {
                 | Self::missingtensor { .. }
                 | Self::dtypemismatch { .. }
                 | Self::shapemismatch { .. }
+        )
+    }
+
+    /// Returns `true` when the failure is a corruption of the artifact's
+    /// integrity — a checksum or hash mismatch, a truncated block, or an
+    /// inconsistent block table — as opposed to a structural incompatibility or
+    /// a recoverable I/O error. Corruption is never auto-retried.
+    #[must_use]
+    pub fn iscorruption(&self) -> bool {
+        matches!(
+            self,
+            Self::rootmismatch { .. }
+                | Self::blockcrcmismatch { .. }
+                | Self::blockhashmismatch { .. }
+                | Self::truncatedblock { .. }
+                | Self::blockoutofrange { .. }
         )
     }
 }

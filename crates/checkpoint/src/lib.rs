@@ -35,6 +35,7 @@
 //! the crate root.
 
 mod atomicwrite;
+mod blocks;
 mod compatibility;
 mod crc32c;
 mod error;
@@ -43,11 +44,13 @@ mod load;
 mod manifests;
 mod save;
 mod training;
+mod uformat;
 
 /// The checkpoint artifact version this build writes and accepts.
 pub const CHECKPOINTVERSION: u32 = 1;
 
 pub use atomicwrite::writeatomic;
+pub use blocks::{BLOCKSIZE, blockref, chunk};
 pub use compatibility::{checkcompat, checkversion, tensorspec};
 pub use crc32c::crc32c;
 pub use error::checkpointerror;
@@ -56,3 +59,4 @@ pub use load::loadcheckpoint;
 pub use manifests::{checkpoint, manifest, manifestentry};
 pub use save::savecheckpoint;
 pub use training::trainingstate;
+pub use uformat::{snapshot, tensorentry};
