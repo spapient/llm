@@ -27,6 +27,57 @@ pub(crate) struct storedentry {
     pub(crate) codec: u8,
 }
 
+/// Names the tensors carrying a quantized tensor's scale and zero-point, so a
+/// reader can dequantize without relying on naming conventions.
+///
+/// The scale is a first-class tensor: block-addressed, deduplicated, and
+/// compressed like any other tensor. `groupsize` is the number of elements
+/// sharing one scale (0 = per-tensor); the scale tensor's own shape determines
+/// whether it is per-channel, per-group, or per-block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct quantdesc {
+    groupsize: u32,
+    scale: String,
+    zeropoint: Option<String>,
+}
+
+impl quantdesc {
+    /// Creates an affine quantization descriptor with no zero-point.
+    #[must_use]
+    pub fn new(groupsize: u32, scale: String) -> Self {
+        Self {
+            groupsize,
+            scale,
+            zeropoint: None,
+        }
+    }
+
+    /// Sets the zero-point tensor name.
+    #[must_use]
+    pub fn withzeropoint(mut self, zeropoint: String) -> Self {
+        self.zeropoint = Some(zeropoint);
+        self
+    }
+
+    /// Returns the group size in elements (0 = per-tensor).
+    #[must_use]
+    pub fn getgroupsize(&self) -> u32 {
+        self.groupsize
+    }
+
+    /// Returns the scale tensor name.
+    #[must_use]
+    pub fn getscale(&self) -> &str {
+        &self.scale
+    }
+
+    /// Returns the zero-point tensor name, when present.
+    #[must_use]
+    pub fn getzeropoint(&self) -> Option<&str> {
+        self.zeropoint.as_deref()
+    }
+}
+
 /// Describes one tensor persisted in a `.u` snapshot.
 ///
 /// A value records the tensor's name, storage [`dtype`], logical [`shape`], and
@@ -39,6 +90,7 @@ pub struct tensorentry {
     shape: shape,
     offset: u64,
     nbytes: u64,
+    quant: Option<quantdesc>,
 }
 
 impl tensorentry {
@@ -76,6 +128,12 @@ impl tensorentry {
     #[must_use]
     pub fn getend(&self) -> u64 {
         self.offset + self.nbytes
+    }
+
+    /// Returns the quantization descriptor, when the tensor is quantized.
+    #[must_use]
+    pub fn getquant(&self) -> Option<&quantdesc> {
+        self.quant.as_ref()
     }
 }
 
@@ -180,9 +238,27 @@ impl snapshot {
             shape: dims,
             offset,
             nbytes: actual,
+            quant: None,
         };
         self.tensors.push(entry);
         self.data.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Attaches a quantization descriptor to an existing tensor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::missingtensor`] when the tensor is absent.
+    pub fn setquant(&mut self, name: &str, quant: quantdesc) -> Result<(), checkpointerror> {
+        let entry = self
+            .tensors
+            .iter_mut()
+            .find(|t| t.name == name)
+            .ok_or_else(|| checkpointerror::missingtensor {
+                name: name.to_string(),
+            })?;
+        entry.quant = Some(quant);
         Ok(())
     }
 
@@ -380,6 +456,21 @@ pub(crate) fn canonicalmanifest(
         }
         pushu64(&mut buf, entry.offset);
         pushu64(&mut buf, entry.nbytes);
+        match &entry.quant {
+            None => pushu64(&mut buf, 0),
+            Some(quant) => {
+                pushu64(&mut buf, 1);
+                pushu32(&mut buf, quant.groupsize);
+                pushstring(&mut buf, &quant.scale);
+                match &quant.zeropoint {
+                    None => pushu64(&mut buf, 0),
+                    Some(zp) => {
+                        pushu64(&mut buf, 1);
+                        pushstring(&mut buf, zp);
+                    }
+                }
+            }
+        }
     }
     pushu64(&mut buf, blocks.len() as u64);
     for block in blocks {
@@ -418,6 +509,32 @@ pub(crate) fn readtensors(
         })?;
         let offset = readu64(manifest, pos)?;
         let nbytes = readu64(manifest, pos)?;
+        let quant = match readu64(manifest, pos)? {
+            0 => None,
+            1 => {
+                let groupsize = readu32(manifest, pos)?;
+                let scale = readstring(manifest, pos)?;
+                let zeropoint = match readu64(manifest, pos)? {
+                    0 => None,
+                    1 => Some(readstring(manifest, pos)?),
+                    _ => {
+                        return Err(checkpointerror::invalidmanifest {
+                            reason: "invalid zero-point flag".to_string(),
+                        });
+                    }
+                };
+                Some(quantdesc {
+                    groupsize,
+                    scale,
+                    zeropoint,
+                })
+            }
+            _ => {
+                return Err(checkpointerror::invalidmanifest {
+                    reason: "invalid quant flag".to_string(),
+                });
+            }
+        };
         let count = dims
             .getelementcount()
             .map_err(|_| checkpointerror::shapeoverflow { name: name.clone() })?;
@@ -437,6 +554,7 @@ pub(crate) fn readtensors(
             shape: dims,
             offset,
             nbytes,
+            quant,
         });
     }
     Ok(tensors)

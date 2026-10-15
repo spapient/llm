@@ -67,4 +67,4 @@ pub use merge::{merge, mergefiles};
 pub use reader::{blocksource, bytesource, checkpointreader, filesource};
 pub use save::savecheckpoint;
 pub use training::trainingstate;
-pub use uformat::{snapshot, tensorentry};
+pub use uformat::{quantdesc, snapshot, tensorentry};

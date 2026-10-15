@@ -1002,3 +1002,64 @@ mod compression {
         assert_eq!(reader.readtensor("w").unwrap().unwrap(), data);
     }
 }
+
+/// Tests for the quantization descriptor and scale-as-tensor.
+mod quant {
+    use crate::support::shapeof;
+    use ::checkpoint::{delta, quantdesc, snapshot};
+    use tensor::dtype;
+
+    #[test]
+    fn quantized_tensor_roundtrips_with_its_scale() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::i8, shapeof(&[4096]), &vec![1u8; 4096])
+            .unwrap();
+        snap.addtensor("w_scale".to_string(), dtype::f32, shapeof(&[32]), &[0u8; 128])
+            .unwrap();
+        snap.addtensor("w_zp".to_string(), dtype::i8, shapeof(&[32]), &[0u8; 32])
+            .unwrap();
+        snap.setquant(
+            "w",
+            quantdesc::new(128, "w_scale".to_string()).withzeropoint("w_zp".to_string()),
+        )
+        .unwrap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        let entry = back
+            .gettensors()
+            .iter()
+            .find(|t| t.getname() == "w")
+            .unwrap();
+        let q = entry.getquant().unwrap();
+        assert_eq!(q.getgroupsize(), 128);
+        assert_eq!(q.getscale(), "w_scale");
+        assert_eq!(q.getzeropoint(), Some("w_zp"));
+        assert_eq!(back.readtensor("w_scale").unwrap().len(), 128);
+    }
+
+    #[test]
+    fn quantdesc_survives_a_delta() {
+        let mut base = snapshot::new(1);
+        base.addtensor("w".to_string(), dtype::i8, shapeof(&[4096]), &vec![1u8; 4096])
+            .unwrap();
+        base.addtensor("w_scale".to_string(), dtype::f32, shapeof(&[32]), &[0u8; 128])
+            .unwrap();
+        base.setquant("w", quantdesc::new(128, "w_scale".to_string()))
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("w".to_string(), dtype::i8, shapeof(&[4096]), &vec![2u8; 4096])
+            .unwrap();
+        new.addtensor("w_scale".to_string(), dtype::f32, shapeof(&[32]), &[0u8; 128])
+            .unwrap();
+        new.setquant("w", quantdesc::new(128, "w_scale".to_string()))
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        let back = delta::decode(&d.encode().unwrap()).unwrap();
+        let entry = back
+            .gettensors()
+            .iter()
+            .find(|t| t.getname() == "w")
+            .unwrap();
+        assert_eq!(entry.getquant().unwrap().getscale(), "w_scale");
+    }
+}
