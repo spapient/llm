@@ -250,7 +250,7 @@ mod linux {
     fn submissionchain(criterion: &mut Criterion) {
         let steps = 32usize;
         let elements = 64 * 64;
-        let (x, y) = (tensor::new(shape(vec![64, 64]), vec![0.5_f32; elements]).unwrap(), tensor::new(shape(vec![64, 64]), vec![0.25_f32; elements]).unwrap());
+        let (x, y) = (tensor::new(shape::new(vec![64, 64]).unwrap(), vec![0.5_f32; elements]).unwrap(), tensor::new(shape::new(vec![64, 64]).unwrap(), vec![0.25_f32; elements]).unwrap());
         let (xv, yv) = (x.getview(), y.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
