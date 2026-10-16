@@ -1499,6 +1499,73 @@ mod encryption {
     }
 }
 
+/// Tests for the symmetric int8 quantization kernel.
+mod quantize {
+    use ::checkpoint::checkpointerror;
+    use ::checkpoint::quantize::{dequantize, quantize};
+
+    #[test]
+    fn symmetric_roundtrip_within_half_step() {
+        let data = [0.0f32, 0.5, -0.5, 1.0, -1.0, 0.25, -0.75];
+        let (q, scale) = quantize(&data, 0).unwrap();
+        assert_eq!(scale.len(), 1);
+        let back = dequantize(&q, &scale, 0).unwrap();
+        let halfstep = scale[0] / 2.0;
+        for (x, y) in data.iter().zip(back.iter()) {
+            assert!((x - y).abs() <= halfstep + f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn full_scale_value_maps_to_127() {
+        let data = [0.0f32, 127.0, -127.0];
+        let (q, scale) = quantize(&data, 0).unwrap();
+        assert!((scale[0] - 1.0).abs() < f32::EPSILON);
+        assert_eq!(q, vec![0i8, 127, -127]);
+    }
+
+    #[test]
+    fn per_group_quantization_uses_group_scales() {
+        let data = [100.0f32, -100.0, 1.0, -1.0];
+        let (q, scale) = quantize(&data, 2).unwrap();
+        assert_eq!(scale.len(), 2);
+        assert!((scale[0] - 100.0 / 127.0).abs() < f32::EPSILON);
+        assert!((scale[1] - 1.0 / 127.0).abs() < f32::EPSILON);
+        assert_eq!(q, vec![127i8, -127, 127, -127]);
+    }
+
+    #[test]
+    fn all_zero_group_has_zero_scale_and_values() {
+        let data = [0.0f32, 0.0, 0.0];
+        let (q, scale) = quantize(&data, 0).unwrap();
+        assert_eq!(scale[0], 0.0);
+        assert_eq!(q, vec![0i8, 0, 0]);
+        let back = dequantize(&q, &scale, 0).unwrap();
+        assert_eq!(back, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn empty_input_is_rejected() {
+        assert!(matches!(
+            quantize(&[], 0),
+            Err(checkpointerror::invalidmanifest { .. })
+        ));
+        assert!(matches!(
+            dequantize(&[], &[], 0),
+            Err(checkpointerror::invalidmanifest { .. })
+        ));
+    }
+
+    #[test]
+    fn mismatched_scale_count_is_rejected() {
+        let (q, _) = quantize(&[1.0f32, 2.0, 3.0, 4.0], 2).unwrap();
+        assert!(matches!(
+            dequantize(&q, &[1.0], 2),
+            Err(checkpointerror::invalidmanifest { .. })
+        ));
+    }
+}
+
 /// Tests for the quantization descriptor and scale-as-tensor.
 mod quant {
     use crate::support::shapeof;

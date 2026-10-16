@@ -73,6 +73,9 @@ mod save;
 
 /// Ed25519 signatures over a snapshot's root hash.
 pub mod signature;
+
+/// Symmetric int8 quantization of `f32` weights.
+pub mod quantize;
 mod training;
 
 /// The training `.u` snapshot format: content-addressed, chunked, compressed.

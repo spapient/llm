@@ -21,6 +21,7 @@ use std::hint::black_box;
 
 use ::checkpoint::deltas::delta;
 use ::checkpoint::merge::merge;
+use ::checkpoint::quantize::{dequantize, quantize};
 use ::checkpoint::uformat::snapshot;
 use ::tensor::{dtype, shape};
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -97,5 +98,44 @@ fn mergefull(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, encode, decode, deltacreate, mergefull);
+/// Builds a deterministic pseudo-random `f32` slice (an LCG stream).
+fn f32data(len: usize) -> Vec<f32> {
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    (0..len)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 40) as f32 / (1u64 << 24) as f32
+        })
+        .collect()
+}
+
+fn quantizebench(c: &mut Criterion) {
+    let data = f32data(DIM * DIM * TENSORS);
+    c.bench_function("quantize/per_tensor", |b| {
+        b.iter(|| black_box(quantize(&data, 0).unwrap()))
+    });
+    c.bench_function("quantize/per_group_128", |b| {
+        b.iter(|| black_box(quantize(&data, 128).unwrap()))
+    });
+}
+
+fn dequantizebench(c: &mut Criterion) {
+    let data = f32data(DIM * DIM * TENSORS);
+    let (q, scale) = quantize(&data, 0).unwrap();
+    c.bench_function("dequantize/per_tensor", |b| {
+        b.iter(|| black_box(dequantize(&q, &scale, 0).unwrap()))
+    });
+}
+
+criterion_group!(
+    benches,
+    encode,
+    decode,
+    deltacreate,
+    mergefull,
+    quantizebench,
+    dequantizebench
+);
 criterion_main!(benches);

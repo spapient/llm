@@ -1529,6 +1529,8 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **稀疏存储（COO）。** `tensorentry` 可选携带 `sparsedesc`（`nnz`），稀疏张量的数据段字节 = `nnz` 个 `u32` 线性索引（小端）+ `nnz` 个非零值，`nbytes = nnz × (4 + dtype 宽)`。`addsparse` 校验索引落在 `[0, elementcount)` 内；`readtensortyped` 经 `desparsify` 零填充重建稠密字节后再解 dtype/layout。适用于结构化稀疏（如 2:4）与剪枝权重。
 
+**量化内核（对称 int8）。** `quantize`/`dequantize` 实现对称 int8 量化：`scale = max(|x|)/127`（`groupsize=0` 为 per-tensor，否则 per-group/per-channel），`q = round(x/scale)` clamp `[-127,127]`，反量化 `x ≈ q×scale`（重建误差 ≤ scale/2）。与 `quantdesc`（scale 一等张量）配套，量化输出（i8 + scale）经 `addtensor`/`setquant` 落盘。
+
 **字段布局（设计草案）。** 下列固定字节步长的条目为早期设计草案；实际 manifest 采用变长二进制序列化（`version`/`flags`/张量/块列表按 `pushu*`/`read*` 编解码，见 §12.4 与 `crates/checkpoint/src/uformat.rs`）。草案张量条目 64 B 定长：
 
 | 长度 | 字段 | 类型 |
@@ -1565,7 +1567,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **不变量（验收判据）。** 块 `len` 与 BLAKE3-128/CRC32C 一致；块列表总长 = 逻辑数据段长（受检算术，`blockoutofrange` 兜底）；逻辑数据段 = 张量字节连续拼接且区间不重叠（复用 `checkoverlaps`）；合并输出根哈希 == 增量根哈希、数据段与原始全量字节相等；校验失败不发布部分产物；恢复只读目标块；所有文件不可变。
 
-**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）；AES-256-GCM 分块加密已实现（`encode_encrypted`/`decode_encrypted`）。Zstd、mmap 零拷贝、多文件分片、量化内核仍属后续。块来源以 `blocksource` trait 预留扩展点。
+**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）；AES-256-GCM 分块加密已实现（`encode_encrypted`/`decode_encrypted`）。Zstd、mmap 零拷贝、多文件分片仍属后续。块来源以 `blocksource` trait 预留扩展点。
 
 ---
 
