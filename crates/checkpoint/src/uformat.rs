@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use format::{dtypetoken, tokendtype};
 use tensor::{dtype, layout, shape};
@@ -360,10 +361,16 @@ impl snapshot {
                 actual: values.len() as u64,
             });
         }
+        let mut seen = HashSet::with_capacity(indices.len());
         for &idx in indices {
             if (idx as u64) >= (count as u64) {
                 return Err(checkpointerror::invalidmanifest {
                     reason: format!("sparse index {idx} out of range for tensor {name:?}"),
+                });
+            }
+            if !seen.insert(idx) {
+                return Err(checkpointerror::invalidmanifest {
+                    reason: format!("sparse index {idx} duplicated for tensor {name:?}"),
                 });
             }
         }
@@ -1154,11 +1161,11 @@ fn verifyfull_parallel(
                 available: data.len().saturating_sub(offset),
             });
         }
-        rawtotal = rawtotal
-            .checked_add(block.getlen() as usize)
-            .ok_or(checkpointerror::invalidmanifest {
+        rawtotal = rawtotal.checked_add(block.getlen() as usize).ok_or(
+            checkpointerror::invalidmanifest {
                 reason: format!("block {position} raw length overflows"),
-            })?;
+            },
+        )?;
         offset = end;
     }
     if offset != data.len() {
@@ -1199,9 +1206,8 @@ fn verifyfull_parallel(
         }
         let mut handles = Vec::with_capacity(nthreads);
         for (span, out) in spans.into_iter().zip(segs) {
-            handles.push(
-                scope.spawn(move || verifyblockspan(data, blocks, stored, key, span, out)),
-            );
+            handles
+                .push(scope.spawn(move || verifyblockspan(data, blocks, stored, key, span, out)));
         }
         for handle in handles {
             match handle.join() {

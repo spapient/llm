@@ -869,6 +869,17 @@ mod uformat {
             .unwrap_err();
         assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
     }
+
+    #[test]
+    fn sparse_rejects_duplicate_index() {
+        let indices = [1u32, 1];
+        let values = [2u8, 3];
+        let mut snap = snapshot::new(1);
+        let err = snap
+            .addsparse("w".to_string(), dtype::u8, shapeof(&[4]), &indices, &values)
+            .unwrap_err();
+        assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/delta.rs`.
