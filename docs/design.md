@@ -464,6 +464,10 @@ executor 路径与裸内核路径在运行间噪声内一致（噪声带准则�
 
 **多线程前后对比（2026-10-17，同机同工具链同基准；M5 Pro 18 核 6P+12E）。** `cpuexecutor` 增加 worker 预算（`newwithworkers`，0 拒绝为 `invalidparameter`），`matmul` 分块路径按行块拆分、`attention` 按查询块拆分、`rmsnorm` 按行认领（均 scoped thread，私有 partial 或 Mutex 行槽直写，无共享可变状态、无合并拷贝带宽损失）；每输出元素的算术序列与线程布局无关 → **任意 worker 数下与串行逐位一致**（三个 `*_threaded_matches_the_single_threaded_result` 测试）。prefill2048：matmul 412.48 → 114.81 ms（w4，3.59×）→ 76.23 ms（w8，5.41×）；attention 248.91 → 70.75 ms（w4，3.52×）→ 47.36 ms（w8，5.26×）；attention prefill512 16.00 → 5.02 ms（w4，3.19×）→ 3.75 ms（w8，4.26×）；rmsnorm 617.0 → 291.7 µs（w4，2.11×）→ 246.4 µs（w8，2.50×）。decode 路径不并行（单次遍历已带宽最优）。cli 经 `DEFAULTMAXWORKERS`（当前为 1）接线，机制就位、默认行为不变；kvcacheforward 模型级逐位一致性保持。
 
+**rope 角度复用前后对比（2026-10-17，同机同工具链同基准）。** 每 (position, i) 的 `sin_cos` 由每 head 重复计算改为跨 head 复用（每元素算术不变，结果逐位相同）：`executor/compute/rope`（seq128heads8dim64）由 89.06 → 30.03 µs（2.97×）。
+
+**剩余优化项（2026-10-17 记录，未实施）。** ① SIMD 宽度泛型（`f32x8`/`f32x16` 路径）：fearless_simd 1.1.0 类型族存在，但本机 NEON 最高 4 宽、无法建立测量，留待 AVX2/AVX-512 机器按 §12 先立基线；② 融合算子（rmsnorm+matmul 行缩放 epilogue、attention 输出+残差）：需扩展 api 契约，prefill 每层可省一次 `m×k` 读加写；③ attention 长序列 exp 瓶颈：prefill2048 的 16.7M 次 `expf` 主导，向量化 exp 需精度验证（§softmax SIMD 评估先例：Apple libm `expf` 已 NEON 加速，自写多项式难更快）。
+
 **softmax SIMD 评估（2026-10-16）：判定不引入。** `softmaxrow` 的 max 与缩放趟经 LLVM 自动向量化已是 4 宽 NEON，而 `exp` 趟占主导且 `fearless_simd` 无向量化 `exp`（Apple Silicon 的系统 libm `expf` 已 NEON 加速，自写多项式难更快）。实测仅向量化 max/缩放反而回退 6.5%（2.4593→2.6182 ms），已回退；softmax 保持标量 `f32::exp`，未引入数值近似。
 
 内核调用契约的验证：`lib`、`tensor`、`api` 以其文档化契约实现，仓库根 `tensorcontract`、`apicontract`、`crosscrate` 套件通过（证据等级 E1）。
