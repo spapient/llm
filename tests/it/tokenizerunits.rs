@@ -301,6 +301,23 @@ mod engine {
     }
 
     #[test]
+    fn encode_into_reuses_scratch_across_calls() {
+        let tok = tokenizer::fromjson(SAMPLE).unwrap();
+        let mut scratch = ::tokenizer::mergescratch::default();
+        let mut out = Vec::new();
+        // Largest first, then shorter and empty, so the reused buffers must be
+        // correctly reset rather than leaking stale linked-list or run state.
+        tok.encode_into("abc", &mut scratch, &mut out).unwrap();
+        assert_eq!(out, vec![tokenid::new(2), tokenid::new(3)]);
+        out.clear();
+        tok.encode_into("ab", &mut scratch, &mut out).unwrap();
+        assert_eq!(out, vec![tokenid::new(2)]);
+        out.clear();
+        tok.encode_into("", &mut scratch, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn rejects_invalid_json() {
         assert!(matches!(
             tokenizer::fromjson("{"),
@@ -404,6 +421,8 @@ mod error {
 mod merges {
     use ::tokenizer::bytepair;
     use ::tokenizer::tokenizererror;
+    use ::tokenizer::vocabulary;
+    use lib::tokenid;
     use proptest::prelude::*;
 
     fn symbols(parts: &[&str]) -> Vec<String> {
@@ -516,6 +535,52 @@ mod merges {
                 .collect();
             let bpe = bytepair::frommerges(&merges).unwrap();
             prop_assert_eq!(bpe.apply(&input), naiveapply(&merges, &input));
+        }
+    }
+
+    /// Builds a vocabulary covering every `a`..`h` single character and every
+    /// two-character combination, so any single-character merge over this
+    /// alphabet has in-vocabulary sides and results.
+    fn idvocab() -> vocabulary {
+        let chars: Vec<char> = (b'a'..=b'h').map(char::from).collect();
+        let mut entries: Vec<(String, u32)> = Vec::new();
+        let mut id = 0u32;
+        for &c in &chars {
+            entries.push((c.to_string(), id));
+            id += 1;
+        }
+        for &l in &chars {
+            for &r in &chars {
+                let mut s = String::new();
+                s.push(l);
+                s.push(r);
+                entries.push((s, id));
+                id += 1;
+            }
+        }
+        vocabulary::fromentries(entries).unwrap()
+    }
+
+    proptest! {
+        #[test]
+        fn applyids_matches_string_apply(
+            input in proptest::collection::vec(alpha(), 0..24),
+            pairs in proptest::collection::vec((alpha(), alpha()), 0..40),
+        ) {
+            let merges: Vec<String> = pairs
+                .iter()
+                .map(|(left, right)| format!("{left} {right}"))
+                .collect();
+            let vocab = idvocab();
+            let bpe = bytepair::frommergesandvocab(&merges, &vocab).unwrap();
+            let string_ids: Vec<u32> = bpe
+                .apply(&input)
+                .iter()
+                .map(|symbol| vocab.getid(symbol).unwrap().get())
+                .collect();
+            let symbols: Vec<tokenid> = input.iter().map(|s| vocab.getid(s).unwrap()).collect();
+            let id_ids: Vec<u32> = bpe.applyids(&symbols).iter().map(|id| id.get()).collect();
+            prop_assert_eq!(id_ids, string_ids);
         }
     }
 }

@@ -7,36 +7,12 @@
 //! concatenation is a vocabulary token (lowest resulting rank first). Special
 //! tokens are supplied by the caller because they are not in the file.
 
-use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
 use lib::tokenid;
 
 use crate::error::tokenizererror;
-
-/// A candidate byte merge: the rank of the concatenation starting at `left`
-/// and that pair's left-symbol position.
-#[derive(PartialEq, Eq)]
-struct tiktokenstep {
-    rank: u32,
-    left: usize,
-}
-
-impl Ord for tiktokenstep {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Pop the smallest rank first, then the leftmost position.
-        other
-            .rank
-            .cmp(&self.rank)
-            .then_with(|| other.left.cmp(&self.left))
-    }
-}
-
-impl PartialOrd for tiktokenstep {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+use crate::scratch::{mergescratch, mergestep, resetlinks};
 
 /// The o200k_base pre-tokenizer regex (from tiktoken's openai_public module).
 const O200KREGEX: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
@@ -125,12 +101,29 @@ impl tiktokenizer {
     ///
     /// Returns [`tokenizererror::invalidregex`] for a runtime regex failure.
     pub fn encode(&self, text: &str) -> Result<Vec<tokenid>, tokenizererror> {
+        let mut scratch = mergescratch::default();
         let mut out = Vec::new();
+        self.encode_into(text, &mut scratch, &mut out)?;
+        Ok(out)
+    }
+
+    /// Encodes `text`, recognizing special-token literals, appending to `out`
+    /// and reusing `scratch` for the merge-loop buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`tokenizererror::invalidregex`] for a runtime regex failure.
+    pub fn encode_into(
+        &self,
+        text: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
         let mut segment = String::new();
         let mut index = 0;
         while index < text.len() {
             if let Some((length, rank)) = self.matching_special(&text[index..]) {
-                self.encode_segment(&segment, &mut out)?;
+                self.encode_segment(&segment, scratch, out)?;
                 segment.clear();
                 out.push(tokenid::new(rank));
                 index += length;
@@ -143,8 +136,8 @@ impl tiktokenizer {
             segment.push(character);
             index += character.len_utf8();
         }
-        self.encode_segment(&segment, &mut out)?;
-        Ok(out)
+        self.encode_segment(&segment, scratch, out)?;
+        Ok(())
     }
 
     /// Decodes token ids to text.
@@ -174,7 +167,12 @@ impl tiktokenizer {
     }
 
     /// Encodes one non-special segment through the regex and the byte merge.
-    fn encode_segment(&self, segment: &str, out: &mut Vec<tokenid>) -> Result<(), tokenizererror> {
+    fn encode_segment(
+        &self,
+        segment: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
         if segment.is_empty() {
             return Ok(());
         }
@@ -184,13 +182,13 @@ impl tiktokenizer {
                 detail: error.to_string(),
             })?;
             if found.start() > last {
-                self.encode_chunk(&segment[last..found.start()], out)?;
+                self.encode_chunk(&segment[last..found.start()], scratch, out)?;
             }
-            self.encode_chunk(&segment[found.start()..found.end()], out)?;
+            self.encode_chunk(&segment[found.start()..found.end()], scratch, out)?;
             last = found.end();
         }
         if last < segment.len() {
-            self.encode_chunk(&segment[last..], out)?;
+            self.encode_chunk(&segment[last..], scratch, out)?;
         }
         Ok(())
     }
@@ -199,8 +197,16 @@ impl tiktokenizer {
     ///
     /// The next merge is selected from a binary heap and symbols live in a
     /// linked list, so each merge touches only its two neighbours instead of
-    /// rescanning the whole chunk.
-    fn encode_chunk(&self, chunk: &str, out: &mut Vec<tokenid>) -> Result<(), tokenizererror> {
+    /// rescanning the whole chunk. A live symbol at index `i` is the byte slice
+    /// `bytes[i..next[i]]` (its start offset equals its index), so no per-symbol
+    /// buffer is materialized and each candidate probes the vocabulary with a
+    /// borrowed slice.
+    fn encode_chunk(
+        &self,
+        chunk: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
         let bytes = chunk.as_bytes();
         let count = bytes.len();
         if count == 0 {
@@ -217,39 +223,34 @@ impl tiktokenizer {
             return Ok(());
         }
 
-        let mut symbols: Vec<Vec<u8>> = bytes.iter().map(|byte| vec![*byte]).collect();
-        let mut prev = Vec::with_capacity(count);
-        let mut next = Vec::with_capacity(count);
-        for index in 0..count {
-            prev.push(index.checked_sub(1));
-            next.push((index + 1 < count).then_some(index + 1));
-        }
-        let mut alive = vec![true; count];
-        let mut heap = BinaryHeap::new();
+        let merge = &mut scratch.merge;
+        resetlinks(merge, count);
+        merge.heap.clear();
         for index in 0..count - 1 {
-            self.queue_pair(&symbols, &next, &alive, &mut heap, index);
+            self.queue_pair(bytes, &merge.next, &merge.alive, &mut merge.heap, index);
         }
 
-        while let Some(step) = heap.pop() {
+        while let Some(step) = merge.heap.pop() {
             self.trymerge(
-                &mut symbols,
-                &mut prev,
-                &mut next,
-                &mut alive,
-                &mut heap,
+                bytes,
+                &mut merge.prev,
+                &mut merge.next,
+                &mut merge.alive,
+                &mut merge.heap,
                 step,
             );
         }
 
         let mut cursor = 0usize;
         loop {
-            let rank = self.ranks.get(&symbols[cursor]).ok_or_else(|| {
+            let end = merge.next[cursor].unwrap_or(count);
+            let rank = self.ranks.get(&bytes[cursor..end]).ok_or_else(|| {
                 tokenizererror::invalidtiktoken {
                     detail: "merged token is absent from the vocabulary".to_string(),
                 }
             })?;
             out.push(tokenid::new(*rank));
-            match next[cursor] {
+            match merge.next[cursor] {
                 Some(following) => cursor = following,
                 None => break,
             }
@@ -261,12 +262,12 @@ impl tiktokenizer {
     /// still current; otherwise it is a stale candidate and is skipped.
     fn trymerge(
         &self,
-        symbols: &mut [Vec<u8>],
+        bytes: &[u8],
         prev: &mut [Option<usize>],
         next: &mut [Option<usize>],
         alive: &mut [bool],
-        heap: &mut BinaryHeap<tiktokenstep>,
-        step: tiktokenstep,
+        heap: &mut BinaryHeap<mergestep>,
+        step: mergestep,
     ) {
         let Some(right) = next[step.left] else {
             return;
@@ -274,12 +275,13 @@ impl tiktokenizer {
         if !alive[step.left] || !alive[right] {
             return;
         }
-        let mut merged = symbols[step.left].clone();
-        merged.extend_from_slice(&symbols[right]);
-        if self.ranks.get(&merged) != Some(&step.rank) {
+        let end = next[right].unwrap_or(bytes.len());
+        let Some(rank) = self.ranks.get(&bytes[step.left..end]) else {
+            return;
+        };
+        if *rank as usize != step.rank {
             return;
         }
-        symbols[step.left] = merged;
         alive[right] = false;
         let following = next[right];
         next[step.left] = following;
@@ -287,19 +289,19 @@ impl tiktokenizer {
             prev[after] = Some(step.left);
         }
         if let Some(before) = prev[step.left] {
-            self.queue_pair(symbols, next, alive, heap, before);
+            self.queue_pair(bytes, next, alive, heap, before);
         }
-        self.queue_pair(symbols, next, alive, heap, step.left);
+        self.queue_pair(bytes, next, alive, heap, step.left);
     }
 
     /// Queues the mergeable pair starting at `left`, if its concatenation is a
     /// vocabulary token and both symbols are live.
     fn queue_pair(
         &self,
-        symbols: &[Vec<u8>],
+        bytes: &[u8],
         next: &[Option<usize>],
         alive: &[bool],
-        heap: &mut BinaryHeap<tiktokenstep>,
+        heap: &mut BinaryHeap<mergestep>,
         left: usize,
     ) {
         if !alive[left] {
@@ -311,10 +313,12 @@ impl tiktokenizer {
         if !alive[right] {
             return;
         }
-        let mut merged = symbols[left].clone();
-        merged.extend_from_slice(&symbols[right]);
-        if let Some(rank) = self.ranks.get(&merged) {
-            heap.push(tiktokenstep { rank: *rank, left });
+        let end = next[right].unwrap_or(bytes.len());
+        if let Some(rank) = self.ranks.get(&bytes[left..end]) {
+            heap.push(mergestep {
+                rank: *rank as usize,
+                left,
+            });
         }
     }
 }

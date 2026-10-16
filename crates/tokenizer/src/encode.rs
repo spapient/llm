@@ -19,6 +19,18 @@ pub(crate) fn resolvetoken(
         out.push(id);
         return Ok(());
     }
+    resolvenonvocab(vocab, bytefallback, unk, symbol, out)
+}
+
+/// Resolves a symbol already known to be absent from the vocabulary through
+/// byte fallback, the unknown token, or an error.
+pub(crate) fn resolvenonvocab(
+    vocab: &vocabulary,
+    bytefallback: bool,
+    unk: Option<tokenid>,
+    symbol: &str,
+    out: &mut Vec<tokenid>,
+) -> Result<(), tokenizererror> {
     if bytefallback {
         let mut ids = Vec::new();
         let mut complete = true;

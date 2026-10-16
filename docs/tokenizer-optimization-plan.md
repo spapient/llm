@@ -1,6 +1,6 @@
 # tokenizer 深度分析与优化执行计划
 
-- 状态：**优化计划（已完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 全管线类型分发、T2+T3、T4、T5 已实施（见 §12.6–§12.8、§12.12）；P1/T10 与 T12 已实施（见 §12.10）；**D3 逐位对齐达成——7 个真实模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）encode+decode 全对齐（见 §12.11–§12.13）**。无剩余条目。
+- 状态：**优化计划（已完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 全管线类型分发、T2+T3、T4、T5 已实施（见 §12.6–§12.8、§12.12）；P1/T10 与 T12 已实施（见 §12.10）；**D3 逐位对齐达成——7 个真实模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）encode+decode 全对齐（见 §12.11–§12.13）**。Phase 2 S1（整数键合并表 + pair 打包 64 位）、S2（tiktoken/rankmerge 去字节键）与 S3（scratch 复用）已实施（见 §12.16–§12.18）；S4–S5（batch、安全 SIMD）待评估。
 - 仓库：`llm` workspace（`crates/tokenizer`）
 - 基线分支：`main`
 - 计划日期：2026-10-16
@@ -405,3 +405,81 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 
 - **① `ignore_merges`（llama3）**：已实现。`encodeplainsegment` 在 `ignore_merges=true` 时改用 `rankmerge`（按"相邻符号拼接结果在词表内的最低 id"贪心合并，最小堆 + 双向链表），等价于 tiktoken 派生 merges 表、但直接查词表。6 模型 encode 仍全对齐（llama3 8/8）。
 - **② `fuse_unk`（gemma）**：确认为 **no-op**。gemma 同时 `byte_fallback=true` + `<unk>`（id 3），解析顺序 exact → byte_fallback → unk，故 `<unk>` 永不触发、fuse 无对象；Fuse decoder 早已按 no-op 处理（`"ByteFallback" | "Fuse" => {}`）。无需行为改动。
+
+### 12.16 Phase 2 S1：整数键合并表 + pair 打包 64 位（2026-10-16）
+
+把 §12.5 明确"留待后续评估"的"符号→整数 id"落地：`bytepair` 增加整数键形态，`applyids` 以打包 `(left_id<<32)|right_id` 键合并 id 序列，消除 O(总键长) 的字符串比较项。
+
+**实现**：
+
+1. `bytepair` 增 `byids: HashMap<u64, (usize, u32)>`（键 = 两个 u32 词表 id 打包，双射零碰撞；值 = `(rank, merged_id)`）。
+2. 新构造 `frommergesandvocab(&merges, &vocab)`：字符串表 + 整数表同建；合并两侧或结果不在词表 → 新错误 `mergenotinvocab`（D1 加载期校验拒绝）。**7 个真实模型实测 0 缺失**（llama3 280k / gemma 580k merges 全在词表内）。
+3. 新方法 `applyids(&[tokenid]) -> Vec<tokenid>`：最小堆 + 双向链表，候选与惰性删除校验都只做一次 `u64` 打包 + `HashMap` 探针，无拼接、无分配。
+4. `engine::fromjson` 条件构建：`ignore_merges` 走 `frommerges`（id 表无用，llama3 省 280k 条），否则 `frommergesandvocab`。
+5. `engine::encodebypairids`：初始符号映射为 id，非词表符号是不可合并叶，按叶切分 id run、逐 run `applyids`、叶直接 `resolvenonvocab`（从 `resolvetoken` 拆出，避免叶路径重复 `getid`）。
+
+**验证**：`tokenizerunits` 66 passed（新增 proptest `applyids_matches_string_apply`，对拍 `applyids` ≡ `apply`+`getid` 逐 id 一致）；`tokenizergolden` 4 passed（7 模型 encode/decode/postprocess/o200k 逐位不变）；`tokens` 21 passed；fmt + clippy `-D warnings` + checkunsafe（0 新增 unsafe）+ checknaming + checksrctests 全过。
+
+**基准（同环境/profile/工作负载，mean）**：
+
+| 基准 | 字符串键（`apply_chain`） | 整数键（`applyids_chain`） | 加速比 |
+| --- | --- | --- | --- |
+| chain/64 | 7.291 µs | 2.655 µs | ≈ 2.7× |
+| chain/512 | 287.02 µs | 21.26 µs | ≈ 13.5× |
+| chain/4096 | 20.639 ms | 177.62 µs | ≈ 116× |
+
+| 基准 | S1 前（§12.5） | S1 后 | 变化 |
+| --- | --- | --- | --- |
+| encode/bytefallback/4096 | 328.1 µs | 248.31 µs | −24%（去除空 merges 的 `apply` 开销） |
+
+**过程中抓到并修复的回归**：`encodebypairids` 叶路径最初调用 `resolvetoken`，对"非词表符号"重复 `getid`（一次在 run 切分、一次在 `resolvetoken` 内），使 `encode/bytefallback/4096` 一度 384 µs（+17%）。拆出 `resolvenonvocab` 后消除重复探针，回落至 248 µs。
+
+**诚实边界**：① 位置/rank 仍为 `usize`，未做堆步 `(rank,left)→u64` 打包（D4 的 >2³² 输入 guard 属 S3 scratch 复用一并处理）；② `applyids` 在 `frommerges`（字符串-only）构建的表上是恒等——公开方法依赖"由 `frommergesandvocab` 构建"这一前提，已写入文档注释；③ tiktoken/rankmerge 仍按字节键查 `HashMap`（§12.13 同款 O(键长) 限制），是 S2 的目标，S1 不覆盖。
+
+### 12.17 Phase 2 S2：tiktoken/rankmerge 去字节键（2026-10-16）
+
+消除 §12.13 记录的"拼接按字节键查 `HashMap`（O(键长)）"与 §12.15 rankmerge 的"字符串 clone+push_str"分配：两条贪心合并循环都改为「区间表示 + 借用切片查找」，不再物化每符号的 `Vec<u8>`/`String`，候选拼接也不分配。
+
+**实现**：
+
+1. `tiktokenizer::encode_chunk`（[tiktoken.rs](crates/tokenizer/src/tiktoken.rs)）：利用不变量「活符号在索引 `i` 即字节切片 `bytes[i..next[i]]`」（起始偏移 == 索引），删掉 `symbols: Vec<Vec<u8>>` 与 `merged = clone + extend`；`trymerge`/`queue_pair` 改 `ranks.get(&bytes[left..end])` 切片 Borrow 查找（`Vec<u8>: Borrow<[u8]>`，零分配、零碰撞）。
+2. `tokenizer::rankmerge`（[engine.rs](crates/tokenizer/src/engine.rs)）：签名改 `pretoken: &str`，用 `char_indices` 建 `charstart`（字符起始偏移），符号 = `pretoken[charstart[i]..end]` 借用切片；删掉 `work: Vec<String>` 的 clone+push_str。`pretoken`+`charstart` 捆成只读 `ranksource` 上下文（压 clippy `too_many_arguments`）。`encodeplainsegment` 的 ignore_merges 分支不再物化 `symbols: Vec<String>`。
+
+**验证**：`tokenizerunits` 66 passed；`tokenizergolden` 4 passed（o200k 8/8 + llama3 8/8 逐位不变，rankmerge 走新路径）；`tokens` 21 passed；fmt + clippy `-D warnings` + checkunsafe（0 新增 unsafe）+ checknaming + checksrctests 全过。
+
+**基准（同环境/profile/工作负载，mean）**：
+
+| 基准 | S2 前（§12.13） | S2 后 | 加速比 |
+| --- | --- | --- | --- |
+| encode/tiktoken/512 | 118.9 µs | 62.43 µs | ≈ 1.90× |
+| encode/tiktoken/4096 | 945.1 µs | 497.78 µs | ≈ 1.90× |
+
+**诚实边界**：① 用切片 Borrow 查现有 `HashMap<Vec<u8>,u32>`（精确键、零碰撞），未引入 trie/滚动哈希——短 token 下哈希已便宜，trie 的指针追逐未必更快，故 D2 的"默认 trie"被推翻（切片方案更简且同正确性）；② `ranksource` 仍按调用物化 `charstart: Vec<usize>`（一次 O(n) 分配），归 S3 scratch 复用；③ rankmerge 无独立基准（llama3 无 bench 夹具），只证正确性不声称性能。
+
+### 12.18 Phase 2 S3：scratch 复用（2026-10-16）
+
+把三套合并循环（`bytepair::applyids`、`tiktokenizer::encode_chunk`、`tokenizer::rankmerge`）的每调用分配（`prev`/`next`/`alive`/`work`/`charstart`/`heap`）与 `encodebypairids` 的 `symbols: Vec<String>` 收进调用方持有的复用缓冲，新增 `encode_into`/`encodespecial_into`/`applyids_into` API。
+
+**实现**：
+
+1. 新模块 [`scratch.rs`](crates/tokenizer/src/scratch.rs)：统一候选步 `mergestep{rank:usize,left:usize}`（替换 `tiktokenstep`/`rankstep`）；`mergework`（prev/next/alive/ids/heap 五缓冲，pub(crate)）；公开 `mergescratch{merge, run, charstart}`（`Default`，只扩容不缩容）；`resetlinks` 复位链表。
+2. `bytepair::applyids` 变薄包装，新增 `applyids_into(symbols, &mut mergework, out)`（pub(crate)，因 `mergework` 不公开）。
+3. `tokenizer`/`tiktokenizer` 加 `encode_into`/`encodespecial_into`（公开，`&mut mergescratch`），`encode`/`encodespecial` 变薄包装；scratch 穿透 `encodeplainsegment`→`encodebypairids`/`rankmerge`。
+4. `encodebypairids` 改收 `pretoken: &str`，用 4 字节栈缓冲 `char.encode_utf8` 直接查词表，**删除 `symbols: Vec<String>`（每字符一个 String 的分配）**；run 累进器复用 `scratch.run`（与 `scratch.merge` 分离字段，避免借用冲突）。
+
+**验证**：`tokenizerunits` 67 passed（新增 `encode_into_reuses_scratch_across_calls`，大→小→空复用不串扰）；`tokenizergolden` 4 passed（7 模型逐位不变）；`tokens` 21 passed；fmt + clippy `-D warnings` + rustdoc `-D warnings` + checkunsafe（0 新增 unsafe）+ checknaming + checksrctests 全过。
+
+**基准（同环境/profile/工作负载，mean）**：
+
+| 基准 | S2 后 | S3 后（`encode` 包装） | 变化 |
+| --- | --- | --- | --- |
+| encode/tiktoken/4096 | 497.78 µs | 442.39 µs | −11%（去每 chunk 分配） |
+| encode/bytefallback/4096 | 248.31 µs | 186.78 µs | −25%（去 `symbols: Vec<String>`） |
+| encode/tiktoken/4096（`encode_into`） | — | 438.14 µs | 跨调用复用再 −1% |
+
+**诚实边界与发现**：
+
+1. **`encode/bytelevel/4096` 实测 292.86 µs，与 §12.9 记录的 15.88 µs 相差约 18×——原因是 §12.9 声称"已实施"的 T7 词缓存（per-encode `HashMap<&str,Vec<tokenid>>`）实际已不在代码中**：`git show HEAD` 与当前树均无该缓存（仅 lib.rs 文档提及 "KV-cache"）。这是文档与代码的既有脱节，非本阶段引入（S1 起点即无缓存）；§12.9 的 15.88 µs 是带缓存的旧状态，字节级真实无缓存基线约 292 µs。
+2. 无合并词仍走完整链表+堆建置（每 pre-token O(len)），是 `applyids`/`rankmerge` 的既有开销，非 S3 目标，属潜在后续优化。
+3. 堆步未做 `(rank,left)→u64` 打包（保留 `left: usize`，规避 >2³² 输入的 D4 guard 复杂度）。
+4. **环境**：并发会话在 checkpoint 引入 `mmap-guard` 依赖但未 vendor，`cargo check --offline` 一度解析失败；已 `cargo vendor vendor/ --versioned-dirs` 从缓存补齐（`vendor/mmap-guard-0.2.2`）。

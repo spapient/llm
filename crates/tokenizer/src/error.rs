@@ -130,6 +130,14 @@ pub enum tokenizererror {
         index: usize,
     },
 
+    /// A merge rule names a symbol absent from the vocabulary, so it cannot be
+    /// expressed as an integer-keyed pair.
+    #[error("merge symbol {symbol:?} is not in the vocabulary")]
+    mergenotinvocab {
+        /// The merge-side or merge-result symbol missing from the vocabulary.
+        symbol: String,
+    },
+
     /// An added-token entry was missing a required member or typed incorrectly.
     #[error("malformed added token at index {index}")]
     malformedspecialtoken {

@@ -1,41 +1,31 @@
-use std::cmp::Ordering;
-
 use lib::tokenid;
 use serde_json::{Map, Value};
 
 use crate::chat::{chatmessage, chattemplate};
 use crate::decode::{decoder, parsedecoder};
-use crate::encode::resolvetoken;
+use crate::encode::{resolvenonvocab, resolvetoken};
 use crate::error::tokenizererror;
 use crate::jinja::renderjinja;
 use crate::merges::bytepair;
 use crate::normalize::{normalizer, parsenormalizer};
 use crate::postprocess::{parsepostprocessor, postprocessor};
 use crate::pretoken::{parsepretokenizer, pretokenizer};
+use crate::scratch::{mergescratch, mergestep, resetlinks};
 use crate::special::specialtokens;
 use crate::vocab::vocabulary;
 
-/// A candidate rank-based merge: the id of the concatenation starting at `left`
-/// and that pair's left-symbol position.
-#[derive(PartialEq, Eq)]
-struct rankstep {
-    rank: u32,
-    left: usize,
+/// The pre-token byte source and its character start offsets, shared read-only
+/// by the rank-merge candidate probes.
+struct ranksource<'a> {
+    pretoken: &'a str,
+    charstart: &'a [usize],
 }
 
-impl Ord for rankstep {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Pop the smallest rank first, then the leftmost position.
-        other
-            .rank
-            .cmp(&self.rank)
-            .then_with(|| other.left.cmp(&self.left))
-    }
-}
-
-impl PartialOrd for rankstep {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+impl ranksource<'_> {
+    /// Returns the byte offset just past the symbol at `index`: where the next
+    /// live symbol begins, or the end of the pre-token.
+    fn end(&self, next: &[Option<usize>], index: usize) -> usize {
+        next[index].map_or(self.pretoken.len(), |following| self.charstart[following])
     }
 }
 
@@ -90,6 +80,7 @@ impl tokenizer {
         };
         let bytefallback = parsebytefallback(model)?;
         let unkcontent = parseunkcontent(model)?;
+        let ignoremerges = parseignoremerges(model)?;
 
         let mut entries = parsevocab(vocabobject)?;
         let added = match rootobject.get("added_tokens") {
@@ -107,7 +98,11 @@ impl tokenizer {
                 .map(|(content, id, _)| (content.clone(), *id))
                 .collect(),
         );
-        let bpe = bytepair::frommerges(&merges)?;
+        let bpe = if ignoremerges {
+            bytepair::frommerges(&merges)?
+        } else {
+            bytepair::frommergesandvocab(&merges, &vocab)?
+        };
         let unk = match unkcontent {
             Some(content) => Some(
                 vocab
@@ -127,7 +122,6 @@ impl tokenizer {
         let bostokencontent = parseoptionalstring(rootobject, "bos_token")?;
         let eostokencontent = parseoptionalstring(rootobject, "eos_token")?;
         let normalizer = parsenormalizer(rootobject)?;
-        let ignoremerges = parseignoremerges(model)?;
         Ok(Self {
             vocabulary: vocab,
             bytepair: bpe,
@@ -213,13 +207,31 @@ impl tokenizer {
     /// Returns [`tokenizererror::unknowntoken`] when a symbol has no vocabulary
     /// entry, no complete byte fallback, and no configured unknown token.
     pub fn encode(&self, text: &str) -> Result<Vec<tokenid>, tokenizererror> {
+        let mut scratch = mergescratch::default();
+        let mut out = Vec::new();
+        self.encode_into(text, &mut scratch, &mut out)?;
+        Ok(out)
+    }
+
+    /// Encodes `text` as ordinary text, appending the token ids to `out` and
+    /// reusing `scratch` for the merge-loop buffers instead of allocating them
+    /// per call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`tokenizererror::unknowntoken`] when a symbol has no vocabulary
+    /// entry, no complete byte fallback, and no configured unknown token.
+    pub fn encode_into(
+        &self,
+        text: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
         if text.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let normalized = self.normalized(text);
-        let mut out = Vec::new();
-        self.encodeplainsegment(normalized.as_ref(), &mut out)?;
-        Ok(out)
+        self.encodeplainsegment(normalized.as_ref(), scratch, out)
     }
 
     /// Encodes `text`, recognizing special-token literals as structural markers.
@@ -231,7 +243,24 @@ impl tokenizer {
     ///
     /// Returns the same errors as [`Self::encode`] for the non-special segments.
     pub fn encodespecial(&self, text: &str) -> Result<Vec<tokenid>, tokenizererror> {
+        let mut scratch = mergescratch::default();
         let mut out = Vec::new();
+        self.encodespecial_into(text, &mut scratch, &mut out)?;
+        Ok(out)
+    }
+
+    /// Encodes `text`, recognizing special-token literals, appending to `out`
+    /// and reusing `scratch` for the merge-loop buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::encode`] for the non-special segments.
+    pub fn encodespecial_into(
+        &self,
+        text: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
         let mut segment = String::new();
         let mut index = 0;
         while index < text.len() {
@@ -240,7 +269,7 @@ impl tokenizer {
                 .iterlongest()
                 .find(|(literal, _)| text[index..].starts_with(literal))
             {
-                self.encodenormalizedsegment(&segment, &mut out)?;
+                self.encodenormalizedsegment(&segment, scratch, out)?;
                 segment.clear();
                 out.push(id);
                 index += literal.len();
@@ -253,8 +282,8 @@ impl tokenizer {
             segment.push(character);
             index += character.len_utf8();
         }
-        self.encodenormalizedsegment(&segment, &mut out)?;
-        Ok(out)
+        self.encodenormalizedsegment(&segment, scratch, out)?;
+        Ok(())
     }
 
     /// Normalizes one non-special segment, then encodes it through the
@@ -262,19 +291,21 @@ impl tokenizer {
     fn encodenormalizedsegment(
         &self,
         segment: &str,
+        scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
         if segment.is_empty() {
             return Ok(());
         }
         let normalized = self.normalized(segment);
-        self.encodeplainsegment(normalized.as_ref(), out)
+        self.encodeplainsegment(normalized.as_ref(), scratch, out)
     }
 
     /// Encodes one non-special text segment through the pre-tokenizer pipeline.
     fn encodeplainsegment(
         &self,
         segment: &str,
+        scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
         let pretokens = match &self.pretokenizer {
@@ -282,15 +313,46 @@ impl tokenizer {
             None => vec![segment.to_string()],
         };
         for pretoken in &pretokens {
-            let symbols: Vec<String> = pretoken.chars().map(|ch| ch.to_string()).collect();
             if self.ignoremerges {
-                self.rankmerge(&symbols, out)?;
+                self.rankmerge(pretoken, scratch, out)?;
             } else {
-                let merged = self.bytepair.apply(&symbols);
-                for symbol in &merged {
-                    resolvetoken(&self.vocabulary, self.bytefallback, self.unk, symbol, out)?;
-                }
+                self.encodebypairids(pretoken, scratch, out)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Encodes a pre-token's characters through the integer-keyed merge table.
+    ///
+    /// A character that is a vocabulary token is collected into a run; a
+    /// character absent from the vocabulary is a non-mergeable leaf, so the run
+    /// is merged via [`applyids_into`](bytepair::applyids_into) and the leaf is
+    /// resolved directly. The result equals the string-keyed `apply` followed by
+    /// [`resolvetoken`](crate::encode::resolvetoken), without concatenating
+    /// symbol strings per candidate.
+    fn encodebypairids(
+        &self,
+        pretoken: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
+        let mergescratch { merge, run, .. } = scratch;
+        run.clear();
+        for character in pretoken.chars() {
+            let mut buffer = [0u8; 4];
+            let symbol = character.encode_utf8(&mut buffer);
+            if let Some(id) = self.vocabulary.getid(symbol) {
+                run.push(id);
+            } else {
+                if !run.is_empty() {
+                    self.bytepair.applyids_into(run, merge, out);
+                    run.clear();
+                }
+                resolvenonvocab(&self.vocabulary, self.bytefallback, self.unk, symbol, out)?;
+            }
+        }
+        if !run.is_empty() {
+            self.bytepair.applyids_into(run, merge, out);
         }
         Ok(())
     }
@@ -299,49 +361,61 @@ impl tokenizer {
     /// concatenation is in the vocabulary with the lowest id. This is the
     /// `ignore_merges` path (tiktoken-derived vocabularies) and is equivalent
     /// to applying the derived merge table, but probes the vocabulary directly.
-    fn rankmerge(&self, symbols: &[String], out: &mut Vec<tokenid>) -> Result<(), tokenizererror> {
-        let count = symbols.len();
+    fn rankmerge(
+        &self,
+        pretoken: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
+        let count = pretoken.chars().count();
         if count == 0 {
             return Ok(());
         }
         if count == 1 {
-            resolvetoken(
-                &self.vocabulary,
-                self.bytefallback,
-                self.unk,
-                &symbols[0],
-                out,
-            )?;
+            resolvetoken(&self.vocabulary, self.bytefallback, self.unk, pretoken, out)?;
             return Ok(());
         }
 
-        let mut work: Vec<String> = symbols.to_vec();
-        let mut prev = Vec::with_capacity(count);
-        let mut next = Vec::with_capacity(count);
-        for index in 0..count {
-            prev.push(index.checked_sub(1));
-            next.push((index + 1 < count).then_some(index + 1));
-        }
-        let mut alive = vec![true; count];
-        let mut heap = std::collections::BinaryHeap::new();
+        // `charstart[i]` is the byte offset where character `i` begins, so a
+        // live symbol at index `i` is the borrowed slice
+        // `pretoken[charstart[i]..end]`; no per-symbol string is materialized.
+        let mergescratch {
+            merge, charstart, ..
+        } = scratch;
+        charstart.clear();
+        charstart.extend(pretoken.char_indices().map(|(offset, _)| offset));
+        let source = ranksource {
+            pretoken,
+            charstart: charstart.as_slice(),
+        };
+        resetlinks(merge, count);
+        merge.heap.clear();
         for index in 0..count - 1 {
-            self.queue_rank_pair(&work, &next, &alive, &mut heap, index);
+            self.queue_rank_pair(&source, &merge.next, &merge.alive, &mut merge.heap, index);
         }
 
-        while let Some(step) = heap.pop() {
-            self.try_rank_merge(&mut work, &mut prev, &mut next, &mut alive, &mut heap, step);
+        while let Some(step) = merge.heap.pop() {
+            self.try_rank_merge(
+                &source,
+                &mut merge.prev,
+                &mut merge.next,
+                &mut merge.alive,
+                &mut merge.heap,
+                step,
+            );
         }
 
         let mut cursor = 0usize;
         loop {
+            let end = source.end(&merge.next, cursor);
             resolvetoken(
                 &self.vocabulary,
                 self.bytefallback,
                 self.unk,
-                &work[cursor],
+                &pretoken[charstart[cursor]..end],
                 out,
             )?;
-            match next[cursor] {
+            match merge.next[cursor] {
                 Some(following) => cursor = following,
                 None => break,
             }
@@ -353,12 +427,12 @@ impl tokenizer {
     /// still current; otherwise it is a stale candidate and is skipped.
     fn try_rank_merge(
         &self,
-        work: &mut [String],
+        source: &ranksource,
         prev: &mut [Option<usize>],
         next: &mut [Option<usize>],
         alive: &mut [bool],
-        heap: &mut std::collections::BinaryHeap<rankstep>,
-        step: rankstep,
+        heap: &mut std::collections::BinaryHeap<mergestep>,
+        step: mergestep,
     ) {
         let Some(right) = next[step.left] else {
             return;
@@ -366,12 +440,15 @@ impl tokenizer {
         if !alive[step.left] || !alive[right] {
             return;
         }
-        let mut merged = work[step.left].clone();
-        merged.push_str(&work[right]);
-        if self.vocabulary.getid(&merged).map(tokenid::get) != Some(step.rank) {
+        let end = source.end(next, right);
+        if self
+            .vocabulary
+            .getid(&source.pretoken[source.charstart[step.left]..end])
+            .map(tokenid::get)
+            != Some(step.rank as u32)
+        {
             return;
         }
-        work[step.left] = merged;
         alive[right] = false;
         let following = next[right];
         next[step.left] = following;
@@ -379,19 +456,19 @@ impl tokenizer {
             prev[after] = Some(step.left);
         }
         if let Some(before) = prev[step.left] {
-            self.queue_rank_pair(work, next, alive, heap, before);
+            self.queue_rank_pair(source, next, alive, heap, before);
         }
-        self.queue_rank_pair(work, next, alive, heap, step.left);
+        self.queue_rank_pair(source, next, alive, heap, step.left);
     }
 
     /// Queues the mergeable pair starting at `left`, if its concatenation is in
     /// the vocabulary and both symbols are live.
     fn queue_rank_pair(
         &self,
-        work: &[String],
+        source: &ranksource,
         next: &[Option<usize>],
         alive: &[bool],
-        heap: &mut std::collections::BinaryHeap<rankstep>,
+        heap: &mut std::collections::BinaryHeap<mergestep>,
         left: usize,
     ) {
         if !alive[left] {
@@ -403,11 +480,13 @@ impl tokenizer {
         if !alive[right] {
             return;
         }
-        let mut merged = work[left].clone();
-        merged.push_str(&work[right]);
-        if let Some(id) = self.vocabulary.getid(&merged) {
-            heap.push(rankstep {
-                rank: id.get(),
+        let end = source.end(next, right);
+        if let Some(id) = self
+            .vocabulary
+            .getid(&source.pretoken[source.charstart[left]..end])
+        {
+            heap.push(mergestep {
+                rank: id.get() as usize,
                 left,
             });
         }

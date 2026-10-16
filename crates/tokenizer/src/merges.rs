@@ -1,32 +1,10 @@
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
+
+use lib::tokenid;
 
 use crate::error::tokenizererror;
-
-/// A candidate byte-pair merge: the rank of the pair starting at `left` and
-/// that pair's left-symbol position.
-#[derive(PartialEq, Eq)]
-struct mergestep {
-    rank: usize,
-    left: usize,
-}
-
-impl Ord for mergestep {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // `BinaryHeap` pops the greatest element, so both keys are reversed to
-        // pop the smallest rank first, then the leftmost position.
-        other
-            .rank
-            .cmp(&self.rank)
-            .then_with(|| other.left.cmp(&self.left))
-    }
-}
-
-impl PartialOrd for mergestep {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+use crate::scratch::{mergescratch, mergestep, mergework, resetlinks};
+use crate::vocab::vocabulary;
 
 /// A byte-pair-encoding merge table.
 ///
@@ -35,9 +13,16 @@ impl PartialOrd for mergestep {
 /// `merges` array; lower indices take precedence, which is the HuggingFace
 /// convention. The table is applied to a symbol sequence by repeatedly merging
 /// the adjacent pair with the lowest rank until no rule applies.
+///
+/// When built with [`frommergesandvocab`](bytepair::frommergesandvocab), the
+/// table additionally holds an integer-keyed form: each merge is indexed by the
+/// packed pair `(left_id << 32) | right_id` of the two symbols' vocabulary ids,
+/// mapping to `(rank, merged_id)`. This lets [`applyids`](bytepair::applyids)
+/// merge id sequences with constant-size keys and no allocation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct bytepair {
     ranks: BTreeMap<String, BTreeMap<String, usize>>,
+    byids: HashMap<u64, (usize, u32)>,
 }
 
 impl bytepair {
@@ -63,7 +48,58 @@ impl bytepair {
                 .entry(right.to_string())
                 .or_insert(index);
         }
-        Ok(Self { ranks })
+        Ok(Self {
+            ranks,
+            byids: HashMap::new(),
+        })
+    }
+
+    /// Builds a merge table with both its string-keyed and integer-keyed forms.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`tokenizererror::malformedmerge`] for the same malformed
+    /// entries as [`frommerges`](bytepair::frommerges), and
+    /// [`tokenizererror::mergenotinvocab`] when a merge's left, right, or
+    /// concatenated result is absent from `vocab` and so has no id.
+    pub fn frommergesandvocab(
+        merges: &[String],
+        vocab: &vocabulary,
+    ) -> Result<Self, tokenizererror> {
+        let mut ranks: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut byids: HashMap<u64, (usize, u32)> = HashMap::new();
+        for (index, merge) in merges.iter().enumerate() {
+            let (left, right) = merge
+                .split_once(' ')
+                .ok_or(tokenizererror::malformedmerge { index })?;
+            if left.is_empty() || right.is_empty() {
+                return Err(tokenizererror::malformedmerge { index });
+            }
+            ranks
+                .entry(left.to_string())
+                .or_default()
+                .entry(right.to_string())
+                .or_insert(index);
+            let leftid = vocab
+                .getid(left)
+                .ok_or_else(|| tokenizererror::mergenotinvocab {
+                    symbol: left.to_string(),
+                })?;
+            let rightid = vocab
+                .getid(right)
+                .ok_or_else(|| tokenizererror::mergenotinvocab {
+                    symbol: right.to_string(),
+                })?;
+            let mut merged = String::with_capacity(left.len() + right.len());
+            merged.push_str(left);
+            merged.push_str(right);
+            let mergedid = vocab
+                .getid(&merged)
+                .ok_or(tokenizererror::mergenotinvocab { symbol: merged })?;
+            let key = (u64::from(leftid.get()) << 32) | u64::from(rightid.get());
+            byids.entry(key).or_insert((index, mergedid.get()));
+        }
+        Ok(Self { ranks, byids })
     }
 
     /// Returns the number of distinct merge rules.
@@ -82,6 +118,77 @@ impl bytepair {
             .get(left)
             .and_then(|inner| inner.get(right))
             .copied()
+    }
+
+    /// Applies the integer-keyed merge rules to a sequence of vocabulary ids,
+    /// returning the merged id sequence.
+    ///
+    /// This is a convenience wrapper that allocates a fresh
+    /// [`mergescratch`] and output buffer.
+    #[must_use]
+    pub fn applyids(&self, symbols: &[tokenid]) -> Vec<tokenid> {
+        let mut scratch = mergescratch::default();
+        let mut out = Vec::with_capacity(symbols.len());
+        self.applyids_into(symbols, &mut scratch.merge, &mut out);
+        out
+    }
+
+    /// Applies the integer-keyed merge rules to a sequence of vocabulary ids,
+    /// appending the merged ids to `out` and reusing `merge` for the linked
+    /// list, symbol buffer, and candidate heap instead of allocating them per
+    /// call.
+    ///
+    /// Each merge step probes the packed `(left_id, right_id)` key, so the
+    /// per-candidate cost is a constant-size hash lookup with no allocation.
+    /// The result is identical to [`apply`](bytepair::apply) followed by an id
+    /// resolution when every merge rule's symbols are in the vocabulary; a
+    /// table built by [`frommerges`](bytepair::frommerges) has an empty id map,
+    /// so the method then appends `symbols` unchanged.
+    pub(crate) fn applyids_into(
+        &self,
+        symbols: &[tokenid],
+        merge: &mut mergework,
+        out: &mut Vec<tokenid>,
+    ) {
+        let count = symbols.len();
+        if count < 2 {
+            out.extend_from_slice(symbols);
+            return;
+        }
+
+        resetlinks(merge, count);
+        merge.ids.clear();
+        merge.ids.extend(symbols.iter().map(|id| id.get()));
+        merge.heap.clear();
+        for index in 0..count - 1 {
+            self.queueidcandidate(
+                &merge.ids,
+                &merge.next,
+                &merge.alive,
+                &mut merge.heap,
+                index,
+            );
+        }
+
+        while let Some(step) = merge.heap.pop() {
+            self.tryidmerge(
+                &mut merge.ids,
+                &mut merge.prev,
+                &mut merge.next,
+                &mut merge.alive,
+                &mut merge.heap,
+                step,
+            );
+        }
+
+        let mut cursor = 0usize;
+        loop {
+            out.push(tokenid::new(merge.ids[cursor]));
+            match merge.next[cursor] {
+                Some(following) => cursor = following,
+                None => break,
+            }
+        }
     }
 
     /// Applies the merge rules to `symbols`, returning the merged sequence.
@@ -191,6 +298,68 @@ impl bytepair {
         }
         if let Some(rank) = self.getrank(&work[left], &work[right]) {
             heap.push(mergestep { rank, left });
+        }
+    }
+
+    /// Applies one heap-selected id merge when it is still live and its rank is
+    /// still current; otherwise it is a stale candidate and is skipped.
+    fn tryidmerge(
+        &self,
+        work: &mut [u32],
+        prev: &mut [Option<usize>],
+        next: &mut [Option<usize>],
+        alive: &mut [bool],
+        heap: &mut BinaryHeap<mergestep>,
+        step: mergestep,
+    ) {
+        let Some(right) = next[step.left] else {
+            return;
+        };
+        if !alive[step.left] || !alive[right] {
+            return;
+        }
+        let key = (u64::from(work[step.left]) << 32) | u64::from(work[right]);
+        let Some((rank, merged)) = self.byids.get(&key) else {
+            return;
+        };
+        if *rank != step.rank {
+            return;
+        }
+        work[step.left] = *merged;
+        alive[right] = false;
+        let following = next[right];
+        next[step.left] = following;
+        if let Some(after) = following {
+            prev[after] = Some(step.left);
+        }
+        if let Some(before) = prev[step.left] {
+            self.queueidcandidate(work, next, alive, heap, before);
+        }
+        self.queueidcandidate(work, next, alive, heap, step.left);
+    }
+
+    /// Queues the mergeable id pair starting at `left`, if one exists and both
+    /// of its symbols are still live.
+    fn queueidcandidate(
+        &self,
+        work: &[u32],
+        next: &[Option<usize>],
+        alive: &[bool],
+        heap: &mut BinaryHeap<mergestep>,
+        left: usize,
+    ) {
+        if !alive[left] {
+            return;
+        }
+        let Some(right) = next[left] else {
+            return;
+        };
+        if !alive[right] {
+            return;
+        }
+        let key = (u64::from(work[left]) << 32) | u64::from(work[right]);
+        if let Some((rank, _)) = self.byids.get(&key) {
+            heap.push(mergestep { rank: *rank, left });
         }
     }
 }
