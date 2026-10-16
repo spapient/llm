@@ -17,6 +17,7 @@ mod multihead;
 mod normalize;
 mod projection;
 mod rotate;
+mod statespace;
 
 pub use gated::mlp;
 pub use lookup::embedding;
@@ -24,6 +25,7 @@ pub use multihead::attention;
 pub use normalize::{DEFAULTEPS, rmsnorm};
 pub use projection::linear;
 pub use rotate::{DEFAULTBASE, rotary};
+pub use statespace::ssm;
 
 use ::tensor::{shape, tensor};
 

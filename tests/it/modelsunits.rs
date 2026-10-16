@@ -282,4 +282,14 @@ mod registry {
         let m = getarchitecture("llama").unwrap().newmodel(c, w).unwrap();
         assert_eq!(m.getconfig().getvocab(), 5);
     }
+
+    #[test]
+    fn mamba_resolves_and_refuses_newmodel() {
+        let a = getarchitecture("mamba").unwrap();
+        assert_eq!(a, architecture::mamba);
+        assert_eq!(a.getname(), "mamba");
+        let c = llamaconfig::new(5, 4, 1, 1, 1, 8, 1.0e-5, 10_000.0, 8).unwrap();
+        let w = llamaweights::random(&c, seed::new(1)).unwrap();
+        assert!(matches!(a.newmodel(c, w), Err(modelerror::invalidconfig { .. })));
+    }
 }

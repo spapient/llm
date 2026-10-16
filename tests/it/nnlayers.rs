@@ -11,7 +11,7 @@ use cpu::cpuexecutor;
 use lib::seed;
 use nn::{
     DEFAULTBASE, DEFAULTEPS, attention, embedding, linear, mlp, module, nnerror, parameter,
-    rmsnorm, rotary,
+    rmsnorm, rotary, ssm,
 };
 use testkit::{assertions::assertallclose, reference};
 
@@ -161,6 +161,54 @@ fn attend(
         }
     }
     out
+}
+
+#[test]
+fn ssm_forward_matches_the_scalar_reference() {
+    let n = 4;
+    let d = 2;
+    let statewidth = 2;
+    let a_data = vec![0.5, -0.25, 0.75, 0.125];
+    let b_data = vec![1.0, 0.5, 2.0, 0.25];
+    let c_data = vec![0.5, 1.0, 1.5, 2.0];
+    let skip_data = vec![0.25, -0.5];
+    let layer = ssm::new(
+        param("a", vec![d, statewidth], a_data.clone()),
+        param("b", vec![d, statewidth], b_data.clone()),
+        param("c", vec![d, statewidth], c_data.clone()),
+        param("skip", vec![d], skip_data.clone()),
+    )
+    .unwrap();
+
+    let input = build(
+        vec![n, d],
+        vec![1.0, 2.0, 0.5, -1.0, 3.0, 0.25, -0.5, 1.5],
+    );
+    let state = build(vec![d, statewidth], vec![0.0, 1.0, 2.0, 0.5]);
+    let (out, final_state) = layer.forward(&exec(), &input, &state).unwrap();
+
+    let (want_out, want_state) = reference::scan(
+        input.getdata(),
+        state.getdata(),
+        &a_data,
+        &b_data,
+        &c_data,
+        &skip_data,
+        n,
+        d,
+        statewidth,
+    );
+    assertallclose(out.getdata(), &want_out, 1e-5, 1e-5);
+    assertallclose(final_state.getdata(), &want_state, 1e-5, 1e-5);
+}
+
+#[test]
+fn ssm_rejects_mismatched_parameter_shapes() {
+    let a = param("a", vec![2, 2], vec![0.5; 4]);
+    let b = param("b", vec![3, 2], vec![1.0; 6]);
+    let c = param("c", vec![2, 2], vec![1.0; 4]);
+    let skip = param("skip", vec![2], vec![0.0, 0.0]);
+    assert!(ssm::new(a, b, c, skip).is_err());
 }
 
 #[test]

@@ -56,6 +56,6 @@ pub use dictionary::{joinname, statedict};
 pub use error::nnerror;
 pub use init::{fillnormal, fillone, filluniform, fillvalue, fillzero, initxavier};
 pub use layers::{DEFAULTBASE, DEFAULTEPS};
-pub use layers::{attention, embedding, linear, mlp, rmsnorm, rotary};
+pub use layers::{attention, embedding, linear, mlp, rmsnorm, rotary, ssm};
 pub use modules::module;
 pub use parameters::parameter;

@@ -11,6 +11,9 @@ use crate::llama::{llamaconfig, llamamodel, llamaweights};
 pub enum architecture {
     /// The Llama family (RMSNorm, RoPE, grouped-query attention, SwiGLU).
     llama,
+    /// The selective state-space family (the `arch: trap` base and Mamba-class
+    /// models); built via `nn::ssm`, not [`Self::newmodel`].
+    mamba,
 }
 
 impl architecture {
@@ -19,6 +22,7 @@ impl architecture {
     pub const fn getname(self) -> &'static str {
         match self {
             Self::llama => "llama",
+            Self::mamba => "mamba",
         }
     }
 
@@ -40,6 +44,10 @@ impl architecture {
     ) -> Result<llamamodel, modelerror> {
         match self {
             Self::llama => llamamodel::new(config, weights),
+            Self::mamba => Err(modelerror::config(
+                "architecture",
+                "mamba models are built via nn::ssm, not registry::newmodel",
+            )),
         }
     }
 }
@@ -52,6 +60,7 @@ impl architecture {
 pub fn getarchitecture(name: &str) -> Result<architecture, modelerror> {
     match name {
         "llama" => Ok(architecture::llama),
+        "mamba" => Ok(architecture::mamba),
         other => Err(modelerror::unknownarchitecture {
             name: other.to_string(),
         }),
