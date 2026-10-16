@@ -2269,3 +2269,31 @@ mod rawformat {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// Fuzz-style property tests: the `.u` parsers never panic on arbitrary bytes,
+/// and a successful decode yields a snapshot whose accessors stay safe.
+mod fuzz {
+    use proptest::prelude::*;
+    use ::checkpoint::deltas::delta;
+    use ::checkpoint::uformat::snapshot;
+
+    proptest! {
+        #[test]
+        fn snapshot_decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            if let Ok(snap) = snapshot::decode(&bytes) {
+                let _ = snap.gettensors();
+                let _ = snap.getdata();
+                let _ = snap.roothash();
+            }
+        }
+
+        #[test]
+        fn delta_decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            if let Ok(d) = delta::decode(&bytes) {
+                let _ = d.getblocks();
+                let _ = d.getstored();
+                let _ = d.getroothash();
+            }
+        }
+    }
+}
