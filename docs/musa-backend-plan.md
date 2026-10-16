@@ -1,6 +1,6 @@
 # MUSA 后端适配计划：国产 GPU 的 CUDA 兼容后端
 
-> **版本**：v1.1（2026-10-16）　**状态**：提议（未实现）；**M0 调研尖刺已完成并收敛（2026-10-16，MTT S4000 真机）**
+> **版本**：v1.2（2026-10-16）　**状态**：提议（未实现）；**M0 已收敛 + 5.x/MTRTC 升级评估已完成（结论：不升级，留 3.1.0 走 mcc 预编译 + mu\* driver API）**
 > **权威**：`docs/design.md` §21（GPU 后端与 `unsafe` 豁免）、`docs/beta-scan-plan.md`（scan 算子已三后端闭环，本计划复用其内核）
 > **目标**：新增 `musa` 后端（摩尔线程 MUSA 架构），复用已验证的 CUDA C 内核，把 host 层从 `cudarc` 替换为 `musart`/`MTRTC`/`muBLAS`/`muDNN` 的 MUSA 绑定，使同一 `api::compute` 算子集在国产 GPU 上跑通且三后端数值一致。
 
@@ -35,7 +35,20 @@
 | `cudarc::cublas::CudaBlas::gemm` | **muBLAS**（cuBLAS 兼容） | `matmul` 快速路径 |
 | `cudarc::cudnn::SoftmaxForward` | **muDNN**（cuDNN 兼容） | `softmax` 快速路径 |
 
-**M0 已收敛（2026-10-16 真机实测）**：MUSA host API **非符号级 CUDA 兼容**——`libmusart.so` 导出 185 个 `musa*` 前缀符号（`musaMalloc`/`musaMemcpy`/`musaLaunchKernel`/`musaDeviceGetCount` 等，C ABI）；driver 层 `libmusa.so` 为 MUSA 原生 C++ ABI（`MU*` 类型：`DeviceGetId`/`ContextGetId`/`imuMemcpy*`）。无 `cuInit`/`cuDeviceGetCount` 等 CUDA driver 符号 → `cudarc` 动态加载**不可用** → **自写 MUSA FFI 岛**（本计划原保守规划成立）。`musaLaunchKernel(const void*, dim3, dim3, void**, size_t, musaStream_t)` 与 `cudaLaunchKernel` 签名同构，FFI 薄。
+**M0 已收敛（2026-10-16 真机实测）**：MUSA host API **非符号级 CUDA 兼容**——`libmusart.so` 导出 185 个 `musa*` 前缀符号（`musaMalloc`/`musaMemcpy`/`musaLaunchKernel`/`musaDeviceGetCount` 等，C ABI）；driver 层 `libmusa.so` 为 MUSA 原生 C++ ABI（`MU*` 类型：`DeviceGetId`/`ContextGetId`/`imuMemcpy*`）。无 `cuInit`/`cuDeviceGetCount` 等 CUDA driver 符号 → `cudarc` 动态加载**不可用** → **自写 MUSA FFI 岛**（本计划原保守规划成立）。
+
+**关键补充（3.1.0 driver API 完整性，2026-10-16 实测）**：`libmusa.so`（driver 层）**已含完整 `mu*` driver API**——`muModuleLoadData(Ex)`（加载二进制产物）、`muLaunchKernel(Ex)`（启动内核）、`muMemAlloc`/`muMemcpyHtoD`/`muMemcpyDtoH`、`muCtxCreate`/`muCtxSynchronize`、`muDeviceGet`（共 24 个内存/上下文/设备符号），且 `include/musa.h` 头齐全。**MUSA driver API 是 5.x MTRTC 加载路径的同一层，3.1.0 就已具备**——缺的只有运行时编译组件（MTRTC）。
+
+### 3.x 5.x/MTRTC 升级评估（2026-10-16，结论：不升级）
+
+| 维度 | 实测/事实 | 判断 |
+| :--- | :--- | :--- |
+| MTRTC（5.2.0） | `libmtrtc.so` + `mtrtc.h`；与 NVRTC **一一对应**（`mtrtcCreateProgram`/`mtrtcCompileProgram`/`mtrtcGetFatBin`/`mtrtcGetLoweredName`）；输出 FatBin → `muModuleLoadData` → `muLaunchKernel`；编译选项 `--gpu-architecture=mp_22`（S4000 示例即用） | 5.x MTRTC 路径 = 3.1.0 mu\* driver API + 运行时编译；API 形态与 cudarc 的 NVRTC 调用面镜像 |
+| 主机前置（sha1） | 内存 1007 GB、内核 5.15.0-105-generic（5.2.0 安装指南指定版本）、**IOMMU 已开**（`intel_iommu=on iommu.passthrough=0`，S4000 精确配置） | 5.x 安装硬件/内核/BIOS 前置**全部已满足** |
+| 升级动作与风险 | 需装 5.x 驱动（2.7.0 → 5.x，跨代）+ `musa_toolkits` install.sh（先卸载旧 musa）+ **重启**（云主机，reboot 与驱动 deb 安装有失败/断连风险） | 非零风险 |
+| **需求驱动** | 项目 8 个内核 = **固定编译期已知源码**（`kernels/*.cu`），无运行时生成源码/模板实例化需求 | **运行时编译（NVRTC/MTRTC）对项目是多余的**——cudarc 用 NVRTC 只是其实现方式，不是需求 |
+
+**结论：不升级 5.x。** MUSA 后端 host 层 = **`mu*` driver API**（3.1.0 已完整）：build.rs 调 `mcc -mtgpu --offload-arch=mp_22` 预编译 `kernels/*.cu` → FatBin 随包 → 运行时 `muModuleLoadData` + `muModuleGetFunction` + `muLaunchKernel`。与 5.x MTRTC 的唯一差异 = 编译时机（编译期 vs 运行时），对固定内核集无实质收益；零升级风险。**5.x/MTRTC 保留为未来选项**（若出现运行时生成内核、模板实例化、按 arch 多编译等需求再评估）。
 
 ## 4. 架构决策
 
@@ -51,8 +64,8 @@
 | :--- | :--- | :--- |
 | ~~**M0 调研尖刺**~~ | **已完成（2026-10-16，MTT S4000 + MUSA Toolkit 3.1.0 真机）**：① host API = 独立符号（musart 185 个 `musa*`、driver 层 `MU*` C++ ABI）→ 自写 FFI；② **3.1.0 无 MTRTC**（5.x 组件）→ 内核走 `mcc` 编译期（`-mtgpu --offload-arch=mp_22`）+ `musaLaunchKernel`；③ `libmublas.so`/`libmudnn.so` 存在（M4 可行）；④ 三段式并行 scan 内核已真机数值 PASS（`scripts/musa/smoke_scan.cu`）。**M2–M6 实现细节按此收敛** |
 | **M1 骨架 + 站点登记** | `musa` crate 骨架（`backend`/`error`/`source`/`ffi` 空壳）；`#![deny]` + `ffi.rs` 单文件 `#![allow]`；`checkunsafe.sh` 加 `musa=3`；api `devicekind::musa` | 骨架编译（非 Linux 空库）；`checkunsafe.sh` 登记表一致；依赖图无环 |
-| **M2 musart FFI** | `musart` host 层（context 保留、stream、设备内存、上传/下载、内核启动）；`ffi.rs` 首个 unsafe 站点（MTRTC launch） | 单内核 `silu` 经 musart 跑通（若 M0 判可复用 cudarc，此阶段退化为库路径替换） |
-| **M3 内核族（mcc 编译期）** | 复用 `kernels/*.cu`；build.rs 调 `mcc -mtgpu --offload-arch=mp_22` 预编译 + `musaLaunchKernel` 运行时调用（镜像 smoke_scan 已验证路径；5.x 可再切 MTRTC）；`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention`/`scan` 全部注册 | 内核数值 vs `testkit::reference` 一致 |
+| **M2 mu\* driver FFI** | `mu*` driver API host 层（`muInit`/`muDeviceGet`/`muCtxCreate`/`muMemAlloc`/`muMemcpyHtoD`/`muMemcpyDtoH`/`muModuleLoadData`/`muLaunchKernel`）；`ffi.rs` 首个 unsafe 站点（`muLaunchKernel`） | 单内核 `silu` 经 mcc 预编译 FatBin + mu\* driver 跑通 |
+| **M3 内核族（mcc 预编译 + mu\* driver API）** | 复用 `kernels/*.cu`；build.rs 调 `mcc -mtgpu --offload-arch=mp_22` 预编译 FatBin → 运行时 `muModuleLoadData` + `muModuleGetFunction` + `muLaunchKernel`（3.1.0 driver API 已验证存在；与 5.x MTRTC 加载路径同层）；`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention`/`scan` 全部注册 | 内核数值 vs `testkit::reference` 一致 |
 | **M4 muBLAS/muDNN** | `matmul` 走 muBLAS、`softmax` 走 muDNN；第二、三 unsafe 站点 | `matmul`/`softmax` 数值 vs 参考一致；`musa=3` 站点恰等于登记数 |
 | **M5 算子全量** | `compute` 全部方法（含 `scan`/`scan_cached`、`submission` 累加式重放）；形状/预算/谱校验镜像 `cuda` | `musacontract` 数值 + 错误分支全绿（等价 `cudacontract` 48 例的复刻） |
 | **M6 真机 + 基准 + 文档** | MUSA 真机跑 `musacontract`；`benches/musa.rs` 基准；design.md §21 站点表 + 后端清单、lld.md E6、conformance.md 判定 | 真机数值全绿；基准出数；`checkunsafe.sh`/`checknaming.sh`/`checksrctests.sh` 全绿 |
@@ -101,4 +114,4 @@
 
 ---
 
-**状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；3.1.0 无 MTRTC（内核走 mcc 编译期）；muBLAS/muDNN 可用。M2–M6 按此收敛实施。
+**状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**——3.1.0 的 `mu*` driver API 已完整（`muModuleLoadData`/`muLaunchKernel`/内存/上下文，`musa.h` 齐），host 层 = `mu*` driver API + build.rs `mcc` 预编译 FatBin（与 5.x MTRTC 加载路径同层，编译时机不同，对固定内核集无实质收益）；muBLAS/muDNN 可用。M2–M6 按此收敛实施。
