@@ -28,11 +28,12 @@ pub fn encryptblock(
         reason: "invalid aes key length".to_string(),
     })?;
     let nonce = Nonce::from_slice(nonce);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext)
-        .map_err(|_| checkpointerror::invalidmanifest {
-            reason: "aes-gcm encryption failed".to_string(),
-        })?;
+    let ciphertext =
+        cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|_| checkpointerror::invalidmanifest {
+                reason: "aes-gcm encryption failed".to_string(),
+            })?;
     let split = ciphertext.len() - TAGLEN;
     let mut tag = [0u8; TAGLEN];
     tag.copy_from_slice(&ciphertext[split..]);

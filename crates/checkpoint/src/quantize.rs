@@ -28,10 +28,7 @@ fn groupcount(len: usize, groupsize: usize) -> usize {
 ///
 /// Returns [`checkpointerror::invalidmanifest`] for an empty input or a
 /// `groupsize` larger than the input length.
-pub fn quantize(
-    data: &[f32],
-    groupsize: usize,
-) -> Result<(Vec<i8>, Vec<f32>), checkpointerror> {
+pub fn quantize(data: &[f32], groupsize: usize) -> Result<(Vec<i8>, Vec<f32>), checkpointerror> {
     if data.is_empty() {
         return Err(checkpointerror::invalidmanifest {
             reason: "cannot quantize an empty slice".to_string(),
@@ -42,7 +39,11 @@ pub fn quantize(
             reason: "groupsize exceeds the input length".to_string(),
         });
     }
-    let size = if groupsize == 0 { data.len() } else { groupsize };
+    let size = if groupsize == 0 {
+        data.len()
+    } else {
+        groupsize
+    };
     let ngroup = data.len().div_ceil(size);
     let mut scale = vec![0.0f32; ngroup];
     for (gi, chunk) in data.chunks(size).enumerate() {
@@ -70,11 +71,7 @@ pub fn quantize(
 /// Returns [`checkpointerror::invalidmanifest`] for an empty input, a
 /// `groupsize` larger than the input length, or a scale count that does not
 /// match the group count.
-pub fn dequantize(
-    q: &[i8],
-    scale: &[f32],
-    groupsize: usize,
-) -> Result<Vec<f32>, checkpointerror> {
+pub fn dequantize(q: &[i8], scale: &[f32], groupsize: usize) -> Result<Vec<f32>, checkpointerror> {
     if q.is_empty() {
         return Err(checkpointerror::invalidmanifest {
             reason: "cannot dequantize an empty slice".to_string(),

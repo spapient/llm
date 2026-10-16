@@ -176,6 +176,55 @@ mod crc32c {
         data[37] ^= 1;
         assert_ne!(crc32c(&data), before);
     }
+
+    #[test]
+    fn slicing_by_8_matches_the_byte_wise_reference() {
+        // The fast path folds 8 bytes per step; every length from 0..=70
+        // exercises each tail remainder, and longer inputs cross many
+        // 8-byte folds. A byte-wise reference pins the definition.
+        let byte_wise = |bytes: &[u8]| -> u32 {
+            let mut table = [0u32; 256];
+            for i in 0..256usize {
+                let mut crc = i as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0x82F63B78
+                    } else {
+                        crc >> 1
+                    };
+                }
+                table[i] = crc;
+            }
+            let mut crc = 0xFFFF_FFFFu32;
+            for &byte in bytes {
+                crc = (crc >> 8) ^ table[((crc ^ u32::from(byte)) & 0xFF) as usize];
+            }
+            crc ^ 0xFFFF_FFFF
+        };
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut data = Vec::with_capacity(4096);
+        for len in 0..=70usize {
+            data.clear();
+            data.resize(len, 0);
+            assert_eq!(crc32c(&data), byte_wise(&data), "zeros len {len}");
+            for byte in &mut data {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+            }
+            assert_eq!(crc32c(&data), byte_wise(&data), "random len {len}");
+        }
+        data.clear();
+        data.resize(4096, 0);
+        for byte in &mut data {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *byte = state as u8;
+        }
+        assert_eq!(crc32c(&data), byte_wise(&data));
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/error.rs`.
@@ -1252,6 +1301,29 @@ mod reader {
         let cow = reader.readtensorcow("w").unwrap().unwrap();
         assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
         assert_eq!(cow.as_ref(), data.as_slice());
+    }
+
+    #[test]
+    fn openfullfile_mmap_returns_borrowed() {
+        let dir = scratch("mmap");
+        let path = dir.join("snap.u");
+        let mut data = vec![0u8; 4096];
+        let mut state = 0x9E37_79B9u32;
+        for byte in &mut data {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = (state >> 24) as u8;
+        }
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::u8, shapeof(&[data.len()]), &data)
+            .unwrap();
+        std::fs::write(&path, snap.encode().unwrap()).unwrap();
+        let reader = checkpointreader::openfullfile(&path).unwrap();
+        let cow = reader.readtensorcow("w").unwrap().unwrap();
+        assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(cow.as_ref(), data.as_slice());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

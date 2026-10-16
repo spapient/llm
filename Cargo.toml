@@ -155,6 +155,8 @@ bytemuck = "1"
 ed25519-compact = "2"
 # AES-256-GCM 认证加密：.u 快照分块加密（纯 Rust，硬件加速 unsafe 封装在依赖内）。
 aes-gcm = "0.10"
+# 内存映射文件读取：.u 快照 mmap 零拷贝（unsafe 封装在依赖内，safe API）。
+mmap-guard = "0.2"
 # 预分词 Split 段的正则切分（llama3/qwen3/deepseek 等），需 look-around。
 fancy-regex = "0.15"
 # normalizer 段的 Unicode 归一化（NFC/NFD/NFKC/NFKD，qwen3 需要 NFC）。

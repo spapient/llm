@@ -4,8 +4,6 @@
 //! section's CRC32C as it is read. It mirrors [`crate::checkpointreader`] but
 //! without block tables, deltas, or compression.
 
-use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use ::tensor::{element, tensor};
@@ -16,7 +14,7 @@ use crate::error::checkpointerror;
 use crate::rawfmt::{
     RAWFORMATVERSION, RAWMAGIC, RAWPREFIXLEN, parsehead, rawsnapshot, rawtensorentry,
 };
-use crate::reader::{blocksource, bytesource, filesource};
+use crate::reader::{blocksource, bytesource, mmapsource};
 
 /// Reads tensors from a raw weights artifact, touching only the sections a
 /// requested tensor spans.
@@ -50,21 +48,16 @@ impl rawreader {
     /// Returns the I/O failures opening or reading the file, or the header
     /// parse failures.
     pub fn fromfile(path: &Path) -> Result<Self, checkpointerror> {
-        let file = File::open(path).map_err(|source| checkpointerror::io {
+        let data = mmap_guard::map_file(path).map_err(|source| checkpointerror::io {
             path: path.to_path_buf(),
             source,
         })?;
-        let mut prefix = [0u8; RAWPREFIXLEN];
-        file.read_exact_at(&mut prefix, 0)
-            .map_err(|source| checkpointerror::io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        if &prefix[..RAWMAGIC.len()] != RAWMAGIC {
+        let bytes: &[u8] = &data;
+        if bytes.len() < RAWPREFIXLEN || &bytes[..RAWMAGIC.len()] != RAWMAGIC {
             return Err(checkpointerror::badmagic);
         }
         let dataoffset = u64::from_le_bytes(
-            prefix[16..24]
+            bytes[16..24]
                 .try_into()
                 .map_err(|_| checkpointerror::badmagic)?,
         );
@@ -72,36 +65,24 @@ impl rawreader {
             needed: usize::MAX,
             available: 0,
         })?;
-        let mut head = vec![0u8; heaplen];
-        file.read_exact_at(&mut head, 0)
-            .map_err(|source| checkpointerror::io {
-                path: path.to_path_buf(),
-                source,
-            })?;
-        let (version, tensors, _) = parsehead(&head)?;
+        if heaplen > bytes.len() {
+            return Err(checkpointerror::truncated {
+                needed: heaplen,
+                available: bytes.len(),
+            });
+        }
+        let (version, tensors, _) = parsehead(&bytes[..heaplen])?;
         if version != RAWFORMATVERSION {
             return Err(checkpointerror::unsupportedversion {
                 found: version,
                 supported: RAWFORMATVERSION,
             });
         }
-        let filelen = file
-            .metadata()
-            .map_err(|source| checkpointerror::io {
-                path: path.to_path_buf(),
-                source,
-            })?
-            .len();
-        let datalen =
-            filelen
-                .checked_sub(dataoffset)
-                .ok_or_else(|| checkpointerror::invalidmanifest {
-                    reason: "file is shorter than its declared data section".to_string(),
-                })?;
+        let datalen = bytes.len() as u64 - dataoffset;
         Ok(Self {
             tensors,
             datalen,
-            source: Box::new(filesource::new(file, dataoffset, path.to_path_buf())),
+            source: Box::new(mmapsource::new(data, dataoffset)),
         })
     }
 

@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs::File;
-use std::os::unix::fs::FileExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ::tensor::{element, tensor};
 use format::dtypetoken;
@@ -63,67 +61,90 @@ impl blocksource for bytesource {
     }
 }
 
-/// A block source backed by a file, read at absolute offsets.
-pub struct filesource {
-    file: File,
+/// A block source backed by a memory-mapped file, returning borrowed slices.
+pub struct mmapsource {
+    data: mmap_guard::FileData,
     base: u64,
-    path: PathBuf,
 }
 
-impl filesource {
-    /// Wraps an opened file; `base` is the file offset of the data section.
+impl mmapsource {
+    /// Wraps a mapped file; `base` is the file offset of the data section.
     #[must_use]
-    pub fn new(file: File, base: u64, path: PathBuf) -> Self {
-        Self { file, base, path }
+    pub fn new(data: mmap_guard::FileData, base: u64) -> Self {
+        Self { data, base }
     }
 }
 
-impl blocksource for filesource {
+impl blocksource for mmapsource {
     fn read(&self, offset: u64, size: usize) -> Result<Cow<'_, [u8]>, checkpointerror> {
-        let at = self
+        let start = self
             .base
             .checked_add(offset)
             .ok_or(checkpointerror::blockoutofrange {
                 position: 0,
                 blockcount: 0,
             })?;
-        let mut buf = vec![0u8; size];
-        self.file
-            .read_exact_at(&mut buf, at)
-            .map_err(|source| checkpointerror::io {
-                path: self.path.clone(),
-                source,
+        let start = usize::try_from(start).map_err(|_| checkpointerror::blockoutofrange {
+            position: 0,
+            blockcount: 0,
+        })?;
+        let end = start
+            .checked_add(size)
+            .ok_or(checkpointerror::blockoutofrange {
+                position: 0,
+                blockcount: 0,
             })?;
-        Ok(Cow::Owned(buf))
+        let slice: &[u8] = &self.data;
+        slice
+            .get(start..end)
+            .map(Cow::Borrowed)
+            .ok_or(checkpointerror::blockoutofrange {
+                position: 0,
+                blockcount: slice.len(),
+            })
     }
 }
 
-/// Parses an artifact's manifest from a file without loading its data section.
-fn parsefileartifact(file: &File, path: &Path) -> Result<parsedmanifest, checkpointerror> {
-    let mut prefix = [0u8; PREFIXLEN];
-    readat(file, &mut prefix, 0, path)?;
+/// Parses an artifact's manifest from a memory-mapped file slice.
+fn parsemmap(data: &[u8]) -> Result<parsedmanifest, checkpointerror> {
+    if data.len() < PREFIXLEN {
+        return Err(checkpointerror::truncated {
+            needed: PREFIXLEN,
+            available: data.len(),
+        });
+    }
     let mut lenbytes = [0u8; 8];
-    lenbytes.copy_from_slice(&prefix[MAGIC.len()..PREFIXLEN]);
+    lenbytes.copy_from_slice(&data[MAGIC.len()..PREFIXLEN]);
     let manifestlen = u64::from_le_bytes(lenbytes);
     let manifestlen = usize::try_from(manifestlen).map_err(|_| checkpointerror::truncated {
         needed: usize::MAX,
-        available: 0,
+        available: data.len(),
     })?;
-    let mut manifest = vec![0u8; manifestlen];
-    readat(file, &mut manifest, PREFIXLEN as u64, path)?;
-    let mut bytes = Vec::with_capacity(PREFIXLEN + manifestlen);
-    bytes.extend_from_slice(&prefix);
-    bytes.extend_from_slice(&manifest);
-    parseartifact(&bytes)
+    let manifestend = PREFIXLEN
+        .checked_add(manifestlen)
+        .ok_or(checkpointerror::truncated {
+            needed: usize::MAX,
+            available: data.len(),
+        })?;
+    if manifestend > data.len() {
+        return Err(checkpointerror::truncated {
+            needed: manifestend,
+            available: data.len(),
+        });
+    }
+    parseartifact(&data[..manifestend])
 }
 
-/// Reads exactly into `buf` at `offset`, mapping failures to an I/O error.
-fn readat(file: &File, buf: &mut [u8], offset: u64, path: &Path) -> Result<(), checkpointerror> {
-    file.read_exact_at(buf, offset)
-        .map_err(|source| checkpointerror::io {
-            path: path.to_path_buf(),
-            source,
-        })
+/// Memory-maps a file for read-only access.
+fn mapfile(path: &Path) -> Result<mmap_guard::FileData, checkpointerror> {
+    let strpath = path.to_str().ok_or_else(|| checkpointerror::io {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "path is not valid utf-8"),
+    })?;
+    mmap_guard::map_file(strpath).map_err(|source| checkpointerror::io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Resolves each logical block to a source, delta first then base.
@@ -342,11 +363,8 @@ impl checkpointreader {
     }
 
     fn openfullfile_with(path: &Path, key: Option<[u8; 32]>) -> Result<Self, checkpointerror> {
-        let file = File::open(path).map_err(|source| checkpointerror::io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let parsed = parsefileartifact(&file, path)?;
+        let data = mapfile(path)?;
+        let parsed = parsemmap(&data)?;
         checkflags(parsed.flags, FLAGSFULL)?;
         if parsed.base_id.iter().any(|&b| b != 0) {
             return Err(checkpointerror::invalidmanifest {
@@ -371,11 +389,7 @@ impl checkpointreader {
             tensors: parsed.tensors,
             blocks: parsed.blocks,
             locations,
-            sources: vec![Box::new(filesource::new(
-                file,
-                parsed.dataoffset as u64,
-                path.to_path_buf(),
-            ))],
+            sources: vec![Box::new(mmapsource::new(data, parsed.dataoffset as u64))],
             key,
         })
     }
@@ -406,17 +420,11 @@ impl checkpointreader {
         delta_path: &Path,
         key: Option<[u8; 32]>,
     ) -> Result<Self, checkpointerror> {
-        let deltafile = File::open(delta_path).map_err(|source| checkpointerror::io {
-            path: delta_path.to_path_buf(),
-            source,
-        })?;
-        let parsed = parsefileartifact(&deltafile, delta_path)?;
+        let deltadata = mapfile(delta_path)?;
+        let parsed = parsemmap(&deltadata)?;
         checkflags(parsed.flags, FLAGDELTA)?;
-        let basefile = File::open(base_path).map_err(|source| checkpointerror::io {
-            path: base_path.to_path_buf(),
-            source,
-        })?;
-        let baseparsed = parsefileartifact(&basefile, base_path)?;
+        let basedata = mapfile(base_path)?;
+        let baseparsed = parsemmap(&basedata)?;
         checkflags(baseparsed.flags, FLAGSFULL)?;
         if baseparsed.root_hash != parsed.base_id {
             return Err(checkpointerror::basehashmismatch {
@@ -438,16 +446,8 @@ impl checkpointreader {
             blocks: parsed.blocks,
             locations,
             sources: vec![
-                Box::new(filesource::new(
-                    deltafile,
-                    parsed.dataoffset as u64,
-                    delta_path.to_path_buf(),
-                )),
-                Box::new(filesource::new(
-                    basefile,
-                    baseparsed.dataoffset as u64,
-                    base_path.to_path_buf(),
-                )),
+                Box::new(mmapsource::new(deltadata, parsed.dataoffset as u64)),
+                Box::new(mmapsource::new(basedata, baseparsed.dataoffset as u64)),
             ],
             key,
         })

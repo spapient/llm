@@ -154,11 +154,7 @@ impl<T: element + bytemuck::Pod> tensor<T> {
     ///
     /// Returns the errors of [`tensor::newwithlayout`] or
     /// [`tensor::tryfrombytes`].
-    pub fn tryfrombyteswithlayout(
-        s: shape,
-        l: layout,
-        bytes: &[u8],
-    ) -> Result<Self, tensorerror> {
+    pub fn tryfrombyteswithlayout(s: shape, l: layout, bytes: &[u8]) -> Result<Self, tensorerror> {
         let count = s.getelementcount()?;
         let expected = count
             .checked_mul(core::mem::size_of::<T>())
