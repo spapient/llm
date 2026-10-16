@@ -16,7 +16,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(missing_docs)]
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 mod linux {
     use std::hint::black_box;
 
@@ -304,7 +304,7 @@ mod linux {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 criterion::criterion_main!(linux::benches);
 
 #[cfg(not(target_os = "linux"))]

@@ -36,7 +36,7 @@
 //! concatenates on the host), and `scan_cached` is supported (the `cuda`
 //! backend reports `unsupportedoperation`). The numerical cases below
 //! therefore cover those operators against the same scalar references.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", musa_toolkit))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::support::{build, wide};

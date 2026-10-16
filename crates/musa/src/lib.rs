@@ -9,7 +9,7 @@
 //!
 //! The crate compiles to an empty library on every non-Linux target so that
 //! `cargo check --workspace --all-targets` stays green everywhere. All items
-//! are `#[cfg(target_os = "linux")]`.
+//! are `#[cfg(all(target_os = "linux", musa_toolkit))]`.
 //!
 //! # Architecture (docs/musa-backend-plan.md §5)
 //!
@@ -42,22 +42,22 @@
 //! variant, and function names are lowercase concatenated, and constants are
 //! uppercase concatenated.
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 mod backend;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 mod error;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 mod executor;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 mod ffi;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 mod registry;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 mod source;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 pub use backend::{MUSAMAXHEADDIM, MUSAMAXRANK, musabackend};
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 pub use error::musaerror;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", musa_toolkit))]
 pub use executor::musaexecutor;
