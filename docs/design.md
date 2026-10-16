@@ -2598,7 +2598,7 @@ cuda  -> api
 * 超出能力声明的元素或字节预算（`embedding` 的按其 gather 输出 `rows * width` 计；`matmul` 的除两个操作数外还含其**结果**）→ `resourceexhausted`；
 * 每头宽度超过 `METALMAXHEADDIM`/`CUDAMAXHEADDIM` → `resourceexhausted`；
 * 设备初始化失败 / MSL 或 NVRTC 编译失败 / 模块或内核解析失败 / 缓冲分配失败 / 内核启动失败 / cuBLAS 调用失败 / cuDNN 调用失败 / host-device 传输失败 → `executionfailed`（诊断文本保留在 crate 私有的 `metalerror`/`cudaerror` 中，不泄入 `api` 契约）；
-* `metal` 与 `cuda` 都已实现 `compute` 的全部算子（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`），故两者唯一的 `unsupportedoperation` 来源是上一条的空末轴（`softmax`、`rmsnorm`）。
+* `metal` 与 `cuda` 都已实现 `compute` 的全部算子（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`、`scan`），故两者唯一的 `unsupportedoperation` 来源是上一条的空末轴（`softmax`、`rmsnorm`）。`scan` 为每线程一通道的串行递推内核（β 通道，`docs/beta-scan-plan.md`），复用既有上传/下载/绑定/参数绑定站点，`unsafe` 站点数不变（metal 4/4、cuda 3/3）。
 
 `compute` 契约的每个方法都只接受 `f32` 张量视图，故 GPU 后端不可能因 dtype 失败；`capabilities` 声明 `f32` 是为了让上层在派发前就能判定，`unsupporteddtype` 不由这两个后端产生。
 
