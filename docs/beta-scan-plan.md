@@ -69,7 +69,7 @@ $$
 
 ### 4.1 签名（草案，f32、显式参数、无逐模型配置藏入 kernel）
 
-`scan`/`scan_cached` 作为 `compute` 的累加式新方法（design.md §5.2 决策 5 的既定路线），与 `attention`/`rope` 等同属「带显式属性的 f32 算子」。直通项参数名为 `skip`（避免与通道维 $d$ 重名）。谱前置校验单点在 `api` 提供（仿 `checkbudget` 的「单点决定、三后端复用」模式）。
+`scan`/`scan_cached` 作为 `compute` 的累加式新方法（design.md §5.2 决策 5 的既定路线），与 `attention`/`rope` 等同属「带显式属性的 f32 算子」。直通项参数名为 `skip`（避免与通道维 $d$ 重名）。谱前置校验与 `attention` 的 heads 整除校验同属**算子语义前置**，在各后端 kernel（B1）实现；`invalidparameter` variant 在 B0 就位，供 B1 触发。
 
 ```rust
 /// 全量半群扫描（prefill 形态）：h_t = A h_{t-1} + B x_t；y_t = C h_t + D x_t。
@@ -105,7 +105,7 @@ fn scan_cached(
 | 状态宽对齐 | `init[1] == a[1] == b[1] == c[1] == N` |
 | 空序列 | `n == 0` ⇒ 输出空张量 + 返回 `init` 原样（显式语义，非错误） |
 | 非 2 幂 | `n` 非 2 幂时并行路径按分段/补零语义，结果与串行一致（不要求逐位） |
-| 谱前置 | 对角核 $\lvert a_i\rvert\le 1$；2×2 块对角核块特征值谱半径 ≤ 1；否则 `backenderror::invalidparameter`（**B0 新增此 variant**，现有 7 variant 无「参数值非法」类） |
+| 谱前置 | 对角核 $\lvert a_i\rvert\le 1$；2×2 块对角核块特征值谱半径 ≤ 1；否则 `backenderror::invalidparameter`（**B0 新增此 variant**，校验逻辑在 B1 后端 kernel） |
 | 预算 | 中间张量（并行扫描块前缀，辅助空间 $O(n)$）计入 executor 预算检查，超限 `resourceexhausted` |
 
 错误枚举：谱半径越界 ⇒ 新增 `backenderror::invalidparameter`（同步 design.md §5.4 的 variant 表 7→8）；通道/状态宽不匹配、rank 不足、`skip` 长度不匹配 ⇒ 复用 `shapemismatch`；预算耗尽 ⇒ 复用 `resourceexhausted`。
@@ -127,7 +127,7 @@ A4 上界 20 的权威口径是「crate root 导出的公共项数」（design.m
 
 | 阶段 | 内容 | 验收标准（独立可测） |
 | :--- | :--- | :--- |
-| **B0 契约 + 标量参考** | `api::compute` 加 `scan`/`scan_cached`；`api::error` 加 `invalidparameter`；`testkit::reference::scan`（逐步递推标量实现）；形状/边界/错误测试 `tests/it/scancontract.rs` | 契约编译；参考实现 64 点对 5a 半群恒等全一致；错误分支（含谱前置、非 2 幂、空序列）全触发 |
+| **B0 契约 + 标量参考** | `api::compute` 加 `scan`/`scan_cached`；`api::error` 加 `invalidparameter`；`testkit::reference::scan`（逐步递推标量实现）；形状/边界/错误测试 `tests/it/scancontract.rs` | 契约编译；参考实现 64 点对 5a 半群恒等全一致；错误分支（非 2 幂、空序列）全触发；谱前置校验留待 B1 |
 | **B1 CPU 串行** | `cpuscan`/`cpuscancached` 纯净 kernel + `cpuexecutor` 派发 + 预算检查 | 串行结果 vs 参考**逐位一致**（确定性路径）；`tests/it/cpucontract.rs` 或新 `scanunits.rs` |
 | **B2 CPU 并行** | 分段三阶段（主）+ Hillis–Steele/裸 Blelloch（对照）；并行 vs 串行容差一致；**M1 理论分析文档**（循环不变量、每步工作量/内存访问计数 → $O(ndN)$）；分段/Blelloch 按 DS3 拆成 ≤80 行、圈复杂度 ≤10 的小函数 | 并行 vs 串行 `rtol=1e-3/atol=1e-4` 全一致；理论证明成文；log-log 实测 $O(nd)$ 斜率 + 常数项核对 |
 | **B3 Metal** | `source.rs` MSL kernel（分段三阶段）；`metalexecutor` 注册；数值对照 testkit | `metalcontract` 数值 vs 参考一致；**unsafe 站点登记评审**（期望复用现有缓冲/参数绑定路径，metal=4 不变；若新增交互类须先更新 `docs/design.md` §21.8 登记表） |
