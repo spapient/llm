@@ -345,7 +345,7 @@ MUST NOT 拥有：
 - CPU 算子实现。
 - CPU 后端内的执行分发。
 - CPU 特定数值策略。
-- SIMD 实现（`matmul` 已实现 8×4 寄存器分块 NEON 微内核，经 `fearless_simd` 派发，2026-10-16；其余 `crates/cpu/src` 内核仍无数值 SIMD 路径。任何新的 SIMD 引入 MUST 先按 §12 建立基线并附正确性计划与前后对比）。
+- SIMD 实现（`matmul` 已实现 8×4 寄存器分块 NEON 微内核、`rmsnorm` 已实现向量化平方和与缩放，均经 `fearless_simd` 派发，2026-10-16；其余 `crates/cpu/src` 内核仍无数值 SIMD 路径。任何新的 SIMD 引入 MUST 先按 §12 建立基线并附正确性计划与前后对比）。
 - CPU 特定能力上报。
 
 MUST NOT 拥有：

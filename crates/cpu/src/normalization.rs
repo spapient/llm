@@ -1,5 +1,6 @@
 use ::tensor::{tensor, tensorview};
 use api::{backenderror, weightedkernel};
+use fearless_simd::{Level, Simd, dispatch, f32x4, prelude::*};
 
 use crate::support::finish;
 
@@ -69,18 +70,52 @@ impl weightedkernel<f32> for cpurmsnorm {
         let src = input.getdata();
         let w = weight.getdata();
         let mut data = vec![0.0_f32; src.len()];
-        for (row, out) in src.chunks(width).zip(data.chunks_mut(width)) {
-            rmsnormrow(row, out, w, self.eps);
-        }
+        let level = Level::new();
+        dispatch!(level, simd => rmsnormrows(simd, src, &mut data, w, self.eps, width));
         finish(input.getshape(), data)
     }
 }
 
-fn rmsnormrow(row: &[f32], out: &mut [f32], weight: &[f32], eps: f32) {
-    let sumsq: f32 = row.iter().map(|&x| x * x).sum();
-    let mean = sumsq / row.len() as f32;
-    let inv = 1.0 / (mean + eps).sqrt();
-    for ((dst, &x), &w) in out.iter_mut().zip(row.iter()).zip(weight.iter()) {
-        *dst = x * inv * w;
+/// Normalizes every row of `src` into `data`, dispatched through
+/// `fearless_simd`.
+#[inline(always)]
+fn rmsnormrows<S: Simd>(
+    simd: S,
+    src: &[f32],
+    data: &mut [f32],
+    weight: &[f32],
+    eps: f32,
+    width: usize,
+) {
+    for (row, out) in src.chunks(width).zip(data.chunks_mut(width)) {
+        rmsnormrow(simd, row, out, weight, eps);
+    }
+}
+
+/// RMS-normalizes one `row` with a vectorized square-sum and a vectorized
+/// scale pass.
+#[inline(always)]
+fn rmsnormrow<S: Simd>(simd: S, row: &[f32], out: &mut [f32], weight: &[f32], eps: f32) {
+    let n = row.len();
+    let ntile = n / 4 * 4;
+    let mut acc = f32x4::<S>::splat(simd, 0.0);
+    for i in (0..ntile).step_by(4) {
+        let x = f32x4::<S>::from_slice(simd, &row[i..i + 4]);
+        acc = x.mul_add(x, acc);
+    }
+    let mut sumsq = acc.reduce_sum();
+    for &x in &row[ntile..n] {
+        sumsq += x * x;
+    }
+    let inv = 1.0 / (sumsq / n as f32 + eps).sqrt();
+
+    let invv = f32x4::<S>::splat(simd, inv);
+    for i in (0..ntile).step_by(4) {
+        let x = f32x4::<S>::from_slice(simd, &row[i..i + 4]);
+        let w = f32x4::<S>::from_slice(simd, &weight[i..i + 4]);
+        (x * invv * w).store_slice(&mut out[i..i + 4]);
+    }
+    for i in ntile..n {
+        out[i] = row[i] * inv * weight[i];
     }
 }

@@ -444,6 +444,10 @@ executor 路径与裸内核路径在运行间噪声内一致（噪声带准则�
 
 **matmul SIMD 前后对比（2026-10-16，同机同工具链，criterion 0.7.0，100 samples）。** 上表 `kernel/binary/matmul256` 的朴素三重循环由 `matmulblock` 替换为经 `fearless_simd`（NEON）派发的 8×4 寄存器分块微内核：端到端 `apply` 由 1.0185 ms → 0.9008 ms（1.13×，含分配与契约开销；受同机热漂移影响）；纯计算内核交错 A/B 为 1.72×（0.615 ms vs 1.059 ms）。正确性经 `cpucontract`/`kvcacheforward`/`modelforward` 全绿（重结合差异 ~1e-8，在既有 1e-5/1e-4 容差内）；`checkunsafe.sh` 零新增 unsafe（`cpu`/`tensor` 保持 `#![forbid(unsafe_code)]`）。
 
+**rmsnorm SIMD 前后对比（2026-10-16，同机同工具链）。** `rmsnormrow` 的平方和改为 `fearless_simd`（NEON）向量化（4 累加器 + fused `mul_add` + `reduce_sum` 水平规约），缩放趟改为向量乘：`kernel/rmsnorm/rows512cols4096` 由 1.1266 ms → 0.7285 ms（1.55×）。平方和重结合使结果对标量参照「容差内一致而非逐位」，归约顺序仅依赖行宽、与 batch 无关（保住逐位确定性）。`weighted_kernel_matches_the_scalar_reference` 全绿。
+
+**softmax SIMD 评估（2026-10-16）：判定不引入。** `softmaxrow` 的 max 与缩放趟经 LLVM 自动向量化已是 4 宽 NEON，而 `exp` 趟占主导且 `fearless_simd` 无向量化 `exp`（Apple Silicon 的系统 libm `expf` 已 NEON 加速，自写多项式难更快）。实测仅向量化 max/缩放反而回退 6.5%（2.4593→2.6182 ms），已回退；softmax 保持标量 `f32::exp`，未引入数值近似。
+
 内核调用契约的验证：`lib`、`tensor`、`api` 以其文档化契约实现，仓库根 `tensorcontract`、`apicontract`、`crosscrate` 套件通过（证据等级 E1）。
 
 ### 5.10 复审条件
