@@ -692,21 +692,21 @@ fn desparsifybitmap(
     count: usize,
 ) -> Result<Vec<u8>, checkpointerror> {
     let bitmapbytes = count.div_ceil(8);
-    let valuebytes = nnz.checked_mul(width).ok_or_else(|| {
-        checkpointerror::invalidmanifest {
+    let valuebytes = nnz
+        .checked_mul(width)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
             reason: "sparse value section overflows usize".to_string(),
-        }
-    })?;
+        })?;
     if bytes.len() != bitmapbytes + valuebytes {
         return Err(checkpointerror::invalidmanifest {
             reason: "sparse data length mismatch".to_string(),
         });
     }
-    let dense_len = count.checked_mul(width).ok_or_else(|| {
-        checkpointerror::invalidmanifest {
+    let dense_len = count
+        .checked_mul(width)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
             reason: "dense buffer overflows usize".to_string(),
-        }
-    })?;
+        })?;
     let bitmap = &bytes[..bitmapbytes];
     let values = &bytes[bitmapbytes..];
     let mut dense = vec![0u8; dense_len];

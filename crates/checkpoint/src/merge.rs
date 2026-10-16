@@ -74,9 +74,10 @@ pub fn merge(base: &snapshot, delta: &delta) -> Result<snapshot, checkpointerror
                 .sum();
             let (head, tail) = cursor.split_at_mut(seglen);
             cursor = tail;
-            handles.push(scope.spawn(move || {
-                mergeblockspan(blocksref, storedmapref, basemapref, span, head)
-            }));
+            handles
+                .push(scope.spawn(move || {
+                    mergeblockspan(blocksref, storedmapref, basemapref, span, head)
+                }));
         }
         for handle in handles {
             match handle.join() {

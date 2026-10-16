@@ -465,7 +465,10 @@ impl snapshot {
                 });
             }
         }
-        let nnz = bitmap.iter().map(|b| u64::from(b.count_ones())).sum::<u64>();
+        let nnz = bitmap
+            .iter()
+            .map(|b| u64::from(b.count_ones()))
+            .sum::<u64>();
         let valuebytes = nnz
             .checked_mul(value.sizeinbytes() as u64)
             .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
