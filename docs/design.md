@@ -1475,7 +1475,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 ### 12.12 《.u 增量检查点契约》
 
-> 状态：**已验证（Verified）**。`.u` 格式的合并/恢复逻辑与哈希/校验体系已在 `checkpoint` crate 实现并有测试覆盖：内容寻址分块（CDC）、增量创建/合并/按需读取、LZ4 逐块压缩、链压缩与溯源（`compact`/`verifyprovenance`）、`checkpointerror` 的损坏分类（`iscorruption()`），以及 Ed25519 签名（`encode_signed`/`verifysignature`，`FLAGSIGNED` 标志位）与 AES-256-GCM 分块加密（`encode_encrypted`/`decode_encrypted`，`FLAGENCRYPTED` 标志位）。本节描述的固定 64 字节条目与量化/稀疏/多排布字段布局为设计草案，实际 manifest 采用变长二进制序列化（以 §12.4 与源码为准）。
+> 状态：**已验证（Verified）**。`.u` 格式的合并/恢复逻辑与哈希/校验体系已在 `checkpoint` crate 实现并有测试覆盖：内容寻址分块（CDC）、增量创建/合并/按需读取、逐块压缩（LZ4/Zstd + bit-shuffle 变换）、链压缩与溯源（`compact`/`verifyprovenance`）、`checkpointerror` 的损坏分类（`iscorruption()`），以及安全增强层（Ed25519 签名、AES-256-GCM 加密）与存储增强（多排布 layout、稀疏 COO、对称 int8 量化、多文件分片、mmap 零拷贝）。本节描述的固定 64 字节条目字段布局为设计草案，实际 manifest 采用变长二进制序列化（以 §12.4 与源码为准）。
 
 **上下文。** 增量检查点通过「仅存相对基础快照变化的块」降低训练存储冗余，通过「块级随机访问」支撑按需加载与显存调度。实现方式是**内容寻址 + 梅克尔 DAG**：块身份 = 内容哈希，快照身份 = 根哈希，溯源链由 `base_id` 显式记录。
 
@@ -1490,11 +1490,11 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `version` | `u32` | 格式版本 |
-| `flags` | `u32` | bit0 增量 / bit1 全量 / bit2 签名 / bit3 加密，其余保留 |
+| `flags` | `u32` | bit0 增量 / bit1 全量 / bit2 签名 / bit3 加密 / bit4 变换，其余保留 |
 | `base_id` | `[u8; 32]` | 全 0 = 无基础；否则 = 基础根哈希（BLAKE3-256） |
 | `training` | 可选 `trainingstate` | 复用 §12.4 |
 | `metadata` | `BTreeMap<String, String>` | 复用 §12.4，键序确定 |
-| `tensors` | `manifestentry[]` | 复用 §12.4，`offset` 相对逻辑数据段 |
+| `tensors` | `manifestentry[]` | 复用 §12.4，`offset` 相对逻辑数据段；每条目可选 layout 与 sparse |
 | `blocks` | `blockref[]` | 有序块引用 `{ hash: [u8; 16], len: u32 }` |
 | `root_hash` | `[u8; 32]` | BLAKE3-256，见下 |
 | `signature` | 可选 `[u8; 64]` | Ed25519，覆盖 `root_hash`，由 `flags` bit2 标记 |
@@ -1527,7 +1527,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **多排布（layout）。** `tensorentry` 可选携带显式 `layout`（`strides: usize[]` + `offset: usize`，复用 `tensor::layout`），`None` = 规范行主序（向后兼容）。非 contiguous 布局（如转置存储）让权重以计算友好的排布落盘、加载时零拷贝重建；`setlayout` 校验 `isvalidfor(shape)`，decode 时再验，非法报 `invalidmanifest`。数据段字节仍按插入序连续拼接，layout 仅描述逻辑张量到连续缓冲的映射；`readtensortyped` 用 `tryfrombyteswithlayout` 恢复。
 
-**稀疏存储（COO）。** `tensorentry` 可选携带 `sparsedesc`（`nnz`），稀疏张量的数据段字节 = `nnz` 个 `u32` 线性索引（小端）+ `nnz` 个非零值，`nbytes = nnz × (4 + dtype 宽)`。`addsparse` 校验索引落在 `[0, elementcount)` 内；`readtensortyped` 经 `desparsify` 零填充重建稠密字节后再解 dtype/layout。适用于结构化稀疏（如 2:4）与剪枝权重。
+**稀疏存储（COO）。** `tensorentry` 可选携带 `sparsedesc`（`nnz`），稀疏张量的数据段字节 = `nnz` 个 `u32` 线性索引（小端）+ `nnz` 个非零值，`nbytes = nnz × (4 + dtype 宽)`。`addsparse` 校验索引落在 `[0, elementcount)` 内且唯一（重复报 `invalidmanifest`）；`readtensortyped` 经 `desparsify` 零填充重建稠密字节后再解 dtype/layout。索引是逻辑元素坐标（shape 行主序线性化），layout 仅作用于重建后的稠密缓冲，故稀疏与多排布正交。适用于结构化稀疏（如 2:4）与剪枝权重。
 
 **量化内核（对称 int8）。** `quantize`/`dequantize` 实现对称 int8 量化：`scale = max(|x|)/127`（`groupsize=0` 为 per-tensor，否则 per-group/per-channel），`q = round(x/scale)` clamp `[-127,127]`，反量化 `x ≈ q×scale`（重建误差 ≤ scale/2）。与 `quantdesc`（scale 一等张量）配套，量化输出（i8 + scale）经 `addtensor`/`setquant` 落盘。
 
@@ -1569,7 +1569,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **合并（物化）。** `merge(base, delta, out)`：校验 delta 根哈希 → 校验 base 存在且 `root_hash(base) == delta.base_id` → staging 写 out（`base_id := 0`，物理块表全量，`root_hash(out) == root_hash(delta)`）→ 逐逻辑块按「delta 自身 → base」解析来源并校验 CRC32C + BLAKE3-128 → 存储态字节原样拷贝（不重新编码）→ flush + fsync + 原子 rename（复用 `writeatomic`）。任一校验失败即中止并删 staging，源文件不变；合并是复制 + 校验的纯变换，绝不把损坏 base 传播进 out。
 
-**恢复（按需读取）。** `checkpointreader` 提供与 `checkpoint::readtensor` 同构接口：载入 manifest 并验根哈希 → 建块解析表（逻辑位置 → 来源/偏移/CRC32C）→ `readtensor` 仅读被请求张量覆盖的块（受检算术算块区间），验 CRC32C（首次验 BLAKE3-128 并缓存）。类型化读取 `readtensortyped<T>` 在同一路径上先校验存储 `dtype` 等于 `T::DTYPE`（不符报 `dtypemismatch`，归类结构不兼容），再把 manifest shape 与字节交给 `tensor::tryfrombytes` 解码为 `tensor<T>`，调用方不可能观察到静默错误的 dtype 或 shape；解码失败经 `checkpointerror::tensor` 传播。首版 `File::read_at`，无 mmap。
+**恢复（按需读取）。** `checkpointreader` 提供与 `checkpoint::readtensor` 同构接口：载入 manifest 并验根哈希 → 建块解析表（逻辑位置 → 来源/偏移/CRC32C）→ `readtensor` 仅读被请求张量覆盖的块（受检算术算块区间），验 CRC32C（首次验 BLAKE3-128 并缓存）。类型化读取 `readtensortyped<T>` 在同一路径上先校验存储 `dtype` 等于 `T::DTYPE`（不符报 `dtypemismatch`，归类结构不兼容），再把 manifest shape 与字节交给 `tensor::tryfrombytes` 解码为 `tensor<T>`，调用方不可能观察到静默错误的 dtype 或 shape；解码失败经 `checkpointerror::tensor` 传播。文件变体经 `mmap-guard` 内存映射（见「mmap 零拷贝」）。
 
 **压缩 / 保留 / 溯源。** 文件一旦 rename 即不可变（copy-on-write），压缩只产新文件、不原地改。链长上限（连续增量 > 32 或增量体积 > 全量 50%）触发压缩。GC 仅删不可达且过宽限期的文件。`verifyprovenance` 沿 `base_id` 链验证各根哈希。
 
