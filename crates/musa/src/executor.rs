@@ -156,31 +156,19 @@ impl compute for musaexecutor {
         // the check runs before the host buffer and any device buffer exist.
         let outshape = geometry.outshape()?;
         self.checkbudget(&outshape)?;
-        let outelements = outshape
-            .getelementcount()
-            .map_err(|_| backenderror::sizeoverflow)?;
 
         let lhsdata = lhs.getdata();
         let rhsdata = rhs.getdata();
-        let mut data = Vec::new();
-        data.try_reserve_exact(outelements)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        for b in 0..geometry.batch {
-            let lstart = b * geometry.m * geometry.k;
-            let rstart = b * geometry.k * geometry.n;
-            let lblock = &lhsdata[lstart..lstart + geometry.m * geometry.k];
-            let rblock = &rhsdata[rstart..rstart + geometry.k * geometry.n];
-            let block = ffi::matmul(
-                &self.cache,
-                lblock,
-                rblock,
-                geometry.m,
-                geometry.k,
-                geometry.n,
-            )
-            .map_err(maptobackend)?;
-            data.extend_from_slice(&block);
-        }
+        let data = ffi::matmul(
+            &self.cache,
+            lhsdata,
+            rhsdata,
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.batch,
+        )
+        .map_err(maptobackend)?;
 
         wrap(outshape, data)
     }
@@ -635,8 +623,16 @@ impl submission for musasubmission {
         }
         let lhs = self.resolve(lhs)?;
         let rhs = self.resolve(rhs)?;
-        let data = ffi::matmul(&self.cache, &lhs, &rhs, geometry.m, geometry.k, geometry.n)
-            .map_err(maptobackend)?;
+        let data = ffi::matmul(
+            &self.cache,
+            &lhs,
+            &rhs,
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            1,
+        )
+        .map_err(maptobackend)?;
         Ok(self.push(data, outshape))
     }
 

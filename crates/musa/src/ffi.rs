@@ -501,10 +501,12 @@ pub(crate) fn dispatch(
 // The safe operator surface the executor calls.
 // ---------------------------------------------------------------------------
 
-/// Computes `[m, k] * [k, n]` with the reference FMA kernel.
+/// Computes `[batch, m, k] * [batch, k, n]` with the reference FMA kernel.
 ///
 /// The kernel is compiled at build time by `mcc`; this is the A1 path (no
-/// runtime JIT). The WMMA Tensor-Core kernel is a separate measurable stage.
+/// runtime JIT). The batch dimension is the grid's third axis, so every slice
+/// is uploaded, launched, and downloaded in one dispatch instead of one per
+/// slice. The WMMA Tensor-Core kernel is a separate measurable stage.
 pub(crate) fn matmul(
     cache: &cache,
     lhs: &[f32],
@@ -512,26 +514,31 @@ pub(crate) fn matmul(
     m: usize,
     k: usize,
     n: usize,
+    batch: usize,
 ) -> Result<Vec<f32>, musaerror> {
+    if batch == 0 {
+        return Ok(Vec::new());
+    }
+    let total = m
+        .checked_mul(n)
+        .and_then(|value| value.checked_mul(batch))
+        .ok_or(musaerror::sizeoverflow)?;
     let grid = (
         (n as u32).div_ceil(source::THREADEDGE),
         (m as u32).div_ceil(source::THREADEDGE),
-        1,
+        batch as u32,
     );
     let block = (source::THREADEDGE, source::THREADEDGE, 1);
     let mut results = dispatch(
         cache,
         "matmul",
         source::MATMULENTRY,
-        &[
-            buf::host(lhs),
-            buf::host(rhs),
-            buf::out(m.checked_mul(n).ok_or(musaerror::sizeoverflow)?),
-        ],
+        &[buf::host(lhs), buf::host(rhs), buf::out(total)],
         &[
             scalar::u32(m as u32),
             scalar::u32(k as u32),
             scalar::u32(n as u32),
+            scalar::u32(batch as u32),
         ],
         grid,
         block,
