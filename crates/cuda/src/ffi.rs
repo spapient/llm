@@ -768,6 +768,10 @@ pub(crate) fn attention(
 
 /// Runs the serial per-channel scan kernel, returning the `[n, d]` output and
 /// the `[d, N]` final state.
+///
+/// When the state width fits the parallel kernel's thread-local arrays, the
+/// three-stage parallel scan ([`scan_parallel`]) is used; the serial kernel
+/// remains the fallback for wider states.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn scan(
     cache: &cache,
@@ -783,6 +787,9 @@ pub(crate) fn scan(
 ) -> Result<(Vec<f32>, Vec<f32>), cudaerror> {
     if n == 0 {
         return Ok((Vec::new(), init.to_vec()));
+    }
+    if statewidth <= source::SCANMAXN as usize {
+        return scan_parallel(cache, input, init, a, b, c, skip, n, d, statewidth);
     }
     let stream = cache.stream()?;
     let function = cache.function(source::SCANCUDA, source::SCANENTRY)?;
@@ -816,6 +823,132 @@ pub(crate) fn scan(
     submit(&mut args, config)?;
     let out = syncanddownload(&stream, &dout)?;
     let state = syncanddownload(&stream, &dstate)?;
+    Ok((out, state))
+}
+
+/// Runs the three-stage parallel scan: per-block aggregation, inter-block
+/// prefix, and per-block apply, mirroring the Metal implementation. The apply
+/// pass reproduces the serial recurrence bit-for-bit; the block start states
+/// differ by the reordered float associations of the inter-block prefix, whose
+/// rounding error grows like `P·ε·‖B‖`.
+#[allow(clippy::too_many_arguments)]
+fn scan_parallel(
+    cache: &cache,
+    input: &[f32],
+    init: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    skip: &[f32],
+    n: usize,
+    d: usize,
+    statewidth: usize,
+) -> Result<(Vec<f32>, Vec<f32>), cudaerror> {
+    let stream = cache.stream()?;
+    let dinput = upload(&stream, input)?;
+    let da = upload(&stream, a)?;
+    let db = upload(&stream, b)?;
+    let dc = upload(&stream, c)?;
+    let dskip = upload(&stream, skip)?;
+    let dinit = upload(&stream, init)?;
+    let dN = d.checked_mul(statewidth).ok_or(cudaerror::sizeoverflow)?;
+    let blocks = n.div_ceil(source::SCANCHUNK as usize);
+    let totalelements = blocks
+        .checked_mul(2)
+        .and_then(|twice| twice.checked_mul(dN))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let mut dtotal = alloc(&stream, totalelements)?;
+    let mut dstateout = alloc(&stream, dN)?;
+    let prefixelements = blocks
+        .checked_add(1)
+        .and_then(|one_more| one_more.checked_mul(2))
+        .and_then(|twice| twice.checked_mul(dN))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let mut dprefix = alloc(&stream, prefixelements)?;
+    let outelements = n.checked_mul(d).ok_or(cudaerror::sizeoverflow)?;
+    let mut dout = alloc(&stream, outelements)?;
+    let nv = asunsigned(n)?;
+    let dv = asunsigned(d)?;
+    let nw = asunsigned(statewidth)?;
+    let cv = asunsigned(source::SCANCHUNK as usize)?;
+    let bv = asunsigned(blocks)?;
+    let block = source::SCANBLOCKDIM;
+    let grid_y = asunsigned(d.div_ceil(block as usize))?;
+
+    // Pass 1: block aggregation.
+    let agg = cache.function(source::SCANPARALLELCUDA, source::SCANAGGENTRY)?;
+    let mut args = stream.launch_builder(&agg);
+    args.arg(&dinput)
+        .arg(&da)
+        .arg(&db)
+        .arg(&dc)
+        .arg(&dskip)
+        .arg(&dinit)
+        .arg(&mut dtotal)
+        .arg(&nv)
+        .arg(&dv)
+        .arg(&nw)
+        .arg(&cv)
+        .arg(&bv);
+    submit(
+        &mut args,
+        LaunchConfig {
+            grid_dim: (bv, grid_y, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: 0,
+        },
+    )?;
+
+    // Pass 2: inter-block prefix plus the whole-sequence final state.
+    let prefix = cache.function(source::SCANPARALLELCUDA, source::SCANPREFIXENTRY)?;
+    let mut args = stream.launch_builder(&prefix);
+    args.arg(&mut dtotal)
+        .arg(&dinit)
+        .arg(&mut dstateout)
+        .arg(&mut dprefix)
+        .arg(&nv)
+        .arg(&dv)
+        .arg(&nw)
+        .arg(&cv)
+        .arg(&bv);
+    let prefixthreads = asunsigned(dN.min(1024))?;
+    submit(
+        &mut args,
+        LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (prefixthreads, 1, 1),
+            shared_mem_bytes: 0,
+        },
+    )?;
+
+    // Pass 3: per-block apply writing `out`; the final state was computed by
+    // Pass 2 into `dstateout`.
+    let apply = cache.function(source::SCANPARALLELCUDA, source::SCANAPPLYENTRY)?;
+    let mut args = stream.launch_builder(&apply);
+    args.arg(&dinput)
+        .arg(&da)
+        .arg(&db)
+        .arg(&dc)
+        .arg(&dskip)
+        .arg(&dinit)
+        .arg(&mut dprefix)
+        .arg(&mut dout)
+        .arg(&nv)
+        .arg(&dv)
+        .arg(&nw)
+        .arg(&cv)
+        .arg(&bv);
+    submit(
+        &mut args,
+        LaunchConfig {
+            grid_dim: (bv, grid_y, 1),
+            block_dim: (block, 1, 1),
+            shared_mem_bytes: 0,
+        },
+    )?;
+
+    let out = syncanddownload(&stream, &dout)?;
+    let state = syncanddownload(&stream, &dstateout)?;
     Ok((out, state))
 }
 

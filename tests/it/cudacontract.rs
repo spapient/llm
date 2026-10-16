@@ -630,6 +630,112 @@ fn scan_matches_the_scalar_reference() {
 }
 
 #[test]
+fn scan_parallel_matches_reference_on_non_divisible_length() {
+    if !hasdevice("scan_parallel_matches_reference_on_non_divisible_length") {
+        return;
+    }
+    // n = 1000 splits into ceil(1000 / 256) = 4 blocks; the last block covers
+    // only 232 steps, exercising the block boundary in every stage.
+    let exec = cudaexecutor::new(wide());
+    let n = 1000;
+    let d = 3;
+    let statewidth = 4;
+    let input: Vec<f32> = (0..n * d).map(|i| (i as f32 * 0.37).sin()).collect();
+    let init: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.13).cos())
+        .collect();
+    let a: Vec<f32> = (0..d * statewidth)
+        .map(|i| 0.5 + 0.5 * (i as f32 * 0.71).cos().abs())
+        .collect();
+    let b: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.29).sin())
+        .collect();
+    let c: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.19).cos())
+        .collect();
+    let skip: Vec<f32> = (0..d).map(|i| (i as f32 * 0.11).sin()).collect();
+
+    let input_t = build(vec![n, d], input.clone());
+    let init_t = build(vec![d, statewidth], init.clone());
+    let a_t = build(vec![d, statewidth], a.clone());
+    let b_t = build(vec![d, statewidth], b.clone());
+    let c_t = build(vec![d, statewidth], c.clone());
+    let skip_t = build(vec![d], skip.clone());
+
+    let (out, state) = exec
+        .scan(
+            &input_t.getview(),
+            &init_t.getview(),
+            &a_t.getview(),
+            &b_t.getview(),
+            &c_t.getview(),
+            &skip_t.getview(),
+        )
+        .unwrap();
+
+    let (want_out, want_state) =
+        reference::scan(&input, &init, &a, &b, &c, &skip, n, d, statewidth);
+    assertallclose(out.getdata(), &want_out, 1e-5, 1e-5);
+    assertallclose(state.getdata(), &want_state, 1e-5, 1e-5);
+}
+
+#[test]
+fn scan_parallel_matches_reference_on_large_sequence() {
+    if !hasdevice("scan_parallel_matches_reference_on_large_sequence") {
+        return;
+    }
+    // n = 16384 is the M1 probe length: 64 blocks of 256 steps each, all three
+    // stages fully parallel. The tolerance gate is the P·ε·‖B‖ bound of the
+    // reordered float associations across block boundaries.
+    let exec = cudaexecutor::new(wide());
+    let n = 16384;
+    let d = 256;
+    let statewidth = 64;
+    let input: Vec<f32> = (0..n * d).map(|i| (i as f32 * 0.37).sin()).collect();
+    let init: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.13).cos())
+        .collect();
+    let a: Vec<f32> = (0..d * statewidth)
+        .map(|i| 0.5 + 0.5 * (i as f32 * 0.71).cos().abs())
+        .collect();
+    let b: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.29).sin())
+        .collect();
+    let c: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.19).cos())
+        .collect();
+    let skip: Vec<f32> = (0..d).map(|i| (i as f32 * 0.11).sin()).collect();
+
+    let input_t = build(vec![n, d], input.clone());
+    let init_t = build(vec![d, statewidth], init.clone());
+    let a_t = build(vec![d, statewidth], a.clone());
+    let b_t = build(vec![d, statewidth], b.clone());
+    let c_t = build(vec![d, statewidth], c.clone());
+    let skip_t = build(vec![d], skip.clone());
+
+    let (out, state) = exec
+        .scan(
+            &input_t.getview(),
+            &init_t.getview(),
+            &a_t.getview(),
+            &b_t.getview(),
+            &c_t.getview(),
+            &skip_t.getview(),
+        )
+        .unwrap();
+
+    let (want_out, want_state) =
+        reference::scan(&input, &init, &a, &b, &c, &skip, n, d, statewidth);
+    // The parallel path is mathematically identical but numerically distinct:
+    // per-block totals combine across 64 block boundaries with rounding that
+    // grows like P·ε·‖B‖_max ≈ 64·1.2e-7·128 ≈ 1e-3. The apply pass keeps the
+    // serial recurrence order bit-for-bit; the absolute allowance is that bound
+    // (relative tolerance stays 1e-5, matching the frozen F0-2 protocol).
+    assertallclose(out.getdata(), &want_out, 1e-3, 1e-5);
+    assertallclose(state.getdata(), &want_state, 1e-3, 1e-5);
+}
+
+#[test]
 fn scan_rejects_a_spectral_violation() {
     let exec = cudaexecutor::new(wide());
     let input = build(vec![2, 2], vec![1.0; 4]);

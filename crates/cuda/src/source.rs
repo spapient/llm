@@ -84,6 +84,34 @@ pub(crate) const SCANCUDA: &str = include_str!("../kernels/scan.cu");
 /// The stable symbol name of the kernel in [`SCANCUDA`].
 pub(crate) const SCANENTRY: &str = "scan";
 
+/// CUDA C source of the parallel three-stage scan kernel family
+/// (`kernels/scan_parallel.cu`): block aggregation, inter-block prefix, and
+/// per-block apply.
+pub(crate) const SCANPARALLELCUDA: &str = include_str!("../kernels/scan_parallel.cu");
+
+/// The stable symbol name of the block-aggregation kernel in
+/// [`SCANPARALLELCUDA`].
+pub(crate) const SCANAGGENTRY: &str = "scan_agg";
+
+/// The stable symbol name of the inter-block prefix kernel in
+/// [`SCANPARALLELCUDA`].
+pub(crate) const SCANPREFIXENTRY: &str = "scan_prefix";
+
+/// The stable symbol name of the per-block apply kernel in [`SCANPARALLELCUDA`].
+pub(crate) const SCANAPPLYENTRY: &str = "scan_apply";
+
+/// The sequence-chunk length of the parallel scan, and the compile-time bound
+/// on the per-channel state width. The apply kernel keeps its state in a
+/// thread-local array, so widths above this bound fall back to the serial
+/// kernel in [`SCANCUDA`].
+pub(crate) const SCANMAXN: u32 = 256;
+
+/// The per-threadgroup thread count of the parallel scan's block passes.
+pub(crate) const SCANBLOCKDIM: u32 = 256;
+
+/// The sequence-chunk length of the parallel scan (one block per chunk).
+pub(crate) const SCANCHUNK: u32 = 256;
+
 /// The threadgroup width of the attention kernel.
 ///
 /// The kernel's reduction tree and shared-memory partition are both sized by
