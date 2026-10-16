@@ -262,4 +262,4 @@ A4 上界 20 的权威口径是「crate root 导出的公共项数」（design.m
 
 ---
 
-**状态声明**：B0–B5 已实现并提交（契约/三后端/模型挂载），B6 基准基线已出（serial 线性 $O(n)$ 实测核对）。M1 状态在「理论 + 实测」双门禁下：理论已成文（§11：循环不变量、每步工作量、内存访问计数、完整阶 $O(ndN)$）、n 维度线性已实测（§12：log-log 斜率 ≈1）、**M1 Should 已实测闭合（Metal 同装置 16K scan 26.6 ms vs 稠密 attention 2747 ms ≈103× ≥ 5×，§12 表）**，GPU 数值真机双绿（Metal `metalcontract::scan` 16/16、CUDA `cudacontract` 48/48，均含 16K 并行用例）。M1 判定：**已达成交付门（Must 理论+线性实测；Should 同装置 16K ≥5×；GPU 真机数值双后端绿）**，阈值 $O(nd)$ 维持不变。
+**状态声明**：B0–B5 已实现并提交（契约/三后端/模型挂载），B6 基准基线已出（serial 线性 $O(n)$ 实测核对）。M1 状态在「理论 + 实测」双门禁下：理论已成文（§11：循环不变量、每步工作量、内存访问计数、完整阶 $O(ndN)$）、n 维度线性已实测（§12：log-log 斜率 ≈1）、**M1 Should 已实测闭合（Metal 同装置 16K scan 26.6 ms vs 稠密 attention 2747 ms ≈103× ≥ 5×，§12 表）**，GPU 数值真机双绿（Metal `metalcontract::scan` 16/16、CUDA `cudacontract` 48/48，均含 16K 并行用例）。M1 判定：**已达成交付门（Must 理论+线性实测；Should 同装置 16K ≥5×；GPU 真机数值双后端绿 + MUSA 内核移植验证 MTT S4000）**，阈值 $O(nd)$ 维持不变。
