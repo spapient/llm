@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ::tensor::{element, tensor};
 use format::dtypetoken;
 
-use crate::blocks::{CODECRAW, blockref, decompressblock};
+use crate::blocks::{CODECRAW, TRANSFORMNONE, blockref, decompressblock};
 use crate::crc32c::crc32c;
 use crate::encryption;
 use crate::error::checkpointerror;
@@ -142,6 +142,7 @@ fn resolvelocations(
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                transform: entry.transform,
                 tag: entry.tag,
             },
         );
@@ -156,6 +157,7 @@ fn resolvelocations(
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                transform: entry.transform,
                 tag: entry.tag,
             },
         );
@@ -184,6 +186,7 @@ struct blocklocation {
     size: u32,
     crc32c: u32,
     codec: u8,
+    transform: u8,
     tag: [u8; 16],
 }
 
@@ -248,6 +251,7 @@ impl checkpointreader {
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                transform: entry.transform,
                 tag: entry.tag,
             })
             .collect();
@@ -337,10 +341,7 @@ impl checkpointreader {
         Self::openfullfile_with(path, Some(*key))
     }
 
-    fn openfullfile_with(
-        path: &Path,
-        key: Option<[u8; 32]>,
-    ) -> Result<Self, checkpointerror> {
+    fn openfullfile_with(path: &Path, key: Option<[u8; 32]>) -> Result<Self, checkpointerror> {
         let file = File::open(path).map_err(|source| checkpointerror::io {
             path: path.to_path_buf(),
             source,
@@ -362,6 +363,7 @@ impl checkpointreader {
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                transform: entry.transform,
                 tag: entry.tag,
             })
             .collect();
@@ -524,7 +526,12 @@ impl checkpointreader {
             let plain = match self.key {
                 Some(key) => {
                     let nonce = encryption::nonceof(&block.gethash());
-                    Cow::Owned(encryption::decryptblock(&key, &nonce, &blockbytes, &location.tag)?)
+                    Cow::Owned(encryption::decryptblock(
+                        &key,
+                        &nonce,
+                        &blockbytes,
+                        &location.tag,
+                    )?)
                 }
                 None => blockbytes,
             };
@@ -532,7 +539,10 @@ impl checkpointreader {
             let to = if blockend > end { end - running } else { len };
             match plain {
                 Cow::Borrowed(slice)
-                    if out.is_empty() && blockend >= end && location.codec == CODECRAW =>
+                    if out.is_empty()
+                        && blockend >= end
+                        && location.codec == CODECRAW
+                        && location.transform == TRANSFORMNONE =>
                 {
                     let hash = contenthash(slice);
                     if hash != block.gethash() {
@@ -545,7 +555,7 @@ impl checkpointreader {
                     return Ok(Some(Cow::Borrowed(&slice[from..to])));
                 }
                 bytes => {
-                    let raw = decompressblock(location.codec, &bytes)?;
+                    let raw = decompressblock(location.codec, location.transform, &bytes)?;
                     let hash = contenthash(&raw);
                     if hash != block.gethash() {
                         return Err(checkpointerror::blockhashmismatch {
@@ -602,19 +612,16 @@ impl checkpointreader {
                     .getelementcount()
                     .map_err(checkpointerror::tensor)?;
                 let width = entry.getdtype().sizeinbytes();
-                let nnz = usize::try_from(sp.getnnz()).map_err(|_| {
-                    checkpointerror::invalidmanifest {
+                let nnz =
+                    usize::try_from(sp.getnnz()).map_err(|_| checkpointerror::invalidmanifest {
                         reason: "sparse non-zero count overflows usize".to_string(),
-                    }
-                })?;
+                    })?;
                 Cow::Owned(desparsify(&bytes, nnz, width, count)?)
             }
             None => bytes,
         };
         let decoded = match entry.getlayout() {
-            Some(l) => {
-                tensor::tryfrombyteswithlayout(entry.getshape().clone(), l.clone(), &dense)?
-            }
+            Some(l) => tensor::tryfrombyteswithlayout(entry.getshape().clone(), l.clone(), &dense)?,
             None => tensor::tryfrombytes(entry.getshape().clone(), &dense)?,
         };
         Ok(Some(decoded))
@@ -634,35 +641,33 @@ fn desparsify(
     width: usize,
     count: usize,
 ) -> Result<Vec<u8>, checkpointerror> {
-    let indexbytes = nnz.checked_mul(4).ok_or_else(|| {
-        checkpointerror::invalidmanifest {
+    let indexbytes = nnz
+        .checked_mul(4)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
             reason: "sparse index section overflows usize".to_string(),
-        }
-    })?;
-    let valuebytes = nnz.checked_mul(width).ok_or_else(|| {
-        checkpointerror::invalidmanifest {
+        })?;
+    let valuebytes = nnz
+        .checked_mul(width)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
             reason: "sparse value section overflows usize".to_string(),
-        }
-    })?;
+        })?;
     if bytes.len() != indexbytes + valuebytes {
         return Err(checkpointerror::invalidmanifest {
             reason: "sparse data length mismatch".to_string(),
         });
     }
-    let dense_len = count.checked_mul(width).ok_or_else(|| {
-        checkpointerror::invalidmanifest {
+    let dense_len = count
+        .checked_mul(width)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
             reason: "dense buffer overflows usize".to_string(),
-        }
-    })?;
+        })?;
     let mut dense = vec![0u8; dense_len];
     for i in 0..nnz {
-        let idx = u32::from_le_bytes(
-            bytes[i * 4..i * 4 + 4]
-                .try_into()
-                .map_err(|_| checkpointerror::invalidmanifest {
-                    reason: "sparse index decode failed".to_string(),
-                })?,
-        ) as usize;
+        let idx = u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().map_err(|_| {
+            checkpointerror::invalidmanifest {
+                reason: "sparse index decode failed".to_string(),
+            }
+        })?) as usize;
         if idx >= count {
             return Err(checkpointerror::invalidmanifest {
                 reason: "sparse index out of range".to_string(),

@@ -1,15 +1,15 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use crate::blocks::{blockref, chunk, compressblock, decompressblock};
+use crate::blocks::{TRANSFORMNONE, blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
 use crate::encryption;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
 use crate::signature;
 use crate::uformat::{
-    FLAGDELTA, FLAGENCRYPTED, FLAGSIGNED, MAGIC, PREFIXLEN, canonicalmanifest, checkflags,
-    parseartifact, pushu32, pushu64, snapshot, storedentry, tensorentry,
+    FLAGDELTA, FLAGENCRYPTED, FLAGSIGNED, FLAGTRANSFORMED, MAGIC, PREFIXLEN, canonicalmanifest,
+    checkflags, parseartifact, pushu32, pushu64, snapshot, storedentry, tensorentry,
 };
 
 /// One block physically stored in a delta artifact.
@@ -220,6 +220,22 @@ impl delta {
             flags |= FLAGENCRYPTED;
         }
 
+        // Phase 1: compress every stored block before the manifest header is
+        // written, so the snapshot-level transform flag can be set when any
+        // block uses the bit-shuffle pre-pass.
+        let mut storedblocks = Vec::with_capacity(self.stored.len());
+        let mut has_transform = false;
+        for block in &self.stored {
+            let (codec, transform, compressed) = compressblock(&block.bytes);
+            if transform != TRANSFORMNONE {
+                has_transform = true;
+            }
+            storedblocks.push((codec, transform, compressed));
+        }
+        if has_transform {
+            flags |= FLAGTRANSFORMED;
+        }
+
         let mut manifest = canonical;
         pushu32(&mut manifest, flags);
         manifest.extend_from_slice(&self.base_id);
@@ -229,8 +245,7 @@ impl delta {
         }
         pushu64(&mut manifest, self.stored.len() as u64);
         let mut storeddata = Vec::new();
-        for block in &self.stored {
-            let (codec, compressed) = compressblock(&block.bytes);
+        for (block, (codec, transform, compressed)) in self.stored.iter().zip(storedblocks) {
             let (stored, tag) = match key {
                 Some(key) => {
                     let nonce = encryption::nonceof(&block.hash);
@@ -244,6 +259,9 @@ impl delta {
             pushu32(&mut manifest, stored.len() as u32);
             pushu32(&mut manifest, checksum);
             manifest.push(codec);
+            if flags & FLAGTRANSFORMED != 0 {
+                manifest.push(transform);
+            }
             if key.is_some() {
                 manifest.extend_from_slice(&tag);
             }
@@ -354,7 +372,7 @@ fn verifystored(
             }
             None => Cow::Borrowed(bytes),
         };
-        let raw = decompressblock(entry.codec, &plain)?;
+        let raw = decompressblock(entry.codec, entry.transform, &plain)?;
         let hash = contenthash(&raw);
         if hash != entry.hash {
             return Err(checkpointerror::blockhashmismatch {

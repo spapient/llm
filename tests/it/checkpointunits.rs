@@ -651,8 +651,12 @@ mod uformat {
         let snap = onesnap();
         let root = snap.roothash();
         let mut bytes = snap.encode().unwrap();
-        let pos = bytes.windows(32).position(|w| w == root.as_slice()).unwrap();
-        bytes[pos - 32 - 4] |= 0x10;
+        let pos = bytes
+            .windows(32)
+            .position(|w| w == root.as_slice())
+            .unwrap();
+        // 0x20 is still an unassigned bit: 0x10 became FLAGTRANSFORMED.
+        bytes[pos - 32 - 4] |= 0x20;
         assert!(matches!(
             snapshot::decode(&bytes),
             Err(checkpointerror::invalidmanifest { .. })
@@ -746,7 +750,9 @@ mod uformat {
         let mut snap = snapshot::new(1);
         snap.addtensor("w".to_string(), dtype::f32, shapeof(&[2, 3]), &[0u8; 24])
             .unwrap();
-        let err = snap.setlayout("w", layout::new(vec![100, 100], 0)).unwrap_err();
+        let err = snap
+            .setlayout("w", layout::new(vec![100, 100], 0))
+            .unwrap_err();
         assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
     }
 

@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use format::{dtypetoken, tokendtype};
 use tensor::{dtype, layout, shape};
 
-use crate::blocks::{blockref, chunk, compressblock, decompressblock};
+use crate::blocks::{TRANSFORMNONE, blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
 use crate::encryption;
 use crate::error::checkpointerror;
@@ -28,6 +28,10 @@ pub(crate) const FLAGSIGNED: u32 = 4;
 /// Flags value for a snapshot whose blocks are AES-256-GCM encrypted.
 pub(crate) const FLAGENCRYPTED: u32 = 8;
 
+/// Flags value for a snapshot whose block table carries per-entry transform
+/// bytes (the bit-shuffle + delta pre-pass).
+pub(crate) const FLAGTRANSFORMED: u32 = 16;
+
 /// One entry of the physical block table: where a stored block lives.
 pub(crate) struct storedentry {
     pub(crate) hash: [u8; 16],
@@ -35,6 +39,7 @@ pub(crate) struct storedentry {
     pub(crate) size: u32,
     pub(crate) crc32c: u32,
     pub(crate) codec: u8,
+    pub(crate) transform: u8,
     pub(crate) tag: [u8; 16],
 }
 
@@ -513,6 +518,25 @@ impl snapshot {
             flags |= FLAGENCRYPTED;
         }
 
+        // Phase 1: compress every block before the manifest header is written,
+        // so the snapshot-level transform flag can be set when any block uses
+        // the bit-shuffle pre-pass.
+        let mut storedblocks = Vec::with_capacity(blocks.len());
+        let mut has_transform = false;
+        let mut offset = 0usize;
+        for block in &blocks {
+            let len = block.getlen() as usize;
+            let (codec, transform, compressed) = compressblock(&self.data[offset..offset + len]);
+            if transform != TRANSFORMNONE {
+                has_transform = true;
+            }
+            storedblocks.push((codec, transform, compressed));
+            offset += len;
+        }
+        if has_transform {
+            flags |= FLAGTRANSFORMED;
+        }
+
         let mut manifest = canonical;
         pushu32(&mut manifest, flags);
         manifest.extend_from_slice(&[0u8; 32]);
@@ -522,10 +546,7 @@ impl snapshot {
         }
         pushu64(&mut manifest, blocks.len() as u64);
         let mut storeddata = Vec::new();
-        let mut offset = 0usize;
-        for block in &blocks {
-            let len = block.getlen() as usize;
-            let (codec, compressed) = compressblock(&self.data[offset..offset + len]);
+        for (block, (codec, transform, compressed)) in blocks.iter().zip(storedblocks) {
             let (stored, tag) = match key {
                 Some(key) => {
                     let nonce = encryption::nonceof(&block.gethash());
@@ -539,11 +560,13 @@ impl snapshot {
             pushu32(&mut manifest, stored.len() as u32);
             pushu32(&mut manifest, checksum);
             manifest.push(codec);
+            if flags & FLAGTRANSFORMED != 0 {
+                manifest.push(transform);
+            }
             if key.is_some() {
                 manifest.extend_from_slice(&tag);
             }
             storeddata.extend_from_slice(&stored);
-            offset += len;
         }
 
         let total = PREFIXLEN
@@ -689,7 +712,12 @@ pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointer
     } else {
         None
     };
-    let stored = readstored(manifest, &mut pos, flags & FLAGENCRYPTED != 0)?;
+    let stored = readstored(
+        manifest,
+        &mut pos,
+        flags & FLAGENCRYPTED != 0,
+        flags & FLAGTRANSFORMED != 0,
+    )?;
     Ok(parsedmanifest {
         version,
         tensors,
@@ -706,7 +734,7 @@ pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointer
 /// Validates snapshot flags against an expected kind (full or delta), rejecting
 /// unknown bits and a mixed full/delta declaration.
 pub(crate) fn checkflags(flags: u32, expected: u32) -> Result<(), checkpointerror> {
-    let known = FLAGSFULL | FLAGDELTA | FLAGSIGNED | FLAGENCRYPTED;
+    let known = FLAGSFULL | FLAGDELTA | FLAGSIGNED | FLAGENCRYPTED | FLAGTRANSFORMED;
     if flags & !known != 0 {
         return Err(checkpointerror::invalidmanifest {
             reason: format!("unsupported snapshot flags {flags}"),
@@ -950,12 +978,13 @@ pub(crate) fn readblocks(
     Ok(blocks)
 }
 
-/// Parses the physical block table, reading each entry's authentication tag
-/// when the snapshot is encrypted.
+/// Parses the physical block table, reading each entry's transform byte when
+/// the snapshot is transformed and its authentication tag when encrypted.
 pub(crate) fn readstored(
     manifest: &[u8],
     pos: &mut usize,
     encrypted: bool,
+    transformed: bool,
 ) -> Result<Vec<storedentry>, checkpointerror> {
     let count = readcount(manifest, pos)?;
     let mut stored = Vec::with_capacity(count);
@@ -967,6 +996,11 @@ pub(crate) fn readstored(
         let size = readu32(manifest, pos)?;
         let crc32c = readu32(manifest, pos)?;
         let codec = readbytes(manifest, pos, 1)?[0];
+        let transform = if transformed {
+            readbytes(manifest, pos, 1)?[0]
+        } else {
+            TRANSFORMNONE
+        };
         let tag = if encrypted {
             let tagbytes = readbytes(manifest, pos, 16)?;
             let mut tag = [0u8; 16];
@@ -981,6 +1015,7 @@ pub(crate) fn readstored(
             size,
             crc32c,
             codec,
+            transform,
             tag,
         });
     }
@@ -1034,7 +1069,7 @@ fn verifyfull(
             }
             None => Cow::Borrowed(bytes),
         };
-        let raw = decompressblock(entry.codec, &plain)?;
+        let raw = decompressblock(entry.codec, entry.transform, &plain)?;
         if raw.len() != block.getlen() as usize {
             return Err(checkpointerror::invalidmanifest {
                 reason: format!("block {position} decompressed length mismatch"),
