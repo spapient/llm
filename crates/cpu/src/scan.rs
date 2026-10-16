@@ -101,6 +101,150 @@ impl cpuscan {
         let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
         Ok((finish(&outshape, out)?, finish(&stateshape, newstate)?))
     }
+
+    /// Applies the scan with a chunked three-phase reorganization: chunk-local
+    /// serial scan, inter-chunk prefix, then chunk-local correction. The
+    /// reorganization reassociates the floating-point order, so the result
+    /// matches [`Self::apply`] within the parallel-reduction tolerance (§5.10),
+    /// not bit-for-bit.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply`], plus [`backenderror::shapemismatch`] when `chunk`
+    /// is zero.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chunked(
+        &self,
+        input: &tensorview<'_, f32>,
+        init: &tensorview<'_, f32>,
+        a: &tensorview<'_, f32>,
+        b: &tensorview<'_, f32>,
+        c: &tensorview<'_, f32>,
+        skip: &tensorview<'_, f32>,
+        chunk: usize,
+    ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
+        let (n, d, statewidth) = scanplan(input, init, a, b, c, skip)?;
+        if chunk == 0 {
+            return Err(backenderror::shapemismatch { op: SCANOP });
+        }
+        if n <= chunk {
+            return self.apply(input, init, a, b, c, skip);
+        }
+        let prefixes = chunkprefixes(
+            n,
+            d,
+            statewidth,
+            chunk,
+            input.getdata(),
+            a.getdata(),
+            b.getdata(),
+        );
+        let (out, state) = chunkapply(
+            n,
+            d,
+            statewidth,
+            chunk,
+            input.getdata(),
+            init.getdata(),
+            a.getdata(),
+            b.getdata(),
+            c.getdata(),
+            skip.getdata(),
+            &prefixes,
+        );
+        let outshape = shape::new(vec![n, d]).map_err(|_| backenderror::sizeoverflow)?;
+        let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
+        Ok((finish(&outshape, out)?, finish(&stateshape, state)?))
+    }
+}
+
+/// Computes the inter-chunk prefix of each chunk's semigroup combine, in chunk
+/// order. `prefixes[k]` is the combine of every chunk before `k`, so applying
+/// `prefixes[k]` to a chunk-local scan recovers the global prefix up to that
+/// chunk.
+fn chunkprefixes(
+    n: usize,
+    d: usize,
+    statewidth: usize,
+    chunk: usize,
+    x: &[f32],
+    a: &[f32],
+    b: &[f32],
+) -> Vec<(Vec<f32>, Vec<f32>)> {
+    let width = d * statewidth;
+    let mut prefixes = Vec::new();
+    let mut prefix_a = vec![1.0_f32; width];
+    let mut prefix_b = vec![0.0_f32; width];
+    let mut start = 0;
+    while start < n {
+        let end = (start + chunk).min(n);
+        let mut block_a = vec![1.0_f32; width];
+        let mut block_b = vec![0.0_f32; width];
+        for t in start..end {
+            for i in 0..d {
+                let xv = x[t * d + i];
+                for j in 0..statewidth {
+                    let idx = i * statewidth + j;
+                    block_b[idx] = a[idx] * block_b[idx] + b[idx] * xv;
+                    block_a[idx] *= a[idx];
+                }
+            }
+        }
+        prefixes.push((prefix_a.clone(), prefix_b.clone()));
+        for idx in 0..width {
+            prefix_b[idx] = block_a[idx] * prefix_b[idx] + block_b[idx];
+            prefix_a[idx] *= block_a[idx];
+        }
+        start = end;
+    }
+    prefixes
+}
+
+/// Applies each chunk's local serial scan (from `init`) and corrects it with
+/// the chunk's prefix, returning the output and the final state.
+#[allow(clippy::too_many_arguments)]
+fn chunkapply(
+    n: usize,
+    d: usize,
+    statewidth: usize,
+    chunk: usize,
+    x: &[f32],
+    init: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    skip: &[f32],
+    prefixes: &[(Vec<f32>, Vec<f32>)],
+) -> (Vec<f32>, Vec<f32>) {
+    let width = d * statewidth;
+    let mut out = vec![0.0_f32; n * d];
+    let mut state = init.to_vec();
+    let mut start = 0;
+    let mut block = 0;
+    while start < n {
+        let end = (start + chunk).min(n);
+        let (pa, pb) = &prefixes[block];
+        let mut h = Vec::with_capacity(width);
+        for idx in 0..width {
+            h.push(pa[idx] * init[idx] + pb[idx]);
+        }
+        for t in start..end {
+            for i in 0..d {
+                let xv = x[t * d + i];
+                let mut acc = 0.0_f32;
+                for j in 0..statewidth {
+                    let idx = i * statewidth + j;
+                    h[idx] = a[idx] * h[idx] + b[idx] * xv;
+                    acc += c[idx] * h[idx];
+                }
+                out[t * d + i] = acc + skip[i] * xv;
+            }
+        }
+        state = h;
+        block += 1;
+        start = end;
+    }
+    (out, state)
 }
 
 /// Validates ranks, channel alignment, state-width alignment, and the spectral

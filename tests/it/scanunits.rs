@@ -8,8 +8,8 @@
 
 use crate::support::{build, wide};
 use api::{backenderror, compute};
-use cpu::cpuexecutor;
-use testkit::reference;
+use cpu::{cpuexecutor, cpuscan};
+use testkit::{assertions::assertallclose, reference};
 
 fn exec() -> cpuexecutor {
     cpuexecutor::new(wide())
@@ -237,6 +237,85 @@ fn scan_cached_rejects_multi_token() {
             &skip.getview(),
         )
         .map(|_| ()),
+        Err(backenderror::shapemismatch { op: "scan" })
+    );
+}
+
+#[test]
+fn scan_chunked_matches_serial_within_tolerance() {
+    let exec = exec();
+    let n = 128;
+    let d = 3;
+    let statewidth = 4;
+    let chunk = 16;
+    let input: Vec<f32> = (0..n * d).map(|i| (i as f32 * 0.37).sin()).collect();
+    let init: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.13).cos())
+        .collect();
+    let a: Vec<f32> = (0..d * statewidth)
+        .map(|i| 0.5 + 0.5 * (i as f32 * 0.71).cos().abs())
+        .collect();
+    let b: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.29).sin())
+        .collect();
+    let c: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.19).cos())
+        .collect();
+    let skip: Vec<f32> = (0..d).map(|i| (i as f32 * 0.11).sin()).collect();
+
+    let input_t = build(vec![n, d], input.clone());
+    let init_t = build(vec![d, statewidth], init.clone());
+    let a_t = build(vec![d, statewidth], a.clone());
+    let b_t = build(vec![d, statewidth], b.clone());
+    let c_t = build(vec![d, statewidth], c.clone());
+    let skip_t = build(vec![d], skip.clone());
+
+    let (serial_out, serial_state) = exec
+        .scan(
+            &input_t.getview(),
+            &init_t.getview(),
+            &a_t.getview(),
+            &b_t.getview(),
+            &c_t.getview(),
+            &skip_t.getview(),
+        )
+        .unwrap();
+    let (chunked_out, chunked_state) = cpuscan
+        .apply_chunked(
+            &input_t.getview(),
+            &init_t.getview(),
+            &a_t.getview(),
+            &b_t.getview(),
+            &c_t.getview(),
+            &skip_t.getview(),
+            chunk,
+        )
+        .unwrap();
+
+    assertallclose(chunked_out.getdata(), serial_out.getdata(), 1e-4, 1e-3);
+    assertallclose(chunked_state.getdata(), serial_state.getdata(), 1e-4, 1e-3);
+}
+
+#[test]
+fn scan_chunked_rejects_zero_chunk() {
+    let input = build(vec![4, 2], vec![0.0; 8]);
+    let init = build(vec![2, 1], vec![0.0, 0.0]);
+    let a = build(vec![2, 1], vec![0.5, 0.5]);
+    let b = build(vec![2, 1], vec![1.0, 1.0]);
+    let c = build(vec![2, 1], vec![1.0, 1.0]);
+    let skip = build(vec![2], vec![0.0, 0.0]);
+    assert_eq!(
+        cpuscan
+            .apply_chunked(
+                &input.getview(),
+                &init.getview(),
+                &a.getview(),
+                &b.getview(),
+                &c.getview(),
+                &skip.getview(),
+                0,
+            )
+            .map(|_| ()),
         Err(backenderror::shapemismatch { op: "scan" })
     );
 }
