@@ -522,3 +522,29 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 `encode/bytelevel/4096` 现 27.97 µs（≈6.8 ns/字符），逼近旧 §12.9 带缓存记录的 15.88 µs。
 
 **② 安全 SIMD 评估——暂不引入**：剩余开销为 `gpt2split`（逐 `char` Unicode 分类 + 收缩词匹配）与 `bytemap`（byte→char 表查 + String 收集）。SIMD 选项：`fearless_simd`/`archmage`（安全、需新依赖 + vendor）或 `#[target_feature]`+feature token（安全、但 ARM NEON 的 byte→u32 gather 需多段 `vtbx` + 加宽，复杂且 `char` 级 Unicode 分类 SIMD 价值低）。按 AGENTS.md §8「没有清晰的正确性与测量计划，不得引入 SIMD」与 §3.2「最小依赖」：剩余 ~6.8 ns/字符收益已低，SIMD 至多对其中表查部分再 ~1.5–2×，不抵新依赖/复杂度，故**判定暂不值得**；如需可在后续单独立项（fearless_simd 优先，unsafe 封在依赖内）。
+
+### 12.22 热路径去分配 + 词表哈希化（2026-10-16）
+
+按 §12.19 后的深度分析落地前两项：
+
+**① bytefallback 去分配**：`resolvenonvocab`/`resolvetoken` 的每 leaf `Vec::new()` 改为复用 `mergescratch::bytetokens` 缓冲（`&mut Vec<tokenid>` 贯穿 encode/rankmerge 调用点）。
+
+**② 词表 `bycontent` BTreeMap → HashMap**：`vocabulary::bycontent` 由 `BTreeMap<String,u32>` 改 `HashMap<String,u32>`（`byid` 保持 `BTreeMap` 供 `getminid`/`getmaxid` 排序）。`getid` 从 O(log V) 指针追逐降为 O(1) 哈希。**这是本轮最大单项 win**——bytefallback 每字符一次失败 `getid`，BTreeMap 的指针追逐是主开销，非 Vec 分配。
+
+**验证**：`tokenizerunits` 68 passed、`tokenizergolden` 4 passed（7 模型逐位不变）、`tokens` 21 passed；clippy `-D warnings` + fmt 通过。
+
+**基准（同环境，mean）**：
+
+| 基准 | 本轮前 | ① 后 | ①+② 后 | 累计 |
+| --- | --- | --- | --- | --- |
+| encode/bytefallback/4096 | 188.86 µs | 147.39 µs | **41.37 µs** | ≈ 4.6× |
+| encode/bytelevel/4096 | 27.97 µs | — | 27.00 µs | ≈ 1.04×（词表 256 本就浅） |
+| encode/gpt2/4096（真实 50k 词表） | — | — | **28.14 µs** | 词表大小不再影响 |
+
+**诚实边界**：① `bycontent` 用 std `HashMap`（SipHash），对短键仍非最快；若再追求极致可换 `ahash`/`fxhash`（新依赖 + vendor），对 bytefallback 可能再省 ~15–20%，未做。② gpt2 基准为本轮新增（无"哈希化前"对照），28.14 µs 是现状绝对数。
+
+### 12.23 堆步打包实验（回退）+ tiktoken 评估（2026-10-16）
+
+**① 堆步 `(rank,left)→u64` 打包——实测无效，已回退**：把 `mergestep{rank:usize,left:usize}`（16 B）改为 u64 打包（8 B）+ 访问器。实测 `applyids_chain/64` 2.655→3.25 µs（−22%）、`/512` −4%、`/4096` −1%——**变慢**。原因：`new` 的 shift+or、`rank()`/`left()` 每次访问的 shift/and 开销抵消了内存减半的缓存收益；编译器对 16 B 结构体的字段访问本就零开销。结论：**内存打包的"理论更快"被实测推翻，维持 16 B 结构体**（AGENTS.md §8「避免仅因更复杂或理论更快就接受更慢的实现」）。
+
+**② tiktoken 剩余评估——无干净的低风险优化**：`encode/tiktoken/4096` ≈ 450 µs，主导是 ① `fancy_regex` 的 o200k 正则（含 `(?!\S)` 负向前瞻，回溯较慢，手写替换有正确性风险）；② `ranks: HashMap<Vec<u8>,u32>` 的 SipHash 切片哈希。换更快的非 DoS 抗性 hasher（fxhash）会引入**哈希泛洪 DoS**——`ranks.get` 的键是输入文本的字节切片（不可信输入），确定性哈希可被预构造碰撞；`ahash`（随机种子、DoS 抗性、更快）可行但需新依赖 + vendor。两者收益均 ~15–20%，风险/成本不抵，**判定维持 SipHash**。tiktoken 路径维持 ~450 µs，是当前唯一"慢"路径，但其优化需单独立项（手写 o200k 切分 或 ahash 依赖）。

@@ -217,6 +217,19 @@ fn encodebytelevelbatch(c: &mut Criterion) {
     });
 }
 
+/// Encodes a repeated phrase with the real GPT-2 tokenizer (50,257-entry
+/// vocabulary) to measure the hot `getid` path against a production-sized table.
+fn encodegpt2(c: &mut Criterion) {
+    let doc = std::fs::read_to_string("tests/fixtures/gpt2/tokenizer.json").unwrap();
+    let tok = tokenizer::fromjson(&doc).unwrap();
+    for len in [512usize, 4096] {
+        let input = repeatphrase("the quick brown fox jumps over ", len);
+        c.bench_function(&format!("tokenizer/encode/gpt2/{len}"), |b| {
+            b.iter(|| black_box(tok.encode(&input).unwrap()));
+        });
+    }
+}
+
 fn encodetiktoken(c: &mut Criterion) {
     let content = std::fs::read_to_string("tests/fixtures/o200k/o200k_base.tiktoken").unwrap();
     let specials = [
@@ -261,6 +274,7 @@ criterion_group!(
     decodebytefallback,
     encodebytelevel,
     encodebytelevelbatch,
+    encodegpt2,
     encodetiktoken,
     encodetiktokeninto
 );

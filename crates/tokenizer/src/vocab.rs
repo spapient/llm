@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use lib::tokenid;
 
@@ -9,15 +9,16 @@ use crate::error::tokenizererror;
 /// A `vocabulary` owns two maps: token string to id and id to token string.
 /// Both directions are populated from the same validated entry list, so a
 /// lookup in one direction always succeeds exactly when the other does. The
-/// id to token direction is stored in a `BTreeMap` rather than a dense vector
+/// token-string-to-id direction uses a `HashMap` for O(1) encode lookups; the
+/// id-to-token direction is stored in a `BTreeMap` rather than a dense vector
 /// so that an out-of-range id from untrusted input cannot cause a large
-/// allocation (rule `IN4`); ids are validated against the inserted entries,
-/// never against their numeric magnitude. A 256-entry byte-fallback table maps
-/// each byte to its `<0xNN>` token id when present, so byte-fallback encoding
-/// does not allocate per byte.
+/// allocation (rule `IN4`) and `getminid`/`getmaxid` stay sorted. Ids are
+/// validated against the inserted entries, never against their numeric
+/// magnitude. A 256-entry byte-fallback table maps each byte to its `<0xNN>`
+/// token id when present, so byte-fallback encoding does not allocate per byte.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct vocabulary {
-    bycontent: BTreeMap<String, u32>,
+    bycontent: HashMap<String, u32>,
     byid: BTreeMap<u32, String>,
     bytetokens: [Option<tokenid>; 256],
 }
@@ -25,7 +26,7 @@ pub struct vocabulary {
 impl Default for vocabulary {
     fn default() -> Self {
         Self {
-            bycontent: BTreeMap::new(),
+            bycontent: HashMap::new(),
             byid: BTreeMap::new(),
             bytetokens: [None; 256],
         }
@@ -42,7 +43,7 @@ impl vocabulary {
     /// one token string is assigned to two different ids. Repeating the exact
     /// same `(token, id)` pair is accepted.
     pub fn fromentries(entries: Vec<(String, u32)>) -> Result<Self, tokenizererror> {
-        let mut bycontent = BTreeMap::new();
+        let mut bycontent = HashMap::new();
         let mut byid = BTreeMap::new();
         for (content, raw) in entries {
             if let Some(existing) = byid.get(&raw)

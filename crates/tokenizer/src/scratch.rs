@@ -50,6 +50,7 @@ pub struct mergescratch {
     pub(crate) run: Vec<tokenid>,
     pub(crate) charstart: Vec<usize>,
     pub(crate) wordcache: HashMap<String, Vec<tokenid>>,
+    pub(crate) bytetokens: Vec<tokenid>,
 }
 
 /// Resets `prev`/`next`/`alive` to the initial linked list of `count` symbols.

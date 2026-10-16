@@ -392,7 +392,12 @@ impl tokenizer {
         scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
-        let mergescratch { merge, run, .. } = scratch;
+        let mergescratch {
+            merge,
+            run,
+            bytetokens,
+            ..
+        } = scratch;
         run.clear();
         for character in pretoken.chars() {
             let mut buffer = [0u8; 4];
@@ -404,7 +409,14 @@ impl tokenizer {
                     self.bytepair.applyids_into(run, merge, out);
                     run.clear();
                 }
-                resolvenonvocab(&self.vocabulary, self.bytefallback, self.unk, symbol, out)?;
+                resolvenonvocab(
+                    &self.vocabulary,
+                    self.bytefallback,
+                    self.unk,
+                    symbol,
+                    bytetokens,
+                    out,
+                )?;
             }
         }
         if !run.is_empty() {
@@ -428,7 +440,14 @@ impl tokenizer {
             return Ok(());
         }
         if count == 1 {
-            resolvetoken(&self.vocabulary, self.bytefallback, self.unk, pretoken, out)?;
+            resolvetoken(
+                &self.vocabulary,
+                self.bytefallback,
+                self.unk,
+                pretoken,
+                &mut scratch.bytetokens,
+                out,
+            )?;
             return Ok(());
         }
 
@@ -436,7 +455,10 @@ impl tokenizer {
         // live symbol at index `i` is the borrowed slice
         // `pretoken[charstart[i]..end]`; no per-symbol string is materialized.
         let mergescratch {
-            merge, charstart, ..
+            merge,
+            charstart,
+            bytetokens,
+            ..
         } = scratch;
         charstart.clear();
         charstart.extend(pretoken.char_indices().map(|(offset, _)| offset));
@@ -469,6 +491,7 @@ impl tokenizer {
                 self.bytefallback,
                 self.unk,
                 &pretoken[charstart[cursor]..end],
+                bytetokens,
                 out,
             )?;
             match merge.next[cursor] {
