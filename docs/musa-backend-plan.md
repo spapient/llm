@@ -115,3 +115,27 @@
 ---
 
 **状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**——3.1.0 的 `mu*` driver API 已完整（`muModuleLoadData`/`muLaunchKernel`/内存/上下文，`musa.h` 齐），host 层 = `mu*` driver API + build.rs `mcc` 预编译 FatBin（与 5.x MTRTC 加载路径同层，编译时机不同，对固定内核集无实质收益）；muBLAS/muDNN 可用。M2–M6 按此收敛实施。
+
+
+### 4.x 性能路径深度对比（2026-10-16，结论：A1+B1+C2 唯一最优）
+
+**真机/权威证据（本轮新增）**：
+| 证据 | 数据 | 来源 |
+| :--- | :--- | :--- |
+| 单次内核启动稳态开销（MTT S4000） | 异步队列 **18.1 µs**/launch；带同步往返 **42.2 µs**/launch | 本轮 `scripts/musa/launch_probe.cu` 真机实测 |
+| S4000 Tensor Core 规格 | FP32 25 T / **TF32 Tensor 50 T** / FP16 Tensor 100 T / INT8 200 TOPS | 官方产品页 |
+| GEMM 优化路径 | 基线 FMA **3,640 GFLOPS** → WMMA/Tensor Core 优化 **53,572 GFLOPS**（~15×） | 摩尔线程官方博客（B 预转置 + 128 线程 Wave Tile + 异步双缓冲 + CTA Swizzle） |
+
+**正交维度拆解**（方案非互斥，三个独立性能变量）：
+
+| 维度 | 选项 | 实测/依据 | 是否性能变量 |
+| :--- | :--- | :--- | :--- |
+| 编译时机 | A1 mcc 编译期 vs A2 MTRTC 运行时 | fatbin 优化程度相同；A2 仅多首启 JIT | **否**（稳态等价） |
+| host 层 | A1/A2 `mu*` driver vs A3 `musart` runtime | driver 直通驱动、无 runtime 编组；实测 18µs 为 musart 路径，driver 同量级（µs 级差） | **否**（每算子一次启动） |
+| 算子计算 | **B1 muBLAS/muDNN（Tensor Core）** vs B2 自研 FMA 内核 | TF32 50 T vs FMA 3.6 T → **~14×**；muBLAS 已含官方博客全套优化 | **是（最大）** |
+| 执行模式 | C1 逐算子同步 vs **C2 submission 单提交** | 35 算子 × 42µs ≈ **1.5 ms 固定开销** → 单提交 ~0.1 ms（~35×）；Metal 端已实证 52ms→2.8ms | **是（次大）** |
+
+**结论（唯一最优）**：**A1（mcc 预编译 + `mu*` driver）+ B1（muBLAS/muDNN）+ C2（submission 批处理）**。
+- 综合最优 = A1：零升级风险；稳态性能与 A2 等价；host 层比 A3 薄且为未来 MTRTC 同层接口（A1 ⊃ A3）。
+- 性能最优 = B1×C2（Tensor Core 计算差 ~14× × 固定开销差 ~35×）；A1/A2 在性能上无差异，A2 无任何增益。
+- 性能预估（外推，非实测；真实差距待 M6 基准）：最差路径（B2+C1）1× → 最优路径（B1+C2）预估 **15–30×**（固定开销 + 计算双杠杆）。
