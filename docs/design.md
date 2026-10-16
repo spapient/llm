@@ -2512,7 +2512,7 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 已执行的一次性尖刺验证（代码置于被 git 忽略的 `work/`，不提交；证据等级 E1）：
 
 * **Metal 在本机真实运行成功。** 设备 `Apple M5 Pro`；MSL 经 `newLibraryWithSource_options_error` **运行时编译成功且无需 Xcode**；2×3 乘 3×2 的 f32 matmul 输出 `[58, 64, 139, 154]` 与参考一致。
-* **Metal 的真实 `unsafe` 面仅 4 处**：host→device 上传、device→host 下载、`setBuffer_offset_atIndex`、`setBytes_length_atIndex`。`MTLCreateSystemDefaultDevice`、`newLibraryWithSource_options_error`、`newComputePipelineStateWithFunction_error`、`newBufferWithLength_options`、`newCommandQueue`、`commandBuffer`、`computeCommandEncoder`、`setComputePipelineState`、`dispatchThreads_threadsPerThreadgroup`、`endEncoding`、`commit`、`waitUntilCompleted` 全部是**安全**的（实测判据：编译器对多余的 `unsafe` 块报 `unused_unsafe`）。
+* **Metal 的真实 `unsafe` 面仅 4 处**：host→device 上传、device→host 下载、`setBuffer_offset_atIndex`、`setBytes_length_atIndex`。`MTLCreateSystemDefaultDevice`、`newLibraryWithSource_options_error`、`newComputePipelineStateWithFunction_error`、`newBufferWithLength_options`、`newCommandQueue`、`commandBuffer`、`computeCommandEncoder`、`setComputePipelineState`、`dispatchThreads_threadsPerThreadgroup`、`endEncoding`、`commit`、`waitUntilCompleted` 全部是**安全**的（实测判据：编译器对多余的 `unsafe` 块报 `unused_unsafe`）。（尖刺时刻观测；现值已收敛至 3 个驱动交接块，见 21.8 表。）
 * **cudarc 可在无 CUDA 工具链的 macOS 上类型检查通过。** feature 为 `driver`、`cublas`、`cudnn`、`nvrtc`、`dynamic-loading`，且**必须**显式指定一个 `cuda-<version>`（本仓库取 `cuda-12060`；缺省时 `build.rs` 直接失败）。因此 `cargo check -p cuda` 可作为无 GPU 的 CI 门禁。
 * **cuDNN 同样可在无工具链的宿主上类型检查。** `dynamic-loading` 下 `cudarc` 的 `build.rs` 不发出任何 `rustc-link-lib`，`cudnn` 的符号改由 `libloading` 在运行时解析（`src/cudnn/sys` 的 `culib()`），故 cuDNN 头文件与库都不参与本机构建。代价是符号缺失从链接期错误变为 `cudarc` 内部的 `panic!`，我们无法消除，只如实记录（证据等级 E1，读源码所得）。
 * CUDA 的运行时数值验证**已于 2026-10-12 在真机执行**（RTX 2080 Ti；`cudacontract` 36 passed / 0 failed、`cargo test --workspace` 758 passed / 0 failed、输出 0 条 `E4 未执行`），见 21.10.3。
@@ -2598,7 +2598,7 @@ cuda  -> api
 * 超出能力声明的元素或字节预算（`embedding` 的按其 gather 输出 `rows * width` 计；`matmul` 的除两个操作数外还含其**结果**）→ `resourceexhausted`；
 * 每头宽度超过 `METALMAXHEADDIM`/`CUDAMAXHEADDIM` → `resourceexhausted`；
 * 设备初始化失败 → `devicenotavailable`；MSL 或 NVRTC 编译失败 / 模块或内核解析失败 → `kernelcompilefailed`（带 backend/kernel/驱动诊断）；缓冲分配失败 / 内核启动失败 / cuBLAS 调用失败 / cuDNN 调用失败 / host-device 传输失败 / 输出张量构造失败 → `executionfailed`（携带结构化诊断 `{ backend, kernel, message }`，`kernel` 为失败阶段名，`message` 为驱动或宿主诊断——执行失败可定位到阶段与根因）；
-* `metal` 与 `cuda` 都已实现 `compute` 的全部算子（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`、`scan`），故两者唯一的 `unsupportedoperation` 来源是上一条的空末轴（`softmax`、`rmsnorm`）。`scan` 为每线程一通道的串行递推内核（β 通道，`docs/beta-scan-plan.md`），复用既有上传/下载/绑定/参数绑定站点，`unsafe` 站点数不变（metal 4/4、cuda 3/3）。
+* `metal` 与 `cuda` 都已实现 `compute` 的全部算子（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`、`scan`），故两者唯一的 `unsupportedoperation` 来源是上一条的空末轴（`softmax`、`rmsnorm`）。`scan` 为每线程一通道的串行递推内核（β 通道，`docs/beta-scan-plan.md`），复用既有上传/下载/绑定/参数绑定站点，`unsafe` 站点数不变（metal 3/3、cuda 3/3）。
 
 `compute` 契约的每个方法都只接受 `f32` 张量视图，故 GPU 后端不可能因 dtype 失败；`capabilities` 声明 `f32` 是为了让上层在派发前就能判定，`unsupporteddtype` 不由这两个后端产生。
 
@@ -2663,19 +2663,18 @@ cuda  -> api
 
 | crate | 站点 | 位置 |
 | --- | --- | --- |
-| `metal` | host→device 上传（写 `contents` 指针） | `ffi.rs` |
-| `metal` | device→host 下载（读 `contents` 指针） | `ffi.rs` |
-| `metal` | `setBuffer_offset_atIndex`（绑定设备缓冲） | `ffi.rs` |
-| `metal` | `setBytes_length_atIndex`（绑定标量参数） | `ffi.rs` |
+| `metal` | 同步驱动交接块（`dispatch`：上传、绑定缓冲、绑定标量、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载，全部收于一个 `unsafe` 块） | `ffi.rs` |
+| `metal` | 会话编码块（`session::dispatch`：同一 command buffer 上绑定并启动，不等待） | `ffi.rs` |
+| `metal` | 会话提交块（`session::apply`：`commit`/`waitUntilCompleted` + 下载全部结果） | `ffi.rs` |
 | `cuda` | `LaunchArgs::launch`（NVRTC 内核启动） | `ffi.rs` |
 | `cuda` | `CudaBlas::gemm`（cuBLAS 矩阵乘） | `ffi.rs` |
 | `cuda` | `SoftmaxForward::launch`（cuDNN 末轴 softmax） | `ffi.rs` |
 | `musa` | `unsafe extern "C"` 声明块（edition 2024 强制；MUSA driver 全部 FFI 声明） | `ffi.rs` |
 | `musa` | 驱动交接 `unsafe` 块（`drive`：模块加载/函数解析/内存传输/内核启动/同步，全部 `mu*` 调用收于一个块） | `ffi.rs` |
 
-站点登记：`metal` = 4，`cuda` = 3，`musa` = 2；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
+站点登记：`metal` = 3，`cuda` = 3，`musa` = 2；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
 
-依据：这些数字由**调用面结构**推导，而非经验取值。Metal 一次 `matmul` 的最小平台交互面固定为 4 处——上传主机数据、下载设备结果、绑定设备缓冲、绑定标量参数。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
+依据：这些数字由**调用面结构**推导，而非经验取值。Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径的 `dispatch` 把上传、缓冲绑定、标量绑定、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载收进**单一交接块**；累积路径的 `session` 拆成**编码块**（绑定并启动、不等待）与**提交块**（`commit` + 等待 + 下载）两个块——command buffer 单次使用、跨算子共享，故提交只发生一次。每个块内的全部平台调用共享同一个 `// SAFETY:` 前置论证（缓冲均为本块持有或调用者传入的存活 `MTLBuffer`、长度与内核读写一致、`setBytes` 拷贝而非保留、`waitUntilCompleted` 排序读写）。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
 
 * `LaunchArgs::launch` 只登记一次，因为整个在仓内核族共用它。启动辅助以闭包注入实参、以 `(source, entry)` 选择内核，故 `matmul`/`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention` 八个内核**不增加站点**。这是设计选择而非巧合：把「一类平台交互」而非「一个算子」作为登记的原子单位，使豁免面不随算子数增长。
 * `CudaBlas::gemm` 与 `SoftmaxForward::launch` 各一处，因为二者是各自库里唯一自带 `unsafe` 的入口。
@@ -2691,7 +2690,7 @@ MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有�
 ### 21.9 后果
 
 * GPU 能力以两个独立、可单独删除的 crate 提供；删除任一 crate 不影响 `cpu` 路径与依赖图。
-* `unsafe` 面被压缩到 9 个已登记站点（`metal` 4 + `cuda` 3 + `musa` 2），且由机械门禁强制；既有 crate 的 `forbid` 未被触碰。`musa` = 2 是 2024 edition 下自写 FFI 的理论下限（`unsafe extern` 声明 + 单一驱动交接块）。
+* `unsafe` 面被压缩到 8 个已登记站点（`metal` 3 + `cuda` 3 + `musa` 2），且由机械门禁强制；既有 crate 的 `forbid` 未被触碰。`metal` 3 个站点均是一次驱动交接块（同步 1 + 累积 2），`musa` = 2 是 2024 edition 下自写 FFI 的理论下限（`unsafe extern` 声明 + 单一驱动交接块）。
 * `api` 与上层（`models`/`infer`）零改动即可通过 `C: compute` 使用 GPU。
 * CUDA 的运行时正确性依赖 NVIDIA 驱动与设备：本文件与 `docs/conformance.md` 只声明**真机执行过**的部分（2026-10-12 的 RTX 2080 Ti 会话，见 21.10.3），未执行的部分仍如实标注，绝不声称通过。
 * 维护成本：两个 crate 各自绑定一个易变的第三方 GPU 绑定（`objc2-metal`、`cudarc`），版本升级需重新核对 21.8 的站点表。

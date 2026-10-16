@@ -5,14 +5,15 @@
 //! declares `#![allow(unsafe_code)]`; the crate root keeps
 //! `#![deny(unsafe_code)]`. Every platform call that the Objective-C bridge
 //! marks `unsafe` is confined here, and each `unsafe` construct is directly
-//! preceded by a `// SAFETY:` comment. The registered site count (four) is
+//! preceded by a `// SAFETY:` comment. The registered site count (three) is
 //! enforced by `scripts/checkunsafe.sh`.
 //!
-//! The four sites are one per **class of platform interaction**, not one per
-//! operator: uploading host data into a buffer, downloading a result out of a
-//! buffer, binding operand buffers to the encoder, and binding the scalar
-//! parameter buffer. Every kernel in [`crate::source`] reuses those same four
-//! sites, so the count does not grow with the operator count.
+//! The three sites are one per **driver handoff block**, not one per operator:
+//! the synchronous `dispatch` block (upload, buffer binding, scalar binding,
+//! launch, `endEncoding`/`commit`/`waitUntilCompleted`, and download in one
+//! block), plus the accumulative `session`'s encode block and commit block.
+//! Every kernel in [`crate::source`] reuses those same sites, so the count does
+//! not grow with the operator count.
 //!
 //! The safe functions expose a narrow, run-to-completion interface: upload host
 //! slices, dispatch one kernel, download the result. Buffers, command buffers,
@@ -28,6 +29,7 @@ use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
     MTLComputePipelineState, MTLDevice, MTLLibrary, MTLResourceOptions, MTLSize,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
@@ -64,6 +66,15 @@ struct cachestate {
     /// `None` means "not opened yet or the last attempt failed", so an
     /// unavailable device is retried on the next call rather than latched.
     device: Option<Retained<ProtocolObject<dyn MTLDevice>>>,
+    /// The device's command queue, opened on first use and reused by every
+    /// dispatch.
+    ///
+    /// `newCommandQueue` is a driver round trip; caching it removes that fixed
+    /// cost from every operator call while the command buffers themselves stay
+    /// per-dispatch (Metal command buffers are single-use by contract). The
+    /// queue lives beside the one device it was created for, so it can never
+    /// outlive a device it does not belong to.
+    queue: Option<Retained<ProtocolObject<dyn MTLCommandQueue>>>,
     /// One compiled compute pipeline per `(source, entry)` pair.
     ///
     /// The key carries the MSL **source text**, so editing a kernel in
@@ -120,6 +131,22 @@ impl cache {
         let compiled = compile(&device, source, entry)?;
         state.pipelines.insert((source, entry), compiled.clone());
         Ok(compiled)
+    }
+
+    /// Returns the device's command queue, opening and caching it once.
+    fn queue(&self) -> Result<Retained<ProtocolObject<dyn MTLCommandQueue>>, metalerror> {
+        let mut state = self.lock();
+        if let Some(queue) = &state.queue {
+            return Ok(queue.clone());
+        }
+        let device = state.device()?;
+        let opened = device
+            .newCommandQueue()
+            .ok_or_else(|| metalerror::execution {
+                message: "the device returned no command queue".to_string(),
+            })?;
+        state.queue = Some(opened.clone());
+        Ok(opened)
     }
 
     /// Acquires the lock, recovering the contents if an earlier holder panicked.
@@ -194,24 +221,13 @@ pub(crate) fn matmul(
         return Ok(vec![0.0_f32; total]);
     }
     let dims = Extents::new(m, k, n)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
 
-    let device = cache.device()?;
-    let bufa = alloc(&device, core::mem::size_of_val(lhs))?;
-    let bufb = alloc(&device, core::mem::size_of_val(rhs))?;
-    let bufc = alloc(&device, bytes)?;
-    write(&bufa, lhs);
-    write(&bufb, rhs);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&bufa, &bufb, &bufc];
     let params = [dims.m, dims.k, dims.n];
-    execute(
+    let mut results = dispatch(
         cache,
         source::MATMULMSL,
         source::MATMULENTRY,
-        &buffers,
+        &[buf::host(lhs), buf::host(rhs), buf::out(total)],
         &params,
         MTLSize {
             width: dims.cols,
@@ -220,7 +236,7 @@ pub(crate) fn matmul(
         },
         dims.threadgroup(),
     )?;
-    read(&bufc, total)
+    Ok(results.remove(0))
 }
 
 /// The matmul extents as device-side `u32` values.
@@ -293,23 +309,17 @@ pub(crate) fn silu(cache: &cache, input: &[f32]) -> Result<Vec<f32>, metalerror>
         return Ok(Vec::new());
     }
     let count = asu32(input.len())?;
-    let device = cache.device()?;
-    let da = alloc(&device, core::mem::size_of_val(input))?;
-    let dc = alloc(&device, core::mem::size_of_val(input))?;
-    write(&da, input);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [&da, &dc];
     let params = [count];
-    execute(
+    let mut results = dispatch(
         cache,
         source::ELEMENTWISE,
         source::SILUENTRY,
-        &buffers,
+        &[buf::host(input), buf::out(input.len())],
         &params,
         flatgrid(input.len())?,
         flatthreads(input.len()),
     )?;
-    read(&dc, input.len())
+    Ok(results.remove(0))
 }
 
 /// Runs the two-operand elementwise kernel named `entry` in [`ELEMENTWISE`].
@@ -323,25 +333,17 @@ fn elementwise2(
         return Ok(Vec::new());
     }
     let count = asu32(lhs.len())?;
-    let device = cache.device()?;
-    let da = alloc(&device, core::mem::size_of_val(lhs))?;
-    let db = alloc(&device, core::mem::size_of_val(rhs))?;
-    let dc = alloc(&device, core::mem::size_of_val(lhs))?;
-    write(&da, lhs);
-    write(&db, rhs);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&da, &db, &dc];
     let params = [count];
-    execute(
+    let mut results = dispatch(
         cache,
         source::ELEMENTWISE,
         entry,
-        &buffers,
+        &[buf::host(lhs), buf::host(rhs), buf::out(lhs.len())],
         &params,
         flatgrid(lhs.len())?,
         flatthreads(lhs.len()),
     )?;
-    read(&dc, lhs.len())
+    Ok(results.remove(0))
 }
 
 /// Numerically stable softmax over the last axis.
@@ -368,26 +370,17 @@ pub(crate) fn softmax(
         return Ok(Vec::new());
     }
     let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let device = cache.device()?;
-    let dx = alloc(&device, bytes)?;
-    let dy = alloc(&device, bytes)?;
-    write(&dx, input);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [&dx, &dy];
     let params = [asu32(width)?];
-    execute(
+    let mut results = dispatch(
         cache,
         source::SOFTMAXMSL,
         source::SOFTMAXENTRY,
-        &buffers,
+        &[buf::host(input), buf::out(total)],
         &params,
         rowgrid(rows, source::SOFTMAXTILE)?,
         fullthreads(source::SOFTMAXTILE),
     )?;
-    read(&dy, total)
+    Ok(results.remove(0))
 }
 
 /// RMS-normalises `rows` rows of `width` elements and scales them by `weight`.
@@ -409,28 +402,17 @@ pub(crate) fn rmsnorm(
         return Ok(Vec::new());
     }
     let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let device = cache.device()?;
-    let dx = alloc(&device, bytes)?;
-    let dw = alloc(&device, core::mem::size_of_val(weight))?;
-    let dy = alloc(&device, bytes)?;
-    write(&dx, input);
-    write(&dw, weight);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&dx, &dw, &dy];
     let params = [asu32(width)?, eps.to_bits()];
-    execute(
+    let mut results = dispatch(
         cache,
         source::RMSNORMMSL,
         source::RMSNORMENTRY,
-        &buffers,
+        &[buf::host(input), buf::host(weight), buf::out(total)],
         &params,
         rowgrid(rows, source::RMSNORMTILE)?,
         fullthreads(source::RMSNORMTILE),
     )?;
-    read(&dy, total)
+    Ok(results.remove(0))
 }
 
 /// Rotates every `headdim` slice of `rows` rows by its position angle.
@@ -456,12 +438,6 @@ pub(crate) fn rope(
         .checked_mul(heads)
         .and_then(|value| value.checked_mul(headdim / 2))
         .ok_or(metalerror::sizeoverflow)?;
-    let device = cache.device()?;
-    let dx = alloc(&device, core::mem::size_of_val(input))?;
-    let dy = alloc(&device, core::mem::size_of_val(input))?;
-    write(&dx, input);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [&dx, &dy];
     let params = [
         asu32(rows)?,
         asu32(seqaxis)?,
@@ -469,16 +445,16 @@ pub(crate) fn rope(
         asu32(headdim)?,
         base.to_bits(),
     ];
-    execute(
+    let mut results = dispatch(
         cache,
         source::ROPEMSL,
         source::ROPEENTRY,
-        &buffers,
+        &[buf::host(input), buf::out(input.len())],
         &params,
         flatgrid(pairs)?,
         flatthreads(pairs),
     )?;
-    read(&dy, input.len())
+    Ok(results.remove(0))
 }
 
 /// Gathers `indices.len()` rows of `width` elements from `table`.
@@ -503,29 +479,18 @@ pub(crate) fn embedding(
         return Ok(Vec::new());
     }
     let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
     let devindices: Vec<u64> = indices.iter().map(|&index| index as u64).collect();
-    let device = cache.device()?;
-    let dtable = alloc(&device, core::mem::size_of_val(table))?;
-    let dindices = alloc(&device, core::mem::size_of_val(&devindices))?;
-    let dout = alloc(&device, bytes)?;
-    write(&dtable, table);
-    write(&dindices, &devindices);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [&dtable, &dindices, &dout];
     let params = [rows as u64, width as u64];
-    execute(
+    let mut results = dispatch(
         cache,
         source::EMBEDDINGMSL,
         source::EMBEDDINGENTRY,
-        &buffers,
+        &[buf::host(table), buf::hostu64(&devindices), buf::out(total)],
         &params,
         flatgrid(total)?,
         flatthreads(total),
     )?;
-    read(&dout, total)
+    Ok(results.remove(0))
 }
 
 /// Applies grouped-query scaled dot-product attention to `geometry.seq`
@@ -559,22 +524,9 @@ pub(crate) fn attention(
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(metalerror::sizeoverflow)?;
-    let bytes = queryelements
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
     let groups = qseq
         .checked_mul(geometry.heads)
         .ok_or(metalerror::sizeoverflow)?;
-    let device = cache.device()?;
-    let dquery = alloc(&device, core::mem::size_of_val(query))?;
-    let dkey = alloc(&device, core::mem::size_of_val(key))?;
-    let dvalue = alloc(&device, core::mem::size_of_val(value))?;
-    let dout = alloc(&device, bytes)?;
-    write(&dquery, query);
-    write(&dkey, key);
-    write(&dvalue, value);
-
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 4] = [&dquery, &dkey, &dvalue, &dout];
     let params = [
         asu32(qseq)?,
         asu32(geometry.kvseq)?,
@@ -583,16 +535,21 @@ pub(crate) fn attention(
         asu32(geometry.headdim)?,
         u32::from(causal),
     ];
-    execute(
+    let mut results = dispatch(
         cache,
         source::ATTENTIONMSL,
         source::ATTENTIONENTRY,
-        &buffers,
+        &[
+            buf::host(query),
+            buf::host(key),
+            buf::host(value),
+            buf::out(queryelements),
+        ],
         &params,
         rowgrid(groups, source::ATTENTIONLANES)?,
         fullthreads(source::ATTENTIONLANES),
     )?;
-    read(&dout, queryelements)
+    Ok(results.remove(0))
 }
 
 /// Runs the serial per-channel scan kernel, returning the `[n, d]` output and
@@ -620,24 +577,20 @@ pub(crate) fn scan(
         return scan_serial(cache, input, init, a, b, c, skip, n, d, statewidth);
     }
     let device = cache.device()?;
-    let dinput = alloc(&device, core::mem::size_of_val(input))?;
-    let da = alloc(&device, core::mem::size_of_val(a))?;
-    let db = alloc(&device, core::mem::size_of_val(b))?;
-    let dc = alloc(&device, core::mem::size_of_val(c))?;
-    let dskip = alloc(&device, core::mem::size_of_val(skip))?;
-    let dstate = alloc(&device, core::mem::size_of_val(init))?;
     // The inter-block prefix pass writes the final state into a separate
-    // buffer so `dstate` keeps the untouched `init` the apply pass reads.
-    let dstateout = alloc(&device, core::mem::size_of_val(init))?;
+    // buffer so the uploaded `init` stays untouched for the apply pass.
+    let statebytes = init
+        .len()
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let dstateout = alloc(&device, statebytes)?;
     let outbytes = n
         .checked_mul(d)
         .and_then(|elements| elements.checked_mul(core::mem::size_of::<f32>()))
         .ok_or(metalerror::sizeoverflow)?;
     let dout = alloc(&device, outbytes)?;
     let blocks = n.div_ceil(source::SCANCHUNK);
-    let dntotal = d
-        .checked_mul(statewidth)
-        .ok_or(metalerror::sizeoverflow)?;
+    let dntotal = d.checked_mul(statewidth).ok_or(metalerror::sizeoverflow)?;
     let pairbytes = |count: usize| {
         count
             .checked_mul(2)
@@ -648,12 +601,6 @@ pub(crate) fn scan(
     let dtotal = alloc(&device, pairbytes(blocks)?)?;
     let prefixcount = blocks.checked_add(1).ok_or(metalerror::sizeoverflow)?;
     let dprefix = alloc(&device, pairbytes(prefixcount)?)?;
-    write(&dinput, input);
-    write(&da, a);
-    write(&db, b);
-    write(&dc, c);
-    write(&dskip, skip);
-    write(&dstate, init);
     let params = [
         asu32(n)?,
         asu32(d)?,
@@ -661,41 +608,65 @@ pub(crate) fn scan(
         asu32(source::SCANCHUNK)?,
         asu32(blocks)?,
     ];
-    // Pass 1: per-block totals.
-    execute(
+    // Pass 1: per-block totals. The block buffers are uploaded once and passed
+    // through the three dispatches by device reference; only `dstateout` and
+    // the final `out` are downloaded.
+    dispatch(
         cache,
         source::SCANPARALLELMSL,
         source::SCANAGGENTRY,
-        &[&dinput, &da, &db, &dc, &dskip, &dstate, &dtotal],
+        &[
+            buf::host(input),
+            buf::host(a),
+            buf::host(b),
+            buf::host(c),
+            buf::host(skip),
+            buf::host(init),
+            buf::device(&dtotal),
+        ],
         &params,
         scangrid(blocks, d)?,
         scantiles(d),
     )?;
-    // Pass 2: inter-block prefix plus the whole-sequence final state.
+    // Pass 2: inter-block prefix plus the whole-sequence final state, written
+    // into the caller-held `dstateout` and read back here.
     let prefixthreads = (d * statewidth).min(1024);
-    execute(
+    let mut state = dispatch(
         cache,
         source::SCANPARALLELMSL,
         source::SCANPREFIXENTRY,
-        &[&dtotal, &dstate, &dstateout, &dprefix],
+        &[
+            buf::device(&dtotal),
+            buf::host(init),
+            buf::readback(&dstateout, d * statewidth),
+            buf::device(&dprefix),
+        ],
         &params,
         flatgrid(prefixthreads)?,
         flatthreads(prefixthreads),
     )?;
     // Pass 3: per-block apply writing `out`; the final state was computed by
     // Pass 2 into `dstateout`.
-    execute(
+    let mut results = dispatch(
         cache,
         source::SCANPARALLELMSL,
         source::SCANAPPLYENTRY,
-        &[&dinput, &da, &db, &dc, &dskip, &dstate, &dprefix, &dout],
+        &[
+            buf::host(input),
+            buf::host(a),
+            buf::host(b),
+            buf::host(c),
+            buf::host(skip),
+            buf::host(init),
+            buf::device(&dprefix),
+            buf::readback(&dout, n * d),
+        ],
         &params,
         scangrid(blocks, d)?,
         scantiles(d),
     )?;
-    let out = read(&dout, n * d)?;
-    let state = read(&dstateout, d * statewidth)?;
-    Ok((out, state))
+    let out = results.remove(0);
+    Ok((out, state.remove(0)))
 }
 
 /// Runs the serial per-channel scan kernel, returning the `[n, d]` output and
@@ -717,37 +688,39 @@ fn scan_serial(
     statewidth: usize,
 ) -> Result<(Vec<f32>, Vec<f32>), metalerror> {
     let device = cache.device()?;
-    let dinput = alloc(&device, core::mem::size_of_val(input))?;
-    let da = alloc(&device, core::mem::size_of_val(a))?;
-    let db = alloc(&device, core::mem::size_of_val(b))?;
-    let dc = alloc(&device, core::mem::size_of_val(c))?;
-    let dskip = alloc(&device, core::mem::size_of_val(skip))?;
-    let dstate = alloc(&device, core::mem::size_of_val(init))?;
+    // The output and the final state both stay on the device for one dispatch
+    // and are read back together after it completes.
     let outbytes = n
         .checked_mul(d)
         .and_then(|elements| elements.checked_mul(core::mem::size_of::<f32>()))
         .ok_or(metalerror::sizeoverflow)?;
     let dout = alloc(&device, outbytes)?;
-    write(&dinput, input);
-    write(&da, a);
-    write(&db, b);
-    write(&dc, c);
-    write(&dskip, skip);
-    write(&dstate, init);
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 7] =
-        [&dinput, &da, &db, &dc, &dskip, &dstate, &dout];
+    let statebytes = init
+        .len()
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(metalerror::sizeoverflow)?;
+    let dstate = alloc(&device, statebytes)?;
     let params = [asu32(n)?, asu32(d)?, asu32(statewidth)?];
-    execute(
+    let mut results = dispatch(
         cache,
         source::SCANMSL,
         source::SCANENTRY,
-        &buffers,
+        &[
+            buf::host(input),
+            buf::host(a),
+            buf::host(b),
+            buf::host(c),
+            buf::host(skip),
+            buf::host(init),
+            buf::readback(&dstate, d * statewidth),
+            buf::readback(&dout, n * d),
+        ],
         &params,
         flatgrid(d)?,
         flatthreads(d),
     )?;
-    let out = read(&dout, n * d)?;
-    let state = read(&dstate, d * statewidth)?;
+    let state = results.remove(0);
+    let out = results.remove(0);
     Ok((out, state))
 }
 
@@ -802,105 +775,205 @@ fn compile(
         })
 }
 
-/// Compiles, binds, and runs one kernel, then waits for completion.
+/// One buffer slot of a dispatch, in kernel binding order.
 ///
-/// `buffers` are bound to buffer indices `0..buffers.len()` in order, and
-/// `params` is copied into the next index, so a kernel's operand buffers and
-/// its single parameter buffer line up with its `[[buffer(i)]]` attributes.
+/// The three variants cover every kernel the crate ships: `host` uploads a
+/// host slice into a freshly allocated buffer, `device` passes through a
+/// buffer the caller allocated and still owns (the inter-pass buffers of the
+/// three-stage scan), and `out` allocates a buffer whose contents are copied
+/// back to the host after the dispatch completes.
+pub(crate) enum buf<'a> {
+    /// Upload a host f32 slice into a freshly allocated device buffer.
+    host(&'a [f32]),
+    /// Upload a host u64 slice into a freshly allocated device buffer — the
+    /// embedding gather's index buffer, whose elements are row IDs.
+    hostu64(&'a [u64]),
+    /// Pass through a caller-owned device buffer.
+    device(&'a ProtocolObject<dyn MTLBuffer>),
+    /// Allocate a device buffer and copy its contents back after completion.
+    out(usize),
+    /// Pass through a caller-owned buffer and copy `count` f32 elements back
+    /// after completion — the final state buffer of the three-stage scan,
+    /// allocated once and written by the prefix pass, read by the apply pass,
+    /// and downloaded by the caller.
+    readback(&'a ProtocolObject<dyn MTLBuffer>, usize),
+}
+
+/// Compiles, binds, and runs one kernel, then waits and copies the outputs
+/// back — the backend's single driver-handoff.
+///
+/// Every platform interaction this crate performs (uploading an operand,
+/// binding buffers, copying the scalar parameters, launching the kernel,
+/// waiting for completion, downloading the result) happens inside **one**
+/// `unsafe` block, the crate's registered unsafe site. Everything around it —
+/// geometry, budget checks, buffer allocation, the pipeline cache, the reused
+/// command queue — is safe Rust, so the unsafe surface is exactly the handoff
+/// itself, matching the `drive` design the MUSA backend uses
+/// (docs/musa-backend-plan.md §5.4).
+///
+/// The caller establishes the SAFETY preconditions that the block documents:
+/// `buffers` are bound to indices `0..buffers.len()` in order and `params` is
+/// copied into the next index, matching the kernel's `[[buffer(i)]]`
+/// attributes; `grid`/`threads` are validated by the caller's geometry helper;
+/// every element index the kernels derive is bounds-tested by the kernels
+/// themselves.
 ///
 /// # Errors
 ///
 /// Returns [`metalerror`] when compilation or pipeline creation fails, or when
 /// the device, queue, or command buffer declines to hand out the resources the
-/// dispatch needs.
-fn execute<T>(
+/// dispatch needs. Output buffers are reserved before their contents are read,
+/// so a host allocation failure surfaces as [`metalerror::allocation`] rather
+/// than aborting.
+fn dispatch<P>(
     cache: &cache,
     source: &'static str,
     entry: &'static str,
-    buffers: &[&ProtocolObject<dyn MTLBuffer>],
-    params: &T,
+    buffers: &[buf<'_>],
+    params: &P,
     grid: MTLSize,
     threads: MTLSize,
-) -> Result<(), metalerror> {
+) -> Result<Vec<Vec<f32>>, metalerror> {
     // The device, the pipeline, and the queue all come from the same cache, so
-    // the pipeline cannot be built for one device and used on another.
+    // the pipeline cannot be built for one device and used on another. The
+    // queue is opened once and reused; only the command buffer is per-dispatch
+    // (Metal command buffers are single-use by contract).
     let device = cache.device()?;
     let pipeline = cache.pipeline(source, entry)?;
-    let queue = newqueue(&device)?;
-    let command = newcommand(&queue)?;
-    let encoder = newencoder(&command)?;
-    encoder.setComputePipelineState(&pipeline);
-    bind(&encoder, buffers);
-    setbytes(&encoder, params, buffers.len());
-    encoder.dispatchThreads_threadsPerThreadgroup(grid, threads);
-    encoder.endEncoding();
-    command.commit();
-    command.waitUntilCompleted();
-    Ok(())
-}
-
-/// Creates the device's command queue.
-fn newqueue(
-    device: &ProtocolObject<dyn MTLDevice>,
-) -> Result<Retained<ProtocolObject<dyn MTLCommandQueue>>, metalerror> {
-    device
-        .newCommandQueue()
-        .ok_or_else(|| metalerror::execution {
-            message: "the device returned no command queue".to_string(),
-        })
-}
-
-/// Creates a command buffer on `queue`.
-fn newcommand(
-    queue: &ProtocolObject<dyn MTLCommandQueue>,
-) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, metalerror> {
-    queue.commandBuffer().ok_or_else(|| metalerror::execution {
+    let queue = cache.queue()?;
+    let command = queue.commandBuffer().ok_or_else(|| metalerror::execution {
         message: "the queue returned no command buffer".to_string(),
-    })
-}
-
-/// Creates a compute encoder on `command`.
-fn newencoder(
-    command: &ProtocolObject<dyn MTLCommandBuffer>,
-) -> Result<Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>, metalerror> {
-    command
+    })?;
+    let encoder = command
         .computeCommandEncoder()
         .ok_or_else(|| metalerror::execution {
             message: "the command buffer returned no compute encoder".to_string(),
-        })
-}
+        })?;
+    encoder.setComputePipelineState(&pipeline);
 
-/// Binds the operand buffers to the kernel's buffer indices.
-fn bind(
-    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
-    buffers: &[&ProtocolObject<dyn MTLBuffer>],
-) {
-    // SAFETY: `encoder` is a live compute encoder and each buffer was allocated
-    // by `alloc` with the byte length the kernel reads or writes, so binding
-    // buffer indices 0..buffers.len() to the pipeline's `[[buffer(i)]]`
-    // attributes matches the MSL signature. The kernel bounds-tests every
-    // element index it derives, and no index is dereferenced here.
-    unsafe {
-        for (index, buffer) in buffers.iter().enumerate() {
-            encoder.setBuffer_offset_atIndex(Some(*buffer), 0, index);
+    // Allocate the device buffers this dispatch owns in one pass, then line up
+    // the bound references in a second pass. Splitting the passes keeps the
+    // borrows disjoint: nothing borrows `owned` while it is still being pushed
+    // to. `owned` lives for the whole function, so no buffer is freed while a
+    // kernel can still touch it.
+    let mut allocbytes: Vec<usize> = Vec::with_capacity(buffers.len());
+    let mut uploads: Vec<(usize, &[f32])> = Vec::new();
+    let mut uploads64: Vec<(usize, &[u64])> = Vec::new();
+    let mut outputs: Vec<(usize, usize)> = Vec::new();
+    for (index, slot) in buffers.iter().enumerate() {
+        match *slot {
+            buf::host(data) => {
+                allocbytes.push(
+                    data.len()
+                        .checked_mul(core::mem::size_of::<f32>())
+                        .ok_or(metalerror::sizeoverflow)?,
+                );
+                uploads.push((index, data));
+            }
+            buf::hostu64(data) => {
+                allocbytes.push(
+                    data.len()
+                        .checked_mul(core::mem::size_of::<u64>())
+                        .ok_or(metalerror::sizeoverflow)?,
+                );
+                uploads64.push((index, data));
+            }
+            buf::out(count) => {
+                let bytes = count
+                    .checked_mul(core::mem::size_of::<f32>())
+                    .ok_or(metalerror::sizeoverflow)?;
+                allocbytes.push(bytes);
+                outputs.push((index, count));
+            }
+            buf::readback(_, count) => {
+                outputs.push((index, count));
+            }
+            buf::device(_) => {}
         }
     }
-}
+    let mut owned: Vec<Retained<ProtocolObject<dyn MTLBuffer>>> =
+        Vec::with_capacity(allocbytes.len());
+    for bytes in allocbytes {
+        owned.push(alloc(&device, bytes)?);
+    }
+    let mut refs: Vec<&ProtocolObject<dyn MTLBuffer>> = Vec::with_capacity(buffers.len());
+    let mut owncursor = 0;
+    for slot in buffers.iter() {
+        match *slot {
+            buf::host(_) | buf::hostu64(_) | buf::out(_) => {
+                refs.push(&owned[owncursor]);
+                owncursor += 1;
+            }
+            buf::device(passedbuf) | buf::readback(passedbuf, _) => refs.push(passedbuf),
+        }
+    }
 
-/// Copies `params` into the kernel's scalar parameter buffer at `index`.
-fn setbytes<T>(encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>, params: &T, index: usize) {
-    // SAFETY: `params` is a live value whose address is valid for the duration
-    // of the call, and `setBytes_length_atIndex` copies `size_of_val(params)`
-    // bytes rather than retaining the pointer, so the reference need not
-    // outlive the call. `index` is the number of operand buffers, which the
-    // caller's kernel declares as its parameter buffer's `[[buffer(index)]]`.
+    let mut results: Vec<Vec<f32>> = Vec::with_capacity(outputs.len());
+    // SAFETY: `refs` is exactly the bound buffer list and every entry is a
+    // live device buffer — caller-owned (device) or allocated above with the
+    // byte length the kernel reads or writes — so binding indices
+    // 0..refs.len() to the pipeline's `[[buffer(i)]]` attributes matches the
+    // MSL signature, and the kernels bounds-test every element index they
+    // derive. `params` is a live value whose address is valid for the call,
+    // and `setBytes_length_atIndex` copies rather than retains it. The
+    // downloaded pointers cover exactly the elements reserved in `results`,
+    // and `waitUntilCompleted` (invoked inside the block) orders the reads
+    // after the kernel writes. No index is dereferenced here.
     unsafe {
+        // Upload: copy each host operand into its shared-storage buffer. The
+        // buffers were allocated with exactly `size_of_val(data)` bytes, so
+        // the copies are in bounds and the two pointers never overlap.
+        for (index, data) in &uploads {
+            let target = refs[*index];
+            core::ptr::copy_nonoverlapping(
+                data.as_ptr().cast::<u8>(),
+                target.contents().as_ptr().cast::<u8>(),
+                core::mem::size_of_val(&data[..]),
+            );
+        }
+        for (index, data) in &uploads64 {
+            let target = refs[*index];
+            core::ptr::copy_nonoverlapping(
+                data.as_ptr().cast::<u8>(),
+                target.contents().as_ptr().cast::<u8>(),
+                core::mem::size_of_val(&data[..]),
+            );
+        }
+        // Bind: operand buffers to buffer indices 0..refs.len().
+        for (index, buffer) in refs.iter().enumerate() {
+            encoder.setBuffer_offset_atIndex(Some(*buffer), 0, index);
+        }
+        // Scalars: the kernel's parameter buffer at the next index.
         encoder.setBytes_length_atIndex(
             core::ptr::NonNull::from(params).cast(),
             core::mem::size_of_val(params),
-            index,
+            refs.len(),
         );
+        // Launch, close the encoder, commit, and synchronize: the
+        // grid/threadgroup shape was validated by the caller's geometry
+        // helper, and completion orders the reads below. `endEncoding`,
+        // `commit`, and `waitUntilCompleted` are safe methods invoked inside
+        // the block so that the whole driver handoff stays one unsafe site.
+        encoder.dispatchThreads_threadsPerThreadgroup(grid, threads);
+        encoder.endEncoding();
+        command.commit();
+        command.waitUntilCompleted();
+        // Download: copy each output buffer into a host vector reserved
+        // beforehand, so an allocation failure surfaces as an error here.
+        for (index, count) in &outputs {
+            let mut out = Vec::new();
+            out.try_reserve_exact(*count)
+                .map_err(|_| metalerror::allocation)?;
+            out.resize(*count, 0.0_f32);
+            core::ptr::copy_nonoverlapping(
+                refs[*index].contents().as_ptr().cast::<f32>(),
+                out.as_mut_ptr(),
+                *count,
+            );
+            results.push(out);
+        }
     }
+    Ok(results)
 }
 
 /// Allocates a shared-storage buffer of `bytes` bytes.
@@ -911,49 +984,6 @@ fn alloc(
     device
         .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
         .ok_or(metalerror::allocation)
-}
-
-/// Copies `data` into a shared-storage buffer of matching byte length.
-///
-/// The caller MUST allocate `target` from `data.len()`; a smaller target would
-/// make the copy out of bounds, which is why this is private to the call sites
-/// that establish that precondition.
-fn write<T>(target: &ProtocolObject<dyn MTLBuffer>, data: &[T]) {
-    // SAFETY: `target` was allocated by `alloc` with exactly
-    // `size_of_val(data)` bytes of shared storage, so its `contents` pointer
-    // covers the region that is copied into it. The buffer outlives the copy
-    // and the two pointers are non-overlapping.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            data.as_ptr().cast::<u8>(),
-            target.contents().as_ptr().cast::<u8>(),
-            core::mem::size_of_val(data),
-        );
-    }
-}
-
-/// Copies `len` f32 elements out of a completed shared-storage buffer.
-///
-/// The host mirror is reserved before the copy so that a host allocation
-/// failure is reported as [`metalerror::allocation`] rather than aborting the
-/// process, matching the device side.
-fn read(source: &ProtocolObject<dyn MTLBuffer>, len: usize) -> Result<Vec<f32>, metalerror> {
-    let mut out = Vec::new();
-    out.try_reserve_exact(len)
-        .map_err(|_| metalerror::allocation)?;
-    out.resize(len, 0.0_f32);
-    // SAFETY: `source` was allocated with at least `len` f32 elements and the
-    // dispatch that wrote it has completed (the command buffer was waited on),
-    // so its `contents` pointer yields exactly `len` initialized elements,
-    // which `out` has room for.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            source.contents().as_ptr().cast::<f32>(),
-            out.as_mut_ptr(),
-            out.len(),
-        );
-    }
-    Ok(out)
 }
 
 /// Converts a validated extent into the kernel's `uint` parameter.
@@ -1021,6 +1051,24 @@ struct dispatchspec {
     threads: MTLSize,
 }
 
+/// One buffer slot of an asynchronous session dispatch, in kernel binding
+/// order. The last slot MUST be [`sbuf::out`], the output the slot records.
+enum sbuf<'a> {
+    /// Upload a host u64 slice into a freshly allocated device buffer — the
+    /// embedding gather's index buffer, whose elements are row IDs. Host f32
+    /// operands on the session path go through [`session::upload`] instead,
+    /// which defers the device copy to the next dispatch's unsafe block.
+    hostu64(&'a [u64]),
+    /// Pass through a caller-owned device buffer.
+    device(&'a ProtocolObject<dyn MTLBuffer>),
+    /// Allocate the output buffer (not read back here; [`session::apply`] does).
+    out(usize),
+}
+
+/// A deferred host upload queued by [`session::upload`]: the device buffer the
+/// next dispatch's unsafe block copies into, plus the host data it copies.
+type pendingupload = (Retained<ProtocolObject<dyn MTLBuffer>>, Vec<f32>);
+
 /// One accumulative submission: a command buffer and compute encoder that many
 /// operators share, plus the output slot of every recorded step.
 ///
@@ -1035,6 +1083,17 @@ pub(crate) struct session {
     command: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
     encoder: Retained<ProtocolObject<dyn MTLComputeCommandEncoder>>,
     outputs: Vec<slot>,
+    /// Host operands uploaded with [`session::upload`] whose device copies are
+    /// flushed into their buffers by the next dispatch, inside that dispatch's
+    /// single unsafe block. Holding the data here keeps the upload path free of
+    /// its own unsafe site without pinning a copy lifetime on the caller.
+    ///
+    /// `RefCell` is the submission's only interior mutability: the API trait
+    /// encodes operators as `&self` (operand resolution never mutates the
+    /// submission's recorded shape list), so the pending queue mutates through
+    /// a runtime borrow. A submission is request-scoped and never shared
+    /// across threads, so the borrow is uncontended by construction.
+    pending: RefCell<Vec<pendingupload>>,
     /// True once `endEncoding` has been called, so `Drop` ends an encoder that
     /// an error path dropped mid-submission exactly once.
     ended: bool,
@@ -1050,52 +1109,167 @@ enum slot {
 
 impl session {
     /// Opens a device, queue, command buffer, and encoder for one submission.
+    ///
+    /// The command queue comes from the executor-owned [`cache`], so a
+    /// submission pays `newCommandQueue` at most once per cache, not once per
+    /// submission; only the command buffer is created here, because Metal
+    /// command buffers are single-use by contract.
     pub(crate) fn new(cache: &cache) -> Result<Self, metalerror> {
         let device = cache.device()?;
-        let queue = newqueue(&device)?;
-        let command = newcommand(&queue)?;
-        let encoder = newencoder(&command)?;
+        let queue = cache.queue()?;
+        let command = queue.commandBuffer().ok_or_else(|| metalerror::execution {
+            message: "the queue returned no command buffer".to_string(),
+        })?;
+        let encoder = command
+            .computeCommandEncoder()
+            .ok_or_else(|| metalerror::execution {
+                message: "the command buffer returned no compute encoder".to_string(),
+            })?;
         Ok(Self {
             device,
             command,
             encoder,
             outputs: Vec::new(),
+            pending: RefCell::new(Vec::new()),
             ended: false,
         })
     }
 
     /// Uploads host data into a fresh device buffer.
     ///
-    /// The returned buffer is owned by the caller; the encoder records only a
-    /// reference to it, so an input buffer may be dropped after the dispatch
-    /// that reads it has been encoded.
+    /// The device copy is deferred to the next dispatch, whose unsafe block
+    /// flushes the pending operands — so the upload path itself has no unsafe
+    /// site. The returned buffer is owned by the caller; the encoder records
+    /// only a reference to it, so an input buffer may be dropped after the
+    /// dispatch that reads it has been encoded.
     pub(crate) fn upload(
         &self,
         data: &[f32],
     ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, metalerror> {
         let buffer = alloc(&self.device, core::mem::size_of_val(data))?;
-        write(&buffer, data);
+        self.pending
+            .borrow_mut()
+            .push((buffer.clone(), data.to_vec()));
         Ok(buffer)
     }
 
     /// Encodes one dispatch into the shared encoder and records its output slot.
+    ///
+    /// This is the asynchronous driver handoff: the whole encoding — uploading
+    /// host operands, binding buffers, copying the scalar parameters, launching
+    /// the kernel — happens inside one `unsafe` block, the session path's
+    /// registered unsafe site. No synchronization happens here; the shared
+    /// `commit` + `wait` lives in [`session::apply`], whose download block is
+    /// that path's second and last unsafe site.
+    ///
+    /// `buffers` bind to indices `0..buffers.len()` in order and `params` to
+    /// the next index; the **last** slot MUST be the output buffer, whose slot
+    /// is recorded for [`session::apply`] to download. Every kernel this crate
+    /// encodes follows that layout.
     fn dispatch<T>(
         &mut self,
         cache: &cache,
         spec: &dispatchspec,
-        buffers: &[&ProtocolObject<dyn MTLBuffer>],
+        buffers: &[sbuf<'_>],
         params: &T,
-        out: &Retained<ProtocolObject<dyn MTLBuffer>>,
         outlen: usize,
     ) -> Result<usize, metalerror> {
         let pipeline = cache.pipeline(spec.source, spec.entry)?;
         self.encoder.setComputePipelineState(&pipeline);
-        bind(&self.encoder, buffers);
-        setbytes(&self.encoder, params, buffers.len());
-        self.encoder
-            .dispatchThreads_threadsPerThreadgroup(spec.grid, spec.threads);
+
+        // Allocate the buffers this dispatch owns in one pass, then line up
+        // the bound references in a second pass, keeping the borrows disjoint.
+        let mut allocbytes: Vec<usize> = Vec::with_capacity(buffers.len());
+        let mut uploads64: Vec<(usize, &[u64])> = Vec::new();
+        for (index, slot) in buffers.iter().enumerate() {
+            match *slot {
+                sbuf::hostu64(data) => {
+                    allocbytes.push(
+                        data.len()
+                            .checked_mul(core::mem::size_of::<u64>())
+                            .ok_or(metalerror::sizeoverflow)?,
+                    );
+                    uploads64.push((index, data));
+                }
+                sbuf::out(count) => {
+                    let bytes = count
+                        .checked_mul(core::mem::size_of::<f32>())
+                        .ok_or(metalerror::sizeoverflow)?;
+                    allocbytes.push(bytes);
+                }
+                sbuf::device(_) => {}
+            }
+        }
+        let mut owned: Vec<Retained<ProtocolObject<dyn MTLBuffer>>> =
+            Vec::with_capacity(allocbytes.len());
+        for bytes in allocbytes {
+            owned.push(alloc(&self.device, bytes)?);
+        }
+        let mut refs: Vec<&ProtocolObject<dyn MTLBuffer>> = Vec::with_capacity(buffers.len());
+        let mut owncursor = 0;
+        let mut out: Option<Retained<ProtocolObject<dyn MTLBuffer>>> = None;
+        for slot in buffers.iter() {
+            match *slot {
+                sbuf::hostu64(_) | sbuf::out(_) => {
+                    let buffer = &owned[owncursor];
+                    if matches!(*slot, sbuf::out(_)) {
+                        out = Some(buffer.clone());
+                    }
+                    refs.push(buffer);
+                    owncursor += 1;
+                }
+                sbuf::device(passed) => refs.push(passed),
+            }
+        }
+        let out = out.ok_or_else(|| metalerror::execution {
+            message: "a session dispatch has no output slot".to_string(),
+        })?;
         let index = self.outputs.len();
-        self.outputs.push(slot::buffer(out.clone(), outlen));
+        self.outputs.push(slot::buffer(out, outlen));
+
+        // SAFETY: `refs` is exactly the bound buffer list and every entry is a
+        // live device buffer — caller-owned (device) or allocated above with
+        // the byte length the kernel reads or writes — so binding indices
+        // 0..refs.len() to the pipeline's `[[buffer(i)]]` attributes matches
+        // the MSL signature, and the kernels bounds-test every element index
+        // they derive. `params` is a live value whose address is valid for the
+        // call, and `setBytes_length_atIndex` copies rather than retains it.
+        // The upload targets (this dispatch's and the pending ones flushed
+        // below) were allocated with exactly the byte length of their data, so
+        // the copies are in bounds and never overlap. No index is dereferenced
+        // here.
+        unsafe {
+            {
+                let mut pending = self.pending.borrow_mut();
+                for (buffer, data) in pending.iter() {
+                    core::ptr::copy_nonoverlapping(
+                        data.as_ptr().cast::<u8>(),
+                        buffer.contents().as_ptr().cast::<u8>(),
+                        core::mem::size_of_val(data.as_slice()),
+                    );
+                }
+                pending.clear();
+            }
+            for (index, data) in &uploads64 {
+                let target = refs[*index];
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().cast::<u8>(),
+                    target.contents().as_ptr().cast::<u8>(),
+                    core::mem::size_of_val(&data[..]),
+                );
+            }
+            for (index, buffer) in refs.iter().enumerate() {
+                self.encoder
+                    .setBuffer_offset_atIndex(Some(*buffer), 0, index);
+            }
+            self.encoder.setBytes_length_atIndex(
+                core::ptr::NonNull::from(params).cast(),
+                core::mem::size_of_val(params),
+                refs.len(),
+            );
+            self.encoder
+                .dispatchThreads_threadsPerThreadgroup(spec.grid, spec.threads);
+        }
         Ok(index)
     }
 
@@ -1145,18 +1319,37 @@ impl session {
         self.encoder.endEncoding();
         self.ended = true;
         self.command.commit();
-        self.command.waitUntilCompleted();
         // `session` implements `Drop`, so fields cannot be moved out of `self`;
         // `take` leaves an empty vector behind and hands the slots over.
         let outputs = core::mem::take(&mut self.outputs);
-        outputs
-            .into_iter()
-            .map(|output| match output {
-                slot::buffer(buffer, len) => read(&buffer, len),
-                slot::empty => Ok(Vec::new()),
-                slot::zeros(count) => Ok(vec![0.0_f32; count]),
-            })
-            .collect()
+        let mut results: Vec<Vec<f32>> = Vec::with_capacity(outputs.len());
+        // SAFETY: every `slot::buffer` was allocated with at least `len` f32
+        // elements by the dispatch that recorded it, and the `waitUntilCompleted`
+        // inside this block orders the reads after every encoded kernel wrote
+        // the buffers, so each `contents` pointer yields exactly `len`
+        // initialized elements, which the reserved `out` has room for.
+        unsafe {
+            self.command.waitUntilCompleted();
+            for output in outputs {
+                match output {
+                    slot::buffer(buffer, len) => {
+                        let mut out = Vec::new();
+                        out.try_reserve_exact(len)
+                            .map_err(|_| metalerror::allocation)?;
+                        out.resize(len, 0.0_f32);
+                        core::ptr::copy_nonoverlapping(
+                            buffer.contents().as_ptr().cast::<f32>(),
+                            out.as_mut_ptr(),
+                            len,
+                        );
+                        results.push(out);
+                    }
+                    slot::empty => results.push(Vec::new()),
+                    slot::zeros(count) => results.push(vec![0.0_f32; count]),
+                }
+            }
+        }
+        Ok(results)
     }
 }
 
@@ -1197,11 +1390,7 @@ pub(crate) fn matmul_into(
         return Ok(session.recordzeros(total));
     }
     let dims = Extents::new(m, k, n)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [lhs, rhs, &out];
+    let buffers = [sbuf::device(lhs), sbuf::device(rhs), sbuf::out(total)];
     let params = [dims.m, dims.k, dims.n];
     let spec = dispatchspec {
         source: source::MATMULMSL,
@@ -1213,7 +1402,7 @@ pub(crate) fn matmul_into(
         },
         threads: dims.threadgroup(),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+    session.dispatch(cache, &spec, &buffers, &params, total)
 }
 
 /// Encodes an elementwise `add` of `count` elements, returning the slot index.
@@ -1250,11 +1439,7 @@ fn elementwise2_into(
     if count == 0 {
         return Ok(session.recordempty());
     }
-    let bytes = count
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [lhs, rhs, &out];
+    let buffers = [sbuf::device(lhs), sbuf::device(rhs), sbuf::out(count)];
     let params = [asu32(count)?];
     let spec = dispatchspec {
         source: source::ELEMENTWISE,
@@ -1262,7 +1447,7 @@ fn elementwise2_into(
         grid: flatgrid(count)?,
         threads: flatthreads(count),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, count)
+    session.dispatch(cache, &spec, &buffers, &params, count)
 }
 
 /// Encodes a `silu` of `count` elements, returning the slot index.
@@ -1275,11 +1460,7 @@ pub(crate) fn silu_into(
     if count == 0 {
         return Ok(session.recordempty());
     }
-    let bytes = count
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let buffers = [sbuf::device(input), sbuf::out(count)];
     let params = [asu32(count)?];
     let spec = dispatchspec {
         source: source::ELEMENTWISE,
@@ -1287,7 +1468,7 @@ pub(crate) fn silu_into(
         grid: flatgrid(count)?,
         threads: flatthreads(count),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, count)
+    session.dispatch(cache, &spec, &buffers, &params, count)
 }
 
 /// Encodes a `softmax` over `rows` rows of `width`, returning the slot index.
@@ -1302,11 +1483,7 @@ pub(crate) fn softmax_into(
         return Ok(session.recordempty());
     }
     let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let buffers = [sbuf::device(input), sbuf::out(total)];
     let params = [asu32(width)?];
     let spec = dispatchspec {
         source: source::SOFTMAXMSL,
@@ -1314,7 +1491,7 @@ pub(crate) fn softmax_into(
         grid: rowgrid(rows, source::SOFTMAXTILE)?,
         threads: fullthreads(source::SOFTMAXTILE),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+    session.dispatch(cache, &spec, &buffers, &params, total)
 }
 
 /// Encodes an RMS normalization, returning the slot index.
@@ -1331,11 +1508,7 @@ pub(crate) fn rmsnorm_into(
         return Ok(session.recordempty());
     }
     let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [input, weight, &out];
+    let buffers = [sbuf::device(input), sbuf::device(weight), sbuf::out(total)];
     let params = [asu32(width)?, eps.to_bits()];
     let spec = dispatchspec {
         source: source::RMSNORMMSL,
@@ -1343,7 +1516,7 @@ pub(crate) fn rmsnorm_into(
         grid: rowgrid(rows, source::RMSNORMTILE)?,
         threads: fullthreads(source::RMSNORMTILE),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+    session.dispatch(cache, &spec, &buffers, &params, total)
 }
 
 /// Encodes rotary position embedding, returning the slot index.
@@ -1369,11 +1542,7 @@ pub(crate) fn rope_into(
         .checked_mul(heads)
         .and_then(|value| value.checked_mul(headdim))
         .ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let buffers = [sbuf::device(input), sbuf::out(total)];
     let params = [
         asu32(rows)?,
         asu32(seqaxis)?,
@@ -1387,7 +1556,7 @@ pub(crate) fn rope_into(
         grid: flatgrid(pairs)?,
         threads: flatthreads(pairs),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+    session.dispatch(cache, &spec, &buffers, &params, total)
 }
 
 /// Encodes absolute-position rotary embedding of a single token.
@@ -1401,11 +1570,7 @@ pub(crate) fn rope_at_into(
     base: f32,
 ) -> Result<usize, metalerror> {
     let total = heads.checked_mul(headdim).ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 2] = [input, &out];
+    let buffers = [sbuf::device(input), sbuf::out(total)];
     let params = [
         asu32(heads)?,
         asu32(headdim)?,
@@ -1418,7 +1583,7 @@ pub(crate) fn rope_at_into(
         grid: flatgrid(heads * headdim / 2)?,
         threads: flatthreads(heads * headdim / 2),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+    session.dispatch(cache, &spec, &buffers, &params, total)
 }
 
 /// Encodes an embedding gather, returning the slot index.
@@ -1434,14 +1599,12 @@ pub(crate) fn embedding_into(
         return Ok(session.recordempty());
     }
     let total = rows.checked_mul(width).ok_or(metalerror::sizeoverflow)?;
-    let bytes = total
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
     let devindices: Vec<u64> = indices.iter().map(|&index| index as u64).collect();
-    let dindices = alloc(&session.device, core::mem::size_of_val(&devindices))?;
-    write(&dindices, &devindices);
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 3] = [table, &dindices, &out];
+    let buffers = [
+        sbuf::device(table),
+        sbuf::hostu64(&devindices),
+        sbuf::out(total),
+    ];
     let params = [rows as u64, width as u64];
     let spec = dispatchspec {
         source: source::EMBEDDINGMSL,
@@ -1449,7 +1612,7 @@ pub(crate) fn embedding_into(
         grid: flatgrid(total)?,
         threads: flatthreads(total),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, total)
+    session.dispatch(cache, &spec, &buffers, &params, total)
 }
 
 /// Encodes grouped-query attention, returning the slot index.
@@ -1470,14 +1633,15 @@ pub(crate) fn attention_into(
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(metalerror::sizeoverflow)?;
-    let bytes = queryelements
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
     let groups = qseq
         .checked_mul(geometry.heads)
         .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 4] = [query, key, value, &out];
+    let buffers = [
+        sbuf::device(query),
+        sbuf::device(key),
+        sbuf::device(value),
+        sbuf::out(queryelements),
+    ];
     let params = [
         asu32(qseq)?,
         asu32(geometry.kvseq)?,
@@ -1492,7 +1656,7 @@ pub(crate) fn attention_into(
         grid: rowgrid(groups, source::ATTENTIONLANES)?,
         threads: fullthreads(source::ATTENTIONLANES),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, queryelements)
+    session.dispatch(cache, &spec, &buffers, &params, queryelements)
 }
 
 /// A cached and a new device buffer of an incremental attention operand.
@@ -1523,12 +1687,14 @@ pub(crate) fn attention_cached_into(
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(metalerror::sizeoverflow)?;
-    let bytes = queryelements
-        .checked_mul(core::mem::size_of::<f32>())
-        .ok_or(metalerror::sizeoverflow)?;
-    let out = alloc(&session.device, bytes)?;
-    let buffers: [&ProtocolObject<dyn MTLBuffer>; 6] =
-        [query, key.cached, key.new, value.cached, value.new, &out];
+    let buffers = [
+        sbuf::device(query),
+        sbuf::device(key.cached),
+        sbuf::device(key.new),
+        sbuf::device(value.cached),
+        sbuf::device(value.new),
+        sbuf::out(queryelements),
+    ];
     let params = [
         asu32(kvseq)?,
         asu32(geometry.heads)?,
@@ -1542,5 +1708,5 @@ pub(crate) fn attention_cached_into(
         grid: rowgrid(geometry.heads, source::ATTENTIONLANES)?,
         threads: fullthreads(source::ATTENTIONLANES),
     };
-    session.dispatch(cache, &spec, &buffers, &params, &out, queryelements)
+    session.dispatch(cache, &spec, &buffers, &params, queryelements)
 }
