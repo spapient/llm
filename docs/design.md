@@ -1529,7 +1529,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **稀疏存储（COO / bitmap）。** `tensorentry` 可选携带 `sparsedesc`（`nnz` + `format`）。COO：数据段字节 = `nnz` 个 `u32` 线性索引（小端）+ `nnz` 个非零值；bitmap：`ceil(elementcount/8)` 字节位图（LSB 优先，bit 置位 = 非零）+ `nnz` 个非零值（元素序）。`addsparse`/`addsparsebitmap` 分别构造，校验索引/位图合法、位图高位清零且（COO）索引唯一，重复报 `invalidmanifest`；`readtensortyped` 经 `desparsify`/`desparsifybitmap` 零填充重建稠密后再解 dtype/layout。索引/位图是逻辑元素坐标（shape 行主序线性化），layout 仅作用于重建后的稠密缓冲，故稀疏与多排布正交。bitmap 对结构化稀疏（如 2:4，50% 密度）比 COO 省约 16× 索引开销。
 
-**量化内核（对称 int8）。** `quantize`/`dequantize` 实现对称 int8 量化：`scale = max(|x|)/127`（`groupsize=0` 为 per-tensor，否则 per-group/per-channel），`q = round(x/scale)` clamp `[-127,127]`，反量化 `x ≈ q×scale`（重建误差 ≤ scale/2）。与 `quantdesc`（scale 一等张量）配套，量化输出（i8 + scale）经 `addtensor`/`setquant` 落盘。
+**量化内核（对称 + 非对称 int8）。** `quantize`/`dequantize` 实现对称 int8 量化：`scale = max(|x|)/127`（`groupsize=0` 为 per-tensor，否则 per-group/per-channel），`q = round(x/scale)` clamp `[-127,127]`，反量化 `x ≈ q×scale`（重建误差 ≤ scale/2）。`quantizeasymmetric`/`dequantizeasymmetric` 实现非对称：`scale = (max-min)/255`，`zeropoint = round(-128 - min/scale)`，`q = round(x/scale)+zp` clamp `[-128,127]`，反量化 `x ≈ (q-zp)×scale`，对偏斜分布（如全正数据）重建精度更高；常量组 scale=0、zeropoint=0。与 `quantdesc`（scale/zeropoint 一等张量）配套，量化输出经 `addtensor`/`setquant` 落盘。
 
 **多文件分片（sharded）。** `shards::split`/`join` 把编码后快照的数据段切成固定大小分片（manifest 前缀保持完整，`block_offset` 语义不变），`join` 按序拼接精确重建原始工件。分片与压缩/加密/签名正交；适合超大模型拆文件存储/传输。
 

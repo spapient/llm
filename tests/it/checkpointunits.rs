@@ -1658,7 +1658,7 @@ mod encryption {
 /// Tests for the symmetric int8 quantization kernel.
 mod quantize {
     use ::checkpoint::checkpointerror;
-    use ::checkpoint::quantize::{dequantize, quantize};
+    use ::checkpoint::quantize::{dequantize, dequantizeasymmetric, quantize, quantizeasymmetric};
 
     #[test]
     fn symmetric_roundtrip_within_half_step() {
@@ -1717,6 +1717,47 @@ mod quantize {
         let (q, _) = quantize(&[1.0f32, 2.0, 3.0, 4.0], 2).unwrap();
         assert!(matches!(
             dequantize(&q, &[1.0], 2),
+            Err(checkpointerror::invalidmanifest { .. })
+        ));
+    }
+
+    #[test]
+    fn asymmetric_roundtrip_within_half_step() {
+        let data = [-1.5f32, -1.0, -0.5, 0.0, 0.5, 1.0];
+        let aq = quantizeasymmetric(&data, 0).unwrap();
+        let back = dequantizeasymmetric(aq.getq(), aq.getscale(), aq.getzeropoint(), 0).unwrap();
+        let halfstep = aq.getscale()[0] / 2.0;
+        for (x, y) in data.iter().zip(back.iter()) {
+            assert!((x - y).abs() <= halfstep + f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn asymmetric_uses_nonzero_zeropoint_for_positive_data() {
+        let data = [0.0f32, 1.0, 2.0, 3.0];
+        let aq = quantizeasymmetric(&data, 0).unwrap();
+        assert!((aq.getzeropoint()[0] as f32 + 128.0).abs() < 1.0);
+        let back = dequantizeasymmetric(aq.getq(), aq.getscale(), aq.getzeropoint(), 0).unwrap();
+        let halfstep = aq.getscale()[0] / 2.0;
+        for (x, y) in data.iter().zip(back.iter()) {
+            assert!((x - y).abs() <= halfstep + f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn asymmetric_constant_group_is_zero() {
+        let data = [5.0f32, 5.0, 5.0];
+        let aq = quantizeasymmetric(&data, 0).unwrap();
+        assert_eq!(aq.getscale()[0], 0.0);
+        assert_eq!(aq.getzeropoint()[0], 0);
+        assert_eq!(aq.getq(), &[0i8, 0, 0]);
+    }
+
+    #[test]
+    fn asymmetric_mismatched_zeropoint_is_rejected() {
+        let aq = quantizeasymmetric(&[0.0f32, 1.0, 2.0, 3.0], 2).unwrap();
+        assert!(matches!(
+            dequantizeasymmetric(aq.getq(), aq.getscale(), &[0i8], 2),
             Err(checkpointerror::invalidmanifest { .. })
         ));
     }
