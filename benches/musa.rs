@@ -217,25 +217,30 @@ mod linux {
     }
 
     fn scan(criterion: &mut Criterion) {
-        let (input, init, a, b, c, skip) = scaninput(256).unwrap();
-        let (iv, nv, av, bv, cv, sv) = (
-            input.getview(),
-            init.getview(),
-            a.getview(),
-            b.getview(),
-            c.getview(),
-            skip.getview(),
-        );
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
         let mut group = criterion.benchmark_group("musa/scan");
-        pair(
-            &mut group,
-            "n256d64state4",
-            input.getlen(),
-            || cpuexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap().0,
-            || musaexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap().0,
-        );
+        for seq in [256usize, 16384] {
+            let (input, init, a, b, c, skip) = scaninput(seq).unwrap();
+            let (iv, nv, av, bv, cv, sv) = (
+                input.getview(),
+                init.getview(),
+                a.getview(),
+                b.getview(),
+                c.getview(),
+                skip.getview(),
+            );
+            // seq 256 stays below the single-chunk threshold (serial kernel);
+            // seq 16384 crosses it, so the three-pass parallel kernel with the
+            // device-resident intermediates is what runs.
+            pair(
+                &mut group,
+                &format!("n{seq}d64state4"),
+                input.getlen(),
+                || cpuexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap().0,
+                || musaexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap().0,
+            );
+        }
         group.finish();
     }
 

@@ -148,6 +148,12 @@ struct cachestate {
     /// of operand sizes the operators request, so it does not grow without
     /// limit for a fixed workload.
     pool: HashMap<usize, Vec<mudevptr>>,
+    /// Device-resident buffers released by [`freedevice`], waiting for the
+    /// next driver handoff block to return them to the pool or free them.
+    /// The queue keeps the release inside the single registered handoff, and
+    /// its length is bounded by the live device-resident slots of one
+    /// multi-stage operator.
+    pendingfree: Vec<(mudevptr, usize)>,
 }
 
 impl cache {
@@ -163,6 +169,7 @@ impl cache {
                 modules: HashMap::new(),
                 functions: HashMap::new(),
                 pool: HashMap::new(),
+                pendingfree: Vec::new(),
             }),
         }
     }
@@ -211,12 +218,14 @@ pub(crate) enum scalar {
 
 /// A bound operand of a dispatch.
 ///
-/// Every dispatch is run-to-completion: host operands are uploaded, the output
-/// is downloaded, and this dispatch's temporaries are freed inside the single
-/// handoff block. A device pass-through operand is deliberately absent: the
-/// multi-stage device-buffer reuse of the submission optimization (C2) is a
-/// separate measurable stage, and adding the branch before a caller uses it
-/// would be dead code (AGENTS.md §3.2).
+/// Every `dispatch` is run-to-completion: host operands are uploaded, the
+/// output is downloaded, and this dispatch's temporaries are returned to the
+/// pool inside the single handoff block. The device-resident variants serve
+/// multi-stage kernels (`scan_parallel` chains its passes): the producer hands
+/// a buffer back with [`buf::outdevice`] or [`buf::hostdevice`], later passes
+/// bind it with [`buf::device`], and the owner releases it through
+/// [`freedevice`], which queues the return into the next handoff block — no
+/// second driver-handoff site exists for freeing.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum buf<'a> {
     /// Upload a host `f32` slice into a fresh device allocation.
@@ -225,6 +234,27 @@ pub(crate) enum buf<'a> {
     hostu64(&'a [u64]),
     /// Allocate the output buffer and download it after the kernel completes.
     out(usize),
+    /// Bind an existing device allocation without uploading or returning it
+    /// to the pool. The caller owns its lifetime and releases it through
+    /// [`freedevice`].
+    device(mudevptr),
+    /// Allocate the output buffer and hand it back as a device pointer
+    /// instead of downloading it. The caller owns its lifetime and releases
+    /// it through [`freedevice`].
+    outdevice(usize),
+    /// Upload a host `f32` slice and hand the allocation back as a device
+    /// pointer instead of returning it to the pool, so later passes reuse the
+    /// upload. The caller owns its lifetime and releases it through
+    /// [`freedevice`].
+    hostdevice(&'a [f32]),
+}
+
+/// The two halves of one driver handoff: downloaded host outputs in buffer
+/// order, and handed-back device buffers as `(pointer, byte size)` pairs for
+/// every `device`-resident slot in buffer order.
+struct dispatchresult {
+    host: Vec<Vec<f32>>,
+    device: Vec<(mudevptr, usize)>,
 }
 
 /// Runs one kernel through the single driver-handoff block.
@@ -245,6 +275,10 @@ pub(crate) enum buf<'a> {
 /// entry resolved, [`musaerror::transfer`] when a copy fails,
 /// [`musaerror::launch`] when the launch or synchronisation fails, and
 /// [`musaerror::sizeoverflow`] when a byte count overflows.
+/// Runs one kernel through the single driver-handoff block, downloading
+/// every [`buf::out`] slot. Device-resident variants are accepted but their
+/// handed-back pointers are discarded: callers of a mixed run use
+/// [`dispatchdevice`] instead.
 pub(crate) fn dispatch(
     cache: &cache,
     source_id: &'static str,
@@ -255,7 +289,59 @@ pub(crate) fn dispatch(
     block: (u32, u32, u32),
     sharedbytes: u32,
 ) -> Result<Vec<Vec<f32>>, musaerror> {
-    // The state lock is held across the whole dispatch: the lazy open and
+    Ok(drive(cache, source_id, entry, buffers, scalars, grid, block, sharedbytes)?.host)
+}
+
+/// Runs one kernel through the single driver-handoff block, handing back
+/// both halves: downloaded [`buf::out`] slots and every device-resident slot
+/// as a `(pointer, byte size)` pair, each in buffer order. The caller owns
+/// the device-resident buffers and releases them through [`freedevice`].
+pub(crate) fn dispatchmixed(
+    cache: &cache,
+    source_id: &'static str,
+    entry: &'static str,
+    buffers: &[buf<'_>],
+    scalars: &[scalar],
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    sharedbytes: u32,
+) -> Result<dispatchresult, musaerror> {
+    drive(cache, source_id, entry, buffers, scalars, grid, block, sharedbytes)
+}
+
+/// Queues a device-resident buffer for release at the next driver handoff.
+///
+/// The release itself (pool return or `muMemFree_v2`) happens inside the one
+/// registered handoff block, so this function performs no driver call and adds
+/// no `unsafe` site. A zero pointer or zero size is a no-op.
+pub(crate) fn freedevice(cache: &cache, mem: mudevptr, bytes: usize) {
+    if mem != 0 && bytes != 0 {
+        cache.lock().pendingfree.push((mem, bytes));
+    }
+}
+
+/// The single registered driver-handoff block behind [`dispatch`] and
+/// [`dispatchdevice`].
+///
+/// The block is lazy by design: the first call initialises the driver, opens
+/// the device and context, loads the fatbin for `source_id` from the
+/// build-time registry, and resolves `entry`; later calls reuse all of it.
+/// Host operands are uploaded, the kernel is launched on the default stream,
+/// the context is synchronised, outputs are downloaded, and this dispatch's
+/// temporary allocations are returned to the pool — all inside the one
+/// `unsafe` block, so the registered handoff count stays exactly one
+/// (docs/musa-backend-plan.md §5.4).
+fn drive(
+    cache: &cache,
+    source_id: &'static str,
+    entry: &'static str,
+    buffers: &[buf<'_>],
+    scalars: &[scalar],
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+    sharedbytes: u32,
+) -> Result<dispatchresult, musaerror> {
+    // The state lock is held across the whole handoff: the lazy open and
     // function resolution mutate the shared caches, and the default stream
     // serialises launches anyway.
     let mut state = cache.lock();
@@ -273,8 +359,10 @@ pub(crate) fn dispatch(
     // checked against `MUSA_SUCCESS` and converted to `musaerror`; no result
     // is ignored. The synchronisation orders the downloads after the kernel's
     // writes, and a buffer is returned to the pool only after its last use in
-    // this dispatch; the lock held across the whole block means no pooled
-    // buffer is ever checked out by two dispatches at once.
+    // this handoff; the lock held across the whole block means no pooled
+    // buffer is ever checked out by two dispatches at once, and the
+    // device-resident variants bypass the pool return because the caller owns
+    // them through [`freedevice`].
     unsafe {
         // --- lazy open -----------------------------------------------------
         if !state.opened {
@@ -302,6 +390,22 @@ pub(crate) fn dispatch(
         let context = state.context.ok_or(musaerror::device {
             message: "context not open".into(),
         })?;
+
+        // --- deferred releases --------------------------------------------
+        // Buffers released by `freedevice` re-enter the pool (or are freed)
+        // here, inside the one registered handoff block, before any new
+        // allocation so a just-released slot can serve this very dispatch.
+        let pending: Vec<(mudevptr, usize)> = state.pendingfree.drain(..).collect();
+        for (mem, bytes) in pending {
+            let bucket = state.pool.entry(bytes).or_default();
+            if bucket.len() < POOLCAP {
+                bucket.push(mem);
+            } else if muMemFree_v2(mem) != MUSA_SUCCESS {
+                return Err(musaerror::transfer {
+                    message: "muMemFree failed for released device buffer".into(),
+                });
+            }
+        }
 
         // --- lazy module load and kernel resolution ------------------------
         if !state.functions.contains_key(&(source_id, entry)) {
@@ -352,49 +456,69 @@ pub(crate) fn dispatch(
 
         // --- allocate and upload ------------------------------------------
         // Byte sizes first (all checked), then allocate, then copy, so a
-        // failed allocation leaves nothing half-uploaded.
+        // failed allocation leaves nothing half-uploaded. Device-resident
+        // slots (`device`/`outdevice`/`hostdevice`) are marked `keep`: they
+        // skip the pool return and their `(pointer, byte size)` pair is
+        // handed back to the caller in buffer order.
         let mut sizes: Vec<usize> = Vec::with_capacity(buffers.len());
         let mut owned: Vec<usize> = Vec::with_capacity(buffers.len());
+        let mut keep: Vec<bool> = Vec::with_capacity(buffers.len());
         for slot in buffers {
             match *slot {
-                buf::host(data) => sizes.push(
-                    data.len()
-                        .checked_mul(core::mem::size_of::<f32>())
-                        .ok_or(musaerror::sizeoverflow)?,
-                ),
-                buf::hostu64(data) => sizes.push(
-                    data.len()
-                        .checked_mul(core::mem::size_of::<u64>())
-                        .ok_or(musaerror::sizeoverflow)?,
-                ),
-                buf::out(count) => sizes.push(
-                    count
-                        .checked_mul(core::mem::size_of::<f32>())
-                        .ok_or(musaerror::sizeoverflow)?,
-                ),
+                buf::host(data) | buf::hostdevice(data) => {
+                    sizes.push(
+                        data.len()
+                            .checked_mul(core::mem::size_of::<f32>())
+                            .ok_or(musaerror::sizeoverflow)?,
+                    );
+                    keep.push(matches!(*slot, buf::hostdevice(_)));
+                    owned.push(0);
+                }
+                buf::hostu64(data) => {
+                    sizes.push(
+                        data.len()
+                            .checked_mul(core::mem::size_of::<u64>())
+                            .ok_or(musaerror::sizeoverflow)?,
+                    );
+                    keep.push(false);
+                    owned.push(0);
+                }
+                buf::out(count) | buf::outdevice(count) => {
+                    sizes.push(
+                        count
+                            .checked_mul(core::mem::size_of::<f32>())
+                            .ok_or(musaerror::sizeoverflow)?,
+                    );
+                    keep.push(matches!(*slot, buf::outdevice(_)));
+                    owned.push(0);
+                }
+                buf::device(mem) => {
+                    sizes.push(0);
+                    keep.push(true);
+                    owned.push(mem);
+                }
             }
         }
-        for size in &sizes {
-            if *size == 0 {
-                owned.push(0);
+        for (index, &size) in sizes.iter().enumerate() {
+            if size == 0 {
                 continue;
             }
-            let mem = if let Some(pooled) = state.pool.get_mut(size).and_then(Vec::pop) {
+            let mem = if let Some(pooled) = state.pool.get_mut(&size).and_then(Vec::pop) {
                 pooled
             } else {
                 let mut mem: mudevptr = 0;
-                if muMemAlloc_v2(&mut mem, *size) != MUSA_SUCCESS {
+                if muMemAlloc_v2(&mut mem, size) != MUSA_SUCCESS {
                     return Err(musaerror::transfer {
                         message: format!("muMemAlloc failed for {size} bytes"),
                     });
                 }
                 mem
             };
-            owned.push(mem);
+            owned[index] = mem;
         }
         for (index, slot) in buffers.iter().enumerate() {
             match *slot {
-                buf::host(data) => {
+                buf::host(data) | buf::hostdevice(data) => {
                     if muMemcpyHtoD_v2(owned[index], data.as_ptr().cast(), sizes[index])
                         != MUSA_SUCCESS
                     {
@@ -412,11 +536,12 @@ pub(crate) fn dispatch(
                         });
                     }
                 }
-                buf::out(_) => {}
+                buf::out(_) | buf::outdevice(_) | buf::device(_) => {}
             }
         }
         // Buffer pointers: every bound operand is backed by an owned
-        // allocation. `ptrs` outlives the launch.
+        // allocation or a caller-owned device pointer. `ptrs` outlives the
+        // launch.
         let mut ptrs: Vec<usize> = owned.clone();
 
         // --- launch on the default stream, then synchronise ----------------
@@ -455,21 +580,28 @@ pub(crate) fn dispatch(
         }
 
         // --- download outputs ---------------------------------------------
-        let mut results: Vec<Vec<f32>> = Vec::with_capacity(buffers.len());
+        let mut host: Vec<Vec<f32>> = Vec::with_capacity(buffers.len());
+        let mut device: Vec<(mudevptr, usize)> = Vec::with_capacity(buffers.len());
         for (index, slot) in buffers.iter().enumerate() {
-            if let buf::out(count) = *slot {
-                let mut out = Vec::new();
-                out.try_reserve_exact(count)
-                    .map_err(|_| musaerror::sizeoverflow)?;
-                out.resize(count, 0.0_f32);
-                if muMemcpyDtoH_v2(out.as_mut_ptr().cast(), owned[index], sizes[index])
-                    != MUSA_SUCCESS
-                {
-                    return Err(musaerror::transfer {
-                        message: "muMemcpyDtoH failed for output".into(),
-                    });
+            match *slot {
+                buf::out(count) => {
+                    let mut out = Vec::new();
+                    out.try_reserve_exact(count)
+                        .map_err(|_| musaerror::sizeoverflow)?;
+                    out.resize(count, 0.0_f32);
+                    if muMemcpyDtoH_v2(out.as_mut_ptr().cast(), owned[index], sizes[index])
+                        != MUSA_SUCCESS
+                    {
+                        return Err(musaerror::transfer {
+                            message: "muMemcpyDtoH failed for output".into(),
+                        });
+                    }
+                    host.push(out);
                 }
-                results.push(out);
+                buf::device(_) | buf::outdevice(_) | buf::hostdevice(_) => {
+                    device.push((owned[index], sizes[index]));
+                }
+                buf::host(_) | buf::hostu64(_) => {}
             }
         }
 
@@ -481,7 +613,7 @@ pub(crate) fn dispatch(
         // block and the default stream serialises launches. A bucket that has
         // reached `POOLCAP` frees its excess instead, bounding device memory.
         for (index, &mem) in owned.iter().enumerate() {
-            if sizes[index] == 0 {
+            if sizes[index] == 0 || keep[index] {
                 continue;
             }
             let bucket = state.pool.entry(sizes[index]).or_default();
@@ -493,7 +625,7 @@ pub(crate) fn dispatch(
                 });
             }
         }
-        Ok(results)
+        Ok(dispatchresult { host, device })
     }
 }
 
@@ -890,12 +1022,13 @@ pub(crate) fn scan_parallel(
     d: usize,
     statewidth: usize,
 ) -> Result<(Vec<f32>, Vec<f32>), musaerror> {
-    // Pass 1: per-block totals into `dtotal`. Each pass is a run-to-completion
-    // dispatch (alloc, upload, launch, sync, download, check-in), so the
-    // intermediate `dtotal`/`dprefix` cross the host between passes and the
-    // six shared operands are re-uploaded by every pass that reads them.
-    // Device-resident pass-through (mirroring `metal`'s `buf::device`) is the
-    // reserved follow-up (docs/musa-backend-plan.md §5.5).
+    // The three passes chain on device-resident intermediates: pass 1 keeps
+    // `dtotal` and the six shared operands on the device (uploaded once),
+    // pass 2 binds them, keeps `dprefix` on the device and downloads only the
+    // final state, and pass 3 binds the retained operands and downloads only
+    // the output. The intermediates are released through `freedevice`, whose
+    // queue is drained inside the next handoff block, so the release adds no
+    // driver call of its own (docs/musa-backend-plan.md §5.5).
     let blocks = n.div_ceil(source::SCANCHUNK as usize);
     let dntotal = d.checked_mul(statewidth).ok_or(musaerror::sizeoverflow)?;
     let pairbytes = |count: usize| {
@@ -905,18 +1038,21 @@ pub(crate) fn scan_parallel(
             .and_then(|elements| elements.checked_mul(core::mem::size_of::<f32>()))
             .ok_or(musaerror::sizeoverflow)
     };
-    let mut totals = dispatch(
+    let aggsize = pairbytes(blocks)? / core::mem::size_of::<f32>();
+
+    // Pass 1: per-block totals; every operand upload is retained.
+    let mut totals = dispatchmixed(
         cache,
         "scan_parallel",
         source::SCANAGGENTRY,
         &[
-            buf::host(input),
-            buf::host(a),
-            buf::host(b),
-            buf::host(c),
-            buf::host(skip),
-            buf::host(init),
-            buf::out(pairbytes(blocks)? / core::mem::size_of::<f32>()),
+            buf::hostdevice(input),
+            buf::hostdevice(a),
+            buf::hostdevice(b),
+            buf::hostdevice(c),
+            buf::hostdevice(skip),
+            buf::hostdevice(init),
+            buf::outdevice(aggsize),
         ],
         &[
             scalar::u32(n as u32),
@@ -929,20 +1065,27 @@ pub(crate) fn scan_parallel(
         (source::SCANBLOCKDIM, 1, 1),
         0,
     )?;
-    let dtotal = totals.remove(0);
+    // Device slots in buffer order: input, a, b, c, skip, init, dtotal.
+    let dinput = totals.device[0];
+    let da = totals.device[1];
+    let db = totals.device[2];
+    let dc = totals.device[3];
+    let dskip = totals.device[4];
+    let dinit = totals.device[5];
+    let dtotal = totals.device[6];
 
     // Pass 2: inter-block prefix plus the whole-sequence final state.
     let prefixcount = blocks.checked_add(1).ok_or(musaerror::sizeoverflow)?;
     let statecount = dntotal;
-    let mut prefix = dispatch(
+    let mut prefix = dispatchmixed(
         cache,
         "scan_parallel",
         source::SCANPREFIXENTRY,
         &[
-            buf::host(&dtotal),
-            buf::host(init),
+            buf::device(dtotal.0),
+            buf::device(dinit.0),
             buf::out(statecount),
-            buf::out(pairbytes(prefixcount)? / core::mem::size_of::<f32>()),
+            buf::outdevice(pairbytes(prefixcount)? / core::mem::size_of::<f32>()),
         ],
         &[
             scalar::u32(n as u32),
@@ -955,23 +1098,25 @@ pub(crate) fn scan_parallel(
         ((statecount as u32).min(1024), 1, 1),
         0,
     )?;
-    let state = prefix.remove(0);
-    let dprefix = prefix.remove(0);
+    let state = prefix.host.remove(0);
+    // Device slots in buffer order: dtotal (bound again), dinit, dprefix.
+    let dprefix = prefix.device[2];
+    freedevice(cache, dtotal.0, dtotal.1);
 
-    // Pass 3: per-block apply; the output is downloaded here.
+    // Pass 3: per-block apply; only the output is downloaded.
     let outcount = n.checked_mul(d).ok_or(musaerror::sizeoverflow)?;
     let mut results = dispatch(
         cache,
         "scan_parallel",
         source::SCANAPPLYENTRY,
         &[
-            buf::host(input),
-            buf::host(a),
-            buf::host(b),
-            buf::host(c),
-            buf::host(skip),
-            buf::host(init),
-            buf::host(&dprefix),
+            buf::device(dinput.0),
+            buf::device(da.0),
+            buf::device(db.0),
+            buf::device(dc.0),
+            buf::device(dskip.0),
+            buf::device(dinit.0),
+            buf::device(dprefix.0),
             buf::out(outcount),
         ],
         &[
@@ -986,6 +1131,13 @@ pub(crate) fn scan_parallel(
         0,
     )?;
     let out = results.remove(0);
+    freedevice(cache, dinput.0, dinput.1);
+    freedevice(cache, da.0, da.1);
+    freedevice(cache, db.0, db.1);
+    freedevice(cache, dc.0, dc.1);
+    freedevice(cache, dskip.0, dskip.1);
+    freedevice(cache, dinit.0, dinit.1);
+    freedevice(cache, dprefix.0, dprefix.1);
     Ok((out, state))
 }
 
