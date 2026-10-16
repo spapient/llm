@@ -192,7 +192,9 @@ fn matmul_handles_a_leading_batch_dimension() {
     );
     let rhs = build(vec![2, 3, 1], vec![1.0, 0.0, -1.0, 2.0, 1.0, 3.0]);
     let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
-    let want = reference::matmul(lhs.getdata(), rhs.getdata(), 2, 3, 1);
+    // The scalar reference is single-matrix; batch is per-slice concatenation.
+    let mut want = reference::matmul(&lhs.getdata()[0..6], &rhs.getdata()[0..3], 2, 3, 1);
+    want.extend_from_slice(&reference::matmul(&lhs.getdata()[6..12], &rhs.getdata()[3..6], 2, 3, 1));
     assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
 }
 
@@ -281,7 +283,9 @@ fn softmax_matches_the_scalar_reference_per_row() {
     let exec = musaexecutor::new(wide());
     let input = build(vec![2, 3], vec![1.0, 2.0, 3.0, 0.0, -1.0, -2.0]);
     let out = exec.softmax(&input.getview()).unwrap();
-    let want = reference::softmax(input.getdata());
+    // Per-row softmax: rows are independent, so the reference is row-wise too.
+    let mut want = reference::softmax(&input.getdata()[0..3]);
+    want.extend_from_slice(&reference::softmax(&input.getdata()[3..6]));
     assertallclose(out.getdata(), &want, 1.0e-6, 1.0e-6);
 }
 

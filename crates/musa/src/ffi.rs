@@ -725,7 +725,11 @@ pub(crate) fn attention(
         .checked_mul(heads)
         .and_then(|value| value.checked_mul(headdim))
         .ok_or(musaerror::sizeoverflow)?;
-    let grid = (qseq as u32, 1, 1);
+    let grid = (
+        qseq.checked_mul(heads).ok_or(musaerror::sizeoverflow)? as u32,
+        1,
+        1,
+    );
     let block = (source::ATTENTIONLANES, 1, 1);
     let mut results = dispatch(
         cache,
@@ -768,7 +772,7 @@ pub(crate) fn attention_cached(
     causal: bool,
 ) -> Result<Vec<f32>, musaerror> {
     let count = heads.checked_mul(headdim).ok_or(musaerror::sizeoverflow)?;
-    let grid = (1, 1, 1);
+    let grid = (heads as u32, 1, 1);
     let block = (source::ATTENTIONLANES, 1, 1);
     let mut results = dispatch(
         cache,
