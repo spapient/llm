@@ -4,13 +4,13 @@
 // Symbol: embedding
 extern "C" __global__ void embedding(const float* table,
                                      const unsigned long long* indices,
-                                     float* out, unsigned long long rows,
-                                     unsigned long long width) {
-    unsigned long long total = rows * width;
+                                     float* out, unsigned rows,
+                                     unsigned width) {
+    unsigned total = rows * width;
     unsigned long long index = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= total) {
         return;
     }
-    unsigned long long row = index / width;
+    unsigned row = (unsigned)(index / width);
     out[index] = table[indices[row] * width + (index % width)];
 }

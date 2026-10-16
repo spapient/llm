@@ -671,9 +671,9 @@ pub(crate) fn rope_at(
         source::ROPEATENTRY,
         &[buf::host(input), buf::out(count)],
         &[
-            scalar::u32(position as u32),
             scalar::u32(heads as u32),
             scalar::u32(headdim as u32),
+            scalar::u32(position as u32),
             scalar::f32(base),
         ],
         grid,
@@ -890,6 +890,7 @@ pub(crate) fn scan_parallel(
         ],
         (blocks as u32, (d as u32).div_ceil(source::SCANBLOCKDIM), 1),
         (source::SCANBLOCKDIM, 1, 1),
+        0,
     )?;
     let dtotal = totals.remove(0);
 
@@ -915,6 +916,7 @@ pub(crate) fn scan_parallel(
         ],
         ((statecount as u32).min(1024), 1, 1),
         ((statecount as u32).min(1024), 1, 1),
+        0,
     )?;
     let state = prefix.remove(0);
     let dprefix = prefix.remove(0);
@@ -944,6 +946,7 @@ pub(crate) fn scan_parallel(
         ],
         (blocks as u32, (d as u32).div_ceil(source::SCANBLOCKDIM), 1),
         (source::SCANBLOCKDIM, 1, 1),
+        0,
     )?;
     let out = results.remove(0);
     Ok((out, state))
@@ -1005,6 +1008,7 @@ pub(crate) fn scan_cached(
         ],
         (d as u32, 1, 1),
         (source::ELEMENTWISETILE, 1, 1),
+        0,
     )?;
     let newstate = results.remove(0);
     let out = results.remove(0);

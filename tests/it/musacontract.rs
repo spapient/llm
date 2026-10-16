@@ -588,10 +588,11 @@ fn scan_cached_continues_the_serial_scan() {
     let skip: Vec<f32> = (0..d).map(|i| (i as f32 * 0.11).sin()).collect();
     // Serial continuation: h' = A h + B x, y = C h' + D x for the new token.
     let (_, fullstate) = reference::scan(&input, &init, &a, &b, &c, &skip, n, d, statewidth);
-    let x = input[n * d - d];
+    // The cached continuation consumes the final token's full row.
     let mut wantstate = fullstate.clone();
     let mut wantout = vec![0.0_f32; d];
     for i in 0..d {
+        let x = input[n * d - d + i];
         let mut acc = 0.0_f32;
         for j in 0..statewidth {
             let idx = i * statewidth + j;
@@ -600,7 +601,7 @@ fn scan_cached_continues_the_serial_scan() {
         }
         wantout[i] = acc + skip[i] * x;
     }
-    let input_t = build(vec![1, d], vec![x]);
+    let input_t = build(vec![1, d], input[n * d - d..n * d].to_vec());
     let state_t = build(vec![d, statewidth], fullstate);
     let a_t = build(vec![d, statewidth], a.clone());
     let b_t = build(vec![d, statewidth], b.clone());
