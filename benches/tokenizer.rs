@@ -231,7 +231,8 @@ fn encodegpt2(c: &mut Criterion) {
 }
 
 /// Models with a real `tokenizer.json` fixture under `tests/fixtures/`, kept in
-/// sync with the golden-alignment list in `tests/it/tokenizergolden.rs`.
+/// sync with the golden-alignment list in `tests/it/tokenizergolden.rs`. Kimi
+/// ships a `.tiktoken` file instead and is benchmarked through `fromfilehan`.
 const FROMJSONMODELS: [&str; 12] = [
     "gpt2", "gemma", "deepseek", "llama2", "llama3", "qwen3", "mamba3", "llama4", "mistral",
     "glm4", "nanbeige", "bge3",
@@ -248,6 +249,53 @@ fn loadtokenizer(c: &mut Criterion) {
             b.iter(|| black_box(tokenizer::fromjson(&doc).unwrap()));
         });
     }
+}
+
+/// Loads the Kimi K2 tiktoken encoder (`fromfilehan`, official pat_str
+/// compiled verbatim) to quantify its one-time load cost next to the
+/// `fromjson` fixtures.
+fn loadkimi(c: &mut Criterion) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kimi");
+    let content = std::fs::read_to_string(format!("{dir}/kimi_tiktoken.model")).unwrap();
+    let golden: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap())
+            .unwrap();
+    let specials = kimi_specials(&golden);
+    c.bench_function("tokenizer/fromfilehan/kimi", |b| {
+        b.iter(|| black_box(tiktokenizer::fromfilehan(&content, &specials).unwrap()));
+    });
+}
+
+/// Encodes the shared mixed CJK/ASCII pattern through the Kimi K2 encoder.
+fn encodekimi(c: &mut Criterion) {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kimi");
+    let content = std::fs::read_to_string(format!("{dir}/kimi_tiktoken.model")).unwrap();
+    let golden: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap())
+            .unwrap();
+    let tok = tiktokenizer::fromfilehan(&content, &kimi_specials(&golden)).unwrap();
+    for len in [512usize, 4096] {
+        let input = repeatpattern(len);
+        c.bench_function(&format!("tokenizer/encode/kimi/{len}"), |b| {
+            b.iter(|| black_box(tok.encode(&input).unwrap()));
+        });
+    }
+}
+
+/// Reads the Kimi special-token `(content, id)` pairs from the golden meta,
+/// the same construction the golden-alignment test uses.
+fn kimi_specials(golden: &serde_json::Value) -> Vec<(String, u32)> {
+    golden["meta"]["specials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["content"].as_str().unwrap().to_string(),
+                entry["id"].as_u64().unwrap() as u32,
+            )
+        })
+        .collect()
 }
 
 fn encodetiktoken(c: &mut Criterion) {
@@ -297,6 +345,8 @@ criterion_group!(
     encodegpt2,
     encodetiktoken,
     encodetiktokeninto,
-    loadtokenizer
+    loadtokenizer,
+    loadkimi,
+    encodekimi
 );
 criterion_main!(benches);
