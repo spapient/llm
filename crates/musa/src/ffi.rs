@@ -238,6 +238,7 @@ pub(crate) fn dispatch(
     scalars: &[scalar],
     grid: (u32, u32, u32),
     block: (u32, u32, u32),
+    sharedbytes: u32,
 ) -> Result<Vec<Vec<f32>>, musaerror> {
     // The state lock is held across the whole dispatch: the lazy open and
     // function resolution mutate the shared caches, and the default stream
@@ -419,7 +420,7 @@ pub(crate) fn dispatch(
             block.0,
             block.1,
             block.2,
-            0,
+            sharedbytes,
             MUNULLSTREAM,
             rawargs.as_mut_ptr(),
             core::ptr::null_mut(),
@@ -511,6 +512,7 @@ pub(crate) fn matmul(
         ],
         grid,
         block,
+        0,
     )?;
     Ok(results.remove(0))
 }
@@ -528,6 +530,7 @@ pub(crate) fn add(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, m
         &[scalar::u32(count as u32)],
         grid,
         block,
+        0,
     )?;
     Ok(results.remove(0))
 }
@@ -545,6 +548,7 @@ pub(crate) fn mul(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, m
         &[scalar::u32(count as u32)],
         grid,
         block,
+        0,
     )?;
     Ok(results.remove(0))
 }
@@ -562,6 +566,7 @@ pub(crate) fn silu(cache: &cache, input: &[f32]) -> Result<Vec<f32>, musaerror> 
         &[scalar::u32(count as u32)],
         grid,
         block,
+        0,
     )?;
     Ok(results.remove(0))
 }
@@ -586,6 +591,7 @@ pub(crate) fn rmsnorm(
         &[scalar::u32(width as u32), scalar::f32(eps)],
         grid,
         block,
+        source::ROWTILE as u32 * 4,
     )?;
     Ok(results.remove(0))
 }
@@ -602,12 +608,13 @@ pub(crate) fn softmax(
     let block = (source::ELEMENTWISETILE, 1, 1);
     let mut results = dispatch(
         cache,
-        "elementwise",
+        "softmax",
         source::SOFTMAXENTRY,
         &[buf::host(input), buf::out(count)],
         &[scalar::u32(width as u32)],
         grid,
         block,
+        source::ELEMENTWISETILE as u32 * 4,
     )?;
     Ok(results.remove(0))
 }
@@ -640,6 +647,7 @@ pub(crate) fn rope(
         ],
         grid,
         block,
+        0,
     )?;
     Ok(results.remove(0))
 }
@@ -670,6 +678,7 @@ pub(crate) fn rope_at(
         ],
         grid,
         block,
+        0,
     )?;
     Ok(results.remove(0))
 }
@@ -693,6 +702,7 @@ pub(crate) fn embedding(
         &[scalar::u32(rows as u32), scalar::u32(width as u32)],
         grid,
         block,
+        0,
     )?;
     Ok(results.remove(0))
 }
@@ -737,6 +747,7 @@ pub(crate) fn attention(
         ],
         grid,
         block,
+        (2 * source::ATTENTIONLANES as u32 + headdim as u32) * 4,
     )?;
     Ok(results.remove(0))
 }
@@ -780,6 +791,7 @@ pub(crate) fn attention_cached(
         ],
         grid,
         block,
+        (2 * source::ATTENTIONLANES as u32 + headdim as u32) * 4,
     )?;
     Ok(results.remove(0))
 }
@@ -822,6 +834,7 @@ pub(crate) fn scan_serial(
         ],
         grid,
         block,
+        0,
     )?;
     let state = results.remove(0);
     let out = results.remove(0);
