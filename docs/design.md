@@ -1549,7 +1549,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **decode 加载路径优化（2026-10-16）。** 快照级 decode 实测分解（16 MiB 相关 f32 / 9.7 MiB 存储）：手写逐字节 CRC32C 17.1ms（567 MiB/s，占 43%）、zstd 解压 10.3ms、BLAKE3 内容哈希 6.6ms、变换逆 5.1ms，合计 ≈39ms 即旧 decode 40ms。两项优化：① CRC32C 改 slicing-by-8 查表（8×256 编译期表，纯 safe Rust 零新依赖，570 → 2583 MiB/s）；② `verifyfull` 并行化——块间完全独立，元数据一致性/数据边界串行先验（manifest 错误保持全序），数据段按块数均分 worker、各写预分配 buffer 的互不重叠区间（`split_at_mut`，零拼接拷贝），`PARALLELMINBLOCKS=8`/`PARALLELMINBYTES=1MiB` 阈值以下保持串行原路径；数据错误报最早失败段内首个坏块（错误语义差异已 doc 注明）。结果：**decode/correlated 40ms → 3.35ms（快 ≈12×）**，压缩率与格式字节级不变，936 测试全过、clippy 零警告。可复现：`cargo bench --offline --bench checkpoint_compress`。
 
-**encode 并行化。** 对称 decode 的并行：`encode_with` Phase 1 逐块压缩（候选集 `{无变换,f16,f32}×Zstd-1`）块间独立，按核数均分块 span，`thread::scope` + `split_at_mut` 各 worker 写 `storedblocks` 的互不重叠槽，压缩结果字节精确不变。`encode/correlated-f32` 73ms → 28ms（快 ≈2.6×），decode 3.35ms 不变。
+**encode 并行化。** 对称 decode 的并行：`encode_with` Phase 1 逐块压缩（候选集 `{无变换,f16,f32}×Zstd-1`）与 Phase 2 逐块加密（AES-GCM）+ CRC 均块间独立，按核数均分块 span，`thread::scope` + `split_at_mut` 各 worker 写互不重叠槽，压缩/加密结果字节精确不变。`encode/correlated-f32` 73ms → 28ms（快 ≈2.6×），decode 3.35ms 不变。
 
 **mmap 零拷贝。** `checkpointreader` 的文件变体（`openfullfile`/`opendeltafile` 等）经 `mmap-guard`（safe API，unsafe 封装在依赖内）内存映射文件，`mmapsource` 按块返回借用切片（`Cow::Borrowed`），`readtensorcow` 对单块 raw 且无变换的张量零拷贝返回。workspace 保持 `forbid(unsafe_code)`。
 

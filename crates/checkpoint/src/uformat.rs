@@ -660,11 +660,11 @@ impl snapshot {
         std::thread::scope(|scope| {
             let mut cursor: &mut [(u8, u8, Vec<u8>)] = &mut storedblocks;
             let mut handles = Vec::with_capacity(nthreads);
-            for span in spans {
+            for span in &spans {
                 let (head, tail) = cursor.split_at_mut(span.len());
                 cursor = tail;
                 handles.push(scope.spawn(move || {
-                    compressblockspan(dataref, blocksref, cumoffsetsref, span, head);
+                    compressblockspan(dataref, blocksref, cumoffsetsref, span.clone(), head);
                 }));
             }
             for handle in handles {
@@ -691,28 +691,52 @@ impl snapshot {
             manifest.extend_from_slice(&sig);
         }
         pushu64(&mut manifest, blocks.len() as u64);
-        let mut storeddata = Vec::new();
-        for (block, (codec, transform, compressed)) in blocks.iter().zip(storedblocks) {
-            let (stored, tag) = match key {
-                Some(key) => {
-                    let nonce = encryption::nonceof(&block.gethash());
-                    encryption::encryptblock(key, &nonce, &compressed)?
+
+        // Phase 2: encrypt and checksum every stored block in parallel; the
+        // manifest layout is written serially afterwards.
+        let mut storedmeta: Vec<(Vec<u8>, [u8; 16], u32)> = Vec::with_capacity(blocks.len());
+        storedmeta.resize_with(blocks.len(), || (Vec::new(), [0u8; 16], 0));
+        let storedblocksref: &[(u8, u8, Vec<u8>)] = &storedblocks;
+        std::thread::scope(|scope| {
+            let mut cursor: &mut [(Vec<u8>, [u8; 16], u32)] = &mut storedmeta;
+            let mut handles = Vec::with_capacity(nthreads);
+            for span in &spans {
+                let (head, tail) = cursor.split_at_mut(span.len());
+                cursor = tail;
+                handles.push(scope.spawn(move || {
+                    encryptchecksumspan(blocksref, storedblocksref, key, span.clone(), head)
+                }));
+            }
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => {
+                        return Err(checkpointerror::invalidmanifest {
+                            reason: "encode worker panicked".to_string(),
+                        });
+                    }
                 }
-                None => (compressed, [0u8; 16]),
-            };
-            let checksum = crc32c(&stored);
+            }
+            Ok::<(), checkpointerror>(())
+        })?;
+
+        let mut storeddata = Vec::new();
+        for (position, block) in blocks.iter().enumerate() {
+            let (codec, transform, _) = &storedblocks[position];
+            let (stored, tag, checksum) = &storedmeta[position];
             manifest.extend_from_slice(&block.gethash());
             pushu64(&mut manifest, storeddata.len() as u64);
             pushu32(&mut manifest, stored.len() as u32);
-            pushu32(&mut manifest, checksum);
-            manifest.push(codec);
+            pushu32(&mut manifest, *checksum);
+            manifest.push(*codec);
             if flags & FLAGTRANSFORMED != 0 {
-                manifest.push(transform);
+                manifest.push(*transform);
             }
             if key.is_some() {
-                manifest.extend_from_slice(&tag);
+                manifest.extend_from_slice(tag);
             }
-            storeddata.extend_from_slice(&stored);
+            storeddata.extend_from_slice(stored);
         }
 
         let total = PREFIXLEN
@@ -1456,6 +1480,32 @@ fn compressblockspan(
         let len = block.getlen() as usize;
         out[i] = compressblock(&data[start..start + len]);
     }
+}
+
+/// Encrypts and checksums one contiguous span of stored blocks into `out`,
+/// which must hold one `(stored, tag, checksum)` entry per block in the span.
+/// Without a key, `stored` is a clone of the compressed bytes.
+fn encryptchecksumspan(
+    blocks: &[blockref],
+    storedblocks: &[(u8, u8, Vec<u8>)],
+    key: Option<&[u8; 32]>,
+    span: std::ops::Range<usize>,
+    out: &mut [(Vec<u8>, [u8; 16], u32)],
+) -> Result<(), checkpointerror> {
+    for (i, position) in span.enumerate() {
+        let block = &blocks[position];
+        let (_, _, compressed) = &storedblocks[position];
+        let (stored, tag) = match key {
+            Some(key) => {
+                let nonce = encryption::nonceof(&block.gethash());
+                encryption::encryptblock(key, &nonce, compressed)?
+            }
+            None => (compressed.clone(), [0u8; 16]),
+        };
+        let checksum = crc32c(&stored);
+        out[i] = (stored, tag, checksum);
+    }
+    Ok(())
 }
 
 /// Verifies every tensor's byte range lies within the data section without
