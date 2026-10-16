@@ -20,12 +20,12 @@
 | CUDA | ✅ 已注册 | `crates/cuda/src/executor.rs:378/390`（数值用例在 GPU 真机套件） |
 | 测试 | ✅ 齐备 | `tests/it/scancontract.rs`（64 点半群前缀/空序列/非 2 幂）、`scanunits.rs`（逐位一致、cached≡全量）、`apikernelcontract.rs:291/303` |
 | design.md §5 契约表 | ✅ 已登记 | `docs/design.md:351-352`（`scan`/`scan_cached` 形状规则） |
-| **基准** | ❌ **缺失** | `benches/` 无 scan 目标（违反 AGENTS.md §7「每个算子至少一个可复现基准」） |
-| **M1 判定** | ⚠️ **未实测** | lld.md M1 仍 OPEN（理论证明 + 实测 log-log 未出数） |
-| 模型挂载 | ❌ 未做 | `registry::architecture` 无 Mamba 变体；`nn` 无 SSM 组合层 |
-| GPU 并行扫描 | ⚠️ 待核对 | CPU 有并行路径；Metal/CUDA 内核是否 work-efficient 并行扫描需源码核对 |
+| **基准** | ⚠️ 半覆盖 | **CPU 侧已出**（`benches/cpuops.rs` `scan/seq{4096,16384,65536}`，§12 实测）；**GPU 侧无 scan 基准**（AGENTS.md §7 每算子至少一个基准未对 GPU 满足） |
+| **M1 判定** | ⚠️ **半闭环** | §11 理论成文 + §12 CPU n 维度实测（log-log≈1）已出；**M1 Should（同装置 16K scan vs 稠密 attention ≥5×）与 GPU 数值真机未出 ⇒ M1 保持 OPEN，阈值 $O(nd)$ 不降** |
+| 模型挂载 | ✅ **已实现** | `registry::architecture` 含 `mamba` 变体（`crates/models/src/registry.rs:14-16`，trap 底座 + Mamba 类家族） |
+| GPU 并行扫描 | ❌ **每线程一通道** | `scan.metal`/`scan.cu` 每线程一通道串行（并行度仅 `d`，序列维度零并行）；分段三阶段（块内+块间+应用）未做 |
 
-**结论**：B0（契约+参考）、B1（CPU 串行）、B2（CPU 并行）、B3（Metal）、B4（CUDA）**已交付**；本计划实际剩余工作 = **B6 基准 + M1 判定 + 并行核对 + B5 模型挂载**。
+**结论**：B0–B5 **已全部交付**（契约/参考、CPU 串行、CPU 分段三阶段、Metal、CUDA、模型挂载）；本计划实际剩余工作 = **GPU 分段三阶段并行内核 + GPU scan 基准 + M1 Should（16K vs attention ≥5× 同装置对照）+ CUDA 真机数值**。
 
 ---
 
