@@ -55,10 +55,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mcc = env::var("MUSA_MCC").unwrap_or_else(|_| "/usr/local/musa-3.1.0/bin/mcc".into());
     let arch = env::var("MUSA_ARCH").unwrap_or_else(|_| "mp_22".into());
     if !std::path::Path::new(&mcc).is_file() {
-        // No toolkit on this host: empty registry, device errors at run time.
+        // No toolkit on this host: the crate compiles to an empty library
+        // (the `musa_toolkit` cfg is absent, so every module is compiled out),
+        // exactly like on non-Linux targets. The registry stays empty and any
+        // device access errors at run time.
         emit(&[])?;
         return Ok(());
     }
+    // The toolkit is present: compile the full backend and link the driver.
+    println!("cargo:rustc-cfg=musa_toolkit");
     // Link the MUSA driver (`libmusa.so`) for the `mu*` C symbols declared
     // in `ffi.rs`. Verified by `nm` on the MTT S4000 host: `muInit`,
     // `muDeviceGet`, `muModuleLoadData`, `muLaunchKernel` etc. are defined in
