@@ -1,5 +1,6 @@
 use ::tensor::{shape, tensor, tensorview};
 use api::{backenderror, binarykernel};
+use fearless_simd::{Level, Simd, dispatch, f32x4, prelude::*};
 
 use crate::support::finish;
 
@@ -13,8 +14,11 @@ const MATMULOP: &str = "matmul";
 /// the result has shape `[batch..., m, n]`. The inner dimensions must agree.
 ///
 /// No implicit broadcasting is performed: the leading batch dimensions of the
-/// two operands must be equal element by element. Accumulation is a plain
-/// left-to-right `f32` sum, so the result is deterministic for fixed inputs.
+/// two operands must be equal element by element. Accumulation uses a
+/// register-blocked SIMD micro-kernel with fused multiply-add, so the reduction
+/// is not a plain left-to-right `f32` sum; the result is deterministic for
+/// fixed inputs but matches the scalar reference only within tolerance, not
+/// bit-for-bit.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct cpumatmul;
 
@@ -129,16 +133,63 @@ pub(crate) fn matmulplan(
     })
 }
 
-/// Computes one `[m, k] * [k, n]` block into `out`.
+/// Computes one `[m, k] * [k, n]` block into `out` with a register-blocked
+/// SIMD micro-kernel dispatched through `fearless_simd`.
 fn matmulblock(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
-    for i in 0..m {
-        for p in 0..k {
-            let av = a[i * k + p];
-            let brow = &b[p * n..p * n + n];
-            let orow = &mut out[i * n..i * n + n];
-            for (o, &bv) in orow.iter_mut().zip(brow.iter()) {
-                *o += av * bv;
+    let level = Level::new();
+    dispatch!(level, simd => matmulblocksimd(simd, a, b, out, m, k, n));
+}
+
+/// The register-blocked SIMD micro-kernel behind [`matmulblock`].
+///
+/// Tiles the output into `BLOCKROWS` by `BLOCKCOLS` blocks whose accumulators
+/// stay in SIMD registers across the inner dimension. Every row count uses the
+/// SIMD path (a partial final block just holds fewer accumulators), so the fused
+/// accumulation order depends only on the inner dimension, never on the batch
+/// width. Only columns past the last full tile fall back to a scalar dot
+/// product.
+#[inline(always)]
+fn matmulblocksimd<S: Simd>(
+    simd: S,
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    const BLOCKROWS: usize = 8;
+    const BLOCKCOLS: usize = 4;
+    let ntile = n / BLOCKCOLS * BLOCKCOLS;
+
+    for i0 in (0..m).step_by(BLOCKROWS) {
+        let rows = (m - i0).min(BLOCKROWS);
+        for j0 in (0..ntile).step_by(BLOCKCOLS) {
+            let mut acc = [f32x4::<S>::splat(simd, 0.0); BLOCKROWS];
+            for p in 0..k {
+                let brow = f32x4::<S>::from_slice(simd, &b[p * n + j0..p * n + j0 + BLOCKCOLS]);
+                for r in 0..rows {
+                    acc[r] = brow.mul_add(a[(i0 + r) * k + p], acc[r]);
+                }
+            }
+            for r in 0..rows {
+                acc[r].store_slice(&mut out[(i0 + r) * n + j0..(i0 + r) * n + j0 + BLOCKCOLS]);
+            }
+        }
+        for r in 0..rows {
+            for j in ntile..n {
+                out[(i0 + r) * n + j] = scalardot(a, b, i0 + r, j, k, n);
             }
         }
     }
+}
+
+/// Scalar dot product of row `i` of `a` with column `j` of `b`, for the tail.
+#[inline(always)]
+fn scalardot(a: &[f32], b: &[f32], i: usize, j: usize, k: usize, n: usize) -> f32 {
+    let mut acc = 0.0_f32;
+    for p in 0..k {
+        acc += a[i * k + p] * b[p * n + j];
+    }
+    acc
 }

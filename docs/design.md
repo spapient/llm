@@ -407,7 +407,7 @@ Layer 0 一侧的 `kernel`/`backend` 错误契约：`kernel::apply` 在元素 dt
 
 - `autograd`、`nn`、`models` 可通过 `api::compute` 组合算子，且永不依赖 `cpu`，保持后端可替换与无环。
 - 冻结的单目契约不变；新 trait 是额外的可实现契约，因此没有既有后端或测试失效。
-- `matmul` 是直白的三重循环（在基线中测得为每元素最慢的算子）。它是文档化的正确性基线，不是优化内核；任何快速路径都必须对照它测量。
+- `matmul` 由直白三重循环改为经 `fearless_simd` 派发的 8×4 寄存器分块 SIMD 微内核（2026-10-16）；FMA 重结合使结果对标量参照「容差内一致而非逐位」，原三重循环仍是正确性参照（`testkit::reference::matmul`）。
 - `embedding` 通过复制 gather 行；每次调用分配 `indices.len() * width` 个元素。那是契约的拥有输出成本，不是隐藏缓冲。
 - `cpuexecutor` 现在实现 `api::compute`，因此 executor 既是预算所有者，也是上层消费的后端视图。
 - Layer 1 拥有四个单目算子的可用、经测试的 CPU 路径，且不改变 Layer 0；`cpu` 只依赖 `api`、`tensor`、`lib`，图保持无环且每个后端实现保持可替换。
@@ -441,6 +441,8 @@ Layer 0 一侧的 `kernel`/`backend` 错误契约：`kernel::apply` 在元素 dt
 | executor/compute/attention | 65,536 f32 | 1.207 ms | 54.29 Melem/s |
 
 executor 路径与裸内核路径在运行间噪声内一致（噪声带准则）。这些数字是基线；不声明任何改进（VF5）。
+
+**matmul SIMD 前后对比（2026-10-16，同机同工具链，criterion 0.7.0，100 samples）。** 上表 `kernel/binary/matmul256` 的朴素三重循环由 `matmulblock` 替换为经 `fearless_simd`（NEON）派发的 8×4 寄存器分块微内核：端到端 `apply` 由 1.0185 ms → 0.9008 ms（1.13×，含分配与契约开销；受同机热漂移影响）；纯计算内核交错 A/B 为 1.72×（0.615 ms vs 1.059 ms）。正确性经 `cpucontract`/`kvcacheforward`/`modelforward` 全绿（重结合差异 ~1e-8，在既有 1e-5/1e-4 容差内）；`checkunsafe.sh` 零新增 unsafe（`cpu`/`tensor` 保持 `#![forbid(unsafe_code)]`）。
 
 内核调用契约的验证：`lib`、`tensor`、`api` 以其文档化契约实现，仓库根 `tensorcontract`、`apicontract`、`crosscrate` 套件通过（证据等级 E1）。
 

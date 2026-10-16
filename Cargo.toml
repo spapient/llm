@@ -157,6 +157,8 @@ zstd = "0.13"
 half = { version = "2", features = ["bytemuck"] }
 # 安全的字节↔类型重解释；unsafe 封装在依赖内部，workspace 保持零 unsafe。
 bytemuck = "1"
+# 安全 SIMD（x86 SSE/AVX 与 aarch64 NEON）；unsafe 封装在依赖内部，workspace 保持零 unsafe。
+fearless_simd = "1"
 # Ed25519 签名：对 .u 根哈希签名，纯 Rust、无 unsafe。
 ed25519-compact = "2"
 # AES-256-GCM 认证加密：.u 快照分块加密（纯 Rust，硬件加速 unsafe 封装在依赖内）。
