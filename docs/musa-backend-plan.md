@@ -196,10 +196,12 @@ crates/musa/
 | **安全性** | **全仓最小 unsafe 面（musa=1，单交互类别）**、unsafe 壳 ~30 行、SAFETY 注释 + checkunsafe.sh 机械强制 |
 | 可测试性 | 构造器区分路径、kernelcount 观测、真机门禁（M6） |
 
-#### 5.8 对 cuda/metal 的回推（独立阶段，如实标注）
+#### 5.8 全局统一（跨后端，见 `docs/gpu-backend-unification.md` v1.0）
 
-* **cuda 可同样收敛到 cuda=1**：去 cuBLAS/cuDNN，NVRTC 内核族 + WMMA 内核——但 NVRTC 编译 WMMA 需 CUDA 头文件（`cuda.h`/`cuda_fp16.h`），cudarc 动态加载模式无头文件，需 NVRTC 内嵌头或换工具链（尖刺待证）。独立阶段，不与 musa 混提。
-* **metal=4 由 objc2-metal 的 unsafe API 面决定**（上传/下载/setBuffer/setBytes，已实测取证 §21.8），不收敛。
+* **统一终态**：三个 GPU 后端共同收敛到「构建期预编译 + 运行时零编译 + 最小 unsafe 面」——cuda=1、musa=1、metal=4（库决定）。
+* **cuda 的 JIT 消除已验证可行**：cudarc 0.19.10 `load_module(PtxKind::Binary)` → `cuModuleLoadData`（源码确认）；nvcc 构建期预编译 CUBIN 内嵌 + WMMA matmul 内核（构建机有完整 CUDA 工具链，WMMA 头可编译）→ cuda=1。
+* **metal**：JIT 消除 = xcrun metal 构建期 metallib（P3，`newLibraryWithData` 待尖刺）；unsafe=4 由 objc2-metal API 面决定（§21.8 实测）。
+* 阶段互斥：P1（musa）→ P2（cuda 收敛）→ P3（metal JIT 消除），各为独立可测提交。
 
 **状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**；**性能路径对比完成（结论 A1+B1+C2，后经消除 unsafe 设计修订为 A1+WMMA+C2）**；**消除 unsafe 终极架构完成（musa=1：单交互类别 muLaunchKernel，不引入 muBLAS/muDNN，WMMA 内核吃 Tensor Core——`include/crt/mma.h` 真机验证 203 重载 mma_sync）**。M1–M6 按此收敛实施。
 
