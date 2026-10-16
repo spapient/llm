@@ -79,8 +79,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             continue;
         };
         let obj = fatbin.join(format!("{stem}.o"));
+        // `mcc` is a clang driver (`/usr/local/musa-3.1.0/bin/mcc` -> clang):
+        // like every clang, it accepts `--offload-arch` only in the `=` form,
+        // so the value must be embedded rather than passed as a second arg.
+        let offload = format!("--offload-arch={arch}");
         let status = Command::new(&mcc)
-            .args(["-mtgpu", "--offload-arch", &arch, "-c", "-o"])
+            .args(["-mtgpu", &offload, "-c", "-o"])
             .arg(&obj)
             .arg(&path)
             .status()
