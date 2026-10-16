@@ -1,13 +1,15 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::blocks::{blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
+use crate::encryption;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
 use crate::signature;
 use crate::uformat::{
-    FLAGDELTA, FLAGSIGNED, MAGIC, PREFIXLEN, canonicalmanifest, checkflags, parseartifact,
-    pushu32, pushu64, snapshot, storedentry, tensorentry,
+    FLAGDELTA, FLAGENCRYPTED, FLAGSIGNED, MAGIC, PREFIXLEN, canonicalmanifest, checkflags,
+    parseartifact, pushu32, pushu64, snapshot, storedentry, tensorentry,
 };
 
 /// One block physically stored in a delta artifact.
@@ -144,7 +146,8 @@ impl delta {
         &self.blocks
     }
 
-    /// Encodes the delta into its on-disk byte layout with no signature.
+    /// Encodes the delta into its on-disk byte layout with no signature and no
+    /// encryption.
     ///
     /// The layout is magic, a little-endian `u64` manifest length, a binary
     /// manifest (tensors, block list, delta flag, base identity, root hash,
@@ -155,7 +158,7 @@ impl delta {
     /// Returns [`checkpointerror::invalidmanifest`] if the total length
     /// overflows `usize`.
     pub fn encode(&self) -> Result<Vec<u8>, checkpointerror> {
-        self.encode_with(None)
+        self.encode_with(None, None)
     }
 
     /// Encodes the delta signed with `seed`.
@@ -169,17 +172,53 @@ impl delta {
     /// or [`checkpointerror::invalidmanifest`] if the total length overflows
     /// `usize`.
     pub fn encode_signed(&self, seed: &[u8; 32]) -> Result<Vec<u8>, checkpointerror> {
-        self.encode_with(Some(seed))
+        self.encode_with(Some(seed), None)
     }
 
-    /// Encodes the delta, signing it when `seed` is provided.
-    fn encode_with(&self, seed: Option<&[u8; 32]>) -> Result<Vec<u8>, checkpointerror> {
+    /// Encodes the delta encrypted with `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::invalidmanifest`] if the total length
+    /// overflows `usize`.
+    pub fn encode_encrypted(&self, key: &[u8; 32]) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(None, Some(key))
+    }
+
+    /// Encodes the delta signed with `seed` and encrypted with `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::invalidsignaturekey`] for an all-zero seed,
+    /// or [`checkpointerror::invalidmanifest`] if the total length overflows
+    /// `usize`.
+    pub fn encode_signed_encrypted(
+        &self,
+        seed: &[u8; 32],
+        key: &[u8; 32],
+    ) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(Some(seed), Some(key))
+    }
+
+    /// Encodes the delta, signing and encrypting it as requested.
+    fn encode_with(
+        &self,
+        seed: Option<&[u8; 32]>,
+        key: Option<&[u8; 32]>,
+    ) -> Result<Vec<u8>, checkpointerror> {
         let canonical = canonicalmanifest(self.version, &self.tensors, &self.blocks);
         let root = blake3hash(&canonical);
-        let (flags, signature) = match seed {
-            Some(seed) => (FLAGDELTA | FLAGSIGNED, Some(signature::sign(seed, &root)?)),
-            None => (FLAGDELTA, None),
+        let mut flags = FLAGDELTA;
+        let signature = match seed {
+            Some(seed) => {
+                flags |= FLAGSIGNED;
+                Some(signature::sign(seed, &root)?)
+            }
+            None => None,
         };
+        if key.is_some() {
+            flags |= FLAGENCRYPTED;
+        }
 
         let mut manifest = canonical;
         pushu32(&mut manifest, flags);
@@ -191,13 +230,23 @@ impl delta {
         pushu64(&mut manifest, self.stored.len() as u64);
         let mut storeddata = Vec::new();
         for block in &self.stored {
-            let (codec, stored) = compressblock(&block.bytes);
+            let (codec, compressed) = compressblock(&block.bytes);
+            let (stored, tag) = match key {
+                Some(key) => {
+                    let nonce = encryption::nonceof(&block.hash);
+                    encryption::encryptblock(key, &nonce, &compressed)?
+                }
+                None => (compressed, [0u8; 16]),
+            };
             let checksum = crc32c(&stored);
             manifest.extend_from_slice(&block.hash);
             pushu64(&mut manifest, storeddata.len() as u64);
             pushu32(&mut manifest, stored.len() as u32);
             pushu32(&mut manifest, checksum);
             manifest.push(codec);
+            if key.is_some() {
+                manifest.extend_from_slice(&tag);
+            }
             storeddata.extend_from_slice(&stored);
         }
 
@@ -224,10 +273,31 @@ impl delta {
     /// [`checkpointerror::blockcrcmismatch`], [`checkpointerror::blockhashmismatch`],
     /// [`checkpointerror::truncatedblock`], or [`checkpointerror::blockoutofrange`].
     pub fn decode(bytes: &[u8]) -> Result<Self, checkpointerror> {
+        Self::decode_with(bytes, None)
+    }
+
+    /// Decodes and validates an encrypted delta, decrypting its stored blocks
+    /// with `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::missingkey`] when the delta is encrypted but
+    /// no key is provided, or the decode failures of [`Self::decode`].
+    pub fn decode_encrypted(bytes: &[u8], key: &[u8; 32]) -> Result<Self, checkpointerror> {
+        Self::decode_with(bytes, Some(key))
+    }
+
+    fn decode_with(bytes: &[u8], key: Option<&[u8; 32]>) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(bytes)?;
         checkflags(parsed.flags, FLAGDELTA)?;
+        let encrypted = parsed.flags & FLAGENCRYPTED != 0;
+        let key = match (encrypted, key) {
+            (true, Some(key)) => Some(key),
+            (true, None) => return Err(checkpointerror::missingkey),
+            (false, _) => None,
+        };
         let data = &bytes[parsed.dataoffset..];
-        let stored = verifystored(data, &parsed.blocks, &parsed.stored)?;
+        let stored = verifystored(data, &parsed.blocks, &parsed.stored, key)?;
         Ok(Self {
             version: parsed.version,
             base_id: parsed.base_id,
@@ -246,6 +316,7 @@ fn verifystored(
     data: &[u8],
     blocks: &[blockref],
     entries: &[storedentry],
+    key: Option<&[u8; 32]>,
 ) -> Result<Vec<storedblock>, checkpointerror> {
     let known: HashSet<[u8; 16]> = blocks.iter().map(|b| b.gethash()).collect();
     let mut stored = Vec::with_capacity(entries.len());
@@ -276,7 +347,14 @@ fn verifystored(
         if crc32c(bytes) != entry.crc32c {
             return Err(checkpointerror::blockcrcmismatch { position });
         }
-        let raw = decompressblock(entry.codec, bytes)?;
+        let plain = match key {
+            Some(key) => {
+                let nonce = encryption::nonceof(&entry.hash);
+                Cow::Owned(encryption::decryptblock(key, &nonce, bytes, &entry.tag)?)
+            }
+            None => Cow::Borrowed(bytes),
+        };
+        let raw = decompressblock(entry.codec, &plain)?;
         let hash = contenthash(&raw);
         if hash != entry.hash {
             return Err(checkpointerror::blockhashmismatch {

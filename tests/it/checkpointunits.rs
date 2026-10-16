@@ -651,7 +651,7 @@ mod uformat {
         let root = snap.roothash();
         let mut bytes = snap.encode().unwrap();
         let pos = bytes.windows(32).position(|w| w == root.as_slice()).unwrap();
-        bytes[pos - 32 - 4] |= 0x08;
+        bytes[pos - 32 - 4] |= 0x10;
         assert!(matches!(
             snapshot::decode(&bytes),
             Err(checkpointerror::invalidmanifest { .. })
@@ -664,6 +664,59 @@ mod uformat {
         let snap = onesnap();
         let bytes = snap.encode_signed(&SEED).unwrap();
         let reader = checkpointreader::openfull(bytes).unwrap();
+        let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(t.getdtype(), dtype::f32);
+    }
+
+    #[test]
+    fn encrypted_encode_decode_roundtrips() {
+        const KEY: [u8; 32] = [0x42; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_encrypted(&KEY).unwrap();
+        let back = snapshot::decode_encrypted(&bytes, &KEY).unwrap();
+        assert_eq!(back.gettensors(), snap.gettensors());
+        assert_eq!(back.getdata(), snap.getdata());
+        assert_eq!(back.roothash(), snap.roothash());
+    }
+
+    #[test]
+    fn encrypted_snapshot_requires_key() {
+        const KEY: [u8; 32] = [0x42; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_encrypted(&KEY).unwrap();
+        let err = snapshot::decode(&bytes).unwrap_err();
+        assert!(matches!(err, checkpointerror::missingkey));
+        assert!(err.isincompatibility());
+    }
+
+    #[test]
+    fn wrong_key_reports_decryptionfailed() {
+        const KEY: [u8; 32] = [0x42; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_encrypted(&KEY).unwrap();
+        let err = snapshot::decode_encrypted(&bytes, &[0x24; 32]).unwrap_err();
+        assert!(matches!(err, checkpointerror::decryptionfailed));
+        assert!(err.iscorruption());
+    }
+
+    #[test]
+    fn signed_encrypted_roundtrips() {
+        const SEED: [u8; 32] = [0x42; 32];
+        const KEY: [u8; 32] = [0x24; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_signed_encrypted(&SEED, &KEY).unwrap();
+        let back = snapshot::decode_encrypted(&bytes, &KEY).unwrap();
+        assert_eq!(back.getdata(), snap.getdata());
+        let pk = publickey(&SEED).unwrap();
+        back.verifysignature(&pk).unwrap();
+    }
+
+    #[test]
+    fn reader_opens_an_encrypted_snapshot() {
+        const KEY: [u8; 32] = [0x42; 32];
+        let snap = onesnap();
+        let bytes = snap.encode_encrypted(&KEY).unwrap();
+        let reader = checkpointreader::openfull_encrypted(bytes, &KEY).unwrap();
         let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
         assert_eq!(t.getdtype(), dtype::f32);
     }
@@ -804,6 +857,23 @@ mod delta {
             d.encode_signed(&[0u8; 32]),
             Err(checkpointerror::invalidsignaturekey)
         ));
+    }
+
+    #[test]
+    fn encrypted_delta_roundtrips() {
+        const KEY: [u8; 32] = [0x42; 32];
+        let mut base = snapshot::new(1);
+        base.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[1u8; 100])
+            .unwrap();
+        let mut new = snapshot::new(1);
+        new.addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[2u8; 100])
+            .unwrap();
+        let d = delta::fromsnapshots(&base, &new);
+        let bytes = d.encode_encrypted(&KEY).unwrap();
+        let back = delta::decode_encrypted(&bytes, &KEY).unwrap();
+        assert_eq!(back.getroothash(), d.getroothash());
+        let err = delta::decode(&bytes).unwrap_err();
+        assert!(matches!(err, checkpointerror::missingkey));
     }
 }
 
@@ -1318,6 +1388,54 @@ mod signature {
             .addtensor("w".to_string(), dtype::u8, shapeof(&[100]), &[2u8; 100])
             .unwrap();
         assert!(!verify(&pk, &other.roothash(), &sig));
+    }
+}
+
+/// Tests for the AES-256-GCM block encryption primitives.
+mod encryption {
+    use ::checkpoint::checkpointerror;
+    use ::checkpoint::encryption::{decryptblock, encryptblock, nonceof};
+
+    const KEY: [u8; 32] = [0x42; 32];
+
+    #[test]
+    fn roundtrip() {
+        let nonce = nonceof(&[0xAB; 16]);
+        let (ct, tag) = encryptblock(&KEY, &nonce, b"plaintext block").unwrap();
+        assert_ne!(ct, b"plaintext block".to_vec());
+        let pt = decryptblock(&KEY, &nonce, &ct, &tag).unwrap();
+        assert_eq!(pt, b"plaintext block".to_vec());
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails() {
+        let nonce = nonceof(&[0xAB; 16]);
+        let (mut ct, tag) = encryptblock(&KEY, &nonce, b"plaintext block").unwrap();
+        ct[0] ^= 1;
+        assert!(matches!(
+            decryptblock(&KEY, &nonce, &ct, &tag),
+            Err(checkpointerror::decryptionfailed)
+        ));
+    }
+
+    #[test]
+    fn wrong_key_fails() {
+        let nonce = nonceof(&[0xAB; 16]);
+        let (ct, tag) = encryptblock(&KEY, &nonce, b"plaintext block").unwrap();
+        assert!(matches!(
+            decryptblock(&[0x24; 32], &nonce, &ct, &tag),
+            Err(checkpointerror::decryptionfailed)
+        ));
+    }
+
+    #[test]
+    fn nonce_is_the_leading_twelve_bytes() {
+        let hash = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10,
+        ];
+        let nonce = nonceof(&hash);
+        assert_eq!(&nonce[..], &hash[..12]);
     }
 }
 

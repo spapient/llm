@@ -147,6 +147,8 @@ half = { version = "2", features = ["bytemuck"] }
 bytemuck = "1"
 # Ed25519 签名：对 .u 根哈希签名，纯 Rust、无 unsafe。
 ed25519-compact = "2"
+# AES-256-GCM 认证加密：.u 快照分块加密（纯 Rust，硬件加速 unsafe 封装在依赖内）。
+aes-gcm = "0.10"
 # 预分词 Split 段的正则切分（llama3/qwen3/deepseek 等），需 look-around。
 fancy-regex = "0.15"
 # normalizer 段的 Unicode 归一化（NFC/NFD/NFKC/NFKD，qwen3 需要 NFC）。

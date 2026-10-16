@@ -103,3 +103,42 @@ pub fn mergefiles(
     let out = merged.encode()?;
     writeatomic(out_path, &out)
 }
+
+/// Merges an encrypted delta file onto its encrypted base file, writing the
+/// full encrypted snapshot to `out_path` atomically.
+///
+/// # Errors
+///
+/// Returns the same failures as [`mergefiles`], plus
+/// [`checkpointerror::missingkey`] or [`checkpointerror::decryptionfailed`]
+/// for key or decryption failures.
+pub fn mergefiles_encrypted(
+    base_path: &Path,
+    delta_path: &Path,
+    out_path: &Path,
+    key: &[u8; 32],
+) -> Result<(), checkpointerror> {
+    let deltabytes = std::fs::read(delta_path).map_err(|source| checkpointerror::io {
+        path: delta_path.to_path_buf(),
+        source,
+    })?;
+    let delta = delta::decode_encrypted(&deltabytes, key)?;
+    let basebytes = match std::fs::read(base_path) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Err(checkpointerror::missingbase {
+                base_id: delta.getbaseid(),
+            });
+        }
+        Err(source) => {
+            return Err(checkpointerror::io {
+                path: base_path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let base = snapshot::decode_encrypted(&basebytes, key)?;
+    let merged = merge(&base, &delta)?;
+    let out = merged.encode_encrypted(key)?;
+    writeatomic(out_path, &out)
+}

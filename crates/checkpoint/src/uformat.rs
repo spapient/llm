@@ -1,8 +1,11 @@
+use std::borrow::Cow;
+
 use format::{dtypetoken, tokendtype};
 use tensor::{dtype, shape};
 
 use crate::blocks::{blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
+use crate::encryption;
 use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
 use crate::signature;
@@ -22,6 +25,9 @@ pub(crate) const FLAGDELTA: u32 = 1;
 /// Flags value for a snapshot carrying an Ed25519 signature.
 pub(crate) const FLAGSIGNED: u32 = 4;
 
+/// Flags value for a snapshot whose blocks are AES-256-GCM encrypted.
+pub(crate) const FLAGENCRYPTED: u32 = 8;
+
 /// One entry of the physical block table: where a stored block lives.
 pub(crate) struct storedentry {
     pub(crate) hash: [u8; 16],
@@ -29,6 +35,7 @@ pub(crate) struct storedentry {
     pub(crate) size: u32,
     pub(crate) crc32c: u32,
     pub(crate) codec: u8,
+    pub(crate) tag: [u8; 16],
 }
 
 /// Names the tensors carrying a quantized tensor's scale and zero-point, so a
@@ -306,14 +313,14 @@ impl snapshot {
     }
 
     /// Encodes the snapshot as a full (self-contained) artifact with no
-    /// signature.
+    /// signature and no encryption.
     ///
     /// # Errors
     ///
     /// Returns [`checkpointerror::invalidmanifest`] if the total length
     /// overflows `usize`.
     pub fn encode(&self) -> Result<Vec<u8>, checkpointerror> {
-        self.encode_with(None)
+        self.encode_with(None, None)
     }
 
     /// Encodes the snapshot as a full artifact signed with `seed`.
@@ -327,18 +334,55 @@ impl snapshot {
     /// or [`checkpointerror::invalidmanifest`] if the total length overflows
     /// `usize`.
     pub fn encode_signed(&self, seed: &[u8; 32]) -> Result<Vec<u8>, checkpointerror> {
-        self.encode_with(Some(seed))
+        self.encode_with(Some(seed), None)
     }
 
-    /// Encodes the snapshot, signing it when `seed` is provided.
-    fn encode_with(&self, seed: Option<&[u8; 32]>) -> Result<Vec<u8>, checkpointerror> {
+    /// Encodes the snapshot as a full artifact encrypted with `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::invalidmanifest`] if the total length
+    /// overflows `usize`.
+    pub fn encode_encrypted(&self, key: &[u8; 32]) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(None, Some(key))
+    }
+
+    /// Encodes the snapshot as a full artifact signed with `seed` and encrypted
+    /// with `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::invalidsignaturekey`] for an all-zero seed,
+    /// or [`checkpointerror::invalidmanifest`] if the total length overflows
+    /// `usize`.
+    pub fn encode_signed_encrypted(
+        &self,
+        seed: &[u8; 32],
+        key: &[u8; 32],
+    ) -> Result<Vec<u8>, checkpointerror> {
+        self.encode_with(Some(seed), Some(key))
+    }
+
+    /// Encodes the snapshot, signing and encrypting it as requested.
+    fn encode_with(
+        &self,
+        seed: Option<&[u8; 32]>,
+        key: Option<&[u8; 32]>,
+    ) -> Result<Vec<u8>, checkpointerror> {
         let blocks = chunk(&self.data);
         let canonical = canonicalmanifest(self.version, &self.tensors, &blocks);
         let root = blake3hash(&canonical);
-        let (flags, signature) = match seed {
-            Some(seed) => (FLAGSFULL | FLAGSIGNED, Some(signature::sign(seed, &root)?)),
-            None => (FLAGSFULL, None),
+        let mut flags = FLAGSFULL;
+        let signature = match seed {
+            Some(seed) => {
+                flags |= FLAGSIGNED;
+                Some(signature::sign(seed, &root)?)
+            }
+            None => None,
         };
+        if key.is_some() {
+            flags |= FLAGENCRYPTED;
+        }
 
         let mut manifest = canonical;
         pushu32(&mut manifest, flags);
@@ -352,13 +396,23 @@ impl snapshot {
         let mut offset = 0usize;
         for block in &blocks {
             let len = block.getlen() as usize;
-            let (codec, stored) = compressblock(&self.data[offset..offset + len]);
+            let (codec, compressed) = compressblock(&self.data[offset..offset + len]);
+            let (stored, tag) = match key {
+                Some(key) => {
+                    let nonce = encryption::nonceof(&block.gethash());
+                    encryption::encryptblock(key, &nonce, &compressed)?
+                }
+                None => (compressed, [0u8; 16]),
+            };
             let checksum = crc32c(&stored);
             manifest.extend_from_slice(&block.gethash());
             pushu64(&mut manifest, storeddata.len() as u64);
             pushu32(&mut manifest, stored.len() as u32);
             pushu32(&mut manifest, checksum);
             manifest.push(codec);
+            if key.is_some() {
+                manifest.extend_from_slice(&tag);
+            }
             storeddata.extend_from_slice(&stored);
             offset += len;
         }
@@ -386,6 +440,21 @@ impl snapshot {
     /// [`checkpointerror::blockhashmismatch`], [`checkpointerror::truncatedblock`],
     /// [`checkpointerror::blockoutofrange`], or the tensor validation failures.
     pub fn decode(bytes: &[u8]) -> Result<Self, checkpointerror> {
+        Self::decode_with(bytes, None)
+    }
+
+    /// Decodes and validates an encrypted full snapshot, decrypting its blocks
+    /// with `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::missingkey`] when the snapshot is not
+    /// encrypted, or the decode failures of [`Self::decode`].
+    pub fn decode_encrypted(bytes: &[u8], key: &[u8; 32]) -> Result<Self, checkpointerror> {
+        Self::decode_with(bytes, Some(key))
+    }
+
+    fn decode_with(bytes: &[u8], key: Option<&[u8; 32]>) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(bytes)?;
         checkflags(parsed.flags, FLAGSFULL)?;
         if parsed.base_id.iter().any(|&b| b != 0) {
@@ -393,8 +462,14 @@ impl snapshot {
                 reason: "full snapshot has a non-zero base identity".to_string(),
             });
         }
+        let encrypted = parsed.flags & FLAGENCRYPTED != 0;
+        let key = match (encrypted, key) {
+            (true, Some(key)) => Some(key),
+            (true, None) => return Err(checkpointerror::missingkey),
+            (false, _) => None,
+        };
         let data = &bytes[parsed.dataoffset..];
-        let rawdata = verifyfull(data, &parsed.blocks, &parsed.stored)?;
+        let rawdata = verifyfull(data, &parsed.blocks, &parsed.stored, key)?;
         verifytensors(&rawdata, &parsed.tensors)?;
         Ok(Self {
             version: parsed.version,
@@ -485,7 +560,7 @@ pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointer
     } else {
         None
     };
-    let stored = readstored(manifest, &mut pos)?;
+    let stored = readstored(manifest, &mut pos, flags & FLAGENCRYPTED != 0)?;
     Ok(parsedmanifest {
         version,
         tensors,
@@ -502,7 +577,7 @@ pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointer
 /// Validates snapshot flags against an expected kind (full or delta), rejecting
 /// unknown bits and a mixed full/delta declaration.
 pub(crate) fn checkflags(flags: u32, expected: u32) -> Result<(), checkpointerror> {
-    let known = FLAGSFULL | FLAGDELTA | FLAGSIGNED;
+    let known = FLAGSFULL | FLAGDELTA | FLAGSIGNED | FLAGENCRYPTED;
     if flags & !known != 0 {
         return Err(checkpointerror::invalidmanifest {
             reason: format!("unsupported snapshot flags {flags}"),
@@ -664,10 +739,12 @@ pub(crate) fn readblocks(
     Ok(blocks)
 }
 
-/// Parses the physical block table.
+/// Parses the physical block table, reading each entry's authentication tag
+/// when the snapshot is encrypted.
 pub(crate) fn readstored(
     manifest: &[u8],
     pos: &mut usize,
+    encrypted: bool,
 ) -> Result<Vec<storedentry>, checkpointerror> {
     let count = readcount(manifest, pos)?;
     let mut stored = Vec::with_capacity(count);
@@ -679,12 +756,21 @@ pub(crate) fn readstored(
         let size = readu32(manifest, pos)?;
         let crc32c = readu32(manifest, pos)?;
         let codec = readbytes(manifest, pos, 1)?[0];
+        let tag = if encrypted {
+            let tagbytes = readbytes(manifest, pos, 16)?;
+            let mut tag = [0u8; 16];
+            tag.copy_from_slice(tagbytes);
+            tag
+        } else {
+            [0u8; 16]
+        };
         stored.push(storedentry {
             hash,
             offset,
             size,
             crc32c,
             codec,
+            tag,
         });
     }
     Ok(stored)
@@ -696,6 +782,7 @@ fn verifyfull(
     data: &[u8],
     blocks: &[blockref],
     stored: &[storedentry],
+    key: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, checkpointerror> {
     if stored.len() != blocks.len() {
         return Err(checkpointerror::invalidmanifest {
@@ -729,7 +816,14 @@ fn verifyfull(
         if crc32c(bytes) != entry.crc32c {
             return Err(checkpointerror::blockcrcmismatch { position });
         }
-        let raw = decompressblock(entry.codec, bytes)?;
+        let plain = match key {
+            Some(key) => {
+                let nonce = encryption::nonceof(&block.gethash());
+                Cow::Owned(encryption::decryptblock(key, &nonce, bytes, &entry.tag)?)
+            }
+            None => Cow::Borrowed(bytes),
+        };
+        let raw = decompressblock(entry.codec, &plain)?;
         if raw.len() != block.getlen() as usize {
             return Err(checkpointerror::invalidmanifest {
                 reason: format!("block {position} decompressed length mismatch"),

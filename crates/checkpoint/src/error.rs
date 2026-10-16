@@ -237,6 +237,15 @@ pub enum checkpointerror {
     #[error("ed25519 signature does not match the snapshot's root hash")]
     signaturemismatch,
 
+    /// The AES-256-GCM authentication tag did not verify (wrong key or tampered
+    /// ciphertext).
+    #[error("aes-gcm decryption failed: authentication tag mismatch")]
+    decryptionfailed,
+
+    /// An encrypted snapshot was opened without the decryption key.
+    #[error("encrypted snapshot requires a decryption key")]
+    missingkey,
+
     /// An error owned by the `format` crate propagated unchanged.
     #[error(transparent)]
     format(#[from] format::formaterror),
@@ -270,6 +279,7 @@ impl checkpointerror {
                 | Self::missingbase { .. }
                 | Self::basehashmismatch { .. }
                 | Self::signaturemissing
+                | Self::missingkey
         )
     }
 
@@ -289,6 +299,7 @@ impl checkpointerror {
                 | Self::missingblock { .. }
                 | Self::tensorcrcmismatch { .. }
                 | Self::signaturemismatch
+                | Self::decryptionfailed
         )
     }
 }

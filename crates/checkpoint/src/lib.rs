@@ -50,6 +50,9 @@ pub mod crc32c;
 
 /// Delta/base resolution primitives for incremental `.u` snapshots.
 pub mod deltas;
+
+/// AES-256-GCM block encryption primitives for `.u` snapshots.
+pub mod encryption;
 mod error;
 
 /// BLAKE3 content identity and root-hash primitives.

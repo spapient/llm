@@ -9,11 +9,12 @@ use format::dtypetoken;
 
 use crate::blocks::{CODECRAW, blockref, decompressblock};
 use crate::crc32c::crc32c;
+use crate::encryption;
 use crate::error::checkpointerror;
 use crate::hash::contenthash;
 use crate::uformat::{
-    FLAGDELTA, FLAGSFULL, MAGIC, PREFIXLEN, checkflags, parseartifact, parsedmanifest,
-    storedentry, tensorentry,
+    FLAGDELTA, FLAGENCRYPTED, FLAGSFULL, MAGIC, PREFIXLEN, checkflags, parseartifact,
+    parsedmanifest, storedentry, tensorentry,
 };
 
 /// A source of block bytes addressed by an absolute offset within a data
@@ -141,6 +142,7 @@ fn resolvelocations(
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                tag: entry.tag,
             },
         );
     }
@@ -154,6 +156,7 @@ fn resolvelocations(
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                tag: entry.tag,
             },
         );
     }
@@ -181,6 +184,17 @@ struct blocklocation {
     size: u32,
     crc32c: u32,
     codec: u8,
+    tag: [u8; 16],
+}
+
+/// Resolves the decryption key for a snapshot, requiring it when the snapshot's
+/// flags mark it encrypted.
+fn resolvekey(flags: u32, key: Option<[u8; 32]>) -> Result<Option<[u8; 32]>, checkpointerror> {
+    match (flags & FLAGENCRYPTED != 0, key) {
+        (true, Some(key)) => Ok(Some(key)),
+        (true, None) => Err(checkpointerror::missingkey),
+        (false, _) => Ok(None),
+    }
 }
 
 /// Reads tensors from a full snapshot or a base plus a delta, touching only the
@@ -190,6 +204,7 @@ pub struct checkpointreader {
     blocks: Vec<blockref>,
     locations: Vec<blocklocation>,
     sources: Vec<Box<dyn blocksource>>,
+    key: Option<[u8; 32]>,
 }
 
 impl checkpointreader {
@@ -200,6 +215,21 @@ impl checkpointreader {
     /// Returns the manifest parse failures, or [`checkpointerror::invalidmanifest`]
     /// when the bytes are not a full snapshot.
     pub fn openfull(bytes: Vec<u8>) -> Result<Self, checkpointerror> {
+        Self::openfull_with(bytes, None)
+    }
+
+    /// Opens an encrypted full snapshot's encoded bytes, decrypting blocks on
+    /// demand with `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the manifest parse failures, or [`checkpointerror::missingkey`]
+    /// when the snapshot is not encrypted.
+    pub fn openfull_encrypted(bytes: Vec<u8>, key: &[u8; 32]) -> Result<Self, checkpointerror> {
+        Self::openfull_with(bytes, Some(*key))
+    }
+
+    fn openfull_with(bytes: Vec<u8>, key: Option<[u8; 32]>) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(&bytes)?;
         checkflags(parsed.flags, FLAGSFULL)?;
         if parsed.base_id.iter().any(|&b| b != 0) {
@@ -207,6 +237,7 @@ impl checkpointreader {
                 reason: "full snapshot has a non-zero base identity".to_string(),
             });
         }
+        let key = resolvekey(parsed.flags, key)?;
         let data = bytes[parsed.dataoffset..].to_vec();
         let locations = parsed
             .stored
@@ -217,6 +248,7 @@ impl checkpointreader {
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                tag: entry.tag,
             })
             .collect();
         Ok(Self {
@@ -224,6 +256,7 @@ impl checkpointreader {
             blocks: parsed.blocks,
             locations,
             sources: vec![Box::new(bytesource::new(data))],
+            key,
         })
     }
 
@@ -235,6 +268,24 @@ impl checkpointreader {
     /// does not match the delta's reference, [`checkpointerror::missingblock`]
     /// when a logical block resolves to neither, or the parse failures.
     pub fn opendelta(base: Vec<u8>, delta: Vec<u8>) -> Result<Self, checkpointerror> {
+        Self::opendelta_with(base, delta, None)
+    }
+
+    /// Opens an encrypted delta together with its encrypted base, decrypting
+    /// blocks on demand with `key`.
+    pub fn opendelta_encrypted(
+        base: Vec<u8>,
+        delta: Vec<u8>,
+        key: &[u8; 32],
+    ) -> Result<Self, checkpointerror> {
+        Self::opendelta_with(base, delta, Some(*key))
+    }
+
+    fn opendelta_with(
+        base: Vec<u8>,
+        delta: Vec<u8>,
+        key: Option<[u8; 32]>,
+    ) -> Result<Self, checkpointerror> {
         let parsed = parseartifact(&delta)?;
         checkflags(parsed.flags, FLAGDELTA)?;
         let baseparsed = parseartifact(&base)?;
@@ -245,6 +296,14 @@ impl checkpointreader {
                 found: baseparsed.root_hash,
             });
         }
+        let deltaenc = parsed.flags & FLAGENCRYPTED != 0;
+        let baseenc = baseparsed.flags & FLAGENCRYPTED != 0;
+        if deltaenc != baseenc {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "delta and base have inconsistent encryption".to_string(),
+            });
+        }
+        let key = resolvekey(parsed.flags, key)?;
 
         let locations = resolvelocations(&parsed.stored, &baseparsed.stored, &parsed.blocks)?;
 
@@ -258,6 +317,7 @@ impl checkpointreader {
                 Box::new(bytesource::new(deltadata)),
                 Box::new(bytesource::new(basedata)),
             ],
+            key,
         })
     }
 
@@ -268,6 +328,19 @@ impl checkpointreader {
     /// Returns the I/O or manifest parse failures, or
     /// [`checkpointerror::invalidmanifest`] when the file is not a full snapshot.
     pub fn openfullfile(path: &Path) -> Result<Self, checkpointerror> {
+        Self::openfullfile_with(path, None)
+    }
+
+    /// Opens an encrypted full snapshot file, decrypting blocks on demand with
+    /// `key`.
+    pub fn openfullfile_encrypted(path: &Path, key: &[u8; 32]) -> Result<Self, checkpointerror> {
+        Self::openfullfile_with(path, Some(*key))
+    }
+
+    fn openfullfile_with(
+        path: &Path,
+        key: Option<[u8; 32]>,
+    ) -> Result<Self, checkpointerror> {
         let file = File::open(path).map_err(|source| checkpointerror::io {
             path: path.to_path_buf(),
             source,
@@ -279,6 +352,7 @@ impl checkpointreader {
                 reason: "full snapshot has a non-zero base identity".to_string(),
             });
         }
+        let key = resolvekey(parsed.flags, key)?;
         let locations = parsed
             .stored
             .iter()
@@ -288,6 +362,7 @@ impl checkpointreader {
                 size: entry.size,
                 crc32c: entry.crc32c,
                 codec: entry.codec,
+                tag: entry.tag,
             })
             .collect();
         Ok(Self {
@@ -299,6 +374,7 @@ impl checkpointreader {
                 parsed.dataoffset as u64,
                 path.to_path_buf(),
             ))],
+            key,
         })
     }
 
@@ -310,6 +386,24 @@ impl checkpointreader {
     /// does not match the delta's reference, [`checkpointerror::missingblock`]
     /// when a logical block resolves to neither, or the I/O and parse failures.
     pub fn opendeltafile(base_path: &Path, delta_path: &Path) -> Result<Self, checkpointerror> {
+        Self::opendeltafile_with(base_path, delta_path, None)
+    }
+
+    /// Opens an encrypted delta file together with its encrypted base file,
+    /// decrypting blocks on demand with `key`.
+    pub fn opendeltafile_encrypted(
+        base_path: &Path,
+        delta_path: &Path,
+        key: &[u8; 32],
+    ) -> Result<Self, checkpointerror> {
+        Self::opendeltafile_with(base_path, delta_path, Some(*key))
+    }
+
+    fn opendeltafile_with(
+        base_path: &Path,
+        delta_path: &Path,
+        key: Option<[u8; 32]>,
+    ) -> Result<Self, checkpointerror> {
         let deltafile = File::open(delta_path).map_err(|source| checkpointerror::io {
             path: delta_path.to_path_buf(),
             source,
@@ -328,6 +422,14 @@ impl checkpointreader {
                 found: baseparsed.root_hash,
             });
         }
+        let deltaenc = parsed.flags & FLAGENCRYPTED != 0;
+        let baseenc = baseparsed.flags & FLAGENCRYPTED != 0;
+        if deltaenc != baseenc {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "delta and base have inconsistent encryption".to_string(),
+            });
+        }
+        let key = resolvekey(parsed.flags, key)?;
         let locations = resolvelocations(&parsed.stored, &baseparsed.stored, &parsed.blocks)?;
         Ok(Self {
             tensors: parsed.tensors,
@@ -345,6 +447,7 @@ impl checkpointreader {
                     base_path.to_path_buf(),
                 )),
             ],
+            key,
         })
     }
 
@@ -418,9 +521,16 @@ impl checkpointreader {
             if crc32c(&blockbytes) != location.crc32c {
                 return Err(checkpointerror::blockcrcmismatch { position });
             }
+            let plain = match self.key {
+                Some(key) => {
+                    let nonce = encryption::nonceof(&block.gethash());
+                    Cow::Owned(encryption::decryptblock(&key, &nonce, &blockbytes, &location.tag)?)
+                }
+                None => blockbytes,
+            };
             let from = start.saturating_sub(running);
             let to = if blockend > end { end - running } else { len };
-            match blockbytes {
+            match plain {
                 Cow::Borrowed(slice)
                     if out.is_empty() && blockend >= end && location.codec == CODECRAW =>
                 {

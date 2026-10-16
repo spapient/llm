@@ -1475,7 +1475,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 ### 12.12 《.u 增量检查点契约》
 
-> 状态：**已验证（Verified）**。`.u` 格式的合并/恢复逻辑与哈希/校验体系已在 `checkpoint` crate 实现并有测试覆盖：内容寻址分块（CDC）、增量创建/合并/按需读取、LZ4 逐块压缩、链压缩与溯源（`compact`/`verifyprovenance`）、`checkpointerror` 的损坏分类（`iscorruption()`），以及 Ed25519 签名（`encode_signed`/`verifysignature`，`FLAGSIGNED` 标志位）。本节描述的固定 64 字节条目与量化/稀疏/多排布字段布局为设计草案，实际 manifest 采用变长二进制序列化（以 §12.4 与源码为准）。
+> 状态：**已验证（Verified）**。`.u` 格式的合并/恢复逻辑与哈希/校验体系已在 `checkpoint` crate 实现并有测试覆盖：内容寻址分块（CDC）、增量创建/合并/按需读取、LZ4 逐块压缩、链压缩与溯源（`compact`/`verifyprovenance`）、`checkpointerror` 的损坏分类（`iscorruption()`），以及 Ed25519 签名（`encode_signed`/`verifysignature`，`FLAGSIGNED` 标志位）与 AES-256-GCM 分块加密（`encode_encrypted`/`decode_encrypted`，`FLAGENCRYPTED` 标志位）。本节描述的固定 64 字节条目与量化/稀疏/多排布字段布局为设计草案，实际 manifest 采用变长二进制序列化（以 §12.4 与源码为准）。
 
 **上下文。** 增量检查点通过「仅存相对基础快照变化的块」降低训练存储冗余，通过「块级随机访问」支撑按需加载与显存调度。实现方式是**内容寻址 + 梅克尔 DAG**：块身份 = 内容哈希，快照身份 = 根哈希，溯源链由 `base_id` 显式记录。
 
@@ -1490,7 +1490,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `version` | `u32` | 格式版本 |
-| `flags` | `u32` | bit0 增量 / bit1 全量 / bit2 签名，其余保留 |
+| `flags` | `u32` | bit0 增量 / bit1 全量 / bit2 签名 / bit3 加密，其余保留 |
 | `base_id` | `[u8; 32]` | 全 0 = 无基础；否则 = 基础根哈希（BLAKE3-256） |
 | `training` | 可选 `trainingstate` | 复用 §12.4 |
 | `metadata` | `BTreeMap<String, String>` | 复用 §12.4，键序确定 |
@@ -1521,7 +1521,9 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 | 块/张量内容身份 | BLAKE3-128 | 16B | 是 | 跨文件解析、去重、版本比对 |
 | 快照根锚点 | BLAKE3-256 | 32B | 是 | 快照身份、溯源、完整性公证 |
 
-**签名（Ed25519 认证）。** 签名是「认证」层，叠加在哈希「完整性」层之上：`signature = Ed25519(seed, root_hash)`，64 字节，由 `flags` bit2（`FLAGSIGNED`）标记存在性，manifest 中紧随 `root_hash`。`encode_signed(seed)` 写入签名，`decode` 解析并保留（不验签）；`verifysignature(public)` 由调用方外部提供公钥、显式验签（离线分发，文件不自含公钥——内嵌公钥不提供真实性，反徒增自证语义）。验签失败报 `signaturemismatch`（归 `iscorruption()`），无签名验签报 `signaturemissing`（归 `isincompatibility()`），全零 seed 报 `invalidsignaturekey`（不归三类，与 `invalidmanifest` 同列）。merge 产物无签名（纯内容变换），由调用方决定是否重签；reader 只解析不验签（职责仍是按需读块）。AES-256-GCM 分块加密仍属后续。
+**签名（Ed25519 认证）。** 签名是「认证」层，叠加在哈希「完整性」层之上：`signature = Ed25519(seed, root_hash)`，64 字节，由 `flags` bit2（`FLAGSIGNED`）标记存在性，manifest 中紧随 `root_hash`。`encode_signed(seed)` 写入签名，`decode` 解析并保留（不验签）；`verifysignature(public)` 由调用方外部提供公钥、显式验签（离线分发，文件不自含公钥——内嵌公钥不提供真实性，反徒增自证语义）。验签失败报 `signaturemismatch`（归 `iscorruption()`），无签名验签报 `signaturemissing`（归 `isincompatibility()`），全零 seed 报 `invalidsignaturekey`（不归三类，与 `invalidmanifest` 同列）。merge 产物无签名（纯内容变换），由调用方决定是否重签；reader 只解析不验签（职责仍是按需读块）。
+
+**加密（AES-256-GCM 认证加密）。** 加密是「机密性」层，叠加在哈希与签名之上：每块独立 `AES-256-GCM(compress(content))`，密钥 32 字节外部提供、不进文件。`nonce = blockref.hash[..12]`（BLAKE3-128 明文内容身份前 12 字节）确定性派生——GCM nonce 只需唯一、不需保密，确定性使「相同明文块→相同密文块」保持内容寻址去重；96 位 nonce 对 140 GB 模型（~2^19 块）远低于生日界 2^48。加密在压缩之后、不改明文 content 的块哈希，故**加密不改变 root_hash**，同一逻辑内容的加密/未加密/签名快照 root_hash 相同、可互换，签名与加密正交。全快照统一加密（`flags` bit3 = `FLAGENCRYPTED`），codec 保持 raw/lz4、加密独立；每 `storedentry` 追加 16 字节 tag（未加密 tag 全 0、不占字节，旧文件字节级兼容）。`encode_encrypted(key)`/`encode_signed_encrypted(seed, key)` 写入密文，`decode_encrypted(bytes, key)` 解密（无密钥遇加密报 `missingkey`，归 `isincompatibility()`）；tag 不匹配报 `decryptionfailed`（归 `iscorruption()`）。reader 带密钥打开变体按需解密；`mergefiles_encrypted` 解密合并后重加密输出。
 
 **字段布局（设计草案）。** 下列固定字节步长的条目为早期设计草案；实际 manifest 采用变长二进制序列化（`version`/`flags`/张量/块列表按 `pushu*`/`read*` 编解码，见 §12.4 与 `crates/checkpoint/src/uformat.rs`）。草案张量条目 64 B 定长：
 
@@ -1555,11 +1557,11 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **并发。** 训练写 = 新文件 + 原子 rename；读者按名打开持 fd 读旧完整内容（POSIX，`writeatomic` 既有保证）。基础删除由 GC 宽限期 + 打开时验根哈希兜底；不做锁/引用计数（§12.7）。
 
-**错误分类。** `checkpointerror` 新增 11 变体（15 → 26）：`rootmismatch`、`blockcrcmismatch`、`blockhashmismatch`、`truncatedblock`、`missingblock`、`blockoutofrange`、`signaturemismatch`（归入新访问器 `iscorruption()`）；`missingbase`、`basehashmismatch`、`signaturemissing`（并入 `isincompatibility()`）；`invalidsignaturekey`（不归三类，与 `invalidmanifest` 同列 malformed input）。`isrecoverable()` 不变（仅 `io`）。`iscorruption()` 区分「损坏」于「不兼容」与「可重试 I/O」（engineering.md §5.11）。
+**错误分类。** `checkpointerror` 新增 13 变体（15 → 28）：`rootmismatch`、`blockcrcmismatch`、`blockhashmismatch`、`truncatedblock`、`missingblock`、`blockoutofrange`、`signaturemismatch`、`decryptionfailed`（归入新访问器 `iscorruption()`）；`missingbase`、`basehashmismatch`、`signaturemissing`、`missingkey`（并入 `isincompatibility()`）；`invalidsignaturekey`（不归三类，与 `invalidmanifest` 同列 malformed input）。`isrecoverable()` 不变（仅 `io`）。`iscorruption()` 区分「损坏」于「不兼容」与「可重试 I/O」（engineering.md §5.11）。
 
 **不变量（验收判据）。** 块 `len` 与 BLAKE3-128/CRC32C 一致；块列表总长 = 逻辑数据段长（受检算术，`blockoutofrange` 兜底）；逻辑数据段 = 张量字节连续拼接且区间不重叠（复用 `checkoverlaps`）；合并输出根哈希 == 增量根哈希、数据段与原始全量字节相等；校验失败不发布部分产物；恢复只读目标块；所有文件不可变。
 
-**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）。Zstd、mmap 零拷贝、多文件分片、多排布共存、稀疏存储、量化内核、AES-256-GCM 分块加密仍属后续。块来源以 `blocksource` trait 预留扩展点。
+**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）；AES-256-GCM 分块加密已实现（`encode_encrypted`/`decode_encrypted`）。Zstd、mmap 零拷贝、多文件分片、多排布共存、稀疏存储、量化内核仍属后续。块来源以 `blocksource` trait 预留扩展点。
 
 ---
 
