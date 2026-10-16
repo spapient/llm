@@ -329,6 +329,18 @@ impl compute for refusecompute {
         Err(backenderror::unsupportedoperation { op: "rmsnorm" })
     }
 
+    fn rmsnormmatmul(
+        &self,
+        _input: &tensorview<'_, f32>,
+        _weight: &tensorview<'_, f32>,
+        _rhs: &tensorview<'_, f32>,
+        _eps: f32,
+    ) -> Result<tensor<f32>, backenderror> {
+        Err(backenderror::unsupportedoperation {
+            op: "rmsnormmatmul",
+        })
+    }
+
     fn softmax(&self, _input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         Err(backenderror::unsupportedoperation { op: "softmax" })
     }

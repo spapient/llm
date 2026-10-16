@@ -251,6 +251,78 @@ fn rmsnormrow_neon(_token: NeonToken, row: &[f32], out: &mut [f32], weight: &[f3
     }
 }
 
+/// Computes one reciprocal RMS per row of `input`, with the same per-row
+/// square-sum reassociation as the standalone kernel tiers, so the scale the
+/// fused `rmsnormmatmul` applies equals the standalone `rmsnorm` divisor
+/// exactly. The weight is not consulted: the scale is `1 / sqrt(mean(x^2)+eps)`.
+pub(crate) fn rowinvtable(input: &[f32], width: usize, eps: f32) -> Vec<f32> {
+    let rows = input.len() / width;
+    let mut inv = vec![0.0_f32; rows];
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(token) = X64V3Token::summon() {
+        for r in 0..rows {
+            inv[r] = rowinv_v3(token, &input[r * width..(r + 1) * width], eps);
+        }
+        return inv;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = NeonToken::summon() {
+        for r in 0..rows {
+            inv[r] = rowinv_neon(token, &input[r * width..(r + 1) * width], eps);
+        }
+        return inv;
+    }
+    for r in 0..rows {
+        inv[r] = rowinv_scalar(&input[r * width..(r + 1) * width], eps);
+    }
+    inv
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[arcane(import_intrinsics)]
+fn rowinv_v3(_token: X64V3Token, row: &[f32], eps: f32) -> f32 {
+    let n = row.len();
+    let (chunks, tail) = row.as_chunks::<8>();
+    let mut acc = _mm256_setzero_ps();
+    for x in chunks {
+        let xv = _mm256_loadu_ps(x);
+        acc = _mm256_fmadd_ps(xv, xv, acc);
+    }
+    let mut lanes = [0.0_f32; 8];
+    _mm256_storeu_ps(&mut lanes, acc);
+    let mut sumsq = lanes.iter().sum::<f32>();
+    for &x in tail {
+        sumsq += x * x;
+    }
+    1.0 / (sumsq / n as f32 + eps).sqrt()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane(import_intrinsics)]
+fn rowinv_neon(_token: NeonToken, row: &[f32], eps: f32) -> f32 {
+    let n = row.len();
+    let (chunks, tail) = row.as_chunks::<4>();
+    let mut acc = vdupq_n_f32(0.0);
+    for x in chunks {
+        let xv = vld1q_f32(x);
+        acc = vfmaq_f32(acc, xv, xv);
+    }
+    let mut sumsq = vaddvq_f32(acc);
+    for &x in tail {
+        sumsq += x * x;
+    }
+    1.0 / (sumsq / n as f32 + eps).sqrt()
+}
+
+fn rowinv_scalar(row: &[f32], eps: f32) -> f32 {
+    let n = row.len();
+    let mut sumsq = 0.0_f32;
+    for &x in row {
+        sumsq += x * x;
+    }
+    1.0 / (sumsq / n as f32 + eps).sqrt()
+}
+
 /// RMS-normalizes one `row` on the scalar tier.
 fn rmsnormrow_scalar(_token: ScalarToken, row: &[f32], out: &mut [f32], weight: &[f32], eps: f32) {
     let n = row.len();

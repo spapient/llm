@@ -313,6 +313,49 @@ impl compute for cpuexecutor {
         cpurmsnorm::new(eps).apply(input, weight)
     }
 
+    fn rmsnormmatmul(
+        &self,
+        input: &tensorview<'_, f32>,
+        weight: &tensorview<'_, f32>,
+        rhs: &tensorview<'_, f32>,
+        eps: f32,
+    ) -> Result<tensor<f32>, backenderror> {
+        self.checkbudget(input.getshape()).map_err(maptobackend)?;
+        self.checkbudget(weight.getshape()).map_err(maptobackend)?;
+        self.checkbudget(rhs.getshape()).map_err(maptobackend)?;
+        let Some(&k) = input.getshape().getdims().last() else {
+            return Err(backenderror::shapemismatch {
+                op: "rmsnormmatmul",
+            });
+        };
+        if k == 0 {
+            return Err(backenderror::unsupportedoperation {
+                op: "rmsnormmatmul",
+            });
+        }
+        if weight.getdata().len() != k {
+            return Err(backenderror::shapemismatch {
+                op: "rmsnormmatmul",
+            });
+        }
+        // The multiplication plan validates the leading batch dimensions and
+        // the inner-dimension agreement; the output budget is checked before
+        // any allocation. The weight folds into the left operand inside the
+        // kernel loads and the reciprocal RMS scales the stored rows, so the
+        // normalised activation is never materialised.
+        let plan = matmulplan(input, rhs)?;
+        self.checkbudget(&plan.outshape()?).map_err(maptobackend)?;
+        let inv = crate::normalization::rowinvtable(input.getdata(), k, eps);
+        cpumatmul.applyplanfused(
+            plan,
+            input,
+            weight.getdata(),
+            rhs,
+            &inv,
+            self.maxworkers,
+        )
+    }
+
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.apply(cpuop::softmax, input).map_err(maptobackend)
     }

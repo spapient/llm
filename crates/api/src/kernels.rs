@@ -159,6 +159,34 @@ pub trait compute {
         eps: f32,
     ) -> Result<tensor<f32>, backenderror>;
 
+    /// Fused RMS normalization followed by matrix multiplication.
+    ///
+    /// `input` is the left operand `[batch..., m, k]` of the multiplication
+    /// and `weight` the RMS weight of length `k`; the operator computes
+    /// `rmsnorm(input, weight, eps) @ rhs` without materialising the
+    /// normalised activation. The row scale is exact — `out_r = (a_r @ W) *
+    /// inv_r` with `inv_r` the same per-row reciprocal RMS the standalone
+    /// [`rmsnorm`](Self::rmsnorm) computes — so the result matches the
+    /// composed reference within the documented tolerance, not bit-for-bit:
+    /// the composed form rounds `a_r * inv_r` before multiplying, this form
+    /// multiplies first and scales after.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`backenderror::shapemismatch`] when the operand shapes do not
+    /// form a multiplication, [`backenderror::unsupportedoperation`] when the
+    /// last axis of `input` is empty, and
+    /// [`backenderror::unsupportedoperation`] when the backend does not fuse
+    /// this operator (callers compose [`rmsnorm`](Self::rmsnorm) and
+    /// [`matmul`](Self::matmul) instead).
+    fn rmsnormmatmul(
+        &self,
+        input: &tensorview<'_, f32>,
+        weight: &tensorview<'_, f32>,
+        rhs: &tensorview<'_, f32>,
+        eps: f32,
+    ) -> Result<tensor<f32>, backenderror>;
+
     /// Numerically stable softmax over the last axis.
     ///
     /// # Errors

@@ -107,6 +107,16 @@ pub trait submission {
         eps: f32,
     ) -> Result<stepref, backenderror>;
 
+    /// Records fused RMS normalization plus matrix multiplication, mirroring
+    /// [`compute::rmsnormmatmul`](crate::compute::rmsnormmatmul).
+    fn recordrmsnormmatmul(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        rhs: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror>;
+
     /// Records last-axis softmax, mirroring [`compute::softmax`](crate::compute::softmax).
     fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror>;
 

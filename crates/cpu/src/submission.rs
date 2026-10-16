@@ -102,6 +102,22 @@ impl<C: compute> submission for cpusubmission<C> {
         Ok(self.push(out))
     }
 
+    fn recordrmsnormmatmul(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        rhs: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror> {
+        let out = {
+            let input = self.view(input)?;
+            let weight = self.view(weight)?;
+            let rhs = self.view(rhs)?;
+            self.backend.rmsnormmatmul(&input, &weight, &rhs, eps)?
+        };
+        Ok(self.push(out))
+    }
+
     fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
         let out = {
             let input = self.view(input)?;

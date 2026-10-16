@@ -247,6 +247,84 @@ fn matmul_threaded_matches_the_single_threaded_result() {
     }
 }
 
+/// The fused rmsnorm+matmul matches the composed kernels and the scalar
+/// reference within tolerance, across the path boundary and a leading batch
+/// dimension. The fused form scales stored rows and folds the weight into the
+/// left-operand loads, so it differs from the composed form only in rounding.
+#[test]
+fn rmsnormmatmul_matches_the_composed_reference() {
+    for (m, k, n) in [(31usize, 64usize, 48usize), (200, 600, 300)] {
+        let input: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.13).sin()).collect();
+        let w: Vec<f32> = (0..k).map(|i| (i as f32 * 0.17).cos() + 1.5).collect();
+        let rhs: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.19).sin()).collect();
+        let x = build(vec![m, k], input.clone());
+        let wv = build(vec![k], w.clone());
+        let b = build(vec![k, n], rhs.clone());
+        let exec = cpuexecutor::new(wide());
+        let fused = exec
+            .rmsnormmatmul(&x.getview(), &wv.getview(), &b.getview(), 1.0e-5)
+            .unwrap();
+        let normed = exec.rmsnorm(&x.getview(), &wv.getview(), 1.0e-5).unwrap();
+        let composed = exec.matmul(&normed.getview(), &b.getview()).unwrap();
+        // The fused form folds the weight into the left-operand loads and
+        // scales the stored rows, so it differs from the composed kernels in
+        // rounding only; the documented contract is tolerance-based.
+        assertallclose(fused.getdata(), composed.getdata(), 1.0e-4, 1.0e-4);
+        let mut want = Vec::new();
+        for row in input.chunks(k) {
+            let r = reference::rmsnorm(row, &w, 1.0e-5);
+            want.extend(reference::matmul(&r, &rhs, 1, k, n));
+        }
+        assertallclose(fused.getdata(), &want, 1.0e-4, 1.0e-4);
+    }
+}
+
+/// The fused path handles a leading batch dimension and stays bitwise
+/// identical across worker counts.
+#[test]
+fn rmsnormmatmul_handles_batch_and_is_threaded_bitwise() {
+    let (batch, m, k, n) = (2usize, 64usize, 128usize, 64usize);
+    let input: Vec<f32> = (0..batch * m * k).map(|i| (i as f32 * 0.23).sin()).collect();
+    let w: Vec<f32> = (0..k).map(|i| (i as f32 * 0.29).cos() + 1.5).collect();
+    let rhs: Vec<f32> = (0..batch * k * n).map(|i| (i as f32 * 0.31).sin()).collect();
+    let x = build(vec![batch, m, k], input.clone());
+    let wv = build(vec![k], w.clone());
+    let b = build(vec![batch, k, n], rhs.clone());
+    let serial = cpuexecutor::new(wide());
+    let wanted = serial
+        .rmsnormmatmul(&x.getview(), &wv.getview(), &b.getview(), 1.0e-5)
+        .unwrap();
+    let exec = cpuexecutor::newwithworkers(wide(), 4).unwrap();
+    let got = exec
+        .rmsnormmatmul(&x.getview(), &wv.getview(), &b.getview(), 1.0e-5)
+        .unwrap();
+    assert_eq!(got.getdata(), wanted.getdata());
+}
+
+/// The fused path rejects the same malformed shapes as its two components.
+#[test]
+fn rmsnormmatmul_rejects_malformed_shapes() {
+    let exec = cpuexecutor::new(wide());
+    let x = build(vec![2, 3], vec![1.0; 6]);
+    let w = build(vec![3], vec![1.0; 3]);
+    let b = build(vec![4, 2], vec![1.0; 8]);
+    // The inner-dimension mismatch is reported by the shared multiplication
+    // plan, which carries the matmul operator name.
+    assert_eq!(
+        exec.rmsnormmatmul(&x.getview(), &w.getview(), &b.getview(), 1.0e-5)
+            .map(|_| ()),
+        Err(api::backenderror::shapemismatch { op: "matmul" })
+    );
+    let empty = build(vec![2, 0], vec![]);
+    assert_eq!(
+        exec.rmsnormmatmul(&empty.getview(), &w.getview(), &b.getview(), 1.0e-5)
+            .map(|_| ()),
+        Err(api::backenderror::unsupportedoperation {
+            op: "rmsnormmatmul"
+        })
+    );
+}
+
 /// The executor rejects a zero worker budget instead of silently serialising.
 #[test]
 fn executor_rejects_zero_workers() {

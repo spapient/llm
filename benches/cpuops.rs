@@ -21,6 +21,7 @@ use bench::{
     matmulprefillinput, norminput, ropeinput, scaninput, softmaxinput,
 };
 use cpu::{cpuop, cpuscan};
+use ::tensor::{shape, tensor};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 fn elementwise(c: &mut Criterion) {
@@ -314,6 +315,44 @@ fn attentionscales(c: &mut Criterion) {
     }
 }
 
+fn fusedrmsnormmatmul(c: &mut Criterion) {
+    let exec = cpuexec();
+    for (name, seq) in [("prefill2048", 2048usize), ("decode1", 1usize)] {
+        let k = 4096usize;
+        let n = 4096usize;
+        let x = tensor::new(
+            shape::new(vec![seq, k]).unwrap(),
+            vec![0.5_f32; seq * k],
+        )
+        .unwrap();
+        let w = tensor::new(shape::new(vec![k]).unwrap(), vec![1.0_f32; k]).unwrap();
+        let b = tensor::new(
+            shape::new(vec![k, n]).unwrap(),
+            vec![0.25_f32; k * n],
+        )
+        .unwrap();
+        let (xv, wv, bv) = (x.getview(), w.getview(), b.getview());
+        let mut group = c.benchmark_group(format!("fused/rmsnormmatmul/{name}"));
+        group.throughput(Throughput::Elements((seq * k) as u64));
+        group.sample_size(10);
+        group.bench_function("fused", |bench| {
+            bench.iter(|| {
+                black_box(
+                    exec.rmsnormmatmul(black_box(&xv), black_box(&wv), black_box(&bv), 1.0e-5)
+                        .unwrap(),
+                )
+            });
+        });
+        group.bench_function("separate", |bench| {
+            bench.iter(|| {
+                let normed = exec.rmsnorm(black_box(&xv), black_box(&wv), 1.0e-5).unwrap();
+                black_box(exec.matmul(black_box(&normed.getview()), black_box(&bv)).unwrap())
+            });
+        });
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     elementwise,
@@ -324,6 +363,7 @@ criterion_group!(
     compute_paths,
     scan,
     matmulscales,
-    attentionscales
+    attentionscales,
+    fusedrmsnormmatmul
 );
 criterion_main!(benches);

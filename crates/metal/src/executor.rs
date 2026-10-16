@@ -210,6 +210,18 @@ impl compute for metalexecutor {
         wrap(input.getshape().clone(), data)
     }
 
+    fn rmsnormmatmul(
+        &self,
+        _input: &tensorview<'_, f32>,
+        _weight: &tensorview<'_, f32>,
+        _rhs: &tensorview<'_, f32>,
+        _eps: f32,
+    ) -> Result<tensor<f32>, backenderror> {
+        Err(backenderror::unsupportedoperation {
+            op: "rmsnormmatmul",
+        })
+    }
+
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
         let geometry = axisshape::softmax(input.getshape())?;
@@ -657,6 +669,18 @@ impl submission for metalsubmission {
         )
         .map_err(maptobackend)?;
         Ok(self.push(slot, inshape))
+    }
+
+    fn recordrmsnormmatmul(
+        &mut self,
+        _input: operand<'_>,
+        _weight: operand<'_>,
+        _rhs: operand<'_>,
+        _eps: f32,
+    ) -> Result<stepref, backenderror> {
+        Err(backenderror::unsupportedoperation {
+            op: "rmsnormmatmul",
+        })
     }
 
     fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
