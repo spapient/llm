@@ -860,7 +860,7 @@ mod jinja {
 
 /// Tests for the `normalizer` section.
 mod normalize {
-    use ::tokenizer::{normalizer, tokenizer, tokenizererror};
+    use ::tokenizer::{normalizer, tokenizer};
     use lib::tokenid;
 
     #[test]
@@ -883,9 +883,6 @@ mod normalize {
     #[test]
     fn nfc_normalizes_combining_sequences() {
         // "é" as e + U+0301 combining acute must NFC-normalize to U+00E9.
-        let doc =
-            r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"normalizer":{"type":"NFC"}}"#;
-        let tok = tokenizer::fromjson(doc).unwrap();
         assert_eq!(normalizer::nfc.apply("e\u{0301}"), "\u{e9}");
     }
 
