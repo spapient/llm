@@ -261,7 +261,7 @@ pub(crate) fn dispatch(
     unsafe {
         // --- lazy open -----------------------------------------------------
         if !state.opened {
-            if muInit() != MUSA_SUCCESS {
+            if muInit(0) != MUSA_SUCCESS {
                 return Err(musaerror::device {
                     message: "muInit failed".into(),
                 });
