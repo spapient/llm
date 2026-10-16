@@ -465,15 +465,31 @@ mod macos {
         let seq = 16384;
         let width = HEADS * HEADDIM;
         let elements = seq * width;
-        let q = tensor::new(shape::new(vec![seq, width]).unwrap(), vec![0.1_f32; elements]).unwrap();
-        let k = tensor::new(shape::new(vec![seq, width]).unwrap(), vec![0.2_f32; elements]).unwrap();
-        let v = tensor::new(shape::new(vec![seq, width]).unwrap(), vec![0.3_f32; elements]).unwrap();
+        let q = tensor::new(
+            shape::new(vec![seq, width]).unwrap(),
+            vec![0.1_f32; elements],
+        )
+        .unwrap();
+        let k = tensor::new(
+            shape::new(vec![seq, width]).unwrap(),
+            vec![0.2_f32; elements],
+        )
+        .unwrap();
+        let v = tensor::new(
+            shape::new(vec![seq, width]).unwrap(),
+            vec![0.3_f32; elements],
+        )
+        .unwrap();
         let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
         let mut group = c.benchmark_group("gpu/attention16k");
         group.throughput(Throughput::Elements(seq as u64));
         group.bench_function("metalheads8dim64", |b| {
             b.iter(|| {
-                black_box(metalexec.attention(&qv, &kv, &vv, HEADS, HEADS, true).unwrap())
+                black_box(
+                    metalexec
+                        .attention(&qv, &kv, &vv, HEADS, HEADS, true)
+                        .unwrap(),
+                )
             })
         });
         group.finish();
