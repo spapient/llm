@@ -645,3 +645,51 @@ fn compute_contract_routes_through_the_executor() {
         Err(api::backenderror::resourceexhausted)
     );
 }
+
+/// The softmax SIMD fast path (finite rows) stays inside the contract
+/// tolerance across row widths and shifted scales, including rows whose
+/// maximum is far from the other values.
+#[test]
+fn softmax_fast_path_stays_within_tolerance() {
+    let widths = [8usize, 16, 24, 31, 64, 100, 128];
+    let shifts = [0.0_f32, 100.0, -100.0, -1000.0];
+    for &width in &widths {
+        for &shift in &shifts {
+            let row: Vec<f32> = (0..width)
+                .map(|i| shift + ((i as f32) * 0.37).sin() * 12.0)
+                .collect();
+            let t = build(vec![width], row.clone());
+            let out = cpusoftmax.apply(&t.getview()).unwrap();
+            assertallclose(out.getdata(), &reference::softmax(&row), 1.0e-6, 1.0e-6);
+            let sum: f32 = out.getdata().iter().sum();
+            assert!(
+                (sum - 1.0).abs() <= 1.0e-6,
+                "row sum off at w={width} shift={shift}: {sum}"
+            );
+        }
+    }
+}
+
+/// Rows containing non-finite values take the scalar contract path: `NaN` in,
+/// `NaN` out at the same position; a `-inf` row propagates `NaN` instead of
+/// producing a zero row.
+#[test]
+fn softmax_nonfinite_rows_follow_scalar_contract() {
+    // A NaN in the row must surface as NaN at that position (the fast path
+    // rejects the whole row, so this is the scalar path).
+    let t = build(vec![4], vec![1.0_f32, f32::NAN, 2.0, 3.0]);
+    let out = cpusoftmax.apply(&t.getview()).unwrap();
+    let d = out.getdata();
+    assert!(d[1].is_nan(), "NaN must propagate at its own position");
+    // A row of negative infinities yields NaN (max - max = NaN), never zeros.
+    let t = build(vec![2], vec![f32::NEG_INFINITY, f32::NEG_INFINITY]);
+    let out = cpusoftmax.apply(&t.getview()).unwrap();
+    assert!(out.getdata()[0].is_nan(), "-inf row must propagate NaN");
+    // A single finite element beside infinities still yields the finite row.
+    let t = build(vec![3], vec![f32::NEG_INFINITY, 1.0, f32::NEG_INFINITY]);
+    let out = cpusoftmax.apply(&t.getview()).unwrap();
+    let d = out.getdata();
+    assert_eq!(d[0], 0.0, "-inf slot exponentiates to zero");
+    assert_eq!(d[2], 0.0, "-inf slot exponentiates to zero");
+    assert!((d[1] - 1.0).abs() <= 1.0e-6, "finite slot stays 1.0");
+}
