@@ -69,10 +69,12 @@ impl normalizer {
             Self::nfkc => text.nfkc().collect(),
             Self::nfkd => text.nfkd().collect(),
             Self::precompiled => {
-                // Fast path: a text with no mapped scalar passes through
-                // unchanged (the common case for ASCII/Latin runs).
+                // The charsmap is NFKC plus extra scalar mappings (control
+                // deletion, CJK-compat normalization). Apply the scalar table
+                // first, then NFC-compose the result, matching the reference
+                // implementation (e.g. `a` + U+0301 composes to `á`).
                 if text.chars().all(|ch| lookupcharsmap(ch as u32).is_none()) {
-                    return text.to_string();
+                    return text.nfc().collect();
                 }
                 let mut out = String::with_capacity(text.len());
                 for ch in text.chars() {
@@ -85,7 +87,7 @@ impl normalizer {
                     }
                     out.push_str(repl);
                 }
-                out
+                out.nfc().collect()
             }
             Self::sequence(children) => {
                 let mut out = text.to_string();

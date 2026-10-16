@@ -12,8 +12,17 @@ use std::collections::{BinaryHeap, HashMap};
 use lib::tokenid;
 
 use crate::error::tokenizererror;
-use crate::pretoken::{hanfirstsplit, o200ksplit};
+use crate::pretoken::{o200ksplit, KIMI_PAT};
 use crate::scratch::{mergescratch, mergestep, resetlinks};
+
+/// The pre-token splitter applied to non-special segments.
+#[derive(Clone, Debug)]
+enum splitter {
+    /// The hand-written o200k splitter.
+    o200k,
+    /// The official Kimi `pat_str`, compiled verbatim with `fancy_regex`.
+    kimi(fancy_regex::Regex),
+}
 
 /// A tiktoken-format encoder.
 #[derive(Clone, Debug)]
@@ -24,8 +33,8 @@ pub struct tiktokenizer {
     tokens: Vec<Vec<u8>>,
     /// Special token content → rank, sorted longest first.
     specials: Vec<(String, u32)>,
-    /// The hand-written pre-token splitter for non-special segments.
-    split: fn(&str) -> Vec<&str>,
+    /// The pre-token splitter for non-special segments.
+    split: splitter,
 }
 
 impl tiktokenizer {
@@ -85,25 +94,27 @@ impl tiktokenizer {
             ranks,
             tokens,
             specials: specials_sorted,
-            split: o200ksplit,
+            split: splitter::o200k,
         })
     }
 
     /// Parses a `.tiktoken` document like [`fromfile`](Self::fromfile), but
-    /// splits non-special segments with the Kimi K2 Han-first pre-tokenizer
-    /// ([`hanfirstsplit`]) instead of the o200k splitter. Kimi-K2's `pat_str`
-    /// is DeepSeek-style: Han runs first, letter runs split upper/lower with an
-    /// optional contraction suffix, then the o200k digit/punct/newline/space
-    /// alternatives.
+    /// splits non-special segments with the official Kimi K2 `pat_str`
+    /// (DeepSeek-style: Han runs first, letter runs exclude Han via `&&`,
+    /// then the o200k digit/punct/newline/space alternatives) compiled
+    /// verbatim with `fancy_regex` — no hand-written approximation.
     ///
     /// # Errors
     ///
     /// Returns [`tokenizererror::invalidtiktoken`] for a malformed line or a
-    /// base64 token, and [`tokenizererror::invalidregex`] if the built-in
-    /// regex fails to compile.
+    /// base64 token, and [`tokenizererror::invalidregex`] if the pattern
+    /// fails to compile.
     pub fn fromfilehan(content: &str, specials: &[(String, u32)]) -> Result<Self, tokenizererror> {
+        let re = fancy_regex::Regex::new(KIMI_PAT).map_err(|error| tokenizererror::invalidregex {
+            detail: format!("Kimi pat_str does not compile: {error}"),
+        })?;
         let mut tok = Self::fromfile(content, specials)?;
-        tok.split = hanfirstsplit;
+        tok.split = splitter::kimi(re);
         Ok(tok)
     }
 
@@ -178,16 +189,31 @@ impl tiktokenizer {
             .map(|(content, rank)| (content.len(), *rank))
     }
 
-    /// Encodes one non-special segment through the hand-written splitter and
-    /// the byte merge.
+    /// Encodes one non-special segment through the pre-token splitter and the
+    /// byte merge.
     fn encode_segment(
         &self,
         segment: &str,
         scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
-        for chunk in (self.split)(segment) {
-            self.encode_chunk(chunk, scratch, out)?;
+        match &self.split {
+            splitter::o200k => {
+                for chunk in o200ksplit(segment) {
+                    self.encode_chunk(chunk, scratch, out)?;
+                }
+            }
+            splitter::kimi(re) => {
+                let found = re
+                    .find_iter(segment)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| tokenizererror::invalidregex {
+                        detail: format!("Kimi pat_str match failed: {error}"),
+                    })?;
+                for matched in found {
+                    self.encode_chunk(matched.as_str(), scratch, out)?;
+                }
+            }
         }
         Ok(())
     }

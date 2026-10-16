@@ -231,146 +231,28 @@ fn otherchar(ch: char) -> bool {
     !ch.is_whitespace() && !ch.is_alphabetic() && !ch.is_numeric()
 }
 
-/// Reports whether `ch` is a Han ideograph, approximating the Unicode `\p{Han}`
-/// property over its main blocks (basic, extensions A–H, compatibility). The
-/// standard library exposes no `\p{Han}` query, and the splitter is hand-written
-/// without a regex engine.
-fn is_han(ch: char) -> bool {
-    matches!(u32::from(ch),
-        0x3400..=0x4DBF   // Extension A
-        | 0x4E00..=0x9FFF // Unified
-        | 0xF900..=0xFAFF // Compatibility
-        | 0x20000..=0x2A6DF // Extension B
-        | 0x2A700..=0x2B73F // Extension C
-        | 0x2B740..=0x2B81F // Extension D
-        | 0x2B820..=0x2CEAF // Extension E
-        | 0x2CEB0..=0x2EBEF // Extension F
-        | 0x30000..=0x3134F // Extension G
-        | 0x31350..=0x323AF // Extension H
-    )
-}
-
-/// Returns the byte length of an optional Kimi contraction suffix
-/// `(?i:'s|'t|'re|'ve|'m|'ll|'d)` at the start of `rest`.
-fn contractionsuffix(rest: &str) -> usize {
-    for contraction in ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"] {
-        if rest.len() >= contraction.len()
-            && rest.is_char_boundary(contraction.len())
-            && rest[..contraction.len()].eq_ignore_ascii_case(contraction)
-        {
-            return contraction.len();
-        }
-    }
-    0
-}
-
-/// Returns `(len, end)` of the letter run at the start of `rest` under the Kimi
-/// two-class split: an upper/title-case start consumes the upper run then the
-/// lower run; a lower-case start consumes only the lower run. Han is excluded
-/// (already consumed by the Han-first branch).
-fn hanletterrun(rest: &str) -> (usize, usize) {
-    let Some(first) = rest.chars().next() else {
-        return (0, 0); // unreachable: callers pass non-empty text
-    };
-    if first.is_uppercase() {
-        let upper = classrun(rest, |ch| ch.is_uppercase() && !is_han(ch));
-        let lower = classrun(&rest[upper..], |ch| ch.is_lowercase() && !is_han(ch));
-        (upper + lower, upper + lower)
-    } else {
-        let lower = classrun(rest, |ch| ch.is_lowercase() && !is_han(ch));
-        (lower, lower)
-    }
-}
-
-/// Splits `text` with the Kimi K2 pre-tokenizer regex (DeepSeek-style
-/// `pat_str`), hand-written like [`o200ksplit`]:
-/// `[\p{Han}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`.
-///
-/// Han ideographs form a single run first (whereas [`o200ksplit`] folds them
-/// into the letter class), and letter runs split upper/lower with an optional
-/// contraction suffix. The digit, punctuation, newline and whitespace
-/// alternatives match [`o200ksplit`].
-#[must_use]
-pub fn hanfirstsplit(text: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let mut start = 0;
-    while start < text.len() {
-        let length = hanfirsttoklen(&text[start..]);
-        tokens.push(&text[start..start + length]);
-        start += length;
-    }
-    tokens
-}
-
-/// Returns the byte length of the next Kimi pre-token in the non-empty `rest`.
-fn hanfirsttoklen(rest: &str) -> usize {
-    let Some(first) = rest.chars().next() else {
-        return 0; // unreachable: `rest` is non-empty
-    };
-    let firstlen = first.len_utf8();
-    // 1. `[\p{Han}]+`: a whole run of Han ideographs.
-    if is_han(first) {
-        return classrun(rest, is_han);
-    }
-    // 2/3. Letter runs (Han excluded), each with an optional single non-letter,
-    //    non-number prefix and an optional contraction suffix.
-    if first.is_alphabetic() {
-        let (body, end) = hanletterrun(rest);
-        return body + contractionsuffix(&rest[end..]);
-    }
-    if first != '\r'
-        && first != '\n'
-        && let Some(second) = rest[firstlen..].chars().next()
-        && second.is_alphabetic()
-        && !is_han(second)
-    {
-        let (body, end) = hanletterrun(&rest[firstlen..]);
-        return firstlen + body + contractionsuffix(&rest[firstlen + end..]);
-    }
-    // 4. `\p{N}{1,3}`: one to three digits, with no leading space.
-    if first.is_numeric() {
-        let mut total = 0;
-        let mut count = 0;
-        for ch in rest.chars() {
-            if ch.is_numeric() && count < 3 {
-                total += ch.len_utf8();
-                count += 1;
-            } else {
-                break;
-            }
-        }
-        return total;
-    }
-    // 5. ` ?[^\s\p{L}\p{N}]+[\r\n]*`: optional space + 1+ punctuation + 0+ CR/LF.
-    if first == ' ' {
-        let tail = &rest[firstlen..];
-        if let Some(ch) = tail.chars().next()
-            && otherchar(ch)
-        {
-            let run = classrun(tail, otherchar);
-            return firstlen + run + crlfrun(&tail[run..]);
-        }
-    }
-    if otherchar(first) {
-        let run = classrun(rest, otherchar);
-        return run + crlfrun(&rest[run..]);
-    }
-    // 6-8. Whitespace alternatives, identical to `o200ktoklen`.
-    if first.is_whitespace() {
-        let runlen = classrun(rest, |ch| ch.is_whitespace());
-        if let Some(last) = rest[..runlen]
-            .bytes()
-            .rposition(|byte| byte == b'\r' || byte == b'\n')
-        {
-            return last + 1;
-        }
-        return match rest[runlen..].chars().next() {
-            Some(_) => runlen.saturating_sub(1).max(1),
-            None => runlen,
-        };
-    }
-    firstlen // unreachable: every character is classified above
-}
+/// The official Kimi K2 pre-tokenizer pattern (`pat_str`, eight alternatives in
+/// precedence order, from the model's `tokenizer.json`). Han ideographs form a
+/// single run first; letter runs exclude Han via the `&&` set-operation syntax,
+/// which the repository's `fancy_regex` engine supports. Compiled verbatim —
+/// no hand-written approximation.
+pub(crate) const KIMI_PAT: &str = concat!(
+    r"[\p{Han}]+",
+    "|",
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    "|",
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    "|",
+    r"\p{N}{1,3}",
+    "|",
+    r" ?[^\s\p{L}\p{N}]+[\r\n]*",
+    "|",
+    r"\s*[\r\n]+",
+    "|",
+    r"\s+(?!\S)",
+    "|",
+    r"\s+",
+);
 
 /// A pre-tokenizer: splits and/or transforms text before byte-pair encoding.
 ///

@@ -16,7 +16,8 @@
       "decoded_no_skip": {
         "skip_special_tokens": false
       }
-    }
+    },
+    "extended_at_utc": "2026-10-16T15:55:36+00:00"
   },
   "samples": [
     {
@@ -384,6 +385,428 @@
       ],
       "decoded": "In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell, nor yet a dry, bare, sandy hole with nothing in it to sit down on or to eat: it was a hobbit-hole, and that means comfort.",
       "decoded_no_skip": "In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell, nor yet a dry, bare, sandy hole with nothing in it to sit down on or to eat: it was a hobbit-hole, and that means comfort."
+    },
+    {
+      "input": "\u0001\u0002\u0003 controls",
+      "tokens": [
+        "▁control",
+        "s"
+      ],
+      "ids": [
+        6226,
+        7
+      ],
+      "decoded": "controls",
+      "decoded_no_skip": "controls"
+    },
+    {
+      "input": "tab\there\u000b\f\r newline",
+      "tokens": [
+        "▁tab",
+        "▁here",
+        "▁new",
+        "line"
+      ],
+      "ids": [
+        20928,
+        3688,
+        3525,
+        2256
+      ],
+      "decoded": "tab here newline",
+      "decoded_no_skip": "tab here newline"
+    },
+    {
+      "input": "zero​width‌‍ joiner",
+      "tokens": [
+        "▁zero",
+        "▁",
+        "width",
+        "▁join",
+        "er"
+      ],
+      "ids": [
+        45234,
+        6,
+        146984,
+        33284,
+        56
+      ],
+      "decoded": "zero width joiner",
+      "decoded_no_skip": "zero width joiner"
+    },
+    {
+      "input": "fullｗｉｄｔｈ ｈｅｌｌｏ",
+      "tokens": [
+        "▁full",
+        "width",
+        "▁hell",
+        "o"
+      ],
+      "ids": [
+        4393,
+        146984,
+        33600,
+        31
+      ],
+      "decoded": "fullwidth hello",
+      "decoded_no_skip": "fullwidth hello"
+    },
+    {
+      "input": "①圈②号③ 数字",
+      "tokens": [
+        "▁1",
+        "圈",
+        "2",
+        "号",
+        "3",
+        "▁",
+        "数字"
+      ],
+      "ids": [
+        106,
+        18453,
+        304,
+        5730,
+        363,
+        6,
+        28406
+      ],
+      "decoded": "1圈2号3 数字",
+      "decoded_no_skip": "1圈2号3 数字"
+    },
+    {
+      "input": "ⅦⅧⅨ 罗马数字",
+      "tokens": [
+        "▁VII",
+        "VIII",
+        "IX",
+        "▁",
+        "罗马",
+        "数字"
+      ],
+      "ids": [
+        25714,
+        117865,
+        21487,
+        6,
+        154576,
+        28406
+      ],
+      "decoded": "VIIVIIIIX 罗马数字",
+      "decoded_no_skip": "VIIVIIIIX 罗马数字"
+    },
+    {
+      "input": "¼½¾⅓ 分数",
+      "tokens": [
+        "▁",
+        "1⁄4",
+        "1⁄2",
+        "3⁄4",
+        "1",
+        "⁄",
+        "3",
+        "▁",
+        "分",
+        "数"
+      ],
+      "ids": [
+        6,
+        121346,
+        92759,
+        162869,
+        418,
+        244259,
+        363,
+        6,
+        1583,
+        4723
+      ],
+      "decoded": "1⁄41⁄23⁄41⁄3 分数",
+      "decoded_no_skip": "1⁄41⁄23⁄41⁄3 分数"
+    },
+    {
+      "input": "⺟⻳⺠ 部首",
+      "tokens": [
+        "▁",
+        "母",
+        "龟",
+        "⺠",
+        "▁",
+        "部",
+        "首"
+      ],
+      "ids": [
+        6,
+        15775,
+        243436,
+        3,
+        6,
+        2649,
+        6342
+      ],
+      "decoded": "母龟 部首",
+      "decoded_no_skip": "母龟<unk> 部首"
+    },
+    {
+      "input": "豈更車 兼容",
+      "tokens": [
+        "▁",
+        "豈",
+        "更",
+        "車",
+        "▁",
+        "兼",
+        "容"
+      ],
+      "ids": [
+        6,
+        244193,
+        1955,
+        3009,
+        6,
+        26646,
+        17707
+      ],
+      "decoded": "豈更車 兼容",
+      "decoded_no_skip": "豈更車 兼容"
+    },
+    {
+      "input": "ǅǆǇǉ 标题字",
+      "tokens": [
+        "▁D",
+        "ž",
+        "dž",
+        "LJ",
+        "lj",
+        "▁",
+        "标题",
+        "字"
+      ],
+      "ids": [
+        391,
+        869,
+        60499,
+        75612,
+        21178,
+        6,
+        189656,
+        7234
+      ],
+      "decoded": "DždžLJlj 标题字",
+      "decoded_no_skip": "DždžLJlj 标题字"
+    },
+    {
+      "input": "℡™№ 符号字",
+      "tokens": [
+        "▁",
+        "TEL",
+        "TM",
+        "No",
+        "▁",
+        "符",
+        "号",
+        "字"
+      ],
+      "ids": [
+        6,
+        29350,
+        10111,
+        5021,
+        6,
+        53853,
+        5730,
+        7234
+      ],
+      "decoded": "TELTMNo 符号字",
+      "decoded_no_skip": "TELTMNo 符号字"
+    },
+    {
+      "input": "ｈｅｌｌｏ·ｗｏｒｌｄ",
+      "tokens": [
+        "▁hell",
+        "o",
+        "·",
+        "world"
+      ],
+      "ids": [
+        33600,
+        31,
+        1280,
+        32554
+      ],
+      "decoded": "hello·world",
+      "decoded_no_skip": "hello·world"
+    },
+    {
+      "input": "áé ö marks",
+      "tokens": [
+        "▁á",
+        "é",
+        "▁ö",
+        "▁mark",
+        "s"
+      ],
+      "ids": [
+        392,
+        446,
+        11952,
+        16188,
+        7
+      ],
+      "decoded": "áé ö marks",
+      "decoded_no_skip": "áé ö marks"
+    },
+    {
+      "input": "😀🀄🚀 中文 emoji",
+      "tokens": [
+        "▁😀",
+        "🀄",
+        "🚀",
+        "▁",
+        "中文",
+        "▁e",
+        "moji"
+      ],
+      "ids": [
+        21119,
+        3,
+        247206,
+        6,
+        32095,
+        28,
+        121505
+      ],
+      "decoded": "😀🚀 中文 emoji",
+      "decoded_no_skip": "😀<unk>🚀 中文 emoji"
+    },
+    {
+      "input": "﻿bom​hidden",
+      "tokens": [
+        "▁bom",
+        "▁hidden"
+      ],
+      "ids": [
+        8634,
+        204105
+      ],
+      "decoded": "bom hidden",
+      "decoded_no_skip": "bom hidden"
+    },
+    {
+      "input": "ＡＢＣ１２３ ｔｅｓｔ",
+      "tokens": [
+        "▁ABC",
+        "123",
+        "▁test"
+      ],
+      "ids": [
+        47457,
+        48636,
+        3034
+      ],
+      "decoded": "ABC123 test",
+      "decoded_no_skip": "ABC123 test"
+    },
+    {
+      "input": "long ​‌‍ spaces    mixed",
+      "tokens": [
+        "▁long",
+        "▁space",
+        "s",
+        "▁mix",
+        "ed"
+      ],
+      "ids": [
+        4989,
+        32628,
+        7,
+        17664,
+        297
+      ],
+      "decoded": "long spaces mixed",
+      "decoded_no_skip": "long spaces mixed"
+    },
+    {
+      "input": "„quotes“ «and» ‹nested›",
+      "tokens": [
+        "▁„",
+        "quote",
+        "s",
+        "“",
+        "▁«",
+        "and",
+        "»",
+        "▁‹",
+        "ne",
+        "sted",
+        "›"
+      ],
+      "ids": [
+        137,
+        68726,
+        7,
+        155,
+        94,
+        2940,
+        167,
+        42131,
+        86,
+        14437,
+        27492
+      ],
+      "decoded": "„quotes“ «and» ‹nested›",
+      "decoded_no_skip": "„quotes“ «and» ‹nested›"
+    },
+    {
+      "input": "⅐⅑⅒ 分数罗马",
+      "tokens": [
+        "▁1",
+        "⁄",
+        "71",
+        "⁄",
+        "91",
+        "⁄",
+        "10",
+        "▁",
+        "分",
+        "数",
+        "罗马"
+      ],
+      "ids": [
+        106,
+        244259,
+        15770,
+        244259,
+        12183,
+        244259,
+        963,
+        6,
+        1583,
+        4723,
+        154576
+      ],
+      "decoded": "1⁄71⁄91⁄10 分数罗马",
+      "decoded_no_skip": "1⁄71⁄91⁄10 分数罗马"
+    },
+    {
+      "input": "ＦｕｌｌＷｉｄｔｈ Ｎａｔｉｏｎ",
+      "tokens": [
+        "▁Full",
+        "W",
+        "id",
+        "th",
+        "▁Nation"
+      ],
+      "ids": [
+        9312,
+        1456,
+        532,
+        927,
+        82581
+      ],
+      "decoded": "FullWidth Nation",
+      "decoded_no_skip": "FullWidth Nation"
     }
   ]
 }
