@@ -1,6 +1,6 @@
 use ::tensor::{tensor, tensorview};
 use api::{backenderror, weightedkernel};
-use fearless_simd::{Level, Simd, dispatch, f32x4, prelude::*};
+use archmage::prelude::*;
 
 use crate::support::finish;
 
@@ -84,46 +84,17 @@ impl cpurmsnorm {
         let src = input.getdata();
         let w = weight.getdata();
         let mut data = vec![0.0_f32; src.len()];
-        let level = Level::new();
-        let result = dispatch!(level, simd => rmsnormrowsparallel(
-            simd,
-            src,
-            &mut data,
-            w,
-            self.eps,
-            width,
-            workers,
-        ));
-        result?;
+        rmsnormrowsparallel(src, &mut data, w, self.eps, width, workers)?;
         finish(input.getshape(), data)
     }
 }
 
-/// Normalizes every row of `src` into `data`, dispatched through
-/// `fearless_simd`.
-#[inline(always)]
-fn rmsnormrows<S: Simd>(
-    simd: S,
-    src: &[f32],
-    data: &mut [f32],
-    weight: &[f32],
-    eps: f32,
-    width: usize,
-) {
-    for (row, out) in src.chunks(width).zip(data.chunks_mut(width)) {
-        rmsnormrow(simd, row, out, weight, eps);
-    }
-}
-
-/// Splits the rows over scoped threads when there are at least two of them.
+/// Normalizes every row of `src` into `data`, dispatching the SIMD tier once
+/// per call and splitting the rows over scoped threads when asked.
 ///
-/// Each thread claims row indices from an atomic counter and writes the row
-/// directly through a mutex-guarded output slice, so no merge copy is added
-/// to a bandwidth-bound operation. The per-row arithmetic is identical to
-/// [`rmsnormrows`].
-#[allow(clippy::too_many_arguments)]
-fn rmsnormrowsparallel<S: Simd>(
-    simd: S,
+/// The tier proof is summoned before any row runs, so the runtime detection
+/// cost is paid once per call, not once per row.
+fn rmsnormrowsparallel(
     src: &[f32],
     data: &mut [f32],
     weight: &[f32],
@@ -132,8 +103,48 @@ fn rmsnormrowsparallel<S: Simd>(
     workers: usize,
 ) -> Result<(), backenderror> {
     let rows = src.len() / width;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if let Some(token) = X64V3Token::summon() {
+        return runrows(rows, src, data, width, workers, |row, out| {
+            rmsnormrow_v3(token, row, out, weight, eps)
+        });
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(token) = NeonToken::summon() {
+        return runrows(rows, src, data, width, workers, |row, out| {
+            rmsnormrow_neon(token, row, out, weight, eps)
+        });
+    }
+    runrows(rows, src, data, width, workers, |row, out| {
+        rmsnormrow_scalar(ScalarToken, row, out, weight, eps)
+    })
+}
+
+/// Runs one row kernel over every row of `src` into `data`, in parallel when
+/// `workers > 1` and there is more than one row.
+///
+/// Each thread claims row indices from an atomic counter and writes the row
+/// directly through a mutex-guarded output slice, so no merge copy is added
+/// to a bandwidth-bound operation. The per-row arithmetic is identical to the
+/// serial order.
+fn runrows<F>(
+    rows: usize,
+    src: &[f32],
+    data: &mut [f32],
+    width: usize,
+    workers: usize,
+    rowkernel: F,
+) -> Result<(), backenderror>
+where
+    F: Fn(&[f32], &mut [f32]) + Send + Sync,
+{
     if workers <= 1 || rows <= 1 {
-        rmsnormrows(simd, src, data, weight, eps, width);
+        for i in 0..rows {
+            rowkernel(
+                &src[i * width..(i + 1) * width],
+                &mut data[i * width..(i + 1) * width],
+            );
+        }
         return Ok(());
     }
     // The row pool and the claim counter live outside the scope so the
@@ -143,6 +154,7 @@ fn rmsnormrowsparallel<S: Simd>(
     let next = std::sync::atomic::AtomicUsize::new(0);
     let pool = &pool;
     let next = &next;
+    let rowkernel = &rowkernel;
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
@@ -155,13 +167,7 @@ fn rmsnormrowsparallel<S: Simd>(
                     let Ok(mut outrow) = pool[i].lock() else {
                         return false;
                     };
-                    rmsnormrow(
-                        simd,
-                        &src[i * width..(i + 1) * width],
-                        &mut outrow,
-                        weight,
-                        eps,
-                    );
+                    rowkernel(&src[i * width..(i + 1) * width], &mut outrow);
                 }
                 true
             }));
@@ -182,30 +188,78 @@ fn rmsnormrowsparallel<S: Simd>(
     })
 }
 
-/// RMS-normalizes one `row` with a vectorized square-sum and a vectorized
-/// scale pass.
-#[inline(always)]
-fn rmsnormrow<S: Simd>(simd: S, row: &[f32], out: &mut [f32], weight: &[f32], eps: f32) {
+/// RMS-normalizes one `row` on the AVX2+FMA tier, eight lanes per vector.
+///
+/// The safe intrinsic imports take array references, so the row is walked
+/// through [`slice::as_chunks`] and the scalar tail keeps the same order.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[arcane(import_intrinsics)]
+fn rmsnormrow_v3(_token: X64V3Token, row: &[f32], out: &mut [f32], weight: &[f32], eps: f32) {
     let n = row.len();
-    let ntile = n / 4 * 4;
-    let mut acc = f32x4::<S>::splat(simd, 0.0);
-    for i in (0..ntile).step_by(4) {
-        let x = f32x4::<S>::from_slice(simd, &row[i..i + 4]);
-        acc = x.mul_add(x, acc);
+    let (chunks, tail) = row.as_chunks::<8>();
+    let (wchunks, _) = weight.as_chunks::<8>();
+    let mut acc = _mm256_setzero_ps();
+    for x in chunks {
+        let xv = _mm256_loadu_ps(x);
+        acc = _mm256_fmadd_ps(xv, xv, acc);
     }
-    let mut sumsq = acc.reduce_sum();
-    for &x in &row[ntile..n] {
+    let mut lanes = [0.0_f32; 8];
+    _mm256_storeu_ps(&mut lanes, acc);
+    let mut sumsq = lanes.iter().sum::<f32>();
+    for &x in tail {
         sumsq += x * x;
     }
     let inv = 1.0 / (sumsq / n as f32 + eps).sqrt();
-
-    let invv = f32x4::<S>::splat(simd, inv);
-    for i in (0..ntile).step_by(4) {
-        let x = f32x4::<S>::from_slice(simd, &row[i..i + 4]);
-        let w = f32x4::<S>::from_slice(simd, &weight[i..i + 4]);
-        (x * invv * w).store_slice(&mut out[i..i + 4]);
+    let invv = _mm256_set1_ps(inv);
+    let (ochunks, _) = out.as_chunks_mut::<8>();
+    for (o, (&x, &w)) in ochunks.iter_mut().zip(chunks.iter().zip(wchunks.iter())) {
+        let xv = _mm256_loadu_ps(&x);
+        let wv = _mm256_loadu_ps(&w);
+        _mm256_storeu_ps(o, _mm256_mul_ps(_mm256_mul_ps(xv, invv), wv));
     }
-    for i in ntile..n {
+    for i in n - tail.len()..n {
+        out[i] = row[i] * inv * weight[i];
+    }
+}
+
+/// RMS-normalizes one `row` on the NEON tier, four lanes per vector.
+#[cfg(target_arch = "aarch64")]
+#[arcane(import_intrinsics)]
+fn rmsnormrow_neon(_token: NeonToken, row: &[f32], out: &mut [f32], weight: &[f32], eps: f32) {
+    let n = row.len();
+    let (chunks, tail) = row.as_chunks::<4>();
+    let (wchunks, _) = weight.as_chunks::<4>();
+    let mut acc = vdupq_n_f32(0.0);
+    for x in chunks {
+        let xv = vld1q_f32(x);
+        acc = vfmaq_f32(acc, xv, xv);
+    }
+    let mut sumsq = vaddvq_f32(acc);
+    for &x in tail {
+        sumsq += x * x;
+    }
+    let inv = 1.0 / (sumsq / n as f32 + eps).sqrt();
+    let invv = vdupq_n_f32(inv);
+    let (ochunks, _) = out.as_chunks_mut::<4>();
+    for (o, (&x, &w)) in ochunks.iter_mut().zip(chunks.iter().zip(wchunks.iter())) {
+        let xv = vld1q_f32(&x);
+        let wv = vld1q_f32(&w);
+        vst1q_f32(o, vmulq_f32(vmulq_f32(xv, invv), wv));
+    }
+    for i in n - tail.len()..n {
+        out[i] = row[i] * inv * weight[i];
+    }
+}
+
+/// RMS-normalizes one `row` on the scalar tier.
+fn rmsnormrow_scalar(_token: ScalarToken, row: &[f32], out: &mut [f32], weight: &[f32], eps: f32) {
+    let n = row.len();
+    let mut sumsq = 0.0_f32;
+    for &x in row {
+        sumsq += x * x;
+    }
+    let inv = 1.0 / (sumsq / n as f32 + eps).sqrt();
+    for i in 0..n {
         out[i] = row[i] * inv * weight[i];
     }
 }
