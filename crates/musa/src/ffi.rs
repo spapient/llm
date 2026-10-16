@@ -71,17 +71,17 @@ unsafe extern "C" {
     /// Fills `device` with the `ordinal`-th device.
     fn muDeviceGet(device: *mut mudevice, ordinal: i32) -> muresult;
     /// Creates a context for `device`.
-    fn muCtxCreate(context: *mut mucontext, flags: u32, device: mudevice) -> muresult;
+    fn muCtxCreate_v2(context: *mut mucontext, flags: u32, device: mudevice) -> muresult;
     /// Blocks until every preceding operation on `context` completes.
     fn muCtxSynchronize(context: mucontext) -> muresult;
     /// Frees a device allocation.
-    fn muMemFree(mem: mudevptr) -> muresult;
+    fn muMemFree_v2(mem: mudevptr) -> muresult;
     /// Allocates `bytesize` device bytes into `mem`.
-    fn muMemAlloc(mem: *mut mudevptr, bytesize: usize) -> muresult;
+    fn muMemAlloc_v2(mem: *mut mudevptr, bytesize: usize) -> muresult;
     /// Copies `count` bytes from host `src` to device `dst`.
-    fn muMemcpyHtoD(dst: mudevptr, src: *const core::ffi::c_void, count: usize) -> muresult;
+    fn muMemcpyHtoD_v2(dst: mudevptr, src: *const core::ffi::c_void, count: usize) -> muresult;
     /// Copies `count` bytes from device `src` to host `dst`.
-    fn muMemcpyDtoH(dst: *mut core::ffi::c_void, src: mudevptr, count: usize) -> muresult;
+    fn muMemcpyDtoH_v2(dst: *mut core::ffi::c_void, src: mudevptr, count: usize) -> muresult;
     /// Loads the binary fatbin `data` into `module`.
     fn muModuleLoadData(module: *mut mumodule, data: *const core::ffi::c_void) -> muresult;
     /// Resolves `name` in `module` into `function`.
