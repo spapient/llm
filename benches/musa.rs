@@ -75,7 +75,7 @@ mod linux {
             "256",
             MATMULDIM * MATMULDIM,
             || cpuexec.matmul(&lv, &rv).unwrap(),
-            || cudaexec.matmul(&lv, &rv).unwrap(),
+            || musaexec.matmul(&lv, &rv).unwrap(),
         );
         group.finish();
     }
@@ -91,7 +91,7 @@ mod linux {
             "8x256",
             lhs.getlen(),
             || cpuexec.matmul(&lv, &rv).unwrap(),
-            || cudaexec.matmul(&lv, &rv).unwrap(),
+            || musaexec.matmul(&lv, &rv).unwrap(),
         );
         group.finish();
     }
@@ -109,21 +109,21 @@ mod linux {
             "silu",
             ELEMENTWISE,
             || cpuexec.silu(&v).unwrap(),
-            || cudaexec.silu(&v).unwrap(),
+            || musaexec.silu(&v).unwrap(),
         );
         pair(
             &mut group,
             "add",
             ELEMENTWISE,
             || cpuexec.add(&v, &w).unwrap(),
-            || cudaexec.add(&v, &w).unwrap(),
+            || musaexec.add(&v, &w).unwrap(),
         );
         pair(
             &mut group,
             "mul",
             ELEMENTWISE,
             || cpuexec.mul(&v, &w).unwrap(),
-            || cudaexec.mul(&v, &w).unwrap(),
+            || musaexec.mul(&v, &w).unwrap(),
         );
         group.finish();
     }
@@ -139,7 +139,7 @@ mod linux {
             "rows512cols4096",
             SOFTMAXROWS * SOFTMAXCOLS,
             || cpuexec.softmax(&v).unwrap(),
-            || cudaexec.softmax(&v).unwrap(),
+            || musaexec.softmax(&v).unwrap(),
         );
         group.finish();
     }
@@ -155,7 +155,7 @@ mod linux {
             "rows512cols4096",
             NORMROWS * NORMCOLS,
             || cpuexec.rmsnorm(&xv, &wv, EPS).unwrap(),
-            || cudaexec.rmsnorm(&xv, &wv, EPS).unwrap(),
+            || musaexec.rmsnorm(&xv, &wv, EPS).unwrap(),
         );
         group.finish();
     }
@@ -171,7 +171,7 @@ mod linux {
             "seq128heads8dim64",
             SEQLEN * HEADS * HEADDIM,
             || cpuexec.rope(&v, HEADS, BASE).unwrap(),
-            || cudaexec.rope(&v, HEADS, BASE).unwrap(),
+            || musaexec.rope(&v, HEADS, BASE).unwrap(),
         );
         group.finish();
     }
@@ -187,7 +187,7 @@ mod linux {
             "gather128",
             GATHER * EMBEDDIM,
             || cpuexec.embedding(&v, &indices).unwrap(),
-            || cudaexec.embedding(&v, &indices).unwrap(),
+            || musaexec.embedding(&v, &indices).unwrap(),
         );
         group.finish();
     }
@@ -208,7 +208,7 @@ mod linux {
                     .unwrap()
             },
             || {
-                cudaexec
+                musaexec
                     .attention(&qv, &kv, &vv, HEADS, HEADS, true)
                     .unwrap()
             },
@@ -216,7 +216,7 @@ mod linux {
         group.finish();
     }
 
-    fn scan(c: &mut Criterion) {
+    fn scan(criterion: &mut Criterion) {
         let (input, init, a, b, c, skip) = scaninput(256).unwrap();
         let (iv, nv, av, bv, cv, sv) = (
             input.getview(),
@@ -228,13 +228,13 @@ mod linux {
         );
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/scan");
+        let mut group = criterion.benchmark_group("musa/scan");
         pair(
             &mut group,
             "n256d64state4",
             input.getlen(),
-            || cpuexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap(),
-            || musaexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap(),
+            || cpuexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap().0,
+            || musaexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap().0,
         );
         group.finish();
     }
