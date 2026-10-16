@@ -286,6 +286,216 @@ fn attention_single_position_returns_the_value() {
     assertallclose(out.getdata(), &[3.0, 4.0], 1.0e-6, 1.0e-6);
 }
 
+/// Scalar attention reference restating the shape semantics `cpuattention`
+/// documents: position `s` attends to `t <= offset + s` under the causal mask
+/// (or to every key without it), and the max subtraction is the stable one the
+/// kernel shares. Kept local because only this suite needs it, so the
+/// expectation is not derived from the code under test.
+fn attend(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    qseq: usize,
+    heads: usize,
+    kvheads: usize,
+    headdim: usize,
+    causal: bool,
+) -> Vec<f32> {
+    let stride = heads * headdim;
+    let kstride = kvheads * headdim;
+    let group = heads / kvheads;
+    let scale = 1.0 / (headdim as f32).sqrt();
+    let kvseq = k.len() / kstride;
+    let offset = kvseq - qseq;
+    let mut out = vec![0.0_f32; qseq * stride];
+    for position in 0..qseq {
+        for head in 0..heads {
+            let kvhead = head / group;
+            let qrow =
+                &q[position * stride + head * headdim..position * stride + (head + 1) * headdim];
+            let tmax = if causal {
+                (position + offset + 1).min(kvseq)
+            } else {
+                kvseq
+            };
+            let mut scores = vec![0.0_f32; tmax];
+            let mut maxscore = f32::NEG_INFINITY;
+            for t in 0..tmax {
+                let krow = &k[t * kstride + kvhead * headdim..t * kstride + (kvhead + 1) * headdim];
+                let mut score = 0.0_f32;
+                for i in 0..headdim {
+                    score += qrow[i] * krow[i];
+                }
+                score *= scale;
+                scores[t] = score;
+                if score > maxscore {
+                    maxscore = score;
+                }
+            }
+            let mut denom = 0.0_f32;
+            for &score in &scores {
+                denom += (score - maxscore).exp();
+            }
+            for (t, &score) in scores.iter().enumerate() {
+                let vrow = &v[t * kstride + kvhead * headdim..t * kstride + (kvhead + 1) * headdim];
+                let weight = (score - maxscore).exp() / denom;
+                for i in 0..headdim {
+                    out[position * stride + head * headdim + i] += weight * vrow[i];
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The blocked kernel matches the scalar reference for a causal grouped-query
+/// call that spans several key tiles, query blocks, and partial boundary rows:
+/// the sequence length crosses the 256-key tile boundary twice, the head
+/// dimension is not a multiple of four, and two query heads share each key
+/// head.
+#[test]
+fn attention_blocked_matches_the_scalar_reference() {
+    let heads = 4usize;
+    let kvheads = 2usize;
+    let headdim = 6usize;
+    let seq = 600usize;
+    let q = build(
+        vec![seq, heads * headdim],
+        (0..seq * heads * headdim)
+            .map(|i| (i as f32 * 0.13).sin())
+            .collect(),
+    );
+    let k = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.17).cos())
+            .collect(),
+    );
+    let v = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.19).sin())
+            .collect(),
+    );
+    let out = cpuattention
+        .apply(
+            &q.getview(),
+            &k.getview(),
+            &v.getview(),
+            heads,
+            kvheads,
+            true,
+        )
+        .unwrap();
+    let want = attend(
+        q.getdata(),
+        k.getdata(),
+        v.getdata(),
+        seq,
+        heads,
+        kvheads,
+        headdim,
+        true,
+    );
+    assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
+}
+
+/// The blocked kernel matches the scalar reference without the causal mask.
+#[test]
+fn attention_blocked_non_causal_matches_the_scalar_reference() {
+    let heads = 2usize;
+    let kvheads = 1usize;
+    let headdim = 4usize;
+    let seq = 100usize;
+    let q = build(
+        vec![seq, heads * headdim],
+        (0..seq * heads * headdim)
+            .map(|i| (i as f32 * 0.23).sin())
+            .collect(),
+    );
+    let k = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.29).cos())
+            .collect(),
+    );
+    let v = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.31).sin())
+            .collect(),
+    );
+    let out = cpuattention
+        .apply(
+            &q.getview(),
+            &k.getview(),
+            &v.getview(),
+            heads,
+            kvheads,
+            false,
+        )
+        .unwrap();
+    let want = attend(
+        q.getdata(),
+        k.getdata(),
+        v.getdata(),
+        seq,
+        heads,
+        kvheads,
+        headdim,
+        false,
+    );
+    assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
+}
+
+/// The blocked kernel is bitwise deterministic for fixed inputs.
+#[test]
+fn attention_blocked_is_deterministic() {
+    let heads = 2usize;
+    let kvheads = 1usize;
+    let headdim = 4usize;
+    let seq = 300usize;
+    let q = build(
+        vec![seq, heads * headdim],
+        (0..seq * heads * headdim)
+            .map(|i| (i as f32 * 0.37).sin())
+            .collect(),
+    );
+    let k = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.41).cos())
+            .collect(),
+    );
+    let v = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.43).sin())
+            .collect(),
+    );
+    let first = cpuattention
+        .apply(
+            &q.getview(),
+            &k.getview(),
+            &v.getview(),
+            heads,
+            kvheads,
+            true,
+        )
+        .unwrap();
+    let second = cpuattention
+        .apply(
+            &q.getview(),
+            &k.getview(),
+            &v.getview(),
+            heads,
+            kvheads,
+            true,
+        )
+        .unwrap();
+    assert_eq!(first.getdata(), second.getdata());
+}
+
 #[test]
 fn executor_dispatches_binary_weighted_and_gather() {
     let exec = cpuexecutor::new(wide());
