@@ -273,7 +273,7 @@ pub(crate) fn dispatch(
                 });
             }
             let mut context: mucontext = 0;
-            if muCtxCreate(&mut context, 0, device) != MUSA_SUCCESS {
+            if muCtxCreate_v2(&mut context, 0, device) != MUSA_SUCCESS {
                 return Err(musaerror::device {
                     message: "muCtxCreate failed".into(),
                 });
@@ -363,7 +363,7 @@ pub(crate) fn dispatch(
                 continue;
             }
             let mut mem: mudevptr = 0;
-            if muMemAlloc(&mut mem, *size) != MUSA_SUCCESS {
+            if muMemAlloc_v2(&mut mem, *size) != MUSA_SUCCESS {
                 return Err(musaerror::transfer {
                     message: format!("muMemAlloc failed for {size} bytes"),
                 });
@@ -374,7 +374,7 @@ pub(crate) fn dispatch(
         for (index, slot) in buffers.iter().enumerate() {
             match *slot {
                 buf::host(data) => {
-                    if muMemcpyHtoD(owned[index], data.as_ptr().cast(), sizes[index])
+                    if muMemcpyHtoD_v2(owned[index], data.as_ptr().cast(), sizes[index])
                         != MUSA_SUCCESS
                     {
                         return Err(musaerror::transfer {
@@ -384,7 +384,7 @@ pub(crate) fn dispatch(
                     uploads.push(index);
                 }
                 buf::hostu64(data) => {
-                    if muMemcpyHtoD(owned[index], data.as_ptr().cast(), sizes[index])
+                    if muMemcpyHtoD_v2(owned[index], data.as_ptr().cast(), sizes[index])
                         != MUSA_SUCCESS
                     {
                         return Err(musaerror::transfer {
@@ -443,7 +443,8 @@ pub(crate) fn dispatch(
                 out.try_reserve_exact(count)
                     .map_err(|_| musaerror::sizeoverflow)?;
                 out.resize(count, 0.0_f32);
-                if muMemcpyDtoH(out.as_mut_ptr().cast(), owned[index], sizes[index]) != MUSA_SUCCESS
+                if muMemcpyDtoH_v2(out.as_mut_ptr().cast(), owned[index], sizes[index])
+                    != MUSA_SUCCESS
                 {
                     return Err(musaerror::transfer {
                         message: "muMemcpyDtoH failed for output".into(),
@@ -455,14 +456,14 @@ pub(crate) fn dispatch(
 
         // --- free this dispatch's temporaries ------------------------------
         for index in uploads {
-            if muMemFree(owned[index]) != MUSA_SUCCESS {
+            if muMemFree_v2(owned[index]) != MUSA_SUCCESS {
                 return Err(musaerror::transfer {
                     message: "muMemFree failed for uploaded operand".into(),
                 });
             }
         }
         for (index, slot) in buffers.iter().enumerate() {
-            if matches!(*slot, buf::out(_)) && muMemFree(owned[index]) != MUSA_SUCCESS {
+            if matches!(*slot, buf::out(_)) && muMemFree_v2(owned[index]) != MUSA_SUCCESS {
                 return Err(musaerror::transfer {
                     message: "muMemFree failed for output".into(),
                 });
