@@ -446,6 +446,22 @@ executor 路径与裸内核路径在运行间噪声内一致（噪声带准则�
 
 **rmsnorm SIMD 前后对比（2026-10-16，同机同工具链）。** `rmsnormrow` 的平方和改为 `fearless_simd`（NEON）向量化（4 累加器 + fused `mul_add` + `reduce_sum` 水平规约），缩放趟改为向量乘：`kernel/rmsnorm/rows512cols4096` 由 1.1266 ms → 0.7285 ms（1.55×）。平方和重结合使结果对标量参照「容差内一致而非逐位」，归约顺序仅依赖行宽、与 batch 无关（保住逐位确定性）。`weighted_kernel_matches_the_scalar_reference` 全绿。
 
+**新尺度基准与基线（2026-10-16，M5 Pro / Mac17,9，rustc 1.99.0，release `lto=thin` `codegen-units=1`，criterion 0.7.0，matmul prefill sample 10、decode sample 20、attention prefill sample 10，优化前内核）。** 既有 256² 基准的右操作数（256 KiB）整体驻留 L2，无法暴露按行块重扫右操作数的流量放大；新增三组尺度基准：prefill 2048² 方阵、decode 1×4096×4096、attention causal（heads=8、headdim=64）prefill 512/2048 与 decode 4096。基线（中位数）：
+
+| Benchmark | Time (median) |
+| --- | --- |
+| matmul/scale/prefill2048 | 1.3111 s |
+| matmul/scale/decode1x4096x4096 | 14.785 ms |
+| attention/scale/prefill512 | 17.473 ms |
+| attention/scale/decode4096 | 601.15 µs |
+| attention/scale/prefill2048 | 281.24 ms |
+
+这些数字是基线；不声明任何改进（VF5）。
+
+**matmul 分块打包前后对比（2026-10-16，同机同工具链同基准）。** `m >= 32` 改走 k 分块（512）× n 面板（256）打包路径：右操作数面板连续化后驻留打包缓冲、被全部行块复用，消除每 8 行重扫一次右操作数的放大；`m < 32`（decode）保持直连微内核，其单次遍历已最优，打包只会多一次拷贝。prefill2048 由 1.3111 s → 412.48 ms（**3.18×**）；decode 14.785 ms → 14.446 ms（0.98×，设计上不变，噪带内）。每输出元素的 FMA 顺序与直连路径一致（p 升序、分块顺序执行），逐位确定性保持；`cpucontract` 新增 4 个边界测试（跨 chunk/面板与尾部、路径切换、batch、确定性）与 `kvcacheforward`/`modelforward`/`submissioncontract` 全绿；`checkunsafe.sh` 零新增 unsafe。
+
+**attention 分块在线 softmax 前后对比（2026-10-16，同机同工具链同基准）。** 32 行查询块 × 256 key tile、在线 max/sum 重缩放（不物化分数矩阵）、值行按 key 顺序行主累加（向量化 `mul_add`）、GQA 组内 head 背靠背共享 KV tile；每行算术序列只依赖自身参与 key 范围与固定 tile 边界，与查询宽度无关 → `incrementalattention`/`kvcacheforward` 的逐位一致性保持。prefill512 由 17.473 ms → 16.000 ms（1.09×）；decode4096 由 601.15 µs → 520.20 µs（1.16×）；prefill2048 由 281.24 ms → 248.91 ms（1.13×，该尺度 16.7M 次 `expf` 主导，内存收益被摊薄——并行化属后续阶段）。`cpucontract` 新增 3 个参考测试（跨 tile 边界 GQA、非因果、确定性），全量 `tests/it` 976 测试通过。
+
 **softmax SIMD 评估（2026-10-16）：判定不引入。** `softmaxrow` 的 max 与缩放趟经 LLVM 自动向量化已是 4 宽 NEON，而 `exp` 趟占主导且 `fearless_simd` 无向量化 `exp`（Apple Silicon 的系统 libm `expf` 已 NEON 加速，自写多项式难更快）。实测仅向量化 max/缩放反而回退 6.5%（2.4593→2.6182 ms），已回退；softmax 保持标量 `f32::exp`，未引入数值近似。
 
 内核调用契约的验证：`lib`、`tensor`、`api` 以其文档化契约实现，仓库根 `tensorcontract`、`apicontract`、`crosscrate` 套件通过（证据等级 E1）。
