@@ -595,6 +595,59 @@ pub(crate) fn attention(
     read(&dout, queryelements)
 }
 
+/// Runs the serial per-channel scan kernel, returning the `[n, d]` output and
+/// the `[d, N]` final state.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scan(
+    cache: &cache,
+    input: &[f32],
+    init: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    skip: &[f32],
+    n: usize,
+    d: usize,
+    statewidth: usize,
+) -> Result<(Vec<f32>, Vec<f32>), metalerror> {
+    if n == 0 {
+        return Ok((Vec::new(), init.to_vec()));
+    }
+    let device = cache.device()?;
+    let dinput = alloc(&device, core::mem::size_of_val(input))?;
+    let da = alloc(&device, core::mem::size_of_val(a))?;
+    let db = alloc(&device, core::mem::size_of_val(b))?;
+    let dc = alloc(&device, core::mem::size_of_val(c))?;
+    let dskip = alloc(&device, core::mem::size_of_val(skip))?;
+    let dstate = alloc(&device, core::mem::size_of_val(init))?;
+    let outbytes = n
+        .checked_mul(d)
+        .and_then(|elements| elements.checked_mul(core::mem::size_of::<f32>()))
+        .ok_or(metalerror::sizeoverflow)?;
+    let dout = alloc(&device, outbytes)?;
+    write(&dinput, input);
+    write(&da, a);
+    write(&db, b);
+    write(&dc, c);
+    write(&dskip, skip);
+    write(&dstate, init);
+    let buffers: [&ProtocolObject<dyn MTLBuffer>; 7] =
+        [&dinput, &da, &db, &dc, &dskip, &dstate, &dout];
+    let params = [asu32(n)?, asu32(d)?, asu32(statewidth)?];
+    execute(
+        cache,
+        source::SCANMSL,
+        source::SCANENTRY,
+        &buffers,
+        &params,
+        flatgrid(d)?,
+        flatthreads(d),
+    )?;
+    let out = read(&dout, n * d)?;
+    let state = read(&dstate, d * statewidth)?;
+    Ok((out, state))
+}
+
 /// Compiles `source` and builds the compute pipeline for `entry`.
 fn compile(
     device: &ProtocolObject<dyn MTLDevice>,

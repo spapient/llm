@@ -93,6 +93,13 @@ pub(crate) const ATTENTIONCACHEDMSL: &str = include_str!("../kernels/attention_c
 /// The stable symbol name of the kernel in [`ATTENTIONCACHEDMSL`].
 pub(crate) const ATTENTIONCACHEDENTRY: &str = "attention_cached";
 
+/// Metal Shading Language source of the `f32` semigroup scan kernel
+/// (`kernels/scan.metal`).
+pub(crate) const SCANMSL: &str = include_str!("../kernels/scan.metal");
+
+/// The stable symbol name of the kernel in [`SCANMSL`].
+pub(crate) const SCANENTRY: &str = "scan";
+
 /// The threadgroup width of the attention kernel.
 ///
 /// The kernel's reduction tree and shared-memory partition are both sized by
