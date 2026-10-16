@@ -1,6 +1,6 @@
 # tokenizer 深度分析与优化执行计划
 
-- 状态：**优化计划（已完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 全管线类型分发、T2+T3、T4、T5 已实施（见 §12.6–§12.8、§12.12）；P1/T10 与 T12 已实施（见 §12.10）；**D3 逐位对齐达成——7 个真实模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）encode+decode 全对齐（见 §12.11–§12.13）**。Phase 2 S1（整数键合并表 + pair 打包 64 位）、S2（tiktoken/rankmerge 去字节键）与 S3（scratch 复用）已实施（见 §12.16–§12.18）；S4–S5（batch、安全 SIMD）待评估。
+- 状态：**优化计划（已完成）**；Phase 0 基线已建立；P1/T6（BPE 合并重写）、T8（热路径去分配）、T7（per-encode 词缓存）与 T9（special 前缀匹配去分配）已实施（见 §12.4、§12.5、§12.9）；P0/T1 全管线类型分发、T2+T3、T4、T5 已实施（见 §12.6–§12.8、§12.12）；P1/T10 与 T12 已实施（见 §12.10）；**D3 逐位对齐达成——7 个真实模型（GPT-2/Llama2/Llama3/Qwen3/DeepSeek/Gemma/o200k）encode+decode 全对齐（见 §12.11–§12.13）**。Phase 2 S1（整数键合并表 + pair 打包 64 位）、S2（tiktoken/rankmerge 去字节键）、S3（scratch 复用）、T7（per-encode 词缓存）、S4（batch）与 S5（const 表 + SIMD 评估）已实施（见 §12.16–§12.21）。
 - 仓库：`llm` workspace（`crates/tokenizer`）
 - 基线分支：`main`
 - 计划日期：2026-10-16
@@ -483,3 +483,42 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 2. 无合并词仍走完整链表+堆建置（每 pre-token O(len)），是 `applyids`/`rankmerge` 的既有开销，非 S3 目标，属潜在后续优化。
 3. 堆步未做 `(rank,left)→u64` 打包（保留 `left: usize`，规避 >2³² 输入的 D4 guard 复杂度）。
 4. **环境**：并发会话在 checkpoint 引入 `mmap-guard` 依赖但未 vendor，`cargo check --offline` 一度解析失败；已 `cargo vendor vendor/ --versioned-dirs` 从缓存补齐（`vendor/mmap-guard-0.2.2`）。
+
+### 12.19 T7 词缓存复实（2026-10-16）
+
+§12.9 曾记录"已实施"的 per-encode 词缓存实际不在代码中（§12.18 发现），此处重新落地：`mergescratch` 增 `wordcache: HashMap<String, Vec<tokenid>>`，`encode_into`/`encodespecial_into` 入口 `clear`，`encodeplainsegment` 对每个 pre-token 先查后插（键为 pre-token `String`，直接 move 进表、无克隆）；无 pre-tokenizer 的模型（单一 pre-token，无重复可能）走 `encodepretoken` 直接编码、不缓存。
+
+**验证**：`tokenizerunits` 67 passed、`tokenizergolden` 4 passed（7 模型逐位不变）、`tokens` 21 passed；clippy `-D warnings` + fmt 通过。
+
+**基准（同环境，mean）**：
+
+| 基准 | T7 前（§12.18） | T7 后 | 变化 |
+| --- | --- | --- | --- |
+| encode/bytelevel/4096 | 292.86 µs | 187.94 µs | −36%（≈1.56×） |
+| encode/bytefallback/4096 | 186.78 µs | 188.86 µs | +1%（噪声，无 pre-tokenizer 走直通） |
+
+**诚实边界**：词缓存只省"合并"，不省"预分词"。`encode/bytelevel/4096` 剩余 187.94 µs 几乎全在 `gpt2split`（O(n) 字符分类）与 `bytemap`（每 pre-token 一次 `bytetounicode()` 重建 256 表 + 逐字节映射）——后者是 S5 的预分词优化目标（含 `bytetounicode` 改静态表 + 安全 SIMD）。旧 §12.9 的 15.88 µs 是带缓存且预分词已优化的状态。
+
+### 12.20 S4 batch（2026-10-16）
+
+新增 `tokenizer::encode_batch(&[&str], &mut mergescratch, &mut Vec<Vec<tokenid>>)`：一次清空词缓存，逐文本编码并追加一条 id 序列；词缓存在整批内共享，后文命中前文已见的 pre-token。`encode_into` 抽出私有 `encode_text`（不清理缓存）供两者复用。
+
+**验证**：`tokenizerunits` 68 passed（新增 `encode_batch_matches_individual_encodes`，batch ≡ 逐条 encode）；`tokenizergolden` 4 passed；clippy `-D warnings` + fmt 通过。
+
+**基准（同环境，mean）**：`encode_batch/bytelevel/8x512` = 186.09 µs；单条 `encode/bytelevel/512` = 24.87 µs（8 条独立约 199 µs）。共享缓存约省 7%——**再次佐证瓶颈在预分词而非合并**：预分词 `gpt2split`+`bytemap` 逐文本重跑、不缓存，词缓存省不掉。
+
+### 12.21 S5：const 表（LazyLock）+ 安全 SIMD 评估（2026-10-16）
+
+**① const 表（决定性一击）**：`bytetounicode()`/`unicodetobyte()` 由"每次调用重建 256/324 表"改为 `LazyLock` 静态表（`std::sync::LazyLock`，首次使用算一次）。此前 `bytemap` 每 pre-token 重建一次 `bytetounicode()` 表，是 `encode/bytelevel` 的主开销。返回类型由 `[char;256]`→`&'static [char;256]`、`[Option<u8>;324]`→`&'static [Option<u8>;324]`（全部调用点按索引/迭代使用，源码兼容）。**零新依赖、零 unsafe。**
+
+**基准（同环境，mean）**：
+
+| 基准 | S5 前（§12.19/§12.20） | S5 后 | 加速比 |
+| --- | --- | --- | --- |
+| encode/bytelevel/512 | 24.87 µs | 5.12 µs | ≈ 4.9× |
+| encode/bytelevel/4096 | 187.94 µs | 27.97 µs | ≈ 6.7× |
+| encode_batch/bytelevel/8x512 | 186.09 µs | 29.90 µs | ≈ 6.2× |
+
+`encode/bytelevel/4096` 现 27.97 µs（≈6.8 ns/字符），逼近旧 §12.9 带缓存记录的 15.88 µs。
+
+**② 安全 SIMD 评估——暂不引入**：剩余开销为 `gpt2split`（逐 `char` Unicode 分类 + 收缩词匹配）与 `bytemap`（byte→char 表查 + String 收集）。SIMD 选项：`fearless_simd`/`archmage`（安全、需新依赖 + vendor）或 `#[target_feature]`+feature token（安全、但 ARM NEON 的 byte→u32 gather 需多段 `vtbx` + 加宽，复杂且 `char` 级 Unicode 分类 SIMD 价值低）。按 AGENTS.md §8「没有清晰的正确性与测量计划，不得引入 SIMD」与 §3.2「最小依赖」：剩余 ~6.8 ns/字符收益已低，SIMD 至多对其中表查部分再 ~1.5–2×，不抵新依赖/复杂度，故**判定暂不值得**；如需可在后续单独立项（fearless_simd 优先，unsafe 封在依赖内）。

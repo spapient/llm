@@ -6,14 +6,10 @@
 //! This module owns those two fixed pieces as pure functions; wiring them into
 //! `encode`/`decode` is the caller's concern.
 
-/// The GPT-2 byte-to-unicode alphabet: `table[byte]` is the Unicode character
-/// representing `byte`.
-///
-/// The 188 printable bytes `0x21..=0x7E`, `0xA1..=0xAC`, and `0xAE..=0xFF` map
-/// to themselves; the remaining 68 bytes map to `U+0100..=U+0143` in ascending
-/// byte order. The mapping is a bijection.
-#[must_use]
-pub fn bytetounicode() -> [char; 256] {
+use std::sync::LazyLock;
+
+/// The GPT-2 byte-to-unicode alphabet, computed once on first use.
+static BYTEALPHABET: LazyLock<[char; 256]> = LazyLock::new(|| {
     let mut table = ['\0'; 256];
     let mut next = 0x0100u32;
     for (byte, slot) in table.iter_mut().enumerate() {
@@ -28,6 +24,17 @@ pub fn bytetounicode() -> [char; 256] {
         *slot = char::from_u32(codepoint).unwrap_or('\u{fffd}');
     }
     table
+});
+
+/// The GPT-2 byte-to-unicode alphabet: `table[byte]` is the Unicode character
+/// representing `byte`.
+///
+/// The 188 printable bytes `0x21..=0x7E`, `0xA1..=0xAC`, and `0xAE..=0xFF` map
+/// to themselves; the remaining 68 bytes map to `U+0100..=U+0143` in ascending
+/// byte order. The mapping is a bijection.
+#[must_use]
+pub fn bytetounicode() -> &'static [char; 256] {
+    &BYTEALPHABET
 }
 
 /// Reports whether `byte` maps to itself rather than a private-use codepoint.
@@ -35,15 +42,20 @@ fn directbyte(byte: usize) -> bool {
     (33..=126).contains(&byte) || (161..=172).contains(&byte) || (174..=255).contains(&byte)
 }
 
-/// The inverse of [`bytetounicode`]: `table[codepoint]` is the byte the
-/// codepoint represents, for codepoints up to `U+0143`.
-#[must_use]
-pub fn unicodetobyte() -> [Option<u8>; 324] {
+/// The inverse of [`bytetounicode`], computed once on first use.
+static UNICODEBYTES: LazyLock<[Option<u8>; 324]> = LazyLock::new(|| {
     let mut table = [None; 324];
-    for (byte, character) in bytetounicode().iter().enumerate() {
+    for (byte, character) in BYTEALPHABET.iter().enumerate() {
         table[*character as usize] = Some(byte as u8);
     }
     table
+});
+
+/// The inverse of [`bytetounicode`]: `table[codepoint]` is the byte the
+/// codepoint represents, for codepoints up to `U+0143`.
+#[must_use]
+pub fn unicodetobyte() -> &'static [Option<u8>; 324] {
+    &UNICODEBYTES
 }
 
 /// Splits `text` with the GPT-2 pre-tokenizer regex

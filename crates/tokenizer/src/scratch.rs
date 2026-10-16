@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 use lib::tokenid;
 
@@ -40,14 +40,16 @@ pub(crate) struct mergework {
 }
 
 /// Reusable working buffers for tokenizer encoding. Owned by the caller so
-/// repeated encodes reuse the merge-loop buffers, the run accumulator, and the
-/// character-offset table instead of reallocating per call. Buffers only grow
-/// to the largest input seen and are never shrunk.
+/// repeated encodes reuse the merge-loop buffers, the run accumulator, the
+/// character-offset table, and the per-encode word cache instead of
+/// reallocating per call. Buffers only grow to the largest input seen and are
+/// never shrunk.
 #[derive(Default)]
 pub struct mergescratch {
     pub(crate) merge: mergework,
     pub(crate) run: Vec<tokenid>,
     pub(crate) charstart: Vec<usize>,
+    pub(crate) wordcache: HashMap<String, Vec<tokenid>>,
 }
 
 /// Resets `prev`/`next`/`alive` to the initial linked list of `count` symbols.

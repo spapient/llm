@@ -227,6 +227,40 @@ impl tokenizer {
         scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
+        scratch.wordcache.clear();
+        self.encode_text(text, scratch, out)
+    }
+
+    /// Encodes a batch of texts, sharing one scratch and one word cache so a
+    /// pre-token seen in any earlier text of the batch is reused in later
+    /// texts. Appends one token-id sequence per input text to `out`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::encode_into`] for any text in the
+    /// batch.
+    pub fn encode_batch(
+        &self,
+        texts: &[&str],
+        scratch: &mut mergescratch,
+        out: &mut Vec<Vec<tokenid>>,
+    ) -> Result<(), tokenizererror> {
+        scratch.wordcache.clear();
+        for text in texts {
+            let mut ids = Vec::new();
+            self.encode_text(text, scratch, &mut ids)?;
+            out.push(ids);
+        }
+        Ok(())
+    }
+
+    /// Encodes one non-empty text without clearing the word cache.
+    fn encode_text(
+        &self,
+        text: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
         if text.is_empty() {
             return Ok(());
         }
@@ -261,6 +295,7 @@ impl tokenizer {
         scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
+        scratch.wordcache.clear();
         let mut segment = String::new();
         let mut index = 0;
         while index < text.len() {
@@ -302,6 +337,10 @@ impl tokenizer {
     }
 
     /// Encodes one non-special text segment through the pre-tokenizer pipeline.
+    ///
+    /// When a pre-tokenizer is installed, a repeated pre-token within the same
+    /// encode hits the per-encode word cache in `scratch`, so each distinct
+    /// pre-token is merged only once.
     fn encodeplainsegment(
         &self,
         segment: &str,
@@ -310,16 +349,33 @@ impl tokenizer {
     ) -> Result<(), tokenizererror> {
         let pretokens = match &self.pretokenizer {
             Some(pretokenizer) => pretokenizer.pretokenize(segment)?,
-            None => vec![segment.to_string()],
+            None => return self.encodepretoken(segment, scratch, out),
         };
-        for pretoken in &pretokens {
-            if self.ignoremerges {
-                self.rankmerge(pretoken, scratch, out)?;
-            } else {
-                self.encodebypairids(pretoken, scratch, out)?;
+        for pretoken in pretokens {
+            if let Some(ids) = scratch.wordcache.get(&pretoken) {
+                out.extend_from_slice(ids);
+                continue;
             }
+            let start = out.len();
+            self.encodepretoken(&pretoken, scratch, out)?;
+            let ids: Vec<tokenid> = out[start..].to_vec();
+            scratch.wordcache.insert(pretoken, ids);
         }
         Ok(())
+    }
+
+    /// Encodes one pre-token through the active merge path.
+    fn encodepretoken(
+        &self,
+        pretoken: &str,
+        scratch: &mut mergescratch,
+        out: &mut Vec<tokenid>,
+    ) -> Result<(), tokenizererror> {
+        if self.ignoremerges {
+            self.rankmerge(pretoken, scratch, out)
+        } else {
+            self.encodebypairids(pretoken, scratch, out)
+        }
     }
 
     /// Encodes a pre-token's characters through the integer-keyed merge table.

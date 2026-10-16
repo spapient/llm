@@ -202,6 +202,21 @@ fn encodebytelevel(c: &mut Criterion) {
     }
 }
 
+fn encodebytelevelbatch(c: &mut Criterion) {
+    let tok = byteleveltok();
+    let input = repeatphrase("the quick brown fox jumps over ", 512);
+    let texts = vec![input.as_str(); 8];
+    let mut scratch = mergescratch::default();
+    let mut out = Vec::new();
+    c.bench_function("tokenizer/encode_batch/bytelevel/8x512", |b| {
+        b.iter(|| {
+            out.clear();
+            tok.encode_batch(&texts, &mut scratch, &mut out).unwrap();
+            black_box(&out);
+        });
+    });
+}
+
 fn encodetiktoken(c: &mut Criterion) {
     let content = std::fs::read_to_string("tests/fixtures/o200k/o200k_base.tiktoken").unwrap();
     let specials = [
@@ -245,6 +260,7 @@ criterion_group!(
     encodebytefallback,
     decodebytefallback,
     encodebytelevel,
+    encodebytelevelbatch,
     encodetiktoken,
     encodetiktokeninto
 );

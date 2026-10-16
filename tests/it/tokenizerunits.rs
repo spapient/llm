@@ -318,6 +318,18 @@ mod engine {
     }
 
     #[test]
+    fn encode_batch_matches_individual_encodes() {
+        let tok = tokenizer::fromjson(SAMPLE).unwrap();
+        let texts = ["ab", "abc", "ab", "ac", ""];
+        let mut scratch = ::tokenizer::mergescratch::default();
+        let mut batched = Vec::new();
+        tok.encode_batch(&texts, &mut scratch, &mut batched)
+            .unwrap();
+        let expected: Vec<Vec<tokenid>> = texts.iter().map(|t| tok.encode(t).unwrap()).collect();
+        assert_eq!(batched, expected);
+    }
+
+    #[test]
     fn rejects_invalid_json() {
         assert!(matches!(
             tokenizer::fromjson("{"),
