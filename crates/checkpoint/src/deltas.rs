@@ -96,7 +96,14 @@ impl delta {
                 let (head, tail) = cursor.split_at_mut(span.len());
                 cursor = tail;
                 handles.push(scope.spawn(move || {
-                    deltablockspan(newblocksref, basehashesref, dataref, cumoffsetsref, span.clone(), head);
+                    deltablockspan(
+                        newblocksref,
+                        basehashesref,
+                        dataref,
+                        cumoffsetsref,
+                        span.clone(),
+                        head,
+                    );
                 }));
             }
             for handle in handles {
