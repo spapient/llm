@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::atomicwrite::writeatomic;
-use crate::blocks::chunk;
+use crate::blocks::{blockref, chunk};
 use crate::deltas::delta;
 use crate::error::checkpointerror;
 use crate::uformat::snapshot;
@@ -44,8 +44,73 @@ pub fn merge(base: &snapshot, delta: &delta) -> Result<snapshot, checkpointerror
         storedmap.insert(block.gethash(), block.getbytes());
     }
 
-    let mut data = Vec::new();
-    for block in delta.getblocks() {
+    let blocks = delta.getblocks();
+    let total: usize = blocks.iter().map(|b| b.getlen() as usize).sum();
+    let mut data = vec![0u8; total];
+
+    let nthreads = match std::thread::available_parallelism() {
+        Ok(n) => n.get().min(blocks.len()),
+        Err(_) => 1,
+    };
+    let mut spans = Vec::with_capacity(nthreads);
+    let mut start = 0usize;
+    for t in 0..nthreads {
+        let len = blocks.len() / nthreads + usize::from(t < blocks.len() % nthreads);
+        let end = start + len;
+        spans.push(start..end);
+        start = end;
+    }
+
+    let blocksref: &[blockref] = blocks;
+    let storedmapref: &HashMap<[u8; 16], &[u8]> = &storedmap;
+    let basemapref: &HashMap<[u8; 16], &[u8]> = &basemap;
+    std::thread::scope(|scope| {
+        let mut cursor: &mut [u8] = &mut data;
+        let mut handles = Vec::with_capacity(nthreads);
+        for span in spans {
+            let seglen: usize = blocksref[span.clone()]
+                .iter()
+                .map(|b| b.getlen() as usize)
+                .sum();
+            let (head, tail) = cursor.split_at_mut(seglen);
+            cursor = tail;
+            handles.push(scope.spawn(move || {
+                mergeblockspan(blocksref, storedmapref, basemapref, span, head)
+            }));
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    return Err(checkpointerror::invalidmanifest {
+                        reason: "merge worker panicked".to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    })?;
+
+    Ok(snapshot::fromparts(
+        delta.getversion(),
+        delta.gettensors().to_vec(),
+        data,
+    ))
+}
+
+/// Resolves one contiguous span of blocks from the delta or base and copies
+/// their bytes into `out`, which must hold exactly the span's combined length.
+fn mergeblockspan(
+    blocks: &[blockref],
+    storedmap: &HashMap<[u8; 16], &[u8]>,
+    basemap: &HashMap<[u8; 16], &[u8]>,
+    span: std::ops::Range<usize>,
+    out: &mut [u8],
+) -> Result<(), checkpointerror> {
+    let mut written = 0usize;
+    for position in span {
+        let block = &blocks[position];
         let bytes = if let Some(bytes) = storedmap.get(&block.gethash()) {
             bytes
         } else if let Some(bytes) = basemap.get(&block.gethash()) {
@@ -55,14 +120,11 @@ pub fn merge(base: &snapshot, delta: &delta) -> Result<snapshot, checkpointerror
                 hash: block.gethash(),
             });
         };
-        data.extend_from_slice(bytes);
+        let dst = &mut out[written..written + bytes.len()];
+        dst.copy_from_slice(bytes);
+        written += bytes.len();
     }
-
-    Ok(snapshot::fromparts(
-        delta.getversion(),
-        delta.gettensors().to_vec(),
-        data,
-    ))
+    Ok(())
 }
 
 /// Merges a delta file onto its base file, writing the full snapshot to
