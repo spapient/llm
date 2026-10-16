@@ -93,6 +93,10 @@ name = "checkpointload"
 harness = false
 
 [[bench]]
+name = "checkpoint_compress"
+harness = false
+
+[[bench]]
 name = "checkpoint"
 harness = false
 
