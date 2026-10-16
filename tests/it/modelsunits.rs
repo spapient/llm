@@ -290,6 +290,9 @@ mod registry {
         assert_eq!(a.getname(), "mamba");
         let c = llamaconfig::new(5, 4, 1, 1, 1, 8, 1.0e-5, 10_000.0, 8).unwrap();
         let w = llamaweights::random(&c, seed::new(1)).unwrap();
-        assert!(matches!(a.newmodel(c, w), Err(modelerror::invalidconfig { .. })));
+        assert!(matches!(
+            a.newmodel(c, w),
+            Err(modelerror::invalidconfig { .. })
+        ));
     }
 }

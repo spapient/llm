@@ -180,10 +180,7 @@ fn ssm_forward_matches_the_scalar_reference() {
     )
     .unwrap();
 
-    let input = build(
-        vec![n, d],
-        vec![1.0, 2.0, 0.5, -1.0, 3.0, 0.25, -0.5, 1.5],
-    );
+    let input = build(vec![n, d], vec![1.0, 2.0, 0.5, -1.0, 3.0, 0.25, -0.5, 1.5]);
     let state = build(vec![d, statewidth], vec![0.0, 1.0, 2.0, 0.5]);
     let (out, final_state) = layer.forward(&exec(), &input, &state).unwrap();
 
