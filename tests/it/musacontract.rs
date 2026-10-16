@@ -91,7 +91,7 @@ fn attend(
             let kvhead = head / group;
             let qrow =
                 &q[position * stride + head * headdim..position * stride + (head + 1) * headdim];
-            let tmax = (position + offset).min(kvseq);
+            let tmax = (position + offset + 1).min(kvseq);
             let mut scores = vec![0.0_f32; tmax];
             let mut maxscore = f32::NEG_INFINITY;
             for t in 0..tmax {
@@ -194,7 +194,13 @@ fn matmul_handles_a_leading_batch_dimension() {
     let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
     // The scalar reference is single-matrix; batch is per-slice concatenation.
     let mut want = reference::matmul(&lhs.getdata()[0..6], &rhs.getdata()[0..3], 2, 3, 1);
-    want.extend_from_slice(&reference::matmul(&lhs.getdata()[6..12], &rhs.getdata()[3..6], 2, 3, 1));
+    want.extend_from_slice(&reference::matmul(
+        &lhs.getdata()[6..12],
+        &rhs.getdata()[3..6],
+        2,
+        3,
+        1,
+    ));
     assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
 }
 

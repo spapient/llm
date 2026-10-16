@@ -781,8 +781,8 @@ pub(crate) fn attention_cached(
         &[
             buf::host(query),
             buf::host(keycached),
-            buf::host(keynew),
             buf::host(valuecached),
+            buf::host(keynew),
             buf::host(valuenew),
             buf::out(count),
         ],
@@ -828,8 +828,8 @@ pub(crate) fn scan_serial(
             buf::host(c),
             buf::host(skip),
             buf::host(init),
-            buf::out(statewidth.checked_mul(d).ok_or(musaerror::sizeoverflow)?),
             buf::out(outcount),
+            buf::out(statewidth.checked_mul(d).ok_or(musaerror::sizeoverflow)?),
         ],
         &[
             scalar::u32(n as u32),
@@ -840,8 +840,8 @@ pub(crate) fn scan_serial(
         block,
         0,
     )?;
-    let state = results.remove(0);
     let out = results.remove(0);
+    let state = results.remove(0);
     Ok((out, state))
 }
 
@@ -1002,8 +1002,8 @@ pub(crate) fn scan_cached(
             buf::host(c),
             buf::host(skip),
             buf::host(state),
-            buf::out(statewidth.checked_mul(d).ok_or(musaerror::sizeoverflow)?),
             buf::out(outcount),
+            buf::out(statewidth.checked_mul(d).ok_or(musaerror::sizeoverflow)?),
         ],
         &[
             scalar::u32(1),
@@ -1014,7 +1014,7 @@ pub(crate) fn scan_cached(
         (source::ELEMENTWISETILE, 1, 1),
         0,
     )?;
-    let newstate = results.remove(0);
     let out = results.remove(0);
+    let newstate = results.remove(0);
     Ok((out, newstate))
 }

@@ -6,7 +6,7 @@
 // state (in/out), out. Symbol: scan
 extern "C" __global__ void scan(const float* input, const float* a,
                                 const float* b, const float* c, const float* skip,
-                                float* state, float* out,
+                                float* state, float* out, float* out_state,
                                 unsigned n, unsigned d, unsigned N) {
     unsigned long long i = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= (unsigned long long)d) {
@@ -22,5 +22,8 @@ extern "C" __global__ void scan(const float* input, const float* a,
             acc += c[idx] * h;
         }
         out[t * d + i] = acc + skip[i] * x;
+    }
+    for (unsigned j = 0; j < N; ++j) {
+        out_state[i * N + j] = state[i * N + j];
     }
 }
