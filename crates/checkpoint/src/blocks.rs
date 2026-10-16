@@ -9,6 +9,9 @@ pub(crate) const CODECRAW: u8 = 0;
 /// Codec byte for an LZ4-compressed block.
 pub(crate) const CODECLZ4: u8 = 1;
 
+/// Codec byte for a Zstd-compressed block.
+pub(crate) const CODECZSTD: u8 = 2;
+
 /// The target average block size for content-defined chunking, in bytes.
 ///
 /// `256 * 1024 = 2^18`; the actual block lengths vary between [`MINBLOCK`] and
@@ -108,11 +111,14 @@ pub fn chunk(data: &[u8]) -> Vec<blockref> {
 ///
 /// The block is stored raw when compression does not shrink it.
 pub(crate) fn compressblock(bytes: &[u8]) -> (u8, Vec<u8>) {
-    let compressed = lz4_flex::compress_prepend_size(bytes);
-    if compressed.len() < bytes.len() {
-        (CODECLZ4, compressed)
-    } else {
-        (CODECRAW, bytes.to_vec())
+    let lz4 = lz4_flex::compress_prepend_size(bytes);
+    let mut best = (CODECRAW, bytes.to_vec());
+    if lz4.len() < best.1.len() {
+        best = (CODECLZ4, lz4);
+    }
+    match zstd::stream::encode_all(bytes, 3) {
+        Ok(zstd) if zstd.len() < best.1.len() => (CODECZSTD, zstd),
+        _ => best,
     }
 }
 
@@ -135,6 +141,11 @@ pub(crate) fn decompressblock<'a>(
             .map(Cow::Owned)
             .map_err(|_| checkpointerror::invalidmanifest {
                 reason: "lz4 decompression failed".to_string(),
+            }),
+        CODECZSTD => zstd::stream::decode_all(stored)
+            .map(Cow::Owned)
+            .map_err(|_| checkpointerror::invalidmanifest {
+                reason: "zstd decompression failed".to_string(),
             }),
         _ => Err(checkpointerror::invalidmanifest {
             reason: format!("unknown block codec {codec}"),

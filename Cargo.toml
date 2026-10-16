@@ -141,6 +141,8 @@ cudarc = "0.19"
 blake3 = "1"
 # 分块无损压缩：.u 格式的默认编解码（纯 Rust、无 unsafe、极速解压）。
 lz4_flex = "0.11"
+# 分块无损压缩第二编解码：更高压缩率的 Zstd（C 绑定，参照 GGUF 生态）。
+zstd = "0.13"
 # 半精度浮点元素类型（f16/bf16）：LLM 权重的现实存储 dtype。
 half = { version = "2", features = ["bytemuck"] }
 # 安全的字节↔类型重解释；unsafe 封装在依赖内部，workspace 保持零 unsafe。
