@@ -1,0 +1,1277 @@
+{
+  "meta": {
+    "model": "kimi-k2",
+    "source": "moonshotai/Kimi-K2-Instruct tiktoken.model (DeepSeek-style pat_str)",
+    "tokenizer_sha256": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103",
+    "tiktoken_version": "0.14.0",
+    "num_base_tokens": 163584,
+    "specials": [
+      {
+        "content": "[BOS]",
+        "id": 163584
+      },
+      {
+        "content": "[EOS]",
+        "id": 163585
+      },
+      {
+        "content": "<|im_end|>",
+        "id": 163586
+      },
+      {
+        "content": "<|im_user|>",
+        "id": 163587
+      },
+      {
+        "content": "<|im_assistant|>",
+        "id": 163588
+      },
+      {
+        "content": "<|reserved_token_163589|>",
+        "id": 163589
+      },
+      {
+        "content": "<|start_header_id|>",
+        "id": 163590
+      },
+      {
+        "content": "<|end_header_id|>",
+        "id": 163591
+      },
+      {
+        "content": "<|reserved_token_163592|>",
+        "id": 163592
+      },
+      {
+        "content": "[EOT]",
+        "id": 163593
+      },
+      {
+        "content": "<|im_system|>",
+        "id": 163594
+      },
+      {
+        "content": "<|tool_calls_section_begin|>",
+        "id": 163595
+      },
+      {
+        "content": "<|tool_calls_section_end|>",
+        "id": 163596
+      },
+      {
+        "content": "<|tool_call_begin|>",
+        "id": 163597
+      },
+      {
+        "content": "<|tool_call_argument_begin|>",
+        "id": 163598
+      },
+      {
+        "content": "<|tool_call_end|>",
+        "id": 163599
+      },
+      {
+        "content": "<|reserved_token_163600|>",
+        "id": 163600
+      },
+      {
+        "content": "<|im_middle|>",
+        "id": 163601
+      },
+      {
+        "content": "<|reserved_token_163602|>",
+        "id": 163602
+      },
+      {
+        "content": "<|reserved_token_163603|>",
+        "id": 163603
+      },
+      {
+        "content": "<|reserved_token_163604|>",
+        "id": 163604
+      },
+      {
+        "content": "<|reserved_token_163605|>",
+        "id": 163605
+      },
+      {
+        "content": "<|reserved_token_163606|>",
+        "id": 163606
+      },
+      {
+        "content": "<|reserved_token_163607|>",
+        "id": 163607
+      },
+      {
+        "content": "<|reserved_token_163608|>",
+        "id": 163608
+      },
+      {
+        "content": "<|reserved_token_163609|>",
+        "id": 163609
+      },
+      {
+        "content": "<|reserved_token_163610|>",
+        "id": 163610
+      },
+      {
+        "content": "<|reserved_token_163611|>",
+        "id": 163611
+      },
+      {
+        "content": "<|reserved_token_163612|>",
+        "id": 163612
+      },
+      {
+        "content": "<|reserved_token_163613|>",
+        "id": 163613
+      },
+      {
+        "content": "<|reserved_token_163614|>",
+        "id": 163614
+      },
+      {
+        "content": "<|reserved_token_163615|>",
+        "id": 163615
+      },
+      {
+        "content": "<|reserved_token_163616|>",
+        "id": 163616
+      },
+      {
+        "content": "<|reserved_token_163617|>",
+        "id": 163617
+      },
+      {
+        "content": "<|reserved_token_163618|>",
+        "id": 163618
+      },
+      {
+        "content": "<|reserved_token_163619|>",
+        "id": 163619
+      },
+      {
+        "content": "<|reserved_token_163620|>",
+        "id": 163620
+      },
+      {
+        "content": "<|reserved_token_163621|>",
+        "id": 163621
+      },
+      {
+        "content": "<|reserved_token_163622|>",
+        "id": 163622
+      },
+      {
+        "content": "<|reserved_token_163623|>",
+        "id": 163623
+      },
+      {
+        "content": "<|reserved_token_163624|>",
+        "id": 163624
+      },
+      {
+        "content": "<|reserved_token_163625|>",
+        "id": 163625
+      },
+      {
+        "content": "<|reserved_token_163626|>",
+        "id": 163626
+      },
+      {
+        "content": "<|reserved_token_163627|>",
+        "id": 163627
+      },
+      {
+        "content": "<|reserved_token_163628|>",
+        "id": 163628
+      },
+      {
+        "content": "<|reserved_token_163629|>",
+        "id": 163629
+      },
+      {
+        "content": "<|reserved_token_163630|>",
+        "id": 163630
+      },
+      {
+        "content": "<|reserved_token_163631|>",
+        "id": 163631
+      },
+      {
+        "content": "<|reserved_token_163632|>",
+        "id": 163632
+      },
+      {
+        "content": "<|reserved_token_163633|>",
+        "id": 163633
+      },
+      {
+        "content": "<|reserved_token_163634|>",
+        "id": 163634
+      },
+      {
+        "content": "<|reserved_token_163635|>",
+        "id": 163635
+      },
+      {
+        "content": "<|reserved_token_163636|>",
+        "id": 163636
+      },
+      {
+        "content": "<|reserved_token_163637|>",
+        "id": 163637
+      },
+      {
+        "content": "<|reserved_token_163638|>",
+        "id": 163638
+      },
+      {
+        "content": "<|reserved_token_163639|>",
+        "id": 163639
+      },
+      {
+        "content": "<|reserved_token_163640|>",
+        "id": 163640
+      },
+      {
+        "content": "<|reserved_token_163641|>",
+        "id": 163641
+      },
+      {
+        "content": "<|reserved_token_163642|>",
+        "id": 163642
+      },
+      {
+        "content": "<|reserved_token_163643|>",
+        "id": 163643
+      },
+      {
+        "content": "<|reserved_token_163644|>",
+        "id": 163644
+      },
+      {
+        "content": "<|reserved_token_163645|>",
+        "id": 163645
+      },
+      {
+        "content": "<|reserved_token_163646|>",
+        "id": 163646
+      },
+      {
+        "content": "<|reserved_token_163647|>",
+        "id": 163647
+      },
+      {
+        "content": "<|reserved_token_163648|>",
+        "id": 163648
+      },
+      {
+        "content": "<|reserved_token_163649|>",
+        "id": 163649
+      },
+      {
+        "content": "<|reserved_token_163650|>",
+        "id": 163650
+      },
+      {
+        "content": "<|reserved_token_163651|>",
+        "id": 163651
+      },
+      {
+        "content": "<|reserved_token_163652|>",
+        "id": 163652
+      },
+      {
+        "content": "<|reserved_token_163653|>",
+        "id": 163653
+      },
+      {
+        "content": "<|reserved_token_163654|>",
+        "id": 163654
+      },
+      {
+        "content": "<|reserved_token_163655|>",
+        "id": 163655
+      },
+      {
+        "content": "<|reserved_token_163656|>",
+        "id": 163656
+      },
+      {
+        "content": "<|reserved_token_163657|>",
+        "id": 163657
+      },
+      {
+        "content": "<|reserved_token_163658|>",
+        "id": 163658
+      },
+      {
+        "content": "<|reserved_token_163659|>",
+        "id": 163659
+      },
+      {
+        "content": "<|reserved_token_163660|>",
+        "id": 163660
+      },
+      {
+        "content": "<|reserved_token_163661|>",
+        "id": 163661
+      },
+      {
+        "content": "<|reserved_token_163662|>",
+        "id": 163662
+      },
+      {
+        "content": "<|reserved_token_163663|>",
+        "id": 163663
+      },
+      {
+        "content": "<|reserved_token_163664|>",
+        "id": 163664
+      },
+      {
+        "content": "<|reserved_token_163665|>",
+        "id": 163665
+      },
+      {
+        "content": "<|reserved_token_163666|>",
+        "id": 163666
+      },
+      {
+        "content": "<|reserved_token_163667|>",
+        "id": 163667
+      },
+      {
+        "content": "<|reserved_token_163668|>",
+        "id": 163668
+      },
+      {
+        "content": "<|reserved_token_163669|>",
+        "id": 163669
+      },
+      {
+        "content": "<|reserved_token_163670|>",
+        "id": 163670
+      },
+      {
+        "content": "<|reserved_token_163671|>",
+        "id": 163671
+      },
+      {
+        "content": "<|reserved_token_163672|>",
+        "id": 163672
+      },
+      {
+        "content": "<|reserved_token_163673|>",
+        "id": 163673
+      },
+      {
+        "content": "<|reserved_token_163674|>",
+        "id": 163674
+      },
+      {
+        "content": "<|reserved_token_163675|>",
+        "id": 163675
+      },
+      {
+        "content": "<|reserved_token_163676|>",
+        "id": 163676
+      },
+      {
+        "content": "<|reserved_token_163677|>",
+        "id": 163677
+      },
+      {
+        "content": "<|reserved_token_163678|>",
+        "id": 163678
+      },
+      {
+        "content": "<|reserved_token_163679|>",
+        "id": 163679
+      },
+      {
+        "content": "<|reserved_token_163680|>",
+        "id": 163680
+      },
+      {
+        "content": "<|reserved_token_163681|>",
+        "id": 163681
+      },
+      {
+        "content": "<|reserved_token_163682|>",
+        "id": 163682
+      },
+      {
+        "content": "<|reserved_token_163683|>",
+        "id": 163683
+      },
+      {
+        "content": "<|reserved_token_163684|>",
+        "id": 163684
+      },
+      {
+        "content": "<|reserved_token_163685|>",
+        "id": 163685
+      },
+      {
+        "content": "<|reserved_token_163686|>",
+        "id": 163686
+      },
+      {
+        "content": "<|reserved_token_163687|>",
+        "id": 163687
+      },
+      {
+        "content": "<|reserved_token_163688|>",
+        "id": 163688
+      },
+      {
+        "content": "<|reserved_token_163689|>",
+        "id": 163689
+      },
+      {
+        "content": "<|reserved_token_163690|>",
+        "id": 163690
+      },
+      {
+        "content": "<|reserved_token_163691|>",
+        "id": 163691
+      },
+      {
+        "content": "<|reserved_token_163692|>",
+        "id": 163692
+      },
+      {
+        "content": "<|reserved_token_163693|>",
+        "id": 163693
+      },
+      {
+        "content": "<|reserved_token_163694|>",
+        "id": 163694
+      },
+      {
+        "content": "<|reserved_token_163695|>",
+        "id": 163695
+      },
+      {
+        "content": "<|reserved_token_163696|>",
+        "id": 163696
+      },
+      {
+        "content": "<|reserved_token_163697|>",
+        "id": 163697
+      },
+      {
+        "content": "<|reserved_token_163698|>",
+        "id": 163698
+      },
+      {
+        "content": "<|reserved_token_163699|>",
+        "id": 163699
+      },
+      {
+        "content": "<|reserved_token_163700|>",
+        "id": 163700
+      },
+      {
+        "content": "<|reserved_token_163701|>",
+        "id": 163701
+      },
+      {
+        "content": "<|reserved_token_163702|>",
+        "id": 163702
+      },
+      {
+        "content": "<|reserved_token_163703|>",
+        "id": 163703
+      },
+      {
+        "content": "<|reserved_token_163704|>",
+        "id": 163704
+      },
+      {
+        "content": "<|reserved_token_163705|>",
+        "id": 163705
+      },
+      {
+        "content": "<|reserved_token_163706|>",
+        "id": 163706
+      },
+      {
+        "content": "<|reserved_token_163707|>",
+        "id": 163707
+      },
+      {
+        "content": "<|reserved_token_163708|>",
+        "id": 163708
+      },
+      {
+        "content": "<|reserved_token_163709|>",
+        "id": 163709
+      },
+      {
+        "content": "<|reserved_token_163710|>",
+        "id": 163710
+      },
+      {
+        "content": "<|reserved_token_163711|>",
+        "id": 163711
+      },
+      {
+        "content": "<|reserved_token_163712|>",
+        "id": 163712
+      },
+      {
+        "content": "<|reserved_token_163713|>",
+        "id": 163713
+      },
+      {
+        "content": "<|reserved_token_163714|>",
+        "id": 163714
+      },
+      {
+        "content": "<|reserved_token_163715|>",
+        "id": 163715
+      },
+      {
+        "content": "<|reserved_token_163716|>",
+        "id": 163716
+      },
+      {
+        "content": "<|reserved_token_163717|>",
+        "id": 163717
+      },
+      {
+        "content": "<|reserved_token_163718|>",
+        "id": 163718
+      },
+      {
+        "content": "<|reserved_token_163719|>",
+        "id": 163719
+      },
+      {
+        "content": "<|reserved_token_163720|>",
+        "id": 163720
+      },
+      {
+        "content": "<|reserved_token_163721|>",
+        "id": 163721
+      },
+      {
+        "content": "<|reserved_token_163722|>",
+        "id": 163722
+      },
+      {
+        "content": "<|reserved_token_163723|>",
+        "id": 163723
+      },
+      {
+        "content": "<|reserved_token_163724|>",
+        "id": 163724
+      },
+      {
+        "content": "<|reserved_token_163725|>",
+        "id": 163725
+      },
+      {
+        "content": "<|reserved_token_163726|>",
+        "id": 163726
+      },
+      {
+        "content": "<|reserved_token_163727|>",
+        "id": 163727
+      },
+      {
+        "content": "<|reserved_token_163728|>",
+        "id": 163728
+      },
+      {
+        "content": "<|reserved_token_163729|>",
+        "id": 163729
+      },
+      {
+        "content": "<|reserved_token_163730|>",
+        "id": 163730
+      },
+      {
+        "content": "<|reserved_token_163731|>",
+        "id": 163731
+      },
+      {
+        "content": "<|reserved_token_163732|>",
+        "id": 163732
+      },
+      {
+        "content": "<|reserved_token_163733|>",
+        "id": 163733
+      },
+      {
+        "content": "<|reserved_token_163734|>",
+        "id": 163734
+      },
+      {
+        "content": "<|reserved_token_163735|>",
+        "id": 163735
+      },
+      {
+        "content": "<|reserved_token_163736|>",
+        "id": 163736
+      },
+      {
+        "content": "<|reserved_token_163737|>",
+        "id": 163737
+      },
+      {
+        "content": "<|reserved_token_163738|>",
+        "id": 163738
+      },
+      {
+        "content": "<|reserved_token_163739|>",
+        "id": 163739
+      },
+      {
+        "content": "<|reserved_token_163740|>",
+        "id": 163740
+      },
+      {
+        "content": "<|reserved_token_163741|>",
+        "id": 163741
+      },
+      {
+        "content": "<|reserved_token_163742|>",
+        "id": 163742
+      },
+      {
+        "content": "<|reserved_token_163743|>",
+        "id": 163743
+      },
+      {
+        "content": "<|reserved_token_163744|>",
+        "id": 163744
+      },
+      {
+        "content": "<|reserved_token_163745|>",
+        "id": 163745
+      },
+      {
+        "content": "<|reserved_token_163746|>",
+        "id": 163746
+      },
+      {
+        "content": "<|reserved_token_163747|>",
+        "id": 163747
+      },
+      {
+        "content": "<|reserved_token_163748|>",
+        "id": 163748
+      },
+      {
+        "content": "<|reserved_token_163749|>",
+        "id": 163749
+      },
+      {
+        "content": "<|reserved_token_163750|>",
+        "id": 163750
+      },
+      {
+        "content": "<|reserved_token_163751|>",
+        "id": 163751
+      },
+      {
+        "content": "<|reserved_token_163752|>",
+        "id": 163752
+      },
+      {
+        "content": "<|reserved_token_163753|>",
+        "id": 163753
+      },
+      {
+        "content": "<|reserved_token_163754|>",
+        "id": 163754
+      },
+      {
+        "content": "<|reserved_token_163755|>",
+        "id": 163755
+      },
+      {
+        "content": "<|reserved_token_163756|>",
+        "id": 163756
+      },
+      {
+        "content": "<|reserved_token_163757|>",
+        "id": 163757
+      },
+      {
+        "content": "<|reserved_token_163758|>",
+        "id": 163758
+      },
+      {
+        "content": "<|reserved_token_163759|>",
+        "id": 163759
+      },
+      {
+        "content": "<|reserved_token_163760|>",
+        "id": 163760
+      },
+      {
+        "content": "<|reserved_token_163761|>",
+        "id": 163761
+      },
+      {
+        "content": "<|reserved_token_163762|>",
+        "id": 163762
+      },
+      {
+        "content": "<|reserved_token_163763|>",
+        "id": 163763
+      },
+      {
+        "content": "<|reserved_token_163764|>",
+        "id": 163764
+      },
+      {
+        "content": "<|reserved_token_163765|>",
+        "id": 163765
+      },
+      {
+        "content": "<|reserved_token_163766|>",
+        "id": 163766
+      },
+      {
+        "content": "<|reserved_token_163767|>",
+        "id": 163767
+      },
+      {
+        "content": "<|reserved_token_163768|>",
+        "id": 163768
+      },
+      {
+        "content": "<|reserved_token_163769|>",
+        "id": 163769
+      },
+      {
+        "content": "<|reserved_token_163770|>",
+        "id": 163770
+      },
+      {
+        "content": "<|reserved_token_163771|>",
+        "id": 163771
+      },
+      {
+        "content": "<|reserved_token_163772|>",
+        "id": 163772
+      },
+      {
+        "content": "<|reserved_token_163773|>",
+        "id": 163773
+      },
+      {
+        "content": "<|reserved_token_163774|>",
+        "id": 163774
+      },
+      {
+        "content": "<|reserved_token_163775|>",
+        "id": 163775
+      },
+      {
+        "content": "<|reserved_token_163776|>",
+        "id": 163776
+      },
+      {
+        "content": "<|reserved_token_163777|>",
+        "id": 163777
+      },
+      {
+        "content": "<|reserved_token_163778|>",
+        "id": 163778
+      },
+      {
+        "content": "<|reserved_token_163779|>",
+        "id": 163779
+      },
+      {
+        "content": "<|reserved_token_163780|>",
+        "id": 163780
+      },
+      {
+        "content": "<|reserved_token_163781|>",
+        "id": 163781
+      },
+      {
+        "content": "<|reserved_token_163782|>",
+        "id": 163782
+      },
+      {
+        "content": "<|reserved_token_163783|>",
+        "id": 163783
+      },
+      {
+        "content": "<|reserved_token_163784|>",
+        "id": 163784
+      },
+      {
+        "content": "<|reserved_token_163785|>",
+        "id": 163785
+      },
+      {
+        "content": "<|reserved_token_163786|>",
+        "id": 163786
+      },
+      {
+        "content": "<|reserved_token_163787|>",
+        "id": 163787
+      },
+      {
+        "content": "<|reserved_token_163788|>",
+        "id": 163788
+      },
+      {
+        "content": "<|reserved_token_163789|>",
+        "id": 163789
+      },
+      {
+        "content": "<|reserved_token_163790|>",
+        "id": 163790
+      },
+      {
+        "content": "<|reserved_token_163791|>",
+        "id": 163791
+      },
+      {
+        "content": "<|reserved_token_163792|>",
+        "id": 163792
+      },
+      {
+        "content": "<|reserved_token_163793|>",
+        "id": 163793
+      },
+      {
+        "content": "<|reserved_token_163794|>",
+        "id": 163794
+      },
+      {
+        "content": "<|reserved_token_163795|>",
+        "id": 163795
+      },
+      {
+        "content": "<|reserved_token_163796|>",
+        "id": 163796
+      },
+      {
+        "content": "<|reserved_token_163797|>",
+        "id": 163797
+      },
+      {
+        "content": "<|reserved_token_163798|>",
+        "id": 163798
+      },
+      {
+        "content": "<|reserved_token_163799|>",
+        "id": 163799
+      },
+      {
+        "content": "<|reserved_token_163800|>",
+        "id": 163800
+      },
+      {
+        "content": "<|reserved_token_163801|>",
+        "id": 163801
+      },
+      {
+        "content": "<|reserved_token_163802|>",
+        "id": 163802
+      },
+      {
+        "content": "<|reserved_token_163803|>",
+        "id": 163803
+      },
+      {
+        "content": "<|reserved_token_163804|>",
+        "id": 163804
+      },
+      {
+        "content": "<|reserved_token_163805|>",
+        "id": 163805
+      },
+      {
+        "content": "<|reserved_token_163806|>",
+        "id": 163806
+      },
+      {
+        "content": "<|reserved_token_163807|>",
+        "id": 163807
+      },
+      {
+        "content": "<|reserved_token_163808|>",
+        "id": 163808
+      },
+      {
+        "content": "<|reserved_token_163809|>",
+        "id": 163809
+      },
+      {
+        "content": "<|reserved_token_163810|>",
+        "id": 163810
+      },
+      {
+        "content": "<|reserved_token_163811|>",
+        "id": 163811
+      },
+      {
+        "content": "<|reserved_token_163812|>",
+        "id": 163812
+      },
+      {
+        "content": "<|reserved_token_163813|>",
+        "id": 163813
+      },
+      {
+        "content": "<|reserved_token_163814|>",
+        "id": 163814
+      },
+      {
+        "content": "<|reserved_token_163815|>",
+        "id": 163815
+      },
+      {
+        "content": "<|reserved_token_163816|>",
+        "id": 163816
+      },
+      {
+        "content": "<|reserved_token_163817|>",
+        "id": 163817
+      },
+      {
+        "content": "<|reserved_token_163818|>",
+        "id": 163818
+      },
+      {
+        "content": "<|reserved_token_163819|>",
+        "id": 163819
+      },
+      {
+        "content": "<|reserved_token_163820|>",
+        "id": 163820
+      },
+      {
+        "content": "<|reserved_token_163821|>",
+        "id": 163821
+      },
+      {
+        "content": "<|reserved_token_163822|>",
+        "id": 163822
+      },
+      {
+        "content": "<|reserved_token_163823|>",
+        "id": 163823
+      },
+      {
+        "content": "<|reserved_token_163824|>",
+        "id": 163824
+      },
+      {
+        "content": "<|reserved_token_163825|>",
+        "id": 163825
+      },
+      {
+        "content": "<|reserved_token_163826|>",
+        "id": 163826
+      },
+      {
+        "content": "<|reserved_token_163827|>",
+        "id": 163827
+      },
+      {
+        "content": "<|reserved_token_163828|>",
+        "id": 163828
+      },
+      {
+        "content": "<|reserved_token_163829|>",
+        "id": 163829
+      },
+      {
+        "content": "<|reserved_token_163830|>",
+        "id": 163830
+      },
+      {
+        "content": "<|reserved_token_163831|>",
+        "id": 163831
+      },
+      {
+        "content": "<|reserved_token_163832|>",
+        "id": 163832
+      },
+      {
+        "content": "<|reserved_token_163833|>",
+        "id": 163833
+      },
+      {
+        "content": "<|reserved_token_163834|>",
+        "id": 163834
+      },
+      {
+        "content": "<|reserved_token_163835|>",
+        "id": 163835
+      },
+      {
+        "content": "<|reserved_token_163836|>",
+        "id": 163836
+      },
+      {
+        "content": "<|reserved_token_163837|>",
+        "id": 163837
+      },
+      {
+        "content": "[UNK]",
+        "id": 163838
+      },
+      {
+        "content": "[PAD]",
+        "id": 163839
+      }
+    ],
+    "note": "tiktoken-format file (NOT HF tokenizer.json); special tokens from added_tokens_decoder over [num_base, num_base+256)."
+  },
+  "samples": [
+    {
+      "text": "",
+      "raw_ids": [],
+      "wrapped_ids": [],
+      "tokens_bytes_hex": [],
+      "decoded": ""
+    },
+    {
+      "text": "Hello, world!",
+      "raw_ids": [
+        19180,
+        11,
+        2695,
+        0
+      ],
+      "wrapped_ids": [
+        19180,
+        11,
+        2695,
+        0
+      ],
+      "tokens_bytes_hex": [
+        "48656c6c6f",
+        "2c",
+        "20776f726c64",
+        "21"
+      ],
+      "decoded": "Hello, world!"
+    },
+    {
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "raw_ids": [
+        1008,
+        5072,
+        16331,
+        69275,
+        60062,
+        1312,
+        276,
+        29292,
+        7751,
+        13
+      ],
+      "wrapped_ids": [
+        1008,
+        5072,
+        16331,
+        69275,
+        60062,
+        1312,
+        276,
+        29292,
+        7751,
+        13
+      ],
+      "tokens_bytes_hex": [
+        "546865",
+        "20717569636b",
+        "2062726f776e",
+        "20666f78",
+        "206a756d7073",
+        "206f766572",
+        "20746865",
+        "206c617a79",
+        "20646f67",
+        "2e"
+      ],
+      "decoded": "The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "text": "  multiple   spaces   here  ",
+      "raw_ids": [
+        220,
+        6810,
+        256,
+        14803,
+        256,
+        2397,
+        256
+      ],
+      "wrapped_ids": [
+        220,
+        6810,
+        256,
+        14803,
+        256,
+        2397,
+        256
+      ],
+      "tokens_bytes_hex": [
+        "20",
+        "206d756c7469706c65",
+        "2020",
+        "20737061636573",
+        "2020",
+        "2068657265",
+        "2020"
+      ],
+      "decoded": "  multiple   spaces   here  "
+    },
+    {
+      "text": "中文测试：你好，世界！",
+      "raw_ids": [
+        16717,
+        9555,
+        2648,
+        33845,
+        378,
+        2243,
+        856
+      ],
+      "wrapped_ids": [
+        16717,
+        9555,
+        2648,
+        33845,
+        378,
+        2243,
+        856
+      ],
+      "tokens_bytes_hex": [
+        "e4b8ade69687",
+        "e6b58be8af95",
+        "efbc9a",
+        "e4bda0e5a5bd",
+        "efbc8c",
+        "e4b896e7958c",
+        "efbc81"
+      ],
+      "decoded": "中文测试：你好，世界！"
+    },
+    {
+      "text": "café naïve — 100% ✓ 你好",
+      "raw_ids": [
+        122583,
+        1941,
+        7915,
+        44187,
+        367,
+        4275,
+        220,
+        1570,
+        4,
+        66700,
+        241,
+        220,
+        33845
+      ],
+      "wrapped_ids": [
+        122583,
+        1941,
+        7915,
+        44187,
+        367,
+        4275,
+        220,
+        1570,
+        4,
+        66700,
+        241,
+        220,
+        33845
+      ],
+      "tokens_bytes_hex": [
+        "636166",
+        "c3a9",
+        "206e61",
+        "c3af",
+        "7665",
+        "20e28094",
+        "20",
+        "313030",
+        "25",
+        "20e29c",
+        "93",
+        "20",
+        "e4bda0e5a5bd"
+      ],
+      "decoded": "café naïve — 100% ✓ 你好"
+    },
+    {
+      "text": "lowest lower lowe lower",
+      "raw_ids": [
+        1332,
+        601,
+        6798,
+        4688,
+        68,
+        6798
+      ],
+      "wrapped_ids": [
+        1332,
+        601,
+        6798,
+        4688,
+        68,
+        6798
+      ],
+      "tokens_bytes_hex": [
+        "6c6f77",
+        "657374",
+        "206c6f776572",
+        "206c6f77",
+        "65",
+        "206c6f776572"
+      ],
+      "decoded": "lowest lower lowe lower"
+    },
+    {
+      "text": "<|endoftext|>",
+      "raw_ids": [
+        27,
+        91,
+        517,
+        20013,
+        672,
+        91,
+        29
+      ],
+      "wrapped_ids": [
+        27,
+        91,
+        517,
+        20013,
+        672,
+        91,
+        29
+      ],
+      "tokens_bytes_hex": [
+        "3c",
+        "7c",
+        "656e64",
+        "6f6674",
+        "657874",
+        "7c",
+        "3e"
+      ],
+      "decoded": "<|endoftext|>"
+    }
+  ]
+}

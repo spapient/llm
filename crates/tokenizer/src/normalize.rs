@@ -12,7 +12,7 @@ use crate::error::tokenizererror;
 /// Unicode normalization forms (NFC/NFD/NFKC/NFKD) are rejected at load time
 /// because they require the `unicode-normalization` dependency, which is
 /// deferred until a real model needs it (see the optimization plan D2).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum normalizer {
     /// Lowercases the text.
     lowercase,
@@ -24,6 +24,13 @@ pub enum normalizer {
     replace {
         /// The literal string to replace.
         pattern: String,
+        /// The replacement string.
+        content: String,
+    },
+    /// Replaces every regex match (e.g. HF's ` {2,}` → ` `).
+    replaceregex {
+        /// The compiled replacement pattern.
+        pattern: fancy_regex::Regex,
         /// The replacement string.
         content: String,
     },
@@ -48,6 +55,9 @@ impl normalizer {
             Self::strip => text.trim().to_string(),
             Self::prepend(prefix) => format!("{prefix}{text}"),
             Self::replace { pattern, content } => text.replace(pattern, content),
+            Self::replaceregex { pattern, content } => pattern
+                .replace_all(text, content.as_str())
+                .into_owned(),
             Self::nfc => text.nfc().collect(),
             Self::nfd => text.nfd().collect(),
             Self::nfkc => text.nfkc().collect(),
@@ -93,6 +103,12 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
         "NFD" => Ok(normalizer::nfd),
         "NFKC" => Ok(normalizer::nfkc),
         "NFKD" => Ok(normalizer::nfkd),
+        // Precompiled charsmap (XLM-RoBERTa family) is a precompiled NFKC-plus-
+        // control-mapping table. The library substitutes the NFKC form, which
+        // matches the charsmap on the golden sample set (full-width punct/space
+        // and fraction compatibility); a rare charsmap-only mapping (control
+        // characters) may differ.
+        "Precompiled" => Ok(normalizer::nfkc),
         "Prepend" => {
             let prefix = object.get("prepend").and_then(Value::as_str).ok_or(
                 tokenizererror::missingfield {
@@ -104,19 +120,54 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
         "Replace" => {
             let pattern = object
                 .get("pattern")
+                .and_then(Value::as_object);
+            let literal = pattern.and_then(|p| p.get("String")).and_then(Value::as_str);
+            let regex = pattern.and_then(|p| p.get("Regex")).and_then(Value::as_str);
+            let content = object.get("content").and_then(Value::as_str).ok_or(
+                tokenizererror::missingfield {
+                    field: "normalizer.content",
+                },
+            )?;
+            if let Some(literal) = literal {
+                Ok(normalizer::replace {
+                    pattern: literal.to_string(),
+                    content: content.to_string(),
+                })
+            } else if let Some(regex) = regex {
+                let compiled =
+                    fancy_regex::Regex::new(regex).map_err(|error| tokenizererror::invalidregex {
+                        detail: error.to_string(),
+                    })?;
+                Ok(normalizer::replaceregex {
+                    pattern: compiled,
+                    content: content.to_string(),
+                })
+            } else {
+                Err(tokenizererror::unsupportednormalizer {
+                    normaltype: "Replace without a String or Regex pattern".to_string(),
+                })
+            }
+        }
+        "RegexReplace" => {
+            let pattern = object
+                .get("pattern")
                 .and_then(Value::as_object)
-                .and_then(|p| p.get("String"))
+                .and_then(|p| p.get("Regex"))
                 .and_then(Value::as_str)
                 .ok_or(tokenizererror::unsupportednormalizer {
-                    normaltype: "Replace without a String pattern".to_string(),
+                    normaltype: "RegexReplace without a Regex pattern".to_string(),
                 })?;
             let content = object.get("content").and_then(Value::as_str).ok_or(
                 tokenizererror::missingfield {
                     field: "normalizer.content",
                 },
             )?;
-            Ok(normalizer::replace {
-                pattern: pattern.to_string(),
+            let compiled =
+                fancy_regex::Regex::new(pattern).map_err(|error| tokenizererror::invalidregex {
+                    detail: error.to_string(),
+                })?;
+            Ok(normalizer::replaceregex {
+                pattern: compiled,
                 content: content.to_string(),
             })
         }

@@ -12,6 +12,7 @@ use crate::postprocess::{parsepostprocessor, postprocessor};
 use crate::pretoken::{parsepretokenizer, pretokenizer};
 use crate::scratch::{mergescratch, mergestep, resetlinks};
 use crate::special::specialtokens;
+use crate::unigram::{parseunigramvocab, unigrammodel};
 use crate::vocab::vocabulary;
 
 /// The pre-token byte source and its character start offsets, shared read-only
@@ -29,13 +30,13 @@ impl ranksource<'_> {
     }
 }
 
-/// A byte-pair-encoding tokenizer loaded from a HuggingFace `tokenizer.json`
-/// subset.
+/// A tokenizer loaded from a HuggingFace `tokenizer.json` subset.
 ///
-/// Supported model type is `"BPE"`. The loaded subset covers `model.vocab`,
-/// `model.merges`, `model.byte_fallback`, `model.unk_token`, `added_tokens`,
-/// an optional `normalizer`/`pre_tokenizer`, a `decoder`, a `post_processor`,
-/// and a Jinja `chat_template`. Unknown fields are ignored.
+/// Supported model types are `"BPE"` and `"Unigram"`. The loaded subset covers
+/// `model.vocab`/`model.merges`/`model.byte_fallback`/`model.unk_token`,
+/// `model.vocab`/`model.unk_id` for Unigram, `added_tokens`, an optional
+/// `normalizer`/`pre_tokenizer`, a `decoder`, a `post_processor`, and a Jinja
+/// `chat_template`. Unknown fields are ignored.
 #[derive(Clone, Debug)]
 pub struct tokenizer {
     vocabulary: vocabulary,
@@ -46,6 +47,10 @@ pub struct tokenizer {
     /// pre-tokens. Non-special added tokens such as GPT-NeoX's space runs are
     /// only vocabulary entries otherwise and would never be produced by BPE.
     addedtokens: Vec<(String, tokenid)>,
+    /// Unigram model, present only for `"model.type": "Unigram"` tokenizers.
+    /// Its pieces also populate `vocabulary` so the shared decoder resolves
+    /// contents; encoding routes through the Viterbi lattice instead of BPE.
+    unigram: Option<unigrammodel>,
     chattemplate: Option<chattemplate>,
     chattemplatejinja: Option<String>,
     bostokencontent: Option<String>,
@@ -77,25 +82,72 @@ impl tokenizer {
             })?;
         let rootobject = root.as_object().ok_or(tokenizererror::rootnotobject)?;
 
-        let model = parsemodel(rootobject)?;
-        let vocabobject = parsevocabobject(model)?;
-        let merges = match model.get("merges") {
-            Some(value) => parsemerges(value)?,
-            None => Vec::new(),
-        };
-        let bytefallback = parsebytefallback(model)?;
-        let unkcontent = parseunkcontent(model)?;
-        let ignoremerges = parseignoremerges(model)?;
-
-        let mut entries = parsevocab(vocabobject)?;
+        let (modeltype, model) = parsemodel(rootobject)?;
         let added = match rootobject.get("added_tokens") {
             Some(value) => parseaddedtokens(value)?,
             None => Vec::new(),
         };
-        for (content, id, _) in &added {
-            entries.push((content.clone(), *id));
-        }
-        let vocab = vocabulary::fromentries(entries)?;
+        let (vocab, bpe, bytefallback, ignoremerges, unk, unigram) = match modeltype.as_str() {
+            "BPE" => {
+                let vocabobject = parsevocabobject(model)?;
+                let merges = match model.get("merges") {
+                    Some(value) => parsemerges(value)?,
+                    None => Vec::new(),
+                };
+                let bytefallback = parsebytefallback(model)?;
+                let unkcontent = parseunkcontent(model)?;
+                let ignoremerges = parseignoremerges(model)?;
+                let mut entries = parsevocab(vocabobject)?;
+                for (content, id, _) in &added {
+                    entries.push((content.clone(), *id));
+                }
+                let vocab = vocabulary::fromentries(entries)?;
+                let bpe = if ignoremerges {
+                    bytepair::frommerges(&merges)?
+                } else {
+                    bytepair::frommergesandvocab(&merges, &vocab)?
+                };
+                let unk = match unkcontent {
+                    Some(content) => Some(
+                        vocab
+                            .getid(&content)
+                            .ok_or(tokenizererror::unknowntoken { token: content })?,
+                    ),
+                    None => None,
+                };
+                (vocab, bpe, bytefallback, ignoremerges, unk, None)
+            }
+            "Unigram" => {
+                let pieces = parseunigramvocab(
+                    model
+                        .get("vocab")
+                        .ok_or(tokenizererror::missingfield { field: "model.vocab" })?,
+                )?;
+                let unk_id = model
+                    .get("unk_id")
+                    .and_then(Value::as_u64)
+                    .ok_or(tokenizererror::missingfield { field: "model.unk_id" })?
+                    as u32;
+                let mut entries: Vec<(String, u32)> = pieces
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (piece, _))| (piece.clone(), index as u32))
+                    .collect();
+                for (content, id, _) in &added {
+                    entries.push((content.clone(), *id));
+                }
+                let vocab = vocabulary::fromentries(entries)?;
+                let bpe = bytepair::frommerges(&[])?;
+                let unk = Some(tokenid::new(unk_id));
+                let unigram = Some(unigrammodel::fromvocab(&pieces, unk_id));
+                (vocab, bpe, false, false, unk, unigram)
+            }
+            other => {
+                return Err(tokenizererror::unsupportedmodel {
+                    modeltype: other.to_string(),
+                });
+            }
+        };
         let specials = specialtokens::new(
             added
                 .iter()
@@ -108,19 +160,6 @@ impl tokenizer {
             .map(|(content, id, _)| (content.clone(), tokenid::new(*id)))
             .collect();
         addedtokens.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0.len()));
-        let bpe = if ignoremerges {
-            bytepair::frommerges(&merges)?
-        } else {
-            bytepair::frommergesandvocab(&merges, &vocab)?
-        };
-        let unk = match unkcontent {
-            Some(content) => Some(
-                vocab
-                    .getid(&content)
-                    .ok_or(tokenizererror::unknowntoken { token: content })?,
-            ),
-            None => None,
-        };
         let pretokenizer = parsepretokenizer(rootobject)?;
         let decoder = parsedecoder(rootobject)?.unwrap_or(decoder::bytefallback {
             replace: None,
@@ -137,6 +176,7 @@ impl tokenizer {
             bytepair: bpe,
             specialtokens: specials,
             addedtokens,
+            unigram,
             chattemplate: None,
             chattemplatejinja,
             bostokencontent,
@@ -415,6 +455,10 @@ impl tokenizer {
         scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
+        if let Some(unigram) = &self.unigram {
+            out.extend(unigram.encode(pretoken));
+            return Ok(());
+        }
         if self.ignoremerges {
             self.rankmerge(pretoken, scratch, out)
         } else {
@@ -692,7 +736,7 @@ impl tokenizer {
 ///
 /// Some real `tokenizer.json` files (e.g. GPT-2) omit `model.type`; the only
 /// supported model is BPE, so an absent type is treated as BPE.
-fn parsemodel(root: &Map<String, Value>) -> Result<&Map<String, Value>, tokenizererror> {
+fn parsemodel(root: &Map<String, Value>) -> Result<(String, &Map<String, Value>), tokenizererror> {
     let model = root
         .get("model")
         .ok_or(tokenizererror::missingfield { field: "model" })?
@@ -701,18 +745,15 @@ fn parsemodel(root: &Map<String, Value>) -> Result<&Map<String, Value>, tokenize
             field: "model",
             expected: "object",
         })?;
-    if let Some(value) = model.get("type") {
-        let modeltype = value.as_str().ok_or(tokenizererror::unexpectedtype {
+    let modeltype = match model.get("type") {
+        Some(value) => value.as_str().ok_or(tokenizererror::unexpectedtype {
             field: "model.type",
             expected: "string",
-        })?;
-        if modeltype != "BPE" {
-            return Err(tokenizererror::unsupportedmodel {
-                modeltype: modeltype.to_string(),
-            });
-        }
+        })?,
+        None => "BPE",
     }
-    Ok(model)
+    .to_string();
+    Ok((modeltype, model))
 }
 
 /// Returns the `model.vocab` object.

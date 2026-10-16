@@ -1,0 +1,359 @@
+{
+  "meta": {
+    "kind": "hf-tokenizers-reference",
+    "tokenizer_file": "glm4/tokenizer.json",
+    "tokenizer_sha256": "8a7269d6daa6328de533def0082ff9d3a825bb89036cbcc665c324f941f67fbf",
+    "tokenizers_version": "0.23.3",
+    "python_version": "3.14.7",
+    "generated_at_utc": "2026-10-16T14:30:19+00:00",
+    "encode_settings": {
+      "add_special_tokens": false
+    },
+    "decode_variants": {
+      "decoded": {
+        "skip_special_tokens": true
+      },
+      "decoded_no_skip": {
+        "skip_special_tokens": false
+      }
+    }
+  },
+  "samples": [
+    {
+      "input": "",
+      "tokens": [],
+      "ids": [],
+      "decoded": "",
+      "decoded_no_skip": ""
+    },
+    {
+      "input": "Hello, world!",
+      "tokens": [
+        "Hello",
+        ",",
+        "Ġworld",
+        "!"
+      ],
+      "ids": [
+        9703,
+        11,
+        1879,
+        0
+      ],
+      "decoded": "Hello, world!",
+      "decoded_no_skip": "Hello, world!"
+    },
+    {
+      "input": "The quick brown fox jumps over the lazy dog.",
+      "tokens": [
+        "The",
+        "Ġquick",
+        "Ġbrown",
+        "Ġfox",
+        "Ġjumps",
+        "Ġover",
+        "Ġthe",
+        "Ġlazy",
+        "Ġdog",
+        "."
+      ],
+      "ids": [
+        785,
+        3974,
+        13867,
+        38627,
+        34041,
+        916,
+        279,
+        15666,
+        5562,
+        13
+      ],
+      "decoded": "The quick brown fox jumps over the lazy dog.",
+      "decoded_no_skip": "The quick brown fox jumps over the lazy dog."
+    },
+    {
+      "input": "  multiple   spaces   here  ",
+      "tokens": [
+        "Ġ",
+        "Ġmultiple",
+        "ĠĠ",
+        "Ġspaces",
+        "ĠĠ",
+        "Ġhere",
+        "ĠĠ"
+      ],
+      "ids": [
+        220,
+        5248,
+        256,
+        12615,
+        256,
+        1588,
+        256
+      ],
+      "decoded": "  multiple   spaces   here  ",
+      "decoded_no_skip": "  multiple   spaces   here  "
+    },
+    {
+      "input": "中文测试：你好，世界！",
+      "tokens": [
+        "ä¸Ńæĸĩ",
+        "æµĭè¯ķ",
+        "ï¼ļ",
+        "ä½łå¥½",
+        "ï¼Į",
+        "ä¸ĸçķĮ",
+        "ï¼ģ"
+      ],
+      "ids": [
+        102169,
+        100838,
+        5122,
+        109377,
+        3837,
+        99011,
+        6313
+      ],
+      "decoded": "中文测试：你好，世界！",
+      "decoded_no_skip": "中文测试：你好，世界！"
+    },
+    {
+      "input": "café naïve — 100% ✓ 你好",
+      "tokens": [
+        "ca",
+        "fÃ©",
+        "ĠnaÃ¯",
+        "ve",
+        "ĠâĢĶ",
+        "Ġ",
+        "100",
+        "%",
+        "Ġâľĵ",
+        "Ġä½ł",
+        "å¥½"
+      ],
+      "ids": [
+        924,
+        58451,
+        94083,
+        586,
+        1959,
+        220,
+        99457,
+        4,
+        52031,
+        101726,
+        98384
+      ],
+      "decoded": "café naïve — 100% ✓ 你好",
+      "decoded_no_skip": "café naïve — 100% ✓ 你好"
+    },
+    {
+      "input": "lowest lower lowe lower",
+      "tokens": [
+        "lowest",
+        "Ġlower",
+        "Ġlow",
+        "e",
+        "Ġlower"
+      ],
+      "ids": [
+        89156,
+        4722,
+        3347,
+        68,
+        4722
+      ],
+      "decoded": "lowest lower lowe lower",
+      "decoded_no_skip": "lowest lower lowe lower"
+    },
+    {
+      "input": "GPT-2 (gpt2) tokenizer — 测试",
+      "tokens": [
+        "G",
+        "PT",
+        "-",
+        "2",
+        "Ġ(",
+        "g",
+        "pt",
+        "2",
+        ")",
+        "Ġtokenizer",
+        "ĠâĢĶ",
+        "Ġæµ",
+        "ĭè¯ķ"
+      ],
+      "ids": [
+        38,
+        2828,
+        12,
+        17,
+        320,
+        70,
+        417,
+        17,
+        8,
+        45681,
+        1959,
+        97482,
+        66149
+      ],
+      "decoded": "GPT-2 (gpt2) tokenizer — 测试",
+      "decoded_no_skip": "GPT-2 (gpt2) tokenizer — 测试"
+    },
+    {
+      "input": "<|endoftext|>",
+      "tokens": [
+        "<|endoftext|>"
+      ],
+      "ids": [
+        151329
+      ],
+      "decoded": "",
+      "decoded_no_skip": "<|endoftext|>"
+    },
+    {
+      "input": "In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell, nor yet a dry, bare, sandy hole with nothing in it to sit down on or to eat: it was a hobbit-hole, and that means comfort.",
+      "tokens": [
+        "In",
+        "Ġa",
+        "Ġhole",
+        "Ġin",
+        "Ġthe",
+        "Ġground",
+        "Ġthere",
+        "Ġlived",
+        "Ġa",
+        "Ġhob",
+        "bit",
+        ".",
+        "ĠNot",
+        "Ġa",
+        "Ġnasty",
+        ",",
+        "Ġdirty",
+        ",",
+        "Ġwet",
+        "Ġhole",
+        ",",
+        "Ġfilled",
+        "Ġwith",
+        "Ġthe",
+        "Ġends",
+        "Ġof",
+        "Ġworms",
+        "Ġand",
+        "Ġan",
+        "Ġoo",
+        "zy",
+        "Ġsmell",
+        ",",
+        "Ġnor",
+        "Ġyet",
+        "Ġa",
+        "Ġdry",
+        ",",
+        "Ġbare",
+        ",",
+        "Ġsandy",
+        "Ġhole",
+        "Ġwith",
+        "Ġnothing",
+        "Ġin",
+        "Ġit",
+        "Ġto",
+        "Ġsit",
+        "Ġdown",
+        "Ġon",
+        "Ġor",
+        "Ġto",
+        "Ġeat",
+        ":",
+        "Ġit",
+        "Ġwas",
+        "Ġa",
+        "Ġhob",
+        "bit",
+        "-hole",
+        ",",
+        "Ġand",
+        "Ġthat",
+        "Ġmeans",
+        "Ġcomfort",
+        "."
+      ],
+      "ids": [
+        641,
+        264,
+        14169,
+        304,
+        279,
+        4910,
+        1052,
+        12157,
+        264,
+        67581,
+        4489,
+        13,
+        2806,
+        264,
+        34237,
+        11,
+        18563,
+        11,
+        14391,
+        14169,
+        11,
+        10194,
+        448,
+        279,
+        10330,
+        315,
+        61466,
+        323,
+        458,
+        55533,
+        4246,
+        22013,
+        11,
+        6329,
+        3602,
+        264,
+        9055,
+        11,
+        12455,
+        11,
+        66947,
+        14169,
+        448,
+        4302,
+        304,
+        432,
+        311,
+        2444,
+        1495,
+        389,
+        476,
+        311,
+        8179,
+        25,
+        432,
+        572,
+        264,
+        67581,
+        4489,
+        85874,
+        11,
+        323,
+        429,
+        3363,
+        6838,
+        13
+      ],
+      "decoded": "In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell, nor yet a dry, bare, sandy hole with nothing in it to sit down on or to eat: it was a hobbit-hole, and that means comfort.",
+      "decoded_no_skip": "In a hole in the ground there lived a hobbit. Not a nasty, dirty, wet hole, filled with the ends of worms and an oozy smell, nor yet a dry, bare, sandy hole with nothing in it to sit down on or to eat: it was a hobbit-hole, and that means comfort."
+    }
+  ]
+}

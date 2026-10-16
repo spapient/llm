@@ -12,8 +12,9 @@
 use ::tokenizer::tokenizer as tokenizerengine;
 use lib::tokenid;
 
-const MODELS: [&str; 7] = [
-    "gpt2", "llama2", "llama3", "qwen3", "deepseek", "gemma", "mamba3",
+const MODELS: [&str; 12] = [
+    "gpt2", "llama2", "llama3", "qwen3", "deepseek", "gemma", "mamba3", "llama4", "mistral",
+    "glm4", "nanbeige", "bge3",
 ];
 
 fn loadtokenizer(model: &str) -> tokenizerengine {
@@ -119,6 +120,47 @@ fn o200k_matches_the_tiktoken_reference() {
             decoded,
             sample["decoded"].as_str().unwrap(),
             "o200k decode mismatch for {text:?}"
+        );
+    }
+}
+
+#[test]
+fn kimi_matches_the_tiktoken_reference() {
+    use ::tokenizer::tiktokenizer;
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kimi");
+    let content = std::fs::read_to_string(format!("{dir}/kimi_tiktoken.model")).unwrap();
+    let golden: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap())
+            .unwrap();
+    let specials: Vec<(String, u32)> = golden["meta"]["specials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["content"].as_str().unwrap().to_string(),
+                entry["id"].as_u64().unwrap() as u32,
+            )
+        })
+        .collect();
+    let tok = tiktokenizer::fromfilehan(&content, &specials).unwrap();
+    for sample in golden["samples"].as_array().unwrap() {
+        let text = sample["text"].as_str().unwrap();
+        let expected: Vec<u32> = sample["raw_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u32)
+            .collect();
+        let ids = tok.encode(text).unwrap();
+        let got: Vec<u32> = ids.iter().map(|id| id.get()).collect();
+        assert_eq!(got, expected, "kimi encode mismatch for {text:?}");
+        let ids: Vec<tokenid> = expected.iter().map(|rank| tokenid::new(*rank)).collect();
+        let decoded = tok.decode(&ids).unwrap();
+        assert_eq!(
+            decoded,
+            sample["decoded"].as_str().unwrap(),
+            "kimi decode mismatch for {text:?}"
         );
     }
 }

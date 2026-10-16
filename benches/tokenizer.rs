@@ -232,8 +232,9 @@ fn encodegpt2(c: &mut Criterion) {
 
 /// Models with a real `tokenizer.json` fixture under `tests/fixtures/`, kept in
 /// sync with the golden-alignment list in `tests/it/tokenizergolden.rs`.
-const FROMJSONMODELS: [&str; 7] = [
-    "gpt2", "gemma", "deepseek", "llama2", "llama3", "qwen3", "mamba3",
+const FROMJSONMODELS: [&str; 12] = [
+    "gpt2", "gemma", "deepseek", "llama2", "llama3", "qwen3", "mamba3", "llama4", "mistral",
+    "glm4", "nanbeige", "bge3",
 ];
 
 /// Measures `tokenizer::fromjson` against the real fixtures, so a one-time load

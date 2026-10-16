@@ -65,6 +65,14 @@ pub enum decoder {
         /// Number of leading spaces to strip.
         stripleading: usize,
     },
+    /// Metaspace (SentencePiece): map `replacement` back to a space in every
+    /// token, then strip `stripleading` leading spaces.
+    metaspace {
+        /// The space replacement string (usually `▁`).
+        replacement: String,
+        /// Number of leading spaces to strip.
+        stripleading: usize,
+    },
 }
 
 impl decoder {
@@ -84,6 +92,24 @@ impl decoder {
                     .as_ref()
                     .map(|(pattern, content)| (pattern.as_str(), content.as_str()));
                 let mut out = decodebytefallback(vocab, ids, replace)?;
+                for _ in 0..*stripleading {
+                    if out.starts_with(' ') {
+                        out.remove(0);
+                    }
+                }
+                Ok(out)
+            }
+            Self::metaspace {
+                replacement,
+                stripleading,
+            } => {
+                let mut out = String::new();
+                for id in ids {
+                    let content = vocab
+                        .getcontent(*id)
+                        .ok_or(tokenizererror::unknowntokenid { id: id.get() })?;
+                    out.push_str(&content.replace(replacement, " "));
+                }
                 for _ in 0..*stripleading {
                     if out.starts_with(' ') {
                         out.remove(0);
@@ -152,6 +178,21 @@ fn parsedecoderone(value: &serde_json::Value) -> Result<decoder, tokenizererror>
         })?;
     match kind {
         "ByteLevel" => Ok(decoder::bytelevel),
+        "Metaspace" => {
+            let replacement = object
+                .get("replacement")
+                .and_then(Value::as_str)
+                .unwrap_or("▁")
+                .to_string();
+            let add_prefix_space = object
+                .get("add_prefix_space")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            Ok(decoder::metaspace {
+                replacement,
+                stripleading: if add_prefix_space { 1 } else { 0 },
+            })
+        }
         "Sequence" => {
             let children = object.get("decoders").and_then(Value::as_array).ok_or(
                 tokenizererror::missingfield {

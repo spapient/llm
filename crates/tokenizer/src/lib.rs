@@ -41,6 +41,7 @@ mod pretoken;
 mod scratch;
 mod special;
 mod tiktoken;
+mod unigram;
 mod vocab;
 
 pub use chat::{chatmessage, chatrole, chattemplate, chattemplateentry};
