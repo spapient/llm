@@ -183,13 +183,15 @@ fn decode_plane(
     table: &Table,
 ) -> Result<(), checkpointerror> {
     let n = dst.len();
+    // slot → symbol 查找表，按符号区间 `fill`（每区间一次 memset 式填充），
+    // 取代逐槽 `while` 推进——区间恰好覆盖 [0, M)，故无需清零后逐槽判定。
     let mut lut = vec![0u8; M as usize];
-    let mut s = 0usize;
-    for (slot, entry) in lut.iter_mut().enumerate() {
-        while table.cum[s + 1] <= slot as u32 {
-            s += 1;
+    for s in 0..NSYMBOLS {
+        let start = table.cum[s] as usize;
+        let end = table.cum[s + 1] as usize;
+        if start < end {
+            lut[start..end].fill(s as u8);
         }
-        *entry = s as u8;
     }
 
     let mut data = stream;
