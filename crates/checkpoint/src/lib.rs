@@ -76,6 +76,9 @@ pub mod signature;
 
 /// Symmetric int8 quantization of `f32` weights.
 pub mod quantize;
+
+/// Sharded `.u` persistence: a manifest prefix plus data shards.
+pub mod shards;
 mod training;
 
 /// The training `.u` snapshot format: content-addressed, chunked, compressed.

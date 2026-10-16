@@ -1566,6 +1566,60 @@ mod quantize {
     }
 }
 
+/// Tests for sharded `.u` persistence.
+mod shards {
+    use crate::support::shapeof;
+    use ::checkpoint::checkpointerror;
+    use ::checkpoint::shards::{join, split};
+    use ::checkpoint::uformat::snapshot;
+    use tensor::dtype;
+
+    fn encoded() -> Vec<u8> {
+        let mut snap = snapshot::new(1);
+        let mut data = vec![0u8; 4000];
+        let mut state = 0x1234_5678u64;
+        for b in &mut data {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *b = (state >> 56) as u8;
+        }
+        snap.addtensor("w".to_string(), dtype::f32, shapeof(&[1000]), &data)
+            .unwrap();
+        snap.encode().unwrap()
+    }
+
+    #[test]
+    fn split_join_roundtrips() {
+        let bytes = encoded();
+        let sharded = split(&bytes, 1024).unwrap();
+        assert!(sharded.getshards().len() > 1);
+        let joined = join(sharded.getmanifest(), sharded.getshards());
+        assert_eq!(joined, bytes);
+    }
+
+    #[test]
+    fn shards_are_contiguous_slices() {
+        let bytes = encoded();
+        let sharded = split(&bytes, 1024).unwrap();
+        let data = &bytes[sharded.getmanifest().len()..];
+        let mut joined = Vec::new();
+        for shard in sharded.getshards() {
+            joined.extend_from_slice(shard);
+        }
+        assert_eq!(joined, data);
+    }
+
+    #[test]
+    fn split_rejects_zero_shard_size() {
+        let bytes = encoded();
+        assert!(matches!(
+            split(&bytes, 0),
+            Err(checkpointerror::invalidmanifest { .. })
+        ));
+    }
+}
+
 /// Tests for the quantization descriptor and scale-as-tensor.
 mod quant {
     use crate::support::shapeof;
