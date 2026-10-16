@@ -94,11 +94,43 @@ pub(crate) const ATTENTIONCACHEDMSL: &str = include_str!("../kernels/attention_c
 pub(crate) const ATTENTIONCACHEDENTRY: &str = "attention_cached";
 
 /// Metal Shading Language source of the `f32` semigroup scan kernel
-/// (`kernels/scan.metal`).
+/// (`kernels/scan.metal`). Serial per-channel reference and the fallback for
+/// state widths above [`SCANMAXN`].
 pub(crate) const SCANMSL: &str = include_str!("../kernels/scan.metal");
 
 /// The stable symbol name of the kernel in [`SCANMSL`].
 pub(crate) const SCANENTRY: &str = "scan";
+
+/// Metal Shading Language source of the parallel three-stage scan kernel
+/// family (`kernels/scan_parallel.metal`): block aggregation, inter-block
+/// prefix, and per-block apply.
+pub(crate) const SCANPARALLELMSL: &str = include_str!("../kernels/scan_parallel.metal");
+
+/// The stable symbol name of the block-aggregation kernel in
+/// [`SCANPARALLELMSL`].
+pub(crate) const SCANAGGENTRY: &str = "scan_agg";
+
+/// The stable symbol name of the inter-block prefix kernel in
+/// [`SCANPARALLELMSL`].
+pub(crate) const SCANPREFIXENTRY: &str = "scan_prefix";
+
+/// The stable symbol name of the per-block apply kernel in
+/// [`SCANPARALLELMSL`].
+pub(crate) const SCANAPPLYENTRY: &str = "scan_apply";
+
+/// The maximum state width the parallel scan kernels support.
+///
+/// The apply kernel keeps one channel's `N` state components in a
+/// compile-time-sized thread-local array; a wider state falls back to the
+/// serial [`SCANMSL`] kernel.
+pub(crate) const SCANMAXN: usize = 256;
+
+/// The sequence steps per block in the parallel scan.
+///
+/// The number of blocks is `n.div_ceil(SCANCHUNK)`; the inter-block prefix
+/// (Pass 2) is serial over the blocks, so a large block count would make that
+/// pass the bottleneck — 256 steps keeps P ≤ 64 for the 16K M1 probe.
+pub(crate) const SCANCHUNK: usize = 256;
 
 /// The threadgroup width of the attention kernel.
 ///

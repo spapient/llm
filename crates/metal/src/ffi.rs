@@ -613,6 +613,109 @@ pub(crate) fn scan(
     if n == 0 {
         return Ok((Vec::new(), init.to_vec()));
     }
+    // The parallel three-stage kernels keep one channel's state in a
+    // compile-time-sized thread-local array; a wider state falls back to the
+    // serial per-channel kernel (bit-for-bit reference).
+    if statewidth > source::SCANMAXN {
+        return scan_serial(cache, input, init, a, b, c, skip, n, d, statewidth);
+    }
+    let device = cache.device()?;
+    let dinput = alloc(&device, core::mem::size_of_val(input))?;
+    let da = alloc(&device, core::mem::size_of_val(a))?;
+    let db = alloc(&device, core::mem::size_of_val(b))?;
+    let dc = alloc(&device, core::mem::size_of_val(c))?;
+    let dskip = alloc(&device, core::mem::size_of_val(skip))?;
+    let dstate = alloc(&device, core::mem::size_of_val(init))?;
+    // The inter-block prefix pass writes the final state into a separate
+    // buffer so `dstate` keeps the untouched `init` the apply pass reads.
+    let dstateout = alloc(&device, core::mem::size_of_val(init))?;
+    let outbytes = n
+        .checked_mul(d)
+        .and_then(|elements| elements.checked_mul(core::mem::size_of::<f32>()))
+        .ok_or(metalerror::sizeoverflow)?;
+    let dout = alloc(&device, outbytes)?;
+    let blocks = n.div_ceil(source::SCANCHUNK);
+    let dntotal = d
+        .checked_mul(statewidth)
+        .ok_or(metalerror::sizeoverflow)?;
+    let pairbytes = |count: usize| {
+        count
+            .checked_mul(2)
+            .and_then(|pairs| pairs.checked_mul(dntotal))
+            .and_then(|elements| elements.checked_mul(core::mem::size_of::<f32>()))
+            .ok_or(metalerror::sizeoverflow)
+    };
+    let dtotal = alloc(&device, pairbytes(blocks)?)?;
+    let prefixcount = blocks.checked_add(1).ok_or(metalerror::sizeoverflow)?;
+    let dprefix = alloc(&device, pairbytes(prefixcount)?)?;
+    write(&dinput, input);
+    write(&da, a);
+    write(&db, b);
+    write(&dc, c);
+    write(&dskip, skip);
+    write(&dstate, init);
+    let params = [
+        asu32(n)?,
+        asu32(d)?,
+        asu32(statewidth)?,
+        asu32(source::SCANCHUNK)?,
+        asu32(blocks)?,
+    ];
+    // Pass 1: per-block totals.
+    execute(
+        cache,
+        source::SCANPARALLELMSL,
+        source::SCANAGGENTRY,
+        &[&dinput, &da, &db, &dc, &dskip, &dstate, &dtotal],
+        &params,
+        scangrid(blocks, d)?,
+        scantiles(d),
+    )?;
+    // Pass 2: inter-block prefix plus the whole-sequence final state.
+    let prefixthreads = (d * statewidth).min(1024);
+    execute(
+        cache,
+        source::SCANPARALLELMSL,
+        source::SCANPREFIXENTRY,
+        &[&dtotal, &dstate, &dstateout, &dprefix],
+        &params,
+        flatgrid(prefixthreads)?,
+        flatthreads(prefixthreads),
+    )?;
+    // Pass 3: per-block apply writing `out`; the final state was computed by
+    // Pass 2 into `dstateout`.
+    execute(
+        cache,
+        source::SCANPARALLELMSL,
+        source::SCANAPPLYENTRY,
+        &[&dinput, &da, &db, &dc, &dskip, &dstate, &dprefix, &dout],
+        &params,
+        scangrid(blocks, d)?,
+        scantiles(d),
+    )?;
+    let out = read(&dout, n * d)?;
+    let state = read(&dstateout, d * statewidth)?;
+    Ok((out, state))
+}
+
+/// Runs the serial per-channel scan kernel, returning the `[n, d]` output and
+/// the `[d, N]` final state.
+///
+/// This is the bit-for-bit reference path and the fallback for state widths
+/// above [`source::SCANMAXN`].
+#[allow(clippy::too_many_arguments)]
+fn scan_serial(
+    cache: &cache,
+    input: &[f32],
+    init: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    skip: &[f32],
+    n: usize,
+    d: usize,
+    statewidth: usize,
+) -> Result<(Vec<f32>, Vec<f32>), metalerror> {
     let device = cache.device()?;
     let dinput = alloc(&device, core::mem::size_of_val(input))?;
     let da = alloc(&device, core::mem::size_of_val(a))?;
@@ -646,6 +749,29 @@ pub(crate) fn scan(
     let out = read(&dout, n * d)?;
     let state = read(&dstate, d * statewidth)?;
     Ok((out, state))
+}
+
+/// Builds the two-dimensional scan thread grid: `blocks × d` threads, one per
+/// sequence block along the x axis and one per channel along the y axis.
+/// `dispatchThreads` treats this as the total thread count and partitions it
+/// into threadgroups of [`source::FLATTILE`] threads automatically.
+fn scangrid(blocks: usize, d: usize) -> Result<MTLSize, metalerror> {
+    asu32(blocks)?;
+    Ok(MTLSize {
+        width: blocks,
+        height: d,
+        depth: 1,
+    })
+}
+
+/// The threadgroup shape of the scan block kernels: one thread per channel,
+/// `FLATTILE` threads per group.
+fn scantiles(d: usize) -> MTLSize {
+    MTLSize {
+        width: 1,
+        height: source::FLATTILE.min(d),
+        depth: 1,
+    }
 }
 
 /// Compiles `source` and builds the compute pipeline for `entry`.
