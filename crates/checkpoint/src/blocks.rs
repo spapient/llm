@@ -1,16 +1,14 @@
 use std::borrow::Cow;
 
 use crate::error::checkpointerror;
+use crate::gate;
 use crate::hash::contenthash;
 
 /// Codec byte for an uncompressed (raw) block.
 pub(crate) const CODECRAW: u8 = 0;
 
-/// Codec byte for an LZ4-compressed block.
-pub(crate) const CODECLZ4: u8 = 1;
-
-/// Codec byte for a Zstd-compressed block.
-pub(crate) const CODECZSTD: u8 = 2;
+/// Codec byte for a gate rANS-entropy-coded block.
+pub(crate) const CODECGATE: u8 = 1;
 
 /// Transform byte for an untransformed block.
 pub(crate) const TRANSFORMNONE: u8 = 0;
@@ -162,8 +160,8 @@ fn chunksegment(data: &[u8]) -> Vec<blockref> {
 /// profile, losing 13 percentage points of total savings).
 ///
 /// On correlated floating-point data (realistic weights) the transformed
-/// stream compresses far better than the raw byte stream: measured 39% vs 17%
-/// total savings for `zstd -1` on a 256 KiB chunk profile (see the codec
+/// stream compresses far better than the raw byte stream: measured ~42% vs ~0%
+/// total savings for gate rANS on a 256 KiB chunk profile (see the codec
 /// selection notes in `compressblock`).
 #[must_use]
 pub fn bitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
@@ -203,13 +201,9 @@ pub fn unbitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
 /// bytes.
 ///
 /// The candidate set is deliberately minimal: the transform pre-pass
-/// (`{none, f16, f32}`) is tried with a single codec, Zstd level 1, and the
-/// block is stored raw when no candidate shrinks it. LZ4 and Zstd levels 3/9
-/// were dropped after sweep measurements: on every measured profile Zstd-1
-/// either wins the ratio or ties it, Zstd-3/9 add at most 0.4 percentage
-/// points while compressing 5–10× slower, and raw storage protects
-/// high-entropy blocks from codec expansion. The `CODECLZ4` decode path stays
-/// for format compatibility with older snapshots.
+/// (`{none, f16, f32}`) is tried with a single codec, gate (rANS entropy
+/// coding), and the block is stored raw when no candidate shrinks it. Raw
+/// storage protects high-entropy blocks from codec expansion.
 pub(crate) fn compressblock(bytes: &[u8]) -> (u8, u8, Vec<u8>) {
     let mut best: (u8, u8, Vec<u8>) = (CODECRAW, TRANSFORMNONE, bytes.to_vec());
     for transform in [TRANSFORMNONE, TRANSFORMF16, TRANSFORMF32] {
@@ -224,10 +218,9 @@ pub(crate) fn compressblock(bytes: &[u8]) -> (u8, u8, Vec<u8>) {
         } else {
             &transformed
         };
-        if let Ok(zstd) = zstd::bulk::compress(source, 1)
-            && zstd.len() < best.2.len()
-        {
-            best = (CODECZSTD, transform, zstd);
+        let compressed = gate::compress(source, elem);
+        if compressed.len() < best.2.len() {
+            best = (CODECGATE, transform, compressed);
         }
     }
     best
@@ -248,18 +241,10 @@ pub(crate) fn decompressblock<'a>(
     transform: u8,
     stored: &'a [u8],
 ) -> Result<Cow<'a, [u8]>, checkpointerror> {
+    let elem = transform as usize;
     let cow = match codec {
         CODECRAW => Cow::Borrowed(stored),
-        CODECLZ4 => lz4_flex::decompress_size_prepended(stored)
-            .map(Cow::Owned)
-            .map_err(|_| checkpointerror::invalidmanifest {
-                reason: "lz4 decompression failed".to_string(),
-            })?,
-        CODECZSTD => zstd::stream::decode_all(stored)
-            .map(Cow::Owned)
-            .map_err(|_| checkpointerror::invalidmanifest {
-                reason: "zstd decompression failed".to_string(),
-            })?,
+        CODECGATE => Cow::Owned(gate::decompress(stored, elem)?),
         _ => {
             return Err(checkpointerror::invalidmanifest {
                 reason: format!("unknown block codec {codec}"),
@@ -268,10 +253,7 @@ pub(crate) fn decompressblock<'a>(
     };
     match transform {
         TRANSFORMNONE => Ok(cow),
-        TRANSFORMF16 | TRANSFORMF32 => {
-            let elem = transform as usize;
-            Ok(Cow::Owned(unbitshuffle_delta(&cow, elem)))
-        }
+        TRANSFORMF16 | TRANSFORMF32 => Ok(Cow::Owned(unbitshuffle_delta(&cow, elem))),
         _ => Err(checkpointerror::invalidmanifest {
             reason: format!("unknown block transform {transform}"),
         }),

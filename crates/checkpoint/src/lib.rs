@@ -55,6 +55,10 @@ pub mod deltas;
 pub mod encryption;
 mod error;
 
+/// GATE rANS plane entropy codec for the `.u` snapshot format. Production
+/// paths use it through `blocks::compressblock`.
+pub mod gate;
+
 /// BLAKE3 content identity and root-hash primitives.
 pub mod hash;
 mod load;

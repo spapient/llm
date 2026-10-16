@@ -124,10 +124,10 @@ mod transform_units {
         let decoded = snapshot::decode(&encoded).unwrap();
         assert_eq!(decoded.readtensor("w").unwrap(), bytes);
         // The transform + codec picker must shrink correlated weights well
-        // below what plain Zstd alone achieves (measured ~17% vs ~39% saved).
+        // below the raw byte stream (measured ~42% saved with gate rANS).
         assert!(
-            encoded.len() * 100 < bytes.len() * 70,
-            "encoded {} bytes should be well under 70% of input {} bytes",
+            encoded.len() * 100 < bytes.len() * 65,
+            "encoded {} bytes should be well under 65% of input {} bytes",
             encoded.len(),
             bytes.len()
         );

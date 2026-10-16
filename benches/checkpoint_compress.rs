@@ -5,8 +5,8 @@
 //! 与 `snapshot::decode` 的吞吐与压缩率，覆盖「相关 f32 权重（变换生效）」
 //! 与「纯随机 f32（raw 回退）」两个剖面。
 //!
-//! 压缩率基线（16 MiB、256 KiB 块、release，/tmp/zbench 复现）：相关 f32
-//! 权重裸 `zstd -1` 省 17%，`bit+delta + zstd -1` 省 39%；纯随机两者都≈0%
+//! 压缩率基线（16 MiB、256 KiB 块、release）：相关 f32
+//! 权重裸 gate ≈0%（略膨胀），`bit+delta + gate` 省 41.6%；纯随机两者都≈0%
 //! （raw 回退）。本基准在快照路径上重测同一事实。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]

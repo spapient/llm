@@ -16,13 +16,11 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
-lz4_flex.workspace = true
 tensor = { path = "../tensor" }
 format = { path = "../format" }
 bytemuck.workspace = true
 ed25519-compact.workspace = true
 aes-gcm.workspace = true
-zstd.workspace = true
 mmap-guard.workspace = true
 
 [lints]
