@@ -799,7 +799,8 @@ mod pretoken {
 
     #[test]
     fn rejects_unsupported_decoder() {
-        let doc = r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"decoder":{"type":"CTC"}}"#;
+        let doc =
+            r#"{"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"decoder":{"type":"CTC"}}"#;
         assert!(matches!(
             tokenizer::fromjson(doc),
             Err(tokenizererror::unsupporteddecoder { .. })

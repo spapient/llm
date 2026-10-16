@@ -3,6 +3,7 @@
 use serde_json::{Map, Value};
 use unicode_normalization::UnicodeNormalization;
 
+use crate::charsmap::CHARSMAP;
 use crate::error::tokenizererror;
 
 /// A text normalizer applied before pre-tokenization.
@@ -42,6 +43,11 @@ pub enum normalizer {
     nfkc,
     /// NFKD normalization.
     nfkd,
+    /// The XLM-R `Precompiled` charsmap: per-scalar lookup in the exported
+    /// table (`CHARSMAP`), where identity scalars pass through untouched,
+    /// mapped scalars are replaced (possibly expanding to several scalars),
+    /// and deleted scalars vanish.
+    precompiled,
     /// Applies the children in order.
     sequence(Vec<normalizer>),
 }
@@ -55,13 +61,32 @@ impl normalizer {
             Self::strip => text.trim().to_string(),
             Self::prepend(prefix) => format!("{prefix}{text}"),
             Self::replace { pattern, content } => text.replace(pattern, content),
-            Self::replaceregex { pattern, content } => pattern
-                .replace_all(text, content.as_str())
-                .into_owned(),
+            Self::replaceregex { pattern, content } => {
+                pattern.replace_all(text, content.as_str()).into_owned()
+            }
             Self::nfc => text.nfc().collect(),
             Self::nfd => text.nfd().collect(),
             Self::nfkc => text.nfkc().collect(),
             Self::nfkd => text.nfkd().collect(),
+            Self::precompiled => {
+                // Fast path: a text with no mapped scalar passes through
+                // unchanged (the common case for ASCII/Latin runs).
+                if text.chars().all(|ch| lookupcharsmap(ch as u32).is_none()) {
+                    return text.to_string();
+                }
+                let mut out = String::with_capacity(text.len());
+                for ch in text.chars() {
+                    let Some(repl) = lookupcharsmap(ch as u32) else {
+                        out.push(ch);
+                        continue;
+                    };
+                    if repl.is_empty() {
+                        continue; // deleted scalar
+                    }
+                    out.push_str(repl);
+                }
+                out
+            }
             Self::sequence(children) => {
                 let mut out = text.to_string();
                 for child in children {
@@ -103,12 +128,10 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
         "NFD" => Ok(normalizer::nfd),
         "NFKC" => Ok(normalizer::nfkc),
         "NFKD" => Ok(normalizer::nfkd),
-        // Precompiled charsmap (XLM-RoBERTa family) is a precompiled NFKC-plus-
-        // control-mapping table. The library substitutes the NFKC form, which
-        // matches the charsmap on the golden sample set (full-width punct/space
-        // and fraction compatibility); a rare charsmap-only mapping (control
-        // characters) may differ.
-        "Precompiled" => Ok(normalizer::nfkc),
+        // Precompiled charsmap (XLM-RoBERTa family): an NFKC-plus-controls
+        // mapping table, applied here as an exact per-scalar lookup in the
+        // table exported from the tokenizers reference implementation.
+        "Precompiled" => Ok(normalizer::precompiled),
         "Prepend" => {
             let prefix = object.get("prepend").and_then(Value::as_str).ok_or(
                 tokenizererror::missingfield {
@@ -118,10 +141,10 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
             Ok(normalizer::prepend(prefix.to_string()))
         }
         "Replace" => {
-            let pattern = object
-                .get("pattern")
-                .and_then(Value::as_object);
-            let literal = pattern.and_then(|p| p.get("String")).and_then(Value::as_str);
+            let pattern = object.get("pattern").and_then(Value::as_object);
+            let literal = pattern
+                .and_then(|p| p.get("String"))
+                .and_then(Value::as_str);
             let regex = pattern.and_then(|p| p.get("Regex")).and_then(Value::as_str);
             let content = object.get("content").and_then(Value::as_str).ok_or(
                 tokenizererror::missingfield {
@@ -134,10 +157,11 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
                     content: content.to_string(),
                 })
             } else if let Some(regex) = regex {
-                let compiled =
-                    fancy_regex::Regex::new(regex).map_err(|error| tokenizererror::invalidregex {
+                let compiled = fancy_regex::Regex::new(regex).map_err(|error| {
+                    tokenizererror::invalidregex {
                         detail: error.to_string(),
-                    })?;
+                    }
+                })?;
                 Ok(normalizer::replaceregex {
                     pattern: compiled,
                     content: content.to_string(),
@@ -191,4 +215,11 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
             normaltype: other.to_string(),
         }),
     }
+}
+
+/// Looks up one scalar in the exported charsmap. Identity scalars are absent
+/// from the table and return `None`.
+fn lookupcharsmap(cp: u32) -> Option<&'static str> {
+    let index = CHARSMAP.binary_search_by_key(&cp, |(key, _)| *key).ok()?;
+    Some(CHARSMAP[index].1)
 }

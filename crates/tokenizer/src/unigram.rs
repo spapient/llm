@@ -92,7 +92,6 @@ impl unigrammodel {
         if text.is_empty() {
             return Vec::new();
         }
-        eprintln!("DBG unigram.encode input: {text:?} ranks={}", self.ranks.len());
         let charbyte: Vec<usize> = text
             .char_indices()
             .map(|(byte, _)| byte)
@@ -111,9 +110,7 @@ impl unigrammodel {
             for length in 1..=available {
                 let end = charbyte[index + length];
                 let start = charbyte[index];
-                if let Some((id, piece_score, _)) =
-                    self.ranks.get(&text[start..end])
-                {
+                if let Some((id, piece_score, _)) = self.ranks.get(&text[start..end]) {
                     let candidate = score + piece_score;
                     let current = &mut dp[index + length];
                     if current.is_none_or(|(best, _, _)| candidate > best) {

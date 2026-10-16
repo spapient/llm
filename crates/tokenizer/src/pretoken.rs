@@ -595,10 +595,7 @@ fn parseone(value: &serde_json::Value) -> Result<pretokenizer, crate::error::tok
                 .and_then(Value::as_str)
                 .is_some_and(|scheme| scheme != "never")
                 || add_prefix_space;
-            let split = object
-                .get("split")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
+            let split = object.get("split").and_then(Value::as_bool).unwrap_or(true);
             Ok(pretokenizer::metaspace {
                 replacement,
                 prepend,

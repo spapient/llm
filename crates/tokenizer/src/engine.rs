@@ -118,16 +118,15 @@ impl tokenizer {
                 (vocab, bpe, bytefallback, ignoremerges, unk, None)
             }
             "Unigram" => {
-                let pieces = parseunigramvocab(
-                    model
-                        .get("vocab")
-                        .ok_or(tokenizererror::missingfield { field: "model.vocab" })?,
-                )?;
-                let unk_id = model
-                    .get("unk_id")
-                    .and_then(Value::as_u64)
-                    .ok_or(tokenizererror::missingfield { field: "model.unk_id" })?
-                    as u32;
+                let pieces =
+                    parseunigramvocab(model.get("vocab").ok_or(tokenizererror::missingfield {
+                        field: "model.vocab",
+                    })?)?;
+                let unk_id = model.get("unk_id").and_then(Value::as_u64).ok_or(
+                    tokenizererror::missingfield {
+                        field: "model.unk_id",
+                    },
+                )? as u32;
                 let mut entries: Vec<(String, u32)> = pieces
                     .iter()
                     .enumerate()

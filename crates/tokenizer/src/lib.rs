@@ -28,6 +28,7 @@
 //! `chat` exports the chat types), because a module and a re-exported type
 //! share one name namespace and cannot both use the same name.
 
+mod charsmap;
 mod chat;
 mod decode;
 mod encode;
