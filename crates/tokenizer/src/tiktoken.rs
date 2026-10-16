@@ -12,7 +12,7 @@ use std::collections::{BinaryHeap, HashMap};
 use lib::tokenid;
 
 use crate::error::tokenizererror;
-use crate::pretoken::{o200ksplit, KIMI_PAT};
+use crate::pretoken::{KIMI_PAT, o200ksplit};
 use crate::scratch::{mergescratch, mergestep, resetlinks};
 
 /// The pre-token splitter applied to non-special segments.
@@ -110,9 +110,10 @@ impl tiktokenizer {
     /// base64 token, and [`tokenizererror::invalidregex`] if the pattern
     /// fails to compile.
     pub fn fromfilehan(content: &str, specials: &[(String, u32)]) -> Result<Self, tokenizererror> {
-        let re = fancy_regex::Regex::new(KIMI_PAT).map_err(|error| tokenizererror::invalidregex {
-            detail: format!("Kimi pat_str does not compile: {error}"),
-        })?;
+        let re =
+            fancy_regex::Regex::new(KIMI_PAT).map_err(|error| tokenizererror::invalidregex {
+                detail: format!("Kimi pat_str does not compile: {error}"),
+            })?;
         let mut tok = Self::fromfile(content, specials)?;
         tok.split = splitter::kimi(re);
         Ok(tok)
