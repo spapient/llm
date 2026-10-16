@@ -171,13 +171,14 @@ pub fn unbitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
 /// Compresses a block, returning its codec byte, transform byte, and the stored
 /// bytes.
 ///
-/// Every candidate `(transform, codec)` pair is tried and the smallest stored
-/// size wins, so the block is stored raw when no compression shrinks it and
-/// transformed only when the pre-pass actually helps. The transform pre-pass is
-/// bit-shuffle + delta over 16-bit and 32-bit elements; the codecs are LZ4 and
-/// Zstd at levels 1 and 3. Zstd level 9 is deliberately excluded: on the
-/// measured profiles its ratio gain over level 1 is under 0.4 percentage
-/// points while compression runs 5–10× slower.
+/// The candidate set is deliberately minimal: the transform pre-pass
+/// (`{none, f16, f32}`) is tried with a single codec, Zstd level 1, and the
+/// block is stored raw when no candidate shrinks it. LZ4 and Zstd levels 3/9
+/// were dropped after sweep measurements: on every measured profile Zstd-1
+/// either wins the ratio or ties it, Zstd-3/9 add at most 0.4 percentage
+/// points while compressing 5–10× slower, and raw storage protects
+/// high-entropy blocks from codec expansion. The `CODECLZ4` decode path stays
+/// for format compatibility with older snapshots.
 pub(crate) fn compressblock(bytes: &[u8]) -> (u8, u8, Vec<u8>) {
     let mut best: (u8, u8, Vec<u8>) = (CODECRAW, TRANSFORMNONE, bytes.to_vec());
     for transform in [TRANSFORMNONE, TRANSFORMF16, TRANSFORMF32] {
@@ -192,16 +193,10 @@ pub(crate) fn compressblock(bytes: &[u8]) -> (u8, u8, Vec<u8>) {
         } else {
             &transformed
         };
-        let lz4 = lz4_flex::compress_prepend_size(source);
-        if lz4.len() < best.2.len() {
-            best = (CODECLZ4, transform, lz4);
-        }
-        for level in [1i32, 3] {
-            if let Ok(zstd) = zstd::bulk::compress(source, level)
-                && zstd.len() < best.2.len()
-            {
-                best = (CODECZSTD, transform, zstd);
-            }
+        if let Ok(zstd) = zstd::bulk::compress(source, 1)
+            && zstd.len() < best.2.len()
+        {
+            best = (CODECZSTD, transform, zstd);
         }
     }
     best
