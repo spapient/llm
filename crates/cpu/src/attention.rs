@@ -382,7 +382,6 @@ fn mergepartials(
 /// tile the running maximum advances and the accumulated output is rescaled by
 /// `exp(old - new)`, then the tile's value rows are fused into the accumulator.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 #[arcane(import_intrinsics)]
 fn attentionqblock_v3(
     token: X64V3Token,
@@ -504,7 +503,6 @@ fn attentionqblock_v3(
 
 /// NEON query-block variant.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 #[arcane(import_intrinsics)]
 fn attentionqblock_neon(
     token: NeonToken,
@@ -622,7 +620,6 @@ fn attentionqblock_neon(
 
 /// Scalar query-block variant (fused multiply-add keeps the accumulation
 /// sequence identical to the SIMD tiers per element).
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 #[arcane(import_intrinsics)]
 fn attentionqblock_scalar(
