@@ -51,8 +51,21 @@ pub enum backenderror {
     },
 
     /// Execution failed for a reason owned by the backend.
-    #[error("execution failed")]
-    executionfailed,
+    ///
+    /// Carries the backend name, the failing stage or kernel entry point, and
+    /// the backend-provided diagnostic so a runtime failure is reachable and
+    /// actionable — a caller can tell *where* it failed (`launch` vs
+    /// `transfer` vs `construct`) and *why*, instead of receiving an opaque
+    /// marker.
+    #[error("execution failed on {backend} ({kernel}): {message}")]
+    executionfailed {
+        /// The backend whose execution failed.
+        backend: &'static str,
+        /// The failing stage or kernel entry point.
+        kernel: String,
+        /// The backend-provided diagnostic.
+        message: String,
+    },
 
     /// Two operands have shapes that are incompatible for the requested
     /// operation.

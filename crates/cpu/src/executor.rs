@@ -319,7 +319,11 @@ impl compute for cpuexecutor {
             shape::new(vec![position + 1, width]).map_err(|_| backenderror::sizeoverflow)?,
             data,
         )
-        .map_err(|_| backenderror::executionfailed)?;
+        .map_err(|e| backenderror::executionfailed {
+            backend: "cpu",
+            kernel: "construct".into(),
+            message: e.to_string(),
+        })?;
         let rotated = self.rope(&padded.getview(), heads, base)?;
         let start = position * width;
         let last = rotated.getdata()[start..start + width].to_vec();
@@ -327,7 +331,11 @@ impl compute for cpuexecutor {
             shape::new(vec![1, width]).map_err(|_| backenderror::sizeoverflow)?,
             last,
         )
-        .map_err(|_| backenderror::executionfailed)
+        .map_err(|e| backenderror::executionfailed {
+            backend: "cpu",
+            kernel: "construct".into(),
+            message: e.to_string(),
+        })
     }
 
     fn attention(
@@ -410,7 +418,11 @@ fn concat(a: &tensorview<'_, f32>, b: &tensorview<'_, f32>) -> Result<tensor<f32
     data.extend_from_slice(b.getdata());
     let len = data.len() / width;
     let outshape = shape::new(vec![len, width]).map_err(|_| backenderror::sizeoverflow)?;
-    tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
+    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
+        backend: "cpu",
+        kernel: "construct".into(),
+        message: e.to_string(),
+    })
 }
 
 /// Maps a CPU policy error onto the backend contract enforced by `api`.

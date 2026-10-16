@@ -44,27 +44,14 @@ use crate::gpucontract;
 /// Reports whether an NVIDIA device is reachable, failing when it is required.
 ///
 /// Returns `true` when a kernel may be dispatched. When no device is reachable
-/// it returns `false` after asserting the environment did not demand one, so a
-/// caller must return early instead of asserting a numerical result.
+/// it returns `false` after applying the shared environment gate, so a caller
+/// must return early instead of asserting a numerical result.
+///
+/// The probe protocol (command, `E4` record, `LLM_CUDA_REQUIRE_DEVICE` hard
+/// gate) is the shared one from [`testkit::probe`], so CUDA, MUSA, and any
+/// future backend report a missing device identically.
 fn hasdevice(test: &str) -> bool {
-    let probed = std::process::Command::new("nvidia-smi")
-        .arg("-L")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if probed {
-        return true;
-    }
-    assert!(
-        std::env::var_os("LLM_CUDA_REQUIRE_DEVICE").is_none(),
-        "{test}: LLM_CUDA_REQUIRE_DEVICE is set but no CUDA device was detected"
-    );
-    eprintln!(
-        "E4 未执行: {test} needs an NVIDIA GPU; `nvidia-smi -L` was unavailable or \
-         reported no device. Set LLM_CUDA_REQUIRE_DEVICE=1 to fail instead."
-    );
-    false
+    testkit::probe::requiredevice(test, testkit::probe::gpuprobe::cuda)
 }
 
 /// Scalar reference for grouped-query causal attention.

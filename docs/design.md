@@ -363,7 +363,7 @@ cpu    -> lib
 
 资源回滚：失败的内核在构造输出张量之前返回，不逃逸任何部分分配（所有者：内核；生命期：该次调用）。
 
-`backenderror`（10 个 variant）：`unsupporteddtype { dtype }`、`unsupportedoperation { op }`、`sizeoverflow`、`devicenotavailable`、`kernelcompilefailed { backend, kernel, message }`、`executionfailed`、`shapemismatch { op }`、`indexoutofrange { index, len }`、`invalidparameter { op }`、`resourceexhausted`。`compute` 的边界映射约定：被拒预算 -> `resourceexhausted`；内核错误 -> 原样透传；设备不可达 -> `devicenotavailable`（让"环境无 GPU"可诊断）；内核编译/模块加载失败 -> `kernelcompilefailed { backend, kernel, message }`（`kernel` 是失败的 `(source, entry)` 对中的 entry，`message` 是驱动诊断——编译失败可定位到具体内核而非笼统的执行失败）。
+`backenderror`（10 个 variant）：`unsupporteddtype { dtype }`、`unsupportedoperation { op }`、`sizeoverflow`、`devicenotavailable`、`kernelcompilefailed { backend, kernel, message }`、`executionfailed { backend, kernel, message }`、`shapemismatch { op }`、`indexoutofrange { index, len }`、`invalidparameter { op }`、`resourceexhausted`。`compute` 的边界映射约定：被拒预算 -> `resourceexhausted`；内核错误 -> 原样透传；设备不可达 -> `devicenotavailable`（让"环境无 GPU"可诊断）；内核编译/模块加载失败 -> `kernelcompilefailed { backend, kernel, message }`（`kernel` 是失败的 `(source, entry)` 对中的 entry，`message` 是驱动诊断——编译失败可定位到具体内核而非笼统的执行失败）；运行期失败 -> `executionfailed { backend, kernel, message }`（`kernel` 是失败阶段或入口：`construct`/`transfer`/`launch`/`blas`/`cudnn`/`alloc`/`run`，`message` 是驱动或宿主诊断——执行失败同样可定位到阶段与根因）。
 
 **错误分类语义（排障契约）。** `compute` 边界把后端失败分为三类，调用方按类采取动作：
 
@@ -371,9 +371,9 @@ cpu    -> lib
 | :--- | :--- | :--- |
 | `devicenotavailable` | 后端无法打开设备：无 Metal 设备 / 无可用 CUDA GPU / 驱动缺失 / 沙箱拦截设备系统调用 | 检查 GPU 与驱动、放开沙箱设备权限；**降级 CPU 后端**（`cpu` 永不产生该变体，是最小可用路径） |
 | `kernelcompilefailed { backend, kernel, message }` | MSL/NVRTC 编译失败、pipeline 创建失败、模块加载/函数解析失败 | 按 `kernel` 定位 `(source, entry)` 对，按 `message` 核对 MSL/CUDA 版本、语法或资源限制；编译发生在运行期且按对缓存，一次修复全局生效 |
-| `executionfailed` | 运行期执行失败：缓冲分配、传输、启动、cuBLAS/cuDNN 调用 | 后端内部错误（`metalerror`/`cudaerror`）保留驱动 `message` 与分类，查后端日志；不携带可统一处理的恢复语义 |
+| `executionfailed` | 运行期执行失败：输出构造、缓冲分配、传输、启动、cuBLAS/cuDNN 调用 | 携带结构化诊断 `{ backend, kernel, message }`：`kernel` 标识失败阶段（`construct`/`alloc`/`transfer`/`launch`/`blas`/`cudnn`/`run`），`message` 为驱动或宿主诊断——执行失败可定位到阶段与根因，不再是无上下文的标记；不携带可统一处理的恢复语义 |
 
-前两类是可恢复/可归因的环境与编译问题，调用方应显式处理；`executionfailed` 是后端自持错误，只陈述失败不承诺恢复。此分类是"错误映射显式且在关键处无损"（§5.2 决策 10）的实例化：分类无塌缩、诊断有归属。
+前两类是可恢复/可归因的环境与编译问题，调用方应显式处理；`executionfailed` 是后端自持错误，只陈述失败与阶段归属、不承诺恢复。此分类是"错误映射显式且在关键处无损"（§5.2 决策 10）的实例化：分类无塌缩、诊断有归属。
 
 Layer 0 一侧的 `kernel`/`backend` 错误契约：`kernel::apply` 在元素 dtype 不受支持、操作不受支持、元素计数溢出或执行失败时返回 `backenderror`。`backend` 不做校验也不分配，只陈述后端接受什么。
 
@@ -2597,7 +2597,7 @@ cuda  -> api
 * 秩超过 `METALMAXRANK`/`CUDAMAXRANK` → `resourceexhausted`（与 `cpu` 对 `CPUMAXRANK` 的分类一致：被拒绝的是声明的能力上界，不是执行失败）；
 * 超出能力声明的元素或字节预算（`embedding` 的按其 gather 输出 `rows * width` 计；`matmul` 的除两个操作数外还含其**结果**）→ `resourceexhausted`；
 * 每头宽度超过 `METALMAXHEADDIM`/`CUDAMAXHEADDIM` → `resourceexhausted`；
-* 设备初始化失败 / MSL 或 NVRTC 编译失败 / 模块或内核解析失败 / 缓冲分配失败 / 内核启动失败 / cuBLAS 调用失败 / cuDNN 调用失败 / host-device 传输失败 → `executionfailed`（诊断文本保留在 crate 私有的 `metalerror`/`cudaerror` 中，不泄入 `api` 契约）；
+* 设备初始化失败 → `devicenotavailable`；MSL 或 NVRTC 编译失败 / 模块或内核解析失败 → `kernelcompilefailed`（带 backend/kernel/驱动诊断）；缓冲分配失败 / 内核启动失败 / cuBLAS 调用失败 / cuDNN 调用失败 / host-device 传输失败 / 输出张量构造失败 → `executionfailed`（携带结构化诊断 `{ backend, kernel, message }`，`kernel` 为失败阶段名，`message` 为驱动或宿主诊断——执行失败可定位到阶段与根因）；
 * `metal` 与 `cuda` 都已实现 `compute` 的全部算子（`matmul`、`add`、`mul`、`silu`、`rmsnorm`、`softmax`、`rope`、`embedding`、`attention`、`scan`），故两者唯一的 `unsupportedoperation` 来源是上一条的空末轴（`softmax`、`rmsnorm`）。`scan` 为每线程一通道的串行递推内核（β 通道，`docs/beta-scan-plan.md`），复用既有上传/下载/绑定/参数绑定站点，`unsafe` 站点数不变（metal 4/4、cuda 3/3）。
 
 `compute` 契约的每个方法都只接受 `f32` 张量视图，故 GPU 后端不可能因 dtype 失败；`capabilities` 声明 `f32` 是为了让上层在派发前就能判定，`unsupporteddtype` 不由这两个后端产生。

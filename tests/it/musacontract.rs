@@ -10,10 +10,11 @@
 //! (`mthreads-gmi`). Per docs/engineering.md, a test that cannot run in its
 //! environment must be reported as *not executed*, never as passed:
 //!
-//! - The device probe is `mthreads-gmi`. When it is absent or reports no
-//!   device, the suite prints `E4 未执行` and returns without asserting the
-//!   numerical result. That printed line is the record; the harness still
-//!   reports the test as `ok`.
+//! - The device probe is `musaInfo` (the MUSA toolkit device query), shared
+//!   with every GPU backend through [`testkit::probe`]. When it is absent or
+//!   reports no device, the suite prints `E4 未执行` and returns without
+//!   asserting the numerical result. That printed line is the record; the
+//!   harness still reports the test as `ok`.
 //! - Setting `LLM_MUSA_REQUIRE_DEVICE=1` turns the same condition into a hard
 //!   failure, so a missing device can never be mistaken for a passing
 //!   numerical check.

@@ -9,5 +9,9 @@ use api::backenderror;
 /// internal invariant; it is reported as a backend execution failure rather
 /// than silently ignored or discarded.
 pub(crate) fn finish(s: &shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
-    tensor::new(s.clone(), data).map_err(|_| backenderror::executionfailed)
+    tensor::new(s.clone(), data).map_err(|e| backenderror::executionfailed {
+        backend: "cpu",
+        kernel: "construct".into(),
+        message: e.to_string(),
+    })
 }

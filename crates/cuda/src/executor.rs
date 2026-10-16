@@ -146,7 +146,11 @@ impl cudaexecutor {
 
 /// Rebuilds a kernel result into a tensor of `outshape`.
 fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
-    tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
+    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
+        backend: "cuda",
+        kernel: "construct".into(),
+        message: e.to_string(),
+    })
 }
 
 /// Maps a crate-local [`cudaerror`] onto the frozen `api::backenderror`.
@@ -159,7 +163,7 @@ fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
 fn maptobackend(error: cudaerror) -> backenderror {
     match error {
         cudaerror::sizeoverflow => backenderror::sizeoverflow,
-        cudaerror::device { message } => backenderror::devicenotavailable,
+        cudaerror::device { .. } => backenderror::devicenotavailable,
         cudaerror::compile { kernel, message } | cudaerror::module { kernel, message } => {
             backenderror::kernelcompilefailed {
                 backend: "cuda",
@@ -167,10 +171,26 @@ fn maptobackend(error: cudaerror) -> backenderror {
                 message,
             }
         }
-        cudaerror::transfer { .. }
-        | cudaerror::launch { .. }
-        | cudaerror::blas { .. }
-        | cudaerror::cudnn { .. } => backenderror::executionfailed,
+        cudaerror::transfer { message } => backenderror::executionfailed {
+            backend: "cuda",
+            kernel: "transfer".into(),
+            message,
+        },
+        cudaerror::launch { message } => backenderror::executionfailed {
+            backend: "cuda",
+            kernel: "launch".into(),
+            message,
+        },
+        cudaerror::blas { message } => backenderror::executionfailed {
+            backend: "cuda",
+            kernel: "blas".into(),
+            message,
+        },
+        cudaerror::cudnn { message } => backenderror::executionfailed {
+            backend: "cuda",
+            kernel: "cudnn".into(),
+            message,
+        },
     }
 }
 
@@ -322,7 +342,11 @@ impl compute for cudaexecutor {
             shape::new(vec![position + 1, width]).map_err(|_| backenderror::sizeoverflow)?,
             data,
         )
-        .map_err(|_| backenderror::executionfailed)?;
+        .map_err(|e| backenderror::executionfailed {
+            backend: "cuda",
+            kernel: "construct".into(),
+            message: e.to_string(),
+        })?;
         let rotated = self.rope(&padded.getview(), heads, base)?;
         let start = position * width;
         let last = rotated.getdata()[start..start + width].to_vec();
@@ -330,7 +354,11 @@ impl compute for cudaexecutor {
             shape::new(vec![1, width]).map_err(|_| backenderror::sizeoverflow)?,
             last,
         )
-        .map_err(|_| backenderror::executionfailed)
+        .map_err(|e| backenderror::executionfailed {
+            backend: "cuda",
+            kernel: "construct".into(),
+            message: e.to_string(),
+        })
     }
 
     fn attention(
@@ -440,7 +468,11 @@ fn concat(a: &tensorview<'_, f32>, b: &tensorview<'_, f32>) -> Result<tensor<f32
     data.extend_from_slice(b.getdata());
     let len = data.len() / width;
     let outshape = shape::new(vec![len, width]).map_err(|_| backenderror::sizeoverflow)?;
-    tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
+    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
+        backend: "cuda",
+        kernel: "construct".into(),
+        message: e.to_string(),
+    })
 }
 
 /// Validates scan ranks, channel alignment, state-width alignment, and the

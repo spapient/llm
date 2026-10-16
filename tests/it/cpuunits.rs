@@ -432,7 +432,11 @@ mod error {
     #[test]
     fn variants_are_distinguishable() {
         assert_ne!(
-            cpuerror::backend(backenderror::executionfailed),
+            cpuerror::backend(backenderror::executionfailed {
+                backend: "cpu",
+                kernel: "construct".into(),
+                message: "probe".into(),
+            }),
             cpuerror::limit(limiterror::maxbatchexceeded {
                 requested: 1,
                 limit: 0,

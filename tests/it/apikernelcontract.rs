@@ -94,14 +94,26 @@ fn invalidparameter_carries_op_name() {
 #[test]
 fn unit_variants_are_distinct() {
     assert_eq!(backenderror::sizeoverflow, backenderror::sizeoverflow);
-    assert_ne!(backenderror::sizeoverflow, backenderror::executionfailed);
+    assert_ne!(
+        backenderror::sizeoverflow,
+        backenderror::executionfailed {
+            backend: "cpu",
+            kernel: "construct".into(),
+            message: "probe".into(),
+        }
+    );
 }
 
 #[test]
 fn display_is_stable() {
     assert_eq!(
-        backenderror::executionfailed.to_string(),
-        "execution failed"
+        backenderror::executionfailed {
+            backend: "metal",
+            kernel: "launch".into(),
+            message: "device timeout".into(),
+        }
+        .to_string(),
+        "execution failed on metal (launch): device timeout"
     );
     assert_eq!(backenderror::sizeoverflow.to_string(), "size overflow");
     assert_eq!(
@@ -131,7 +143,11 @@ fn resource_exhaustion_is_distinct() {
     );
     assert_ne!(
         backenderror::resourceexhausted,
-        backenderror::executionfailed
+        backenderror::executionfailed {
+            backend: "cpu",
+            kernel: "construct".into(),
+            message: "probe".into(),
+        }
     );
     assert_eq!(
         backenderror::resourceexhausted.to_string(),
@@ -149,7 +165,11 @@ fn device_absence_is_distinct_and_stable() {
     // runtime execution failure.
     assert_ne!(
         backenderror::devicenotavailable,
-        backenderror::executionfailed
+        backenderror::executionfailed {
+            backend: "cuda",
+            kernel: "launch".into(),
+            message: "probe".into(),
+        }
     );
     assert_ne!(
         backenderror::devicenotavailable,
@@ -211,7 +231,14 @@ fn kernel_compile_failure_carries_backend_kernel_and_diagnostic() {
         e.to_string(),
         "kernel compilation failed on metal (attention): MSL 5.0: undeclared identifier 'foo'"
     );
-    assert_ne!(e, backenderror::executionfailed);
+    assert_ne!(
+        e,
+        backenderror::executionfailed {
+            backend: "metal",
+            kernel: "launch".into(),
+            message: "probe".into(),
+        }
+    );
 }
 
 /// A binary kernel that refuses every element type, used only to type-check

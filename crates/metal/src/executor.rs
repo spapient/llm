@@ -96,7 +96,11 @@ impl metalexecutor {
 
 /// Rebuilds a kernel result into a tensor of `outshape`.
 fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
-    tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
+    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
+        backend: "metal",
+        kernel: "construct".into(),
+        message: e.to_string(),
+    })
 }
 
 /// Maps a crate-local [`metalerror`] onto the frozen `api::backenderror`.
@@ -118,7 +122,16 @@ fn maptobackend(error: metalerror) -> backenderror {
                 message,
             }
         }
-        metalerror::allocation | metalerror::execution { .. } => backenderror::executionfailed,
+        metalerror::allocation => backenderror::executionfailed {
+            backend: "metal",
+            kernel: "alloc".into(),
+            message: "device allocation failed".into(),
+        },
+        metalerror::execution { message } => backenderror::executionfailed {
+            backend: "metal",
+            kernel: "run".into(),
+            message,
+        },
     }
 }
 
@@ -264,7 +277,11 @@ impl compute for metalexecutor {
             shape::new(vec![position + 1, width]).map_err(|_| backenderror::sizeoverflow)?,
             data,
         )
-        .map_err(|_| backenderror::executionfailed)?;
+        .map_err(|e| backenderror::executionfailed {
+            backend: "metal",
+            kernel: "construct".into(),
+            message: e.to_string(),
+        })?;
         let rotated = self.rope(&padded.getview(), heads, base)?;
         let start = position * width;
         let last = rotated.getdata()[start..start + width].to_vec();
@@ -272,7 +289,11 @@ impl compute for metalexecutor {
             shape::new(vec![1, width]).map_err(|_| backenderror::sizeoverflow)?,
             last,
         )
-        .map_err(|_| backenderror::executionfailed)
+        .map_err(|e| backenderror::executionfailed {
+            backend: "metal",
+            kernel: "construct".into(),
+            message: e.to_string(),
+        })
     }
 
     fn attention(
@@ -376,7 +397,11 @@ fn concat(a: &tensorview<'_, f32>, b: &tensorview<'_, f32>) -> Result<tensor<f32
     data.extend_from_slice(b.getdata());
     let len = data.len() / width;
     let outshape = shape::new(vec![len, width]).map_err(|_| backenderror::sizeoverflow)?;
-    tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
+    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
+        backend: "metal",
+        kernel: "construct".into(),
+        message: e.to_string(),
+    })
 }
 
 /// Validates scan ranks, channel alignment, state-width alignment, and the
