@@ -16,6 +16,7 @@ lib = { path = "../lib" }
 tensor = { path = "../tensor" }
 api = { path = "../api" }
 fearless_simd.workspace = true
+archmage.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

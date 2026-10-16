@@ -1,0 +1,1733 @@
+//! Generated from token-registry.toml — DO NOT EDIT.
+//!
+//! Regenerate with: cargo xtask generate
+
+use crate::tokens::SimdToken;
+#[allow(deprecated)]
+use crate::tokens::{Has128BitSimd, HasArm64V2, HasArm64V3, HasNeon, HasNeonAes, HasNeonSha3};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+// Cache statics: 0 = unknown, 1 = unavailable, 2 = available
+#[allow(dead_code)]
+pub(super) static NEON_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static NEON_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static NEON_AES_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static NEON_AES_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static NEON_SHA3_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static NEON_SHA3_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static NEON_CRC_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static NEON_CRC_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static ARM64_V2_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static ARM64_V2_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static ARM64_V3_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static ARM64_V3_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Proof that NEON is available.
+///
+/// NEON is available on virtually all AArch64 processors, but requires
+/// runtime detection via `summon()` unless compiled with `-Ctarget-feature=+neon`.
+#[derive(Clone, Copy, Debug)]
+pub struct NeonToken {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for NeonToken {}
+
+impl SimdToken for NeonToken {
+    const NAME: &'static str = "NEON";
+    const TARGET_FEATURES: &'static str = "neon";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+neon";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-neon";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(target_feature = "neon", not(feature = "testable_dispatch")))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(target_feature = "neon", not(feature = "testable_dispatch"))))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(target_feature = "neon", not(feature = "testable_dispatch")))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(target_feature = "neon", not(feature = "testable_dispatch"))))]
+        {
+            match NEON_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by neon_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => neon_detect(),
+            }
+        }
+    }
+}
+
+impl NeonToken {
+    /// Construct a NEON proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "neon")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`NeonToken::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`NeonToken::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "neon")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl NeonToken {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `NeonAesToken`
+    /// - `NeonSha3Token`
+    /// - `NeonCrcToken`
+    /// - `Arm64V2Token`
+    /// - `Arm64V3Token`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(target_feature = "neon", not(feature = "testable_dispatch")))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(target_feature = "neon", not(feature = "testable_dispatch"))))]
+        {
+            NEON_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            NEON_CACHE.store(v, Ordering::Relaxed);
+            NEON_AES_DISABLED.store(disabled, Ordering::Relaxed);
+            NEON_AES_CACHE.store(v, Ordering::Relaxed);
+            NEON_SHA3_DISABLED.store(disabled, Ordering::Relaxed);
+            NEON_SHA3_CACHE.store(v, Ordering::Relaxed);
+            NEON_CRC_DISABLED.store(disabled, Ordering::Relaxed);
+            NEON_CRC_CACHE.store(v, Ordering::Relaxed);
+            ARM64_V2_DISABLED.store(disabled, Ordering::Relaxed);
+            ARM64_V2_CACHE.store(v, Ordering::Relaxed);
+            ARM64_V3_DISABLED.store(disabled, Ordering::Relaxed);
+            ARM64_V3_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(target_feature = "neon", not(feature = "testable_dispatch")))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(target_feature = "neon", not(feature = "testable_dispatch"))))]
+        {
+            Ok(NEON_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(target_feature = "neon", not(feature = "testable_dispatch"))))]
+#[cold]
+#[inline(never)]
+fn neon_detect() -> Option<NeonToken> {
+    let available = crate::is_aarch64_feature_available!("neon");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = NEON_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !NEON_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { NeonToken::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that NEON + AES is available.
+///
+/// AES extension is common on modern ARM64 devices with crypto extensions.
+#[derive(Clone, Copy, Debug)]
+pub struct NeonAesToken {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for NeonAesToken {}
+
+impl SimdToken for NeonAesToken {
+    const NAME: &'static str = "NEON+AES";
+    const TARGET_FEATURES: &'static str = "neon,aes";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+neon,+aes";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-neon,-aes";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match NEON_AES_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by neon_aes_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => neon_aes_detect(),
+            }
+        }
+    }
+}
+
+impl NeonAesToken {
+    /// Construct a NEON+AES proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "neon,aes")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`NeonAesToken::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`NeonAesToken::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "neon,aes")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl NeonAesToken {
+    /// Extract a NeonToken — guaranteed because NEON+AES implies NEON.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon(self) -> NeonToken {
+        // SAFETY: holding `self` proves this CPU has NEON+AES's
+        // full feature set, a superset of NEON's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonToken::from_context() }
+    }
+}
+
+impl NeonAesToken {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            NEON_AES_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            NEON_AES_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(NEON_AES_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "neon",
+    target_feature = "aes",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn neon_aes_detect() -> Option<NeonAesToken> {
+    let available =
+        crate::is_aarch64_feature_available!("neon") && crate::is_aarch64_feature_available!("aes");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = NEON_AES_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !NEON_AES_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { NeonAesToken::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that NEON + SHA3 is available.
+///
+/// SHA3 extension is available on ARMv8.2-A and later.
+#[derive(Clone, Copy, Debug)]
+pub struct NeonSha3Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for NeonSha3Token {}
+
+impl SimdToken for NeonSha3Token {
+    const NAME: &'static str = "NEON+SHA3";
+    const TARGET_FEATURES: &'static str = "neon,sha3";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+neon,+sha3";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-neon,-sha3";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match NEON_SHA3_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by neon_sha3_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => neon_sha3_detect(),
+            }
+        }
+    }
+}
+
+impl NeonSha3Token {
+    /// Construct a NEON+SHA3 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "neon,sha3")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`NeonSha3Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`NeonSha3Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "neon,sha3")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl NeonSha3Token {
+    /// Extract a NeonToken — guaranteed because NEON+SHA3 implies NEON.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon(self) -> NeonToken {
+        // SAFETY: holding `self` proves this CPU has NEON+SHA3's
+        // full feature set, a superset of NEON's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonToken::from_context() }
+    }
+}
+
+impl NeonSha3Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            NEON_SHA3_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            NEON_SHA3_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "sha3",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(NEON_SHA3_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "neon",
+    target_feature = "sha3",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn neon_sha3_detect() -> Option<NeonSha3Token> {
+    let available = crate::is_aarch64_feature_available!("neon")
+        && crate::is_aarch64_feature_available!("sha3");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = NEON_SHA3_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !NEON_SHA3_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { NeonSha3Token::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that NEON + CRC is available.
+///
+/// CRC32 extension is common on most AArch64 CPUs (part of ARMv8.1-A baseline).
+/// Available on: Cortex-A53+, Apple M1+, Graviton 1+, Snapdragon 8xx.
+#[derive(Clone, Copy, Debug)]
+pub struct NeonCrcToken {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for NeonCrcToken {}
+
+impl SimdToken for NeonCrcToken {
+    const NAME: &'static str = "NEON+CRC";
+    const TARGET_FEATURES: &'static str = "neon,crc";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+neon,+crc";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-neon,-crc";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match NEON_CRC_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by neon_crc_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => neon_crc_detect(),
+            }
+        }
+    }
+}
+
+impl NeonCrcToken {
+    /// Construct a NEON+CRC proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "neon,crc")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`NeonCrcToken::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`NeonCrcToken::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "neon,crc")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl NeonCrcToken {
+    /// Extract a NeonToken — guaranteed because NEON+CRC implies NEON.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon(self) -> NeonToken {
+        // SAFETY: holding `self` proves this CPU has NEON+CRC's
+        // full feature set, a superset of NEON's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonToken::from_context() }
+    }
+}
+
+impl NeonCrcToken {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            NEON_CRC_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            NEON_CRC_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(NEON_CRC_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "neon",
+    target_feature = "crc",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn neon_crc_detect() -> Option<NeonCrcToken> {
+    let available =
+        crate::is_aarch64_feature_available!("neon") && crate::is_aarch64_feature_available!("crc");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = NEON_CRC_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !NEON_CRC_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { NeonCrcToken::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that the Arm64-v2 feature set is available.
+///
+/// Arm64-v2 is archmage's second ARM tier, covering: NEON, CRC, RDM, DotProd,
+/// FP16, AES, SHA2. This targets the broadest modern ARM baseline.
+///
+/// Available on: Cortex-A55+, Apple M1+, Graviton 2+, all post-2017 ARM chips.
+#[derive(Clone, Copy, Debug)]
+pub struct Arm64V2Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for Arm64V2Token {}
+
+impl SimdToken for Arm64V2Token {
+    const NAME: &'static str = "Arm64-v2";
+    const TARGET_FEATURES: &'static str = "neon,crc,rdm,dotprod,fp16,aes,sha2";
+    const ENABLE_TARGET_FEATURES: &'static str =
+        "-Ctarget-feature=+neon,+crc,+rdm,+dotprod,+fp16,+aes,+sha2";
+    const DISABLE_TARGET_FEATURES: &'static str =
+        "-Ctarget-feature=-neon,-crc,-rdm,-dotprod,-fp16,-aes,-sha2";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match ARM64_V2_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by arm64_v2_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => arm64_v2_detect(),
+            }
+        }
+    }
+}
+
+impl Arm64V2Token {
+    /// Construct a Arm64-v2 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "neon,crc,rdm,dotprod,fp16,aes,sha2")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`Arm64V2Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`Arm64V2Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "neon,crc,rdm,dotprod,fp16,aes,sha2")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl Arm64V2Token {
+    /// Extract a NeonAesToken — guaranteed because Arm64-v2 implies NEON+AES.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon_aes(self) -> NeonAesToken {
+        // SAFETY: holding `self` proves this CPU has Arm64-v2's
+        // full feature set, a superset of NEON+AES's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonAesToken::from_context() }
+    }
+    /// Extract a NeonCrcToken — guaranteed because Arm64-v2 implies NEON+CRC.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon_crc(self) -> NeonCrcToken {
+        // SAFETY: holding `self` proves this CPU has Arm64-v2's
+        // full feature set, a superset of NEON+CRC's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonCrcToken::from_context() }
+    }
+    /// Extract a NeonToken — guaranteed because Arm64-v2 implies NEON.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon(self) -> NeonToken {
+        // SAFETY: holding `self` proves this CPU has Arm64-v2's
+        // full feature set, a superset of NEON's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonToken::from_context() }
+    }
+}
+
+impl Arm64V2Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `Arm64V3Token`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            ARM64_V2_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            ARM64_V2_CACHE.store(v, Ordering::Relaxed);
+            ARM64_V3_DISABLED.store(disabled, Ordering::Relaxed);
+            ARM64_V3_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(ARM64_V2_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "neon",
+    target_feature = "crc",
+    target_feature = "rdm",
+    target_feature = "dotprod",
+    target_feature = "fp16",
+    target_feature = "aes",
+    target_feature = "sha2",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn arm64_v2_detect() -> Option<Arm64V2Token> {
+    let available = crate::is_aarch64_feature_available!("neon")
+        && crate::is_aarch64_feature_available!("crc")
+        && crate::is_aarch64_feature_available!("rdm")
+        && crate::is_aarch64_feature_available!("dotprod")
+        && crate::is_aarch64_feature_available!("fp16")
+        && crate::is_aarch64_feature_available!("aes")
+        && crate::is_aarch64_feature_available!("sha2");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = ARM64_V2_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !ARM64_V2_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { Arm64V2Token::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that the full modern ARM SIMD feature set is available (Arm64-v3).
+///
+/// Arm64-v3 adds FHM, FCMA, SHA3, I8MM, and BF16 over Arm64-v2.
+/// Available on: Cortex-A510+, Apple M2+, Snapdragon X, Graviton 3+, Cobalt 100.
+#[derive(Clone, Copy, Debug)]
+pub struct Arm64V3Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for Arm64V3Token {}
+
+impl SimdToken for Arm64V3Token {
+    const NAME: &'static str = "Arm64-v3";
+    const TARGET_FEATURES: &'static str =
+        "neon,crc,rdm,dotprod,fp16,aes,sha2,fhm,fcma,sha3,i8mm,bf16";
+    const ENABLE_TARGET_FEATURES: &'static str =
+        "-Ctarget-feature=+neon,+crc,+rdm,+dotprod,+fp16,+aes,+sha2,+fhm,+fcma,+sha3,+i8mm,+bf16";
+    const DISABLE_TARGET_FEATURES: &'static str =
+        "-Ctarget-feature=-neon,-crc,-rdm,-dotprod,-fp16,-aes,-sha2,-fhm,-fcma,-sha3,-i8mm,-bf16";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match ARM64_V3_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by arm64_v3_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => arm64_v3_detect(),
+            }
+        }
+    }
+}
+
+impl Arm64V3Token {
+    /// Construct a Arm64-v3 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "neon,crc,rdm,dotprod,fp16,aes,sha2,fhm,fcma,sha3,i8mm,bf16")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`Arm64V3Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`Arm64V3Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "neon,crc,rdm,dotprod,fp16,aes,sha2,fhm,fcma,sha3,i8mm,bf16")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl Arm64V3Token {
+    /// Extract a Arm64V2Token — guaranteed because Arm64-v3 implies Arm64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn arm_v2(self) -> Arm64V2Token {
+        // SAFETY: holding `self` proves this CPU has Arm64-v3's
+        // full feature set, a superset of Arm64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { Arm64V2Token::from_context() }
+    }
+    /// Extract a NeonAesToken — guaranteed because Arm64-v3 implies NEON+AES.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon_aes(self) -> NeonAesToken {
+        // SAFETY: holding `self` proves this CPU has Arm64-v3's
+        // full feature set, a superset of NEON+AES's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonAesToken::from_context() }
+    }
+    /// Extract a NeonCrcToken — guaranteed because Arm64-v3 implies NEON+CRC.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon_crc(self) -> NeonCrcToken {
+        // SAFETY: holding `self` proves this CPU has Arm64-v3's
+        // full feature set, a superset of NEON+CRC's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonCrcToken::from_context() }
+    }
+    /// Extract a NeonSha3Token — guaranteed because Arm64-v3 implies NEON+SHA3.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon_sha3(self) -> NeonSha3Token {
+        // SAFETY: holding `self` proves this CPU has Arm64-v3's
+        // full feature set, a superset of NEON+SHA3's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonSha3Token::from_context() }
+    }
+    /// Extract a NeonToken — guaranteed because Arm64-v3 implies NEON.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn neon(self) -> NeonToken {
+        // SAFETY: holding `self` proves this CPU has Arm64-v3's
+        // full feature set, a superset of NEON's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { NeonToken::from_context() }
+    }
+}
+
+impl Arm64V3Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            ARM64_V3_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            ARM64_V3_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "neon",
+            target_feature = "crc",
+            target_feature = "rdm",
+            target_feature = "dotprod",
+            target_feature = "fp16",
+            target_feature = "aes",
+            target_feature = "sha2",
+            target_feature = "fhm",
+            target_feature = "fcma",
+            target_feature = "sha3",
+            target_feature = "i8mm",
+            target_feature = "bf16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(ARM64_V3_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "neon",
+    target_feature = "crc",
+    target_feature = "rdm",
+    target_feature = "dotprod",
+    target_feature = "fp16",
+    target_feature = "aes",
+    target_feature = "sha2",
+    target_feature = "fhm",
+    target_feature = "fcma",
+    target_feature = "sha3",
+    target_feature = "i8mm",
+    target_feature = "bf16",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn arm64_v3_detect() -> Option<Arm64V3Token> {
+    let available = crate::is_aarch64_feature_available!("neon")
+        && crate::is_aarch64_feature_available!("crc")
+        && crate::is_aarch64_feature_available!("rdm")
+        && crate::is_aarch64_feature_available!("dotprod")
+        && crate::is_aarch64_feature_available!("fp16")
+        && crate::is_aarch64_feature_available!("aes")
+        && crate::is_aarch64_feature_available!("sha2")
+        && crate::is_aarch64_feature_available!("fhm")
+        && crate::is_aarch64_feature_available!("fcma")
+        && crate::is_aarch64_feature_available!("sha3")
+        && crate::is_aarch64_feature_available!("i8mm")
+        && crate::is_aarch64_feature_available!("bf16");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = ARM64_V3_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !ARM64_V3_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { Arm64V3Token::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Type alias for [`NeonToken`].
+pub type Arm64 = NeonToken;
+
+impl NeonToken {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x72CB52B2;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_72CB52B2: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x72CB52B2) as usize];
+}
+
+impl NeonAesToken {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x8C16863D;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_8C16863D: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x8C16863D) as usize];
+}
+
+impl NeonSha3Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x8215198F;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_8215198F: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x8215198F) as usize];
+}
+
+impl NeonCrcToken {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x5C2B1B4E;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_5C2B1B4E: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x5C2B1B4E) as usize];
+}
+
+impl Arm64V2Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0xB0231590;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_B0231590: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0xB0231590) as usize];
+}
+
+impl Arm64V3Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0xB2F6E2D5;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_B2F6E2D5: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0xB2F6E2D5) as usize];
+}
+
+#[allow(deprecated)]
+impl Has128BitSimd for NeonToken {}
+#[allow(deprecated)]
+impl Has128BitSimd for NeonAesToken {}
+#[allow(deprecated)]
+impl Has128BitSimd for NeonSha3Token {}
+#[allow(deprecated)]
+impl Has128BitSimd for NeonCrcToken {}
+#[allow(deprecated)]
+impl Has128BitSimd for Arm64V2Token {}
+#[allow(deprecated)]
+impl Has128BitSimd for Arm64V3Token {}
+impl HasArm64V2 for Arm64V2Token {}
+impl HasArm64V2 for Arm64V3Token {}
+impl HasArm64V3 for Arm64V3Token {}
+impl HasNeon for NeonToken {}
+impl HasNeon for NeonAesToken {}
+impl HasNeon for NeonSha3Token {}
+impl HasNeon for NeonCrcToken {}
+impl HasNeon for Arm64V2Token {}
+impl HasNeon for Arm64V3Token {}
+impl HasNeonAes for NeonAesToken {}
+impl HasNeonAes for Arm64V2Token {}
+impl HasNeonAes for Arm64V3Token {}
+impl HasNeonSha3 for NeonSha3Token {}
+impl HasNeonSha3 for Arm64V3Token {}

@@ -1,0 +1,118 @@
+[workspace]
+members = [".", "archmage-macros", "magetypes", "xtask", "tests/no-features-crate"]
+# `apidoc/` is the CI-free public-API snapshot runner: excluded so plain
+# `cargo test` and every CI job never compile its dependency tree or run
+# rustdoc. Regenerate via `just api-doc`.
+exclude = ["apidoc"]
+
+[workspace.package]
+version = "0.9.30"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/imazen/archmage"
+
+[package]
+name = "archmage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Safely invoke your intrinsic power, using the tokens granted to you by the CPU. Cast primitive magics faster than any mage alive."
+documentation = "https://docs.rs/archmage"
+# crates.io renders this trimmed, badge-free README (generated from README.md by
+# cargo run -p xtask -- generate); GitHub keeps README.md with the full badge row.
+readme = "README.crates.md"
+keywords = ["simd", "avx", "neon", "wasm", "safe"]
+categories = ["development-tools", "hardware-support", "no-std"]
+include = [
+    "src/**",
+    # tests/** intentionally NOT published — 727 KB of integration tests (276
+    # files, all auto-discovered, no [[test]] decls) that consumers never build.
+    # Files stay on disk so local `cargo test` is unaffected.
+    "token-registry.toml",
+    # Anchor root-level files with leading slash so they don't match inside
+    # the docs/site/themes/goyo git submodule (gitignore-style: no slash → any depth).
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.crates.md",
+    "/CHANGELOG.md",
+    "/LICENSE*",
+]
+
+[features]
+default = ["std"]
+std = []
+# Backwards-compat: macros are now always included. This feature exists so
+# `features = ["macros"]` doesn't break.
+macros = []
+# AVX-512 token support (Avx512Token, X64V4xToken, X64V4Token, etc.)
+# Also enables AVX-512 safe memory ops from safe_unaligned_simd.
+avx512 = ["safe_unaligned_simd/avx512", "archmage-macros/avx512"]
+# Backwards-compat: safe_unaligned_simd is now always included (no longer optional).
+# This feature exists so `features = ["safe_unaligned_simd"]` doesn't break.
+safe_unaligned_simd = []
+# Make token disabling work even when compiled with -Ctarget-cpu=native.
+# Without this, the compiler bakes summon() into a no-op and tokens can't be
+# disabled at runtime. With this, compiled_with() returns None and summon()
+# uses runtime detection + cache, so dangerously_disable_token_process_wide()
+# and for_each_token_permutation() always work.
+#
+# Cost: every summon() becomes a cache read, even X64V1Token's on x86-64,
+# which is otherwise a constant. Cargo unifies features across the build, so
+# enable this only from [dev-dependencies] or a dev-only feature (for example
+# `_dev = ["archmage/testable_dispatch"]`), never from [dependencies] or
+# [workspace.dependencies], where it reaches every downstream build.
+testable_dispatch = []
+# Backwards-compat no-op. forge_token_dangerously() used to be gated behind
+# this feature; it is now always public, because it is a safe
+# #[target_feature] function that rustc checks against the caller's feature
+# context. This feature exists so `features = ["forge-token-api"]` doesn't break.
+forge-token-api = []
+
+[dependencies]
+# Proc-macro output references this crate's internal API; release the pair together.
+archmage-macros = { version = "=0.9.30", path = "archmage-macros" }
+# Safe unaligned SIMD load/store (reference-based, no raw pointers)
+safe_unaligned_simd = { version = "0.2.5" }
+
+# Windows-on-ARM aarch64 detection. Pulled in unconditionally on this
+# target combo so every aarch64 token's `summon()` slow path goes
+# through the registry-backed `ID_AA64*_EL1` decoder + IPFP — recovering
+# ~30 feature names that stdarch's IPFP-only Windows backend cannot
+# see. Sandboxed callers can disable the registry layer at runtime via
+# `winarm_cpufeatures::set_registry_enabled(false)`. The crate is
+# `#[cfg(target_os = "windows", target_arch = "aarch64")]` internally,
+# so this entry never resolves on any other target.
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+winarm-cpufeatures = { version = "0.1.2", default-features = false, features = ["registry"] }
+
+# Dev dependencies that don't support WASM
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+
+# Gates exercise tests for intrinsics stabilized after the 1.89 MSRV
+# (NEON dotprod 1.98, NEON fp16/fhm 1.94, AVX-512 FP16 1.94).
+rustversion = "1.0.23"
+zenbench = { version = "0.1.10", features = ["criterion-compat"] }
+trybuild = "1.0.121"
+macrotest = "1.2.1"
+safe_unaligned_simd = { version = "0.2.5", features = ["avx512"] }
+
+[[bench]]
+name = "tokens"
+harness = false
+
+[[bench]]
+name = "asm_inspection"
+harness = false
+
+[[bench]]
+name = "summon_overhead"
+harness = false
+
+[package.metadata.docs.rs]
+features = ["std", "avx512"]
+rustdoc-args = ["--cfg", "docsrs"]
+# Build docs for multiple targets to show all platform-specific tokens
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "wasm32-unknown-unknown"]

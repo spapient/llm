@@ -159,6 +159,9 @@ half = { version = "2", features = ["bytemuck"] }
 bytemuck = "1"
 # 安全 SIMD（x86 SSE/AVX 与 aarch64 NEON）；unsafe 封装在依赖内部，workspace 保持零 unsafe。
 fearless_simd = "1"
+# 安全 intrinsics SIMD：本仓保持 forbid(unsafe_code) 下直接写平台 intrinsics。
+# token 证明（summon）+ #[arcane] 宏生成内部 unsafe 边界 + safe_unaligned_simd 安全内存操作。
+archmage = "0.9"
 # Ed25519 签名：对 .u 根哈希签名，纯 Rust、无 unsafe。
 ed25519-compact = "2"
 # AES-256-GCM 认证加密：.u 快照分块加密（纯 Rust，硬件加速 unsafe 封装在依赖内）。

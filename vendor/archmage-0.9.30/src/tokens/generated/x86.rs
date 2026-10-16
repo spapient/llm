@@ -1,0 +1,3962 @@
+//! Generated from token-registry.toml — DO NOT EDIT.
+//!
+//! Regenerate with: cargo xtask generate
+
+use crate::tokens::SimdToken;
+#[allow(deprecated)]
+use crate::tokens::{Has128BitSimd, Has256BitSimd, Has512BitSimd, HasX64V2, HasX64V4};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+// Cache statics: 0 = unknown, 1 = unavailable, 2 = available
+#[allow(dead_code)]
+pub(super) static X64_V1_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_V1_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static X64_V2_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_V2_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static X64_CRYPTO_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_CRYPTO_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static X64_V3_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_V3_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static X64_V3_CRYPTO_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_V3_CRYPTO_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static X64_V3_GFNI_CRYPTO_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_V3_GFNI_CRYPTO_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static X64_V4_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_V4_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static X64_V4X_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static X64_V4X_DISABLED: AtomicBool = AtomicBool::new(false);
+#[allow(dead_code)]
+pub(super) static AVX512_FP16_CACHE: AtomicU8 = AtomicU8::new(0);
+#[allow(dead_code)]
+pub(super) static AVX512_FP16_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Proof that SSE + SSE2 are available (x86-64-v1 baseline level).
+///
+/// SSE2 is the x86_64 ABI baseline — every x86_64 CPU has it. However, Rust
+/// still requires #[target_feature(enable = "sse2")] for SSE2 intrinsics to
+/// be safe. This token provides that via `#[arcane]`.
+///
+/// On x86_64, summon() always returns Some. On 32-bit x86, returns None
+/// (x86_64 tokens are not available on 32-bit).
+#[derive(Clone, Copy, Debug)]
+pub struct X64V1Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64V1Token {}
+
+impl SimdToken for X64V1Token {
+    const NAME: &'static str = "x86-64-v1";
+    const TARGET_FEATURES: &'static str = "sse,sse2";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(not(feature = "testable_dispatch"))]
+        {
+            Some(true)
+        }
+        #[cfg(feature = "testable_dispatch")]
+        {
+            None
+        }
+    }
+
+    #[inline]
+    fn summon() -> Option<Self> {
+        #[cfg(not(feature = "testable_dispatch"))]
+        {
+            // SAFETY: SSE/SSE2 are the x86-64 ABI baseline — every
+            // x86-64 CPU has them, so this token needs no detection.
+            Some(unsafe { Self::from_context() })
+        }
+        #[cfg(feature = "testable_dispatch")]
+        {
+            match X64_V1_CACHE.load(Ordering::Relaxed) {
+                1 => None,
+                // SAFETY: SSE/SSE2 are the x86-64 ABI baseline (the
+                // cache only simulates unavailability for tests).
+                _ => Some(unsafe { Self::from_context() }),
+            }
+        }
+    }
+}
+
+impl X64V1Token {
+    /// Construct a x86-64-v1 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "sse,sse2")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64V1Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64V1Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "sse,sse2")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64V1Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `X64V2Token`
+    /// - `X64CryptoToken`
+    /// - `X64V3Token`
+    /// - `X64V3CryptoToken`
+    /// - `X64V3GfniCryptoToken`
+    /// - `X64V4Token`
+    /// - `X64V4xToken`
+    /// - `Avx512Fp16Token`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_V1_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_V1_CACHE.store(v, Ordering::Relaxed);
+            X64_V2_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V2_CACHE.store(v, Ordering::Relaxed);
+            X64_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V4_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4_CACHE.store(v, Ordering::Relaxed);
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            AVX512_FP16_DISABLED.store(disabled, Ordering::Relaxed);
+            AVX512_FP16_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_V1_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+
+/// Proof that SSE4.2 + POPCNT are available (x86-64-v2 level).
+///
+/// x86-64-v2 implies: SSE, SSE2, SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CX16, SAHF.
+/// This is the Nehalem (2008) / Bulldozer (2011) baseline.
+#[derive(Clone, Copy, Debug)]
+pub struct X64V2Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64V2Token {}
+
+impl SimdToken for X64V2Token {
+    const NAME: &'static str = "x86-64-v2";
+    const TARGET_FEATURES: &'static str = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b";
+    const ENABLE_TARGET_FEATURES: &'static str =
+        "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b";
+    const DISABLE_TARGET_FEATURES: &'static str =
+        "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match X64_V2_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by x64_v2_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => x64_v2_detect(),
+            }
+        }
+    }
+}
+
+impl X64V2Token {
+    /// Construct a x86-64-v2 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64V2Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64V2Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64V2Token {
+    /// Extract a X64V1Token — guaranteed because x86-64-v2 implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v2's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+}
+
+impl X64V2Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `X64CryptoToken`
+    /// - `X64V3Token`
+    /// - `X64V3CryptoToken`
+    /// - `X64V3GfniCryptoToken`
+    /// - `X64V4Token`
+    /// - `X64V4xToken`
+    /// - `Avx512Fp16Token`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_V2_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_V2_CACHE.store(v, Ordering::Relaxed);
+            X64_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V4_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4_CACHE.store(v, Ordering::Relaxed);
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            AVX512_FP16_DISABLED.store(disabled, Ordering::Relaxed);
+            AVX512_FP16_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_V2_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn x64_v2_detect() -> Option<X64V2Token> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = X64_V2_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !X64_V2_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { X64V2Token::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that PCLMULQDQ + AES-NI are available (on top of x86-64-v2).
+///
+/// PCLMULQDQ and AES-NI are not part of the psABI v2 spec but ship on every
+/// x86-64 CPU since Westmere (2010). Original Nehalem (2008) and some VMs
+/// (QEMU x86-64-v2, VMware EVC Nehalem baseline) lack them.
+///
+/// Use this token for CRC-32 folding, AES encryption, and GF(2) polynomial
+/// arithmetic. Available on: Westmere+, Bulldozer+, Silvermont+, all Zen.
+#[derive(Clone, Copy, Debug)]
+pub struct X64CryptoToken {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64CryptoToken {}
+
+impl SimdToken for X64CryptoToken {
+    const NAME: &'static str = "x86-64 Crypto";
+    const TARGET_FEATURES: &'static str =
+        "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,pclmulqdq,aes";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+pclmulqdq,+aes";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b,-pclmulqdq,-aes";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match X64_CRYPTO_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by x64_crypto_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => x64_crypto_detect(),
+            }
+        }
+    }
+}
+
+impl X64CryptoToken {
+    /// Construct a x86-64 Crypto proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,pclmulqdq,aes")]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64CryptoToken::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64CryptoToken::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,pclmulqdq,aes")]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64CryptoToken {
+    /// Extract a X64V1Token — guaranteed because x86-64 Crypto implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has x86-64 Crypto's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+    /// Extract a X64V2Token — guaranteed because x86-64 Crypto implies x86-64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v2(self) -> X64V2Token {
+        // SAFETY: holding `self` proves this CPU has x86-64 Crypto's
+        // full feature set, a superset of x86-64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V2Token::from_context() }
+    }
+}
+
+impl X64CryptoToken {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `X64V3CryptoToken`
+    /// - `X64V3GfniCryptoToken`
+    /// - `X64V4Token`
+    /// - `X64V4xToken`
+    /// - `Avx512Fp16Token`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V4_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4_CACHE.store(v, Ordering::Relaxed);
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            AVX512_FP16_DISABLED.store(disabled, Ordering::Relaxed);
+            AVX512_FP16_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_CRYPTO_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    target_feature = "pclmulqdq",
+    target_feature = "aes",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn x64_crypto_detect() -> Option<X64CryptoToken> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b")
+        && crate::is_x86_feature_available!("pclmulqdq")
+        && crate::is_x86_feature_available!("aes");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = X64_CRYPTO_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !X64_CRYPTO_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { X64CryptoToken::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that AVX2 + FMA + BMI1/2 + F16C + LZCNT are available (x86-64-v3 level).
+///
+/// x86-64-v3 implies all of v2 plus: AVX, AVX2, FMA, BMI1, BMI2, F16C, LZCNT, MOVBE.
+/// This is the Haswell (2013) / Zen 1 (2017) baseline.
+///
+/// This is the most commonly targeted level for high-performance SIMD code.
+#[derive(Clone, Copy, Debug)]
+pub struct X64V3Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64V3Token {}
+
+impl SimdToken for X64V3Token {
+    const NAME: &'static str = "x86-64-v3";
+    const TARGET_FEATURES: &'static str = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+f16c,+lzcnt,+movbe";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b,-avx,-avx2,-fma,-bmi1,-bmi2,-f16c,-lzcnt,-movbe";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match X64_V3_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by x64_v3_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => x64_v3_detect(),
+            }
+        }
+    }
+}
+
+impl X64V3Token {
+    /// Construct a x86-64-v3 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe"
+    )]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64V3Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64V3Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe"
+    )]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64V3Token {
+    /// Extract a X64V1Token — guaranteed because x86-64-v3 implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+    /// Extract a X64V2Token — guaranteed because x86-64-v3 implies x86-64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v2(self) -> X64V2Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3's
+        // full feature set, a superset of x86-64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V2Token::from_context() }
+    }
+}
+
+impl X64V3Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `X64V3CryptoToken`
+    /// - `X64V3GfniCryptoToken`
+    /// - `X64V4Token`
+    /// - `X64V4xToken`
+    /// - `Avx512Fp16Token`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_V3_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_V3_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V4_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4_CACHE.store(v, Ordering::Relaxed);
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            AVX512_FP16_DISABLED.store(disabled, Ordering::Relaxed);
+            AVX512_FP16_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_V3_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    target_feature = "avx",
+    target_feature = "avx2",
+    target_feature = "fma",
+    target_feature = "bmi1",
+    target_feature = "bmi2",
+    target_feature = "f16c",
+    target_feature = "lzcnt",
+    target_feature = "movbe",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn x64_v3_detect() -> Option<X64V3Token> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b")
+        && crate::is_x86_feature_available!("avx")
+        && crate::is_x86_feature_available!("avx2")
+        && crate::is_x86_feature_available!("fma")
+        && crate::is_x86_feature_available!("bmi1")
+        && crate::is_x86_feature_available!("bmi2")
+        && crate::is_x86_feature_available!("f16c")
+        && crate::is_x86_feature_available!("lzcnt")
+        && crate::is_x86_feature_available!("movbe");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = X64_V3_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !X64_V3_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { X64V3Token::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that AVX2 + VPCLMULQDQ + VAES are available.
+///
+/// VPCLMULQDQ (256-bit carryless multiply) and VAES (256-bit AES) extend
+/// PCLMULQDQ/AES-NI to 256-bit vectors. Available without AVX-512 on:
+/// Zen 3+ (2020), Alder Lake P-core (2021), Raptor Lake (2022).
+///
+/// Use for 256-bit CRC-32 folding, AES-CTR/GCM, and GF(2) polynomial
+/// arithmetic on CPUs that lack AVX-512.
+#[derive(Clone, Copy, Debug)]
+pub struct X64V3CryptoToken {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64V3CryptoToken {}
+
+impl SimdToken for X64V3CryptoToken {
+    const NAME: &'static str = "x86-64-v3 Crypto";
+    const TARGET_FEATURES: &'static str = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,vpclmulqdq,vaes";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+f16c,+lzcnt,+movbe,+pclmulqdq,+aes,+vpclmulqdq,+vaes";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b,-avx,-avx2,-fma,-bmi1,-bmi2,-f16c,-lzcnt,-movbe,-pclmulqdq,-aes,-vpclmulqdq,-vaes";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match X64_V3_CRYPTO_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by x64_v3_crypto_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => x64_v3_crypto_detect(),
+            }
+        }
+    }
+}
+
+impl X64V3CryptoToken {
+    /// Construct a x86-64-v3 Crypto proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,vpclmulqdq,vaes"
+    )]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64V3CryptoToken::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64V3CryptoToken::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,vpclmulqdq,vaes"
+    )]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64V3CryptoToken {
+    /// Extract a X64CryptoToken — guaranteed because x86-64-v3 Crypto implies x86-64 Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn x64_crypto(self) -> X64CryptoToken {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 Crypto's
+        // full feature set, a superset of x86-64 Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64CryptoToken::from_context() }
+    }
+    /// Extract a X64V1Token — guaranteed because x86-64-v3 Crypto implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 Crypto's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+    /// Extract a X64V2Token — guaranteed because x86-64-v3 Crypto implies x86-64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v2(self) -> X64V2Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 Crypto's
+        // full feature set, a superset of x86-64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V2Token::from_context() }
+    }
+    /// Extract a X64V3Token — guaranteed because x86-64-v3 Crypto implies x86-64-v3.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3(self) -> X64V3Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 Crypto's
+        // full feature set, a superset of x86-64-v3's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3Token::from_context() }
+    }
+}
+
+impl X64V3CryptoToken {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `X64V3GfniCryptoToken`
+    /// - `X64V4xToken`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_V3_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_V3_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V3_GFNI_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_V3_CRYPTO_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    target_feature = "avx",
+    target_feature = "avx2",
+    target_feature = "fma",
+    target_feature = "bmi1",
+    target_feature = "bmi2",
+    target_feature = "f16c",
+    target_feature = "lzcnt",
+    target_feature = "movbe",
+    target_feature = "pclmulqdq",
+    target_feature = "aes",
+    target_feature = "vpclmulqdq",
+    target_feature = "vaes",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn x64_v3_crypto_detect() -> Option<X64V3CryptoToken> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b")
+        && crate::is_x86_feature_available!("avx")
+        && crate::is_x86_feature_available!("avx2")
+        && crate::is_x86_feature_available!("fma")
+        && crate::is_x86_feature_available!("bmi1")
+        && crate::is_x86_feature_available!("bmi2")
+        && crate::is_x86_feature_available!("f16c")
+        && crate::is_x86_feature_available!("lzcnt")
+        && crate::is_x86_feature_available!("movbe")
+        && crate::is_x86_feature_available!("pclmulqdq")
+        && crate::is_x86_feature_available!("aes")
+        && crate::is_x86_feature_available!("vpclmulqdq")
+        && crate::is_x86_feature_available!("vaes");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = X64_V3_CRYPTO_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !X64_V3_CRYPTO_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { X64V3CryptoToken::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that AVX2 + GFNI + VPCLMULQDQ + VAES are available.
+///
+/// GFNI provides GF(2^8) affine transforms and field multiplication over the
+/// AES/Rijndael polynomial. Its 256-bit VEX forms operate on YMM registers without
+/// requiring AVX-512. At the x86-64-v3 level, GFNI-capable CPUs also provide the
+/// AES, PCLMULQDQ, VAES, and VPCLMULQDQ features inherited from
+/// `X64V3CryptoToken`.
+///
+/// Available without AVX-512 on Intel Alder Lake, Raptor Lake, Meteor Lake, Arrow
+/// Lake, Lunar Lake, Sierra Forest, and later related CPUs. Also available on AMD
+/// Zen 4+.
+///
+/// Use for Reed-Solomon erasure coding, GF(2^8) and binary-tower field arithmetic,
+/// bit permutation, and byte-wise affine transforms.
+#[derive(Clone, Copy, Debug)]
+pub struct X64V3GfniCryptoToken {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64V3GfniCryptoToken {}
+
+impl SimdToken for X64V3GfniCryptoToken {
+    const NAME: &'static str = "x86-64-v3 GFNI Crypto";
+    const TARGET_FEATURES: &'static str = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,vpclmulqdq,vaes,gfni";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+f16c,+lzcnt,+movbe,+pclmulqdq,+aes,+vpclmulqdq,+vaes,+gfni";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b,-avx,-avx2,-fma,-bmi1,-bmi2,-f16c,-lzcnt,-movbe,-pclmulqdq,-aes,-vpclmulqdq,-vaes,-gfni";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match X64_V3_GFNI_CRYPTO_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by x64_v3_gfni_crypto_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => x64_v3_gfni_crypto_detect(),
+            }
+        }
+    }
+}
+
+impl X64V3GfniCryptoToken {
+    /// Construct a x86-64-v3 GFNI Crypto proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,vpclmulqdq,vaes,gfni"
+    )]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64V3GfniCryptoToken::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64V3GfniCryptoToken::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,vpclmulqdq,vaes,gfni"
+    )]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64V3GfniCryptoToken {
+    /// Extract a X64CryptoToken — guaranteed because x86-64-v3 GFNI Crypto implies x86-64 Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn x64_crypto(self) -> X64CryptoToken {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 GFNI Crypto's
+        // full feature set, a superset of x86-64 Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64CryptoToken::from_context() }
+    }
+    /// Extract a X64V1Token — guaranteed because x86-64-v3 GFNI Crypto implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 GFNI Crypto's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+    /// Extract a X64V2Token — guaranteed because x86-64-v3 GFNI Crypto implies x86-64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v2(self) -> X64V2Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 GFNI Crypto's
+        // full feature set, a superset of x86-64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V2Token::from_context() }
+    }
+    /// Extract a X64V3CryptoToken — guaranteed because x86-64-v3 GFNI Crypto implies x86-64-v3 Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3_crypto(self) -> X64V3CryptoToken {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 GFNI Crypto's
+        // full feature set, a superset of x86-64-v3 Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3CryptoToken::from_context() }
+    }
+    /// Extract a X64V3Token — guaranteed because x86-64-v3 GFNI Crypto implies x86-64-v3.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3(self) -> X64V3Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v3 GFNI Crypto's
+        // full feature set, a superset of x86-64-v3's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3Token::from_context() }
+    }
+}
+
+impl X64V3GfniCryptoToken {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `X64V4xToken`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_V3_GFNI_CRYPTO_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_V3_GFNI_CRYPTO_CACHE.store(v, Ordering::Relaxed);
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "vpclmulqdq",
+            target_feature = "vaes",
+            target_feature = "gfni",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_V3_GFNI_CRYPTO_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    target_feature = "avx",
+    target_feature = "avx2",
+    target_feature = "fma",
+    target_feature = "bmi1",
+    target_feature = "bmi2",
+    target_feature = "f16c",
+    target_feature = "lzcnt",
+    target_feature = "movbe",
+    target_feature = "pclmulqdq",
+    target_feature = "aes",
+    target_feature = "vpclmulqdq",
+    target_feature = "vaes",
+    target_feature = "gfni",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn x64_v3_gfni_crypto_detect() -> Option<X64V3GfniCryptoToken> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b")
+        && crate::is_x86_feature_available!("avx")
+        && crate::is_x86_feature_available!("avx2")
+        && crate::is_x86_feature_available!("fma")
+        && crate::is_x86_feature_available!("bmi1")
+        && crate::is_x86_feature_available!("bmi2")
+        && crate::is_x86_feature_available!("f16c")
+        && crate::is_x86_feature_available!("lzcnt")
+        && crate::is_x86_feature_available!("movbe")
+        && crate::is_x86_feature_available!("pclmulqdq")
+        && crate::is_x86_feature_available!("aes")
+        && crate::is_x86_feature_available!("vpclmulqdq")
+        && crate::is_x86_feature_available!("vaes")
+        && crate::is_x86_feature_available!("gfni");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = X64_V3_GFNI_CRYPTO_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !X64_V3_GFNI_CRYPTO_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { X64V3GfniCryptoToken::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that AVX-512 (F + CD + VL + DQ + BW) is available.
+///
+/// This is the complete x86-64-v4 AVX-512 feature set, available on:
+/// - Intel Skylake-X (2017+), Ice Lake, Sapphire Rapids
+/// - AMD Zen 4+ (2022+)
+///
+/// Note: Intel 12th-14th gen consumer CPUs do NOT have AVX-512.
+#[derive(Clone, Copy, Debug)]
+pub struct X64V4Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64V4Token {}
+
+impl SimdToken for X64V4Token {
+    const NAME: &'static str = "AVX-512";
+    const TARGET_FEATURES: &'static str = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+f16c,+lzcnt,+movbe,+pclmulqdq,+aes,+avx512f,+avx512bw,+avx512cd,+avx512dq,+avx512vl";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b,-avx,-avx2,-fma,-bmi1,-bmi2,-f16c,-lzcnt,-movbe,-pclmulqdq,-aes,-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match X64_V4_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by x64_v4_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => x64_v4_detect(),
+            }
+        }
+    }
+}
+
+impl X64V4Token {
+    /// Construct a AVX-512 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl"
+    )]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64V4Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64V4Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl"
+    )]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64V4Token {
+    /// Extract a X64CryptoToken — guaranteed because AVX-512 implies x86-64 Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn x64_crypto(self) -> X64CryptoToken {
+        // SAFETY: holding `self` proves this CPU has AVX-512's
+        // full feature set, a superset of x86-64 Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64CryptoToken::from_context() }
+    }
+    /// Extract a X64V1Token — guaranteed because AVX-512 implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has AVX-512's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+    /// Extract a X64V2Token — guaranteed because AVX-512 implies x86-64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v2(self) -> X64V2Token {
+        // SAFETY: holding `self` proves this CPU has AVX-512's
+        // full feature set, a superset of x86-64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V2Token::from_context() }
+    }
+    /// Extract a X64V3Token — guaranteed because AVX-512 implies x86-64-v3.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3(self) -> X64V3Token {
+        // SAFETY: holding `self` proves this CPU has AVX-512's
+        // full feature set, a superset of x86-64-v3's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3Token::from_context() }
+    }
+}
+
+impl X64V4Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    ///
+    /// **Cascading:** Also affects descendants:
+    /// - `X64V4xToken`
+    /// - `Avx512Fp16Token`
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_V4_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_V4_CACHE.store(v, Ordering::Relaxed);
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            AVX512_FP16_DISABLED.store(disabled, Ordering::Relaxed);
+            AVX512_FP16_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_V4_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    target_feature = "avx",
+    target_feature = "avx2",
+    target_feature = "fma",
+    target_feature = "bmi1",
+    target_feature = "bmi2",
+    target_feature = "f16c",
+    target_feature = "lzcnt",
+    target_feature = "movbe",
+    target_feature = "pclmulqdq",
+    target_feature = "aes",
+    target_feature = "avx512f",
+    target_feature = "avx512bw",
+    target_feature = "avx512cd",
+    target_feature = "avx512dq",
+    target_feature = "avx512vl",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn x64_v4_detect() -> Option<X64V4Token> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b")
+        && crate::is_x86_feature_available!("avx")
+        && crate::is_x86_feature_available!("avx2")
+        && crate::is_x86_feature_available!("fma")
+        && crate::is_x86_feature_available!("bmi1")
+        && crate::is_x86_feature_available!("bmi2")
+        && crate::is_x86_feature_available!("f16c")
+        && crate::is_x86_feature_available!("lzcnt")
+        && crate::is_x86_feature_available!("movbe")
+        && crate::is_x86_feature_available!("pclmulqdq")
+        && crate::is_x86_feature_available!("aes")
+        && crate::is_x86_feature_available!("avx512f")
+        && crate::is_x86_feature_available!("avx512bw")
+        && crate::is_x86_feature_available!("avx512cd")
+        && crate::is_x86_feature_available!("avx512dq")
+        && crate::is_x86_feature_available!("avx512vl");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = X64_V4_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !X64_V4_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { X64V4Token::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that extended AVX-512 features are available (x86-64-v4x = Ice Lake / Zen 4 level).
+///
+/// This includes all of `X64V4Token` (F+CD+VL+DQ+BW) plus:
+/// - VPOPCNTDQ, IFMA, VBMI, VBMI2, BITALG, VNNI
+/// - VPCLMULQDQ, GFNI, VAES
+///
+/// Available on Intel Ice Lake (2019+), Sapphire Rapids, AMD Zen 4+.
+/// NOT available on Skylake-X (lacks VBMI2, VNNI, etc.).
+#[derive(Clone, Copy, Debug)]
+pub struct X64V4xToken {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for X64V4xToken {}
+
+impl SimdToken for X64V4xToken {
+    const NAME: &'static str = "x86-64-v4x";
+    const TARGET_FEATURES: &'static str = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx512vpopcntdq,avx512ifma,avx512vbmi,avx512vbmi2,avx512bitalg,avx512vnni,vpclmulqdq,gfni,vaes";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+f16c,+lzcnt,+movbe,+pclmulqdq,+aes,+avx512f,+avx512bw,+avx512cd,+avx512dq,+avx512vl,+avx512vpopcntdq,+avx512ifma,+avx512vbmi,+avx512vbmi2,+avx512bitalg,+avx512vnni,+vpclmulqdq,+gfni,+vaes";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b,-avx,-avx2,-fma,-bmi1,-bmi2,-f16c,-lzcnt,-movbe,-pclmulqdq,-aes,-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl,-avx512vpopcntdq,-avx512ifma,-avx512vbmi,-avx512vbmi2,-avx512bitalg,-avx512vnni,-vpclmulqdq,-gfni,-vaes";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match X64_V4X_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by x64_v4x_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => x64_v4x_detect(),
+            }
+        }
+    }
+}
+
+impl X64V4xToken {
+    /// Construct a x86-64-v4x proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx512vpopcntdq,avx512ifma,avx512vbmi,avx512vbmi2,avx512bitalg,avx512vnni,vpclmulqdq,gfni,vaes"
+    )]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`X64V4xToken::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`X64V4xToken::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx512vpopcntdq,avx512ifma,avx512vbmi,avx512vbmi2,avx512bitalg,avx512vnni,vpclmulqdq,gfni,vaes"
+    )]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl X64V4xToken {
+    /// Extract a X64CryptoToken — guaranteed because x86-64-v4x implies x86-64 Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn x64_crypto(self) -> X64CryptoToken {
+        // SAFETY: holding `self` proves this CPU has x86-64-v4x's
+        // full feature set, a superset of x86-64 Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64CryptoToken::from_context() }
+    }
+    /// Extract a X64V1Token — guaranteed because x86-64-v4x implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v4x's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+    /// Extract a X64V2Token — guaranteed because x86-64-v4x implies x86-64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v2(self) -> X64V2Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v4x's
+        // full feature set, a superset of x86-64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V2Token::from_context() }
+    }
+    /// Extract a X64V3CryptoToken — guaranteed because x86-64-v4x implies x86-64-v3 Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3_crypto(self) -> X64V3CryptoToken {
+        // SAFETY: holding `self` proves this CPU has x86-64-v4x's
+        // full feature set, a superset of x86-64-v3 Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3CryptoToken::from_context() }
+    }
+    /// Extract a X64V3GfniCryptoToken — guaranteed because x86-64-v4x implies x86-64-v3 GFNI Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3_gfni_crypto(self) -> X64V3GfniCryptoToken {
+        // SAFETY: holding `self` proves this CPU has x86-64-v4x's
+        // full feature set, a superset of x86-64-v3 GFNI Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3GfniCryptoToken::from_context() }
+    }
+    /// Extract a X64V3Token — guaranteed because x86-64-v4x implies x86-64-v3.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3(self) -> X64V3Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v4x's
+        // full feature set, a superset of x86-64-v3's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3Token::from_context() }
+    }
+    /// Extract a X64V4Token — guaranteed because x86-64-v4x implies AVX-512.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v4(self) -> X64V4Token {
+        // SAFETY: holding `self` proves this CPU has x86-64-v4x's
+        // full feature set, a superset of AVX-512's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V4Token::from_context() }
+    }
+
+    /// Get a X64V4Token (alias for `.v4()`)
+    #[inline(always)]
+    pub fn avx512(self) -> X64V4Token {
+        // SAFETY: identical to `.v4()` — self's feature set is a
+        // registry-verified superset of AVX-512's.
+        unsafe { X64V4Token::from_context() }
+    }
+}
+
+impl X64V4xToken {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            X64_V4X_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            X64_V4X_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512vpopcntdq",
+            target_feature = "avx512ifma",
+            target_feature = "avx512vbmi",
+            target_feature = "avx512vbmi2",
+            target_feature = "avx512bitalg",
+            target_feature = "avx512vnni",
+            target_feature = "vpclmulqdq",
+            target_feature = "gfni",
+            target_feature = "vaes",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(X64_V4X_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    target_feature = "avx",
+    target_feature = "avx2",
+    target_feature = "fma",
+    target_feature = "bmi1",
+    target_feature = "bmi2",
+    target_feature = "f16c",
+    target_feature = "lzcnt",
+    target_feature = "movbe",
+    target_feature = "pclmulqdq",
+    target_feature = "aes",
+    target_feature = "avx512f",
+    target_feature = "avx512bw",
+    target_feature = "avx512cd",
+    target_feature = "avx512dq",
+    target_feature = "avx512vl",
+    target_feature = "avx512vpopcntdq",
+    target_feature = "avx512ifma",
+    target_feature = "avx512vbmi",
+    target_feature = "avx512vbmi2",
+    target_feature = "avx512bitalg",
+    target_feature = "avx512vnni",
+    target_feature = "vpclmulqdq",
+    target_feature = "gfni",
+    target_feature = "vaes",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn x64_v4x_detect() -> Option<X64V4xToken> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b")
+        && crate::is_x86_feature_available!("avx")
+        && crate::is_x86_feature_available!("avx2")
+        && crate::is_x86_feature_available!("fma")
+        && crate::is_x86_feature_available!("bmi1")
+        && crate::is_x86_feature_available!("bmi2")
+        && crate::is_x86_feature_available!("f16c")
+        && crate::is_x86_feature_available!("lzcnt")
+        && crate::is_x86_feature_available!("movbe")
+        && crate::is_x86_feature_available!("pclmulqdq")
+        && crate::is_x86_feature_available!("aes")
+        && crate::is_x86_feature_available!("avx512f")
+        && crate::is_x86_feature_available!("avx512bw")
+        && crate::is_x86_feature_available!("avx512cd")
+        && crate::is_x86_feature_available!("avx512dq")
+        && crate::is_x86_feature_available!("avx512vl")
+        && crate::is_x86_feature_available!("avx512vpopcntdq")
+        && crate::is_x86_feature_available!("avx512ifma")
+        && crate::is_x86_feature_available!("avx512vbmi")
+        && crate::is_x86_feature_available!("avx512vbmi2")
+        && crate::is_x86_feature_available!("avx512bitalg")
+        && crate::is_x86_feature_available!("avx512vnni")
+        && crate::is_x86_feature_available!("vpclmulqdq")
+        && crate::is_x86_feature_available!("gfni")
+        && crate::is_x86_feature_available!("vaes");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = X64_V4X_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !X64_V4X_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { X64V4xToken::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Proof that AVX-512 FP16 (half-precision) is available.
+///
+/// AVX-512 FP16 provides native 16-bit floating-point arithmetic in 512-bit
+/// vectors, enabling efficient ML inference and scientific computing.
+///
+/// Available on Intel Sapphire Rapids (2023+), Emerald Rapids.
+/// NOT available on Skylake-X, Ice Lake, AMD Zen 4.
+#[derive(Clone, Copy, Debug)]
+pub struct Avx512Fp16Token {
+    _private: (),
+}
+
+impl crate::tokens::Sealed for Avx512Fp16Token {}
+
+impl SimdToken for Avx512Fp16Token {
+    const NAME: &'static str = "AVX-512FP16";
+    const TARGET_FEATURES: &'static str = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx512fp16";
+    const ENABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+f16c,+lzcnt,+movbe,+pclmulqdq,+aes,+avx512f,+avx512bw,+avx512cd,+avx512dq,+avx512vl,+avx512fp16";
+    const DISABLE_TARGET_FEATURES: &'static str = "-Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-popcnt,-cmpxchg16b,-avx,-avx2,-fma,-bmi1,-bmi2,-f16c,-lzcnt,-movbe,-pclmulqdq,-aes,-avx512f,-avx512bw,-avx512cd,-avx512dq,-avx512vl,-avx512fp16";
+
+    #[inline]
+    fn compiled_with() -> Option<bool> {
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            Some(true)
+        }
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            None
+        }
+    }
+
+    #[inline(always)]
+    fn summon() -> Option<Self> {
+        // Compile-time fast path (suppressed by testable_dispatch)
+        #[cfg(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            // SAFETY: every feature this token asserts is enabled at
+            // compile time (cfg(target_feature)), so the binary only
+            // runs on CPUs that have them.
+            Some(unsafe { Self::from_context() })
+        }
+
+        // Runtime path with caching
+        #[cfg(not(all(
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            match AVX512_FP16_CACHE.load(Ordering::Relaxed) {
+                // SAFETY: 2 is only ever stored by avx512_fp16_detect()
+                // after a positive runtime check of every feature.
+                2 => Some(unsafe { Self::from_context() }),
+                1 => None,
+                _ => avx512_fp16_detect(),
+            }
+        }
+    }
+}
+
+impl Avx512Fp16Token {
+    /// Construct a AVX-512FP16 proof from the caller's statically proven
+    /// feature context.
+    ///
+    /// A safe call requires a caller whose `#[target_feature]` attribute
+    /// enables every feature of this tier; a superset is sufficient. Outside
+    /// such a context rustc requires an `unsafe` block at the call site.
+    ///
+    /// Features enabled globally (`-C target-feature`, `-C target-cpu`) do
+    /// not satisfy this — rustc requires them on the caller's own attribute.
+    ///
+    /// No runtime detection happens here, so this also bypasses
+    /// process-wide token disabling (including `testable_dispatch`):
+    /// the caller's feature context is already the proof. Use
+    /// [`SimdToken::summon`](crate::SimdToken::summon) when the
+    /// features have to be detected at runtime.
+    ///
+    /// Being a `#[target_feature]` function, this cannot be coerced to
+    /// a safe function pointer — there would be no call site left for
+    /// rustc to check.
+    ///
+    /// # Safety
+    ///
+    /// When called through an `unsafe` block, the caller must ensure
+    /// every feature in this tier is available on the executing CPU.
+    /// Safe calls have that obligation discharged by the compiler.
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx512fp16"
+    )]
+    pub fn from_context() -> Self {
+        Self { _private: () }
+    }
+
+    /// Deprecated alias for [`Avx512Fp16Token::from_context`].
+    ///
+    /// Identical in every respect — same `#[target_feature]` gate, same
+    /// safe-call rules. The name predates the compiler-checked design
+    /// and describes only the `unsafe` half of it.
+    ///
+    /// # Safety
+    ///
+    /// Identical to [`Avx512Fp16Token::from_context`]: when called through an
+    /// `unsafe` block, the caller must ensure every feature in this
+    /// tier is available on the executing CPU. Safe calls have that
+    /// obligation discharged by the compiler.
+    #[deprecated(
+        since = "0.9.29",
+        note = "Renamed to from_context() — the constructor is checked against the caller's target-feature context"
+    )]
+    #[inline]
+    #[target_feature(
+        enable = "sse,sse2,sse3,ssse3,sse4.1,sse4.2,popcnt,cmpxchg16b,avx,avx2,fma,bmi1,bmi2,f16c,lzcnt,movbe,pclmulqdq,aes,avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx512fp16"
+    )]
+    pub fn forge_token_dangerously() -> Self {
+        // Matching features: a safe call inside the same region.
+        Self::from_context()
+    }
+}
+
+impl Avx512Fp16Token {
+    /// Extract a X64CryptoToken — guaranteed because AVX-512FP16 implies x86-64 Crypto.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn x64_crypto(self) -> X64CryptoToken {
+        // SAFETY: holding `self` proves this CPU has AVX-512FP16's
+        // full feature set, a superset of x86-64 Crypto's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64CryptoToken::from_context() }
+    }
+    /// Extract a X64V1Token — guaranteed because AVX-512FP16 implies x86-64-v1.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v1(self) -> X64V1Token {
+        // SAFETY: holding `self` proves this CPU has AVX-512FP16's
+        // full feature set, a superset of x86-64-v1's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V1Token::from_context() }
+    }
+    /// Extract a X64V2Token — guaranteed because AVX-512FP16 implies x86-64-v2.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v2(self) -> X64V2Token {
+        // SAFETY: holding `self` proves this CPU has AVX-512FP16's
+        // full feature set, a superset of x86-64-v2's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V2Token::from_context() }
+    }
+    /// Extract a X64V3Token — guaranteed because AVX-512FP16 implies x86-64-v3.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v3(self) -> X64V3Token {
+        // SAFETY: holding `self` proves this CPU has AVX-512FP16's
+        // full feature set, a superset of x86-64-v3's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V3Token::from_context() }
+    }
+    /// Extract a X64V4Token — guaranteed because AVX-512FP16 implies AVX-512.
+    ///
+    /// Zero-cost: compiles away entirely.
+    #[inline(always)]
+    pub fn v4(self) -> X64V4Token {
+        // SAFETY: holding `self` proves this CPU has AVX-512FP16's
+        // full feature set, a superset of AVX-512's (registry-
+        // verified hierarchy), so the ancestor token's claim holds.
+        unsafe { X64V4Token::from_context() }
+    }
+
+    /// Get a X64V4Token (alias for `.v4()`)
+    #[inline(always)]
+    pub fn avx512(self) -> X64V4Token {
+        // SAFETY: identical to `.v4()` — self's feature set is a
+        // registry-verified superset of AVX-512's.
+        unsafe { X64V4Token::from_context() }
+    }
+}
+
+impl Avx512Fp16Token {
+    /// Disable this token process-wide for testing and benchmarking.
+    ///
+    /// When disabled, `summon()` will return `None` even if the CPU supports
+    /// the required features.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled
+    /// (e.g., via `-Ctarget-cpu=native`), since the compiler has already
+    /// elided the runtime checks.
+    #[allow(clippy::needless_return)]
+    pub fn dangerously_disable_token_process_wide(
+        disabled: bool,
+    ) -> Result<(), crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            let _ = disabled;
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            AVX512_FP16_DISABLED.store(disabled, Ordering::Relaxed);
+            let v = if disabled { 1 } else { 0 };
+            AVX512_FP16_CACHE.store(v, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// Check if this token has been manually disabled process-wide.
+    ///
+    /// Returns `Err` when all required features are compile-time enabled.
+    #[allow(clippy::needless_return)]
+    pub fn manually_disabled() -> Result<bool, crate::tokens::CompileTimeGuaranteedError> {
+        #[cfg(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        ))]
+        {
+            return Err(crate::tokens::CompileTimeGuaranteedError {
+                token_name: Self::NAME,
+                target_features: Self::TARGET_FEATURES,
+                disable_flags: Self::DISABLE_TARGET_FEATURES,
+            });
+        }
+        #[cfg(not(all(
+            target_feature = "sse",
+            target_feature = "sse2",
+            target_feature = "sse3",
+            target_feature = "ssse3",
+            target_feature = "sse4.1",
+            target_feature = "sse4.2",
+            target_feature = "popcnt",
+            target_feature = "cmpxchg16b",
+            target_feature = "avx",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "pclmulqdq",
+            target_feature = "aes",
+            target_feature = "avx512f",
+            target_feature = "avx512bw",
+            target_feature = "avx512cd",
+            target_feature = "avx512dq",
+            target_feature = "avx512vl",
+            target_feature = "avx512fp16",
+            not(feature = "testable_dispatch")
+        )))]
+        {
+            Ok(AVX512_FP16_DISABLED.load(Ordering::Relaxed))
+        }
+    }
+}
+#[cfg(not(all(
+    target_feature = "sse3",
+    target_feature = "ssse3",
+    target_feature = "sse4.1",
+    target_feature = "sse4.2",
+    target_feature = "popcnt",
+    target_feature = "cmpxchg16b",
+    target_feature = "avx",
+    target_feature = "avx2",
+    target_feature = "fma",
+    target_feature = "bmi1",
+    target_feature = "bmi2",
+    target_feature = "f16c",
+    target_feature = "lzcnt",
+    target_feature = "movbe",
+    target_feature = "pclmulqdq",
+    target_feature = "aes",
+    target_feature = "avx512f",
+    target_feature = "avx512bw",
+    target_feature = "avx512cd",
+    target_feature = "avx512dq",
+    target_feature = "avx512vl",
+    target_feature = "avx512fp16",
+    not(feature = "testable_dispatch")
+)))]
+#[cold]
+#[inline(never)]
+fn avx512_fp16_detect() -> Option<Avx512Fp16Token> {
+    let available = crate::is_x86_feature_available!("sse3")
+        && crate::is_x86_feature_available!("ssse3")
+        && crate::is_x86_feature_available!("sse4.1")
+        && crate::is_x86_feature_available!("sse4.2")
+        && crate::is_x86_feature_available!("popcnt")
+        && crate::is_x86_feature_available!("cmpxchg16b")
+        && crate::is_x86_feature_available!("avx")
+        && crate::is_x86_feature_available!("avx2")
+        && crate::is_x86_feature_available!("fma")
+        && crate::is_x86_feature_available!("bmi1")
+        && crate::is_x86_feature_available!("bmi2")
+        && crate::is_x86_feature_available!("f16c")
+        && crate::is_x86_feature_available!("lzcnt")
+        && crate::is_x86_feature_available!("movbe")
+        && crate::is_x86_feature_available!("pclmulqdq")
+        && crate::is_x86_feature_available!("aes")
+        && crate::is_x86_feature_available!("avx512f")
+        && crate::is_x86_feature_available!("avx512bw")
+        && crate::is_x86_feature_available!("avx512cd")
+        && crate::is_x86_feature_available!("avx512dq")
+        && crate::is_x86_feature_available!("avx512vl")
+        && crate::is_x86_feature_available!("avx512fp16");
+    // Publish only while the cache is still undetected (0): a
+    // concurrent disable/enable writes the cache itself, and an
+    // unconditional store here could overwrite it — resurrecting a
+    // token that was disabled mid-detect (lost update: summon()
+    // returning Some for a disabled token).
+    let _ = AVX512_FP16_CACHE.compare_exchange(
+        0,
+        if available { 2 } else { 1 },
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    // disable() stores the flag before the cache, so loading the
+    // flag after the CAS observes every disable that could have
+    // raced this probe.
+    if available && !AVX512_FP16_DISABLED.load(Ordering::Relaxed) {
+        // SAFETY: `available` — runtime detection just confirmed every
+        // feature this token asserts is present on this CPU.
+        Some(unsafe { Avx512Fp16Token::from_context() })
+    } else {
+        None
+    }
+}
+
+/// Type alias for [`X64V1Token`].
+#[deprecated(
+    since = "0.9.9",
+    note = "Use X64V1Token instead. Sse2Token is misleading — this is an x86_64-only token (SSE2 is the x86_64 baseline). On 32-bit x86, summon() returns None."
+)]
+pub type Sse2Token = X64V1Token;
+
+/// Type alias for [`X64V3Token`].
+pub type Desktop64 = X64V3Token;
+
+/// Type alias for [`X64V3Token`].
+#[deprecated(
+    since = "0.9.9",
+    note = "Use X64V3Token or Desktop64 instead. Avx2FmaToken is misleading — V3 includes BMI1/2, F16C, and more, not just AVX2+FMA."
+)]
+pub type Avx2FmaToken = X64V3Token;
+
+/// Type alias for [`X64V4Token`].
+pub type Avx512Token = X64V4Token;
+
+/// Type alias for [`X64V4Token`].
+pub type Server64 = X64V4Token;
+
+/// Type alias for [`X64V4xToken`].
+pub type Avx512ModernToken = X64V4xToken;
+
+impl X64V1Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x510E0DCD;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_510E0DCD: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x510E0DCD) as usize];
+}
+
+impl X64V2Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x8CCD97C6;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_8CCD97C6: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x8CCD97C6) as usize];
+}
+
+impl X64CryptoToken {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0xF5F0FBF5;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_F5F0FBF5: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0xF5F0FBF5) as usize];
+}
+
+impl X64V3Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0xF38B284B;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_F38B284B: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0xF38B284B) as usize];
+}
+
+impl X64V3CryptoToken {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x01EAE708;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_01EAE708: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x01EAE708) as usize];
+}
+
+impl X64V3GfniCryptoToken {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x49A7BE90;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_49A7BE90: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x49A7BE90) as usize];
+}
+
+impl X64V4Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0xFE1B900C;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_FE1B900C: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0xFE1B900C) as usize];
+}
+
+impl X64V4xToken {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x8F63232A;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_8F63232A: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x8F63232A) as usize];
+}
+
+impl Avx512Fp16Token {
+    #[doc(hidden)]
+    pub const __ARCHMAGE_TIER_TAG: u32 = 0x2F39FFC0;
+
+    #[doc(hidden)]
+    pub const __ARCHMAGE_ASSERT_TIER_2F39FFC0: () =
+        [()][!(Self::__ARCHMAGE_TIER_TAG == 0x2F39FFC0) as usize];
+}
+
+#[allow(deprecated)]
+impl Has128BitSimd for X64V1Token {}
+#[allow(deprecated)]
+impl Has128BitSimd for X64V2Token {}
+#[allow(deprecated)]
+impl Has128BitSimd for X64CryptoToken {}
+#[allow(deprecated)]
+impl Has128BitSimd for X64V3Token {}
+#[allow(deprecated)]
+impl Has128BitSimd for X64V3CryptoToken {}
+#[allow(deprecated)]
+impl Has128BitSimd for X64V3GfniCryptoToken {}
+#[allow(deprecated)]
+impl Has128BitSimd for X64V4Token {}
+#[allow(deprecated)]
+impl Has128BitSimd for X64V4xToken {}
+#[allow(deprecated)]
+impl Has128BitSimd for Avx512Fp16Token {}
+#[allow(deprecated)]
+impl Has256BitSimd for X64V3Token {}
+#[allow(deprecated)]
+impl Has256BitSimd for X64V3CryptoToken {}
+#[allow(deprecated)]
+impl Has256BitSimd for X64V3GfniCryptoToken {}
+#[allow(deprecated)]
+impl Has256BitSimd for X64V4Token {}
+#[allow(deprecated)]
+impl Has256BitSimd for X64V4xToken {}
+#[allow(deprecated)]
+impl Has256BitSimd for Avx512Fp16Token {}
+#[allow(deprecated)]
+impl Has512BitSimd for X64V4Token {}
+#[allow(deprecated)]
+impl Has512BitSimd for X64V4xToken {}
+#[allow(deprecated)]
+impl Has512BitSimd for Avx512Fp16Token {}
+impl HasX64V2 for X64V2Token {}
+impl HasX64V2 for X64CryptoToken {}
+impl HasX64V2 for X64V3Token {}
+impl HasX64V2 for X64V3CryptoToken {}
+impl HasX64V2 for X64V3GfniCryptoToken {}
+impl HasX64V2 for X64V4Token {}
+impl HasX64V2 for X64V4xToken {}
+impl HasX64V2 for Avx512Fp16Token {}
+impl HasX64V4 for X64V4Token {}
+impl HasX64V4 for X64V4xToken {}
+impl HasX64V4 for Avx512Fp16Token {}
