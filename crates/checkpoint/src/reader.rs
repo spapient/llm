@@ -12,7 +12,7 @@ use crate::error::checkpointerror;
 use crate::hash::contenthash;
 use crate::uformat::{
     FLAGDELTA, FLAGENCRYPTED, FLAGSFULL, MAGIC, PREFIXLEN, checkflags, parseartifact,
-    parsedmanifest, storedentry, tensorentry,
+    parsedmanifest, sparseformat, storedentry, tensorentry,
 };
 
 /// A source of block bytes addressed by an absolute offset within a data
@@ -616,7 +616,11 @@ impl checkpointreader {
                     usize::try_from(sp.getnnz()).map_err(|_| checkpointerror::invalidmanifest {
                         reason: "sparse non-zero count overflows usize".to_string(),
                     })?;
-                Cow::Owned(desparsify(&bytes, nnz, width, count)?)
+                let dense = match sp.getformat() {
+                    sparseformat::coo => desparsify(&bytes, nnz, width, count)?,
+                    sparseformat::bitmap => desparsifybitmap(&bytes, nnz, width, count)?,
+                };
+                Cow::Owned(dense)
             }
             None => bytes,
         };
@@ -675,6 +679,44 @@ fn desparsify(
         }
         let src = &bytes[indexbytes + i * width..indexbytes + (i + 1) * width];
         dense[idx * width..idx * width + width].copy_from_slice(src);
+    }
+    Ok(dense)
+}
+
+/// Reconstructs a dense byte buffer from a bitmap-sparse encoding (bitset then
+/// values).
+fn desparsifybitmap(
+    bytes: &[u8],
+    nnz: usize,
+    width: usize,
+    count: usize,
+) -> Result<Vec<u8>, checkpointerror> {
+    let bitmapbytes = count.div_ceil(8);
+    let valuebytes = nnz.checked_mul(width).ok_or_else(|| {
+        checkpointerror::invalidmanifest {
+            reason: "sparse value section overflows usize".to_string(),
+        }
+    })?;
+    if bytes.len() != bitmapbytes + valuebytes {
+        return Err(checkpointerror::invalidmanifest {
+            reason: "sparse data length mismatch".to_string(),
+        });
+    }
+    let dense_len = count.checked_mul(width).ok_or_else(|| {
+        checkpointerror::invalidmanifest {
+            reason: "dense buffer overflows usize".to_string(),
+        }
+    })?;
+    let bitmap = &bytes[..bitmapbytes];
+    let values = &bytes[bitmapbytes..];
+    let mut dense = vec![0u8; dense_len];
+    let mut vi = 0usize;
+    for i in 0..count {
+        if (bitmap[i / 8] >> (i % 8)) & 1 != 0 {
+            let src = &values[vi * width..(vi + 1) * width];
+            dense[i * width..(i + 1) * width].copy_from_slice(src);
+            vi += 1;
+        }
     }
     Ok(dense)
 }

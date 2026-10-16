@@ -880,6 +880,39 @@ mod uformat {
             .unwrap_err();
         assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
     }
+
+    #[test]
+    fn sparse_bitmap_roundtrips_and_reconstructs() {
+        // 8 元素张量，非零位置 0, 2, 5, 7（bitmap 0b1010_0101 = 0xA5）
+        let bitmap = [0b1010_0101u8];
+        let values = [1u8, 3, 6, 8];
+        let mut snap = snapshot::new(1);
+        snap.addsparsebitmap("w".to_string(), dtype::u8, shapeof(&[8]), &bitmap, &values)
+            .unwrap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        let entry = back
+            .gettensors()
+            .iter()
+            .find(|t| t.getname() == "w")
+            .unwrap();
+        assert_eq!(entry.getsparse().unwrap().getnnz(), 4);
+        let reader = checkpointreader::openfull(bytes).unwrap();
+        let t = reader.readtensortyped::<u8>("w").unwrap().unwrap();
+        assert_eq!(t.getdata(), &[1u8, 0, 3, 0, 0, 6, 0, 8]);
+    }
+
+    #[test]
+    fn sparse_bitmap_rejects_high_bits_past_count() {
+        // 5 元素张量，bitmap 第 5-7 位是高位（应报错）
+        let bitmap = [0b1110_0000u8];
+        let values = [1u8, 2, 3];
+        let mut snap = snapshot::new(1);
+        let err = snap
+            .addsparsebitmap("w".to_string(), dtype::u8, shapeof(&[5]), &bitmap, &values)
+            .unwrap_err();
+        assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/delta.rs`.

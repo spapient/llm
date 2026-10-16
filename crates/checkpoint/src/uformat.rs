@@ -95,28 +95,56 @@ impl quantdesc {
     }
 }
 
+/// The storage layout of a sparsely stored tensor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum sparseformat {
+    /// Coordinate format: `u32` linear indices then the non-zero values.
+    coo,
+    /// Bitmap format: a bitset marking non-zero positions, then the values.
+    bitmap,
+}
+
 /// Describes a sparsely stored tensor: only the non-zero values and their
-/// linear indices are persisted in the data section.
+/// positions are persisted in the data section.
 ///
-/// The data section stores the indices first (each a little-endian `u32` linear
-/// element position) followed by the non-zero values, so a reader reconstructs
-/// the dense tensor by zero-filling and scattering the values.
+/// In COO format the data section stores the indices first (each a little-endian
+/// `u32` linear element position) followed by the non-zero values. In bitmap
+/// format it stores a bitset (`ceil(elementcount / 8)` bytes, bit set = non-zero,
+/// little-endian within each byte) followed by the non-zero values in element
+/// order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct sparsedesc {
     nnz: u64,
+    format: sparseformat,
 }
 
 impl sparsedesc {
-    /// Creates a descriptor for a tensor with `nnz` non-zero elements.
+    /// Creates a COO descriptor for a tensor with `nnz` non-zero elements.
     #[must_use]
     pub fn new(nnz: u64) -> Self {
-        Self { nnz }
+        Self {
+            nnz,
+            format: sparseformat::coo,
+        }
+    }
+
+    /// Switches the descriptor to bitmap format.
+    #[must_use]
+    pub fn withbitmap(mut self) -> Self {
+        self.format = sparseformat::bitmap;
+        self
     }
 
     /// Returns the number of non-zero elements.
     #[must_use]
     pub fn getnnz(&self) -> u64 {
         self.nnz
+    }
+
+    /// Returns the storage format.
+    #[must_use]
+    pub fn getformat(&self) -> sparseformat {
+        self.format
     }
 }
 
@@ -396,6 +424,77 @@ impl snapshot {
         for &idx in indices {
             self.data.extend_from_slice(&idx.to_le_bytes());
         }
+        self.data.extend_from_slice(values);
+        Ok(())
+    }
+
+    /// Appends a bitmap-sparse tensor: `bitmap` marks non-zero positions (bit
+    /// set = non-zero, little-endian within each byte) and `values` are the
+    /// non-zero bytes in element order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::shapeoverflow`], [`checkpointerror::lengthmismatch`],
+    /// or [`checkpointerror::invalidmanifest`] for a bitmap whose length does
+    /// not cover the element count or whose bits past the count are set.
+    pub fn addsparsebitmap(
+        &mut self,
+        name: String,
+        value: dtype,
+        dims: shape,
+        bitmap: &[u8],
+        values: &[u8],
+    ) -> Result<(), checkpointerror> {
+        let count = dims
+            .getelementcount()
+            .map_err(|_| checkpointerror::shapeoverflow { name: name.clone() })?;
+        let bitmapbytes = count.div_ceil(8);
+        if bitmap.len() != bitmapbytes {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!(
+                    "bitmap length {} does not cover element count {count}",
+                    bitmap.len()
+                ),
+            });
+        }
+        if count % 8 != 0 {
+            let validmask = (1u8 << (count % 8)) - 1;
+            if bitmap[bitmapbytes - 1] & !validmask != 0 {
+                return Err(checkpointerror::invalidmanifest {
+                    reason: "bitmap has set bits past the element count".to_string(),
+                });
+            }
+        }
+        let nnz = bitmap.iter().map(|b| u64::from(b.count_ones())).sum::<u64>();
+        let valuebytes = nnz
+            .checked_mul(value.sizeinbytes() as u64)
+            .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
+        if values.len() as u64 != valuebytes {
+            return Err(checkpointerror::lengthmismatch {
+                name: name.clone(),
+                expected: valuebytes,
+                actual: values.len() as u64,
+            });
+        }
+        if self.tensors.iter().any(|t| t.name == name) {
+            return Err(checkpointerror::duplicatetensor { name });
+        }
+        let offset = self.data.len() as u64;
+        let nbytes = (bitmapbytes as u64)
+            .checked_add(valuebytes)
+            .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
+        let entry = tensorentry {
+            name,
+            dtype: value,
+            shape: dims,
+            offset,
+            nbytes,
+            quant: None,
+            layout: None,
+            sparse: Some(sparsedesc::new(nnz).withbitmap()),
+        };
+        self.tensors.push(entry);
+        self.data.extend_from_slice(bitmap);
         self.data.extend_from_slice(values);
         Ok(())
     }
@@ -851,6 +950,11 @@ pub(crate) fn canonicalmanifest(
             Some(sp) => {
                 pushu64(&mut buf, 1);
                 pushu64(&mut buf, sp.getnnz());
+                let format = match sp.getformat() {
+                    sparseformat::coo => 0u64,
+                    sparseformat::bitmap => 1u64,
+                };
+                pushu64(&mut buf, format);
             }
         }
     }
@@ -952,7 +1056,23 @@ pub(crate) fn readtensors(
         }
         let sparse = match readu64(manifest, pos)? {
             0 => None,
-            1 => Some(sparsedesc::new(readu64(manifest, pos)?)),
+            1 => {
+                let nnz = readu64(manifest, pos)?;
+                let format = match readu64(manifest, pos)? {
+                    0 => sparseformat::coo,
+                    1 => sparseformat::bitmap,
+                    _ => {
+                        return Err(checkpointerror::invalidmanifest {
+                            reason: "invalid sparse format".to_string(),
+                        });
+                    }
+                };
+                let sp = sparsedesc::new(nnz);
+                Some(match format {
+                    sparseformat::coo => sp,
+                    sparseformat::bitmap => sp.withbitmap(),
+                })
+            }
             _ => {
                 return Err(checkpointerror::invalidmanifest {
                     reason: "invalid sparse flag".to_string(),
@@ -968,9 +1088,15 @@ pub(crate) fn readtensors(
                     .getnnz()
                     .checked_mul(value.sizeinbytes() as u64)
                     .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
-                sp.getnnz()
-                    .checked_mul(4)
-                    .and_then(|v| v.checked_add(valuebytes))
+                let indexbytes = match sp.getformat() {
+                    sparseformat::coo => sp
+                        .getnnz()
+                        .checked_mul(4)
+                        .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?,
+                    sparseformat::bitmap => count.div_ceil(8) as u64,
+                };
+                indexbytes
+                    .checked_add(valuebytes)
                     .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?
             }
             None => (count as u64)

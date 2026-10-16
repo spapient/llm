@@ -1527,7 +1527,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **多排布（layout）。** `tensorentry` 可选携带显式 `layout`（`strides: usize[]` + `offset: usize`，复用 `tensor::layout`），`None` = 规范行主序（向后兼容）。非 contiguous 布局（如转置存储）让权重以计算友好的排布落盘、加载时零拷贝重建；`setlayout` 校验 `isvalidfor(shape)`，decode 时再验，非法报 `invalidmanifest`。数据段字节仍按插入序连续拼接，layout 仅描述逻辑张量到连续缓冲的映射；`readtensortyped` 用 `tryfrombyteswithlayout` 恢复。
 
-**稀疏存储（COO）。** `tensorentry` 可选携带 `sparsedesc`（`nnz`），稀疏张量的数据段字节 = `nnz` 个 `u32` 线性索引（小端）+ `nnz` 个非零值，`nbytes = nnz × (4 + dtype 宽)`。`addsparse` 校验索引落在 `[0, elementcount)` 内且唯一（重复报 `invalidmanifest`）；`readtensortyped` 经 `desparsify` 零填充重建稠密字节后再解 dtype/layout。索引是逻辑元素坐标（shape 行主序线性化），layout 仅作用于重建后的稠密缓冲，故稀疏与多排布正交。适用于结构化稀疏（如 2:4）与剪枝权重。
+**稀疏存储（COO / bitmap）。** `tensorentry` 可选携带 `sparsedesc`（`nnz` + `format`）。COO：数据段字节 = `nnz` 个 `u32` 线性索引（小端）+ `nnz` 个非零值；bitmap：`ceil(elementcount/8)` 字节位图（LSB 优先，bit 置位 = 非零）+ `nnz` 个非零值（元素序）。`addsparse`/`addsparsebitmap` 分别构造，校验索引/位图合法、位图高位清零且（COO）索引唯一，重复报 `invalidmanifest`；`readtensortyped` 经 `desparsify`/`desparsifybitmap` 零填充重建稠密后再解 dtype/layout。索引/位图是逻辑元素坐标（shape 行主序线性化），layout 仅作用于重建后的稠密缓冲，故稀疏与多排布正交。bitmap 对结构化稀疏（如 2:4，50% 密度）比 COO 省约 16× 索引开销。
 
 **量化内核（对称 int8）。** `quantize`/`dequantize` 实现对称 int8 量化：`scale = max(|x|)/127`（`groupsize=0` 为 per-tensor，否则 per-group/per-channel），`q = round(x/scale)` clamp `[-127,127]`，反量化 `x ≈ q×scale`（重建误差 ≤ scale/2）。与 `quantdesc`（scale 一等张量）配套，量化输出（i8 + scale）经 `addtensor`/`setquant` 落盘。
 
