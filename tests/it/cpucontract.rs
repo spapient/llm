@@ -140,6 +140,86 @@ fn matmul_rejects_incompatible_shapes() {
     );
 }
 
+/// The blocked packed path (`m >= 32`) agrees with the scalar reference
+/// across panel and chunk boundaries: the first case spans two inner chunks
+/// (`k = 512 + 88`) and two column panels (`n = 256 + 44`), the second leaves
+/// a one-element inner chunk, a one-column panel, and a partial row block.
+#[test]
+fn matmul_blocked_path_matches_the_scalar_reference() {
+    for (m, k, n) in [(32usize, 600usize, 300usize), (100, 513, 257)] {
+        let lhs: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.13).sin()).collect();
+        let rhs: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.17).cos()).collect();
+        let a = build(vec![m, k], lhs.clone());
+        let b = build(vec![k, n], rhs.clone());
+        let out = cpumatmul.apply(&a.getview(), &b.getview()).unwrap();
+        assertallclose(
+            out.getdata(),
+            &reference::matmul(&lhs, &rhs, m, k, n),
+            1.0e-4,
+            1.0e-4,
+        );
+    }
+}
+
+/// The blocked packed path is bitwise deterministic for fixed inputs.
+#[test]
+fn matmul_blocked_path_is_deterministic() {
+    let m = 64usize;
+    let k = 1024usize;
+    let n = 512usize;
+    let a = build(
+        vec![m, k],
+        (0..m * k).map(|i| (i as f32 * 0.11).sin()).collect(),
+    );
+    let b = build(
+        vec![k, n],
+        (0..k * n).map(|i| (i as f32 * 0.19).cos()).collect(),
+    );
+    let first = cpumatmul.apply(&a.getview(), &b.getview()).unwrap();
+    let second = cpumatmul.apply(&a.getview(), &b.getview()).unwrap();
+    assert_eq!(first.getdata(), second.getdata());
+}
+
+/// The row-count switch between the direct path (`m < 32`) and the blocked
+/// packed path (`m >= 32`) does not change the result beyond tolerance.
+#[test]
+fn matmul_path_switch_matches_the_scalar_reference() {
+    let k = 64usize;
+    let n = 48usize;
+    for m in [31usize, 32usize, 33usize] {
+        let lhs: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.29).sin()).collect();
+        let rhs: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.31).cos()).collect();
+        let a = build(vec![m, k], lhs.clone());
+        let b = build(vec![k, n], rhs.clone());
+        let out = cpumatmul.apply(&a.getview(), &b.getview()).unwrap();
+        assertallclose(
+            out.getdata(),
+            &reference::matmul(&lhs, &rhs, m, k, n),
+            1.0e-4,
+            1.0e-4,
+        );
+    }
+}
+
+/// The blocked packed path handles a leading batch dimension as per-slice
+/// multiplications.
+#[test]
+fn matmul_blocked_path_handles_a_leading_batch_dimension() {
+    let (batch, m, k, n) = (2usize, 64usize, 128usize, 64usize);
+    let lhs: Vec<f32> = (0..batch * m * k)
+        .map(|i| (i as f32 * 0.23).sin())
+        .collect();
+    let rhs: Vec<f32> = (0..batch * k * n)
+        .map(|i| (i as f32 * 0.37).cos())
+        .collect();
+    let a = build(vec![batch, m, k], lhs.clone());
+    let b = build(vec![batch, k, n], rhs.clone());
+    let out = cpumatmul.apply(&a.getview(), &b.getview()).unwrap();
+    let mut want = reference::matmul(&lhs[0..m * k], &rhs[0..k * n], m, k, n);
+    want.extend_from_slice(&reference::matmul(&lhs[m * k..], &rhs[k * n..], m, k, n));
+    assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
+}
+
 #[test]
 fn weighted_kernel_matches_the_scalar_reference() {
     let x = build(vec![2, 2], vec![3.0, 4.0, 0.0, 5.0]);

@@ -133,14 +133,45 @@ pub(crate) fn matmulplan(
     })
 }
 
+/// Register-tile dimensions of the SIMD micro-kernel.
+const BLOCKROWS: usize = 8;
+const BLOCKCOLS: usize = 4;
+
+/// Row count at or above which the blocked packed path replaces the direct
+/// path. Below it the right operand is re-walked at most `PACKROWS / BLOCKROWS`
+/// times, so the packing copy would cost more than the re-walk it saves.
+const PACKROWS: usize = 32;
+
+/// Inner-dimension chunk of one packed right-operand tile. The tile stays in
+/// the packed buffer and is reused by every `BLOCKROWS`-row block, so its size
+/// is chosen to remain cache-resident on the documented baseline machine.
+const KCPANEL: usize = 512;
+
+/// Column count of one packed right-operand tile.
+const NCPANEL: usize = 256;
+
 /// Computes one `[m, k] * [k, n]` block into `out` with a register-blocked
 /// SIMD micro-kernel dispatched through `fearless_simd`.
+///
+/// Wide row counts take the blocked packed path: the right operand is copied
+/// into a contiguous tile of `KCPANEL * NCPANEL` at most, and every
+/// `BLOCKROWS`-row block then streams that tile instead of re-walking the
+/// strided operand. Narrow row counts (decode) take the direct path, which
+/// already walks the right operand exactly once and would only pay for the
+/// extra copy. The per-element fused accumulation order is identical on both
+/// paths, so the choice never changes the floating-point result.
 fn matmulblock(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
     let level = Level::new();
-    dispatch!(level, simd => matmulblocksimd(simd, a, b, out, m, k, n));
+    dispatch!(level, simd => {
+        if m >= PACKROWS {
+            matmulblocked(simd, a, b, out, m, k, n);
+        } else {
+            matmuldirect(simd, a, b, out, m, k, n);
+        }
+    });
 }
 
-/// The register-blocked SIMD micro-kernel behind [`matmulblock`].
+/// The direct register-blocked SIMD micro-kernel behind [`matmulblock`].
 ///
 /// Tiles the output into `BLOCKROWS` by `BLOCKCOLS` blocks whose accumulators
 /// stay in SIMD registers across the inner dimension. Every row count uses the
@@ -149,7 +180,7 @@ fn matmulblock(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usi
 /// width. Only columns past the last full tile fall back to a scalar dot
 /// product.
 #[inline(always)]
-fn matmulblocksimd<S: Simd>(
+fn matmuldirect<S: Simd>(
     simd: S,
     a: &[f32],
     b: &[f32],
@@ -158,8 +189,6 @@ fn matmulblocksimd<S: Simd>(
     k: usize,
     n: usize,
 ) {
-    const BLOCKROWS: usize = 8;
-    const BLOCKCOLS: usize = 4;
     let ntile = n / BLOCKCOLS * BLOCKCOLS;
 
     for i0 in (0..m).step_by(BLOCKROWS) {
@@ -179,6 +208,73 @@ fn matmulblocksimd<S: Simd>(
         for r in 0..rows {
             for j in ntile..n {
                 out[(i0 + r) * n + j] = scalardot(a, b, i0 + r, j, k, n);
+            }
+        }
+    }
+}
+
+/// The blocked packed micro-kernel behind [`matmulblock`].
+///
+/// The right operand is walked in column panels of at most `NCPANEL` and inner
+/// chunks of at most `KCPANEL`. Each chunk is copied once into the contiguous
+/// packed tile and then streamed by every `BLOCKROWS`-row block, so the right
+/// operand is read from its strided layout exactly once instead of once per
+/// row block. Output tiles are loaded and stored once per inner chunk, which
+/// keeps the per-element accumulation order identical to [`matmuldirect`]:
+/// the same ascending inner-dimension sequence of fused multiply-adds.
+#[inline(always)]
+fn matmulblocked<S: Simd>(
+    simd: S,
+    a: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    let mut packed = vec![0.0_f32; KCPANEL * NCPANEL];
+    for jp in (0..n).step_by(NCPANEL) {
+        let panel = (n - jp).min(NCPANEL);
+        let ntile = panel / BLOCKCOLS * BLOCKCOLS;
+        for kc0 in (0..k).step_by(KCPANEL) {
+            let kchunk = (k - kc0).min(KCPANEL);
+            for p in 0..kchunk {
+                let src = &b[(kc0 + p) * n + jp..(kc0 + p) * n + jp + panel];
+                packed[p * panel..p * panel + panel].copy_from_slice(src);
+            }
+            for i0 in (0..m).step_by(BLOCKROWS) {
+                let rows = (m - i0).min(BLOCKROWS);
+                for j0 in (0..ntile).step_by(BLOCKCOLS) {
+                    let mut acc = [f32x4::<S>::splat(simd, 0.0); BLOCKROWS];
+                    for r in 0..rows {
+                        acc[r] = f32x4::<S>::from_slice(
+                            simd,
+                            &out[(i0 + r) * n + jp + j0..(i0 + r) * n + jp + j0 + BLOCKCOLS],
+                        );
+                    }
+                    for p in 0..kchunk {
+                        let brow = f32x4::<S>::from_slice(
+                            simd,
+                            &packed[p * panel + j0..p * panel + j0 + BLOCKCOLS],
+                        );
+                        for r in 0..rows {
+                            acc[r] = brow.mul_add(a[(i0 + r) * k + kc0 + p], acc[r]);
+                        }
+                    }
+                    for r in 0..rows {
+                        acc[r].store_slice(
+                            &mut out[(i0 + r) * n + jp + j0..(i0 + r) * n + jp + j0 + BLOCKCOLS],
+                        );
+                    }
+                }
+            }
+        }
+        for i0 in (0..m).step_by(BLOCKROWS) {
+            let rows = (m - i0).min(BLOCKROWS);
+            for r in 0..rows {
+                for j in ntile..panel {
+                    out[(i0 + r) * n + jp + j] = scalardot(a, b, i0 + r, jp + j, k, n);
+                }
             }
         }
     }
