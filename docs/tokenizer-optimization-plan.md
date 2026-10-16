@@ -548,3 +548,27 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 **① 堆步 `(rank,left)→u64` 打包——实测无效，已回退**：把 `mergestep{rank:usize,left:usize}`（16 B）改为 u64 打包（8 B）+ 访问器。实测 `applyids_chain/64` 2.655→3.25 µs（−22%）、`/512` −4%、`/4096` −1%——**变慢**。原因：`new` 的 shift+or、`rank()`/`left()` 每次访问的 shift/and 开销抵消了内存减半的缓存收益；编译器对 16 B 结构体的字段访问本就零开销。结论：**内存打包的"理论更快"被实测推翻，维持 16 B 结构体**（AGENTS.md §8「避免仅因更复杂或理论更快就接受更慢的实现」）。
 
 **② tiktoken 剩余评估——无干净的低风险优化**：`encode/tiktoken/4096` ≈ 450 µs，主导是 ① `fancy_regex` 的 o200k 正则（含 `(?!\S)` 负向前瞻，回溯较慢，手写替换有正确性风险）；② `ranks: HashMap<Vec<u8>,u32>` 的 SipHash 切片哈希。换更快的非 DoS 抗性 hasher（fxhash）会引入**哈希泛洪 DoS**——`ranks.get` 的键是输入文本的字节切片（不可信输入），确定性哈希可被预构造碰撞；`ahash`（随机种子、DoS 抗性、更快）可行但需新依赖 + vendor。两者收益均 ~15–20%，风险/成本不抵，**判定维持 SipHash**。tiktoken 路径维持 ~450 µs，是当前唯一"慢"路径，但其优化需单独立项（手写 o200k 切分 或 ahash 依赖）。
+
+### 12.24 加载期优化（2026-10-16）
+
+实测 `fromjson`：gpt2（50k 词表）34.3 ms、gemma（256k 词表、580k merges）510.7 ms。落地两处：
+
+1. `vocabulary::byid` 由 `BTreeMap<u32,String>` 改 `HashMap<u32,String>`，`minid`/`maxid` 改为构建期跟踪（`getminid`/`getmaxid` O(1)）；`bycontent`/`byid` 均 `with_capacity`。`getcontent`（decode）同时从 O(log V) 降 O(1)。
+2. `bytepair::byids` `with_capacity(merges.len())`。
+
+**结果**：gpt2 34.34→28.92 ms、gemma 510.73→445.48 ms（约 −13%）。**剩余主项是 `ranks` 字符串 BTreeMap（580k merges 的双向 String 克隆 + 树插入，仅服务公开 `getrank`/`apply` API，编码路径不用）**；改为惰性构建需把 `ranks` 换成 `OnceCell`，破坏 `bytepair` 的 `#[derive(Clone/PartialEq/Eq)]`（`OnceCell` 非 `Clone`），需手工 impl，故判定**暂不引入**（一次性加载 445 ms 可接受）。
+
+### 12.25 tiktoken 手写切分器（2026-10-16）
+
+§12.23 判"手写替换有正确性风险"——用 proptest 对照 `fancy_regex` 消除了该风险后落地：`o200ksplit`（[pretoken.rs](crates/tokenizer/src/pretoken.rs)）手写 o200k 正则（大小写不敏感收缩词 / 单可选非字母数字前缀 + 字母 / 1–3 位数字 / 标点 + 尾随 CRLF / `\s*[\r\n]+` 至末个换行 / 尾随空白回退 / 空白），`tiktokenizer` 删掉 `fancy_regex` 依赖与 `regex` 字段，`encode_segment` 直接用 `o200ksplit`。
+
+**验证**：新增 proptest `o200ksplit_matches_the_regex_reference`（`o200ksplit` ≡ `fancy_regex` 逐 chunk，随机 ASCII+Unicode+换行+收缩词输入）；`tokenizergolden` 4 passed（o200k 8/8 逐位不变）；`tokenizerunits` 69 passed；clippy `-D warnings` + fmt + checkunsafe（0 新增 unsafe）+ checknaming + checksrctests + rustdoc 全过。`fancy-regex` 加入根 `[dev-dependencies]` 仅供对照测试（tokenizer 生产依赖不变：`fancy-regex` 仍由 Split pre-tokenizer 使用）。
+
+**基准（同环境，mean）**：
+
+| 基准 | 手写前（§12.23） | 手写后 | 加速比 |
+| --- | --- | --- | --- |
+| encode/tiktoken/4096 | 472.57 µs | 208.81 µs | ≈ 2.26× |
+| encode_into/tiktoken/4096 | 449.61 µs | 205.16 µs | ≈ 2.19× |
+
+tiktoken 累计（相对 Phase 0 945.1 µs）≈ **4.6×**，现 205 µs 与 HF BPE（27–41 µs）的差距主要剩 `ranks` 的 SipHash 切片哈希（DoS 抗性、维持）。

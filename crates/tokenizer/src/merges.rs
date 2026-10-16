@@ -67,7 +67,7 @@ impl bytepair {
         vocab: &vocabulary,
     ) -> Result<Self, tokenizererror> {
         let mut ranks: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
-        let mut byids: HashMap<u64, (usize, u32)> = HashMap::new();
+        let mut byids: HashMap<u64, (usize, u32)> = HashMap::with_capacity(merges.len());
         for (index, merge) in merges.iter().enumerate() {
             let (left, right) = merge
                 .split_once(' ')

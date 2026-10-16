@@ -50,7 +50,7 @@ pub use error::tokenizererror;
 pub use merges::bytepair;
 pub use normalize::normalizer;
 pub use postprocess::postprocessor;
-pub use pretoken::{bytetounicode, gpt2split, pretokenizer, unicodetobyte};
+pub use pretoken::{bytetounicode, gpt2split, o200ksplit, pretokenizer, unicodetobyte};
 pub use scratch::mergescratch;
 pub use special::specialtokens;
 pub use tiktoken::tiktokenizer;

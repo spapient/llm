@@ -865,6 +865,7 @@ dependencies = [
  "criterion",
  "cuda",
  "data",
+ "fancy-regex",
  "format",
  "half",
  "infer",

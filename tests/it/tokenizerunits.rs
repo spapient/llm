@@ -711,7 +711,11 @@ mod vocab {
 
 /// Tests relocated from `crates/tokenizer/src/pretoken.rs`.
 mod pretoken {
-    use ::tokenizer::{bytetounicode, gpt2split, tokenizer, tokenizererror, unicodetobyte};
+    use ::tokenizer::{
+        bytetounicode, gpt2split, o200ksplit, tokenizer, tokenizererror, unicodetobyte,
+    };
+    use fancy_regex::Regex;
+    use proptest::prelude::*;
     use serde_json::json;
 
     #[test]
@@ -824,6 +828,57 @@ mod pretoken {
         let text = "the cat and the dog and the cat";
         let ids = tok.encode(text).unwrap();
         assert_eq!(tok.decode(&ids).unwrap(), text);
+    }
+
+    /// Reference splitter over the o200k pattern, filling gaps between matches
+    /// so it yields the same contiguous chunks as [`o200ksplit`].
+    fn o200kregex(text: &str) -> Vec<String> {
+        const O200K: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+        let regex = Regex::new(O200K).unwrap();
+        let mut out = Vec::new();
+        let mut last = 0;
+        for found in regex.find_iter(text) {
+            let found = found.unwrap();
+            if found.start() > last {
+                out.push(text[last..found.start()].to_string());
+            }
+            out.push(text[found.start()..found.end()].to_string());
+            last = found.end();
+        }
+        if last < text.len() {
+            out.push(text[last..].to_string());
+        }
+        out
+    }
+
+    fn o200kchar() -> impl Strategy<Value = char> {
+        prop_oneof![
+            4 => prop::char::range('a', 'z'),
+            2 => prop::char::range('A', 'Z'),
+            2 => prop::char::range('0', '9'),
+            4 => Just(' '),
+            2 => Just('\t'),
+            2 => Just('\n'),
+            1 => Just('\r'),
+            1 => Just('\''),
+            1 => Just('!'),
+            1 => Just('?'),
+            1 => Just('.'),
+            1 => Just(','),
+            1 => Just('é'),
+            1 => Just('中'),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn o200ksplit_matches_the_regex_reference(
+            chars in proptest::collection::vec(o200kchar(), 0..40),
+        ) {
+            let text: String = chars.into_iter().collect();
+            let got: Vec<String> = o200ksplit(&text).iter().map(|s| s.to_string()).collect();
+            prop_assert_eq!(got, o200kregex(&text));
+        }
     }
 }
 

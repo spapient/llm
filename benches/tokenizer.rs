@@ -230,6 +230,19 @@ fn encodegpt2(c: &mut Criterion) {
     }
 }
 
+/// Measures `tokenizer::fromjson` against the real fixtures, so a one-time load
+/// cost for a production-sized vocabulary is quantified rather than assumed.
+fn loadtokenizer(c: &mut Criterion) {
+    let gpt2 = std::fs::read_to_string("tests/fixtures/gpt2/tokenizer.json").unwrap();
+    let gemma = std::fs::read_to_string("tests/fixtures/gemma/tokenizer.json").unwrap();
+    c.bench_function("tokenizer/fromjson/gpt2", |b| {
+        b.iter(|| black_box(tokenizer::fromjson(&gpt2).unwrap()));
+    });
+    c.bench_function("tokenizer/fromjson/gemma", |b| {
+        b.iter(|| black_box(tokenizer::fromjson(&gemma).unwrap()));
+    });
+}
+
 fn encodetiktoken(c: &mut Criterion) {
     let content = std::fs::read_to_string("tests/fixtures/o200k/o200k_base.tiktoken").unwrap();
     let specials = [
@@ -276,6 +289,7 @@ criterion_group!(
     encodebytelevelbatch,
     encodegpt2,
     encodetiktoken,
-    encodetiktokeninto
+    encodetiktokeninto,
+    loadtokenizer
 );
 criterion_main!(benches);

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use lib::tokenid;
 
@@ -8,27 +8,31 @@ use crate::error::tokenizererror;
 ///
 /// A `vocabulary` owns two maps: token string to id and id to token string.
 /// Both directions are populated from the same validated entry list, so a
-/// lookup in one direction always succeeds exactly when the other does. The
-/// token-string-to-id direction uses a `HashMap` for O(1) encode lookups; the
-/// id-to-token direction is stored in a `BTreeMap` rather than a dense vector
-/// so that an out-of-range id from untrusted input cannot cause a large
-/// allocation (rule `IN4`) and `getminid`/`getmaxid` stay sorted. Ids are
-/// validated against the inserted entries, never against their numeric
-/// magnitude. A 256-entry byte-fallback table maps each byte to its `<0xNN>`
-/// token id when present, so byte-fallback encoding does not allocate per byte.
+/// lookup in one direction always succeeds exactly when the other does. Both
+/// directions use `HashMap` for O(1) lookups rather than a dense vector, so an
+/// out-of-range id from untrusted input cannot cause a large allocation (rule
+/// `IN4`); ids are validated against the inserted entries, never against their
+/// numeric magnitude. The smallest and largest ids are tracked during
+/// construction for `getminid`/`getmaxid`. A 256-entry byte-fallback table maps
+/// each byte to its `<0xNN>` token id when present, so byte-fallback encoding
+/// does not allocate per byte.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct vocabulary {
     bycontent: HashMap<String, u32>,
-    byid: BTreeMap<u32, String>,
+    byid: HashMap<u32, String>,
     bytetokens: [Option<tokenid>; 256],
+    minid: Option<u32>,
+    maxid: Option<u32>,
 }
 
 impl Default for vocabulary {
     fn default() -> Self {
         Self {
             bycontent: HashMap::new(),
-            byid: BTreeMap::new(),
+            byid: HashMap::new(),
             bytetokens: [None; 256],
+            minid: None,
+            maxid: None,
         }
     }
 }
@@ -43,8 +47,10 @@ impl vocabulary {
     /// one token string is assigned to two different ids. Repeating the exact
     /// same `(token, id)` pair is accepted.
     pub fn fromentries(entries: Vec<(String, u32)>) -> Result<Self, tokenizererror> {
-        let mut bycontent = HashMap::new();
-        let mut byid = BTreeMap::new();
+        let mut bycontent = HashMap::with_capacity(entries.len());
+        let mut byid = HashMap::with_capacity(entries.len());
+        let mut minid: Option<u32> = None;
+        let mut maxid: Option<u32> = None;
         for (content, raw) in entries {
             if let Some(existing) = byid.get(&raw)
                 && existing != &content
@@ -56,6 +62,8 @@ impl vocabulary {
             {
                 return Err(tokenizererror::duplicatecontent { token: content });
             }
+            minid = Some(minid.map_or(raw, |current| current.min(raw)));
+            maxid = Some(maxid.map_or(raw, |current| current.max(raw)));
             byid.insert(raw, content.clone());
             bycontent.insert(content, raw);
         }
@@ -68,6 +76,8 @@ impl vocabulary {
             bycontent,
             byid,
             bytetokens,
+            minid,
+            maxid,
         })
     }
 
@@ -98,12 +108,12 @@ impl vocabulary {
     /// Returns the smallest token id present, if the vocabulary is not empty.
     #[must_use]
     pub fn getminid(&self) -> Option<tokenid> {
-        self.byid.keys().next().copied().map(tokenid::new)
+        self.minid.map(tokenid::new)
     }
 
     /// Returns the largest token id present, if the vocabulary is not empty.
     #[must_use]
     pub fn getmaxid(&self) -> Option<tokenid> {
-        self.byid.keys().next_back().copied().map(tokenid::new)
+        self.maxid.map(tokenid::new)
     }
 }

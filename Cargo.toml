@@ -47,6 +47,7 @@ half.workspace = true
 bytemuck.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+fancy-regex.workspace = true
 
 [[bench]]
 name = "cpuops"

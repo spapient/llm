@@ -118,6 +118,106 @@ fn gpt2toklen(rest: &str) -> usize {
     }
 }
 
+/// Splits `text` with the o200k pre-tokenizer regex (from tiktoken's
+/// `openai_public` module):
+/// `(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`.
+///
+/// Like [`gpt2split`], this is hand-written (no regex engine) and classifies
+/// Unicode scalars with the standard library's `is_alphabetic`, `is_numeric`,
+/// and `is_whitespace`.
+#[must_use]
+pub fn o200ksplit(text: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let length = o200ktoklen(&text[start..]);
+        tokens.push(&text[start..start + length]);
+        start += length;
+    }
+    tokens
+}
+
+/// Returns the byte length of the next o200k token in the non-empty `rest`.
+fn o200ktoklen(rest: &str) -> usize {
+    // 1. Case-insensitive contractions `'s|'t|'re|'ve|'m|'ll|'d` (ASCII-only).
+    let bytes = rest.as_bytes();
+    for contraction in ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"] {
+        if bytes.len() >= contraction.len()
+            && bytes[..contraction.len()].eq_ignore_ascii_case(contraction.as_bytes())
+        {
+            return contraction.len();
+        }
+    }
+    let Some(first) = rest.chars().next() else {
+        return 0; // unreachable: `rest` is non-empty
+    };
+    let firstlen = first.len_utf8();
+    // 3. `\p{N}{1,3}`: one to three digits, with no leading space.
+    if first.is_numeric() {
+        let mut total = 0;
+        let mut count = 0;
+        for ch in rest.chars() {
+            if ch.is_numeric() && count < 3 {
+                total += ch.len_utf8();
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        return total;
+    }
+    // 2. `[^\r\n\p{L}\p{N}]?\p{L}+`: an optional single non-CR/LF, non-letter,
+    //    non-number character followed by one or more letters.
+    if first.is_alphabetic() {
+        return classrun(rest, |ch| ch.is_alphabetic());
+    }
+    if first != '\r'
+        && first != '\n'
+        && let Some(second) = rest[firstlen..].chars().next()
+        && second.is_alphabetic()
+    {
+        return firstlen + classrun(&rest[firstlen..], |ch| ch.is_alphabetic());
+    }
+    // 4. ` ?[^\s\p{L}\p{N}]+[\r\n]*`: optional space + 1+ punctuation + 0+ CR/LF.
+    if first == ' ' {
+        let tail = &rest[firstlen..];
+        if let Some(ch) = tail.chars().next()
+            && otherchar(ch)
+        {
+            let run = classrun(tail, otherchar);
+            return firstlen + run + crlfrun(&tail[run..]);
+        }
+    }
+    if otherchar(first) {
+        let run = classrun(rest, otherchar);
+        return run + crlfrun(&rest[run..]);
+    }
+    // 5-7. Whitespace alternatives.
+    if first.is_whitespace() {
+        let runlen = classrun(rest, |ch| ch.is_whitespace());
+        // 5. `\s*[\r\n]+`: whitespace up to and including the last CR/LF.
+        if let Some(last) = rest[..runlen]
+            .bytes()
+            .rposition(|byte| byte == b'\r' || byte == b'\n')
+        {
+            return last + 1;
+        }
+        // 6. `\s+(?!\S)` then 7. `\s+`: trailing whitespace backs off one.
+        return match rest[runlen..].chars().next() {
+            Some(_) => runlen.saturating_sub(1).max(1),
+            None => runlen,
+        };
+    }
+    firstlen // unreachable: every character is classified above
+}
+
+/// Returns the byte length of the leading run of CR/LF bytes.
+fn crlfrun(rest: &str) -> usize {
+    rest.bytes()
+        .take_while(|&byte| byte == b'\r' || byte == b'\n')
+        .count()
+}
+
 /// Returns the byte length of the leading run of characters satisfying `pred`.
 fn classrun(rest: &str, pred: impl Fn(char) -> bool) -> usize {
     rest.chars()

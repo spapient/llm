@@ -3,19 +3,17 @@
 //! Unlike a HuggingFace `tokenizer.json`, a `.tiktoken` file holds only the
 //! mergeable vocabulary — one `<base64 token bytes> <rank>` per line — with no
 //! merges table, no pre-tokenizer, and no decoder. Encoding runs the fixed
-//! o200k regex to split, then greedily merges adjacent bytes whose
-//! concatenation is a vocabulary token (lowest resulting rank first). Special
-//! tokens are supplied by the caller because they are not in the file.
+//! hand-written o200k splitter to split, then greedily merges adjacent bytes
+//! whose concatenation is a vocabulary token (lowest resulting rank first).
+//! Special tokens are supplied by the caller because they are not in the file.
 
 use std::collections::{BinaryHeap, HashMap};
 
 use lib::tokenid;
 
 use crate::error::tokenizererror;
+use crate::pretoken::o200ksplit;
 use crate::scratch::{mergescratch, mergestep, resetlinks};
-
-/// The o200k_base pre-tokenizer regex (from tiktoken's openai_public module).
-const O200KREGEX: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 /// A tiktoken-format encoder.
 #[derive(Clone, Debug)]
@@ -26,8 +24,6 @@ pub struct tiktokenizer {
     tokens: Vec<Vec<u8>>,
     /// Special token content → rank, sorted longest first.
     specials: Vec<(String, u32)>,
-    /// The pre-tokenizer regex.
-    regex: fancy_regex::Regex,
 }
 
 impl tiktokenizer {
@@ -83,15 +79,10 @@ impl tiktokenizer {
         for (content, rank) in &specials_sorted {
             tokens[*rank as usize] = content.as_bytes().to_vec();
         }
-        let regex =
-            fancy_regex::Regex::new(O200KREGEX).map_err(|error| tokenizererror::invalidregex {
-                detail: error.to_string(),
-            })?;
         Ok(Self {
             ranks,
             tokens,
             specials: specials_sorted,
-            regex,
         })
     }
 
@@ -166,29 +157,16 @@ impl tiktokenizer {
             .map(|(content, rank)| (content.len(), *rank))
     }
 
-    /// Encodes one non-special segment through the regex and the byte merge.
+    /// Encodes one non-special segment through the hand-written splitter and
+    /// the byte merge.
     fn encode_segment(
         &self,
         segment: &str,
         scratch: &mut mergescratch,
         out: &mut Vec<tokenid>,
     ) -> Result<(), tokenizererror> {
-        if segment.is_empty() {
-            return Ok(());
-        }
-        let mut last = 0;
-        for found in self.regex.find_iter(segment) {
-            let found = found.map_err(|error| tokenizererror::invalidregex {
-                detail: error.to_string(),
-            })?;
-            if found.start() > last {
-                self.encode_chunk(&segment[last..found.start()], scratch, out)?;
-            }
-            self.encode_chunk(&segment[found.start()..found.end()], scratch, out)?;
-            last = found.end();
-        }
-        if last < segment.len() {
-            self.encode_chunk(&segment[last..], scratch, out)?;
+        for chunk in o200ksplit(segment) {
+            self.encode_chunk(chunk, scratch, out)?;
         }
         Ok(())
     }
