@@ -15,8 +15,10 @@ use std::hint::black_box;
 
 use api::compute;
 use bench::{
-    ELEMENTWISE, SOFTMAXCOLS, SOFTMAXROWS, attentioninput, cpuexec, elementwiseinput,
-    embeddinginput, matmulinput, norminput, ropeinput, scaninput, softmaxinput,
+    ATTNDECODEKV, ATTNPREFILLLONG, ATTNPREFILLSEQ, ELEMENTWISE, HEADDIM, HEADS, MATMULDECODEM,
+    MATMULDECODEN, MATMULPREFILL, SOFTMAXCOLS, SOFTMAXROWS, attentioninput, attentionseqinput,
+    cpuexec, elementwiseinput, embeddinginput, matmuldecodeinput, matmulinput, matmulprefillinput,
+    norminput, ropeinput, scaninput, softmaxinput,
 };
 use cpu::{cpuop, cpuscan};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -195,6 +197,72 @@ fn scan(c: &mut Criterion) {
     }
 }
 
+fn matmulscales(c: &mut Criterion) {
+    let exec = cpuexec();
+
+    let (a, b) = matmulprefillinput().unwrap();
+    let (av, bv) = (a.getview(), b.getview());
+    let mut group = c.benchmark_group("matmul/scale");
+    group.throughput(Throughput::Elements((MATMULPREFILL * MATMULPREFILL) as u64));
+    group.sample_size(10);
+    group.bench_function("prefill2048", |bench| {
+        bench.iter(|| {
+            black_box(
+                exec.applybinary(cpuop::matmul, black_box(&av), black_box(&bv))
+                    .unwrap(),
+            )
+        });
+    });
+
+    let (a, b) = matmuldecodeinput().unwrap();
+    let (av, bv) = (a.getview(), b.getview());
+    group.throughput(Throughput::Elements((MATMULDECODEM * MATMULDECODEN) as u64));
+    group.sample_size(20);
+    group.bench_function("decode1x4096x4096", |bench| {
+        bench.iter(|| {
+            black_box(
+                exec.applybinary(cpuop::matmul, black_box(&av), black_box(&bv))
+                    .unwrap(),
+            )
+        });
+    });
+    group.finish();
+}
+
+fn attentionscales(c: &mut Criterion) {
+    let exec = cpuexec();
+    for (name, qseq, kvseq) in [
+        ("prefill512", ATTNPREFILLSEQ, ATTNPREFILLSEQ),
+        ("prefill2048", ATTNPREFILLLONG, ATTNPREFILLLONG),
+        ("decode4096", 1usize, ATTNDECODEKV),
+    ] {
+        let (q, k, v) = attentionseqinput(qseq, kvseq).unwrap();
+        let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
+        let mut group = c.benchmark_group(format!("attention/scale/{name}"));
+        group.throughput(Throughput::Elements((qseq * HEADS * HEADDIM) as u64));
+        if qseq > 1 {
+            group.sample_size(10);
+        }
+        group.bench_function("causal", |bench| {
+            bench.iter(|| {
+                black_box(
+                    compute::attention(
+                        &exec,
+                        black_box(&qv),
+                        black_box(&kv),
+                        black_box(&vv),
+                        HEADS,
+                        HEADS,
+                        true,
+                    )
+                    .unwrap(),
+                )
+            });
+        });
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     elementwise,
@@ -203,6 +271,8 @@ criterion_group!(
     weighted,
     gather,
     compute_paths,
-    scan
+    scan,
+    matmulscales,
+    attentionscales
 );
 criterion_main!(benches);

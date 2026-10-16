@@ -236,3 +236,87 @@ pub fn scaninput(seq: usize) -> Result<scanoperands, tensorerror> {
     let skip = tensor::new(shape::new(vec![d])?, vec![0.0_f32; d])?;
     Ok((input, init, a, b, c, skip))
 }
+
+/// Square dimension of the prefill-scale matrix-multiplication workload.
+///
+/// At this size the right operand (16 MiB) exceeds the on-chip caches of the
+/// documented baseline machine, so the workload measures the operand reuse
+/// pattern of a prefill-sized multiplication rather than an L2-resident one.
+pub const MATMULPREFILL: usize = 2048;
+
+/// Builds the two fixed `[MATMULPREFILL, MATMULPREFILL]` matmul operands.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if the fixed shape is rejected by `tensor`.
+pub fn matmulprefillinput() -> Result<(tensor<f32>, tensor<f32>), tensorerror> {
+    let elements = MATMULPREFILL * MATMULPREFILL;
+    let lhs = tensor::new(
+        shape::new(vec![MATMULPREFILL, MATMULPREFILL])?,
+        vec![0.5_f32; elements],
+    )?;
+    let rhs = tensor::new(
+        shape::new(vec![MATMULPREFILL, MATMULPREFILL])?,
+        vec![0.25_f32; elements],
+    )?;
+    Ok((lhs, rhs))
+}
+
+/// Row count of the decode-scale matrix-multiplication workload: one token.
+pub const MATMULDECODEM: usize = 1;
+
+/// Inner dimension of the decode-scale matrix-multiplication workload.
+pub const MATMULDECODEK: usize = 4096;
+
+/// Column count of the decode-scale matrix-multiplication workload.
+pub const MATMULDECODEN: usize = 4096;
+
+/// Builds the decode-scale `[1, K] * [K, N]` matmul operands.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if a fixed shape is rejected by `tensor`.
+pub fn matmuldecodeinput() -> Result<(tensor<f32>, tensor<f32>), tensorerror> {
+    let lhs = tensor::new(
+        shape::new(vec![MATMULDECODEM, MATMULDECODEK])?,
+        vec![0.5_f32; MATMULDECODEM * MATMULDECODEK],
+    )?;
+    let rhs = tensor::new(
+        shape::new(vec![MATMULDECODEK, MATMULDECODEN])?,
+        vec![0.25_f32; MATMULDECODEK * MATMULDECODEN],
+    )?;
+    Ok((lhs, rhs))
+}
+
+/// Query sequence length of the prefill-scale attention workload.
+pub const ATTNPREFILLSEQ: usize = 512;
+
+/// Query sequence length of the long-prefill attention workload, where the
+/// key/value operands (16 MiB each) exceed the on-chip caches of the
+/// documented baseline machine and tile reuse is what pays.
+pub const ATTNPREFILLLONG: usize = 2048;
+
+/// Key/value sequence length of the decode-scale attention workload: one query
+/// position attending a long cached context.
+pub const ATTNDECODEKV: usize = 4096;
+
+/// Builds attention operands with a `[qseq, width]` query and `[kvseq, width]`
+/// key/value pair, where `width = HEADS * HEADDIM` and `qseq <= kvseq` so the
+/// operands satisfy the causal precondition of the attention contract.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if a fixed shape is rejected by `tensor`.
+pub fn attentionseqinput(qseq: usize, kvseq: usize) -> Result<attentionoperands, tensorerror> {
+    let width = HEADS * HEADDIM;
+    let q = tensor::new(shape::new(vec![qseq, width])?, vec![0.1_f32; qseq * width])?;
+    let k = tensor::new(
+        shape::new(vec![kvseq, width])?,
+        vec![0.2_f32; kvseq * width],
+    )?;
+    let v = tensor::new(
+        shape::new(vec![kvseq, width])?,
+        vec![0.3_f32; kvseq * width],
+    )?;
+    Ok((q, k, v))
+}
