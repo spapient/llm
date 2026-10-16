@@ -28,6 +28,7 @@ api = { path = "crates/api" }
 cpu = { path = "crates/cpu" }
 metal = { path = "crates/metal" }
 cuda = { path = "crates/cuda" }
+musa = { path = "crates/musa" }
 autograd = { path = "crates/autograd" }
 nn = { path = "crates/nn" }
 models = { path = "crates/models" }
@@ -83,6 +84,10 @@ harness = false
 
 [[bench]]
 name = "cuda"
+harness = false
+
+[[bench]]
+name = "musa"
 harness = false
 
 [[bench]]

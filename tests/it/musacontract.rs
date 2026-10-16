@@ -41,7 +41,7 @@
 
 use crate::support::{build, wide};
 use ::tensor::dtype;
-use api::{backend, backenderror, compute, kvpair, operand, stepref, submission};
+use api::{backend, backenderror, compute, kvpair, operand, submission};
 use cpu::cpuexecutor;
 use lib::limits;
 use musa::{MUSAMAXHEADDIM, MUSAMAXRANK, musabackend, musaexecutor};
