@@ -1024,6 +1024,15 @@ pub(crate) fn readstored(
 
 /// Verifies a full snapshot: every stored entry matches its logical block and
 /// the data section passes CRC32C and content-identity checks.
+///
+/// For snapshots with at least [`PARALLELMINBLOCKS`] blocks and
+/// [`PARALLELMINBYTES`] of data section, the heavy per-block work (CRC,
+/// decryption, decompression, transform inversion, content hashing) runs in
+/// parallel across the available cores, each worker writing into its own
+/// disjoint span of one preallocated output buffer. Metadata consistency and
+/// data bounds are checked serially before the workers start, so manifest
+/// errors keep their original ordering; a data error reports the first failing
+/// block within the earliest failing worker span.
 fn verifyfull(
     data: &[u8],
     blocks: &[blockref],
@@ -1035,6 +1044,25 @@ fn verifyfull(
             reason: "stored block count does not match the block list".to_string(),
         });
     }
+    if blocks.len() >= PARALLELMINBLOCKS && data.len() >= PARALLELMINBYTES {
+        return verifyfull_parallel(data, blocks, stored, key);
+    }
+    verifyfull_serial(data, blocks, stored, key)
+}
+
+/// Minimum block count and data-section size that trigger parallel decode;
+/// below these thresholds thread creation would dominate the per-block work.
+const PARALLELMINBLOCKS: usize = 8;
+const PARALLELMINBYTES: usize = 1024 * 1024;
+
+/// Serial decode: validates each block in order and returns the first error
+/// encountered, exactly as snapshots were decoded before parallel decode.
+fn verifyfull_serial(
+    data: &[u8],
+    blocks: &[blockref],
+    stored: &[storedentry],
+    key: Option<&[u8; 32]>,
+) -> Result<Vec<u8>, checkpointerror> {
     let mut rawdata = Vec::new();
     let mut offset = 0usize;
     for (position, block) in blocks.iter().enumerate() {
@@ -1093,6 +1121,151 @@ fn verifyfull(
         });
     }
     Ok(rawdata)
+}
+
+/// Parallel decode: validates the manifest metadata serially, then decodes
+/// every block concurrently into disjoint spans of one preallocated buffer.
+fn verifyfull_parallel(
+    data: &[u8],
+    blocks: &[blockref],
+    stored: &[storedentry],
+    key: Option<&[u8; 32]>,
+) -> Result<Vec<u8>, checkpointerror> {
+    let mut rawtotal = 0usize;
+    let mut offset = 0usize;
+    for (position, block) in blocks.iter().enumerate() {
+        let entry = &stored[position];
+        if entry.hash != block.gethash() || entry.offset != offset as u64 {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("stored entry {position} is inconsistent with the block list"),
+            });
+        }
+        let end =
+            offset
+                .checked_add(entry.size as usize)
+                .ok_or(checkpointerror::blockoutofrange {
+                    position,
+                    blockcount: blocks.len(),
+                })?;
+        if end > data.len() {
+            return Err(checkpointerror::truncatedblock {
+                position,
+                needed: entry.size as usize,
+                available: data.len().saturating_sub(offset),
+            });
+        }
+        rawtotal = rawtotal
+            .checked_add(block.getlen() as usize)
+            .ok_or(checkpointerror::invalidmanifest {
+                reason: format!("block {position} raw length overflows"),
+            })?;
+        offset = end;
+    }
+    if offset != data.len() {
+        return Err(checkpointerror::blockoutofrange {
+            position: offset,
+            blockcount: data.len(),
+        });
+    }
+
+    let nthreads = match std::thread::available_parallelism() {
+        Ok(n) => n.get().min(blocks.len()),
+        Err(_) => 1,
+    };
+    // One contiguous block span per worker, sized as evenly as possible.
+    let mut spans = Vec::with_capacity(nthreads);
+    let mut start = 0usize;
+    for t in 0..nthreads {
+        let len = blocks.len() / nthreads + usize::from(t < blocks.len() % nthreads);
+        let end = start + len;
+        spans.push(start..end);
+        start = end;
+    }
+
+    let mut rawdata = vec![0u8; rawtotal];
+    std::thread::scope(|scope| {
+        // Preallocate the output and split it into disjoint per-span write
+        // regions; the borrow ends when the scope returns.
+        let mut cursor: &mut [u8] = &mut rawdata;
+        let mut segs: Vec<&mut [u8]> = Vec::with_capacity(nthreads);
+        for span in &spans {
+            let seglen: usize = blocks[span.clone()]
+                .iter()
+                .map(|b| b.getlen() as usize)
+                .sum();
+            let (head, tail) = cursor.split_at_mut(seglen);
+            segs.push(head);
+            cursor = tail;
+        }
+        let mut handles = Vec::with_capacity(nthreads);
+        for (span, out) in spans.into_iter().zip(segs) {
+            handles.push(
+                scope.spawn(move || verifyblockspan(data, blocks, stored, key, span, out)),
+            );
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    return Err(checkpointerror::invalidmanifest {
+                        reason: "decode worker panicked".to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(rawdata)
+}
+
+/// Decodes one contiguous span of blocks into `out`, which must hold exactly
+/// the combined raw length of the span's blocks. The caller guarantees the
+/// span's metadata and data bounds were already validated.
+fn verifyblockspan(
+    data: &[u8],
+    blocks: &[blockref],
+    stored: &[storedentry],
+    key: Option<&[u8; 32]>,
+    span: std::ops::Range<usize>,
+    out: &mut [u8],
+) -> Result<(), checkpointerror> {
+    let mut written = 0usize;
+    for position in span {
+        let block = &blocks[position];
+        let entry = &stored[position];
+        let start = entry.offset as usize;
+        let end = start + entry.size as usize;
+        let bytes = &data[start..end];
+        if crc32c(bytes) != entry.crc32c {
+            return Err(checkpointerror::blockcrcmismatch { position });
+        }
+        let plain = match key {
+            Some(key) => {
+                let nonce = encryption::nonceof(&block.gethash());
+                Cow::Owned(encryption::decryptblock(key, &nonce, bytes, &entry.tag)?)
+            }
+            None => Cow::Borrowed(bytes),
+        };
+        let raw = decompressblock(entry.codec, entry.transform, &plain)?;
+        if raw.len() != block.getlen() as usize {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("block {position} decompressed length mismatch"),
+            });
+        }
+        let hash = contenthash(&raw);
+        if hash != block.gethash() {
+            return Err(checkpointerror::blockhashmismatch {
+                position,
+                expected: block.gethash(),
+                found: hash,
+            });
+        }
+        let dst = &mut out[written..written + raw.len()];
+        dst.copy_from_slice(&raw);
+        written += raw.len();
+    }
+    Ok(())
 }
 
 /// Verifies every tensor's byte range lies within the data section without

@@ -184,7 +184,7 @@ mod crc32c {
         // 8-byte folds. A byte-wise reference pins the definition.
         let byte_wise = |bytes: &[u8]| -> u32 {
             let mut table = [0u32; 256];
-            for i in 0..256usize {
+            for (i, entry) in table.iter_mut().enumerate() {
                 let mut crc = i as u32;
                 for _ in 0..8 {
                     crc = if crc & 1 != 0 {
@@ -193,7 +193,7 @@ mod crc32c {
                         crc >> 1
                     };
                 }
-                table[i] = crc;
+                *entry = crc;
             }
             let mut crc = 0xFFFF_FFFFu32;
             for &byte in bytes {
@@ -627,6 +627,40 @@ mod uformat {
         let bytes = snap.encode().unwrap();
         let back = snapshot::decode(&bytes).unwrap();
         assert_eq!(back.readtensor("big").unwrap(), data);
+    }
+
+    fn large_correlated_snap() -> (snapshot, Vec<u8>) {
+        // 16 MiB correlated f32: >8 blocks and >1 MiB data section, which
+        // forces the parallel decode path.
+        let n = 1024 * 1024 * 4usize;
+        let mut data = Vec::with_capacity(n * 4);
+        for i in 0..n {
+            let base = (i as f32 * 0.001).sin();
+            let noise = ((i.wrapping_mul(2654435761) % 1000) as f32) / 10000.0;
+            data.extend_from_slice(&(base + noise).to_le_bytes());
+        }
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::f32, shapeof(&[n]), &data)
+            .unwrap();
+        (snap, data)
+    }
+
+    #[test]
+    fn large_correlated_snapshot_roundtrips_byte_exact() {
+        let (snap, data) = large_correlated_snap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        assert_eq!(back.readtensor("w").unwrap(), data);
+    }
+
+    #[test]
+    fn large_snapshot_bit_flip_reports_corruption() {
+        let (snap, _) = large_correlated_snap();
+        let mut bytes = snap.encode().unwrap();
+        let flip = bytes.len() / 2;
+        bytes[flip] ^= 0x40;
+        let err = snapshot::decode(&bytes).unwrap_err();
+        assert!(err.iscorruption());
     }
 
     #[test]
