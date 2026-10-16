@@ -11,8 +11,17 @@ incremental = true
 [future-incompat-report]
 frequency = "always"
 
-# --- Vendored offline sources (removed 2026-10-16) ---------------------------
-# 原为应对 Claude Code 会话沙箱锁死 rsproxy.cn 而设（2026-10-15 加入）。
-# 该限制是会话沙箱的，不是机器的；当前环境网络直连 crates.io 正常，
-# 强制 vendor 反而使 blake3/crc32c 等新依赖无法解析。已恢复默认 crates.io
-# 解析，vendor/（139M）不再参与解析，可随时删除释放空间。
+# --- Vendored offline sources (re-enabled 2026-10-16) ------------------------
+# 2026-10-16 重建为完整闭包：`cargo vendor vendor/ --versioned-dirs` 从当前
+# Cargo.lock 全量解析（156 crates，含 regex 1.13.1 / unicode-normalization
+# 0.1.25 / tinyvec / blake3 / crc32c 等），供 Claude Code 会话沙箱
+# （strictAllowlist 锁死 crates.io）离线解析新依赖。
+# 使用方式：agent 在 Cargo.toml 声明依赖（如 unicode-normalization = "0.1"）
+# 后执行 `cargo build --offline`，无需网络。
+# 注意：新增 vendor 闭包之外的 crates.io 依赖时必须先补 vendor 目录
+# （重新跑 cargo vendor 或找 MainAgent 代拉），否则会报「无法解析」。
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor/"
