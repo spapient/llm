@@ -1,6 +1,6 @@
 # MUSA 后端适配计划：国产 GPU 的 CUDA 兼容后端
 
-> **版本**：v1.2（2026-10-16）　**状态**：提议（未实现）；**M0 已收敛 + 5.x/MTRTC 升级评估已完成（结论：不升级，留 3.1.0 走 mcc 预编译 + mu\* driver API）**
+> **版本**：v1.3（2026-10-16）　**状态**：提议（未实现）；**M0 已收敛 + 5.x 评估 + 性能路径对比 + 顶级架构设计已完成**
 > **权威**：`docs/design.md` §21（GPU 后端与 `unsafe` 豁免）、`docs/beta-scan-plan.md`（scan 算子已三后端闭环，本计划复用其内核）
 > **目标**：新增 `musa` 后端（摩尔线程 MUSA 架构），复用已验证的 CUDA C 内核，把 host 层从 `cudarc` 替换为 `musart`/`MTRTC`/`muBLAS`/`muDNN` 的 MUSA 绑定，使同一 `api::compute` 算子集在国产 GPU 上跑通且三后端数值一致。
 
@@ -114,7 +114,94 @@
 
 ---
 
-**状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**——3.1.0 的 `mu*` driver API 已完整（`muModuleLoadData`/`muLaunchKernel`/内存/上下文，`musa.h` 齐），host 层 = `mu*` driver API + build.rs `mcc` 预编译 FatBin（与 5.x MTRTC 加载路径同层，编译时机不同，对固定内核集无实质收益）；muBLAS/muDNN 可用。M2–M6 按此收敛实施。
+
+
+### 5. 顶级架构设计（v1.3，2026-10-16）——消除 unsafe
+
+**架构命题（一句话）**：musa 把 `unsafe` 收敛到**恰好一类平台交互（内核启动）**——`musa=1`，比 cuda=3 再收敛两级；不引入 muBLAS/muDNN，matmul 用 **WMMA 内核**吃 Tensor Core，性能与数值契约双不损。
+
+#### 5.0 「消除 unsafe」的现实边界（先说清事实）
+
+* **字面零 unsafe 不可能**：GPU 编程必须经 C ABI FFI 调用平台库（`mu*` driver / `musart`），Rust 调用 C 函数本身就是 `unsafe extern`；跨进程 IPC 隔离（unsafe 移入守护进程）可做到 crate 内零 unsafe，但引入 IPC 往返、部署复杂化，是过度设计，违反项目极简哲学（design.md §21.2 决策 2 同款论证：外包 ≠ 消除）。
+* **可达的顶级形态** = **unsafe 面收敛到最小可证集合**：站点按「交互类别」登记，且类别数降到 1；unsafe 代码体积极小化（单薄壳函数）；理由机械可证（SAFETY 注释 + checkunsafe.sh 强制）。
+* 本设计使 **musa=1（唯一类别：内核启动 `muLaunchKernel`）**——比 cuda=3、metal=4 更收敛，是当前架构原则（§21.8「逐类交互恰一处」）的极限应用。
+
+#### 5.1 关键架构决策：不引入 muBLAS/muDNN（musa=1 的前提）
+
+| 决策 | 依据 |
+| :--- | :--- |
+| **matmul 用 WMMA 内核，不走 muBLAS** | 真机验证：3.1.0 `include/crt/mma.h`（156 KB）含完整 WMMA 指令集——`mma_sync` 203 重载 / `load_matrix_sync` 130 / `store_matrix_sync` 21 / `fill_fragment` / `bmma_sync`，与 CUDA `nvcuda::wmma` 同形态；官方博客证实 WMMA 路径可达 3,640 → 53,572 GFLOPS（~15×，Tensor Core）。**自研内核即可吃 Tensor Core**，muBLAS 的「厂商优化」收益被 WMMA 内核追平 |
+| **softmax 用内核，不走 muDNN** | softmax 是内存带宽受限算子（非计算受限），自研减最大式内核与 muDNN 差距小；且减最大式与 cpu/metal 标量契约**同式**——数值契约设备无关，无厂商库精度分叉 |
+| **收益** | unsafe 站点 −2（无 blas/dnn 两类交互）；依赖 −2 库；错误面 −2 类（无 blas/dnn）；数值契约自洽（全内核族、无 fallback 分叉） |
+| **代价与缓解** | WMMA matmul 内核需自行实现分块/转置（官方博客全套优化可照搬：B 预转置 + 128 线程 Wave Tile + 异步双缓冲 + CTA Swizzle）——这是 M3 内核工作量的增加，换取整个后端 unsafe 归零 |
+
+#### 5.2 继承的架构内核（cuda/metal 已验证，必须保留）
+
+| 内核 | 依据 |
+| :--- | :--- |
+| 单文件 `unsafe` 岛（`src/ffi.rs` 唯一 `allow(unsafe_code)`） | design.md §21.8 |
+| 条件编译空库（非目标平台零实体，workspace 绿） | design.md §21.2 决策 5 |
+| 依赖边 `musa → api/tensor/lib`，api 零反向依赖 | design.md §21.3 |
+| `geometry` 校验唯一实现于 api（跨后端一致） | design.md §21.4 |
+| 同步 run-to-completion + submission 单 stream 累积、一次 sync 一次下载 | design.md §21.13 |
+| cache 单锁、锁不跨传输、每调用新 stream（防并发串行化） | design.md §21.6 |
+| 构造器区分路径（快路径 vs 参考路径） | cuda `matmulpath` 同构 |
+| 空输入短路 | cuda 全算子 |
+
+#### 5.3 模块结构
+
+```text
+crates/musa/
+  Cargo.toml              # [target.'cfg(target_os = "linux")'.dependencies] libmusa/libmusart（动态加载）
+  build.rs                # mcc 探测 → 预编译 kernels/*.cu → OUT_DIR fatbin → 生成 registry.rs
+  kernels/*.cu            # 自 cuda 复制 + WMMA matmul 内核（mma.h 指令集）：
+                          #   elementwise/rmsnorm/rope/rope_at/embedding/attention/
+                          #   attention_cached/matmul_wmma/softmax/scan/scan_parallel
+  src/lib.rs              # #![deny(unsafe_code)]；cfg(target_os="linux") 条件导出
+  src/backend.rs          # musabackend（devicekind::musa）
+  src/error.rs            # musaerror（6 类：device/module/transfer/launch/sizeoverflow）
+  src/executor.rs         # musaexecutor（api::compute）+ musasubmission（session）
+  src/ffi.rs              # 唯一 unsafe 岛：1 站点（muLaunchKernel）
+  src/registry.rs         # 构建期生成：内核 → (fatbin 段, entry, shared 预算)，编译期枚举
+```
+
+#### 5.4 unsafe 站点登记（musa=1）
+
+| # | 站点 | 交互类别 | SAFETY 前置 |
+| :--- | :--- | :--- | :--- |
+| 1 | `submit`（`muLaunchKernel`） | 内核启动（全部在仓内核共用，不随内核数增长） | args 由 `muModuleGetFunction` 解析的内核签名镜像构建、实参为存活设备分配或本调用期标量、launch 几何经 `api::geometry` 校验且覆盖元素数（内核自界检） |
+
+`scripts/checkunsafe.sh` 登记 `musa=1`（与 metal=4/cuda=3 并列，机械强制；musa 是全仓最小 unsafe 面）。unsafe 壳为一个薄函数：全部参数在安全侧完成 geometry/预算校验后，仅转发给 C ABI。
+
+#### 5.5 执行与内存所有权
+
+* **无请求级状态、无模型权重**（AGENTS.md §5）：cache 只持设备上下文 + 已加载模块 + 惰性解析的内核函数；session 只持 stream + 输出 slot。
+* **每调用新 stream**：submission 内单 stream 保序累积；单算子调用取新 stream，并发不串行化。
+* **无厂商库 fallback 分叉**：全内核族数值契约与 cpu/metal 同式（softmax 减最大；非有限输入传播 NaN，与标量契约一致）。
+
+#### 5.6 验证面
+
+* `tests/it/musacontract.rs`：数值 vs `testkit::reference` + WMMA matmul 与 FMA 参考路径互证 + 边界 + 错误路径 + 提交模式 + kernelcount 观测。
+* `benches/musa.rs`：`gpu/matmul`（WMMA vs FMA 参考，Tensor Core 差距实测）、`gpu/softmax`、`gpu/scan`、`gpu/decode`（缓存 vs 重算），真机基线（MTT S4000）。
+* 构建期：fatbin 生成进 CI 门禁（mcc 缺失 → 空库）。
+
+#### 5.7 质量维度对标（ISO/IEC 25010）
+
+| 维度 | 设计对应 |
+| :--- | :--- |
+| 功能性正确性 | 数值 vs 独立参考路径互证；全内核族数值契约设备无关；错误面收窄（编译错误构建期暴露；无 blas/dnn 错误类） |
+| 性能效率 | WMMA 内核吃 Tensor Core（官方博客 ~15× 证据）+ submission 单提交（~35× 实测杠杆） |
+| 可维护性 | 单文件 unsafe 岛、构建期类型化注册表、模块与 cuda/metal 同构 |
+| 可移植性 | 条件编译空库、mcc 缺失退化空库、workspace 全平台绿 |
+| **安全性** | **全仓最小 unsafe 面（musa=1，单交互类别）**、unsafe 壳 ~30 行、SAFETY 注释 + checkunsafe.sh 机械强制 |
+| 可测试性 | 构造器区分路径、kernelcount 观测、真机门禁（M6） |
+
+#### 5.8 对 cuda/metal 的回推（独立阶段，如实标注）
+
+* **cuda 可同样收敛到 cuda=1**：去 cuBLAS/cuDNN，NVRTC 内核族 + WMMA 内核——但 NVRTC 编译 WMMA 需 CUDA 头文件（`cuda.h`/`cuda_fp16.h`），cudarc 动态加载模式无头文件，需 NVRTC 内嵌头或换工具链（尖刺待证）。独立阶段，不与 musa 混提。
+* **metal=4 由 objc2-metal 的 unsafe API 面决定**（上传/下载/setBuffer/setBytes，已实测取证 §21.8），不收敛。
+
+**状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**；**性能路径对比完成（结论 A1+B1+C2，后经消除 unsafe 设计修订为 A1+WMMA+C2）**；**消除 unsafe 终极架构完成（musa=1：单交互类别 muLaunchKernel，不引入 muBLAS/muDNN，WMMA 内核吃 Tensor Core——`include/crt/mma.h` 真机验证 203 重载 mma_sync）**。M1–M6 按此收敛实施。
 
 
 ### 4.x 性能路径深度对比（2026-10-16，结论：A1+B1+C2 唯一最优）
