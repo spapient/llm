@@ -14,7 +14,7 @@
 //!
 //! # Unsafe
 //!
-//! This crate is one of the two carriers of the workspace's restricted
+//! This crate is one of the three carriers of the workspace's restricted
 //! `unsafe` exemption (see docs/design.md §21.8). The crate root uses
 //! `#![deny(unsafe_code)]`; the single module `ffi` declares
 //! `#![allow(unsafe_code)]` and confines every platform call there, each

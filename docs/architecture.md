@@ -345,7 +345,7 @@ MUST NOT 拥有：
 - CPU 算子实现。
 - CPU 后端内的执行分发。
 - CPU 特定数值策略。
-- SIMD 实现（`matmul` 已实现 8×4 寄存器分块 NEON 微内核与 `m >= 32` 的 k/n 分块打包路径、`attention` 已实现分块在线 softmax、`rmsnorm` 已实现向量化平方和与缩放，均经 `fearless_simd` 派发，2026-10-16；`matmul`/`attention`/`rmsnorm` 经 `cpuexecutor` worker 预算分块/行级并行，与串行逐位一致，2026-10-17；其余 `crates/cpu/src` 内核仍无数值 SIMD 路径。任何新的 SIMD 引入 MUST 先按 §12 建立基线并附正确性计划与前后对比）。
+- SIMD 实现（2026-10-17 现状：`crates/cpu/src` 全部数值 SIMD 路径经 `archmage` 安全 intrinsics 三层派发——AVX2+FMA（8 宽）、NEON（4 宽）、scalar 回退；`matmul` 8×4 寄存器分块微内核与 `m >= 32` 的 k/n 分块打包、`attention` 分块在线 softmax、`rmsnorm` 向量化平方和与缩放、`softmax` deg-7 泰勒 `exp2` 快路径（NaN/-inf 契约由标量路径保持）、`activation`/`elementwise` 向量化；`matmul`/`attention`/`rmsnorm` 另经 `cpuexecutor` worker 预算分块/行级并行，与串行逐位一致。任何新的 SIMD 引入 MUST 先按 §12 建立基线并附正确性计划与前后对比）。
 - CPU 特定能力上报。
 
 MUST NOT 拥有：
@@ -385,7 +385,7 @@ MUST NOT 拥有：
 验收标准：
 
 - 算子行为符合 `api::compute` 的文档化契约，并与 `cpu` 的数值结果对照。
-- `unsafe` 仅存在于 `src/ffi.rs`，每处均有 `// SAFETY:` 注释，且站点数恰好等于 docs/design.md §21.8 的登记数（`metal` = 4，`cuda` = 3；非上界语义，多一处或少一处均失败），由 `scripts/checkunsafe.sh` 强制。
+- `unsafe` 仅存在于 `src/ffi.rs`，每处均有 `// SAFETY:` 注释，且站点数恰好等于 docs/design.md §21.8 的登记数（`metal` = 3，`cuda` = 3，`musa` = 2；非上界语义，多一处或少一处均失败），由 `scripts/checkunsafe.sh` 强制。
 - `api`、`tensor`、`lib` MUST NOT 反向依赖 `metal` 或 `cuda`。
 - 非目标平台（例如无 GPU 的 CI）上 `cargo check --workspace --all-targets` 仍通过。
 

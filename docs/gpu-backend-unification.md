@@ -64,7 +64,7 @@ build.rs（构建期，需目标工具链）
 
 * 数值：三后端 vs `testkit::reference` 互证；WMMA 路径与 FMA 参考路径互证（构造器区分）。
 * 构建期：工具链缺失 → 空库（CI 门禁同现有条件编译）。
-* unsafe：checkunsafe.sh 登记 `cuda=1 / musa=2 / metal=4`，机械强制。
+* unsafe：checkunsafe.sh 登记 `metal=3 / cuda=3 / musa=2`（2026-10-17 现值；本表的 `cuda=1` 为 P2 收敛目标），机械强制。
 * 基准：`gpu/matmul`（WMMA vs FMA，Tensor Core 差距实测）、`gpu/decode`（缓存 vs 重算）、首启延迟对比（JIT 消除收益实测）。
 * 真机门禁：Metal（Apple GPU）、CUDA（NVIDIA）、MUSA（MTT S4000）。
 
@@ -76,7 +76,7 @@ build.rs（构建期，需目标工具链）
 | 性能效率 | WMMA 吃 Tensor Core（~15×）+ submission 单提交（~35×）+ 首启零 JIT |
 | 可维护性 | 单文件 unsafe 岛、类型化注册表、三后端同构管线 |
 | 可移植性 | 条件编译空库、工具链缺失退化空库 |
-| 安全性 | **全仓 unsafe 面收敛到最小可证集合**（cuda=1/musa=2/metal=4）+ SAFETY 注释机械强制 |
+| 安全性 | **全仓 unsafe 面收敛到最小可证集合**（现值 metal=3/cuda=3/musa=2；规划目标 cuda=1）+ SAFETY 注释机械强制 |
 | 可测试性 | 构造器区分路径、kernelcount 观测、真机门禁 |
 
 ## 8. 状态声明

@@ -124,7 +124,7 @@
 
 * **字面零 unsafe 不可能**：GPU 编程必须经 C ABI FFI 调用平台库（`mu*` driver / `musart`），Rust 调用 C 函数本身就是 `unsafe extern`；跨进程 IPC 隔离（unsafe 移入守护进程）可做到 crate 内零 unsafe，但引入 IPC 往返、部署复杂化，是过度设计，违反项目极简哲学（design.md §21.2 决策 2 同款论证：外包 ≠ 消除）。
 * **可达的顶级形态** = **unsafe 面收敛到最小可证集合**：站点按「交互类别」登记，且类别数降到 1；unsafe 代码体积极小化（单薄壳函数）；理由机械可证（SAFETY 注释 + checkunsafe.sh 强制）。
-* 本设计使 **musa=2（自写 FFI 的 2024 edition 理论下限）**：`unsafe extern "C"` 声明块（edition 2024 强制——声明面本身是不可消除的构造）+ 单一驱动交接 `unsafe` 块（`drive`：全部 `mu*` 调用收于一个块，块内不再逐处标记）。比 cuda=3、metal=4 更收敛；`musa=1` 在 2024 edition 下不可能（extern 声明不可省）。
+* 本设计使 **musa=2（自写 FFI 的 2024 edition 理论下限）**：`unsafe extern "C"` 声明块（edition 2024 强制——声明面本身是不可消除的构造）+ 单一驱动交接 `unsafe` 块（`drive`：全部 `mu*` 调用收于一个块，块内不再逐处标记）。比 cuda=3、metal=3（2026-10-17 现值；metal 由 4 站点合并为 3 个交接块）更收敛；`musa=1` 在 2024 edition 下不可能（extern 声明不可省）。
 
 #### 5.1 关键架构决策：不引入 muBLAS/muDNN（musa=2 的前提）
 
@@ -171,7 +171,7 @@ crates/musa/
 | :--- | :--- | :--- | :--- |
 | 1 | `submit`（`muLaunchKernel`） | 内核启动（全部在仓内核共用，不随内核数增长） | args 由 `muModuleGetFunction` 解析的内核签名镜像构建、实参为存活设备分配或本调用期标量、launch 几何经 `api::geometry` 校验且覆盖元素数（内核自界检） |
 
-`scripts/checkunsafe.sh` 登记 `musa=2`（与 metal=4/cuda=3 并列，机械强制；musa 是全仓最小 unsafe 面）。驱动交接函数在安全侧完成 geometry/预算校验后，仅转发给 C ABI。
+`scripts/checkunsafe.sh` 登记 `musa=2`（与 metal=3/cuda=3 并列，2026-10-17 现值，机械强制；musa 是全仓最小 unsafe 面）。驱动交接函数在安全侧完成 geometry/预算校验后，仅转发给 C ABI。
 
 #### 5.5 执行与内存所有权
 
@@ -198,7 +198,7 @@ crates/musa/
 
 #### 5.8 全局统一（跨后端，见 `docs/gpu-backend-unification.md` v1.0）
 
-* **统一终态**：三个 GPU 后端共同收敛到「构建期预编译 + 运行时零编译 + 最小 unsafe 面」——cuda=1、musa=2、metal=4（库决定；musa=2 为 2024 edition 自写 FFI 理论下限）。
+* **统一终态**：三个 GPU 后端共同收敛到「构建期预编译 + 运行时零编译 + 最小 unsafe 面」——cuda=1（规划目标）、musa=2、metal=3（2026-10-17 现值；musa=2 为 2024 edition 自写 FFI 理论下限）。
 * **cuda 的 JIT 消除已验证可行**：cudarc 0.19.10 `load_module(PtxKind::Binary)` → `cuModuleLoadData`（源码确认）；nvcc 构建期预编译 CUBIN 内嵌 + WMMA matmul 内核（构建机有完整 CUDA 工具链，WMMA 头可编译）→ cuda=1。
 * **metal**：JIT 消除 = xcrun metal 构建期 metallib（P3，`newLibraryWithData` 待尖刺）；unsafe=4 由 objc2-metal API 面决定（§21.8 实测）。
 * 阶段互斥：P1（musa）→ P2（cuda 收敛）→ P3（metal JIT 消除），各为独立可测提交。

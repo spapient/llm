@@ -466,9 +466,9 @@ executor 路径与裸内核路径在运行间噪声内一致（噪声带准则�
 
 **rope 角度复用前后对比（2026-10-17，同机同工具链同基准）。** 每 (position, i) 的 `sin_cos` 由每 head 重复计算改为跨 head 复用（每元素算术不变，结果逐位相同）：`executor/compute/rope`（seq128heads8dim64）由 89.06 → 30.03 µs（2.97×）。
 
-**剩余优化项（2026-10-17 记录，未实施）。** ① SIMD 宽度泛型（`f32x8`/`f32x16` 路径）：fearless_simd 1.1.0 类型族存在，但本机 NEON 最高 4 宽、无法建立测量，留待 AVX2/AVX-512 机器按 §12 先立基线；② 融合算子（rmsnorm+matmul 行缩放 epilogue、attention 输出+残差）：需扩展 api 契约，prefill 每层可省一次 `m×k` 读加写；③ attention 长序列 exp 瓶颈：prefill2048 的 16.7M 次 `expf` 主导，向量化 exp 需精度验证（§softmax SIMD 评估先例：Apple libm `expf` 已 NEON 加速，自写多项式难更快）。
+**剩余优化项（2026-10-17 更新，未实施）。** ① ~~SIMD 宽度泛型~~（已落地：archmage 三层派发 v3/neon/scalar，服务器 x86 rmsnorm 实测 1.37×）；② 融合算子（rmsnorm+matmul 行缩放 epilogue、attention 输出+residual）：需扩展 api 契约，prefill 每层可省一次 `m×k` 读加写；③ ~~attention 长序列 exp 瓶颈~~（已解决：ce17c18 的 deg-7 泰勒 `exp2` 向量化快路径，softmax 2.41×，attention 侧同式可复用）；④ 输出免零初始化（需新增封装 unsafe 的 vendor 依赖，沙箱离线待补 vendor）。
 
-**softmax SIMD 评估（2026-10-16）：判定不引入。** `softmaxrow` 的 max 与缩放趟经 LLVM 自动向量化已是 4 宽 NEON，而 `exp` 趟占主导且 `fearless_simd` 无向量化 `exp`（Apple Silicon 的系统 libm `expf` 已 NEON 加速，自写多项式难更快）。实测仅向量化 max/缩放反而回退 6.5%（2.4593→2.6182 ms），已回退；softmax 保持标量 `f32::exp`，未引入数值近似。
+**softmax SIMD 评估（2026-10-16）：判定不引入。** `softmaxrow` 的 max 与缩放趟经 LLVM 自动向量化已是 4 宽 NEON，而 `exp` 趟占主导且 `fearless_simd` 无向量化 `exp`（Apple Silicon 的系统 libm `expf` 已 NEON 加速，自写多项式难更快）。实测仅向量化 max/缩放反而回退 6.5%（2.4593→2.6182 ms），已回退；softmax 保持标量 `f32::exp`，未引入数值近似。**（2026-10-17 作废）** 该判定在 `fearless_simd` 前提下成立；迁移到 `archmage` 直接 intrinsics 后前提改变，deg-7 泰勒 `exp2` 近似 + 全有限行向量化快路径已落地（提交 ce17c18，NaN/-inf 契约由标量路径保持）。同机同基准实测：`softmax/rows512cols4096` 由 2.5391 ms → 1.0522 ms（**2.41×**），数值对照 `softmax_matches_the_scalar_reference_per_row` 与 `softmax_is_numerically_stable_for_extreme_logits` 全绿。
 
 内核调用契约的验证：`lib`、`tensor`、`api` 以其文档化契约实现，仓库根 `tensorcontract`、`apicontract`、`crosscrate` 套件通过（证据等级 E1）。
 
@@ -2729,7 +2729,7 @@ MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有�
 * **CUDA 编译与静态门禁（E1）。** `cargo check -p cuda --target x86_64-unknown-linux-gnu --all-targets`、`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --all-targets -- -D warnings`，以及 `-p llm --target x86_64-unknown-linux-gnu --test it`、`--bench cuda` 的同名检查均 exit 0。全部在无 CUDA toolkit、无 NVIDIA 驱动的 macOS 宿主上完成，`dynamic-loading` 使其不必要。
 * **CUDA 契约（E1，2026-10-12 真机）。** `tests/it/cudacontract.rs` 共 36 例，在 RTX 2080 Ti 主机上以 `LLM_CUDA_REQUIRE_DEVICE=1` 全部执行通过（36 passed / 0 failed，输出中 0 条 `E4 未执行`）：18 例定案于宿主侧（身份与能力声明、matmul 路径选择、八个算子的形状/下标/空末轴拒绝、元素与 gather 预算、`CUDAMAXHEADDIM` 上限、退化空输入），15 例走设备并与 `testkit::reference` 的标量参考对照（cuBLAS 与 NVRTC 两条 `matmul` 路径、`softmax`、`rmsnorm`、`rope`、`embedding`、`attention`、逐元素，容差 1e-4–1e-5），其余 3 例断言与共享向量列表一致。首次执行暴露并修正了一个用例缺陷，命令与结果见 21.10.3。
 * **CUDA 基准（E1，2026-10-12 真机）。** `benches/cuda.rs` 的十个工作负载在真机上运行，CPU 与 CUDA 两侧在同一进程、同一轮内测量；数字、每调用固定成本的分解与结论见 21.10.3。**不声明任何加速**（VF5）：CUDA 只在三个由 cuBLAS/cuDNN 服务的工作负载上快于 CPU，其余（由 NVRTC 服务）仍慢于 CPU，原因已由测量定位到每次调用的固定成本。
-* **门禁（E1）。** `scripts/checkunsafe.sh` 四项断言全绿（`metal` 4/4 站点、`cuda` 3/3 站点，各有 SAFETY 注释）；`scripts/checknaming.sh`、`scripts/checkthresholds.sh` 与汇总的 `scripts/check.sh`（fmt、全工作区 check/clippy、命名、内联测试、unsafe、阈值、文档）全部通过。
+* **门禁（E1）。** `scripts/checkunsafe.sh` 四项断言全绿（`metal` 4/4 站点、`cuda` 3/3 站点，各有 SAFETY 注释）；`scripts/checknaming.sh`、`scripts/checkthresholds.sh` 与汇总的 `scripts/check.sh`（fmt、全工作区 check/clippy、命名、内联测试、unsafe、阈值、文档）全部通过。（2026-10-17 更新：metal 的四个按类站点已合并为三个驱动交接块，登记数 4→3，见本表；`checkunsafe.sh` 现报 `metal 3/3`、`cuda 3/3`、`musa 2/2`。）
 * **回归（E1）。** `cargo test --workspace` 在 macOS 宿主上 44 个测试目标全部 `test result: ok`、0 failed（exit 0），其中 `tests/it/main.rs` 单个二进制 748 passed / 0 failed；`metalcontract` 的 30 例真实运行，`cudacontract` 因平台 cfg 不参与本机构建。
 
 基线（E1；`cargo bench -p llm --bench metal`，release profile，criterion 0.7.0，warm-up 0.5 s，measurement 1.0 s，10 samples；环境 macOS、arm64、Apple M5 Pro、`rustc 1.99.0`）：

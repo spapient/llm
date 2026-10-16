@@ -34,12 +34,14 @@
 //!
 //! # Unsafe
 //!
-//! This crate is one of the two carriers of the workspace's restricted
+//! This crate is one of the three carriers of the workspace's restricted
 //! `unsafe` exemption (see docs/design.md §21.8). The crate root uses
 //! `#![deny(unsafe_code)]`; the single module `ffi` declares the crate's one
 //! allowance and confines every platform call there, each preceded by a
-//! `// SAFETY:` comment. `scripts/checkunsafe.sh` enforces the exact site count
-//! and the SAFETY comments mechanically.
+//! `// SAFETY:` comment. The registered sites are three, one per class of
+//! platform interaction: the NVRTC kernel launch, the cuBLAS `gemm`, and the
+//! cuDNN softmax. `scripts/checkunsafe.sh` enforces the exact site count and
+//! the SAFETY comments mechanically.
 //!
 //! # Naming
 //!
