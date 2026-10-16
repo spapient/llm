@@ -749,6 +749,37 @@ mod uformat {
         let err = snap.setlayout("w", layout::new(vec![100, 100], 0)).unwrap_err();
         assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
     }
+
+    #[test]
+    fn sparse_tensor_roundtrips_and_reconstructs() {
+        let indices = [0u32, 2];
+        let values = [1u8, 3];
+        let mut snap = snapshot::new(1);
+        snap.addsparse("w".to_string(), dtype::u8, shapeof(&[4]), &indices, &values)
+            .unwrap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        let entry = back
+            .gettensors()
+            .iter()
+            .find(|t| t.getname() == "w")
+            .unwrap();
+        assert_eq!(entry.getsparse().unwrap().getnnz(), 2);
+        let reader = checkpointreader::openfull(bytes).unwrap();
+        let t = reader.readtensortyped::<u8>("w").unwrap().unwrap();
+        assert_eq!(t.getdata(), &[1u8, 0, 3, 0]);
+    }
+
+    #[test]
+    fn sparse_rejects_out_of_range_index() {
+        let indices = [4u32];
+        let values = [1u8];
+        let mut snap = snapshot::new(1);
+        let err = snap
+            .addsparse("w".to_string(), dtype::u8, shapeof(&[4]), &indices, &values)
+            .unwrap_err();
+        assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/delta.rs`.

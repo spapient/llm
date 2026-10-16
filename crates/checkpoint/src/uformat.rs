@@ -89,6 +89,31 @@ impl quantdesc {
     }
 }
 
+/// Describes a sparsely stored tensor: only the non-zero values and their
+/// linear indices are persisted in the data section.
+///
+/// The data section stores the indices first (each a little-endian `u32` linear
+/// element position) followed by the non-zero values, so a reader reconstructs
+/// the dense tensor by zero-filling and scattering the values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct sparsedesc {
+    nnz: u64,
+}
+
+impl sparsedesc {
+    /// Creates a descriptor for a tensor with `nnz` non-zero elements.
+    #[must_use]
+    pub fn new(nnz: u64) -> Self {
+        Self { nnz }
+    }
+
+    /// Returns the number of non-zero elements.
+    #[must_use]
+    pub fn getnnz(&self) -> u64 {
+        self.nnz
+    }
+}
+
 /// Describes one tensor persisted in a `.u` snapshot.
 ///
 /// A value records the tensor's name, storage [`dtype`], logical [`shape`], and
@@ -103,6 +128,7 @@ pub struct tensorentry {
     nbytes: u64,
     quant: Option<quantdesc>,
     layout: Option<layout>,
+    sparse: Option<sparsedesc>,
 }
 
 impl tensorentry {
@@ -153,6 +179,13 @@ impl tensorentry {
     #[must_use]
     pub fn getlayout(&self) -> Option<&layout> {
         self.layout.as_ref()
+    }
+
+    /// Returns the sparse-storage descriptor, when the tensor is sparsely
+    /// stored.
+    #[must_use]
+    pub fn getsparse(&self) -> Option<&sparsedesc> {
+        self.sparse.as_ref()
     }
 }
 
@@ -286,9 +319,72 @@ impl snapshot {
             nbytes: actual,
             quant: None,
             layout: None,
+            sparse: None,
         };
         self.tensors.push(entry);
         self.data.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Appends a sparsely stored tensor: `indices` are little-endian `u32`
+    /// linear element positions and `values` are the matching non-zero bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::shapeoverflow`], [`checkpointerror::lengthmismatch`],
+    /// or [`checkpointerror::invalidmanifest`] for an out-of-range index.
+    pub fn addsparse(
+        &mut self,
+        name: String,
+        value: dtype,
+        dims: shape,
+        indices: &[u32],
+        values: &[u8],
+    ) -> Result<(), checkpointerror> {
+        let count = dims
+            .getelementcount()
+            .map_err(|_| checkpointerror::shapeoverflow { name: name.clone() })?;
+        let nnz = indices.len() as u64;
+        let valuebytes = nnz
+            .checked_mul(value.sizeinbytes() as u64)
+            .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
+        if values.len() as u64 != valuebytes {
+            return Err(checkpointerror::lengthmismatch {
+                name: name.clone(),
+                expected: valuebytes,
+                actual: values.len() as u64,
+            });
+        }
+        for &idx in indices {
+            if (idx as u64) >= (count as u64) {
+                return Err(checkpointerror::invalidmanifest {
+                    reason: format!("sparse index {idx} out of range for tensor {name:?}"),
+                });
+            }
+        }
+        if self.tensors.iter().any(|t| t.name == name) {
+            return Err(checkpointerror::duplicatetensor { name });
+        }
+        let offset = self.data.len() as u64;
+        let nbytes = nnz
+            .checked_mul(4)
+            .and_then(|v| v.checked_add(valuebytes))
+            .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
+        let entry = tensorentry {
+            name,
+            dtype: value,
+            shape: dims,
+            offset,
+            nbytes,
+            quant: None,
+            layout: None,
+            sparse: Some(sparsedesc::new(nnz)),
+        };
+        self.tensors.push(entry);
+        for &idx in indices {
+            self.data.extend_from_slice(&idx.to_le_bytes());
+        }
+        self.data.extend_from_slice(values);
         Ok(())
     }
 
@@ -678,6 +774,13 @@ pub(crate) fn canonicalmanifest(
                 }
             }
         }
+        match &entry.sparse {
+            None => pushu64(&mut buf, 0),
+            Some(sp) => {
+                pushu64(&mut buf, 1);
+                pushu64(&mut buf, sp.getnnz());
+            }
+        }
     }
     pushu64(&mut buf, blocks.len() as u64);
     for block in blocks {
@@ -775,17 +878,45 @@ pub(crate) fn readtensors(
                 reason: format!("tensor {name:?} has an invalid layout"),
             });
         }
+        let sparse = match readu64(manifest, pos)? {
+            0 => None,
+            1 => Some(sparsedesc::new(readu64(manifest, pos)?)),
+            _ => {
+                return Err(checkpointerror::invalidmanifest {
+                    reason: "invalid sparse flag".to_string(),
+                });
+            }
+        };
         let count = dims
             .getelementcount()
             .map_err(|_| checkpointerror::shapeoverflow { name: name.clone() })?;
-        let expected = (count as u64)
-            .checked_mul(value.sizeinbytes() as u64)
-            .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
+        let expected = match &sparse {
+            Some(sp) => {
+                let valuebytes = sp
+                    .getnnz()
+                    .checked_mul(value.sizeinbytes() as u64)
+                    .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
+                sp.getnnz()
+                    .checked_mul(4)
+                    .and_then(|v| v.checked_add(valuebytes))
+                    .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?
+            }
+            None => (count as u64)
+                .checked_mul(value.sizeinbytes() as u64)
+                .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?,
+        };
         if nbytes != expected {
             return Err(checkpointerror::lengthmismatch {
                 name,
                 expected,
                 actual: nbytes,
+            });
+        }
+        if let Some(sp) = &sparse
+            && sp.getnnz() > count as u64
+        {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("tensor {name:?} has more non-zeros than elements"),
             });
         }
         tensors.push(tensorentry {
@@ -796,6 +927,7 @@ pub(crate) fn readtensors(
             nbytes,
             quant,
             layout,
+            sparse,
         });
     }
     Ok(tensors)

@@ -595,11 +595,27 @@ impl checkpointreader {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
+        let dense = match entry.getsparse() {
+            Some(sp) => {
+                let count = entry
+                    .getshape()
+                    .getelementcount()
+                    .map_err(checkpointerror::tensor)?;
+                let width = entry.getdtype().sizeinbytes();
+                let nnz = usize::try_from(sp.getnnz()).map_err(|_| {
+                    checkpointerror::invalidmanifest {
+                        reason: "sparse non-zero count overflows usize".to_string(),
+                    }
+                })?;
+                Cow::Owned(desparsify(&bytes, nnz, width, count)?)
+            }
+            None => bytes,
+        };
         let decoded = match entry.getlayout() {
             Some(l) => {
-                tensor::tryfrombyteswithlayout(entry.getshape().clone(), l.clone(), &bytes)?
+                tensor::tryfrombyteswithlayout(entry.getshape().clone(), l.clone(), &dense)?
             }
-            None => tensor::tryfrombytes(entry.getshape().clone(), &bytes)?,
+            None => tensor::tryfrombytes(entry.getshape().clone(), &dense)?,
         };
         Ok(Some(decoded))
     }
@@ -608,4 +624,52 @@ impl checkpointreader {
     fn totallen(&self) -> usize {
         self.blocks.iter().map(|b| b.getlen() as usize).sum()
     }
+}
+
+/// Reconstructs a dense byte buffer from a sparse encoding (indices first,
+/// then values).
+fn desparsify(
+    bytes: &[u8],
+    nnz: usize,
+    width: usize,
+    count: usize,
+) -> Result<Vec<u8>, checkpointerror> {
+    let indexbytes = nnz.checked_mul(4).ok_or_else(|| {
+        checkpointerror::invalidmanifest {
+            reason: "sparse index section overflows usize".to_string(),
+        }
+    })?;
+    let valuebytes = nnz.checked_mul(width).ok_or_else(|| {
+        checkpointerror::invalidmanifest {
+            reason: "sparse value section overflows usize".to_string(),
+        }
+    })?;
+    if bytes.len() != indexbytes + valuebytes {
+        return Err(checkpointerror::invalidmanifest {
+            reason: "sparse data length mismatch".to_string(),
+        });
+    }
+    let dense_len = count.checked_mul(width).ok_or_else(|| {
+        checkpointerror::invalidmanifest {
+            reason: "dense buffer overflows usize".to_string(),
+        }
+    })?;
+    let mut dense = vec![0u8; dense_len];
+    for i in 0..nnz {
+        let idx = u32::from_le_bytes(
+            bytes[i * 4..i * 4 + 4]
+                .try_into()
+                .map_err(|_| checkpointerror::invalidmanifest {
+                    reason: "sparse index decode failed".to_string(),
+                })?,
+        ) as usize;
+        if idx >= count {
+            return Err(checkpointerror::invalidmanifest {
+                reason: "sparse index out of range".to_string(),
+            });
+        }
+        let src = &bytes[indexbytes + i * width..indexbytes + (i + 1) * width];
+        dense[idx * width..idx * width + width].copy_from_slice(src);
+    }
+    Ok(dense)
 }
