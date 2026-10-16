@@ -1,5 +1,6 @@
 use ::tensor::{tensor, tensorview};
 use api::{backenderror, kernel};
+use archmage::prelude::*;
 
 use crate::support::finish;
 
@@ -20,6 +21,10 @@ pub struct cpurelu;
 ///
 /// `NaN` propagates. For large negative `x` the exponential saturates to
 /// positive infinity and the quotient underflows toward negative zero.
+///
+/// The transcendental stays on the scalar `exp` path: the operator contract
+/// fixes exact IEEE-754 propagation semantics, and the libm exponential is the
+/// only value that keeps every non-finite case bit-exact across SIMD tiers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct cpusilu;
 
@@ -38,8 +43,22 @@ impl kernel<f32> for cpurelu {
     }
 
     fn apply(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
-        let data = input.getdata().iter().copied().map(reluvalue).collect();
+        let mut data = vec![0.0_f32; input.getdata().len()];
+        reluspan(input.getdata(), &mut data);
         finish(input.getshape(), data)
+    }
+}
+
+/// Multi-versioned rectified linear unit over one span.
+///
+/// The `if x < 0.0` form is kept deliberately instead of a `max` intrinsic:
+/// the compiler's vectorized `select` preserves the scalar contract exactly —
+/// `NaN` propagates (the comparison is false) and negative zero is passed
+/// through unchanged rather than flushed to `+0`.
+#[autoversion]
+fn reluspan(data: &[f32], out: &mut [f32]) {
+    for (o, &x) in out.iter_mut().zip(data.iter()) {
+        *o = if x < 0.0 { 0.0 } else { x };
     }
 }
 
@@ -63,10 +82,6 @@ impl kernel<f32> for cpugelutanh {
         let data = input.getdata().iter().copied().map(gelutanhvalue).collect();
         finish(input.getshape(), data)
     }
-}
-
-fn reluvalue(x: f32) -> f32 {
-    if x < 0.0 { 0.0 } else { x }
 }
 
 fn siluvalue(x: f32) -> f32 {

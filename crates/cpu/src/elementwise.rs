@@ -1,5 +1,6 @@
 use ::tensor::{tensor, tensorview};
 use api::{backenderror, binarykernel};
+use archmage::prelude::*;
 
 use crate::support::finish;
 
@@ -35,7 +36,11 @@ impl binarykernel<f32> for cpuadd {
         lhs: &tensorview<'_, f32>,
         rhs: &tensorview<'_, f32>,
     ) -> Result<tensor<f32>, backenderror> {
-        let data = zipmap(lhs, rhs, ADDOP, |a, b| a + b)?;
+        if lhs.getshape().getdims() != rhs.getshape().getdims() {
+            return Err(backenderror::shapemismatch { op: ADDOP });
+        }
+        let mut data = vec![0.0_f32; lhs.getdata().len()];
+        addspans(lhs.getdata(), rhs.getdata(), &mut data);
         finish(lhs.getshape(), data)
     }
 }
@@ -50,25 +55,35 @@ impl binarykernel<f32> for cpumul {
         lhs: &tensorview<'_, f32>,
         rhs: &tensorview<'_, f32>,
     ) -> Result<tensor<f32>, backenderror> {
-        let data = zipmap(lhs, rhs, MULOP, |a, b| a * b)?;
+        if lhs.getshape().getdims() != rhs.getshape().getdims() {
+            return Err(backenderror::shapemismatch { op: MULOP });
+        }
+        let mut data = vec![0.0_f32; lhs.getdata().len()];
+        mulspans(lhs.getdata(), rhs.getdata(), &mut data);
         finish(lhs.getshape(), data)
     }
 }
 
-/// Zips two equal-shaped operands through `op`, rejecting shape mismatches.
-fn zipmap(
-    lhs: &tensorview<'_, f32>,
-    rhs: &tensorview<'_, f32>,
-    op: &'static str,
-    f: impl Fn(f32, f32) -> f32,
-) -> Result<Vec<f32>, backenderror> {
-    if lhs.getshape().getdims() != rhs.getshape().getdims() {
-        return Err(backenderror::shapemismatch { op });
+/// Multi-versioned elementwise addition over equal-length spans.
+///
+/// The branch-free scalar loop is recompiled per CPU tier by `#[autoversion]`
+/// (SSE4.2/AVX2/AVX-512/NEON plus the scalar fallback) and dispatched at
+/// runtime once. Plain `+` keeps every IEEE-754 property of the scalar kernel:
+/// `NaN`/infinity propagation, signed zero, and rounding are unchanged, so the
+/// result is bit-identical to the former `zipmap` implementation.
+#[autoversion]
+fn addspans(a: &[f32], b: &[f32], out: &mut [f32]) {
+    for ((o, &x), &y) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *o = x + y;
     }
-    Ok(lhs
-        .getdata()
-        .iter()
-        .zip(rhs.getdata().iter())
-        .map(|(&a, &b)| f(a, b))
-        .collect())
+}
+
+/// Multi-versioned elementwise multiplication over equal-length spans.
+///
+/// Same contract as [`addspans`]; `*` is likewise bit-identical to scalar.
+#[autoversion]
+fn mulspans(a: &[f32], b: &[f32], out: &mut [f32]) {
+    for ((o, &x), &y) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *o = x * y;
+    }
 }

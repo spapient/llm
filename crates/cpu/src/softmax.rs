@@ -24,6 +24,17 @@ const SOFTMAXOP: &str = "softmax";
 /// NaN, and the same guard propagates it instead of masking it. Non-finite
 /// inputs are neither clamped nor rejected; they follow ordinary
 /// floating-point propagation.
+///
+/// # Why the row kernel stays scalar
+///
+/// The dominating cost is the shifted `exp`, for which x86 and AArch64 have no
+/// SIMD instruction; polynomial relaxations trade `~1e-7` relative error for
+/// speed, which sits against the contract tolerance and is not worth it.
+/// Vectorizing only the max/sum/scale passes would add an `_mm256_max_ps`
+/// reduction whose NaN semantics differ from the `f32::max` fold used here
+/// (SSE `maxps` returns its second operand on NaN while `f32::max` skips the
+/// NaN), changing non-finite propagation. Per the "correctness before
+/// premature optimization" priority, the row kernel remains scalar.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct cpusoftmax;
 

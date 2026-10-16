@@ -348,6 +348,7 @@ fn attention_single_position_returns_the_value() {
 /// (or to every key without it), and the max subtraction is the stable one the
 /// kernel shares. Kept local because only this suite needs it, so the
 /// expectation is not derived from the code under test.
+#[allow(clippy::too_many_arguments)]
 fn attend(
     q: &[f32],
     k: &[f32],
