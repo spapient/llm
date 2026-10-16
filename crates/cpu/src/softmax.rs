@@ -71,7 +71,7 @@ fn softmaxrows(src: &[f32], data: &mut [f32], width: usize) {
 /// AVX2 8-wide variant.
 #[arcane(import_intrinsics)]
 fn softmaxrowspan_v3(
-    _: X64V3Token,
+    token: X64V3Token,
     src: &[f32],
     data: &mut [f32],
     width: usize,
@@ -289,7 +289,9 @@ fn exp2approx_v3(_: X64V3Token, x: __m256, log2e: __m256) -> __m256 {
     let bias = _mm256_add_ps(yi, _mm256_set1_ps(127.0));
     let bits = _mm256_cvtps_epi32(bias);
     let pos = _mm256_cmpgt_epi32(bits, _mm256_set1_epi32(0));
-    let lt = _mm256_cmplt_epi32(bits, _mm256_set1_epi32(255));
+    // archmage wraps `_mm256_cmpgt_epi32` but not its less-than twin; the
+    // swapped comparison is the same predicate (255 > bits).
+    let lt = _mm256_cmpgt_epi32(_mm256_set1_epi32(255), bits);
     let valid = _mm256_and_si256(pos, lt);
     let scale = _mm256_castsi256_ps(_mm256_and_si256(_mm256_slli_epi32(bits, 23), valid));
     _mm256_mul_ps(p, scale)
