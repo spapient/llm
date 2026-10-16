@@ -595,7 +595,12 @@ impl checkpointreader {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
-        let decoded = tensor::tryfrombytes(entry.getshape().clone(), &bytes)?;
+        let decoded = match entry.getlayout() {
+            Some(l) => {
+                tensor::tryfrombyteswithlayout(entry.getshape().clone(), l.clone(), &bytes)?
+            }
+            None => tensor::tryfrombytes(entry.getshape().clone(), &bytes)?,
+        };
         Ok(Some(decoded))
     }
 

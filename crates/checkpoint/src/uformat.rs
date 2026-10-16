@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use format::{dtypetoken, tokendtype};
-use tensor::{dtype, shape};
+use tensor::{dtype, layout, shape};
 
 use crate::blocks::{blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
@@ -102,6 +102,7 @@ pub struct tensorentry {
     offset: u64,
     nbytes: u64,
     quant: Option<quantdesc>,
+    layout: Option<layout>,
 }
 
 impl tensorentry {
@@ -145,6 +146,13 @@ impl tensorentry {
     #[must_use]
     pub fn getquant(&self) -> Option<&quantdesc> {
         self.quant.as_ref()
+    }
+
+    /// Returns the explicit layout, when it differs from the canonical
+    /// contiguous (row-major) layout.
+    #[must_use]
+    pub fn getlayout(&self) -> Option<&layout> {
+        self.layout.as_ref()
     }
 }
 
@@ -277,6 +285,7 @@ impl snapshot {
             offset,
             nbytes: actual,
             quant: None,
+            layout: None,
         };
         self.tensors.push(entry);
         self.data.extend_from_slice(bytes);
@@ -297,6 +306,30 @@ impl snapshot {
                 name: name.to_string(),
             })?;
         entry.quant = Some(quant);
+        Ok(())
+    }
+
+    /// Attaches an explicit layout to an existing tensor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::missingtensor`] when the tensor is absent, or
+    /// [`checkpointerror::invalidmanifest`] when the layout is not valid for
+    /// the tensor's shape.
+    pub fn setlayout(&mut self, name: &str, l: layout) -> Result<(), checkpointerror> {
+        let entry = self
+            .tensors
+            .iter_mut()
+            .find(|t| t.name == name)
+            .ok_or_else(|| checkpointerror::missingtensor {
+                name: name.to_string(),
+            })?;
+        if !l.isvalidfor(&entry.shape) {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("layout is not valid for tensor {name:?}"),
+            });
+        }
+        entry.layout = Some(l);
         Ok(())
     }
 
@@ -633,6 +666,18 @@ pub(crate) fn canonicalmanifest(
                 }
             }
         }
+        match &entry.layout {
+            None => pushu64(&mut buf, 0),
+            Some(l) => {
+                pushu64(&mut buf, 1);
+                pushu64(&mut buf, l.getoffset() as u64);
+                let strides = l.getstrides();
+                pushu64(&mut buf, strides.len() as u64);
+                for &st in strides {
+                    pushu64(&mut buf, st as u64);
+                }
+            }
+        }
     }
     pushu64(&mut buf, blocks.len() as u64);
     for block in blocks {
@@ -697,6 +742,39 @@ pub(crate) fn readtensors(
                 });
             }
         };
+        let layout = match readu64(manifest, pos)? {
+            0 => None,
+            1 => {
+                let layoutoffset = usize::try_from(readu64(manifest, pos)?).map_err(|_| {
+                    checkpointerror::invalidmanifest {
+                        reason: format!("tensor {name:?} layout offset overflows usize"),
+                    }
+                })?;
+                let stridecount = readcount(manifest, pos)?;
+                let mut strides = Vec::with_capacity(stridecount);
+                for _ in 0..stridecount {
+                    let st = usize::try_from(readu64(manifest, pos)?).map_err(|_| {
+                        checkpointerror::invalidmanifest {
+                            reason: format!("tensor {name:?} stride overflows usize"),
+                        }
+                    })?;
+                    strides.push(st);
+                }
+                Some(layout::new(strides, layoutoffset))
+            }
+            _ => {
+                return Err(checkpointerror::invalidmanifest {
+                    reason: "invalid layout flag".to_string(),
+                });
+            }
+        };
+        if let Some(l) = &layout
+            && !l.isvalidfor(&dims)
+        {
+            return Err(checkpointerror::invalidmanifest {
+                reason: format!("tensor {name:?} has an invalid layout"),
+            });
+        }
         let count = dims
             .getelementcount()
             .map_err(|_| checkpointerror::shapeoverflow { name: name.clone() })?;
@@ -717,6 +795,7 @@ pub(crate) fn readtensors(
             offset,
             nbytes,
             quant,
+            layout,
         });
     }
     Ok(tensors)

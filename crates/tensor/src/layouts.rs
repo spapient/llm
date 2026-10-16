@@ -30,6 +30,16 @@ impl layout {
         Self { strides, offset: 0 }
     }
 
+    /// Builds a layout from explicit strides and a base offset.
+    ///
+    /// Strides are measured in elements. This constructor does not validate the
+    /// result against a shape; callers that need the guarantee use
+    /// [`layout::isvalidfor`] or a tensor constructor that checks it.
+    #[must_use]
+    pub fn new(strides: Vec<usize>, offset: usize) -> Self {
+        Self { strides, offset }
+    }
+
     /// Returns the strides, one per dimension.
     #[must_use]
     pub fn getstrides(&self) -> &[usize] {

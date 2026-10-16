@@ -36,6 +36,31 @@ impl<T: element> tensor<T> {
         })
     }
 
+    /// Creates a tensor from a shape, an explicit layout, and element data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`tensorerror::invalidlayout`] when the layout is not valid for
+    /// the shape, or [`tensorerror::lengthmismatch`] when `data.len()` differs
+    /// from the shape's element count.
+    pub fn newwithlayout(s: shape, l: layout, data: Vec<T>) -> Result<Self, tensorerror> {
+        let n = s.getelementcount()?;
+        if data.len() != n {
+            return Err(tensorerror::lengthmismatch {
+                expected: n,
+                actual: data.len(),
+            });
+        }
+        if !l.isvalidfor(&s) {
+            return Err(tensorerror::invalidlayout);
+        }
+        Ok(Self {
+            shape: s,
+            layout: l,
+            data,
+        })
+    }
+
     /// Returns the shape.
     #[must_use]
     pub fn getshape(&self) -> &shape {
@@ -116,6 +141,41 @@ impl<T: element + bytemuck::Pod> tensor<T> {
             .map(|c| bytemuck::pod_read_unaligned(c))
             .collect::<Vec<T>>();
         Self::new(s, data)
+    }
+
+    /// Builds an owned tensor from a byte slice and an explicit layout.
+    ///
+    /// Like [`tensor::tryfrombytes`], each element is read with an unaligned,
+    /// checked read; the layout is adopted verbatim after validation, so the
+    /// returned tensor can describe a non-contiguous (e.g. transposed) mapping
+    /// onto the byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`tensor::newwithlayout`] or
+    /// [`tensor::tryfrombytes`].
+    pub fn tryfrombyteswithlayout(
+        s: shape,
+        l: layout,
+        bytes: &[u8],
+    ) -> Result<Self, tensorerror> {
+        let count = s.getelementcount()?;
+        let expected = count
+            .checked_mul(core::mem::size_of::<T>())
+            .ok_or_else(|| tensorerror::elementcountoverflow {
+                dims: s.getdims().to_vec(),
+            })?;
+        if bytes.len() != expected {
+            return Err(tensorerror::lengthmismatch {
+                expected,
+                actual: bytes.len(),
+            });
+        }
+        let data = bytes
+            .chunks_exact(core::mem::size_of::<T>())
+            .map(|c| bytemuck::pod_read_unaligned(c))
+            .collect::<Vec<T>>();
+        Self::newwithlayout(s, l, data)
     }
 
     /// Returns the element data as raw bytes in storage order.

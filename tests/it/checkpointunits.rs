@@ -495,6 +495,7 @@ mod uformat {
     use ::checkpoint::signature::publickey;
     use ::checkpoint::uformat::snapshot;
     use tensor::dtype;
+    use tensor::layout;
 
     fn onesnap() -> snapshot {
         let mut snap = snapshot::new(1);
@@ -719,6 +720,34 @@ mod uformat {
         let reader = checkpointreader::openfull_encrypted(bytes, &KEY).unwrap();
         let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
         assert_eq!(t.getdtype(), dtype::f32);
+    }
+
+    #[test]
+    fn layout_roundtrips_through_encode_decode() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::f32, shapeof(&[2, 3]), &[0u8; 24])
+            .unwrap();
+        snap.setlayout("w", layout::new(vec![1, 2], 0)).unwrap();
+        let bytes = snap.encode().unwrap();
+        let back = snapshot::decode(&bytes).unwrap();
+        let entry = back
+            .gettensors()
+            .iter()
+            .find(|t| t.getname() == "w")
+            .unwrap();
+        let l = entry.getlayout().unwrap();
+        assert_eq!(l.getstrides(), &[1, 2]);
+        assert_eq!(l.getoffset(), 0);
+        assert!(!l.iscontiguous());
+    }
+
+    #[test]
+    fn setlayout_rejects_invalid_strides() {
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::f32, shapeof(&[2, 3]), &[0u8; 24])
+            .unwrap();
+        let err = snap.setlayout("w", layout::new(vec![100, 100], 0)).unwrap_err();
+        assert!(matches!(err, checkpointerror::invalidmanifest { .. }));
     }
 }
 
@@ -1538,6 +1567,7 @@ mod tensorbridge {
     use ::checkpoint::{checkpointerror, checkpointreader};
     use half::f16;
     use tensor::dtype;
+    use tensor::layout;
 
     #[test]
     fn typed_f32_reads_from_a_full_snapshot() {
@@ -1638,6 +1668,24 @@ mod tensorbridge {
         .unwrap();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
         let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(t.getdata(), &values);
+    }
+
+    #[test]
+    fn typed_read_restores_a_transposed_layout() {
+        let values = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[2, 3]),
+            bytemuck::cast_slice(&values),
+        )
+        .unwrap();
+        snap.setlayout("w", layout::new(vec![1, 2], 0)).unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        let t = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(t.getlayout().getstrides(), &[1, 2]);
         assert_eq!(t.getdata(), &values);
     }
 }

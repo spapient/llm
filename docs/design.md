@@ -1525,6 +1525,8 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **加密（AES-256-GCM 认证加密）。** 加密是「机密性」层，叠加在哈希与签名之上：每块独立 `AES-256-GCM(compress(content))`，密钥 32 字节外部提供、不进文件。`nonce = blockref.hash[..12]`（BLAKE3-128 明文内容身份前 12 字节）确定性派生——GCM nonce 只需唯一、不需保密，确定性使「相同明文块→相同密文块」保持内容寻址去重；96 位 nonce 对 140 GB 模型（~2^19 块）远低于生日界 2^48。加密在压缩之后、不改明文 content 的块哈希，故**加密不改变 root_hash**，同一逻辑内容的加密/未加密/签名快照 root_hash 相同、可互换，签名与加密正交。全快照统一加密（`flags` bit3 = `FLAGENCRYPTED`），codec 保持 raw/lz4、加密独立；每 `storedentry` 追加 16 字节 tag（未加密 tag 全 0、不占字节，旧文件字节级兼容）。`encode_encrypted(key)`/`encode_signed_encrypted(seed, key)` 写入密文，`decode_encrypted(bytes, key)` 解密（无密钥遇加密报 `missingkey`，归 `isincompatibility()`）；tag 不匹配报 `decryptionfailed`（归 `iscorruption()`）。reader 带密钥打开变体按需解密；`mergefiles_encrypted` 解密合并后重加密输出。
 
+**多排布（layout）。** `tensorentry` 可选携带显式 `layout`（`strides: usize[]` + `offset: usize`，复用 `tensor::layout`），`None` = 规范行主序（向后兼容）。非 contiguous 布局（如转置存储）让权重以计算友好的排布落盘、加载时零拷贝重建；`setlayout` 校验 `isvalidfor(shape)`，decode 时再验，非法报 `invalidmanifest`。数据段字节仍按插入序连续拼接，layout 仅描述逻辑张量到连续缓冲的映射；`readtensortyped` 用 `tryfrombyteswithlayout` 恢复。
+
 **字段布局（设计草案）。** 下列固定字节步长的条目为早期设计草案；实际 manifest 采用变长二进制序列化（`version`/`flags`/张量/块列表按 `pushu*`/`read*` 编解码，见 §12.4 与 `crates/checkpoint/src/uformat.rs`）。草案张量条目 64 B 定长：
 
 | 长度 | 字段 | 类型 |
@@ -1561,7 +1563,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **不变量（验收判据）。** 块 `len` 与 BLAKE3-128/CRC32C 一致；块列表总长 = 逻辑数据段长（受检算术，`blockoutofrange` 兜底）；逻辑数据段 = 张量字节连续拼接且区间不重叠（复用 `checkoverlaps`）；合并输出根哈希 == 增量根哈希、数据段与原始全量字节相等；校验失败不发布部分产物；恢复只读目标块；所有文件不可变。
 
-**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）；AES-256-GCM 分块加密已实现（`encode_encrypted`/`decode_encrypted`）。Zstd、mmap 零拷贝、多文件分片、多排布共存、稀疏存储、量化内核仍属后续。块来源以 `blocksource` trait 预留扩展点。
+**明确排除（本契约范围外）。** LZ4 逐块压缩已实现（codec 与解压点预留扩展）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）；AES-256-GCM 分块加密已实现（`encode_encrypted`/`decode_encrypted`）。Zstd、mmap 零拷贝、多文件分片、稀疏存储、量化内核仍属后续。块来源以 `blocksource` trait 预留扩展点。
 
 ---
 
