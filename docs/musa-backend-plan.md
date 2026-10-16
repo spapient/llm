@@ -1,6 +1,6 @@
 # MUSA 后端适配计划：国产 GPU 的 CUDA 兼容后端
 
-> **版本**：v1.4（2026-10-16）　**状态**：提议（未实现）；**M0 已收敛 + 5.x 评估 + 性能路径对比 + 消除 unsafe 终极架构（musa=2，2024 下限）已完成；P1 骨架已开工**
+> **版本**：v1.5（2026-10-16）　**状态**：P1b 已实现（提交 `0b0f7cf`）——`crates/musa` 从 171 行类型骨架补成完整后端：`build.rs` mcc 预编译管线（A1，无运行时 JIT）+ `musa=2` unsafe 面（`unsafe extern` 声明岛 + 单一驱动交接 `dispatch`）+ 全部 13 个 `api::compute` 算子 + `musacontract` 数值契约套件 + `benches/musa.rs`（含 scan）；**M0 已收敛 + 5.x 评估 + 性能路径对比 + 消除 unsafe 终极架构（musa=2，2024 下限）已完成；P1 骨架（31ac165）已提交**
 > **权威**：`docs/design.md` §21（GPU 后端与 `unsafe` 豁免）、`docs/beta-scan-plan.md`（scan 算子已三后端闭环，本计划复用其内核）
 > **目标**：新增 `musa` 后端（摩尔线程 MUSA 架构），复用已验证的 CUDA C 内核，把 host 层从 `cudarc` 替换为 `musart`/`MTRTC`/`muBLAS`/`muDNN` 的 MUSA 绑定，使同一 `api::compute` 算子集在国产 GPU 上跑通且三后端数值一致。
 
@@ -203,7 +203,9 @@ crates/musa/
 * **metal**：JIT 消除 = xcrun metal 构建期 metallib（P3，`newLibraryWithData` 待尖刺）；unsafe=4 由 objc2-metal API 面决定（§21.8 实测）。
 * 阶段互斥：P1（musa）→ P2（cuda 收敛）→ P3（metal JIT 消除），各为独立可测提交。
 
-**状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**；**性能路径对比完成（结论 A1+B1+C2，后经消除 unsafe 设计修订为 A1+WMMA+C2）**；**消除 unsafe 终极架构完成（musa=2：2024 edition 自写 FFI 理论下限——`unsafe extern` 声明 + 单一驱动交接块；不引入 muBLAS/muDNN，WMMA 内核吃 Tensor Core——`include/crt/mma.h` 真机验证 203 重载 mma_sync）**。M1–M6 按此收敛实施。
+**状态声明**：**P1b 已实现**（提交 `0b0f7cf`，2026-10-16）：`crates/musa` 完整后端落地——`build.rs` 在 Linux 且探测到 `/usr/local/musa-3.1.0/bin/mcc` 时把 `kernels/*.cu`（11 个，含新增减最大式 `softmax.cu`，`scan_parallel.cu` 的两处 `min(t0+chunk,n)`→三元已按 M0 冒烟结论适配）预编译为 ELF fatbin 经 `include_bytes!` 嵌入（`registry.rs`）；`ffi.rs` 的 `musa=2` 面落地（`unsafe extern "C"` 声明 11 个 `mu*` 符号 + 单一惰性驱动交接 `dispatch`，handle 为 `usize` 保持 cache `Send+Sync`）；`executor.rs` 实现全部 13 个 `api::compute` 算子 + host-side `musasubmission`（scan/scan_cached 在 submission 镜像 cuda 报 `unsupportedoperation`）；`scan_cached` 在 compute 路径**受支持**（n=1 串行内核续算）、`rope_at`/`attention_cached` 走**专用内核**（不复制 cuda 的 host 拼接）；`tests/it/musacontract.rs` 全量数值契约（13 算子 vs 标量参考、host 侧拒绝路径、submission 链、共享 device-free 向量，`E4`/`requiredevice` 探测协议）；`benches/musa.rs` 镜像 cuda 工作负载并**新增 scan**。本地已验证：`cargo check --workspace --all-targets`、`cargo clippy --workspace --all-targets -D warnings`、`cargo fmt --check` 全绿，`scripts/checkunsafe.sh` musa 2/2 exact，musa 交叉 check 绿。**剩余门：真机数值与基准**（MTT S4000 主机 `cargo test -p llm --test it musacontract` + `cargo bench -p llm --bench musa`），结果回填 `docs/conformance.md` 后本计划状态翻「已验证」。
+
+**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**；**性能路径对比完成（结论 A1+B1+C2，后经消除 unsafe 设计修订为 A1+WMMA+C2）**；**消除 unsafe 终极架构完成（musa=2：2024 edition 自写 FFI 理论下限——`unsafe extern` 声明 + 单一驱动交接块；不引入 muBLAS/muDNN，WMMA 内核吃 Tensor Core——`include/crt/mma.h` 真机验证 203 重载 mma_sync）**。M2–M6 中，M2（musart FFI）与 M3（内核族预编译）已由 P1b 覆盖；M4（muBLAS/muDNN）按终态设计**取消**（WMMA + 减最大式内核取代厂商库）；M5（算子全量）与 M6（真机+基准+文档）即 P1b 收尾与本节「剩余门」。
 
 
 ### 4.x 性能路径深度对比（2026-10-16，结论：A1+B1+C2 唯一最优）
