@@ -33,6 +33,10 @@ pub const MINBLOCK: usize = 64 * 1024;
 /// Maximum block size for content-defined chunking: 1 MiB.
 pub const MAXBLOCK: usize = 1024 * 1024;
 
+/// Segment size for parallel chunking: data larger than this is split into
+/// segments that each chunk independently on available cores.
+const SEGMENT: usize = 16 * 1024 * 1024;
+
 /// Cut mask: the 18 low bits, for a 256 KiB average block size.
 const CUTMASK: u64 = (1 << 18) - 1;
 
@@ -92,9 +96,36 @@ fn gearroll(hash: u64, byte: u8) -> u64 {
 /// Block boundaries are chosen by a Gear rolling hash, so an insertion or
 /// deletion shifts only the few boundaries near the change; the blocks after it
 /// keep their content and deduplicate. Block lengths stay within
-/// [`MINBLOCK`]..=[`MAXBLOCK`], except the final block, which may be shorter.
+/// [`MINBLOCK`]..=[`MAXBLOCK`], except the final block of the data (and of each
+/// parallel segment), which may be shorter.
+///
+/// Data larger than [`SEGMENT`] is chunked in parallel: each segment is cut at
+/// its boundary and chunked independently. Deduplication therefore holds within
+/// a segment, and only the few blocks around a segment boundary lose
+/// cross-segment identity — a bounded, negligible loss for multi-core chunking.
 #[must_use]
 pub fn chunk(data: &[u8]) -> Vec<blockref> {
+    if data.len() <= SEGMENT {
+        return chunksegment(data);
+    }
+    let segs: Vec<&[u8]> = data.chunks(SEGMENT).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = segs
+            .iter()
+            .map(|seg| scope.spawn(move || chunksegment(seg)))
+            .collect();
+        let mut blocks = Vec::new();
+        for handle in handles {
+            if let Ok(segblocks) = handle.join() {
+                blocks.extend(segblocks);
+            }
+        }
+        blocks
+    })
+}
+
+/// Chunks one segment of data with the Gear rolling hash. See [`chunk`].
+fn chunksegment(data: &[u8]) -> Vec<blockref> {
     let mut blocks = Vec::new();
     let mut start = 0usize;
     let mut hash = 0u64;

@@ -533,6 +533,23 @@ mod blocks {
         let b = chunk(&[0u8; BLOCKSIZE]);
         assert_eq!(a[0].gethash(), b[0].gethash());
     }
+
+    #[test]
+    fn large_data_chunks_cover_in_segments() {
+        // 32 MiB 超过 SEGMENT（16 MiB），触发分段并行 CDC。
+        let len = 32 * 1024 * 1024 + 123;
+        let mut data = vec![0u8; len];
+        let mut state = 0x9E37_79B9u32;
+        for byte in &mut data {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = (state >> 24) as u8;
+        }
+        let blocks = chunk(&data);
+        let total: usize = blocks.iter().map(|b| b.getlen() as usize).sum();
+        assert_eq!(total, len);
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/uformat.rs`.
@@ -2273,9 +2290,9 @@ mod rawformat {
 /// Fuzz-style property tests: the `.u` parsers never panic on arbitrary bytes,
 /// and a successful decode yields a snapshot whose accessors stay safe.
 mod fuzz {
-    use proptest::prelude::*;
     use ::checkpoint::deltas::delta;
     use ::checkpoint::uformat::snapshot;
+    use proptest::prelude::*;
 
     proptest! {
         #[test]
