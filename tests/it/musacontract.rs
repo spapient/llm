@@ -572,6 +572,57 @@ fn scan_matches_the_scalar_reference() {
     assertallclose(state.getdata(), &want_state, 1e-5, 1e-5);
 }
 
+/// `scan` matches the scalar reference across multiple blocks.
+///
+/// `n > SCANCHUNK` forces the three-pass parallel kernel (the single-chunk
+/// case is routed to the serial reference), so this exercises the inter-block
+/// prefix combine whose `fmaf` folding is the only place the parallel path may
+/// differ from the serial recurrence in the final state's last rounding.
+#[test]
+fn scan_matches_the_scalar_reference_across_blocks() {
+    if !hasdevice("scan_matches_the_scalar_reference_across_blocks") {
+        return;
+    }
+    let exec = musaexecutor::new(wide());
+    let n = 512;
+    let d = 3;
+    let statewidth = 4;
+    let input: Vec<f32> = (0..n * d).map(|i| (i as f32 * 0.37).sin()).collect();
+    let init: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.13).cos())
+        .collect();
+    let a: Vec<f32> = (0..d * statewidth)
+        .map(|i| 0.5 + 0.5 * (i as f32 * 0.71).cos().abs())
+        .collect();
+    let b: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.29).sin())
+        .collect();
+    let c: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.19).cos())
+        .collect();
+    let skip: Vec<f32> = (0..d).map(|i| (i as f32 * 0.11).sin()).collect();
+    let input_t = build(vec![n, d], input.clone());
+    let init_t = build(vec![d, statewidth], init.clone());
+    let a_t = build(vec![d, statewidth], a.clone());
+    let b_t = build(vec![d, statewidth], b.clone());
+    let c_t = build(vec![d, statewidth], c.clone());
+    let skip_t = build(vec![d], skip.clone());
+    let (out, state) = exec
+        .scan(
+            &input_t.getview(),
+            &init_t.getview(),
+            &a_t.getview(),
+            &b_t.getview(),
+            &c_t.getview(),
+            &skip_t.getview(),
+        )
+        .unwrap();
+    let (want_out, want_state) =
+        reference::scan(&input, &init, &a, &b, &c, &skip, n, d, statewidth);
+    assertallclose(out.getdata(), &want_out, 1e-5, 1e-5);
+    assertallclose(state.getdata(), &want_state, 1e-5, 1e-5);
+}
+
 /// `scan_cached` continues the serial scan for the decode step.
 #[test]
 fn scan_cached_continues_the_serial_scan() {

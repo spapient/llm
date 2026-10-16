@@ -58,6 +58,12 @@ pub(crate) type mudevptr = usize;
 /// synchronously in this backend's run-to-completion contract.
 pub(crate) const MUNULLSTREAM: usize = 0;
 
+/// The maximum number of buffers a pool bucket keeps per byte size before an
+/// excess buffer is freed back to the driver. It bounds device memory to a
+/// small multiple of the largest operand set while still absorbing the
+/// per-dispatch allocation churn (docs/musa-backend-plan.md §5.5).
+const POOLCAP: usize = 4;
+
 // SAFETY: Every declaration mirrors the C ABI of `musa.h` (MUSA Toolkit
 // 3.1.0): the opaque handles are pointer-sized `repr(C)` structs, `MUdeviceptr`
 // is a byte address, and `muLaunchKernel`'s `kernelParams` is a pointer to an
@@ -134,6 +140,14 @@ struct cachestate {
     modules: HashMap<&'static str, mumodule>,
     /// Resolved kernels by `(source id, entry)`.
     functions: HashMap<(&'static str, &'static str), mufunction>,
+    /// Device buffers returned by earlier dispatches, keyed by exact byte
+    /// size, reused by later dispatches instead of a fresh `muMemAlloc_v2`.
+    /// The lock is held across a whole dispatch and the default stream
+    /// serialises launches, so a pooled buffer is never checked out by two
+    /// dispatches at once. The pool is bounded in practice by the fixed set
+    /// of operand sizes the operators request, so it does not grow without
+    /// limit for a fixed workload.
+    pool: HashMap<usize, Vec<mudevptr>>,
 }
 
 impl cache {
@@ -148,6 +162,7 @@ impl cache {
                 context: None,
                 modules: HashMap::new(),
                 functions: HashMap::new(),
+                pool: HashMap::new(),
             }),
         }
     }
@@ -257,8 +272,9 @@ pub(crate) fn dispatch(
     // argument arrays, which outlive the launch. Every call's result is
     // checked against `MUSA_SUCCESS` and converted to `musaerror`; no result
     // is ignored. The synchronisation orders the downloads after the kernel's
-    // writes, and the frees release only this dispatch's temporaries, after
-    // their last use.
+    // writes, and a buffer is returned to the pool only after its last use in
+    // this dispatch; the lock held across the whole block means no pooled
+    // buffer is ever checked out by two dispatches at once.
     unsafe {
         // --- lazy open -----------------------------------------------------
         if !state.opened {
@@ -363,15 +379,19 @@ pub(crate) fn dispatch(
                 owned.push(0);
                 continue;
             }
-            let mut mem: mudevptr = 0;
-            if muMemAlloc_v2(&mut mem, *size) != MUSA_SUCCESS {
-                return Err(musaerror::transfer {
-                    message: format!("muMemAlloc failed for {size} bytes"),
-                });
-            }
+            let mem = if let Some(pooled) = state.pool.get_mut(size).and_then(Vec::pop) {
+                pooled
+            } else {
+                let mut mem: mudevptr = 0;
+                if muMemAlloc_v2(&mut mem, *size) != MUSA_SUCCESS {
+                    return Err(musaerror::transfer {
+                        message: format!("muMemAlloc failed for {size} bytes"),
+                    });
+                }
+                mem
+            };
             owned.push(mem);
         }
-        let mut uploads: Vec<usize> = Vec::with_capacity(buffers.len());
         for (index, slot) in buffers.iter().enumerate() {
             match *slot {
                 buf::host(data) => {
@@ -382,7 +402,6 @@ pub(crate) fn dispatch(
                             message: "muMemcpyHtoD failed for f32 operand".into(),
                         });
                     }
-                    uploads.push(index);
                 }
                 buf::hostu64(data) => {
                     if muMemcpyHtoD_v2(owned[index], data.as_ptr().cast(), sizes[index])
@@ -392,7 +411,6 @@ pub(crate) fn dispatch(
                             message: "muMemcpyHtoD failed for u64 operand".into(),
                         });
                     }
-                    uploads.push(index);
                 }
                 buf::out(_) => {}
             }
@@ -455,18 +473,23 @@ pub(crate) fn dispatch(
             }
         }
 
-        // --- free this dispatch's temporaries ------------------------------
-        for index in uploads {
-            if muMemFree_v2(owned[index]) != MUSA_SUCCESS {
-                return Err(musaerror::transfer {
-                    message: "muMemFree failed for uploaded operand".into(),
-                });
+        // --- return this dispatch's buffers to the pool --------------------
+        // Every non-zero allocation this dispatch checked out goes back by its
+        // exact byte size, so the next dispatch of the same size reuses it
+        // instead of paying the driver allocation cost. The pool never hands a
+        // buffer to two dispatches at once: the lock is held across this whole
+        // block and the default stream serialises launches. A bucket that has
+        // reached `POOLCAP` frees its excess instead, bounding device memory.
+        for (index, &mem) in owned.iter().enumerate() {
+            if sizes[index] == 0 {
+                continue;
             }
-        }
-        for (index, slot) in buffers.iter().enumerate() {
-            if matches!(*slot, buf::out(_)) && muMemFree_v2(owned[index]) != MUSA_SUCCESS {
+            let bucket = state.pool.entry(sizes[index]).or_default();
+            if bucket.len() < POOLCAP {
+                bucket.push(mem);
+            } else if muMemFree_v2(mem) != MUSA_SUCCESS {
                 return Err(musaerror::transfer {
-                    message: "muMemFree failed for output".into(),
+                    message: "muMemFree failed for excess pooled buffer".into(),
                 });
             }
         }
@@ -860,9 +883,12 @@ pub(crate) fn scan_parallel(
     d: usize,
     statewidth: usize,
 ) -> Result<(Vec<f32>, Vec<f32>), musaerror> {
-    // Pass 1: per-block totals into `dtotal`; the block buffers are uploaded
-    // once and passed through the three dispatches by device reference. Only
-    // the final state and output are downloaded.
+    // Pass 1: per-block totals into `dtotal`. Each pass is a run-to-completion
+    // dispatch (alloc, upload, launch, sync, download, check-in), so the
+    // intermediate `dtotal`/`dprefix` cross the host between passes and the
+    // six shared operands are re-uploaded by every pass that reads them.
+    // Device-resident pass-through (mirroring `metal`'s `buf::device`) is the
+    // reserved follow-up (docs/musa-backend-plan.md §5.5).
     let blocks = n.div_ceil(source::SCANCHUNK as usize);
     let dntotal = d.checked_mul(statewidth).ok_or(musaerror::sizeoverflow)?;
     let pairbytes = |count: usize| {

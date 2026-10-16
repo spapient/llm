@@ -49,3 +49,22 @@ LD_LIBRARY_PATH=/usr/local/musa-3.1.0/lib ./smoke_scan
 - MUSA 3.1.0 的 `device_launch_parameters.h` 定义 `threadIdx/blockIdx` 等，
   用 `-mtgpu` 模式时自动生效；`-nocudainc`/`--cuda-path` 的 clang CUDA 模式
   因缺 `cuda.h` 兼容头不可用（MUSA 未提供 CUDA 头文件兼容层）。
+
+## 每调度开销分解（`alloc_probe.cu`）
+
+后端 `dispatch` 是 run-to-completion（分配 → 上传 → 启动 → 同步 → 下载 →
+入池/释放），scan 基准实测 28.3 ms 由 3 次 dispatch 的固定开销主导。本探针
+把各阶段拆开计时（分配/释放、HtoD/DtoH、launch+sync），供真机判定开销主项：
+
+```bash
+/usr/local/musa-3.1.0/bin/mcc -mtgpu --offload-arch=mp_22 \
+  -I/usr/local/musa-3.1.0/include -L/usr/local/musa-3.1.0/lib -lmusart \
+  -o alloc_probe alloc_probe.cu
+LD_LIBRARY_PATH=/usr/local/musa-3.1.0/lib ./alloc_probe
+```
+
+探针走 MUSA runtime API（`musaMalloc`/`musaMemcpy`/…），与后端实际调用的
+driver `mu*` ABI 仅 µs 级差（见 `docs/musa-backend-plan.md` §4.x），可作代理。
+若「alloc+free」显著大于「launch+sync」，则设备缓冲池（已落地）即主杠杆；
+若 HtoD/DtoH 主导，则需设备驻留直通（`buf::device`，对应 metal 的
+`crates/metal/src/ffi.rs`，列为后续）。
