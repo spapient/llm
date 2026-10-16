@@ -582,6 +582,77 @@ fn embedding_with_no_indices_yields_an_empty_output() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn scan_matches_the_scalar_reference() {
+    if !hasdevice("scan_matches_the_scalar_reference") {
+        return;
+    }
+    let exec = cudaexecutor::new(wide());
+    let n = 8;
+    let d = 3;
+    let statewidth = 4;
+    let input: Vec<f32> = (0..n * d).map(|i| (i as f32 * 0.37).sin()).collect();
+    let init: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.13).cos())
+        .collect();
+    let a: Vec<f32> = (0..d * statewidth)
+        .map(|i| 0.5 + 0.5 * (i as f32 * 0.71).cos().abs())
+        .collect();
+    let b: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.29).sin())
+        .collect();
+    let c: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.19).cos())
+        .collect();
+    let skip: Vec<f32> = (0..d).map(|i| (i as f32 * 0.11).sin()).collect();
+
+    let input_t = build(vec![n, d], input.clone());
+    let init_t = build(vec![d, statewidth], init.clone());
+    let a_t = build(vec![d, statewidth], a.clone());
+    let b_t = build(vec![d, statewidth], b.clone());
+    let c_t = build(vec![d, statewidth], c.clone());
+    let skip_t = build(vec![d], skip.clone());
+
+    let (out, state) = exec
+        .scan(
+            &input_t.getview(),
+            &init_t.getview(),
+            &a_t.getview(),
+            &b_t.getview(),
+            &c_t.getview(),
+            &skip_t.getview(),
+        )
+        .unwrap();
+
+    let (want_out, want_state) =
+        reference::scan(&input, &init, &a, &b, &c, &skip, n, d, statewidth);
+    assertallclose(out.getdata(), &want_out, 1e-5, 1e-5);
+    assertallclose(state.getdata(), &want_state, 1e-5, 1e-5);
+}
+
+#[test]
+fn scan_rejects_a_spectral_violation() {
+    let exec = cudaexecutor::new(wide());
+    let input = build(vec![2, 2], vec![1.0; 4]);
+    let init = build(vec![2, 1], vec![0.0, 0.0]);
+    let a = build(vec![2, 1], vec![0.5, -1.5]);
+    let b = build(vec![2, 1], vec![1.0, 1.0]);
+    let c = build(vec![2, 1], vec![1.0, 1.0]);
+    let skip = build(vec![2], vec![0.0, 0.0]);
+    assert_eq!(
+        exec.scan(
+            &input.getview(),
+            &init.getview(),
+            &a.getview(),
+            &b.getview(),
+            &c.getview(),
+            &skip.getview(),
+        )
+        .map(|_| ()),
+        Err(backenderror::invalidparameter { op: "scan" })
+    );
+}
+
+#[test]
 fn attention_matches_a_scalar_reference() {
     if !hasdevice("attention_matches_a_scalar_reference") {
         return;

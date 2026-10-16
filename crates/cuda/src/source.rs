@@ -78,6 +78,12 @@ pub(crate) const ATTENTIONCACHEDCUDA: &str = include_str!("../kernels/attention_
 /// The stable symbol name of the kernel in [`ATTENTIONCACHEDCUDA`].
 pub(crate) const ATTENTIONCACHEDENTRY: &str = "attention_cached";
 
+/// CUDA C source of the `f32` semigroup scan kernel (`kernels/scan.cu`).
+pub(crate) const SCANCUDA: &str = include_str!("../kernels/scan.cu");
+
+/// The stable symbol name of the kernel in [`SCANCUDA`].
+pub(crate) const SCANENTRY: &str = "scan";
+
 /// The threadgroup width of the attention kernel.
 ///
 /// The kernel's reduction tree and shared-memory partition are both sized by

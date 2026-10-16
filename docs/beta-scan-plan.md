@@ -1,9 +1,31 @@
 # β 通道落地计划：结合律半群扫描算子（SSM 递推）
 
-> **版本**：v1.2（2026-10-16）　**状态**：提议（未实现，不写已交付）
+> **版本**：v1.3（2026-10-16）　**状态**：现状核对版——scan 算子三后端已实现（见 §0），本计划聚焦剩余缺口
+> **v1.3 变更**：**实测核对（2026-10-16，完全访问环境）**——`api::compute` 已有 `scan`/`scan_cached`（`kernels.rs:283/307`，HEAD 已提交）；CPU（`crates/cpu/src/scan.rs`，串行权威 + 并行容差路径）、Metal（executor + MSL，metalcontract 48/48 全绿）、CUDA（executor:378/390）三后端均已实现；测试齐备（`scancontract.rs` 参考 64 点半群前缀/空序列/非 2 幂、`scanunits.rs` 逐位一致 + cached≡全量、apikernelcontract、metalcontract 谱违规拒绝）；design.md §5 契约表已登记（351-352 行）。**剩余缺口 = 基准（benches/ 无 scan 目标）+ M1 判定实测 + GPU 并行扫描核对 + 模型挂载（nn SSM 层 + registry 变体）**。B0–B4 由「从零实现」改为「已交付」；B5/B6 保留。
 > **v1.2 变更**：撤回 v1.1 的「拆 `scankernel` trait」——核对 `lib.rs` 与 conformance.md 后，A4 上界 20 的权威口径是 **crate root 导出项数**（当前 18/20），拆 trait 反而 +1 导出项；design.md §5.2 决策 5 的既定路线就是「累加扩展 `compute`」。`scan`/`scan_cached` 作为 `compute` 新方法（11 → 13）。另将谱前置的错误改由 **B0 新增 `backenderror::invalidparameter`**（现有 7 variant 无「参数值非法」类）。其余 v1.1 修正保留：并行容差对齐 §5.10、`A` 限定对角/块对角并补谱校验、离散化边界、SSM 层归属（`nn`）、M1 测量协议（闭集硬件 + 禁 Table 7）、直通项 `skip`、`scan_cached` 输出 `[1,d]`。
 > **数学权威**：`docs/lld.md` §5.6（结合律扫描，数学验证 5a/5b）、§1.1 C2、M1/M3/M4；实现契约权威：`docs/design.md` §5（层 0：api，累加式扩展）
-> **目标**：让 β 通道（选择性 SSM / 扫描递推）从「方案已冻结、代码未实现」变为「算子可挂载、三后端可跑、M1 可验收」。自研 `arch: trap` 底座与 Mamba 类模型由此可挂上 $\mathcal{T}_\theta$。
+> **目标**：让 β 通道（选择性 SSM / 扫描递推）从「算子已实现、验收未闭合」变为「基准齐备、M1 可验收、模型可挂载」。自研 `arch: trap` 底座与 Mamba 类模型由此可挂上 $\mathcal{T}_\theta$。
+
+---
+
+## 0. 现状核对（2026-10-16 实测，完全访问环境）
+
+> 本节为 v1.3 新增，基于本地源码核对 + metalcontract 实测，取代此前"未实现"假设。
+
+| 项 | 实测状态 | 证据 |
+| :--- | :--- | :--- |
+| `api::compute::scan`/`scan_cached` | ✅ **已提交** | `crates/api/src/kernels.rs:283/307`（签名含 `skip` 直通项） |
+| CPU | ✅ 已实现 | `crates/cpu/src/scan.rs`（串行权威 + 并行容差路径）+ executor:369/387 |
+| Metal | ✅ 已实现 + 数值通过 | `metalcontract` 48/48 全绿，含 `scan_matches_the_scalar_reference`、`scan_rejects_a_spectral_violation` |
+| CUDA | ✅ 已注册 | `crates/cuda/src/executor.rs:378/390`（数值用例在 GPU 真机套件） |
+| 测试 | ✅ 齐备 | `tests/it/scancontract.rs`（64 点半群前缀/空序列/非 2 幂）、`scanunits.rs`（逐位一致、cached≡全量）、`apikernelcontract.rs:291/303` |
+| design.md §5 契约表 | ✅ 已登记 | `docs/design.md:351-352`（`scan`/`scan_cached` 形状规则） |
+| **基准** | ❌ **缺失** | `benches/` 无 scan 目标（违反 AGENTS.md §7「每个算子至少一个可复现基准」） |
+| **M1 判定** | ⚠️ **未实测** | lld.md M1 仍 OPEN（理论证明 + 实测 log-log 未出数） |
+| 模型挂载 | ❌ 未做 | `registry::architecture` 无 Mamba 变体；`nn` 无 SSM 组合层 |
+| GPU 并行扫描 | ⚠️ 待核对 | CPU 有并行路径；Metal/CUDA 内核是否 work-efficient 并行扫描需源码核对 |
+
+**结论**：B0（契约+参考）、B1（CPU 串行）、B2（CPU 并行）、B3（Metal）、B4（CUDA）**已交付**；本计划实际剩余工作 = **B6 基准 + M1 判定 + 并行核对 + B5 模型挂载**。
 
 ---
 
