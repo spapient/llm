@@ -2670,24 +2670,28 @@ cuda  -> api
 | `cuda` | `LaunchArgs::launch`（NVRTC 内核启动） | `ffi.rs` |
 | `cuda` | `CudaBlas::gemm`（cuBLAS 矩阵乘） | `ffi.rs` |
 | `cuda` | `SoftmaxForward::launch`（cuDNN 末轴 softmax） | `ffi.rs` |
+| `musa` | `unsafe extern "C"` 声明块（edition 2024 强制；MUSA driver 全部 FFI 声明） | `ffi.rs` |
+| `musa` | 驱动交接 `unsafe` 块（`drive`：模块加载/函数解析/内存传输/内核启动/同步，全部 `mu*` 调用收于一个块） | `ffi.rs` |
 
-站点登记：`metal` = 4，`cuda` = 3；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
+站点登记：`metal` = 4，`cuda` = 3，`musa` = 2；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
 
 依据：这些数字由**调用面结构**推导，而非经验取值。Metal 一次 `matmul` 的最小平台交互面固定为 4 处——上传主机数据、下载设备结果、绑定设备缓冲、绑定标量参数。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
 
 * `LaunchArgs::launch` 只登记一次，因为整个在仓内核族共用它。启动辅助以闭包注入实参、以 `(source, entry)` 选择内核，故 `matmul`/`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention` 八个内核**不增加站点**。这是设计选择而非巧合：把「一类平台交互」而非「一个算子」作为登记的原子单位，使豁免面不随算子数增长。
 * `CudaBlas::gemm` 与 `SoftmaxForward::launch` 各一处，因为二者是各自库里唯一自带 `unsafe` 的入口。
 
+MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有像 `cudarc`/`objc2-metal` 那样的第三方安全封装，必须自己写 `extern "C"` 声明与调用（`docs/musa-backend-plan.md` §5.0/§5.4）。在 edition 2024（本工作区 `rust-version = 1.99`）下，`extern` 块声明本身强制为 `unsafe extern "C"`——这是**一个不可消除的 `unsafe` 构造**；所有 `mu*` 调用（`muModuleLoadData`/`muModuleGetFunction`/`muMemAlloc`/`muMemcpy*`/`muLaunchKernel`/`muCtxSynchronize`）被收进**同一个 `unsafe` 块**（`drive` 驱动交接函数），块内调用不再需要逐处标记——这是**第二个、也是最后一个**构造。故 `musa` = 2 是自写 FFI 条件下的理论下限。`musa` 刻意不引入 `muBLAS`/`muDNN`：matmul 由 WMMA 内核（`include/crt/mma.h`，Tensor Core）服务、softmax 由减最大式内核服务（与 `cpu`/`metal` 同式），因此没有「逐库」站点可加——这也是 `musa` 比 `cuda` 少一个站点的原因。
+
 任何使数字上升的改动都意味着引入了一类新的平台交互或一个自带 `unsafe` 入口的第三方库（例如 cuDNN 的 attention frontend、cuDNN 的 `ActivationForward`），属于豁免扩散，必须先改本表并说明理由；数字下降则意味着某类交互被移除，表也必须同步。
 
 机械门禁 `scripts/checkunsafe.sh` 断言四项：白名单文件是唯一出现 `allow(unsafe_code)` 之处；全部既有 crate 根仍含 `forbid(unsafe_code)`；代码中每处 `unsafe` 前一行（含注释块）含 `// SAFETY:`；`unsafe` 站点计数与本表条目数**恰好相等**（非上界语义：多一处或少一处均失败，本表与代码不允许单向漂移）。该脚本接入 `scripts/check.sh`。
 
-回滚：删除 `crates/metal` 与 `crates/cuda`、撤销 `api` 的设备变体与门禁条目，即完全恢复修订前状态。
+回滚：删除 `crates/metal`、`crates/cuda` 与 `crates/musa`、撤销 `api` 的设备变体与门禁条目，即完全恢复修订前状态。
 
 ### 21.9 后果
 
 * GPU 能力以两个独立、可单独删除的 crate 提供；删除任一 crate 不影响 `cpu` 路径与依赖图。
-* `unsafe` 面被压缩到 7 个已登记站点（`metal` 4 + `cuda` 3），且由机械门禁强制；既有 19 个 crate 的 `forbid` 未被触碰。
+* `unsafe` 面被压缩到 9 个已登记站点（`metal` 4 + `cuda` 3 + `musa` 2），且由机械门禁强制；既有 crate 的 `forbid` 未被触碰。`musa` = 2 是 2024 edition 下自写 FFI 的理论下限（`unsafe extern` 声明 + 单一驱动交接块）。
 * `api` 与上层（`models`/`infer`）零改动即可通过 `C: compute` 使用 GPU。
 * CUDA 的运行时正确性依赖 NVIDIA 驱动与设备：本文件与 `docs/conformance.md` 只声明**真机执行过**的部分（2026-10-12 的 RTX 2080 Ti 会话，见 21.10.3），未执行的部分仍如实标注，绝不声称通过。
 * 维护成本：两个 crate 各自绑定一个易变的第三方 GPU 绑定（`objc2-metal`、`cudarc`），版本升级需重新核对 21.8 的站点表。

@@ -40,6 +40,7 @@ mod lossdecrease;
 mod metalcontract;
 mod modelforward;
 mod modelsunits;
+mod musacontract;
 mod nnlayers;
 mod nnunits;
 mod optim;

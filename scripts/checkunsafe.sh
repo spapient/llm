@@ -25,6 +25,7 @@ cd "$ROOT_DIR"
 WHITELIST=(
   "crates/metal/src/ffi.rs:4"
   "crates/cuda/src/ffi.rs:3"
+  "crates/musa/src/ffi.rs:2"
 )
 
 fail() {

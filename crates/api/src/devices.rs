@@ -7,6 +7,8 @@ pub enum devicekind {
     metal,
     /// NVIDIA CUDA execution.
     cuda,
+    /// Moore Threads MUSA execution.
+    musa,
 }
 
 /// An execution device handle.
@@ -44,6 +46,14 @@ impl device {
         }
     }
 
+    /// Returns the Moore Threads MUSA device.
+    #[must_use]
+    pub const fn musa() -> Self {
+        Self {
+            kind: devicekind::musa,
+        }
+    }
+
     /// Returns the kind of this device.
     #[must_use]
     pub const fn getkind(self) -> devicekind {
@@ -66,5 +76,11 @@ impl device {
     #[must_use]
     pub const fn iscuda(self) -> bool {
         matches!(self.kind, devicekind::cuda)
+    }
+
+    /// Reports whether this device is Moore Threads MUSA.
+    #[must_use]
+    pub const fn ismusa(self) -> bool {
+        matches!(self.kind, devicekind::musa)
     }
 }

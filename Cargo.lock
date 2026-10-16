@@ -962,6 +962,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "musa"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "lib",
+ "tensor",
+ "thiserror",
+]
+
+[[package]]
 name = "nn"
 version = "0.1.0"
 dependencies = [

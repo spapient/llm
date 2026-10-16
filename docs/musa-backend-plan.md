@@ -1,6 +1,6 @@
 # MUSA 后端适配计划：国产 GPU 的 CUDA 兼容后端
 
-> **版本**：v1.3（2026-10-16）　**状态**：提议（未实现）；**M0 已收敛 + 5.x 评估 + 性能路径对比 + 顶级架构设计已完成**
+> **版本**：v1.4（2026-10-16）　**状态**：提议（未实现）；**M0 已收敛 + 5.x 评估 + 性能路径对比 + 消除 unsafe 终极架构（musa=2，2024 下限）已完成；P1 骨架已开工**
 > **权威**：`docs/design.md` §21（GPU 后端与 `unsafe` 豁免）、`docs/beta-scan-plan.md`（scan 算子已三后端闭环，本计划复用其内核）
 > **目标**：新增 `musa` 后端（摩尔线程 MUSA 架构），复用已验证的 CUDA C 内核，把 host 层从 `cudarc` 替换为 `musart`/`MTRTC`/`muBLAS`/`muDNN` 的 MUSA 绑定，使同一 `api::compute` 算子集在国产 GPU 上跑通且三后端数值一致。
 
@@ -118,15 +118,15 @@
 
 ### 5. 顶级架构设计（v1.3，2026-10-16）——消除 unsafe
 
-**架构命题（一句话）**：musa 把 `unsafe` 收敛到**恰好一类平台交互（内核启动）**——`musa=1`，比 cuda=3 再收敛两级；不引入 muBLAS/muDNN，matmul 用 **WMMA 内核**吃 Tensor Core，性能与数值契约双不损。
+**架构命题（一句话）**：musa 把 `unsafe` 收敛到**自写 FFI 的理论下限 `musa=2`**（`unsafe extern "C"` 声明 + 单一驱动交接块），比 cuda=3 再收敛一级；不引入 muBLAS/muDNN，matmul 用 **WMMA 内核**吃 Tensor Core，性能与数值契约双不损。
 
 #### 5.0 「消除 unsafe」的现实边界（先说清事实）
 
 * **字面零 unsafe 不可能**：GPU 编程必须经 C ABI FFI 调用平台库（`mu*` driver / `musart`），Rust 调用 C 函数本身就是 `unsafe extern`；跨进程 IPC 隔离（unsafe 移入守护进程）可做到 crate 内零 unsafe，但引入 IPC 往返、部署复杂化，是过度设计，违反项目极简哲学（design.md §21.2 决策 2 同款论证：外包 ≠ 消除）。
 * **可达的顶级形态** = **unsafe 面收敛到最小可证集合**：站点按「交互类别」登记，且类别数降到 1；unsafe 代码体积极小化（单薄壳函数）；理由机械可证（SAFETY 注释 + checkunsafe.sh 强制）。
-* 本设计使 **musa=1（唯一类别：内核启动 `muLaunchKernel`）**——比 cuda=3、metal=4 更收敛，是当前架构原则（§21.8「逐类交互恰一处」）的极限应用。
+* 本设计使 **musa=2（自写 FFI 的 2024 edition 理论下限）**：`unsafe extern "C"` 声明块（edition 2024 强制——声明面本身是不可消除的构造）+ 单一驱动交接 `unsafe` 块（`drive`：全部 `mu*` 调用收于一个块，块内不再逐处标记）。比 cuda=3、metal=4 更收敛；`musa=1` 在 2024 edition 下不可能（extern 声明不可省）。
 
-#### 5.1 关键架构决策：不引入 muBLAS/muDNN（musa=1 的前提）
+#### 5.1 关键架构决策：不引入 muBLAS/muDNN（musa=2 的前提）
 
 | 决策 | 依据 |
 | :--- | :--- |
@@ -165,13 +165,13 @@ crates/musa/
   src/registry.rs         # 构建期生成：内核 → (fatbin 段, entry, shared 预算)，编译期枚举
 ```
 
-#### 5.4 unsafe 站点登记（musa=1）
+#### 5.4 unsafe 站点登记（musa=2，2024 edition 自写 FFI 理论下限）
 
 | # | 站点 | 交互类别 | SAFETY 前置 |
 | :--- | :--- | :--- | :--- |
 | 1 | `submit`（`muLaunchKernel`） | 内核启动（全部在仓内核共用，不随内核数增长） | args 由 `muModuleGetFunction` 解析的内核签名镜像构建、实参为存活设备分配或本调用期标量、launch 几何经 `api::geometry` 校验且覆盖元素数（内核自界检） |
 
-`scripts/checkunsafe.sh` 登记 `musa=1`（与 metal=4/cuda=3 并列，机械强制；musa 是全仓最小 unsafe 面）。unsafe 壳为一个薄函数：全部参数在安全侧完成 geometry/预算校验后，仅转发给 C ABI。
+`scripts/checkunsafe.sh` 登记 `musa=2`（与 metal=4/cuda=3 并列，机械强制；musa 是全仓最小 unsafe 面）。驱动交接函数在安全侧完成 geometry/预算校验后，仅转发给 C ABI。
 
 #### 5.5 执行与内存所有权
 
@@ -193,17 +193,17 @@ crates/musa/
 | 性能效率 | WMMA 内核吃 Tensor Core（官方博客 ~15× 证据）+ submission 单提交（~35× 实测杠杆） |
 | 可维护性 | 单文件 unsafe 岛、构建期类型化注册表、模块与 cuda/metal 同构 |
 | 可移植性 | 条件编译空库、mcc 缺失退化空库、workspace 全平台绿 |
-| **安全性** | **全仓最小 unsafe 面（musa=1，单交互类别）**、unsafe 壳 ~30 行、SAFETY 注释 + checkunsafe.sh 机械强制 |
+| **安全性** | **全仓最小 unsafe 面（musa=2，自写 FFI 2024 下限）**、驱动交接函数薄壳、SAFETY 注释 + checkunsafe.sh 机械强制 |
 | 可测试性 | 构造器区分路径、kernelcount 观测、真机门禁（M6） |
 
 #### 5.8 全局统一（跨后端，见 `docs/gpu-backend-unification.md` v1.0）
 
-* **统一终态**：三个 GPU 后端共同收敛到「构建期预编译 + 运行时零编译 + 最小 unsafe 面」——cuda=1、musa=1、metal=4（库决定）。
+* **统一终态**：三个 GPU 后端共同收敛到「构建期预编译 + 运行时零编译 + 最小 unsafe 面」——cuda=1、musa=2、metal=4（库决定；musa=2 为 2024 edition 自写 FFI 理论下限）。
 * **cuda 的 JIT 消除已验证可行**：cudarc 0.19.10 `load_module(PtxKind::Binary)` → `cuModuleLoadData`（源码确认）；nvcc 构建期预编译 CUBIN 内嵌 + WMMA matmul 内核（构建机有完整 CUDA 工具链，WMMA 头可编译）→ cuda=1。
 * **metal**：JIT 消除 = xcrun metal 构建期 metallib（P3，`newLibraryWithData` 待尖刺）；unsafe=4 由 objc2-metal API 面决定（§21.8 实测）。
 * 阶段互斥：P1（musa）→ P2（cuda 收敛）→ P3（metal JIT 消除），各为独立可测提交。
 
-**状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**；**性能路径对比完成（结论 A1+B1+C2，后经消除 unsafe 设计修订为 A1+WMMA+C2）**；**消除 unsafe 终极架构完成（musa=1：单交互类别 muLaunchKernel，不引入 muBLAS/muDNN，WMMA 内核吃 Tensor Core——`include/crt/mma.h` 真机验证 203 重载 mma_sync）**。M1–M6 按此收敛实施。
+**状态声明**：本计划为提议（未实现，不写已交付）。**M0 调研尖刺已于 2026-10-16 在 MTT S4000 真机完成并收敛**：host 层 = 独立符号（自写 FFI 岛，非 cudarc 复用）；**5.x/MTRTC 升级评估完成（结论：不升级）**；**性能路径对比完成（结论 A1+B1+C2，后经消除 unsafe 设计修订为 A1+WMMA+C2）**；**消除 unsafe 终极架构完成（musa=2：2024 edition 自写 FFI 理论下限——`unsafe extern` 声明 + 单一驱动交接块；不引入 muBLAS/muDNN，WMMA 内核吃 Tensor Core——`include/crt/mma.h` 真机验证 203 重载 mma_sync）**。M1–M6 按此收敛实施。
 
 
 ### 4.x 性能路径深度对比（2026-10-16，结论：A1+B1+C2 唯一最优）
