@@ -234,4 +234,23 @@ A4 上界 20 的权威口径是「crate root 导出的公共项数」（design.m
 
 ---
 
-**状态声明**：本计划为提议，所有算子在实现与三后端实测前不写"已交付"；M1 状态在理论证明 + 实测出数前保持 OPEN，阈值 $O(nd)$ 不降。
+## 12. B6 基准基线（2026-10-16 实测）
+
+环境：Apple M5 Pro（arm64）、`rustc 1.99.0`、`bench` profile（optimized + debuginfo，继承 release `lto=thin`/`codegen-units=1`）。工作负载 `scaninput`：d=256、N=64，a∈(-1,1) 谱前置满足。criterion，median，100 samples。
+
+| 基准 | median |
+| :--- | :--- |
+| `scan/seq4096/serial` | 23.265 ms |
+| `scan/seq4096/chunked` | 23.303 ms |
+| `scan/seq16384/serial` | 92.695 ms |
+| `scan/seq16384/chunked` | 136.35 ms |
+| `scan/seq65536/serial` | 367.52 ms |
+| `scan/seq65536/chunked` | 548.00 ms |
+
+**M1 实测（n 维度）**：serial 每 4× 序列 ≈4× 耗时（23.3→92.7→367.5），log-log 斜率 ≈1，与 §11 理论 $O(ndN)$（固定 d,N 时 n 线性）一致。chunked 慢 ~50%（两遍递推常数 2×，与 §11 一致），是数值验证路径而非 CPU 性能路径；其性能价值在并行（多线程/GPU 序列维度并行）。
+
+**M1 Should（scan vs 稠密 attention 16K ≥5×）**：待同装置 attention 对照；不引用异模型 Table 7。
+
+---
+
+**状态声明**：B0–B5 已实现并提交（契约/三后端/模型挂载），B6 基准基线已出（serial 线性 $O(n)$ 实测核对）。M1 状态在「理论 + 实测」双门禁下：理论已成文（§11）、n 维度线性已实测（§12）；**M1 Should（16K vs attention ≥5×）与 GPU 数值真机验证仍未出数**，M1 保持 OPEN，阈值 $O(nd)$ 不降。

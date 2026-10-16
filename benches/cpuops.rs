@@ -16,9 +16,9 @@ use std::hint::black_box;
 use api::compute;
 use bench::{
     ELEMENTWISE, SOFTMAXCOLS, SOFTMAXROWS, attentioninput, cpuexec, elementwiseinput,
-    embeddinginput, matmulinput, norminput, ropeinput, softmaxinput,
+    embeddinginput, matmulinput, norminput, ropeinput, scaninput, softmaxinput,
 };
-use cpu::cpuop;
+use cpu::{cpuop, cpuscan};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 fn elementwise(c: &mut Criterion) {
@@ -144,6 +144,57 @@ fn compute_paths(c: &mut Criterion) {
     group.finish();
 }
 
+fn scan(c: &mut Criterion) {
+    let exec = cpuexec();
+    for seq in [4096usize, 16384, 65536] {
+        let (input, init, a, b, cparam, skip) = scaninput(seq).unwrap();
+        let (iv, statev, av, bv, cv, sv) = (
+            input.getview(),
+            init.getview(),
+            a.getview(),
+            b.getview(),
+            cparam.getview(),
+            skip.getview(),
+        );
+        let mut group = c.benchmark_group(format!("scan/seq{seq}"));
+        group.throughput(Throughput::Elements((seq * bench::SCANCHANNELS) as u64));
+        group.bench_function("serial", |b| {
+            b.iter(|| {
+                black_box(
+                    compute::scan(
+                        &exec,
+                        black_box(&iv),
+                        black_box(&statev),
+                        black_box(&av),
+                        black_box(&bv),
+                        black_box(&cv),
+                        black_box(&sv),
+                    )
+                    .unwrap(),
+                )
+            });
+        });
+        group.bench_function("chunked", |b| {
+            b.iter(|| {
+                black_box(
+                    cpuscan
+                        .apply_chunked(
+                            black_box(&iv),
+                            black_box(&statev),
+                            black_box(&av),
+                            black_box(&bv),
+                            black_box(&cv),
+                            black_box(&sv),
+                            4096,
+                        )
+                        .unwrap(),
+                )
+            });
+        });
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     elementwise,
@@ -151,6 +202,7 @@ criterion_group!(
     binary,
     weighted,
     gather,
-    compute_paths
+    compute_paths,
+    scan
 );
 criterion_main!(benches);

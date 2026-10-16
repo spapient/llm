@@ -200,3 +200,39 @@ pub fn attentioninput() -> Result<attentionoperands, tensorerror> {
     let v = tensor::new(shape::new(vec![SEQLEN, width])?, vec![0.3_f32; elements])?;
     Ok((q, k, v))
 }
+
+/// Channel count of the scan workload.
+pub const SCANCHANNELS: usize = 256;
+
+/// State width of the scan workload.
+pub const SCANSTATE: usize = 64;
+
+/// The six operands of one scan call, returned by [`scaninput`].
+pub type scanoperands = (
+    tensor<f32>,
+    tensor<f32>,
+    tensor<f32>,
+    tensor<f32>,
+    tensor<f32>,
+    tensor<f32>,
+);
+
+/// Builds the fixed-channel scan operands for `seq` timesteps.
+///
+/// The recurrence kernel `a` stays within `(-1, 1)` so the spectral precondition
+/// holds; `init` and `skip` are zero.
+///
+/// # Errors
+///
+/// Returns a [`tensorerror`] if a fixed shape is rejected by `tensor`.
+pub fn scaninput(seq: usize) -> Result<scanoperands, tensorerror> {
+    let d = SCANCHANNELS;
+    let n = SCANSTATE;
+    let input = tensor::new(shape::new(vec![seq, d])?, vec![0.5_f32; seq * d])?;
+    let init = tensor::new(shape::new(vec![d, n])?, vec![0.0_f32; d * n])?;
+    let a = tensor::new(shape::new(vec![d, n])?, vec![0.5_f32; d * n])?;
+    let b = tensor::new(shape::new(vec![d, n])?, vec![0.25_f32; d * n])?;
+    let c = tensor::new(shape::new(vec![d, n])?, vec![0.125_f32; d * n])?;
+    let skip = tensor::new(shape::new(vec![d])?, vec![0.0_f32; d])?;
+    Ok((input, init, a, b, c, skip))
+}
