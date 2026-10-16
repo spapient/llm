@@ -726,7 +726,9 @@ impl submission for musasubmission {
         self.checkbudget(&lhsshape)?;
         self.checkbudget(&rhsshape)?;
         let outshape = binaryshape(&lhsshape, &rhsshape, ADDOP)?;
-        let count = lhsshape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let count = lhsshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
         let lbuf = self.operandsbuf(lhs)?;
         let rbuf = self.operandsbuf(rhs)?;
         let slot = ffi::add_record(&mut self.session, lbuf, rbuf, count).map_err(maptobackend)?;
@@ -739,7 +741,9 @@ impl submission for musasubmission {
         self.checkbudget(&lhsshape)?;
         self.checkbudget(&rhsshape)?;
         let outshape = binaryshape(&lhsshape, &rhsshape, MULOP)?;
-        let count = lhsshape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let count = lhsshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
         let lbuf = self.operandsbuf(lhs)?;
         let rbuf = self.operandsbuf(rhs)?;
         let slot = ffi::mul_record(&mut self.session, lbuf, rbuf, count).map_err(maptobackend)?;
@@ -759,8 +763,15 @@ impl submission for musasubmission {
         let geometry = axisshape::rmsnorm(&inshape, &weightshape)?;
         let ibuf = self.operandsbuf(input)?;
         let wbuf = self.operandsbuf(weight)?;
-        let slot = ffi::rmsnorm_record(&mut self.session, ibuf, wbuf, geometry.rows, geometry.width, eps)
-            .map_err(maptobackend)?;
+        let slot = ffi::rmsnorm_record(
+            &mut self.session,
+            ibuf,
+            wbuf,
+            geometry.rows,
+            geometry.width,
+            eps,
+        )
+        .map_err(maptobackend)?;
         Ok(self.pushslot(slot, inshape))
     }
 
@@ -789,7 +800,9 @@ impl submission for musasubmission {
     fn recordsilu(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
         let inshape = self.shapeof(input)?;
         self.checkbudget(&inshape)?;
-        let count = inshape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let count = inshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
         let ibuf = self.operandsbuf(input)?;
         let slot = ffi::silu_record(&mut self.session, ibuf, count).map_err(maptobackend)?;
         Ok(self.pushslot(slot, inshape))
@@ -1001,12 +1014,13 @@ impl submission for musasubmission {
             .iter()
             .map(|reference| {
                 let index = reference.getindex();
-                let (data, outshape) = self.results.get(index).ok_or(
-                    backenderror::indexoutofrange {
-                        index,
-                        len: self.results.len(),
-                    },
-                )?;
+                let (data, outshape) =
+                    self.results
+                        .get(index)
+                        .ok_or(backenderror::indexoutofrange {
+                            index,
+                            len: self.results.len(),
+                        })?;
                 let data = match data {
                     resultdata::host(data) => data.clone(),
                     resultdata::slot(_) => {

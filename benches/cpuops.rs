@@ -13,6 +13,7 @@
 
 use std::hint::black_box;
 
+use ::tensor::{shape, tensor};
 use api::compute;
 use bench::{
     ATTNDECODEKV, ATTNPREFILLLONG, ATTNPREFILLSEQ, ELEMENTWISE, HEADDIM, HEADS, MATMULDECODEM,
@@ -21,7 +22,6 @@ use bench::{
     matmulprefillinput, norminput, ropeinput, scaninput, softmaxinput,
 };
 use cpu::{cpuop, cpuscan};
-use ::tensor::{shape, tensor};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 fn elementwise(c: &mut Criterion) {
@@ -317,20 +317,15 @@ fn attentionscales(c: &mut Criterion) {
 
 fn fusedrmsnormmatmul(c: &mut Criterion) {
     let exec = cpuexec();
-    for (name, seq) in [("prefill2048", 2048usize), ("decode1", 1usize)] {
+    for (name, seq, n) in [
+        ("prefill2048", 2048usize, 4096usize),
+        ("decode1", 1usize, 4096usize),
+        ("qkv2048", 2048usize, 16384usize),
+    ] {
         let k = 4096usize;
-        let n = 4096usize;
-        let x = tensor::new(
-            shape::new(vec![seq, k]).unwrap(),
-            vec![0.5_f32; seq * k],
-        )
-        .unwrap();
+        let x = tensor::new(shape::new(vec![seq, k]).unwrap(), vec![0.5_f32; seq * k]).unwrap();
         let w = tensor::new(shape::new(vec![k]).unwrap(), vec![1.0_f32; k]).unwrap();
-        let b = tensor::new(
-            shape::new(vec![k, n]).unwrap(),
-            vec![0.25_f32; k * n],
-        )
-        .unwrap();
+        let b = tensor::new(shape::new(vec![k, n]).unwrap(), vec![0.25_f32; k * n]).unwrap();
         let (xv, wv, bv) = (x.getview(), w.getview(), b.getview());
         let mut group = c.benchmark_group(format!("fused/rmsnormmatmul/{name}"));
         group.throughput(Throughput::Elements((seq * k) as u64));
@@ -345,8 +340,13 @@ fn fusedrmsnormmatmul(c: &mut Criterion) {
         });
         group.bench_function("separate", |bench| {
             bench.iter(|| {
-                let normed = exec.rmsnorm(black_box(&xv), black_box(&wv), 1.0e-5).unwrap();
-                black_box(exec.matmul(black_box(&normed.getview()), black_box(&bv)).unwrap())
+                let normed = exec
+                    .rmsnorm(black_box(&xv), black_box(&wv), 1.0e-5)
+                    .unwrap();
+                black_box(
+                    exec.matmul(black_box(&normed.getview()), black_box(&bv))
+                        .unwrap(),
+                )
             });
         });
         group.finish();

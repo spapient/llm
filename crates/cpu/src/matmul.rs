@@ -90,7 +90,14 @@ impl cpumatmul {
                 kernel: MATMULOP.into(),
                 message: e.to_string(),
             })?;
-            matmuldatarows(&plan, &xwtensor.getview(), rhs, workers, Some(rowscale), None)?
+            matmuldatarows(
+                &plan,
+                &xwtensor.getview(),
+                rhs,
+                workers,
+                Some(rowscale),
+                None,
+            )?
         } else {
             matmuldatarows(&plan, input, rhs, workers, Some(rowscale), Some(weight))?
         };
@@ -146,7 +153,9 @@ fn matmuldatarows(
         let a = &lhsdata[b * plan.m * plan.k..(b + 1) * plan.m * plan.k];
         let bt = &rhsdata[b * plan.k * plan.n..(b + 1) * plan.k * plan.n];
         let out = &mut data[b * plan.m * plan.n..(b + 1) * plan.m * plan.n];
-        matmulblock(a, bt, out, plan.m, plan.k, plan.n, workers, rowscale, rowweight)?;
+        matmulblock(
+            a, bt, out, plan.m, plan.k, plan.n, workers, rowscale, rowweight,
+        )?;
     }
     Ok(data)
 }
@@ -624,7 +633,8 @@ fn matmultile_v3(
             bl.copy_from_slice(&packed[p * panel + j0..p * panel + j0 + 8]);
             let brow = _mm256_loadu_ps(&bl);
             for r in 0..rows {
-                acc[r] = _mm256_fmadd_ps(brow, _mm256_set1_ps(a[(i0base + r) * k + kc0 + p]), acc[r]);
+                acc[r] =
+                    _mm256_fmadd_ps(brow, _mm256_set1_ps(a[(i0base + r) * k + kc0 + p]), acc[r]);
             }
         }
         for r in 0..rows {
@@ -746,7 +756,9 @@ fn matmultile_scalar(
     lastchunk: bool,
 ) {
     for r in 0..rows {
-        let s = (lastchunk).then(|| rowscale.map(|scales| scales[i0base + r])).flatten();
+        let s = (lastchunk)
+            .then(|| rowscale.map(|scales| scales[i0base + r]))
+            .flatten();
         for j in 0..panel {
             let mut acc = 0.0_f32;
             for p in 0..k {

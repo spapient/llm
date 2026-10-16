@@ -347,7 +347,9 @@ impl compute for cudaexecutor {
         self.checkbudget(input.getshape())?;
         let geometry = axisshape::softmax(input.getshape())?;
         let data = match self.softmax {
-            softmaxpath::cudnn => ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width),
+            softmaxpath::cudnn => {
+                ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width)
+            }
             softmaxpath::nvrtc => {
                 ffi::softmax_nvrtc(&self.cache, input.getdata(), geometry.rows, geometry.width)
             }

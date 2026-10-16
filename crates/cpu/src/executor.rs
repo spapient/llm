@@ -346,14 +346,7 @@ impl compute for cpuexecutor {
         let plan = matmulplan(input, rhs)?;
         self.checkbudget(&plan.outshape()?).map_err(maptobackend)?;
         let inv = crate::normalization::rowinvtable(input.getdata(), k, eps);
-        cpumatmul.applyplanfused(
-            plan,
-            input,
-            weight.getdata(),
-            rhs,
-            &inv,
-            self.maxworkers,
-        )
+        cpumatmul.applyplanfused(plan, input, weight.getdata(), rhs, &inv, self.maxworkers)
     }
 
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {

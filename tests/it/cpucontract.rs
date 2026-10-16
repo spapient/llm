@@ -284,9 +284,13 @@ fn rmsnormmatmul_matches_the_composed_reference() {
 #[test]
 fn rmsnormmatmul_handles_batch_and_is_threaded_bitwise() {
     let (batch, m, k, n) = (2usize, 64usize, 128usize, 64usize);
-    let input: Vec<f32> = (0..batch * m * k).map(|i| (i as f32 * 0.23).sin()).collect();
+    let input: Vec<f32> = (0..batch * m * k)
+        .map(|i| (i as f32 * 0.23).sin())
+        .collect();
     let w: Vec<f32> = (0..k).map(|i| (i as f32 * 0.29).cos() + 1.5).collect();
-    let rhs: Vec<f32> = (0..batch * k * n).map(|i| (i as f32 * 0.31).sin()).collect();
+    let rhs: Vec<f32> = (0..batch * k * n)
+        .map(|i| (i as f32 * 0.31).sin())
+        .collect();
     let x = build(vec![batch, m, k], input.clone());
     let wv = build(vec![k], w.clone());
     let b = build(vec![batch, k, n], rhs.clone());
