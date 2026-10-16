@@ -103,46 +103,86 @@ fn gearroll(hash: u64, byte: u8) -> u64 {
 /// cross-segment identity — a bounded, negligible loss for multi-core chunking.
 #[must_use]
 pub fn chunk(data: &[u8]) -> Vec<blockref> {
-    if data.len() <= SEGMENT {
-        return chunksegment(data);
-    }
-    let segs: Vec<&[u8]> = data.chunks(SEGMENT).collect();
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = segs
-            .iter()
-            .map(|seg| scope.spawn(move || chunksegment(seg)))
+    // Phase 1 — boundaries: the Gear rolling hash is a serial per-byte chain, so
+    // a segment's spans are cut in order. Segments (fixed-size windows) cut
+    // independently and in parallel, each carrying its absolute offset.
+    let spans: Vec<(usize, usize)> = if data.len() <= SEGMENT {
+        gearspans(data, 0)
+    } else {
+        let segs: Vec<(usize, &[u8])> = data
+            .chunks(SEGMENT)
+            .scan(0usize, |off, seg| {
+                let o = *off;
+                *off += seg.len();
+                Some((o, seg))
+            })
             .collect();
-        let mut blocks = Vec::new();
-        for handle in handles {
-            if let Ok(segblocks) = handle.join() {
-                blocks.extend(segblocks);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = segs
+                .iter()
+                .map(|&(off, seg)| scope.spawn(move || gearspans(seg, off)))
+                .collect();
+            let mut spans = Vec::new();
+            for handle in handles {
+                if let Ok(s) = handle.join() {
+                    spans.extend(s);
+                }
             }
-        }
-        blocks
-    })
+            spans
+        })
+    };
+    // Phase 2 — identities: content-hashing each block is independent, so it
+    // runs across cores; the boundaries (and thus the output) are unchanged.
+    hashspans(data, &spans)
 }
 
-/// Chunks one segment of data with the Gear rolling hash. See [`chunk`].
-fn chunksegment(data: &[u8]) -> Vec<blockref> {
-    let mut blocks = Vec::new();
+/// Cuts `data` into `(offset, len)` blocks with the Gear rolling hash, adding
+/// `base` to each offset. See [`chunk`].
+fn gearspans(data: &[u8], base: usize) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
     let mut start = 0usize;
     let mut hash = 0u64;
     for (i, &byte) in data.iter().enumerate() {
         hash = gearroll(hash, byte);
         let len = i + 1 - start;
         if len >= MAXBLOCK || (len >= MINBLOCK && hash & CUTMASK == 0) {
-            blocks.push(blockref::new(contenthash(&data[start..i + 1]), len as u32));
+            spans.push((base + start, len));
             start = i + 1;
             hash = 0;
         }
     }
     if start < data.len() {
-        blocks.push(blockref::new(
-            contenthash(&data[start..]),
-            (data.len() - start) as u32,
-        ));
+        spans.push((base + start, data.len() - start));
     }
-    blocks
+    spans
+}
+
+/// Content-hashes every span into a [`blockref`], in parallel across cores
+/// when there are enough blocks to pay for the threads.
+fn hashspans(data: &[u8], spans: &[(usize, usize)]) -> Vec<blockref> {
+    const PARALLELMINBLOCKS: usize = 8;
+    let mut out = vec![blockref::new([0u8; 16], 0); spans.len()];
+    let nthreads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(spans.len());
+    if spans.len() < PARALLELMINBLOCKS || nthreads <= 1 {
+        for ((start, len), slot) in spans.iter().zip(out.iter_mut()) {
+            *slot = blockref::new(contenthash(&data[*start..*start + *len]), *len as u32);
+        }
+        return out;
+    }
+    let per = spans.len().div_ceil(nthreads);
+    std::thread::scope(|scope| {
+        for (sc, oc) in spans.chunks(per).zip(out.chunks_mut(per)) {
+            scope.spawn(move || {
+                for ((start, len), slot) in sc.iter().zip(oc.iter_mut()) {
+                    *slot = blockref::new(contenthash(&data[*start..*start + *len]), *len as u32);
+                }
+            });
+        }
+    });
+    out
 }
 
 /// Transposes the byte planes of `data` and applies a byte-wise delta within
