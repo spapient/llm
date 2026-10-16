@@ -12,7 +12,9 @@
 use ::tokenizer::tokenizer as tokenizerengine;
 use lib::tokenid;
 
-const MODELS: [&str; 6] = ["gpt2", "llama2", "llama3", "qwen3", "deepseek", "gemma"];
+const MODELS: [&str; 7] = [
+    "gpt2", "llama2", "llama3", "qwen3", "deepseek", "gemma", "mamba3",
+];
 
 fn loadtokenizer(model: &str) -> tokenizerengine {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");

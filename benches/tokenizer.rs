@@ -230,17 +230,23 @@ fn encodegpt2(c: &mut Criterion) {
     }
 }
 
+/// Models with a real `tokenizer.json` fixture under `tests/fixtures/`, kept in
+/// sync with the golden-alignment list in `tests/it/tokenizergolden.rs`.
+const FROMJSONMODELS: [&str; 7] = [
+    "gpt2", "gemma", "deepseek", "llama2", "llama3", "qwen3", "mamba3",
+];
+
 /// Measures `tokenizer::fromjson` against the real fixtures, so a one-time load
 /// cost for a production-sized vocabulary is quantified rather than assumed.
 fn loadtokenizer(c: &mut Criterion) {
-    let gpt2 = std::fs::read_to_string("tests/fixtures/gpt2/tokenizer.json").unwrap();
-    let gemma = std::fs::read_to_string("tests/fixtures/gemma/tokenizer.json").unwrap();
-    c.bench_function("tokenizer/fromjson/gpt2", |b| {
-        b.iter(|| black_box(tokenizer::fromjson(&gpt2).unwrap()));
-    });
-    c.bench_function("tokenizer/fromjson/gemma", |b| {
-        b.iter(|| black_box(tokenizer::fromjson(&gemma).unwrap()));
-    });
+    for model in FROMJSONMODELS {
+        let doc =
+            std::fs::read_to_string(format!("tests/fixtures/{model}/tokenizer.json")).unwrap();
+        let name = format!("tokenizer/fromjson/{model}");
+        c.bench_function(&name, |b| {
+            b.iter(|| black_box(tokenizer::fromjson(&doc).unwrap()));
+        });
+    }
 }
 
 fn encodetiktoken(c: &mut Criterion) {

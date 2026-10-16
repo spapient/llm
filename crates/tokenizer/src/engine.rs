@@ -41,6 +41,11 @@ pub struct tokenizer {
     vocabulary: vocabulary,
     bytepair: bytepair,
     specialtokens: specialtokens,
+    /// Every added token (special and non-special) sorted by content length in
+    /// descending order, used for HF-compatible longest-prefix pre-splitting of
+    /// pre-tokens. Non-special added tokens such as GPT-NeoX's space runs are
+    /// only vocabulary entries otherwise and would never be produced by BPE.
+    addedtokens: Vec<(String, tokenid)>,
     chattemplate: Option<chattemplate>,
     chattemplatejinja: Option<String>,
     bostokencontent: Option<String>,
@@ -98,6 +103,11 @@ impl tokenizer {
                 .map(|(content, id, _)| (content.clone(), *id))
                 .collect(),
         );
+        let mut addedtokens: Vec<(String, tokenid)> = added
+            .iter()
+            .map(|(content, id, _)| (content.clone(), tokenid::new(*id)))
+            .collect();
+        addedtokens.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0.len()));
         let bpe = if ignoremerges {
             bytepair::frommerges(&merges)?
         } else {
@@ -126,6 +136,7 @@ impl tokenizer {
             vocabulary: vocab,
             bytepair: bpe,
             specialtokens: specials,
+            addedtokens,
             chattemplate: None,
             chattemplatejinja,
             bostokencontent,
@@ -323,6 +334,15 @@ impl tokenizer {
 
     /// Normalizes one non-special segment, then encodes it through the
     /// pre-tokenizer pipeline.
+    ///
+    /// HF-compatible added-token pre-splitting runs on the normalized text
+    /// *before* pre-tokenization: at each position the longest added token
+    /// starting there maps to its id directly, and the unmatched runs in
+    /// between go through the normal pipeline. This matters for non-special
+    /// added tokens such as GPT-NeoX's space runs (50254-50277), which HF
+    /// matches against the raw text even though ByteLevel pre-tokenization
+    /// would turn spaces into `Ġ` byte forms; the gpt2/llama/qwen families
+    /// carry no such tokens, so their path is unchanged.
     fn encodenormalizedsegment(
         &self,
         segment: &str,
@@ -333,7 +353,31 @@ impl tokenizer {
             return Ok(());
         }
         let normalized = self.normalized(segment);
-        self.encodeplainsegment(normalized.as_ref(), scratch, out)
+        let mut pos = 0usize;
+        let mut runstart = 0usize;
+        while pos < normalized.len() {
+            if let Some((literal, id)) = self
+                .addedtokens
+                .iter()
+                .find(|(content, _)| normalized[pos..].starts_with(content.as_str()))
+            {
+                if runstart < pos {
+                    self.encodeplainsegment(&normalized[runstart..pos], scratch, out)?;
+                }
+                out.push(*id);
+                pos += literal.len();
+                runstart = pos;
+            } else {
+                match normalized[pos..].chars().next() {
+                    Some(character) => pos += character.len_utf8(),
+                    None => break,
+                }
+            }
+        }
+        if runstart < normalized.len() {
+            self.encodeplainsegment(&normalized[runstart..], scratch, out)?;
+        }
+        Ok(())
     }
 
     /// Encodes one non-special text segment through the pre-tokenizer pipeline.
