@@ -306,7 +306,7 @@ cpu    -> lib
 
 9. **仅 f32，无 `unsafe`。** 后端声明 `[dtype::f32]`。`api` 与 `cpu` 以及全部非 GPU crate 保持 `#![forbid(unsafe_code)]`；内核使用形状校验已界定范围的安全索引。原生 GPU 后端（第 21 章）因平台 FFI 适用一条受限的 `unsafe` 豁免，不改变本层与 `cpu` 的约束。
 
-10. **错误映射显式且在关键处无损。** 内核失败保持 `backenderror`。executor 的 CPU 策略错误保持 `cpuerror`；`compute` 实现把被拒的预算映射到 `backenderror::resourceexhausted`，并原样透传内核错误，因此 `compute` 的调用方只看到抽象层的区分。
+10. **错误映射显式且在关键处无损。** 内核失败保持 `backenderror`。executor 的 CPU 策略错误保持 `cpuerror`；`compute` 实现把被拒的预算映射到 `backenderror::resourceexhausted`，并原样透传内核错误，因此 `compute` 的调用方只看到抽象层的区分。设备不可达与内核编译失败在边界映射为独立变体（`devicenotavailable`、`kernelcompilefailed`），不塌缩进 `executionfailed`，使"环境无 GPU"与"内核没编译出来"可分别诊断。
 
 11. **`backend` 是窄身份契约。** `backend` 只暴露名称、设备与声明能力；执行、内存与同步职责刻意不并入该 trait，它们属于 `kernel` 实现。
 
@@ -363,7 +363,7 @@ cpu    -> lib
 
 资源回滚：失败的内核在构造输出张量之前返回，不逃逸任何部分分配（所有者：内核；生命期：该次调用）。
 
-`backenderror`（8 个 variant）：`unsupporteddtype { dtype }`、`unsupportedoperation { op }`、`sizeoverflow`、`executionfailed`、`shapemismatch { op }`、`indexoutofrange { index, len }`、`invalidparameter { op }`、`resourceexhausted`。`compute` 的边界映射约定：被拒预算 -> `resourceexhausted`；内核错误 -> 原样透传。
+`backenderror`（10 个 variant）：`unsupporteddtype { dtype }`、`unsupportedoperation { op }`、`sizeoverflow`、`devicenotavailable`、`kernelcompilefailed { backend, message }`、`executionfailed`、`shapemismatch { op }`、`indexoutofrange { index, len }`、`invalidparameter { op }`、`resourceexhausted`。`compute` 的边界映射约定：被拒预算 -> `resourceexhausted`；内核错误 -> 原样透传；设备不可达 -> `devicenotavailable`（让"环境无 GPU"可诊断）；内核编译/模块加载失败 -> `kernelcompilefailed { backend, message }`（携带驱动诊断，使编译失败与运行期执行失败可区分）。
 
 Layer 0 一侧的 `kernel`/`backend` 错误契约：`kernel::apply` 在元素 dtype 不受支持、操作不受支持、元素计数溢出或执行失败时返回 `backenderror`。`backend` 不做校验也不分配，只陈述后端接受什么。
 
@@ -509,7 +509,7 @@ cpu    -> lib
 
 实现级不变量：内核只在校验之后分配输出；用于切分输入的每个索引 `<` 该输入的元素计数；`cpuexecutor::checkbudget` 对 rank、元素计数（受检乘法）与字节大小（元素数乘 `size_of::<f32>()`，受检）逐一校验；`checkgatherbudget` 对 row 宽度与 gather 输出元素数做受检乘法。
 
-错误分支枚举：rank 超后端最大（`rankexceeded`）、元素/字节预算超出（`limit`）、dtype 不受支持（`unsupporteddtype`）、操作不受支持（`unsupportedoperation`）、操作数形状不匹配（`shapemismatch`）、索引越界（`indexoutofrange`）、元素计数溢出（`sizeoverflow`）、执行失败（`executionfailed`）。
+错误分支枚举：rank 超后端最大（`rankexceeded`）、元素/字节预算超出（`limit`）、dtype 不受支持（`unsupporteddtype`）、操作不受支持（`unsupportedoperation`）、操作数形状不匹配（`shapemismatch`）、索引越界（`indexoutofrange`）、元素计数溢出（`sizeoverflow`）、设备不可达（`devicenotavailable`）、内核编译失败（`kernelcompilefailed`）、执行失败（`executionfailed`）。
 
 `cpuerror`（3 个 variant）：`backend(#[from] backenderror)`、`limit(#[from] limiterror)`、`rankexceeded { rank, max }`。`maptobackend` 把 `cpuerror::limit` 与 `rankexceeded` 映射到 `backenderror::resourceexhausted`，把 `cpuerror::backend` 原样透传。
 

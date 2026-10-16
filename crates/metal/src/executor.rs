@@ -100,14 +100,22 @@ fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
 }
 
 /// Maps a crate-local [`metalerror`] onto the frozen `api::backenderror`.
+///
+/// Device absence and kernel compilation are surfaced as their own variants so
+/// a caller can tell "no GPU on this host" from "the kernel did not compile";
+/// allocation and runtime execution failures stay under the generic
+/// `executionfailed` because no caller action distinguishes them.
 fn maptobackend(error: metalerror) -> backenderror {
     match error {
         metalerror::sizeoverflow => backenderror::sizeoverflow,
-        metalerror::nodevice
-        | metalerror::allocation
-        | metalerror::compile { .. }
-        | metalerror::pipeline { .. }
-        | metalerror::execution { .. } => backenderror::executionfailed,
+        metalerror::nodevice => backenderror::devicenotavailable,
+        metalerror::compile { message } | metalerror::pipeline { message } => {
+            backenderror::kernelcompilefailed {
+                backend: "metal",
+                message,
+            }
+        }
+        metalerror::allocation | metalerror::execution { .. } => backenderror::executionfailed,
     }
 }
 

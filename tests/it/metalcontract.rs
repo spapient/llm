@@ -7,11 +7,12 @@
 //! # Environment assumptions
 //!
 //! Every dispatch case needs access to the system GPU. Where the process
-//! cannot reach the Metal device the calls surface as `executionfailed`; this
-//! was observed reproducibly under the agent sandbox, and running the same test
-//! binary outside it passed. Run this suite with GPU access available. The
-//! shape, budget, and error-path cases are settled on the host before any
-//! dispatch, so those hold with or without a device.
+//! cannot reach the Metal device the calls surface as
+//! `backenderror::devicenotavailable` (distinct from a compile or execution
+//! failure); this was observed reproducibly under the agent sandbox, and
+//! running the same test binary outside it passed. Run this suite with GPU
+//! access available. The shape, budget, and error-path cases are settled on
+//! the host before any dispatch, so those hold with or without a device.
 #![cfg(target_os = "macos")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

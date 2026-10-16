@@ -139,6 +139,60 @@ fn resource_exhaustion_is_distinct() {
     );
 }
 
+#[test]
+fn device_absence_is_distinct_and_stable() {
+    assert_eq!(
+        backenderror::devicenotavailable,
+        backenderror::devicenotavailable
+    );
+    // "no GPU on this host" must not be confusable with a kernel failure or a
+    // runtime execution failure.
+    assert_ne!(
+        backenderror::devicenotavailable,
+        backenderror::executionfailed
+    );
+    assert_ne!(
+        backenderror::devicenotavailable,
+        backenderror::kernelcompilefailed {
+            backend: "metal",
+            message: String::new(),
+        }
+    );
+    assert_eq!(
+        backenderror::devicenotavailable.to_string(),
+        "no device is available for this backend"
+    );
+}
+
+#[test]
+fn kernel_compile_failure_carries_backend_and_diagnostic() {
+    let e = backenderror::kernelcompilefailed {
+        backend: "metal",
+        message: "MSL 5.0: undeclared identifier 'foo'".to_string(),
+    };
+    assert_eq!(
+        e,
+        backenderror::kernelcompilefailed {
+            backend: "metal",
+            message: "MSL 5.0: undeclared identifier 'foo'".to_string(),
+        }
+    );
+    assert_ne!(
+        e,
+        backenderror::kernelcompilefailed {
+            backend: "cuda",
+            message: "MSL 5.0: undeclared identifier 'foo'".to_string(),
+        }
+    );
+    assert_eq!(
+        e.to_string(),
+        "kernel compilation failed on metal: MSL 5.0: undeclared identifier 'foo'"
+    );
+    // The diagnostic must survive the mapping, so a compilation failure is
+    // reachable and actionable rather than a bare "execution failed".
+    assert_ne!(e, backenderror::executionfailed);
+}
+
 /// A binary kernel that refuses every element type, used only to type-check
 /// the `binarykernel` signature.
 struct refusebinary;

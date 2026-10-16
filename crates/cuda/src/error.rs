@@ -2,11 +2,13 @@ use thiserror::Error;
 
 /// Failures owned by the CUDA backend.
 ///
-/// The executor maps these onto the frozen [`api::backenderror`] at the
-/// `api::compute` boundary: size overflow keeps its category, while device,
-/// compilation, module, transfer, launch, cuBLAS, and cuDNN failures collapse
-/// into `backenderror::executionfailed`. The richer diagnostic stays here so it
-/// can be inspected without widening the public `api` contract.
+/// The executor maps these onto the [`api::backenderror`] at the
+/// `api::compute` boundary: size overflow keeps its category; device absence
+/// becomes `devicenotavailable`; compilation and module-loading failures become
+/// `kernelcompilefailed` carrying the driver diagnostic; transfer, launch,
+/// cuBLAS, and cuDNN runtime failures collapse into `executionfailed`. The
+/// richer diagnostic stays here so it can be inspected without widening the
+/// public `api` contract.
 #[derive(Debug, Error)]
 pub enum cudaerror {
     /// No usable CUDA device could be opened.

@@ -2,11 +2,13 @@ use thiserror::Error;
 
 /// Failures owned by the Metal backend.
 ///
-/// The executor maps these onto the frozen [`api::backenderror`] at the
-/// `api::compute` boundary: shape and size failures keep their category, while
-/// device, compilation, pipeline, and execution failures collapse into
-/// `backenderror::executionfailed`. The richer diagnostic stays here so it can
-/// be inspected without widening the public `api` contract.
+/// The executor maps these onto the [`api::backenderror`] at the
+/// `api::compute` boundary: shape and size failures keep their category; device
+/// absence becomes `devicenotavailable`; compilation and pipeline failures
+/// become `kernelcompilefailed` carrying the driver diagnostic; allocation and
+/// runtime execution failures collapse into `executionfailed`. The richer
+/// diagnostic stays here so it can be inspected without widening the public
+/// `api` contract.
 #[derive(Debug, Error)]
 pub enum metalerror {
     /// No Metal device is available on this system.

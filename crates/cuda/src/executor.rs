@@ -150,13 +150,22 @@ fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
 }
 
 /// Maps a crate-local [`cudaerror`] onto the frozen `api::backenderror`.
+///
+/// Device absence and kernel compilation/module loading are surfaced as their
+/// own variants so a caller can tell "no GPU on this host" from "the kernel did
+/// not compile"; transfer, launch, cuBLAS, and cuDNN runtime failures stay under
+/// the generic `executionfailed`.
 fn maptobackend(error: cudaerror) -> backenderror {
     match error {
         cudaerror::sizeoverflow => backenderror::sizeoverflow,
-        cudaerror::device { .. }
-        | cudaerror::compile { .. }
-        | cudaerror::module { .. }
-        | cudaerror::transfer { .. }
+        cudaerror::device { message } => backenderror::devicenotavailable,
+        cudaerror::compile { message } | cudaerror::module { message } => {
+            backenderror::kernelcompilefailed {
+                backend: "cuda",
+                message,
+            }
+        }
+        cudaerror::transfer { .. }
         | cudaerror::launch { .. }
         | cudaerror::blas { .. }
         | cudaerror::cudnn { .. } => backenderror::executionfailed,
@@ -377,14 +386,36 @@ impl compute for cudaexecutor {
 
     fn scan(
         &self,
-        _input: &tensorview<'_, f32>,
-        _init: &tensorview<'_, f32>,
-        _a: &tensorview<'_, f32>,
-        _b: &tensorview<'_, f32>,
-        _c: &tensorview<'_, f32>,
-        _skip: &tensorview<'_, f32>,
+        input: &tensorview<'_, f32>,
+        init: &tensorview<'_, f32>,
+        a: &tensorview<'_, f32>,
+        b: &tensorview<'_, f32>,
+        c: &tensorview<'_, f32>,
+        skip: &tensorview<'_, f32>,
     ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
-        Err(backenderror::unsupportedoperation { op: "scan" })
+        self.checkbudget(input.getshape())?;
+        self.checkbudget(init.getshape())?;
+        self.checkbudget(a.getshape())?;
+        self.checkbudget(b.getshape())?;
+        self.checkbudget(c.getshape())?;
+        self.checkbudget(skip.getshape())?;
+        let (n, d, statewidth) = scanshape(input, init, a, b, c, skip)?;
+        let (out, state) = ffi::scan(
+            &self.cache,
+            input.getdata(),
+            init.getdata(),
+            a.getdata(),
+            b.getdata(),
+            c.getdata(),
+            skip.getdata(),
+            n,
+            d,
+            statewidth,
+        )
+        .map_err(maptobackend)?;
+        let outshape = shape::new(vec![n, d]).map_err(|_| backenderror::sizeoverflow)?;
+        let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
+        Ok((wrap(outshape, out)?, wrap(stateshape, state)?))
     }
 
     fn scan_cached(
@@ -408,6 +439,47 @@ fn concat(a: &tensorview<'_, f32>, b: &tensorview<'_, f32>) -> Result<tensor<f32
     let len = data.len() / width;
     let outshape = shape::new(vec![len, width]).map_err(|_| backenderror::sizeoverflow)?;
     tensor::new(outshape, data).map_err(|_| backenderror::executionfailed)
+}
+
+/// Validates scan ranks, channel alignment, state-width alignment, and the
+/// spectral precondition, returning `(n, d, statewidth)`.
+fn scanshape(
+    input: &tensorview<'_, f32>,
+    init: &tensorview<'_, f32>,
+    a: &tensorview<'_, f32>,
+    b: &tensorview<'_, f32>,
+    c: &tensorview<'_, f32>,
+    skip: &tensorview<'_, f32>,
+) -> Result<(usize, usize, usize), backenderror> {
+    let id = input.getshape().getdims();
+    let initd = init.getshape().getdims();
+    let ad = a.getshape().getdims();
+    let bd = b.getshape().getdims();
+    let cd = c.getshape().getdims();
+    let skipd = skip.getshape().getdims();
+    if id.len() != 2
+        || initd.len() != 2
+        || ad.len() != 2
+        || bd.len() != 2
+        || cd.len() != 2
+        || skipd.len() != 1
+    {
+        return Err(backenderror::shapemismatch { op: "scan" });
+    }
+    let d = id[1];
+    if ad[0] != d || bd[0] != d || cd[0] != d || skipd[0] != d || initd[0] != d {
+        return Err(backenderror::shapemismatch { op: "scan" });
+    }
+    let statewidth = initd[1];
+    if ad[1] != statewidth || bd[1] != statewidth || cd[1] != statewidth {
+        return Err(backenderror::shapemismatch { op: "scan" });
+    }
+    for &value in a.getdata() {
+        if value.abs() > 1.0 || value.is_nan() {
+            return Err(backenderror::invalidparameter { op: "scan" });
+        }
+    }
+    Ok((id[0], d, statewidth))
 }
 
 /// Concatenates two rank-two shapes along their sequence axis.

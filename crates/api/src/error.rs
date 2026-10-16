@@ -26,6 +26,27 @@ pub enum backenderror {
     #[error("size overflow")]
     sizeoverflow,
 
+    /// No device is available for this backend.
+    ///
+    /// Raised when the backend cannot open a usable device (for example, no
+    /// Metal device on the host, or no CUDA-capable GPU), so the caller can
+    /// distinguish "the environment has no GPU" from "the kernel failed".
+    #[error("no device is available for this backend")]
+    devicenotavailable,
+
+    /// Kernel compilation or module loading failed for this backend.
+    ///
+    /// Carries the backend name and the driver-provided diagnostic so a
+    /// compilation failure is reachable and actionable, instead of collapsing
+    /// into the generic [`backenderror::executionfailed`].
+    #[error("kernel compilation failed on {backend}: {message}")]
+    kernelcompilefailed {
+        /// The backend whose kernel failed to compile.
+        backend: &'static str,
+        /// The driver-provided diagnostic.
+        message: String,
+    },
+
     /// Execution failed for a reason owned by the backend.
     #[error("execution failed")]
     executionfailed,
