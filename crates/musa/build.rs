@@ -59,13 +59,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         emit(&[])?;
         return Ok(());
     }
-    // Link the MUSA runtime (`libmusart.so`) for the `unsafe extern "C"`
-    // symbols declared in `ffi.rs`. The runtime directory is fixed at the
-    // toolkit install location; the loader finds it when
+    // Link the MUSA driver (`libmusa.so`) for the `mu*` C symbols declared
+    // in `ffi.rs`. Verified by `nm` on the MTT S4000 host: `muInit`,
+    // `muDeviceGet`, `muModuleLoadData`, `muLaunchKernel` etc. are defined in
+    // `libmusa.so` (driver layer), while `libmusart.so` exports the `musa*`
+    // runtime API. The driver directory is fixed at the toolkit install
+    // location; the loader finds it when
     // `LD_LIBRARY_PATH=/usr/local/musa/lib` (or the same inside the toolkit
     // tree) is exported at run time, documented in docs/musa-backend-plan.md.
     println!("cargo:rustc-link-search=/usr/local/musa-3.1.0/lib");
-    println!("cargo:rustc-link-lib=dylib=musart");
+    println!("cargo:rustc-link-lib=dylib=musa");
 
     let out = PathBuf::from(env::var("OUT_DIR").map_err(|e| err(format!("OUT_DIR: {e}")))?);
     let fatbin = out.join("fatbin");

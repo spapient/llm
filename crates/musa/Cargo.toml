@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "Moore Threads MUSA GPU execution backend for the LLM runtime (Linux only)"
-links = "musart"
+links = "musa"
 
 [lib]
 name = "musa"
