@@ -90,6 +90,13 @@
 - **unsafe 门（E1）。** `bash scripts/checkunsafe.sh` → exit 0，`musa/src/ffi.rs` **2/2 (exact)**、`metal` 3/3、`cuda` 3/3，无未登记站点。
 - **性能基线复验（criterion 0.7.0 中位数，musa 与 cpu 同组同 run 对照）。** matmul 256³：**1.284 ms vs 2.329 ms**（记录 1.26 vs 2.51）；matmulbatch 8×256³：**8.958 ms vs 18.863 ms**（新记录）；silu：**1.328 ms vs 3.481 ms**（记录 1.54 vs 3.46）；softmax 512×4096：**2.128 ms vs 8.916 ms**（记录 2.52 vs 8.89）；attention seq128：**1.573 ms vs 2.489 ms**（记录 1.46 vs 3.33）；仍慢于 CPU 的方向不变：add 1.836 ms vs 497.5 µs、mul 1.805 ms vs 485.5 µs、rmsnorm 2.213 ms vs 1.664 ms、rope 752.5 µs vs 100.7 µs、embedding 3.125 ms vs 19.2 µs、scan 17.210 ms vs 5.210 ms——「每调用 launch + 缓冲分配开销主导」的既有结论复现，方向与量级一致；无性能声称（方向性基线）。
 
+## 本轮重测证据（2026-10-17 CUDA RTX 3090）
+
+环境：AutoDL x86_64 容器（nmb2，NVIDIA GeForce RTX 3090、驱动 5.15.0-136-generic、`rustc 1.99.0`），git HEAD 依次含三阶段优化（cuBLAS 句柄缓存、strided-batched 批处理、自研 NVRTC softmax 路径）与 Linux 无 MUSA 工具链主机的链接门控修复。
+
+- **契约（E1）。** `LLM_CUDA_REQUIRE_DEVICE=1 cargo test -p llm --test it cudacontract -- --nocapture` → **49 passed / 0 failed**（含新增 `nvrtc_softmax_matches_the_scalar_reference_per_row` 与既有 batch/strided 用例），0 条 `E4 未执行`。为达成此次链接，修复两处跨平台缺陷：① `crates/cpu/src/softmax.rs` 的 AVX2 快路径从未在非 aarch64 目标编译（token 绑定为下划线却引用、`_mm256_cmplt_epi32` 无 archmage 安全包装改用 `cmpgt` 交换操作数）；② `musa` 在 Linux 无工具链主机链接失败（空库契约未覆盖 Linux）——新增 `musa_toolkit` cfg（musa build.rs 发射 + 根包 build.rs 对 tests/benches 发射，musacontract/benches/musa 同门控）。
+- **基准（E1，criterion 中位数，cuda 与 cpu 同组同 run）。** matmul 256³：**151.41 µs vs 1.5646 ms**（10.3×）；matmulbatch 8×256³：**2.5913 ms vs 11.992 ms**（4.6×，对照三阶段前按记录固定成本推估约 13 ms——每块 151 µs + 每调用约 1.5 ms 句柄创建 × 8 块）；silu：**1.9335 ms vs 3.7737 ms**；softmax 512×4096：**1.0502 ms vs 5.5266 ms**；rmsnorm 2.1376 ms vs 2.1183 ms（近持平）；add/mul/rope/embedding 仍慢于 CPU（launch 主导，方向与既有记录一致）。无性能声称（方向性基线）。
+
 ## 当前判定
 
 ### architecture.md
