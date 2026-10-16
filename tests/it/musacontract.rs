@@ -757,6 +757,48 @@ fn submission_runs_a_recorded_chain() {
     assertallclose(out[0].getdata(), &want, 1.0e-4, 1.0e-4);
 }
 
+/// A chain mixing the device-resident path (add/silu) and the host-replay
+/// path (embedding) matches the per-step composition, including the mid-chain
+/// drain of a device slot consumed by a host-replay operator.
+#[test]
+fn submission_mixes_device_resident_and_host_replay_steps() {
+    if !hasdevice("submission_mixes_device_resident_and_host_replay_steps") {
+        return;
+    }
+    let exec = musaexecutor::new(wide());
+    let mut sub = exec.newsubmission();
+    // The add/silu chain produces an [8, 2] table for the embedding step.
+    let a = build(
+        vec![8, 2],
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
+    );
+    let b = build(
+        vec![8, 2],
+        vec![0.5, -1.0, 0.25, 1.0, -0.5, 2.0, 1.5, -0.25, 0.75, 0.0, -1.25, 0.5, 2.0, -2.0, 1.0, 1.5],
+    );
+    let r1 = sub
+        .recordadd(operand::input(a.getview()), operand::input(b.getview()))
+        .unwrap();
+    let r2 = sub.recordsilu(operand::result(r1)).unwrap();
+    // `recordembedding` stays on the host-replay path: it drains the silu
+    // slot mid-chain through the single flush.
+    let r3 = sub
+        .recordembedding(operand::result(r2), &[3, 1, 5])
+        .unwrap();
+    let out = sub.apply(&[r3]).unwrap();
+    let sum: Vec<f32> = a
+        .getdata()
+        .iter()
+        .zip(b.getdata().iter())
+        .map(|(&x, &y)| reference::silu(x + y))
+        .collect();
+    let want: Vec<f32> = [3, 1, 5]
+        .iter()
+        .flat_map(|&row| [sum[2 * row], sum[2 * row + 1]])
+        .collect();
+    assertallclose(out[0].getdata(), &want, 1.0e-4, 1.0e-4);
+}
+
 /// The submission rejects scan as unsupported, mirroring the CUDA contract.
 #[test]
 fn submission_rejects_scan_as_unsupported() {

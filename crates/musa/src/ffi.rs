@@ -18,6 +18,7 @@
 //! backend's `dispatch`, keeping the three GPU backends structurally aligned.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::ffi::CString;
 use std::sync::{Mutex, PoisonError};
 
@@ -247,6 +248,11 @@ pub(crate) enum buf<'a> {
     /// upload. The caller owns its lifetime and releases it through
     /// [`freedevice`].
     hostdevice(&'a [f32]),
+    /// Download an existing device allocation into a host vector without
+    /// allocating or launching anything. Used by [`flush`], which runs the
+    /// deferred synchronisation and the downloads inside the one registered
+    /// handoff block.
+    download(mudevptr, usize),
 }
 
 /// The two halves of one driver handoff: downloaded host outputs in buffer
@@ -289,7 +295,17 @@ pub(crate) fn dispatch(
     block: (u32, u32, u32),
     sharedbytes: u32,
 ) -> Result<Vec<Vec<f32>>, musaerror> {
-    Ok(drive(cache, source_id, entry, buffers, scalars, grid, block, sharedbytes)?.host)
+    Ok(drive(
+        cache,
+        Some((source_id, entry)),
+        buffers,
+        scalars,
+        grid,
+        block,
+        sharedbytes,
+        true,
+    )?
+    .host)
 }
 
 /// Runs one kernel through the single driver-handoff block, handing back
@@ -306,7 +322,16 @@ pub(crate) fn dispatchmixed(
     block: (u32, u32, u32),
     sharedbytes: u32,
 ) -> Result<dispatchresult, musaerror> {
-    drive(cache, source_id, entry, buffers, scalars, grid, block, sharedbytes)
+    drive(
+        cache,
+        Some((source_id, entry)),
+        buffers,
+        scalars,
+        grid,
+        block,
+        sharedbytes,
+        true,
+    )
 }
 
 /// Queues a device-resident buffer for release at the next driver handoff.
@@ -320,6 +345,220 @@ pub(crate) fn freedevice(cache: &cache, mem: mudevptr, bytes: usize) {
     }
 }
 
+/// Synchronises once and downloads the given device buffers, all inside the
+/// one registered handoff block.
+///
+/// This is the submission path's `apply`: the per-step records ran with the
+/// synchronisation deferred, and this call drains the whole chain with a
+/// single `muCtxSynchronize` before copying the requested outputs out.
+pub(crate) fn flush(
+    cache: &cache,
+    downloads: &[(mudevptr, usize)],
+) -> Result<Vec<Vec<f32>>, musaerror> {
+    let slots: Vec<buf<'_>> = downloads
+        .iter()
+        .map(|&(ptr, bytes)| buf::download(ptr, bytes))
+        .collect();
+    Ok(drive(cache, None, &slots, &[], (1, 1, 1), (1, 1, 1), 0, true)?.host)
+}
+
+/// A device-resident record chain: every step launches immediately on the
+/// default stream with the synchronisation deferred, and [`session::apply`]
+/// drains the chain with one synchronise plus the requested downloads.
+pub(crate) struct session {
+    cache: Arc<cache>,
+    /// Every device buffer the session owns, in creation order: uploaded
+    /// inputs and recorded outputs alike. `apply` frees them all through
+    /// [`freedevice`], whose queue drains inside the next handoff block.
+    slots: Vec<(mudevptr, usize)>,
+}
+
+impl session {
+    /// Creates an empty record chain over `cache`.
+    #[must_use]
+    pub(crate) fn new(cache: Arc<cache>) -> Self {
+        Self {
+            cache,
+            slots: Vec::new(),
+        }
+    }
+
+    /// Returns the device pointer of `slot`.
+    pub(crate) fn slotptr(&self, slot: usize) -> mudevptr {
+        self.slots[slot].0
+    }
+
+    /// Uploads a host slice once and returns its slot.
+    pub(crate) fn upload(&mut self, data: &[f32]) -> Result<usize, musaerror> {
+        let mut result = drive(
+            &self.cache,
+            None,
+            &[buf::hostdevice(data)],
+            &[],
+            (1, 1, 1),
+            (1, 1, 1),
+            0,
+            false,
+        )?;
+        let (ptr, bytes) = result.device.remove(0);
+        self.slots.push((ptr, bytes));
+        Ok(self.slots.len() - 1)
+    }
+
+    /// Records one kernel step without synchronising and returns the output
+    /// slot. `hostdevice` inputs in `buffers` are uploaded once and kept;
+    /// `device` inputs bind existing slots.
+    pub(crate) fn record(
+        &mut self,
+        source_id: &'static str,
+        entry: &'static str,
+        buffers: &[buf<'_>],
+        scalars: &[scalar],
+        grid: (u32, u32, u32),
+        block: (u32, u32, u32),
+        sharedbytes: u32,
+    ) -> Result<usize, musaerror> {
+        let mut result = drive(
+            &self.cache,
+            Some((source_id, entry)),
+            buffers,
+            scalars,
+            grid,
+            block,
+            sharedbytes,
+            false,
+        )?;
+        for (ptr, bytes) in result.device {
+            self.slots.push((ptr, bytes));
+        }
+        Ok(self.slots.len() - 1)
+    }
+
+    /// Drains one slot to host data mid-chain (an operator still on the
+    /// host-replay path consuming a device-resident result). The slot is
+    /// released immediately and marked empty.
+    pub(crate) fn take(&mut self, slot: usize) -> Result<Vec<f32>, musaerror> {
+        let (ptr, bytes) = self.slots[slot];
+        let mut out = flush(&self.cache, &[(ptr, bytes)])?;
+        freedevice(&self.cache, ptr, bytes);
+        self.slots[slot] = (0, 0);
+        Ok(out.remove(0))
+    }
+
+    /// Synchronises once, downloads the requested slots in order, and releases
+    /// every owned buffer through [`freedevice`].
+    pub(crate) fn apply(&mut self, downloads: &[usize]) -> Result<Vec<Vec<f32>>, musaerror> {
+        let wanted: Vec<(mudevptr, usize)> = downloads
+            .iter()
+            .map(|&index| self.slots[index])
+            .collect();
+        let out = flush(&self.cache, &wanted)?;
+        for (ptr, bytes) in self.slots.drain(..) {
+            freedevice(&self.cache, ptr, bytes);
+        }
+        Ok(out)
+    }
+}
+
+/// Records one elementwise `add` into a device-resident chain.
+pub(crate) fn add_record(
+    session: &mut session,
+    lhs: buf<'_>,
+    rhs: buf<'_>,
+    count: usize,
+) -> Result<usize, musaerror> {
+    let grid = ((count as u32).div_ceil(source::ELEMENTWISETILE), 1, 1);
+    let block = (source::ELEMENTWISETILE, 1, 1);
+    session.record(
+        "elementwise",
+        source::ADDENTRY,
+        &[lhs, rhs, buf::outdevice(count)],
+        &[scalar::u32(count as u32)],
+        grid,
+        block,
+        0,
+    )
+}
+
+/// Records one elementwise `mul` into a device-resident chain.
+pub(crate) fn mul_record(
+    session: &mut session,
+    lhs: buf<'_>,
+    rhs: buf<'_>,
+    count: usize,
+) -> Result<usize, musaerror> {
+    let grid = ((count as u32).div_ceil(source::ELEMENTWISETILE), 1, 1);
+    let block = (source::ELEMENTWISETILE, 1, 1);
+    session.record(
+        "elementwise",
+        source::MULENTRY,
+        &[lhs, rhs, buf::outdevice(count)],
+        &[scalar::u32(count as u32)],
+        grid,
+        block,
+        0,
+    )
+}
+
+/// Records one `silu` into a device-resident chain.
+pub(crate) fn silu_record(session: &mut session, input: buf<'_>, count: usize) -> Result<usize, musaerror> {
+    let grid = ((count as u32).div_ceil(source::ELEMENTWISETILE), 1, 1);
+    let block = (source::ELEMENTWISETILE, 1, 1);
+    session.record(
+        "elementwise",
+        source::SILUENTRY,
+        &[input, buf::outdevice(count)],
+        &[scalar::u32(count as u32)],
+        grid,
+        block,
+        0,
+    )
+}
+
+/// Records one RMS normalization into a device-resident chain.
+pub(crate) fn rmsnorm_record(
+    session: &mut session,
+    input: buf<'_>,
+    weight: buf<'_>,
+    rows: usize,
+    width: usize,
+    eps: f32,
+) -> Result<usize, musaerror> {
+    let count = rows.checked_mul(width).ok_or(musaerror::sizeoverflow)?;
+    let grid = (rows as u32, 1, 1);
+    let block = (source::ROWTILE, 1, 1);
+    session.record(
+        "rmsnorm",
+        source::RMSNORMENTRY,
+        &[input, weight, buf::outdevice(count)],
+        &[scalar::u32(width as u32), scalar::f32(eps)],
+        grid,
+        block,
+        source::ROWTILE as u32 * 4,
+    )
+}
+
+/// Records one softmax over the last axis into a device-resident chain.
+pub(crate) fn softmax_record(
+    session: &mut session,
+    input: buf<'_>,
+    rows: usize,
+    width: usize,
+) -> Result<usize, musaerror> {
+    let count = rows.checked_mul(width).ok_or(musaerror::sizeoverflow)?;
+    let grid = (rows as u32, 1, 1);
+    let block = (source::ELEMENTWISETILE, 1, 1);
+    session.record(
+        "softmax",
+        source::SOFTMAXENTRY,
+        &[input, buf::outdevice(count)],
+        &[scalar::u32(width as u32)],
+        grid,
+        block,
+        source::ELEMENTWISETILE as u32 * 4,
+    )
+}
+
 /// The single registered driver-handoff block behind [`dispatch`] and
 /// [`dispatchdevice`].
 ///
@@ -331,15 +570,16 @@ pub(crate) fn freedevice(cache: &cache, mem: mudevptr, bytes: usize) {
 /// temporary allocations are returned to the pool — all inside the one
 /// `unsafe` block, so the registered handoff count stays exactly one
 /// (docs/musa-backend-plan.md §5.4).
+#[allow(clippy::too_many_arguments)]
 fn drive(
     cache: &cache,
-    source_id: &'static str,
-    entry: &'static str,
+    kernel: Option<(&'static str, &'static str)>,
     buffers: &[buf<'_>],
     scalars: &[scalar],
     grid: (u32, u32, u32),
     block: (u32, u32, u32),
     sharedbytes: u32,
+    sync: bool,
 ) -> Result<dispatchresult, musaerror> {
     // The state lock is held across the whole handoff: the lazy open and
     // function resolution mutate the shared caches, and the default stream
@@ -408,7 +648,8 @@ fn drive(
         }
 
         // --- lazy module load and kernel resolution ------------------------
-        if !state.functions.contains_key(&(source_id, entry)) {
+        if let Some((source_id, entry)) = kernel {
+            if !state.functions.contains_key(&(source_id, entry)) {
             let fatbin = KERNELS
                 .iter()
                 .find(|(id, _)| *id == source_id)
@@ -443,16 +684,21 @@ fn drive(
                     message: format!("muModuleGetFunction failed for `{entry}`"),
                 });
             }
-            state.functions.insert((source_id, entry), function);
+                state.functions.insert((source_id, entry), function);
+            }
         }
-        let function =
-            *state
-                .functions
-                .get(&(source_id, entry))
-                .ok_or_else(|| musaerror::module {
-                    kernel: entry.to_string(),
-                    message: "kernel not resolved".into(),
-                })?;
+        let function = match kernel {
+            Some((source_id, entry)) => Some(
+                *state
+                    .functions
+                    .get(&(source_id, entry))
+                    .ok_or_else(|| musaerror::module {
+                        kernel: entry.to_string(),
+                        message: "kernel not resolved".into(),
+                    })?,
+            ),
+            None => None,
+        };
 
         // --- allocate and upload ------------------------------------------
         // Byte sizes first (all checked), then allocate, then copy, so a
@@ -497,6 +743,11 @@ fn drive(
                     keep.push(true);
                     owned.push(mem);
                 }
+                buf::download(mem, bytes) => {
+                    sizes.push(bytes);
+                    keep.push(true);
+                    owned.push(mem);
+                }
             }
         }
         for (index, &size) in sizes.iter().enumerate() {
@@ -536,7 +787,7 @@ fn drive(
                         });
                     }
                 }
-                buf::out(_) | buf::outdevice(_) | buf::device(_) => {}
+                buf::out(_) | buf::outdevice(_) | buf::device(_) | buf::download(_, _) => {}
             }
         }
         // Buffer pointers: every bound operand is backed by an owned
@@ -555,25 +806,27 @@ fn drive(
                 scalar::f32(number) => rawargs.push(number as *mut f32 as *mut _),
             }
         }
-        if muLaunchKernel(
-            function,
-            grid.0,
-            grid.1,
-            grid.2,
-            block.0,
-            block.1,
-            block.2,
-            sharedbytes,
-            MUNULLSTREAM,
-            rawargs.as_mut_ptr(),
-            core::ptr::null_mut(),
-        ) != MUSA_SUCCESS
-        {
-            return Err(musaerror::launch {
-                message: format!("muLaunchKernel failed for `{entry}`"),
-            });
+        if let Some(function) = function {
+            if muLaunchKernel(
+                function,
+                grid.0,
+                grid.1,
+                grid.2,
+                block.0,
+                block.1,
+                block.2,
+                sharedbytes,
+                MUNULLSTREAM,
+                rawargs.as_mut_ptr(),
+                core::ptr::null_mut(),
+            ) != MUSA_SUCCESS
+            {
+                return Err(musaerror::launch {
+                    message: "muLaunchKernel failed".into(),
+                });
+            }
         }
-        if muCtxSynchronize(context) != MUSA_SUCCESS {
+        if sync && muCtxSynchronize(context) != MUSA_SUCCESS {
             return Err(musaerror::launch {
                 message: "muCtxSynchronize failed".into(),
             });
@@ -598,8 +851,21 @@ fn drive(
                     }
                     host.push(out);
                 }
-                buf::device(_) | buf::outdevice(_) | buf::hostdevice(_) => {
+                buf::outdevice(_) | buf::hostdevice(_) => {
                     device.push((owned[index], sizes[index]));
+                }
+                buf::device(_) => {}
+                buf::download(ptr, bytes) => {
+                    let mut out = Vec::new();
+                    out.try_reserve_exact(bytes / core::mem::size_of::<f32>())
+                        .map_err(|_| musaerror::sizeoverflow)?;
+                    out.resize(bytes / core::mem::size_of::<f32>(), 0.0_f32);
+                    if muMemcpyDtoH_v2(out.as_mut_ptr().cast(), ptr, bytes) != MUSA_SUCCESS {
+                        return Err(musaerror::transfer {
+                            message: "muMemcpyDtoH failed for flush download".into(),
+                        });
+                    }
+                    host.push(out);
                 }
                 buf::host(_) | buf::hostu64(_) => {}
             }
@@ -1099,8 +1365,9 @@ pub(crate) fn scan_parallel(
         0,
     )?;
     let state = prefix.host.remove(0);
-    // Device slots in buffer order: dtotal (bound again), dinit, dprefix.
-    let dprefix = prefix.device[2];
+    // Only producer-side slots are collected; the bound pass-throughs
+    // (`device`) are not, so the single collected entry is `dprefix`.
+    let dprefix = prefix.device[0];
     freedevice(cache, dtotal.0, dtotal.1);
 
     // Pass 3: per-block apply; only the output is downloaded.

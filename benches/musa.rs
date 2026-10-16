@@ -20,8 +20,8 @@
 mod linux {
     use std::hint::black_box;
 
-    use ::tensor::tensor;
-    use api::compute;
+    use ::tensor::{shape, tensor};
+    use api::{compute, operand, submission};
     use bench::{
         ELEMENTWISE, EMBEDDIM, GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN,
         SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput,
@@ -244,6 +244,51 @@ mod linux {
         group.finish();
     }
 
+    /// A 32-step elementwise chain recorded through the accumulative
+    /// submission (one synchronise at `apply`) against the same chain run as
+    /// 32 separate compute calls (one synchronise each), on both backends.
+    fn submissionchain(criterion: &mut Criterion) {
+        let steps = 32usize;
+        let elements = 64 * 64;
+        let (x, y) = (tensor::new(shape(vec![64, 64]), vec![0.5_f32; elements]).unwrap(), tensor::new(shape(vec![64, 64]), vec![0.25_f32; elements]).unwrap());
+        let (xv, yv) = (x.getview(), y.getview());
+        let cpuexec = cpuexecutor::new(LIMIT);
+        let musaexec = musaexecutor::new(LIMIT);
+        let mut group = criterion.benchmark_group("musa/submissionchain");
+        group.throughput(Throughput::Elements((elements * steps) as u64));
+        group.bench_function("cpucompute32", |b| {
+            b.iter(|| {
+                let mut acc = x.clone();
+                for _ in 0..steps {
+                    acc = cpuexec.add(&acc.getview(), &yv).unwrap();
+                }
+                black_box(acc)
+            })
+        });
+        group.bench_function("musacompute32", |b| {
+            b.iter(|| {
+                let mut acc = x.clone();
+                for _ in 0..steps {
+                    acc = musaexec.add(&acc.getview(), &yv).unwrap();
+                }
+                black_box(acc)
+            })
+        });
+        group.bench_function("musasubmission32", |b| {
+            b.iter(|| {
+                let mut sub = musaexec.newsubmission();
+                let mut current = operand::input(xv.clone());
+                let mut last = None;
+                for _ in 0..steps {
+                    last = Some(sub.recordadd(current, operand::input(yv.clone())).unwrap());
+                    current = operand::result(last.unwrap());
+                }
+                black_box(sub.apply(&[last.unwrap()]).unwrap())
+            })
+        });
+        group.finish();
+    }
+
     criterion_group!(
         benches,
         matmul,
@@ -254,7 +299,8 @@ mod linux {
         rope,
         embedding,
         attention,
-        scan
+        scan,
+        submissionchain
     );
 }
 

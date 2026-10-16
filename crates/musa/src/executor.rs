@@ -13,7 +13,7 @@ use api::geometry::{
 
 use crate::backend::{MUSAMAXHEADDIM, musabackend};
 use crate::error::musaerror;
-use crate::ffi;
+use crate::ffi::{self, buf};
 
 /// A MUSA executor: the crate's [`compute`](api::compute) provider.
 ///
@@ -534,16 +534,31 @@ impl musaexecutor {
 pub struct musasubmission {
     backend: musabackend,
     cache: Arc<ffi::cache>,
-    results: Vec<(Vec<f32>, shape)>,
+    session: ffi::session,
+    results: Vec<(resultdata, shape)>,
+    /// Uploaded caller inputs keyed by `(data pointer, length)`, so an input
+    /// operand referenced by several steps is uploaded exactly once per
+    /// submission.
+    inputs: std::collections::HashMap<(usize, usize), usize>,
+}
+
+/// A recorded result: either a device slot drained by [`session::apply`]
+/// (the device-resident path) or host data (the operators not yet converted).
+enum resultdata {
+    slot(usize),
+    host(Vec<f32>),
 }
 
 impl musasubmission {
     /// Creates a submission over `backend` using `cache`.
     pub(crate) fn new(backend: musabackend, cache: Arc<ffi::cache>) -> Self {
+        let session = ffi::session::new(cache.clone());
         Self {
             backend,
             cache,
+            session,
             results: Vec::new(),
+            inputs: std::collections::HashMap::new(),
         }
     }
 
@@ -581,26 +596,83 @@ impl musasubmission {
         }
     }
 
-    /// Resolves an operand to host data: copying caller inputs and reusing
-    /// recorded results.
-    fn resolve(&self, op: operand<'_>) -> Result<Vec<f32>, backenderror> {
+    /// Resolves an operand to a device slot for the device-resident path, or
+    /// returns `None` when the operand is host data (an operator not yet
+    /// converted): caller inputs are uploaded once per identity, recorded
+    /// results already live in slots.
+    fn resolveslot(&mut self, op: operand<'_>) -> Result<Option<usize>, backenderror> {
         match op {
-            operand::input(view) => Ok(view.getdata().to_vec()),
+            operand::input(view) => {
+                let data = view.getdata();
+                let key = (data.as_ptr() as usize, data.len());
+                if let Some(&slot) = self.inputs.get(&key) {
+                    return Ok(Some(slot));
+                }
+                let slot = self.session.upload(data).map_err(maptobackend)?;
+                self.inputs.insert(key, slot);
+                Ok(Some(slot))
+            }
             operand::result(reference) => {
                 let index = reference.getindex();
-                self.results.get(index).map(|(data, _)| data.clone()).ok_or(
-                    backenderror::indexoutofrange {
+                match self.results.get(index) {
+                    Some((resultdata::slot(slot), _)) => Ok(Some(*slot)),
+                    Some((resultdata::host(_), _)) => Ok(None),
+                    None => Err(backenderror::indexoutofrange {
                         index,
                         len: self.results.len(),
-                    },
-                )
+                    }),
+                }
             }
         }
     }
 
+    /// Resolves an operand to host data, for the operators still on the
+    /// host-replay path. A device-resident result is drained mid-chain with a
+    /// single synchronise, which is correct but reintroduces one sync.
+    fn resolve(&mut self, op: operand<'_>) -> Result<Vec<f32>, backenderror> {
+        match op {
+            operand::input(view) => Ok(view.getdata().to_vec()),
+            operand::result(reference) => {
+                let index = reference.getindex();
+                match self.results.get(index) {
+                    Some((resultdata::host(data), _)) => Ok(data.clone()),
+                    Some((resultdata::slot(slot), _)) => {
+                        let slot = *slot;
+                        self.session.take(slot).map_err(maptobackend)
+                    }
+                    None => Err(backenderror::indexoutofrange {
+                        index,
+                        len: self.results.len(),
+                    }),
+                }
+            }
+        }
+    }
+
+    /// Binds one operand for a device-resident record: a recorded slot binds
+    /// directly, host data is uploaded once into a new slot, and a fresh
+    /// caller input is uploaded once per identity.
+    /// The returned bind never borrows host data: every operand is resolved
+    /// to a device slot (uploaded on first use), so the `'static` lifetime
+    /// parameter is a formality — `buf::device` carries a pointer only.
+    fn operandsbuf(&mut self, op: operand<'_>) -> Result<buf<'static>, backenderror> {
+        if let Some(slot) = self.resolveslot(op)? {
+            return Ok(buf::device(self.session.slotptr(slot)));
+        }
+        let data = self.resolve(op)?;
+        let slot = self.session.upload(&data).map_err(maptobackend)?;
+        Ok(buf::device(self.session.slotptr(slot)))
+    }
+
+    fn pushslot(&mut self, slot: usize, outshape: shape) -> stepref {
+        let index = self.results.len();
+        self.results.push((resultdata::slot(slot), outshape));
+        stepref::fromindex(index)
+    }
+
     fn push(&mut self, data: Vec<f32>, outshape: shape) -> stepref {
         let index = self.results.len();
-        self.results.push((data, outshape));
+        self.results.push((resultdata::host(data), outshape));
         stepref::fromindex(index)
     }
 }
@@ -642,10 +714,11 @@ impl submission for musasubmission {
         self.checkbudget(&lhsshape)?;
         self.checkbudget(&rhsshape)?;
         let outshape = binaryshape(&lhsshape, &rhsshape, ADDOP)?;
-        let lhs = self.resolve(lhs)?;
-        let rhs = self.resolve(rhs)?;
-        let data = ffi::add(&self.cache, &lhs, &rhs).map_err(maptobackend)?;
-        Ok(self.push(data, outshape))
+        let count = lhsshape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let lbuf = self.operandsbuf(lhs)?;
+        let rbuf = self.operandsbuf(rhs)?;
+        let slot = ffi::add_record(&mut self.session, lbuf, rbuf, count).map_err(maptobackend)?;
+        Ok(self.pushslot(slot, outshape))
     }
 
     fn recordmul(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
@@ -654,10 +727,11 @@ impl submission for musasubmission {
         self.checkbudget(&lhsshape)?;
         self.checkbudget(&rhsshape)?;
         let outshape = binaryshape(&lhsshape, &rhsshape, MULOP)?;
-        let lhs = self.resolve(lhs)?;
-        let rhs = self.resolve(rhs)?;
-        let data = ffi::mul(&self.cache, &lhs, &rhs).map_err(maptobackend)?;
-        Ok(self.push(data, outshape))
+        let count = lhsshape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let lbuf = self.operandsbuf(lhs)?;
+        let rbuf = self.operandsbuf(rhs)?;
+        let slot = ffi::mul_record(&mut self.session, lbuf, rbuf, count).map_err(maptobackend)?;
+        Ok(self.pushslot(slot, outshape))
     }
 
     fn recordrmsnorm(
@@ -671,36 +745,30 @@ impl submission for musasubmission {
         self.checkbudget(&inshape)?;
         self.checkbudget(&weightshape)?;
         let geometry = axisshape::rmsnorm(&inshape, &weightshape)?;
-        let input = self.resolve(input)?;
-        let weight = self.resolve(weight)?;
-        let data = ffi::rmsnorm(
-            &self.cache,
-            &input,
-            &weight,
-            geometry.rows,
-            geometry.width,
-            eps,
-        )
-        .map_err(maptobackend)?;
-        Ok(self.push(data, inshape))
+        let ibuf = self.operandsbuf(input)?;
+        let wbuf = self.operandsbuf(weight)?;
+        let slot = ffi::rmsnorm_record(&mut self.session, ibuf, wbuf, geometry.rows, geometry.width, eps)
+            .map_err(maptobackend)?;
+        Ok(self.pushslot(slot, inshape))
     }
 
     fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
         let inshape = self.shapeof(input)?;
         self.checkbudget(&inshape)?;
         let geometry = axisshape::softmax(&inshape)?;
-        let input = self.resolve(input)?;
-        let data = ffi::softmax(&self.cache, &input, geometry.rows, geometry.width)
+        let ibuf = self.operandsbuf(input)?;
+        let slot = ffi::softmax_record(&mut self.session, ibuf, geometry.rows, geometry.width)
             .map_err(maptobackend)?;
-        Ok(self.push(data, inshape))
+        Ok(self.pushslot(slot, inshape))
     }
 
     fn recordsilu(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
         let inshape = self.shapeof(input)?;
         self.checkbudget(&inshape)?;
-        let input = self.resolve(input)?;
-        let data = ffi::silu(&self.cache, &input).map_err(maptobackend)?;
-        Ok(self.push(data, inshape))
+        let count = inshape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let ibuf = self.operandsbuf(input)?;
+        let slot = ffi::silu_record(&mut self.session, ibuf, count).map_err(maptobackend)?;
+        Ok(self.pushslot(slot, inshape))
     }
 
     fn recordembedding(
@@ -886,17 +954,44 @@ impl submission for musasubmission {
         Err(backenderror::unsupportedoperation { op: "scan_cached" })
     }
 
-    fn apply(self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
-        let results = self.results;
+    fn apply(mut self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
+        // Download every requested device slot in one synchronise, then
+        // rebuild the outputs in request order.
+        let mut slotindices: Vec<usize> = Vec::new();
+        for reference in outputs {
+            let index = reference.getindex();
+            match self.results.get(index) {
+                Some((resultdata::slot(slot), _)) => slotindices.push(*slot),
+                Some((resultdata::host(_), _)) => {}
+                None => {
+                    return Err(backenderror::indexoutofrange {
+                        index,
+                        len: self.results.len(),
+                    });
+                }
+            }
+        }
+        let downloaded = self.session.apply(&slotindices).map_err(maptobackend)?;
+        let mut cursor = 0;
         outputs
             .iter()
             .map(|reference| {
                 let index = reference.getindex();
-                let (data, outshape) = results.get(index).ok_or(backenderror::indexoutofrange {
-                    index,
-                    len: results.len(),
-                })?;
-                wrap(outshape.clone(), data.clone())
+                let (data, outshape) = self.results.get(index).ok_or(
+                    backenderror::indexoutofrange {
+                        index,
+                        len: self.results.len(),
+                    },
+                )?;
+                let data = match data {
+                    resultdata::host(data) => data.clone(),
+                    resultdata::slot(_) => {
+                        let data = downloaded[cursor].clone();
+                        cursor += 1;
+                        data
+                    }
+                };
+                wrap(outshape.clone(), data)
             })
             .collect()
     }
