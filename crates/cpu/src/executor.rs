@@ -73,18 +73,53 @@ impl cpuop {
 /// executor is also the crate's [`compute`](api::compute) provider, so the
 /// differentiation and neural-network layers reach the CPU through the `api`
 /// contract rather than a direct dependency on this crate.
+///
+/// The executor additionally carries a worker budget for the kernels that
+/// parallelise internally (`matmul`, `attention`). One worker means the
+/// kernels run their serial paths; higher counts split the work over scoped
+/// threads whose per-element arithmetic sequence is identical to the serial
+/// one, so results are bit-for-bit independent of the worker count.
 #[derive(Clone, Debug)]
 pub struct cpuexecutor {
     backend: cpubackend,
+    maxworkers: usize,
 }
 
 impl cpuexecutor {
-    /// Creates an executor over a CPU backend configured with `lim`.
+    /// Creates an executor over a CPU backend configured with `lim`, running
+    /// every kernel serially.
     #[must_use]
     pub fn new(lim: limits) -> Self {
         Self {
             backend: cpubackend::new(lim),
+            maxworkers: 1,
         }
+    }
+
+    /// Creates an executor over a CPU backend configured with `lim` whose
+    /// parallel kernels may use up to `maxworkers` threads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`cpuerror::backend`] with [`backenderror::invalidparameter`]
+    /// when `maxworkers` is zero: an executor that can run no parallel work is
+    /// a wiring error, not a resource limit.
+    pub fn newwithworkers(lim: limits, maxworkers: usize) -> Result<Self, cpuerror> {
+        if maxworkers == 0 {
+            return Err(cpuerror::backend(backenderror::invalidparameter {
+                op: "executor",
+            }));
+        }
+        Ok(Self {
+            backend: cpubackend::new(lim),
+            maxworkers,
+        })
+    }
+
+    /// Returns the worker budget the parallel kernels may use.
+    #[must_use]
+    pub const fn getmaxworkers(&self) -> usize {
+        self.maxworkers
     }
 
     /// Returns the backend whose budget this executor enforces.
@@ -137,7 +172,7 @@ impl cpuexecutor {
                 // output vector exists.
                 let plan = matmulplan(lhs, rhs)?;
                 self.checkbudget(&plan.outshape()?)?;
-                Ok(cpumatmul.applyplan(plan, lhs, rhs)?)
+                Ok(cpumatmul.applyplanwith(plan, lhs, rhs, self.maxworkers)?)
             }
             cpuop::add => {
                 self.checkbudget(rhs.getshape())?;
@@ -171,7 +206,7 @@ impl cpuexecutor {
         match op {
             cpuop::rmsnorm => {
                 self.checkbudget(weight.getshape())?;
-                Ok(cpurmsnorm::default().apply(input, weight)?)
+                Ok(cpurmsnorm::default().applywith(input, weight, self.maxworkers)?)
             }
             other => Err(cpuerror::backend(backenderror::unsupportedoperation {
                 op: other.getname(),
@@ -350,7 +385,7 @@ impl compute for cpuexecutor {
         self.checkbudget(query.getshape()).map_err(maptobackend)?;
         self.checkbudget(key.getshape()).map_err(maptobackend)?;
         self.checkbudget(value.getshape()).map_err(maptobackend)?;
-        cpuattention.apply(query, key, value, heads, kvheads, causal)
+        cpuattention.applywith(query, key, value, heads, kvheads, causal, self.maxworkers)
     }
 
     fn attention_cached(

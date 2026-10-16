@@ -64,7 +64,12 @@ pub(crate) fn run(args: &generateargs) -> Result<commandoutput, clierror> {
         requestid::new(1),
         executionconfig::new(DEFAULTMEMORYBYTES, DEFAULTMAXWORKERS, maxsteps)?,
     );
-    let executor = cpuexecutor::new(DEFAULTLIMITS);
+    let executor =
+        cpuexecutor::newwithworkers(DEFAULTLIMITS, DEFAULTMAXWORKERS).map_err(|source| {
+            clierror::invalidarguments {
+                detail: source.to_string(),
+            }
+        })?;
     let engine = generationengine::new(&model, &executor);
     let mut sink = collectingsink::new();
     let result = engine.generate(&exec, &mut request, &mut sink)?;

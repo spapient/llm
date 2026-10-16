@@ -58,6 +58,20 @@ impl weightedkernel<f32> for cpurmsnorm {
         input: &tensorview<'_, f32>,
         weight: &tensorview<'_, f32>,
     ) -> Result<tensor<f32>, backenderror> {
+        self.applywith(input, weight, 1)
+    }
+}
+
+impl cpurmsnorm {
+    /// Applies the kernel, splitting the rows over up to `workers` scoped
+    /// threads. Every row's arithmetic is identical to the serial kernel, so
+    /// the result is bit-for-bit independent of `workers`.
+    pub(crate) fn applywith(
+        &self,
+        input: &tensorview<'_, f32>,
+        weight: &tensorview<'_, f32>,
+        workers: usize,
+    ) -> Result<tensor<f32>, backenderror> {
         let Some(&width) = input.getshape().getdims().last() else {
             return Err(backenderror::unsupportedoperation { op: RMSNORMOP });
         };
@@ -71,7 +85,16 @@ impl weightedkernel<f32> for cpurmsnorm {
         let w = weight.getdata();
         let mut data = vec![0.0_f32; src.len()];
         let level = Level::new();
-        dispatch!(level, simd => rmsnormrows(simd, src, &mut data, w, self.eps, width));
+        let result = dispatch!(level, simd => rmsnormrowsparallel(
+            simd,
+            src,
+            &mut data,
+            w,
+            self.eps,
+            width,
+            workers,
+        ));
+        result?;
         finish(input.getshape(), data)
     }
 }
@@ -90,6 +113,73 @@ fn rmsnormrows<S: Simd>(
     for (row, out) in src.chunks(width).zip(data.chunks_mut(width)) {
         rmsnormrow(simd, row, out, weight, eps);
     }
+}
+
+/// Splits the rows over scoped threads when there are at least two of them.
+///
+/// Each thread claims row indices from an atomic counter and writes the row
+/// directly through a mutex-guarded output slice, so no merge copy is added
+/// to a bandwidth-bound operation. The per-row arithmetic is identical to
+/// [`rmsnormrows`].
+#[allow(clippy::too_many_arguments)]
+fn rmsnormrowsparallel<S: Simd>(
+    simd: S,
+    src: &[f32],
+    data: &mut [f32],
+    weight: &[f32],
+    eps: f32,
+    width: usize,
+    workers: usize,
+) -> Result<(), backenderror> {
+    let rows = src.len() / width;
+    if workers <= 1 || rows <= 1 {
+        rmsnormrows(simd, src, data, weight, eps, width);
+        return Ok(());
+    }
+    // The row pool and the claim counter live outside the scope so the
+    // closures can borrow them for the whole scoped lifetime.
+    let pool: Vec<std::sync::Mutex<&mut [f32]>> =
+        data.chunks_mut(width).map(std::sync::Mutex::new).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let pool = &pool;
+    let next = &next;
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            handles.push(scope.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= rows {
+                        break;
+                    }
+                    let Ok(mut outrow) = pool[i].lock() else {
+                        return false;
+                    };
+                    rmsnormrow(
+                        simd,
+                        &src[i * width..(i + 1) * width],
+                        &mut outrow,
+                        weight,
+                        eps,
+                    );
+                }
+                true
+            }));
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(true) => {}
+                Ok(false) | Err(_) => {
+                    return Err(backenderror::executionfailed {
+                        backend: "cpu",
+                        kernel: RMSNORMOP.into(),
+                        message: "an rmsnorm worker thread panicked".into(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 /// RMS-normalizes one `row` with a vectorized square-sum and a vectorized

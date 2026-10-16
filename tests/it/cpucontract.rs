@@ -220,6 +220,63 @@ fn matmul_blocked_path_handles_a_leading_batch_dimension() {
     assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
 }
 
+/// The blocked packed path is bit-for-bit identical across worker counts:
+/// every output element's fused accumulation sequence does not depend on the
+/// thread layout.
+#[test]
+fn matmul_threaded_matches_the_single_threaded_result() {
+    let (m, k, n) = (200usize, 600usize, 300usize);
+    let a = build(
+        vec![m, k],
+        (0..m * k).map(|i| (i as f32 * 0.17).sin()).collect(),
+    );
+    let b = build(
+        vec![k, n],
+        (0..k * n).map(|i| (i as f32 * 0.21).cos()).collect(),
+    );
+    let serial = cpuexecutor::new(wide());
+    let wanted = serial
+        .applybinary(cpuop::matmul, &a.getview(), &b.getview())
+        .unwrap();
+    for workers in [2usize, 4, 8] {
+        let exec = cpuexecutor::newwithworkers(wide(), workers).unwrap();
+        let got = exec
+            .applybinary(cpuop::matmul, &a.getview(), &b.getview())
+            .unwrap();
+        assert_eq!(got.getdata(), wanted.getdata());
+    }
+}
+
+/// The executor rejects a zero worker budget instead of silently serialising.
+#[test]
+fn executor_rejects_zero_workers() {
+    assert!(cpuexecutor::newwithworkers(wide(), 0).is_err());
+}
+
+/// The rmsnorm kernel is bit-for-bit identical across worker counts: every
+/// row's arithmetic sequence does not depend on the thread layout.
+#[test]
+fn rmsnorm_threaded_matches_the_single_threaded_result() {
+    let rows = 40usize;
+    let width = 600usize;
+    let x = build(
+        vec![rows, width],
+        (0..rows * width).map(|i| (i as f32 * 0.27).sin()).collect(),
+    );
+    let w = build(vec![width], vec![1.0_f32; width]);
+    let serial = cpuexecutor::new(wide());
+    let wanted = serial
+        .applyweighted(cpuop::rmsnorm, &x.getview(), &w.getview())
+        .unwrap();
+    for workers in [2usize, 4, 8] {
+        let exec = cpuexecutor::newwithworkers(wide(), workers).unwrap();
+        let got = exec
+            .applyweighted(cpuop::rmsnorm, &x.getview(), &w.getview())
+            .unwrap();
+        assert_eq!(got.getdata(), wanted.getdata());
+    }
+}
+
 #[test]
 fn weighted_kernel_matches_the_scalar_reference() {
     let x = build(vec![2, 2], vec![3.0, 4.0, 0.0, 5.0]);
@@ -494,6 +551,59 @@ fn attention_blocked_is_deterministic() {
         )
         .unwrap();
     assert_eq!(first.getdata(), second.getdata());
+}
+
+/// The blocked kernel is bit-for-bit identical across worker counts: every
+/// row's arithmetic sequence does not depend on the thread layout.
+#[test]
+fn attention_threaded_matches_the_single_threaded_result() {
+    let heads = 4usize;
+    let kvheads = 2usize;
+    let headdim = 6usize;
+    let seq = 600usize;
+    let q = build(
+        vec![seq, heads * headdim],
+        (0..seq * heads * headdim)
+            .map(|i| (i as f32 * 0.13).sin())
+            .collect(),
+    );
+    let k = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.17).cos())
+            .collect(),
+    );
+    let v = build(
+        vec![seq, kvheads * headdim],
+        (0..seq * kvheads * headdim)
+            .map(|i| (i as f32 * 0.19).sin())
+            .collect(),
+    );
+    let serial = cpuexecutor::new(wide());
+    let wanted = serial
+        .attention(
+            &q.getview(),
+            &k.getview(),
+            &v.getview(),
+            heads,
+            kvheads,
+            true,
+        )
+        .unwrap();
+    for workers in [2usize, 4, 8] {
+        let exec = cpuexecutor::newwithworkers(wide(), workers).unwrap();
+        let got = exec
+            .attention(
+                &q.getview(),
+                &k.getview(),
+                &v.getview(),
+                heads,
+                kvheads,
+                true,
+            )
+            .unwrap();
+        assert_eq!(got.getdata(), wanted.getdata());
+    }
 }
 
 #[test]

@@ -17,8 +17,8 @@ use api::compute;
 use bench::{
     ATTNDECODEKV, ATTNPREFILLLONG, ATTNPREFILLSEQ, ELEMENTWISE, HEADDIM, HEADS, MATMULDECODEM,
     MATMULDECODEN, MATMULPREFILL, SOFTMAXCOLS, SOFTMAXROWS, attentioninput, attentionseqinput,
-    cpuexec, elementwiseinput, embeddinginput, matmuldecodeinput, matmulinput, matmulprefillinput,
-    norminput, ropeinput, scaninput, softmaxinput,
+    cpuexec, cpuexecw, elementwiseinput, embeddinginput, matmuldecodeinput, matmulinput,
+    matmulprefillinput, norminput, ropeinput, scaninput, softmaxinput,
 };
 use cpu::{cpuop, cpuscan};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -90,6 +90,18 @@ fn weighted(c: &mut Criterion) {
             )
         });
     });
+    for workers in [4usize, 8] {
+        let execw = cpuexecw(workers).unwrap();
+        group.bench_function(format!("rmsnormw{workers}"), |b| {
+            b.iter(|| {
+                black_box(
+                    execw
+                        .applyweighted(cpuop::rmsnorm, black_box(&xv), black_box(&wv))
+                        .unwrap(),
+                )
+            });
+        });
+    }
     group.finish();
 }
 
@@ -226,6 +238,23 @@ fn matmulscales(c: &mut Criterion) {
             )
         });
     });
+
+    let (a, b) = matmulprefillinput().unwrap();
+    let (av, bv) = (a.getview(), b.getview());
+    group.throughput(Throughput::Elements((MATMULPREFILL * MATMULPREFILL) as u64));
+    group.sample_size(10);
+    for workers in [4usize, 8] {
+        let execw = cpuexecw(workers).unwrap();
+        group.bench_function(format!("prefill2048w{workers}"), |bench| {
+            bench.iter(|| {
+                black_box(
+                    execw
+                        .applybinary(cpuop::matmul, black_box(&av), black_box(&bv))
+                        .unwrap(),
+                )
+            });
+        });
+    }
     group.finish();
 }
 
@@ -259,6 +288,28 @@ fn attentionscales(c: &mut Criterion) {
                 )
             });
         });
+        for workers in [4usize, 8] {
+            if qseq == 1 {
+                break;
+            }
+            let execw = cpuexecw(workers).unwrap();
+            group.bench_function(format!("causalw{workers}"), |bench| {
+                bench.iter(|| {
+                    black_box(
+                        compute::attention(
+                            &execw,
+                            black_box(&qv),
+                            black_box(&kv),
+                            black_box(&vv),
+                            HEADS,
+                            HEADS,
+                            true,
+                        )
+                        .unwrap(),
+                    )
+                });
+            });
+        }
         group.finish();
     }
 }

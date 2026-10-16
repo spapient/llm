@@ -43,6 +43,16 @@ pub fn cpuexec() -> cpuexecutor {
     cpuexecutor::new(OPLIMITS)
 }
 
+/// Builds a CPU executor with the benchmark resource budget and a worker
+/// budget of `workers` for the internally parallel kernels.
+///
+/// # Errors
+///
+/// Returns the executor's rejection when `workers` is zero.
+pub fn cpuexecw(workers: usize) -> Result<cpuexecutor, cpu::cpuerror> {
+    cpuexecutor::newwithworkers(OPLIMITS, workers)
+}
+
 /// Builds the fixed elementwise input of [`ELEMENTWISE`] `f32` values.
 ///
 /// # Errors
