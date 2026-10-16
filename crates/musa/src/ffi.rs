@@ -997,7 +997,13 @@ pub(crate) fn scan(
     d: usize,
     statewidth: usize,
 ) -> Result<(Vec<f32>, Vec<f32>), musaerror> {
-    if statewidth > source::SCANMAXN as usize {
+    // A single chunk (`n <= SCANCHUNK`) degenerates the three-pass parallel
+    // scan to one block: pass 1 aggregates the whole sequence, pass 2 is a
+    // trivial identity prefix, and pass 3 recomputes it — three dispatches for
+    // no parallelism over the serial kernel, which already runs one thread per
+    // channel. Route the single-chunk case to the serial reference, which is
+    // the bit-for-bit continuation of the same recurrence.
+    if statewidth > source::SCANMAXN as usize || n <= source::SCANCHUNK as usize {
         return scan_serial(cache, input, init, a, b, c, skip, n, d, statewidth);
     }
     scan_parallel(cache, input, init, a, b, c, skip, n, d, statewidth)
