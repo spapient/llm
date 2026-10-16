@@ -62,18 +62,48 @@ impl delta {
         let newblocks = chunk(new.getdata());
         let basehashes: HashSet<[u8; 16]> =
             chunk(base.getdata()).iter().map(|b| b.gethash()).collect();
-        let mut stored = Vec::new();
-        let mut offset = 0usize;
+
+        // Each block's dedup decision and byte copy are independent, so spread
+        // them over available cores into disjoint slots of `stored`.
+        let nthreads = match std::thread::available_parallelism() {
+            Ok(n) => n.get().min(newblocks.len()),
+            Err(_) => 1,
+        };
+        let mut cumoffsets = Vec::with_capacity(newblocks.len() + 1);
+        let mut acc = 0usize;
+        cumoffsets.push(acc);
         for block in &newblocks {
-            let len = block.getlen() as usize;
-            if !basehashes.contains(&block.gethash()) {
-                stored.push(storedblock {
-                    hash: block.gethash(),
-                    bytes: new.getdata()[offset..offset + len].to_vec(),
-                });
-            }
-            offset += len;
+            acc += block.getlen() as usize;
+            cumoffsets.push(acc);
         }
+        let mut spans = Vec::with_capacity(nthreads);
+        let mut start = 0usize;
+        for t in 0..nthreads {
+            let len = newblocks.len() / nthreads + usize::from(t < newblocks.len() % nthreads);
+            let end = start + len;
+            spans.push(start..end);
+            start = end;
+        }
+        let mut stored: Vec<Option<storedblock>> = vec![None; newblocks.len()];
+        let newblocksref: &[blockref] = &newblocks;
+        let basehashesref: &HashSet<[u8; 16]> = &basehashes;
+        let dataref: &[u8] = new.getdata();
+        let cumoffsetsref: &[usize] = &cumoffsets;
+        std::thread::scope(|scope| {
+            let mut cursor: &mut [Option<storedblock>] = &mut stored;
+            let mut handles = Vec::with_capacity(nthreads);
+            for span in &spans {
+                let (head, tail) = cursor.split_at_mut(span.len());
+                cursor = tail;
+                handles.push(scope.spawn(move || {
+                    deltablockspan(newblocksref, basehashesref, dataref, cumoffsetsref, span.clone(), head);
+                }));
+            }
+            for handle in handles {
+                let _ = handle.join();
+            }
+        });
+        let stored: Vec<storedblock> = stored.into_iter().flatten().collect();
         let canonical = canonicalmanifest(new.getversion(), new.gettensors(), &newblocks);
         let root_hash = blake3hash(&canonical);
         Self {
@@ -325,6 +355,30 @@ impl delta {
             root_hash: parsed.root_hash,
             signature: parsed.signature,
         })
+    }
+}
+
+/// Fills one contiguous span of a delta's stored blocks: each block whose hash
+/// is absent from `basehashes` gets its bytes copied into the matching slot of
+/// `out`.
+fn deltablockspan(
+    newblocks: &[blockref],
+    basehashes: &HashSet<[u8; 16]>,
+    data: &[u8],
+    cumoffsets: &[usize],
+    span: std::ops::Range<usize>,
+    out: &mut [Option<storedblock>],
+) {
+    for (i, position) in span.enumerate() {
+        let block = &newblocks[position];
+        if !basehashes.contains(&block.gethash()) {
+            let start = cumoffsets[position];
+            let len = block.getlen() as usize;
+            out[i] = Some(storedblock {
+                hash: block.gethash(),
+                bytes: data[start..start + len].to_vec(),
+            });
+        }
     }
 }
 
