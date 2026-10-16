@@ -66,8 +66,8 @@ pub(crate) const MUNULLSTREAM: usize = 0;
 // inside the single `unsafe` block of [`dispatch`], guarded by result-code
 // checks, so no unvalidated driver call can escape this island.
 unsafe extern "C" {
-    /// Initialises the MUSA driver (idempotent).
-    fn muInit() -> muresult;
+    /// Initialises the MUSA driver (idempotent; flags must be 0 per musa.h).
+    fn muInit(flags: u32) -> muresult;
     /// Fills `device` with the `ordinal`-th device.
     fn muDeviceGet(device: *mut mudevice, ordinal: i32) -> muresult;
     /// Creates a context for `device`.
