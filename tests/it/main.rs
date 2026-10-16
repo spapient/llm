@@ -47,6 +47,7 @@ mod optimunits;
 mod pipeline;
 mod roundtrip;
 mod scancontract;
+mod scanunits;
 mod server;
 mod serveunits;
 mod service;

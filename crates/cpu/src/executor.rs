@@ -13,6 +13,7 @@ use crate::error::cpuerror;
 use crate::matmul::{cpumatmul, matmulplan};
 use crate::normalization::cpurmsnorm;
 use crate::rotary::cpurope;
+use crate::scan::cpuscan;
 use crate::softmax::cpusoftmax;
 
 /// Names a CPU operator for dispatch.
@@ -367,26 +368,38 @@ impl compute for cpuexecutor {
 
     fn scan(
         &self,
-        _input: &tensorview<'_, f32>,
-        _init: &tensorview<'_, f32>,
-        _a: &tensorview<'_, f32>,
-        _b: &tensorview<'_, f32>,
-        _c: &tensorview<'_, f32>,
-        _skip: &tensorview<'_, f32>,
+        input: &tensorview<'_, f32>,
+        init: &tensorview<'_, f32>,
+        a: &tensorview<'_, f32>,
+        b: &tensorview<'_, f32>,
+        c: &tensorview<'_, f32>,
+        skip: &tensorview<'_, f32>,
     ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
-        Err(backenderror::unsupportedoperation { op: "scan" })
+        self.checkbudget(input.getshape()).map_err(maptobackend)?;
+        self.checkbudget(init.getshape()).map_err(maptobackend)?;
+        self.checkbudget(a.getshape()).map_err(maptobackend)?;
+        self.checkbudget(b.getshape()).map_err(maptobackend)?;
+        self.checkbudget(c.getshape()).map_err(maptobackend)?;
+        self.checkbudget(skip.getshape()).map_err(maptobackend)?;
+        cpuscan.apply(input, init, a, b, c, skip)
     }
 
     fn scan_cached(
         &self,
-        _input: &tensorview<'_, f32>,
-        _state: &tensorview<'_, f32>,
-        _a: &tensorview<'_, f32>,
-        _b: &tensorview<'_, f32>,
-        _c: &tensorview<'_, f32>,
-        _skip: &tensorview<'_, f32>,
+        input: &tensorview<'_, f32>,
+        state: &tensorview<'_, f32>,
+        a: &tensorview<'_, f32>,
+        b: &tensorview<'_, f32>,
+        c: &tensorview<'_, f32>,
+        skip: &tensorview<'_, f32>,
     ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
-        Err(backenderror::unsupportedoperation { op: "scan_cached" })
+        self.checkbudget(input.getshape()).map_err(maptobackend)?;
+        self.checkbudget(state.getshape()).map_err(maptobackend)?;
+        self.checkbudget(a.getshape()).map_err(maptobackend)?;
+        self.checkbudget(b.getshape()).map_err(maptobackend)?;
+        self.checkbudget(c.getshape()).map_err(maptobackend)?;
+        self.checkbudget(skip.getshape()).map_err(maptobackend)?;
+        cpuscan.apply_cached(input, state, a, b, c, skip)
     }
 }
 
