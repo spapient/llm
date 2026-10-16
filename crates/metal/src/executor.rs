@@ -270,30 +270,18 @@ impl compute for metalexecutor {
         heads: usize,
         base: f32,
     ) -> Result<tensor<f32>, backenderror> {
-        let width = input.getshape().getdims()[1];
-        let mut data = vec![0.0_f32; (position + 1) * width];
-        data[position * width..].copy_from_slice(input.getdata());
-        let padded = tensor::new(
-            shape::new(vec![position + 1, width]).map_err(|_| backenderror::sizeoverflow)?,
-            data,
+        self.checkbudget(input.getshape())?;
+        let geometry = ropeshape::new(input.getshape(), heads)?;
+        let data = ffi::rope_at(
+            &self.cache,
+            input.getdata(),
+            position,
+            geometry.heads,
+            geometry.headdim,
+            base,
         )
-        .map_err(|e| backenderror::executionfailed {
-            backend: "metal",
-            kernel: "construct".into(),
-            message: e.to_string(),
-        })?;
-        let rotated = self.rope(&padded.getview(), heads, base)?;
-        let start = position * width;
-        let last = rotated.getdata()[start..start + width].to_vec();
-        tensor::new(
-            shape::new(vec![1, width]).map_err(|_| backenderror::sizeoverflow)?,
-            last,
-        )
-        .map_err(|e| backenderror::executionfailed {
-            backend: "metal",
-            kernel: "construct".into(),
-            message: e.to_string(),
-        })
+        .map_err(maptobackend)?;
+        wrap(input.getshape().clone(), data)
     }
 
     fn attention(
@@ -486,6 +474,11 @@ pub struct metalsubmission {
     cache: Arc<ffi::cache>,
     session: ffi::session,
     results: Vec<(usize, shape)>,
+    /// Uploaded caller inputs keyed by `(data pointer, length)`, so an input
+    /// operand referenced by several steps is allocated, copied, and uploaded
+    /// exactly once per submission. Operands are immutable views, so identical
+    /// identity means identical bytes.
+    inputs: std::collections::HashMap<(usize, usize), Retained<ProtocolObject<dyn MTLBuffer>>>,
 }
 
 impl metalsubmission {
@@ -501,6 +494,7 @@ impl metalsubmission {
             cache,
             session,
             results: Vec::new(),
+            inputs: std::collections::HashMap::new(),
         })
     }
 
@@ -541,11 +535,20 @@ impl metalsubmission {
     /// Resolves an operand to a device buffer, uploading caller inputs and
     /// reusing or re-uploading recorded results in place.
     fn resolve(
-        &self,
+        &mut self,
         op: operand<'_>,
     ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, backenderror> {
         match op {
-            operand::input(view) => self.session.upload(view.getdata()).map_err(maptobackend),
+            operand::input(view) => {
+                let data = view.getdata();
+                let key = (data.as_ptr() as usize, data.len());
+                if let Some(buffer) = self.inputs.get(&key) {
+                    return Ok(buffer.clone());
+                }
+                let buffer = self.session.upload(data).map_err(maptobackend)?;
+                self.inputs.insert(key, buffer.clone());
+                Ok(buffer)
+            }
             operand::result(reference) => {
                 let index = reference.getindex();
                 let (slot, _) = self

@@ -457,6 +457,41 @@ pub(crate) fn rope(
     Ok(results.remove(0))
 }
 
+/// Rotates one absolute-position row with the dedicated single-row kernel.
+///
+/// Unlike [`rope`] on a padded `[position + 1, width]` operand, the kernel
+/// takes the position as a scalar, so only the row itself is uploaded and
+/// rotated: no padded operand is materialized, transferred, or walked.
+pub(crate) fn rope_at(
+    cache: &cache,
+    input: &[f32],
+    position: usize,
+    heads: usize,
+    headdim: usize,
+    base: f32,
+) -> Result<Vec<f32>, metalerror> {
+    let total = heads
+        .checked_mul(headdim)
+        .ok_or(metalerror::sizeoverflow)?;
+    let pairs = total / 2;
+    let params = [
+        asu32(heads)?,
+        asu32(headdim)?,
+        asu32(position)?,
+        base.to_bits(),
+    ];
+    let mut results = dispatch(
+        cache,
+        source::ROPEATMSL,
+        source::ROPEATENTRY,
+        &[buf::host(input), buf::out(total)],
+        &params,
+        flatgrid(pairs)?,
+        flatthreads(pairs),
+    )?;
+    Ok(results.remove(0))
+}
+
 /// Gathers `indices.len()` rows of `width` elements from `table`.
 ///
 /// The indices arrive already validated against the table's row count; the
