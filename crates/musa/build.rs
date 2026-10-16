@@ -93,8 +93,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         // like every clang, it accepts `--offload-arch` only in the `=` form,
         // so the value must be embedded rather than passed as a second arg.
         let offload = format!("--offload-arch={arch}");
+        // --cuda-device-only produces a pure device cubin that muModuleLoadData
+        // can load and muModuleGetFunction can resolve by plain kernel name
+        // (verified by a C probe on the MTT S4000 host: the host+device
+        // relocatable object from plain -c loads but resolves no kernel).
         let status = Command::new(&mcc)
-            .args(["-mtgpu", &offload, "-c", "-o"])
+            .args(["-mtgpu", &offload, "--cuda-device-only", "-c", "-o"])
             .arg(&obj)
             .arg(&path)
             .status()
