@@ -178,14 +178,17 @@ impl core::fmt::Debug for cache {
 /// Compiles `text` with NVRTC, loads the module, and resolves `entry`.
 fn compile(device: &Arc<CudaContext>, text: &str, entry: &str) -> Result<CudaFunction, cudaerror> {
     let ptx = compile_ptx(text).map_err(|error| cudaerror::compile {
+        kernel: entry.to_string(),
         message: error.to_string(),
     })?;
     let module = device.load_module(ptx).map_err(|error| cudaerror::module {
+        kernel: entry.to_string(),
         message: error.to_string(),
     })?;
     module
         .load_function(entry)
         .map_err(|error| cudaerror::module {
+            kernel: entry.to_string(),
             message: error.to_string(),
         })
 }
@@ -761,6 +764,59 @@ pub(crate) fn attention(
         .arg(&causalv);
     submit(&mut args, config)?;
     syncanddownload(&stream, &dout)
+}
+
+/// Runs the serial per-channel scan kernel, returning the `[n, d]` output and
+/// the `[d, N]` final state.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scan(
+    cache: &cache,
+    input: &[f32],
+    init: &[f32],
+    a: &[f32],
+    b: &[f32],
+    c: &[f32],
+    skip: &[f32],
+    n: usize,
+    d: usize,
+    statewidth: usize,
+) -> Result<(Vec<f32>, Vec<f32>), cudaerror> {
+    if n == 0 {
+        return Ok((Vec::new(), init.to_vec()));
+    }
+    let stream = cache.stream()?;
+    let function = cache.function(source::SCANCUDA, source::SCANENTRY)?;
+    let dinput = upload(&stream, input)?;
+    let da = upload(&stream, a)?;
+    let db = upload(&stream, b)?;
+    let dc = upload(&stream, c)?;
+    let dskip = upload(&stream, skip)?;
+    let mut dstate = upload(&stream, init)?;
+    let outelements = n.checked_mul(d).ok_or(cudaerror::sizeoverflow)?;
+    let mut dout = alloc(&stream, outelements)?;
+    let nv = asunsigned(n)?;
+    let dv = asunsigned(d)?;
+    let statewidthv = asunsigned(statewidth)?;
+    let config = LaunchConfig {
+        grid_dim: (dv, 1, 1),
+        block_dim: (1, 1, 1),
+        shared_mem_bytes: 0,
+    };
+    let mut args = stream.launch_builder(&function);
+    args.arg(&dinput)
+        .arg(&da)
+        .arg(&db)
+        .arg(&dc)
+        .arg(&dskip)
+        .arg(&mut dstate)
+        .arg(&mut dout)
+        .arg(&nv)
+        .arg(&dv)
+        .arg(&statewidthv);
+    submit(&mut args, config)?;
+    let out = syncanddownload(&stream, &dout)?;
+    let state = syncanddownload(&stream, &dstate)?;
+    Ok((out, state))
 }
 
 /// The matmul extents as device-side `u32` values.

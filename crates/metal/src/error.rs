@@ -21,15 +21,19 @@ pub enum metalerror {
     allocation,
 
     /// Metal Shading Language compilation failed.
-    #[error("Metal Shading Language compilation failed: {message}")]
+    #[error("Metal Shading Language compilation failed ({kernel}): {message}")]
     compile {
+        /// The kernel entry point whose source failed to compile.
+        kernel: String,
         /// The driver-provided diagnostic.
         message: String,
     },
 
     /// Compute pipeline creation failed.
-    #[error("Metal compute pipeline creation failed: {message}")]
+    #[error("Metal compute pipeline creation failed ({kernel}): {message}")]
     pipeline {
+        /// The kernel entry point whose pipeline could not be created.
+        kernel: String,
         /// The driver-provided diagnostic.
         message: String,
     },

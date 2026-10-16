@@ -36,13 +36,16 @@ pub enum backenderror {
 
     /// Kernel compilation or module loading failed for this backend.
     ///
-    /// Carries the backend name and the driver-provided diagnostic so a
-    /// compilation failure is reachable and actionable, instead of collapsing
-    /// into the generic [`backenderror::executionfailed`].
-    #[error("kernel compilation failed on {backend}: {message}")]
+    /// Carries the backend name, the kernel entry point, and the driver-provided
+    /// diagnostic so a compilation failure is reachable and actionable, instead
+    /// of collapsing into the generic [`backenderror::executionfailed`].
+    #[error("kernel compilation failed on {backend} ({kernel}): {message}")]
     kernelcompilefailed {
         /// The backend whose kernel failed to compile.
         backend: &'static str,
+        /// The kernel entry point (the `(source, entry)` pair's entry half)
+        /// that failed to compile or load.
+        kernel: String,
         /// The driver-provided diagnostic.
         message: String,
     },

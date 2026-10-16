@@ -155,6 +155,7 @@ fn device_absence_is_distinct_and_stable() {
         backenderror::devicenotavailable,
         backenderror::kernelcompilefailed {
             backend: "metal",
+            kernel: String::new(),
             message: String::new(),
         }
     );
@@ -165,31 +166,51 @@ fn device_absence_is_distinct_and_stable() {
 }
 
 #[test]
-fn kernel_compile_failure_carries_backend_and_diagnostic() {
+fn kernel_compile_failure_carries_backend_kernel_and_diagnostic() {
     let e = backenderror::kernelcompilefailed {
         backend: "metal",
+        kernel: "attention".to_string(),
         message: "MSL 5.0: undeclared identifier 'foo'".to_string(),
     };
     assert_eq!(
         e,
         backenderror::kernelcompilefailed {
             backend: "metal",
+            kernel: "attention".to_string(),
+            message: "MSL 5.0: undeclared identifier 'foo'".to_string(),
+        }
+    );
+    // Every dimension is distinguishing: backend, kernel, and diagnostic.
+    assert_ne!(
+        e,
+        backenderror::kernelcompilefailed {
+            backend: "cuda",
+            kernel: "attention".to_string(),
             message: "MSL 5.0: undeclared identifier 'foo'".to_string(),
         }
     );
     assert_ne!(
         e,
         backenderror::kernelcompilefailed {
-            backend: "cuda",
+            backend: "metal",
+            kernel: "matmul".to_string(),
             message: "MSL 5.0: undeclared identifier 'foo'".to_string(),
         }
     );
+    assert_ne!(
+        e,
+        backenderror::kernelcompilefailed {
+            backend: "metal",
+            kernel: "attention".to_string(),
+            message: "MSL 5.0: undeclared identifier 'bar'".to_string(),
+        }
+    );
+    // The display names the failing kernel so a compile failure is reachable
+    // and actionable rather than a bare "execution failed".
     assert_eq!(
         e.to_string(),
-        "kernel compilation failed on metal: MSL 5.0: undeclared identifier 'foo'"
+        "kernel compilation failed on metal (attention): MSL 5.0: undeclared identifier 'foo'"
     );
-    // The diagnostic must survive the mapping, so a compilation failure is
-    // reachable and actionable rather than a bare "execution failed".
     assert_ne!(e, backenderror::executionfailed);
 }
 

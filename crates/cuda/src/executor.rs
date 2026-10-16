@@ -153,15 +153,17 @@ fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
 ///
 /// Device absence and kernel compilation/module loading are surfaced as their
 /// own variants so a caller can tell "no GPU on this host" from "the kernel did
-/// not compile"; transfer, launch, cuBLAS, and cuDNN runtime failures stay under
-/// the generic `executionfailed`.
+/// not compile"; the kernel entry point rides along so a compile failure
+/// identifies exactly which `(source, entry)` pair failed. Transfer, launch,
+/// cuBLAS, and cuDNN runtime failures stay under the generic `executionfailed`.
 fn maptobackend(error: cudaerror) -> backenderror {
     match error {
         cudaerror::sizeoverflow => backenderror::sizeoverflow,
         cudaerror::device { message } => backenderror::devicenotavailable,
-        cudaerror::compile { message } | cudaerror::module { message } => {
+        cudaerror::compile { kernel, message } | cudaerror::module { kernel, message } => {
             backenderror::kernelcompilefailed {
                 backend: "cuda",
+                kernel,
                 message,
             }
         }

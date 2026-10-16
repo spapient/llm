@@ -658,17 +658,20 @@ fn compile(
     let library: Retained<ProtocolObject<dyn MTLLibrary>> = device
         .newLibraryWithSource_options_error(&text, None)
         .map_err(|error| metalerror::compile {
+            kernel: entry.to_string(),
             message: describe(&error),
         })?;
     let name = NSString::from_str(entry);
     let function = library
         .newFunctionWithName(&name)
         .ok_or_else(|| metalerror::compile {
+            kernel: entry.to_string(),
             message: format!("entry point `{entry}` is missing from the compiled library"),
         })?;
     device
         .newComputePipelineStateWithFunction_error(&function)
         .map_err(|error| metalerror::pipeline {
+            kernel: entry.to_string(),
             message: describe(&error),
         })
 }

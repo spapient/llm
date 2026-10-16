@@ -103,15 +103,18 @@ fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
 ///
 /// Device absence and kernel compilation are surfaced as their own variants so
 /// a caller can tell "no GPU on this host" from "the kernel did not compile";
-/// allocation and runtime execution failures stay under the generic
-/// `executionfailed` because no caller action distinguishes them.
+/// the kernel entry point rides along so a compile failure identifies exactly
+/// which `(source, entry)` pair failed. Allocation and runtime execution
+/// failures stay under the generic `executionfailed` because no caller action
+/// distinguishes them.
 fn maptobackend(error: metalerror) -> backenderror {
     match error {
         metalerror::sizeoverflow => backenderror::sizeoverflow,
         metalerror::nodevice => backenderror::devicenotavailable,
-        metalerror::compile { message } | metalerror::pipeline { message } => {
+        metalerror::compile { kernel, message } | metalerror::pipeline { kernel, message } => {
             backenderror::kernelcompilefailed {
                 backend: "metal",
+                kernel,
                 message,
             }
         }

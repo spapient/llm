@@ -19,15 +19,19 @@ pub enum cudaerror {
     },
 
     /// NVRTC compilation of the kernel source failed.
-    #[error("NVRTC compilation failed: {message}")]
+    #[error("NVRTC compilation failed ({kernel}): {message}")]
     compile {
+        /// The kernel entry point whose source failed to compile.
+        kernel: String,
         /// The NVRTC-provided diagnostic.
         message: String,
     },
 
     /// Loading the compiled module or resolving a kernel failed.
-    #[error("CUDA module load failed: {message}")]
+    #[error("CUDA module load failed ({kernel}): {message}")]
     module {
+        /// The kernel entry point that could not be loaded or resolved.
+        kernel: String,
         /// The driver-provided diagnostic.
         message: String,
     },
