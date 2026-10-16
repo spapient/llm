@@ -572,3 +572,18 @@ ByteLevel 接入管线（`engine.rs` 读取 `pre_tokenizer`/`decoder` 段；`enc
 | encode_into/tiktoken/4096 | 449.61 µs | 205.16 µs | ≈ 2.19× |
 
 tiktoken 累计（相对 Phase 0 945.1 µs）≈ **4.6×**，现 205 µs 与 HF BPE（27–41 µs）的差距主要剩 `ranks` 的 SipHash 切片哈希（DoS 抗性、维持）。
+
+### 12.26 加载期：`ranks` 字符串表惰性化（2026-10-16）
+
+§12.24 指出加载剩余主项是 `ranks` 字符串 BTreeMap（仅服务公开 `getrank`/`apply`，编码路径不用）。落地惰性化：`bytepair` 改存 `merges: Vec<String>`（原始 merge 串，`&[String]` 入参 clone，避免改签名）+ `ranks: OnceCell<BTreeMap<…>>`（首次 `getrank`/`apply` 才 `ranksfrommerges` 构建）+ `count: usize`（`frommergesandvocab` 用 `byids.len()`、`frommerges` 用 `HashSet<&str>` 去重计数）。`OnceCell` 满足 `#[derive(Clone/Debug/PartialEq/Eq/Default)]`，无需手工 impl。
+
+**基准（同环境，mean）**：
+
+| 基准 | 惰性化前（§12.24） | 惰性化后 | 变化 |
+| --- | --- | --- | --- |
+| fromjson/gpt2 | 28.92 ms | 20.88 ms | −28% |
+| fromjson/gemma | 445.48 ms | 228.01 ms | **−49%（≈2×）** |
+
+gemma 加载累计（相对首测 510.7 ms）≈ **2.2×**；剩余主项是 `serde_json::from_str`（~10 MB JSON 全量解析）+ 580k merge 串解析本身，一次性可接受。
+
+**验证**：`tokenizerunits` 69、`tokenizergolden` 4（7 模型逐位不变）、`tokens` 21 全过；clippy `-D warnings` + fmt + checkunsafe（0 新增 unsafe）+ rustdoc 全过。checknaming 现报 3 项，全部在并发会话新增的 `crates/musa/src/ffi.rs`（`const core` 大写紧凑 NM5），非本 crate。

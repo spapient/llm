@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use lib::tokenid;
 
@@ -14,15 +15,31 @@ use crate::vocab::vocabulary;
 /// convention. The table is applied to a symbol sequence by repeatedly merging
 /// the adjacent pair with the lowest rank until no rule applies.
 ///
-/// When built with [`frommergesandvocab`](bytepair::frommergesandvocab), the
-/// table additionally holds an integer-keyed form: each merge is indexed by the
-/// packed pair `(left_id << 32) | right_id` of the two symbols' vocabulary ids,
-/// mapping to `(rank, merged_id)`. This lets [`applyids`](bytepair::applyids)
-/// merge id sequences with constant-size keys and no allocation.
+/// The string-keyed form (`ranks`) is built lazily on first use by
+/// [`getrank`](bytepair::getrank)/[`apply`](bytepair::apply), because the
+/// encoding path only needs the integer-keyed form (`byids`) built by
+/// [`frommergesandvocab`](bytepair::frommergesandvocab).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct bytepair {
-    ranks: BTreeMap<String, BTreeMap<String, usize>>,
+    merges: Vec<String>,
+    ranks: OnceCell<BTreeMap<String, BTreeMap<String, usize>>>,
     byids: HashMap<u64, (usize, u32)>,
+    count: usize,
+}
+
+/// Builds the string-keyed merge table from pre-validated merge strings.
+fn ranksfrommerges(merges: &[String]) -> BTreeMap<String, BTreeMap<String, usize>> {
+    let mut ranks: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    for (index, merge) in merges.iter().enumerate() {
+        if let Some((left, right)) = merge.split_once(' ') {
+            ranks
+                .entry(left.to_string())
+                .or_default()
+                .entry(right.to_string())
+                .or_insert(index);
+        }
+    }
+    ranks
 }
 
 impl bytepair {
@@ -34,7 +51,6 @@ impl bytepair {
     /// entry does not contain exactly one separating space, or when either
     /// side of the split is empty.
     pub fn frommerges(merges: &[String]) -> Result<Self, tokenizererror> {
-        let mut ranks: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         for (index, merge) in merges.iter().enumerate() {
             let (left, right) = merge
                 .split_once(' ')
@@ -42,15 +58,17 @@ impl bytepair {
             if left.is_empty() || right.is_empty() {
                 return Err(tokenizererror::malformedmerge { index });
             }
-            ranks
-                .entry(left.to_string())
-                .or_default()
-                .entry(right.to_string())
-                .or_insert(index);
         }
+        let count = merges
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>()
+            .len();
         Ok(Self {
-            ranks,
+            merges: merges.to_vec(),
+            ranks: OnceCell::new(),
             byids: HashMap::new(),
+            count,
         })
     }
 
@@ -66,7 +84,6 @@ impl bytepair {
         merges: &[String],
         vocab: &vocabulary,
     ) -> Result<Self, tokenizererror> {
-        let mut ranks: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         let mut byids: HashMap<u64, (usize, u32)> = HashMap::with_capacity(merges.len());
         for (index, merge) in merges.iter().enumerate() {
             let (left, right) = merge
@@ -75,11 +92,6 @@ impl bytepair {
             if left.is_empty() || right.is_empty() {
                 return Err(tokenizererror::malformedmerge { index });
             }
-            ranks
-                .entry(left.to_string())
-                .or_default()
-                .entry(right.to_string())
-                .or_insert(index);
             let leftid = vocab
                 .getid(left)
                 .ok_or_else(|| tokenizererror::mergenotinvocab {
@@ -99,13 +111,24 @@ impl bytepair {
             let key = (u64::from(leftid.get()) << 32) | u64::from(rightid.get());
             byids.entry(key).or_insert((index, mergedid.get()));
         }
-        Ok(Self { ranks, byids })
+        let count = byids.len();
+        Ok(Self {
+            merges: merges.to_vec(),
+            ranks: OnceCell::new(),
+            byids,
+            count,
+        })
     }
 
     /// Returns the number of distinct merge rules.
     #[must_use]
     pub fn getcount(&self) -> usize {
-        self.ranks.values().map(|inner| inner.len()).sum()
+        self.count
+    }
+
+    /// Returns the string-keyed merge table, building it lazily on first use.
+    fn ranks(&self) -> &BTreeMap<String, BTreeMap<String, usize>> {
+        self.ranks.get_or_init(|| ranksfrommerges(&self.merges))
     }
 
     /// Returns the rank of the pair `(left, right)`, if the rule exists.
@@ -114,7 +137,7 @@ impl bytepair {
     /// `str` keys.
     #[must_use]
     pub fn getrank(&self, left: &str, right: &str) -> Option<usize> {
-        self.ranks
+        self.ranks()
             .get(left)
             .and_then(|inner| inner.get(right))
             .copied()
