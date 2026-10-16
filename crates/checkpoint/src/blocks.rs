@@ -167,6 +167,49 @@ fn chunksegment(data: &[u8]) -> Vec<blockref> {
 pub fn bitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
     let n = data.len() / elem;
     let mut out = vec![0u8; data.len()];
+    match elem {
+        2 => shuffle2(data, &mut out, n),
+        4 => shuffle4(data, &mut out, n),
+        _ => shuffle_generic(data, &mut out, n, elem),
+    }
+    out[elem * n..].copy_from_slice(&data[elem * n..]);
+    out
+}
+
+/// Loop-interchanged transpose + delta for `elem = 4`: reads contiguous
+/// elements and writes one byte per plane, so the four `prev` chains are
+/// independent and overlap in the pipeline instead of serialising.
+fn shuffle4(data: &[u8], out: &mut [u8], n: usize) {
+    let (o0, r) = out.split_at_mut(n);
+    let (o1, r) = r.split_at_mut(n);
+    let (o2, o3) = r.split_at_mut(n);
+    let (mut p0, mut p1, mut p2, mut p3) = (0u8, 0u8, 0u8, 0u8);
+    for (i, c) in data[..4 * n].as_chunks::<4>().0.iter().enumerate() {
+        let (b0, b1, b2, b3) = (c[0], c[1], c[2], c[3]);
+        o0[i] = b0.wrapping_sub(p0);
+        o1[i] = b1.wrapping_sub(p1);
+        o2[i] = b2.wrapping_sub(p2);
+        o3[i] = b3.wrapping_sub(p3);
+        p0 = b0;
+        p1 = b1;
+        p2 = b2;
+        p3 = b3;
+    }
+}
+
+fn shuffle2(data: &[u8], out: &mut [u8], n: usize) {
+    let (o0, o1) = out.split_at_mut(n);
+    let (mut p0, mut p1) = (0u8, 0u8);
+    for (i, c) in data[..2 * n].as_chunks::<2>().0.iter().enumerate() {
+        let (b0, b1) = (c[0], c[1]);
+        o0[i] = b0.wrapping_sub(p0);
+        o1[i] = b1.wrapping_sub(p1);
+        p0 = b0;
+        p1 = b1;
+    }
+}
+
+fn shuffle_generic(data: &[u8], out: &mut [u8], n: usize, elem: usize) {
     for plane in 0..elem {
         let mut prev = 0u8;
         for i in 0..n {
@@ -175,8 +218,6 @@ pub fn bitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
             prev = byte;
         }
     }
-    out[elem * n..].copy_from_slice(&data[elem * n..]);
-    out
 }
 
 /// Inverts [`bitshuffle_delta`]: reverses the intra-plane delta and the plane
@@ -186,6 +227,43 @@ pub fn bitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
 pub fn unbitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
     let n = data.len() / elem;
     let mut out = vec![0u8; data.len()];
+    match elem {
+        2 => unshuffle2(data, &mut out, n),
+        4 => unshuffle4(data, &mut out, n),
+        _ => unshuffle_generic(data, &mut out, n, elem),
+    }
+    out[elem * n..].copy_from_slice(&data[elem * n..]);
+    out
+}
+
+/// Loop-interchanged prefix sum + transpose for `elem = 4`: reads one byte from
+/// each plane and writes the four contiguous output bytes at once. The four
+/// `acc` chains are independent (IPC > 1) and the store is contiguous.
+fn unshuffle4(data: &[u8], out: &mut [u8], n: usize) {
+    let (p0, r) = data.split_at(n);
+    let (p1, r) = r.split_at(n);
+    let (p2, p3) = r.split_at(n);
+    let (mut a0, mut a1, mut a2, mut a3) = (0u8, 0u8, 0u8, 0u8);
+    for (i, c) in out[..4 * n].as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        a0 = a0.wrapping_add(p0[i]);
+        a1 = a1.wrapping_add(p1[i]);
+        a2 = a2.wrapping_add(p2[i]);
+        a3 = a3.wrapping_add(p3[i]);
+        *c = [a0, a1, a2, a3];
+    }
+}
+
+fn unshuffle2(data: &[u8], out: &mut [u8], n: usize) {
+    let (p0, p1) = data.split_at(n);
+    let (mut a0, mut a1) = (0u8, 0u8);
+    for (i, c) in out[..2 * n].as_chunks_mut::<2>().0.iter_mut().enumerate() {
+        a0 = a0.wrapping_add(p0[i]);
+        a1 = a1.wrapping_add(p1[i]);
+        *c = [a0, a1];
+    }
+}
+
+fn unshuffle_generic(data: &[u8], out: &mut [u8], n: usize, elem: usize) {
     for plane in 0..elem {
         let mut acc = 0u8;
         for i in 0..n {
@@ -193,8 +271,6 @@ pub fn unbitshuffle_delta(data: &[u8], elem: usize) -> Vec<u8> {
             out[i * elem + plane] = acc;
         }
     }
-    out[elem * n..].copy_from_slice(&data[elem * n..]);
-    out
 }
 
 /// Compresses a block, returning its codec byte, transform byte, and the stored

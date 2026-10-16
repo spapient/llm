@@ -57,10 +57,21 @@ fn normalize(counts: &[u32; NSYMBOLS]) -> [u32; NSYMBOLS] {
     freq
 }
 
-/// 一个平面的频率表与累积频率表。
+/// Packed per-symbol encode parameters, so the encoder fetches all four with a
+/// single 16-byte load from one cache line instead of four separate arrays.
+#[derive(Clone, Copy, Default)]
+struct encentry {
+    freq: u32,
+    cum: u32,
+    rcp: u32,
+    xmax: u32,
+}
+
+/// 一个平面的频率表、累积频率表与打包的编码参数。
 struct Table {
     freq: [u32; NSYMBOLS],
     cum: [u32; NSYMBOLS + 1],
+    enc: [encentry; NSYMBOLS],
 }
 
 impl Table {
@@ -73,48 +84,77 @@ impl Table {
             acc += freq[s];
         }
         cum[NSYMBOLS] = acc;
-        Self { freq, cum }
-    }
-
-    /// 由 `slot ∈ [0, M)` 反查符号（二分）。
-    fn find_symbol(&self, slot: u32) -> usize {
-        let mut lo = 0usize;
-        let mut hi = NSYMBOLS;
-        while lo + 1 < hi {
-            let mid = (lo + hi) / 2;
-            if self.cum[mid] <= slot {
-                lo = mid;
+        let mut enc = [encentry::default(); NSYMBOLS];
+        for s in 0..NSYMBOLS {
+            let f = freq[s];
+            // ceil(2^32 / f) 定点逆元，用乘法替代 u32 除法；renorm 阈值 = 32768*f。
+            let rcp = if f >= 2 {
+                (1u64 << 32).div_ceil(f as u64) as u32
             } else {
-                hi = mid;
-            }
+                0
+            };
+            enc[s] = encentry {
+                freq: f,
+                cum: cum[s],
+                rcp,
+                xmax: ((L >> LOG2_M) << 8) * f,
+            };
         }
-        lo
+        Self { freq, cum, enc }
     }
 }
 
-/// 编码一个平面，把 rANS 流追加到 `out`。
+/// 用预计算的定点逆元 `rcp` 做 `x / f` 与 `x % f`，结果与硬件除法精确一致。
+#[inline]
+fn div_rem(x: u32, f: u32, rcp: u32) -> (u32, u32) {
+    if f == 1 {
+        return (x, 0);
+    }
+    let q = ((x as u64 * rcp as u64) >> 32) as u32;
+    let rem = x.wrapping_sub(q * f);
+    if rem >= f {
+        (q - 1, rem.wrapping_add(f))
+    } else {
+        (q, rem)
+    }
+}
+
+/// 交错状态数：符号 `i` 编码到状态 `i % NLANES`，解码 SIMD 并行 `NLANES` 路。
+const NLANES: usize = 8;
+
+/// 编码一个平面，把 interleaved rANS 流追加到 `out`。
 ///
-/// 字节序与解码对称：先 flush 最终状态 `x` 的 4 字节（little-endian），再按
-/// 逆序输出 renorm 期间积累的字节（先高字节后低字节），使解码按序读入。
+/// `NLANES` 个独立状态交错编码：符号 `i` 进入 `i % NLANES` 状态，各状态独立
+/// renorm，最后 flush 各状态的 4 字节、各 renorm 流长度与逆序字节。解码逆序
+/// 弹符号、按 `i % NLANES` 分派回同一状态。
 fn encode_plane(out: &mut Vec<u8>, data: &[u8], table: &Table) {
-    let mut x: u32 = L;
-    let mut renorm = Vec::new();
-    for &byte in data {
-        let s = byte as usize;
-        let f = table.freq[s];
-        let c = table.cum[s];
-        let x_max = ((L >> LOG2_M) << 8) * f;
-        while x >= x_max {
-            renorm.push((x & 0xFF) as u8);
+    let mut xs = [L; NLANES];
+    let cap = data.len() / NLANES + 8;
+    let mut renorms: [Vec<u8>; NLANES] = core::array::from_fn(|_| Vec::with_capacity(cap));
+    for (i, &byte) in data.iter().enumerate() {
+        let lane = i % NLANES;
+        let e = table.enc[byte as usize];
+        let mut x = xs[lane];
+        while x >= e.xmax {
+            renorms[lane].push((x & 0xFF) as u8);
             x >>= 8;
         }
-        x = (x / f) * M + (x % f) + c;
+        let (q, rem) = div_rem(x, e.freq, e.rcp);
+        x = (q << LOG2_M) + rem + e.cum;
+        xs[lane] = x;
     }
-    for shift in [0, 8, 16, 24] {
-        out.push(((x >> shift) & 0xFF) as u8);
+    for &x in &xs {
+        for shift in [0, 8, 16, 24] {
+            out.push(((x >> shift) & 0xFF) as u8);
+        }
     }
-    for &b in renorm.iter().rev() {
-        out.push(b);
+    for renorm in &renorms {
+        out.extend_from_slice(&(renorm.len() as u32).to_le_bytes());
+    }
+    for renorm in &renorms {
+        for &b in renorm.iter().rev() {
+            out.push(b);
+        }
     }
 }
 
@@ -135,31 +175,56 @@ fn take_u32(data: &mut &[u8]) -> Option<u32> {
 
 /// 解码一个平面，从 `stream` 读出 `n` 字节追加到 `out`。
 ///
-/// rANS 是栈式编码：解码按编码的逆序弹出符号，故先在局部缓冲收集、最后
-/// reverse 后写入 `out`，恢复原始顺序。
+/// interleaved 栈式解码：`NLANES` 个状态逆序弹符号，符号 `i` 由状态
+/// `i % NLANES` 恢复，直接落入输出 `i` 位，无需 reverse。
 fn decode_plane(
     stream: &[u8],
-    out: &mut Vec<u8>,
+    dst: &mut [u8],
     table: &Table,
-    n: usize,
 ) -> Result<(), checkpointerror> {
+    let n = dst.len();
+    let mut lut = vec![0u8; M as usize];
+    let mut s = 0usize;
+    for (slot, entry) in lut.iter_mut().enumerate() {
+        while table.cum[s + 1] <= slot as u32 {
+            s += 1;
+        }
+        *entry = s as u8;
+    }
+
     let mut data = stream;
-    let mut x = take_u32(&mut data).ok_or_else(|| invalid("gate stream truncated"))?;
-    let mut buf = Vec::with_capacity(n);
-    for _ in 0..n {
-        let slot = x & (M - 1);
-        let s = table.find_symbol(slot);
-        buf.push(s as u8);
-        x = table.freq[s] * (x >> LOG2_M) + slot - table.cum[s];
-        while x < L {
-            if data.is_empty() {
+    let mut xs = [0u32; NLANES];
+    for x in &mut xs {
+        *x = take_u32(&mut data).ok_or_else(|| invalid("gate stream truncated"))?;
+    }
+    let mut lens = [0usize; NLANES];
+    for l in &mut lens {
+        *l = take_u32(&mut data).ok_or_else(|| invalid("gate stream truncated"))? as usize;
+    }
+    let mut streams: [&[u8]; NLANES] = [&[]; NLANES];
+    for (l, st) in lens.iter().zip(streams.iter_mut()) {
+        if data.len() < *l {
+            return Err(invalid("gate stream truncated"));
+        }
+        *st = &data[..*l];
+        data = &data[*l..];
+    }
+
+    for i in (0..n).rev() {
+        let lane = i % NLANES;
+        let slot = (xs[lane] & (M - 1)) as usize;
+        let s = lut[slot] as usize;
+        dst[i] = s as u8;
+        xs[lane] = table.freq[s] * (xs[lane] >> LOG2_M) + slot as u32 - table.cum[s];
+        while xs[lane] < L {
+            let st = streams[lane];
+            if st.is_empty() {
                 return Err(invalid("gate stream truncated"));
             }
-            x = (x << 8) | u32::from(data[0]);
-            data = &data[1..];
+            xs[lane] = (xs[lane] << 8) | u32::from(st[0]);
+            streams[lane] = &st[1..];
         }
     }
-    out.extend(buf.iter().rev());
     Ok(())
 }
 
@@ -229,7 +294,11 @@ pub fn decompress(stored: &[u8], elem: usize) -> Result<Vec<u8>, checkpointerror
             acc += freq[s];
         }
         cum[NSYMBOLS] = acc;
-        tables.push(Table { freq, cum });
+        tables.push(Table {
+            freq,
+            cum,
+            enc: [encentry::default(); NSYMBOLS],
+        });
     }
 
     let mut lens = Vec::with_capacity(nplanes);
@@ -237,17 +306,17 @@ pub fn decompress(stored: &[u8], elem: usize) -> Result<Vec<u8>, checkpointerror
         lens.push(take_u32(&mut data).ok_or_else(|| invalid("gate stream length truncated"))? as usize);
     }
 
-    let mut out = Vec::with_capacity(src_len);
+    let mut out = vec![0u8; src_len];
     for p in 0..nplanes {
         if data.len() < lens[p] {
             return Err(invalid("gate stream truncated"));
         }
-        decode_plane(&data[..lens[p]], &mut out, &tables[p], n)?;
+        decode_plane(&data[..lens[p]], &mut out[p * n..(p + 1) * n], &tables[p])?;
         data = &data[lens[p]..];
     }
     if data.len() < tail_len {
         return Err(invalid("gate tail truncated"));
     }
-    out.extend_from_slice(&data[..tail_len]);
+    out[nplanes * n..].copy_from_slice(&data[..tail_len]);
     Ok(out)
 }
