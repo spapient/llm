@@ -16,11 +16,15 @@
 //! * [`softmax`] — the cuDNN softmax call.
 //!
 //! The safe functions expose a narrow, run-to-completion interface: upload host
-//! slices, run one kernel or one library call, download the result. Every stream
-//! and library handle is created locally and released by scope, so no execution
-//! state outlives a call. The only state that does survive is [`cache`] — the
-//! retained device context and the compiled kernels — which the executor owns
-//! and which holds no request-scoped value (docs/design.md §21.6).
+//! slices, run one kernel or one library call, download the result. NVRTC
+//! kernels take a fresh stream per call so concurrent calls proceed in
+//! parallel; the cuBLAS path shares one cached stream because its handle is
+//! created once and bound to it, which also orders concurrent cuBLAS calls.
+//! Every call still allocates and releases its own buffers by scope, so no
+//! execution state outlives a call. The only state that does survive is
+//! [`cache`] — the retained device context, the compiled kernels, and the
+//! cuBLAS handle — which the executor owns and which holds no request-scoped
+//! value (docs/design.md §21.6).
 //!
 //! The launch helpers take the validated plans produced by [`api::geometry`]
 //! rather than loose extents, so no number is re-derived after it was checked.
@@ -83,6 +87,24 @@ struct cachestate {
     /// `CudaFunction` keeps its `CudaModule` — and through it the context —
     /// alive, so a cached kernel cannot outlive the device it was compiled for.
     functions: HashMap<(&'static str, &'static str), CudaFunction>,
+    /// The stream shared by the cuBLAS path.
+    ///
+    /// The cuBLAS handle is created once and bound to this stream, so every
+    /// cuBLAS-served dispatch runs on it. Dispatches of different calls are
+    /// therefore ordered by the stream instead of running concurrently, and
+    /// each call still allocates its own buffers, so no call ever observes
+    /// another call's data.
+    librarystream: Option<Arc<CudaStream>>,
+    /// The cuBLAS handle created on first use and reused by every
+    /// [`matmul_cublas`] call.
+    ///
+    /// The cuDNN handle is deliberately not cached here: cudarc's `Cudnn` is
+    /// `!Send`/`!Sync` by design (cuDNN's documented thread-safety model), so
+    /// storing it in the shared cache would break the executor's own `Send`/
+    /// `Sync` contract. `softmax` keeps creating its handle per call; the
+    /// durable fix is an in-repo NVRTC softmax kernel, which reuses the
+    /// already cached kernel machinery.
+    blas: Option<Arc<CudaBlas>>,
 }
 
 impl cache {
@@ -119,6 +141,15 @@ impl cache {
     /// Returns the retained device, opening it once.
     fn device(&self) -> Result<Arc<CudaContext>, cudaerror> {
         self.lock().device()
+    }
+
+    /// Returns the shared cuBLAS handle and its stream, creating both once.
+    ///
+    /// The lock is held only across a creation miss; the handle and stream
+    /// are cloned out and every transfer, launch, and synchronization happens
+    /// after the lock is released, exactly like the resolved kernels.
+    fn blas(&self) -> Result<(Arc<CudaBlas>, Arc<CudaStream>), cudaerror> {
+        self.lock().blas()
     }
 
     /// Returns the resolved kernel for `(text, entry)`, compiling it once.
@@ -161,6 +192,42 @@ impl cachestate {
         })?;
         self.device = Some(opened.clone());
         Ok(opened)
+    }
+
+    /// Returns the shared library stream, creating it once.
+    ///
+    /// The stream owns a reference to the retained device, so it stays valid
+    /// as long as the cache does.
+    fn librarystream(&mut self) -> Result<Arc<CudaStream>, cudaerror> {
+        if let Some(stream) = &self.librarystream {
+            return Ok(stream.clone());
+        }
+        let device = self.device()?;
+        let opened = device
+            .new_stream()
+            .map_err(|error| cudaerror::device {
+                message: error.to_string(),
+            })?;
+        self.librarystream = Some(opened.clone());
+        Ok(opened)
+    }
+
+    /// Returns the cuBLAS handle bound to the shared library stream, creating
+    /// it once. Creation happens under the cache lock, which serializes
+    /// concurrent first calls instead of creating several handles.
+    fn blas(&mut self) -> Result<(Arc<CudaBlas>, Arc<CudaStream>), cudaerror> {
+        if self.blas.is_none() {
+            let stream = self.librarystream()?;
+            let opened = CudaBlas::new(stream.clone()).map_err(|error| cudaerror::blas {
+                message: error.to_string(),
+            })?;
+            self.blas = Some(Arc::new(opened));
+        }
+        let blas = self.blas.clone().ok_or(cudaerror::blas {
+            message: "cuBLAS handle not available".into(),
+        })?;
+        let stream = self.librarystream()?;
+        Ok((blas, stream))
     }
 }
 
@@ -365,10 +432,7 @@ pub(crate) fn matmul_cublas(
         return Ok(vec![0.0_f32; m * n]);
     }
     let dims = devicedims::new(m, k, n)?;
-    let stream = cache.stream()?;
-    let blas = CudaBlas::new(stream.clone()).map_err(|error| cudaerror::blas {
-        message: error.to_string(),
-    })?;
+    let (blas, stream) = cache.blas()?;
 
     let da = upload(&stream, lhs)?;
     let db = upload(&stream, rhs)?;

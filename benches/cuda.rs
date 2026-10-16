@@ -9,10 +9,10 @@
 //!
 //! No improvement is claimed: these numbers are a baseline (E1, RTX 2080 Ti /
 //! CUDA 13.0 / `rustc 1.99.0`, 2026-10-12; docs/design.md §21.10.3), not a
-//! comparison against an earlier revision. Every call's cost still includes the
-//! per-call device context creation and run-time NVRTC compilation this stage
-//! performs, which §21.10.3 measures at ≈12.3 ms per NVRTC-served call (about
-//! 10.8 ms of it `compile_ptx` plus module load) on that host.
+//! comparison against an earlier revision. The per-call NVRTC compilation this
+//! baseline measured no longer exists: kernels are compiled once per
+//! `(source, entry)` and cached (docs/design.md §21.10.3 item 7, 2026-10-12),
+//! and the cuBLAS/cuDNN handles are cached as well (2026-10-17).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(missing_docs)]
 
