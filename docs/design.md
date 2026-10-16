@@ -1537,6 +1537,8 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **bit-shuffle + delta 变换（`FLAGTRANSFORMED`）。** 压缩前的无损预处理：把块的字节按元素宽（2 = f16、4 = f32）转置成字节平面，再在每个平面内做字节级差分，把相关浮点数据的符号/指数/尾数字节分组并差分，显著提升后续 codec 的可压缩性。变换采用 floor+tail 语义——覆盖最大的整元素前缀（`elem*n` 字节），尾部 0..`elem` 字节原样携带在输出末尾——因此任意块长的 CDC 块都可无损变换（CDC 边界是任意字节偏移，实测 16 MiB 剖面 50 块中 32 块、70.4% 字节不整除元素宽；若像早期版本那样整块跳过，真实管线压缩率会从可达的 38.7% 掉到 25.4%）。`compressblock` 候选集刻意最小化——逐块试 {无变换, f16, f32} × Zstd-1 + raw 取最小存储：相关 f32 权重 `sd4+Zstd-1` 省 38.7%（裸 `Zstd-1` 仅 17%），f16 用 `sd2` 微赢，量化/随机剖面由选择器自然回落 raw/plain；LZ4 与 Zstd-3/9 已按扫参移除（每个实测剖面 Zstd-1 比率最优或持平，Zstd-3/9 最多多省 0.4pp 但压缩慢 5–10×，`CODECLZ4` 解码路径为旧文件兼容保留）。格式上 `FLAGTRANSFORMED`(0x10) 门控每条 `storedentry` 追加 1 字节 transform（0/2/4），无该 flag 的旧文件字节级兼容；块哈希计算基于未变换原始字节，故 root_hash、内容寻址去重、加密与签名语义全部不变，变换与其正交。可复现基准：`benches/checkpoint_compress.rs`（快照级：correlated-f32 61.29% 剩余/省 38.7%，random-f32 100.02% raw 回退；decode 40ms、encode 183ms @ 16 MiB）与 `/tmp/zbench`（块级扫参）。
 
+**mmap 零拷贝。** `checkpointreader` 的文件变体（`openfullfile`/`opendeltafile` 等）经 `mmap-guard`（safe API，unsafe 封装在依赖内）内存映射文件，`mmapsource` 按块返回借用切片（`Cow::Borrowed`），`readtensorcow` 对单块 raw 且无变换的张量零拷贝返回。workspace 保持 `forbid(unsafe_code)`。
+
 **字段布局（设计草案）。** 下列固定字节步长的条目为早期设计草案；实际 manifest 采用变长二进制序列化（`version`/`flags`/张量/块列表按 `pushu*`/`read*` 编解码，见 §12.4 与 `crates/checkpoint/src/uformat.rs`）。草案张量条目 64 B 定长：
 
 | 长度 | 字段 | 类型 |
@@ -1573,7 +1575,7 @@ checkpoint -> tensor, format        (checkpoint 不直接导入 lib)
 
 **不变量（验收判据）。** 块 `len` 与 BLAKE3-128/CRC32C 一致；块列表总长 = 逻辑数据段长（受检算术，`blockoutofrange` 兜底）；逻辑数据段 = 张量字节连续拼接且区间不重叠（复用 `checkoverlaps`）；合并输出根哈希 == 增量根哈希、数据段与原始全量字节相等；校验失败不发布部分产物；恢复只读目标块；所有文件不可变。
 
-**明确排除（本契约范围外）。** LZ4 与 Zstd 逐块压缩已实现（codec 与解压点预留扩展）；bit-shuffle + delta 变换已实现（`FLAGTRANSFORMED`）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）；AES-256-GCM 分块加密已实现（`encode_encrypted`/`decode_encrypted`）。mmap 零拷贝仍属后续。块来源以 `blocksource` trait 预留扩展点。
+**明确排除（本契约范围外）。** LZ4 与 Zstd 逐块压缩已实现（codec 与解压点预留扩展）；bit-shuffle + delta 变换已实现（`FLAGTRANSFORMED`）；Ed25519 签名已实现（`encode_signed`/`verifysignature`）；AES-256-GCM 分块加密已实现（`encode_encrypted`/`decode_encrypted`）；mmap 零拷贝已实现（`mmapsource`，safe API）。块来源以 `blocksource` trait 预留扩展点。
 
 ---
 
