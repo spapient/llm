@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use format::{dtypetoken, tokendtype};
 use tensor::{dtype, layout, shape};
 
-use crate::blocks::{TRANSFORMNONE, blockref, chunk, compressblock, decompressblock};
+use crate::blocks::{CODECRAW, TRANSFORMNONE, blockref, chunk, compressblock, decompressblock};
 use crate::crc32c::crc32c;
 use crate::encryption;
 use crate::error::checkpointerror;
@@ -527,19 +527,56 @@ impl snapshot {
 
         // Phase 1: compress every block before the manifest header is written,
         // so the snapshot-level transform flag can be set when any block uses
-        // the bit-shuffle pre-pass.
-        let mut storedblocks = Vec::with_capacity(blocks.len());
-        let mut has_transform = false;
-        let mut offset = 0usize;
+        // the bit-shuffle pre-pass. Blocks are independent, so compression is
+        // spread over available cores; each worker fills a disjoint slice of
+        // `storedblocks`.
+        let mut storedblocks: Vec<(u8, u8, Vec<u8>)> = Vec::with_capacity(blocks.len());
+        storedblocks.resize_with(blocks.len(), || (CODECRAW, TRANSFORMNONE, Vec::new()));
+
+        let nthreads = match std::thread::available_parallelism() {
+            Ok(n) => n.get().min(blocks.len()),
+            Err(_) => 1,
+        };
+        let mut cumoffsets = Vec::with_capacity(blocks.len() + 1);
+        let mut acc = 0usize;
+        cumoffsets.push(acc);
         for block in &blocks {
-            let len = block.getlen() as usize;
-            let (codec, transform, compressed) = compressblock(&self.data[offset..offset + len]);
-            if transform != TRANSFORMNONE {
-                has_transform = true;
-            }
-            storedblocks.push((codec, transform, compressed));
-            offset += len;
+            acc += block.getlen() as usize;
+            cumoffsets.push(acc);
         }
+        let mut spans = Vec::with_capacity(nthreads);
+        let mut start = 0usize;
+        for t in 0..nthreads {
+            let len = blocks.len() / nthreads + usize::from(t < blocks.len() % nthreads);
+            let end = start + len;
+            spans.push(start..end);
+            start = end;
+        }
+        let blocksref: &[blockref] = &blocks;
+        let cumoffsetsref: &[usize] = &cumoffsets;
+        let dataref: &[u8] = &self.data;
+        std::thread::scope(|scope| {
+            let mut cursor: &mut [(u8, u8, Vec<u8>)] = &mut storedblocks;
+            let mut handles = Vec::with_capacity(nthreads);
+            for span in spans {
+                let (head, tail) = cursor.split_at_mut(span.len());
+                cursor = tail;
+                handles.push(scope.spawn(move || {
+                    compressblockspan(dataref, blocksref, cumoffsetsref, span, head);
+                }));
+            }
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|_| checkpointerror::invalidmanifest {
+                        reason: "encode worker panicked".to_string(),
+                    })?;
+            }
+            Ok::<(), checkpointerror>(())
+        })?;
+        let has_transform = storedblocks
+            .iter()
+            .any(|(_, transform, _)| *transform != TRANSFORMNONE);
         if has_transform {
             flags |= FLAGTRANSFORMED;
         }
@@ -1272,6 +1309,24 @@ fn verifyblockspan(
         written += raw.len();
     }
     Ok(())
+}
+
+/// Compresses one contiguous span of blocks into `out`, which must hold exactly
+/// one entry per block in the span. Each block's source slice is located via
+/// `cumoffsets`, whose entry `i` is the byte offset of block `i`.
+fn compressblockspan(
+    data: &[u8],
+    blocks: &[blockref],
+    cumoffsets: &[usize],
+    span: std::ops::Range<usize>,
+    out: &mut [(u8, u8, Vec<u8>)],
+) {
+    for (i, position) in span.enumerate() {
+        let block = &blocks[position];
+        let start = cumoffsets[position];
+        let len = block.getlen() as usize;
+        out[i] = compressblock(&data[start..start + len]);
+    }
 }
 
 /// Verifies every tensor's byte range lies within the data section without
