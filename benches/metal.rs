@@ -30,7 +30,7 @@ mod macos {
     use bench::{
         ELEMENTWISE, EMBEDDIM, GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN,
         SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput,
-        matmulbatchinput, matmulinput, norminput, ropeinput, softmaxinput,
+        matmulbatchinput, matmulinput, norminput, ropeinput, scaninput, softmaxinput,
     };
     use cpu::cpuexecutor;
     use criterion::{
@@ -401,6 +401,84 @@ mod macos {
         group.finish();
     }
 
+    /// M1 Should: on the same device, a 16K semigroup scan against dense 16K
+    /// attention on the same sequence (lld.md §5.6, §10.10 — no cross-model
+    /// Table 7 extrapolation). The scan is O(seq·d), dense attention
+    /// O(seq²·d), so the Metal ratio is the β-path payoff of the three-stage
+    /// parallel scan; the CPU serial number anchors the same workload.
+    fn scan(c: &mut Criterion) {
+        let cpuexec = cpuexecutor::new(LIMIT);
+        let metalexec = metalexecutor::new(LIMIT);
+        let seq = 16384;
+        let (input, init, a, b, cparam, skip) = scaninput(seq).unwrap();
+        let (iv, statev, av, bv, cv, sv) = (
+            input.getview(),
+            init.getview(),
+            a.getview(),
+            b.getview(),
+            cparam.getview(),
+            skip.getview(),
+        );
+        let mut group = c.benchmark_group("gpu/scan");
+        group.throughput(Throughput::Elements((seq * bench::SCANCHANNELS) as u64));
+        group.bench_function("cpuserial", |b| {
+            b.iter(|| {
+                black_box(
+                    compute::scan(
+                        &cpuexec,
+                        black_box(&iv),
+                        black_box(&statev),
+                        black_box(&av),
+                        black_box(&bv),
+                        black_box(&cv),
+                        black_box(&sv),
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+        group.bench_function("metalparallel", |b| {
+            b.iter(|| {
+                black_box(
+                    compute::scan(
+                        &metalexec,
+                        black_box(&iv),
+                        black_box(&statev),
+                        black_box(&av),
+                        black_box(&bv),
+                        black_box(&cv),
+                        black_box(&sv),
+                    )
+                    .unwrap(),
+                )
+            })
+        });
+        group.finish();
+    }
+
+    /// The dense 16K attention side of the M1 Should comparison. Metal only:
+    /// the same workload on CPU would run for minutes. The `heads8dim64`
+    /// suffix pins the workload against the existing `gpu/attention`
+    /// `seq128heads8dim64` group.
+    fn attention16k(c: &mut Criterion) {
+        let metalexec = metalexecutor::new(LIMIT);
+        let seq = 16384;
+        let width = HEADS * HEADDIM;
+        let elements = seq * width;
+        let q = tensor::new(shape::new(vec![seq, width]).unwrap(), vec![0.1_f32; elements]).unwrap();
+        let k = tensor::new(shape::new(vec![seq, width]).unwrap(), vec![0.2_f32; elements]).unwrap();
+        let v = tensor::new(shape::new(vec![seq, width]).unwrap(), vec![0.3_f32; elements]).unwrap();
+        let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
+        let mut group = c.benchmark_group("gpu/attention16k");
+        group.throughput(Throughput::Elements(seq as u64));
+        group.bench_function("metalheads8dim64", |b| {
+            b.iter(|| {
+                black_box(metalexec.attention(&qv, &kv, &vv, HEADS, HEADS, true).unwrap())
+            })
+        });
+        group.finish();
+    }
+
     criterion_group!(
         benches,
         matmul,
@@ -411,6 +489,8 @@ mod macos {
         rope,
         embedding,
         attention,
+        scan,
+        attention16k,
         model_forward,
         submission_chain,
         decode

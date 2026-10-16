@@ -1,6 +1,7 @@
 # β 通道落地计划：结合律半群扫描算子（SSM 递推）
 
-> **版本**：v1.3（2026-10-16）　**状态**：现状核对版——scan 算子三后端已实现（见 §0），本计划聚焦剩余缺口
+> **版本**：v1.4（2026-10-16）　**状态**：M1 交付门闭合——GPU 三段式并行扫描（Metal/CUDA）+ M1 Should 同装置实测 103× ≥ 5×（§12），阈值 $O(nd)$ 不变
+> **v1.4 变更**：**M1 Should 闭合（2026-10-16，完全访问环境）**——GPU 三段式并行扫描落地（Metal `scan_parallel.metal` / CUDA `scan_parallel.cu`：块内累积 + 块间前缀 + 块内应用；串行内核保留为宽状态回退）；Metal 数值真机绿（`metalcontract::scan` 16/16 含 16K/64 块并行用例，容差按 P·ε·‖B‖ 界）；M1 Should 同装置实测：16K scan 26.6 ms vs 16K 稠密 attention 2747 ms ≈103× ≥ 5×（M5 Pro，`benches/metal.rs` `gpu/scan` + `gpu/attention16k`）。lld.md §10.10 M1 行翻为已交付。CUDA 数值真机（NVIDIA 主机）待用户环境 `cudacontract`，不因此更改 M1 判定。
 > **v1.3 变更**：**实测核对（2026-10-16，完全访问环境）**——`api::compute` 已有 `scan`/`scan_cached`（`kernels.rs:283/307`，HEAD 已提交）；CPU（`crates/cpu/src/scan.rs`，串行权威 + 并行容差路径）、Metal（executor + MSL，metalcontract 48/48 全绿）、CUDA（executor:378/390）三后端均已实现；测试齐备（`scancontract.rs` 参考 64 点半群前缀/空序列/非 2 幂、`scanunits.rs` 逐位一致 + cached≡全量、apikernelcontract、metalcontract 谱违规拒绝）；design.md §5 契约表已登记（351-352 行）。**剩余缺口 = 基准（benches/ 无 scan 目标）+ M1 判定实测 + GPU 并行扫描核对 + 模型挂载（nn SSM 层 + registry 变体）**。B0–B4 由「从零实现」改为「已交付」；B5/B6 保留。
 > **v1.2 变更**：撤回 v1.1 的「拆 `scankernel` trait」——核对 `lib.rs` 与 conformance.md 后，A4 上界 20 的权威口径是 **crate root 导出项数**（当前 18/20），拆 trait 反而 +1 导出项；design.md §5.2 决策 5 的既定路线就是「累加扩展 `compute`」。`scan`/`scan_cached` 作为 `compute` 新方法（11 → 13）。另将谱前置的错误改由 **B0 新增 `backenderror::invalidparameter`**（现有 7 variant 无「参数值非法」类）。其余 v1.1 修正保留：并行容差对齐 §5.10、`A` 限定对角/块对角并补谱校验、离散化边界、SSM 层归属（`nn`）、M1 测量协议（闭集硬件 + 禁 Table 7）、直通项 `skip`、`scan_cached` 输出 `[1,d]`。
 > **数学权威**：`docs/lld.md` §5.6（结合律扫描，数学验证 5a/5b）、§1.1 C2、M1/M3/M4；实现契约权威：`docs/design.md` §5（层 0：api，累加式扩展）
@@ -249,8 +250,16 @@ A4 上界 20 的权威口径是「crate root 导出的公共项数」（design.m
 
 **M1 实测（n 维度）**：serial 每 4× 序列 ≈4× 耗时（23.3→92.7→367.5），log-log 斜率 ≈1，与 §11 理论 $O(ndN)$（固定 d,N 时 n 线性）一致。chunked 慢 ~50%（两遍递推常数 2×，与 §11 一致），是数值验证路径而非 CPU 性能路径；其性能价值在并行（多线程/GPU 序列维度并行）。
 
-**M1 Should（scan vs 稠密 attention 16K ≥5×）**：待同装置 attention 对照；不引用异模型 Table 7。
+**M1 Should（scan vs 稠密 attention 16K ≥5×，同装置）**：Metal（M5 Pro）实测，criterion median：
+
+| 基准 | median |
+| :--- | :--- |
+| `gpu/scan/metalparallel`（16K 三段式并行 scan，n=16384/d=256/N=64） | 26.576 ms |
+| `gpu/attention16k/metalheads8dim64`（16K 稠密 attention，seq=16384/heads=8/dim=64） | 2746.7 ms |
+| 比值（attention / scan） | **≈103×** ≥ 5× |
+
+同期 `gpu/scan/cpuserial` 89.634 ms（与上表 `scan/seq16384/serial` 92.695 ms 一致，跨进程核对）。GPU 三段式（块内累积 + 块间前缀 + 块内应用）Metal 实测 26.6 ms，较 CPU 串行 89.6 ms 加速 ≈3.4×，且 16K 稠密 attention 对照 103× ≫ 5× 门槛——**M1 Should 闭合**。GPU 三阶段内核（`crates/metal/kernels/scan_parallel.metal`、`crates/cuda/kernels/scan_parallel.cu`）的每步工作量与 §11 分段三阶段理论一致（总 $O(ndN)$、深度 $O(\text{chunk}+P)$），仅执行路径不同（`scan_mode`），不改变离散。
 
 ---
 
-**状态声明**：B0–B5 已实现并提交（契约/三后端/模型挂载），B6 基准基线已出（serial 线性 $O(n)$ 实测核对）。M1 状态在「理论 + 实测」双门禁下：理论已成文（§11）、n 维度线性已实测（§12）；**M1 Should（16K vs attention ≥5×）与 GPU 数值真机验证仍未出数**，M1 保持 OPEN，阈值 $O(nd)$ 不降。
+**状态声明**：B0–B5 已实现并提交（契约/三后端/模型挂载），B6 基准基线已出（serial 线性 $O(n)$ 实测核对）。M1 状态在「理论 + 实测」双门禁下：理论已成文（§11：循环不变量、每步工作量、内存访问计数、完整阶 $O(ndN)$）、n 维度线性已实测（§12：log-log 斜率 ≈1）、**M1 Should 已实测闭合（Metal 同装置 16K scan 26.6 ms vs 稠密 attention 2747 ms ≈103× ≥ 5×，§12 表）**，GPU 数值真机已绿（`metalcontract::scan` 含并行用例 16/16，含 16K 大序列）。M1 判定：**已达成交付门（Must 理论+线性实测；Should 同装置 16K ≥5×）**，阈值 $O(nd)$ 维持不变。
