@@ -576,6 +576,43 @@ pub(crate) fn softmax(
     syncanddownload(&stream, &dy)
 }
 
+/// Computes softmax over the last axis with the in-repo NVRTC kernel.
+///
+/// This is the in-repo alternative to the cuDNN path: the kernel is compiled
+/// from [`SOFTMAXCUDA`](crate::source::SOFTMAXCUDA) at run time through the
+/// cached kernel machinery, so every call after the first pays no library
+/// handle creation and no cuDNN descriptor setup. The numerical rule is the
+/// same max-subtracting one as [`softmax`], including the host fallback for
+/// non-finite input.
+pub(crate) fn softmax_nvrtc(
+    cache: &cache,
+    input: &[f32],
+    rows: usize,
+    width: usize,
+) -> Result<Vec<f32>, cudaerror> {
+    if rows == 0 {
+        return Ok(Vec::new());
+    }
+    let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
+    if input.iter().any(|value| !value.is_finite()) {
+        return Ok(scalarsoftmax(input, width));
+    }
+    let stream = cache.stream()?;
+    let function = cache.function(source::SOFTMAXCUDA, source::SOFTMAXENTRY)?;
+    let dx = upload(&stream, input)?;
+    let mut dy = alloc(&stream, total)?;
+    let widthu = asunsigned(width)?;
+    let config = LaunchConfig {
+        grid_dim: (asunsigned(rows)?, 1, 1),
+        block_dim: (source::ROWTILE, 1, 1),
+        shared_mem_bytes: source::ROWTILE * 4,
+    };
+    let mut args = stream.launch_builder(&function);
+    args.arg(&dx).arg(&mut dy).arg(&widthu);
+    submit(&mut args, config)?;
+    syncanddownload(&stream, &dy)
+}
+
 /// The scalar max-subtracting softmax `cpu` and `metal` implement.
 ///
 /// Private to this file: it exists so the cuDNN path can step aside for inputs

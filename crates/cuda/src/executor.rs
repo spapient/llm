@@ -30,6 +30,20 @@ pub enum matmulpath {
     nvrtc,
 }
 
+/// Which implementation serves `softmax`, chosen once at construction exactly
+/// like [`matmulpath`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum softmaxpath {
+    /// cuDNN — the library path used by [`cudaexecutor::new`]. Its handle is
+    /// created per call because cudarc's `Cudnn` is `!Send` by design, so this
+    /// path pays a fixed cost every call.
+    cudnn,
+    /// The in-repo kernel compiled at run time through NVRTC, used by
+    /// [`cudaexecutor::newsoftmaxnvrtc`]. After the first call the kernel is
+    /// cached, so no library handle is created per call.
+    nvrtc,
+}
+
 /// A CUDA executor: the crate's [`compute`](api::compute) provider.
 ///
 /// `cudaexecutor` owns a [`cudabackend`] and is the single place where its
@@ -38,19 +52,21 @@ pub enum matmulpath {
 /// value, so one value can be shared immutably across requests.
 ///
 /// The operator set is complete: `matmul` is served by cuBLAS (or, on the
-/// reference path, by an NVRTC kernel), `softmax` by cuDNN, and every remaining
-/// operator by an in-repo CUDA C++ kernel compiled at run time through NVRTC.
-/// See docs/design.md §21.2 decision 11 for why each operator uses the
-/// mechanism it does.
+/// reference path, by an NVRTC kernel), `softmax` by cuDNN (or by the in-repo
+/// NVRTC kernel), and every remaining operator by an in-repo CUDA C++ kernel
+/// compiled at run time through NVRTC. See docs/design.md §21.2 decision 11
+/// for why each operator uses the mechanism it does.
 #[derive(Clone, Debug)]
 pub struct cudaexecutor {
     backend: cudabackend,
     path: matmulpath,
+    softmax: softmaxpath,
     cache: Arc<ffi::cache>,
 }
 
 impl cudaexecutor {
-    /// Creates an executor whose `matmul` is served by cuBLAS.
+    /// Creates an executor whose `matmul` is served by cuBLAS and `softmax` by
+    /// cuDNN.
     ///
     /// The executor owns the device state and the compiled kernels: a clone
     /// shares them, while an independently constructed executor retains its own
@@ -60,6 +76,7 @@ impl cudaexecutor {
         Self {
             backend: cudabackend::new(lim),
             path: matmulpath::cublas,
+            softmax: softmaxpath::cudnn,
             cache: Arc::new(ffi::cache::new()),
         }
     }
@@ -74,6 +91,22 @@ impl cudaexecutor {
         Self {
             backend: cudabackend::new(lim),
             path: matmulpath::nvrtc,
+            softmax: softmaxpath::cudnn,
+            cache: Arc::new(ffi::cache::new()),
+        }
+    }
+
+    /// Creates an executor whose `softmax` is served by the in-repo NVRTC
+    /// kernel, avoiding the per-call cuDNN handle creation.
+    ///
+    /// The kernel is compiled once and cached like every other NVRTC kernel,
+    /// so the steady-state call pays upload, launch, and download only.
+    #[must_use]
+    pub fn newsoftmaxnvrtc(lim: limits) -> Self {
+        Self {
+            backend: cudabackend::new(lim),
+            path: matmulpath::cublas,
+            softmax: softmaxpath::nvrtc,
             cache: Arc::new(ffi::cache::new()),
         }
     }
@@ -100,6 +133,12 @@ impl cudaexecutor {
     #[must_use]
     pub fn getpath(&self) -> matmulpath {
         self.path
+    }
+
+    /// Returns which implementation currently serves `softmax`.
+    #[must_use]
+    pub fn getsoftmaxpath(&self) -> softmaxpath {
+        self.softmax
     }
 
     /// Validates a shape's rank, element count, and byte size against the
@@ -295,8 +334,13 @@ impl compute for cudaexecutor {
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
         let geometry = axisshape::softmax(input.getshape())?;
-        let data = ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width)
-            .map_err(maptobackend)?;
+        let data = match self.softmax {
+            softmaxpath::cudnn => ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width),
+            softmaxpath::nvrtc => {
+                ffi::softmax_nvrtc(&self.cache, input.getdata(), geometry.rows, geometry.width)
+            }
+        }
+        .map_err(maptobackend)?;
         wrap(input.getshape().clone(), data)
     }
 

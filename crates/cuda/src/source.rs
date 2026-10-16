@@ -44,6 +44,13 @@ pub(crate) const RMSNORMENTRY: &str = "rmsnorm";
 /// The threadgroup width of the RMS-normalization reduction.
 pub(crate) const ROWTILE: u32 = 256;
 
+/// CUDA C source of the `f32` softmax-over-last-axis kernel
+/// (`kernels/softmax.cu`), the in-repo alternative to the cuDNN path.
+pub(crate) const SOFTMAXCUDA: &str = include_str!("../kernels/softmax.cu");
+
+/// The stable symbol name of the kernel in [`SOFTMAXCUDA`].
+pub(crate) const SOFTMAXENTRY: &str = "softmax";
+
 /// CUDA C source of the `f32` rotary-position-embedding kernel
 /// (`kernels/rope.cu`).
 pub(crate) const ROPECUDA: &str = include_str!("../kernels/rope.cu");

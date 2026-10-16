@@ -365,6 +365,26 @@ fn softmax_matches_the_scalar_reference_per_row() {
     assertallclose(out.getdata(), &want, 1.0e-6, 1.0e-6);
 }
 
+/// The in-repo NVRTC softmax path matches the scalar reference with the same
+/// rule as the cuDNN path, including the row-wise maximum subtraction.
+#[test]
+fn nvrtc_softmax_matches_the_scalar_reference_per_row() {
+    if !hasdevice("nvrtc_softmax_matches_the_scalar_reference_per_row") {
+        return;
+    }
+    let exec = cudaexecutor::newsoftmaxnvrtc(wide());
+    let input: Vec<f32> = (0..1024).map(|i| (i as f32 * 0.31).sin()).collect();
+    let x = build(vec![16, 64], input.clone());
+
+    let out = exec.softmax(&x.getview()).unwrap();
+
+    let mut want = Vec::new();
+    for row in input.chunks(64) {
+        want.extend(reference::softmax(row));
+    }
+    assertallclose(out.getdata(), &want, 1.0e-5, 1.0e-5);
+}
+
 #[test]
 fn softmax_is_numerically_stable_for_extreme_logits() {
     if !hasdevice("softmax_is_numerically_stable_for_extreme_logits") {
