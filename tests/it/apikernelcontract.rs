@@ -84,6 +84,14 @@ fn operation_variant_carries_name() {
 }
 
 #[test]
+fn invalidparameter_carries_op_name() {
+    let e = backenderror::invalidparameter { op: "scan" };
+    assert_eq!(e, backenderror::invalidparameter { op: "scan" });
+    assert_ne!(e, backenderror::invalidparameter { op: "attention" });
+    assert_eq!(e.to_string(), "invalid parameter for scan");
+}
+
+#[test]
 fn unit_variants_are_distinct() {
     assert_eq!(backenderror::sizeoverflow, backenderror::sizeoverflow);
     assert_ne!(backenderror::sizeoverflow, backenderror::executionfailed);
@@ -344,6 +352,16 @@ fn compute_contract_reports_unsupported_operations() {
     assert_eq!(
         refusecompute.attention(&v, &v, &v, 1, 1, true).map(|_| ()),
         Err(backenderror::unsupportedoperation { op: "attention" })
+    );
+    assert_eq!(
+        refusecompute.scan(&v, &v, &v, &v, &v, &v).map(|_| ()),
+        Err(backenderror::unsupportedoperation { op: "scan" })
+    );
+    assert_eq!(
+        refusecompute
+            .scan_cached(&v, &v, &v, &v, &v, &v)
+            .map(|_| ()),
+        Err(backenderror::unsupportedoperation { op: "scan_cached" })
     );
 }
 
