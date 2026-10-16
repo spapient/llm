@@ -79,15 +79,18 @@ impl kernel<f32> for cpurope {
         for (row, out) in data.chunks_mut(last).enumerate() {
             let position = if seqaxis == 0 { 0 } else { row % seqaxis };
             let inrow = &src[row * last..(row + 1) * last];
-            for head in 0..self.heads {
-                let offset = head * headdim;
-                for (i, &freq) in invfreq.iter().enumerate() {
-                    let angle = position as f32 * freq;
-                    let (sin, cos) = angle.sin_cos();
-                    let even = inrow[offset + 2 * i];
-                    let odd = inrow[offset + 2 * i + 1];
-                    out[offset + 2 * i] = even * cos - odd * sin;
-                    out[offset + 2 * i + 1] = even * sin + odd * cos;
+            // Each (position, i) angle is computed once and reused by every
+            // head; the per-element arithmetic is unchanged, so the result is
+            // bit-identical to the head-outer evaluation order.
+            for (i, &freq) in invfreq.iter().enumerate() {
+                let angle = position as f32 * freq;
+                let (sin, cos) = angle.sin_cos();
+                for head in 0..self.heads {
+                    let offset = head * headdim + 2 * i;
+                    let even = inrow[offset];
+                    let odd = inrow[offset + 1];
+                    out[offset] = even * cos - odd * sin;
+                    out[offset + 1] = even * sin + odd * cos;
                 }
             }
         }
