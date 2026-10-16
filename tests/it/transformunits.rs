@@ -87,6 +87,27 @@ mod transform_units {
     }
 
     #[test]
+    fn bitshuffle_delta_inverts_non_aligned_lengths() {
+        // CDC block boundaries are arbitrary byte offsets; the transform must
+        // invert blocks whose length is not a multiple of the element size.
+        let mut seed = 0x0ddb_00d5_0000_0001u64;
+        let data = gen_weights(&mut seed, 100_000, false);
+        for len in 1..=8 {
+            let block = &data[..data.len() - len];
+            for elem in [2usize, 4] {
+                let transformed = bitshuffle_delta(block, elem);
+                assert_eq!(transformed.len(), block.len());
+                assert_eq!(
+                    unbitshuffle_delta(&transformed, elem),
+                    block,
+                    "len % {elem} = {}",
+                    block.len() % elem
+                );
+            }
+        }
+    }
+
+    #[test]
     fn bitshuffle_delta_is_deterministic() {
         let mut seed = 0x1234_5678_9abc_def0u64;
         let data = gen_weights(&mut seed, 100_000, false);
