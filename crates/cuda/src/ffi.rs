@@ -29,11 +29,11 @@
 //! The launch helpers take the validated plans produced by [`api::geometry`]
 //! rather than loose extents, so no number is re-derived after it was checked.
 
-use core::ffi::c_int;
+use core::ffi::{c_int, c_longlong};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, sys::cublasOperation_t};
+use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, StridedBatchedConfig, sys::cublasOperation_t};
 use cudarc::cudnn::{
     Cudnn, CudnnError, SoftmaxForward,
     sys::{cudnnSoftmaxAlgorithm_t, cudnnSoftmaxMode_t},
@@ -336,27 +336,31 @@ fn submit(args: &mut LaunchArgs<'_>, config: LaunchConfig) -> Result<(), cudaerr
         })
 }
 
-/// Runs one cuBLAS `gemm`, the crate's single cuBLAS site.
+/// Runs one cuBLAS strided-batched `gemm`, the crate's single cuBLAS site.
 ///
 /// This is a function rather than an inline block so the registered count stays
 /// one: the single-operator [`matmul_cublas`] and the accumulative submission
-/// path both call it, and neither adds an `unsafe` site of its own.
+/// path both call it, and neither adds an `unsafe` site of its own. The batched
+/// form serves single matrices too (batch size one), so the one site covers
+/// both call shapes.
 fn gemm(
     blas: &CudaBlas,
-    config: GemmConfig<f32>,
+    config: StridedBatchedConfig<f32>,
     db: &CudaSlice<f32>,
     da: &CudaSlice<f32>,
     dc: &mut CudaSlice<f32>,
 ) -> Result<(), cudaerror> {
     // SAFETY: `da`, `db`, and `dc` are live device allocations. `da` holds the
-    // `[m, k]` left operand and `db` the `[k, n]` right operand; read as
-    // column-major they are the `k x m` and `n x k` matrices the `lda`/`ldb`
-    // leading dimensions describe, and `dc` is written as an `n x m`
-    // column-major matrix with leading dimension `ldc`, i.e. the row-major
-    // `[m, n]` result. Every dimension is at least 1 and fits `c_int`, so no
-    // out-of-bounds access is possible.
+    // `[batch, m, k]` left operand and `db` the `[batch, k, n]` right operand;
+    // read as column-major they are the `k x m` and `n x k` matrices the
+    // `lda`/`ldb` leading dimensions describe, and `dc` is written as an
+    // `n x m` column-major matrix with leading dimension `ldc`, i.e. the
+    // row-major `[m, n]` result. The per-slice strides `stride_a`/`stride_b`/
+    // `stride_c` are the exact element counts of one slice of each operand, so
+    // every batch slice stays inside its allocation. Every dimension is at
+    // least 1 and fits `c_int`, so no out-of-bounds access is possible.
     unsafe {
-        blas.gemm(config, db, da, dc)
+        blas.gemm_strided_batched(config, db, da, dc)
             .map_err(|error| cudaerror::blas {
                 message: error.to_string(),
             })?;
@@ -424,40 +428,57 @@ pub(crate) fn matmul_cublas(
     m: usize,
     k: usize,
     n: usize,
+    batch: usize,
 ) -> Result<Vec<f32>, cudaerror> {
-    if m == 0 || n == 0 {
+    if m == 0 || n == 0 || batch == 0 {
         return Ok(Vec::new());
     }
     if k == 0 {
-        return Ok(vec![0.0_f32; m * n]);
+        return Ok(vec![0.0_f32; m * n * batch]);
     }
     let dims = devicedims::new(m, k, n)?;
     let (blas, stream) = cache.blas()?;
 
     let da = upload(&stream, lhs)?;
     let db = upload(&stream, rhs)?;
-    let mut dc = alloc(&stream, m * n)?;
+    let total = m
+        .checked_mul(n)
+        .and_then(|value| value.checked_mul(batch))
+        .ok_or(cudaerror::sizeoverflow)?;
+    let mut dc = alloc(&stream, total)?;
 
     // cuBLAS is column-major, so the operands are handed over swapped: the
     // row-major `[m, k]` left operand reads as a column-major `k x m` matrix,
     // and the row-major `[k, n]` right operand as a column-major `n x k` one.
     // Their product is the column-major `n x m` matrix whose row-major reading
     // is the `[m, n]` result the caller asked for. `m` and `n` below are
-    // therefore the cuBLAS extents, not the contract's.
+    // therefore the cuBLAS extents, not the contract's. The strides are one
+    // slice's element count per operand, so the batch dimension walks the
+    // row-major slices without any extra transfer or launch.
     let m_int = asint(dims.n)?;
     let n_int = asint(dims.m)?;
     let k_int = asint(dims.k)?;
-    let config = GemmConfig {
-        transa: cublasOperation_t::CUBLAS_OP_N,
-        transb: cublasOperation_t::CUBLAS_OP_N,
-        m: m_int,
-        n: n_int,
-        k: k_int,
-        alpha: 1.0_f32,
-        lda: m_int,
-        ldb: k_int,
-        beta: 0.0_f32,
-        ldc: m_int,
+    let config = StridedBatchedConfig {
+        gemm: GemmConfig {
+            transa: cublasOperation_t::CUBLAS_OP_N,
+            transb: cublasOperation_t::CUBLAS_OP_N,
+            m: m_int,
+            n: n_int,
+            k: k_int,
+            alpha: 1.0_f32,
+            lda: m_int,
+            ldb: k_int,
+            beta: 0.0_f32,
+            ldc: m_int,
+        },
+        batch_size: asint(
+            batch
+                .try_into()
+                .map_err(|_| cudaerror::sizeoverflow)?,
+        )?,
+        stride_a: (m * k) as c_longlong,
+        stride_b: (k * n) as c_longlong,
+        stride_c: (m * n) as c_longlong,
     };
 
     gemm(&blas, config, &db, &da, &mut dc)?;
@@ -1205,17 +1226,23 @@ pub(crate) fn matmul_cublas_into(
     let m_int = asint(dims.n)?;
     let n_int = asint(dims.m)?;
     let k_int = asint(dims.k)?;
-    let config = GemmConfig {
-        transa: cublasOperation_t::CUBLAS_OP_N,
-        transb: cublasOperation_t::CUBLAS_OP_N,
-        m: m_int,
-        n: n_int,
-        k: k_int,
-        alpha: 1.0_f32,
-        lda: m_int,
-        ldb: k_int,
-        beta: 0.0_f32,
-        ldc: m_int,
+    let config = StridedBatchedConfig {
+        gemm: GemmConfig {
+            transa: cublasOperation_t::CUBLAS_OP_N,
+            transb: cublasOperation_t::CUBLAS_OP_N,
+            m: m_int,
+            n: n_int,
+            k: k_int,
+            alpha: 1.0_f32,
+            lda: m_int,
+            ldb: k_int,
+            beta: 0.0_f32,
+            ldc: m_int,
+        },
+        batch_size: 1,
+        stride_a: (m * k) as c_longlong,
+        stride_b: (k * n) as c_longlong,
+        stride_c: (m * n) as c_longlong,
     };
     gemm(&blas, config, rhs, lhs, &mut dc)?;
     Ok(session.record(slot::buffer(dc)))

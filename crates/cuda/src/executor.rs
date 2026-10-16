@@ -138,7 +138,7 @@ impl cudaexecutor {
         n: usize,
     ) -> Result<Vec<f32>, cudaerror> {
         match self.path {
-            matmulpath::cublas => ffi::matmul_cublas(&self.cache, lhs, rhs, m, k, n),
+            matmulpath::cublas => ffi::matmul_cublas(&self.cache, lhs, rhs, m, k, n, 1),
             matmulpath::nvrtc => ffi::matmul_nvrtc(&self.cache, lhs, rhs, m, k, n),
         }
     }
@@ -216,15 +216,32 @@ impl compute for cudaexecutor {
         let mut data = Vec::new();
         data.try_reserve_exact(outelements)
             .map_err(|_| backenderror::resourceexhausted)?;
-        for b in 0..geometry.batch {
-            let lstart = b * geometry.m * geometry.k;
-            let rstart = b * geometry.k * geometry.n;
-            let lblock = &lhsdata[lstart..lstart + geometry.m * geometry.k];
-            let rblock = &rhsdata[rstart..rstart + geometry.k * geometry.n];
-            let block = self
-                .dispatch(lblock, rblock, geometry.m, geometry.k, geometry.n)
+        match self.path {
+            matmulpath::cublas => {
+                let block = ffi::matmul_cublas(
+                    &self.cache,
+                    lhsdata,
+                    rhsdata,
+                    geometry.m,
+                    geometry.k,
+                    geometry.n,
+                    geometry.batch,
+                )
                 .map_err(maptobackend)?;
-            data.extend_from_slice(&block);
+                data.extend_from_slice(&block);
+            }
+            matmulpath::nvrtc => {
+                for b in 0..geometry.batch {
+                    let lstart = b * geometry.m * geometry.k;
+                    let rstart = b * geometry.k * geometry.n;
+                    let lblock = &lhsdata[lstart..lstart + geometry.m * geometry.k];
+                    let rblock = &rhsdata[rstart..rstart + geometry.k * geometry.n];
+                    let block = self
+                        .dispatch(lblock, rblock, geometry.m, geometry.k, geometry.n)
+                        .map_err(maptobackend)?;
+                    data.extend_from_slice(&block);
+                }
+            }
         }
 
         wrap(outshape, data)
