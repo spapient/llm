@@ -15,33 +15,34 @@
 //! `cargo check --workspace --all-targets` stays green everywhere. All items
 //! are `#[cfg(target_os = "linux")]`.
 //!
-//! # Three mechanisms
+//! # Two mechanisms
 //!
-//! The operator set is served by three CUDA-specific mechanisms, chosen per
+//! The operator set is served by two CUDA-specific mechanisms, chosen per
 //! operator rather than per convenience (docs/design.md §21.2 decision 11):
 //!
 //! * **cuBLAS** serves `matmul` — the CUDA-specific fast path.
-//! * **cuDNN** serves `softmax`, whose last axis maps onto cuDNN's channel axis.
 //! * **In-repo CUDA C++** compiled at run time through NVRTC serves everything
-//!   else: `add`, `mul`, `silu`, `rmsnorm`, `rope`, `embedding`, and a fused
-//!   `attention`. The NVRTC matmul kernel remains available through
+//!   else: `softmax`, `add`, `mul`, `silu`, `rmsnorm`, `rope`, `embedding`, and
+//!   a fused `attention`. The NVRTC matmul kernel remains available through
 //!   `cudaexecutor::newnvrtc` as the independent reference the cuBLAS path is
 //!   validated against.
 //!
-//! `silu` deliberately does *not* use cuDNN's `CUDNN_ACTIVATION_SWISH`: that
-//! entry point is a second `unsafe` construct for an elementwise operation the
-//! NVRTC kernel family already covers at no additional exemption cost.
+//! `softmax` uses the in-repo max-subtracting kernel rather than cuDNN: the
+//! kernel reuses the NVRTC launch site (no exemption growth), implements the
+//! same formulation as `cpu`/`metal`, and avoids cuDNN's per-call handle
+//! creation. Removing the cuDNN path reduced the crate from three `unsafe`
+//! sites to two.
 //!
 //! # Unsafe
 //!
-//! This crate is one of the three carriers of the workspace's restricted
+//! This crate is one of the four carriers of the workspace's restricted
 //! `unsafe` exemption (see docs/design.md §21.8). The crate root uses
 //! `#![deny(unsafe_code)]`; the single module `ffi` declares the crate's one
 //! allowance and confines every platform call there, each preceded by a
-//! `// SAFETY:` comment. The registered sites are three, one per class of
-//! platform interaction: the NVRTC kernel launch, the cuBLAS `gemm`, and the
-//! cuDNN softmax. `scripts/checkunsafe.sh` enforces the exact site count and
-//! the SAFETY comments mechanically.
+//! `// SAFETY:` comment. The registered sites are two, one per class of
+//! platform interaction: the NVRTC kernel launch and the cuBLAS `gemm`.
+//! `scripts/checkunsafe.sh` enforces the exact site count and the SAFETY
+//! comments mechanically.
 //!
 //! # Naming
 //!

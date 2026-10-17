@@ -4,8 +4,11 @@
 // power-of-two ROWTILE. NEGLARGE is the most negative finite f32 (not -inf),
 // because NVRTC needs no header to produce it; for finite inputs the two are
 // equivalent. The max-subtracting order is the numerically stable one the
-// scalar reference shares; a row whose shifted-exponent sum is not positive
-// (non-finite input) is written as zeros, matching the host fallback.
+// scalar reference shares. A row whose shifted-exponent sum is not positive
+// (non-finite input) is written as zeros; the single-operator path routes
+// non-finite input to the host scalar rule (NaN) before launching this kernel,
+// while the submission path cannot inspect device-resident operands and keeps
+// the kernel's own result.
 // Symbol: softmax
 #define NEGLARGE (-3.402823466e+38f)
 

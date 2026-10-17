@@ -345,7 +345,7 @@ fn empty_elementwise_inputs_produce_empty_output() {
 }
 
 // ---------------------------------------------------------------------------
-// softmax (cuDNN) and rmsnorm (NVRTC)
+// softmax and rmsnorm (NVRTC)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -365,14 +365,14 @@ fn softmax_matches_the_scalar_reference_per_row() {
     assertallclose(out.getdata(), &want, 1.0e-6, 1.0e-6);
 }
 
-/// The in-repo NVRTC softmax path matches the scalar reference with the same
-/// rule as the cuDNN path, including the row-wise maximum subtraction.
+/// The default NVRTC softmax path matches the scalar reference, including the
+/// row-wise maximum subtraction.
 #[test]
 fn nvrtc_softmax_matches_the_scalar_reference_per_row() {
     if !hasdevice("nvrtc_softmax_matches_the_scalar_reference_per_row") {
         return;
     }
-    let exec = cudaexecutor::newsoftmaxnvrtc(wide());
+    let exec = cudaexecutor::new(wide());
     let input: Vec<f32> = (0..1024).map(|i| (i as f32 * 0.31).sin()).collect();
     let x = build(vec![16, 64], input.clone());
 
@@ -430,7 +430,7 @@ fn softmax_rejects_an_empty_last_axis() {
 
 #[test]
 fn softmax_over_zero_rows_yields_an_empty_output() {
-    // `rows == 0` is settled on the host before cuDNN is opened.
+    // `rows == 0` is settled on the host before a device is opened.
     let exec = cudaexecutor::new(wide());
     let x = build(vec![0, 3], vec![]);
     let out = exec.softmax(&x.getview()).unwrap();
@@ -945,8 +945,9 @@ fn runeveryoperator(exec: &cudaexecutor) {
 
 #[test]
 fn every_kernel_is_compiled_once_and_then_reused() {
-    // Seven `(source, entry)` pairs serve the nine operators on the cuBLAS path:
-    // `add`/`mul`/`silu` share ELEMENTWISE with three entries, and `matmul` is
+    // Eight `(source, entry)` pairs serve the nine operators on the cuBLAS path:
+    // `add`/`mul`/`silu` share ELEMENTWISE with three entries, `softmax` now
+    // compiles its own in-repo kernel (it no longer uses cuDNN), and `matmul` is
     // served by cuBLAS so it compiles nothing. Compiling is the dominant
     // per-call cost (docs/design.md §21.10.3), so "compiled once" is asserted
     // mechanically rather than inferred from timing.
@@ -958,14 +959,14 @@ fn every_kernel_is_compiled_once_and_then_reused() {
     runeveryoperator(&cublas);
     assert_eq!(
         cublas.getcachedkernelcount(),
-        7,
+        8,
         "one pass over the operator set must compile exactly one kernel per (source, entry) pair"
     );
 
     runeveryoperator(&cublas);
     assert_eq!(
         cublas.getcachedkernelcount(),
-        7,
+        8,
         "a second pass recompiled a kernel instead of reusing it"
     );
 
@@ -975,7 +976,7 @@ fn every_kernel_is_compiled_once_and_then_reused() {
     runeveryoperator(&nvrtc);
     assert_eq!(
         nvrtc.getcachedkernelcount(),
-        8,
+        9,
         "the NVRTC matmul kernel must be compiled on exactly one path"
     );
 }
@@ -1045,8 +1046,10 @@ fn the_executor_is_shareable_across_threads() {
 fn softmax_of_a_negative_infinity_row_is_not_a_number() {
     // Pinned for the same reason as in `metalcontract`: subtracting a row
     // maximum of negative infinity from itself is NaN, not a finite underflow,
-    // so the row propagates NaN, and `cpu` behaves identically. cuDNN computes
-    // the same max-subtracting formulation, so the third backend must agree.
+    // so the row propagates NaN, and `cpu` behaves identically. The NVRTC kernel
+    // seeds its maximum with the most negative finite f32, so `softmax` routes
+    // non-finite input to the host scalar rule instead of letting the all-(-inf)
+    // row come back as zeros.
     if !hasdevice("softmax_of_a_negative_infinity_row_is_not_a_number") {
         return;
     }
@@ -1064,10 +1067,12 @@ fn softmax_of_a_negative_infinity_row_is_not_a_number() {
 
 #[test]
 fn softmax_matches_the_cpu_backend_outside_the_finite_domain() {
-    // The measured divergence this suite found: cuDNN's `CUDNN_SOFTMAX_ACCURATE`
-    // returns zeros for a row of negative infinity, where `cpu` and `metal`
-    // propagate NaN. Every case is settled by comparing the device result with
-    // the host backend on the same input, so neither side can drift alone.
+    // The divergence this suite originally found under cuDNN: a row of negative
+    // infinity came back as zeros where `cpu` and `metal` propagate NaN. The
+    // NVRTC kernel keeps the same finite seed, so `softmax` still defers
+    // non-finite input to the host scalar rule. Every case is settled by
+    // comparing the device result with the host backend on the same input, so
+    // neither side can drift alone.
     if !hasdevice("softmax_matches_the_cpu_backend_outside_the_finite_domain") {
         return;
     }

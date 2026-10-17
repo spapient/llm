@@ -24,7 +24,7 @@ cd "$ROOT_DIR"
 # file:registered-count (exact match, not a ceiling)
 WHITELIST=(
   "crates/metal/src/ffi.rs:3"
-  "crates/cuda/src/ffi.rs:3"
+  "crates/cuda/src/ffi.rs:2"
   "crates/musa/src/ffi.rs:2"
   "crates/checkpoint/src/crc32c_hw.rs:3"
 )

@@ -3,17 +3,16 @@
 //!
 //! Authority: docs/design.md §21.8. This is the only file in the crate that
 //! declares `#![allow(unsafe_code)]`; the crate root keeps
-//! `#![deny(unsafe_code)]`. Exactly three constructs are `unsafe` — one per
+//! `#![deny(unsafe_code)]`. Exactly two constructs are `unsafe` — one per
 //! **class of platform interaction**, not one per operator — and each is
 //! directly preceded by a `// SAFETY:` comment. `scripts/checkunsafe.sh`
 //! enforces both the count and the comments.
 //!
-//! The three classes are:
+//! The two classes are:
 //!
 //! * [`submit`] — the NVRTC kernel launch. Every in-repo kernel reaches the
 //!   driver through it, so the count does not grow with the kernel count.
 //! * [`matmul_cublas`] — the cuBLAS `gemm` call.
-//! * [`softmax`] — the cuDNN softmax call.
 //!
 //! The safe functions expose a narrow, run-to-completion interface: upload host
 //! slices, run one kernel or one library call, download the result. NVRTC
@@ -34,10 +33,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, StridedBatchedConfig, sys::cublasOperation_t};
-use cudarc::cudnn::{
-    Cudnn, CudnnError, SoftmaxForward,
-    sys::{cudnnSoftmaxAlgorithm_t, cudnnSoftmaxMode_t},
-};
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaSlice, CudaStream, DeviceRepr, LaunchArgs, LaunchConfig,
     PushKernelArg,
@@ -97,13 +92,6 @@ struct cachestate {
     librarystream: Option<Arc<CudaStream>>,
     /// The cuBLAS handle created on first use and reused by every
     /// [`matmul_cublas`] call.
-    ///
-    /// The cuDNN handle is deliberately not cached here: cudarc's `Cudnn` is
-    /// `!Send`/`!Sync` by design (cuDNN's documented thread-safety model), so
-    /// storing it in the shared cache would break the executor's own `Send`/
-    /// `Sync` contract. `softmax` keeps creating its handle per call; the
-    /// durable fix is an in-repo NVRTC softmax kernel, which reuses the
-    /// already cached kernel machinery.
     blas: Option<Arc<CudaBlas>>,
 }
 
@@ -305,13 +293,6 @@ fn syncanddownload(stream: &Arc<CudaStream>, src: &CudaSlice<f32>) -> Result<Vec
     })
 }
 
-/// Maps a cuDNN status into the crate's own error type.
-fn cudnnfail(error: CudnnError) -> cudaerror {
-    cudaerror::cudnn {
-        message: error.to_string(),
-    }
-}
-
 /// Submits a prepared kernel launch to the driver.
 ///
 /// This is the crate's single kernel-launch site, and it is a function rather
@@ -479,106 +460,24 @@ pub(crate) fn matmul_cublas(
     syncanddownload(&stream, &dc)
 }
 
-/// Launches one cuDNN softmax, the crate's single cuDNN site.
+/// Numerically stable softmax over the last axis with the in-repo NVRTC kernel.
 ///
-/// This is a function rather than an inline block so the registered count stays
-/// one: the single-operator [`softmax`] and the accumulative submission path
-/// both call it, and neither adds an `unsafe` site of its own.
-fn softmax_forward(
-    forward: &SoftmaxForward<'_, f32, f32, f32>,
-    dx: &CudaSlice<f32>,
-    dy: &mut CudaSlice<f32>,
-) -> Result<(), cudaerror> {
-    // SAFETY: `dx` and `dy` are live device allocations, each holding the
-    // `total` contiguous `f32` the descriptors name, and `forward`'s
-    // `xdesc`/`ydesc` describe exactly that buffer shape with the strides it
-    // already has, so cuDNN reads and writes within the allocations.
-    // `CUDNN_SOFTMAX_ACCURATE` is the max-subtracting formulation, which is the
-    // numerically stable variant the scalar contract requires. The scaling pair
-    // is the neutral `(1, 0)`, so it changes no operand.
-    unsafe {
-        forward
-            .launch(
-                (1.0_f32, 0.0_f32),
-                cudnnSoftmaxAlgorithm_t::CUDNN_SOFTMAX_ACCURATE,
-                dx,
-                dy,
-            )
-            .map_err(cudnnfail)?;
-    }
-    Ok(())
-}
-
-/// Numerically stable softmax over the last axis with cuDNN.
+/// `input` is read as `[rows, width]`. The kernel is compiled from
+/// [`SOFTMAXCUDA`](crate::source::SOFTMAXCUDA) at run time through the cached
+/// kernel machinery, so every call after the first pays upload, launch, and
+/// download only. It is the crate's only softmax implementation — the cuDNN
+/// path was removed once this kernel reached parity (docs/design.md §21.8).
 ///
-/// `input` is read as `[rows, width]`. cuDNN descriptors are `[N, C, H, W]`, so
-/// the row axis becomes `N` and the normalised axis becomes `C`; with
-/// `CUDNN_SOFTMAX_MODE_CHANNEL` cuDNN then normalises over `C` for every `N`,
-/// which is exactly softmax over the last axis of each row. The strides are the
-/// standard contiguous NCHW strides of that shape, so the descriptor describes
-/// the buffer as it already lies in memory.
-///
-/// cuDNN computes the same max-subtracting formulation, so it agrees with the
-/// scalar reference on finite rows. It does **not** agree outside that domain:
-/// measured on an RTX 2080 Ti (E1), a row of negative infinity comes back as
-/// zeros under `CUDNN_SOFTMAX_ACCURATE`, whereas `cpu` and `metal` propagate
-/// NaN. The contract is device-independent, so an input containing any
-/// non-finite value is computed by [`scalarsoftmax`] — the same formulation the
-/// other two backends implement — instead of being delegated to cuDNN.
+/// An input containing any non-finite value is computed by [`scalarsoftmax`],
+/// the same formulation `cpu` and `metal` implement: the kernel seeds its
+/// maximum with the most negative finite `f32`, so an all-negative-infinity row
+/// would otherwise come back as zeros instead of propagating NaN.
 ///
 /// # Errors
 ///
-/// Returns [`cudaerror`] when the device cannot be opened, cuDNN cannot be
-/// loaded or set up, a transfer fails, a dimension does not fit `c_int`, or the
-/// softmax call fails.
+/// Returns [`cudaerror`] when the device cannot be opened, a transfer fails, a
+/// dimension does not fit `c_int`, or the kernel launch fails.
 pub(crate) fn softmax(
-    cache: &cache,
-    input: &[f32],
-    rows: usize,
-    width: usize,
-) -> Result<Vec<f32>, cudaerror> {
-    if rows == 0 {
-        return Ok(Vec::new());
-    }
-    let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
-    if input.iter().any(|value| !value.is_finite()) {
-        return Ok(scalarsoftmax(input, width));
-    }
-    let stream = cache.stream()?;
-    let handle = Cudnn::new(stream.clone()).map_err(cudnnfail)?;
-    let operation = handle
-        .create_softmax::<f32>(cudnnSoftmaxMode_t::CUDNN_SOFTMAX_MODE_CHANNEL)
-        .map_err(cudnnfail)?;
-    let dims = [asint(asunsigned(rows)?)?, asint(asunsigned(width)?)?, 1, 1];
-    let strides = [asint(asunsigned(width)?)?, 1, 1, 1];
-    let xdesc = handle
-        .create_4d_tensor_ex::<f32>(dims, strides)
-        .map_err(cudnnfail)?;
-    let ydesc = handle
-        .create_4d_tensor_ex::<f32>(dims, strides)
-        .map_err(cudnnfail)?;
-
-    let dx = upload(&stream, input)?;
-    let mut dy = alloc(&stream, total)?;
-    let forward = SoftmaxForward {
-        softmax: &operation,
-        x: &xdesc,
-        y: &ydesc,
-    };
-
-    softmax_forward(&forward, &dx, &mut dy)?;
-    syncanddownload(&stream, &dy)
-}
-
-/// Computes softmax over the last axis with the in-repo NVRTC kernel.
-///
-/// This is the in-repo alternative to the cuDNN path: the kernel is compiled
-/// from [`SOFTMAXCUDA`](crate::source::SOFTMAXCUDA) at run time through the
-/// cached kernel machinery, so every call after the first pays no library
-/// handle creation and no cuDNN descriptor setup. The numerical rule is the
-/// same max-subtracting one as [`softmax`], including the host fallback for
-/// non-finite input.
-pub(crate) fn softmax_nvrtc(
     cache: &cache,
     input: &[f32],
     rows: usize,
@@ -609,9 +508,10 @@ pub(crate) fn softmax_nvrtc(
 
 /// The scalar max-subtracting softmax `cpu` and `metal` implement.
 ///
-/// Private to this file: it exists so the cuDNN path can step aside for inputs
-/// outside the finite domain, not as a second public softmax. The row rule is
-/// the one `crates/cpu/src/softmax.rs` documents — subtract the row maximum,
+/// Private to this file: the single-operator [`softmax`] defers to it for
+/// inputs outside the finite domain, where the NVRTC kernel's finite seed would
+/// turn a negative-infinity row into zeros. The row rule is the one
+/// `crates/cpu/src/softmax.rs` documents — subtract the row maximum,
 /// exponentiate, and divide only when the shifted exponents sum above zero, so a
 /// row of negative infinity propagates NaN instead of being masked to zeros.
 fn scalarsoftmax(input: &[f32], width: usize) -> Vec<f32> {
@@ -1345,14 +1245,18 @@ pub(crate) fn silu_into(
     Ok(session.record(slot::buffer(dc)))
 }
 
-/// Encodes a `softmax` over `rows` rows of `width` with cuDNN.
+/// Encodes a `softmax` over `rows` rows of `width` with the in-repo NVRTC
+/// kernel.
 ///
-/// The non-finite-input fallback of the single-operator [`softmax`] is not
-/// replicated here: a submission forwards the recorded step to cuDNN
-/// unconditionally, so a non-finite row is the caller's responsibility to keep
-/// out of a recorded chain.
+/// The launch is enqueued on the submission's stream like every other recorded
+/// step, so the intermediate stays on the device until `apply`. Unlike the
+/// single-operator [`softmax`], no host-side finite check is possible here —
+/// operands may already be device-resident — so a non-finite row takes the
+/// kernel's own path. For an all-negative-infinity row that is zeros, the same
+/// behavior the retired cuDNN submission path had; the single-operator path
+/// still propagates NaN through [`scalarsoftmax`].
 pub(crate) fn softmax_into(
-    _cache: &cache,
+    cache: &cache,
     session: &mut session,
     input: &CudaSlice<f32>,
     rows: usize,
@@ -1362,25 +1266,19 @@ pub(crate) fn softmax_into(
         return Ok(session.recordempty());
     }
     let total = rows.checked_mul(width).ok_or(cudaerror::sizeoverflow)?;
-    let handle = Cudnn::new(session.stream.clone()).map_err(cudnnfail)?;
-    let operation = handle
-        .create_softmax::<f32>(cudnnSoftmaxMode_t::CUDNN_SOFTMAX_MODE_CHANNEL)
-        .map_err(cudnnfail)?;
-    let dims = [asint(asunsigned(rows)?)?, asint(asunsigned(width)?)?, 1, 1];
-    let strides = [asint(asunsigned(width)?)?, 1, 1, 1];
-    let xdesc = handle
-        .create_4d_tensor_ex::<f32>(dims, strides)
-        .map_err(cudnnfail)?;
-    let ydesc = handle
-        .create_4d_tensor_ex::<f32>(dims, strides)
-        .map_err(cudnnfail)?;
+    let function = cache.function(source::SOFTMAXCUDA, source::SOFTMAXENTRY)?;
     let mut dy = session.alloc(total)?;
-    let forward = SoftmaxForward {
-        softmax: &operation,
-        x: &xdesc,
-        y: &ydesc,
+    let widthu = asunsigned(width)?;
+    let config = LaunchConfig {
+        grid_dim: (asunsigned(rows)?, 1, 1),
+        block_dim: (source::ROWTILE, 1, 1),
+        shared_mem_bytes: source::ROWTILE * 4,
     };
-    softmax_forward(&forward, input, &mut dy)?;
+    {
+        let mut args = session.stream.launch_builder(&function);
+        args.arg(input).arg(&mut dy).arg(&widthu);
+        submit(&mut args, config)?;
+    }
     Ok(session.record(slot::buffer(dy)))
 }
 

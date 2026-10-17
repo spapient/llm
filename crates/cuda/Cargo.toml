@@ -27,7 +27,6 @@ api = { path = "../api" }
 cudarc = { workspace = true, features = [
     "driver",
     "cublas",
-    "cudnn",
     "nvrtc",
     "dynamic-loading",
     "cuda-12060",

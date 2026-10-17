@@ -120,8 +120,8 @@ workspace 默认完全禁止 `unsafe` 代码。该禁令由 workspace lint 配�
 
 * 豁免 crate 使用 `#![deny(unsafe_code)]`（不是 `forbid`），且 crate 内**恰好一个文件**声明 `#![allow(unsafe_code)]`（GPU 后端为 `src/ffi.rs`，`checkpoint` 为 `src/crc32c_hw.rs`）；其余模块仍受 `deny` 约束。
 * `src/ffi.rs` 中每处 `unsafe` 构造前必须有 `// SAFETY:` 注释陈述该 API 的安全前置为何被满足。
-* `unsafe` 站点数必须**恰好等于**登记数（`metal` = 3，`cuda` = 3，`musa` = 2，`checkpoint` = 3），由 `scripts/checkunsafe.sh` 机械强制；多一处或少一处都失败。
-  依据：数字由**调用面结构**推导而非经验取值 —— Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径 `dispatch` 一个块（上传/绑定/启动/commit/wait/下载收于一处），累积路径 `session` 拆编码块与提交块两个，共 3；CUDA 是**每类平台交互恰一处**：NVRTC 内核启动 1（一处 `LaunchArgs::launch`，以闭包注入实参，故其服务于全部在仓内核而不随内核数增长）+ cuBLAS 矩阵乘 1 + cuDNN softmax 1 = 3；MUSA 是自写 FFI 的 edition 2024 理论下限：`unsafe extern "C"` 声明块（不可消除）+ 单一驱动交接块 = 2。任何使数字上升的改动都意味着新增了一类平台交互或一个自带 `unsafe` 入口的第三方库，因此必须评审；数字下降（如 metal 4→3，2026-10-17 合并为驱动交接块）同样必须同步本表与 docs/design.md §21.8。
+* `unsafe` 站点数必须**恰好等于**登记数（`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3），由 `scripts/checkunsafe.sh` 机械强制；多一处或少一处都失败。
+  依据：数字由**调用面结构**推导而非经验取值 —— Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径 `dispatch` 一个块（上传/绑定/启动/commit/wait/下载收于一处），累积路径 `session` 拆编码块与提交块两个，共 3；CUDA 是**每类平台交互恰一处**：NVRTC 内核启动 1（一处 `LaunchArgs::launch`，以闭包注入实参，故其服务于全部在仓内核而不随内核数增长）+ cuBLAS 矩阵乘 1 = 2（cuDNN softmax 站点已于 2026-10-17 删除，由同一 NVRTC 启动站点服务）；MUSA 是自写 FFI 的 edition 2024 理论下限：`unsafe extern "C"` 声明块（不可消除）+ 单一驱动交接块 = 2。任何使数字上升的改动都意味着新增了一类平台交互或一个自带 `unsafe` 入口的第三方库，因此必须评审；数字下降（如 metal 4→3、cuda 3→2）同样必须同步本表与 docs/design.md §21.8。
 * 权威的豁免范围、站点登记表与回滚方案见 docs/design.md §21.8；新增站点 MUST 先更新该表并在设计中说明理由。
 * 其余全部 crate MUST 保持 `#![forbid(unsafe_code)]`，一行不改。
 

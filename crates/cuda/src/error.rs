@@ -6,7 +6,7 @@ use thiserror::Error;
 /// `api::compute` boundary: size overflow keeps its category; device absence
 /// becomes `devicenotavailable`; compilation and module-loading failures become
 /// `kernelcompilefailed` carrying the driver diagnostic; transfer, launch,
-/// cuBLAS, and cuDNN runtime failures collapse into `executionfailed`. The
+/// and cuBLAS runtime failures collapse into `executionfailed`. The
 /// richer diagnostic stays here so it can be inspected without widening the
 /// public `api` contract.
 #[derive(Debug, Error)]
@@ -54,16 +54,6 @@ pub enum cudaerror {
     #[error("cuBLAS call failed: {message}")]
     blas {
         /// The cuBLAS-provided diagnostic.
-        message: String,
-    },
-
-    /// The cuDNN call failed.
-    #[error("cuDNN call failed: {message}")]
-    cudnn {
-        /// The cuDNN-provided diagnostic.
-        ///
-        /// `CudnnError` carries only a status code, so the message is the
-        /// debug rendering of that code; the code itself is the stable part.
         message: String,
     },
 

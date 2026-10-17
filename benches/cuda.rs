@@ -12,7 +12,7 @@
 //! comparison against an earlier revision. The per-call NVRTC compilation this
 //! baseline measured no longer exists: kernels are compiled once per
 //! `(source, entry)` and cached (docs/design.md §21.10.3 item 7, 2026-10-12),
-//! and the cuBLAS/cuDNN handles are cached as well (2026-10-17).
+//! and the cuBLAS handle is cached as well (2026-10-17).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(missing_docs)]
 
@@ -144,25 +144,6 @@ mod linux {
         group.finish();
     }
 
-    /// The two softmax implementations side by side: the cuDNN default and
-    /// the in-repo NVRTC kernel, so the per-call handle-creation cost the
-    /// NVRTC path avoids is visible on the same device in the same run.
-    fn softmaxnvrtc(c: &mut Criterion) {
-        let x = softmaxinput().unwrap();
-        let v = x.getview();
-        let cudaexec = cudaexecutor::new(LIMIT);
-        let nvrtcexec = cudaexecutor::newsoftmaxnvrtc(LIMIT);
-        let mut group = c.benchmark_group("gpu/softmaxpath");
-        group.throughput(Throughput::Elements((SOFTMAXROWS * SOFTMAXCOLS) as u64));
-        group.bench_function("cudnn", |b| {
-            b.iter(|| black_box(cudaexec.softmax(&v).unwrap()));
-        });
-        group.bench_function("nvrtc", |b| {
-            b.iter(|| black_box(nvrtcexec.softmax(&v).unwrap()));
-        });
-        group.finish();
-    }
-
     fn rmsnorm(c: &mut Criterion) {
         let (x, w) = norminput().unwrap();
         let (xv, wv) = (x.getview(), w.getview());
@@ -241,7 +222,6 @@ mod linux {
         matmul_batch,
         elementwise,
         softmax,
-        softmaxnvrtc,
         rmsnorm,
         rope,
         embedding,
