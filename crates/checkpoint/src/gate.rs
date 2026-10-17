@@ -193,14 +193,11 @@ fn take_u32(data: &mut &[u8]) -> Option<u32> {
     Some(v)
 }
 
-/// 解码一个平面，从 `stream` 读出 `n` 字节追加到 `out`。
+/// Builds the slot → symbol lookup table for one frequency table.
 ///
-/// interleaved 栈式解码：`NLANES` 个状态逆序弹符号，符号 `i` 由状态
-/// `i % NLANES` 恢复，直接落入输出 `i` 位，无需 reverse。
-fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), checkpointerror> {
-    let n = dst.len();
-    // slot → symbol 查找表，按符号区间 `fill`（每区间一次 memset 式填充），
-    // 取代逐槽 `while` 推进——区间恰好覆盖 [0, TOTALFREQ)，故无需清零后逐槽判定。
+/// 按符号区间 `fill`（每区间一次 memset 式填充），取代逐槽 `while` 推进——
+/// 区间恰好覆盖 [0, TOTALFREQ)，故无需清零后逐槽判定。
+fn slotlut(table: &Table) -> Vec<u8> {
     let mut lut = vec![0u8; TOTALFREQ as usize];
     for s in 0..NSYMBOLS {
         let start = table.cum[s] as usize;
@@ -209,8 +206,12 @@ fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), chec
             lut[start..end].fill(s as u8);
         }
     }
+    lut
+}
 
-    let mut data = stream;
+/// Parses the lane states and per-lane streams from a plane's header.
+fn takestreams(data: &[u8]) -> Result<([u32; NLANES], [&[u8]; NLANES]), checkpointerror> {
+    let mut data = data;
     let mut xs = [0u32; NLANES];
     for x in &mut xs {
         *x = take_u32(&mut data).ok_or_else(|| invalid("gate stream truncated"))?;
@@ -227,6 +228,30 @@ fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), chec
         *st = &data[..*l];
         data = &data[*l..];
     }
+    Ok((xs, streams))
+}
+
+/// Refills a lane from its stream until it can decode another symbol.
+#[inline]
+fn renorm(x: &mut u32, stream: &mut &[u8]) -> Result<(), checkpointerror> {
+    while *x < STATEMIN {
+        let Some((&byte, rest)) = stream.split_first() else {
+            return Err(invalid("gate stream truncated"));
+        };
+        *x = (*x << 8) | u32::from(byte);
+        *stream = rest;
+    }
+    Ok(())
+}
+
+/// 解码一个平面，从 `stream` 读出 `n` 字节追加到 `out`。
+///
+/// interleaved 栈式解码：`NLANES` 个状态逆序弹符号，符号 `i` 由状态
+/// `i % NLANES` 恢复，直接落入输出 `i` 位，无需 reverse。
+fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), checkpointerror> {
+    let n = dst.len();
+    let lut = slotlut(table);
+    let (mut xs, mut streams) = takestreams(stream)?;
 
     // Unrolled by lane: symbol `i` uses lane `i % NLANES`, so once the base of a
     // block is a multiple of NLANES every lane index is a compile-time constant
@@ -237,14 +262,7 @@ fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), chec
             let s = lut[slot] as usize;
             dst[$base + $lane] = s as u8;
             xs[$lane] = table.freq[s] * (xs[$lane] >> LOG2_M) + slot as u32 - table.cum[s];
-            while xs[$lane] < STATEMIN {
-                let st = streams[$lane];
-                if st.is_empty() {
-                    return Err(invalid("gate stream truncated"));
-                }
-                xs[$lane] = (xs[$lane] << 8) | u32::from(st[0]);
-                streams[$lane] = &st[1..];
-            }
+            renorm(&mut xs[$lane], &mut streams[$lane])?;
         }};
     }
     let mut i = n;
@@ -255,14 +273,7 @@ fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), chec
         let s = lut[slot] as usize;
         dst[i] = s as u8;
         xs[lane] = table.freq[s] * (xs[lane] >> LOG2_M) + slot as u32 - table.cum[s];
-        while xs[lane] < STATEMIN {
-            let st = streams[lane];
-            if st.is_empty() {
-                return Err(invalid("gate stream truncated"));
-            }
-            xs[lane] = (xs[lane] << 8) | u32::from(st[0]);
-            streams[lane] = &st[1..];
-        }
+        renorm(&mut xs[lane], &mut streams[lane])?;
     }
     while i > 0 {
         i -= NLANES;
@@ -276,6 +287,31 @@ fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), chec
         DECODELANE!(i, 0);
     }
     Ok(())
+}
+
+/// Builds the frequency table for one plane.
+fn freqtable(plane: &[u8]) -> Table {
+    let mut counts = [0u32; NSYMBOLS];
+    for &b in plane {
+        counts[b as usize] += 1;
+    }
+    Table::fromcounts(&counts)
+}
+
+/// Appends one plane's presence bitmap and `u16` `freq-1` entries.
+fn encodetable(out: &mut Vec<u8>, table: &Table) {
+    let mut bitmap = [0u8; NSYMBOLS / 8];
+    for s in 0..NSYMBOLS {
+        if table.freq[s] != 0 {
+            bitmap[s / 8] |= 1 << (s % 8);
+        }
+    }
+    out.extend_from_slice(&bitmap);
+    for s in 0..NSYMBOLS {
+        if table.freq[s] != 0 {
+            out.extend_from_slice(&((table.freq[s] - 1) as u16).to_le_bytes());
+        }
+    }
 }
 
 /// 压缩 `src`，`elem` 为平面数（0 = 整体单平面，2 = f16，4 = f32）。
@@ -294,12 +330,7 @@ pub fn compress(src: &[u8], elem: usize) -> Vec<u8> {
 
     let mut tables = Vec::with_capacity(nplanes);
     for p in 0..nplanes {
-        let plane = &src[p * n..(p + 1) * n];
-        let mut counts = [0u32; NSYMBOLS];
-        for &b in plane {
-            counts[b as usize] += 1;
-        }
-        tables.push(Table::fromcounts(&counts));
+        tables.push(freqtable(&src[p * n..(p + 1) * n]));
     }
 
     let mut streams = Vec::with_capacity(nplanes);
@@ -317,18 +348,7 @@ pub fn compress(src: &[u8], elem: usize) -> Vec<u8> {
     // at u32 the table was ~1.6% of a 16 MiB snapshot, and this cuts it by more
     // than half (and far more for sparse planes).
     for table in &tables {
-        let mut bitmap = [0u8; NSYMBOLS / 8];
-        for s in 0..NSYMBOLS {
-            if table.freq[s] != 0 {
-                bitmap[s / 8] |= 1 << (s % 8);
-            }
-        }
-        out.extend_from_slice(&bitmap);
-        for s in 0..NSYMBOLS {
-            if table.freq[s] != 0 {
-                out.extend_from_slice(&((table.freq[s] - 1) as u16).to_le_bytes());
-            }
-        }
+        encodetable(&mut out, table);
     }
     for stream in &streams {
         out.extend_from_slice(&(stream.len() as u32).to_le_bytes());

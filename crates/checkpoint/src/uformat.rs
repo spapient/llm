@@ -242,6 +242,156 @@ pub struct snapshot {
     signature: Option<[u8; 64]>,
 }
 
+/// The per-block products of the cut/hash/compress phase.
+struct cutblocks {
+    blocks: Vec<blockref>,
+    stored: Vec<(u8, u8, Vec<u8>)>,
+    crcs: Vec<u32>,
+}
+
+/// Cuts, hashes, and compresses every block, restoring the cut order.
+fn cutblocks(data: &[u8], plain: bool, nthreads: usize) -> cutblocks {
+    let (span_tx, span_rx) = std::sync::mpsc::sync_channel::<(usize, usize, usize, usize)>(256);
+    let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<cutresult>(256);
+    let span_rx = std::sync::Mutex::new(span_rx);
+    let mut collected: Vec<cutresult> = Vec::new();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            crate::blocks::streamspans(data, |seg, idx, off, len| {
+                let _ = span_tx.send((seg, idx, off, len));
+            });
+        });
+        for _ in 0..nthreads {
+            let rx = &span_rx;
+            let tx = res_tx.clone();
+            scope.spawn(move || {
+                loop {
+                    let item = match rx.lock() {
+                        Ok(guard) => guard.recv().ok(),
+                        Err(_) => None,
+                    };
+                    let Some((seg, idx, off, len)) = item else {
+                        break;
+                    };
+                    let slice = &data[off..off + len];
+                    let hash = contenthash(slice);
+                    let stored = compressblock(slice);
+                    let crc = if plain { crc32c(&stored.2) } else { 0 };
+                    if tx
+                        .send((seg, idx, blockref::new(hash, len as u32), stored, crc))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(res_tx);
+        for item in res_rx {
+            collected.push(item);
+        }
+    });
+    collected.sort_unstable_by_key(|(seg, idx, _, _, _)| (*seg, *idx));
+    let cap = collected.len();
+    let mut blocks = Vec::with_capacity(cap);
+    let mut stored = Vec::with_capacity(cap);
+    let mut crcs = Vec::with_capacity(cap);
+    for (_, _, b, bytes, crc) in collected {
+        blocks.push(b);
+        stored.push(bytes);
+        crcs.push(crc);
+    }
+    cutblocks {
+        blocks,
+        stored,
+        crcs,
+    }
+}
+
+/// Encrypts and checksums every stored block across `spans`.
+fn encryptspans(
+    blocks: &[blockref],
+    stored: &[(u8, u8, Vec<u8>)],
+    key: &[u8; 32],
+    spans: &[std::ops::Range<usize>],
+    nthreads: usize,
+    storedmeta: &mut [(Vec<u8>, [u8; 16], u32)],
+) -> Result<(), checkpointerror> {
+    std::thread::scope(|scope| {
+        let mut cursor: &mut [(Vec<u8>, [u8; 16], u32)] = storedmeta;
+        let mut handles = Vec::with_capacity(nthreads);
+        for span in spans {
+            let (head, tail) = cursor.split_at_mut(span.len());
+            cursor = tail;
+            handles.push(
+                scope.spawn(move || {
+                    encryptchecksumspan(blocks, stored, Some(key), span.clone(), head)
+                }),
+            );
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    return Err(checkpointerror::invalidmanifest {
+                        reason: "encode worker panicked".to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Splits `count` blocks into `nthreads` contiguous spans.
+fn splitspans(count: usize, nthreads: usize) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::with_capacity(nthreads);
+    let mut start = 0usize;
+    for t in 0..nthreads {
+        let len = count / nthreads + usize::from(t < count % nthreads);
+        let end = start + len;
+        spans.push(start..end);
+        start = end;
+    }
+    spans
+}
+
+/// Appends every block's manifest entry and returns the stored data length.
+fn pushmanifestentries(
+    manifest: &mut Vec<u8>,
+    blocks: &[blockref],
+    storedblocks: &[(u8, u8, Vec<u8>)],
+    plaincrcs: &[u32],
+    storedmeta: &[(Vec<u8>, [u8; 16], u32)],
+    keyed: bool,
+    transformed: bool,
+) -> usize {
+    let mut offset = 0usize;
+    for (position, block) in blocks.iter().enumerate() {
+        let (codec, transform, plainbytes) = &storedblocks[position];
+        let (stored_len, tag, checksum) = if keyed {
+            let (s, t, c) = &storedmeta[position];
+            (s.len(), *t, *c)
+        } else {
+            (plainbytes.len(), [0u8; 16], plaincrcs[position])
+        };
+        manifest.extend_from_slice(&block.gethash());
+        pushu64(manifest, offset as u64);
+        pushu32(manifest, stored_len as u32);
+        pushu32(manifest, checksum);
+        manifest.push(*codec);
+        if transformed {
+            manifest.push(*transform);
+        }
+        if keyed {
+            manifest.extend_from_slice(&tag);
+        }
+        offset += stored_len;
+    }
+    offset
+}
+
 impl snapshot {
     /// Creates an empty snapshot with the given version.
     #[must_use]
@@ -624,64 +774,18 @@ impl snapshot {
         // compression overlap the cut instead of waiting for it. Block order is
         // restored by `(segment, index)` after collection, so the output is
         // identical to a fully serial cut.
-        let data: &[u8] = &self.data;
         let nthreads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
             .max(1);
-        let (span_tx, span_rx) = std::sync::mpsc::sync_channel::<(usize, usize, usize, usize)>(256);
-        let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<cutresult>(256);
-        let span_rx = std::sync::Mutex::new(span_rx);
         // Without a key the checksum covers the compressed bytes, so the worker
         // computes it inline and Phase 2 can be skipped entirely.
         let plain = key.is_none();
-        let mut collected: Vec<cutresult> = Vec::new();
-        std::thread::scope(|scope| {
-            scope.spawn(move || {
-                crate::blocks::streamspans(data, |seg, idx, off, len| {
-                    let _ = span_tx.send((seg, idx, off, len));
-                });
-            });
-            for _ in 0..nthreads {
-                let rx = &span_rx;
-                let tx = res_tx.clone();
-                scope.spawn(move || {
-                    loop {
-                        let item = match rx.lock() {
-                            Ok(guard) => guard.recv().ok(),
-                            Err(_) => None,
-                        };
-                        let Some((seg, idx, off, len)) = item else {
-                            break;
-                        };
-                        let slice = &data[off..off + len];
-                        let hash = contenthash(slice);
-                        let stored = compressblock(slice);
-                        let crc = if plain { crc32c(&stored.2) } else { 0 };
-                        if tx
-                            .send((seg, idx, blockref::new(hash, len as u32), stored, crc))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                });
-            }
-            drop(res_tx);
-            for item in res_rx {
-                collected.push(item);
-            }
-        });
-        collected.sort_unstable_by_key(|(seg, idx, _, _, _)| (*seg, *idx));
-        let cap = collected.len();
-        let mut blocks: Vec<blockref> = Vec::with_capacity(cap);
-        let mut storedblocks: Vec<(u8, u8, Vec<u8>)> = Vec::with_capacity(cap);
-        let mut plaincrcs: Vec<u32> = Vec::with_capacity(cap);
-        for (_, _, b, stored, crc) in collected {
-            blocks.push(b);
-            storedblocks.push(stored);
-            plaincrcs.push(crc);
-        }
+        let cutblocks {
+            blocks,
+            stored: storedblocks,
+            crcs: plaincrcs,
+        } = cutblocks(&self.data, plain, nthreads);
 
         let canonical = canonicalmanifest(self.version, &self.tensors, &blocks);
         let root = blake3hash(&canonical);
@@ -697,14 +801,7 @@ impl snapshot {
             flags |= FLAGENCRYPTED;
         }
 
-        let mut spans = Vec::with_capacity(nthreads);
-        let mut start = 0usize;
-        for t in 0..nthreads {
-            let len = blocks.len() / nthreads + usize::from(t < blocks.len() % nthreads);
-            let end = start + len;
-            spans.push(start..end);
-            start = end;
-        }
+        let spans = splitspans(blocks.len(), nthreads);
         let has_transform = storedblocks
             .iter()
             .any(|(_, transform, _)| *transform != TRANSFORMNONE);
@@ -726,59 +823,29 @@ impl snapshot {
         // compressed bytes are used as-is (no clone).
         let mut storedmeta: Vec<(Vec<u8>, [u8; 16], u32)> = Vec::with_capacity(blocks.len());
         storedmeta.resize_with(blocks.len(), || (Vec::new(), [0u8; 16], 0));
-        let blocksref: &[blockref] = &blocks;
-        let storedblocksref: &[(u8, u8, Vec<u8>)] = &storedblocks;
-        if key.is_some() {
-            std::thread::scope(|scope| {
-                let mut cursor: &mut [(Vec<u8>, [u8; 16], u32)] = &mut storedmeta;
-                let mut handles = Vec::with_capacity(nthreads);
-                for span in &spans {
-                    let (head, tail) = cursor.split_at_mut(span.len());
-                    cursor = tail;
-                    handles.push(scope.spawn(move || {
-                        encryptchecksumspan(blocksref, storedblocksref, key, span.clone(), head)
-                    }));
-                }
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => return Err(error),
-                        Err(_) => {
-                            return Err(checkpointerror::invalidmanifest {
-                                reason: "encode worker panicked".to_string(),
-                            });
-                        }
-                    }
-                }
-                Ok::<(), checkpointerror>(())
-            })?;
+        if let Some(key) = key {
+            encryptspans(
+                &blocks,
+                &storedblocks,
+                key,
+                &spans,
+                nthreads,
+                &mut storedmeta,
+            )?;
         }
 
         // Pass 1: manifest entries. The per-block data offset is the running
         // sum of stored lengths, so the stored bytes can be written straight
         // into the output in pass 2 without an intermediate 10 MiB buffer.
-        let mut offset = 0usize;
-        for (position, block) in blocks.iter().enumerate() {
-            let (codec, transform, plainbytes) = &storedblocks[position];
-            let (stored_len, tag, checksum) = if key.is_some() {
-                let (s, t, c) = &storedmeta[position];
-                (s.len(), *t, *c)
-            } else {
-                (plainbytes.len(), [0u8; 16], plaincrcs[position])
-            };
-            manifest.extend_from_slice(&block.gethash());
-            pushu64(&mut manifest, offset as u64);
-            pushu32(&mut manifest, stored_len as u32);
-            pushu32(&mut manifest, checksum);
-            manifest.push(*codec);
-            if flags & FLAGTRANSFORMED != 0 {
-                manifest.push(*transform);
-            }
-            if key.is_some() {
-                manifest.extend_from_slice(&tag);
-            }
-            offset += stored_len;
-        }
+        let offset = pushmanifestentries(
+            &mut manifest,
+            &blocks,
+            &storedblocks,
+            &plaincrcs,
+            &storedmeta,
+            key.is_some(),
+            flags & FLAGTRANSFORMED != 0,
+        );
 
         let total = PREFIXLEN
             .checked_add(manifest.len())
@@ -1041,6 +1108,131 @@ pub(crate) fn canonicalmanifest(
     buf
 }
 
+/// Builds an invalid-manifest error from a reason.
+fn invalidreason(reason: String) -> checkpointerror {
+    checkpointerror::invalidmanifest { reason }
+}
+
+/// Reads a tensor's dimensions.
+fn readdims(manifest: &[u8], pos: &mut usize, name: &str) -> Result<shape, checkpointerror> {
+    let dimcount = readcount(manifest, pos)?;
+    let mut dims = Vec::with_capacity(dimcount);
+    for _ in 0..dimcount {
+        let dim = readu64(manifest, pos)?;
+        dims.push(
+            usize::try_from(dim)
+                .map_err(|_| invalidreason(format!("dimension {dim} overflows usize")))?,
+        );
+    }
+    shape::new(dims).map_err(|_| invalidreason(format!("tensor {name:?} has an invalid shape")))
+}
+
+/// Reads a tensor's quantization descriptor.
+fn readquant(manifest: &[u8], pos: &mut usize) -> Result<Option<quantdesc>, checkpointerror> {
+    match readu64(manifest, pos)? {
+        0 => Ok(None),
+        1 => {
+            let groupsize = readu32(manifest, pos)?;
+            let scale = readstring(manifest, pos)?;
+            let zeropoint = match readu64(manifest, pos)? {
+                0 => None,
+                1 => Some(readstring(manifest, pos)?),
+                _ => return Err(invalidreason("invalid zero-point flag".to_string())),
+            };
+            Ok(Some(quantdesc {
+                groupsize,
+                scale,
+                zeropoint,
+            }))
+        }
+        _ => Err(invalidreason("invalid quant flag".to_string())),
+    }
+}
+
+/// Reads a tensor's physical layout descriptor.
+fn readlayout(
+    manifest: &[u8],
+    pos: &mut usize,
+    name: &str,
+) -> Result<Option<layout>, checkpointerror> {
+    match readu64(manifest, pos)? {
+        0 => Ok(None),
+        1 => {
+            let layoutoffset = usize::try_from(readu64(manifest, pos)?).map_err(|_| {
+                invalidreason(format!("tensor {name:?} layout offset overflows usize"))
+            })?;
+            let stridecount = readcount(manifest, pos)?;
+            let mut strides = Vec::with_capacity(stridecount);
+            for _ in 0..stridecount {
+                let st = usize::try_from(readu64(manifest, pos)?).map_err(|_| {
+                    invalidreason(format!("tensor {name:?} stride overflows usize"))
+                })?;
+                strides.push(st);
+            }
+            Ok(Some(layout::new(strides, layoutoffset)))
+        }
+        _ => Err(invalidreason("invalid layout flag".to_string())),
+    }
+}
+
+/// Reads a tensor's sparse-storage descriptor.
+fn readsparse(manifest: &[u8], pos: &mut usize) -> Result<Option<sparsedesc>, checkpointerror> {
+    match readu64(manifest, pos)? {
+        0 => Ok(None),
+        1 => {
+            let nnz = readu64(manifest, pos)?;
+            let format = match readu64(manifest, pos)? {
+                0 => sparseformat::coo,
+                1 => sparseformat::bitmap,
+                _ => return Err(invalidreason("invalid sparse format".to_string())),
+            };
+            let sp = sparsedesc::new(nnz);
+            Ok(Some(match format {
+                sparseformat::coo => sp,
+                sparseformat::bitmap => sp.withbitmap(),
+            }))
+        }
+        _ => Err(invalidreason("invalid sparse flag".to_string())),
+    }
+}
+
+/// Computes the byte length a tensor entry must declare.
+fn expectedbytes(
+    name: &str,
+    count: usize,
+    value: dtype,
+    sparse: Option<&sparsedesc>,
+) -> Result<u64, checkpointerror> {
+    let Some(sp) = sparse else {
+        return (count as u64)
+            .checked_mul(value.sizeinbytes() as u64)
+            .ok_or_else(|| checkpointerror::shapeoverflow {
+                name: name.to_string(),
+            });
+    };
+    let valuebytes = sp
+        .getnnz()
+        .checked_mul(value.sizeinbytes() as u64)
+        .ok_or_else(|| checkpointerror::shapeoverflow {
+            name: name.to_string(),
+        })?;
+    let indexbytes = match sp.getformat() {
+        sparseformat::coo => {
+            sp.getnnz()
+                .checked_mul(4)
+                .ok_or_else(|| checkpointerror::shapeoverflow {
+                    name: name.to_string(),
+                })?
+        }
+        sparseformat::bitmap => count.div_ceil(8) as u64,
+    };
+    indexbytes
+        .checked_add(valuebytes)
+        .ok_or_else(|| checkpointerror::shapeoverflow {
+            name: name.to_string(),
+        })
+}
+
 /// Parses and validates the tensor entries.
 pub(crate) fn readtensors(
     manifest: &[u8],
@@ -1053,131 +1245,25 @@ pub(crate) fn readtensors(
         let token = readstring(manifest, pos)?;
         let value = tokendtype(&token).ok_or_else(|| checkpointerror::dtypeunsupported {
             name: name.clone(),
-            dtype: token.clone(),
+            dtype: token,
         })?;
-        let dimcount = readcount(manifest, pos)?;
-        let mut dims = Vec::with_capacity(dimcount);
-        for _ in 0..dimcount {
-            let dim = readu64(manifest, pos)?;
-            dims.push(
-                usize::try_from(dim).map_err(|_| checkpointerror::invalidmanifest {
-                    reason: format!("dimension {dim} overflows usize"),
-                })?,
-            );
-        }
-        let dims = shape::new(dims).map_err(|_| checkpointerror::invalidmanifest {
-            reason: format!("tensor {name:?} has an invalid shape"),
-        })?;
+        let dims = readdims(manifest, pos, &name)?;
         let offset = readu64(manifest, pos)?;
         let nbytes = readu64(manifest, pos)?;
-        let quant = match readu64(manifest, pos)? {
-            0 => None,
-            1 => {
-                let groupsize = readu32(manifest, pos)?;
-                let scale = readstring(manifest, pos)?;
-                let zeropoint = match readu64(manifest, pos)? {
-                    0 => None,
-                    1 => Some(readstring(manifest, pos)?),
-                    _ => {
-                        return Err(checkpointerror::invalidmanifest {
-                            reason: "invalid zero-point flag".to_string(),
-                        });
-                    }
-                };
-                Some(quantdesc {
-                    groupsize,
-                    scale,
-                    zeropoint,
-                })
-            }
-            _ => {
-                return Err(checkpointerror::invalidmanifest {
-                    reason: "invalid quant flag".to_string(),
-                });
-            }
-        };
-        let layout = match readu64(manifest, pos)? {
-            0 => None,
-            1 => {
-                let layoutoffset = usize::try_from(readu64(manifest, pos)?).map_err(|_| {
-                    checkpointerror::invalidmanifest {
-                        reason: format!("tensor {name:?} layout offset overflows usize"),
-                    }
-                })?;
-                let stridecount = readcount(manifest, pos)?;
-                let mut strides = Vec::with_capacity(stridecount);
-                for _ in 0..stridecount {
-                    let st = usize::try_from(readu64(manifest, pos)?).map_err(|_| {
-                        checkpointerror::invalidmanifest {
-                            reason: format!("tensor {name:?} stride overflows usize"),
-                        }
-                    })?;
-                    strides.push(st);
-                }
-                Some(layout::new(strides, layoutoffset))
-            }
-            _ => {
-                return Err(checkpointerror::invalidmanifest {
-                    reason: "invalid layout flag".to_string(),
-                });
-            }
-        };
+        let quant = readquant(manifest, pos)?;
+        let layout = readlayout(manifest, pos, &name)?;
         if let Some(l) = &layout
             && !l.isvalidfor(&dims)
         {
-            return Err(checkpointerror::invalidmanifest {
-                reason: format!("tensor {name:?} has an invalid layout"),
-            });
+            return Err(invalidreason(format!(
+                "tensor {name:?} has an invalid layout"
+            )));
         }
-        let sparse = match readu64(manifest, pos)? {
-            0 => None,
-            1 => {
-                let nnz = readu64(manifest, pos)?;
-                let format = match readu64(manifest, pos)? {
-                    0 => sparseformat::coo,
-                    1 => sparseformat::bitmap,
-                    _ => {
-                        return Err(checkpointerror::invalidmanifest {
-                            reason: "invalid sparse format".to_string(),
-                        });
-                    }
-                };
-                let sp = sparsedesc::new(nnz);
-                Some(match format {
-                    sparseformat::coo => sp,
-                    sparseformat::bitmap => sp.withbitmap(),
-                })
-            }
-            _ => {
-                return Err(checkpointerror::invalidmanifest {
-                    reason: "invalid sparse flag".to_string(),
-                });
-            }
-        };
+        let sparse = readsparse(manifest, pos)?;
         let count = dims
             .getelementcount()
             .map_err(|_| checkpointerror::shapeoverflow { name: name.clone() })?;
-        let expected = match &sparse {
-            Some(sp) => {
-                let valuebytes = sp
-                    .getnnz()
-                    .checked_mul(value.sizeinbytes() as u64)
-                    .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
-                let indexbytes = match sp.getformat() {
-                    sparseformat::coo => sp
-                        .getnnz()
-                        .checked_mul(4)
-                        .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?,
-                    sparseformat::bitmap => count.div_ceil(8) as u64,
-                };
-                indexbytes
-                    .checked_add(valuebytes)
-                    .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?
-            }
-            None => (count as u64)
-                .checked_mul(value.sizeinbytes() as u64)
-                .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?,
-        };
+        let expected = expectedbytes(&name, count, value, sparse.as_ref())?;
         if nbytes != expected {
             return Err(checkpointerror::lengthmismatch {
                 name,
@@ -1188,9 +1274,9 @@ pub(crate) fn readtensors(
         if let Some(sp) = &sparse
             && sp.getnnz() > count as u64
         {
-            return Err(checkpointerror::invalidmanifest {
-                reason: format!("tensor {name:?} has more non-zeros than elements"),
-            });
+            return Err(invalidreason(format!(
+                "tensor {name:?} has more non-zeros than elements"
+            )));
         }
         tensors.push(tensorentry {
             name,

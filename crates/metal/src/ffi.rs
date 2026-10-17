@@ -585,6 +585,45 @@ pub(crate) fn attention(
     Ok(results.remove(0))
 }
 
+/// The host operands of one parallel scan invocation.
+struct scanoperands<'a> {
+    input: &'a [f32],
+    a: &'a [f32],
+    b: &'a [f32],
+    c: &'a [f32],
+    skip: &'a [f32],
+    init: &'a [f32],
+}
+
+/// Encodes the per-block totals pass of the parallel scan.
+fn scanaggregate(
+    cache: &cache,
+    operands: &scanoperands<'_>,
+    totals: &Retained<ProtocolObject<dyn MTLBuffer>>,
+    params: &[u32; 5],
+    blocks: usize,
+    d: usize,
+) -> Result<(), metalerror> {
+    dispatch(
+        cache,
+        source::SCANPARALLELMSL,
+        source::SCANAGGENTRY,
+        &[
+            buf::host(operands.input),
+            buf::host(operands.a),
+            buf::host(operands.b),
+            buf::host(operands.c),
+            buf::host(operands.skip),
+            buf::host(operands.init),
+            buf::device(totals),
+        ],
+        params,
+        scangrid(blocks, d)?,
+        scantiles(d),
+    )?;
+    Ok(())
+}
+
 /// Runs the serial per-channel scan kernel, returning the `[n, d]` output and
 /// the `[d, N]` final state.
 #[allow(clippy::too_many_arguments)]
@@ -644,23 +683,15 @@ pub(crate) fn scan(
     // Pass 1: per-block totals. The block buffers are uploaded once and passed
     // through the three dispatches by device reference; only `dstateout` and
     // the final `out` are downloaded.
-    dispatch(
-        cache,
-        source::SCANPARALLELMSL,
-        source::SCANAGGENTRY,
-        &[
-            buf::host(input),
-            buf::host(a),
-            buf::host(b),
-            buf::host(c),
-            buf::host(skip),
-            buf::host(init),
-            buf::device(&dtotal),
-        ],
-        &params,
-        scangrid(blocks, d)?,
-        scantiles(d),
-    )?;
+    let operands = scanoperands {
+        input,
+        a,
+        b,
+        c,
+        skip,
+        init,
+    };
+    scanaggregate(cache, &operands, &dtotal, &params, blocks, d)?;
     // Pass 2: inter-block prefix plus the whole-sequence final state, written
     // into the caller-held `dstateout` and read back here.
     let prefixthreads = (d * statewidth).min(1024);
@@ -832,6 +863,59 @@ pub(crate) enum buf<'a> {
     readback(&'a ProtocolObject<dyn MTLBuffer>, usize),
 }
 
+/// The allocation and transfer plan for one dispatch.
+struct bufferplan<'a> {
+    allocbytes: Vec<usize>,
+    uploads: Vec<(usize, &'a [f32])>,
+    uploads64: Vec<(usize, &'a [u64])>,
+    outputs: Vec<(usize, usize)>,
+}
+
+/// Splits the buffer slots into allocation sizes, host uploads, and outputs.
+fn planbuffers<'a>(buffers: &[buf<'a>]) -> Result<bufferplan<'a>, metalerror> {
+    let mut allocbytes = Vec::with_capacity(buffers.len());
+    let mut uploads = Vec::new();
+    let mut uploads64 = Vec::new();
+    let mut outputs = Vec::new();
+    for (index, slot) in buffers.iter().enumerate() {
+        match *slot {
+            buf::host(data) => {
+                allocbytes.push(
+                    data.len()
+                        .checked_mul(core::mem::size_of::<f32>())
+                        .ok_or(metalerror::sizeoverflow)?,
+                );
+                uploads.push((index, data));
+            }
+            buf::hostu64(data) => {
+                allocbytes.push(
+                    data.len()
+                        .checked_mul(core::mem::size_of::<u64>())
+                        .ok_or(metalerror::sizeoverflow)?,
+                );
+                uploads64.push((index, data));
+            }
+            buf::out(count) => {
+                let bytes = count
+                    .checked_mul(core::mem::size_of::<f32>())
+                    .ok_or(metalerror::sizeoverflow)?;
+                allocbytes.push(bytes);
+                outputs.push((index, count));
+            }
+            buf::readback(_, count) => {
+                outputs.push((index, count));
+            }
+            buf::device(_) => {}
+        }
+    }
+    Ok(bufferplan {
+        allocbytes,
+        uploads,
+        uploads64,
+        outputs,
+    })
+}
+
 /// Compiles, binds, and runs one kernel, then waits and copies the outputs
 /// back — the backend's single driver-handoff.
 ///
@@ -889,41 +973,12 @@ fn dispatch<P>(
     // borrows disjoint: nothing borrows `owned` while it is still being pushed
     // to. `owned` lives for the whole function, so no buffer is freed while a
     // kernel can still touch it.
-    let mut allocbytes: Vec<usize> = Vec::with_capacity(buffers.len());
-    let mut uploads: Vec<(usize, &[f32])> = Vec::new();
-    let mut uploads64: Vec<(usize, &[u64])> = Vec::new();
-    let mut outputs: Vec<(usize, usize)> = Vec::new();
-    for (index, slot) in buffers.iter().enumerate() {
-        match *slot {
-            buf::host(data) => {
-                allocbytes.push(
-                    data.len()
-                        .checked_mul(core::mem::size_of::<f32>())
-                        .ok_or(metalerror::sizeoverflow)?,
-                );
-                uploads.push((index, data));
-            }
-            buf::hostu64(data) => {
-                allocbytes.push(
-                    data.len()
-                        .checked_mul(core::mem::size_of::<u64>())
-                        .ok_or(metalerror::sizeoverflow)?,
-                );
-                uploads64.push((index, data));
-            }
-            buf::out(count) => {
-                let bytes = count
-                    .checked_mul(core::mem::size_of::<f32>())
-                    .ok_or(metalerror::sizeoverflow)?;
-                allocbytes.push(bytes);
-                outputs.push((index, count));
-            }
-            buf::readback(_, count) => {
-                outputs.push((index, count));
-            }
-            buf::device(_) => {}
-        }
-    }
+    let bufferplan {
+        allocbytes,
+        uploads,
+        uploads64,
+        outputs,
+    } = planbuffers(buffers)?;
     let mut owned: Vec<Retained<ProtocolObject<dyn MTLBuffer>>> =
         Vec::with_capacity(allocbytes.len());
     for bytes in allocbytes {
@@ -1102,6 +1157,41 @@ enum sbuf<'a> {
 /// next dispatch's unsafe block copies into, plus the host data it copies.
 type pendingupload = (Retained<ProtocolObject<dyn MTLBuffer>>, Vec<f32>);
 
+/// The allocation and upload plan for one session dispatch.
+struct sessionplan<'a> {
+    allocbytes: Vec<usize>,
+    uploads64: Vec<(usize, &'a [u64])>,
+}
+
+/// Splits the session buffer slots into allocation sizes and index uploads.
+fn plansessionbuffers<'a>(buffers: &[sbuf<'a>]) -> Result<sessionplan<'a>, metalerror> {
+    let mut allocbytes = Vec::with_capacity(buffers.len());
+    let mut uploads64 = Vec::new();
+    for (index, slot) in buffers.iter().enumerate() {
+        match *slot {
+            sbuf::hostu64(data) => {
+                allocbytes.push(
+                    data.len()
+                        .checked_mul(core::mem::size_of::<u64>())
+                        .ok_or(metalerror::sizeoverflow)?,
+                );
+                uploads64.push((index, data));
+            }
+            sbuf::out(count) => {
+                let bytes = count
+                    .checked_mul(core::mem::size_of::<f32>())
+                    .ok_or(metalerror::sizeoverflow)?;
+                allocbytes.push(bytes);
+            }
+            sbuf::device(_) => {}
+        }
+    }
+    Ok(sessionplan {
+        allocbytes,
+        uploads64,
+    })
+}
+
 /// One accumulative submission: a command buffer and compute encoder that many
 /// operators share, plus the output slot of every recorded step.
 ///
@@ -1212,27 +1302,10 @@ impl session {
 
         // Allocate the buffers this dispatch owns in one pass, then line up
         // the bound references in a second pass, keeping the borrows disjoint.
-        let mut allocbytes: Vec<usize> = Vec::with_capacity(buffers.len());
-        let mut uploads64: Vec<(usize, &[u64])> = Vec::new();
-        for (index, slot) in buffers.iter().enumerate() {
-            match *slot {
-                sbuf::hostu64(data) => {
-                    allocbytes.push(
-                        data.len()
-                            .checked_mul(core::mem::size_of::<u64>())
-                            .ok_or(metalerror::sizeoverflow)?,
-                    );
-                    uploads64.push((index, data));
-                }
-                sbuf::out(count) => {
-                    let bytes = count
-                        .checked_mul(core::mem::size_of::<f32>())
-                        .ok_or(metalerror::sizeoverflow)?;
-                    allocbytes.push(bytes);
-                }
-                sbuf::device(_) => {}
-            }
-        }
+        let sessionplan {
+            allocbytes,
+            uploads64,
+        } = plansessionbuffers(buffers)?;
         let mut owned: Vec<Retained<ProtocolObject<dyn MTLBuffer>>> =
             Vec::with_capacity(allocbytes.len());
         for bytes in allocbytes {

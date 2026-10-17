@@ -467,23 +467,8 @@ impl checkpointreader {
         Ok(self.readtensorcow(name)?.map(Cow::into_owned))
     }
 
-    /// Reads a tensor's bytes, returning a borrowed slice when the tensor is a
-    /// single uncompressed block from a zero-copy source, and an owned buffer
-    /// otherwise.
-    ///
-    /// Returns `Ok(None)` when the tensor is absent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`checkpointerror::blockcrcmismatch`] or
-    /// [`checkpointerror::blockhashmismatch`] when a touched block is corrupt,
-    /// or [`checkpointerror::offsetoutofrange`] when the tensor's range exceeds
-    /// the data section.
-    pub fn readtensorcow(&self, name: &str) -> Result<Option<Cow<'_, [u8]>>, checkpointerror> {
-        let entry = match self.tensors.iter().find(|t| t.getname() == name) {
-            Some(entry) => entry,
-            None => return Ok(None),
-        };
+    /// Resolves a tensor entry's absolute byte range within the data section.
+    fn tensorrange(&self, entry: &tensorentry) -> Result<(usize, usize), checkpointerror> {
         let total = self.totallen();
         let start =
             usize::try_from(entry.getoffset()).map_err(|_| checkpointerror::offsetoutofrange {
@@ -504,6 +489,27 @@ impl checkpointreader {
                 datalength: total as u64,
             });
         }
+        Ok((start, end))
+    }
+
+    /// Reads a tensor's bytes, returning a borrowed slice when the tensor is a
+    /// single uncompressed block from a zero-copy source, and an owned buffer
+    /// otherwise.
+    ///
+    /// Returns `Ok(None)` when the tensor is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::blockcrcmismatch`] or
+    /// [`checkpointerror::blockhashmismatch`] when a touched block is corrupt,
+    /// or [`checkpointerror::offsetoutofrange`] when the tensor's range exceeds
+    /// the data section.
+    pub fn readtensorcow(&self, name: &str) -> Result<Option<Cow<'_, [u8]>>, checkpointerror> {
+        let entry = match self.tensors.iter().find(|t| t.getname() == name) {
+            Some(entry) => entry,
+            None => return Ok(None),
+        };
+        let (start, end) = self.tensorrange(entry)?;
 
         let mut out = Vec::with_capacity(end - start);
         let mut running = 0usize;

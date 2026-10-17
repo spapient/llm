@@ -50,6 +50,54 @@ pub struct delta {
     signature: Option<[u8; 64]>,
 }
 
+/// Compresses every stored block and reports whether any transform applied.
+fn compressstored(stored: &[storedblock]) -> (Vec<(u8, u8, Vec<u8>)>, bool) {
+    let mut storedblocks = Vec::with_capacity(stored.len());
+    let mut has_transform = false;
+    for block in stored {
+        let (codec, transform, compressed) = compressblock(&block.bytes);
+        if transform != TRANSFORMNONE {
+            has_transform = true;
+        }
+        storedblocks.push((codec, transform, compressed));
+    }
+    (storedblocks, has_transform)
+}
+
+/// Appends every stored block's manifest entry and stored bytes.
+fn pushblockentries(
+    manifest: &mut Vec<u8>,
+    storeddata: &mut Vec<u8>,
+    stored: &[storedblock],
+    storedblocks: Vec<(u8, u8, Vec<u8>)>,
+    key: Option<&[u8; 32]>,
+    transformed: bool,
+) -> Result<(), checkpointerror> {
+    for (block, (codec, transform, compressed)) in stored.iter().zip(storedblocks) {
+        let (storedbytes, tag) = match key {
+            Some(key) => {
+                let nonce = encryption::nonceof(&block.hash);
+                encryption::encryptblock(key, &nonce, &compressed)?
+            }
+            None => (compressed, [0u8; 16]),
+        };
+        let checksum = crc32c(&storedbytes);
+        manifest.extend_from_slice(&block.hash);
+        pushu64(manifest, storeddata.len() as u64);
+        pushu32(manifest, storedbytes.len() as u32);
+        pushu32(manifest, checksum);
+        manifest.push(codec);
+        if transformed {
+            manifest.push(transform);
+        }
+        if key.is_some() {
+            manifest.extend_from_slice(&tag);
+        }
+        storeddata.extend_from_slice(&storedbytes);
+    }
+    Ok(())
+}
+
 impl delta {
     /// Builds the delta from `base` to `new`.
     ///
@@ -260,15 +308,7 @@ impl delta {
         // Phase 1: compress every stored block before the manifest header is
         // written, so the snapshot-level transform flag can be set when any
         // block uses the bit-shuffle pre-pass.
-        let mut storedblocks = Vec::with_capacity(self.stored.len());
-        let mut has_transform = false;
-        for block in &self.stored {
-            let (codec, transform, compressed) = compressblock(&block.bytes);
-            if transform != TRANSFORMNONE {
-                has_transform = true;
-            }
-            storedblocks.push((codec, transform, compressed));
-        }
+        let (storedblocks, has_transform) = compressstored(&self.stored);
         if has_transform {
             flags |= FLAGTRANSFORMED;
         }
@@ -282,28 +322,14 @@ impl delta {
         }
         pushu64(&mut manifest, self.stored.len() as u64);
         let mut storeddata = Vec::new();
-        for (block, (codec, transform, compressed)) in self.stored.iter().zip(storedblocks) {
-            let (stored, tag) = match key {
-                Some(key) => {
-                    let nonce = encryption::nonceof(&block.hash);
-                    encryption::encryptblock(key, &nonce, &compressed)?
-                }
-                None => (compressed, [0u8; 16]),
-            };
-            let checksum = crc32c(&stored);
-            manifest.extend_from_slice(&block.hash);
-            pushu64(&mut manifest, storeddata.len() as u64);
-            pushu32(&mut manifest, stored.len() as u32);
-            pushu32(&mut manifest, checksum);
-            manifest.push(codec);
-            if flags & FLAGTRANSFORMED != 0 {
-                manifest.push(transform);
-            }
-            if key.is_some() {
-                manifest.extend_from_slice(&tag);
-            }
-            storeddata.extend_from_slice(&stored);
-        }
+        pushblockentries(
+            &mut manifest,
+            &mut storeddata,
+            &self.stored,
+            storedblocks,
+            key,
+            flags & FLAGTRANSFORMED != 0,
+        )?;
 
         let total = PREFIXLEN
             .checked_add(manifest.len())
