@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use format::{dtypetoken, tokendtype};
-use serde::{Deserialize, Serialize};
+use lib::{jsonnumber, jsonvalue, parse, tostring};
 use tensor::{dtype, shape};
 
 use crate::error::checkpointerror;
@@ -165,19 +165,30 @@ impl manifest {
     /// which cannot occur for a well-formed manifest but is handled explicitly
     /// rather than panicking.
     pub fn tobytes(&self) -> Result<Vec<u8>, checkpointerror> {
-        let raw = rawmanifest {
-            version: self.version,
-            training: self.training,
-            metadata: self.metadata.clone(),
-            tensors: self
-                .tensors
-                .iter()
-                .map(entrytoraw)
-                .collect::<Result<Vec<rawentry>, checkpointerror>>()?,
-        };
-        serde_json::to_vec(&raw).map_err(|e| checkpointerror::invalidmanifest {
-            reason: e.to_string(),
-        })
+        let mut manifest = BTreeMap::new();
+        manifest.insert(
+            "version".to_string(),
+            jsonvalue::number(jsonnumber::integer(self.version as i64)),
+        );
+        manifest.insert(
+            "training".to_string(),
+            match self.training {
+                Some(state) => state.tojson(),
+                None => jsonvalue::null,
+            },
+        );
+        let mut metadata = BTreeMap::new();
+        for (key, value) in &self.metadata {
+            metadata.insert(key.clone(), jsonvalue::string(value.clone()));
+        }
+        manifest.insert("metadata".to_string(), jsonvalue::object(metadata));
+        let tensors = self
+            .tensors
+            .iter()
+            .map(entrytojson)
+            .collect::<Vec<jsonvalue>>();
+        manifest.insert("tensors".to_string(), jsonvalue::array(tensors));
+        Ok(tostring(&jsonvalue::object(manifest)).into_bytes())
     }
 
     /// Parses and validates a manifest from UTF-8 JSON.
@@ -194,20 +205,52 @@ impl manifest {
     /// [`checkpointerror::invalidmanifest`] / [`checkpointerror::shapeoverflow`]
     /// / [`checkpointerror::lengthmismatch`] for inconsistent entries.
     pub fn frombytes(bytes: &[u8]) -> Result<Self, checkpointerror> {
-        let raw: rawmanifest =
-            serde_json::from_slice(bytes).map_err(|e| checkpointerror::invalidmanifestjson {
-                line: e.line(),
-                column: e.column(),
-                message: e.to_string(),
+        let root = parse(bytes).map_err(|error| checkpointerror::invalidmanifestjson {
+            line: error.getline(),
+            column: error.getcolumn(),
+            message: error.to_string(),
+        })?;
+        let object = root
+            .getobject()
+            .ok_or_else(|| checkpointerror::invalidmanifest {
+                reason: "manifest is not a JSON object".to_string(),
             })?;
-        let mut tensors = Vec::with_capacity(raw.tensors.len());
-        for entry in raw.tensors {
-            tensors.push(rawtoentry(entry)?);
+        let version = object
+            .get("version")
+            .and_then(jsonvalue::getinteger)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| checkpointerror::invalidmanifest {
+                reason: "manifest 'version' is not a non-negative integer".to_string(),
+            })?;
+        let training = match object.get("training") {
+            Some(value) if !value.isnull() => Some(trainingstate::fromjson(value)?),
+            _ => None,
+        };
+        let mut metadata = BTreeMap::new();
+        if let Some(values) = object.get("metadata").and_then(jsonvalue::getobject) {
+            for (key, value) in values {
+                let text = value
+                    .getstr()
+                    .ok_or_else(|| checkpointerror::invalidmanifest {
+                        reason: format!("metadata {key:?} is not a string"),
+                    })?;
+                metadata.insert(key.clone(), text.to_string());
+            }
+        }
+        let raws = object
+            .get("tensors")
+            .and_then(jsonvalue::getarray)
+            .ok_or_else(|| checkpointerror::invalidmanifest {
+                reason: "manifest has no 'tensors' array".to_string(),
+            })?;
+        let mut tensors = Vec::with_capacity(raws.len());
+        for entry in raws {
+            tensors.push(jsonentrytoentry(entry)?);
         }
         let manifest = Self {
-            version: raw.version,
-            training: raw.training,
-            metadata: raw.metadata,
+            version,
+            training,
+            metadata,
             tensors,
         };
         manifest.checkuniquenames()?;
@@ -229,75 +272,113 @@ impl manifest {
     }
 }
 
-/// The raw serialized form of one manifest entry.
-#[derive(Serialize, Deserialize)]
-struct rawentry {
-    name: String,
-    dtype: String,
-    shape: Vec<usize>,
-    offset: u64,
-    nbytes: u64,
+/// Converts a typed entry to its JSON value.
+fn entrytojson(entry: &manifestentry) -> jsonvalue {
+    let mut object = BTreeMap::new();
+    object.insert("name".to_string(), jsonvalue::string(entry.name.clone()));
+    object.insert(
+        "dtype".to_string(),
+        jsonvalue::string(dtypetoken(entry.dtype).to_string()),
+    );
+    let shape = entry
+        .shape
+        .getdims()
+        .iter()
+        .map(|dim| jsonvalue::number(jsonnumber::integer(*dim as i64)))
+        .collect();
+    object.insert("shape".to_string(), jsonvalue::array(shape));
+    object.insert(
+        "offset".to_string(),
+        jsonvalue::number(jsonnumber::integer(entry.offset as i64)),
+    );
+    object.insert(
+        "nbytes".to_string(),
+        jsonvalue::number(jsonnumber::integer(entry.nbytes as i64)),
+    );
+    jsonvalue::object(object)
 }
 
-/// The raw serialized form of the manifest.
-#[derive(Serialize, Deserialize)]
-struct rawmanifest {
-    version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    training: Option<trainingstate>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    metadata: BTreeMap<String, String>,
-    tensors: Vec<rawentry>,
-}
-
-/// Converts a typed entry to its serialized form.
-fn entrytoraw(entry: &manifestentry) -> Result<rawentry, checkpointerror> {
-    Ok(rawentry {
-        name: entry.name.clone(),
-        dtype: dtypetoken(entry.dtype).to_string(),
-        shape: entry.shape.getdims().to_vec(),
-        offset: entry.offset,
-        nbytes: entry.nbytes,
-    })
-}
-
-/// Validates a raw entry into a typed entry.
-fn rawtoentry(raw: rawentry) -> Result<manifestentry, checkpointerror> {
-    let value = tokendtype(&raw.dtype).ok_or_else(|| checkpointerror::dtypeunsupported {
-        name: raw.name.clone(),
-        dtype: raw.dtype.clone(),
+/// Validates a JSON entry value into a typed entry.
+fn jsonentrytoentry(entry: &jsonvalue) -> Result<manifestentry, checkpointerror> {
+    let object = entry
+        .getobject()
+        .ok_or_else(|| checkpointerror::invalidmanifest {
+            reason: "manifest tensor entry is not a JSON object".to_string(),
+        })?;
+    let name = object
+        .get("name")
+        .and_then(jsonvalue::getstr)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
+            reason: "manifest tensor entry has no string 'name'".to_string(),
+        })?
+        .to_string();
+    let dtype = object
+        .get("dtype")
+        .and_then(jsonvalue::getstr)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
+            reason: format!("tensor {name:?} has no string 'dtype'"),
+        })?;
+    let value = tokendtype(dtype).ok_or_else(|| checkpointerror::dtypeunsupported {
+        name: name.clone(),
+        dtype: dtype.to_string(),
     })?;
-    if raw.shape.is_empty() {
+    let shape = object
+        .get("shape")
+        .and_then(jsonvalue::getarray)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
+            reason: format!("tensor {name:?} has no 'shape' array"),
+        })?;
+    if shape.is_empty() {
         return Err(checkpointerror::invalidmanifest {
-            reason: format!("tensor {:?} has an empty shape", raw.name),
+            reason: format!("tensor {name:?} has an empty shape"),
         });
     }
-    let dims = shape::new(raw.shape).map_err(|_| checkpointerror::invalidmanifest {
-        reason: format!("tensor {:?} has an invalid shape", raw.name),
+    let dims = shape
+        .iter()
+        .map(|dim| {
+            dim.getinteger()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| checkpointerror::invalidmanifest {
+                    reason: format!("tensor {name:?} has a non-integer shape dimension"),
+                })
+        })
+        .collect::<Result<Vec<usize>, checkpointerror>>()?;
+    let dims = shape::new(dims).map_err(|_| checkpointerror::invalidmanifest {
+        reason: format!("tensor {name:?} has an invalid shape"),
     })?;
     let count = dims
         .getelementcount()
-        .map_err(|_| checkpointerror::shapeoverflow {
-            name: raw.name.clone(),
-        })?;
+        .map_err(|_| checkpointerror::shapeoverflow { name: name.clone() })?;
     let expected = (count as u64)
         .checked_mul(value.sizeinbytes() as u64)
-        .ok_or_else(|| checkpointerror::shapeoverflow {
-            name: raw.name.clone(),
+        .ok_or_else(|| checkpointerror::shapeoverflow { name: name.clone() })?;
+    let offset = object
+        .get("offset")
+        .and_then(jsonvalue::getinteger)
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| checkpointerror::invalidmanifest {
+            reason: format!("tensor {name:?} has a non-integer 'offset'"),
         })?;
-    if raw.nbytes != expected {
+    let nbytes = object
+        .get("nbytes")
+        .and_then(jsonvalue::getinteger)
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| checkpointerror::invalidmanifest {
+            reason: format!("tensor {name:?} has a non-integer 'nbytes'"),
+        })?;
+    if nbytes != expected {
         return Err(checkpointerror::lengthmismatch {
-            name: raw.name,
+            name,
             expected,
-            actual: raw.nbytes,
+            actual: nbytes,
         });
     }
     Ok(manifestentry {
-        name: raw.name,
+        name,
         dtype: value,
         shape: dims,
-        offset: raw.offset,
-        nbytes: raw.nbytes,
+        offset,
+        nbytes,
     })
 }
 

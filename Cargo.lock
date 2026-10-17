@@ -241,9 +241,8 @@ dependencies = [
  "bytemuck",
  "ed25519-compact",
  "format",
+ "lib",
  "mmap-guard",
- "serde",
- "serde_json",
  "tensor",
 ]
 
@@ -585,8 +584,6 @@ name = "format"
 version = "0.1.0"
 dependencies = [
  "lib",
- "serde",
- "serde_json",
  "tensor",
 ]
 

@@ -11,8 +11,7 @@ description = "Model and training-state persistence for the LLM runtime"
 name = "checkpoint"
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
+lib = { path = "../lib" }
 blake3.workspace = true
 tensor = { path = "../tensor" }
 format = { path = "../format" }

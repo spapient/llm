@@ -11,8 +11,6 @@ description = "External model format parsing and structural validation for the L
 name = "format"
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
 lib = { path = "../lib" }
 tensor = { path = "../tensor" }
 

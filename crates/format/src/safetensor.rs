@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use lib::limits;
-use serde_json::Value;
+use lib::{jsonvalue, parse};
 
 use crate::error::formaterror;
 use crate::metadata::tensormetadata;
@@ -67,14 +67,20 @@ impl safetensorfile {
         }
         let headerlength = headerlength as usize;
         let headerend = HEADERLENGTHSIZE + headerlength;
-        let parsed: BTreeMap<String, Value> =
-            serde_json::from_slice(&bytes[HEADERLENGTHSIZE..headerend]).map_err(|e| {
-                formaterror::invalidjson {
-                    line: e.line(),
-                    column: e.column(),
-                    message: e.to_string(),
-                }
+        let root =
+            parse(&bytes[HEADERLENGTHSIZE..headerend]).map_err(|e| formaterror::invalidjson {
+                line: e.getline(),
+                column: e.getcolumn(),
+                message: e.to_string(),
             })?;
+        let parsed: BTreeMap<String, jsonvalue> =
+            root.getobject()
+                .cloned()
+                .ok_or_else(|| formaterror::invalidjson {
+                    line: 1,
+                    column: 1,
+                    message: "safetensors header is not a JSON object".to_string(),
+                })?;
         let datalength = (bytes.len() - headerend) as u64;
         let metadata = extractmetadata(&parsed)?;
         let mut tensors = Vec::with_capacity(parsed.len());
@@ -170,16 +176,24 @@ impl safetensorfile {
 
 /// Extracts the optional `__metadata__` string map from a parsed header.
 fn extractmetadata(
-    parsed: &BTreeMap<String, Value>,
+    parsed: &BTreeMap<String, jsonvalue>,
 ) -> Result<BTreeMap<String, String>, formaterror> {
     match parsed.get(METADATAKEY) {
         None => Ok(BTreeMap::new()),
         Some(value) => {
-            serde_json::from_value::<BTreeMap<String, String>>(value.clone()).map_err(|e| {
-                formaterror::invalidmetadata {
-                    reason: e.to_string(),
-                }
-            })
+            let object = value
+                .getobject()
+                .ok_or_else(|| formaterror::invalidmetadata {
+                    reason: "__metadata__ is not a JSON object".to_string(),
+                })?;
+            let mut metadata = BTreeMap::new();
+            for (key, item) in object {
+                let text = item.getstr().ok_or_else(|| formaterror::invalidmetadata {
+                    reason: format!("metadata {key:?} is not a string"),
+                })?;
+                metadata.insert(key.clone(), text.to_string());
+            }
+            Ok(metadata)
         }
     }
 }

@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use lib::{jsonvalue, parse};
 use tensor::dtype;
 
 use crate::error::formaterror;
@@ -7,35 +7,6 @@ use crate::error::formaterror;
 ///
 /// Unknown fields are ignored so that vendor-specific additions do not fail
 /// parsing; every field this crate relies on is validated explicitly afterwards.
-#[derive(Deserialize)]
-struct rawconfig {
-    #[serde(default)]
-    architectures: Vec<String>,
-    #[serde(rename = "model_type")]
-    modeltype: String,
-    #[serde(rename = "hidden_size")]
-    hiddensize: usize,
-    #[serde(rename = "intermediate_size")]
-    intermediatesize: usize,
-    #[serde(rename = "num_attention_heads")]
-    attentionheads: usize,
-    #[serde(rename = "num_key_value_heads", default)]
-    keyvalueheads: Option<usize>,
-    #[serde(rename = "num_hidden_layers")]
-    hiddenlayers: usize,
-    #[serde(rename = "max_position_embeddings")]
-    maxpositions: usize,
-    #[serde(rename = "rms_norm_eps")]
-    rmsnormeps: f64,
-    #[serde(rename = "vocab_size")]
-    vocabsize: usize,
-    #[serde(rename = "rope_theta")]
-    ropetheta: f64,
-    #[serde(rename = "torch_dtype", default)]
-    torchdtype: Option<String>,
-    #[serde(rename = "tie_word_embeddings", default)]
-    tiewordembeddings: Option<bool>,
-}
 
 /// A validated Llama-family model configuration.
 ///
@@ -76,56 +47,110 @@ impl modelconfig {
     /// Returns a [`formaterror`] for malformed JSON, an unsupported model type
     /// or torch dtype, or an invalid field value.
     pub fn parse(bytes: &[u8]) -> Result<Self, formaterror> {
-        let raw: rawconfig =
-            serde_json::from_slice(bytes).map_err(|e| formaterror::invalidjson {
-                line: e.line(),
-                column: e.column(),
-                message: e.to_string(),
-            })?;
-        if raw.modeltype != "llama" {
-            return Err(formaterror::unsupportedmodeltype {
-                found: raw.modeltype,
-            });
+        let root = parse(bytes).map_err(|e| formaterror::invalidjson {
+            line: e.getline(),
+            column: e.getcolumn(),
+            message: e.to_string(),
+        })?;
+        let object = root.getobject().ok_or_else(|| formaterror::invalidjson {
+            line: 1,
+            column: 1,
+            message: "config.json is not a JSON object".to_string(),
+        })?;
+        let modeltype = stringfield(object, "model_type")?;
+        if modeltype != "llama" {
+            return Err(formaterror::unsupportedmodeltype { found: modeltype });
         }
-        positive("hidden_size", raw.hiddensize)?;
-        positive("intermediate_size", raw.intermediatesize)?;
-        positive("num_attention_heads", raw.attentionheads)?;
-        positive("num_hidden_layers", raw.hiddenlayers)?;
-        positive("max_position_embeddings", raw.maxpositions)?;
-        positive("vocab_size", raw.vocabsize)?;
-        let keyvalueheads = raw.keyvalueheads.unwrap_or(raw.attentionheads);
+        let hiddensize = sizefield(object, "hidden_size")?;
+        let intermediatesize = sizefield(object, "intermediate_size")?;
+        let attentionheads = sizefield(object, "num_attention_heads")?;
+        let hiddenlayers = sizefield(object, "num_hidden_layers")?;
+        let maxpositions = sizefield(object, "max_position_embeddings")?;
+        let vocabsize = sizefield(object, "vocab_size")?;
+        positive("hidden_size", hiddensize)?;
+        positive("intermediate_size", intermediatesize)?;
+        positive("num_attention_heads", attentionheads)?;
+        positive("num_hidden_layers", hiddenlayers)?;
+        positive("max_position_embeddings", maxpositions)?;
+        positive("vocab_size", vocabsize)?;
+        let keyvalueheads =
+            optionalsizefield(object, "num_key_value_heads")?.unwrap_or(attentionheads);
         positive("num_key_value_heads", keyvalueheads)?;
-        if !raw.hiddensize.is_multiple_of(raw.attentionheads) {
+        if !hiddensize.is_multiple_of(attentionheads) {
             return Err(formaterror::invalidvalue {
                 field: "hidden_size",
                 reason: "not divisible by num_attention_heads".to_string(),
             });
         }
-        if !raw.attentionheads.is_multiple_of(keyvalueheads) {
+        if !attentionheads.is_multiple_of(keyvalueheads) {
             return Err(formaterror::invalidvalue {
                 field: "num_attention_heads",
                 reason: "not divisible by num_key_value_heads".to_string(),
             });
         }
-        finite_positive("rms_norm_eps", raw.rmsnormeps)?;
-        finite_positive("rope_theta", raw.ropetheta)?;
-        let torchdtype = match raw.torchdtype {
-            None => None,
-            Some(token) => Some(parsetorchdtype(&token)?),
-        };
+        let rmsnormeps = realfield(object, "rms_norm_eps")?;
+        let ropetheta = realfield(object, "rope_theta")?;
+        finite_positive("rms_norm_eps", rmsnormeps)?;
+        finite_positive("rope_theta", ropetheta)?;
+        let architectures = object
+            .get("architectures")
+            .map(|value| {
+                value
+                    .getarray()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|item| {
+                                item.getstr().map(str::to_string).ok_or_else(|| {
+                                    formaterror::invalidvalue {
+                                        field: "architectures",
+                                        reason: "entry is not a string".to_string(),
+                                    }
+                                })
+                            })
+                            .collect::<Result<Vec<String>, formaterror>>()
+                    })
+                    .unwrap_or_else(|| {
+                        Err(formaterror::invalidvalue {
+                            field: "architectures",
+                            reason: "not an array".to_string(),
+                        })
+                    })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let torchdtype = object
+            .get("torch_dtype")
+            .map(|value| {
+                let token = value.getstr().ok_or_else(|| formaterror::invalidvalue {
+                    field: "torch_dtype",
+                    reason: "not a string".to_string(),
+                })?;
+                parsetorchdtype(token)
+            })
+            .transpose()?;
+        let tiewordembeddings = object
+            .get("tie_word_embeddings")
+            .map(|value| {
+                value.getbool().ok_or_else(|| formaterror::invalidvalue {
+                    field: "tie_word_embeddings",
+                    reason: "not a boolean".to_string(),
+                })
+            })
+            .transpose()?;
         Ok(Self {
-            architectures: raw.architectures,
-            hiddensize: raw.hiddensize,
-            intermediatesize: raw.intermediatesize,
-            attentionheads: raw.attentionheads,
+            architectures,
+            hiddensize,
+            intermediatesize,
+            attentionheads,
             keyvalueheads,
-            hiddenlayers: raw.hiddenlayers,
-            maxpositions: raw.maxpositions,
-            rmsnormeps: raw.rmsnormeps,
-            vocabsize: raw.vocabsize,
-            ropetheta: raw.ropetheta,
+            hiddenlayers,
+            maxpositions,
+            rmsnormeps,
+            vocabsize,
+            ropetheta,
             torchdtype,
-            tiewordembeddings: raw.tiewordembeddings,
+            tiewordembeddings,
         })
     }
 
@@ -223,6 +248,82 @@ fn positive(field: &'static str, value: usize) -> Result<(), formaterror> {
         });
     }
     Ok(())
+}
+
+/// Extracts a required string field.
+fn stringfield(
+    object: &std::collections::BTreeMap<String, jsonvalue>,
+    field: &'static str,
+) -> Result<String, formaterror> {
+    object.get(field).ok_or_else(|| missingfield(field))?;
+    object
+        .get(field)
+        .and_then(jsonvalue::getstr)
+        .map(str::to_string)
+        .ok_or_else(|| formaterror::invalidvalue {
+            field,
+            reason: "not a string".to_string(),
+        })
+}
+
+/// Extracts a required non-negative integer size field.
+fn sizefield(
+    object: &std::collections::BTreeMap<String, jsonvalue>,
+    field: &'static str,
+) -> Result<usize, formaterror> {
+    object.get(field).ok_or_else(|| missingfield(field))?;
+    object
+        .get(field)
+        .and_then(jsonvalue::getunsigned)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| formaterror::invalidvalue {
+            field,
+            reason: "not a non-negative integer".to_string(),
+        })
+}
+
+/// Extracts an optional non-negative integer size field.
+fn optionalsizefield(
+    object: &std::collections::BTreeMap<String, jsonvalue>,
+    field: &'static str,
+) -> Result<Option<usize>, formaterror> {
+    object
+        .get(field)
+        .map(|value| {
+            value
+                .getunsigned()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| formaterror::invalidvalue {
+                    field,
+                    reason: "not a non-negative integer".to_string(),
+                })
+        })
+        .transpose()
+}
+
+/// Extracts a required real field.
+fn realfield(
+    object: &std::collections::BTreeMap<String, jsonvalue>,
+    field: &'static str,
+) -> Result<f64, formaterror> {
+    object.get(field).ok_or_else(|| missingfield(field))?;
+    object
+        .get(field)
+        .and_then(jsonvalue::getreal)
+        .ok_or_else(|| formaterror::invalidvalue {
+            field,
+            reason: "not a number".to_string(),
+        })
+}
+
+/// Builds the JSON-level error for a missing required field, matching the
+/// previous deserializer behaviour of reporting schema gaps as invalid JSON.
+fn missingfield(field: &'static str) -> formaterror {
+    formaterror::invalidjson {
+        line: 1,
+        column: 1,
+        message: format!("missing required field {field:?}"),
+    }
 }
 
 /// Rejects a non-finite or non-positive floating-point field.
