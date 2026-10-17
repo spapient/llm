@@ -905,8 +905,9 @@ fn drive(
 /// The kernel is compiled at build time by `mcc`; this is the A1 path (no
 /// runtime JIT). The batch dimension is the grid's third axis, so every slice
 /// is uploaded, launched, and downloaded in one dispatch instead of one per
-/// slice. The WMMA Tensor-Core kernel is a separate measurable stage.
-pub(crate) fn matmul(
+/// slice. This is the high-precision reference path; the executor's default
+/// path is [`matmul_wmma`].
+pub(crate) fn matmul_fma(
     cache: &cache,
     lhs: &[f32],
     rhs: &[f32],
@@ -915,7 +916,7 @@ pub(crate) fn matmul(
     n: usize,
     batch: usize,
 ) -> Result<Vec<f32>, musaerror> {
-    if batch == 0 {
+    if batch == 0 || m == 0 || n == 0 {
         return Ok(Vec::new());
     }
     let total = m
@@ -932,6 +933,54 @@ pub(crate) fn matmul(
         cache,
         "matmul",
         source::MATMULENTRY,
+        &[buf::host(lhs), buf::host(rhs), buf::out(total)],
+        &[
+            scalar::u32(m as u32),
+            scalar::u32(k as u32),
+            scalar::u32(n as u32),
+            scalar::u32(batch as u32),
+        ],
+        grid,
+        block,
+        0,
+    )?;
+    Ok(results.remove(0))
+}
+
+/// Computes `[batch, m, k] * [batch, k, n]` with the Tensor-Core kernel.
+///
+/// The kernel accumulates in `f32` but rounds each operand to TF32 (a 10-bit
+/// mantissa) before the Tensor-Core multiply, so its result differs from the
+/// FMA reference path within the documented TF32 tolerance
+/// (`docs/design.md` §21.8). It covers the same shapes, including a leading
+/// batch dimension and edges that are not multiples of the 64x64 tile: the
+/// kernel stages operands and results through guarded shared-memory tiles.
+pub(crate) fn matmul_wmma(
+    cache: &cache,
+    lhs: &[f32],
+    rhs: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    batch: usize,
+) -> Result<Vec<f32>, musaerror> {
+    if batch == 0 || m == 0 || n == 0 {
+        return Ok(Vec::new());
+    }
+    let total = m
+        .checked_mul(n)
+        .and_then(|value| value.checked_mul(batch))
+        .ok_or(musaerror::sizeoverflow)?;
+    let grid = (
+        (n as u32).div_ceil(source::MATMULWMMABN),
+        (m as u32).div_ceil(source::MATMULWMMABM),
+        batch as u32,
+    );
+    let block = (source::MATMULWMMATHREADS, 1, 1);
+    let mut results = dispatch(
+        cache,
+        "matmul",
+        source::MATMULWMMAENTRY,
         &[buf::host(lhs), buf::host(rhs), buf::out(total)],
         &[
             scalar::u32(m as u32),

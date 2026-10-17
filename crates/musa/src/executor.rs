@@ -15,6 +15,22 @@ use crate::backend::{MUSAMAXHEADDIM, musabackend};
 use crate::error::musaerror;
 use crate::ffi::{self, buf};
 
+/// Which MUSA implementation serves `matmul`.
+///
+/// The choice is made once, at construction, and stored as a field, exactly as
+/// `cuda` stores its `matmulpath`: selecting it per call would add a run-time
+/// branch to the hottest path and obscure which path a measurement exercised.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum matmulpath {
+    /// The in-repo Tensor-Core kernel (TF32), used by [`musaexecutor::new`].
+    /// TF32 rounds each operand to a 10-bit mantissa, so its result differs
+    /// from the FMA reference within the documented tolerance.
+    wmma,
+    /// The in-repo scalar FMA kernel, used by [`musaexecutor::newfma`] as the
+    /// independent high-precision reference path.
+    fma,
+}
+
 /// A MUSA executor: the crate's [`compute`](api::compute) provider.
 ///
 /// `musaexecutor` owns a [`musabackend`] and is the single place where its
@@ -24,31 +40,53 @@ use crate::ffi::{self, buf};
 ///
 /// The operator set is complete: all thirteen `api::compute` operators are
 /// served by in-repo kernels compiled at build time by `mcc` — matmul by the
-/// reference FMA kernel (the WMMA Tensor-Core kernel is a separate measurable
-/// stage), softmax by the max-subtracting kernel, scan by the serial/parallel
-/// pair. There is deliberately no vendor acceleration library and no runtime
-/// JIT (docs/musa-backend-plan.md §5.3): build failures surface at build time,
-/// not as a `kernelcompilefailed` at run time.
+/// WMMA Tensor-Core kernel (or, on the reference path, the FMA kernel),
+/// softmax by the max-subtracting kernel, scan by the serial/parallel pair.
+/// There is deliberately no vendor acceleration library and no runtime JIT
+/// (docs/musa-backend-plan.md §5.3): build failures surface at build time, not
+/// as a `kernelcompilefailed` at run time.
 #[derive(Clone, Debug)]
 pub struct musaexecutor {
     backend: musabackend,
+    path: matmulpath,
     cache: Arc<ffi::cache>,
 }
 
 impl musaexecutor {
     /// Creates an executor over the MUSA backend with budget `lim`.
     ///
-    /// The executor owns the device state and the compiled kernels: a clone
-    /// shares them, while an independently constructed executor retains its own
-    /// device handle and loads its own kernels. Nothing touches the device
-    /// until the first operator call — `new` never fails on a host without a
-    /// MUSA device.
+    /// `matmul` is served by the Tensor-Core (TF32) kernel. The executor owns
+    /// the device state and the compiled kernels: a clone shares them, while
+    /// an independently constructed executor retains its own device handle and
+    /// loads its own kernels. Nothing touches the device until the first
+    /// operator call — `new` never fails on a host without a MUSA device.
     #[must_use]
     pub fn new(lim: limits) -> Self {
         Self {
             backend: musabackend::new(lim),
+            path: matmulpath::wmma,
             cache: Arc::new(ffi::cache::new()),
         }
+    }
+
+    /// Creates an executor whose `matmul` is served by the scalar FMA kernel.
+    ///
+    /// This is the independent high-precision path the Tensor-Core path is
+    /// validated against. It exists as a constructor rather than a flag so a
+    /// reference run can never be confused with a production run.
+    #[must_use]
+    pub fn newfma(lim: limits) -> Self {
+        Self {
+            backend: musabackend::new(lim),
+            path: matmulpath::fma,
+            cache: Arc::new(ffi::cache::new()),
+        }
+    }
+
+    /// Returns which implementation serves `matmul`.
+    #[must_use]
+    pub fn getpath(&self) -> matmulpath {
+        self.path
     }
 
     /// Returns how many kernels this executor has resolved so far.
@@ -159,15 +197,26 @@ impl compute for musaexecutor {
 
         let lhsdata = lhs.getdata();
         let rhsdata = rhs.getdata();
-        let data = ffi::matmul(
-            &self.cache,
-            lhsdata,
-            rhsdata,
-            geometry.m,
-            geometry.k,
-            geometry.n,
-            geometry.batch,
-        )
+        let data = match self.path {
+            matmulpath::wmma => ffi::matmul_wmma(
+                &self.cache,
+                lhsdata,
+                rhsdata,
+                geometry.m,
+                geometry.k,
+                geometry.n,
+                geometry.batch,
+            ),
+            matmulpath::fma => ffi::matmul_fma(
+                &self.cache,
+                lhsdata,
+                rhsdata,
+                geometry.m,
+                geometry.k,
+                geometry.n,
+                geometry.batch,
+            ),
+        }
         .map_err(maptobackend)?;
 
         wrap(outshape, data)
@@ -525,7 +574,7 @@ impl musaexecutor {
     /// path, a separate measurable stage.)
     #[must_use]
     pub fn newsubmission(&self) -> musasubmission {
-        musasubmission::new(self.backend.clone(), self.cache.clone())
+        musasubmission::new(self.backend.clone(), self.path, self.cache.clone())
     }
 }
 
@@ -545,6 +594,7 @@ impl musaexecutor {
 /// trips, so it is left to the single-operator [`compute`] path.
 pub struct musasubmission {
     backend: musabackend,
+    path: matmulpath,
     cache: Arc<ffi::cache>,
     session: ffi::session,
     results: Vec<(resultdata, shape)>,
@@ -562,11 +612,13 @@ enum resultdata {
 }
 
 impl musasubmission {
-    /// Creates a submission over `backend` using `cache`.
-    pub(crate) fn new(backend: musabackend, cache: Arc<ffi::cache>) -> Self {
+    /// Creates a submission over `backend` using `cache`, selecting `path` for
+    /// recorded `matmul` steps.
+    pub(crate) fn new(backend: musabackend, path: matmulpath, cache: Arc<ffi::cache>) -> Self {
         let session = ffi::session::new(cache.clone());
         Self {
             backend,
+            path,
             cache,
             session,
             results: Vec::new(),
@@ -707,15 +759,26 @@ impl submission for musasubmission {
         }
         let lhs = self.resolve(lhs)?;
         let rhs = self.resolve(rhs)?;
-        let data = ffi::matmul(
-            &self.cache,
-            &lhs,
-            &rhs,
-            geometry.m,
-            geometry.k,
-            geometry.n,
-            1,
-        )
+        let data = match self.path {
+            matmulpath::wmma => ffi::matmul_wmma(
+                &self.cache,
+                &lhs,
+                &rhs,
+                geometry.m,
+                geometry.k,
+                geometry.n,
+                1,
+            ),
+            matmulpath::fma => ffi::matmul_fma(
+                &self.cache,
+                &lhs,
+                &rhs,
+                geometry.m,
+                geometry.k,
+                geometry.n,
+                1,
+            ),
+        }
         .map_err(maptobackend)?;
         Ok(self.push(data, outshape))
     }

@@ -19,7 +19,8 @@
 //! time by `mcc` into ELF fatbins embedded with `include_bytes!` (see
 //! [`registry`]) and loaded at run time through the `mu*` driver API — no
 //! runtime compiler, no `muBLAS`/`muDNN` (matmul is served by an in-repo
-//! kernel, softmax by the max-subtracting kernel shared with `cpu`/`metal`),
+//! Tensor-Core (TF32) kernel with the scalar FMA kernel kept as the reference
+//! path, softmax by the max-subtracting kernel shared with `cpu`/`metal`),
 //! so the whole platform FFI collapses to one driver-handoff function. The
 //! registered unsafe site count is `musa = 2`: the `unsafe extern "C"` block
 //! (mandatory under edition 2024) and the driver-handoff `unsafe` block
@@ -60,4 +61,4 @@ pub use backend::{MUSAMAXHEADDIM, MUSAMAXRANK, musabackend};
 #[cfg(all(target_os = "linux", musa_toolkit))]
 pub use error::musaerror;
 #[cfg(all(target_os = "linux", musa_toolkit))]
-pub use executor::musaexecutor;
+pub use executor::{matmulpath, musaexecutor};

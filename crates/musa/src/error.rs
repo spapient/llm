@@ -14,10 +14,11 @@ use thiserror::Error;
 /// compilation, cuBLAS, and cuDNN classes are absent by design
 /// (docs/musa-backend-plan.md §5): kernels are compiled at build time by `mcc`
 /// (a build failure is a build failure, not a run-time error), and the backend
-/// deliberately uses no vendor acceleration libraries — matmul runs a WMMA
-/// kernel on the Tensor Core and softmax the max-subtracting kernel, so the
-/// only run-time interaction classes left are device, module, transfer,
-/// launch, and size overflow.
+/// deliberately uses no vendor acceleration libraries — matmul runs the
+/// in-repo WMMA (TF32) kernel on the Tensor Core (the scalar FMA kernel is the
+/// reference path) and softmax the max-subtracting kernel, so the only
+/// run-time interaction classes left are device, module, transfer, launch, and
+/// size overflow.
 #[derive(Debug, Error)]
 pub enum musaerror {
     /// No usable MUSA device could be opened.

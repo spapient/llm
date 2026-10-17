@@ -96,6 +96,46 @@ mod linux {
         group.finish();
     }
 
+    /// A/B of the two matmul paths on the same operands and run: the 256 case
+    /// matches the rest of the suite, and the 1024 case keeps the comparison
+    /// clear of the per-call launch floor.
+    fn matmul_paths(c: &mut Criterion) {
+        let fma = musaexecutor::newfma(LIMIT);
+        let wmma = musaexecutor::new(LIMIT);
+        let (lhs, rhs) = matmulinput().unwrap();
+        let (lv, rv) = (lhs.getview(), rhs.getview());
+        let mut group = c.benchmark_group("musa/matmulpath");
+        group.throughput(Throughput::Elements((MATMULDIM * MATMULDIM) as u64));
+        group.bench_function("fma256", |b| {
+            b.iter(|| black_box(fma.matmul(&lv, &rv).unwrap()))
+        });
+        group.bench_function("wmma256", |b| {
+            b.iter(|| black_box(wmma.matmul(&lv, &rv).unwrap()))
+        });
+
+        let side = 1024;
+        let elements = side * side;
+        let lhsbig = tensor::new(
+            shape::new(vec![side, side]).unwrap(),
+            vec![0.5_f32; elements],
+        )
+        .unwrap();
+        let rhsbig = tensor::new(
+            shape::new(vec![side, side]).unwrap(),
+            vec![0.25_f32; elements],
+        )
+        .unwrap();
+        let (lvbig, rvbig) = (lhsbig.getview(), rhsbig.getview());
+        group.throughput(Throughput::Elements(elements as u64));
+        group.bench_function("fma1024", |b| {
+            b.iter(|| black_box(fma.matmul(&lvbig, &rvbig).unwrap()))
+        });
+        group.bench_function("wmma1024", |b| {
+            b.iter(|| black_box(wmma.matmul(&lvbig, &rvbig).unwrap()))
+        });
+        group.finish();
+    }
+
     fn elementwise(c: &mut Criterion) {
         let x = elementwiseinput().unwrap();
         let y = elementwiseinput().unwrap();
@@ -296,6 +336,7 @@ mod linux {
         benches,
         matmul,
         matmul_batch,
+        matmul_paths,
         elementwise,
         softmax,
         rmsnorm,

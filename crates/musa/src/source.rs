@@ -8,16 +8,34 @@
 //! declares the stable entry-point symbols and the dispatch geometry the host
 //! resolves with `muModuleGetFunction`.
 //!
-//! Every kernel is written to need no headers: `mcc -mtgpu` provides the
-//! device math functions (`sqrtf`, `expf`, `powf`) and the thread-index
-//! environment (`threadIdx`/`blockIdx`) implicitly, which the MTT S4000 smoke
-//! run verified for the parallel-scan family (scripts/musa/README.md).
+//! Apart from the Tensor-Core kernel, which includes `<mma.h>` for the
+//! `mtmusa::wmma` intrinsics, kernels are written to need no headers:
+//! `mcc -mtgpu` provides the device math functions (`sqrtf`, `expf`, `powf`)
+//! and the thread-index environment (`threadIdx`/`blockIdx`) implicitly, which
+//! the MTT S4000 smoke run verified for the parallel-scan family
+//! (scripts/musa/README.md).
 
 /// The stable symbol name of the reference matmul kernel.
 pub(crate) const MATMULENTRY: &str = "matmul";
 
-/// The threadgroup edge used when dispatching the matmul kernel.
+/// The stable symbol name of the Tensor-Core (TF32) matmul kernel.
+pub(crate) const MATMULWMMAENTRY: &str = "matmul_wmma";
+
+/// The threadgroup edge used when dispatching the reference matmul kernel.
 pub(crate) const THREADEDGE: u32 = 16;
+
+/// The output tile row count of the Tensor-Core matmul kernel (one block per
+/// tile).
+pub(crate) const MATMULWMMABM: u32 = 64;
+
+/// The output tile column count of the Tensor-Core matmul kernel.
+pub(crate) const MATMULWMMABN: u32 = 32;
+
+/// The thread count of the Tensor-Core matmul kernel's threadgroup.
+///
+/// The `m32n32k8` TF32 MMA is a wave128 instruction: its four 32-lane warps
+/// cooperate on one 32x32 tile, so the block is a full 128-thread wave.
+pub(crate) const MATMULWMMATHREADS: u32 = 128;
 
 /// The symbol of the elementwise addition kernel.
 pub(crate) const ADDENTRY: &str = "add";

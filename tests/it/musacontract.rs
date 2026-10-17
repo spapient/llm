@@ -44,7 +44,7 @@ use ::tensor::dtype;
 use api::{backend, backenderror, compute, kvpair, operand, submission};
 use cpu::cpuexecutor;
 use lib::limits;
-use musa::{MUSAMAXHEADDIM, MUSAMAXRANK, musabackend, musaexecutor};
+use musa::{MUSAMAXHEADDIM, MUSAMAXRANK, matmulpath, musabackend, musaexecutor};
 use testkit::assertions::assertallclose;
 use testkit::reference;
 
@@ -60,6 +60,27 @@ use crate::gpucontract;
 /// gate) is the shared one from [`testkit::probe`].
 fn hasdevice(test: &str) -> bool {
     testkit::probe::requiredevice(test, testkit::probe::gpuprobe::musa)
+}
+
+/// TF32 input rounding (2^-11 ≈ 4.9e-4) propagated through a dot product; the
+/// contract allows four times that bound so a cancellation-heavy case cannot
+/// fail on legitimate Tensor-Core rounding.
+const WMMATOL: f32 = 2.0e-3;
+
+/// Builds an executor on the requested matmul path.
+fn executor(path: matmulpath, lim: limits) -> musaexecutor {
+    match path {
+        matmulpath::wmma => musaexecutor::new(lim),
+        matmulpath::fma => musaexecutor::newfma(lim),
+    }
+}
+
+/// Deterministic operand values in `[-1.0, 1.75]`; the odd multipliers avoid
+/// exact powers of two, so TF32 rounding is actually exercised.
+fn pattern(count: usize, seed: usize) -> Vec<f32> {
+    (0..count)
+        .map(|index| ((index * 37 + seed * 11 + 3) % 23) as f32 * 0.125 - 1.0)
+        .collect()
 }
 
 /// Scalar reference for grouped-query causal attention.
@@ -157,10 +178,17 @@ fn headdim_bound_matches_cuda() {
 // Numerical suites (require a MUSA device)
 // ---------------------------------------------------------------------------
 
-/// `matmul` matches the scalar reference on a non-square case.
+/// `new` selects the Tensor-Core path and `newfma` the reference path.
 #[test]
-fn matmul_matches_the_scalar_reference() {
-    if !hasdevice("matmul_matches_the_scalar_reference") {
+fn executor_reports_which_matmul_path_serves_matmul() {
+    assert_eq!(musaexecutor::new(wide()).getpath(), matmulpath::wmma);
+    assert_eq!(musaexecutor::newfma(wide()).getpath(), matmulpath::fma);
+}
+
+/// The Tensor-Core path matches the scalar reference on a non-square case.
+#[test]
+fn wmma_matmul_matches_the_scalar_reference() {
+    if !hasdevice("wmma_matmul_matches_the_scalar_reference") {
         return;
     }
     let exec = musaexecutor::new(wide());
@@ -176,45 +204,158 @@ fn matmul_matches_the_scalar_reference() {
     );
     let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
     let want = reference::matmul(lhs.getdata(), rhs.getdata(), 3, 4, 2);
-    assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
+    assertallclose(out.getdata(), &want, WMMATOL, WMMATOL);
 }
 
-/// `matmul` handles a leading batch dimension.
+/// The reference FMA path matches the scalar reference on a non-square case.
 #[test]
-fn matmul_handles_a_leading_batch_dimension() {
-    if !hasdevice("matmul_handles_a_leading_batch_dimension") {
+fn fma_matmul_matches_the_scalar_reference() {
+    if !hasdevice("fma_matmul_matches_the_scalar_reference") {
         return;
     }
-    let exec = musaexecutor::new(wide());
+    let exec = musaexecutor::newfma(wide());
     let lhs = build(
-        vec![2, 2, 3],
-        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, -1.0, 0.0, 2.0, 1.0, 1.0, 1.0],
+        vec![3, 4],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ],
     );
-    let rhs = build(vec![2, 3, 1], vec![1.0, 0.0, -1.0, 2.0, 1.0, 3.0]);
+    let rhs = build(
+        vec![4, 2],
+        vec![0.5, -1.0, 2.0, 1.5, -0.25, 0.75, 1.0, -2.0],
+    );
     let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
-    // The scalar reference is single-matrix; batch is per-slice concatenation.
-    let mut want = reference::matmul(&lhs.getdata()[0..6], &rhs.getdata()[0..3], 2, 3, 1);
-    want.extend_from_slice(&reference::matmul(
-        &lhs.getdata()[6..12],
-        &rhs.getdata()[3..6],
-        2,
-        3,
-        1,
-    ));
+    let want = reference::matmul(lhs.getdata(), rhs.getdata(), 3, 4, 2);
     assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
 }
 
-/// `matmul` with a zero contraction yields the additive identity.
+/// The two paths agree on a non-square case within the TF32 bound.
 #[test]
-fn matmul_with_a_zero_contraction_yields_the_additive_identity() {
-    if !hasdevice("matmul_with_a_zero_contraction_yields_the_additive_identity") {
+fn the_two_matmul_paths_agree_on_a_non_square_case() {
+    if !hasdevice("the_two_matmul_paths_agree_on_a_non_square_case") {
+        return;
+    }
+    let lhs = build(vec![5, 7], pattern(35, 1));
+    let rhs = build(vec![7, 4], pattern(28, 2));
+    let wmma = musaexecutor::new(wide())
+        .matmul(&lhs.getview(), &rhs.getview())
+        .unwrap();
+    let fma = musaexecutor::newfma(wide())
+        .matmul(&lhs.getview(), &rhs.getview())
+        .unwrap();
+    assertallclose(wmma.getdata(), fma.getdata(), WMMATOL, WMMATOL);
+}
+
+/// Both paths handle a leading batch dimension.
+#[test]
+fn both_matmul_paths_handle_a_leading_batch_dimension() {
+    if !hasdevice("both_matmul_paths_handle_a_leading_batch_dimension") {
+        return;
+    }
+    for path in [matmulpath::wmma, matmulpath::fma] {
+        let exec = executor(path, wide());
+        let lhs = build(
+            vec![2, 2, 3],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, -1.0, 0.0, 2.0, 1.0, 1.0, 1.0],
+        );
+        let rhs = build(vec![2, 3, 1], vec![1.0, 0.0, -1.0, 2.0, 1.0, 3.0]);
+        let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
+        // The scalar reference is single-matrix; batch is per-slice concatenation.
+        let mut want = reference::matmul(&lhs.getdata()[0..6], &rhs.getdata()[0..3], 2, 3, 1);
+        want.extend_from_slice(&reference::matmul(
+            &lhs.getdata()[6..12],
+            &rhs.getdata()[3..6],
+            2,
+            3,
+            1,
+        ));
+        let tolerance = if path == matmulpath::wmma {
+            WMMATOL
+        } else {
+            1.0e-4
+        };
+        assertallclose(out.getdata(), &want, tolerance, tolerance);
+    }
+}
+
+/// The Tensor-Core path covers tile edges and a batched edge case.
+#[test]
+fn wmma_matmul_covers_tile_edges_and_a_batch() {
+    if !hasdevice("wmma_matmul_covers_tile_edges_and_a_batch") {
         return;
     }
     let exec = musaexecutor::new(wide());
-    let lhs = build(vec![2, 0], vec![]);
-    let rhs = build(vec![0, 3], vec![]);
+    for (m, k, n) in [
+        (1_usize, 1_usize, 1_usize),
+        (15, 16, 17),
+        (16, 16, 16),
+        (17, 19, 13),
+        (37, 51, 29),
+        (64, 64, 16),
+        (65, 63, 17),
+    ] {
+        let lhs = build(vec![m, k], pattern(m * k, m + k));
+        let rhs = build(vec![k, n], pattern(k * n, k + n));
+        let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
+        let want = reference::matmul(lhs.getdata(), rhs.getdata(), m, k, n);
+        assertallclose(out.getdata(), &want, WMMATOL, WMMATOL);
+    }
+
+    let (m, k, n, batch) = (17_usize, 13_usize, 19_usize, 2_usize);
+    let lhs = build(vec![batch, m, k], pattern(batch * m * k, 5));
+    let rhs = build(vec![batch, k, n], pattern(batch * k * n, 6));
     let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
-    assert_eq!(out.getdata(), &vec![0.0_f32; 6]);
+    let mut want = reference::matmul(&lhs.getdata()[0..m * k], &rhs.getdata()[0..k * n], m, k, n);
+    want.extend_from_slice(&reference::matmul(
+        &lhs.getdata()[m * k..2 * m * k],
+        &rhs.getdata()[k * n..2 * k * n],
+        m,
+        k,
+        n,
+    ));
+    assertallclose(out.getdata(), &want, WMMATOL, WMMATOL);
+}
+
+/// Both paths yield the additive identity for a zero contraction.
+#[test]
+fn both_matmul_paths_yield_the_additive_identity_for_a_zero_contraction() {
+    if !hasdevice("both_matmul_paths_yield_the_additive_identity_for_a_zero_contraction") {
+        return;
+    }
+    for path in [matmulpath::wmma, matmulpath::fma] {
+        let exec = executor(path, wide());
+        let lhs = build(vec![2, 0], vec![]);
+        let rhs = build(vec![0, 3], vec![]);
+        let out = exec.matmul(&lhs.getview(), &rhs.getview()).unwrap();
+        assert_eq!(out.getdata(), &vec![0.0_f32; 6]);
+    }
+}
+
+/// Both paths return an empty result for a zero row or column count.
+#[test]
+fn both_matmul_paths_return_an_empty_result_for_a_zero_row_or_column() {
+    if !hasdevice("both_matmul_paths_return_an_empty_result_for_a_zero_row_or_column") {
+        return;
+    }
+    for path in [matmulpath::wmma, matmulpath::fma] {
+        let exec = executor(path, wide());
+        let no_rows = exec
+            .matmul(
+                &build(vec![0, 4], vec![]).getview(),
+                &build(vec![4, 3], pattern(12, 3)).getview(),
+            )
+            .unwrap();
+        assert_eq!(no_rows.getshape().getdims(), &[0, 3]);
+        assert!(no_rows.getdata().is_empty());
+        let no_cols = exec
+            .matmul(
+                &build(vec![3, 4], pattern(12, 4)).getview(),
+                &build(vec![4, 0], vec![]).getview(),
+            )
+            .unwrap();
+        assert_eq!(no_cols.getshape().getdims(), &[3, 0]);
+        assert!(no_cols.getdata().is_empty());
+    }
 }
 
 /// `matmul` rejects operands beyond the element budget.
@@ -743,7 +884,7 @@ fn submission_runs_a_recorded_chain() {
     if !hasdevice("submission_runs_a_recorded_chain") {
         return;
     }
-    let exec = musaexecutor::new(wide());
+    let exec = musaexecutor::newfma(wide());
     let mut sub = exec.newsubmission();
     let a = build(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let b = build(vec![3, 2], vec![0.5, -1.0, 2.0, 1.5, -0.25, 0.75]);
@@ -755,6 +896,27 @@ fn submission_runs_a_recorded_chain() {
     let want1 = reference::matmul(a.getdata(), b.getdata(), 2, 3, 2);
     let want = reference::map(&want1, reference::silu);
     assertallclose(out[0].getdata(), &want, 1.0e-4, 1.0e-4);
+}
+
+/// A recorded matmul step honours the executor's path selection.
+#[test]
+fn submission_matmul_uses_the_selected_path() {
+    if !hasdevice("submission_matmul_uses_the_selected_path") {
+        return;
+    }
+    let a = build(vec![4, 5], pattern(20, 7));
+    let b = build(vec![5, 3], pattern(15, 8));
+    let run = |path| {
+        let exec = executor(path, wide());
+        let mut sub = exec.newsubmission();
+        let step = sub
+            .recordmatmul(operand::input(a.getview()), operand::input(b.getview()))
+            .unwrap();
+        sub.apply(&[step]).unwrap().remove(0)
+    };
+    let wmma = run(matmulpath::wmma);
+    let fma = run(matmulpath::fma);
+    assertallclose(wmma.getdata(), fma.getdata(), WMMATOL, WMMATOL);
 }
 
 /// A chain mixing the device-resident path (add/silu) and the host-replay
@@ -845,5 +1007,15 @@ fn device_free_contract_vectors_match_the_cpu_backend() {
         gpucontract::run(&musaexecutor::new),
         gpucontract::run(&cpuexecutor::new),
         "the musa and cpu backends disagree on a device-free contract vector"
+    );
+}
+
+/// The two matmul paths classify the shared contract vectors identically.
+#[test]
+fn the_reference_path_agrees_with_the_default_path_on_the_contract_vectors() {
+    assert_eq!(
+        gpucontract::run(&musaexecutor::new),
+        gpucontract::run(&musaexecutor::newfma),
+        "the wmma and fma matmul paths disagree on a device-free contract vector"
     );
 }
