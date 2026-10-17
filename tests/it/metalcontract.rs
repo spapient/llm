@@ -18,7 +18,7 @@
 
 use crate::support::{build, wide};
 use ::tensor::{dtype, tensor};
-use api::{backend, backenderror, compute, operand, stepref, submission};
+use api::{backend, backenderror, compute, operand, session, stepref, submission};
 use cpu::cpuexecutor;
 use gpu::metal::{METALMAXHEADDIM, METALMAXRANK, metalbackend, metalexecutor};
 use lib::limits;
@@ -1062,6 +1062,42 @@ fn submission_reproduces_a_compute_chain_bit_for_bit() {
 
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].getdata(), want_silu.getdata());
+}
+
+#[test]
+fn session_reuses_one_device_state_across_applies() {
+    let exec = metalexecutor::new(wide());
+    let a = build(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]);
+    let b = build(vec![2, 2], vec![0.5, -0.5, 1.5, -1.5]);
+
+    let mut sess = exec.newsession().unwrap();
+    for _ in 0..2 {
+        let mul = api::recorder::recordmul(
+            &mut sess,
+            operand::input(a.getview()),
+            operand::input(b.getview()),
+        )
+        .unwrap();
+        let sum =
+            api::recorder::recordadd(&mut sess, operand::result(mul), operand::input(a.getview()))
+                .unwrap();
+        let got = sess.apply(&[sum]).unwrap();
+
+        let want_mul = exec.mul(&a.getview(), &b.getview()).unwrap();
+        let want = exec.add(&want_mul.getview(), &a.getview()).unwrap();
+        assert_eq!(got[0].getdata(), want.getdata());
+    }
+
+    sess.reset();
+    let sum = api::recorder::recordadd(
+        &mut sess,
+        operand::input(a.getview()),
+        operand::input(b.getview()),
+    )
+    .unwrap();
+    let got = sess.apply(&[sum]).unwrap();
+    let want = exec.add(&a.getview(), &b.getview()).unwrap();
+    assert_eq!(got[0].getdata(), want.getdata());
 }
 
 #[test]

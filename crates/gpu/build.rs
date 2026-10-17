@@ -19,9 +19,11 @@
 //!   requires (objc2-metal's documented requirement). Without it the device
 //!   probe silently returns `None` on a machine that has a GPU.
 //!
-//! Each `musa/kernels/*.cu` compiles to `OUT_DIR/fatbin/<stem>.o`; the generated
-//! registry lists every `(stem, include_bytes!(fatbin))` pair so the runtime
-//! module loader can find a fatbin by source id without a filesystem.
+//! Each shared `cuda/*.cu` and the MUSA-only `musa/musa.cu`
+//! compiles to `OUT_DIR/fatbin/<stem>.o`; the generated registry lists every
+//! `(stem, include_bytes!(fatbin))` pair so the runtime module loader can find
+//! a fatbin by source id without a filesystem. Duplicate stems are a build
+//! error.
 //!
 //! All failures propagate through `main -> Result` (never `panic!`/`expect`),
 //! so an `mcc` failure is a build failure, exactly as the no-runtime-JIT
@@ -53,7 +55,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Declared on every host so `-D warnings` (check.sh's clippy) accepts the
     // cfg even when the toolkit is absent and the cfg is never emitted.
     println!("cargo::rustc-check-cfg=cfg(musa_toolkit)");
-    println!("cargo:rerun-if-changed=musa/kernels");
     println!("cargo:rerun-if-changed=build.rs");
     match env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") => {
@@ -97,20 +98,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fatbin = out.join("fatbin");
     std::fs::create_dir_all(&fatbin).map_err(|e| err(format!("create fatbin dir: {e}")))?;
 
-    let mut files: Vec<_> = std::fs::read_dir("musa/kernels")
-        .map_err(|e| err(format!("read kernels dir: {e}")))?
+    // The shared kernels live in `cuda/`; MUSA's Tensor-Core family
+    // is its platform-specific source. Both compile into one registry.
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir("cuda")
+        .map_err(|e| err(format!("read cuda dir: {e}")))?
         .filter_map(Result::ok)
         .collect();
     files.sort_by_key(|entry| entry.file_name());
-    let mut entries: Vec<String> = Vec::new();
     for entry in files {
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("cu") {
-            continue;
+        if path.extension().and_then(|ext| ext.to_str()) == Some("cu") {
+            paths.push(path);
         }
+    }
+    paths.push(PathBuf::from("musa/musa.cu"));
+
+    let mut entries: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for path in paths {
+        println!("cargo:rerun-if-changed={}", path.display());
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        if seen.iter().any(|existing| existing == stem) {
+            return Err(err(format!("duplicate kernel stem {stem}")));
+        }
+        seen.push(stem.to_string());
         let obj = fatbin.join(format!("{stem}.o"));
         // `mcc` is a clang driver (`/usr/local/musa-3.1.0/bin/mcc` -> clang):
         // like every clang, it accepts `--offload-arch` only in the `=` form,
@@ -121,7 +135,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         // (verified by a C probe on the MTT S4000 host: the host+device
         // relocatable object from plain -c loads but resolves no kernel).
         let status = Command::new(&mcc)
-            .args(["-mtgpu", &offload, "--cuda-device-only", "-c", "-o"])
+            .args([
+                "-mtgpu",
+                &offload,
+                "--cuda-device-only",
+                "-DMUSA_OUT_STATE=1",
+                "-c",
+                "-o",
+            ])
             .arg(&obj)
             .arg(&path)
             .status()

@@ -6,6 +6,10 @@
 > **实施记录（2026-10-17）**：经评审选定单 crate 形态——`crates/gpu/gpu.rs`（crate 根 + 平台无关 helper）加 `crates/gpu/{cuda,musa,metal}/`，每后端保留独立 `ffi.rs` 安全岛。§5 的阻碍已按下述方式处置：`links = "musa"` 移除（无 `DEP_MUSA_*` 消费者）；三条构建管线合并为一个 `build.rs`；`checkunsafe.sh` 的 crate 根推导改为显式指向 `crates/gpu/gpu.rs`（原先的反推会静默失效，已修复）；各后端命名空间隔离，不再有 `matmulpath` 冲突。本文 §3–§6 中的 `crates/cuda` 等路径描述的是归并前基线。
 >
 > 实测结论：Metal 真机 50/50 通过；cuda/musa 交叉目标类型检查通过，运行时未在归并后重跑。
+>
+> **共享执行引擎（同日第三轮）**：`engine.rs` 持有唯一的 `compute` 实现与 `platform` 原语 trait；三端各删除一份 14 方法的编排骨架，只保留设备原语。MUSA 的原生融合算子以覆盖方法保留（差异即最优实现），CUDA 的 NVRTC 逐块路径留在其原语内。`cudaexecutor`/`metalexecutor`/`musaexecutor` 变为类型别名，公开 API 不变。`backend.rs`、`error.rs` 与 `gpu.rs` 的共享 helper 也已并入 `engine.rs`，crate 根只剩 `gpu.rs`（文档与模块声明）、`engine.rs`（共享骨架）、`catalog.rs`（全部内核常量，含 matmul 与 MUSA Tensor-Core 入口）、`ffi.rs`（三个后端 island）。录制路径同构：`engine::recordplatform` + `engine::submission` 是唯一的 `api::submission` 实现；`engine::session` 在同一记录逻辑上提供可重复 `apply`，CUDA/Metal 的 `newsession` 由此获得持久 session。MUSA 保留自己的 pinned/slot 链实现，去重需真机 parity 门禁后再做。
+>
+> **内核收敛（同日第二轮）**：CUDA 系内核收敛到 `crates/gpu/` 根的单一来源（11 个），WMMA 族因 `<mma.h>` 留在 `crates/gpu/musa/musa.cu`；五处差异最终全部收敛为常量（`matmul` 的 cuBLAS/WMMA/NVRTC 入口也并入 `catalog.rs`）；差异实现留在共享源或后端原语中；Metal 的 MSL 合并为 `crates/gpu/metal/metal.c` 单文件。§3.3 中"92% 可共享"的判断已落实为 10/11 同源；未共享的 `matmul_wmma` 是算法差异，不是重复。
 
 ## 1. 结论
 

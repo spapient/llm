@@ -2558,7 +2558,7 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 4. **CUDA 走 `cudarc`，feature 固定为 `driver` + `cublas` + `nvrtc` + `dynamic-loading` + `cuda-12060`。** `dynamic-loading` 使 `cargo check` 无需 CUDA 工具链；`cuda-12060` 是 `cudarc` 的强制要求。（`cudnn` feature 曾用于 `SoftmaxForward`，2026-10-17 随默认路径切换至 NVRTC 而移除。）
 5. **条件编译为空 lib。** 非目标平台不引入任何平台依赖，也不导出实现类型，保证跨平台 workspace 绿。
 6. **同步、运行至完成的执行语义。** 与 `tensor` 与 `cpu` 的同步模型一致：每次算子调用完成 host→device→dispatch→device→host 全流程后返回拥有张量；不引入流式或异步 API。
-7. **首个算子为 `f32` matmul。** MSL 与 CUDA C 源码以独立文件（`kernels/*.metal` / `kernels/*.cu`）经 `include_str!` 内嵌并在运行时编译，避免构建期依赖 `xcrun`/`nvcc`。
+7. **首个算子为 `f32` matmul。** MSL 与 CUDA C 源码以源文件（`crates/gpu/metal/metal.c` / `crates/gpu/cuda/*.cu`）经 `include_str!` 内嵌并在运行时编译，避免构建期依赖 `xcrun`/`nvcc`。MUSA 的内核在构建期由 `mcc` 预编译为 fatbin（`crates/gpu/cuda/*.cu` 加 `crates/gpu/musa/musa.cu`）。
 8. **设备身份在 `api` 侧累加。** `devicekind` 新增 `metal` 与 `cuda` 变体，`device` 新增对应构造与判定；不改动既有 `cpu` 语义，也不加 `#[non_exhaustive]`（工作区内需要穷举 match 以获得编译期完整性）。
 9. **依赖边仅为后端到 `api`/`tensor`/`lib`。** `api` MUST NOT 依赖 `metal` 或 `cuda`；上层（`models`/`infer`）通过既有的 `C: compute` 泛型槽接入，零改动。
 10. **CUDA 的 `unsafe` 站点收于两类平台交互、共两处。** NVRTC 内核启动一处（以闭包注入实参，服务于全部在仓内核，包括 `softmax`）、cuBLAS `gemm` 一处；不做 `unsafe` 的通用化封装，仅按 21.8 登记的两处具体调用。
@@ -2566,36 +2566,31 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 
 ### 21.3 接口边界（DS1）
 
-`metal` 在 crate root 导出 4 个公共项，`cuda` 导出 5 个，均远低于 A4 上界 20：
+后端的公共面由模块文件 `metal.rs` / `cuda.rs`（`mod.rs` 已取消）导出，均远低于 A4 上界：
 
-| crate | 公共项 | 模块文件 | 职责 |
+| 后端 | 公共项 | 模块文件 | 职责 |
 | --- | --- | --- | --- |
-| `metal` | `METALMAXRANK` | `backend.rs` | 后端接受的最大张量秩 |
-| `metal` | `metalbackend` | `backend.rs` | macOS 后端身份与能力声明，返回 `device::metal()` |
-| `metal` | `metalexecutor` | `executor.rs` | 实现 `api::compute` 的 f32 算子集 |
-| `metal` | `metalexecutor::getcachedpipelinecount` | `executor.rs` | 已缓存的编译产物数，使「每内核只编译一次」可从 crate 外机械核对 |
-| `cuda` | `CUDAMAXRANK` | `backend.rs` | 后端接受的最大张量秩 |
-| `cuda` | `CUDAMAXHEADDIM` | `backend.rs` | 单个注意力头的最大宽度，由内核的共享内存预算决定 |
-| `cuda` | `cudabackend` | `backend.rs` | Linux 后端身份与能力声明，返回 `device::cuda()` |
-| `cuda` | `cudaexecutor` | `executor.rs` | 实现 `api::compute` 的 f32 算子集 |
-| `cuda` | `matmulpath` | `executor.rs` | `matmul` 走 cuBLAS 还是 NVRTC，构造期固定 |
+| `metal` | `METALMAXRANK` / `METALMAXHEADDIM` | `metal.rs` | 秩与注意力头维上界 |
+| `metal` | `metalbackend` | `metal.rs` | 后端身份与能力声明，返回 `device::metal()` |
+| `metal` | `metalexecutor` / `metalsubmission` | `metal.rs` | `engine::executor` / `engine::submission` 的平台实例 |
+| `cuda` | `CUDAMAXRANK` / `CUDAMAXHEADDIM` | `cuda.rs` | 秩与注意力头维上界 |
+| `cuda` | `cudabackend` | `cuda.rs` | Linux 后端身份，返回 `device::cuda()` |
+| `cuda` | `cudaexecutor` / `cudasubmission` | `cuda.rs` | 引擎实例 |
+| `cuda` | `matmulpath` | `cuda.rs` | `matmul` 走 cuBLAS 还是 NVRTC，构造期固定 |
 
-`src/ffi.rs` 是私有模块，不导出任何符号；它只向 `executor.rs` 提供安全的封装函数，`backend.rs` 不接触它。模块文件名刻意不同于导出的类型名以满足 E0255 守卫。
+`ffi.rs` 是后端目录下的私有模块，不导出任何符号，只向平台原语提供安全封装。后端模块根为 `metal.rs` / `cuda.rs` / `musa.rs`，其目录内只剩 `ffi.rs` 与内核源码；`backend.rs`（身份/能力）与 `error.rs`（错误与映射）由三个后端共用，位于 crate 根。
 
-依赖图（累加，无环）：
+依赖图（单 crate，无环）：
 
 ```text
-metal -> lib
-metal -> tensor
-metal -> api
-cuda  -> lib
-cuda  -> tensor
-cuda  -> api
+gpu -> lib
+gpu -> tensor
+gpu -> api
 ```
 
 `api`、`tensor`、`lib` 均不依赖 `metal` 或 `cuda`。目标平台的表驱动依赖（`[target.'cfg(...)'.dependencies]`）不产生新的 workspace 内边。
 
-两个后端的预算与秩判定不各自实现：`api` 的 `checkbudget`/`checkgatherbudget` 是唯一实现，二者在 `executor.rs` 中各持一个转发包装。`api` 的 crate root 导出项由 10 增至 12，仍低于 A4 上界 20。
+两个后端的预算与秩判定不各自实现：`api` 的 `checkbudget`/`checkgatherbudget` 是唯一实现，二者在 `engine.rs` 中共用同一份转发实现。`api` 的 crate root 导出项由 10 增至 12，仍低于 A4 上界 20。
 
 ### 21.4 不变量与错误路径（DS2）
 
@@ -2633,7 +2628,7 @@ cuda  -> api
 
 `compute` 契约的每个方法都只接受 `f32` 张量视图，故 GPU 后端不可能因 dtype 失败；`capabilities` 声明 `f32` 是为了让上层在派发前就能判定，`unsupporteddtype` 不由这两个后端产生。
 
-预算与秩的判定由 `api::checkbudget` / `api::checkgatherbudget` 单点实现：两个 GPU 后端在 `executor.rs` 只保留转发到该谓词的私有包装，因此同一操作数不可能在两个后端得到不同的分类；`cpu` 保留自己更丰富的策略类型（`cpuerror` 携带 `limiterror` 的 `requested`/`limit` 与 `rankexceeded`），但把这两类拒绝映射到同一个 `backenderror`，故三个后端的**可观测**分类一致。
+预算与秩的判定由 `api::checkbudget` / `api::checkgatherbudget` 单点实现：两个 GPU 后端在 `engine.rs` 统一转发到该谓词，因此同一操作数不可能在两个后端得到不同的分类；`cpu` 保留自己更丰富的策略类型（`cpuerror` 携带 `limiterror` 的 `requested`/`limit` 与 `rankexceeded`），但把这两类拒绝映射到同一个 `backenderror`，故三个后端的**可观测**分类一致。
 
 `matmul` 的结果由后端自行分配，故其结果形状在**任何分配之前**也过同一预算谓词；这是 `embedding` 早已有的输出预算检查在 `matmul` 上的对齐（此前 `matmul` 只受操作数约束，`m*k <= max` 且 `k*n <= max` 仍可要求 `m*n` 级别的输出）。
 
@@ -2644,9 +2639,10 @@ cuda  -> api
 各 crate 的单函数圈复杂度 ≤ 10、有效行数 ≤ 80：
 
 * `geometry.rs` 把每个算子的形状推理与拒绝条件收进单个函数，使 `ffi.rs` 的每个启动封装只做「取已验证的几何 → 一次平台调用 → 一次错误映射」，判定点不超过 3 个。
-* `executor.rs` 的每个算子在预算校验后委派给 `geometry` 与 `ffi`，自身不做算术；`matmul` 不再在宿主侧切分 batch block，因此不含逐块循环。
-* 预算与秩判定不是 `executor.rs` 自己的逻辑：两个后端都转发到 `api::checkbudget`，连判定顺序都无法分歧；`geometry.rs` 的 `matmulshape` 在两侧同形，并各自提供 `outshape()` 以在分配前校验结果预算。
-* `source.rs` 只存放 `include_str!` 引用与 entry 名常量，不参与 Rust 复杂度（MSL/CUDA 原文在 `kernels/` 目录）；两个后端的 `ffi.rs` 都只有一条通用 `execute` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
+* `engine.rs` 是唯一的 `compute` 实现：预算校验、几何推导、结果张量重建各写一次。每个后端只实现 `platform` 原语（设备上传、内核启动、错误映射），MUSA 的原生融合算子（`rmsnormmatmul`、`scan_cached`、`attention_cached`、`rope_at`）以覆盖方法保留；`matmul` 的逐块 NVRTC 循环留在 CUDA 的平台原语里，引擎不含逐块逻辑。
+* 预算与秩判定不是各后端自己的逻辑：全部转发到 `api::checkbudget`，连判定顺序都无法分歧；`geometry.rs` 的 `matmulshape` 在三侧同形，并各自提供 `outshape()` 以在分配前校验结果预算。
+* 录制路径同构：`engine::recordplatform` 提供设备侧录制原语，`engine::submission` 只写一份 14 方法的 `api::submission`，`engine::session` 在同一份记录逻辑上实现可重复 `apply` 的 `api::session`。CUDA/Metal 通过 `newsession` 获得持久 session；MUSA 因 pinned 输入与 slot 链的资源模型不同而保留自己的 `musasubmission`/`musasession`（其去重需真机 parity 后再做）。`newsubmission` 的失败类型统一为 `backenderror`。
+* 内核文本集中在 `crates/gpu/cuda/*.cu`（CUDA 系同源，平铺在 crate 根）与 `crates/gpu/metal/metal.c`（Metal）；`catalog.rs` 登记全部内核常量与几何，包括 `matmul` 的 cuBLAS / WMMA / NVRTC 入口；其余差异已收敛进共享源（`scan.cu` 的 `MUSA_OUT_STATE` 宏）或后端原语。这些登记模块只存放 `include_str!` 引用、entry 名与几何常量，不参与 Rust 复杂度；两个后端的 `ffi.rs` 都只有一条通用 `execute` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
 
 宿主 macOS 的 `scripts/checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的 CUDA 代码，因此 CUDA 侧以同一组阈值单独在 Linux 目标上核对（`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --lib --locked -- -D clippy::cognitive_complexity -D clippy::too_many_lines`，exit 0）。两者均为机械检查（证据等级 E1）。
 
@@ -2665,7 +2661,7 @@ cuda  -> api
 
 `cuda` 的缓存与 `metal` 同构，差异只在被缓存的对象与「执行队列故意不缓存」的实现方式：
 
-* **内容与所有权。** `ffi::cache` 只含 device 0 的**已 retain 主上下文**与按 `(source, entry)` 索引的已解析内核；键里带着内核**原文**，因此改动 `kernels/` 源码不可能复用陈旧模块；每个 `CudaFunction` 持有其 `CudaModule`、进而持有上下文，故缓存的内核不可能比它编译所在的设备活得更久。它同样由 executor 拥有、clone 经 `Arc` 共享，不是全局单例。
+* **内容与所有权。** `ffi::cache` 只含 device 0 的**已 retain 主上下文**与按 `(source, entry)` 索引的已解析内核；键里带着内核**原文**，因此改动 `*.cu` 源码不可能复用陈旧模块；每个 `CudaFunction` 持有其 `CudaModule`、进而持有上下文，故缓存的内核不可能比它编译所在的设备活得更久。它同样由 executor 拥有、clone 经 `Arc` 共享，不是全局单例。
 * **执行队列不缓存。** 每次调用从缓存上下文取一条**新流**并在返回前释放（`metal` 的对应选择是不缓存命令队列）：共享一条流会把并发调用的 GPU 工作排成队，而这正是 §21.6 在 Metal 侧否决过的做法。新流的创建/销毁成本记账在下面的前后对比里。
 * **锁与持锁时间。** 全 crate 一个锁，从不在持锁期间申请第二个；锁内只做查表、可能的 NVRTC 编译与模块装载；传输、内核启动与同步**都在锁外**。同一内核的并发首次调用在锁内编译一次，命中缓存的稳态调用持锁约百纳秒量级。
 * **失败与中毒。** 与 `metal` 相同：设备打开失败不缓存 `None`（下次调用重试），锁中毒后取回内部值继续使用。
@@ -2688,9 +2684,9 @@ cuda  -> api
 
 * 工作区 lint 保持 `unsafe_code = "deny"`（`Cargo.toml`），一行不改。
 * 全部既有 crate 保持 `#![forbid(unsafe_code)]`，一行不改。
-* `gpu` crate（内含 `metal`、`cuda`、`musa` 三个后端模块）使用 `#![deny(unsafe_code)]`，且每个后端命名空间内**恰好一个文件** `ffi.rs` 声明 `#![allow(unsafe_code)]`——即 `crates/gpu/metal/ffi.rs`、`crates/gpu/cuda/ffi.rs`、`crates/gpu/musa/ffi.rs` 三个岛，彼此互不替代；`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
+* `gpu` crate（内含 `metal`、`cuda`、`musa` 三个后端模块）使用 `#![deny(unsafe_code)]`。三个后端的岛合居 `crates/gpu/ffi.rs`，文件内每个后端各一个内联模块并各自声明 `#![allow(unsafe_code)]`，彼此互不替代。`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
 * 每个 `ffi.rs` 中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
-* 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。下表的 `ffi.rs` 指该后端自己的豁免文件：`crates/gpu/metal/ffi.rs`、`crates/gpu/cuda/ffi.rs`、`crates/gpu/musa/ffi.rs`。实测登记（证据等级 E1，来自 21.1 的尖刺）：
+* 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。下表的 `ffi.rs` 指被豁免的文件：三个后端的行均落在 `crates/gpu/ffi.rs`，该文件登记数为三行之和（7）。实测登记（证据等级 E1，来自 21.1 的尖刺）：
 
 | crate | 站点 | 位置 |
 | --- | --- | --- |
@@ -2708,7 +2704,7 @@ cuda  -> api
 | `simd` | 14 个 dispatch `unsafe` 调用块（7 算子 × AVX2/NEON 各一） | `intrinsics.rs` |
 | `simd` | 4 个 x86/NEON 辅助内核声明（`hmax256`/`hsum256`/`exp2approx` ×2） | `intrinsics.rs` |
 
-站点登记：`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3，`simd` = 32；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
+站点登记：`metal` = 3，`cuda` = 2，`musa` = 2（三者合居一个文件，文件登记 = 7），`checkpoint` = 3，`simd` = 32；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
 
 依据：这些数字由**调用面结构**推导，而非经验取值。Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径的 `dispatch` 把上传、缓冲绑定、标量绑定、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载收进**单一交接块**；累积路径的 `session` 拆成**编码块**（绑定并启动、不等待）与**提交块**（`commit` + 等待 + 下载）两个块——command buffer 单次使用、跨算子共享，故提交只发生一次。每个块内的全部平台调用共享同一个 `// SAFETY:` 前置论证（缓冲均为本块持有或调用者传入的存活 `MTLBuffer`、长度与内核读写一致、`setBytes` 拷贝而非保留、`waitUntilCompleted` 排序读写）。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
 
@@ -2758,7 +2754,7 @@ MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有�
 
 环境与 2026-10-11 相同（macOS 27.0.1 arm64 / Apple M5 Pro / `rustc 1.99.0`）；基线 commit `55d8efb`。
 
-* **共享的预算与秩谓词（E1）。** `api` 新增 `checkbudget`/`checkgatherbudget`，`metal` 与 `cuda` 的 `executor.rs` 改为转发；此前两处逐字节重复的 32 行策略（含「秩超限 → `executionfailed`」）被删除，取而代之的是与 `cpu` 一致的 `resourceexhausted`。
+* **共享的预算与秩谓词（E1）。** `api` 新增 `checkbudget`/`checkgatherbudget`，`metal` 与 `cuda` 的预算校验统一到 `engine.rs`；此前两处逐字节重复的 32 行策略（含「秩超限 → `executionfailed`」）被删除，取而代之的是与 `cpu` 一致的 `resourceexhausted`。
 * **`matmul` 结果预算（E1）。** 三个后端（`cpu`/`metal`/`cuda`）此前只校验操作数，`m*k <= max` 且 `k*n <= max` 仍可要求 `m*n` 级别的输出分配；现在结果形状在**任何分配之前**过同一谓词。`cpu` 侧的改动是把 `matmulplan` 与 `cpumatmul` 的计划拆开，使 executor 能在内核分配输出前校验，`cpuerror` 的公开语义未变。
 * **共享的无设备契约向量（E1）。** `tests/it/gpucontract.rs` 定义 30 个在任何机器上都定案于宿主侧的向量（秩/元素/字节预算、`matmul` 结果预算与其 inclusive 边界、七个算子的形状与下标拒绝、gather 输出预算），`metal` 与 `cuda` 两个套件各自断言「与本列表一致」，并各自断言「与 `cpu` 的观测逐项相同」。
 * **证伪性验证（E1）。** 把 `api::checkbudget` 的秩分类改回 `executionfailed`：`metal` 的两个向量用例都变红，报文为 `case \`silu/rank\` returned Some(executionfailed), the contract requires Some(resourceexhausted)`；把 `metal` executor 里 `self.checkbudget(&outshape)?` 一行删掉：`case \`matmul/outelements\` returned None, the contract requires Some(resourceexhausted)`。两处探针随后还原。

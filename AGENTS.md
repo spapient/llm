@@ -118,9 +118,9 @@ workspace 默认完全禁止 `unsafe` 代码。该禁令由 workspace lint 配�
 
 **受限豁免（唯一例外）。** 原生 GPU 后端（`crates/gpu` 内的 `metal` / `cuda` / `musa` 模块）因平台 FFI、`crates/checkpoint` 因硬件 CRC32C intrinsics、`crates/simd` 因 CPU SIMD intrinsics 无法在安全 Rust 内实现，适用一条范围严格受限的豁免：
 
-* 豁免 crate 使用 `#![deny(unsafe_code)]`（不是 `forbid`）。`gpu` crate 在三个后端命名空间下各有一个 `ffi.rs` 声明 `#![allow(unsafe_code)]`（`crates/gpu/metal/ffi.rs`、`crates/gpu/cuda/ffi.rs`、`crates/gpu/musa/ffi.rs`），每个后端恰好一个；`checkpoint` 为 `src/crc32c_hw.rs`，`simd` 为 `src/intrinsics.rs`；其余模块仍受 `deny` 约束。
+* 豁免 crate 使用 `#![deny(unsafe_code)]`（不是 `forbid`）。`gpu` crate 的三个后端岛合居 `crates/gpu/ffi.rs`（同一文件内每个后端一个内联模块，各自声明 `#![allow(unsafe_code)]`）；`checkpoint` 为 `src/crc32c_hw.rs`，`simd` 为 `src/intrinsics.rs`；其余模块仍受 `deny` 约束。
 * 豁免文件中每处 `unsafe` 构造前必须有 `// SAFETY:` 注释陈述该 API 的安全前置为何被满足。
-* `unsafe` 站点数必须**恰好等于**登记数（`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3，`simd` = 32），由 `scripts/checkunsafe.sh` 机械强制；多一处或少一处都失败。
+* `unsafe` 站点数必须**恰好等于**登记数（`metal` = 3、`cuda` = 2、`musa` = 2 合居 `crates/gpu/ffi.rs`，该文件登记 = 7；`checkpoint` = 3，`simd` = 32），由 `scripts/checkunsafe.sh` 机械强制；多一处或少一处都失败。
   依据：数字由**调用面结构**推导而非经验取值 —— Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径 `dispatch` 一个块（上传/绑定/启动/commit/wait/下载收于一处），累积路径 `session` 拆编码块与提交块两个，共 3；CUDA 是**每类平台交互恰一处**：NVRTC 内核启动 1（一处 `LaunchArgs::launch`，以闭包注入实参，故其服务于全部在仓内核而不随内核数增长）+ cuBLAS 矩阵乘 1 = 2（cuDNN softmax 站点已于 2026-10-17 删除，由同一 NVRTC 启动站点服务）；MUSA 是自写 FFI 的 edition 2024 理论下限：`unsafe extern "C"` 声明块（不可消除）+ 单一驱动交接块 = 2；`simd` 是 CPU SIMD 豁免岛，口径是**每内核一个 `#[target_feature]` 声明 + 每算子 dispatch 一个调用块**：7 算子 × 2 平台（AVX2/NEON）内核声明 = 14、每算子 dispatch 的 `unsafe` 调用块 2 × 7 = 14、x86 辅助内核（`hmax256`/`hsum256`/`exp2approx`）声明 3 + NEON `exp2approx` 声明 1 = 4，共 14 + 14 + 4 = 32（多平台源码并存，门禁按文件全量计数）。任何使数字上升的改动都意味着新增了一类平台交互或一个自带 `unsafe` 入口的第三方库，因此必须评审；数字下降（如 metal 4→3、cuda 3→2）同样必须同步本表与 docs/design.md §21.8。
 * 权威的豁免范围、站点登记表与回滚方案见 docs/design.md §21.8；新增站点 MUST 先更新该表并在设计中说明理由。
 * 其余全部 crate MUST 保持 `#![forbid(unsafe_code)]`，一行不改。
