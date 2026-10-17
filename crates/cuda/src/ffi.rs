@@ -203,11 +203,9 @@ impl cachestate {
             return Ok(stream.clone());
         }
         let device = self.device()?;
-        let opened = device
-            .new_stream()
-            .map_err(|error| cudaerror::device {
-                message: error.to_string(),
-            })?;
+        let opened = device.new_stream().map_err(|error| cudaerror::device {
+            message: error.to_string(),
+        })?;
         self.librarystream = Some(opened.clone());
         Ok(opened)
     }
@@ -471,11 +469,7 @@ pub(crate) fn matmul_cublas(
             beta: 0.0_f32,
             ldc: m_int,
         },
-        batch_size: asint(
-            batch
-                .try_into()
-                .map_err(|_| cudaerror::sizeoverflow)?,
-        )?,
+        batch_size: asint(batch.try_into().map_err(|_| cudaerror::sizeoverflow)?)?,
         stride_a: (m * k) as c_longlong,
         stride_b: (k * n) as c_longlong,
         stride_c: (m * n) as c_longlong,

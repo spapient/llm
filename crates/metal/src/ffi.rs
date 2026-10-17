@@ -470,9 +470,7 @@ pub(crate) fn rope_at(
     headdim: usize,
     base: f32,
 ) -> Result<Vec<f32>, metalerror> {
-    let total = heads
-        .checked_mul(headdim)
-        .ok_or(metalerror::sizeoverflow)?;
+    let total = heads.checked_mul(headdim).ok_or(metalerror::sizeoverflow)?;
     let pairs = total / 2;
     let params = [
         asu32(heads)?,
