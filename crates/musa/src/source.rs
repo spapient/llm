@@ -21,6 +21,12 @@ pub(crate) const MATMULENTRY: &str = "matmul";
 /// The stable symbol name of the Tensor-Core (TF32) matmul kernel.
 pub(crate) const MATMULWMMAENTRY: &str = "matmul_wmma";
 
+/// The stable symbol name of the per-row reciprocal-RMS kernel.
+pub(crate) const RMSINVENTRY: &str = "rmsinv";
+
+/// The stable symbol name of the fused RMSNorm+matmul Tensor-Core kernel.
+pub(crate) const MATMULRMSENTRY: &str = "matmul_rms";
+
 /// The threadgroup edge used when dispatching the reference matmul kernel.
 pub(crate) const THREADEDGE: u32 = 16;
 

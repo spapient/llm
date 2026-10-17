@@ -1,5 +1,5 @@
 use ::tensor::tensor;
-use api::compute;
+use api::{backenderror, compute, recorder, stepref};
 
 use crate::error::modelerror;
 use crate::llamaconfig;
@@ -40,6 +40,63 @@ pub trait causallm {
         cache: &mut K,
         token: usize,
     ) -> Result<Vec<f32>, modelerror>;
+}
+
+/// A device-resident key/value cache for incremental decoding.
+///
+/// Unlike [`kvcache`], which exposes host tensors, this contract keeps the
+/// cached rows on the backend device: `keys`/`values` return handles to the
+/// first `getlen` rows of a persistent device buffer and `append` copies the
+/// new row into that buffer without a host round trip. `advance` moves the
+/// position after every layer of one token has been appended.
+pub trait devicekvcache {
+    /// Returns the number of transformer layers the cache holds.
+    fn getlayers(&self) -> usize;
+
+    /// Returns the number of cached positions.
+    fn getlen(&self) -> usize;
+
+    /// Returns the maximum number of positions the cache can hold.
+    fn getmaxseq(&self) -> usize;
+
+    /// Returns a handle to the cached keys of `layer`, or `None` at position 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when the handle cannot be produced.
+    fn keys<R: recorder>(
+        &mut self,
+        sub: &mut R,
+        layer: usize,
+    ) -> Result<Option<stepref>, backenderror>;
+
+    /// Returns a handle to the cached values of `layer`, or `None` at position
+    /// 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when the handle cannot be produced.
+    fn values<R: recorder>(
+        &mut self,
+        sub: &mut R,
+        layer: usize,
+    ) -> Result<Option<stepref>, backenderror>;
+
+    /// Appends `key` and `value` to `layer` at the current position.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when the device copy cannot be recorded.
+    fn append<R: recorder>(
+        &mut self,
+        sub: &mut R,
+        layer: usize,
+        key: stepref,
+        value: stepref,
+    ) -> Result<(), backenderror>;
+
+    /// Advances the cached position by one after every layer has appended.
+    fn advance(&mut self);
 }
 
 /// A key/value cache for incremental decoding, owned by `models` and

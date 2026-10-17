@@ -1,4 +1,4 @@
-use ::tensor::{tensor, tensorview};
+use ::tensor::{shape, tensor, tensorview};
 
 use crate::backenderror;
 
@@ -391,6 +391,41 @@ pub trait recorder {
     ) -> Result<(stepref, stepref), backenderror> {
         let _ = (input, state, a, b, c, skip);
         Err(backenderror::unsupportedoperation { op: "scan_cached" })
+    }
+
+    /// Returns a handle to the same device buffer as `base`, carrying `shape`.
+    ///
+    /// Used by a device KV cache to expose the first `len` rows of a persistent
+    /// buffer as a `[len, width]` operand without copying. The default reports
+    /// `unsupportedoperation`; a persistent session overrides it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `unsupportedoperation` by default, or the backend's index error
+    /// when `base` does not name a recorded step.
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
+        let _ = (base, shape);
+        Err(backenderror::unsupportedoperation { op: "recordview" })
+    }
+
+    /// Appends the `new` row into the `cached` device buffer at `position`.
+    ///
+    /// Used by a device KV cache to keep the cached key/value rows on the
+    /// device: the backend copies `new` into `cached` without a host round
+    /// trip. The default reports `unsupportedoperation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `unsupportedoperation` by default, or the backend's transfer
+    /// error when the copy fails.
+    fn recordappend(
+        &mut self,
+        cached: operand<'_>,
+        new: operand<'_>,
+        position: usize,
+    ) -> Result<(), backenderror> {
+        let _ = (cached, new, position);
+        Err(backenderror::unsupportedoperation { op: "recordappend" })
     }
 }
 

@@ -2,7 +2,7 @@ use ::tensor::tensor;
 use api::{compute, operand, recorder, stepref};
 
 use crate::block::llamablock;
-use crate::causal::{causallm, kvcache};
+use crate::causal::{causallm, devicekvcache, kvcache};
 use crate::config::llamaconfig;
 use crate::error::modelerror;
 use crate::weights::llamaweights;
@@ -140,6 +140,58 @@ impl llamamodel {
             keys.push(key);
             values.push(value);
         }
+        sub.pin(self.weights.getnorm().getweight().getvalue().getview())?;
+        let normalized = sub.recordrmsnorm(
+            operand::result(x),
+            operand::input(self.weights.getnorm().getweight().getvalue().getview()),
+            self.weights.getnorm().geteps(),
+        )?;
+        sub.pin(self.weights.getoutput().getweight().getvalue().getview())?;
+        let logits = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(self.weights.getoutput().getweight().getvalue().getview()),
+        )?;
+        Ok(cachedsubmission {
+            logits,
+            keys,
+            values,
+        })
+    }
+
+    /// Records one cache-aware forward pass against a device-resident cache.
+    ///
+    /// The cached key/value rows stay on the device; the model appends the new
+    /// row per layer and advances the cache after all layers. The returned
+    /// key/value handles are the new rows, which the caller may ignore when
+    /// using the device cache.
+    pub fn forwardsubmission_cached_device<R: recorder, K: devicekvcache>(
+        &self,
+        sub: &mut R,
+        cache: &mut K,
+        token: usize,
+    ) -> Result<cachedsubmission, modelerror> {
+        let position = cache.getlen();
+        sub.pin(self.weights.getembedding().getweight().getvalue().getview())?;
+        let mut x = sub.recordembedding(
+            operand::input(self.weights.getembedding().getweight().getvalue().getview()),
+            &[token],
+        )?;
+        let mut keys = Vec::with_capacity(self.weights.getlayers().len());
+        let mut values = Vec::with_capacity(self.weights.getlayers().len());
+        for (layer, layerweights) in self.weights.getlayers().iter().enumerate() {
+            let (out, key, value) = self.block.forwardsubmission_cached_device(
+                sub,
+                cache,
+                layerweights,
+                x,
+                layer,
+                position,
+            )?;
+            x = out;
+            keys.push(key);
+            values.push(value);
+        }
+        cache.advance();
         sub.pin(self.weights.getnorm().getweight().getvalue().getview())?;
         let normalized = sub.recordrmsnorm(
             operand::result(x),

@@ -176,6 +176,28 @@ fn maptobackend(error: musaerror) -> backenderror {
     }
 }
 
+/// Reports a step reference that a previous persistent apply released.
+fn stalestep() -> backenderror {
+    backenderror::executionfailed {
+        backend: "musa",
+        kernel: "record".into(),
+        message: "step was released by the previous apply".into(),
+    }
+}
+
+/// Extracts a device pointer from an operand binding.
+fn bufferptr(value: buf<'_>) -> Result<ffi::mudevptr, backenderror> {
+    if let buf::device(ptr) = value {
+        Ok(ptr)
+    } else {
+        Err(backenderror::executionfailed {
+            backend: "musa",
+            kernel: "append".into(),
+            message: "operand is not device-resident".into(),
+        })
+    }
+}
+
 /// Converts the API's `usize` row indices to the kernel's `u64` gather indices.
 fn tou64(indices: &[usize]) -> Vec<u64> {
     indices.iter().map(|index| *index as u64).collect()
@@ -269,14 +291,30 @@ impl compute for musaexecutor {
 
     fn rmsnormmatmul(
         &self,
-        _input: &tensorview<'_, f32>,
-        _weight: &tensorview<'_, f32>,
-        _rhs: &tensorview<'_, f32>,
-        _eps: f32,
+        input: &tensorview<'_, f32>,
+        weight: &tensorview<'_, f32>,
+        rhs: &tensorview<'_, f32>,
+        eps: f32,
     ) -> Result<tensor<f32>, backenderror> {
-        Err(backenderror::unsupportedoperation {
-            op: "rmsnormmatmul",
-        })
+        self.checkbudget(input.getshape())?;
+        self.checkbudget(weight.getshape())?;
+        self.checkbudget(rhs.getshape())?;
+        let (geometry, outshape) =
+            rmsnormmatmulshape(input.getshape(), weight.getshape(), rhs.getshape())?;
+        self.checkbudget(&outshape)?;
+        let data = ffi::rmsnormmatmul(
+            &self.cache,
+            input.getdata(),
+            weight.getdata(),
+            rhs.getdata(),
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.batch,
+            eps,
+        )
+        .map_err(maptobackend)?;
+        wrap(outshape, data)
     }
 
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
@@ -524,6 +562,31 @@ fn concatshape(a: &shape, b: &shape) -> Result<shape, backenderror> {
 
 /// Validates scan ranks, channel alignment, state-width alignment, and the
 /// spectral precondition, returning `(n, d, statewidth)`.
+/// Validates the fused RMSNorm+matmul shapes and returns the multiplication
+/// plan and output shape.
+fn rmsnormmatmulshape(
+    input: &shape,
+    weight: &shape,
+    rhs: &shape,
+) -> Result<(matmulshape, shape), backenderror> {
+    let geometry = matmulshape::new(input, rhs)?;
+    if geometry.k == 0 {
+        return Err(backenderror::unsupportedoperation {
+            op: "rmsnormmatmul",
+        });
+    }
+    let weightcount = weight
+        .getelementcount()
+        .map_err(|_| backenderror::sizeoverflow)?;
+    if weightcount != geometry.k {
+        return Err(backenderror::shapemismatch {
+            op: "rmsnormmatmul",
+        });
+    }
+    let outshape = geometry.outshape()?;
+    Ok((geometry, outshape))
+}
+
 fn scanshape(
     input: &tensorview<'_, f32>,
     init: &tensorview<'_, f32>,
@@ -639,11 +702,12 @@ pub struct musasubmission {
     pinned: Arc<Mutex<std::collections::HashMap<(usize, usize), (ffi::mudevptr, usize)>>>,
 }
 
-/// A recorded result: either a device slot drained by [`session::apply`] or
-/// host data for a degenerate empty output.
+/// A recorded result: a device slot, host data for a degenerate empty output,
+/// or a step released by the previous persistent apply.
 enum resultdata {
     slot(usize),
     host(Vec<f32>),
+    dead,
 }
 
 impl musasubmission {
@@ -699,13 +763,14 @@ impl musasubmission {
             operand::input(view) => Ok(view.getshape().clone()),
             operand::result(reference) => {
                 let index = reference.getindex();
-                self.results
-                    .get(index)
-                    .map(|(_, outshape)| outshape.clone())
-                    .ok_or(backenderror::indexoutofrange {
+                match self.results.get(index) {
+                    Some((resultdata::dead, _)) => Err(stalestep()),
+                    Some((_, outshape)) => Ok(outshape.clone()),
+                    None => Err(backenderror::indexoutofrange {
                         index,
                         len: self.results.len(),
-                    })
+                    }),
+                }
             }
         }
     }
@@ -731,6 +796,7 @@ impl musasubmission {
                 match self.results.get(index) {
                     Some((resultdata::slot(slot), _)) => Ok(Some(*slot)),
                     Some((resultdata::host(_), _)) => Ok(None),
+                    Some((resultdata::dead, _)) => Err(stalestep()),
                     None => Err(backenderror::indexoutofrange {
                         index,
                         len: self.results.len(),
@@ -754,6 +820,7 @@ impl musasubmission {
                         let slot = *slot;
                         self.session.take(slot).map_err(maptobackend)
                     }
+                    Some((resultdata::dead, _)) => Err(stalestep()),
                     None => Err(backenderror::indexoutofrange {
                         index,
                         len: self.results.len(),
@@ -834,6 +901,27 @@ impl musasession {
             pinned,
             current,
         }
+    }
+
+    /// Allocates a zeroed device buffer that survives every apply and returns a
+    /// step handle to it.
+    ///
+    /// A device KV cache uses this for its per-layer key/value buffers, then
+    /// exposes the first `len` rows through [`recorder::recordview`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when the allocation fails or the shape overflows.
+    pub fn zeroed(&mut self, shape: shape) -> Result<stepref, backenderror> {
+        let count = shape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let slot = self
+            .current
+            .session
+            .alloczeros(count)
+            .map_err(maptobackend)?;
+        Ok(self.current.pushslot(slot, shape))
     }
 
     /// Releases every pinned allocation through the deferred free queue.
@@ -1110,6 +1198,47 @@ impl recorder for musasession {
         ))
     }
 
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
+        let index = base.getindex();
+        match self.current.results.get(index) {
+            Some((resultdata::slot(slot), _)) => Ok(self.current.pushslot(*slot, shape)),
+            Some((resultdata::dead, _)) => Err(stalestep()),
+            Some((resultdata::host(_), _)) | None => Err(backenderror::indexoutofrange {
+                index,
+                len: self.current.results.len(),
+            }),
+        }
+    }
+
+    fn recordappend(
+        &mut self,
+        cached: operand<'_>,
+        new: operand<'_>,
+        position: usize,
+    ) -> Result<(), backenderror> {
+        let cachedbuf = self.current.operandsbuf(cached)?;
+        let newbuf = self.current.operandsbuf(new)?;
+        let cachedptr = bufferptr(cachedbuf)?;
+        let newptr = bufferptr(newbuf)?;
+        let newshape = self.current.shapeof(new)?;
+        let width = *newshape
+            .getdims()
+            .last()
+            .ok_or(backenderror::shapemismatch { op: "append" })?;
+        let bytes = width
+            .checked_mul(core::mem::size_of::<f32>())
+            .ok_or(backenderror::sizeoverflow)?;
+        let offset = position
+            .checked_mul(bytes)
+            .ok_or(backenderror::sizeoverflow)?;
+        let dst = cachedptr
+            .checked_add(offset)
+            .ok_or(backenderror::sizeoverflow)?;
+        ffi::session::copyinto(&mut self.current.session, dst, newptr, bytes)
+            .map_err(maptobackend)?;
+        Ok(())
+    }
+
     fn pin(&mut self, view: tensorview<'_, f32>) -> Result<(), backenderror> {
         let data = view.getdata();
         let key = (data.as_ptr() as usize, data.len());
@@ -1133,14 +1262,7 @@ impl recorder for musasession {
 
 impl session for musasession {
     fn apply(&mut self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
-        let next = musasubmission::newpinned(
-            self.backend.clone(),
-            self.path,
-            self.cache.clone(),
-            self.pinned.clone(),
-        );
-        let current = std::mem::replace(&mut self.current, next);
-        current.apply(outputs)
+        self.current.applyref(outputs)
     }
 
     fn reset(&mut self) {
@@ -1254,14 +1376,48 @@ impl submission for musasubmission {
 
     fn recordrmsnormmatmul(
         &mut self,
-        _input: operand<'_>,
-        _weight: operand<'_>,
-        _rhs: operand<'_>,
-        _eps: f32,
+        input: operand<'_>,
+        weight: operand<'_>,
+        rhs: operand<'_>,
+        eps: f32,
     ) -> Result<stepref, backenderror> {
-        Err(backenderror::unsupportedoperation {
-            op: "rmsnormmatmul",
-        })
+        let inshape = self.shapeof(input)?;
+        let weightshape = self.shapeof(weight)?;
+        let rhsshape = self.shapeof(rhs)?;
+        self.checkbudget(&inshape)?;
+        self.checkbudget(&weightshape)?;
+        self.checkbudget(&rhsshape)?;
+        let (geometry, outshape) = rmsnormmatmulshape(&inshape, &weightshape, &rhsshape)?;
+        self.checkbudget(&outshape)?;
+        if geometry.batch == 0 || geometry.m == 0 || geometry.n == 0 {
+            return Ok(self.push(Vec::new(), outshape));
+        }
+        let inputbuf = self.operandsbuf(input)?;
+        let weightbuf = self.operandsbuf(weight)?;
+        let rhsbuf = self.operandsbuf(rhs)?;
+        let rows = geometry
+            .batch
+            .checked_mul(geometry.m)
+            .ok_or(backenderror::sizeoverflow)?;
+        let total = rows
+            .checked_mul(geometry.n)
+            .ok_or(backenderror::sizeoverflow)?;
+        let invslot = ffi::rmsinv_record(&mut self.session, inputbuf, rows, geometry.k, eps)
+            .map_err(maptobackend)?;
+        let slot = ffi::rmsnormmatmul_record(
+            &mut self.session,
+            inputbuf,
+            weightbuf,
+            rhsbuf,
+            invslot,
+            total,
+            geometry.m,
+            geometry.k,
+            geometry.n,
+            geometry.batch,
+        )
+        .map_err(maptobackend)?;
+        Ok(self.pushslot(slot, outshape))
     }
 
     fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
@@ -1496,14 +1652,22 @@ impl submission for musasubmission {
     }
 
     fn apply(mut self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
-        // Download every requested device slot in one synchronise, then
-        // rebuild the outputs in request order.
-        let mut slotindices: Vec<usize> = Vec::new();
+        let slotindices = self.requestslots(outputs)?;
+        let downloaded = self.session.apply(&slotindices).map_err(maptobackend)?;
+        self.materialize(outputs, downloaded)
+    }
+}
+
+impl musasubmission {
+    /// Maps the requested step references to their device slots.
+    fn requestslots(&self, outputs: &[stepref]) -> Result<Vec<usize>, backenderror> {
+        let mut slotindices = Vec::new();
         for reference in outputs {
             let index = reference.getindex();
             match self.results.get(index) {
                 Some((resultdata::slot(slot), _)) => slotindices.push(*slot),
                 Some((resultdata::host(_), _)) => {}
+                Some((resultdata::dead, _)) => return Err(stalestep()),
                 None => {
                     return Err(backenderror::indexoutofrange {
                         index,
@@ -1512,29 +1676,60 @@ impl submission for musasubmission {
                 }
             }
         }
-        let downloaded = self.session.apply(&slotindices).map_err(maptobackend)?;
+        Ok(slotindices)
+    }
+
+    /// Rebuilds the requested outputs in request order.
+    fn materialize(
+        &self,
+        outputs: &[stepref],
+        downloaded: Vec<Vec<f32>>,
+    ) -> Result<Vec<tensor<f32>>, backenderror> {
         let mut cursor = 0;
-        outputs
-            .iter()
-            .map(|reference| {
-                let index = reference.getindex();
-                let (data, outshape) =
-                    self.results
-                        .get(index)
-                        .ok_or(backenderror::indexoutofrange {
-                            index,
-                            len: self.results.len(),
-                        })?;
-                let data = match data {
-                    resultdata::host(data) => data.clone(),
-                    resultdata::slot(_) => {
-                        let data = downloaded[cursor].clone();
-                        cursor += 1;
-                        data
-                    }
-                };
-                wrap(outshape.clone(), data)
-            })
-            .collect()
+        let mut built = Vec::with_capacity(outputs.len());
+        for reference in outputs {
+            let index = reference.getindex();
+            let (data, outshape) =
+                self.results
+                    .get(index)
+                    .ok_or(backenderror::indexoutofrange {
+                        index,
+                        len: self.results.len(),
+                    })?;
+            let data = match data {
+                resultdata::host(data) => data.clone(),
+                resultdata::slot(_) => {
+                    let data = downloaded[cursor].clone();
+                    cursor += 1;
+                    data
+                }
+                resultdata::dead => return Err(stalestep()),
+            };
+            built.push(wrap(outshape.clone(), data)?);
+        }
+        Ok(built)
+    }
+
+    /// Applies a persistent step without consuming the submission: downloads
+    /// the requested outputs, frees every transient slot, and keeps the
+    /// persistent cache buffers (and their step indices) alive.
+    fn applyref(&mut self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
+        let slotindices = self.requestslots(outputs)?;
+        let downloaded = self
+            .session
+            .applyretained(&slotindices)
+            .map_err(maptobackend)?;
+        let built = self.materialize(outputs, downloaded)?;
+        for (data, _) in self.results.iter_mut() {
+            match data {
+                resultdata::slot(slot) if !self.session.ispersistent(*slot) => {
+                    *data = resultdata::dead;
+                }
+                resultdata::host(_) => *data = resultdata::dead,
+                _ => {}
+            }
+        }
+        self.inputs.clear();
+        Ok(built)
     }
 }

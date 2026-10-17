@@ -10,15 +10,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::support::build;
-use api::{operand, recorder, session, submission};
+use ::tensor::shape;
+use api::{backenderror, compute, operand, recorder, session, stepref, submission};
 use context::{executionconfig, executioncontext};
 use infer::{
     collectingsink, generationengine, generationparams, generationrequest, kvstate, samplingparams,
     stopcondition, submissionengine,
 };
 use lib::{limits, requestid};
-use models::{causallm, kvcache};
-use musa::musaexecutor;
+use models::{causallm, devicekvcache, kvcache};
+use musa::{musaexecutor, musasession};
 use testkit::assertions::assertallclose;
 use testkit::reference;
 
@@ -181,6 +182,174 @@ fn submission_engine_matches_compute_engine_on_musa() {
 
     assert_eq!(got.gettokens(), want.gettokens());
     assert_eq!(got.getreason(), want.getreason());
+}
+
+/// A recorded fused RMSNorm+matmul matches the compute path.
+#[test]
+fn submission_rmsnormmatmul_matches_compute_on_musa() {
+    if !hasdevice("submission_rmsnormmatmul_matches_compute_on_musa") {
+        return;
+    }
+    let exec = engine();
+    let (m, k, n) = (31usize, 64usize, 48usize);
+    let input: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.13).sin()).collect();
+    let weights: Vec<f32> = (0..k).map(|i| (i as f32 * 0.17).cos() + 1.5).collect();
+    let rhs: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.19).sin()).collect();
+    let x = build(vec![m, k], input);
+    let wv = build(vec![k], weights);
+    let b = build(vec![k, n], rhs);
+    let want = exec
+        .rmsnormmatmul(&x.getview(), &wv.getview(), &b.getview(), 1.0e-5)
+        .unwrap();
+    let mut sess = exec.newpersistent();
+    let step = sess
+        .recordrmsnormmatmul(
+            operand::input(x.getview()),
+            operand::input(wv.getview()),
+            operand::input(b.getview()),
+            1.0e-5,
+        )
+        .unwrap();
+    let out = sess.apply(&[step]).unwrap();
+    assertallclose(out[0].getdata(), want.getdata(), 2.0e-3, 2.0e-3);
+}
+
+/// A device-resident KV cache used by the decode test: each layer owns one
+/// zeroed `[maxseq, width]` key buffer and one value buffer, and the current
+/// prefix is exposed as a `[len, width]` view.
+struct musadevicecache {
+    layers: usize,
+    width: usize,
+    maxseq: usize,
+    len: usize,
+    keys: Vec<stepref>,
+    values: Vec<stepref>,
+}
+
+impl musadevicecache {
+    fn new(session: &mut musasession, layers: usize, width: usize, maxseq: usize) -> Self {
+        let buffer = shape::new(vec![maxseq, width]).unwrap();
+        let mut keys = Vec::with_capacity(layers);
+        let mut values = Vec::with_capacity(layers);
+        for _ in 0..layers {
+            keys.push(session.zeroed(buffer.clone()).unwrap());
+            values.push(session.zeroed(buffer.clone()).unwrap());
+        }
+        Self {
+            layers,
+            width,
+            maxseq,
+            len: 0,
+            keys,
+            values,
+        }
+    }
+}
+
+impl devicekvcache for musadevicecache {
+    fn getlayers(&self) -> usize {
+        self.layers
+    }
+
+    fn getlen(&self) -> usize {
+        self.len
+    }
+
+    fn getmaxseq(&self) -> usize {
+        self.maxseq
+    }
+
+    fn keys<R: recorder>(
+        &mut self,
+        sub: &mut R,
+        layer: usize,
+    ) -> Result<Option<stepref>, backenderror> {
+        if self.len == 0 {
+            return Ok(None);
+        }
+        let view =
+            shape::new(vec![self.len, self.width]).map_err(|_| backenderror::sizeoverflow)?;
+        Ok(Some(sub.recordview(self.keys[layer], view)?))
+    }
+
+    fn values<R: recorder>(
+        &mut self,
+        sub: &mut R,
+        layer: usize,
+    ) -> Result<Option<stepref>, backenderror> {
+        if self.len == 0 {
+            return Ok(None);
+        }
+        let view =
+            shape::new(vec![self.len, self.width]).map_err(|_| backenderror::sizeoverflow)?;
+        Ok(Some(sub.recordview(self.values[layer], view)?))
+    }
+
+    fn append<R: recorder>(
+        &mut self,
+        sub: &mut R,
+        layer: usize,
+        key: stepref,
+        value: stepref,
+    ) -> Result<(), backenderror> {
+        sub.recordappend(
+            operand::result(self.keys[layer]),
+            operand::result(key),
+            self.len,
+        )?;
+        sub.recordappend(
+            operand::result(self.values[layer]),
+            operand::result(value),
+            self.len,
+        )
+    }
+
+    fn advance(&mut self) {
+        self.len += 1;
+    }
+}
+
+/// The device KV cache keeps every cached row on the device and reproduces the
+/// compute decode logits.
+#[test]
+fn device_cache_decode_chain_matches_compute_on_musa() {
+    if !hasdevice("device_cache_decode_chain_matches_compute_on_musa") {
+        return;
+    }
+    let exec = engine();
+    let model = crate::common::model(42);
+    let config = model.getconfig();
+    let layers = config.getnlayers();
+    let width = config.getkvwidth();
+    let prompt = vec![0usize, 1, 2];
+    let next = [3usize, 4];
+
+    let mut refcache = kvstate::new(layers, width, config.getmaxseq()).unwrap();
+    for &token in &prompt {
+        model.forward_cached(&exec, &mut refcache, token).unwrap();
+    }
+    let want: Vec<Vec<f32>> = next
+        .iter()
+        .map(|&token| model.forward_cached(&exec, &mut refcache, token).unwrap())
+        .collect();
+
+    let mut sess = exec.newpersistent();
+    let mut cache = musadevicecache::new(&mut sess, layers, width, config.getmaxseq());
+    let mut got = Vec::new();
+    for (step, &token) in prompt.iter().chain(next.iter()).enumerate() {
+        let handles = model
+            .forwardsubmission_cached_device(&mut sess, &mut cache, token)
+            .unwrap();
+        let out = sess.apply(&[handles.logits]).unwrap();
+        if step >= prompt.len() {
+            got.push(out[0].getdata().to_vec());
+        }
+    }
+    assert_eq!(got.len(), want.len());
+    for (step, (actual, expected)) in got.iter().zip(want.iter()).enumerate() {
+        assertallclose(actual, expected, TOL, TOL);
+        let _ = step;
+    }
 }
 
 /// A persistent session exposes both scan outputs, and the state handle feeds

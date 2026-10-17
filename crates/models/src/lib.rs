@@ -50,7 +50,7 @@ mod registry;
 mod weights;
 
 pub use block::llamablock;
-pub use causal::{causallm, kvcache};
+pub use causal::{causallm, devicekvcache, kvcache};
 pub use config::llamaconfig;
 pub use error::modelerror;
 pub use model::{cachedsubmission, llamamodel};

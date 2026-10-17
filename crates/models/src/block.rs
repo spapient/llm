@@ -2,7 +2,7 @@ use ::tensor::{shape, tensor};
 use api::{compute, operand, operandpair, recorder, stepref};
 use nn::{attention, rotary};
 
-use crate::causal::kvcache;
+use crate::causal::{devicekvcache, kvcache};
 use crate::config::llamaconfig;
 use crate::error::modelerror;
 use crate::weights::llamalayerweights;
@@ -248,6 +248,124 @@ impl llamablock {
             self.attention.getkvheads(),
             self.attention.getcausal(),
         )?;
+        let projected = sub.recordmatmul(
+            operand::result(attended),
+            operand::input(weights.getwo().getweight().getvalue().getview()),
+        )?;
+        let residual = sub.recordadd(operand::result(x), operand::result(projected))?;
+        let normalized = sub.recordrmsnorm(
+            operand::result(residual),
+            operand::input(weights.getffnnorm().getweight().getvalue().getview()),
+            weights.getffnnorm().geteps(),
+        )?;
+        let gate = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getmlp().getgate().getweight().getvalue().getview()),
+        )?;
+        let up = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getmlp().getup().getweight().getvalue().getview()),
+        )?;
+        let silu = sub.recordsilu(operand::result(gate))?;
+        let gated = sub.recordmul(operand::result(silu), operand::result(up))?;
+        let feedforward = sub.recordmatmul(
+            operand::result(gated),
+            operand::input(weights.getmlp().getdown().getweight().getvalue().getview()),
+        )?;
+        let out = sub.recordadd(operand::result(residual), operand::result(feedforward))?;
+        Ok((out, k, v))
+    }
+
+    /// Records one cache-aware block step against a device-resident cache.
+    ///
+    /// Attention reads the `[position, width]` view the cache exposes, and the
+    /// new key/value row is appended with a device copy, so no cached row
+    /// crosses the host boundary. Returns the residual output and the new
+    /// key/value handles.
+    pub fn forwardsubmission_cached_device<R: recorder, K: devicekvcache>(
+        &self,
+        sub: &mut R,
+        cache: &mut K,
+        weights: &llamalayerweights,
+        x: stepref,
+        layer: usize,
+        position: usize,
+    ) -> Result<(stepref, stepref, stepref), modelerror> {
+        pinweights(sub, weights)?;
+        let normalized = sub.recordrmsnorm(
+            operand::result(x),
+            operand::input(weights.getattnnorm().getweight().getvalue().getview()),
+            weights.getattnnorm().geteps(),
+        )?;
+        let q = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getwq().getweight().getvalue().getview()),
+        )?;
+        let k = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getwk().getweight().getvalue().getview()),
+        )?;
+        let v = sub.recordmatmul(
+            operand::result(normalized),
+            operand::input(weights.getwv().getweight().getvalue().getview()),
+        )?;
+        let q = sub.recordrope_at(
+            operand::result(q),
+            position,
+            self.rotaryq.getheads(),
+            self.rotaryq.getbase(),
+        )?;
+        let k = sub.recordrope_at(
+            operand::result(k),
+            position,
+            self.rotaryk.getheads(),
+            self.rotaryk.getbase(),
+        )?;
+        let width = *weights
+            .getwk()
+            .getweight()
+            .getvalue()
+            .getshape()
+            .getdims()
+            .get(1)
+            .ok_or_else(|| modelerror::config("kv cache", "projection weight is not rank two"))?;
+        let cachedkey = cache.keys(sub, layer)?;
+        let cachedvalue = cache.values(sub, layer)?;
+        let emptykey = if cachedkey.is_none() {
+            Some(tensor::new(shape::new(vec![0, width])?, Vec::new())?)
+        } else {
+            None
+        };
+        let emptyvalue = if cachedvalue.is_none() {
+            Some(tensor::new(shape::new(vec![0, width])?, Vec::new())?)
+        } else {
+            None
+        };
+        let key_operand = match (cachedkey, emptykey.as_ref()) {
+            (Some(handle), _) => operand::result(handle),
+            (None, Some(key)) => operand::input(key.getview()),
+            (None, None) => return Err(modelerror::config("kv cache", "missing cached key")),
+        };
+        let value_operand = match (cachedvalue, emptyvalue.as_ref()) {
+            (Some(handle), _) => operand::result(handle),
+            (None, Some(value)) => operand::input(value.getview()),
+            (None, None) => return Err(modelerror::config("kv cache", "missing cached value")),
+        };
+        let attended = sub.recordattention_cached(
+            operand::result(q),
+            operandpair {
+                cached: key_operand,
+                new: operand::result(k),
+            },
+            operandpair {
+                cached: value_operand,
+                new: operand::result(v),
+            },
+            self.attention.getheads(),
+            self.attention.getkvheads(),
+            self.attention.getcausal(),
+        )?;
+        cache.append(sub, layer, k, v)?;
         let projected = sub.recordmatmul(
             operand::result(attended),
             operand::input(weights.getwo().getweight().getvalue().getview()),

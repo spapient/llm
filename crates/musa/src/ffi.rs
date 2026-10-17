@@ -258,6 +258,10 @@ pub(crate) enum buf<'a> {
     /// `src`, handing the allocation back to the caller. Used when an operand
     /// must be preserved across a kernel that updates it in place.
     copy(mudevptr, usize),
+    /// Copy `count` bytes from `src` into an existing device buffer `dst`
+    /// without allocating. Used to append a key/value row to a persistent
+    /// cache buffer.
+    copyinto(mudevptr, mudevptr, usize),
     /// Download an existing device allocation into a host vector without
     /// allocating or launching anything. Used by [`flush`], which runs the
     /// deferred synchronisation and the downloads inside the one registered
@@ -381,6 +385,10 @@ pub(crate) struct session {
     /// inputs and recorded outputs alike. `apply` frees them all through
     /// [`retiredevice`], whose queue drains inside the next handoff block.
     slots: Vec<(mudevptr, usize)>,
+    /// Parallel to `slots`: whether a slot survives
+    /// [`applyretained`](Session::applyretained). Persistent slots hold the
+    /// device KV-cache buffers a persistent session reuses across steps.
+    persistent: Vec<bool>,
 }
 
 impl Drop for session {
@@ -398,6 +406,7 @@ impl session {
         Self {
             cache,
             slots: Vec::new(),
+            persistent: Vec::new(),
         }
     }
 
@@ -420,7 +429,26 @@ impl session {
         )?;
         let (ptr, bytes) = result.device.remove(0);
         self.slots.push((ptr, bytes));
+        self.persistent.push(false);
         Ok(self.slots.len() - 1)
+    }
+
+    /// Uploads a host slice into a slot that survives `applyretained`.
+    pub(crate) fn allocpersistent(&mut self, data: &[f32]) -> Result<usize, musaerror> {
+        let slot = self.upload(data)?;
+        self.persistent[slot] = true;
+        Ok(slot)
+    }
+
+    /// Allocates a zeroed persistent device buffer of `count` floats.
+    pub(crate) fn alloczeros(&mut self, count: usize) -> Result<usize, musaerror> {
+        let zeros = vec![0.0_f32; count];
+        self.allocpersistent(&zeros)
+    }
+
+    /// Reports whether `slot` survives `applyretained`.
+    pub(crate) fn ispersistent(&self, slot: usize) -> bool {
+        self.persistent.get(slot).copied().unwrap_or(false)
     }
 
     /// Uploads a host slice into an allocation the caller owns and returns its
@@ -459,7 +487,28 @@ impl session {
         )?;
         let (ptr, size) = result.device.remove(0);
         self.slots.push((ptr, size));
+        self.persistent.push(false);
         Ok(self.slots.len() - 1)
+    }
+
+    /// Copies `bytes` from device `src` into the existing device buffer `dst`.
+    pub(crate) fn copyinto(
+        &mut self,
+        dst: mudevptr,
+        src: mudevptr,
+        bytes: usize,
+    ) -> Result<(), musaerror> {
+        drive(
+            &self.cache,
+            None,
+            &[buf::copyinto(dst, src, bytes)],
+            &[],
+            (1, 1, 1),
+            (1, 1, 1),
+            0,
+            false,
+        )?;
+        Ok(())
     }
 
     /// Uploads a host `u64` slice once and returns its slot.
@@ -476,6 +525,7 @@ impl session {
         )?;
         let (ptr, bytes) = result.device.remove(0);
         self.slots.push((ptr, bytes));
+        self.persistent.push(false);
         Ok(self.slots.len() - 1)
     }
 
@@ -504,6 +554,7 @@ impl session {
         )?;
         for (ptr, bytes) in result.device {
             self.slots.push((ptr, bytes));
+            self.persistent.push(false);
         }
         Ok(self.slots.len() - 1)
     }
@@ -537,6 +588,7 @@ impl session {
         let mut slots = Vec::with_capacity(result.device.len());
         for (ptr, bytes) in result.device {
             self.slots.push((ptr, bytes));
+            self.persistent.push(false);
             slots.push(self.slots.len() - 1);
         }
         Ok(slots)
@@ -550,6 +602,7 @@ impl session {
         let mut out = flush(&self.cache, &[(ptr, bytes)])?;
         retiredevice(&self.cache, ptr, bytes);
         self.slots[slot] = (0, 0);
+        self.persistent[slot] = false;
         Ok(out.remove(0))
     }
 
@@ -561,6 +614,29 @@ impl session {
         let out = flush(&self.cache, &wanted)?;
         for (ptr, bytes) in self.slots.drain(..) {
             retiredevice(&self.cache, ptr, bytes);
+        }
+        self.persistent.clear();
+        Ok(out)
+    }
+
+    /// Downloads the requested slots and frees every **non-persistent** buffer,
+    /// leaving persistent slots (and their indices) in place for the next step.
+    pub(crate) fn applyretained(
+        &mut self,
+        downloads: &[usize],
+    ) -> Result<Vec<Vec<f32>>, musaerror> {
+        let wanted: Vec<(mudevptr, usize)> =
+            downloads.iter().map(|&index| self.slots[index]).collect();
+        let out = flush(&self.cache, &wanted)?;
+        for index in 0..self.slots.len() {
+            if self.persistent[index] {
+                continue;
+            }
+            let (ptr, bytes) = self.slots[index];
+            if ptr != 0 && bytes != 0 {
+                retiredevice(&self.cache, ptr, bytes);
+            }
+            self.slots[index] = (0, 0);
         }
         Ok(out)
     }
@@ -969,6 +1045,7 @@ fn drive(
         let mut sizes: Vec<usize> = Vec::with_capacity(buffers.len());
         let mut owned: Vec<usize> = Vec::with_capacity(buffers.len());
         let mut keep: Vec<bool> = Vec::with_capacity(buffers.len());
+        let mut allocate: Vec<bool> = Vec::with_capacity(buffers.len());
         for slot in buffers {
             match *slot {
                 buf::host(data) | buf::hostdevice(data) => {
@@ -978,6 +1055,7 @@ fn drive(
                             .ok_or(musaerror::sizeoverflow)?,
                     );
                     keep.push(matches!(*slot, buf::hostdevice(_)));
+                    allocate.push(true);
                     owned.push(0);
                 }
                 buf::hostu64(data) | buf::hostu64device(data) => {
@@ -987,6 +1065,7 @@ fn drive(
                             .ok_or(musaerror::sizeoverflow)?,
                     );
                     keep.push(matches!(*slot, buf::hostu64device(_)));
+                    allocate.push(true);
                     owned.push(0);
                 }
                 buf::out(count) | buf::outdevice(count) => {
@@ -996,27 +1075,37 @@ fn drive(
                             .ok_or(musaerror::sizeoverflow)?,
                     );
                     keep.push(matches!(*slot, buf::outdevice(_)));
+                    allocate.push(true);
                     owned.push(0);
                 }
                 buf::device(mem) => {
                     sizes.push(0);
                     keep.push(true);
+                    allocate.push(false);
                     owned.push(mem);
                 }
                 buf::download(mem, bytes) => {
                     sizes.push(bytes);
                     keep.push(true);
+                    allocate.push(false);
                     owned.push(mem);
                 }
                 buf::copy(_, bytes) => {
                     sizes.push(bytes);
                     keep.push(true);
+                    allocate.push(true);
+                    owned.push(0);
+                }
+                buf::copyinto(_, _, bytes) => {
+                    sizes.push(bytes);
+                    keep.push(true);
+                    allocate.push(false);
                     owned.push(0);
                 }
             }
         }
         for (index, &size) in sizes.iter().enumerate() {
-            if size == 0 {
+            if size == 0 || !allocate[index] {
                 continue;
             }
             let mem = if let Some(pooled) = state.pool.get_mut(&size).and_then(Vec::pop) {
@@ -1059,6 +1148,13 @@ fn drive(
                     if muMemcpyDtoD_v2(owned[index], src, sizes[index]) != MUSA_SUCCESS {
                         return Err(musaerror::transfer {
                             message: "muMemcpyDtoD failed for copy".into(),
+                        });
+                    }
+                }
+                buf::copyinto(dst, src, _) => {
+                    if muMemcpyDtoD_v2(dst, src, sizes[index]) != MUSA_SUCCESS {
+                        return Err(musaerror::transfer {
+                            message: "muMemcpyDtoD failed for copyinto".into(),
                         });
                     }
                 }
@@ -1133,7 +1229,7 @@ fn drive(
                 | buf::copy(_, _) => {
                     device.push((owned[index], sizes[index]));
                 }
-                buf::device(_) => {}
+                buf::device(_) | buf::copyinto(_, _, _) => {}
                 buf::download(ptr, bytes) => {
                     let mut out = Vec::new();
                     out.try_reserve_exact(bytes / core::mem::size_of::<f32>())
@@ -1273,6 +1369,139 @@ pub(crate) fn matmul_wmma(
         0,
     )?;
     Ok(results.remove(0))
+}
+
+/// Fused RMSNorm (weight + per-row inverse RMS) followed by a Tensor-Core
+/// matmul. The reciprocal-RMS kernel leaves its result on the device and the
+/// matmul reads it directly, so the normalised activation is never
+/// materialised.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rmsnormmatmul(
+    cache: &cache,
+    input: &[f32],
+    weight: &[f32],
+    rhs: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    batch: usize,
+    eps: f32,
+) -> Result<Vec<f32>, musaerror> {
+    if batch == 0 || m == 0 || n == 0 {
+        return Ok(Vec::new());
+    }
+    let rows = batch.checked_mul(m).ok_or(musaerror::sizeoverflow)?;
+    let total = rows.checked_mul(n).ok_or(musaerror::sizeoverflow)?;
+    let mut inv = dispatchmixed(
+        cache,
+        "matmul",
+        source::RMSINVENTRY,
+        &[buf::hostdevice(input), buf::outdevice(rows)],
+        &[
+            scalar::u32(rows as u32),
+            scalar::u32(k as u32),
+            scalar::f32(eps),
+        ],
+        (rows as u32, 1, 1),
+        (source::ROWTILE, 1, 1),
+        source::ROWTILE as u32 * 4,
+    )?;
+    let inputptr = inv.device[0].0;
+    let invptr = inv.device[1].0;
+    let grid = (
+        (n as u32).div_ceil(source::MATMULWMMABN),
+        (m as u32).div_ceil(source::MATMULWMMABM),
+        batch as u32,
+    );
+    let mut results = dispatch(
+        cache,
+        "matmul",
+        source::MATMULRMSENTRY,
+        &[
+            buf::device(inputptr),
+            buf::host(weight),
+            buf::device(invptr),
+            buf::host(rhs),
+            buf::out(total),
+        ],
+        &[
+            scalar::u32(m as u32),
+            scalar::u32(k as u32),
+            scalar::u32(n as u32),
+            scalar::u32(batch as u32),
+        ],
+        grid,
+        (source::MATMULWMMATHREADS, 1, 1),
+        0,
+    )?;
+    retiredevice(cache, inputptr, inv.device[0].1);
+    retiredevice(cache, invptr, inv.device[1].1);
+    Ok(results.remove(0))
+}
+
+/// Records the per-row reciprocal-RMS step into a device-resident chain.
+pub(crate) fn rmsinv_record(
+    session: &mut session,
+    input: buf<'_>,
+    rows: usize,
+    width: usize,
+    eps: f32,
+) -> Result<usize, musaerror> {
+    session.record(
+        "matmul",
+        source::RMSINVENTRY,
+        &[input, buf::outdevice(rows)],
+        &[
+            scalar::u32(rows as u32),
+            scalar::u32(width as u32),
+            scalar::f32(eps),
+        ],
+        (rows as u32, 1, 1),
+        (source::ROWTILE, 1, 1),
+        source::ROWTILE as u32 * 4,
+    )
+}
+
+/// Records the fused RMSNorm+matmul step into a device-resident chain.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rmsnormmatmul_record(
+    session: &mut session,
+    input: buf<'_>,
+    weight: buf<'_>,
+    rhs: buf<'_>,
+    invslot: usize,
+    total: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+    batch: usize,
+) -> Result<usize, musaerror> {
+    let invptr = session.slotptr(invslot);
+    let grid = (
+        (n as u32).div_ceil(source::MATMULWMMABN),
+        (m as u32).div_ceil(source::MATMULWMMABM),
+        batch as u32,
+    );
+    session.record(
+        "matmul",
+        source::MATMULRMSENTRY,
+        &[
+            input,
+            weight,
+            buf::device(invptr),
+            rhs,
+            buf::outdevice(total),
+        ],
+        &[
+            scalar::u32(m as u32),
+            scalar::u32(k as u32),
+            scalar::u32(n as u32),
+            scalar::u32(batch as u32),
+        ],
+        grid,
+        (source::MATMULWMMATHREADS, 1, 1),
+        0,
+    )
 }
 
 /// Records one device-resident Tensor-Core matmul into a submission session.
