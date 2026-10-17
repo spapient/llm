@@ -154,7 +154,7 @@ A4 上界 20 的权威口径是「crate root 导出的公共项数」（design.m
 | **B1 CPU 串行** | `cpuscan`/`cpuscancached` 纯净 kernel + `cpuexecutor` 派发 + 预算检查 | 串行结果 vs 参考**逐位一致**（确定性路径）；`tests/it/cpucontract.rs` 或新 `scanunits.rs` |
 | **B2 CPU 并行** | 分段三阶段（主）+ Hillis–Steele/裸 Blelloch（对照）；并行 vs 串行容差一致；**M1 理论分析文档**（循环不变量、每步工作量/内存访问计数 → $O(ndN)$）；分段/Blelloch 按 DS3 拆成 ≤80 行、圈复杂度 ≤10 的小函数 | 并行 vs 串行 `rtol=1e-3/atol=1e-4` 全一致；理论证明成文；log-log 实测 $O(nd)$ 斜率 + 常数项核对 |
 | **B3 Metal** | `source.rs` MSL kernel（分段三阶段）；`metalexecutor` 注册；数值对照 testkit | `metalcontract` 数值 vs 参考一致；**unsafe 站点登记评审**（期望复用现有缓冲/参数绑定路径，站点数不变；若新增交互类须先更新 `docs/design.md` §21.8 登记表） |
-| **B4 CUDA** | `source.rs` CUDA C kernel（同一分段三阶段）；`cudaexecutor` 注册 | `cudacontract` 数值 vs 参考一致；走现有 `LaunchArgs::launch` 闭包机制 ⇒ **cuda=3 不变**（逐类交互恰一处原则） |
+| **B4 CUDA** | `source.rs` CUDA C kernel（同一分段三阶段）；`cudaexecutor` 注册 | `cudacontract` 数值 vs 参考一致；走现有 `LaunchArgs::launch` 闭包机制 ⇒ **cuda=2 不变**（逐类交互恰一处原则） |
 | **B5 模型挂载演示** | `nn` 新增 SSM 组合层（$\Delta_t/A/B/C/D$ 投影 + 指数梯形离散化，调 `compute::scan`）；`registry::architecture` 加变体（`mamba`，$N{=}64$、复值块旋转经半群实值扩展）；自研 `trap` 配置同算子 | `getarchitecture("mamba")` 解析；最小模型前向 vs 参考逐位；**不替代** Mamba-3 1.5B 端到端（那走 §4.9 协议） |
 | **B6 基准 + 文档** | `benches/` 新目标（`scan` vs `attention` 同装置 16K 对照，按 §10.10 M1 卡：闭集硬件、$d{=}4096,N{=}64,n\in\{4K..128K\}$）；design.md §5 契约表 + §21 GPU 清单；lld.md M1 状态翻；conformance.md 判定行 | M1 Should 同装置 16K 相对稠密对照 ≥5×（**禁引用异模型 Table 7 外推**，不达标则如实记 OPEN，不降阈值）；文档与实现一致 |
 
@@ -172,7 +172,7 @@ A4 上界 20 的权威口径是「crate root 导出的公共项数」（design.m
 | M1 Should | 同装置 16K scan vs 稠密 attention ≥5×（禁引用异模型 Table 7 外推） | 达标记实测，不达标 OPEN |
 | 谱前置 | 对角 $\lvert\bar A_i\rvert\le1$；2×2 块对角块特征值谱半径 ≤1（M3 一致性观点） | 拒绝越界配置 |
 | 量化纪律 | $\bar A$ 永不进低比特（数学验证 23） | 代码评审门禁 |
-| unsafe | 工作站登记表核对（scripts/checkunsafe.sh） | metal=3、cuda=3 期望不变（2026-10-17 现值），变则先评审 |
+| unsafe | 工作站登记表核对（scripts/checkunsafe.sh） | metal=3、cuda=2 期望不变（2026-10-17 现值），变则先评审 |
 | 文档 | design.md §5 契约表（`compute` 13 方法、`backenderror` 8 variant）/ lld.md M1 / conformance.md 同步 | 与实现一致 |
 
 ## 7. 风险与缓解

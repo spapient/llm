@@ -78,7 +78,7 @@ MUST 级要求仅在经过明确、可评审的架构决策后方可豁免；该
 11. **错误类型表达稳定的语义类别**，而不依赖人类可读字符串。
 12. **每个 crate 拥有其自身抽象与不变量的错误**；错误仅在有意义的抽象边界转换；错误转换不得丢失语义区别（无效输入不得变成内部服务器错误、资源耗尽不得变成无效输入、取消不得变成成功、损坏的持久状态不得变成普通的缺失值、不支持功能不得变成无关的后端失败）。
 13. **错误处理不得掩盖被破坏的不变量或让无效状态看似有效。** 无效的外部输入是可恢复错误；内部不变量破坏可能表示编程缺陷，不得伪装成普通用户输入失败。
-14. **默认禁止 unsafe 代码**（由工作区 lint 配置 `unsafe_code = "deny"` 与各 crate 的 `#![forbid(unsafe_code)]` 强制）。不得引入任何形式的 unsafe 构造，也不得放宽该约束。唯一的例外是原生 GPU 后端 crate（`crates/metal`、`crates/cuda`）的受限豁免：crate 级 `deny` 加单文件 `src/ffi.rs` 的 `allow`，配合 `// SAFETY:` 注释、站点登记数与 `scripts/checkunsafe.sh` 门禁；权威范围见 docs/design.md §21.8。若某项需求看似需要 unsafe，应以安全 Rust 重新设计，或报告该限制，而不是在豁免范围之外放宽禁令。
+14. **默认禁止 unsafe 代码**（由工作区 lint 配置 `unsafe_code = "deny"` 与各 crate 的 `#![forbid(unsafe_code)]` 强制）。不得引入任何形式的 unsafe 构造，也不得放宽该约束。唯一的例外是原生 GPU 后端 crate（`crates/metal`、`crates/cuda`、`crates/musa`）与 `crates/checkpoint`（硬件 CRC32C）的受限豁免：crate 级 `deny` 加单文件 `allow`（GPU 后端为 `src/ffi.rs`，`checkpoint` 为 `src/crc32c_hw.rs`），配合 `// SAFETY:` 注释、站点登记数与 `scripts/checkunsafe.sh` 门禁；权威范围见 docs/design.md §21.8。若某项需求看似需要 unsafe，应以安全 Rust 重新设计，或报告该限制，而不是在豁免范围之外放宽禁令。
 15. **请求态隔离。** 模型权重对象不得包含请求级可变状态；推理变更必须保持共享模型数据与每请求执行状态之间的分离。
 16. **取消与超时不得被视为普通成功。** 资源限制应在可能超限的操作之前检查。
 
@@ -247,7 +247,7 @@ cargo check --workspace --all-targets
 
 优先组合：当现有窄 trait 与具体类型满足需求时使用它们。当具体实现足够时，不要添加泛型框架。除非运行期选择或其他具体需求证明其合理性，否则不要添加运行期多态。不要创建吸收无关状态的通用上下文对象。
 
-错误处理见本文《错误处理与失败语义》章节。unsafe 变更：工作区默认禁止 unsafe 代码，不得引入新的 unsafe 代码。若某项需求看似需要 unsafe，以安全 Rust 重新设计，或报告该限制，而不是放宽禁令。唯一例外是原生 GPU 后端 crate 的受限豁免（crate 级 `deny` 加单文件 `src/ffi.rs` 的 `allow`，配 `// SAFETY:` 注释、站点登记数与 `scripts/checkunsafe.sh` 门禁）；权威范围见 docs/design.md §21.8。
+错误处理见本文《错误处理与失败语义》章节。unsafe 变更：工作区默认禁止 unsafe 代码，不得引入新的 unsafe 代码。若某项需求看似需要 unsafe，以安全 Rust 重新设计，或报告该限制，而不是放宽禁令。唯一例外是原生 GPU 后端 crate 与 `crates/checkpoint` 的受限豁免（crate 级 `deny` 加单文件 `allow`：GPU 后端为 `src/ffi.rs`，`checkpoint` 为 `src/crc32c_hw.rs`，配 `// SAFETY:` 注释、站点登记数与 `scripts/checkunsafe.sh` 门禁）；权威范围见 docs/design.md §21.8。
 
 保持变更可评审：不得把行为变更隐藏在仅格式化的提交中；除非构建需要或计划明确包含，不得修改生成文件或无关文件；持续评审差异，而不是等到大变更结束时。
 

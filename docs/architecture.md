@@ -100,7 +100,7 @@ crate：`cpu`、`metal`、`cuda`、`autograd`、`nn`。
 - 算子语义必须能独立测试。
 - 梯度行为必须对照数学或数值参考验证。
 - 模型特定的编排不属于计算内核。
-- `metal` 与 `cuda` 是工作区 `unsafe` 禁令受限豁免的唯一载体；其豁免范围、站点登记表与门禁见 docs/design.md §21.8。
+- `metal`、`cuda`、`musa` 与 `checkpoint` 是工作区 `unsafe` 禁令受限豁免的全部载体；其豁免范围、站点登记表与门禁见 docs/design.md §21.8。
 
 ### 3.4 层 2：模型与工作流
 
@@ -369,7 +369,7 @@ MUST NOT 拥有：
 
 拥有：
 
-- GPU 算子实现（`metal` 用 Metal Shading Language，`cuda` 用 CUDA C 经 NVRTC，另有 cuBLAS 矩阵乘与 cuDNN softmax 快速路径）。
+- GPU 算子实现（`metal` 用 Metal Shading Language，`cuda` 用 CUDA C 经 NVRTC，另有 cuBLAS 矩阵乘快速路径）。
 - 各自后端内的执行分发与设备上下文生命周期。
 - 平台 FFI 封装，收敛于 `crate::ffi`。
 - 各自后端的能力上报。
@@ -386,7 +386,7 @@ MUST NOT 拥有：
 验收标准：
 
 - 算子行为符合 `api::compute` 的文档化契约，并与 `cpu` 的数值结果对照。
-- `unsafe` 仅存在于 `src/ffi.rs`，每处均有 `// SAFETY:` 注释，且站点数恰好等于 docs/design.md §21.8 的登记数（`metal` = 3，`cuda` = 3，`musa` = 2；非上界语义，多一处或少一处均失败），由 `scripts/checkunsafe.sh` 强制。
+- `unsafe` 仅存在于各豁免 crate 的单一白名单文件（`metal`/`cuda`/`musa` 为 `src/ffi.rs`，`checkpoint` 为 `src/crc32c_hw.rs`），每处均有 `// SAFETY:` 注释，且站点数恰好等于 docs/design.md §21.8 的登记数（`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3；非上界语义，多一处或少一处均失败），由 `scripts/checkunsafe.sh` 强制。
 - `api`、`tensor`、`lib` MUST NOT 反向依赖 `metal` 或 `cuda`。
 - 非目标平台（例如无 GPU 的 CI）上 `cargo check --workspace --all-targets` 仍通过。
 
@@ -1005,7 +1005,7 @@ llm (根 package) -> (无生产依赖；仅 dev-dependencies)
 ```text
 autograd, nn, models -> proptest
 testkit              -> lib, api, cpu   (dev-dependencies)
-llm (根 package)     -> 全部 21 个成员 crate  (dev-dependencies)
+llm (根 package)     -> 全部 22 个成员 crate  (dev-dependencies)
 ```
 
 本图与 §4.2 的**目标**图存在差异：目标图声明的若干边尚未实现（例如 `train -> models`/`nn`/`data`、`infer -> tokenizer`、`checkpoint -> train` 在当前生产清单中并不存在，`autograd` 当前无任何生产依赖方）。§4.2 是设计目标，本图是当前状态；任何目标边在落地前 MUST 按 §14 流程验证。

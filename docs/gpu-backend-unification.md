@@ -6,7 +6,7 @@
 
 | 后端 | 内核编译时机 | JIT 债务 | unsafe 站点 |
 | :--- | :--- | :--- | :--- |
-| `cuda` | **NVRTC 运行时 JIT**（每内核首启 ~10.8 ms；运行时依赖 nvrtc 库；编译错误运行时才暴露） | 高 | 3（NVRTC launch / cuBLAS gemm / cuDNN softmax） |
+| `cuda` | **NVRTC 运行时 JIT**（每内核首启 ~10.8 ms；运行时依赖 nvrtc 库；编译错误运行时才暴露） | 高 | 2（NVRTC launch / cuBLAS gemm） |
 | `metal` | **MSL 运行时编译**（`newLibraryWithSource`，每 pipeline 首启编译） | 中 | 4（上传 / 下载 / setBuffer / setBytes，objc2-metal API 面决定） |
 | `musa`（规划） | **mcc 构建期预编译**（已无 JIT） | 无 | 2（`unsafe extern` 声明 + 单一驱动交接块） |
 
@@ -64,7 +64,7 @@ build.rs（构建期，需目标工具链）
 
 * 数值：三后端 vs `testkit::reference` 互证；WMMA 路径与 FMA 参考路径互证（构造器区分）。
 * 构建期：工具链缺失 → 空库（CI 门禁同现有条件编译）。
-* unsafe：checkunsafe.sh 登记 `metal=3 / cuda=3 / musa=2`（2026-10-17 现值；本表的 `cuda=1` 为 P2 收敛目标），机械强制。
+* unsafe：checkunsafe.sh 登记 `metal=3 / cuda=2 / musa=2`（2026-10-17 现值；本表的 `cuda=1` 为 P2 收敛目标），机械强制。
 * 基准：`gpu/matmul`（WMMA vs FMA，Tensor Core 差距实测）、`gpu/decode`（缓存 vs 重算）、首启延迟对比（JIT 消除收益实测）。
 * 真机门禁：Metal（Apple GPU）、CUDA（NVIDIA）、MUSA（MTT S4000）。
 
@@ -76,9 +76,9 @@ build.rs（构建期，需目标工具链）
 | 性能效率 | WMMA 吃 Tensor Core（~15×）+ submission 单提交（~35×）+ 首启零 JIT |
 | 可维护性 | 单文件 unsafe 岛、类型化注册表、三后端同构管线 |
 | 可移植性 | 条件编译空库、工具链缺失退化空库 |
-| 安全性 | **全仓 unsafe 面收敛到最小可证集合**（现值 metal=3/cuda=3/musa=2；规划目标 cuda=1）+ SAFETY 注释机械强制 |
+| 安全性 | **全仓 unsafe 面收敛到最小可证集合**（现值 metal=3/cuda=2/musa=2；规划目标 cuda=1）+ SAFETY 注释机械强制 |
 | 可测试性 | 构造器区分路径、kernelcount 观测、真机门禁 |
 
 ## 8. 状态声明
 
-本计划为提议（未实现，不写已交付）。**已验证**：cudarc 二进制加载（源码）、MUSA WMMA（真机）、WMMA 性能路径（官方）、metal unsafe 下限（§21.8 实测）。**待尖刺**：`newLibraryWithData` API（P3）。P1 不依赖任何未决信息，可立即开始。
+**2026-10-17 更新：P1 已实现并真机验证。** `crates/musa` 的 TF32 WMMA matmul 为默认路径（`matmulpath::wmma`），标量 FMA 内核保留为 `newfma` 参考路径；`musacontract` 39/39、`checkunsafe.sh` 报 `musa 2/2`。实测（MTT S4000，同组同 run）：1024³ WMMA **2.1250 ms** vs FMA **10.110 ms**（**4.76×**）；256³ WMMA **0.9175 ms** vs FMA **1.0798 ms**（1.18×）；8×256³ CPU 11.906 ms vs WMMA 1.2202 ms（9.76×）；device-resident 8×1024³ 链 **1.062 ms/步** vs FMA 8.489 ms/步（7.99×）。优化迭代与关键约束（wave128、CTA Swizzle、双缓冲回退）见 `docs/musa-backend-plan.md` §5.6 与 `docs/conformance.md`。P2（cuda 收敛）与 P3（metal JIT 消除）仍为提议；P3 的 `newLibraryWithData` API 待尖刺。cudarc 二进制加载（源码）与 metal unsafe 下限（§21.8 实测）已验证。

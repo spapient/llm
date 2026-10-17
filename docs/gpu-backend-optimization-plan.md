@@ -378,7 +378,7 @@ bash scripts/checkthresholds.sh
 4. **共享的无设备契约向量（G1 第 2 条 / PR-A）。** `tests/it/gpucontract.rs` 定义 30 个向量；`metal` 与 `cuda` 两个套件各自断言「与列表一致」与「与 `cpu` 逐项相同」。
 5. **Metal 真机数值扩展（G2 / PR-A）。** `metalcontract` 由 30 例增至 40 例：互异维度的非方阵、单元素 matmul、宽度 1000 的 `rmsnorm`/`softmax`、`heads == kvheads` 的 attention、位置 0 的 `rope`、embedding 首尾行、全 `-inf` 行的 softmax 行为。
 6. **Metal 全算子基准（G6 的前置基线 / PR-A）。** `benches/metal.rs` 由只测 `matmul` 扩为覆盖九个算子，与 `benches/cuda.rs` 的工作负载与组名一致，使 AGENTS.md 第 7 节「每个算子至少一个可复现基准」对两个后端成立。
-7. **Metal 运行时编译缓存（G4 / PR-D）。** 设备句柄与 MSL pipeline 由 executor 拥有的缓存持有（非全局单例，`Arc` 共享给 clone），每个内核只编译一次：九个算子的 median 提升 15–34%，`unsafe` 站点仍为 4/4。公开 `metalexecutor::getcachedpipelinecount` 使「只编译一次」可从 crate 外机械断言。
+7. **Metal 运行时编译缓存（G4 / PR-D）。** 设备句柄与 MSL pipeline 由 executor 拥有的缓存持有（非全局单例，`Arc` 共享给 clone），每个内核只编译一次：九个算子的 median 提升 15–34%，`unsafe` 站点当时仍为 4/4（2026-10-17 合并后现值 3/3，见 `docs/design.md` §21.8）。公开 `metalexecutor::getcachedpipelinecount` 使「只编译一次」可从 crate 外机械断言。
 8. **dispatch 几何（G5 的一半 / PR-D）。** 逐阶段插桩测出每次调用一次命令缓冲往返约 1.7–2.4 ms，且与负载大小和 dispatch 次数无关；据此把 `matmul` 的全部 batch block 合入一次 dispatch（batch 作为网格第三维）。8×256³ 由 13.969 ms 降至 2.878 ms（−79.4%），成为唯一一处 Metal 快于 CPU 的测量点。
 9. **文档更正。** `softmax` 的「全下溢行保持全零」不成立（全 `-inf` 行的 `max - max` 是 NaN），已在 `cpu`/`metal`/`cuda` 的文档与 `docs/design.md` 中更正，并由用例钉住。
 
@@ -410,6 +410,6 @@ bash scripts/checkthresholds.sh
 按 10.6 的测量实施：device 0 的已 retain 主上下文与按 `(source, entry)` 索引的已解析内核收进由 executor 拥有、clone 经 `Arc` 共享的 `ffi::cache`；执行流**故意不缓存**（共享流会串行化并发调用），每次调用取一条新流并在返回前释放。设计、锁序、失败与中毒语义见 `docs/design.md` §21.6，数据见 §21.10.3 第 7 条。
 
 * **性能（E1，同机前后对比）。** 由 NVRTC 服务的七个工作负载 median 下降 **74–92%**（`rope` 12.402 → 0.95834 ms、`attention` 14.309 → 1.2974 ms、`embedding` 15.941 → 4.1326 ms）；两个 cuBLAS 工作负载不变（该路径本就不编译）。CUDA 快于 CPU 的工作负载由 3 个增至 **5 个**。**不声明超出该表范围的加速。**
-* **缓存后固定成本（E1）。** NVRTC 算子 2 元素 0.98–1.08 ms/调用（缓存前 12.3 ms）；cuBLAS 1.47–1.59 ms、cuDNN 2.85–2.98 ms——后者如今由句柄创建主导，是下一项。
-* **一致性缺陷（E1，已修）。** 真机执行发现 cuDNN 的 `CUDNN_SOFTMAX_ACCURATE` 对全 `-inf` 行返回全零，而契约要求传播 NaN；已改为「输入含非有限值时不委托 cuDNN」，代价约 +1.9 ms/2^21 元素。下一步把 `softmax` 改由在仓 NVRTC 内核服务，可同时去掉该守卫与句柄创建（涉及 §21.2 决策 11、§21.8 站点表 3 → 2）。
-* **验证（E1）。** `cudacontract` 41 passed / 0 failed（含三个缓存断言：编译一次、clone 共享、四线程并发只编译一次）；`unsafe` 站点仍为 3/3。
+* **缓存后固定成本（E1）。** NVRTC 算子 2 元素 0.98–1.08 ms/调用（缓存前 12.3 ms）；cuBLAS 1.47–1.59 ms、cuDNN 2.85–2.98 ms——后者当时由句柄创建主导（cuDNN 路径已于 2026-10-17 删除）。
+* **一致性缺陷（E1，已修）。** 真机执行发现 cuDNN 的 `CUDNN_SOFTMAX_ACCURATE` 对全 `-inf` 行返回全零，而契约要求传播 NaN；已改为「输入含非有限值时不委托 cuDNN」，代价约 +1.9 ms/2^21 元素。已于 2026-10-17 实施：`softmax` 默认改由在仓 NVRTC 内核服务，cuDNN 路径与站点删除（§21.2 决策 11、§21.8 站点表 cuda 3 → 2）；`scalarsoftmax` 守卫保留用于单算子路径的非有限输入。
+* **验证（E1）。** `cudacontract` 41 passed / 0 failed（含三个缓存断言：编译一次、clone 共享、四线程并发只编译一次）；`unsafe` 站点当时为 3/3（2026-10-17 删除 cuDNN softmax 站点后现值为 2/2）。
