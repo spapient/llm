@@ -629,10 +629,8 @@ impl snapshot {
             .map(|n| n.get())
             .unwrap_or(1)
             .max(1);
-        let (span_tx, span_rx) =
-            std::sync::mpsc::sync_channel::<(usize, usize, usize, usize)>(256);
-        let (res_tx, res_rx) =
-            std::sync::mpsc::sync_channel::<cutresult>(256);
+        let (span_tx, span_rx) = std::sync::mpsc::sync_channel::<(usize, usize, usize, usize)>(256);
+        let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<cutresult>(256);
         let span_rx = std::sync::Mutex::new(span_rx);
         // Without a key the checksum covers the compressed bytes, so the worker
         // computes it inline and Phase 2 can be skipped entirely.
@@ -731,29 +729,29 @@ impl snapshot {
         let blocksref: &[blockref] = &blocks;
         let storedblocksref: &[(u8, u8, Vec<u8>)] = &storedblocks;
         if key.is_some() {
-        std::thread::scope(|scope| {
-            let mut cursor: &mut [(Vec<u8>, [u8; 16], u32)] = &mut storedmeta;
-            let mut handles = Vec::with_capacity(nthreads);
-            for span in &spans {
-                let (head, tail) = cursor.split_at_mut(span.len());
-                cursor = tail;
-                handles.push(scope.spawn(move || {
-                    encryptchecksumspan(blocksref, storedblocksref, key, span.clone(), head)
-                }));
-            }
-            for handle in handles {
-                match handle.join() {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => return Err(error),
-                    Err(_) => {
-                        return Err(checkpointerror::invalidmanifest {
-                            reason: "encode worker panicked".to_string(),
-                        });
+            std::thread::scope(|scope| {
+                let mut cursor: &mut [(Vec<u8>, [u8; 16], u32)] = &mut storedmeta;
+                let mut handles = Vec::with_capacity(nthreads);
+                for span in &spans {
+                    let (head, tail) = cursor.split_at_mut(span.len());
+                    cursor = tail;
+                    handles.push(scope.spawn(move || {
+                        encryptchecksumspan(blocksref, storedblocksref, key, span.clone(), head)
+                    }));
+                }
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => return Err(error),
+                        Err(_) => {
+                            return Err(checkpointerror::invalidmanifest {
+                                reason: "encode worker panicked".to_string(),
+                            });
+                        }
                     }
                 }
-            }
-            Ok::<(), checkpointerror>(())
-        })?;
+                Ok::<(), checkpointerror>(())
+            })?;
         }
 
         // Pass 1: manifest entries. The per-block data offset is the running

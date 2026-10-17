@@ -4,7 +4,7 @@
 //! 字节流按平面独立做静态 rANS 熵编码，逼近信息熵下界。纯 safe Rust、零
 //! unsafe、零第三方依赖。
 //!
-//! 关键参数：归一化因子 `M = 2^16`、状态下界 `L = 2^23`、32 位状态、8 位
+//! 关键参数：归一化因子 `TOTALFREQ = 2^16`、状态下界 `STATEMIN = 2^23`、32 位状态、8 位
 //! renorm。每平面独立建 256 符号频率表并编码，避免把分布迥异的字节平面混在
 //! 一起（整体编码会损失约 5pp，见设计记录）。
 
@@ -12,22 +12,22 @@ use crate::error::checkpointerror;
 
 const NSYMBOLS: usize = 256;
 const LOG2_M: u32 = 16;
-const M: u32 = 1 << LOG2_M;
-const L: u32 = 1 << 23;
+const TOTALFREQ: u32 = 1 << LOG2_M;
+const STATEMIN: u32 = 1 << 23;
 
-/// 归一化 256 符号频率到总和精确为 `M`（出现符号频率 ≥1，未出现为 0）。
+/// 归一化 256 符号频率到总和精确为 `TOTALFREQ`（出现符号频率 ≥1，未出现为 0）。
 fn normalize(counts: &[u32; NSYMBOLS]) -> [u32; NSYMBOLS] {
     let total: u64 = counts.iter().map(|&c| c as u64).sum();
     let mut freq = [0u32; NSYMBOLS];
     if total == 0 {
-        freq[0] = M;
+        freq[0] = TOTALFREQ;
         return freq;
     }
     let mut sum = 0i64;
     let mut max_s = 0usize;
     for (s, &c) in counts.iter().enumerate() {
         if c > 0 {
-            let f = ((c as u64 * M as u64 + total / 2) / total).max(1) as u32;
+            let f = ((c as u64 * TOTALFREQ as u64 + total / 2) / total).max(1) as u32;
             freq[s] = f;
             sum += f as i64;
             if f > freq[max_s] {
@@ -35,7 +35,7 @@ fn normalize(counts: &[u32; NSYMBOLS]) -> [u32; NSYMBOLS] {
             }
         }
     }
-    let mut diff = M as i64 - sum;
+    let mut diff = TOTALFREQ as i64 - sum;
     while diff > 0 {
         freq[max_s] += 1;
         diff -= 1;
@@ -45,11 +45,11 @@ fn normalize(counts: &[u32; NSYMBOLS]) -> [u32; NSYMBOLS] {
         diff += 1;
     }
     if diff < 0 {
-        // 兜底（理论上不可达）：把 M 均匀分给出现符号。
+        // 兜底（理论上不可达）：把 TOTALFREQ 均匀分给出现符号。
         let present: Vec<usize> = (0..NSYMBOLS).filter(|&s| freq[s] > 0).collect();
         let n = present.len().max(1);
-        let base = M as usize / n;
-        let rem = M as usize % n;
+        let base = TOTALFREQ as usize / n;
+        let rem = TOTALFREQ as usize % n;
         for (i, &s) in present.iter().enumerate() {
             freq[s] = (base + usize::from(i < rem)) as u32;
         }
@@ -75,7 +75,7 @@ struct Table {
 }
 
 impl Table {
-    fn build(counts: &[u32; NSYMBOLS]) -> Self {
+    fn fromcounts(counts: &[u32; NSYMBOLS]) -> Self {
         let freq = normalize(counts);
         let mut cum = [0u32; NSYMBOLS + 1];
         let mut acc = 0u32;
@@ -97,7 +97,7 @@ impl Table {
                 freq: f,
                 cum: cum[s],
                 rcp,
-                xmax: ((L >> LOG2_M) << 8) * f,
+                xmax: ((STATEMIN >> LOG2_M) << 8) * f,
             };
         }
         Self { freq, cum, enc }
@@ -128,7 +128,7 @@ const NLANES: usize = 8;
 /// renorm，最后 flush 各状态的 4 字节、各 renorm 流长度与逆序字节。解码逆序
 /// 弹符号、按 `i % NLANES` 分派回同一状态。
 fn encode_plane(out: &mut Vec<u8>, data: &[u8], table: &Table) {
-    let mut xs = [L; NLANES];
+    let mut xs = [STATEMIN; NLANES];
     let cap = data.len() / NLANES + 8;
     let mut renorms: [Vec<u8>; NLANES] = core::array::from_fn(|_| Vec::with_capacity(cap));
     for (i, &byte) in data.iter().enumerate() {
@@ -186,15 +186,11 @@ fn take_u32(data: &mut &[u8]) -> Option<u32> {
 ///
 /// interleaved 栈式解码：`NLANES` 个状态逆序弹符号，符号 `i` 由状态
 /// `i % NLANES` 恢复，直接落入输出 `i` 位，无需 reverse。
-fn decode_plane(
-    stream: &[u8],
-    dst: &mut [u8],
-    table: &Table,
-) -> Result<(), checkpointerror> {
+fn decode_plane(stream: &[u8], dst: &mut [u8], table: &Table) -> Result<(), checkpointerror> {
     let n = dst.len();
     // slot → symbol 查找表，按符号区间 `fill`（每区间一次 memset 式填充），
-    // 取代逐槽 `while` 推进——区间恰好覆盖 [0, M)，故无需清零后逐槽判定。
-    let mut lut = vec![0u8; M as usize];
+    // 取代逐槽 `while` 推进——区间恰好覆盖 [0, TOTALFREQ)，故无需清零后逐槽判定。
+    let mut lut = vec![0u8; TOTALFREQ as usize];
     for s in 0..NSYMBOLS {
         let start = table.cum[s] as usize;
         let end = table.cum[s + 1] as usize;
@@ -224,14 +220,13 @@ fn decode_plane(
     // Unrolled by lane: symbol `i` uses lane `i % NLANES`, so once the base of a
     // block is a multiple of NLANES every lane index is a compile-time constant
     // and the eight states stay in registers across the block.
-    macro_rules! dl {
+    macro_rules! DECODELANE {
         ($base:expr, $lane:literal) => {{
-            let slot = (xs[$lane] & (M - 1)) as usize;
+            let slot = (xs[$lane] & (TOTALFREQ - 1)) as usize;
             let s = lut[slot] as usize;
             dst[$base + $lane] = s as u8;
-            xs[$lane] =
-                table.freq[s] * (xs[$lane] >> LOG2_M) + slot as u32 - table.cum[s];
-            while xs[$lane] < L {
+            xs[$lane] = table.freq[s] * (xs[$lane] >> LOG2_M) + slot as u32 - table.cum[s];
+            while xs[$lane] < STATEMIN {
                 let st = streams[$lane];
                 if st.is_empty() {
                     return Err(invalid("gate stream truncated"));
@@ -245,11 +240,11 @@ fn decode_plane(
     while !i.is_multiple_of(NLANES) {
         i -= 1;
         let lane = i % NLANES;
-        let slot = (xs[lane] & (M - 1)) as usize;
+        let slot = (xs[lane] & (TOTALFREQ - 1)) as usize;
         let s = lut[slot] as usize;
         dst[i] = s as u8;
         xs[lane] = table.freq[s] * (xs[lane] >> LOG2_M) + slot as u32 - table.cum[s];
-        while xs[lane] < L {
+        while xs[lane] < STATEMIN {
             let st = streams[lane];
             if st.is_empty() {
                 return Err(invalid("gate stream truncated"));
@@ -260,14 +255,14 @@ fn decode_plane(
     }
     while i > 0 {
         i -= NLANES;
-        dl!(i, 7);
-        dl!(i, 6);
-        dl!(i, 5);
-        dl!(i, 4);
-        dl!(i, 3);
-        dl!(i, 2);
-        dl!(i, 1);
-        dl!(i, 0);
+        DECODELANE!(i, 7);
+        DECODELANE!(i, 6);
+        DECODELANE!(i, 5);
+        DECODELANE!(i, 4);
+        DECODELANE!(i, 3);
+        DECODELANE!(i, 2);
+        DECODELANE!(i, 1);
+        DECODELANE!(i, 0);
     }
     Ok(())
 }
@@ -280,7 +275,11 @@ fn decode_plane(
 pub fn compress(src: &[u8], elem: usize) -> Vec<u8> {
     let nplanes = if elem == 0 { 1 } else { elem };
     let n = src.len().checked_div(elem).unwrap_or(src.len());
-    let tail = if elem == 0 { &src[..0] } else { &src[elem * n..] };
+    let tail = if elem == 0 {
+        &src[..0]
+    } else {
+        &src[elem * n..]
+    };
 
     let mut tables = Vec::with_capacity(nplanes);
     for p in 0..nplanes {
@@ -289,7 +288,7 @@ pub fn compress(src: &[u8], elem: usize) -> Vec<u8> {
         for &b in plane {
             counts[b as usize] += 1;
         }
-        tables.push(Table::build(&counts));
+        tables.push(Table::fromcounts(&counts));
     }
 
     let mut streams = Vec::with_capacity(nplanes);
@@ -303,7 +302,7 @@ pub fn compress(src: &[u8], elem: usize) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(src.len() as u32).to_le_bytes());
     // Table encoding: a 256-bit presence bitmap followed by `u16` `freq-1` for
-    // each present symbol. Frequencies are in 1..=M=65536, so `freq-1` fits u16;
+    // each present symbol. Frequencies are in 1..=TOTALFREQ=65536, so `freq-1` fits u16;
     // at u32 the table was ~1.6% of a 16 MiB snapshot, and this cuts it by more
     // than half (and far more for sparse planes).
     for table in &tables {
@@ -349,7 +348,8 @@ pub fn decompress(stored: &[u8], elem: usize) -> Result<Vec<u8>, checkpointerror
         let mut freq = [0u32; NSYMBOLS];
         for s in 0..NSYMBOLS {
             if bitmap[s / 8] & (1 << (s % 8)) != 0 {
-                let raw = take_u16(&mut data).ok_or_else(|| invalid("gate freq table truncated"))?;
+                let raw =
+                    take_u16(&mut data).ok_or_else(|| invalid("gate freq table truncated"))?;
                 freq[s] = u32::from(raw) + 1;
             }
         }
@@ -369,7 +369,9 @@ pub fn decompress(stored: &[u8], elem: usize) -> Result<Vec<u8>, checkpointerror
 
     let mut lens = Vec::with_capacity(nplanes);
     for _ in 0..nplanes {
-        lens.push(take_u32(&mut data).ok_or_else(|| invalid("gate stream length truncated"))? as usize);
+        lens.push(
+            take_u32(&mut data).ok_or_else(|| invalid("gate stream length truncated"))? as usize,
+        );
     }
 
     let mut out = vec![0u8; src_len];

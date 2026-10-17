@@ -46,6 +46,9 @@ while IFS= read -r source; do
     /^[[:space:]]*(\/\/|\*|\/\*)/ { next }
     {
       gsub(/r#"[^"]*"#/, "")
+      # Raw pointer types (`*const T`, `*mut T`) are not const declarations;
+      # strip them so an FFI signature is not reported as a lowercase const.
+      gsub(/\*[ \t]*const[ \t]+[A-Za-z_][A-Za-z0-9_:]*/, "")
       if ($0 ~ /r#"/) { sub(/r#".*$/, ""); raw = 1 }
       if (match($0, /fn[ \t]+[a-z_][a-z0-9_]*/)) {
         s = substr($0, RSTART, RLENGTH); sub(/fn[ \t]+/, "", s)

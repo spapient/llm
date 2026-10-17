@@ -391,7 +391,9 @@ fn transformbits(probe: &[u8], blocklen: usize, elem: usize) -> f64 {
     } else {
         let n = probe.len().checked_div(elem).unwrap_or(probe.len());
         let t = bitshuffle_delta(&probe[..elem * n], elem);
-        (0..elem).map(|p| zeroorderbits(&t[p * n..(p + 1) * n])).sum()
+        (0..elem)
+            .map(|p| zeroorderbits(&t[p * n..(p + 1) * n]))
+            .sum()
     };
     bits / probe.len() as f64 * blocklen as f64 + (elem as f64) * (32.0 + 2.0 * 256.0) * 8.0
 }

@@ -18,8 +18,8 @@
 //! backend's `dispatch`, keeping the three GPU backends structurally aligned.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::ffi::CString;
+use std::sync::Arc;
 use std::sync::{Mutex, PoisonError};
 
 use crate::error::musaerror;
@@ -149,7 +149,7 @@ struct cachestate {
     /// of operand sizes the operators request, so it does not grow without
     /// limit for a fixed workload.
     pool: HashMap<usize, Vec<mudevptr>>,
-    /// Device-resident buffers released by [`freedevice`], waiting for the
+    /// Device-resident buffers released by [`retiredevice`], waiting for the
     /// next driver handoff block to return them to the pool or free them.
     /// The queue keeps the release inside the single registered handoff, and
     /// its length is bounded by the live device-resident slots of one
@@ -225,7 +225,7 @@ pub(crate) enum scalar {
 /// multi-stage kernels (`scan_parallel` chains its passes): the producer hands
 /// a buffer back with [`buf::outdevice`] or [`buf::hostdevice`], later passes
 /// bind it with [`buf::device`], and the owner releases it through
-/// [`freedevice`], which queues the return into the next handoff block — no
+/// [`retiredevice`], which queues the return into the next handoff block — no
 /// second driver-handoff site exists for freeing.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum buf<'a> {
@@ -237,16 +237,16 @@ pub(crate) enum buf<'a> {
     out(usize),
     /// Bind an existing device allocation without uploading or returning it
     /// to the pool. The caller owns its lifetime and releases it through
-    /// [`freedevice`].
+    /// [`retiredevice`].
     device(mudevptr),
     /// Allocate the output buffer and hand it back as a device pointer
     /// instead of downloading it. The caller owns its lifetime and releases
-    /// it through [`freedevice`].
+    /// it through [`retiredevice`].
     outdevice(usize),
     /// Upload a host `f32` slice and hand the allocation back as a device
     /// pointer instead of returning it to the pool, so later passes reuse the
     /// upload. The caller owns its lifetime and releases it through
-    /// [`freedevice`].
+    /// [`retiredevice`].
     hostdevice(&'a [f32]),
     /// Download an existing device allocation into a host vector without
     /// allocating or launching anything. Used by [`flush`], which runs the
@@ -311,7 +311,7 @@ pub(crate) fn dispatch(
 /// Runs one kernel through the single driver-handoff block, handing back
 /// both halves: downloaded [`buf::out`] slots and every device-resident slot
 /// as a `(pointer, byte size)` pair, each in buffer order. The caller owns
-/// the device-resident buffers and releases them through [`freedevice`].
+/// the device-resident buffers and releases them through [`retiredevice`].
 pub(crate) fn dispatchmixed(
     cache: &cache,
     source_id: &'static str,
@@ -339,7 +339,7 @@ pub(crate) fn dispatchmixed(
 /// The release itself (pool return or `muMemFree_v2`) happens inside the one
 /// registered handoff block, so this function performs no driver call and adds
 /// no `unsafe` site. A zero pointer or zero size is a no-op.
-pub(crate) fn freedevice(cache: &cache, mem: mudevptr, bytes: usize) {
+pub(crate) fn retiredevice(cache: &cache, mem: mudevptr, bytes: usize) {
     if mem != 0 && bytes != 0 {
         cache.lock().pendingfree.push((mem, bytes));
     }
@@ -369,7 +369,7 @@ pub(crate) struct session {
     cache: Arc<cache>,
     /// Every device buffer the session owns, in creation order: uploaded
     /// inputs and recorded outputs alike. `apply` frees them all through
-    /// [`freedevice`], whose queue drains inside the next handoff block.
+    /// [`retiredevice`], whose queue drains inside the next handoff block.
     slots: Vec<(mudevptr, usize)>,
 }
 
@@ -440,21 +440,19 @@ impl session {
     pub(crate) fn take(&mut self, slot: usize) -> Result<Vec<f32>, musaerror> {
         let (ptr, bytes) = self.slots[slot];
         let mut out = flush(&self.cache, &[(ptr, bytes)])?;
-        freedevice(&self.cache, ptr, bytes);
+        retiredevice(&self.cache, ptr, bytes);
         self.slots[slot] = (0, 0);
         Ok(out.remove(0))
     }
 
     /// Synchronises once, downloads the requested slots in order, and releases
-    /// every owned buffer through [`freedevice`].
+    /// every owned buffer through [`retiredevice`].
     pub(crate) fn apply(&mut self, downloads: &[usize]) -> Result<Vec<Vec<f32>>, musaerror> {
-        let wanted: Vec<(mudevptr, usize)> = downloads
-            .iter()
-            .map(|&index| self.slots[index])
-            .collect();
+        let wanted: Vec<(mudevptr, usize)> =
+            downloads.iter().map(|&index| self.slots[index]).collect();
         let out = flush(&self.cache, &wanted)?;
         for (ptr, bytes) in self.slots.drain(..) {
-            freedevice(&self.cache, ptr, bytes);
+            retiredevice(&self.cache, ptr, bytes);
         }
         Ok(out)
     }
@@ -501,7 +499,11 @@ pub(crate) fn mul_record(
 }
 
 /// Records one `silu` into a device-resident chain.
-pub(crate) fn silu_record(session: &mut session, input: buf<'_>, count: usize) -> Result<usize, musaerror> {
+pub(crate) fn silu_record(
+    session: &mut session,
+    input: buf<'_>,
+    count: usize,
+) -> Result<usize, musaerror> {
     let grid = ((count as u32).div_ceil(source::ELEMENTWISETILE), 1, 1);
     let block = (source::ELEMENTWISETILE, 1, 1);
     session.record(
@@ -602,7 +604,7 @@ fn drive(
     // this handoff; the lock held across the whole block means no pooled
     // buffer is ever checked out by two dispatches at once, and the
     // device-resident variants bypass the pool return because the caller owns
-    // them through [`freedevice`].
+    // them through [`retiredevice`].
     unsafe {
         // --- lazy open -----------------------------------------------------
         if !state.opened {
@@ -632,7 +634,7 @@ fn drive(
         })?;
 
         // --- deferred releases --------------------------------------------
-        // Buffers released by `freedevice` re-enter the pool (or are freed)
+        // Buffers released by `retiredevice` re-enter the pool (or are freed)
         // here, inside the one registered handoff block, before any new
         // allocation so a just-released slot can serve this very dispatch.
         let pending: Vec<(mudevptr, usize)> = state.pendingfree.drain(..).collect();
@@ -650,53 +652,52 @@ fn drive(
         // --- lazy module load and kernel resolution ------------------------
         if let Some((source_id, entry)) = kernel {
             if !state.functions.contains_key(&(source_id, entry)) {
-            let fatbin = KERNELS
-                .iter()
-                .find(|(id, _)| *id == source_id)
-                .map(|(_, bytes)| *bytes)
-                .ok_or_else(|| musaerror::module {
+                let fatbin = KERNELS
+                    .iter()
+                    .find(|(id, _)| *id == source_id)
+                    .map(|(_, bytes)| *bytes)
+                    .ok_or_else(|| musaerror::module {
+                        kernel: entry.to_string(),
+                        message: format!(
+                            "no fatbin for source `{source_id}` (was mcc available at build time?)"
+                        ),
+                    })?;
+                let module = if let Some(module) = state.modules.get(source_id) {
+                    *module
+                } else {
+                    let mut module: mumodule = 0;
+                    if muModuleLoadData(&mut module, fatbin.as_ptr().cast()) != MUSA_SUCCESS {
+                        return Err(musaerror::module {
+                            kernel: entry.to_string(),
+                            message: format!("muModuleLoadData failed for `{source_id}`"),
+                        });
+                    }
+                    state.modules.insert(source_id, module);
+                    module
+                };
+                let name = CString::new(entry).map_err(|_| musaerror::module {
                     kernel: entry.to_string(),
-                    message: format!(
-                        "no fatbin for source `{source_id}` (was mcc available at build time?)"
-                    ),
+                    message: "entry name contains a NUL byte".into(),
                 })?;
-            let module = if let Some(module) = state.modules.get(source_id) {
-                *module
-            } else {
-                let mut module: mumodule = 0;
-                if muModuleLoadData(&mut module, fatbin.as_ptr().cast()) != MUSA_SUCCESS {
+                let mut function: mufunction = 0;
+                if muModuleGetFunction(&mut function, module, name.as_ptr()) != MUSA_SUCCESS {
                     return Err(musaerror::module {
                         kernel: entry.to_string(),
-                        message: format!("muModuleLoadData failed for `{source_id}`"),
+                        message: format!("muModuleGetFunction failed for `{entry}`"),
                     });
                 }
-                state.modules.insert(source_id, module);
-                module
-            };
-            let name = CString::new(entry).map_err(|_| musaerror::module {
-                kernel: entry.to_string(),
-                message: "entry name contains a NUL byte".into(),
-            })?;
-            let mut function: mufunction = 0;
-            if muModuleGetFunction(&mut function, module, name.as_ptr()) != MUSA_SUCCESS {
-                return Err(musaerror::module {
-                    kernel: entry.to_string(),
-                    message: format!("muModuleGetFunction failed for `{entry}`"),
-                });
-            }
                 state.functions.insert((source_id, entry), function);
             }
         }
         let function = match kernel {
-            Some((source_id, entry)) => Some(
-                *state
-                    .functions
-                    .get(&(source_id, entry))
-                    .ok_or_else(|| musaerror::module {
+            Some((source_id, entry)) => {
+                Some(*state.functions.get(&(source_id, entry)).ok_or_else(|| {
+                    musaerror::module {
                         kernel: entry.to_string(),
                         message: "kernel not resolved".into(),
-                    })?,
-            ),
+                    }
+                })?)
+            }
             None => None,
         };
 
@@ -1292,7 +1293,7 @@ pub(crate) fn scan_parallel(
     // `dtotal` and the six shared operands on the device (uploaded once),
     // pass 2 binds them, keeps `dprefix` on the device and downloads only the
     // final state, and pass 3 binds the retained operands and downloads only
-    // the output. The intermediates are released through `freedevice`, whose
+    // the output. The intermediates are released through `retiredevice`, whose
     // queue is drained inside the next handoff block, so the release adds no
     // driver call of its own (docs/musa-backend-plan.md §5.5).
     let blocks = n.div_ceil(source::SCANCHUNK as usize);
@@ -1368,7 +1369,7 @@ pub(crate) fn scan_parallel(
     // Only producer-side slots are collected; the bound pass-throughs
     // (`device`) are not, so the single collected entry is `dprefix`.
     let dprefix = prefix.device[0];
-    freedevice(cache, dtotal.0, dtotal.1);
+    retiredevice(cache, dtotal.0, dtotal.1);
 
     // Pass 3: per-block apply; only the output is downloaded.
     let outcount = n.checked_mul(d).ok_or(musaerror::sizeoverflow)?;
@@ -1398,13 +1399,13 @@ pub(crate) fn scan_parallel(
         0,
     )?;
     let out = results.remove(0);
-    freedevice(cache, dinput.0, dinput.1);
-    freedevice(cache, da.0, da.1);
-    freedevice(cache, db.0, db.1);
-    freedevice(cache, dc.0, dc.1);
-    freedevice(cache, dskip.0, dskip.1);
-    freedevice(cache, dinit.0, dinit.1);
-    freedevice(cache, dprefix.0, dprefix.1);
+    retiredevice(cache, dinput.0, dinput.1);
+    retiredevice(cache, da.0, da.1);
+    retiredevice(cache, db.0, db.1);
+    retiredevice(cache, dc.0, dc.1);
+    retiredevice(cache, dskip.0, dskip.1);
+    retiredevice(cache, dinit.0, dinit.1);
+    retiredevice(cache, dprefix.0, dprefix.1);
     Ok((out, state))
 }
 
