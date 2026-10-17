@@ -233,6 +233,10 @@ pub(crate) enum buf<'a> {
     host(&'a [f32]),
     /// Upload a host `u64` slice into a fresh device allocation.
     hostu64(&'a [u64]),
+    /// Upload a host `u64` slice and hand the allocation back as a device
+    /// pointer instead of returning it to the pool, so a recorded step keeps
+    /// its index buffer alive across the deferred synchronisation.
+    hostu64device(&'a [u64]),
     /// Allocate the output buffer and download it after the kernel completes.
     out(usize),
     /// Bind an existing device allocation without uploading or returning it
@@ -405,6 +409,23 @@ impl session {
         Ok(self.slots.len() - 1)
     }
 
+    /// Uploads a host `u64` slice once and returns its slot.
+    pub(crate) fn uploadu64(&mut self, data: &[u64]) -> Result<usize, musaerror> {
+        let mut result = drive(
+            &self.cache,
+            None,
+            &[buf::hostu64device(data)],
+            &[],
+            (1, 1, 1),
+            (1, 1, 1),
+            0,
+            false,
+        )?;
+        let (ptr, bytes) = result.device.remove(0);
+        self.slots.push((ptr, bytes));
+        Ok(self.slots.len() - 1)
+    }
+
     /// Records one kernel step without synchronising and returns the output
     /// slot. `hostdevice` inputs in `buffers` are uploaded once and kept;
     /// `device` inputs bind existing slots.
@@ -434,9 +455,9 @@ impl session {
         Ok(self.slots.len() - 1)
     }
 
-    /// Drains one slot to host data mid-chain (an operator still on the
-    /// host-replay path consuming a device-resident result). The slot is
-    /// released immediately and marked empty.
+    /// Drains one slot to host data mid-chain, for a caller that needs a host
+    /// copy of a recorded result. The slot is released immediately and marked
+    /// empty.
     pub(crate) fn take(&mut self, slot: usize) -> Result<Vec<f32>, musaerror> {
         let (ptr, bytes) = self.slots[slot];
         let mut out = flush(&self.cache, &[(ptr, bytes)])?;
@@ -558,6 +579,157 @@ pub(crate) fn softmax_record(
         grid,
         block,
         source::ELEMENTWISETILE as u32 * 4,
+    )
+}
+
+/// Records one embedding gather into a device-resident chain.
+pub(crate) fn embedding_record(
+    session: &mut session,
+    table: buf<'_>,
+    indices: buf<'_>,
+    rows: usize,
+    width: usize,
+) -> Result<usize, musaerror> {
+    let count = rows.checked_mul(width).ok_or(musaerror::sizeoverflow)?;
+    session.record(
+        "embedding",
+        source::EMBEDDINGENTRY,
+        &[table, indices, buf::outdevice(count)],
+        &[scalar::u32(rows as u32), scalar::u32(width as u32)],
+        (rows as u32, 1, 1),
+        (source::ELEMENTWISETILE, 1, 1),
+        0,
+    )
+}
+
+/// Records one rotary position embedding into a device-resident chain.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rope_record(
+    session: &mut session,
+    input: buf<'_>,
+    count: usize,
+    rows: usize,
+    seqaxis: usize,
+    heads: usize,
+    headdim: usize,
+    base: f32,
+) -> Result<usize, musaerror> {
+    let grid = ((seqaxis as u32).div_ceil(source::ELEMENTWISETILE), 1, 1);
+    session.record(
+        "rope",
+        source::ROPEENTRY,
+        &[input, buf::outdevice(count)],
+        &[
+            scalar::u32(rows as u32),
+            scalar::u32(seqaxis as u32),
+            scalar::u32(heads as u32),
+            scalar::u32(headdim as u32),
+            scalar::f32(base),
+        ],
+        grid,
+        (source::ELEMENTWISETILE, 1, 1),
+        0,
+    )
+}
+
+/// Records one absolute-position rotary embedding into a device-resident
+/// chain.
+pub(crate) fn rope_at_record(
+    session: &mut session,
+    input: buf<'_>,
+    count: usize,
+    position: usize,
+    heads: usize,
+    headdim: usize,
+    base: f32,
+) -> Result<usize, musaerror> {
+    session.record(
+        "rope_at",
+        source::ROPEATENTRY,
+        &[input, buf::outdevice(count)],
+        &[
+            scalar::u32(heads as u32),
+            scalar::u32(headdim as u32),
+            scalar::u32(position as u32),
+            scalar::f32(base),
+        ],
+        (1, 1, 1),
+        (source::ELEMENTWISETILE, 1, 1),
+        0,
+    )
+}
+
+/// Records one multi-head attention into a device-resident chain.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn attention_record(
+    session: &mut session,
+    query: buf<'_>,
+    key: buf<'_>,
+    value: buf<'_>,
+    count: usize,
+    qseq: usize,
+    kvseq: usize,
+    heads: usize,
+    kvheads: usize,
+    headdim: usize,
+    causal: bool,
+) -> Result<usize, musaerror> {
+    let gridx = qseq.checked_mul(heads).ok_or(musaerror::sizeoverflow)?;
+    session.record(
+        "attention",
+        source::ATTENTIONENTRY,
+        &[query, key, value, buf::outdevice(count)],
+        &[
+            scalar::u32(qseq as u32),
+            scalar::u32(kvseq as u32),
+            scalar::u32(heads as u32),
+            scalar::u32(kvheads as u32),
+            scalar::u32(headdim as u32),
+            scalar::u32(causal as u32),
+        ],
+        (gridx as u32, 1, 1),
+        (source::ATTENTIONLANES, 1, 1),
+        (2 * source::ATTENTIONLANES + headdim as u32) * 4,
+    )
+}
+
+/// Records one incremental-decode attention into a device-resident chain.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn attention_cached_record(
+    session: &mut session,
+    query: buf<'_>,
+    keycached: buf<'_>,
+    valuecached: buf<'_>,
+    keynew: buf<'_>,
+    valuenew: buf<'_>,
+    count: usize,
+    kvseq: usize,
+    heads: usize,
+    kvheads: usize,
+    headdim: usize,
+    causal: bool,
+) -> Result<usize, musaerror> {
+    session.record(
+        "attention_cached",
+        source::ATTENTIONCACHEDENTRY,
+        &[
+            query,
+            keycached,
+            valuecached,
+            keynew,
+            valuenew,
+            buf::outdevice(count),
+        ],
+        &[
+            scalar::u32(kvseq as u32),
+            scalar::u32(heads as u32),
+            scalar::u32(kvheads as u32),
+            scalar::u32(headdim as u32),
+            scalar::u32(causal as u32),
+        ],
+        (heads as u32, 1, 1),
+        (source::ATTENTIONLANES, 1, 1),
+        (2 * source::ATTENTIONLANES + headdim as u32) * 4,
     )
 }
 
@@ -721,13 +893,13 @@ fn drive(
                     keep.push(matches!(*slot, buf::hostdevice(_)));
                     owned.push(0);
                 }
-                buf::hostu64(data) => {
+                buf::hostu64(data) | buf::hostu64device(data) => {
                     sizes.push(
                         data.len()
                             .checked_mul(core::mem::size_of::<u64>())
                             .ok_or(musaerror::sizeoverflow)?,
                     );
-                    keep.push(false);
+                    keep.push(matches!(*slot, buf::hostu64device(_)));
                     owned.push(0);
                 }
                 buf::out(count) | buf::outdevice(count) => {
@@ -779,7 +951,7 @@ fn drive(
                         });
                     }
                 }
-                buf::hostu64(data) => {
+                buf::hostu64(data) | buf::hostu64device(data) => {
                     if muMemcpyHtoD_v2(owned[index], data.as_ptr().cast(), sizes[index])
                         != MUSA_SUCCESS
                     {
@@ -852,7 +1024,7 @@ fn drive(
                     }
                     host.push(out);
                 }
-                buf::outdevice(_) | buf::hostdevice(_) => {
+                buf::outdevice(_) | buf::hostdevice(_) | buf::hostu64device(_) => {
                     device.push((owned[index], sizes[index]));
                 }
                 buf::device(_) => {}

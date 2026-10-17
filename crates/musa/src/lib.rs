@@ -61,4 +61,4 @@ pub use backend::{MUSAMAXHEADDIM, MUSAMAXRANK, musabackend};
 #[cfg(all(target_os = "linux", musa_toolkit))]
 pub use error::musaerror;
 #[cfg(all(target_os = "linux", musa_toolkit))]
-pub use executor::{matmulpath, musaexecutor};
+pub use executor::{matmulpath, musaexecutor, musasubmission};

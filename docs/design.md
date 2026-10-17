@@ -2946,7 +2946,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 ## 21.13 执行上下文与 dispatch 批处理（**已验证**）
 
-> 状态：**已验证（Verified）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。该契约已按 21.13.5 的顺序在三个后端（`cpu`、`metal`、`cuda`）实施；三后端的「同一链经上下文与经 `compute` 逐位相同」测试与全部静态门禁均已执行并通过（见 21.13.7）。性能验收也已达成：`gpu/modelforward` 的 Metal 数字由 52.60 ms（35 次同步往返的 `compute` 基线）降至 2.81 ms（整链一次 commit，`forwardsubmission`），**改善 ≈18.7×**，远超 10× 标准；且 `forwardsubmission` 与 `forward` 逐位一致，不是以正确性换速度。
+> 状态：**已验证（Verified）**。本节记录一个由测量确定的架构缺口、被采纳的设计方向、被否决的备选方案与分阶段的实施顺序。该契约已按 21.13.5 的顺序在四个后端（`cpu`、`metal`、`cuda`、`musa`）实施；四后端的「同一链经上下文与经 `compute` 相同」测试与全部静态门禁均已执行并通过（见 21.13.7）。性能验收也已达成：`gpu/modelforward` 的 Metal 数字由 52.60 ms（35 次同步往返的 `compute` 基线）降至 2.81 ms（整链一次 commit，`forwardsubmission`），**改善 ≈18.7×**，远超 10× 标准；且 `forwardsubmission` 与 `forward` 逐位一致，不是以正确性换速度。
 
 ### 21.13.1 上下文（测量事实）
 
@@ -3014,6 +3014,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **cpu。** `tests/it/submissioncontract.rs` 8 例通过：多算子链经 `submission` 与经 `compute` 逐位相同（`assert_eq!` 精确）、声明阶段拒绝与 `compute` 同变体。
 * **metal。** `tests/it/metalcontract.rs` 45 例在 Apple M5 Pro 上通过，含 2 例 `submission`（逐位相同、越界 `stepref`）；`unsafe` 站点当时仍 4/4（复用 `write`/`read`/`bind`/`setbytes`；2026-10-17 合并后现值 3/3，见 §21.8）。首轮暴露 `session` 缺 `impl Drop`：中途错误路径丢弃 session 时 encoder 未 `endEncoding` 即被释放，Metal 在 dealloc 时断言（SIGTRAP）；补 `ended` 标志 + `Drop` 兜底后 45/45 全过。
 * **cuda。** `tests/it/cudacontract.rs` 43 例在 NVIDIA T600（Windows WSL2 Ubuntu 24.04）真机上通过，含 `submission_reproduces_a_compute_chain_bit_for_bit` 的 bit-for-bit 复现；`unsafe` 站点当时仍 3/3（复用 `submit`/`gemm`/`softmax_forward`，后两者为单算子路径抽出的 helper；2026-10-17 删除 `softmax_forward` 后现值 2/2）。
+* **musa（2026-10-17）。** `musasubmission` 把全部支持的算子改为设备驻留：`matmul`、`add`/`mul`/`silu`、`rmsnorm`、`softmax`、`embedding`、`rope`/`rope_at`、`attention`/`attention_cached`；u64 gather 索引经 `hostu64device` 常驻上传，中间结果只留在 slot。`scan`/`scan_cached` 与 `rmsnormmatmul` 仍报 `unsupportedoperation`。MTT S4000 上 `musacontract` **39/39**、`tests/it/musasubmission.rs` **4/4**：完整 prefill、单步 cached decode、prefill+2 步 decode 均与 compute 对齐（TF32 容差 2e-3），且 `infer::submissionengine`（compute prefill + 设备驻留 decode）与 `generationengine` 选择相同 greedy token。prefill 仍走 compute，因为 `forwardsubmission_cached` 要求已填充的 cache；每个 decode 步创建一条单次 submission，因此模型权重按步上传，持久设备 session/设备 KV cache 是后续优化。
 * **平台修复。** `metal` 新增 `build.rs` 显式链接 `CoreGraphics` 框架：`MTLCreateSystemDefaultDevice` 要求 CoreGraphics 链接，而 `objc2-core-graphics` 依赖无本 crate 使用的符号，其 `#[link]` 被死代码消除，设备探测会静默返回空。
 * **公共化。** 平台无关的 `geometry`（shape 校验）从 `metal`/`cuda` 各一份复制抽到 `api::geometry`，`attentionshape::new` 增 `maxheaddim` 参数承载唯一的设备差异（Metal 4096 vs CUDA 8192）；消除 607 行重复。
 

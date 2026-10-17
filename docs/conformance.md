@@ -113,6 +113,16 @@
 - **内核优化迭代（E1，1024³ WMMA，同装置）。** 32-lane 16×16×8 初版 **5.7208 ms** → wave128（128 线程、`m32n32k8`、32×32 tile）**2.9479 ms** → 完整 tile `float4` 向量装载 **2.1530 ms** → 64×32 tile（两个累加器）+ 结果 staging 复用操作数缓冲 **2.0568 ms** → 寄存器预取 + CTA Swizzle（8 行分组）约 **2.0 ms**（同 run 比值 0.2050 vs 关闭 Swizzle 0.2099、基线 0.2115）。经典双 stage 双缓冲因共享内存 8.5→17.4 KiB、占用率 8→4 块/SM 而回退（一次运行 1024 +9.5%、256 +38.6%）；BK=32 回退 22%，CS stride 32 回退 2.9%，均未采用。
 - **实现约束（E1）。** MUSA 硬件 `warpSize=128`，`m32n32k8` TF32 MMA 是 wave128 指令：128 线程拆 4 个独立 32-lane 组、或用 32 线程块执行该形状，真机上都只得到零/部分输出（37×51×29 边缘用例从第 32 行起全 0）。最终内核以 **128 线程 = 一个 wave128 组**，每块 64×32 tile；完整 tile 走向量化/直接存储，边缘 tile 走 guarded shared staging，覆盖任意 m/n/k。
 
+## 本轮验证证据（2026-10-17 MUSA 设备驻留推理链）
+
+环境：AutoDL x86_64 容器（MTT S4000 / MP_22、MUSA 3.1.0、`rustc 1.99.0`），隔离副本 `/tmp/llm-ms4`；服务器 `/root/llm` 未触碰。
+
+- **算子驻留（E1）。** `musasubmission` 的全部支持算子改为设备驻留：`matmul`、`add`/`mul`/`silu`、`rmsnorm`、`softmax`、`embedding`、`rope`/`rope_at`、`attention`/`attention_cached`。embedding 的 u64 索引经新增 `buf::hostu64device` + `session::uploadu64` 常驻上传；每条记录的输入/输出都是设备 slot。`scan`/`scan_cached`、`rmsnormmatmul` 仍返回 `unsupportedoperation`。
+- **契约（E1）。** `LLM_MUSA_REQUIRE_DEVICE=1 cargo test -p llm --test it musacontract -- --nocapture` → **39 passed / 0 failed**，0 条 `E4 未执行`；embedding 链测试已从“host-replay”改为设备驻留链并通过。
+- **推理链（E1）。** `tests/it/musasubmission.rs` → **4 passed / 0 failed**：完整 prefill 的 `forwardsubmission` 与 `forward` 对齐；单步 cached decode 与 `forward_cached` 对齐；prefill+2 步 decode（每步 apply logits 与全部新 K/V 并追加回 cache）逐 step 与 compute 对齐（2e-3）；`infer::submissionengine`（compute prefill + 设备驻留 decode）与 `generationengine` 选择相同 greedy token、相同停止原因。
+- **回归（E1）。** CPU 侧 `generation` **10/10**、`submissionforward` **2/2**、`submissioncached` **1/1**；`bash scripts/checkunsafe.sh` → `musa 2/2`、`metal 3/3`、`cuda 2/2`、`checkpoint 3/3`，exit 0。本地 `cargo fmt --check`、`cargo check --workspace --all-targets`、命名/内联测试/unsafe 门全绿。
+- **已知边界。** prefill 仍走 compute（`forwardsubmission_cached` 要求已填充 cache）；每个 decode 步创建一条单次 submission，因此模型权重按步上传，设备端持久 session/设备 KV cache 尚未实现；`scan` 在 submission 中仍不支持。
+
 ## 当前判定
 
 ### architecture.md

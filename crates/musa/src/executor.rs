@@ -567,12 +567,13 @@ impl musaexecutor {
     /// Creates a single-use accumulative submission over this executor's
     /// backend and compiled-kernel cache.
     ///
-    /// Steps that have a device-resident form (`matmul`, elementwise,
-    /// normalization, embedding) are recorded without synchronising and keep
-    /// their results in device slots; the remaining operators replay on the
-    /// host. `apply` synchronises once and downloads the requested outputs, so
-    /// construction never fails — nothing touches the device until the first
-    /// record.
+    /// Every supported operator records a device-resident kernel without
+    /// synchronising and keeps its result in a device slot (`matmul`,
+    /// `add`/`mul`/`silu`, `rmsnorm`, `softmax`, `embedding`, `rope`/
+    /// `rope_at`, `attention`/`attention_cached`). `scan`/`scan_cached` and
+    /// `rmsnormmatmul` remain unsupported. `apply` synchronises once and
+    /// downloads the requested outputs, so construction never fails — nothing
+    /// touches the device until the first record.
     #[must_use]
     pub fn newsubmission(&self) -> musasubmission {
         musasubmission::new(self.backend.clone(), self.path, self.cache.clone())
@@ -583,11 +584,10 @@ impl musaexecutor {
 /// executor-owned cache.
 ///
 /// `musasubmission` owns the recorded results and no model weights; it shares
-/// no mutable state between requests. A step whose operator has a
-/// device-resident form records a kernel that reads existing device slots and
-/// leaves its result in a new slot; host-replay operators drain the slot they
-/// consume through one synchronise. [`apply`](submission::apply) rebuilds the
-/// requested outputs with one final synchronise and download.
+/// no mutable state between requests. Every supported step records a kernel
+/// that reads existing device slots and leaves its result in a new slot; only
+/// degenerate empty outputs stay on the host. [`apply`](submission::apply)
+/// rebuilds the requested outputs with one final synchronise and download.
 ///
 /// A batched `matmul` (a leading batch dimension greater than one) is rejected,
 /// mirroring `cuda`'s submission contract: the recorded path is one contraction
@@ -596,7 +596,6 @@ impl musaexecutor {
 pub struct musasubmission {
     backend: musabackend,
     path: matmulpath,
-    cache: Arc<ffi::cache>,
     session: ffi::session,
     results: Vec<(resultdata, shape)>,
     /// Uploaded caller inputs keyed by `(data pointer, length)`, so an input
@@ -605,8 +604,8 @@ pub struct musasubmission {
     inputs: std::collections::HashMap<(usize, usize), usize>,
 }
 
-/// A recorded result: either a device slot drained by [`session::apply`]
-/// (the device-resident path) or host data (the operators not yet converted).
+/// A recorded result: either a device slot drained by [`session::apply`] or
+/// host data for a degenerate empty output.
 enum resultdata {
     slot(usize),
     host(Vec<f32>),
@@ -616,11 +615,10 @@ impl musasubmission {
     /// Creates a submission over `backend` using `cache`, selecting `path` for
     /// recorded `matmul` steps.
     pub(crate) fn new(backend: musabackend, path: matmulpath, cache: Arc<ffi::cache>) -> Self {
-        let session = ffi::session::new(cache.clone());
+        let session = ffi::session::new(cache);
         Self {
             backend,
             path,
-            cache,
             session,
             results: Vec::new(),
             inputs: std::collections::HashMap::new(),
@@ -691,9 +689,9 @@ impl musasubmission {
         }
     }
 
-    /// Resolves an operand to host data, for the operators still on the
-    /// host-replay path. A device-resident result is drained mid-chain with a
-    /// single synchronise, which is correct but reintroduces one sync.
+    /// Resolves an operand to host data for the upload fallback (a degenerate
+    /// empty result); a device-resident result is drained with one
+    /// synchronise, which reintroduces a sync only on that fallback path.
     fn resolve(&mut self, op: operand<'_>) -> Result<Vec<f32>, backenderror> {
         match op {
             operand::input(view) => Ok(view.getdata().to_vec()),
@@ -882,15 +880,26 @@ impl submission for musasubmission {
         self.checkbudget(&tableshape)?;
         let geometry = embeddingshape::new(&tableshape, indices)?;
         self.checkgatherbudget(geometry.rows, geometry.width)?;
-        let table = self.resolve(table)?;
-        let index64 = tou64(indices);
-        let data =
-            ffi::embedding(&self.cache, &table, &index64, geometry.width).map_err(maptobackend)?;
         let mut outdims = Vec::with_capacity(tableshape.getrank());
         outdims.push(geometry.rows);
         outdims.extend_from_slice(&tableshape.getdims()[1..]);
         let outshape = shape::new(outdims).map_err(|_| backenderror::sizeoverflow)?;
-        Ok(self.push(data, outshape))
+        if geometry.rows == 0 {
+            return Ok(self.push(Vec::new(), outshape));
+        }
+        let tablebuf = self.operandsbuf(table)?;
+        let index64 = tou64(indices);
+        let indexslot = self.session.uploadu64(&index64).map_err(maptobackend)?;
+        let indexbuf = buf::device(self.session.slotptr(indexslot));
+        let slot = ffi::embedding_record(
+            &mut self.session,
+            tablebuf,
+            indexbuf,
+            geometry.rows,
+            geometry.width,
+        )
+        .map_err(maptobackend)?;
+        Ok(self.pushslot(slot, outshape))
     }
 
     fn recordrope(
@@ -902,10 +911,14 @@ impl submission for musasubmission {
         let inshape = self.shapeof(input)?;
         self.checkbudget(&inshape)?;
         let geometry = ropeshape::new(&inshape, heads)?;
-        let input = self.resolve(input)?;
-        let data = ffi::rope(
-            &self.cache,
-            &input,
+        let count = inshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let inputbuf = self.operandsbuf(input)?;
+        let slot = ffi::rope_record(
+            &mut self.session,
+            inputbuf,
+            count,
             geometry.rows,
             geometry.seqaxis,
             geometry.heads,
@@ -913,7 +926,7 @@ impl submission for musasubmission {
             base,
         )
         .map_err(maptobackend)?;
-        Ok(self.push(data, inshape))
+        Ok(self.pushslot(slot, inshape))
     }
 
     fn recordrope_at(
@@ -926,17 +939,21 @@ impl submission for musasubmission {
         let inshape = self.shapeof(input)?;
         self.checkbudget(&inshape)?;
         let geometry = ropeshape::new(&inshape, heads)?;
-        let input = self.resolve(input)?;
-        let data = ffi::rope_at(
-            &self.cache,
-            &input,
+        let count = inshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let inputbuf = self.operandsbuf(input)?;
+        let slot = ffi::rope_at_record(
+            &mut self.session,
+            inputbuf,
+            count,
             position,
             geometry.heads,
             geometry.headdim,
             base,
         )
         .map_err(maptobackend)?;
-        Ok(self.push(data, inshape))
+        Ok(self.pushslot(slot, inshape))
     }
 
     fn recordattention(
@@ -962,14 +979,18 @@ impl submission for musasubmission {
             kvheads,
             MUSAMAXHEADDIM,
         )?;
-        let query = self.resolve(query)?;
-        let key = self.resolve(key)?;
-        let value = self.resolve(value)?;
-        let data = ffi::attention(
-            &self.cache,
-            &query,
-            &key,
-            &value,
+        let count = queryshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let query = self.operandsbuf(query)?;
+        let key = self.operandsbuf(key)?;
+        let value = self.operandsbuf(value)?;
+        let slot = ffi::attention_record(
+            &mut self.session,
+            query,
+            key,
+            value,
+            count,
             geometry.qseq,
             geometry.kvseq,
             geometry.heads,
@@ -978,7 +999,7 @@ impl submission for musasubmission {
             causal,
         )
         .map_err(maptobackend)?;
-        Ok(self.push(data, queryshape))
+        Ok(self.pushslot(slot, queryshape))
     }
 
     fn recordattention_cached(
@@ -1010,18 +1031,22 @@ impl submission for musasubmission {
             kvheads,
             MUSAMAXHEADDIM,
         )?;
-        let query = self.resolve(query)?;
-        let cachedkey = self.resolve(key.cached)?;
-        let cachedvalue = self.resolve(value.cached)?;
-        let newkey = self.resolve(key.new)?;
-        let newvalue = self.resolve(value.new)?;
-        let data = ffi::attention_cached(
-            &self.cache,
-            &query,
-            &cachedkey,
-            &newkey,
-            &cachedvalue,
-            &newvalue,
+        let count = queryshape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
+        let query = self.operandsbuf(query)?;
+        let cachedkey = self.operandsbuf(key.cached)?;
+        let cachedvalue = self.operandsbuf(value.cached)?;
+        let newkey = self.operandsbuf(key.new)?;
+        let newvalue = self.operandsbuf(value.new)?;
+        let slot = ffi::attention_cached_record(
+            &mut self.session,
+            query,
+            cachedkey,
+            cachedvalue,
+            newkey,
+            newvalue,
+            count,
             geometry.kvseq,
             geometry.heads,
             geometry.kvheads,
@@ -1029,7 +1054,7 @@ impl submission for musasubmission {
             causal,
         )
         .map_err(maptobackend)?;
-        Ok(self.push(data, queryshape))
+        Ok(self.pushslot(slot, queryshape))
     }
 
     fn recordscan(

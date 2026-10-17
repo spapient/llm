@@ -13,5 +13,5 @@ mod weights;
 
 pub use block::llamablock;
 pub use config::llamaconfig;
-pub use model::llamamodel;
+pub use model::{cachedsubmission, llamamodel};
 pub use weights::{llamalayerweights, llamaweights};

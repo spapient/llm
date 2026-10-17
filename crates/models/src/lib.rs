@@ -48,5 +48,7 @@ mod registry;
 
 pub use causal::{causallm, kvcache};
 pub use error::modelerror;
-pub use llama::{llamablock, llamaconfig, llamalayerweights, llamamodel, llamaweights};
+pub use llama::{
+    cachedsubmission, llamablock, llamaconfig, llamalayerweights, llamamodel, llamaweights,
+};
 pub use registry::{architecture, getarchitecture};

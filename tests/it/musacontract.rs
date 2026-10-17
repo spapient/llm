@@ -965,12 +965,12 @@ fn submission_matmul_with_a_zero_contraction_yields_the_additive_identity() {
     assert_eq!(out[0].getdata(), &vec![0.0_f32; 6]);
 }
 
-/// A chain mixing the device-resident path (add/silu) and the host-replay
-/// path (embedding) matches the per-step composition, including the mid-chain
-/// drain of a device slot consumed by a host-replay operator.
+/// A chain of recorded device-resident steps (add, silu, embedding) matches the
+/// per-step composition; the embedding consumes the silu slot directly, without
+/// a host round trip.
 #[test]
-fn submission_mixes_device_resident_and_host_replay_steps() {
-    if !hasdevice("submission_mixes_device_resident_and_host_replay_steps") {
+fn submission_chains_recorded_device_steps() {
+    if !hasdevice("submission_chains_recorded_device_steps") {
         return;
     }
     let exec = musaexecutor::new(wide());

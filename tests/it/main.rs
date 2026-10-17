@@ -41,6 +41,7 @@ mod metalcontract;
 mod modelforward;
 mod modelsunits;
 mod musacontract;
+mod musasubmission;
 mod nnlayers;
 mod nnunits;
 mod optim;
