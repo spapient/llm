@@ -587,3 +587,21 @@ tiktoken 累计（相对 Phase 0 945.1 µs）≈ **4.6×**，现 205 µs 与 HF 
 gemma 加载累计（相对首测 510.7 ms）≈ **2.2×**；剩余主项是 `serde_json::from_str`（~10 MB JSON 全量解析）+ 580k merge 串解析本身，一次性可接受。
 
 **验证**：`tokenizerunits` 69、`tokenizergolden` 4（7 模型逐位不变）、`tokens` 21 全过；clippy `-D warnings` + fmt + checkunsafe（0 新增 unsafe）+ rustdoc 全过。checknaming 现报 3 项，全部在并发会话新增的 `crates/musa/src/ffi.rs`（`const core` 大写紧凑 NM5），非本 crate。
+
+### 12.27 零依赖攻坚 S4：tokenizer 依赖内化评估（2026-10-17）
+
+目标：评估 `fancy-regex` 与 `unicode-normalization` 是否值得内化为零依赖实现。
+
+**使用面**（S3 完成后实测）：
+
+| 依赖 | 使用处 | 性质 |
+| --- | --- | --- |
+| `unicode-normalization` | normalize.rs：`nfc/nfd/nfkc/nfkd` + `precompiled` 的 NFC 合成 | 领域算法（UAX #15） |
+| `fancy-regex` | pretoken.rs：Split 动态 pattern + `KIMI_PAT` 常量；normalize.rs：`replaceregex` 动态 pattern | 外部契约正则引擎 |
+
+**内化代价量化**（vendor 实测）：
+
+- `unicode-normalization` 0.1.25：`tables.rs` 22,824 行 / 612K（规范分解与组合表）+ 算法模块 ~1,200 行；**本身零依赖**（`tinyvec` 为 optional feature，未启用）。内化 = 复制 612K 表 + 算法 → 源码 +~750K，Unicode 版本升级需重新生成表；收益仅依赖清单 −1 行。
+- `fancy-regex` 0.15：500K + 传递依赖 6 包（bit-set/derivative→proc-macro2/quote/regex-automata→aho-corasick）。**使用面含动态用户 pattern**（Split/replaceregex 的 lookaround 来自模型作者定义的 `tokenizer.json`，语法含 `&&` 差集、`(?i:)`、lookbehind）。标准 `regex` crate 不支持 `&&` 差集（`KIMI_PAT` 编译失败）且不支持 lookbehind，不可直接替代；自写完整 lookaround 引擎 ≈2,000+ 行且无法证明与 fancy-regex 行为一致。
+
+**判定**：两个依赖均为**领域算法 / 外部契约组件**，与 S3 清除的便利性胶水依赖（serde/clap/tracing/thiserror——纯代码结构）性质不同——内化的「依赖清零」收益为负（源码体积大幅膨胀或契约风险失控）。**维持现状，不内化**；`KIMI_PAT`/GPT-2 常量路径可手写（§12.25 o200k 先例），但动态 Split 仍依赖 fancy-regex，常量手写无净依赖收益，不做。零依赖攻坚的剩余实质工作转入 **S5：vendor 瘦身 + 恢复 crates.io 直连**（vendor/ 157M 中残留大量已清除依赖，重新 `cargo vendor` 或移除 vendored-sources 强制可实质性减负）。
