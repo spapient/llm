@@ -7,7 +7,6 @@ use crate::error::formaterror;
 ///
 /// Unknown fields are ignored so that vendor-specific additions do not fail
 /// parsing; every field this crate relies on is validated explicitly afterwards.
-
 /// A validated Llama-family model configuration.
 ///
 /// Only the fields this workspace models are retained; the raw JSON may carry

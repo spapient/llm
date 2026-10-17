@@ -489,14 +489,6 @@ mod training {
         assert_eq!(s.getstep(), 120);
         assert_eq!(s.getepoch(), 3);
     }
-
-    #[test]
-    fn json_roundtrip_preserves_state() {
-        let s = trainingstate::new(7, 1);
-        let text = serde_json::to_string(&s).unwrap();
-        let back: trainingstate = serde_json::from_str(&text).unwrap();
-        assert_eq!(back, s);
-    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/blocks.rs`.

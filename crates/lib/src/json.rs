@@ -21,12 +21,15 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// A JSON number: an exact integer or a real.
+/// A JSON number: an exact signed integer, an exact unsigned integer, or a
+/// real.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum jsonnumber {
     /// An exact signed integer.
     integer(i64),
-    /// A real number (contains `.`, `e`, or both, or overflowed `i64`).
+    /// An exact unsigned integer beyond `i64::MAX` (up to `u64::MAX`).
+    unsigned(u64),
+    /// A real number (contains `.`, `e`, or both).
     real(f64),
 }
 
@@ -71,6 +74,17 @@ impl jsonvalue {
     pub fn getinteger(&self) -> Option<i64> {
         match self {
             Self::number(jsonnumber::integer(value)) => Some(*value),
+            Self::number(jsonnumber::unsigned(value)) => i64::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+
+    /// Returns the unsigned integer value, when this is an exact integer.
+    #[must_use]
+    pub fn getunsigned(&self) -> Option<u64> {
+        match self {
+            Self::number(jsonnumber::integer(value)) => u64::try_from(*value).ok(),
+            Self::number(jsonnumber::unsigned(value)) => Some(*value),
             _ => None,
         }
     }
@@ -80,6 +94,7 @@ impl jsonvalue {
     pub fn getreal(&self) -> Option<f64> {
         match self {
             Self::number(jsonnumber::integer(value)) => Some(*value as f64),
+            Self::number(jsonnumber::unsigned(value)) => Some(*value as f64),
             Self::number(jsonnumber::real(value)) => Some(*value),
             _ => None,
         }
@@ -228,6 +243,9 @@ fn writevalue(value: &jsonvalue, out: &mut String) {
         jsonvalue::null => out.push_str("null"),
         jsonvalue::boolean(value) => out.push_str(if *value { "true" } else { "false" }),
         jsonvalue::number(jsonnumber::integer(value)) => {
+            out.push_str(&value.to_string());
+        }
+        jsonvalue::number(jsonnumber::unsigned(value)) => {
             out.push_str(&value.to_string());
         }
         jsonvalue::number(jsonnumber::real(value)) => {
@@ -553,11 +571,10 @@ impl<'a> parser<'a> {
         } else {
             match text.parse::<i64>() {
                 Ok(value) => Ok(jsonvalue::number(jsonnumber::integer(value))),
-                Err(_) => {
-                    // Integer outside i64: accept as a real only when a huge
-                    // exponent is present; otherwise reject as out of range.
-                    Err(self.error("integer out of range"))
-                }
+                Err(_) => match text.parse::<u64>() {
+                    Ok(value) => Ok(jsonvalue::number(jsonnumber::unsigned(value))),
+                    Err(_) => Err(self.error("integer out of range")),
+                },
             }
         }
     }
