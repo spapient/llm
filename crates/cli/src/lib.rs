@@ -58,7 +58,9 @@ use std::io::Write;
 
 use lib::limits;
 
-pub use args::{cli, command, decodeargs, generateargs, inspectargs, trainargs, validateargs};
+pub use args::{
+    cli, command, decodeargs, generateargs, inspectargs, parseoutcome, trainargs, validateargs,
+};
 pub use error::{
     OPERATIONALEXITCODE, SUCCESSEXITCODE, UNSUPPORTEDEXITCODE, USAGEEXITCODE, VALIDATIONEXITCODE,
     clierror, exitcode,
@@ -152,21 +154,21 @@ impl core::fmt::Display for commandoutput {
 
 /// Parses `args` into a [`cli`] command tree.
 ///
-/// This wraps `clap::Parser::try_parse_from` so the whole tree can be parsed
-/// and dispatched in-process. The first element of `args` is the program name.
+/// This wraps the hand-written parser so the whole tree can be parsed and
+/// dispatched in-process. The first element of `args` is the program name.
 ///
 /// # Errors
 ///
-/// Returns the `clap` diagnostic for an unknown flag, a missing required
+/// Returns a [`parseoutcome`] for an unknown flag, a missing required
 /// argument, or a conflicting argument. `--help` and `--version` are returned
-/// as a `clap` "display" error, which [`runcli`] writes to stdout and treats as
-/// success.
-pub fn parse<I, T>(args: I) -> Result<cli, clap::Error>
+/// as a [`parseoutcome::help`] / [`parseoutcome::version`] information
+/// request, which [`runcli`] writes to stdout and treats as success.
+pub fn parse<I, T>(args: I) -> Result<cli, parseoutcome>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    <cli as clap::Parser>::try_parse_from(args)
+    args::parse(args)
 }
 
 /// Dispatches a parsed command to the workflow it selects.

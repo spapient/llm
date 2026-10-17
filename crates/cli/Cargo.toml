@@ -15,7 +15,6 @@ name = "cli"
 path = "src/main.rs"
 
 [dependencies]
-clap.workspace = true
 lib = { path = "../lib" }
 cpu = { path = "../cpu" }
 optim = { path = "../optim" }
