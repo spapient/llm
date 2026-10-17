@@ -33,7 +33,7 @@ pub const MAXBLOCK: usize = 1024 * 1024;
 
 /// Segment size for parallel chunking: data larger than this is split into
 /// segments that each chunk independently on available cores.
-const SEGMENT: usize = 16 * 1024 * 1024;
+const SEGMENT: usize = 8 * 1024 * 1024;
 
 /// Cut mask: the 18 low bits, for a 256 KiB average block size.
 const CUTMASK: u64 = (1 << 18) - 1;
