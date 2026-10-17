@@ -50,19 +50,19 @@ mod linux {
     const BASE: f32 = 10_000.0;
 
     /// Vocabulary size of the decode benchmark model.
-    const DECODEVOCAB: usize = 512;
+    const DECODEVOCAB: usize = 128;
     /// Model dimension of the decode benchmark model.
-    const DECODEDIM: usize = 128;
+    const DECODEDIM: usize = 64;
     /// Layer count of the decode benchmark model.
     const DECODELAYERS: usize = 2;
     /// Query head count of the decode benchmark model.
-    const DECODEHEADS: usize = 4;
+    const DECODEHEADS: usize = 2;
     /// Key/value head count of the decode benchmark model.
-    const DECODEKVHEADS: usize = 4;
+    const DECODEKVHEADS: usize = 2;
     /// Feed-forward hidden dimension of the decode benchmark model.
-    const DECODEHIDDEN: usize = 512;
+    const DECODEHIDDEN: usize = 128;
     /// Maximum sequence length of the decode benchmark model.
-    const DECODEMAXSEQ: usize = 32;
+    const DECODEMAXSEQ: usize = 16;
     /// Prompt used by the decode benchmark.
     const DECODEPROMPT: [usize; 4] = [0, 1, 2, 3];
     /// Generated tokens per decode benchmark iteration.

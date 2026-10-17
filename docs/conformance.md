@@ -121,8 +121,9 @@
 - **契约（E1）。** `LLM_MUSA_REQUIRE_DEVICE=1 cargo test -p llm --test it musacontract -- --nocapture` → **39 passed / 0 failed**，0 条 `E4 未执行`；embedding 链测试已从“host-replay”改为设备驻留链并通过。
 - **推理链（E1）。** `tests/it/musasubmission.rs` → **4 passed / 0 failed**：完整 prefill 的 `forwardsubmission` 与 `forward` 对齐；单步 cached decode 与 `forward_cached` 对齐；prefill+2 步 decode（每步 apply logits 与全部新 K/V 并追加回 cache）逐 step 与 compute 对齐（2e-3）；`infer::submissionengine`（compute prefill + 设备驻留 decode）与 `generationengine` 选择相同 greedy token、相同停止原因。
 - **回归（E1）。** CPU 侧 `generation` **10/10**、`submissionforward` **2/2**、`submissioncached` **1/1**；`bash scripts/checkunsafe.sh` → `musa 2/2`、`metal 3/3`、`cuda 2/2`、`checkpoint 3/3`，exit 0。本地 `cargo fmt --check`、`cargo check --workspace --all-targets`、命名/内联测试/unsafe 门全绿。
-- **decode 基准（E1）。** `musa/decode`（prompt 4 + 4 新 token，compute 与 submission 同 run）：compute **88.31 ms** vs 全 submission **38.75 ms**（**2.28×**）。
-- **已知边界。** 每个 token 仍创建一条单次 submission，因此模型权重按步上传；设备端持久 session/设备 KV cache 尚未实现。`scan`/`scan_cached` 在 submission 中仍不支持——`api::submission::recordscan` 只返回一个 `stepref`，无法同时暴露新状态，需要契约层扩展后才能正确实现。
+- **持久 session 与 scan（E1）。** `api` 新增 `recorder`（记录面）与 `session`（持久 `apply(&mut self)` + `reset`），`recorder::pin` 让模型权重在 session 内只上传一次；`musasession` 实现二者并提供 `recordscan_pair`/`recordscan_cached_pair`。`musasubmission` **5/5**：新增 scan pair 链用例（full scan 的 state 槽喂给 cached scan，两个输出都正确）；`scan.cu` 原地更新 state，记录路径先 D2D 复制输入 state，避免覆盖可下载槽。
+- **decode 基准（E1）。** `musa/decode`（中等模型，prompt 4 + 4 新 token，compute 与 persistent submission 同 run）：compute **73.14 ms** vs persistent submission **15.45 ms**（**4.73×**）。
+- **已知边界。** 设备 KV cache 仍未实现（模型侧 `kvcache` 返回 host tensor，需要新的设备缓存契约与设备端 append）；`rmsnormmatmul` 在 MUSA 仍不支持。
 
 ## 当前判定
 

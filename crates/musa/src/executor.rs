@@ -1033,7 +1033,6 @@ impl recorder for musasession {
             statewidth,
         )
         .map_err(maptobackend)?;
-        eprintln!("DBG scan pair outslot={outslot} stateslot={stateslot}");
         let outshape = shape::new(vec![n, d]).map_err(|_| backenderror::sizeoverflow)?;
         let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
         Ok((
@@ -1103,7 +1102,6 @@ impl recorder for musasession {
             statewidth,
         )
         .map_err(maptobackend)?;
-        eprintln!("DBG scan cached pair outslot={outslot} stateslot={newstate}");
         let outshape = shape::new(vec![1, d]).map_err(|_| backenderror::sizeoverflow)?;
         let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
         Ok((
@@ -1514,15 +1512,6 @@ impl submission for musasubmission {
                 }
             }
         }
-        eprintln!(
-            "DBG apply refs={:?} slots={:?} ptrs={:?}",
-            outputs.iter().map(|r| r.getindex()).collect::<Vec<_>>(),
-            slotindices,
-            slotindices
-                .iter()
-                .map(|&s| self.session.slotptr(s))
-                .collect::<Vec<_>>()
-        );
         let downloaded = self.session.apply(&slotindices).map_err(maptobackend)?;
         let mut cursor = 0;
         outputs

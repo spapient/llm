@@ -89,6 +89,8 @@ unsafe extern "C" {
     fn muMemcpyHtoD_v2(dst: mudevptr, src: *const core::ffi::c_void, count: usize) -> muresult;
     /// Copies `count` bytes from device `src` to host `dst`.
     fn muMemcpyDtoH_v2(dst: *mut core::ffi::c_void, src: mudevptr, count: usize) -> muresult;
+    /// Copies `count` bytes from device `src` to device `dst`.
+    fn muMemcpyDtoD_v2(dst: mudevptr, src: mudevptr, count: usize) -> muresult;
     /// Loads the binary fatbin `data` into `module`.
     fn muModuleLoadData(module: *mut mumodule, data: *const core::ffi::c_void) -> muresult;
     /// Resolves `name` in `module` into `function`.
@@ -252,6 +254,10 @@ pub(crate) enum buf<'a> {
     /// upload. The caller owns its lifetime and releases it through
     /// [`retiredevice`].
     hostdevice(&'a [f32]),
+    /// Allocate a fresh device buffer and copy `count` bytes into it from
+    /// `src`, handing the allocation back to the caller. Used when an operand
+    /// must be preserved across a kernel that updates it in place.
+    copy(mudevptr, usize),
     /// Download an existing device allocation into a host vector without
     /// allocating or launching anything. Used by [`flush`], which runs the
     /// deferred synchronisation and the downloads inside the one registered
@@ -435,6 +441,25 @@ impl session {
             false,
         )?;
         Ok(result.device.remove(0))
+    }
+
+    /// Copies `bytes` from device `src` into a fresh allocation and returns its
+    /// slot. Used when a kernel updates an operand in place and the original
+    /// value must remain downloadable.
+    pub(crate) fn copy(&mut self, src: mudevptr, bytes: usize) -> Result<usize, musaerror> {
+        let mut result = drive(
+            &self.cache,
+            None,
+            &[buf::copy(src, bytes)],
+            &[],
+            (1, 1, 1),
+            (1, 1, 1),
+            0,
+            false,
+        )?;
+        let (ptr, size) = result.device.remove(0);
+        self.slots.push((ptr, size));
+        Ok(self.slots.len() - 1)
     }
 
     /// Uploads a host `u64` slice once and returns its slot.
@@ -983,6 +1008,11 @@ fn drive(
                     keep.push(true);
                     owned.push(mem);
                 }
+                buf::copy(_, bytes) => {
+                    sizes.push(bytes);
+                    keep.push(true);
+                    owned.push(0);
+                }
             }
         }
         for (index, &size) in sizes.iter().enumerate() {
@@ -1022,6 +1052,13 @@ fn drive(
                     {
                         return Err(musaerror::transfer {
                             message: "muMemcpyHtoD failed for u64 operand".into(),
+                        });
+                    }
+                }
+                buf::copy(src, _) => {
+                    if muMemcpyDtoD_v2(owned[index], src, sizes[index]) != MUSA_SUCCESS {
+                        return Err(musaerror::transfer {
+                            message: "muMemcpyDtoD failed for copy".into(),
                         });
                     }
                 }
@@ -1090,7 +1127,10 @@ fn drive(
                     }
                     host.push(out);
                 }
-                buf::outdevice(_) | buf::hostdevice(_) | buf::hostu64device(_) => {
+                buf::outdevice(_)
+                | buf::hostdevice(_)
+                | buf::hostu64device(_)
+                | buf::copy(_, _) => {
                     device.push((owned[index], sizes[index]));
                 }
                 buf::device(_) => {}
@@ -1631,6 +1671,16 @@ pub(crate) fn scan_serial(
     Ok((out, state))
 }
 
+/// Extracts the device pointer of an operand that must already be resident.
+fn deviceptr(value: buf<'_>) -> Result<mudevptr, musaerror> {
+    match value {
+        buf::device(ptr) => Ok(ptr),
+        _ => Err(musaerror::transfer {
+            message: "scan state operand is not device-resident".into(),
+        }),
+    }
+}
+
 /// Records a serial scan into a device-resident chain, returning the output and
 /// final-state slots.
 #[allow(clippy::too_many_arguments)]
@@ -1648,6 +1698,13 @@ pub(crate) fn scan_record(
 ) -> Result<(usize, usize), musaerror> {
     let outcount = n.checked_mul(d).ok_or(musaerror::sizeoverflow)?;
     let statecount = d.checked_mul(statewidth).ok_or(musaerror::sizeoverflow)?;
+    // The kernel updates its state operand in place. Stage a copy so the
+    // caller's init slot (which may itself be a requested result) is preserved.
+    let statebytes = statecount
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(musaerror::sizeoverflow)?;
+    let initslot = session.copy(deviceptr(init)?, statebytes)?;
+    let initcopy = buf::device(session.slotptr(initslot));
     let slots = session.recordmulti(
         "scan",
         source::SCANENTRY,
@@ -1657,7 +1714,7 @@ pub(crate) fn scan_record(
             b,
             c,
             skip,
-            init,
+            initcopy,
             buf::outdevice(outcount),
             buf::outdevice(statecount),
         ],
@@ -1688,6 +1745,13 @@ pub(crate) fn scan_cached_record(
     statewidth: usize,
 ) -> Result<(usize, usize), musaerror> {
     let statecount = d.checked_mul(statewidth).ok_or(musaerror::sizeoverflow)?;
+    // The kernel updates its state operand in place; copy it so the caller's
+    // state slot (often the previous scan's output) stays downloadable.
+    let statebytes = statecount
+        .checked_mul(core::mem::size_of::<f32>())
+        .ok_or(musaerror::sizeoverflow)?;
+    let stateslot = session.copy(deviceptr(state)?, statebytes)?;
+    let statecopy = buf::device(session.slotptr(stateslot));
     let slots = session.recordmulti(
         "scan",
         source::SCANENTRY,
@@ -1697,7 +1761,7 @@ pub(crate) fn scan_cached_record(
             b,
             c,
             skip,
-            state,
+            statecopy,
             buf::outdevice(d),
             buf::outdevice(statecount),
         ],
