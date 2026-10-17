@@ -1,11 +1,28 @@
 use ::tensor::{shape, tensor};
-use api::{compute, operand, operandpair, stepref, submission};
+use api::{compute, operand, operandpair, recorder, stepref};
 use nn::{attention, rotary};
 
 use crate::causal::kvcache;
+use crate::config::llamaconfig;
 use crate::error::modelerror;
-use crate::llama::config::llamaconfig;
-use crate::llama::weights::llamalayerweights;
+use crate::weights::llamalayerweights;
+
+/// Pins every layer weight for a recorder.
+///
+/// A single-use submission ignores this; a persistent session uploads each
+/// weight once and reuses the device allocation across decode steps.
+fn pinweights<R: recorder>(sub: &mut R, weights: &llamalayerweights) -> Result<(), modelerror> {
+    sub.pin(weights.getattnnorm().getweight().getvalue().getview())?;
+    sub.pin(weights.getwq().getweight().getvalue().getview())?;
+    sub.pin(weights.getwk().getweight().getvalue().getview())?;
+    sub.pin(weights.getwv().getweight().getvalue().getview())?;
+    sub.pin(weights.getwo().getweight().getvalue().getview())?;
+    sub.pin(weights.getffnnorm().getweight().getvalue().getview())?;
+    sub.pin(weights.getmlp().getgate().getweight().getvalue().getview())?;
+    sub.pin(weights.getmlp().getup().getweight().getvalue().getview())?;
+    sub.pin(weights.getmlp().getdown().getweight().getvalue().getview())?;
+    Ok(())
+}
 
 /// The configuration-derived operators of one Llama transformer block.
 ///
@@ -75,12 +92,13 @@ impl llamablock {
     ///
     /// The caller submits the whole chain once and resolves the returned
     /// [`stepref`]; intermediate results stay on the backend's device.
-    pub fn forwardsubmission<S: submission>(
+    pub fn forwardsubmission<R: recorder>(
         &self,
-        sub: &mut S,
+        sub: &mut R,
         weights: &llamalayerweights,
         x: stepref,
     ) -> Result<stepref, modelerror> {
+        pinweights(sub, weights)?;
         let normalized = sub.recordrmsnorm(
             operand::result(x),
             operand::input(weights.getattnnorm().getweight().getvalue().getview()),
@@ -146,15 +164,16 @@ impl llamablock {
     /// Records one pre-norm transformer block for a single new token into a
     /// submission, reading the cached keys and values and returning the new
     /// key/value handles for the caller to append after `apply`.
-    pub fn forwardsubmission_cached<S: submission, K: kvcache>(
+    pub fn forwardsubmission_cached<R: recorder, K: kvcache>(
         &self,
-        sub: &mut S,
+        sub: &mut R,
         cache: &K,
         weights: &llamalayerweights,
         x: stepref,
         layer: usize,
         position: usize,
     ) -> Result<(stepref, stepref, stepref), modelerror> {
+        pinweights(sub, weights)?;
         let normalized = sub.recordrmsnorm(
             operand::result(x),
             operand::input(weights.getattnnorm().getweight().getvalue().getview()),
@@ -184,20 +203,45 @@ impl llamablock {
             self.rotaryk.getheads(),
             self.rotaryk.getbase(),
         )?;
-        let cached_key = cache
-            .keys(layer)
-            .ok_or_else(|| modelerror::config("kv cache", "missing cached key"))?;
-        let cached_value = cache
-            .values(layer)
-            .ok_or_else(|| modelerror::config("kv cache", "missing cached value"))?;
+        // The first prefill token has no cached rows. Attention over an empty
+        // cache plus the new row is well-defined, so pass zero-length views
+        // instead of requiring the caller to seed the cache.
+        let width = *weights
+            .getwk()
+            .getweight()
+            .getvalue()
+            .getshape()
+            .getdims()
+            .get(1)
+            .ok_or_else(|| modelerror::config("kv cache", "projection weight is not rank two"))?;
+        let emptykey = if cache.keys(layer).is_none() {
+            Some(tensor::new(shape::new(vec![0, width])?, Vec::new())?)
+        } else {
+            None
+        };
+        let emptyvalue = if cache.values(layer).is_none() {
+            Some(tensor::new(shape::new(vec![0, width])?, Vec::new())?)
+        } else {
+            None
+        };
+        let cached_key = match (cache.keys(layer), emptykey.as_ref()) {
+            (Some(key), _) => key.getview(),
+            (None, Some(key)) => key.getview(),
+            (None, None) => return Err(modelerror::config("kv cache", "missing cached key")),
+        };
+        let cached_value = match (cache.values(layer), emptyvalue.as_ref()) {
+            (Some(value), _) => value.getview(),
+            (None, Some(value)) => value.getview(),
+            (None, None) => return Err(modelerror::config("kv cache", "missing cached value")),
+        };
         let attended = sub.recordattention_cached(
             operand::result(q),
             operandpair {
-                cached: operand::input(cached_key.getview()),
+                cached: operand::input(cached_key),
                 new: operand::result(k),
             },
             operandpair {
-                cached: operand::input(cached_value.getview()),
+                cached: operand::input(cached_value),
                 new: operand::result(v),
             },
             self.attention.getheads(),

@@ -1,5 +1,5 @@
 use crate::error::modelerror;
-use crate::llama::{llamaconfig, llamamodel, llamaweights};
+use crate::{llamaconfig, llamamodel, llamaweights};
 
 /// A recognized model architecture.
 ///

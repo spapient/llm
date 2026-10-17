@@ -2,7 +2,7 @@ use ::tensor::tensor;
 use api::compute;
 
 use crate::error::modelerror;
-use crate::llama::llamaconfig;
+use crate::llamaconfig;
 
 /// A causal language model: an architecture that maps token ids to next-token
 /// logits.

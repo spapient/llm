@@ -1,11 +1,11 @@
 use ::tensor::tensor;
-use api::{compute, operand, stepref, submission};
+use api::{compute, operand, recorder, stepref};
 
+use crate::block::llamablock;
 use crate::causal::{causallm, kvcache};
+use crate::config::llamaconfig;
 use crate::error::modelerror;
-use crate::llama::block::llamablock;
-use crate::llama::config::llamaconfig;
-use crate::llama::weights::llamaweights;
+use crate::weights::llamaweights;
 
 /// A Llama-family causal language model: configuration, immutable weights, and
 /// the shared block operators.
@@ -81,11 +81,12 @@ impl llamamodel {
     ///
     /// The caller submits the whole chain once and resolves the returned
     /// [`stepref`]; every intermediate activation stays on the backend's device.
-    pub fn forwardsubmission<S: submission>(
+    pub fn forwardsubmission<R: recorder>(
         &self,
-        sub: &mut S,
+        sub: &mut R,
         tokens: &[usize],
     ) -> Result<stepref, modelerror> {
+        sub.pin(self.weights.getembedding().getweight().getvalue().getview())?;
         let mut x = sub.recordembedding(
             operand::input(self.weights.getembedding().getweight().getvalue().getview()),
             tokens,
@@ -93,11 +94,13 @@ impl llamamodel {
         for layer in self.weights.getlayers() {
             x = self.block.forwardsubmission(sub, layer, x)?;
         }
+        sub.pin(self.weights.getnorm().getweight().getvalue().getview())?;
         let normalized = sub.recordrmsnorm(
             operand::result(x),
             operand::input(self.weights.getnorm().getweight().getvalue().getview()),
             self.weights.getnorm().geteps(),
         )?;
+        sub.pin(self.weights.getoutput().getweight().getvalue().getview())?;
         Ok(sub.recordmatmul(
             operand::result(normalized),
             operand::input(self.weights.getoutput().getweight().getvalue().getview()),
@@ -110,13 +113,14 @@ impl llamamodel {
     ///
     /// The caller submits once and appends the downloaded new keys/values to the
     /// cache, so the submission itself stays a pure encoding of the decode step.
-    pub fn forwardsubmission_cached<S: submission, K: kvcache>(
+    pub fn forwardsubmission_cached<R: recorder, K: kvcache>(
         &self,
-        sub: &mut S,
+        sub: &mut R,
         cache: &K,
         token: usize,
     ) -> Result<cachedsubmission, modelerror> {
         let position = cache.getlen();
+        sub.pin(self.weights.getembedding().getweight().getvalue().getview())?;
         let mut x = sub.recordembedding(
             operand::input(self.weights.getembedding().getweight().getvalue().getview()),
             &[token],
@@ -136,11 +140,13 @@ impl llamamodel {
             keys.push(key);
             values.push(value);
         }
+        sub.pin(self.weights.getnorm().getweight().getvalue().getview())?;
         let normalized = sub.recordrmsnorm(
             operand::result(x),
             operand::input(self.weights.getnorm().getweight().getvalue().getview()),
             self.weights.getnorm().geteps(),
         )?;
+        sub.pin(self.weights.getoutput().getweight().getvalue().getview())?;
         let logits = sub.recordmatmul(
             operand::result(normalized),
             operand::input(self.weights.getoutput().getweight().getvalue().getview()),

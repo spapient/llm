@@ -5,7 +5,7 @@ use nn::{
 };
 
 use crate::error::modelerror;
-use crate::llama::llamaconfig;
+use crate::llamaconfig;
 
 /// The immutable weights of one Llama transformer block.
 ///

@@ -41,14 +41,18 @@
 //! variant names are lowercase concatenated and constants are uppercase
 //! concatenated. Module file names differ from the public types they export.
 
+mod block;
 mod causal;
+mod config;
 mod error;
-mod llama;
+mod model;
 mod registry;
+mod weights;
 
+pub use block::llamablock;
 pub use causal::{causallm, kvcache};
+pub use config::llamaconfig;
 pub use error::modelerror;
-pub use llama::{
-    cachedsubmission, llamablock, llamaconfig, llamalayerweights, llamamodel, llamaweights,
-};
+pub use model::{cachedsubmission, llamamodel};
 pub use registry::{architecture, getarchitecture};
+pub use weights::{llamalayerweights, llamaweights};
