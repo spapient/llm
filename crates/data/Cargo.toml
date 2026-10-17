@@ -12,7 +12,6 @@ name = "data"
 
 [dependencies]
 lib = { path = "../lib" }
-thiserror.workspace = true
 
 [lints]
 workspace = true

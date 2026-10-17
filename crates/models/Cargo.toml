@@ -11,7 +11,6 @@ description = "Concrete model architectures (Llama-family causal language model)
 name = "models"
 
 [dependencies]
-thiserror.workspace = true
 lib = { path = "../lib" }
 tensor = { path = "../tensor" }
 api = { path = "../api" }

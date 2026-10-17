@@ -12,7 +12,6 @@ name = "gpu"
 path = "gpu.rs"
 
 [dependencies]
-thiserror.workspace = true
 lib = { path = "../lib" }
 tensor = { path = "../tensor" }
 api = { path = "../api" }

@@ -1,7 +1,6 @@
 use ::tensor::dtype;
 use ::tensor::tensorerror;
 use optim::opterror;
-use thiserror::Error;
 
 /// Failures produced while orchestrating a training run.
 ///
@@ -12,37 +11,30 @@ use thiserror::Error;
 /// input that violates the cross-entropy contract. Underlying tensor, optimizer,
 /// and checkpoint errors are carried transparently so no diagnostic context is
 /// lost (`ER2`).
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum trainerror {
     /// Tensor metadata construction or validation failed.
-    #[error(transparent)]
-    tensor(#[from] tensorerror),
+    tensor(tensorerror),
 
     /// An optimizer update or state operation failed.
-    #[error(transparent)]
-    optim(#[from] opterror),
+    optim(opterror),
 
     /// A checkpoint load, save, or compatibility check failed.
-    #[error(transparent)]
-    checkpoint(#[from] checkpoint::checkpointerror),
+    checkpoint(checkpoint::checkpointerror),
 
     /// The run was cancelled at a cancellation checkpoint.
-    #[error("training was cancelled")]
     cancelled,
 
     /// The gradient-accumulation window size is not at least one.
-    #[error("gradient accumulation must cover at least one micro-batch, found {found}")]
     invalidaccumulation {
         /// The rejected window size.
         found: usize,
     },
 
     /// No parameters were supplied to the trainer.
-    #[error("a trainer requires at least one parameter")]
     emptyparameters,
 
     /// The configured step budget for the run has been exhausted.
-    #[error("training step budget exhausted: {completed} of {max} steps completed")]
     steplimitreached {
         /// The number of completed optimizer steps.
         completed: u64,
@@ -51,7 +43,6 @@ pub enum trainerror {
     },
 
     /// The loss function returned a different number of gradients than parameters.
-    #[error("loss function returned {actual} gradients for {expected} parameters")]
     gradientcountmismatch {
         /// The number of parameters the trainer holds.
         expected: usize,
@@ -60,7 +51,6 @@ pub enum trainerror {
     },
 
     /// A returned gradient's shape differs from its parameter's shape.
-    #[error("gradient {index} has shape {grad:?} but its parameter has shape {param:?}")]
     gradientshapemismatch {
         /// The zero-based index of the offending gradient.
         index: usize,
@@ -71,7 +61,6 @@ pub enum trainerror {
     },
 
     /// The loss function returned a value that is not finite.
-    #[error("loss at training step {step} is not finite: {loss}")]
     nonfiniteloss {
         /// The zero-based index of the step whose loss was rejected.
         step: u64,
@@ -80,32 +69,27 @@ pub enum trainerror {
     },
 
     /// A gradient was added to an already-full accumulation window.
-    #[error("gradient accumulation window is already full")]
     accumulatorfull,
 
     /// The local training state is inconsistent with itself or a loaded artifact.
-    #[error("invalid training state: {detail}")]
     invalidstate {
         /// Why the state was rejected.
         detail: String,
     },
 
     /// Cross-entropy received logits that are not a rank-two matrix.
-    #[error("cross-entropy logits must be a rank-two matrix, found shape {dims:?}")]
     lossnotmatrix {
         /// The rejected logits dimensions.
         dims: Vec<usize>,
     },
 
     /// Cross-entropy received an empty row or class axis.
-    #[error("cross-entropy requires at least one row and one class, found shape {dims:?}")]
     lossemptymatrix {
         /// The rejected logits dimensions.
         dims: Vec<usize>,
     },
 
     /// Cross-entropy received a different number of targets than logit rows.
-    #[error("cross-entropy received {rows} rows but {targets} targets")]
     targetcountmismatch {
         /// The number of rows in the logits.
         rows: usize,
@@ -114,7 +98,6 @@ pub enum trainerror {
     },
 
     /// A cross-entropy target is outside the class axis.
-    #[error("cross-entropy target {index} is {label}, outside the {classes} classes")]
     targetoutofrange {
         /// The zero-based row index of the offending target.
         index: usize,
@@ -125,11 +108,9 @@ pub enum trainerror {
     },
 
     /// Cross-entropy produced a non-finite loss or gradient.
-    #[error("cross-entropy produced a non-finite loss or gradient")]
     lossnonfinite,
 
     /// A checkpoint tensor that must hold `f32` data declares another dtype.
-    #[error("checkpoint tensor {name:?} uses dtype {dtype:?} instead of f32")]
     unsupportedtensordtype {
         /// The offending tensor name.
         name: String,
@@ -145,5 +126,94 @@ impl trainerror {
         Self::invalidstate {
             detail: detail.into(),
         }
+    }
+}
+
+impl std::fmt::Display for trainerror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::tensor(f0) => std::fmt::Display::fmt(f0, f),
+            Self::optim(f0) => std::fmt::Display::fmt(f0, f),
+            Self::checkpoint(f0) => std::fmt::Display::fmt(f0, f),
+            Self::cancelled => f.write_str("training was cancelled"),
+            Self::invalidaccumulation { found } => write!(
+                f,
+                "gradient accumulation must cover at least one micro-batch, found {found}"
+            ),
+            Self::emptyparameters => f.write_str("a trainer requires at least one parameter"),
+            Self::steplimitreached { completed, max } => write!(
+                f,
+                "training step budget exhausted: {completed} of {max} steps completed"
+            ),
+            Self::gradientcountmismatch { expected, actual } => write!(
+                f,
+                "loss function returned {actual} gradients for {expected} parameters"
+            ),
+            Self::gradientshapemismatch { index, param, grad } => write!(
+                f,
+                "gradient {index} has shape {grad:?} but its parameter has shape {param:?}"
+            ),
+            Self::nonfiniteloss { step, loss } => {
+                write!(f, "loss at training step {step} is not finite: {loss}")
+            }
+            Self::accumulatorfull => f.write_str("gradient accumulation window is already full"),
+            Self::invalidstate { detail } => write!(f, "invalid training state: {detail}"),
+            Self::lossnotmatrix { dims } => write!(
+                f,
+                "cross-entropy logits must be a rank-two matrix, found shape {dims:?}"
+            ),
+            Self::lossemptymatrix { dims } => write!(
+                f,
+                "cross-entropy requires at least one row and one class, found shape {dims:?}"
+            ),
+            Self::targetcountmismatch { rows, targets } => write!(
+                f,
+                "cross-entropy received {rows} rows but {targets} targets"
+            ),
+            Self::targetoutofrange {
+                index,
+                label,
+                classes,
+            } => write!(
+                f,
+                "cross-entropy target {index} is {label}, outside the {classes} classes"
+            ),
+            Self::lossnonfinite => {
+                f.write_str("cross-entropy produced a non-finite loss or gradient")
+            }
+            Self::unsupportedtensordtype { name, dtype } => write!(
+                f,
+                "checkpoint tensor {name:?} uses dtype {dtype:?} instead of f32"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for trainerror {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::tensor(f0) => Some(f0),
+            Self::optim(f0) => Some(f0),
+            Self::checkpoint(f0) => Some(f0),
+            _ => None,
+        }
+    }
+}
+
+impl From<tensorerror> for trainerror {
+    fn from(v: tensorerror) -> Self {
+        Self::tensor(v)
+    }
+}
+
+impl From<opterror> for trainerror {
+    fn from(v: opterror) -> Self {
+        Self::optim(v)
+    }
+}
+
+impl From<checkpoint::checkpointerror> for trainerror {
+    fn from(v: checkpoint::checkpointerror) -> Self {
+        Self::checkpoint(v)
     }
 }

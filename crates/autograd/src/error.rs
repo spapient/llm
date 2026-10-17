@@ -1,6 +1,5 @@
 use ::tensor::tensorerror;
 use api::backenderror;
-use thiserror::Error;
 
 /// Failures produced while building or differentiating an autograd graph.
 ///
@@ -9,25 +8,21 @@ use thiserror::Error;
 /// operand shape the operator does not support, and a size computation that
 /// overflowed. Backend failures keep the [`backenderror`] carried by the
 /// `api` contracts.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum autoggraderror {
     /// A backend operator failed during the forward or reverse pass.
-    #[error(transparent)]
-    backend(#[from] backenderror),
+    backend(backenderror),
 
     /// Tensor metadata construction failed while building a gradient.
-    #[error(transparent)]
-    tensor(#[from] tensorerror),
+    tensor(tensorerror),
 
     /// A variable handle does not refer to a node in this graph.
-    #[error("variable id {id} is not present in the graph")]
     unknownvariable {
         /// The rejected handle index.
         id: usize,
     },
 
     /// The requested operation is not defined for the operand shape.
-    #[error("operation {op} does not support shape {dims:?}")]
     unsupportedshape {
         /// The stable operation name.
         op: &'static str,
@@ -36,9 +31,48 @@ pub enum autoggraderror {
     },
 
     /// A size computation overflowed while planning a gradient.
-    #[error("size overflow while planning autograd operation {op}")]
     sizeoverflow {
         /// The stable operation name.
         op: &'static str,
     },
+}
+
+impl std::fmt::Display for autoggraderror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::backend(f0) => std::fmt::Display::fmt(f0, f),
+            Self::tensor(f0) => std::fmt::Display::fmt(f0, f),
+            Self::unknownvariable { id } => {
+                write!(f, "variable id {id} is not present in the graph")
+            }
+            Self::unsupportedshape { op, dims } => {
+                write!(f, "operation {op} does not support shape {dims:?}")
+            }
+            Self::sizeoverflow { op } => {
+                write!(f, "size overflow while planning autograd operation {op}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for autoggraderror {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::backend(f0) => Some(f0),
+            Self::tensor(f0) => Some(f0),
+            _ => None,
+        }
+    }
+}
+
+impl From<backenderror> for autoggraderror {
+    fn from(v: backenderror) -> Self {
+        Self::backend(v)
+    }
+}
+
+impl From<tensorerror> for autoggraderror {
+    fn from(v: tensorerror) -> Self {
+        Self::tensor(v)
+    }
 }

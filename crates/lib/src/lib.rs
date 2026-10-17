@@ -3,7 +3,7 @@
 //!
 //! `lib` owns identifiers, precision descriptors, reproducible seeds,
 //! resource limits, and the shared limit-validation error type. It depends only
-//! on the Rust standard library and `thiserror` and MUST NOT depend on any other
+//! only on the Rust standard library and MUST NOT depend on any other
 //! workspace crate.
 //!
 //! # Naming

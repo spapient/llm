@@ -1,6 +1,5 @@
 use ::tensor::{shape, tensor, tensorview};
 use api::{backenderror, binarykernel};
-use simd;
 
 use crate::support::finish;
 

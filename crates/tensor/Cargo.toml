@@ -11,7 +11,6 @@ description = "Core tensor types and numerical primitives for the LLM runtime"
 name = "tensor"
 
 [dependencies]
-thiserror.workspace = true
 lib = { path = "../lib" }
 half.workspace = true
 bytemuck.workspace = true

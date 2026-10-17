@@ -1,5 +1,4 @@
 use ::tensor::tensorerror;
-use thiserror::Error;
 
 /// Failures produced while configuring an optimizer, validating its operands,
 /// or restoring its state.
@@ -9,14 +8,12 @@ use thiserror::Error;
 /// shape mismatch, an inconsistent or incompatible optimizer state, and an
 /// invalid hyperparameter. Underlying tensor errors are carried transparently
 /// so no context is lost (ER2).
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum opterror {
     /// Tensor metadata construction or validation failed.
-    #[error(transparent)]
-    tensor(#[from] tensorerror),
+    tensor(tensorerror),
 
     /// The number of parameter tensors differs from the number of gradients.
-    #[error("received {params} parameters but {grads} gradients")]
     mismatchedcount {
         /// The parameter count.
         params: usize,
@@ -25,7 +22,6 @@ pub enum opterror {
     },
 
     /// A gradient's shape differs from its parameter's shape.
-    #[error("gradient {index} has shape {grad:?} but its parameter has shape {param:?}")]
     shapemismatch {
         /// The zero-based index of the offending parameter/gradient pair.
         index: usize,
@@ -36,14 +32,12 @@ pub enum opterror {
     },
 
     /// The optimizer state is inconsistent with itself or with the parameters.
-    #[error("invalid optimizer state: {detail}")]
     invalidstate {
         /// Why the state was rejected.
         detail: String,
     },
 
     /// A hyperparameter is outside its supported domain.
-    #[error("invalid hyperparameter {field}: {detail}")]
     invalidhyperparameter {
         /// The rejected hyperparameter name.
         field: &'static str,
@@ -68,5 +62,39 @@ impl opterror {
             field,
             detail: detail.into(),
         }
+    }
+}
+
+impl std::fmt::Display for opterror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::tensor(f0) => std::fmt::Display::fmt(f0, f),
+            Self::mismatchedcount { params, grads } => {
+                write!(f, "received {params} parameters but {grads} gradients")
+            }
+            Self::shapemismatch { index, param, grad } => write!(
+                f,
+                "gradient {index} has shape {grad:?} but its parameter has shape {param:?}"
+            ),
+            Self::invalidstate { detail } => write!(f, "invalid optimizer state: {detail}"),
+            Self::invalidhyperparameter { field, detail } => {
+                write!(f, "invalid hyperparameter {field}: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for opterror {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::tensor(f0) => Some(f0),
+            _ => None,
+        }
+    }
+}
+
+impl From<tensorerror> for opterror {
+    fn from(v: tensorerror) -> Self {
+        Self::tensor(v)
     }
 }

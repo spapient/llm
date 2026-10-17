@@ -1,6 +1,5 @@
 use ::tensor::{shape, tensorerror};
 use api::backenderror;
-use thiserror::Error;
 
 /// Failures produced while building or running a neural-network layer.
 ///
@@ -9,18 +8,15 @@ use thiserror::Error;
 /// layer does not accept, a layer configuration that cannot be built, and a
 /// parameter name that is duplicated or missing. Underlying errors are carried
 /// transparently so no context is lost (ER2).
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum nnerror {
     /// A backend operator failed during a forward pass.
-    #[error(transparent)]
-    backend(#[from] backenderror),
+    backend(backenderror),
 
     /// Tensor metadata construction failed while building a layer or output.
-    #[error(transparent)]
-    tensor(#[from] tensorerror),
+    tensor(tensorerror),
 
     /// A layer received an operand whose shape it does not accept.
-    #[error("layer {layer} expected shape {expected:?} but received {actual:?}")]
     shapemismatch {
         /// The stable layer name.
         layer: &'static str,
@@ -31,7 +27,6 @@ pub enum nnerror {
     },
 
     /// A layer configuration value is invalid.
-    #[error("invalid configuration for {field}: {detail}")]
     invalidconfig {
         /// The configuration field that was rejected.
         field: &'static str,
@@ -40,14 +35,12 @@ pub enum nnerror {
     },
 
     /// Two parameters were collected under the same name.
-    #[error("duplicate parameter name: {name}")]
     duplicateparameter {
         /// The repeated parameter name.
         name: String,
     },
 
     /// A parameter name was requested but is not present.
-    #[error("missing parameter name: {name}")]
     missingparameter {
         /// The absent parameter name.
         name: String,
@@ -72,5 +65,49 @@ impl nnerror {
             field,
             detail: detail.into(),
         }
+    }
+}
+
+impl std::fmt::Display for nnerror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::backend(f0) => std::fmt::Display::fmt(f0, f),
+            Self::tensor(f0) => std::fmt::Display::fmt(f0, f),
+            Self::shapemismatch {
+                layer,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "layer {layer} expected shape {expected:?} but received {actual:?}"
+            ),
+            Self::invalidconfig { field, detail } => {
+                write!(f, "invalid configuration for {field}: {detail}")
+            }
+            Self::duplicateparameter { name } => write!(f, "duplicate parameter name: {name}"),
+            Self::missingparameter { name } => write!(f, "missing parameter name: {name}"),
+        }
+    }
+}
+
+impl std::error::Error for nnerror {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::backend(f0) => Some(f0),
+            Self::tensor(f0) => Some(f0),
+            _ => None,
+        }
+    }
+}
+
+impl From<backenderror> for nnerror {
+    fn from(v: backenderror) -> Self {
+        Self::backend(v)
+    }
+}
+
+impl From<tensorerror> for nnerror {
+    fn from(v: tensorerror) -> Self {
+        Self::tensor(v)
     }
 }

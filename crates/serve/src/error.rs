@@ -1,5 +1,4 @@
 use infer::infererror;
-use thiserror::Error;
 
 /// Failures produced by the HTTP service.
 ///
@@ -15,22 +14,18 @@ use thiserror::Error;
 ///
 /// Only the I/O error *kind* is retained, so an error response never exposes an
 /// internal filesystem or socket detail (error-handling section 10.3).
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum serveerror {
     /// The request line was missing, empty, or not exactly three parts.
-    #[error("malformed request line")]
     malformedrequestline,
 
     /// A header line had no colon or an empty name.
-    #[error("malformed header line")]
     malformedheader,
 
     /// The HTTP version was not `HTTP/1.0` or `HTTP/1.1`.
-    #[error("unsupported HTTP version")]
     unsupportedversion,
 
     /// A request or header line exceeded the configured byte bound.
-    #[error("line too long: {len} bytes exceeds {limit}")]
     linetoolong {
         /// The observed line length in bytes.
         len: usize,
@@ -39,18 +34,15 @@ pub enum serveerror {
     },
 
     /// The request carried more headers than the configured bound.
-    #[error("too many headers: limit {limit}")]
     toomanyheaders {
         /// The configured header count bound.
         limit: usize,
     },
 
     /// The response ended before the blank line that terminates the headers.
-    #[error("incomplete request headers")]
     incompleteheaders,
 
     /// The body was shorter than its declared `content-length`.
-    #[error("incomplete request body: expected {expected} bytes, received {received}")]
     incompletebody {
         /// The declared content length.
         expected: usize,
@@ -59,11 +51,9 @@ pub enum serveerror {
     },
 
     /// A `content-length` header was present but not a valid count.
-    #[error("invalid content-length header")]
     invalidcontentlength,
 
     /// The declared or observed body exceeded the configured bound.
-    #[error("request body too large: {len} bytes exceeds {limit}")]
     bodytoolarge {
         /// The declared or observed body length in bytes.
         len: usize,
@@ -72,35 +62,30 @@ pub enum serveerror {
     },
 
     /// The request content type was not supported for the route.
-    #[error("unsupported media type: {media}")]
     unsupportedmediatype {
         /// The rejected media type, bounded by the header line bound.
         media: String,
     },
 
     /// The request method was not supported for the target.
-    #[error("unsupported method: {method}")]
     unsupportedmethod {
         /// The rejected method.
         method: String,
     },
 
     /// The request target did not match a route.
-    #[error("not found: {path}")]
     notfound {
         /// The request path that did not match.
         path: String,
     },
 
     /// A required form field was absent.
-    #[error("missing required field: {field}")]
     missingfield {
         /// The name of the absent field.
         field: &'static str,
     },
 
     /// A form field was present but invalid.
-    #[error("invalid field {field}: {detail}")]
     invalidfield {
         /// The name of the rejected field.
         field: &'static str,
@@ -109,7 +94,6 @@ pub enum serveerror {
     },
 
     /// The form body carried more fields than the configured bound.
-    #[error("too many form fields: limit {limit}")]
     toomanyfields {
         /// The configured field count bound.
         limit: usize,
@@ -117,33 +101,28 @@ pub enum serveerror {
 
     /// Admission control rejected the request because the service is at its
     /// concurrency ceiling.
-    #[error("too many concurrent requests: limit {limit}")]
     overloaded {
         /// The configured concurrency ceiling.
         limit: usize,
     },
 
     /// A configuration value is invalid.
-    #[error("invalid service configuration: {detail}")]
     invalidconfig {
         /// A static explanation of the rejected configuration.
         detail: &'static str,
     },
 
     /// A dispatch worker ended without producing a response.
-    #[error("request dispatch failed")]
     dispatchfailed,
 
     /// An I/O operation failed; only the error kind is retained.
-    #[error("io error: {kind:?}")]
     io {
         /// The standard-library I/O error kind.
         kind: std::io::ErrorKind,
     },
 
     /// A model execution or generation failure, carried unchanged.
-    #[error(transparent)]
-    inference(#[from] infererror),
+    inference(infererror),
 }
 
 impl serveerror {
@@ -151,5 +130,54 @@ impl serveerror {
     #[must_use]
     pub(crate) fn fromio(error: &std::io::Error) -> Self {
         Self::io { kind: error.kind() }
+    }
+}
+
+impl std::fmt::Display for serveerror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::malformedrequestline => f.write_str("malformed request line"),
+            Self::malformedheader => f.write_str("malformed header line"),
+            Self::unsupportedversion => f.write_str("unsupported HTTP version"),
+            Self::linetoolong { len, limit } => {
+                write!(f, "line too long: {len} bytes exceeds {limit}")
+            }
+            Self::toomanyheaders { limit } => write!(f, "too many headers: limit {limit}"),
+            Self::incompleteheaders => f.write_str("incomplete request headers"),
+            Self::incompletebody { expected, received } => write!(
+                f,
+                "incomplete request body: expected {expected} bytes, received {received}"
+            ),
+            Self::invalidcontentlength => f.write_str("invalid content-length header"),
+            Self::bodytoolarge { len, limit } => {
+                write!(f, "request body too large: {len} bytes exceeds {limit}")
+            }
+            Self::unsupportedmediatype { media } => write!(f, "unsupported media type: {media}"),
+            Self::unsupportedmethod { method } => write!(f, "unsupported method: {method}"),
+            Self::notfound { path } => write!(f, "not found: {path}"),
+            Self::missingfield { field } => write!(f, "missing required field: {field}"),
+            Self::invalidfield { field, detail } => write!(f, "invalid field {field}: {detail}"),
+            Self::toomanyfields { limit } => write!(f, "too many form fields: limit {limit}"),
+            Self::overloaded { limit } => write!(f, "too many concurrent requests: limit {limit}"),
+            Self::invalidconfig { detail } => write!(f, "invalid service configuration: {detail}"),
+            Self::dispatchfailed => f.write_str("request dispatch failed"),
+            Self::io { kind } => write!(f, "io error: {kind:?}"),
+            Self::inference(f0) => std::fmt::Display::fmt(f0, f),
+        }
+    }
+}
+
+impl std::error::Error for serveerror {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::inference(f0) => Some(f0),
+            _ => None,
+        }
+    }
+}
+
+impl From<infererror> for serveerror {
+    fn from(v: infererror) -> Self {
+        Self::inference(v)
     }
 }

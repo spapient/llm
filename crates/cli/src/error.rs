@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use thiserror::Error;
-
 /// Exit code for a command that completed successfully.
 pub const SUCCESSEXITCODE: u8 = 0;
 
@@ -26,12 +24,11 @@ pub const UNSUPPORTEDEXITCODE: u8 = 4;
 /// file larger than the configured bound, bytes that match no known artifact, an
 /// invalid argument value, a malformed training-configuration document, and the
 /// declared unsupported limitation). Failures owned by a workflow crate are
-/// carried transparently with `#[from]` so no diagnostic context is lost and no
+/// carried transparently with `` so no diagnostic context is lost and no
 /// underlying error type is collapsed into an application variant (ER2).
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum clierror {
     /// A filesystem operation failed at the named path.
-    #[error("i/o error at {path}: {source}")]
     io {
         /// The path the failed operation targeted.
         path: PathBuf,
@@ -40,7 +37,6 @@ pub enum clierror {
     },
 
     /// A supplied path is not an existing regular file.
-    #[error("invalid path {path}: {detail}")]
     invalidpath {
         /// The rejected path.
         path: PathBuf,
@@ -49,7 +45,6 @@ pub enum clierror {
     },
 
     /// A file exceeds the configured byte bound and was not read.
-    #[error("file {path} is {observed} bytes, exceeding the {limit}-byte limit")]
     sizeexceeded {
         /// The oversized path.
         path: PathBuf,
@@ -61,21 +56,18 @@ pub enum clierror {
 
     /// The bytes match no supported artifact: not JSON, not a checkpoint, and
     /// not a structurally valid safetensors header.
-    #[error("unrecognized artifact at {path}: not a config, checkpoint, or safetensors file")]
     unrecognizedartifact {
         /// The path whose bytes were not recognized.
         path: PathBuf,
     },
 
     /// An argument value is present but semantically invalid.
-    #[error("invalid argument: {detail}")]
     invalidarguments {
         /// A description of the rejected value.
         detail: String,
     },
 
     /// A training-configuration document is not valid JSON for the schema.
-    #[error("invalid training configuration at line {line}, column {column}: {message}")]
     invalidconfigjson {
         /// One-based line number of the failure.
         line: usize,
@@ -86,7 +78,6 @@ pub enum clierror {
     },
 
     /// The requested operation is a declared, structural limitation.
-    #[error("{operation} is not supported: {detail}")]
     notsupported {
         /// The operation that cannot be performed.
         operation: &'static str,
@@ -95,36 +86,28 @@ pub enum clierror {
     },
 
     /// An artifact parsing or validation failure owned by `format`.
-    #[error(transparent)]
-    format(#[from] format::formaterror),
+    format(format::formaterror),
 
     /// A checkpoint load or validation failure owned by `checkpoint`.
-    #[error(transparent)]
-    checkpoint(#[from] checkpoint::checkpointerror),
+    checkpoint(checkpoint::checkpointerror),
 
     /// A model configuration or forward-pass failure owned by `models`.
-    #[error(transparent)]
-    model(#[from] models::modelerror),
+    model(models::modelerror),
 
     /// A generation failure owned by `infer`.
-    #[error(transparent)]
-    infer(#[from] infer::infererror),
+    infer(infer::infererror),
 
     /// A training configuration or orchestration failure owned by `train`.
-    #[error(transparent)]
-    train(#[from] train::trainerror),
+    train(train::trainerror),
 
     /// An execution-control failure owned by `context`.
-    #[error(transparent)]
-    context(#[from] context::contexterror),
+    context(context::contexterror),
 
     /// A tokenization failure owned by `tokenizer`.
-    #[error(transparent)]
-    tokenizer(#[from] tokenizer::tokenizererror),
+    tokenizer(tokenizer::tokenizererror),
 
     /// An optimizer configuration failure owned by `optim`.
-    #[error(transparent)]
-    optim(#[from] optim::opterror),
+    optim(optim::opterror),
 }
 
 /// Maps a `clierror` to its process exit code.
@@ -139,5 +122,116 @@ pub fn exitcode(error: &clierror) -> u8 {
         clierror::format(_) | clierror::checkpoint(_) => VALIDATIONEXITCODE,
         clierror::notsupported { .. } => UNSUPPORTEDEXITCODE,
         _ => OPERATIONALEXITCODE,
+    }
+}
+
+impl std::fmt::Display for clierror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::io { path, source } => {
+                write!(f, "i/o error at {}: {source}", path.display())
+            }
+            Self::invalidpath { path, detail } => {
+                write!(f, "invalid path {}: {detail}", path.display())
+            }
+            Self::sizeexceeded {
+                path,
+                observed,
+                limit,
+            } => write!(
+                f,
+                "file {} is {observed} bytes, exceeding the {limit}-byte limit",
+                path.display()
+            ),
+            Self::unrecognizedartifact { path } => write!(
+                f,
+                "unrecognized artifact at {}: not a config, checkpoint, or safetensors file",
+                path.display()
+            ),
+            Self::invalidarguments { detail } => write!(f, "invalid argument: {detail}"),
+            Self::invalidconfigjson {
+                line,
+                column,
+                message,
+            } => write!(
+                f,
+                "invalid training configuration at line {line}, column {column}: {message}"
+            ),
+            Self::notsupported { operation, detail } => {
+                write!(f, "{operation} is not supported: {detail}")
+            }
+            Self::format(f0) => std::fmt::Display::fmt(f0, f),
+            Self::checkpoint(f0) => std::fmt::Display::fmt(f0, f),
+            Self::model(f0) => std::fmt::Display::fmt(f0, f),
+            Self::infer(f0) => std::fmt::Display::fmt(f0, f),
+            Self::train(f0) => std::fmt::Display::fmt(f0, f),
+            Self::context(f0) => std::fmt::Display::fmt(f0, f),
+            Self::tokenizer(f0) => std::fmt::Display::fmt(f0, f),
+            Self::optim(f0) => std::fmt::Display::fmt(f0, f),
+        }
+    }
+}
+
+impl std::error::Error for clierror {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::format(f0) => Some(f0),
+            Self::checkpoint(f0) => Some(f0),
+            Self::model(f0) => Some(f0),
+            Self::infer(f0) => Some(f0),
+            Self::train(f0) => Some(f0),
+            Self::context(f0) => Some(f0),
+            Self::tokenizer(f0) => Some(f0),
+            Self::optim(f0) => Some(f0),
+            _ => None,
+        }
+    }
+}
+
+impl From<format::formaterror> for clierror {
+    fn from(v: format::formaterror) -> Self {
+        Self::format(v)
+    }
+}
+
+impl From<checkpoint::checkpointerror> for clierror {
+    fn from(v: checkpoint::checkpointerror) -> Self {
+        Self::checkpoint(v)
+    }
+}
+
+impl From<models::modelerror> for clierror {
+    fn from(v: models::modelerror) -> Self {
+        Self::model(v)
+    }
+}
+
+impl From<infer::infererror> for clierror {
+    fn from(v: infer::infererror) -> Self {
+        Self::infer(v)
+    }
+}
+
+impl From<train::trainerror> for clierror {
+    fn from(v: train::trainerror) -> Self {
+        Self::train(v)
+    }
+}
+
+impl From<context::contexterror> for clierror {
+    fn from(v: context::contexterror) -> Self {
+        Self::context(v)
+    }
+}
+
+impl From<tokenizer::tokenizererror> for clierror {
+    fn from(v: tokenizer::tokenizererror) -> Self {
+        Self::tokenizer(v)
+    }
+}
+
+impl From<optim::opterror> for clierror {
+    fn from(v: optim::opterror) -> Self {
+        Self::optim(v)
     }
 }

@@ -1,7 +1,6 @@
 use ::tensor::tensorerror;
 use api::backenderror;
 use nn::nnerror;
-use thiserror::Error;
 
 /// Failures produced while building or running a concrete model.
 ///
@@ -10,22 +9,18 @@ use thiserror::Error;
 /// architecture configuration, a weight whose shape does not match the
 /// configuration, an unknown architecture name, and a weight that is missing.
 /// Underlying errors are carried transparently so no context is lost (ER2).
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum modelerror {
     /// A backend operator failed during a forward pass.
-    #[error(transparent)]
-    backend(#[from] backenderror),
+    backend(backenderror),
 
     /// Tensor metadata construction failed.
-    #[error(transparent)]
-    tensor(#[from] tensorerror),
+    tensor(tensorerror),
 
     /// A neural-network layer failed.
-    #[error(transparent)]
-    nn(#[from] nnerror),
+    nn(nnerror),
 
     /// An architecture configuration value is invalid.
-    #[error("invalid configuration for {field}: {detail}")]
     invalidconfig {
         /// The configuration field that was rejected.
         field: &'static str,
@@ -34,7 +29,6 @@ pub enum modelerror {
     },
 
     /// A weight tensor has a shape the configuration does not allow.
-    #[error("weight {context} expected shape {expected:?} but received {actual:?}")]
     shapemismatch {
         /// The weight name or role that was checked.
         context: &'static str,
@@ -45,14 +39,12 @@ pub enum modelerror {
     },
 
     /// An architecture name does not correspond to a known architecture.
-    #[error("unknown architecture: {name}")]
     unknownarchitecture {
         /// The unrecognized architecture name.
         name: String,
     },
 
     /// A required weight is absent.
-    #[error("missing weight: {name}")]
     missingweight {
         /// The absent weight name.
         name: String,
@@ -67,5 +59,57 @@ impl modelerror {
             field,
             detail: detail.into(),
         }
+    }
+}
+
+impl std::fmt::Display for modelerror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::backend(f0) => std::fmt::Display::fmt(f0, f),
+            Self::tensor(f0) => std::fmt::Display::fmt(f0, f),
+            Self::nn(f0) => std::fmt::Display::fmt(f0, f),
+            Self::invalidconfig { field, detail } => {
+                write!(f, "invalid configuration for {field}: {detail}")
+            }
+            Self::shapemismatch {
+                context,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "weight {context} expected shape {expected:?} but received {actual:?}"
+            ),
+            Self::unknownarchitecture { name } => write!(f, "unknown architecture: {name}"),
+            Self::missingweight { name } => write!(f, "missing weight: {name}"),
+        }
+    }
+}
+
+impl std::error::Error for modelerror {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::backend(f0) => Some(f0),
+            Self::tensor(f0) => Some(f0),
+            Self::nn(f0) => Some(f0),
+            _ => None,
+        }
+    }
+}
+
+impl From<backenderror> for modelerror {
+    fn from(v: backenderror) -> Self {
+        Self::backend(v)
+    }
+}
+
+impl From<tensorerror> for modelerror {
+    fn from(v: tensorerror) -> Self {
+        Self::tensor(v)
+    }
+}
+
+impl From<nnerror> for modelerror {
+    fn from(v: nnerror) -> Self {
+        Self::nn(v)
     }
 }

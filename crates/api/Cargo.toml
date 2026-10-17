@@ -11,7 +11,6 @@ description = "Backend and execution contracts for the LLM runtime"
 name = "api"
 
 [dependencies]
-thiserror.workspace = true
 lib = { path = "../lib" }
 tensor = { path = "../tensor" }
 
