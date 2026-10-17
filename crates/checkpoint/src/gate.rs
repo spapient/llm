@@ -221,7 +221,29 @@ fn decode_plane(
         data = &data[*l..];
     }
 
-    for i in (0..n).rev() {
+    // Unrolled by lane: symbol `i` uses lane `i % NLANES`, so once the base of a
+    // block is a multiple of NLANES every lane index is a compile-time constant
+    // and the eight states stay in registers across the block.
+    macro_rules! dl {
+        ($base:expr, $lane:literal) => {{
+            let slot = (xs[$lane] & (M - 1)) as usize;
+            let s = lut[slot] as usize;
+            dst[$base + $lane] = s as u8;
+            xs[$lane] =
+                table.freq[s] * (xs[$lane] >> LOG2_M) + slot as u32 - table.cum[s];
+            while xs[$lane] < L {
+                let st = streams[$lane];
+                if st.is_empty() {
+                    return Err(invalid("gate stream truncated"));
+                }
+                xs[$lane] = (xs[$lane] << 8) | u32::from(st[0]);
+                streams[$lane] = &st[1..];
+            }
+        }};
+    }
+    let mut i = n;
+    while !i.is_multiple_of(NLANES) {
+        i -= 1;
         let lane = i % NLANES;
         let slot = (xs[lane] & (M - 1)) as usize;
         let s = lut[slot] as usize;
@@ -235,6 +257,17 @@ fn decode_plane(
             xs[lane] = (xs[lane] << 8) | u32::from(st[0]);
             streams[lane] = &st[1..];
         }
+    }
+    while i > 0 {
+        i -= NLANES;
+        dl!(i, 7);
+        dl!(i, 6);
+        dl!(i, 5);
+        dl!(i, 4);
+        dl!(i, 3);
+        dl!(i, 2);
+        dl!(i, 1);
+        dl!(i, 0);
     }
     Ok(())
 }
