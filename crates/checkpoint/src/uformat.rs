@@ -756,28 +756,21 @@ impl snapshot {
         })?;
         }
 
-        // Preallocate: growing a 10 MiB Vec by doubling copies ~10 MiB extra.
-        let storedcap: usize = (0..blocks.len())
-            .map(|position| {
-                if key.is_some() {
-                    storedmeta[position].0.len()
-                } else {
-                    storedblocks[position].2.len()
-                }
-            })
-            .sum();
-        let mut storeddata = Vec::with_capacity(storedcap);
+        // Pass 1: manifest entries. The per-block data offset is the running
+        // sum of stored lengths, so the stored bytes can be written straight
+        // into the output in pass 2 without an intermediate 10 MiB buffer.
+        let mut offset = 0usize;
         for (position, block) in blocks.iter().enumerate() {
             let (codec, transform, plainbytes) = &storedblocks[position];
-            let (stored, tag, checksum) = if key.is_some() {
+            let (stored_len, tag, checksum) = if key.is_some() {
                 let (s, t, c) = &storedmeta[position];
-                (s.as_slice(), *t, *c)
+                (s.len(), *t, *c)
             } else {
-                (plainbytes.as_slice(), [0u8; 16], plaincrcs[position])
+                (plainbytes.len(), [0u8; 16], plaincrcs[position])
             };
             manifest.extend_from_slice(&block.gethash());
-            pushu64(&mut manifest, storeddata.len() as u64);
-            pushu32(&mut manifest, stored.len() as u32);
+            pushu64(&mut manifest, offset as u64);
+            pushu32(&mut manifest, stored_len as u32);
             pushu32(&mut manifest, checksum);
             manifest.push(*codec);
             if flags & FLAGTRANSFORMED != 0 {
@@ -786,12 +779,12 @@ impl snapshot {
             if key.is_some() {
                 manifest.extend_from_slice(&tag);
             }
-            storeddata.extend_from_slice(stored);
+            offset += stored_len;
         }
 
         let total = PREFIXLEN
             .checked_add(manifest.len())
-            .and_then(|v| v.checked_add(storeddata.len()))
+            .and_then(|v| v.checked_add(offset))
             .ok_or_else(|| checkpointerror::invalidmanifest {
                 reason: "snapshot size overflows usize".to_string(),
             })?;
@@ -799,7 +792,14 @@ impl snapshot {
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&(manifest.len() as u64).to_le_bytes());
         out.extend_from_slice(&manifest);
-        out.extend_from_slice(&storeddata);
+        for position in 0..blocks.len() {
+            let bytes: &[u8] = if key.is_some() {
+                &storedmeta[position].0
+            } else {
+                &storedblocks[position].2
+            };
+            out.extend_from_slice(bytes);
+        }
         Ok(out)
     }
 
