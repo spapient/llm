@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 //! Model and training-state persistence for the LLM runtime.
 //!
 //! `checkpoint` owns the checkpoint artifact: its [`manifest`], the in-memory
@@ -47,6 +47,9 @@ pub mod compatibility;
 
 /// CRC32C checksums used by the `.u` and raw artifacts.
 pub mod crc32c;
+
+/// Hardware CRC32C intrinsic island (docs/design.md §21.8).
+mod crc32c_hw;
 
 /// Delta/base resolution primitives for incremental `.u` snapshots.
 pub mod deltas;

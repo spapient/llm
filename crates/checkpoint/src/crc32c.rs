@@ -59,6 +59,9 @@ const CRCTABLES: [[u32; 256]; 8] = {
 /// ≈1.5–3 GiB/s versus ≈0.55 GiB/s for the byte-wise loop it replaces.
 #[must_use]
 pub fn crc32c(bytes: &[u8]) -> u32 {
+    if crate::crc32c_hw::supported() {
+        return crate::crc32c_hw::compute(bytes);
+    }
     let mut crc = 0xFFFF_FFFFu32;
     let mut rest = bytes;
     while rest.len() >= 8 {

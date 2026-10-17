@@ -26,6 +26,7 @@ WHITELIST=(
   "crates/metal/src/ffi.rs:3"
   "crates/cuda/src/ffi.rs:3"
   "crates/musa/src/ffi.rs:2"
+  "crates/checkpoint/src/crc32c_hw.rs:3"
 )
 
 fail() {
@@ -41,6 +42,18 @@ is_whitelisted() {
   return 1
 }
 
+# True when some whitelisted island lives in the same src/ directory as `lib`.
+crate_has_island() {
+  local lib="$1" dir entry
+  dir="${lib%/*}"
+  for entry in "${WHITELIST[@]}"; do
+    case "${entry%%:*}" in
+      "$dir"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # --- 1. allow(unsafe_code) only in whitelisted files -------------------------
 while IFS= read -r file; do
   [ -n "$file" ] || continue
@@ -51,7 +64,7 @@ done < <(rg -n '^\s*#!?\[allow\(unsafe_code\)\]' crates/*/src 2>/dev/null | cut 
 missing=""
 for lib in crates/*/src/lib.rs; do
   [ -f "$lib" ] || continue
-  is_whitelisted "${lib%/*}/ffi.rs" && continue
+  crate_has_island "$lib" && continue
   grep -q '#!\[forbid(unsafe_code)\]' "$lib" || missing="${missing}  ${lib}"$'\n'
 done
 if [ -n "$missing" ]; then
