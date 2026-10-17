@@ -4,7 +4,12 @@ use std::collections::HashSet;
 use format::{dtypetoken, tokendtype};
 use tensor::{dtype, layout, shape};
 
-use crate::blocks::{CODECRAW, TRANSFORMNONE, blockref, chunk, compressblock, decompressblock};
+use crate::blocks::{TRANSFORMNONE, blockref, chunk, compressblock, decompressblock};
+
+/// One encode worker result: `(segment, index-in-segment, block identity,
+/// (codec, transform, stored bytes))`.
+type cutresult = (usize, usize, blockref, (u8, u8, Vec<u8>));
+
 use crate::crc32c::crc32c;
 use crate::encryption;
 use crate::error::checkpointerror;
@@ -607,12 +612,69 @@ impl snapshot {
     }
 
     /// Encodes the snapshot, signing and encrypting it as requested.
+    #[allow(clippy::type_complexity)]
     fn encode_with(
         &self,
         seed: Option<&[u8; 32]>,
         key: Option<&[u8; 32]>,
     ) -> Result<Vec<u8>, checkpointerror> {
-        let blocks = chunk(&self.data);
+        // Phase 1: cut, hash, and compress every block. The Gear cut is a serial
+        // per-byte chain, so it runs on its own producer and streams each
+        // finished block to the workers, letting per-block content hashing and
+        // compression overlap the cut instead of waiting for it. Block order is
+        // restored by `(segment, index)` after collection, so the output is
+        // identical to a fully serial cut.
+        let data: &[u8] = &self.data;
+        let nthreads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(1);
+        let (span_tx, span_rx) =
+            std::sync::mpsc::sync_channel::<(usize, usize, usize, usize)>(256);
+        let (res_tx, res_rx) =
+            std::sync::mpsc::sync_channel::<(usize, usize, blockref, (u8, u8, Vec<u8>))>(256);
+        let span_rx = std::sync::Mutex::new(span_rx);
+        let mut collected: Vec<cutresult> = Vec::new();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                crate::blocks::streamspans(data, |seg, idx, off, len| {
+                    let _ = span_tx.send((seg, idx, off, len));
+                });
+            });
+            for _ in 0..nthreads {
+                let rx = &span_rx;
+                let tx = res_tx.clone();
+                scope.spawn(move || {
+                    loop {
+                        let item = match rx.lock() {
+                            Ok(guard) => guard.recv().ok(),
+                            Err(_) => None,
+                        };
+                        let Some((seg, idx, off, len)) = item else {
+                            break;
+                        };
+                        let slice = &data[off..off + len];
+                        let hash = contenthash(slice);
+                        let stored = compressblock(slice);
+                        if tx
+                            .send((seg, idx, blockref::new(hash, len as u32), stored))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(res_tx);
+            for item in res_rx {
+                collected.push(item);
+            }
+        });
+        collected.sort_unstable_by_key(|(seg, idx, _, _)| (*seg, *idx));
+        let blocks: Vec<blockref> = collected.iter().map(|(_, _, b, _)| b.clone()).collect();
+        let storedblocks: Vec<(u8, u8, Vec<u8>)> =
+            collected.into_iter().map(|(_, _, _, s)| s).collect();
+
         let canonical = canonicalmanifest(self.version, &self.tensors, &blocks);
         let root = blake3hash(&canonical);
         let mut flags = FLAGSFULL;
@@ -627,25 +689,6 @@ impl snapshot {
             flags |= FLAGENCRYPTED;
         }
 
-        // Phase 1: compress every block before the manifest header is written,
-        // so the snapshot-level transform flag can be set when any block uses
-        // the bit-shuffle pre-pass. Blocks are independent, so compression is
-        // spread over available cores; each worker fills a disjoint slice of
-        // `storedblocks`.
-        let mut storedblocks: Vec<(u8, u8, Vec<u8>)> = Vec::with_capacity(blocks.len());
-        storedblocks.resize_with(blocks.len(), || (CODECRAW, TRANSFORMNONE, Vec::new()));
-
-        let nthreads = match std::thread::available_parallelism() {
-            Ok(n) => n.get().min(blocks.len()),
-            Err(_) => 1,
-        };
-        let mut cumoffsets = Vec::with_capacity(blocks.len() + 1);
-        let mut acc = 0usize;
-        cumoffsets.push(acc);
-        for block in &blocks {
-            acc += block.getlen() as usize;
-            cumoffsets.push(acc);
-        }
         let mut spans = Vec::with_capacity(nthreads);
         let mut start = 0usize;
         for t in 0..nthreads {
@@ -654,28 +697,6 @@ impl snapshot {
             spans.push(start..end);
             start = end;
         }
-        let blocksref: &[blockref] = &blocks;
-        let cumoffsetsref: &[usize] = &cumoffsets;
-        let dataref: &[u8] = &self.data;
-        std::thread::scope(|scope| {
-            let mut cursor: &mut [(u8, u8, Vec<u8>)] = &mut storedblocks;
-            let mut handles = Vec::with_capacity(nthreads);
-            for span in &spans {
-                let (head, tail) = cursor.split_at_mut(span.len());
-                cursor = tail;
-                handles.push(scope.spawn(move || {
-                    compressblockspan(dataref, blocksref, cumoffsetsref, span.clone(), head);
-                }));
-            }
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| checkpointerror::invalidmanifest {
-                        reason: "encode worker panicked".to_string(),
-                    })?;
-            }
-            Ok::<(), checkpointerror>(())
-        })?;
         let has_transform = storedblocks
             .iter()
             .any(|(_, transform, _)| *transform != TRANSFORMNONE);
@@ -696,6 +717,7 @@ impl snapshot {
         // manifest layout is written serially afterwards.
         let mut storedmeta: Vec<(Vec<u8>, [u8; 16], u32)> = Vec::with_capacity(blocks.len());
         storedmeta.resize_with(blocks.len(), || (Vec::new(), [0u8; 16], 0));
+        let blocksref: &[blockref] = &blocks;
         let storedblocksref: &[(u8, u8, Vec<u8>)] = &storedblocks;
         std::thread::scope(|scope| {
             let mut cursor: &mut [(Vec<u8>, [u8; 16], u32)] = &mut storedmeta;
@@ -1467,21 +1489,6 @@ fn verifyblockspan(
 /// Compresses one contiguous span of blocks into `out`, which must hold exactly
 /// one entry per block in the span. Each block's source slice is located via
 /// `cumoffsets`, whose entry `i` is the byte offset of block `i`.
-fn compressblockspan(
-    data: &[u8],
-    blocks: &[blockref],
-    cumoffsets: &[usize],
-    span: std::ops::Range<usize>,
-    out: &mut [(u8, u8, Vec<u8>)],
-) {
-    for (i, position) in span.enumerate() {
-        let block = &blocks[position];
-        let start = cumoffsets[position];
-        let len = block.getlen() as usize;
-        out[i] = compressblock(&data[start..start + len]);
-    }
-}
-
 /// Encrypts and checksums one contiguous span of stored blocks into `out`,
 /// which must hold one `(stored, tag, checksum)` entry per block in the span.
 /// Without a key, `stored` is a clone of the compressed bytes.

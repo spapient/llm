@@ -136,24 +136,70 @@ pub fn chunk(data: &[u8]) -> Vec<blockref> {
     hashspans(data, &spans)
 }
 
-/// Cuts `data` into `(offset, len)` blocks with the Gear rolling hash, adding
-/// `base` to each offset. See [`chunk`].
-fn gearspans(data: &[u8], base: usize) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
+/// Cuts `data` into `(offset, len)` blocks with the Gear rolling hash, invoking
+/// `emit` for each block with `base` added to its offset. See [`chunk`].
+fn gearspans_each(data: &[u8], base: usize, mut emit: impl FnMut(usize, usize)) {
     let mut start = 0usize;
     let mut hash = 0u64;
     for (i, &byte) in data.iter().enumerate() {
         hash = gearroll(hash, byte);
         let len = i + 1 - start;
         if len >= MAXBLOCK || (len >= MINBLOCK && hash & CUTMASK == 0) {
-            spans.push((base + start, len));
+            emit(base + start, len);
             start = i + 1;
             hash = 0;
         }
     }
     if start < data.len() {
-        spans.push((base + start, data.len() - start));
+        emit(base + start, data.len() - start);
     }
+}
+
+/// Streams every block of `data` as `(segment, index-in-segment, offset, len)`
+/// to `emit`, cutting each [`SEGMENT`]-byte window independently (the same
+/// boundaries [`chunk`] produces) and running the windows in parallel.
+///
+/// `emit` may be called from several threads; callers pass a channel sender so
+/// the serial Gear cut of one window overlaps the consumers' work.
+pub(crate) fn streamspans<F>(data: &[u8], emit: F)
+where
+    F: Fn(usize, usize, usize, usize) + Sync,
+{
+    if data.len() <= SEGMENT {
+        let mut index = 0usize;
+        gearspans_each(data, 0, |off, len| {
+            emit(0, index, off, len);
+            index += 1;
+        });
+        return;
+    }
+    let segs: Vec<(usize, &[u8])> = data
+        .chunks(SEGMENT)
+        .scan(0usize, |off, seg| {
+            let o = *off;
+            *off += seg.len();
+            Some((o, seg))
+        })
+        .collect();
+    std::thread::scope(|scope| {
+        for (si, &(base, seg)) in segs.iter().enumerate() {
+            let emit = &emit;
+            scope.spawn(move || {
+                let mut index = 0usize;
+                gearspans_each(seg, base, |off, len| {
+                    emit(si, index, off, len);
+                    index += 1;
+                });
+            });
+        }
+    });
+}
+
+/// Cuts `data` into `(offset, len)` blocks with the Gear rolling hash, adding
+/// `base` to each offset. See [`chunk`].
+fn gearspans(data: &[u8], base: usize) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    gearspans_each(data, base, |off, len| spans.push((off, len)));
     spans
 }
 
