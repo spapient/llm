@@ -1,6 +1,6 @@
 use ::tensor::{shape, tensor, tensorview};
 use api::{backenderror, binarykernel};
-use archmage::prelude::*;
+use simd;
 
 use crate::support::finish;
 
@@ -233,7 +233,7 @@ const KCPANEL: usize = 512;
 const NCPANEL: usize = 256;
 
 /// Computes one `[m, k] * [k, n]` block into `out` with a register-blocked
-/// SIMD micro-kernel dispatched through `archmage`.
+/// SIMD micro-kernel dispatched through `simd`.
 ///
 /// Wide row counts take the blocked packed path: the right operand is copied
 /// into a contiguous tile of `KCPANEL * NCPANEL` at most, and every
@@ -265,153 +265,8 @@ fn matmulblock(
             Ok(())
         }
     } else {
-        incant!(
-            matmuldirect(a, b, out, m, k, n, rowscale),
-            [v3, neon, scalar]
-        );
+        simd::matmuldirect(simd::detect(), a, b, out, m, k, n, rowscale);
         Ok(())
-    }
-}
-
-/// The direct register-blocked SIMD micro-kernel behind [`matmulblock`].
-///
-/// Tiles the output into `BLOCKROWS` by lane blocks whose accumulators stay in
-/// SIMD registers across the inner dimension. Every row count uses the SIMD
-/// path (a partial final block just holds fewer accumulators), so the fused
-/// accumulation order depends only on the inner dimension, never on the batch
-/// width. Only columns past the last full lane block fall back to a scalar dot
-/// product. The lane width differs per tier (8 on AVX2, 4 on NEON, 1 scalar),
-/// but every output element accumulates over `k` in ascending order with fused
-/// multiply-add, so the result is bit-for-bit identical to the previous
-/// `fearless_simd` 4-lane kernel.
-#[arcane(import_intrinsics)]
-#[allow(clippy::too_many_arguments)]
-fn matmuldirect_v3(
-    _: X64V3Token,
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-    rowscale: Option<&[f32]>,
-) {
-    let ntile = n / 8 * 8;
-    for i0 in (0..m).step_by(BLOCKROWS) {
-        let rows = (m - i0).min(BLOCKROWS);
-        for j0 in (0..ntile).step_by(8) {
-            let mut acc = [_mm256_setzero_ps(); BLOCKROWS];
-            for p in 0..k {
-                let mut bl = [0.0_f32; 8];
-                bl.copy_from_slice(&b[p * n + j0..p * n + j0 + 8]);
-                let brow = _mm256_loadu_ps(&bl);
-                for r in 0..rows {
-                    acc[r] = _mm256_fmadd_ps(brow, _mm256_set1_ps(a[(i0 + r) * k + p]), acc[r]);
-                }
-            }
-            for r in 0..rows {
-                let mut outl = [0.0_f32; 8];
-                _mm256_storeu_ps(&mut outl, acc[r]);
-                if let Some(scales) = rowscale {
-                    let s = scales[i0 + r];
-                    for lane in outl.iter_mut() {
-                        *lane *= s;
-                    }
-                }
-                out[(i0 + r) * n + j0..(i0 + r) * n + j0 + 8].copy_from_slice(&outl);
-            }
-        }
-        for r in 0..rows {
-            for j in ntile..n {
-                let v = scalardot(a, b, i0 + r, j, k, n);
-                out[(i0 + r) * n + j] = match rowscale {
-                    Some(scales) => v * scales[i0 + r],
-                    None => v,
-                };
-            }
-        }
-    }
-}
-
-/// AArch64 4-lane direct variant.
-#[arcane(import_intrinsics)]
-#[allow(clippy::too_many_arguments)]
-fn matmuldirect_neon(
-    _: NeonToken,
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-    rowscale: Option<&[f32]>,
-) {
-    let ntile = n / 4 * 4;
-    for i0 in (0..m).step_by(BLOCKROWS) {
-        let rows = (m - i0).min(BLOCKROWS);
-        for j0 in (0..ntile).step_by(4) {
-            let mut acc = [vdupq_n_f32(0.0); BLOCKROWS];
-            for p in 0..k {
-                let mut bl = [0.0_f32; 4];
-                bl.copy_from_slice(&b[p * n + j0..p * n + j0 + 4]);
-                let brow = vld1q_f32(&bl);
-                for r in 0..rows {
-                    acc[r] = vfmaq_f32(acc[r], brow, vdupq_n_f32(a[(i0 + r) * k + p]));
-                }
-            }
-            for r in 0..rows {
-                let mut outl = [0.0_f32; 4];
-                vst1q_f32(&mut outl, acc[r]);
-                if let Some(scales) = rowscale {
-                    let s = scales[i0 + r];
-                    for lane in outl.iter_mut() {
-                        *lane *= s;
-                    }
-                }
-                out[(i0 + r) * n + j0..(i0 + r) * n + j0 + 4].copy_from_slice(&outl);
-            }
-        }
-        for r in 0..rows {
-            for j in ntile..n {
-                let v = scalardot(a, b, i0 + r, j, k, n);
-                out[(i0 + r) * n + j] = match rowscale {
-                    Some(scales) => v * scales[i0 + r],
-                    None => v,
-                };
-            }
-        }
-    }
-}
-
-/// Scalar direct variant with fused multiply-add, bit-identical to the SIMD
-/// tiers per element.
-#[arcane(import_intrinsics)]
-#[allow(clippy::too_many_arguments)]
-fn matmuldirect_scalar(
-    _: ScalarToken,
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    m: usize,
-    k: usize,
-    n: usize,
-    rowscale: Option<&[f32]>,
-) {
-    for i0 in (0..m).step_by(BLOCKROWS) {
-        let rows = (m - i0).min(BLOCKROWS);
-        for r in 0..rows {
-            let s = rowscale.map(|scales| scales[i0 + r]);
-            for j in 0..n {
-                let mut acc = 0.0_f32;
-                for p in 0..k {
-                    acc = f32::mul_add(a[(i0 + r) * k + p], b[p * n + j], acc);
-                }
-                out[(i0 + r) * n + j] = match s {
-                    Some(s) => acc * s,
-                    None => acc,
-                };
-            }
-        }
     }
 }
 
@@ -443,24 +298,22 @@ fn matmulblocked(
             packpanel(b, &mut packed, jp, panel, kc0, kchunk, n, rowweight);
             for i0 in (0..m).step_by(BLOCKROWS) {
                 let rows = (m - i0).min(BLOCKROWS);
-                incant!(
-                    matmultile(
-                        a,
-                        b,
-                        &packed,
-                        &mut out[i0 * n..],
-                        i0,
-                        rows,
-                        jp,
-                        panel,
-                        kc0,
-                        kchunk,
-                        k,
-                        n,
-                        rowscale,
-                        kc0 + kchunk >= k
-                    ),
-                    [v3, neon, scalar]
+                simd::matmultile(
+                    simd::detect(),
+                    a,
+                    b,
+                    &packed,
+                    &mut out[i0 * n..],
+                    i0,
+                    rows,
+                    jp,
+                    panel,
+                    kc0,
+                    kchunk,
+                    k,
+                    n,
+                    rowscale,
+                    kc0 + kchunk >= k,
                 );
             }
         }
@@ -492,6 +345,7 @@ fn matmulblockedparallel(
     rowweight: Option<&[f32]>,
 ) -> Result<(), backenderror> {
     let nblocks = m.div_ceil(BLOCKROWS);
+    let isa = simd::detect();
     std::thread::scope(|scope| {
         let mut slots: Vec<(usize, usize, Vec<f32>)> = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
@@ -511,24 +365,22 @@ fn matmulblockedparallel(
                         for lb in 0..blocks {
                             let i0 = (t + lb * workers) * BLOCKROWS;
                             let rows = (m - i0).min(BLOCKROWS);
-                            incant!(
-                                matmultile(
-                                    a,
-                                    b,
-                                    &packed,
-                                    &mut part[lb * BLOCKROWS * n..],
-                                    i0,
-                                    rows,
-                                    jp,
-                                    panel,
-                                    kc0,
-                                    kchunk,
-                                    k,
-                                    n,
-                                    rowscale,
-                                    kc0 + kchunk >= k
-                                ),
-                                [v3, neon, scalar]
+                            simd::matmultile(
+                                isa,
+                                a,
+                                b,
+                                &packed,
+                                &mut part[lb * BLOCKROWS * n..],
+                                i0,
+                                rows,
+                                jp,
+                                panel,
+                                kc0,
+                                kchunk,
+                                k,
+                                n,
+                                rowscale,
+                                kc0 + kchunk >= k,
                             );
                         }
                     }
@@ -591,193 +443,4 @@ fn packpanel(
             }
         }
     }
-}
-
-/// Accumulates one packed inner chunk into `part[0..rows * n]`, the local
-/// row-major block of the logical rows starting at `i0base`, reading the left
-/// operand at its global row offsets.
-///
-/// The lane width differs per tier (8 on AVX2, 4 on NEON, 1 scalar), so the
-/// per-element fused accumulation stays identical to the previous 4-lane
-/// kernel for the tiled columns; only the columns past the last full tile fall
-/// back to the same scalar dot product the old tail path used.
-#[allow(clippy::too_many_arguments)]
-#[arcane(import_intrinsics)]
-fn matmultile_v3(
-    _: X64V3Token,
-    a: &[f32],
-    b: &[f32],
-    packed: &[f32],
-    part: &mut [f32],
-    i0base: usize,
-    rows: usize,
-    jp: usize,
-    panel: usize,
-    kc0: usize,
-    kchunk: usize,
-    k: usize,
-    n: usize,
-    rowscale: Option<&[f32]>,
-    lastchunk: bool,
-) {
-    let ntile = panel / 8 * 8;
-    for j0 in (0..ntile).step_by(8) {
-        let mut acc = [_mm256_setzero_ps(); BLOCKROWS];
-        for r in 0..rows {
-            let mut pl = [0.0_f32; 8];
-            pl.copy_from_slice(&part[r * n + jp + j0..r * n + jp + j0 + 8]);
-            acc[r] = _mm256_loadu_ps(&pl);
-        }
-        for p in 0..kchunk {
-            let mut bl = [0.0_f32; 8];
-            bl.copy_from_slice(&packed[p * panel + j0..p * panel + j0 + 8]);
-            let brow = _mm256_loadu_ps(&bl);
-            for r in 0..rows {
-                acc[r] =
-                    _mm256_fmadd_ps(brow, _mm256_set1_ps(a[(i0base + r) * k + kc0 + p]), acc[r]);
-            }
-        }
-        for r in 0..rows {
-            let mut outl = [0.0_f32; 8];
-            _mm256_storeu_ps(&mut outl, acc[r]);
-            if lastchunk && let Some(scales) = rowscale {
-                let s = scales[i0base + r];
-                for lane in outl.iter_mut() {
-                    *lane *= s;
-                }
-            }
-            part[r * n + jp + j0..r * n + jp + j0 + 8].copy_from_slice(&outl);
-        }
-    }
-    if lastchunk {
-        for r in 0..rows {
-            for j in ntile..panel {
-                let v = scalardot(a, b, i0base + r, jp + j, k, n);
-                part[r * n + jp + j] = match rowscale {
-                    Some(scales) => v * scales[i0base + r],
-                    None => v,
-                };
-            }
-        }
-    } else {
-        for r in 0..rows {
-            for j in ntile..panel {
-                part[r * n + jp + j] = scalardot(a, b, i0base + r, jp + j, k, n);
-            }
-        }
-    }
-}
-
-/// AArch64 4-lane packed variant.
-#[allow(clippy::too_many_arguments)]
-#[arcane(import_intrinsics)]
-fn matmultile_neon(
-    _: NeonToken,
-    a: &[f32],
-    b: &[f32],
-    packed: &[f32],
-    part: &mut [f32],
-    i0base: usize,
-    rows: usize,
-    jp: usize,
-    panel: usize,
-    kc0: usize,
-    kchunk: usize,
-    k: usize,
-    n: usize,
-    rowscale: Option<&[f32]>,
-    lastchunk: bool,
-) {
-    let ntile = panel / 4 * 4;
-    for j0 in (0..ntile).step_by(4) {
-        let mut acc = [vdupq_n_f32(0.0); BLOCKROWS];
-        for r in 0..rows {
-            let mut pl = [0.0_f32; 4];
-            pl.copy_from_slice(&part[r * n + jp + j0..r * n + jp + j0 + 4]);
-            acc[r] = vld1q_f32(&pl);
-        }
-        for p in 0..kchunk {
-            let mut bl = [0.0_f32; 4];
-            bl.copy_from_slice(&packed[p * panel + j0..p * panel + j0 + 4]);
-            let brow = vld1q_f32(&bl);
-            for r in 0..rows {
-                acc[r] = vfmaq_f32(acc[r], brow, vdupq_n_f32(a[(i0base + r) * k + kc0 + p]));
-            }
-        }
-        for r in 0..rows {
-            let mut outl = [0.0_f32; 4];
-            vst1q_f32(&mut outl, acc[r]);
-            if lastchunk && let Some(scales) = rowscale {
-                let s = scales[i0base + r];
-                for lane in outl.iter_mut() {
-                    *lane *= s;
-                }
-            }
-            part[r * n + jp + j0..r * n + jp + j0 + 4].copy_from_slice(&outl);
-        }
-    }
-    if lastchunk {
-        for r in 0..rows {
-            for j in ntile..panel {
-                let v = scalardot(a, b, i0base + r, jp + j, k, n);
-                part[r * n + jp + j] = match rowscale {
-                    Some(scales) => v * scales[i0base + r],
-                    None => v,
-                };
-            }
-        }
-    } else {
-        for r in 0..rows {
-            for j in ntile..panel {
-                part[r * n + jp + j] = scalardot(a, b, i0base + r, jp + j, k, n);
-            }
-        }
-    }
-}
-
-/// Scalar packed variant with fused multiply-add per element.
-#[allow(clippy::too_many_arguments)]
-#[arcane(import_intrinsics)]
-fn matmultile_scalar(
-    _: ScalarToken,
-    a: &[f32],
-    b: &[f32],
-    _packed: &[f32],
-    part: &mut [f32],
-    i0base: usize,
-    rows: usize,
-    jp: usize,
-    panel: usize,
-    _kc0: usize,
-    _kchunk: usize,
-    k: usize,
-    n: usize,
-    rowscale: Option<&[f32]>,
-    lastchunk: bool,
-) {
-    for r in 0..rows {
-        let s = (lastchunk)
-            .then(|| rowscale.map(|scales| scales[i0base + r]))
-            .flatten();
-        for j in 0..panel {
-            let mut acc = 0.0_f32;
-            for p in 0..k {
-                acc = f32::mul_add(a[(i0base + r) * k + p], b[p * n + jp + j], acc);
-            }
-            part[r * n + jp + j] = match s {
-                Some(s) => acc * s,
-                None => acc,
-            };
-        }
-    }
-}
-
-/// Scalar dot product of row `i` of `a` with column `j` of `b`, for the tail.
-#[inline(always)]
-fn scalardot(a: &[f32], b: &[f32], i: usize, j: usize, k: usize, n: usize) -> f32 {
-    let mut acc = 0.0_f32;
-    for p in 0..k {
-        acc += a[i * k + p] * b[p * n + j];
-    }
-    acc
 }

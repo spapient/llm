@@ -15,7 +15,7 @@ thiserror.workspace = true
 lib = { path = "../lib" }
 tensor = { path = "../tensor" }
 api = { path = "../api" }
-archmage.workspace = true
+simd = { path = "../simd" }
 
 [dev-dependencies]
 proptest.workspace = true

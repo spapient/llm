@@ -27,6 +27,7 @@ WHITELIST=(
   "crates/cuda/src/ffi.rs:2"
   "crates/musa/src/ffi.rs:2"
   "crates/checkpoint/src/crc32c_hw.rs:3"
+  "crates/simd/src/intrinsics.rs:32"
 )
 
 fail() {

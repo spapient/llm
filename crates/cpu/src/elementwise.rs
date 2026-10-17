@@ -1,6 +1,5 @@
 use ::tensor::{tensor, tensorview};
 use api::{backenderror, binarykernel};
-use archmage::prelude::*;
 
 use crate::support::finish;
 
@@ -64,24 +63,21 @@ impl binarykernel<f32> for cpumul {
     }
 }
 
-/// Multi-versioned elementwise addition over equal-length spans.
+/// Elementwise addition over equal-length spans.
 ///
-/// The branch-free scalar loop is recompiled per CPU tier by `#[autoversion]`
-/// (SSE4.2/AVX2/AVX-512/NEON plus the scalar fallback) and dispatched at
-/// runtime once. Plain `+` keeps every IEEE-754 property of the scalar kernel:
+/// The branch-free scalar loop is auto-vectorized by the compiler on every
+/// tier. Plain `+` keeps every IEEE-754 property of the scalar kernel:
 /// `NaN`/infinity propagation, signed zero, and rounding are unchanged, so the
 /// result is bit-identical to the former `zipmap` implementation.
-#[autoversion]
 fn addspans(a: &[f32], b: &[f32], out: &mut [f32]) {
     for ((o, &x), &y) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
         *o = x + y;
     }
 }
 
-/// Multi-versioned elementwise multiplication over equal-length spans.
+/// Elementwise multiplication over equal-length spans.
 ///
 /// Same contract as [`addspans`]; `*` is likewise bit-identical to scalar.
-#[autoversion]
 fn mulspans(a: &[f32], b: &[f32], out: &mut [f32]) {
     for ((o, &x), &y) in out.iter_mut().zip(a.iter()).zip(b.iter()) {
         *o = x * y;

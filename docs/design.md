@@ -2688,7 +2688,7 @@ cuda  -> api
 
 * 工作区 lint 保持 `unsafe_code = "deny"`（`Cargo.toml`），一行不改。
 * 全部既有 crate 保持 `#![forbid(unsafe_code)]`，一行不改。
-* `metal`、`cuda`、`musa` 使用 `#![deny(unsafe_code)]`，且每个 crate 内**恰好一个文件** `src/ffi.rs` 声明 `#![allow(unsafe_code)]`；`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`。其余模块仍受 `deny` 约束。
+* `metal`、`cuda`、`musa` 使用 `#![deny(unsafe_code)]`，且每个 crate 内**恰好一个文件** `src/ffi.rs` 声明 `#![allow(unsafe_code)]`；`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
 * `src/ffi.rs` 中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
 * 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。实测登记（证据等级 E1，来自 21.1 的尖刺）：
 
@@ -2704,8 +2704,11 @@ cuda  -> api
 | `checkpoint` | aarch64 硬件 CRC32C `unsafe fn`（`crc` target feature；`__crc32cd`/`__crc32cb`） | `crc32c_hw.rs` |
 | `checkpoint` | x86_64 硬件 CRC32C `unsafe fn`（`sse4.2` target feature；`_mm_crc32_u64`/`_mm_crc32_u8`） | `crc32c_hw.rs` |
 | `checkpoint` | 硬件 CRC 调用块（运行时特性检测通过后调用上二者之一） | `crc32c_hw.rs` |
+| `simd` | 14 个 `#[target_feature]` 内核声明（rmsnormrow/rowinv/softmaxrowspan/attentiondot/attentionqblock/matmuldirect/matmultile × AVX2/NEON） | `intrinsics.rs` |
+| `simd` | 14 个 dispatch `unsafe` 调用块（7 算子 × AVX2/NEON 各一） | `intrinsics.rs` |
+| `simd` | 4 个 x86/NEON 辅助内核声明（`hmax256`/`hsum256`/`exp2approx` ×2） | `intrinsics.rs` |
 
-站点登记：`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
+站点登记：`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3，`simd` = 32；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
 
 依据：这些数字由**调用面结构**推导，而非经验取值。Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径的 `dispatch` 把上传、缓冲绑定、标量绑定、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载收进**单一交接块**；累积路径的 `session` 拆成**编码块**（绑定并启动、不等待）与**提交块**（`commit` + 等待 + 下载）两个块——command buffer 单次使用、跨算子共享，故提交只发生一次。每个块内的全部平台调用共享同一个 `// SAFETY:` 前置论证（缓冲均为本块持有或调用者传入的存活 `MTLBuffer`、长度与内核读写一致、`setBytes` 拷贝而非保留、`waitUntilCompleted` 排序读写）。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
 
@@ -2716,16 +2719,18 @@ MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有�
 
 `checkpoint` 的口径是**每平台一条硬件指令封装**：两个 `unsafe fn` 分别是 aarch64 与 x86_64 的 CRC32C intrinsics（各以一条 `#[target_feature]` 声明所需扩展），第三个是运行期 `is_*_feature_detected!` 通过后的那次调用。安全性由运行期检测保证，语义由 `crc32c(b"123456789") == 0xE306_9283` 与软件 slicing-by-8 的逐长度交叉验证钉住；实测 ARM 上 12.28 GB/s vs 1.25 GB/s（9.8×），decode 4.72→4.29ms。软件路径保留为回退，且**不引入任何 unsafe**。
 
+`simd` 的口径是**每内核一个 `#[target_feature]` 声明 + 每算子 dispatch 一个调用块**（2026-10-17 随 archmage 依赖移除引入）：7 个算子 × 2 平台（AVX2/NEON）内核声明 = 14；7 个算子 × 每平台一个 dispatch `unsafe` 调用块 = 14；x86 辅助内核（`hmax256`/`hsum256`/`exp2approx`）声明 3 + NEON `exp2approx` 声明 1 = 4。AVX2 与 NEON 内核源码并存于同一文件，门禁按文件全量计数，故总数为 14 + 14 + 4 = 32。安全性由 `detect()` 的运行时特性检测保证（调用方在 `Isa` 上 dispatch，`SAFETY:` 注释以此为前置）；数值语义与迁移前的 `archmage` 内核逐位一致（融合累加序、lane 树归约、deg-7 Taylor exp2 均未变），CPU 集成测试在迁移后全绿。该豁免替代了第三方 `archmage` 的运行时多版本化，是「unsafe 封装在 crate 内部」策略的延续。
+
 任何使数字上升的改动都意味着引入了一类新的平台交互或一个自带 `unsafe` 入口的第三方库（例如某个自带 `unsafe` 的 attention 库或激活库），属于豁免扩散，必须先改本表并说明理由；数字下降则意味着某类交互被移除，表也必须同步。
 
 机械门禁 `scripts/checkunsafe.sh` 断言四项：白名单文件是唯一出现 `allow(unsafe_code)` 之处；全部既有 crate 根仍含 `forbid(unsafe_code)`；代码中每处 `unsafe` 前一行（含注释块）含 `// SAFETY:`；`unsafe` 站点计数与本表条目数**恰好相等**（非上界语义：多一处或少一处均失败，本表与代码不允许单向漂移）。该脚本接入 `scripts/check.sh`。
 
-回滚：删除 `crates/metal`、`crates/cuda` 与 `crates/musa`、撤销 `api` 的设备变体与门禁条目，即完全恢复修订前状态。
+回滚：删除 `crates/metal`、`crates/cuda`、`crates/musa` 与 `crates/simd`、撤销 `api` 的设备变体与门禁条目，即完全恢复修订前状态。
 
 ### 21.9 后果
 
 * GPU 能力以两个独立、可单独删除的 crate 提供；删除任一 crate 不影响 `cpu` 路径与依赖图。
-* `unsafe` 面被压缩到 10 个已登记站点（`metal` 3 + `cuda` 2 + `musa` 2 + `checkpoint` 3），且由机械门禁强制；既有 crate 的 `forbid` 未被触碰。`metal` 3 个站点均是一次驱动交接块（同步 1 + 累积 2），`musa` = 2 是 2024 edition 下自写 FFI 的理论下限（`unsafe extern` 声明 + 单一驱动交接块）。
+* `unsafe` 面被压缩到 42 个已登记站点（`metal` 3 + `cuda` 2 + `musa` 2 + `checkpoint` 3 + `simd` 32），且由机械门禁强制；既有 crate 的 `forbid` 未被触碰。`metal` 3 个站点均是一次驱动交接块（同步 1 + 累积 2），`musa` = 2 是 2024 edition 下自写 FFI 的理论下限（`unsafe extern` 声明 + 单一驱动交接块），`simd` 32 个站点是 CPU SIMD 内核岛的每内核声明 + 每算子 dispatch 块（见上）。
 * `api` 与上层（`models`/`infer`）零改动即可通过 `C: compute` 使用 GPU。
 * CUDA 的运行时正确性依赖 NVIDIA 驱动与设备：本文件与 `docs/conformance.md` 只声明**真机执行过**的部分（2026-10-12 的 RTX 2080 Ti 会话，见 21.10.3），未执行的部分仍如实标注，绝不声称通过。
 * 维护成本：两个 crate 各自绑定一个易变的第三方 GPU 绑定（`objc2-metal`、`cudarc`），版本升级需重新核对 21.8 的站点表。

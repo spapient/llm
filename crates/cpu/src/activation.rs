@@ -1,6 +1,5 @@
 use ::tensor::{tensor, tensorview};
 use api::{backenderror, kernel};
-use archmage::prelude::*;
 
 use crate::support::finish;
 
@@ -49,13 +48,12 @@ impl kernel<f32> for cpurelu {
     }
 }
 
-/// Multi-versioned rectified linear unit over one span.
+/// Rectified linear unit over one span.
 ///
 /// The `if x < 0.0` form is kept deliberately instead of a `max` intrinsic:
 /// the compiler's vectorized `select` preserves the scalar contract exactly —
 /// `NaN` propagates (the comparison is false) and negative zero is passed
 /// through unchanged rather than flushed to `+0`.
-#[autoversion]
 fn reluspan(data: &[f32], out: &mut [f32]) {
     for (o, &x) in out.iter_mut().zip(data.iter()) {
         *o = if x < 0.0 { 0.0 } else { x };
