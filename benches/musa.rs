@@ -136,6 +136,48 @@ mod linux {
         group.finish();
     }
 
+    /// Device-resident matmul chain: eight 1024x1024 contractions per
+    /// iteration, with both operands uploaded once and every intermediate
+    /// result kept in a device slot. Only the final `apply` synchronises and
+    /// downloads, so the measurement is the GPU path plus launch, without the
+    /// per-call host round trip the compute API pays.
+    fn matmul_chain(c: &mut Criterion) {
+        const SIDE: usize = 1024;
+        const STEPS: usize = 8;
+        let elements = SIDE * SIDE;
+        let lhs = tensor::new(
+            shape::new(vec![SIDE, SIDE]).unwrap(),
+            vec![0.5_f32; elements],
+        )
+        .unwrap();
+        let rhs = tensor::new(
+            shape::new(vec![SIDE, SIDE]).unwrap(),
+            vec![0.25_f32; elements],
+        )
+        .unwrap();
+        let lv = lhs.getview();
+        let rv = rhs.getview();
+        let wmma = musaexecutor::new(LIMIT);
+        let fma = musaexecutor::newfma(LIMIT);
+        let run = |exec: &musaexecutor| {
+            let mut sub = exec.newsubmission();
+            let mut step = sub
+                .recordmatmul(operand::input(lv.clone()), operand::input(rv.clone()))
+                .unwrap();
+            for _ in 1..STEPS {
+                step = sub
+                    .recordmatmul(operand::result(step), operand::input(rv.clone()))
+                    .unwrap();
+            }
+            black_box(sub.apply(&[step]).unwrap())
+        };
+        let mut group = c.benchmark_group("musa/matmulchain");
+        group.throughput(Throughput::Elements((elements * STEPS) as u64));
+        group.bench_function("wmma1024x8", |b| b.iter(|| run(&wmma)));
+        group.bench_function("fma1024x8", |b| b.iter(|| run(&fma)));
+        group.finish();
+    }
+
     fn elementwise(c: &mut Criterion) {
         let x = elementwiseinput().unwrap();
         let y = elementwiseinput().unwrap();
@@ -337,6 +379,7 @@ mod linux {
         matmul,
         matmul_batch,
         matmul_paths,
+        matmul_chain,
         elementwise,
         softmax,
         rmsnorm,

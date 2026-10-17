@@ -919,6 +919,52 @@ fn submission_matmul_uses_the_selected_path() {
     assertallclose(wmma.getdata(), fma.getdata(), WMMATOL, WMMATOL);
 }
 
+/// A chain of recorded matmuls keeps every intermediate result in a device
+/// slot; only the final apply downloads, and the values match the reference
+/// composition.
+#[test]
+fn submission_keeps_a_matmul_chain_device_resident() {
+    if !hasdevice("submission_keeps_a_matmul_chain_device_resident") {
+        return;
+    }
+    let a = build(vec![4, 4], pattern(16, 9));
+    let b = build(vec![4, 4], pattern(16, 10));
+    let mut want = a.getdata().to_vec();
+    for _ in 0..3 {
+        want = reference::matmul(&want, b.getdata(), 4, 4, 4);
+    }
+    let exec = musaexecutor::new(wide());
+    let mut sub = exec.newsubmission();
+    let mut step = sub
+        .recordmatmul(operand::input(a.getview()), operand::input(b.getview()))
+        .unwrap();
+    for _ in 1..3 {
+        step = sub
+            .recordmatmul(operand::result(step), operand::input(b.getview()))
+            .unwrap();
+    }
+    let out = sub.apply(&[step]).unwrap();
+    assertallclose(out[0].getdata(), &want, WMMATOL, WMMATOL);
+}
+
+/// A recorded matmul with a zero contraction stays on the device path and
+/// yields the additive identity.
+#[test]
+fn submission_matmul_with_a_zero_contraction_yields_the_additive_identity() {
+    if !hasdevice("submission_matmul_with_a_zero_contraction_yields_the_additive_identity") {
+        return;
+    }
+    let lhs = build(vec![2, 0], vec![]);
+    let rhs = build(vec![0, 3], vec![]);
+    let exec = musaexecutor::new(wide());
+    let mut sub = exec.newsubmission();
+    let step = sub
+        .recordmatmul(operand::input(lhs.getview()), operand::input(rhs.getview()))
+        .unwrap();
+    let out = sub.apply(&[step]).unwrap();
+    assert_eq!(out[0].getdata(), &vec![0.0_f32; 6]);
+}
+
 /// A chain mixing the device-resident path (add/silu) and the host-replay
 /// path (embedding) matches the per-step composition, including the mid-chain
 /// drain of a device slot consumed by a host-replay operator.

@@ -995,6 +995,74 @@ pub(crate) fn matmul_wmma(
     Ok(results.remove(0))
 }
 
+/// Records one device-resident Tensor-Core matmul into a submission session.
+///
+/// The operands bind existing device slots (uploaded once per submission) and
+/// the result stays in a device slot, so a chain of recorded matmuls performs
+/// one upload, no per-step download, and one synchronisation at `apply`.
+pub(crate) fn matmul_wmma_record(
+    session: &mut session,
+    lhs: buf<'_>,
+    rhs: buf<'_>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<usize, musaerror> {
+    let total = m.checked_mul(n).ok_or(musaerror::sizeoverflow)?;
+    let grid = (
+        (n as u32).div_ceil(source::MATMULWMMABN),
+        (m as u32).div_ceil(source::MATMULWMMABM),
+        1,
+    );
+    let block = (source::MATMULWMMATHREADS, 1, 1);
+    session.record(
+        "matmul",
+        source::MATMULWMMAENTRY,
+        &[lhs, rhs, buf::outdevice(total)],
+        &[
+            scalar::u32(m as u32),
+            scalar::u32(k as u32),
+            scalar::u32(n as u32),
+            scalar::u32(1),
+        ],
+        grid,
+        block,
+        0,
+    )
+}
+
+/// Records one device-resident reference FMA matmul into a submission session.
+pub(crate) fn matmul_fma_record(
+    session: &mut session,
+    lhs: buf<'_>,
+    rhs: buf<'_>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<usize, musaerror> {
+    let total = m.checked_mul(n).ok_or(musaerror::sizeoverflow)?;
+    let grid = (
+        (n as u32).div_ceil(source::THREADEDGE),
+        (m as u32).div_ceil(source::THREADEDGE),
+        1,
+    );
+    let block = (source::THREADEDGE, source::THREADEDGE, 1);
+    session.record(
+        "matmul",
+        source::MATMULENTRY,
+        &[lhs, rhs, buf::outdevice(total)],
+        &[
+            scalar::u32(m as u32),
+            scalar::u32(k as u32),
+            scalar::u32(n as u32),
+            scalar::u32(1),
+        ],
+        grid,
+        block,
+        0,
+    )
+}
+
 /// Elementwise `lhs + rhs`.
 pub(crate) fn add(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, musaerror> {
     let count = lhs.len();

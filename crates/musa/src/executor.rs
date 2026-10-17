@@ -567,11 +567,12 @@ impl musaexecutor {
     /// Creates a single-use accumulative submission over this executor's
     /// backend and compiled-kernel cache.
     ///
-    /// The MUSA submission records each step synchronously on the default
-    /// stream and keeps results on the host, so construction never fails —
-    /// nothing touches the device until the first record. (The device-buffer
-    /// accumulation of the `cuda`/`metal` submissions is the C2 optimization
-    /// path, a separate measurable stage.)
+    /// Steps that have a device-resident form (`matmul`, elementwise,
+    /// normalization, embedding) are recorded without synchronising and keep
+    /// their results in device slots; the remaining operators replay on the
+    /// host. `apply` synchronises once and downloads the requested outputs, so
+    /// construction never fails — nothing touches the device until the first
+    /// record.
     #[must_use]
     pub fn newsubmission(&self) -> musasubmission {
         musasubmission::new(self.backend.clone(), self.path, self.cache.clone())
@@ -581,12 +582,12 @@ impl musaexecutor {
 /// A MUSA submission: the [`submission`] contract implemented over the same
 /// executor-owned cache.
 ///
-/// `musasubmission` owns the host-side results of its recorded steps and no
-/// model weights; it shares no mutable state between requests. Each recorded
-/// step resolves its operands to host data — copying caller inputs and reusing
-/// recorded results — then runs the operator through the single `dispatch`
-/// handoff and stores the result on the host. [`apply`](submission::apply)
-/// rebuilds the requested outputs from those results.
+/// `musasubmission` owns the recorded results and no model weights; it shares
+/// no mutable state between requests. A step whose operator has a
+/// device-resident form records a kernel that reads existing device slots and
+/// leaves its result in a new slot; host-replay operators drain the slot they
+/// consume through one synchronise. [`apply`](submission::apply) rebuilds the
+/// requested outputs with one final synchronise and download.
 ///
 /// A batched `matmul` (a leading batch dimension greater than one) is rejected,
 /// mirroring `cuda`'s submission contract: the recorded path is one contraction
@@ -757,30 +758,31 @@ impl submission for musasubmission {
         if geometry.batch != 1 {
             return Err(backenderror::unsupportedoperation { op: "matmul" });
         }
-        let lhs = self.resolve(lhs)?;
-        let rhs = self.resolve(rhs)?;
-        let data = match self.path {
-            matmulpath::wmma => ffi::matmul_wmma(
-                &self.cache,
-                &lhs,
-                &rhs,
+        if geometry.m == 0 || geometry.n == 0 {
+            return Ok(self.push(Vec::new(), outshape));
+        }
+        let lhs = self.operandsbuf(lhs)?;
+        let rhs = self.operandsbuf(rhs)?;
+        let slot = match self.path {
+            matmulpath::wmma => ffi::matmul_wmma_record(
+                &mut self.session,
+                lhs,
+                rhs,
                 geometry.m,
                 geometry.k,
                 geometry.n,
-                1,
             ),
-            matmulpath::fma => ffi::matmul_fma(
-                &self.cache,
-                &lhs,
-                &rhs,
+            matmulpath::fma => ffi::matmul_fma_record(
+                &mut self.session,
+                lhs,
+                rhs,
                 geometry.m,
                 geometry.k,
                 geometry.n,
-                1,
             ),
         }
         .map_err(maptobackend)?;
-        Ok(self.push(data, outshape))
+        Ok(self.pushslot(slot, outshape))
     }
 
     fn recordadd(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
