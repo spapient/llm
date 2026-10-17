@@ -22,6 +22,7 @@
 // a module and a re-exported type share the type namespace and cannot both use
 // the same name at the crate root.
 mod error;
+mod json;
 mod limit;
 mod prec;
 mod request;
@@ -29,6 +30,7 @@ mod seeds;
 mod token;
 
 pub use error::limiterror;
+pub use json::{jsonerror, jsonnumber, jsonvalue, parse, parse_str, tostring};
 pub use limit::limits;
 pub use prec::precision;
 pub use request::requestid;
