@@ -129,16 +129,26 @@ const NLANES: usize = 8;
 /// 弹符号、按 `i % NLANES` 分派回同一状态。
 fn encode_plane(out: &mut Vec<u8>, data: &[u8], table: &Table) {
     let mut xs = [STATEMIN; NLANES];
-    let cap = data.len() / NLANES + 8;
-    let mut renorms: [Vec<u8>; NLANES] = core::array::from_fn(|_| Vec::with_capacity(cap));
+    // One flat per-lane renorm buffer instead of NLANES `Vec`s: a symbol whose
+    // state sits just under 2^32 and whose frequency is 1 renormalizes at most
+    // three bytes (x >> 24 < 2^8 below x_max >= 2^15), so `3 * symbols` per lane
+    // is a provable bound and the buffer is allocated once.
+    let per = data.len() / NLANES;
+    let cap = per.saturating_mul(3).saturating_add(8);
+    let mut rbuf = vec![0u8; cap * NLANES];
+    let mut blen = [0usize; NLANES];
     for (i, &byte) in data.iter().enumerate() {
         let lane = i % NLANES;
         let e = table.enc[byte as usize];
         let mut x = xs[lane];
+        let base = lane * cap;
+        let mut at = base + blen[lane];
         while x >= e.xmax {
-            renorms[lane].push((x & 0xFF) as u8);
+            rbuf[at] = (x & 0xFF) as u8;
+            at += 1;
             x >>= 8;
         }
+        blen[lane] = at - base;
         let (q, rem) = div_rem(x, e.freq, e.rcp);
         x = (q << LOG2_M) + rem + e.cum;
         xs[lane] = x;
@@ -148,11 +158,12 @@ fn encode_plane(out: &mut Vec<u8>, data: &[u8], table: &Table) {
             out.push(((x >> shift) & 0xFF) as u8);
         }
     }
-    for renorm in &renorms {
-        out.extend_from_slice(&(renorm.len() as u32).to_le_bytes());
+    for &l in &blen {
+        out.extend_from_slice(&(l as u32).to_le_bytes());
     }
-    for renorm in &renorms {
-        for &b in renorm.iter().rev() {
+    for lane in 0..NLANES {
+        let seg = &rbuf[lane * cap..lane * cap + blen[lane]];
+        for &b in seg.iter().rev() {
             out.push(b);
         }
     }
