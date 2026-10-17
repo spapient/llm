@@ -27,7 +27,6 @@ mod cpuunits;
 mod crosscrate;
 mod cudacontract;
 mod dataunits;
-mod diagnostics;
 mod formatunits;
 mod generation;
 mod gpucontract;

@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use tracing::debug;
-
 use crate::error::checkpointerror;
 use crate::manifests::checkpoint;
 
@@ -19,6 +17,6 @@ use crate::manifests::checkpoint;
 pub fn savecheckpoint(path: &Path, ckpt: &checkpoint) -> Result<(), checkpointerror> {
     let bytes = ckpt.encode()?;
     crate::atomicwrite::writeatomic(path, &bytes)?;
-    debug!(path = %path.display(), bytes = bytes.len(), "checkpoint saved");
+
     Ok(())
 }

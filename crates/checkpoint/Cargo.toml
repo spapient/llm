@@ -11,7 +11,6 @@ description = "Model and training-state persistence for the LLM runtime"
 name = "checkpoint"
 
 [dependencies]
-tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true

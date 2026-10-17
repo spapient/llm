@@ -1,7 +1,6 @@
 use api::{recorder, session};
 use context::executioncontext;
 use models::{cachedsubmission, causallm, kvcache, llamamodel, modelerror};
-use tracing::{debug, trace};
 
 use crate::error::infererror;
 use crate::generation::generationresult;
@@ -82,11 +81,7 @@ where
     ) -> Result<generationresult, infererror> {
         request.prepare(self.model.getconfig())?;
         exec.getcancellation().checkpoint()?;
-        debug!(
-            prompt = request.getprompt().len(),
-            maxnewtokens = request.getmaxnewtokens(),
-            "submission generation started"
-        );
+
         let prompt = request.getprompt().to_vec();
         let mut sub = (self.factory)();
         let mut logits = Vec::new();
@@ -101,7 +96,7 @@ where
             exec.checkpoint()?;
             steps = steps.saturating_add(1);
             let token = request.sample(&logits)?;
-            trace!(step = steps, token, "sampled token");
+
             if request.getstop().iseos(token) {
                 break stopreason::endoftoken;
             }
@@ -119,12 +114,7 @@ where
             };
         };
         sub.reset();
-        debug!(
-            steps,
-            generated = request.getgeneratedlen(),
-            reason = ?reason,
-            "submission generation finished"
-        );
+
         sink.onstop(reason);
         Ok(generationresult::new(
             request.getgenerated().to_vec(),

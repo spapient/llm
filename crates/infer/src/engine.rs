@@ -1,7 +1,6 @@
 use api::compute;
 use context::executioncontext;
 use models::causallm;
-use tracing::{debug, trace};
 
 use crate::decode::decodestep;
 use crate::error::infererror;
@@ -54,11 +53,7 @@ impl<'a, M: causallm, C: compute> generationengine<'a, M, C> {
     ) -> Result<generationresult, infererror> {
         request.prepare(self.model.getconfig())?;
         exec.getcancellation().checkpoint()?;
-        debug!(
-            prompt = request.getprompt().len(),
-            maxnewtokens = request.getmaxnewtokens(),
-            "generation started"
-        );
+
         let prompt = request.getprompt().to_vec();
         let mut logits = {
             let cache = request.getkvcachemut();
@@ -69,7 +64,7 @@ impl<'a, M: causallm, C: compute> generationengine<'a, M, C> {
             exec.checkpoint()?;
             steps = steps.saturating_add(1);
             let token = request.sample(&logits)?;
-            trace!(step = steps, token, "sampled token");
+
             if request.getstop().iseos(token) {
                 break stopreason::endoftoken;
             }
@@ -86,12 +81,7 @@ impl<'a, M: causallm, C: compute> generationengine<'a, M, C> {
                 decodestep(self.model, self.provider, cache, token)?
             };
         };
-        debug!(
-            steps,
-            generated = request.getgeneratedlen(),
-            reason = ?reason,
-            "generation finished"
-        );
+
         sink.onstop(reason);
         Ok(generationresult::new(
             request.getgenerated().to_vec(),

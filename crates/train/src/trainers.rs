@@ -1,7 +1,6 @@
 use ::tensor::tensor;
 use context::cancellation;
 use optim::optimizer;
-use tracing::debug;
 
 use crate::error::trainerror;
 use crate::gradientaccumulation::gradientaccumulator;
@@ -262,10 +261,7 @@ impl<O: optimizer> trainer<O> {
         let loss = self.windowsum / microbatches as f32;
         self.windowsum = 0.0;
         self.step += 1;
-        debug!(
-            step = self.step,
-            loss, lr, microbatches, "optimizer update applied"
-        );
+
         Ok(Some(stepresult::new(loss, self.step, lr, microbatches)))
     }
 

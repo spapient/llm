@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use tracing::debug;
-
 use crate::error::checkpointerror;
 use crate::manifests::checkpoint;
 
@@ -23,6 +21,6 @@ pub fn loadcheckpoint(path: &Path) -> Result<checkpoint, checkpointerror> {
         source,
     })?;
     let ckpt = checkpoint::decode(&bytes)?;
-    debug!(path = %path.display(), bytes = bytes.len(), "checkpoint loaded");
+
     Ok(ckpt)
 }

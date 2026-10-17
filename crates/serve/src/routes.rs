@@ -9,7 +9,6 @@ use infer::{
 };
 use lib::{requestid, seed};
 use models::causallm;
-use tracing::debug;
 
 use crate::admit::admissions;
 use crate::error::serveerror;
@@ -154,23 +153,15 @@ impl<'a, M: causallm, C: compute> inferenceservice<'a, M, C> {
         let _permit = self.config.getadmission().tryadmit()?;
         let stop = stopcondition::new(input.eos, input.maxnewtokens)?;
         let params = generationparams::formodel(self.model.getconfig(), stop, input.sampling);
-        let promptlen = input.prompt.len();
-        let maxnewtokens = input.maxnewtokens;
         let mut genreq = generationrequest::new(input.prompt, params)?;
         let id = requestid::new(self.nextid.fetch_add(1, Ordering::Relaxed));
         let exec = executioncontext::new(id, *self.config.getexecution());
         onstart(exec.getcancellation());
-        debug!(
-            prompt = promptlen,
-            maxnewtokens, "generation request admitted"
-        );
+
         let engine = generationengine::new(self.model, self.provider);
         let mut sink = collectingsink::new();
         let result = engine.generate(&exec, &mut genreq, &mut sink)?;
-        debug!(
-            generated = result.getcount(),
-            "generation request completed"
-        );
+
         Ok(formatresponse(&result))
     }
 }

@@ -11,8 +11,6 @@ description = "Optional HTTP application: routes, request/response mapping, admi
 name = "serve"
 
 [dependencies]
-tracing.workspace = true
-tracing-subscriber.workspace = true
 lib = { path = "../lib" }
 api = { path = "../api" }
 models = { path = "../models" }

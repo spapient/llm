@@ -96,7 +96,6 @@ impl<'a, M: causallm + Sync, C: compute + Sync> httpserver<'a, M, C> {
     ///
     /// Returns [`serveerror::io`] when accepting a connection fails.
     pub fn serve(&self) -> Result<(), serveerror> {
-        initdiagnostics();
         std::thread::scope(|scope| -> Result<(), serveerror> {
             loop {
                 let (stream, _peer) = self
@@ -121,30 +120,11 @@ impl<'a, M: causallm + Sync, C: compute + Sync> httpserver<'a, M, C> {
     /// Returns [`serveerror::io`] when accepting the connection or writing the
     /// response fails.
     pub fn serveone(&self) -> Result<(), serveerror> {
-        initdiagnostics();
         let (stream, _peer) = self
             .listener
             .accept()
             .map_err(|error| serveerror::fromio(&error))?;
         handleconnection(&self.service, stream, self.readtimeout)
-    }
-}
-
-/// Installs the process-wide diagnostics subscriber if none is present.
-///
-/// The filter is read from the `RUST_LOG` environment variable and defaults to
-/// `warn`, so the `debug`/`trace` events emitted on hot paths stay discarded
-/// unless an operator opts in (`PF2`). A pre-existing global subscriber is kept
-/// and the install is skipped explicitly rather than treated as an error.
-fn initdiagnostics() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-    let subscriber = tracing_subscriber::fmt().with_env_filter(filter).finish();
-    match tracing::subscriber::set_global_default(subscriber) {
-        Ok(()) => {}
-        Err(_) => {
-            // Diagnostics were already enabled by another component; keep them.
-        }
     }
 }
 
