@@ -8,7 +8,7 @@ use crate::blocks::{TRANSFORMNONE, blockref, chunk, compressblock, decompressblo
 
 /// One encode worker result: `(segment, index-in-segment, block identity,
 /// (codec, transform, stored bytes))`.
-type cutresult = (usize, usize, blockref, (u8, u8, Vec<u8>));
+type cutresult = (usize, usize, blockref, (u8, u8, Vec<u8>), u32);
 
 use crate::crc32c::crc32c;
 use crate::encryption;
@@ -632,8 +632,11 @@ impl snapshot {
         let (span_tx, span_rx) =
             std::sync::mpsc::sync_channel::<(usize, usize, usize, usize)>(256);
         let (res_tx, res_rx) =
-            std::sync::mpsc::sync_channel::<(usize, usize, blockref, (u8, u8, Vec<u8>))>(256);
+            std::sync::mpsc::sync_channel::<cutresult>(256);
         let span_rx = std::sync::Mutex::new(span_rx);
+        // Without a key the checksum covers the compressed bytes, so the worker
+        // computes it inline and Phase 2 can be skipped entirely.
+        let plain = key.is_none();
         let mut collected: Vec<cutresult> = Vec::new();
         std::thread::scope(|scope| {
             scope.spawn(move || {
@@ -656,8 +659,9 @@ impl snapshot {
                         let slice = &data[off..off + len];
                         let hash = contenthash(slice);
                         let stored = compressblock(slice);
+                        let crc = if plain { crc32c(&stored.2) } else { 0 };
                         if tx
-                            .send((seg, idx, blockref::new(hash, len as u32), stored))
+                            .send((seg, idx, blockref::new(hash, len as u32), stored, crc))
                             .is_err()
                         {
                             break;
@@ -670,10 +674,16 @@ impl snapshot {
                 collected.push(item);
             }
         });
-        collected.sort_unstable_by_key(|(seg, idx, _, _)| (*seg, *idx));
-        let blocks: Vec<blockref> = collected.iter().map(|(_, _, b, _)| b.clone()).collect();
-        let storedblocks: Vec<(u8, u8, Vec<u8>)> =
-            collected.into_iter().map(|(_, _, _, s)| s).collect();
+        collected.sort_unstable_by_key(|(seg, idx, _, _, _)| (*seg, *idx));
+        let cap = collected.len();
+        let mut blocks: Vec<blockref> = Vec::with_capacity(cap);
+        let mut storedblocks: Vec<(u8, u8, Vec<u8>)> = Vec::with_capacity(cap);
+        let mut plaincrcs: Vec<u32> = Vec::with_capacity(cap);
+        for (_, _, b, stored, crc) in collected {
+            blocks.push(b);
+            storedblocks.push(stored);
+            plaincrcs.push(crc);
+        }
 
         let canonical = canonicalmanifest(self.version, &self.tensors, &blocks);
         let root = blake3hash(&canonical);
@@ -713,12 +723,14 @@ impl snapshot {
         }
         pushu64(&mut manifest, blocks.len() as u64);
 
-        // Phase 2: encrypt and checksum every stored block in parallel; the
-        // manifest layout is written serially afterwards.
+        // Phase 2: encrypt every stored block in parallel when a key is given;
+        // without one the checksum was already computed in Phase 1 and the
+        // compressed bytes are used as-is (no clone).
         let mut storedmeta: Vec<(Vec<u8>, [u8; 16], u32)> = Vec::with_capacity(blocks.len());
         storedmeta.resize_with(blocks.len(), || (Vec::new(), [0u8; 16], 0));
         let blocksref: &[blockref] = &blocks;
         let storedblocksref: &[(u8, u8, Vec<u8>)] = &storedblocks;
+        if key.is_some() {
         std::thread::scope(|scope| {
             let mut cursor: &mut [(Vec<u8>, [u8; 16], u32)] = &mut storedmeta;
             let mut handles = Vec::with_capacity(nthreads);
@@ -742,21 +754,27 @@ impl snapshot {
             }
             Ok::<(), checkpointerror>(())
         })?;
+        }
 
         let mut storeddata = Vec::new();
         for (position, block) in blocks.iter().enumerate() {
-            let (codec, transform, _) = &storedblocks[position];
-            let (stored, tag, checksum) = &storedmeta[position];
+            let (codec, transform, plainbytes) = &storedblocks[position];
+            let (stored, tag, checksum) = if key.is_some() {
+                let (s, t, c) = &storedmeta[position];
+                (s.as_slice(), *t, *c)
+            } else {
+                (plainbytes.as_slice(), [0u8; 16], plaincrcs[position])
+            };
             manifest.extend_from_slice(&block.gethash());
             pushu64(&mut manifest, storeddata.len() as u64);
             pushu32(&mut manifest, stored.len() as u32);
-            pushu32(&mut manifest, *checksum);
+            pushu32(&mut manifest, checksum);
             manifest.push(*codec);
             if flags & FLAGTRANSFORMED != 0 {
                 manifest.push(*transform);
             }
             if key.is_some() {
-                manifest.extend_from_slice(tag);
+                manifest.extend_from_slice(&tag);
             }
             storeddata.extend_from_slice(stored);
         }
