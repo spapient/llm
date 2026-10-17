@@ -756,7 +756,17 @@ impl snapshot {
         })?;
         }
 
-        let mut storeddata = Vec::new();
+        // Preallocate: growing a 10 MiB Vec by doubling copies ~10 MiB extra.
+        let storedcap: usize = (0..blocks.len())
+            .map(|position| {
+                if key.is_some() {
+                    storedmeta[position].0.len()
+                } else {
+                    storedblocks[position].2.len()
+                }
+            })
+            .sum();
+        let mut storeddata = Vec::with_capacity(storedcap);
         for (position, block) in blocks.iter().enumerate() {
             let (codec, transform, plainbytes) = &storedblocks[position];
             let (stored, tag, checksum) = if key.is_some() {
