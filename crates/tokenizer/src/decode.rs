@@ -178,76 +178,86 @@ fn parsedecoderone(value: &serde_json::Value) -> Result<decoder, tokenizererror>
         })?;
     match kind {
         "ByteLevel" => Ok(decoder::bytelevel),
-        "Metaspace" => {
-            let replacement = object
-                .get("replacement")
-                .and_then(Value::as_str)
-                .unwrap_or("▁")
-                .to_string();
-            let add_prefix_space = object
-                .get("add_prefix_space")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            Ok(decoder::metaspace {
-                replacement,
-                stripleading: if add_prefix_space { 1 } else { 0 },
-            })
-        }
+        "Metaspace" => Ok(parsemetaspace(object)),
         "Sequence" => {
             let children = object.get("decoders").and_then(Value::as_array).ok_or(
                 tokenizererror::missingfield {
                     field: "decoder.decoders",
                 },
             )?;
-            let mut replace = None;
-            let mut stripleading = 0usize;
-            for child in children {
-                let childtype = child
-                    .as_object()
-                    .and_then(|object| object.get("type"))
-                    .and_then(Value::as_str)
-                    .ok_or(tokenizererror::unsupporteddecoder {
-                        decodertype: "malformed decoder entry".to_string(),
-                    })?;
-                match childtype {
-                    "Replace" => {
-                        let pattern = child
-                            .as_object()
-                            .and_then(|object| object.get("pattern"))
-                            .and_then(Value::as_object)
-                            .and_then(|pattern| pattern.get("String"))
-                            .and_then(Value::as_str);
-                        let content = child
-                            .as_object()
-                            .and_then(|object| object.get("content"))
-                            .and_then(Value::as_str);
-                        if let (Some(pattern), Some(content)) = (pattern, content) {
-                            replace = Some((pattern.to_string(), content.to_string()));
-                        }
-                    }
-                    "ByteFallback" | "Fuse" => {}
-                    "Strip" => {
-                        let start = child
-                            .as_object()
-                            .and_then(|object| object.get("start"))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
-                        stripleading = start as usize;
-                    }
-                    other => {
-                        return Err(tokenizererror::unsupporteddecoder {
-                            decodertype: other.to_string(),
-                        });
-                    }
-                }
-            }
-            Ok(decoder::bytefallback {
-                replace,
-                stripleading,
-            })
+            parsesedecodersequence(children)
         }
         other => Err(tokenizererror::unsupporteddecoder {
             decodertype: other.to_string(),
         }),
     }
+}
+
+/// Parses a `Metaspace` decoder.
+fn parsemetaspace(object: &serde_json::Map<String, serde_json::Value>) -> decoder {
+    let replacement = object
+        .get("replacement")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("▁")
+        .to_string();
+    let add_prefix_space = object
+        .get("add_prefix_space")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    decoder::metaspace {
+        replacement,
+        stripleading: if add_prefix_space { 1 } else { 0 },
+    }
+}
+
+/// Parses a `Sequence` of `Replace` + `ByteFallback` (+ `Fuse`) + `Strip`.
+fn parsesedecodersequence(children: &[serde_json::Value]) -> Result<decoder, tokenizererror> {
+    use serde_json::Value;
+
+    let mut replace = None;
+    let mut stripleading = 0usize;
+    for child in children {
+        let childtype = child
+            .as_object()
+            .and_then(|object| object.get("type"))
+            .and_then(Value::as_str)
+            .ok_or(tokenizererror::unsupporteddecoder {
+                decodertype: "malformed decoder entry".to_string(),
+            })?;
+        match childtype {
+            "Replace" => {
+                let pattern = child
+                    .as_object()
+                    .and_then(|object| object.get("pattern"))
+                    .and_then(Value::as_object)
+                    .and_then(|pattern| pattern.get("String"))
+                    .and_then(Value::as_str);
+                let content = child
+                    .as_object()
+                    .and_then(|object| object.get("content"))
+                    .and_then(Value::as_str);
+                if let (Some(pattern), Some(content)) = (pattern, content) {
+                    replace = Some((pattern.to_string(), content.to_string()));
+                }
+            }
+            "ByteFallback" | "Fuse" => {}
+            "Strip" => {
+                let start = child
+                    .as_object()
+                    .and_then(|object| object.get("start"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                stripleading = start as usize;
+            }
+            other => {
+                return Err(tokenizererror::unsupporteddecoder {
+                    decodertype: other.to_string(),
+                });
+            }
+        }
+    }
+    Ok(decoder::bytefallback {
+        replace,
+        stripleading,
+    })
 }

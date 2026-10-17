@@ -46,6 +46,9 @@ fn err(message: impl Into<String>) -> Box<dyn Error> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Declared on every host so `-D warnings` (check.sh's clippy) accepts the
+    // cfg even when the toolkit is absent and the cfg is never emitted.
+    println!("cargo::rustc-check-cfg=cfg(musa_toolkit)");
     println!("cargo:rerun-if-changed=kernels");
     println!("cargo:rerun-if-changed=build.rs");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {

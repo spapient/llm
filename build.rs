@@ -9,6 +9,9 @@
 use std::env;
 
 fn main() {
+    // Declared on every host so `-D warnings` (check.sh's clippy) accepts the
+    // cfg even when the toolkit is absent and the cfg is never emitted.
+    println!("cargo::rustc-check-cfg=cfg(musa_toolkit)");
     println!("cargo:rerun-if-env-changed=MUSA_MCC");
     let mcc = env::var("MUSA_MCC").unwrap_or_else(|_| "/usr/local/musa-3.1.0/bin/mcc".into());
     if std::path::Path::new(&mcc).is_file() {

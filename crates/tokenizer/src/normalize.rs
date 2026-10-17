@@ -134,89 +134,106 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
         // mapping table, applied here as an exact per-scalar lookup in the
         // table exported from the tokenizers reference implementation.
         "Precompiled" => Ok(normalizer::precompiled),
-        "Prepend" => {
-            let prefix = object.get("prepend").and_then(Value::as_str).ok_or(
-                tokenizererror::missingfield {
-                    field: "normalizer.prepend",
-                },
-            )?;
-            Ok(normalizer::prepend(prefix.to_string()))
-        }
-        "Replace" => {
-            let pattern = object.get("pattern").and_then(Value::as_object);
-            let literal = pattern
-                .and_then(|p| p.get("String"))
-                .and_then(Value::as_str);
-            let regex = pattern.and_then(|p| p.get("Regex")).and_then(Value::as_str);
-            let content = object.get("content").and_then(Value::as_str).ok_or(
-                tokenizererror::missingfield {
-                    field: "normalizer.content",
-                },
-            )?;
-            if let Some(literal) = literal {
-                Ok(normalizer::replace {
-                    pattern: literal.to_string(),
-                    content: content.to_string(),
-                })
-            } else if let Some(regex) = regex {
-                let compiled = fancy_regex::Regex::new(regex).map_err(|error| {
-                    tokenizererror::invalidregex {
-                        detail: error.to_string(),
-                    }
-                })?;
-                Ok(normalizer::replaceregex {
-                    pattern: compiled,
-                    content: content.to_string(),
-                })
-            } else {
-                Err(tokenizererror::unsupportednormalizer {
-                    normaltype: "Replace without a String or Regex pattern".to_string(),
-                })
-            }
-        }
-        "RegexReplace" => {
-            let pattern = object
-                .get("pattern")
-                .and_then(Value::as_object)
-                .and_then(|p| p.get("Regex"))
-                .and_then(Value::as_str)
-                .ok_or(tokenizererror::unsupportednormalizer {
-                    normaltype: "RegexReplace without a Regex pattern".to_string(),
-                })?;
-            let content = object.get("content").and_then(Value::as_str).ok_or(
-                tokenizererror::missingfield {
-                    field: "normalizer.content",
-                },
-            )?;
-            let compiled =
-                fancy_regex::Regex::new(pattern).map_err(|error| tokenizererror::invalidregex {
-                    detail: error.to_string(),
-                })?;
-            Ok(normalizer::replaceregex {
-                pattern: compiled,
-                content: content.to_string(),
-            })
-        }
-        "Sequence" => {
-            let children = object
-                .get("normalizers")
-                .ok_or(tokenizererror::missingfield {
-                    field: "normalizer.normalizers",
-                })?;
-            let array = children.as_array().ok_or(tokenizererror::unexpectedtype {
-                field: "normalizer.normalizers",
-                expected: "array",
-            })?;
-            let mut parsed = Vec::with_capacity(array.len());
-            for child in array {
-                parsed.push(parseone(child)?);
-            }
-            Ok(normalizer::sequence(parsed))
-        }
+        "Prepend" => parseprepend(object),
+        "Replace" => parsereplace(object),
+        "RegexReplace" => parseregexreplace(object),
+        "Sequence" => parsesequence(object),
         other => Err(tokenizererror::unsupportednormalizer {
             normaltype: other.to_string(),
         }),
     }
+}
+
+/// Parses a `Prepend` normalizer.
+fn parseprepend(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
+    let prefix =
+        object
+            .get("prepend")
+            .and_then(Value::as_str)
+            .ok_or(tokenizererror::missingfield {
+                field: "normalizer.prepend",
+            })?;
+    Ok(normalizer::prepend(prefix.to_string()))
+}
+
+/// Parses a `Replace` normalizer with a literal or regex pattern.
+fn parsereplace(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
+    let pattern = object.get("pattern").and_then(Value::as_object);
+    let literal = pattern
+        .and_then(|p| p.get("String"))
+        .and_then(Value::as_str);
+    let regex = pattern.and_then(|p| p.get("Regex")).and_then(Value::as_str);
+    let content =
+        object
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or(tokenizererror::missingfield {
+                field: "normalizer.content",
+            })?;
+    if let Some(literal) = literal {
+        Ok(normalizer::replace {
+            pattern: literal.to_string(),
+            content: content.to_string(),
+        })
+    } else if let Some(regex) = regex {
+        let compiled =
+            fancy_regex::Regex::new(regex).map_err(|error| tokenizererror::invalidregex {
+                detail: error.to_string(),
+            })?;
+        Ok(normalizer::replaceregex {
+            pattern: compiled,
+            content: content.to_string(),
+        })
+    } else {
+        Err(tokenizererror::unsupportednormalizer {
+            normaltype: "Replace without a String or Regex pattern".to_string(),
+        })
+    }
+}
+
+/// Parses a `RegexReplace` normalizer.
+fn parseregexreplace(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
+    let pattern = object
+        .get("pattern")
+        .and_then(Value::as_object)
+        .and_then(|p| p.get("Regex"))
+        .and_then(Value::as_str)
+        .ok_or(tokenizererror::unsupportednormalizer {
+            normaltype: "RegexReplace without a Regex pattern".to_string(),
+        })?;
+    let content =
+        object
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or(tokenizererror::missingfield {
+                field: "normalizer.content",
+            })?;
+    let compiled =
+        fancy_regex::Regex::new(pattern).map_err(|error| tokenizererror::invalidregex {
+            detail: error.to_string(),
+        })?;
+    Ok(normalizer::replaceregex {
+        pattern: compiled,
+        content: content.to_string(),
+    })
+}
+
+/// Parses a `Sequence` normalizer.
+fn parsesequence(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
+    let children = object
+        .get("normalizers")
+        .ok_or(tokenizererror::missingfield {
+            field: "normalizer.normalizers",
+        })?;
+    let array = children.as_array().ok_or(tokenizererror::unexpectedtype {
+        field: "normalizer.normalizers",
+        expected: "array",
+    })?;
+    let mut parsed = Vec::with_capacity(array.len());
+    for child in array {
+        parsed.push(parseone(child)?);
+    }
+    Ok(normalizer::sequence(parsed))
 }
 
 /// Looks up one scalar in the exported charsmap. Identity scalars are absent

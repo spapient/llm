@@ -87,66 +87,15 @@ impl tokenizer {
             Some(value) => parseaddedtokens(value)?,
             None => Vec::new(),
         };
-        let (vocab, bpe, bytefallback, ignoremerges, unk, unigram) = match modeltype.as_str() {
-            "BPE" => {
-                let vocabobject = parsevocabobject(model)?;
-                let merges = match model.get("merges") {
-                    Some(value) => parsemerges(value)?,
-                    None => Vec::new(),
-                };
-                let bytefallback = parsebytefallback(model)?;
-                let unkcontent = parseunkcontent(model)?;
-                let ignoremerges = parseignoremerges(model)?;
-                let mut entries = parsevocab(vocabobject)?;
-                for (content, id, _) in &added {
-                    entries.push((content.clone(), *id));
-                }
-                let vocab = vocabulary::fromentries(entries)?;
-                let bpe = if ignoremerges {
-                    bytepair::frommerges(&merges)?
-                } else {
-                    bytepair::frommergesandvocab(&merges, &vocab)?
-                };
-                let unk = match unkcontent {
-                    Some(content) => Some(
-                        vocab
-                            .getid(&content)
-                            .ok_or(tokenizererror::unknowntoken { token: content })?,
-                    ),
-                    None => None,
-                };
-                (vocab, bpe, bytefallback, ignoremerges, unk, None)
-            }
-            "Unigram" => {
-                let pieces =
-                    parseunigramvocab(model.get("vocab").ok_or(tokenizererror::missingfield {
-                        field: "model.vocab",
-                    })?)?;
-                let unk_id = model.get("unk_id").and_then(Value::as_u64).ok_or(
-                    tokenizererror::missingfield {
-                        field: "model.unk_id",
-                    },
-                )? as u32;
-                let mut entries: Vec<(String, u32)> = pieces
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (piece, _))| (piece.clone(), index as u32))
-                    .collect();
-                for (content, id, _) in &added {
-                    entries.push((content.clone(), *id));
-                }
-                let vocab = vocabulary::fromentries(entries)?;
-                let bpe = bytepair::frommerges(&[])?;
-                let unk = Some(tokenid::new(unk_id));
-                let unigram = Some(unigrammodel::fromvocab(&pieces, unk_id));
-                (vocab, bpe, false, false, unk, unigram)
-            }
-            other => {
-                return Err(tokenizererror::unsupportedmodel {
-                    modeltype: other.to_string(),
-                });
-            }
-        };
+        let parts = parsemodelparts(modeltype.as_str(), model, &added)?;
+        let (vocab, bpe, bytefallback, ignoremerges, unk, unigram) = (
+            parts.vocab,
+            parts.bpe,
+            parts.bytefallback,
+            parts.ignoremerges,
+            parts.unk,
+            parts.unigram,
+        );
         let specials = specialtokens::new(
             added
                 .iter()
@@ -728,6 +677,98 @@ impl tokenizer {
         let mut body = self.encodespecial(&rendered)?;
         ids.append(&mut body);
         Ok(ids)
+    }
+}
+
+/// The model-dependent portion of a parsed tokenizer.
+struct modelparts {
+    vocab: vocabulary,
+    bpe: bytepair,
+    bytefallback: bool,
+    ignoremerges: bool,
+    unk: Option<tokenid>,
+    unigram: Option<unigrammodel>,
+}
+
+/// Builds the vocabulary and merge tables for the declared model type.
+fn parsemodelparts(
+    modeltype: &str,
+    model: &Map<String, Value>,
+    added: &[(String, u32, bool)],
+) -> Result<modelparts, tokenizererror> {
+    match modeltype {
+        "BPE" => {
+            let vocabobject = parsevocabobject(model)?;
+            let merges = match model.get("merges") {
+                Some(value) => parsemerges(value)?,
+                None => Vec::new(),
+            };
+            let bytefallback = parsebytefallback(model)?;
+            let unkcontent = parseunkcontent(model)?;
+            let ignoremerges = parseignoremerges(model)?;
+            let mut entries = parsevocab(vocabobject)?;
+            for (content, id, _) in added {
+                entries.push((content.clone(), *id));
+            }
+            let vocab = vocabulary::fromentries(entries)?;
+            let bpe = if ignoremerges {
+                bytepair::frommerges(&merges)?
+            } else {
+                bytepair::frommergesandvocab(&merges, &vocab)?
+            };
+            let unk = match unkcontent {
+                Some(content) => Some(
+                    vocab
+                        .getid(&content)
+                        .ok_or(tokenizererror::unknowntoken { token: content })?,
+                ),
+                None => None,
+            };
+            Ok(modelparts {
+                vocab,
+                bpe,
+                bytefallback,
+                ignoremerges,
+                unk,
+                unigram: None,
+            })
+        }
+        "Unigram" => {
+            let pieces =
+                parseunigramvocab(model.get("vocab").ok_or(tokenizererror::missingfield {
+                    field: "model.vocab",
+                })?)?;
+            let unk_id =
+                model
+                    .get("unk_id")
+                    .and_then(Value::as_u64)
+                    .ok_or(tokenizererror::missingfield {
+                        field: "model.unk_id",
+                    })? as u32;
+            let mut entries: Vec<(String, u32)> = pieces
+                .iter()
+                .enumerate()
+                .map(|(index, (piece, _))| (piece.clone(), index as u32))
+                .collect();
+            for (content, id, _) in added {
+                entries.push((content.clone(), *id));
+            }
+            let vocab = vocabulary::fromentries(entries)?;
+            let bpe = bytepair::frommerges(&[])?;
+            let unk = Some(tokenid::new(unk_id));
+            let unigram = Some(unigrammodel::fromvocab(&pieces, unk_id));
+            Ok(modelparts {
+                vocab,
+                bpe,
+                bytefallback: false,
+                ignoremerges: false,
+                unk,
+                unigram,
+            })
+        }
+        other => Err(tokenizererror::unsupportedmodel {
+            modeltype: other.to_string(),
+        }),
     }
 }
 
