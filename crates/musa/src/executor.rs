@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ::tensor::{shape, tensor, tensorview};
 use api::{
     backend, backenderror, checkbudget, checkgatherbudget, compute, kvpair, operand, operandpair,
-    stepref, submission,
+    recorder, session, stepref, submission,
 };
 use lib::limits;
 
@@ -532,12 +532,37 @@ fn scanshape(
     c: &tensorview<'_, f32>,
     skip: &tensorview<'_, f32>,
 ) -> Result<(usize, usize, usize), backenderror> {
-    let id = input.getshape().getdims();
-    let initd = init.getshape().getdims();
-    let ad = a.getshape().getdims();
-    let bd = b.getshape().getdims();
-    let cd = c.getshape().getdims();
-    let skipd = skip.getshape().getdims();
+    let geometry = scanshapes(
+        input.getshape(),
+        init.getshape(),
+        a.getshape(),
+        b.getshape(),
+        c.getshape(),
+        skip.getshape(),
+    )?;
+    for &value in a.getdata() {
+        if value.abs() > 1.0 || value.is_nan() {
+            return Err(backenderror::invalidparameter { op: "scan" });
+        }
+    }
+    Ok(geometry)
+}
+
+/// Validates scan ranks and state-width alignment without reading operand data.
+fn scanshapes(
+    input: &shape,
+    init: &shape,
+    a: &shape,
+    b: &shape,
+    c: &shape,
+    skip: &shape,
+) -> Result<(usize, usize, usize), backenderror> {
+    let id = input.getdims();
+    let initd = init.getdims();
+    let ad = a.getdims();
+    let bd = b.getdims();
+    let cd = c.getdims();
+    let skipd = skip.getdims();
     if id.len() != 2
         || initd.len() != 2
         || ad.len() != 2
@@ -554,11 +579,6 @@ fn scanshape(
     let statewidth = initd[1];
     if ad[1] != statewidth || bd[1] != statewidth || cd[1] != statewidth {
         return Err(backenderror::shapemismatch { op: "scan" });
-    }
-    for &value in a.getdata() {
-        if value.abs() > 1.0 || value.is_nan() {
-            return Err(backenderror::invalidparameter { op: "scan" });
-        }
     }
     Ok((id[0], d, statewidth))
 }
@@ -577,6 +597,18 @@ impl musaexecutor {
     #[must_use]
     pub fn newsubmission(&self) -> musasubmission {
         musasubmission::new(self.backend.clone(), self.path, self.cache.clone())
+    }
+
+    /// Creates a request-scoped persistent session over this executor's backend
+    /// and compiled-kernel cache.
+    ///
+    /// The session pins model weights once and reuses them across every
+    /// [`apply`](session::apply), so a decode loop does not re-upload the model
+    /// on each token. Call [`session::reset`] (or drop the session) to release
+    /// the pinned allocations.
+    #[must_use]
+    pub fn newpersistent(&self) -> musasession {
+        musasession::new(self.backend.clone(), self.path, self.cache.clone())
     }
 }
 
@@ -602,6 +634,9 @@ pub struct musasubmission {
     /// operand referenced by several steps is uploaded exactly once per
     /// submission.
     inputs: std::collections::HashMap<(usize, usize), usize>,
+    /// Inputs pinned by a persistent session, shared across submissions so the
+    /// model weights stop being re-uploaded on every decode step.
+    pinned: Arc<Mutex<std::collections::HashMap<(usize, usize), (ffi::mudevptr, usize)>>>,
 }
 
 /// A recorded result: either a device slot drained by [`session::apply`] or
@@ -615,6 +650,21 @@ impl musasubmission {
     /// Creates a submission over `backend` using `cache`, selecting `path` for
     /// recorded `matmul` steps.
     pub(crate) fn new(backend: musabackend, path: matmulpath, cache: Arc<ffi::cache>) -> Self {
+        Self::newpinned(
+            backend,
+            path,
+            cache,
+            Arc::new(Mutex::new(std::collections::HashMap::new())),
+        )
+    }
+
+    /// Creates a submission that shares `pinned` with a persistent session.
+    pub(crate) fn newpinned(
+        backend: musabackend,
+        path: matmulpath,
+        cache: Arc<ffi::cache>,
+        pinned: Arc<Mutex<std::collections::HashMap<(usize, usize), (ffi::mudevptr, usize)>>>,
+    ) -> Self {
         let session = ffi::session::new(cache);
         Self {
             backend,
@@ -622,6 +672,7 @@ impl musasubmission {
             session,
             results: Vec::new(),
             inputs: std::collections::HashMap::new(),
+            pinned,
         }
     }
 
@@ -719,6 +770,21 @@ impl musasubmission {
     /// to a device slot (uploaded on first use), so the `'static` lifetime
     /// parameter is a formality — `buf::device` carries a pointer only.
     fn operandsbuf(&mut self, op: operand<'_>) -> Result<buf<'static>, backenderror> {
+        if let operand::input(view) = op {
+            let data = view.getdata();
+            let key = (data.as_ptr() as usize, data.len());
+            let pinned = self
+                .pinned
+                .lock()
+                .map_err(|_| backenderror::executionfailed {
+                    backend: "musa",
+                    kernel: "pin".into(),
+                    message: "pinned input cache poisoned".into(),
+                })?;
+            if let Some(&(ptr, _)) = pinned.get(&key) {
+                return Ok(buf::device(ptr));
+            }
+        }
         if let Some(slot) = self.resolveslot(op)? {
             return Ok(buf::device(self.session.slotptr(slot)));
         }
@@ -737,6 +803,356 @@ impl musasubmission {
         let index = self.results.len();
         self.results.push((resultdata::host(data), outshape));
         stepref::fromindex(index)
+    }
+}
+
+/// A request-scoped persistent MUSA session.
+///
+/// Unlike [`musasubmission`], a session keeps its pinned inputs (the model
+/// weights) in device allocations that outlive each [`apply`](session::apply).
+/// Every apply consumes the current step buffer and starts a fresh one over the
+/// same pinned allocations, so a decode loop uploads the weights once and the
+/// transient activations and key/value rows are released after each step.
+pub struct musasession {
+    backend: musabackend,
+    path: matmulpath,
+    cache: Arc<ffi::cache>,
+    pinned: Arc<Mutex<std::collections::HashMap<(usize, usize), (ffi::mudevptr, usize)>>>,
+    current: musasubmission,
+}
+
+impl musasession {
+    /// Creates an empty session over `backend`, selecting `path` for matmul.
+    pub(crate) fn new(backend: musabackend, path: matmulpath, cache: Arc<ffi::cache>) -> Self {
+        let pinned = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let current =
+            musasubmission::newpinned(backend.clone(), path, cache.clone(), pinned.clone());
+        Self {
+            backend,
+            path,
+            cache,
+            pinned,
+            current,
+        }
+    }
+
+    /// Releases every pinned allocation through the deferred free queue.
+    fn retirepinned(&mut self) {
+        let pinned = match self.pinned.lock() {
+            Ok(mut map) => std::mem::take(&mut *map),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        for (_, (ptr, bytes)) in pinned {
+            ffi::retiredevice(&self.cache, ptr, bytes);
+        }
+    }
+}
+
+impl Drop for musasession {
+    fn drop(&mut self) {
+        self.retirepinned();
+    }
+}
+
+impl recorder for musasession {
+    fn recordmatmul(
+        &mut self,
+        lhs: operand<'_>,
+        rhs: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        submission::recordmatmul(&mut self.current, lhs, rhs)
+    }
+
+    fn recordadd(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
+        submission::recordadd(&mut self.current, lhs, rhs)
+    }
+
+    fn recordmul(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
+        submission::recordmul(&mut self.current, lhs, rhs)
+    }
+
+    fn recordrmsnorm(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror> {
+        submission::recordrmsnorm(&mut self.current, input, weight, eps)
+    }
+
+    fn recordrmsnormmatmul(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        rhs: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror> {
+        submission::recordrmsnormmatmul(&mut self.current, input, weight, rhs, eps)
+    }
+
+    fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
+        submission::recordsoftmax(&mut self.current, input)
+    }
+
+    fn recordsilu(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
+        submission::recordsilu(&mut self.current, input)
+    }
+
+    fn recordembedding(
+        &mut self,
+        table: operand<'_>,
+        indices: &[usize],
+    ) -> Result<stepref, backenderror> {
+        submission::recordembedding(&mut self.current, table, indices)
+    }
+
+    fn recordrope(
+        &mut self,
+        input: operand<'_>,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror> {
+        submission::recordrope(&mut self.current, input, heads, base)
+    }
+
+    fn recordrope_at(
+        &mut self,
+        input: operand<'_>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror> {
+        submission::recordrope_at(&mut self.current, input, position, heads, base)
+    }
+
+    fn recordattention(
+        &mut self,
+        query: operand<'_>,
+        key: operand<'_>,
+        value: operand<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror> {
+        submission::recordattention(&mut self.current, query, key, value, heads, kvheads, causal)
+    }
+
+    fn recordattention_cached(
+        &mut self,
+        query: operand<'_>,
+        key: operandpair<'_>,
+        value: operandpair<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror> {
+        submission::recordattention_cached(
+            &mut self.current,
+            query,
+            key,
+            value,
+            heads,
+            kvheads,
+            causal,
+        )
+    }
+
+    fn recordscan(
+        &mut self,
+        input: operand<'_>,
+        init: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        self.recordscan_pair(input, init, a, b, c, skip)
+            .map(|(out, _)| out)
+    }
+
+    fn recordscan_cached(
+        &mut self,
+        input: operand<'_>,
+        state: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        self.recordscan_cached_pair(input, state, a, b, c, skip)
+            .map(|(out, _)| out)
+    }
+
+    fn recordscan_pair(
+        &mut self,
+        input: operand<'_>,
+        init: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<(stepref, stepref), backenderror> {
+        let inshape = self.current.shapeof(input)?;
+        let initshape = self.current.shapeof(init)?;
+        let ashape = self.current.shapeof(a)?;
+        let bshape = self.current.shapeof(b)?;
+        let cshape = self.current.shapeof(c)?;
+        let skipshape = self.current.shapeof(skip)?;
+        for shape in [&inshape, &initshape, &ashape, &bshape, &cshape, &skipshape] {
+            self.current.checkbudget(shape)?;
+        }
+        let (n, d, statewidth) =
+            scanshapes(&inshape, &initshape, &ashape, &bshape, &cshape, &skipshape)?;
+        // The spectral check needs host values. A recorded result is already on
+        // the device, so it cannot be inspected without a download; the
+        // submission contract validates caller inputs and leaves device
+        // intermediates to the backend (docs/design.md §21.13).
+        if let operand::input(view) = a {
+            for &value in view.getdata() {
+                if value.abs() > 1.0 || value.is_nan() {
+                    return Err(backenderror::invalidparameter { op: "scan" });
+                }
+            }
+        }
+        let inputbuf = self.current.operandsbuf(input)?;
+        let initbuf = self.current.operandsbuf(init)?;
+        let abuf = self.current.operandsbuf(a)?;
+        let bbuf = self.current.operandsbuf(b)?;
+        let cbuf = self.current.operandsbuf(c)?;
+        let skipbuf = self.current.operandsbuf(skip)?;
+        let (outslot, stateslot) = ffi::scan_record(
+            &mut self.current.session,
+            inputbuf,
+            initbuf,
+            abuf,
+            bbuf,
+            cbuf,
+            skipbuf,
+            n,
+            d,
+            statewidth,
+        )
+        .map_err(maptobackend)?;
+        eprintln!("DBG scan pair outslot={outslot} stateslot={stateslot}");
+        let outshape = shape::new(vec![n, d]).map_err(|_| backenderror::sizeoverflow)?;
+        let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
+        Ok((
+            self.current.pushslot(outslot, outshape),
+            self.current.pushslot(stateslot, stateshape),
+        ))
+    }
+
+    fn recordscan_cached_pair(
+        &mut self,
+        input: operand<'_>,
+        state: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<(stepref, stepref), backenderror> {
+        let inshape = self.current.shapeof(input)?;
+        let stateshapein = self.current.shapeof(state)?;
+        let ashape = self.current.shapeof(a)?;
+        let bshape = self.current.shapeof(b)?;
+        let cshape = self.current.shapeof(c)?;
+        let skipshape = self.current.shapeof(skip)?;
+        for shape in [
+            &inshape,
+            &stateshapein,
+            &ashape,
+            &bshape,
+            &cshape,
+            &skipshape,
+        ] {
+            self.current.checkbudget(shape)?;
+        }
+        let (n, d, statewidth) = scanshapes(
+            &inshape,
+            &stateshapein,
+            &ashape,
+            &bshape,
+            &cshape,
+            &skipshape,
+        )?;
+        if n != 1 {
+            return Err(backenderror::shapemismatch { op: "scan_cached" });
+        }
+        if let operand::input(view) = a {
+            for &value in view.getdata() {
+                if value.abs() > 1.0 || value.is_nan() {
+                    return Err(backenderror::invalidparameter { op: "scan_cached" });
+                }
+            }
+        }
+        let inputbuf = self.current.operandsbuf(input)?;
+        let statebuf = self.current.operandsbuf(state)?;
+        let abuf = self.current.operandsbuf(a)?;
+        let bbuf = self.current.operandsbuf(b)?;
+        let cbuf = self.current.operandsbuf(c)?;
+        let skipbuf = self.current.operandsbuf(skip)?;
+        let (outslot, newstate) = ffi::scan_cached_record(
+            &mut self.current.session,
+            inputbuf,
+            statebuf,
+            abuf,
+            bbuf,
+            cbuf,
+            skipbuf,
+            d,
+            statewidth,
+        )
+        .map_err(maptobackend)?;
+        eprintln!("DBG scan cached pair outslot={outslot} stateslot={newstate}");
+        let outshape = shape::new(vec![1, d]).map_err(|_| backenderror::sizeoverflow)?;
+        let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
+        Ok((
+            self.current.pushslot(outslot, outshape),
+            self.current.pushslot(newstate, stateshape),
+        ))
+    }
+
+    fn pin(&mut self, view: tensorview<'_, f32>) -> Result<(), backenderror> {
+        let data = view.getdata();
+        let key = (data.as_ptr() as usize, data.len());
+        let mut pinned = self
+            .pinned
+            .lock()
+            .map_err(|_| backenderror::executionfailed {
+                backend: "musa",
+                kernel: "pin".into(),
+                message: "pinned input cache poisoned".into(),
+            })?;
+        if pinned.contains_key(&key) {
+            return Ok(());
+        }
+        let (ptr, bytes) =
+            ffi::session::uploadpersistent(&self.cache, data).map_err(maptobackend)?;
+        pinned.insert(key, (ptr, bytes));
+        Ok(())
+    }
+}
+
+impl session for musasession {
+    fn apply(&mut self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
+        let next = musasubmission::newpinned(
+            self.backend.clone(),
+            self.path,
+            self.cache.clone(),
+            self.pinned.clone(),
+        );
+        let current = std::mem::replace(&mut self.current, next);
+        current.apply(outputs)
+    }
+
+    fn reset(&mut self) {
+        self.retirepinned();
+        self.current = musasubmission::newpinned(
+            self.backend.clone(),
+            self.path,
+            self.cache.clone(),
+            self.pinned.clone(),
+        );
     }
 }
 
@@ -1098,6 +1514,15 @@ impl submission for musasubmission {
                 }
             }
         }
+        eprintln!(
+            "DBG apply refs={:?} slots={:?} ptrs={:?}",
+            outputs.iter().map(|r| r.getindex()).collect::<Vec<_>>(),
+            slotindices,
+            slotindices
+                .iter()
+                .map(|&s| self.session.slotptr(s))
+                .collect::<Vec<_>>()
+        );
         let downloaded = self.session.apply(&slotindices).map_err(maptobackend)?;
         let mut cursor = 0;
         outputs

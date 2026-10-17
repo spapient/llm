@@ -377,6 +377,14 @@ pub(crate) struct session {
     slots: Vec<(mudevptr, usize)>,
 }
 
+impl Drop for session {
+    fn drop(&mut self) {
+        for (ptr, bytes) in self.slots.drain(..) {
+            retiredevice(&self.cache, ptr, bytes);
+        }
+    }
+}
+
 impl session {
     /// Creates an empty record chain over `cache`.
     #[must_use]
@@ -407,6 +415,26 @@ impl session {
         let (ptr, bytes) = result.device.remove(0);
         self.slots.push((ptr, bytes));
         Ok(self.slots.len() - 1)
+    }
+
+    /// Uploads a host slice into an allocation the caller owns and returns its
+    /// pointer and byte size. Used for inputs pinned for a persistent session;
+    /// they are not session slots, so `apply` never releases them.
+    pub(crate) fn uploadpersistent(
+        cache: &cache,
+        data: &[f32],
+    ) -> Result<(mudevptr, usize), musaerror> {
+        let mut result = drive(
+            cache,
+            None,
+            &[buf::hostdevice(data)],
+            &[],
+            (1, 1, 1),
+            (1, 1, 1),
+            0,
+            false,
+        )?;
+        Ok(result.device.remove(0))
     }
 
     /// Uploads a host `u64` slice once and returns its slot.
@@ -453,6 +481,40 @@ impl session {
             self.slots.push((ptr, bytes));
         }
         Ok(self.slots.len() - 1)
+    }
+
+    /// Records one kernel step and returns **every** new device slot in buffer
+    /// order.
+    ///
+    /// Used by operators with two device-resident outputs (`scan`'s output and
+    /// final state); [`record`](Self::record) remains the single-output form.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn recordmulti(
+        &mut self,
+        source_id: &'static str,
+        entry: &'static str,
+        buffers: &[buf<'_>],
+        scalars: &[scalar],
+        grid: (u32, u32, u32),
+        block: (u32, u32, u32),
+        sharedbytes: u32,
+    ) -> Result<Vec<usize>, musaerror> {
+        let result = drive(
+            &self.cache,
+            Some((source_id, entry)),
+            buffers,
+            scalars,
+            grid,
+            block,
+            sharedbytes,
+            false,
+        )?;
+        let mut slots = Vec::with_capacity(result.device.len());
+        for (ptr, bytes) in result.device {
+            self.slots.push((ptr, bytes));
+            slots.push(self.slots.len() - 1);
+        }
+        Ok(slots)
     }
 
     /// Drains one slot to host data mid-chain, for a caller that needs a host
@@ -941,6 +1003,9 @@ fn drive(
             owned[index] = mem;
         }
         for (index, slot) in buffers.iter().enumerate() {
+            if sizes[index] == 0 {
+                continue;
+            }
             match *slot {
                 buf::host(data) | buf::hostdevice(data) => {
                     if muMemcpyHtoD_v2(owned[index], data.as_ptr().cast(), sizes[index])
@@ -1015,8 +1080,9 @@ fn drive(
                     out.try_reserve_exact(count)
                         .map_err(|_| musaerror::sizeoverflow)?;
                     out.resize(count, 0.0_f32);
-                    if muMemcpyDtoH_v2(out.as_mut_ptr().cast(), owned[index], sizes[index])
-                        != MUSA_SUCCESS
+                    if count != 0
+                        && muMemcpyDtoH_v2(out.as_mut_ptr().cast(), owned[index], sizes[index])
+                            != MUSA_SUCCESS
                     {
                         return Err(musaerror::transfer {
                             message: "muMemcpyDtoH failed for output".into(),
@@ -1033,7 +1099,9 @@ fn drive(
                     out.try_reserve_exact(bytes / core::mem::size_of::<f32>())
                         .map_err(|_| musaerror::sizeoverflow)?;
                     out.resize(bytes / core::mem::size_of::<f32>(), 0.0_f32);
-                    if muMemcpyDtoH_v2(out.as_mut_ptr().cast(), ptr, bytes) != MUSA_SUCCESS {
+                    if bytes != 0
+                        && muMemcpyDtoH_v2(out.as_mut_ptr().cast(), ptr, bytes) != MUSA_SUCCESS
+                    {
                         return Err(musaerror::transfer {
                             message: "muMemcpyDtoH failed for flush download".into(),
                         });
@@ -1561,6 +1629,88 @@ pub(crate) fn scan_serial(
     let out = results.remove(0);
     let state = results.remove(0);
     Ok((out, state))
+}
+
+/// Records a serial scan into a device-resident chain, returning the output and
+/// final-state slots.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scan_record(
+    session: &mut session,
+    input: buf<'_>,
+    init: buf<'_>,
+    a: buf<'_>,
+    b: buf<'_>,
+    c: buf<'_>,
+    skip: buf<'_>,
+    n: usize,
+    d: usize,
+    statewidth: usize,
+) -> Result<(usize, usize), musaerror> {
+    let outcount = n.checked_mul(d).ok_or(musaerror::sizeoverflow)?;
+    let statecount = d.checked_mul(statewidth).ok_or(musaerror::sizeoverflow)?;
+    let slots = session.recordmulti(
+        "scan",
+        source::SCANENTRY,
+        &[
+            input,
+            a,
+            b,
+            c,
+            skip,
+            init,
+            buf::outdevice(outcount),
+            buf::outdevice(statecount),
+        ],
+        &[
+            scalar::u32(n as u32),
+            scalar::u32(d as u32),
+            scalar::u32(statewidth as u32),
+        ],
+        (d as u32, 1, 1),
+        (source::ELEMENTWISETILE, 1, 1),
+        0,
+    )?;
+    Ok((slots[0], slots[1]))
+}
+
+/// Records a single-step scan into a device-resident chain, returning the
+/// output and new-state slots.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scan_cached_record(
+    session: &mut session,
+    input: buf<'_>,
+    state: buf<'_>,
+    a: buf<'_>,
+    b: buf<'_>,
+    c: buf<'_>,
+    skip: buf<'_>,
+    d: usize,
+    statewidth: usize,
+) -> Result<(usize, usize), musaerror> {
+    let statecount = d.checked_mul(statewidth).ok_or(musaerror::sizeoverflow)?;
+    let slots = session.recordmulti(
+        "scan",
+        source::SCANENTRY,
+        &[
+            input,
+            a,
+            b,
+            c,
+            skip,
+            state,
+            buf::outdevice(d),
+            buf::outdevice(statecount),
+        ],
+        &[
+            scalar::u32(1),
+            scalar::u32(d as u32),
+            scalar::u32(statewidth as u32),
+        ],
+        (d as u32, 1, 1),
+        (source::ELEMENTWISETILE, 1, 1),
+        0,
+    )?;
+    Ok((slots[0], slots[1]))
 }
 
 /// Parallel three-stage semigroup scan for state widths within

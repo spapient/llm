@@ -211,3 +211,325 @@ pub trait submission {
     /// not name a recorded step.
     fn apply(self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror>;
 }
+
+/// The recording surface shared by single-use [`submission`]s and persistent
+/// [`session`]s.
+///
+/// A model records its forward pass against this trait, so the same chain can
+/// be executed by a single-use submission or by a request-scoped session that
+/// keeps pinned inputs resident across decode steps. Every [`submission`]
+/// implements this trait through a blanket implementation, so existing callers
+/// need no change.
+pub trait recorder {
+    /// Records matrix multiplication, mirroring [`compute::matmul`](crate::compute::matmul).
+    fn recordmatmul(&mut self, lhs: operand<'_>, rhs: operand<'_>)
+    -> Result<stepref, backenderror>;
+
+    /// Records elementwise addition, mirroring [`compute::add`](crate::compute::add).
+    fn recordadd(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror>;
+
+    /// Records elementwise multiplication, mirroring [`compute::mul`](crate::compute::mul).
+    fn recordmul(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror>;
+
+    /// Records RMS normalization, mirroring [`compute::rmsnorm`](crate::compute::rmsnorm).
+    fn recordrmsnorm(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records fused RMS normalization plus matrix multiplication, mirroring
+    /// [`compute::rmsnormmatmul`](crate::compute::rmsnormmatmul).
+    fn recordrmsnormmatmul(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        rhs: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records last-axis softmax, mirroring [`compute::softmax`](crate::compute::softmax).
+    fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror>;
+
+    /// Records the sigmoid linear unit, mirroring [`compute::silu`](crate::compute::silu).
+    fn recordsilu(&mut self, input: operand<'_>) -> Result<stepref, backenderror>;
+
+    /// Records a row gather, mirroring [`compute::embedding`](crate::compute::embedding).
+    fn recordembedding(
+        &mut self,
+        table: operand<'_>,
+        indices: &[usize],
+    ) -> Result<stepref, backenderror>;
+
+    /// Records rotary position embedding, mirroring [`compute::rope`](crate::compute::rope).
+    fn recordrope(
+        &mut self,
+        input: operand<'_>,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records absolute-position rotary embedding, mirroring
+    /// [`compute::rope_at`](crate::compute::rope_at).
+    fn recordrope_at(
+        &mut self,
+        input: operand<'_>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records grouped-query attention, mirroring [`compute::attention`](crate::compute::attention).
+    fn recordattention(
+        &mut self,
+        query: operand<'_>,
+        key: operand<'_>,
+        value: operand<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records incremental attention, mirroring
+    /// [`compute::attention_cached`](crate::compute::attention_cached).
+    fn recordattention_cached(
+        &mut self,
+        query: operand<'_>,
+        key: operandpair<'_>,
+        value: operandpair<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records a full semigroup scan, mirroring
+    /// [`compute::scan`](crate::compute::scan). The state output is not exposed;
+    /// use [`recordscan_pair`](Self::recordscan_pair) when both are needed.
+    fn recordscan(
+        &mut self,
+        input: operand<'_>,
+        init: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror>;
+
+    /// Records a single-step incremental scan, mirroring
+    /// [`compute::scan_cached`](crate::compute::scan_cached).
+    fn recordscan_cached(
+        &mut self,
+        input: operand<'_>,
+        state: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror>;
+
+    /// Pins an input operand for the lifetime of the recorder.
+    ///
+    /// A single-use submission ignores the request (its inputs are uploaded for
+    /// that submission anyway). A persistent session uploads the operand once
+    /// and reuses the device allocation across later steps, which is how model
+    /// weights stop being re-uploaded on every decode token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when the upload fails.
+    fn pin(&mut self, view: tensorview<'_, f32>) -> Result<(), backenderror> {
+        let _ = view;
+        Ok(())
+    }
+
+    /// Records a full semigroup scan and returns both the output and the final
+    /// state.
+    ///
+    /// The default reports `unsupportedoperation`; a backend that can expose
+    /// two device slots overrides it. This is the decode-chain form: the state
+    /// handle can feed the next step's [`recordscan_cached`](Self::recordscan_cached).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same shape/index/budget errors as the matching `compute`
+    /// method, or `unsupportedoperation` when the backend cannot expose both
+    /// outputs.
+    fn recordscan_pair(
+        &mut self,
+        input: operand<'_>,
+        init: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<(stepref, stepref), backenderror> {
+        let _ = (input, init, a, b, c, skip);
+        Err(backenderror::unsupportedoperation { op: "scan" })
+    }
+
+    /// Records a single-step incremental scan and returns both the output and
+    /// the new state.
+    ///
+    /// The default reports `unsupportedoperation`; a backend that can expose
+    /// two device slots overrides it. The state handle can feed the next
+    /// decode step's [`recordscan_cached_pair`](Self::recordscan_cached_pair).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same shape/index/budget errors as the matching `compute`
+    /// method, or `unsupportedoperation` when the backend cannot expose both
+    /// outputs.
+    fn recordscan_cached_pair(
+        &mut self,
+        input: operand<'_>,
+        state: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<(stepref, stepref), backenderror> {
+        let _ = (input, state, a, b, c, skip);
+        Err(backenderror::unsupportedoperation { op: "scan_cached" })
+    }
+}
+
+impl<T: submission> recorder for T {
+    fn recordmatmul(
+        &mut self,
+        lhs: operand<'_>,
+        rhs: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordmatmul(self, lhs, rhs)
+    }
+
+    fn recordadd(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
+        <T as submission>::recordadd(self, lhs, rhs)
+    }
+
+    fn recordmul(&mut self, lhs: operand<'_>, rhs: operand<'_>) -> Result<stepref, backenderror> {
+        <T as submission>::recordmul(self, lhs, rhs)
+    }
+
+    fn recordrmsnorm(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordrmsnorm(self, input, weight, eps)
+    }
+
+    fn recordrmsnormmatmul(
+        &mut self,
+        input: operand<'_>,
+        weight: operand<'_>,
+        rhs: operand<'_>,
+        eps: f32,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordrmsnormmatmul(self, input, weight, rhs, eps)
+    }
+
+    fn recordsoftmax(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
+        <T as submission>::recordsoftmax(self, input)
+    }
+
+    fn recordsilu(&mut self, input: operand<'_>) -> Result<stepref, backenderror> {
+        <T as submission>::recordsilu(self, input)
+    }
+
+    fn recordembedding(
+        &mut self,
+        table: operand<'_>,
+        indices: &[usize],
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordembedding(self, table, indices)
+    }
+
+    fn recordrope(
+        &mut self,
+        input: operand<'_>,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordrope(self, input, heads, base)
+    }
+
+    fn recordrope_at(
+        &mut self,
+        input: operand<'_>,
+        position: usize,
+        heads: usize,
+        base: f32,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordrope_at(self, input, position, heads, base)
+    }
+
+    fn recordattention(
+        &mut self,
+        query: operand<'_>,
+        key: operand<'_>,
+        value: operand<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordattention(self, query, key, value, heads, kvheads, causal)
+    }
+
+    fn recordattention_cached(
+        &mut self,
+        query: operand<'_>,
+        key: operandpair<'_>,
+        value: operandpair<'_>,
+        heads: usize,
+        kvheads: usize,
+        causal: bool,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordattention_cached(self, query, key, value, heads, kvheads, causal)
+    }
+
+    fn recordscan(
+        &mut self,
+        input: operand<'_>,
+        init: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordscan(self, input, init, a, b, c, skip)
+    }
+
+    fn recordscan_cached(
+        &mut self,
+        input: operand<'_>,
+        state: operand<'_>,
+        a: operand<'_>,
+        b: operand<'_>,
+        c: operand<'_>,
+        skip: operand<'_>,
+    ) -> Result<stepref, backenderror> {
+        <T as submission>::recordscan_cached(self, input, state, a, b, c, skip)
+    }
+}
+
+/// A persistent recording session.
+///
+/// Unlike a single-use [`submission`], a session keeps its pinned inputs
+/// resident across [`apply`](Self::apply) calls, so a decode loop can record one
+/// step per token without re-uploading the model weights. [`reset`](Self::reset)
+/// releases every retained buffer.
+pub trait session: recorder {
+    /// Executes every step recorded since the last apply or reset and returns
+    /// the declared outputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`backenderror::indexoutofrange`] when an `outputs` entry does
+    /// not name a recorded step.
+    fn apply(&mut self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror>;
+
+    /// Releases every retained buffer and clears the recorded steps.
+    fn reset(&mut self);
+}

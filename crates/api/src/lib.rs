@@ -43,4 +43,4 @@ pub use capability::capabilities;
 pub use devices::{device, devicekind};
 pub use error::backenderror;
 pub use kernels::{binarykernel, compute, gatherkernel, kvpair, weightedkernel};
-pub use submissions::{operand, operandpair, stepref, submission};
+pub use submissions::{operand, operandpair, recorder, session, stepref, submission};

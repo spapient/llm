@@ -27,11 +27,17 @@ mod linux {
         SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput,
         matmulbatchinput, matmulinput, norminput, ropeinput, scaninput, softmaxinput,
     };
+    use context::{executionconfig, executioncontext};
     use cpu::cpuexecutor;
     use criterion::{
-        BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
+        BatchSize, BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
     };
-    use lib::limits;
+    use infer::{
+        collectingsink, generationengine, generationparams, generationrequest, samplingparams,
+        stopcondition, submissionengine,
+    };
+    use lib::{limits, requestid, seed};
+    use models::{causallm, llamaconfig, llamamodel, llamaweights};
     use musa::musaexecutor;
 
     /// Resource budget that admits every workload without rejecting it.
@@ -42,6 +48,43 @@ mod linux {
 
     /// Rotary base used by both sides of the RoPE comparison.
     const BASE: f32 = 10_000.0;
+
+    /// Vocabulary size of the decode benchmark model.
+    const DECODEVOCAB: usize = 512;
+    /// Model dimension of the decode benchmark model.
+    const DECODEDIM: usize = 128;
+    /// Layer count of the decode benchmark model.
+    const DECODELAYERS: usize = 2;
+    /// Query head count of the decode benchmark model.
+    const DECODEHEADS: usize = 4;
+    /// Key/value head count of the decode benchmark model.
+    const DECODEKVHEADS: usize = 4;
+    /// Feed-forward hidden dimension of the decode benchmark model.
+    const DECODEHIDDEN: usize = 512;
+    /// Maximum sequence length of the decode benchmark model.
+    const DECODEMAXSEQ: usize = 32;
+    /// Prompt used by the decode benchmark.
+    const DECODEPROMPT: [usize; 4] = [0, 1, 2, 3];
+    /// Generated tokens per decode benchmark iteration.
+    const DECODENEW: usize = 4;
+
+    /// Builds the deterministic decode benchmark model.
+    fn decodemodel() -> llamamodel {
+        let config = llamaconfig::new(
+            DECODEVOCAB,
+            DECODEDIM,
+            DECODELAYERS,
+            DECODEHEADS,
+            DECODEKVHEADS,
+            DECODEHIDDEN,
+            1.0e-5,
+            10_000.0,
+            DECODEMAXSEQ,
+        )
+        .unwrap();
+        let weights = llamaweights::random(&config, seed::new(42)).unwrap();
+        llamamodel::new(config, weights).unwrap()
+    }
 
     /// Measures the `cpu` and `musa` closures of one workload back to back.
     ///
@@ -175,6 +218,68 @@ mod linux {
         group.throughput(Throughput::Elements((elements * STEPS) as u64));
         group.bench_function("wmma1024x8", |b| b.iter(|| run(&wmma)));
         group.bench_function("fma1024x8", |b| b.iter(|| run(&fma)));
+        group.finish();
+    }
+
+    /// Compares the compute engine with the all-submission engine on a
+    /// deterministic tiny decode workload. Both engines prefill and decode the
+    /// same prompt; the submission engine records every token into a
+    /// device-resident submission and downloads only logits plus the new K/V.
+    fn decode(c: &mut Criterion) {
+        let exec = musaexecutor::new(LIMIT);
+        let model = decodemodel();
+        let stop = stopcondition::new(vec![], DECODENEW).unwrap();
+        let params = generationparams::formodel(model.getconfig(), stop, samplingparams::greedy());
+        let mut group = c.benchmark_group("musa/decode");
+        group.throughput(Throughput::Elements(DECODENEW as u64));
+        group.bench_function("compute", |b| {
+            b.iter_batched(
+                || {
+                    (
+                        generationrequest::new(DECODEPROMPT.to_vec(), params.clone()).unwrap(),
+                        executioncontext::new(
+                            requestid::new(1),
+                            executionconfig::new(1 << 20, 1, 16).unwrap(),
+                        ),
+                        collectingsink::new(),
+                    )
+                },
+                |(mut request, context, mut sink)| {
+                    let engine = generationengine::new(&model, &exec);
+                    black_box(
+                        engine
+                            .generate(&context, &mut request, &mut sink)
+                            .unwrap()
+                            .getcount(),
+                    )
+                },
+                BatchSize::SmallInput,
+            )
+        });
+        group.bench_function("submission", |b| {
+            b.iter_batched(
+                || {
+                    (
+                        generationrequest::new(DECODEPROMPT.to_vec(), params.clone()).unwrap(),
+                        executioncontext::new(
+                            requestid::new(1),
+                            executionconfig::new(1 << 20, 1, 16).unwrap(),
+                        ),
+                        collectingsink::new(),
+                    )
+                },
+                |(mut request, context, mut sink)| {
+                    let engine = submissionengine::new(&model, || exec.newpersistent());
+                    black_box(
+                        engine
+                            .generate(&context, &mut request, &mut sink)
+                            .unwrap()
+                            .getcount(),
+                    )
+                },
+                BatchSize::SmallInput,
+            )
+        });
         group.finish();
     }
 
@@ -380,6 +485,7 @@ mod linux {
         matmul_batch,
         matmul_paths,
         matmul_chain,
+        decode,
         elementwise,
         softmax,
         rmsnorm,

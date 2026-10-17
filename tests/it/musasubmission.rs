@@ -9,7 +9,8 @@
 #![cfg(all(target_os = "linux", musa_toolkit))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use api::submission;
+use crate::support::build;
+use api::{operand, recorder, session, submission};
 use context::{executionconfig, executioncontext};
 use infer::{
     collectingsink, generationengine, generationparams, generationrequest, kvstate, samplingparams,
@@ -19,6 +20,7 @@ use lib::{limits, requestid};
 use models::{causallm, kvcache};
 use musa::musaexecutor;
 use testkit::assertions::assertallclose;
+use testkit::reference;
 
 /// TF32 input rounding propagated through the model chain.
 const TOL: f32 = 2.0e-3;
@@ -105,14 +107,11 @@ fn submission_decode_chain_matches_compute_on_musa() {
         .map(|&token| model.forward_cached(&exec, &mut refcache, token).unwrap())
         .collect();
 
-    // Submission path: prefill with the compute cache-aware forward (the
-    // recorded decode requires a populated cache), then record each decode
-    // step, apply the logits plus every layer's new key/value row, and append
-    // those rows to the cache.
+    // Submission path: prefill and decode both record one submission per
+    // token, apply the logits plus every layer's new key/value row, and append
+    // those rows to the cache. The first prompt token records against an empty
+    // cache.
     let mut cache = kvstate::new(layers, width, config.getmaxseq()).unwrap();
-    for &token in &prompt {
-        model.forward_cached(&exec, &mut cache, token).unwrap();
-    }
     let record = |cache: &mut kvstate, token: usize| {
         let mut sub = exec.newsubmission();
         let handles = model
@@ -133,6 +132,9 @@ fn submission_decode_chain_matches_compute_on_musa() {
         out.remove(0).getdata().to_vec()
     };
 
+    for &token in &prompt {
+        record(&mut cache, token);
+    }
     for (step, &token) in next.iter().enumerate() {
         let got = record(&mut cache, token);
         assertallclose(&got, &want[step], TOL, TOL);
@@ -162,7 +164,7 @@ fn submission_engine_matches_compute_engine_on_musa() {
         executionconfig::new(1 << 20, 1, 8).unwrap(),
     );
     let compute_engine = generationengine::new(&model, &exec);
-    let submission_engine = submissionengine::new(&model, &exec, || exec.newsubmission());
+    let submission_engine = submissionengine::new(&model, || exec.newpersistent());
     let mut compute_sink = collectingsink::new();
     let mut submission_sink = collectingsink::new();
 
@@ -179,4 +181,82 @@ fn submission_engine_matches_compute_engine_on_musa() {
 
     assert_eq!(got.gettokens(), want.gettokens());
     assert_eq!(got.getreason(), want.getreason());
+}
+
+/// A persistent session exposes both scan outputs, and the state handle feeds
+/// the next cached step without a host round trip.
+#[test]
+fn submission_scan_pair_round_trips_state_on_musa() {
+    if !hasdevice("submission_scan_pair_round_trips_state_on_musa") {
+        return;
+    }
+    let exec = engine();
+    let n = 8usize;
+    let d = 3usize;
+    let statewidth = 4usize;
+    let input: Vec<f32> = (0..n * d).map(|i| (i as f32 * 0.37).sin()).collect();
+    let init: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.13).cos())
+        .collect();
+    let a: Vec<f32> = (0..d * statewidth)
+        .map(|i| 0.5 + 0.5 * (i as f32 * 0.71).cos().abs())
+        .collect();
+    let b: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.29).sin())
+        .collect();
+    let c: Vec<f32> = (0..d * statewidth)
+        .map(|i| (i as f32 * 0.19).cos())
+        .collect();
+    let skip: Vec<f32> = (0..d).map(|i| (i as f32 * 0.11).sin()).collect();
+    let input_t = build(vec![n, d], input.clone());
+    let init_t = build(vec![d, statewidth], init.clone());
+    let a_t = build(vec![d, statewidth], a.clone());
+    let b_t = build(vec![d, statewidth], b.clone());
+    let c_t = build(vec![d, statewidth], c.clone());
+    let skip_t = build(vec![d], skip.clone());
+    let next: Vec<f32> = (0..d).map(|i| (i as f32 * 0.53).cos()).collect();
+    let next_t = build(vec![1, d], next.clone());
+
+    let mut sess = exec.newpersistent();
+    let (outref, stateref) = sess
+        .recordscan_pair(
+            operand::input(input_t.getview()),
+            operand::input(init_t.getview()),
+            operand::input(a_t.getview()),
+            operand::input(b_t.getview()),
+            operand::input(c_t.getview()),
+            operand::input(skip_t.getview()),
+        )
+        .unwrap();
+    let (out2ref, state2ref) = sess
+        .recordscan_cached_pair(
+            operand::input(next_t.getview()),
+            operand::result(stateref),
+            operand::input(a_t.getview()),
+            operand::input(b_t.getview()),
+            operand::input(c_t.getview()),
+            operand::input(skip_t.getview()),
+        )
+        .unwrap();
+    let outputs = sess.apply(&[outref, stateref, out2ref, state2ref]).unwrap();
+
+    let (want_out, want_state) =
+        reference::scan(&input, &init, &a, &b, &c, &skip, n, d, statewidth);
+    assertallclose(outputs[0].getdata(), &want_out, 1e-5, 1e-5);
+    assertallclose(outputs[1].getdata(), &want_state, 1e-5, 1e-5);
+
+    let mut wantstate = want_state.clone();
+    let mut wantout = vec![0.0_f32; d];
+    for i in 0..d {
+        let x = next[i];
+        let mut acc = 0.0_f32;
+        for j in 0..statewidth {
+            let idx = i * statewidth + j;
+            wantstate[idx] = a[idx] * wantstate[idx] + b[idx] * x;
+            acc += c[idx] * wantstate[idx];
+        }
+        wantout[i] = acc + skip[i] * x;
+    }
+    assertallclose(outputs[2].getdata(), &wantout, 1e-5, 1e-5);
+    assertallclose(outputs[3].getdata(), &wantstate, 1e-5, 1e-5);
 }

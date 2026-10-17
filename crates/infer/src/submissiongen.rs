@@ -1,4 +1,4 @@
-use api::{compute, submission};
+use api::{recorder, session};
 use context::executioncontext;
 use models::{cachedsubmission, causallm, kvcache, llamamodel, modelerror};
 use tracing::{debug, trace};
@@ -6,7 +6,6 @@ use tracing::{debug, trace};
 use crate::error::infererror;
 use crate::generation::generationresult;
 use crate::kvcache::kvstate;
-use crate::prefill::prefillprompt;
 use crate::request::generationrequest;
 use crate::stopping::stopreason;
 use crate::stream::streamsink;
@@ -23,18 +22,18 @@ pub trait causallmsubmission: causallm {
     ///
     /// Returns a [`modelerror`] when the token is out of range, an operand shape
     /// is inconsistent, or a recorded operator fails.
-    fn forwardsubmission_cached<S: submission, K: kvcache>(
+    fn forwardsubmission_cached<R: recorder, K: kvcache>(
         &self,
-        sub: &mut S,
+        sub: &mut R,
         cache: &K,
         token: usize,
     ) -> Result<cachedsubmission, modelerror>;
 }
 
 impl causallmsubmission for llamamodel {
-    fn forwardsubmission_cached<S: submission, K: kvcache>(
+    fn forwardsubmission_cached<R: recorder, K: kvcache>(
         &self,
-        sub: &mut S,
+        sub: &mut R,
         cache: &K,
         token: usize,
     ) -> Result<cachedsubmission, modelerror> {
@@ -42,35 +41,30 @@ impl causallmsubmission for llamamodel {
     }
 }
 
-/// Orchestrates prefill and decode with a device-resident decode submission.
+/// Orchestrates prefill and decode through one request-scoped persistent
+/// session.
 ///
-/// The recorded cache-aware forward requires a populated cache, so prefill uses
-/// the compute path. Every decode step then records one submission, applies it
-/// once, appends the new key/value rows to the cache, and samples from the
-/// returned logits. The engine borrows the model, the compute provider used for
-/// prefill, and a submission factory, and owns no per-request state.
-pub struct submissionengine<'a, M: causallmsubmission, C: compute, F> {
+/// Every prompt and decode token records into the session, applies it once,
+/// appends the new key/value rows to the cache, and samples from the returned
+/// logits. The session pins the model weights on first use, so later tokens do
+/// not re-upload them. The first prompt token records against an empty cache,
+/// which the model represents with zero-length cached operands. The engine
+/// borrows the model and a session factory and owns no per-request state.
+pub struct submissionengine<'a, M: causallmsubmission, F> {
     model: &'a M,
-    provider: &'a C,
     factory: F,
 }
 
-impl<'a, M, C, F, S> submissionengine<'a, M, C, F>
+impl<'a, M, F, S> submissionengine<'a, M, F>
 where
     M: causallmsubmission,
-    C: compute,
     F: Fn() -> S,
-    S: submission,
+    S: session,
 {
-    /// Creates an engine over a borrowed model, prefill provider, and
-    /// submission factory.
+    /// Creates an engine over a borrowed model and submission factory.
     #[must_use]
-    pub fn new(model: &'a M, provider: &'a C, factory: F) -> Self {
-        Self {
-            model,
-            provider,
-            factory,
-        }
+    pub fn new(model: &'a M, factory: F) -> Self {
+        Self { model, factory }
     }
 
     /// Runs one generation attempt for `request`, emitting tokens to `sink`.
@@ -94,10 +88,14 @@ where
             "submission generation started"
         );
         let prompt = request.getprompt().to_vec();
-        let mut logits = {
+        let mut sub = (self.factory)();
+        let mut logits = Vec::new();
+        {
             let cache = request.getkvcachemut();
-            prefillprompt(self.model, self.provider, cache, &prompt)?
-        };
+            for &token in &prompt {
+                logits = self.decodestep(&mut sub, cache, token)?;
+            }
+        }
         let mut steps = 0usize;
         let reason = loop {
             exec.checkpoint()?;
@@ -117,9 +115,10 @@ where
             }
             logits = {
                 let cache = request.getkvcachemut();
-                self.decodestep(cache, token)?
+                self.decodestep(&mut sub, cache, token)?
             };
         };
+        sub.reset();
         debug!(
             steps,
             generated = request.getgeneratedlen(),
@@ -135,11 +134,13 @@ where
     }
 
     /// Records, applies, and appends one decode step.
-    fn decodestep(&self, cache: &mut kvstate, token: usize) -> Result<Vec<f32>, infererror> {
-        let mut sub = (self.factory)();
-        let handles = self
-            .model
-            .forwardsubmission_cached(&mut sub, cache, token)?;
+    fn decodestep(
+        &self,
+        sub: &mut S,
+        cache: &mut kvstate,
+        token: usize,
+    ) -> Result<Vec<f32>, infererror> {
+        let handles = self.model.forwardsubmission_cached(sub, cache, token)?;
         let layers = cache.getlayers();
         let mut requested = Vec::with_capacity(1 + 2 * layers);
         requested.push(handles.logits);

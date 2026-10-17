@@ -24,9 +24,10 @@
 //! # Execution paths
 //!
 //! [`generationengine`] uses `compute`'s cache-aware forward for both prefill
-//! and decode. [`submissionengine`] uses the same compute path for prefill and
-//! records every decode step into a device-resident submission, applying it
-//! once and appending the new key/value rows to the request-owned [`kvstate`].
+//! and decode. [`submissionengine`] records every prompt and decode token into a
+//! device-resident submission, applying it once and appending the new key/value
+//! rows to the request-owned [`kvstate`]. The first prompt token records against
+//! an empty cache, represented by zero-length cached operands.
 //!
 //! # Dependencies
 //!
