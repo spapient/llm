@@ -118,12 +118,6 @@ publish = false
 # 错误建模：优先使用 Result 和明确的错误类型。
 # 日志与诊断：由需要日志能力的 crate 显式引入。
 # CLI 和服务端依赖按需使用。
-tokio = { version = "1", features = [
-    "macros",
-    "rt-multi-thread",
-    "signal",
-    "net",
-] }
 # 质量保障依赖仅在对应 crate 的开发依赖中引入。
 proptest = "1"
 criterion = "0.7"
