@@ -164,6 +164,15 @@ fn invalid(reason: &str) -> checkpointerror {
     }
 }
 
+fn take_u16(data: &mut &[u8]) -> Option<u16> {
+    if data.len() < 2 {
+        return None;
+    }
+    let v = u16::from_le_bytes([data[0], data[1]]);
+    *data = &data[2..];
+    Some(v)
+}
+
 fn take_u32(data: &mut &[u8]) -> Option<u32> {
     if data.len() < 4 {
         return None;
@@ -260,9 +269,22 @@ pub fn compress(src: &[u8], elem: usize) -> Vec<u8> {
 
     let mut out = Vec::new();
     out.extend_from_slice(&(src.len() as u32).to_le_bytes());
+    // Table encoding: a 256-bit presence bitmap followed by `u16` `freq-1` for
+    // each present symbol. Frequencies are in 1..=M=65536, so `freq-1` fits u16;
+    // at u32 the table was ~1.6% of a 16 MiB snapshot, and this cuts it by more
+    // than half (and far more for sparse planes).
     for table in &tables {
-        for &f in &table.freq {
-            out.extend_from_slice(&f.to_le_bytes());
+        let mut bitmap = [0u8; NSYMBOLS / 8];
+        for s in 0..NSYMBOLS {
+            if table.freq[s] != 0 {
+                bitmap[s / 8] |= 1 << (s % 8);
+            }
+        }
+        out.extend_from_slice(&bitmap);
+        for s in 0..NSYMBOLS {
+            if table.freq[s] != 0 {
+                out.extend_from_slice(&((table.freq[s] - 1) as u16).to_le_bytes());
+            }
         }
     }
     for stream in &streams {
@@ -285,9 +307,18 @@ pub fn decompress(stored: &[u8], elem: usize) -> Result<Vec<u8>, checkpointerror
 
     let mut tables = Vec::with_capacity(nplanes);
     for _ in 0..nplanes {
+        if data.len() < NSYMBOLS / 8 {
+            return Err(invalid("gate freq bitmap truncated"));
+        }
+        let mut bitmap = [0u8; NSYMBOLS / 8];
+        bitmap.copy_from_slice(&data[..NSYMBOLS / 8]);
+        data = &data[NSYMBOLS / 8..];
         let mut freq = [0u32; NSYMBOLS];
-        for f in &mut freq {
-            *f = take_u32(&mut data).ok_or_else(|| invalid("gate freq table truncated"))?;
+        for s in 0..NSYMBOLS {
+            if bitmap[s / 8] & (1 << (s % 8)) != 0 {
+                let raw = take_u16(&mut data).ok_or_else(|| invalid("gate freq table truncated"))?;
+                freq[s] = u32::from(raw) + 1;
+            }
         }
         let mut cum = [0u32; NSYMBOLS + 1];
         let mut acc = 0u32;
