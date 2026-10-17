@@ -9,6 +9,14 @@ pub enum devicekind {
     cuda,
     /// Moore Threads MUSA execution.
     musa,
+    /// AMD / Hygon ROCm execution.
+    rocm,
+    /// Intel oneAPI SYCL execution.
+    sycl,
+    /// Huawei CANN execution.
+    cann,
+    /// Cambricon MLU execution.
+    mlu,
 }
 
 /// An execution device handle.
@@ -54,6 +62,38 @@ impl device {
         }
     }
 
+    /// Returns the AMD / Hygon ROCm device.
+    #[must_use]
+    pub const fn rocm() -> Self {
+        Self {
+            kind: devicekind::rocm,
+        }
+    }
+
+    /// Returns the Intel oneAPI SYCL device.
+    #[must_use]
+    pub const fn sycl() -> Self {
+        Self {
+            kind: devicekind::sycl,
+        }
+    }
+
+    /// Returns the Huawei CANN device.
+    #[must_use]
+    pub const fn cann() -> Self {
+        Self {
+            kind: devicekind::cann,
+        }
+    }
+
+    /// Returns the Cambricon MLU device.
+    #[must_use]
+    pub const fn mlu() -> Self {
+        Self {
+            kind: devicekind::mlu,
+        }
+    }
+
     /// Returns the kind of this device.
     #[must_use]
     pub const fn getkind(self) -> devicekind {
@@ -82,5 +122,29 @@ impl device {
     #[must_use]
     pub const fn ismusa(self) -> bool {
         matches!(self.kind, devicekind::musa)
+    }
+
+    /// Reports whether this device is AMD / Hygon ROCm.
+    #[must_use]
+    pub const fn isrocm(self) -> bool {
+        matches!(self.kind, devicekind::rocm)
+    }
+
+    /// Reports whether this device is Intel oneAPI SYCL.
+    #[must_use]
+    pub const fn issycl(self) -> bool {
+        matches!(self.kind, devicekind::sycl)
+    }
+
+    /// Reports whether this device is Huawei CANN.
+    #[must_use]
+    pub const fn iscann(self) -> bool {
+        matches!(self.kind, devicekind::cann)
+    }
+
+    /// Reports whether this device is Cambricon MLU.
+    #[must_use]
+    pub const fn ismlu(self) -> bool {
+        matches!(self.kind, devicekind::mlu)
     }
 }

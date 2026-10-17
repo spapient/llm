@@ -370,7 +370,7 @@ cpu    -> lib
 | 变体 | 触发 | 排障动作 |
 | :--- | :--- | :--- |
 | `devicenotavailable` | 后端无法打开设备：无 Metal 设备 / 无可用 CUDA GPU / 驱动缺失 / 沙箱拦截设备系统调用 | 检查 GPU 与驱动、放开沙箱设备权限；**降级 CPU 后端**（`cpu` 永不产生该变体，是最小可用路径） |
-| `kernelcompilefailed { backend, kernel, message }` | MSL/NVRTC 编译失败、pipeline 创建失败、模块加载/函数解析失败 | 按 `kernel` 定位 `(source, entry)` 对，按 `message` 核对 MSL/CUDA 版本、语法或资源限制；编译发生在运行期且按对缓存，一次修复全局生效 |
+| `kernelcompilefailed { backend, kernel, message }` | MSL/NVRTC 编译失败、pipeline 创建失败、模块加载/函数解析失败 | 按 `kernel` 定位 `(source, entry)` 对，按 `message` 核对 MSL/CUDA 版本、语法或资源限制；CUDA 侧编译发生在运行期且按单编译单元缓存（一次编译整单元、按 entry 解析，一次修复全局生效） |
 | `executionfailed` | 运行期执行失败：输出构造、缓冲分配、传输、启动、cuBLAS 调用 | 携带结构化诊断 `{ backend, kernel, message }`：`kernel` 标识失败阶段（`construct`/`alloc`/`transfer`/`launch`/`blas`/`run`），`message` 为驱动或宿主诊断——执行失败可定位到阶段与根因，不再是无上下文的标记；不携带可统一处理的恢复语义 |
 
 前两类是可恢复/可归因的环境与编译问题，调用方应显式处理；`executionfailed` 是后端自持错误，只陈述失败与阶段归属、不承诺恢复。此分类是"错误映射显式且在关键处无损"（§5.2 决策 10）的实例化：分类无塌缩、诊断有归属。
@@ -470,7 +470,7 @@ executor 路径与裸内核路径在运行间噪声内一致（噪声带准则�
 
 **剩余优化项（2026-10-17 更新，未实施）。** ① ~~SIMD 宽度泛型~~（已落地：archmage 三层派发 v3/neon/scalar，服务器 x86 rmsnorm 实测 1.37×）；② 融合算子（rmsnorm+matmul 行缩放 epilogue、attention 输出+residual）：需扩展 api 契约，prefill 每层可省一次 `m×k` 读加写；③ ~~attention 长序列 exp 瓶颈~~（已解决：ce17c18 的 deg-7 泰勒 `exp2` 向量化快路径，softmax 2.41×，attention 侧同式可复用）；④ 输出免零初始化（需新增封装 unsafe 的 vendor 依赖，沙箱离线待补 vendor）。
 
-**rmsnormmatmul 融合算子（2026-10-17，决策 + 实测）。** `api::compute`/`api::submission` 各加 `rmsnormmatmul`/`recordrmsnormmatmul`（沿 attention_cached/rope_at 的「专用形态」加法式先例），语义 = `rmsnorm(input, weight, eps) @ rhs`，归一化激活零物化。数值语义：行缩放是精确的——`out_r = (x_r ∘ w) @ W * inv_r`，`inv_r` 由与独立 rmsnorm 同序的平方和计算（逐位同分母）；与合成参照的差异仅为「先乘后缩」vs「先缩后乘」的舍入，契约容差 1e-4。实现：权重折叠移出热循环——直连路径（m<32）预折叠进左侧 scratch，分块路径折叠进打包 tile（摊销到全部行块）；行缩放仅在末 k-chunk 的 store 应用（早期版把缩放放在每 chunk store 导致 kchunks 次重复应用，探针定位后改为 lastchunk 语义）。实测（M5 Pro，同机同基准）：qkv 上投影（2048×4096@4096×16384，真实 QKV 形状）fused 7.48 s vs separate 8.02 s（**−6.7%**，省 2·m·k 物化）；方阵与 decode 为平局（±1.5% 噪带，符合理论：融合省的是 norm 物化流量，n≥k 才兑现）。metal/cuda/musa 暂返回 `unsupportedoperation`（compute 与 submission 同），列为后续逐后端移植。cpucontract 新增 3 例（合成参照、batch/线程逐位、形状拒绝）全绿。
+**rmsnormmatmul 融合算子（2026-10-17，决策 + 实测）。** `api::compute`/`api::submission` 各加 `rmsnormmatmul`/`recordrmsnormmatmul`（沿 attention_cached/rope_at 的「专用形态」加法式先例），语义 = `rmsnorm(input, weight, eps) @ rhs`，归一化激活零物化。数值语义：行缩放是精确的——`out_r = (x_r ∘ w) @ W * inv_r`，`inv_r` 由与独立 rmsnorm 同序的平方和计算（逐位同分母）；与合成参照的差异仅为「先乘后缩」vs「先缩后乘」的舍入，契约容差 1e-4。实现：权重折叠移出热循环——直连路径（m<32）预折叠进左侧 scratch，分块路径折叠进打包 tile（摊销到全部行块）；行缩放仅在末 k-chunk 的 store 应用（早期版把缩放放在每 chunk store 导致 kchunks 次重复应用，探针定位后改为 lastchunk 语义）。实测（M5 Pro，同机同基准）：qkv 上投影（2048×4096@4096×16384，真实 QKV 形状）fused 7.48 s vs separate 8.02 s（**−6.7%**，省 2·m·k 物化）；方阵与 decode 为平局（±1.5% 噪带，符合理论：融合省的是 norm 物化流量，n≥k 才兑现）。metal/cuda 暂返回 `unsupportedoperation`（compute 与 submission 同），列为后续逐后端移植。**musa 已移植（2026-10-18，MTT S4000 真机）**：融合 kernel 刻意走 FP32 FMA（2D 16×16 tile）而非 WMMA——真机证据表明 TF32 逐操作数 `__float_to_tf32`（10-bit 尾数）在 sin 强抵消、k=64 点积结果偏小（约 0.4）的输入上把相对误差放大到约 1.3%，超过普通 matmul 的 2e-3 契约、更不满足本算子 1e-4 的精确融合契约；改 FP32 后融合路径与 `newfma` 构造的 FP32 合成参照逐位一致（实测 1e-4 内）。同步路径与设备驻留提交路径（`recordrmsnormmatmul`）均实现；共享 `engine::executor` 的形状校验顺序同步修正为「先判收缩维 k==0 返回 `unsupportedoperation`，再走 `matmulshape::new`」（此前 `matmulshape` 先拒收 0 维，使 k=0 误报 `shapemismatch{op:"matmul"}`）。musacontract 41 例 + musasubmission 7 例全绿（含 rmsnormmatmul 合成参照/形状拒绝与设备驻留，0 条 `E4 未执行`）。cpucontract 新增 3 例（合成参照、batch/线程逐位、形状拒绝）全绿。
 
 **softmax SIMD 评估（2026-10-16）：判定不引入。** `softmaxrow` 的 max 与缩放趟经 LLVM 自动向量化已是 4 宽 NEON，而 `exp` 趟占主导且 `fearless_simd` 无向量化 `exp`（Apple Silicon 的系统 libm `expf` 已 NEON 加速，自写多项式难更快）。实测仅向量化 max/缩放反而回退 6.5%（2.4593→2.6182 ms），已回退；softmax 保持标量 `f32::exp`，未引入数值近似。**（2026-10-17 作废）** 该判定在 `fearless_simd` 前提下成立；迁移到 `archmage` 直接 intrinsics 后前提改变，deg-7 泰勒 `exp2` 近似 + 全有限行向量化快路径已落地（提交 ce17c18，NaN/-inf 契约由标量路径保持）。同机同基准实测：`softmax/rows512cols4096` 由 2.5391 ms → 1.0522 ms（**2.41×**），数值对照 `softmax_matches_the_scalar_reference_per_row` 与 `softmax_is_numerically_stable_for_extreme_logits` 全绿。
 
@@ -2553,16 +2553,16 @@ cargo bench --workspace --no-run                             # exit 0 (7 benchma
 ### 21.2 决策
 
 1. **采纳原生双后端，不引入 `wgpu`。** 用户要求 CUDA 专用能力（cuBLAS），`wgpu` 的 Vulkan 后端不满足该诉求；且 `wgpu` 只是把 `unsafe` 移入第三方，并未消除，同时引入一层与 `api` 契约不直接对应的抽象。
-2. **单文件 `unsafe` 豁免模型。** 四个 crate 使用 `#![deny(unsafe_code)]`：`metal`/`cuda`/`musa` 的豁免文件是 `src/ffi.rs`，`checkpoint` 的是 `src/crc32c_hw.rs`；每个 crate 内恰好一个文件声明 `#![allow(unsafe_code)]`，所有平台调用被封在此文件内，对外只暴露安全 Rust 函数。详见 21.8。
+2. **单文件 `unsafe` 豁免模型。** 四个 crate 使用 `#![deny(unsafe_code)]`：`metal`/`cuda`/`musa` 等 GPU 后端岛的豁免文件最初集中于 `src/ffi.rs`，后按"声明 / 驱动 / 算子"目录化为每个岛一个 `ffi/<岛>/drive.rs`（未目录化的岛仍为单文件 `ffi/<岛>.rs`），`checkpoint` 的是 `src/crc32c_hw.rs`；每个后端岛内恰好一个文件声明 `#![allow(unsafe_code)]`，所有平台调用被封在该文件内，对外只暴露安全 Rust 函数。现值与文件清单详见 21.8。
 3. **Metal 走 `objc2-metal`，不走 `metal-rs`。** 实测 `objc2-metal` 的绝大多数 API 是安全的，`unsafe` 面仅 4 处；`metal-rs` 0.33 把大量 API 标为 `unsafe`，暴露面显著更大。
 4. **CUDA 走 `cudarc`，feature 固定为 `driver` + `cublas` + `nvrtc` + `dynamic-loading` + `cuda-12060`。** `dynamic-loading` 使 `cargo check` 无需 CUDA 工具链；`cuda-12060` 是 `cudarc` 的强制要求。（`cudnn` feature 曾用于 `SoftmaxForward`，2026-10-17 随默认路径切换至 NVRTC 而移除。）
 5. **条件编译为空 lib。** 非目标平台不引入任何平台依赖，也不导出实现类型，保证跨平台 workspace 绿。
 6. **同步、运行至完成的执行语义。** 与 `tensor` 与 `cpu` 的同步模型一致：每次算子调用完成 host→device→dispatch→device→host 全流程后返回拥有张量；不引入流式或异步 API。
-7. **首个算子为 `f32` matmul。** MSL 与 CUDA C 源码以源文件（`crates/gpu/metal/metal.c` / `crates/gpu/cuda/*.cu`）经 `include_str!` 内嵌并在运行时编译，避免构建期依赖 `xcrun`/`nvcc`。MUSA 的内核在构建期由 `mcc` 预编译为 fatbin（`crates/gpu/cuda/*.cu` 加 `crates/gpu/musa/musa.cu`）。
+7. **首个算子为 `f32` matmul。** MSL 与 CUDA C 源码以源文件（`crates/gpu/metal/metal.c` / `crates/gpu/cuda/*.cu`）经 `include_str!` 内嵌并在运行时编译，避免构建期依赖 `xcrun`/`nvcc`。MUSA 的内核在构建期由 `mcc` 预编译为 fatbin（`crates/gpu/cuda/*.cu` 加 `crates/gpu/grid/*.cu`）。
 8. **设备身份在 `api` 侧累加。** `devicekind` 新增 `metal` 与 `cuda` 变体，`device` 新增对应构造与判定；不改动既有 `cpu` 语义，也不加 `#[non_exhaustive]`（工作区内需要穷举 match 以获得编译期完整性）。
 9. **依赖边仅为后端到 `api`/`tensor`/`lib`。** `api` MUST NOT 依赖 `metal` 或 `cuda`；上层（`models`/`infer`）通过既有的 `C: compute` 泛型槽接入，零改动。
-10. **CUDA 的 `unsafe` 站点收于两类平台交互、共两处。** NVRTC 内核启动一处（以闭包注入实参，服务于全部在仓内核，包括 `softmax`）、cuBLAS `gemm` 一处；不做 `unsafe` 的通用化封装，仅按 21.8 登记的两处具体调用。
-11. **算子按机制分工。** `matmul` 走 cuBLAS（并保留 NVRTC 路径作独立参考）；`softmax` 走在仓 NVRTC 内核（2026-10-17 起默认且唯一，见 21.10.3）；其余算子（`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention`）同样走内嵌 CUDA C++ 源码经 NVRTC 运行时编译。cuDNN 曾服务 `softmax`，但其每次调用的句柄创建成本与独立 `unsafe` 站点均不划算：NVRTC 内核按构造与 `cpu`/`metal` 同式，并复用既有启动站点。
+10. **CUDA 的 `unsafe` 站点收于两类平台交互、共两处。** NVRTC 内核启动一处（`submit`，以 `LaunchArgs` 实参列表服务于全部在仓内核，包括 `softmax`）、cuBLAS `gemm` 一处；不做 `unsafe` 的通用化封装，仅按 21.8 登记的两处具体调用。
+11. **算子按机制分工。** `matmul` 走 cuBLAS（并保留 NVRTC 路径作独立参考）；`softmax` 走在仓 NVRTC 内核（2026-10-17 起默认且唯一，见 21.10.3）；其余算子（`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention`）同样走内嵌 CUDA C++ 源码经 NVRTC 运行时编译。2026-10-18 起 CUDA 系内核合并为单一编译单元（`cuda/kernels.cu`，15 入口一源三编译：`nvcc`/`mcc`/`hipcc`），NVRTC 从每内核一次编译降为整单元一次编译、按 entry 解析函数；`drive` 为算子层唯一驱动引擎，宏生成的算子面与手写 `matmul`/`scan` 共享同一启动站点。cuDNN 曾服务 `softmax`，但其每次调用的句柄创建成本与独立 `unsafe` 站点均不划算：NVRTC 内核按构造与 `cpu`/`metal` 同式，并复用既有启动站点。
 
 ### 21.3 接口边界（DS1）
 
@@ -2641,8 +2641,8 @@ gpu -> api
 * `geometry.rs` 把每个算子的形状推理与拒绝条件收进单个函数，使 `ffi.rs` 的每个启动封装只做「取已验证的几何 → 一次平台调用 → 一次错误映射」，判定点不超过 3 个。
 * `engine.rs` 是唯一的 `compute` 实现：预算校验、几何推导、结果张量重建各写一次。每个后端只实现 `platform` 原语（设备上传、内核启动、错误映射），MUSA 的原生融合算子（`rmsnormmatmul`、`scan_cached`、`attention_cached`、`rope_at`）以覆盖方法保留；`matmul` 的逐块 NVRTC 循环留在 CUDA 的平台原语里，引擎不含逐块逻辑。
 * 预算与秩判定不是各后端自己的逻辑：全部转发到 `api::checkbudget`，连判定顺序都无法分歧；`geometry.rs` 的 `matmulshape` 在三侧同形，并各自提供 `outshape()` 以在分配前校验结果预算。
-* 录制路径同构：`engine::recordplatform` 提供设备侧录制原语，`engine::submission` 只写一份 14 方法的 `api::submission`，`engine::session` 在同一份记录逻辑上实现可重复 `apply` 的 `api::session`。CUDA/Metal 通过 `newsession` 获得持久 session；MUSA 因 pinned 输入与 slot 链的资源模型不同而保留自己的 `musasubmission`/`musasession`（其去重需真机 parity 后再做）。`newsubmission` 的失败类型统一为 `backenderror`。
-* 内核文本集中在 `crates/gpu/cuda/*.cu`（CUDA 系同源，平铺在 crate 根）与 `crates/gpu/metal/metal.c`（Metal）；`catalog.rs` 登记全部内核常量与几何，包括 `matmul` 的 cuBLAS / WMMA / NVRTC 入口；其余差异已收敛进共享源（`scan.cu` 的 `MUSA_OUT_STATE` 宏）或后端原语。这些登记模块只存放 `include_str!` 引用、entry 名与几何常量，不参与 Rust 复杂度；两个后端的 `ffi.rs` 都只有一条通用 `execute` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
+* 录制路径同构：`engine::recordplatform` 提供设备侧录制原语，`engine::submission` 只写一份 14 方法的 `api::submission`，`engine::session` 在同一份记录逻辑上实现可重复 `apply` 的 `api::session`。CUDA/Metal 通过 `newsession` 获得持久 session；MUSA 因 pinned 输入与 slot 链的资源模型不同而保留自己的 `musasubmission`/`musasession`（其去重需真机 parity 后再做）。GRID 家族四岛（2026-10-18 起）经 `gen_backend_mod` 生成同一 `recordplatform`：host 槽 `ffi::session` + `gen_into!` 生成的 `*_into` 记录算子（每步跑通直派引擎、输出存槽，`apply` 一次排空），记录链成本与直派路径相同。`newsubmission` 的失败类型统一为 `backenderror`。
+* 内核文本集中在 `crates/gpu/cuda/kernels.cu`（CUDA 系单一编译单元，15 入口，`nvcc`/`mcc`/`hipcc` 一源三编译；`grid/musa.cu` 为 MUSA 专有 WMMA 融合）与 `crates/gpu/metal/metal.c`（Metal）；`catalog.rs` 登记全部内核常量与几何，包括 `matmul` 的 cuBLAS / WMMA / NVRTC 入口；其余差异已收敛进共享源（`scan` 的 `MUSA_OUT_STATE` 宏）或后端原语。这些登记模块只存放 `include_str!` 引用、entry 名与几何常量，不参与 Rust 复杂度；两个后端的 `ffi.rs` 都只有一条通用 `drive` 启动路径，编译、管线、队列、命令缓冲与编码器的失败各由一个 `?` 上报，判定点不超过 5 个；`attention` 的融合内核把规约树拆成 `reducemax`/`reducesum` 两个辅助函数，避免单个内核函数越过 80 行。
 
 宿主 macOS 的 `scripts/checkthresholds.sh` 看不到被 `cfg(target_os = "linux")` 门控的 CUDA 代码，因此 CUDA 侧以同一组阈值单独在 Linux 目标上核对（`cargo clippy -p cuda --target x86_64-unknown-linux-gnu --lib --locked -- -D clippy::cognitive_complexity -D clippy::too_many_lines`，exit 0）。两者均为机械检查（证据等级 E1）。
 
@@ -2684,19 +2684,28 @@ gpu -> api
 
 * 工作区 lint 保持 `unsafe_code = "deny"`（`Cargo.toml`），一行不改。
 * 全部既有 crate 保持 `#![forbid(unsafe_code)]`，一行不改。
-* `gpu` crate（内含 `metal`、`cuda`、`musa` 三个后端模块）使用 `#![deny(unsafe_code)]`。三个后端的岛合居 `crates/gpu/ffi.rs`，文件内每个后端各一个内联模块并各自声明 `#![allow(unsafe_code)]`，彼此互不替代。`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
-* 每个 `ffi.rs` 中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
-* 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。下表的 `ffi.rs` 指被豁免的文件：三个后端的行均落在 `crates/gpu/ffi.rs`，该文件登记数为三行之和（7）。实测登记（证据等级 E1，来自 21.1 的尖刺）：
+* `gpu` crate（内含 `metal`、`cuda`、`musa`、`rocm`、`sycl`、`cann`、`mlu` 七个后端模块）使用 `#![deny(unsafe_code)]`。七个后端的岛分居 `crates/gpu/ffi/`。`cuda`/`metal`/`musa` 已按"声明 / 驱动 / 算子"目录化为 `ffi/<岛>/`：唯一 `drive.rs` 持 `#![allow(unsafe_code)]` 并收纳该岛全部 `unsafe` 站点（`mod.rs` 为声明层、`ops.rs` 为算子层，`musa` 另含 `record.rs` 累积层，均无 `allow`）；`rocm`/`sycl`/`cann`/`mlu` 仍为单文件 `rocm.rs`/`sycl.rs`/`cann.rs`/`mlu.rs`，各自声明 `#![allow(unsafe_code)]`。各岛由 `ffi/mod.rs` 的 `pub(crate) mod <岛>;` 加 `#[cfg]` 条件编译，外部 `ffi::<岛>::*` 命名空间经 `mod.rs` re-export 保持不变，彼此互不替代。`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
+* 每个豁免文件中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
+* 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。下表"位置"列即被豁免文件：目录岛的行落在 `ffi/<岛>/drive.rs`，单文件岛落在 `ffi/<岛>.rs`；七岛登记数之和为 16。实测登记（证据等级 E1，来自 21.1 的尖刺、2026-10-18 的 GRID 家族接入与同日的目录化拆分）：
 
 | crate | 站点 | 位置 |
 | --- | --- | --- |
-| `metal` | 同步驱动交接块（`dispatch`：上传、绑定缓冲、绑定标量、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载，全部收于一个 `unsafe` 块） | `ffi.rs` |
-| `metal` | 会话编码块（`session::dispatch`：同一 command buffer 上绑定并启动，不等待） | `ffi.rs` |
-| `metal` | 会话提交块（`session::apply`：`commit`/`waitUntilCompleted` + 下载全部结果） | `ffi.rs` |
-| `cuda` | `LaunchArgs::launch`（NVRTC 内核启动） | `ffi.rs` |
-| `cuda` | `CudaBlas::gemm`（cuBLAS 矩阵乘） | `ffi.rs` |
-| `musa` | `unsafe extern "C"` 声明块（edition 2024 强制；MUSA driver 全部 FFI 声明） | `ffi.rs` |
-| `musa` | 驱动交接 `unsafe` 块（`drive`：模块加载/函数解析/内存传输/内核启动/同步，全部 `mu*` 调用收于一个块） | `ffi.rs` |
+| `metal` | 同步驱动交接块（`dispatch`：上传、绑定缓冲、绑定标量、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载，全部收于一个 `unsafe` 块） | `ffi/metal/drive.rs` |
+| `metal` | 会话编码块（`session::dispatch`：同一 command buffer 上绑定并启动，不等待） | `ffi/metal/drive.rs` |
+| `metal` | 会话提交块（`session::apply`：`commit`/`waitUntilCompleted` + 下载全部结果） | `ffi/metal/drive.rs` |
+| `cuda` | `LaunchArgs::launch`（NVRTC 内核启动） | `ffi/cuda/drive.rs` |
+| `cuda` | `CudaBlas::gemm`（cuBLAS 矩阵乘） | `ffi/cuda/drive.rs` |
+| `musa` | `unsafe extern "C"` 声明块（edition 2024 强制；MUSA driver 全部 FFI 声明） | `ffi/musa/drive.rs` |
+| `musa` | 驱动交接 `unsafe` 块（`drive`：模块加载/函数解析/内存传输/内核启动/同步，全部 `mu*` 调用收于一个块） | `ffi/musa/drive.rs` |
+| `rocm` | `unsafe extern "C"` 声明块（edition 2024 强制；HIP driver 与 hipBLAS 全部 FFI 声明） | `ffi/rocm.rs` |
+| `rocm` | 驱动交接 `unsafe` 块（`drive`：模块加载/函数解析/内存传输/内核启动/同步，全部 `hip*` 调用收于一个块） | `ffi/rocm.rs` |
+| `rocm` | hipBLAS 交接 `unsafe` 块（`matmul`：句柄创建/`hipblasGemmStridedBatched`/同步/传输，全部 `hipblas*` 与配套 `hip*` 调用收于一个块） | `ffi/rocm.rs` |
+| `sycl` | `unsafe extern "C"` 声明块（edition 2024 强制；SYCL 桥与 15 个 `sycl_*` 算子全部 FFI 声明） | `ffi/sycl.rs` |
+| `sycl` | 驱动交接 `unsafe` 块（`drive`：队列/USM 分配/上下载/算子调用/错误读取，全部桥调用收于一个块） | `ffi/sycl.rs` |
+| `cann` | `unsafe extern "C"` 声明块（edition 2024 强制；AscendCL 全部 FFI 声明） | `ffi/cann.rs` |
+| `cann` | 驱动交接 `unsafe` 块（`drive`：上下文/内存/内核解析/启动/同步，全部 `acl*` 调用收于一个块） | `ffi/cann.rs` |
+| `mlu` | `unsafe extern "C"` 声明块（edition 2024 强制；CNRT 全部 FFI 声明） | `ffi/mlu.rs` |
+| `mlu` | 驱动交接 `unsafe` 块（`drive`：初始化/内存/内核解析/启动/同步，全部 `cnrt*` 调用收于一个块） | `ffi/mlu.rs` |
 | `checkpoint` | aarch64 硬件 CRC32C `unsafe fn`（`crc` target feature；`__crc32cd`/`__crc32cb`） | `crc32c_hw.rs` |
 | `checkpoint` | x86_64 硬件 CRC32C `unsafe fn`（`sse4.2` target feature；`_mm_crc32_u64`/`_mm_crc32_u8`） | `crc32c_hw.rs` |
 | `checkpoint` | 硬件 CRC 调用块（运行时特性检测通过后调用上二者之一） | `crc32c_hw.rs` |
@@ -2704,7 +2713,7 @@ gpu -> api
 | `simd` | 14 个 dispatch `unsafe` 调用块（7 算子 × AVX2/NEON 各一） | `intrinsics.rs` |
 | `simd` | 4 个 x86/NEON 辅助内核声明（`hmax256`/`hsum256`/`exp2approx` ×2） | `intrinsics.rs` |
 
-站点登记：`metal` = 3，`cuda` = 2，`musa` = 2（三者合居一个文件，文件登记 = 7），`checkpoint` = 3，`simd` = 32；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。
+站点登记：`metal` = 3，`cuda` = 2，`musa` = 2，`rocm` = 3，`sycl` = 2，`cann` = 2，`mlu` = 2（分居 `crates/gpu/ffi/`，各文件登记 = cuda 2/musa 2/metal 3/rocm 3/sycl 2/cann 2/mlu 2，合计 16），`checkpoint` = 3，`simd` = 32；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。`rocm` 的第三处站点（2026-10-18 随 `matmul` 走 hipBLAS 而新增）把 hipBLAS 的句柄创建与 `hipblasGemmStridedBatched` 收于独立交接块，与 `drive` 的内核交接块分开，`unsafe` 数不随算子面增减。
 
 依据：这些数字由**调用面结构**推导，而非经验取值。Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径的 `dispatch` 把上传、缓冲绑定、标量绑定、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载收进**单一交接块**；累积路径的 `session` 拆成**编码块**（绑定并启动、不等待）与**提交块**（`commit` + 等待 + 下载）两个块——command buffer 单次使用、跨算子共享，故提交只发生一次。每个块内的全部平台调用共享同一个 `// SAFETY:` 前置论证（缓冲均为本块持有或调用者传入的存活 `MTLBuffer`、长度与内核读写一致、`setBytes` 拷贝而非保留、`waitUntilCompleted` 排序读写）。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
 
@@ -2712,6 +2721,8 @@ gpu -> api
 * `CudaBlas::gemm` 一处，因为它是 cuBLAS 中唯一自带 `unsafe` 的入口。cuDNN 的 `SoftmaxForward` 站点已于 2026-10-17 删除：`softmax` 改由同一 NVRTC 启动站点服务，cuda 由 3 降为 2（A/B 依据见 21.10.3）。
 
 MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有像 `cudarc`/`objc2-metal` 那样的第三方安全封装，必须自己写 `extern "C"` 声明与调用（`docs/musa-backend-plan.md` §5.0/§5.4）。在 edition 2024（本工作区 `rust-version = 1.99`）下，`extern` 块声明本身强制为 `unsafe extern "C"`——这是**一个不可消除的 `unsafe` 构造**；所有 `mu*` 调用（`muModuleLoadData`/`muModuleGetFunction`/`muMemAlloc`/`muMemcpy*`/`muLaunchKernel`/`muCtxSynchronize`）被收进**同一个 `unsafe` 块**（`drive` 驱动交接函数），块内调用不再需要逐处标记——这是**第二个、也是最后一个**构造。故 `musa` = 2 是自写 FFI 条件下的理论下限。`musa` 刻意不引入 `muBLAS`/`muDNN`：matmul 由自研 TF32 WMMA 内核（`include/crt/mma.h`，`mtmusa::wmma`）服务——默认路径 `matmulpath::wmma`，标量 FMA 内核保留为 `newfma` 构造的参考路径，契约容差 2e-3（TF32 输入舍入界 2^-11 的 4 倍），FMA 路径仍为 1e-4；softmax 由减最大式内核服务（与 `cpu`/`metal` 同式），因此没有「逐库」站点可加——`musa` 与 `cuda` 现同为 2 个站点（`cuda` 的另一处是 cuBLAS `gemm`）。MUSA 的硬件 `warpSize` 为 128 lane；`m32n32k8` TF32 MMA 是 **wave128** 指令（四个 32-lane warp 协作完成一个 32×32 tile）。真机实测：把 128 线程拆成 4 个独立 32-lane 组、或用 32 线程块执行该形状，都只得到零/部分输出；最终内核以 **128 线程 = 一个 wave128 组**，每块计算 64×32 输出 tile（两个累加器）。完整 tile 用 `float4` 向量装载，下一 K tile 在 MMA 前预取到寄存器、compute 后写回同一 stage（单阶段寄存器流水，不牺牲占用率），块索引按 8 行分组 **CTA Swizzle** 以复用 L2 中的 B tile；输出 stride 32 字节对齐时直接 `store_matrix_sync` 写全局，边缘 tile 走 guarded shared staging。结果 staging 在 K 循环后复用操作数缓冲，共享内存恒为 8.5 KiB。submission 的 `recordmatmul` 也走设备驻留路径：输入只上传一次，中间结果留在设备 slot，`apply` 时一次同步与下载。
+
+GRID 家族（`rocm`/`sycl`/`cann`/`mlu`，2026-10-18 接入）与 `musa` 同式：四家都没有第三方安全封装，必须自写 `extern "C"` 声明与调用，故每家的口径同样是「edition 2024 下限」两站点——`unsafe extern "C"` 声明块一个（不可消除的构造）+ 驱动交接 `unsafe` 块一个（`drive` 把该家全部驱动调用收进单一交接块，块内不再逐处标记）。算子面由共享 `gen_ops!` 宏按每家参数签名统一展开，算子的增减不改变站点数。四个岛的驱动调用与 `musa` 对照：`rocm` 走 `hipModuleLoadData`/`hipLaunchKernel`（fatbin 注册表解析，同 `musa`）；`cann` 走 `aclrtCreateKernel`/`aclrtLaunchKernel`（fatbin 注册表）；`mlu` 走 `cnrtGetKernel`/`cnrtLaunchKernel`（静态链接符号）；`sycl` 经 C 桥（`sycl_queue_new`/`sycl_malloc_shared`/`sycl_*` 算子入口/`sycl_take_error`，USM 共享内存，符号静态链接）。内核源与编译管线由 `build.rs` 配置表（`GRIDFAMILY`）驱动：`rocm`/`cann` 编译为 fatbin 嵌入注册表（`musa` 同式，见 docs/musa-backend-plan.md §5.3），`sycl`/`mlu` 编译为静态库链接。
 
 `checkpoint` 的口径是**每平台一条硬件指令封装**：两个 `unsafe fn` 分别是 aarch64 与 x86_64 的 CRC32C intrinsics（各以一条 `#[target_feature]` 声明所需扩展），第三个是运行期 `is_*_feature_detected!` 通过后的那次调用。安全性由运行期检测保证，语义由 `crc32c(b"123456789") == 0xE306_9283` 与软件 slicing-by-8 的逐长度交叉验证钉住；实测 ARM 上 12.28 GB/s vs 1.25 GB/s（9.8×），decode 4.72→4.29ms。软件路径保留为回退，且**不引入任何 unsafe**。
 
@@ -2738,6 +2749,7 @@ MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有�
 * **CUDA 契约（E1，2026-10-12 真机）。** `tests/it/cudacontract.rs` 共 36 例，在 RTX 2080 Ti 主机上以 `LLM_CUDA_REQUIRE_DEVICE=1` 全部执行通过（36 passed / 0 failed，输出中 0 条 `E4 未执行`）：18 例定案于宿主侧（身份与能力声明、matmul 路径选择、八个算子的形状/下标/空末轴拒绝、元素与 gather 预算、`CUDAMAXHEADDIM` 上限、退化空输入），15 例走设备并与 `testkit::reference` 的标量参考对照（cuBLAS 与 NVRTC 两条 `matmul` 路径、`softmax`、`rmsnorm`、`rope`、`embedding`、`attention`、逐元素，容差 1e-4–1e-5），其余 3 例断言与共享向量列表一致。首次执行暴露并修正了一个用例缺陷，命令与结果见 21.10.3。
 * **CUDA 基准（E1，2026-10-12 真机）。** `benches/cuda.rs` 的十个工作负载在真机上运行，CPU 与 CUDA 两侧在同一进程、同一轮内测量；数字、每调用固定成本的分解与结论见 21.10.3。**不声明任何加速**（VF5）：CUDA 只在三个由 cuBLAS/cuDNN 服务的工作负载上快于 CPU，其余（由 NVRTC 服务）仍慢于 CPU，原因已由测量定位到每次调用的固定成本。
 * **MUSA WMMA 契约与基准（E1，2026-10-17 真机）。** `tests/it/musacontract.rs` 在 MTT S4000 / MUSA 3.1.0 上以 `LLM_MUSA_REQUIRE_DEVICE=1` 跑 **39 passed / 0 failed**（0 条 `E4 未执行`）：WMMA 路径对照标量参考容差 2e-3、FMA 路径 1e-4、两路径互证 2e-3，覆盖 1×1×1、15×16×17、16×16×16、17×19×13、37×51×29、64×64×16、65×63×17、batch [2,17,13]×[2,13,19]、k=0 与 m/n=0 空输出，以及设备驻留 matmul 链（3 步）与 k=0 提交；`checkunsafe.sh` 报 `musa 2/2 (exact)`。基准（criterion 中位数，musa 与 cpu 同组同 run；`benches/musa.rs`）：1024³ FMA **10.110 ms** vs WMMA **2.1250 ms**（**4.76×**）；256³ WMMA **0.9175 ms** vs FMA **1.0798 ms**（WMMA 快 17.7%），CPU **1.3959 ms** vs 默认 WMMA **0.9399 ms**；8×256³ 批处理 CPU **11.906 ms** vs WMMA **1.2202 ms**（9.76×）。**device-resident 基准**（`musa/matmulchain`，8×1024³，输入只上传一次、中间结果留设备、仅最终 `apply` 同步下载）：WMMA **8.495 ms**（每步 1.062 ms）vs FMA **67.908 ms**（每步 8.489 ms），**7.99×**；对比 compute API 的 2.125 ms，每调用约 **1.06 ms** 为 host 固定开销。优化迭代（1024³ WMMA）：32-lane 16×16×8 初版 5.7208 ms → wave128 32×32 2.9479 ms → `float4` 内点装载 2.1530 ms → 64×32 tile + 缓冲复用 2.0568 ms → 寄存器预取 + CTA Swizzle（G=8）约 2.0 ms；经典双 stage 双缓冲因共享内存翻倍、占用率减半而回退（一次运行 1024 +9.5%、256 +38.6%）。**不声明通用加速**：以上是该装置、形状与当前 tile 结构的实测值；共享 GPU 的绝对时间有漂移，同 run 的比例更可靠。官方博客的 ~15× 是优化路径上界而非已兑现结果。
+* **MUSA rmsnormmatmul 融合契约（E1，2026-10-18 真机）。** 套件由 39 增至 **41 passed / 0 failed**（新增融合 `rmsnormmatmul` 的 FP32 合成参照与形状拒绝 2 例，0 条 `E4 未执行`），`musasubmission` 同步 7 例（含设备驻留融合 `submission_rmsnormmatmul_matches_compute_on_musa`）。`matmul_rms` 是独立 FP32 FMA kernel（2D 16×16 tile，不与普通 `matmul` 共享 WMMA 主体），满足 §5 融合算子的 1e-4 精确契约；普通 `matmul` 仍默认 WMMA、2e-3 契约不变（`newfma` 参考路径 1e-4）。同日三路真机全绿：`cudacontract` 50（WSL2 Ubuntu / T600 / CUDA 12.0）、`metalcontract` 51（Apple GPU）、`musacontract` 41 + `musasubmission` 7（MTT S4000 / MUSA 3.1.0）；`clippy -p gpu` 在 metal（musa cfg 出局）与 musa（toolkit 激活）两套 cfg 下均零告警，`checkunsafe.sh` 仍精确 16 站点。
 * **门禁（E1）。** `scripts/checkunsafe.sh` 四项断言全绿（`metal` 4/4 站点、`cuda` 3/3 站点，各有 SAFETY 注释）；`scripts/checknaming.sh`、`scripts/checkthresholds.sh` 与汇总的 `scripts/check.sh`（fmt、全工作区 check/clippy、命名、内联测试、unsafe、阈值、文档）全部通过。（2026-10-17 更新：metal 的四个按类站点已合并为三个驱动交接块，登记数 4→3；同日 cuda 删除 cuDNN softmax 站点，登记数 3→2，见本表；`checkunsafe.sh` 现报 `metal 3/3`、`cuda 2/2`、`musa 2/2`、`checkpoint 3/3`。）
 * **回归（E1）。** `cargo test --workspace` 在 macOS 宿主上 44 个测试目标全部 `test result: ok`、0 failed（exit 0），其中 `tests/it/main.rs` 单个二进制 748 passed / 0 failed；`metalcontract` 的 30 例真实运行，`cudacontract` 因平台 cfg 不参与本机构建。
 

@@ -3,14 +3,15 @@
 // These kernels need `<mma.h>` (the mtmusa WMMA intrinsics), which NVRTC
 // does not provide, so they cannot live in the shared crate root.
 // The reference FMA kernel `matmul` is shared and lives in
-// `matmul.cu` at the crate root; `rmsinv`/`matmul_wmma`/`matmul_rms` stay here.
+// `grid/cuda.c`; `rmsinv`/`matmul_wmma`/`matmul_rms` stay here.
 //
 // Symbols: rmsinv, matmul_wmma, matmul_rms
 
+#include "grid.h"
 #include <mma.h>
 
 // Per-row reciprocal RMS: inv[r] = 1 / sqrt(mean(x[r]^2) + eps).
-// One threadgroup per row; the block reduction matches rmsnorm.cu.
+// One threadgroup per row; the block reduction matches grid/cuda.c rmsnorm.
 // Symbol: rmsinv
 extern "C" __global__ void rmsinv(const float* x, float* inv, unsigned rows,
                                   unsigned width, float eps) {
@@ -51,13 +52,10 @@ namespace wmma = mtmusa::wmma;
 // pipeline. Edge tiles keep the simpler guarded path. The result staging
 // reuses the operand buffer after the K loop.
 //
-// `FUSED` folds an RMSNorm weight and the per-row reciprocal RMS into the A
-// staging; the template keeps the normal path free of the extra multiply.
-//
 // Block indices are swizzled in groups of eight row tiles (CTA swizzle), so
 // consecutive blocks reuse the same B tile through L2 instead of walking the
 // whole column stripe first.
-// Symbols: matmul_wmma, matmul_rms
+// Symbol: matmul_wmma
 constexpr unsigned MATMULWMMABM = 64;
 constexpr unsigned MATMULWMMABN = 32;
 constexpr unsigned MATMULWMMABK = 16;
@@ -111,18 +109,6 @@ static __device__ __forceinline__ void matmul_wmma_load(
         &bb[(size_t)(k0 + rb) * n + blockcol + cb0]);
 }
 
-// Applies the RMS weight and per-row inverse RMS to one A register tile.
-static __device__ __forceinline__ void matmul_wmma_fold(
-    float4& value, const float* rmsweight, unsigned k0, unsigned column,
-    float invrow) {
-    const float4 weight =
-        *reinterpret_cast<const float4 *>(&rmsweight[k0 + column]);
-    value.x *= invrow * weight.x;
-    value.y *= invrow * weight.y;
-    value.z *= invrow * weight.z;
-    value.w *= invrow * weight.w;
-}
-
 // Writes one operand tile from registers into the shared stage.
 static __device__ __forceinline__ void matmul_wmma_store(
     float* as, float* bs, unsigned ra0, unsigned ca0, unsigned ra1,
@@ -133,10 +119,9 @@ static __device__ __forceinline__ void matmul_wmma_store(
     *reinterpret_cast<float4 *>(&bs[rb * MATMULWMMABS + cb0]) = b0;
 }
 
-template <bool FUSED>
 static __device__ __forceinline__ void matmul_wmma_body(
-    const float* a, const float* rmsweight, const float* inv, const float* b,
-    float* c, unsigned m, unsigned k, unsigned n, unsigned batch) {
+    const float* a, const float* b, float* c, unsigned m, unsigned k,
+    unsigned n, unsigned batch) {
     // `cs` reuses the operand buffer after the K loop.
     static_assert(MATMULWMMACSIZE <= MATMULWMMAASIZE + MATMULWMMABSIZE,
                   "result staging must fit in the operand buffer");
@@ -160,7 +145,6 @@ static __device__ __forceinline__ void matmul_wmma_body(
     const unsigned pidn = (pid % groupwidth) / grouprows;
     const unsigned blockrow = pidm * MATMULWMMABM;
     const unsigned blockcol = pidn * MATMULWMMABN;
-    const unsigned invbase = blockIdx.z * m;
 
     const unsigned tid = threadIdx.x;
     const float* ab = a + (size_t)blockIdx.z * m * k;
@@ -191,8 +175,6 @@ static __device__ __forceinline__ void matmul_wmma_body(
         const unsigned jb = tid * 4;
         const unsigned rb = jb / MATMULWMMABN;
         const unsigned cb0 = jb % MATMULWMMABN;
-        const float inv0 = FUSED ? inv[invbase + blockrow + ra0] : 1.0f;
-        const float inv1 = FUSED ? inv[invbase + blockrow + ra1] : 1.0f;
 
         float4 a0;
         float4 a1;
@@ -200,10 +182,6 @@ static __device__ __forceinline__ void matmul_wmma_body(
         if (ktiles > 0) {
             matmul_wmma_load(ab, bb, blockrow, blockcol, k, n, 0, ra0, ca0,
                              ra1, ca1, rb, cb0, a0, a1, b0);
-            if (FUSED) {
-                matmul_wmma_fold(a0, rmsweight, 0, ca0, inv0);
-                matmul_wmma_fold(a1, rmsweight, 0, ca1, inv1);
-            }
             matmul_wmma_store(as, bs, ra0, ca0, ra1, ca1, rb, cb0, a0, a1, b0);
         }
         __syncthreads();
@@ -214,10 +192,6 @@ static __device__ __forceinline__ void matmul_wmma_body(
                 const unsigned k0 = (kt + 1) * MATMULWMMABK;
                 matmul_wmma_load(ab, bb, blockrow, blockcol, k, n, k0, ra0,
                                  ca0, ra1, ca1, rb, cb0, a0, a1, b0);
-                if (FUSED) {
-                    matmul_wmma_fold(a0, rmsweight, k0, ca0, inv0);
-                    matmul_wmma_fold(a1, rmsweight, k0, ca1, inv1);
-                }
             }
             matmul_wmma_tile(as, bs, acc);
             __syncthreads();
@@ -239,9 +213,6 @@ static __device__ __forceinline__ void matmul_wmma_body(
                 float value = 0.0f;
                 if (gr < m && gk < k) {
                     value = ab[(size_t)gr * k + gk];
-                    if (FUSED) {
-                        value *= rmsweight[gk] * inv[invbase + gr];
-                    }
                 }
                 as[r * MATMULWMMAAS + col] = value;
             }
@@ -291,14 +262,34 @@ static __device__ __forceinline__ void matmul_wmma_body(
 extern "C" __global__ void matmul_wmma(const float* a, const float* b,
                                        float* c, unsigned m, unsigned k,
                                        unsigned n, unsigned batch) {
-    matmul_wmma_body<false>(a, nullptr, nullptr, b, c, m, k, n, batch);
+    matmul_wmma_body(a, b, c, m, k, n, batch);
 }
 
-// Tensor-Core matmul with RMSNorm weight and per-row reciprocal RMS folded into
-// the A staging: out = (x * weight * inv_row) @ b.
+// FP32 fused RMSNorm+matmul: out = (x * weight * inv_row) @ b.
+//
+// This deliberately keeps full fp32 precision (no TF32 operand rounding) so
+// the fused operator meets the documented 1e-4 numerical contract; the
+// reciprocal-RMS table is produced by rmsinv. Folding the weight and per-row
+// scale into the A load still avoids materialising the normalised activation,
+// which is the kernel's memory-traffic saving. The 2D tile layout matches the
+// shared reference `matmul` in grid/cuda.c.
 extern "C" __global__ void matmul_rms(const float* a, const float* weight,
                                       const float* inv, const float* b,
                                       float* c, unsigned m, unsigned k,
                                       unsigned n, unsigned batch) {
-    matmul_wmma_body<true>(a, weight, inv, b, c, m, k, n, batch);
+    const unsigned row = blockIdx.y * blockDim.y + threadIdx.y;
+    const unsigned col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= m || col >= n) {
+        return;
+    }
+    const float scale = inv[(size_t)blockIdx.z * m + row];
+    const float* ab = a + (size_t)blockIdx.z * m * k;
+    const float* bb = b + (size_t)blockIdx.z * k * n;
+    float* cb = c + (size_t)blockIdx.z * m * n;
+    float acc = 0.0f;
+    for (unsigned i = 0; i < k; ++i) {
+        acc += ab[(size_t)row * k + i] * weight[i] * scale *
+               bb[(size_t)i * n + col];
+    }
+    cb[(size_t)row * n + col] = acc;
 }

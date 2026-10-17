@@ -370,14 +370,18 @@ fn matmul_rejects_operands_beyond_the_element_budget() {
     ));
 }
 
-/// The fused rmsnorm+matmul matches the composed kernels and the scalar
-/// reference within the TF32 tolerance.
+/// The fused rmsnorm+matmul is full precision even on the default Tensor-Core
+/// executor: it matches the fp32 FMA composed kernels and the scalar reference
+/// within the 1e-4 fused-operator contract. The sin operands are strongly
+/// cancelling, so a TF32 matmul diverges; passing here proves the fused kernel
+/// keeps fp32 operands rather than rounding them to TF32.
 #[test]
 fn rmsnormmatmul_matches_the_composed_reference() {
     if !hasdevice("rmsnormmatmul_matches_the_composed_reference") {
         return;
     }
     let exec = musaexecutor::new(wide());
+    let fmaexec = musaexecutor::newfma(wide());
     let (m, k, n) = (31usize, 64usize, 48usize);
     let input: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.13).sin()).collect();
     let weights: Vec<f32> = (0..k).map(|i| (i as f32 * 0.17).cos() + 1.5).collect();
@@ -388,15 +392,19 @@ fn rmsnormmatmul_matches_the_composed_reference() {
     let fused = exec
         .rmsnormmatmul(&x.getview(), &wv.getview(), &b.getview(), 1.0e-5)
         .unwrap();
-    let normed = exec.rmsnorm(&x.getview(), &wv.getview(), 1.0e-5).unwrap();
-    let composed = exec.matmul(&normed.getview(), &b.getview()).unwrap();
-    assertallclose(fused.getdata(), composed.getdata(), 2.0e-3, 2.0e-3);
+    // The comparison basis is the fp32 FMA composed form; the default
+    // executor's standalone matmul is TF32 and is not the fused contract.
+    let normed = fmaexec
+        .rmsnorm(&x.getview(), &wv.getview(), 1.0e-5)
+        .unwrap();
+    let composed = fmaexec.matmul(&normed.getview(), &b.getview()).unwrap();
+    assertallclose(fused.getdata(), composed.getdata(), 1.0e-4, 1.0e-4);
     let mut want = Vec::new();
     for row in input.chunks(k) {
         let normalized = reference::rmsnorm(row, &weights, 1.0e-5);
         want.extend(reference::matmul(&normalized, &rhs, 1, k, n));
     }
-    assertallclose(fused.getdata(), &want, 2.0e-3, 2.0e-3);
+    assertallclose(fused.getdata(), &want, 1.0e-4, 1.0e-4);
 }
 
 /// The fused path rejects the same malformed shapes as its components.

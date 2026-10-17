@@ -1,5 +1,8 @@
 // Metal Shading Language sources for the Metal backend.
 //
+// GRID constants and the dialect macro are spliced in front of this source
+// by the Rust runtime (ffi.rs `compilelibrary`); see grid/grid.h.
+//
 // One translation unit holds every kernel entry the backend dispatches; the
 // runtime compiles it once through `newLibraryWithSource` and then builds one
 // compute pipeline per entry. The sections below were originally separate
@@ -12,7 +15,6 @@
 #include <metal_stdlib>
 using namespace metal;
 
-#define NEGLARGE (-3.402823466e+38f)
 
 // ===========================================================================
 // attention
@@ -20,7 +22,7 @@ using namespace metal;
 // Fused scaled-dot-product attention kernel, compiled at run time through
 // newLibraryWithSource. One threadgroup per (query position, head); scores are
 // recomputed, not materialized. Threadgroup memory is proportional to
-// 2 * ATTENTIONLANES + METALMAXHEADDIM, independent of sequence length. NEGLARGE
+// 2 * ATTENTIONLANES + METALMAXHEADDIM, independent of sequence length. GRID_NEGLARGE
 // is the most negative finite f32 (not -inf). p carries qseq, kvseq, heads,
 // kvheads, headdim, causal as six uint values at indices 0..5. Runs with exactly
 // ATTENTIONLANES threads per threadgroup; accum is sized by METALMAXHEADDIM, so
@@ -88,22 +90,20 @@ kernel void attention(device const float* q [[buffer(0)]],
     device const float* qrow = q + ((size_t)position * heads + head) * headdim;
     float scale = 1.0f / sqrt((float)headdim);
 
-    float localmax = NEGLARGE;
-    for (uint key = tid; key < limit; key += tg) {
-        device const float* krow = k + ((size_t)key * kvheads + kvhead) * headdim;
-        float score = attentiondot(qrow, krow, headdim) * scale;
-        if (score > localmax) {
-            localmax = score;
-        }
-    }
-    float maxv = reducemax(scratch, localmax, tid, tg);
-
+    // Online softmax: one pass computes the running max and the running
+    // sum, so each QK score is evaluated twice instead of three times
+    // (the PV pass below re-evaluates scores).
+    float runningmax = GRID_NEGLARGE;
     float localsum = 0.0f;
     for (uint key = tid; key < limit; key += tg) {
         device const float* krow = k + ((size_t)key * kvheads + kvhead) * headdim;
-        localsum += exp(attentiondot(qrow, krow, headdim) * scale - maxv);
+        float score = attentiondot(qrow, krow, headdim) * scale;
+        float nm = (score > runningmax) ? score : runningmax;
+        localsum = localsum * exp(runningmax - nm) + exp(score - nm);
+        runningmax = nm;
     }
-    float total = reducesum(scratch, localsum, tid, tg);
+    float maxv = reducemax(scratch, runningmax, tid, tg);
+    float total = reducesum(scratch, localsum * exp(runningmax - maxv), tid, tg);
 
     for (uint d = tid; d < headdim; d += tg) {
         accum[d] = 0.0f;
@@ -210,28 +210,21 @@ kernel void attention_cached(
     device const float* qrow = q + ((size_t)head) * headdim;
     float scale = 1.0f / sqrt((float)headdim);
 
-    float localmax = NEGLARGE;
-    for (uint key = tid; key < limit; key += tg) {
-        device const float* krow = (key < pos)
-            ? (ck + ((size_t)key * kvheads + kvhead) * headdim)
-            : (nk + ((size_t)kvhead) * headdim);
-        float score = attentioncacheddot(qrow, krow, headdim) * scale;
-        if (score > localmax) {
-            localmax = score;
-        }
-    }
-    scratch[tid] = localmax;
-    float maxv = cachedreducemax(scratch, localmax, tid, tg);
-
+    // Online softmax, same as `attention` above: one pass for the running
+    // max and running sum (two score evaluations instead of three).
+    float runningmax = GRID_NEGLARGE;
     float localsum = 0.0f;
     for (uint key = tid; key < limit; key += tg) {
         device const float* krow = (key < pos)
             ? (ck + ((size_t)key * kvheads + kvhead) * headdim)
             : (nk + ((size_t)kvhead) * headdim);
-        localsum += exp(attentioncacheddot(qrow, krow, headdim) * scale - maxv);
+        float score = attentioncacheddot(qrow, krow, headdim) * scale;
+        float nm = (score > runningmax) ? score : runningmax;
+        localsum = localsum * exp(runningmax - nm) + exp(score - nm);
+        runningmax = nm;
     }
-    scratch[tid] = localsum;
-    float total = cachedreducesum(scratch, localsum, tid, tg);
+    float maxv = cachedreducemax(scratch, runningmax, tid, tg);
+    float total = cachedreducesum(scratch, localsum * exp(runningmax - maxv), tid, tg);
 
     for (uint d = tid; d < headdim; d += tg) {
         accum[d] = 0.0f;
@@ -519,7 +512,7 @@ kernel void scan(device const float* input [[buffer(0)]],
 // f32 semigroup scan, parallel three-stage kernel family, compiled at run time
 // through newLibraryWithSource. The serial per-channel kernel (scan.metal)
 // remains the bit-for-bit reference and the fallback for state widths above
-// LLM_SCAN_MAXN; this file provides the measured parallel path.
+// GRID_SCANMAXN; this file provides the measured parallel path.
 //
 // Mathematics (docs/lld.md §5.6, verification 5b): the recurrence is fully
 // independent per component j in [0, d*N):
@@ -535,10 +528,9 @@ kernel void scan(device const float* input [[buffer(0)]],
 // Grid layout shared by the block kernels: width = P sequence blocks, height =
 // ceil(d / LANES) channel groups; each threadgroup holds LANES threads, one per
 // channel i = group_y * LANES + thread. Works for any d, and for N ≤
-// LLM_SCAN_MAXN (the thread-local state array is compile-time sized).
+// GRID_SCANMAXN (the thread-local state array is compile-time sized).
 
 
-#define LLM_SCAN_MAXN 256
 #define LLM_SCAN_LANES 256
 
 // Pass 1: per-block total. Thread i aggregates the block's semigroup product
@@ -647,7 +639,7 @@ kernel void scan_apply(device const float* input [[buffer(0)]],
     const uint t1 = min(t0 + chunk, n);
     const uint dN = d * N;
     const uint base = block * (2u * dN);
-    thread float h[LLM_SCAN_MAXN];
+    thread float h[GRID_SCANMAXN];
     for (uint j = 0; j < N; ++j) {
         const uint idx = i * N + j;
         h[j] = block_prefix[base + idx] * init[idx] + block_prefix[base + dN + idx];

@@ -23,7 +23,13 @@ cd "$ROOT_DIR"
 
 # file:registered-count (exact match, not a ceiling)
 WHITELIST=(
-  "crates/gpu/ffi.rs:7"
+  "crates/gpu/ffi/cuda/drive.rs:2"
+  "crates/gpu/ffi/musa/drive.rs:2"
+  "crates/gpu/ffi/metal/drive.rs:3"
+  "crates/gpu/ffi/rocm.rs:3"
+  "crates/gpu/ffi/sycl.rs:2"
+  "crates/gpu/ffi/cann.rs:2"
+  "crates/gpu/ffi/mlu.rs:2"
   "crates/checkpoint/src/crc32c_hw.rs:3"
   "crates/simd/src/intrinsics.rs:32"
 )
