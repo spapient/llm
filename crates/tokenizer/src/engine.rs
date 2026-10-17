@@ -1,5 +1,6 @@
 use lib::tokenid;
-use serde_json::{Map, Value};
+use lib::{jsonvalue, parse_str};
+use std::collections::BTreeMap;
 
 use crate::chat::{chatmessage, chattemplate};
 use crate::decode::{decoder, parsedecoder};
@@ -75,12 +76,11 @@ impl tokenizer {
     /// id is out of range or conflicting, or the configured unknown token is
     /// absent from the vocabulary.
     pub fn fromjson(json: &str) -> Result<Self, tokenizererror> {
-        let root: Value =
-            serde_json::from_str(json).map_err(|error| tokenizererror::invalidjson {
-                line: error.line(),
-                column: error.column(),
-            })?;
-        let rootobject = root.as_object().ok_or(tokenizererror::rootnotobject)?;
+        let root: jsonvalue = parse_str(json).map_err(|error| tokenizererror::invalidjson {
+            line: error.getline(),
+            column: error.getcolumn(),
+        })?;
+        let rootobject = root.getobject().ok_or(tokenizererror::rootnotobject)?;
 
         let (modeltype, model) = parsemodel(rootobject)?;
         let added = match rootobject.get("added_tokens") {
@@ -693,7 +693,7 @@ struct modelparts {
 /// Builds the vocabulary and merge tables for the declared model type.
 fn parsemodelparts(
     modeltype: &str,
-    model: &Map<String, Value>,
+    model: &BTreeMap<String, jsonvalue>,
     added: &[(String, u32, bool)],
 ) -> Result<modelparts, tokenizererror> {
     match modeltype {
@@ -738,13 +738,11 @@ fn parsemodelparts(
                 parseunigramvocab(model.get("vocab").ok_or(tokenizererror::missingfield {
                     field: "model.vocab",
                 })?)?;
-            let unk_id =
-                model
-                    .get("unk_id")
-                    .and_then(Value::as_u64)
-                    .ok_or(tokenizererror::missingfield {
-                        field: "model.unk_id",
-                    })? as u32;
+            let unk_id = model.get("unk_id").and_then(jsonvalue::getunsigned).ok_or(
+                tokenizererror::missingfield {
+                    field: "model.unk_id",
+                },
+            )? as u32;
             let mut entries: Vec<(String, u32)> = pieces
                 .iter()
                 .enumerate()
@@ -776,17 +774,19 @@ fn parsemodelparts(
 ///
 /// Some real `tokenizer.json` files (e.g. GPT-2) omit `model.type`; the only
 /// supported model is BPE, so an absent type is treated as BPE.
-fn parsemodel(root: &Map<String, Value>) -> Result<(String, &Map<String, Value>), tokenizererror> {
+fn parsemodel(
+    root: &BTreeMap<String, jsonvalue>,
+) -> Result<(String, &BTreeMap<String, jsonvalue>), tokenizererror> {
     let model = root
         .get("model")
         .ok_or(tokenizererror::missingfield { field: "model" })?
-        .as_object()
+        .getobject()
         .ok_or(tokenizererror::unexpectedtype {
             field: "model",
             expected: "object",
         })?;
     let modeltype = match model.get("type") {
-        Some(value) => value.as_str().ok_or(tokenizererror::unexpectedtype {
+        Some(value) => value.getstr().ok_or(tokenizererror::unexpectedtype {
             field: "model.type",
             expected: "string",
         })?,
@@ -797,13 +797,15 @@ fn parsemodel(root: &Map<String, Value>) -> Result<(String, &Map<String, Value>)
 }
 
 /// Returns the `model.vocab` object.
-fn parsevocabobject(model: &Map<String, Value>) -> Result<&Map<String, Value>, tokenizererror> {
+fn parsevocabobject(
+    model: &BTreeMap<String, jsonvalue>,
+) -> Result<&BTreeMap<String, jsonvalue>, tokenizererror> {
     model
         .get("vocab")
         .ok_or(tokenizererror::missingfield {
             field: "model.vocab",
         })?
-        .as_object()
+        .getobject()
         .ok_or(tokenizererror::unexpectedtype {
             field: "model.vocab",
             expected: "object",
@@ -811,9 +813,9 @@ fn parsevocabobject(model: &Map<String, Value>) -> Result<&Map<String, Value>, t
 }
 
 /// Returns the optional `model.byte_fallback` flag, defaulting to `false`.
-fn parsebytefallback(model: &Map<String, Value>) -> Result<bool, tokenizererror> {
+fn parsebytefallback(model: &BTreeMap<String, jsonvalue>) -> Result<bool, tokenizererror> {
     match model.get("byte_fallback") {
-        Some(value) => value.as_bool().ok_or(tokenizererror::unexpectedtype {
+        Some(value) => value.getbool().ok_or(tokenizererror::unexpectedtype {
             field: "model.byte_fallback",
             expected: "boolean",
         }),
@@ -822,9 +824,9 @@ fn parsebytefallback(model: &Map<String, Value>) -> Result<bool, tokenizererror>
 }
 
 /// Returns the `model.ignore_merges` flag, defaulting to `false`.
-fn parseignoremerges(model: &Map<String, Value>) -> Result<bool, tokenizererror> {
+fn parseignoremerges(model: &BTreeMap<String, jsonvalue>) -> Result<bool, tokenizererror> {
     match model.get("ignore_merges") {
-        Some(value) => value.as_bool().ok_or(tokenizererror::unexpectedtype {
+        Some(value) => value.getbool().ok_or(tokenizererror::unexpectedtype {
             field: "model.ignore_merges",
             expected: "boolean",
         }),
@@ -833,12 +835,12 @@ fn parseignoremerges(model: &Map<String, Value>) -> Result<bool, tokenizererror>
 }
 
 /// Returns the optional `model.unk_token` string.
-fn parseunkcontent(model: &Map<String, Value>) -> Result<Option<String>, tokenizererror> {
+fn parseunkcontent(model: &BTreeMap<String, jsonvalue>) -> Result<Option<String>, tokenizererror> {
     match model.get("unk_token") {
-        Some(value) if value.is_null() => Ok(None),
+        Some(value) if value.isnull() => Ok(None),
         Some(value) => Ok(Some(
             value
-                .as_str()
+                .getstr()
                 .ok_or(tokenizererror::unexpectedtype {
                     field: "model.unk_token",
                     expected: "string",
@@ -851,12 +853,12 @@ fn parseunkcontent(model: &Map<String, Value>) -> Result<Option<String>, tokeniz
 
 /// Returns the optional top-level string field `field`.
 fn parseoptionalstring(
-    root: &Map<String, Value>,
+    root: &BTreeMap<String, jsonvalue>,
     field: &'static str,
 ) -> Result<Option<String>, tokenizererror> {
     match root.get(field) {
         Some(value) => {
-            let content = value.as_str().ok_or(tokenizererror::unexpectedtype {
+            let content = value.getstr().ok_or(tokenizererror::unexpectedtype {
                 field,
                 expected: "string",
             })?;
@@ -866,10 +868,10 @@ fn parseoptionalstring(
     }
 }
 
-fn parsevocab(map: &Map<String, Value>) -> Result<Vec<(String, u32)>, tokenizererror> {
+fn parsevocab(map: &BTreeMap<String, jsonvalue>) -> Result<Vec<(String, u32)>, tokenizererror> {
     let mut entries = Vec::with_capacity(map.len());
     for (content, value) in map {
-        let raw = value.as_u64().ok_or(tokenizererror::unexpectedtype {
+        let raw = value.getunsigned().ok_or(tokenizererror::unexpectedtype {
             field: "model.vocab",
             expected: "integer",
         })?;
@@ -879,8 +881,8 @@ fn parsevocab(map: &Map<String, Value>) -> Result<Vec<(String, u32)>, tokenizere
     Ok(entries)
 }
 
-fn parsemerges(value: &Value) -> Result<Vec<String>, tokenizererror> {
-    let array = value.as_array().ok_or(tokenizererror::unexpectedtype {
+fn parsemerges(value: &jsonvalue) -> Result<Vec<String>, tokenizererror> {
+    let array = value.getarray().ok_or(tokenizererror::unexpectedtype {
         field: "model.merges",
         expected: "array",
     })?;
@@ -888,14 +890,14 @@ fn parsemerges(value: &Value) -> Result<Vec<String>, tokenizererror> {
     for (index, item) in array.iter().enumerate() {
         // Two in-the-wild shapes: `"left right"` strings and `["left", "right"]`
         // pairs (qwen3 uses the latter).
-        if let Some(merge) = item.as_str() {
+        if let Some(merge) = item.getstr() {
             merges.push(merge.to_string());
             continue;
         }
-        if let Some(pair) = item.as_array()
+        if let Some(pair) = item.getarray()
             && let (Some(left), Some(right)) = (
-                pair.first().and_then(Value::as_str),
-                pair.get(1).and_then(Value::as_str),
+                pair.first().and_then(jsonvalue::getstr),
+                pair.get(1).and_then(jsonvalue::getstr),
             )
         {
             merges.push(format!("{left} {right}"));
@@ -906,29 +908,29 @@ fn parsemerges(value: &Value) -> Result<Vec<String>, tokenizererror> {
     Ok(merges)
 }
 
-fn parseaddedtokens(value: &Value) -> Result<Vec<(String, u32, bool)>, tokenizererror> {
-    let array = value.as_array().ok_or(tokenizererror::unexpectedtype {
+fn parseaddedtokens(value: &jsonvalue) -> Result<Vec<(String, u32, bool)>, tokenizererror> {
+    let array = value.getarray().ok_or(tokenizererror::unexpectedtype {
         field: "added_tokens",
         expected: "array",
     })?;
     let mut added = Vec::with_capacity(array.len());
     for (index, item) in array.iter().enumerate() {
         let object = item
-            .as_object()
+            .getobject()
             .ok_or(tokenizererror::malformedspecialtoken { index })?;
         let raw = object
             .get("id")
-            .and_then(Value::as_u64)
+            .and_then(jsonvalue::getunsigned)
             .ok_or(tokenizererror::malformedspecialtoken { index })?;
         let id = u32::try_from(raw).map_err(|_| tokenizererror::idoutofrange { id: raw })?;
         let content = object
             .get("content")
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::malformedspecialtoken { index })?
             .to_string();
         let special = match object.get("special") {
             Some(flag) => flag
-                .as_bool()
+                .getbool()
                 .ok_or(tokenizererror::malformedspecialtoken { index })?,
             None => false,
         };

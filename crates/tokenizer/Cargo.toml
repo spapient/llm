@@ -11,7 +11,6 @@ description = "Tokenization, vocabulary, byte-pair encoding, special tokens, and
 name = "tokenizer"
 
 [dependencies]
-serde_json.workspace = true
 fancy-regex.workspace = true
 unicode-normalization.workspace = true
 lib = { path = "../lib" }

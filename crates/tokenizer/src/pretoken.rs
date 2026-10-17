@@ -6,6 +6,8 @@
 //! This module owns those two fixed pieces as pure functions; wiring them into
 //! `encode`/`decode` is the caller's concern.
 
+use lib::jsonvalue;
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 /// The GPT-2 byte-to-unicode alphabet, computed once on first use.
@@ -414,45 +416,45 @@ fn splitisolated<'a>(
 
 /// Parses the `pre_tokenizer` section, if present.
 pub(crate) fn parsepretokenizer(
-    root: &serde_json::Map<String, serde_json::Value>,
+    root: &BTreeMap<String, jsonvalue>,
 ) -> Result<Option<pretokenizer>, crate::error::tokenizererror> {
     let Some(value) = root.get("pre_tokenizer") else {
         return Ok(None);
     };
-    if value.is_null() {
+    if value.isnull() {
         return Ok(None);
     }
     Ok(Some(parseone(value)?))
 }
 
 /// Parses one pre-tokenizer object.
-fn parseone(value: &serde_json::Value) -> Result<pretokenizer, crate::error::tokenizererror> {
+fn parseone(value: &jsonvalue) -> Result<pretokenizer, crate::error::tokenizererror> {
     use crate::error::tokenizererror;
-    use serde_json::Value;
 
-    let object = value.as_object().ok_or(tokenizererror::unexpectedtype {
+    let object = value.getobject().ok_or(tokenizererror::unexpectedtype {
         field: "pre_tokenizer",
         expected: "object",
     })?;
-    let kind = object
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or(tokenizererror::missingfield {
-            field: "pre_tokenizer.type",
-        })?;
+    let kind =
+        object
+            .get("type")
+            .and_then(jsonvalue::getstr)
+            .ok_or(tokenizererror::missingfield {
+                field: "pre_tokenizer.type",
+            })?;
     match kind {
         "ByteLevel" => Ok(pretokenizer::bytelevel {
             useregex: object
                 .get("use_regex")
-                .and_then(Value::as_bool)
+                .and_then(jsonvalue::getbool)
                 .unwrap_or(true),
         }),
         "Split" => {
             let pattern = object
                 .get("pattern")
-                .and_then(|p| p.as_object())
+                .and_then(|p| p.getobject())
                 .and_then(|p| p.get("Regex"))
-                .and_then(Value::as_str)
+                .and_then(jsonvalue::getstr)
                 .ok_or(tokenizererror::unsupportedpretokenizer {
                     pretype: "Split without Regex pattern".to_string(),
                 })?;
@@ -465,19 +467,22 @@ fn parseone(value: &serde_json::Value) -> Result<pretokenizer, crate::error::tok
         "Metaspace" => {
             let replacement = object
                 .get("replacement")
-                .and_then(Value::as_str)
+                .and_then(jsonvalue::getstr)
                 .unwrap_or("▁")
                 .to_string();
             let add_prefix_space = object
                 .get("add_prefix_space")
-                .and_then(Value::as_bool)
+                .and_then(jsonvalue::getbool)
                 .unwrap_or(false);
             let prepend = object
                 .get("prepend_scheme")
-                .and_then(Value::as_str)
+                .and_then(jsonvalue::getstr)
                 .is_some_and(|scheme| scheme != "never")
                 || add_prefix_space;
-            let split = object.get("split").and_then(Value::as_bool).unwrap_or(true);
+            let split = object
+                .get("split")
+                .and_then(jsonvalue::getbool)
+                .unwrap_or(true);
             Ok(pretokenizer::metaspace {
                 replacement,
                 prepend,
@@ -487,7 +492,7 @@ fn parseone(value: &serde_json::Value) -> Result<pretokenizer, crate::error::tok
         "Sequence" => {
             let children = object
                 .get("pretokenizers")
-                .and_then(Value::as_array)
+                .and_then(jsonvalue::getarray)
                 .ok_or(tokenizererror::missingfield {
                     field: "pre_tokenizer.pretokenizers",
                 })?;

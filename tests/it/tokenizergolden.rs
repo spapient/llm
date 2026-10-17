@@ -10,7 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ::tokenizer::tokenizer as tokenizerengine;
-use lib::tokenid;
+use lib::{jsonvalue, parse_str, tokenid};
 
 const MODELS: [&str; 12] = [
     "gpt2", "llama2", "llama3", "qwen3", "deepseek", "gemma", "mamba3", "llama4", "mistral",
@@ -24,29 +24,29 @@ fn loadtokenizer(model: &str) -> tokenizerengine {
     tokenizerengine::fromjson(&document).unwrap()
 }
 
-fn loadsamples(model: &str) -> serde_json::Value {
+fn loadsamples(model: &str) -> jsonvalue {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
     let path = format!("{dir}/{model}/{model}_golden.json");
     let text = std::fs::read_to_string(path).unwrap();
-    serde_json::from_str(&text).unwrap()
+    parse_str(&text).unwrap()
 }
 
-fn sampletext(sample: &serde_json::Value) -> &str {
+fn sampletext(sample: &jsonvalue) -> &str {
     sample
         .get("input")
         .or_else(|| sample.get("text"))
-        .and_then(serde_json::Value::as_str)
+        .and_then(jsonvalue::getstr)
         .unwrap()
 }
 
-fn samplerawids(sample: &serde_json::Value) -> Vec<u32> {
+fn samplerawids(sample: &jsonvalue) -> Vec<u32> {
     sample
         .get("ids")
         .or_else(|| sample.get("raw_ids"))
-        .and_then(serde_json::Value::as_array)
+        .and_then(jsonvalue::getarray)
         .unwrap()
         .iter()
-        .map(|value| value.as_u64().unwrap() as u32)
+        .map(|value| value.getunsigned().unwrap() as u32)
         .collect()
 }
 
@@ -55,7 +55,7 @@ fn encodes_match_the_hf_reference() {
     for model in MODELS {
         let tok = loadtokenizer(model);
         let golden = loadsamples(model);
-        for sample in golden["samples"].as_array().unwrap() {
+        for sample in golden.get("samples").and_then(jsonvalue::getarray).unwrap() {
             let input = sampletext(sample);
             let expected = samplerawids(sample);
             let ids = tok.encodespecial(input).unwrap();
@@ -70,13 +70,13 @@ fn decodes_match_the_hf_reference() {
     for model in MODELS {
         let tok = loadtokenizer(model);
         let golden = loadsamples(model);
-        for sample in golden["samples"].as_array().unwrap() {
+        for sample in golden.get("samples").and_then(jsonvalue::getarray).unwrap() {
             let input = sampletext(sample);
             let ids: Vec<tokenid> = samplerawids(sample).into_iter().map(tokenid::new).collect();
             let expected = sample
                 .get("decoded_no_skip")
                 .or_else(|| sample.get("decoded"))
-                .and_then(serde_json::Value::as_str)
+                .and_then(jsonvalue::getstr)
                 .unwrap();
             // A special-token-only sample decodes to "" under
             // `skip_special_tokens=true` (the golden's `decoded` field), a quirk
@@ -100,16 +100,16 @@ fn o200k_matches_the_tiktoken_reference() {
         ("<|endofprompt|>".to_string(), 200_018u32),
     ];
     let tok = tiktokenizer::fromfile(&content, &specials).unwrap();
-    let golden: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/o200k_golden.json")).unwrap())
-            .unwrap();
-    for sample in golden["samples"].as_array().unwrap() {
-        let text = sample["text"].as_str().unwrap();
-        let expected: Vec<u32> = sample["raw_ids"]
-            .as_array()
+    let golden: jsonvalue =
+        parse_str(&std::fs::read_to_string(format!("{dir}/o200k_golden.json")).unwrap()).unwrap();
+    for sample in golden.get("samples").and_then(jsonvalue::getarray).unwrap() {
+        let text = sample.get("text").and_then(jsonvalue::getstr).unwrap();
+        let expected: Vec<u32> = sample
+            .get("raw_ids")
+            .and_then(jsonvalue::getarray)
             .unwrap()
             .iter()
-            .map(|value| value.as_u64().unwrap() as u32)
+            .map(|value| value.getunsigned().unwrap() as u32)
             .collect();
         let ids = tok.encode(text).unwrap();
         let got: Vec<u32> = ids.iter().map(|id| id.get()).collect();
@@ -118,7 +118,7 @@ fn o200k_matches_the_tiktoken_reference() {
         let decoded = tok.decode(&ids).unwrap();
         assert_eq!(
             decoded,
-            sample["decoded"].as_str().unwrap(),
+            sample.get("decoded").and_then(jsonvalue::getstr).unwrap(),
             "o200k decode mismatch for {text:?}"
         );
     }
@@ -129,28 +129,36 @@ fn kimi_matches_the_tiktoken_reference() {
     use ::tokenizer::tiktokenizer;
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kimi");
     let content = std::fs::read_to_string(format!("{dir}/kimi_tiktoken.model")).unwrap();
-    let golden: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap())
-            .unwrap();
-    let specials: Vec<(String, u32)> = golden["meta"]["specials"]
-        .as_array()
+    let golden: jsonvalue =
+        parse_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap()).unwrap();
+    let specials: Vec<(String, u32)> = golden
+        .get("meta")
+        .and_then(jsonvalue::getobject)
+        .unwrap()
+        .get("specials")
+        .and_then(jsonvalue::getarray)
         .unwrap()
         .iter()
         .map(|entry| {
             (
-                entry["content"].as_str().unwrap().to_string(),
-                entry["id"].as_u64().unwrap() as u32,
+                entry
+                    .get("content")
+                    .and_then(jsonvalue::getstr)
+                    .unwrap()
+                    .to_string(),
+                entry.get("id").and_then(jsonvalue::getunsigned).unwrap() as u32,
             )
         })
         .collect();
     let tok = tiktokenizer::fromfilehan(&content, &specials).unwrap();
-    for sample in golden["samples"].as_array().unwrap() {
-        let text = sample["text"].as_str().unwrap();
-        let expected: Vec<u32> = sample["raw_ids"]
-            .as_array()
+    for sample in golden.get("samples").and_then(jsonvalue::getarray).unwrap() {
+        let text = sample.get("text").and_then(jsonvalue::getstr).unwrap();
+        let expected: Vec<u32> = sample
+            .get("raw_ids")
+            .and_then(jsonvalue::getarray)
             .unwrap()
             .iter()
-            .map(|value| value.as_u64().unwrap() as u32)
+            .map(|value| value.getunsigned().unwrap() as u32)
             .collect();
         let ids = tok.encode(text).unwrap();
         let got: Vec<u32> = ids.iter().map(|id| id.get()).collect();
@@ -159,7 +167,7 @@ fn kimi_matches_the_tiktoken_reference() {
         let decoded = tok.decode(&ids).unwrap();
         assert_eq!(
             decoded,
-            sample["decoded"].as_str().unwrap(),
+            sample.get("decoded").and_then(jsonvalue::getstr).unwrap(),
             "kimi decode mismatch for {text:?}"
         );
     }
@@ -174,17 +182,14 @@ fn postprocess_matches_the_wrapped_reference() {
     for model in MODELS {
         let tok = loadtokenizer(model);
         let golden = loadsamples(model);
-        for sample in golden["samples"].as_array().unwrap() {
-            let Some(wrapped) = sample
-                .get("wrapped_ids")
-                .and_then(serde_json::Value::as_array)
-            else {
+        for sample in golden.get("samples").and_then(jsonvalue::getarray).unwrap() {
+            let Some(wrapped) = sample.get("wrapped_ids").and_then(jsonvalue::getarray) else {
                 continue;
             };
             let text = sampletext(sample);
             let expected: Vec<u32> = wrapped
                 .iter()
-                .map(|value| value.as_u64().unwrap() as u32)
+                .map(|value| value.getunsigned().unwrap() as u32)
                 .collect();
             let raw = tok.encodespecial(text).unwrap();
             let got: Vec<u32> = tok.postprocess(&raw).iter().map(|id| id.get()).collect();

@@ -19,7 +19,8 @@ use std::hint::black_box;
 
 use ::tokenizer::{bytepair, bytetounicode, mergescratch, tiktokenizer, tokenizer, vocabulary};
 use criterion::{Criterion, criterion_group, criterion_main};
-use lib::tokenid;
+use lib::{jsonvalue, parse_str, tokenid};
+use std::collections::BTreeMap;
 
 /// Text pattern for the byte-fallback workloads: ASCII plus a CJK run so the
 /// byte fallback emits multi-byte UTF-8 sequences.
@@ -131,17 +132,37 @@ fn repeatpattern(len: usize) -> String {
 /// Builds a GPT-2 ByteLevel tokenizer whose vocabulary is exactly the 256
 /// byte-to-unicode characters, with no merge rules.
 fn byteleveltok() -> tokenizer {
+    use lib::{jsonnumber, tostring};
     let table = bytetounicode();
-    let mut vocab = serde_json::Map::new();
+    let mut vocab = BTreeMap::new();
     for (byte, character) in table.iter().enumerate() {
-        vocab.insert(character.to_string(), serde_json::json!(byte));
+        vocab.insert(
+            character.to_string(),
+            jsonvalue::number(jsonnumber::integer(byte as i64)),
+        );
     }
-    let doc = serde_json::json!({
-        "model": {"type": "BPE", "vocab": vocab, "merges": [], "byte_fallback": false},
-        "pre_tokenizer": {"type": "ByteLevel"},
-        "decoder": {"type": "ByteLevel"},
-    });
-    tokenizer::fromjson(&doc.to_string()).unwrap()
+    let mut model = BTreeMap::new();
+    model.insert("type".to_string(), jsonvalue::string("BPE".to_string()));
+    model.insert("vocab".to_string(), jsonvalue::object(vocab));
+    model.insert("merges".to_string(), jsonvalue::array(Vec::new()));
+    model.insert("byte_fallback".to_string(), jsonvalue::boolean(false));
+    let mut root = BTreeMap::new();
+    root.insert("model".to_string(), jsonvalue::object(model));
+    root.insert(
+        "pre_tokenizer".to_string(),
+        jsonvalue::object(byteleveltype()),
+    );
+    root.insert("decoder".to_string(), jsonvalue::object(byteleveltype()));
+    tokenizer::fromjson(&tostring(&jsonvalue::object(root))).unwrap()
+}
+
+fn byteleveltype() -> BTreeMap<String, jsonvalue> {
+    let mut entry = BTreeMap::new();
+    entry.insert(
+        "type".to_string(),
+        jsonvalue::string("ByteLevel".to_string()),
+    );
+    entry
 }
 
 /// Repeats `phrase` until `len` characters are produced, so its pre-tokens
@@ -257,9 +278,8 @@ fn loadtokenizer(c: &mut Criterion) {
 fn loadkimi(c: &mut Criterion) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kimi");
     let content = std::fs::read_to_string(format!("{dir}/kimi_tiktoken.model")).unwrap();
-    let golden: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap())
-            .unwrap();
+    let golden: jsonvalue =
+        parse_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap()).unwrap();
     let specials = kimi_specials(&golden);
     c.bench_function("tokenizer/fromfilehan/kimi", |b| {
         b.iter(|| black_box(tiktokenizer::fromfilehan(&content, &specials).unwrap()));
@@ -270,9 +290,8 @@ fn loadkimi(c: &mut Criterion) {
 fn encodekimi(c: &mut Criterion) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/kimi");
     let content = std::fs::read_to_string(format!("{dir}/kimi_tiktoken.model")).unwrap();
-    let golden: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap())
-            .unwrap();
+    let golden: jsonvalue =
+        parse_str(&std::fs::read_to_string(format!("{dir}/kimi_golden.json")).unwrap()).unwrap();
     let tok = tiktokenizer::fromfilehan(&content, &kimi_specials(&golden)).unwrap();
     for len in [512usize, 4096] {
         let input = repeatpattern(len);
@@ -284,15 +303,23 @@ fn encodekimi(c: &mut Criterion) {
 
 /// Reads the Kimi special-token `(content, id)` pairs from the golden meta,
 /// the same construction the golden-alignment test uses.
-fn kimi_specials(golden: &serde_json::Value) -> Vec<(String, u32)> {
-    golden["meta"]["specials"]
-        .as_array()
+fn kimi_specials(golden: &jsonvalue) -> Vec<(String, u32)> {
+    golden
+        .get("meta")
+        .and_then(jsonvalue::getobject)
+        .unwrap()
+        .get("specials")
+        .and_then(jsonvalue::getarray)
         .unwrap()
         .iter()
         .map(|entry| {
             (
-                entry["content"].as_str().unwrap().to_string(),
-                entry["id"].as_u64().unwrap() as u32,
+                entry
+                    .get("content")
+                    .and_then(jsonvalue::getstr)
+                    .unwrap()
+                    .to_string(),
+                entry.get("id").and_then(jsonvalue::getunsigned).unwrap() as u32,
             )
         })
         .collect()

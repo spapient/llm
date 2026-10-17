@@ -336,8 +336,6 @@ dependencies = [
  "lib",
  "models",
  "optim",
- "serde",
- "serde_json",
  "tokenizer",
  "train",
 ]
@@ -840,7 +838,6 @@ dependencies = [
  "optim",
  "proptest",
  "rstest",
- "serde_json",
  "serve",
  "tensor",
  "testkit",
@@ -1490,7 +1487,6 @@ version = "0.1.0"
 dependencies = [
  "fancy-regex",
  "lib",
- "serde_json",
  "unicode-normalization",
 ]
 

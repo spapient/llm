@@ -1,6 +1,7 @@
 //! Normalization: the `normalizer` section of a `tokenizer.json`.
 
-use serde_json::{Map, Value};
+use lib::jsonvalue;
+use std::collections::BTreeMap;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::charsmap::CHARSMAP;
@@ -102,27 +103,28 @@ impl normalizer {
 
 /// Parses the `normalizer` section, if present and non-null.
 pub(crate) fn parsenormalizer(
-    root: &Map<String, Value>,
+    root: &BTreeMap<String, jsonvalue>,
 ) -> Result<Option<normalizer>, tokenizererror> {
     match root.get("normalizer") {
-        Some(value) if value.is_null() => Ok(None),
+        Some(value) if value.isnull() => Ok(None),
         Some(value) => Ok(Some(parseone(value)?)),
         None => Ok(None),
     }
 }
 
 /// Parses one normalizer object.
-fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
-    let object = value.as_object().ok_or(tokenizererror::unexpectedtype {
+fn parseone(value: &jsonvalue) -> Result<normalizer, tokenizererror> {
+    let object = value.getobject().ok_or(tokenizererror::unexpectedtype {
         field: "normalizer",
         expected: "object",
     })?;
-    let kind = object
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or(tokenizererror::missingfield {
-            field: "normalizer.type",
-        })?;
+    let kind =
+        object
+            .get("type")
+            .and_then(jsonvalue::getstr)
+            .ok_or(tokenizererror::missingfield {
+                field: "normalizer.type",
+            })?;
     match kind {
         "Lowercase" => Ok(normalizer::lowercase),
         "Strip" => Ok(normalizer::strip),
@@ -145,11 +147,11 @@ fn parseone(value: &Value) -> Result<normalizer, tokenizererror> {
 }
 
 /// Parses a `Prepend` normalizer.
-fn parseprepend(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
+fn parseprepend(object: &BTreeMap<String, jsonvalue>) -> Result<normalizer, tokenizererror> {
     let prefix =
         object
             .get("prepend")
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::missingfield {
                 field: "normalizer.prepend",
             })?;
@@ -157,16 +159,18 @@ fn parseprepend(object: &Map<String, Value>) -> Result<normalizer, tokenizererro
 }
 
 /// Parses a `Replace` normalizer with a literal or regex pattern.
-fn parsereplace(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
-    let pattern = object.get("pattern").and_then(Value::as_object);
+fn parsereplace(object: &BTreeMap<String, jsonvalue>) -> Result<normalizer, tokenizererror> {
+    let pattern = object.get("pattern").and_then(jsonvalue::getobject);
     let literal = pattern
         .and_then(|p| p.get("String"))
-        .and_then(Value::as_str);
-    let regex = pattern.and_then(|p| p.get("Regex")).and_then(Value::as_str);
+        .and_then(jsonvalue::getstr);
+    let regex = pattern
+        .and_then(|p| p.get("Regex"))
+        .and_then(jsonvalue::getstr);
     let content =
         object
             .get("content")
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::missingfield {
                 field: "normalizer.content",
             })?;
@@ -192,19 +196,19 @@ fn parsereplace(object: &Map<String, Value>) -> Result<normalizer, tokenizererro
 }
 
 /// Parses a `RegexReplace` normalizer.
-fn parseregexreplace(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
+fn parseregexreplace(object: &BTreeMap<String, jsonvalue>) -> Result<normalizer, tokenizererror> {
     let pattern = object
         .get("pattern")
-        .and_then(Value::as_object)
+        .and_then(jsonvalue::getobject)
         .and_then(|p| p.get("Regex"))
-        .and_then(Value::as_str)
+        .and_then(jsonvalue::getstr)
         .ok_or(tokenizererror::unsupportednormalizer {
             normaltype: "RegexReplace without a Regex pattern".to_string(),
         })?;
     let content =
         object
             .get("content")
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::missingfield {
                 field: "normalizer.content",
             })?;
@@ -219,13 +223,13 @@ fn parseregexreplace(object: &Map<String, Value>) -> Result<normalizer, tokenize
 }
 
 /// Parses a `Sequence` normalizer.
-fn parsesequence(object: &Map<String, Value>) -> Result<normalizer, tokenizererror> {
+fn parsesequence(object: &BTreeMap<String, jsonvalue>) -> Result<normalizer, tokenizererror> {
     let children = object
         .get("normalizers")
         .ok_or(tokenizererror::missingfield {
             field: "normalizer.normalizers",
         })?;
-    let array = children.as_array().ok_or(tokenizererror::unexpectedtype {
+    let array = children.getarray().ok_or(tokenizererror::unexpectedtype {
         field: "normalizer.normalizers",
         expected: "array",
     })?;

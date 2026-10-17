@@ -5,6 +5,7 @@
 //! [["piece", score], ...], "unk_id": N}`. The vocabulary also feeds the
 //! tokenizer's `vocabulary` table so the shared decoder can resolve contents.
 
+use lib::jsonvalue;
 use std::collections::HashMap;
 
 use lib::tokenid;
@@ -24,17 +25,15 @@ pub struct unigrammodel {
 
 /// Builds the piece table: `[piece, score]` arrays become `(String, f32)`
 /// entries in id order.
-pub fn parseunigramvocab(
-    value: &serde_json::Value,
-) -> Result<Vec<(String, f32)>, crate::tokenizererror> {
+pub fn parseunigramvocab(value: &jsonvalue) -> Result<Vec<(String, f32)>, crate::tokenizererror> {
     use crate::tokenizererror;
-    let array = value.as_array().ok_or(tokenizererror::unexpectedtype {
+    let array = value.getarray().ok_or(tokenizererror::unexpectedtype {
         field: "model.vocab",
         expected: "array",
     })?;
     let mut out = Vec::with_capacity(array.len());
     for entry in array.iter() {
-        let pair = entry.as_array().ok_or(tokenizererror::unexpectedtype {
+        let pair = entry.getarray().ok_or(tokenizererror::unexpectedtype {
             field: "model.vocab entry",
             expected: "array",
         })?;
@@ -44,11 +43,11 @@ pub fn parseunigramvocab(
                 expected: "[piece, score]",
             });
         }
-        let piece = pair[0].as_str().ok_or(tokenizererror::unexpectedtype {
+        let piece = pair[0].getstr().ok_or(tokenizererror::unexpectedtype {
             field: "model.vocab entry piece",
             expected: "string",
         })?;
-        let score = pair[1].as_f64().ok_or(tokenizererror::unexpectedtype {
+        let score = pair[1].getreal().ok_or(tokenizererror::unexpectedtype {
             field: "model.vocab entry score",
             expected: "number",
         })?;

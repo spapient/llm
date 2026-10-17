@@ -1,6 +1,5 @@
-use lib::seed;
+use lib::{jsonvalue, parse, seed};
 use optim::{adamw, adamwconfig, sgd, sgdconfig};
-use serde::Deserialize;
 use train::trainconfig;
 
 use crate::ADAMWBETA1;
@@ -13,7 +12,6 @@ use crate::commandoutput;
 use crate::commands::readartifact;
 
 /// The CLI-owned training-configuration document schema.
-#[derive(Debug, Deserialize)]
 struct trainconfigfile {
     /// The number of micro-batches averaged into one optimizer step.
     accumulationsteps: usize,
@@ -24,24 +22,117 @@ struct trainconfigfile {
     /// The initial learning rate.
     learningrate: f32,
     /// The SGD momentum coefficient, ignored for AdamW.
-    #[serde(default)]
     momentum: f32,
     /// The weight-decay coefficient.
-    #[serde(default)]
     weightdecay: f32,
     /// The optimizer selection.
-    #[serde(default)]
     optimizer: optimizerchoice,
 }
 
+impl trainconfigfile {
+    /// Parses the configuration from its JSON document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`clierror::invalidconfigjson`] for malformed JSON and
+    /// [`clierror::invalidvalue`] for a missing or mistyped field.
+    fn parse(bytes: &[u8]) -> Result<Self, clierror> {
+        let root = parse(bytes).map_err(|error| clierror::invalidconfigjson {
+            line: error.getline(),
+            column: error.getcolumn(),
+            message: error.to_string(),
+        })?;
+        let object = root
+            .getobject()
+            .ok_or_else(|| configerror("train config", "document is not a JSON object"))?;
+        let accumulationsteps = usizefield(object, "accumulationsteps")?;
+        let maxsteps = u64field(object, "maxsteps")?;
+        let seed = u64field(object, "seed")?;
+        let learningrate = f32field(object, "learningrate")?;
+        let momentum = object
+            .get("momentum")
+            .map(|_| f32field(object, "momentum"))
+            .transpose()?
+            .unwrap_or(0.0);
+        let weightdecay = object
+            .get("weightdecay")
+            .map(|_| f32field(object, "weightdecay"))
+            .transpose()?
+            .unwrap_or(0.0);
+        let optimizer = match object.get("optimizer") {
+            Some(value) => match value.getstr() {
+                Some("sgd") => optimizerchoice::sgd,
+                Some("adamw") => optimizerchoice::adamw,
+                _ => {
+                    return Err(configerror("optimizer", "expected \"sgd\" or \"adamw\""));
+                }
+            },
+            None => optimizerchoice::sgd,
+        };
+        Ok(Self {
+            accumulationsteps,
+            maxsteps,
+            seed,
+            learningrate,
+            momentum,
+            weightdecay,
+            optimizer,
+        })
+    }
+}
+
 /// The supported optimizer selections.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum optimizerchoice {
     /// Stochastic gradient descent with momentum.
     #[default]
     sgd,
     /// AdamW with decoupled weight decay.
     adamw,
+}
+
+/// Builds the JSON-level error for a configuration-field failure.
+fn configerror(field: &str, reason: &str) -> clierror {
+    clierror::invalidconfigjson {
+        line: 1,
+        column: 1,
+        message: format!("field {field:?}: {reason}"),
+    }
+}
+
+/// Extracts a required `usize` field.
+fn usizefield(
+    object: &std::collections::BTreeMap<String, jsonvalue>,
+    field: &str,
+) -> Result<usize, clierror> {
+    object
+        .get(field)
+        .and_then(jsonvalue::getunsigned)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| configerror(field, "missing or not a non-negative integer"))
+}
+
+/// Extracts a required `u64` field.
+fn u64field(
+    object: &std::collections::BTreeMap<String, jsonvalue>,
+    field: &str,
+) -> Result<u64, clierror> {
+    object
+        .get(field)
+        .and_then(jsonvalue::getunsigned)
+        .ok_or_else(|| configerror(field, "missing or not a non-negative integer"))
+}
+
+/// Extracts a required `f32` field.
+fn f32field(
+    object: &std::collections::BTreeMap<String, jsonvalue>,
+    field: &str,
+) -> Result<f32, clierror> {
+    object
+        .get(field)
+        .and_then(jsonvalue::getreal)
+        .map(|value| value as f32)
+        .ok_or_else(|| configerror(field, "missing or not a number"))
 }
 
 /// A validated optimizer selection.
@@ -66,12 +157,7 @@ struct optimizerplan {
 /// hyperparameter, or the declared unsupported limitation.
 pub(crate) fn run(args: &trainargs) -> Result<commandoutput, clierror> {
     let bytes = readartifact(&args.config, DEFAULTMAXARTIFACTBYTES)?;
-    let file: trainconfigfile =
-        serde_json::from_slice(&bytes).map_err(|error| clierror::invalidconfigjson {
-            line: error.line(),
-            column: error.column(),
-            message: error.to_string(),
-        })?;
+    let file = trainconfigfile::parse(&bytes)?;
     let config = trainconfig::new(
         file.accumulationsteps,
         file.maxsteps,

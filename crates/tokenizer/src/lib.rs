@@ -3,7 +3,7 @@
 //! templates for the LLM runtime.
 //!
 //! `tokenizer` owns text-to-token and token-to-text conversion. It loads a
-//! HuggingFace `tokenizer.json` subset with `serde_json`, applies byte-pair
+//! HuggingFace `tokenizer.json` subset with `lib::json`, applies byte-pair
 //! merges with optional byte fallback, resolves special tokens, and renders
 //! explicit chat templates. It owns no tensor, model-weight, KV-cache, or
 //! request-scheduling behavior.
@@ -11,7 +11,7 @@
 //! # Dependencies
 //!
 //! `tokenizer` depends on `lib` for [`tokenid`](lib::tokenid) and on
-//! `serde_json` for parsing. It must not depend on any higher-level crate.
+//! `lib::json` for parsing. It must not depend on any higher-level crate.
 //!
 //! # Errors
 //!

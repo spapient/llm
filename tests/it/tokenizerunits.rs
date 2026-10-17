@@ -715,8 +715,9 @@ mod pretoken {
         bytetounicode, gpt2split, o200ksplit, tokenizer, tokenizererror, unicodetobyte,
     };
     use fancy_regex::Regex;
+    use lib::{jsonnumber, jsonvalue, tostring};
     use proptest::prelude::*;
-    use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn byte_to_unicode_is_a_bijection() {
@@ -754,21 +755,36 @@ mod pretoken {
     /// byte-to-unicode characters, with ByteLevel pre-tokenization and
     /// decoding and no merge rules.
     fn byteleveljson() -> String {
-        let mut vocab = serde_json::Map::new();
+        let mut vocab = BTreeMap::new();
         for (byte, character) in bytetounicode().iter().enumerate() {
-            vocab.insert(character.to_string(), json!(byte));
+            vocab.insert(
+                character.to_string(),
+                jsonvalue::number(jsonnumber::integer(byte as i64)),
+            );
         }
-        json!({
-            "model": {
-                "type": "BPE",
-                "vocab": vocab,
-                "merges": [],
-                "byte_fallback": false,
-            },
-            "pre_tokenizer": {"type": "ByteLevel"},
-            "decoder": {"type": "ByteLevel"},
-        })
-        .to_string()
+        let mut model = BTreeMap::new();
+        model.insert("type".to_string(), jsonvalue::string("BPE".to_string()));
+        model.insert("vocab".to_string(), jsonvalue::object(vocab));
+        model.insert("merges".to_string(), jsonvalue::array(Vec::new()));
+        model.insert("byte_fallback".to_string(), jsonvalue::boolean(false));
+        let mut root = BTreeMap::new();
+        root.insert("model".to_string(), jsonvalue::object(model));
+        root.insert(
+            "pre_tokenizer".to_string(),
+            jsonvalue::object(byteleveltype()),
+        );
+        root.insert("decoder".to_string(), jsonvalue::object(byteleveltype()));
+        tostring(&jsonvalue::object(root))
+    }
+
+    /// The shared ByteLevel pre-tokenizer/decoder configuration entry.
+    fn byteleveltype() -> BTreeMap<String, jsonvalue> {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            "type".to_string(),
+            jsonvalue::string("ByteLevel".to_string()),
+        );
+        entry
     }
 
     #[test]

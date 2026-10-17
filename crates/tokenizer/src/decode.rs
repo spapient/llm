@@ -1,4 +1,6 @@
+use lib::jsonvalue;
 use lib::tokenid;
+use std::collections::BTreeMap;
 
 use crate::error::tokenizererror;
 use crate::pretoken::unicodetobyte;
@@ -153,7 +155,7 @@ fn decodebytefallback(
 
 /// Parses the `decoder` section, if present.
 pub(crate) fn parsedecoder(
-    root: &serde_json::Map<String, serde_json::Value>,
+    root: &BTreeMap<String, jsonvalue>,
 ) -> Result<Option<decoder>, tokenizererror> {
     let Some(value) = root.get("decoder") else {
         return Ok(None);
@@ -163,24 +165,23 @@ pub(crate) fn parsedecoder(
 
 /// Parses one decoder object, flattening the common `Sequence` of
 /// `Replace` + `ByteFallback` (+ `Fuse`) + `Strip` into one value.
-fn parsedecoderone(value: &serde_json::Value) -> Result<decoder, tokenizererror> {
-    use serde_json::Value;
-
-    let object = value.as_object().ok_or(tokenizererror::unexpectedtype {
+fn parsedecoderone(value: &jsonvalue) -> Result<decoder, tokenizererror> {
+    let object = value.getobject().ok_or(tokenizererror::unexpectedtype {
         field: "decoder",
         expected: "object",
     })?;
-    let kind = object
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or(tokenizererror::missingfield {
-            field: "decoder.type",
-        })?;
+    let kind =
+        object
+            .get("type")
+            .and_then(jsonvalue::getstr)
+            .ok_or(tokenizererror::missingfield {
+                field: "decoder.type",
+            })?;
     match kind {
         "ByteLevel" => Ok(decoder::bytelevel),
         "Metaspace" => Ok(parsemetaspace(object)),
         "Sequence" => {
-            let children = object.get("decoders").and_then(Value::as_array).ok_or(
+            let children = object.get("decoders").and_then(jsonvalue::getarray).ok_or(
                 tokenizererror::missingfield {
                     field: "decoder.decoders",
                 },
@@ -194,15 +195,15 @@ fn parsedecoderone(value: &serde_json::Value) -> Result<decoder, tokenizererror>
 }
 
 /// Parses a `Metaspace` decoder.
-fn parsemetaspace(object: &serde_json::Map<String, serde_json::Value>) -> decoder {
+fn parsemetaspace(object: &BTreeMap<String, jsonvalue>) -> decoder {
     let replacement = object
         .get("replacement")
-        .and_then(serde_json::Value::as_str)
+        .and_then(jsonvalue::getstr)
         .unwrap_or("▁")
         .to_string();
     let add_prefix_space = object
         .get("add_prefix_space")
-        .and_then(serde_json::Value::as_bool)
+        .and_then(jsonvalue::getbool)
         .unwrap_or(false);
     decoder::metaspace {
         replacement,
@@ -211,31 +212,29 @@ fn parsemetaspace(object: &serde_json::Map<String, serde_json::Value>) -> decode
 }
 
 /// Parses a `Sequence` of `Replace` + `ByteFallback` (+ `Fuse`) + `Strip`.
-fn parsesedecodersequence(children: &[serde_json::Value]) -> Result<decoder, tokenizererror> {
-    use serde_json::Value;
-
+fn parsesedecodersequence(children: &[jsonvalue]) -> Result<decoder, tokenizererror> {
     let mut replace = None;
     let mut stripleading = 0usize;
     for child in children {
         let childtype = child
-            .as_object()
+            .getobject()
             .and_then(|object| object.get("type"))
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::unsupporteddecoder {
                 decodertype: "malformed decoder entry".to_string(),
             })?;
         match childtype {
             "Replace" => {
                 let pattern = child
-                    .as_object()
+                    .getobject()
                     .and_then(|object| object.get("pattern"))
-                    .and_then(Value::as_object)
+                    .and_then(jsonvalue::getobject)
                     .and_then(|pattern| pattern.get("String"))
-                    .and_then(Value::as_str);
+                    .and_then(jsonvalue::getstr);
                 let content = child
-                    .as_object()
+                    .getobject()
                     .and_then(|object| object.get("content"))
-                    .and_then(Value::as_str);
+                    .and_then(jsonvalue::getstr);
                 if let (Some(pattern), Some(content)) = (pattern, content) {
                     replace = Some((pattern.to_string(), content.to_string()));
                 }
@@ -243,9 +242,9 @@ fn parsesedecodersequence(children: &[serde_json::Value]) -> Result<decoder, tok
             "ByteFallback" | "Fuse" => {}
             "Strip" => {
                 let start = child
-                    .as_object()
+                    .getobject()
                     .and_then(|object| object.get("start"))
-                    .and_then(Value::as_u64)
+                    .and_then(jsonvalue::getunsigned)
                     .unwrap_or(0);
                 stripleading = start as usize;
             }

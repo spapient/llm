@@ -1,8 +1,9 @@
 //! TemplateProcessing post-processing: wraps encoded sequences with special
 //! tokens (BOS/EOS) per the `post_processor` section of a `tokenizer.json`.
 
+use lib::jsonvalue;
 use lib::tokenid;
-use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 
 use crate::error::tokenizererror;
 use crate::vocab::vocabulary;
@@ -62,20 +63,20 @@ fn render(template: &[poststep], ids: &[tokenid], pair: Option<&[tokenid]>) -> V
 
 /// Parses the `post_processor` section, if present.
 pub(crate) fn parsepostprocessor(
-    root: &Map<String, Value>,
+    root: &BTreeMap<String, jsonvalue>,
     vocab: &vocabulary,
 ) -> Result<Option<postprocessor>, tokenizererror> {
     let Some(value) = root.get("post_processor") else {
         return Ok(None);
     };
-    let object = value.as_object().ok_or(tokenizererror::unexpectedtype {
+    let object = value.getobject().ok_or(tokenizererror::unexpectedtype {
         field: "post_processor",
         expected: "object",
     })?;
     let posttype =
         object
             .get("type")
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::missingfield {
                 field: "post_processor.type",
             })?;
@@ -85,14 +86,14 @@ pub(crate) fn parsepostprocessor(
         // child, which is the member that actually inserts BOS/EOS.
         "ByteLevel" => Ok(None),
         "Sequence" => {
-            let Some(processors) = object.get("processors").and_then(Value::as_array) else {
+            let Some(processors) = object.get("processors").and_then(jsonvalue::getarray) else {
                 return Ok(None);
             };
             for processor in processors {
-                let Some(child) = processor.as_object() else {
+                let Some(child) = processor.getobject() else {
                     continue;
                 };
-                if child.get("type").and_then(Value::as_str) != Some("TemplateProcessing") {
+                if child.get("type").and_then(jsonvalue::getstr) != Some("TemplateProcessing") {
                     continue;
                 }
                 let single =
@@ -117,7 +118,7 @@ pub(crate) fn parsepostprocessor(
 /// Parses a template array. `allowb` gates whether a `B` sequence placeholder
 /// is permitted (the single template must not reference the second sequence).
 fn parsetemplate(
-    value: Option<&Value>,
+    value: Option<&jsonvalue>,
     vocab: &vocabulary,
     field: &'static str,
     allowb: bool,
@@ -125,7 +126,7 @@ fn parsetemplate(
     let Some(value) = value else {
         return Ok(Vec::new());
     };
-    let array = value.as_array().ok_or(tokenizererror::unexpectedtype {
+    let array = value.getarray().ok_or(tokenizererror::unexpectedtype {
         field,
         expected: "array",
     })?;
@@ -138,19 +139,19 @@ fn parsetemplate(
 
 /// Parses one template entry.
 fn parsestep(
-    item: &Value,
+    item: &jsonvalue,
     vocab: &vocabulary,
     allowb: bool,
     index: usize,
 ) -> Result<poststep, tokenizererror> {
     let object = item
-        .as_object()
+        .getobject()
         .ok_or(tokenizererror::malformedpostprocessor { index })?;
     if let Some(special) = object.get("SpecialToken") {
         let content = special
-            .as_object()
+            .getobject()
             .and_then(|obj| obj.get("id"))
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::malformedpostprocessor { index })?;
         let id = vocab.getid(content).ok_or(tokenizererror::unknowntoken {
             token: content.to_string(),
@@ -159,9 +160,9 @@ fn parsestep(
     }
     if let Some(sequence) = object.get("Sequence") {
         let id = sequence
-            .as_object()
+            .getobject()
             .and_then(|obj| obj.get("id"))
-            .and_then(Value::as_str)
+            .and_then(jsonvalue::getstr)
             .ok_or(tokenizererror::malformedpostprocessor { index })?;
         return match id {
             "A" => Ok(poststep::sequencea),
