@@ -87,12 +87,12 @@ jobs:
       # No CUDA toolkit is installed on purpose: `cudarc` is pulled in with
       # `dynamic-loading`, so this job type-checks the real Linux code of the
       # `cuda` crate without any driver or toolkit (verified locally with
-      # `cargo check -p cuda --target x86_64-unknown-linux-gnu`, evidence E1).
+      # `cargo check -p gpu --target x86_64-unknown-linux-gnu`, evidence E1).
       # The workspace-wide Linux compile is already covered by `quality`; what
       # this job adds is the mechanical gates evaluated where the CUDA crate is
       # non-empty, because a macOS host cannot see that code at all.
       - name: Check CUDA crate
-        run: cargo check -p cuda --all-targets
+        run: cargo check -p gpu --all-targets
       # The device-free half of `cudacontract` (shape/index/empty-axis
       # rejection, element and gather budgets, the head-dimension limit, and
       # degenerate empty inputs) is settled on the host before any device call,

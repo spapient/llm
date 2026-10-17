@@ -1,5 +1,4 @@
-#![deny(unsafe_code)]
-//! Moore Threads MUSA GPU execution backend for the LLM runtime.
+//! Moore Threads MUSA GPU execution backend.
 //!
 //! `musa` is a Layer 1 backend: it implements the frozen [`api::backend`] and
 //! [`api::compute`] contracts for `f32` operands on a Moore Threads MUSA device.
@@ -7,9 +6,10 @@
 //!
 //! # Platform
 //!
-//! The crate compiles to an empty library on every non-Linux target so that
-//! `cargo check --workspace --all-targets` stays green everywhere. All items
-//! are `#[cfg(all(target_os = "linux", musa_toolkit))]`.
+//! The module is compiled only on Linux with the MUSA toolkit present (the
+//! `musa_toolkit` cfg emitted by the crate's build script). On every other
+//! host the crate exposes no `musa` namespace and
+//! `cargo check --workspace --all-targets` stays green.
 //!
 //! # Architecture (docs/musa-backend-plan.md §5)
 //!
@@ -30,10 +30,10 @@
 //!
 //! # Unsafe
 //!
-//! This crate is the third carrier of the workspace's restricted `unsafe`
-//! exemption (docs/design.md §21.8): the crate root uses `#![deny(unsafe_code)]`;
-//! the single module `ffi` declares the crate's one allowance and confines
-//! every platform call there, each preceded by a `// SAFETY:` comment.
+//! This backend is one of the carriers of the workspace's restricted `unsafe`
+//! exemption (docs/design.md §21.8): the crate root uses
+//! `#![deny(unsafe_code)]`; `ffi` declares this backend's one allowance and
+//! confines every platform call there, each preceded by a `// SAFETY:` comment.
 //! `scripts/checkunsafe.sh` enforces the exact site count and the SAFETY
 //! comments mechanically.
 //!
@@ -43,22 +43,13 @@
 //! variant, and function names are lowercase concatenated, and constants are
 //! uppercase concatenated.
 
-#[cfg(all(target_os = "linux", musa_toolkit))]
 mod backend;
-#[cfg(all(target_os = "linux", musa_toolkit))]
 mod error;
-#[cfg(all(target_os = "linux", musa_toolkit))]
 mod executor;
-#[cfg(all(target_os = "linux", musa_toolkit))]
 mod ffi;
-#[cfg(all(target_os = "linux", musa_toolkit))]
 mod registry;
-#[cfg(all(target_os = "linux", musa_toolkit))]
 mod source;
 
-#[cfg(all(target_os = "linux", musa_toolkit))]
 pub use backend::{MUSAMAXHEADDIM, MUSAMAXRANK, musabackend};
-#[cfg(all(target_os = "linux", musa_toolkit))]
 pub use error::musaerror;
-#[cfg(all(target_os = "linux", musa_toolkit))]
 pub use executor::{matmulpath, musaexecutor, musasession, musasubmission};

@@ -2688,9 +2688,9 @@ cuda  -> api
 
 * 工作区 lint 保持 `unsafe_code = "deny"`（`Cargo.toml`），一行不改。
 * 全部既有 crate 保持 `#![forbid(unsafe_code)]`，一行不改。
-* `metal`、`cuda`、`musa` 使用 `#![deny(unsafe_code)]`，且每个 crate 内**恰好一个文件** `src/ffi.rs` 声明 `#![allow(unsafe_code)]`；`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
-* `src/ffi.rs` 中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
-* 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。实测登记（证据等级 E1，来自 21.1 的尖刺）：
+* `gpu` crate（内含 `metal`、`cuda`、`musa` 三个后端模块）使用 `#![deny(unsafe_code)]`，且每个后端命名空间内**恰好一个文件** `ffi.rs` 声明 `#![allow(unsafe_code)]`——即 `crates/gpu/metal/ffi.rs`、`crates/gpu/cuda/ffi.rs`、`crates/gpu/musa/ffi.rs` 三个岛，彼此互不替代；`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
+* 每个 `ffi.rs` 中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
+* 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。下表的 `ffi.rs` 指该后端自己的豁免文件：`crates/gpu/metal/ffi.rs`、`crates/gpu/cuda/ffi.rs`、`crates/gpu/musa/ffi.rs`。实测登记（证据等级 E1，来自 21.1 的尖刺）：
 
 | crate | 站点 | 位置 |
 | --- | --- | --- |
@@ -2725,7 +2725,7 @@ MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有�
 
 机械门禁 `scripts/checkunsafe.sh` 断言四项：白名单文件是唯一出现 `allow(unsafe_code)` 之处；全部既有 crate 根仍含 `forbid(unsafe_code)`；代码中每处 `unsafe` 前一行（含注释块）含 `// SAFETY:`；`unsafe` 站点计数与本表条目数**恰好相等**（非上界语义：多一处或少一处均失败，本表与代码不允许单向漂移）。该脚本接入 `scripts/check.sh`。
 
-回滚：删除 `crates/metal`、`crates/cuda`、`crates/musa` 与 `crates/simd`、撤销 `api` 的设备变体与门禁条目，即完全恢复修订前状态。
+回滚：删除 `crates/gpu` 与 `crates/simd`、撤销 `api` 的设备变体与门禁条目，即完全恢复修订前状态。若只需回滚本轮 crate 归并（保留三个后端），把 `crates/gpu/{metal,cuda,musa}` 拆回 `crates/{metal,cuda,musa}` 并同步 `scripts/checkunsafe.sh` 的白名单与 crate 根推导即可。
 
 ### 21.9 后果
 

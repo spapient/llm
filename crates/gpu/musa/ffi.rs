@@ -22,9 +22,9 @@ use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::{Mutex, PoisonError};
 
-use crate::error::musaerror;
-use crate::registry::KERNELS;
-use crate::source;
+use crate::musa::error::musaerror;
+use crate::musa::registry::KERNELS;
+use crate::musa::source;
 
 // ---------------------------------------------------------------------------
 // MUSA driver ABI (musa.h, MUSA Toolkit 3.1.0). The opaque handles are

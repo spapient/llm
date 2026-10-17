@@ -39,8 +39,8 @@ use cudarc::driver::{
 };
 use cudarc::nvrtc::compile_ptx;
 
-use crate::error::cudaerror;
-use crate::source;
+use crate::cuda::error::cudaerror;
+use crate::cuda::source;
 use api::geometry::{attentionshape, ropeshape};
 
 /// The device state and compiled kernels one executor owns.
@@ -76,7 +76,7 @@ struct cachestate {
     /// One resolved kernel per `(source, entry)` pair.
     ///
     /// The key carries the kernel **source text**, so editing a kernel in
-    /// [`crate::source`] can never reuse a stale module. The map is
+    /// [`crate::cuda::source`] can never reuse a stale module. The map is
     /// device-specific by construction: it lives beside the one device whose
     /// module it was resolved from, so no device belongs in the key. Every
     /// `CudaFunction` keeps its `CudaModule` — and through it the context —
@@ -350,7 +350,7 @@ fn gemm(
 /// Computes `[m, k] * [k, n]` with the in-repo NVRTC kernel.
 ///
 /// This is the independent reference path: the kernel is compiled from
-/// [`MATMULCUDA`](crate::source::MATMULCUDA) at run time, so it shares no code
+/// [`MATMULCUDA`](crate::cuda::source::MATMULCUDA) at run time, so it shares no code
 /// with cuBLAS.
 ///
 /// # Errors
@@ -463,7 +463,7 @@ pub(crate) fn matmul_cublas(
 /// Numerically stable softmax over the last axis with the in-repo NVRTC kernel.
 ///
 /// `input` is read as `[rows, width]`. The kernel is compiled from
-/// [`SOFTMAXCUDA`](crate::source::SOFTMAXCUDA) at run time through the cached
+/// [`SOFTMAXCUDA`](crate::cuda::source::SOFTMAXCUDA) at run time through the cached
 /// kernel machinery, so every call after the first pays upload, launch, and
 /// download only. It is the crate's only softmax implementation — the cuDNN
 /// path was removed once this kernel reached parity (docs/design.md §21.8).

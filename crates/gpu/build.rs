@@ -1,21 +1,25 @@
-//! Build script for the MUSA backend: the `mcc` precompilation pipeline.
+//! Build script for the GPU backends: the MUSA `mcc` precompilation pipeline
+//! and the Metal framework link.
 //!
 //! Kernels are compiled at build time by `mcc` into ELF fatbins and embedded
-//! through `include_bytes!` in the generated [`registry`] (docs/musa-backend-
+//! through `include_bytes!` in the generated `registry` (docs/musa-backend-
 //! plan.md §5.3). This is the A1 path of the performance analysis: build-time
 //! compilation, zero runtime JIT, no MTRTC dependency on MUSA 3.1.0.
 //!
 //! Platform contract:
-//! - On any non-Linux target the crate compiles to an empty library, so the
-//!   script emits an empty registry and does not require `mcc`.
+//! - On any non-Linux target the MUSA module is compiled out, so the script
+//!   emits an empty registry and does not require `mcc`.
 //! - On Linux, `mcc` is probed (override with `MUSA_MCC`, default
 //!   `/usr/local/musa-3.1.0/bin/mcc`). When it is absent the script emits an
-//!   empty registry: every operator then fails with a device error at run
+//!   empty registry: every MUSA operator then fails with a device error at run
 //!   time, and the workspace stays green on hosts without the toolkit.
 //! - The target architecture is `--offload-arch=mp_22` (MTT S4000), overridable
 //!   with `MUSA_ARCH`.
+//! - On macOS the script links CoreGraphics, which `MTLCreateSystemDefaultDevice`
+//!   requires (objc2-metal's documented requirement). Without it the device
+//!   probe silently returns `None` on a machine that has a GPU.
 //!
-//! Each `kernels/*.cu` compiles to `OUT_DIR/fatbin/<stem>.o`; the generated
+//! Each `musa/kernels/*.cu` compiles to `OUT_DIR/fatbin/<stem>.o`; the generated
 //! registry lists every `(stem, include_bytes!(fatbin))` pair so the runtime
 //! module loader can find a fatbin by source id without a filesystem.
 //!
@@ -49,26 +53,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Declared on every host so `-D warnings` (check.sh's clippy) accepts the
     // cfg even when the toolkit is absent and the cfg is never emitted.
     println!("cargo::rustc-check-cfg=cfg(musa_toolkit)");
-    println!("cargo:rerun-if-changed=kernels");
+    println!("cargo:rerun-if-changed=musa/kernels");
     println!("cargo:rerun-if-changed=build.rs");
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
-        emit(&[])?;
-        return Ok(());
+    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => {
+            println!("cargo:rustc-link-lib=framework=CoreGraphics");
+            // The MUSA module is compiled out here, but keep the generated
+            // registry present so a toolchain-forced `musa_toolkit` cfg still
+            // resolves its `include!`.
+            emit(&[])?;
+            return Ok(());
+        }
+        Ok("linux") => {}
+        _ => {
+            emit(&[])?;
+            return Ok(());
+        }
     }
+
     let mcc = env::var("MUSA_MCC").unwrap_or_else(|_| "/usr/local/musa-3.1.0/bin/mcc".into());
     let arch = env::var("MUSA_ARCH").unwrap_or_else(|_| "mp_22".into());
     if !std::path::Path::new(&mcc).is_file() {
-        // No toolkit on this host: the crate compiles to an empty library
-        // (the `musa_toolkit` cfg is absent, so every module is compiled out),
-        // exactly like on non-Linux targets. The registry stays empty and any
-        // device access errors at run time.
+        // No toolkit on this host: the MUSA module compiles out (the
+        // `musa_toolkit` cfg is absent), exactly like on non-Linux targets. The
+        // registry stays empty and any device access errors at run time.
         emit(&[])?;
         return Ok(());
     }
     // The toolkit is present: compile the full backend and link the driver.
     println!("cargo:rustc-cfg=musa_toolkit");
     // Link the MUSA driver (`libmusa.so`) for the `mu*` C symbols declared
-    // in `ffi.rs`. Verified by `nm` on the MTT S4000 host: `muInit`,
+    // in `musa/ffi.rs`. Verified by `nm` on the MTT S4000 host: `muInit`,
     // `muDeviceGet`, `muModuleLoadData`, `muLaunchKernel` etc. are defined in
     // `libmusa.so` (driver layer), while `libmusart.so` exports the `musa*`
     // runtime API. The driver directory is fixed at the toolkit install
@@ -82,7 +97,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fatbin = out.join("fatbin");
     std::fs::create_dir_all(&fatbin).map_err(|e| err(format!("create fatbin dir: {e}")))?;
 
-    let mut files: Vec<_> = std::fs::read_dir("kernels")
+    let mut files: Vec<_> = std::fs::read_dir("musa/kernels")
         .map_err(|e| err(format!("read kernels dir: {e}")))?
         .filter_map(Result::ok)
         .collect();
@@ -122,7 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// Writes `OUT_DIR/registry.rs`: the kernel fatbin registry embedded by
-/// [`crate::registry`].
+/// `crate::musa::registry`.
 fn emit(entries: &[String]) -> Result<(), Box<dyn Error>> {
     let mut reg = String::new();
     reg.push_str("// @generated by build.rs. Do not edit.\n");

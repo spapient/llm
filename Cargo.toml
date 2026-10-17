@@ -27,9 +27,7 @@ lib = { path = "crates/lib" }
 tensor = { path = "crates/tensor" }
 api = { path = "crates/api" }
 cpu = { path = "crates/cpu" }
-metal = { path = "crates/metal" }
-cuda = { path = "crates/cuda" }
-musa = { path = "crates/musa" }
+gpu = { path = "crates/gpu" }
 autograd = { path = "crates/autograd" }
 nn = { path = "crates/nn" }
 models = { path = "crates/models" }

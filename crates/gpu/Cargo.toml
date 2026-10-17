@@ -1,14 +1,15 @@
 [package]
-name = "cuda"
+name = "gpu"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "NVIDIA CUDA GPU execution backend for the LLM runtime (Linux only)"
+description = "Native GPU execution backends (Metal, CUDA, MUSA) for the LLM runtime"
 
 [lib]
-name = "cuda"
+name = "gpu"
+path = "gpu.rs"
 
 [dependencies]
 thiserror.workspace = true
@@ -16,9 +17,10 @@ lib = { path = "../lib" }
 tensor = { path = "../tensor" }
 api = { path = "../api" }
 
-# The CUDA bindings are only pulled in on Linux. Every other target compiles
-# this crate as an empty library so that `cargo check --workspace --all-targets`
-# stays green on any host (see docs/design.md 第 21 章).
+# Platform bindings are pulled in only on the target that owns the backend.
+# Every other target compiles the corresponding module out, so that
+# `cargo check --workspace --all-targets` stays green on any host
+# (see docs/design.md 第 21 章).
 #
 # `dynamic-loading` lets `cargo check` type-check without a CUDA toolkit, and
 # `cuda-12060` is mandatory: without an explicit `cuda-<version>` feature
@@ -31,6 +33,12 @@ cudarc = { workspace = true, features = [
     "dynamic-loading",
     "cuda-12060",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-metal = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-core-graphics = { workspace = true }
 
 [lints]
 workspace = true

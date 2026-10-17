@@ -5,7 +5,7 @@ use lib::limits;
 /// The maximum tensor rank the CUDA backend accepts.
 ///
 /// The value bounds the number of dimensions the executor processes. It is
-/// declared here and enforced by [`cudaexecutor`](crate::cudaexecutor), not
+/// declared here and enforced by [`cudaexecutor`](crate::cuda::cudaexecutor), not
 /// validated by this declaration.
 pub const CUDAMAXRANK: usize = 8;
 
@@ -19,7 +19,7 @@ pub const CUDAMAXRANK: usize = 8;
 /// 48 KiB leaves ~14 KiB of headroom for driver accounting.
 ///
 /// A call beyond this bound is rejected as resource exhaustion by
-/// [`cudaexecutor`](crate::cudaexecutor).
+/// [`cudaexecutor`](crate::cuda::cudaexecutor).
 pub const CUDAMAXHEADDIM: usize = 8192;
 
 /// The CUDA execution backend.

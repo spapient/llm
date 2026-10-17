@@ -32,13 +32,13 @@ mod linux {
     use criterion::{
         BatchSize, BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
     };
+    use gpu::musa::musaexecutor;
     use infer::{
         collectingsink, generationengine, generationparams, generationrequest, samplingparams,
         stopcondition, submissionengine,
     };
     use lib::{limits, requestid, seed};
     use models::{causallm, llamaconfig, llamamodel, llamaweights};
-    use musa::musaexecutor;
 
     /// Resource budget that admits every workload without rejecting it.
     const LIMIT: limits = limits::new(1 << 28, 1 << 31, 1 << 20, 1 << 18);
@@ -500,5 +500,5 @@ mod linux {
 #[cfg(all(target_os = "linux", musa_toolkit))]
 criterion::criterion_main!(linux::benches);
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", musa_toolkit)))]
 fn main() {}

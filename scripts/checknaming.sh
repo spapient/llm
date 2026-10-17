@@ -63,7 +63,7 @@ while IFS= read -r source; do
         print "macro", FILENAME, FNR, s
       }
     }' "$source"
-done < <(find crates -path '*/src/*.rs' -not -path '*/target/*') >"$tmp"
+done < <(find crates \( -path '*/src/*.rs' -o -path 'crates/gpu/*.rs' -o -path 'crates/gpu/*/*.rs' \) -not -path '*/target/*') >"$tmp"
 
 log "Checking naming conformance (docs/engineering.md)"
 
@@ -108,7 +108,7 @@ while IFS= read -r hit; do
       report "$file:$line: naming #[allow] must cite its NM clause (docs/engineering.md)"
       ;;
   esac
-done < <(grep -rnE '#\[allow\([^]]*(non_snake_case|non_camel_case_types|non_upper_case_globals)' crates/*/src 2>/dev/null || true)
+done < <(grep -rnE '#\[allow\([^]]*(non_snake_case|non_camel_case_types|non_upper_case_globals)' crates 2>/dev/null || true)
 
 if [ "$violations" -ne 0 ]; then
   fail "$violations naming conformance violation(s); see docs/engineering.md"

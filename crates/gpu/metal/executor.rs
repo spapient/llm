@@ -5,108 +5,74 @@ use api::{
     backend, backenderror, checkbudget, checkgatherbudget, compute, kvpair, operand, operandpair,
     stepref, submission,
 };
-use cudarc::driver::CudaSlice;
 use lib::limits;
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_metal::MTLBuffer;
 
 use api::geometry::{
     ADDOP, MULOP, attentionshape, axisshape, binaryshape, embeddingshape, matmulshape, ropeshape,
 };
 
-use crate::backend::{CUDAMAXHEADDIM, cudabackend};
-use crate::error::cudaerror;
-use crate::ffi;
+use crate::metal::backend::{METALMAXHEADDIM, metalbackend};
+use crate::metal::error::metalerror;
+use crate::metal::ffi;
+use crate::{concat, concatshape, embeddingoutshape, scanshape, scanstable, wrap};
 
-/// Which CUDA implementation serves `matmul`.
+/// A Metal executor: the crate's [`compute`](api::compute) provider.
 ///
-/// The choice is made once, at construction, and stored as a field. Selecting
-/// it per call would add a run-time branch to the hottest path for no benefit,
-/// and would obscure which path a given measurement exercised.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum matmulpath {
-    /// cuBLAS `gemm` — the CUDA-specific fast path, used by [`cudaexecutor::new`].
-    cublas,
-    /// The in-repo kernel compiled at run time through NVRTC, used by
-    /// [`cudaexecutor::newnvrtc`] as the independent reference path.
-    nvrtc,
-}
-
-/// A CUDA executor: the crate's [`compute`](api::compute) provider.
+/// `metalexecutor` owns a [`metalbackend`] and is the single place where its
+/// declared element and byte budget is enforced. It is stateless between calls
+/// and holds no request-scoped state, so a single value can be shared
+/// immutably across requests.
 ///
-/// `cudaexecutor` owns a [`cudabackend`] and is the single place where its
-/// declared rank and byte budget is enforced. Besides the budget it holds only
-/// device state and compiled kernels (kept in `ffi.rs`), never a request-scoped
-/// value, so one value can be shared immutably across requests.
-///
-/// The operator set is complete: `matmul` is served by cuBLAS (or, on the
-/// reference path, by an NVRTC kernel), and every remaining operator —
-/// including `softmax` — by an in-repo CUDA C++ kernel compiled at run time
-/// through NVRTC. See docs/design.md §21.2 decision 11 for why each operator
-/// uses the mechanism it does.
+/// The operator set is complete: `matmul` is served by the in-repo MSL kernel,
+/// and every remaining operator by the MSL kernels embedded in `source.rs`, all
+/// compiled at run time through `newLibraryWithSource`. See docs/design.md
+/// §21 for the operator-to-kernel mapping.
 #[derive(Clone, Debug)]
-pub struct cudaexecutor {
-    backend: cudabackend,
-    path: matmulpath,
+pub struct metalexecutor {
+    backend: metalbackend,
     cache: Arc<ffi::cache>,
 }
 
-impl cudaexecutor {
-    /// Creates an executor whose `matmul` is served by cuBLAS.
+impl metalexecutor {
+    /// Creates an executor over a Metal backend configured with `lim`.
     ///
-    /// The executor owns the device state and the compiled kernels: a clone
-    /// shares them, while an independently constructed executor retains its own
-    /// device handle and compiles its own kernels (docs/design.md §21.6).
+    /// The executor owns the device state and the compiled pipelines: a clone
+    /// shares them, while an independently constructed executor compiles its own
+    /// (docs/design.md §21.6).
     #[must_use]
     pub fn new(lim: limits) -> Self {
         Self {
-            backend: cudabackend::new(lim),
-            path: matmulpath::cublas,
+            backend: metalbackend::new(lim),
             cache: Arc::new(ffi::cache::new()),
         }
     }
 
-    /// Creates an executor whose `matmul` is served by the NVRTC kernel.
-    ///
-    /// This is the independent path the cuBLAS path is validated against. It
-    /// exists as a constructor rather than a flag so that a reference run can
-    /// never be confused with a production run.
+    /// Returns the backend whose budget this executor enforces.
     #[must_use]
-    pub fn newnvrtc(lim: limits) -> Self {
-        Self {
-            backend: cudabackend::new(lim),
-            path: matmulpath::nvrtc,
-            cache: Arc::new(ffi::cache::new()),
-        }
+    pub fn getbackend(&self) -> &metalbackend {
+        &self.backend
     }
 
-    /// Returns how many kernels this executor has compiled so far.
+    /// Returns how many compute pipelines this executor has compiled so far.
     ///
-    /// The kernel sources are compiled at run time, once per `(source, entry)`
+    /// The MSL sources are compiled at run time, once per `(source, entry)`
     /// pair, and reused by every later call; the count therefore rises to the
     /// number of distinct kernels a workload exercises and then stops. It is the
     /// observable that makes "compiled once" checkable from outside the crate
     /// rather than only by timing.
     #[must_use]
-    pub fn getcachedkernelcount(&self) -> usize {
-        self.cache.kernelcount()
-    }
-
-    /// Returns the backend whose budget this executor enforces.
-    #[must_use]
-    pub fn getbackend(&self) -> &cudabackend {
-        &self.backend
-    }
-
-    /// Returns which implementation currently serves `matmul`.
-    #[must_use]
-    pub fn getpath(&self) -> matmulpath {
-        self.path
+    pub fn getcachedpipelinecount(&self) -> usize {
+        self.cache.pipelinecount()
     }
 
     /// Validates a shape's rank, element count, and byte size against the
     /// backend budget.
     ///
-    /// The predicate itself lives in `api` so that this crate and `metal`
-    /// cannot classify the same operand differently (docs/design.md §21.4).
+    /// The predicate itself lives in `api` so that this crate and `cuda` cannot
+    /// classify the same operand differently (docs/design.md §21.4).
     fn checkbudget(&self, s: &shape) -> Result<(), backenderror> {
         checkbudget(
             self.backend.getcapabilities(),
@@ -127,69 +93,41 @@ impl cudaexecutor {
             core::mem::size_of::<f32>(),
         )
     }
-
-    /// Runs one block of `[m, k] * [k, n]` on the configured path.
-    fn dispatch(
-        &self,
-        lhs: &[f32],
-        rhs: &[f32],
-        m: usize,
-        k: usize,
-        n: usize,
-    ) -> Result<Vec<f32>, cudaerror> {
-        match self.path {
-            matmulpath::cublas => ffi::matmul_cublas(&self.cache, lhs, rhs, m, k, n, 1),
-            matmulpath::nvrtc => ffi::matmul_nvrtc(&self.cache, lhs, rhs, m, k, n),
-        }
-    }
 }
 
-/// Rebuilds a kernel result into a tensor of `outshape`.
-fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
-    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
-        backend: "cuda",
-        kernel: "construct".into(),
-        message: e.to_string(),
-    })
-}
-
-/// Maps a crate-local [`cudaerror`] onto the frozen `api::backenderror`.
+/// Maps a crate-local [`metalerror`] onto the frozen `api::backenderror`.
 ///
-/// Device absence and kernel compilation/module loading are surfaced as their
-/// own variants so a caller can tell "no GPU on this host" from "the kernel did
-/// not compile"; the kernel entry point rides along so a compile failure
-/// identifies exactly which `(source, entry)` pair failed. Transfer, launch,
-/// and cuBLAS runtime failures stay under the generic `executionfailed`.
-fn maptobackend(error: cudaerror) -> backenderror {
+/// Device absence and kernel compilation are surfaced as their own variants so
+/// a caller can tell "no GPU on this host" from "the kernel did not compile";
+/// the kernel entry point rides along so a compile failure identifies exactly
+/// which `(source, entry)` pair failed. Allocation and runtime execution
+/// failures stay under the generic `executionfailed` because no caller action
+/// distinguishes them.
+fn maptobackend(error: metalerror) -> backenderror {
     match error {
-        cudaerror::sizeoverflow => backenderror::sizeoverflow,
-        cudaerror::device { .. } => backenderror::devicenotavailable,
-        cudaerror::compile { kernel, message } | cudaerror::module { kernel, message } => {
+        metalerror::sizeoverflow => backenderror::sizeoverflow,
+        metalerror::nodevice => backenderror::devicenotavailable,
+        metalerror::compile { kernel, message } | metalerror::pipeline { kernel, message } => {
             backenderror::kernelcompilefailed {
-                backend: "cuda",
+                backend: "metal",
                 kernel,
                 message,
             }
         }
-        cudaerror::transfer { message } => backenderror::executionfailed {
-            backend: "cuda",
-            kernel: "transfer".into(),
-            message,
+        metalerror::allocation => backenderror::executionfailed {
+            backend: "metal",
+            kernel: "alloc".into(),
+            message: "device allocation failed".into(),
         },
-        cudaerror::launch { message } => backenderror::executionfailed {
-            backend: "cuda",
-            kernel: "launch".into(),
-            message,
-        },
-        cudaerror::blas { message } => backenderror::executionfailed {
-            backend: "cuda",
-            kernel: "blas".into(),
+        metalerror::execution { message } => backenderror::executionfailed {
+            backend: "metal",
+            kernel: "run".into(),
             message,
         },
     }
 }
 
-impl compute for cudaexecutor {
+impl compute for metalexecutor {
     fn matmul(
         &self,
         lhs: &tensorview<'_, f32>,
@@ -202,44 +140,21 @@ impl compute for cudaexecutor {
         // the check runs before the host buffer and any device buffer exist.
         let outshape = geometry.outshape()?;
         self.checkbudget(&outshape)?;
-        let outelements = outshape
-            .getelementcount()
-            .map_err(|_| backenderror::sizeoverflow)?;
+        // One dispatch covers every batch block, so the operands are handed
+        // over whole rather than sliced per block: the block index travels in
+        // the grid (docs/design.md §21.10.2).
+        let data = ffi::matmul(
+            &self.cache,
+            lhs.getdata(),
+            rhs.getdata(),
+            geometry.batch,
+            geometry.m,
+            geometry.k,
+            geometry.n,
+        )
+        .map_err(maptobackend)?;
 
-        let lhsdata = lhs.getdata();
-        let rhsdata = rhs.getdata();
-        let mut data = Vec::new();
-        data.try_reserve_exact(outelements)
-            .map_err(|_| backenderror::resourceexhausted)?;
-        match self.path {
-            matmulpath::cublas => {
-                let block = ffi::matmul_cublas(
-                    &self.cache,
-                    lhsdata,
-                    rhsdata,
-                    geometry.m,
-                    geometry.k,
-                    geometry.n,
-                    geometry.batch,
-                )
-                .map_err(maptobackend)?;
-                data.extend_from_slice(&block);
-            }
-            matmulpath::nvrtc => {
-                for b in 0..geometry.batch {
-                    let lstart = b * geometry.m * geometry.k;
-                    let rstart = b * geometry.k * geometry.n;
-                    let lblock = &lhsdata[lstart..lstart + geometry.m * geometry.k];
-                    let rblock = &rhsdata[rstart..rstart + geometry.k * geometry.n];
-                    let block = self
-                        .dispatch(lblock, rblock, geometry.m, geometry.k, geometry.n)
-                        .map_err(maptobackend)?;
-                    data.extend_from_slice(&block);
-                }
-            }
-        }
-
-        wrap(outshape, data)
+        wrap("metal", outshape, data)
     }
 
     fn add(
@@ -251,7 +166,7 @@ impl compute for cudaexecutor {
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), ADDOP)?;
         let data = ffi::add(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
-        wrap(outshape, data)
+        wrap("metal", outshape, data)
     }
 
     fn mul(
@@ -263,7 +178,7 @@ impl compute for cudaexecutor {
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), MULOP)?;
         let data = ffi::mul(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
-        wrap(outshape, data)
+        wrap("metal", outshape, data)
     }
 
     fn rmsnorm(
@@ -284,7 +199,7 @@ impl compute for cudaexecutor {
             eps,
         )
         .map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("metal", input.getshape().clone(), data)
     }
 
     fn rmsnormmatmul(
@@ -304,13 +219,13 @@ impl compute for cudaexecutor {
         let geometry = axisshape::softmax(input.getshape())?;
         let data = ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width)
             .map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("metal", input.getshape().clone(), data)
     }
 
     fn silu(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
         let data = ffi::silu(&self.cache, input.getdata()).map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("metal", input.getshape().clone(), data)
     }
 
     fn embedding(
@@ -324,11 +239,8 @@ impl compute for cudaexecutor {
         let data = ffi::embedding(&self.cache, table.getdata(), indices, geometry.width)
             .map_err(maptobackend)?;
 
-        let mut outdims = Vec::with_capacity(table.getshape().getrank());
-        outdims.push(geometry.rows);
-        outdims.extend_from_slice(&table.getshape().getdims()[1..]);
-        let outshape = shape::new(outdims).map_err(|_| backenderror::sizeoverflow)?;
-        wrap(outshape, data)
+        let outshape = embeddingoutshape(table.getshape(), geometry.rows)?;
+        wrap("metal", outshape, data)
     }
 
     fn rope(
@@ -349,7 +261,7 @@ impl compute for cudaexecutor {
             base,
         )
         .map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("metal", input.getshape().clone(), data)
     }
 
     fn rope_at(
@@ -359,30 +271,18 @@ impl compute for cudaexecutor {
         heads: usize,
         base: f32,
     ) -> Result<tensor<f32>, backenderror> {
-        let width = input.getshape().getdims()[1];
-        let mut data = vec![0.0_f32; (position + 1) * width];
-        data[position * width..].copy_from_slice(input.getdata());
-        let padded = tensor::new(
-            shape::new(vec![position + 1, width]).map_err(|_| backenderror::sizeoverflow)?,
-            data,
+        self.checkbudget(input.getshape())?;
+        let geometry = ropeshape::new(input.getshape(), heads)?;
+        let data = ffi::rope_at(
+            &self.cache,
+            input.getdata(),
+            position,
+            geometry.heads,
+            geometry.headdim,
+            base,
         )
-        .map_err(|e| backenderror::executionfailed {
-            backend: "cuda",
-            kernel: "construct".into(),
-            message: e.to_string(),
-        })?;
-        let rotated = self.rope(&padded.getview(), heads, base)?;
-        let start = position * width;
-        let last = rotated.getdata()[start..start + width].to_vec();
-        tensor::new(
-            shape::new(vec![1, width]).map_err(|_| backenderror::sizeoverflow)?,
-            last,
-        )
-        .map_err(|e| backenderror::executionfailed {
-            backend: "cuda",
-            kernel: "construct".into(),
-            message: e.to_string(),
-        })
+        .map_err(maptobackend)?;
+        wrap("metal", input.getshape().clone(), data)
     }
 
     fn attention(
@@ -403,7 +303,7 @@ impl compute for cudaexecutor {
             value.getshape(),
             heads,
             kvheads,
-            CUDAMAXHEADDIM,
+            METALMAXHEADDIM,
         )?;
         let data = ffi::attention(
             &self.cache,
@@ -414,7 +314,7 @@ impl compute for cudaexecutor {
             causal,
         )
         .map_err(maptobackend)?;
-        wrap(query.getshape().clone(), data)
+        wrap("metal", query.getshape().clone(), data)
     }
 
     fn attention_cached(
@@ -426,8 +326,8 @@ impl compute for cudaexecutor {
         kvheads: usize,
         causal: bool,
     ) -> Result<tensor<f32>, backenderror> {
-        let key = concat(&key.cached, &key.new)?;
-        let value = concat(&value.cached, &value.new)?;
+        let key = concat("metal", &key.cached, &key.new)?;
+        let value = concat("metal", &value.cached, &value.new)?;
         self.attention(
             query,
             &key.getview(),
@@ -447,13 +347,15 @@ impl compute for cudaexecutor {
         c: &tensorview<'_, f32>,
         skip: &tensorview<'_, f32>,
     ) -> Result<(tensor<f32>, tensor<f32>), backenderror> {
-        self.checkbudget(input.getshape())?;
-        self.checkbudget(init.getshape())?;
-        self.checkbudget(a.getshape())?;
-        self.checkbudget(b.getshape())?;
-        self.checkbudget(c.getshape())?;
-        self.checkbudget(skip.getshape())?;
-        let (n, d, statewidth) = scanshape(input, init, a, b, c, skip)?;
+        let (n, d, statewidth) = scanshape(
+            input.getshape(),
+            init.getshape(),
+            a.getshape(),
+            b.getshape(),
+            c.getshape(),
+            skip.getshape(),
+        )?;
+        scanstable(a)?;
         let (out, state) = ffi::scan(
             &self.cache,
             input.getdata(),
@@ -469,7 +371,10 @@ impl compute for cudaexecutor {
         .map_err(maptobackend)?;
         let outshape = shape::new(vec![n, d]).map_err(|_| backenderror::sizeoverflow)?;
         let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
-        Ok((wrap(outshape, out)?, wrap(stateshape, state)?))
+        Ok((
+            wrap("metal", outshape, out)?,
+            wrap("metal", stateshape, state)?,
+        ))
     }
 
     fn scan_cached(
@@ -485,128 +390,58 @@ impl compute for cudaexecutor {
     }
 }
 
-/// Concatenates two `[_, width]` views into one `[a + b, width]` tensor.
-fn concat(a: &tensorview<'_, f32>, b: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
-    let width = a.getshape().getdims()[1];
-    let mut data = a.getdata().to_vec();
-    data.extend_from_slice(b.getdata());
-    let len = data.len() / width;
-    let outshape = shape::new(vec![len, width]).map_err(|_| backenderror::sizeoverflow)?;
-    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
-        backend: "cuda",
-        kernel: "construct".into(),
-        message: e.to_string(),
-    })
-}
-
-/// Validates scan ranks, channel alignment, state-width alignment, and the
-/// spectral precondition, returning `(n, d, statewidth)`.
-fn scanshape(
-    input: &tensorview<'_, f32>,
-    init: &tensorview<'_, f32>,
-    a: &tensorview<'_, f32>,
-    b: &tensorview<'_, f32>,
-    c: &tensorview<'_, f32>,
-    skip: &tensorview<'_, f32>,
-) -> Result<(usize, usize, usize), backenderror> {
-    let id = input.getshape().getdims();
-    let initd = init.getshape().getdims();
-    let ad = a.getshape().getdims();
-    let bd = b.getshape().getdims();
-    let cd = c.getshape().getdims();
-    let skipd = skip.getshape().getdims();
-    if id.len() != 2
-        || initd.len() != 2
-        || ad.len() != 2
-        || bd.len() != 2
-        || cd.len() != 2
-        || skipd.len() != 1
-    {
-        return Err(backenderror::shapemismatch { op: "scan" });
-    }
-    let d = id[1];
-    if ad[0] != d || bd[0] != d || cd[0] != d || skipd[0] != d || initd[0] != d {
-        return Err(backenderror::shapemismatch { op: "scan" });
-    }
-    let statewidth = initd[1];
-    if ad[1] != statewidth || bd[1] != statewidth || cd[1] != statewidth {
-        return Err(backenderror::shapemismatch { op: "scan" });
-    }
-    for &value in a.getdata() {
-        if value.abs() > 1.0 || value.is_nan() {
-            return Err(backenderror::invalidparameter { op: "scan" });
-        }
-    }
-    Ok((id[0], d, statewidth))
-}
-
-/// Concatenates two rank-two shapes along their sequence axis.
-fn concatshape(a: &shape, b: &shape) -> Result<shape, backenderror> {
-    let ad = a.getdims();
-    let bd = b.getdims();
-    if ad.len() != 2 || bd.len() != 2 || ad[1] != bd[1] {
-        return Err(backenderror::shapemismatch { op: "attention" });
-    }
-    shape::new(vec![ad[0] + bd[0], ad[1]]).map_err(|_| backenderror::sizeoverflow)
-}
-
-impl cudaexecutor {
-    /// Creates a single-use accumulative submission over this executor's backend,
-    /// matmul path, and compiled-kernel cache.
+impl metalexecutor {
+    /// Creates a single-use accumulative submission over this executor's backend
+    /// and compiled-pipeline cache.
     ///
     /// # Errors
     ///
-    /// Returns `cudaerror::device` when no CUDA device is available, the same
-    /// first-call condition as any operator dispatch.
-    pub fn newsubmission(&self) -> Result<cudasubmission, cudaerror> {
-        cudasubmission::new(self.backend.clone(), self.cache.clone(), self.path)
+    /// Returns `metalerror::nodevice` when no Metal device is available, the
+    /// same first-call condition as any operator dispatch.
+    pub fn newsubmission(&self) -> Result<metalsubmission, metalerror> {
+        metalsubmission::new(self.backend.clone(), self.cache.clone())
     }
 }
 
-/// A CUDA submission: one execution stream shared by every recorded step, so a
-/// whole operator chain launches in order and synchronises once
-/// (docs/design.md §21.13).
+/// A Metal submission: one command buffer and encoder shared by every recorded
+/// step, so a whole operator chain submits and waits once (docs/design.md §21.13).
 ///
-/// `cudasubmission` is the CUDA implementation of [`submission`]. It owns its
-/// stream and the device slices of its intermediate results; it owns no model
-/// weights and shares no mutable state between requests. Compiled kernels and
-/// the retained context still come from the executor-owned cache.
+/// `metalsubmission` is the Metal implementation of [`submission`]. It owns its
+/// command buffer and encoder (through `ffi::session`) and the device buffers
+/// of its intermediate results; it owns no model weights and shares no mutable
+/// state between requests. Compiled pipelines still come from the executor-owned
+/// cache, which holds no request-scoped value.
 ///
-/// Each recorded step resolves its operands to device slices — uploading caller
-/// inputs and reusing earlier results in place — then launches its kernel into
-/// the shared stream. [`apply`](submission::apply) synchronises once and
+/// Each recorded step resolves its operands to device buffers — uploading
+/// caller inputs and reusing earlier results in place — then encodes its dispatch
+/// into the shared encoder. [`apply`](submission::apply) submits once, waits, and
 /// downloads only the requested outputs.
-///
-/// A batched `matmul` (a leading batch dimension greater than one) is rejected:
-/// the stream-serialised path records one launch per contraction block, and
-/// joining those blocks back into one tensor would re-introduce host round trips,
-/// so it is left to the single-operator [`compute`] path.
-pub struct cudasubmission {
-    backend: cudabackend,
+pub struct metalsubmission {
+    backend: metalbackend,
     cache: Arc<ffi::cache>,
-    path: matmulpath,
     session: ffi::session,
     results: Vec<(usize, shape)>,
+    /// Uploaded caller inputs keyed by `(data pointer, length)`, so an input
+    /// operand referenced by several steps is allocated, copied, and uploaded
+    /// exactly once per submission. Operands are immutable views, so identical
+    /// identity means identical bytes.
+    inputs: std::collections::HashMap<(usize, usize), Retained<ProtocolObject<dyn MTLBuffer>>>,
 }
 
-impl cudasubmission {
-    /// Creates a submission over `backend` using `cache` and `path`.
+impl metalsubmission {
+    /// Creates a submission over `backend` using `cache` for compiled pipelines.
     ///
     /// # Errors
     ///
-    /// Returns `cudaerror::device` when no CUDA device is available.
-    pub(crate) fn new(
-        backend: cudabackend,
-        cache: Arc<ffi::cache>,
-        path: matmulpath,
-    ) -> Result<Self, cudaerror> {
+    /// Returns [`metalerror::nodevice`] when no Metal device is available.
+    pub(crate) fn new(backend: metalbackend, cache: Arc<ffi::cache>) -> Result<Self, metalerror> {
         let session = ffi::session::new(&cache)?;
         Ok(Self {
             backend,
             cache,
-            path,
             session,
             results: Vec::new(),
+            inputs: std::collections::HashMap::new(),
         })
     }
 
@@ -644,11 +479,23 @@ impl cudasubmission {
         }
     }
 
-    /// Resolves an operand to a device slice, uploading caller inputs and
+    /// Resolves an operand to a device buffer, uploading caller inputs and
     /// reusing or re-uploading recorded results in place.
-    fn resolve(&self, op: operand<'_>) -> Result<CudaSlice<f32>, backenderror> {
+    fn resolve(
+        &mut self,
+        op: operand<'_>,
+    ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, backenderror> {
         match op {
-            operand::input(view) => self.session.upload(view.getdata()).map_err(maptobackend),
+            operand::input(view) => {
+                let data = view.getdata();
+                let key = (data.as_ptr() as usize, data.len());
+                if let Some(buffer) = self.inputs.get(&key) {
+                    return Ok(buffer.clone());
+                }
+                let buffer = self.session.upload(data).map_err(maptobackend)?;
+                self.inputs.insert(key, buffer.clone());
+                Ok(buffer)
+            }
             operand::result(reference) => {
                 let index = reference.getindex();
                 let (slot, _) = self
@@ -679,29 +526,9 @@ impl cudasubmission {
         self.results.push((slot, outshape));
         stepref::fromindex(index)
     }
-
-    /// Records one `matmul` block through the configured path.
-    fn recordmatmulblock(
-        &mut self,
-        lhs: &CudaSlice<f32>,
-        rhs: &CudaSlice<f32>,
-        m: usize,
-        k: usize,
-        n: usize,
-    ) -> Result<usize, backenderror> {
-        match self.path {
-            matmulpath::cublas => {
-                ffi::matmul_cublas_into(&self.cache, &mut self.session, lhs, rhs, m, k, n)
-            }
-            matmulpath::nvrtc => {
-                ffi::matmul_nvrtc_into(&self.cache, &mut self.session, lhs, rhs, m, k, n)
-            }
-        }
-        .map_err(maptobackend)
-    }
 }
 
-impl submission for cudasubmission {
+impl submission for metalsubmission {
     fn recordmatmul(
         &mut self,
         lhs: operand<'_>,
@@ -714,12 +541,10 @@ impl submission for cudasubmission {
         let geometry = matmulshape::new(&lhsshape, &rhsshape)?;
         let outshape = geometry.outshape()?;
         self.checkbudget(&outshape)?;
-        if geometry.batch != 1 {
-            return Err(backenderror::unsupportedoperation { op: "matmul" });
-        }
         let lhs = self.resolve(lhs)?;
         let rhs = self.resolve(rhs)?;
-        let slot = self.recordmatmulblock(&lhs, &rhs, geometry.m, geometry.k, geometry.n)?;
+        let slot = ffi::matmul_into(&self.cache, &mut self.session, &lhs, &rhs, &geometry)
+            .map_err(maptobackend)?;
         Ok(self.push(slot, outshape))
     }
 
@@ -839,10 +664,7 @@ impl submission for cudasubmission {
             geometry.width,
         )
         .map_err(maptobackend)?;
-        let mut outdims = Vec::with_capacity(tableshape.getrank());
-        outdims.push(geometry.rows);
-        outdims.extend_from_slice(&tableshape.getdims()[1..]);
-        let outshape = shape::new(outdims).map_err(|_| backenderror::sizeoverflow)?;
+        let outshape = embeddingoutshape(&tableshape, geometry.rows)?;
         Ok(self.push(slot, outshape))
     }
 
@@ -906,7 +728,7 @@ impl submission for cudasubmission {
             &valueshape,
             heads,
             kvheads,
-            CUDAMAXHEADDIM,
+            METALMAXHEADDIM,
         )?;
         let query = self.resolve(query)?;
         let key = self.resolve(key)?;
@@ -951,7 +773,7 @@ impl submission for cudasubmission {
             &valueshape,
             heads,
             kvheads,
-            CUDAMAXHEADDIM,
+            METALMAXHEADDIM,
         )?;
         let query = self.resolve(query)?;
         let cachedkey = self.resolve(key.cached)?;
@@ -1019,7 +841,7 @@ impl submission for cudasubmission {
                         index,
                         len: results.len(),
                     })?;
-                wrap(outshape.clone(), data)
+                wrap("metal", outshape.clone(), data)
             })
             .collect()
     }

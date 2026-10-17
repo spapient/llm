@@ -15,8 +15,7 @@ application layers, plus two native GPU backends.
 | `tensor` | Tensor metadata, storage, shapes, layouts, and views | Implemented |
 | `api` | Backend and kernel execution contracts | Implemented |
 | `cpu` | CPU execution backend and numerical kernels | Implemented |
-| `metal` | Apple Metal GPU backend (full operator set) — macOS only | Implemented; run on macOS |
-| `cuda` | NVIDIA CUDA GPU backend (full operator set) — Linux only | Implemented; see below |
+| `gpu` | Native GPU backends (full operator set): Metal (macOS), CUDA and MUSA (Linux) | Implemented; see below |
 | `autograd` | Define-by-run reverse-mode differentiation | Implemented |
 | `nn` | Reusable layers and parameter containers | Implemented |
 | `models` | Llama-family causal language model | Implemented |
@@ -48,7 +47,7 @@ attempted, so no performance claim is made.
 ## Layout
 
 ```text
-crates/     workspace crates (21 crates: layers 0-4 plus the two GPU backends)
+crates/     workspace crates (layers 0-4 plus the `gpu` backend crate)
 tests/      cross-crate integration tests
 benches/    criterion benchmark harnesses
 docs/       architecture, standards, and conformance records
@@ -66,15 +65,20 @@ targets. See [`docs/architecture.md`](docs/architecture.md).
 The GPU backends are platform-gated, and neither needs its platform's GPU
 toolchain to compile:
 
-- `metal` builds only on macOS. The MSL kernels are compiled at run time through
-  `newLibraryWithSource`, so no Xcode or Metal toolchain is involved.
-- `cuda` builds only on Linux and resolves the driver, NVRTC, cuBLAS, and cuDNN
-  at run time (`cudarc` with `dynamic-loading`), so `cargo check -p cuda` needs
-  no CUDA toolkit. Running it needs an NVIDIA driver and GPU.
+- the `metal` module builds only on macOS. The MSL kernels are compiled at run
+  time through `newLibraryWithSource`, so no Xcode or Metal toolchain is
+  involved.
+- the `cuda` module builds only on Linux and resolves the driver, NVRTC, and
+  cuBLAS at run time (`cudarc` with `dynamic-loading`), so
+  `cargo check -p gpu` needs no CUDA toolkit. Running it needs an NVIDIA
+  driver and GPU.
+- the `musa` module builds only on Linux with the MUSA toolkit present; its
+  kernels are precompiled by `mcc` at build time. Without the toolkit the
+  module is compiled out and the workspace stays green.
 
-Both crates are the only carriers of the workspace's restricted `unsafe`
-exemption; the exemption, its file whitelist, and its mechanical gate are
-documented in [`docs/design.md`](docs/design.md) and
+The `gpu` crate is one of the carriers of the workspace's restricted `unsafe`
+exemption, one FFI island per backend; the exemption, its file whitelist, and
+its mechanical gate are documented in [`docs/design.md`](docs/design.md) and
 [`docs/engineering.md`](docs/engineering.md).
 
 ## Commands

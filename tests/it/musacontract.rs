@@ -43,8 +43,8 @@ use crate::support::{build, wide};
 use ::tensor::dtype;
 use api::{backend, backenderror, compute, kvpair, operand, submission};
 use cpu::cpuexecutor;
+use gpu::musa::{MUSAMAXHEADDIM, MUSAMAXRANK, matmulpath, musabackend, musaexecutor};
 use lib::limits;
-use musa::{MUSAMAXHEADDIM, MUSAMAXRANK, matmulpath, musabackend, musaexecutor};
 use testkit::assertions::assertallclose;
 use testkit::reference;
 
@@ -165,13 +165,13 @@ fn backend_exposes_identity_device_and_f32_capability() {
 /// The MUSA backend declares the same rank bound as the CUDA backend.
 #[test]
 fn rank_bound_matches_cuda() {
-    assert_eq!(MUSAMAXRANK, cuda::CUDAMAXRANK);
+    assert_eq!(MUSAMAXRANK, gpu::cuda::CUDAMAXRANK);
 }
 
 /// The MUSA attention head-dimension bound matches the CUDA derivation.
 #[test]
 fn headdim_bound_matches_cuda() {
-    assert_eq!(MUSAMAXHEADDIM, cuda::CUDAMAXHEADDIM);
+    assert_eq!(MUSAMAXHEADDIM, gpu::cuda::CUDAMAXHEADDIM);
 }
 
 // ---------------------------------------------------------------------------

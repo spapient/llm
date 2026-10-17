@@ -20,8 +20,8 @@ use crate::support::{build, wide};
 use ::tensor::{dtype, tensor};
 use api::{backend, backenderror, compute, operand, stepref, submission};
 use cpu::cpuexecutor;
+use gpu::metal::{METALMAXHEADDIM, METALMAXRANK, metalbackend, metalexecutor};
 use lib::limits;
-use metal::{METALMAXHEADDIM, METALMAXRANK, metalbackend, metalexecutor};
 use testkit::assertions::assertallclose;
 use testkit::reference;
 

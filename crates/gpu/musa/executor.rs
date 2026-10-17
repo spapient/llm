@@ -11,9 +11,10 @@ use api::geometry::{
     ADDOP, MULOP, attentionshape, axisshape, binaryshape, embeddingshape, matmulshape, ropeshape,
 };
 
-use crate::backend::{MUSAMAXHEADDIM, musabackend};
-use crate::error::musaerror;
-use crate::ffi::{self, buf};
+use crate::musa::backend::{MUSAMAXHEADDIM, musabackend};
+use crate::musa::error::musaerror;
+use crate::musa::ffi::{self, buf};
+use crate::{concatshape, embeddingoutshape, scanshape, scanstable, wrap};
 
 /// Which MUSA implementation serves `matmul`.
 ///
@@ -135,15 +136,6 @@ impl musaexecutor {
     }
 }
 
-/// Rebuilds a kernel result into a tensor of `outshape`.
-fn wrap(outshape: shape, data: Vec<f32>) -> Result<tensor<f32>, backenderror> {
-    tensor::new(outshape, data).map_err(|e| backenderror::executionfailed {
-        backend: "musa",
-        kernel: "construct".into(),
-        message: e.to_string(),
-    })
-}
-
 /// Maps a crate-local [`musaerror`] onto the frozen `api::backenderror`.
 ///
 /// Device absence and module loading are surfaced as their own variants so a
@@ -241,7 +233,7 @@ impl compute for musaexecutor {
         }
         .map_err(maptobackend)?;
 
-        wrap(outshape, data)
+        wrap("musa", outshape, data)
     }
 
     fn add(
@@ -253,7 +245,7 @@ impl compute for musaexecutor {
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), ADDOP)?;
         let data = ffi::add(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
-        wrap(outshape, data)
+        wrap("musa", outshape, data)
     }
 
     fn mul(
@@ -265,7 +257,7 @@ impl compute for musaexecutor {
         self.checkbudget(rhs.getshape())?;
         let outshape = binaryshape(lhs.getshape(), rhs.getshape(), MULOP)?;
         let data = ffi::mul(&self.cache, lhs.getdata(), rhs.getdata()).map_err(maptobackend)?;
-        wrap(outshape, data)
+        wrap("musa", outshape, data)
     }
 
     fn rmsnorm(
@@ -286,7 +278,7 @@ impl compute for musaexecutor {
             eps,
         )
         .map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("musa", input.getshape().clone(), data)
     }
 
     fn rmsnormmatmul(
@@ -314,7 +306,7 @@ impl compute for musaexecutor {
             eps,
         )
         .map_err(maptobackend)?;
-        wrap(outshape, data)
+        wrap("musa", outshape, data)
     }
 
     fn softmax(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
@@ -322,13 +314,13 @@ impl compute for musaexecutor {
         let geometry = axisshape::softmax(input.getshape())?;
         let data = ffi::softmax(&self.cache, input.getdata(), geometry.rows, geometry.width)
             .map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("musa", input.getshape().clone(), data)
     }
 
     fn silu(&self, input: &tensorview<'_, f32>) -> Result<tensor<f32>, backenderror> {
         self.checkbudget(input.getshape())?;
         let data = ffi::silu(&self.cache, input.getdata()).map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("musa", input.getshape().clone(), data)
     }
 
     fn embedding(
@@ -343,11 +335,8 @@ impl compute for musaexecutor {
         let data = ffi::embedding(&self.cache, table.getdata(), &index64, geometry.width)
             .map_err(maptobackend)?;
 
-        let mut outdims = Vec::with_capacity(table.getshape().getrank());
-        outdims.push(geometry.rows);
-        outdims.extend_from_slice(&table.getshape().getdims()[1..]);
-        let outshape = shape::new(outdims).map_err(|_| backenderror::sizeoverflow)?;
-        wrap(outshape, data)
+        let outshape = embeddingoutshape(table.getshape(), geometry.rows)?;
+        wrap("musa", outshape, data)
     }
 
     fn rope(
@@ -368,7 +357,7 @@ impl compute for musaexecutor {
             base,
         )
         .map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("musa", input.getshape().clone(), data)
     }
 
     fn rope_at(
@@ -392,7 +381,7 @@ impl compute for musaexecutor {
             base,
         )
         .map_err(maptobackend)?;
-        wrap(input.getshape().clone(), data)
+        wrap("musa", input.getshape().clone(), data)
     }
 
     fn attention(
@@ -428,7 +417,7 @@ impl compute for musaexecutor {
             causal,
         )
         .map_err(maptobackend)?;
-        wrap(query.getshape().clone(), data)
+        wrap("musa", query.getshape().clone(), data)
     }
 
     fn attention_cached(
@@ -473,7 +462,7 @@ impl compute for musaexecutor {
             causal,
         )
         .map_err(maptobackend)?;
-        wrap(query.getshape().clone(), data)
+        wrap("musa", query.getshape().clone(), data)
     }
 
     fn scan(
@@ -491,7 +480,15 @@ impl compute for musaexecutor {
         self.checkbudget(b.getshape())?;
         self.checkbudget(c.getshape())?;
         self.checkbudget(skip.getshape())?;
-        let (n, d, statewidth) = scanshape(input, init, a, b, c, skip)?;
+        let (n, d, statewidth) = scanshape(
+            input.getshape(),
+            init.getshape(),
+            a.getshape(),
+            b.getshape(),
+            c.getshape(),
+            skip.getshape(),
+        )?;
+        scanstable(a)?;
         let (out, state) = ffi::scan(
             &self.cache,
             input.getdata(),
@@ -507,7 +504,10 @@ impl compute for musaexecutor {
         .map_err(maptobackend)?;
         let outshape = shape::new(vec![n, d]).map_err(|_| backenderror::sizeoverflow)?;
         let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
-        Ok((wrap(outshape, out)?, wrap(stateshape, state)?))
+        Ok((
+            wrap("musa", outshape, out)?,
+            wrap("musa", stateshape, state)?,
+        ))
     }
 
     fn scan_cached(
@@ -525,7 +525,15 @@ impl compute for musaexecutor {
         self.checkbudget(b.getshape())?;
         self.checkbudget(c.getshape())?;
         self.checkbudget(skip.getshape())?;
-        let (n, d, statewidth) = scanshape(input, state, a, b, c, skip)?;
+        let (n, d, statewidth) = scanshape(
+            input.getshape(),
+            state.getshape(),
+            a.getshape(),
+            b.getshape(),
+            c.getshape(),
+            skip.getshape(),
+        )?;
+        scanstable(a)?;
         if n != 1 {
             return Err(backenderror::shapemismatch { op: "scan_cached" });
         }
@@ -546,22 +554,13 @@ impl compute for musaexecutor {
         .map_err(maptobackend)?;
         let outshape = shape::new(vec![1, d]).map_err(|_| backenderror::sizeoverflow)?;
         let stateshape = shape::new(vec![d, statewidth]).map_err(|_| backenderror::sizeoverflow)?;
-        Ok((wrap(outshape, out)?, wrap(stateshape, newstate)?))
+        Ok((
+            wrap("musa", outshape, out)?,
+            wrap("musa", stateshape, newstate)?,
+        ))
     }
 }
 
-/// Concatenates two rank-two shapes along their sequence axis.
-fn concatshape(a: &shape, b: &shape) -> Result<shape, backenderror> {
-    let ad = a.getdims();
-    let bd = b.getdims();
-    if ad.len() != 2 || bd.len() != 2 || ad[1] != bd[1] {
-        return Err(backenderror::shapemismatch { op: "attention" });
-    }
-    shape::new(vec![ad[0] + bd[0], ad[1]]).map_err(|_| backenderror::sizeoverflow)
-}
-
-/// Validates scan ranks, channel alignment, state-width alignment, and the
-/// spectral precondition, returning `(n, d, statewidth)`.
 /// Validates the fused RMSNorm+matmul shapes and returns the multiplication
 /// plan and output shape.
 fn rmsnormmatmulshape(
@@ -585,65 +584,6 @@ fn rmsnormmatmulshape(
     }
     let outshape = geometry.outshape()?;
     Ok((geometry, outshape))
-}
-
-fn scanshape(
-    input: &tensorview<'_, f32>,
-    init: &tensorview<'_, f32>,
-    a: &tensorview<'_, f32>,
-    b: &tensorview<'_, f32>,
-    c: &tensorview<'_, f32>,
-    skip: &tensorview<'_, f32>,
-) -> Result<(usize, usize, usize), backenderror> {
-    let geometry = scanshapes(
-        input.getshape(),
-        init.getshape(),
-        a.getshape(),
-        b.getshape(),
-        c.getshape(),
-        skip.getshape(),
-    )?;
-    for &value in a.getdata() {
-        if value.abs() > 1.0 || value.is_nan() {
-            return Err(backenderror::invalidparameter { op: "scan" });
-        }
-    }
-    Ok(geometry)
-}
-
-/// Validates scan ranks and state-width alignment without reading operand data.
-fn scanshapes(
-    input: &shape,
-    init: &shape,
-    a: &shape,
-    b: &shape,
-    c: &shape,
-    skip: &shape,
-) -> Result<(usize, usize, usize), backenderror> {
-    let id = input.getdims();
-    let initd = init.getdims();
-    let ad = a.getdims();
-    let bd = b.getdims();
-    let cd = c.getdims();
-    let skipd = skip.getdims();
-    if id.len() != 2
-        || initd.len() != 2
-        || ad.len() != 2
-        || bd.len() != 2
-        || cd.len() != 2
-        || skipd.len() != 1
-    {
-        return Err(backenderror::shapemismatch { op: "scan" });
-    }
-    let d = id[1];
-    if ad[0] != d || bd[0] != d || cd[0] != d || skipd[0] != d || initd[0] != d {
-        return Err(backenderror::shapemismatch { op: "scan" });
-    }
-    let statewidth = initd[1];
-    if ad[1] != statewidth || bd[1] != statewidth || cd[1] != statewidth {
-        return Err(backenderror::shapemismatch { op: "scan" });
-    }
-    Ok((id[0], d, statewidth))
 }
 
 impl musaexecutor {
@@ -1090,7 +1030,7 @@ impl recorder for musasession {
             self.current.checkbudget(shape)?;
         }
         let (n, d, statewidth) =
-            scanshapes(&inshape, &initshape, &ashape, &bshape, &cshape, &skipshape)?;
+            scanshape(&inshape, &initshape, &ashape, &bshape, &cshape, &skipshape)?;
         // The spectral check needs host values. A recorded result is already on
         // the device, so it cannot be inspected without a download; the
         // submission contract validates caller inputs and leaves device
@@ -1154,7 +1094,7 @@ impl recorder for musasession {
         ] {
             self.current.checkbudget(shape)?;
         }
-        let (n, d, statewidth) = scanshapes(
+        let (n, d, statewidth) = scanshape(
             &inshape,
             &stateshapein,
             &ashape,
@@ -1450,10 +1390,7 @@ impl submission for musasubmission {
         self.checkbudget(&tableshape)?;
         let geometry = embeddingshape::new(&tableshape, indices)?;
         self.checkgatherbudget(geometry.rows, geometry.width)?;
-        let mut outdims = Vec::with_capacity(tableshape.getrank());
-        outdims.push(geometry.rows);
-        outdims.extend_from_slice(&tableshape.getdims()[1..]);
-        let outshape = shape::new(outdims).map_err(|_| backenderror::sizeoverflow)?;
+        let outshape = embeddingoutshape(&tableshape, geometry.rows)?;
         if geometry.rows == 0 {
             return Ok(self.push(Vec::new(), outshape));
         }
@@ -1705,7 +1642,7 @@ impl musasubmission {
                 }
                 resultdata::dead => return Err(stalestep()),
             };
-            built.push(wrap(outshape.clone(), data)?);
+            built.push(wrap("musa", outshape.clone(), data)?);
         }
         Ok(built)
     }

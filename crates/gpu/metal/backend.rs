@@ -6,7 +6,7 @@ use lib::limits;
 ///
 /// The value bounds the number of dimensions the executor processes. It is
 /// declared here and enforced by
-/// [`metalexecutor`](crate::metalexecutor), not validated by this declaration.
+/// [`metalexecutor`](crate::metal::metalexecutor), not validated by this declaration.
 pub const METALMAXRANK: usize = 8;
 
 /// The maximum head dimension the attention kernel accepts.
@@ -20,7 +20,7 @@ pub const METALMAXRANK: usize = 8;
 /// attention kernel of `crates/metal/src/source.rs`.
 ///
 /// A call beyond this bound is rejected as resource exhaustion by
-/// [`metalexecutor`](crate::metalexecutor).
+/// [`metalexecutor`](crate::metal::metalexecutor).
 pub const METALMAXHEADDIM: usize = 4096;
 
 /// The Metal execution backend.

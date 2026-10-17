@@ -1,7 +1,7 @@
 //! Kernel source metadata for the MUSA backend.
 //!
 //! Kernels live in `kernels/*.cu` and are compiled **at build time** by `mcc`
-//! into ELF fatbins embedded with `include_bytes!` (see [`crate::registry`])
+//! into ELF fatbins embedded with `include_bytes!` (see [`crate::musa::registry`])
 //! and loaded at run time through `muModuleLoadData` — no runtime JIT, no
 //! NVRTC, no MTRTC (docs/musa-backend-plan.md §5.3). The kernel sources
 //! themselves are therefore never embedded in the binary; this module only

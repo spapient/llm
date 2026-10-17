@@ -31,7 +31,7 @@ mod linux {
     use criterion::{
         BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
     };
-    use cuda::cudaexecutor;
+    use gpu::cuda::cudaexecutor;
     use lib::limits;
 
     /// Resource budget that admits every workload without rejecting it.

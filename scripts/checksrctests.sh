@@ -31,7 +31,7 @@ fail() {
 
 [ -f "$BASELINE" ] || fail "missing baseline file $BASELINE"
 
-current="$(rg -l '#\[cfg\(test\)\]|#\[test\]' crates/*/src 2>/dev/null | sort || true)"
+current="$(rg -l '#\[cfg\(test\)\]|#\[test\]' crates -g '*.rs' 2>/dev/null | sort || true)"
 
 violations=""
 while IFS= read -r file; do

@@ -13,13 +13,13 @@ use crate::support::build;
 use ::tensor::shape;
 use api::{backenderror, compute, operand, recorder, session, stepref, submission};
 use context::{executionconfig, executioncontext};
+use gpu::musa::{musaexecutor, musasession};
 use infer::{
     collectingsink, generationengine, generationparams, generationrequest, kvstate, samplingparams,
     stopcondition, submissionengine,
 };
 use lib::{limits, requestid};
 use models::{causallm, devicekvcache, kvcache};
-use musa::{musaexecutor, musasession};
 use testkit::assertions::assertallclose;
 use testkit::reference;
 

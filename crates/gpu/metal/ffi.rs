@@ -12,7 +12,7 @@
 //! the synchronous `dispatch` block (upload, buffer binding, scalar binding,
 //! launch, `endEncoding`/`commit`/`waitUntilCompleted`, and download in one
 //! block), plus the accumulative `session`'s encode block and commit block.
-//! Every kernel in [`crate::source`] reuses those same sites, so the count does
+//! Every kernel in [`crate::metal::source`] reuses those same sites, so the count does
 //! not grow with the operator count.
 //!
 //! The safe functions expose a narrow, run-to-completion interface: upload host
@@ -33,8 +33,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
-use crate::error::metalerror;
-use crate::source;
+use crate::metal::error::metalerror;
+use crate::metal::source;
 use api::geometry::{attentionshape, matmulshape, ropeshape};
 
 /// The threadgroup edge used when dispatching the matmul kernel.
@@ -78,7 +78,7 @@ struct cachestate {
     /// One compiled compute pipeline per `(source, entry)` pair.
     ///
     /// The key carries the MSL **source text**, so editing a kernel in
-    /// [`crate::source`] can never reuse a stale binary. The map is
+    /// [`crate::metal::source`] can never reuse a stale binary. The map is
     /// device-specific by construction: it lives beside the one device it was
     /// compiled for, so no device belongs in the key.
     pipelines: HashMap<
@@ -534,7 +534,7 @@ pub(crate) fn embedding(
 /// [`attentionshape`], so this function revalidates nothing. The kernel keeps
 /// its entire accumulator in threadgroup memory, so no sequence-length cap is
 /// needed; `geometry` already rejected a head dimension beyond
-/// [`METALMAXHEADDIM`](crate::METALMAXHEADDIM).
+/// [`METALMAXHEADDIM`](crate::metal::METALMAXHEADDIM).
 ///
 /// # Errors
 ///

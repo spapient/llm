@@ -12,7 +12,7 @@
 
 /// CUDA C source of the reference `f32` matrix-multiply kernel
 /// (`kernels/matmul.cu`).
-pub(crate) const MATMULCUDA: &str = include_str!("../kernels/matmul.cu");
+pub(crate) const MATMULCUDA: &str = include_str!("kernels/matmul.cu");
 
 /// The stable symbol name of the kernel in [`MATMULCUDA`].
 pub(crate) const MATMULENTRY: &str = "matmul";
@@ -21,7 +21,7 @@ pub(crate) const MATMULENTRY: &str = "matmul";
 pub(crate) const THREADEDGE: u32 = 16;
 
 /// CUDA C source of the elementwise `f32` kernels (`kernels/elementwise.cu`).
-pub(crate) const ELEMENTWISE: &str = include_str!("../kernels/elementwise.cu");
+pub(crate) const ELEMENTWISE: &str = include_str!("kernels/elementwise.cu");
 
 /// The symbol of the elementwise addition kernel in [`ELEMENTWISE`].
 pub(crate) const ADDENTRY: &str = "add";
@@ -36,7 +36,7 @@ pub(crate) const SILUENTRY: &str = "silu";
 pub(crate) const ELEMENTWISETILE: u32 = 256;
 
 /// CUDA C source of the `f32` RMS-normalization kernel (`kernels/rmsnorm.cu`).
-pub(crate) const RMSNORMCUDA: &str = include_str!("../kernels/rmsnorm.cu");
+pub(crate) const RMSNORMCUDA: &str = include_str!("kernels/rmsnorm.cu");
 
 /// The stable symbol name of the kernel in [`RMSNORMCUDA`].
 pub(crate) const RMSNORMENTRY: &str = "rmsnorm";
@@ -46,47 +46,47 @@ pub(crate) const ROWTILE: u32 = 256;
 
 /// CUDA C source of the `f32` softmax-over-last-axis kernel
 /// (`kernels/softmax.cu`), the crate's only softmax implementation.
-pub(crate) const SOFTMAXCUDA: &str = include_str!("../kernels/softmax.cu");
+pub(crate) const SOFTMAXCUDA: &str = include_str!("kernels/softmax.cu");
 
 /// The stable symbol name of the kernel in [`SOFTMAXCUDA`].
 pub(crate) const SOFTMAXENTRY: &str = "softmax";
 
 /// CUDA C source of the `f32` rotary-position-embedding kernel
 /// (`kernels/rope.cu`).
-pub(crate) const ROPECUDA: &str = include_str!("../kernels/rope.cu");
+pub(crate) const ROPECUDA: &str = include_str!("kernels/rope.cu");
 
 /// The stable symbol name of the kernel in [`ROPECUDA`].
 pub(crate) const ROPEENTRY: &str = "rope";
 
 /// CUDA C source of the absolute-position rotary embedding
 /// (`kernels/rope_at.cu`).
-pub(crate) const ROPEATCUDA: &str = include_str!("../kernels/rope_at.cu");
+pub(crate) const ROPEATCUDA: &str = include_str!("kernels/rope_at.cu");
 
 /// The stable symbol name of the kernel in [`ROPEATCUDA`].
 pub(crate) const ROPEATENTRY: &str = "rope_at";
 
 /// CUDA C source of the `f32` embedding-gather kernel (`kernels/embedding.cu`).
-pub(crate) const EMBEDDINGCUDA: &str = include_str!("../kernels/embedding.cu");
+pub(crate) const EMBEDDINGCUDA: &str = include_str!("kernels/embedding.cu");
 
 /// The stable symbol name of the kernel in [`EMBEDDINGCUDA`].
 pub(crate) const EMBEDDINGENTRY: &str = "embedding";
 
 /// CUDA C source of the fused scaled-dot-product attention kernel
 /// (`kernels/attention.cu`).
-pub(crate) const ATTENTIONCUDA: &str = include_str!("../kernels/attention.cu");
+pub(crate) const ATTENTIONCUDA: &str = include_str!("kernels/attention.cu");
 
 /// The stable symbol name of the kernel in [`ATTENTIONCUDA`].
 pub(crate) const ATTENTIONENTRY: &str = "attention";
 
 /// CUDA C source of the incremental-decode attention kernel
 /// (`kernels/attention_cached.cu`).
-pub(crate) const ATTENTIONCACHEDCUDA: &str = include_str!("../kernels/attention_cached.cu");
+pub(crate) const ATTENTIONCACHEDCUDA: &str = include_str!("kernels/attention_cached.cu");
 
 /// The stable symbol name of the kernel in [`ATTENTIONCACHEDCUDA`].
 pub(crate) const ATTENTIONCACHEDENTRY: &str = "attention_cached";
 
 /// CUDA C source of the `f32` semigroup scan kernel (`kernels/scan.cu`).
-pub(crate) const SCANCUDA: &str = include_str!("../kernels/scan.cu");
+pub(crate) const SCANCUDA: &str = include_str!("kernels/scan.cu");
 
 /// The stable symbol name of the kernel in [`SCANCUDA`].
 pub(crate) const SCANENTRY: &str = "scan";
@@ -94,7 +94,7 @@ pub(crate) const SCANENTRY: &str = "scan";
 /// CUDA C source of the parallel three-stage scan kernel family
 /// (`kernels/scan_parallel.cu`): block aggregation, inter-block prefix, and
 /// per-block apply.
-pub(crate) const SCANPARALLELCUDA: &str = include_str!("../kernels/scan_parallel.cu");
+pub(crate) const SCANPARALLELCUDA: &str = include_str!("kernels/scan_parallel.cu");
 
 /// The stable symbol name of the block-aggregation kernel in
 /// [`SCANPARALLELCUDA`].

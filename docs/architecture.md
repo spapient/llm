@@ -42,8 +42,7 @@
 | `tensor` | 张量元数据、存储、形状、布局与视图 |
 | `api` | 后端、设备、能力与算子契约 |
 | `cpu` | CPU 执行与数值算子 |
-| `metal` | Apple Metal GPU 执行与 MSL 算子（macOS） |
-| `cuda` | NVIDIA CUDA GPU 执行与 cuBLAS 算子（Linux） |
+| `gpu` | 原生 GPU 执行与内核算子：`metal`（macOS，MSL）、`cuda`（Linux，NVRTC + cuBLAS）、`musa`（Linux，`mcc` 预编译），三个后端共用 crate 根的安全形状 helper |
 | `autograd` | 自动微分与梯度传播 |
 | `nn` | 神经网络模块与参数 |
 | `models` | 具体模型架构 |
@@ -85,12 +84,12 @@ crate：`lib`、`tensor`、`api`。
 
 ### 3.3 层 1：计算与微分
 
-crate：`cpu`、`metal`、`cuda`、`autograd`、`nn`。
+crate：`cpu`、`gpu`、`autograd`、`nn`。
 
 职责：
 
 - CPU 算子实现。
-- GPU 算子实现（`metal` 面向 macOS，`cuda` 面向 Linux；均只在目标平台编译出实体代码）。
+- GPU 算子实现（`gpu` 内的 `metal` 面向 macOS、`cuda`/`musa` 面向 Linux；均只在目标平台编译出实体代码）。
 - 自动微分。
 - 神经网络模块与参数抽象。
 
@@ -100,7 +99,7 @@ crate：`cpu`、`metal`、`cuda`、`autograd`、`nn`。
 - 算子语义必须能独立测试。
 - 梯度行为必须对照数学或数值参考验证。
 - 模型特定的编排不属于计算内核。
-- `metal`、`cuda`、`musa` 与 `checkpoint` 是工作区 `unsafe` 禁令受限豁免的全部载体；其豁免范围、站点登记表与门禁见 docs/design.md §21.8。
+- `gpu`（`metal`/`cuda`/`musa` 三个后端）、`checkpoint` 与 `simd` 是工作区 `unsafe` 禁令受限豁免的全部载体；其豁免范围、站点登记表与门禁见 docs/design.md §21.8。
 
 ### 3.4 层 2：模型与工作流
 
@@ -212,8 +211,8 @@ models ────────────────────────�
 
 1. `lib` MUST NOT 依赖任何其他工作区 crate。
 2. `tensor` MUST NOT 依赖模型、训练、推理或应用 crate。
-3. `api` MUST NOT 依赖 `cpu`、`metal`、`cuda` 等具体后端实现。
-4. `api` 定义契约时 MUST NOT 要求 `cpu`、`metal` 或 `cuda`。
+3. `api` MUST NOT 依赖 `cpu`、`gpu` 等具体后端实现。
+4. `api` 定义契约时 MUST NOT 要求 `cpu` 或 `gpu`。
 5. `models` MUST NOT 依赖 `infer`、`train`、`cli` 或 `serve`。
 6. `infer` MUST NOT 依赖 `train` 来完成推理。
 7. `train` MUST NOT 依赖 `infer` 来完成训练。
@@ -386,8 +385,8 @@ MUST NOT 拥有：
 验收标准：
 
 - 算子行为符合 `api::compute` 的文档化契约，并与 `cpu` 的数值结果对照。
-- `unsafe` 仅存在于各豁免 crate 的单一白名单文件（`metal`/`cuda`/`musa` 为 `src/ffi.rs`，`checkpoint` 为 `src/crc32c_hw.rs`），每处均有 `// SAFETY:` 注释，且站点数恰好等于 docs/design.md §21.8 的登记数（`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3；非上界语义，多一处或少一处均失败），由 `scripts/checkunsafe.sh` 强制。
-- `api`、`tensor`、`lib` MUST NOT 反向依赖 `metal` 或 `cuda`。
+- `unsafe` 仅存在于各豁免 crate 的白名单文件（`gpu` 的 `metal`/`cuda`/`musa` 各一个 `ffi.rs`，`checkpoint` 为 `src/crc32c_hw.rs`），每处均有 `// SAFETY:` 注释，且站点数恰好等于 docs/design.md §21.8 的登记数（`metal` = 3，`cuda` = 2，`musa` = 2，`checkpoint` = 3；非上界语义，多一处或少一处均失败），由 `scripts/checkunsafe.sh` 强制。
+- `api`、`tensor`、`lib` MUST NOT 反向依赖 `gpu`。
 - 非目标平台（例如无 GPU 的 CI）上 `cargo check --workspace --all-targets` 仍通过。
 
 ### 5.6 autograd — 自动微分
@@ -1051,7 +1050,7 @@ llm (根 package)     -> 全部 22 个成员 crate  (dev-dependencies)
 
 - `lib` 依赖任何其他工作区 crate。
 - `api` 依赖 `cpu`。
-- `api` 依赖 `metal` 或 `cuda`。
+- `api` 依赖 `gpu`。
 - `models` 依赖 `infer`、`train`、`cli` 或 `serve`。
 - `infer` 依赖 `train`。
 - `train` 依赖 `infer`。

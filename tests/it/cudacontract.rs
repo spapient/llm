@@ -34,7 +34,7 @@ use crate::support::{build, wide};
 use ::tensor::dtype;
 use api::{backend, backenderror, compute, operand, stepref, submission};
 use cpu::cpuexecutor;
-use cuda::{CUDAMAXHEADDIM, CUDAMAXRANK, cudabackend, cudaexecutor, matmulpath};
+use gpu::cuda::{CUDAMAXHEADDIM, CUDAMAXRANK, cudabackend, cudaexecutor, matmulpath};
 use lib::limits;
 use testkit::assertions::assertallclose;
 use testkit::reference;

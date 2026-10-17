@@ -36,9 +36,9 @@ mod macos {
     use criterion::{
         BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
     };
+    use gpu::metal::metalexecutor;
     use infer::kvstate;
     use lib::{limits, seed};
-    use metal::metalexecutor;
     use models::{causallm, kvcache, llamaconfig, llamamodel, llamaweights};
 
     /// Resource budget that admits every workload without rejecting it.

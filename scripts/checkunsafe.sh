@@ -23,9 +23,9 @@ cd "$ROOT_DIR"
 
 # file:registered-count (exact match, not a ceiling)
 WHITELIST=(
-  "crates/metal/src/ffi.rs:3"
-  "crates/cuda/src/ffi.rs:2"
-  "crates/musa/src/ffi.rs:2"
+  "crates/gpu/metal/ffi.rs:3"
+  "crates/gpu/cuda/ffi.rs:2"
+  "crates/gpu/musa/ffi.rs:2"
   "crates/checkpoint/src/crc32c_hw.rs:3"
   "crates/simd/src/intrinsics.rs:32"
 )
@@ -59,11 +59,11 @@ crate_has_island() {
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   is_whitelisted "$file" || fail "$file: allow(unsafe_code) is permitted only in the whitelisted FFI files"
-done < <(rg -n '^\s*#!?\[allow\(unsafe_code\)\]' crates/*/src 2>/dev/null | cut -d: -f1 | sort -u || true)
+done < <(rg -n '^\s*#!?\[allow\(unsafe_code\)\]' crates -g '*.rs' 2>/dev/null | cut -d: -f1 | sort -u || true)
 
 # --- 2. non-exempt crate roots keep #![forbid(unsafe_code)] ------------------
 missing=""
-for lib in crates/*/src/lib.rs; do
+for lib in crates/*/src/lib.rs crates/gpu/gpu.rs; do
   [ -f "$lib" ] || continue
   crate_has_island "$lib" && continue
   grep -q '#!\[forbid(unsafe_code)\]' "$lib" || missing="${missing}  ${lib}"$'\n'
@@ -78,13 +78,15 @@ for entry in "${WHITELIST[@]}"; do
   registered="${entry##*:}"
   [ -f "$f" ] || continue
 
-  lib="${f%/*}/lib.rs"
-  if [ -f "$lib" ]; then
-    grep -q '#!\[forbid(unsafe_code)\]' "$lib" \
-      && fail "$f: exempt crate must use deny, not forbid, at the crate root"
-    grep -q '#!\[deny(unsafe_code)\]' "$lib" \
-      || fail "$lib: exempt crate root must declare #![deny(unsafe_code)]"
-  fi
+  case "$f" in
+    crates/gpu/*) lib="crates/gpu/gpu.rs" ;;
+    *) lib="${f%/*}/lib.rs" ;;
+  esac
+  [ -f "$lib" ] || fail "$f: cannot locate the crate root (expected $lib)"
+  grep -q '#!\[forbid(unsafe_code)\]' "$lib" \
+    && fail "$f: exempt crate must use deny, not forbid, at the crate root"
+  grep -q '#!\[deny(unsafe_code)\]' "$lib" \
+    || fail "$lib: exempt crate root must declare #![deny(unsafe_code)]"
   grep -q '#!\[allow(unsafe_code)\]' "$f" \
     || fail "$f: FFI island must declare #![allow(unsafe_code)]"
 

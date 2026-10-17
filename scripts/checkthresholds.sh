@@ -39,9 +39,12 @@ log "Checking A4 exported interface width (<= ${A4BOUND} per crate root)"
 
 violations=0
 failures=""
-for lib in crates/*/src/lib.rs; do
+for lib in crates/*/src/lib.rs crates/gpu/gpu.rs; do
   [ -f "$lib" ] || continue
-  crate="$(basename "$(dirname "$(dirname "$lib")")")"
+  case "$lib" in
+    crates/gpu/gpu.rs) crate="gpu" ;;
+    *) crate="$(basename "$(dirname "$(dirname "$lib")")")" ;;
+  esac
   width="$(
     awk '
       function countnames(s,   arr, c, i, k) {
