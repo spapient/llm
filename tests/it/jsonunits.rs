@@ -4,9 +4,11 @@
 //! organization rules: parsing, value access, serialization, canonical output,
 //! and the error positions reported by [`jsonerror`].
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::collections::BTreeMap;
 
-use lib::{jsonerror, jsonnumber, jsonvalue, parse, tostring};
+use lib::{jsonerror, jsonnumber, jsonvalue, tostring};
 
 /// A value round-trips through parse and serialize, comparing numbers by value
 /// (a real that serializes to an integer literal re-parses as an integer).
@@ -43,6 +45,7 @@ fn values_equivalent(left: &jsonvalue, right: &jsonvalue) -> bool {
 fn number_to_f64(number: &jsonnumber) -> f64 {
     match number {
         jsonnumber::integer(value) => *value as f64,
+        jsonnumber::unsigned(value) => *value as f64,
         jsonnumber::real(value) => *value,
     }
 }
@@ -127,6 +130,10 @@ fn numbers_keep_integer_precision() {
         parse_str("-9223372036854775808").unwrap().getinteger(),
         Some(i64::MIN)
     );
+    assert_eq!(
+        parse_str("18446744073709551615").unwrap().getunsigned(),
+        Some(u64::MAX)
+    );
     let real = parse_str("1e10").unwrap();
     assert!(matches!(real, jsonvalue::number(jsonnumber::real(_))));
 }
@@ -143,7 +150,7 @@ fn malformed_input_is_rejected() {
     assert!(parse_str("01").is_err());
     assert!(parse_str("1.").is_err());
     assert!(parse_str("1e").is_err());
-    assert!(parse_str("9223372036854775808").is_err());
+    assert!(parse_str("18446744073709551616").is_err()); // u64::MAX + 1
     assert!(parse_str("1 2").is_err());
     assert!(parse_str(r#""\ud83d""#).is_err()); // lone high surrogate
     assert!(parse_str(r#""\ude00""#).is_err()); // lone low surrogate
