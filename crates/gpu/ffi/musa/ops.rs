@@ -182,52 +182,52 @@ pub(crate) fn rmsnormmatmul(
 /// Elementwise `lhs + rhs`.
 pub(crate) fn add(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, gpuerror> {
     let count = lhs.len();
-    let grid = ((count as u32).div_ceil(source::FLATTILE), 1, 1);
-    let block = (source::FLATTILE, 1, 1);
-    let mut results = dispatch(
+    ewise(
         cache,
-        "cuda",
         source::ADDENTRY,
         &[buf::host(lhs), buf::host(rhs), buf::out(count)],
-        &[scalar::u32(count as u32)],
-        grid,
-        block,
-        0,
-    )?;
-    Ok(results.remove(0))
+        count,
+    )
 }
 
 /// Elementwise `lhs * rhs`.
 pub(crate) fn mul(cache: &cache, lhs: &[f32], rhs: &[f32]) -> Result<Vec<f32>, gpuerror> {
     let count = lhs.len();
-    let grid = ((count as u32).div_ceil(source::FLATTILE), 1, 1);
-    let block = (source::FLATTILE, 1, 1);
-    let mut results = dispatch(
+    ewise(
         cache,
-        "cuda",
         source::MULENTRY,
         &[buf::host(lhs), buf::host(rhs), buf::out(count)],
-        &[scalar::u32(count as u32)],
-        grid,
-        block,
-        0,
-    )?;
-    Ok(results.remove(0))
+        count,
+    )
 }
 
 /// Sigmoid linear unit, elementwise.
 pub(crate) fn silu(cache: &cache, input: &[f32]) -> Result<Vec<f32>, gpuerror> {
     let count = input.len();
+    ewise(
+        cache,
+        source::SILUENTRY,
+        &[buf::host(input), buf::out(count)],
+        count,
+    )
+}
+
+/// Runs the flat elementwise kernel `entry` over `count` elements.
+fn ewise(
+    cache: &cache,
+    entry: &'static str,
+    buffers: &[buf<'_>],
+    count: usize,
+) -> Result<Vec<f32>, gpuerror> {
     let grid = ((count as u32).div_ceil(source::FLATTILE), 1, 1);
-    let block = (source::FLATTILE, 1, 1);
     let mut results = dispatch(
         cache,
         "cuda",
-        source::SILUENTRY,
-        &[buf::host(input), buf::out(count)],
+        entry,
+        buffers,
         &[scalar::u32(count as u32)],
         grid,
-        block,
+        (source::FLATTILE, 1, 1),
         0,
     )?;
     Ok(results.remove(0))
