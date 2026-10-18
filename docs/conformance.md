@@ -82,6 +82,13 @@
 - **Metal 45/45（E1，2026-10-15）。** `cargo test -p llm --test it metalcontract` 在本机 Apple GPU 上 45 例全部通过。首轮运行 44 过、1 崩（SIGTRAP），崩在 `submission_rejects_an_unrecorded_result_reference`（故意拒绝路径）：`crates/metal/src/ffi.rs` 的 `session` 无 `impl Drop`，任何中途错误路径 drop session 时 encoder 未 `endEncoding` 就被释放，Metal 在 dealloc 时断言炸进程。修复：`session` 增加 `ended` 标志，`apply` 先 `endEncoding` 再置位，新增 `impl Drop` 兜底补调；`apply` 因 Drop 类型不能 move 字段改用 `core::mem::take`。修复后 45/45 全过，`submission_reproduces_a_compute_chain_bit_for_bit` 无数值不匹配；`cargo bench -p llm --bench metal -- gpu/submissionchain` 无回归（`submission32` ≈2.42–2.49 ms、1.65–1.69 Melem/s）。
 - **CUDA 43/43（E1，2026-10-15，第二台真机）。** 在用户的 Windows 11 + WSL2 的 Ubuntu 24.04（glibc）新建发行版并装齐工具链：rustup 1.29.1 → rustc 1.99.0（与项目 `rust-toolchain.toml` 一致）、`nvidia-cuda-toolkit` 12.0.140（提供 nvcc/libcublas/libnvrtc）、cudnn 9.3.0.75 官方 redist tarball 整目录装入（含 `libcudnn.so.9` 与全部 `libcudnn_*` 兄弟库）；`LLM_CUDA_REQUIRE_DEVICE=1 cargo test -p llm --test it cudacontract` → **43 passed / 0 failed**（`nvidia-smi -L` = NVIDIA T600）。两个执行侧要点：① `hasdevice` 探针用 `Command::new("nvidia-smi")` 按 PATH 查找，而 nvidia-smi 位于 `/usr/lib/wsl/lib`——运行环境必须把该目录留在 PATH 上，否则 22 个设备用例以「no CUDA device was detected」误报失败（此时 cuInit 实际成功、`cuDeviceGetCount=1`）；② 编译期不需要 cudnn，但运行期 cudarc 的 `cudnn = ["cudnn-09021"]` 需要 `libcudnn.so.9`，且 cudnn 9 tarball 需整目录拷贝（漏拷 `libcudnn_graph.so.9` 会以 `Cannot load symbol cudnnCreate` 崩溃）。
 
+## 本轮重测证据（2026-10-18）
+
+环境：macOS 27.0.1（arm64，Apple M5 Pro）、`rustc 1.99.0`。本轮为长序列（seq=128/256）KV cache 性能阶段（design.md §21.13.8）：`benches/metal.rs` 的 `gpu/decode` 组参数化三档（`s16`/`s128`/`s256`），`metalcached`（`forwardsubmission_cached`，增量 attention）与 `metalrecompute`（`forwardsubmission`，全量重算）同 submission、对称 token 数对照。
+
+- **真机数字（M5 Pro，`cargo bench -p llm --bench metal -- gpu/decode`）**：s16 cached 107.158 ms vs recompute 14.366 ms（7.46×）；s128 cached 892.127 ms vs recompute 195.517 ms（4.56×）；s256 cached 1801.801 ms vs recompute 529.041 ms（3.41×）。每 decode 步：cached ≈6.70/6.97/7.04 ms（与 seq 无关，固定成本主导）；recompute ≈0.90/1.53/2.07 ms（随 seq 增长，O(seq²) 计算实测可见）。
+- **判定。** KV cache 性能收益**未达成**：cached 每步下载 `1 + 2·layers` 个张量（logits + 每层 key/value）+ CPU `kvstate::append` 的固定成本压倒增量 attention 的 O(seq²)→O(seq) 节省。比值收敛（7.46×→3.41×）证明方向正确；下一步为设备端 KV cache（KV 驻留设备、设备端 append、每步只下载 logits）。conformance 层 2/3 KV cache 判定改「正确性已验证；性能未达成」。
+
 ## 本轮重测证据（2026-10-16）
 
 环境：macOS 27.0.1（arm64，Apple M5 Pro）、`rustc 1.99.0 (b940084d7 2026-09-28)`；远程真机为 Windows 11 + WSL2（Ubuntu 24.04、CUDA 12.0.140、cudnn 9.3.0.75）的 NVIDIA T600。本轮为 KV cache 接线：attention 契约扩展 + `forward_cached` 增量前向 + `infer` 的 `kvstate` 接线 + GPU 用例与 decode 基准。
@@ -176,7 +183,7 @@
 | 层 1：autograd | 已验证 | `crates/autograd` 实现图、变量与所支持算子的 VJP；根 `autograd` 套件对每个算子用有限差分参考检查，`cargo bench --no-run` 构建 `benches/autograd.rs`。 |
 | 层 2：nn | 已验证 | `crates/nn` 实现参数、模块与层集；根 `nnlayers` 套件用 `testkit` 的独立标量参考检查每一层。 |
 | 层 2：models（模型支持契约） | 已验证 | `crates/models` 实现因果 LM 契约与 Llama config/weights/block/model；根 `modelforward` 套件钉住确定性前向 logits。模型支持契约首次成文于设计文档，依据是对 `crates/models/src` 的源码核对。 |
-| 层 2/3：KV cache 接线（`forward_cached`） | 已验证（正确性 + 性能方向） | `llamamodel::forward_cached`/`llamablock::forward_cached` 增量前向读/追加 `kvcache`，`infer` 的 `kvstate` 接线；attention 契约扩展支持 `qseq ≤ kvseq`，三后端一致。`metalcontract` 46/46（M5 Pro）、`cudacontract` 44/44（T600 真机）、CPU `incrementalattention` 2 + `kvcacheforward` 1 + `generation` 10 全绿。**性能**：接入 `forwardsubmission_cached` 后 `gpu/decode` 整组 −94.8%（每前向 52→2.8 ms），seq=16 增量快 ≈4.7%（方向正确；加速比由长序列阶段兑现，见「本轮重测证据（2026-10-16）」）。 |
+| 层 2/3：KV cache 接线（`forward_cached`） | 正确性已验证；**性能未达成** | `llamamodel::forward_cached`/`llamablock::forward_cached` 增量前向读/追加 `kvcache`，`infer` 的 `kvstate` 接线；attention 契约扩展支持 `qseq ≤ kvseq`，三后端一致。`metalcontract` 46/46（M5 Pro）、`cudacontract` 44/44（T600 真机）、CPU `incrementalattention` 2 + `kvcacheforward` 1 + `generation` 10 全绿。**性能（2026-10-18 真机实测，未达成）**：`gpu/decode` 长序列对照（M5 Pro，`forwardsubmission_cached` vs `forwardsubmission`，同 submission 剔除往返）——cached 三档均慢于 recompute（s16 7.5×、s128 4.6×、s256 3.4×）。cached 每步 ≈7 ms 与 seq 无关（下载 1+2·layers 个 KV 张量 + CPU append 的固定成本主导）；recompute 每步随 seq 增长（0.90→2.07 ms，O(seq²) 计算实测可见）。比值收敛证明方向正确，收益未兑现；下一步为设备端 KV cache（KV 驻留设备、设备端 append、每步只下载 logits），见 design.md §21.13.8。 |
 | 层 2：tokenizer | 已验证 | `crates/tokenizer` 实现词表、合并、特殊词元、对话模板、编码/解码与引擎；根 `tokens` 套件通过。 |
 | 层 2：data | 已验证 | `crates/data` 实现记录、数据集、打包、批次、采样器与加载器；根 `pipeline` 套件端到端组合它们。 |
 | 层 2：format 与 checkpoint（检查点格式契约） | 已验证 | `crates/format` 与 `crates/checkpoint` 实现解析/校验与原子 save/load/兼容性；根 `artifact` 与 `roundtrip` 套件通过。检查点格式契约首次成文于设计文档，依据是对两个 crate 源码的核对。 |

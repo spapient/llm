@@ -3034,15 +3034,27 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 * **接入与性能。** `llamamodel` 与 `llamablock` 增 `forwardsubmission`，把前向链的 35 步算子内联进一个 `submission`；`tests/it/submissionforward.rs` 2 例在 CPU 上钉住 `forwardsubmission` 与 `forward` 逐位相同。`gpu/modelforward` 实测（Apple M5 Pro）：`metal` 52.60 ms（35 次同步往返的 `compute` 基线）、`metalsubmission` 2.81 ms（整链一次 commit），**改善 ≈18.7×**，远超 10× 验收，且逐位一致。无需权重驻留设备即达成。
 
-### 21.13.8 KV cache 长序列性能阶段（基准就绪，真机数字待补）
+### 21.13.8 KV cache 长序列性能阶段（实测：未达成，下载/append 固定成本主导）
 
-> 状态：**基准就绪（Ready），真机数字待补（Pending device run）**。`benches/metal.rs` 的 `gpu/decode` 组已参数化为三个序列长度（`s16`/`s128`/`s256`），`metalcached`（增量 attention，每步只处理新 token）与 `metalrecompute`（全量重算）在同一进程、对称 token 数下对照；数字须在 Apple GPU 真机回填后方可写入本节，在此之前不构成性能声明（PF1/PF5）。
+> 状态：**实测未达成（Not achieved）**。真机数字（2026-10-18，Apple M5 Pro）已回填：`metalcached` 在三档序列上均慢于 `metalrecompute`（s16 慢 7.5×、s128 慢 4.6×、s256 慢 3.4×）。KV cache 的计算收益**方向正确但未兑现**——增量 attention 的 O(seq²) → O(seq) 节省被 cached 路径的每步固定成本压倒。判据 PF1/PF5：只有实测证据成立，本判定不写「已验证」，KV cache 性能收益在 conformance 中如实标为**未达成**。
 
-KV cache 的收益兑现路径在 §21.13 之前已两次确认：seq=16 时单步 decode 的计算差（O(seq²) vs O(seq) 的 attention）远小于固定往返成本，`metalcached` 反而因多计时 prefill 而慢；**只有「单次提交 + 增量 attention」在长序列下让计算差主导，收益才显现**。本节是那一步的度量装置：
+真机数字（`gpu/decode`，prefill+decode 对称，每档总耗时与每 decode 步）：
 
-* **测量对象。** 每次 decode 步：`metalcached` 经 `forwardsubmission_cached`（一步 submission，只对新增 token 行做 attention），`metalrecompute` 经 `forwardsubmission`（一步 submission，对全上下文重算 attention）。两侧同用 submission，把 §21.13 已消灭的 35 次往返从对照中剔除，留下纯计算差。
-* **预期。** 每步成本 = 单次提交往返（固定）+ attention 计算。attention 部分 cached 为 O(seq·d)（新行对全部缓存键），recompute 为 O(seq²·d)（全量行对全量键）；当计算占主导时 cached/recompute 比随 seq 线性改善。seq=16 时往返主导、无加速（既有实测）；128/256 是让计算差超过往返的档位。
-* **真机命令。** `cargo bench -p llm --bench metal -- gpu/decode`，回填三档 `metalrecompute/metalcached` 的中位数与比值。
+| 档位 | `metalcached` | `metalrecompute` | 比值 | cached 每步 | recompute 每步 |
+| --- | --- | --- | --- | --- | --- |
+| s16 | 107.158 ms | 14.366 ms | 7.46× | ≈6.70 ms | ≈0.90 ms |
+| s128 | 892.127 ms | 195.517 ms | 4.56× | ≈6.97 ms | ≈1.53 ms |
+| s256 | 1801.801 ms | 529.041 ms | 3.41× | ≈7.04 ms | ≈2.07 ms |
+
+**分析。** 两条曲线把成因分开：
+
+* **`metalcached` 每步 ≈7.0 ms，与 seq 几乎无关**——固定成本主导。每步 `sub.apply(&outputs)` 下载 `1 + 2·layers` 个张量（logits + 每层 key + 每层 value，2 层模型即 5 个），再在 CPU 侧 `kvstate::append` 逐层拷贝。设备→宿主下载与 append 拷贝的固定成本随**张量个数**而非数据量定价，且与 attention 计算量无关。
+* **`metalrecompute` 每步随 seq 增长（0.90 → 1.53 → 2.07 ms）**——O(seq²) 全量 attention 的计算成本实测可见；这正是 cached 应省下的那部分，证明方向③的假设（长序列下计算差显著）**成立**。
+
+比值 7.46× → 3.41× 的收敛方向就是两条曲线赛跑的斜率：recompute 在长序列下追上来，说明在更长 seq（512/1024）与更低 cached 固定成本下存在反超点。**收益兑现的下一步是消除 cached 的每步固定成本：设备端 KV cache**（KV 张量驻留设备、append 在设备侧完成、每步只下载 logits 一个张量）——与 §21.13.7 musa 段已列的「设备 KV cache 仍待实现」同一条路。
+
+* **测量对象。** 每次 decode 步：`metalcached` 经 `forwardsubmission_cached`（一步 submission，只对新增 token 行做 attention），`metalrecompute` 经 `forwardsubmission`（一步 submission，对全上下文重算 attention）。两侧同用 submission，把 §21.13 已消灭的 35 次往返从对照中剔除，留下纯计算差；对称 token 数保证 prefill 不偏袒任一侧（prefill 计入 setup，不计时）。
+* **真机命令。** `cargo bench -p llm --bench metal -- gpu/decode`（已执行，数字见上表）。
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 
