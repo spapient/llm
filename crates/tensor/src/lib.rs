@@ -1,4 +1,6 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+// Exemption: crates/tensor/src/byteview.rs (zero-copy byte view, registered in
+// AGENTS.md §6 and docs/design.md §21.8).
 //! Core tensor types and numerical primitives for the LLM runtime.
 //!
 //! `tensor` owns tensor storage, shape, layout, element typing, and
@@ -37,6 +39,7 @@
 //! is a compute precision.
 
 mod bytes;
+mod byteview;
 mod dtypes;
 mod elements;
 mod error;
@@ -47,6 +50,7 @@ mod tensors;
 mod views;
 
 pub use bytes::{byteable, bytesof, frombytes};
+pub use byteview::trybyteview;
 pub use dtypes::dtype;
 pub use elements::element;
 pub use error::tensorerror;

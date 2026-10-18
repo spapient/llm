@@ -2684,7 +2684,7 @@ gpu -> api
 
 * 工作区 lint 保持 `unsafe_code = "deny"`（`Cargo.toml`），一行不改。
 * 全部既有 crate 保持 `#![forbid(unsafe_code)]`，一行不改。
-* `gpu` crate（内含 `metal`、`cuda`、`musa`、`rocm`、`sycl`、`cann`、`mlu` 七个后端模块）使用 `#![deny(unsafe_code)]`。七个后端的岛分居 `crates/gpu/ffi/`。`cuda`/`metal`/`musa` 已按"声明 / 驱动 / 算子"目录化为 `ffi/<岛>/`：唯一 `drive.rs` 持 `#![allow(unsafe_code)]` 并收纳该岛全部 `unsafe` 站点（`mod.rs` 为声明层、`ops.rs` 为算子层，`musa` 另含 `record.rs` 累积层，均无 `allow`）；`rocm`/`sycl`/`cann`/`mlu` 仍为单文件 `rocm.rs`/`sycl.rs`/`cann.rs`/`mlu.rs`，各自声明 `#![allow(unsafe_code)]`。各岛由 `ffi/mod.rs` 的 `pub(crate) mod <岛>;` 加 `#[cfg]` 条件编译，外部 `ffi::<岛>::*` 命名空间经 `mod.rs` re-export 保持不变，彼此互不替代。`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）。其余模块仍受 `deny` 约束。
+* `gpu` crate（内含 `metal`、`cuda`、`musa`、`rocm`、`sycl`、`cann`、`mlu` 七个后端模块）使用 `#![deny(unsafe_code)]`。七个后端的岛分居 `crates/gpu/ffi/`。`cuda`/`metal`/`musa` 已按"声明 / 驱动 / 算子"目录化为 `ffi/<岛>/`：唯一 `drive.rs` 持 `#![allow(unsafe_code)]` 并收纳该岛全部 `unsafe` 站点（`mod.rs` 为声明层、`ops.rs` 为算子层，`musa` 另含 `record.rs` 累积层，均无 `allow`）；`rocm`/`sycl`/`cann`/`mlu` 仍为单文件 `rocm.rs`/`sycl.rs`/`cann.rs`/`mlu.rs`，各自声明 `#![allow(unsafe_code)]`。各岛由 `ffi/mod.rs` 的 `pub(crate) mod <岛>;` 加 `#[cfg]` 条件编译，外部 `ffi::<岛>::*` 命名空间经 `mod.rs` re-export 保持不变，彼此互不替代。`checkpoint` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/crc32c_hw.rs`；`simd` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/intrinsics.rs`（CPU SIMD 内核岛）；`tensor` 同样使用 `#![deny(unsafe_code)]`，其唯一豁免文件是 `src/byteview.rs`（零拷贝字节视图岛：对齐与长度校验后的一次 `from_raw_parts` reinterpret，参考 `zerocopy` 的 `Ref` 校验核心但不引入依赖）。其余模块仍受 `deny` 约束。
 * 每个豁免文件中每一处 `unsafe` 构造前必须有 `// SAFETY:` 注释，陈述该 API 的安全前置为何被满足。
 * 站点总数必须与下表条目数**恰好相等**，多一处或少一处都视为豁免扩散并触发评审。下表"位置"列即被豁免文件：目录岛的行落在 `ffi/<岛>/drive.rs`，单文件岛落在 `ffi/<岛>.rs`；七岛登记数之和为 16。实测登记（证据等级 E1，来自 21.1 的尖刺、2026-10-18 的 GRID 家族接入与同日的目录化拆分）：
 
@@ -2712,8 +2712,9 @@ gpu -> api
 | `simd` | 14 个 `#[target_feature]` 内核声明（rmsnormrow/rowinv/softmaxrowspan/attentiondot/attentionqblock/matmuldirect/matmultile × AVX2/NEON） | `intrinsics.rs` |
 | `simd` | 14 个 dispatch `unsafe` 调用块（7 算子 × AVX2/NEON 各一） | `intrinsics.rs` |
 | `simd` | 4 个 x86/NEON 辅助内核声明（`hmax256`/`hsum256`/`exp2approx` ×2） | `intrinsics.rs` |
+| `tensor` | 零拷贝字节视图 `unsafe` 块（`trybyteview`：对齐与长度校验通过后的一次 `from_raw_parts` 重解释，参考 `zerocopy` `Ref` 校验核心） | `byteview.rs` |
 
-站点登记：`metal` = 3，`cuda` = 2，`musa` = 2，`rocm` = 3，`sycl` = 2，`cann` = 2，`mlu` = 2（分居 `crates/gpu/ffi/`，各文件登记 = cuda 2/musa 2/metal 3/rocm 3/sycl 2/cann 2/mlu 2，合计 16），`checkpoint` = 3，`simd` = 32；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。`rocm` 的第三处站点（2026-10-18 随 `matmul` 走 hipBLAS 而新增）把 hipBLAS 的句柄创建与 `hipblasGemmStridedBatched` 收于独立交接块，与 `drive` 的内核交接块分开，`unsafe` 数不随算子面增减。
+站点登记：`metal` = 3，`cuda` = 2，`musa` = 2，`rocm` = 3，`sycl` = 2，`cann` = 2，`mlu` = 2（分居 `crates/gpu/ffi/`，各文件登记 = cuda 2/musa 2/metal 3/rocm 3/sycl 2/cann 2/mlu 2，合计 16），`checkpoint` = 3，`simd` = 32，`tensor` = 1；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。`rocm` 的第三处站点（2026-10-18 随 `matmul` 走 hipBLAS 而新增）把 hipBLAS 的句柄创建与 `hipblasGemmStridedBatched` 收于独立交接块，与 `drive` 的内核交接块分开，`unsafe` 数不随算子面增减。
 
 依据：这些数字由**调用面结构**推导，而非经验取值。Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径的 `dispatch` 把上传、缓冲绑定、标量绑定、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载收进**单一交接块**；累积路径的 `session` 拆成**编码块**（绑定并启动、不等待）与**提交块**（`commit` + 等待 + 下载）两个块——command buffer 单次使用、跨算子共享，故提交只发生一次。每个块内的全部平台调用共享同一个 `// SAFETY:` 前置论证（缓冲均为本块持有或调用者传入的存活 `MTLBuffer`、长度与内核读写一致、`setBytes` 拷贝而非保留、`waitUntilCompleted` 排序读写）。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
 

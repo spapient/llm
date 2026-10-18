@@ -568,3 +568,73 @@ mod bytetensor {
         assert_eq!(t.getview().getlen(), 0);
     }
 }
+
+mod byteview {
+    /// A stack buffer with a guaranteed 16-byte alignment, so the alignment
+    /// tests below do not depend on allocator placement of `Vec<u8>` (which
+    /// only guarantees alignment 1).
+    #[repr(align(16))]
+    struct Align16([u8; 64]);
+
+    #[test]
+    fn zero_copy_view_matches_frombytes_and_preserves_address() {
+        let data: Vec<f32> = vec![1.0, -2.5, 3.125, f32::INFINITY, f32::NAN, 0.0];
+        let encoded = tensor::bytesof(&data);
+        let mut backing = Align16([0u8; 64]);
+        backing.0[..encoded.len()].copy_from_slice(&encoded);
+        let bytes = &backing.0[..encoded.len()];
+        let view = tensor::trybyteview::<f32>(bytes).unwrap();
+        // Values match the copying conversion.
+        let copied = tensor::frombytes::<f32>(bytes).unwrap();
+        assert_eq!(view.len(), copied.len());
+        for (a, b) in view.iter().zip(copied.iter()) {
+            if a.is_nan() {
+                assert!(b.is_nan());
+            } else {
+                assert_eq!(*a, *b);
+            }
+        }
+        // Zero copy: the view points at the source bytes, not a copy.
+        assert_eq!(
+            view.as_ptr() as usize,
+            bytes.as_ptr() as usize,
+            "byteview must alias the source bytes"
+        );
+    }
+
+    #[test]
+    fn rejects_non_multiple_byte_length() {
+        let bytes = vec![0u8; 5];
+        assert!(matches!(
+            tensor::trybyteview::<f32>(&bytes),
+            Err(tensor::tensorerror::byteconversion)
+        ));
+    }
+
+    #[test]
+    fn rejects_misaligned_bytes() {
+        let backing = Align16([0u8; 64]);
+        // Offset by one breaks the 4-byte alignment of f32 (16k + 1 is not a
+        // multiple of 4, regardless of the 16-byte-aligned base); the 4-byte
+        // length keeps the length check from firing first.
+        let misaligned = &backing.0[1..5];
+        assert!(matches!(
+            tensor::trybyteview::<f32>(misaligned),
+            Err(tensor::tensorerror::viewmisaligned { align: 4 })
+        ));
+    }
+
+    #[test]
+    fn accepts_empty_slice() {
+        let view = tensor::trybyteview::<f32>(&[]).unwrap();
+        assert!(view.is_empty());
+    }
+
+    #[test]
+    fn i8_view_accepts_any_alignment() {
+        // i8 has alignment 1, so even the offset slice is a valid view.
+        let bytes = [1u8, 2, 3, 4, 5, 6];
+        let view = tensor::trybyteview::<i8>(&bytes[1..]).unwrap();
+        assert_eq!(view, &[2, 3, 4, 5, 6]);
+    }
+}

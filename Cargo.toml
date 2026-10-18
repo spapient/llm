@@ -108,6 +108,10 @@ harness = false
 name = "gatedecode"
 harness = false
 
+[[bench]]
+name = "byteview"
+harness = false
+
 [lints]
 workspace = true
 [workspace.package]

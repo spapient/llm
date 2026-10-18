@@ -31,6 +31,7 @@ WHITELIST=(
   "crates/gpu/ffi/cann.rs:2"
   "crates/gpu/ffi/mlu.rs:2"
   "crates/checkpoint/src/crc32c_hw.rs:3"
+  "crates/tensor/src/byteview.rs:1"
   "crates/simd/src/intrinsics.rs:32"
 )
 

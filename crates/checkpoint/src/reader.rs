@@ -632,7 +632,19 @@ impl checkpointreader {
         };
         let decoded = match entry.getlayout() {
             Some(l) => tensor::tryfrombyteswithlayout(entry.getshape().clone(), l.clone(), &dense)?,
-            None => tensor::tryfrombytes(entry.getshape().clone(), &dense)?,
+            None => match &dense {
+                // Zero-copy fast path: a borrowed (memory-mapped) byte slice
+                // that passed the block-level checks decodes to a typed view
+                // without element-wise `from_ne_bytes`; the aligned view is
+                // then moved into the owned tensor by one copy. Falls back to
+                // the element-wise decode when the bytes are not a valid view
+                // (unaligned or mis-sized, e.g. sparse or cross-block data).
+                Cow::Borrowed(slice) => match ::tensor::trybyteview::<T>(slice) {
+                    Ok(view) => tensor::new(entry.getshape().clone(), view.to_vec())?,
+                    Err(_) => tensor::tryfrombytes(entry.getshape().clone(), &dense)?,
+                },
+                Cow::Owned(_) => tensor::tryfrombytes(entry.getshape().clone(), &dense)?,
+            },
         };
         Ok(Some(decoded))
     }
