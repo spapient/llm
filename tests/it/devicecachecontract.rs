@@ -15,7 +15,6 @@
 use crate::support::{build, wide};
 use api::{backenderror, operand, submission};
 use cpu::{cpuexecutor, cpusubmission};
-use lib::limits;
 use tensor::shape;
 
 /// A persistent buffer round-trips its registered data unchanged.
@@ -41,7 +40,10 @@ fn recordpersist_rejects_mismatched_length() {
     let s = shape::new(vec![2, 3]).unwrap();
     let mut sub = cpusubmission::new(exec);
     let err = sub.recordpersist(&[1.0, 2.0], s).unwrap_err();
-    assert!(matches!(err, backenderror::invalidparameter { op: "persist" }));
+    assert!(matches!(
+        err,
+        backenderror::invalidparameter { op: "persist" }
+    ));
 }
 
 /// Appending rows into a persistent buffer keeps the earlier rows and extends
@@ -88,7 +90,10 @@ fn recordappend_rejects_out_of_bounds_row() {
     let err = sub
         .recordappend(operand::result(cached), operand::input(row.getview()), 2)
         .unwrap_err();
-    assert!(matches!(err, backenderror::invalidparameter { op: "append" }));
+    assert!(matches!(
+        err,
+        backenderror::invalidparameter { op: "append" }
+    ));
 }
 
 /// Appending into a caller input (not a recorded step) is rejected.
@@ -107,7 +112,10 @@ fn recordappend_rejects_input_cached() {
             0,
         )
         .unwrap_err();
-    assert!(matches!(err, backenderror::invalidparameter { op: "append" }));
+    assert!(matches!(
+        err,
+        backenderror::invalidparameter { op: "append" }
+    ));
 }
 
 /// A view narrower than the buffer reads the leading rows only.
@@ -121,7 +129,9 @@ fn recordview_reads_the_leading_rows() {
             shape::new(vec![3, 2]).unwrap(),
         )
         .unwrap();
-    let prefix = sub.recordview(base, shape::new(vec![2, 2]).unwrap()).unwrap();
+    let prefix = sub
+        .recordview(base, shape::new(vec![2, 2]).unwrap())
+        .unwrap();
     let out = sub.apply(&[prefix]).unwrap();
     assert_eq!(out[0].getdata(), &[1.0, 2.0, 3.0, 4.0]);
 }

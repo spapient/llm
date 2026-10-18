@@ -3056,6 +3056,41 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **测量对象。** 每次 decode 步：`metalcached` 经 `forwardsubmission_cached`（一步 submission，只对新增 token 行做 attention），`metalrecompute` 经 `forwardsubmission`（一步 submission，对全上下文重算 attention）。两侧同用 submission，把 §21.13 已消灭的 35 次往返从对照中剔除，留下纯计算差；对称 token 数保证 prefill 不偏袒任一侧（prefill 计入 setup，不计时）。
 * **真机命令。** `cargo bench -p llm --bench metal -- gpu/decode`（已执行，数字见上表）。
 
+### 21.13.9 持久设备输入契约（recordpersist/recordappend/recordview）（P0，已实现）
+
+设备端 KV cache 需要把缓存行驻留在设备上、每步只下载 logits。为此在
+`api::submission` / `api::recorder` 上新增三个契约原语：
+
+* `recordpersist(data, shape) -> stepref`：把调用方数据注册为设备驻留步骤。
+  首次调用上传，同 `(指针, 长度)` 复用同一设备分配（引擎层 `persistent`
+  表去重）；单次 submission 只在其 apply 内有效，持久 session 跨 apply
+  保留。设备缓冲不进入 apply 的下载列表（Metal `PERSIST_BASE` 高位槽位
+  空间、CUDA 同构），因此每步不会为缓存行付出下载成本。
+* `recordappend(cached, new, position)`：把 `new` 行写入 `cached` 的设备
+  缓冲（宽 = 末维），无 host 往返。`cached` MUST 是 `recordpersist` 的
+  结果。CPU 参考实现在张量内原地写行。
+* `recordview(base, shape)`：把 `base` 的前导元素重标为子形状。设备端
+  重标同一缓冲（kernel 只读前导行，正好是缓存窗口语义）；CPU 参考实现
+  快照前导元素。
+
+实现分布：契约声明在 `api::submission`（默认 unsupportedoperation）与
+`api::recorder`（委托到 backing submission）；编排在 `crates/gpu/engine/
+record.rs`（`recordplatform` 两默认方法 + `submission<P>` 三实现 + 持久表）；
+CPU 参考在 `crates/cpu/src/submission.rs`（三方法全实现）；Metal/CUDA 的
+设备驻留在各自 ffi `session::persist`（pending 队列 flush 复用 dispatch 的
+单一 unsafe 块，**unsafe 站点数不变**：metal = 3、cuda = 2）；MUSA 走
+既有 `session::zeroed` 设备缓存路径（recordpersist 保持默认
+unsupportedoperation）。
+
+验收证据：`tests/it/devicecachecontract.rs` 7 例（往返、长度校验、行写入、
+越界、input 拒绝、前导视图、超界视图），CPU 全过；`cargo test -p llm
+--test it` = 1015 passed；clippy 零警告；checkunsafe 门禁通过。
+
+**剩余（P1–P3）**：devicekvcache 的 Metal/CUDA 实现者（消费
+`recordpersist` + `recordappend` + `recordview`，兑现「每步只下载 logits」）、
+`gpu/decode` 的 devicecached 基准对照、MUSA 对齐。recordappend 的 Metal
+blit / CUDA D2D 拷贝在 P1 落地。
+
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 
 > 状态：**参考路径已在 Windows + Intel UHD Graphics 750 上验证（2026-10-18），回退 matmul 已换为自研 64×64 分块内核（D8）；oneMKL 路径未验证（该主机未安装 MKL）**。已执行：macOS 主机上的 `cargo check`/`clippy`（`x86_64-unknown-linux-gnu` + `--cfg sycl_toolkit`）、`cargo fmt`、`scripts/checkunsafe.sh`（`sycl` 2/2）、命名与内联门禁、`cargo test --workspace`（993 例）；Windows 主机（i7-11700 + UHD 750，oneAPI 2026.0，VS BuildTools 14.51，rustc 1.99.0）上的 `icpx` 编译与 `sycl_bridge.dll` 链接、`sycl-ls` 设备探测、`tests/it/syclcontract.rs` 13 例（debug `-O0` 与 release `-O3` 各 13/13）、`cargo bench --bench sycl`。该主机未安装 oneMKL，`sycl_bridge.dll` 只导入 `sycl9.dll`，故全部 matmul 数字为自研分块内核回退路径。未执行：oneMKL 构建、数值对照与吞吐测量。§21.14.6 的数字仅是该主机、该工具链、该 MKL 配置下的基线，不构成跨实现性能声明。

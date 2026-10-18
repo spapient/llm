@@ -194,7 +194,9 @@ pub trait recordplatform: platform {
         _data: &[f32],
         _shape: &shape,
     ) -> Result<usize, backenderror> {
-        Err(backenderror::unsupportedoperation { op: "recordpersist" })
+        Err(backenderror::unsupportedoperation {
+            op: "recordpersist",
+        })
     }
 
     /// Appends `new` into `cached` at row `position`, both device buffers.
@@ -218,6 +220,10 @@ pub struct submission<P: recordplatform> {
     inputs: std::collections::HashMap<(usize, usize), P::buffer>,
     /// Whether caller inputs survive an apply (the persistent-session form).
     persistinputs: bool,
+    /// Caller data registered through [`recordpersist`], keyed by
+    /// `(pointer, length)` so a device KV cache that hands the same host
+    /// buffer back every step reuses one device allocation.
+    persistent: std::collections::HashMap<(usize, usize), usize>,
 }
 
 impl<P: recordplatform> submission<P> {
@@ -233,6 +239,7 @@ impl<P: recordplatform> submission<P> {
             results: Vec::new(),
             inputs: std::collections::HashMap::new(),
             persistinputs,
+            persistent: std::collections::HashMap::new(),
         })
     }
 
@@ -641,7 +648,17 @@ impl<P: recordplatform> api::submission for submission<P> {
 
     fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
         self.checkbudget(&shape)?;
-        let slot = self.platform.recordpersist(&mut self.session, data, &shape)?;
+        let key = (data.as_ptr() as usize, data.len());
+        let slot = match self.persistent.get(&key) {
+            Some(&slot) => slot,
+            None => {
+                let slot = self
+                    .platform
+                    .recordpersist(&mut self.session, data, &shape)?;
+                self.persistent.insert(key, slot);
+                slot
+            }
+        };
         Ok(self.push(slot, shape))
     }
 
@@ -653,7 +670,8 @@ impl<P: recordplatform> api::submission for submission<P> {
     ) -> Result<(), backenderror> {
         let cached = self.resolve(cached)?;
         let new = self.resolve(new)?;
-        self.platform.recordappend(&mut self.session, &cached, &new, position)
+        self.platform
+            .recordappend(&mut self.session, &cached, &new, position)
     }
 
     fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
@@ -713,5 +731,6 @@ impl<P: recordplatform> submission<P> {
         self.platform.resetsession(&mut self.session);
         self.results.clear();
         self.inputs.clear();
+        self.persistent.clear();
     }
 }

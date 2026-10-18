@@ -157,8 +157,7 @@ impl<P: recordplatform> api::recorder for session<P> {
         api::submission::recordappend(&mut self.inner, cached, new, position)
     }
 
-    fn recordpersist(&mut self, data: &[f32], shape: shape)
-    -> Result<stepref, backenderror> {
+    fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
         api::submission::recordpersist(&mut self.inner, data, shape)
     }
 }

@@ -383,9 +383,19 @@ fn launchconfig(dims: &devicedims) -> LaunchConfig {
 /// synchronises and downloads only once. It owns no model weights and carries no
 /// request-scoped state beyond its own slices; compiled kernels and the retained
 /// context still come from the executor-owned [`cache`].
+/// The slot-space marker for persistent device buffers registered through
+/// [`session::persist`]. Persistent slots live in their own table (they must
+/// survive every `apply` without being downloaded as step outputs), so their
+/// index carries this high bit and `getbuffer` routes on it.
+const PERSIST_BASE: usize = 1usize << 63;
+
 pub(crate) struct session {
     stream: Arc<CudaStream>,
     outputs: Vec<slot>,
+    /// Persistent device slices registered through [`session::persist`],
+    /// retained across every apply so a device KV cache keeps its key/value
+    /// rows resident.
+    persisted: Vec<CudaSlice<f32>>,
 }
 
 /// The recorded output of one step: a device slice to download, no elements, or
@@ -403,6 +413,7 @@ impl session {
         Ok(Self {
             stream,
             outputs: Vec::new(),
+            persisted: Vec::new(),
         })
     }
 
@@ -416,8 +427,24 @@ impl session {
         alloc(&self.stream, len)
     }
 
+    /// Registers `data` as a persistent device-resident slice.
+    ///
+    /// The slice is retained in the session's persistent table (never
+    /// downloaded as a step output). The returned slot carries
+    /// [`PERSIST_BASE`], so `getbuffer` routes it to the persistent table even
+    /// after `apply` rebuilt the output list.
+    pub(crate) fn persist(&mut self, data: &[f32]) -> Result<usize, gpuerror> {
+        let slice = upload(&self.stream, data)?;
+        let index = self.persisted.len();
+        self.persisted.push(slice);
+        Ok(PERSIST_BASE | index)
+    }
+
     /// Returns the device slice of slot `index`, when that slot holds one.
     pub(crate) fn getbuffer(&self, index: usize) -> Option<&CudaSlice<f32>> {
+        if index & PERSIST_BASE != 0 {
+            return self.persisted.get(index & !PERSIST_BASE);
+        }
         match self.outputs.get(index) {
             Some(slot::buffer(buffer)) => Some(buffer),
             _ => None,

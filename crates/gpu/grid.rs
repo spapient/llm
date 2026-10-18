@@ -489,6 +489,15 @@ pub mod cuda {
             session.0.getbuffer(slot).cloned()
         }
 
+        fn recordpersist(
+            &self,
+            session: &mut Self::session,
+            data: &[f32],
+            _shape: &shape,
+        ) -> Result<usize, backenderror> {
+            session.0.persist(data).map_err(maptobackend)
+        }
+
         fn gethostdata(&self, session: &Self::session, slot: usize) -> Option<Vec<f32>> {
             session.0.gethostdata(slot)
         }
@@ -780,6 +789,7 @@ pub mod metal {
 
     use std::sync::Arc;
 
+    use ::tensor::shape;
     use api::{backend, backenderror, capabilities};
     use lib::limits;
     use objc2::rc::Retained;
@@ -1040,6 +1050,15 @@ pub mod metal {
 
         fn getbuffer(&self, session: &Self::session, slot: usize) -> Option<Self::buffer> {
             session.0.getbuffer(slot).cloned()
+        }
+
+        fn recordpersist(
+            &self,
+            session: &mut Self::session,
+            data: &[f32],
+            _shape: &shape,
+        ) -> Result<usize, backenderror> {
+            session.0.persist(data).map_err(maptobackend)
         }
 
         fn gethostdata(&self, session: &Self::session, slot: usize) -> Option<Vec<f32>> {

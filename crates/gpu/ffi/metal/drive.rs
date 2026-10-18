@@ -257,6 +257,12 @@ pub(super) enum sbuf<'a> {
 /// next dispatch's unsafe block copies into, plus the host data it copies.
 type pendingupload = (Retained<ProtocolObject<dyn MTLBuffer>>, Vec<f32>);
 
+/// The slot-space marker for persistent device buffers registered through
+/// [`session::persist`]. Persistent slots live in their own table (they must
+/// survive every `apply` without being downloaded as step outputs), so their
+/// index carries this high bit and `getbuffer` routes on it.
+const PERSIST_BASE: usize = 1usize << 63;
+
 /// The allocation and upload plan for one session dispatch.
 struct sessionplan<'a> {
     allocbytes: Vec<usize>,
@@ -318,6 +324,11 @@ pub(crate) struct session {
     /// a runtime borrow. A submission is request-scoped and never shared
     /// across threads, so the borrow is uncontended by construction.
     pending: RefCell<Vec<pendingupload>>,
+    /// Persistent device buffers registered through [`session::persist`],
+    /// retained across every apply so a device KV cache keeps its key/value
+    /// rows resident. The pending queue flushes their contents on the next
+    /// dispatch, exactly like ordinary uploads.
+    persisted: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
     /// True once `endEncoding` has been called, so `Drop` ends an encoder that
     /// an error path dropped mid-submission exactly once.
     ended: bool,
@@ -356,6 +367,7 @@ impl session {
             encoder,
             outputs: Vec::new(),
             pending: RefCell::new(Vec::new()),
+            persisted: Vec::new(),
             ended: false,
         })
     }
@@ -376,6 +388,23 @@ impl session {
             .borrow_mut()
             .push((buffer.clone(), data.to_vec()));
         Ok(buffer)
+    }
+
+    /// Registers `data` as a persistent device-resident buffer.
+    ///
+    /// The buffer is retained in the session's persistent table (never
+    /// downloaded as a step output) and its contents are flushed into it by
+    /// the next dispatch, inside that dispatch's single unsafe block. The
+    /// returned slot carries [`PERSIST_BASE`], so `getbuffer` routes it to the
+    /// persistent table even after `apply` rebuilt the output list.
+    pub(crate) fn persist(&mut self, data: &[f32]) -> Result<usize, gpuerror> {
+        let buffer = alloc(&self.device, core::mem::size_of_val(data))?;
+        self.pending
+            .borrow_mut()
+            .push((buffer.clone(), data.to_vec()));
+        let index = self.persisted.len();
+        self.persisted.push(buffer);
+        Ok(PERSIST_BASE | index)
     }
 
     /// Encodes one dispatch into the shared encoder and records its output slot.
@@ -500,6 +529,9 @@ impl session {
         &self,
         index: usize,
     ) -> Option<&Retained<ProtocolObject<dyn MTLBuffer>>> {
+        if index & PERSIST_BASE != 0 {
+            return self.persisted.get(index & !PERSIST_BASE);
+        }
         match self.outputs.get(index) {
             Some(slot::buffer(buffer, _)) => Some(buffer),
             _ => None,

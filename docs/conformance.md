@@ -89,6 +89,8 @@
 - **真机数字（M5 Pro，`cargo bench -p llm --bench metal -- gpu/decode`）**：s16 cached 107.158 ms vs recompute 14.366 ms（7.46×）；s128 cached 892.127 ms vs recompute 195.517 ms（4.56×）；s256 cached 1801.801 ms vs recompute 529.041 ms（3.41×）。每 decode 步：cached ≈6.70/6.97/7.04 ms（与 seq 无关，固定成本主导）；recompute ≈0.90/1.53/2.07 ms（随 seq 增长，O(seq²) 计算实测可见）。
 - **判定。** KV cache 性能收益**未达成**：cached 每步下载 `1 + 2·layers` 个张量（logits + 每层 key/value）+ CPU `kvstate::append` 的固定成本压倒增量 attention 的 O(seq²)→O(seq) 节省。比值收敛（7.46×→3.41×）证明方向正确；下一步为设备端 KV cache（KV 驻留设备、设备端 append、每步只下载 logits）。conformance 层 2/3 KV cache 判定改「正确性已验证；性能未达成」。
 
+- **P0 持久设备输入契约（2026-10-18 追加）**：设备端 KV cache 的三个契约原语（`recordpersist` / `recordappend` / `recordview`）已落地——声明在 `api::submission`/`api::recorder`，编排在 `gpu::engine`（持久表去重），CPU 参考实现三方法全实现，Metal/CUDA ffi 各加 `session::persist`（`PERSIST_BASE` 高位槽位，持久缓冲不进入 apply 下载列表，unsafe 站点数不变：metal 3、cuda 2）。验证：`tests/it/devicecachecontract.rs` 7/7（往返、长度校验、行写入、越界、input 拒绝、前导视图、超界视图）；`cargo test -p llm --test it` = 1015 passed；clippy 零警告；checkunsafe 门禁通过。契约文档见 design.md §21.13.9。Metal/CUDA 的设备端 KV cache 实现者、`gpu/decode` devicecached 对照与 MUSA 对齐为 P1–P3 剩余工作。
+
 ## 本轮重测证据（2026-10-16）
 
 环境：macOS 27.0.1（arm64，Apple M5 Pro）、`rustc 1.99.0 (b940084d7 2026-09-28)`；远程真机为 Windows 11 + WSL2（Ubuntu 24.04、CUDA 12.0.140、cudnn 9.3.0.75）的 NVIDIA T600。本轮为 KV cache 接线：attention 契约扩展 + `forward_cached` 增量前向 + `infer` 的 `kvstate` 接线 + GPU 用例与 decode 基准。

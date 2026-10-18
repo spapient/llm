@@ -27,6 +27,7 @@ mod cpuunits;
 mod crosscrate;
 mod cudacontract;
 mod dataunits;
+mod devicecachecontract;
 mod formatunits;
 mod generation;
 mod gpucontract;
@@ -67,6 +68,5 @@ mod trainingresume;
 mod trainunits;
 mod transformunits;
 mod weightloader;
-mod devicecachecontract;
 
 mod jsonunits;

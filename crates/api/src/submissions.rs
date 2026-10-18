@@ -214,7 +214,9 @@ pub trait submission {
     /// the backend does not implement persistent inputs.
     fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
         let _ = (data, shape);
-        Err(backenderror::unsupportedoperation { op: "recordpersist" })
+        Err(backenderror::unsupportedoperation {
+            op: "recordpersist",
+        })
     }
 
     /// Appends the `new` row into the `cached` device buffer at `position`.
@@ -489,8 +491,7 @@ pub trait recorder {
     ///
     /// Returns the backing submission's error, or `unsupportedoperation` when
     /// the backend does not implement persistent inputs.
-    fn recordpersist(&mut self, data: &[f32], shape: shape)
-    -> Result<stepref, backenderror>;
+    fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror>;
 }
 
 impl<T: submission> recorder for T {
@@ -625,8 +626,7 @@ impl<T: submission> recorder for T {
         <T as submission>::recordappend(self, cached, new, position)
     }
 
-    fn recordpersist(&mut self, data: &[f32], shape: shape)
-    -> Result<stepref, backenderror> {
+    fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
         <T as submission>::recordpersist(self, data, shape)
     }
 }

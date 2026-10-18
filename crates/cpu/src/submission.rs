@@ -250,7 +250,9 @@ impl<C: compute> submission for cpusubmission<C> {
     }
 
     fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
-        let count = shape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let count = shape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
         if data.len() != count {
             return Err(backenderror::invalidparameter { op: "persist" });
         }
@@ -281,7 +283,9 @@ impl<C: compute> submission for cpusubmission<C> {
             .results
             .get_mut(index)
             .ok_or(backenderror::indexoutofrange { index, len })?;
-        let start = position.checked_mul(width).ok_or(backenderror::sizeoverflow)?;
+        let start = position
+            .checked_mul(width)
+            .ok_or(backenderror::sizeoverflow)?;
         let end = start.checked_add(width).ok_or(backenderror::sizeoverflow)?;
         if end > cached_t.getlen() {
             return Err(backenderror::invalidparameter { op: "append" });
@@ -299,7 +303,9 @@ impl<C: compute> submission for cpusubmission<C> {
                 index,
                 len: self.results.len(),
             })?;
-        let count = shape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        let count = shape
+            .getelementcount()
+            .map_err(|_| backenderror::sizeoverflow)?;
         if count > t.getlen() {
             return Err(backenderror::invalidparameter { op: "view" });
         }
