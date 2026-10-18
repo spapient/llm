@@ -276,10 +276,25 @@ mod macos {
         }));
     }
 
-    /// KV-cache decode: prefill the prompt token by token, then decode the rest
-    /// token by token. The cache-aware path processes only the new token each
-    /// step, while the recompute path runs a full forward over the whole context.
+    /// KV-cache decode at three sequence lengths: prefill the prompt token by
+    /// token, then decode the rest token by token. The cache-aware path
+    /// processes only the new token each step, while the recompute path runs a
+    /// full forward over the whole context.
+    ///
+    /// Both paths time only the decode phase (setup is untimed): `metalcached`
+    /// prefills in setup, `metalrecompute` starts from the prompt. Symmetric
+    /// token counts keep the numbers honest. At seq=16 the per-call
+    /// command-buffer round trip dominates both paths and no speedup is
+    /// claimed; the 128/256 rows are the long-sequence evidence for the
+    /// O(seq²) → O(seq) attention saving once a single submission collapses
+    /// the round trips — the KV-cache payoff stage (docs/design.md §21.13).
     pub fn decode() {
+        for seq in [16usize, 128, 256] {
+            decodeat(seq);
+        }
+    }
+
+    fn decodeat(seq: usize) {
         let config = llamaconfig::new(
             VOCAB,
             DIM,
@@ -289,19 +304,15 @@ mod macos {
             HIDDEN,
             1.0e-5,
             10_000.0,
-            SEQ * 2,
+            seq * 2,
         )
         .unwrap();
         let weights = llamaweights::random(&config, seed::new(42)).unwrap();
         let model = llamamodel::new(config, weights).unwrap();
-        let prompt: Vec<usize> = (0..SEQ).map(|i| i % VOCAB).collect();
-        let decode_tokens: Vec<usize> = (SEQ..2 * SEQ).map(|i| i % VOCAB).collect();
+        let prompt: Vec<usize> = (0..seq).map(|i| i % VOCAB).collect();
+        let decode_tokens: Vec<usize> = (seq..2 * seq).map(|i| i % VOCAB).collect();
         let metalexec = metalexecutor::new(LIMIT);
-        // Both paths time only the decode phase (iter_batched setup is untimed):
-        // `metalcached` prefills in setup, `metalrecompute` starts from the prompt.
-        // Symmetric token counts make the numbers honest; at seq=16 the per-call
-        // command-buffer round trip dominates, so no speedup is claimed here.
-        report(&run("gpu/decode/metalcached", || {
+        report(&run(&format!("gpu/decode/metalcached/s{seq}"), || {
             let mut cache =
                 kvstate::new(config.getnlayers(), config.getkvwidth(), config.getmaxseq()).unwrap();
             for &token in &prompt {
@@ -326,7 +337,7 @@ mod macos {
                 black_box(&got[0]);
             }
         }));
-        report(&run("gpu/decode/metalrecompute", || {
+        report(&run(&format!("gpu/decode/metalrecompute/s{seq}"), || {
             let mut context = prompt.clone();
             for &token in &decode_tokens {
                 context.push(token);

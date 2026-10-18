@@ -3034,6 +3034,16 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 * **接入与性能。** `llamamodel` 与 `llamablock` 增 `forwardsubmission`，把前向链的 35 步算子内联进一个 `submission`；`tests/it/submissionforward.rs` 2 例在 CPU 上钉住 `forwardsubmission` 与 `forward` 逐位相同。`gpu/modelforward` 实测（Apple M5 Pro）：`metal` 52.60 ms（35 次同步往返的 `compute` 基线）、`metalsubmission` 2.81 ms（整链一次 commit），**改善 ≈18.7×**，远超 10× 验收，且逐位一致。无需权重驻留设备即达成。
 
+### 21.13.8 KV cache 长序列性能阶段（基准就绪，真机数字待补）
+
+> 状态：**基准就绪（Ready），真机数字待补（Pending device run）**。`benches/metal.rs` 的 `gpu/decode` 组已参数化为三个序列长度（`s16`/`s128`/`s256`），`metalcached`（增量 attention，每步只处理新 token）与 `metalrecompute`（全量重算）在同一进程、对称 token 数下对照；数字须在 Apple GPU 真机回填后方可写入本节，在此之前不构成性能声明（PF1/PF5）。
+
+KV cache 的收益兑现路径在 §21.13 之前已两次确认：seq=16 时单步 decode 的计算差（O(seq²) vs O(seq) 的 attention）远小于固定往返成本，`metalcached` 反而因多计时 prefill 而慢；**只有「单次提交 + 增量 attention」在长序列下让计算差主导，收益才显现**。本节是那一步的度量装置：
+
+* **测量对象。** 每次 decode 步：`metalcached` 经 `forwardsubmission_cached`（一步 submission，只对新增 token 行做 attention），`metalrecompute` 经 `forwardsubmission`（一步 submission，对全上下文重算 attention）。两侧同用 submission，把 §21.13 已消灭的 35 次往返从对照中剔除，留下纯计算差。
+* **预期。** 每步成本 = 单次提交往返（固定）+ attention 计算。attention 部分 cached 为 O(seq·d)（新行对全部缓存键），recompute 为 O(seq²·d)（全量行对全量键）；当计算占主导时 cached/recompute 比随 seq 线性改善。seq=16 时往返主导、无加速（既有实测）；128/256 是让计算差超过往返的档位。
+* **真机命令。** `cargo bench -p llm --bench metal -- gpu/decode`，回填三档 `metalrecompute/metalcached` 的中位数与比值。
+
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 
 > 状态：**参考路径已在 Windows + Intel UHD Graphics 750 上验证（2026-10-18），回退 matmul 已换为自研 64×64 分块内核（D8）；oneMKL 路径未验证（该主机未安装 MKL）**。已执行：macOS 主机上的 `cargo check`/`clippy`（`x86_64-unknown-linux-gnu` + `--cfg sycl_toolkit`）、`cargo fmt`、`scripts/checkunsafe.sh`（`sycl` 2/2）、命名与内联门禁、`cargo test --workspace`（993 例）；Windows 主机（i7-11700 + UHD 750，oneAPI 2026.0，VS BuildTools 14.51，rustc 1.99.0）上的 `icpx` 编译与 `sycl_bridge.dll` 链接、`sycl-ls` 设备探测、`tests/it/syclcontract.rs` 13 例（debug `-O0` 与 release `-O3` 各 13/13）、`cargo bench --bench sycl`。该主机未安装 oneMKL，`sycl_bridge.dll` 只导入 `sycl9.dll`，故全部 matmul 数字为自研分块内核回退路径。未执行：oneMKL 构建、数值对照与吞吐测量。§21.14.6 的数字仅是该主机、该工具链、该 MKL 配置下的基线，不构成跨实现性能声明。
