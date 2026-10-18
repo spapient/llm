@@ -3035,7 +3035,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 
-> 状态：**实现完成，仅通过静态检查与主机侧测试，尚未在任何 SYCL 设备上执行**。已执行：`cargo check`（`x86_64-unknown-linux-gnu` 交叉目标、`--cfg sycl_toolkit`）、同口径 `cargo clippy`、`cargo fmt`、`scripts/checkunsafe.sh`（`sycl` 2/2）、命名与内联测试门禁、根包测试与基准目标的类型检查、`cargo test --workspace`（macOS 主机，SYCL 目标被 cfg 排除；993 例集成测试通过）。未执行：Windows 上 `icpx` 对 `sycl.c` 的编译、`tests/it/syclcontract.rs`、`benches/sycl.rs`、启用 oneMKL 的构建与数值对照。因此本节不含任何新性能结论；引用的数字均标注其来源与证据等级。
+> 状态：**参考路径已在 Windows + Intel UHD Graphics 750 上验证（2026-10-18）；oneMKL 路径未验证（该主机未安装 MKL）**。已执行：macOS 主机上的 `cargo check`/`clippy`（`x86_64-unknown-linux-gnu` + `--cfg sycl_toolkit`）、`cargo fmt`、`scripts/checkunsafe.sh`（`sycl` 2/2）、命名与内联门禁、`cargo test --workspace`（993 例）；Windows 主机（i7-11700 + UHD 750，oneAPI 2026.0，VS BuildTools 14.51，rustc 1.99.0）上的 `icpx` 编译与 `sycl_bridge.dll` 链接、`sycl-ls` 设备探测、`tests/it/syclcontract.rs` 12 例（debug `-O0` 与 release `-O3` 各 12/12）、`cargo bench --bench sycl`。该主机未安装 oneMKL，`sycl_bridge.dll` 只导入 `sycl9.dll`，故全部 matmul 数字为参考内核回退路径。未执行：oneMKL 构建、数值对照与吞吐测量。§21.14.6 的数字仅是该主机、该工具链、该 MKL 配置下的基线，不构成跨实现性能声明。
 
 ### 21.14.1 上下文（先前会话的测量事实）
 
@@ -3092,7 +3092,28 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 4. 分别构建 `GRID_MKL` 开/关两个版本，两者数值都与参考实现一致（容差 1e-5 / 1e-6 按用例），记录各自 matmul 吞吐。
 5. `scripts/check.sh` 全绿；`checkunsafe.sh` 维持 `sycl` 2/2。
 
-在完成第 1–5 项前，本节不宣称任何性能提升或设备正确性。
+截至 2026-10-18：第 1 项完成（Windows iGPU，oneAPI 2026.0）；第 2 项完成（debug 与 release 各 12/12）；第 3 项完成 MKL-off 部分（§21.14.6）；第 4 项未执行（该主机未安装 oneMKL）；第 5 项在 macOS 上除既有 DS3/rustdoc 失败外通过，Windows 上未执行 `check.sh`。oneMKL 路径与跨实现性能对照完成前，本节不宣称任何性能提升。
+
+### 21.14.6 上机基线（2026-10-18，Windows + UHD 750，oneMKL off）
+
+主机与构建：i7-11700 + Intel UHD Graphics 750（32 EU），Windows，oneAPI 2026.0（`sycl-ls` 同时列出 Level-Zero 与 OpenCL 设备），VS BuildTools 14.51，rustc/cargo 1.99.0。快照 `eb506c5` 经 `git archive` 传至独立目录，`cargo test/bench --offline --locked` 从 vendored 闭包构建。`sycl_bridge.dll` 的导入表只有 `sycl9.dll` 与 CRT，无 `mkl_sycl.dll`，即 `GRID_MKL` 未定义；因此下表全部为参考内核回退路径。测试 debug 构建设备代码 `-O0`，release/bench 为 `-O3`（D7）。
+
+`tests/it/syclcontract.rs`：debug 12/12（0.46 s）、release 12/12（0.47 s），`LLM_SYCL_REQUIRE_DEVICE=1`。
+
+`cargo bench --bench sycl`（criterion 中位值；同轮 CPU 基线；未与 llama.cpp/ollama 对照，因为该主机没有可用的 `llama-bench`/`test-backend-ops` 可执行文件）：
+
+| 基准 | 中位时间 | 换算 | 备注 |
+| --- | --- | --- | --- |
+| `sycl/matmul/cpu256` | 1.2293 ms | 27.3 GFLOPS | 同轮 CPU 基线 |
+| `sycl/matmul/sycl256` | 7.5783 ms | 4.43 GFLOPS | 参考内核 + 单次上下载，与先前 ≈4.7 GFLOPS 同量级 |
+| `sycl/matmulbatch/cpu8x256` | 10.808 ms | 24.8 GFLOPS | 8×256³ |
+| `sycl/matmulbatch/sycl8x256` | 81.873 ms | 3.28 GFLOPS | 参考内核 |
+| `sycl/matmulchain/sycl1024x8` | 3.6884 s | 4.66 GFLOPS（每步 461 ms） | 设备驻留 8 步链，一次 `apply` |
+| `sycl/submissionchain/cpucompute32` | 26.083 µs | — | 32 次 64×64 add |
+| `sycl/submissionchain/syclcompute32` | 6.3019 ms | ≈197 µs/步 | 32 次 `compute`，每次同步 |
+| `sycl/submissionchain/syclsubmission32` | 1.9773 ms | ≈61.8 µs/步 | 批提交一次同步；较 `syclcompute32` 快 **3.19×** |
+
+证据边界：criterion 在 `cpu8x256` 报告 20% 离群（18 个 high severe），其余组 4–10%；上表取中位值，不外推到其他主机或工具链。MKL-off 的 matmul 明显慢于同机 CPU（单次 256³ 约 6.2×），符合“参考内核仅用于回退”的定位；设备驻留批提交把 32 步链的同步开销从约 197 µs/步降到约 61.8 µs/步。oneMKL 命中后的吞吐必须按 §21.14.5 第 4 项单独测量，不能与本表混列。
 
 ## 22. 跨领域主题与声明局限
 
