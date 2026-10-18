@@ -3128,23 +3128,44 @@ devicecached 相对 metalcached **3.10–3.70×**（每步下载 `1 + 2·layers`
 command-buffer 固定成本 ≈2.1ms 主导，s256 已收敛到 1.02×——增量 attention
 的 O(seq²)→O(seq) 优势在更长序列显现）。
 
-**P3（CUDA D2D 拷贝 + MUSA 对齐，已交付）**：`recordplatform::recordappend`
-签名收 `&mut Self::buffer`（CUDA 需可变目标做切片视图）；CUDA 的
-`session::recordappend` 用 cudarc 安全 API `slice_mut` + `memcpy_dtod`
-（流序设备到设备拷贝，随 `apply` 的 synchronize 排序），`gethostdata`
-补持久高位槽按需下载分支（`clone_dtoh`）——两者都是 cudarc 安全方法，
+**P3（CUDA D2D 拷贝 + MUSA 对齐，已交付；真机修复 2026-10-18）**：
+`recordplatform::recordappend` 签名收 `&mut Self::buffer`（CUDA 需可变目标做
+切片视图）。CUDA 真机（WSL Ubuntu + NVIDIA T600）暴露两个 cudarc/WSL 特定
+问题，均已修复并真机转绿：
+
+1. **D2D memcpy 静默 no-op**：cudarc 的 `memcpy_dtod` 在 WSL/NVIDIA 虚拟
+   栈上对带 write event 的目标 slice 静默失败（内核 launch 同样受影响：
+   `clone_htod` 创建的目标携带上传事件，后续 launch 等待它时不执行）。
+   修复：`recordappend` 改用**在仓 copy 内核 launch**（`cuda.c` 新增
+   `copy(a, c, n, off)`，`c[off+i]=a[i]`，catalog 登记 `cu::COPYENTRY`），
+   并让 `session::persist` 对**全零数据走 `alloc_zeros`**（无事件分配）、
+   非零数据才 upload——持久 KV cache（全零初始化）从此不携带目标事件。
+2. **CudaSlice clone 是深拷贝**：cudarc 的 `Clone` = `try_clone`（D2D 全量
+   拷贝到新分配），engine 层 `getbuffer().cloned()` 传给 append 的只是
+   persisted 缓冲的**副本**，写入副本不会碰设备驻留缓冲。修复：
+   `recordplatform::recordappend` 签名改为收 **persist 槽号 `usize`**
+   （不再收 `&mut Self::buffer`），`submission` 层只解析槽号、`ffi`
+   `session::recordappend` 直接 `persisted.get_mut(slot)` 在驻留分配内
+   slice 写入——`CudaSlice` 深拷贝语义与「append 必须写驻留缓冲」的
+   契约不再冲突。Metal（`Retained` 浅共享）与 MUSA（指针直写）无此问题，
+   签名同步槽号化保持一致。
+
+`gethostdata` 补持久高位槽按需下载分支（`clone_dtoh`，cudarc 安全方法），
 **cuda unsafe 站点数保持 2 不变**；MUSA 侧 `api::submission::recordappend`
 （`muMemcpyDtoD` 拷到 persist 缓冲偏移）在 P1b 已实现，P3 补
 `ffi::session::gethostdata`（`flush` 按需下载整块持久缓冲，供
 `enginerecordplatform` 的视图下载路径）。测试：
 `tests/it/cudacontract.rs` 新增 `devicecache_cuda_persist_append_view_roundtrip`
-与 `devicecache_cuda_two_rows_leading_window`（linux-gated，真机在
-Linux/WSL 验证；`cargo check --target x86_64-unknown-linux-gnu` 已过）。
+与 `devicecache_cuda_two_rows_leading_window`。
 
-**剩余（P4）**：CUDA/MUSA 真机回填（Linux/WSL 跑 cudacontract 新增两例 +
-`gpu/decode` devicecached 对照）；CUDA 空 `[0,width]` 张量上传
-（`alloc_zeros(0)` / 空 `clone_htod`）边界待真机核对（Metal 侧 P2 已用
-`bytes.max(1)` 修）。
+**P4（CUDA 真机回填，已完成）**：WSL Ubuntu + NVIDIA T600 真机
+`cargo test -p llm --test it cudacontract` = **52 passed；0 failed**
+（含 P3 新增两例 devicecache 测试：persist+append+view 往返、两行前导窗口，
+与 CPU/Metal 参考逐位一致）；`cargo check --target
+x86_64-unknown-linux-gnu`、本地 clippy（gpu 零警告）、checkunsafe
+（cuda = 2 不变）均过。`gpu/decode` devicecached 的 CUDA 对照基准与
+MUSA 真机回填、CUDA 空 `[0,width]` 张量上传边界（`alloc_zeros(0)` /
+空 `clone_htod`）待真机核对（Metal 侧 P2 已用 `bytes.max(1)` 修）。
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 

@@ -434,7 +434,17 @@ impl session {
     /// [`PERSIST_BASE`], so `getbuffer` routes it to the persistent table even
     /// after `apply` rebuilt the output list.
     pub(crate) fn persist(&mut self, data: &[f32]) -> Result<usize, gpuerror> {
-        let slice = upload(&self.stream, data)?;
+        // WSL/NVIDIA virtual stacks: a `clone_htod` slice carries a write
+        // event, and a later kernel launch that waits on that event silently
+        // no-ops (verified on T600). All-zero persistence — the KV-cache
+        // case — allocates without events so an append kernel can write into
+        // the slot; non-zero payloads keep the upload path (their event is
+        // harmless as a kernel *input*).
+        let slice = if data.iter().all(|value| *value == 0.0) {
+            alloc(&self.stream, data.len())?
+        } else {
+            upload(&self.stream, data)?
+        };
         let index = self.persisted.len();
         self.persisted.push(slice);
         Ok(PERSIST_BASE | index)
@@ -482,9 +492,20 @@ impl session {
     /// Appends one `[1, width]` device row into the leading rows of a
     /// persistent cache buffer, in stream order (the same stream the kernels
     /// run on, ordered before `apply`'s synchronise).
+    ///
+    /// The copy is a launched kernel rather than `cuMemcpyDtoD` because the
+    /// driver's D2D memcpy silently no-ops on WSL/NVIDIA virtual stacks
+    /// (verified on T600; kernel launches on the same stream work), and the
+    /// kernel keeps the append ordered with the surrounding compute.
+    ///
+    /// `cached` is the persistent slot index, and the copy writes directly
+    /// into the resident allocation — never a `CudaSlice` copy, whose clone
+    /// performs a deep device-to-device copy and would leave the resident
+    /// buffer untouched.
     pub(crate) fn recordappend(
         &mut self,
-        cached: &mut CudaSlice<f32>,
+        cache: &cache,
+        cached: usize,
         new: &CudaSlice<f32>,
         position: usize,
     ) -> Result<(), gpuerror> {
@@ -494,20 +515,49 @@ impl session {
                 message: "append of an empty row".into(),
             });
         }
+        if cached & PERSIST_BASE == 0 {
+            return Err(gpuerror::execution {
+                message: "append target is not a persistent slot".into(),
+            });
+        }
+        let base_index = cached & !PERSIST_BASE;
+        let stream = self.stream.clone();
+        let base = self
+            .persisted
+            .get_mut(base_index)
+            .ok_or(gpuerror::execution {
+                message: "append target slot out of range".into(),
+            })?;
         let start = position
             .checked_mul(elements)
             .ok_or(gpuerror::sizeoverflow)?;
         let end = start.checked_add(elements).ok_or(gpuerror::sizeoverflow)?;
-        if end > cached.len() {
+        if end > base.len() {
             return Err(gpuerror::execution {
                 message: "append row out of the cache bounds".into(),
             });
         }
-        self.stream
-            .memcpy_dtod(new, &mut cached.slice_mut(start..end))
-            .map_err(|error| gpuerror::transfer {
-                message: error.to_string(),
-            })
+        let function = cache.function(source::COPYENTRY)?;
+        let elementsu = asunsigned(elements)?;
+        let offsetu = asunsigned(start)?;
+        // WSL/NVIDIA virtual stacks: the stream event-wait that guards the
+        // persistent slot's prior upload can stall a following launch, so
+        // force the upload to complete before the copy is queued.
+        stream.synchronize().map_err(|error| gpuerror::transfer {
+            message: error.to_string(),
+        })?;
+        // The kernel addresses the target as `c[off + i]` where `off` is an
+        // absolute element offset into the persistent allocation, so the view
+        // must span the whole base buffer — slicing it to `start..end` first
+        // would double-count the offset and write past the row.
+        let mut view = base.slice_mut(0..base.len());
+        let mut args = stream.launch_builder(&function);
+        args.arg(new).arg(&mut view).arg(&elementsu).arg(&offsetu);
+        submit(&mut args, flatconfig(elements)?)?;
+        stream.synchronize().map_err(|error| gpuerror::transfer {
+            message: error.to_string(),
+        })?;
+        Ok(())
     }
 
     /// Records a zero-element output without touching the device.

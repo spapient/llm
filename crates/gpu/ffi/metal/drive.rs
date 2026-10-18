@@ -596,6 +596,10 @@ impl session {
     /// An empty slot yields an empty vector and a zeros slot its zero run; a
     /// buffer slot yields `None`. This lets a later step read an empty or zero
     /// result back off the host rather than off the device.
+    pub(crate) fn persistedlen(&self) -> usize {
+        self.persisted.len()
+    }
+
     pub(crate) fn gethostdata(&self, index: usize) -> Option<Vec<f32>> {
         match self.outputs.get(index) {
             Some(slot::empty) => Some(Vec::new()),

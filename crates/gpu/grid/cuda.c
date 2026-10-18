@@ -10,8 +10,9 @@
 // CANN and MLU use their own languages and mirror this catalog over their own
 // translation units.
 //
-// Entries: attention, attention_cached, add, mul, silu, embedding, matmul,
-// rmsnorm, rope, rope_at, scan, scan_agg, scan_prefix, scan_apply, softmax.
+// Entries: attention, attention_cached, add, copy, mul, silu, embedding,
+// matmul, rmsnorm, rope, rope_at, scan, scan_agg, scan_prefix, scan_apply,
+// softmax.
 //
 // Shared constants (GRID_NEGLARGE, GRID_SCANMAXN) come from grid/grid.h.
 // NVRTC compiles this source from a string with no filesystem, so the Rust
@@ -39,6 +40,16 @@ extern "C" __global__ void mul(const float* a, const float* b, float* c, unsigne
     unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) {
         c[i] = a[i] * b[i];
+    }
+}
+
+// Device-to-device row copy: c[off + i] = a[i]. Used by the KV-cache append
+// path, where the driver's cuMemcpyDtoD is unreliable on WSL/NVIDIA virtual
+// GPU stacks. Offsets are element-based and caller-validated.
+extern "C" __global__ void copy(const float* a, float* c, unsigned n, unsigned off) {
+    unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        c[off + i] = a[i];
     }
 }
 

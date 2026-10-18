@@ -86,6 +86,14 @@ pub(crate) mod cu {
 
     GENENTRIES!("");
 
+    /// Device-to-device row copy (`c[off + i] = a[i]`). Served only by the
+    /// CUDA backend: the driver's `cuMemcpyDtoD` is unreliable on WSL/NVIDIA
+    /// virtual stacks, so the KV-cache append path launches this kernel
+    /// instead. MUSA/ROCm share the same translation unit but keep their own
+    /// platform-copy paths, so the constant is unused under those toolchains.
+    #[cfg_attr(any(musa_toolkit, rocm_toolkit), allow(dead_code))]
+    pub(crate) const COPYENTRY: &str = "copy";
+
     pub(crate) const ATTENTIONLANES: u32 = 256;
     /// Attention headdim ceiling. CUDA sizes the shared buffer dynamically
     /// and the driver rejects an over-large launch; 4096 is the defensive

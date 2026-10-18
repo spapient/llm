@@ -199,12 +199,14 @@ pub trait recordplatform: platform {
         })
     }
 
-    /// Appends `new` into `cached` at row `position`, both device buffers.
-    /// Unsupported by default.
+    /// Appends `new` into the persistent slot `cached` at row `position`.
+    /// `cached` is the slot index (a `PERSIST_BASE`-tagged `recordpersist`
+    /// result), not a copied buffer: a backend must write into the device-
+    /// resident allocation itself. Unsupported by default.
     fn recordappend(
         &self,
         _session: &mut Self::session,
-        _cached: &mut Self::buffer,
+        _cached: usize,
         _new: &mut Self::buffer,
         _position: usize,
     ) -> Result<(), backenderror> {
@@ -668,10 +670,28 @@ impl<P: recordplatform> api::submission for submission<P> {
         new: operand<'_>,
         position: usize,
     ) -> Result<(), backenderror> {
-        let mut cached = self.resolve(cached)?;
+        // `cached` must name a persistent slot: the append writes into the
+        // device-resident allocation itself, so no host round trip and no
+        // copied buffer may stand in for it.
+        let index = match cached {
+            operand::result(reference) => reference.getindex(),
+            operand::input(_) => {
+                return Err(backenderror::invalidparameter { op: "append" });
+            }
+        };
+        let slot = {
+            let (slot, _) = self
+                .results
+                .get(index)
+                .ok_or(backenderror::indexoutofrange {
+                    index,
+                    len: self.results.len(),
+                })?;
+            *slot
+        };
         let mut new = self.resolve(new)?;
         self.platform
-            .recordappend(&mut self.session, &mut cached, &mut new, position)
+            .recordappend(&mut self.session, slot, &mut new, position)
     }
 
     fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {

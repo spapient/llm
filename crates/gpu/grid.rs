@@ -104,10 +104,10 @@ pub mod cuda {
     pub(crate) mod source {
         pub(crate) use crate::catalog::cu::{
             ADDENTRY, AGGENTRY as SCANAGGENTRY, APPLYENTRY as SCANAPPLYENTRY, ATTENTIONCACHEDENTRY,
-            ATTENTIONENTRY, ATTENTIONLANES, ATTNLIMIT, CHUNK as SCANCHUNK, EMBEDDINGENTRY,
-            FLATTILE, MULENTRY, PREFIXENTRY as SCANPREFIXENTRY, RMSNORMENTRY, RMSNORMTILE,
-            ROPEATENTRY, ROPEENTRY, SCANBLOCKDIM, SCANENTRY, SCANMAXN, SILUENTRY, SOFTMAXENTRY,
-            SOFTMAXTILE, SOURCE,
+            ATTENTIONENTRY, ATTENTIONLANES, ATTNLIMIT, CHUNK as SCANCHUNK, COPYENTRY,
+            EMBEDDINGENTRY, FLATTILE, MULENTRY, PREFIXENTRY as SCANPREFIXENTRY, RMSNORMENTRY,
+            RMSNORMTILE, ROPEATENTRY, ROPEENTRY, SCANBLOCKDIM, SCANENTRY, SCANMAXN, SILUENTRY,
+            SOFTMAXENTRY, SOFTMAXTILE, SOURCE,
         };
         pub(crate) use crate::catalog::cu::{MATMULENTRY, THREADEDGE};
     }
@@ -501,13 +501,13 @@ pub mod cuda {
         fn recordappend(
             &self,
             session: &mut Self::session,
-            cached: &mut CudaSlice<f32>,
+            cached: usize,
             new: &mut CudaSlice<f32>,
             position: usize,
         ) -> Result<(), backenderror> {
             session
                 .0
-                .recordappend(cached, new, position)
+                .recordappend(&self.cache, cached, new, position)
                 .map_err(maptobackend)
         }
 
@@ -1077,7 +1077,7 @@ pub mod metal {
         fn recordappend(
             &self,
             session: &mut Self::session,
-            cached: &mut Retained<ProtocolObject<dyn MTLBuffer>>,
+            cached: usize,
             new: &mut Retained<ProtocolObject<dyn MTLBuffer>>,
             position: usize,
         ) -> Result<(), backenderror> {
@@ -1090,9 +1090,18 @@ pub mod metal {
             let offset = position
                 .checked_mul(bytes)
                 .ok_or(backenderror::sizeoverflow)?;
+            let base =
+                session
+                    .0
+                    .getbuffer(cached)
+                    .cloned()
+                    .ok_or(backenderror::indexoutofrange {
+                        index: cached,
+                        len: session.0.persistedlen(),
+                    })?;
             session
                 .0
-                .recordappend(&*cached, offset, &*new, bytes)
+                .recordappend(&base, offset, new, bytes)
                 .map_err(maptobackend)
         }
 
