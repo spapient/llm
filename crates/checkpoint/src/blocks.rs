@@ -395,7 +395,7 @@ fn transformbits(probe: &[u8], blocklen: usize, elem: usize) -> f64 {
             .map(|p| zeroorderbits(&t[p * n..(p + 1) * n]))
             .sum()
     };
-    bits / probe.len() as f64 * blocklen as f64 + (elem as f64) * (32.0 + 2.0 * 256.0) * 8.0
+    bits / probe.len() as f64 * blocklen as f64 + (elem as f64) * 4352.0
 }
 
 /// Chooses the transform for a block from `probe`, a sample of it, returning
