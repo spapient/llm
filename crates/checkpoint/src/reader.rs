@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
-use ::tensor::{byteable, element, tensor};
+use ::tensor::{byteable, element, tensor, tensorerror};
 use format::dtypetoken;
 
 use crate::blocks::{CODECRAW, TRANSFORMNONE, blockref, decompressblock};
@@ -647,6 +647,94 @@ impl checkpointreader {
             },
         };
         Ok(Some(decoded))
+    }
+
+    /// Reads a tensor as a borrowed typed view when the underlying bytes are
+    /// directly usable, without materializing an owned buffer.
+    ///
+    /// This is the zero-copy consumption path: a dense, contiguous, raw
+    /// (uncompressed, untransformed) tensor whose bytes are memory-mapped
+    /// returns a slice that aliases the mapped file directly — no `Vec<T>` is
+    /// allocated. It pairs with the backend operand contract
+    /// ([`api::operand::input`]), which accepts a borrowed [`tensorview`], so a
+    /// loader can stream mapped weight bytes straight into a GPU/CPU operator.
+    ///
+    /// Falls back to an owned decode when the entry is sparse, has a
+    /// non-contiguous layout, is compressed/transformed, or spans blocks —
+    /// encodings that cannot be expressed as a contiguous borrow. The caller
+    /// distinguishes the two cases by [`Cow`]: `Borrowed` aliases the map,
+    /// `Owned` is a fresh buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`checkpointerror::dtypemismatch`] for a wrong dtype, and the
+    /// underlying decode errors for a malformed entry.
+    pub fn readtensorview<T: element + byteable>(
+        &self,
+        name: &str,
+    ) -> Result<Option<Cow<'_, [T]>>, checkpointerror> {
+        let entry = match self.tensors.iter().find(|t| t.getname() == name) {
+            Some(entry) => entry,
+            None => return Ok(None),
+        };
+        if entry.getdtype() != T::DTYPE {
+            return Err(checkpointerror::dtypemismatch {
+                name: name.to_string(),
+                expected: dtypetoken(T::DTYPE).to_string(),
+                actual: dtypetoken(entry.getdtype()).to_string(),
+            });
+        }
+        let bytes = match self.readtensorcow(name)? {
+            Some(bytes) => bytes,
+            None => return Ok(None),
+        };
+        // Encodings that cannot be borrowed contiguously fall back to the
+        // owned decode (sparse must be densified; a codec or transform needs a
+        // fresh decoded buffer).
+        let dense = match entry.getsparse() {
+            Some(sp) => {
+                let count = entry
+                    .getshape()
+                    .getelementcount()
+                    .map_err(checkpointerror::tensor)?;
+                let width = entry.getdtype().sizeinbytes();
+                let nnz =
+                    usize::try_from(sp.getnnz()).map_err(|_| checkpointerror::invalidmanifest {
+                        reason: "sparse non-zero count overflows usize".to_string(),
+                    })?;
+                let dense = match sp.getformat() {
+                    sparseformat::coo => desparsify(&bytes, nnz, width, count)?,
+                    sparseformat::bitmap => desparsifybitmap(&bytes, nnz, width, count)?,
+                };
+                Cow::Owned(dense)
+            }
+            None => bytes,
+        };
+        let typed = match (&dense, entry.getlayout()) {
+            // Zero-copy fast path: a borrowed (memory-mapped) raw byte slice
+            // that passes the view validation aliases the file; no
+            // element-wise decode happens at all.
+            (Cow::Borrowed(slice), None) => match ::tensor::trybyteview::<T>(slice) {
+                Ok(view) => Cow::Borrowed(view),
+                // Misaligned or mis-sized borrows (e.g. cross-block data) fall
+                // back to the element-wise owned decode.
+                Err(_) => Cow::Owned(
+                    ::tensor::frombytes::<T>(slice)
+                        .ok_or(checkpointerror::tensor(tensorerror::byteconversion))?,
+                ),
+            },
+            // Every other encoding materializes an owned typed buffer.
+            _ => {
+                let owned = match entry.getlayout() {
+                    Some(l) => {
+                        tensor::tryfrombyteswithlayout(entry.getshape().clone(), l.clone(), &dense)?
+                    }
+                    None => tensor::tryfrombytes(entry.getshape().clone(), &dense)?,
+                };
+                Cow::Owned(owned.getdata().to_vec())
+            }
+        };
+        Ok(Some(typed))
     }
 
     /// Returns the total logical data length in bytes.

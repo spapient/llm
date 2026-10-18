@@ -8,8 +8,9 @@ use crate::error::checkpointerror;
 use crate::hash::{blake3hash, contenthash};
 use crate::signature;
 use crate::uformat::{
-    FLAGDELTA, FLAGENCRYPTED, FLAGSIGNED, FLAGTRANSFORMED, MAGIC, PREFIXLEN, canonicalmanifest,
-    checkflags, parseartifact, pushu32, pushu64, snapshot, storedentry, tensorentry,
+    FLAGDELTA, FLAGENCRYPTED, FLAGSIGNED, FLAGTRANSFORMED, MAGIC, PREFIXLEN, alignup,
+    canonicalmanifest, checkflags, parseartifact, pushu32, pushu64, snapshot, storedentry,
+    tensorentry,
 };
 
 /// One block physically stored in a delta artifact.
@@ -331,16 +332,23 @@ impl delta {
             flags & FLAGTRANSFORMED != 0,
         )?;
 
-        let total = PREFIXLEN
-            .checked_add(manifest.len())
-            .and_then(|v| v.checked_add(storeddata.len()))
-            .ok_or_else(|| checkpointerror::invalidmanifest {
+        let dataoffset = alignup(PREFIXLEN.checked_add(manifest.len()).ok_or_else(|| {
+            checkpointerror::invalidmanifest {
                 reason: "delta size overflows usize".to_string(),
-            })?;
+            }
+        })?)?;
+        let total = dataoffset.checked_add(storeddata.len()).ok_or_else(|| {
+            checkpointerror::invalidmanifest {
+                reason: "delta size overflows usize".to_string(),
+            }
+        })?;
         let mut out = Vec::with_capacity(total);
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&(manifest.len() as u64).to_le_bytes());
         out.extend_from_slice(&manifest);
+        // Pad the header out to a page boundary so the block data section is
+        // page-aligned and memory-mapped blocks can be viewed zero-copy.
+        out.resize(dataoffset, 0);
         out.extend_from_slice(&storeddata);
         Ok(out)
     }

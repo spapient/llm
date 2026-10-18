@@ -1412,6 +1412,41 @@ mod reader {
         assert_eq!(cow.as_ref(), data.as_slice());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn readtensorview_aliases_mmap_bytes_for_raw_f32() {
+        let dir = scratch("view");
+        let path = dir.join("snap.u");
+        let values = [1.0f32, -2.5, 3.25, 4096.0];
+        let mut snap = snapshot::new(1);
+        snap.addtensor(
+            "w".to_string(),
+            dtype::f32,
+            shapeof(&[values.len()]),
+            &::tensor::bytesof(&values),
+        )
+        .unwrap();
+        std::fs::write(&path, snap.encode().unwrap()).unwrap();
+        let reader = checkpointreader::openfullfile(&path).unwrap();
+        let view = reader.readtensorview::<f32>("w").unwrap().unwrap();
+        // 零拷贝快路径：借用的视图直接别名 mmap 的字节，不产生物化缓冲。
+        assert!(matches!(view, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(view.as_ref(), values.as_slice());
+        // 与物化路径数值一致（同源解码，逐位相同）。
+        let owned = reader.readtensortyped::<f32>("w").unwrap().unwrap();
+        assert_eq!(owned.getdata(), values.as_slice());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn readtensorview_rejects_wrong_dtype() {
+        let data = vec![0u8; 16];
+        let mut snap = snapshot::new(1);
+        snap.addtensor("w".to_string(), dtype::f32, shapeof(&[4]), &data)
+            .unwrap();
+        let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
+        assert!(reader.readtensorview::<::tensor::f16>("w").is_err());
+    }
 }
 
 /// Tests relocated from `crates/checkpoint/src/compact.rs`.
@@ -1520,8 +1555,9 @@ mod compression {
         let snap = snapwith(&data);
         let encoded = snap.encode().unwrap();
         // Random data is stored raw, so the artifact is only slightly larger
-        // than the raw bytes.
-        assert!(encoded.len() < data.len() + 4096);
+        // than the raw bytes: one page for the page-aligned header plus one
+        // page of alignment slack.
+        assert!(encoded.len() < data.len() + 8192);
         let back = snapshot::decode(&encoded).unwrap();
         assert_eq!(back.readtensor("w").unwrap(), data);
     }

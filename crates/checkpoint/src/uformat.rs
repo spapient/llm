@@ -22,6 +22,22 @@ pub(crate) const MAGIC: [u8; 8] = *b"UWFSNAP1";
 /// The number of bytes in the fixed prefix: magic plus manifest length.
 pub(crate) const PREFIXLEN: usize = 16;
 
+/// Rounds `n` up to the next page boundary.
+///
+/// The block data section starts at this offset, so a memory-mapped snapshot
+/// yields page-aligned block bytes that can be reinterpreted as typed views
+/// zero-copy (every storage element's alignment divides the page size). RAW
+/// format ([`crate::rawfmt`]) applies the same rule; the two formats share the
+/// layout invariant.
+pub(crate) fn alignup(n: usize) -> Result<usize, checkpointerror> {
+    const PAGE: usize = 4096;
+    n.checked_add(PAGE - 1)
+        .map(|v| v / PAGE * PAGE)
+        .ok_or_else(|| checkpointerror::invalidmanifest {
+            reason: "length overflows when page-aligning".to_string(),
+        })
+}
+
 /// Flags value for a full (self-contained) snapshot.
 pub(crate) const FLAGSFULL: u32 = 2;
 
@@ -847,16 +863,24 @@ impl snapshot {
             flags & FLAGTRANSFORMED != 0,
         );
 
-        let total = PREFIXLEN
-            .checked_add(manifest.len())
-            .and_then(|v| v.checked_add(offset))
-            .ok_or_else(|| checkpointerror::invalidmanifest {
+        let dataoffset = alignup(PREFIXLEN.checked_add(manifest.len()).ok_or_else(|| {
+            checkpointerror::invalidmanifest {
                 reason: "snapshot size overflows usize".to_string(),
-            })?;
+            }
+        })?)?;
+        let total =
+            dataoffset
+                .checked_add(offset)
+                .ok_or_else(|| checkpointerror::invalidmanifest {
+                    reason: "snapshot size overflows usize".to_string(),
+                })?;
         let mut out = Vec::with_capacity(total);
         out.extend_from_slice(&MAGIC);
         out.extend_from_slice(&(manifest.len() as u64).to_le_bytes());
         out.extend_from_slice(&manifest);
+        // Pad the header out to a page boundary so the block data section is
+        // page-aligned and memory-mapped blocks can be viewed zero-copy.
+        out.resize(dataoffset, 0);
         for position in 0..blocks.len() {
             let bytes: &[u8] = if key.is_some() {
                 &storedmeta[position].0
@@ -1012,7 +1036,7 @@ pub(crate) fn parseartifact(bytes: &[u8]) -> Result<parsedmanifest, checkpointer
         root_hash,
         signature,
         stored,
-        dataoffset: manifestend,
+        dataoffset: alignup(manifestend)?,
     })
 }
 

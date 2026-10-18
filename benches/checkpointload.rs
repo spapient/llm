@@ -210,5 +210,38 @@ fn rawreadall(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, ufull, rawtyped, rawreadall);
+/// The zero-materialization path: `readtensorview` aliases the memory-mapped
+/// file for every raw `f32` tensor (page-aligned data section), while
+/// `readtensortyped` allocates an owned buffer per tensor. The difference is
+/// the materialization cost the loading pipeline skips when it feeds the
+/// borrowed view straight into a backend operand.
+fn viewvsowned(c: &mut Criterion) {
+    let s = scratch::build();
+    let mut group = c.benchmark_group("load/view");
+    group.bench_function("owned_typed", |b| {
+        b.iter(|| {
+            let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
+            let mut total = 0usize;
+            for name in f32names() {
+                let t = reader.readtensortyped::<f32>(&name).unwrap().unwrap();
+                total += t.getlen();
+            }
+            black_box(total);
+        });
+    });
+    group.bench_function("borrowed_view", |b| {
+        b.iter(|| {
+            let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
+            let mut total = 0usize;
+            for name in f32names() {
+                let v = reader.readtensorview::<f32>(&name).unwrap().unwrap();
+                total += v.as_ref().len();
+            }
+            black_box(total);
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(benches, ufull, rawtyped, rawreadall, viewvsowned);
 criterion_main!(benches);
