@@ -178,6 +178,53 @@ fn batched_matmul_matches_the_scalar_reference() {
 }
 
 #[test]
+fn matmul_handles_partial_tiles_and_unaligned_strides() {
+    if !hasdevice("matmul_handles_partial_tiles_and_unaligned_strides") {
+        return;
+    }
+    let exec = syclexecutor::new(wide());
+    // The tiled kernel splits the output into 64x64 tiles and stages 16
+    // rows of K at a time. These shapes exercise: a row tile that is not a
+    // multiple of 64 (65), a K that is not a multiple of 4 (17), a column
+    // tile that is not a multiple of 64 (70), the smallest legal shape, a K
+    // that is a multiple of 4 but not 16 (20), and an exactly full tile.
+    let shapes = [
+        (65u32, 17u32, 70u32, 2u32),
+        (1, 1, 1, 1),
+        (3, 20, 66, 1),
+        (64, 16, 64, 3),
+    ];
+    for (m, k, n, batch) in shapes {
+        let (m, k, n, batch) = (m as usize, k as usize, n as usize, batch as usize);
+        let adata: Vec<f32> = (0..batch * m * k)
+            .map(|i| ((i % 29) as f32 - 14.0) * 0.125)
+            .collect();
+        let bdata: Vec<f32> = (0..batch * k * n)
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.0625)
+            .collect();
+        let a = build(vec![batch, m, k], adata.clone());
+        let b = build(vec![batch, k, n], bdata.clone());
+
+        let out = exec.matmul(&a.getview(), &b.getview()).unwrap();
+
+        let mut want = Vec::new();
+        for bi in 0..batch {
+            let abase = bi * m * k;
+            let bbase = bi * k * n;
+            want.extend(reference::matmul(
+                &adata[abase..abase + m * k],
+                &bdata[bbase..bbase + k * n],
+                m,
+                k,
+                n,
+            ));
+        }
+        assert_eq!(out.getdata().len(), want.len(), "m={m} k={k} n={n}");
+        assertallclose(out.getdata(), &want, 1.0e-4, 1.0e-4);
+    }
+}
+
+#[test]
 fn submission_reproduces_a_compute_chain_on_the_device() {
     if !hasdevice("submission_reproduces_a_compute_chain_on_the_device") {
         return;

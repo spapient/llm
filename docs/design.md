@@ -147,7 +147,7 @@
 5. **视图借用而不拥有。** `tensorview` 只借用拥有者的形状、布局与数据，不分配、不通过 `Arc` 或动态分发共享所有权。
 6. **`dtype` 是完整存储分类法，`precision` 是计算分类法。** 二者是不同轴；`From<precision> for dtype` 是把计算格式嵌入存储格式的单射，但非满射。整数存储与 `f64` 只用于存储。
 7. **`dtype::f64` 为新增的仅存储类型。** 它没有 `precision` 对应项，也没有任何后端声明 `f64` 执行；它存在是为了让张量能承载双精度参考数据、金标值与高精度累加缓冲。
-8. **`element` 覆盖每个有原生 Rust 表示的基元。** `element` 为 `f32`、`f64`、`i8`、`u8`、`i32`、`i64` 实现。`f16` 与 `bf16` 因 Rust 无原生半精度类型而排除；支持它们需要后续层拥有的包装类型。
+8. **`element` 覆盖每个有原生 Rust 表示的基元。** `element` 为 `f32`、`f64`、`i8`、`u8`、`i32`、`i64` 实现；`f16` 与 `bf16` 由 `crates/tensor/src/halffloat.rs` 的自写包装类型提供（RNE 转换、特殊值处理，零第三方依赖），同样实现 `element`，但仅为存储类型——任何后端都未声明其执行。
 9. **宽度不变量由测试机械强制。** 每个 `element` 实现 MUST 满足 `DTYPE.sizeinbytes() == size_of::<Self>()`，在 `element` 的单元测试中跨全部六种类型断言。
 10. **所有尺寸与偏移运算受检。** 会溢出的计算返回 `tensorerror`，而非回绕或 panic。
 
@@ -182,7 +182,7 @@
 
 **视图（tensorview）。** `tensorview<'a, T>` 持有对拥有者 `shape`、`layout`、`data` 的借用，是 `Clone + Copy`，不分配，不共享所有权。`getshape`、`getlayout` 返回借用；`getlen` 返回可见元素数；`getdata` 返回 `&'a [T]`。`toowned` 把可见数据复制为新 `tensor`，可能返回 `tensor::new` 的错误。视图的生命期不得超过被借用数据。
 
-**存储与元素类型。** `element: Copy + 'static` 带有关联常量 `DTYPE: dtype`。每个 `element` 实现的 `DTYPE.sizeinbytes()` 必须等于 `size_of::<Self>()`。已实现：`f32 -> dtype::f32`、`f64 -> dtype::f64`、`i8 -> dtype::i8`、`u8 -> dtype::u8`、`i32 -> dtype::i32`、`i64 -> dtype::i64`。`f16`、`bf16` 有 `dtype` variant 但无原生存储类型，故不实现 `element`。
+**存储与元素类型。** `element: Copy + 'static` 带有关联常量 `DTYPE: dtype`。每个 `element` 实现的 `DTYPE.sizeinbytes()` 必须等于 `size_of::<Self>()`。已实现：`f32 -> dtype::f32`、`f64 -> dtype::f64`、`i8 -> dtype::i8`、`u8 -> dtype::u8`、`i32 -> dtype::i32`、`i64 -> dtype::i64`、`f16 -> dtype::f16`、`bf16 -> dtype::bf16`。`f16`/`bf16` 是 `halffloat.rs` 的自写包装类型（取代 `half` crate），实现 `element` 但仅为存储类型，无后端执行。
 
 **dtype 与 precision 的关系。** `dtype` 取值为 `{f32, f64, f16, bf16, i8, u8, i32, i64}`，是完整的存储分类法。`precision` 取值为 `{f32, f16, bf16}`，是计算分类法。`From<precision> for dtype` 把三种计算格式嵌入存储分类法，但整数存储与 `f64` 只用于存储，没有计算精度对应项。`dtype` 只说明值在内存中的布局，不暗示任何后端能执行它；后端声明的 `capabilities.dtypes` 才是执行支持的唯一权威。`dtype::sizeinbytes()` 给出宽度：`f32`=4、`f64`=8、`f16`=2、`bf16`=2、`i8`=1、`u8`=1、`i32`=4、`i64`=8。
 
@@ -486,7 +486,7 @@ executor 路径与裸内核路径在运行间噪声内一致（噪声带准则�
 
 Layer 0（`lib`、`tensor`、`api`）已实现。其内核调用契约冻结为：`kernel<T>` 单目，接受一个借用输入视图并返回一个新拥有的张量，没有第二操作数、属性或归约轴的参数。
 
-`tensor` 为每个有原生 Rust 表示的基元实现 `element`（`f32`、`f64`、`i8`、`u8`、`i32`、`i64`）；`f16` 与 `bf16` 有 `dtype` variant 但无原生存储类型（测试要求不支持的 dtype 被拒绝，而不只是能编译）。
+`tensor` 为每个有原生 Rust 表示的基元实现 `element`（`f32`、`f64`、`i8`、`u8`、`i32`、`i64`），以及 `halffloat.rs` 自写的 `f16`/`bf16` 包装类型（取代 `half` crate，存储专用、无后端执行）。
 
 架构契约要求 `cpu` 实现后端契约、不引入反向依赖、不引入 `unsafe`，并给每个新算子边界测试、数值测试与至少一个基准。
 
@@ -3035,7 +3035,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 
-> 状态：**参考路径已在 Windows + Intel UHD Graphics 750 上验证（2026-10-18）；oneMKL 路径未验证（该主机未安装 MKL）**。已执行：macOS 主机上的 `cargo check`/`clippy`（`x86_64-unknown-linux-gnu` + `--cfg sycl_toolkit`）、`cargo fmt`、`scripts/checkunsafe.sh`（`sycl` 2/2）、命名与内联门禁、`cargo test --workspace`（993 例）；Windows 主机（i7-11700 + UHD 750，oneAPI 2026.0，VS BuildTools 14.51，rustc 1.99.0）上的 `icpx` 编译与 `sycl_bridge.dll` 链接、`sycl-ls` 设备探测、`tests/it/syclcontract.rs` 12 例（debug `-O0` 与 release `-O3` 各 12/12）、`cargo bench --bench sycl`。该主机未安装 oneMKL，`sycl_bridge.dll` 只导入 `sycl9.dll`，故全部 matmul 数字为参考内核回退路径。未执行：oneMKL 构建、数值对照与吞吐测量。§21.14.6 的数字仅是该主机、该工具链、该 MKL 配置下的基线，不构成跨实现性能声明。
+> 状态：**参考路径已在 Windows + Intel UHD Graphics 750 上验证（2026-10-18），回退 matmul 已换为自研 64×64 分块内核（D8）；oneMKL 路径未验证（该主机未安装 MKL）**。已执行：macOS 主机上的 `cargo check`/`clippy`（`x86_64-unknown-linux-gnu` + `--cfg sycl_toolkit`）、`cargo fmt`、`scripts/checkunsafe.sh`（`sycl` 2/2）、命名与内联门禁、`cargo test --workspace`（993 例）；Windows 主机（i7-11700 + UHD 750，oneAPI 2026.0，VS BuildTools 14.51，rustc 1.99.0）上的 `icpx` 编译与 `sycl_bridge.dll` 链接、`sycl-ls` 设备探测、`tests/it/syclcontract.rs` 13 例（debug `-O0` 与 release `-O3` 各 13/13）、`cargo bench --bench sycl`。该主机未安装 oneMKL，`sycl_bridge.dll` 只导入 `sycl9.dll`，故全部 matmul 数字为自研分块内核回退路径。未执行：oneMKL 构建、数值对照与吞吐测量。§21.14.6 的数字仅是该主机、该工具链、该 MKL 配置下的基线，不构成跨实现性能声明。
 
 ### 21.14.1 上下文（先前会话的测量事实）
 
@@ -3045,7 +3045,7 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 | --- | --- | --- |
 | llama.cpp `ggml-sycl` SGEMM 256³ | ≈ 461.5 GFLOPS | oneMKL/DPAS 路径 |
 | 本仓参考内核（每输出元素一个工作项、K 维串行） | ≈ 4.7 GFLOPS | 可移植 FMA 内核 |
-| 试验性 64×64 tile + 4×4 寄存器块内核 | ≈ 141–200 GFLOPS | 未合入的评估实现 |
+| 试验性 64×64 tile + 4×4 寄存器块内核 | ≈ 141–200 GFLOPS | 设备驻留、预分配缓冲的纯内核测量；2026-10-18 合入回退路径（D8） |
 | SYCL 桥单算子「提交 + 同步」往返 | ≈ 118–220 µs/算子，与负载基本无关 | 直接路径 |
 
 两组事实分别决定两个方向：**矩阵乘必须有厂商库或等价的分块内核**；**多算子链必须合并提交并把中间结果留在设备**。ollama 复用 llama.cpp 的 ggml/ggml-sycl：fp32 GEMM 交给 oneMKL，量化 GEMM 走 DPAS 内核。本仓推理是 f32 契约，故不复制其量化内核，而是在同一层面用 oneMKL 对齐其 fp32 路径，并以设备驻留提交取得链级收益。
@@ -3065,6 +3065,8 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 **D6：`unsafe` 站点不增长。** 新增的 `sycl_wait` 与全部记录入口都经同一个 `handoff` 交接块；oneMKL 调用发生在 C++ 侧，不产生 Rust `unsafe`。`sycl` 仍为 2 个站点（§21.8），由 `scripts/checkunsafe.sh` 实测。
 
 **D7：设备代码按 Cargo profile 优化。** 构建脚本不继承 rustc 的优化参数，而 clang 驱动默认 `-O0`，若不处理，任何 profile 下的 SYCL 内核都是未优化代码，基准将测到一个不代表发布构建的实现。`crates/gpu/build.rs` 对 SYCL 桥把 Cargo 的 `OPT_LEVEL` 映射为驱动参数 `-O{level}`（`0/1/2/3/s/z` 均为合法拼写）：dev/test 构建 `-O0`，release/bench 构建 `-O3`。该映射只作用于 `sycl.c` 的编译，不改变链接参数与任何契约；其他 GRID 后端保持既有参数不变（不在本次范围，避免无测量的行为变更）。未启用 fast-math。
+
+**D8：回退路径的 64×64 分块内核（2026-10-18）。** 无 oneMKL 时 `matmul` 不再使用「每输出元素一个工作项、K 维串行」的朴素内核，改为每工作组计算一个 64×64 输出 tile：16×16 工作项、每项 4×4 累加器，按 K 以 16 为步长把 A 的 64×16 与 B 的 16×64 切片载入 local memory（合计 8 KiB），每步前后各一次 barrier。工作组数为 `ceil(m/64) × ceil(n/64) × batch`，`nd_range` 的全局范围以工作项计（每组 16×16）。任意 m/n/k 均正确：越界读在共享切片中填 0，越界写在回写时跳过；`float4` 暂存仅在行跨距（A 的 k、B 的 n）为 4 的倍数且整个向量在界内时启用（地址由 16 字节对齐的 USM 基址与 4 的倍数偏移保证），否则同一槽位逐元素填充。内核放在 `SYCLTRY` 宏外的具名辅助函数中，因为 `#pragma unroll` 不能出现在宏实参内。首次实现曾把 `nd_range` 误写成「组数 × 64」，使每维组数放大 4 倍、16 倍的工作组空转，256³ 端到端为 4.2255 ms（7.94 GFLOPS）；由与诊断程序（v3 纯内核 141–200 GFLOPS）对照发现，修正为「组数 × 16」后端到端 0.5613 ms（59.8 GFLOPS），设备驻留链达 144.8 GFLOPS（§21.14.6）。该错误也说明：网格单位错误可以在边界谓词保护下保持数值正确，只有吞吐对照能暴露它——契约测试与基准缺一不可。新增边界测试 `matmul_handles_partial_tiles_and_unaligned_strides` 覆盖 65×17×70（batch 2）、1×1×1、3×20×66 与 64×16×64（batch 3）。
 
 ### 21.14.3 不变量
 
@@ -3087,33 +3089,35 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 上机验证（Windows + Intel 集显/独显；oneMKL 安装属系统级操作，须单独确认）必须完成以下各项，缺一不得声称通过：
 
 1. `sycl.c` 在 `icpx` 下编译并链接为 `sycl_bridge.dll`；`sycl-ls` 能看到设备。Windows 构建须在已初始化 oneAPI 环境（`setvars.bat`）的 shell 中运行，以提供 MSVC 头/库与 oneAPI 运行库；测试与基准进程同样需要该环境才能加载 `sycl*.dll` 与 MKL DLL。Linux 无 DLL 规避，`-fsycl` 会作为最终链接参数传给 rustc 的默认 `cc`（如 gcc 不识别该参数，将以链接错误暴露），因此须令最终链接由 SYCL 驱动执行（如 `RUSTFLAGS=-Clinker=icpx`）；该链接方式同样列入上机核验。
-2. `tests/it/syclcontract.rs` 的 12 例通过：既有 5 例（身份/能力、add、matmul、rmsnorm、形状拒绝）加新增 7 例（批量 matmul 对照标量参考、submission 链对照直接 `compute`、批量 matmul 经 submission、持久 session 跨两次 `apply` + `reset`、未记录 `stepref` 拒绝、`headdim = 4097` 时 direct 与 record 同报 `sizeoverflow`、记录后未 `apply` 即 `reset` 且会话仍可用）。
+2. `tests/it/syclcontract.rs` 的 13 例通过：既有 5 例（身份/能力、add、matmul、rmsnorm、形状拒绝）加新增 8 例（批量 matmul 对照标量参考、submission 链对照直接 `compute`、批量 matmul 经 submission、持久 session 跨两次 `apply` + `reset`、未记录 `stepref` 拒绝、`headdim = 4097` 时 direct 与 record 同报 `sizeoverflow`、记录后未 `apply` 即 `reset` 且会话仍可用、分块内核的 partial-tile/非对齐跨距边界形状）。
 3. `cargo bench --bench sycl` 记录 cpu/sycl 同轮对照、direct/session 链对照；每条数据必须随附该次构建是否启用 oneMKL（bench 测量的是构建时选定的路径，文件头已说明）与构建 profile（D7：设备代码的 `-O` 级别由 Cargo `OPT_LEVEL` 决定，release/bench 为 `-O3`，不得与 `-O0` 的 dev 构建结果混列）。
 4. 分别构建 `GRID_MKL` 开/关两个版本，两者数值都与参考实现一致（容差 1e-5 / 1e-6 按用例），记录各自 matmul 吞吐。
 5. `scripts/check.sh` 全绿；`checkunsafe.sh` 维持 `sycl` 2/2。
 
-截至 2026-10-18：第 1 项完成（Windows iGPU，oneAPI 2026.0）；第 2 项完成（debug 与 release 各 12/12）；第 3 项完成 MKL-off 部分（§21.14.6）；第 4 项未执行（该主机未安装 oneMKL）；第 5 项在 macOS 上除既有 DS3/rustdoc 失败外通过，Windows 上未执行 `check.sh`。oneMKL 路径与跨实现性能对照完成前，本节不宣称任何性能提升。
+截至 2026-10-18：第 1 项完成（Windows iGPU，oneAPI 2026.0）；第 2 项完成（debug 与 release 各 13/13）；第 3 项完成 MKL-off 部分（§21.14.6，含朴素内核与分块内核的同轮对照）；第 4 项未执行（该主机未安装 oneMKL）；第 5 项在 macOS 上除既有 DS3/rustdoc 失败外通过，Windows 上未执行 `check.sh`。oneMKL 路径与跨实现性能对照完成前，本节不宣称跨实现性能优势；回退内核相对本仓朴素内核的实测变化见 §21.14.6。
 
 ### 21.14.6 上机基线（2026-10-18，Windows + UHD 750，oneMKL off）
 
-主机与构建：i7-11700 + Intel UHD Graphics 750（32 EU），Windows，oneAPI 2026.0（`sycl-ls` 同时列出 Level-Zero 与 OpenCL 设备），VS BuildTools 14.51，rustc/cargo 1.99.0。快照 `eb506c5` 经 `git archive` 传至独立目录，`cargo test/bench --offline --locked` 从 vendored 闭包构建。`sycl_bridge.dll` 的导入表只有 `sycl9.dll` 与 CRT，无 `mkl_sycl.dll`，即 `GRID_MKL` 未定义；因此下表全部为参考内核回退路径。测试 debug 构建设备代码 `-O0`，release/bench 为 `-O3`（D7）。
+主机与构建：i7-11700 + Intel UHD Graphics 750（32 EU），Windows，oneAPI 2026.0（`sycl-ls` 同时列出 Level-Zero 与 OpenCL 设备），VS BuildTools 14.51，rustc/cargo 1.99.0。快照经 `git archive` 传至独立目录，`cargo test/bench --offline --locked` 从 vendored 闭包构建。`sycl_bridge.dll` 的导入表只有 `sycl9.dll` 与 CRT，无 `mkl_sycl.dll`，即 `GRID_MKL` 未定义；因此下表全部为自研 64×64 分块内核回退路径（D8）。测试 debug 构建设备代码 `-O0`，release/bench 为 `-O3`（D7）。
 
-`tests/it/syclcontract.rs`：debug 12/12（0.46 s）、release 12/12（0.47 s），`LLM_SYCL_REQUIRE_DEVICE=1`。
+`tests/it/syclcontract.rs`：debug 13/13（0.45 s）、release 13/13（0.36 s），`LLM_SYCL_REQUIRE_DEVICE=1`。
 
-`cargo bench --bench sycl`（criterion 中位值；同轮 CPU 基线；未与 llama.cpp/ollama 对照，因为该主机没有可用的 `llama-bench`/`test-backend-ops` 可执行文件）：
+`cargo bench --bench sycl`（criterion 中位值；同轮 CPU 基线；朴素内核列为同日早前、同主机同工具链的实测，用于同口径对照；未与 llama.cpp/ollama 对照，因为该主机没有可用的 `llama-bench`/`test-backend-ops` 可执行文件）：
 
-| 基准 | 中位时间 | 换算 | 备注 |
+| 基准 | 朴素内核（对照） | 64×64 分块内核（本次） | 变化 |
 | --- | --- | --- | --- |
-| `sycl/matmul/cpu256` | 1.2293 ms | 27.3 GFLOPS | 同轮 CPU 基线 |
-| `sycl/matmul/sycl256` | 7.5783 ms | 4.43 GFLOPS | 参考内核 + 单次上下载，与先前 ≈4.7 GFLOPS 同量级 |
-| `sycl/matmulbatch/cpu8x256` | 10.808 ms | 24.8 GFLOPS | 8×256³ |
-| `sycl/matmulbatch/sycl8x256` | 81.873 ms | 3.28 GFLOPS | 参考内核 |
-| `sycl/matmulchain/sycl1024x8` | 3.6884 s | 4.66 GFLOPS（每步 461 ms） | 设备驻留 8 步链，一次 `apply` |
-| `sycl/submissionchain/cpucompute32` | 26.083 µs | — | 32 次 64×64 add |
-| `sycl/submissionchain/syclcompute32` | 6.3019 ms | ≈197 µs/步 | 32 次 `compute`，每次同步 |
-| `sycl/submissionchain/syclsubmission32` | 1.9773 ms | ≈61.8 µs/步 | 批提交一次同步；较 `syclcompute32` 快 **3.19×** |
+| `sycl/matmul/cpu256` | 1.2293 ms（27.3 GFLOPS） | 1.1846 ms（28.3 GFLOPS） | 同轮 CPU 基线，噪声 |
+| `sycl/matmul/sycl256` | 7.5783 ms（4.43 GFLOPS） | 0.5613 ms（59.8 GFLOPS） | 13.5× |
+| `sycl/matmulbatch/cpu8x256` | 10.808 ms（24.8 GFLOPS） | 10.026 ms（26.8 GFLOPS） | 噪声 |
+| `sycl/matmulbatch/sycl8x256` | 81.873 ms（3.28 GFLOPS） | 5.1549 ms（52.1 GFLOPS） | 15.9× |
+| `sycl/matmulchain/sycl1024x8` | 3.6884 s（4.66 GFLOPS，每步 461 ms） | 118.67 ms（144.8 GFLOPS，每步 14.83 ms） | 31.1× |
+| `sycl/submissionchain/cpucompute32` | 26.083 µs | 26.356 µs | 32 次 64×64 add，噪声 |
+| `sycl/submissionchain/syclcompute32` | 6.3019 ms（≈197 µs/步） | 6.5299 ms（≈204 µs/步） | 与 matmul 无关；一次整组运行曾报 7.6723 ms，独立复测回到 6.53 ms，判为该轮环境异常 |
+| `sycl/submissionchain/syclsubmission32` | 1.9773 ms（≈61.8 µs/步） | 2.0108 ms（≈62.8 µs/步） | 噪声；批提交仍较 `compute` 快 3.25× |
 
-证据边界：criterion 在 `cpu8x256` 报告 20% 离群（18 个 high severe），其余组 4–10%；上表取中位值，不外推到其他主机或工具链。MKL-off 的 matmul 明显慢于同机 CPU（单次 256³ 约 6.2×），符合“参考内核仅用于回退”的定位；设备驻留批提交把 32 步链的同步开销从约 197 µs/步降到约 61.8 µs/步。oneMKL 命中后的吞吐必须按 §21.14.5 第 4 项单独测量，不能与本表混列。
+口径说明：`sycl256`/`sycl8x256` 是 `executor.matmul` 的端到端时间，含 Rust 侧的输入上传、输出分配、一次 `sycl_wait` 与下载；纯内核层面的数字由 `sycl/matmulchain` 体现——1024² × 8 的一次 `apply` 中每步 14.83 ms，即 144.8 GFLOPS，与先前诊断程序的 v3 纯内核 141–200 GFLOPS 同量级。256³ 端到端与纯内核（诊断 v3：237 µs）之差约 320 µs/次，属于共享 executor 的每调用往返，不是内核本身；该差距列入后续优化（缓存输入槽位、避免重复分配），本次不改共享契约。
+
+证据边界：criterion 中位值；`sycl/submissionchain` 在完整组运行出现过的 7.67 ms 已由独立复测否定（6.53 ms），表中取复测值。不把本表外推到其他主机、工具链或 MKL 配置。与同机 ggml-sycl/oneMKL 的 461.5 GFLOPS（256³ 纯内核）相比，本仓纯内核（v3 口径 141 GFLOPS）仍差约 3.2×；需按 §21.14.5 第 4 项在安装 MKL 的主机上单独测量 `GRID_MKL` 路径，不能用本表冒充跨实现结论。
 
 ## 22. 跨领域主题与声明局限
 

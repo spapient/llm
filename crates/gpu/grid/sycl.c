@@ -28,7 +28,7 @@
 //
 // oneMKL: when the build finds the oneAPI MKL development files it defines
 // GRID_MKL, and matmul is served by oneMKL's row-major SGEMM (including the
-// strided-batched form). Otherwise the in-repo reference kernel serves it.
+// strided-batched form). Otherwise the in-repo tiled SGEMM kernel serves it.
 //
 // Entries: sycl_attention, sycl_attention_cached, sycl_add, sycl_mul,
 //          sycl_silu, sycl_embedding, sycl_matmul, sycl_rmsnorm, sycl_rope,
@@ -380,10 +380,132 @@ SYCLAPI void sycl_embedding(void* queue, const float* table,
 // With oneMKL (GRID_MKL) the row-major SGEMM/SGEMM-batch entry serves the
 // call: it dispatches to the Xe matrix engine's own tuned implementation,
 // which is the only way to use the XMX units that Arc discrete GPUs and Xe
-// integrated GPUs expose through the oneAPI stack. Without MKL the portable
-// FMA kernel remains the reference: grid is (n, m, batch), one work-item per
-// output element.
+// integrated GPUs expose through the oneAPI stack. Without MKL the in-repo
+// tiled kernel below serves it: each work-group computes a 64x64 output
+// tile with 16x16 work-items (4x4 outputs each) and stages 16-deep A/B
+// slabs through local memory. One work-item per output would re-read a full
+// row and column from global memory for every element; the tile turns that
+// into 8 KiB of shared traffic per 16-deep step, which is the difference
+// between memory-bound and compute-bound on Xe.
+//
+// The tile edges are guarded: m, n and k need not be multiples of 64/16, so
+// partial tiles fill the shared slabs with zeros and the store-back skips
+// out-of-range elements. The 16-byte (float4) staging loads only engage when
+// the row stride keeps the address aligned and the whole vector is in
+// bounds; otherwise the same slots are filled scalar-wise.
 // Symbol: sycl_matmul
+
+#if !defined(GRID_MKL)
+namespace {
+// 64x64 output tile per work-group, 16x16 work-items, 4x4 outputs per
+// work-item, 16-deep shared staging of A and B. This lives outside
+// `sycl_matmul` because it carries `#pragma unroll` hints, and a
+// preprocessor directive cannot appear inside the `SYCLTRY` macro argument.
+void matmul_tiled(sycl::queue& que, const float* a, const float* b, float* c,
+                  unsigned m, unsigned k, unsigned n, unsigned batch) {
+    const unsigned groups_n = (n + 63) / 64;
+    const unsigned groups_m = (m + 63) / 64;
+    que.submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 2> as(sycl::range<2>(64, 16), h);
+        sycl::local_accessor<float, 2> bs(sycl::range<2>(16, 64), h);
+        // The nd_range is in work-items: one 16x16 group per 64x64 tile.
+        h.parallel_for(
+            sycl::nd_range<3>(sycl::range<3>(groups_n * 16, groups_m * 16, batch),
+                              sycl::range<3>(16, 16, 1)),
+            [a, b, c, m, k, n, as, bs](sycl::nd_item<3> it) {
+                const unsigned lc = (unsigned)it.get_local_id(0);
+                const unsigned lr = (unsigned)it.get_local_id(1);
+                const unsigned lid = lr * 16 + lc;
+                const unsigned col0 = (unsigned)it.get_group(0) * 64;
+                const unsigned row0 = (unsigned)it.get_group(1) * 64;
+                const unsigned blk = (unsigned)it.get_group(2);
+                const float* ab = a + (size_t)blk * m * k;
+                const float* bb = b + (size_t)blk * k * n;
+                float* cb = c + (size_t)blk * m * n;
+                // A vector load needs a 16-byte aligned address. The USM
+                // base is page-aligned, so the only thing that can break
+                // alignment is a row stride that is not a multiple of four
+                // floats (k for A, n for B); the in-bounds check keeps the
+                // last vector of a row from reading past the operand.
+                const bool a_vec = (k & 3u) == 0;
+                const bool b_vec = (n & 3u) == 0;
+                float acc[4][4] = {};
+                for (unsigned k0 = 0; k0 < k; k0 += 16) {
+                    // One 4-float load per work-item stages a 64x16 A slab
+                    // (rows 0..63) and a 16x64 B slab (columns 0..63):
+                    // 256 work-items x 4 floats covers 1024 slots each.
+                    const unsigned ar = lid / 4;
+                    const unsigned ac = (lid % 4) * 4;
+                    const unsigned br = lid / 16;
+                    const unsigned bc = (lid % 16) * 4;
+                    const bool a_row = row0 + ar < m;
+                    const bool b_row = k0 + br < k;
+                    if (a_row && a_vec && k0 + ac + 4 <= k) {
+                        const sycl::float4 v =
+                            *reinterpret_cast<const sycl::float4*>(
+                                ab + (size_t)(row0 + ar) * k + k0 + ac);
+                        as[ar][ac + 0] = v.x();
+                        as[ar][ac + 1] = v.y();
+                        as[ar][ac + 2] = v.z();
+                        as[ar][ac + 3] = v.w();
+                    } else {
+                        for (unsigned j = 0; j < 4; ++j) {
+                            const unsigned col = k0 + ac + j;
+                            as[ar][ac + j] =
+                                (a_row && col < k)
+                                    ? ab[(size_t)(row0 + ar) * k + col]
+                                    : 0.0f;
+                        }
+                    }
+                    if (b_row && b_vec && col0 + bc + 4 <= n) {
+                        const sycl::float4 v =
+                            *reinterpret_cast<const sycl::float4*>(
+                                bb + (size_t)(k0 + br) * n + col0 + bc);
+                        bs[br][bc + 0] = v.x();
+                        bs[br][bc + 1] = v.y();
+                        bs[br][bc + 2] = v.z();
+                        bs[br][bc + 3] = v.w();
+                    } else {
+                        for (unsigned j = 0; j < 4; ++j) {
+                            const unsigned col = col0 + bc + j;
+                            bs[br][bc + j] =
+                                (b_row && col < n)
+                                    ? bb[(size_t)(k0 + br) * n + col]
+                                    : 0.0f;
+                        }
+                    }
+                    it.barrier();
+#pragma unroll 4
+                    for (unsigned kk = 0; kk < 16; ++kk) {
+                        float av[4];
+                        float bv[4];
+#pragma unroll
+                        for (unsigned i = 0; i < 4; ++i)
+                            av[i] = as[lr * 4 + i][kk];
+#pragma unroll
+                        for (unsigned j = 0; j < 4; ++j)
+                            bv[j] = bs[kk][lc * 4 + j];
+#pragma unroll
+                        for (unsigned i = 0; i < 4; ++i)
+#pragma unroll
+                            for (unsigned j = 0; j < 4; ++j)
+                                acc[i][j] += av[i] * bv[j];
+                    }
+                    it.barrier();
+                }
+                for (unsigned i = 0; i < 4; ++i) {
+                    const unsigned row = row0 + lr * 4 + i;
+                    if (row >= m) continue;
+                    for (unsigned j = 0; j < 4; ++j) {
+                        const unsigned col = col0 + lc * 4 + j;
+                        if (col < n) cb[(size_t)row * n + col] = acc[i][j];
+                    }
+                }
+            });
+    });
+}
+}  // namespace
+#endif
 
 SYCLAPI void sycl_matmul(void* queue, const float* a, const float* b,
                             float* c, unsigned m, unsigned k, unsigned n,
@@ -406,22 +528,7 @@ SYCLAPI void sycl_matmul(void* queue, const float* a, const float* b,
             static_cast<std::int64_t>(batch));
     }
 #else
-    que.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<3>(n, m, batch),
-                       [a, b, c, m, k, n, batch](sycl::id<3> gid) {
-                           unsigned col = gid[0];
-                           unsigned row = gid[1];
-                           unsigned blk = gid[2];
-                           const float* ab = a + (size_t)blk * m * k;
-                           const float* bb = b + (size_t)blk * k * n;
-                           float* cb = c + (size_t)blk * m * n;
-                           float acc = 0.0f;
-                           for (unsigned i = 0; i < k; ++i) {
-                               acc += ab[row * k + i] * bb[i * n + col];
-                           }
-                           cb[row * n + col] = acc;
-                       });
-    });
+    matmul_tiled(que, a, b, c, m, k, n, batch);
 #endif
   ); }
 
