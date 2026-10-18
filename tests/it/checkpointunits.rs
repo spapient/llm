@@ -89,7 +89,7 @@ mod compatibility {
     use ::checkpoint::compatibility::checkcompat;
     use ::checkpoint::compatibility::checkversion;
     use ::checkpoint::compatibility::tensorspec;
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     fn ckpt() -> checkpoint {
         let mut ckpt = checkpoint::new(1);
@@ -329,7 +329,7 @@ mod manifests {
     use ::checkpoint::checkpointerror;
     use ::checkpoint::manifest;
     use ::checkpoint::trainingstate;
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     #[test]
     fn encode_decode_roundtrip_preserves_all_state() {
@@ -552,8 +552,8 @@ mod uformat {
     use ::checkpoint::checkpointreader;
     use ::checkpoint::signature::publickey;
     use ::checkpoint::uformat::snapshot;
-    use tensor::dtype;
-    use tensor::layout;
+    use ::tensor::dtype;
+    use ::tensor::layout;
 
     fn onesnap() -> snapshot {
         let mut snap = snapshot::new(1);
@@ -933,7 +933,7 @@ mod delta {
     use ::checkpoint::deltas::delta;
     use ::checkpoint::signature::publickey;
     use ::checkpoint::uformat::snapshot;
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     fn pseudorandom(len: usize) -> Vec<u8> {
         let mut data = vec![0u8; len];
@@ -1090,7 +1090,7 @@ mod merge {
     use ::checkpoint::deltas::delta;
     use ::checkpoint::merge::{merge, mergefiles};
     use ::checkpoint::uformat::snapshot;
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     fn base() -> snapshot {
         let mut base = snapshot::new(1);
@@ -1214,7 +1214,7 @@ mod reader {
     use ::checkpoint::deltas::delta;
     use ::checkpoint::uformat::snapshot;
     use ::checkpoint::{checkpointerror, checkpointreader};
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     fn base() -> snapshot {
         let mut snap = snapshot::new(1);
@@ -1422,7 +1422,7 @@ mod compact {
     use ::checkpoint::compact::{compact, verifyprovenance};
     use ::checkpoint::deltas::delta;
     use ::checkpoint::uformat::snapshot;
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     fn full(v: u8) -> snapshot {
         let mut snap = snapshot::new(1);
@@ -1483,7 +1483,7 @@ mod compression {
     use ::checkpoint::blocks::BLOCKSIZE;
     use ::checkpoint::uformat::snapshot;
     use ::checkpoint::{checkpointerror, checkpointreader};
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     fn snapwith(data: &[u8]) -> snapshot {
         let mut snap = snapshot::new(1);
@@ -1553,7 +1553,7 @@ mod signature {
     use ::checkpoint::checkpointerror;
     use ::checkpoint::signature::{publickey, sign, verify};
     use ::checkpoint::uformat::snapshot;
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     const SEED: [u8; 32] = [0x42; 32];
 
@@ -1778,7 +1778,7 @@ mod shards {
     use ::checkpoint::checkpointerror;
     use ::checkpoint::shards::{join, split};
     use ::checkpoint::uformat::snapshot;
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     fn encoded() -> Vec<u8> {
         let mut snap = snapshot::new(1);
@@ -1831,7 +1831,7 @@ mod quant {
     use crate::support::shapeof;
     use ::checkpoint::deltas::delta;
     use ::checkpoint::uformat::{quantdesc, snapshot};
-    use tensor::dtype;
+    use ::tensor::dtype;
 
     #[test]
     fn quantized_tensor_roundtrips_with_its_scale() {
@@ -1923,9 +1923,9 @@ mod tensorbridge {
     use crate::support::shapeof;
     use ::checkpoint::uformat::snapshot;
     use ::checkpoint::{checkpointerror, checkpointreader};
-    use half::f16;
-    use tensor::dtype;
-    use tensor::layout;
+    use ::tensor::dtype;
+    use ::tensor::f16;
+    use ::tensor::layout;
 
     #[test]
     fn typed_f32_reads_from_a_full_snapshot() {
@@ -1935,7 +1935,7 @@ mod tensorbridge {
             "w".to_string(),
             dtype::f32,
             shapeof(&[2, 3]),
-            bytemuck::cast_slice(&values),
+            &::tensor::bytesof(&values),
         )
         .unwrap();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
@@ -1958,7 +1958,7 @@ mod tensorbridge {
             "h".to_string(),
             dtype::f16,
             shapeof(&[4]),
-            bytemuck::cast_slice(&values),
+            &::tensor::bytesof(&values),
         )
         .unwrap();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
@@ -1974,7 +1974,7 @@ mod tensorbridge {
             "w".to_string(),
             dtype::f32,
             shapeof(&[2]),
-            bytemuck::cast_slice(&[1.0f32, 2.0]),
+            &::tensor::bytesof(&[1.0f32, 2.0]),
         )
         .unwrap();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
@@ -1990,7 +1990,7 @@ mod tensorbridge {
             "w".to_string(),
             dtype::f32,
             shapeof(&[1]),
-            bytemuck::cast_slice(&[1.0f32]),
+            &::tensor::bytesof(&[1.0f32]),
         )
         .unwrap();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
@@ -2005,7 +2005,7 @@ mod tensorbridge {
             "w".to_string(),
             dtype::f32,
             shapeof(&[values.len()]),
-            bytemuck::cast_slice(&values),
+            &::tensor::bytesof(&values),
         )
         .unwrap();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
@@ -2021,7 +2021,7 @@ mod tensorbridge {
             "w".to_string(),
             dtype::f32,
             shapeof(&[values.len()]),
-            bytemuck::cast_slice(&values),
+            &::tensor::bytesof(&values),
         )
         .unwrap();
         let reader = checkpointreader::openfull(snap.encode().unwrap()).unwrap();
@@ -2037,7 +2037,7 @@ mod tensorbridge {
             "w".to_string(),
             dtype::f32,
             shapeof(&[2, 3]),
-            bytemuck::cast_slice(&values),
+            &::tensor::bytesof(&values),
         )
         .unwrap();
         snap.setlayout("w", layout::new(vec![1, 2], 0)).unwrap();
@@ -2057,8 +2057,8 @@ mod rawformat {
     use ::checkpoint::rawfmt::{PAGESIZE, RAWFORMATVERSION, rawsnapshot};
     use ::checkpoint::rawio::rawreader;
     use ::checkpoint::{checkpoint, checkpointerror};
-    use half::f16;
-    use tensor::dtype;
+    use ::tensor::dtype;
+    use ::tensor::f16;
 
     fn sample() -> checkpoint {
         let mut ckpt = checkpoint::new(1);
@@ -2066,14 +2066,14 @@ mod rawformat {
             "w".to_string(),
             dtype::f32,
             shapeof(&[2, 3]),
-            bytemuck::cast_slice(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            &::tensor::bytesof(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]),
         )
         .unwrap();
         ckpt.addtensor(
             "h".to_string(),
             dtype::f16,
             shapeof(&[2]),
-            bytemuck::cast_slice(&[f16::from_f32(0.5), f16::from_f32(-1.0)]),
+            &::tensor::bytesof(&[f16::from_f32(0.5), f16::from_f32(-1.0)]),
         )
         .unwrap();
         ckpt
@@ -2109,7 +2109,7 @@ mod rawformat {
         let end = (w.getoffset() + w.getnbytes()) as usize;
         assert_eq!(
             back.getdata()[start..end].to_vec(),
-            bytemuck::cast_slice::<f32, u8>(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]).to_vec()
+            ::tensor::bytesof(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0])
         );
     }
 
@@ -2130,10 +2130,7 @@ mod rawformat {
         let raw = rawsnapshot::fromcheckpoint(&sample()).unwrap();
         let reader = rawreader::open(raw.encode().unwrap()).unwrap();
         let w = reader.readtensor("w").unwrap().unwrap();
-        assert_eq!(
-            w,
-            bytemuck::cast_slice::<f32, u8>(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0])
-        );
+        assert_eq!(w, ::tensor::bytesof(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]));
         assert!(reader.readtensor("absent").unwrap().is_none());
     }
 
@@ -2179,7 +2176,7 @@ mod rawformat {
             "big".to_string(),
             dtype::f32,
             shapeof(&[values.len()]),
-            bytemuck::cast_slice(&values),
+            &::tensor::bytesof(&values),
         )
         .unwrap();
         let raw = rawsnapshot::fromcheckpoint(&ckpt).unwrap();
@@ -2213,7 +2210,7 @@ mod rawformat {
         assert_eq!(name, "w");
         assert_eq!(
             bytes,
-            bytemuck::cast_slice::<f32, u8>(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0])
+            &::tensor::bytesof(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0])
         );
         let (name, _) = &all[1];
         assert_eq!(name, "h");
@@ -2257,14 +2254,14 @@ mod rawformat {
             "w".to_string(),
             dtype::f32,
             shapeof(&[values.len()]),
-            bytemuck::cast_slice(&values),
+            &::tensor::bytesof(&values),
         )
         .unwrap();
         snap.addtensor(
             "h".to_string(),
             dtype::f16,
             shapeof(&[2]),
-            bytemuck::cast_slice(&[f16::from_f32(0.5), f16::from_f32(-1.0)]),
+            &::tensor::bytesof(&[f16::from_f32(0.5), f16::from_f32(-1.0)]),
         )
         .unwrap();
         std::fs::write(&ckpt_path, snap.encode().unwrap()).unwrap();

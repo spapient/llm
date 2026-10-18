@@ -27,9 +27,9 @@ use ::checkpoint::checkpointreader;
 use ::checkpoint::rawfmt::rawexport;
 use ::checkpoint::rawio::rawreader;
 use ::checkpoint::uformat::snapshot;
+use ::tensor::f16;
 use ::tensor::{dtype, shape, tensor};
 use criterion::{Criterion, criterion_group, criterion_main};
-use half::f16;
 
 /// Vocabulary size of the embedding workload.
 const VOCAB: usize = 4096;

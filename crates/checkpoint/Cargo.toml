@@ -15,7 +15,6 @@ lib = { path = "../lib" }
 blake3.workspace = true
 tensor = { path = "../tensor" }
 format = { path = "../format" }
-bytemuck.workspace = true
 ed25519-compact.workspace = true
 aes-gcm.workspace = true
 mmap-guard.workspace = true

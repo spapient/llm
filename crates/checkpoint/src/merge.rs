@@ -30,18 +30,21 @@ pub fn merge(base: &snapshot, delta: &delta) -> Result<snapshot, checkpointerror
         });
     }
 
-    let mut basemap: HashMap<[u8; 16], &[u8]> = HashMap::new();
+    let mut basemap: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
     let baseblocks = chunk(base.getdata());
     let mut offset = 0usize;
     for block in &baseblocks {
         let len = block.getlen() as usize;
-        basemap.insert(block.gethash(), &base.getdata()[offset..offset + len]);
+        basemap.insert(
+            block.gethash(),
+            base.getdata()[offset..offset + len].to_vec(),
+        );
         offset += len;
     }
 
-    let mut storedmap: HashMap<[u8; 16], &[u8]> = HashMap::new();
+    let mut storedmap: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
     for block in delta.getstored() {
-        storedmap.insert(block.gethash(), block.getbytes());
+        storedmap.insert(block.gethash(), block.getbytes().to_vec());
     }
 
     let blocks = delta.getblocks();
@@ -62,8 +65,8 @@ pub fn merge(base: &snapshot, delta: &delta) -> Result<snapshot, checkpointerror
     }
 
     let blocksref: &[blockref] = blocks;
-    let storedmapref: &HashMap<[u8; 16], &[u8]> = &storedmap;
-    let basemapref: &HashMap<[u8; 16], &[u8]> = &basemap;
+    let storedmapref: &HashMap<[u8; 16], Vec<u8>> = &storedmap;
+    let basemapref: &HashMap<[u8; 16], Vec<u8>> = &basemap;
     std::thread::scope(|scope| {
         let mut cursor: &mut [u8] = &mut data;
         let mut handles = Vec::with_capacity(nthreads);
@@ -104,8 +107,8 @@ pub fn merge(base: &snapshot, delta: &delta) -> Result<snapshot, checkpointerror
 /// their bytes into `out`, which must hold exactly the span's combined length.
 fn mergeblockspan(
     blocks: &[blockref],
-    storedmap: &HashMap<[u8; 16], &[u8]>,
-    basemap: &HashMap<[u8; 16], &[u8]>,
+    storedmap: &HashMap<[u8; 16], Vec<u8>>,
+    basemap: &HashMap<[u8; 16], Vec<u8>>,
     span: std::ops::Range<usize>,
     out: &mut [u8],
 ) -> Result<(), checkpointerror> {

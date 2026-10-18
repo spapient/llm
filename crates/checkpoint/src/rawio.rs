@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use ::tensor::{element, tensor};
+use ::tensor::{byteable, element, tensor};
 use format::dtypetoken;
 
 use crate::crc32c::crc32c;
@@ -193,7 +193,7 @@ impl rawreader {
     /// differs, the range and corruption errors of [`Self::readtensor`], or the
     /// decoding error from [`tensor::tryfrombytes`] propagated as
     /// [`checkpointerror::tensor`].
-    pub fn readtensortyped<T: element + bytemuck::Pod>(
+    pub fn readtensortyped<T: element + byteable>(
         &self,
         name: &str,
     ) -> Result<Option<tensor<T>>, checkpointerror> {

@@ -360,7 +360,7 @@ mod views {
 mod halfelements {
     use ::tensor::dtype;
     use ::tensor::element;
-    use half::{bf16, f16};
+    use ::tensor::{bf16, f16};
 
     #[test]
     fn half_dtype_constants_match_storage_type() {
@@ -386,6 +386,87 @@ mod halfelements {
         assertcopy::<f16>();
         assertcopy::<bf16>();
     }
+
+    #[test]
+    fn f16_roundtrips_exactly_representable_values() {
+        for value in [0.0f32, -0.0, 1.0, -1.0, 0.5, -2.25, 65504.0, -65504.0] {
+            let half = f16::from_f32(value);
+            let back = half.to_f32();
+            assert_eq!(back.to_bits(), value.to_bits(), "roundtrip {value}");
+        }
+    }
+
+    #[test]
+    fn f16_rounds_to_nearest_even() {
+        // 1.0 is 0x3c00; the next f16 is 1 + 2^-10 = 0x3c01, so the midpoint
+        // is 1 + 2^-11 (even on the low side) and must round down; the point
+        // just above the midpoint must round up.
+        let midpoint = 1.0f32 + 2f32.powi(-11);
+        assert_eq!(f16::from_f32(midpoint).to_bits(), 0x3c00);
+        let just_above = 1.0f32 + 2f32.powi(-11) + 2f32.powi(-20);
+        assert_eq!(f16::from_f32(just_above).to_bits(), 0x3c01);
+        // 1.5 is exact; -1.5 keeps the sign.
+        assert_eq!(f16::from_f32(1.5).to_bits(), 0x3e00);
+        assert_eq!(f16::from_f32(-1.5).to_bits(), 0xbe00);
+    }
+
+    #[test]
+    fn f16_handles_subnormals_and_underflow() {
+        // Smallest f16 subnormal is 2^-24.
+        let smallest = 2f32.powi(-24);
+        assert_eq!(f16::from_f32(smallest).to_bits(), 0x0001);
+        // Below half of the smallest subnormal rounds to zero.
+        assert_eq!(f16::from_f32(smallest / 2.0).to_bits(), 0x0000);
+        // Largest subnormal decodes back to its exact value.
+        let largest = f16::from_bits(0x03ff);
+        assert_eq!(largest.to_f32(), 0x03ff as f32 * 2f32.powi(-24));
+        assert_eq!(largest.to_f32().to_bits(), 0x387fc000);
+    }
+
+    #[test]
+    fn f16_handles_overflow_and_special_values() {
+        // Above 65504 the midpoint between 65504 and 65536 rounds to infinity.
+        assert_eq!(f16::from_f32(65504.0).to_bits(), 0x7bff);
+        assert_eq!(f16::from_f32(65520.0).to_bits(), 0x7c00);
+        assert_eq!(f16::from_f32(-65520.0).to_bits(), 0xfc00);
+        assert_eq!(f16::from_f32(1e10).to_bits(), 0x7c00);
+        // Signed zero and infinities survive.
+        assert_eq!(f16::from_f32(f32::INFINITY).to_bits(), 0x7c00);
+        assert_eq!(f16::from_f32(f32::NEG_INFINITY).to_bits(), 0xfc00);
+        // NaN keeps a nonzero payload and a quiet bit.
+        let nan = f16::from_f32(f32::NAN);
+        assert_eq!(nan.to_bits() & 0x7c00, 0x7c00);
+        assert_ne!(nan.to_bits() & 0x03ff, 0);
+    }
+
+    #[test]
+    fn bf16_roundtrips_and_rounds() {
+        for value in [0.0f32, -0.0, 1.0, -1.0, 0.5, 2.25] {
+            let half = bf16::from_f32(value);
+            assert_eq!(half.to_f32(), value, "roundtrip {value}");
+        }
+        // 1.0 + 2^-16 sits at the bf16 midpoint and must round down (lsb even).
+        assert_eq!(bf16::from_f32(1.0 + 2f32.powi(-16)).to_bits(), 0x3f80);
+        // 1.0 + 2^-8 is also a midpoint (between 0x3f80 and 0x3f81) and rounds
+        // down to the even value; just above the midpoint rounds up.
+        assert_eq!(bf16::from_f32(1.0 + 2f32.powi(-8)).to_bits(), 0x3f80);
+        assert_eq!(
+            bf16::from_f32(1.0 + 2f32.powi(-7) + 2f32.powi(-16)).to_bits(),
+            0x3f81
+        );
+        // 65504 is not representable in bf16 (needs 12 mantissa bits); it
+        // rounds to the next binade, 65536 (0x4780).
+        assert_eq!(bf16::from_f32(65504.0).to_bits(), 0x4780);
+        assert_eq!(bf16::from_f32(65504.0).to_f32(), 65536.0);
+        // 1e38 is finite in bf16 (biased exponent 253 < 255, so not infinity).
+        assert_ne!(bf16::from_f32(1e38).to_bits() & 0x7f80, 0x7f80);
+        // Infinities and NaN survive.
+        assert_eq!(bf16::from_f32(f32::INFINITY).to_bits(), 0x7f80);
+        assert_eq!(bf16::from_f32(f32::NEG_INFINITY).to_bits(), 0xff80);
+        let nan = bf16::from_f32(f32::NAN);
+        assert_eq!(nan.to_bits() & 0x7f80, 0x7f80);
+        assert_ne!(nan.to_bits() & 0x007f, 0);
+    }
 }
 
 /// Tests for the byte-to-tensor conversion primitives.
@@ -395,18 +476,17 @@ mod bytetensor {
     use ::tensor::shape;
     use ::tensor::tensor;
     use ::tensor::tensorerror;
-    use ::tensor::tensorview;
-    use half::{bf16, f16};
+    use ::tensor::{bf16, f16};
 
-    fn bytesfrom<T: bytemuck::Pod>(values: &[T]) -> Vec<u8> {
-        bytemuck::cast_slice(values).to_vec()
+    fn bytesfrom<T: ::tensor::byteable>(values: &[T]) -> Vec<u8> {
+        ::tensor::bytesof(values)
     }
 
     #[test]
     fn owned_f32_roundtrips_through_bytes() {
         let s = shape::new(vec![2, 3]).unwrap();
         let t = tensor::new(s.clone(), vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
-        let rebuilt: tensor<f32> = tensor::tryfrombytes(s, t.getbytes()).unwrap();
+        let rebuilt: tensor<f32> = tensor::tryfrombytes(s, &t.getbytes()).unwrap();
         assert_eq!(rebuilt.getdata(), t.getdata());
         assert_eq!(rebuilt.getdtype(), dtype::f32);
         assert_eq!(rebuilt.getshape().getdims(), &[2, 3]);
@@ -422,7 +502,7 @@ mod bytetensor {
             f16::from_f32(4.0),
         ];
         let t = tensor::new(s.clone(), values).unwrap();
-        let rebuilt: tensor<f16> = tensor::tryfrombytes(s, t.getbytes()).unwrap();
+        let rebuilt: tensor<f16> = tensor::tryfrombytes(s, &t.getbytes()).unwrap();
         assert_eq!(rebuilt.getdata(), t.getdata());
         assert_eq!(rebuilt.getdtype(), dtype::f16);
     }
@@ -432,7 +512,7 @@ mod bytetensor {
         let s = shape::new(vec![2]).unwrap();
         let values = vec![bf16::from_f32(1.0), bf16::from_f32(-0.5)];
         let t = tensor::new(s.clone(), values).unwrap();
-        let rebuilt: tensor<bf16> = tensor::tryfrombytes(s, t.getbytes()).unwrap();
+        let rebuilt: tensor<bf16> = tensor::tryfrombytes(s, &t.getbytes()).unwrap();
         assert_eq!(rebuilt.getdata(), t.getdata());
         assert_eq!(rebuilt.getdtype(), dtype::bf16);
     }
@@ -441,7 +521,7 @@ mod bytetensor {
     fn owned_frombytes_accepts_unaligned_sources() {
         let s = shape::new(vec![4]).unwrap();
         let mut bytes = vec![0xAA, 0xBB];
-        bytes.extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0, 4.0]));
+        bytes.extend_from_slice(&::tensor::bytesof(&[1.0f32, 2.0, 3.0, 4.0]));
         let t: tensor<f32> = tensor::tryfrombytes(s, &bytes[2..]).unwrap();
         assert_eq!(t.getdata(), &[1.0, 2.0, 3.0, 4.0]);
     }
@@ -470,43 +550,21 @@ mod bytetensor {
     }
 
     #[test]
-    fn aligned_view_borrows_bytes_without_copy() {
-        let s = shape::new(vec![3]).unwrap();
-        let l = layout::contiguous(&s);
-        let bytes = bytesfrom(&[1.0f32, 2.0, 3.0]);
-        let v: tensorview<f32> = tensorview::tryfrombytes(&s, &l, &bytes).unwrap();
-        assert_eq!(v.getdata(), &[1.0, 2.0, 3.0]);
-        assert_eq!(v.getshape().getdims(), &[3]);
-        assert_eq!(v.getlayout().getstrides(), &[1]);
-    }
-
-    #[test]
-    fn misaligned_view_is_rejected() {
-        let s = shape::new(vec![4]).unwrap();
-        let l = layout::contiguous(&s);
-        let mut bytes = vec![0u8];
-        bytes.extend_from_slice(bytemuck::cast_slice(&[1.0f32, 2.0, 3.0, 4.0]));
-        let err = tensorview::<f32>::tryfrombytes(&s, &l, &bytes[1..]).unwrap_err();
-        assert!(matches!(err, tensorerror::viewmisaligned { .. }));
-    }
-
-    #[test]
-    fn view_rejects_layout_not_valid_for_shape() {
+    fn owned_frombytes_rejects_layout_not_valid_for_shape() {
         let s = shape::new(vec![2, 3]).unwrap();
         let other = shape::new(vec![6]).unwrap();
         let l = layout::contiguous(&other);
         let bytes = bytesfrom(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert_eq!(
-            tensorview::<f32>::tryfrombytes(&s, &l, &bytes).map(|_| ()),
+            tensor::<f32>::tryfrombyteswithlayout(s, l, &bytes).map(|_| ()),
             Err(tensorerror::invalidlayout)
         );
     }
 
     #[test]
-    fn empty_view_is_accepted() {
+    fn empty_tensor_yields_an_empty_view() {
         let s = shape::new(vec![0]).unwrap();
-        let l = layout::contiguous(&s);
-        let v = tensorview::<f32>::tryfrombytes(&s, &l, &[]).unwrap();
-        assert_eq!(v.getlen(), 0);
+        let t = tensor::new(s, Vec::<f32>::new()).unwrap();
+        assert_eq!(t.getview().getlen(), 0);
     }
 }

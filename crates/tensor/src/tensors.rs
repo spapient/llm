@@ -1,4 +1,4 @@
-use crate::{dtype, element, layout, shape, tensorerror, tensorview};
+use crate::{byteable, bytesof, dtype, element, layout, shape, tensorerror, tensorview};
 
 /// An owned, dense tensor with an explicit shape and contiguous layout.
 ///
@@ -110,13 +110,12 @@ impl<T: element> tensor<T> {
     }
 }
 
-impl<T: element + bytemuck::Pod> tensor<T> {
+impl<T: element + byteable> tensor<T> {
     /// Builds an owned tensor by copying a byte slice into typed elements.
     ///
-    /// Unlike [`tensorview::tryfrombytes`], the source bytes may have any
-    /// alignment; each element is read with an unaligned, checked read. The
-    /// byte length must equal the shape's element count multiplied by the
-    /// element width.
+    /// The source bytes may have any alignment; each element is read with an
+    /// unaligned, checked read. The byte length must equal the shape's element
+    /// count multiplied by the element width.
     ///
     /// # Errors
     ///
@@ -138,8 +137,8 @@ impl<T: element + bytemuck::Pod> tensor<T> {
         }
         let data = bytes
             .chunks_exact(core::mem::size_of::<T>())
-            .map(|c| bytemuck::pod_read_unaligned(c))
-            .collect::<Vec<T>>();
+            .map(|c| byteable::readfrom(c).ok_or(tensorerror::byteconversion))
+            .collect::<Result<Vec<T>, _>>()?;
         Self::new(s, data)
     }
 
@@ -169,18 +168,19 @@ impl<T: element + bytemuck::Pod> tensor<T> {
         }
         let data = bytes
             .chunks_exact(core::mem::size_of::<T>())
-            .map(|c| bytemuck::pod_read_unaligned(c))
-            .collect::<Vec<T>>();
+            .map(|c| byteable::readfrom(c).ok_or(tensorerror::byteconversion))
+            .collect::<Result<Vec<T>, _>>()?;
         Self::newwithlayout(s, l, data)
     }
 
     /// Returns the element data as raw bytes in storage order.
     ///
-    /// The returned slice's length equals the shape's element count multiplied
+    /// The returned buffer's length equals the shape's element count multiplied
     /// by the element width, and its byte representation matches the storage
-    /// dtype (IEEE-754 bits for floating-point types).
+    /// dtype (IEEE-754 bits for floating-point types). This is a copying
+    /// conversion (the safe counterpart of a zero-copy byte view).
     #[must_use]
-    pub fn getbytes(&self) -> &[u8] {
-        bytemuck::cast_slice(&self.data)
+    pub fn getbytes(&self) -> Vec<u8> {
+        bytesof(&self.data)
     }
 }

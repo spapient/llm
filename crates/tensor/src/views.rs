@@ -57,45 +57,9 @@ impl<'a, T: element> tensorview<'a, T> {
     }
 }
 
-impl<'a, T: element + bytemuck::Pod> tensorview<'a, T> {
-    /// Borrows a byte slice as a typed read-only view without copying.
-    ///
-    /// The byte length must equal the shape's element count multiplied by the
-    /// element width, `l` must be a layout valid for `s` (the canonical choice
-    /// is [`layout::contiguous`]), and `bytes` must be aligned to the element
-    /// type's alignment. When the source is not aligned the method returns
-    /// [`tensorerror::viewmisaligned`] and the caller may fall back to the
-    /// copying constructor [`tensor::tryfrombytes`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the error from [`shape::getelementcount`],
-    /// [`tensorerror::lengthmismatch`] when the byte length is wrong,
-    /// [`tensorerror::invalidlayout`] when `l` does not describe `s`, or
-    /// [`tensorerror::viewmisaligned`] when the source is not aligned.
-    pub fn tryfrombytes(s: &'a shape, l: &'a layout, bytes: &'a [u8]) -> Result<Self, tensorerror> {
-        let count = s.getelementcount()?;
-        let expected = count
-            .checked_mul(core::mem::size_of::<T>())
-            .ok_or_else(|| tensorerror::elementcountoverflow {
-                dims: s.getdims().to_vec(),
-            })?;
-        if bytes.len() != expected {
-            return Err(tensorerror::lengthmismatch {
-                expected,
-                actual: bytes.len(),
-            });
-        }
-        if !l.isvalidfor(s) {
-            return Err(tensorerror::invalidlayout);
-        }
-        let data = if bytes.is_empty() {
-            &[]
-        } else {
-            bytemuck::try_cast_slice(bytes).map_err(|_| tensorerror::viewmisaligned {
-                align: core::mem::align_of::<T>(),
-            })?
-        };
-        Ok(Self::new(s, l, data))
-    }
-}
+// NOTE: a zero-copy `tryfrombytes` (borrowing a byte slice as a typed view)
+// previously existed here via `bytemuck::try_cast_slice`. The workspace now
+// forbids `unsafe` outside the registered islands (AGENTS.md §6), and a
+// byte-slice reinterpretation cannot be expressed in safe Rust, so the method
+// was removed (it had no callers). Byte construction paths use the copying
+// [`tensor::tryfrombytes`] constructor instead.

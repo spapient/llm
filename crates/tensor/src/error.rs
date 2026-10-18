@@ -52,6 +52,12 @@ pub enum tensorerror {
         align: usize,
     },
 
+    /// A byte slice could not be converted into an element of the target
+    /// width. Internal invariant: the caller validates the length before the
+    /// conversion, so this marks a byte-width mismatch in an `byteable`
+    /// implementation rather than a user input error.
+    byteconversion,
+
     /// A supplied layout is not valid for the supplied shape.
     invalidlayout,
 }
@@ -78,6 +84,7 @@ impl std::fmt::Display for tensorerror {
             Self::viewmisaligned { align } => {
                 write!(f, "byte view is not aligned to {align} bytes")
             }
+            Self::byteconversion => f.write_str("byte slice width does not match the element type"),
             Self::invalidlayout => f.write_str("layout is not valid for the shape"),
         }
     }

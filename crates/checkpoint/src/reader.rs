@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
-use ::tensor::{element, tensor};
+use ::tensor::{byteable, element, tensor};
 use format::dtypetoken;
 
 use crate::blocks::{CODECRAW, TRANSFORMNONE, blockref, decompressblock};
@@ -592,7 +592,7 @@ impl checkpointreader {
     /// differs, the corruption and range errors of [`Self::readtensorcow`], or
     /// the decoding error from [`tensor::tryfrombytes`] propagated as
     /// [`checkpointerror::tensor`].
-    pub fn readtensortyped<T: element + bytemuck::Pod>(
+    pub fn readtensortyped<T: element + byteable>(
         &self,
         name: &str,
     ) -> Result<Option<tensor<T>>, checkpointerror> {

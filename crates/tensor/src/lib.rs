@@ -29,22 +29,28 @@
 //! This crate provides metadata and storage only. It defines no operators and
 //! no execution logic. The [`element`] trait is implemented for the primitive
 //! types with a native Rust representation (`f32`, `f64`, `i8`, `u8`, `i32`,
-//! `i64`); `f16` and `bf16` are declared unsupported. [`dtype`] is the storage
+//! `i64`), plus the hand-written half-precision types [`f16`] and [`bf16`]
+//! (`halffloat.rs`), which are storage-only: no backend declares their
+//! execution. [`dtype`] is the storage
 //! taxonomy and is a strict superset of [`precision`](lib::precision): `dtype`
 //! additionally contains integer storage and storage-only `f64`, none of which
 //! is a compute precision.
 
+mod bytes;
 mod dtypes;
 mod elements;
 mod error;
+mod halffloat;
 mod layouts;
 mod shapes;
 mod tensors;
 mod views;
 
+pub use bytes::{byteable, bytesof, frombytes};
 pub use dtypes::dtype;
 pub use elements::element;
 pub use error::tensorerror;
+pub use halffloat::{bf16, f16};
 pub use layouts::layout;
 pub use shapes::shape;
 pub use tensors::tensor;

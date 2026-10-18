@@ -12,8 +12,6 @@ name = "tensor"
 
 [dependencies]
 lib = { path = "../lib" }
-half.workspace = true
-bytemuck.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
