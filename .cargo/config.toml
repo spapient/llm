@@ -11,10 +11,11 @@ incremental = true
 [future-incompat-report]
 frequency = "always"
 
-# --- Vendored offline sources (re-enabled 2026-10-16) ------------------------
-# 2026-10-16 重建为完整闭包：`cargo vendor vendor/ --versioned-dirs` 从当前
-# Cargo.lock 全量解析（156 crates，含 regex 1.13.1 / unicode-normalization
-# 0.1.25 / tinyvec / blake3 / crc32c 等），供 Claude Code 会话沙箱
+# --- Vendored offline sources (S5 slimmed 2026-10-18) ------------------------
+# 2026-10-18 重建为当前闭包：`cargo vendor vendor/ --versioned-dirs --locked`
+# 从 Cargo.lock 全量解析（155 crates，含 regex 1.13.1 / unicode-normalization
+# 0.1.25 / tinyvec / blake3 / crc32c 等），移除 37 个已清除依赖（archmage、
+# clap、tracing、thiserror、zstd 等），供 Claude Code 会话沙箱
 # （strictAllowlist 锁死 crates.io）离线解析新依赖。
 # 使用方式：agent 在 Cargo.toml 声明依赖（如 unicode-normalization = "0.1"）
 # 后执行 `cargo build --offline`，无需网络。

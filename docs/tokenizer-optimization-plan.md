@@ -605,3 +605,23 @@ gemma 加载累计（相对首测 510.7 ms）≈ **2.2×**；剩余主项是 `se
 - `fancy-regex` 0.15：500K + 传递依赖 6 包（bit-set/derivative→proc-macro2/quote/regex-automata→aho-corasick）。**使用面含动态用户 pattern**（Split/replaceregex 的 lookaround 来自模型作者定义的 `tokenizer.json`，语法含 `&&` 差集、`(?i:)`、lookbehind）。标准 `regex` crate 不支持 `&&` 差集（`KIMI_PAT` 编译失败）且不支持 lookbehind，不可直接替代；自写完整 lookaround 引擎 ≈2,000+ 行且无法证明与 fancy-regex 行为一致。
 
 **判定**：两个依赖均为**领域算法 / 外部契约组件**，与 S3 清除的便利性胶水依赖（serde/clap/tracing/thiserror——纯代码结构）性质不同——内化的「依赖清零」收益为负（源码体积大幅膨胀或契约风险失控）。**维持现状，不内化**；`KIMI_PAT`/GPT-2 常量路径可手写（§12.25 o200k 先例），但动态 Split 仍依赖 fancy-regex，常量手写无净依赖收益，不做。零依赖攻坚的剩余实质工作转入 **S5：vendor 瘦身 + 恢复 crates.io 直连**（vendor/ 157M 中残留大量已清除依赖，重新 `cargo vendor` 或移除 vendored-sources 强制可实质性减负）。
+
+### 12.28 零依赖攻坚 S5：vendor 瘦身（2026-10-18）
+
+**范围**：只执行 S5 的 vendor 瘦身。「恢复 crates.io 直连」未做——沙箱（strictAllowlist 锁死 crates.io）依赖离线闭包，移除 vendored-sources 会使会话内的 `cargo build` 无法解析依赖，该决策需单独评审。
+
+**操作**：临时移开 `.cargo/config.toml` 的 source 替换，执行 `cargo vendor vendor-s5 --versioned-dirs --locked`，替换 `vendor/` 后恢复配置；`.cargo/config.toml` 注释同步为 155 crates。
+
+**结果**：
+
+| 指标 | 瘦身前 | 瘦身后 |
+| --- | --- | --- |
+| vendor 体积（`du -sk`） | 161,200 KiB | 139,592 KiB |
+| vendor 包数 | 192 | 155 |
+| 相对 Cargo.lock 外部依赖的残留包 | 37 | 0 |
+
+瘦身 21,608 KiB（≈ 21.1 MiB，13.4%）。移除的 37 个包：`archmage`/`archmage-macros`/`safe_unaligned_simd`、`clap_derive`/`anstream`/`anstyle-parse`/`anstyle-query`/`anstyle-wincon`/`colorchoice`/`strsim`/`heck`/`is_terminal_polyfill`/`once_cell_polyfill`/`utf8parse`、`tracing`/`tracing-attributes`/`tracing-core`/`tracing-log`/`tracing-subscriber`/`matchers`/`nu-ansi-term`/`sharded-slab`/`thread_local`/`valuable`/`log`/`lazy_static`、`thiserror`/`thiserror-impl`、`zstd`/`zstd-safe`/`zstd-sys`、`lz4_flex`/`twox-hash`、`jobserver`/`pkg-config`/`smallvec`/`winarm-cpufeatures`。
+
+**验证（E1）**：`cargo check --workspace --all-targets --offline --locked` 通过；新闭包与 Cargo.lock 的外部依赖**精确匹配**（155/155，无残留、无缺失）；工作树差异为 37 个包整体删除、`memmap2-0.9.11/Cargo.lock` 补齐（新 vendor 含该文件，旧闭包缺失）。
+
+**诚实边界**：139,592 KiB 仍主要由 `regex`/`unicode-normalization` 表与 `windows-sys` 等闭包内实际依赖占据；不放弃离线 vendored 模式的前提下，进一步减容空间有限。
