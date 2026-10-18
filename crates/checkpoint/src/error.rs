@@ -130,6 +130,12 @@ pub enum checkpointerror {
         actual: Vec<usize>,
     },
 
+    /// A snapshot cannot be reconstructed as the requested model.
+    snapshotmismatch {
+        /// The human-readable reason.
+        detail: String,
+    },
+
     /// The snapshot's root hash does not match its declared value.
     rootmismatch {
         /// The root hash computed over the canonical manifest.
@@ -335,6 +341,10 @@ impl std::fmt::Display for checkpointerror {
                 f,
                 "tensor {name:?} shape mismatch: expected {expected:?}, actual {actual:?}"
             ),
+
+            Self::snapshotmismatch { detail } => {
+                write!(f, "snapshot does not reconstruct the model: {detail}")
+            }
             Self::rootmismatch { expected, found } => write!(
                 f,
                 "root hash mismatch: expected {expected:?}, found {found:?}"

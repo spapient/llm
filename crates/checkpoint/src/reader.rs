@@ -737,6 +737,18 @@ impl checkpointreader {
         Ok(Some(typed))
     }
 
+    /// Returns the snapshot tensor's logical shape, when the tensor exists.
+    ///
+    /// Weight loaders use this to validate a snapshot against a model
+    /// configuration before materializing any tensor.
+    #[must_use]
+    pub fn getentryshape(&self, name: &str) -> Option<&::tensor::shape> {
+        self.tensors
+            .iter()
+            .find(|t| t.getname() == name)
+            .map(|t| t.getshape())
+    }
+
     /// Returns the total logical data length in bytes.
     fn totallen(&self) -> usize {
         self.blocks.iter().map(|b| b.getlen() as usize).sum()

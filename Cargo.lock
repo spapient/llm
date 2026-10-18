@@ -226,6 +226,8 @@ dependencies = [
  "format",
  "lib",
  "mmap-guard",
+ "models",
+ "nn",
  "tensor",
 ]
 

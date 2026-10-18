@@ -55,6 +55,18 @@ impl<'a, T: element> tensorview<'a, T> {
     pub fn toowned(&self) -> Result<tensor<T>, tensorerror> {
         tensor::new(self.shape.clone(), self.data.to_vec())
     }
+
+    /// Builds a view from a shape, a layout, and element data.
+    ///
+    /// The view borrows all three parts; callers that hold their own shape and
+    /// layout (for example a checkpoint weight loader that aliases a memory
+    /// map) use this constructor to hand a borrowed view to a compute or
+    /// submission call without materializing an owned tensor. The parts are
+    /// not revalidated against each other; consumers that need the guarantee
+    /// use the tensors' own constructors.
+    pub fn fromparts(s: &'a shape, l: &'a layout, data: &'a [T]) -> Self {
+        Self::new(s, l, data)
+    }
 }
 
 // NOTE: a zero-copy `tryfrombytes` (borrowing a byte slice as a typed view)

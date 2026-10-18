@@ -25,9 +25,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ::bench::harness::{report, run};
 use ::checkpoint::checkpointreader;
+use ::checkpoint::modelio::{loadllamaweights, loadweightviews};
 use ::checkpoint::rawfmt::rawexport;
 use ::checkpoint::rawio::rawreader;
 use ::checkpoint::uformat::snapshot;
+use ::lib::seed;
+use ::models::{llamaconfig, llamaweights};
+use ::nn::{module, statedict};
+use ::tensor::bytesof;
 use ::tensor::f16;
 use ::tensor::{dtype, shape, tensor};
 
@@ -231,9 +236,47 @@ fn viewvsowned() {
     }));
 }
 
+/// The model-loader channel: rebuilding [`llamaweights`] materializes every
+/// weight tensor, while [`loadweightviews`] aliases raw tensors straight off
+/// the memory map and hands each consumer view over without an owned buffer.
+/// The workload is a deterministic small Llama config so the comparison
+/// measures the loader wiring, not file size.
+fn weightsvsviews() {
+    let config = llamaconfig::new(128, 64, 4, 4, 2, 128, 1e-5, 10_000.0, 32).unwrap();
+    let weights = llamaweights::random(&config, seed::new(42)).unwrap();
+    let mut dict = statedict::new();
+    weights.collect("", &mut dict).unwrap();
+    let mut snap = snapshot::new(1);
+    for (name, t) in dict.iter() {
+        snap.addtensor(
+            name.to_string(),
+            ::tensor::dtype::f32,
+            t.getshape().clone(),
+            &bytesof(t.getdata()),
+        )
+        .unwrap();
+    }
+    let bytes = snap.encode().unwrap();
+    report(&run("weights/rebuilt", || {
+        let reader = checkpointreader::openfull(bytes.clone()).unwrap();
+        let w = loadllamaweights(&reader, &config).unwrap();
+        black_box(w.getoutput().getweight().getlen());
+    }));
+    report(&run("weights/views", || {
+        let reader = checkpointreader::openfull(bytes.clone()).unwrap();
+        let views = loadweightviews(&reader, &config).unwrap();
+        let mut total = 0usize;
+        for (_, v) in views.iter() {
+            total += v.getview().getlen();
+        }
+        black_box(total);
+    }));
+}
+
 fn main() {
     ufull();
     rawtyped();
     rawreadall();
     viewvsowned();
+    weightsvsviews();
 }

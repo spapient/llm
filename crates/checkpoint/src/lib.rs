@@ -69,6 +69,7 @@ mod manifests;
 
 /// Incremental snapshot merge and merge-file workflows.
 pub mod merge;
+pub mod modelio;
 
 /// The inference-only raw weights format: page-aligned sections and CRC32C.
 pub mod rawfmt;
