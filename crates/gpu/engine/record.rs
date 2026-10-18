@@ -204,8 +204,8 @@ pub trait recordplatform: platform {
     fn recordappend(
         &self,
         _session: &mut Self::session,
-        _cached: &Self::buffer,
-        _new: &Self::buffer,
+        _cached: &mut Self::buffer,
+        _new: &mut Self::buffer,
         _position: usize,
     ) -> Result<(), backenderror> {
         Err(backenderror::unsupportedoperation { op: "recordappend" })
@@ -668,10 +668,10 @@ impl<P: recordplatform> api::submission for submission<P> {
         new: operand<'_>,
         position: usize,
     ) -> Result<(), backenderror> {
-        let cached = self.resolve(cached)?;
-        let new = self.resolve(new)?;
+        let mut cached = self.resolve(cached)?;
+        let mut new = self.resolve(new)?;
         self.platform
-            .recordappend(&mut self.session, &cached, &new, position)
+            .recordappend(&mut self.session, &mut cached, &mut new, position)
     }
 
     fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {

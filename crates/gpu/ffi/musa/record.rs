@@ -255,6 +255,21 @@ impl session {
         Ok(out)
     }
 
+    /// Downloads the full device buffer a persistent slot names, on demand.
+    ///
+    /// Persistent buffers are not part of the per-apply download list; a
+    /// leading-window view re-tags such a slot, so this copies the whole
+    /// allocation out on request. A failed copy reports `None` (the caller
+    /// treats the slot as out of range) rather than widening the `Option`
+    /// contract of the record-platform accessor.
+    pub(crate) fn gethostdata(&self, slot: usize) -> Option<Vec<f32>> {
+        let (ptr, bytes) = self.slots.get(slot)?;
+        if *ptr == 0 && *bytes == 0 {
+            return None;
+        }
+        flush(&self.cache, &[(*ptr, *bytes)]).ok()
+    }
+
     /// Downloads the requested slots and frees every **non-persistent** buffer,
     /// leaving persistent slots (and their indices) in place for the next step.
     pub(crate) fn applyretained(&mut self, downloads: &[usize]) -> Result<Vec<Vec<f32>>, gpuerror> {

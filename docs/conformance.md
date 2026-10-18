@@ -95,6 +95,8 @@
 
 - **P2 devicecached 性能对照（2026-10-18 追加，真机实测）**：`benches/metal.rs` `gpu/decode` 新增 `devicecached/s{seq}` 档（prefill+decode 全走设备端缓存，每步只下载 logits），修 Metal `newBufferWithLength(0)` 返回 nil 的边界（`alloc` 对 0 字节向上取整 1）。真机（Apple M5 Pro）：devicecached vs metalcached = **3.10–3.70× 加速**（s16 103.5→28.0ms、s128 839.9→262.1ms、s256 1711.4→551.7ms）——「每步只下载 logits」的收益兑现；vs metalrecompute 1.02–1.84×（每步 command-buffer 固定成本 ≈2.1ms 主导，s256 已收敛到 1.02×，增量 attention 的 O(seq²)→O(seq) 优势在更长序列显现）。**conformance 层 2/3 KV cache 判定从「性能未达成」翻「性能已达成（相对 cached 路径）」**：cached 路径的固定下载成本已消除、加速比实测 ≥3.1×；相对全量 recompute 的剩余差距为每步固定成本，非 KV cache 语义缺陷，随序列增长收敛。
 
+- **P3 CUDA/MUSA 对齐（2026-10-18 追加）**：设备端 KV cache 三原语（`recordpersist`/`recordappend`/`recordview`）在 CUDA 补齐——`recordappend` 用 cudarc 安全 `slice_mut` + `memcpy_dtod`（流序 D2D，不新增 unsafe 站点，cuda=2 不变）、`gethostdata` 补持久高位槽 `clone_dtoh` 按需下载；MUSA 的 `recordappend`（`muMemcpyDtoD` 拷偏移）P1b 已实现，P3 补 `ffi::session::gethostdata` 持久下载。`recordplatform::recordappend` 签名收 `&mut Self::buffer`（CUDA 需可变目标切片视图）。测试：cudacontract 新增两例（linux-gated，`cargo check --target x86_64-unknown-linux-gnu` 通过；数值真机回填在 Linux/WSL 待跑）；本机 `cargo test -p llm --test it` = 1024 passed、clippy 零警告、checkunsafe 门禁通过。
+
 ## 本轮重测证据（2026-10-16）
 
 环境：macOS 27.0.1（arm64，Apple M5 Pro）、`rustc 1.99.0 (b940084d7 2026-09-28)`；远程真机为 Windows 11 + WSL2（Ubuntu 24.04、CUDA 12.0.140、cudnn 9.3.0.75）的 NVIDIA T600。本轮为 KV cache 接线：attention 契约扩展 + `forward_cached` 增量前向 + `infer` 的 `kvstate` 接线 + GPU 用例与 decode 基准。

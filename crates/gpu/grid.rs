@@ -498,6 +498,19 @@ pub mod cuda {
             session.0.persist(data).map_err(maptobackend)
         }
 
+        fn recordappend(
+            &self,
+            session: &mut Self::session,
+            cached: &mut CudaSlice<f32>,
+            new: &mut CudaSlice<f32>,
+            position: usize,
+        ) -> Result<(), backenderror> {
+            session
+                .0
+                .recordappend(cached, new, position)
+                .map_err(maptobackend)
+        }
+
         fn gethostdata(&self, session: &Self::session, slot: usize) -> Option<Vec<f32>> {
             session.0.gethostdata(slot)
         }
@@ -1064,8 +1077,8 @@ pub mod metal {
         fn recordappend(
             &self,
             session: &mut Self::session,
-            cached: &Retained<ProtocolObject<dyn MTLBuffer>>,
-            new: &Retained<ProtocolObject<dyn MTLBuffer>>,
+            cached: &mut Retained<ProtocolObject<dyn MTLBuffer>>,
+            new: &mut Retained<ProtocolObject<dyn MTLBuffer>>,
             position: usize,
         ) -> Result<(), backenderror> {
             // One row is the whole `new` buffer: the cached-attention path
@@ -1079,7 +1092,7 @@ pub mod metal {
                 .ok_or(backenderror::sizeoverflow)?;
             session
                 .0
-                .recordappend(cached, offset, new, bytes)
+                .recordappend(&*cached, offset, &*new, bytes)
                 .map_err(maptobackend)
         }
 

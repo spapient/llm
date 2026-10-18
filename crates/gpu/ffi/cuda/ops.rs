@@ -456,8 +456,58 @@ impl session {
         match self.outputs.get(index) {
             Some(slot::empty) => Some(Vec::new()),
             Some(slot::zeros(count)) => Some(vec![0.0_f32; *count]),
-            _ => None,
+            _ => {
+                // A persistent slot names a device-resident slice that is not
+                // part of the per-apply download list; copy it out here on
+                // demand so a leading-window view downloads the real prefix.
+                // A failed device-to-host copy falls back to `None` (the
+                // caller reports the slot as out of range) rather than
+                // widening this slot's `Option` contract.
+                if index & PERSIST_BASE != 0 {
+                    let persist_index = index & !PERSIST_BASE;
+                    let slice = self.persisted.get(persist_index)?;
+                    return self
+                        .stream
+                        .clone_dtoh(slice)
+                        .map_err(|error| gpuerror::transfer {
+                            message: error.to_string(),
+                        })
+                        .ok();
+                }
+                None
+            }
         }
+    }
+
+    /// Appends one `[1, width]` device row into the leading rows of a
+    /// persistent cache buffer, in stream order (the same stream the kernels
+    /// run on, ordered before `apply`'s synchronise).
+    pub(crate) fn recordappend(
+        &mut self,
+        cached: &mut CudaSlice<f32>,
+        new: &CudaSlice<f32>,
+        position: usize,
+    ) -> Result<(), gpuerror> {
+        let elements = new.len();
+        if elements == 0 {
+            return Err(gpuerror::execution {
+                message: "append of an empty row".into(),
+            });
+        }
+        let start = position
+            .checked_mul(elements)
+            .ok_or(gpuerror::sizeoverflow)?;
+        let end = start.checked_add(elements).ok_or(gpuerror::sizeoverflow)?;
+        if end > cached.len() {
+            return Err(gpuerror::execution {
+                message: "append row out of the cache bounds".into(),
+            });
+        }
+        self.stream
+            .memcpy_dtod(new, &mut cached.slice_mut(start..end))
+            .map_err(|error| gpuerror::transfer {
+                message: error.to_string(),
+            })
     }
 
     /// Records a zero-element output without touching the device.

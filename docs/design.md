@@ -3128,8 +3128,23 @@ devicecached 相对 metalcached **3.10–3.70×**（每步下载 `1 + 2·layers`
 command-buffer 固定成本 ≈2.1ms 主导，s256 已收敛到 1.02×——增量 attention
 的 O(seq²)→O(seq) 优势在更长序列显现）。
 
-**剩余（P3）**：CUDA D2D 拷贝对齐（`recordappend` 走
-`cudaMemcpyAsync` 设备端拷贝）与 MUSA 对齐。
+**P3（CUDA D2D 拷贝 + MUSA 对齐，已交付）**：`recordplatform::recordappend`
+签名收 `&mut Self::buffer`（CUDA 需可变目标做切片视图）；CUDA 的
+`session::recordappend` 用 cudarc 安全 API `slice_mut` + `memcpy_dtod`
+（流序设备到设备拷贝，随 `apply` 的 synchronize 排序），`gethostdata`
+补持久高位槽按需下载分支（`clone_dtoh`）——两者都是 cudarc 安全方法，
+**cuda unsafe 站点数保持 2 不变**；MUSA 侧 `api::submission::recordappend`
+（`muMemcpyDtoD` 拷到 persist 缓冲偏移）在 P1b 已实现，P3 补
+`ffi::session::gethostdata`（`flush` 按需下载整块持久缓冲，供
+`enginerecordplatform` 的视图下载路径）。测试：
+`tests/it/cudacontract.rs` 新增 `devicecache_cuda_persist_append_view_roundtrip`
+与 `devicecache_cuda_two_rows_leading_window`（linux-gated，真机在
+Linux/WSL 验证；`cargo check --target x86_64-unknown-linux-gnu` 已过）。
+
+**剩余（P4）**：CUDA/MUSA 真机回填（Linux/WSL 跑 cudacontract 新增两例 +
+`gpu/decode` devicecached 对照）；CUDA 空 `[0,width]` 张量上传
+（`alloc_zeros(0)` / 空 `clone_htod`）边界待真机核对（Metal 侧 P2 已用
+`bytes.max(1)` 修）。
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 
