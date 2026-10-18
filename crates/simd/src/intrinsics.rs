@@ -465,12 +465,12 @@ unsafe fn exp2approx_avx2_kernel(x: __m256, log2e: __m256) -> __m256 {
     let yi = _mm256_floor_ps(y);
     let yf = _mm256_sub_ps(y, yi);
     let mut p = _mm256_set1_ps(1.525_39e-5);
-    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(1.540_353_0e-4));
+    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(1.540_353e-4));
     p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(1.333_355_8e-3));
     p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(9.618_129e-3));
-    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(5.550_410_9e-2));
-    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(2.402_265_1e-1));
-    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(6.931_471_8e-1));
+    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(5.550_411e-2));
+    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(2.402_265e-1));
+    p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(std::f32::consts::LN_2));
     p = _mm256_fmadd_ps(p, yf, _mm256_set1_ps(1.0));
     let bias = _mm256_add_ps(yi, _mm256_set1_ps(127.0));
     let bits = _mm256_cvtps_epi32(bias);

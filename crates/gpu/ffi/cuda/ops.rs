@@ -995,14 +995,29 @@ pub(crate) fn attention_cached_into(
     causal: bool,
 ) -> Result<usize, gpuerror> {
     let kvseq = geometry.kvseq;
-    if kvseq == 0 {
-        return Ok(session.recordempty());
-    }
     let queryelements = geometry
         .qseq
         .checked_mul(geometry.heads)
         .and_then(|rows| rows.checked_mul(geometry.headdim))
         .ok_or(gpuerror::sizeoverflow)?;
+    if kvseq == 0 {
+        // An empty KV window still yields an all-zero attended output, and
+        // later operators read it as a real device buffer. A marker-only
+        // empty slot has no `CudaSlice`, so the following matmul resolves to
+        // nothing and the device faults on launch (T600, WSL).
+        let dout = session.alloc(queryelements)?;
+        return Ok(session.record(slot::buffer(dout)));
+    }
+    if key.cached.is_empty() || value.cached.is_empty() {
+        // An empty cached window is exactly the plain attention kernel over
+        // the new row: the cached-aware kernel's `key < pos` branch reads the
+        // cached operand only when a cached prefix exists, and a zero-length
+        // `CudaSlice` carries a device pointer the driver faults on
+        // (verified on T600/WSL: ILLEGAL_ADDRESS at the first decode token).
+        // Folding to the single-operand kernel keeps every bound pointer to a
+        // real allocation.
+        return attention_into(cache, session, query, key.new, value.new, geometry, causal);
+    }
     let function = cache.function(source::ATTENTIONCACHEDENTRY)?;
     let mut dout = session.alloc(queryelements)?;
     let kvseqv = asunsigned(kvseq)?;

@@ -3163,9 +3163,40 @@ command-buffer 固定成本 ≈2.1ms 主导，s256 已收敛到 1.02×——增�
 （含 P3 新增两例 devicecache 测试：persist+append+view 往返、两行前导窗口，
 与 CPU/Metal 参考逐位一致）；`cargo check --target
 x86_64-unknown-linux-gnu`、本地 clippy（gpu 零警告）、checkunsafe
-（cuda = 2 不变）均过。`gpu/decode` devicecached 的 CUDA 对照基准与
-MUSA 真机回填、CUDA 空 `[0,width]` 张量上传边界（`alloc_zeros(0)` /
-空 `clone_htod`）待真机核对（Metal 侧 P2 已用 `bytes.max(1)` 修）。
+（cuda = 2 不变）均过。`gpu/decode` devicecached 的 CUDA 对照基准已回填
+（下表，T600/WSL 真机）。
+
+**P4.1（CUDA `gpu/decode` 三档对照，T600/WSL 真机实测）**：`benches/cuda.rs`
+新增 `cudacached`（host 端 KV 拼接）/ `devicecached`（设备端 KV cache，
+每步只下载 logits）/ `cudarecompute`（全量重算）三档 × s16/128/256，
+与 Metal 侧 P2 同构。真机数字：
+
+| seq | cudacached | devicecached | cudarecompute |
+| --- | --- | --- | --- |
+| 16 | 344.7 ms | 596.3 ms | 309.2 ms |
+| 128 | 3.498 s | 4.557 s | 2.441 s |
+| 256 | 7.454 s | 9.777 s | 4.428 s |
+
+**修复（两个真实根因，均已提交）**：
+
+1. **空窗口设备 fault**：`block.rs` 在 position==0 时以 CPU 空 `[0,width]`
+   张量作 `operand::input`，engine `concat` 后 `kvseq=1`，`attention_cached`
+   内核绑定零长 `CudaSlice` —— 其 device 指针在 T600 驱动上触发
+   `ILLEGAL_ADDRESS`（首个 decode token 即崩）。修法：`attention_cached_into`
+   对 `key.cached.is_empty() || value.cached.is_empty()` 折叠为普通
+   `attention` 内核（只有 new 行，`key < pos` 分支永不读 cached 区），
+   所有绑定指针均为真实分配。
+2. **`kvseq == 0` 标记空槽**：marker-only 空槽无 `CudaSlice`，后续 matmul
+   resolve 到空指针。`attention_cached_into` 的 `kvseq == 0` 分支直接
+   `alloc(queryelements)` 返回全零输出（P3 已修，P4 真机确认路径触发）。
+
+**性能口径（如实）**：CUDA 侧 devicecached 未复现 Metal 的加速
+（T600/WSL 上 1.7–2.2× 慢于 recompute）。归因：CUDA 的 `recordappend`
+每 token 两次 `stream.synchronize()`（WSL 虚拟栈驱动修复的代价，见
+§21.13.9 P1 段）——每步全链同步的固定成本（≈5–25 ms/步）压倒极小模型
+（DIM=64）增量 attention 的 O(seq²)→O(seq) 节省；这是 WSL 虚拟栈 + 小模型
+的 overhead 主导，不是 KV cache 语义缺陷。Metal 侧同构路径已实测
+3.10–3.70× 加速（P2）。真实物理栈 Linux 主机上重测属剩余工作。
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 
