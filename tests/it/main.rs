@@ -67,5 +67,6 @@ mod trainingresume;
 mod trainunits;
 mod transformunits;
 mod weightloader;
+mod devicecachecontract;
 
 mod jsonunits;

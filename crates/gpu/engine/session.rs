@@ -1,4 +1,4 @@
-use ::tensor::tensor;
+use ::tensor::{shape, tensor};
 use api::{backenderror, operand, operandpair, stepref};
 
 use super::{recordplatform, submission};
@@ -142,6 +142,24 @@ impl<P: recordplatform> api::recorder for session<P> {
         skip: operand<'_>,
     ) -> Result<stepref, backenderror> {
         api::submission::recordscan_cached(&mut self.inner, input, state, a, b, c, skip)
+    }
+
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
+        api::submission::recordview(&mut self.inner, base, shape)
+    }
+
+    fn recordappend(
+        &mut self,
+        cached: operand<'_>,
+        new: operand<'_>,
+        position: usize,
+    ) -> Result<(), backenderror> {
+        api::submission::recordappend(&mut self.inner, cached, new, position)
+    }
+
+    fn recordpersist(&mut self, data: &[f32], shape: shape)
+    -> Result<stepref, backenderror> {
+        api::submission::recordpersist(&mut self.inner, data, shape)
     }
 }
 

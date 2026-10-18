@@ -181,6 +181,33 @@ pub trait recordplatform: platform {
     ) -> Result<usize, backenderror> {
         Err(backenderror::unsupportedoperation { op: "scan_cached" })
     }
+
+    /// Registers caller-owned data as a persistent device-resident slot.
+    ///
+    /// The returned slot stays resolvable through later applies (the
+    /// persistent-session form) or at least for the current apply (the
+    /// single-use form), and `getbuffer` on it yields the registered data.
+    /// Unsupported by default.
+    fn recordpersist(
+        &self,
+        _session: &mut Self::session,
+        _data: &[f32],
+        _shape: &shape,
+    ) -> Result<usize, backenderror> {
+        Err(backenderror::unsupportedoperation { op: "recordpersist" })
+    }
+
+    /// Appends `new` into `cached` at row `position`, both device buffers.
+    /// Unsupported by default.
+    fn recordappend(
+        &self,
+        _session: &mut Self::session,
+        _cached: &Self::buffer,
+        _new: &Self::buffer,
+        _position: usize,
+    ) -> Result<(), backenderror> {
+        Err(backenderror::unsupportedoperation { op: "recordappend" })
+    }
 }
 
 /// A recorded submission over a platform: one synchronise, many kernels.
@@ -610,6 +637,36 @@ impl<P: recordplatform> api::submission for submission<P> {
             &skip,
         )?;
         Ok(self.push(slot, inshape))
+    }
+
+    fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
+        self.checkbudget(&shape)?;
+        let slot = self.platform.recordpersist(&mut self.session, data, &shape)?;
+        Ok(self.push(slot, shape))
+    }
+
+    fn recordappend(
+        &mut self,
+        cached: operand<'_>,
+        new: operand<'_>,
+        position: usize,
+    ) -> Result<(), backenderror> {
+        let cached = self.resolve(cached)?;
+        let new = self.resolve(new)?;
+        self.platform.recordappend(&mut self.session, &cached, &new, position)
+    }
+
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
+        let index = base.getindex();
+        let (slot, _) = self
+            .results
+            .get(index)
+            .ok_or(backenderror::indexoutofrange {
+                index,
+                len: self.results.len(),
+            })?;
+        self.checkbudget(&shape)?;
+        Ok(self.push(*slot, shape))
     }
 
     fn apply(self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {

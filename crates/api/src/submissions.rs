@@ -198,6 +198,64 @@ pub trait submission {
         skip: operand<'_>,
     ) -> Result<stepref, backenderror>;
 
+    /// Registers caller-owned data as a device-resident step.
+    ///
+    /// The first call uploads `data` into a persistent device buffer; a later
+    /// call with the same `(pointer, length)` reuses that buffer. The returned
+    /// step names the buffer, so a device KV cache can hand `operand::result`
+    /// of this step to an operator that reads cached rows. A single-use
+    /// submission uploads once for its own apply; a persistent session keeps
+    /// the buffer across applies. The default reports `unsupportedoperation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a budget error when `shape` exceeds the backend limits, a
+    /// transfer error when the upload fails, or `unsupportedoperation` when
+    /// the backend does not implement persistent inputs.
+    fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
+        let _ = (data, shape);
+        Err(backenderror::unsupportedoperation { op: "recordpersist" })
+    }
+
+    /// Appends the `new` row into the `cached` device buffer at `position`.
+    ///
+    /// Used by a device KV cache to keep cached rows on the device: the
+    /// backend copies `new` into `cached` without a host round trip. `cached`
+    /// MUST be the result of an earlier [`recordpersist`](Self::recordpersist)
+    /// step. The default reports `unsupportedoperation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a shape/index error when the row does not fit, a transfer error
+    /// when the copy fails, or `unsupportedoperation` when the backend does not
+    /// implement device copies.
+    fn recordappend(
+        &mut self,
+        cached: operand<'_>,
+        new: operand<'_>,
+        position: usize,
+    ) -> Result<(), backenderror> {
+        let _ = (cached, new, position);
+        Err(backenderror::unsupportedoperation { op: "recordappend" })
+    }
+
+    /// Names a sub-shape of an earlier recorded step.
+    ///
+    /// The default reports `unsupportedoperation`; the CPU backend snapshots
+    /// the leading elements, and the device backends retag the same buffer with
+    /// the new shape (the kernels read the leading rows, which is exactly the
+    /// prefix a cache row window needs).
+    ///
+    /// # Errors
+    ///
+    /// Returns `indexoutofrange` when `base` names no recorded step,
+    /// `shapemismatch` when `shape` exceeds the base buffer, or
+    /// `unsupportedoperation` by default.
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
+        let _ = (base, shape);
+        Err(backenderror::unsupportedoperation { op: "recordview" })
+    }
+
     /// Executes every recorded step and returns the declared outputs.
     ///
     /// The returned tensors match `outputs` in order and count. Consuming `self`
@@ -403,10 +461,7 @@ pub trait recorder {
     ///
     /// Returns `unsupportedoperation` by default, or the backend's index error
     /// when `base` does not name a recorded step.
-    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
-        let _ = (base, shape);
-        Err(backenderror::unsupportedoperation { op: "recordview" })
-    }
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror>;
 
     /// Appends the `new` row into the `cached` device buffer at `position`.
     ///
@@ -423,10 +478,19 @@ pub trait recorder {
         cached: operand<'_>,
         new: operand<'_>,
         position: usize,
-    ) -> Result<(), backenderror> {
-        let _ = (cached, new, position);
-        Err(backenderror::unsupportedoperation { op: "recordappend" })
-    }
+    ) -> Result<(), backenderror>;
+
+    /// Registers caller-owned data as a device-resident step.
+    ///
+    /// See [`submission::recordpersist`] for semantics; this delegates to the
+    /// backing submission so every backend agrees on one implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backing submission's error, or `unsupportedoperation` when
+    /// the backend does not implement persistent inputs.
+    fn recordpersist(&mut self, data: &[f32], shape: shape)
+    -> Result<stepref, backenderror>;
 }
 
 impl<T: submission> recorder for T {
@@ -546,6 +610,24 @@ impl<T: submission> recorder for T {
         skip: operand<'_>,
     ) -> Result<stepref, backenderror> {
         <T as submission>::recordscan_cached(self, input, state, a, b, c, skip)
+    }
+
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
+        <T as submission>::recordview(self, base, shape)
+    }
+
+    fn recordappend(
+        &mut self,
+        cached: operand<'_>,
+        new: operand<'_>,
+        position: usize,
+    ) -> Result<(), backenderror> {
+        <T as submission>::recordappend(self, cached, new, position)
+    }
+
+    fn recordpersist(&mut self, data: &[f32], shape: shape)
+    -> Result<stepref, backenderror> {
+        <T as submission>::recordpersist(self, data, shape)
     }
 }
 

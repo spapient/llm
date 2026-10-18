@@ -1,4 +1,4 @@
-use ::tensor::{tensor, tensorview};
+use ::tensor::{shape, tensor, tensorview};
 use api::{backenderror, compute, kvpair, operand, operandpair, stepref, submission};
 
 /// A CPU submission that records steps by replaying [`compute`] in order.
@@ -247,6 +247,65 @@ impl<C: compute> submission for cpusubmission<C> {
         _skip: operand<'_>,
     ) -> Result<stepref, backenderror> {
         Err(backenderror::unsupportedoperation { op: "scan_cached" })
+    }
+
+    fn recordpersist(&mut self, data: &[f32], shape: shape) -> Result<stepref, backenderror> {
+        let count = shape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        if data.len() != count {
+            return Err(backenderror::invalidparameter { op: "persist" });
+        }
+        let t = tensor::new(shape, data.to_vec())
+            .map_err(|_| backenderror::invalidparameter { op: "persist" })?;
+        Ok(self.push(t))
+    }
+
+    fn recordappend(
+        &mut self,
+        cached: operand<'_>,
+        new: operand<'_>,
+        position: usize,
+    ) -> Result<(), backenderror> {
+        let index = match cached {
+            operand::result(reference) => reference.getindex(),
+            operand::input(_) => {
+                return Err(backenderror::invalidparameter { op: "append" });
+            }
+        };
+        let newdata: Vec<f32> = self.view(new)?.getdata().to_vec();
+        let width = newdata.len();
+        if width == 0 {
+            return Err(backenderror::invalidparameter { op: "append" });
+        }
+        let len = self.results.len();
+        let cached_t = self
+            .results
+            .get_mut(index)
+            .ok_or(backenderror::indexoutofrange { index, len })?;
+        let start = position.checked_mul(width).ok_or(backenderror::sizeoverflow)?;
+        let end = start.checked_add(width).ok_or(backenderror::sizeoverflow)?;
+        if end > cached_t.getlen() {
+            return Err(backenderror::invalidparameter { op: "append" });
+        }
+        cached_t.getdatamut()[start..end].copy_from_slice(&newdata);
+        Ok(())
+    }
+
+    fn recordview(&mut self, base: stepref, shape: shape) -> Result<stepref, backenderror> {
+        let index = base.getindex();
+        let t = self
+            .results
+            .get(index)
+            .ok_or(backenderror::indexoutofrange {
+                index,
+                len: self.results.len(),
+            })?;
+        let count = shape.getelementcount().map_err(|_| backenderror::sizeoverflow)?;
+        if count > t.getlen() {
+            return Err(backenderror::invalidparameter { op: "view" });
+        }
+        let sub = tensor::new(shape, t.getdata()[..count].to_vec())
+            .map_err(|_| backenderror::invalidparameter { op: "view" })?;
+        Ok(self.push(sub))
     }
 
     fn apply(self, outputs: &[stepref]) -> Result<Vec<tensor<f32>>, backenderror> {
