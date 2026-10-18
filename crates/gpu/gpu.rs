@@ -61,7 +61,7 @@ pub use grid::mlu;
 pub use grid::musa;
 #[cfg(all(target_os = "linux", rocm_toolkit))]
 pub use grid::rocm;
-#[cfg(all(target_os = "linux", sycl_toolkit))]
+#[cfg(all(any(target_os = "linux", target_os = "windows"), sycl_toolkit))]
 pub use grid::sycl;
 
 #[doc(hidden)]
@@ -355,6 +355,60 @@ macro_rules! GENBACKENDMOD {
             }
         }
 
+        /// Maps a crate-local [`gpuerror`] onto the frozen `api::backenderror`.
+        fn maptobackend(error: gpuerror) -> backenderror {
+            error.maptobackend($name)
+        }
+
+        /// The executor: the crate's [`compute`](api::compute) provider.
+        pub type executor = engineexecutor<platform>;
+
+        impl executor {
+            /// Creates an executor over this backend configured with `lim`.
+            #[must_use]
+            pub fn new(lim: limits) -> Self {
+                Self::newplatform(platform::new(lim))
+            }
+
+            /// Returns the backend whose budget this executor enforces.
+            #[must_use]
+            pub fn getbackend(&self) -> &backend {
+                &self.getplatform().backend
+            }
+
+            /// Creates a recorded submission over this backend.
+            ///
+            /// The shared [`submission`](crate::engine::submission) records a
+            /// chain of steps and applies them with one drain; this backend's
+            /// record platform decides whether the steps stay device-resident
+            /// or run to completion into host slots.
+            #[must_use]
+            pub fn newsubmission(&self) -> Result<enginesubmission<platform>, backenderror> {
+                enginesubmission::new(self.getplatform().clone())
+            }
+
+            /// Creates a persistent recording session over this backend.
+            #[must_use]
+            pub fn newsession(&self) -> Result<enginesession<platform>, backenderror> {
+                enginesession::new(self.getplatform().clone())
+            }
+        }
+
+        /// Converts `usize` row indices to the kernel's `unsigned long long`
+        /// lane.
+        fn tou64(indices: &[usize]) -> Vec<u64> {
+            indices.iter().map(|&i| i as u64).collect()
+        }
+    };
+}
+
+/// Generates the host-slot recording platform shared by the
+/// run-to-completion GRID-family islands (ROCm, CANN, MLU).
+///
+/// Invoked in the same module scope as [`GENBACKENDMOD`], after it.
+#[macro_export]
+macro_rules! GENHOSTRECORD {
+    () => {
         /// A recorded session over this platform: host slots backed by the
         /// island's [`ffi::session`]. The record contract is satisfied with
         /// run-to-completion steps, so `upload` stores host data, `record*`
@@ -703,57 +757,12 @@ macro_rules! GENBACKENDMOD {
             }
         }
 
-        /// Maps a crate-local [`gpuerror`] onto the frozen `api::backenderror`.
-        fn maptobackend(error: gpuerror) -> backenderror {
-            error.maptobackend($name)
-        }
-
         /// Reports a slot index outside the session's recorded range.
         fn sloterror(slot: usize, session: &ffi::session) -> backenderror {
             backenderror::indexoutofrange {
                 index: slot,
                 len: session.len(),
             }
-        }
-
-        /// The executor: the crate's [`compute`](api::compute) provider.
-        pub type executor = engineexecutor<platform>;
-
-        impl executor {
-            /// Creates an executor over this backend configured with `lim`.
-            #[must_use]
-            pub fn new(lim: limits) -> Self {
-                Self::newplatform(platform::new(lim))
-            }
-
-            /// Returns the backend whose budget this executor enforces.
-            #[must_use]
-            pub fn getbackend(&self) -> &backend {
-                &self.getplatform().backend
-            }
-
-            /// Creates a recorded submission over this backend.
-            ///
-            /// The shared [`submission`](crate::engine::submission) records a
-            /// chain of steps and applies them with one drain; this backend's
-            /// record platform runs each step through the direct dispatch
-            /// engine and keeps the outputs in host slots.
-            #[must_use]
-            pub fn newsubmission(&self) -> Result<enginesubmission<platform>, backenderror> {
-                enginesubmission::new(self.getplatform().clone())
-            }
-
-            /// Creates a persistent recording session over this backend.
-            #[must_use]
-            pub fn newsession(&self) -> Result<enginesession<platform>, backenderror> {
-                enginesession::new(self.getplatform().clone())
-            }
-        }
-
-        /// Converts `usize` row indices to the kernel's `unsigned long long`
-        /// lane.
-        fn tou64(indices: &[usize]) -> Vec<u64> {
-            indices.iter().map(|&i| i as u64).collect()
         }
     };
 }

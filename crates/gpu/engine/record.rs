@@ -647,8 +647,14 @@ impl<P: recordplatform> submission<P> {
     }
 
     pub(crate) fn reset(&mut self) {
+        // Teardown the platform first: a device-resident session may still
+        // have kernels in flight over the retained input buffers. Its reset
+        // drains the queue, so the handles cleared below are released only
+        // after every kernel that could touch them has completed. Backends
+        // whose record operations run to completion use the default no-op
+        // `resetsession`, so the ordering is unobservable there.
+        self.platform.resetsession(&mut self.session);
         self.results.clear();
         self.inputs.clear();
-        self.platform.resetsession(&mut self.session);
     }
 }

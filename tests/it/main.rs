@@ -56,6 +56,7 @@ mod submissioncached;
 mod submissioncontract;
 mod submissionforward;
 mod support;
+mod syclcontract;
 mod tensorcontract;
 mod tensorunits;
 mod testkitunits;

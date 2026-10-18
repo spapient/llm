@@ -42,7 +42,7 @@ macro_rules! GENENTRIES {
 
 macro_rules! GENCATALOG {
     ($mod:ident, $toolkit:ident, $source:literal, $prefix:literal, $attnlimit:expr) => {
-        #[cfg(all(target_os = "linux", $toolkit))]
+        #[cfg(all(any(target_os = "linux", target_os = "windows"), $toolkit))]
         pub(crate) mod $mod {
             /// The single translation unit; every kernel entry is a function in
             /// this one source.

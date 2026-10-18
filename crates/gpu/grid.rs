@@ -2799,24 +2799,272 @@ pub mod musa {
 /// The AMD / Hygon ROCm backend.
 #[cfg(all(target_os = "linux", rocm_toolkit))]
 pub mod rocm {
-    use crate::GENBACKENDMOD;
+    use crate::{GENBACKENDMOD, GENHOSTRECORD};
     GENBACKENDMOD!(rocm, "rocm", 8192);
+    GENHOSTRECORD!();
 }
 /// The Intel oneAPI SYCL backend.
-#[cfg(all(target_os = "linux", sycl_toolkit))]
+///
+/// Unlike the other GRID-family islands, SYCL records on the device: every
+/// step submits to the session's own in-order queue, intermediate results stay
+/// in shared USM, and `apply` pays one wait plus the requested downloads. See
+/// [`crate::ffi::sycl`] for the lifetime rules that keep an in-flight kernel
+/// from outliving its operands.
+#[cfg(all(any(target_os = "linux", target_os = "windows"), sycl_toolkit))]
 pub mod sycl {
     use crate::GENBACKENDMOD;
     GENBACKENDMOD!(sycl, "sycl", 8192);
+
+    /// The device-resident handle an operand resolves to.
+    ///
+    /// A thin public wrapper over the island's crate-private handle: an
+    /// `impl` in a public module cannot name the crate-private type directly.
+    #[derive(Clone)]
+    pub struct devicebuffer(ffi::buffer);
+
+    /// A recorded session over this platform, backed by the island's
+    /// device-resident session.
+    pub struct recordingsession(ffi::session);
+
+    impl enginerecordplatform for platform {
+        type buffer = devicebuffer;
+        type session = recordingsession;
+
+        // Shared USM has no implicit synchronisation on free: a caller upload
+        // must stay alive from its record step until the one wait in `apply`.
+        // The submission's input table is what provides that lifetime.
+        const DEDUP_INPUTS: bool = true;
+
+        fn newsession(&self) -> Result<Self::session, backenderror> {
+            ffi::session::new(self.cache.clone())
+                .map(recordingsession)
+                .map_err(maptobackend)
+        }
+
+        fn upload(
+            &self,
+            session: &Self::session,
+            data: &[f32],
+        ) -> Result<Self::buffer, backenderror> {
+            session
+                .0
+                .upload(data)
+                .map(devicebuffer)
+                .map_err(maptobackend)
+        }
+
+        fn getbuffer(&self, session: &Self::session, slot: usize) -> Option<Self::buffer> {
+            session.0.getbuffer(slot).map(devicebuffer)
+        }
+
+        fn gethostdata(&self, session: &Self::session, slot: usize) -> Option<Vec<f32>> {
+            session.0.gethostdata(slot)
+        }
+
+        fn applysession(&self, session: &mut Self::session) -> Result<Vec<Vec<f32>>, backenderror> {
+            session.0.apply().map_err(maptobackend)
+        }
+
+        fn resetsession(&self, session: &mut Self::session) {
+            session.0.reset();
+        }
+
+        fn recordmatmul(
+            &self,
+            session: &mut Self::session,
+            lhs: &Self::buffer,
+            rhs: &Self::buffer,
+            geometry: &matmulshape,
+        ) -> Result<usize, backenderror> {
+            ffi::matmul_record(
+                &mut session.0,
+                &lhs.0,
+                &rhs.0,
+                geometry.batch,
+                geometry.m,
+                geometry.k,
+                geometry.n,
+            )
+            .map_err(maptobackend)
+        }
+
+        fn recordadd(
+            &self,
+            session: &mut Self::session,
+            lhs: &Self::buffer,
+            rhs: &Self::buffer,
+            count: usize,
+        ) -> Result<usize, backenderror> {
+            ffi::add_record(&mut session.0, &lhs.0, &rhs.0, count).map_err(maptobackend)
+        }
+
+        fn recordmul(
+            &self,
+            session: &mut Self::session,
+            lhs: &Self::buffer,
+            rhs: &Self::buffer,
+            count: usize,
+        ) -> Result<usize, backenderror> {
+            ffi::mul_record(&mut session.0, &lhs.0, &rhs.0, count).map_err(maptobackend)
+        }
+
+        fn recordrmsnorm(
+            &self,
+            session: &mut Self::session,
+            input: &Self::buffer,
+            weight: &Self::buffer,
+            geometry: &axisshape,
+            eps: f32,
+        ) -> Result<usize, backenderror> {
+            ffi::rmsnorm_record(
+                &mut session.0,
+                &input.0,
+                &weight.0,
+                geometry.rows,
+                geometry.width,
+                eps,
+            )
+            .map_err(maptobackend)
+        }
+
+        fn recordsoftmax(
+            &self,
+            session: &mut Self::session,
+            input: &Self::buffer,
+            geometry: &axisshape,
+        ) -> Result<usize, backenderror> {
+            ffi::softmax_record(&mut session.0, &input.0, geometry.rows, geometry.width)
+                .map_err(maptobackend)
+        }
+
+        fn recordsilu(
+            &self,
+            session: &mut Self::session,
+            input: &Self::buffer,
+            count: usize,
+        ) -> Result<usize, backenderror> {
+            ffi::silu_record(&mut session.0, &input.0, count).map_err(maptobackend)
+        }
+
+        fn recordembedding(
+            &self,
+            session: &mut Self::session,
+            table: &Self::buffer,
+            indices: &[usize],
+            geometry: &embeddingshape,
+        ) -> Result<usize, backenderror> {
+            let index64 = tou64(indices);
+            ffi::embedding_record(
+                &mut session.0,
+                &table.0,
+                &index64,
+                geometry.rows,
+                geometry.width,
+            )
+            .map_err(maptobackend)
+        }
+
+        fn recordrope(
+            &self,
+            session: &mut Self::session,
+            input: &Self::buffer,
+            geometry: &ropeshape,
+            base: f32,
+        ) -> Result<usize, backenderror> {
+            ffi::rope_record(
+                &mut session.0,
+                &input.0,
+                geometry.rows,
+                geometry.seqaxis,
+                geometry.heads,
+                geometry.headdim,
+                base,
+            )
+            .map_err(maptobackend)
+        }
+
+        fn recordrope_at(
+            &self,
+            session: &mut Self::session,
+            input: &Self::buffer,
+            position: usize,
+            geometry: &ropeshape,
+            base: f32,
+        ) -> Result<usize, backenderror> {
+            ffi::rope_at_record(
+                &mut session.0,
+                &input.0,
+                position,
+                geometry.heads,
+                geometry.headdim,
+                base,
+            )
+            .map_err(maptobackend)
+        }
+
+        fn recordattention(
+            &self,
+            session: &mut Self::session,
+            query: &Self::buffer,
+            key: &Self::buffer,
+            value: &Self::buffer,
+            geometry: &attentionshape,
+            causal: bool,
+        ) -> Result<usize, backenderror> {
+            ffi::attention_record(
+                &mut session.0,
+                &query.0,
+                &key.0,
+                &value.0,
+                geometry.qseq,
+                geometry.kvseq,
+                geometry.heads,
+                geometry.kvheads,
+                geometry.headdim,
+                causal,
+            )
+            .map_err(maptobackend)
+        }
+
+        fn recordattention_cached(
+            &self,
+            session: &mut Self::session,
+            query: &Self::buffer,
+            keycached: &Self::buffer,
+            keynew: &Self::buffer,
+            valuecached: &Self::buffer,
+            valuenew: &Self::buffer,
+            geometry: &attentionshape,
+            causal: bool,
+        ) -> Result<usize, backenderror> {
+            ffi::attention_cached_record(
+                &mut session.0,
+                &query.0,
+                &keycached.0,
+                &valuecached.0,
+                &keynew.0,
+                &valuenew.0,
+                geometry.kvseq,
+                geometry.heads,
+                geometry.kvheads,
+                geometry.headdim,
+                causal,
+            )
+            .map_err(maptobackend)
+        }
+    }
 }
 /// The Huawei CANN backend.
 #[cfg(all(target_os = "linux", cann_toolkit))]
 pub mod cann {
-    use crate::GENBACKENDMOD;
+    use crate::{GENBACKENDMOD, GENHOSTRECORD};
     GENBACKENDMOD!(cann, "cann", 4096);
+    GENHOSTRECORD!();
 }
 /// The Cambricon MLU backend.
 #[cfg(all(target_os = "linux", mlu_toolkit))]
 pub mod mlu {
-    use crate::GENBACKENDMOD;
+    use crate::{GENBACKENDMOD, GENHOSTRECORD};
     GENBACKENDMOD!(mlu, "mlu", 4096);
+    GENHOSTRECORD!();
 }

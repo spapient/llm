@@ -87,6 +87,10 @@ name = "musa"
 harness = false
 
 [[bench]]
+name = "sycl"
+harness = false
+
+[[bench]]
 name = "tokenizer"
 harness = false
 

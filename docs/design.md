@@ -2701,7 +2701,7 @@ gpu -> api
 | `rocm` | 驱动交接 `unsafe` 块（`drive`：模块加载/函数解析/内存传输/内核启动/同步，全部 `hip*` 调用收于一个块） | `ffi/rocm.rs` |
 | `rocm` | hipBLAS 交接 `unsafe` 块（`matmul`：句柄创建/`hipblasGemmStridedBatched`/同步/传输，全部 `hipblas*` 与配套 `hip*` 调用收于一个块） | `ffi/rocm.rs` |
 | `sycl` | `unsafe extern "C"` 声明块（edition 2024 强制；SYCL 桥与 15 个 `sycl_*` 算子全部 FFI 声明） | `ffi/sycl.rs` |
-| `sycl` | 驱动交接 `unsafe` 块（`drive`：队列/USM 分配/上下载/算子调用/错误读取，全部桥调用收于一个块） | `ffi/sycl.rs` |
+| `sycl` | 驱动交接 `unsafe` 块（`handoff`：队列/USM 分配/上下载/算子提交/`sycl_wait`/错误读取，全部桥调用收于一个块） | `ffi/sycl.rs` |
 | `cann` | `unsafe extern "C"` 声明块（edition 2024 强制；AscendCL 全部 FFI 声明） | `ffi/cann.rs` |
 | `cann` | 驱动交接 `unsafe` 块（`drive`：上下文/内存/内核解析/启动/同步，全部 `acl*` 调用收于一个块） | `ffi/cann.rs` |
 | `mlu` | `unsafe extern "C"` 声明块（edition 2024 强制；CNRT 全部 FFI 声明） | `ffi/mlu.rs` |
@@ -2722,7 +2722,7 @@ gpu -> api
 
 MUSA 的口径是「自写 FFI 的 2024 edition 理论下限」：`musa` 没有像 `cudarc`/`objc2-metal` 那样的第三方安全封装，必须自己写 `extern "C"` 声明与调用（`docs/musa-backend-plan.md` §5.0/§5.4）。在 edition 2024（本工作区 `rust-version = 1.99`）下，`extern` 块声明本身强制为 `unsafe extern "C"`——这是**一个不可消除的 `unsafe` 构造**；所有 `mu*` 调用（`muModuleLoadData`/`muModuleGetFunction`/`muMemAlloc`/`muMemcpy*`/`muLaunchKernel`/`muCtxSynchronize`）被收进**同一个 `unsafe` 块**（`drive` 驱动交接函数），块内调用不再需要逐处标记——这是**第二个、也是最后一个**构造。故 `musa` = 2 是自写 FFI 条件下的理论下限。`musa` 刻意不引入 `muBLAS`/`muDNN`：matmul 由自研 TF32 WMMA 内核（`include/crt/mma.h`，`mtmusa::wmma`）服务——默认路径 `matmulpath::wmma`，标量 FMA 内核保留为 `newfma` 构造的参考路径，契约容差 2e-3（TF32 输入舍入界 2^-11 的 4 倍），FMA 路径仍为 1e-4；softmax 由减最大式内核服务（与 `cpu`/`metal` 同式），因此没有「逐库」站点可加——`musa` 与 `cuda` 现同为 2 个站点（`cuda` 的另一处是 cuBLAS `gemm`）。MUSA 的硬件 `warpSize` 为 128 lane；`m32n32k8` TF32 MMA 是 **wave128** 指令（四个 32-lane warp 协作完成一个 32×32 tile）。真机实测：把 128 线程拆成 4 个独立 32-lane 组、或用 32 线程块执行该形状，都只得到零/部分输出；最终内核以 **128 线程 = 一个 wave128 组**，每块计算 64×32 输出 tile（两个累加器）。完整 tile 用 `float4` 向量装载，下一 K tile 在 MMA 前预取到寄存器、compute 后写回同一 stage（单阶段寄存器流水，不牺牲占用率），块索引按 8 行分组 **CTA Swizzle** 以复用 L2 中的 B tile；输出 stride 32 字节对齐时直接 `store_matrix_sync` 写全局，边缘 tile 走 guarded shared staging。结果 staging 在 K 循环后复用操作数缓冲，共享内存恒为 8.5 KiB。submission 的 `recordmatmul` 也走设备驻留路径：输入只上传一次，中间结果留在设备 slot，`apply` 时一次同步与下载。
 
-GRID 家族（`rocm`/`sycl`/`cann`/`mlu`，2026-10-18 接入）与 `musa` 同式：四家都没有第三方安全封装，必须自写 `extern "C"` 声明与调用，故每家的口径同样是「edition 2024 下限」两站点——`unsafe extern "C"` 声明块一个（不可消除的构造）+ 驱动交接 `unsafe` 块一个（`drive` 把该家全部驱动调用收进单一交接块，块内不再逐处标记）。算子面由共享 `gen_ops!` 宏按每家参数签名统一展开，算子的增减不改变站点数。四个岛的驱动调用与 `musa` 对照：`rocm` 走 `hipModuleLoadData`/`hipLaunchKernel`（fatbin 注册表解析，同 `musa`）；`cann` 走 `aclrtCreateKernel`/`aclrtLaunchKernel`（fatbin 注册表）；`mlu` 走 `cnrtGetKernel`/`cnrtLaunchKernel`（静态链接符号）；`sycl` 经 C 桥（`sycl_queue_new`/`sycl_malloc_shared`/`sycl_*` 算子入口/`sycl_take_error`，USM 共享内存，符号静态链接）。内核源与编译管线由 `build.rs` 配置表（`GRIDFAMILY`）驱动：`rocm`/`cann` 编译为 fatbin 嵌入注册表（`musa` 同式，见 docs/musa-backend-plan.md §5.3），`sycl`/`mlu` 编译为静态库链接。
+GRID 家族（`rocm`/`sycl`/`cann`/`mlu`，2026-10-18 接入）与 `musa` 同式：四家都没有第三方安全封装，必须自写 `extern "C"` 声明与调用，故每家的口径同样是「edition 2024 下限」两站点——`unsafe extern "C"` 声明块一个（不可消除的构造）+ 驱动交接 `unsafe` 块一个（`drive` 把该家全部驱动调用收进单一交接块，块内不再逐处标记）。算子面由共享 `gen_ops!` 宏按每家参数签名统一展开，算子的增减不改变站点数。四个岛的驱动调用与 `musa` 对照：`rocm` 走 `hipModuleLoadData`/`hipLaunchKernel`（fatbin 注册表解析，同 `musa`）；`cann` 走 `aclrtCreateKernel`/`aclrtLaunchKernel`（fatbin 注册表）；`mlu` 走 `cnrtGetKernel`/`cnrtLaunchKernel`（静态链接符号）；`sycl` 经 C 桥（`sycl_queue_new`/`sycl_malloc_shared`/`sycl_*` 算子入口/`sycl_wait`/`sycl_take_error`，USM 共享内存；Windows 桥为 `sycl_bridge.dll`，Linux 为静态库），全部桥调用仍收于 `handoff` 的单一交接块，2026-10-18 引入的记录队列与 `sycl_wait` 不新增站点。内核源与编译管线由 `build.rs` 配置表（`GRIDFAMILY`）驱动：`rocm`/`cann` 编译为 fatbin 嵌入注册表（`musa` 同式，见 docs/musa-backend-plan.md §5.3），`sycl`/`mlu` 编译为静态库链接。
 
 `checkpoint` 的口径是**每平台一条硬件指令封装**：两个 `unsafe fn` 分别是 aarch64 与 x86_64 的 CRC32C intrinsics（各以一条 `#[target_feature]` 声明所需扩展），第三个是运行期 `is_*_feature_detected!` 通过后的那次调用。安全性由运行期检测保证，语义由 `crc32c(b"123456789") == 0xE306_9283` 与软件 slicing-by-8 的逐长度交叉验证钉住；实测 ARM 上 12.28 GB/s vs 1.25 GB/s（9.8×），decode 4.72→4.29ms。软件路径保留为回退，且**不引入任何 unsafe**。
 
@@ -3032,6 +3032,67 @@ Metal 在**每个**工作负载上都慢于 CPU，原因与 21.10 已记录的�
 * **公共化。** 平台无关的 `geometry`（shape 校验）从 `metal`/`cuda` 各一份复制抽到 `api::geometry`，`attentionshape::new` 增 `maxheaddim` 参数承载唯一的设备差异（Metal 4096 vs CUDA 8192）；消除 607 行重复。
 
 * **接入与性能。** `llamamodel` 与 `llamablock` 增 `forwardsubmission`，把前向链的 35 步算子内联进一个 `submission`；`tests/it/submissionforward.rs` 2 例在 CPU 上钉住 `forwardsubmission` 与 `forward` 逐位相同。`gpu/modelforward` 实测（Apple M5 Pro）：`metal` 52.60 ms（35 次同步往返的 `compute` 基线）、`metalsubmission` 2.81 ms（整链一次 commit），**改善 ≈18.7×**，远超 10× 验收，且逐位一致。无需权重驻留设备即达成。
+
+## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
+
+> 状态：**实现完成，仅通过静态检查与主机侧测试，尚未在任何 SYCL 设备上执行**。已执行：`cargo check`（`x86_64-unknown-linux-gnu` 交叉目标、`--cfg sycl_toolkit`）、同口径 `cargo clippy`、`cargo fmt`、`scripts/checkunsafe.sh`（`sycl` 2/2）、命名与内联测试门禁、根包测试与基准目标的类型检查、`cargo test --workspace`（macOS 主机，SYCL 目标被 cfg 排除；993 例集成测试通过）。未执行：Windows 上 `icpx` 对 `sycl.c` 的编译、`tests/it/syclcontract.rs`、`benches/sycl.rs`、启用 oneMKL 的构建与数值对照。因此本节不含任何新性能结论；引用的数字均标注其来源与证据等级。
+
+### 21.14.1 上下文（先前会话的测量事实）
+
+验证主机为 Windows + Intel UHD Graphics 750（32 EU、1.3 GHz、fp32 峰值 ≈ 665.6 GFLOPS）。先前会话在同一主机实测：
+
+| 对象 | 结果 | 口径 |
+| --- | --- | --- |
+| llama.cpp `ggml-sycl` SGEMM 256³ | ≈ 461.5 GFLOPS | oneMKL/DPAS 路径 |
+| 本仓参考内核（每输出元素一个工作项、K 维串行） | ≈ 4.7 GFLOPS | 可移植 FMA 内核 |
+| 试验性 64×64 tile + 4×4 寄存器块内核 | ≈ 141–200 GFLOPS | 未合入的评估实现 |
+| SYCL 桥单算子「提交 + 同步」往返 | ≈ 118–220 µs/算子，与负载基本无关 | 直接路径 |
+
+两组事实分别决定两个方向：**矩阵乘必须有厂商库或等价的分块内核**；**多算子链必须合并提交并把中间结果留在设备**。ollama 复用 llama.cpp 的 ggml/ggml-sycl：fp32 GEMM 交给 oneMKL，量化 GEMM 走 DPAS 内核。本仓推理是 f32 契约，故不复制其量化内核，而是在同一层面用 oneMKL 对齐其 fp32 路径，并以设备驻留提交取得链级收益。
+
+### 21.14.2 决策（已实施）
+
+**D1：oneMKL 构建期双轨，不做运行期选择。** `crates/gpu/build.rs` 依次探测 `MKLROOT` 与默认根（Windows `C:\Program Files (x86)\Intel\oneAPI\mkl\latest`、`C:\Program Files\Intel\oneAPI\mkl\latest`；Linux `/opt/intel/oneapi/mkl/latest`），只有头 `include/oneapi/mkl/blas.hpp` 与四个库（`mkl_sycl`、`mkl_intel_lp64`、`mkl_sequential`、`mkl_core`；Windows `{lib}.lib`、Linux `lib{lib}.so`，搜索 `<root>/lib` 与 `<root>/lib/intel64`）全部就位时才定义 `GRID_MKL`：Windows 把四个库链入 `sycl_bridge.dll`，Linux 加入最终链接。未命中时完全回退，不定义 cfg、不链接、不改变任何行为。C 侧在 `GRID_MKL` 下以行主序 `gemm`（batch = 1）或 `gemm_batch`（`stride_a = m*k`、`stride_b = k*n`、`stride_c = m*n`）服务 `matmul`；否则由参考内核服务。运行期不存在库选择分支，符合「静态组合优先」；构建环境是否有 MKL 是构建事实，不是运行期能力。
+
+**D2：设备驻留批提交。** C 桥的每个算子入口只 `submit` 不等待；队列创建为 in-order，故步骤按提交顺序执行。直接路径在单次 launch 后立即调用 `sycl_wait`，保持 `compute` 的 run-to-completion 语义，一行契约未改。记录路径复用共享 `engine::record` 的 `submission`：平台为 11 个可记录算子分配共享 USM 输出槽、提交内核并返回槽号；`apply` 只调用一次 `sycl_wait`，随后按共享契约下载每个已记录槽位，由上层挑选被请求的输出。中间结果与持久输入在等待前始终设备驻留。
+
+**D3：共享 USM 的生命周期。** shared USM 的 `free` 不会隐式同步，故平台设 `DEDUP_INPUTS = true`：调用方上传按 `(ptr, len)` 去重并挂在 submission 的输入表上，存活到 `reset`/析构，覆盖整条链的在飞内核。输出槽由 session 的 `results` 持有到 `apply` 的等待之后；`embedding` 的 u64 索引作为 `transients` 持有，在等待后释放。每个分配持有 `Rc<queue>`，session 亦持有 `Rc<queue>`；队列在最后一个句柄释放时才销毁，保证晚于全部缓冲。session 析构先等待在飞内核，再释放字段。
+
+**D4：零尺寸与退化形状。** USM 分配至少 4 字节（f32）/8 字节（u64），零长度切片跳过上下载，避免 `malloc_shared(0)` 返回空指针；各记录入口在空输入（`count == 0`、`rows == 0`、`qseq == 0`、`m/n/batch == 0`、`k == 0`）时走与直接路径一致的 `empty`/`zeros` 槽，不启动内核。
+
+**D5：softmax 的非有限值语义。** 直接与记录路径都由内核按减最大式计算，不做宿主预扫描；NaN/±inf 按内核语义传播。这与依赖宿主扫描的路径不同，但与 CUDA 记录路径的既有取舍一致：设备驻留的输入无法在不付出回读成本的前提下预检。该差异限定在非有限输入，合法有限输入的结果不变。
+
+**D6：`unsafe` 站点不增长。** 新增的 `sycl_wait` 与全部记录入口都经同一个 `handoff` 交接块；oneMKL 调用发生在 C++ 侧，不产生 Rust `unsafe`。`sycl` 仍为 2 个站点（§21.8），由 `scripts/checkunsafe.sh` 实测。
+
+**D7：设备代码按 Cargo profile 优化。** 构建脚本不继承 rustc 的优化参数，而 clang 驱动默认 `-O0`，若不处理，任何 profile 下的 SYCL 内核都是未优化代码，基准将测到一个不代表发布构建的实现。`crates/gpu/build.rs` 对 SYCL 桥把 Cargo 的 `OPT_LEVEL` 映射为驱动参数 `-O{level}`（`0/1/2/3/s/z` 均为合法拼写）：dev/test 构建 `-O0`，release/bench 构建 `-O3`。该映射只作用于 `sycl.c` 的编译，不改变链接参数与任何契约；其他 GRID 后端保持既有参数不变（不在本次范围，避免无测量的行为变更）。未启用 fast-math。
+
+### 21.14.3 不变量
+
+* 一个 session 拥有一个 in-order 队列；步骤顺序即提交顺序，不依赖任何隐式同步假设。
+* `apply` 之后 `results` 排空、`transients` 释放；`inputs` 保留，故持久 session 可在同一设备状态上记录下一条链；`reset` 先排空队列（一次 `sycl_wait`）再清空两者。共享层在 `resetsession` 返回后才释放输入句柄，因此共享 USM 的释放总晚于可能触及它的在飞内核；`Drop` 同此顺序（session 字段先于输入表析构）。
+* 任何错误路径（提交失败、内核异常、下载失败）都先排空队列并释放本次槽位，不把半完成的链留给下一次 `apply`。
+* C 侧错误槽 `sycl_last_error` 是 `thread_local`：采集（`SYCLTRY`）与清除（`sycl_take_error`）总在同一宿主线程完成，并发 session 既不共享计数，也不会消费彼此的错误。
+* 记录路径的共享形状校验（`attentionshape::new`，上界为 `MAXHEADDIM = 8192`）发生在任何分配之前；发射守卫 `ATTNLIMIT = 4096` 在操作数解析之后执行，与直接路径同值、同错误变体（`sizeoverflow`）。两者共同决定的有效上界为 4096，与 ROCm/CUDA/MUSA 的 GRID 家族口径一致（8192 只是共享校验层的声明上界），该检查位于解析之后意味着非法请求最多浪费一次未被执行的上传，不改变任何可观察结果。
+
+### 21.14.4 被否决方案（DS5）
+
+* **运行期探测 oneMKL（`dlopen` 或能力查询）。** 被否决：引入运行期注册表/间接层，且 `dlopen` 需要新的 `unsafe` 入口；构建期探测是确定性的，两个分支都可独立构建与验证。
+* **强制依赖 oneMKL。** 被否决：没有 MKL 的工具箱（或无 MKL 的 CI）必须仍能构建并运行参考路径；系统级组件安装不能成为构建前提。
+* **沿用每算子一次 submit + wait 的直接路径作为记录实现。** 被否决：实测往返 118–220 µs/算子，链越长越淹没内核时间；设备驻留正是为消除该项。
+* **记录路径中加入宿主有限值扫描。** 被否决：输入可能已是设备槽位，扫描需要回读，破坏驻留目标。
+* **为跳过未请求槽位的下载而修改 `applysession` 契约。** 本次不做：契约是跨后端共享的，改动会影响 metal/cuda/musa/GRID 全部实现；当前实现先取回全部槽位，是否正确性无关的带宽开销，列为后续优化（需要 `Vec<Option<Vec<f32>>>` 或请求集合参数）。
+
+### 21.14.5 验收标准与待执行项
+
+上机验证（Windows + Intel 集显/独显；oneMKL 安装属系统级操作，须单独确认）必须完成以下各项，缺一不得声称通过：
+
+1. `sycl.c` 在 `icpx` 下编译并链接为 `sycl_bridge.dll`；`sycl-ls` 能看到设备。Windows 构建须在已初始化 oneAPI 环境（`setvars.bat`）的 shell 中运行，以提供 MSVC 头/库与 oneAPI 运行库；测试与基准进程同样需要该环境才能加载 `sycl*.dll` 与 MKL DLL。Linux 无 DLL 规避，`-fsycl` 会作为最终链接参数传给 rustc 的默认 `cc`（如 gcc 不识别该参数，将以链接错误暴露），因此须令最终链接由 SYCL 驱动执行（如 `RUSTFLAGS=-Clinker=icpx`）；该链接方式同样列入上机核验。
+2. `tests/it/syclcontract.rs` 的 12 例通过：既有 5 例（身份/能力、add、matmul、rmsnorm、形状拒绝）加新增 7 例（批量 matmul 对照标量参考、submission 链对照直接 `compute`、批量 matmul 经 submission、持久 session 跨两次 `apply` + `reset`、未记录 `stepref` 拒绝、`headdim = 4097` 时 direct 与 record 同报 `sizeoverflow`、记录后未 `apply` 即 `reset` 且会话仍可用）。
+3. `cargo bench --bench sycl` 记录 cpu/sycl 同轮对照、direct/session 链对照；每条数据必须随附该次构建是否启用 oneMKL（bench 测量的是构建时选定的路径，文件头已说明）与构建 profile（D7：设备代码的 `-O` 级别由 Cargo `OPT_LEVEL` 决定，release/bench 为 `-O3`，不得与 `-O0` 的 dev 构建结果混列）。
+4. 分别构建 `GRID_MKL` 开/关两个版本，两者数值都与参考实现一致（容差 1e-5 / 1e-6 按用例），记录各自 matmul 吞吐。
+5. `scripts/check.sh` 全绿；`checkunsafe.sh` 维持 `sycl` 2/2。
+
+在完成第 1–5 项前，本节不宣称任何性能提升或设备正确性。
 
 ## 22. 跨领域主题与声明局限
 

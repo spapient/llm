@@ -29,6 +29,8 @@ pub enum gpuprobe {
     cuda,
     /// Moore Threads MUSA: `musaInfo`.
     musa,
+    /// Intel SYCL (oneAPI DPC++): `sycl-ls`.
+    sycl,
 }
 
 impl gpuprobe {
@@ -37,6 +39,7 @@ impl gpuprobe {
         match self {
             gpuprobe::cuda => "nvidia-smi",
             gpuprobe::musa => "musaInfo",
+            gpuprobe::sycl => "sycl-ls",
         }
     }
 
@@ -46,6 +49,7 @@ impl gpuprobe {
         match self {
             gpuprobe::cuda => "LLM_CUDA_REQUIRE_DEVICE",
             gpuprobe::musa => "LLM_MUSA_REQUIRE_DEVICE",
+            gpuprobe::sycl => "LLM_SYCL_REQUIRE_DEVICE",
         }
     }
 
@@ -54,6 +58,7 @@ impl gpuprobe {
         match self {
             gpuprobe::cuda => "CUDA",
             gpuprobe::musa => "MUSA",
+            gpuprobe::sycl => "SYCL",
         }
     }
 }

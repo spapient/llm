@@ -19,10 +19,16 @@
 //
 // Memory model: operands are shared-USM allocations owned by the Rust
 // side (`sycl_malloc_shared`), so host copies are plain memcpy; kernels
-// read/write them directly. All launches
-// are synchronous (`queue.wait_and_throw`) so a call's result is complete
-// when the C function returns, matching the crate's run-to-completion
-// execution semantics.
+// read/write them directly. The queue is created in-order, so kernels
+// execute in submission order; every entry only *submits* and returns.
+// Completion is requested explicitly with `sycl_wait(queue)`: the direct
+// operator path calls it immediately after the single launch (preserving
+// run-to-completion), while the recorded path submits a whole chain and
+// pays one wait in `apply`.
+//
+// oneMKL: when the build finds the oneAPI MKL development files it defines
+// GRID_MKL, and matmul is served by oneMKL's row-major SGEMM (including the
+// strided-batched form). Otherwise the in-repo reference kernel serves it.
 //
 // Entries: sycl_attention, sycl_attention_cached, sycl_add, sycl_mul,
 //          sycl_silu, sycl_embedding, sycl_matmul, sycl_rmsnorm, sycl_rope,
@@ -32,14 +38,37 @@
 #include "grid.h"
 #include <sycl/sycl.hpp>
 
+// oneMKL is an optional build-time dependency (build.rs probes the oneAPI
+// MKL layout and defines GRID_MKL only when both the headers and the
+// libraries are present). Without it the reference FMA kernel below serves
+// matmul on every device, so a toolkit without MKL still builds and runs.
+#if defined(GRID_MKL)
+#include <oneapi/mkl/blas.hpp>
+
+#include <cstdint>
+#endif
+
+// Windows ships this unit as `sycl_bridge.dll` (GRID_SYCL_DLL): the oneAPI
+// driver owns the final DLL link so the embedded device images are
+// registered, and every FFI entry must carry `__declspec(dllexport)`. On
+// Linux the bridge is a static archive and the macro is a plain `extern "C"`.
+#if defined(_WIN32) && defined(GRID_SYCL_DLL)
+#define SYCLAPI extern "C" __declspec(dllexport)
+#else
+#define SYCLAPI extern "C"
+#endif
+
 namespace {
 }  // namespace
 // Error reporting: C++ exceptions never cross the C ABI (that would be
 // undefined behaviour at the extern "C" boundary). Every entry body runs
 // under SYCLTRY, which catches and records; the Rust side drains the code
-// with sycl_take_error after each call.
+// with sycl_take_error after each call. The slot is per host thread: each
+// call/response pair stays on one thread, so concurrent sessions on
+// different threads neither race on the counter nor consume each other's
+// error.
 namespace {
-int sycl_last_error = 0;
+thread_local int sycl_last_error = 0;
 }
 #define SYCLTRY(code) \
     do { \
@@ -60,7 +89,7 @@ int sycl_last_error = 0;
 // reduction tree halves the group size).
 // Symbol: sycl_attention
 
-extern "C" void sycl_attention(void* queue, const float* q, const float* k,
+SYCLAPI void sycl_attention(void* queue, const float* q, const float* k,
                                const float* v, float* out, unsigned qseq,
                                unsigned kvseq, unsigned heads, unsigned kvheads,
                                unsigned headdim, unsigned causal) { SYCLTRY(
@@ -68,10 +97,15 @@ extern "C" void sycl_attention(void* queue, const float* q, const float* k,
     const size_t groups = (size_t)qseq * heads;
     const size_t local = 256;
     que.submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> reduce(sycl::range<1>(local), h);
+        sycl::local_accessor<float, 1> weights(sycl::range<1>(local), h);
+        sycl::local_accessor<float, 1> accum(
+            sycl::range<1>(headdim > 4096 ? headdim : 4096), h);
         h.parallel_for(
             sycl::nd_range<1>(sycl::range<1>(groups * local),
                               sycl::range<1>(local)),
-            [=](sycl::nd_item<1> it) {
+            [q, k, v, out, qseq, kvseq, heads, kvheads, headdim, causal, reduce,
+             weights, accum](sycl::nd_item<1> it) {
                 const unsigned tid = (unsigned)it.get_local_linear_id();
                 const unsigned gid = (unsigned)it.get_group_linear_id();
                 const unsigned head = gid % heads;
@@ -84,11 +118,6 @@ extern "C" void sycl_attention(void* queue, const float* q, const float* k,
                         : kvseq;
                 const float* qrow = q + ((size_t)position * heads + head) * headdim;
                 const float scale = 1.0f / sycl::sqrt((float)headdim);
-
-                sycl::local_accessor<float, 1> reduce(sycl::range<1>(local), h);
-                sycl::local_accessor<float, 1> weights(sycl::range<1>(local), h);
-                sycl::local_accessor<float, 1> accum(
-                    sycl::range<1>(headdim > 4096 ? headdim : 4096), h);
 
                 auto score = [&](unsigned key) {
                     const float* krow =
@@ -166,8 +195,7 @@ extern "C" void sycl_attention(void* queue, const float* q, const float* k,
                 }
             });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // attention_cached
@@ -177,7 +205,7 @@ extern "C" void sycl_attention(void* queue, const float* q, const float* k,
 // row, without materialising the concatenation. Grid is one group per head.
 // Symbol: sycl_attention_cached
 
-extern "C" void sycl_attention_cached(void* queue, const float* q,
+SYCLAPI void sycl_attention_cached(void* queue, const float* q,
                                       const float* ck, const float* cv,
                                       const float* nk, const float* nv,
                                       float* out, unsigned kvseq,
@@ -186,10 +214,15 @@ extern "C" void sycl_attention_cached(void* queue, const float* q,
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     const size_t local = 256;
     que.submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> reduce(sycl::range<1>(local), h);
+        sycl::local_accessor<float, 1> weights(sycl::range<1>(local), h);
+        sycl::local_accessor<float, 1> accum(
+            sycl::range<1>(headdim > 4096 ? headdim : 4096), h);
         h.parallel_for(
             sycl::nd_range<1>(sycl::range<1>(heads * local),
                               sycl::range<1>(local)),
-            [=](sycl::nd_item<1> it) {
+            [q, ck, cv, nk, nv, out, kvseq, heads, kvheads, headdim, causal,
+             reduce, weights, accum](sycl::nd_item<1> it) {
                 const unsigned tid = (unsigned)it.get_local_linear_id();
                 const unsigned head = (unsigned)it.get_group_linear_id();
                 const unsigned kvhead = head / (heads / kvheads);
@@ -197,11 +230,6 @@ extern "C" void sycl_attention_cached(void* queue, const float* q,
                 const unsigned limit = kvseq;
                 const float* qrow = q + ((size_t)head) * headdim;
                 const float scale = 1.0f / sycl::sqrt((float)headdim);
-
-                sycl::local_accessor<float, 1> reduce(sycl::range<1>(local), h);
-                sycl::local_accessor<float, 1> weights(sycl::range<1>(local), h);
-                sycl::local_accessor<float, 1> accum(
-                    sycl::range<1>(headdim > 4096 ? headdim : 4096), h);
 
                 auto score = [&](unsigned key) {
                     const float* krow = (key < pos)
@@ -283,8 +311,7 @@ extern "C" void sycl_attention_cached(void* queue, const float* q,
                 }
             });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // elementwise
@@ -295,36 +322,33 @@ extern "C" void sycl_attention_cached(void* queue, const float* q,
 // silu reproduces cpu's x / (1 + exp(-x)) exactly (no fused approximation).
 // Symbols: sycl_add, sycl_mul, sycl_silu
 
-extern "C" void sycl_add(void* queue, const float* a, const float* b,
+SYCLAPI void sycl_add(void* queue, const float* a, const float* b,
                          float* c, unsigned n) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     que.submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>(n),
-                       [=](sycl::id<1> gid) { c[gid] = a[gid] + b[gid]; });
+                       [a, b, c, n](sycl::id<1> gid) { c[gid] = a[gid] + b[gid]; });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
-extern "C" void sycl_mul(void* queue, const float* a, const float* b,
+SYCLAPI void sycl_mul(void* queue, const float* a, const float* b,
                          float* c, unsigned n) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     que.submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>(n),
-                       [=](sycl::id<1> gid) { c[gid] = a[gid] * b[gid]; });
+                       [a, b, c, n](sycl::id<1> gid) { c[gid] = a[gid] * b[gid]; });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
-extern "C" void sycl_silu(void* queue, const float* a, float* c, unsigned n) { SYCLTRY(
+SYCLAPI void sycl_silu(void* queue, const float* a, float* c, unsigned n) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     que.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(n), [=](sycl::id<1> gid) {
+        h.parallel_for(sycl::range<1>(n), [a, c, n](sycl::id<1> gid) {
             float x = a[gid];
             c[gid] = x / (1.0f + sycl::exp(-x));
         });
     });
-    que.wait_and_throw();
- ) }
+ ); }
 
 // ===========================================================================
 // embedding
@@ -334,37 +358,57 @@ extern "C" void sycl_silu(void* queue, const float* a, float* c, unsigned n) { S
 // [rows, width]. One thread per output element; fully coalesced reads.
 // Symbol: sycl_embedding
 
-extern "C" void sycl_embedding(void* queue, const float* table,
+SYCLAPI void sycl_embedding(void* queue, const float* table,
                                const unsigned long long* indices, float* out,
                                unsigned long long rows, unsigned long long width) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     const unsigned long long total = rows * width;
     que.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(total), [=](sycl::id<1> gid) {
+        h.parallel_for(sycl::range<1>(total), [table, indices, out, rows, width](sycl::id<1> gid) {
             unsigned long long row = gid / width;
             out[gid] = table[indices[row] * width + (gid % width)];
         });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // matmul
 // ===========================================================================
-// Reference f32 matrix-multiply, shared semantics with grid/cuda.c.
+// f32 matrix-multiply, shared semantics with grid/cuda.c.
 // a is [batch, m, k], b is [batch, k, n], c is [batch, m, n], all row-major.
-// Grid is (n, m, batch): id[0] = col, id[1] = row, id[2] = batch slice.
-// The Intel Xe matrix engine fast path (XMX / oneMKL) is a later, measured
-// optimization; this FMA kernel is the portable reference.
+//
+// With oneMKL (GRID_MKL) the row-major SGEMM/SGEMM-batch entry serves the
+// call: it dispatches to the Xe matrix engine's own tuned implementation,
+// which is the only way to use the XMX units that Arc discrete GPUs and Xe
+// integrated GPUs expose through the oneAPI stack. Without MKL the portable
+// FMA kernel remains the reference: grid is (n, m, batch), one work-item per
+// output element.
 // Symbol: sycl_matmul
 
-extern "C" void sycl_matmul(void* queue, const float* a, const float* b,
+SYCLAPI void sycl_matmul(void* queue, const float* a, const float* b,
                             float* c, unsigned m, unsigned k, unsigned n,
                             unsigned batch) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
+#if defined(GRID_MKL)
+    const std::int64_t mm = m;
+    const std::int64_t nn = n;
+    const std::int64_t kk = k;
+    if (batch == 1) {
+        oneapi::mkl::blas::row_major::gemm(
+            que, oneapi::mkl::transpose::nontranspose,
+            oneapi::mkl::transpose::nontranspose, mm, nn, kk, 1.0f, a, kk, b,
+            nn, 0.0f, c, nn);
+    } else {
+        oneapi::mkl::blas::row_major::gemm_batch(
+            que, oneapi::mkl::transpose::nontranspose,
+            oneapi::mkl::transpose::nontranspose, mm, nn, kk, 1.0f, a, kk,
+            mm * kk, b, nn, kk * nn, 0.0f, c, nn, mm * nn,
+            static_cast<std::int64_t>(batch));
+    }
+#else
     que.submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<3>(n, m, batch),
-                       [=](sycl::id<3> gid) {
+                       [a, b, c, m, k, n, batch](sycl::id<3> gid) {
                            unsigned col = gid[0];
                            unsigned row = gid[1];
                            unsigned blk = gid[2];
@@ -378,8 +422,8 @@ extern "C" void sycl_matmul(void* queue, const float* a, const float* b,
                            cb[row * n + col] = acc;
                        });
     });
-    que.wait_and_throw();
-  ) }
+#endif
+  ); }
 
 // ===========================================================================
 // rmsnorm
@@ -389,20 +433,20 @@ extern "C" void sycl_matmul(void* queue, const float* a, const float* b,
 // Runs with exactly 256 work-items per group (a power of two).
 // Symbol: sycl_rmsnorm
 
-extern "C" void sycl_rmsnorm(void* queue, const float* x, const float* w,
+SYCLAPI void sycl_rmsnorm(void* queue, const float* x, const float* w,
                              float* y, unsigned rows, unsigned width,
                              float eps) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     const size_t local = 256;
     que.submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> partial(sycl::range<1>(local), h);
         h.parallel_for(
             sycl::nd_range<1>(sycl::range<1>(rows * local),
                               sycl::range<1>(local)),
-            [=](sycl::nd_item<1> it) {
+            [x, w, y, rows, width, eps, partial](sycl::nd_item<1> it) {
                 const unsigned tid = (unsigned)it.get_local_linear_id();
                 const unsigned row = (unsigned)it.get_group_linear_id();
                 const float* xrow = x + (size_t)row * width;
-                sycl::local_accessor<float, 1> partial(sycl::range<1>(local), h);
                 float sumsq = 0.0f;
                 for (unsigned i = tid; i < width; i += local) {
                     float v = xrow[i];
@@ -422,8 +466,7 @@ extern "C" void sycl_rmsnorm(void* queue, const float* x, const float* w,
                 }
             });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // rope
@@ -433,14 +476,14 @@ extern "C" void sycl_rmsnorm(void* queue, const float* x, const float* w,
 // position of a row is row % seqaxis; seqaxis == 0 places every row at 0.
 // Symbol: sycl_rope
 
-extern "C" void sycl_rope(void* queue, const float* x, float* y, unsigned rows,
+SYCLAPI void sycl_rope(void* queue, const float* x, float* y, unsigned rows,
                           unsigned seqaxis, unsigned heads, unsigned headdim,
                           float base) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     unsigned half = headdim / 2;
     unsigned long long total = (unsigned long long)rows * heads * half;
     que.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(total), [=](sycl::id<1> gid) {
+        h.parallel_for(sycl::range<1>(total), [x, y, rows, seqaxis, heads, headdim, half, total, base](sycl::id<1> gid) {
             unsigned i = (unsigned)(gid % half);
             unsigned hd = (unsigned)((gid / half) % heads);
             unsigned row = (unsigned)(gid / ((unsigned long long)half * heads));
@@ -457,8 +500,7 @@ extern "C" void sycl_rope(void* queue, const float* x, float* y, unsigned rows,
             y[offset + 1u] = even * s + odd * c;
         });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // rope_at
@@ -467,14 +509,14 @@ extern "C" void sycl_rope(void* queue, const float* x, float* y, unsigned rows,
 // with grid/cuda.c. Position is a scalar parameter, not row % seqaxis.
 // Symbol: sycl_rope_at
 
-extern "C" void sycl_rope_at(void* queue, const float* x, float* y,
+SYCLAPI void sycl_rope_at(void* queue, const float* x, float* y,
                              unsigned heads, unsigned headdim, unsigned position,
                              float base) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     unsigned half = headdim / 2;
     unsigned long long total = (unsigned long long)heads * half;
     que.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(total), [=](sycl::id<1> gid) {
+        h.parallel_for(sycl::range<1>(total), [x, y, heads, headdim, position, half, total, base](sycl::id<1> gid) {
             unsigned i = (unsigned)(gid % half);
             unsigned hd = (unsigned)(gid / half);
             float angle = (float)position *
@@ -488,8 +530,7 @@ extern "C" void sycl_rope_at(void* queue, const float* x, float* y,
             y[offset + 1u] = even * s + odd * c;
         });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // scan
@@ -501,13 +542,13 @@ extern "C" void sycl_rope_at(void* queue, const float* x, float* y,
 // in place. Pointer order: input, a, b, c, skip, state (in/out), out.
 // Symbol: sycl_scan
 
-extern "C" void sycl_scan(void* queue, const float* input, const float* a,
+SYCLAPI void sycl_scan(void* queue, const float* input, const float* a,
                           const float* b, const float* c, const float* skip,
                           float* state, float* out, unsigned n, unsigned d,
                           unsigned N) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     que.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(d), [=](sycl::id<1> gid) {
+        h.parallel_for(sycl::range<1>(d), [input, a, b, c, skip, state, out, n, d, N](sycl::id<1> gid) {
             unsigned i = (unsigned)gid;
             for (unsigned t = 0; t < n; ++t) {
                 float x = input[t * d + i];
@@ -522,8 +563,7 @@ extern "C" void sycl_scan(void* queue, const float* input, const float* a,
             }
         });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // scan_parallel
@@ -534,7 +574,7 @@ extern "C" void sycl_scan(void* queue, const float* input, const float* a,
 // the intra-block recurrence is bit-for-bit the serial one.
 
 // Pass 1: per-block total. Thread id maps block = id / d, channel = id % d.
-extern "C" void sycl_scan_agg(void* queue, const float* input, const float* a,
+SYCLAPI void sycl_scan_agg(void* queue, const float* input, const float* a,
                               const float* b, const float* c, const float* skip,
                               const float* init, float* block_total, unsigned n,
                               unsigned d, unsigned N, unsigned chunk,
@@ -542,7 +582,7 @@ extern "C" void sycl_scan_agg(void* queue, const float* input, const float* a,
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     que.submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>((size_t)blocks * d),
-                       [=](sycl::id<1> gid) {
+                       [input, a, b, c, skip, init, block_total, n, d, N, chunk, blocks](sycl::id<1> gid) {
                            unsigned block = (unsigned)(gid / d);
                            unsigned i = (unsigned)(gid % d);
                            unsigned t0 = block * chunk;
@@ -565,22 +605,21 @@ extern "C" void sycl_scan_agg(void* queue, const float* input, const float* a,
                            }
                        });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // Pass 2: inter-block prefix, one thread per component (j in [0, d*N));
 // prefix[p] = ⊕_{q<p} total[q] with prefix[0] = identity (1, 0). The
 // loop-final accumulator is the whole-sequence total, giving the final
 // state: state[j] = A_total * init[j] + B_total. sycl::fma folds the combine
 // into one rounding, halving the inter-block error that grows like P·ε·‖B‖.
-extern "C" void sycl_scan_prefix(void* queue, const float* block_total,
+SYCLAPI void sycl_scan_prefix(void* queue, const float* block_total,
                                  const float* init, float* state,
                                  float* block_prefix, unsigned n, unsigned d,
                                  unsigned N, unsigned chunk, unsigned blocks) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     const unsigned dN = d * N;
     que.submit([&](sycl::handler& h) {
-        h.parallel_for(sycl::range<1>(dN), [=](sycl::id<1> gid) {
+        h.parallel_for(sycl::range<1>(dN), [block_total, init, state, block_prefix, n, d, N, chunk, blocks, dN](sycl::id<1> gid) {
             unsigned j = (unsigned)gid;
             block_prefix[j] = 1.0f;
             block_prefix[dN + j] = 0.0f;
@@ -598,14 +637,13 @@ extern "C" void sycl_scan_prefix(void* queue, const float* block_total,
             state[j] = A * init[j] + B;
         });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // Pass 3: per-block apply. Thread i owns channel i; its thread-local h array
 // holds the channel's N state components. The block starts at the inter-block
 // prefix state h = A0*init + B0, then runs the same intra-block recurrence as
 // the serial reference, writing out[t][i] = skip[i]*x + Σ_j c[i,j]*h[j].
-extern "C" void sycl_scan_apply(void* queue, const float* input, const float* a,
+SYCLAPI void sycl_scan_apply(void* queue, const float* input, const float* a,
                                 const float* b, const float* c, const float* skip,
                                 const float* init, const float* block_prefix,
                                 float* out, unsigned n, unsigned d, unsigned N,
@@ -613,7 +651,7 @@ extern "C" void sycl_scan_apply(void* queue, const float* input, const float* a,
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     que.submit([&](sycl::handler& h) {
         h.parallel_for(sycl::range<1>((size_t)blocks * d),
-                       [=](sycl::id<1> gid) {
+                       [input, a, b, c, skip, init, block_prefix, out, n, d, N, chunk, blocks](sycl::id<1> gid) {
                            unsigned block = (unsigned)(gid / d);
                            unsigned i = (unsigned)(gid % d);
                            unsigned t0 = block * chunk;
@@ -638,8 +676,7 @@ extern "C" void sycl_scan_apply(void* queue, const float* input, const float* a,
                            }
                        });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // softmax
@@ -650,20 +687,20 @@ extern "C" void sycl_scan_apply(void* queue, const float* input, const float* a,
 // order is the numerically stable one the scalar reference shares.
 // Symbol: sycl_softmax
 
-extern "C" void sycl_softmax(void* queue, const float* x, float* y,
+SYCLAPI void sycl_softmax(void* queue, const float* x, float* y,
                              unsigned rows, unsigned width) { SYCLTRY(
     sycl::queue& que = *static_cast<sycl::queue*>(queue);
     const size_t local = 256;
     que.submit([&](sycl::handler& h) {
+        sycl::local_accessor<float, 1> scratch(sycl::range<1>(local), h);
         h.parallel_for(
             sycl::nd_range<1>(sycl::range<1>(rows * local),
                               sycl::range<1>(local)),
-            [=](sycl::nd_item<1> it) {
+            [x, y, rows, width, scratch](sycl::nd_item<1> it) {
                 const unsigned tid = (unsigned)it.get_local_linear_id();
                 const unsigned row = (unsigned)it.get_group_linear_id();
                 const float* xrow = x + (size_t)row * width;
                 float* dst = y + (size_t)row * width;
-                sycl::local_accessor<float, 1> scratch(sycl::range<1>(local), h);
 
                 float localmax = GRID_NEGLARGE;
                 for (unsigned i = tid; i < width; i += local) {
@@ -703,24 +740,29 @@ extern "C" void sycl_softmax(void* queue, const float* x, float* y,
                 }
             });
     });
-    que.wait_and_throw();
-  ) }
+  ); }
 
 // ===========================================================================
 // queue and USM bridge (called by the Rust side)
 // ===========================================================================
 
-/// Creates a queue on the `device_ordinal`-th device (-1 selects the default
-/// device). Returns null when no matching device exists.
-extern "C" void* sycl_queue_new(int device_ordinal) {
+/// Creates an in-order queue on the `device_ordinal`-th device (-1 selects
+/// the default device). Returns null when no matching device exists.
+///
+/// In-order is what makes the deferred-wait record path legal: kernels are
+/// submitted without synchronising, and the queue itself guarantees that each
+/// one observes the writes of every kernel submitted before it.
+SYCLAPI void* sycl_queue_new(int device_ordinal) {
     try {
         if (device_ordinal < 0) {
-            return new sycl::queue(sycl::default_selector_v);
+            return new sycl::queue(sycl::default_selector_v,
+                                   sycl::property::queue::in_order());
         }
         for (auto const& platform : sycl::platform::get_platforms()) {
             auto devices = platform.get_devices(sycl::info::device_type::all);
             if ((int)devices.size() > device_ordinal) {
-                return new sycl::queue(devices[(size_t)device_ordinal]);
+                return new sycl::queue(devices[(size_t)device_ordinal],
+                                       sycl::property::queue::in_order());
             }
             device_ordinal -= (int)devices.size();
         }
@@ -730,8 +772,17 @@ extern "C" void* sycl_queue_new(int device_ordinal) {
     }
 }
 
+/// Waits for every kernel submitted to `queue` so far.
+///
+/// Every operator entry only submits; the direct path calls this immediately
+/// after its single launch, and the record path calls it once per `apply`.
+/// Failures are recorded for `sycl_take_error`, never thrown across the ABI.
+SYCLAPI void sycl_wait(void* queue) { SYCLTRY(
+    static_cast<sycl::queue*>(queue)->wait_and_throw();
+  ); }
+
 /// Destroys a queue created by `sycl_queue_new`.
-extern "C" void sycl_queue_free(void* queue) {
+SYCLAPI void sycl_queue_free(void* queue) {
     if (queue) {
         delete static_cast<sycl::queue*>(queue);
     }
@@ -740,7 +791,7 @@ extern "C" void sycl_queue_free(void* queue) {
 /// Allocates `bytes` of shared USM memory visible to both host and device.
 /// Shared USM lets the Rust side upload/download with plain copies instead of
 /// an extra queue-copy call.
-extern "C" void* sycl_malloc_shared(void* queue, size_t bytes) {
+SYCLAPI void* sycl_malloc_shared(void* queue, size_t bytes) {
     try {
         return sycl::malloc_shared(bytes, *static_cast<sycl::queue*>(queue));
     } catch (...) {
@@ -749,7 +800,7 @@ extern "C" void* sycl_malloc_shared(void* queue, size_t bytes) {
 }
 
 /// Frees a shared USM allocation created by `sycl_malloc_shared`.
-extern "C" void sycl_free_shared(void* queue, void* ptr) {
+SYCLAPI void sycl_free_shared(void* queue, void* ptr) {
     if (queue && ptr) {
         try {
             sycl::free(ptr, *static_cast<sycl::queue*>(queue));
@@ -760,7 +811,7 @@ extern "C" void sycl_free_shared(void* queue, void* ptr) {
 }
 
 /// Returns and clears the last recorded error code (0 = ok).
-extern "C" int sycl_take_error(void) {
+SYCLAPI int sycl_take_error(void) {
     int code = sycl_last_error;
     sycl_last_error = 0;
     return code;
