@@ -20,6 +20,7 @@
 mod linux {
     use std::hint::black_box;
 
+    use ::bench::harness::{report, run};
     use ::tensor::tensor;
     use api::compute;
     use bench::{
@@ -28,9 +29,6 @@ mod linux {
         matmulbatchinput, matmulinput, norminput, ropeinput, softmaxinput,
     };
     use cpu::cpuexecutor;
-    use criterion::{
-        BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
-    };
     use gpu::cuda::cudaexecutor;
     use lib::limits;
 
@@ -49,159 +47,128 @@ mod linux {
     /// both numbers together and the ratio stays meaningful (VF4). Each timed
     /// region returns the operator's output tensor, which `black_box` keeps
     /// observable so the work cannot be optimized away.
-    fn pair<F, G>(
-        group: &mut BenchmarkGroup<'_, WallTime>,
-        name: &str,
-        elements: usize,
-        cpu: F,
-        cuda: G,
-    ) where
+    fn pair<F, G>(prefix: &str, name: &str, cpu: F, cuda: G)
+    where
         F: Fn() -> tensor<f32>,
         G: Fn() -> tensor<f32>,
     {
-        group.throughput(Throughput::Elements(elements as u64));
-        group.bench_function(format!("cpu{name}"), |b| b.iter(|| black_box(cpu())));
-        group.bench_function(format!("cuda{name}"), |b| b.iter(|| black_box(cuda())));
+        report(&run(&format!("{prefix}/cpu{name}"), || black_box(cpu())));
+        report(&run(&format!("{prefix}/cuda{name}"), || black_box(cuda())));
     }
 
-    fn matmul(c: &mut Criterion) {
+    pub fn matmul() {
         let (lhs, rhs) = matmulinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/matmul");
         pair(
-            &mut group,
+            "gpu/matmul",
             "256",
-            MATMULDIM * MATMULDIM,
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || cudaexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
-    fn matmul_batch(c: &mut Criterion) {
+    pub fn matmul_batch() {
         let (lhs, rhs) = matmulbatchinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/matmulbatch");
         pair(
-            &mut group,
+            "gpu/matmulbatch",
             "8x256",
-            lhs.getlen(),
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || cudaexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
-    fn elementwise(c: &mut Criterion) {
+    pub fn elementwise() {
         let x = elementwiseinput().unwrap();
         let y = elementwiseinput().unwrap();
         let v = x.getview();
         let w = y.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/elementwise");
         pair(
-            &mut group,
+            "gpu/elementwise",
             "silu",
-            ELEMENTWISE,
             || cpuexec.silu(&v).unwrap(),
             || cudaexec.silu(&v).unwrap(),
         );
         pair(
-            &mut group,
+            "gpu/elementwise",
             "add",
-            ELEMENTWISE,
             || cpuexec.add(&v, &w).unwrap(),
             || cudaexec.add(&v, &w).unwrap(),
         );
         pair(
-            &mut group,
+            "gpu/elementwise",
             "mul",
-            ELEMENTWISE,
             || cpuexec.mul(&v, &w).unwrap(),
             || cudaexec.mul(&v, &w).unwrap(),
         );
-        group.finish();
     }
 
-    fn softmax(c: &mut Criterion) {
+    pub fn softmax() {
         let x = softmaxinput().unwrap();
         let v = x.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/softmax");
         pair(
-            &mut group,
+            "gpu/softmax",
             "rows512cols4096",
-            SOFTMAXROWS * SOFTMAXCOLS,
             || cpuexec.softmax(&v).unwrap(),
             || cudaexec.softmax(&v).unwrap(),
         );
-        group.finish();
     }
 
-    fn rmsnorm(c: &mut Criterion) {
+    pub fn rmsnorm() {
         let (x, w) = norminput().unwrap();
         let (xv, wv) = (x.getview(), w.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/rmsnorm");
         pair(
-            &mut group,
+            "gpu/rmsnorm",
             "rows512cols4096",
-            NORMROWS * NORMCOLS,
             || cpuexec.rmsnorm(&xv, &wv, EPS).unwrap(),
             || cudaexec.rmsnorm(&xv, &wv, EPS).unwrap(),
         );
-        group.finish();
     }
 
-    fn rope(c: &mut Criterion) {
+    pub fn rope() {
         let x = ropeinput().unwrap();
         let v = x.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/rope");
         pair(
-            &mut group,
+            "gpu/rope",
             "seq128heads8dim64",
-            SEQLEN * HEADS * HEADDIM,
             || cpuexec.rope(&v, HEADS, BASE).unwrap(),
             || cudaexec.rope(&v, HEADS, BASE).unwrap(),
         );
-        group.finish();
     }
 
-    fn embedding(c: &mut Criterion) {
+    pub fn embedding() {
         let (table, indices) = embeddinginput().unwrap();
         let v = table.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/embedding");
         pair(
-            &mut group,
+            "gpu/embedding",
             "gather128",
-            GATHER * EMBEDDIM,
             || cpuexec.embedding(&v, &indices).unwrap(),
             || cudaexec.embedding(&v, &indices).unwrap(),
         );
-        group.finish();
     }
 
-    fn attention(c: &mut Criterion) {
+    pub fn attention() {
         let (q, k, v) = attentioninput().unwrap();
         let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let cudaexec = cudaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/attention");
         pair(
-            &mut group,
+            "gpu/attention",
             "seq128heads8dim64",
-            SEQLEN * HEADS * HEADDIM,
             || {
                 cpuexec
                     .attention(&qv, &kv, &vv, HEADS, HEADS, true)
@@ -213,24 +180,20 @@ mod linux {
                     .unwrap()
             },
         );
-        group.finish();
     }
-
-    criterion_group!(
-        benches,
-        matmul,
-        matmul_batch,
-        elementwise,
-        softmax,
-        rmsnorm,
-        rope,
-        embedding,
-        attention
-    );
 }
 
 #[cfg(target_os = "linux")]
-criterion::criterion_main!(linux::benches);
+fn main() {
+    linux::matmul();
+    linux::matmul_batch();
+    linux::elementwise();
+    linux::softmax();
+    linux::rmsnorm();
+    linux::rope();
+    linux::embedding();
+    linux::attention();
+}
 
 #[cfg(not(target_os = "linux"))]
 fn main() {}

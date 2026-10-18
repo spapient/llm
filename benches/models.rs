@@ -10,8 +10,8 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use cpu::cpuexecutor;
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use lib::{limits, seed};
 use models::{causallm, llamaconfig, llamamodel, llamaweights};
 
@@ -45,17 +45,15 @@ fn model() -> llamamodel {
     llamamodel::new(c, w).unwrap()
 }
 
-fn forward(c: &mut Criterion) {
+fn forward() {
     let exec = cpuexecutor::new(limits::new(1 << 24, 1 << 28, 1 << 20, 1 << 16));
     let m = model();
     let tokens: Vec<usize> = (0..SEQ).map(|i| i % VOCAB).collect();
-    let mut group = c.benchmark_group("models/llama");
-    group.throughput(Throughput::Elements(SEQ as u64));
-    group.bench_function("forward", |b| {
-        b.iter(|| m.forward(&exec, black_box(&tokens)).unwrap());
-    });
-    group.finish();
+    report(&run("models/llama/forward", || {
+        m.forward(&exec, black_box(&tokens)).unwrap()
+    }));
 }
 
-criterion_group!(benches, forward);
-criterion_main!(benches);
+fn main() {
+    forward();
+}

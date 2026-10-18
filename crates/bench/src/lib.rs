@@ -330,3 +330,5 @@ pub fn attentionseqinput(qseq: usize, kvseq: usize) -> Result<attentionoperands,
     )?;
     Ok((q, k, v))
 }
+
+pub mod harness;

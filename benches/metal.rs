@@ -25,17 +25,14 @@
 mod macos {
     use std::hint::black_box;
 
+    use ::bench::harness::{report, run};
     use ::tensor::{shape, tensor};
     use api::{compute, operand, submission};
     use bench::{
-        ELEMENTWISE, EMBEDDIM, GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN,
-        SOFTMAXCOLS, SOFTMAXROWS, attentioninput, elementwiseinput, embeddinginput,
-        matmulbatchinput, matmulinput, norminput, ropeinput, scaninput, softmaxinput,
+        HEADDIM, HEADS, attentioninput, elementwiseinput, embeddinginput, matmulbatchinput,
+        matmulinput, norminput, ropeinput, scaninput, softmaxinput,
     };
     use cpu::cpuexecutor;
-    use criterion::{
-        BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
-    };
     use gpu::metal::metalexecutor;
     use infer::kvstate;
     use lib::{limits, seed};
@@ -71,159 +68,131 @@ mod macos {
     /// both numbers together and the ratio stays meaningful (VF4). Each timed
     /// region returns the operator's output tensor, which `black_box` keeps
     /// observable so the work cannot be optimized away.
-    fn pair<F, G>(
-        group: &mut BenchmarkGroup<'_, WallTime>,
-        name: &str,
-        elements: usize,
-        cpu: F,
-        metal: G,
-    ) where
+    fn pair<F, G>(prefix: &str, name: &str, cpu: F, metal: G)
+    where
         F: Fn() -> tensor<f32>,
         G: Fn() -> tensor<f32>,
     {
-        group.throughput(Throughput::Elements(elements as u64));
-        group.bench_function(format!("cpu{name}"), |b| b.iter(|| black_box(cpu())));
-        group.bench_function(format!("metal{name}"), |b| b.iter(|| black_box(metal())));
+        report(&run(&format!("{prefix}/cpu{name}"), || black_box(cpu())));
+        report(&run(
+            &format!("{prefix}/metal{name}"),
+            || black_box(metal()),
+        ));
     }
 
-    fn matmul(c: &mut Criterion) {
+    pub fn matmul() {
         let (lhs, rhs) = matmulinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/matmul");
         pair(
-            &mut group,
+            "gpu/matmul",
             "256",
-            MATMULDIM * MATMULDIM,
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || metalexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
-    fn matmul_batch(c: &mut Criterion) {
+    pub fn matmul_batch() {
         let (lhs, rhs) = matmulbatchinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/matmulbatch");
         pair(
-            &mut group,
+            "gpu/matmulbatch",
             "8x256",
-            lhs.getlen(),
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || metalexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
-    fn elementwise(c: &mut Criterion) {
+    pub fn elementwise() {
         let x = elementwiseinput().unwrap();
         let y = elementwiseinput().unwrap();
         let v = x.getview();
         let w = y.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/elementwise");
         pair(
-            &mut group,
+            "gpu/elementwise",
             "silu",
-            ELEMENTWISE,
             || cpuexec.silu(&v).unwrap(),
             || metalexec.silu(&v).unwrap(),
         );
         pair(
-            &mut group,
+            "gpu/elementwise",
             "add",
-            ELEMENTWISE,
             || cpuexec.add(&v, &w).unwrap(),
             || metalexec.add(&v, &w).unwrap(),
         );
         pair(
-            &mut group,
+            "gpu/elementwise",
             "mul",
-            ELEMENTWISE,
             || cpuexec.mul(&v, &w).unwrap(),
             || metalexec.mul(&v, &w).unwrap(),
         );
-        group.finish();
     }
 
-    fn softmax(c: &mut Criterion) {
+    pub fn softmax() {
         let x = softmaxinput().unwrap();
         let v = x.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/softmax");
         pair(
-            &mut group,
+            "gpu/softmax",
             "rows512cols4096",
-            SOFTMAXROWS * SOFTMAXCOLS,
             || cpuexec.softmax(&v).unwrap(),
             || metalexec.softmax(&v).unwrap(),
         );
-        group.finish();
     }
 
-    fn rmsnorm(c: &mut Criterion) {
+    pub fn rmsnorm() {
         let (x, w) = norminput().unwrap();
         let (xv, wv) = (x.getview(), w.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/rmsnorm");
         pair(
-            &mut group,
+            "gpu/rmsnorm",
             "rows512cols4096",
-            NORMROWS * NORMCOLS,
             || cpuexec.rmsnorm(&xv, &wv, EPS).unwrap(),
             || metalexec.rmsnorm(&xv, &wv, EPS).unwrap(),
         );
-        group.finish();
     }
 
-    fn rope(c: &mut Criterion) {
+    pub fn rope() {
         let x = ropeinput().unwrap();
         let v = x.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/rope");
         pair(
-            &mut group,
+            "gpu/rope",
             "seq128heads8dim64",
-            SEQLEN * HEADS * HEADDIM,
             || cpuexec.rope(&v, HEADS, BASE).unwrap(),
             || metalexec.rope(&v, HEADS, BASE).unwrap(),
         );
-        group.finish();
     }
 
-    fn embedding(c: &mut Criterion) {
+    pub fn embedding() {
         let (table, indices) = embeddinginput().unwrap();
         let v = table.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/embedding");
         pair(
-            &mut group,
+            "gpu/embedding",
             "gather128",
-            GATHER * EMBEDDIM,
             || cpuexec.embedding(&v, &indices).unwrap(),
             || metalexec.embedding(&v, &indices).unwrap(),
         );
-        group.finish();
     }
 
-    fn attention(c: &mut Criterion) {
+    pub fn attention() {
         let (q, k, v) = attentioninput().unwrap();
         let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("gpu/attention");
         pair(
-            &mut group,
+            "gpu/attention",
             "seq128heads8dim64",
-            SEQLEN * HEADS * HEADDIM,
             || {
                 cpuexec
                     .attention(&qv, &kv, &vv, HEADS, HEADS, true)
@@ -235,7 +204,6 @@ mod macos {
                     .unwrap()
             },
         );
-        group.finish();
     }
 
     /// End-to-end forward pass of the same tiny Llama `benches/models.rs`
@@ -247,7 +215,7 @@ mod macos {
     /// trip measured in docs/design.md §21.10.2. The ratio this prints is the
     /// tax that chain pays, and the number any batching execution context must
     /// beat.
-    fn model_forward(c: &mut Criterion) {
+    pub fn model_forward() {
         let config = llamaconfig::new(
             VOCAB, DIM, LAYERS, NHEADS, KVHEADS, HIDDEN, 1.0e-5, 10_000.0, SEQ,
         )
@@ -257,25 +225,19 @@ mod macos {
         let tokens: Vec<usize> = (0..SEQ).map(|i| i % VOCAB).collect();
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
-
-        let mut group = c.benchmark_group("gpu/modelforward");
-        group.throughput(Throughput::Elements(SEQ as u64));
-        group.bench_function("cpu", |b| {
-            b.iter(|| black_box(model.forward(&cpuexec, black_box(&tokens)).unwrap()));
-        });
-        group.bench_function("metal", |b| {
-            b.iter(|| black_box(model.forward(&metalexec, black_box(&tokens)).unwrap()));
-        });
-        group.bench_function("metalsubmission", |b| {
-            b.iter(|| {
-                let mut sub = metalexec.newsubmission().unwrap();
-                let logits = model
-                    .forwardsubmission(&mut sub, black_box(&tokens))
-                    .unwrap();
-                black_box(sub.apply(&[logits]).unwrap())
-            });
-        });
-        group.finish();
+        report(&run("gpu/modelforward/cpu", || {
+            black_box(model.forward(&cpuexec, black_box(&tokens)).unwrap())
+        }));
+        report(&run("gpu/modelforward/metal", || {
+            black_box(model.forward(&metalexec, black_box(&tokens)).unwrap())
+        }));
+        report(&run("gpu/modelforward/metalsubmission", || {
+            let mut sub = metalexec.newsubmission().unwrap();
+            let logits = model
+                .forwardsubmission(&mut sub, black_box(&tokens))
+                .unwrap();
+            black_box(sub.apply(&[logits]).unwrap())
+        }));
     }
 
     /// A 32-step elementwise chain run through `compute` (32 synchronous
@@ -285,47 +247,39 @@ mod macos {
     /// This is a representative chain, not the exact Llama forward: it proves
     /// the one lever `submission` exists to pull — collapsing N round trips into
     /// one — without re-deriving the model's operator sequence here.
-    fn submission_chain(c: &mut Criterion) {
+    pub fn submission_chain() {
         let metalexec = metalexecutor::new(LIMIT);
         let base = tensor::new(shape::new(vec![DIM, DIM]).unwrap(), vec![0.5; DIM * DIM]).unwrap();
         let delta =
             tensor::new(shape::new(vec![DIM, DIM]).unwrap(), vec![0.25; DIM * DIM]).unwrap();
-
-        let mut group = c.benchmark_group("gpu/submissionchain");
-        group.throughput(Throughput::Elements((DIM * DIM) as u64));
-        group.bench_function("compute32", |bench| {
-            bench.iter(|| {
-                let mut x = base.clone();
-                for _ in 0..32 {
-                    x = metalexec.add(&x.getview(), &delta.getview()).unwrap();
-                }
-                black_box(x)
-            });
-        });
-        group.bench_function("submission32", |bench| {
-            bench.iter(|| {
-                let mut sub = metalexec.newsubmission().unwrap();
-                let mut prev = sub
-                    .recordadd(
-                        operand::input(base.getview()),
-                        operand::input(delta.getview()),
-                    )
+        report(&run("gpu/submissionchain/compute32", || {
+            let mut x = base.clone();
+            for _ in 0..32 {
+                x = metalexec.add(&x.getview(), &delta.getview()).unwrap();
+            }
+            black_box(x)
+        }));
+        report(&run("gpu/submissionchain/submission32", || {
+            let mut sub = metalexec.newsubmission().unwrap();
+            let mut prev = sub
+                .recordadd(
+                    operand::input(base.getview()),
+                    operand::input(delta.getview()),
+                )
+                .unwrap();
+            for _ in 1..32 {
+                prev = sub
+                    .recordadd(operand::result(prev), operand::input(delta.getview()))
                     .unwrap();
-                for _ in 1..32 {
-                    prev = sub
-                        .recordadd(operand::result(prev), operand::input(delta.getview()))
-                        .unwrap();
-                }
-                black_box(sub.apply(&[prev]).unwrap())
-            });
-        });
-        group.finish();
+            }
+            black_box(sub.apply(&[prev]).unwrap())
+        }));
     }
 
     /// KV-cache decode: prefill the prompt token by token, then decode the rest
     /// token by token. The cache-aware path processes only the new token each
     /// step, while the recompute path runs a full forward over the whole context.
-    fn decode(c: &mut Criterion) {
+    pub fn decode() {
         let config = llamaconfig::new(
             VOCAB,
             DIM,
@@ -343,62 +297,44 @@ mod macos {
         let prompt: Vec<usize> = (0..SEQ).map(|i| i % VOCAB).collect();
         let decode_tokens: Vec<usize> = (SEQ..2 * SEQ).map(|i| i % VOCAB).collect();
         let metalexec = metalexecutor::new(LIMIT);
-
-        let mut group = c.benchmark_group("gpu/decode");
-        group.throughput(Throughput::Elements(SEQ as u64));
         // Both paths time only the decode phase (iter_batched setup is untimed):
         // `metalcached` prefills in setup, `metalrecompute` starts from the prompt.
         // Symmetric token counts make the numbers honest; at seq=16 the per-call
         // command-buffer round trip dominates, so no speedup is claimed here.
-        group.bench_function("metalcached", |bench| {
-            bench.iter_batched(
-                || {
-                    let mut cache =
-                        kvstate::new(config.getnlayers(), config.getkvwidth(), config.getmaxseq())
-                            .unwrap();
-                    for &token in &prompt {
-                        model.forward_cached(&metalexec, &mut cache, token).unwrap();
-                    }
+        report(&run("gpu/decode/metalcached", || {
+            let mut cache =
+                kvstate::new(config.getnlayers(), config.getkvwidth(), config.getmaxseq()).unwrap();
+            for &token in &prompt {
+                model.forward_cached(&metalexec, &mut cache, token).unwrap();
+            }
+            let layers = config.getnlayers();
+            for &token in &decode_tokens {
+                let mut sub = metalexec.newsubmission().unwrap();
+                let handles = model
+                    .forwardsubmission_cached(&mut sub, &cache, token)
+                    .unwrap();
+                let mut outputs = Vec::with_capacity(1 + 2 * layers);
+                outputs.push(handles.logits);
+                outputs.extend(handles.keys.iter().copied());
+                outputs.extend(handles.values.iter().copied());
+                let got = sub.apply(&outputs).unwrap();
+                for layer in 0..layers {
                     cache
-                },
-                |mut cache| {
-                    let layers = config.getnlayers();
-                    for &token in &decode_tokens {
-                        let mut sub = metalexec.newsubmission().unwrap();
-                        let handles = model
-                            .forwardsubmission_cached(&mut sub, &cache, token)
-                            .unwrap();
-                        let mut outputs = Vec::with_capacity(1 + 2 * layers);
-                        outputs.push(handles.logits);
-                        outputs.extend(handles.keys.iter().copied());
-                        outputs.extend(handles.values.iter().copied());
-                        let got = sub.apply(&outputs).unwrap();
-                        for layer in 0..layers {
-                            cache
-                                .append(layer, &got[1 + layer], &got[1 + layers + layer])
-                                .unwrap();
-                        }
-                        black_box(&got[0]);
-                    }
-                },
-                criterion::BatchSize::SmallInput,
-            );
-        });
-        group.bench_function("metalrecompute", |bench| {
-            bench.iter_batched(
-                || prompt.clone(),
-                |mut context| {
-                    for &token in &decode_tokens {
-                        context.push(token);
-                        let mut sub = metalexec.newsubmission().unwrap();
-                        let logits = model.forwardsubmission(&mut sub, &context).unwrap();
-                        black_box(sub.apply(&[logits]).unwrap());
-                    }
-                },
-                criterion::BatchSize::SmallInput,
-            );
-        });
-        group.finish();
+                        .append(layer, &got[1 + layer], &got[1 + layers + layer])
+                        .unwrap();
+                }
+                black_box(&got[0]);
+            }
+        }));
+        report(&run("gpu/decode/metalrecompute", || {
+            let mut context = prompt.clone();
+            for &token in &decode_tokens {
+                context.push(token);
+                let mut sub = metalexec.newsubmission().unwrap();
+                let logits = model.forwardsubmission(&mut sub, &context).unwrap();
+                black_box(sub.apply(&[logits]).unwrap());
+            }
+        }));
     }
 
     /// M1 Should: on the same device, a 16K semigroup scan against dense 16K
@@ -406,7 +342,7 @@ mod macos {
     /// Table 7 extrapolation). The scan is O(seq·d), dense attention
     /// O(seq²·d), so the Metal ratio is the β-path payoff of the three-stage
     /// parallel scan; the CPU serial number anchors the same workload.
-    fn scan(c: &mut Criterion) {
+    pub fn scan() {
         let cpuexec = cpuexecutor::new(LIMIT);
         let metalexec = metalexecutor::new(LIMIT);
         let seq = 16384;
@@ -419,48 +355,41 @@ mod macos {
             cparam.getview(),
             skip.getview(),
         );
-        let mut group = c.benchmark_group("gpu/scan");
-        group.throughput(Throughput::Elements((seq * bench::SCANCHANNELS) as u64));
-        group.bench_function("cpuserial", |b| {
-            b.iter(|| {
-                black_box(
-                    compute::scan(
-                        &cpuexec,
-                        black_box(&iv),
-                        black_box(&statev),
-                        black_box(&av),
-                        black_box(&bv),
-                        black_box(&cv),
-                        black_box(&sv),
-                    )
-                    .unwrap(),
+        report(&run("gpu/scan/cpuserial", || {
+            black_box(
+                compute::scan(
+                    &cpuexec,
+                    black_box(&iv),
+                    black_box(&statev),
+                    black_box(&av),
+                    black_box(&bv),
+                    black_box(&cv),
+                    black_box(&sv),
                 )
-            })
-        });
-        group.bench_function("metalparallel", |b| {
-            b.iter(|| {
-                black_box(
-                    compute::scan(
-                        &metalexec,
-                        black_box(&iv),
-                        black_box(&statev),
-                        black_box(&av),
-                        black_box(&bv),
-                        black_box(&cv),
-                        black_box(&sv),
-                    )
-                    .unwrap(),
+                .unwrap(),
+            )
+        }));
+        report(&run("gpu/scan/metalparallel", || {
+            black_box(
+                compute::scan(
+                    &metalexec,
+                    black_box(&iv),
+                    black_box(&statev),
+                    black_box(&av),
+                    black_box(&bv),
+                    black_box(&cv),
+                    black_box(&sv),
                 )
-            })
-        });
-        group.finish();
+                .unwrap(),
+            )
+        }));
     }
 
     /// The dense 16K attention side of the M1 Should comparison. Metal only:
     /// the same workload on CPU would run for minutes. The `heads8dim64`
     /// suffix pins the workload against the existing `gpu/attention`
     /// `seq128heads8dim64` group.
-    fn attention16k(c: &mut Criterion) {
+    pub fn attention16k() {
         let metalexec = metalexecutor::new(LIMIT);
         let seq = 16384;
         let width = HEADS * HEADDIM;
@@ -481,40 +410,33 @@ mod macos {
         )
         .unwrap();
         let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
-        let mut group = c.benchmark_group("gpu/attention16k");
-        group.throughput(Throughput::Elements(seq as u64));
-        group.bench_function("metalheads8dim64", |b| {
-            b.iter(|| {
-                black_box(
-                    metalexec
-                        .attention(&qv, &kv, &vv, HEADS, HEADS, true)
-                        .unwrap(),
-                )
-            })
-        });
-        group.finish();
+        report(&run("gpu/attention16k/metalheads8dim64", || {
+            black_box(
+                metalexec
+                    .attention(&qv, &kv, &vv, HEADS, HEADS, true)
+                    .unwrap(),
+            )
+        }));
     }
-
-    criterion_group!(
-        benches,
-        matmul,
-        matmul_batch,
-        elementwise,
-        softmax,
-        rmsnorm,
-        rope,
-        embedding,
-        attention,
-        scan,
-        attention16k,
-        model_forward,
-        submission_chain,
-        decode
-    );
 }
 
 #[cfg(target_os = "macos")]
-criterion::criterion_main!(macos::benches);
+#[cfg(target_os = "macos")]
+fn main() {
+    macos::matmul();
+    macos::matmul_batch();
+    macos::elementwise();
+    macos::softmax();
+    macos::rmsnorm();
+    macos::rope();
+    macos::embedding();
+    macos::attention();
+    macos::scan();
+    macos::attention16k();
+    macos::model_forward();
+    macos::submission_chain();
+    macos::decode();
+}
 
 #[cfg(not(target_os = "macos"))]
 fn main() {}

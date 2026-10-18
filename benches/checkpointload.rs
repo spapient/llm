@@ -23,13 +23,13 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ::bench::harness::{report, run};
 use ::checkpoint::checkpointreader;
 use ::checkpoint::rawfmt::rawexport;
 use ::checkpoint::rawio::rawreader;
 use ::checkpoint::uformat::snapshot;
 use ::tensor::f16;
 use ::tensor::{dtype, shape, tensor};
-use criterion::{Criterion, criterion_group, criterion_main};
 
 /// Vocabulary size of the embedding workload.
 const VOCAB: usize = 4096;
@@ -145,69 +145,63 @@ impl Drop for scratch {
     }
 }
 
-fn ufull(c: &mut Criterion) {
+fn ufull() {
     let s = scratch::build();
-    c.bench_function("load/u_full", |b| {
-        b.iter(|| {
-            let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
-            let mut total = 0usize;
-            for name in f32names() {
-                let t = reader.readtensortyped::<f32>(&name).unwrap().unwrap();
-                total += t.getlen();
-            }
-            for name in f16names() {
-                let t = reader.readtensortyped::<f16>(&name).unwrap().unwrap();
-                total += t.getlen();
-            }
-            black_box(total);
-        });
-    });
+    report(&run("load/u_full", || {
+        let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
+        let mut total = 0usize;
+        for name in f32names() {
+            let t = reader.readtensortyped::<f32>(&name).unwrap().unwrap();
+            total += t.getlen();
+        }
+        for name in f16names() {
+            let t = reader.readtensortyped::<f16>(&name).unwrap().unwrap();
+            total += t.getlen();
+        }
+        black_box(total);
+    }));
 }
 
-fn rawtyped(c: &mut Criterion) {
+fn rawtyped() {
     let s = scratch::build();
-    c.bench_function("load/raw_typed", |b| {
-        b.iter(|| {
-            let reader = rawreader::fromfile(&s.raw_path).unwrap();
-            let mut total = 0usize;
-            for name in f32names() {
-                let t = reader.readtensortyped::<f32>(&name).unwrap().unwrap();
-                total += t.getlen();
-            }
-            for name in f16names() {
-                let t = reader.readtensortyped::<f16>(&name).unwrap().unwrap();
-                total += t.getlen();
-            }
-            black_box(total);
-        });
-    });
+    report(&run("load/raw_typed", || {
+        let reader = rawreader::fromfile(&s.raw_path).unwrap();
+        let mut total = 0usize;
+        for name in f32names() {
+            let t = reader.readtensortyped::<f32>(&name).unwrap().unwrap();
+            total += t.getlen();
+        }
+        for name in f16names() {
+            let t = reader.readtensortyped::<f16>(&name).unwrap().unwrap();
+            total += t.getlen();
+        }
+        black_box(total);
+    }));
 }
 
-fn rawreadall(c: &mut Criterion) {
+fn rawreadall() {
     let s = scratch::build();
-    c.bench_function("load/raw_readall", |b| {
-        b.iter(|| {
-            let reader = rawreader::fromfile(&s.raw_path).unwrap();
-            let all = reader.readall().unwrap();
-            let mut total = 0usize;
-            for (entry, (_, bytes)) in reader.gettensors().iter().zip(all.iter()) {
-                match entry.getdtype() {
-                    dtype::f32 => {
-                        let t: tensor<f32> =
-                            tensor::tryfrombytes(entry.getshape().clone(), bytes).unwrap();
-                        total += t.getlen();
-                    }
-                    dtype::f16 => {
-                        let t: tensor<f16> =
-                            tensor::tryfrombytes(entry.getshape().clone(), bytes).unwrap();
-                        total += t.getlen();
-                    }
-                    _ => {}
+    report(&run("load/raw_readall", || {
+        let reader = rawreader::fromfile(&s.raw_path).unwrap();
+        let all = reader.readall().unwrap();
+        let mut total = 0usize;
+        for (entry, (_, bytes)) in reader.gettensors().iter().zip(all.iter()) {
+            match entry.getdtype() {
+                dtype::f32 => {
+                    let t: tensor<f32> =
+                        tensor::tryfrombytes(entry.getshape().clone(), bytes).unwrap();
+                    total += t.getlen();
                 }
+                dtype::f16 => {
+                    let t: tensor<f16> =
+                        tensor::tryfrombytes(entry.getshape().clone(), bytes).unwrap();
+                    total += t.getlen();
+                }
+                _ => {}
             }
-            black_box(total);
-        });
-    });
+        }
+        black_box(total);
+    }));
 }
 
 /// The zero-materialization path: `readtensorview` aliases the memory-mapped
@@ -215,33 +209,31 @@ fn rawreadall(c: &mut Criterion) {
 /// `readtensortyped` allocates an owned buffer per tensor. The difference is
 /// the materialization cost the loading pipeline skips when it feeds the
 /// borrowed view straight into a backend operand.
-fn viewvsowned(c: &mut Criterion) {
+fn viewvsowned() {
     let s = scratch::build();
-    let mut group = c.benchmark_group("load/view");
-    group.bench_function("owned_typed", |b| {
-        b.iter(|| {
-            let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
-            let mut total = 0usize;
-            for name in f32names() {
-                let t = reader.readtensortyped::<f32>(&name).unwrap().unwrap();
-                total += t.getlen();
-            }
-            black_box(total);
-        });
-    });
-    group.bench_function("borrowed_view", |b| {
-        b.iter(|| {
-            let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
-            let mut total = 0usize;
-            for name in f32names() {
-                let v = reader.readtensorview::<f32>(&name).unwrap().unwrap();
-                total += v.as_ref().len();
-            }
-            black_box(total);
-        });
-    });
-    group.finish();
+    report(&run("load/view/owned_typed", || {
+        let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
+        let mut total = 0usize;
+        for name in f32names() {
+            let t = reader.readtensortyped::<f32>(&name).unwrap().unwrap();
+            total += t.getlen();
+        }
+        black_box(total);
+    }));
+    report(&run("load/view/borrowed_view", || {
+        let reader = checkpointreader::openfullfile(&s.u_path).unwrap();
+        let mut total = 0usize;
+        for name in f32names() {
+            let v = reader.readtensorview::<f32>(&name).unwrap().unwrap();
+            total += v.as_ref().len();
+        }
+        black_box(total);
+    }));
 }
 
-criterion_group!(benches, ufull, rawtyped, rawreadall, viewvsowned);
-criterion_main!(benches);
+fn main() {
+    ufull();
+    rawtyped();
+    rawreadall();
+    viewvsowned();
+}

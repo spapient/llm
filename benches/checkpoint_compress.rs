@@ -14,10 +14,10 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use ::checkpoint::blocks::{bitshuffle_delta, unbitshuffle_delta};
 use ::checkpoint::uformat::snapshot;
 use ::tensor::{dtype, shape};
-use criterion::{Criterion, criterion_group, criterion_main};
 
 const SIZE: usize = 16 * 1024 * 1024;
 
@@ -75,19 +75,19 @@ fn snap(bytes: &[u8]) -> snapshot {
     snap
 }
 
-fn bench_primitives(c: &mut Criterion) {
+fn bench_primitives() {
     let mut seed = 0x1234_5678_9abc_def0u64;
     let data = gen_weights_real(&mut seed, SIZE);
     let transformed = bitshuffle_delta(&data, 4);
-    c.bench_function("bitshuffle_delta/16MiB-f32", |b| {
-        b.iter(|| black_box(bitshuffle_delta(black_box(&data), 4)))
-    });
-    c.bench_function("unbitshuffle_delta/16MiB-f32", |b| {
-        b.iter(|| black_box(unbitshuffle_delta(black_box(&transformed), 4)))
-    });
+    report(&run("bitshuffle_delta/16MiB-f32", || {
+        black_box(bitshuffle_delta(black_box(&data), 4))
+    }));
+    report(&run("unbitshuffle_delta/16MiB-f32", || {
+        black_box(unbitshuffle_delta(black_box(&transformed), 4))
+    }));
 }
 
-fn bench_snapshot(c: &mut Criterion) {
+fn bench_snapshot() {
     let mut seed = 0x1234_5678_9abc_def0u64;
     let real = gen_weights_real(&mut seed, SIZE);
     let random = gen_random(&mut seed, SIZE);
@@ -110,16 +110,18 @@ fn bench_snapshot(c: &mut Criterion) {
         100.0 * random_encoded.len() as f64 / random.len() as f64
     );
 
-    c.bench_function("encode/correlated-f32", |b| {
-        b.iter(|| black_box(real_snap.encode().unwrap()))
-    });
-    c.bench_function("decode/correlated-f32", |b| {
-        b.iter(|| black_box(snapshot::decode(black_box(&real_encoded)).unwrap()))
-    });
-    c.bench_function("encode/random-f32", |b| {
-        b.iter(|| black_box(random_snap.encode().unwrap()))
-    });
+    report(&run("encode/correlated-f32", || {
+        black_box(real_snap.encode().unwrap())
+    }));
+    report(&run("decode/correlated-f32", || {
+        black_box(snapshot::decode(black_box(&real_encoded)).unwrap())
+    }));
+    report(&run("encode/random-f32", || {
+        black_box(random_snap.encode().unwrap())
+    }));
 }
 
-criterion_group!(benches, bench_primitives, bench_snapshot);
-criterion_main!(benches);
+fn main() {
+    bench_primitives();
+    bench_snapshot();
+}

@@ -10,9 +10,9 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use ::tensor::{shape, tensor};
 use cpu::cpuexecutor;
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use lib::limits;
 use nn::{attention, linear, mlp, parameter};
 
@@ -48,19 +48,16 @@ fn projection(name: &str, in_features: usize, out_features: usize) -> linear {
     .unwrap()
 }
 
-fn linearforward(c: &mut Criterion) {
+fn linearforward() {
     let exec = engine();
     let layer = projection("weight", DIM, DIM);
     let input = dense(vec![ROWS, DIM], 0.05);
-    let mut group = c.benchmark_group("nn/linear");
-    group.throughput(Throughput::Elements((ROWS * DIM) as u64));
-    group.bench_function("forward", |b| {
-        b.iter(|| layer.forward(&exec, black_box(&input)).unwrap());
-    });
-    group.finish();
+    report(&run("nn/linear/forward", || {
+        layer.forward(&exec, black_box(&input)).unwrap()
+    }));
 }
 
-fn mlpforward(c: &mut Criterion) {
+fn mlpforward() {
     let exec = engine();
     let layer = mlp::new(
         projection("weight", DIM, HIDDEN),
@@ -69,31 +66,26 @@ fn mlpforward(c: &mut Criterion) {
     )
     .unwrap();
     let input = dense(vec![ROWS, DIM], 0.05);
-    let mut group = c.benchmark_group("nn/mlp");
-    group.throughput(Throughput::Elements((ROWS * DIM) as u64));
-    group.bench_function("forward", |b| {
-        b.iter(|| layer.forward(&exec, black_box(&input)).unwrap());
-    });
-    group.finish();
+    report(&run("nn/mlp/forward", || {
+        layer.forward(&exec, black_box(&input)).unwrap()
+    }));
 }
 
-fn attentionforward(c: &mut Criterion) {
+fn attentionforward() {
     let exec = engine();
     let layer = attention::new(HEADS, HEADS, true).unwrap();
     let q = dense(vec![ROWS, HEADS * HEADDIM], 0.05);
     let k = dense(vec![ROWS, HEADS * HEADDIM], 0.05);
     let v = dense(vec![ROWS, HEADS * HEADDIM], 0.05);
-    let mut group = c.benchmark_group("nn/attention");
-    group.throughput(Throughput::Elements((ROWS * HEADS * HEADDIM) as u64));
-    group.bench_function("forward", |b| {
-        b.iter(|| {
-            layer
-                .forward(&exec, black_box(&q), black_box(&k), black_box(&v))
-                .unwrap()
-        });
-    });
-    group.finish();
+    report(&run("nn/attention/forward", || {
+        layer
+            .forward(&exec, black_box(&q), black_box(&k), black_box(&v))
+            .unwrap()
+    }));
 }
 
-criterion_group!(benches, linearforward, mlpforward, attentionforward);
-criterion_main!(benches);
+fn main() {
+    linearforward();
+    mlpforward();
+    attentionforward();
+}

@@ -11,8 +11,8 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use ::tensor::{shape, tensor};
-use criterion::{Criterion, criterion_group, criterion_main};
 
 fn workload() -> (shape, Vec<u8>) {
     let n = 4 * 1024 * 1024; // 4 Mi elements = 16 MiB of f32.
@@ -39,18 +39,19 @@ fn view_only(bytes: &[u8]) -> usize {
     ::tensor::trybyteview::<f32>(bytes).unwrap().len()
 }
 
-fn run_benches(c: &mut Criterion) {
+fn run_benches() {
     let (s, bytes) = workload();
-    c.bench_function("byteview/element_wise_from_ne_bytes", |b| {
-        b.iter(|| black_box(element_wise(&s, &bytes)))
-    });
-    c.bench_function("byteview/reinterpret_then_copy", |b| {
-        b.iter(|| black_box(view_copy(&s, &bytes)))
-    });
-    c.bench_function("byteview/view_only_alias", |b| {
-        b.iter(|| black_box(view_only(&bytes)))
-    });
+    report(&run("byteview/element_wise_from_ne_bytes", || {
+        black_box(element_wise(&s, &bytes))
+    }));
+    report(&run("byteview/reinterpret_then_copy", || {
+        black_box(view_copy(&s, &bytes))
+    }));
+    report(&run("byteview/view_only_alias", || {
+        black_box(view_only(&bytes))
+    }));
 }
 
-criterion_group!(benches, run_benches);
-criterion_main!(benches);
+fn main() {
+    run_benches();
+}

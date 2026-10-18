@@ -16,8 +16,8 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use ::checkpoint::gate;
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 const SIZE: usize = 16 * 1024 * 1024;
 const NSYMBOLS: usize = 256;
@@ -160,7 +160,7 @@ fn decode_plane_single(stream: &[u8], t: &TableLut, n: usize) -> Vec<u8> {
     buf
 }
 
-fn gatedecode(c: &mut Criterion) {
+fn gatedecode() {
     let mut seed = 0x1234_5678_9abc_def0u64;
     let data = gen_weights_real(&mut seed, SIZE);
 
@@ -194,16 +194,14 @@ fn gatedecode(c: &mut Criterion) {
         100.0 * single_stream.len() as f64 / data.len() as f64
     );
 
-    let mut group = c.benchmark_group("gatedecode");
-    group.throughput(Throughput::Bytes(SIZE as u64));
-    group.bench_function("interleaved (gate::decompress)", |b| {
-        b.iter(|| black_box(gate::decompress(black_box(&stored), 0).unwrap()))
-    });
-    group.bench_function("single-state + lut", |b| {
-        b.iter(|| black_box(decode_plane_single(black_box(&single_stream), &t, SIZE)))
-    });
-    group.finish();
+    report(&run("gatedecode/interleaved (gate::decompress)", || {
+        black_box(gate::decompress(black_box(&stored), 0).unwrap())
+    }));
+    report(&run("gatedecode/single-state + lut", || {
+        black_box(decode_plane_single(black_box(&single_stream), &t, SIZE))
+    }));
 }
 
-criterion_group!(benches, gatedecode);
-criterion_main!(benches);
+fn main() {
+    gatedecode();
+}

@@ -23,13 +23,11 @@
 mod device {
     use std::hint::black_box;
 
+    use ::bench::harness::{report, run};
     use ::tensor::{shape, tensor};
     use api::{compute, operand, submission};
     use bench::{MATMULDIM, matmulbatchinput, matmulinput};
     use cpu::cpuexecutor;
-    use criterion::{
-        BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
-    };
     use gpu::sycl::executor as syclexecutor;
     use lib::limits;
 
@@ -42,51 +40,39 @@ mod device {
     /// both numbers together and the ratio stays meaningful (VF4). Each timed
     /// region returns the operator's output tensor, which `black_box` keeps
     /// observable so the work cannot be optimized away.
-    fn pair<F, G>(
-        group: &mut BenchmarkGroup<'_, WallTime>,
-        name: &str,
-        elements: usize,
-        cpu: F,
-        sycl: G,
-    ) where
+    fn pair<F, G>(prefix: &str, name: &str, cpu: F, sycl: G)
+    where
         F: Fn() -> tensor<f32>,
         G: Fn() -> tensor<f32>,
     {
-        group.throughput(Throughput::Elements(elements as u64));
-        group.bench_function(format!("cpu{name}"), |b| b.iter(|| black_box(cpu())));
-        group.bench_function(format!("sycl{name}"), |b| b.iter(|| black_box(sycl())));
+        report(&run(&format!("{prefix}/cpu{name}"), || black_box(cpu())));
+        report(&run(&format!("{prefix}/sycl{name}"), || black_box(sycl())));
     }
 
-    fn matmul(c: &mut Criterion) {
+    pub fn matmul() {
         let (lhs, rhs) = matmulinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let syclexec = syclexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("sycl/matmul");
         pair(
-            &mut group,
+            "sycl/matmul",
             "256",
-            MATMULDIM * MATMULDIM,
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || syclexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
-    fn matmul_batch(c: &mut Criterion) {
+    pub fn matmul_batch() {
         let (lhs, rhs) = matmulbatchinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let syclexec = syclexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("sycl/matmulbatch");
         pair(
-            &mut group,
+            "sycl/matmulbatch",
             "8x256",
-            lhs.getlen(),
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || syclexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
     /// Device-resident matmul chain: eight 1024x1024 contractions per
@@ -94,7 +80,7 @@ mod device {
     /// result kept in a device slot. Only the final `apply` synchronises and
     /// downloads, so the measurement is the GPU path plus submission, without
     /// the per-call host round trip the compute API pays.
-    fn matmul_chain(c: &mut Criterion) {
+    pub fn matmul_chain() {
         const SIDE: usize = 1024;
         const STEPS: usize = 8;
         let elements = SIDE * SIDE;
@@ -110,29 +96,24 @@ mod device {
         .unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let syclexec = syclexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("sycl/matmulchain");
-        group.throughput(Throughput::Elements((elements * STEPS) as u64));
-        group.bench_function("sycl1024x8", |b| {
-            b.iter(|| {
-                let mut sub = syclexec.newsubmission().unwrap();
-                let mut step = sub
-                    .recordmatmul(operand::input(lv), operand::input(rv))
+        report(&run("sycl/matmulchain/sycl1024x8", || {
+            let mut sub = syclexec.newsubmission().unwrap();
+            let mut step = sub
+                .recordmatmul(operand::input(lv), operand::input(rv))
+                .unwrap();
+            for _ in 1..STEPS {
+                step = sub
+                    .recordmatmul(operand::result(step), operand::input(rv))
                     .unwrap();
-                for _ in 1..STEPS {
-                    step = sub
-                        .recordmatmul(operand::result(step), operand::input(rv))
-                        .unwrap();
-                }
-                black_box(sub.apply(&[step]).unwrap())
-            })
-        });
-        group.finish();
+            }
+            black_box(sub.apply(&[step]).unwrap())
+        }));
     }
 
     /// A 32-step elementwise chain recorded through the accumulative
     /// submission (one synchronise at `apply`) against the same chain run as
     /// 32 separate compute calls (one synchronise each), on both backends.
-    fn submissionchain(criterion: &mut Criterion) {
+    pub fn submissionchain() {
         let steps = 32usize;
         let elements = 64 * 64;
         let (x, y) = (
@@ -142,46 +123,40 @@ mod device {
         let (xv, yv) = (x.getview(), y.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let syclexec = syclexecutor::new(LIMIT);
-        let mut group = criterion.benchmark_group("sycl/submissionchain");
-        group.throughput(Throughput::Elements((elements * steps) as u64));
-        group.bench_function("cpucompute32", |b| {
-            b.iter(|| {
-                let mut acc = x.clone();
-                for _ in 0..steps {
-                    acc = cpuexec.add(&acc.getview(), &yv).unwrap();
-                }
-                black_box(acc)
-            })
-        });
-        group.bench_function("syclcompute32", |b| {
-            b.iter(|| {
-                let mut acc = x.clone();
-                for _ in 0..steps {
-                    acc = syclexec.add(&acc.getview(), &yv).unwrap();
-                }
-                black_box(acc)
-            })
-        });
-        group.bench_function("syclsubmission32", |b| {
-            b.iter(|| {
-                let mut sub = syclexec.newsubmission().unwrap();
-                let mut current = operand::input(xv);
-                let mut last = None;
-                for _ in 0..steps {
-                    last = Some(sub.recordadd(current, operand::input(yv)).unwrap());
-                    current = operand::result(last.unwrap());
-                }
-                black_box(sub.apply(&[last.unwrap()]).unwrap())
-            })
-        });
-        group.finish();
+        report(&run("sycl/submissionchain/cpucompute32", || {
+            let mut acc = x.clone();
+            for _ in 0..steps {
+                acc = cpuexec.add(&acc.getview(), &yv).unwrap();
+            }
+            black_box(acc)
+        }));
+        report(&run("sycl/submissionchain/syclcompute32", || {
+            let mut acc = x.clone();
+            for _ in 0..steps {
+                acc = syclexec.add(&acc.getview(), &yv).unwrap();
+            }
+            black_box(acc)
+        }));
+        report(&run("sycl/submissionchain/syclsubmission32", || {
+            let mut sub = syclexec.newsubmission().unwrap();
+            let mut current = operand::input(xv);
+            let mut last = None;
+            for _ in 0..steps {
+                last = Some(sub.recordadd(current, operand::input(yv)).unwrap());
+                current = operand::result(last.unwrap());
+            }
+            black_box(sub.apply(&[last.unwrap()]).unwrap())
+        }));
     }
-
-    criterion_group!(benches, matmul, matmul_batch, matmul_chain, submissionchain);
 }
 
 #[cfg(all(any(target_os = "linux", target_os = "windows"), sycl_toolkit))]
-criterion::criterion_main!(device::benches);
+fn main() {
+    device::matmul();
+    device::matmul_batch();
+    device::matmul_chain();
+    device::submissionchain();
+}
 
 #[cfg(not(all(any(target_os = "linux", target_os = "windows"), sycl_toolkit)))]
 fn main() {}

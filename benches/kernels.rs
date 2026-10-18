@@ -15,17 +15,14 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use ::tensor::{shape, tensor};
 use api::{binarykernel, gatherkernel, kernel, weightedkernel};
-use bench::{
-    GATHER, HEADDIM, HEADS, MATMULDIM, NORMCOLS, NORMROWS, SEQLEN, attentioninput, embeddinginput,
-    matmulinput, norminput, ropeinput,
-};
+use bench::{HEADS, attentioninput, embeddinginput, matmulinput, norminput, ropeinput};
 use cpu::{
     cpuadd, cpuattention, cpuembedding, cpugelutanh, cpumatmul, cpumul, cpurelu, cpurmsnorm,
     cpurope, cpusilu, cpusoftmax,
 };
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 /// Element count for the elementwise activation workloads.
 const ELEMENTWISE: usize = 1 << 20;
@@ -36,7 +33,7 @@ const SOFTMAXROWS: usize = 512;
 /// Row width for the softmax workload.
 const SOFTMAXCOLS: usize = 4096;
 
-fn elementwise(c: &mut Criterion) {
+fn elementwise() {
     let t = tensor::new(
         shape::new(vec![ELEMENTWISE]).unwrap(),
         vec![0.5_f32; ELEMENTWISE],
@@ -44,21 +41,18 @@ fn elementwise(c: &mut Criterion) {
     .unwrap();
     let view = t.getview();
 
-    let mut group = c.benchmark_group("kernel/elementwise");
-    group.throughput(Throughput::Elements(ELEMENTWISE as u64));
-    group.bench_function("relu", |b| {
-        b.iter(|| black_box(cpurelu.apply(black_box(&view)).unwrap()));
-    });
-    group.bench_function("silu", |b| {
-        b.iter(|| black_box(cpusilu.apply(black_box(&view)).unwrap()));
-    });
-    group.bench_function("gelutanh", |b| {
-        b.iter(|| black_box(cpugelutanh.apply(black_box(&view)).unwrap()));
-    });
-    group.finish();
+    report(&run("kernel/elementwise/relu", || {
+        black_box(cpurelu.apply(black_box(&view)).unwrap())
+    }));
+    report(&run("kernel/elementwise/silu", || {
+        black_box(cpusilu.apply(black_box(&view)).unwrap())
+    }));
+    report(&run("kernel/elementwise/gelutanh", || {
+        black_box(cpugelutanh.apply(black_box(&view)).unwrap())
+    }));
 }
 
-fn softmax(c: &mut Criterion) {
+fn softmax() {
     let elements = SOFTMAXROWS * SOFTMAXCOLS;
     let t = tensor::new(
         shape::new(vec![SOFTMAXROWS, SOFTMAXCOLS]).unwrap(),
@@ -67,109 +61,85 @@ fn softmax(c: &mut Criterion) {
     .unwrap();
     let view = t.getview();
 
-    let mut group = c.benchmark_group("kernel/softmax");
-    group.throughput(Throughput::Elements(elements as u64));
-    group.bench_function("rows512cols4096", |b| {
-        b.iter(|| black_box(cpusoftmax.apply(black_box(&view)).unwrap()));
-    });
-    group.finish();
+    report(&run("kernel/softmax/rows512cols4096", || {
+        black_box(cpusoftmax.apply(black_box(&view)).unwrap())
+    }));
 }
 
-fn binary(c: &mut Criterion) {
+fn binary() {
     let (a, b) = matmulinput().unwrap();
     let (av, bv) = (a.getview(), b.getview());
 
-    let mut group = c.benchmark_group("kernel/binary");
-    group.throughput(Throughput::Elements((MATMULDIM * MATMULDIM) as u64));
-    group.bench_function("matmul256", |bch| {
-        bch.iter(|| black_box(cpumatmul.apply(black_box(&av), black_box(&bv)).unwrap()));
-    });
-    group.bench_function("add", |bch| {
-        bch.iter(|| black_box(cpuadd.apply(black_box(&av), black_box(&bv)).unwrap()));
-    });
-    group.bench_function("mul", |bch| {
-        bch.iter(|| black_box(cpumul.apply(black_box(&av), black_box(&bv)).unwrap()));
-    });
-    group.finish();
+    report(&run("kernel/binary/matmul256", || {
+        black_box(cpumatmul.apply(black_box(&av), black_box(&bv)).unwrap())
+    }));
+    report(&run("kernel/binary/add", || {
+        black_box(cpuadd.apply(black_box(&av), black_box(&bv)).unwrap())
+    }));
+    report(&run("kernel/binary/mul", || {
+        black_box(cpumul.apply(black_box(&av), black_box(&bv)).unwrap())
+    }));
 }
 
-fn rmsnorm(c: &mut Criterion) {
+fn rmsnorm() {
     let (x, w) = norminput().unwrap();
     let (xv, wv) = (x.getview(), w.getview());
     let kernel = cpurmsnorm::new(cpurmsnorm::DEFAULTEPS);
 
-    let mut group = c.benchmark_group("kernel/rmsnorm");
-    group.throughput(Throughput::Elements((NORMROWS * NORMCOLS) as u64));
-    group.bench_function("rows512cols4096", |b| {
-        b.iter(|| black_box(kernel.apply(black_box(&xv), black_box(&wv)).unwrap()));
-    });
-    group.finish();
+    report(&run("kernel/rmsnorm/rows512cols4096", || {
+        black_box(kernel.apply(black_box(&xv), black_box(&wv)).unwrap())
+    }));
 }
 
-fn rope(c: &mut Criterion) {
+fn rope() {
     let t = ropeinput().unwrap();
     let view = t.getview();
     let kernel = cpurope::new(HEADS, 10000.0);
 
-    let mut group = c.benchmark_group("kernel/rope");
-    group.throughput(Throughput::Elements((SEQLEN * HEADS * HEADDIM) as u64));
-    group.bench_function("seq128heads8dim64", |b| {
-        b.iter(|| black_box(kernel.apply(black_box(&view)).unwrap()));
-    });
-    group.finish();
+    report(&run("kernel/rope/seq128heads8dim64", || {
+        black_box(kernel.apply(black_box(&view)).unwrap())
+    }));
 }
 
-fn embedding(c: &mut Criterion) {
+fn embedding() {
     let (table, indices) = embeddinginput().unwrap();
     let view = table.getview();
 
-    let mut group = c.benchmark_group("kernel/embedding");
-    group.throughput(Throughput::Elements((GATHER * bench::EMBEDDIM) as u64));
-    group.bench_function("gather128", |b| {
-        b.iter(|| {
-            black_box(
-                cpuembedding
-                    .apply(black_box(&view), black_box(&indices))
-                    .unwrap(),
-            )
-        });
-    });
-    group.finish();
+    report(&run("kernel/embedding/gather128", || {
+        black_box(
+            cpuembedding
+                .apply(black_box(&view), black_box(&indices))
+                .unwrap(),
+        )
+    }));
 }
 
-fn attention(c: &mut Criterion) {
+fn attention() {
     let (q, k, v) = attentioninput().unwrap();
     let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
 
-    let mut group = c.benchmark_group("kernel/attention");
-    group.throughput(Throughput::Elements((SEQLEN * HEADS * HEADDIM) as u64));
-    group.bench_function("seq128heads8dim64", |b| {
-        b.iter(|| {
-            black_box(
-                cpuattention
-                    .apply(
-                        black_box(&qv),
-                        black_box(&kv),
-                        black_box(&vv),
-                        HEADS,
-                        HEADS,
-                        true,
-                    )
-                    .unwrap(),
-            )
-        });
-    });
-    group.finish();
+    report(&run("kernel/attention/seq128heads8dim64", || {
+        black_box(
+            cpuattention
+                .apply(
+                    black_box(&qv),
+                    black_box(&kv),
+                    black_box(&vv),
+                    HEADS,
+                    HEADS,
+                    true,
+                )
+                .unwrap(),
+        )
+    }));
 }
 
-criterion_group!(
-    benches,
-    elementwise,
-    softmax,
-    binary,
-    rmsnorm,
-    rope,
-    embedding,
-    attention
-);
-criterion_main!(benches);
+fn main() {
+    elementwise();
+    softmax();
+    binary();
+    rmsnorm();
+    rope();
+    embedding();
+    attention();
+}

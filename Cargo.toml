@@ -19,7 +19,6 @@ members = ["crates/*"]
 # (see docs/architecture.md), matching the `m.md` layout.
 # Every dependency below is a dev-dependency used only by those targets.
 [dev-dependencies]
-criterion.workspace = true
 proptest.workspace = true
 rstest.workspace = true
 lib = { path = "crates/lib" }
@@ -126,7 +125,6 @@ publish = false
 # CLI 和服务端依赖按需使用。
 # 质量保障依赖仅在对应 crate 的开发依赖中引入。
 proptest = "1"
-criterion = "0.7"
 # 参数化测试：以 `#[case]` 表驱动表达"仅输入不同、断言形状相同"的用例，
 # 保留每个用例的独立名字与独立失败（见 docs/engineering.md 测试依赖决策）。
 rstest = "0.27"

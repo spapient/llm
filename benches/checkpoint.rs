@@ -19,12 +19,12 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use ::checkpoint::deltas::delta;
 use ::checkpoint::merge::merge;
 use ::checkpoint::quantize::{dequantize, quantize};
 use ::checkpoint::uformat::snapshot;
 use ::tensor::{dtype, shape};
-use criterion::{Criterion, criterion_group, criterion_main};
 
 /// Square weight width of the workload.
 const DIM: usize = 512;
@@ -66,36 +66,34 @@ fn snapshotwith(random_last: bool) -> snapshot {
     snap
 }
 
-fn encode(c: &mut Criterion) {
+fn encode() {
     let snap = snapshotwith(true);
-    c.bench_function("snapshot/encode", |b| {
-        b.iter(|| black_box(snap.encode().unwrap()))
-    });
+    report(&run("snapshot/encode", || {
+        black_box(snap.encode().unwrap())
+    }));
 }
 
-fn decode(c: &mut Criterion) {
+fn decode() {
     let snap = snapshotwith(true);
     let bytes = snap.encode().unwrap();
-    c.bench_function("snapshot/decode", |b| {
-        b.iter(|| black_box(snapshot::decode(&bytes).unwrap()))
-    });
+    report(&run("snapshot/decode", || {
+        black_box(snapshot::decode(&bytes).unwrap())
+    }));
 }
 
-fn deltacreate(c: &mut Criterion) {
+fn deltacreate() {
     let base = snapshotwith(false);
     let new = snapshotwith(true);
-    c.bench_function("delta/create", |b| {
-        b.iter(|| black_box(delta::fromsnapshots(&base, &new)))
-    });
+    report(&run("delta/create", || {
+        black_box(delta::fromsnapshots(&base, &new))
+    }));
 }
 
-fn mergefull(c: &mut Criterion) {
+fn mergefull() {
     let base = snapshotwith(false);
     let new = snapshotwith(true);
     let d = delta::fromsnapshots(&base, &new);
-    c.bench_function("merge/full", |b| {
-        b.iter(|| black_box(merge(&base, &d).unwrap()))
-    });
+    report(&run("merge/full", || black_box(merge(&base, &d).unwrap())));
 }
 
 /// Builds a deterministic pseudo-random `f32` slice (an LCG stream).
@@ -111,31 +109,29 @@ fn f32data(len: usize) -> Vec<f32> {
         .collect()
 }
 
-fn quantizebench(c: &mut Criterion) {
+fn quantizebench() {
     let data = f32data(DIM * DIM * TENSORS);
-    c.bench_function("quantize/per_tensor", |b| {
-        b.iter(|| black_box(quantize(&data, 0).unwrap()))
-    });
-    c.bench_function("quantize/per_group_128", |b| {
-        b.iter(|| black_box(quantize(&data, 128).unwrap()))
-    });
+    report(&run("quantize/per_tensor", || {
+        black_box(quantize(&data, 0).unwrap())
+    }));
+    report(&run("quantize/per_group_128", || {
+        black_box(quantize(&data, 128).unwrap())
+    }));
 }
 
-fn dequantizebench(c: &mut Criterion) {
+fn dequantizebench() {
     let data = f32data(DIM * DIM * TENSORS);
     let (q, scale) = quantize(&data, 0).unwrap();
-    c.bench_function("dequantize/per_tensor", |b| {
-        b.iter(|| black_box(dequantize(&q, &scale, 0).unwrap()))
-    });
+    report(&run("dequantize/per_tensor", || {
+        black_box(dequantize(&q, &scale, 0).unwrap())
+    }));
 }
 
-criterion_group!(
-    benches,
-    encode,
-    decode,
-    deltacreate,
-    mergefull,
-    quantizebench,
-    dequantizebench
-);
-criterion_main!(benches);
+fn main() {
+    encode();
+    decode();
+    deltacreate();
+    mergefull();
+    quantizebench();
+    dequantizebench();
+}

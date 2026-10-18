@@ -1,9 +1,9 @@
-//! Criterion benchmark for the autograd reverse pass.
+//! Benchmark for the autograd reverse pass.
 //!
 //! The workload is a small but representative chain — matrix multiply, RMS
 //! normalization, and softmax — built once per sample so that gradient
 //! accumulation does not bleed across iterations. Only the reverse pass is
-//! timed; the forward graph is constructed in criterion's setup phase. The
+//! timed; the forward graph is constructed in the setup phase. The
 //! dimensions and dtype are fixed so the measurement is reproducible. This
 //! establishes a baseline; no improvement is claimed.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -11,10 +11,10 @@
 
 use std::hint::black_box;
 
+use ::bench::harness::{report, run};
 use ::tensor::{shape, tensor};
 use autograd::{graph, variableid};
 use cpu::cpuexecutor;
-use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use lib::limits;
 
 /// Row count of the benchmark input.
@@ -45,20 +45,13 @@ fn build() -> (graph<f32>, variableid) {
     (g, p)
 }
 
-fn reverse(c: &mut Criterion) {
-    let mut group = c.benchmark_group("autograd/backward");
-    group.throughput(Throughput::Elements((ROWS * WIDTH) as u64));
-    group.bench_function("matmul_rmsnorm_softmax", |b| {
-        b.iter_batched(
-            build,
-            |(mut g, out)| {
-                g.backward(black_box(out)).unwrap();
-            },
-            BatchSize::SmallInput,
-        );
-    });
-    group.finish();
+fn reverse() {
+    report(&run("autograd/backward/matmul_rmsnorm_softmax", || {
+        let (mut g, out) = build();
+        g.backward(black_box(out)).unwrap();
+    }));
 }
 
-criterion_group!(benches, reverse);
-criterion_main!(benches);
+fn main() {
+    reverse();
+}

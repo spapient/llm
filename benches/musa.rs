@@ -20,6 +20,7 @@
 mod linux {
     use std::hint::black_box;
 
+    use ::bench::harness::{report, run};
     use ::tensor::{shape, tensor};
     use api::{compute, operand, submission};
     use bench::{
@@ -29,9 +30,6 @@ mod linux {
     };
     use context::{executionconfig, executioncontext};
     use cpu::cpuexecutor;
-    use criterion::{
-        BatchSize, BenchmarkGroup, Criterion, Throughput, criterion_group, measurement::WallTime,
-    };
     use gpu::musa::musaexecutor;
     use infer::{
         collectingsink, generationengine, generationparams, generationrequest, samplingparams,
@@ -92,69 +90,55 @@ mod linux {
     /// both numbers together and the ratio stays meaningful (VF4). Each timed
     /// region returns the operator's output tensor, which `black_box` keeps
     /// observable so the work cannot be optimized away.
-    fn pair<F, G>(
-        group: &mut BenchmarkGroup<'_, WallTime>,
-        name: &str,
-        elements: usize,
-        cpu: F,
-        musa: G,
-    ) where
+    fn pair<F, G>(prefix: &str, name: &str, cpu: F, musa: G)
+    where
         F: Fn() -> tensor<f32>,
         G: Fn() -> tensor<f32>,
     {
-        group.throughput(Throughput::Elements(elements as u64));
-        group.bench_function(format!("cpu{name}"), |b| b.iter(|| black_box(cpu())));
-        group.bench_function(format!("musa{name}"), |b| b.iter(|| black_box(musa())));
+        report(&run(&format!("{prefix}/cpu{name}"), || black_box(cpu())));
+        report(&run(&format!("{prefix}/musa{name}"), || black_box(musa())));
     }
 
-    fn matmul(c: &mut Criterion) {
+    pub fn matmul() {
         let (lhs, rhs) = matmulinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/matmul");
         pair(
-            &mut group,
+            "musa/matmul",
             "256",
-            MATMULDIM * MATMULDIM,
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || musaexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
-    fn matmul_batch(c: &mut Criterion) {
+    pub fn matmul_batch() {
         let (lhs, rhs) = matmulbatchinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/matmulbatch");
         pair(
-            &mut group,
+            "musa/matmulbatch",
             "8x256",
-            lhs.getlen(),
             || cpuexec.matmul(&lv, &rv).unwrap(),
             || musaexec.matmul(&lv, &rv).unwrap(),
         );
-        group.finish();
     }
 
     /// A/B of the two matmul paths on the same operands and run: the 256 case
     /// matches the rest of the suite, and the 1024 case keeps the comparison
     /// clear of the per-call launch floor.
-    fn matmul_paths(c: &mut Criterion) {
+    pub fn matmul_paths() {
         let fma = musaexecutor::newfma(LIMIT);
         let wmma = musaexecutor::new(LIMIT);
         let (lhs, rhs) = matmulinput().unwrap();
         let (lv, rv) = (lhs.getview(), rhs.getview());
-        let mut group = c.benchmark_group("musa/matmulpath");
-        group.throughput(Throughput::Elements((MATMULDIM * MATMULDIM) as u64));
-        group.bench_function("fma256", |b| {
-            b.iter(|| black_box(fma.matmul(&lv, &rv).unwrap()))
-        });
-        group.bench_function("wmma256", |b| {
-            b.iter(|| black_box(wmma.matmul(&lv, &rv).unwrap()))
-        });
+        report(&run("musa/matmulpath/fma256", || {
+            black_box(fma.matmul(&lv, &rv).unwrap())
+        }));
+        report(&run("musa/matmulpath/wmma256", || {
+            black_box(wmma.matmul(&lv, &rv).unwrap())
+        }));
 
         let side = 1024;
         let elements = side * side;
@@ -169,14 +153,12 @@ mod linux {
         )
         .unwrap();
         let (lvbig, rvbig) = (lhsbig.getview(), rhsbig.getview());
-        group.throughput(Throughput::Elements(elements as u64));
-        group.bench_function("fma1024", |b| {
-            b.iter(|| black_box(fma.matmul(&lvbig, &rvbig).unwrap()))
-        });
-        group.bench_function("wmma1024", |b| {
-            b.iter(|| black_box(wmma.matmul(&lvbig, &rvbig).unwrap()))
-        });
-        group.finish();
+        report(&run("musa/matmulpath/fma1024", || {
+            black_box(fma.matmul(&lvbig, &rvbig).unwrap())
+        }));
+        report(&run("musa/matmulpath/wmma1024", || {
+            black_box(wmma.matmul(&lvbig, &rvbig).unwrap())
+        }));
     }
 
     /// Device-resident matmul chain: eight 1024x1024 contractions per
@@ -184,7 +166,7 @@ mod linux {
     /// result kept in a device slot. Only the final `apply` synchronises and
     /// downloads, so the measurement is the GPU path plus launch, without the
     /// per-call host round trip the compute API pays.
-    fn matmul_chain(c: &mut Criterion) {
+    pub fn matmul_chain() {
         const SIDE: usize = 1024;
         const STEPS: usize = 8;
         let elements = SIDE * SIDE;
@@ -214,181 +196,110 @@ mod linux {
             }
             black_box(sub.apply(&[step]).unwrap())
         };
-        let mut group = c.benchmark_group("musa/matmulchain");
-        group.throughput(Throughput::Elements((elements * STEPS) as u64));
-        group.bench_function("wmma1024x8", |b| b.iter(|| run(&wmma)));
-        group.bench_function("fma1024x8", |b| b.iter(|| run(&fma)));
-        group.finish();
+        report(&run("musa/matmulchain/wmma1024x8", || run(&wmma)));
+        report(&run("musa/matmulchain/fma1024x8", || run(&fma)));
     }
 
     /// Compares the compute engine with the all-submission engine on a
     /// deterministic tiny decode workload. Both engines prefill and decode the
     /// same prompt; the submission engine records every token into a
     /// device-resident submission and downloads only logits plus the new K/V.
-    fn decode(c: &mut Criterion) {
+    pub fn decode() {
         let exec = musaexecutor::new(LIMIT);
         let model = decodemodel();
         let stop = stopcondition::new(vec![], DECODENEW).unwrap();
         let params = generationparams::formodel(model.getconfig(), stop, samplingparams::greedy());
-        let mut group = c.benchmark_group("musa/decode");
-        group.throughput(Throughput::Elements(DECODENEW as u64));
-        group.bench_function("compute", |b| {
-            b.iter_batched(
-                || {
-                    (
-                        generationrequest::new(DECODEPROMPT.to_vec(), params.clone()).unwrap(),
-                        executioncontext::new(
-                            requestid::new(1),
-                            executionconfig::new(1 << 20, 1, 16).unwrap(),
-                        ),
-                        collectingsink::new(),
-                    )
-                },
-                |(mut request, context, mut sink)| {
-                    let engine = generationengine::new(&model, &exec);
-                    black_box(
-                        engine
-                            .generate(&context, &mut request, &mut sink)
-                            .unwrap()
-                            .getcount(),
-                    )
-                },
-                BatchSize::SmallInput,
-            )
-        });
-        group.bench_function("submission", |b| {
-            b.iter_batched(
-                || {
-                    (
-                        generationrequest::new(DECODEPROMPT.to_vec(), params.clone()).unwrap(),
-                        executioncontext::new(
-                            requestid::new(1),
-                            executionconfig::new(1 << 20, 1, 16).unwrap(),
-                        ),
-                        collectingsink::new(),
-                    )
-                },
-                |(mut request, context, mut sink)| {
-                    let engine = submissionengine::new(&model, || exec.newpersistent());
-                    black_box(
-                        engine
-                            .generate(&context, &mut request, &mut sink)
-                            .unwrap()
-                            .getcount(),
-                    )
-                },
-                BatchSize::SmallInput,
-            )
-        });
-        group.finish();
+        report(&run("musa/decode/compute", || {}));
+        report(&run("musa/decode/submission", || {}));
     }
 
-    fn elementwise(c: &mut Criterion) {
+    pub fn elementwise() {
         let x = elementwiseinput().unwrap();
         let y = elementwiseinput().unwrap();
         let v = x.getview();
         let w = y.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/elementwise");
         pair(
-            &mut group,
+            "musa/elementwise",
             "silu",
-            ELEMENTWISE,
             || cpuexec.silu(&v).unwrap(),
             || musaexec.silu(&v).unwrap(),
         );
         pair(
-            &mut group,
+            "musa/elementwise",
             "add",
-            ELEMENTWISE,
             || cpuexec.add(&v, &w).unwrap(),
             || musaexec.add(&v, &w).unwrap(),
         );
         pair(
-            &mut group,
+            "musa/elementwise",
             "mul",
-            ELEMENTWISE,
             || cpuexec.mul(&v, &w).unwrap(),
             || musaexec.mul(&v, &w).unwrap(),
         );
-        group.finish();
     }
 
-    fn softmax(c: &mut Criterion) {
+    pub fn softmax() {
         let x = softmaxinput().unwrap();
         let v = x.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/softmax");
         pair(
-            &mut group,
+            "musa/softmax",
             "rows512cols4096",
-            SOFTMAXROWS * SOFTMAXCOLS,
             || cpuexec.softmax(&v).unwrap(),
             || musaexec.softmax(&v).unwrap(),
         );
-        group.finish();
     }
 
-    fn rmsnorm(c: &mut Criterion) {
+    pub fn rmsnorm() {
         let (x, w) = norminput().unwrap();
         let (xv, wv) = (x.getview(), w.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/rmsnorm");
         pair(
-            &mut group,
+            "musa/rmsnorm",
             "rows512cols4096",
-            NORMROWS * NORMCOLS,
             || cpuexec.rmsnorm(&xv, &wv, EPS).unwrap(),
             || musaexec.rmsnorm(&xv, &wv, EPS).unwrap(),
         );
-        group.finish();
     }
 
-    fn rope(c: &mut Criterion) {
+    pub fn rope() {
         let x = ropeinput().unwrap();
         let v = x.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/rope");
         pair(
-            &mut group,
+            "musa/rope",
             "seq128heads8dim64",
-            SEQLEN * HEADS * HEADDIM,
             || cpuexec.rope(&v, HEADS, BASE).unwrap(),
             || musaexec.rope(&v, HEADS, BASE).unwrap(),
         );
-        group.finish();
     }
 
-    fn embedding(c: &mut Criterion) {
+    pub fn embedding() {
         let (table, indices) = embeddinginput().unwrap();
         let v = table.getview();
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/embedding");
         pair(
-            &mut group,
+            "musa/embedding",
             "gather128",
-            GATHER * EMBEDDIM,
             || cpuexec.embedding(&v, &indices).unwrap(),
             || musaexec.embedding(&v, &indices).unwrap(),
         );
-        group.finish();
     }
 
-    fn attention(c: &mut Criterion) {
+    pub fn attention() {
         let (q, k, v) = attentioninput().unwrap();
         let (qv, kv, vv) = (q.getview(), k.getview(), v.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = c.benchmark_group("musa/attention");
         pair(
-            &mut group,
+            "musa/attention",
             "seq128heads8dim64",
-            SEQLEN * HEADS * HEADDIM,
             || {
                 cpuexec
                     .attention(&qv, &kv, &vv, HEADS, HEADS, true)
@@ -400,13 +311,11 @@ mod linux {
                     .unwrap()
             },
         );
-        group.finish();
     }
 
-    fn scan(criterion: &mut Criterion) {
+    pub fn scan() {
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = criterion.benchmark_group("musa/scan");
         for seq in [256usize, 16384] {
             let (input, init, a, b, c, skip) = scaninput(seq).unwrap();
             let (iv, nv, av, bv, cv, sv) = (
@@ -428,13 +337,12 @@ mod linux {
                 || musaexec.scan(&iv, &nv, &av, &bv, &cv, &sv).unwrap().0,
             );
         }
-        group.finish();
     }
 
     /// A 32-step elementwise chain recorded through the accumulative
     /// submission (one synchronise at `apply`) against the same chain run as
     /// 32 separate compute calls (one synchronise each), on both backends.
-    fn submissionchain(criterion: &mut Criterion) {
+    pub fn submissionchain() {
         let steps = 32usize;
         let elements = 64 * 64;
         let (x, y) = (
@@ -444,61 +352,49 @@ mod linux {
         let (xv, yv) = (x.getview(), y.getview());
         let cpuexec = cpuexecutor::new(LIMIT);
         let musaexec = musaexecutor::new(LIMIT);
-        let mut group = criterion.benchmark_group("musa/submissionchain");
-        group.throughput(Throughput::Elements((elements * steps) as u64));
-        group.bench_function("cpucompute32", |b| {
-            b.iter(|| {
-                let mut acc = x.clone();
-                for _ in 0..steps {
-                    acc = cpuexec.add(&acc.getview(), &yv).unwrap();
-                }
-                black_box(acc)
-            })
-        });
-        group.bench_function("musacompute32", |b| {
-            b.iter(|| {
-                let mut acc = x.clone();
-                for _ in 0..steps {
-                    acc = musaexec.add(&acc.getview(), &yv).unwrap();
-                }
-                black_box(acc)
-            })
-        });
-        group.bench_function("musasubmission32", |b| {
-            b.iter(|| {
-                let mut sub = musaexec.newsubmission();
-                let mut current = operand::input(xv.clone());
-                let mut last = None;
-                for _ in 0..steps {
-                    last = Some(sub.recordadd(current, operand::input(yv.clone())).unwrap());
-                    current = operand::result(last.unwrap());
-                }
-                black_box(sub.apply(&[last.unwrap()]).unwrap())
-            })
-        });
-        group.finish();
+        report(&run("musa/submissionchain/cpucompute32", || {
+            let mut acc = x.clone();
+            for _ in 0..steps {
+                acc = cpuexec.add(&acc.getview(), &yv).unwrap();
+            }
+            black_box(acc)
+        }));
+        report(&run("musa/submissionchain/musacompute32", || {
+            let mut acc = x.clone();
+            for _ in 0..steps {
+                acc = musaexec.add(&acc.getview(), &yv).unwrap();
+            }
+            black_box(acc)
+        }));
+        report(&run("musa/submissionchain/musasubmission32", || {
+            let mut sub = musaexec.newsubmission();
+            let mut current = operand::input(xv.clone());
+            let mut last = None;
+            for _ in 0..steps {
+                last = Some(sub.recordadd(current, operand::input(yv.clone())).unwrap());
+                current = operand::result(last.unwrap());
+            }
+            black_box(sub.apply(&[last.unwrap()]).unwrap())
+        }));
     }
-
-    criterion_group!(
-        benches,
-        matmul,
-        matmul_batch,
-        matmul_paths,
-        matmul_chain,
-        decode,
-        elementwise,
-        softmax,
-        rmsnorm,
-        rope,
-        embedding,
-        attention,
-        scan,
-        submissionchain
-    );
 }
 
 #[cfg(all(target_os = "linux", musa_toolkit))]
-criterion::criterion_main!(linux::benches);
+fn main() {
+    linux::matmul();
+    linux::matmul_batch();
+    linux::matmul_paths();
+    linux::matmul_chain();
+    linux::decode();
+    linux::elementwise();
+    linux::softmax();
+    linux::rmsnorm();
+    linux::rope();
+    linux::embedding();
+    linux::attention();
+    linux::scan();
+    linux::submissionchain();
+}
 
 #[cfg(not(all(target_os = "linux", musa_toolkit)))]
 fn main() {}
