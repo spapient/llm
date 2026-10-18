@@ -3109,8 +3109,27 @@ metalcontract.rs` 2 例真机（persist+append+view 往返、两行前导窗口�
 blit 设备端写入验证）；`cargo test -p llm --test it` = 1024 passed；
 clippy 零警告；checkunsafe 门禁通过（metal = 4 已登记，见 §21.8）。
 
-**剩余（P2–P3）**：`gpu/decode` 的 devicecached 基准对照（真机回填
-「每步只下载 logits」的收益）、MUSA 对齐。CUDA 的 D2D 拷贝对齐在 P3 落地。
+**P2（devicecached 基准对照，已交付）**：`benches/metal.rs` 的
+`gpu/decode` 新增 `devicecached/s{seq}` 档——prefill 与 decode 全走
+`forwardsubmission_cached_device` + `devicecache`，每步 `apply` 只下载
+logits（KV 张量永不离开设备）。修了 alloc 的一个真机边界：Metal
+`newBufferWithLength(0)` 返回 nil（`position==0` 时 block 传空 `[0,width]`
+kv 前缀作 input），`alloc` 现对 0 字节向上取整到 1 字节，空视图读写仍为空。
+真机数字（Apple M5 Pro，`cargo bench -p llm --bench metal -- gpu/decode`）：
+
+| seq | metalcached | devicecached | metalrecompute |
+|---|---|---|---|
+| 16 | 103.5ms | 28.0ms | 15.2ms |
+| 128 | 839.9ms | 262.1ms | 196.9ms |
+| 256 | 1711.4ms | 551.7ms | 543.5ms |
+
+devicecached 相对 metalcached **3.10–3.70×**（每步下载 `1 + 2·layers` 个 KV
+张量 + CPU append 的固定成本消除）；相对 recompute 1.02–1.84×（每步
+command-buffer 固定成本 ≈2.1ms 主导，s256 已收敛到 1.02×——增量 attention
+的 O(seq²)→O(seq) 优势在更长序列显现）。
+
+**剩余（P3）**：CUDA D2D 拷贝对齐（`recordappend` 走
+`cudaMemcpyAsync` 设备端拷贝）与 MUSA 对齐。
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 

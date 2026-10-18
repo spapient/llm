@@ -36,7 +36,7 @@ mod macos {
     use gpu::metal::metalexecutor;
     use infer::kvstate;
     use lib::{limits, seed};
-    use models::{causallm, kvcache, llamaconfig, llamamodel, llamaweights};
+    use models::{causallm, devicecache, kvcache, llamaconfig, llamamodel, llamaweights};
 
     /// Resource budget that admits every workload without rejecting it.
     const LIMIT: limits = limits::new(1 << 28, 1 << 31, 1 << 20, 1 << 18);
@@ -335,6 +335,25 @@ mod macos {
                         .unwrap();
                 }
                 black_box(&got[0]);
+            }
+        }));
+        report(&run(&format!("gpu/decode/devicecached/s{seq}"), || {
+            // The same decode workload against a device-resident cache: each
+            // step records one `forwardsubmission_cached_device`, appends the
+            // new key/value rows with a device-side blit inside `apply`, and
+            // downloads only the logits — no KV tensor ever leaves the
+            // device. Setup (prefill) and decode both run through the device
+            // cache so the token counts match `metalcached` and `recompute`.
+            let mut cache =
+                devicecache::new(config.getnlayers(), config.getkvwidth(), config.getmaxseq())
+                    .unwrap();
+            for &token in prompt.iter().chain(decode_tokens.iter()) {
+                let mut sub = metalexec.newsubmission().unwrap();
+                let handles = model
+                    .forwardsubmission_cached_device(&mut sub, &mut cache, token)
+                    .unwrap();
+                let logits = sub.apply(&[handles.logits]).unwrap();
+                black_box(&logits[0]);
             }
         }));
         report(&run(&format!("gpu/decode/metalrecompute/s{seq}"), || {

@@ -237,8 +237,12 @@ pub(super) fn alloc(
     device: &ProtocolObject<dyn MTLDevice>,
     bytes: usize,
 ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>, gpuerror> {
+    // A zero-length allocation (an empty `[0, width]` operand, e.g. the
+    // leading key/value rows at position 0) would make `newBufferWithLength`
+    // return nil on Apple GPUs; allocate one byte instead. Element-wise
+    // copies and downloads of a zero-element view stay empty and in bounds.
     device
-        .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
+        .newBufferWithLength_options(bytes.max(1), MTLResourceOptions::StorageModeShared)
         .ok_or(gpuerror::allocation)
 }
 
