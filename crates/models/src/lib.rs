@@ -44,6 +44,7 @@
 mod block;
 mod causal;
 mod config;
+mod devicekv;
 mod error;
 mod model;
 mod registry;
@@ -52,6 +53,7 @@ mod weights;
 pub use block::llamablock;
 pub use causal::{causallm, devicekvcache, kvcache};
 pub use config::llamaconfig;
+pub use devicekv::devicecache;
 pub use error::modelerror;
 pub use model::{cachedsubmission, llamamodel};
 pub use registry::{architecture, getarchitecture};

@@ -1061,6 +1061,28 @@ pub mod metal {
             session.0.persist(data).map_err(maptobackend)
         }
 
+        fn recordappend(
+            &self,
+            session: &mut Self::session,
+            cached: &Retained<ProtocolObject<dyn MTLBuffer>>,
+            new: &Retained<ProtocolObject<dyn MTLBuffer>>,
+            position: usize,
+        ) -> Result<(), backenderror> {
+            // One row is the whole `new` buffer: the cached-attention path
+            // appends exactly the `[1, width]` key/value the kernel produced.
+            let bytes = new.length();
+            if bytes == 0 {
+                return Err(backenderror::invalidparameter { op: "append" });
+            }
+            let offset = position
+                .checked_mul(bytes)
+                .ok_or(backenderror::sizeoverflow)?;
+            session
+                .0
+                .recordappend(cached, offset, new, bytes)
+                .map_err(maptobackend)
+        }
+
         fn gethostdata(&self, session: &Self::session, slot: usize) -> Option<Vec<f32>> {
             session.0.gethostdata(slot)
         }

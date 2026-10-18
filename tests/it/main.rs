@@ -28,6 +28,7 @@ mod crosscrate;
 mod cudacontract;
 mod dataunits;
 mod devicecachecontract;
+mod devicekv;
 mod formatunits;
 mod generation;
 mod gpucontract;

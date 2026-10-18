@@ -1113,3 +1113,116 @@ fn submission_rejects_an_unrecorded_result_reference() {
 
     assert_eq!(err, backenderror::indexoutofrange { index: 99, len: 0 });
 }
+
+/// Device-resident append, on Metal: register a persistent key/value buffer,
+/// append one row with a device-to-device blit copy, view the leading window,
+/// and require the downloaded view to equal the appended row.
+///
+/// This exercises `recordpersist` (persistent slot, not downloaded as a step
+/// output), `recordappend` (blit pass inside `apply`'s unsafe block) and
+/// `recordview` (leading-window re-tag) through the public recorder surface.
+#[test]
+fn devicecache_metal_persist_append_view_roundtrip() {
+    let exec = metalexecutor::new(wide());
+    let maxseq = 4usize;
+    let width = 4usize;
+    let mut sess = exec.newsession().unwrap();
+
+    let keydata = vec![0.0; maxseq * width];
+    let valdata = vec![0.0; maxseq * width];
+    let kpersist = api::recorder::recordpersist(
+        &mut sess,
+        &keydata,
+        ::tensor::shape::new(vec![maxseq, width]).unwrap(),
+    )
+    .unwrap();
+    let vpersist = api::recorder::recordpersist(
+        &mut sess,
+        &valdata,
+        ::tensor::shape::new(vec![maxseq, width]).unwrap(),
+    )
+    .unwrap();
+
+    let k0 = vec![1.0, 2.0, 3.0, 4.0];
+    let v0 = vec![5.0, 6.0, 7.0, 8.0];
+    let kh = api::recorder::recordpersist(
+        &mut sess,
+        &k0,
+        ::tensor::shape::new(vec![1, width]).unwrap(),
+    )
+    .unwrap();
+    let vh = api::recorder::recordpersist(
+        &mut sess,
+        &v0,
+        ::tensor::shape::new(vec![1, width]).unwrap(),
+    )
+    .unwrap();
+    api::recorder::recordappend(&mut sess, operand::result(kpersist), operand::result(kh), 0)
+        .unwrap();
+    api::recorder::recordappend(&mut sess, operand::result(vpersist), operand::result(vh), 0)
+        .unwrap();
+
+    let kview = api::recorder::recordview(
+        &mut sess,
+        kpersist,
+        ::tensor::shape::new(vec![1, width]).unwrap(),
+    )
+    .unwrap();
+    let vview = api::recorder::recordview(
+        &mut sess,
+        vpersist,
+        ::tensor::shape::new(vec![1, width]).unwrap(),
+    )
+    .unwrap();
+    let got = sess.apply(&[kview, vview]).unwrap();
+    assert_eq!(got[0].getdata(), &k0);
+    assert_eq!(got[1].getdata(), &v0);
+}
+
+/// Appending two rows onto the same persistent buffer and viewing the leading
+/// window returns both rows: the blit pass writes row `position * width` and
+/// the view re-tags the persistent slot, so the window is the real device
+/// state, not a host snapshot.
+#[test]
+fn devicecache_metal_two_rows_leading_window() {
+    let exec = metalexecutor::new(wide());
+    let maxseq = 4usize;
+    let width = 4usize;
+    let mut sess = exec.newsession().unwrap();
+
+    let keydata = vec![0.0; maxseq * width];
+    let kpersist = api::recorder::recordpersist(
+        &mut sess,
+        &keydata,
+        ::tensor::shape::new(vec![maxseq, width]).unwrap(),
+    )
+    .unwrap();
+    // Two rows kept alive together: `recordpersist` dedups on the host
+    // `(ptr, len)` pair, and a single reused allocation would alias the two
+    // rows onto one device buffer.
+    let rows = [vec![1.0f32, 2.0, 3.0, 4.0], vec![9.0, 10.0, 11.0, 12.0]];
+    for (row, data) in rows.iter().enumerate() {
+        let handle = api::recorder::recordpersist(
+            &mut sess,
+            data,
+            ::tensor::shape::new(vec![1, width]).unwrap(),
+        )
+        .unwrap();
+        api::recorder::recordappend(
+            &mut sess,
+            operand::result(kpersist),
+            operand::result(handle),
+            row,
+        )
+        .unwrap();
+    }
+    let view = api::recorder::recordview(
+        &mut sess,
+        kpersist,
+        ::tensor::shape::new(vec![2, width]).unwrap(),
+    )
+    .unwrap();
+    let got = sess.apply(&[view]).unwrap();
+    let want: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 9.0, 10.0, 11.0, 12.0];
+    assert_eq!(got[0].getdata(), &want);
+}

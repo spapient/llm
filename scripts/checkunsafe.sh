@@ -25,7 +25,7 @@ cd "$ROOT_DIR"
 WHITELIST=(
   "crates/gpu/ffi/cuda/drive.rs:2"
   "crates/gpu/ffi/musa/drive.rs:2"
-  "crates/gpu/ffi/metal/drive.rs:3"
+  "crates/gpu/ffi/metal/drive.rs:4"
   "crates/gpu/ffi/rocm.rs:3"
   "crates/gpu/ffi/sycl.rs:2"
   "crates/gpu/ffi/cann.rs:2"

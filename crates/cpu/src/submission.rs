@@ -18,6 +18,12 @@ use api::{backenderror, compute, kvpair, operand, operandpair, stepref, submissi
 pub struct cpusubmission<C: compute> {
     backend: C,
     results: Vec<tensor<f32>>,
+    /// Caller data registered through `recordpersist`, keyed by
+    /// `(pointer, length)`: the CPU reference reuses the same result slot for
+    /// the same registered buffer, mirroring the engine's device-side
+    /// persistent table, so a device cache that hands the same host buffer
+    /// back every step keeps one snapshot.
+    persistent: std::collections::HashMap<(usize, usize), usize>,
 }
 
 impl<C: compute> cpusubmission<C> {
@@ -27,6 +33,7 @@ impl<C: compute> cpusubmission<C> {
         Self {
             backend,
             results: Vec::new(),
+            persistent: std::collections::HashMap::new(),
         }
     }
 
@@ -256,9 +263,15 @@ impl<C: compute> submission for cpusubmission<C> {
         if data.len() != count {
             return Err(backenderror::invalidparameter { op: "persist" });
         }
+        let key = (data.as_ptr() as usize, data.len());
+        if let Some(&index) = self.persistent.get(&key) {
+            return Ok(stepref::fromindex(index));
+        }
         let t = tensor::new(shape, data.to_vec())
             .map_err(|_| backenderror::invalidparameter { op: "persist" })?;
-        Ok(self.push(t))
+        let index = self.push(t).getindex();
+        self.persistent.insert(key, index);
+        Ok(stepref::fromindex(index))
     }
 
     fn recordappend(

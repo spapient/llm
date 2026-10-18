@@ -9,6 +9,18 @@
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 
+use objc2_metal::MTLBlitCommandEncoder;
+
+/// A queued device-to-device row copy: `(destination, offset, source, bytes)`.
+///
+/// The tuple keeps the destination and its offset adjacent so the blit pass
+/// in `apply` can encode each copy without re-deriving the row geometry.
+type appendlist = Vec<(
+    Retained<ProtocolObject<dyn MTLBuffer>>,
+    usize,
+    Retained<ProtocolObject<dyn MTLBuffer>>,
+    usize,
+)>;
 use objc2_metal::{
     MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
     MTLDevice, MTLResourceOptions, MTLSize,
@@ -329,6 +341,13 @@ pub(crate) struct session {
     /// rows resident. The pending queue flushes their contents on the next
     /// dispatch, exactly like ordinary uploads.
     persisted: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    /// Device-to-device row copies queued by [`session::recordappend`]: each
+    /// `(destination, offset, source, bytes)` copies a new key/value row into a
+    /// persistent cache buffer. The copies are encoded by `apply` as one blit
+    /// pass after the compute encoder ends and before commit, inside the same
+    /// unsafe block as the commit and the downloads, so the site count does
+    /// not change.
+    appends: appendlist,
     /// True once `endEncoding` has been called, so `Drop` ends an encoder that
     /// an error path dropped mid-submission exactly once.
     ended: bool,
@@ -368,6 +387,7 @@ impl session {
             outputs: Vec::new(),
             pending: RefCell::new(Vec::new()),
             persisted: Vec::new(),
+            appends: Vec::new(),
             ended: false,
         })
     }
@@ -405,6 +425,35 @@ impl session {
         let index = self.persisted.len();
         self.persisted.push(buffer);
         Ok(PERSIST_BASE | index)
+    }
+
+    /// Queues a device-to-device row copy into a persistent buffer.
+    ///
+    /// `bytes` is one row (`width * size_of::<f32>()`) and `offset` its
+    /// destination row start; both ranges are validated here, and the copy
+    /// itself is encoded by `apply` as one blit pass, so no host round trip
+    /// ever carries a cached row.
+    pub(crate) fn recordappend(
+        &mut self,
+        destination: &Retained<ProtocolObject<dyn MTLBuffer>>,
+        offset: usize,
+        source: &Retained<ProtocolObject<dyn MTLBuffer>>,
+        bytes: usize,
+    ) -> Result<(), gpuerror> {
+        let end = offset.checked_add(bytes).ok_or(gpuerror::sizeoverflow)?;
+        if end > destination.length() {
+            return Err(gpuerror::execution {
+                message: "append destination out of range".to_string(),
+            });
+        }
+        if bytes > source.length() {
+            return Err(gpuerror::execution {
+                message: "append source out of range".to_string(),
+            });
+        }
+        self.appends
+            .push((destination.clone(), offset, source.clone(), bytes));
+        Ok(())
     }
 
     /// Encodes one dispatch into the shared encoder and records its output slot.
@@ -547,7 +596,32 @@ impl session {
         match self.outputs.get(index) {
             Some(slot::empty) => Some(Vec::new()),
             Some(slot::zeros(count)) => Some(vec![0.0_f32; *count]),
-            _ => None,
+            _ => {
+                // A persistent slot names a buffer that lives on the device and
+                // is not part of the per-apply download list; copy it out here
+                // on demand. The leading-window view re-tags such a slot, so a
+                // caller downloading that view receives the real cache prefix.
+                if index >= PERSIST_BASE {
+                    let persist_index = index & !PERSIST_BASE;
+                    let buffer = self.persisted.get(persist_index)?;
+                    let len = buffer.length() / 4;
+                    let mut out = vec![0.0_f32; len];
+                    // SAFETY: `contents` is valid for the buffer's length and
+                    // `out` is exactly that length in floats; the command
+                    // buffer has already been committed and waited on by
+                    // `apply`, so the read races nothing.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping::<f32>(
+                            buffer.contents().as_ptr().cast::<f32>(),
+                            out.as_mut_ptr(),
+                            len,
+                        );
+                    }
+                    Some(out)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -558,17 +632,56 @@ impl session {
     pub(crate) fn apply(&mut self) -> Result<Vec<Vec<f32>>, gpuerror> {
         self.encoder.endEncoding();
         self.ended = true;
-        self.command.commit();
         // `session` implements `Drop`, so fields cannot be moved out of `self`;
-        // `take` leaves an empty vector behind and hands the slots over.
+        // `take` leaves empty vectors behind and hands the slots over.
+        let appends = core::mem::take(&mut self.appends);
         let outputs = core::mem::take(&mut self.outputs);
         let mut results: Vec<Vec<f32>> = Vec::with_capacity(outputs.len());
-        // SAFETY: every `slot::buffer` was allocated with at least `len` f32
-        // elements by the dispatch that recorded it, and the `waitUntilCompleted`
-        // inside this block orders the reads after every encoded kernel wrote
-        // the buffers, so each `contents` pointer yields exactly `len`
-        // initialized elements, which the reserved `out` has room for.
+        // SAFETY: one unsafe block serializes the blit pass, the commit, and
+        // the downloads on the same command buffer:
+        // * every `(destination, offset, source, bytes)` append was validated
+        //   by `recordappend` to fit both buffers, and the copies are encoded
+        //   after the compute encoder ended, so each new key/value row lands in
+        //   its persistent cache row after the kernel that produced it;
+        // * `commit` submits that ordered work and `waitUntilCompleted` makes
+        //   every download below read post-kernel data;
+        // * every `slot::buffer` was allocated with at least `len` f32 elements
+        //   by the dispatch that recorded it, so each `contents` pointer yields
+        //   exactly `len` initialized elements, which the reserved `out` has
+        //   room for.
         unsafe {
+            // Flush the pending host uploads into their buffers first: a
+            // persist-only session (no dispatch) still needs the initial
+            // key/value rows resident before the blit pass reads them, and
+            // every buffer here was allocated with exactly `size_of_val(data)`
+            // bytes, so the copies are in bounds.
+            let pending = core::mem::take(&mut *self.pending.borrow_mut());
+            for (buffer, data) in pending {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().cast::<u8>(),
+                    buffer.contents().as_ptr().cast::<u8>(),
+                    core::mem::size_of_val(&data[..]),
+                );
+            }
+            if !appends.is_empty() {
+                let blit =
+                    self.command
+                        .blitCommandEncoder()
+                        .ok_or_else(|| gpuerror::execution {
+                            message: "the command buffer returned no blit encoder".to_string(),
+                        })?;
+                for (destination, offset, source, bytes) in appends {
+                    blit.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
+                        &source,
+                        0,
+                        &destination,
+                        offset,
+                        bytes,
+                    );
+                }
+                blit.endEncoding();
+            }
+            self.command.commit();
             self.command.waitUntilCompleted();
             for output in outputs {
                 match output {

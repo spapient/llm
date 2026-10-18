@@ -2714,9 +2714,9 @@ gpu -> api
 | `simd` | 4 个 x86/NEON 辅助内核声明（`hmax256`/`hsum256`/`exp2approx` ×2） | `intrinsics.rs` |
 | `tensor` | 零拷贝字节视图 `unsafe` 块（`trybyteview`：对齐与长度校验通过后的一次 `from_raw_parts` 重解释，参考 `zerocopy` `Ref` 校验核心） | `byteview.rs` |
 
-站点登记：`metal` = 3，`cuda` = 2，`musa` = 2，`rocm` = 3，`sycl` = 2，`cann` = 2，`mlu` = 2（分居 `crates/gpu/ffi/`，各文件登记 = cuda 2/musa 2/metal 3/rocm 3/sycl 2/cann 2/mlu 2，合计 16），`checkpoint` = 3，`simd` = 32，`tensor` = 1；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。`rocm` 的第三处站点（2026-10-18 随 `matmul` 走 hipBLAS 而新增）把 hipBLAS 的句柄创建与 `hipblasGemmStridedBatched` 收于独立交接块，与 `drive` 的内核交接块分开，`unsafe` 数不随算子面增减。
+站点登记：`metal` = 4，`cuda` = 2，`musa` = 2，`rocm` = 3，`sycl` = 2，`cann` = 2，`mlu` = 2（分居 `crates/gpu/ffi/`，各文件登记 = cuda 2/musa 2/metal 4/rocm 3/sycl 2/cann 2/mlu 2，合计 17），`checkpoint` = 3，`simd` = 32，`tensor` = 1；门禁断言「实测站点数**恰好等于**本表条目数」，多一处或少一处都失败。因此新增任何站点都必须先更新本表并在此说明理由，删除站点同样必须同步本表。`rocm` 的第三处站点（2026-10-18 随 `matmul` 走 hipBLAS 而新增）把 hipBLAS 的句柄创建与 `hipblasGemmStridedBatched` 收于独立交接块，与 `drive` 的内核交接块分开，`unsafe` 数不随算子面增减。
 
-依据：这些数字由**调用面结构**推导，而非经验取值。Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径的 `dispatch` 把上传、缓冲绑定、标量绑定、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载收进**单一交接块**；累积路径的 `session` 拆成**编码块**（绑定并启动、不等待）与**提交块**（`commit` + 等待 + 下载）两个块——command buffer 单次使用、跨算子共享，故提交只发生一次。每个块内的全部平台调用共享同一个 `// SAFETY:` 前置论证（缓冲均为本块持有或调用者传入的存活 `MTLBuffer`、长度与内核读写一致、`setBytes` 拷贝而非保留、`waitUntilCompleted` 排序读写）。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
+依据：这些数字由**调用面结构**推导，而非经验取值。Metal 的口径是**每次驱动交接一个 `unsafe` 块**：同步路径的 `dispatch` 把上传、缓冲绑定、标量绑定、启动、`endEncoding`/`commit`/`waitUntilCompleted`、下载收进**单一交接块**；累积路径的 `session` 拆成**编码块**（绑定并启动、不等待）与**提交块**（`commit` + 等待 + 下载）两个块——command buffer 单次使用、跨算子共享，故提交只发生一次。2026-10-18 新增第 4 处（`session::gethostdata` 的 persist 下载分支）：持久缓冲不在 per-apply 下载列表里，`recordview` 点名下载它时必须在 `apply` 返回之后按需 `contents()` 读，无法并入既有提交块（该块只下载普通输出槽、且生命周期在 `apply_mut` 拿到结果时已结束），故为一个独立的按需下载交接块——这是「持久设备输入契约」（§21.13.9）引入的**新一类平台交互**（按需读持久缓冲），而非既有站点的复制。每个块内的全部平台调用共享同一个 `// SAFETY:` 前置论证（缓冲均为本块持有或调用者传入的存活 `MTLBuffer`、长度与内核读写一致、`setBytes` 拷贝而非保留、`waitUntilCompleted` 排序读写）。CUDA 的口径是**每类平台交互恰一处**，而不是每个算子一处：
 
 * `LaunchArgs::launch` 只登记一次，因为整个在仓内核族共用它。启动辅助以闭包注入实参、以 `(source, entry)` 选择内核，故 `matmul`/`add`/`mul`/`silu`/`rmsnorm`/`rope`/`embedding`/`attention` 八个内核**不增加站点**。这是设计选择而非巧合：把「一类平台交互」而非「一个算子」作为登记的原子单位，使豁免面不随算子数增长。
 * `CudaBlas::gemm` 一处，因为它是 cuBLAS 中唯一自带 `unsafe` 的入口。cuDNN 的 `SoftmaxForward` 站点已于 2026-10-17 删除：`softmax` 改由同一 NVRTC 启动站点服务，cuda 由 3 降为 2（A/B 依据见 21.10.3）。
@@ -3086,10 +3086,31 @@ unsupportedoperation）。
 越界、input 拒绝、前导视图、超界视图），CPU 全过；`cargo test -p llm
 --test it` = 1015 passed；clippy 零警告；checkunsafe 门禁通过。
 
-**剩余（P1–P3）**：devicekvcache 的 Metal/CUDA 实现者（消费
-`recordpersist` + `recordappend` + `recordview`，兑现「每步只下载 logits」）、
-`gpu/decode` 的 devicecached 基准对照、MUSA 对齐。recordappend 的 Metal
-blit / CUDA D2D 拷贝在 P1 落地。
+**P1（设备端 KV cache 实现，已交付）**：`crates/models/src/devicekv.rs`
+新增通用 `devicecache`（layers/width/maxseq/position + 每层 keydata/valuedata
+零缓冲 `[maxseq,width]`），实现 `models::devicekvcache`：`keys`/`values` 经
+`ensure_registered` 每次现场 `recordpersist`（dedup 表把同缓冲映射回同槽）
++ `recordview(keyslot, [position,width])` 暴露前导窗口；`append` 调
+`recordappend` 把 `[1,width]` 新行写进设备缓冲；`advance` = position+1。
+Metal 的 `recordappend` 在 ffi `session` 上加 `appends: appendlist` 队列，
+`apply` 的 unsafe 提交块内在 `endEncoding` 后、`commit` 前开一个 blit
+encoder 逐项 `copyFromBuffer`（无 host 往返）；同一 unsafe 块开头先 flush
+pending 上传队列（persist-only session 无 dispatch，仍需初始行驻留设备）。
+持久缓冲的按需下载走 `session::gethostdata` 的 `PERSIST_BASE` 高位分支
+（`apply_mut` 对普通槽取 `applysession` 结果、对高位槽回退 `gethostdata`，
+再按 `recordview` 的 shape 截前导行）——这是 §21.8 的 metal 第 4 个 unsafe
+站点（新一类平台交互：按需读持久缓冲）。CPU 参考在 `crates/cpu/src/
+submission.rs` 已实现三原语 + `persistent` dedup 表。
+
+验收证据：`tests/it/devicekv.rs` 7 例（含 `device_forward_matches_host_cached`
+与 `device_forward_matches_full_recompute` 两条 CPU 等价性：devicecache 推进
+的 logits 与 `forward_cached`、全量 recompute 逐位一致）+ `tests/it/
+metalcontract.rs` 2 例真机（persist+append+view 往返、两行前导窗口，Metal
+blit 设备端写入验证）；`cargo test -p llm --test it` = 1024 passed；
+clippy 零警告；checkunsafe 门禁通过（metal = 4 已登记，见 §21.8）。
+
+**剩余（P2–P3）**：`gpu/decode` 的 devicecached 基准对照（真机回填
+「每步只下载 logits」的收益）、MUSA 对齐。CUDA 的 D2D 拷贝对齐在 P3 落地。
 
 ## 21.14 SYCL 后端：设备驻留批提交与 oneMKL 双轨（实现完成，未上机验证）
 

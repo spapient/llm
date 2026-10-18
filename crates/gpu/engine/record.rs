@@ -712,10 +712,22 @@ impl<P: recordplatform> submission<P> {
                 let data = slots
                     .get(*slot)
                     .cloned()
+                    .or_else(|| self.platform.gethostdata(&self.session, *slot))
                     .ok_or(backenderror::indexoutofrange {
                         index,
                         len: results.len(),
                     })?;
+                // A persistent slot downloads the whole device allocation;
+                // the leading-window view keeps only its prefix, which is
+                // exactly the rows `recordview` exposed.
+                let want = outshape
+                    .getelementcount()
+                    .map_err(|_| backenderror::invalidparameter { op: "view" })?;
+                let data = if data.len() > want {
+                    data[..want].to_vec()
+                } else {
+                    data
+                };
                 wrap(P::NAME, outshape.clone(), data)
             })
             .collect()

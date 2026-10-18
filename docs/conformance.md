@@ -91,6 +91,8 @@
 
 - **P0 持久设备输入契约（2026-10-18 追加）**：设备端 KV cache 的三个契约原语（`recordpersist` / `recordappend` / `recordview`）已落地——声明在 `api::submission`/`api::recorder`，编排在 `gpu::engine`（持久表去重），CPU 参考实现三方法全实现，Metal/CUDA ffi 各加 `session::persist`（`PERSIST_BASE` 高位槽位，持久缓冲不进入 apply 下载列表，unsafe 站点数不变：metal 3、cuda 2）。验证：`tests/it/devicecachecontract.rs` 7/7（往返、长度校验、行写入、越界、input 拒绝、前导视图、超界视图）；`cargo test -p llm --test it` = 1015 passed；clippy 零警告；checkunsafe 门禁通过。契约文档见 design.md §21.13.9。Metal/CUDA 的设备端 KV cache 实现者、`gpu/decode` devicecached 对照与 MUSA 对齐为 P1–P3 剩余工作。
 
+- **P1 设备端 KV cache 实现（2026-10-18 追加）**：`models::devicecache`（`crates/models/src/devicekv.rs`）实现 `devicekvcache`——KV 零缓冲 `[maxseq,width]` 驻留设备、`append` 走 Metal blit 设备端行拷贝（无 host 往返）、`keys`/`values` 经 `recordview` 暴露前导窗口、每步只下载 logits 的真实收益路径就绪。Metal 真机验证：`devicecache_metal_persist_append_view_roundtrip`、`devicecache_metal_two_rows_leading_window` 2/2（blit 写行 + 前导窗口读回）；CPU 等价性：`device_forward_matches_host_cached` / `device_forward_matches_full_recompute`（devicecache 推进 logits 与 cached、全量 recompute 逐位一致）；`cargo test -p llm --test it` = 1024 passed；clippy 零警告；checkunsafe 门禁通过（metal 3→4：新增 persist 按需下载交接块，§21.8 已登记）。conformance 层 2/3 KV cache 判定维持「正确性已验证；性能未达成」——P2 `gpu/decode` devicecached 对照尚未回填实测数字。
+
 ## 本轮重测证据（2026-10-16）
 
 环境：macOS 27.0.1（arm64，Apple M5 Pro）、`rustc 1.99.0 (b940084d7 2026-09-28)`；远程真机为 Windows 11 + WSL2（Ubuntu 24.04、CUDA 12.0.140、cudnn 9.3.0.75）的 NVIDIA T600。本轮为 KV cache 接线：attention 契约扩展 + `forward_cached` 增量前向 + `infer` 的 `kvstate` 接线 + GPU 用例与 decode 基准。
