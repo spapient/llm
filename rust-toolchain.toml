@@ -1,0 +1,6 @@
+# 1.100 正式版尚未发布：先 pin 到 rustc 1.100.0-nightly 对应的 nightly。
+# 正式发布后把 channel 改成 "1.100" 即可，其余配置无需改动。
+[toolchain]
+channel = "nightly-2026-09-01"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
