@@ -1,0 +1,105 @@
+# Intel GPU 档案（P0 只有 L1：本机没有 Intel GPU，OpenCL 片段也未编译过）。
+# 保留它是为了让"同一份模板、三台设备"在数据上成立，而不是靠口号。
+
+[meta]
+vendor   = "intel"
+id       = "gen12"
+emit     = "opencl"
+tool     = "clang"
+tool_ver = "17.0"
+checked  = "2026-11-11"
+
+[fingerprint]
+name = "contains: Intel"
+arch = "gen12"
+
+[space]
+GM   = "global"
+FAST = "slm"
+REG  = "private"
+
+[mem]
+FAST = { bytes = 65536, bank = 16 }
+REG  = { bytes = 32768 }
+
+[simt]
+group      = 16
+groups_max = 32
+
+[peak]
+flops_f32 = { value = 2.1e12, src = "96 EU * 8 lane * 2 flop * 1.35 GHz" }
+bw        = { value = 68.3e9, src = "LPDDR5 128 bit * 4266 MT/s" }
+
+[compile]
+flags = ["-cl-std=CL2.0"]
+preamble = ""
+
+[[provides]]
+prim  = "dot"
+impl  = "dp4a"
+dt    = ["i8", "i32"]
+space = ["REG"]
+lanes = ["4"]
+grade = "L1"
+
+[[provides]]
+prim  = "quant"
+impl  = "i4_unpack"
+dt    = ["i4", "f32"]
+space = ["REG", "GM"]
+group = ["32"]
+grade = "L1"
+
+[[provides]]
+prim  = "load"
+impl  = "async_work_group_copy"
+m     = "<=4096"
+dt    = ["i4", "u8", "f32"]
+space = ["GM", "FAST"]
+src   = ["GM"]
+dst   = ["GM"]
+grade = "L1"
+
+[[provides]]
+prim  = "load_async"
+impl  = "prefetch"
+m     = "<=4096"
+dt    = ["i4", "u8", "f32"]
+space = ["GM", "FAST"]
+src   = ["GM"]
+dst   = ["GM"]
+stages = ["2"]
+grade = "L1"
+
+[[provides]]
+prim  = "commit_wait"
+impl  = "work_group_barrier"
+grade = "L1"
+
+[[provides]]
+prim  = "store"
+impl  = "global_store"
+m     = "<=4096"
+dt    = ["f32"]
+space = ["GM"]
+grade = "L1"
+
+[[provides]]
+prim  = "bar"
+impl  = "barrier"
+grade = "L1"
+
+[[provides]]
+prim  = "cvt"
+impl  = "convert_float"
+dt    = ["f32", "i32", "i8"]
+sat   = ["on", "off"]
+grade = "L1"
+
+[[provides]]
+prim  = "reduce"
+impl  = "sub_group_reduce"
+axis  = ["GMAX"]
+op    = ["sum", "max"]
+dt    = ["f32"]
+grade = "L1"

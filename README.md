@@ -36,9 +36,15 @@ CI（`.github/workflows/ci.yml`）会把格式差异、clippy 告警和 rustdoc 
 ├── Cargo.lock            # 整个 workspace 共用一份锁文件
 ├── src/main.rs           # 根包 llm 的程序入口（bin）
 ├── crates/
-│   └── cutile/           # 库成员 cutile（lib），tile 级计算原语
+│   ├── config/           # 库成员 config（lib）：配置层占位
+│   └── cutile/           # 库成员 cutile（lib）+ bin：设备无关 kernel DSL
+│       ├── DESIGN.md     # 设计文档（声明层 / 档案层 / 片段层、闭集与预算）
+│       ├── ops/          # 声明层：gemv_i4.toml（骨架/轴/需求/布局/降级链）+ gemv_i4.k（模板）
+│       ├── devices/      # 档案层：cpu.toml（L2）/ nvidia.toml、intel.toml（L1）
+│       ├── prim/cpu/     # 片段层：9 个原语片段 + witness.c
 │       ├── Cargo.toml    # 元数据与 lints 全部继承自 workspace
-│       └── src/lib.rs
+│       └── src/          # atom / prof / cap / layout / space / sch / lower / cache / plan / host
+│                         # / reference / backend / probe / cli / builtin / toml + main.rs
 ├── rust-toolchain.toml
 ├── rustfmt.toml
 ├── clippy.toml           # clippy 策略（含 MSRV）
@@ -50,7 +56,22 @@ CI（`.github/workflows/ci.yml`）会把格式差异、clippy 告警和 rustdoc 
 | 成员 | 类型 | 职责 |
 |---|---|---|
 | `llm`（根包） | bin | 运行时程序入口 |
-| `cutile` | lib | tile 级计算原语 |
+| `cutile` | lib | 设备无关 kernel DSL（算子声明 + 设备档案 + 原语片段），设计见 [crates/cutile/DESIGN.md](crates/cutile/DESIGN.md) |
+
+`cutile` 的 P0 纵切面已经落地（声明 → 协商 → tile 选择 → 片段拼接 → emit → 编译执行 → 对拍）：
+
+```bash
+cargo run -p cutile -- doctor --op gemv_i4 --device auto            # 协商链 + 布局契约 + 缓存指纹
+cargo run -p cutile -- verify --op gemv_i4 --devices cpu            # 编译执行并与标量参考对拍（L2）
+cargo run -p cutile -- bench  --op gemv_i4 --shape 4096x4096 --repeat 20
+```
+
+| 设备 | 现状 | 说明 |
+|---|---|---|
+| `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `reference.rs` 对拍 `max_rel_err = 0` |
+| `nvidia` / `intel` | L1 | 仅有档案与片段声明；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
+
+`verify` 在没有任何 L2 供给的设备上返回非零码，这是刻意的（DESIGN §11.2 对"静默跳过"的修正）。
 
 两者目前在代码层面**没有依赖关系**，属于平级成员。如果之后 `llm` 需要调用 `cutile`，在根 `Cargo.toml` 的 `[dependencies]` 中加一行即可：
 
