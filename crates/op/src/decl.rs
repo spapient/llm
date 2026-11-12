@@ -18,7 +18,7 @@ pub const MAX_VARIANTS: usize = 8;
 pub const MAX_TILES: usize = 8;
 
 /// 骨架闭集（DESIGN 附录 B）：决定用哪个模板基座。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Skeleton {
     /// 逐元素。
     Elementwise,
@@ -32,9 +32,9 @@ pub enum Skeleton {
     Scan,
 }
 
-impl Skeleton {
+impl prof::atom::Closed for Skeleton {
     /// 闭集全量。
-    pub const ALL: [Self; 5] = [
+    const ALL: &'static [Self] = &[
         Self::Elementwise,
         Self::Reduce,
         Self::Gemm,
@@ -43,7 +43,7 @@ impl Skeleton {
     ];
 
     /// 声明层写法。
-    pub const fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Elementwise => "elementwise",
             Self::Reduce => "reduce",
@@ -53,11 +53,12 @@ impl Skeleton {
         }
     }
 
-    /// 从名字解析。
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|item| item.as_str() == name)
+    fn index(self) -> usize {
+        self as usize
     }
 }
+
+prof::inherent_names!(Skeleton);
 
 impl fmt::Display for Skeleton {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

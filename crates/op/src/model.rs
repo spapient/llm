@@ -20,7 +20,10 @@
 //! 自己在 `cost` 里声明：分组属于算子语义，把它推给调用方等于让每个层都抄一遍 32。
 
 use diagnostic::{Code, Error};
-use prof::atom::DType;
+
+/// 输出类型从 `prof` 再导出：`#[annotation::model]` 生成的 `Model` 与审计侧用同一个 `DType`，
+/// 不因为"谁先定义"而出现两条路径。
+pub use prof::atom::DType;
 
 #[doc(inline)]
 pub use einsum::Cost;
@@ -127,6 +130,97 @@ impl Sample {
             )),
         }
     }
+
+    /// 把一个缓冲换成调用方的取值。
+    ///
+    /// 名字是算子契约的一部分：模板的形参名、[`Model::reference`] 读的缓冲名、`@prim(...)` 的
+    /// 实参名是同一个字符串。因此"换数据"只能按名字换，不能按顺序换——顺序属于签名，不属于样本。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲不存在（[`Code::Missing`]）或长度与算子声明的形状不符（[`Code::Invalid`]）时返回说明。
+    pub fn set(&mut self, name: &str, values: Values) -> diagnostic::Result<()> {
+        let buffer = self
+            .buffers
+            .iter_mut()
+            .find(|buffer| buffer.name == name)
+            .ok_or_else(|| {
+                Error::new(Code::Missing, format!("样本里没有缓冲 `{name}`"))
+                    .with("op::model::Sample::set")
+            })?;
+        let (want, got) = (buffer.values.len(), values.len());
+        if want != got {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("缓冲 `{name}` 声明了 {want} 个元素，换入 {got} 个"),
+            )
+            .with("op::model::Sample::set"));
+        }
+        buffer.values = values;
+        Ok(())
+    }
+}
+
+/// 用真实数据构造一份可执行样本：形状由层给，`x` / `w` 换成权重文件里的值。
+///
+/// 这是"真实权重"进入内核的唯一入口，因此两条约束写在这里而不是散在调用方：
+///
+/// - 形状必须与算子的形状粒度自洽（`m` 是 [`Model::group`] 的整数倍），否则样本与内核算的
+///   根本不是同一件事；
+/// - 只有**稠密**（权重缓冲是 f32）的算子能这样注入——量化算子的 `w` 是打包字节，塞 f32 进去
+///   会得到一份与 `.toml` 声明不符的样本（字节数对、含义不对），因此以 [`Code::Unsupported`]
+///   拒绝，而不是让内核去解读半份字节。
+///
+/// `x` / `w` 之外的一切（标量 `M` / `N` / `gsz`、输出缓冲、其余输入）都来自
+/// [`Model::sample`]：真实数据不该顺手改掉形状或 ABI。
+///
+/// # Errors
+///
+/// `m` 不是分组的整数倍、`x` 长度不是 `m`、`w` 长度不是 `n · m`，或该算子的权重缓冲不是 f32
+/// 时返回说明。
+pub fn bind(model: &Model, m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnostic::Result<Sample> {
+    let group = model.group.max(1) as usize;
+    if m == 0 || n == 0 || !m.is_multiple_of(group) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("形状 {m}x{n} 不自洽：m 必须是形状粒度 {group} 的正整数倍"),
+        )
+        .with("op::model::bind"));
+    }
+    if x.len() != m {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("输入向量长度 {} 与输入宽度 {m} 不符", x.len()),
+        )
+        .with("op::model::bind"));
+    }
+    if w.len() != n * m {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("权重元素数 {} 与 {n}×{m} 不符", w.len()),
+        )
+        .with("op::model::bind"));
+    }
+
+    let mut sample = (model.sample)(m, n);
+    match sample.buffer("w").map(|buffer| &buffer.values) {
+        Some(Values::F32(_)) => {}
+        Some(Values::U8(_)) => {
+            return Err(Error::new(
+                Code::Unsupported,
+                "该算子的权重缓冲是打包字节（量化），真实 f32 权重不能注入：先按算子声明的分组量化",
+            )
+            .with("op::model::bind"));
+        }
+        None => {
+            return Err(
+                Error::new(Code::Missing, "算子样本里没有权重缓冲 `w`").with("op::model::bind")
+            );
+        }
+    }
+    sample.set("x", Values::F32(x.to_vec()))?;
+    sample.set("w", Values::F32(w.to_vec()))?;
+    Ok(sample)
 }
 
 /// 一条基本轴的语义角色（闭集）。
@@ -223,7 +317,7 @@ pub struct Model {
     /// 基本轴：层按角色取值，不必知道表达式里的字母。
     ///
     /// 投影算子声明 [`AxisRole::Input`] 与 [`AxisRole::Output`]；将来的 RMSNorm / Attention
-    /// 可以只声明自己需要的角色（或先留空，由调用方用 [`Bounds`]-侧的形状上下文自行构造）。
+    /// 可以只声明自己需要的角色（或先留空，由调用方用 `nn::Bounds` 那侧的形状上下文自行构造）。
     pub axes: &'static [AxisSpec],
     /// 给定形状上下文的标量代价。
     ///
@@ -364,5 +458,55 @@ mod tests {
         let error = ShapeContext::new([('m', 0)]).expect_err("空轴");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("长度为 0"), "{error}");
+    }
+
+    #[test]
+    fn bind_puts_real_numbers_where_the_reference_reads_them() {
+        let model = crate::model("gemv_f32").expect("稠密语义");
+        let x: Vec<f32> = (0..8).map(|index| index as f32).collect();
+        let w: Vec<f32> = (0..16).map(|index| index as f32 * 0.5).collect();
+        let sample = bind(&model, 8, 2, &x, &w).expect("形状合法");
+
+        assert_eq!(sample.f32("x").expect("输入"), x.as_slice());
+        assert_eq!(sample.f32("w").expect("权重"), w.as_slice());
+        // 输出缓冲与标量仍来自算子样本：真实数据只替换 x / w，不顺手改 ABI。
+        assert_eq!(sample.f32("y").expect("输出"), [0.0f32, 0.0]);
+        assert_eq!(sample.scalar("M"), Some(8));
+        assert_eq!(sample.scalar("N"), Some(2));
+        // 参考实现读的就是绑定进来的数，所以"绑定"与"对拍"不会各看一份数据。
+        let y = (model.reference)(&sample).expect("参考");
+        let want: f32 = x.iter().zip(&w[..8]).map(|(a, b)| a * b).sum();
+        assert_eq!(y[0], want);
+    }
+
+    #[test]
+    fn bind_refuses_packed_weights_instead_of_reading_them_as_f32() {
+        let model = crate::model("gemv_i4").expect("量化语义");
+        let error =
+            bind(&model, 64, 2, &[0.0; 64], &[0.0; 128]).expect_err("量化算子的权重缓冲是打包字节");
+        assert_eq!(error.code(), Code::Unsupported);
+        assert!(error.to_string().contains("打包字节"), "{error}");
+    }
+
+    #[test]
+    fn bind_checks_lengths_and_the_shape_granularity() {
+        let dense = crate::model("gemv_f32").expect("稠密语义");
+        assert_eq!(
+            bind(&dense, 8, 2, &[0.0; 7], &[0.0; 16])
+                .expect_err("输入长度不符")
+                .code(),
+            Code::Invalid
+        );
+        assert_eq!(
+            bind(&dense, 8, 2, &[0.0; 8], &[0.0; 15])
+                .expect_err("权重长度不符")
+                .code(),
+            Code::Invalid
+        );
+        // 量化算子的粒度是 32：形状不自洽时先被挡在这里，而不是进内核后读到半个分组。
+        let quantized = crate::model("gemv_i4").expect("量化语义");
+        let error = bind(&quantized, 8, 2, &[0.0; 8], &[0.0; 16]).expect_err("粒度不符");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("形状粒度"), "{error}");
     }
 }

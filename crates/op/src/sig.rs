@@ -8,7 +8,7 @@
 //! 只支持 P0 需要的那一小撮 C 声明：指针缓冲（`float`、`unsigned char`/`u8`）与整数标量。
 //! 不追求通用 C 解析器——遇到闭集之外的类型就报错，而不是猜。
 
-use crate::model::{Sample, Values};
+use crate::model::{DType, Sample, Values};
 use diagnostic::{Code, Error};
 
 /// 形参的类型。
@@ -35,6 +35,19 @@ impl CType {
     /// 是否对应一个样本缓冲（标量不是缓冲）。
     pub fn is_buffer(self) -> bool {
         !matches!(self, Self::Int)
+    }
+
+    /// 样本侧对应的 [`DType`]：签名与语义表必须用同一个词描述同一块缓冲。
+    ///
+    /// `None` 表示这个 C 类型在样本侧没有同名词（标量不占缓冲，也就没有元素类型）。
+    /// 输出类型因此能被交叉核对：[`Signature::output_type`] 说 `.k` 写的是什么，
+    /// [`crate::model::Model::dtype`] 说回读时按什么类型解释——两者只能指同一个类型。
+    pub fn dtype(self) -> Option<DType> {
+        match self {
+            Self::F32 => Some(DType::F32),
+            Self::U8 => Some(DType::U8),
+            Self::Int => None,
+        }
     }
 }
 
@@ -115,6 +128,11 @@ impl Signature {
         Ok(signature)
     }
 
+    /// 算子名（诊断里显示的名字）。
+    pub fn op(&self) -> &str {
+        &self.op
+    }
+
     /// 入口函数名（`cutile_{op}_kernel`）。
     pub fn kernel(&self) -> String {
         format!("cutile_{}_kernel", self.op)
@@ -131,6 +149,17 @@ impl Signature {
             .iter()
             .find(|param| param.ctype.is_buffer() && param.mutable)
             .map(|param| param.name.as_str())
+    }
+
+    /// 唯一可写输出缓冲的类型（与 [`Self::output`] 同源）。
+    ///
+    /// 单独暴露类型而不是只给名字：回读路径按它检查"内核写的到底是不是 float"，
+    /// 而不必再猜一次 `Model::dtype`（DESIGN §11.3 的输出契约）。
+    pub fn output_type(&self) -> Option<CType> {
+        self.params
+            .iter()
+            .find(|param| param.ctype.is_buffer() && param.mutable)
+            .map(|param| param.ctype)
     }
 
     /// 把签名与样本逐项对齐：缓冲要同名同类型，标量要有取值，样本也不能多出签名之外的名字。
@@ -491,6 +520,22 @@ mod tests {
         let error = signature.check(&missing).expect_err("缺标量");
         assert_eq!(error.code(), Code::Missing);
         assert!(error.to_string().contains("gsz"), "{error}");
+    }
+
+    /// 输出类型要能从签名读出来，而且与样本侧用同一个词：注解里的 `dtype` 因此有得比对。
+    #[test]
+    fn the_output_type_is_readable_and_names_the_same_element_type() {
+        let signature = Signature::parse("probe", TEMPLATE).expect("签名");
+        assert_eq!(signature.output_type(), Some(CType::F32));
+        assert_eq!(CType::F32.dtype(), Some(DType::F32));
+        assert_eq!(CType::U8.dtype(), Some(DType::U8));
+        assert_eq!(CType::Int.dtype(), None, "标量不占缓冲，没有元素类型");
+
+        // 可写输出换成字节缓冲时，类型查询跟着变——这正是"回读只认 float"要拦的那一类。
+        let broken = TEMPLATE.replace("float *y", "u8 *y");
+        let signature = Signature::parse("probe", &broken).expect("u8 是闭集内的缓冲类型");
+        assert_eq!(signature.output_type(), Some(CType::U8));
+        assert_eq!(signature.output(), Some("y"));
     }
 
     #[test]

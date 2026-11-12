@@ -1,17 +1,15 @@
-//! `gemv_f32` 的算子语义：代价、样本与标量参考。
+//! `gemv_f32` 的算子语义：稠密 f32 权重投影。
 //!
-//! 模板在 `ops/gemv_f32.k`，本模块是它的第二份实现（DESIGN §11.1）：片段只与这里对拍，
-//! 片段之间不互相对拍。内核实参不在这里手写：它由 `.k` 的签名与样本派生（[`crate::sig`]）。
+//! 骨架在 [`crate::gemv`]，本文件只有"稠密权重"这一份格式契约：表达式、操作数位宽、分块宽度
+//! 与内核本体。模板在 `ops/gemv_f32.k`，本模块是它的第二份实现（DESIGN §11.1）：片段只与这里
+//! 对拍，片段之间不互相对拍。内核实参不在这里手写：它由 `.k` 的签名与样本派生（[`crate::sig`]）。
 //!
-//! 与 [`crate::gemv_i4`] 的差别只有两点，而且两点都是**数据**：求和表达式少了标度轴
-//! （`nm,m,n->n` 而不是 `nm,m,ng,n->n`），样本里的权重是 `f32` 而不是打包字节。代价、样本、
-//! 参考三条路径的代码形状完全一样——这正是"加一条算子不改机制"的样子。
+//! 与 [`crate::gemv_i4`] 的差别只有两点，而且两点都是**类型参数**：权重元素是 `f32` 而不是
+//! 打包字节，形状粒度是 1 而不是量化分组。代价、样本、校验、遍历四条路径一份代码也没有重写。
 
-use crate::model::{AxisRole, AxisSpec, Buffer, Model, Sample, ShapeContext, Values};
+use crate::gemv::{self, Format, OperandSpec};
 use diagnostic::{Code, Error};
-use einsum::{Bits, Cost, Expr, Formula, Operand};
-use prof::atom::DType;
-use std::sync::OnceLock;
+use einsum::Bits;
 
 /// 分块宽度：模板每轮处理这么多元素，标量参考按同一个宽度分块累加。
 ///
@@ -19,185 +17,113 @@ use std::sync::OnceLock;
 /// 参考实现必须用同一个宽度分块，否则对拍比的是两种不同的舍入顺序。
 pub const BLOCK: usize = 32;
 
-/// 本算子的基本轴：`m` 是规约轴（输入宽度），`n` 是输出轴。
+/// 稠密格式的语义类型：分块宽度 [`BLOCK`]、任意输入宽度都合法。
 ///
-/// 与 `gemv_i4` 逐字相同——两条算子是同一副骨架的两种输入格式，层的"输入宽度填哪条轴"
-/// 不该因为权重从 4 位变成 32 位而改变。
-pub const AXES: &[AxisSpec] = &[
-    AxisSpec {
-        role: AxisRole::Input,
-        label: 'm',
-    },
-    AxisSpec {
-        role: AxisRole::Output,
-        label: 'n',
-    },
-];
+/// `#[model]` 由这份注解生成 [`MODEL`]：生产形状、输出类型与三个单态化入口。别名不实现
+/// [`Format`] 就编译不过，所以"注解说的格式"与"实际实现的格式"不可能分家。
+#[annotation::model(name = "gemv_f32", shape = [4096, 4096], dtype = "f32")]
+pub type F32 = gemv::Dense<BLOCK>;
 
-/// 本算子的语义表。
-///
-/// `group = 1`：任意输入宽度都合法。量化算子那条"`m` 必须是分组整数倍"属于对齐 nibble 的
-/// 约束，稠密算子不该继承它——否则"宽度 100 的层算不出下界"会变成一条莫名其妙的限制。
-pub const MODEL: Model = Model {
-    group: 1,
-    // 生产形状：一份 4096 方阵的 f32 权重就是一次真实调用。
-    shape: (4096, 4096),
-    dtype: DType::F32,
-    axes: AXES,
-    cost,
-    sample,
-    reference,
-};
+impl<const B: usize> Format for gemv::Dense<B> {
+    type Elem = f32;
 
-/// 本算子的 einsum 语义：`w[nm] · x[m] → y[n]`。
-///
-/// 这条式子就是代价模型的全部来源：`flops` 由参与运算的轴（`n`、`m`）推出，`bytes` 由三个
-/// 操作数各自的轴与位宽推出。f32 权重没有派生轴，所以这里比 int4 少一个 `g`。
-pub const EXPR: &str = "nm,m,n->n";
+    /// `w[nm] · x[m] → y[n]`：f32 权重没有派生轴，所以这里比 int4 少一个 `g`。
+    const EXPR: &'static str = "nm,m,n->n";
 
-/// 表达式 + 三个操作数的位宽/方向；整个进程只解析一次。
-///
-/// [`cost`] 会被层的下界（每层一次）、`doctor` 的 roofline 与形状矩阵分别调用，而表达式与
-/// 形状无关：解析一次把结果留在静态里，热路径上只剩一次原子读。
-fn formula() -> Result<&'static Formula, Error> {
-    static FORMULA: OnceLock<Result<Formula, Error>> = OnceLock::new();
-    FORMULA
-        .get_or_init(|| {
-            Formula::new(
-                Expr::parse(EXPR)?,
-                vec![
-                    Operand::read("w", Bits::ThirtyTwo),
-                    Operand::read("x", Bits::ThirtyTwo),
-                    Operand::write("y", Bits::ThirtyTwo),
-                ],
-            )
-            .map_err(|error| error.with("op::gemv_f32::formula"))
-        })
-        .as_ref()
-        .map_err(Clone::clone)
-}
+    /// 三个操作数都是 f32：两个读、一个写。
+    const OPERANDS: &'static [OperandSpec] = &[
+        OperandSpec::read("w", Bits::ThirtyTwo),
+        OperandSpec::read("x", Bits::ThirtyTwo),
+        OperandSpec::write("y", Bits::ThirtyTwo),
+    ];
 
-/// 标量代价：完全由 [`EXPR`] 与三个操作数的位宽推出，本函数不含任何流量常数。
-///
-/// 稠密权重没有派生轴，所以这里不像量化算子那样声明 `g`：调用方给的轴表直接就是表达式要的
-/// 全部。**这也正是两条算子唯一的结构差异**——一条要切分组，一条不切。
-///
-/// # Errors
-///
-/// 形状与表达式不自洽（缺 `m` / `n`，或任一为 0）时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    formula()?
-        .cost(shape.extents())
-        .map_err(|error| error.with("op::gemv_f32::cost"))
-}
+    /// 稠密权重没有分组约束：任意输入宽度都合法。
+    const GRAIN: usize = 1;
 
-/// 确定性样本：同一形状永远得到同一组输入（DESIGN §12.3 的"可复现"要求）。
-///
-/// 取值刻意落在 2 的负幂网格上（权重 `k/8 - 8`、输入 `k/4 - 1`）：乘积与累加在 f32 里都是
-/// 精确的，因此对拍结果的 `max_rel_err` 反映的是**实现是否一致**，而不是"浮点本来就抖"。
-pub fn sample(m: usize, n: usize) -> Sample {
-    let x: Vec<f32> = (0..m)
-        .map(|index| ((index * 7) % 13) as f32 * 0.25 - 1.0)
-        .collect();
-    let w: Vec<f32> = (0..n * m)
-        .map(|index| ((index * 37) % 251) as f32 * 0.125 - 8.0)
-        .collect();
-    Sample {
-        m,
-        n,
-        scalars: vec![("M", m as i64), ("N", n as i64), ("gsz", BLOCK as i64)],
-        buffers: vec![
-            Buffer {
-                name: "x",
-                values: Values::F32(x),
-            },
-            Buffer {
-                name: "w",
-                values: Values::F32(w),
-            },
-            Buffer {
-                name: "y",
-                values: Values::F32(vec![0.0; n]),
-            },
-        ],
-    }
-}
+    const DERIVED: Option<(char, char, usize)> = None;
 
-/// 标量参考：`y[n] = Σ_blocks dot(w[n, block], x[block])`。
-///
-/// 分块边界与模板一致（[`BLOCK`] 个元素一块，最后一块可以更短），因此比较的是同一份舍入顺序。
-///
-/// # Errors
-///
-/// 缓冲缺失或长度不足时返回说明。
-pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    let x = sample.f32("x")?;
-    let w = sample.f32("w")?;
-    let m = sample.m;
-    let n = sample.n;
+    const SCALES: Option<fn(usize) -> f32> = None;
 
-    if n == 0 {
-        return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
-    }
-    if x.len() < m {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("输入长度 {} < {m}", x.len()),
-        ));
-    }
-    if w.len() < n * m {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("权重长度 {} < {}", w.len(), n * m),
-        ));
+    const STEP: usize = B;
+
+    fn formula() -> Result<&'static einsum::Formula, Error> {
+        // 缓存落在这个 impl 里：`Dense<B>` 的表达式与块宽无关，一份缓存覆盖所有实例。
+        static CACHE: gemv::Cache = gemv::Cache::new();
+        CACHE.get::<Self>()
     }
 
-    let mut y = vec![0.0f32; n];
-    forward(&x[..m], &w[..n * m], &mut y)?;
-    Ok(y)
+    fn row(m: usize) -> usize {
+        m
+    }
+
+    fn weights(m: usize, n: usize) -> Vec<f32> {
+        (0..n * m)
+            .map(|index| ((index * 37) % 251) as f32 * 0.125 - 8.0)
+            .collect()
+    }
+
+    fn forward(
+        x: &[f32],
+        weights: &[f32],
+        scales: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        // 块宽进源码就是常数：单态化后编译器看到的是 `chunks(32)` 而不是 `chunks(gsz)`。
+        const { assert!(B > 0, "累加块宽必须是正数：`chunks(0)` 会 panic") };
+        let m = x.len();
+        let n = out.len();
+
+        if n == 0 {
+            return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
+        }
+        if !scales.is_empty() {
+            // 稠密格式没有标度：拿着标度调用说明调用方把两条格式搞混了。静默忽略会让
+            // "换错算子"表现成数值正确，那比报错难查得多。
+            return Err(Error::new(
+                Code::Invalid,
+                format!("稠密格式没有标度，收到 {} 个", scales.len()),
+            ));
+        }
+        if weights.len() < n * m {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("权重长度 {} < {}", weights.len(), n * m),
+            ));
+        }
+
+        // 每行只看自己那一段：切片一次算好，内层就不再做 `row × 列数 + base` 的乘加。
+        for (row, value) in out.iter_mut().enumerate() {
+            let w_row = &weights[row * m..][..m];
+            let mut acc = 0.0f32;
+            for (w_block, x_block) in w_row.chunks(B).zip(x.chunks(B)) {
+                let mut dot = 0.0f32;
+                for (weight, input) in w_block.iter().zip(x_block) {
+                    dot += weight * input;
+                }
+                acc += dot;
+            }
+            *value = acc;
+        }
+        Ok(())
+    }
 }
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果**写进调用方给的缓冲**。
 ///
-/// 与 [`reference()`] 是同一段算术，区别只在形状从缓冲长度推出、输出不自带分配：重放时每一步
-/// 都要算，稳定态不该再向分配器要一块新的 `Vec`。
+/// 与 [`gemv::reference`] 是同一段算术，区别只在形状从缓冲长度推出、输出不自带分配。
 ///
 /// # Errors
 ///
-/// `out` 为空或 `w` 长度不足 `n · m` 时返回说明。
-pub fn forward(x: &[f32], w: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-    let m = x.len();
-    let n = out.len();
-
-    if n == 0 {
-        return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
-    }
-    if w.len() < n * m {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("权重长度 {} < {}", w.len(), n * m),
-        ));
-    }
-
-    // 每行只看自己那一段：切片一次算好，内层就不再做 `row × 列数 + base` 的乘加。
-    for (row, value) in out.iter_mut().enumerate() {
-        let w_row = &w[row * m..][..m];
-        let mut acc = 0.0f32;
-        for (w_block, x_block) in w_row.chunks(BLOCK).zip(x.chunks(BLOCK)) {
-            let mut dot = 0.0f32;
-            for (weight, input) in w_block.iter().zip(x_block) {
-                dot += weight * input;
-            }
-            acc += dot;
-        }
-        *value = acc;
-    }
-    Ok(())
+/// `out` 为空或 `weights` 长度不足 `n · m` 时返回说明。
+pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    <F32 as Format>::forward(x, weights, &[], out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ShapeContext, Values};
+    use prof::atom::DType;
 
     fn shape(m: usize, n: usize) -> ShapeContext {
         MODEL.projection(m, n).expect("两个投影轴都声明了")
@@ -206,7 +132,7 @@ mod tests {
     #[test]
     fn cost_reads_three_f32_operands_and_counts_one_multiply_add_per_element() {
         // 小形状逐项可算：w 是 m·n 个 f32、x 是 m 个、y 是 n 个；flops = 2·m·n。
-        let cost = cost(&shape(8, 4)).expect("合法形状");
+        let cost = gemv::cost::<F32>(&shape(8, 4)).expect("合法形状");
         assert_eq!(cost.read, (32 + 8) * 4, "w 与 x 都是 f32");
         assert_eq!(cost.write, 4 * 4, "y 是 n 个 f32 输出");
         assert_eq!(cost.flops, 2.0 * 8.0 * 4.0);
@@ -226,18 +152,18 @@ mod tests {
     #[test]
     fn any_width_is_a_legal_dense_shape() {
         assert_eq!(MODEL.group, 1);
-        let odd = cost(&shape(100, 3)).expect("100 不是 32 的倍数也合法");
+        let odd = gemv::cost::<F32>(&shape(100, 3)).expect("100 不是 32 的倍数也合法");
         assert!(odd.read > 0);
         // 模板用 `len` 截断最后一块，参考实现也必须能算这个宽度。
-        let sample = sample(100, 3);
-        let y = reference(&sample).expect("分块余数不应报错");
+        let sample = gemv::sample::<F32>(100, 3);
+        let y = gemv::reference::<F32>(&sample).expect("分块余数不应报错");
         assert_eq!(y.len(), 3);
     }
 
     #[test]
     fn sample_is_deterministic_and_sized_to_the_shape() {
-        let first = sample(64, 4);
-        assert_eq!(first, sample(64, 4));
+        let first = gemv::sample::<F32>(64, 4);
+        assert_eq!(first, gemv::sample::<F32>(64, 4));
         assert_eq!(first.f32("w").expect("w").len(), 4 * 64);
         assert_eq!(first.f32("x").expect("x").len(), 64);
         assert_eq!(first.f32("y").expect("y").len(), 4);
@@ -258,8 +184,8 @@ mod tests {
     fn the_reference_is_exact_on_the_deterministic_sample() {
         // 取值都在 2 的负幂网格上：累加在 f32 里精确，所以结果可以被逐位钉死。
         // 期望值由同一段算术算出，再用"换顺序必须等价"验一遍：分块边界的移动不改变结果。
-        let sample = sample(64, 2);
-        let y = reference(&sample).expect("合法");
+        let sample = gemv::sample::<F32>(64, 2);
+        let y = gemv::reference::<F32>(&sample).expect("合法");
         let x = sample.f32("x").expect("x");
         let w = sample.f32("w").expect("w");
         for (row, value) in y.iter().enumerate() {
@@ -278,12 +204,37 @@ mod tests {
         assert!(error.to_string().contains("权重长度"), "{error}");
     }
 
+    /// 稠密格式不接受标度：换错算子必须报错，而不是"算出一个看起来对的数"。
+    #[test]
+    fn the_dense_format_refuses_a_scales_buffer() {
+        let x = [1.0f32; 4];
+        let w = [1.0f32; 4];
+        let mut y = [0.0f32; 1];
+        let error = <F32 as Format>::forward(&x, &w, &[1.0], &mut y).expect_err("稠密格式没有标度");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("标度"), "{error}");
+    }
+
+    /// 样本的权重类型由格式决定：稠密格式的 `w` 是 f32，换进来的 u8 会被骨架拒绝。
+    #[test]
+    fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
+        let mut sample = gemv::sample::<F32>(8, 2);
+        sample
+            .set("w", Values::U8(vec![0; 16]))
+            .expect("长度相同即可换");
+        let error = gemv::reference::<F32>(&sample).expect_err("u8 不是 f32 权重");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("f32"), "{error}");
+    }
+
     #[test]
     fn call_arguments_follow_the_template_signature() {
         let signature = crate::sig::Signature::parse("gemv_f32", include_str!("../ops/gemv_f32.k"))
             .expect("签名可解析");
         assert_eq!(
-            signature.call_args(&sample(64, 4)).expect("实参"),
+            signature
+                .call_args(&gemv::sample::<F32>(64, 4))
+                .expect("实参"),
             "x, w, y, 64, 4, 32"
         );
         assert_eq!(signature.output(), Some("y"));
@@ -292,19 +243,19 @@ mod tests {
     /// 这条算子与 `gemv_i4` 共用同一批原语，只少一个 `quant`：差异全在数据里。
     #[test]
     fn the_two_operators_differ_only_in_their_declared_quantization() {
+        use crate::decl::OpDecl;
         use crate::model;
         use prof::atom::Prim;
 
         let dense = crate::builtin_named("gemv_f32").expect("内置");
         let quantized = crate::builtin_named("gemv_i4").expect("内置");
-        let dense_decl = crate::decl::OpDecl::parse(dense.declaration(), dense.template())
-            .expect("稠密声明合法");
-        let quant_decl = crate::decl::OpDecl::parse(quantized.declaration(), quantized.template())
-            .expect("量化声明合法");
+        let dense_decl =
+            OpDecl::parse(dense.declaration(), dense.template()).expect("稠密声明合法");
+        let quant_decl =
+            OpDecl::parse(quantized.declaration(), quantized.template()).expect("量化声明合法");
 
-        let prims = |decl: &crate::decl::OpDecl| -> Vec<Prim> {
-            decl.needs.iter().map(|need| need.prim).collect()
-        };
+        let prims =
+            |decl: &OpDecl| -> Vec<Prim> { decl.needs.iter().map(|need| need.prim).collect() };
         assert!(!prims(&dense_decl).contains(&Prim::Quant), "稠密算子不解包");
         assert!(prims(&quant_decl).contains(&Prim::Quant));
         assert_eq!(dense_decl.skeleton, quant_decl.skeleton, "同一条骨架");
@@ -318,5 +269,10 @@ mod tests {
             Some(1),
             "稠密的形状粒度是 1"
         );
+        assert_eq!(MODEL.dtype, DType::F32, "样本的输出缓冲是 f32");
+        assert_eq!(FORMAT_GRAIN, 1, "格式自己的声明粒度也是 1");
     }
+
+    /// 与 [`MODEL`] 同源：证明 `Model::group` 确实来自 [`Format::GRAIN`]，而不是注解另写了一个数。
+    const FORMAT_GRAIN: usize = <F32 as Format>::GRAIN;
 }

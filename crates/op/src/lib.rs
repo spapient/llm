@@ -13,6 +13,11 @@
 //! 第二份实现，与声明、模板共同构成"正确性来自双源"（DESIGN §11.1）；`cutile` 只提供对拍口径
 //! 与执行环境，不认识任何算子名。
 //!
+//! 同一副骨架的多种精度写在 [`gemv`]：一份泛型实现（求和、代价、样本、校验、遍历）+ 每个格式
+//! 一份 [`gemv::Format`] 契约（权重元素、位宽、粒度、解包）。`gemv_i4` / `gemv_f32` 因此只写
+//! "这份格式是什么"，不重写骨架。它们的 `MODEL` 由 `#[annotation::model]` 注解生成：配置在编译期
+//! 定下，"注解说的是哪份格式"由类型（`Quantized<32>` / `Dense<32>`）保证，写错就编译不过。
+//!
 //! 代价（`flops` / `bytes`）不在本 crate 里手写：算子只声明 `EXPR`（如 `nm,m,ng,n->n`）与每个操作数
 //! 的位宽/方向，由 [`einsum`] 推出；[`model::Cost`] 只是它的再导出（`docs/adr/0007`）。这样新增算子
 //! 不会引入第二条流量公式，roofline 的分子也只有一处来源。
@@ -36,7 +41,12 @@
 
 #![deny(unsafe_code)]
 
+// `#[annotation::model]` 生成的代码用 `::llm_op::..` 指回本 crate（与 `nn` 的
+// `extern crate self as nn` 同一条约定：注解绑定它所属契约的路径，而不是硬编码调用方的名字）。
+extern crate self as llm_op;
+
 pub mod decl;
+pub mod gemv;
 pub mod gemv_f32;
 pub mod gemv_i4;
 pub mod layout;
@@ -161,7 +171,7 @@ impl Op {
 
 /// 按名字取一条内嵌算子；名字不在注册表里时返回 `None`。
 ///
-/// 存在的理由和 [`model`] 一样：调用方要的是**某一条**算子，而不是"第一条算子"。按位置取
+/// 存在的理由和 `model()` 一样：调用方要的是**某一条**算子，而不是"第一条算子"。按位置取
 /// （`builtin()[0]`）在注册表从一条变成两条的那天会静默换人——而算子之间并不等价（稠密 f32
 /// 与 int4 的代价差 8 倍）。
 pub fn builtin_named(name: &str) -> Option<Op> {

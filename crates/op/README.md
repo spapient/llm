@@ -21,8 +21,9 @@ crates/op/
     ├── tpl.rs           # 模板词法：文本 / {{槽位}} / @原语(...) 与行号；借用正文，装载期只切一遍
     ├── model.rs         # 算子语义的类型：样本 Sample、语义表 Model（生产形状 / 输出类型 / Cost）
     ├── sig.rs           # `.k` 入口签名的解析与样本对齐（ABI 的唯一事实源）
-    ├── gemv_f32.rs      # 稠密 f32 投影的求和表达式、样本与标量参考
-    └── gemv_i4.rs       # int4 解码 GEMV 的求和表达式、样本与标量参考
+    ├── gemv.rs          # 一条 GEMV 骨架 + 权重格式契约（Format / Element / OperandSpec / Cache）
+    ├── gemv_f32.rs      # 稠密格式：`Dense<B>` 的表达式、位宽、块宽与解包循环
+    └── gemv_i4.rs       # int4 格式：`Quantized<G>` 的表达式、位宽、粒度与解包循环
 ```
 
 同一个算子的两个文件必须**同名成对**（`<name>.toml` ↔ `<name>.k`），缺模板会在装载时报错并指出两个路径。
@@ -45,6 +46,39 @@ crates/op/
 `sample` 给确定性的输入，`reference` 是标量参考（片段只与它对拍）；`shape` / `dtype` 声明生产形状与
 输出类型——审计的形状矩阵、`bench` 的缺省形状、`verify` 的对拍阈值都取自它们，而不是在命令层
 再写一份方阵或“每个元素 4 字节”。
+
+## 一份骨架，多条精度
+
+`gemv_i4` 与 `gemv_f32` 的代价、样本、校验、遍历是同一段代码，写在 `gemv.rs`；每个格式只写自己的
+**契约**（`impl gemv::Format`）：权重元素类型（`u8` / `f32`）、位宽、形状粒度、派生轴（量化有
+`g = m / GRAIN`，稠密没有）、标度取值与内核本体。骨架按格式**单态化**，所以 `Model` 里仍是三个
+`fn` 指针，热路径上没有任何 `match op` 或枚举分发。
+
+哪些东西进类型、哪些留在数据里，是按内核自己怎么收划的：稠密的块宽 `Dense<32>` 直接出现在
+`chunks` 上（进热循环）；量化的声明粒度 `Quantized<32>` 决定派生轴除数与样本里的标度个数（冷路径）；
+**实际分组大小**留在数据里，因为模板本身就把它当 `int gsz` 实参收——训练侧按 8 元素分组调用同一份
+`forward` 不需要第二份单态化副本。
+
+`MODEL` 由 `#[annotation::model(name = "..", shape = [..], dtype = "..")]` 生成，标在
+`type 名字 = <具体格式>;` 上：`cost` / `sample` / `reference` 写成 `<名字 as Format>` 的实例，`group`
+取 `Format::GRAIN`，另加"生产形状是粒度整数倍"的编译期断言与一条"注册表里的语义就是这份 `MODEL`、
+样本与 `.k` 签名一致"的测试。写错格式名或形状，`cargo check` / `cargo test` 就失败，不必等到审计。
+
+## 三处自证：格式、注解、注册表
+
+注解只负责"让它被求值"，规则本身写在类型上，因为规则属于契约、不属于宏：
+
+- **格式自证**（`Format::CHECK`，编译期）：`GRAIN > 0`，且派生轴的除数就是 `GRAIN`
+  （`gemv::derived_matches_grain`）。两处都拿同一个常数算分组——`cost` 用派生轴除数造轴、`sample`
+  用粒度算每行标度个数；写歪一个数不会让任何一步失败，只会让代价与样本说的是两种语义。
+  生成物里的 `const _: () = <别名 as Format>::CHECK;` 就是这条规则的求值点（不被引用的关联常量不报错）。
+- **注解 ↔ 输出类型**（`__model_check`，测试期）：注解的 `dtype` 说"回读按什么解释"，`.k` 的可写输出
+  说"内核写的是什么"，`signature.output_type()` 把后者读出来逐项比较。两者分家时不该由 `verify`
+  用一个错宽度的缓冲去对拍。`cutile::backend::harness` 另有一道同源闸：非 `float` 的输出在拼任何 C
+  之前就被拒，诊断带算子名与缓冲名（而不是 C 编译器的一句 `incompatible pointer type`）。
+- **注解 ↔ 注册表**（`tests/contracts.rs::the_registry_and_the_model_annotations_are_mirrors`，文本门禁）：
+  标了 `#[model]` 必须在 `REGISTRY` 里有同名条目；注册表的 `model:` 必须写 `..::MODEL`，不能是手写的
+  `Model { .. }` 字面量。语义表只有一个生产者，注册表与注解两侧互为镜像，没有豁免节。
 
 内核实参不在这里手写：`op::sig` 从 `.k` 的入口函数解析形参名、类型与可写性，样本只按名字提供缓冲
 与标量取值，实参顺序与输出缓冲名都由签名派生。签名、样本与模板任一漂移，装载期或 `verify`/`bench`
@@ -83,8 +117,9 @@ crates/op/
 ## 新增一个算子
 
 1. 在 `ops/` 下写 `<name>.toml` 与 `<name>.k`；
-2. 在 `src/<name>.rs` 写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`
-   与一张 `MODEL` 表；样本里的缓冲名与标量名必须和 `.k` 签名一致，实参列表不在这里写；
+2. 在 `src/<name>.rs` 写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`，
+   并以 `#[annotation::model(..)]` 标注生成 `MODEL`（不要手写 `Model { .. }`）；样本里的缓冲名与
+   标量名必须和 `.k` 签名一致，实参列表不在这里写；
 3. 在 `src/lib.rs` 的 `REGISTRY` 里补一条 `Registration`（名字 + 两段 `include_str!` + `MODEL`）：
    声明、模板与语义表是同一条注册，`BUILTIN` 与 `model()` 都是它的投影，因此不存在
    "内嵌里有、语义表里没有"的第二份事实；

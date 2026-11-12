@@ -1,8 +1,30 @@
 //! 注解层：把"声明"写成属性，由编译器检查，而不是手写 trait 样板再靠人复核。
 //!
-//! **拥有**：`#[layer]` 属性宏。**不拥有**：任何领域类型——宏只生成调用点所在 crate 的代码，
-//! 生成的实现指向 `nn` 的契约（`nn::Layer` / `nn::LayerSpec`），因此本 crate 对 `nn` **没有**
-//! 依赖：proc-macro 只在编译期运行，产出的 token 在调用方的 crate 里展开。
+//! **拥有**：`#[layer]` / `#[frontend]` / `#[model]` 属性宏。**不拥有**：任何领域类型——宏只
+//! 生成调用点所在 crate 的代码，生成的实现指向契约路径（`#[layer]` 指向 `nn::Layer` /
+//! `nn::LayerSpec`，`#[frontend]` 指向 `crate::witness::Language`，`#[model]` 指向
+//! `op::model::Model`），因此本 crate 对它们**没有**依赖：proc-macro 只在编译期运行，产出的
+//! token 在调用方的 crate 里展开。
+//!
+//! 三套注解共用同一趟展开（`expand_with`）与同一套"注解只能标 struct / enum / 别名、不得带
+//! 泛型"的类型名判据：注解承载的是**可静态判定**的契约（名字/形状/算子、语言/后缀/缓存标签、
+//! 注册名/生产形状/输出类型），执行与业务仍由手写代码给出，两者用 trait bound 绑死
+//! （`nn::Layer`、`witness::Frontend`、`op::gemv::Format`）。
+//!
+//! # 注解里的名字来自词汇表
+//!
+//! `emit = "opencl"` 与 `dtype = "f32"` 都是"闭集里的一个名字"。这份闭集不能是注解自己
+//! 的一份手抄表：`Emit` / `DType` 增删一个变体时注解必须同时变，而不是安静地留着一个匹配不上
+//! 的名字。因此两张表写成**等式**（`syntax::LANGUAGES` / `syntax::DTYPES`）：
+//!
+//! - `LANGUAGES` 与 `prof::Emit::ALL` 逐项相等；
+//! - `DTYPES` 与「`cutile::reference::tolerance` 给出非零阈值」的 `DType` 集合逐项相等。
+//!
+//! 两边同时被核对：仓库级门禁 `tests/contracts.rs` 核对全量与映射规则（名字 → 首字母大写 →
+//! 变体名），每个注解生成的 `#[cfg(test)]` 模块核对**这一个调用点**用的确实是同一个变体
+//! （`Emit::parse(..) == Language::EMIT`、`DType::parse(..) == Some(MODEL.dtype)`）。
+//! 这份核对故意住在门禁与生成的代码里，而不是引入对 `prof` 的依赖：本 crate 仍然零依赖，
+//! 且失败会指向被标注的那一行——而不是另一张表上。
 //!
 //! **依赖**：无。不引入 `syn` / `quote` / `proc-macro2`：注解文法只有四种键
 //! （`name = ".."`、`out = [..]`、`in = ..`、`ops = [".."]`），手写解析一百多行就能覆盖，换来的是
@@ -126,16 +148,82 @@ impl Streams for TokenStream {
     }
 }
 
+/// 把 `#[frontend(emit = "..", ext = "..", tag = "..")]` 展开成 `crate::witness::Language` 的
+/// 实现 + 两条编译期断言。
+///
+/// 注解只承载"这台设备是什么语言"这类**可静态判定**的身份（语言、产物后缀、缓存标签），
+/// 执行仍然是手写的 `Device` 实现：`Frontend: Language + Device` 把两者绑在一起，所以只标注解
+/// 不写执行、或写了执行却没标注解，都拿不到 `Frontend`，泛型入口也不会接受它。
+#[proc_macro_attribute]
+pub fn frontend(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    expand_with(
+        attribute,
+        item,
+        "frontend",
+        syntax::parse_frontend,
+        codegen::render_frontend,
+        syntax::target_name,
+    )
+}
+
+/// 把 `#[model(name = "..", shape = [m, n], dtype = "..")]` 展开成 `MODEL` 常量、两条编译期
+/// 断言与一条校验测试。
+///
+/// 注解承载的是**编译期数据**：注册表的键、生产形状、输出类型。行为不在注解里——它是被标注的
+/// `type` 别名指向的那份格式契约（`Quantized<32>` / `Dense<32>`）：生成的 `MODEL` 把
+/// `cost` / `sample` / `reference` 写成 `<名字 as Format>` 的单态化实例，`group` 取
+/// `Format::GRAIN`。于是"注解说的格式"与"实际实现的格式"不可能各说各的：别名不实现
+/// `Format` 就编译不过，生产形状不是粒度的整数倍也是编译错误。
+///
+/// 与 `#[layer]` / `#[frontend]` 的分工一样，本注解不建注册表：注册表仍是 `REGISTRY` 一张，
+/// 生成的测试只核对"注册表里的那一条就是这份 `MODEL`"，不另存一份事实。
+#[proc_macro_attribute]
+pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    expand_with(
+        attribute,
+        item,
+        "model",
+        syntax::parse_model,
+        codegen::render_model,
+        syntax::model_target,
+    )
+}
+
 /// 解析 + 校验 + 生成；失败时一定留下被标注项，避免次生错误埋掉真正的原因。
 fn expand<S: Streams>(attribute: S, item: S) -> S {
+    expand_with(
+        attribute,
+        item,
+        "layer",
+        syntax::parse,
+        codegen::render,
+        syntax::target_name,
+    )
+}
+
+/// 两道注解共用的一趟展开：解析 → 取类型名 → 渲染 → 拼接。
+///
+/// 文法与渲染以**具体函数**（不是 `dyn`）传进来：每一步都单态化，公共步骤——错误定位、
+/// "失败也要留下被标注项"、拼接顺序——只有一份实现，于是两道注解不会各错一处。
+fn expand_with<S, D>(
+    attribute: S,
+    item: S,
+    name: &str,
+    parse: fn(&[Token]) -> Result<D, SyntaxError>,
+    render: fn(&D, &str) -> String,
+    target: fn(&[Token], &str) -> Result<String, SyntaxError>,
+) -> S
+where
+    S: Streams,
+{
     let arguments = attribute.tokenize();
     let body = item.tokenize();
 
-    match syntax::parse(&convert(&arguments)) {
+    match parse(&convert(&arguments)) {
         Err(error) => reject(item, &error, &arguments),
-        Ok(declaration) => match syntax::type_name(&convert(&body)) {
+        Ok(declaration) => match target(&convert(&body), name) {
             Err(error) => reject(item, &error, &body),
-            Ok(ty) => attach(item, &codegen::render(&declaration, &ty)),
+            Ok(ty) => attach(item, &render(&declaration, &ty)),
         },
     }
 }
