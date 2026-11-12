@@ -108,11 +108,15 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// 注解解析后的三件事实：名字、输出形状、算子列表。
+/// 注解解析后的四件事实：名字、输出形状、输入宽度、算子列表。
+///
+/// `input` 是可选件：没有它，层仍然是一份合法的声明（名字 + 输出 + 算子），只是算不出下界——
+/// 算子语义表要的是 `(规约轴, 输出轴)`，缺一半就宁可不给数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Declaration {
     name: String,
     out: Vec<usize>,
+    input: Option<usize>,
     ops: Vec<String>,
 }
 
@@ -127,6 +131,11 @@ impl Declaration {
         &self.out
     }
 
+    /// 输入（规约轴）宽度；`None` 表示这一层没有可计价的形状。
+    pub(crate) fn input(&self) -> Option<usize> {
+        self.input
+    }
+
     /// 要引用的算子名，已去重且非空。
     pub(crate) fn ops(&self) -> &[String] {
         &self.ops
@@ -134,13 +143,14 @@ impl Declaration {
 }
 
 /// 注解允许的键；顺序即错误信息里的提示顺序。
-pub(crate) const KEYS: [&str; 3] = ["name", "out", "ops"];
+pub(crate) const KEYS: [&str; 4] = ["name", "out", "in", "ops"];
 
 /// 解析注解本体；任何一处不合文法都只产出一条带位置的错误。
 pub(crate) fn parse(tokens: &[Token]) -> Result<Declaration, Error> {
     let mut cursor = Cursor::new(tokens);
     let mut name: Option<String> = None;
     let mut out: Option<Vec<usize>> = None;
+    let mut input: Option<(usize, Position)> = None;
     let mut ops: Option<Vec<String>> = None;
 
     while !cursor.is_empty() {
@@ -180,6 +190,23 @@ pub(crate) fn parse(tokens: &[Token]) -> Result<Declaration, Error> {
                     dims.push(dimension);
                 }
                 out = Some(dims);
+            }
+            "in" => {
+                if input.is_some() {
+                    return Err(Error::at(
+                        key_position,
+                        "注解键 `in` 重复：输入宽度只能声明一次",
+                    ));
+                }
+                let token = cursor.next("`in` 的值")?;
+                let width = unsigned(token).map_err(|error| error.rebased(key_position))?;
+                if width == 0 {
+                    return Err(Error::at(
+                        key_position,
+                        "输入宽度必须大于 0：零宽的规约轴没有下界",
+                    ));
+                }
+                input = Some((width, key_position));
             }
             "ops" => {
                 if ops.is_some() {
@@ -225,7 +252,25 @@ pub(crate) fn parse(tokens: &[Token]) -> Result<Declaration, Error> {
             "`ops` 不能为空：一个层至少要引用一个已声明的算子",
         ));
     }
-    Ok(Declaration { name, out, ops })
+    if let Some((width, position)) = input
+        && out.len() != 1
+    {
+        // `(m, n)` 只描述“一条规约轴 + 一条输出轴”。多轴输出需要形状上下文，
+        // 而不是把某一根轴冒充 `n`；宁可让注解在这里失败，也不要生成一个假的下界。
+        return Err(Error::at(
+            position,
+            format!(
+                "`in = {width}` 只对单轴输出（一次投影）有意义：`out` 现在有 {} 个轴",
+                out.len()
+            ),
+        ));
+    }
+    Ok(Declaration {
+        name,
+        out,
+        input: input.map(|(width, _)| width),
+        ops,
+    })
 }
 
 /// 从被标注的项里取出类型名；顺带拒绝无法用一份注解覆盖的形态。
@@ -437,6 +482,34 @@ mod tests {
     }
 
     #[test]
+    fn an_input_width_is_optional_and_kept_as_given() {
+        let declaration =
+            parse_text(r#"name = "q", out = [8], in = 32, ops = ["gemv_i4"]"#).expect("合法注解");
+        assert_eq!(declaration.input(), Some(32));
+        assert_eq!(
+            parse_text(r#"name = "q", out = [8], ops = ["gemv_i4"]"#)
+                .expect("合法注解")
+                .input(),
+            None,
+            "没有 `in` 只是没有可计价的形状，不是文法错误"
+        );
+    }
+
+    #[test]
+    fn an_input_width_only_fits_a_single_axis_output() {
+        let error = parse_text(r#"name = "q", out = [2, 3], in = 32, ops = ["gemv_i4"]"#)
+            .expect_err("多轴输出没有单一的输出轴");
+        assert!(error.message().contains("单轴输出"), "{error}");
+    }
+
+    #[test]
+    fn a_zero_input_width_is_rejected() {
+        let error = parse_text(r#"name = "q", out = [8], in = 0, ops = ["gemv_i4"]"#)
+            .expect_err("零宽规约轴");
+        assert!(error.message().contains("大于 0"), "{error}");
+    }
+
+    #[test]
     fn an_unknown_key_lists_the_closed_set() {
         let error = parse_text(r#"name = "x", out = [1], ops = ["dot"], dtype = "f32""#)
             .expect_err("未知键");
@@ -451,6 +524,7 @@ mod tests {
         for text in [
             r#"name = "a", name = "b", out = [1], ops = ["dot"]"#,
             r#"name = "a", out = [1], out = [2], ops = ["dot"]"#,
+            r#"name = "a", out = [1], in = 4, in = 8, ops = ["dot"]"#,
             r#"name = "a", out = [1], ops = ["dot"], ops = ["dot"]"#,
         ] {
             let error = parse_text(text).expect_err("重复键");

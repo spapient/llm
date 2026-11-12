@@ -56,6 +56,16 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     code.push_str(
         "    fn spec(&self) -> &::nn::LayerSpec {\n        <Self>::__layer_spec()\n    }\n",
     );
+    // `in` 给了规约轴宽度，下界就有得算；没给就沿用契约里的默认实现（`Ok(None)`），
+    // 而不是生成一个“返回空值”的方法把“这一层不懂自己的形状”藏起来。
+    if let Some(width) = declaration.input() {
+        let out = declaration.out()[0];
+        code.push_str("    fn bounds(&self) -> ::nn::BoundsResult {\n");
+        code.push_str(&format!(
+            "        ::nn::Bounds::of_ops(<Self>::__layer_spec().ops(), {width}usize, {out}usize).map(::core::option::Option::Some)\n"
+        ));
+        code.push_str("    }\n");
+    }
     code.push_str("}\n\n");
 
     code.push_str("#[cfg(test)]\n#[allow(non_snake_case)]\n");
@@ -120,6 +130,36 @@ mod tests {
         assert!(
             code.contains(r#"::nn::LayerSpec::new("lm_head", ::nn::Shape::new([4096usize]), ::std::vec!["gemv_i4".to_string()])"#),
             "{code}"
+        );
+    }
+
+    #[test]
+    fn an_input_width_generates_the_same_floor_path_as_a_linear_layer() {
+        let code = render(
+            &declaration(r#"name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"]"#),
+            "LmHead",
+        );
+        assert!(
+            code.contains("fn bounds(&self) -> ::nn::BoundsResult {"),
+            "{code}"
+        );
+        assert!(
+            code.contains(
+                "::nn::Bounds::of_ops(<Self>::__layer_spec().ops(), 4096usize, 4096usize)"
+            ),
+            "下界必须走与 Linear 同一条路径：{code}"
+        );
+    }
+
+    #[test]
+    fn without_an_input_width_no_bounds_method_is_generated() {
+        let code = render(
+            &declaration(r#"name = "q", out = [8], ops = ["gemv_i4"]"#),
+            "Q",
+        );
+        assert!(
+            !code.contains("fn bounds("),
+            "没给形状就不要生成一个“空”实现：契约的默认值已经说明了这件事：{code}"
         );
     }
 

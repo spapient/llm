@@ -141,15 +141,22 @@ fn every_owned_type_is_public_in_the_claimed_crate() {
     }
 }
 
-/// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：`op` / `cutile` / `audit` 与 L7
-/// 入口的失败类型必须是 `diagnostic::Error`，否则类别与退出码就失去了来源。
+/// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：`op` / `prof` / `prim` /
+/// `cutile` / `audit` 与 L7 入口的失败类型必须是 `diagnostic::Error`，否则类别与退出码就失去了来源。
 ///
 /// 扫描的是"`Result<…, String>`"这一形态本身，不是某个函数：新加的函数同样被覆盖。
-/// `prof` / `prim` 仍是存量（在边界处用 `Error::new` 显式给类别），刻意不在扫描范围。
+/// `llm-config` 的 `Error` 是唯一剩下的存量（它是数据层自己的类型，`Settings::load` 用它），
+/// 刻意不在扫描范围。
 #[test]
 fn the_error_boundary_does_not_fall_back_to_strings() {
     let mut paths = Vec::new();
-    for root in ["crates/op/src", "crates/cutile/src", "crates/audit/src"] {
+    for root in [
+        "crates/op/src",
+        "crates/prof/src",
+        "crates/prim/src",
+        "crates/cutile/src",
+        "crates/audit/src",
+    ] {
         paths.extend(rust_files(std::path::Path::new(root)));
     }
     paths.push(std::path::PathBuf::from("src/bin/cutile.rs"));

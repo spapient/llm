@@ -4,8 +4,8 @@
 //! 生成的实现指向 `nn` 的契约（`nn::Layer` / `nn::LayerSpec`），因此本 crate 对 `nn` **没有**
 //! 依赖：proc-macro 只在编译期运行，产出的 token 在调用方的 crate 里展开。
 //!
-//! **依赖**：无。不引入 `syn` / `quote` / `proc-macro2`：注解文法只有三种键
-//! （`name = ".."`、`out = [..]`、`ops = [".."]`），手写解析一百多行就能覆盖，换来的是
+//! **依赖**：无。不引入 `syn` / `quote` / `proc-macro2`：注解文法只有四种键
+//! （`name = ".."`、`out = [..]`、`in = ..`、`ops = [".."]`），手写解析一百多行就能覆盖，换来的是
 //! "workspace 零外部依赖"这条供应链契约持续成立（见 `docs/ARCHITECTURE.md` 的依赖规则）。
 //!
 //! # 三层结构（可测性从这里来）
@@ -33,12 +33,15 @@
 //! # 例子
 //!
 //! ```ignore
-//! #[nn::layer(name = "lm_head", out = [32000], ops = ["gemv_i4"])]
+//! // `in` 是规约轴宽度：给了它，注解层就能把 `(in, out)` 交给算子语义表，
+//! // 于是和 `Linear` 走同一条下界路径；不给，层照样合法，只是没有可计价的形状。
+//! #[nn::layer(name = "lm_head", out = [32000], in = 4096, ops = ["gemv_i4"])]
 //! pub struct LmHead;
 //!
 //! let layer: &dyn nn::Layer = &LmHead;
 //! assert_eq!(layer.name(), "lm_head");
 //! assert_eq!(layer.output().dims(), [32000]);
+//! assert!(layer.bounds().expect("合法").is_some());
 //! ```
 //!
 //! 生成的东西是确定的三块：原样保留的被标注项、一份 `impl nn::Layer`、一个

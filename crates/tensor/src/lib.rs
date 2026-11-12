@@ -87,8 +87,15 @@ impl Shape {
     }
 
     /// 元素个数：各轴长度之积，空形状为 1。
+    ///
+    /// 溢出时**饱和**到 `usize::MAX`，不回绕：形状可以来自权重文件头这类不受信任的输入，
+    /// 回绕会让一个巨大形状报出很小的 `numel`（例如 `[2^32, 2^32]` 得到 0），于是
+    /// [`Tensor::new`] / [`View::new`] 的"缓冲够长"判定被绕过，得到一个形状与缓冲不符的
+    /// 张量。饱和之后下游只会按"缓冲不够"拒绝，而 `checked_mul` 的调用点照旧能看见溢出。
     pub fn numel(&self) -> usize {
-        self.0.iter().product()
+        self.0
+            .iter()
+            .fold(1usize, |acc, dim| acc.saturating_mul(*dim))
     }
 
     /// 该元素类型下需要的字节数（按位向上取整，`U4` 会小于 `numel`）。
@@ -428,6 +435,29 @@ mod tests {
         let error = Tensor::new(DType::F32, Shape::new([2]), &[0u8; 4]).expect_err("应报错");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("8 字节"), "{error}");
+    }
+
+    /// 形状可以来自文件头：乘积溢出必须饱和，而不是回绕成一个"看起来很小"的数。
+    #[test]
+    fn a_shape_whose_product_overflows_saturates_instead_of_wrapping() {
+        let huge = Shape::new([usize::MAX, 2]);
+        assert_eq!(huge.numel(), usize::MAX, "溢出饱和，不回绕");
+        // 回绕会得到 0，于是"空缓冲 + 巨大形状"会被当成合法张量。
+        let error = Tensor::new(DType::F32, huge.clone(), &[0u8; 4]).expect_err("必须拒绝");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(
+            View::new(huge.clone(), &[0u8; 4]).is_err(),
+            "元素视图同样不能放行"
+        );
+        assert!(
+            View::strided(huge, Strides::new([1, 1]), &[0u8; 4]).is_err(),
+            "按步长算最高偏移时必须看见溢出"
+        );
+        assert_eq!(
+            Shape::new([usize::MAX, 0, 2]).numel(),
+            0,
+            "真有一轴为 0 才是 0 个元素"
+        );
     }
 
     #[test]

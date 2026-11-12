@@ -1,22 +1,29 @@
 //! 模板词法：把 `<name>.k` 切成文本、`{{槽位}}` 与 `@原语(...)`（DESIGN §4.2）。
 //!
-//! 词法属于声明层：它解释的是 `ops/` 里的文本格式，声明解析（`OpDecl::check_slots`）要用它提前
+//! 词法属于声明层：它解释的是 `ops/` 里的文本格式，声明解析（[`crate::decl::OpDecl`]）要用它提前
 //! 拦住 `{{GMAXX}}` 这类笔误。片段拼接（`@原语` → 片段文本）才是机制，留在 `cutile`。
 //!
 //! 位置信息只记行号——这是"诊断精度换解析器规模"的刻意取舍。
+//!
+//! # 切一次，查三遍
+//!
+//! 装载期要把同一份模板校验三遍：槽位都得有定义、每条 `@原语` 都得被申请、调用点的能力参数
+//! 都得落在该变体的能力签名之内。三次校验看的是同一份切分结果，所以 [`Segment`] **借用**模板
+//! 正文——文本段与槽位名都是 `&str`，一个字符都不拷贝。只有 `@原语` 的参数表需要一次小分配
+//! （每处调用一次，与模板里写了几条 `@` 同阶）。
 
 use diagnostic::{Code, Error};
 use prof::atom::Prim;
 
 /// 模板片段。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Segment {
+pub enum Segment<'a> {
     /// 原样保留的文本。
-    Text(String),
+    Text(&'a str),
     /// `{{槽位}}`。
     Slot {
-        /// 槽位名。
-        name: String,
+        /// 槽位名（已去掉首尾空白）。
+        name: &'a str,
         /// 行号。
         line: usize,
     },
@@ -25,24 +32,110 @@ pub enum Segment {
         /// 原语。
         prim: Prim,
         /// 参数。
-        args: Vec<Arg>,
+        args: Vec<Arg<'a>>,
         /// 行号。
         line: usize,
     },
 }
 
 /// `@原语` 的一个参数。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Arg {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arg<'a> {
     /// 位置参数，原样拼入片段。
-    Expr(String),
+    Expr(&'a str),
     /// 命名参数（`along: BN`、`op: sum`），作为 `$key` 占位符的值。
     Named {
         /// 键。
-        key: String,
+        key: &'a str,
         /// 值。
-        value: String,
+        value: &'a str,
     },
+}
+
+/// 一次词法的结果：切好的片段。
+///
+/// 这是装载期三次校验共用的视图（[`Self::slots`]、[`Self::calls`]），也是 [`lex`] 的容器。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Template<'a> {
+    segments: Vec<Segment<'a>>,
+}
+
+impl<'a> Template<'a> {
+    /// 切分模板正文。
+    ///
+    /// 只认两种构造：`{{名字}}` 与 `@名字(...)`。其余文本原样保留——包括"看起来像原语但名字
+    /// 不在闭集里"的写法，它与"参数括号不配对"一样退回成文本，由后续校验按文本处理。
+    pub fn parse(template: &'a str) -> Self {
+        let mut segments = Vec::new();
+        let mut cursor = 0usize;
+        let mut text_start = 0usize;
+        let mut line = 1usize;
+
+        while cursor < template.len() {
+            let rest = &template[cursor..];
+            if rest.starts_with("{{")
+                && let Some(end) = rest[2..].find("}}")
+            {
+                if text_start < cursor {
+                    segments.push(Segment::Text(&template[text_start..cursor]));
+                }
+                segments.push(Segment::Slot {
+                    name: rest[2..2 + end].trim(),
+                    line,
+                });
+                cursor = advance(template, cursor, 2 + end + 2, &mut line);
+                text_start = cursor;
+                continue;
+            }
+            if rest.starts_with('@')
+                && let Some((consumed, prim, args)) = call(rest)
+            {
+                if text_start < cursor {
+                    segments.push(Segment::Text(&template[text_start..cursor]));
+                }
+                segments.push(Segment::Call { prim, args, line });
+                cursor = advance(template, cursor, consumed, &mut line);
+                text_start = cursor;
+                continue;
+            }
+            // 普通字符：推进一个字符，顺带数换行；文本段不逐字拷贝，最后整段切走。
+            let ch = rest.chars().next().expect("cursor 未到末尾");
+            cursor += ch.len_utf8();
+            if ch == '\n' {
+                line += 1;
+            }
+        }
+        if text_start < template.len() {
+            segments.push(Segment::Text(&template[text_start..]));
+        }
+        Self { segments }
+    }
+
+    /// 切好的片段。
+    pub fn segments(&self) -> &[Segment<'a>] {
+        &self.segments
+    }
+
+    /// 拆成片段（[`lex`] 的等价形式）。
+    pub fn into_segments(self) -> Vec<Segment<'a>> {
+        self.segments
+    }
+
+    /// 逐个槽位：`(行号, 名字)`。
+    pub fn slots(&self) -> impl Iterator<Item = (usize, &'a str)> + '_ {
+        self.segments.iter().filter_map(|segment| match segment {
+            Segment::Slot { name, line } => Some((*line, *name)),
+            _ => None,
+        })
+    }
+
+    /// 逐个原语调用：`(行号, 原语, 参数)`。
+    pub fn calls<'s>(&'s self) -> impl Iterator<Item = (usize, Prim, &'s [Arg<'a>])> + use<'s, 'a> {
+        self.segments.iter().filter_map(|segment| match segment {
+            Segment::Call { prim, args, line } => Some((*line, *prim, args.as_slice())),
+            _ => None,
+        })
+    }
 }
 
 /// 模板拼接错误（只给行号，不给列）。
@@ -52,77 +145,37 @@ pub fn error(line: usize, message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with(format!("第 {line} 行"))
 }
 
-/// 列出模板里出现的全部槽位（声明层提前校验用）。
-pub fn slots(template: &str) -> Vec<(usize, String)> {
-    lex(template)
-        .into_iter()
-        .filter_map(|segment| match segment {
-            Segment::Slot { name, line } => Some((line, name)),
-            _ => None,
-        })
-        .collect()
+/// 词法：把模板切成 [`Segment`]。
+pub fn lex(template: &str) -> Vec<Segment<'_>> {
+    Template::parse(template).into_segments()
 }
 
-/// 词法：把模板切成 [`Segment`]。
-pub fn lex(template: &str) -> Vec<Segment> {
-    let mut segments = Vec::new();
-    let mut text = String::new();
-    let mut line = 1usize;
-    let mut chars = template.char_indices().peekable();
+/// 跳过一个构造：推进 `consumed` 个字节，并把其中的换行计入行号。
+///
+/// 行号必须在这里跟上：`@bar(\n    tok\n)` 之后的片段落在新行上，漏掉这一步后面每条诊断都会
+/// 指回上一次换行——诊断精度就没了。
+fn advance(template: &str, from: usize, consumed: usize, line: &mut usize) -> usize {
+    let to = from + consumed;
+    *line += template[from..to]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    to
+}
 
-    while let Some((index, ch)) = chars.next() {
-        if ch == '\n' {
-            line += 1;
-        }
-        if ch == '{'
-            && template[index..].starts_with("{{")
-            && let Some(end) = template[index + 2..].find("}}")
-        {
-            let name = template[index + 2..index + 2 + end].trim().to_string();
-            if !text.is_empty() {
-                segments.push(Segment::Text(std::mem::take(&mut text)));
-            }
-            segments.push(Segment::Slot { name, line });
-            let consumed = 2 + end + 2;
-            for _ in 0..consumed - 1 {
-                chars.next();
-            }
-            continue;
-        }
-        if ch == '@' {
-            let rest = &template[index + 1..];
-            let name_len = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .count();
-            if name_len > 0 && rest[name_len..].starts_with('(') {
-                let prim_name = &rest[..name_len];
-                if let Some(end) = matching_paren(&rest[name_len..])
-                    && let Some(prim) = Prim::parse(prim_name)
-                {
-                    if !text.is_empty() {
-                        segments.push(Segment::Text(std::mem::take(&mut text)));
-                    }
-                    let inner = &rest[name_len + 1..name_len + end];
-                    segments.push(Segment::Call {
-                        prim,
-                        args: parse_args(inner),
-                        line,
-                    });
-                    let consumed = 1 + name_len + end + 1;
-                    for _ in 0..consumed - 1 {
-                        chars.next();
-                    }
-                    continue;
-                }
-            }
-        }
-        text.push(ch);
+/// 识别 `@原语(...)`，返回 `(消费的字节数, 原语, 参数)`。
+fn call<'a>(rest: &'a str) -> Option<(usize, Prim, Vec<Arg<'a>>)> {
+    let after = &rest[1..];
+    let name_len = after
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .unwrap_or(after.len());
+    if name_len == 0 || !after[name_len..].starts_with('(') {
+        return None;
     }
-    if !text.is_empty() {
-        segments.push(Segment::Text(text));
-    }
-    segments
+    let end = matching_paren(&after[name_len..])?;
+    let prim = Prim::parse(&after[..name_len])?;
+    let args = parse_args(&after[name_len + 1..name_len + end]);
+    Some((1 + name_len + end + 1, prim, args))
 }
 
 fn matching_paren(text: &str) -> Option<usize> {
@@ -142,44 +195,134 @@ fn matching_paren(text: &str) -> Option<usize> {
     None
 }
 
-fn parse_args(inner: &str) -> Vec<Arg> {
+/// 按顶层逗号切分参数；`key: value` 且键是标识符时是命名参数。
+fn parse_args(inner: &str) -> Vec<Arg<'_>> {
     let mut args = Vec::new();
-    let mut current = String::new();
     let mut depth = 0usize;
-    let mut pieces = Vec::new();
-    for ch in inner.chars() {
+    let mut start = 0usize;
+    for (index, ch) in inner.char_indices() {
         match ch {
-            '(' | '[' | '{' => {
-                depth += 1;
-                current.push(ch);
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                push_arg(&mut args, &inner[start..index]);
+                start = index + 1;
             }
-            ')' | ']' | '}' => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if depth == 0 => pieces.push(std::mem::take(&mut current)),
-            _ => current.push(ch),
+            _ => {}
         }
     }
-    if !current.trim().is_empty() {
-        pieces.push(current);
-    }
-    for piece in pieces {
-        let trimmed = piece.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some((key, value)) = trimmed.split_once(':') {
-            let key = key.trim();
-            if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                args.push(Arg::Named {
-                    key: key.to_string(),
-                    value: value.trim().to_string(),
-                });
-                continue;
-            }
-        }
-        args.push(Arg::Expr(trimmed.to_string()));
-    }
+    push_arg(&mut args, &inner[start..]);
     args
+}
+
+fn push_arg<'a>(args: &mut Vec<Arg<'a>>, piece: &'a str) {
+    let piece = piece.trim();
+    if piece.is_empty() {
+        return;
+    }
+    if let Some((key, value)) = piece.split_once(':') {
+        let key = key.trim();
+        if !key.is_empty()
+            && key
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            args.push(Arg::Named {
+                key,
+                value: value.trim(),
+            });
+            return;
+        }
+    }
+    args.push(Arg::Expr(piece));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_slots_and_calls_are_split_without_copying() {
+        let template = "void f() {\n    float d[{{GMAX}}];\n    @dot(acc, d, xs, gsz);\n}\n";
+        let parsed = Template::parse(template);
+
+        assert_eq!(
+            parsed.slots().collect::<Vec<_>>(),
+            [(2, "GMAX")],
+            "槽位名借用正文，不去空白之外做任何改写"
+        );
+        let calls: Vec<_> = parsed.calls().map(|(line, prim, _)| (line, prim)).collect();
+        assert_eq!(calls, [(3, Prim::Dot)]);
+        // 文本段拼回去必须还原原文：切分只拿走两种构造，不能吃掉任何字符。
+        let text_only: String = parsed
+            .segments()
+            .iter()
+            .filter_map(|segment| match segment {
+                Segment::Text(text) => Some(*text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            text_only,
+            template
+                .replace("{{GMAX}}", "")
+                .replace("@dot(acc, d, xs, gsz)", "")
+        );
+        assert_eq!(lex(template), parsed.into_segments());
+    }
+
+    /// 行号必须跟着被跳过的构造一起前进：否则跨行调用的下一条诊断指错行。
+    #[test]
+    fn the_line_number_survives_a_multi_line_call() {
+        let template = "void f() {\n    @bar(\n        tok,\n    );\n    {{typo}}\n}\n";
+        let parsed = Template::parse(template);
+        assert_eq!(parsed.slots().collect::<Vec<_>>(), [(5, "typo")]);
+        let (line, prim, _) = parsed.calls().next().expect("一条调用");
+        assert_eq!(prim, Prim::Bar);
+        assert_eq!(line, 2);
+    }
+
+    #[test]
+    fn named_and_positional_arguments_keep_their_text() {
+        let parsed = Template::parse("@cvt(v, acc, sat: off, along: 32)");
+        let (_, prim, args) = parsed.calls().next().expect("一条调用");
+        assert_eq!(prim, Prim::Cvt);
+        assert_eq!(
+            args,
+            [
+                Arg::Expr("v"),
+                Arg::Expr("acc"),
+                Arg::Named {
+                    key: "sat",
+                    value: "off"
+                },
+                Arg::Named {
+                    key: "along",
+                    value: "32"
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_primitive_stays_text_instead_of_being_guessed() {
+        let parsed = Template::parse("@nosuchprim(y, n, out);");
+        assert!(parsed.calls().next().is_none(), "闭集外不猜");
+        assert!(matches!(
+            parsed.segments(),
+            [Segment::Text("@nosuchprim(y, n, out);")]
+        ));
+    }
+
+    #[test]
+    fn an_unclosed_slot_or_call_is_left_alone() {
+        for template in ["{{GMAX", "@dot(acc, d"] {
+            let parsed = Template::parse(template);
+            assert_eq!(
+                parsed.segments(),
+                [Segment::Text(template)],
+                "写坏了应当退回文本，而不是产生半个构造"
+            );
+        }
+    }
 }

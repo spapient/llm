@@ -28,6 +28,7 @@ dependencies = [
  "llm-kv",
  "llm-nn",
  "llm-op",
+ "llm-prim",
  "llm-prof",
  "llm-serve",
  "llm-tensor",
@@ -135,7 +136,11 @@ dependencies = [
 name = "llm-fuzz"
 version = "0.1.0"
 dependencies = [
+ "llm-cli",
+ "llm-config",
  "llm-diagnostic",
+ "llm-prof",
+ "llm-weights",
 ]
 
 [[package]]
@@ -161,6 +166,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-op",
  "llm-tensor",
+ "llm-weights",
 ]
 
 [[package]]
@@ -177,6 +183,7 @@ dependencies = [
 name = "llm-prim"
 version = "0.1.0"
 dependencies = [
+ "llm-diagnostic",
  "llm-prof",
 ]
 
@@ -185,6 +192,7 @@ name = "llm-prof"
 version = "0.1.0"
 dependencies = [
  "llm-config",
+ "llm-diagnostic",
 ]
 
 [[package]]
@@ -254,6 +262,7 @@ dependencies = [
  "llm-data",
  "llm-diagnostic",
  "llm-nn",
+ "llm-op",
  "llm-shard",
  "llm-tensor",
  "llm-weights",

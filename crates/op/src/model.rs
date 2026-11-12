@@ -7,15 +7,25 @@
 //! 用函数指针而不是 trait：注册表可以是一张 `const` 表，新增算子只加一行，不需要 `dyn` 或
 //! 工厂的样板代码。
 //!
-//! 代价本身不在这里计算：`flops` / `bytes` 由 [`einsum`] 从"一条求和表达式 + 每个操作数的
-//! 位宽"推出，本模块只负责把算子的语义（表达式、样本、标量参考）挂到注册表上。`Cost` 从
-//! `einsum` 再导出，是为了让 `cutile` 继续只依赖 `op` 就能拿到它（所有权仍在 `einsum`）。
+//! 代价本身不在这里计算：`flops` / `read` / `write` 由 [`einsum`] 从"一条求和表达式 + 每个
+//! 操作数的位宽与方向"推出，本模块只负责把算子的语义（表达式、样本、标量参考）挂到注册表上。
+//! `Cost` 与 [`Extents`] 从 `einsum` 再导出，是为了让 `cutile` / `nn` 继续只依赖 `op` 就能拿到
+//! 它们（所有权仍在 `einsum`）。
+//!
+//! # 形状是具名轴，不是一对数字
+//!
+//! 算子的 `cost` 收 [`ShapeContext`]（轴字母 → 长度），而不是 `(m, n)`：后者把"一个规约轴 +
+//! 一个输出轴"写死进接口，RMSNorm 的 `[batch, seq, d_model]` 与 Attention 的 `seq²` 只能靠伪造
+//! 一对 `(m, n)` 来表达，而伪造就意味着第二份公式。**派生轴**（量化分组 `g = m / GROUP`）由算子
+//! 自己在 `cost` 里声明：分组属于算子语义，把它推给调用方等于让每个层都抄一遍 32。
 
 use diagnostic::{Code, Error};
 use prof::atom::DType;
 
 #[doc(inline)]
 pub use einsum::Cost;
+#[doc(inline)]
+pub use einsum::Extents;
 
 /// 缓冲的取值：P0 只出现 f32 与打包字节。
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +129,85 @@ impl Sample {
     }
 }
 
+/// 一条基本轴的语义角色（闭集）。
+///
+/// 闭集而不是字符串：层按角色向算子要轴（"输入宽度填哪条轴"），写错角色应当是类型错误。
+/// 一个新层类型需要新角色时在这里加一个变体，并同时定义"层该怎么填它"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisRole {
+    /// 投影的规约轴：层用输入宽度填它。
+    Input,
+    /// 投影的输出轴：层用输出宽度填它。
+    Output,
+}
+
+/// 算子的一条基本轴：角色 + 表达式里的字母。
+///
+/// 字母属于算子（同一条表达式 `nm,m,ng,n->n`），角色属于层（"输入宽度"）。两者分开之后，
+/// `nn::Linear` 不必知道自己的规约轴叫 `m` 还是 `k`，换一份表达式也不会把层一起改掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AxisSpec {
+    /// 语义角色。
+    pub role: AxisRole,
+    /// 表达式里的字母。
+    pub label: char,
+}
+
+/// 一次调用的形状上下文：算子声明的**基本轴**及长度。
+///
+/// 调用方只填自己知道的轴（投影的输入/输出宽度、注意力的序列长度……）。派生轴不在这里：
+/// 量化分组 `g = m / GROUP` 由算子在 `cost` 里用 [`ShapeContext::extents_with_group`] 声明——
+/// 分组若由调用方填，每个层都要抄一遍 32，而且改分组时所有层都得跟着改。
+///
+/// 轴表的合法性（非零、不重复、字母在 `a..z` / `A..Z` 内）由 [`Extents`] 保证，本类型不重写
+/// 一遍判断。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShapeContext {
+    extents: Extents,
+}
+
+impl ShapeContext {
+    /// 由 `(轴字母, 长度)` 构造。
+    ///
+    /// # Errors
+    ///
+    /// 字母非法、长度为 0、同一个字母给了两次（见 [`Extents::new`]）。
+    pub fn new(pairs: impl IntoIterator<Item = (char, usize)>) -> Result<Self, Error> {
+        Ok(Self {
+            extents: Extents::new(pairs)?,
+        })
+    }
+
+    /// 取一条轴的长度。
+    pub fn get(&self, label: char) -> Option<usize> {
+        self.extents.get(label)
+    }
+
+    /// 基底轴表（不含派生轴）。
+    pub fn extents(&self) -> &Extents {
+        &self.extents
+    }
+
+    /// 克隆一份并声明派生轴 `label = base / divisor`，返回可直接交给 `Formula::cost` 的轴表。
+    ///
+    /// 这是"派生轴属于算子"的落点：调用方只给 `m`，`g` 由算子按自己的 `GROUP` 切出来。
+    ///
+    /// # Errors
+    ///
+    /// `base` 不在上下文里、`divisor` 为 0，或 `base` 的长度不是它的整数倍。
+    pub fn extents_with_group(
+        &self,
+        label: char,
+        base: char,
+        divisor: usize,
+    ) -> Result<Extents, Error> {
+        self.extents
+            .clone()
+            .group(label, base, divisor)
+            .map_err(|error| error.with("op::model::ShapeContext"))
+    }
+}
+
 /// 一个算子的语义表。
 #[derive(Debug, Clone, Copy)]
 pub struct Model {
@@ -131,13 +220,149 @@ pub struct Model {
     pub shape: (usize, usize),
     /// 输出（也是 tile 中转）的元素类型：`verify` 的对拍阈值与缓冲区读回宽度由它推出，不写死 f32。
     pub dtype: DType,
-    /// 给定 `(m, n)` 的标量代价。
+    /// 基本轴：层按角色取值，不必知道表达式里的字母。
+    ///
+    /// 投影算子声明 [`AxisRole::Input`] 与 [`AxisRole::Output`]；将来的 RMSNorm / Attention
+    /// 可以只声明自己需要的角色（或先留空，由调用方用 [`Bounds`]-侧的形状上下文自行构造）。
+    pub axes: &'static [AxisSpec],
+    /// 给定形状上下文的标量代价。
     ///
     /// 可失败：表达式与形状不自洽（例如列数不是量化分组的整数倍）时返回带类别的错误，而不是
     /// 在代价里悄悄截断一个因子。
-    pub cost: fn(usize, usize) -> Result<Cost, Error>,
+    pub cost: fn(&ShapeContext) -> Result<Cost, Error>,
     /// 给定 `(m, n)` 的确定性样本。
     pub sample: fn(usize, usize) -> Sample,
     /// 标量参考：不依赖任何设备，也不依赖片段。
     pub reference: fn(&Sample) -> diagnostic::Result<Vec<f32>>,
+}
+
+impl Model {
+    /// 按角色取轴字母。
+    pub fn axis(&self, role: AxisRole) -> Option<char> {
+        self.axes
+            .iter()
+            .find(|axis| axis.role == role)
+            .map(|axis| axis.label)
+    }
+
+    /// 把投影的 `(输入宽度, 输出宽度)` 放进本算子声明的具名轴。
+    ///
+    /// 这是"投影"这一**层**概念与"具名轴"这一**算子**概念之间唯一的翻译点。算子没有声明
+    /// 投影轴时返回 [`Code::Unsupported`]，而不是退回一对 `(m, n)`：那会把接口重新钉回它
+    /// 试图摆脱的形状，RMSNorm / Attention 也就永远只能伪造一对数字。
+    ///
+    /// # Errors
+    ///
+    /// 缺少 [`AxisRole::Input`] 或 [`AxisRole::Output`] 的声明；宽度为 0（见
+    /// [`ShapeContext::new`]）。
+    pub fn projection(
+        &self,
+        in_features: usize,
+        out_features: usize,
+    ) -> Result<ShapeContext, Error> {
+        let input = self.axis(AxisRole::Input).ok_or_else(|| {
+            Error::new(
+                Code::Unsupported,
+                "算子没有声明输入轴（`AxisRole::Input`），不能按投影计价",
+            )
+            .with("op::model::Model::projection")
+        })?;
+        let output = self.axis(AxisRole::Output).ok_or_else(|| {
+            Error::new(
+                Code::Unsupported,
+                "算子没有声明输出轴（`AxisRole::Output`），不能按投影计价",
+            )
+            .with("op::model::Model::projection")
+        })?;
+        ShapeContext::new([(input, in_features), (output, out_features)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn zero_cost(_: &ShapeContext) -> Result<Cost, Error> {
+        Ok(Cost::ZERO)
+    }
+
+    fn sample(m: usize, n: usize) -> Sample {
+        Sample {
+            m,
+            n,
+            scalars: Vec::new(),
+            buffers: Vec::new(),
+        }
+    }
+
+    fn reference(_: &Sample) -> diagnostic::Result<Vec<f32>> {
+        Ok(Vec::new())
+    }
+
+    /// 只声明输入轴：它不是一个可投影的算子，`projection` 必须说出来，而不是猜一对数字。
+    const HALF_PROJECTION: Model = Model {
+        group: 1,
+        shape: (4, 4),
+        dtype: DType::F32,
+        axes: &[AxisSpec {
+            role: AxisRole::Input,
+            label: 'k',
+        }],
+        cost: zero_cost,
+        sample,
+        reference,
+    };
+
+    #[test]
+    fn a_projection_context_fills_the_axes_by_role_not_by_position() {
+        let model = Model {
+            axes: &[
+                AxisSpec {
+                    role: AxisRole::Input,
+                    label: 'k',
+                },
+                AxisSpec {
+                    role: AxisRole::Output,
+                    label: 'j',
+                },
+            ],
+            ..HALF_PROJECTION
+        };
+        let shape = model.projection(64, 4).expect("两个轴都声明了");
+        assert_eq!(shape.get('k'), Some(64), "输入宽度填的是 input 轴");
+        assert_eq!(shape.get('j'), Some(4), "输出宽度填的是 output 轴");
+        assert_eq!(shape.get('m'), None, "没有把 `m` 当成约定");
+    }
+
+    #[test]
+    fn a_model_without_both_projection_axes_is_not_a_projection() {
+        let error = HALF_PROJECTION.projection(4, 4).expect_err("缺输出轴");
+        assert_eq!(error.code(), Code::Unsupported);
+        assert!(error.to_string().contains("输出轴"), "{error}");
+    }
+
+    #[test]
+    fn a_derived_axis_is_declared_by_the_operator() {
+        let shape = ShapeContext::new([('m', 64), ('n', 4)]).expect("合法");
+        let extents = shape
+            .extents_with_group('g', 'm', 32)
+            .expect("64 能被 32 整除");
+        assert_eq!(
+            extents.get('g'),
+            Some(2),
+            "调用方没有给 `g`，算子自己切出来"
+        );
+        assert!(shape.extents_with_group('g', 'm', 32).is_ok());
+        let error = shape
+            .extents_with_group('g', 'm', 48)
+            .expect_err("不是整数倍");
+        assert!(error.to_string().contains("整数倍"), "{error}");
+    }
+
+    #[test]
+    fn a_context_rejects_an_empty_axis_instead_of_pricing_zero() {
+        let error = ShapeContext::new([('m', 0)]).expect_err("空轴");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("长度为 0"), "{error}");
+    }
 }

@@ -153,8 +153,16 @@ pub fn encode_prompt(
 
 /// 尝试把一个序列准入调度器，并把结果翻译成响应。
 ///
-/// 页不够不是错误，是"现在不行"：返回 503 让客户端重试，而不是让它在半路失败。
+/// 两种"拒绝"必须分成两个状态码：**现在满**（页被别的序列占着）是可重试的 503，客户端等一会儿
+/// 再来即可；**永远装不下**（[`engine::Scheduler::fits`] 为假，即最坏情况的页数超过整个页池）
+/// 重试多少次都一样，只有改请求（调小 `max_new`）才有用，因此是 400。
 pub fn admit(scheduler: &mut engine::Scheduler, sequence: &engine::Sequence) -> Result<Response> {
+    if !scheduler.fits(sequence) {
+        return Ok(Response::error(
+            Status::BadRequest,
+            "这条请求的最坏长度超过整个 KV 页池：调小 max_new 或加大页池",
+        ));
+    }
     if scheduler.admit(sequence)? {
         Ok(Response::ok(sequence.id().to_le_bytes().to_vec()))
     } else {
@@ -214,15 +222,33 @@ mod tests {
 
     #[test]
     fn admission_turns_into_an_ok_or_a_retryable_status() {
-        let mut scheduler = Scheduler::new(Cache::new(1, 16).expect("页池"));
+        let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
         let small = Sequence::new(1, 4, 2, 16, exec::Stream::new(0)).expect("序列");
         let response = admit(&mut scheduler, &small).expect("准入");
         assert_eq!(response.status(), Status::Ok);
 
-        let big = Sequence::new(2, 64, 2, 16, exec::Stream::new(0)).expect("序列");
-        let refused = admit(&mut scheduler, &big).expect("拒绝不是错误");
+        // 提示就占满剩下的一页，但跑到最后要第二页：现在不行，等别人结束再试。
+        let full = Sequence::new(2, 20, 4, 16, exec::Stream::new(0)).expect("序列");
+        assert_eq!(scheduler.cache().free_pages(), 1);
+        let refused = admit(&mut scheduler, &full).expect("拒绝不是错误");
         assert_eq!(refused.status(), Status::Unavailable);
+        assert_eq!(refused.status().code(), 503, "现在满 = 可重试");
         assert_eq!(scheduler.running(), 1);
+    }
+
+    /// 最坏情况装不下与"现在满"不是一回事：重试没有用，必须改请求，所以不给 503。
+    #[test]
+    fn an_impossible_request_is_a_bad_request_not_a_retry() {
+        let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+        let endless = Sequence::new(9, 4, 1024, 16, exec::Stream::new(0)).expect("序列");
+        let response = admit(&mut scheduler, &endless).expect("拒绝不是错误");
+        assert_eq!(response.status().code(), 400);
+        assert_eq!(
+            scheduler.running(),
+            0,
+            "装不下的请求连页都不该占（否则每次重试都白占一页）"
+        );
+        assert_eq!(scheduler.cache().in_use(), 0);
     }
 
     #[test]

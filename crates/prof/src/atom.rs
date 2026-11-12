@@ -4,6 +4,7 @@
 //! （DESIGN §5.2）。因此 [`Provide::covers`] 只做一次区间包含判定，协商不需要任何启发式。
 
 use core::fmt;
+use diagnostic::{Code, Error};
 
 /// 原语闭集：模板唯一能调用的 16 个指令级操作（DESIGN §5.1 的 P1–P16）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -109,6 +110,36 @@ impl Prim {
     /// 是否属于搬运三件套（`load` / `load_async` / `store`）。
     pub const fn is_transfer(self) -> bool {
         matches!(self, Self::Load | Self::LoadAsync | Self::Store)
+    }
+
+    /// 这条原语的能力签名里允许出现的属性键（`exec` 之外）。
+    ///
+    /// 属性键不是全局通用的：`lanes` 对 `dot`/`shuffle` 有意义，对 `load` 没有。把"一个签名
+    /// 由哪些参数构成"写成每原语的闭集后，声明层（`op::decl`）与档案层
+    /// （[`crate::prof::Profile::validate`]）对同一份签名给出同一个答案——否则一个永远不被
+    /// 协商检查的键（`load.sat`）会让"声明了"与"生效了"分家。
+    pub fn attr_keys(self) -> &'static [AttrKey] {
+        match self {
+            Self::Mma => &[AttrKey::Accuracy],
+            Self::Dot | Self::Shuffle | Self::Broadcast => &[AttrKey::Lanes],
+            Self::Load | Self::Store => &[AttrKey::Src, AttrKey::Dst],
+            Self::LoadAsync => &[AttrKey::Src, AttrKey::Dst, AttrKey::Stages],
+            Self::CommitWait => &[AttrKey::Group],
+            Self::Bar => &[],
+            Self::Reduce | Self::Scan => &[AttrKey::Axis, AttrKey::Op],
+            Self::Exp2 => &[AttrKey::Accuracy],
+            Self::Rcp => &[AttrKey::Kind, AttrKey::Accuracy],
+            Self::Cvt => &[AttrKey::Sat],
+            Self::Quant => &[AttrKey::Group],
+            Self::Atomic => &[AttrKey::Op],
+        }
+    }
+
+    /// 某个属性键能否出现在这条原语的签名里。
+    ///
+    /// `exec` 对每条原语都成立：它说的是"由哪个硬件单元实现"，与语义无关。
+    pub fn accepts(self, key: AttrKey) -> bool {
+        key == AttrKey::Exec || self.attr_keys().contains(&key)
     }
 }
 
@@ -407,9 +438,12 @@ impl Span {
     }
 
     /// 区间；`lo > hi` 视为非法。
-    pub fn range(lo: u32, hi: u32) -> Result<Self, String> {
+    pub fn range(lo: u32, hi: u32) -> diagnostic::Result<Self> {
         if lo > hi {
-            return Err(format!("区间下界 {lo} 大于上界 {hi}"));
+            return Err(Error::new(
+                Code::Invalid,
+                format!("区间下界 {lo} 大于上界 {hi}"),
+            ));
         }
         Ok(Self { lo, hi })
     }
@@ -435,7 +469,11 @@ impl Span {
     }
 
     /// 解析三种写法：`16`、`16..64`、`<=512`、`16..`。
-    pub fn parse(text: &str) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// 写法不在上述三种之内、或数字越界时返回 `invalid`。
+    pub fn parse(text: &str) -> diagnostic::Result<Self> {
         let text = text.trim();
         if let Some(rest) = text.strip_prefix("<=") {
             let hi = parse_u32(rest)?;
@@ -454,10 +492,13 @@ impl Span {
     }
 }
 
-fn parse_u32(text: &str) -> Result<u32, String> {
-    text.trim()
-        .parse::<u32>()
-        .map_err(|_| format!("`{}` 不是合法的非负整数", text.trim()))
+fn parse_u32(text: &str) -> diagnostic::Result<u32> {
+    text.trim().parse::<u32>().map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!("`{}` 不是合法的非负整数", text.trim()),
+        )
+    })
 }
 
 impl fmt::Display for Span {

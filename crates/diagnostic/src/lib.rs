@@ -1,12 +1,13 @@
 //! 全仓库唯一的错误类型：类别闭集 [`Code`] + 带上下文的 [`Error`] + [`Result`]。
 //!
 //! **拥有**：`Error`、`Code`、`Result`。**不拥有**：任何领域的错误码字面量——各层用自己的语义
-//! 填 `Code`，但类型只有这一个。**依赖**：无。**被依赖**：除 `prof` / `prim` / `testkit`
-//! 以外的全部成员（见 `docs/ARCHITECTURE.md` 的所有权表）。
+//! 填 `Code`，但类型只有这一个。**依赖**：无（只用 `std`）。**被依赖**：除 `testkit` 以外的
+//! 全部成员（见 `docs/ARCHITECTURE.md` 的所有权表）。
 //!
-//! 存量代码里还有旧形态：`prof` / `prim` 边界的 `Result<_, String>`，以及 `llm-config`
-//! 自带的 `Error`。收敛方向只有一个：新代码用本 crate，旧签名在 crate 边界处用 [`Error::new`]
-//! 显式给出类别——不做"无类别的 `From<String>` 猜测"，否则类别会失去意义。
+//! 旧形态只剩 `llm-config` 自带的 `Error`：数据层（`prof` / `prim`）在 P0-7 已改用本 crate，
+//! 读文件的地方统一走 [`Error::from_io`]——“路径不存在”与“存在但读不出来”是两类事，又直接
+//! 决定退出码（`missing` → 4、`io` → 5），所以这条分类不该由每个调用点各猜一遍。
+//! 不做"无类别的 `From<String>` 猜测"，否则类别会失去意义。
 //!
 //! 类别同时是**退出码的对外契约**（[`Code::exit_code`]）：L7 入口不再自己决定失败该返回 1 还是 2，
 //! 而是把类别映射成退出码，于是"缺设备"与"声明写错"在脚本里可区分。
@@ -25,6 +26,7 @@
 #![deny(unsafe_code)]
 
 use core::fmt;
+use std::path::Path;
 
 /// 错误类别闭集。
 ///
@@ -104,6 +106,7 @@ pub struct Error {
     code: Code,
     message: String,
     context: Vec<String>,
+    notes: Vec<String>,
 }
 
 impl Error {
@@ -113,6 +116,7 @@ impl Error {
             code,
             message: message.into(),
             context: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -121,6 +125,22 @@ impl Error {
     pub fn with(mut self, context: impl Into<String>) -> Self {
         self.context.push(context.into());
         self
+    }
+
+    /// 追加一条**同级**诊断（同一次校验里的另一个失败）。
+    ///
+    /// `Result` 只能携一个错误，但"装载一次报全"对改数据的人比"只报第一条"有用得多。
+    /// 类别与上下文取自第一条，追加的行各自带着自己的类别文本——所以 `missing` 与
+    /// `invalid` 混在一起时仍然可以分辨，而不是被压成同一个码。
+    #[must_use]
+    pub fn also(mut self, other: &Self) -> Self {
+        self.notes.push(other.to_string());
+        self
+    }
+
+    /// 追加的同级诊断（已渲染为文本，含各自的类别与上下文）。
+    pub fn notes(&self) -> &[String] {
+        &self.notes
     }
 
     /// 类别。
@@ -137,6 +157,19 @@ impl Error {
     pub fn context(&self) -> &[String] {
         &self.context
     }
+
+    /// 由一次读文件失败构造：路径不存在是 `missing`，其余是 `io`。
+    ///
+    /// 这条分类放在错误类型所在的层：它同时是退出码契约（`missing` → 4、`io` → 5），
+    /// 各个读文件的层各写一遍，脚本看到的分类迟早会不一致。
+    pub fn from_io(path: &Path, error: &std::io::Error) -> Self {
+        let code = if error.kind() == std::io::ErrorKind::NotFound {
+            Code::Missing
+        } else {
+            Code::Io
+        };
+        Self::new(code, format!("读取 {} 失败：{error}", path.display()))
+    }
 }
 
 impl fmt::Display for Error {
@@ -144,6 +177,9 @@ impl fmt::Display for Error {
         write!(formatter, "{}: {}", self.code, self.message)?;
         for frame in &self.context {
             write!(formatter, " → {frame}")?;
+        }
+        for note in &self.notes {
+            write!(formatter, "\n  {note}")?;
         }
         Ok(())
     }
@@ -189,6 +225,31 @@ mod tests {
             error.to_string(),
             "missing: 模板缺配对的 `.k` → op::load → cutile::builtin"
         );
+    }
+
+    #[test]
+    fn a_peer_diagnostic_keeps_its_own_category() {
+        let first = Error::new(Code::Missing, "缺片段 `load`").with("`cpu`");
+        let second = Error::new(Code::Invalid, "`dot` 的见证不成立");
+        let error = first.also(&second).with("cutile::builtin::load");
+        assert_eq!(error.code(), Code::Missing, "首条的类别不被改写");
+        assert_eq!(error.notes().len(), 1);
+        assert_eq!(
+            error.to_string(),
+            "missing: 缺片段 `load` → `cpu` → cutile::builtin::load\n  invalid: `dot` 的见证不成立"
+        );
+    }
+
+    #[test]
+    fn a_missing_path_is_missing_and_a_broken_read_is_io() {
+        let absent = std::io::Error::new(std::io::ErrorKind::NotFound, "没有这个文件");
+        let error = Error::from_io(std::path::Path::new("/tmp/nope"), &absent);
+        assert_eq!(error.code(), Code::Missing, "{error}");
+        assert!(error.message().contains("/tmp/nope"), "{error}");
+
+        let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "拒绝访问");
+        let error = Error::from_io(std::path::Path::new("/tmp/nope"), &denied);
+        assert_eq!(error.code(), Code::Io, "{error}");
     }
 
     #[test]

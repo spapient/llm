@@ -1,8 +1,10 @@
 # CPU 档案（P0 的真机后端）。
 # 三级存储映射到 CPU 的真实层级：GM = 主存，FAST = L2 分块缓冲，REG = 寄存器/栈。
 # 证据等级说明：L2 = 与参考实现对拍通过，且每条 `provides` 的见证（file + func + expect）
-# 都被 `cutile verify` 真的编译执行过；L1 = 仅源码可生成。atomic 故意留在 L1，用来演示
-# "未验证的能力视为不具备"。
+# 都被 `cutile verify` 真的编译执行过；L0 = 有见证源码、没有片段文本。末尾五条（`atomic`
+# 与闭集里 CPU 真正具备的四条）是 L0：协商照样把它们当作不具备，这正是"未验证的能力
+# 视为不具备"的负例。闭集里的 `shuffle` / `broadcast` 刻意不声明：`[simt].group = 1`
+# 的单 lane 设备没有可交换的对象。
 
 [meta]
 vendor   = "cpu"
@@ -118,11 +120,57 @@ dt      = ["f32"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_reduce", expect = [7.5] }
 
-# 单线程 CPU 没有真正的原子指令；声明在 L1，协商会把它当成"不具备"。
+# 单线程 CPU 只有读改写，没有多线程原子语义；也没有片段文本，所以是 L0——
+# 协商会把它当成"不具备"，这正是这条声明要演示的东西。
 [[provides]]
 prim    = "atomic"
-impl    = "none"
+impl    = "rmw_scalar"
 dt      = ["f32"]
 space   = ["GM"]
 op      = ["add", "max"]
-grade   = "L1"
+grade   = "L0"
+witness = { file = "cpu/witness.c", func = "witness_atomic", expect = [5.0] }
+
+# ── 闭集其余四条：CPU 真的能算，但 P0 模板不调用 ────────────────────────────
+# 与加速器的同六条（`mma`/`shuffle`/`broadcast`/`scan`/`exp2`/`rcp`）不同，这里少了
+# `shuffle`/`broadcast`：它们要求 `[simt].group > 1`，单 lane 设备声明它们就是伪造证据。
+# 这四条没有片段文本，等级因此是 L0——矩阵补的是覆盖，不是等级。
+[[provides]]
+prim     = "mma"
+impl     = "scalar_tile"
+m        = "<=8"
+n        = "<=8"
+k        = "<=8"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["fp32"]
+grade    = "L0"
+witness  = { file = "cpu/witness.c", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
+
+# 单线程前缀和：`sum` 与 `max` 走同一段循环，只是结合运算不同。
+[[provides]]
+prim    = "scan"
+impl    = "prefix_loop"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "cpu/witness.c", func = "witness_scan", expect = [1.0, 3.0, 6.0, 10.0] }
+
+[[provides]]
+prim    = "exp2"
+impl    = "pow2_loop"
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "cpu/witness.c", func = "witness_exp2", expect = [8.0, 0.5] }
+
+[[provides]]
+prim    = "rcp"
+impl    = "recip_newton"
+dt      = ["f32"]
+space   = ["REG"]
+kind    = ["rcp", "rsqrt"]
+grade   = "L0"
+witness = { file = "cpu/witness.c", func = "witness_rcp", expect = [0.25, 0.5] }

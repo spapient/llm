@@ -1,0 +1,50 @@
+# 第二条算子：稠密 f32 投影（无量化、无标度）。
+#
+# 它和 `gemv_i4` 是同一副骨架、同一批原语，差别只在"权重怎么取"：
+#   gemv_i4 ：@quant(deq, packed, scale, gsz) → 先解包再点积
+#   gemv_f32：@load_async(wp, row + g*gsz)    → 直接点积
+# 也就是说新增这条算子只改数据（本文件 + `gemv_f32.k` + `gemv_f32.rs` 的语义表），
+# `cutile` 的机制一行未改——这是 DESIGN §13.2"新增一格边际成本 0 行"的第一次兑现。
+#
+# 它补的是一个真实缺口：`gemv_i4` 只覆盖 4 位权重，而一份 f32 权重的读下界是它的 8 倍，
+# 两者不能互相顶替（`nn::WeightFormat` 因此按元素类型选算子，而不是钉死一个默认值）。
+
+[op]
+name     = "gemv_f32"
+skeleton = "gemm"
+summary  = "y[n] = dot(w[n, :], x[:])"
+
+# GMAX 是 `@reduce` 的轴名：能力协商按轴名匹配（`provides.reduce.axis`），不是注释。
+# 32 也是分块宽度的取值：`gsz` 由样本给出，模板按 `M / gsz` 分块累加。
+[axes]
+GMAX = [32]
+
+[needs]
+dot    = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
+load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+cvt    = { dt = ["f32", "i32"], sat = ["off"] }
+reduce = { axis = ["GMAX"], op = ["sum"], dt = ["f32"] }
+# 搬运与同步原语属于所有变体：模板只有一份，`direct` emit 出来同样会调用它们。
+load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"], stages = ["2"] }
+commit_wait = {}
+bar         = {}
+
+# 布局契约：权重与输入都按行连续。稠密权重没有分组，也没有标度，所以只有两个槽位。
+[layouts]
+w = "row"
+x = "row"
+
+# 与 `gemv_i4` 是同一条两级流水，所以掩盖账也是同一口径：首选变体必须过 DESIGN §12.2 的判据 1，
+# 兜底变体不过（它存在的理由就是"设备缺原语时仍能跑"）。
+[[variants]]
+name      = "pipe2"
+order     = 1
+schedule  = "pipe<2>"
+mma_share = 0.62
+
+[[variants]]
+name      = "direct"
+order     = 2
+schedule  = "direct"
+mma_share = 0.35

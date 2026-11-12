@@ -9,7 +9,8 @@
 //!   与属性键闭集 [`atom::AttrKey`]。
 //!
 //! `cutile` 只做机制（协商、降级、拼接、emit），因此本 crate 不反向依赖它：依赖方向
-//! `cutile → prof`，而 `prof` 只依赖 `std` 与同属基座的 [`llm_config::toml`]。
+//! `cutile → prof`，而 `prof` 只依赖 `std`、同属基座的 [`llm_config::toml`]，以及错误类型
+//! `diagnostic`（类别由产生错误的那一层给，见 `docs/ARCHITECTURE.md` 第三节）。
 //!
 //! 档案里 `witness`（L2 证据）指向片段层（`crates/prim`）：路径相对**片段层根**，仓库里是
 //! `crates/prim`，换数据根时是 `<data.root>/prim`。本 crate 只在装载期做"文件在不在"的校验，
@@ -25,6 +26,7 @@
 
 #![deny(unsafe_code)]
 
+use diagnostic::{Code, Error};
 use std::path::{Path, PathBuf};
 
 pub mod atom;
@@ -100,10 +102,10 @@ pub fn dir() -> PathBuf {
 ///
 /// # Errors
 ///
-/// 目录不可读、文件名不是合法 UTF-8、或某个文件读不出来时返回带路径的说明。
-pub fn load(dir: &Path) -> Result<Vec<Archive>, String> {
-    let entries =
-        std::fs::read_dir(dir).map_err(|error| format!("读取 {} 失败：{error}", dir.display()))?;
+/// 目录不存在是 `missing`（换 `data.root` 时最常发生的错），不可读是 `io`；文件名不是
+/// 合法 UTF-8 是 `invalid`。每条都带路径。
+pub fn load(dir: &Path) -> diagnostic::Result<Vec<Archive>> {
+    let entries = std::fs::read_dir(dir).map_err(|error| Error::from_io(dir, &error))?;
     let mut paths: Vec<PathBuf> = entries
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.is_file())
@@ -118,14 +120,19 @@ pub fn load(dir: &Path) -> Result<Vec<Archive>, String> {
         let name = path
             .file_stem()
             .and_then(|value| value.to_str())
-            .ok_or_else(|| format!("`{}` 的文件名不是合法 UTF-8", path.display()))?;
+            .ok_or_else(|| {
+                Error::new(
+                    Code::Invalid,
+                    format!("`{}` 的文件名不是合法 UTF-8", path.display()),
+                )
+            })?;
         archives.push(Archive::new(name, read(&path)?));
     }
     Ok(archives)
 }
 
-fn read(path: &Path) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|error| format!("读取 {} 失败：{error}", path.display()))
+fn read(path: &Path) -> diagnostic::Result<String> {
+    std::fs::read_to_string(path).map_err(|error| Error::from_io(path, &error))
 }
 
 #[cfg(test)]
@@ -191,6 +198,7 @@ mod tests {
         let dir = temp_dir("missing");
         let _ = std::fs::remove_dir_all(&dir);
         let error = load(&dir).unwrap_err();
-        assert!(error.contains("prof-missing"), "{error}");
+        assert_eq!(error.code(), Code::Missing, "缺目录是 `missing`：{error}");
+        assert!(error.to_string().contains("prof-missing"), "{error}");
     }
 }

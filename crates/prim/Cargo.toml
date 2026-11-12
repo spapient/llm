@@ -8,9 +8,22 @@ repository.workspace = true
 description = "Fragment layer: per-device primitive implementations consumed by cutile."
 readme = "README.md"
 publish = false
+build = "build.rs"
 
 [dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 prof = { path = "../prof", package = "llm-prof" }
+
+# 构建脚本读同一份档案（工具链、编译参数、每条签名的见证入口）与同一份原语闭集，
+# 所以它不是第二个事实源，只是把 `prof` 的内容搬进生成的表。
+[build-dependencies]
+prof = { path = "../prof", package = "llm-prof" }
+
+[features]
+default = []
+# 构建期把能编译的设备见证编成设备镜像（`metal` → `metallib`）并嵌入二进制。
+# 关着是"源码调试"：只有片段与见证源码，运行期再编译；打开是"镜像发布"。
+device-image = []
 
 [lints]
 workspace = true

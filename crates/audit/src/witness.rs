@@ -4,18 +4,22 @@
 //! `int func(float *out)` 并与 `witness.expect` 对拍。没有跑通的提供不会通过 `verify`，
 //! 因此 `grade` 不再是作者的自述：它是这次执行的结论。
 //!
-//! 执行分两种范围（[`Scope`]）：[`run_all`] 是**设备执行**（`emit = c` 时设备就是本机）；
-//! [`self_check`] 是**本机自检**，把每条已声明的见证按 host C ABI 编译执行一遍——它证明
-//! "见证写了什么、算得对不对"，不证明设备具备该能力，所以不改变任何 `grade`。
+//! 执行分两种范围（[`Scope`]），两者不重叠而合起来覆盖每一条声明：
+//! [`run_all`] 是**设备执行**（`emit = c` 时设备就是本机，只跑 `grade ≥ L2`）；
+//! [`self_check`] 是**本机自检**，跑设备执行跑不到的那些（非 C 设备的全部声明，加 C 设备的
+//! `L0`/`L1`）——它证明"见证写了什么、算得对不对"，不证明设备具备该能力，所以不改变任何
+//! `grade`。
 
 use cutile::atom::{DType, Prim, Witness};
 use cutile::backend;
 use cutile::build;
+use cutile::cap::Proof;
 use cutile::prof::Profile;
 use cutile::reference;
 use diagnostic::{Code, Error};
 use llm_config::Settings;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 
 /// 一次见证执行能证明什么：范围不同，结论的效力就不同。
@@ -70,7 +74,11 @@ pub fn run_all(profile: &Profile, settings: &Settings) -> diagnostic::Result<Vec
     execute(profile, settings, &selected, Scope::Device)
 }
 
-/// 对**每条已声明**的见证做本机自检，不要求 `grade ≥ L2`。
+/// 对**设备执行跑不到**的见证做本机自检。
+///
+/// 范围与 [`run_all`] 互补，合起来刚好覆盖每一条已声明的见证：`emit = c` 时
+/// `grade ≥ L2` 的见证已经由设备（本机）执行过，不再重复自检——同一份见证只执行一次，
+/// 结论由能给出更强结论的那个范围给出；非 C 设备本机没有设备执行，全部声明都在自检范围内。
 ///
 /// 见证的 ABI 是 host C（`int func(float *)`），与片段语言无关：这里跳过档案的
 /// `[compile].preamble` 与 `flags`（`#include <cuda_fp16.h>`、`-arch=sm_100a` 这类只对
@@ -84,7 +92,7 @@ pub fn run_all(profile: &Profile, settings: &Settings) -> diagnostic::Result<Vec
 /// 缺 host C 编译器、见证文件不可读、函数不存在、编译/执行失败、返回值个数不符或对拍
 /// 超出容差时，返回带设备、原语与函数名的说明。
 pub fn self_check(profile: &Profile, settings: &Settings) -> diagnostic::Result<Vec<WitnessRun>> {
-    let selected = declared_witnesses(profile);
+    let selected = self_checkable(profile);
     if selected.is_empty() {
         return Ok(Vec::new());
     }
@@ -117,11 +125,16 @@ fn verified_witnesses(profile: &Profile) -> diagnostic::Result<Vec<(Prim, String
     Ok(selected)
 }
 
-/// 声明了见证的供给：自检只看"写了什么"，不看等级。
-fn declared_witnesses(profile: &Profile) -> Vec<(Prim, String, &Witness)> {
+/// 设备执行覆盖不到的见证：非 C 设备全部，C 设备只有 `grade < L2` 的那些。
+///
+/// C 设备上的 `L0`/`L1` 见证此前两头落空：`run_all` 只挑 `grade ≥ L2`，而 `verify` 又只对
+/// 非 C 设备跑自检，于是它们既没有设备结论也没有自检结论——写下来的证据从未被执行。
+fn self_checkable(profile: &Profile) -> Vec<(Prim, String, &Witness)> {
+    let device_runs = profile.meta.emit == cutile::prof::Emit::C;
     profile
         .provides
         .iter()
+        .filter(|provide| !(device_runs && provide.grade.is_verified()))
         .filter_map(|provide| {
             provide
                 .witness
@@ -129,6 +142,108 @@ fn declared_witnesses(profile: &Profile) -> Vec<(Prim, String, &Witness)> {
                 .map(|witness| (provide.prim, provide.impl_name.clone(), witness))
         })
         .collect()
+}
+
+/// 这次协商的依据。
+///
+/// 两者不能混着说：`Executed` 是"这台机器刚刚跑通了见证"，`Declared` 是"档案这么写，本机
+/// 执行不了这台设备"。报告里必须写出是哪一种，否则读者会把自述当成证据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Basis {
+    /// 能力来自这次执行（C 档案：设备就是本机）。
+    Executed,
+    /// 本机不能执行这台设备：协商只能按档案自述。
+    Declared,
+}
+
+impl fmt::Display for Basis {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Executed => "这次执行",
+            Self::Declared => "档案自述（本机执行不了这台设备）",
+        })
+    }
+}
+
+/// 一台设备这一次的证据：跑通了哪些见证、依据是什么、哪一步不成立。
+///
+/// 它是 `doctor` / `verify` / `bench` 共用的那一份结论。分开算的代价不是性能，而是**不一致**：
+/// 三条命令各自读一遍档案时，同一台设备可以同时"协商可行"（doctor）与"见证不成立"（verify）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Evidence {
+    /// 协商的依据。
+    pub basis: Basis,
+    /// 设备执行通过的见证条数（`grade ≥ L2`，结论是 L2 证据）。
+    pub device: usize,
+    /// 本机自检通过的见证条数（设备执行跑不到的那些）。
+    pub host: usize,
+    /// 这次没能确立的证据：见证编译/执行/对拍失败，或声明了 `L2` 却没有见证。
+    ///
+    /// `None` 表示每一条 `grade ≥ L2` 的供给都有执行结论。非 C 设备的"本机没有这台设备"
+    /// 不算证据失败——它写进 [`Evidence::basis`]，而不是这里。
+    pub failure: Option<Error>,
+    /// 真的被证明的供给（执行结论）。
+    proof: Proof,
+}
+
+impl Evidence {
+    /// 协商该用的证据。
+    ///
+    /// [`Basis::Executed`] 时是执行结论；[`Basis::Declared`] 时退回档案自述——本机执行不了
+    /// 这台设备，没有第二条路，所以依据必须由 [`Evidence::basis`] 说出来。
+    #[must_use]
+    pub fn proof(&self, profile: &Profile) -> Proof {
+        match self.basis {
+            Basis::Executed => self.proof.clone(),
+            Basis::Declared => Proof::declared(profile),
+        }
+    }
+}
+
+/// 跑这台设备的全部见证，得到三条命令共用的证据。
+///
+/// 不返回 `Result`：`doctor` 的职责正是解释"为什么不行"，一次见证执行失败也是一条要报的
+/// 事实，而不是让它连报告都交不出来。要失败语义的调用方（`verify` / `bench`）读
+/// [`Evidence::failure`] 自己决定。
+#[must_use]
+pub fn establish(profile: &Profile, settings: &Settings) -> Evidence {
+    let executed = profile.meta.emit == cutile::prof::Emit::C;
+    let mut proof = Proof::none();
+    let mut device = 0;
+    let mut failure = None;
+    match run_all(profile, settings) {
+        Ok(runs) => {
+            device = runs.len();
+            for run in runs {
+                proof.insert(run.prim, &run.impl_name);
+            }
+        }
+        // 非 C 设备在这里的第一件事就是"本机没有这台设备"：它是设备的存在性结论，不是证据
+        // 不成立。写进 failure 会让 `doctor` 把一台 GPU 说成"见证写错了"。
+        Err(error) => {
+            if executed {
+                failure = Some(error);
+            }
+        }
+    }
+    let host = match self_check(profile, settings) {
+        Ok(runs) => runs.len(),
+        Err(error) => {
+            failure = failure.or(Some(error));
+            0
+        }
+    };
+    Evidence {
+        basis: if executed {
+            Basis::Executed
+        } else {
+            Basis::Declared
+        },
+        device,
+        host,
+        failure,
+        proof,
+    }
 }
 
 /// 编译一次、逐条调用。
@@ -141,12 +256,8 @@ fn execute(
     selected: &[(Prim, String, &Witness)],
     scope: Scope,
 ) -> diagnostic::Result<Vec<WitnessRun>> {
-    let tool = backend::detect_toolchain().ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            "缺少 C 编译器（cc/clang/gcc 都不在 PATH 上），无法执行见证",
-        )
-    })?;
+    // 见证程序同样进产物缓存：本节里的编译器只用于“要不要重新编”，命中时用不上。
+    let tool = backend::detect();
     let (preamble, flags, tag) = match scope {
         Scope::Device => (profile.preamble.clone(), profile.flags.clone(), "witness"),
         // 自检只走 host C ABI：设备的 `[compile]` 前置声明与参数在这台机器上要么不存在
@@ -190,7 +301,7 @@ fn execute(
     program.push_str(&harness(selected));
 
     // 见证程序也进产物缓存：第二次 `verify` 只在第一次调用编译器。
-    let (outcome, _artifact) = build::run_program(&tool, &flags, tag, &program, settings)?;
+    let (outcome, _artifact) = build::run_program(tool.as_ref(), &flags, tag, &program, settings)?;
     let counts = parse_counts(&outcome.stderr);
     if counts.len() != selected.len() {
         return Err(Error::new(
@@ -343,7 +454,7 @@ mod tests {
 
     #[test]
     fn every_l2_provide_executes_its_own_witness() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let profile = cpu();
@@ -359,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_wrong_expectation_is_a_failure() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let mut profile = cpu();
@@ -371,7 +482,7 @@ mod tests {
 
     #[test]
     fn a_witness_must_write_exactly_the_declared_number_of_values() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let mut profile = cpu();
@@ -403,23 +514,25 @@ mod tests {
             .unwrap_or_else(|| panic!("{vendor} 档案"))
     }
 
-    /// 四台加速器的见证虽然进不了协商，但它们是写下来的声明：每一条都要能编译、能算出
-    /// 档案里的 `expect`。写错一个期望值不该拖到真机接入那天才暴露。
+    /// 每台设备的每条已声明见证恰好被执行一次，且由能给出更强结论的范围执行。
+    ///
+    /// 加速器的全部声明进自检（本机没有它们的设备执行）；`cpu` 的 `L2` 由设备执行跑，
+    /// 剩下的 `L0`/`L1`（`atomic` 与闭集其余四条）才进自检。两个范围不重叠也没有遗漏。
     #[test]
-    fn every_declared_accelerator_witness_passes_the_host_self_check() {
-        if backend::detect_toolchain().is_none() {
+    fn every_declared_witness_is_executed_once_in_the_strongest_scope() {
+        if backend::detect().is_none() {
             return;
         }
-        for vendor in ["nvidia", "intel", "ascend", "metal"] {
-            let profile = device(vendor);
+        let catalogue = Catalogue::try_builtin().expect("内置数据");
+        for profile in catalogue.profiles() {
+            let vendor = profile.meta.vendor.as_str();
             let declared = profile
                 .provides
                 .iter()
                 .filter(|provide| provide.witness.is_some())
                 .count();
-            let runs = self_check(&profile, &settings())
+            let runs = self_check(profile, &settings())
                 .unwrap_or_else(|error| panic!("{vendor} 的见证自检失败：{error}"));
-            assert_eq!(runs.len(), declared, "{vendor}: 每条声明的见证都要跑一次");
             assert!(
                 runs.iter().all(|run| run.max_rel_err <= 1e-5),
                 "{vendor}: {runs:?}"
@@ -428,6 +541,44 @@ mod tests {
                 runs.iter().all(|run| run.scope == Scope::Host),
                 "{vendor}: 自检的结论不能被当成设备证据"
             );
+            let executed = if profile.meta.emit == cutile::prof::Emit::C {
+                run_all(profile, &settings())
+                    .expect("cpu 的 L2 见证必须通过")
+                    .len()
+            } else {
+                0
+            };
+            assert_eq!(
+                runs.len() + executed,
+                declared,
+                "{vendor}: 自检 {} + 设备执行 {executed} ≠ 声明的 {declared}",
+                runs.len()
+            );
+        }
+    }
+
+    /// `cpu` 的 `L0` 见证此前两头落空：设备执行只挑 `L2`，自检又只跑非 C 设备。
+    /// 现在它们虽然进不了协商，至少能证明“源码可编译、`expect` 算得对”。
+    #[test]
+    fn a_cpu_l0_witness_is_self_checked_instead_of_being_dead_data() {
+        if backend::detect().is_none() {
+            return;
+        }
+        let profile = cpu();
+        let unverified = profile
+            .provides
+            .iter()
+            .filter(|provide| !provide.grade.is_verified())
+            .map(|provide| provide.prim)
+            .collect::<Vec<_>>();
+        assert!(!unverified.is_empty(), "前提：cpu 至少有一条 L0 声明");
+        let runs = self_check(&profile, &settings()).expect("L0 见证自检必须通过");
+        let checked = runs.iter().map(|run| run.prim).collect::<Vec<_>>();
+        for prim in unverified {
+            assert!(
+                checked.contains(&prim),
+                "`{prim}` 的 L0 见证没有被执行：{checked:?}"
+            );
         }
     }
 
@@ -435,7 +586,7 @@ mod tests {
     /// `cuda_fp16.h`，也没有 `nvcc`）。把 preamble 换成一个必然编不过的 `#error`，自检仍必须通过。
     #[test]
     fn the_self_check_ignores_the_device_preamble_and_flags() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let mut profile = device("nvidia");
@@ -448,7 +599,7 @@ mod tests {
     /// 自检是硬判据：期望值错一位就失败，而不是“没设备所以不知道”。
     #[test]
     fn a_wrong_expectation_fails_even_the_host_self_check() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let mut profile = device("ascend");

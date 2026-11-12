@@ -1,9 +1,28 @@
-//! 检查点文件：[`Snapshot`] 把一次训练恢复所需的事实与权重条目表编成字节。
+//! 检查点文件：[`Snapshot`] 把一次训练恢复所需的事实与权重条目表编成字节，字节自带校验。
 //!
-//! **拥有**：`Format`、`Snapshot`。**不拥有**：训练循环状态（`train::Checkpoint` 是内存里的
-//! 最小事实集，本 crate 只负责它怎么落盘、怎么读回）、参数数据（`weights::Header` 被引用，
-//! 条目表不复制）、张量存储（`tensor`）、字节容器的去重与 CRC（`storage`）。
-//! **依赖**：`weights`、`tensor`、`diagnostic`。**被依赖**：`train`。
+//! **拥有**：`Format`、`Facts`、`Snapshot`——字节布局、完整性校验与原子落盘。**不拥有**：训练
+//! 循环状态（`train::Checkpoint` 是内存里的最小事实集，本 crate 只负责它怎么落盘、怎么读回）、
+//! 参数数据（`weights::Header` 被引用，条目表不复制）、张量存储（`tensor`）、检查点存在哪个
+//! 路径（`llm-config` 决定根目录）。**依赖**：`weights`、`tensor`、`diagnostic`。
+//! **被依赖**：`train`。
+//!
+//! 四个取舍，都是"错了会很贵"那一类：
+//!
+//! - **字节自证**：`LLMC` 魔数 + 版本 + **CRC-32 尾部**。检查点是上次训练的结论；读回一个被
+//!   截断或改过一个比特的文件却照常恢复，比读不出来贵得多——训练会在第 N 步之后才发现参数
+//!   与步号对不上，而那时旧状态已经被覆盖。
+//! - **编码紧凑且是单射**：长度、计数、形状与偏移全用 LEB128，偏移按条目顺序存**增量**
+//!   （[`weights::Header`] 已保证条目按偏移有序），解码器再拒掉非规范写法与超过 `u64` 的
+//!   整数。于是同一份快照只有一种字节形态：`decode(encode(x)) == x` 与
+//!   `encode(decode(b)) == b` 同时成立。
+//! - **长度先算准，写盘不留副本**：`encoded_len` 与 `encode` 走同一个编码器（零重复算术），
+//!   `write` 把同一个编码器直接接到同目录临时文件上：整份检查点的字节从不落进一块"文件大小"
+//!   的缓冲，写多大的文件，额外内存都只是一个固定大小的写缓冲。承诺的字节数仍是
+//!   `metadata().len()`——与 `autograd::Plan` 的"计划峰值必须能被实测对上"是同一条约定。
+//! - **恢复有两道前置校验**：[`Snapshot::verify`] 只验字节（魔数、版本、CRC-32，不建表），
+//!   [`Snapshot::check_weights`] 再确认这份检查点引用的条目表与手头的权重文件逐条相同。
+//!   形状对、内容错位是这里最贵的一类失败：它不在读取时炸，而是在训练若干步之后才表现成
+//!   loss 不降，那时旧的检查点往往已经被覆盖。
 //!
 //! 解码不是"读出来就用"：`weights::Header` 会重新校验名字唯一、区间不重叠、起点不早于数据段，
 //! 因此手改过的检查点不会等到恢复后的第 N 步才炸。
@@ -11,7 +30,7 @@
 //! # 例子
 //!
 //! ```
-//! use llm_checkpoint::Snapshot;
+//! use llm_checkpoint::{Facts, Snapshot};
 //! use tensor::{DType, Shape};
 //! use weights::{Entry, Header};
 //!
@@ -20,14 +39,27 @@
 //!     64,
 //! )
 //! .expect("头部");
-//! let snapshot = Snapshot::new(7, 2, 2, 3, header).expect("快照");
-//! let bytes = snapshot.encode().expect("编码");
+//! let facts = Facts::new(7, 2, 2, 3).expect("恢复事实");
+//! let snapshot = Snapshot::new(facts, header);
+//!
+//! let bytes = snapshot.encode();
+//! assert_eq!(bytes.len(), snapshot.encoded_len());
+//! Snapshot::verify(&bytes).expect("字节自证");
+//!
 //! let restored = Snapshot::decode(&bytes).expect("解码");
-//! assert_eq!(restored.step(), 7);
+//! assert_eq!(restored.facts(), facts);
 //! assert_eq!(restored.weights().entries().len(), 1);
+//!
+//! // 恢复前的第二道关：这份检查点描述的条目表必须与手头的权重文件逐条相同。
+//! let weights = restored.weights().clone();
+//! restored.check_weights(&weights).expect("同一份权重表");
 //! ```
 
 #![deny(unsafe_code)]
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
@@ -35,6 +67,21 @@ use weights::{Entry, Header};
 
 /// 解码失败的上下文：错误只由这一层产生，排查时不必再猜是哪一段。
 const CONTEXT: &str = "checkpoint::Snapshot::decode";
+
+/// 一个权重条目在字节里最少占多少：名字长度、类型、秩、偏移增量各 1 字节。
+///
+/// 解码据此把"声明的条目数"与"剩下多少字节"对账，伪造的计数撑不大内存。
+const MIN_ENTRY: usize = 4;
+
+/// 写盘时的缓冲：够把几千条目的头部一次交给内核，又不至于为一个小检查点占太多内存。
+const WRITE_BUFFER: usize = 8 * 1024;
+
+/// 条目表的预分配上限：更大的表改为按需增长。
+///
+/// 声明的条目数只有在字节能撑住时才可信（见 [`MIN_ENTRY`]），但"能撑住"仍允许几十倍的放大
+/// ——一个 [`Entry`] 比 4 字节大得多，一个 1 MB 的伪造文件能声明 25 万个条目。预分到这么多
+/// 之后改为按需增长，于是伪造的计数最多多要一块固定大小的内存，真表也只有几次摊还扩容。
+const PREALLOC: usize = 1024;
 
 /// 检查点文件头：4 字节魔数 + 2 字节小端版本号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,13 +91,25 @@ impl Format {
     /// 魔数 `LLMC`。
     pub const MAGIC: [u8; 4] = *b"LLMC";
 
-    /// 当前格式版本：事实集、条目表或编码顺序变化时必须递增。
-    pub const VERSION: u16 = 1;
+    /// 当前格式版本：字段集、编码顺序或校验方式变化时必须递增。
+    ///
+    /// 第 2 版相对第 1 版换了整套编码：LEB128 变长整数、偏移增量、CRC-32 尾部。两个版本不兼容，
+    /// 也只支持当前版本——读一个"看起来能读"的旧文件比读不出来更危险。
+    pub const VERSION: u16 = 2;
 
     /// 文件头字节数（魔数 + 版本）。
     pub const HEADER_BYTES: usize = Self::MAGIC.len() + 2;
 
+    /// 尾部校验和字节数（小端 `u32`）。
+    pub const FOOTER_BYTES: usize = 4;
+
     /// 校验文件头：魔数一致且版本相同。
+    ///
+    /// 版本不符时说清是哪一边旧：读端旧要重存，写端旧要升级，这两件事的处理方式完全不同。
+    ///
+    /// # Errors
+    ///
+    /// 不足文件头长度、魔数不符或版本不同时返回 [`Code::Invalid`]。
     pub fn check(bytes: &[u8]) -> Result<()> {
         let magic = bytes.get(..Self::MAGIC.len()).ok_or_else(|| truncated(0))?;
         if magic != Self::MAGIC.as_slice() {
@@ -59,47 +118,55 @@ impl Format {
                     .with("checkpoint::Format::check"),
             );
         }
-        let version = bytes
+        let raw = bytes
             .get(Self::MAGIC.len()..Self::HEADER_BYTES)
             .ok_or_else(|| truncated(Self::MAGIC.len()))?;
-        let version = u16::from_le_bytes([version[0], version[1]]);
-        if version != Self::VERSION {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("检查点版本 {version} 与当前版本 {} 不同", Self::VERSION),
-            )
-            .with("checkpoint::Format::check"));
+        let version = u16::from_le_bytes([raw[0], raw[1]]);
+        if version == Self::VERSION {
+            return Ok(());
         }
-        Ok(())
+        let message = if version > Self::VERSION {
+            format!(
+                "检查点版本 {version} 比当前版本 {} 新：请用写它的那个版本读取",
+                Self::VERSION
+            )
+        } else {
+            format!(
+                "检查点版本 {version} 比当前版本 {} 旧：本 crate 只读第 {} 版，请重存一次",
+                Self::VERSION,
+                Self::VERSION
+            )
+        };
+        Err(Error::new(Code::Invalid, message).with("checkpoint::Format::check"))
     }
 }
 
-/// 一次落盘的快照：恢复所需的事实 + 权重条目表。
+/// 一次训练恢复后必须逐项相同的事实：步号、并行度、层数与批行数。
 ///
-/// 四个事实必须在恢复后逐项相同，否则读出来的参数形状正确、内容却错位；因此它们和条目表
-/// 一起进同一个文件，而不是各自找地方存。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Snapshot {
+/// 放在一个类型里不是样式问题：四个数全是整数，位置化参数一旦传反，得到的仍是一个"合法"的
+/// 检查点。作为整体比较（`restored.facts() == saved.facts()`）才是恢复前的判据，也是
+/// [`Snapshot`] 里唯一必须逐项对上的那部分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Facts {
     step: u64,
     world: usize,
     layers: usize,
     batch_rows: usize,
-    weights: Header,
 }
 
-impl Snapshot {
-    /// 构造：并行度、层数与批行数必须非零；权重条目表由 [`weights::Header`] 自证合法。
-    pub fn new(
-        step: u64,
-        world: usize,
-        layers: usize,
-        batch_rows: usize,
-        weights: Header,
-    ) -> Result<Self> {
+impl Facts {
+    /// 构造：并行度、层数与批行数必须非零。
+    ///
+    /// 步号可以为 0——"刚初始化就存盘"是合法状态，零并不表示信息缺失。
+    ///
+    /// # Errors
+    ///
+    /// 三个非零字段中任意一个为 0 时返回 [`Code::Invalid`]。
+    pub fn new(step: u64, world: usize, layers: usize, batch_rows: usize) -> Result<Self> {
         for (name, value) in [("并行度", world), ("层数", layers), ("批行数", batch_rows)] {
             if value == 0 {
                 return Err(Error::new(Code::Invalid, format!("检查点的{name}不能为 0"))
-                    .with("checkpoint::Snapshot::new"));
+                    .with("checkpoint::Facts::new"));
             }
         }
         Ok(Self {
@@ -107,7 +174,6 @@ impl Snapshot {
             world,
             layers,
             batch_rows,
-            weights,
         })
     }
 
@@ -130,71 +196,324 @@ impl Snapshot {
     pub fn batch_rows(&self) -> usize {
         self.batch_rows
     }
+}
+
+/// 一次落盘的快照：恢复事实 + 权重条目表。
+///
+/// 字节布局（全部小端，见 [`Snapshot::encode`]）：
+///
+/// ```text
+/// LLMC | 版本 u16
+/// 步号 | 并行度 | 层数 | 批行数 | 权重数据段起点 | 条目数            （LEB128）
+/// 每条目：名字长度 | 名字 | 类型 u8 | 秩 | 各维度… | 偏移增量        （LEB128 + 字节）
+/// CRC-32 u32                                                         （覆盖以上全部）
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    facts: Facts,
+    weights: Header,
+}
+
+impl Snapshot {
+    /// 由事实与权重条目表构造。
+    ///
+    /// 不会失败：两个入参各自已自证合法（[`Facts::new`] 管零值，[`Header::new`] 管名字与区间），
+    /// 这一层没有第二条判据可加——把校验放在拥有不变量的类型里，而不是在每条路径上重复一遍。
+    #[must_use]
+    pub fn new(facts: Facts, weights: Header) -> Self {
+        Self { facts, weights }
+    }
+
+    /// 恢复事实（四个数整体比较）。
+    pub fn facts(&self) -> Facts {
+        self.facts
+    }
+
+    /// 步号。
+    pub fn step(&self) -> u64 {
+        self.facts.step()
+    }
 
     /// 权重条目表：解码时已经重新校验过偏移与重名。
     pub fn weights(&self) -> &Header {
         &self.weights
     }
 
-    /// 编码成字节：文件头 → 事实集 → 权重数据段起点 → 条目表。
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        let entries = self.weights.entries();
-        let mut bytes = Vec::with_capacity(Format::HEADER_BYTES + 32 + entries.len() * 32);
-        bytes.extend_from_slice(Format::MAGIC.as_slice());
-        bytes.extend_from_slice(&Format::VERSION.to_le_bytes());
-        bytes.extend_from_slice(&self.step.to_le_bytes());
-        bytes.extend_from_slice(&(self.world as u64).to_le_bytes());
-        bytes.extend_from_slice(&(self.layers as u64).to_le_bytes());
-        bytes.extend_from_slice(&(self.batch_rows as u64).to_le_bytes());
-        bytes.extend_from_slice(&(self.weights.data_start() as u64).to_le_bytes());
-        let count = u32::try_from(entries.len()).map_err(|_| invalid("权重条目超过 u32 上限"))?;
-        bytes.extend_from_slice(&count.to_le_bytes());
-        for entry in entries {
-            let name = entry.name().as_bytes();
-            let len = u16::try_from(name.len()).map_err(|_| {
-                invalid(format!("权重条目 `{}` 的名字超过 65535 字节", entry.name()))
-            })?;
-            bytes.extend_from_slice(&len.to_le_bytes());
-            bytes.extend_from_slice(name);
-            bytes.push(tag(entry.dtype()));
-            let dims = entry.shape().dims();
-            let rank = u16::try_from(dims.len())
-                .map_err(|_| invalid(format!("权重条目 `{}` 的秩超过 65535", entry.name())))?;
-            bytes.extend_from_slice(&rank.to_le_bytes());
-            for dim in dims {
-                bytes.extend_from_slice(&(*dim as u64).to_le_bytes());
-            }
-            bytes.extend_from_slice(&(entry.offset() as u64).to_le_bytes());
+    /// 恢复前的前置校验：检查点引用的条目表必须与手头的权重表逐条相同。
+    ///
+    /// 检查点只描述"参数长什么样、在第几个字节"，它不持有参数。于是"文件都对、但配错权重"
+    /// 这一种失败在字节层面完全看不出来：条目数与形状可能刚好一致，读出来的参数却是另一次
+    /// 训练的。恢复之前必须先过这一关——它比"读得出来"强，也比"跑起来不报错"强。
+    ///
+    /// 比较数据段起点、条目数，以及每个条目的名字、元素类型、形状与偏移；差异按**第一条**
+    /// 不同的记录报出，几千个条目的表里不必自己去二分。
+    ///
+    /// # Errors
+    ///
+    /// 任一字段不同时返回 [`Code::Invalid`]，消息里带上条目序号与两边的值。
+    pub fn check_weights(&self, weights: &Header) -> Result<()> {
+        if self.weights.data_start() != weights.data_start() {
+            return Err(mismatch(format!(
+                "权重数据段起点：检查点里是 {}，权重文件里是 {}",
+                self.weights.data_start(),
+                weights.data_start()
+            )));
         }
-        Ok(bytes)
+        let saved = self.weights.entries();
+        let live = weights.entries();
+        if saved.len() != live.len() {
+            return Err(mismatch(format!(
+                "检查点引用 {} 个权重条目，权重文件有 {} 个",
+                saved.len(),
+                live.len()
+            )));
+        }
+        for (index, (want, have)) in saved.iter().zip(live).enumerate() {
+            if want.name() != have.name() {
+                return Err(mismatch(format!(
+                    "第 {index} 个条目：检查点里是 `{}`，权重文件里是 `{}`",
+                    want.name(),
+                    have.name()
+                )));
+            }
+            if want.dtype() != have.dtype() {
+                return Err(mismatch(format!(
+                    "条目 `{}` 的元素类型：检查点里是 {:?}，权重文件里是 {:?}",
+                    want.name(),
+                    want.dtype(),
+                    have.dtype()
+                )));
+            }
+            if want.shape() != have.shape() {
+                return Err(mismatch(format!(
+                    "条目 `{}` 的形状：检查点里是 {:?}，权重文件里是 {:?}",
+                    want.name(),
+                    want.shape().dims(),
+                    have.shape().dims()
+                )));
+            }
+            if want.offset() != have.offset() {
+                return Err(mismatch(format!(
+                    "条目 `{}` 的偏移：检查点里是 {}，权重文件里是 {}",
+                    want.name(),
+                    want.offset(),
+                    have.offset()
+                )));
+            }
+        }
+        Ok(())
     }
 
-    /// 从字节解码：文件头 → 事实集 → 权重数据段起点 → 条目表。
+    /// 编码后的精确字节数。
     ///
-    /// 截断、版本不符、尾部多余字节都直接拒绝；条目表交给 [`weights::Header::new`] 重新校验，
-    /// 解码路径与磁盘读取路径因此共用同一套判据。
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
+    /// 与 [`Snapshot::encode`] 走同一个编码器，只是把字节"写"进一个只做加法的计数器，因此
+    /// 不存在第二份长度算术、也不会两边漂移。调用方据此一次分配，或判断磁盘上是否放得下。
+    ///
+    /// 计数**不算校验和**：长度与 CRC 是两份工作，而校验和固定 [`Format::FOOTER_BYTES`] 字节，
+    /// 所以"正文长度 + 校验和长度"就是整份文件。写正文的路径只有 [`Snapshot::write_body`] 一处，
+    /// 新增字段若写到它外面，既逃出 CRC 覆盖、也会让这条长度承诺当场对不上。
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        let mut count = Count(0);
+        self.write_body(&mut count);
+        count.0 + Format::FOOTER_BYTES
+    }
+
+    /// 编码成字节，容量正好等于 [`Snapshot::encoded_len`]。
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let capacity = self.encoded_len();
+        let mut bytes = Vec::with_capacity(capacity);
+        self.write_to(&mut VecSink(&mut bytes));
+        debug_assert_eq!(bytes.len(), capacity, "长度算术与写出的字节必须一致");
+        bytes
+    }
+
+    /// 写进调用方给的缓冲区，返回写入的字节数。
+    ///
+    /// `out` 至少要有 [`Snapshot::encoded_len`] 字节；多出来的部分不会被碰。失败时 `out` 的
+    /// 内容没有意义——编码器一旦发现放不下就停止追加，不会越界。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲区装不下整份检查点时返回 [`Code::Invalid`]（这是调用方的错，不能截断写入）。
+    pub fn encode_into(&self, out: &mut [u8]) -> Result<usize> {
+        let capacity = out.len();
+        let mut sink = SliceSink {
+            out,
+            at: 0,
+            overflow: false,
+        };
+        self.write_to(&mut sink);
+        if sink.overflow {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "缓冲区 {capacity} 字节，检查点需要 {} 字节",
+                    self.encoded_len()
+                ),
+            )
+            .with("checkpoint::Snapshot::encode_into"));
+        }
+        Ok(sink.at)
+    }
+
+    /// 原子地写到一个路径：同目录临时文件 → 落盘 → 改名。
+    ///
+    /// 检查点的写入必须是"全有或全无"：中途崩溃既不能让上一次的好检查点消失，也不能让恢复端
+    /// 读到一个半截文件。`rename` 在同一文件系统上原子，所以临时文件放在目标目录里——放 `/tmp`
+    /// 会退化成跨文件系统的拷贝，"原子"就没了。
+    ///
+    /// 字节是**边编码边写**的：编码器直接接到文件上的缓冲，整份检查点从不进内存。条目表大到
+    /// 几十万条时，这一条就是"写得下"与"写不下"的区别，而不是快慢的区别。
+    ///
+    /// # Errors
+    ///
+    /// 目录不存在、写盘或改名失败时返回 [`Code::Io`]；临时文件会被清掉。
+    pub fn write(&self, path: &Path) -> Result<()> {
+        let temp = temp_path(path);
+        if let Err(error) = self.write_temp(&temp, path) {
+            // 半截临时文件比错误本身更麻烦：它会被下一次 `ls` 当成一个检查点。
+            let _ = std::fs::remove_file(&temp);
+            return Err(
+                Error::new(Code::Io, format!("写入 {} 失败：{error}", path.display()))
+                    .with("checkpoint::Snapshot::write"),
+            );
+        }
+        // 目录 fsync 尽力而为：改名已经生效，有的文件系统（容器 overlay、部分网络盘）不支持
+        // 目录 fsync；为一个"可能不持久"的目录项把成功改判成失败，比不 fsync 更糟。
+        if let Some(parent) = path.parent()
+            && let Ok(directory) = std::fs::File::open(parent)
+        {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    }
+
+    /// 写临时文件、刷盘、改名为目标路径。
+    ///
+    /// 编码器一次走完：字节追加给写缓冲，缓冲再交给内核，没有任何一处需要先知道总长度。
+    /// 三段式（写 → 刷盘 → 改名）也正是"改名前任何失败都不影响旧检查点"的原因。
+    fn write_temp(&self, temp: &Path, path: &Path) -> io::Result<()> {
+        let mut sink = FileSink {
+            inner: io::BufWriter::with_capacity(WRITE_BUFFER, std::fs::File::create(temp)?),
+            written: 0,
+            error: None,
+        };
+        self.write_to(&mut sink);
+        // 第一次写失败之后剩下的追加都是空操作，错误在这里报一次就够。
+        if let Some(error) = sink.error {
+            return Err(error);
+        }
+        let written = sink.written;
+        let file = sink
+            .inner
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?;
+        file.sync_all()?;
+        std::fs::rename(temp, path)?;
+        debug_assert_eq!(
+            written,
+            self.encoded_len(),
+            "写下的字节数必须等于承诺的长度"
+        );
+        Ok(())
+    }
+
+    /// 从一个路径读出并解码。
+    ///
+    /// 路径不存在是 [`Code::Missing`]、存在但读不出来是 [`Code::Io`]——这个分类由
+    /// [`Error::from_io`] 给，本层不重写一遍；解出来的错误补上路径，排查时不必回头查调用栈。
+    ///
+    /// # Errors
+    ///
+    /// 读文件失败时返回 `missing` / `io`；字节不合法时返回 [`Snapshot::decode`] 的错误。
+    pub fn read(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path).map_err(|error| Error::from_io(path, &error))?;
+        Self::decode(&bytes).map_err(|error| error.with(path.display().to_string()))
+    }
+
+    /// 只验字节：魔数、版本与 CRC-32，不解析条目表。
+    ///
+    /// 与 [`Snapshot::decode`] 的关系是"先判能不能读，再判读到什么"：想确认一个文件是不是完好
+    /// 的检查点（巡检、备份、下载后自检）不必付出一次完整解码的代价，也不需要一块条目表大小的
+    /// 内存。
+    ///
+    /// # Errors
+    ///
+    /// 文件头不符、长度不足文件头加校验和、校验和不符时返回 [`Code::Invalid`]。
+    pub fn verify(bytes: &[u8]) -> Result<()> {
         Format::check(bytes)?;
-        let mut cursor = Cursor::new(bytes, Format::HEADER_BYTES);
-        let step = cursor.u64()?;
-        let world = cursor.count()?;
-        let layers = cursor.count()?;
-        let batch_rows = cursor.count()?;
-        let data_start = cursor.count()?;
-        let count = cursor.u32()?;
-        let mut entries = Vec::new();
+        let Some(end) = bytes.len().checked_sub(Format::FOOTER_BYTES) else {
+            return Err(truncated(bytes.len()));
+        };
+        // 连文件头都装不下时，问题不是"校验和对不上"而是"少了一截"；把话说准。
+        if end < Format::HEADER_BYTES {
+            return Err(truncated(end));
+        }
+        let (payload, footer) = bytes.split_at(end);
+        let recorded = u32::from_le_bytes([footer[0], footer[1], footer[2], footer[3]]);
+        let actual = crc32(payload);
+        if recorded != actual {
+            return Err(invalid(format!(
+                "检查点校验和不符（记录 {recorded:#010x}，实测 {actual:#010x}）：\
+                 文件被截断或被改动"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 从字节解码。
+    ///
+    /// 顺序是刻意的：先由 [`Snapshot::verify`] 判文件头与校验和（截断与改动在那里一次拦下），
+    /// 再解析正文——此时出错只剩"拿着正确工具重封了一个坏检查点"这一种可能，所以条目表还要
+    /// 再过一次 [`weights::Header`] 的自证。
+    ///
+    /// # Errors
+    ///
+    /// 文件头不符、校验和不符、正文截断/超宽/非规范、条目表自证失败（重名或区间重叠）或
+    /// 恢复事实非法时返回 [`Code::Invalid`]。
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        Self::verify(bytes)?;
+        let payload = &bytes[..bytes.len() - Format::FOOTER_BYTES];
+
+        let mut cursor = Cursor::new(payload, Format::HEADER_BYTES);
+        let step = cursor.varint()?;
+        let world = cursor.count("并行度")?;
+        let layers = cursor.count("层数")?;
+        let batch_rows = cursor.count("批行数")?;
+        let data_start = cursor.count("权重数据段起点")?;
+        let count = cursor.count("权重条目数")?;
+        // 先对账再分配：每个条目至少 `MIN_ENTRY` 字节，所以声明值超过剩余字节能容纳的上限就
+        // 一定读不完。否则一个伪造的计数就能让解码器按声明值要一大块内存。
+        if count > cursor.remaining() / MIN_ENTRY {
+            return Err(invalid(format!(
+                "检查点声明了 {count} 个权重条目，但剩余 {} 字节最多容纳 {} 个",
+                cursor.remaining(),
+                cursor.remaining() / MIN_ENTRY
+            )));
+        }
+        let mut entries = Vec::with_capacity(count.min(PREALLOC));
+        let mut previous = 0usize;
         for index in 0..count {
-            let len = usize::from(cursor.u16()?);
-            let name = cursor.take(len)?;
+            let len = cursor.count("条目名长度").map_err(context(index))?;
+            let name = cursor.take(len).map_err(context(index))?;
             let name = std::str::from_utf8(name)
-                .map_err(|error| invalid(format!("第 {index} 个条目名不是 UTF-8：{error}")))?;
-            let dtype = dtype(cursor.u8()?)?;
-            let rank = usize::from(cursor.u16()?);
-            let mut dims = Vec::new();
+                .map_err(|error| context(index)(invalid(format!("条目名不是 UTF-8：{error}"))))?;
+            let dtype = dtype(cursor.u8().map_err(context(index))?)?;
+            let rank = cursor.count("秩").map_err(context(index))?;
+            // 放大攻击的另一个入口：几百字节的伪造正文就能声明一个上百万维的形状。预分到
+            // [`PREALLOC`] 个维度为止、其余按需增长，于是真实形状（秩远小于它）一次分够，
+            // 伪造的秩也只能骗到一块固定大小的内存。
+            let mut dims = Vec::with_capacity(rank.min(PREALLOC));
             for _ in 0..rank {
-                dims.push(cursor.count()?);
+                dims.push(cursor.count("维度").map_err(context(index))?);
             }
-            let offset = cursor.count()?;
+            let delta = cursor.count("偏移增量").map_err(context(index))?;
+            let offset = previous.checked_add(delta).ok_or_else(|| {
+                context(index)(invalid(format!("偏移 {previous} + {delta} 溢出")))
+            })?;
+            previous = offset;
             entries.push(Entry::new(name, dtype, Shape::new(dims)).at(offset));
         }
         if cursor.remaining() > 0 {
@@ -204,8 +523,161 @@ impl Snapshot {
             )));
         }
         let weights = Header::new(entries, data_start).map_err(|error| error.with(CONTEXT))?;
-        Self::new(step, world, layers, batch_rows, weights)
+        let facts =
+            Facts::new(step, world, layers, batch_rows).map_err(|error| error.with(CONTEXT))?;
+        Ok(Self::new(facts, weights))
     }
+
+    /// 编码正文与校验和：正文写进一个"密封"的接收器，于是**写出的每个字节都自动进入 CRC**，
+    /// 新增字段不可能忘了更新校验范围。
+    fn write_to(&self, sink: &mut impl Sink) {
+        let crc = {
+            let mut sealed = Sealed {
+                inner: sink,
+                crc: !0,
+            };
+            self.write_body(&mut sealed);
+            !sealed.crc
+        };
+        sink.push(&crc.to_le_bytes());
+    }
+
+    /// 写文件头与正文（不含校验和）。
+    fn write_body(&self, sink: &mut impl Sink) {
+        let facts = self.facts;
+        sink.push(Format::MAGIC.as_slice());
+        sink.push(&Format::VERSION.to_le_bytes());
+        varint(sink, facts.step());
+        varint(sink, facts.world() as u64);
+        varint(sink, facts.layers() as u64);
+        varint(sink, facts.batch_rows() as u64);
+        varint(sink, self.weights.data_start() as u64);
+
+        let entries = self.weights.entries();
+        varint(sink, entries.len() as u64);
+        let mut previous = 0usize;
+        for entry in entries {
+            let name = entry.name().as_bytes();
+            varint(sink, name.len() as u64);
+            sink.push(name);
+            sink.push(&[tag(entry.dtype())]);
+            let dims = entry.shape().dims();
+            varint(sink, dims.len() as u64);
+            for dim in dims {
+                varint(sink, *dim as u64);
+            }
+            // 增量而不是绝对值：`Header` 按偏移排序，相邻差值就是"中间的空隙 + 上一条的长度"，
+            // 比绝对偏移少几个字节；条目有序这一条也因此写进了格式本身。
+            debug_assert!(entry.offset() >= previous, "`Header` 必须按偏移排序");
+            varint(sink, entry.offset().saturating_sub(previous) as u64);
+            previous = entry.offset();
+        }
+    }
+}
+
+/// 编码器的唯一接口：追加一段字节。
+///
+/// 三个消费者共用同一份编码逻辑——统计长度（[`Count`]）、写进缓冲区（[`SliceSink`]）、
+/// 或分配一块 `Vec`（[`VecSink`]）。编码本身没有可失败的操作（所有整数都是变长、所有名字
+/// 都按字节计），所以这里没有 `Result`：缓冲区放不下是接收器的事，由 [`Snapshot::encode_into`]
+/// 在最后统一判一次。
+trait Sink {
+    /// 追加一段字节；接收器放不下时置位而不是返回错误。
+    fn push(&mut self, bytes: &[u8]);
+}
+
+/// 只做加法：`encoded_len` 用它与 `encode` 共用同一份算术。
+struct Count(usize);
+
+impl Sink for Count {
+    fn push(&mut self, bytes: &[u8]) {
+        self.0 += bytes.len();
+    }
+}
+
+/// 写进一块 `Vec`。
+struct VecSink<'a>(&'a mut Vec<u8>);
+
+impl Sink for VecSink<'_> {
+    fn push(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+/// 写进调用方的固定缓冲区，放不下就置 `overflow`。
+struct SliceSink<'a> {
+    out: &'a mut [u8],
+    at: usize,
+    overflow: bool,
+}
+
+impl Sink for SliceSink<'_> {
+    fn push(&mut self, bytes: &[u8]) {
+        let Some(end) = self.at.checked_add(bytes.len()) else {
+            self.overflow = true;
+            return;
+        };
+        let Some(slot) = self.out.get_mut(self.at..end) else {
+            self.overflow = true;
+            return;
+        };
+        slot.copy_from_slice(bytes);
+        self.at = end;
+    }
+}
+
+/// 直接写进文件缓冲：整份检查点从不进内存。
+///
+/// 错误只记一次：`Sink::push` 不返回 `Result`（编码本身没有可失败的操作），所以第一次写失败
+/// 之后剩下的追加全部变成空操作，由 [`Snapshot::write`] 在最后统一报出来——一个坏掉的块设备
+/// 不该产生一千条一模一样的错误。
+struct FileSink<W> {
+    inner: W,
+    written: usize,
+    error: Option<io::Error>,
+}
+
+impl<W: io::Write> Sink for FileSink<W> {
+    fn push(&mut self, bytes: &[u8]) {
+        if self.error.is_some() {
+            return;
+        }
+        match self.inner.write_all(bytes) {
+            Ok(()) => self.written += bytes.len(),
+            Err(error) => self.error = Some(error),
+        }
+    }
+}
+
+/// 一边写一边更新 CRC：正文的每个字节都会经过这里，校验范围不可能漏掉字段。
+struct Sealed<'s, S> {
+    inner: &'s mut S,
+    crc: u32,
+}
+
+impl<S: Sink> Sink for Sealed<'_, S> {
+    fn push(&mut self, bytes: &[u8]) {
+        self.crc = crc32_update(self.crc, bytes);
+        self.inner.push(bytes);
+    }
+}
+
+/// 写一个 LEB128 变长整数（每字节 7 位，小端，最高位是续位）。
+fn varint(sink: &mut impl Sink, mut value: u64) {
+    let mut buffer = [0u8; 10];
+    let mut len = 0usize;
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value == 0 {
+            buffer[len] = byte;
+            len += 1;
+            break;
+        }
+        buffer[len] = byte | 0x80;
+        len += 1;
+    }
+    sink.push(&buffer[..len]);
 }
 
 /// 逐字节读取器：每次读取都检查边界，越界时报出当前的偏移。
@@ -236,30 +708,64 @@ impl<'a> Cursor<'a> {
         Ok(self.take(1)?[0])
     }
 
-    fn u16(&mut self) -> Result<u16> {
-        let raw = self.take(2)?;
-        Ok(u16::from_le_bytes([raw[0], raw[1]]))
+    /// 读一个 LEB128 变长整数。
+    ///
+    /// 两条拒绝：超过 `u64` 宽度，以及**非规范写法**（例如 `0x87 0x00` 也等于 7，但只允许
+    /// `0x07`）。后者让编码成为单射——同一份快照不会有两种字节形态，校验和也就真正对得上
+    /// "这份字节就是这个检查点"。
+    fn varint(&mut self) -> Result<u64> {
+        // 直接在切片上走：`take(1)` 每次都把"再切一刀 + 判空"做一遭，而解码一条条目要读
+        // 五六个整数。这里的边界检查只做在真正取字节的那一处，报错时的偏移仍然是精确的。
+        let bytes = self.bytes;
+        let start = self.offset;
+        let mut at = start;
+        let mut value = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let Some(&byte) = bytes.get(at) else {
+                self.offset = at;
+                return Err(truncated(at));
+            };
+            at += 1;
+            let low = u64::from(byte & 0x7F);
+            if shift == 63 && low > 1 {
+                self.offset = at;
+                return Err(invalid("检查点里的整数超过 u64 上限"));
+            }
+            value |= low << shift;
+            if byte & 0x80 == 0 {
+                self.offset = at;
+                let width = at - start;
+                if width > 1 && low == 0 {
+                    return Err(invalid(format!(
+                        "检查点里的整数用了 {width} 字节的非规范写法（末字节为 0）"
+                    )));
+                }
+                return Ok(value);
+            }
+            shift += 7;
+            if shift >= 64 {
+                self.offset = at;
+                return Err(invalid("检查点里的整数超过 10 字节"));
+            }
+        }
     }
 
-    fn u32(&mut self) -> Result<u32> {
-        let raw = self.take(4)?;
-        Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
-    }
-
-    fn u64(&mut self) -> Result<u64> {
-        let raw = self.take(8)?;
-        Ok(u64::from_le_bytes([
-            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-        ]))
-    }
-
-    fn count(&mut self) -> Result<usize> {
-        usize::try_from(self.u64()?).map_err(|_| invalid("检查点的计数超出 usize 上限"))
+    /// 读一个不能超过 `usize` 的计数；`what` 是字段名，用来把错误指到具体位置。
+    fn count(&mut self, what: &str) -> Result<usize> {
+        let value = self.varint()?;
+        usize::try_from(value)
+            .map_err(|_| invalid(format!("检查点的{what} {value} 超出 usize 上限")))
     }
 
     fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.offset)
     }
+}
+
+/// 条目错误的上下文：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。
+fn context(index: usize) -> impl Fn(Error) -> Error {
+    move |error| error.with(format!("第 {index} 个权重条目"))
 }
 
 /// 元素类型在字节里的标签；穷尽 `match` 保证新增 [`DType`] 变体时这里编译失败。
@@ -284,6 +790,60 @@ fn dtype(tag: u8) -> Result<DType> {
     }
 }
 
+/// CRC-32 查表（反射多项式 `0xEDB8_8320`，即 IEEE 802.3）。
+///
+/// 表在编译期算好：运行期只剩一次查表与一次移位，一个常量表换来逐字节的线性时间。
+static TABLE: [u32; 256] = table();
+
+const fn table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut index = 0;
+    while index < 256 {
+        let mut value = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            value = if value & 1 == 1 {
+                (value >> 1) ^ 0xEDB8_8320
+            } else {
+                value >> 1
+            };
+            bit += 1;
+        }
+        table[index] = value;
+        index += 1;
+    }
+    table
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    !crc32_update(!0, bytes)
+}
+
+fn crc32_update(crc: u32, bytes: &[u8]) -> u32 {
+    let mut crc = crc;
+    for byte in bytes {
+        crc = TABLE[((crc ^ u32::from(*byte)) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc
+}
+
+/// 临时文件名：同目录 + 进程号 + 进程内序号。
+///
+/// 两个写者同时存同一个路径时，各自的临时文件不能互相覆盖——否则先改名的一方会把后来者的
+/// 半截文件搬走。
+fn temp_path(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 fn truncated(offset: usize) -> Error {
     Error::new(Code::Invalid, format!("检查点在偏移 {offset} 处截断")).with(CONTEXT)
 }
@@ -292,9 +852,18 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with(CONTEXT)
 }
 
+/// 检查点与手头的权重表不一致：只由 [`Snapshot::check_weights`] 产生。
+fn mismatch(message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with("checkpoint::Snapshot::check_weights")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn facts() -> Facts {
+        Facts::new(7, 2, 2, 3).expect("恢复事实")
+    }
 
     fn snapshot() -> Snapshot {
         let weights = Header::new(
@@ -305,60 +874,504 @@ mod tests {
             64,
         )
         .expect("头部");
-        Snapshot::new(7, 2, 2, 3, weights).expect("快照")
+        Snapshot::new(facts(), weights)
+    }
+
+    /// 用任意正文重新封上校验和：只有测试会造"CRC 正确但正文有问题"的文件。
+    fn seal(payload: &[u8]) -> Vec<u8> {
+        let mut bytes = payload.to_vec();
+        bytes.extend_from_slice(&crc32(payload).to_le_bytes());
+        bytes
+    }
+
+    fn push_varint(bytes: &mut Vec<u8>, value: u64) {
+        varint(&mut VecSink(bytes), value);
+    }
+
+    fn payload_of(snapshot: &Snapshot) -> Vec<u8> {
+        let bytes = snapshot.encode();
+        bytes[..bytes.len() - Format::FOOTER_BYTES].to_vec()
+    }
+
+    fn lcg(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state
+    }
+
+    /// 一整套承诺：长度是算准的、写进缓冲区的字节与 `encode` 一致、缓冲区多出来的部分不被碰、
+    /// 解码回来逐项相同、再编码逐字节相同。
+    fn assert_round_trip(snapshot: &Snapshot) {
+        let bytes = snapshot.encode();
+        assert_eq!(
+            bytes.len(),
+            snapshot.encoded_len(),
+            "承诺的长度就是写出的长度"
+        );
+
+        let mut buffer = vec![0xAAu8; snapshot.encoded_len() + 16];
+        let written = snapshot.encode_into(&mut buffer).expect("缓冲够大");
+        assert_eq!(written, snapshot.encoded_len());
+        assert_eq!(&buffer[..written], bytes.as_slice());
+        assert!(
+            buffer[written..].iter().all(|byte| *byte == 0xAA),
+            "缓冲区多出来的部分不能被碰"
+        );
+
+        let restored = Snapshot::decode(&bytes).expect("解码");
+        assert_eq!(&restored, snapshot);
+        assert_eq!(restored.encode(), bytes, "同一份快照只有一种写法");
     }
 
     #[test]
     fn a_snapshot_round_trips_through_its_bytes() {
         let snapshot = snapshot();
-        let bytes = snapshot.encode().expect("编码");
-        let restored = Snapshot::decode(&bytes).expect("解码");
-        assert_eq!(restored, snapshot);
+        assert_round_trip(&snapshot);
+        let restored = Snapshot::decode(&snapshot.encode()).expect("解码");
+        assert_eq!(restored.facts(), facts());
+        assert_eq!(restored.step(), 7);
         assert_eq!(restored.weights().entries().len(), 2);
         assert_eq!(restored.weights().entries()[1].name(), "blk.0.scales");
     }
 
+    /// 变长整数的每个宽度边界都要对上：错一档就是半个检查点。
+    #[test]
+    fn the_length_promise_holds_at_every_varint_boundary() {
+        let steps = [0u64, 1, 127, 128, 16_383, 16_384, 4_294_967_295, u64::MAX];
+        for (index, step) in steps.into_iter().enumerate() {
+            let offset = 64 + index * 65_536;
+            let header = Header::new(
+                vec![Entry::new("w", DType::F32, Shape::new(vec![1, 127, 128, 16_384])).at(offset)],
+                64,
+            )
+            .expect("头部");
+            let size = index + 1;
+            let facts = Facts::new(step, size, size, size).expect("事实");
+            assert_round_trip(&Snapshot::new(facts, header));
+        }
+    }
+
+    #[test]
+    fn a_snapshot_without_entries_still_round_trips() {
+        let header = Header::new(Vec::new(), 0).expect("空头部");
+        assert_round_trip(&Snapshot::new(facts(), header));
+    }
+
+    /// 名字长度按**字节**算：按字符算就会在解码时切进 UTF-8 中间。
+    #[test]
+    fn a_unicode_name_is_measured_in_bytes() {
+        let header = Header::new(
+            vec![Entry::new("层.0.注意_权重", DType::BF16, Shape::new([3])).at(64)],
+            64,
+        )
+        .expect("头部");
+        let snapshot = Snapshot::new(facts(), header);
+        assert_round_trip(&snapshot);
+        let name = "层.0.注意_权重".as_bytes();
+        assert!(
+            snapshot
+                .encode()
+                .windows(name.len())
+                .any(|window| window == name),
+            "名字原样进字节"
+        );
+    }
+
+    /// 恢复前的第二道关：文件都是好的，但配的是另一次训练的权重。
+    ///
+    /// 这一种失败在字节层面完全看不出来——它不会在读取时炸，而是在训练若干步之后才表现成
+    /// loss 不降。所以每一条差异都要被逐个拦住，而不是只比一个总数。
+    #[test]
+    fn check_weights_reports_the_first_entry_that_differs() {
+        let snapshot = snapshot();
+        let same = snapshot.weights().clone();
+        snapshot.check_weights(&same).expect("同一份表");
+
+        let two = || {
+            vec![
+                Entry::new("blk.0.attn_q.weight", DType::F16, Shape::new([2, 3])).at(64),
+                Entry::new("blk.0.scales", DType::U4, Shape::new([4])).at(88),
+            ]
+        };
+        let edited = |name: &str, dtype: DType, shape: [usize; 2], offset: usize| {
+            Header::new(
+                vec![
+                    Entry::new(name, dtype, Shape::new(shape)).at(offset),
+                    two()[1].clone(),
+                ],
+                64,
+            )
+            .expect("头部")
+        };
+        let cases: [(Header, [&str; 2]); 6] = [
+            (Header::new(two(), 60).expect("头部"), ["数据段起点", "60"]),
+            (
+                Header::new(vec![two()[0].clone()], 64).expect("头部"),
+                ["引用 2 个", "有 1 个"],
+            ),
+            (
+                edited("blk.0.attn_k.weight", DType::F16, [2, 3], 64),
+                ["attn_k", "attn_q"],
+            ),
+            (
+                edited("blk.0.attn_q.weight", DType::BF16, [2, 3], 64),
+                ["元素类型", "BF16"],
+            ),
+            (
+                edited("blk.0.attn_q.weight", DType::F16, [3, 3], 64),
+                ["形状", "[3, 3]"],
+            ),
+            (
+                edited("blk.0.attn_q.weight", DType::F16, [2, 3], 72),
+                ["偏移", "72"],
+            ),
+        ];
+        for (weights, wants) in cases {
+            let error = snapshot.check_weights(&weights).expect_err(wants[0]);
+            assert_eq!(error.code(), Code::Invalid);
+            for want in wants {
+                assert!(error.to_string().contains(want), "{want}: {error}");
+            }
+        }
+    }
+
+    /// 检查点最贵的失败不是"读不出来"，而是"读出来了但不是当初写的那份"。校验和把每一种
+    /// 一个比特的改动都变成解码失败，这条测试把整个文件逐位翻一遍。
+    #[test]
+    fn every_flipped_bit_is_rejected() {
+        let bytes = snapshot().encode();
+        for offset in 0..bytes.len() {
+            for bit in 0..8 {
+                let mut broken = bytes.clone();
+                broken[offset] ^= 1 << bit;
+                assert!(
+                    Snapshot::decode(&broken).is_err(),
+                    "第 {offset} 字节第 {bit} 位翻转后被接受了"
+                );
+            }
+        }
+    }
+
+    /// 校验和本身也要能被独立复算：表是编译期生成的，另写一份逐位定义来对。
+    #[test]
+    fn the_checksum_matches_its_bitwise_definition() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926, "IEEE 802.3 的标准检验值");
+
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let bytes: Vec<u8> = (0..2048).map(|_| (lcg(&mut state) >> 33) as u8).collect();
+        let mut crc = !0u32;
+        for byte in &bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        assert_eq!(crc32(&bytes), !crc);
+    }
+
     #[test]
     fn a_foreign_magic_is_rejected() {
-        let mut bytes = snapshot().encode().expect("编码");
+        let mut bytes = snapshot().encode();
         bytes[0] = b'X';
         let error = Snapshot::decode(&bytes).expect_err("魔数不符");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("LLMC"), "{error}");
     }
 
+    /// 版本错误要说清是哪一边旧：读端旧要重存，写端旧要升级。
     #[test]
-    fn another_version_is_rejected() {
-        let mut bytes = snapshot().encode().expect("编码");
-        bytes[4] = 9;
-        let error = Snapshot::decode(&bytes).expect_err("版本不符");
+    fn another_version_says_which_side_is_old() {
+        let mut newer = snapshot().encode();
+        newer[4..6].copy_from_slice(&(Format::VERSION + 1).to_le_bytes());
+        let error = Snapshot::decode(&newer).expect_err("更新");
         assert_eq!(error.code(), Code::Invalid);
-        assert!(error.to_string().contains("版本"), "{error}");
+        assert!(error.to_string().contains("新"), "{error}");
+
+        let mut older = snapshot().encode();
+        older[4..6].copy_from_slice(&1u16.to_le_bytes());
+        let error = Snapshot::decode(&older).expect_err("更旧");
+        assert!(error.to_string().contains("旧"), "{error}");
     }
 
     #[test]
-    fn a_truncated_snapshot_names_the_offset() {
-        let bytes = snapshot().encode().expect("编码");
+    fn a_truncated_file_is_a_checksum_mismatch_not_a_half_snapshot() {
+        let bytes = snapshot().encode();
         let error = Snapshot::decode(&bytes[..bytes.len() - 3]).expect_err("截断");
         assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("校验和"), "{error}");
+
+        let error = Snapshot::decode(&[]).expect_err("连文件头都没有");
         assert!(error.to_string().contains("截断"), "{error}");
     }
 
+    /// 巡检、备份、下载后自检只想知道"这份字节能自证吗"：不必建出一整张条目表。
     #[test]
-    fn trailing_bytes_are_rejected() {
-        let mut bytes = snapshot().encode().expect("编码");
-        bytes.push(0);
-        let error = Snapshot::decode(&bytes).expect_err("尾部多余");
+    fn verify_checks_the_bytes_without_building_the_snapshot() {
+        let bytes = snapshot().encode();
+        Snapshot::verify(&bytes).expect("完好");
+
+        let mut changed = bytes.clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 0x80;
+        let error = Snapshot::verify(&changed).expect_err("校验和被改");
         assert_eq!(error.code(), Code::Invalid);
-        assert!(error.to_string().contains("尾部"), "{error}");
+        assert!(error.to_string().contains("校验和"), "{error}");
+
+        // 比文件头还短：这不是"校验和对不上"，而是少了一截。
+        let error = Snapshot::verify(&bytes[..Format::HEADER_BYTES]).expect_err("只有一个头");
+        assert!(error.to_string().contains("截断"), "{error}");
+
+        let mut foreign = bytes.clone();
+        foreign[0] = b'X';
+        assert!(Snapshot::verify(&foreign).is_err(), "魔数不符也要拦下");
+    }
+
+    /// 校验和正确但正文不够：此时只有游标能说清缺在哪个偏移。
+    #[test]
+    fn a_sealed_but_short_payload_names_the_offset() {
+        let bytes = snapshot().encode();
+        let payload = &bytes[..Format::HEADER_BYTES + 1];
+        let error = Snapshot::decode(&seal(payload)).expect_err("正文不够");
+        let offset = Format::HEADER_BYTES + 1;
+        assert!(
+            error.to_string().contains(&format!("偏移 {offset}")),
+            "{error}"
+        );
+    }
+
+    /// 校验和挡得住"被改动"，挡不住"拿着正确工具重封了一个坏检查点"：条目表的判据必须在
+    /// 解码期也跑一遍，否则手改过的检查点会等到恢复后的第 N 步才炸。
+    #[test]
+    fn a_sealed_checkpoint_still_has_its_entry_table_validated() {
+        let header = Header::new(
+            vec![
+                Entry::new("aaa", DType::F32, Shape::new([1])).at(64),
+                Entry::new("bbb", DType::F32, Shape::new([1])).at(80),
+            ],
+            64,
+        )
+        .expect("头部");
+        let snapshot = Snapshot::new(facts(), header);
+        let mut payload = payload_of(&snapshot);
+        let at = payload
+            .windows(3)
+            .position(|window| window == b"bbb".as_slice())
+            .expect("条目名就在正文里");
+        payload[at..at + 3].copy_from_slice(b"aaa");
+        let error = Snapshot::decode(&seal(&payload)).expect_err("重名");
+        assert!(error.to_string().contains("重复"), "{error}");
     }
 
     #[test]
-    fn a_snapshot_without_layers_is_rejected() {
-        let weights = Header::new(Vec::new(), 0).expect("空头部");
+    fn trailing_bytes_after_the_entry_table_are_rejected() {
+        let mut payload = payload_of(&snapshot());
+        payload.push(0);
+        let error = Snapshot::decode(&seal(&payload)).expect_err("尾部多余");
+        assert!(error.to_string().contains("尾部多出 1 字节"), "{error}");
+    }
+
+    /// 一个值只能有一种写法，否则"同一份快照只有一种字节形态"就不成立。
+    #[test]
+    fn a_non_canonical_integer_is_rejected() {
+        let mut payload = payload_of(&snapshot());
         assert_eq!(
-            Snapshot::new(0, 1, 0, 1, weights).unwrap_err().code(),
-            Code::Invalid
+            payload[Format::HEADER_BYTES],
+            7,
+            "步号 7 的正常写法是单字节"
         );
+        payload[Format::HEADER_BYTES] = 0x87;
+        payload.insert(Format::HEADER_BYTES + 1, 0x00);
+        let error = Snapshot::decode(&seal(&payload)).expect_err("非规范");
+        assert!(error.to_string().contains("规范"), "{error}");
+    }
+
+    #[test]
+    fn an_integer_wider_than_u64_is_rejected() {
+        let mut payload = snapshot().encode()[..Format::HEADER_BYTES].to_vec();
+        payload.extend_from_slice(&[0xFF; 9]);
+        payload.push(0x02);
+        let error = Snapshot::decode(&seal(&payload)).expect_err("超宽");
+        assert!(error.to_string().contains("u64"), "{error}");
+    }
+
+    /// 先对账再分配：伪造的条目数不能换来一次大分配。
+    #[test]
+    fn an_entry_count_beyond_the_bytes_is_rejected_before_allocating() {
+        let mut payload = snapshot().encode()[..Format::HEADER_BYTES].to_vec();
+        for value in [0u64, 1, 1, 1, 0] {
+            push_varint(&mut payload, value);
+        }
+        push_varint(&mut payload, 1_000_000);
+        let error = Snapshot::decode(&seal(&payload)).expect_err("计数超限");
+        assert!(error.to_string().contains("权重条目"), "{error}");
+    }
+
+    #[test]
+    fn a_checkpoint_without_layers_is_rejected() {
+        for (world, layers, rows) in [(0, 1, 1), (1, 0, 1), (1, 1, 0)] {
+            let error = Facts::new(0, world, layers, rows).expect_err("零值");
+            assert_eq!(error.code(), Code::Invalid);
+        }
+    }
+
+    #[test]
+    fn a_short_buffer_is_refused_not_silently_filled() {
+        let snapshot = snapshot();
+        let mut buffer = vec![0u8; snapshot.encoded_len() - 1];
+        let error = snapshot.encode_into(&mut buffer).expect_err("放不下");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("需要"), "{error}");
+    }
+
+    /// 随机条目表（名字、秩、维度、间隔各不同）压一遍长度与往返承诺。
+    #[test]
+    fn random_snapshots_keep_the_length_promise_and_the_bytes() {
+        let mut state = 0x2545_F491_4F6C_DD1D;
+        for round in 0..200u64 {
+            let count = (lcg(&mut state) % 8) as usize;
+            let mut entries = Vec::new();
+            let mut offset = 64usize;
+            for index in 0..count {
+                let rank = (lcg(&mut state) % 4) as usize;
+                let dims: Vec<usize> = (0..rank)
+                    .map(|_| (lcg(&mut state) % 4096) as usize)
+                    .collect();
+                let bytes = dims.iter().product::<usize>() * 4;
+                offset += (lcg(&mut state) % 512) as usize;
+                entries.push(
+                    Entry::new(
+                        format!("blk.{round}.w{index}"),
+                        DType::F32,
+                        Shape::new(dims),
+                    )
+                    .at(offset),
+                );
+                offset += bytes.max(1);
+            }
+            let header = Header::new(entries, 64).expect("头部");
+            let size = |state: &mut u64| 1 + (lcg(state) % 64) as usize;
+            let facts = Facts::new(
+                lcg(&mut state),
+                size(&mut state),
+                size(&mut state),
+                size(&mut state),
+            )
+            .expect("事实");
+            assert_round_trip(&Snapshot::new(facts, header));
+        }
+    }
+
+    /// 写盘是边编码边写的：超过写缓冲的检查点必须逐字节对得上——这一条走的是 `BufWriter`
+    /// 真正的刷写路径，而不是"先编进一块内存再拷贝"。
+    #[test]
+    fn a_snapshot_larger_than_the_write_buffer_lands_byte_for_byte() {
+        let mut entries = Vec::new();
+        let mut offset = 4096usize;
+        for layer in 0..512 {
+            let entry = Entry::new(
+                format!("blk.{layer}.attn_qkv.weight"),
+                DType::F16,
+                Shape::new([64, 64]),
+            )
+            .at(offset);
+            offset += entry.len();
+            entries.push(entry);
+        }
+        let header = Header::new(entries, 4096).expect("头部");
+        let snapshot = Snapshot::new(facts(), header);
+        assert!(
+            snapshot.encoded_len() > WRITE_BUFFER,
+            "这一条必须真的跨过写缓冲"
+        );
+
+        let dir = scratch("stream");
+        let path = dir.join("step-7.llmc");
+        snapshot.write(&path).expect("写");
+        let meta = std::fs::metadata(&path).expect("文件存在");
+        assert_eq!(meta.len() as usize, snapshot.encoded_len());
+        assert_eq!(std::fs::read(&path).expect("字节"), snapshot.encode());
+        assert_eq!(Snapshot::read(&path).expect("读"), snapshot);
+
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("目录")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["step-7.llmc"], "跨缓冲刷写也不留临时文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("llm-checkpoint-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        dir
+    }
+
+    #[test]
+    fn write_then_read_restores_the_snapshot_and_leaves_no_residue() {
+        let dir = scratch("write");
+        let path = dir.join("step-7.llmc");
+        let snapshot = snapshot();
+        snapshot.write(&path).expect("写");
+
+        let meta = std::fs::metadata(&path).expect("文件存在");
+        assert_eq!(
+            meta.len() as usize,
+            snapshot.encoded_len(),
+            "写下的字节数就是承诺的字节数"
+        );
+        assert_eq!(Snapshot::read(&path).expect("读"), snapshot);
+
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("目录")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["step-7.llmc"], "成功后不留临时文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_checkpoint_is_missing_and_a_failed_write_is_io() {
+        let dir = scratch("io");
+        let error = Snapshot::read(&dir.join("absent.llmc")).expect_err("不存在");
+        assert_eq!(error.code(), Code::Missing);
+
+        let error = snapshot()
+            .write(&dir.join("no-such-dir/step.llmc"))
+            .expect_err("目录不存在");
+        assert_eq!(error.code(), Code::Io);
+        assert!(error.to_string().contains("写入"), "{error}");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("目录")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.is_empty(), "失败不留残骸：{names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corrupted_file_names_its_path() {
+        let dir = scratch("corrupt");
+        let path = dir.join("step-7.llmc");
+        snapshot().write(&path).expect("写");
+
+        let mut bytes = std::fs::read(&path).expect("读");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        std::fs::write(&path, &bytes).expect("覆盖");
+
+        let error = Snapshot::read(&path).expect_err("校验和不符");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("step-7.llmc"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

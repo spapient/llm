@@ -1,7 +1,9 @@
 //! ⑤ 缓存：指纹、编译产物、锁、原子落盘、容量回收（DESIGN §10.3）。
 //!
-//! 指纹必须是"改任何输入都换 key"：schema 版本、emit 语言、工具版本、编译参数、架构、
-//! 模板哈希、参与拼接的片段哈希、布局声明式、变体与 tile、数据类型。
+//! 指纹必须是"改任何输入都换 key"：schema 版本、emit 语言、编译参数、架构、模板哈希、
+//! 参与拼接的片段哈希、布局声明式、变体与 tile、数据类型。**工具链不在其中**：源文本与
+//! 编译器无关，换编译器只换产物——那件事由 [`ArtifactKey`] 的 `tool` 字段承担，而它是
+//! **实测**的工具链身份（命令名@版本），不是档案里的登记值。
 //!
 //! 键的逐项字段只有一个出处（[`CacheKey::fields`]）：哈希、`meta.txt` 与"为什么没命中"的
 //! 差异都从它派生。存量管理同理只有一份（[`Cache::entries`]）：GC 删除的条目与 `doctor`
@@ -10,6 +12,9 @@
 //! 一个条目里有两种东西：源文本（`source` + `meta.txt`，由 [`CacheKey`] 定名）与编译产物
 //! （`bin/<hex>`，由 [`ArtifactKey`] 定名）。产物必须单独定名，因为它还取决于主函数——
 //! 同一个源文本在三个形状下就是三个可执行文件。产物进了缓存，命中才能连 `cc` 一起省掉。
+//!
+//! 每份产物旁边还写一行身份（`bin/<hex>.key`，[`ArtifactKey::describe`] 的原文）：编译器名
+//! 因此躺在产物身边，本机装着哪个编译器都能把已有的产物认回来（[`Cache::artifacts_in`]）。
 //!
 //! "这条记录还能不能用"只有两个答案，而且都由目录内容决定：[`State::Complete`] 有 `source`，
 //! 可以复用；[`State::Partial`] 没有，永远不会命中。后者不是理论情况——写到一半被 `kill`、
@@ -32,17 +37,16 @@ use std::time::{Duration, SystemTime};
 /// 不可能还有活着的持有者；反过来，把判据取得更大只会让崩溃的代价拖得更久。
 pub const STALE_LOCK: Duration = Duration::from_secs(60);
 
-/// 缓存指纹。
+/// 缓存指纹（源文本的身份）。
+///
+/// 它描述的是"emit 出哪段文本"，所以只有声明侧的输入：换编译器不换这段文本，只换由它
+/// 编出来的产物。工具链身份在 [`ArtifactKey`] 里。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheKey {
     /// cutile 自身版本。
     pub schema_ver: u16,
     /// 输出语言。
     pub emit: Emit,
-    /// 工具名。
-    pub tool: String,
-    /// 工具版本。
-    pub tool_ver: String,
     /// 编译参数哈希。
     pub flags_hash: u64,
     /// 架构键。
@@ -74,7 +78,6 @@ impl CacheKey {
         vec![
             ("schema", self.schema_ver.to_string()),
             ("emit", self.emit.to_string()),
-            ("tool", format!("{}@{}", self.tool, self.tool_ver)),
             ("flags", format!("{:016x}", self.flags_hash)),
             ("arch", self.arch.clone()),
             ("template", format!("{:016x}", self.template_hash)),
@@ -162,7 +165,7 @@ pub struct Entry {
     pub hex: String,
     /// 该键的目录。
     pub dir: PathBuf,
-    /// 目录内全部文件的字节数（含 `source.tmp` 与残留的锁）。
+    /// 目录内全部文件的字节数（递归，含 `bin/` 下的产物与残留的临时文件）。
     pub bytes: u64,
     /// 最后一次使用（读命中或写入）的时间：GC 的 LRU 顺序用它。
     pub used: SystemTime,
@@ -246,17 +249,20 @@ pub struct Gc {
     pub skipped: usize,
 }
 
-/// 一个编译产物的身份：源文本 + 真正调用的编译器 + 拼进去的主函数。
+/// 一个编译产物的身份：源文本 + **实测工具链身份** + 拼进去的主函数。
 ///
-/// 三者缺一都会被复用成错误的产物：源文本决定内核，编译器决定代码生成（档案声明的工具名
-/// 只是自述，真正的编译器由 [`crate::backend::detect_toolchain`] 解析），主函数决定样本、
-/// 形状与重复次数。产物因此有自己的哈希，但在目录里跟随父条目（`<条目>/bin/<hash>`）：
-/// 它的 `source` 与 `meta.txt` 就是父条目的那一份，不该为它复制一套。
+/// 三者缺一都会被复用成错误的产物：源文本决定内核，工具链决定代码生成，主函数决定样本、
+/// 形状与重复次数。工具链这一项是 [`crate::backend::Toolchain::id`] 给出的 `命令@版本`
+/// （例如 `cc@21.0.0`）——只写命令名不够：升级一次编译器就换了一套代码生成，旧产物不能再
+/// 冒充新编译器的产物。档案声明的 `[meta].tool_ver` 是人写的登记值，不参与这里。
+///
+/// 产物因此有自己的哈希，但在目录里跟随父条目（`<条目>/bin/<hash>`）：它的 `source` 与
+/// `meta.txt` 就是父条目的那一份，不该为它复制一套。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactKey {
     /// 源文本的缓存键（十六进制）。
     pub source: String,
-    /// 真正调用的编译器。
+    /// 工具链身份（`命令@实测版本`）。
     pub tool: String,
     /// 拼进去的主函数的哈希。
     pub harness: u64,
@@ -279,6 +285,29 @@ impl ArtifactKey {
             tool: tool.to_string(),
             harness: fnv1a(harness),
         }
+    }
+
+    /// 从 [`Self::describe`] 的文本还原身份（产物旁的 `.key` 记的就是这一行）。
+    ///
+    /// 解析失败即当作"没有身份"：宁可不复用，也不把一份来历不明的可执行文件当成这里的产物。
+    fn parse(text: &str) -> Option<Self> {
+        let mut source = None;
+        let mut tool = None;
+        let mut harness = None;
+        for item in text.split(';') {
+            let (name, value) = item.split_once('=')?;
+            match name {
+                "source" => source = Some(value.to_string()),
+                "tool" => tool = Some(value.to_string()),
+                "harness" => harness = Some(u64::from_str_radix(value, 16).ok()?),
+                _ => {}
+            }
+        }
+        Some(Self {
+            source: source?,
+            tool: tool?,
+            harness: harness?,
+        })
     }
 
     /// 规范化描述。
@@ -366,7 +395,42 @@ impl Cache {
         })
     }
 
+    /// 一个条目里已落盘的每一份产物，带"谁编译的、拼了哪个主函数"。
+    ///
+    /// 没有编译器时靠它复用产物：身份写在产物旁边（`bin/<hex>.key`），所以不必重新探测
+    /// 工具链才能拼出文件名。没有身份文件的不在此列——不知道它由谁编译、
+    /// 拼了哪个主函数，复用它是赌；只有身份文件、可执行文件已不在的也不算产物。
+    #[must_use]
+    pub fn artifacts_in(&self, source: &str) -> Vec<Artifact> {
+        let bin = self.entry_dir(source).join("bin");
+        let Ok(files) = std::fs::read_dir(&bin) else {
+            return Vec::new();
+        };
+        files
+            .flatten()
+            .filter_map(|file| {
+                let name = file.file_name().to_str()?.to_string();
+                if !is_key(&name) {
+                    return None;
+                }
+                let text = std::fs::read_to_string(bin.join(format!("{name}.key"))).ok()?;
+                let key = ArtifactKey::parse(text.trim())?;
+                let path = file.path();
+                let bytes = std::fs::metadata(&path).ok()?.len();
+                Some(Artifact {
+                    key,
+                    path,
+                    bytes,
+                    reused: true,
+                })
+            })
+            .collect()
+    }
+
     /// 落一份产物：先拷到同目录的临时名再 `rename`，并发写同一个键不会读到半截可执行文件。
+    ///
+    /// 落盘值与身份文件分两步写：可执行文件先到位，身份随后补上。中途崩溃会留下"没有身份"的
+    /// 产物——精确键仍能用它，按身份扫描则看不见它，正是这里想要的保守方向。
     ///
     /// # Errors
     ///
@@ -382,6 +446,12 @@ impl Cache {
         // `copy` 保留可执行位：直接 `rename` 会丢掉它，产物就再也跑不起来。
         std::fs::copy(exe, &temp)?;
         std::fs::rename(&temp, &path)?;
+        // 身份写在产物旁边：没有编译器的机器靠它把产物认回来（[`Self::artifacts_in`]），
+        // 而不是让工具链探测猜出一个文件名。
+        let identity = bin.join(format!("{}.key", key.hex()));
+        let temp = temp_path(&bin, "key");
+        std::fs::write(&temp, format!("{}\n", key.describe()))?;
+        std::fs::rename(&temp, &identity)?;
         let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
         touch(&self.entry_dir(&key.source).join("meta.txt"));
         Ok(Artifact {
@@ -425,23 +495,23 @@ impl Cache {
 
     /// 写一份不来自算子声明的程序（见证、探测）：条目按程序文本定名，`source` 就是程序本身。
     ///
-    /// 返回条目键，它与 [`CacheKey::hex`] 同一形状，于是扫描、LRU 回收与 [`Self::entry`] 都
-    /// 不需要第二套规则——见证的编译产物因此和算子的产物一样受容量管理，而不是缓存根下
-    /// 一个扫不到也删不掉的角落。`meta.txt` 记的是"这份程序是什么"，不是算子指纹。
+    /// 条目名只由标签与程序文本决定，编译器不在其中：编译器是**产物**身份的一部分
+    /// （[`ArtifactKey`]），不是源文本身份的一部分——同一份程序的 `cc` 产物与 `clang` 产物
+    /// 共用一个条目、各占 `bin/` 下一份。返回条目键，它与 [`CacheKey::hex`] 同一形状，于是
+    /// 扫描、LRU 回收与 [`Self::entry`] 都不需要第二套规则——见证的编译产物因此和算子的产物
+    /// 一样受容量管理，而不是缓存根下一个扫不到也删不掉的角落。`meta.txt` 记的是"这份程序
+    /// 是什么"，不是算子指纹。
     ///
     /// # Errors
     ///
     /// 目录不可建或文件不可写时返回系统错误（调用方给出带路径的说明）。
-    pub fn put_program(&self, label: &str, program: &str, tool: &str) -> std::io::Result<String> {
-        let hex = format!("{:016x}", fnv1a(&format!("{label};{tool};{program}")));
+    pub fn put_program(&self, label: &str, program: &str) -> std::io::Result<String> {
+        let hex = format!("{:016x}", fnv1a(&format!("{label};{program}")));
         let dir = self.entry_dir(&hex);
         std::fs::create_dir_all(&dir)?;
         let temp = temp_path(&dir, "program");
         std::fs::write(&temp, program)?;
-        let meta = format!(
-            "program={label}\ntool={tool}\nprogram_hash={:016x}\n",
-            fnv1a(program)
-        );
+        let meta = format!("program={label}\nprogram_hash={:016x}\n", fnv1a(program));
         std::fs::write(dir.join("meta.txt"), meta)?;
         std::fs::rename(&temp, dir.join("source"))?;
         Ok(hex)
@@ -715,8 +785,6 @@ mod tests {
         CacheKey {
             schema_ver: 1,
             emit: Emit::C,
-            tool: "cc".to_string(),
-            tool_ver: "17".to_string(),
             flags_hash: 0x1234,
             arch: "aarch64".to_string(),
             template_hash: 0xabcd,
@@ -741,8 +809,26 @@ mod tests {
         assert_ne!(key().hash(), other.hash());
 
         let mut other = key();
-        other.tool_ver = "18".to_string();
+        other.variant = "direct".to_string();
         assert_ne!(key().hash(), other.hash());
+    }
+
+    #[test]
+    fn the_source_key_ignores_the_archive_tool_registration() {
+        // 工具链不属于源文本：它的身份在 [`ArtifactKey`] 里，而且是实测值。这条断言盯的是
+        // "换编译器会不会把源文本缓存也弄失效"——不会，也不该。
+        let names: Vec<&str> = key().fields().into_iter().map(|(name, _)| name).collect();
+        assert!(!names.contains(&"tool"), "{names:?}");
+        assert!(!names.contains(&"tool_ver"), "{names:?}");
+    }
+
+    #[test]
+    fn the_artifact_identity_carries_the_measured_toolchain() {
+        let cc17 = ArtifactKey::keyed("abc", "cc@17.0.0", "main");
+        let cc21 = ArtifactKey::keyed("abc", "cc@21.0.0", "main");
+        assert_ne!(cc17, cc21, "换编译器版本必须换一份产物");
+        assert_ne!(cc17.hex(), cc21.hex());
+        assert_eq!(cc17, ArtifactKey::parse(&cc17.describe()).expect("可还原"));
     }
 
     #[test]
@@ -815,13 +901,13 @@ mod tests {
     #[test]
     fn changes_name_every_field_that_differs() {
         let mut other = key();
-        other.tool_ver = "18".to_string();
+        other.variant = "direct".to_string();
         other.tile = "GMAX=64".to_string();
         let changes = other.changes(&stored(&key()));
         let fields: Vec<&str> = changes.iter().map(|change| change.field.as_str()).collect();
-        assert_eq!(fields, ["tool", "tile"], "{changes:?}");
-        assert_eq!(changes[0].stored.as_deref(), Some("cc@17"));
-        assert_eq!(changes[0].current.as_deref(), Some("cc@18"));
+        assert_eq!(fields, ["variant", "tile"], "{changes:?}");
+        assert_eq!(changes[0].stored.as_deref(), Some("pipe2"));
+        assert_eq!(changes[0].current.as_deref(), Some("direct"));
         assert!(
             other.changes(&stored(&other)).is_empty(),
             "自己与自己不存在差异"
@@ -835,7 +921,7 @@ mod tests {
         let mut keys = Vec::new();
         for (index, secs) in [100u64, 200, 300].into_iter().enumerate() {
             let mut key = key();
-            key.tool_ver = index.to_string();
+            key.variant = format!("v{index}");
             cache.put(&key, "int x;\n").expect("写缓存");
             stamp(&cache, &key, secs);
             keys.push(key);
@@ -896,7 +982,7 @@ mod tests {
         let key = key();
         cache.put(&key, "int x;\n").expect("写缓存");
         let mut half = key.clone();
-        half.tool_ver = "18".to_string();
+        half.variant = "direct".to_string();
         let dir = cache.dir_for(&half);
         std::fs::create_dir_all(&dir).expect("建目录");
         std::fs::write(dir.join("source.tmp"), "int y;\n").expect("半截落盘");
@@ -989,6 +1075,61 @@ mod tests {
         assert!(
             entry.bytes >= 4096,
             "产物必须计入占用，否则 GC 删不掉真正占空间的东西：{entry:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_artifact_records_who_compiled_it() {
+        // 身份写在产物旁边：没有编译器的机器靠它把产物认回来，而不是重新猜一个文件名。
+        let root = root("artifact-identity");
+        let cache = Cache::new(&root);
+        let key = key();
+        cache.put(&key, "int x;\n").expect("写缓存");
+        let built = root.join("exe");
+        std::fs::create_dir_all(&root).expect("临时目录");
+        std::fs::write(&built, vec![0u8; 16]).expect("写假产物");
+        let harness = "int main(void){return 0;}\n";
+
+        let cc = cache
+            .put_artifact(&ArtifactKey::new(&key, "cc", harness), &built)
+            .expect("落产物");
+        let listed = cache.artifacts_in(&key.hex());
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].key, cc.key);
+        assert!(listed[0].reused, "{listed:?}");
+        assert_eq!(listed[0].bytes, 16, "{listed:?}");
+
+        cache
+            .put_artifact(&ArtifactKey::new(&key, "clang", harness), &built)
+            .expect("落另一份");
+        let mut tools: Vec<String> = cache
+            .artifacts_in(&key.hex())
+            .into_iter()
+            .map(|artifact| artifact.key.tool)
+            .collect();
+        tools.sort();
+        assert_eq!(
+            tools,
+            vec![String::from("cc"), String::from("clang")],
+            "身份里带着编译器名"
+        );
+        assert_eq!(
+            cache.entry(&key.hex()).expect("有记录").artifacts,
+            2,
+            "身份文件不算第二份产物"
+        );
+
+        std::fs::remove_file(&cc.path).expect("删掉可执行文件");
+        let left: Vec<String> = cache
+            .artifacts_in(&key.hex())
+            .into_iter()
+            .map(|artifact| artifact.key.tool)
+            .collect();
+        assert_eq!(
+            left,
+            vec![String::from("clang")],
+            "只有身份文件、可执行文件已不在的不算产物"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

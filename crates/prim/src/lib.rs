@@ -1,20 +1,41 @@
 //! 片段层：`<vendor>/<prim>.<ext>`——某台设备上某个原语的具体写法，以及它的见证源码。
 //!
-//! 这一层是**内容**而不是机制：一台设备的某条原语怎么写，全部是 `<vendor>/<prim>.<ext>`
-//! 里的文本；`cutile` 只负责把它拼进模板、emit 成源文件并编译执行。因此新增设备、替换一段
-//! 实现都不必改机制代码，片段也不会与拼接器混在同一个 crate 里。
+//! **拥有**：`Builtin`（内嵌片段表）、`Fragment` / `FragmentSet`（装载后的片段）、`Device` /
+//! `Image` / `Status`（设备侧代码：源码 + 可选的镜像）。**不拥有**：设备能力区间（`prof`）、
+//! 拼接与 emit（`cutile`）、运行时缓冲与数值（各自的层）。**依赖**：`prof`（原语闭集与档案）、
+//! `diagnostic`（错误类别由本层给，装载失败因此带类别而不是字符串）。
+//! **被依赖**：`cutile`。
+//!
+//! 这一层是**内容**而不是机制：一台设备的某条原语怎么写，全部是 `<vendor>/<prim>.<ext>` 里的
+//! 文本；`cutile` 只负责把它拼进模板、emit 成源文件并编译执行。因此新增设备、替换一段实现都不
+//! 必改机制代码，片段也不会与拼接器混在同一个 crate 里。
 //!
 //! 本 crate 就是数据根的 `prim/` 那一层：`<root>/<vendor>/<prim>.<ext>`。仓库里 `<root>` 是
 //! [`dir`]，换 `data.root` 时是 `<data.root>/prim`（见 [`layer_root`]）。文件名必须落在原语
 //! 闭集 [`Prim`] 内，否则装载即报错——片段与词汇表同源，写错名字不会静默生效。
+//!
+//! # 内嵌表是编译期生成的
+//!
+//! [`BUILTIN`] / [`WITNESS`] / [`DEVICES`] 不是手写登记：`build.rs` 在编译期扫描 `<vendor>/`，
+//! 按 [`Prim`] 校验文件名、按档案校验每段片段声明的签名（`/* cutile-sign: <prim>/<impl> */`），
+//! 再把三张表写进 `$OUT_DIR/tables.rs`。于是"发布出去的二进制里没有它"这类漂移不再靠人记得补
+//! 一行 `include_str!`：加设备只需要放文件，`<vendor>` 与 `prof/devices/<vendor>.toml` 同名。
+//!
+//! # 两种模式：源码调试 / 设备镜像发布
+//!
+//! 默认（调试）只有源码：片段文本 + 见证源码，运行期照旧 emit 后编译。打开 `device-image`
+//! feature（发布）时，能用本机工具链编出设备镜像的设备（如今是 `metal`）额外带上二进制；
+//! [`Device::status`] 说明每台设备这次走到了哪一步，没有镜像也只是"这一步没走"，不是配置错误。
+//!
+//! # 签名声明
 //!
 //! 每段片段的第一行是**签名声明** `/* cutile-sign: <prim>/<impl> */`：同一原语可以有多条签名
 //! （`dot` 的 `dp4a` 与标量 `fma`），片段只说"这段文本写的是哪一条"，"这台设备有没有这条签名"
 //! 仍由档案回答。两边的对齐由 `cutile` 在装载期判定，所以"协商选中 `dp4a`、文本写的却是 `fma`"
 //! 不会晚到构建期、更不会静默用错算法。
 //!
-//! `witness.<ext>` 是见证源码（L2 证据），**不是片段**：装载时跳过它，档案里的 `witness`
-//! 用 `{ file, func, expect }` 指向同一目录下的这个文件、入口函数与期望输出。
+//! `witness.<ext>` 是见证源码（L2 证据），**不是片段**：装载时跳过它，档案里的 `witness` 用
+//! `{ file, func, expect }` 指向同一目录下的这个文件、入口函数与期望输出。
 //!
 //! # 例子
 //!
@@ -22,14 +43,24 @@
 //! let set = llm_prim::builtin("cpu", "c").expect("内置 cpu 片段");
 //! assert_eq!(set.vendor(), "cpu");
 //! assert!(set.get(llm_prim::Prim::Load).is_some());
+//!
+//! let device = llm_prim::device("metal").expect("内置设备");
+//! assert_eq!(device.ext, "metal", "扩展名由档案的 emit 语言决定");
+//! assert!(device.entry(llm_prim::Prim::Dot).is_some(), "每个原语都有入口");
 //! ```
 
 #![deny(unsafe_code)]
 
+use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod device;
+mod tables;
+
+pub use device::{Device, Image, Status, device, devices};
 pub use prof::atom::Prim;
+pub use tables::{BUILTIN, DEVICES, WITNESS};
 
 /// 见证源码的文件名（不含扩展名）。
 ///
@@ -47,109 +78,6 @@ pub struct Builtin {
     /// 片段：原语 → 文本。
     pub fragments: &'static [(Prim, &'static str)],
 }
-
-/// 编译期内嵌的片段层，按 `(vendor, ext)` 唯一（查表不依赖顺序）。
-///
-/// Rust 不能在编译期遍历目录，所以内嵌片段要在这里登记一次——这与 `op::BUILTIN`、
-/// `prof::BUILTIN` 登记声明与档案是同一件事：**表是数据，查表的是代码**。没有登记的
-/// vendor 走 [`load`]，同样不必改代码。
-pub const BUILTIN: [Builtin; 5] = [
-    Builtin {
-        vendor: "cpu",
-        ext: "c",
-        fragments: &[
-            (Prim::Load, include_str!("../cpu/load.c")),
-            (Prim::LoadAsync, include_str!("../cpu/load_async.c")),
-            (Prim::CommitWait, include_str!("../cpu/commit_wait.c")),
-            (Prim::Store, include_str!("../cpu/store.c")),
-            (Prim::Quant, include_str!("../cpu/quant.c")),
-            (Prim::Dot, include_str!("../cpu/dot.c")),
-            (Prim::Bar, include_str!("../cpu/bar.c")),
-            (Prim::Cvt, include_str!("../cpu/cvt.c")),
-            (Prim::Reduce, include_str!("../cpu/reduce.c")),
-        ],
-    },
-    // 三台加速器的片段按 `meta.emit.ext()` 的扩展名登记：P0 的标量路径在三种语言里都是
-    // C 语义，tile 落点（`dp4a` / `mmad` / `fixpipe_out` 之类）留给 P3。等级仍是 L0/L1，
-    // 所以它们不会进入协商；登记的意义是"发布出去的二进制里也有这台设备的片段文本"，
-    // 而不是"本机能跑"。
-    Builtin {
-        vendor: "nvidia",
-        ext: "cu",
-        fragments: &[
-            (Prim::Load, include_str!("../nvidia/load.cu")),
-            (Prim::LoadAsync, include_str!("../nvidia/load_async.cu")),
-            (Prim::CommitWait, include_str!("../nvidia/commit_wait.cu")),
-            (Prim::Store, include_str!("../nvidia/store.cu")),
-            (Prim::Quant, include_str!("../nvidia/quant.cu")),
-            (Prim::Dot, include_str!("../nvidia/dot.cu")),
-            (Prim::Bar, include_str!("../nvidia/bar.cu")),
-            (Prim::Cvt, include_str!("../nvidia/cvt.cu")),
-            (Prim::Reduce, include_str!("../nvidia/reduce.cu")),
-        ],
-    },
-    Builtin {
-        vendor: "intel",
-        ext: "cl",
-        fragments: &[
-            (Prim::Load, include_str!("../intel/load.cl")),
-            (Prim::LoadAsync, include_str!("../intel/load_async.cl")),
-            (Prim::CommitWait, include_str!("../intel/commit_wait.cl")),
-            (Prim::Store, include_str!("../intel/store.cl")),
-            (Prim::Quant, include_str!("../intel/quant.cl")),
-            (Prim::Dot, include_str!("../intel/dot.cl")),
-            (Prim::Bar, include_str!("../intel/bar.cl")),
-            (Prim::Cvt, include_str!("../intel/cvt.cl")),
-            (Prim::Reduce, include_str!("../intel/reduce.cl")),
-        ],
-    },
-    Builtin {
-        vendor: "ascend",
-        ext: "cpp",
-        fragments: &[
-            (Prim::Load, include_str!("../ascend/load.cpp")),
-            (Prim::LoadAsync, include_str!("../ascend/load_async.cpp")),
-            (Prim::CommitWait, include_str!("../ascend/commit_wait.cpp")),
-            (Prim::Store, include_str!("../ascend/store.cpp")),
-            (Prim::Quant, include_str!("../ascend/quant.cpp")),
-            (Prim::Dot, include_str!("../ascend/dot.cpp")),
-            (Prim::Bar, include_str!("../ascend/bar.cpp")),
-            (Prim::Cvt, include_str!("../ascend/cvt.cpp")),
-            (Prim::Reduce, include_str!("../ascend/reduce.cpp")),
-        ],
-    },
-    // Metal 的片段按 `Emit::Metal.ext()` 登记为 `.metal`：与另外三台加速器同一条约定——
-    // P0 的标量路径在各语言里都是 C 语义，threadgroup 地址空间与 simdgroup 内建留给 P3。
-    Builtin {
-        vendor: "metal",
-        ext: "metal",
-        fragments: &[
-            (Prim::Load, include_str!("../metal/load.metal")),
-            (Prim::LoadAsync, include_str!("../metal/load_async.metal")),
-            (Prim::CommitWait, include_str!("../metal/commit_wait.metal")),
-            (Prim::Store, include_str!("../metal/store.metal")),
-            (Prim::Quant, include_str!("../metal/quant.metal")),
-            (Prim::Dot, include_str!("../metal/dot.metal")),
-            (Prim::Bar, include_str!("../metal/bar.metal")),
-            (Prim::Cvt, include_str!("../metal/cvt.metal")),
-            (Prim::Reduce, include_str!("../metal/reduce.metal")),
-        ],
-    },
-];
-
-/// 编译期内嵌的见证源码：`(vendor, ext, source)`。
-///
-/// 与 [`BUILTIN`] 分开登记：见证不是片段（装载时按名字跳过），但发布机上没有源码树，
-/// `cutile verify` 仍需要它才能执行 L2 证据，因此必须随二进制一起带上。
-///
-/// 新增设备时在这里补一行，`builtin_witness_matches_disk` 会把漂移判为失败。
-pub const WITNESS: [(&str, &str, &str); 5] = [
-    ("cpu", "c", include_str!("../cpu/witness.c")),
-    ("nvidia", "cu", include_str!("../nvidia/witness.cu")),
-    ("intel", "cl", include_str!("../intel/witness.cl")),
-    ("ascend", "cpp", include_str!("../ascend/witness.cpp")),
-    ("metal", "metal", include_str!("../metal/witness.metal")),
-];
 
 /// 按 `(vendor, ext)` 查内嵌见证；没有登记时返回 `None`（调用方改读磁盘）。
 pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
@@ -193,11 +121,18 @@ impl Fragment {
     }
 
     /// 解析第一行的签名声明。
-    fn parse(prim: Prim, source: impl Into<String>) -> Result<Self, String> {
+    ///
+    /// # Errors
+    ///
+    /// 第一行不是签名声明、声明里的原语与文件名不一致、或缺少 `impl` 名时返回 `invalid`。
+    fn parse(prim: Prim, source: impl Into<String>) -> diagnostic::Result<Self> {
         let source = source.into();
-        let (first, body) = source
-            .split_once('\n')
-            .ok_or_else(|| format!("片段 `{prim}` 只有签名声明，没有实现"))?;
+        let (first, body) = source.split_once('\n').ok_or_else(|| {
+            Error::new(
+                Code::Invalid,
+                format!("片段 `{prim}` 只有签名声明，没有实现"),
+            )
+        })?;
         let declared = first
             .strip_prefix("/*")
             .and_then(|rest| rest.strip_suffix("*/"))
@@ -205,22 +140,34 @@ impl Fragment {
             .and_then(|rest| rest.strip_prefix(SIGN_MARKER))
             .map(str::trim)
             .ok_or_else(|| {
-                format!(
-                    "片段 `{prim}` 的第一行必须是 `/* {SIGN_MARKER} {prim}/<impl> */`，实际是 `{first}`"
+                Error::new(
+                    Code::Invalid,
+                    format!(
+                        "片段 `{prim}` 的第一行必须是 `/* {SIGN_MARKER} {prim}/<impl> */`，实际是 `{first}`"
+                    ),
                 )
             })?;
-        let (declared_prim, implementation) = declared
-            .split_once('/')
-            .ok_or_else(|| format!("`{prim}` 的签名声明 `{declared}` 不是 `<prim>/<impl>`"))?;
+        let (declared_prim, implementation) = declared.split_once('/').ok_or_else(|| {
+            Error::new(
+                Code::Invalid,
+                format!("`{prim}` 的签名声明 `{declared}` 不是 `<prim>/<impl>`"),
+            )
+        })?;
         if Prim::parse(declared_prim.trim()) != Some(prim) {
-            return Err(format!(
-                "`{prim}` 的签名声明写的是 `{}`：文件名即原语名，两者必须一致",
-                declared_prim.trim()
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "`{prim}` 的签名声明写的是 `{}`：文件名即原语名，两者必须一致",
+                    declared_prim.trim()
+                ),
             ));
         }
         let implementation = implementation.trim();
         if implementation.is_empty() {
-            return Err(format!("`{prim}` 的签名声明缺少 `impl` 名"));
+            return Err(Error::new(
+                Code::Invalid,
+                format!("`{prim}` 的签名声明缺少 `impl` 名"),
+            ));
         }
         // 先把两处都落成 `String`：它们借的是 `source`，随后 `source` 要整体移进结构体。
         let implementation = implementation.to_string();
@@ -255,8 +202,8 @@ impl FragmentSet {
     ///
     /// # Errors
     ///
-    /// 第一行不是签名声明、声明里的原语与文件名不一致、或缺少 `impl` 名时返回说明。
-    pub fn insert(&mut self, prim: Prim, source: impl Into<String>) -> Result<(), String> {
+    /// 第一行不是签名声明、声明里的原语与文件名不一致、或缺少 `impl` 名时返回 `invalid`。
+    pub fn insert(&mut self, prim: Prim, source: impl Into<String>) -> diagnostic::Result<()> {
         self.fragments.insert(prim, Fragment::parse(prim, source)?);
         Ok(())
     }
@@ -333,13 +280,17 @@ pub fn builtin(vendor: &str, ext: &str) -> Option<FragmentSet> {
 ///
 /// `<root>` 是片段层根目录（见 [`dir`] 与 [`layer_root`]）；`witness.<ext>` 被跳过，
 /// 文件名不在 [`Prim`] 闭集内的其余文件报错，第一行不是签名声明的片段也报错。
-pub fn load(root: &Path, vendor: &str, ext: &str) -> Result<FragmentSet, String> {
+///
+/// # Errors
+///
+/// 目录不存在是 `missing`（`data.root` 指错时最常发生），不可读是 `io`；文件名不在闭集内、
+/// 或片段的第一行不是签名声明是 `invalid`。
+pub fn load(root: &Path, vendor: &str, ext: &str) -> diagnostic::Result<FragmentSet> {
     let mut set = FragmentSet::new(vendor, ext);
     let dir = root.join(vendor);
-    let entries =
-        std::fs::read_dir(&dir).map_err(|error| format!("读取 {} 失败：{error}", dir.display()))?;
+    let entries = std::fs::read_dir(&dir).map_err(|error| Error::from_io(&dir, &error))?;
     for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
+        let entry = entry.map_err(|error| Error::new(Code::Io, error.to_string()))?;
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some(ext) {
             continue;
@@ -351,13 +302,13 @@ pub fn load(root: &Path, vendor: &str, ext: &str) -> Result<FragmentSet, String>
             continue;
         }
         let Some(prim) = Prim::parse(stem) else {
-            return Err(format!(
-                "`{}` 的文件名 `{stem}` 不在原语闭集内",
-                path.display()
+            return Err(Error::new(
+                Code::Invalid,
+                format!("`{}` 的文件名 `{stem}` 不在原语闭集内", path.display()),
             ));
         };
-        let source = std::fs::read_to_string(&path)
-            .map_err(|error| format!("读取 {} 失败：{error}", path.display()))?;
+        let source =
+            std::fs::read_to_string(&path).map_err(|error| Error::from_io(&path, &error))?;
         set.insert(prim, source)?;
     }
     Ok(set)
@@ -367,6 +318,7 @@ pub fn load(root: &Path, vendor: &str, ext: &str) -> Result<FragmentSet, String>
 mod tests {
     use super::*;
 
+    /// 内嵌表与磁盘一致：生成器漏扫一个目录，这里就会失败。
     #[test]
     fn builtin_matches_disk() {
         for entry in BUILTIN {
@@ -406,8 +358,12 @@ mod tests {
 
     #[test]
     fn witness_is_not_a_fragment() {
+        let cpu = BUILTIN
+            .iter()
+            .find(|entry| entry.vendor == "cpu")
+            .expect("内置 cpu 片段");
         let set = load(&dir(), "cpu", "c").expect("witness.c 必须被跳过");
-        assert_eq!(set.len(), BUILTIN[0].fragments.len());
+        assert_eq!(set.len(), cpu.fragments.len());
         assert!(set.get(Prim::Load).is_some());
     }
 
@@ -438,7 +394,12 @@ mod tests {
         .expect("写片段");
         std::fs::write(vendor_dir.join("not_a_prim.c"), "").expect("写非法片段");
         let error = load(&root, "fake", "c").expect_err("闭集外的文件名必须报错");
-        assert!(error.contains("not_a_prim"), "{error}");
+        assert_eq!(
+            error.code(),
+            Code::Invalid,
+            "文件名是声明，不是 io：{error}"
+        );
+        assert!(error.to_string().contains("not_a_prim"), "{error}");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -450,7 +411,7 @@ mod tests {
         std::fs::create_dir_all(&vendor_dir).expect("建临时目录");
         std::fs::write(vendor_dir.join("load.c"), "{ $0 = $1; }\n").expect("写片段");
         let error = load(&root, "fake", "c").expect_err("没有签名声明的片段必须报错");
-        assert!(error.contains(SIGN_MARKER), "{error}");
+        assert!(error.to_string().contains(SIGN_MARKER), "{error}");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -461,8 +422,8 @@ mod tests {
         let error = set
             .insert(Prim::Load, "/* cutile-sign: dot/fma */\n{ $0 += $1; }\n")
             .expect_err("原语名不一致必须报错");
-        assert!(error.contains("dot"), "{error}");
-        assert!(error.contains("load"), "{error}");
+        assert!(error.to_string().contains("dot"), "{error}");
+        assert!(error.to_string().contains("load"), "{error}");
     }
 
     /// 别名不能空着：`impl` 就是档案里那条 `provides.impl`，空名无法对齐。
@@ -472,6 +433,6 @@ mod tests {
         let error = set
             .insert(Prim::Load, "/* cutile-sign: load/ */\n{ $0 = $1; }\n")
             .expect_err("缺 impl 必须报错");
-        assert!(error.contains("impl"), "{error}");
+        assert!(error.to_string().contains("impl"), "{error}");
     }
 }

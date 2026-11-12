@@ -51,15 +51,25 @@ impl Parallel {
 }
 
 /// 三维并行拓扑。
+///
+/// `world` 在构造时算好并校验过：三个维度的乘积必须能用 `u32` 表示。rank 在 [`Group`]（与
+/// `exec::Stream`）里是 `u32`，所以更大的拓扑本来就派不出一套合法的 rank 布局；让构造期报错，
+/// 好过让 [`Topology::world`] 退回成饱和值（"一共 `usize::MAX` 个进程"）而 [`Topology::group`]
+/// 用回绕的乘积发出一串看起来合法的 rank。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Topology {
     tp: usize,
     pp: usize,
     dp: usize,
+    world: usize,
 }
 
 impl Topology {
-    /// 三个维度都必须非零。
+    /// 三个维度都必须非零，且乘积（总进程数）必须能用 `u32` 表示。
+    ///
+    /// # Errors
+    ///
+    /// 任一维度为零，或 `tp · pp · dp` 溢出 `usize` / 超过 `u32::MAX` 时返回说明。
     pub fn new(tp: usize, pp: usize, dp: usize) -> Result<Self> {
         if tp == 0 || pp == 0 || dp == 0 {
             return Err(Error::new(
@@ -68,7 +78,20 @@ impl Topology {
             )
             .with("shard::Topology::new"));
         }
-        Ok(Self { tp, pp, dp })
+        let world = tp
+            .checked_mul(pp)
+            .and_then(|plan| plan.checked_mul(dp))
+            .filter(|world| *world <= u32::MAX as usize)
+            .ok_or_else(|| {
+                Error::new(
+                    Code::Invalid,
+                    format!(
+                        "tp · pp · dp = {tp} · {pp} · {dp} 超出 u32：rank 布局无解，启动再多进程也对不上"
+                    ),
+                )
+                .with("shard::Topology::new")
+            })?;
+        Ok(Self { tp, pp, dp, world })
     }
 
     /// 张量并行度。
@@ -87,8 +110,11 @@ impl Topology {
     }
 
     /// 总进程数。
+    ///
+    /// 构造期已经校验过它能用 `u32` 表示，所以这里是精确值，不存在"饱和成 `usize::MAX`"那种
+    /// 谎报——否则 [`Topology::check`] 也会跟着接受一个不可能的进程数。
     pub fn world(&self) -> usize {
-        self.tp.saturating_mul(self.pp).saturating_mul(self.dp)
+        self.world
     }
 
     /// 校验启动的进程数与拓扑一致（不一致时继续跑只会得到静默的错误结果）。
@@ -109,7 +135,9 @@ impl Topology {
     /// - `Pipeline`：`index` 是 `dp_index`，组大小 `tp * pp`；
     /// - `Data`：`index` 是 `pp_index * tp + tp_index`，组大小 `dp`。
     pub fn group(&self, parallel: Parallel, index: usize) -> Result<Group> {
-        let plan = self.tp.saturating_mul(self.pp);
+        // `plan` 与下面各式的乘积都以 `world` 为上界，而 `world` 在构造期已校验能用 `u32` 表示，
+        // 所以这里不会回绕——这正是把上限放在 `new` 里的理由。
+        let plan = self.tp * self.pp;
         let ranks: Vec<usize> = match parallel {
             Parallel::Tensor => {
                 if index >= self.dp * self.pp {
@@ -258,6 +286,57 @@ mod tests {
         assert_eq!(partition.slice(15, 0).unwrap_err().code(), Code::Invalid);
         assert_eq!(partition.slice(16, 4).unwrap_err().code(), Code::Invalid);
         assert_eq!(Partition::new(0, 0).unwrap_err().code(), Code::Invalid);
+    }
+
+    /// 乘积溢出时不能只把 `world()` 饱和掉：那样 `check` 会跟着接受一个不可能的进程数，
+    /// 而 `group` 又用回绕的乘积发出一串"看起来合法"的 rank。
+    #[test]
+    fn a_topology_whose_world_does_not_fit_in_u32_is_refused() {
+        let error = Topology::new(usize::MAX, 2, 2).expect_err("溢出");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("u32"), "{error}");
+        // 恰好超出 u32 也算无解：rank 是 u32，最后一个 rank 写不出来。
+        assert_eq!(
+            Topology::new(1 << 16, 1 << 16, 1).unwrap_err().code(),
+            Code::Invalid
+        );
+        // 卡在 u32::MAX 之下的乘积仍然合法，且 world 是精确值而不是饱和值。
+        let huge = Topology::new(65_535, 65_535, 1).expect("乘积 4_294_836_225 < u32::MAX");
+        assert_eq!(huge.world(), 4_294_836_225);
+        assert!(huge.check(4_294_836_225).is_ok());
+        assert_eq!(huge.check(usize::MAX).unwrap_err().code(), Code::Invalid);
+    }
+
+    /// 三个维度的组必须各自把 `0..world` 恰切一遍：不多不少、不重叠。
+    /// 布局规则一旦算错，这里会先于训练发现。
+    #[test]
+    fn every_axis_partitions_the_ranks_exactly_once() {
+        for (tp, pp, dp) in [(1, 1, 1), (2, 2, 2), (3, 5, 7), (4, 1, 3), (1, 6, 2)] {
+            let topology = Topology::new(tp, pp, dp).expect("合法");
+            let world = topology.world();
+            for parallel in Parallel::ALL {
+                let count = match parallel {
+                    Parallel::Tensor => dp * pp,
+                    Parallel::Pipeline => dp,
+                    Parallel::Data => tp * pp,
+                };
+                let mut seen = vec![0usize; world];
+                for index in 0..count {
+                    for &rank in topology.group(parallel, index).expect("组存在").ranks() {
+                        seen[rank as usize] += 1;
+                    }
+                }
+                assert!(
+                    seen.iter().all(|count| *count == 1),
+                    "{parallel:?} 在 {tp}·{pp}·{dp} 上没有恰好划开：{seen:?}"
+                );
+                assert_eq!(
+                    topology.group(parallel, count).unwrap_err().code(),
+                    Code::Invalid,
+                    "{parallel:?} 的第 {count} 组不存在"
+                );
+            }
+        }
     }
 
     #[test]

@@ -140,7 +140,10 @@ impl Envelope {
         Ok(frame)
     }
 
-    /// 解析一帧；长度不符、魔数不符、版本过新、类型未知都报错。
+    /// 解析一帧；短于帧头、魔数不符、版本过新、类型未知、载荷比声明的短都报错。
+    ///
+    /// 多出来的字节不动：流式连接上一个缓冲里可能躺着好几帧，调用方按 [`HEADER_LEN`] 加
+    /// [`Envelope::payload`] 的长度切下一帧，本函数只保证"头 + 声明的载荷"这一段可用。
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < HEADER_LEN {
             return Err(Error::new(
@@ -175,16 +178,18 @@ impl Envelope {
         })?;
         let len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
         let len = usize::try_from(len).unwrap_or(usize::MAX);
-        let payload = bytes.get(HEADER_LEN..HEADER_LEN + len).ok_or_else(|| {
-            Error::new(
+        // 先切掉帧头再比长度：`len` 是别人发来的数，可以是 `0xFFFF_FFFF`，而 32 位平台上
+        // `HEADER_LEN + len` 会溢出——那会变成 debug 构建里的 panic，也就是一个可以用 10 字节
+        // 打出来的拒绝服务。
+        let rest = &bytes[HEADER_LEN..];
+        if rest.len() < len {
+            return Err(Error::new(
                 Code::Invalid,
-                format!(
-                    "载荷声明 {len} 字节，实际只有 {} 字节",
-                    bytes.len() - HEADER_LEN
-                ),
+                format!("载荷声明 {len} 字节，实际只有 {} 字节", rest.len()),
             )
-            .with("proto::Envelope::parse")
-        })?;
+            .with("proto::Envelope::parse"));
+        }
+        let payload = &rest[..len];
         Ok(Self {
             version,
             kind,
@@ -214,6 +219,33 @@ mod tests {
         let frame = empty.frame().expect("编码");
         assert_eq!(frame.len(), HEADER_LEN);
         assert_eq!(Envelope::parse(&frame).expect("解析").payload(), b"");
+    }
+
+    /// 帧头里的长度来自对端：16 进制的极限值不能变成算术溢出。
+    #[test]
+    fn an_absurd_declared_length_is_an_error_not_an_overflow() {
+        let mut frame = envelope().frame().expect("编码");
+        frame[6..10].copy_from_slice(&u32::MAX.to_le_bytes());
+        let error = Envelope::parse(&frame).expect_err("必须拒绝");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("载荷声明"), "{error}");
+    }
+
+    /// 一个缓冲里有多帧时只解析第一帧，剩下的留给调用方。
+    #[test]
+    fn trailing_bytes_belong_to_the_next_frame() {
+        let first = envelope().frame().expect("编码");
+        let second = Envelope::new(Version::current(), Kind::Done, b"bye".to_vec())
+            .frame()
+            .expect("编码");
+        let mut stream = first.clone();
+        stream.extend_from_slice(&second);
+        let parsed = Envelope::parse(&stream).expect("只解析第一帧");
+        assert_eq!(parsed, envelope());
+        let consumed = HEADER_LEN + parsed.payload().len();
+        assert_eq!(Envelope::parse(&stream[consumed..]).expect("第二帧"), {
+            Envelope::new(Version::current(), Kind::Done, b"bye".to_vec())
+        });
     }
 
     #[test]

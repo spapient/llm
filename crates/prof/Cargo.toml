@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 llm-config = { path = "../config" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [lints]
 workspace = true

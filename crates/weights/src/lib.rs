@@ -1,11 +1,20 @@
-//! 权重文件的结构：[`Entry`]、[`Header`] 与 [`Reader`]。
+//! 权重文件的结构：[`Entry`]、[`Header`] 与两条读取契约（[`Reader`] / [`Loader`]），以及
+//! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
-//! **拥有**：`Header`、`Entry`、`Reader`。**不拥有**：张量本身（`tensor`）、布局（`storage`）、
-//! safetensors / GGUF 的具体解析器（P1：解析器只填这三个类型，不新增契约）。
-//! **依赖**：`tensor`、`diagnostic`。**被依赖**：`train`、`llm`。
+//! **拥有**：`Header`、`Entry`、`Reader`、`Loader`、`safetensors::Archive`、`safetensors::File`、
+//! `json`。**不拥有**：张量本身（`tensor`）、布局（`storage`）、GPU 侧的字节搬运（`storage`）。
+//! **依赖**：`tensor`、`diagnostic`。**被依赖**：`train`、`nn`、`llm`。
 //!
-//! 这一层先解决"权重文件的元数据能不能自证合法"：条目名唯一、字节区间不重叠、区间起点不早于
-//! 数据段起点。这三条不成立时，任何后续读写都会在别处以更难查的方式失败。
+//! 两条读取契约的分工是所有权而不是风格：[`Reader`] 把字节**借**出来（内存切片、映射），
+//! [`Loader`] 把字节**拷进**调用方给的缓冲区——只有后者能由文件实现，因为不引入 `unsafe` 就无法
+//! 自己映射，也无法承诺"借出的引用在函数返回后仍然有效"。真实权重动辄十几 GB，靠的正是后者。
+//!
+//! 这一层先解决“权重文件能不能自证合法”：条目名唯一、字节区间不重叠、区间起点不早于
+//! 数据段，以及 safetensors 的“声明区间必须等于形状推出的字节数”。这几条不成立时，任何
+//! 后续读写都会在别处以更难查的方式失败。
+//!
+//! 解析器只填这三个类型，不新增契约：换个文件格式（GGUF）只需再写一个“字节 → `Header`”，
+//! 上层（`nn` 的层清单、`train` 的检查点）不需要跟着改。
 //!
 //! # 例子
 //!
@@ -23,6 +32,12 @@
 
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
+
+pub mod json;
+pub mod quant;
+pub mod safetensors;
+
+pub use quant::Quantized;
 
 /// 一个权重条目：名字、元素类型、形状与它在数据段里的字节区间。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,12 +182,54 @@ impl Header {
     }
 }
 
-/// 读取条目字节的后端：文件、内存映射或测试夹具。
+/// 零拷贝后端：把条目字节**借**出来（内存切片、映射或测试夹具）。
 ///
-/// 只有这一个方法：头部解析、校验与张量构造都在别处完成，读端不需要知道格式。
+/// 只有这一个方法：头部解析、校验与张量构造都在别处完成，读端不需要知道格式。借用意味着
+/// "后端必须活得比返回值长"，所以文件这类"字节不经我手"的来源只能用 [`Loader`]。
 pub trait Reader {
     /// 读出条目的原始字节；长度必须与 `entry.len()` 一致。
     fn read(&self, entry: &Entry) -> Result<&[u8]>;
+}
+
+/// 按需后端：把条目字节**拷进**调用方给的缓冲区（文件、压缩包、远端分块）。
+///
+/// 只有 [`Loader::copy_into`] 是必须实现的，[`Loader::load`] 是它的分配封装——两种后端都不必
+/// 重写，因此"长度对不对、越界没越界"只有一处判断，不会出现第二份边界检查。
+pub trait Loader {
+    /// 把条目字节写进 `out`；`out` 必须正好等于 `entry.len()` 字节。
+    ///
+    /// # Errors
+    ///
+    /// 长度不符时返回 [`Code::Invalid`]（这是调用方的错，不能截断也不能补零）；
+    /// 读不出来时由具体后端给出（文件是 [`Code::Io`]，借用的后端是 [`Code::Internal`]）。
+    fn copy_into(&self, entry: &Entry, out: &mut [u8]) -> Result<()>;
+
+    /// 分配并读出条目字节。
+    ///
+    /// 分配大小由 `entry.len()` 决定，不由后端决定：读端想限制内存就只能自己调
+    /// [`Loader::copy_into`]，这个默认实现不做额外预算。
+    fn load(&self, entry: &Entry) -> Result<Vec<u8>> {
+        let mut buffer = vec![0u8; entry.len()];
+        self.copy_into(entry, &mut buffer)?;
+        Ok(buffer)
+    }
+}
+
+/// 缓冲区长度必须与条目声明一致：短了会读出半个张量，长了会把相邻条目混进来。
+fn check_capacity(entry: &Entry, out: &[u8]) -> Result<()> {
+    if out.len() == entry.len() {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!(
+            "缓冲区 {} 字节，条目 `{}` 需要 {} 字节",
+            out.len(),
+            entry.name(),
+            entry.len()
+        ),
+    )
+    .with("weights::Loader::copy_into"))
 }
 
 #[cfg(test)]

@@ -88,19 +88,22 @@ impl LayoutSpec {
     }
 
     /// 渲染回声明层写法。
+    ///
+    /// 只有这一处写对照表：`Display` 直接写进调用方的缓冲，不在中间先建一个 `String`。
+    #[must_use]
     pub fn as_str(&self) -> String {
-        match self {
-            Self::Row => "row".to_string(),
-            Self::Col => "col".to_string(),
-            Self::Swz { b, m, s } => format!("swz<{b},{m},{s}>"),
-            Self::Pad(pad) => format!("pad({pad})"),
-        }
+        self.to_string()
     }
 }
 
 impl fmt::Display for LayoutSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.as_str())
+        match self {
+            Self::Row => f.write_str("row"),
+            Self::Col => f.write_str("col"),
+            Self::Swz { b, m, s } => write!(f, "swz<{b},{m},{s}>"),
+            Self::Pad(pad) => write!(f, "pad({pad})"),
+        }
     }
 }
 

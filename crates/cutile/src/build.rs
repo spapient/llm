@@ -9,7 +9,7 @@
 
 use crate::SCHEMA_VER;
 use crate::atom::{DType, DTypeSet, Prim, Space};
-use crate::backend::{self, Outcome};
+use crate::backend::{self, Outcome, Toolchain};
 use crate::cache::{Artifact, ArtifactKey, Cache, CacheKey, Lock};
 use crate::cap::Path;
 use crate::decl::{OpDecl, TileCombo};
@@ -90,33 +90,30 @@ pub fn source(
 
 /// ⑤ 的编译执行：产物已在缓存里就直接跑，否则编一次再落盘。
 ///
-/// 产物的身份是 [`ArtifactKey`]（源文本 + 编译器 + 主函数），因此"命中产物"与"重新编译"
-/// 必然等价——形状、样本数据与重复次数都在主函数里，换一个就换一份产物。命中时连编译器都
-/// 不需要：一份已经验证过的产物不该因为这台机器上没有 `cc` 而失效。
+/// 产物的身份是 [`ArtifactKey`]（源文本 + **实测工具链身份** + 主函数），因此"命中产物"与
+/// "重新编译"必然等价——工具链版本、形状、样本数据与重复次数都在里面，换一个就换一份产物。
+///
+/// `tool` 是本机探测到的工具链（[`crate::backend::detect`]），可以是 `None`：一份已经验证过
+/// 的产物不该因为这台机器上没有 `cc` 而失效。没有编译器时按产物旁的身份文件认人——
+/// `命令@版本`就写在那里，所以不必先探测工具链才能拼出文件名。只有"既没编译器、缓存里
+/// 也没有这份产物"才失败。
 ///
 /// 编译在一次性的沙箱里进行（`work.dir` 下按产物键 + 进程命名），产物拷进缓存后沙箱即删，
 /// 于是"编译过一次"不会在 `work.dir` 里留下第二份可执行文件。
 ///
 /// # Errors
 ///
-/// 编译器缺失或编译失败、产物不可执行、缓存不可写时返回说明；运行失败由
-/// [`crate::backend::run`] 分类。
+/// 编译器缺失（且缓存里没有这份产物）、编译失败、产物不可执行、缓存不可写时返回说明；
+/// 运行失败由 [`crate::backend::run`] 分类。
 pub fn execute(
     profile: &Profile,
-    tool: &str,
+    tool: Option<&Toolchain>,
     key: &CacheKey,
     harness: &str,
     settings: &Settings,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let cache = Cache::from_settings(settings);
-    cached_run(
-        &cache,
-        ArtifactKey::new(key, tool, harness),
-        tool,
-        &profile.flags,
-        harness,
-        settings,
-    )
+    cached_run(&cache, &key.hex(), tool, &profile.flags, harness, settings)
 }
 
 /// 一份自建程序的编译执行（见证与将来的探测）：与 [`execute`] 共用同一条产物缓存。
@@ -124,11 +121,14 @@ pub fn execute(
 /// 源文本不来自算子声明，所以条目按程序文本定名（[`Cache::put_program`]）；`flags` 也由
 /// 调用方给——见证自检走的 host C 参数与设备档案的 `[compile].flags` 并不是同一套。
 ///
+/// `tool` 同上：`None` 表示本机没有编译器，此时只能复用已落盘的产物。
+///
 /// # Errors
 ///
-/// 程序不可写盘、编译器缺失或编译失败、产物不可执行、缓存不可写时返回说明。
+/// 程序不可写盘、编译器缺失（且缓存里没有这份产物）、编译失败、产物不可执行、缓存不可写时
+/// 返回说明。
 pub fn run_program(
-    tool: &str,
+    tool: Option<&Toolchain>,
     flags: &[String],
     label: &str,
     program: &str,
@@ -136,16 +136,9 @@ pub fn run_program(
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let cache = Cache::from_settings(settings);
     let hex = cache
-        .put_program(label, program, tool)
+        .put_program(label, program)
         .map_err(|error| Error::new(Code::Io, format!("写程序缓存失败：{error}")))?;
-    cached_run(
-        &cache,
-        ArtifactKey::keyed(hex, tool, program),
-        tool,
-        flags,
-        program,
-        settings,
-    )
+    cached_run(&cache, &hex, tool, flags, program, settings)
 }
 
 /// 查产物 → 命中就直接跑；否则编译一次、落盘，再跑缓存里的那一份。
@@ -153,12 +146,17 @@ pub fn run_program(
 /// 跑的是缓存里那份而不是沙箱里那份：被缓存的、被报告的、被执行的必须是同一个文件。
 fn cached_run(
     cache: &Cache,
-    key: ArtifactKey,
-    tool: &str,
+    source: &str,
+    tool: Option<&Toolchain>,
     flags: &[String],
     program: &str,
     settings: &Settings,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
+    let Some(tool) = tool else {
+        return cached_only(cache, source, program);
+    };
+    // 产物身份用**实测**的工具链：升一次编译器就换一份产物，旧产物不再冒充新编译器的代码生成。
+    let key = ArtifactKey::keyed(source, &tool.id(), program);
     if let Some(artifact) = cache.artifact(&key) {
         return Ok((backend::run(&artifact.path)?, artifact));
     }
@@ -170,7 +168,7 @@ fn cached_run(
         std::process::id(),
         SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let exe = backend::compile(tool, flags, program, &sandbox)?;
+    let exe = backend::compile(&tool.command, flags, program, &sandbox)?;
     let artifact = cache.put_artifact(&key, &exe).map_err(|error| {
         Error::new(
             Code::Io,
@@ -182,6 +180,47 @@ fn cached_run(
     })?;
     let _ = std::fs::remove_dir_all(&sandbox);
     Ok((backend::run(&artifact.path)?, artifact))
+}
+
+/// 没有编译器时的唯一出路：复用已经落盘的同一份产物。
+///
+/// 主函数必须逐字相同（形状、样本、重复次数都在里面），工具链可以不同——但那时会有多份
+/// 候选，选哪一份都是替用户决定"用谁的代码生成"，也就替 `bench` 决定了一组耗时的来历，
+/// 所以不猜：列出工具链身份（`命令@版本`），让用户装上一个或清掉多余的产物。
+fn cached_only(
+    cache: &Cache,
+    source: &str,
+    program: &str,
+) -> diagnostic::Result<(Outcome, Artifact)> {
+    let harness = emit::fnv1a(program);
+    let candidates: Vec<Artifact> = cache
+        .artifacts_in(source)
+        .into_iter()
+        .filter(|artifact| artifact.key.harness == harness)
+        .collect();
+    match candidates.as_slice() {
+        [one] => Ok((backend::run(&one.path)?, one.clone())),
+        [] => Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "缺少 C 编译器（cc/clang/gcc 都不在 PATH 上），缓存条目 `{source}` 里也没有这份产物\n先在有编译器的机器上跑一次，或把编译器装上"
+            ),
+        )),
+        many => {
+            let tools: Vec<&str> = many
+                .iter()
+                .map(|artifact| artifact.key.tool.as_str())
+                .collect();
+            Err(Error::new(
+                Code::Unsupported,
+                format!(
+                    "缺少 C 编译器（cc/clang/gcc 都不在 PATH 上），而缓存里这份产物有 {} 个工具链留下的版本（{}）：无法判定复用哪一份\n装上其中一个（它会被优先使用），或删掉多余的产物",
+                    tools.len(),
+                    tools.join(" / ")
+                ),
+            ))
+        }
+    }
 }
 
 /// 等锁的上限：另一个进程正常写完缓存就会释放锁，等到超时说明锁文件是残留的。
@@ -244,12 +283,8 @@ fn fragments(profile: &Profile, settings: &Settings) -> diagnostic::Result<Fragm
     let root = settings
         .data_root()
         .map_or_else(prim::dir, prim::layer_root);
-    prim::load(&root, &profile.meta.vendor, ext).map_err(|error| {
-        Error::new(
-            Code::Missing,
-            format!("`{}` 的片段层缺失：{error}", profile.meta.vendor),
-        )
-    })
+    prim::load(&root, &profile.meta.vendor, ext)
+        .map_err(|error| error.with(format!("`{}` 的片段层", profile.meta.vendor)))
 }
 
 /// 一条声明的搬运量：原语、存储层、字节数。
@@ -339,8 +374,6 @@ fn key(
     CacheKey {
         schema_ver: SCHEMA_VER,
         emit: profile.meta.emit,
-        tool: profile.meta.tool.clone(),
-        tool_ver: profile.meta.tool_ver.clone(),
         flags_hash: emit::fnv1a(&flags),
         arch: profile.meta.id.clone(),
         template_hash: emit::fnv1a(&op.template),
@@ -370,13 +403,13 @@ mod tests {
 
     /// 只改声明里的某一处（模板不变）：用来构造"缓存键不变、判定结果变了"的输入。
     fn declared(from_to: (&str, &str)) -> OpDecl {
-        let source = &op::builtin()[0];
+        let source = &op::builtin_named("gemv_i4").expect("内置");
         let text = source.declaration().replace(from_to.0, from_to.1);
         OpDecl::parse(&text, source.template()).expect("声明可解析")
     }
 
     fn builtin() -> OpDecl {
-        let source = &op::builtin()[0];
+        let source = &op::builtin_named("gemv_i4").expect("内置");
         OpDecl::parse(source.declaration(), source.template()).expect("内置声明可解析")
     }
 
@@ -467,9 +500,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 真实的编译器名字（本机没有编译器时返回 `None`，用例跳过）。
-    fn tool() -> Option<String> {
-        crate::backend::detect_toolchain()
+    /// 本机实测的工具链（本机没有编译器时返回 `None`，用例跳过）。
+    fn tool() -> Option<Toolchain> {
+        crate::backend::detect()
     }
 
     /// 一份带主函数的内核源码与形状：产物身份要用的两个输入。
@@ -502,22 +535,91 @@ mod tests {
 
         let wrapper = root.join("fake-cc.sh");
         std::fs::create_dir_all(&root).expect("临时目录");
-        std::fs::write(&wrapper, format!("#!/bin/sh\nexec {tool} \"$@\"\n")).expect("写脚本");
+        std::fs::write(
+            &wrapper,
+            format!("#!/bin/sh\nexec {} \"$@\"\n", tool.command),
+        )
+        .expect("写脚本");
         let mut perms = std::fs::metadata(&wrapper).expect("脚本").permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&wrapper, perms).expect("可执行");
-        let wrapper = wrapper.to_string_lossy().to_string();
+        // 身份也是探测出来的：脚本 `--version` 转调真正的编译器，所以版本是真的，
+        // 命令名是脚本路径——两者合起来就是这份产物的来历。
+        let wrapper = backend::probe(&wrapper.to_string_lossy()).expect("脚本可探测");
 
         let (first, artifact) =
-            execute(&profile, &wrapper, &key, &harness, &settings).expect("第一次应真的编译");
+            execute(&profile, Some(&wrapper), &key, &harness, &settings).expect("第一次应真的编译");
         assert!(!artifact.reused, "{artifact:?}");
         assert_eq!(first.bits.len(), sample.n);
+        assert_eq!(
+            artifact.key.tool,
+            wrapper.id(),
+            "产物身份必须带上实测工具链"
+        );
 
-        std::fs::remove_file(&wrapper).expect("删掉编译器");
+        std::fs::remove_file(&wrapper.command).expect("删掉编译器");
         let (second, hit) =
-            execute(&profile, &wrapper, &key, &harness, &settings).expect("应复用产物");
+            execute(&profile, Some(&wrapper), &key, &harness, &settings).expect("应复用产物");
         assert!(hit.reused, "{hit:?}");
         assert_eq!(second.bits, first.bits, "复用同一份产物，结果必须逐位相同");
+
+        // `None` 就是"这台机器上没有编译器"：产物旁的身份文件足以认回同一份文件。
+        let (third, from_identity) =
+            execute(&profile, None, &key, &harness, &settings).expect("没有编译器也应复用产物");
+        assert!(from_identity.reused, "{from_identity:?}");
+        assert_eq!(from_identity.path, hit.path, "按身份找到的还是同一份产物");
+        assert_eq!(third.bits, first.bits, "同一份产物，结果逐位相同");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_compiler_version_does_not_reuse_the_old_artifact() {
+        // 同一份源文本、同一个主函数，只把 `--version` 换掉：必须重编。这是"产物身份带实测
+        // 工具链"的可观测后果——此前身份只有命令名，升级编译器会命中旧代码生成。
+        let Some(tool) = tool() else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("cutile-version-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let settings = settings(&root);
+        std::fs::create_dir_all(&root).expect("临时目录");
+        let profile = cpu_profile();
+        let op = builtin();
+        let (key, harness, _) = built(&op, &settings);
+
+        let fake = |name: &str, version: &str| {
+            let path = root.join(name);
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Fake clang version {version}'; exit 0; fi\nexec {} \"$@\"\n",
+                    tool.command
+                ),
+            )
+            .expect("写脚本");
+            let mut perms = std::fs::metadata(&path).expect("脚本").permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            std::fs::set_permissions(&path, perms).expect("可执行");
+            backend::probe(&path.to_string_lossy()).expect("脚本可探测")
+        };
+        let old = fake("cc17.sh", "17.0.0");
+        let new = fake("cc21.sh", "21.0.0");
+        assert_ne!(old.id(), new.id(), "前提：两条工具链身份不同");
+
+        let (first, older) =
+            execute(&profile, Some(&old), &key, &harness, &settings).expect("第一次编译");
+        assert!(!older.reused, "{older:?}");
+        let (second, newer) =
+            execute(&profile, Some(&new), &key, &harness, &settings).expect("第二次编译");
+        assert!(!newer.reused, "换工具链版本必须重新编译：{newer:?}");
+        assert_ne!(older.path, newer.path, "两份产物不能共用路径");
+        assert_eq!(first.bits, second.bits, "语义相同，结果必须逐位相同");
+
+        // 再跑一次新版本：这次才该复用。
+        let (_, again) = execute(&profile, Some(&new), &key, &harness, &settings).expect("应复用");
+        assert!(again.reused, "{again:?}");
+        assert_eq!(again.path, newer.path);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -531,7 +633,7 @@ mod tests {
         let settings = settings(&root);
         let op = builtin();
         let (key, harness, _) = built(&op, &settings);
-        execute(&cpu_profile(), &tool, &key, &harness, &settings).expect("应能编译执行");
+        execute(&cpu_profile(), Some(&tool), &key, &harness, &settings).expect("应能编译执行");
         let leftovers: Vec<_> = std::fs::read_dir(settings.work_dir())
             .map(|items| items.flatten().map(|item| item.file_name()).collect())
             .unwrap_or_default();
@@ -539,6 +641,51 @@ mod tests {
             leftovers.is_empty(),
             "产物拷进缓存后沙箱就该删掉，否则每次编译都留一份可执行文件：{leftovers:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn without_a_compiler_a_missing_artifact_is_an_explicit_failure() {
+        let root = std::env::temp_dir().join(format!("cutile-no-artifact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let settings = settings(&root);
+        let op = builtin();
+        let (key, harness, _) = built(&op, &settings);
+
+        let error = execute(&cpu_profile(), None, &key, &harness, &settings).unwrap_err();
+        assert_eq!(error.code(), Code::Unsupported, "{error}");
+        assert!(error.to_string().contains("没有这份产物"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_compilers_worth_of_artifacts_are_not_chosen_between() {
+        // 没有编译器时只在"唯一一份"产物上复用：多份候选就是替用户选编译器，也就替 `bench`
+        // 决定了耗时的来历。用两份假产物把这条判定单独钉住（不需要真编译器）。
+        let root = std::env::temp_dir().join(format!("cutile-ambiguous-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let settings = settings(&root);
+        let op = builtin();
+        let (key, harness, _) = built(&op, &settings);
+        let cache = Cache::from_settings(&settings);
+
+        let exe = root.join("fake-exe");
+        std::fs::create_dir_all(&root).expect("临时目录");
+        std::fs::write(&exe, b"#!/bin/sh\nexit 0\n").expect("写假产物");
+        let mut perms = std::fs::metadata(&exe).expect("产物").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&exe, perms).expect("可执行");
+        for candidate in ["cc@17.0.0", "clang@18.1.3"] {
+            cache
+                .put_artifact(&ArtifactKey::keyed(key.hex(), candidate, &harness), &exe)
+                .expect("落产物");
+        }
+
+        let error = execute(&cpu_profile(), None, &key, &harness, &settings).unwrap_err();
+        assert_eq!(error.code(), Code::Unsupported, "{error}");
+        assert!(error.to_string().contains("cc@17.0.0"), "{error}");
+        assert!(error.to_string().contains("clang@18.1.3"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

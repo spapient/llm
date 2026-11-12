@@ -6,8 +6,8 @@
 use crate::layout::LayoutSpec;
 use crate::sch;
 use crate::sch::Schedule;
-use crate::tpl::Segment;
-use core::fmt;
+use crate::tpl::{Arg, Template};
+use core::fmt::{self, Write as _};
 use diagnostic::{Code, Error};
 use llm_config::toml::{self, Table, Value};
 use prof::atom::{Attr, AttrKey, DType, DTypeSet, Need, Prim, Space, SpaceSet, Span};
@@ -140,13 +140,18 @@ impl TileCombo {
     }
 
     /// 渲染成 `GMAX=32` 形式。
+    ///
+    /// 直接写进一个 `String`：一组合只有几个轴，为它们先造一个 `Vec<String>` 再拼，是白付的
+    /// 一次分配与一次拷贝。
     pub fn summary(&self) -> String {
-        let parts: Vec<String> = self
-            .values
-            .iter()
-            .map(|(axis, value)| format!("{axis}={value}"))
-            .collect();
-        parts.join(" ")
+        let mut text = String::new();
+        for (index, (axis, value)) in self.values.iter().enumerate() {
+            if index > 0 {
+                text.push(' ');
+            }
+            write!(text, "{axis}={value}").expect("写进 String 不会失败");
+        }
+        text
     }
 }
 
@@ -295,11 +300,16 @@ impl OpDecl {
                 return Err(field("variants", format!("变体名 `{}` 重复", pair[0].name)));
             }
         }
-        let chain: Vec<(String, f64)> = variants
+        // 借用变体名：这条判据只读名字与占比，没有理由在装载期为它拷一份字符串。
+        let chain: Vec<(&str, f64)> = variants
             .iter()
-            .map(|variant| (variant.name.clone(), variant.mma_share))
+            .map(|variant| (variant.name.as_str(), variant.mma_share))
             .collect();
         sch::check_monotonic(&chain).map_err(|detail| field("variants", detail.message()))?;
+        // 判据 1 只判首选：兜底变体的存在理由就是"设备缺原语时仍能跑"（见 `sch::check_masking`）。
+        let head = &variants[0];
+        sch::check_masking(&head.name, sch::Masking::of(head.mma_share, &head.schedule))
+            .map_err(|detail| field("variants", detail.message()))?;
 
         let signature = crate::sig::Signature::parse(&name, template)?;
         let op_decl = Self {
@@ -313,9 +323,12 @@ impl OpDecl {
             template: template.to_string(),
             signature,
         };
-        expand(&op_decl)?;
-        op_decl.check_slots()?;
-        op_decl.check_needs()?;
+        // 模板只切一遍：三处校验看同一份 [`Template`]，不再各 `lex` 一次。
+        let segments = Template::parse(template);
+        tiles(&op_decl)?;
+        op_decl.check_slots(&segments)?;
+        op_decl.check_needs(&segments)?;
+        op_decl.check_call_arguments(&segments)?;
         Ok(op_decl)
     }
 
@@ -338,12 +351,12 @@ impl OpDecl {
     }
 
     /// 模板里的每个 `{{槽位}}` 必须能被轴、布局或 `op` 解析（提前拦住 `{{GMAXX}}` 这类笔误）。
-    fn check_slots(&self) -> diagnostic::Result<()> {
-        for (line, slot) in crate::tpl::slots(&self.template) {
+    fn check_slots(&self, template: &Template<'_>) -> diagnostic::Result<()> {
+        for (line, slot) in template.slots() {
             if slot == "op" {
                 continue;
             }
-            if self.axis(&slot).is_none() && self.layout(&slot).is_none() {
+            if self.axis(slot).is_none() && self.layout(slot).is_none() {
                 return Err(field(
                     &format!("{}.k:{line}", self.name),
                     format!("槽位 `{{{{{slot}}}}}` 在 [axes] 和 [layouts] 里都没有定义"),
@@ -362,19 +375,12 @@ impl OpDecl {
     ///
     /// 这也是"申请闭集之外的组合必须显式报错"的前移：错误发生在装载，而不是跑到 `substitute`；
     /// 诊断里带着变体名、模板行号与算子名。
-    fn check_needs(&self) -> diagnostic::Result<()> {
-        let calls: Vec<(usize, Prim)> = crate::tpl::lex(&self.template)
-            .into_iter()
-            .filter_map(|segment| match segment {
-                Segment::Call { prim, line, .. } => Some((line, prim)),
-                _ => None,
-            })
-            .collect();
+    fn check_needs(&self, template: &Template<'_>) -> diagnostic::Result<()> {
         for variant in &self.variants {
             let mut declared: Vec<Prim> = variant.needs(self).map(|need| need.prim).collect();
             declared.extend(variant.schedule.required_prims());
-            for (line, prim) in &calls {
-                if declared.contains(prim) {
+            for (line, prim, _) in template.calls() {
+                if declared.contains(&prim) {
                     continue;
                 }
                 return Err(field(
@@ -388,13 +394,88 @@ impl OpDecl {
         }
         Ok(())
     }
+
+    /// 模板调用点的能力参数必须落在该变体 `[needs]` 声明的能力签名之内。
+    ///
+    /// `@cvt(..., sat: off)`、`@reduce(..., op: sum, axis: GMAX)` 的值会原样拼进片段文本，
+    /// 也就是"这次生成用的是哪条签名"。此前它们只被 `substitute` 当成 `$key` 的取值，没有任何
+    /// 判据保证与协商检查的那条需求一致：`needs.cvt.sat = ["off"]` 与模板里的 `sat: on` 可以
+    /// 同时存在，于是设备被按 `off` 验证、代码按 `on` 生成——同一条能力签名有两份事实源。
+    ///
+    /// 只判闭集内的属性键（[`AttrKey`]）：`sat` / `op` / `axis` / `kind` / `accuracy` /
+    /// `group` / `lanes` / `src` / `dst` / `stages` / `exec` 是能力参数，传了就必须声明、且取值
+    /// 被声明允许；闭集之外的命名参数（如 `along:`）是片段级提示，协商本来就不检查它们，
+    /// 因此留给片段。
+    fn check_call_arguments(&self, template: &Template<'_>) -> diagnostic::Result<()> {
+        for variant in &self.variants {
+            for (line, prim, args) in template.calls() {
+                for arg in args {
+                    let Arg::Named { key, value } = arg else {
+                        continue;
+                    };
+                    // 闭集之外的命名参数是片段级提示，不构成能力声明。
+                    let Some(attr_key) = AttrKey::parse(key) else {
+                        continue;
+                    };
+                    // 只收这一条原语声明的属性：`needs.{prim}.{key}` 是该调用点的全部签名。
+                    let declared: Vec<&Attr> = variant
+                        .needs(self)
+                        .filter(|need| need.prim == prim)
+                        .flat_map(|need| need.attrs.iter())
+                        .filter(|attr| attr.key() == attr_key)
+                        .collect();
+                    if declared.is_empty() {
+                        return Err(field(
+                            &format!("{}.k:{line}", self.name),
+                            format!(
+                                "变体 `{}` 给 `@{prim}` 传了能力参数 `{key}: {value}`，\
+                                 但该变体的 `needs.{prim}` 没有声明 `{key}`：协商不会检查它",
+                                variant.name
+                            ),
+                        ));
+                    }
+                    if let Some(attr) = declared.iter().find(|attr| !attr.contains(value)) {
+                        return Err(field(
+                            &format!("{}.k:{line}", self.name),
+                            format!(
+                                "变体 `{}` 给 `@{prim}` 传 `{key}: {value}`，\
+                                 但 `needs.{prim}.{key}` 只允许 [{}]：设备被按声明的值验证，\
+                                 代码却按模板的值生成",
+                                variant.name,
+                                attr.values().join(" | ")
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// tile 候选数：轴取值的乘积，与 [`expand`] 同一口径但**不物化**组合。
+///
+/// 装载期只需要判上限：把每个组合的轴名都拷一份再丢掉，是这条路径上唯一一笔纯浪费。
+///
+/// # Errors
+///
+/// 乘积超过 [`MAX_TILES`] 时返回说明（与 [`expand`] 用同一个判据与消息）。
+pub fn tiles(op: &OpDecl) -> diagnostic::Result<usize> {
+    let mut count = 1usize;
+    for axis in &op.axes {
+        count = count.saturating_mul(axis.values.len());
+        if count > MAX_TILES {
+            return Err(too_many_tiles(op, axis, count));
+        }
+    }
+    Ok(count)
 }
 
 /// 轴展开：笛卡尔积，超过 [`MAX_TILES`] 即拒绝并说明该剪哪个轴。
 pub fn expand(op: &OpDecl) -> diagnostic::Result<Vec<TileCombo>> {
     let mut combos = vec![TileCombo { values: Vec::new() }];
     for axis in &op.axes {
-        let mut next = Vec::new();
+        let mut next = Vec::with_capacity(combos.len() * axis.values.len());
         for combo in &combos {
             for value in &axis.values {
                 let mut values = combo.values.clone();
@@ -403,19 +484,23 @@ pub fn expand(op: &OpDecl) -> diagnostic::Result<Vec<TileCombo>> {
             }
         }
         if next.len() > MAX_TILES {
-            return Err(field(
-                &format!("{}.axes", op.name),
-                format!(
-                    "展开后有 {} 个 tile 候选，超过上限 {MAX_TILES}；最少可剪掉轴 `{}` 的{}个取值",
-                    next.len(),
-                    axis.name,
-                    axis.values.len().saturating_sub(1)
-                ),
-            ));
+            return Err(too_many_tiles(op, axis, next.len()));
         }
         combos = next;
     }
     Ok(combos)
+}
+
+/// 候选超限的诊断：点名该剪哪个轴，以及它至少要让出几个取值。
+fn too_many_tiles(op: &OpDecl, axis: &Axis, count: usize) -> Error {
+    field(
+        &format!("{}.axes", op.name),
+        format!(
+            "展开后有 {count} 个 tile 候选，超过上限 {MAX_TILES}；最少可剪掉轴 `{}` 的{}个取值",
+            axis.name,
+            axis.values.len().saturating_sub(1)
+        ),
+    )
 }
 
 /// 从 `[needs]`/`[extra_needs]` 的一个条目解析能力签名。
@@ -424,8 +509,11 @@ fn parse_need(section: &Table, key: &str, path: &str) -> Result<Need, Error> {
         let allowed: Vec<&str> = Prim::ALL.iter().map(|prim| prim.as_str()).collect();
         field(path, format!("闭集：{}", allowed.join(" | ")))
     })?;
-    let Value::Table(detail) = section.get(key).expect("调用方已确认键存在").clone()
-    else {
+    let Some(value) = section.get(key) else {
+        return Err(field(path, "缺失"));
+    };
+    // 不拷这张表：解析只读它，为一棵内联表克隆一次等于每条需求多付一次分配。
+    let Value::Table(detail) = value else {
         return Err(field(path, "必须是内联表"));
     };
 
@@ -443,6 +531,21 @@ fn parse_need(section: &Table, key: &str, path: &str) -> Result<Need, Error> {
             other => {
                 let attr_key = AttrKey::parse(other)
                     .ok_or_else(|| field(&value_path, "既不是维度也不是闭集内的属性键"))?;
+                // 属性键属于原语自己的签名：`sat` 不属于 `load`，`lanes` 不属于 `mma`。
+                // 协商只比对需求里出现的键，所以一个与该原语无关的键既不会被检查、也不会被
+                // 片段消费——它只会让声明看起来更具体。装载期就拒收。
+                if !prim.accepts(attr_key) {
+                    let mut allowed: Vec<&str> =
+                        prim.attr_keys().iter().map(|key| key.as_str()).collect();
+                    allowed.push("exec");
+                    return Err(field(
+                        &value_path,
+                        format!(
+                            "`{prim}` 的能力签名里没有 `{attr_key}`（该原语的属性键：{}）",
+                            allowed.join(" | ")
+                        ),
+                    ));
+                }
                 need = need.with_attr(Attr::new(attr_key, string_list(&value_path, value)?));
             }
         }
@@ -454,7 +557,7 @@ fn parse_span(path: &str, value: &Value) -> Result<Span, Error> {
     let Value::Str(text) = value else {
         return Err(field(path, "必须是字符串（`16`、`16..64`、`<=512`）"));
     };
-    Span::parse(text).map_err(|detail| field(path, detail))
+    Span::parse(text).map_err(|error| field(path, error.message()))
 }
 
 fn parse_dt(path: &str, value: &Value) -> Result<DTypeSet, Error> {
@@ -501,5 +604,64 @@ fn string_list(path: &str, value: &Value) -> Result<Vec<String>, Error> {
         Value::Float(number) => Ok(vec![number.to_string()]),
         Value::Bool(flag) => Ok(vec![flag.to_string()]),
         Value::Table(_) => Err(field(path, "不能是表")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn builtin() -> OpDecl {
+        let (_, declaration, template) = crate::BUILTIN[0];
+        OpDecl::parse(declaration, template).expect("内置声明必须自洽")
+    }
+
+    /// 计数与展开必须同一个口径：装载期只数不物化，调用方仍然可以拿到组合。
+    #[test]
+    fn the_tile_count_matches_the_expanded_combinations() {
+        let op = builtin();
+        assert_eq!(
+            tiles(&op).expect("未超限"),
+            expand(&op).expect("可展开").len()
+        );
+    }
+
+    #[test]
+    fn a_tile_overflow_names_the_axis_to_prune() {
+        let (_, declaration, template) = crate::BUILTIN[0];
+        let broken =
+            declaration.replace("GMAX = [32]", "GMAX = [1, 2, 4, 8, 16, 32, 64, 128, 256]");
+        let error = OpDecl::parse(&broken, template).expect_err("9 个候选超过上限 8");
+        assert_eq!(error.code(), Code::Invalid);
+        let text = error.to_string();
+        assert!(text.contains("GMAX"), "{text}");
+        assert!(text.contains("超过上限 8"), "{text}");
+        assert!(text.contains("9 个 tile 候选"), "{text}");
+    }
+
+    /// 属性键属于原语自己的签名：`sat` 是 `cvt` 的参数，写在 `store` 上既不会被协商检查，
+    /// 也不会被片段消费。判据必须点名原语、键与该原语真正允许的参数。
+    #[test]
+    fn an_attr_key_must_belong_to_its_primitive() {
+        let (_, declaration, template) = crate::BUILTIN[0];
+        let broken = declaration.replace(
+            "store  = { bytes = \"<=4096\", dt = [\"f32\"], space = [\"GM\"] }",
+            "store  = { bytes = \"<=4096\", dt = [\"f32\"], space = [\"GM\"], sat = [\"off\"] }",
+        );
+        assert_ne!(broken, declaration, "前提：测试要改的是 store 的签名");
+        let error = OpDecl::parse(&broken, template).expect_err("`store.sat` 不属于签名");
+        let text = error.to_string();
+        assert!(text.contains("`store`"), "{text}");
+        assert!(text.contains("`sat`"), "{text}");
+        assert!(text.contains("src | dst | exec"), "{text}");
+    }
+
+    /// 降级链的单调性判据接受借用名：装载期不为它拷一份 `String`。
+    #[test]
+    fn the_monotonic_chain_is_checked_on_borrowed_names() {
+        let chain = [("first", 0.5), ("second", 0.5)];
+        assert!(sch::check_monotonic(&chain).is_ok());
+        let reversed = [("first", 0.4), ("second", 0.9)];
+        assert!(sch::check_monotonic(&reversed).is_err());
     }
 }

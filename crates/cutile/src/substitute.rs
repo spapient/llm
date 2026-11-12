@@ -22,13 +22,13 @@ pub fn render(
 
     for segment in lex(&op.template) {
         match segment {
-            Segment::Text(part) => text.push_str(&part),
+            Segment::Text(part) => text.push_str(part),
             Segment::Slot { name, line } => {
                 if name == "op" {
                     text.push_str(&op.name);
-                } else if let Some(value) = combo.get(&name) {
+                } else if let Some(value) = combo.get(name) {
                     text.push_str(&value.to_string());
-                } else if let Some(spec) = op.layout(&name) {
+                } else if let Some(spec) = op.layout(name) {
                     text.push_str(&spec.as_str());
                 } else {
                     return Err(error(
@@ -67,18 +67,18 @@ pub fn render(
 }
 
 /// 片段占位符替换：`$0`..`$9` 是位置参数，`$name` 是命名参数。
-fn splice(fragment: &str, args: &[Arg], line: usize) -> diagnostic::Result<String> {
+fn splice(fragment: &str, args: &[Arg<'_>], line: usize) -> diagnostic::Result<String> {
     let positional: Vec<&str> = args
         .iter()
         .filter_map(|arg| match arg {
-            Arg::Expr(text) => Some(text.as_str()),
+            Arg::Expr(text) => Some(*text),
             Arg::Named { .. } => None,
         })
         .collect();
     let named: BTreeMap<&str, &str> = args
         .iter()
         .filter_map(|arg| match arg {
-            Arg::Named { key, value } => Some((key.as_str(), value.as_str())),
+            Arg::Named { key, value } => Some((*key, *value)),
             Arg::Expr(_) => None,
         })
         .collect();

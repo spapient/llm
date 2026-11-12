@@ -70,8 +70,13 @@ impl Region {
     }
 
     /// 结束偏移（不含）。
+    ///
+    /// 溢出时**饱和**到 `usize::MAX`：`Region` 可以由 [`Region::new`] 从反序列化的偏移造出来，
+    /// 一个 `usize::MAX` 偏移加长度在这里 panic，就等于"读到一个坏区间"能打死进程。饱和之后
+    /// [`Arena::slice`] 只会按"超出已分配范围"返回 `None`，而回绕更不能要：回绕会让结束偏移
+    /// 落回区间内部，看起来像一个合法的小区间。
     pub fn end(&self) -> usize {
-        self.offset + self.len
+        self.offset.saturating_add(self.len)
     }
 }
 
@@ -169,6 +174,24 @@ mod tests {
         assert!(region.is_empty());
         assert_eq!(arena.cursor(), 0);
         assert_eq!(arena.slice(region), Some(&[][..]));
+    }
+
+    /// 区间可以来自反序列化：越界偏移加上长度不能在这里 panic（文档承诺的是返回 `None`）。
+    #[test]
+    fn an_overflowing_region_saturates_and_slices_to_none() {
+        let mut arena = Arena::with_capacity(4);
+        let region = arena.alloc(4, 4).expect("分配");
+        let bogus = Region::new(usize::MAX, 8);
+        assert_eq!(bogus.end(), usize::MAX, "结束偏移饱和，不回绕");
+        assert_eq!(arena.slice(bogus), None);
+        assert_eq!(arena.slice_mut(bogus), None);
+        assert_eq!(
+            arena.slice(region),
+            Some(&[0, 0, 0, 0][..]),
+            "合法区间不受影响"
+        );
+        // 空区间贴着末尾：宽度 0，但偏移本身越界，仍然不许给视图。
+        assert_eq!(arena.slice(Region::new(usize::MAX, 0)), None);
     }
 
     #[test]

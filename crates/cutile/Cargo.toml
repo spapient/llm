@@ -16,6 +16,10 @@ llm-config = { path = "../config" }
 op = { path = "../op", package = "llm-op" }
 prof = { path = "../prof", package = "llm-prof" }
 
+[features]
+# 把设备镜像的开关透传下去：`cutile` 是消费片段层的机制层，发布时它才是用镜像的那一段。
+device-image = ["prim/device-image"]
+
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
 

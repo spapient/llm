@@ -12,7 +12,7 @@
 //! cargo run --bin cutile -- cache gc --limit 1073741824
 //! ```
 
-use audit::{self, Bench, Doctor, Verdict, Verified};
+use audit::{self, Bench, Doctor, Fragment, Verdict, Verified};
 use cli::cutile::CutileCommand;
 use config::{Cutile, Settings};
 use cutile::builtin::Catalogue;
@@ -145,12 +145,17 @@ fn doctor(
     .row(
         "device",
         format!(
-            "{}({}) emit={} tool={} {}",
+            "{}({}) emit={} tool={} 档案 {} 实测 {}",
             report.device.vendor,
             report.device.id,
             report.device.emit,
             report.device.tool,
-            report.device.tool_ver
+            report.device.tool_ver,
+            report
+                .device
+                .toolchain
+                .as_deref()
+                .unwrap_or("未知（没有编译器，只能复用已落盘产物）")
         ),
     )
     .row(
@@ -184,6 +189,16 @@ fn doctor(
         .render();
     out.push('\n');
     out.push_str(&settings.describe());
+
+    out.push_str("\n[证据] 依据 ");
+    out.push_str(&report.evidence.basis.to_string());
+    out.push_str(&format!(
+        " | 设备执行 {} 条 | 本机自检 {} 条\n",
+        report.evidence.device, report.evidence.host
+    ));
+    if let Some(error) = &report.evidence.failure {
+        out.push_str(&format!("  见证不成立：{error}\n"));
+    }
 
     out.push_str("\n[协商]\n");
     out.push_str(&negotiation(&report));
@@ -224,8 +239,8 @@ fn doctor(
     }
     if let Some(source) = &report.source {
         out.push_str(&format!(
-            "\n[emit] {} 行，{} | cache key {}\n  {}\n",
-            source.lines,
+            "\n[emit] {} | {} | cache key {}\n  {}\n",
+            fragment_note(source.fragment),
             source.ext,
             source.key.hex(),
             source.key.describe()
@@ -294,8 +309,17 @@ fn negotiation(report: &Doctor) -> String {
         return String::new();
     };
     let mut out = format!(
-        "path: {} (schedule {}) mma_share {:.2}\n",
-        path.variant, path.schedule, path.mma_share
+        "path: {} (schedule {}) mma_share {:.2} | 第 {}/{} 档{}\n",
+        path.variant,
+        path.schedule,
+        path.mma_share,
+        path.index + 1,
+        report.variants.len(),
+        if path.is_head() {
+            "（首档）"
+        } else {
+            "（降级）"
+        }
     );
     for (index, check) in report.variants.iter().enumerate() {
         let mark = if index == path.index {
@@ -345,6 +369,7 @@ fn verify(
             }
         }
     }
+    out.push_str(&negotiation_summary(&report));
 
     let failures = report.failures();
     if failures.is_empty() {
@@ -361,6 +386,63 @@ fn verify(
     }
 }
 
+/// `[协商]` 汇总：DESIGN §16 的「协商 3/3 命中首档」。
+///
+/// 这段与上面的逐设备结果正交：执行需要真机，协商只看声明与档案——所以"本机没有该设备"的行
+/// 照样在这里有答案。判定（首档 / 降级 / 无路径 / 无档案）在库里（`audit::Negotiation`），
+/// 这里只排版。
+fn negotiation_summary(report: &audit::VerifyReport) -> String {
+    let (hits, total) = report.head_hits();
+    let mut out =
+        format!("\n协商首档 {hits}/{total}（DESIGN §16：首选没被选中说明 `needs` 粒度写错了）\n");
+    for (device, negotiation) in report.devices.iter().zip(&report.negotiations) {
+        out.push_str(&format!(
+            "  {device} = {}\n",
+            describe_negotiation(negotiation)
+        ));
+    }
+    out
+}
+
+fn describe_negotiation(negotiation: &audit::Negotiation) -> String {
+    match negotiation {
+        audit::Negotiation::Head { variant, of } => format!("1/{of} 首选 {variant}"),
+        audit::Negotiation::Fallback { variant, step, of } => {
+            format!("{step}/{of} 降级到 {variant}：首选的能力没被满足")
+        }
+        audit::Negotiation::NoPath { of, unmet } if unmet.is_empty() => {
+            format!("0/{of} 链上无可行变体")
+        }
+        audit::Negotiation::NoPath { of, unmet } => {
+            format!("0/{of} 链上无可行变体；首选缺 {}", unmet.join(" "))
+        }
+        audit::Negotiation::Unknown { reason } => format!("无档案：{reason}"),
+    }
+}
+
+/// §16 的片段行数判定：上限管成败，内部目标只是余量。
+///
+/// 判定在库里（`audit::Fragment`），这里只选词；`doctor` 与 `verify` 用同一句，
+/// 同一个数在两处不会被说成两种结论。
+fn fragment_note(fragment: Fragment) -> String {
+    let limit = if fragment.within_limit() {
+        "达标"
+    } else {
+        "超出上限：原语粒度错，先合并原语"
+    };
+    let goal = if fragment.within_goal() {
+        "达标"
+    } else {
+        "未达（余量不足）"
+    };
+    format!(
+        "片段 {} 行（上限 {}：{limit}；内部目标 {}：{goal}）",
+        fragment.lines,
+        fragment.limit(),
+        fragment.goal()
+    )
+}
+
 /// 一台设备的 L2 结论行。
 ///
 /// 形状矩阵与见证条数必须打印：它们才是"这条 L2 是跑出来的"的证据，而不是档案里的自述。
@@ -371,15 +453,38 @@ fn passed_line(verified: &Verified) -> String {
         .map(|(m, n)| format!("{m}x{n}"))
         .collect::<Vec<_>>()
         .join(",");
-    // 产物行是"编译过几次"的证据：全部复用说明这一轮没调用过编译器。
+    // 产物行是"编译过几次"的证据：全部复用说明这一轮没调用过编译器；编译器名说明这份产物
+    // 是谁编出来的——复用的若是别人编的那份，它与本机装了什么无关。
     let artifacts = verified.artifacts.len();
     let reused = verified
         .artifacts
         .iter()
         .filter(|artifact| artifact.reused)
         .count();
+    let compiler = verified
+        .artifacts
+        .first()
+        .map_or("未知", |artifact| artifact.key.tool.as_str());
+    // 工具链身份进结论行：它是"这份 L2 是谁编出来的"的一部分，而不是档案里的自述。
+    // 档案登记值与实测值不一致时明说——证据可以在别的机器上取得，但差异不能被藏起来。
+    let toolchain = match (&verified.toolchain, verified.tool_ver.as_str()) {
+        (Some(actual), declared) if verified.toolchain_agrees => {
+            format!(" | 工具链 {actual}（档案登记 {declared}）")
+        }
+        (Some(actual), "") => format!(" | 工具链 {actual}"),
+        (Some(actual), declared) => {
+            format!(" | 工具链 {actual}（档案登记 {declared}，不一致）")
+        }
+        (None, declared) => format!(" | 工具链 未知（档案登记 {declared}，本轮复用已落盘产物）"),
+    };
+    // 自检与设备执行分开报：前者只说明“见证源码算得对”，不能与 L2 证据合成一个数。
+    let checked = if verified.self_checked == 0 {
+        String::new()
+    } else {
+        format!("，自检 {} 条", verified.self_checked)
+    };
     format!(
-        "  {}({}): ✓ L2 | variant {} | tile {} | 形状 {} | 见证 {} 条 | max_rel_err {:.3e} | source {} 行 | 产物 {artifacts} 份（复用 {reused}）| key {}\n",
+        "  {}({}): ✓ L2 | variant {} | tile {} | 形状 {} | 见证 {} 条{checked} | max_rel_err {:.3e} | {} | 产物 {artifacts} 份（复用 {reused}，{compiler}）{toolchain} | key {}\n",
         verified.vendor,
         verified.id,
         verified.variant,
@@ -387,7 +492,7 @@ fn passed_line(verified: &Verified) -> String {
         shapes,
         verified.witnesses,
         verified.max_rel_err,
-        verified.lines,
+        fragment_note(verified.fragment),
         verified.key
     )
 }
@@ -411,6 +516,20 @@ fn write_ledger(
     text.push_str(&format!(
         "- 档案：`{}` ({})\n",
         profile.meta.id, profile.meta.checked
+    ));
+    // 台账要能回答"这条证据是谁编出来的"：实测值来自 `--version`，登记值是人写的出处。
+    let actual = verified
+        .toolchain
+        .as_deref()
+        .unwrap_or("未知（没有编译器，只能复用已落盘产物）");
+    let agrees = if verified.toolchain_agrees {
+        ""
+    } else {
+        "，与登记值不一致"
+    };
+    text.push_str(&format!(
+        "- 工具链：实测 `{actual}`，档案登记 `{}`{agrees}\n",
+        verified.tool_ver
     ));
     text.push_str(&format!("- 结论：{}", conclusion.trim()));
     text.push_str("\n\n| 原语 | 实现 | 等级 | 见证 |\n|---|---|---|---|\n");
@@ -442,6 +561,10 @@ fn bench(
 
     let mut out = format!("bench {} {m}x{n} repeat={}\n", measured.op, measured.repeat);
     out.push_str(&format!("  plan  {}\n", measured.plan));
+    out.push_str(&format!(
+        "  证据  {} 条见证（这次执行，协商用的就是它）\n",
+        measured.proven
+    ));
     out.push_str(&format!(
         "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s\n",
         per_run(measured.per_run_ns),
@@ -496,8 +619,9 @@ fn bench(
         }
     }
     out.push_str(&format!(
-        "  产物  {}（{}）\n",
+        "  产物  {}（{}：{}）\n",
         measured.artifact.key.hex(),
+        measured.artifact.key.tool,
         if measured.artifact.reused {
             format!("复用，未调用编译器 | {}", measured.artifact.path.display())
         } else {
@@ -646,8 +770,12 @@ mod tests {
             tile: "GMAX=32".to_string(),
             shapes: vec![(32, 1), (4096, 4096)],
             witnesses: 9,
+            self_checked: 0,
             max_rel_err: 0.0,
-            lines: 53,
+            fragment: Fragment::new(53),
+            tool_ver: profile.meta.tool_ver.clone(),
+            toolchain: Some("cc@21.0.0".to_string()),
+            toolchain_agrees: true,
             key: "0".to_string(),
             artifacts: Vec::new(),
         };

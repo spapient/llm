@@ -78,10 +78,14 @@ impl Catalogue {
         };
         catalogue
             .validate(witness_root.as_deref())
-            .map_err(|errors| {
-                let lines: Vec<String> = errors.iter().map(ToString::to_string).collect();
-                Error::new(Code::Invalid, lines.join("\n")).with("cutile::builtin::load")
-            })?;
+            .map_err(|mut errors| {
+                // 首条决定类别，其余作为同级诊断逐行保留各自的类别：一次报全，但不把
+                // `missing`（文件不在）与 `invalid`（内容写错）压成同一个码。
+                let mut errors = errors.drain(..);
+                let first = errors.next().expect("validate 失败即至少一条");
+                errors.fold(first, |error, other| error.also(&other))
+            })
+            .map_err(|error| error.with("cutile::builtin::load"))?;
         Ok(catalogue)
     }
 
@@ -100,11 +104,9 @@ impl Catalogue {
 
     fn from_layers(ops_dir: &Path, devices_dir: &Path) -> diagnostic::Result<Self> {
         let mut profiles = Vec::new();
-        // `prof` / `prim` 仍是存量形态（`Result<_, String>` / `Option`）：在边界处显式给类别，
-        // 不做“无类别的 `From<String>` 猜测”。
-        for archive in prof::load(devices_dir)
-            .map_err(|error| Error::new(Code::Invalid, error).with("prof::load"))?
-        {
+        // 档案层与声明层现在都用自己的类别报错：边界处只补"是哪一层在读"，不重新给类别，
+        // 否则 `Missing`（文件不在）与 `Invalid`（内容写错）会被压成同一个码。
+        for archive in prof::load(devices_dir)? {
             profiles.push(Profile::parse(archive.text()).map_err(|error| {
                 Error::new(Code::Invalid, format!("`{}`：{error}", archive.name()))
             })?);
@@ -182,10 +184,8 @@ impl Catalogue {
             }
             if let Err(profile_errors) = profile.validate(root) {
                 for error in profile_errors {
-                    errors.push(
-                        Error::new(Code::Invalid, error.to_string())
-                            .with(format!("`{}`", profile.meta.vendor)),
-                    );
+                    // 类别由档案层给（`ProfileError::code`），这里只补"哪份档案"。
+                    errors.push(Error::from(error).with(format!("`{}`", profile.meta.vendor)));
                 }
             }
         }
@@ -231,8 +231,7 @@ impl Catalogue {
 fn fragments_for(profile: &Profile, root: Option<&Path>) -> diagnostic::Result<prim::FragmentSet> {
     let ext = profile.meta.emit.ext();
     match root {
-        Some(root) => prim::load(root, &profile.meta.vendor, ext)
-            .map_err(|error| Error::new(Code::Missing, error)),
+        Some(root) => prim::load(root, &profile.meta.vendor, ext),
         None => prim::builtin(&profile.meta.vendor, ext).ok_or_else(|| {
             Error::new(
                 Code::Missing,
@@ -267,15 +266,14 @@ mod tests {
             .expect("见证文件必须存在");
     }
 
-    /// P0 的四台加速器：每条 `provides` 都要有见证声明。
+    /// 每台设备的每条 `provides` 都要有见证声明——包括能在本机产出 L2 证据的 `cpu`。
     ///
-    /// 等级仍是 `L0`/`L1`（本机不能执行非 C 见证），但"证据是什么"必须先落成数据；
-    /// 少了哪条，补见证就没有完成。
+    /// 等级不是门槛：`L0`/`L1` 的声明同样要给出"证据是什么"，否则补见证就没有完成。
     #[test]
-    fn every_accelerator_provide_declares_a_witness() {
+    fn every_provide_declares_a_witness() {
         let catalogue = Catalogue::try_builtin().expect("内置数据");
-        for vendor in ["nvidia", "intel", "ascend", "metal"] {
-            let profile = catalogue.profile(vendor).expect("加速器档案");
+        for profile in catalogue.profiles() {
+            let vendor = profile.meta.vendor.as_str();
             for provide in &profile.provides {
                 assert!(
                     provide.witness.is_some(),
@@ -286,20 +284,32 @@ mod tests {
         }
     }
 
-    /// 见证矩阵：闭集的 16 个原语在四台加速器（NVIDIA / Intel / 昇腾 / Metal）上都能找到
-    /// **带见证的**签名。
+    /// 见证矩阵：闭集的 16 个原语在**每台设备**上都要有带见证的签名。
     ///
-    /// 只守"P0 用到的 9 个"会留下一个自相矛盾的档案：写了 `flops_f32 = 94.6e12`
-    /// （132 SM × 128 lane 的 FMA 口径），却没有一条 `mma`——设备声称的算力与它声明的
-    /// 能力对不上。补上的六条（`mma`/`shuffle`/`broadcast`/`scan`/`exp2`/`rcp`）等级都是
-    /// `L0`：有见证源码，没有片段文本，也没有真机执行，协商照样把它们当作不具备。
+    /// 只守"P0 用到的 9 个"会留下自相矛盾的档案：写了几十 TFLOPS 的 FMA 口径，却没有一条
+    /// `mma`——设备声称的算力与它声明的能力对不上。空白格只在数据能解释时才合法：显式写了
+    /// `[simt].group = 1` 的单 lane 设备没有子组内交换的对象，`shuffle`/`broadcast` 因此不声明
+    /// （`prof` 装载期会直接拒绝这种声明）。区分"单 lane"与"没有 `[simt]` 段"要看
+    /// `simt.declared`：昇腾的 lane 交换由向量单元（`vgather`/`vbroadcast`）承担，本来就不是
+    /// SIMT，默认值 1 不是它单 lane 的证据。其余补上的条目等级都是 `L0`：有见证源码，没有
+    /// 片段文本，协商照样把它们当作不具备——矩阵补的是覆盖，不是等级。
     #[test]
-    fn every_accelerator_declares_the_whole_primitive_set() {
+    fn every_device_covers_the_primitive_set_or_explains_the_gap() {
         use crate::atom::Prim;
         let catalogue = Catalogue::try_builtin().expect("内置数据");
-        for vendor in ["nvidia", "intel", "ascend", "metal"] {
-            let profile = catalogue.profile(vendor).expect("加速器档案");
+        for profile in catalogue.profiles() {
+            let vendor = profile.meta.vendor.as_str();
             for prim in Prim::ALL {
+                if profile.simt.declared
+                    && profile.simt.group <= 1
+                    && matches!(prim, Prim::Shuffle | Prim::Broadcast)
+                {
+                    assert!(
+                        profile.providers(prim).next().is_none(),
+                        "`{vendor}` 声明了 `[simt].group = 1`，却又有 `{prim}`"
+                    );
+                    continue;
+                }
                 let mut provides = profile.providers(prim).peekable();
                 assert!(
                     provides.peek().is_some(),
@@ -416,6 +426,32 @@ mod tests {
         let error = Catalogue::assemble(vec![op], profiles).unwrap_err();
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("文件名即算子名"), "{error}");
+    }
+
+    /// 空片段层根下每条失败都是 `missing`：类别由数据层给，装载层不再一律压成 `invalid`。
+    #[test]
+    fn validation_keeps_the_category_of_the_failing_layer() {
+        let root = std::env::temp_dir().join(format!("cutile-prim-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("建临时目录");
+        let errors = Catalogue::try_builtin()
+            .expect("内置数据")
+            .validate(Some(&root))
+            .unwrap_err();
+        assert!(!errors.is_empty(), "空片段层根必须报错");
+        assert!(
+            errors.iter().any(
+                |error| error.code() == Code::Missing && error.to_string().contains("见证文件")
+            ),
+            "见证文件不在应是 `missing`：{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.code() == Code::Missing && error.to_string().contains("读取")),
+            "片段层目录不在应是 `missing`，不是 `invalid`：{errors:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

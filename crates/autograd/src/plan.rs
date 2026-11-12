@@ -88,6 +88,17 @@ impl Sizes {
         self.entries[index] = Some((shape, dtype));
     }
 
+    /// 一个变量登记的形状与元素类型；没登记时为 `None`。
+    ///
+    /// 计划只关心字节数（[`Footprint`]），而真正要把值写进一块内存的一方还需要知道"形状多大、
+    /// 按哪种元素读写"——分配缓冲需要的就是这两个事实。
+    pub fn get(&self, var: Var) -> Option<(&Shape, DType)> {
+        self.entries
+            .get(var.id() as usize)
+            .and_then(Option::as_ref)
+            .map(|(shape, dtype)| (shape, *dtype))
+    }
+
     /// 表的长度：覆盖到的变量数（含还没登记的槽位），与 `Tape::vars()` 同口径。
     pub fn len(&self) -> usize {
         self.entries.len()

@@ -29,6 +29,10 @@
 //! assert!(cutile::cap::negotiate(op, nvidia).is_err());
 //! ```
 //!
+//! 上面用的是**按档案自述**的协商：§16 的判据问的是声明粒度，不该随本机有没有这块卡而变。
+//! 执行路径（`audit` 的 `doctor` / `verify` / `bench`）用 [`cap::negotiate_with`]，它还要求供给
+//! 出现在这次执行得到的 [`cap::Proof`] 里——`grade` 是执行的结论，不是 TOML 的结论。
+//!
 //! # 工程条款（DESIGN §3.2）
 //!
 //! - `unsafe` 在本 crate 被整体禁止；P0 的 `c` 后端通过子进程调用 `cc`，不需要 FFI。

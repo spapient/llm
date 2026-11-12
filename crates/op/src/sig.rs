@@ -77,18 +77,18 @@ impl Signature {
     /// 解析主体；错误带上行号，文件帧由 [`Self::parse`] 统一追加。
     fn scan(op: &str, template: &str) -> diagnostic::Result<Self> {
         // 模板保留 `{{op}}` 插值；直接检查已展开的文本也接受（测试与将来的内联模板）。
-        let expanded = format!("cutile_{op}_kernel(");
-        let entry = [expanded.as_str(), "cutile_{{op}}_kernel("]
+        let marker = format!("cutile_{op}_kernel(");
+        // 一次定位：`find` 已经给出起点，再 `contains` 一遍只是把同一段文本扫两次。
+        let (start, width) = [marker.as_str(), "cutile_{{op}}_kernel("]
             .into_iter()
-            .find(|entry| template.contains(entry))
+            .find_map(|entry| template.find(entry).map(|start| (start, entry.len())))
             .ok_or_else(|| {
                 at(
                     1,
                     format!("算子 `{op}` 的模板缺少内核入口 `cutile_{{op}}_kernel(`"),
                 )
             })?;
-        let start = template.find(entry).expect("刚检查过入口存在");
-        let open = start + entry.len() - 1;
+        let open = start + width - 1;
         let close = matching(template, open).ok_or_else(|| {
             at(
                 line_of(template, open),

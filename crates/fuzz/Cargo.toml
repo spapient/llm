@@ -12,5 +12,12 @@ publish = false
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
+# 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）。只在测试里用，不进运行时。
+[dev-dependencies]
+cli = { path = "../cli", package = "llm-cli" }
+config = { path = "../config", package = "llm-config" }
+prof = { path = "../prof", package = "llm-prof" }
+weights = { path = "../weights", package = "llm-weights" }
+
 [lints]
 workspace = true

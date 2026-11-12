@@ -14,7 +14,7 @@
 //! use llm_cli::{Command, Invocation};
 //!
 //! let invocation = Invocation::parse(&[]).expect("空参数即默认命令");
-//! assert_eq!(invocation.command(), &Command::Status);
+//! assert_eq!(invocation.command(), &Command::Status { weights: None });
 //!
 //! let verify = Invocation::parse(&["verify".to_string(), "--op".to_string(), "gemv_i4".to_string()])
 //!     .expect("合法参数");
@@ -41,6 +41,7 @@ pub const USAGE: &str = "\
 
 选项：
   --op <算子>             算子名（`verify` / `bench` 用，缺省为 `gemv_i4`）
+  --weights <文件>        safetensors 权重文件（`status` 用；不给则只用声明层）
   -h, --help             等价于 `help`
 ";
 
@@ -48,7 +49,10 @@ pub const USAGE: &str = "\
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// 打印各层状态。
-    Status,
+    Status {
+        /// safetensors 权重文件路径；`None` 表示只用声明层。
+        weights: Option<String>,
+    },
     /// 校验一个算子。
     Verify {
         /// 算子名；`None` 表示用命令的默认值。
@@ -79,7 +83,9 @@ impl Invocation {
     pub fn parse(args: &[String]) -> Result<Self> {
         let mut words = args.iter().map(String::as_str);
         let command = match words.next() {
-            None | Some("status") => Command::Status,
+            None | Some("status") => Command::Status {
+                weights: parse_weights(&mut words)?,
+            },
             Some("help" | "-h" | "--help") => Command::Help,
             Some("verify") => Command::Verify {
                 op: parse_op(&mut words)?,
@@ -107,21 +113,36 @@ impl Invocation {
 
 /// `--op <name>`：最多出现一次，取值不能为空或看起来像另一个选项。
 fn parse_op<'a>(words: &mut impl Iterator<Item = &'a str>) -> Result<Option<String>> {
-    let Some(flag) = words.next() else {
+    parse_value(words, "--op", "算子")
+}
+
+/// `--weights <文件>`：同 [`parse_op`] 的规则；取值是路径，因此不对内容做白名单。
+fn parse_weights<'a>(words: &mut impl Iterator<Item = &'a str>) -> Result<Option<String>> {
+    parse_value(words, "--weights", "文件")
+}
+
+/// 一个“带取值的选项”：最多出现一次，取值不能为空或看起来像另一个选项。
+fn parse_value<'a>(
+    words: &mut impl Iterator<Item = &'a str>,
+    flag: &str,
+    what: &str,
+) -> Result<Option<String>> {
+    let Some(given) = words.next() else {
         return Ok(None);
     };
-    if flag != "--op" {
-        return Err(
-            Error::new(Code::Invalid, format!("期望 `--op <算子>`，得到 `{flag}`"))
-                .with("cli::Invocation::parse"),
-        );
+    if given != flag {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("期望 `{flag} <{what}>`，得到 `{given}`"),
+        )
+        .with("cli::Invocation::parse"));
     }
     let value = words.next().ok_or_else(|| {
-        Error::new(Code::Invalid, "`--op` 缺少取值").with("cli::Invocation::parse")
+        Error::new(Code::Invalid, format!("`{flag}` 缺少取值")).with("cli::Invocation::parse")
     })?;
     if value.is_empty() || value.starts_with('-') {
         return Err(
-            Error::new(Code::Invalid, format!("`--op` 的取值不合法：`{value}`"))
+            Error::new(Code::Invalid, format!("`{flag}` 的取值不合法：`{value}`"))
                 .with("cli::Invocation::parse"),
         );
     }
@@ -140,14 +161,31 @@ mod tests {
     fn the_default_command_is_status() {
         assert_eq!(
             Invocation::parse(&[]).expect("默认").command(),
-            &Command::Status
+            &Command::Status { weights: None }
         );
         assert_eq!(
             Invocation::parse(&args(&["status"]))
                 .expect("显式")
                 .command(),
-            &Command::Status
+            &Command::Status { weights: None }
         );
+    }
+
+    #[test]
+    fn a_weights_file_is_carried_through_without_being_opened() {
+        assert_eq!(
+            Invocation::parse(&args(&["status", "--weights", "model.safetensors"]))
+                .expect("合法")
+                .command(),
+            &Command::Status {
+                weights: Some("model.safetensors".to_string())
+            }
+        );
+        let missing = Invocation::parse(&args(&["status", "--weights"])).expect_err("缺取值");
+        assert!(missing.to_string().contains("缺少取值"), "{missing}");
+        let wrong = Invocation::parse(&args(&["status", "--op", "gemv_i4"]))
+            .expect_err("status 只接受 --weights");
+        assert!(wrong.to_string().contains("--weights"), "{wrong}");
     }
 
     #[test]

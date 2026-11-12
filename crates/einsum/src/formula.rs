@@ -354,21 +354,29 @@ impl Formula {
             axes.output_elements()? as f64
         };
 
-        let mut bytes: u128 = 0;
+        // 两个方向各自累加：合成一个数之后，"读受限还是写受限"就再也推不出来了。
+        let mut read: u128 = 0;
+        let mut write: u128 = 0;
         for (operand, term) in self.operands.iter().zip(self.expr.terms()) {
             let elements = term.iter().try_fold(1u128, |total, label| {
                 multiply(total, extent(extents, *label)?)
             })?;
-            bytes = bytes
-                .checked_add(operand.bits().bytes_for(elements))
-                .ok_or_else(overflow)?;
+            let bytes = operand.bits().bytes_for(elements);
+            match operand.access() {
+                Access::Read => read = read.checked_add(bytes).ok_or_else(overflow)?,
+                Access::Write => write = write.checked_add(bytes).ok_or_else(overflow)?,
+            }
         }
 
-        let bytes = u64::try_from(bytes).map_err(|_| {
-            Error::new(Code::Invalid, format!("流量 {bytes} 字节超出 u64"))
+        let read = u64::try_from(read).map_err(|_| {
+            Error::new(Code::Invalid, format!("读流量 {read} 字节超出 u64"))
                 .with("einsum::Formula::cost")
         })?;
-        Ok(Cost { flops, bytes })
+        let write = u64::try_from(write).map_err(|_| {
+            Error::new(Code::Invalid, format!("写流量 {write} 字节超出 u64"))
+                .with("einsum::Formula::cost")
+        })?;
+        Ok(Cost { flops, read, write })
     }
 }
 
@@ -417,7 +425,9 @@ mod tests {
             .expect("可估算");
         assert_eq!(cost.flops, 2.0 * 2.0 * 3.0 * 4.0);
         // a: 2·3、b: 3·4、c: 2·4，全部 f32。
-        assert_eq!(cost.bytes, (2 * 3 + 3 * 4 + 2 * 4) * 4);
+        assert_eq!(cost.read, (2 * 3 + 3 * 4) * 4);
+        assert_eq!(cost.write, 2 * 4 * 4, "只有 c 是写方向");
+        assert_eq!(cost.bytes(), (2 * 3 + 3 * 4 + 2 * 4) * 4, "合计不变");
     }
 
     #[test]
@@ -452,7 +462,8 @@ mod tests {
         let extents = Extents::new([('i', 3), ('j', 4)]).expect("合法");
         let cost = formula.cost(&extents).expect("可估算");
         assert_eq!(cost.flops, 12.0);
-        assert_eq!(cost.bytes, 12 * 4 * 2);
+        assert_eq!(cost.read, 12 * 4);
+        assert_eq!(cost.write, 12 * 4);
     }
 
     #[test]
@@ -521,7 +532,8 @@ mod tests {
             .cost(&Extents::new([('n', 3), ('m', 5)]).expect("合法"))
             .expect("可估算");
         assert_eq!(cost.flops, 2.0 * 15.0);
-        assert_eq!(cost.bytes, 8 + 5 * 4 + 3 * 4);
+        assert_eq!(cost.read, 8 + 5 * 4, "int4 权重与输入都是读");
+        assert_eq!(cost.write, 3 * 4);
     }
 
     #[test]
@@ -550,8 +562,9 @@ mod tests {
 
         let cost = formula.cost(&extents).expect("可估算");
         assert_eq!(cost.flops, 2.0 * 8.0 * 64.0);
-        // 流量仍然按 scales 自己的轴算：8·2 个 f32。
-        assert_eq!(cost.bytes, 8 * 64 / 2 + 64 * 4 + 8 * 2 * 4 + 8 * 4);
+        // 读流量仍然按 scales 自己的轴算：8·2 个 f32。
+        assert_eq!(cost.read, 8 * 64 / 2 + 64 * 4 + 8 * 2 * 4);
+        assert_eq!(cost.write, 8 * 4);
     }
 
     #[test]
@@ -586,7 +599,8 @@ mod tests {
             .cost(&Extents::new([('m', 8)]).expect("合法"))
             .expect("可估算");
         assert_eq!(cost.flops, 2.0 * 8.0);
-        assert_eq!(cost.bytes, 8 * 4 * 2);
+        assert_eq!(cost.read, 8 * 4 * 2);
+        assert_eq!(cost.write, 0, "标量输出不在缓冲里");
     }
 
     #[test]

@@ -15,11 +15,10 @@ checkpoint = { path = "../checkpoint", package = "llm-checkpoint" }
 data = { path = "../data", package = "llm-data" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 nn = { path = "../nn", package = "llm-nn" }
+op = { path = "../op", package = "llm-op" }
 shard = { path = "../shard", package = "llm-shard" }
-weights = { path = "../weights", package = "llm-weights" }
-
-[dev-dependencies]
 tensor = { path = "../tensor", package = "llm-tensor" }
+weights = { path = "../weights", package = "llm-weights" }
 
 [lints]
 workspace = true

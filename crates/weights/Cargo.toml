@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Weight file structure: entries, header offset validation and the Reader trait."
+description = "Weight files: entries, header validation, plus safetensors archives (whole-buffer or header-only file backend)."
 publish = false
 
 [dependencies]

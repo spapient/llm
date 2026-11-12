@@ -35,7 +35,12 @@
 //! | 量 | 口径 |
 //! |---|---|
 //! | `flops` | 有规约轴时 `2 × Π(参与运算的轴)`（每个规约项一次乘加）；没有规约轴时 `Π(输出轴)`（每个输出元素一次运算） |
-//! | `bytes` | 每个操作数 `ceil(Π(自己的轴) × 位宽 / 8)` 之和；写入方向同样计入（至少写一遍输出） |
+//! | `read` | 只读操作数各自的 `ceil(Π(自己的轴) × 位宽 / 8)` 之和 |
+//! | `write` | 只写操作数各自的 `ceil(Π(自己的轴) × 位宽 / 8)` 之和（至少写一遍输出） |
+//!
+//! 读与写**分开给**而不是合成一个 `bytes`：它们的上限不是同一个（只流式读权重的 GEMV 可以
+//! 跑过设备的拷贝上限），合成之后"这层是读受限还是写受限"就再也判断不了。`Cost::bytes()` 仍然
+//! 提供合计值，但它是**派生**量，不是口径本身。
 //!
 //! 位宽用 [`Bits`] 闭集表达，因此 `i4` 权重按 nibble 计费，而不是被当成一个 `f32` 或一个 `u8`。
 //!
@@ -70,8 +75,10 @@
 //! let cost = formula.cost(&extents).expect("可估算");
 //!
 //! assert_eq!(cost.flops, 2.0 * 8.0 * 64.0);
-//! // w: 8·64 元素 × 4 bit/8；x: 64 × 4；scales: 8·2 × 4；y: 8 × 4。
-//! assert_eq!(cost.bytes, 8 * 64 / 2 + 64 * 4 + 8 * 2 * 4 + 8 * 4);
+//! // w: 8·64 元素 × 4 bit/8；x: 64 × 4；scales: 8·2 × 4。
+//! assert_eq!(cost.read, 8 * 64 / 2 + 64 * 4 + 8 * 2 * 4);
+//! // 只有一个输出缓冲，所以写方向只有它。
+//! assert_eq!(cost.write, 8 * 4);
 //! ```
 
 #![deny(unsafe_code)]
@@ -132,31 +139,50 @@ impl Bits {
 }
 
 /// 一次计算的标量代价，roofline 的分子（DESIGN §12.1）。
+///
+/// 流量按**方向**分账：读与写的上限不是同一个数，把它们加成一个总量之后，任何"这层到底卡在
+/// 哪一侧"的结论都失去了依据，而"把读挪成写、总量不变"也会变得看起来等价（`nn::Bounds`
+/// 的 `moves_within` 正是靠这个区分来发现融合是否真的更省）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cost {
     /// 浮点运算次数。
     pub flops: f64,
-    /// 最少流量（字节）。
-    pub bytes: u64,
+    /// 最少读入字节：算子入口的输入。
+    pub read: u64,
+    /// 最少写出字节：算子出口的输出。
+    pub write: u64,
 }
 
 impl Cost {
     /// 零代价：空的表达式或纯标量计算。
     pub const ZERO: Self = Self {
         flops: 0.0,
-        bytes: 0,
+        read: 0,
+        write: 0,
     };
 
-    /// 由两个分量构造（便于测试与适配旧的调用点）。
-    pub const fn new(flops: f64, bytes: u64) -> Self {
-        Self { flops, bytes }
+    /// 由三个分量构造（便于测试与适配旧的调用点）。
+    pub const fn new(flops: f64, read: u64, write: u64) -> Self {
+        Self { flops, read, write }
+    }
+
+    /// 最少流量（字节）：读与写合计。
+    ///
+    /// 这是**派生**量，用来打印与对齐旧口径。判断 roofline 卡在哪一侧必须分别拿
+    /// [`Cost::read`] 与 [`Cost::write`] 去比峰值，而不是拿这个和。
+    pub fn bytes(&self) -> u64 {
+        self.read.saturating_add(self.write)
     }
 
     /// 两笔代价相加：复合算子的总代价。
+    ///
+    /// 每个方向各自相加——这正是"复合组件的下界在**每个方向**上都不高于子组件之和"那句话
+    /// 里的那个和。
     pub fn plus(self, other: Self) -> Self {
         Self {
             flops: self.flops + other.flops,
-            bytes: self.bytes.saturating_add(other.bytes),
+            read: self.read.saturating_add(other.read),
+            write: self.write.saturating_add(other.write),
         }
     }
 }
@@ -180,11 +206,12 @@ mod tests {
 
     #[test]
     fn the_zero_cost_is_the_identity_of_adding() {
-        let cost = Cost::new(2.0, 8);
+        let cost = Cost::new(2.0, 8, 4);
         assert_eq!(cost.plus(Cost::ZERO), cost);
+        assert_eq!(cost.bytes(), 12, "合计是派生量，不是口径本身");
         assert_eq!(
-            Cost::new(1.0, 8).plus(Cost::new(1.0, 8)),
-            Cost::new(2.0, 16)
+            Cost::new(1.0, 8, 4).plus(Cost::new(1.0, 8, 4)),
+            Cost::new(2.0, 16, 8)
         );
     }
 }

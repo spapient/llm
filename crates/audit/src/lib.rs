@@ -16,6 +16,7 @@
 
 pub mod witness;
 
+use crate::witness::{Basis, Evidence};
 use cutile::backend;
 use cutile::build;
 use cutile::builtin::Catalogue;
@@ -36,6 +37,50 @@ use std::path::PathBuf;
 /// L3 达成率门槛（DESIGN §12.3）：低于它就是"没有可用证据"。
 pub const L3_THRESHOLD: f64 = 0.7;
 
+/// DESIGN §16 给片段定的行数上限：超过它说明原语粒度错，先合并原语。
+pub const FRAGMENT_LIMIT: usize = 400;
+
+/// §16 给片段定的内部目标（行数）：达标余量，不是另一条判据。
+pub const FRAGMENT_GOAL: usize = 240;
+
+/// 一份生成的片段：行数与 §16 的口径。
+///
+/// 行数是 P0 里唯一能自动读出的“原语粒度”指标：超过上限不是“代码写得长”，而是这个算子的原语
+/// 切得太细，模板里开始堆特化代码。判定与数字同源（[`Fragment::within_limit`] 就是拿
+/// [`Fragment::lines`] 与 [`FRAGMENT_LIMIT`] 比），前端只负责选词。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fragment {
+    /// 行数。
+    pub lines: usize,
+}
+
+impl Fragment {
+    /// 以行数构造（`build::Source::lines` 是唯一数据源）。
+    pub const fn new(lines: usize) -> Self {
+        Self { lines }
+    }
+
+    /// §16 的上限。
+    pub const fn limit(&self) -> usize {
+        FRAGMENT_LIMIT
+    }
+
+    /// §16 的内部目标。
+    pub const fn goal(&self) -> usize {
+        FRAGMENT_GOAL
+    }
+
+    /// 是否在上限内：§16 “片段 ≤ 400 行”的结论。
+    pub const fn within_limit(&self) -> bool {
+        self.lines <= FRAGMENT_LIMIT
+    }
+
+    /// 是否达到内部目标（与上限分开：目标未达不算失败）。
+    pub const fn within_goal(&self) -> bool {
+        self.lines <= FRAGMENT_GOAL
+    }
+}
+
 /// 一次 `doctor` 的结论：每一步的产物，排版交给前端。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Doctor {
@@ -43,6 +88,10 @@ pub struct Doctor {
     pub op: OpInfo,
     /// 档案层头部。
     pub device: DeviceInfo,
+    /// 这次执行到的证据：三条命令共用同一份。
+    ///
+    /// 协商用的是它的结论，不是档案里的 `grade`；`basis` 说明这份结论来自执行还是来自自述。
+    pub evidence: Evidence,
     /// 本次估值与 plan 用的形状 `(m, n)`：算子的生产形状（`Model::shape`），不是命令参数。
     pub shape: (usize, usize),
     /// 逐变体的需求复核：成功路径用它解释"为何选它、其它差在哪"。
@@ -113,10 +162,16 @@ pub struct DeviceInfo {
     pub id: String,
     /// emit 语言。
     pub emit: String,
-    /// 编译工具。
+    /// 编译工具（档案声明的命令名）。
     pub tool: String,
-    /// 工具版本。
+    /// 档案登记的工具版本（人写的证据出处，不参与缓存键）。
     pub tool_ver: String,
+    /// 实测的工具链身份（`命令@版本`）：探测的是档案声明的那个命令（`[meta].tool`），
+    /// 因为 `doctor` 回答的是"这台设备按这份档案要用什么工具链"；本机没装它时为 `None`。
+    ///
+    /// `verify` 报的是另一件事——真正编出产物的那条（`backend::detect` 依次试 `cc`/`clang`/`gcc`）。
+    /// 两者在只装了 `clang` 的机器上会不同，这正是要分别写出来的原因。
+    pub toolchain: Option<String>,
     /// `GM` / `FAST` / `REG` 的容量（档案原文，单位自带）。
     pub spaces: [String; 3],
     /// 执行单元（名字与可访问的存储层）。
@@ -138,8 +193,8 @@ pub struct LayoutRow {
 /// 一次 emit 的产物摘要。源文件本身不重复返回：它已经落在缓存里，按 `cache_dir` 取。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Built {
-    /// 行数。
-    pub lines: usize,
+    /// 行数与 §16 的口径。
+    pub fragment: Fragment,
     /// 扩展名。
     pub ext: String,
     /// 缓存键：十六进制形式与逐项说明都由它自己给出。
@@ -163,12 +218,26 @@ pub struct Verified {
     pub tile: String,
     /// 实际跑过的形状（`verify` 的形状矩阵）。
     pub shapes: Vec<(u64, u64)>,
-    /// 执行通过的见证条数（每条 `grade ≥ L2` 的供给一条）。
+    /// 执行通过的见证条数（每条 `grade ≥ L2` 的供给一条，结论是 L2 证据）。
     pub witnesses: usize,
+    /// 本机自检通过的见证条数（设备执行跑不到的那些：非 C 设备的全部，C 设备的 `L0`/`L1`）。
+    ///
+    /// 与 [`Verified::witnesses`] 相加等于这台设备声明的全部见证：一份见证只被执行一次，
+    /// 由能给出更强结论的那个范围执行。
+    pub self_checked: usize,
     /// 与标量参考的相对误差（取全部形状的最大值）。
     pub max_rel_err: f64,
-    /// 源文件行数。
-    pub lines: usize,
+    /// 源文件行数与 §16 的口径。
+    pub fragment: Fragment,
+    /// 档案登记的工具版本：与 [`Verified::toolchain`] 对照用，不参与任何判定。
+    pub tool_ver: String,
+    /// 实测的工具链身份（`命令@版本`）；本机没有编译器时为 `None`（那一轮只复用已落盘产物）。
+    pub toolchain: Option<String>,
+    /// 实测工具链是否与档案登记的版本相容（只比主版本号）。
+    ///
+    /// 不相容不改等级：证据可以在别的机器上取得，登记值说明的是"这条证据按哪个版本记的"。
+    /// 但报告必须把差异说出来，否则"换了一台机器、换了一个编译器"会静悄悄地发生。
+    pub toolchain_agrees: bool,
     /// 缓存键（十六进制）。
     pub key: String,
     /// 编译产物：形状矩阵的每一项一份（`reused` 为真表示那次没调用编译器）。
@@ -199,6 +268,54 @@ impl VerifyEntry {
     }
 }
 
+/// 一台设备的协商结论（DESIGN §16 判据「协商 3/3 命中首档」）。
+///
+/// 这是 §16 里唯一只看数据的判据：`cap::negotiate` 不碰编译器、不碰硬件，所以本机有没有这块卡
+/// 都有答案。缺设备是**执行**层面的结论，不该顺手把协商的答案一起吞掉——两条信息各归各的。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Negotiation {
+    /// 命中降级链的首选变体；`of` 是链长。
+    Head {
+        /// 变体名。
+        variant: String,
+        /// 降级链的变体总数。
+        of: usize,
+    },
+    /// 首选不可行，落到链上第 `step` 个变体（从 1 数起）。
+    Fallback {
+        /// 变体名。
+        variant: String,
+        /// 选中变体在链上的位置（从 1 数起）。
+        step: usize,
+        /// 降级链的变体总数。
+        of: usize,
+    },
+    /// 整条链都不可行：`of` 是链长，`unmet` 是首选变体缺的原语（去重，按 `needs` 顺序）。
+    NoPath {
+        /// 降级链的变体总数。
+        of: usize,
+        /// 首选变体没被满足的原语。
+        unmet: Vec<String>,
+    },
+    /// 没有这份档案，协商无从谈起。
+    Unknown {
+        /// 取档案失败的原因。
+        reason: String,
+    },
+}
+
+impl Negotiation {
+    /// 是否命中首档：判据的唯一取值。
+    pub fn head_hit(&self) -> bool {
+        matches!(self, Self::Head { .. })
+    }
+
+    /// 协商是否给出了可行变体（首档或降级）。
+    pub fn has_path(&self) -> bool {
+        matches!(self, Self::Head { .. } | Self::Fallback { .. })
+    }
+}
+
 /// 一次 `verify` 的逐设备结果。
 ///
 /// "缺设备即失败"是调用方据 [`VerifyReport::failures`] 决定的（DESIGN §11.2），本模块只
@@ -211,12 +328,78 @@ pub struct VerifyReport {
     pub devices: Vec<String>,
     /// 与 `devices` 一一对应的结果。
     pub entries: Vec<VerifyEntry>,
+    /// 与 `devices` 一一对应的协商结论：只看数据，本机缺设备时也有答案。
+    pub negotiations: Vec<Negotiation>,
 }
 
 impl VerifyReport {
     /// 未通过的项。
     pub fn failures(&self) -> Vec<&Error> {
         self.entries.iter().filter_map(VerifyEntry::error).collect()
+    }
+
+    /// 命中降级链首档的设备数：`(命中, 总数)`。
+    ///
+    /// DESIGN §16 的判据就是这对数："< 3/3" 说明 `needs` 声明粒度错，而不是设备不行——所以它
+    /// 只统计有答案的设备，与执行结果无关（[`VerifyReport::failures`] 管后者）。
+    pub fn head_hits(&self) -> (usize, usize) {
+        (
+            self.negotiations
+                .iter()
+                .filter(|negotiation| negotiation.head_hit())
+                .count(),
+            self.negotiations.len(),
+        )
+    }
+}
+
+/// 逐设备的协商结论，与 `devices` 一一对应。
+///
+/// 判据是 `cap::negotiate`——**按档案自述**协商的那一档，不是这次执行得到的 `Proof`：§16 问的是
+/// "`needs` 的粒度有没有写错"，这个答案不该随本机有没有这块卡而变。执行结论在 [`verify`] 的
+/// 逐设备结果里，两者分开记（`cap::negotiate_with` 才是执行路径的口径）。
+/// 设备没有档案时给 [`Negotiation::Unknown`]——那与"链上行不通"是两回事，不能合并成一个码。
+pub fn negotiations(op: &OpDecl, catalogue: &Catalogue, devices: &[String]) -> Vec<Negotiation> {
+    devices
+        .iter()
+        .map(|device| negotiate(op, catalogue, device))
+        .collect()
+}
+
+fn negotiate(op: &OpDecl, catalogue: &Catalogue, device: &str) -> Negotiation {
+    let profile = match catalogue.resolve(device) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return Negotiation::Unknown {
+                reason: error.to_string(),
+            };
+        }
+    };
+    let of = op.variants.len();
+    match cap::negotiate(op, profile) {
+        Ok(path) if path.is_head() => Negotiation::Head {
+            variant: path.variant,
+            of,
+        },
+        Ok(path) => Negotiation::Fallback {
+            variant: path.variant,
+            step: path.index + 1,
+            of,
+        },
+        Err(no_path) => {
+            // `needs` 是首选变体的完整明细（含已满足的项）：只报真正缺的那些，且一个原语只报一次。
+            let mut unmet: Vec<String> = Vec::new();
+            for report in no_path.needs.iter().filter(|report| !report.is_satisfied()) {
+                let prim = report.need.prim.to_string();
+                if !unmet.contains(&prim) {
+                    unmet.push(prim);
+                }
+            }
+            Negotiation::NoPath {
+                of: no_path.chain.len(),
+                unmet,
+            }
+        }
     }
 }
 
@@ -250,6 +433,8 @@ pub struct Bench {
     pub cache_dir: Option<PathBuf>,
     /// 这次跑的那份编译产物：`reused` 为真表示没调用编译器。
     pub artifact: Artifact,
+    /// 这次跑通的见证条数：计时之前必须已有证据，否则测的是一条未经确认的能力。
+    pub proven: usize,
 }
 
 impl Bench {
@@ -347,6 +532,7 @@ pub fn doctor(
         emit: profile.meta.emit.to_string(),
         tool: profile.meta.tool.to_string(),
         tool_ver: profile.meta.tool_ver.to_string(),
+        toolchain: backend::probe(&profile.meta.tool).map(|tool| tool.id()),
         spaces: [
             space::physical(profile, Space::Gm).to_string(),
             space::physical(profile, Space::Fast).to_string(),
@@ -359,9 +545,15 @@ pub fn doctor(
             .collect(),
     };
 
+    // 证据先跑：协商用的不是档案里的 `grade`，而是这次执行得到的 `Proof`。见证不成立时协商
+    // 必然失败（拒绝理由写成“L2 但没有这次执行的见证”），而 `doctor` 仍交报告——它的职责是
+    // 解释为什么不行，不是把原因吞成一个 `Err`。
+    let evidence = witness::establish(profile, settings);
+    let proof = evidence.proof(profile);
     let mut report = Doctor {
         op: info,
         device,
+        evidence,
         shape: model.shape,
         variants: Vec::new(),
         no_path: None,
@@ -373,16 +565,17 @@ pub fn doctor(
     };
 
     // 协商只跑一次：失败时把诊断原样带回去，成功时再逐变体复核一遍用于解释。
-    let path = match cap::negotiate(op, profile) {
+    let path = match cap::negotiate_with(op, profile, &proof) {
         Ok(path) => path,
         Err(no_path) => {
             report.no_path = Some(no_path);
             return Ok(report);
         }
     };
-    report.variants = cap::inspect(op, profile);
+    report.variants = cap::inspect_with(op, profile, &proof);
     let (m, n) = model.shape;
-    let cost = (model.cost)(m, n)?;
+    let shape = model.projection(m, n)?;
+    let cost = (model.cost)(&shape)?;
     let plan = plan::select(op, profile, &path, cost)?;
     let (source, key) = build::source(op, profile, &path, &plan.tile, settings)?;
 
@@ -414,7 +607,7 @@ pub fn doctor(
         })
         .collect();
     report.source = Some(Built {
-        lines: source.lines(),
+        fragment: Fragment::new(source.lines()),
         ext: source.ext().to_string(),
         cache_dir: build::dir(&key, settings),
         key,
@@ -454,53 +647,50 @@ pub fn verify(
             }
         };
         let label = format!("{}({})", profile.meta.vendor, profile.meta.id);
-        let witnesses = match witness::run_all(profile, settings) {
-            Ok(runs) => runs,
-            Err(error) => {
-                entries.push(VerifyEntry::Failed {
-                    label: label.clone(),
-                    error,
-                });
-                continue;
-            }
-        };
-        // 非 C 设备在本机没有设备，但它的见证已经写成了 host C ABI：先把能执行的证据执行掉，
-        // 再如实报“缺设备”。自检失败是硬错误——不能退化成“没设备所以没结论”。
-        let self_checked = if profile.meta.emit == cutile::prof::Emit::C {
-            None
-        } else {
-            match witness::self_check(profile, settings) {
-                Ok(runs) => Some(runs.len()),
-                Err(error) => {
-                    entries.push(VerifyEntry::Failed {
-                        label: label.clone(),
-                        error,
-                    });
-                    continue;
-                }
-            }
-        };
-        entries.push(match verify_one(op, profile, settings) {
-            Ok(mut verified) => {
-                verified.device = device.clone();
-                verified.witnesses = witnesses.len();
-                VerifyEntry::Passed(verified)
-            }
-            Err(error) => VerifyEntry::Failed {
+        // 见证先跑，且三条命令共用这一份结论：`verify` 跑完就不再读它，别的命令却还在读档案，
+        // 同一台设备因此可以同时“协商可行”（doctor）与“见证不成立”（verify）。
+        let evidence = witness::establish(profile, settings);
+        let witnesses = evidence.device;
+        let self_checked = evidence.host;
+        if let Some(error) = evidence.failure {
+            entries.push(VerifyEntry::Failed {
                 label,
-                error: match self_checked {
-                    Some(count) => error.with(format!(
-                        "见证自检 {count} 条通过（host C ABI，不含设备执行）"
-                    )),
-                    None => error,
+                error: if self_checked == 0 {
+                    error
+                } else {
+                    error.with(format!(
+                        "见证自检 {self_checked} 条通过（host C ABI，不含设备执行）"
+                    ))
+                },
+            });
+            continue;
+        }
+        entries.push(
+            match verify_one(op, profile, settings, &evidence.proof(profile)) {
+                Ok(mut verified) => {
+                    verified.device = device.clone();
+                    verified.witnesses = witnesses;
+                    verified.self_checked = self_checked;
+                    VerifyEntry::Passed(verified)
+                }
+                Err(error) => VerifyEntry::Failed {
+                    label,
+                    error: if self_checked == 0 {
+                        error
+                    } else {
+                        error.with(format!(
+                            "见证自检 {self_checked} 条通过（host C ABI，不含设备执行）"
+                        ))
+                    },
                 },
             },
-        });
+        );
     }
     Ok(VerifyReport {
         op: op_name.to_string(),
         devices: devices.to_vec(),
         entries,
+        negotiations: negotiations(op, catalogue, devices),
     })
 }
 
@@ -516,6 +706,7 @@ pub fn verify_one(
     op: &OpDecl,
     profile: &Profile,
     settings: &Settings,
+    proof: &cap::Proof,
 ) -> diagnostic::Result<Verified> {
     let model = model_for(&op.name)?;
     if profile.meta.emit != cutile::prof::Emit::C {
@@ -533,7 +724,7 @@ pub fn verify_one(
         ));
     }
 
-    let path = cap::negotiate(op, profile)
+    let path = cap::negotiate_with(op, profile, proof)
         .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
     let group = u64::from(model.group.max(1));
 
@@ -548,23 +739,20 @@ pub fn verify_one(
         }
     }
 
-    let tool = backend::detect_toolchain().ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            "缺少 C 编译器（cc/clang/gcc 都不在 PATH 上），无法产生 L2 证据",
-        )
-    })?;
+    // 没有编译器不等于没有结论：产物若已落盘，`build::execute` 会按产物旁的身份文件复用它。
+    let tool = backend::detect();
     let tolerance = reference::tolerance(model.dtype);
 
     let mut max_rel_err = 0.0f64;
     let mut shapes = Vec::new();
     let mut artifacts = Vec::new();
-    let mut lines = 0usize;
+    let mut fragment = Fragment::new(0);
     let mut key = String::new();
     let mut tile = String::new();
 
     for (m, n) in verify_shapes(&model) {
-        let cost = (model.cost)(m as usize, n as usize)?;
+        let shape = model.projection(m as usize, n as usize)?;
+        let cost = (model.cost)(&shape)?;
         let plan = plan::select(op, profile, &path, cost)?;
         // 签名与样本先对齐：ABI 不一致的错误必须在 emit 与编译之前出现。
         let sample = (model.sample)(m as usize, n as usize);
@@ -572,7 +760,8 @@ pub fn verify_one(
         let (source, source_key) = build::source(op, profile, &path, &plan.tile, settings)?;
         let harness = harness(&source, op, &sample, 1)?;
         // 产物进缓存：命中就不调用编译器，L2 证据因此不必每次重编一遍。
-        let (outcome, artifact) = build::execute(profile, &tool, &source_key, &harness, settings)?;
+        let (outcome, artifact) =
+            build::execute(profile, tool.as_ref(), &source_key, &harness, settings)?;
         if outcome.bits.len() != sample.n {
             return Err(Error::new(
                 Code::Invalid,
@@ -593,7 +782,7 @@ pub fn verify_one(
             ));
         }
         max_rel_err = max_rel_err.max(error);
-        lines = source.lines();
+        fragment = Fragment::new(source.lines());
         key = source_key.hex();
         tile = plan.tile.to_string();
         shapes.push((m, n));
@@ -608,8 +797,14 @@ pub fn verify_one(
         tile,
         shapes,
         witnesses: 0,
+        self_checked: 0,
         max_rel_err,
-        lines,
+        fragment,
+        tool_ver: profile.meta.tool_ver.clone(),
+        toolchain: tool.as_ref().map(backend::Toolchain::id),
+        toolchain_agrees: tool
+            .as_ref()
+            .is_some_and(|tool| tool.agrees_with(&profile.meta.tool_ver)),
         key,
         artifacts,
     })
@@ -659,25 +854,37 @@ pub fn bench(
         }
     };
     let profile = catalogue.resolve("auto")?;
-    let path = cap::negotiate(op, profile)
+    // 计时之前必须先有证据：否则测的是一条“档案说它能跑”的能力，而不是这台机器能跑的能力。
+    let evidence = witness::establish(profile, settings);
+    if let Some(error) = &evidence.failure {
+        return Err(error.clone().with("bench 不能给一台没有执行证据的设备计时"));
+    }
+    if evidence.basis != Basis::Executed {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "`{}({})` 本机执行不了（emit 是 {}）：bench 没有可测的对象",
+                profile.meta.vendor, profile.meta.id, profile.meta.emit
+            ),
+        ));
+    }
+    let proof = evidence.proof(profile);
+    let path = cap::negotiate_with(op, profile, &proof)
         .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
-    let cost = (model.cost)(m as usize, n as usize)?;
+    let shape = model.projection(m as usize, n as usize)?;
+    let cost = (model.cost)(&shape)?;
     let plan = plan::select(op, profile, &path, cost)?;
     // 签名与样本先对齐：ABI 不一致的错误必须在 emit 与编译之前出现。
     let sample = (model.sample)(m as usize, n as usize);
     op.signature.check(&sample)?;
     let (source, key) = build::source(op, profile, &path, &plan.tile, settings)?;
 
-    let tool = backend::detect_toolchain().ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            "缺少 C 编译器（cc/clang/gcc 都不在 PATH 上）",
-        )
-    })?;
+    // 同上：命中产物时连编译器都不需要，所以工具链只是“能重新编译”的前提，不是跑 bench 的前提。
+    let tool = backend::detect();
     let repeat = repeat.max(1);
     let harness = harness(&source, op, &sample, repeat)?;
     // 重复次数在主函数里，所以它也是产物身份的一部分：换 `--repeat` 就换一份产物。
-    let (outcome, artifact) = build::execute(profile, &tool, &key, &harness, settings)?;
+    let (outcome, artifact) = build::execute(profile, tool.as_ref(), &key, &harness, settings)?;
     let per_run_ns = outcome
         .timing
         .min_ns()
@@ -706,6 +913,7 @@ pub fn bench(
         fast_bytes: profile.mem.fast_bytes,
         cache_dir: build::dir(&key, settings),
         artifact,
+        proven: evidence.device,
     })
 }
 
@@ -877,10 +1085,25 @@ mod tests {
         assert_eq!(report.path.as_ref().expect("有路径").variant, "pipe2");
         assert!(!report.layouts.is_empty(), "{report:?}");
         let source = report.source.as_ref().expect("有 emit 产物");
-        assert!(source.lines > 0);
+        assert!(source.fragment.lines > 0);
+        assert!(source.fragment.within_limit(), "{source:?}");
         let hex = source.key.hex();
         assert_eq!(hex.len(), 16, "缓存键是 16 位十六进制");
         assert!(hex.chars().all(|digit| digit.is_ascii_hexdigit()));
+    }
+
+    /// §16 的片段判据是“同一对数与两个门槛比”：上限管成败，内部目标只是余量。
+    #[test]
+    fn the_fragment_verdict_reads_the_p0_limits() {
+        assert_eq!(FRAGMENT_LIMIT, 400, "DESIGN §16 的上限");
+        assert_eq!(FRAGMENT_GOAL, 240, "DESIGN §16 的内部目标");
+        assert!(Fragment::new(FRAGMENT_LIMIT).within_limit());
+        assert!(!Fragment::new(FRAGMENT_LIMIT + 1).within_limit());
+        assert!(Fragment::new(FRAGMENT_GOAL).within_goal());
+        assert!(
+            !Fragment::new(FRAGMENT_GOAL + 1).within_goal(),
+            "超出目标是余量不足，不是失败"
+        );
     }
 
     /// 独立缓存目录：GC 会真删东西，不能与其他用例共用。
@@ -904,8 +1127,12 @@ mod tests {
         assert!(before.before > 0, "doctor 刚落过盘：{before:?}");
         assert_eq!(before.removed, 0, "未超上限时不删：{before:?}");
 
+        // 条目个数不再是"doctor 只落 1 条"：它现在还要把见证程序登记进缓存。判据是"上限为 0
+        // 时每一条可复用条目都被回收"，与条目个数无关。
+        let entries = Cache::from_settings(&settings).entries().len();
+        assert!(entries > 1, "内核源之外还有见证程序：{entries}");
         let after = cache_gc(&settings, Some(0)).expect("可回收");
-        assert_eq!(after.removed, 1, "{after:?}");
+        assert_eq!(after.removed, entries, "{after:?}");
         assert_eq!(after.after, 0, "{after:?}");
         let _ = std::fs::remove_dir_all(settings.cache_dir());
     }
@@ -987,9 +1214,83 @@ mod tests {
         assert!(no_path.to_string().contains("L2"), "{no_path}");
     }
 
+    /// 协商用的是这次执行到的证据：条数与依据都要能对上档案。
+    ///
+    /// 这条断言的对象是"`doctor` 凭什么说这台设备可行"——不是档案里的 `grade`，而是它刚刚
+    /// 跑通的那几条见证。
+    #[test]
+    fn doctor_reports_the_evidence_it_ran() {
+        if backend::detect().is_none() {
+            return;
+        }
+        let catalogue = catalogue();
+        let report = doctor(&catalogue, &settings(), "gemv_i4", "cpu").expect("doctor 应成功");
+        let profile = catalogue.profile("cpu").expect("cpu 档案");
+        assert_eq!(
+            report.evidence.basis,
+            Basis::Executed,
+            "C 档案在本机就是设备"
+        );
+        assert!(
+            report.evidence.failure.is_none(),
+            "证据不成立：{:?}",
+            report.evidence.failure
+        );
+        assert_eq!(
+            report.evidence.device,
+            profile
+                .provides
+                .iter()
+                .filter(|provide| provide.grade.is_verified())
+                .count(),
+            "每条 L2 供给都要在这次证据里"
+        );
+        assert_eq!(report.path.as_ref().expect("有路径").variant, "pipe2");
+    }
+
+    /// 本机执行不了的设备：依据必须写成"档案自述"，不能假装执行过。
+    #[test]
+    fn a_device_that_cannot_run_here_is_negotiated_on_declarations() {
+        let report = doctor(&catalogue(), &settings(), "gemv_i4", "nvidia").expect("仍应返回报告");
+        assert_eq!(report.evidence.basis, Basis::Declared);
+        assert_eq!(report.evidence.device, 0, "本机没有设备执行");
+        assert!(
+            report.evidence.host > 0,
+            "自检仍要跑：见证源码算得对不对在这里是可验证的"
+        );
+    }
+
+    /// 见证对不上时能力就不成立：同一份档案只把一处期望值写错，协商也必须全线不可行。
+    #[test]
+    fn a_witness_that_does_not_hold_removes_the_capability() {
+        if backend::detect().is_none() {
+            return;
+        }
+        let mut profile =
+            Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案可解析");
+        // `quant` 的见证解包 `0xF0` 得 `-4.0`：把期望值改一位，执行器必须发现。
+        let quant = profile
+            .provides
+            .iter_mut()
+            .find(|provide| provide.prim == Prim::Quant)
+            .expect("cpu 有 quant");
+        quant.witness.as_mut().expect("quant 有见证").expect[0] = -5.0;
+
+        let evidence = witness::establish(&profile, &settings());
+        assert!(
+            evidence.failure.is_some(),
+            "见证对不上就是证据不成立：{evidence:?}"
+        );
+        assert!(evidence.proof(&profile).is_empty(), "一条都不该被证明");
+
+        let op = catalogue().op("gemv_i4").expect("算子").clone();
+        let error = cap::negotiate_with(&op, &profile, &evidence.proof(&profile)).unwrap_err();
+        assert!(error.to_string().contains("没有这次执行的见证"), "{error}");
+    }
+
     #[test]
     fn verify_runs_witnesses_and_the_whole_shape_matrix() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let devices = vec!["cpu".to_string()];
@@ -1003,23 +1304,62 @@ mod tests {
             vec![(32, 1), (64, 3), (4096, 4096)],
             "形状矩阵必须全部跑到"
         );
+        let profile = catalogue().profile("cpu").expect("cpu 档案").clone();
         assert_eq!(
             verified.witnesses,
-            catalogue()
-                .profile("cpu")
-                .expect("cpu 档案")
+            profile
                 .provides
                 .iter()
                 .filter(|provide| provide.grade.is_verified())
                 .count(),
             "每条 L2 供给都要有自己的见证结果"
         );
+        // 自检补的正是设备执行跑不到的 `L0`：两数相加等于全部声明，既不重复也不遗漏。
+        assert_eq!(
+            verified.self_checked,
+            profile
+                .provides
+                .iter()
+                .filter(|provide| !provide.grade.is_verified() && provide.witness.is_some())
+                .count(),
+            "L0 见证必须由自检执行，不能是死数据"
+        );
+        assert!(verified.self_checked > 0, "前提：cpu 有 L0 见证可供自检");
+        assert_eq!(
+            verified.witnesses + verified.self_checked,
+            profile
+                .provides
+                .iter()
+                .filter(|provide| provide.witness.is_some())
+                .count(),
+            "一份见证只执行一次，两个范围加起来要覆盖全部声明"
+        );
+        // 证据带工具链身份：实测值进报告与产物身份，登记值原样带出用于对照。
+        let tool = backend::detect().expect("前提：本机有编译器");
+        assert_eq!(
+            verified.toolchain.as_deref(),
+            Some(tool.id().as_str()),
+            "报告里的工具链必须是实测身份，不是档案里的登记值"
+        );
+        assert_eq!(verified.tool_ver, profile.meta.tool_ver, "登记值要能对照");
+        assert_eq!(
+            verified.toolchain_agrees,
+            tool.agrees_with(&profile.meta.tool_ver),
+            "一致性判定只比主版本号"
+        );
+        for artifact in &verified.artifacts {
+            assert_eq!(
+                artifact.key.tool,
+                tool.id(),
+                "产物身份必须带实测工具链，否则换编译器会命中旧产物"
+            );
+        }
     }
 
     /// 产物也进缓存：第二次 `verify` 不该再调用编译器。
     #[test]
     fn verify_reuses_its_artifacts_on_the_second_run() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let settings = cache_settings("verify-artifacts");
@@ -1058,7 +1398,7 @@ mod tests {
     /// 本机没有的加速器：见证自检先跑，缺设备是最后一句而不是唯一一句。
     #[test]
     fn verify_reports_the_witness_self_check_for_a_device_that_is_not_here() {
-        if backend::detect_toolchain().is_none() {
+        if backend::detect().is_none() {
             return;
         }
         let devices = vec!["nvidia".to_string()];
@@ -1082,6 +1422,103 @@ mod tests {
         );
         assert_eq!(error.code(), Code::Unsupported);
         assert!(error.to_string().contains("本机没有该设备"), "{error}");
+    }
+
+    /// 协商的答案跟着"缺设备"一起消失是旧的形状：这条判据只看声明与档案，两只眼睛各看各的。
+    #[test]
+    fn a_device_that_cannot_run_here_still_gets_a_negotiation_answer() {
+        let devices = vec!["nvidia".to_string()];
+        let report = verify(&catalogue(), &settings(), "gemv_i4", &devices).expect("算子存在");
+        assert!(
+            report.entries[0].error().is_some(),
+            "这条用例的前提是执行不通"
+        );
+        assert_eq!(report.head_hits(), (0, 1));
+        assert!(
+            !report.negotiations[0].has_path(),
+            "{:?}",
+            report.negotiations
+        );
+    }
+
+    /// 判据本身：首档只由链上位置决定，缺项清单来自首选变体的未满足需求。
+    #[test]
+    fn the_head_hits_are_read_from_the_chain_position() {
+        let catalogue = catalogue();
+        let op = catalogue.op("gemv_i4").expect("算子");
+        let devices = vec!["cpu".to_string(), "nvidia".to_string(), "intel".to_string()];
+        let negotiated = negotiations(op, &catalogue, &devices);
+        assert_eq!(
+            negotiated[0],
+            Negotiation::Head {
+                variant: "pipe2".to_string(),
+                of: 2,
+            },
+            "cpu 的九条 L2 供给足以命中首选"
+        );
+        // 两台加速器的证据只有 L1：链上两个变体的需求相同，所以整条链都不可行。
+        for (index, device) in [(1, "nvidia"), (2, "intel")] {
+            match &negotiated[index] {
+                Negotiation::NoPath { of, unmet } => {
+                    assert_eq!(*of, 2, "{device} 的链长");
+                    assert!(unmet.contains(&"dot".to_string()), "{device}: {unmet:?}");
+                    // 一条原语可能有多条需求（不同 dtype）：缺项清单报的是原语，不是需求。
+                    let unique: std::collections::BTreeSet<&String> = unmet.iter().collect();
+                    assert_eq!(
+                        unique.len(),
+                        unmet.len(),
+                        "{device} 的原语重复了：{unmet:?}"
+                    );
+                }
+                other => panic!("`{device}` 应当没有可行变体：{other:?}"),
+            }
+        }
+    }
+
+    /// 没有档案与"链上行不通"是两件事：前者连协商都做不了。
+    #[test]
+    fn a_device_without_an_archive_has_no_negotiation() {
+        let catalogue = catalogue();
+        let op = catalogue.op("gemv_i4").expect("算子");
+        let negotiated = negotiations(op, &catalogue, &["tpu".to_string()]);
+        match &negotiated[0] {
+            Negotiation::Unknown { reason } => assert!(reason.contains("tpu"), "{reason}"),
+            other => panic!("没有档案不该给出协商结论：{other:?}"),
+        }
+    }
+
+    /// 降级是能力差，不是"更慢的同一个东西"：首选多要一条 `exp2`，cpu 只有它的 `L0`。
+    ///
+    /// 这段声明只过 `OpDecl::parse`（不做片段层校验），用途是造出"首选不可行、兜底可行"的数据
+    /// ——真实数据里两台加速器的两个变体需求相同，链上要么全通要么全不通，撞不到这一支。
+    #[test]
+    fn a_falling_back_device_is_not_a_head_hit() {
+        // 按名字取：内置数据会继续增加算子，按下标取会在第二个算子进来时静默换人。
+        let (_, declaration, template) = op::BUILTIN
+            .iter()
+            .find(|(name, _, _)| *name == "gemv_i4")
+            .copied()
+            .expect("gemv_i4 应当在内置数据里");
+        // 只改首选变体：`extra_needs` 必须落在它自己的表里（第一条 `schedule = "pipe<2>"`）。
+        let narrowed = declaration.replacen(
+            "schedule  = \"pipe<2>\"\n",
+            "schedule  = \"pipe<2>\"\nextra_needs = { exp2 = { dt = [\"f32\"] } }\n",
+            1,
+        );
+        assert_ne!(narrowed, declaration, "声明里的写法变了");
+        let op = OpDecl::parse(&narrowed, template).expect("声明应当通过");
+        let negotiated = negotiations(&op, &catalogue(), &["cpu".to_string()]);
+        assert_eq!(
+            negotiated[0],
+            Negotiation::Fallback {
+                variant: "direct".to_string(),
+                step: 2,
+                of: 2,
+            },
+            "{negotiated:?}"
+        );
+        assert!(!negotiated[0].head_hit());
+        assert!(negotiated[0].has_path());
     }
 
     /// 把三层数据复制到临时 `data.root`，再按需要改一份档案。

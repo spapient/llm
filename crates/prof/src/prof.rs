@@ -8,7 +8,8 @@ use crate::atom::{
 };
 use crate::toml::{self, Table};
 use core::fmt;
-use std::collections::BTreeMap;
+use diagnostic::{Code, Error};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// 输出语言闭集（DESIGN §5.4 的 `emit` 列）。设备与输出语言是两个维度：
@@ -100,9 +101,12 @@ pub struct Meta {
     pub id: String,
     /// 输出语言。
     pub emit: Emit,
-    /// 编译工具名。
+    /// 编译工具名（命令名，`cc` / `nvcc` / `xcrun` …）。
     pub tool: String,
-    /// 工具版本。
+    /// **登记**的工具版本：这条证据是在哪个工具链上取得的，与 `checked` 同一性质。
+    ///
+    /// 本机实测值由 `cutile::backend::Toolchain` 从 `--version` 解析，进产物身份与报告；
+    /// 两者不必相等（证据可以在别的机器上取得），所以这里不参与缓存键，也不参与任何判定。
     pub tool_ver: String,
     /// 上次核对日期。
     pub checked: String,
@@ -272,6 +276,11 @@ pub struct Simt {
     pub group: u32,
     /// 每块最大子组数。
     pub groups_max: u32,
+    /// 档案是否写了 `[simt]` 段。
+    ///
+    /// 没有这一段不等于"没有并行"：昇腾的 lane 交换由向量单元（`vgather`/`vbroadcast`）
+    /// 承担，本来就不是 SIMT。所以 `group` 的默认值 1 不能单独当作"单 lane"的证据。
+    pub declared: bool,
 }
 
 /// 一个带推导式出处的常数（DESIGN §12.1）。
@@ -355,6 +364,13 @@ pub enum ProfileError {
         /// 说明。
         detail: String,
     },
+    /// 见证文件不在或读不出来（给定了片段层根时）。
+    WitnessFile {
+        /// 路径（相对片段层根）。
+        file: String,
+        /// 说明。
+        detail: String,
+    },
     /// 数值非法。
     BadValue {
         /// 字段路径。
@@ -375,8 +391,28 @@ impl fmt::Display for ProfileError {
                 allowed,
             } => write!(f, "`{field} = {value}` 不在闭集内（闭集：{allowed}）"),
             Self::Witness { prim, detail } => write!(f, "`{prim}` 的见证不成立：{detail}"),
+            Self::WitnessFile { file, detail } => write!(f, "见证文件 `{file}` {detail}"),
             Self::BadValue { field, detail } => write!(f, "`{field}` 非法：{detail}"),
         }
+    }
+}
+
+impl ProfileError {
+    /// 这条诊断属于哪一类：声明与数字写错都是 `invalid`，而“见证文件不在”是 `missing`
+    /// ——前者是档案的问题，后者是片段层没装到位，脚本里该分开处理。类别在这里定，
+    /// 不让调用方凭字符串猜。
+    pub fn code(&self) -> Code {
+        match self {
+            Self::WitnessFile { .. } => Code::Missing,
+            _ => Code::Invalid,
+        }
+    }
+}
+
+impl From<ProfileError> for Error {
+    /// 消息与 [`ProfileError`] 的 `Display` 逐字相同，只补上类别与结构化字段。
+    fn from(error: ProfileError) -> Self {
+        Self::new(error.code(), error.to_string())
     }
 }
 
@@ -487,6 +523,7 @@ impl Profile {
                 .and_then(|t| t.int("groups_max"))
                 .unwrap_or(1)
                 .max(1) as u32,
+            declared: simt_table.is_some(),
         };
 
         let mut units = Vec::new();
@@ -566,6 +603,8 @@ impl Profile {
 
         // 同一份见证源码只读一次：一台设备的 `provides` 通常共用一个文件。
         let mut sources: BTreeMap<String, Option<String>> = BTreeMap::new();
+        // 同一个缺失文件只报一次：一条 `provides` 缺见证时，其余引用同一文件的不必重复。
+        let mut missing_files: BTreeSet<String> = BTreeSet::new();
 
         // 同一原语的每条签名必须有不同 `impl`：同名的两条供给无法区分"谁实现了什么"，
         // 协商也只会取到其中一条。
@@ -579,6 +618,29 @@ impl Profile {
                         provide.prim
                     ),
                 });
+            }
+        }
+
+        // 属性键属于原语自己的能力签名：`sat` 不属于 `load`，`lanes` 不属于 `mma`。
+        // 协商只比对需求里出现的键（`Provide::diff`），所以档案里多写一个与该原语无关的键
+        // 永远不会被检查——"声明了"与"生效了"就此分家。闭集在这里就拒收。
+        for provide in &self.provides {
+            for attr in &provide.attrs {
+                if provide.prim.accepts(attr.key()) {
+                    continue;
+                }
+                let mut allowed: Vec<&str> = provide
+                    .prim
+                    .attr_keys()
+                    .iter()
+                    .map(|key| key.as_str())
+                    .collect();
+                allowed.push("exec");
+                errors.push(unknown(
+                    &format!("provides[{}].{}", provide.prim, attr.key()),
+                    attr.key().as_str(),
+                    &allowed,
+                ));
             }
         }
 
@@ -651,13 +713,15 @@ impl Profile {
                             std::fs::read_to_string(root.join(&witness.file)).ok()
                         });
                         match text.as_deref() {
-                            None => errors.push(ProfileError::Witness {
-                                prim: provide.prim,
-                                detail: format!(
-                                    "见证文件 `{}` 不存在或不可读",
-                                    root.join(&witness.file).display()
-                                ),
-                            }),
+                            None => {
+                                let path = root.join(&witness.file).display().to_string();
+                                if missing_files.insert(path.clone()) {
+                                    errors.push(ProfileError::WitnessFile {
+                                        file: path,
+                                        detail: "不存在或不可读".to_string(),
+                                    });
+                                }
+                            }
                             Some(text) if !text.contains(&format!("{}(", witness.func)) => {
                                 errors.push(ProfileError::Witness {
                                     prim: provide.prim,
@@ -684,6 +748,29 @@ impl Profile {
                     detail: "实现名不能为空".to_string(),
                 });
             }
+        }
+
+        // 子组内交换/广播以"有第二条 lane"为前提：显式声明 `[simt].group = 1` 的设备再声明
+        // `shuffle`，只会造出一份自欺的证据（把同一个值搬给自己）。这条不是风格问题——
+        // `simt` 此前完全没进能力比对，warp 宽度契约因此没有校验入口。
+        //
+        // 只看 `group` 不够：没写 `[simt]` 的设备（昇腾）以向量单元做 lane 交换，默认值 1 不
+        // 代表没有并行，所以还要 `declared`。
+        for provide in &self.provides {
+            if !matches!(provide.prim, Prim::Shuffle | Prim::Broadcast)
+                || !self.simt.declared
+                || self.simt.group > 1
+            {
+                continue;
+            }
+            errors.push(ProfileError::BadValue {
+                field: format!("provides[{}]", provide.prim),
+                detail: format!(
+                    "`{}` 要求 `[simt].group > 1`（子组内交换/广播），本档案声明的是 {}：\
+                     单 lane 设备没有可交换的对象，这条能力应当不声明",
+                    provide.prim, self.simt.group
+                ),
+            });
         }
 
         // `exec` 的取值必须对得上本档案声明的执行单元，且该单元的存储层必须覆盖这条供给：
@@ -794,9 +881,9 @@ fn parse_constant(table: &Table, key: &str) -> Result<Option<Constant>, ProfileE
         .string("src")
         .ok_or_else(|| missing(&format!("{field}.src")))?
         .to_string();
-    let derived = eval_expression(&src).map_err(|detail| ProfileError::BadValue {
+    let derived = eval_expression(&src).map_err(|error| ProfileError::BadValue {
         field: format!("{field}.src"),
-        detail: format!("推导式 `{src}` 求值失败：{detail}"),
+        detail: format!("推导式 `{src}` 求值失败：{}", error.message()),
     })?;
     // 允许字面量的常规舍入（如 `2.1e12`），但容不下 10% 量级的"抄错一位"。
     let tolerance = value.abs().max(1.0) * 1e-6;
@@ -810,13 +897,18 @@ fn parse_constant(table: &Table, key: &str) -> Result<Option<Constant>, ProfileE
 }
 
 /// 求值一个只用数值字面量、`+ - * /` 与括号的推导式。
-fn eval_expression(text: &str) -> Result<f64, String> {
+///
+/// 失败一律是 `invalid`：推导式是档案的一部分，写错就是声明写错。
+fn eval_expression(text: &str) -> diagnostic::Result<f64> {
     let bytes = text.as_bytes();
     let mut cursor = 0usize;
     let value = eval_sum(text, bytes, &mut cursor)?;
     skip_spaces(bytes, &mut cursor);
     if cursor != bytes.len() {
-        return Err(format!("位置 {cursor} 起有多余内容"));
+        return Err(Error::new(
+            Code::Invalid,
+            format!("位置 {cursor} 起有多余内容"),
+        ));
     }
     Ok(value)
 }
@@ -830,7 +922,7 @@ fn skip_spaces(bytes: &[u8], cursor: &mut usize) {
     }
 }
 
-fn eval_sum(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, String> {
+fn eval_sum(text: &str, bytes: &[u8], cursor: &mut usize) -> diagnostic::Result<f64> {
     let mut value = eval_product(text, bytes, cursor)?;
     loop {
         skip_spaces(bytes, cursor);
@@ -848,7 +940,7 @@ fn eval_sum(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, String>
     }
 }
 
-fn eval_product(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, String> {
+fn eval_product(text: &str, bytes: &[u8], cursor: &mut usize) -> diagnostic::Result<f64> {
     let mut value = eval_atom(text, bytes, cursor)?;
     loop {
         skip_spaces(bytes, cursor);
@@ -861,7 +953,7 @@ fn eval_product(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, Str
                 *cursor += 1;
                 let divisor = eval_atom(text, bytes, cursor)?;
                 if divisor == 0.0 {
-                    return Err("除数为 0".to_string());
+                    return Err(Error::new(Code::Invalid, "除数为 0"));
                 }
                 value /= divisor;
             }
@@ -870,7 +962,7 @@ fn eval_product(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, Str
     }
 }
 
-fn eval_atom(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, String> {
+fn eval_atom(text: &str, bytes: &[u8], cursor: &mut usize) -> diagnostic::Result<f64> {
     skip_spaces(bytes, cursor);
     match bytes.get(*cursor) {
         Some(b'(') => {
@@ -878,7 +970,7 @@ fn eval_atom(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, String
             let value = eval_sum(text, bytes, cursor)?;
             skip_spaces(bytes, cursor);
             if bytes.get(*cursor) != Some(&b')') {
-                return Err("括号没有闭合".to_string());
+                return Err(Error::new(Code::Invalid, "括号没有闭合"));
             }
             *cursor += 1;
             Ok(value)
@@ -903,17 +995,44 @@ fn eval_atom(text: &str, bytes: &[u8], cursor: &mut usize) -> Result<f64, String
                 }
             }
             text[start..*cursor].parse::<f64>().map_err(|error| {
-                format!(
-                    "位置 {start} 的数字 `{}` 非法：{error}",
-                    &text[start..*cursor]
+                Error::new(
+                    Code::Invalid,
+                    format!(
+                        "位置 {start} 的数字 `{}` 非法：{error}",
+                        &text[start..*cursor]
+                    ),
                 )
             })
         }
-        Some(byte) => Err(format!(
-            "位置 {cursor} 处不允许字符 `{}`",
-            char::from(*byte)
+        Some(byte) => Err(Error::new(
+            Code::Invalid,
+            format!("位置 {cursor} 处不允许字符 `{}`", char::from(*byte)),
         )),
-        None => Err("表达式意外结束".to_string()),
+        None => Err(Error::new(Code::Invalid, "表达式意外结束")),
+    }
+}
+
+/// 一个“名字集合”字段的两种合法写法：标量字符串或字符串数组。
+///
+/// 与 `[needs]` 侧同一口径：两层的解析器对同一份签名必须接受同一套写法，否则换个合法写法
+/// 就会静默少一个约束。形状不对时直接报错，不当作“没写”。
+fn names(field: &str, value: &crate::toml::Value) -> Result<Vec<String>, ProfileError> {
+    match value {
+        crate::toml::Value::Str(text) => Ok(vec![text.clone()]),
+        crate::toml::Value::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                crate::toml::Value::Str(text) => Ok(text.clone()),
+                _ => Err(ProfileError::BadValue {
+                    field: field.to_string(),
+                    detail: "数组里只能是字符串".to_string(),
+                }),
+            })
+            .collect(),
+        _ => Err(ProfileError::BadValue {
+            field: field.to_string(),
+            detail: "只接受字符串或字符串数组".to_string(),
+        }),
     }
 }
 
@@ -942,27 +1061,56 @@ fn parse_provide(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
     let impl_name = entry.string("impl").unwrap_or("-").to_string();
     let mut provide = Provide::of(prim, impl_name);
 
-    if let Some(text) = entry.string("m") {
-        provide = provide.with_extent(parse_span(&field("m"), text)?);
+    // 主维度在两层里有三个名字：`[needs]` 与 `[[provides]]` 必须接受同一套，否则同一份
+    // 签名换个合法写法就少一个约束。`m` 是档案侧的书面名，`bytes` / `extent` 是原语维度的
+    // 名字（`Prim::extent_label`），诊断里打印的也是后者。
+    let aliases: Vec<&str> = ["m", "bytes", "extent"]
+        .into_iter()
+        .filter(|alias| entry.get(alias).is_some())
+        .collect();
+    if aliases.len() > 1 {
+        return Err(ProfileError::BadValue {
+            field: field(aliases[0]),
+            detail: format!(
+                "主维度有三个同义名字（`m` / `bytes` / `extent`），只能写一个，这里写了 {}",
+                aliases.len()
+            ),
+        });
     }
-    if let Some(text) = entry.string("n") {
-        provide = provide.with_n(parse_span(&field("n"), text)?);
+    if let Some(alias) = aliases.first() {
+        let text = entry.string(alias).ok_or_else(|| ProfileError::BadValue {
+            field: field(alias),
+            detail: "主维度只能是区间字符串（如 `<=4096`）".to_string(),
+        })?;
+        provide = provide.with_extent(parse_span(&field(alias), text)?);
     }
-    if let Some(text) = entry.string("k") {
-        provide = provide.with_k(parse_span(&field("k"), text)?);
+    for (name, apply) in [
+        ("n", Provide::with_n as fn(Provide, Span) -> Provide),
+        ("k", Provide::with_k),
+    ] {
+        if entry.get(name).is_none() {
+            continue;
+        }
+        let text = entry.string(name).ok_or_else(|| ProfileError::BadValue {
+            field: field(name),
+            detail: "只能是区间字符串（如 `16`、`16..64`）".to_string(),
+        })?;
+        provide = apply(provide, parse_span(&field(name), text)?);
     }
-    if let Some(items) = entry.string_array("dt") {
+    if let Some(value) = entry.get("dt") {
         let mut set = DTypeSet::empty();
-        for item in items {
-            let dt = DType::parse(item).ok_or_else(|| {
+        for item in names(&field("dt"), value)? {
+            let dt = DType::parse(&item).ok_or_else(|| {
                 let names: Vec<&str> = DType::ALL.iter().map(|dt| dt.as_str()).collect();
-                unknown(&field("dt"), item, &names)
+                unknown(&field("dt"), &item, &names)
             })?;
             set.insert(dt);
         }
         provide = provide.with_dt(set);
     }
-    if let Some(items) = entry.string_array("space") {
+    if let Some(value) = entry.get("space") {
+        let items = names(&field("space"), value)?;
+        let items: Vec<&str> = items.iter().map(String::as_str).collect();
         provide = provide.with_space(parse_space_set(&field("space"), &items)?);
     }
     if let Some(text) = entry.string("grade") {
@@ -1010,7 +1158,17 @@ fn parse_provide(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
     for (key, value) in entry.entries() {
         if matches!(
             key.as_str(),
-            "prim" | "impl" | "m" | "n" | "k" | "dt" | "space" | "grade" | "witness"
+            "prim"
+                | "impl"
+                | "m"
+                | "bytes"
+                | "extent"
+                | "n"
+                | "k"
+                | "dt"
+                | "space"
+                | "grade"
+                | "witness"
         ) {
             continue;
         }
@@ -1047,9 +1205,9 @@ fn parse_provide(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
 }
 
 fn parse_span(field: &str, text: &str) -> Result<Span, ProfileError> {
-    Span::parse(text).map_err(|detail| ProfileError::BadValue {
+    Span::parse(text).map_err(|error| ProfileError::BadValue {
         field: field.to_string(),
-        detail,
+        detail: error.message().to_string(),
     })
 }
 
@@ -1074,12 +1232,117 @@ mod tests {
         assert!(profile.providers(Prim::Dot).next().is_some());
     }
 
+    /// 同一个签名字符串在两层里必须接受同一套写法。
+    ///
+    /// `[needs]` 认 `m` / `bytes` / `extent` 三个名字，也认标量形式的 `dt` / `space`；档案层
+    /// 若只认 `m` 与数组，那么同一份签名换个合法写法就会**静默少一个约束**——`space` 甚至
+    /// 没有后续校验能把它捞回来（空集在协商里表现为"缺空间"，离原因很远）。
+    #[test]
+    fn a_provide_accepts_the_same_signature_spellings_as_a_need() {
+        let mut text = cpu().to_string();
+        text.push_str(
+            "\n[[provides]]\n\
+             prim    = \"load\"\n\
+             impl    = \"scalar_copy_alias\"\n\
+             bytes   = \"<=4096\"\n\
+             dt      = \"f32\"\n\
+             space   = \"FAST\"\n\
+             src     = \"GM\"\n\
+             dst     = \"FAST\"\n\
+             grade   = \"L0\"\n",
+        );
+        let profile = Profile::parse(&text).expect("档案层必须接受与 `[needs]` 相同的写法");
+        let provide = profile.provides.last().expect("新加的供给");
+        assert_eq!(provide.prim, Prim::Load);
+        assert_eq!(
+            provide.extent,
+            Span::at_most(4096),
+            "`bytes` 是主维度的别名"
+        );
+        assert!(provide.dt.contains(DType::F32), "标量 `dt` 不能被丢掉");
+        assert!(
+            provide.space.contains(Space::Fast),
+            "标量 `space` 不能被静默跳过"
+        );
+        let value = |key: AttrKey| {
+            provide
+                .attrs
+                .iter()
+                .find(|attr| attr.key() == key)
+                .and_then(|attr| attr.values().first())
+                .map(String::as_str)
+        };
+        assert_eq!(value(AttrKey::Src), Some("GM"));
+        assert_eq!(value(AttrKey::Dst), Some("FAST"));
+    }
+
+    /// 看不懂的写法要报错，不能当作"没写"。
+    #[test]
+    fn a_signature_field_with_the_wrong_shape_is_an_error() {
+        for entry in ["space = 3", "n = 16"] {
+            let mut text = cpu().to_string();
+            text.push_str(&format!(
+                "\n[[provides]]\n\
+                 prim  = \"dot\"\n\
+                 impl  = \"scalar_fma\"\n\
+                 {entry}\n\
+                 grade = \"L0\"\n"
+            ));
+            let error = Profile::parse(&text).expect_err(&format!("`{entry}` 不能当成没写"));
+            assert!(
+                error
+                    .to_string()
+                    .contains(entry.split(' ').next().expect("字段名")),
+                "{error}"
+            );
+        }
+    }
+
+    /// 一个维度只有一个名字：同时写 `m` 与 `bytes` 会让"哪个生效"取决于遍历顺序，
+    /// 而档案是数据，不该有顺序语义。
+    #[test]
+    fn two_names_for_one_dimension_are_an_error() {
+        let mut text = cpu().to_string();
+        text.push_str(
+            "\n[[provides]]\n\
+             prim  = \"load\"\n\
+             impl  = \"scalar_copy\"\n\
+             m     = \"<=4096\"\n\
+             bytes = \"<=4096\"\n\
+             grade = \"L0\"\n",
+        );
+        let error = Profile::parse(&text).expect_err("一个维度只能写一个名字");
+        assert!(error.to_string().contains("只能写一个"), "{error}");
+    }
+
     #[test]
     fn builtin_cpu_profile_is_schema_valid() {
         let profile = Profile::parse(cpu()).expect("可解析");
         // 见证文件属于片段层（`crates/prim`），本 crate 只校验 schema 与 `[units]`；
         // "见证真的存在"由 `cutile` 的 `Catalogue::validate(Some(root))` 负责。
         profile.validate(None).expect("CPU 档案必须自洽");
+    }
+
+    /// 属性键属于原语自己的签名：`sat` 是 `cvt` 的参数，`load` 写上它只会让档案看起来
+    /// 更具体——协商只比对需求里出现的键，这条永远读不到。
+    #[test]
+    fn an_attr_key_must_belong_to_its_primitive() {
+        let mut profile = Profile::parse(cpu()).expect("可解析");
+        let load = profile
+            .provides
+            .iter_mut()
+            .find(|provide| provide.prim == Prim::Load)
+            .expect("cpu 有 load 供给");
+        load.attrs.push(Attr::new(AttrKey::Sat, ["off"]));
+        let errors = profile.validate(None).unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ProfileError::Unknown { field, value, .. }
+                    if field == "provides[load].sat" && value == "sat"
+            )),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -1196,6 +1459,20 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 见证文件不在是 `missing`，不是"档案写错"：两者在脚本里该分开处理。
+    #[test]
+    fn a_missing_witness_file_is_missing() {
+        let dir = std::env::temp_dir().join(format!("prof-witness-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let profile = Profile::parse(cpu()).expect("可解析");
+        let errors = profile.validate(Some(&dir)).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.code() == Code::Missing),
+            "见证文件不在应是 `missing`：{errors:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 见证可以先落成数据：等级还是 L0/L1 时，声明过的文件与函数名同样要校验，
     /// 否则命名写错会一直潜伏到升 L2 才暴露。
     #[test]
@@ -1286,9 +1563,32 @@ mod tests {
     fn only_verified_provides_satisfy_needs() {
         let profile = Profile::parse(cpu()).expect("可解析");
         let need = Need::of(Prim::Atomic);
-        // CPU 档案把 atomic 声明在 L1：未验证视为不具备。
+        // CPU 档案把 atomic 声明在 L0：未验证视为不具备。
         assert!(!profile.satisfies(&need));
         assert!(profile.providers(Prim::Atomic).next().is_some());
+    }
+
+    /// 子组内交换/广播以"有第二条 lane"为前提：单 lane 设备声明它只会造出自欺的证据。
+    ///
+    /// `[simt]` 此前完全不进能力比对，warp 宽度契约因此没有校验入口；这条把它变成装载期
+    /// 判据，而不是档案作者的自觉。
+    #[test]
+    fn a_single_lane_device_may_not_declare_a_lane_exchange() {
+        let mut profile = Profile::parse(cpu()).expect("可解析");
+        assert_eq!(profile.simt.group, 1, "前提：CPU 是单 lane");
+        let template = profile.provides[0].clone();
+        let mut shuffle = template;
+        shuffle.prim = Prim::Shuffle;
+        shuffle.impl_name = "fake_shuffle".to_string();
+        shuffle.dt = DTypeSet::of([DType::F32]);
+        profile.provides.push(shuffle);
+        let errors = profile.validate(None).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("`[simt].group > 1`")),
+            "{errors:?}"
+        );
     }
 
     /// 昇腾档案原文：执行单元与"哪一层只有谁能访问"全在数据里。

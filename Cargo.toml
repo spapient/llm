@@ -28,6 +28,7 @@ exec = { path = "crates/exec", package = "llm-exec" }
 kv = { path = "crates/kv", package = "llm-kv" }
 nn = { path = "crates/nn", package = "llm-nn" }
 op = { path = "crates/op", package = "llm-op" }
+prim = { path = "crates/prim", package = "llm-prim" }
 prof = { path = "crates/prof", package = "llm-prof" }
 serve = { path = "crates/serve", package = "llm-serve" }
 tensor = { path = "crates/tensor", package = "llm-tensor" }
@@ -35,6 +36,10 @@ tokenizer = { path = "crates/tokenizer", package = "llm-tokenizer" }
 tool = { path = "crates/tool", package = "llm-tool" }
 train = { path = "crates/train", package = "llm-train" }
 weights = { path = "crates/weights", package = "llm-weights" }
+
+[features]
+# 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prim/build.rs`）。
+device-image = ["cutile/device-image"]
 
 [lints]
 workspace = true

@@ -1,13 +1,15 @@
-//! 训练循环的状态：[`Schedule`]、[`Step`]、[`Checkpoint`]。
+//! 训练循环的状态：[`Schedule`]、[`Step`]、[`Checkpoint`]，以及激活缓冲 [`Buffers`]。
 //!
-//! **拥有**：`Schedule`、`Step`、`Checkpoint`。**不拥有**：反传公式（`autograd` 记录顺序、算子表
-//! 提供公式）、样本生成（`data`）、层定义（`nn`）、参数（`weights`）、拓扑（`shard`）。
-//! **依赖**：`nn`、`autograd`、`data`、`weights`、`shard`、`checkpoint`、`diagnostic`。
-//! **被依赖**：`llm`。
+//! **拥有**：`Schedule`、`Step`、`Checkpoint`、`Buffers`、`Kernel`、`Reference`、`Data`、
+//! `View`、`ViewMut`。**不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
+//! 计划（`autograd::Plan`）、样本生成（`data`）、层定义（`nn`）、参数（`weights`）、拓扑
+//! （`shard`）、算子语义（`op`）。**依赖**：`nn`、`autograd`、`data`、`weights`、`shard`、
+//! `checkpoint`、`tensor`、`op`、`diagnostic`。**被依赖**：`llm`。
 //!
-//! 这一层只回答"训练到哪了、能不能恢复"：学习率是完全确定的函数，检查点记录的是**恢复所需的最小
-//! 事实集**（步数、图规模、批形状、层数、权重条目数、并行度）。少了任何一项，恢复出来的都不是
-//! 原来那次训练。
+//! 这一层回答两件事：**训练到哪了、能不能恢复**——学习率是完全确定的函数，检查点记录的是
+//! "恢复所需的最小事实集"（步数、图规模、批形状、层数、权重条目数、并行度），少任何一项恢复出来
+//! 的都不是原来那次训练；**激活放在哪、什么时候还**——[`Buffers`] 是 `autograd::Store` 在训练侧
+//! 的实现，把重放要的值放进真实内存，算的部分交给 [`Kernel`]。
 //!
 //! # 例子
 //!
@@ -22,7 +24,11 @@
 
 #![deny(unsafe_code)]
 
+mod store;
+
 use diagnostic::{Code, Error, Result};
+
+pub use store::{Buffers, Data, Kernel, Reference, View, ViewMut};
 
 /// 一条训练步记录。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -171,13 +177,8 @@ impl Checkpoint {
     /// 文件格式由 `checkpoint` 拥有：本层只回答"恢复需要知道什么"，编码、版本与偏移校验
     /// 不在训练循环里再做一遍。
     pub fn snapshot(&self, weights: &weights::Header) -> Result<checkpoint::Snapshot> {
-        checkpoint::Snapshot::new(
-            self.step,
-            self.world,
-            self.layers,
-            self.batch_rows,
-            weights.clone(),
-        )
+        let facts = checkpoint::Facts::new(self.step, self.world, self.layers, self.batch_rows)?;
+        Ok(checkpoint::Snapshot::new(facts, weights.clone()))
     }
 }
 
@@ -277,12 +278,13 @@ mod tests {
         let checkpoint = Checkpoint::new(7, &tape, &batch, 2, &header, topology).expect("检查点");
 
         let snapshot = checkpoint.snapshot(&header).expect("快照");
-        let bytes = snapshot.encode().expect("编码");
+        let bytes = snapshot.encode();
         let restored = checkpoint::Snapshot::decode(&bytes).expect("解码");
-        assert_eq!(restored.step(), checkpoint.step());
-        assert_eq!(restored.world(), checkpoint.world());
-        assert_eq!(restored.layers(), checkpoint.layers());
-        assert_eq!(restored.batch_rows(), checkpoint.batch_rows());
+        let facts = restored.facts();
+        assert_eq!(facts.step(), checkpoint.step());
+        assert_eq!(facts.world(), checkpoint.world());
+        assert_eq!(facts.layers(), checkpoint.layers());
+        assert_eq!(facts.batch_rows(), checkpoint.batch_rows());
         assert_eq!(
             restored.weights().entries().len(),
             checkpoint.weight_entries()
