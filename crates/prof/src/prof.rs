@@ -4,7 +4,8 @@
 //! （存储层物理名、输出语言、工具链、能力区间）都在这份数据里，而不是在代码里。
 
 use crate::atom::{
-    Attr, AttrKey, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span, Witness,
+    Attr, AttrKey, Closed, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
+    Witness,
 };
 use crate::toml::{self, Table};
 use core::fmt;
@@ -36,9 +37,9 @@ pub enum Emit {
     Wgsl,
 }
 
-impl Emit {
+impl Closed for Emit {
     /// 闭集全量。
-    pub const ALL: [Self; 9] = [
+    const ALL: &'static [Self] = &[
         Self::Cuda,
         Self::Ptx,
         Self::Hip,
@@ -51,7 +52,7 @@ impl Emit {
     ];
 
     /// 档案与缓存里使用的名字。
-    pub const fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Cuda => "cuda",
             Self::Ptx => "ptx",
@@ -65,6 +66,14 @@ impl Emit {
         }
     }
 
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+crate::inherent_names!(Emit);
+
+impl Emit {
     /// 生成的源文件扩展名。
     pub const fn ext(self) -> &'static str {
         match self {
@@ -78,11 +87,6 @@ impl Emit {
             Self::C => "c",
             Self::Wgsl => "wgsl",
         }
-    }
-
-    /// 从名字解析。
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|emit| emit.as_str() == name)
     }
 }
 
@@ -497,7 +501,7 @@ impl Profile {
                 spaces.push((space, name.clone()));
             }
         }
-        for space in Space::ALL {
+        for space in Space::ALL.iter().copied() {
             if !spaces.iter().any(|(have, _)| *have == space) {
                 return Err(missing(&format!(
                     "space.{}（三级存储的语义名必须齐全）",
@@ -796,7 +800,7 @@ impl Profile {
             for value in exec.values() {
                 match self.units.iter().find(|unit| unit.name == *value) {
                     Some(unit) => {
-                        for space in Space::ALL {
+                        for space in Space::ALL.iter().copied() {
                             if unit.space.contains(space) {
                                 reachable.insert(space);
                             }

@@ -4,7 +4,166 @@
 //! （DESIGN §5.2）。因此 [`Provide::covers`] 只做一次区间包含判定，协商不需要任何启发式。
 
 use core::fmt;
+use core::hash::Hash;
+use core::marker::PhantomData;
 use diagnostic::{Code, Error};
+
+/// 闭集：词汇表本身，而不是"一个枚举"。
+///
+/// 每个词汇表都要回答三件事，因此它们写成契约而不是各抄一遍：`ALL` 是全量与顺序的**唯一**
+/// 事实源，`as_str` 是跨层共用的名字（TOML、诊断、模板字符串是同一个），`index` 是位集下标。
+/// [`Self::parse`] 由前两者默认实现：闭集外的名字一律 `None`，"闭集里有哪些"的文案由调用方给
+/// （它比这里更清楚读者在写哪一行）。
+///
+/// 契约是**可静态判定**的：`ALL` 与 `index` 都是常量，`Set` 的位宽因此能在编译期核对，
+/// 词汇表的增减只改一个 `impl`，不牵动任何分发。
+pub trait Closed: Copy + Eq + Ord + Hash + 'static {
+    /// 闭集全量；顺序即 [`Self::index`]，也是诊断里的顺序。
+    const ALL: &'static [Self];
+
+    /// 跨层名字。
+    fn as_str(self) -> &'static str;
+
+    /// 位集下标；必须落在 `0..ALL.len()`。
+    fn index(self) -> usize;
+
+    /// 按名字解析；闭集外返回 `None`。
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|item| item.as_str() == name)
+    }
+}
+
+/// 一个闭集的位集。
+///
+/// 宽度是 `WORDS` 个 `u64`（const 参数），因此集合是 `Copy`、无堆分配，容量在编译期核对：
+/// `Set<E, 1>` 装不下 `E::ALL.len() > 64` 的闭集，那是编译错误而不是越界。
+///
+/// 一份实现覆盖所有闭集："空集 / 插入 / 包含 / 子集 / 差集 / 按闭集顺序列名字"只有这一处代码，
+/// `DTypeSet` / `SpaceSet` 这类别名因此不必各自再写一遍位运算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Set<E: Closed, const WORDS: usize> {
+    bits: [u64; WORDS],
+    element: PhantomData<fn() -> E>,
+}
+
+/// 每个 `u64` 能表示的元素个数。
+const WORD_BITS: usize = u64::BITS as usize;
+
+impl<E: Closed, const WORDS: usize> Set<E, WORDS> {
+    /// 容量自证：闭集放得进 `WORDS` 个 word。
+    ///
+    /// 引用它的每个构造点都会让编译器在**单态化时**求值，因此写错宽度是编译错误。
+    const FITS: () = assert!(
+        E::ALL.len() <= WORDS * WORD_BITS,
+        "位集容量不足：加大 `WORDS`"
+    );
+
+    /// 空集。
+    pub const fn empty() -> Self {
+        let () = Self::FITS;
+        Self {
+            bits: [0; WORDS],
+            element: PhantomData,
+        }
+    }
+
+    /// 由元素列表构造。
+    pub fn of(items: impl IntoIterator<Item = E>) -> Self {
+        let mut set = Self::empty();
+        for item in items {
+            set.insert(item);
+        }
+        set
+    }
+
+    /// 加入一个元素。
+    pub fn insert(&mut self, item: E) {
+        let () = Self::FITS;
+        self.bits[item.index() / WORD_BITS] |= 1 << (item.index() % WORD_BITS);
+    }
+
+    /// 是否包含某元素。
+    pub fn contains(self, item: E) -> bool {
+        self.bits[item.index() / WORD_BITS] & (1 << (item.index() % WORD_BITS)) != 0
+    }
+
+    /// 是否为空集。
+    pub const fn is_empty(self) -> bool {
+        let mut index = 0;
+        while index < WORDS {
+            if self.bits[index] != 0 {
+                return false;
+            }
+            index += 1;
+        }
+        true
+    }
+
+    /// 元素个数。
+    pub const fn len(self) -> u32 {
+        let mut total = 0;
+        let mut index = 0;
+        while index < WORDS {
+            total += self.bits[index].count_ones();
+            index += 1;
+        }
+        total
+    }
+
+    /// `self` 是否是 `other` 的子集。
+    pub const fn is_subset(self, other: Self) -> bool {
+        let mut index = 0;
+        while index < WORDS {
+            if self.bits[index] & !other.bits[index] != 0 {
+                return false;
+            }
+            index += 1;
+        }
+        true
+    }
+
+    /// 在 `self` 中而不在 `other` 中的元素。
+    pub const fn difference(self, other: Self) -> Self {
+        let mut bits = [0; WORDS];
+        let mut index = 0;
+        while index < WORDS {
+            bits[index] = self.bits[index] & !other.bits[index];
+            index += 1;
+        }
+        Self {
+            bits,
+            element: PhantomData,
+        }
+    }
+
+    /// 按闭集顺序迭代（不分配）。
+    pub fn iter(self) -> impl Iterator<Item = E> {
+        E::ALL
+            .iter()
+            .copied()
+            .filter(move |item| self.contains(*item))
+    }
+
+    /// 逐名字列出（升序，与闭集顺序一致）。
+    pub fn names(self) -> Vec<&'static str> {
+        self.iter().map(E::as_str).collect()
+    }
+}
+
+impl<E: Closed, const WORDS: usize> Default for Set<E, WORDS> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<E: Closed, const WORDS: usize> fmt::Display for Set<E, WORDS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return f.write_str("-");
+        }
+        f.write_str(&self.names().join(","))
+    }
+}
 
 /// 原语闭集：模板唯一能调用的 16 个指令级操作（DESIGN §5.1 的 P1–P16）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -43,9 +202,9 @@ pub enum Prim {
     Atomic,
 }
 
-impl Prim {
+impl Closed for Prim {
     /// 闭集全量，顺序与 DESIGN §5.1 一致。
-    pub const ALL: [Self; 16] = [
+    const ALL: &'static [Self] = &[
         Self::Mma,
         Self::Dot,
         Self::Load,
@@ -65,7 +224,7 @@ impl Prim {
     ];
 
     /// 声明层、档案层与片段层共用的名字。
-    pub const fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Mma => "mma",
             Self::Dot => "dot",
@@ -86,11 +245,12 @@ impl Prim {
         }
     }
 
-    /// 从闭集名字解析；闭集外返回 `None`，由调用方补全"闭集是什么"的报错文案。
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|prim| prim.as_str() == name)
+    fn index(self) -> usize {
+        self as usize
     }
+}
 
+impl Prim {
     /// 主维度在诊断里的名字：`mma` 是 `m`、搬运是 `bytes`、`dot` 是 `lanes`。
     pub const fn extent_label(self) -> &'static str {
         match self {
@@ -172,9 +332,9 @@ pub enum DType {
     I32,
 }
 
-impl DType {
+impl Closed for DType {
     /// 闭集全量。
-    pub const ALL: [Self; 9] = [
+    const ALL: &'static [Self] = &[
         Self::F16,
         Self::Bf16,
         Self::F32,
@@ -187,7 +347,7 @@ impl DType {
     ];
 
     /// DSL 与档案里使用的名字。
-    pub const fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::F16 => "f16",
             Self::Bf16 => "bf16",
@@ -201,6 +361,12 @@ impl DType {
         }
     }
 
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+impl DType {
     /// 单元素位宽。
     pub const fn size_bits(self) -> u32 {
         match self {
@@ -209,16 +375,6 @@ impl DType {
             Self::F16 | Self::Bf16 => 16,
             Self::F32 | Self::I32 => 32,
         }
-    }
-
-    /// 在闭集里的索引，供 [`DTypeSet`] 做位集。
-    const fn index(self) -> usize {
-        self as usize
-    }
-
-    /// 从闭集名字解析。
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|dt| dt.as_str() == name)
     }
 }
 
@@ -229,72 +385,7 @@ impl fmt::Display for DType {
 }
 
 /// 数据类型集合（位集），协商时做子集判定。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
-pub struct DTypeSet(u32);
-
-impl DTypeSet {
-    /// 空集。
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    /// 加入一个类型。
-    pub fn insert(&mut self, dt: DType) {
-        self.0 |= 1 << dt.index();
-    }
-
-    /// 由类型列表构造。
-    pub fn of(dts: impl IntoIterator<Item = DType>) -> Self {
-        let mut set = Self::empty();
-        for dt in dts {
-            set.insert(dt);
-        }
-        set
-    }
-
-    /// 是否包含某类型。
-    pub const fn contains(self, dt: DType) -> bool {
-        self.0 & (1 << dt.index()) != 0
-    }
-
-    /// 是否为空集。
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// 元素个数。
-    pub const fn len(self) -> u32 {
-        self.0.count_ones()
-    }
-
-    /// `self` 是否是 `other` 的子集。
-    pub const fn is_subset(self, other: Self) -> bool {
-        self.0 & !other.0 == 0
-    }
-
-    /// 在 `self` 中而不在 `other` 中的元素。
-    pub const fn difference(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
-
-    /// 逐名字列出（升序，与闭集顺序一致）。
-    pub fn names(self) -> Vec<&'static str> {
-        DType::ALL
-            .into_iter()
-            .filter(|dt| self.contains(*dt))
-            .map(DType::as_str)
-            .collect()
-    }
-}
-
-impl fmt::Display for DTypeSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_empty() {
-            return f.write_str("-");
-        }
-        f.write_str(&self.names().join(","))
-    }
-}
+pub type DTypeSet = Set<DType, 1>;
 
 /// 三级存储的语义名（DESIGN §6.3）：物理名由档案映射。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -307,12 +398,12 @@ pub enum Space {
     Reg,
 }
 
-impl Space {
+impl Closed for Space {
     /// 闭集全量。
-    pub const ALL: [Self; 3] = [Self::Gm, Self::Fast, Self::Reg];
+    const ALL: &'static [Self] = &[Self::Gm, Self::Fast, Self::Reg];
 
     /// 模板与档案里使用的名字（大写，与 DESIGN 一致）。
-    pub const fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Gm => "GM",
             Self::Fast => "FAST",
@@ -320,14 +411,8 @@ impl Space {
         }
     }
 
-    /// 在闭集里的索引。
-    const fn index(self) -> usize {
+    fn index(self) -> usize {
         self as usize
-    }
-
-    /// 从名字解析。
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|space| space.as_str() == name)
     }
 }
 
@@ -338,67 +423,7 @@ impl fmt::Display for Space {
 }
 
 /// 存储空间集合（位集）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
-pub struct SpaceSet(u32);
-
-impl SpaceSet {
-    /// 空集。
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    /// 加入一个存储空间。
-    pub fn insert(&mut self, space: Space) {
-        self.0 |= 1 << space.index();
-    }
-
-    /// 由列表构造。
-    pub fn of(spaces: impl IntoIterator<Item = Space>) -> Self {
-        let mut set = Self::empty();
-        for space in spaces {
-            set.insert(space);
-        }
-        set
-    }
-
-    /// 是否包含某空间。
-    pub const fn contains(self, space: Space) -> bool {
-        self.0 & (1 << space.index()) != 0
-    }
-
-    /// 是否为空集。
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// `self` 是否是 `other` 的子集。
-    pub const fn is_subset(self, other: Self) -> bool {
-        self.0 & !other.0 == 0
-    }
-
-    /// 在 `self` 中而不在 `other` 中的元素。
-    pub const fn difference(self, other: Self) -> Self {
-        Self(self.0 & !other.0)
-    }
-
-    /// 逐名字列出。
-    pub fn names(self) -> Vec<&'static str> {
-        Space::ALL
-            .into_iter()
-            .filter(|space| self.contains(*space))
-            .map(Space::as_str)
-            .collect()
-    }
-}
-
-impl fmt::Display for SpaceSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_empty() {
-            return f.write_str("-");
-        }
-        f.write_str(&self.names().join(","))
-    }
-}
+pub type SpaceSet = Set<Space, 1>;
 
 /// 一个闭区间（含两端）。`exact(16)` 表示"只能 16"，`at_most(512)` 表示"≤ 512"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -550,9 +575,9 @@ pub enum AttrKey {
     Exec,
 }
 
-impl AttrKey {
+impl Closed for AttrKey {
     /// 闭集全量。
-    pub const ALL: [Self; 11] = [
+    const ALL: &'static [Self] = &[
         Self::Op,
         Self::Axis,
         Self::Kind,
@@ -567,7 +592,7 @@ impl AttrKey {
     ];
 
     /// 声明层里使用的键名。
-    pub const fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Op => "op",
             Self::Axis => "axis",
@@ -583,9 +608,8 @@ impl AttrKey {
         }
     }
 
-    /// 从键名解析；闭集外返回 `None`。
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|key| key.as_str() == name)
+    fn index(self) -> usize {
+        self as usize
     }
 }
 
@@ -739,12 +763,12 @@ pub enum Grade {
     L3,
 }
 
-impl Grade {
+impl Closed for Grade {
     /// 闭集全量，从低到高。
-    pub const ALL: [Self; 4] = [Self::L0, Self::L1, Self::L2, Self::L3];
+    const ALL: &'static [Self] = &[Self::L0, Self::L1, Self::L2, Self::L3];
 
     /// 渲染名。
-    pub const fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::L0 => "L0",
             Self::L1 => "L1",
@@ -753,11 +777,12 @@ impl Grade {
         }
     }
 
-    /// 解析 `L0`–`L3`。
-    pub fn parse(text: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|grade| grade.as_str() == text)
+    fn index(self) -> usize {
+        self as usize
     }
+}
 
+impl Grade {
     /// 是否达到"可用于协商"的门槛（`L2`）。
     pub const fn is_verified(self) -> bool {
         matches!(self, Self::L2 | Self::L3)
@@ -769,6 +794,39 @@ impl fmt::Display for Grade {
         f.write_str(self.as_str())
     }
 }
+
+/// 为每个闭集补一份**同名**的固有转发：`Prim::ALL` / `prim.as_str()` / `Prim::parse(..)`。
+///
+/// 转发而不是复制逻辑：三个符号都直接转到 [`crate::atom::Closed`]，所以"名字表只有一份"这条
+/// 不变量仍然成立；而调用方不必为了叫出一个词汇表的名字去 `use` 一个 trait —— `as_str` 是跨层
+/// 到处都在用的名字，让它既是契约的一部分、又仍然可以直接调用，比让每个调用点补一行 `use`
+/// 更可审计。其他层（`op` 的骨架与调度）用同一份转发，词汇表因此不是"每个 crate 抄一遍"。
+#[macro_export]
+macro_rules! inherent_names {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl $ty {
+                /// 闭集全量（见 [`crate::atom::Closed::ALL`]）。
+                pub const ALL: &'static [Self] = <Self as $crate::atom::Closed>::ALL;
+
+                /// 跨层名字（见 [`crate::atom::Closed::as_str`]）。
+                #[must_use]
+                pub fn as_str(self) -> &'static str {
+                    <Self as $crate::atom::Closed>::as_str(self)
+                }
+
+                /// 按名字解析（见 [`crate::atom::Closed::parse`]）。
+                #[must_use]
+                pub fn parse(name: &str) -> Option<Self> {
+                    <Self as $crate::atom::Closed>::parse(name)
+                }
+
+            }
+        )*
+    };
+}
+
+inherent_names!(Prim, DType, Space, AttrKey, Grade);
 
 /// 一条可执行的见证（DESIGN §11.3）：源码、入口函数与期望输出。
 ///
@@ -1030,19 +1088,55 @@ mod tests {
     #[test]
     fn closed_sets_round_trip() {
         assert_eq!(Prim::ALL.len(), 16);
-        for prim in Prim::ALL {
+        for prim in Prim::ALL.iter().copied() {
             assert_eq!(Prim::parse(prim.as_str()), Some(prim));
         }
-        for dt in DType::ALL {
+        for dt in DType::ALL.iter().copied() {
             assert_eq!(DType::parse(dt.as_str()), Some(dt));
         }
-        for space in Space::ALL {
+        for space in Space::ALL.iter().copied() {
             assert_eq!(Space::parse(space.as_str()), Some(space));
         }
-        for key in AttrKey::ALL {
+        for key in AttrKey::ALL.iter().copied() {
             assert_eq!(AttrKey::parse(key.as_str()), Some(key));
         }
         assert_eq!(Prim::parse("tma_bulk"), None);
+    }
+
+    #[test]
+    fn index_is_the_position_in_the_closed_set() {
+        // 位集下标就是 `ALL` 里的位置：这条不变量让“加一个原语只改一个 impl”成立，
+        // 也让 `Set<E, 1>` 的容量自证有意义（超过 64 个元素要显式加宽）。
+        fn positions<T: Closed>(label: &str) {
+            for (position, item) in T::ALL.iter().copied().enumerate() {
+                assert_eq!(item.index(), position, "{label}: {}", item.as_str());
+            }
+        }
+        positions::<Prim>("prim");
+        positions::<DType>("dtype");
+        positions::<Space>("space");
+        positions::<AttrKey>("attr");
+        positions::<Grade>("grade");
+    }
+
+    #[test]
+    fn a_set_holds_every_element_of_its_closed_set() {
+        let all = SpaceSet::of(Space::ALL.iter().copied());
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().eq(Space::ALL.iter().copied()));
+        assert_eq!(all.names(), vec!["GM", "FAST", "REG"]);
+        assert_eq!(all.to_string(), "GM,FAST,REG");
+        assert!(SpaceSet::empty().is_subset(all));
+        assert!(!all.is_subset(SpaceSet::empty()));
+        assert_eq!(all.difference(all).len(), 0);
+        assert_eq!(SpaceSet::of([Space::Fast]).difference(all).len(), 0);
+        assert_eq!(
+            all.difference(SpaceSet::of([Space::Fast])).to_string(),
+            "GM,REG"
+        );
+        // 宽度自证：`Set<E, 1>` 装得下所有闭集，因此常量构造在编译期就通过检查。
+        const EMPTY: SpaceSet = SpaceSet::empty();
+        assert!(EMPTY.is_empty());
     }
 
     #[test]

@@ -172,6 +172,11 @@ pub struct DeviceInfo {
     /// `verify` 报的是另一件事——真正编出产物的那条（`backend::detect` 依次试 `cc`/`clang`/`gcc`）。
     /// 两者在只装了 `clang` 的机器上会不同，这正是要分别写出来的原因。
     pub toolchain: Option<String>,
+    /// 编译参数（档案的 `[compile].flags`，按声明顺序）。
+    ///
+    /// 能力是「片段 + 工具链 + 参数」三元组：同一份片段在这一组参数下被证明可用，换一组就是
+    /// 另一次代码生成。报告里写出它，读者才能回答"这份证据适用于哪次编译"。
+    pub flags: String,
     /// `GM` / `FAST` / `REG` 的容量（档案原文，单位自带）。
     pub spaces: [String; 3],
     /// 执行单元（名字与可访问的存储层）。
@@ -238,6 +243,11 @@ pub struct Verified {
     /// 不相容不改等级：证据可以在别的机器上取得，登记值说明的是"这条证据按哪个版本记的"。
     /// 但报告必须把差异说出来，否则"换了一台机器、换了一个编译器"会静悄悄地发生。
     pub toolchain_agrees: bool,
+    /// 这次编译用的参数（档案的 `[compile].flags`）：证据与产物都对它成立。
+    ///
+    /// 它与 [`Verified::toolchain`] 是同一个问题的两半：谁编的、用什么参数编的。产物身份把两者
+    /// 都算了进去，所以参数一变就重编、重跑，报告里的数字也跟着指向新的那一次。
+    pub flags: String,
     /// 缓存键（十六进制）。
     pub key: String,
     /// 编译产物：形状矩阵的每一项一份（`reused` 为真表示那次没调用编译器）。
@@ -435,12 +445,14 @@ pub struct Bench {
     pub artifact: Artifact,
     /// 这次跑通的见证条数：计时之前必须已有证据，否则测的是一条未经确认的能力。
     pub proven: usize,
+    /// 这次编译用的参数（档案的 `[compile].flags`）：计时与产物都属于这一组。
+    pub flags: String,
 }
 
 impl Bench {
-    /// 口径结论：达成率只在 `Reached`/`Below` 时参与 L3 判定。
-    pub fn verdict(&self) -> Verdict {
-        classify(self.measured.bandwidth_ratio, self.in_fast())
+    /// §16 的性能判据：达成率与它的尺子一起给（口径无效时 [`Performance::is_measured`] 为假）。
+    pub fn performance(&self) -> Performance {
+        Performance::new(self.measured.bandwidth_ratio, self.in_fast())
     }
 
     /// 工作集是否落在档案声明的 FAST 容量内（重复执行会命中缓存）。
@@ -475,6 +487,40 @@ fn classify(ratio: Option<f64>, cache_resident: bool) -> Verdict {
         _ if cache_resident => Verdict::CacheResident,
         Some(ratio) if ratio >= L3_THRESHOLD => Verdict::Reached,
         Some(_) => Verdict::Below,
+    }
+}
+
+/// §16 的性能判据：一个达成率连同它的尺子一起给。
+///
+/// §16 把「性能」写成一条 Go/No-Go 判据，可 P0 能测的只有 roofline 达成率（实测带宽 ÷ 档案声明的
+/// 峰值），不是「相对原生库的 85%」——仓库里没有原生库的对照实现，那个数要等 P1 才有分母。判据因此
+/// 落在 70% 上（与 §12.1 的 `Reached` / §12.3 的 L3 门槛同一把尺子），而口径无效时如实报“未测量”：
+/// 一条说不出尺子的达成率不是这条判据的证据，没结论比假结论更接近事实。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Performance {
+    /// 实测 / 档案峰值；档案没声明峰值或耗时为 0 时为 `None`。
+    pub ratio: Option<f64>,
+    /// 口径与判定（与 [`Bench::performance`] 共用同一个判定）。
+    pub verdict: Verdict,
+}
+
+impl Performance {
+    /// 由达成率与工作集判定。
+    pub fn new(ratio: Option<f64>, cache_resident: bool) -> Self {
+        Self {
+            ratio,
+            verdict: classify(ratio, cache_resident),
+        }
+    }
+
+    /// 这个数是否参与判定：口径无效的达成率按 §12.3 视为未测量。
+    pub const fn is_measured(&self) -> bool {
+        matches!(self.verdict, Verdict::Reached | Verdict::Below)
+    }
+
+    /// §16「某设备 < 70%」的结论：这台设备承认需要特化代码（从“配置化”降级为“手写 + 片段复用”）。
+    pub const fn needs_specialisation(&self) -> bool {
+        matches!(self.verdict, Verdict::Below)
     }
 }
 
@@ -533,6 +579,7 @@ pub fn doctor(
         tool: profile.meta.tool.to_string(),
         tool_ver: profile.meta.tool_ver.to_string(),
         toolchain: backend::probe(&profile.meta.tool).map(|tool| tool.id()),
+        flags: profile.flags.join(" "),
         spaces: [
             space::physical(profile, Space::Gm).to_string(),
             space::physical(profile, Space::Fast).to_string(),
@@ -591,7 +638,8 @@ pub fn doctor(
     // `build::source` 会再判一次契约——它必须能独立保证产物合法，而这里要的是判定用的输入。
     let uses = build::contract(op, profile, &path)?;
     report.storage = Space::ALL
-        .into_iter()
+        .iter()
+        .copied()
         .map(|space| Storage {
             space,
             physical: space::physical(profile, space).to_string(),
@@ -655,12 +703,9 @@ pub fn verify(
         if let Some(error) = evidence.failure {
             entries.push(VerifyEntry::Failed {
                 label,
-                error: if self_checked == 0 {
-                    error
-                } else {
-                    error.with(format!(
-                        "见证自检 {self_checked} 条通过（host C ABI，不含设备执行）"
-                    ))
+                error: match witness_note(witnesses, self_checked, &evidence.language) {
+                    Some(note) => error.with(note),
+                    None => error,
                 },
             });
             continue;
@@ -675,12 +720,9 @@ pub fn verify(
                 }
                 Err(error) => VerifyEntry::Failed {
                     label,
-                    error: if self_checked == 0 {
-                        error
-                    } else {
-                        error.with(format!(
-                            "见证自检 {self_checked} 条通过（host C ABI，不含设备执行）"
-                        ))
+                    error: match witness_note(witnesses, self_checked, &evidence.language) {
+                        Some(note) => error.with(note),
+                        None => error,
                     },
                 },
             },
@@ -692,6 +734,40 @@ pub fn verify(
         entries,
         negotiations: negotiations(op, catalogue, devices),
     })
+}
+
+/// 失败文案后面补一句"哪些见证真的跑过了"。
+///
+/// 设备执行、自检、语法门是三种效力不同的结论，不能合成一个数：设备执行是这台机器对该设备
+/// 取得的结论，自检只证明见证源码算得对，语法门只证明这份文件在它声称的语言里成立。三样都
+/// 没有时不补句子——没跑过就说没跑过，不拿一句废话充数。
+fn witness_note(device: usize, host: usize, gate: &witness::LanguageGate) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if device > 0 {
+        parts.push(format!("见证设备执行 {device} 条通过"));
+    }
+    if host > 0 {
+        parts.push(format!(
+            "见证自检 {host} 条通过（host C ABI，不含设备执行）"
+        ));
+    }
+    match gate {
+        // 设备执行已经覆盖：再说一次语法门只是重复。
+        witness::LanguageGate::Covered => {}
+        witness::LanguageGate::Passed { front, witnesses } => {
+            parts.push(format!("语言门 {front} 通过（{witnesses} 条）"));
+        }
+        witness::LanguageGate::Absent { reason } => {
+            parts.push(format!("语言门不可用：{reason}"));
+        }
+        // 拒绝已经写进 `Evidence::failure`，这里再说一遍只会把同一句报错印两次。
+        witness::LanguageGate::Rejected { .. } => {}
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("、"))
+    }
 }
 
 /// 一台设备的 L2 证据：逐形状编译、执行、与参考对拍。
@@ -715,12 +791,18 @@ pub fn verify_one(
             .iter()
             .map(|have| format!("{}={}", have.prim, have.grade))
             .collect();
+        let why = if witness::device_available(profile) {
+            format!(
+                "设备在本机（`emit = {}`），但 P0 的内核执行只接了 C 后端：见证已经在这台设备上跑过，\
+                 内核文本还没有对应的编译/回读路径",
+                profile.meta.emit
+            )
+        } else {
+            "本机没有该设备，P0 只能真机验证".to_string()
+        };
         return Err(Error::new(
             Code::Unsupported,
-            format!(
-                "本机没有该设备，P0 只能真机验证；档案声明的等级：{}",
-                declared.join(" ")
-            ),
+            format!("{why}；档案声明的等级：{}", declared.join(" ")),
         ));
     }
 
@@ -805,8 +887,133 @@ pub fn verify_one(
         toolchain_agrees: tool
             .as_ref()
             .is_some_and(|tool| tool.agrees_with(&profile.meta.tool_ver)),
+        flags: profile.flags.join(" "),
         key,
         artifacts,
+    })
+}
+
+/// 一次真机执行：调用方给的样本 → 编译 → 跑一次 → 与标量参考对拍。
+///
+/// `verify` 用的是算子自己的确定性样本，它证明的是"这台机器能算这条算子"；本结构证明的是
+/// "**这份数据**在这台机器上算出来的数是对的"。两者共用同一条流水线（协商 → tile → 拼接 →
+/// emit → 编译执行），差别只在样本从哪来——因此不需要第二套执行路径。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Execution {
+    /// 设备名（档案里的 `id`）。
+    pub device: String,
+    /// 厂商。
+    pub vendor: String,
+    /// 协商选中的变体。
+    pub variant: String,
+    /// 选中的 tile。
+    pub tile: String,
+    /// 缓存键（源文本的身份）。
+    pub key: String,
+    /// 生成的片段行数。
+    pub fragment: Fragment,
+    /// 内核输出。
+    pub output: Vec<f32>,
+    /// 标量参考输出。
+    pub expected: Vec<f32>,
+    /// 最大相对误差。
+    pub max_rel_err: f64,
+    /// 对拍阈值（由算子声明的元素类型推出）。
+    pub tolerance: f64,
+}
+
+/// 用一份**给定的**样本走完整条流水线并执行一次。
+///
+/// 与 [`verify`] 的三点区别，都是刻意的：
+///
+/// - 样本由调用方给（真实权重），因此不做形状矩阵，只跑这一份；
+/// - 执行前仍要求设备有见证证据：没有证据的后端算出来的数不是结果，只是现象；
+/// - 对拍不通过是错误（[`Code::Invalid`]），不是"环境问题"——它说明产物与它自己声明的语义不符。
+///
+/// # Errors
+///
+/// 算子没有声明或没有语义表、设备不可用、设备没有执行证据、协商失败、形状与算子粒度不符、
+/// 签名与样本不一致、编译/执行失败，或对拍超出容差时返回说明。
+pub fn execute(
+    catalogue: &Catalogue,
+    settings: &Settings,
+    op_name: &str,
+    device: &str,
+    sample: &Sample,
+) -> diagnostic::Result<Execution> {
+    let op = catalogue
+        .op(op_name)
+        .ok_or_else(|| Error::new(Code::Missing, format!("没有算子 `{op_name}`")))?;
+    let model = model_for(&op.name)?;
+    let profile = catalogue.resolve(device)?;
+    if profile.meta.emit != cutile::prof::Emit::C {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "设备 `{}` 的输出语言是 `{}`，本机只能编译执行 C",
+                profile.meta.id, profile.meta.emit
+            ),
+        ));
+    }
+    // 证据先于执行：一条没有被执行证据的能力，跑出来的数不能当结果用。
+    let evidence = witness::establish(profile, settings);
+    if let Some(error) = evidence.failure {
+        return Err(error.with("该设备缺少执行证据，真实数据不在未验证的后端上运行"));
+    }
+    let path = cap::negotiate_with(op, profile, &evidence.proof(profile))
+        .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
+    let group = u64::from(model.group.max(1));
+    if sample.m == 0 || sample.n == 0 || !(sample.m as u64).is_multiple_of(group) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "样本形状 {}x{} 不自洽：m 必须是形状粒度 {group} 的正整数倍",
+                sample.m, sample.n
+            ),
+        ));
+    }
+
+    // ABI 先对齐再 emit：签名与样本不一致时，编译能通过、结果会错位。
+    op.signature.check(sample)?;
+    let shape = model.projection(sample.m, sample.n)?;
+    let cost = (model.cost)(&shape)?;
+    let plan = plan::select(op, profile, &path, cost)?;
+    let (source, source_key) = build::source(op, profile, &path, &plan.tile, settings)?;
+    let harness = harness(&source, op, sample, 1)?;
+    let tool = backend::detect();
+    let (outcome, _) = build::execute(profile, tool.as_ref(), &source_key, &harness, settings)?;
+
+    let expected = (model.reference)(sample)?;
+    if outcome.bits.len() != expected.len() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "内核输出 {} 个数，样本声明 {}",
+                outcome.bits.len(),
+                expected.len()
+            ),
+        ));
+    }
+    let tolerance = reference::tolerance(model.dtype);
+    let max_rel_err = reference::max_rel_err(&outcome.bits, &expected);
+    if max_rel_err > tolerance {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"),
+        ));
+    }
+
+    Ok(Execution {
+        device: profile.meta.id.to_string(),
+        vendor: profile.meta.vendor.to_string(),
+        variant: path.variant,
+        tile: plan.tile.to_string(),
+        key: source_key.hex(),
+        fragment: Fragment::new(source.lines()),
+        output: outcome.bits,
+        expected,
+        max_rel_err,
+        tolerance,
     })
 }
 
@@ -914,6 +1121,7 @@ pub fn bench(
         cache_dir: build::dir(&key, settings),
         artifact,
         proven: evidence.device,
+        flags: profile.flags.join(" "),
     })
 }
 
@@ -1238,12 +1446,8 @@ mod tests {
         );
         assert_eq!(
             report.evidence.device,
-            profile
-                .provides
-                .iter()
-                .filter(|provide| provide.grade.is_verified())
-                .count(),
-            "每条 L2 供给都要在这次证据里"
+            profile.provides.len(),
+            "设备就在本机：每一条已声明的见证都要在这次证据里（不按 `grade` 筛）"
         );
         assert_eq!(report.path.as_ref().expect("有路径").variant, "pipe2");
     }
@@ -1307,24 +1511,14 @@ mod tests {
         let profile = catalogue().profile("cpu").expect("cpu 档案").clone();
         assert_eq!(
             verified.witnesses,
-            profile
-                .provides
-                .iter()
-                .filter(|provide| provide.grade.is_verified())
-                .count(),
-            "每条 L2 供给都要有自己的见证结果"
+            profile.provides.len(),
+            "设备就在本机：每一条已声明的见证都要有自己的结果（不按 `grade` 筛）"
         );
-        // 自检补的正是设备执行跑不到的 `L0`：两数相加等于全部声明，既不重复也不遗漏。
+        // 设备执行已覆盖全部声明，自检不会重复跑；两个数相加仍等于全部声明。
         assert_eq!(
-            verified.self_checked,
-            profile
-                .provides
-                .iter()
-                .filter(|provide| !provide.grade.is_verified() && provide.witness.is_some())
-                .count(),
-            "L0 见证必须由自检执行，不能是死数据"
+            verified.self_checked, 0,
+            "设备在本机时，同一份见证不该再在主机上跑一遍"
         );
-        assert!(verified.self_checked > 0, "前提：cpu 有 L0 见证可供自检");
         assert_eq!(
             verified.witnesses + verified.self_checked,
             profile
@@ -1606,6 +1800,35 @@ mod tests {
         assert_eq!(classify(Some(0.7), false), Verdict::Reached);
         assert_eq!(classify(Some(0.69), false), Verdict::Below);
         assert_eq!(classify(None, false), Verdict::Unknown);
+    }
+
+    #[test]
+    fn the_performance_criterion_counts_only_a_measured_ratio() {
+        // §16 的「性能」判据在 P0 只能拿 roofline 达成率作答：口径无效就不是证据，不参与判定。
+        let above = Performance::new(Some(0.85), false);
+        assert_eq!(above.verdict, Verdict::Reached);
+        assert!(above.is_measured());
+        assert!(!above.needs_specialisation(), "达到门槛不算需要特化");
+
+        let on_the_line = Performance::new(Some(0.7), false);
+        assert!(on_the_line.is_measured(), "70% 是门槛本身，含在内");
+
+        let below = Performance::new(Some(0.69), false);
+        assert_eq!(below.verdict, Verdict::Below);
+        assert!(below.is_measured(), "低于门槛仍是一次测量");
+        assert!(below.needs_specialisation(), "§16 要求它承认需要特化代码");
+
+        for unmeasured in [
+            Performance::new(None, false),
+            Performance::new(Some(1.42), false),
+            Performance::new(Some(0.19), true),
+        ] {
+            assert!(!unmeasured.is_measured(), "{unmeasured:?}");
+            assert!(
+                !unmeasured.needs_specialisation(),
+                "没有尺子就不判死：{unmeasured:?}"
+            );
+        }
     }
 
     #[test]

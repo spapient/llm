@@ -253,7 +253,8 @@ mod tests {
         for device in devices() {
             let set = crate::builtin(device.vendor, device.ext).expect("内嵌片段可装载");
             let from_fragments: Vec<Prim> = Prim::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .filter(|prim| set.get(*prim).is_some())
                 .collect();
             assert_eq!(

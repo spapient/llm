@@ -1,0 +1,78 @@
+# 词汇表契约的门禁配置（`docs/ARCHITECTURE.md` 第三节「闭集与位集」）。
+#
+# 今天的消费方只有一份：`tests/contracts.rs`（纯文本扫描，`cargo test` 即门禁）。
+#
+# dylint 规则（HIR 版，`ui-toml` 配置指向本文件）是**计划中的**第二消费方，用于在 IDE 里即时
+# 提示同一条契约；它尚未落地，所以本文件的任何改动都以 `cargo test --test contracts` 为准，
+# 不要假设有另一处也在读它。
+#
+# 白名单按 crate 列，并强制带理由：一份没有理由的豁免等于把规则删掉一半。
+
+[closed]
+# 允许手写闭集表（`pub const ALL: [Self; N]`）的 crate。
+#
+# 规则：`prof` 下游的成员必须用 `impl Closed for ..` 把名字表写成切片，`ALL`/`as_str`/`parse`
+# 由 `prof::inherent_names!` 统一转发；只有**够不到 `Closed`** 的层（`llm-prof` 是 L2 基座，
+# 反向依赖会在层内成环）才允许把词汇表留在本地。
+
+[[closed.exempt]]
+crate = "diagnostic"
+reason = "L1：错误类别是错误类型的词汇表，反向依赖 L2 的 prof 会成环"
+
+[[closed.exempt]]
+crate = "config"
+reason = "L1：设置键是配置层自己的词汇表"
+
+[[closed.exempt]]
+crate = "tensor"
+reason = "L1：元素类型属于张量层，与 prof::DType 不是同一条契约"
+
+[[closed.exempt]]
+crate = "shard"
+reason = "L1：分片种类（张量流水线/数据）是调度层的词汇表"
+
+[[closed.exempt]]
+crate = "proto"
+reason = "L1：帧类型是协议层的词汇表，与设备能力无关"
+
+[[closed.exempt]]
+crate = "comm"
+reason = "L2 但与 prof 无依赖关系（通信原语），为一个名字表引入 prof 不值得"
+
+[[closed.exempt]]
+crate = "einsum"
+reason = "位宽闭集；einsum 不依赖 prof，且位宽与 capability 词汇表无关"
+
+[[closed.exempt]]
+crate = "pack"
+reason = "线上 Wire 用稳定数字 code 序列化而非字符串名，是容器级词汇表，与 prof 原语闭集不同源"
+
+[frontend]
+# 允许"有 `impl Device` 但没有配套 `#[annotation::frontend(..)]` 与 `FRONTENDS` 表项"的 crate。
+#
+# 规则：执行前端三位一体——注解给语言身份（`Language::EMIT` / `EXT` / `TAG`），手写实现给
+# "怎么跑"（`Device`），`const FRONTENDS` 表把它接进分发。空清单本身是判据：类型系统只能保证
+# 登记进表的类型两半齐全，管不到"写了实现忘了加表"——那种设备会一直静默地只跑 host 自检。
+
+exempt = []
+
+[bitset]
+exempt = []
+
+# 手写位集（`struct FooSet(u32)`）的允许清单。
+#
+# 规则：位集只有 `prof::atom::Set<E, WORDS>` 一份实现（`WORDS` 是 const 参数，容量在编译期
+# 自证）。本清单为空是有意的——空清单本身是判据，不是"还没填"。
+
+# 注解文法的闭集（`crates/annotation/src/syntax.rs` 的 `LANGUAGES` / `DTYPES`）没有豁免节：
+#
+# 规则：注解里的名字必须是词汇表的**投影**——`LANGUAGES` 与 `Emit::ALL` 逐项相等，
+# `DTYPES` 与「`cutile::reference::tolerance` 给出非零阈值」的 `DType` 集合逐项相等，
+# 且两边都用变体名（首字母大写）核对 `codegen` 的机械映射。这三条都是等式，不是"尽量"：
+# 少一个名字就有一台设备/一种输出永远无法被声明，多一个就拼出匹配不上的代码。
+#
+# 语义表与注册表的镜像（`#[model]` 标了必须注册、注册的 `model:` 必须是 `..::MODEL`）同样没有
+# 豁免节：两条规则互为反面，出现例外说明契约该改，而不是某个 crate 该豁免。
+# 门禁：`tests/contracts.rs::{annotation_names_come_from_the_vocabulary,
+# the_registry_and_the_model_annotations_are_mirrors}`，以及 `#[frontend]` / `#[model]` 在每个
+# 调用点生成的 `Emit::parse(..)` / `DType::parse(..)` / `output_type()` 断言。

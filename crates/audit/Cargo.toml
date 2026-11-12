@@ -10,6 +10,7 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+annotation = { path = "../annotation", package = "llm-annotation" }
 cutile = { path = "../cutile" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 llm-config = { path = "../config" }

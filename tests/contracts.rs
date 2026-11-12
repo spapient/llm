@@ -1,0 +1,586 @@
+//! 词汇表契约的可执行版本（`docs/ARCHITECTURE.md` 第三节「闭集与位集」）。
+//!
+//! 两条规则，各一个用例：
+//!
+//! 1. **闭集表只有一份**：`prof` 下游的成员把名字表写成 `impl Closed for ..` 里的切片，
+//!    `ALL` / `as_str` / `parse` 由 `prof::inherent_names!` 转发；手写 `pub const ALL: [Self; N]`
+//!    只允许出现在够不到 `Closed` 的层（`llm-prof` 是 L2 基座，反向依赖会成环）。
+//! 2. **位集只有一份**：`struct FooSet(u32)` 一律不许新增，位集只有
+//!    `prof::atom::Set<E, WORDS>`（`WORDS` 是 const 参数，容量在编译期自证）。
+//!
+//! 白名单在 `lints/vocabulary.toml`，**不在源码里**：`#[allow]` 只能豁免一次检查，而配置是
+//! 一份可审计的清单——每条豁免必须写理由，且清单里的 crate 一旦不再违规就必须删掉条目
+//! （下面有用例守这一点，否则白名单会变成"永久免检区"）。
+//!
+//! 扫描器自己也被守：文件数低于下限即失败。一条什么都没扫到却通过的门禁，比没有门禁更误导。
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// 门禁配置：与 dylint 规则读同一份。
+const CONFIG: &str = include_str!("../lints/vocabulary.toml");
+
+/// 扫描下限：近 30 个 crate、80+ 个源文件；低于此数说明遍历逻辑坏了（而不是"没有违规"）。
+const MIN_SOURCES: usize = 70;
+
+fn root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// 一份扫描结果：`(crate, 文件, 行号, 该行原文)`。
+type Hit = (String, PathBuf, usize, String);
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// `crates/<crate>/src/**/*.rs` 下的全部源文件。
+fn sources() -> Vec<(String, PathBuf)> {
+    let crates = root().join("crates");
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(&crates) else {
+        return out;
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    for name in names {
+        let mut files = Vec::new();
+        walk(&crates.join(&name).join("src"), &mut files);
+        files.sort();
+        for file in files {
+            out.push((name.clone(), file));
+        }
+    }
+    out
+}
+
+/// 命中 `predicate` 的行。
+fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
+    let mut out = Vec::new();
+    for (name, file) in sources() {
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            if predicate(line) {
+                out.push((
+                    name.clone(),
+                    file.strip_prefix(root()).unwrap_or(&file).to_path_buf(),
+                    index + 1,
+                    line.trim().to_string(),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// 白名单里的 crate 与理由。
+fn exempt(section: &str) -> Vec<(String, String)> {
+    let table = config::toml::parse(CONFIG).expect("`lints/vocabulary.toml` 必须可解析");
+    let entries = table
+        .table(section)
+        .unwrap_or_else(|| panic!("`lints/vocabulary.toml` 缺 `[{section}]`"));
+    entries
+        .table_array("exempt")
+        .unwrap_or_else(|| panic!("`lints/vocabulary.toml` 缺 `{section}.exempt`"))
+        .iter()
+        .map(|entry| {
+            let name = entry
+                .string("crate")
+                .unwrap_or_else(|| panic!("`{section}.exempt` 的条目缺 `crate`"));
+            let reason = entry
+                .string("reason")
+                .unwrap_or_else(|| panic!("`{section}.exempt` 的 `{name}` 缺 `reason`"));
+            assert!(
+                reason.chars().count() >= 8,
+                "`{section}.exempt` 的 `{name}` 理由太短（{reason:?}）：豁免必须说清为什么"
+            );
+            (name.to_string(), reason.to_string())
+        })
+        .collect()
+}
+
+/// 注解文法里的闭集表：`const <名字>: [&str; N] = [ "..", .. ];`。
+///
+/// 只能读源码：proc-macro crate 不导出非宏项，`syntax::LANGUAGES` / `DTYPES` 在 crate 外
+/// 不可见。扫描只认 `= [ .. ]` 之间的逗号分隔字面量，排版怎么折行都不影响；声明里的 `N`
+/// 一并核对，防止“表删了一项、长度还写着 9”。
+fn annotation_list(name: &str) -> Vec<String> {
+    let path = root().join("crates/annotation/src/syntax.rs");
+    let text = fs::read_to_string(&path).expect("`crates/annotation/src/syntax.rs` 必须存在");
+    let head = format!("const {name}: [&str;");
+    let start = text.find(&head).unwrap_or_else(|| {
+        panic!("注解文法里没有 `{name}`：它是注解与词汇表之间契约的一半，不能改名或删除")
+    });
+
+    let after = &text[start..];
+    let open = start + after.find("= [").expect("闭集表必须写成 `= [ .. ]`") + 3;
+    let close = open + text[open..].find(']').expect("闭集表必须闭合");
+    let items: Vec<String> = text[open..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+                .unwrap_or_else(|| panic!("`{name}` 的条目必须是字符串字面量，得到 {item:?}"))
+                .to_string()
+        })
+        .collect();
+    assert!(!items.is_empty(), "`{name}` 是空表：闭集表不能为空");
+
+    let length_start = start + after.find("; ").expect("长度必须写在 `[&str; N]` 里") + 2;
+    let length_end = length_start + text[length_start..].find(']').expect("长度必须闭合");
+    let declared: usize = text[length_start..length_end]
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("`{name}` 的长度不是整数"));
+    assert_eq!(
+        declared,
+        items.len(),
+        "`{name}` 声明了 {declared} 个元素，实际写了 {} 个",
+        items.len()
+    );
+    items
+}
+
+/// 词汇表侧的变体名规则：首字母大写、其余原样。
+///
+/// 与 `annotation::codegen::capitalised` 是**同一条规则的两处表述**：那份把 `"opencl"`
+/// 渲染成 `Emit::Opencl`，这份把它和真实的 `Debug` 变体名对比。两份必须同时成立，
+/// 否则生成代码会指向一个不存在的变体。
+fn capitalised(word: &str) -> String {
+    let mut characters = word.chars();
+    match characters.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
+        None => String::new(),
+    }
+}
+
+fn describe(hits: &[Hit]) -> String {
+    hits.iter()
+        .map(|(name, file, line, text)| format!("\n  {name} {}:{line}: {text}", file.display()))
+        .collect()
+}
+
+#[test]
+fn closed_vocabularies_are_declared_once() {
+    // 手写的闭集表：数组形式 `pub const ALL: [Self; N]`。切片形式 `&'static [Self]` 是
+    // `Closed` 的实现（`inherent_names!` 转发的那一份），不在此列。
+    // 行内任意位置都算：`impl X { pub const ALL: [Self; N] = ..; }` 这种一行写法不该逃过。
+    // 切片形式 `const ALL: &'static [Self]` 不以 `[` 紧接，所以不会被误判。
+    let hits = hits(|line| line.contains("const ALL: ["));
+    assert!(
+        sources().len() >= MIN_SOURCES,
+        "扫描器没看到源文件：{} < {MIN_SOURCES}",
+        sources().len()
+    );
+
+    let allowed = exempt("closed");
+    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
+    let offenders: Vec<&Hit> = hits
+        .iter()
+        .filter(|(name, ..)| !names.contains(&name.as_str()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "这些闭集表该用 `impl prof::atom::Closed for ..` + `prof::inherent_names!`：{}",
+        offenders
+            .iter()
+            .map(|(name, file, line, text)| format!("\n  {name} {}:{line}: {text}", file.display()))
+            .collect::<String>()
+    );
+
+    // 白名单不能过期：每条豁免都必须在今天仍然真的手写着闭集表。
+    for (name, _) in &allowed {
+        assert!(
+            root().join("crates").join(name).is_dir(),
+            "`lints/vocabulary.toml` 里的 `{name}` 不是成员"
+        );
+        assert!(
+            hits.iter().any(|(crate_name, ..)| crate_name == name),
+            "`lints/vocabulary.toml` 里的 `{name}` 已经没有手写闭集表，删除这条豁免"
+        );
+    }
+
+    // 契约的另一半：`Closed` 的实现必须写成切片，这样才能与 `ALL` 的顺序、`index` 的下标一致。
+    let prof = root().join("crates/prof/src/atom.rs");
+    let text = fs::read_to_string(&prof).expect("`crates/prof/src/atom.rs` 必须存在");
+    assert!(
+        text.contains("const ALL: &'static [Self]"),
+        "`prof::atom` 的闭集表必须写成切片"
+    );
+    assert!(
+        text.contains("macro_rules! inherent_names"),
+        "转发宏 `inherent_names!` 是这份契约的入口"
+    );
+}
+
+/// 执行前端必须"三位一体"：`#[annotation::frontend(..)]` 注解、`impl Device`、`FRONTENDS` 表项。
+///
+/// 类型系统只保证"登记进表的类型两半齐全"（`Frontend: Language + Device`），却管不到两件事故：
+/// 写了 `impl Device` 却忘了标注解（那时它就没有 `Language`，只要没人要求 `Frontend` 就不报错），
+/// 以及标注解、实现了、但忘了加进表（那台设备的见证会永远只走 host 自检，一切看起来正常）。
+/// 这两件事都只能靠文本契约守，所以它进 `lints/vocabulary.toml` 的白名单配置而不是 `#[allow]`。
+#[test]
+fn every_device_front_end_is_annotated_and_entered() {
+    let allowed = exempt("frontend");
+    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
+    let mut checked = 0;
+    let mut failures: Vec<String> = Vec::new();
+    for (name, file) in sources() {
+        if names.contains(&name.as_str()) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            let Some(rest) = line.trim().strip_prefix("impl Device for ") else {
+                continue;
+            };
+            let ty = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('{');
+            if ty.is_empty() {
+                continue;
+            }
+            checked += 1;
+            let where_ = format!("{name} {}:{}", file.display(), index + 1);
+            let annotated = text.contains("annotation::frontend")
+                && (text.contains(&format!("pub struct {ty};"))
+                    || text.contains(&format!("struct {ty} ")));
+            if !annotated {
+                failures.push(format!(
+                    "{where_}: `impl Device for {ty}` 没有配套的 `#[annotation::frontend(..)]`：\
+                     语言身份不能靠手写常量"
+                ));
+            }
+            if !text.contains(&format!("drive::<{ty}>")) {
+                failures.push(format!(
+                    "{where_}: `{ty}` 没有出现在 `FRONTENDS` 表里（缺 `drive::<{ty}>`）：\
+                     它的见证永远只能走 host 自检"
+                ));
+            }
+        }
+    }
+    assert!(
+        checked >= 2,
+        "扫描器只看到 {checked} 个执行前端：扫描逻辑或文件布局坏了，而不是\"没有违规\""
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    // 白名单不能过期：写了豁免却没有 `impl Device`，说明条目该删。
+    for (name, _) in &allowed {
+        let has_device = sources()
+            .iter()
+            .filter(|(crate_name, _)| crate_name == name)
+            .any(|(_, file)| {
+                fs::read_to_string(file)
+                    .map(|text| text.contains("impl Device for "))
+                    .unwrap_or(false)
+            });
+        assert!(
+            has_device,
+            "`lints/vocabulary.toml` 里的 `{name}` 没有执行前端，删除这条豁免"
+        );
+    }
+}
+
+/// 语法前端同样要"三位一体"：`#[annotation::frontend(..)]` 注解、`impl Front`、`GATES` 表项。
+///
+/// 它比执行前端更容易漏：语法门不是必要条件，缺了不会编译失败，只是那门语言永远"不可用"——
+/// 报告里写的是"本机没有语法前端"，看起来像机器的问题，实际是有人忘了一行。
+#[test]
+fn every_language_front_is_annotated_and_entered() {
+    let allowed = exempt("frontend");
+    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
+    let mut checked = 0;
+    let mut failures: Vec<String> = Vec::new();
+    for (name, file) in sources() {
+        if names.contains(&name.as_str()) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            let Some(rest) = line.trim().strip_prefix("impl Front for ") else {
+                continue;
+            };
+            let ty = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('{');
+            if ty.is_empty() {
+                continue;
+            }
+            checked += 1;
+            let where_ = format!("{name} {}:{}", file.display(), index + 1);
+            let annotated = text.contains("annotation::frontend")
+                && (text.contains(&format!("pub struct {ty};"))
+                    || text.contains(&format!("struct {ty} ")));
+            if !annotated {
+                failures.push(format!(
+                    "{where_}: `impl Front for {ty}` 没有配套的 `#[annotation::frontend(..)]`：\
+                     语言身份不能靠手写常量"
+                ));
+            }
+            if !text.contains(&format!("parse_all::<{ty}>")) {
+                failures.push(format!(
+                    "{where_}: `{ty}` 没有出现在 `GATES` 表里（缺 `parse_all::<{ty}>`）：\
+                     那门语言的见证会被说成\"本机没有前端\""
+                ));
+            }
+        }
+    }
+    assert!(
+        checked >= 2,
+        "扫描器只看到 {checked} 个语法前端：扫描逻辑或文件布局坏了，而不是\"没有违规\""
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn bitsets_have_exactly_one_implementation() {
+    // 手写位集：`struct FooSet(u32)` 一类。
+    let hits = hits(|line| line.contains("struct ") && line.contains("Set(u32)"));
+    let allowed = exempt("bitset");
+    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
+    let offenders: Vec<&Hit> = hits
+        .iter()
+        .filter(|(name, ..)| !names.contains(&name.as_str()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "位集只允许 `prof::atom::Set<E, WORDS>` 一份实现：{}",
+        describe(&offenders.into_iter().cloned().collect::<Vec<Hit>>())
+    );
+
+    let atom = fs::read_to_string(root().join("crates/prof/src/atom.rs"))
+        .expect("`crates/prof/src/atom.rs` 必须存在");
+    assert!(
+        atom.contains("pub struct Set<E: Closed, const WORDS: usize>"),
+        "唯一实现 `Set<E, WORDS>` 不见了：这条规则的替代品是空的"
+    );
+}
+
+/// 注解的闭集必须由词汇表与对拍口径**推出来**，而不是第三份手抄表。
+///
+/// 两条规则互为反方向：
+///
+/// 1. `LANGUAGES` 与 `Emit::ALL` 逐项相等——少一个，那台设备就永远不能标注自己的语言
+///    （它的见证只能一直走 host 自检）；多一个，注解能拼出一段永远匹配不上的代码；
+/// 2. `DTYPES` 与「[`cutile::reference::tolerance`] 给出非零阈值」的 `DType` 集合逐项相等——
+///    注解能写出的输出类型必须正好是对拍能给结论的那些：多一个，`verify` 会拿 0 当阈值，
+///    少一个，那门输出就永远无法被声明成算子。
+///
+/// 两处都用 `Debug` 变体名再核一遍：`codegen` 按「首字母大写」把名字翻成变体，
+/// 名字与变体一旦分家，生成代码会指向不存在的变体——错误会出现在被标注的 crate 里，
+/// 而不是写错字的那张表上。
+#[test]
+fn annotation_names_come_from_the_vocabulary() {
+    // 语言：全量、双向、变体名。
+    let languages = annotation_list("LANGUAGES");
+    let mut vocabulary: Vec<&str> = cutile::prof::Emit::ALL
+        .iter()
+        .map(|emit| emit.as_str())
+        .collect();
+    vocabulary.sort_unstable();
+    let mut written: Vec<&str> = languages.iter().map(String::as_str).collect();
+    written.sort_unstable();
+    assert_eq!(
+        written, vocabulary,
+        "`LANGUAGES` 必须与 `Emit::ALL` 逐项相等：注解能声明每一门执行语言，一门不多一门不少"
+    );
+    for language in &languages {
+        let emit = cutile::prof::Emit::parse(language)
+            .unwrap_or_else(|| panic!("`LANGUAGES` 里的 `{language}` 不在 `Emit` 闭集里"));
+        assert_eq!(emit.as_str(), language, "`{language}` 必须能往返解析");
+        assert_eq!(
+            format!("{emit:?}"),
+            capitalised(language),
+            "`{language}` 的变体名与 `codegen` 的「首字母大写」规则不一致"
+        );
+    }
+
+    // 输出类型：与「对拍有阈值」的那一组相等。
+    let dtypes = annotation_list("DTYPES");
+    let mut comparable: Vec<&str> = cutile::atom::DType::ALL
+        .iter()
+        .filter(|dt| cutile::reference::tolerance(**dt) > 0.0)
+        .map(|dt| dt.as_str())
+        .collect();
+    comparable.sort_unstable();
+    let mut declared: Vec<&str> = dtypes.iter().map(String::as_str).collect();
+    declared.sort_unstable();
+    assert_eq!(
+        declared, comparable,
+        "`DTYPES` 必须与 `cutile::reference::tolerance` 给出非零阈值的类型逐项相等"
+    );
+    for dtype in &dtypes {
+        let dt = cutile::atom::DType::parse(dtype)
+            .unwrap_or_else(|| panic!("`DTYPES` 里的 `{dtype}` 不在 `DType` 闭集里"));
+        assert_eq!(dt.as_str(), dtype, "`{dtype}` 必须能往返解析");
+        assert_eq!(
+            format!("{dt:?}"),
+            capitalised(dtype),
+            "`{dtype}` 的变体名与 `codegen` 的「首字母大写」规则不一致"
+        );
+    }
+}
+
+/// 语义表的**唯一生产者**：注册表里的 `MODEL` 必须由注解生成，注解标注的格式必须在注册表里。
+///
+/// 类型系统守住了"注解说的是哪份格式"（`<别名 as gemv::Format>`，写错就编译不过），守不住两件
+/// 纯文本事故：
+///
+/// 1. 标注了 `#[annotation::model(..)]` 却忘了在 `REGISTRY` 里补一行——`MODEL` 常量照样生成，
+///    但注册表里没有这条算子，`verify --op <名字>` 报"未知算子"，而写算子的人以为已经接上了；
+/// 2. 注册表里的 `model:` 手写成 `Model { .. }` 字面量——语义表就有了第二份来源，生成的那一份
+///    与它漂移时没有任何判据（这正是 P0-4 之前 `call_args` 的老毛病）。
+///
+/// 两条规则互为反面，都没有合法例外（标注了却不注册永远错；注册的语义表不是常量也永远错），
+/// 所以不进白名单：出现例外说明契约本身该改，而不是这个 crate 该豁免。
+#[test]
+fn the_registry_and_the_model_annotations_are_mirrors() {
+    // 规则的另一种写法：新增一副骨架时，把它的注解名加进这里，规则跟着扩。
+    const PRODUCERS: [&str; 1] = ["#[annotation::model("];
+
+    let lib = fs::read_to_string(root().join("crates/op/src/lib.rs"))
+        .expect("`crates/op/src/lib.rs` 必须存在");
+    let start = lib
+        .find("pub const REGISTRY:")
+        .expect("`REGISTRY` 不见了：它是语义表的唯一入口");
+    let open = start + lib[start..].find('[').expect("注册表必须是数组");
+    let close = open + lib[open..].find("\n];").expect("注册表必须闭合");
+    let mut names: Vec<String> = Vec::new();
+    let mut models: Vec<String> = Vec::new();
+    for line in lib[open..close].lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("name:") {
+            names.push(
+                rest.trim()
+                    .trim_end_matches(',')
+                    .trim_matches('"')
+                    .to_string(),
+            );
+        } else if let Some(rest) = line.strip_prefix("model:") {
+            models.push(rest.trim().trim_end_matches(',').to_string());
+        }
+    }
+    assert_eq!(
+        names.len(),
+        models.len(),
+        "注册表的条目必須同时写 `name` 与 `model`：{names:?} vs {models:?}"
+    );
+    assert!(
+        names.len() >= 2,
+        "只看到 {} 条注册：扫描逻辑坏了",
+        names.len()
+    );
+
+    // 注解侧：`name` 是第一个键（参数顺序由 `annotation::syntax` 定死，这里只读不猜）。
+    let mut annotated: Vec<(String, String)> = Vec::new();
+    for (crate_name, file) in sources() {
+        if crate_name != "op" {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Some(position) = line.find(PRODUCERS[0]) else {
+                continue;
+            };
+            let rest = &line[position..];
+            let Some(offset) = rest.find("name = \"") else {
+                panic!("注解必须写成 `name = \"..\"`：{line}");
+            };
+            let value = &rest[offset + "name = \"".len()..];
+            let end = value
+                .find('"')
+                .unwrap_or_else(|| panic!("注解里的名字字面量没有闭合：{line}"));
+            annotated.push((
+                value[..end].to_string(),
+                file.display().to_string() + ":" + &line_number(&text, line),
+            ));
+        }
+    }
+    assert!(
+        annotated.len() >= 2,
+        "只看到 {} 条 `#[annotation::model]`：扫描逻辑或文件布局坏了",
+        annotated.len()
+    );
+
+    // 方向一：注解 → 注册表。
+    let mut failures: Vec<String> = Vec::new();
+    for (name, at) in &annotated {
+        if !names.contains(name) {
+            failures.push(format!(
+                "{at}: 标了 `#[annotation::model]` 生成 `MODEL`，但 `REGISTRY` 里没有 `{name}`：\
+                 发布出去的二进制里没有这条算子"
+            ));
+        }
+    }
+
+    // 方向二：注册表 → 注解生成的常量。
+    for (name, model) in names.iter().zip(&models) {
+        let Some(module) = model.strip_suffix("::MODEL") else {
+            failures.push(format!(
+                "`{name}` 的语义表是 `{model}`，不是 `::MODEL` 常量：\
+                 语义表必须有唯一生产者（注解生成），不能是手写的 `Model {{ .. }}`"
+            ));
+            continue;
+        };
+        let file = root().join("crates/op/src").join(format!(
+            "{}.rs",
+            module.rsplit("::").next().unwrap_or(module)
+        ));
+        let text = fs::read_to_string(&file).unwrap_or_else(|_| {
+            panic!(
+                "`{name}` 的语义表指向 `{module}`，但 {} 读不到",
+                file.display()
+            )
+        });
+        if !PRODUCERS.iter().any(|producer| text.contains(producer)) {
+            failures.push(format!(
+                "`{name}` 的 `MODEL` 在 {} 里不是注解生成的：\
+                 `#[annotation::model]` 是它与注册表之间唯一的绑定点",
+                file.display()
+            ));
+        }
+        if !annotated.iter().any(|(annotated, _)| annotated == name) {
+            failures.push(format!(
+                "`{name}` 在 `REGISTRY` 里，但它指向的 `MODEL` 没有同名注解：\
+                 注解是语义表的唯一生产者"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// 一条命中的行号（从 1 开始），用于把失败指回源码。
+fn line_number(text: &str, line: &str) -> String {
+    text.lines()
+        .position(|candidate| candidate == line)
+        .map_or_else(|| "-".to_string(), |index| (index + 1).to_string())
+}
