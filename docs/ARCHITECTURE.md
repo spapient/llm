@@ -83,7 +83,7 @@ diagnostic / llm-config / annotation → （叶：被大量成员消费）
 | `FragmentSet` | `prim` | 原语片段与见证源码 |
 | `Catalogue` | `cutile` | 已装载的三层数据（声明 + 档案 + 片段）与它们的交叉校验；装载要随数据格式演进，所以不属于任何纯数据成员 |
 | `Plan` / `Path` / `NoPath` / `VariantCheck` / `Source` / `Usage` | `cutile` | kernel 层的中间产物，全部可见、无 IR；只有 `NoPath` 自带文本（`Display`，错误契约）。`Usage` 是构建期存储契约比较过的一条声明用量 |
-| `CacheKey` / `Cache` / `Entry` / `State` / `Changed` / `Residue` / `Gc` | `cutile` | 缓存指纹与存量：`CacheKey::fields` 是哈希、`meta.txt` 与差异比较的唯一来源；`Entry`/`State` 让"有 `source`"与"只写了一半"都成为可扫描的记录，`Residue`/`Gc` 是回收的结构化结果 |
+| `CacheKey` / `Cache` / `Entry` / `State` / `Changed` / `Residue` / `Gc` / `ArtifactKey` / `Artifact` | `cutile` | 缓存指纹、编译产物与存量：`CacheKey::fields` 是哈希、`meta.txt` 与差异比较的唯一来源；`ArtifactKey` 是产物身份（源文本 + 真正调用的编译器 + 主函数），`Artifact` 是命中结果（路径、字节、是否复用）；`Entry`/`State` 让"有 `source`"与"只写了一半"都成为可扫描的记录，`Residue`/`Gc` 是回收的结构化结果 |
 | `Doctor` / `OpInfo` / `DeviceInfo` / `LayoutRow` / `Storage` / `Declared` / `Built` / `CacheWhy` / `CacheState` | `audit` | `doctor` 的结构化结论：每步产物都是数据，排版由前端拼；`Storage` 逐层给出档案容量与 `Declared` 用量，`CacheWhy` 答“这个键与本次构建差在哪”，`CacheState` 把"从未落盘 / 半截落盘 / 一致 / 不同"分成四类（文本在前端） |
 | `VerifyReport` / `VerifyEntry` / `Verified` / `WitnessRun` | `audit` | `verify` 的逐设备结果与见证执行；失败如实记录，不写成“跳过” |
 | `Bench` / `Throughput` / `Peak` / `Verdict` | `audit` | `bench` 的实测口径与达成率判定；门槛常数（`L3_THRESHOLD`）也在这里 |
