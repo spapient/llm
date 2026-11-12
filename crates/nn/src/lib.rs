@@ -155,6 +155,15 @@ pub trait Layer {
     fn bounds(&self) -> BoundsResult {
         Ok(None)
     }
+
+    /// 若这一层是按形状构造的线性投影，返回它的类型化视图。
+    ///
+    /// 默认 `None`：`#[layer]` 声明出来的层只有形状与算子列表，**没有参数表**，因此没有
+    /// "把真实权重的第几行喂给它"这回事。真实权重的执行路径只处理 [`Linear`]——把"任意层
+    /// 都能执行"当约定，等于让每个层自己再发明一遍参数绑定，而下界与执行也会各自理解一次形状。
+    fn linear(&self) -> Option<&Linear> {
+        None
+    }
 }
 
 /// 固定形状的输出头：形状、输入宽度与算子写在注解里，`impl Layer` 由 `#[layer]` 生成。
@@ -261,6 +270,10 @@ impl Layer for Linear {
 
     fn spec(&self) -> &LayerSpec {
         &self.spec
+    }
+
+    fn linear(&self) -> Option<&Linear> {
+        Some(self)
     }
 
     fn bounds(&self) -> BoundsResult {

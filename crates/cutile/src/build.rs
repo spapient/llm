@@ -113,7 +113,15 @@ pub fn execute(
     settings: &Settings,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let cache = Cache::from_settings(settings);
-    cached_run(&cache, &key.hex(), tool, &profile.flags, harness, settings)
+    cached_run(
+        &cache,
+        &key.hex(),
+        key.flags_hash,
+        tool,
+        &profile.flags,
+        harness,
+        settings,
+    )
 }
 
 /// 一份自建程序的编译执行（见证与将来的探测）：与 [`execute`] 共用同一条产物缓存。
@@ -138,7 +146,15 @@ pub fn run_program(
     let hex = cache
         .put_program(label, program)
         .map_err(|error| Error::new(Code::Io, format!("写程序缓存失败：{error}")))?;
-    cached_run(&cache, &hex, tool, flags, program, settings)
+    cached_run(
+        &cache,
+        &hex,
+        ArtifactKey::params(flags),
+        tool,
+        flags,
+        program,
+        settings,
+    )
 }
 
 /// 查产物 → 命中就直接跑；否则编译一次、落盘，再跑缓存里的那一份。
@@ -147,16 +163,18 @@ pub fn run_program(
 fn cached_run(
     cache: &Cache,
     source: &str,
+    params: u64,
     tool: Option<&Toolchain>,
     flags: &[String],
     program: &str,
     settings: &Settings,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let Some(tool) = tool else {
-        return cached_only(cache, source, program);
+        return cached_only(cache, source, params, program);
     };
-    // 产物身份用**实测**的工具链：升一次编译器就换一份产物，旧产物不再冒充新编译器的代码生成。
-    let key = ArtifactKey::keyed(source, &tool.id(), program);
+    // 产物身份用**实测**的工具链与**这次**的编译参数：升一次编译器、换一组参数都是另一套
+    // 代码生成，旧产物不再冒充这一轮的产物。
+    let key = ArtifactKey::keyed(source, &tool.id(), params, program);
     if let Some(artifact) = cache.artifact(&key) {
         return Ok((backend::run(&artifact.path)?, artifact));
     }
@@ -184,26 +202,30 @@ fn cached_run(
 
 /// 没有编译器时的唯一出路：复用已经落盘的同一份产物。
 ///
-/// 主函数必须逐字相同（形状、样本、重复次数都在里面），工具链可以不同——但那时会有多份
-/// 候选，选哪一份都是替用户决定"用谁的代码生成"，也就替 `bench` 决定了一组耗时的来历，
-/// 所以不猜：列出工具链身份（`命令@版本`），让用户装上一个或清掉多余的产物。
+/// 主函数必须逐字相同（形状、样本、重复次数都在里面），**编译参数也必须相同**，工具链可以
+/// 不同——但那时会有多份候选，选哪一份都是替用户决定"用谁的代码生成"，也就替 `bench`
+/// 决定了一组耗时的来历，所以不猜：列出工具链身份（`命令@版本`），让用户装上一个或清掉
+/// 多余的产物。
 fn cached_only(
     cache: &Cache,
     source: &str,
+    params: u64,
     program: &str,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let harness = emit::fnv1a(program);
+    // 主函数与编译参数都是这次请求的一部分：前者决定形状与样本，后者决定这份二进制是怎么
+    // 编出来的。参数不同的那份来自另一条命令行，不是"同一份产物"的另一个副本。
     let candidates: Vec<Artifact> = cache
         .artifacts_in(source)
         .into_iter()
-        .filter(|artifact| artifact.key.harness == harness)
+        .filter(|artifact| artifact.key.harness == harness && artifact.key.params == params)
         .collect();
     match candidates.as_slice() {
         [one] => Ok((backend::run(&one.path)?, one.clone())),
         [] => Err(Error::new(
             Code::Unsupported,
             format!(
-                "缺少 C 编译器（cc/clang/gcc 都不在 PATH 上），缓存条目 `{source}` 里也没有这份产物\n先在有编译器的机器上跑一次，或把编译器装上"
+                "缺少 C 编译器（cc/clang/gcc 都不在 PATH 上），缓存条目 `{source}` 里也没有这份产物（主函数或编译参数 `{params:016x}` 不同）\n先在有编译器的机器上跑一次，或把编译器装上"
             ),
         )),
         many => {
@@ -318,7 +340,8 @@ pub fn contract(op: &OpDecl, profile: &Profile, path: &Path) -> diagnostic::Resu
         .flat_map(|need| {
             let bytes = u64::from(need.extent.hi());
             Space::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .filter(move |unit| need.space.contains(*unit))
                 .map(move |space| Usage {
                     prim: need.prim,
@@ -366,7 +389,8 @@ fn key(
         .map(|variant| {
             DTypeSet::of(
                 DType::ALL
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .filter(|dt| variant.needs(op).any(|need| need.dt.contains(*dt))),
             )
         })
@@ -380,7 +404,8 @@ fn key(
         fragments: fragments(profile, settings)
             .map(|set| {
                 Prim::ALL
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .filter_map(|prim| set.get(prim).map(|text| (prim, emit::fnv1a(text))))
                     .collect()
             })
@@ -623,6 +648,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 换一组编译参数不许复用旧产物：见证程序的产物也按参数区分。
+    ///
+    /// 见证没有 `CacheKey`（它不来自算子声明），参数只能由调用方给。少了这一项，档案里改一次
+    /// `[compile].flags` 会复用旧参数编出的可执行文件——「这条见证跑通过」于是对着一份不再
+    /// 会被编出来的程序成立。
+    #[cfg(unix)]
+    #[test]
+    fn a_new_flag_set_does_not_reuse_the_witness_binary() {
+        let Some(tool) = tool() else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("cutile-flags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let settings = settings(&root);
+        let program = "#include <stdio.h>\nint main(void){ printf(\"0\\n\"); return 0; }\n";
+        let args = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_string()).collect()
+        };
+        let o2 = args(&["-O2", "-std=c99"]);
+        let o0 = args(&["-O0", "-std=c99"]);
+
+        let (_, first) = run_program(Some(&tool), &o2, "flags", program, &settings).expect("编译");
+        assert!(!first.reused, "{first:?}");
+        let (_, again) = run_program(Some(&tool), &o2, "flags", program, &settings).expect("复用");
+        assert!(again.reused, "同一组参数应复用：{again:?}");
+
+        let (_, relaid) = run_program(Some(&tool), &o0, "flags", program, &settings).expect("编译");
+        assert!(!relaid.reused, "换参数必须重新编译：{relaid:?}");
+        assert_ne!(relaid.path, again.path, "两份产物不能共用路径");
+        assert_ne!(
+            relaid.key.params, again.key.params,
+            "参数必须是产物身份的一部分"
+        );
+
+        // 没有编译器时也不许拿另一组参数的产物顶替：那不是"同一份产物"的副本。
+        let error = run_program(None, &args(&["-O1"]), "flags", program, &settings).unwrap_err();
+        assert_eq!(error.code(), Code::Unsupported, "{error}");
+        assert!(error.to_string().contains("编译参数"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_artifact_cache_leaves_the_work_directory_empty() {
         let Some(tool) = tool() else {
@@ -678,7 +744,10 @@ mod tests {
         std::fs::set_permissions(&exe, perms).expect("可执行");
         for candidate in ["cc@17.0.0", "clang@18.1.3"] {
             cache
-                .put_artifact(&ArtifactKey::keyed(key.hex(), candidate, &harness), &exe)
+                .put_artifact(
+                    &ArtifactKey::keyed(key.hex(), candidate, key.flags_hash, &harness),
+                    &exe,
+                )
                 .expect("落产物");
         }
 

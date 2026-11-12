@@ -249,12 +249,19 @@ pub struct Gc {
     pub skipped: usize,
 }
 
-/// 一个编译产物的身份：源文本 + **实测工具链身份** + 拼进去的主函数。
+/// 一个编译产物的身份：源文本 + **实测工具链身份** + **编译参数** + 拼进去的主函数。
 ///
-/// 三者缺一都会被复用成错误的产物：源文本决定内核，工具链决定代码生成，主函数决定样本、
-/// 形状与重复次数。工具链这一项是 [`crate::backend::Toolchain::id`] 给出的 `命令@版本`
-/// （例如 `cc@21.0.0`）——只写命令名不够：升级一次编译器就换了一套代码生成，旧产物不能再
-/// 冒充新编译器的产物。档案声明的 `[meta].tool_ver` 是人写的登记值，不参与这里。
+/// 四者缺一都会被复用成错误的产物：源文本决定内核，工具链决定代码生成，参数决定同一份源码
+/// 被优化成什么，主函数决定样本、形状与重复次数。工具链这一项是
+/// [`crate::backend::Toolchain::id`] 给出的 `命令@版本`（例如 `cc@21.0.0`）——只写命令名
+/// 不够：升级一次编译器就换了一套代码生成，旧产物不能再冒充新编译器的产物。档案声明的
+/// `[meta].tool_ver` 是人写的登记值，不参与这里。
+///
+/// 参数这一项是 [`ArtifactKey::params`] 的指纹：它不改变源码，却能改变产物（`-O0` 与 `-O3`
+/// 是两份不同的代码生成）。见证这类不在声明里的程序原本只按 `标记;程序文本` 定名，于是改一次
+/// 档案的 `[compile].flags` 会复用旧参数编出来的可执行文件——「这条见证跑通过」于是对着一份
+/// 不再会被编出来的程序成立。把参数并进身份之后，参数的每次改动都换一份产物，证据的适用条件
+/// 与协商的输入（片段、工具链、参数）对齐。
 ///
 /// 产物因此有自己的哈希，但在目录里跟随父条目（`<条目>/bin/<hash>`）：它的 `source` 与
 /// `meta.txt` 就是父条目的那一份，不该为它复制一套。
@@ -264,25 +271,41 @@ pub struct ArtifactKey {
     pub source: String,
     /// 工具链身份（`命令@实测版本`）。
     pub tool: String,
+    /// 编译参数的指纹（见 [`ArtifactKey::params`]）。
+    pub params: u64,
     /// 拼进去的主函数的哈希。
     pub harness: u64,
 }
 
 impl ArtifactKey {
     /// 由缓存键、编译器与主函数文本构造。
+    ///
+    /// 参数取自 [`CacheKey::flags_hash`]：算子的缓存键已经把 `[compile].flags` 与设备
+    /// preamble 一起哈希过，产物身份不必另算一份。
     #[must_use]
     pub fn new(key: &CacheKey, tool: &str, harness: &str) -> Self {
-        Self::keyed(key.hex(), tool, harness)
+        Self::keyed(key.hex(), tool, key.flags_hash, harness)
+    }
+
+    /// 编译参数的指纹。
+    ///
+    /// 算子走 [`CacheKey::flags_hash`]，而见证程序没有缓存键，参数由调用方给：两者是同一件事
+    /// ——"这次传给编译器的参数是哪一组"。按顺序用空格连接，是因为编译器看到的就是这一行；
+    /// 参数顺序本身也是命令行的一部分（`-I` 之类会出现先到先得），所以不排序。
+    #[must_use]
+    pub fn params(flags: &[String]) -> u64 {
+        fnv1a(&flags.join(" "))
     }
 
     /// 由任意源文本身份构造：算子的缓存键、见证程序的条目键……
     ///
     /// 两者只是"源文本怎么指认"不同（算子靠声明指纹，见证靠程序文本），产物身份的形状一致。
     #[must_use]
-    pub fn keyed(source: impl Into<String>, tool: &str, harness: &str) -> Self {
+    pub fn keyed(source: impl Into<String>, tool: &str, params: u64, harness: &str) -> Self {
         Self {
             source: source.into(),
             tool: tool.to_string(),
+            params,
             harness: fnv1a(harness),
         }
     }
@@ -290,15 +313,20 @@ impl ArtifactKey {
     /// 从 [`Self::describe`] 的文本还原身份（产物旁的 `.key` 记的就是这一行）。
     ///
     /// 解析失败即当作"没有身份"：宁可不复用，也不把一份来历不明的可执行文件当成这里的产物。
+    ///
+    /// 缺 `params=` 的旧产物同样算没有身份：它是在参数还没进身份的时候编出来的，那一轮用的是
+    /// 哪组参数已经无从查起。缓存按定义可重建，重编一次的代价远小于把证据挂到未知参数上。
     fn parse(text: &str) -> Option<Self> {
         let mut source = None;
         let mut tool = None;
+        let mut params = None;
         let mut harness = None;
         for item in text.split(';') {
             let (name, value) = item.split_once('=')?;
             match name {
                 "source" => source = Some(value.to_string()),
                 "tool" => tool = Some(value.to_string()),
+                "params" => params = Some(u64::from_str_radix(value, 16).ok()?),
                 "harness" => harness = Some(u64::from_str_radix(value, 16).ok()?),
                 _ => {}
             }
@@ -306,6 +334,7 @@ impl ArtifactKey {
         Some(Self {
             source: source?,
             tool: tool?,
+            params: params?,
             harness: harness?,
         })
     }
@@ -314,8 +343,8 @@ impl ArtifactKey {
     #[must_use]
     pub fn describe(&self) -> String {
         format!(
-            "source={};tool={};harness={:016x}",
-            self.source, self.tool, self.harness
+            "source={};tool={};params={:016x};harness={:016x}",
+            self.source, self.tool, self.params, self.harness
         )
     }
 
@@ -824,11 +853,51 @@ mod tests {
 
     #[test]
     fn the_artifact_identity_carries_the_measured_toolchain() {
-        let cc17 = ArtifactKey::keyed("abc", "cc@17.0.0", "main");
-        let cc21 = ArtifactKey::keyed("abc", "cc@21.0.0", "main");
+        let cc17 = ArtifactKey::keyed("abc", "cc@17.0.0", 0, "main");
+        let cc21 = ArtifactKey::keyed("abc", "cc@21.0.0", 0, "main");
         assert_ne!(cc17, cc21, "换编译器版本必须换一份产物");
         assert_ne!(cc17.hex(), cc21.hex());
         assert_eq!(cc17, ArtifactKey::parse(&cc17.describe()).expect("可还原"));
+    }
+
+    /// 编译参数也决定产物：同一份见证在 `-O0` 与 `-O3` 下是两份不同的代码生成。
+    ///
+    /// 少了这一项，改一次档案的 `[compile].flags` 会静默复用旧参数的二进制，而「这条见证
+    /// 跑通过」是对着一份不再会被编出来的程序成立的。
+    #[test]
+    fn the_artifact_identity_carries_the_compile_parameters() {
+        let o3 = ArtifactKey::keyed(
+            "abc",
+            "cc@21.0.0",
+            ArtifactKey::params(&args(&["-O3"])),
+            "main",
+        );
+        let o0 = ArtifactKey::keyed(
+            "abc",
+            "cc@21.0.0",
+            ArtifactKey::params(&args(&["-O0"])),
+            "main",
+        );
+        assert_ne!(o3, o0, "换编译参数必须换一份产物");
+        assert_ne!(o3.hex(), o0.hex());
+        assert_eq!(o3, ArtifactKey::parse(&o3.describe()).expect("可还原"));
+        // 参数顺序是命令行的一部分：不排序，`-I a -I b` 与 `-I b -I a` 不是同一行。
+        assert_ne!(
+            ArtifactKey::params(&args(&["-I", "a", "-I", "b"])),
+            ArtifactKey::params(&args(&["-I", "b", "-I", "a"]))
+        );
+    }
+
+    /// 缺 `params=` 的产物不认：它是在参数还没进身份的那一轮编出来的，来历无从查起。
+    #[test]
+    fn an_artifact_without_parameters_has_no_identity() {
+        let text = "source=abc;tool=cc@21.0.0;harness=0000000000000001";
+        assert!(ArtifactKey::parse(text).is_none(), "{text}");
+    }
+
+    /// 参数列表的字面量便利构造。
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
     }
 
     #[test]

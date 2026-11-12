@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn every_element_type_maps_to_a_format_and_back() {
-        for dtype in DType::ALL {
+        for dtype in DType::ALL.iter().copied() {
             let format = WeightFormat::of_dtype(dtype);
             assert_eq!(format.dtype(), dtype, "{dtype:?} 往返");
         }

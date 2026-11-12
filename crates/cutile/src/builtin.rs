@@ -299,7 +299,7 @@ mod tests {
         let catalogue = Catalogue::try_builtin().expect("内置数据");
         for profile in catalogue.profiles() {
             let vendor = profile.meta.vendor.as_str();
-            for prim in Prim::ALL {
+            for prim in Prim::ALL.iter().copied() {
                 if profile.simt.declared
                     && profile.simt.group <= 1
                     && matches!(prim, Prim::Shuffle | Prim::Broadcast)

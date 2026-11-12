@@ -11,7 +11,7 @@
 
 use diagnostic::{Code, Error};
 use op::model::{Sample, Values};
-use op::sig::Signature;
+use op::sig::{CType, Signature};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -82,6 +82,19 @@ pub fn harness(
             "内核签名没有可写输出缓冲（装载期已经校验过，这里只能是实现漂移）",
         )
     })?;
+    // 回读只认 `float`：输出按 `float` 的位模式打印，`y` 也声明成 `float[]`。若 `.k` 把可写
+    // 指针声明成别的类型，C 编译器只会报一句 `incompatible pointer type`，不带算子名与缓冲名；
+    // 所以在这里先说清楚是"哪一份签名的哪一个形参"不满足回读口径。
+    if signature.output_type() != Some(CType::F32) {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "算子 `{}` 的可写输出 `{output}` 在 `.k` 里不是 `float *`（是 `{}`）；回读按 float 位模式解释，只认 `float`",
+                signature.op(),
+                signature.output_type().map_or("无", CType::c_name)
+            ),
+        ));
+    }
     let out = sample
         .buffer(output)
         .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有输出缓冲 `{output}`")))?;
@@ -569,6 +582,28 @@ mod tests {
         let error = harness("", &signature(), &sample, 1).unwrap_err();
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("必须是 f32"), "{error}");
+    }
+
+    /// 回读只认 `float`：`.k` 把可写指针写成字节缓冲时，要在拼 C 之前报，并带算子名与缓冲名
+    /// （否则只会由 C 编译器吐一句 `incompatible pointer type`，没有上下文）。
+    #[test]
+    fn a_non_float_output_is_rejected_before_any_c_is_generated() {
+        let signature = Signature::parse(
+            "x",
+            "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
+             unsigned char *y, int M, int N, int gsz) {}\n",
+        )
+        .expect("u8 是闭集内的缓冲类型");
+        let error = harness("", &signature, &sample(), 1).unwrap_err();
+        assert_eq!(error.code(), Code::Unsupported);
+        let text = error.to_string();
+        assert!(text.contains("`x`"), "算子名要在诊断里：{text}");
+        assert!(text.contains("`y`"), "缓冲名要在诊断里：{text}");
+        assert!(
+            text.contains("unsigned char"),
+            "错误要说清 `.k` 实际写的是什么：{text}"
+        );
+        assert!(text.contains("float"), "{text}");
     }
 
     #[test]
