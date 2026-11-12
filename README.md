@@ -2,7 +2,7 @@
 
 用 Rust 编写的配置驱动算子训练推理框架：kernel 由声明与档案驱动（`cutile`），上层按层组装成推理与训练链路（`llm`）。
 
-本仓库是一个 Cargo workspace，共 32 个成员（`crates/*` 下的 31 个 crate 与根包 `llm`（入口 bin））。
+本仓库是一个 Cargo workspace，共 33 个成员（`crates/*` 下的 32 个 crate 与根包 `llm`（入口 bin））。
 元数据、依赖版本、lint 策略统一在根 `Cargo.toml` 声明；**模块的层级与依赖方向**写在
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，新增成员时按那里的三步登记。
 
@@ -15,6 +15,7 @@
 cargo run -p llm                              # 组装点：默认命令打印各层摘要
 cargo run -p llm -- help                      # 命令行用法（解析在 `cli`，执行在 `llm`）
 cargo run -p llm -- status --weights model.safetensors   # 读真实 safetensors：条目 → 层栈 → 模型下界
+cargo run -p llm -- run --weights model.safetensors      # 用真实权重算一次：每层一条内核、与标量参考对拍
 cargo build --workspace                       # 编译整个 workspace
 cargo test --workspace                        # 跑全部成员的测试与 doctest
 ```
@@ -47,10 +48,10 @@ struct LmHead;   // 生成 impl nn::Layer + 一条“声明仍与 op 数据一�
 | L1 基础设施 | `diagnostic` `testkit` `llm-config` `tool` `benches` | 统一错误类型、测试夹具、配置分层与路径、人可读输出、基准判定 |
 | L2 数据层 | `einsum` `prof` `op` `prim` | 求和表达式的语义代价、设备档案与能力闭集、算子声明与模板（`gemv_i4` 量化 / `gemv_f32` 稠密）、原语片段与见证（纯数据） |
 | L3 内核 | `cutile` `audit` | `cutile`：协商 → 拼接 → emit → 编译执行，见 [DESIGN](crates/cutile/DESIGN.md)；`audit`：在其上做 doctor/verify/bench 的结构化报告与见证执行 |
-| L4 运行时 | `mem` `tensor` `storage` `exec` `tokenizer` | 分配、张量元数据、布局搬运、提交执行、文本边界 |
+| L4 运行时 | `mem` `tensor` `storage` `exec` `tokenizer` `pack` | 分配、张量元数据、布局搬运、提交执行、文本边界、版本化权重容器 |
 | L5 模型与训练 | `weights` `kv` `autograd` `comm` `proto` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、KV 页、反向图、集合通信、线协议、样本、层定义、切分拓扑 |
 | L6 调度与服务 | `checkpoint` `train` `engine` `serve` `cli` | 检查点格式、训练循环状态、连续批与序列、端点契约、命令行解析 |
-| L7 入口 | `llm`（bin） | 组装：把上面各层连起来，不定义新类型 |
+| L7 入口 | `llm`（bin） | 组装：把上面各层连起来，不定义新类型；`status` 算下界，`run` 用真实权重执行 |
 
 唯一一条依赖规则：**依赖只能指向更低的层（同层只能依赖更靠左的成员）**。因此向上依赖不可能通过、
 环不可能出现、数据层永远不会知道机制（`op` / `prof` / `prim` 不依赖 `cutile`）。
@@ -95,10 +96,11 @@ llm ──▶ engine ──▶ kv ──▶ tensor ──▶ mem ──▶ diagn
 │                         # 0010 借出 vs 载入（权重文件的两条读取契约）
 │                         # 0011 下界按方向分账、按文件说格式，并允许“无法计价”
 │                         # 0012 量化权重的分组与宽度必须同源
+│                         # 0014 真实权重执行：同一件内核，换一份样本
 └── crates/
     ├── annotation/       # #[layer] 属性宏：注解 → 校验过的 Layer 实现（零外部依赖）
     ├── audit/            # 内核审计：doctor / verify / bench 的结构化报告与见证执行
-    ├── checkpoint/       # 检查点文件：恢复事实 + 权重条目表（LEB128 + 偏移增量 + CRC-32，流式原子落盘）
+    ├── checkpoint/       # 检查点文件：恢复事实 + 权重条目表（名字前后缀共享 + 布局重复 + 偏移增量 + CRC-32，流式原子落盘）
     ├── config/           # llm-config：配置分层、键闭集、路径解析、App 身份、TOML 解析器
     ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行（bin 在根包 `src/bin/cutile.rs`）
     ├── einsum/           # 语义层：一条求和表达式 → flops 与最少流量（op 的代价来源）
@@ -182,7 +184,7 @@ cargo new --lib crates/<name>       # 或 cargo new --bin
 | 文档 | 内容 |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层、依赖规则、所有权表、如何被守住 |
-| [`docs/adr/`](docs/adr/) | 架构决策记录（分层序、单一主人、kernel/运行时类型、占位策略、注解即契约、配置机制与身份分离、层下界、真实权重、借出与载入、量化分组） |
+| [`docs/adr/`](docs/adr/) | 架构决策记录（分层序、单一主人、kernel/运行时类型、占位策略、注解即契约、配置机制与身份分离、层下界、真实权重、借出与载入、量化分组、真实权重执行） |
 | [`crates/cutile/DESIGN.md`](crates/cutile/DESIGN.md) | kernel 层机制：三层数据、闭集、无 IR lowering、证据分级 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 变更记录 |
 
