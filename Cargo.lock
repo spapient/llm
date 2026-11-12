@@ -47,6 +47,7 @@ name = "llm-audit"
 version = "0.1.0"
 dependencies = [
  "cutile",
+ "llm-annotation",
  "llm-config",
  "llm-diagnostic",
  "llm-op",
@@ -173,10 +174,19 @@ dependencies = [
 name = "llm-op"
 version = "0.1.0"
 dependencies = [
+ "llm-annotation",
  "llm-config",
  "llm-diagnostic",
  "llm-einsum",
  "llm-prof",
+]
+
+[[package]]
+name = "llm-pack"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
 ]
 
 [[package]]

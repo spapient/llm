@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Wire framing: version, message kind and the 10-byte envelope header."
+description = "Wire framing: versioned envelope, incremental decoding, a payload cap and per-frame CRC-32."
 publish = false
 
 [dependencies]
