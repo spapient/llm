@@ -64,6 +64,21 @@ exec  = ["cube"]         # 加载期校验：cube 必须访问得到上面声明
 签名等于同时承诺"有一张与它同构的片段文本"——少这一半，`provides` 与片段可以各自自洽却指向
 不同的算法（`dp4a` 的文本被当作 `fma` 用），而这种错在构建期之外没有任何地方能发现。
 
+一个签名由哪些参数构成也是闭集：`Prim::attr_keys` 给出 16 个原语各自的属性键——`dot` /
+`shuffle` / `broadcast` 是 `lanes`，搬运是 `src` / `dst` / `stages`，`reduce` / `scan` 是
+`axis` / `op`，`cvt` 是 `sat`，`rcp` 是 `kind` / `accuracy`，`atomic` 是 `op`，`mma` 是
+`accuracy`，`quant` / `commit_wait` 是 `group`，`bar` 没有；`exec` 对每条原语都成立。档案里
+写上与该原语无关的键（`load.sat`）在装载期就报错，而不是等它永远不被协商检查——协商只比对
+需求里出现的键，一个多余键读不到也不影响判定，"档案声明了什么"与"生成时用了什么"却已经
+不一致。
+
+同一个签名的**写法**也由两层共用：主维度接受 `m` / `bytes` / `extent` 三个名字，`dt` 与
+`space` 接受标量或数组。声明层的 `[needs]` 与档案层的 `[[provides]]` 各有一个解析器，若它们对
+同一份签名接受不同写法，换一种写法就会静默少一个约束；形状不对（`space = 3`）、维度写成数字
+（`n = 16`）或多个同义名同时出现（`m` 与 `bytes`）一律报错，不当作"没写"——档案是数据，
+"哪个名字生效"不该取决于遍历顺序。`cutile` 的跨层用例把"同一份签名用两种写法分别写在两层、
+协商的覆盖关系两个方向都成立"钉成判据。
+
 `[peak]` 的 `value` 与 `src` 必须一致：`src` 只能是数值字面量与 `+ - * /`、括号组成的表达式，
 装载期会求值并与 `value` 比对，不一致或含变量名/单位都会在解析期报错。量纲与物理含义写在
 TOML 注释里，峰值数字因此只有一个事实源（DESIGN §12.1）。
@@ -81,8 +96,11 @@ witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5]
 
 `profile.validate` 只静态校验（文件可读、函数名在源码里、期望值非空且不超上限）；真正的证据来自
 `cutile verify`：它把每条 `grade ≥ L2` 的见证编成可执行文件并执行，值不对就整台设备失败。
-声明了见证的 `L0`/`L1` 供给走另一条路——**host 自检**：见证的 ABI 是 host C，与片段语言无关，
+设备执行跑不到的供给走另一条路——**host 自检**：见证的 ABI 是 host C，与片段语言无关，
 所以自检跳过档案的 `[compile].preamble` 与 `flags`，直接编译执行 `<vendor>/witness.<ext>`。
+两个范围**不重叠、合起来覆盖每一条声明**：非 C 设备的全部声明走自检，`cpu` 只有 `L0`/`L1`
+（`atomic` 与闭集里 CPU 真正具备的四条）走自检，它的 `L2` 仍由设备执行给出。此前 `cpu` 的
+那几条两头落空——设备执行只挑 `L2`，自检又只跑非 C 设备，写下的证据等于死数据。
 
 校验与等级解耦：**声明了见证就校验它**，即使这条供给还是 `L0`/`L1`。这样加速器可以先有证据
 文本（`nvidia/witness.cu`、`intel/witness.cl`、`ascend/witness.cpp`、`metal/witness.metal` 已经登记在
@@ -97,11 +115,18 @@ witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5]
 执行通过的结论也无法归属——`mmad`（Cube，f16 分块）与 `scalar_fma`（scalar，f32）正是两种
 算法，各用各的函数。`profile.validate` 在装载期就拒绝共用，不等到执行。
 
-**见证矩阵**：闭集的 16 个原语在四台加速器（NVIDIA / Intel / 昇腾 / Metal）上各有一条带见证的
-签名（`nvidia` 17 条、`intel` 17 条、`ascend` 20 条、`metal` 17 条，共 71 条）。补齐的是设备
-**自称有**的能力：张量核（`mma`）、lane 交换/广播/前缀扫描（`shuffle`/`broadcast`/`scan`）、
-`exp2`/`rcp`，以及 `intel` 原先漏掉的 `atomic`。它们的等级都是 `L0`：有见证源码，没有片段
-文本（P0 模板不调用），也没有真机执行——矩阵补的是"证据覆盖"，不是"等级"。
+**见证矩阵**：闭集的 16 个原语在每台设备上都要有带见证的签名——四台加速器
+（`nvidia` 17 条、`intel` 17 条、`ascend` 20 条、`metal` 17 条）加 `cpu` 14 条，共 85 条。加速器
+补齐的是设备**自称有**的能力：张量核（`mma`）、lane 交换/广播/前缀扫描
+（`shuffle`/`broadcast`/`scan`）、`exp2`/`rcp`，以及 `intel` 原先漏掉的 `atomic`。`cpu` 补的是它
+真正具备的四条（`mma` 的标量分块、`scan`、`exp2`、`rcp`）与原先没有见证的 `atomic`（`L1` 降为
+`L0`：单线程只有读改写，没有原子语义）。它们的等级都是 `L0`：有见证源码，没有片段文本
+（P0 模板不调用），也没有真机执行——矩阵补的是"证据覆盖"，不是"等级"。
+
+唯一的合法空白由数据解释：`shuffle`/`broadcast` 要求 `[simt].group > 1`，`cpu` 的
+`[simt].group = 1` 意味着没有可交换的第二条 lane，声明它们只会造出自欺的证据。
+`profile.validate` 把这条变成装载期判据（只对**写了** `[simt]` 的档案生效——`ascend` 没有这一段，
+它的 lane 交换由向量单元 `vgather`/`vbroadcast` 承担）。
 
 ## 新增设备 / 新增执行单元
 
@@ -117,5 +142,5 @@ witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5]
 - **原语片段**（`prim/<vendor>/<prim>.<ext>`）与见证源码：在 `crates/prim`（本 crate 只在装载期检查
   见证文件是否存在）。
 - **机制**：协商（`cap`）、选择（`plan`）、拼接（`substitute`）与 emit（`emit`）、探测（`probe`）都在 `cutile`；
-  依赖方向固定为 `llm → cutile → {prof, prim}`、`prim → prof`，本 crate 不依赖 `cutile`。
+  依赖方向固定为 `llm → cutile → {prof, prim}`、`prim → prof`、`{prof, prim} → diagnostic`，本 crate 不依赖 `cutile`。
 - 构建与工具链配置：见根目录的 `Cargo.toml`、`clippy.toml`、`rustfmt.toml`。

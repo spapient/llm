@@ -14,6 +14,7 @@
 ```bash
 cargo run -p llm                              # 组装点：默认命令打印各层摘要
 cargo run -p llm -- help                      # 命令行用法（解析在 `cli`，执行在 `llm`）
+cargo run -p llm -- status --weights model.safetensors   # 读真实 safetensors：条目 → 层栈 → 模型下界
 cargo build --workspace                       # 编译整个 workspace
 cargo test --workspace                        # 跑全部成员的测试与 doctest
 ```
@@ -44,10 +45,10 @@ struct LmHead;   // 生成 impl nn::Layer + 一条“声明仍与 op 数据一�
 | 层 | 成员 | 职责 |
 |---|---|---|
 | L1 基础设施 | `diagnostic` `testkit` `llm-config` `tool` `benches` | 统一错误类型、测试夹具、配置分层与路径、人可读输出、基准判定 |
-| L2 数据层 | `einsum` `prof` `op` `prim` | 求和表达式的语义代价、设备档案与能力闭集、算子声明与模板、原语片段与见证（纯数据） |
+| L2 数据层 | `einsum` `prof` `op` `prim` | 求和表达式的语义代价、设备档案与能力闭集、算子声明与模板（`gemv_i4` 量化 / `gemv_f32` 稠密）、原语片段与见证（纯数据） |
 | L3 内核 | `cutile` `audit` | `cutile`：协商 → 拼接 → emit → 编译执行，见 [DESIGN](crates/cutile/DESIGN.md)；`audit`：在其上做 doctor/verify/bench 的结构化报告与见证执行 |
 | L4 运行时 | `mem` `tensor` `storage` `exec` `tokenizer` | 分配、张量元数据、布局搬运、提交执行、文本边界 |
-| L5 模型与训练 | `weights` `kv` `autograd` `comm` `proto` `data` `nn` `shard` | 权重结构、KV 页、反向图、集合通信、线协议、样本、层定义、切分拓扑 |
+| L5 模型与训练 | `weights` `kv` `autograd` `comm` `proto` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、KV 页、反向图、集合通信、线协议、样本、层定义、切分拓扑 |
 | L6 调度与服务 | `checkpoint` `train` `engine` `serve` `cli` | 检查点格式、训练循环状态、连续批与序列、端点契约、命令行解析 |
 | L7 入口 | `llm`（bin） | 组装：把上面各层连起来，不定义新类型 |
 
@@ -63,7 +64,7 @@ llm ──▶ engine ──▶ kv ──▶ tensor ──▶ mem ──▶ diagn
   │        └─────▶ exec                     ▲
   ├──▶ serve ──▶ proto / tokenizer ─────────┘
   ├──▶ cli ──▶ diagnostic
-  ├──▶ nn ──▶ op / annotation
+  ├──▶ nn ──▶ weights / op / annotation
   ├──▶ train ──▶ nn ──▶ op
   │             ├▶ checkpoint ──▶ weights
   │             ├▶ autograd ─┐
@@ -88,11 +89,16 @@ llm ──▶ engine ──▶ kv ──▶ tensor ──▶ mem ──▶ diagn
 │   ├── ARCHITECTURE.md   # 分层、依赖规则、所有权表、新增成员三步
 │   └── adr/              # 0001 分层序 / 0002 单一主人 / 0003 kernel 与运行时类型
 │                         # 0004 占位策略 / 0005 注解即契约 / 0006 配置机制与身份分离
-│                         # 0007 代价来自一条求和表达式
+│                         # 0007 代价来自一条求和表达式 / 0008 层下界来自算子语义
+│                         # 0013 加第二条算子只加数据（稠密 f32 投影）
+│                         # 0009 真实权重 → 层栈 → 模型下界
+│                         # 0010 借出 vs 载入（权重文件的两条读取契约）
+│                         # 0011 下界按方向分账、按文件说格式，并允许“无法计价”
+│                         # 0012 量化权重的分组与宽度必须同源
 └── crates/
     ├── annotation/       # #[layer] 属性宏：注解 → 校验过的 Layer 实现（零外部依赖）
     ├── audit/            # 内核审计：doctor / verify / bench 的结构化报告与见证执行
-    ├── checkpoint/       # 检查点文件：恢复事实 + 权重条目表的编码、版本与偏移校验
+    ├── checkpoint/       # 检查点文件：恢复事实 + 权重条目表（LEB128 + 偏移增量 + CRC-32，流式原子落盘）
     ├── config/           # llm-config：配置分层、键闭集、路径解析、App 身份、TOML 解析器
     ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行（bin 在根包 `src/bin/cutile.rs`）
     ├── einsum/           # 语义层：一条求和表达式 → flops 与最少流量（op 的代价来源）
@@ -109,6 +115,7 @@ llm ──▶ engine ──▶ kv ──▶ tensor ──▶ mem ──▶ diagn
 cargo run --bin cutile -- doctor --op gemv_i4 --device auto            # 协商链 + 布局声明 + 缓存指纹
 cargo run --bin cutile -- doctor --op gemv_i4 --device cpu --why 83a3ecdb31cd1225   # 该键为什么没命中
 cargo run --bin cutile -- verify --op gemv_i4 --devices cpu            # 编译执行并与标量参考对拍（L2）
+cargo run --bin cutile -- verify --op gemv_f32 --devices cpu           # 稠密算子同一套流水线（L2）
 cargo run --bin cutile -- bench  --op gemv_i4 --repeat 20              # 形状缺省取算子的生产形状
 cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU 回收到上限以内（缺省 2 GiB）
 ```
@@ -116,7 +123,12 @@ cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU
 | 设备 | 现状 | 说明 |
 |---|---|---|
 | `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `crates/op` 的标量参考对拍 `max_rel_err = 0` |
-| `nvidia` / `intel` / `metal` | L1 | 仅有档案与片段声明；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
+| `nvidia` / `intel` / `metal` | L1 | 仅有档案、片段与见证；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
+
+`metal` 的设备侧代码还能在构建期编成 `metallib` 并嵌进二进制：`cargo build -p llm --features device-image`
+（默认是源码调试，只带片段与见证）。哪台设备带了什么由 `prim::devices()` 回答，`cargo run -p llm`
+的 `片段层 prim` 一行会逐台列出 `=源码` / `=metallib N B/M 个符号`；`CUTILE_REQUIRE_IMAGE=metal`
+把"缺镜像"升级成构建失败。细节见 [`crates/prim/README.md`](crates/prim/README.md)。
 
 ## 配置
 
@@ -170,7 +182,7 @@ cargo new --lib crates/<name>       # 或 cargo new --bin
 | 文档 | 内容 |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层、依赖规则、所有权表、如何被守住 |
-| [`docs/adr/`](docs/adr/) | 架构决策记录（分层序、单一主人、kernel/运行时类型、占位策略、注解即契约、配置机制与身份分离） |
+| [`docs/adr/`](docs/adr/) | 架构决策记录（分层序、单一主人、kernel/运行时类型、占位策略、注解即契约、配置机制与身份分离、层下界、真实权重、借出与载入、量化分组） |
 | [`crates/cutile/DESIGN.md`](crates/cutile/DESIGN.md) | kernel 层机制：三层数据、闭集、无 IR lowering、证据分级 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 变更记录 |
 

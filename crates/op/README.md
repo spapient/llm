@@ -9,17 +9,20 @@
 crates/op/
 ├── Cargo.toml
 ├── ops/
-│   ├── gemv_i4.toml     # 声明：骨架 / 轴 / 需求 / 布局 / 降级链
+│   ├── gemv_f32.toml    # 声明：稠密 f32 投影（骨架 / 轴 / 需求 / 布局 / 降级链）
+│   ├── gemv_f32.k       # 模板：分块点积，未量化
+│   ├── gemv_i4.toml     # 声明：weight-only int4 解码 GEMV
 │   └── gemv_i4.k        # 模板：C 风格文本 + {{插值}} + @原语 槽位
 └── src/
-    ├── lib.rs           # 内嵌（BUILTIN）、目录装载（load）、目录位置（dir）、语义注册表（model）
+    ├── lib.rs           # 注册表（REGISTRY）与它的两张投影（BUILTIN / model）、目录装载（load）、目录位置（dir）
     ├── decl.rs          # `<name>.toml` 的解析与轴展开：OpDecl / Variant / Axis / TileCombo
     ├── layout.rs        # 布局构造子闭集（row / col / swz / pad）与声明式签名
-    ├── sch.rs           # 调度模板闭集（direct / pipe / ws / pingpong）与降级链单调性
-    ├── tpl.rs           # 模板词法：文本 / {{槽位}} / @原语(...) 与行号
+    ├── sch.rs           # 调度模板闭集（direct / pipe / ws / pingpong）与降级链的两条判据（单调性、掩盖）
+    ├── tpl.rs           # 模板词法：文本 / {{槽位}} / @原语(...) 与行号；借用正文，装载期只切一遍
     ├── model.rs         # 算子语义的类型：样本 Sample、语义表 Model（生产形状 / 输出类型 / Cost）
     ├── sig.rs           # `.k` 入口签名的解析与样本对齐（ABI 的唯一事实源）
-    └── gemv_i4.rs       # 该算子的求和表达式、样本与标量参考
+    ├── gemv_f32.rs      # 稠密 f32 投影的求和表达式、样本与标量参考
+    └── gemv_i4.rs       # int4 解码 GEMV 的求和表达式、样本与标量参考
 ```
 
 同一个算子的两个文件必须**同名成对**（`<name>.toml` ↔ `<name>.k`），缺模板会在装载时报错并指出两个路径。
@@ -47,20 +50,45 @@ crates/op/
 与标量取值，实参顺序与输出缓冲名都由签名派生。签名、样本与模板任一漂移，装载期或 `verify`/`bench`
 的拼接之前就会报错，诊断带算子名与形参名。
 
-`cutile` 通过这些函数指针工作，因此它的代码里不出现任何算子名。
+模板里的 `@原语(key: value)` 是签名的另一半：这些命名参数会原样拼进片段文本，说的就是"本次生成用哪条
+签名"。因此 `key` 若属于能力属性闭集（`sat` / `op` / `axis` / `kind` / `accuracy` / `group` / `lanes` /
+`src` / `dst` / `stages` / `exec`），它必须在该变体的 `[needs]` / `extra_needs` 里声明、且取值被声明
+允许——否则设备按声明的值被协商验证，代码却按模板的值生成。闭集之外的命名参数（如 `along:`）是片段级
+提示，协商不检查它们，留给片段。
+
+属性键还必须属于**该原语**的签名（`prof::atom::Prim::attr_keys`）：`sat` 只对 `cvt` 成立，
+`lanes` 只对 `dot` / `shuffle` / `broadcast` 成立，搬运是 `src` / `dst` / `stages`，`exec` 对所有
+原语成立。写在别的原语上（`store.sat`、`mma.lanes`）在装载期报错并给出该原语允许的键——协商
+只比对需求里出现的键，这类键既不会被检查，也不会被片段消费，只会让声明看起来更具体。
+
+`cutile` 通过这些函数指针工作，因此它的代码里不出现任何算子名。要取**某一条**算子请用
+`builtin_named(name)`，不要用 `builtin()[0]`：注册表从一条变两条时，按位置取会静默换人。
 
 表达式里有一类轴必须声明成**派生轴**：`gemv_i4` 的 `scales[n, g]` 中 `g = m / 32`，它只影响流量
 （这块张量确实只有 `n · m/32` 个元素），不能参与运算次数。`Extents::group` 用一条推导来表达这件事，
 `Formula::axes` 因此能把每条轴标成批 / 自由 / 规约 / 分组四类角色。
+
+## 现有的两条算子
+
+| 算子 | 输入格式 | 求和表达式 | 用途 |
+|---|---|---|---|
+| `gemv_i4` | 4 位打包 + 每 32 元素一个标度 | `nm,m,ng,n->n` | weight-only 量化推理（带宽受限） |
+| `gemv_f32` | f32（无标度） | `nm,m,n->n` | 稠密权重；真实 safetensors 最常见的形态 |
+
+两条算子**只差数据**：同一副 `gemm` 骨架、同一批 CPU 原语（9 条 L2 见证）、同一条 lowering 流水线；
+`cutile` 与 `prim` 在加入 `gemv_f32` 时一行未改（ADR 0013）。它们的代价不能互相顶替——同一份
+`[4096, 4096]` 权重，f32 的读下界是 int4 的 8 倍，所以"格式 → 算子名"是 `nn::WeightFormat` 的映射，
+不是一个全局默认值。
 
 ## 新增一个算子
 
 1. 在 `ops/` 下写 `<name>.toml` 与 `<name>.k`；
 2. 在 `src/<name>.rs` 写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`
    与一张 `MODEL` 表；样本里的缓冲名与标量名必须和 `.k` 签名一致，实参列表不在这里写；
-3. 在 `src/lib.rs` 的 `BUILTIN` 里补一行 `include_str!`（否则发布出去的二进制里没有它），
-   并在 `model()` 里补一个分支（否则 `doctor`/`verify`/`bench` 会报"没有语义模型"）；
-4. `cargo test -p op` —— `builtin_matches_disk` 会把"磁盘有、内嵌无"直接判为失败；
+3. 在 `src/lib.rs` 的 `REGISTRY` 里补一条 `Registration`（名字 + 两段 `include_str!` + `MODEL`）：
+   声明、模板与语义表是同一条注册，`BUILTIN` 与 `model()` 都是它的投影，因此不存在
+   "内嵌里有、语义表里没有"的第二份事实；
+4. `cargo test -p llm-op` —— `builtin_matches_disk` 会把"磁盘有、内嵌无"直接判为失败；
 5. `cargo run --bin cutile -- doctor --op <name> --device cpu` 看协商与 emit 结果，
    `cargo run --bin cutile -- verify --op <name> --devices cpu` 与标量参考对拍。
 
