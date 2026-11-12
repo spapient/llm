@@ -1,7 +1,8 @@
 //! 训练循环的状态：[`Schedule`]、[`Step`]、[`Checkpoint`]，以及激活缓冲 [`Buffers`]。
 //!
 //! **拥有**：`Schedule`、`Step`、`Checkpoint`、`Buffers`、`Kernel`、`Reference`、`Data`、
-//! `View`、`ViewMut`。**不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
+//! `View`、`ViewMut`，以及承载静态契约的 `Kind`、`Lane`、`Inputs`。
+//! **不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
 //! 计划（`autograd::Plan`）、样本生成（`data`）、层定义（`nn`）、参数（`weights`）、拓扑
 //! （`shard`）、算子语义（`op`）。**依赖**：`nn`、`autograd`、`data`、`weights`、`shard`、
 //! `checkpoint`、`tensor`、`op`、`diagnostic`。**被依赖**：`llm`。
@@ -28,7 +29,7 @@ mod store;
 
 use diagnostic::{Code, Error, Result};
 
-pub use store::{Buffers, Data, Kernel, Reference, View, ViewMut};
+pub use store::{Buffers, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
 
 /// 一条训练步记录。
 #[derive(Debug, Clone, Copy, PartialEq)]

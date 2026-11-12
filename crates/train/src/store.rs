@@ -1,6 +1,7 @@
 //! 训练侧的激活缓冲：[`Buffers`] 把 [`Store`] 落到真实内存，算的部分交给 [`Kernel`]。
 //!
-//! **拥有**：`Buffers`、`Kernel`、`Reference`、`Data`、`View`、`ViewMut`。**不拥有**：显存计划
+//! **拥有**：`Buffers`、`Kernel`、`Reference`、`Data`、`View`、`ViewMut`，以及承载静态契约的
+//! `Kind`、`Lane`、`Inputs`。**不拥有**：显存计划
 //! （`autograd::Plan`）、反向调度（`autograd::Schedule`）、形状表（`autograd::Sizes`）、算子
 //! 语义（`op`，标量参考就在那里）。**依赖**：`autograd`、`tensor`、`op`、`diagnostic`。
 //!
@@ -16,6 +17,17 @@
 //! workspace 里 `unsafe_code = deny`，"把 `Vec<u8>` 重解释成 `&[f32]`"这条最省事的路是关着的，
 //! 所以 [`Data`] 只有 `f32` 与按位打包的 `u8` 两种。这不是妥协：它把"哪种元素能算"提前到
 //! 编译期，`F16` / `BF16` 在这里直接报 `unsupported`，而不是在运行时把一段字节当浮点读。
+//!
+//! 这两条形态在类型上就是 [`Lane`] 的唯一两个实现：字节数、零值分配、空闲表与拆包都只写
+//! 一份，按 lane 单态化。运行时的形态标签 [`Kind`] 只出现在"元素类型 → 形态"那一处
+//! （`Kind::of`）与视图的标记上；进了内核之后形参类型已由泛型参数确定，没有任何按形态的
+//! 分支。
+//!
+//! # 内核表与算子注册表同源
+//!
+//! [`Reference`] 不写 `match op { ... }`：它查一张定长表，长度与顺序由 [`op::REGISTRY`] 在
+//! 编译期锁死（数组长度 + `const` 断言），每组输入的 lane 由 [`Inputs`] 写成类型。于是
+//! "注册了算子却没有参考实现"是编译错误，而不是某次重放才碰到的 `unsupported`。
 //!
 //! # 数字必须对得上
 //!
@@ -67,6 +79,143 @@ use tensor::{DType, Shape};
 /// 本模块的诊断站点：出错时用它标明"是这一层拒绝了这次请求"。
 const SITE: &str = "train::Buffers";
 
+/// 一块零值缓冲：先向分配器要容量，要不到就返回说明。
+///
+/// `vec![0.0; n]` 在 `n` 大得离谱时不会返回错误，而是直接 `abort` 整个进程——而这里的 `n`
+/// 来自 [`Buffers`] 登记的（形状，元素类型），形状可以是从权重文件头读出来的不受信任输入。
+/// 于是"一份坏文件"会变成"宿主进程消失"，日志里连是哪一层都没留下；`try_reserve_exact` 把
+/// 这件事变回一条带类别的错误，且与其它拒绝一样在分配失败处就停，不会先写半个缓冲区。
+fn zeroed<T: Clone>(len: usize, value: T) -> Result<Vec<T>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!("要一块 {len} 个元素的缓冲区：超出可用内存或地址空间"),
+        )
+        .with(SITE)
+    })?;
+    buffer.resize(len, value);
+    Ok(buffer)
+}
+
+/// 缓冲的存储形态：`f32` 标量与按位打包的字节。
+///
+/// 它是 [`Lane`] 的运行时标签，只出现在两处：把 [`DType`] 折成形态（`Kind::of`，全模块
+/// 唯一一次按元素类型分支），以及给 [`View`] / [`ViewMut`] 打标记。进了内核之后形参类型已由
+/// 泛型参数确定，不再有任何按形态的分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    /// 32 位浮点。
+    F32,
+    /// 按位打包的整型。
+    U8,
+}
+
+impl Kind {
+    /// 元素类型 → 存储形态。
+    ///
+    /// `F16` / `BF16` 没有标量存储：workspace 里 `unsafe_code = deny`，"把字节重解释成浮点"
+    /// 这条路关着，所以它们是**编译期就能判定装不下**的元素类型，`None` 即拒绝。
+    const fn of(dtype: DType) -> Option<Self> {
+        match dtype {
+            DType::F32 => Some(Self::F32),
+            DType::I8 | DType::U4 => Some(Self::U8),
+            DType::F16 | DType::BF16 => None,
+        }
+    }
+
+    /// 名字：只用于错误说明。
+    const fn name(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::U8 => "u8",
+        }
+    }
+}
+
+/// 密封：`Lane` 的合法实现者只有下面那两个，闭集与 [`DType`] 一一对应。
+mod sealed {
+    /// 不导出、也不可在 crate 外实现。
+    pub trait Sealed {}
+
+    impl Sealed for f32 {}
+    impl Sealed for u8 {}
+}
+
+/// 一条存储 lane：`f32` 标量或按位打包的 `u8`。
+///
+/// trait 只承载**静态可判**的事实：形态标签与"按这条 lane 取切片"。字节数、零值分配、
+/// 空闲表都写成 `impl<L: Lane>` 的形式，两条 lane 共用同一份实现并各自单态化——不再有
+/// "两个几乎一样的分支"。
+/// `'static` 是必要的：lane 是元素类型本身（`f32` / `u8`），不带借用；它让
+/// [`Inputs::Slices`] 的 `&'a [L]` 对任意 `'a` 都成立。
+pub trait Lane: sealed::Sealed + Copy + Default + 'static {
+    /// 该 lane 的存储形态；[`Inputs`] 用它把类型拼成常量签名，也用它报错。
+    const KIND: Kind;
+
+    /// 从输入视图里取这一条 lane 的切片；形态不符时为 `None`。
+    ///
+    /// 参数按值传：[`View`] 是 `Copy`，所以返回的切片带着视图自己的生命周期，
+    /// 与这次调用的借用无关。
+    fn slice<'b>(view: View<'b>) -> Option<&'b [Self]>;
+
+    /// 输出侧的同一条契约。
+    fn slice_mut<'a, 'b: 'a>(view: &'a mut ViewMut<'b>) -> Option<&'a mut [Self]>;
+}
+
+impl Lane for f32 {
+    const KIND: Kind = Kind::F32;
+    fn slice<'b>(view: View<'b>) -> Option<&'b [f32]> {
+        match view {
+            View::F32(values) => Some(values),
+            View::U8(_) => None,
+        }
+    }
+
+    fn slice_mut<'a, 'b: 'a>(view: &'a mut ViewMut<'b>) -> Option<&'a mut [f32]> {
+        match view {
+            ViewMut::F32(values) => Some(values),
+            ViewMut::U8(_) => None,
+        }
+    }
+}
+
+impl Lane for u8 {
+    const KIND: Kind = Kind::U8;
+    fn slice<'b>(view: View<'b>) -> Option<&'b [u8]> {
+        match view {
+            View::U8(values) => Some(values),
+            View::F32(_) => None,
+        }
+    }
+
+    fn slice_mut<'a, 'b: 'a>(view: &'a mut ViewMut<'b>) -> Option<&'a mut [u8]> {
+        match view {
+            ViewMut::U8(values) => Some(values),
+            ViewMut::F32(_) => None,
+        }
+    }
+}
+
+/// 一块 lane 的字节数。
+fn bytes_of<L: Lane>(values: &[L]) -> u64 {
+    size_of_val(values) as u64
+}
+
+/// 一块零值 lane：分配失败是错误而不是 abort（理由见 [`zeroed`]）。
+fn zeros<L: Lane>(len: usize) -> Result<Vec<L>> {
+    zeroed(len, L::default())
+}
+
+/// "这个元素类型没有标量存储"：`F16` / `BF16` 的唯一结论。
+fn no_storage(dtype: DType) -> Error {
+    Error::new(
+        Code::Unsupported,
+        format!("{dtype:?} 没有标量存储：本层的缓冲只有 f32 与按位打包的 u8"),
+    )
+    .with(SITE)
+}
+
 /// 一块真实缓冲：与登记的 [`DType`] 一一对应的两种形态。
 ///
 /// 常驻值（参数、输入）与激活共用它，区别只在谁来放：参数由 [`Buffers::load`] 装进来，
@@ -80,11 +229,19 @@ pub enum Data {
 }
 
 impl Data {
-    /// 字节数。
+    /// 这块缓冲的存储形态。
+    pub fn kind(&self) -> Kind {
+        match self {
+            Self::F32(_) => Kind::F32,
+            Self::U8(_) => Kind::U8,
+        }
+    }
+
+    /// 字节数：按 lane 单态化，`size_of_val` 在编译期就知道元素宽度，热路径上没有分支。
     pub fn bytes(&self) -> u64 {
         match self {
-            Self::F32(values) => (values.len() * size_of::<f32>()) as u64,
-            Self::U8(values) => values.len() as u64,
+            Self::F32(values) => bytes_of(values),
+            Self::U8(values) => bytes_of(values),
         }
     }
 
@@ -104,25 +261,9 @@ impl Data {
         }
     }
 
-    /// 与登记的元数据是否相容：浮点只装 `f32`，整型只装按位打包的 `u8`。
+    /// 与登记的元数据是否相容：登记的 [`DType`] 折成形态后必须与这块缓冲同一条 lane。
     fn fits(&self, dtype: DType) -> bool {
-        match self {
-            Self::F32(_) => dtype == DType::F32,
-            Self::U8(_) => !dtype.is_float(),
-        }
-    }
-
-    /// 按形状与元素类型要一块零值缓冲。
-    fn empty(dtype: DType, shape: &Shape) -> Result<Self> {
-        match dtype {
-            DType::F32 => Ok(Self::F32(vec![0.0; shape.numel()])),
-            DType::I8 | DType::U4 => Ok(Self::U8(vec![0; shape.element_bytes(dtype)])),
-            DType::F16 | DType::BF16 => Err(Error::new(
-                Code::Unsupported,
-                format!("{dtype:?} 没有标量存储：本层的缓冲只有 f32 与按位打包的 u8"),
-            )
-            .with(SITE)),
-        }
+        Kind::of(dtype) == Some(self.kind())
     }
 }
 
@@ -136,6 +277,14 @@ pub enum View<'a> {
 }
 
 impl<'a> View<'a> {
+    /// 这一格是哪个存储形态。
+    pub fn kind(&self) -> Kind {
+        match self {
+            Self::F32(_) => Kind::F32,
+            Self::U8(_) => Kind::U8,
+        }
+    }
+
     /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
     pub fn f32(&self) -> Option<&'a [f32]> {
         match self {
@@ -163,12 +312,111 @@ pub enum ViewMut<'a> {
 }
 
 impl<'a> ViewMut<'a> {
+    /// 这一格是哪个存储形态。
+    pub fn kind(&self) -> Kind {
+        match self {
+            Self::F32(_) => Kind::F32,
+            Self::U8(_) => Kind::U8,
+        }
+    }
+
     /// 当成 `f32` 写；不是浮点缓冲时为 `None`。
     pub fn f32(&mut self) -> Option<&mut [f32]> {
         match self {
             Self::F32(values) => Some(values),
             Self::U8(_) => None,
         }
+    }
+}
+
+/// 一组输入 lane 的**类型级**表示：`(f32, u8, f32)` ↔ `(&[f32], &[u8], &[f32])`。
+///
+/// 元数与每一格的 lane 都是类型的一部分：核函数只声明一次自己的形状，长度/顺序/形态的
+/// 拆包由这里的单态化实现完成，能核对的都在编译期核对，不能核对的集中到一处报错。
+/// [`Inputs::KINDS`] 是同一份声明的常量投影，错误说明与文档都读它。
+pub trait Inputs {
+    /// 拆包后的借用形态。
+    type Slices<'a>;
+
+    /// 逐格 lane，顺序即参数顺序。
+    const KINDS: &'static [Kind];
+
+    /// 按声明的 lane 把 `inputs` 拆成切片。
+    ///
+    /// # Errors
+    ///
+    /// 元数不符、某一格形态不符时返回 [`Code::Invalid`]，说明是哪个算子的第几格。
+    fn unpack<'a>(inputs: &'a [View<'a>], op: &str) -> Result<Self::Slices<'a>>;
+}
+
+/// 某一格不是内核要的 lane。
+fn wrong_lane(op: &str, slot: &str, expected: Kind, actual: Kind) -> Error {
+    Error::new(
+        Code::Invalid,
+        format!(
+            "`{op}` 的{slot}是 {}，内核要 {}",
+            actual.name(),
+            expected.name()
+        ),
+    )
+    .with(SITE)
+}
+
+/// 把逐格 lane 拼成 `f32, u8, f32`。
+fn joined(kinds: impl Iterator<Item = Kind>) -> String {
+    kinds.map(Kind::name).collect::<Vec<_>>().join(", ")
+}
+
+/// 元数不符：把两边逐格的 lane 摆在一起。
+fn wrong_arity(op: &str, expected: &[Kind], inputs: &[View<'_>]) -> Error {
+    Error::new(
+        Code::Invalid,
+        format!(
+            "`{op}` 的输入必须是 [{}]，实际是 [{}]",
+            joined(expected.iter().copied()),
+            joined(inputs.iter().map(View::kind))
+        ),
+    )
+    .with(SITE)
+}
+
+/// 取第 `index` 格输入并断言它是 `L`。
+fn input_slice<'a, L: Lane>(op: &str, index: usize, view: &'a View<'a>) -> Result<&'a [L]> {
+    L::slice(*view)
+        .ok_or_else(|| wrong_lane(op, &format!("第 {index} 个输入"), L::KIND, view.kind()))
+}
+
+/// 取输出并断言它是 `L`。
+fn output_slice<'a, L: Lane>(op: &str, view: &'a mut ViewMut<'_>) -> Result<&'a mut [L]> {
+    let actual = view.kind();
+    L::slice_mut(view).ok_or_else(|| wrong_lane(op, "输出", L::KIND, actual))
+}
+
+impl<A: Lane, B: Lane> Inputs for (A, B) {
+    type Slices<'a> = (&'a [A], &'a [B]);
+    const KINDS: &'static [Kind] = &[A::KIND, B::KIND];
+
+    fn unpack<'a>(inputs: &'a [View<'a>], op: &str) -> Result<Self::Slices<'a>> {
+        let [a, b] = inputs else {
+            return Err(wrong_arity(op, Self::KINDS, inputs));
+        };
+        Ok((input_slice::<A>(op, 0, a)?, input_slice::<B>(op, 1, b)?))
+    }
+}
+
+impl<A: Lane, B: Lane, C: Lane> Inputs for (A, B, C) {
+    type Slices<'a> = (&'a [A], &'a [B], &'a [C]);
+    const KINDS: &'static [Kind] = &[A::KIND, B::KIND, C::KIND];
+
+    fn unpack<'a>(inputs: &'a [View<'a>], op: &str) -> Result<Self::Slices<'a>> {
+        let [a, b, c] = inputs else {
+            return Err(wrong_arity(op, Self::KINDS, inputs));
+        };
+        Ok((
+            input_slice::<A>(op, 0, a)?,
+            input_slice::<B>(op, 1, b)?,
+            input_slice::<C>(op, 2, c)?,
+        ))
     }
 }
 
@@ -199,47 +447,120 @@ pub struct Reference;
 
 impl Kernel for Reference {
     fn compute(&mut self, op: &str, inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-        match op {
-            "gemv_i4" => gemv_i4(inputs, output),
-            other => Err(Error::new(
+        match KERNELS.iter().find(|entry| entry.op == op) {
+            Some(entry) => (entry.run)(inputs, output),
+            None => Err(Error::new(
                 Code::Unsupported,
-                format!("`{other}` 没有标量内核；`train::Reference` 目前只实现 gemv_i4"),
+                format!(
+                    "`{op}` 没有标量内核；`train::Reference` 覆盖 {}",
+                    KERNELS
+                        .iter()
+                        .map(|entry| entry.op)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             )
             .with(SITE)),
         }
     }
 }
 
-/// `[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i4::forward` 同一段算术。
+/// 内核表的一行：算子名 + 缓冲级入口。
+///
+/// `run` 是普通函数指针而不是闭包或 `dyn`：表在编译期定长，调用点按名字线性查一次——
+/// 名字来自 `Tape`，这是唯一必须留在运行时的参数。
+struct Entry {
+    /// 算子名，必须与 [`op::REGISTRY`] 同名同序。
+    op: &'static str,
+    /// 把视图拆成算子的形参，再调算子自己的标量实现。
+    run: fn(&[View<'_>], &mut ViewMut<'_>) -> Result<()>,
+}
+
+/// 标量内核表。
+///
+/// 长度就是 [`op::REGISTRY`] 的长度：注册表多一条而这里少一条，数组长度对不上，是编译错误；
+/// 名字或顺序漂移由下面的 `const` 断言拦下。于是"注册了算子却没有可执行的参考实现"不会拖到
+/// 运行时才变成一句 `unsupported`，加算子时也不会出现矩阵：声明层有一条、训练侧又靠人记得
+/// 补一行 `match`。
+const KERNELS: [Entry; op::REGISTRY.len()] = [
+    Entry {
+        op: "gemv_f32",
+        run: gemv_f32,
+    },
+    Entry {
+        op: "gemv_i4",
+        run: gemv_i4,
+    },
+];
+
+const _: () = same_order(&KERNELS, &op::REGISTRY);
+
+/// 编译期断言：内核表与算子注册表逐条同名（长度已由类型锁住）。
+const fn same_order(entries: &[Entry], registry: &[op::Registration]) {
+    let mut index = 0;
+    while index < entries.len() {
+        assert!(
+            same_str(entries[index].op, registry[index].name),
+            "train::Reference 的内核表与 op::REGISTRY 名字或顺序漂移"
+        );
+        index += 1;
+    }
+}
+
+/// `const` 上下文里没有可用的 `str` 比较，逐字节比。
+const fn same_str(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// `gemv_i4`：`[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i4::forward` 同一段算术。
 fn gemv_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let [View::F32(x), View::U8(w), View::F32(scales)] = inputs else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "gemv_i4 的输入必须是 [x: f32, w: u8, scales: f32]，实际是 {:?}",
-                inputs
-            ),
-        )
-        .with(SITE));
-    };
-    let ViewMut::F32(y) = output else {
-        return Err(Error::new(Code::Invalid, "gemv_i4 的输出必须是 f32").with(SITE));
-    };
-    op::gemv_i4::forward(x, w, scales, y)
+    let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, "gemv_i4")?;
+    op::gemv_i4::forward(x, w, scales, output_slice::<f32>("gemv_i4", output)?)
+}
+
+/// `gemv_f32`：`[x: f32, w: f32] → y: f32`，与 `op::gemv_f32::forward` 同一段算术。
+fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (x, w) = <(f32, f32) as Inputs>::unpack(inputs, "gemv_f32")?;
+    op::gemv_f32::forward(x, w, output_slice::<f32>("gemv_f32", output)?)
 }
 
 /// 同尺寸缓冲的空闲表：按**正好相等的长度**分档。
 ///
 /// 只复用等长的块，所以"池里占着的容量"永远不会超过某一档曾经的峰值，记账也不必打折；查找是
-/// 一次线性扫描，档数由模型里出现过的形状决定（通常是个位数），比哈希更可预测。
+/// 一次线性扫描，档数由模型里出现过的形状决定（通常是个位数），比哈希更可预测。泛型参数是
+/// lane：两条形态共用这一份实现，`acquire` / `give` 各自单态化。
 #[derive(Debug, Default)]
-struct Buckets<T> {
-    by_len: Vec<(usize, Vec<Vec<T>>)>,
+struct Buckets<L: Lane> {
+    by_len: Vec<(usize, Vec<Vec<L>>)>,
 }
 
-impl<T> Buckets<T> {
+impl<L: Lane> Buckets<L> {
+    /// 取一块长度正好是 `len` 的缓冲：池里有就复用，没有就零值分配。
+    ///
+    /// 复用块里可能留着上一轮的值；内核承诺写满输出，这里只把长度对齐。
+    fn acquire(&mut self, len: usize) -> Result<Vec<L>> {
+        match self.take(len) {
+            Some(mut values) => {
+                values.truncate(len);
+                Ok(values)
+            }
+            None => zeros(len),
+        }
+    }
+
     /// 取一块长度正好是 `len` 的空闲块。
-    fn take(&mut self, len: usize) -> Option<Vec<T>> {
+    fn take(&mut self, len: usize) -> Option<Vec<L>> {
         self.by_len
             .iter_mut()
             .find(|(size, _)| *size == len)
@@ -247,7 +568,7 @@ impl<T> Buckets<T> {
     }
 
     /// 还回一块空闲块，按它的长度归到对应档。
-    fn give(&mut self, buffer: Vec<T>) {
+    fn give(&mut self, buffer: Vec<L>) {
         let len = buffer.len();
         match self.by_len.iter_mut().find(|(size, _)| *size == len) {
             Some((_, free)) => free.push(buffer),
@@ -261,7 +582,7 @@ impl<T> Buckets<T> {
     }
 }
 
-/// 两种元素形态各自的空闲表。
+/// 两条 lane 各自的空闲表。
 #[derive(Debug, Default)]
 struct Pool {
     f32s: Buckets<f32>,
@@ -270,30 +591,14 @@ struct Pool {
 
 impl Pool {
     /// 一块 `dtype` 的零值缓冲：先试空闲表，没有再向分配器要。
+    ///
+    /// “取多少元素”只在这里算一次：形状 → 字节数已经由 [`Shape::element_bytes`] 做过，
+    /// 两条 lane 的差别仅在这一点，其余（复用、截断、分配失败）都在 [`Buckets::acquire`] 里。
     fn block(&mut self, dtype: DType, shape: &Shape) -> Result<Data> {
-        match dtype {
-            DType::F32 => {
-                let numel = shape.numel();
-                Ok(Data::F32(match self.f32s.take(numel) {
-                    Some(mut values) => {
-                        // 复用块里可能留着上一轮的值；内核承诺写满输出，这里只把长度对齐。
-                        values.truncate(numel);
-                        values
-                    }
-                    None => vec![0.0; numel],
-                }))
-            }
-            DType::I8 | DType::U4 => {
-                let len = shape.element_bytes(dtype);
-                Ok(Data::U8(match self.u8s.take(len) {
-                    Some(mut values) => {
-                        values.truncate(len);
-                        values
-                    }
-                    None => vec![0; len],
-                }))
-            }
-            DType::F16 | DType::BF16 => Data::empty(dtype, shape),
+        match Kind::of(dtype) {
+            Some(Kind::F32) => Ok(Data::F32(self.f32s.acquire(shape.numel())?)),
+            Some(Kind::U8) => Ok(Data::U8(self.u8s.acquire(shape.element_bytes(dtype))?)),
+            None => Err(no_storage(dtype)),
         }
     }
 
@@ -346,27 +651,45 @@ impl<K: Kernel> Buffers<K> {
     ///
     /// # Errors
     ///
-    /// 变量超出形状表的槽位、数据与登记的（形状，元素类型）不相容时返回说明。
+    /// 变量超出形状表的槽位（[`Code::Missing`]）、该变量没有登记形状与元素类型
+    /// （[`Code::Internal`]：这是调用方漏了 `Sizes::set`，不是数据的错）、数据与登记的
+    /// （形状，元素类型）不相容（[`Code::Invalid`]）时返回说明。
+    ///
+    /// 第三种以外都必须在**装进去之前**拒绝：一个占住槽位却对不上的值会让之后每一次 `compute`
+    /// 都算在一个错误的形状上。
     pub fn load(&mut self, var: Var, data: Data) -> Result<()> {
         let slot = self.slot(var)?;
-        if let Some((shape, dtype)) = self.sizes.get(var) {
-            let expected = shape.element_bytes(dtype) as u64;
-            if !data.fits(dtype) || data.bytes() != expected {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "变量 {} 登记为 {dtype:?} 的 {:?}（{expected} 字节），装入的却是 {} 字节的{:?}",
-                        var.id(),
-                        shape.dims(),
-                        data.bytes(),
-                        match data {
-                            Data::F32(_) => " f32",
-                            Data::U8(_) => " u8",
-                        }
-                    ),
-                )
-                .with(SITE));
-            }
+        // 没登记就没有"预期字节数"，也就没有东西能比对：从前那句 `if let Some(...)` 会让整个
+        // 校验静默跳过，于是任意长度、任意元素类型的数据都能占住一个登记为 4 字节的槽位。
+        // 这比报错更糟——后面 `compute` 按登记的形状把缓冲区当成 f32 标量读，读到的却是别的东西，
+        // 数字错得毫无痕迹。所以缺登记是 `internal`：调用方（`Sizes` 由 `Tape::vars()` 构造）
+        // 本应逐项 `set` 过。
+        let Some((shape, dtype)) = self.sizes.get(var) else {
+            return Err(Error::new(
+                Code::Internal,
+                format!(
+                    "变量 {} 没有登记形状与元素类型：装入的数据无从校验（`Sizes` 必须按 `Tape::vars()` 构造并逐项 `set`）",
+                    var.id()
+                ),
+            )
+            .with(SITE));
+        };
+        let expected = shape.element_bytes(dtype) as u64;
+        if !data.fits(dtype) || data.bytes() != expected {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "变量 {} 登记为 {dtype:?} 的 {:?}（{expected} 字节），装入的却是 {} 字节的{:?}",
+                    var.id(),
+                    shape.dims(),
+                    data.bytes(),
+                    match data {
+                        Data::F32(_) => " f32",
+                        Data::U8(_) => " u8",
+                    }
+                ),
+            )
+            .with(SITE));
         }
         self.release(slot);
         self.live += data.bytes();
@@ -725,7 +1048,10 @@ mod tests {
 
     #[test]
     fn an_element_type_without_scalar_storage_is_unsupported() {
-        let error = Data::empty(DType::F16, &Shape::new([4])).expect_err("没有 f16 存储");
+        let mut pool = Pool::default();
+        let error = pool
+            .block(DType::F16, &Shape::new([4]))
+            .expect_err("没有 f16 存储");
         assert_eq!(error.code(), Code::Unsupported);
     }
 
@@ -749,6 +1075,45 @@ mod tests {
         assert_eq!(store.live(), RESIDENT, "失败没有破坏原来的常驻值");
     }
 
+    /// 没登记形状的变量不能绕过校验：否则任意长度、任意类型的数据都能占住一个槽位，
+    /// 之后每次 `compute` 都算在一个与数据无关的形状上。
+    #[test]
+    fn a_variable_without_registered_metadata_cannot_be_loaded() {
+        let mut tape = Tape::new();
+        let first = tape.parameter();
+        let gap = tape.parameter();
+        let mut sizes = Sizes::new(tape.vars());
+        sizes.set(first, Shape::new([1]), DType::F32);
+        let mut store = Buffers::new(sizes, Reference);
+
+        let error = store.load(gap, Data::F32(vec![0.0])).expect_err("没登记");
+        assert_eq!(error.code(), Code::Internal, "这是调用方漏了 Sizes::set");
+        assert!(error.to_string().contains("没有登记"), "{error}");
+        assert_eq!(store.live(), 0, "被拒绝的值不能占住槽位");
+        assert!(store.value(gap).is_none());
+    }
+
+    /// 大到分配不出来的形状必须是错误，而不是把宿主进程 abort 掉：形状可能就是从文件头读来的。
+    #[test]
+    fn an_impossibly_large_output_shape_is_an_error_rather_than_an_abort() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let y = tape.parameter();
+        let mut sizes = Sizes::new(tape.vars());
+        sizes.set(x, Shape::new([1]), DType::F32);
+        sizes.set(y, Shape::new([usize::MAX]), DType::F32);
+        let mut store = Buffers::new(sizes, Reference);
+        store.load(x, Data::F32(vec![1.0])).expect("输入");
+
+        let error = store
+            .compute("gemv_i4", &[x], y)
+            .expect_err("分配不出来就必须报错");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("个元素"), "{error}");
+        assert_eq!(store.live(), 4, "失败的那次不留下半块缓冲区");
+        assert!(store.value(y).is_none());
+    }
+
     #[test]
     fn an_unknown_operator_is_unsupported_rather_than_silently_zero() {
         let fixture = Fixture::new(1);
@@ -757,6 +1122,10 @@ mod tests {
             .compute("relu", &[fixture.x], fixture.loss)
             .expect_err("没有 relu 的标量内核");
         assert_eq!(error.code(), Code::Unsupported);
+        assert!(
+            error.to_string().contains("gemv_f32") && error.to_string().contains("gemv_i4"),
+            "`unsupported` 要说出表里覆盖了什么：{error}"
+        );
         assert_eq!(store.live(), RESIDENT);
     }
 
@@ -858,5 +1227,66 @@ mod tests {
         // 归零之后同一个实例可以接着用：形状表还在，值要重新装。
         store.load(fixture.x, input()).expect("重新装入");
         assert_eq!(store.live(), WIDTH as u64 * 4, "只算刚装进来的那一块");
+    }
+
+    /// 注册表里有 `gemv_f32`，参考内核就必须有它——两张表由编译期断言锁在一起。
+    /// 以前这里是一个手写 `match`，只认 `gemv_i4`，第二条算子到运行时才发现没有内核。
+    #[test]
+    fn the_second_registered_operator_replays_like_the_first() {
+        const N: usize = WIDTH;
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let w = tape.leaf();
+        let y = tape.record("gemv_f32", &[x, w]).expect("记录");
+        let mut sizes = Sizes::new(tape.vars());
+        sizes.set(x, Shape::new([N]), DType::F32);
+        sizes.set(w, Shape::new([N, N]), DType::F32);
+        sizes.set(y, Shape::new([N]), DType::F32);
+        let mut store = Buffers::new(sizes, Reference);
+
+        let input: Vec<f32> = (0..N).map(|index| index as f32 * 0.25 - 1.0).collect();
+        let weights: Vec<f32> = (0..N * N)
+            .map(|index| ((index * 37) % 251) as f32 * 0.125 - 8.0)
+            .collect();
+        store.load(x, Data::F32(input.clone())).expect("输入");
+        store.load(w, Data::F32(weights.clone())).expect("权重");
+
+        store.compute("gemv_f32", &[x, w], y).expect("可算");
+
+        let mut expected = vec![0.0f32; N];
+        op::gemv_f32::forward(&input, &weights, &mut expected).expect("参考可算");
+        assert_eq!(
+            store
+                .value(y)
+                .and_then(|view| view.f32())
+                .map(<[f32]>::to_vec),
+            Some(expected),
+            "第二条算子的重放必须与它自己的标量参考逐位相同"
+        );
+    }
+
+    /// 元数与 lane 的校验只写一份（`Inputs` 的单态化拆包）：报出是哪一个格，
+    /// 而且失败的那次不留下占用。
+    #[test]
+    fn a_kernel_signature_mismatch_names_the_slot() {
+        let fixture = Fixture::new(1);
+        let mut store = fixture.store();
+
+        let error = store
+            .compute("gemv_i4", &[fixture.x, fixture.w], fixture.loss)
+            .expect_err("少一个输入");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("必须是"), "{error}");
+
+        let error = store
+            .compute(
+                "gemv_i4",
+                &[fixture.x, fixture.x, fixture.scales],
+                fixture.loss,
+            )
+            .expect_err("权重是 f32，不是 u8");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("第 1 个输入"), "{error}");
+        assert_eq!(store.live(), RESIDENT, "失败的这一次没有留下占用");
     }
 }
