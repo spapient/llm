@@ -1,0 +1,17 @@
+[package]
+name = "llm-kv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Paged KV cache bookkeeping: pages, per-sequence tables and the page pool."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[lints]
+workspace = true

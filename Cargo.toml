@@ -8,8 +8,33 @@ license.workspace = true
 repository.workspace = true
 readme = "README.md"
 publish = false
+default-run = "llm"
+
+# 这个 bin 与 `crates/cutile` 同名：不产出它的文档，否则 cargo 会把两者写到同一个
+# `target/doc/cutile/index.html`（cargo#6313），文件取决于构建顺序。
+[[bin]]
+name = "cutile"
+path = "src/bin/cutile.rs"
+doc = false
 
 [dependencies]
+audit = { path = "crates/audit", package = "llm-audit" }
+cli = { path = "crates/cli", package = "llm-cli" }
+config = { path = "crates/config", package = "llm-config" }
+cutile = { path = "crates/cutile" }
+diagnostic = { path = "crates/diagnostic", package = "llm-diagnostic" }
+engine = { path = "crates/engine", package = "llm-engine" }
+exec = { path = "crates/exec", package = "llm-exec" }
+kv = { path = "crates/kv", package = "llm-kv" }
+nn = { path = "crates/nn", package = "llm-nn" }
+op = { path = "crates/op", package = "llm-op" }
+prof = { path = "crates/prof", package = "llm-prof" }
+serve = { path = "crates/serve", package = "llm-serve" }
+tensor = { path = "crates/tensor", package = "llm-tensor" }
+tokenizer = { path = "crates/tokenizer", package = "llm-tokenizer" }
+tool = { path = "crates/tool", package = "llm-tool" }
+train = { path = "crates/train", package = "llm-train" }
+weights = { path = "crates/weights", package = "llm-weights" }
 
 [lints]
 workspace = true
@@ -24,8 +49,10 @@ edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/spapient/llm"
+readme = "README.md"
 
 [workspace.lints.rust]
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "warn"
 missing_docs = "warn"
 unused_lifetimes = "warn"
@@ -34,6 +61,9 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
 
 [profile.dev.package."*"]
 opt-level = 2

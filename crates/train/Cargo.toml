@@ -1,0 +1,25 @@
+[package]
+name = "llm-train"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Training loop state: learning-rate schedule, step records and resumable checkpoints."
+publish = false
+
+[dependencies]
+autograd = { path = "../autograd", package = "llm-autograd" }
+checkpoint = { path = "../checkpoint", package = "llm-checkpoint" }
+data = { path = "../data", package = "llm-data" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+nn = { path = "../nn", package = "llm-nn" }
+shard = { path = "../shard", package = "llm-shard" }
+weights = { path = "../weights", package = "llm-weights" }
+
+[dev-dependencies]
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[lints]
+workspace = true

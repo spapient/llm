@@ -5,10 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Tile-level compute primitives for the llm runtime."
+description = "Device-agnostic kernel DSL: capability negotiation, fragment assembly and emit."
+readme = "DESIGN.md"
 publish = false
 
 [dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+prim = { path = "../prim", package = "llm-prim" }
+llm-config = { path = "../config" }
+op = { path = "../op", package = "llm-op" }
+prof = { path = "../prof", package = "llm-prof" }
+
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

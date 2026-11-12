@@ -1,0 +1,128 @@
+# CPU 档案（P0 的真机后端）。
+# 三级存储映射到 CPU 的真实层级：GM = 主存，FAST = L2 分块缓冲，REG = 寄存器/栈。
+# 证据等级说明：L2 = 与参考实现对拍通过，且每条 `provides` 的见证（file + func + expect）
+# 都被 `cutile verify` 真的编译执行过；L1 = 仅源码可生成。atomic 故意留在 L1，用来演示
+# "未验证的能力视为不具备"。
+
+[meta]
+vendor   = "cpu"
+id       = "portable"
+emit     = "c"
+tool     = "cc"
+tool_ver = "clang-17"
+checked  = "2026-11-11"
+
+[fingerprint]
+arch = "x86_64|aarch64"
+
+[space]
+GM   = "main"
+FAST = "L2"
+REG  = "stack"
+
+[mem]
+FAST = { bytes = 524288, bank = 16 }
+REG  = { bytes = 65536 }
+
+[simt]
+group      = 1
+groups_max = 1
+
+[peak]
+# 8 核 × 2.6 GHz × 8 条 f32 流水 × 2 FLOP/cycle（顺序 f32 口径）。
+# `src` 必须可求值且与 `value` 相等：量纲与含义写在这里，数字只写一次。
+flops_f32 = { value = 332.8e9,  src = "8*2.6e9*8*2" }
+# 2 通道 × 8 字节 × 2666 MHz。
+bw        = { value = 42.656e9, src = "2*8*2666e6" }
+
+[compile]
+flags = ["-O3", "-std=c99"]
+preamble = "#include <stdint.h>\n#include <string.h>"
+
+[[provides]]
+prim    = "quant"
+impl    = "scalar_i4"
+dt      = ["i4", "f32"]
+space   = ["REG", "GM"]
+group   = ["32"]
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5] }
+
+[[provides]]
+prim    = "dot"
+impl    = "scalar_f32"
+dt      = ["f32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
+
+[[provides]]
+prim    = "load"
+impl    = "memcpy"
+m       = "<=65536"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM", "FAST"]
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_load", expect = [1.0] }
+
+[[provides]]
+prim    = "load_async"
+impl    = "memcpy_prefetch"
+m       = "<=65536"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM", "FAST"]
+stages  = ["2", "3"]
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_load_async", expect = [1.0] }
+
+[[provides]]
+prim    = "commit_wait"
+impl    = "noop"
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_commit_wait", expect = [0.0] }
+
+[[provides]]
+prim    = "store"
+impl    = "memcpy_out"
+m       = "<=65536"
+dt      = ["f32"]
+space   = ["GM", "REG"]
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_store", expect = [3.25] }
+
+[[provides]]
+prim    = "bar"
+impl    = "noop"
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_bar", expect = [0.0] }
+
+[[provides]]
+prim    = "cvt"
+impl    = "c_cast"
+dt      = ["f32", "i32", "i8"]
+sat     = ["on", "off"]
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_cvt", expect = [3.0] }
+
+[[provides]]
+prim    = "reduce"
+impl    = "scalar_loop"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+grade   = "L2"
+witness = { file = "cpu/witness.c", func = "witness_reduce", expect = [7.5] }
+
+# 单线程 CPU 没有真正的原子指令；声明在 L1，协商会把它当成"不具备"。
+[[provides]]
+prim    = "atomic"
+impl    = "none"
+dt      = ["f32"]
+space   = ["GM"]
+op      = ["add", "max"]
+grade   = "L1"

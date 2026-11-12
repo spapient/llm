@@ -1,0 +1,16 @@
+[package]
+name = "llm-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Wire framing: version, message kind and the 10-byte envelope header."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+
+[lints]
+workspace = true

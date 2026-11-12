@@ -1,0 +1,17 @@
+[package]
+name = "llm-shard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "TP/PP/DP topology: world size, per-axis process groups and partition slicing."
+publish = false
+
+[dependencies]
+comm = { path = "../comm", package = "llm-comm" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+
+[lints]
+workspace = true

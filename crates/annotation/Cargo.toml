@@ -1,0 +1,18 @@
+[package]
+name = "llm-annotation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Attribute macros that turn a declarative annotation into a checked contract (no external dependencies)."
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+
+[lints]
+workspace = true

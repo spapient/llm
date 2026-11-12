@@ -1,0 +1,17 @@
+[package]
+name = "llm-weights"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Weight file structure: entries, header offset validation and the Reader trait."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[lints]
+workspace = true

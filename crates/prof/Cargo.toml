@@ -1,0 +1,16 @@
+[package]
+name = "llm-prof"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Archive layer: per-device capability archives consumed by cutile."
+readme = "README.md"
+publish = false
+
+[dependencies]
+llm-config = { path = "../config" }
+
+[lints]
+workspace = true

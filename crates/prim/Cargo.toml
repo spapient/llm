@@ -1,0 +1,16 @@
+[package]
+name = "llm-prim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fragment layer: per-device primitive implementations consumed by cutile."
+readme = "README.md"
+publish = false
+
+[dependencies]
+prof = { path = "../prof", package = "llm-prof" }
+
+[lints]
+workspace = true

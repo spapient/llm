@@ -1,0 +1,17 @@
+[package]
+name = "llm-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Physical layouts over flat buffers: Order, Layout and the remap pass."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[lints]
+workspace = true

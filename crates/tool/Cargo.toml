@@ -1,0 +1,15 @@
+[package]
+name = "llm-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Presentation helpers: a labelled report and stable name joining for human-readable output."
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

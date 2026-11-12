@@ -1,0 +1,15 @@
+[package]
+name = "llm-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Test fixtures shared across the workspace: float comparison, device gating, scratch dirs."
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

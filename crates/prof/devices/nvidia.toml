@@ -1,0 +1,140 @@
+# NVIDIA 档案（P0 只有 L1：见证已写成数据，本机没有 CUDA 设备，无法执行到 L2）。
+# 协商因此会拒绝这台设备——这正是 DESIGN §11.3"未验证的能力视为不具备"的落地行为。
+#
+# 同一原语可以有多条 `provides`，用不同 `impl` 区分互不覆盖的签名：`dot` 的 `dp4a`
+# （整数张量核，i8×4）与 `fma`（标量 f32）是两种能力，合成一条就只能靠少写 `dt`/`lanes`
+# 来伪装；协商按"能覆盖需求的那条"比对，证据等级只决定它算不算数。
+
+[meta]
+vendor   = "nvidia"
+id       = "sm100"
+emit     = "cuda"
+tool     = "nvcc"
+tool_ver = "13.3"
+checked  = "2026-11-11"
+
+[fingerprint]
+cc   = "10.0..10.3"
+name = "contains: B200|GB200"
+
+[space]
+GM   = "global"
+FAST = "shared"
+REG  = "register"
+
+[mem]
+FAST = { bytes = 233472, bank = 32 }
+REG  = { bytes = 262144 }
+
+[simt]
+group      = 32
+groups_max = 64
+
+[peak]
+# 132 SM × 128 lane × 2 flop × 2.8 GHz（sm100 口径）。
+# `src` 必须可求值且与 `value` 相等：量纲与含义写在这里，数字只写一次。
+flops_f32 = { value = 94.6176e12, src = "132*128*2*2.8e9" }
+# HBM3e 2 stack × 4096 bit（512 B/stack）× 8 Gbps。
+bw        = { value = 8.192e12,   src = "2*4096/8*8e9" }
+
+[compile]
+flags = ["-arch=sm_100a", "-O3"]
+preamble = "#include <cuda_fp16.h>"
+
+[[provides]]
+prim    = "dot"
+impl    = "dp4a"
+dt      = ["i8", "i32"]
+space   = ["REG"]
+lanes   = ["4"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_dot_i8", expect = [10.0] }
+
+# P0 模板的 `@dot` 是标量 f32 累加，与上面的整数点积不是同一个指令：单独一条签名。
+[[provides]]
+prim    = "dot"
+impl    = "fma"
+dt      = ["f32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_dot", expect = [70.0] }
+
+[[provides]]
+prim    = "quant"
+impl    = "lop3_i4"
+dt      = ["i4", "f32"]
+space   = ["REG", "GM"]
+group   = ["32"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_quant", expect = [-4.0, 3.5] }
+
+[[provides]]
+prim    = "load"
+impl    = "ld.global"
+m       = "<=4096"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_load", expect = [1.0] }
+
+[[provides]]
+prim    = "load_async"
+impl    = "cp.async+prefetch"
+m       = "<=4096"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM", "FAST"]
+stages  = ["2", "3"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_load_async", expect = [1.0] }
+
+[[provides]]
+prim    = "commit_wait"
+impl    = "cp.async.commit_group"
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_commit_wait", expect = [0.0] }
+
+[[provides]]
+prim    = "store"
+impl    = "st.global"
+m       = "<=4096"
+dt      = ["f32"]
+space   = ["GM"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_store", expect = [3.25] }
+
+[[provides]]
+prim    = "bar"
+impl    = "bar.sync"
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_bar", expect = [0.0] }
+
+[[provides]]
+prim    = "cvt"
+impl    = "cvt.rn"
+dt      = ["f32", "i32", "i8"]
+sat     = ["on", "off"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_cvt", expect = [3.0] }
+
+[[provides]]
+prim    = "reduce"
+impl    = "shfl.bfly"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_reduce", expect = [7.5] }
+
+[[provides]]
+prim    = "atomic"
+impl    = "red.global"
+dt      = ["f32"]
+space   = ["GM"]
+op      = ["add", "max"]
+grade   = "L1"
+witness = { file = "nvidia/witness.cu", func = "witness_atomic", expect = [5.0] }

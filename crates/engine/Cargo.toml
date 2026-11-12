@@ -1,0 +1,19 @@
+[package]
+name = "llm-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Serving state machine: sequences, their KV pages and the admission scheduler."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+exec = { path = "../exec", package = "llm-exec" }
+kv = { path = "../kv", package = "llm-kv" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "llm-audit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kernel audit: doctor / verify / bench over the cutile pipeline."
+readme = "README.md"
+publish = false
+
+[dependencies]
+cutile = { path = "../cutile" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+llm-config = { path = "../config" }
+op = { path = "../op", package = "llm-op" }
+prim = { path = "../prim", package = "llm-prim" }
+prof = { path = "../prof", package = "llm-prof" }
+
+[lints]
+workspace = true

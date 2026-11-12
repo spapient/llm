@@ -1,0 +1,188 @@
+# 昇腾档案（P0 只有 L0：形状、执行单元与见证已声明，真机执行待补）。
+# 这份档案的用途是证明"设备差异只写在数据里"：三级存储映射到 GM / L1 / L0，
+# 执行单元（cube / vector / mte / fixpipe / scalar）以及"某个单元访问得到哪几层存储"
+# 全部是本文件里的声明，`cutile` 不认识其中任何一个名字。
+
+[meta]
+vendor   = "ascend"
+id       = "910b"
+emit     = "ascendc"
+tool     = "ccec"
+checked  = "2026-11-12"
+
+[fingerprint]
+soc = "contains: ascend910"
+
+[space]
+GM   = "GM"
+FAST = "L1"
+REG  = "L0C"
+
+# 执行单元 → 它能访问的存储层。`provides` 里的 `exec` 只能引用这里声明过的名字；
+# 声明的 `space` 必须被该单元访问得到，否则加载期就报错，而不是等真机跑错。
+# Cube 是典型例子：矩阵乘在 L1/L0 上做，碰不到 GM，搬运交给 MTE。
+[units.cube]
+space = ["FAST", "REG"]
+
+[units.vector]
+space = ["GM", "FAST", "REG"]
+
+[units.mte]
+space = ["GM", "FAST"]
+
+[units.fixpipe]
+space = ["GM", "FAST", "REG"]
+
+[units.scalar]
+space = ["GM", "FAST", "REG"]
+
+# 容量与峰值留空：P0 只声明"能做什么"，实测后再按 DESIGN §11.2 回填到 L2/L3。
+
+[[provides]]
+prim    = "quant"
+impl    = "vcvt_pack"
+dt      = ["i4", "f32"]
+space   = ["FAST", "REG"]
+group   = ["32"]
+exec    = ["vector"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_quant", expect = [-4.0, 3.5] }
+
+[[provides]]
+prim    = "dot"
+impl    = "mmad"
+dt      = ["f16", "bf16"]
+space   = ["FAST", "REG"]
+lanes   = ["16"]
+exec    = ["cube"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_dot_f16", expect = [70.0] }
+
+[[provides]]
+prim     = "load"
+impl     = "copy_gm_to_l1"
+m        = "<=65536"
+dt       = ["i4", "u8", "f16", "f32"]
+space    = ["GM", "FAST"]
+src      = ["GM"]
+dst      = ["FAST"]
+exec     = ["mte"]
+grade    = "L0"
+witness  = { file = "ascend/witness.cpp", func = "witness_load", expect = [1.0] }
+
+[[provides]]
+prim     = "load_async"
+impl     = "copy_gm_to_l1_async"
+m        = "<=65536"
+dt       = ["i4", "u8", "f16", "f32"]
+space    = ["GM", "FAST"]
+src      = ["GM"]
+dst      = ["FAST"]
+stages   = ["2"]
+exec     = ["mte"]
+grade    = "L0"
+witness  = { file = "ascend/witness.cpp", func = "witness_load_async", expect = [1.0] }
+
+[[provides]]
+prim    = "commit_wait"
+impl    = "wait_flag"
+exec    = ["mte"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_commit_wait", expect = [0.0] }
+
+[[provides]]
+prim    = "store"
+impl    = "fixpipe_out"
+m       = "<=65536"
+dt      = ["f16", "f32"]
+space   = ["REG", "GM"]
+exec    = ["fixpipe"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_store", expect = [3.25] }
+
+[[provides]]
+prim    = "bar"
+impl    = "pipe_barrier"
+exec    = ["scalar"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_bar", expect = [0.0] }
+
+[[provides]]
+prim    = "cvt"
+impl    = "vcvt"
+dt      = ["f16", "f32", "i32"]
+sat     = ["on", "off"]
+exec    = ["vector"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_cvt", expect = [3.0] }
+
+[[provides]]
+prim    = "reduce"
+impl    = "vcreduce"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f16", "f32"]
+space   = ["FAST", "REG"]
+exec    = ["vector"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_reduce", expect = [7.5] }
+
+[[provides]]
+prim    = "atomic"
+impl    = "set_atomic_add"
+dt      = ["f32"]
+space   = ["GM"]
+op      = ["add", "max"]
+exec    = ["vector"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_atomic", expect = [5.0] }
+
+# ── P0 的标量路径 ────────────────────────────────────────────────────────────
+# 上面十条描述的是 tile 算子的落点（Cube 做 f16 GEMM、MTE 只到 L1、FixPipe 出 L1/L0C）。
+# P0 模板是标量 C 语义，跑在 scalar 单元上：它三层存储都访问得到，所以"目标可以是 GM"、
+# "deq 可以落在 GM" 这类需求由**另一条签名**满足，而不是把特化那条的 `space`/`dst` 改宽。
+# 两条签名都留在 L0：没有真机证据，协商一律当作不具备。
+[[provides]]
+prim    = "quant"
+impl    = "scalar_dequant"
+dt      = ["i4", "f32"]
+space   = ["GM", "FAST", "REG"]
+group   = ["32"]
+exec    = ["scalar"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_quant", expect = [-4.0, 3.5] }
+
+[[provides]]
+prim    = "dot"
+impl    = "scalar_fma"
+dt      = ["f32"]
+space   = ["GM", "FAST", "REG"]
+lanes   = ["1"]
+exec    = ["scalar"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_dot", expect = [70.0] }
+
+[[provides]]
+prim    = "load"
+impl    = "scalar_copy"
+m       = "<=65536"
+dt      = ["i4", "u8", "f16", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM"]
+exec    = ["scalar"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_load", expect = [1.0] }
+
+[[provides]]
+prim    = "load_async"
+impl    = "scalar_stage"
+m       = "<=65536"
+dt      = ["i4", "u8", "f16", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM", "FAST"]
+stages  = ["2"]
+exec    = ["scalar"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_load_async", expect = [1.0] }

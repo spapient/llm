@@ -3,13 +3,266 @@
 version = 4
 
 [[package]]
-name = "config"
-version = "0.1.0"
-
-[[package]]
 name = "cutile"
 version = "0.1.0"
+dependencies = [
+ "llm-config",
+ "llm-diagnostic",
+ "llm-op",
+ "llm-prim",
+ "llm-prof",
+ "llm-testkit",
+]
 
 [[package]]
 name = "llm"
 version = "0.1.0"
+dependencies = [
+ "cutile",
+ "llm-audit",
+ "llm-cli",
+ "llm-config",
+ "llm-diagnostic",
+ "llm-engine",
+ "llm-exec",
+ "llm-kv",
+ "llm-nn",
+ "llm-op",
+ "llm-prof",
+ "llm-serve",
+ "llm-tensor",
+ "llm-tokenizer",
+ "llm-tool",
+ "llm-train",
+ "llm-weights",
+]
+
+[[package]]
+name = "llm-annotation"
+version = "0.1.0"
+
+[[package]]
+name = "llm-audit"
+version = "0.1.0"
+dependencies = [
+ "cutile",
+ "llm-config",
+ "llm-diagnostic",
+ "llm-op",
+ "llm-prim",
+ "llm-prof",
+]
+
+[[package]]
+name = "llm-autograd"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
+]
+
+[[package]]
+name = "llm-benches"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-checkpoint"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
+ "llm-weights",
+]
+
+[[package]]
+name = "llm-cli"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-comm"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-config"
+version = "0.1.0"
+
+[[package]]
+name = "llm-data"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
+]
+
+[[package]]
+name = "llm-diagnostic"
+version = "0.1.0"
+
+[[package]]
+name = "llm-einsum"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-engine"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-exec",
+ "llm-kv",
+ "llm-tensor",
+]
+
+[[package]]
+name = "llm-exec"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-fuzz"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-kv"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
+]
+
+[[package]]
+name = "llm-mem"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-nn"
+version = "0.1.0"
+dependencies = [
+ "llm-annotation",
+ "llm-diagnostic",
+ "llm-op",
+ "llm-tensor",
+]
+
+[[package]]
+name = "llm-op"
+version = "0.1.0"
+dependencies = [
+ "llm-config",
+ "llm-diagnostic",
+ "llm-einsum",
+ "llm-prof",
+]
+
+[[package]]
+name = "llm-prim"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
+]
+
+[[package]]
+name = "llm-prof"
+version = "0.1.0"
+dependencies = [
+ "llm-config",
+]
+
+[[package]]
+name = "llm-proto"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-serve"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-engine",
+ "llm-exec",
+ "llm-kv",
+ "llm-proto",
+ "llm-tokenizer",
+]
+
+[[package]]
+name = "llm-shard"
+version = "0.1.0"
+dependencies = [
+ "llm-comm",
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-storage"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
+]
+
+[[package]]
+name = "llm-tensor"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-mem",
+]
+
+[[package]]
+name = "llm-testkit"
+version = "0.1.0"
+
+[[package]]
+name = "llm-tokenizer"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+]
+
+[[package]]
+name = "llm-tool"
+version = "0.1.0"
+
+[[package]]
+name = "llm-train"
+version = "0.1.0"
+dependencies = [
+ "llm-autograd",
+ "llm-checkpoint",
+ "llm-data",
+ "llm-diagnostic",
+ "llm-nn",
+ "llm-shard",
+ "llm-tensor",
+ "llm-weights",
+]
+
+[[package]]
+name = "llm-weights"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
+]

@@ -1,0 +1,15 @@
+[package]
+name = "llm-diagnostic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Single error type for the workspace: closed Code set plus context-carrying Error."
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

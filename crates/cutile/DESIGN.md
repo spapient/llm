@@ -44,18 +44,18 @@
 | TileLang | 自身实现（包内 Python 94,994 + `src/` C++ 222,516） | **317,510** |
 | 旧工程 `llm.u` | DSL 相关层（config 4,638 + device 28,325 + kernel 1,451 + C 9,522） | **43,936** |
 | 旧工程 `llm.u` | 全部 `src`（含引擎/存储/训练/服务） | 85,649 + 9,523 C |
-| **cutile（本文预算）** | P3 全量（12 算子 / 8 设备） | **9,780** |
+| **cutile（本文预算）** | P3 全量（12 算子 / 8 设备） | **9,520** |
 
-**这张表要横着读**：CuTile 用 75,732 行只买到一台设备；llm.u 用 43,936 行买到 7 台设备，但每个 `(算子, 设备)` 格子都要人手写内核；cutile 的目标是 9,780 行买到 8 台设备，且**新增一格不需要写代码**。规模不是唯一指标，但它是唯一可复现的指标。
+**这张表要横着读**：CuTile 用 75,732 行只买到一台设备；llm.u 用 43,936 行买到 7 台设备，但每个 `(算子, 设备)` 格子都要人手写内核；cutile 的目标是 9,520 行买到 8 台设备，且**新增一格不需要写代码**。规模不是唯一指标，但它是唯一可复现的指标。
 
 ### 1.3 明确认输的地方（写在这里，评审时才不会被当成隐藏负债）
 
 | 对手 | 强在哪 | cutile 的取舍 |
 |---|---|---|
-| CuTile Rust | 借用检查器级别的数据竞争证明；Tile IR 里有 NVIDIA 自己的调度器 | cutile 用宿主侧 `partition()` 继承 Rust 借用检查（成本约 260 行），但**不接管设备调度**，交给各家原生编译器 |
+| CuTile Rust | 借用检查器级别的数据竞争证明；Tile IR 里有 NVIDIA 自己的调度器 | cutile 计划用宿主侧 `partition()` 继承 Rust 借用检查（DESIGN §4.4，**P0 尚未实现**），但**不接管设备调度**，交给各家原生编译器 |
 | TileLang | 算子生态与 Python 上手速度；tile 级 API 覆盖广 | cutile 只覆盖 12 个算子，超出即报错；不提供 Python 前端 |
 | CubeCL | IR 级优化、后端成熟度、社区 | cutile 放弃 IR，因此**拿不到跨算子融合**，只做算子内融合 |
-| CuTe DSL | 布局代数的表达完备性 | cutile 用 4 构造子的闭集换可判定性，非常规布局必须显式 `@repack` 并计入成本 |
+| CuTe DSL | 布局代数的表达完备性 | cutile 用 4 构造子的闭集换可判定性，非常规布局在闭集外直接拒绝 |
 | 旧工程 `llm.u` | 真机覆盖面与性能台账的严谨度 | cutile 继承它的台账方法（证据分级），但用自动生成的见证替代人填 |
 
 需要说明：**本文不合并 `llm.u`**。它是独立仓库、独立版本、独立发布节奏；cutile 只继承它的两条方法（按架构分档的能力协商、证据分级台账）和一组可复现的实测数字，不迁移它的代码。
@@ -66,15 +66,20 @@
 
 1. **闭集优先于表达力。** 任何"用户可以写任意 X"的设计，都会把成本转移到维护 pass 上。cutile 的每个可写维度都是有限枚举，枚举外显式失败。
 2. **能力必须是参数化的，不是字符串。** `provides = ["mma"]` 这种写法无法表达"我的 MMA 只支持 m=16"；能力签名必须是 `(原语, 形状区间, 数据类型, 存储空间)`，协商做区间包含判断。
-3. **布局是契约，不是推导结果。** 每个片段声明"我要求输入是什么布局、输出是什么布局"；模板声明自己给的是什么。两者不符只有三种合法动作：改模板、插 `@repack`（计成本）、失败。
+3. **布局是契约，不是推导结果。** 布局只能四选一，写错写不出来的布局就写不出来；落到设备上的唯一硬约束（swizzle 粒度 ≤ bank 数）在构建期校验，不合就失败。
 4. **调度是枚举，不是搜索空间。** 4 个调度模板覆盖从 elementwise 到 ping-pong attention 的全部需要；用户选模板 + 填槽位，不写流水线。
-5. **正确性来自双源。** 每个算子都有一份与设备无关的标量参考实现（`ref/`），片段只与参考对拍；片段写错不会"看起来对"。
+5. **正确性来自双源。** 每个算子在 `crates/op` 有一份与设备无关的标量参考实现（`op::model::Model::reference`），片段只与参考对拍；片段写错不会"看起来对"。
 6. **每个能力声明都要有见证。** 档案里写 `provides` 一律附带证据等级 L0–L3；`verify` 拒绝把 L1 当验证，缺设备时**失败而不是跳过**。
 7. **可解释性是产品能力。** 任何一次选择都必须能回答"为什么是这个变体、缓存为什么命中/失效、缺了哪个原子、最近的可行变体是什么"。
 
 ---
 
 ## 3. 架构：三层声明 + 三组闭集 + 一条 lowering
+
+三层数据分属三个 crate：**声明层**在 `crates/op`（`ops/`）、**档案层**在 `crates/prof`（`devices/`）、
+**片段层**在 `crates/prim`（`<vendor>/`），三者都是纯数据、不含机制；解析、协商、拼接、emit 全部在
+`crates/cutile`。依赖方向 `cutile → {op, prof, prim}`、`prim → prof`（片段文件名必须落在原语闭集内），
+`op` 与另外两者之间没有依赖。
 
 ```
         声明层（人写）                     档案层（每设备一份）              片段层（每原子每设备一段）
@@ -92,57 +97,122 @@
                               ⑤ emit + compile + cache
 ```
 
-五步的中间产物都是**可打印的数据结构**（`Variant` / `Path` / `Plan` / `Source` / `Artifact`），这是"无 IR"的具体含义：没有隐藏的优化阶段，任何结论都能在 `doctor` 里逐行看到。
+五步的中间产物都是**可打印的数据结构**（`TileCombo` / `Path` / `Plan` / 拼接文本 / `Source`），这是"无 IR"的具体含义：没有隐藏的优化阶段，任何结论都能在 `doctor` 里逐行看到。
 
 ### 3.1 目录与模块
 
 ```
-crates/cutile/
-├── DESIGN.md
+crates/op/                      # 声明层：纯数据，不含机制
 ├── Cargo.toml
-├── ops/                        # 声明层：12 个算子（闭集）
+├── README.md                   # 两个文件各写什么、如何新增算子
+├── ops/                        # 12 个算子（闭集）
 │   ├── attn_decode.toml        #   { skeleton, axes, needs, variants, layouts }
 │   └── attn_decode.k           #   模板文本（C 风格 + {{插值}} + @原语）
-├── prim/                       # 片段层：16 原语 × ≤8 设备
-│   ├── nvidia/mma.c
-│   └── cpu/reduce.c
-├── devices/                    # 档案层：≤8 份
-│   ├── nvidia.toml
-│   └── cpu.toml
+└── src/lib.rs                  # BUILTIN 内嵌 / load 目录装载 / dir 目录位置
+
+crates/prof/                    # 档案层：纯数据，不含机制
+├── Cargo.toml
+├── README.md                   # 一份档案写什么、如何新增设备
+├── devices/                    # 8 份档案
+│   ├── cpu.toml                #   [meta] / [fingerprint] / [space] / [[provides]]
+│   └── nvidia.toml
+└── src/                        # BUILTIN / load / dir + prof.rs（schema）+ atom.rs（词汇表）
+
+crates/prim/                    # 片段层：纯数据，不含机制
+├── Cargo.toml
+├── README.md                   # 片段与见证各写什么、如何新增设备
+├── cpu/                        # 16 原语 × ≤8 设备，文件名即原语名
+│   ├── dot.c
+│   ├── reduce.c
+│   └── witness.c               # 见证源码（L2 证据），装载片段时跳过
+├── nvidia/                     # cu：同样 9 段 P0 片段 + witness.cu
+├── intel/                      # cl
+├── ascend/                     # cpp
+└── src/lib.rs                  # BUILTIN 内嵌 / builtin 查表 / load 目录装载 / dir 与 layer_root
+
+crates/cutile/                  # 机制：协商、拼接、emit、编译执行
+├── DESIGN.md
+├── Cargo.toml
 └── src/
     ├── lib.rs
-    ├── backend.rs   # FFI / 驱动调用 / launch（unsafe 白名单）
-    ├── atom.rs      # 原语槽位 + 参数化能力签名 + 兼容性判定
-    ├── prof.rs      # 档案 schema、指纹匹配、证据等级、字段校验
-    ├── cap.rs       # 协商、降级链、诊断构造
-    ├── layout.rs    # 4 构造子、正规形、契约校验、@repack 计费
-    ├── space.rs     # GM/FAST/REG 三级存储与寻址
-    ├── sch.rs       # 4 个调度模板与其槽位
-    ├── lower/       # expand / substitute / emit
-    ├── cache.rs     # 指纹、锁、原子落盘、GC
-    ├── probe.rs     # 设备探测（可注入假指纹）
-    ├── plan.rs      # 形状 → 变体、autotune、落盘
-    ├── host.rs      # 宿主侧 API：partition / 所有权 / 网格推导
-    ├── reference.rs # 标量参考解释器（正确性基准）
-    ├── toml.rs      # 手写受限 TOML 解析（D3：本轮不引入 serde/toml）
-    ├── main.rs      # bin：doctor / verify / bench 入口
-    └── cli.rs       # doctor / verify / bench / doctor --why
+    ├── backend.rs    # 编译与执行：`cc` 子进程 + 结果解码（无 unsafe）
+    ├── builtin.rs    # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
+    ├── cap.rs        # 协商、降级链、诊断构造
+    ├── space.rs      # GM/FAST/REG 三级存储与寻址
+    ├── substitute.rs # ④ substitute：模板槽位与 `@原语` 替换
+    ├── emit.rs       # ⑤ emit：加头、加前导、拼正文
+    ├── cache.rs      # 指纹、锁、原子落盘、GC
+    ├── probe.rs      # 设备探测（可注入假指纹）
+    ├── plan.rs       # tile 取值 + roofline 估值
+    ├── build.rs      # ⑤ emit + 缓存：指纹 → 查缓存 → 取锁 → 拼接 → 落盘
+    └── reference.rs  # 对拍口径：相对误差 + 按数据类型的阈值
+
+crates/audit/                   # 审计：doctor / verify / bench 的命令策略与结构化报告
+├── Cargo.toml
+├── README.md      # 这里有什么、不有什么
+└── src/
+    ├── lib.rs     # doctor / verify / bench：报告字段全是数据，排版在驱动方
+    └── witness.rs # 见证执行器：把 grade ≥ L2 的供给编成可执行文件并逐条对拍
 ```
+
+内核不含命令策略：形状矩阵（`verify` 跑哪几个形状）、重复次数、工作目录命名、达成率口径
+都在 `crates/audit`（包名 `llm-audit`）——它们**改变的是"怎么审"，不是"产物长什么样"**。
+内核只提供两件东西给审计：`cutile::build`（⑤ 的指纹、锁、拼接、落盘）与 `cutile::backend`
+（编译执行）。这也是 `audit` 能与 `cutile` 分开的前提：证据采集不拥有任何机制。
+
+闭集与解析不在本 crate：布局构造子、调度模板、模板词法、`OpDecl` 的解析都在 `crates/op`
+（`op::layout` / `op::sch` / `op::tpl` / `op::decl`）；`cutile::layout` 与 `cutile::sch` 是
+`pub use` 转发路径，模块路径不变，但闭集只有一份。命令行文法同样不在本 crate：它是
+`llm-cli::cutile` 的 `CutileCommand`，驱动方是根包的 `src/bin/cutile.rs`（L7 入口，只做
+解析 → `audit` → 排版 → 退出码），因此 `cutile` 不再持有第二套命令语法或第二套输出排版。
+
+TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施，已移到 `crates/config`（包名 `llm-config`）。
+`cutile::toml` 保留为转发路径（`pub use llm_config::toml`），因此模块路径不变，但实现只有一份，
+`llm` 将来读自己的配置时不必反向依赖 `cutile`。
+
+声明层数据也不在本 crate：它在 `crates/op`（包名 `op`，只依赖 `std`），`cutile` 单向依赖它。
+因此新增算子、改声明或改模板都不必动本 crate 的代码，数据与机制不会混成一处。
+算子的**语义**同样在那里（`op::model`）：一条求和表达式、确定性样本、标量参考与内核实参——`cutile`
+只消费它们，代码里不出现任何算子名或算子专属的流量公式。`flops` 与 `bytes` 不再手写：它们由语义层
+`crates/einsum` 从表达式与操作数位宽推出（`Cost` 的所有权在那里，`op::model` 只再导出），
+见 [`docs/adr/0007`](../../docs/adr/0007-semantic-cost-layer.md)。分组轴（`scales[n, g]` 的 `g = m/GROUP`）
+声明为派生轴，只计流量、不计运算次数——否则 roofline 的 `flops` 会多乘一个因子。
+
+档案层同理，在 `crates/prof`（包名 `prof`）：新增设备只加 `devices/<name>.toml` 并在
+`BUILTIN` 里补一行，`cutile` 侧一行不改。
+
+片段层在 `crates/prim`（包名 `prim`，只依赖 `prof` 的词汇表）：`<vendor>/<prim>.<ext>` 是"这条能力怎么写"。
+装载（`prim::builtin` / `prim::load`）随数据一起搬走，文件名不属于原语闭集即报错；`witness.<ext>`
+与片段同目录同扩展名，装载时按名字跳过。档案里的 `witness` 因此是**相对片段层根**的路径
+（仓库内根是 `crates/prim`，设置 `data.root` 时是 `<data.root>/prim`），`cutile` 不再需要知道自己
+的清单目录在哪。
+
+每段片段的第一行是**签名声明** `/* cutile-sign: <prim>/<impl> */`：同一原语在档案里可以有多条
+签名（`dot` 的 `dp4a` 与标量 `fma`），片段只说"这段文本写的是哪一条"。`prim::Fragment::parse`
+在装载期解析它——缺声明、声明的原语与文件名不一致、`impl` 为空都直接报错；`Catalogue::validate`
+再用 `cap::fragment_gaps`（与 `negotiate` 同一张需求表、同一个 `select`）判定"协商会挑中的那条
+实现"是否正是"片段声明写的那条"。缺这一段时，"能协商"与"能生成"可以同时为真却指向不同的算法，
+错误会晚到构建期甚至不被发现。声明行不进 emit（拼接只取它之后的文本，见 `Fragment::body`），
+也不进缓存指纹，所以它是纯元数据：补一行不会改变已生成的源文本。
 
 ### 3.2 与 workspace 的接口
 
-`crates/cutile` 已是 workspace 成员，继承 `version/edition/rust-version/license/repository` 与 `[lints] workspace = true`。`missing_docs`、`unsafe_op_in_unsafe_fn`、`clippy::all`+`cargo` 全部生效，因此本设计必须自带两条工程条款：
+`crates/cutile` 已是 workspace 成员，继承 `version/edition/rust-version/license/repository` 与 `[lints] workspace = true`。`missing_docs`、`unsafe_op_in_unsafe_fn`、`clippy::all`+`cargo` 全部生效，因此本设计必须自带三条工程条款：
 
-- **unsafe 边界**：`unsafe` 只允许出现在 `backend/`（FFI 与驱动调用）与 `host.rs` 的 launch 段；其余模块 `#![deny(unsafe_code)]`。每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
-- **文档豁免**：`lower/` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
+- **unsafe 边界**：本 crate 不含 `unsafe`。`backend` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `backend/` 的新增驱动模块里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
+- **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
+- **配置边界**：依赖方向固定为 `llm → audit → cutile → {op, prof, prim, llm-config}`（`audit` 是"怎么审"，内核是"怎么生成"；反向边不存在，所以去掉审计不会动摇机制），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`llm-config` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
+  - 缓存目录、工作目录、可选数据根（`data.root`）全部取自 `llm_config::Settings`；
+  - 新增配置项必须先在 `llm-config` 的 `Key` 闭集登记，否则配置文件里出现该键会直接报错；没有消费方的键不登记；
+  - 默认目录取平台用户目录（macOS `~/Library/Caches/cutile/cache`、Linux `$XDG_CACHE_HOME/cutile/cache`、Windows `%LOCALAPPDATA%\cutile\cache`），与仓库布局、启动目录都无关；仓库里不放配置文件，只在需要偏离默认时写用户级文件。
 
 ---
 
 ## 4. 声明层：用户写什么
 
-用户只写两个文件，都在 `ops/` 下。
+用户只写两个文件，都在 `crates/op/ops/` 下（本 crate 只读数据，不解释存放位置）。
 
-### 4.1 算子声明（`ops/attn_decode.toml`）
+### 4.1 算子声明（`crates/op/ops/attn_decode.toml`）
 
 ```toml
 [op]
@@ -200,11 +270,11 @@ mma_share = 0.40
 
 - `needs` 是**算子级公共需求**，`extra_needs` 是**变体级增量需求**，两者必须用同一套能力签名词汇（不是字符串数组）。`naive` 不需要 `shuffle`、也不需要 `load_async`——这一点必须能在数据里表达，否则协商对"降级"无效。
 - `mma_share` 是该变体在 roofline 模型里的非 MMA 占比上界，用于 `verify` 的流水掩盖检查（见 §12）。
-- `axes` 的笛卡尔积是**tile 候选**（≤ 8），`[[variants]]` 是**降级链**（≤ 8），两者不是同一维度：前者决定一次编译内的分块，后者决定用哪套调度。
+- `axes` 的笛卡尔积是**tile 候选**（≤ 8），`[[variants]]` 是**降级链**（≤ 8），两者不是同一维度：前者决定一次编译内的分块，后者决定用哪套调度。P0 只取笛卡尔积的**第一个**组合（轴取值的顺序即优先级，与降级链同一口径）；在候选之间比较需要占用率/分块收益这类可推导常数，P0 的档案里没有，所以不做（§9）。
 - 变体数上限 8；`axes` 乘积超过 8 直接拒绝，报错时给出建议剪掉的轴。
 - 为什么是 TOML 而不是 `#[op]` 过程宏：声明要可 diff、可被 `verify` 单独校验、不引入 `syn`/`quote` 依赖（见 §18 D3）。Rust 只在**新增骨架**时才写——骨架闭集只有 5 个，写满即止。
 
-### 4.2 模板（`ops/attn_decode.k`）
+### 4.2 模板（`crates/op/ops/attn_decode.k`）
 
 语法刻意保持极小：可解析构造只有 `{{槽位}}` 插值、`@原语(参数)` 调用、`#define` 与 `for`，其余文本原样保留。
 
@@ -227,6 +297,8 @@ for (kb = 0; kb < NB; ++kb) {
 
 **诊断精度承诺**：解析错误定位到 `(文件, 行, 槽位名)`，不承诺列号。这是省代码的正确做法——先把精度降下来，解析器才能小。
 
+**错误契约**：`cutile`（连同 `op`、`audit`）的失败一律是 `diagnostic::Error`，类别取自闭集 `Code`：缺能力 `unsupported`、输入不合法 `invalid`、缺东西 `missing`、读写 `io`、本层不变量被破坏 `internal`。诊断文字把算子名、形参名、行号作为上下文帧挂上，不再手拼前缀；`Result<_, String>` 在这三个 crate 的边界上已经绝迹（`tests/architecture.rs` 会扫）。类别同时是退出码：`Code::exit_code()` 给出 `2 / 3 / 4 / 5 / 70`，所以 `verify` 遇到"本机没有该设备"是 `3`，而 `--shape 3x1` 写错是 `2`。
+
 ### 4.3 一份声明的作用域
 
 | 维度 | 谁写 | 数量 | 改动成本 |
@@ -238,7 +310,12 @@ for (kb = 0; kb < NB; ++kb) {
 | 布局 | 闭集 4 选 1 + 组合 | 每个槽位一个 | 0 行 |
 | 调度 | 闭集 4 选 1 + 槽位 | 每个变体一个 | 0 行 |
 
-### 4.4 宿主侧：分区即网格，所有权即并发安全
+### 4.4 宿主侧：分区即网格，所有权即并发安全（P0 未实现）
+
+> 状态：**设计保留，代码尚未提供**。P0 的消费方式是 `cli` 内的测试夹具：内核拿到裸指针与标量，
+> 分片与 `grid` 由调用方自己给。原先的 `host.rs` 写了 `Tensor::partition` 与网格推导，
+> 但全仓零调用、也没有对外 API 落地（D5 仍未决），已于 2026-11-12 删除；
+> 等 `llm` 真的要直接调用 kernel 时按本节重建，并把它接进构建路径而不是另写一份。
 
 ```rust
 // 借用检查器保证：分片之间不相交，输入只读
@@ -254,7 +331,7 @@ let y_host = y.unpartition().to_host_vec()?;
 
 - **独占由 `&mut` 分片表达**：同一分片不能同时被两个 kernel 写（借用检查器直接拒绝编译）。
 - **网格不由人写**：`partition([128])` 的分片比就是 `grid.x`，分片数与形状不整除在构造期报错。
-- **设备不由人写**：`probe` 选档案、`negotiate` 选变体、`select` 选 tile，调用点只给形状。
+- **设备不由人写**：`probe` 选档案、`negotiate` 选变体、`select` 取声明的 tile（P0 无候选可比较，见 §9），调用点只给形状。
 
 这套宿主模型与 CuTile Rust 一致；差别在于**所有权不依赖 CUDA**：同一个 `partition`/`&mut` 模式原样服务 8 台设备。CuTile 的遗憾是它把这套好模型绑在了 Tile IR 上，而不是模型本身有问题。
 
@@ -265,6 +342,7 @@ let y_host = y.unpartition().to_host_vec()?;
 ### 5.1 原语闭集
 
 原语是模板唯一能调用的东西，也是片段唯一的实现单位。**16 个，不多不少**；加第 17 个要走设计变更。
+这份闭集与档案 schema 的事实源在 `crates/prof`（`src/atom.rs`、`src/prof.rs`），`cutile` 只 re-export——词汇表与设备数据同住，机制层改不动它们。
 
 | # | 原语 | 语义契约 | 关键参数 | 布局要求 |
 |---|---|---|---|---|
@@ -318,7 +396,28 @@ impl Provide {
 
 **这是与所有参照实现最重要的差别**：能力不是"有没有 mma"，而是"哪种 mma、支持多宽的形状、什么精度、在哪个存储层"。`(m=16) ⟹ (m=64)` 这种包含关系让协商可以被一次区间比较判定，不需要任何启发式。
 
-### 5.3 档案（`devices/nvidia.toml`）
+#### 执行单元也是闭集里的一格
+
+`exec` 是属性键闭集（`AttrKey::ALL`）里的一个键，把"这条能力由哪个硬件单元实现"写进数据：
+
+```toml
+[units.cube]             # 单元名由档案定义，代码不认识任何具体名字
+space = ["FAST", "REG"]  # Cube 只能访问 L1/L0
+
+[[provides]]
+prim  = "dot"
+impl  = "mmad"
+dt    = ["f16", "bf16"]
+space = ["FAST", "REG"]
+exec  = ["cube"]         # 加载期校验：cube 必须访问得到上面声明的每一层存储
+```
+
+于是协商里没有厂商分支：`Need` 写 `exec = ["vector"]` 就是"我要 vector 实现的点积"，
+`Provide::covers` 用同一套集合/区间判定回答"有没有"；档案若写 `exec = ["cube"]` 却声明
+`space = ["GM"]`，加载期直接报 ``provides[dot].space：`cube` 访问不到 [GM]``，而不是等真机跑错。
+新增设备乃至新增一种执行单元都只改 `devices/<name>.toml`，`cutile` 一行不动。
+
+### 5.3 档案（`crates/prof/devices/nvidia.toml`）
 
 ```toml
 [meta]
@@ -354,14 +453,16 @@ k    = "16..32"
 dt   = ["f16", "bf16", "f8e4m3", "f4"]
 space = ["FAST"]
 grade = "L3"
-witness = "prim/nvidia/mma_witness"
+witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 ```
 
-规则（全部由 `prof.rs` 校验，不是约定）：
+规则（全部由 `prof.rs` 与 `llm-audit` 的 `witness` 校验，不是约定）：
 
 - `provides` 里出现闭集外的 `prim` / `dt` / `space` → 加载失败。
-- `grade = "L2"` 及以上必须有 `witness` 字段且对应文件存在。
+- `grade = "L2"` 及以上必须有 `witness = { file, func, expect }`：文件存在、函数在文件里、期望值非空；`verify` 再逐条编译执行并与 `expect` 对拍。
 - 同一 `(vendor, id)` 只允许一份档案；指纹多行同等具体 → 加载失败（不猜顺序）。
+- 同一原语可以有多条 `provides`（用 `impl` 区分互不覆盖的签名）：协商先挑**能覆盖**需求的那条，再比证据等级；都不覆盖时挑差异最少的那条做诊断。
+- 每条 `provides` 的 `impl` 必须在片段层有一段声明它是同一签名的文本（`/* cutile-sign: <prim>/<impl> */`）：`Catalogue::validate` 逐条比对协商会挑中的实现与片段声明的实现，不一致即装载失败。
 - 缺 `emit` 或 `tool` → 加载失败。
 
 ### 5.4 八份档案一览
@@ -383,7 +484,7 @@ witness = "prim/nvidia/mma_witness"
 
 ---
 
-## 6. 布局：4 个构造子 + 正规形 + 契约
+## 6. 布局：4 个构造子 + 声明式
 
 ### 6.1 闭集
 
@@ -394,25 +495,37 @@ witness = "prim/nvidia/mma_witness"
 | L3 | `swz<B,M,S>(base)` | 在 base 上做 XOR swizzle（bank 冲突消解） | `swz<3,3,3>(row(64,64))` |
 | L4 | `pad(base, p)` | 在 base 的最后一维插入 `p` 个填充元素 | `pad(row(64,64), 4)` |
 
-四个构造子的**组合是受限的**：`swz` 与 `pad` 只能包裹 `row`/`col`，不能互相嵌套。这条限制把布局的全集压到可枚举，也让"正规形"唯一。
+四个构造子的**组合是受限的**：`swz` 与 `pad` 只能包裹 `row`/`col`，不能互相嵌套。这条限制把布局的全集压到可枚举（正规形因此在 P3 引入时唯一）。
 
-### 6.2 正规形与判定
+### 6.2 声明式与判定
 
-`layout.rs` 把任意合法布局归约成 `(order, shape, stride, swizzle, pad)` 五元组；两个布局相等当且仅当五元组相等。归约函数是纯函数、无搜索，约 90 行。
+`[layouts]` 的取值就是闭集里的构造子本身：`op::layout::LayoutSpec` 负责解析、校验，并渲染回同一串文本
+（`row` / `col` / `swz<3,3,3>` / `pad(4)`）。这串文本既是模板插值（`{{w}}`）的内容，也是缓存键里的一项——
+布局在构建期的身份是**声明**，不是某个具体形状下的步长。
 
-契约校验的输入是三个：模板声明的布局、片段要求的布局、设备档案里的 `mem.bank`。判定结果只有三种：
+正规形（`(order, shape, stride, swizzle, pad)` 五元组）需要槽位的两级形状，而 P0 的构建期没有形状：
+`tile` 是轴取值（`GMAX=32`），不是 `w[n, m/2]` 这样的槽位形状。用编出来的形状去实例化，只会让缓存键与
+诊断看起来覆盖了形状，实际上描述了一次从未发生的编译（审计里原来的 `instantiate(tile, 64)` 就是如此）。
+因此 P0 只保留闭集与声明式；等槽位形状与片段声明的布局都到位（P3）时再加回正规形与判定。
 
-1. **相等** → 直通。
-2. **可重组**（同一 order，stride/swizzle 不同）→ 插入一次 `@repack`，成本计入 roofline 的字节数。
-3. **不可重组**（order 不同，或 pad 后无法对齐）→ 失败，报"模板给 row、片段要 col，且转置会破坏 P1 的 B 操作数约定"。
+**P0 没有"模板给 vs 片段要"的比对。** 片段是 C 源码，参数只有指针与标量，不声明自己要求的布局，
+也就没有第二个正规形可比。原先设计的三段判定（相等 / 可 `@repack` 重组 / 不可重组）需要片段
+先能声明布局，否则判定的两个输入里有一个永远是空的。与其留一个测试过却从不参与流水线的函数，
+不如把它删掉，等片段层真的有布局声明时再加回来——那时才测得出 `@repack` 的频率（D2）。
 
-**为什么不做布局推导**：CubeCL 的 `cubecl-tile/{layout,space,stage}` 合计 16,666 行、TileLang 的 `tilelang/{layout,transform}` 合计 3,520 行，再加上各自 C++/IR 侧的实现，全部目的都是"给定算子自动求布局"。cutile 把这件事换成"人写一个四选一的属性 + 机器校验 + 不匹配时显式计费"。少掉的不是能力，是**不可解释性**——而且写错的代价从"运行慢 3 倍且没人知道"变成"构建期报错"。
+**设备侧唯一真实的布局约束是 bank 数**，它在构建期执行：`build_source` 对 `[layouts]` 里每个
+`swz<B,…>` 调 `space::check_alignment`，`2^B` 超过档案 `mem.fast_bank` 即报错，`B ≥ 32` 也不会
+溢出成 panic。声明里写 `swz<40,3,3>` 现在得到一条诊断，而不是运行期崩溃。
+
+**为什么不做布局推导**：CubeCL 的 `cubecl-tile/{layout,space,stage}` 合计 16,666 行、TileLang 的 `tilelang/{layout,transform}` 合计 3,520 行，再加上各自 C++/IR 侧的实现，全部目的都是"给定算子自动求布局"。cutile 把这件事换成"人写一个四选一的属性 + 机器校验"。少掉的不是能力，是**不可解释性**——而且写错的代价从"运行慢 3 倍且没人知道"变成"构建期报错"。
 
 ### 6.3 三级存储
 
 `GM / FAST / REG` 是**语义名**，每个档案映射到本设备的物理名（NVIDIA `shared`、Intel `slm`、昇腾 `L1`、Metal `threadgroup`、CPU `L2/栈`）。模板只写语义名，因此同一份模板在昇腾上的 `GM -> FAST` 会自动变成 `GM -> L1` 的 MTE 搬运。
 
-`space.rs` 只做三件事：名字映射、容量校验（`FAST` 用量 ≤ 档案字节数）、对齐校验（`swz` 的粒度与 bank 数兼容）。共 240 行。
+`space.rs` 只做四件事：名字映射、容量取值（`capacity`，档案缺项即"不限"）、容量校验（`FAST`/`REG` 声明用量 ≤ 档案字节数）、对齐校验（`swz` 的粒度与 bank 数兼容），共 130 行。后两件事不再是"留着等人的工具"：`build::contract` 对协商出的变体算一遍声明用量，逐层调容量校验，并对每个 `swz` 槽位调一次对齐校验，不合就在构建期失败。
+
+这个契约**在查缓存之前**执行：声明里的 `bytes` 上界不改变源文本，因此不在缓存键里；若把判定放到命中之后，一份已经落盘的旧文本就成了"声明越界也免检"的通行证。`contract` 返回的就是判定时真正比较过的那些数（原语、层、字节），`doctor` 的 `[存储]` 段直接打印它们与同一份档案容量——"它为什么通过"与"它到底算了什么"因此是同一组值。
 
 ### 6.4 闭集变更流程
 
@@ -481,7 +594,7 @@ error: attn_decode 在 ascend(sm-) 上没有可行变体
     pipe3        ✗ （load_async 缺失）
     smem_only    ✓ （可用，预计 mma_share 0.61，比目标低 0.21）
     naive        ✓
-  建议：改用 smem_only（预计 -26% 峰值），或在 devices/ascend.toml 补 load_async 的 L2 见证
+  建议：改用 smem_only（预计 -26% 峰值），或在 crates/prof/devices/ascend.toml 补 load_async 的 L2 见证
 ```
 
 每条诊断必须包含三件事：**缺什么原子**、**供给方实际是什么**、**最近的可行解与代价**。这三件事是 CubeCL（只报编译错）、TileLang（只报 pass 失败）、CuTile（只报 Tile IR 版本不符）都给不出的。
@@ -501,13 +614,24 @@ error: `layout = "interleaved"` 不在闭集内
 
 ## 9. 变体选择与 plan
 
-`plan.rs` 负责"给定形状，选哪个变体、多大 tile"。
+`plan.rs` 负责"给定形状，给出 tile 与 roofline 估值"。P0 与 P3 交付的东西不同。
 
-- 输入：`(op, prof, shape, dtype, policy)`。
+**P0（当前实现）**：
+
+- 输入：`(op, prof, path, shape)`。
+- tile：取 `[axes]` 笛卡尔积的**第一个**组合。轴取值的顺序就是优先级，与降级链同一口径：TOML 顺序即优先级，**不做自动打分**。
+- 估值：`max(flops/peak, bytes/bw) + 未掩盖项`，只用于 `verify` 打印预测下界、`bench` 算达成率。
+
+P0 不做候选比较，原因是**没有可比的量**：档案里能推导占用率或分块收益的常数一个也没有（`[simt]` 只有组宽度），与 tile 相关的只有 `deq[GMAX]` 的栈占用，它不改 flops、不改流量。硬要给出"哪个 tile 更快"，只能在机制层编一个系数；这种假精确比不做更贵。因此 `gemv_i4` 的 `[axes]` 也只声明实现真正需要的那个取值。
+
+**P3（未实现）**：
+
 - 首选：已落盘的 `plan` 表（`plan/<vendor>-<id>-<op>.toml`），键是形状桶（`m` 按 2 的幂分桶，`n/k` 同理）。
-- 缺失：用 roofline 估算 `max(flops/peak, bytes/bw) + 未掩盖项`，在**预测最优的 ±1 档**内取 3 个候选做一次微基准，落盘。
+- 缺失：用上面的 roofline 估算，在**预测最优的 ±1 档**内取 3 个候选做一次微基准，落盘。
 - autotune 上限：每 (op, device) 最多 3 候选 × 5 次重复；这是与 CubeCL 全空间 autotune 的刻意差别——**搜索空间用闭集已经剪过一次，不需要再暴力剪**。
 - 失效：`plan` 表带指纹（`schema_ver`、`tool_ver`、`emit`、`dtype` 位集），任一不符即视为缺失，重新估算。
+
+P3 的完成标准：表里出现至少一台设备的两个形状桶，且 `bench` 的达成率高于 P0 的首个取值。在那之前，§12.3 的性能目标只能按 P0 的实现口径读。
 
 ---
 
@@ -538,9 +662,9 @@ text      = { any } ;            (* 片段拼接时原样保留 *)
 
 | 步 | 输入 | 输出 | 失败原因 |
 |---|---|---|---|
-| ① expand | `op.axes` | `Vec<Variant>`（≤8） | 轴乘积 > 8 |
+| ① expand | `op.axes` | `Vec<TileCombo>`（≤8） | 轴乘积 > 8 |
 | ② negotiate | `op.needs` + `prof.provides` | `Path` | 无变体可行（§8.2 诊断） |
-| ③ select | `(op, prof, shape)` | `Plan { variant, tile }` | 形状超出轴范围 |
+| ③ select | `(op, prof, shape)` | `Plan { variant, tile }` | 轴展开超过 8 / 档案无 peak 常数 |
 | ④ substitute | 模板 + 片段 + 布局 | `Source { lang, text }` | 槽位缺失 / 布局不可重组 |
 | ⑤ emit | `Source` + `prof.tool` | `Artifact { bytes, key }` | 编译器报错（原文透出） |
 
@@ -555,17 +679,18 @@ pub struct CacheKey {
     arch: String,             // 指纹里的架构键
     template_hash: u64,       // 模板文本哈希
     fragments: Vec<(Prim, u64)>, // 参与拼接的片段名 + 内容哈希
-    layout_nf: Vec<(String, LayoutNF)>, // 正规形
+    layouts: Vec<(String, String)>, // 声明式：row / col / swz<…> / pad(p)
     variant: VariantKey,      // 轴取值 + 调度槽位
     dtype: DTypeSet,
 }
 ```
 
-- 目录：`$CUTILE_CACHE/<key[0..2]>/<key>/`，内含 `artifact`、`source.<ext>`、`meta.toml`。
-- 并发：`<key>.lock` 文件 + `O_EXCL`，等待上限 120 s，超时即报错（不静默重复编译）。
-- 落盘：写临时目录 → `rename` 原子替换。
-- GC：按 LRU + 容量上限（默认 2 GiB），`cutile cache gc` 可手动触发。
-- 可复现：`meta.toml` 记录完整 `CacheKey` 与工具版本，`cutile doctor --why <key>` 能解释命中/失效原因。
+- 目录：`$CUTILE_CACHE/<key[0..2]>/<key>/`，内含 `source`（生成的源文本）与 `meta.txt`（键的逐项快照，一行 `字段=值`）。编译产物不在这里：它落在 `work.dir` 下按进程隔离的目录里（`backend::compile_and_run`），缓存只负责"跳过重新拼装"。
+- 并发：`<key>/build.lock` 文件 + `O_EXCL`；另一个进程正在生成同一个 key 时等它落盘并复用其产物（上限 5 s），超时即报错（不静默重复编译）。`O_EXCL` 锁是**文件**而不是 flock：持有者被 `kill` 后没人能释放它，这个键会永久卡在"等待超时"上。因此取锁失败时先看锁是否陈旧（`cache::STALE_LOCK` = 60 s，一次 emit 是毫秒级、等锁上限只有 5 s）：陈旧就删掉重试，活着的锁一律不抢。
+- 落盘：写临时文件 → `rename` 原子替换。
+- 残留：只在 `rename` 之前崩溃会留下没有 `source` 的目录（`source.tmp` / `meta.txt` / 锁）。它不是"别人的目录"而是**永远不会命中**的记录（`cache::State::Partial`）：旧实现把它排除在扫描之外，于是它既不计入占用、也永远不被回收。现在扫描按目录内容判状态，`cache gc` 把残留与 LRU 删除分两行报告。
+- GC：按 LRU + 容量上限（默认 2 GiB，`audit::CACHE_LIMIT`），`cutile cache gc [--limit <字节>]` 手动触发。LRU 的"使用"由读命中更新 `meta.txt` 的时间戳来记——不记的话它就退化成"最近写入"，一份天天命中的缓存反而先被删。残留与上限无关、一律回收（它等到任何一次"超限"都不会发生）；可复用条目按 LRU 删到上限内。仍在用的（窗口内被动过，或还有活着的锁）一律跳过，跳过的条数在结果里如实计数。
+- 可复现：`meta.txt` 记录完整键，`cutile doctor --why <key>` 用 `CacheKey::fields` 与它逐项比较，只列出真正不同的字段（含只在一侧出现的项：新版本加的字段与已删掉的字段同样是"为什么没命中"）。字段定义只有一份，`describe`/哈希/差异都从它派生。
 
 ---
 
@@ -573,7 +698,7 @@ pub struct CacheKey {
 
 ### 11.1 双源对拍
 
-每个算子在 `src/reference.rs` 有一份标量参考实现（不依赖任何设备、不依赖片段）。对拍口径固定为 `max|got−want| / max|want|`，阈值按数据类型：整数精确、f16/bf16 ≤ 1e-3、f32 ≤ 1e-5。片段只与参考对拍，**片段之间不互相对拍**（否则一个错会传染成"两个都对"）。
+每个算子在 `crates/op/src/<name>.rs` 有一份标量参考实现（不依赖任何设备、不依赖片段），由 `op::model::Model::reference` 暴露；`cutile/src/reference.rs` 只保留对拍口径——`max|got−want| / max|want|`，阈值按数据类型：整数精确、f16/bf16 ≤ 1e-3、f32 ≤ 1e-5。片段只与参考对拍，**片段之间不互相对拍**（否则一个错会传染成"两个都对"）。
 
 ### 11.2 证据分级（继承旧工程，改为自动生成）
 
@@ -584,11 +709,28 @@ pub struct CacheKey {
 | L2 | 与参考对拍通过（真机或注入的假指纹 + 模拟器） | CI / 本地 | 是（但仍标记） |
 | L3 | 真机性能达到 roofline 的 ≥ 70% | 真机 bench | 是 |
 
-`capability` 台账（`devices/<vendor>.capability.md`）由 `cutile verify --emit-ledger` 生成，人不再手填。**缺设备即失败**：`verify` 遇到本机不支持的设备直接返回非零码并列出缺失项，不写"跳过"（这是旧工程 `clblast` 用例静默通过的直接修正）。
+`capability` 台账（`<work.dir>/ledger/<vendor>.capability.md`）由 `cutile verify --emit-ledger` 生成，人不再手填。**缺设备即失败**：`verify` 遇到本机不支持的设备直接返回非零码并列出缺失项，不写"跳过"（这是旧工程 `clblast` 用例静默通过的直接修正）。
 
 ### 11.3 见证
 
-每条 `provides` 附一个最小见证（`prim/<vendor>/<prim>_witness`）：一段只调用该原语的迷你 kernel + 期望值。CI 在能跑的设备上执行见证，并把等级写回台账。协商只接受 `grade ≥ L2` 的供给——**未验证的能力视为不具备**，这是把旧工程 R5 风险（"声明有 TMA 实际没有"）前移成构建期问题的关键一条。
+每条 `provides` 附一个可执行的见证（`<vendor>/witness.<ext>`）：一段只调用该原语的最小函数 + 档案里写明的期望值。
+
+```toml
+witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5] }
+```
+
+统一 ABI 是 `int func(float *out)`：返回写入的元素个数（≤ 8），值按 f32 读回后与 `expect` 对拍。
+`cutile verify` 会先把**档案里每一条** `grade ≥ L2` 的见证编成可执行文件并执行一遍，任何一条不过就整台设备失败；
+通过后才跑形状矩阵（最小合法、多行非方形、生产形状）与标量参考对拍。
+
+因此 `grade` 不是作者的自述，而是这次执行的结论；协商只接受 `grade ≥ L2` 的供给——**未验证的能力视为不具备**，
+这是把旧工程 R5 风险（"声明有 TMA 实际没有"）前移成构建期问题的关键一条。
+
+`grade < L2` 的供给另有**本机自检**（`witness::self_check`，结论的 `scope = Host`）：见证的 ABI 是
+host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble` 与 `flags`，用 host 编译器把
+`<vendor>/witness.<ext>` 编成可执行文件并逐条执行。它把“见证写没写、期望值算不算得对”变成
+今天就能跑的判据（`nvidia` / `intel` / `ascend` 的 35 条 L0/L1 见证因此不再是纯文本），但**不**
+证明设备具备该能力：自检不改写任何 `grade`。把 host 自检通过写成 `L2`，等于用主机替设备作证。
 
 ---
 
@@ -596,20 +738,35 @@ pub struct CacheKey {
 
 ### 12.1 roofline 是判定器，不是口号
 
-档案必须提供可推导的常数，每个值都带自己的 `src`（推导式，而不是抄来的数字）：
+档案必须提供可推导的常数，每个值都带自己的 `src`（推导式，而不是抄来的数字），
+且 `src` 必须是**本层可求值**的表达式：只允许数值字面量、`+ - * /` 与括号。
+装载期会把求值结果与 `value` 比对，不一致即失败；量纲与物理含义写在同一行的注释里，
+数字因此只写一次。
 
 ```toml
 [peak]
-flops_f32 = { value = 1.709e12, src = "sm_count*64*2*clock" }   # 例：T600 口径
-bw        = { value = 160.0e9,  src = "2*mem_clock*bus_bytes" }
+# 8 核 × 2.6 GHz × 8 条 f32 流水 × 2 FLOP/cycle
+flops_f32 = { value = 332.8e9,  src = "8*2.6e9*8*2" }
+# 2 通道 × 8 字节 × 2666 MHz
+bw        = { value = 42.656e9, src = "2*8*2666e6" }
 ```
 
+带变量名与单位的公式（`sm_count*64*2*clock`）无法在没有变量表的情况下核验，因此不被接受：
+这类公式的可靠性只能靠人眼，与"每个值都可求值"的目标冲突。
+
 `verify` 用 `max(flops/peak_flops, bytes/peak_bw) + 未掩盖的非 MMA 时间` 给出预测下界；`bench` 打印达成率。目标数字（见 §12.3）全部是**目标**，不是实测，验收必须附命令与机器。
+
+`bench` 的计时口径是固定的：`CLOCK_MONOTONIC` 墙钟、warmup 不计入、每个样本只包一次内核调用
+（亚微秒内核自动批量，样本按批量折算），报告 `min` 与 `p50`；达成率按 `p50` 计算（对单次抖动与
+CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入工作集与档案的 `FAST` 容量，并把达成率
+分成五类：`> 100%` → 口径无效（数据在缓存中）；工作集 ≤ `FAST` → 口径无效（测到的是缓存带宽，
+与主存峰值不可比）；其余才按 70% 门槛判 `Reached` / `Below`；没有峰值则是 `Unknown`。口径无效的
+数字不参与 L3 判定——这正是 §12.3 "任何未附口径的达成率视为未测量"的执行版本。
 
 ### 12.2 三个可测的构建期判据
 
 1. **流水掩盖**：`unmasked_non_mma / total ≤ 20%`，否则要求换 S3/S4。
-2. **repack 预算**：`@repack` 引入的额外字节 ≤ 该算子总流量的 10%，否则布局设计错误。
+2. **存储契约**：声明的搬运量（`bytes` 上界）必须落在它声明的每个存储层容量内，`swz` 粒度必须 ≤ 档案 bank 数，否则构建期失败（§6.2）。这条只看数据，因此对尚未有真机的设备也生效；判定先于缓存命中执行，报告里的容量与用量就是判定比较过的那两个数（`space::capacity` + `build::contract` 的返回值），不另算一份。
 3. **变体收益单调**：降级链上 `mma_share` 必须单调不增；违反说明 `extra_needs` 写反了。
 
 ### 12.3 目标（非实测）
@@ -633,21 +790,21 @@ bw        = { value = 160.0e9,  src = "2*mem_clock*bus_bytes" }
 | 模块 | 行数 | 说明 |
 |---|---:|---|
 | `prof` schema + 3 份档案 + 校验 | 240 | nvidia / intel / cpu |
-| `cap` 协商 + 诊断 | 280 | 含 §8.2 的格式化 |
-| `layout` 4 构造子 + 正规形 | 200 | swz 只用一种参数 |
-| `space` | 120 | 三级映射 + 容量/对齐校验 |
+| `cap` 协商 + 诊断 | 280 | 判定与需求差异；§8.2 的文本只在 `NoPath` 的 `Display` |
+| `layout` 4 构造子 + 声明式（在 `op`） | 200 | swz 只用一种参数；正规形等槽位形状（P3） |
+| `space` | 120 | 三级映射 + 容量取值/校验 + 对齐校验 |
 | `prim` 片段 | 240 | 10 原语 × 3 设备 × 8 行 |
-| `sch` | 140 | S1 + S2 |
-| `ops` 声明 + 模板 | 260 | `gemv_i4` 一份 |
-| `lower` | 300 | 词法 + 替换 + emit |
-| `cache` | 140 | 指纹 + 锁 + 落盘 |
+| `sch`（在 `op`） | 140 | S1 + S2 |
+| `ops` 声明 + 模板 + 语义 + **解析** | 440 | `gemv_i4` 一份：声明/模板 + 代价/样本/参考 + `decl`/`tpl` |
+| `substitute` + `emit` | 300 | 替换 + 成文（词法在 `op`） |
+| `cache` | 140 | 指纹 + 锁 + 落盘 + LRU 回收 |
 | `probe` | 120 | 三个后端 + 假指纹注入 |
-| `plan` | 80 | 只做 roofline 估算 |
-| `host` | 120 | partition + 所有权 + 网格推导 |
-| `ref` | 240 | 标量参考 + 对拍框架 |
-| `test` | 180 | 见证 + 对拍用例 |
-| `cli` | 100 | `doctor` / `verify` / `bench` |
-| **合计** | **2,760** | |
+| `plan` | 80 | 取声明的 tile + roofline 估算 |
+| `ref` | 60 | 对拍口径（相对误差 + 阈值） |
+| `test` | 180 | 见证 + 对拍用例（执行器在 `llm-audit`） |
+| **合计** | **2,540** | 不含 `audit`：它现在是一门独立成员，见下 |
+
+> **审计已移出内核（2026-11-12）**：`doctor` / `verify` / `bench` 的编排（形状矩阵、重复次数、工作目录命名、达成率口径）与见证执行器搬到 `crates/audit`（包名 `llm-audit`，L3 的第二名成员），本 crate 只保留机制：`build`（⑤ 的指纹 / 锁 / 拼接 / 落盘）与 `backend`（编译执行）。原先 `audit = 100` 那行预算随代码一起迁出，P0 合计从 2,640 降到 2,540。实测（不含测试）：本 crate 2,628 行——`cap` 391、`backend` 336、`build` 351、`builtin` 247、`cache` 699、`emit` + `substitute` 205、`plan` 129、`probe` 77、`reference` 39、`space` 87、`lib` 67；`llm-audit` 1,184 行（`lib` 859 + `witness` 325）。`cache` 从预算的 140 涨到 699，涨的是**存量管理**——扫描、状态判定、LRU 回收、残留清理、`--why` 的逐字段比较：§10.3 一直许诺这些事，只是预算表当初没把它们算进去。拆分的判据不是行数，而是"改命令策略要不要动内核"：此前 `audit` 一个文件 806 行、八倍于它自己的预算，说明预算表量错了对象——命令策略本来就不是内核的一部分。
 
 ### 13.2 P3（12 算子 / 8 设备 / 16 原语 / 4 调度）
 
@@ -655,27 +812,33 @@ bw        = { value = 160.0e9,  src = "2*mem_clock*bus_bytes" }
 |---|---:|---:|---|
 | `prof` | 240 | 600 | 8 份档案 + 证据台账生成 + 指纹家族 |
 | `cap` | 280 | 520 | 参数化区间匹配 + 三档诊断 + 闭集变更检查 |
-| `layout` | 200 | 460 | 4 构造子全组合 + 正规形 + repack 计费 |
+| `layout`（在 `op`） | 200 | 460 | 4 构造子全组合 + 正规形 + repack 计费 |
 | `space` | 120 | 240 | 昇腾 L1 / Metal threadgroup / CPU 栈 |
 | `prim` | 240 | 1,240 | 16 原语 × ≤8 设备，约 128 段 × 9.7 行 |
-| `sch` | 140 | 420 | S3 warp 专门化 + S4 ping-pong |
-| `ops` | 260 | 2,640 | 12 算子 × 220 行 |
-| `lower` | 300 | 680 | 语法检查 + 位置信息 + 多 emit |
-| `cache` | 140 | 300 | GC + 并发 + 迁移 |
+| `sch`（在 `op`） | 140 | 420 | S3 warp 专门化 + S4 ping-pong |
+| `ops` | 440 | 3,300 | 12 算子 × 220 行（含各自的代价/样本/参考） |
+| `substitute` + `emit` | 300 | 680 | 语法检查 + 位置信息 + 多 emit |
+| `cache` | 140 | 300 | 跨版本迁移 + 更细的占用统计 |
 | `probe` | 120 | 280 | 8 后端 + 系统版本约束（Metal 需 macOS 版本） |
 | `plan` | 80 | 380 | 形状桶 + 3 候选微基准 + 失效 |
-| `host` | 120 | 260 | async + 图捕获 + 错误传播 |
-| `ref` | 240 | 820 | 12 份标量参考 + 阈值分档 + 随机形状 |
+| `ref` | 60 | 160 | 对拍口径：阈值分档 + 随机形状 |
 | `test` | 180 | 700 | 见证矩阵 + 假指纹回归 |
-| `cli` | 100 | 240 | `doctor --why` + `cache gc` + `verify --emit-ledger` |
-| **合计** | **2,760** | **9,780** | |
+| `audit`（在 `llm-audit`） | 100 | 240 | `doctor` / `verify` / `bench` 的结构化报告 + `--emit-ledger` 台账（排版在驱动方） |
+| **合计** | **2,540 + 100**（`audit` 在 `llm-audit`） | **9,520** | |
 
-### 13.3 为什么这 9,780 不是幻觉：三笔消元
+`ops` 一行的量计在预算里，但它现在不在 `cutile`：声明、模板与算子语义（代价/样本/标量参考）都住在
+`crates/op`，连同**解析本身**（`op::decl`）与三张闭集（`op::layout` / `op::sch` / `op::tpl`）；
+`cutile` 侧只剩装载与交叉校验（`builtin.rs`）、拼接与 emit，以及对拍口径。P3 增加算子
+只增数据与一页语义，不动机制。
+`prof` 同理：档案（`devices/*.toml`）住在 `crates/prof`，`cutile` 侧只剩 `prof.rs` 的 schema 与校验，
+新增设备同样是"只加数据"。
+
+### 13.3 为什么这 9,520 不是幻觉：三笔消元
 
 | 消元 | 朴素做法 | cutile | 比值 |
 |---|---|---|---|
 | **笛卡尔积** | 12 算子 × 8 设备 × 191 行手写内核 = 18,240 行（191 取自旧工程 `cuda.c` 4,778 行 / 25 类内核） | 声明 2,640 + 片段 1,240 = 3,880 行 | **4.7×** |
-| **布局代数** | CubeCL `cubecl-tile/{layout,space,stage}` 16,666 行（唯一可核实的口径；TileLang 对应层只有 3,520 行，其余在 C++ 侧） | 460 行闭集 + 3 种合法动作 | 按 CubeCL 口径 36× |
+| **布局代数** | CubeCL `cubecl-tile/{layout,space,stage}` 16,666 行（唯一可核实的口径；TileLang 对应层只有 3,520 行，其余在 C++ 侧） | 460 行闭集 + 2 种合法动作（改模板或失败） | 按 CubeCL 口径 36× |
 | **变体组合** | 每设备每形状一份手调参数 | 8 变体上限 + plan 表 + 3 候选搜索 | 搜索空间从 `2ⁿ` 降到 ≤ 24 |
 
 并且：**新增一格 `(算子, 设备)` 的边际成本是 0 行**——只要骨架与原语都在闭集内。
@@ -688,8 +851,8 @@ bw        = { value = 160.0e9,  src = "2*mem_clock*bus_bytes" }
 
 | 指标 | cutile | CubeCL | CuTile Rust | TileLang | 旧工程 llm.u |
 |---|---:|---:|---:|---:|---:|
-| 可比层行数 | **9,780** | 301,766 | 75,732 | 317,510 | 43,936 |
-| 相对 cutile | 1.0× | 30.9× | 7.7× | 32.5× | 4.5× |
+| 可比层行数 | **9,520** | 301,766 | 75,732 | 317,510 | 43,936 |
+| 相对 cutile | 1.0× | 31.7× | 8.0× | 33.4× | 4.6× |
 | 覆盖设备 | **8** | 7 | 1 | 6（目录数，验证深度不一） | 7（真机台账） |
 | 新增一台设备 | ≤ 300 行 | 3,134–11,925 行（实测每后端 src） | 不支持 | 需改 C++ codegen | 2–4k Rust + 0.2–4.8k C |
 | 新增一个算子 | ≤ 270 行，0 行设备代码 | 100–300 行 + 各后端验证 | 50–150 行（仅 NVIDIA） | 30–80 行（限形状/后端） | 骨架 + 每后端约 191 行 C |
@@ -699,7 +862,7 @@ bw        = { value = 160.0e9,  src = "2*mem_clock*bus_bytes" }
 
 | 属性 | cutile | CubeCL | CuTile Rust | TileLang | llm.u |
 |---|---|---|---|---|---|
-| 布局是否可解释 | **构建期契约 + 显式 repack 计费** | IR pass，需读 IR | 框架接管 | pass 推导，留逃生舱 | 手写死 |
+| 布局是否可解释 | **闭集 + 构建期校验（bank 粒度 / 搬运量 vs 容量）** | IR pass，需读 IR | 框架接管 | pass 推导，留逃生舱 | 手写死 |
 | 缺能力时行为 | **构建期失败 + 最近可行解** | 编译错 | Tile IR 版本错 | pass 失败 | 启动期拒绝（部分格子仅编译） |
 | 并发安全 | 宿主 `partition` 借用检查 | 用户自管 | **借用检查（最强）** | 无 | 用户自管 |
 | 能力声明可信度 | **见证 + L0–L3，未验证视为不具备** | 无矩阵 | 架构表硬编码 | 隐式 | 人填台账（有"仅编译"格） |
@@ -741,14 +904,17 @@ bw        = { value = 160.0e9,  src = "2*mem_clock*bus_bytes" }
 | 片段 > 400 行 | 原语粒度错，先合并原语 |
 | 某设备 < 70% | 该设备承认需要特化代码，把它从"配置化"降级为"手写 + 片段复用" |
 | 协商命中率 < 3/3 | `needs` 声明粒度错（这条是 v0.3 保留下来最关键的判据） |
-| 布局校验出现 > 2 次不可重组 | 闭集取错，需重新选 4 个构造子 |
+| 某设备的声明超出档案容量或 bank 数 | 闭集/档案取错，或声明写错：先看诊断里的 need/have 差异 |
 
-执行命令（P0 交付物，已在 `crates/cutile` 实现；`verify` 在缺设备时返回非零码）：
+执行命令（P0 交付物：语法在 `llm-cli::cutile`，计算在 `llm-audit`，排版在根包的
+`src/bin/cutile.rs`；`verify` 在缺设备时返回非零码）：
 
 ```bash
-cargo run -p cutile -- doctor  --op gemv_i4 --device auto
-cargo run -p cutile -- verify  --op gemv_i4 --devices cpu,opencl,cuda
-cargo run -p cutile -- bench   --op gemv_i4 --shape 4096x4096 --repeat 50
+cargo run --bin cutile -- doctor   --op gemv_i4 --device auto
+cargo run --bin cutile -- doctor   --op gemv_i4 --device cpu --why 83a3ecdb31cd1225
+cargo run --bin cutile -- verify   --op gemv_i4 --devices cpu,opencl,cuda
+cargo run --bin cutile -- bench    --op gemv_i4 --repeat 50   # 形状缺省取算子的生产形状
+cargo run --bin cutile -- cache gc --limit 1073741824         # 缺省上限 2 GiB
 ```
 
 ---
@@ -758,7 +924,7 @@ cargo run -p cutile -- bench   --op gemv_i4 --shape 4096x4096 --repeat 50
 | 阶段 | 交付 | 判据 |
 |---|---|---|
 | P0 | Go/No-Go 报告 | §16 五项判据 |
-| P1 | `prof` + `cap` + `layout` + `prim`(3 设备) + `lower` + `host`，跑通 1 算子 | 同一份 `.k` 三设备可运行；与 `ref` 对拍通过；协商命中；布局校验零失败 |
+| P1 | `prof` + `cap` + `layout` + `prim`(3 设备) + `substitute`/`emit`，跑通 1 算子 | 同一份 `.k` 三设备可运行；与 `ref` 对拍通过；协商命中；布局校验零失败 |
 | P2 | `ops` 扩到 6 + `plan` + autotune + S3 | 形状变化自动换变体，达成率差 < 5%；`doctor --why` 可解释每次选择 |
 | P3 | 设备扩到 8（含昇腾/MUSA/可移植 GPU）+ `ops` 扩到 12 + S4 | 新增设备 ≤ 300 行；总量 ≤ 10,000；台账 L2 覆盖 ≥ 90% 的 `provides` |
 | P4 | emit 切换验证（cuda↔ptx / hip↔opencl / wgsl↔spirv） | 换 emit 不改模板、不改算子声明 |
@@ -770,10 +936,10 @@ cargo run -p cutile -- bench   --op gemv_i4 --shape 4096x4096 --repeat 50
 | # | 待决 | 影响 | 建议决策点 |
 |---|---|---|---|
 | D1 | 12 个算子的最终清单（本文 §4 已给候选：`tok_embed` / `rms_norm_res` / `rope` / `gemv_i4` / `gemm_bf16` / `mlp_gate_up` / `attn_decode` / `attn_prefill` / `kv_store` / `ssm_scan` / `sampler` / `adamw`） | 决定 `ops/` 是 2,640 行还是更多 | P1 开始前定稿；超出 12 个必须按 §13.2 重算并重定闭集 |
-| D2 | 布局闭集取哪 4 个构造子（本文取 row/col/swz/pad） | 决定 `@repack` 频率 | P1 用 row + swz 两种跑通，P2 补 col/pad |
-| D3 | `cutile` 是否直接依赖 `syn`/`serde`/`toml` | 影响供应链治理与 `lower` 行数 | P0 用手写解析 + 手写序列化，证明可行性后再评估 |
+| D2 | 布局闭集取哪 4 个构造子（本文取 row/col/swz/pad） | 决定是否需要 `@repack` | P1 用 row + swz 两种跑通，P2 补 col/pad；片段能声明布局之后再补 `@repack` 计费 |
+| D3 | `cutile` 是否直接依赖 `syn`/`serde`/`toml` | 影响供应链治理与 `substitute`/`emit` 行数 | P0 用手写解析 + 手写序列化，证明可行性后再评估 |
 | D4 | 昇腾与可移植 GPU 的 `provides` 来源 | 只能 L0/L1 | 先标 `grade = L1`，协商自动降级；有真机再补见证 |
-| D5 | 与 `llm`（根包）的接口形态 | 决定 `host` 是否需要对外暴露 | P1 前定：`llm` 通过 `cutile::host::launch` 调用，还是只共享 `plan` 表 |
+| D5 | 与 `llm`（根包）的接口形态 | 决定内核是否需要跑在宿主进程里 | P1 前定：`llm` 通过子进程执行 `cc` 产物，还是引入真机驱动并对外暴露 launch |
 | D6 | 是否保留 `tess` 代号 | 命名一致性 | 建议弃用；本文起统一为 `cutile DSL` |
 
 ---
@@ -810,14 +976,15 @@ wc -l crates/device/c/*                                                         
 
 | 术语 | 含义 |
 |---|---|
-| 算子（op） | 声明层的最小单位，对应 `ops/<name>.toml` |
+| 算子（op） | 声明层的最小单位，对应 `crates/op/ops/<name>.toml` |
+| 档案（archive） | 档案层的最小单位，对应 `crates/prof/devices/<name>.toml`：一台设备的能力与证据 |
 | 骨架（skeleton） | 算子的结构类别，闭集 5 个；决定用哪个模板基座 |
 | 原语（prim） | 模板唯一可调用的指令级操作，闭集 16 个 |
-| 片段（fragment） | 某原语在某设备上的实现，`prim/<vendor>/<prim>` |
+| 片段（fragment） | 某原语在某设备上的实现，`crates/prim/<vendor>/<prim>.<ext>` |
 | 变体（variant） | 轴取值 + 调度 + 布局的组合，每算子 ≤ 8 |
 | 能力签名 | `(prim, 形状区间, 位集, 存储集, 实现名, 证据等级)` |
 | 见证（witness） | 证明某条 `provides` 为真的一段最小 kernel + 期望值 |
-| 正规形 | 布局的五元组 `(order, shape, stride, swizzle, pad)` |
+| 正规形 | 布局的五元组 `(order, shape, stride, swizzle, pad)`；P0 不实现（构建期没有槽位形状） |
 | 路径（path） | 协商结果：可行的变体 + 调度 |
 | 台账 | 由 `verify` 自动生成的设备能力证据表 |
 
@@ -834,4 +1001,4 @@ wc -l crates/device/c/*                                                         
 | FA-4 的流水与重叠结论 | 《FlashAttention-4: Algorithm and Kernel Pipelining Co-Design for Asymmetric Hardware Scaling》，论文口径，非本项目实测 |
 | 配置驱动 + 能力协商的工程先例 | `/Users/fei/code/llm.u`：`config/device.toml`、`crates/config/src/negotiate.rs`、`docs/capability-matrix.md`、`docs/device-capability-config.md` |
 
-**许可与归属**：本文只借鉴上述实现的机制与公开结论，不复制其源码。若后续片段实现参考了某一具体实现（例如 CubeCL 的 wgmma 序列），必须在 `prim/<vendor>/NOTICE` 中保留原许可与出处；本项目自身维持 `MIT OR Apache-2.0` 双许可。
+**许可与归属**：本文只借鉴上述实现的机制与公开结论，不复制其源码。若后续片段实现参考了某一具体实现（例如 CubeCL 的 wgmma 序列），必须在 `crates/prim/<vendor>/NOTICE` 中保留原许可与出处；本项目自身维持 `MIT OR Apache-2.0` 双许可。

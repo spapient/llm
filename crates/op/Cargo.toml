@@ -1,0 +1,19 @@
+[package]
+name = "llm-op"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Declaration layer: per-operator declarations, templates, their parsing and operator semantics."
+readme = "README.md"
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+einsum = { path = "../einsum", package = "llm-einsum" }
+llm-config = { path = "../config" }
+prof = { path = "../prof", package = "llm-prof" }
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "llm-autograd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Reverse-mode recording: variables, tape nodes and the backward order."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[lints]
+workspace = true

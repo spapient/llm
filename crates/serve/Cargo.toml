@@ -1,0 +1,23 @@
+[package]
+name = "llm-serve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Endpoint contract: routes, responses and the request-to-scheduler bridge."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+engine = { path = "../engine", package = "llm-engine" }
+proto = { path = "../proto", package = "llm-proto" }
+tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
+
+[dev-dependencies]
+exec = { path = "../exec", package = "llm-exec" }
+kv = { path = "../kv", package = "llm-kv" }
+
+[lints]
+workspace = true

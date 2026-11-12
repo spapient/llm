@@ -1,0 +1,16 @@
+[package]
+name = "llm-fuzz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Fuzz contract: deterministic seeds, target trait and the invariants a parser must keep."
+publish = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+
+[lints]
+workspace = true

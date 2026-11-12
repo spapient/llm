@@ -1,0 +1,19 @@
+[package]
+name = "llm-nn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Layer definitions (declarations, validated op references) and their performance floors."
+publish = false
+
+[dependencies]
+annotation = { path = "../annotation", package = "llm-annotation" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+op = { path = "../op", package = "llm-op" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[lints]
+workspace = true
