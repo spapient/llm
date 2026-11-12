@@ -12,7 +12,7 @@
 //! cargo run --bin cutile -- cache gc --limit 1073741824
 //! ```
 
-use audit::{self, Bench, Doctor, Fragment, Verdict, Verified};
+use audit::{self, Bench, Doctor, Fragment, Peak, Performance, Verdict, Verified};
 use cli::cutile::CutileCommand;
 use config::{Cutile, Settings};
 use cutile::builtin::Catalogue;
@@ -145,7 +145,7 @@ fn doctor(
     .row(
         "device",
         format!(
-            "{}({}) emit={} tool={} 档案 {} 实测 {}",
+            "{}({}) emit={} tool={} 档案 {} 实测 {} 参数 {}",
             report.device.vendor,
             report.device.id,
             report.device.emit,
@@ -155,7 +155,8 @@ fn doctor(
                 .device
                 .toolchain
                 .as_deref()
-                .unwrap_or("未知（没有编译器，只能复用已落盘产物）")
+                .unwrap_or("未知（没有编译器，只能复用已落盘产物）"),
+            params_note(&report.device.flags)
         ),
     )
     .row(
@@ -193,8 +194,10 @@ fn doctor(
     out.push_str("\n[证据] 依据 ");
     out.push_str(&report.evidence.basis.to_string());
     out.push_str(&format!(
-        " | 设备执行 {} 条 | 本机自检 {} 条\n",
-        report.evidence.device, report.evidence.host
+        " | 设备执行 {} | 本机自检 {} | 语言门 {}\n",
+        counted(report.evidence.device, &report.evidence.device_params),
+        counted(report.evidence.host, &report.evidence.host_params),
+        report.evidence.language
     ));
     if let Some(error) = &report.evidence.failure {
         out.push_str(&format!("  见证不成立：{error}\n"));
@@ -443,6 +446,61 @@ fn fragment_note(fragment: Fragment) -> String {
     )
 }
 
+/// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。
+///
+/// 参数是能力的第三个维度（片段、工具链、参数）：同一份片段换一组参数就是另一次代码生成，
+/// 所以结论行、证据行与产物行都把它写出来，而不是只留一个哈希。
+fn params_note(flags: &str) -> String {
+    if flags.is_empty() {
+        "无".to_string()
+    } else {
+        flags.to_string()
+    }
+}
+
+/// 一条"跑了几条、用什么参数跑的"：零条时不带参数，免得给一个没有内容的括号。
+fn counted(count: usize, flags: &str) -> String {
+    if count == 0 {
+        "0 条".to_string()
+    } else {
+        format!("{count} 条（{}）", params_note(flags))
+    }
+}
+
+/// §16 的性能判据：每次都给一行结论。
+///
+/// 判定在 `audit::Performance`（达成率连同尺子一起给），这里只负责把每种结论翻译成一句话。
+/// 口径无效或没声明峰值时也要打印：一条只在失败时出声的判据，读者会把“什么都没说”当成通过。
+fn performance_note(performance: Performance, peak: Option<&Peak>) -> String {
+    let ratio = performance.ratio.map_or_else(
+        || "未测到".to_string(),
+        |ratio| format!("{:.1}%", ratio * 100.0),
+    );
+    let ruler = peak.map_or_else(
+        || "档案没有声明带宽峰值".to_string(),
+        |peak| format!("峰值 {:.1} GB/s，口径：{}", peak.value / 1e9, peak.src),
+    );
+    match performance.verdict {
+        Verdict::OverPeak => format!(
+            "  ⚠ 口径无效：达成率 {ratio}（{ruler}）超过 100%，数据在缓存中；\
+             这个数不参与 §16 判定\n"
+        ),
+        Verdict::CacheResident => format!(
+            "  ⚠ 口径无效：达成率 {ratio}（{ruler}）——工作集装得进 FAST 容量，\
+             测到的是缓存带宽；这个数不参与 §16 判定\n"
+        ),
+        Verdict::Reached => format!(
+            "  带宽达成率 {ratio}（{ruler}）→ 达到 70% 门槛\
+             （尺子是 roofline：实测 ÷ 档案峰值，不是“相对原生库的 85%”）\n"
+        ),
+        Verdict::Below => format!(
+            "  带宽达成率 {ratio}（{ruler}）→ 低于 70% 门槛：\
+             按 §16 这台设备承认需要特化代码（手写 + 片段复用）\n"
+        ),
+        Verdict::Unknown => format!("  ⚠ 未测量：{ruler}；§16 的性能判据不参与 Go/No-Go\n"),
+    }
+}
+
 /// 一台设备的 L2 结论行。
 ///
 /// 形状矩阵与见证条数必须打印：它们才是"这条 L2 是跑出来的"的证据，而不是档案里的自述。
@@ -484,7 +542,7 @@ fn passed_line(verified: &Verified) -> String {
         format!("，自检 {} 条", verified.self_checked)
     };
     format!(
-        "  {}({}): ✓ L2 | variant {} | tile {} | 形状 {} | 见证 {} 条{checked} | max_rel_err {:.3e} | {} | 产物 {artifacts} 份（复用 {reused}，{compiler}）{toolchain} | key {}\n",
+        "  {}({}): ✓ L2 | variant {} | tile {} | 形状 {} | 见证 {} 条{checked} | max_rel_err {:.3e} | {} | 产物 {artifacts} 份（复用 {reused}，{compiler}，{}）{toolchain} | key {}\n",
         verified.vendor,
         verified.id,
         verified.variant,
@@ -493,6 +551,7 @@ fn passed_line(verified: &Verified) -> String {
         verified.witnesses,
         verified.max_rel_err,
         fragment_note(verified.fragment),
+        params_note(&verified.flags),
         verified.key
     )
 }
@@ -582,46 +641,15 @@ fn bench(
             "超出容量"
         }
     ));
-    if let Some(peak) = &measured.peak
-        && let Some(ratio) = measured.measured.bandwidth_ratio
-    {
-        let peak_gb_s = peak.value / 1e9;
-        match measured.verdict() {
-            Verdict::OverPeak => out.push_str(&format!(
-                "  ⚠ 口径无效：实测 {:.1} GB/s 超过档案峰值 {:.1} GB/s（{:.0}%），数据在缓存中；\
-                 这个达成率不参与 L3 判定\n",
-                measured.measured.gb_s,
-                peak_gb_s,
-                ratio * 100.0
-            )),
-            Verdict::CacheResident => out.push_str(&format!(
-                "  ⚠ 口径无效：工作集 {} ≤ FAST {}，数据在缓存中，测到的是缓存带宽；\
-                 与档案的主存峰值 {:.1} GB/s 不可比（实测 {:.0}%）\n",
-                human_bytes(measured.working_set),
-                human_bytes(measured.fast_bytes),
-                peak_gb_s,
-                ratio * 100.0
-            )),
-            Verdict::Reached | Verdict::Below => {
-                out.push_str(&format!(
-                    "  带宽达成率 {:.1}%（峰值 {:.1} GB/s，口径：{}）\n",
-                    ratio * 100.0,
-                    peak_gb_s,
-                    peak.src
-                ));
-                if measured.verdict() == Verdict::Below {
-                    out.push_str(
-                        "  ⚠ 低于 L3 门槛（70%）：P0 的 CPU 片段是标量顺序实现，未做向量化/分块\n",
-                    );
-                }
-            }
-            Verdict::Unknown => {}
-        }
-    }
+    out.push_str(&performance_note(
+        measured.performance(),
+        measured.peak.as_ref(),
+    ));
     out.push_str(&format!(
-        "  产物  {}（{}：{}）\n",
+        "  产物  {}（{} / {}：{}）\n",
         measured.artifact.key.hex(),
         measured.artifact.key.tool,
+        params_note(&measured.flags),
         if measured.artifact.reused {
             format!("复用，未调用编译器 | {}", measured.artifact.path.display())
         } else {
@@ -671,6 +699,35 @@ mod tests {
     fn settings() -> Settings<Cutile> {
         let roots = config::Roots::new(std::env::temp_dir().join("cutile-driver-tests"));
         Settings::<Cutile>::defaults(&roots)
+    }
+
+    /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。
+    #[test]
+    fn the_performance_line_is_printed_even_when_nothing_was_measured() {
+        let peak = Peak {
+            value: 68.0e9,
+            src: "2*8*2666e6".to_string(),
+        };
+
+        let reached = performance_note(Performance::new(Some(0.72), false), Some(&peak));
+        assert!(reached.contains("72.0%"), "{reached}");
+        assert!(reached.contains("达到 70% 门槛"), "{reached}");
+        assert!(reached.contains("不是“相对原生库的 85%”"), "{reached}");
+
+        let below = performance_note(Performance::new(Some(0.0069), false), Some(&peak));
+        assert!(below.contains("0.7%"), "{below}");
+        assert!(below.contains("低于 70% 门槛"), "{below}");
+        assert!(below.contains("特化代码"), "{below}");
+
+        let cached = performance_note(Performance::new(Some(0.19), true), Some(&peak));
+        assert!(cached.contains("口径无效"), "{cached}");
+        assert!(cached.contains("不参与 §16 判定"), "{cached}");
+
+        // 没有峰值：判据没有尺子，仍要说清“未测量”，而不是静默通过。
+        let unknown = performance_note(Performance::new(None, false), None);
+        assert!(unknown.contains("未测量"), "{unknown}");
+        assert!(unknown.contains("不参与 Go/No-Go"), "{unknown}");
+        assert!(!unknown.contains("门槛"), "{unknown}");
     }
 
     #[test]
@@ -776,6 +833,7 @@ mod tests {
             tool_ver: profile.meta.tool_ver.clone(),
             toolchain: Some("cc@21.0.0".to_string()),
             toolchain_agrees: true,
+            flags: "-O3".to_string(),
             key: "0".to_string(),
             artifacts: Vec::new(),
         };

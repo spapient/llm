@@ -153,9 +153,17 @@ pub fn encode_prompt(
 
 /// 尝试把一个序列准入调度器，并把结果翻译成响应。
 ///
-/// 两种"拒绝"必须分成两个状态码：**现在满**（页被别的序列占着）是可重试的 503，客户端等一会儿
-/// 再来即可；**永远装不下**（[`engine::Scheduler::fits`] 为假，即最坏情况的页数超过整个页池）
-/// 重试多少次都一样，只有改请求（调小 `max_new`）才有用，因此是 400。
+/// 三种结局必须是三个不同的东西，混在一起就会让客户端看不到"是我写错了"：
+///
+/// - **进去**：200 + 序列号；
+/// - **现在满**（页被别的序列占着）：可重试的 503，客户端等一会儿再来即可；
+/// - **永远装不下**（[`engine::Scheduler::fits()`] 为假，即最坏情况的页数超过整个页池）或
+///   **请求自身不成立**（[`engine::Scheduler::admit`] 报 `invalid`：id 已在批里、序列已结束、
+///   页宽与调度器不一致）：重试多少次都一样，只有改请求才有用，因此是 400。
+///
+/// 后两类都必须落成 [`Response`] 而不是 `Err`：端点契约里 `Err` 意味着"服务端自己出错了"，
+/// 会被传输层变成 5xx 或直接断连接——客户端于是永远读不到"你的 id 重了"这类信息。只有真正的
+/// 服务端故障（`internal` / `io` 等）才继续上抛，状态码与诊断类别因此不会互相打架。
 pub fn admit(scheduler: &mut engine::Scheduler, sequence: &engine::Sequence) -> Result<Response> {
     if !scheduler.fits(sequence) {
         return Ok(Response::error(
@@ -163,13 +171,18 @@ pub fn admit(scheduler: &mut engine::Scheduler, sequence: &engine::Sequence) -> 
             "这条请求的最坏长度超过整个 KV 页池：调小 max_new 或加大页池",
         ));
     }
-    if scheduler.admit(sequence)? {
-        Ok(Response::ok(sequence.id().to_le_bytes().to_vec()))
-    } else {
-        Ok(Response::error(
+    match scheduler.admit(sequence) {
+        Ok(true) => Ok(Response::ok(sequence.id().to_le_bytes().to_vec())),
+        Ok(false) => Ok(Response::error(
             Status::Unavailable,
             "KV 页不足，请稍后重试",
-        ))
+        )),
+        // `invalid` 全是"这次请求自己不成立"，改什么由客户端决定；`internal` 之类才是本侧的 bug。
+        Err(error) if error.code() == Code::Invalid => Ok(Response::error(
+            Status::BadRequest,
+            &format!("请求不合法：{error}"),
+        )),
+        Err(error) => Err(error),
     }
 }
 
@@ -249,6 +262,54 @@ mod tests {
             "装不下的请求连页都不该占（否则每次重试都白占一页）"
         );
         assert_eq!(scheduler.cache().in_use(), 0);
+    }
+
+    /// 请求自己不成立不能变成传输层错误：客户端看不到 5xx 之外的任何理由。
+    #[test]
+    fn a_request_that_cannot_enter_at_all_is_a_bad_request_not_an_error() {
+        let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+        let small = Sequence::new(1, 4, 2, 16, exec::Stream::new(0)).expect("序列");
+        assert_eq!(
+            admit(&mut scheduler, &small).expect("准入").status(),
+            Status::Ok
+        );
+
+        // 同一个 id 再来一次：`admit` 报 `invalid`，而那是客户端的事（换个 id 就行）。
+        let duplicate = admit(&mut scheduler, &small).expect("拒绝不是错误");
+        assert_eq!(duplicate.status().code(), 400);
+        assert_eq!(scheduler.running(), 1, "重复的那次不得多占一个名额");
+        assert!(
+            String::from_utf8_lossy(duplicate.envelope().payload()).contains("已经在批里"),
+            "400 的载荷要说清哪里不合法"
+        );
+
+        // 页宽与调度器不一致：同样只能改请求，不能靠重试。
+        let wrong_page = Sequence::new(2, 4, 2, 8, exec::Stream::new(0)).expect("序列");
+        let mismatched = admit(&mut scheduler, &wrong_page).expect("拒绝不是错误");
+        assert_eq!(mismatched.status().code(), 400);
+        assert_eq!(scheduler.running(), 1);
+    }
+
+    /// 已结束的序列不该再进批（占一页白等）：这是请求状态错了，不是服务端坏了。
+    #[test]
+    fn a_finished_sequence_is_a_bad_request_rather_than_a_server_failure() {
+        let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+        let mut sequence = Sequence::new(5, 0, 1, 16, exec::Stream::new(0)).expect("序列");
+        assert_eq!(
+            admit(&mut scheduler, &sequence).expect("准入").status(),
+            Status::Ok
+        );
+        scheduler.advance(&mut sequence).expect("推进");
+        assert!(sequence.is_done());
+        assert!(scheduler.finish(5).expect("结束"));
+
+        let response = admit(&mut scheduler, &sequence).expect("拒绝不是错误");
+        assert_eq!(response.status().code(), 400);
+        assert!(
+            String::from_utf8_lossy(response.envelope().payload()).contains("已结束"),
+            "要说清是序列已经结束"
+        );
+        assert_eq!(scheduler.cache().in_use(), 0, "失败的准入不占页");
     }
 
     #[test]

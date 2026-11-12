@@ -35,13 +35,16 @@ pub const USAGE: &str = "\
 
 命令：
   status                 打印各层状态（默认）
+  run    --weights <文件> 用真实权重算一次前向（每条链一层内核）
   verify --op <算子>      校验一个算子的协商与对拍
   bench  --op <算子>      测量一个算子的带宽与达成率
   help                   打印本说明
 
 选项：
   --op <算子>             算子名（`verify` / `bench` 用，缺省为 `gemv_i4`）
-  --weights <文件>        safetensors 权重文件（`status` 用；不给则只用声明层）
+  --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
+  --input <a,b,c>         `run` 的输入向量（逗号分隔 f32；不给则用确定性图案）
+  --device <设备>         `run` 的设备名（缺省 `auto`，按指纹选）
   -h, --help             等价于 `help`
 ";
 
@@ -63,6 +66,15 @@ pub enum Command {
         /// 算子名；`None` 表示用命令的默认值。
         op: Option<String>,
     },
+    /// 用真实权重算一次。
+    Run {
+        /// safetensors 权重文件路径（必需）。
+        weights: String,
+        /// 输入向量（逗号分隔的 f32）；`None` 表示用确定性图案。
+        input: Option<String>,
+        /// 设备名；`None` 表示 `auto`（按指纹选）。
+        device: Option<String>,
+    },
     /// 打印用法。
     Help,
 }
@@ -81,7 +93,7 @@ impl Invocation {
     /// 未知命令、未知选项、缺少取值、重复选项都返回 [`Code::Invalid`]，
     /// 并在消息里给出 [`USAGE`]——错误信息本身就是下一条命令的提示。
     pub fn parse(args: &[String]) -> Result<Self> {
-        let mut words = args.iter().map(String::as_str);
+        let mut words = args.iter().map(String::as_str).peekable();
         let command = match words.next() {
             None | Some("status") => Command::Status {
                 weights: parse_weights(&mut words)?,
@@ -93,6 +105,36 @@ impl Invocation {
             Some("bench") => Command::Bench {
                 op: parse_op(&mut words)?,
             },
+            Some("run") => {
+                // `run` 有三个带取值的选项，顺序自由：循环读到空为止，未知选项立刻报错
+                // （猜一个默认值只会把"写错了"变成"跑出一份别的结果"）。
+                let mut weights = None;
+                let mut input = None;
+                let mut device = None;
+                while let Some(next) = words.peek().copied() {
+                    match next {
+                        "--weights" => weights = parse_value(&mut words, "--weights", "文件")?,
+                        "--input" => input = parse_value(&mut words, "--input", "数值列表")?,
+                        "--device" => device = parse_value(&mut words, "--device", "设备")?,
+                        other => {
+                            return Err(Error::new(
+                                Code::Invalid,
+                                format!("`run` 不接受 `{other}`"),
+                            )
+                            .with("cli::Invocation::parse"));
+                        }
+                    }
+                }
+                let weights = weights.ok_or_else(|| {
+                    Error::new(Code::Invalid, "`run` 需要 `--weights <文件>`")
+                        .with("cli::Invocation::parse")
+                })?;
+                Command::Run {
+                    weights,
+                    input,
+                    device,
+                }
+            }
             Some(other) => {
                 return Err(Error::new(Code::Invalid, format!("未知命令 `{other}`"))
                     .with("cli::Invocation::parse"));
@@ -186,6 +228,34 @@ mod tests {
         let wrong = Invocation::parse(&args(&["status", "--op", "gemv_i4"]))
             .expect_err("status 只接受 --weights");
         assert!(wrong.to_string().contains("--weights"), "{wrong}");
+    }
+
+    #[test]
+    fn run_carries_its_options_in_any_order_and_refuses_to_guess_the_file() {
+        assert_eq!(
+            Invocation::parse(&args(&[
+                "run",
+                "--device",
+                "cpu",
+                "--weights",
+                "model.safetensors",
+                "--input",
+                "1,2,3",
+            ]))
+            .expect("合法")
+            .command(),
+            &Command::Run {
+                weights: "model.safetensors".to_string(),
+                input: Some("1,2,3".to_string()),
+                device: Some("cpu".to_string()),
+            }
+        );
+        let missing =
+            Invocation::parse(&args(&["run", "--input", "1,2"])).expect_err("缺 --weights");
+        assert!(missing.to_string().contains("--weights"), "{missing}");
+        let unknown = Invocation::parse(&args(&["run", "--weights", "m", "--op", "gemv_i4"]))
+            .expect_err("未知选项");
+        assert!(unknown.to_string().contains("--op"), "{unknown}");
     }
 
     #[test]

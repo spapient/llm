@@ -108,13 +108,18 @@ mod tests {
         assert_eq!(error.code(), Code::Invalid);
     }
 
+    /// 截断的多字节序列要让调用方看得到原因（契约第三条：拒绝必须有话说）。
     #[test]
-    fn an_incomplete_utf8_sequence_is_rejected_silently() {
+    fn an_incomplete_utf8_sequence_is_refused_with_a_message() {
         let tokens = Bytes.encode("中").expect("编码");
         let truncated = &tokens[..1];
         let error = Bytes
             .decode(truncated)
             .expect_err("截断的多字节序列必须报错");
         assert_eq!(error.code(), Code::Invalid);
+        assert!(
+            !error.message().trim().is_empty(),
+            "拒绝不能说空话：{error}"
+        );
     }
 }

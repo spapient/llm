@@ -9,14 +9,18 @@
 //! // q_proj.weight  [out, in]  U4（4 位打包）   +  q_proj.scales [out, in / group]  F16
 //! ```
 //!
-//! `group = in / groups`。这条推断有三条硬约束，缺一条就不是"同一个东西"：
+//! `group = in / groups`。这条推断有两条硬约束，缺一条就不是"同一个东西"：
 //!
 //! 1. 打包权重必须是秩 2，标度必须是秩 2，且两者的输出维相等；
-//! 2. 标度的第二维必须整除输入维（`in % groups == 0`），否则 `group` 不是整数；
-//! 3. 打包权重的字节数必须等于 `out × ceil(in / 2)`——这是"4 位一个元素"的可测量事实。
+//! 2. 标度的第二维必须整除输入维（`in % groups == 0`），否则 `group` 不是整数。
 //!
-//! 第三条是把"这是 4 位打包"从**假设**变成**实测**：int8 逐元素权重的字节数是 `out × in`，
-//! 长度对不上时本层返回 [`None`]，让上层按元素类型自己判断，而不是套一个 4 位的内核上去。
+//! 曾经想要的第三条是"字节数必须等于 `out × ceil(in / 2)`"，但它在本层是**结构性自证**的：
+//! [`Entry`] 的长度由 `shape × dtype` 推出，safetensors 又要求声明区间等于这个乘积，所以任何
+//! 从 [`Header`] 构造出来的条目都自动满足它——在这里再比一次，等于拿一个值与自己比。更要紧的
+//! 是它挡不住真正含糊的那件事：8 位元素类型的第二维究竟是"逐元素 int8 的 `in` 个字节"还是
+//! "两个 nibble 一个字节"，形状上看不出来。本层如实按字节读（宽度翻倍，分组也跟着翻倍），
+//! 由上层拿分组与内核声明的一比：不相等就不计价，而不是套一条用错分组的内核（见
+//! `WeightFormat::operator`）。
 //!
 //! # 三种结局，各有各的理由
 //!
@@ -234,12 +238,12 @@ mod tests {
         Header::new(laid_out, 0).expect("测试夹具的区间合法")
     }
 
-    /// 一个 4 位打包的条目：`[out, in]`，字节数是 `out × ceil(in / 2)`。
+    /// 一个 4 位打包的条目：`[out, in]`，字节数是 `ceil(out × in / 2)`（位数组，按行不补齐）。
     fn packed(name: &str, out: usize, in_features: usize) -> Entry {
         let entry = Entry::new(name, DType::U4, Shape::new([out, in_features]));
         assert_eq!(
             entry.len(),
-            out * in_features.div_ceil(2),
+            (out * in_features).div_ceil(2),
             "夹具自证打包口径"
         );
         entry
@@ -285,6 +289,26 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{scale}` 应被认出"));
             assert_eq!(quantized.group(), 32, "`{scale}`");
         }
+    }
+
+    /// 字节数是结构性的：它由 `shape × dtype` 推出，本层不需要再校验一遍。钉成断言，免得
+    /// 日后有人真去加一条"拿一个值与自己比"的检查，并误以为它在挡 int8 那种歧义。
+    ///
+    /// 宽度为奇数时口径是 `ceil(out × in / 2)`，不是 `out × ceil(in / 2)`：这里把 4 位当作一整块
+    /// 紧贴的位数组，**按行不补齐**。按行补齐的导出格式会与这条不符——那正是另一种打包方案，
+    /// 形状上看不出差异，只能由上层用分组与内核声明去拒。
+    #[test]
+    fn the_packed_byte_count_is_structural_rather_than_checked_here() {
+        for (out, in_features) in [(8, 128), (8, 7), (3, 1)] {
+            let entry = Entry::new("a.weight", DType::U4, Shape::new([out, in_features]));
+            assert_eq!(
+                entry.len(),
+                (out * in_features).div_ceil(2),
+                "{out} × {in_features} 个 4 位元素"
+            );
+        }
+        // 同一个张量用 8 位书写时，字节数恰好是上面那个数（`in` 为偶数时两者一致）。
+        assert_eq!(nibbles("a.weight", 8, 128).len(), 8 * 64);
     }
 
     #[test]
