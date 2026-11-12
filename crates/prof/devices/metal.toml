@@ -1,0 +1,213 @@
+# Apple Metal 档案（P0 只有 L1：见证已写成数据，本机的 Metal 工具链尚未接入 `cutile` 的执行后端）。
+# 保留它是为了让"同一份模板、四台设备"在数据上成立，而不是靠口号：档案、片段与见证三份都是
+# 可装载的真实内容，`doctor` 能协商出变体，`verify` 会因为"只有 C 后端能执行"而明确失败。
+#
+# 指纹按 DESIGN §5.3 的 Apple 行：机器名含 `Apple M`，GPU 核数落在 M 系列的量级（10..80）。
+# 设计表原写的 `os >= 26` 没有进指纹：`cutile::probe` 目前只采集 CPU 的 `arch`/`features`，
+# 尚未采集 `sw_vers`；写一条当前永远无法满足的条件，只会让档案看起来更严格、实际更难命中。
+# 两级存储的物理名是 MSL 的地址空间：GM = `device`，FAST = `threadgroup`，REG = `thread`。
+# 同一原语可以有多条 `provides`：`dot` 的 `simd_dp4a`（i8×4）与 `simd_fma`（标量 f32）是两种
+# 能力，合并成一条会变成少写字段。
+
+[meta]
+vendor   = "metal"
+id       = "m5"
+emit     = "metal"
+tool     = "xcrun metal"
+tool_ver = "32023.922"
+checked  = "2026-11-12"
+
+[fingerprint]
+name       = "contains: Apple M"
+gpu_cores  = "10..80"
+
+[space]
+GM   = "device"
+FAST = "threadgroup"
+REG  = "thread"
+
+[mem]
+# MSL 的 threadgroup 内存上限 32 KiB；Apple GPU 的 threadgroup 内存按 32 个 bank 组织。
+FAST = { bytes = 32768, bank = 32 }
+REG  = { bytes = 65536 }
+
+[simt]
+# `group = 32` 是 simdgroup 的宽度；`groups_max = 32` 是 1024 线程/threadgroup 的 MSL 上限
+# 折算成 simdgroup 批次数（1024 / 32），不是核数。
+group      = 32
+groups_max = 32
+
+[peak]
+# 20 核 × 128 lane × 2 flop × 1.6 GHz（M5 Pro 的 20 核 GPU 口径）。
+# `src` 必须可求值且与 `value` 相等：量纲与含义写在这里，数字只写一次。
+flops_f32 = { value = 8.192e12, src = "20*128*2*1.6e9" }
+# LPDDR5X 256 bit（32 B）× 9600 MT/s。
+bw        = { value = 307.2e9, src = "256/8*9.6e9" }
+
+[compile]
+flags = ["-std=metal3.1"]
+preamble = "#include <metal_stdlib>\nusing namespace metal;"
+
+[[provides]]
+prim    = "dot"
+impl    = "simd_dp4a"
+dt      = ["i8", "i32"]
+space   = ["REG"]
+lanes   = ["4"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_dot_i8", expect = [10.0] }
+
+# P0 模板的 `@dot` 是标量 f32 累加，与上面的整数点积不是同一条指令：单独一条签名。
+[[provides]]
+prim    = "dot"
+impl    = "simd_fma"
+dt      = ["f32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_dot", expect = [70.0] }
+
+[[provides]]
+prim    = "quant"
+impl    = "unpack_i4"
+dt      = ["i4", "f32"]
+space   = ["REG", "GM"]
+group   = ["32"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_quant", expect = [-4.0, 3.5] }
+
+[[provides]]
+prim    = "load"
+impl    = "device_load"
+m       = "<=32768"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_load", expect = [1.0] }
+
+[[provides]]
+prim    = "load_async"
+impl    = "async_threadgroup_copy"
+m       = "<=32768"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM", "FAST"]
+stages  = ["2", "3"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_load_async", expect = [1.0] }
+
+[[provides]]
+prim    = "commit_wait"
+impl    = "async_copy_commit"
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_commit_wait", expect = [0.0] }
+
+[[provides]]
+prim    = "store"
+impl    = "device_store"
+m       = "<=32768"
+dt      = ["f32"]
+space   = ["GM"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_store", expect = [3.25] }
+
+[[provides]]
+prim    = "bar"
+impl    = "simdgroup_barrier"
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_bar", expect = [0.0] }
+
+[[provides]]
+prim    = "cvt"
+impl    = "saturate_convert"
+dt      = ["f32", "i32", "i8"]
+sat     = ["on", "off"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_cvt", expect = [3.0] }
+
+[[provides]]
+prim    = "reduce"
+impl    = "simd_bfly"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_reduce", expect = [7.5] }
+
+[[provides]]
+prim    = "atomic"
+impl    = "atomic_fetch"
+dt      = ["f32"]
+space   = ["GM"]
+op      = ["add", "max"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_atomic", expect = [5.0] }
+
+# ── 闭集的其余六条 ──────────────────────────────────────────────────────────
+# 档案描述的是**设备**，不只是 P0 的 `gemv_i4`：M 系列的 GPU 有 simdgroup 矩阵单元
+# （`simdgroup_matrix`）、lane 内交换/广播/前缀扫描，以及 SFU 的 `exp2`/`rcp`。它们没有片段
+# 文本（P0 模板不调用），所以等级是 L0——"声明了 + 有见证源码"，不是"本机能跑"。
+[[provides]]
+prim     = "mma"
+impl     = "simdgroup_matrix"
+m        = "<=64"
+n        = "<=64"
+k        = "<=64"
+dt       = ["f16", "bf16"]
+space    = ["REG", "FAST"]
+accuracy = ["fp32"]
+grade    = "L0"
+witness  = { file = "metal/witness.metal", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
+
+# `simd_shuffle`：simdgroup 内按 lane 取数，宽度受 `[simt].group = 32` 约束。
+[[provides]]
+prim    = "shuffle"
+impl    = "simd_shuffle"
+m       = "<=32"
+dt      = ["f32", "i32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_shuffle", expect = [4.0, 3.0, 2.0, 1.0] }
+
+[[provides]]
+prim    = "broadcast"
+impl    = "simd_broadcast"
+m       = "<=32"
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_broadcast", expect = [7.0, 7.0, 7.0, 7.0] }
+
+# `simd_prefix_inclusive_sum` 做含前缀和；`max` 前缀走同一条 lane 序列的另一种运算。
+[[provides]]
+prim    = "scan"
+impl    = "simd_prefix_sum"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_scan", expect = [1.0, 3.0, 6.0, 10.0] }
+
+[[provides]]
+prim     = "exp2"
+impl     = "exp2_fast"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "metal/witness.metal", func = "witness_exp2", expect = [8.0, 0.5] }
+
+[[provides]]
+prim     = "rcp"
+impl     = "rcp_fast"
+dt       = ["f32"]
+space    = ["REG"]
+kind     = ["rcp", "rsqrt"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "metal/witness.metal", func = "witness_rcp", expect = [0.25, 0.5] }

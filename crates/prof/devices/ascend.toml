@@ -46,7 +46,7 @@ space   = ["FAST", "REG"]
 group   = ["32"]
 exec    = ["vector"]
 grade   = "L0"
-witness = { file = "ascend/witness.cpp", func = "witness_quant", expect = [-4.0, 3.5] }
+witness = { file = "ascend/witness.cpp", func = "witness_quant_vcvt_pack", expect = [-4.0, 3.5] }
 
 [[provides]]
 prim    = "dot"
@@ -68,7 +68,7 @@ src      = ["GM"]
 dst      = ["FAST"]
 exec     = ["mte"]
 grade    = "L0"
-witness  = { file = "ascend/witness.cpp", func = "witness_load", expect = [1.0] }
+witness  = { file = "ascend/witness.cpp", func = "witness_load_copy_gm_to_l1", expect = [1.0] }
 
 [[provides]]
 prim     = "load_async"
@@ -81,7 +81,7 @@ dst      = ["FAST"]
 stages   = ["2"]
 exec     = ["mte"]
 grade    = "L0"
-witness  = { file = "ascend/witness.cpp", func = "witness_load_async", expect = [1.0] }
+witness  = { file = "ascend/witness.cpp", func = "witness_load_async_copy_gm_to_l1", expect = [1.0] }
 
 [[provides]]
 prim    = "commit_wait"
@@ -150,7 +150,7 @@ space   = ["GM", "FAST", "REG"]
 group   = ["32"]
 exec    = ["scalar"]
 grade   = "L0"
-witness = { file = "ascend/witness.cpp", func = "witness_quant", expect = [-4.0, 3.5] }
+witness = { file = "ascend/witness.cpp", func = "witness_quant_scalar_dequant", expect = [-4.0, 3.5] }
 
 [[provides]]
 prim    = "dot"
@@ -172,7 +172,7 @@ src     = ["GM"]
 dst     = ["GM"]
 exec    = ["scalar"]
 grade   = "L0"
-witness = { file = "ascend/witness.cpp", func = "witness_load", expect = [1.0] }
+witness = { file = "ascend/witness.cpp", func = "witness_load_scalar_copy", expect = [1.0] }
 
 [[provides]]
 prim    = "load_async"
@@ -185,4 +185,74 @@ dst     = ["GM", "FAST"]
 stages  = ["2"]
 exec    = ["scalar"]
 grade   = "L0"
-witness = { file = "ascend/witness.cpp", func = "witness_load_async", expect = [1.0] }
+witness = { file = "ascend/witness.cpp", func = "witness_load_async_scalar_stage", expect = [1.0] }
+
+# ── 闭集的其余六条 ──────────────────────────────────────────────────────────
+# 上面十四条是"P0 模板怎么跑"，这六条是"910b 还有什么"：Cube 的 tile 乘加、vector 的
+# 置换/广播/前缀和与 `vexp`/`vrec`。没有片段文本（P0 模板不调用），等级因此停在 L0；
+# 声明它们的原因是不让"档案声称的算力"与"档案声明的能力"对不上。
+[[provides]]
+prim     = "mma"
+impl     = "mmad_tile"
+m        = "<=256"
+n        = "<=256"
+k        = "<=256"
+dt       = ["f16", "bf16"]
+space    = ["FAST", "REG"]
+exec     = ["cube"]
+accuracy = ["fp32"]
+grade    = "L0"
+witness  = { file = "ascend/witness.cpp", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
+
+[[provides]]
+prim    = "shuffle"
+impl    = "vgather"
+m       = "<=256"
+dt      = ["f16", "f32"]
+space   = ["FAST", "REG"]
+lanes   = ["1"]
+exec    = ["vector"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_shuffle", expect = [4.0, 3.0, 2.0, 1.0] }
+
+[[provides]]
+prim    = "broadcast"
+impl    = "vbroadcast"
+m       = "<=256"
+dt      = ["f16", "f32"]
+space   = ["FAST", "REG"]
+exec    = ["vector"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_broadcast", expect = [7.0, 7.0, 7.0, 7.0] }
+
+[[provides]]
+prim    = "scan"
+impl    = "vcumsum"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f16", "f32"]
+space   = ["FAST", "REG"]
+exec    = ["vector"]
+grade   = "L0"
+witness = { file = "ascend/witness.cpp", func = "witness_scan", expect = [1.0, 3.0, 6.0, 10.0] }
+
+[[provides]]
+prim     = "exp2"
+impl     = "vexp"
+dt       = ["f16", "f32"]
+space    = ["FAST", "REG"]
+exec     = ["vector"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "ascend/witness.cpp", func = "witness_exp2", expect = [8.0, 0.5] }
+
+[[provides]]
+prim     = "rcp"
+impl     = "vrec"
+dt       = ["f16", "f32"]
+space    = ["FAST", "REG"]
+exec     = ["vector"]
+kind     = ["rcp", "rsqrt"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "ascend/witness.cpp", func = "witness_rcp", expect = [0.25, 0.5] }

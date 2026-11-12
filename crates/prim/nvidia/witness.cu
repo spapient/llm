@@ -7,6 +7,12 @@
  * 这些函数是**证据**而不是片段：不参与 `@prim` 拼接，也不进 kernel。
  * 本机没有 CUDA 设备，P0 的见证执行器只执行 `emit = c` 的档案，所以下面的
  * 等级仍是 L1——文件先把"证据是什么"写成数据，真机与工具链到位后再执行。
+ *
+ * 一条签名一个函数：见证回答"这条签名写的是什么算法"，两条签名共用一份见证时，
+ * 执行通过的结论无法归属到哪一条（DESIGN §11.3）。
+ *
+ * 末尾六条是 P0 模板不用、但 sm100 确实具备的能力（张量核、lane 交换/广播/扫描、
+ * SFU 的 `ex2`/`rcp`）。它们的等级是 L0：有见证源码，没有片段文本，也没有真机执行。
  */
 
 /* dot/dp4a: 4 个 i8 分量乘加（dp4a 的语义），累加器是 i32 → 10.0 */
@@ -107,4 +113,80 @@ int witness_atomic(float *out) {
     value += 3.0f;
     out[0] = value;
     return 1;
+}
+
+/* mma/wgmma: 2×2 × 2×2 分块乘加（单位阵右侧，C = A）→ {1, 2, 3, 4} */
+int witness_mma(float *out) {
+    const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float b[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            float acc = 0.0f;
+            for (int t = 0; t < 2; ++t) {
+                acc += a[i * 2 + t] * b[t * 2 + j];
+            }
+            out[i * 2 + j] = acc;
+        }
+    }
+    return 4;
+}
+
+/* shuffle/shfl.idx: lane i 取 lane 3-i 的值，{1,2,3,4} → {4,3,2,1} */
+int witness_shuffle(float *out) {
+    const float lane[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    for (int i = 0; i < 4; ++i) {
+        out[i] = lane[3 - i];
+    }
+    return 4;
+}
+
+/* broadcast/shfl.idx.bcast: lane 2 的 7 广播到四条 lane → {7, 7, 7, 7} */
+int witness_broadcast(float *out) {
+    const float lane[4] = {3.0f, 1.0f, 7.0f, 5.0f};
+    const float value = lane[2];
+    for (int i = 0; i < 4; ++i) {
+        out[i] = value;
+    }
+    return 4;
+}
+
+/* scan/shfl.up: 含前缀和 {1,2,3,4} → {1, 3, 6, 10} */
+int witness_scan(float *out) {
+    const float lane[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float acc = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        acc += lane[i];
+        out[i] = acc;
+    }
+    return 4;
+}
+
+/* exp2/ex2.approx: 2^3 = 8、2^-1 = 0.5 */
+int witness_exp2(float *out) {
+    const float exponent[2] = {3.0f, -1.0f};
+    for (int i = 0; i < 2; ++i) {
+        float value = 1.0f;
+        int steps = (int)exponent[i];
+        const int negative = steps < 0;
+        if (negative) {
+            steps = -steps;
+        }
+        for (int k = 0; k < steps; ++k) {
+            value *= 2.0f;
+        }
+        out[i] = negative ? 1.0f / value : value;
+    }
+    return 2;
+}
+
+/* rcp/rcp.approx: 1/4 = 0.25、rsqrt(4) = 0.5（牛顿迭代求 √x 再取倒数） */
+int witness_rcp(float *out) {
+    const float x = 4.0f;
+    out[0] = 1.0f / x;
+    float root = x;
+    for (int k = 0; k < 8; ++k) {
+        root = 0.5f * (root + x / root);
+    }
+    out[1] = 1.0f / root;
+    return 2;
 }

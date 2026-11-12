@@ -16,6 +16,7 @@ crates/prof/
 │   ├── ascend.toml      # P0 只有 L0：单元、形状与见证已声明，真机执行待补
 │   ├── cpu.toml         # 真机后端：L2（与参考实现对拍通过）
 │   ├── intel.toml
+│   ├── metal.toml       # P0 只有 L1：MSL 片段与 17 条见证已声明，Metal 执行后端待接
 │   └── nvidia.toml      # P0 只有 L0/L1：见证已声明，未执行的能力视为不具备
 └── src/
     ├── atom.rs          # 能力词汇表：16 原语、位集、Need/Provide、AttrKey 闭集（含 exec）
@@ -84,11 +85,23 @@ witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5]
 所以自检跳过档案的 `[compile].preamble` 与 `flags`，直接编译执行 `<vendor>/witness.<ext>`。
 
 校验与等级解耦：**声明了见证就校验它**，即使这条供给还是 `L0`/`L1`。这样加速器可以先有证据
-文本（`nvidia/witness.cu`、`intel/witness.cl`、`ascend/witness.cpp` 已经登记在 `prim::WITNESS`），
+文本（`nvidia/witness.cu`、`intel/witness.cl`、`ascend/witness.cpp`、`metal/witness.metal` 已经登记在
+`prim::WITNESS`），
 文件名或函数名写错会在装载期暴露，而不是等升 `L2` 才发现。自检则更进一步：它按 host C ABI
 真正编译执行这些见证，期望值写错会当场失败（结论记作 `Scope::Host`）。但自检**不**说明设备
-具备该能力，因此不改写等级：`nvidia` / `intel` / `ascend` 仍停在 `L0`/`L1`，协商继续把它们的
+具备该能力，因此不改写等级：`nvidia` / `intel` / `ascend` / `metal` 仍停在 `L0`/`L1`，协商继续把它们的
 每条提供视为不具备。
+
+**一条签名一条见证**：`(file, func)` 不能被两条签名共用。见证回答的是"这条签名写的是什么
+算法"，两段签名指向同一个入口时，"每条 provides 都有见证"会退化成"每条都指向同一份证据"，
+执行通过的结论也无法归属——`mmad`（Cube，f16 分块）与 `scalar_fma`（scalar，f32）正是两种
+算法，各用各的函数。`profile.validate` 在装载期就拒绝共用，不等到执行。
+
+**见证矩阵**：闭集的 16 个原语在四台加速器（NVIDIA / Intel / 昇腾 / Metal）上各有一条带见证的
+签名（`nvidia` 17 条、`intel` 17 条、`ascend` 20 条、`metal` 17 条，共 71 条）。补齐的是设备
+**自称有**的能力：张量核（`mma`）、lane 交换/广播/前缀扫描（`shuffle`/`broadcast`/`scan`）、
+`exp2`/`rcp`，以及 `intel` 原先漏掉的 `atomic`。它们的等级都是 `L0`：有见证源码，没有片段
+文本（P0 模板不调用），也没有真机执行——矩阵补的是"证据覆盖"，不是"等级"。
 
 ## 新增设备 / 新增执行单元
 

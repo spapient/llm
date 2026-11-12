@@ -37,10 +37,11 @@ pub use llm_config::toml;
 /// 新增设备档案要在这里补一行，否则发布出去的二进制里没有它；`builtin_matches_disk` 测试会把
 /// "磁盘上有、内嵌里没有"直接判为失败。顺序与磁盘一致（按文件名排序），否则装载结果与内嵌
 /// 副本无法逐项对拍。
-pub const BUILTIN: [(&str, &str); 4] = [
+pub const BUILTIN: [(&str, &str); 5] = [
     ("ascend", include_str!("../devices/ascend.toml")),
     ("cpu", include_str!("../devices/cpu.toml")),
     ("intel", include_str!("../devices/intel.toml")),
+    ("metal", include_str!("../devices/metal.toml")),
     ("nvidia", include_str!("../devices/nvidia.toml")),
 ];
 

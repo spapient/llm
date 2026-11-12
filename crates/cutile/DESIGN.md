@@ -474,7 +474,7 @@ witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 | NVIDIA | `cc = 7.0..12.1`（按代分 sm70/80/90/100） | `shared` | `cuda` / `ptx` | nvcc / NVRTC | 真机 |
 | AMD | `gfx = gfx9..gfx12` | `lds` | `hip` / `opencl` | hipcc / clang | 真机（RDNA） |
 | Intel GPU | `name contains Intel`、`arch = gen12+` | `slm` | `opencl` / `spirv` | IGC / oneAPI | 真机 |
-| Apple | `name contains Apple M`、`os >= 26` | `threadgroup` | `metal` | xcrun metal | 真机 |
+| Apple | `name contains: Apple M`、`gpu_cores 10..80` | `threadgroup` | `metal` | xcrun metal | 真机 |
 | 昇腾 | `soc = Ascend 910B..` | `L1`（MTE 搬运） | `ascendc` | CANN | 文档（L0/L1） |
 | MUSA | `name contains MTT S` | `shared` | `cuda`（源码兼容） | mcc | 文档 + 模拟 |
 | CPU | `isa = x86_64{avx2,avx512} / aarch64{neon,sve}` | `L2`（分块） | `c` | cc / clang | 真机 |
@@ -685,12 +685,14 @@ pub struct CacheKey {
 }
 ```
 
-- 目录：`$CUTILE_CACHE/<key[0..2]>/<key>/`，内含 `source`（生成的源文本）与 `meta.txt`（键的逐项快照，一行 `字段=值`）。编译产物不在这里：它落在 `work.dir` 下按进程隔离的目录里（`backend::compile_and_run`），缓存只负责"跳过重新拼装"。
+- 目录：`$CUTILE_CACHE/<key[0..2]>/<key>/`，内含 `source`（生成的源文本）与 `meta.txt`（键的逐项快照，一行 `字段=值`）；编译产物落在同一条目的 `bin/<hash>` 下。
+- 产物：命中只跳过"重新拼装"是不够的——真正慢的是 `cc`。产物的身份是 `ArtifactKey` = 源文本键 + **真正调用的编译器** + **主函数**（形状、样本、重复次数都在 `main()` 里），因此"命中产物"与"重新编译"必然等价：换形状、换 `--repeat`、换输出精度都换一份产物，而同一份产物在第二次 `verify`/`bench` 里连编译器都不需要（本机没有 `cc` 也照样跑得出已验证的结论）。编译在 `work.dir` 下的一次性沙箱里进行，产物拷进缓存后沙箱即删，`work.dir` 不残留第二份可执行文件。
+- 见证同路：见证程序用 `Cache::put_program` 按程序文本登记成普通条目（`meta.txt` 记 `program=` 而不是算子指纹），自检因此也只在第一次调用编译器，产物同样计入占用、同样被 LRU 回收——而不是缓存根下一个扫不到也删不掉的角落。
 - 并发：`<key>/build.lock` 文件 + `O_EXCL`；另一个进程正在生成同一个 key 时等它落盘并复用其产物（上限 5 s），超时即报错（不静默重复编译）。`O_EXCL` 锁是**文件**而不是 flock：持有者被 `kill` 后没人能释放它，这个键会永久卡在"等待超时"上。因此取锁失败时先看锁是否陈旧（`cache::STALE_LOCK` = 60 s，一次 emit 是毫秒级、等锁上限只有 5 s）：陈旧就删掉重试，活着的锁一律不抢。
-- 落盘：写临时文件 → `rename` 原子替换。
-- 残留：只在 `rename` 之前崩溃会留下没有 `source` 的目录（`source.tmp` / `meta.txt` / 锁）。它不是"别人的目录"而是**永远不会命中**的记录（`cache::State::Partial`）：旧实现把它排除在扫描之外，于是它既不计入占用、也永远不被回收。现在扫描按目录内容判状态，`cache gc` 把残留与 LRU 删除分两行报告。
-- GC：按 LRU + 容量上限（默认 2 GiB，`audit::CACHE_LIMIT`），`cutile cache gc [--limit <字节>]` 手动触发。LRU 的"使用"由读命中更新 `meta.txt` 的时间戳来记——不记的话它就退化成"最近写入"，一份天天命中的缓存反而先被删。残留与上限无关、一律回收（它等到任何一次"超限"都不会发生）；可复用条目按 LRU 删到上限内。仍在用的（窗口内被动过，或还有活着的锁）一律跳过，跳过的条数在结果里如实计数。
-- 可复现：`meta.txt` 记录完整键，`cutile doctor --why <key>` 用 `CacheKey::fields` 与它逐项比较，只列出真正不同的字段（含只在一侧出现的项：新版本加的字段与已删掉的字段同样是"为什么没命中"）。字段定义只有一份，`describe`/哈希/差异都从它派生。
+- 落盘：写临时文件 → `rename` 原子替换。临时名带进程号与序号：同一份 key 的两个并发构建各自落盘，先 `rename` 的不会把后来者的临时文件搬走（那会让后者拿到 `ENOENT`）。
+- 残留：只在 `rename` 之前崩溃会留下没有 `source` 的目录（临时文件 / `meta.txt` / 锁）。它不是"别人的目录"而是**永远不会命中**的记录（`cache::State::Partial`）：旧实现把它排除在扫描之外，于是它既不计入占用、也永远不被回收。现在扫描按目录内容判状态，`cache gc` 把残留与 LRU 删除分两行报告。
+- GC：按 LRU + 容量上限（默认 2 GiB，`audit::CACHE_LIMIT`），`cutile cache gc [--limit <字节>]` 手动触发。占用**递归**统计：产物在 `bin/` 里，只数顶层文件会让上限看着很空、实际删不掉真正占空间的东西。LRU 的"使用"由读命中（源文本或产物）更新 `meta.txt` 的时间戳来记——不记的话它就退化成"最近写入"，一份天天命中的缓存反而先被删。残留与上限无关、一律回收（它等到任何一次"超限"都不会发生）；可复用条目按 LRU 删到上限内。仍在用的（窗口内被动过，或还有活着的锁）一律跳过，跳过的条数在结果里如实计数。
+- 可复现：`meta.txt` 记录完整键，`cutile doctor --why <key>` 用 `CacheKey::fields` 与它逐项比较，只列出真正不同的字段（含只在一侧出现的项：新版本加的字段与已删掉的字段同样是"为什么没命中"）。字段定义只有一份，`describe`/哈希/差异都从它派生。键里的 `dtype` 是模型的输出精度，所以换精度既换源文本也换产物——这正是"接入第二个精度时缓存键不会碰撞"的判据。
 
 ---
 
@@ -729,8 +731,18 @@ witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5]
 `grade < L2` 的供给另有**本机自检**（`witness::self_check`，结论的 `scope = Host`）：见证的 ABI 是
 host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble` 与 `flags`，用 host 编译器把
 `<vendor>/witness.<ext>` 编成可执行文件并逐条执行。它把“见证写没写、期望值算不算得对”变成
-今天就能跑的判据（`nvidia` / `intel` / `ascend` 的 35 条 L0/L1 见证因此不再是纯文本），但**不**
+今天就能跑的判据（`nvidia` / `intel` / `ascend` / `metal` 的 71 条 L0/L1 见证因此不再是纯文本），但**不**
 证明设备具备该能力：自检不改写任何 `grade`。把 host 自检通过写成 `L2`，等于用主机替设备作证。
+
+**一条签名一条见证**：`witness.{file, func}` 不能被两条签名共用。见证回答的是"这条签名写的
+是什么算法"，共用会让"每条 provides 都有见证"退化成"每条都指向同一份证据"，执行通过的结论
+也无法归属（`mmad` 与 `scalar_fma` 是两种算法）。`Profile::validate` 在装载期拒绝共用。
+
+**见证矩阵**：闭集的 16 个原语在四台加速器（NVIDIA / Intel / 昇腾 / Metal）上各有一条带见证
+的签名（`nvidia` 17 条、`intel` 17 条、`ascend` 20 条、`metal` 17 条，共 71 条）。除 P0 用到的
+9 个之外，补的是设备自称有的能力：张量核 `mma`、lane 交换/广播/前缀扫描、`exp2`/`rcp`，以及
+`intel` 原先缺的 `atomic`。这些签名没有片段文本（P0 模板不调用），等级因此停在 `L0`——
+矩阵补的是覆盖，不是等级。
 
 ---
 

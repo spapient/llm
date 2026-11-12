@@ -1,10 +1,13 @@
-//! 反向调度：[`Schedule`] 是 [`crate::Tape::backward`] 的产物，[`Account`] 是执行它的账本。
+//! 反向调度的**事实**：[`Schedule`] 是一次 `backward` 的结果——哪些步骤、什么顺序、谁是终点。
 //!
-//! 两件事必须分开：调度是**事实**（哪些节点、什么顺序、谁是梯度终点），账本是**运行期状态**
-//! （每个变量还差几份梯度贡献）。分开的好处是同一次前向可以反复反向——调度只读，账本可重建。
+//! 调度只读、可重复使用：把同一张图的下一次前向重新规划进同一个 `Schedule`，缓冲留在原处。
 
-use crate::{Node, Var};
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
+
+use crate::account::Account;
+use crate::error::invalid;
+use crate::graph::{Node, Requirement, Var};
+use crate::tape::Tape;
 
 /// 一次反向传播的计划：只含 loss 可达的节点，按反向拓扑序排列。
 ///
@@ -12,31 +15,38 @@ use diagnostic::{Code, Error, Result};
 ///
 /// - 深度降序保证输出总在输入之前（向后一步），因此是合法的反向拓扑序；
 /// - 同深度互不依赖，编号降序只是让同一种图每次排出来的顺序都一样，便于缓存与对拍。
+///
+/// 训练循环里应当复用一个 `Schedule`（[`Tape::plan_into`]）：`clear` 之后重填，
+/// 稳定态不再分配。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schedule {
     loss: Var,
+    vars: u32,
     graph: Vec<bool>,
     steps: Vec<Node>,
     endpoints: Vec<Var>,
 }
 
-impl Schedule {
-    /// 由 [`crate::Tape::backward`] 构造；顺序已经定好，这里只装载并算出图上变量位图。
-    pub(crate) fn new(loss: Var, vars: u32, steps: Vec<Node>, endpoints: Vec<Var>) -> Self {
-        let mut graph = vec![false; vars as usize];
-        graph[loss.id() as usize] = true;
-        for step in &steps {
-            graph[step.output().id() as usize] = true;
-        }
-        for endpoint in &endpoints {
-            graph[endpoint.id() as usize] = true;
-        }
+impl Default for Schedule {
+    fn default() -> Self {
+        // 空计划还没有起点：`loss` 只是占位，规划一次之前它不对应任何变量。
         Self {
-            loss,
-            graph,
-            steps,
-            endpoints,
+            loss: Var::at(0),
+            vars: 0,
+            graph: Vec::new(),
+            steps: Vec::new(),
+            endpoints: Vec::new(),
         }
+    }
+}
+
+impl Schedule {
+    /// 空的计划：还没有规划过任何 loss，也没有分配缓冲。
+    ///
+    /// 它存在的意义是给训练循环一个占位符——[`Tape::plan_into`] 可以反复往里写，
+    /// 第一次规划才分配，之后都复用容量。
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// 反向的起点：它的梯度是 1，不参与累加。
@@ -49,7 +59,7 @@ impl Schedule {
         &self.steps
     }
 
-    /// 需要取走的梯度：loss 可达、需求为 [`crate::Requirement::Grad`] 的变量，按编号升序。
+    /// 需要取走的梯度：loss 可达、需求为 [`Requirement::Grad`] 的变量，按编号升序。
     ///
     /// 不可达的终点不出现在这里——这正是剪枝的价值：没参与 loss 的参数不该被优化器更新，
     /// 也不该被分配梯度缓冲。
@@ -67,143 +77,113 @@ impl Schedule {
         self.steps.is_empty()
     }
 
+    /// 按深度分层：同一层的步骤互不依赖，可以并行/合批执行。
+    ///
+    /// 层按执行顺序给出，第 0 层是 loss 所在深度、最先执行。分层不是随意的：边总是从
+    /// 浅层指向深层，所以一个深度为 `d` 的变量只会被深度 `> d` 的步骤消费——等前面的层
+    /// 全部结算完，这一层的每一步都必然已经收满梯度。
+    pub fn levels(&self) -> impl Iterator<Item = &[Node]> {
+        self.steps
+            .chunk_by(|left, right| left.depth() == right.depth())
+    }
+
     /// 按这个计划执行反向的账本。
     pub fn account(&self) -> Account {
-        Account::new(self)
-    }
-}
-
-/// 反向执行的账本：扇出计数与"谁的梯度已经齐全"。
-///
-/// 一个变量被多少个**可达**步骤当作输入引用，就要接收多少份贡献；收满之前的步骤不允许执行。
-/// 计数一次建好（O(输入数)），之后每一步只做减法，没有哈希、没有扫描。
-#[derive(Debug, Clone)]
-pub struct Account {
-    pending: Vec<u32>,
-    state: Vec<State>,
-    steps: usize,
-    settled: usize,
-}
-
-/// 账本里每个变量的三态：不进图、等贡献、已执行。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Outside,
-    Waiting,
-    Done,
-}
-
-impl Account {
-    /// 统计每个变量的扇出：图上的每个输入位置算一份贡献。
-    fn new(schedule: &Schedule) -> Self {
-        let state: Vec<State> = schedule
-            .graph
-            .iter()
-            .map(|on_graph| match on_graph {
-                true => State::Waiting,
-                false => State::Outside,
-            })
-            .collect();
-        let mut account = Self {
-            pending: vec![0u32; state.len()],
-            state,
-            steps: schedule.steps.len(),
-            settled: 0,
-        };
-        for step in &schedule.steps {
-            for input in step.inputs() {
-                if account.graph(*input) {
-                    account.pending[input.id() as usize] += 1;
-                }
-            }
-        }
+        let mut account = Account::new();
+        account.rebuild(self);
         account
     }
 
-    /// 变量是否在图上（要接收梯度）。
-    fn graph(&self, var: Var) -> bool {
-        self.state
-            .get(var.id() as usize)
-            .is_some_and(|state| *state != State::Outside)
+    /// 图上的变量位图：终点与每个步骤的输出。
+    pub(crate) fn graph(&self) -> &[bool] {
+        &self.graph
     }
 
-    /// 还差几份梯度贡献；0 表示齐全。编号不在本次调度里时也返回 0。
-    pub fn pending(&self, var: Var) -> u32 {
-        self.pending.get(var.id() as usize).copied().unwrap_or(0)
-    }
-
-    /// 该变量的梯度是否已经齐全（它的反向步骤现在可以执行）。
-    pub fn ready(&self, var: Var) -> bool {
-        self.pending(var) == 0
-    }
-
-    /// 已结算的步数。
-    pub fn settled(&self) -> usize {
-        self.settled
-    }
-
-    /// 是否每一步都已结算。
-    pub fn finished(&self) -> bool {
-        self.settled == self.steps
-    }
-
-    /// 结算一步，返回因此**可以执行**的变量（梯度刚收满的前驱，按步骤的输入顺序）。
-    ///
-    /// 三种误用都会失败而不是算错：步骤不属于这份调度、步骤已结算、梯度还没收满。
-    pub fn settle(&mut self, step: &Node) -> Result<Vec<Var>> {
-        let index = step.output().id() as usize;
-        self.enter(step)?;
-        self.state[index] = State::Done;
-        self.settled += 1;
-        let mut ready = Vec::with_capacity(step.inputs().len());
-        for input in step.inputs() {
-            if let Some(var) = self.contribute(*input)? {
-                ready.push(var);
-            }
-        }
-        Ok(ready)
-    }
-
-    /// 结算前的校验：步骤在计划里、没结算过、梯度已收满。
-    fn enter(&self, step: &Node) -> Result<()> {
-        let var = step.output();
-        let index = var.id() as usize;
-        match self.state.get(index) {
-            Some(State::Waiting) => {}
-            Some(State::Done) => {
-                return Err(self.field(format!("变量 {} 的步骤已结算", var.id())));
-            }
-            _ => return Err(self.field(format!("变量 {} 不是本次调度的步骤", var.id()))),
-        }
-        let pending = self.pending[index];
-        if pending > 0 {
-            return Err(self.field(format!("变量 {} 的梯度还差 {pending} 份贡献", var.id())));
-        }
+    /// 把 `loss` 的规划写进本对象；失败时保持原样。
+    pub(crate) fn plan(&mut self, tape: &Tape, loss: Var) -> Result<()> {
+        Self::validate(tape, loss)?;
+        self.reset(loss, tape.vars());
+        self.mark(tape, loss);
+        self.harvest(tape);
         Ok(())
     }
 
-    /// 记一份贡献；不进图的输入不收账，收到最后一份时返回该变量。
-    fn contribute(&mut self, input: Var) -> Result<Option<Var>> {
-        let index = input.id() as usize;
-        if !self.graph(input) {
-            return Ok(None);
+    /// 校验起点：它必须存在，而且必须在图上。
+    fn validate(tape: &Tape, loss: Var) -> Result<()> {
+        match tape.requirement(loss) {
+            Some(requirement) if requirement.requires() => Ok(()),
+            Some(_) => Err(invalid(
+                "autograd::Tape::plan_into",
+                format!("变量 {} 不参与反向", loss.id()),
+            )),
+            None => Err(invalid(
+                "autograd::Tape::plan_into",
+                format!("变量 {} 不存在（当前已创建 {} 个）", loss.id(), tape.vars()),
+            )),
         }
-        let Some(pending) = self.pending.get_mut(index) else {
-            return Err(self.field(format!("变量 {} 不在账本里", input.id())));
-        };
-        *pending = pending.checked_sub(1).ok_or_else(|| {
-            Error::new(
-                Code::Internal,
-                format!("变量 {} 的扇出计数已为 0", input.id()),
-            )
-            .with("autograd::Account::settle")
-        })?;
-        Ok((*pending == 0).then_some(input))
     }
 
-    /// 本层的参数错误：执行顺序与调度不一致。
-    fn field(&self, message: impl Into<String>) -> Error {
-        Error::new(Code::Invalid, message).with("autograd::Account::settle")
+    /// 复用缓冲：位图按变量数补零，表清空但保留容量。
+    fn reset(&mut self, loss: Var, vars: u32) {
+        self.loss = loss;
+        self.vars = vars;
+        self.graph.clear();
+        self.graph.resize(vars as usize, false);
+        self.steps.clear();
+        self.endpoints.clear();
+    }
+
+    /// 从 `loss` 出发沿边反向走一遍，把"变量是否可达"写进位图。
+    ///
+    /// 边只能从小编号指向大编号（输入先于输出记录），因此**按编号降序遍历节点**时，
+    /// 一个节点的可达性已经由它全部消费者决定：这正是拓扑序的逆序，不需要显式栈，
+    /// 也不需要递归——两万层的前向与两层一样走一遍。
+    fn mark(&mut self, tape: &Tape, loss: Var) {
+        self.graph.fill(false);
+        self.graph[loss.id() as usize] = true;
+        for node in tape.nodes().iter().rev() {
+            if !self.graph[node.output().id() as usize] {
+                continue;
+            }
+            self.inherit(tape, node);
+        }
+    }
+
+    /// 一个可达节点把可达性传给它的每个"要梯度"的输入。
+    fn inherit(&mut self, tape: &Tape, node: &Node) {
+        for input in node.inputs() {
+            let index = input.id() as usize;
+            if tape.requirement(*input).is_some_and(Requirement::requires) {
+                self.graph[index] = true;
+            }
+        }
+    }
+
+    /// 把可达节点按深度降序搬进步骤表，并收集终点。
+    fn harvest(&mut self, tape: &Tape) {
+        let Self {
+            graph,
+            steps,
+            endpoints,
+            ..
+        } = self;
+        steps.extend(
+            tape.nodes()
+                .iter()
+                .filter(|node| graph[node.output().id() as usize])
+                .cloned(),
+        );
+        steps.sort_by(|left, right| {
+            right
+                .depth()
+                .cmp(&left.depth())
+                .then(right.output().id().cmp(&left.output().id()))
+        });
+        endpoints.extend(graph.iter().enumerate().filter_map(|(index, seen)| {
+            let var = Var::at(index as u32);
+            let endpoint = *seen && tape.requirement(var) == Some(Requirement::Grad);
+            endpoint.then_some(var)
+        }));
     }
 }
 
@@ -211,8 +191,9 @@ impl Account {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use diagnostic::Code;
+
     use super::*;
-    use crate::{Requirement, Tape};
 
     /// 分支不参与 loss 时不进计划、也不是梯度终点。
     #[test]
@@ -258,79 +239,6 @@ mod tests {
         );
     }
 
-    /// 菱形图：两条路径的贡献都到齐，x 的梯度才算齐全。
-    #[test]
-    fn a_diamond_waits_for_every_contribution() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let left = tape.record("relu", &[x]).expect("记录");
-        let right = tape.record("relu", &[x]).expect("记录");
-        let joined = tape.record("add", &[left, right]).expect("记录");
-        let loss = tape.record("reduce_sum", &[joined]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-        let mut account = schedule.account();
-        assert_eq!(account.pending(x), 2);
-        let steps = schedule.steps();
-        assert_eq!(account.settle(&steps[0]).expect("loss"), [joined]);
-        assert_eq!(account.settle(&steps[1]).expect("joined"), [left, right]);
-        assert!(account.settle(&steps[3]).expect("left").is_empty());
-        assert!(!account.ready(x), "还有一条路径没回传");
-        assert_eq!(account.settle(&steps[2]).expect("right"), [x]);
-        assert!(account.finished());
-    }
-
-    /// 同一个变量在一步里出现两次，就要收两份贡献，且只报一次齐全。
-    #[test]
-    fn a_repeated_input_receives_one_contribution_per_position() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let doubled = tape.record("add", &[x, x]).expect("记录");
-        let scaled = tape.record("mul", &[doubled, x]).expect("记录");
-        let loss = tape.record("reduce_sum", &[scaled]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-        let mut account = schedule.account();
-        assert_eq!(account.pending(x), 3, "add 里两次 + mul 里一次");
-        let steps = schedule.steps();
-        assert_eq!(account.settle(&steps[0]).expect("loss"), [scaled]);
-        assert_eq!(account.settle(&steps[1]).expect("scaled"), [doubled]);
-        assert!(!account.ready(x), "x 还差两份");
-        assert_eq!(
-            account.settle(&steps[2]).expect("doubled"),
-            [x],
-            "两个位置属于同一步，只报一次齐全"
-        );
-        assert!(account.ready(x));
-    }
-
-    /// 乱序执行、重复结算、外来步骤都必须失败，而不是悄悄算错。
-    #[test]
-    fn settling_out_of_order_or_twice_is_rejected() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let y = tape.record("relu", &[x]).expect("记录");
-        let loss = tape.record("reduce_sum", &[y]).expect("记录");
-        let strategy = tape.backward(loss).expect("在图上");
-        let steps = strategy.steps();
-        let mut account = strategy.account();
-        assert_eq!(
-            account.settle(&steps[1]).expect_err("y 还没收满").code(),
-            Code::Invalid
-        );
-        account.settle(&steps[0]).expect("loss");
-        assert_eq!(
-            account.settle(&steps[0]).expect_err("已结算").code(),
-            Code::Invalid
-        );
-
-        let pruned = tape.record("relu", &[x]).expect("记录");
-        let foreign = tape.node(pruned).expect("节点").clone();
-        assert_eq!(
-            account.settle(&foreign).expect_err("不在计划里").code(),
-            Code::Invalid
-        );
-        assert_eq!(account.settled(), 1);
-    }
-
     /// 深链不递归：两万层也不会栈溢出。
     #[test]
     fn a_deep_chain_does_not_recurse() {
@@ -368,6 +276,91 @@ mod tests {
         let second = tape.backward(loss).expect("在图上");
         assert_eq!(first, second);
         assert_eq!(first.account().pending(loss), 0);
+    }
+
+    /// 复用同一个 `Schedule`：步骤表的缓冲地址不变，说明没有重新分配。
+    #[test]
+    fn planning_into_an_existing_schedule_reuses_its_buffers() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let left = tape.record("relu", &[x]).expect("记录");
+        let right = tape.record("relu", &[x]).expect("记录");
+        let loss = tape.record("add", &[left, right]).expect("记录");
+        let mut schedule = Schedule::new();
+        tape.plan_into(&mut schedule, loss).expect("在图上");
+        let steps = schedule.steps().as_ptr();
+        let endpoints = schedule.endpoints().as_ptr();
+        let graph = schedule.graph().as_ptr();
+        tape.plan_into(&mut schedule, loss).expect("在图上");
+        assert_eq!(schedule.steps().as_ptr(), steps, "步骤表没有重新分配");
+        assert_eq!(
+            schedule.endpoints().as_ptr(),
+            endpoints,
+            "终点表没有重新分配"
+        );
+        assert_eq!(schedule.graph().as_ptr(), graph, "可达位图没有重新分配");
+    }
+
+    /// 同一张图换一个 loss 重新规划：旧步骤不复用、终点跟着变。
+    #[test]
+    fn replanning_with_another_loss_replaces_the_whole_plan() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let y = tape.parameter();
+        let branch = tape.record("relu", &[x]).expect("记录");
+        let loss = tape.record("add", &[branch, y]).expect("记录");
+        let mut schedule = tape.backward(loss).expect("在图上");
+        assert_eq!(schedule.endpoints(), [x, y]);
+        tape.plan_into(&mut schedule, branch).expect("在图上");
+        assert_eq!(schedule.loss(), branch);
+        assert_eq!(schedule.len(), 1, "只剩 branch 自己的反向步骤");
+        assert_eq!(schedule.endpoints(), [x], "y 不在这个 loss 的图上");
+    }
+
+    /// 分层：同层互不依赖，前面的层结算完，这一层的每一步都已就绪。
+    #[test]
+    fn levels_partition_the_schedule_and_each_level_is_ready() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let shared = tape.record("relu", &[x]).expect("记录");
+        let left = tape.record("mul", &[shared, x]).expect("记录");
+        let right = tape.record("add", &[shared, x]).expect("记录");
+        let loss = tape.record("add", &[left, right]).expect("记录");
+        let schedule = tape.backward(loss).expect("在图上");
+        let mut account = schedule.account();
+        let mut steps = 0;
+        for level in schedule.levels() {
+            let depth = level[0].depth();
+            assert!(
+                level.iter().all(|node| node.depth() == depth),
+                "同层深度一致"
+            );
+            for step in level {
+                assert!(
+                    account.ready(step.output()),
+                    "变量 {} 在进入它的层时梯度应当已收满",
+                    step.output().id()
+                );
+                account.settle(step).expect("同层可按序结算");
+                steps += 1;
+            }
+        }
+        assert_eq!(steps, schedule.len(), "分层覆盖全部步骤且不重复");
+    }
+
+    /// 失败的规划不改变已有计划：调用方拿到 `Err` 时不会得到半份计划。
+    #[test]
+    fn a_failed_plan_keeps_the_previous_schedule() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let loss = tape.record("relu", &[x]).expect("记录");
+        let mut schedule = tape.backward(loss).expect("在图上");
+        let before = schedule.clone();
+        for bad in [Var::at(99), tape.leaf()] {
+            let error = tape.plan_into(&mut schedule, bad).expect_err("不可规划");
+            assert_eq!(error.code(), Code::Invalid);
+            assert_eq!(schedule, before, "失败的规划不留半份计划");
+        }
     }
 
     /// 用最小标量引擎跑完整反向：调度的顺序与扇出足够复现解析梯度。
@@ -409,7 +402,7 @@ mod tests {
         assert!(account.finished());
     }
 
-    /// 随机图上逐条核对不变量：可达性、拓扑序、扇出计数与账本推进。
+    /// 随机图上逐条核对不变量：可达性、拓扑序、终点与分层。
     #[test]
     fn random_graphs_keep_every_invariant() {
         let mut rng = Rng::new(0x5EED_1234);
@@ -428,7 +421,7 @@ mod tests {
             let expected_endpoints: Vec<u32> = vars
                 .iter()
                 .copied()
-                .filter(|id| tape.requirement(Var { id: *id }) == Some(Requirement::Grad))
+                .filter(|id| tape.requirement(Var::at(*id)) == Some(Requirement::Grad))
                 .collect();
             assert_eq!(
                 schedule
@@ -440,7 +433,7 @@ mod tests {
                 "第 {round} 轮：终点与可达的 Grad 变量不一致"
             );
             check_order(&tape, &schedule, &position, round);
-            check_account(&tape, &schedule, &vars, round);
+            check_levels(&schedule, round);
         }
     }
 
@@ -466,35 +459,27 @@ mod tests {
         }
     }
 
-    /// 账本：扇出计数与独立统计一致，按序结算总能走完。
-    fn check_account(tape: &Tape, schedule: &Schedule, vars: &BTreeSet<u32>, round: u32) {
-        let mut expected = vec![0u32; tape.vars() as usize];
-        for step in schedule.steps() {
-            for input in step.inputs() {
-                if vars.contains(&input.id()) {
-                    expected[input.id() as usize] += 1;
-                }
-            }
-        }
-        let mut account = schedule.account();
-        for id in 0..tape.vars() {
-            assert_eq!(
-                account.pending(Var { id }),
-                expected[id as usize],
-                "第 {round} 轮：变量 {id} 的扇出不一致"
+    /// 分层：每层深度一致、颜色连续，且层数等于不同深度的个数。
+    fn check_levels(schedule: &Schedule, round: u32) {
+        let mut levels = schedule.levels().peekable();
+        let mut seen = BTreeSet::new();
+        let mut total = 0;
+        while let Some(level) = levels.next() {
+            let depth = level[0].depth();
+            assert!(seen.insert(depth), "第 {round} 轮：深度 {depth} 的层重复");
+            assert!(
+                level.iter().all(|node| node.depth() == depth),
+                "第 {round} 轮：一层里混了不同深度"
             );
-        }
-        for step in schedule.steps() {
-            for ready in account.settle(step).expect("按序结算") {
+            if let Some(next) = levels.peek() {
                 assert!(
-                    tape.requirement(ready).is_some_and(Requirement::requires),
-                    "第 {round} 轮：不进图的变量不该收到梯度"
+                    next[0].depth() < depth,
+                    "第 {round} 轮：层的顺序不是深度降序"
                 );
-                assert_eq!(account.pending(ready), 0);
             }
+            total += level.len();
         }
-        assert!(account.finished(), "第 {round} 轮：还有步骤没结算");
-        assert_eq!(account.settled(), schedule.len());
+        assert_eq!(total, schedule.len(), "第 {round} 轮：分层没有覆盖全部步骤");
     }
 
     /// 计划里每一步的位置。

@@ -116,7 +116,7 @@ cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU
 | 设备 | 现状 | 说明 |
 |---|---|---|
 | `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `crates/op` 的标量参考对拍 `max_rel_err = 0` |
-| `nvidia` / `intel` | L1 | 仅有档案与片段声明；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
+| `nvidia` / `intel` / `metal` | L1 | 仅有档案与片段声明；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
 
 ## 配置
 

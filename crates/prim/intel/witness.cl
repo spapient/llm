@@ -5,6 +5,13 @@
  * 内容按执行器的 host ABI 写（扩展名跟随 `emit = opencl`，与同目录片段一致）；
  * P0 的见证执行器只执行 `emit = c`，所以等级仍是 L1——OpenCL 的 host harness
  * 与真机证据随非 C 执行器一起补。
+ *
+ * 一条签名一个函数：见证回答"这条签名写的是什么算法"，两条签名共用一份见证时，
+ * 执行通过的结论无法归属到哪一条（DESIGN §11.3）。
+ *
+ * 末尾六条是 P0 模板不用、但 gen12 确实具备的能力（Xe 矩阵引擎、subgroup 交换/广播/
+ * 扫描、`native_exp2`/`native_recip`）。它们的等级是 L0：有见证源码，没有片段文本，
+ * 也没有真机执行。
  */
 
 /* dot/dp4a: 4 个 i8 分量乘加（dp4a 的语义），累加器是 i32 → 10.0 */
@@ -97,4 +104,88 @@ int witness_reduce(float *out) {
     const float partial = 7.5f;
     out[0] = partial;
     return 1;
+}
+
+/* atomic/atomic_add: 2.0 + 3.0（add 语义） */
+int witness_atomic(float *out) {
+    float value = 2.0f;
+    value += 3.0f;
+    out[0] = value;
+    return 1;
+}
+
+/* mma/dpas: 2×2 × 2×2 分块乘加（单位阵右侧，C = A）→ {1, 2, 3, 4} */
+int witness_mma(float *out) {
+    const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float b[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            float acc = 0.0f;
+            for (int t = 0; t < 2; ++t) {
+                acc += a[i * 2 + t] * b[t * 2 + j];
+            }
+            out[i * 2 + j] = acc;
+        }
+    }
+    return 4;
+}
+
+/* shuffle/sub_group_shuffle: lane i 取 lane 3-i 的值，{1,2,3,4} → {4,3,2,1} */
+int witness_shuffle(float *out) {
+    const float lane[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    for (int i = 0; i < 4; ++i) {
+        out[i] = lane[3 - i];
+    }
+    return 4;
+}
+
+/* broadcast/sub_group_broadcast: lane 2 的 7 广播到四条 lane → {7, 7, 7, 7} */
+int witness_broadcast(float *out) {
+    const float lane[4] = {3.0f, 1.0f, 7.0f, 5.0f};
+    const float value = lane[2];
+    for (int i = 0; i < 4; ++i) {
+        out[i] = value;
+    }
+    return 4;
+}
+
+/* scan/sub_group_scan_inclusive_add: 含前缀和 {1,2,3,4} → {1, 3, 6, 10} */
+int witness_scan(float *out) {
+    const float lane[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float acc = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        acc += lane[i];
+        out[i] = acc;
+    }
+    return 4;
+}
+
+/* exp2/native_exp2: 2^3 = 8、2^-1 = 0.5 */
+int witness_exp2(float *out) {
+    const float exponent[2] = {3.0f, -1.0f};
+    for (int i = 0; i < 2; ++i) {
+        float value = 1.0f;
+        int steps = (int)exponent[i];
+        const int negative = steps < 0;
+        if (negative) {
+            steps = -steps;
+        }
+        for (int k = 0; k < steps; ++k) {
+            value *= 2.0f;
+        }
+        out[i] = negative ? 1.0f / value : value;
+    }
+    return 2;
+}
+
+/* rcp/native_recip: 1/4 = 0.25、rsqrt(4) = 0.5（牛顿迭代求 √x 再取倒数） */
+int witness_rcp(float *out) {
+    const float x = 4.0f;
+    out[0] = 1.0f / x;
+    float root = x;
+    for (int k = 0; k < 8; ++k) {
+        root = 0.5f * (root + x / root);
+    }
+    out[1] = 1.0f / root;
+    return 2;
 }

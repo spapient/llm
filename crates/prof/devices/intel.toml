@@ -129,3 +129,79 @@ op      = ["sum", "max"]
 dt      = ["f32"]
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_reduce", expect = [7.5] }
+
+# OpenCL 2.0 的全局原子（`atomic_fetch_add`）。与 `nvidia` / `ascend` 的同一原语对齐：
+# 三台设备都声明了它，协商才不必为"哪台有原子"写特例。
+[[provides]]
+prim    = "atomic"
+impl    = "atomic_add"
+dt      = ["f32"]
+space   = ["GM"]
+op      = ["add", "max"]
+grade   = "L0"
+witness = { file = "intel/witness.cl", func = "witness_atomic", expect = [5.0] }
+
+# ── 闭集的其余六条 ──────────────────────────────────────────────────────────
+# gen12 的 Xe 矩阵引擎（`dpas`）、subgroup 交换/广播/扫描与 `native_exp2` /
+# `native_recip`。没有片段文本（P0 模板不调用），所以等级是 L0：
+# "声明了 + 有见证源码"，不是"本机能跑"。
+[[provides]]
+prim     = "mma"
+impl     = "dpas"
+m        = "<=8"
+n        = "<=16"
+k        = "<=8"
+dt       = ["f16", "bf16", "i8"]
+space    = ["REG", "FAST"]
+accuracy = ["fp32"]
+grade    = "L0"
+witness  = { file = "intel/witness.cl", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
+
+# `sub_group_shuffle` / `sub_group_broadcast`：宽度受 `[simt].group = 16` 约束。
+[[provides]]
+prim    = "shuffle"
+impl    = "sub_group_shuffle"
+m       = "<=16"
+dt      = ["f32", "i32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L0"
+witness = { file = "intel/witness.cl", func = "witness_shuffle", expect = [4.0, 3.0, 2.0, 1.0] }
+
+[[provides]]
+prim    = "broadcast"
+impl    = "sub_group_broadcast"
+m       = "<=16"
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "intel/witness.cl", func = "witness_broadcast", expect = [7.0, 7.0, 7.0, 7.0] }
+
+[[provides]]
+prim    = "scan"
+impl    = "sub_group_scan_inclusive_add"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "intel/witness.cl", func = "witness_scan", expect = [1.0, 3.0, 6.0, 10.0] }
+
+[[provides]]
+prim     = "exp2"
+impl     = "native_exp2"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "intel/witness.cl", func = "witness_exp2", expect = [8.0, 0.5] }
+
+[[provides]]
+prim     = "rcp"
+impl     = "native_recip"
+dt       = ["f32"]
+space    = ["REG"]
+kind     = ["rcp", "rsqrt"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "intel/witness.cl", func = "witness_rcp", expect = [0.25, 0.5] }

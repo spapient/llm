@@ -22,6 +22,7 @@ crates/prim/
 ├── nvidia/               # 扩展名 = cu（emit = cuda）：同样 9 段 + witness.cu
 ├── intel/                # 扩展名 = cl（emit = opencl）：同样 9 段 + witness.cl
 ├── ascend/               # 扩展名 = cpp（emit = ascendc）：同样 9 段 + witness.cpp
+├── metal/                # 扩展名 = metal（emit = metal）：同样 9 段 + witness.metal
 └── src/lib.rs            # BUILTIN 内嵌 / WITNESS 内嵌 / builtin 查表 / load 目录装载 / dir 与 layer_root
 ```
 
@@ -58,7 +59,7 @@ crates/prim/
 缓存指纹。因此给已有片段补这一行不会改动已落盘的产物，`verify` 的 `source N 行` 与缓存键
 逐字不变。
 
-因此 `nvidia` / `intel` / `ascend` 的 9 段片段与 `cpu` 一样是标量语义的自包含 C：语言外壳不同，
+因此 `nvidia` / `intel` / `ascend` / `metal` 的 9 段片段与 `cpu` 一样是标量语义的自包含 C：语言外壳不同，
 调用约定相同（`@load`、`@quant`、`@dot` … 的位置参数与命名参数一一对上）。`cutile` 的
 `every_device_fragment_set_splices_the_p0_template` 把这条约定变成判据：台架上的档案只要能
 协商出变体，它的片段就必须能把 P0 模板拼出来——参数个数或命名参数写错不必等到构建期。
@@ -78,10 +79,18 @@ witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
 `file` 相对片段层根（即 `crates/prim/cpu/witness.c`）。`grade ≥ L2` 的供给**必须**有见证；
 `cutile verify` 先把每一条见证编成可执行文件并执行，值与 `expect` 不符就整台设备失败。
 `L0`/`L1` 不要求见证，但**一旦声明就会校验**：文件名可读、入口函数在源码里、期望值非空。
-`nvidia` / `intel` / `ascend` 的 35 条 L0/L1 见证还会走**本机自检**：见证的 ABI 是 host C，
+`nvidia` / `intel` / `ascend` / `metal` 的 71 条 L0/L1 见证还会走**本机自检**：见证的 ABI 是 host C，
 与片段语言无关，所以自检跳过档案的 `[compile].preamble` 与 `flags`，把文件编成可执行程序
 逐条对拍——期望值写错会当场失败。结论记作 `Scope::Host`：自检只证明源码与期望值自洽，
 不证明设备能跑，因此不改写任何等级。
+
+**一条签名一条见证**：两个 `impl` 不能指向同一个入口函数。见证证明的是"这条签名写的是什么
+算法"，共用会让"每条签名都有见证"退化成"每条都指向同一份证据"；`ascend` 的 `quant` /
+`load` / `load_async` 因此各有两份函数。`profile.validate` 把这条规则做成装载期判据。
+
+四台加速器的见证覆盖整个原语闭集（16 × 4：`nvidia` 17 条、`intel` 17 条、`ascend` 20 条、
+`metal` 17 条）：除了 P0 用到的 9 个，还包括张量核 `mma`、`shuffle` / `broadcast` / `scan` 与
+`exp2` / `rcp` 的标量等价实现。这些签名没有片段文本（P0 模板不调用它们），等级停在 `L0`。
 
 `witness.<ext>` 与片段同目录同扩展名，因此**装载片段时按名字跳过它**——否则目录扫描会把它
 当成一个名字非法的片段。发布机上没有源码树，所以见证源码登记在 `src/lib.rs` 的 `WITNESS`

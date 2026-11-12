@@ -403,14 +403,14 @@ mod tests {
             .unwrap_or_else(|| panic!("{vendor} 档案"))
     }
 
-    /// 三台加速器的见证虽然进不了协商，但它们是写下来的声明：每一条都要能编译、能算出
+    /// 四台加速器的见证虽然进不了协商，但它们是写下来的声明：每一条都要能编译、能算出
     /// 档案里的 `expect`。写错一个期望值不该拖到真机接入那天才暴露。
     #[test]
     fn every_declared_accelerator_witness_passes_the_host_self_check() {
         if backend::detect_toolchain().is_none() {
             return;
         }
-        for vendor in ["nvidia", "intel", "ascend"] {
+        for vendor in ["nvidia", "intel", "ascend", "metal"] {
             let profile = device(vendor);
             let declared = profile
                 .provides

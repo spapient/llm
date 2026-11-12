@@ -22,7 +22,12 @@ use diagnostic::{Code, Error};
 use llm_config::Settings;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+/// 沙箱目录的进程内序号：同一个 key 会被同一进程的两条路径同时编译（`verify` 的自检与
+/// 形状矩阵、两条用例），`pid` 只区分进程，不区分线程。
+static SANDBOX_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// ⑤ 的完整流程：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘。
 ///
@@ -157,9 +162,14 @@ fn cached_run(
     if let Some(artifact) = cache.artifact(&key) {
         return Ok((backend::run(&artifact.path)?, artifact));
     }
-    let sandbox = settings
-        .work_dir()
-        .join(format!("{}-{}", key.hex(), std::process::id()));
+    // 目录名必须唯一：先编译完的那条会删掉沙箱，共用目录会让另一条的 `cc -o` 失去输出路径
+    // （表现为 linker 报 "cannot open output file"）。
+    let sandbox = settings.work_dir().join(format!(
+        "{}-{}-{}",
+        key.hex(),
+        std::process::id(),
+        SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let exe = backend::compile(tool, flags, program, &sandbox)?;
     let artifact = cache.put_artifact(&key, &exe).map_err(|error| {
         Error::new(

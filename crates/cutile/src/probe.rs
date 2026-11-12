@@ -42,6 +42,10 @@ pub fn fake(vendor: &str) -> Detected {
             .with("name", "Intel Arc A770")
             .with("arch", "gen12"),
         "ascend" => Detected::new().with("soc", "ascend910b"),
+        // Apple GPU 没有 CUDA 式的计算能力号：指纹用机器名 + GPU 核数（档案里写 `10..80`）。
+        "metal" => Detected::new()
+            .with("name", "Apple M5 Pro")
+            .with("gpu_cores", "20"),
         other => Detected::new().with("arch", other),
     }
 }
@@ -100,6 +104,9 @@ mod tests {
         assert_eq!(ascend.meta.vendor, "ascend");
         assert_eq!(ascend.meta.emit, crate::prof::Emit::Ascendc);
         assert_eq!(ascend.units.len(), 5);
+        let metal = select(catalogue.profiles(), &fake("metal")).expect("必须命中");
+        assert_eq!(metal.meta.vendor, "metal");
+        assert_eq!(metal.meta.emit, crate::prof::Emit::Metal);
     }
 
     #[test]

@@ -53,7 +53,7 @@ pub struct Builtin {
 /// Rust 不能在编译期遍历目录，所以内嵌片段要在这里登记一次——这与 `op::BUILTIN`、
 /// `prof::BUILTIN` 登记声明与档案是同一件事：**表是数据，查表的是代码**。没有登记的
 /// vendor 走 [`load`]，同样不必改代码。
-pub const BUILTIN: [Builtin; 4] = [
+pub const BUILTIN: [Builtin; 5] = [
     Builtin {
         vendor: "cpu",
         ext: "c",
@@ -118,6 +118,23 @@ pub const BUILTIN: [Builtin; 4] = [
             (Prim::Reduce, include_str!("../ascend/reduce.cpp")),
         ],
     },
+    // Metal 的片段按 `Emit::Metal.ext()` 登记为 `.metal`：与另外三台加速器同一条约定——
+    // P0 的标量路径在各语言里都是 C 语义，threadgroup 地址空间与 simdgroup 内建留给 P3。
+    Builtin {
+        vendor: "metal",
+        ext: "metal",
+        fragments: &[
+            (Prim::Load, include_str!("../metal/load.metal")),
+            (Prim::LoadAsync, include_str!("../metal/load_async.metal")),
+            (Prim::CommitWait, include_str!("../metal/commit_wait.metal")),
+            (Prim::Store, include_str!("../metal/store.metal")),
+            (Prim::Quant, include_str!("../metal/quant.metal")),
+            (Prim::Dot, include_str!("../metal/dot.metal")),
+            (Prim::Bar, include_str!("../metal/bar.metal")),
+            (Prim::Cvt, include_str!("../metal/cvt.metal")),
+            (Prim::Reduce, include_str!("../metal/reduce.metal")),
+        ],
+    },
 ];
 
 /// 编译期内嵌的见证源码：`(vendor, ext, source)`。
@@ -126,11 +143,12 @@ pub const BUILTIN: [Builtin; 4] = [
 /// `cutile verify` 仍需要它才能执行 L2 证据，因此必须随二进制一起带上。
 ///
 /// 新增设备时在这里补一行，`builtin_witness_matches_disk` 会把漂移判为失败。
-pub const WITNESS: [(&str, &str, &str); 4] = [
+pub const WITNESS: [(&str, &str, &str); 5] = [
     ("cpu", "c", include_str!("../cpu/witness.c")),
     ("nvidia", "cu", include_str!("../nvidia/witness.cu")),
     ("intel", "cl", include_str!("../intel/witness.cl")),
     ("ascend", "cpp", include_str!("../ascend/witness.cpp")),
+    ("metal", "metal", include_str!("../metal/witness.metal")),
 ];
 
 /// 按 `(vendor, ext)` 查内嵌见证；没有登记时返回 `None`（调用方改读磁盘）。

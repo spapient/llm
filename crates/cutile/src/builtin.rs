@@ -267,20 +267,47 @@ mod tests {
             .expect("见证文件必须存在");
     }
 
-    /// P0 的三台加速器：每条 `provides` 都要有见证声明。
+    /// P0 的四台加速器：每条 `provides` 都要有见证声明。
     ///
     /// 等级仍是 `L0`/`L1`（本机不能执行非 C 见证），但"证据是什么"必须先落成数据；
     /// 少了哪条，补见证就没有完成。
     #[test]
     fn every_accelerator_provide_declares_a_witness() {
         let catalogue = Catalogue::try_builtin().expect("内置数据");
-        for vendor in ["nvidia", "intel", "ascend"] {
+        for vendor in ["nvidia", "intel", "ascend", "metal"] {
             let profile = catalogue.profile(vendor).expect("加速器档案");
             for provide in &profile.provides {
                 assert!(
                     provide.witness.is_some(),
                     "`{vendor}`/`{}` 缺少见证声明",
                     provide.prim
+                );
+            }
+        }
+    }
+
+    /// 见证矩阵：闭集的 16 个原语在四台加速器（NVIDIA / Intel / 昇腾 / Metal）上都能找到
+    /// **带见证的**签名。
+    ///
+    /// 只守"P0 用到的 9 个"会留下一个自相矛盾的档案：写了 `flops_f32 = 94.6e12`
+    /// （132 SM × 128 lane 的 FMA 口径），却没有一条 `mma`——设备声称的算力与它声明的
+    /// 能力对不上。补上的六条（`mma`/`shuffle`/`broadcast`/`scan`/`exp2`/`rcp`）等级都是
+    /// `L0`：有见证源码，没有片段文本，也没有真机执行，协商照样把它们当作不具备。
+    #[test]
+    fn every_accelerator_declares_the_whole_primitive_set() {
+        use crate::atom::Prim;
+        let catalogue = Catalogue::try_builtin().expect("内置数据");
+        for vendor in ["nvidia", "intel", "ascend", "metal"] {
+            let profile = catalogue.profile(vendor).expect("加速器档案");
+            for prim in Prim::ALL {
+                let mut provides = profile.providers(prim).peekable();
+                assert!(
+                    provides.peek().is_some(),
+                    "`{vendor}` 没有声明 `{prim}`：闭集的空白格等于没有证据"
+                );
+                assert!(
+                    provides.all(|provide| provide.witness.is_some()),
+                    "`{vendor}` 的 `{prim}` 有一条签名没有见证"
                 );
             }
         }

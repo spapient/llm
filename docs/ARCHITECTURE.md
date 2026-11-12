@@ -96,7 +96,9 @@ diagnostic / llm-config / annotation → （叶：被大量成员消费）
 | `Format` / `Snapshot` | `checkpoint` | 检查点的文件头与恢复事实（步数 / 并行度 / 层数 / 批行数 + 权重条目表）；条目表本身归 `weights`，不复制 |
 | `Page` / `Table` / `Cache` | `kv` | 分页 KV 的页管理 |
 | `Tape` / `Var` / `Node` / `Requirement` | `autograd` | 反向图的记录：变量的需求（不进图 / 中间 / 终点）、边、深度 |
-| `Schedule` / `Account` | `autograd` | 反向调度（可达剪枝 + 深度降序）与扇出账本（谁的梯度已齐全） |
+| `Schedule` / `Account` | `autograd` | 反向调度（可达剪枝 + 深度降序 + 同深度分层）与扇出账本（谁的梯度已齐全）；两者都在原对象上重填，训练循环不必每步新建 |
+| `Plan` / `Budget` / `Choice` / `Footprint` / `Sizes` | `autograd` | 显存计划：预算内的保留集、释放点与重放步数。`Plan::of` 只读 `Tape`、`Schedule` 与一张形状表，不分配、不执行；与 `cutile::Plan`（单条 kernel 选哪个 tile）不是同一件事 |
+| `Replay` / `Store` | `autograd` | 重放执行：把计划编成"第 `k` 步之前重算哪几步、之后交还哪些激活"的扁平序列表，并驱动整次反向。`Store` 是唯一的口子（`compute` / `free`），真实缓冲归 `train`，这一层不碰数值 |
 | `Group` / `Reduce` / `Collective` | `comm` | 集合通信契约 |
 | `Envelope` / `Kind` / `Version` | `proto` | 线协议帧格式 |
 | `Batch` / `Split` / `Dataset` | `data` | 样本与切分 |

@@ -582,6 +582,31 @@ impl Profile {
             }
         }
 
+        // 一条见证只证明一条签名：两段不同签名指向同一个入口函数时，"每条 provides 都有
+        // 见证"会退化成"每条都指向同一份证据"，执行通过的结论也就无法归属到哪一条。
+        let mut witnesses: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+        for (index, provide) in self.provides.iter().enumerate() {
+            let Some(witness) = provide.witness.as_ref() else {
+                continue;
+            };
+            if let Some(first) =
+                witnesses.insert((witness.file.as_str(), witness.func.as_str()), index)
+            {
+                let previous = &self.provides[first];
+                errors.push(ProfileError::Witness {
+                    prim: provide.prim,
+                    detail: format!(
+                        "见证 `{}` 同时被 `{}/{}` 与 `{}/{}` 引用：一条见证只能证明一条签名",
+                        witness.func,
+                        previous.prim,
+                        previous.impl_name,
+                        provide.prim,
+                        provide.impl_name
+                    ),
+                });
+            }
+        }
+
         for provide in &self.provides {
             match provide.witness.as_ref() {
                 // L2 及以上必须有见证：等级是执行的结论，不是自述。
@@ -1206,6 +1231,31 @@ mod tests {
             "{errors:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 两条签名不能共用一份见证：执行通过的结论必须能归属到具体的那一条。
+    ///
+    /// 见证证明的是"这条签名写的是什么算法"，共用入口会让"每条 provides 都有见证"退化成
+    /// "每条都指向同一份证据"——`mmad` 与 `scalar_fma` 正是两种算法。
+    #[test]
+    fn a_witness_may_serve_only_one_signature() {
+        let mut profile = Profile::parse(ascend()).expect("可解析");
+        let quant = profile
+            .provides
+            .iter()
+            .position(|provide| provide.prim == Prim::Quant)
+            .expect("quant 供给");
+        let mut second = profile.provides[quant].clone();
+        second.impl_name = "scalar_dequant_copy".to_string();
+        profile.provides.push(second);
+        let errors = profile.validate(None).unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ProfileError::Witness { detail, .. } if detail.contains("只能证明一条签名")
+            )),
+            "{errors:?}"
+        );
     }
 
     #[test]

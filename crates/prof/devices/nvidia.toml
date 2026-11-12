@@ -138,3 +138,69 @@ space   = ["GM"]
 op      = ["add", "max"]
 grade   = "L1"
 witness = { file = "nvidia/witness.cu", func = "witness_atomic", expect = [5.0] }
+
+# ── 闭集的其余六条 ──────────────────────────────────────────────────────────
+# 档案描述的是**设备**，不只是 P0 的 `gemv_i4`：sm100 有张量核（`wgmma`）、warp 内
+# 交换/广播/前缀扫描，以及 SFU 的 `ex2`/`rcp`。它们没有片段文本（P0 模板不调用），
+# 所以等级是 L0——"声明了 + 有见证源码"，不是"本机能跑"。
+[[provides]]
+prim     = "mma"
+impl     = "wgmma"
+m        = "<=64"
+n        = "<=256"
+k        = "<=64"
+dt       = ["f16", "bf16", "f8e4m3"]
+space    = ["REG", "FAST"]
+accuracy = ["fp32"]
+grade    = "L0"
+witness  = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
+
+# `shfl.idx` / `shfl.idx.bcast`：warp 内按 lane 取数，宽度受 `[simt].group = 32` 约束。
+[[provides]]
+prim    = "shuffle"
+impl    = "shfl.idx"
+m       = "<=32"
+dt      = ["f32", "i32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L0"
+witness = { file = "nvidia/witness.cu", func = "witness_shuffle", expect = [4.0, 3.0, 2.0, 1.0] }
+
+[[provides]]
+prim    = "broadcast"
+impl    = "shfl.idx.bcast"
+m       = "<=32"
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "nvidia/witness.cu", func = "witness_broadcast", expect = [7.0, 7.0, 7.0, 7.0] }
+
+# `shfl.up` 做含前缀和；`max` 前缀走同一条 lane 序列的另一种运算。
+[[provides]]
+prim    = "scan"
+impl    = "shfl.up"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "nvidia/witness.cu", func = "witness_scan", expect = [1.0, 3.0, 6.0, 10.0] }
+
+[[provides]]
+prim     = "exp2"
+impl     = "ex2.approx"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "nvidia/witness.cu", func = "witness_exp2", expect = [8.0, 0.5] }
+
+[[provides]]
+prim     = "rcp"
+impl     = "rcp.approx"
+dt       = ["f32"]
+space    = ["REG"]
+kind     = ["rcp", "rsqrt"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "nvidia/witness.cu", func = "witness_rcp", expect = [0.25, 0.5] }
