@@ -116,7 +116,7 @@ ccn = 7
 
 [[gate.debt]]
 key = "crates/annotation/src/syntax.rs"
-lines = 1143
+lines = 1228
 
 [[gate.debt]]
 key = "crates/cutile/src/report/common.rs:parse_shape#0"
@@ -655,7 +655,7 @@ key = "crates/prof/src/atom.rs:diff#0"
 ccn = 12
 
 [[gate.debt]]
-key = "crates/prof/src/atom.rs:parse#1"
+key = "crates/prof/src/atom.rs:parse#2"
 ccn = 8
 
 [[gate.debt]]
@@ -937,7 +937,7 @@ key = "crates/weights/src/bin.rs:set_items#0"
 ccn = 6
 
 [[gate.debt]]
-key = "crates/weights/src/bin.rs:storage_kind#0"
+key = "crates/weights/src/bin.rs:storage_dtype#0"
 ccn = 10
 
 [[gate.debt]]
@@ -982,7 +982,7 @@ ccn = 6
 
 [[gate.debt]]
 key = "crates/weights/src/gguf.rs"
-call = 2
+call = 3
 
 [[gate.debt]]
 key = "crates/weights/src/ir.rs:code#0"

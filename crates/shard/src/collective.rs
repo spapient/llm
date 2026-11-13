@@ -28,8 +28,10 @@ mod tests {
                 buffer: &mut [f32],
             ) -> Result<()> {
                 if reduce == Reduce::Sum {
-                    // 单进程组：归约是恒等。
-                    buffer[0] += 0.0;
+                    // 故意做一次可观察的变换：恒等实现在空函数下也能通过，测不出任何东西。
+                    for value in buffer.iter_mut() {
+                        *value *= 2.0;
+                    }
                 }
                 Ok(())
             }
@@ -39,6 +41,6 @@ mod tests {
         Local
             .all_reduce(&group, Reduce::Sum, &mut buffer)
             .expect("归约");
-        assert_eq!(buffer, [1.0]);
+        assert_eq!(buffer, [2.0], "变换必须真的落到缓冲上");
     }
 }

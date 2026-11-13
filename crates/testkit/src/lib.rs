@@ -24,13 +24,16 @@ pub const DEVICE_ENV: &str = "LLM_TEST_DEVICE";
 
 /// 逐个元素比较，`NaN` 与 `NaN` 视为相等（对拍时它两边同源，不该因为 `NaN != NaN` 失败）。
 ///
+/// 两个**相同的无限大**也算相等：`inf - inf` 是 `NaN`，只看差值的判定会把「两边同为无穷」
+/// 判成不等，而它与 `NaN` 对 `NaN` 是同一个理由。
+///
 /// 长度不同直接返回 `false`：对拍的首要条件是形状一致。
 pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
     if left.len() != right.len() {
         return false;
     }
     left.iter().zip(right).all(|(a, b)| {
-        if a.is_nan() && b.is_nan() {
+        if a == b || (a.is_nan() && b.is_nan()) {
             return true;
         }
         (a - b).abs() <= tolerance
@@ -120,6 +123,16 @@ mod tests {
         assert!(approx_eq(&[f32::NAN], &[f32::NAN], 0.0));
     }
 
+    /// `inf - inf` 是 `NaN`：差值判定会把「两边同为无穷」判成不等，而它与 NaN 对 NaN 同理。
+    #[test]
+    fn equal_infinities_match() {
+        for value in [f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(approx_eq(&[value], &[value], 0.0), "{value}");
+        }
+        assert!(!approx_eq(&[f32::INFINITY], &[f32::NEG_INFINITY], 1.0));
+        assert!(!approx_eq(&[f32::INFINITY], &[1.0], 1.0));
+    }
+
     #[test]
     fn gating_accepts_all_lists_and_ignores_blank_entries() {
         assert!(matches("all", "nvidia"));
@@ -130,15 +143,14 @@ mod tests {
     }
 
     #[test]
-    fn scratch_directories_are_created_and_distinct() {
+    fn the_same_tag_reuses_one_directory() {
         let first = scratch_dir("a");
         let second = scratch_dir("a");
         assert!(first.is_dir());
         assert_eq!(first, second, "同标签同进程应复用同一目录");
-        let other = scratch_dir("b");
-        assert_ne!(first, other);
+        assert_ne!(first, scratch_dir("b"), "不同标签必须各自一个目录");
         let _ = std::fs::remove_dir_all(&first);
-        let _ = std::fs::remove_dir_all(&other);
+        let _ = std::fs::remove_dir_all(scratch_dir("b"));
     }
 
     #[test]

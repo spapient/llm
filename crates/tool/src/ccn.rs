@@ -135,11 +135,8 @@ fn definition(tokens: &[Token], at: usize) -> Option<(Range, usize)> {
                 return Some((range, idx));
             }
             Token::Punct { ch: ';', .. } => return None,
-            Token::Group { items, .. } => {
-                // 签名组内只可能有函数指针类型，递归不会产生定义。
-                let mut nested = Vec::new();
-                collect(items, &mut nested);
-            }
+            // 签名组内只可能有函数指针类型，递归不会产生定义——也就不必再走一遍并丢掉结果。
+            Token::Group { .. } => {}
             Token::Ident { .. } | Token::Punct { .. } | Token::Literal { .. } => {}
         }
     }

@@ -204,5 +204,5 @@ fn read_wire(cur: &mut Cursor<'_>) -> Result<Wire> {
 }
 
 fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("pack::seg")
+    Error::new(Code::Invalid, message).with("weights::seg")
 }

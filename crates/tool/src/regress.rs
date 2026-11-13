@@ -153,6 +153,7 @@ impl Case {
 /// `over-peak` / `cache-resident`），回答"这次测量能不能与档案峰值比较"；本类型回答
 /// "与基线相比是回退还是改进"。两者会同时出现在一份 CI 报告里，同名等于让人读错结论。
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[must_use]
 pub enum Judgement {
     /// 在预算内（含与基线持平）。
     Pass,

@@ -4,7 +4,7 @@
 //! `deny(unsafe_code)`。所有 `mmap`/`munmap` 的 FFI 与裸指针操作都收敛在本文件。
 //! 映射以 `PROT_READ | MAP_PRIVATE` 建立，内容不可改、写时复制不触发，因此把它当作 `&[u8]`
 //! 共享是线程安全的。[`Mmap`] 在 `Drop` 时自动 `munmap`，不泄漏映射。
-//! 上层把该切片交给 `pack::Archive::parse` 做零拷贝打开。
+//! 上层把该切片交给 `weights::Archive::parse` 做零拷贝打开。
 
 // 工作区默认 deny(unsafe_code)；本模块是经架构决策隔离的唯一 unsafe 岛，对整个模块放开。
 #![allow(unsafe_code)]
@@ -51,17 +51,8 @@ unsafe impl Sync for Mmap {}
 impl Mmap {
     /// 打开并完整映射一个文件为只读。
     pub fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path).map_err(|error| {
-            Error::new(Code::Io, format!("打开 {} 失败：{error}", path.display()))
-                .with("storage::mmap::Mmap::open")
-        })?;
-        let len = file
-            .metadata()
-            .map_err(|error| {
-                Error::new(Code::Io, format!("取 {} 长度失败：{error}", path.display()))
-                    .with("storage::mmap::Mmap::open")
-            })?
-            .len();
+        let (file, len) = open_readonly(path)?;
+        let len = mapped_len(path, len)?;
 
         // 空文件不映射：mmap 长度 0 的行为跨平台不可移植，直接返回空视图。
         if len == 0 {
@@ -74,7 +65,7 @@ impl Mmap {
         let ptr = unsafe {
             mmap(
                 core::ptr::null_mut(),
-                len as usize,
+                len,
                 PROT_READ,
                 MAP_PRIVATE,
                 file.as_raw_fd(),
@@ -91,10 +82,7 @@ impl Mmap {
             );
         }
 
-        Ok(Self {
-            ptr,
-            len: len as usize,
-        })
+        Ok(Self { ptr, len })
     }
 
     /// 映射的只读字节。
@@ -138,13 +126,39 @@ impl Drop for Mmap {
     }
 }
 
+/// 打开文件并取出长度；两类 `io` 错误各自说清是"打不开"还是"读不到长度"。
+fn open_readonly(path: &Path) -> Result<(File, u64)> {
+    let file = File::open(path).map_err(|error| {
+        Error::new(Code::Io, format!("打开 {} 失败：{error}", path.display()))
+            .with("storage::mmap::Mmap::open")
+    })?;
+    let len = file
+        .metadata()
+        .map_err(|error| {
+            Error::new(Code::Io, format!("取 {} 长度失败：{error}", path.display()))
+                .with("storage::mmap::Mmap::open")
+        })?
+        .len();
+    Ok((file, len))
+}
+
+/// 文件长度 → `usize`：32 位目标上一个 >4 GiB 的文件必须报错，而不是悄悄只映射前缀。
+fn mapped_len(path: &Path, len: u64) -> Result<usize> {
+    usize::try_from(len).map_err(|_| {
+        Error::new(
+            Code::Io,
+            format!("{} 超过本目标可映射的长度（usize 上限）", path.display()),
+        )
+        .with("storage::mmap::Mmap::open")
+    })
+}
+
 /// `MAP_FAILED` 指针值 `(void*)-1`。
+///
+/// 用 `without_provenance_mut(usize::MAX)` 而不是 `(-1isize) as *mut c_void`：后者在非 64 位
+/// 目标上曾被 `cfg` 整块裁掉，函数体变成空 `{}`、返回类型不符，交叉构建直接编译失败。
 fn map_failed() -> *mut c_void {
-    #[allow(clippy::cast_possible_wrap)]
-    #[cfg(target_pointer_width = "64")]
-    {
-        (-1isize) as usize as *mut c_void
-    }
+    core::ptr::without_provenance_mut::<c_void>(usize::MAX)
 }
 
 #[cfg(test)]

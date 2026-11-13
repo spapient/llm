@@ -120,6 +120,14 @@ impl Key {
 mod tests {
     use super::*;
 
+    /// `ALL` 是键闭集里唯一没有穷尽 `match` 保护的事实：漏写一行不会编译报错，只会让新键从
+    /// 配置文件、环境变量与诊断输出里同时消失。这里把表的内容逐项锁定，加键时必须显式改这里。
+    #[test]
+    fn the_key_table_lists_every_variant() {
+        let file_keys: Vec<&str> = Key::ALL.iter().map(|key| key.file_key()).collect();
+        assert_eq!(file_keys, ["cache.dir", "work.dir", "data.root"]);
+    }
+
     #[test]
     fn every_key_round_trips_through_its_file_key() {
         for key in Key::ALL {

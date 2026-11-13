@@ -78,10 +78,13 @@ impl Shape {
     }
 
     /// 该元素类型下需要的字节数（按位向上取整，`U4` 会小于 `numel`）。
+    ///
+    /// 公式的唯一实现在 L1 的 [`DType::bytes_for`]：这里只把 `usize` 的元素数搬进它接受
+    /// 的 `u64`，再把结果搬回来——两处各写一遍 `(numel * bits).div_ceil(8)` 迟早会漂移，
+    /// 而装载方的缓冲校验正是按 `numel` 与字节数比对。
     pub fn element_bytes(&self, dtype: DType) -> usize {
-        let bits = u64::from(dtype.bits());
-        let total = (self.numel() as u64).saturating_mul(bits);
-        usize::try_from(total.div_ceil(8)).unwrap_or(usize::MAX)
+        let numel = u64::try_from(self.numel()).unwrap_or(u64::MAX);
+        usize::try_from(dtype.bytes_for(numel)).unwrap_or(usize::MAX)
     }
 }
 
@@ -210,6 +213,10 @@ impl<'a> Tensor<'a> {
 ///
 /// 只实现到 `DType` 已有的宽度：`f16` / `bf16` 没有稳定的 Rust 标量类型，
 /// `U4` 是按位打包的存储形态（不是一种元素宽度），两者都不适合做视图的元素类型。
+///
+/// 映射必须**逐个精确**：`u8` 就是 [`DType::U8`]，不是 `I8`。量化权重常以 `u8` 缓冲搬运，
+/// 但那是装载方的字节视图（[`Tensor`]），“语义是有符号 int8” 得在反量化时显式说出来；
+/// 让无符号标量冒充有符号类型，会让上层按键取内核时静默选错分支。
 pub trait Element: Copy + 'static {
     /// 对应的元素类型。
     const DTYPE: DType;
@@ -224,7 +231,7 @@ impl Element for i8 {
 }
 
 impl Element for u8 {
-    const DTYPE: DType = DType::I8;
+    const DTYPE: DType = DType::U8;
 }
 
 /// 泛型只读视图：形状 + 步长 + 调用方的 `&[E]`。
@@ -516,11 +523,9 @@ mod tests {
         }
         assert_eq!(<f32 as Element>::DTYPE, DType::F32);
         assert_eq!(<i8 as Element>::DTYPE, DType::I8);
-        assert_eq!(
-            <u8 as Element>::DTYPE,
-            DType::I8,
-            "无符号与有符号共用 int8 宽度"
-        );
+        // 无符号标量不许冒充有符号类型：`U8` 与 `I8` 在闭集里是两个变体。
+        assert_eq!(<u8 as Element>::DTYPE, DType::U8);
+        assert_ne!(<u8 as Element>::DTYPE, <i8 as Element>::DTYPE);
     }
 
     const SIX: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];

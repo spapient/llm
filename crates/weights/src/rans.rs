@@ -374,7 +374,7 @@ fn decode_one(
 
 /// 构造一个内部错误，统一携带模块定位。
 fn fault(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("pack::rans")
+    Error::new(Code::Invalid, message).with("weights::rans")
 }
 
 #[cfg(test)]

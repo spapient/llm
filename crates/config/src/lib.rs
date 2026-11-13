@@ -34,7 +34,9 @@
 //!
 //! - 配置文件里出现未登记的键会直接报 [`Error::UnknownKey`]，而不是被静默忽略；
 //! - 环境变量名也由 [`Key::env_vars`] 给出，不存在"某个模块自己拼一个变量名"；
-//! - 新增一项必须先改本 crate，重复与交叉引用在编译期就暴露。
+//! - 新增一项必须先改本 crate：`file_key` / `env_suffixes` / `kind` / `doc` 都是对 `self` 的
+//!   穷尽 `match`，漏一处就编译不过。`Key::ALL` 是唯一没人替你把关的地方（定长数组，加变体不会
+//!   报错），由 `the_key_table_lists_every_variant` 逐项锁住内容。
 //!
 //! # 例子
 //!

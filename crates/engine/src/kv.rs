@@ -184,7 +184,10 @@ impl Cache {
             ),
             Some(live) if !*live => Err(Error::new(
                 Code::Invalid,
-                format!("页 {} 被重复归还", page.id()),
+                format!(
+                    "页 {} 不在借出状态：要么被重复归还，要么从未分配",
+                    page.id()
+                ),
             )
             .with("engine::kv::Cache::release")),
             Some(live) => {

@@ -382,7 +382,15 @@ pub(crate) fn parse_frontend(tokens: &[Token]) -> Result<Frontend, Error> {
 pub(crate) const MODEL_KEYS: [&str; 4] = ["name", "shape", "dtype", "skeleton"];
 
 /// `skeleton` 闭集：决定生成的 `MODEL` 走哪副算子骨架。
-pub(crate) const SKELETONS: [&str; 11] = [
+///
+/// 每个成员在 `codegen::render_model` 里都有**自己的分支**（`every_skeleton_has_a_branch` 逐项
+/// 渲染核对）；`gemm` 唯一特殊：它按注册名在 [`GEMM_SKELETON_NAMES`] 里挑具体的 gemm 模块。
+///
+/// 缺省值是 `gemv`。早期版本把缺省写成 `gemm`，而 `gemm` 又靠「名字不是 `gemm_*` 就落到 gemv」
+/// 收尾——于是没写 `skeleton` 的 `gemv_f32`/`gemv_i8`/`gemv_i4` 实际一直用着 gemv 骨架，
+/// 声明里却写着 `gemm`。
+pub(crate) const SKELETONS: [&str; 12] = [
+    "gemv",
     "gemm",
     "elementwise",
     "unary",
@@ -395,6 +403,12 @@ pub(crate) const SKELETONS: [&str; 11] = [
     "dequant_i4",
     "attention",
 ];
+
+/// `gemm` 骨架认识的注册名：这三种各自有 `op::gemm_*` 模块，名字就是模块选择器。
+///
+/// 这张表同时是文法层的判据——`skeleton = "gemm"` 配上别的名字会在这里被拒，而不是在生成器里
+/// 悄悄退化成 gemv。
+pub(crate) const GEMM_SKELETON_NAMES: [&str; 3] = ["gemm_f32", "gemm_i8", "gemm_i4"];
 
 /// `#[model(..)]` 的 `dtype` 闭集：对拍**有阈值**的那几种输出类型。
 ///
@@ -518,20 +532,7 @@ pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
                 }
                 dtype = Some(text);
             }
-            "skeleton" => {
-                let token = cursor.next("`skeleton` 的值")?;
-                let text = string(token).map_err(|error| error.rebased(key_position))?;
-                if !SKELETONS.contains(&text.as_str()) {
-                    return Err(Error::at(
-                        key_position,
-                        format!(
-                            "`skeleton = \"{text}\"` 不在骨架闭集内（可用：{}）",
-                            SKELETONS.join("、")
-                        ),
-                    ));
-                }
-                skeleton = Some(text);
-            }
+            "skeleton" => skeleton_value(&mut cursor, key_position, &mut skeleton)?,
             other => {
                 return Err(Error::at(
                     key_position,
@@ -548,12 +549,61 @@ pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
     let name = name.ok_or_else(|| Error::at(0, "缺少必填键 `name = \"..\"`"))?;
     let shape = shape.ok_or_else(|| Error::at(0, "缺少必填键 `shape = [m, n]`"))?;
     let dtype = dtype.ok_or_else(|| Error::at(0, "缺少必填键 `dtype = \"..\"`"))?;
+    let skeleton = skeleton.unwrap_or_else(|| "gemv".to_string());
+    check_gemm_name(&skeleton, &name)?;
     Ok(ModelDecl {
         name,
         shape,
         dtype,
-        skeleton: skeleton.unwrap_or_else(|| "gemm".to_string()),
+        skeleton,
     })
+}
+
+/// `skeleton = ".."` 这一个键：重复与闭集之外都在这里拒绝。
+///
+/// 单独成函数是为了让 `parse_model` 的每个键都是同一形状：它已经有四种键各自的分支，
+/// 骨架判定（重复 + 闭集）再展开一次只会让"加一个键"越来越难读。
+fn skeleton_value(
+    cursor: &mut Cursor<'_>,
+    key_position: Position,
+    slot: &mut Option<String>,
+) -> Result<(), Error> {
+    if slot.is_some() {
+        return Err(Error::at(
+            key_position,
+            "注解键 `skeleton` 重复：一条语义只有一个骨架",
+        ));
+    }
+    let token = cursor.next("`skeleton` 的值")?;
+    let text = string(token).map_err(|error| error.rebased(key_position))?;
+    if !SKELETONS.contains(&text.as_str()) {
+        return Err(Error::at(
+            key_position,
+            format!(
+                "`skeleton = \"{text}\"` 不在骨架闭集内（可用：{}）",
+                SKELETONS.join("、")
+            ),
+        ));
+    }
+    *slot = Some(text);
+    Ok(())
+}
+
+/// `gemm` 骨架按注册名选模块：名字不在 [`GEMM_SKELETON_NAMES`] 里就没有骨架可用。
+///
+/// 宁可在这里报错，也不要让生成器落到别的骨架上去（那会生成一份编译得过、却绑错格式的
+/// `MODEL`）。
+fn check_gemm_name(skeleton: &str, name: &str) -> Result<(), Error> {
+    if skeleton != "gemm" || GEMM_SKELETON_NAMES.contains(&name) {
+        return Ok(());
+    }
+    Err(Error::at(
+        0,
+        format!(
+            "`skeleton = \"gemm\"` 只适用于 {} 这几种注册名（gemm 骨架按名字选模块）；`{name}` 请显式写出它实际用的骨架",
+            GEMM_SKELETON_NAMES.join("、")
+        ),
+    ))
 }
 
 /// `#[model]` 标注的是**一个具体格式的别名**：`type 名字 = <具体实例>;`。
@@ -603,9 +653,9 @@ pub(crate) fn model_target(tokens: &[Token], attribute: &str) -> Result<String, 
     ))
 }
 
-/// 与 [`type_name`] 同一判据，只是错误里写的注解名不同。
+/// 与 [`model_target`] 同一判据，只是错误里写的注解名不同。
 ///
-/// 两道注解标的是同一类东西——"一份配置 + 一个具体类型"。被判据只有一份，所以
+/// 三道注解标的是同一类东西——"一份配置 + 一个具体类型"。判据只有一份，所以
 /// `#[frontend]` 与 `#[layer]` 不会对"能不能标 fn / 能不能带泛型"给出两种答案。
 /// 注解名作为参数传进来，是为了让错误文案指向用户真正写下的那一个。
 pub(crate) fn target_name(tokens: &[Token], attribute: &str) -> Result<String, Error> {
@@ -1126,6 +1176,41 @@ mod tests {
             .is_err(),
             "重复键"
         );
+    }
+
+    #[test]
+    fn a_model_skeleton_defaults_to_the_branch_it_actually_takes() {
+        // 缺省值必须等于生成器实际走的那条分支：早期缺省写 `gemm`，而 `gemm` 又靠"名字不是
+        // `gemm_*` 就落到 gemv"收尾，声明与行为于是各说一套。
+        let model = parse_model(&lex(r#"name = "gemv_i4", shape = [4, 4], dtype = "f32""#))
+            .expect("合法注解");
+        assert_eq!(model.skeleton(), "gemv");
+    }
+
+    #[test]
+    fn the_gemm_skeleton_only_accepts_its_registered_names() {
+        for name in GEMM_SKELETON_NAMES {
+            let text =
+                format!(r#"name = "{name}", shape = [4, 4], dtype = "f32", skeleton = "gemm""#);
+            assert_eq!(
+                parse_model(&lex(&text)).expect("名字在表里").skeleton(),
+                "gemm"
+            );
+        }
+        let error = parse_model(&lex(
+            r#"name = "gemv_f32", shape = [4, 4], dtype = "f32", skeleton = "gemm""#,
+        ))
+        .expect_err("`gemm` 骨架按名字选模块，`gemv_f32` 不在其中");
+        assert!(error.message().contains("gemm_f32"), "{error}");
+    }
+
+    #[test]
+    fn a_repeated_skeleton_key_is_rejected() {
+        let error = parse_model(&lex(
+            r#"name = "gemm_f32", shape = [4, 4], dtype = "f32", skeleton = "gemm", skeleton = "gemm""#,
+        ))
+        .expect_err("重复键");
+        assert!(error.message().contains("重复"), "{error}");
     }
 
     #[test]

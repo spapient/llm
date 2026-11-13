@@ -20,20 +20,24 @@ pub(crate) struct Header {
 }
 
 impl Header {
-    /// 校验尾字节数：第 2 版起每帧 4 字节。
-    fn trailer(&self) -> usize {
-        if self.version.has_checksum() {
-            TRAILER_LEN
-        } else {
-            0
-        }
-    }
-
     /// 整帧字节数：帧头 + 载荷 + 校验尾。
     ///
     /// 不会溢出：`len` 在 [`header`] 里已被 [`MAX_PAYLOAD`] 挡住。
     fn total(&self) -> usize {
-        HEADER_LEN + self.len + self.trailer()
+        HEADER_LEN + self.len + trailer_len(self.version)
+    }
+}
+
+/// 校验尾字节数：第 2 版起每帧 4 字节。
+///
+/// 帧头的 [`Header::total`] 与 [`Envelope::encoded_len`] 都从这里取：两处各写一遍
+/// `if version.has_checksum()`，将来加一版更长的尾时就会变成「帧头说 N 字节、实际切 N+4」，
+/// 错位之后整条流都解不开。
+fn trailer_len(version: Version) -> usize {
+    if version.has_checksum() {
+        TRAILER_LEN
+    } else {
+        0
     }
 }
 
@@ -231,7 +235,7 @@ impl Envelope {
     pub fn encoded_len(&self) -> Result<usize> {
         self.check()
             .map_err(|error| error.with("proto::Envelope::encoded_len"))?;
-        Ok(HEADER_LEN + self.payload.len() + self.trailer())
+        Ok(HEADER_LEN + self.payload.len() + trailer_len(self.version))
     }
 
     /// 编码成一帧，复用调用方已有的缓冲。
@@ -299,15 +303,6 @@ impl Envelope {
                 Frame::new(header.version, header.kind, payload),
                 &bytes[total..],
             )),
-        }
-    }
-
-    /// 校验尾字节数。
-    fn trailer(&self) -> usize {
-        if self.version.has_checksum() {
-            TRAILER_LEN
-        } else {
-            0
         }
     }
 

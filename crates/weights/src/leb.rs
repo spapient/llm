@@ -104,11 +104,11 @@ impl<'a> Cursor<'a> {
 }
 
 fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("pack::leb")
+    Error::new(Code::Invalid, message).with("weights::leb")
 }
 
 fn end(what: &str) -> Error {
-    Error::new(Code::Invalid, format!("字节不足，读不出 {what}")).with("pack::leb")
+    Error::new(Code::Invalid, format!("字节不足，读不出 {what}")).with("weights::leb")
 }
 
 #[cfg(test)]

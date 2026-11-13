@@ -139,6 +139,8 @@ impl fmt::Display for Version {
 /// 帧类型闭集。
 ///
 /// 加一个变体要同步 [`Kind::ALL`] 与 [`Kind::code`]：类型是日志与对端行为的对外契约。
+/// [`Kind::from_code`] 由 `ALL` 推出，不再单独维护一张解码表——那样漏一处只有发送端能编、
+/// 接收端却认不出，正是跨版本互通最难查的一类问题。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// 一个请求的开始。
@@ -166,14 +168,10 @@ impl Kind {
     }
 
     /// 由编码还原；未知编码返回 `None`。
+    ///
+    /// 唯一的事实源是 [`Kind::code`]：这里的查找由 [`Kind::ALL`] 驱动，不再手写第二张表。
     pub fn from_code(code: u16) -> Option<Self> {
-        match code {
-            1 => Some(Self::Request),
-            2 => Some(Self::Chunk),
-            3 => Some(Self::Error),
-            4 => Some(Self::Done),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|kind| kind.code() == code)
     }
 
     /// 稳定的短名：写进日志与诊断，不随翻译变化（线上用的是 [`Kind::code`]）。
@@ -370,6 +368,22 @@ mod tests {
         }
     }
 
+    /// 帧头也在校验范围内，而帧头里唯一“改成另一个值也合法”的字段是类型：
+    /// 把 `chunk` 改成 `error` 之后帧头检查全部通过，只有校验和能发现它。
+    #[test]
+    fn a_tampered_type_is_caught_only_by_the_checksum() {
+        let mut frame = envelope().frame().expect("编码");
+        assert_eq!(frame[4], 2, "第 5 字节是 `Kind::Chunk` 的线上编码");
+        frame[4] = 3;
+        assert_eq!(
+            Kind::from_code(3),
+            Some(Kind::Error),
+            "改后的值本身是合法类型"
+        );
+        let error = Envelope::parse(&frame).expect_err("必须拒绝");
+        assert!(error.to_string().contains("校验和"), "{error}");
+    }
+
     /// 第 1 版没有校验尾：同一个载荷的第 1 版帧必须照旧能读，不能因为"本端升级了"就拒收。
     #[test]
     fn a_first_version_frame_still_parses_after_the_format_grew_a_trailer() {
@@ -399,16 +413,24 @@ mod tests {
 
     #[test]
     fn kind_codes_are_a_closed_set() {
+        // 字面锁定线上编码：`ALL` 顺序是唯一会被手改的地方，改了这里必须显式改期望。
+        assert_eq!(
+            Kind::ALL.iter().map(|kind| kind.code()).collect::<Vec<_>>(),
+            [1, 2, 3, 4],
+            "线上编码是对端契约，不允许随枚举顺序漂移"
+        );
         for kind in Kind::ALL {
             assert_eq!(Kind::from_code(kind.code()), Some(kind));
             assert!(!kind.as_str().is_empty());
             assert_eq!(kind.to_string(), kind.as_str());
         }
-        assert_eq!(Kind::from_code(0), None);
-        assert_eq!(Kind::from_code(9), None);
-        let codes: std::collections::BTreeSet<u16> =
-            Kind::ALL.iter().map(|kind| kind.code()).collect();
-        assert_eq!(codes.len(), Kind::ALL.len(), "编码必须两两不同");
+        for code in 0..=u16::MAX {
+            assert_eq!(
+                Kind::from_code(code).is_some(),
+                Kind::ALL.iter().any(|kind| kind.code() == code),
+                "`from_code({code})` 与线上编码表不一致"
+            );
+        }
     }
 
     #[test]

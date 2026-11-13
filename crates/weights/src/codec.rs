@@ -26,7 +26,8 @@ impl Codec {
             0 => Ok(Self::Store),
             1 => Ok(Self::Rans),
             other => Err(
-                Error::new(Code::Unsupported, format!("未知段 codec {other}")).with("pack::codec"),
+                Error::new(Code::Unsupported, format!("未知段 codec {other}"))
+                    .with("weights::codec"),
             ),
         }
     }

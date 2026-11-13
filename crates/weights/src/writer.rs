@@ -72,7 +72,7 @@ impl Writer {
         if self.segs.iter().any(|known| known.name == segment.name) {
             return Err(
                 Error::new(Code::Invalid, format!("段 `{}` 重复", segment.name))
-                    .with("pack::Writer::push"),
+                    .with("weights::Writer::push"),
             );
         }
         self.segs.push(segment);
@@ -192,7 +192,7 @@ impl Writer {
                 Code::Invalid,
                 format!("缓冲区 {} 字节装不下容器", out.len()),
             )
-            .with("pack::Writer::encode_into"));
+            .with("weights::Writer::encode_into"));
         }
         Ok(sink.written())
     }
@@ -205,7 +205,7 @@ impl Writer {
             let _ = std::fs::remove_file(&temp);
             return Err(
                 Error::new(Code::Io, format!("写入 {} 失败：{error}", path.display()))
-                    .with("pack::Writer::write_to_path"),
+                    .with("weights::Writer::write_to_path"),
             );
         }
         // 目录 fsync 尽力而为：部分文件系统不支持，失败不应把成功改判成失败。
@@ -253,7 +253,7 @@ impl Writer {
                 Code::Invalid,
                 format!("align_log {align_log} 超过 {MAX_ALIGN_LOG}"),
             )
-            .with("pack::Writer"));
+            .with("weights::Writer"));
         }
         Ok(())
     }

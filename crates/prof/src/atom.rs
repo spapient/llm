@@ -995,7 +995,7 @@ impl fmt::Display for Mismatch {
         match self {
             Self::PrimAbsent { prim } => write!(f, "该档案未声明 `{prim}`"),
             Self::ExtentTooSmall { label, need, have } => {
-                write!(f, "{label} {} < {}", have.hi, need.lo)
+                write!(f, "{label}: 需求 {need} 不被 {have} 覆盖")
             }
             Self::DtMissing(set) => write!(f, "dt 缺 {set}"),
             Self::SpaceMissing(set) => write!(f, "space 缺 {set}"),
@@ -1110,10 +1110,16 @@ mod tests {
         assert!(!have.covers(&need));
         let diff = have.diff(&need);
         let text = diff.iter().map(ToString::to_string).collect::<Vec<_>>();
+        // 两条都必须是真的陈述：`Span` 两个方向都可能不覆盖，只打印上界会写出
+        // “16 < 8” 这种数学上为假的一句话。
         assert!(
-            text.contains(&"m 16 < 16".to_string()) || text.iter().any(|t| t.starts_with("m "))
+            text.contains(&"m: 需求 16..64 不被 16 覆盖".to_string()),
+            "{text:?}"
         );
-        assert!(text.contains(&"n 16 < 8".to_string()));
+        assert!(
+            text.contains(&"n: 需求 8..128 不被 16 覆盖".to_string()),
+            "{text:?}"
+        );
         assert!(text.contains(&"dt 缺 bf16".to_string()));
         assert!(text.contains(&"op 缺 sum".to_string()));
         assert!(!text.iter().any(|t| t.starts_with("space")));

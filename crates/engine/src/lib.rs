@@ -118,6 +118,15 @@ impl Sequence {
                     .with("engine::Sequence::new"),
             );
         }
+        // 上下文长度在整条生命周期里只增不减，`len()` 与 `len() + 1` 都不该溢出：一次校验
+        // 比每处调用点各写一个 `saturating_add` 便宜，也避免“同一族量一处回绕、一处饱和”。
+        if prompt_len.checked_add(max_new).is_none() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("prompt_len {prompt_len} 加 max_new {max_new} 溢出：上下文长度装不下"),
+            )
+            .with("engine::Sequence::new"));
+        }
         Ok(Self {
             id,
             prompt_len,
@@ -196,6 +205,9 @@ impl Sequence {
     }
 
     /// 当前上下文长度（提示 + 已生成）。
+    ///
+    /// 不会溢出：[`Sequence::new`] 已经校验过 `prompt_len + max_new` 装得下，而 `produced`
+    /// 永远小于 `max_new`。
     pub fn len(&self) -> usize {
         self.prompt_len + self.produced
     }
@@ -329,8 +341,7 @@ impl Scheduler {
             );
         }
         self.check_width(sequence, "engine::Scheduler::advance")?;
-        // 这一步要写的 token 落在 `len()` 这个位置，所以页表要覆盖 `len + 1` 个位置。
-        let needed = pages_for(sequence.len() + 1, self.cache.page_size());
+        let needed = self.next_pages(sequence);
         let table = &mut self.running[index].table;
         let extra = needed.saturating_sub(table.len());
         if extra > 0 {
@@ -410,7 +421,16 @@ impl Scheduler {
         if sequence.is_done() {
             return false;
         }
-        pages_for(sequence.len() + 1, self.cache.page_size()) > table.len()
+        self.next_pages(sequence) > table.len()
+    }
+
+    /// 写到下一个 token 需要的页数：这一步落在 `len()` 这个位置，所以页表要盖住 `len + 1` 个位置。
+    ///
+    /// [`Scheduler::advance`] 与 [`Scheduler::needs_page`] 都从这里取：两处各写一遍
+    /// `pages_for(len + 1)` 时，任一处改成 `len` 或 `>=`，[`Scheduler::blocked`] 就会把无辜的
+    /// 序列报成受害者，而调用方会据此结束错的序列。
+    fn next_pages(&self, sequence: &Sequence) -> usize {
+        pages_for(sequence.len() + 1, self.cache.page_size())
     }
 
     /// 页宽必须与页池一致：页数是按它算的，差一档就会少占一页。
@@ -555,6 +575,13 @@ mod tests {
         );
         assert_eq!(
             Sequence::new(0, 1, 0, 16, crate::exec::Stream::new(0))
+                .unwrap_err()
+                .code(),
+            Code::Invalid
+        );
+        // 上下文长度在构造期就校验：否则 `len() + 1` 会在某次推进里回绕成一个很小的页数。
+        assert_eq!(
+            Sequence::new(0, usize::MAX, 1, 16, crate::exec::Stream::new(0))
                 .unwrap_err()
                 .code(),
             Code::Invalid

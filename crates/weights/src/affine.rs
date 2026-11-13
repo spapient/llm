@@ -106,7 +106,7 @@ impl Quant {
                 Code::Unsupported,
                 format!("未知量化 scheme {scheme}，当前只支持 affine(0)"),
             )
-            .with("pack::quant"));
+            .with("weights::quant"));
         }
         let axis = cur.read_u32()?;
         let block = cur.read_u32()?;
@@ -137,7 +137,7 @@ fn read_wire(cur: &mut Cursor<'_>) -> Result<Wire> {
 }
 
 fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("pack::quant")
+    Error::new(Code::Invalid, message).with("weights::quant")
 }
 
 #[cfg(test)]

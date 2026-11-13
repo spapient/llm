@@ -107,7 +107,7 @@ impl<'a> Archive<'a> {
                 Code::Unsupported,
                 format!("版本 {version} 高于本端支持的 {VERSION}"),
             )
-            .with("pack::Archive"));
+            .with("weights::Archive"));
         }
         if version < VERSION {
             return Err(invalid(format!(
@@ -278,5 +278,5 @@ impl<'a> Archive<'a> {
 }
 
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with("pack::Archive")
+    Error::new(Code::Invalid, message).with("weights::Archive")
 }

@@ -12,7 +12,7 @@
 
 use crate::syntax::{Declaration, Frontend, ModelDecl};
 
-/// 渲染实现；`ty` 必须是 [`crate::syntax::type_name`] 给出的类型名。
+/// 渲染实现；`ty` 必须是 [`crate::syntax::target_name`] 给出的类型名。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     let name = literal(declaration.name());
     let shape = shape(declaration.out());
@@ -185,11 +185,15 @@ fn capitalised(word: &str) -> String {
 /// 实例，`group` 直接取 `Format::GRAIN`。注解里的字面量因此只管注册名、生产形状与输出类型，
 /// "这份语义是哪份格式"由类型参数保证——别名不实现 `Format` 就编译不过。
 ///
-/// 两条断言是注解与类型之间的契约，全部在编译期成立：
+/// 两条断言是注解与类型之间的契约，全部在编译期成立，但**只由 `gemv` 骨架生成**——只有它拿
+/// 得到 `Format::GRAIN` 这个粒度（其余骨架的粒度写在 `op` 的语义表里，不经过类型参数）：
 ///
 /// 1. 形状粒度必须大于 0——`sample` 按它切标度，0 会让除法失真；
 /// 2. 生产形状的 `M` 必须是它的整数倍——量化算子按分组对齐，写错在 `cargo check` 就失败，
 ///    而不是等 `doctor` 算代价时才报。
+///
+/// `gemm` 骨架按注册名在 `syntax::GEMM_SKELETON_NAMES` 里选 `op::gemm_*` 模块；名字不在表里时
+/// 文法层直接拒绝，生成器不会退化成别的骨架。
 ///
 /// 生成的测试把四份事实对齐：注册表里的语义就是这份 `MODEL`、样本与 `.k` 签名一致、生产形状
 /// 能算出代价、注解里的 `dtype` 字符串解析成同一个变体。任何一处漂移都在 `cargo test` 里
@@ -318,37 +322,7 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
             code.push_str("    reference: ::llm_op::attention::reference,\n");
         }
         code.push_str("};\n\n");
-    } else if declaration.name() == "gemm_f32" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::gemm_f32::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::gemm_f32::project_shape,\n");
-        code.push_str("    cost: ::llm_op::gemm_f32::cost,\n");
-        code.push_str("    sample: ::llm_op::gemm_f32::sample,\n");
-        code.push_str("    reference: ::llm_op::gemm_f32::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.name() == "gemm_i8" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::gemm_i8::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::gemm_i8::project_shape,\n");
-        code.push_str("    cost: ::llm_op::gemm_i8::cost,\n");
-        code.push_str("    sample: ::llm_op::gemm_i8::sample,\n");
-        code.push_str("    reference: ::llm_op::gemm_i8::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.name() == "gemm_i4" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::gemm_i4::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::gemm_i4::project_shape,\n");
-        code.push_str("    cost: ::llm_op::gemm_i4::cost,\n");
-        code.push_str("    sample: ::llm_op::gemm_i4::sample,\n");
-        code.push_str("    reference: ::llm_op::gemm_i4::reference,\n");
-        code.push_str("};\n\n");
-    } else {
+    } else if declaration.skeleton() == "gemv" {
         code.push_str(&format!(
             "    group: <{ty} as ::llm_op::gemv::Format>::GRAIN as u32,\n"
         ));
@@ -375,6 +349,26 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
             "    assert!({m}usize / <{ty} as ::llm_op::gemv::Format>::GRAIN * <{ty} as ::llm_op::gemv::Format>::GRAIN == {m}usize, \"生产形状的 M 必须是形状粒度的整数倍\");\n"
         ));
         code.push_str("};\n\n");
+    } else if declaration.skeleton() == "gemm" {
+        // 文法层保证名字在 `GEMM_SKELETON_NAMES` 里，而三种名字就是 `op` 的模块名：不必为
+        // 每种名字各写一份逐字相同的字段列表。
+        render_concrete_body(
+            &mut code,
+            "1u32",
+            declaration.name(),
+            &format!("::llm_op::{}::reference", declaration.name()),
+            m,
+            n,
+            &dtype,
+        );
+    } else {
+        // 文法层保证 `skeleton` 在闭集里、`gemm` 的注册名在 `GEMM_SKELETON_NAMES` 里，所以走到
+        // 这里只剩一个原因：闭集加了成员、生成器没加分支。早退回一条编译错误，而不是悄悄挑
+        // 一个别的骨架——那会生成一份编译得过、却绑错格式的 `MODEL`。
+        return format!(
+            "compile_error!(\"注解层内部错误：骨架 `{}` 没有生成分支\");\n",
+            declaration.skeleton()
+        );
     }
 
     code.push_str("#[cfg(test)]\nmod __model_check {\n");
@@ -437,6 +431,32 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     code.push_str("        );\n");
     code.push_str("    }\n}\n");
     code
+}
+
+/// `MODEL` 体里"模块路径完全确定"的那一半：`cost`/`sample`/`reference` 都是非泛型函数。
+///
+/// 七种具体骨架（含按名字选模块的三种 gemm）逐字相同，只有模块名、`reference` 入口与
+/// `group` 不同；把它们写在一张表里，而不是七段 9 行的拷贝。
+fn render_concrete_body(
+    code: &mut String,
+    group: &str,
+    module: &str,
+    reference: &str,
+    m: usize,
+    n: usize,
+    dtype: &str,
+) {
+    code.push_str(&format!("    group: {group},\n"));
+    code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+    code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+    code.push_str(&format!("    axes: ::llm_op::{module}::AXES,\n"));
+    code.push_str(&format!(
+        "    shape_ctx: ::llm_op::{module}::project_shape,\n"
+    ));
+    code.push_str(&format!("    cost: ::llm_op::{module}::cost,\n"));
+    code.push_str(&format!("    sample: ::llm_op::{module}::sample,\n"));
+    code.push_str(&format!("    reference: {reference},\n"));
+    code.push_str("};\n\n");
 }
 
 /// 形状表达式：空切片表示标量，必须显式写类型，否则 `new([])` 推断不出元素类型。
@@ -687,6 +707,33 @@ mod tests {
             !code.contains("allow("),
             "生成的模块名是固定标识符，不需要豁免任何 lint：{code}"
         );
+    }
+
+    /// 闭集里的每个骨架都必须有生成分支：加一个骨架名却忘了加分支，会在用户 crate 里变成
+    /// 一条 `compile_error!`，而这条测试让它先在注解层自己红掉。
+    #[test]
+    fn every_skeleton_has_a_branch() {
+        for skeleton in syntax::SKELETONS {
+            let name = if skeleton == "gemm" {
+                "gemm_f32"
+            } else {
+                "op_under_test"
+            };
+            let code = render_model(
+                &model(&format!(
+                    r#"name = "{name}", shape = [8, 4], dtype = "f32", skeleton = "{skeleton}""#
+                )),
+                "M",
+            );
+            assert!(
+                !code.contains("compile_error!"),
+                "骨架 `{skeleton}` 在 `render_model` 里没有分支：{code}"
+            );
+            assert!(
+                code.contains("    axes: ::llm_op::") && code.contains("AXES,\n"),
+                "骨架 `{skeleton}` 必须绑定一份轴表：{code}"
+            );
+        }
     }
 
     #[test]
