@@ -4,7 +4,7 @@ use crate::backend;
 use crate::build;
 use crate::prof::Profile;
 use crate::witness::source;
-use crate::witness::{Device, Language, Scope, Selected};
+use crate::witness::{Device, Language, MAX_OUT, Scope, Selected};
 use diagnostic::{Code, Error};
 use llm_config::Settings;
 use std::collections::BTreeMap;
@@ -204,6 +204,18 @@ fn push_dispatch(program: &mut String, max: usize, selected: &[Selected<'_>], cl
     ));
 }
 
+/// 一个新的一次性目录：`<work_dir>/<tag>-<pid>-<序号>`，调用方负责删除。
+///
+/// pid 隔开进程、序号隔开同进程内的多次调用：同时跑的两个 `cutile` 不会互相覆盖对方的中间产物。
+pub(crate) fn scratch(settings: &Settings, tag: &str) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    settings.work_dir().join(format!(
+        "{tag}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
 /// 编译并执行一次 Metal 见证程序，返回 `(每条写入个数, 按顺序回读的值)`。
 ///
 /// 三处调用都要看得见失败原因：`xcrun metal`（语言层）、`metallib`（链接）、`clang`（驱动）；
@@ -215,12 +227,7 @@ fn run_metal(
     flags: &[String],
     settings: &Settings,
 ) -> diagnostic::Result<(Vec<i64>, Vec<f32>)> {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = settings.work_dir().join(format!(
-        "witness-metal-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let dir = scratch(settings, "witness-metal");
     let outcome = (|| {
         std::fs::create_dir_all(&dir).map_err(|error| {
             Error::new(Code::Io, format!("创建 {} 失败：{error}", dir.display()))
@@ -260,7 +267,7 @@ fn run_metal(
                 "缺少 host C 编译器：Metal 见证需要一个 host 驱动把内核发射到 GPU".to_string(),
             )
         })?;
-        std::fs::write(&driver, METAL_DRIVER).map_err(|error| {
+        std::fs::write(&driver, metal_driver(MAX_OUT)).map_err(|error| {
             Error::new(Code::Io, format!("写 {} 失败：{error}", driver.display()))
         })?;
         run_tool(
@@ -332,38 +339,104 @@ impl Device for CudaDevice {
     }
 }
 
-/// 定位 MSVC cl.exe（Windows 上 nvcc 的宿主编译器）：扫常见安装根，取版本目录最大的一个。
+/// 定位 MSVC cl.exe（Windows 上 nvcc 的宿主编译器）：先问 `vswhere`，再退回环境变量登记的两个安装根。
+///
+/// 先前这里写死了五个安装根（`D:\BuildTools` 之类），那只对某台开发机成立：标准安装
+/// （`C:\Program Files\Microsoft Visual Studio\2022\Community`）反而找不到，而 `sort()` + `pop()`
+/// 按字符串序会把 `9.29…` 排到 `17.10…` 之后，多版本共存时选中更旧的一套。
 pub(crate) fn find_cl() -> Option<PathBuf> {
     if std::env::consts::OS != "windows" {
         return None;
     }
-    let roots = [
-        r"D:\VSBuildTools",
-        r"D:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools",
-        r"C:\Program Files\Microsoft Visual Studio\2022\BuildTools",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools",
-        r"D:\BuildTools",
-    ];
-    let mut found: Vec<PathBuf> = Vec::new();
-    for root in roots {
-        let msvc = Path::new(root).join("VC").join("Tools").join("MSVC");
-        let Ok(entries) = std::fs::read_dir(&msvc) else {
+    candidates().into_iter().max_by_key(|cl| msvc_version(cl))
+}
+
+/// 全部候选 cl.exe：`vswhere`（微软官方的安装发现器）枚举的，加环境变量里两个安装根下的。
+fn candidates() -> Vec<PathBuf> {
+    let mut found = vswhere_cls();
+    for key in ["VCINSTALLDIR", "VSINSTALLDIR"] {
+        if let Some(root) = std::env::var_os(key) {
+            found.extend(msvc_cls(Path::new(&root)));
+        }
+    }
+    found
+}
+
+/// `vswhere -find` 枚举的全部 cl.exe：它知道安装在哪，不需要本文件猜盘符。
+fn vswhere_cls() -> Vec<PathBuf> {
+    let Some(program_files) = std::env::var_os("ProgramFiles(x86)") else {
+        return Vec::new();
+    };
+    let vswhere = Path::new(&program_files)
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+    let Ok(output) = std::process::Command::new(vswhere)
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-find",
+            r"VC\Tools\MSVC\**\bin\Hostx64\x64\cl.exe",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .filter(|cl| cl.is_file())
+        .collect()
+}
+
+/// 一个安装根下的全部 cl.exe（`<root>/Tools/MSVC/<版本>/bin/Hostx64/x64/cl.exe`）。
+///
+/// 两个根形状都看：`VCINSTALLDIR` 直接指到 `…\VC`，`VSINSTALLDIR` 指到安装根（下面还有 `VC`）。
+fn msvc_cls(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for base in [
+        root.join("Tools").join("MSVC"),
+        root.join("VC").join("Tools").join("MSVC"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(base) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let cl = entry
+        found.extend(entries.flatten().map(|entry| {
+            entry
                 .path()
                 .join("bin")
                 .join("Hostx64")
                 .join("x64")
-                .join("cl.exe");
-            if cl.is_file() {
-                found.push(cl);
-            }
-        }
+                .join("cl.exe")
+        }));
     }
-    found.sort();
-    found.pop()
+    found.into_iter().filter(|cl| cl.is_file()).collect()
+}
+
+/// cl.exe 路径里 `MSVC\<版本>\` 的那一段，按**数值**比较。
+///
+/// 按字符串找标记而不是 `Path::components`：`\` 只在 Windows 上是分隔符，而本文件的单元测试
+/// 跑在别的平台上（那里整条路径只有一段），用组件切什么都验不到。
+///
+/// 解析不出版本号时返回空表（在 `Vec` 的字典序里最小），于是带版本号的候选总是优先。
+fn msvc_version(cl: &Path) -> Vec<u32> {
+    let text = cl.to_string_lossy().replace('/', "\\");
+    let Some((_, rest)) = text.rsplit_once("MSVC\\") else {
+        return Vec::new();
+    };
+    rest.split('\\')
+        .next()
+        .map(|version| {
+            version
+                .split('.')
+                .map(|part| part.parse::<u32>().unwrap_or(0))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// CUDA 源：runtime 头 + 档案 preamble + `__device__` 见证函数 + `__global__` 分派 kernel + host main。
@@ -553,6 +626,15 @@ pub(crate) fn parse_counts(stderr: &str) -> Vec<i64> {
 ///
 /// 计数走 stderr、值走 stdout——与 C harness 同一口径，`compare` 因此只认一条路径。
 /// 缓冲区用 `MTLResourceStorageModeShared`：要看的是值，不是带宽。
+fn metal_driver(max: usize) -> String {
+    format!("#define WITNESS_MAX_OUT {max}\n{METAL_DRIVER}")
+}
+
+/// 驱动主体：每条见证的缓冲宽度用 `WITNESS_MAX_OUT`，由 [`metal_driver`] 注入。
+///
+/// 这个数字曾经在 MSL kernel 里是 const 泛型 `{max}`、在这里是三个裸字面量 `8`——跨 FFI 的
+/// 唯一一处失去编译期保护的重复：`Witness::MAX_OUT` 一旦不是 8，kernel 按 `tid * MAX_OUT + i`
+/// 写、驱动按 `i * 8 + j` 读，直接错位且不会有任何编译错误。
 const METAL_DRIVER: &str = r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <stdio.h>
@@ -588,7 +670,7 @@ int main(int argc, const char **argv) {
             fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String);
             return 6;
         }
-        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * 8 * sizeof(float)
+        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * WITNESS_MAX_OUT * sizeof(float)
                                                   options:MTLResourceStorageModeShared];
         id<MTLBuffer> counts = [device newBufferWithLength:(NSUInteger)count * sizeof(int)
                                                    options:MTLResourceStorageModeShared];
@@ -616,10 +698,10 @@ int main(int argc, const char **argv) {
         for (int i = 0; i < count; ++i) {
             int n = written[i];
             if (n < 0) n = 0;
-            if (n > 8) n = 8;
+            if (n > WITNESS_MAX_OUT) n = WITNESS_MAX_OUT;
             for (int j = 0; j < n; ++j) {
                 union { float f; unsigned int u; } v;
-                v.f = out[i * 8 + j];
+                v.f = out[i * WITNESS_MAX_OUT + j];
                 printf("%u\n", v.u);
             }
         }
@@ -706,4 +788,61 @@ pub(crate) fn harness<const OUT: usize>(selected: &[Selected<'_>]) -> String {
     }
     text.push_str("    return 0;\n}\n");
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_newest_msvc_wins_by_version_not_by_string_order() {
+        let candidates = [
+            r"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\9.29.30133\bin\Hostx64\x64\cl.exe",
+            r"D:\BuildTools\VC\Tools\MSVC\17.10.0\bin\Hostx64\x64\cl.exe",
+        ];
+        let newest = candidates
+            .into_iter()
+            .max_by_key(|cl| msvc_version(Path::new(cl)))
+            .expect("候选非空");
+        assert!(
+            newest.contains("17.10.0"),
+            "字符串序会把 9.29 排到 17.10 之后：{newest}"
+        );
+    }
+
+    #[test]
+    fn a_path_without_a_version_loses_to_one_with_it() {
+        assert!(msvc_version(Path::new(r"C:\msvc\cl.exe")).is_empty());
+        assert_eq!(
+            msvc_version(Path::new(
+                r"C:\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\cl.exe"
+            )),
+            vec![14, 29, 30133]
+        );
+    }
+
+    #[test]
+    fn the_metal_driver_takes_its_width_from_the_witness_limit() {
+        let driver = metal_driver(MAX_OUT);
+        assert!(driver.contains(&format!("#define WITNESS_MAX_OUT {MAX_OUT}")));
+        // 一处定义 + 四处使用（上限判断那行出现两次）：每个宽度用点都必须走宏。
+        assert_eq!(
+            driver.matches("WITNESS_MAX_OUT").count(),
+            5,
+            "驱动里还有写死的宽度"
+        );
+        for literal in ["count * 8", "out[i * 8", "(n > 8)"] {
+            assert!(!driver.contains(literal), "仍是字面量：{literal}");
+        }
+    }
+
+    #[test]
+    fn scratch_directories_do_not_collide() {
+        let settings =
+            Settings::<llm_config::Cutile>::defaults(&llm_config::Roots::new(std::env::temp_dir()));
+        let first = scratch(&settings, "gate");
+        let second = scratch(&settings, "gate");
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(settings.work_dir().as_path()));
+    }
 }

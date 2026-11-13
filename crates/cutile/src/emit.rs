@@ -18,11 +18,13 @@ pub struct Source {
 
 impl Source {
     /// 行数（统计用，不含尾部空行）。
+    #[must_use]
     pub fn lines(&self) -> usize {
         self.text.lines().count()
     }
 
     /// 源文件建议的扩展名。
+    #[must_use]
     pub fn ext(&self) -> &'static str {
         self.lang.ext()
     }

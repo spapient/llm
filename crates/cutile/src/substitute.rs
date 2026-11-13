@@ -30,47 +30,23 @@ pub(crate) fn missing_fragment(
 }
 
 /// ④ substitute：模板槽位 ← 轴/布局取值，`@原语(...)` ← 片段文本。
+///
+/// 字符串路径是**结构化路径的薄包装**：`ast::render(&ast::build(..))`。词法、槽位解析、占位符
+/// 替换与缩进对齐因此各只有一份实现，两条"路径"的逐字节相同是结构性的；`ast_renders_byte_identical_text`
+/// 仍然守着，它防的是将来有人给其中一步再补一份规则。
 pub fn render(
     op: &OpDecl,
     combo: &TileCombo,
     fragments: &FragmentSet,
 ) -> diagnostic::Result<String> {
-    let mut text = String::new();
-
-    for segment in lex(&op.template) {
-        match segment {
-            Segment::Text(part) => text.push_str(part),
-            Segment::Slot { name, line } => {
-                if name == "op" {
-                    text.push_str(&op.name);
-                } else if let Some(value) = combo.get(name) {
-                    text.push_str(&value.to_string());
-                } else if let Some(spec) = op.layout(name) {
-                    text.push_str(&spec.as_str());
-                } else {
-                    return Err(error(
-                        line,
-                        format!("槽位 `{{{{{name}}}}}` 既不是轴也不是布局槽位"),
-                    ));
-                }
-            }
-            Segment::Call { prim, args, line } => {
-                let Some(fragment) = fragments.get(prim) else {
-                    return Err(missing_fragment(line, prim, fragments));
-                };
-                let expanded = splice(fragment, &args, line)?;
-                place(&mut text, &expanded);
-            }
-        }
-    }
-
-    Ok(text)
+    Ok(crate::ast::render(&crate::ast::build(
+        op, combo, fragments,
+    )?))
 }
 
 /// 把一段片段放进输出：去掉模板已提供的重复 `;`，并按调用点当前缩进对齐多行片段。
 ///
-/// 字符串路径（[`render`]）与结构化路径（`ast::render`）共用这一份：两条路径的产物逐字节相同
-/// 由 `ast_renders_byte_identical_text` 守着，但规则本身只该写一次。
+/// 只有这一份：字符串路径（[`render`]）走的就是 `ast::render`，两条路径不会各写一遍规则。
 pub(crate) fn place(text: &mut String, expanded: &str) {
     let trimmed = expanded.trim_end();
     let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);

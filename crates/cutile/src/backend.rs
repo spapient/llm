@@ -39,11 +39,13 @@ pub struct Timing {
 
 impl Timing {
     /// 最快的一次：达成率用它，避免被调度抖动与换页拖低。
+    #[must_use]
     pub fn min_ns(&self) -> Option<f64> {
         self.samples_ns.iter().copied().reduce(f64::min)
     }
 
     /// 中位数（偶数个样本取中间两个的平均值）：与 [`Self::min_ns`] 的差距即抖动幅度。
+    #[must_use]
     pub fn p50_ns(&self) -> Option<f64> {
         if self.samples_ns.is_empty() {
             return None;

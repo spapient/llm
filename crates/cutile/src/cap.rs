@@ -28,6 +28,7 @@ impl Path {
     ///
     /// 只看下标：链按 `order` 排好，`index = 0` 就是声明里最优先的那个变体。落到后面的变体
     /// 说明首选的能力没被满足——`needs` 要么写多了一条，要么这台设备真的缺。
+    #[must_use]
     pub fn is_head(&self) -> bool {
         self.index == 0
     }
@@ -60,7 +61,7 @@ impl Proof {
     ///
     /// 只给**解释性**报告用——§16 的协商判据（"首选变体在声明上是否命中"）与本机执行不了的
     /// 设备（非 C 档案）。它把 TOML 当结论，所以任何声称"这台设备能跑"的路径都不许用它，
-    /// 否则 `verify` 刚闭合的那条证据链又从别的门开了。用它的报告必须写明依据（`audit::witness::Basis`）。
+    /// 否则 `verify` 刚闭合的那条证据链又从别的门开了。用它的报告必须写明依据（`crate::witness::Basis`）。
     #[must_use]
     pub fn declared(prof: &Profile) -> Self {
         let mut proof = Self::default();
@@ -70,13 +71,6 @@ impl Proof {
             }
         }
         proof
-    }
-
-    /// 记下一条真正跑通的供给（链式，便于从执行结果直接拼）。
-    #[must_use]
-    pub fn with(mut self, prim: Prim, impl_name: &str) -> Self {
-        self.insert(prim, impl_name);
-        self
     }
 
     /// 记下一条真正跑通的供给。
@@ -125,6 +119,7 @@ pub struct NeedReport {
 
 impl NeedReport {
     /// 是否满足。
+    #[must_use]
     pub fn is_satisfied(&self) -> bool {
         self.mismatches.is_empty()
             && !self.blocked_by_grade
@@ -333,7 +328,7 @@ fn select(prof: &Profile, need: &Need, proof: &Proof) -> Option<(Provide, Vec<Mi
 /// 片段层与档案的签名差异：协商会挑中的那条实现，片段真的写了吗。
 ///
 /// 这是"签名对齐"唯一必须两边一起看的判据：`needs ↔ provides` 由 [`negotiate`] 判，
-/// `provides ↔ witness` 由 `audit::witness` 判，而"档案挑中的实现"与"片段文本写的实现"
+/// `provides ↔ witness` 由 `crate::witness` 判，而"档案挑中的实现"与"片段文本写的实现"
 /// 之间没有任何别的检查。少了它，一份档案可以同时"协商可行"且"片段存在"，两者却指向不同的
 /// 实现——错误会晚到构建期，甚至把 `dp4a` 的文本当成 `fma` 用。
 #[derive(Debug, Clone, PartialEq)]
@@ -348,6 +343,7 @@ pub struct FragmentGap {
 
 impl FragmentGap {
     /// 片段声明实现的，是否就是协商会挑中的那条。
+    #[must_use]
     pub fn is_aligned(&self) -> bool {
         match (&self.chosen, &self.declared) {
             (Some(chosen), Some(declared)) => chosen.impl_name == *declared,
@@ -909,7 +905,8 @@ mod tests {
         );
 
         // 反向：它真的跑过了，就按等级取它。
-        let proven = proof.with(Prim::Dot, "vendor_dot");
+        let mut proven = proof.clone();
+        proven.insert(Prim::Dot, "vendor_dot");
         let (chosen, _) = select(&profile, &need, &proven).expect("有供给");
         assert_eq!(chosen.impl_name, "vendor_dot");
     }

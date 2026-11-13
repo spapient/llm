@@ -1,8 +1,9 @@
 //! 语法门：设备不在本机时，用一门语言自己的解析器把见证过一遍。
 
-use crate::device::clang;
+use crate::atom::Witness;
+use crate::device::{clang, scratch};
 use crate::prof::{Emit, Profile};
-use crate::witness::{Front, Language, declared_witnesses, device_available, witness_root};
+use crate::witness::{Front, Language, Selected, declared_witnesses, device_available, source};
 use diagnostic::{Code, Error};
 use llm_config::Settings;
 use std::collections::BTreeSet;
@@ -129,6 +130,10 @@ pub fn language_gate(profile: &Profile, settings: &Settings) -> LanguageGate {
 }
 
 /// 语法门的执行器：`F` 决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
+///
+/// 源码一律经 [`source`] 取：内嵌副本与 `data.root` 覆盖都由它决定。先前这里直接把
+/// `witness_root(settings).join(file)` 交给 clang，于是在没有源码树的发布机上会报成
+/// “见证被自己的语言拒绝”——真相是“本机没有那份源码”，分类与指向的人都错了。
 fn parse_all<F: Front>(profile: &Profile, settings: &Settings) -> diagnostic::Result<LanguageGate> {
     let selected = declared_witnesses(profile)?;
     if selected.is_empty() {
@@ -141,17 +146,51 @@ fn parse_all<F: Front>(profile: &Profile, settings: &Settings) -> diagnostic::Re
             reason: format!("`{}` 不在本机", F::TOOL.join(" ")),
         });
     };
-    let mut files: BTreeSet<&str> = BTreeSet::new();
-    for (_, _, witness) in &selected {
-        files.insert(witness.file.as_str());
-    }
-    for file in files {
-        parse_one::<F>(&witness_root(settings).join(file))?;
-    }
+    let dir = scratch(settings, "gate");
+    let parsed = write_and_parse::<F>(&selected, settings, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    parsed?;
     Ok(LanguageGate::Passed {
         front: format!("{} {}", toolchain.id(), F::CHECK.join(" ")),
         witnesses: selected.len(),
     })
+}
+
+/// 把每份见证按“内嵌优先”的文本落到临时目录，再交给解析器：同一份源码可以没有磁盘副本。
+fn write_and_parse<F: Front>(
+    selected: &[Selected<'_>],
+    settings: &Settings,
+    dir: &Path,
+) -> diagnostic::Result<()> {
+    let mut written: BTreeSet<&str> = BTreeSet::new();
+    for (_, _, witness) in selected {
+        if written.insert(witness.file.as_str()) {
+            write_one::<F>(witness, settings, dir)?;
+        }
+    }
+    Ok(())
+}
+
+/// 一份见证：按“内嵌优先”的文本落盘，再交给它自己语言的解析器。
+fn write_one<F: Front>(
+    witness: &Witness,
+    settings: &Settings,
+    dir: &Path,
+) -> diagnostic::Result<()> {
+    let path = dir.join(&witness.file);
+    write_unit(&path, &source(witness, settings)?)?;
+    parse_one::<F>(&path)
+}
+
+/// 写一份翻译单元：`witness.file` 形如 `<vendor>/<name>.<ext>`，父目录要自己建。
+fn write_unit(path: &Path, text: &str) -> diagnostic::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            Error::new(Code::Io, format!("创建 {} 失败：{error}", parent.display()))
+        })?;
+    }
+    std::fs::write(path, text)
+        .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", path.display())))
 }
 
 /// 解析一份翻译单元；失败时只带编译器的第一行报错（整段 stderr 进不了报告）。

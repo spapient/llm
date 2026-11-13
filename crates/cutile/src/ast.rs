@@ -1,21 +1,22 @@
 //! 单 kernel 级结构化 AST（ADR 0017 的 L1）。
 //!
-//! 这是模板渲染的**可见中间产物**：`substitute::render` 把词法片段直接拼成字符串，本模块把同一份
-//! 词法片段先提升成拥有所有权的节点序列（[`Node`]），再由 [`render`] 打印回文本。节点对应
+//! 这是模板渲染的**可见中间产物**：`substitute::render` 是 [`build`] + [`render`] 的薄包装，
+//! 本模块把词法片段先提升成拥有所有权的节点序列（[`Node`]），再由 [`render`] 打印回文本。节点对应
 //! **模板级结构**（文本 / 槽位 / 原语调用），不解析 C 语句本身——原语的后端片段仍以文本挂在
 //! [`PrimCall::body`] 上，后端真正分叉的 lowering 不会被强行抽象掉。
 //!
-//! # 双射
+//! # 单一路径
 //!
-//! 两条路径对同一份输入必须逐字节相等：
+//! 字符串路径不是并行的第二套实现，它就是这两步：
 //!
 //! ```text
-//! 旧：lex → substitute::render                 → String
-//! 新：lex → ast::build → Vec<Node> → ast::render → String
+//! lex → ast::build → Vec<Node> → ast::render → String
+//!                    ↖ substitute::render 直接调用它们
 //! ```
 //!
-//! 片段占位符替换共用 `substitute::splice`，缩进对齐与分号裁剪在 [`render`] 里逐行复刻，因此
-//! 双射不是"差不多"，而是由 `ast_renders_byte_identical_text` 在全部内置算子 × tile × 设备上断言。
+//! 槽位解析只在 [`build`]、占位符替换只在 `substitute::splice`、缩进对齐与分号裁剪只在
+//! `substitute::place` 里各写一遍。`ast_renders_byte_identical_text` 保留为回归门：它防的是
+//! 将来有人给其中一步再补一份规则，而不是在测两份手抄的循环是否一致。
 //!
 //! # 规范编码
 //!
@@ -130,7 +131,7 @@ pub fn build(
     Ok(nodes)
 }
 
-/// 把节点序列打印回源文本，逐字节复刻 [`substitute::render`] 的输出。
+/// 把节点序列打印回源文本：[`substitute::render`] 就是 [`build`] + 本函数的薄包装。
 ///
 /// 原语片段是语句块，模板已提供 `;`：这里去掉重复终结符，并按调用点当前缩进对齐多行片段。
 #[must_use]

@@ -484,7 +484,7 @@ witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 | Apple | `name contains: Apple M`、`gpu_cores 10..80` | `threadgroup` | `metal` | xcrun metal | 真机 |
 | 昇腾 | `soc = Ascend 910B..` | `L1`（MTE 搬运） | `ascendc` | CANN | 文档（L0/L1） |
 | MUSA | `name contains MTT S` | `shared` | `cuda`（源码兼容） | mcc | 文档 + 模拟 |
-| CPU | `isa = x86_64{avx2,avx512} / aarch64{neon,sve}` | `L2`（分块） | `c` | cc / clang | 真机 |
+| CPU | `arch = x86_64 / aarch64`、`features = <arch>+avx2…`（运行期 cpuid，不是编译目标） | `L2`（分块） | `c` | cc / clang | 真机 |
 | 可移植 GPU | `api = vulkan / webgpu` | `workgroup` | `spirv` / `wgsl` | glslang / naga | 模拟 |
 
 加第 8 台（可移植 GPU）的理由不是"凑数"，而是**兜底**：在没有厂商 SDK 的环境里，`emit = wgsl` 仍能让同一份模板产出可运行代码；能力不足时协商自动降级，而不是整套不可用。同理，`cuda` 一条 emit 同时服务 NVIDIA 与 MUSA，说明"设备"与"输出语言"是两个维度，不能合并成一个概念。

@@ -256,10 +256,6 @@ ccn = 9
 nloc = 87
 
 [[gate.debt]]
-key = "crates/cutile/src/device.rs:find_cl#0"
-ccn = 6
-
-[[gate.debt]]
 key = "crates/cutile/src/device.rs:metal_program#0"
 ccn = 10
 
@@ -279,10 +275,6 @@ nloc = 83
 [[gate.debt]]
 key = "crates/cutile/src/witness.rs:establish#0"
 ccn = 8
-
-[[gate.debt]]
-key = "crates/cutile/src/gate.rs:parse_all#0"
-ccn = 7
 
 [[gate.debt]]
 key = "crates/cutile/src/witness.rs:compare#0"
@@ -535,10 +527,6 @@ ccn = 6
 [[gate.debt]]
 key = "crates/cutile/src/probe.rs:select#0"
 ccn = 7
-
-[[gate.debt]]
-key = "crates/cutile/src/substitute.rs:render#0"
-ccn = 9
 
 [[gate.debt]]
 key = "crates/cutile/src/substitute.rs:splice#0"
