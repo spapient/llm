@@ -1,0 +1,28 @@
+[package]
+name = "llm-dtype"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "L1 element-type floor: closed scalar, GGML block-quantized and micro-scaled format sets, each with one identity table."
+publish = false
+
+[features]
+default = []
+# 可选互操作：默认关闭，`[dependencies]` 的零依赖承诺不变。
+serde = ["dep:serde"]
+bytemuck = ["dep:bytemuck"]
+
+[dependencies]
+# 只在对应 feature 打开时参与构建；两者都支持 `no_std`。
+serde = { version = "1.0.229", default-features = false, features = ["derive"], optional = true }
+bytemuck = { version = "1.25.2", features = ["derive"], optional = true }
+
+[dev-dependencies]
+# 只用于可选 feature 的互操作测试，生产依赖不受影响。
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

@@ -50,6 +50,7 @@ pub use ::prof::prof;
 pub use ::op::decl;
 pub use ::op::{layout, sch};
 
+pub mod ast;
 pub mod backend;
 pub mod build;
 pub mod builtin;
@@ -59,6 +60,13 @@ pub mod emit;
 pub mod plan;
 pub mod probe;
 pub mod reference;
+pub mod report;
+
+/// 与 `report::witness` 同一条路径的根别名。
+///
+/// `#[annotation::frontend]` 生成的实现写死 `crate::witness::Language`——这条契约属于注解与
+/// 词汇表之间，而不是某个 crate 的目录结构；被标注的类型所在 crate 只需在根上暴露 `witness`。
+pub use report::witness;
 pub mod space;
 pub mod substitute;
 
@@ -68,4 +76,5 @@ pub use llm_config::toml;
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（DESIGN §6.4）。
 ///
 /// v3：属性键闭集增加 `exec`，档案增加 `[units.<name>]`（执行单元与其可访问的存储层）。
-pub const SCHEMA_VER: u16 = 3;
+/// v4：缓存指纹锚定结构化 AST（`FNV(ast::encode)`），旧的裸模板哈希条目随即失效。
+pub const SCHEMA_VER: u16 = 4;

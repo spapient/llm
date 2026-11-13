@@ -1,0 +1,23 @@
+# Softmax：y[n] = exp(x[n]-max)/sum(exp(x-max))。
+# OpDecl 闭集归到 elementwise（三趟逐元素）；needs 只有 load/store。
+
+[op]
+name     = "softmax_f32"
+skeleton = "elementwise"
+summary  = "y[n] = softmax(x)[n]"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+x = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

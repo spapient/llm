@@ -141,23 +141,40 @@ fn every_owned_type_is_public_in_the_claimed_crate() {
     }
 }
 
-/// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：`op` / `prof` / `prim` /
-/// `cutile` / `audit` 与 L7 入口的失败类型必须是 `diagnostic::Error`，否则类别与退出码就失去了来源。
+/// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：凡是被 L7 直接调用的层——数据层
+/// （`op` / `prof` / `prim`）、内核层（`cutile`，含 `report`）——失败类型必须是
+/// `diagnostic::Error`，否则类别与退出码就失去了来源。
+///
+/// 扫描集**从层表派生**，不手写目录名：手写的清单在成员被合并或删除后会指向不存在的目录，
+/// 而 [`rust_files`] 对不存在的目录返回空——那会让本测试在"少扫一个成员"时静默通过。
+/// 反过来，层表里每个成员都必须扫出至少一个文件，否则同样失败。
 ///
 /// 扫描的是"`Result<…, String>`"这一形态本身，不是某个函数：新加的函数同样被覆盖。
 /// `llm-config` 的 `Error` 是唯一剩下的存量（它是数据层自己的类型，`Settings::load` 用它），
 /// 刻意不在扫描范围。
 #[test]
 fn the_error_boundary_does_not_fall_back_to_strings() {
+    let contract = contract();
     let mut paths = Vec::new();
-    for root in [
-        "crates/op/src",
-        "crates/prof/src",
-        "crates/prim/src",
-        "crates/cutile/src",
-        "crates/audit/src",
-    ] {
-        paths.extend(rust_files(std::path::Path::new(root)));
+    for member in contract.layers.keys() {
+        // L7 是根包：它的源码在 `src/`，不在 `crates/<member>/src/`。
+        if member == "llm" {
+            continue;
+        }
+        // `llm-config` 的 `Error` 是数据层自己的类型（`Settings::load` 用它），
+        // 按第三节的约定刻意不在扫描范围——这是唯一的例外，写在代码里而不是靠记忆。
+        if member == "config" {
+            continue;
+        }
+        let root = std::path::PathBuf::from("crates").join(member).join("src");
+        let files = rust_files(&root);
+        assert!(
+            !files.is_empty(),
+            "层表成员 `{member}` 在 {} 下一个源文件都没有：扫描集由层表派生，这里必须扫得到东西，\
+             否则合并/删除成员会让本测试静默通过",
+            root.display()
+        );
+        paths.extend(files);
     }
     paths.push(std::path::PathBuf::from("src/bin/cutile.rs"));
 

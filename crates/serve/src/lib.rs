@@ -1,8 +1,9 @@
 //! 端点契约：[`Route`]、[`Status`]、[`Response`]、[`Endpoint`]。
 //!
-//! **拥有**：`Route`、`Endpoint`、`Response`、`Status`。**不拥有**：帧格式（`proto`）、序列状态与
-//! 准入（`engine`）、分词（`tokenizer`）、HTTP/gRPC 服务器（P1：它是 `Endpoint` 的实现）。
-//! **依赖**：`engine`、`proto`、`tokenizer`、`diagnostic`。**被依赖**：`llm`。
+//! **拥有**：`Route`、`Endpoint`、`Response`、`Status`，以及线格式（`proto` 子模块：
+//! `Envelope`/`Frame`/`Decoder`/`Kind`/`Version`）。**不拥有**：序列状态与准入（`engine`）、
+//! 分词（`tokenizer`）、HTTP/gRPC 服务器（P1：它是 `Endpoint` 的实现）。
+//! **依赖**：`engine`、`tokenizer`、`diagnostic`。**被依赖**：`llm`。
 //!
 //! 这里没有 socket：先把"一个请求进来会发生什么"定死——解析路由、编码提示、尝试准入、
 //! 把结果包成帧。等真服务器落地时，它只需要调用 [`Endpoint::call`]。
@@ -21,8 +22,10 @@
 
 #![deny(unsafe_code)]
 
+pub mod proto;
+
+use crate::proto::{Envelope, Kind, Version};
 use diagnostic::{Code, Error, Result};
-use proto::{Envelope, Kind, Version};
 
 /// 一条路由：方法与路径。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,8 +192,8 @@ pub fn admit(scheduler: &mut engine::Scheduler, sequence: &engine::Sequence) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::kv::Cache;
     use engine::{Scheduler, Sequence};
-    use kv::Cache;
 
     #[test]
     fn a_route_needs_exactly_one_method_and_an_absolute_path() {
@@ -236,12 +239,12 @@ mod tests {
     #[test]
     fn admission_turns_into_an_ok_or_a_retryable_status() {
         let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
-        let small = Sequence::new(1, 4, 2, 16, exec::Stream::new(0)).expect("序列");
+        let small = Sequence::new(1, 4, 2, 16, engine::exec::Stream::new(0)).expect("序列");
         let response = admit(&mut scheduler, &small).expect("准入");
         assert_eq!(response.status(), Status::Ok);
 
         // 提示就占满剩下的一页，但跑到最后要第二页：现在不行，等别人结束再试。
-        let full = Sequence::new(2, 20, 4, 16, exec::Stream::new(0)).expect("序列");
+        let full = Sequence::new(2, 20, 4, 16, engine::exec::Stream::new(0)).expect("序列");
         assert_eq!(scheduler.cache().free_pages(), 1);
         let refused = admit(&mut scheduler, &full).expect("拒绝不是错误");
         assert_eq!(refused.status(), Status::Unavailable);
@@ -253,7 +256,7 @@ mod tests {
     #[test]
     fn an_impossible_request_is_a_bad_request_not_a_retry() {
         let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
-        let endless = Sequence::new(9, 4, 1024, 16, exec::Stream::new(0)).expect("序列");
+        let endless = Sequence::new(9, 4, 1024, 16, engine::exec::Stream::new(0)).expect("序列");
         let response = admit(&mut scheduler, &endless).expect("拒绝不是错误");
         assert_eq!(response.status().code(), 400);
         assert_eq!(
@@ -268,7 +271,7 @@ mod tests {
     #[test]
     fn a_request_that_cannot_enter_at_all_is_a_bad_request_not_an_error() {
         let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
-        let small = Sequence::new(1, 4, 2, 16, exec::Stream::new(0)).expect("序列");
+        let small = Sequence::new(1, 4, 2, 16, engine::exec::Stream::new(0)).expect("序列");
         assert_eq!(
             admit(&mut scheduler, &small).expect("准入").status(),
             Status::Ok
@@ -284,7 +287,7 @@ mod tests {
         );
 
         // 页宽与调度器不一致：同样只能改请求，不能靠重试。
-        let wrong_page = Sequence::new(2, 4, 2, 8, exec::Stream::new(0)).expect("序列");
+        let wrong_page = Sequence::new(2, 4, 2, 8, engine::exec::Stream::new(0)).expect("序列");
         let mismatched = admit(&mut scheduler, &wrong_page).expect("拒绝不是错误");
         assert_eq!(mismatched.status().code(), 400);
         assert_eq!(scheduler.running(), 1);
@@ -294,7 +297,7 @@ mod tests {
     #[test]
     fn a_finished_sequence_is_a_bad_request_rather_than_a_server_failure() {
         let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
-        let mut sequence = Sequence::new(5, 0, 1, 16, exec::Stream::new(0)).expect("序列");
+        let mut sequence = Sequence::new(5, 0, 1, 16, engine::exec::Stream::new(0)).expect("序列");
         assert_eq!(
             admit(&mut scheduler, &sequence).expect("准入").status(),
             Status::Ok

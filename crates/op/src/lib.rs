@@ -19,7 +19,8 @@
 //! 定下，"注解说的是哪份格式"由类型（`Quantized<32>` / `Dense<32>`）保证，写错就编译不过。
 //!
 //! 代价（`flops` / `bytes`）不在本 crate 里手写：算子只声明 `EXPR`（如 `nm,m,ng,n->n`）与每个操作数
-//! 的位宽/方向，由 [`einsum`] 推出；[`model::Cost`] 只是它的再导出（`docs/adr/0007`）。这样新增算子
+//! 的位宽/方向，由 [`einsum`] 推出；[`model::Cost`] 只是它的再导出（`docs/adr/0007`，并入本 crate 后
+//! 连再导出也不再是跨 crate 补丁）。这样新增算子
 //! 不会引入第二条流量公式，roofline 的分子也只有一处来源。
 //!
 //! # 例子
@@ -45,15 +46,40 @@
 // `extern crate self as nn` 同一条约定：注解绑定它所属契约的路径，而不是硬编码调用方的名字）。
 extern crate self as llm_op;
 
+pub mod add_f32;
+pub mod attention;
 pub mod decl;
+pub mod dequant_i4;
+pub mod dequant_i8;
+pub mod einsum;
+pub mod elementwise;
+pub mod embed_f32;
+pub mod flash_attention;
+pub mod gelu_f32;
+pub mod gemm;
+pub mod gemm_f32;
+pub mod gemm_i4;
+pub mod gemm_i8;
 pub mod gemv;
 pub mod gemv_f32;
 pub mod gemv_i4;
+pub mod gemv_i8;
 pub mod layout;
 pub mod model;
+pub mod mul_f32;
+pub mod reduce;
+pub mod reduce_max_f32;
+pub mod reduce_sum_f32;
+pub mod residual_add_f32;
+pub mod rmsnorm_f32;
+pub mod rope_f32;
+pub mod scale_f32;
 pub mod sch;
 pub mod sig;
+pub mod silu_f32;
+pub mod softmax_f32;
 pub mod tpl;
+pub mod unary;
 
 use diagnostic::{Code, Error};
 use std::borrow::Cow;
@@ -81,7 +107,67 @@ pub struct Registration {
 ///
 /// 新增算子在这里补一行，否则发布出去的二进制里没有它；`builtin_matches_disk` 测试会把
 /// "磁盘上有、内嵌里没有"直接判为失败。
-pub const REGISTRY: [Registration; 2] = [
+pub const REGISTRY: [Registration; 22] = [
+    Registration {
+        name: "add_f32",
+        declaration: include_str!("../ops/add_f32.toml"),
+        template: include_str!("../ops/add_f32.k"),
+        model: add_f32::MODEL,
+    },
+    Registration {
+        name: "attention_f32",
+        declaration: include_str!("../ops/attention_f32.toml"),
+        template: include_str!("../ops/attention_f32.k"),
+        model: attention::MODEL,
+    },
+    Registration {
+        name: "dequant_i4",
+        declaration: include_str!("../ops/dequant_i4.toml"),
+        template: include_str!("../ops/dequant_i4.k"),
+        model: dequant_i4::MODEL,
+    },
+    Registration {
+        name: "dequant_i8",
+        declaration: include_str!("../ops/dequant_i8.toml"),
+        template: include_str!("../ops/dequant_i8.k"),
+        model: dequant_i8::MODEL,
+    },
+    Registration {
+        name: "embed_f32",
+        declaration: include_str!("../ops/embed_f32.toml"),
+        template: include_str!("../ops/embed_f32.k"),
+        model: embed_f32::MODEL,
+    },
+    Registration {
+        name: "flash_attention_f32",
+        declaration: include_str!("../ops/flash_attention_f32.toml"),
+        template: include_str!("../ops/flash_attention_f32.k"),
+        model: flash_attention::MODEL,
+    },
+    Registration {
+        name: "gelu_f32",
+        declaration: include_str!("../ops/gelu_f32.toml"),
+        template: include_str!("../ops/gelu_f32.k"),
+        model: gelu_f32::MODEL,
+    },
+    Registration {
+        name: "gemm_f32",
+        declaration: include_str!("../ops/gemm_f32.toml"),
+        template: include_str!("../ops/gemm_f32.k"),
+        model: gemm_f32::MODEL,
+    },
+    Registration {
+        name: "gemm_i4",
+        declaration: include_str!("../ops/gemm_i4.toml"),
+        template: include_str!("../ops/gemm_i4.k"),
+        model: gemm_i4::MODEL,
+    },
+    Registration {
+        name: "gemm_i8",
+        declaration: include_str!("../ops/gemm_i8.toml"),
+        template: include_str!("../ops/gemm_i8.k"),
+        model: gemm_i8::MODEL,
+    },
     Registration {
         name: "gemv_f32",
         declaration: include_str!("../ops/gemv_f32.toml"),
@@ -93,6 +179,66 @@ pub const REGISTRY: [Registration; 2] = [
         declaration: include_str!("../ops/gemv_i4.toml"),
         template: include_str!("../ops/gemv_i4.k"),
         model: gemv_i4::MODEL,
+    },
+    Registration {
+        name: "gemv_i8",
+        declaration: include_str!("../ops/gemv_i8.toml"),
+        template: include_str!("../ops/gemv_i8.k"),
+        model: gemv_i8::MODEL,
+    },
+    Registration {
+        name: "mul_f32",
+        declaration: include_str!("../ops/mul_f32.toml"),
+        template: include_str!("../ops/mul_f32.k"),
+        model: mul_f32::MODEL,
+    },
+    Registration {
+        name: "reduce_max_f32",
+        declaration: include_str!("../ops/reduce_max_f32.toml"),
+        template: include_str!("../ops/reduce_max_f32.k"),
+        model: reduce_max_f32::MODEL,
+    },
+    Registration {
+        name: "reduce_sum_f32",
+        declaration: include_str!("../ops/reduce_sum_f32.toml"),
+        template: include_str!("../ops/reduce_sum_f32.k"),
+        model: reduce_sum_f32::MODEL,
+    },
+    Registration {
+        name: "residual_add_f32",
+        declaration: include_str!("../ops/residual_add_f32.toml"),
+        template: include_str!("../ops/residual_add_f32.k"),
+        model: residual_add_f32::MODEL,
+    },
+    Registration {
+        name: "rmsnorm_f32",
+        declaration: include_str!("../ops/rmsnorm_f32.toml"),
+        template: include_str!("../ops/rmsnorm_f32.k"),
+        model: rmsnorm_f32::MODEL,
+    },
+    Registration {
+        name: "rope_f32",
+        declaration: include_str!("../ops/rope_f32.toml"),
+        template: include_str!("../ops/rope_f32.k"),
+        model: rope_f32::MODEL,
+    },
+    Registration {
+        name: "scale_f32",
+        declaration: include_str!("../ops/scale_f32.toml"),
+        template: include_str!("../ops/scale_f32.k"),
+        model: scale_f32::MODEL,
+    },
+    Registration {
+        name: "silu_f32",
+        declaration: include_str!("../ops/silu_f32.toml"),
+        template: include_str!("../ops/silu_f32.k"),
+        model: silu_f32::MODEL,
+    },
+    Registration {
+        name: "softmax_f32",
+        declaration: include_str!("../ops/softmax_f32.toml"),
+        template: include_str!("../ops/softmax_f32.k"),
+        model: softmax_f32::MODEL,
     },
 ];
 

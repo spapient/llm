@@ -12,12 +12,10 @@ publish = false
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 engine = { path = "../engine", package = "llm-engine" }
-proto = { path = "../proto", package = "llm-proto" }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
 
 [dev-dependencies]
-exec = { path = "../exec", package = "llm-exec" }
-kv = { path = "../kv", package = "llm-kv" }
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

@@ -51,13 +51,16 @@ impl WeightFormat {
     ///
     /// `U4` 只给出 [`WeightFormat::Packed4`]：分组没有出现在元素类型里，任何具体数字都只能是
     /// 猜的。需要计价时用 [`WeightFormat::int4`] 明确声明分组。
-    pub fn of_dtype(dtype: DType) -> Self {
+    #[must_use]
+    pub fn of_dtype(dtype: DType) -> Option<Self> {
         match dtype {
-            DType::F32 => Self::F32,
-            DType::F16 => Self::F16,
-            DType::BF16 => Self::Bf16,
-            DType::I8 => Self::I8,
-            DType::U4 => Self::Packed4,
+            DType::F32 => Some(Self::F32),
+            DType::F16 => Some(Self::F16),
+            DType::BF16 => Some(Self::Bf16),
+            DType::I8 => Some(Self::I8),
+            DType::U4 => Some(Self::Packed4),
+            // 闭集里的其他类型不是权重存储格式：调用方按未覆盖处理，不强行归类。
+            _ => None,
         }
     }
 
@@ -143,10 +146,14 @@ mod tests {
     #[test]
     fn every_element_type_maps_to_a_format_and_back() {
         for dtype in DType::ALL.iter().copied() {
-            let format = WeightFormat::of_dtype(dtype);
-            assert_eq!(format.dtype(), dtype, "{dtype:?} 往返");
+            if let Some(format) = WeightFormat::of_dtype(dtype) {
+                assert_eq!(format.dtype(), dtype, "{dtype:?} 往返");
+            }
         }
-        assert_eq!(WeightFormat::of_dtype(DType::U4), WeightFormat::Packed4);
+        assert_eq!(
+            WeightFormat::of_dtype(DType::U4),
+            Some(WeightFormat::Packed4)
+        );
     }
 
     #[test]

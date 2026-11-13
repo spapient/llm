@@ -20,15 +20,16 @@
 //! - `LANGUAGES` 与 `prof::Emit::ALL` 逐项相等；
 //! - `DTYPES` 与「`cutile::reference::tolerance` 给出非零阈值」的 `DType` 集合逐项相等。
 //!
-//! 两边同时被核对：仓库级门禁 `tests/contracts.rs` 核对全量与映射规则（名字 → 首字母大写 →
-//! 变体名），每个注解生成的 `#[cfg(test)]` 模块核对**这一个调用点**用的确实是同一个变体
-//! （`Emit::parse(..) == Language::EMIT`、`DType::parse(..) == Some(MODEL.dtype)`）。
-//! 这份核对故意住在门禁与生成的代码里，而不是引入对 `prof` 的依赖：本 crate 仍然零依赖，
-//! 且失败会指向被标注的那一行——而不是另一张表上。
+//! 两边同时被核对：仓库级门禁 `tests/contracts.rs` 核对全量与映射规则（名字 → 变体名），
+//! 每个注解生成的 `#[cfg(test)]` 模块核对**这一个调用点**用的确实是同一个变体
+//! （`Emit::parse(..) == Language::EMIT`、`DType::parse_name(..) == Some(MODEL.dtype)`）。
+//! 变体名不再在注解里手写一份映射：`dtype` 名的变体名取 `DType::variant`（缩写词全大写
+//! 规则也住在 dtype 里），失败仍指向被标注的那一行——而不是另一张表上。
 //!
-//! **依赖**：无。不引入 `syn` / `quote` / `proc-macro2`：注解文法只有四种键
-//! （`name = ".."`、`out = [..]`、`in = ..`、`ops = [".."]`），手写解析一百多行就能覆盖，换来的是
-//! "workspace 零外部依赖"这条供应链契约持续成立（见 `docs/ARCHITECTURE.md` 的依赖规则）。
+//! **依赖**：仅 `dtype`（workspace 内部 L1 零依赖基座）。不引入 `syn` / `quote` / `proc-macro2`：
+//! 注解文法只有四种键（`name = ".."`、`out = [..]`、`in = ..`、`ops = [".."]`），手写解析
+//! 一百多行就能覆盖，换来的是 "workspace 零外部依赖"这条供应链契约持续成立
+//! （见 `docs/ARCHITECTURE.md` 的依赖规则）。
 //!
 //! # 三层结构（可测性从这里来）
 //!

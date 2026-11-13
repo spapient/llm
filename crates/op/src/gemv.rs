@@ -23,9 +23,9 @@
 //! 最后一行是刻意的：把"内核已经做成运行时参数"的东西改成类型参数，换来的是每次不同分组都要
 //! 一份单态化副本与一次调用点上的匹配，而不是省下一条分支。
 
+use crate::einsum::{Access, Bits, Expr, Formula, Operand};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
-use einsum::{Access, Bits, Expr, Formula, Operand};
 use std::sync::OnceLock;
 
 /// 本骨架的基本轴：`m` 是规约轴（输入宽度），`n` 是输出轴。
@@ -164,7 +164,7 @@ pub trait Format {
 
     /// 派生轴 `(派生轴, 基准轴, 除数)`：量化格式声明一条（`g = m / GRAIN`），稠密格式没有。
     ///
-    /// 派生轴只计流量、不计运算次数，见 [`einsum::Extents::group`]。
+    /// 派生轴只计流量、不计运算次数，见 [`crate::einsum::Extents::group`]。
     const DERIVED: Option<(char, char, usize)>;
 
     /// 标度取值函数；`None` 表示这份格式没有标度缓冲（每个标度不带参数）。
@@ -226,6 +226,12 @@ pub struct Quantized<const GRAIN: usize>;
 /// `chunks(32)` 而不是 `chunks(gsz)`，块内可以整体展开与向量化。
 pub struct Dense<const BLOCK: usize>;
 
+/// 对称 8 位量化格式：`GRAIN` 个元素共用一条标度，每元素占一个字节（不打包、零点 0）。
+///
+/// 与 [`Quantized`] 的差别是不打包（每元素 1 字节、无 nibble 解包），与 [`Dense`] 的差别是
+/// 有 per-group 标度。`u8` 承载 int8 的位模式，算术时按 `i8` 解释。
+pub struct SymI8<const GRAIN: usize>;
+
 /// 与权重格式无关的输入向量：两条算子共用同一份取值。
 fn input(m: usize) -> Vec<f32> {
     (0..m)
@@ -275,6 +281,14 @@ impl Default for Cache {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 把形状对翻译成投影骨架的具名轴上下文：`m` 是规约轴、`n` 是输出轴。
+///
+/// 这是 [`crate::model::Model::shape_ctx`] 在投影骨架上的实例：`verify` 不再假设每条算子都能
+/// 走 [`crate::model::Model::projection`]，非投影算子会提供各自的形状函数。
+pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
+    ShapeContext::new([('m', m), ('n', n)])
 }
 
 /// 标量代价：完全由 [`Format::EXPR`] 与操作数位宽推出，本函数不含任何流量常数。

@@ -78,3 +78,71 @@ jobs:
           toolchain: "nightly-2026-09-01"
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features --locked
+
+  dup:
+    name: duplication
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-01"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 硬门：重复率超过 .jscpd.json 的 threshold（2%）即失败。
+      - name: jscpd hard gate
+        run: npx --yes jscpd
+      # 语义巡检：AST 归一化暴露近重复，只出报告不阻断（硬门已由 jscpd 负责）。
+      - name: cargo-dupes semantic patrol
+        run: |
+          cargo install --git https://github.com/mpecan/cargo-dupes cargo-dupes --locked
+          cargo dupes --exclude-tests report
+
+  deny:
+    name: deny + machete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+      # 漏洞/许可证/来源/重复依赖硬门，配置见 deny.toml。
+      - run: cargo deny check
+      # 依赖卫生：找未使用的依赖。
+      - run: cargo machete
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-01"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate lcov
+        run: cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 14
+
+  bench:
+    name: bench (compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-01"
+      - uses: Swatinem/rust-cache@v2
+      # CI 只保证基准代码始终可编译；实测与基线判定在固定硬件上跑（跨机器绝对值不可比）。
+      - name: Build benchmarks
+        run: cargo bench --workspace --all-features --locked --no-run

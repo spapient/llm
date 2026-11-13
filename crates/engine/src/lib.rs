@@ -1,8 +1,11 @@
 //! 服务侧状态机：[`Sequence`]、[`State`]、[`Scheduler`]。
 //!
-//! **拥有**：`Sequence`、`Scheduler`、`State`。**不拥有**：KV 页的簿记（`kv`）、提交（`exec`）、
-//! 采样策略（P1：它只决定 `advance` 取哪个 token，不改变状态机）。
-//! **依赖**：`kv`、`exec`、`tensor`、`diagnostic`。**被依赖**：`serve`、`llm`。
+//! **拥有**：`Sequence`、`Scheduler`、`State`，以及页账（[`kv`]）与提交契约（[`exec`]）。
+//! **不拥有**：采样策略（P1：它只决定 `advance` 取哪个 token，不改变状态机）。
+//! **依赖**：`tensor`、`diagnostic`。**被依赖**：`serve`、`llm`。
+//!
+//! 页账与提交契约原是两个独立成员（`llm-kv` / `llm-exec`）：它们的生产消费者只有本 crate，
+//! 合并后"谁在借页"与"谁在提交"的不变量在同一处断言，成员与依赖边各少一个。
 //!
 //! 连续批的关键不是"批"，而是**准入**：每个序列占多少页是显式算出来的，页不够就拒绝，
 //! 而不是让 KV 缓冲在跑到一半时溢出。
@@ -31,8 +34,8 @@
 //!
 //! ```
 //! use llm_engine::{Progress, Scheduler, Sequence};
-//! use exec::Stream;
-//! use kv::Cache;
+//! use llm_engine::exec::Stream;
+//! use llm_engine::kv::Cache;
 //!
 //! let mut scheduler = Scheduler::new(Cache::new(4, 16).expect("页池"));
 //! let mut sequence = Sequence::new(0, 8, 4, 16, Stream::new(0)).expect("序列");
@@ -48,8 +51,20 @@
 
 #![deny(unsafe_code)]
 
+pub mod exec;
+pub mod kv;
+
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
+
+/// 覆盖 `tokens` 个 token 需要多少页：向上取整，至少一页。
+///
+/// 页数口径只在这里定义一次。合并 `kv` 之前它被写了四遍（准入上界、当前长度、增长判定、
+/// 下一次是否要页），四处里只要有一处写成"向下取整"或漏掉 `.max(1)`，就会出现"准入说能放下、
+/// 增长时却发现没页"这种只在长提示上复现的错。
+fn pages_for(tokens: usize, page_size: usize) -> usize {
+    tokens.div_ceil(page_size).max(1)
+}
 
 /// [`Scheduler::advance`] 的结局："生成了一步"与"这一步没生成"必须能分开。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,7 +97,7 @@ pub struct Sequence {
     max_new: usize,
     page_size: usize,
     state: State,
-    stream: exec::Stream,
+    stream: crate::exec::Stream,
 }
 
 impl Sequence {
@@ -92,7 +107,7 @@ impl Sequence {
         prompt_len: usize,
         max_new: usize,
         page_size: usize,
-        stream: exec::Stream,
+        stream: crate::exec::Stream,
     ) -> Result<Self> {
         if page_size == 0 {
             return Err(Error::new(Code::Invalid, "页宽不能为 0").with("engine::Sequence::new"));
@@ -140,7 +155,7 @@ impl Sequence {
     }
 
     /// 提交所在的流。
-    pub fn stream(&self) -> exec::Stream {
+    pub fn stream(&self) -> crate::exec::Stream {
         self.stream
     }
 
@@ -172,8 +187,7 @@ impl Sequence {
     /// 跑不完的序列放进批里：它迟早 [`Progress::Blocked`]，而批里没有任何序列能结束，于是谁也
     /// 没法 [`Scheduler::finish`]、页也永远不会被归还。
     pub fn pages_required(&self) -> usize {
-        let len = self.prompt_len.saturating_add(self.max_new);
-        len.div_ceil(self.page_size).max(1)
+        pages_for(self.prompt_len.saturating_add(self.max_new), self.page_size)
     }
 
     /// 是否已结束。
@@ -191,9 +205,9 @@ impl Sequence {
         self.len() == 0
     }
 
-    /// 走到当前长度需要多少页：向上取整，至少一页（否则 `kv::Table` 无处可放）。
+    /// 走到当前长度需要多少页：向上取整，至少一页（否则 [`crate::kv::Table`] 无处可放）。
     pub fn pages_needed(&self) -> usize {
-        self.len().div_ceil(self.page_size).max(1)
+        pages_for(self.len(), self.page_size)
     }
 
     /// KV 的逻辑形状：`[len, page_size]`。
@@ -210,20 +224,20 @@ impl Sequence {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Running {
     id: u64,
-    table: kv::Table,
+    table: crate::kv::Table,
     needs_page: bool,
 }
 
 /// 连续批调度器：准入、占用页、结束后归还。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scheduler {
-    cache: kv::Cache,
+    cache: crate::kv::Cache,
     running: Vec<Running>,
 }
 
 impl Scheduler {
     /// 由页池构造。
-    pub fn new(cache: kv::Cache) -> Self {
+    pub fn new(cache: crate::kv::Cache) -> Self {
         Self {
             cache,
             running: Vec::new(),
@@ -260,7 +274,7 @@ impl Scheduler {
         if self.cache.free_pages() < needed {
             return Ok(false);
         }
-        let mut table = kv::Table::new(needed)?;
+        let mut table = crate::kv::Table::new(needed)?;
         for _ in 0..needed {
             let page = self.cache.alloc().ok_or_else(|| {
                 Error::new(Code::Internal, "空闲页数与实际分配不符")
@@ -316,7 +330,7 @@ impl Scheduler {
         }
         self.check_width(sequence, "engine::Scheduler::advance")?;
         // 这一步要写的 token 落在 `len()` 这个位置，所以页表要覆盖 `len + 1` 个位置。
-        let needed = (sequence.len() + 1).div_ceil(self.cache.page_size());
+        let needed = pages_for(sequence.len() + 1, self.cache.page_size());
         let table = &mut self.running[index].table;
         let extra = needed.saturating_sub(table.len());
         if extra > 0 {
@@ -379,7 +393,7 @@ impl Scheduler {
     }
 
     /// 某个序列占的页表。
-    pub fn pages_of(&self, id: u64) -> Option<&kv::Table> {
+    pub fn pages_of(&self, id: u64) -> Option<&crate::kv::Table> {
         self.running
             .iter()
             .find(|item| item.id == id)
@@ -387,16 +401,16 @@ impl Scheduler {
     }
 
     /// 页池（只读）。
-    pub fn cache(&self) -> &kv::Cache {
+    pub fn cache(&self) -> &crate::kv::Cache {
         &self.cache
     }
 
     /// 下一次生成要不要新页：页表按 `len` 刚好够用，所以差数只可能是 0 或 1。
-    fn needs_page(&self, sequence: &Sequence, table: &kv::Table) -> bool {
+    fn needs_page(&self, sequence: &Sequence, table: &crate::kv::Table) -> bool {
         if sequence.is_done() {
             return false;
         }
-        (sequence.len() + 1).div_ceil(self.cache.page_size()) > table.len()
+        pages_for(sequence.len() + 1, self.cache.page_size()) > table.len()
     }
 
     /// 页宽必须与页池一致：页数是按它算的，差一档就会少占一页。
@@ -420,10 +434,11 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kv::Cache;
+    use crate::kv::Cache;
+    use testkit::Rng;
 
     fn sequence(id: u64, prompt: usize, max_new: usize) -> Sequence {
-        Sequence::new(id, prompt, max_new, 16, exec::Stream::new(0)).expect("序列")
+        Sequence::new(id, prompt, max_new, 16, crate::exec::Stream::new(0)).expect("序列")
     }
 
     #[test]
@@ -468,10 +483,10 @@ mod tests {
     /// 最坏情况的上界与"当前需要"是两个数：准入要的是前者。
     #[test]
     fn pages_required_covers_the_whole_run_not_just_the_prompt() {
-        let short = Sequence::new(1, 4, 4, 4, exec::Stream::new(0)).expect("序列");
+        let short = Sequence::new(1, 4, 4, 4, crate::exec::Stream::new(0)).expect("序列");
         assert_eq!(short.pages_needed(), 1, "当前长度 4 刚好一页");
         assert_eq!(short.pages_required(), 2, "跑满后长度 8 要两页");
-        let long = Sequence::new(2, 1, 39, 4, exec::Stream::new(0)).expect("序列");
+        let long = Sequence::new(2, 1, 39, 4, crate::exec::Stream::new(0)).expect("序列");
         assert_eq!(long.pages_needed(), 1);
         assert_eq!(long.pages_required(), 10, "(1 + 39).div_ceil(4)");
     }
@@ -480,7 +495,7 @@ mod tests {
     #[test]
     fn a_sequence_that_can_never_finish_is_refused() {
         let mut scheduler = Scheduler::new(Cache::new(4, 4).expect("页池"));
-        let endless = Sequence::new(1, 4, 40, 4, exec::Stream::new(0)).expect("序列");
+        let endless = Sequence::new(1, 4, 40, 4, crate::exec::Stream::new(0)).expect("序列");
         assert_eq!(endless.pages_needed(), 1, "当前只占一页");
         assert!(
             !scheduler.admit(&endless).expect("页池放不下整段生成"),
@@ -497,7 +512,7 @@ mod tests {
         assert!(scheduler.admit(&sequence).expect("准入"));
         assert_eq!(scheduler.running(), 1);
         assert_eq!(scheduler.cache().in_use(), 2);
-        assert_eq!(scheduler.pages_of(1).map(kv::Table::len), Some(2));
+        assert_eq!(scheduler.pages_of(1).map(crate::kv::Table::len), Some(2));
         assert!(scheduler.finish(1).expect("结束"));
         assert_eq!(scheduler.cache().in_use(), 0);
         assert!(
@@ -533,13 +548,13 @@ mod tests {
     #[test]
     fn impossible_sequence_parameters_are_rejected() {
         assert_eq!(
-            Sequence::new(0, 1, 1, 0, exec::Stream::new(0))
+            Sequence::new(0, 1, 1, 0, crate::exec::Stream::new(0))
                 .unwrap_err()
                 .code(),
             Code::Invalid
         );
         assert_eq!(
-            Sequence::new(0, 1, 0, 16, exec::Stream::new(0))
+            Sequence::new(0, 1, 0, 16, crate::exec::Stream::new(0))
                 .unwrap_err()
                 .code(),
             Code::Invalid
@@ -550,7 +565,7 @@ mod tests {
     #[test]
     fn a_growing_sequence_takes_a_page_each_time_it_crosses_one() {
         let mut scheduler = Scheduler::new(Cache::new(4, 4).expect("页池"));
-        let mut sequence = Sequence::new(1, 3, 10, 4, exec::Stream::new(0)).expect("序列");
+        let mut sequence = Sequence::new(1, 3, 10, 4, crate::exec::Stream::new(0)).expect("序列");
         assert!(scheduler.admit(&sequence).expect("准入"));
         assert_eq!(scheduler.cache().in_use(), 1, "提示长度 3 只占一页");
         // 长度 4 仍在第一页，写到第 5 个位置才需要第二页，第 9 个位置才需要第三页。
@@ -562,7 +577,7 @@ mod tests {
             assert_eq!(sequence.len(), length);
             assert_eq!(scheduler.cache().in_use(), pages, "长度 {length}");
         }
-        assert_eq!(scheduler.pages_of(1).map(kv::Table::len), Some(3));
+        assert_eq!(scheduler.pages_of(1).map(crate::kv::Table::len), Some(3));
         assert!(scheduler.finish(1).expect("结束"));
         assert_eq!(scheduler.cache().in_use(), 0, "增长出来的页也要还");
     }
@@ -571,8 +586,8 @@ mod tests {
     #[test]
     fn a_step_that_cannot_get_a_page_is_blocked_without_side_effects() {
         let mut scheduler = Scheduler::new(Cache::new(3, 4).expect("页池"));
-        let mut a = Sequence::new(1, 4, 8, 4, exec::Stream::new(0)).expect("序列");
-        let b = Sequence::new(2, 4, 8, 4, exec::Stream::new(0)).expect("序列");
+        let mut a = Sequence::new(1, 4, 8, 4, crate::exec::Stream::new(0)).expect("序列");
+        let b = Sequence::new(2, 4, 8, 4, crate::exec::Stream::new(0)).expect("序列");
         assert!(scheduler.admit(&b).expect("准入"));
         assert!(scheduler.admit(&a).expect("准入"));
         assert_eq!(scheduler.cache().in_use(), 2, "各自只占提示那一页");
@@ -588,7 +603,7 @@ mod tests {
         assert_eq!(a.len(), 8, "阻塞不能推进序列");
         assert_eq!(a.produced(), 4, "阻塞不能多算一个 token");
         assert_eq!(scheduler.cache().in_use(), 3, "阻塞不能动页池");
-        assert_eq!(scheduler.pages_of(1).map(kv::Table::len), Some(2));
+        assert_eq!(scheduler.pages_of(1).map(crate::kv::Table::len), Some(2));
         assert_eq!(
             scheduler.blocked(),
             vec![2, 1],
@@ -609,7 +624,7 @@ mod tests {
     fn fits_separates_a_full_pool_from_a_never_finishable_request() {
         let scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
         assert!(scheduler.fits(&sequence(1, 4, 2)), "两页里跑得完");
-        let endless = Sequence::new(2, 4, 1024, 16, exec::Stream::new(0)).expect("序列");
+        let endless = Sequence::new(2, 4, 1024, 16, crate::exec::Stream::new(0)).expect("序列");
         assert!(!scheduler.fits(&endless), "最坏情况远超两页");
         assert!(scheduler.cache().in_use() == 0, "判据不占页");
     }
@@ -635,7 +650,7 @@ mod tests {
     #[test]
     fn a_sequence_whose_page_width_disagrees_with_the_pool_is_rejected() {
         let mut scheduler = Scheduler::new(Cache::new(4, 16).expect("页池"));
-        let narrow = Sequence::new(5, 16, 4, 8, exec::Stream::new(0)).expect("序列");
+        let narrow = Sequence::new(5, 16, 4, 8, crate::exec::Stream::new(0)).expect("序列");
         assert_eq!(scheduler.admit(&narrow).unwrap_err().code(), Code::Invalid);
         assert_eq!(scheduler.cache().in_use(), 0, "拒绝不能留下分配");
 
@@ -664,24 +679,6 @@ mod tests {
         );
     }
 
-    /// 确定性 PRNG：不给依赖表加 `rand`，同时让失败可复现。
-    struct Rng {
-        state: u32,
-    }
-
-    impl Rng {
-        fn new(seed: u32) -> Self {
-            Self { state: seed }
-        }
-
-        fn below(&mut self, bound: u32) -> u32 {
-            self.state ^= self.state << 13;
-            self.state ^= self.state >> 17;
-            self.state ^= self.state << 5;
-            self.state % bound.max(1)
-        }
-    }
-
     /// 随机准入 / 推进 / 结束，任何一步之后账都要对得上：
     ///
     /// - 页池占用 = 各页表长度之和，空闲 + 占用恒等于页总数；
@@ -695,7 +692,7 @@ mod tests {
             .map(|id| {
                 let prompt = rng.below(8) as usize;
                 let max_new = 1 + rng.below(6) as usize;
-                Sequence::new(id, prompt, max_new, 4, exec::Stream::new(0)).expect("序列")
+                Sequence::new(id, prompt, max_new, 4, crate::exec::Stream::new(0)).expect("序列")
             })
             .collect();
 

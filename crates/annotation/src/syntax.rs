@@ -379,7 +379,22 @@ pub(crate) fn parse_frontend(tokens: &[Token]) -> Result<Frontend, Error> {
 }
 
 /// `#[model(..)]` 的键闭集：注册名、生产形状、输出类型。
-pub(crate) const MODEL_KEYS: [&str; 3] = ["name", "shape", "dtype"];
+pub(crate) const MODEL_KEYS: [&str; 4] = ["name", "shape", "dtype", "skeleton"];
+
+/// `skeleton` 闭集：决定生成的 `MODEL` 走哪副算子骨架。
+pub(crate) const SKELETONS: [&str; 11] = [
+    "gemm",
+    "elementwise",
+    "unary",
+    "reduce",
+    "rmsnorm",
+    "softmax",
+    "rope",
+    "embed",
+    "dequant",
+    "dequant_i4",
+    "attention",
+];
 
 /// `#[model(..)]` 的 `dtype` 闭集：对拍**有阈值**的那几种输出类型。
 ///
@@ -400,6 +415,7 @@ pub(crate) struct ModelDecl {
     name: String,
     shape: [usize; 2],
     dtype: String,
+    skeleton: String,
 }
 
 impl ModelDecl {
@@ -417,6 +433,11 @@ impl ModelDecl {
     pub(crate) fn dtype(&self) -> &str {
         &self.dtype
     }
+
+    /// 骨架名（[`SKELETONS`] 里的一个），缺省为 `gemm`。
+    pub(crate) fn skeleton(&self) -> &str {
+        &self.skeleton
+    }
 }
 
 /// 解析 `#[model(name = "..", shape = [..], dtype = "..")]`。
@@ -428,6 +449,7 @@ pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
     let mut name: Option<String> = None;
     let mut shape: Option<[usize; 2]> = None;
     let mut dtype: Option<String> = None;
+    let mut skeleton: Option<String> = None;
 
     while !cursor.is_empty() {
         let key_position = cursor.position();
@@ -496,6 +518,20 @@ pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
                 }
                 dtype = Some(text);
             }
+            "skeleton" => {
+                let token = cursor.next("`skeleton` 的值")?;
+                let text = string(token).map_err(|error| error.rebased(key_position))?;
+                if !SKELETONS.contains(&text.as_str()) {
+                    return Err(Error::at(
+                        key_position,
+                        format!(
+                            "`skeleton = \"{text}\"` 不在骨架闭集内（可用：{}）",
+                            SKELETONS.join("、")
+                        ),
+                    ));
+                }
+                skeleton = Some(text);
+            }
             other => {
                 return Err(Error::at(
                     key_position,
@@ -512,7 +548,12 @@ pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
     let name = name.ok_or_else(|| Error::at(0, "缺少必填键 `name = \"..\"`"))?;
     let shape = shape.ok_or_else(|| Error::at(0, "缺少必填键 `shape = [m, n]`"))?;
     let dtype = dtype.ok_or_else(|| Error::at(0, "缺少必填键 `dtype = \"..\"`"))?;
-    Ok(ModelDecl { name, shape, dtype })
+    Ok(ModelDecl {
+        name,
+        shape,
+        dtype,
+        skeleton: skeleton.unwrap_or_else(|| "gemm".to_string()),
+    })
 }
 
 /// `#[model]` 标注的是**一个具体格式的别名**：`type 名字 = <具体实例>;`。

@@ -36,8 +36,8 @@ pub fn detect() -> Vec<Detected> {
 pub fn fake(vendor: &str) -> Detected {
     match vendor {
         "nvidia" => Detected::new()
-            .with("cc", "10.0")
-            .with("name", "NVIDIA B200"),
+            .with("cc", "7.5")
+            .with("name", "NVIDIA T600"),
         "intel" => Detected::new()
             .with("name", "Intel Arc A770")
             .with("arch", "gen12"),

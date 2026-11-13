@@ -6,10 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Presentation helpers: a labelled report and stable name joining for human-readable output."
+description = "Repository tool: config-driven static quality gates and human-readable output."
 publish = false
 
 [dependencies]
+config = { path = "../config", package = "llm-config" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [lints]
 workspace = true

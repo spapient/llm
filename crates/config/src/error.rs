@@ -5,6 +5,26 @@ use crate::source::Origin;
 use std::fmt;
 use std::path::PathBuf;
 
+/// 出错键：已解析的登记键，或尚未能解析的原始键名。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BadKey {
+    /// 已登记的键：诊断带文件键名与文档说明。
+    Known(Key),
+    /// 原始键名（未登记或输入缺少 `=`）：如实显示，不拿占位键冒充。
+    Raw(String),
+}
+
+/// 某个来源给出的值不符合该键的形状。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadValue {
+    /// 键（可能尚未解析成登记键）。
+    pub key: BadKey,
+    /// 值从哪来。
+    pub origin: Origin,
+    /// 说明。
+    pub message: String,
+}
+
 /// 配置层错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -43,14 +63,7 @@ pub enum Error {
         expected: u16,
     },
     /// 某个来源给出的值不符合该键的形状。
-    BadValue {
-        /// 键。
-        key: Key,
-        /// 值从哪来。
-        origin: Origin,
-        /// 说明。
-        message: String,
-    },
+    BadValue(BadValue),
 }
 
 impl fmt::Display for Error {
@@ -77,16 +90,19 @@ impl fmt::Display for Error {
                 "`{}` 的 schema = {found}，本版本只接受 {expected}",
                 path.display()
             ),
-            Self::BadValue {
+            Self::BadValue(BadValue {
                 key,
                 origin,
                 message,
-            } => write!(
-                f,
-                "{origin}提供的 `{}`（{}）非法：{message}",
-                key.file_key(),
-                key.doc()
-            ),
+            }) => match key {
+                BadKey::Known(key) => write!(
+                    f,
+                    "{origin}提供的 `{}`（{}）非法：{message}",
+                    key.file_key(),
+                    key.doc()
+                ),
+                BadKey::Raw(name) => write!(f, "{origin}提供的 `{name}` 非法：{message}"),
+            },
         }
     }
 }
@@ -112,13 +128,25 @@ mod tests {
 
     #[test]
     fn bad_values_name_the_key_and_the_origin() {
-        let error = Error::BadValue {
-            key: Key::CacheDir,
+        let error = Error::BadValue(BadValue {
+            key: BadKey::Known(Key::CacheDir),
             origin: Origin::new(Layer::Env, "CUTILE_CACHE_DIR"),
             message: "路径为空".to_string(),
-        };
+        });
         let text = error.to_string();
         assert!(text.contains("cache.dir"), "{text}");
         assert!(text.contains("CUTILE_CACHE_DIR"), "{text}");
+    }
+
+    #[test]
+    fn raw_bad_values_do_not_pretend_to_be_a_registered_key() {
+        let error = Error::BadValue(BadValue {
+            key: BadKey::Raw("work.nope".to_string()),
+            origin: Origin::new(Layer::Cli, "--set work.nope=x"),
+            message: "键未登记".to_string(),
+        });
+        let text = error.to_string();
+        assert!(text.contains("work.nope"), "{text}");
+        assert!(!text.contains("cache.dir"), "不该出现占位键：{text}");
     }
 }

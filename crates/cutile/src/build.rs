@@ -8,6 +8,7 @@
 //! 命令策略（形状矩阵、重复次数、工作目录命名）不在内核里。
 
 use crate::SCHEMA_VER;
+use crate::ast;
 use crate::atom::{DType, DTypeSet, Prim, Space};
 use crate::backend::{self, Outcome, Toolchain};
 use crate::cache::{Artifact, ArtifactKey, Cache, CacheKey, Lock};
@@ -17,7 +18,7 @@ use crate::emit::{self, Source};
 use crate::layout::LayoutSpec;
 use crate::prof::Profile;
 use crate::space;
-use crate::substitute::{self, FragmentSet};
+use crate::substitute::FragmentSet;
 use diagnostic::{Code, Error};
 use llm_config::Settings;
 use std::io::ErrorKind;
@@ -76,7 +77,10 @@ pub fn source(
             key,
         ));
     }
-    let text = substitute::render(op, tile, &fragments)?;
+    // 数据流经过结构化 AST（ADR 0017 L1）：先 build 成节点序列再打印，双射测试保证它与
+    // 直接 `substitute::render` 逐字节相等；字符串路径保留用于回滚与对拍。
+    let nodes = ast::build(op, tile, &fragments)?;
+    let text = ast::render(&nodes);
     let source = emit::assemble(profile, op, variant, tile, &text);
     cache.put(&key, &source.text).map_err(|error| {
         Error::new(
@@ -395,21 +399,35 @@ fn key(
             )
         })
         .unwrap_or_default();
+
+    // 片段层只取一次：片段哈希与 AST 指纹都从它派生。
+    let set = fragments(profile, settings);
+    let fragment_hashes: Vec<(Prim, u64)> = set
+        .as_ref()
+        .map(|set| {
+            Prim::ALL
+                .iter()
+                .copied()
+                .filter_map(|prim| set.get(prim).map(|text| (prim, emit::fnv1a(text))))
+                .collect()
+        })
+        .unwrap_or_default();
+    // 缓存指纹锚定结构化 AST：FNV(AST 规范编码)。片段层不可用或 build 失败时回退到模板哈希，
+    // 保持 key() 不返回 Result 的容错契约；正常路径下两条路径已由双射测试守着。
+    let ast_hash = match set {
+        Ok(set) => ast::build(op, tile, &set)
+            .map(|nodes| emit::fnv1a(&ast::encode(&nodes)))
+            .unwrap_or_else(|_| emit::fnv1a(&op.template)),
+        Err(_) => emit::fnv1a(&op.template),
+    };
+
     CacheKey {
         schema_ver: SCHEMA_VER,
         emit: profile.meta.emit,
         flags_hash: emit::fnv1a(&flags),
         arch: profile.meta.id.clone(),
-        template_hash: emit::fnv1a(&op.template),
-        fragments: fragments(profile, settings)
-            .map(|set| {
-                Prim::ALL
-                    .iter()
-                    .copied()
-                    .filter_map(|prim| set.get(prim).map(|text| (prim, emit::fnv1a(text))))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        ast_hash,
+        fragments: fragment_hashes,
         layouts,
         variant: path.variant.clone(),
         tile: tile.summary(),

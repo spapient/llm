@@ -62,6 +62,47 @@ pub fn scratch_dir(tag: &str) -> PathBuf {
     path
 }
 
+/// 确定性 PRNG（xorshift）：测试共享，不给依赖表加 `rand`，同时让失败可复现。
+pub struct Rng {
+    state: u32,
+}
+
+impl Rng {
+    /// 固定种子。
+    #[must_use]
+    pub fn new(seed: u32) -> Self {
+        Self { state: seed }
+    }
+
+    /// 取 `[0, bound)` 内的确定性值。
+    pub fn below(&mut self, bound: u32) -> u32 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 17;
+        self.state ^= self.state << 5;
+        self.state % bound.max(1)
+    }
+}
+
+/// CRC-32 反射多项式（IEEE 802.3 的 `0x04C1_1DB7` 反射形式）。
+const CRC_POLY: u32 = 0xEDB8_8320;
+
+/// CRC-32 的逐字节参考定义：与各 crate 的查表实现独立，供对拍共享，免得每份测试重写一遍。
+#[must_use]
+pub fn crc32_bitwise(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ CRC_POLY
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +139,17 @@ mod tests {
         assert_ne!(first, other);
         let _ = std::fs::remove_dir_all(&first);
         let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn rng_is_deterministic_and_bounded() {
+        let mut left = Rng::new(1234);
+        let mut right = Rng::new(1234);
+        for _ in 0..16 {
+            let value = left.below(10);
+            assert_eq!(value, right.below(10), "同种子序列一致");
+            assert!(value < 10, "结果落在界内");
+        }
+        assert_eq!(Rng::new(7).below(1), 0, "bound=1 恒为 0");
     }
 }

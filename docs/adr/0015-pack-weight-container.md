@@ -1,7 +1,20 @@
 # 0015：自家权重容器 `pack`——存储与传输一体的版本化字节格式
 
-- 状态：已采纳
+- 状态：已采纳（归属已修订，见下）
 - 日期：2026-11-12
+
+> **修订（2026-11-12）**：本 ADR 原决策第 1 条"新建独立 crate `pack`"已被后续架构评审调整。
+> 理由：两个 crate 均 `publish=false`、消费方高度重叠、`Entry` 与 `Segment` 是同一类抽象，独立 crate
+> 造成 pack 悬空。现把容器实现整体并入 `weights`，各模块直接平铺在 `crates/weights/src/` 根
+> （不设子目录；为避免与外部量化 `quant.rs` 同名，容器的显式仿射量化模块命名为 `affine.rs`，
+> 类型名仍为 `Quant`），独立 `crates/pack` 已删除；格式名、魔数、字节布局与全部能力
+> （21 种 Wire、rANS、Merkle、原子写、两级 CRC）保持不变。下文关于"独立 crate"的表述仅作历史记录。
+>
+> **再修订（2026-11-12，P4 落地）**：图拓扑与格量化已迁移并增强——`ir.rs`（8 闭集算子、
+> 边只能指向更早节点保证无环）、`lattice.rs`（D24/E8/3×E8 + rank/unrank，E8 壳计数对拍）、
+> `scale.rs`（对数域定点把 scale 区从 `4n` 压到 `8+n`，攻克旧版"生产不启用"根因）、
+> `golay.rs`（G24 `[24,12,8]`，向真 Leech Λ24 的码层基础，未宣称达到 Λ24 密度）。
+> 124 测试全过、clippy 零警告、全 workspace 零失败。
 
 ## 背景
 
@@ -143,3 +156,23 @@ CRC-32 采用与 `checkpoint` 完全相同的 IEEE 802.3 反射多项式（`0xED
 - **P3**：显式索引段与 range 随机访问、断点续传，对接 `proto` 帧做网络流式传输。
 - **P3**：strided/block-sparse 布局（含 MoE 专家表）。
 - **P4**：与 `weights`（safetensors）双向转换、分片多文件清单（与 `shard` 拓扑对齐）。
+
+## 再修订注记（2026-11-12，P5 完成）
+
+- 独立 `pack` crate 已撤销、容器整体并入 `weights` 且模块平铺根目录；mmap 的 unsafe 隔离到 `storage`
+  的 feature-gated 模块，不再有独立 crate。
+- P5 落地自研 Jacobi SVD、强类型 `ledger` 账本、五轴 `axes` 选码，并应要求把外部格式提前并入：
+  `gguf.rs`（GGUF v3 六类反量化）、`zip.rs`+`bin.rs`（零依赖 ZIP/pickle 读取，九类 storage，零拷贝）。
+- 真机对拍而非 mock：torch 2.9.1 生成的 2 个固定文件与 20 个随机 fuzz 文件共 100 个张量，
+  解析字节与 `torch.load` 逐字节一致；weights 152 测试、全 workspace 测试零失败，clippy 零警告。
+- 旧版 `legacy.rs` 经取证是自有 v2 容器而非 PyTorch pickle，故 bin 读取为零依赖新写，不属逐行迁移。
+
+## 三修订注记（2026-11-12，P6 完成）
+
+- `mode.rs`：模式写在保留名段 `llm.mode`，不新增二进制机制；`opt.` 命名空间为优化器状态，
+  `release` 过滤发布，旧文件无标记按推理兼容。
+- `patch.rs`：逐字节 XOR 自逆且零额外标记——同名等长 XOR、否则全量；diff/join 同构共用
+  `rebuild`，XOR 大量零经 rans 压小。新增函数全部满足静态门 ccn≤5。
+- 对外命名：外部格式统一称 bin，不带 PyTorch 前缀。
+- 说明：`llm-tool` 的全仓库静态门（gate）当前对大量历史 crate 的既存函数报 ccn/行数技术债，
+  非本阶段引入；本阶段新增的 mode/patch 已主动合规，未在本次范围重构历史 crate。

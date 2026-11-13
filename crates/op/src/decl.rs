@@ -564,8 +564,8 @@ fn parse_span(path: &str, value: &Value) -> Result<Span, Error> {
 fn parse_dt(path: &str, value: &Value) -> Result<DTypeSet, Error> {
     let mut set = DTypeSet::empty();
     for name in string_list(path, value)? {
-        let dt = DType::parse(&name).ok_or_else(|| {
-            let allowed: Vec<&str> = DType::ALL.iter().map(|dt| dt.as_str()).collect();
+        let dt = DType::parse_name(&name).ok_or_else(|| {
+            let allowed: Vec<&str> = DType::ALL.iter().map(|dt| dt.name()).collect();
             field(
                 path,
                 format!("`{name}` 不在闭集内（{}）", allowed.join(" | ")),
@@ -613,8 +613,9 @@ mod tests {
     use super::*;
 
     fn builtin() -> OpDecl {
-        let (_, declaration, template) = crate::BUILTIN[0];
-        OpDecl::parse(declaration, template).expect("内置声明必须自洽")
+        // 按名字取 gemv_f32：注册表按名字排序，新增算子后不应再假设索引 0 是哪条。
+        let op = crate::builtin_named("gemv_f32").expect("gemv_f32 内置");
+        OpDecl::parse(op.declaration(), op.template()).expect("内置声明必须自洽")
     }
 
     /// 计数与展开必须同一个口径：装载期只数不物化，调用方仍然可以拿到组合。
@@ -629,7 +630,9 @@ mod tests {
 
     #[test]
     fn a_tile_overflow_names_the_axis_to_prune() {
-        let (_, declaration, template) = crate::BUILTIN[0];
+        let op = crate::builtin_named("gemv_f32").expect("gemv_f32");
+        let declaration = op.declaration();
+        let template = op.template();
         let broken =
             declaration.replace("GMAX = [32]", "GMAX = [1, 2, 4, 8, 16, 32, 64, 128, 256]");
         let error = OpDecl::parse(&broken, template).expect_err("9 个候选超过上限 8");
@@ -644,7 +647,9 @@ mod tests {
     /// 也不会被片段消费。判据必须点名原语、键与该原语真正允许的参数。
     #[test]
     fn an_attr_key_must_belong_to_its_primitive() {
-        let (_, declaration, template) = crate::BUILTIN[0];
+        let op = crate::builtin_named("gemv_f32").expect("gemv_f32");
+        let declaration = op.declaration();
+        let template = op.template();
         let broken = declaration.replace(
             "store  = { bytes = \"<=4096\", dt = [\"f32\"], space = [\"GM\"] }",
             "store  = { bytes = \"<=4096\", dt = [\"f32\"], space = [\"GM\"], sat = [\"off\"] }",

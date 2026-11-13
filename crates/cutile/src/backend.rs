@@ -210,8 +210,152 @@ fn warmup_runs(repeat: usize) -> usize {
     (repeat / 10).max(1)
 }
 
+/// 拼出可在 GPU 上真实执行的 CUDA 程序：`.k` 内核转 `__device__`，单线程 `__global__`
+/// 包装在 `<<<1,1>>>` 里调用它，host `main` 负责 `cudaMalloc`/`cudaMemcpy`/回读。
+///
+/// 这是**语义对拍门**：数据落在设备内存、内核在 GPU 上执行、结果真实回读，验证跨设备数值一致；
+/// 单线程串行不做并行 tile，并行性能由独立的 roofline 门承载，报告里如实标注，不拿它冒充性能门。
+///
+/// # Errors
+///
+/// 缺输出缓冲、输出不是 f32、样本缺缓冲，或签名与样本不一致时返回说明。
+pub fn cuda_harness(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> diagnostic::Result<String> {
+    let output = signature.output().ok_or_else(|| {
+        Error::new(
+            Code::Internal,
+            "内核签名没有可写输出缓冲（装载期已校验，这里只能是漂移）",
+        )
+    })?;
+    if signature.output_type() != Some(CType::F32) {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "算子 `{}` 的可写输出 `{output}` 不是 `float *`，CUDA 回读只认 f32",
+                signature.op()
+            ),
+        ));
+    }
+    let out = sample
+        .buffer(output)
+        .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有输出缓冲 `{output}`")))?;
+    let Values::F32(out_values) = &out.values else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("输出缓冲 `{output}` 必须是 f32"),
+        ));
+    };
+    let params = signature.params();
+    let kernel = signature.kernel();
+    let len = out_values.len();
+
+    // 形参声明（__global__ 与 __device__ 同签名）。
+    let decl = |param: &op::sig::Param| match param.ctype {
+        CType::F32 => format!("float *{}", param.name),
+        CType::U8 => format!("unsigned char *{}", param.name),
+        CType::Int => format!("int {}", param.name),
+    };
+    let param_decl = params.iter().map(&decl).collect::<Vec<_>>().join(", ");
+
+    // launch 实参：缓冲传设备指针 d_<name>，标量取样本值。
+    let mut launch_args = Vec::with_capacity(params.len());
+    for param in params {
+        if param.ctype.is_buffer() {
+            launch_args.push(format!("d_{}", param.name));
+        } else {
+            let value = sample.scalar(&param.name).ok_or_else(|| {
+                Error::new(
+                    Code::Internal,
+                    format!("标量实参 `{}` 没有取值", param.name),
+                )
+            })?;
+            launch_args.push(value.to_string());
+        }
+    }
+    let launch_args = launch_args.join(", ");
+
+    let mut text = String::new();
+    text.push_str("#include <cuda_runtime.h>\n#include <cstdio>\n");
+    text.push_str(&format!("/* cutile cuda harness | kernel={kernel} m={} n={} | 单线程设备执行（语义门，非并行性能门） */\n", sample.m, sample.n));
+    // .k 内核整体转 __device__：入口定义只有一处。
+    let device_src = kernel_source.replace(
+        &format!("void {kernel}("),
+        &format!("__device__ void {kernel}("),
+    );
+    text.push_str(&device_src);
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "\n__global__ void cutile_launch({param_decl}) {{\n    {kernel}({launch_args});\n}}\n\n"
+    ));
+
+    // host 侧：输入静态初始化 + 设备分配/拷贝，输出仅分配。
+    text.push_str("int main(void) {\n");
+    text.push_str(&cuda_host_buffers(sample, params)?);
+    text.push_str(&format!(
+        "    cutile_launch<<<1, 1>>>({launch_args});\n\
+         \x20   cudaError_t error = cudaDeviceSynchronize();\n\
+         \x20   if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
+    ));
+    text.push_str(&format!(
+        "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n\
+         \x20   for (int i = 0; i < {len}; ++i) {{\n\
+         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
+         \x20       printf(\"%u\\n\", v.u);\n\
+         \x20   }}\n"
+    ));
+    for param in params {
+        if param.ctype.is_buffer() {
+            text.push_str(&format!("    cudaFree(d_{});\n", param.name));
+        }
+    }
+    text.push_str("    return 0;\n}\n");
+    Ok(text)
+}
+
+/// host 侧的缓冲声明、设备分配，以及只读缓冲的入向拷贝。
+fn cuda_host_buffers(sample: &Sample, params: &[op::sig::Param]) -> diagnostic::Result<String> {
+    let mut text = String::new();
+    for param in params {
+        if !param.ctype.is_buffer() {
+            continue;
+        }
+        let Some(buffer) = sample.buffer(&param.name) else {
+            return Err(Error::new(Code::Internal, "签名与样本已对齐（漂移）"));
+        };
+        let ctype = c_type(&buffer.values);
+        let size = buffer.values.len();
+        if param.mutable {
+            text.push_str(&format!("    {ctype} h_{}[{size}];\n", param.name));
+            text.push_str(&format!(
+                "    {ctype} *d_{name} = 0;\n    cudaMalloc((void **)&d_{name}, {size} * sizeof({ctype}));\n",
+                name = param.name
+            ));
+        } else {
+            text.push_str(&format!(
+                "    static const {ctype} h_{name}[{size}] = {{{literal}}};\n",
+                name = param.name,
+                literal = c_literal(&buffer.values)
+            ));
+            text.push_str(&format!(
+                "    {ctype} *d_{name} = 0;\n    cudaMalloc((void **)&d_{name}, {size} * sizeof({ctype}));\n",
+                name = param.name
+            ));
+            text.push_str(&format!(
+                "    cudaMemcpy(d_{name}, h_{name}, {size} * sizeof({ctype}), cudaMemcpyHostToDevice);\n",
+                name = param.name
+            ));
+        }
+    }
+    Ok(text)
+}
+
 /// 缓冲的 C 元素类型。
-fn c_type(values: &Values) -> &'static str {
+pub(crate) fn c_type(values: &Values) -> &'static str {
     match values {
         Values::F32(_) => "float",
         Values::U8(_) => "unsigned char",
@@ -219,7 +363,7 @@ fn c_type(values: &Values) -> &'static str {
 }
 
 /// 缓冲的 C 静态数组初始化式。
-fn c_literal(values: &Values) -> String {
+pub(crate) fn c_literal(values: &Values) -> String {
     match values {
         Values::F32(values) => values
             .iter()
@@ -335,6 +479,13 @@ fn version_in(line: &str) -> Option<String> {
 /// 探测一个可用的 C 编译器（`cc` → `clang` → `gcc`），并读出它自报的版本。
 pub fn detect() -> Option<Toolchain> {
     ["cc", "clang", "gcc"].into_iter().find_map(probe)
+}
+
+/// 探测 nvcc（CUDA 编译器）：`nvcc --version` 只打印版本、不调用宿主 cl，故可独立成功；
+/// 真正设备编译时的宿主编译器（Windows 上的 cl.exe）由调用方用 `-ccbin` 另行指定。
+#[must_use]
+pub fn detect_nvcc() -> Option<Toolchain> {
+    probe("nvcc")
 }
 
 /// 探测指定命令：跑一次 `--version`，成功才返回（版本解析不出也算可用）。

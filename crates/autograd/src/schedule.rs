@@ -192,6 +192,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use diagnostic::Code;
+    use testkit::Rng;
 
     use super::*;
 
@@ -537,23 +538,5 @@ mod tests {
             .rev()
             .find(|var| tape.requirement(**var).is_some_and(Requirement::requires))?;
         Some((tape, loss))
-    }
-
-    /// 确定性 PRNG：不给依赖表加 `rand`，同时让失败可复现。
-    struct Rng {
-        state: u32,
-    }
-
-    impl Rng {
-        fn new(seed: u32) -> Self {
-            Self { state: seed }
-        }
-
-        fn below(&mut self, bound: u32) -> u32 {
-            self.state ^= self.state << 13;
-            self.state ^= self.state >> 17;
-            self.state ^= self.state << 5;
-            self.state % bound.max(1)
-        }
     }
 }

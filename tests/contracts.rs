@@ -243,6 +243,15 @@ fn every_device_front_end_is_annotated_and_entered() {
     let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
     let mut checked = 0;
     let mut failures: Vec<String> = Vec::new();
+    // `FRONTENDS` 是 crate 级装配表：拆分后类型定义与表项可分处同 crate 的不同文件，
+    // 因此 drive 检查按 crate 合并文本，而注解与类型定义仍要求在同一文件。
+    let mut crate_text: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for (crate_name, file) in sources() {
+        if let Ok(text) = fs::read_to_string(&file) {
+            crate_text.entry(crate_name).or_default().push_str(&text);
+        }
+    }
     for (name, file) in sources() {
         if names.contains(&name.as_str()) {
             continue;
@@ -273,7 +282,10 @@ fn every_device_front_end_is_annotated_and_entered() {
                      语言身份不能靠手写常量"
                 ));
             }
-            if !text.contains(&format!("drive::<{ty}>")) {
+            let entered = crate_text
+                .get(&name)
+                .is_some_and(|joined| joined.contains(&format!("drive::<{ty}>")));
+            if !entered {
                 failures.push(format!(
                     "{where_}: `{ty}` 没有出现在 `FRONTENDS` 表里（缺 `drive::<{ty}>`）：\
                      它的见证永远只能走 host 自检"
@@ -427,7 +439,7 @@ fn annotation_names_come_from_the_vocabulary() {
     let mut comparable: Vec<&str> = cutile::atom::DType::ALL
         .iter()
         .filter(|dt| cutile::reference::tolerance(**dt) > 0.0)
-        .map(|dt| dt.as_str())
+        .map(|dt| dt.name())
         .collect();
     comparable.sort_unstable();
     let mut declared: Vec<&str> = dtypes.iter().map(String::as_str).collect();
@@ -437,13 +449,15 @@ fn annotation_names_come_from_the_vocabulary() {
         "`DTYPES` 必须与 `cutile::reference::tolerance` 给出非零阈值的类型逐项相等"
     );
     for dtype in &dtypes {
-        let dt = cutile::atom::DType::parse(dtype)
+        let dt = cutile::atom::DType::parse_name(dtype)
             .unwrap_or_else(|| panic!("`DTYPES` 里的 `{dtype}` 不在 `DType` 闭集里"));
-        assert_eq!(dt.as_str(), dtype, "`{dtype}` 必须能往返解析");
+        assert_eq!(dt.name(), *dtype, "`{dtype}` 必须能往返解析");
+        // 变体名的唯一事实源是 `DType::variant`（缩写词全大写规则住在 dtype 里）。
+        // `Debug` 输出必须与它一致，否则 annotation 生成的 `DType::{variant}` 编不过。
         assert_eq!(
             format!("{dt:?}"),
-            capitalised(dtype),
-            "`{dtype}` 的变体名与 `codegen` 的「首字母大写」规则不一致"
+            dt.variant(),
+            "`{dtype}` 的 Debug 名与 variant 不一致"
         );
     }
 }

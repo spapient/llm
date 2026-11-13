@@ -1,0 +1,64 @@
+//! 残差相加：`y[n] = a[n] + b[n]`。
+//!
+//! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Residual`] 单态化。
+
+use crate::elementwise::{BinCache, Binary};
+use diagnostic::Error;
+
+/// 残差实现：与 `add` 同一段加法，独立成类型以对应网络残差层。
+pub struct Residual;
+
+static CACHE: BinCache = BinCache::new();
+
+impl Binary for Residual {
+    const EXPR: &'static str = "n,n,n->n";
+    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::elementwise::f32_operands();
+
+    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
+        CACHE.get::<Self>()
+    }
+
+    fn apply(a: f32, b: f32) -> f32 {
+        a + b
+    }
+
+    fn input_a(len: usize) -> Vec<f32> {
+        (0..len).map(|i| (i as f32) * 0.5).collect()
+    }
+
+    fn input_b(len: usize) -> Vec<f32> {
+        (0..len).map(|i| (i as f32) * 0.25).collect()
+    }
+}
+
+/// 残差相加的具体语义别名。
+#[annotation::model(name = "residual_add_f32", shape = [4096, 4096], dtype = "f32", skeleton = "elementwise")]
+pub type ResidualAddF32 = Residual;
+
+/// 内核入口：结果写进调用方给的缓冲。
+///
+/// # Errors
+///
+/// 三个缓冲等长，否则返回说明。
+pub fn forward(a: &[f32], b: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    crate::elementwise::forward::<Residual>(a, b, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn residual_add_matches_the_scalar_reference() {
+        let sample = crate::elementwise::sample::<Residual>(128, 1);
+        let expected = crate::elementwise::reference::<Residual>(&sample).expect("参考可计算");
+        let mut out = vec![0.0; 128];
+        forward(
+            sample.f32("a").expect("a"),
+            sample.f32("b").expect("b"),
+            &mut out,
+        )
+        .expect("等长");
+        assert_eq!(out, expected);
+    }
+}

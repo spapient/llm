@@ -278,6 +278,7 @@ mod tests {
 
     use super::*;
     use crate::{Budget, Choice, Requirement};
+    use testkit::Rng;
 
     /// 标量表：值的真值 + 当前活着的值 + 峰值。
     ///
@@ -678,23 +679,5 @@ mod tests {
             replayed_rounds > 0,
             "随机图里至少要有一轮真的重算了，否则用例是空的"
         );
-    }
-
-    /// 确定性 PRNG：不给依赖表加 `rand`，同时让失败可复现。
-    struct Rng {
-        state: u32,
-    }
-
-    impl Rng {
-        fn new(seed: u32) -> Self {
-            Self { state: seed }
-        }
-
-        fn below(&mut self, bound: u32) -> u32 {
-            self.state ^= self.state << 13;
-            self.state ^= self.state >> 17;
-            self.state ^= self.state << 5;
-            self.state % bound.max(1)
-        }
     }
 }

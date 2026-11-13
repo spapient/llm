@@ -7,7 +7,7 @@
 //! 用函数指针而不是 trait：注册表可以是一张 `const` 表，新增算子只加一行，不需要 `dyn` 或
 //! 工厂的样板代码。
 //!
-//! 代价本身不在这里计算：`flops` / `read` / `write` 由 [`einsum`] 从"一条求和表达式 + 每个
+//! 代价本身不在这里计算：`flops` / `read` / `write` 由 [`crate::einsum`] 从"一条求和表达式 + 每个
 //! 操作数的位宽与方向"推出，本模块只负责把算子的语义（表达式、样本、标量参考）挂到注册表上。
 //! `Cost` 与 [`Extents`] 从 `einsum` 再导出，是为了让 `cutile` / `nn` 继续只依赖 `op` 就能拿到
 //! 它们（所有权仍在 `einsum`）。
@@ -26,9 +26,9 @@ use diagnostic::{Code, Error};
 pub use prof::atom::DType;
 
 #[doc(inline)]
-pub use einsum::Cost;
+pub use crate::einsum::Cost;
 #[doc(inline)]
-pub use einsum::Extents;
+pub use crate::einsum::Extents;
 
 /// 缓冲的取值：P0 只出现 f32 与打包字节。
 #[derive(Debug, Clone, PartialEq)]
@@ -319,6 +319,11 @@ pub struct Model {
     /// 投影算子声明 [`AxisRole::Input`] 与 [`AxisRole::Output`]；将来的 RMSNorm / Attention
     /// 可以只声明自己需要的角色（或先留空，由调用方用 `nn::Bounds` 那侧的形状上下文自行构造）。
     pub axes: &'static [AxisSpec],
+    /// 把形状对 `(m, n)` 翻译成算子自己的具名轴上下文。
+    ///
+    /// 投影算子指向按 `m/n` 构造的函数，逐元素/归约/规范化等非投影算子各自按骨架的轴构造，
+    /// 因此 `verify` 不需要假设每条算子都声明了投影的 Input/Output 轴。
+    pub shape_ctx: fn(usize, usize) -> Result<ShapeContext, Error>,
     /// 给定形状上下文的标量代价。
     ///
     /// 可失败：表达式与形状不自洽（例如列数不是量化分组的整数倍）时返回带类别的错误，而不是
@@ -393,6 +398,10 @@ mod tests {
         Ok(Vec::new())
     }
 
+    fn test_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
+        ShapeContext::new([('k', m), ('j', n)])
+    }
+
     /// 只声明输入轴：它不是一个可投影的算子，`projection` 必须说出来，而不是猜一对数字。
     const HALF_PROJECTION: Model = Model {
         group: 1,
@@ -402,6 +411,7 @@ mod tests {
             role: AxisRole::Input,
             label: 'k',
         }],
+        shape_ctx: test_shape,
         cost: zero_cost,
         sample,
         reference,

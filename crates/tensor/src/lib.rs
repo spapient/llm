@@ -1,8 +1,9 @@
 //! 逻辑张量：`DType` + `Shape` + `Strides` + 只读字节视图 [`Tensor`]。
 //!
-//! **拥有**：`Tensor`、`View`、`DType`、`Shape`、`Strides`、`Element`。**不拥有**：kernel 侧的操作数视图
+//! **拥有**：`Tensor`、`View`、`Shape`、`Strides`、`Element` 与计算层子集 [`SUPPORTED`]。**不拥有**：
+//! 元素类型闭集（L1 `dtype`，这里只再导出 `DType`）、kernel 侧的操作数视图
 //! （DSL 的宿主 API，两者语义不同，见 `docs/adr/0003-kernel-and-runtime-types.md`）、
-//! 缓冲分配（`mem`）、布局搬运（`storage`）。**依赖**：`mem`、`diagnostic`。
+//! 缓冲分配（`mem`）、布局搬运（`storage`）。**依赖**：`dtype`、`mem`、`diagnostic`。
 //! **被依赖**：`storage`、`weights`、`kv`、`autograd`、`data`、`nn`、`engine`、`llm`。
 //!
 //! 这个类型只描述"数据长什么样、放在哪几个字节里"，**不做 `&mut` 分区**——分区是 DSL 的所有权
@@ -24,41 +25,19 @@
 
 use diagnostic::{Code, Error, Result};
 
-/// 元素类型闭集。
+// 元素类型的唯一事实源在 L1 `dtype`：全精度 22 变体，这里不再自定义枚举。
+pub use dtype::DType;
+
+/// 计算层当前可消费的元素子集：闭集里的其他类型可以被容器存储，却不能构造进运行时张量。
 ///
-/// 只列推理与训练真实会用到的宽度；`U4` 是 int4 权重的存储形态（按位打包，`bits()` 为 4）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DType {
-    /// 32 位浮点。
-    F32,
-    /// 16 位浮点。
-    F16,
-    /// bfloat16。
-    BF16,
-    /// 8 位整数（含 int8 / uint8 两种解释，由算子决定）。
-    I8,
-    /// 4 位整数（按位打包）。
-    U4,
-}
+/// 旧设计里 `DType` 本身只有 5 个变体、类型系统天然收口；枚举上移到 L1 后，改用这张
+/// 子集表在构造点显式校验，新增一种被内核支持的类型只需在这里加一项。
+pub const SUPPORTED: &[DType] = &[DType::F32, DType::F16, DType::BF16, DType::I8, DType::U4];
 
-impl DType {
-    /// 全部元素类型，供测试与 CLI 遍历。
-    pub const ALL: [Self; 5] = [Self::F32, Self::F16, Self::BF16, Self::I8, Self::U4];
-
-    /// 单个元素占多少位。
-    pub fn bits(self) -> u32 {
-        match self {
-            Self::F32 => 32,
-            Self::F16 | Self::BF16 => 16,
-            Self::I8 => 8,
-            Self::U4 => 4,
-        }
-    }
-
-    /// 是否为浮点类型（整数类型走精确对拍，见 `cutile::reference`）。
-    pub fn is_float(self) -> bool {
-        matches!(self, Self::F32 | Self::F16 | Self::BF16)
-    }
+/// 判定某个 `dtype` 是否属于计算层支持子集。
+#[must_use]
+pub fn supports(dtype: DType) -> bool {
+    SUPPORTED.contains(&dtype)
 }
 
 /// 形状：每个轴的长度。空形状表示标量，`numel()` 为 1。
@@ -149,8 +128,15 @@ pub struct Tensor<'a> {
 }
 
 impl<'a> Tensor<'a> {
-    /// 由元数据与连续布局的缓冲构造：`data` 必须够长，否则报 `invalid`。
+    /// 由元数据与连续布局的缓冲构造：`dtype` 必须在 [`SUPPORTED`] 子集内、`data` 必须够长。
     pub fn new(dtype: DType, shape: Shape, data: &'a [u8]) -> Result<Self> {
+        if !supports(dtype) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{dtype:?} 不在计算层支持的元素子集内"),
+            )
+            .with("tensor::Tensor::new"));
+        }
         let required = shape.element_bytes(dtype);
         if data.len() < required {
             return Err(Error::new(

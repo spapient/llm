@@ -10,6 +10,7 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+dtype = { path = "../dtype", package = "llm-dtype" }
 llm-config = { path = "../config" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 

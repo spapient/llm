@@ -59,3 +59,14 @@ pub struct LmHead;
 - 注解**不能**表达运行期才知道的宽度（如 `Linear::new` 的参数），那类层继续用构造函数，
   两者共用 `LayerSpec::new` 的校验路径；
 - 宏生成的测试会让"声明与数据脱节"变成红灯，但它不替代 `cutile verify` 的真机证据。
+
+## 补充（2026-11-13）：`dtype` 名 → 变体名收敛到 `dtype`
+
+本 ADR 采纳时注解**零依赖**：`dtype` 名 → 变体名在 `codegen` 手写一份映射，靠
+`tests/contracts.rs` 与词汇表 `Debug` 名双向核对。后续 `crates/dtype` 提供
+`DType::variant` 作为变体名唯一事实源（缩写词全大写规则也住在那里），注解改为依赖
+`dtype` 直接取变体名，删掉了那份手写映射与门禁里的镜像映射。
+
+这不违反本 ADR 的供应链动机：`dtype` 是 workspace 内部 L1 零依赖成员，`syn` / `quote` /
+`proc-macro2` 仍未进入 `Cargo.lock`。被拒绝的仍是"给过程宏拉一条到 `prof` 的依赖边"——
+`prof` 会带入 `llm-config` / `diagnostic` 的传递依赖，而注解只需要类型身份，`dtype` 已足够。

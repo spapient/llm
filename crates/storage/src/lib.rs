@@ -23,6 +23,11 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(feature = "mmap")]
+mod mmap;
+#[cfg(feature = "mmap")]
+pub use mmap::Mmap;
+
 use diagnostic::{Code, Error, Result};
 use tensor::{Shape, Strides};
 

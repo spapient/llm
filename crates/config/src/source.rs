@@ -4,7 +4,7 @@
 //! 用户级文件 → 环境变量 → 命令行覆盖。高优先级后写，低优先级不会覆盖高优先级。
 
 use crate::app::App;
-use crate::error::Error;
+use crate::error::{BadKey, BadValue, Error};
 use crate::key::Key;
 use crate::paths::Roots;
 use crate::toml::{self, Table};
@@ -187,14 +187,13 @@ pub fn file<A: App>(path: &Path) -> Result<Sources, Error> {
         let Some(raw) = lookup(&table, key.file_key()) else {
             continue;
         };
-        let value = key
-            .kind()
-            .from_toml(raw)
-            .map_err(|message| Error::BadValue {
-                key,
+        let value = key.kind().from_toml(raw).map_err(|message| {
+            Error::BadValue(BadValue {
+                key: BadKey::Known(key),
                 origin: Origin::new(Layer::File, path.display().to_string()),
                 message,
-            })?;
+            })
+        })?;
         sources.set(
             key,
             value.rebase(base),
@@ -224,10 +223,12 @@ pub fn env<A: App>(
         else {
             continue;
         };
-        let value = key.kind().parse(&text).map_err(|message| Error::BadValue {
-            key,
-            origin: Origin::new(Layer::Env, name.clone()),
-            message,
+        let value = key.kind().parse(&text).map_err(|message| {
+            Error::BadValue(BadValue {
+                key: BadKey::Known(key),
+                origin: Origin::new(Layer::Env, name.clone()),
+                message,
+            })
         })?;
         sources.set(
             key,
@@ -242,25 +243,31 @@ pub fn env<A: App>(
 ///
 /// 命令行层优先级最高，相对路径按进程启动目录解析。
 pub fn cli_override<A: App>(text: &str, roots: &Roots) -> Result<(Key, Value, Origin), Error> {
-    let (name, raw) = text.split_once('=').ok_or_else(|| Error::BadValue {
-        key: Key::CacheDir,
-        origin: Origin::new(Layer::Cli, format!("--set {text}")),
-        message: "缺少 `=`：应写成 `key=value`".to_string(),
+    let (name, raw) = text.split_once('=').ok_or_else(|| {
+        Error::BadValue(BadValue {
+            key: BadKey::Raw(text.trim().to_string()),
+            origin: Origin::new(Layer::Cli, format!("--set {text}")),
+            message: "缺少 `=`：应写成 `key=value`".to_string(),
+        })
     })?;
-    let key = Key::from_file_key_in::<A>(name).ok_or_else(|| Error::BadValue {
-        key: Key::CacheDir,
-        origin: Origin::new(Layer::Cli, format!("--set {text}")),
-        message: format!(
-            "键 `{}` 不属于应用 `{}`（它登记的是：{}）",
-            name.trim(),
-            A::DIR,
-            Key::file_keys_of::<A>().join("、")
-        ),
+    let key = Key::from_file_key_in::<A>(name).ok_or_else(|| {
+        Error::BadValue(BadValue {
+            key: BadKey::Raw(name.trim().to_string()),
+            origin: Origin::new(Layer::Cli, format!("--set {text}")),
+            message: format!(
+                "键 `{}` 不属于应用 `{}`（它登记的是：{}）",
+                name.trim(),
+                A::DIR,
+                Key::file_keys_of::<A>().join("、")
+            ),
+        })
     })?;
-    let value = key.kind().parse(raw).map_err(|message| Error::BadValue {
-        key,
-        origin: Origin::new(Layer::Cli, format!("--set {text}")),
-        message,
+    let value = key.kind().parse(raw).map_err(|message| {
+        Error::BadValue(BadValue {
+            key: BadKey::Known(key),
+            origin: Origin::new(Layer::Cli, format!("--set {text}")),
+            message,
+        })
     })?;
     Ok((
         key,
@@ -412,10 +419,10 @@ mod tests {
         let error = file::<crate::app::Cutile>(&path).unwrap_err();
         assert!(matches!(
             error,
-            Error::BadValue {
-                key: Key::CacheDir,
+            Error::BadValue(BadValue {
+                key: BadKey::Known(Key::CacheDir),
                 ..
-            }
+            })
         ));
         assert!(error.to_string().contains("cache.dir"), "{error}");
         let _ = std::fs::remove_file(&path);

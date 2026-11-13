@@ -1,5 +1,5 @@
-# NVIDIA 档案（P0 只有 L1：见证已写成数据，本机没有 CUDA 设备，无法执行到 L2）。
-# 协商因此会拒绝这台设备——这正是 DESIGN §11.3"未验证的能力视为不具备"的落地行为。
+# NVIDIA 档案：T600 / sm75（Turing）真机口径。硬件数字来自 T600 上 nvcc 编译的
+# deviceQuery 实测与 nvidia-smi，峰值用可求值 src 表达且与 value 相等，不凭记忆。
 #
 # 同一原语可以有多条 `provides`，用不同 `impl` 区分互不覆盖的签名：`dot` 的 `dp4a`
 # （整数张量核，i8×4）与 `fma`（标量 f32）是两种能力，合成一条就只能靠少写 `dt`/`lanes`
@@ -7,15 +7,15 @@
 
 [meta]
 vendor   = "nvidia"
-id       = "sm100"
+id       = "sm75"
 emit     = "cuda"
 tool     = "nvcc"
 tool_ver = "13.3"
-checked  = "2026-11-11"
+checked  = "2026-11-12"
 
 [fingerprint]
-cc   = "10.0..10.3"
-name = "contains: B200|GB200"
+cc   = "7.5"
+name = "contains: T600"
 
 [space]
 GM   = "global"
@@ -23,7 +23,7 @@ FAST = "shared"
 REG  = "register"
 
 [mem]
-FAST = { bytes = 233472, bank = 32 }
+FAST = { bytes = 49152, bank = 32 }
 REG  = { bytes = 262144 }
 
 [simt]
@@ -31,14 +31,14 @@ group      = 32
 groups_max = 64
 
 [peak]
-# 132 SM × 128 lane × 2 flop × 2.8 GHz（sm100 口径）。
+# 10 SM × 64 FP32 core/SM × 2（FMA）× 2.1 GHz boost = 2.688 TFLOPS（与 T600 官方 2.7 一致）。
 # `src` 必须可求值且与 `value` 相等：量纲与含义写在这里，数字只写一次。
-flops_f32 = { value = 94.6176e12, src = "132*128*2*2.8e9" }
-# HBM3e 2 stack × 4096 bit（512 B/stack）× 8 Gbps。
-bw        = { value = 8.192e12,   src = "2*4096/8*8e9" }
+flops_f32 = { value = 2.688e12, src = "10*64*2*2.1e9" }
+# 128 bit GDDR6，DDR 计 2 × 5001 MHz：128/8*2*5.001e9 = 160.032 GB/s（与官方 160 一致）。
+bw        = { value = 160.032e9, src = "128/8*2*5.001e9" }
 
 [compile]
-flags = ["-arch=sm_100a", "-O3"]
+flags = ["-arch=sm_75", "-O3"]
 preamble = "#include <cuda_fp16.h>"
 
 [[provides]]
@@ -140,16 +140,17 @@ grade   = "L1"
 witness = { file = "nvidia/witness.cu", func = "witness_atomic", expect = [5.0] }
 
 # ── 闭集的其余六条 ──────────────────────────────────────────────────────────
-# 档案描述的是**设备**，不只是 P0 的 `gemv_i4`：sm100 有张量核（`wgmma`）、warp 内
-# 交换/广播/前缀扫描，以及 SFU 的 `ex2`/`rcp`。它们没有片段文本（P0 模板不调用），
-# 所以等级是 L0——"声明了 + 有见证源码"，不是"本机能跑"。
+# 档案描述的是**设备**，不只是 P0 的 `gemv_i4`：sm75 有 Turing 张量核（warp 级 `mma.sync`，
+# f16→f32）、warp 内交换/广播/前缀扫描，以及 SFU 的 `ex2`/`rcp`。它们没有片段文本
+# （P0 模板不调用），所以等级是 L0——"声明了 + 有见证源码"，不是"本机能跑"。
+# 注意 sm75 不支持 bf16（sm80+）与 f8（sm89+），故 mma 只声明 f16，不夸大。
 [[provides]]
 prim     = "mma"
-impl     = "wgmma"
-m        = "<=64"
-n        = "<=256"
-k        = "<=64"
-dt       = ["f16", "bf16", "f8e4m3"]
+impl     = "mma.sync"
+m        = "16"
+n        = "8"
+k        = "16"
+dt       = ["f16"]
 space    = ["REG", "FAST"]
 accuracy = ["fp32"]
 grade    = "L0"

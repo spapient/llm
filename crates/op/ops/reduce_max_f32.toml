@@ -1,0 +1,23 @@
+# 最大值归约：y[0] = max(a[0..n])。
+# reduce 骨架：与 reduce_sum 同构，只改折叠运算；needs 只有 load/store。
+
+[op]
+name     = "reduce_max_f32"
+skeleton = "reduce"
+summary  = "y[0] = max(a[0..n])"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+a = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

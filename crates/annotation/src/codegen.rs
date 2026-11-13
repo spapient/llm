@@ -159,15 +159,18 @@ fn language_variant(emit: &str) -> String {
     capitalised(emit)
 }
 
-/// `dtype` 名 → `prof::atom::DType` 的变体名。
+/// `dtype` 名 → 变体名。
 ///
-/// 与 [`language_variant`] 同一条规则：闭集已在文法层（[`crate::syntax::DTYPES`]）校验过，
-/// `f16 → F16`、`bf16 → Bf16`、`f32 → F32` 都落在"首字母大写"里。
+/// 不再手写「名字 → 变体」表：`dtype` 的 [`DType::variant`] 是变体名的唯一事实源，
+/// 缩写词的全大写规则（`bf16 → BF16`）也住在那里。闭集已在文法层（[`crate::syntax::DTYPES`]）
+/// 校验过，这里只做名字到变体的查找。
 fn dtype_variant(dtype: &str) -> String {
-    capitalised(dtype)
+    dtype::DType::parse_name(dtype)
+        .map(|dtype| dtype.variant().to_string())
+        .unwrap_or_else(|| panic!("`{dtype}` 已在文法层被挡在 DTYPES 闭集外"))
 }
 
-/// 首字母大写、其余原样：两道闭集（语言、输出类型）共用这一条命名规则。
+/// 首字母大写、其余原样：语言闭集（`opencl → Opencl`）用这一条命名规则。
 fn capitalised(word: &str) -> String {
     let mut characters = word.chars();
     match characters.next() {
@@ -202,31 +205,177 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
         "#[doc = \"`{ty}` 的语义表（`#[model]` 生成）：生产形状、输出类型与三条单态化入口。\"]\n"
     ));
     code.push_str("pub const MODEL: ::llm_op::model::Model = ::llm_op::model::Model {\n");
-    code.push_str(&format!(
-        "    group: <{ty} as ::llm_op::gemv::Format>::GRAIN as u32,\n"
-    ));
-    code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-    code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-    code.push_str("    axes: ::llm_op::gemv::AXES,\n");
-    code.push_str(&format!("    cost: ::llm_op::gemv::cost::<{ty}>,\n"));
-    code.push_str(&format!("    sample: ::llm_op::gemv::sample::<{ty}>,\n"));
-    code.push_str(&format!(
-        "    reference: ::llm_op::gemv::reference::<{ty}>,\n"
-    ));
-    code.push_str("};\n\n");
+    if declaration.skeleton() == "elementwise" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::elementwise::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::elementwise::project_shape,\n");
+        code.push_str(&format!("    cost: ::llm_op::elementwise::cost::<{ty}>,\n"));
+        code.push_str(&format!(
+            "    sample: ::llm_op::elementwise::sample::<{ty}>,\n"
+        ));
+        code.push_str(&format!(
+            "    reference: ::llm_op::elementwise::reference::<{ty}>,\n"
+        ));
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "unary" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::unary::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::unary::project_shape,\n");
+        code.push_str(&format!("    cost: ::llm_op::unary::cost::<{ty}>,\n"));
+        code.push_str(&format!("    sample: ::llm_op::unary::sample::<{ty}>,\n"));
+        code.push_str(&format!(
+            "    reference: ::llm_op::unary::reference::<{ty}>,\n"
+        ));
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "reduce" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::reduce::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::reduce::project_shape,\n");
+        code.push_str(&format!("    cost: ::llm_op::reduce::cost::<{ty}>,\n"));
+        code.push_str(&format!("    sample: ::llm_op::reduce::sample::<{ty}>,\n"));
+        code.push_str(&format!(
+            "    reference: ::llm_op::reduce::reference::<{ty}>,\n"
+        ));
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "rmsnorm" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::rmsnorm_f32::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::rmsnorm_f32::project_shape,\n");
+        code.push_str("    cost: ::llm_op::rmsnorm_f32::cost,\n");
+        code.push_str("    sample: ::llm_op::rmsnorm_f32::sample,\n");
+        code.push_str("    reference: ::llm_op::rmsnorm_f32::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "softmax" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::softmax_f32::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::softmax_f32::project_shape,\n");
+        code.push_str("    cost: ::llm_op::softmax_f32::cost,\n");
+        code.push_str("    sample: ::llm_op::softmax_f32::sample,\n");
+        code.push_str("    reference: ::llm_op::softmax_f32::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "rope" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::rope_f32::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::rope_f32::project_shape,\n");
+        code.push_str("    cost: ::llm_op::rope_f32::cost,\n");
+        code.push_str("    sample: ::llm_op::rope_f32::sample,\n");
+        code.push_str("    reference: ::llm_op::rope_f32::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "embed" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::embed_f32::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::embed_f32::project_shape,\n");
+        code.push_str("    cost: ::llm_op::embed_f32::cost,\n");
+        code.push_str("    sample: ::llm_op::embed_f32::sample,\n");
+        code.push_str("    reference: ::llm_op::embed_f32::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "dequant" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::dequant_i8::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::dequant_i8::project_shape,\n");
+        code.push_str("    cost: ::llm_op::dequant_i8::cost,\n");
+        code.push_str("    sample: ::llm_op::dequant_i8::sample,\n");
+        code.push_str("    reference: ::llm_op::dequant_i8::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "dequant_i4" {
+        // 打包粒度：每 2 个输出元素占一个字节，group=2 让 verify 从偶数形状起步、并对齐形状约束。
+        code.push_str("    group: 2u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::dequant_i4::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::dequant_i4::project_shape,\n");
+        code.push_str("    cost: ::llm_op::dequant_i4::cost,\n");
+        code.push_str("    sample: ::llm_op::dequant_i4::sample,\n");
+        code.push_str("    reference: ::llm_op::dequant_i4::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.skeleton() == "attention" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::attention::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::attention::project_shape,\n");
+        code.push_str("    cost: ::llm_op::attention::cost,\n");
+        code.push_str("    sample: ::llm_op::attention::sample,\n");
+        if declaration.name() == "flash_attention_f32" {
+            code.push_str("    reference: ::llm_op::attention::flash_reference,\n");
+        } else {
+            code.push_str("    reference: ::llm_op::attention::reference,\n");
+        }
+        code.push_str("};\n\n");
+    } else if declaration.name() == "gemm_f32" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::gemm_f32::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::gemm_f32::project_shape,\n");
+        code.push_str("    cost: ::llm_op::gemm_f32::cost,\n");
+        code.push_str("    sample: ::llm_op::gemm_f32::sample,\n");
+        code.push_str("    reference: ::llm_op::gemm_f32::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.name() == "gemm_i8" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::gemm_i8::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::gemm_i8::project_shape,\n");
+        code.push_str("    cost: ::llm_op::gemm_i8::cost,\n");
+        code.push_str("    sample: ::llm_op::gemm_i8::sample,\n");
+        code.push_str("    reference: ::llm_op::gemm_i8::reference,\n");
+        code.push_str("};\n\n");
+    } else if declaration.name() == "gemm_i4" {
+        code.push_str("    group: 1u32,\n");
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::gemm_i4::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::gemm_i4::project_shape,\n");
+        code.push_str("    cost: ::llm_op::gemm_i4::cost,\n");
+        code.push_str("    sample: ::llm_op::gemm_i4::sample,\n");
+        code.push_str("    reference: ::llm_op::gemm_i4::reference,\n");
+        code.push_str("};\n\n");
+    } else {
+        code.push_str(&format!(
+            "    group: <{ty} as ::llm_op::gemv::Format>::GRAIN as u32,\n"
+        ));
+        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+        code.push_str("    axes: ::llm_op::gemv::AXES,\n");
+        code.push_str("    shape_ctx: ::llm_op::gemv::project_shape,\n");
+        code.push_str(&format!("    cost: ::llm_op::gemv::cost::<{ty}>,\n"));
+        code.push_str(&format!("    sample: ::llm_op::gemv::sample::<{ty}>,\n"));
+        code.push_str(&format!(
+            "    reference: ::llm_op::gemv::reference::<{ty}>,\n"
+        ));
+        code.push_str("};\n\n");
 
-    // 格式自证交给 `Format::CHECK`：粒度与派生轴除数同源这条规则属于格式契约，不属于宏。
-    // 注解唯一要做的，是让它在**生产别名上**被求值——不被引用的关联常量不会报错。
-    code.push_str(&format!(
-        "const _: () = <{ty} as ::llm_op::gemv::Format>::CHECK;\n\n"
-    ));
-    code.push_str("const _: () = {\n");
-    code.push_str(&format!(
-        // 用"除回去乘回来"而不是 `%`：粒度可以是 1（稠密格式），`x % 1` 会被 clippy 的
-        // `modulo_one` 判为恒真，而这里要表达的正是"形状能被粒度整除"。
-        "    assert!({m}usize / <{ty} as ::llm_op::gemv::Format>::GRAIN * <{ty} as ::llm_op::gemv::Format>::GRAIN == {m}usize, \"生产形状的 M 必须是形状粒度的整数倍\");\n"
-    ));
-    code.push_str("};\n\n");
+        // 格式自证交给 `Format::CHECK`：粒度与派生轴除数同源这条规则属于格式契约，不属于宏。
+        // 注解唯一要做的，是让它在**生产别名上**被求值——不被引用的关联常量不会报错。
+        code.push_str(&format!(
+            "const _: () = <{ty} as ::llm_op::gemv::Format>::CHECK;\n\n"
+        ));
+        code.push_str("const _: () = {\n");
+        code.push_str(&format!(
+            // 用"除回去乘回来"而不是 `%`：粒度可以是 1（稠密格式），`x % 1` 会被 clippy 的
+            // `modulo_one` 判为恒真，而这里要表达的正是"形状能被粒度整除"。
+            "    assert!({m}usize / <{ty} as ::llm_op::gemv::Format>::GRAIN * <{ty} as ::llm_op::gemv::Format>::GRAIN == {m}usize, \"生产形状的 M 必须是形状粒度的整数倍\");\n"
+        ));
+        code.push_str("};\n\n");
+    }
 
     code.push_str("#[cfg(test)]\nmod __model_check {\n");
     code.push_str("    #[test]\n");
@@ -257,7 +406,7 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
         "        assert_eq!((registered.sample)(registered.shape.0, registered.shape.1), sample, \"样本必须可复现\");\n",
     );
     code.push_str(
-        "        let shape = registered.projection(registered.shape.0, registered.shape.1).expect(\"两条投影轴都声明了\");\n",
+        "        let shape = (registered.shape_ctx)(registered.shape.0, registered.shape.1).expect(\"形状上下文可构造\");\n",
     );
     code.push_str("        (registered.cost)(&shape).expect(\"生产形状必须能算出代价\");\n");
     // 注解里的 `dtype` 是**字符串**，`MODEL.dtype` 是**变体**：这一句就是两者之间的绑定点。
@@ -265,7 +414,7 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     // 缓冲对拍。全量与映射规则由 `tests/contracts.rs` 统一核对。
     code.push_str("        assert_eq!(\n");
     code.push_str(&format!(
-        "            ::llm_op::model::DType::parse({dtype_name}),\n"
+        "            ::llm_op::model::DType::parse_name({dtype_name}),\n"
     ));
     code.push_str("            Some(super::MODEL.dtype),\n");
     code.push_str(
@@ -531,7 +680,7 @@ mod tests {
         );
         assert!(code.contains("mod __model_check {"), "{code}");
         assert!(
-            code.contains(r#"::llm_op::model::DType::parse("f32")"#),
+            code.contains(r#"::llm_op::model::DType::parse_name("f32")"#),
             "注解里的 `dtype` 必须解析成 `MODEL` 用的那个变体：{code}"
         );
         assert!(
@@ -542,7 +691,7 @@ mod tests {
 
     #[test]
     fn every_dtype_name_maps_to_the_expected_variant() {
-        for (name, variant) in [("f16", "F16"), ("bf16", "Bf16"), ("f32", "F32")] {
+        for (name, variant) in [("f16", "F16"), ("bf16", "BF16"), ("f32", "F32")] {
             assert_eq!(dtype_variant(name), variant, "{name}");
         }
     }

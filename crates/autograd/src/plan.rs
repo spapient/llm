@@ -604,6 +604,7 @@ mod tests {
     use super::*;
     use crate::{Requirement, Tape};
     use diagnostic::Code;
+    use testkit::Rng;
 
     /// 一条链：`length` 个 `relu` 加一个 `reduce_sum`，反向顺序与深度都已知。
     fn chain(length: usize) -> (Tape, Schedule) {
@@ -860,24 +861,6 @@ mod tests {
                     assert_eq!(error.code(), Code::Invalid, "第 {round} 轮：{error}");
                 }
             }
-        }
-    }
-
-    /// 确定性 PRNG：不给依赖表加 `rand`，同时让失败可复现。
-    struct Rng {
-        state: u32,
-    }
-
-    impl Rng {
-        fn new(seed: u32) -> Self {
-            Self { state: seed }
-        }
-
-        fn below(&mut self, bound: u32) -> u32 {
-            self.state ^= self.state << 13;
-            self.state ^= self.state >> 17;
-            self.state ^= self.state << 5;
-            self.state % bound.max(1)
         }
     }
 }

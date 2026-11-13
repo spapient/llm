@@ -5,7 +5,10 @@
 //! **不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
 //! 计划（`autograd::Plan`）、样本生成（`data`）、层定义（`nn`）、参数（`weights`）、拓扑
 //! （`shard`）、算子语义（`op`）。**依赖**：`nn`、`autograd`、`data`、`weights`、`shard`、
-//! `checkpoint`、`tensor`、`op`、`diagnostic`。**被依赖**：`llm`。
+//! `tensor`、`op`、`diagnostic`。**被依赖**：`llm`。
+//!
+//! 检查点的**字节格式**也在本 crate（[`snapshot`]）：它原是一个独立成员（`llm-checkpoint`），
+//! 唯一消费者就是这里的 [`Checkpoint`]；合并后"恢复需要知道哪些事实"只有一处定义。
 //!
 //! 这一层回答两件事：**训练到哪了、能不能恢复**——学习率是完全确定的函数，检查点记录的是
 //! "恢复所需的最小事实集"（步数、图规模、批形状、层数、权重条目数、并行度），少任何一项恢复出来
@@ -25,6 +28,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod snapshot;
 mod store;
 
 use diagnostic::{Code, Error, Result};
@@ -175,11 +179,11 @@ impl Checkpoint {
 
     /// 把这些事实与当前权重表组合成可落盘的快照。
     ///
-    /// 文件格式由 `checkpoint` 拥有：本层只回答"恢复需要知道什么"，编码、版本与偏移校验
+    /// 文件格式由 [`snapshot`] 拥有：本层只回答"恢复需要知道什么"，编码、版本与偏移校验
     /// 不在训练循环里再做一遍。
-    pub fn snapshot(&self, weights: &weights::Header) -> Result<checkpoint::Snapshot> {
-        let facts = checkpoint::Facts::new(self.step, self.world, self.layers, self.batch_rows)?;
-        Ok(checkpoint::Snapshot::new(facts, weights.clone()))
+    pub fn snapshot(&self, weights: &weights::Header) -> Result<snapshot::Snapshot> {
+        let facts = snapshot::Facts::new(self.step, self.world, self.layers, self.batch_rows)?;
+        Ok(snapshot::Snapshot::new(facts, weights.clone()))
     }
 }
 
@@ -280,7 +284,7 @@ mod tests {
 
         let snapshot = checkpoint.snapshot(&header).expect("快照");
         let bytes = snapshot.encode();
-        let restored = checkpoint::Snapshot::decode(&bytes).expect("解码");
+        let restored = snapshot::Snapshot::decode(&bytes).expect("解码");
         let facts = restored.facts();
         assert_eq!(facts.step(), checkpoint.step());
         assert_eq!(facts.world(), checkpoint.world());

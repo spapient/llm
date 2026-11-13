@@ -12,7 +12,10 @@
 //! - 值：字符串、整数、浮点、布尔、数组、内联表；
 //! - `#` 行尾注释（字符串内的 `#` 原样保留）。
 //!
-//! 刻意不支持的：多行字符串、日期、数字分隔符、数组嵌套数组。遇到即报错并给出行号。
+//! 刻意不支持的：多行字符串、日期、数字分隔符、字面字符串（单引号）。遇到即报错并给出行号。
+//!
+//! 数字规则：整数字面量（无 `.`/`e`）只接受 `i64`，超出范围或带前导零直接报错，不静默退化
+//! 成浮点；重复键一律拒绝（TOML 文法禁止），不做 last-wins 覆盖。
 
 use core::fmt;
 
@@ -136,11 +139,12 @@ impl Table {
         self.get(key).is_some()
     }
 
-    fn insert(&mut self, key: String, value: Value) {
-        match self.entries.iter().position(|(name, _)| name == &key) {
-            Some(index) => self.entries[index].1 = value,
-            None => self.entries.push((key, value)),
+    fn insert(&mut self, key: String, value: Value) -> Result<(), String> {
+        if self.entries.iter().any(|(name, _)| name == &key) {
+            return Err(format!("键 `{key}` 重复：TOML 不允许重复键"));
         }
+        self.entries.push((key, value));
+        Ok(())
     }
 
     fn value_mut(&mut self, key: &str) -> Option<&mut Value> {
@@ -212,7 +216,9 @@ pub fn parse(source: &str) -> Result<Table, ParseError> {
         path.extend(split_path(key));
         let (last, parents) = path.split_last().ok_or_else(|| err(line_no, "空键"))?;
         let parent = descend(&mut root, parents, line_no)?;
-        parent.insert(last.clone(), value);
+        parent
+            .insert(last.clone(), value)
+            .map_err(|message| err(line_no, &message))?;
     }
 
     Ok(root)
@@ -265,7 +271,9 @@ fn descend<'a>(
         return Ok(table);
     };
     if !table.contains(key) {
-        table.insert(key.clone(), Value::Table(Table::new()));
+        table
+            .insert(key.clone(), Value::Table(Table::new()))
+            .map_err(|message| err(line, &message))?;
     }
     let Some(value) = table.value_mut(key) else {
         return Err(err(line, &format!("`{key}` 刚刚创建却取不到")));
@@ -289,7 +297,9 @@ fn push_table_array(root: &mut Table, keys: &[String], line: usize) -> Result<()
         .ok_or_else(|| err(line, "`[[]]` 里没有键名"))?;
     let parent = descend(root, parents, line)?;
     if !parent.contains(last) {
-        parent.insert(last.clone(), Value::Array(Vec::new()));
+        parent
+            .insert(last.clone(), Value::Array(Vec::new()))
+            .map_err(|message| err(line, &message))?;
     }
     match parent.value_mut(last) {
         Some(Value::Array(items)) => {
@@ -338,7 +348,7 @@ fn parse_value(text: &str) -> Result<Value, String> {
             let (key, raw) = part
                 .split_once('=')
                 .ok_or_else(|| format!("内联表项 `{part}` 缺少 `=`"))?;
-            table.insert(key.trim().to_string(), parse_value(raw)?);
+            table.insert(key.trim().to_string(), parse_value(raw)?)?;
         }
         return Ok(Value::Table(table));
     }
@@ -347,13 +357,25 @@ fn parse_value(text: &str) -> Result<Value, String> {
         "false" => return Ok(Value::Bool(false)),
         _ => {}
     }
-    if let Ok(value) = text.parse::<i64>() {
-        return Ok(Value::Int(value));
+    parse_number(text)
+}
+
+/// 数字解析：整数字面量走 `i64`（拒绝前导零与溢出），含 `.`/`e` 的走 `f64`。
+fn parse_number(text: &str) -> Result<Value, String> {
+    let body = text.strip_prefix('-').unwrap_or(text);
+    let is_int = !body.contains('.') && !body.contains('e') && !body.contains('E');
+    if !is_int {
+        return text
+            .parse::<f64>()
+            .map(Value::Float)
+            .map_err(|_| format!("`{text}` 不是合法数字"));
     }
-    if let Ok(value) = text.parse::<f64>() {
-        return Ok(Value::Float(value));
+    if body.len() > 1 && body.starts_with('0') {
+        return Err("整数不允许前导零（只写 `0`）".to_string());
     }
-    Err("既不是字符串、数字、布尔，也不是数组/内联表".to_string())
+    text.parse::<i64>()
+        .map(Value::Int)
+        .map_err(|_| format!("整数 `{text}` 超出 i64 范围"))
 }
 
 fn unescape(text: &str) -> String {
@@ -520,10 +542,19 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_keys_last_wins() {
-        let table = parse("[op]\nname = \"a\"\nname = \"b\"\n").unwrap();
-        assert_eq!(table.table("op").unwrap().string("name"), Some("b"));
-        assert_eq!(table.table("op").unwrap().entries().len(), 1);
+    fn duplicate_keys_are_rejected() {
+        let error = parse("[op]\nname = \"a\"\nname = \"b\"\n").unwrap_err();
+        assert!(error.message.contains("重复"), "{}", error.message);
+    }
+
+    #[test]
+    fn leading_zeros_and_overflow_are_rejected() {
+        let error = parse("a = 01\n").unwrap_err();
+        assert!(error.message.contains("前导零"), "{}", error.message);
+        let error = parse("a = 99999999999999999999\n").unwrap_err();
+        assert!(error.message.contains("i64"), "{}", error.message);
+        assert!(parse("a = 0\n").is_ok());
+        assert!(parse("a = -0\n").is_ok());
     }
 
     #[test]

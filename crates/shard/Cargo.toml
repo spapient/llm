@@ -10,7 +10,6 @@ description = "TP/PP/DP topology: world size, per-axis process groups and partit
 publish = false
 
 [dependencies]
-comm = { path = "../comm", package = "llm-comm" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [lints]

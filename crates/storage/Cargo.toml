@@ -9,6 +9,11 @@ readme.workspace = true
 description = "Physical layouts over flat buffers: Order, Layout and the remap pass."
 publish = false
 
+[features]
+default = []
+# 启用只读内存映射：本 feature 是全仓唯一的 unsafe 代码路径。
+mmap = []
+
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }

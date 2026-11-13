@@ -6,12 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Training loop state: learning-rate schedule, step records and resumable checkpoints."
+description = "Training loop state: learning-rate schedule, step records, resumable checkpoints and their byte format."
 publish = false
 
 [dependencies]
 autograd = { path = "../autograd", package = "llm-autograd" }
-checkpoint = { path = "../checkpoint", package = "llm-checkpoint" }
 data = { path = "../data", package = "llm-data" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 nn = { path = "../nn", package = "llm-nn" }

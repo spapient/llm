@@ -5,11 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Device-agnostic kernel DSL: capability negotiation, fragment assembly and emit."
+description = "Device-agnostic kernel DSL: capability negotiation, fragment assembly, emit, and the doctor/verify/bench reports computed on top of it."
 readme = "DESIGN.md"
 publish = false
 
 [dependencies]
+annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 prim = { path = "../prim", package = "llm-prim" }
 llm-config = { path = "../config" }

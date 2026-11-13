@@ -6,14 +6,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Serving state machine: sequences, their KV pages and the admission scheduler."
+description = "Serving state machine: sequences, their KV pages, the admission scheduler and the submission contract."
 publish = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-exec = { path = "../exec", package = "llm-exec" }
-kv = { path = "../kv", package = "llm-kv" }
 tensor = { path = "../tensor", package = "llm-tensor" }
+
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

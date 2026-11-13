@@ -1,0 +1,24 @@
+# 残差相加：y[n] = a[n] + b[n]。
+# 与 add 同构，独立注册以对应网络里的残差层；needs 只有 load/store。
+
+[op]
+name     = "residual_add_f32"
+skeleton = "elementwise"
+summary  = "y[n] = a[n] + b[n]"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+a = "row"
+b = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

@@ -309,78 +309,25 @@ impl fmt::Display for Prim {
     }
 }
 
-/// 数据类型闭集。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DType {
-    /// IEEE 半精度。
-    F16,
-    /// bfloat16。
-    Bf16,
-    /// 单精度。
-    F32,
-    /// FP8 E4M3。
-    F8e4m3,
-    /// FP4。
-    F4,
-    /// 有符号 8 位整数。
-    I8,
-    /// 有符号 4 位整数。
-    I4,
-    /// 无符号 8 位整数。
-    U8,
-    /// 有符号 32 位整数。
-    I32,
-}
+/// 数据类型闭集：唯一事实源在 L1 `dtype`，这里只再导出并接上 [`Closed`] 契约。
+pub use dtype::DType;
 
-impl Closed for DType {
-    /// 闭集全量。
-    const ALL: &'static [Self] = &[
-        Self::F16,
-        Self::Bf16,
-        Self::F32,
-        Self::F8e4m3,
-        Self::F4,
-        Self::I8,
-        Self::I4,
-        Self::U8,
-        Self::I32,
-    ];
+/// L1 的每个精度闭集都实现了 `dtype::Format`（全量表 + 判别值 + 规范名），因此 [`Closed`]
+/// 只需这一份 blanket 实现：`ALL`/`as_str`/`index` 不再按类型手写，也不会与 L1 漂移。
+impl<T: dtype::Format> Closed for T {
+    const ALL: &'static [Self] = T::ALL;
 
-    /// DSL 与档案里使用的名字。
     fn as_str(self) -> &'static str {
-        match self {
-            Self::F16 => "f16",
-            Self::Bf16 => "bf16",
-            Self::F32 => "f32",
-            Self::F8e4m3 => "f8e4m3",
-            Self::F4 => "f4",
-            Self::I8 => "i8",
-            Self::I4 => "i4",
-            Self::U8 => "u8",
-            Self::I32 => "i32",
-        }
+        dtype::Format::name(self)
     }
 
     fn index(self) -> usize {
-        self as usize
+        dtype::Format::index(self)
     }
-}
 
-impl DType {
-    /// 单元素位宽。
-    pub const fn size_bits(self) -> u32 {
-        match self {
-            Self::F4 | Self::I4 => 4,
-            Self::U8 | Self::I8 | Self::F8e4m3 => 8,
-            Self::F16 | Self::Bf16 => 16,
-            Self::F32 | Self::I32 => 32,
-        }
-    }
-}
-
-impl fmt::Display for DType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+    /// 按名解析同样转调 L1：闭集的名字解析只有一份实现（`Format::parse_name`）。
+    fn parse(name: &str) -> Option<Self> {
+        <Self as dtype::Format>::parse_name(name)
     }
 }
 
@@ -651,6 +598,84 @@ impl Attr {
     }
 }
 
+/// 需求与供给共有的六个 builder：字段名与类型在两个结构体里一致，用一份模板展开，避免各抄一遍。
+macro_rules! constraint_builders {
+    () => {
+        /// 设置主维度。
+        #[must_use]
+        pub fn with_extent(mut self, extent: Span) -> Self {
+            self.extent = extent;
+            self
+        }
+
+        /// 设置 `n`。
+        #[must_use]
+        pub fn with_n(mut self, n: Span) -> Self {
+            self.n = n;
+            self
+        }
+
+        /// 设置 `k`。
+        #[must_use]
+        pub fn with_k(mut self, k: Span) -> Self {
+            self.k = k;
+            self
+        }
+
+        /// 设置数据类型集合。
+        #[must_use]
+        pub fn with_dt(mut self, dt: DTypeSet) -> Self {
+            self.dt = dt;
+            self
+        }
+
+        /// 设置存储空间集合。
+        #[must_use]
+        pub fn with_space(mut self, space: SpaceSet) -> Self {
+            self.space = space;
+            self
+        }
+
+        /// 追加一个属性。
+        #[must_use]
+        pub fn with_attr(mut self, attr: Attr) -> Self {
+            self.attrs.push(attr);
+            self
+        }
+    };
+}
+
+/// 渲染需求/供给共享的具名字段：主维度、`n`、`k`、数据类型、存储空间与属性。
+fn constraint_parts(
+    prim: Prim,
+    extent: Span,
+    n: Span,
+    k: Span,
+    dt: DTypeSet,
+    space: SpaceSet,
+    attrs: &[Attr],
+) -> Vec<String> {
+    let mut parts = Vec::new();
+    if !extent.is_any() {
+        parts.push(format!("{}:{}", prim.extent_label(), extent));
+    }
+    for (label, span) in [("n", n), ("k", k)] {
+        if !span.is_any() {
+            parts.push(format!("{label}:{span}"));
+        }
+    }
+    if !dt.is_empty() {
+        parts.push(format!("dt:[{}]", dt));
+    }
+    if !space.is_empty() {
+        parts.push(format!("space:[{}]", space));
+    }
+    for attr in attrs {
+        parts.push(format!("{}:{}", attr.key, attr.values.join("|")));
+    }
+    parts
+}
+
 /// 需求：模板 / 算子声明对某原语的要求。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Need {
@@ -684,68 +709,19 @@ impl Need {
         }
     }
 
-    /// 设置主维度。
-    #[must_use]
-    pub fn with_extent(mut self, extent: Span) -> Self {
-        self.extent = extent;
-        self
-    }
-
-    /// 设置 `n`。
-    #[must_use]
-    pub fn with_n(mut self, n: Span) -> Self {
-        self.n = n;
-        self
-    }
-
-    /// 设置 `k`。
-    #[must_use]
-    pub fn with_k(mut self, k: Span) -> Self {
-        self.k = k;
-        self
-    }
-
-    /// 设置数据类型集合。
-    #[must_use]
-    pub fn with_dt(mut self, dt: DTypeSet) -> Self {
-        self.dt = dt;
-        self
-    }
-
-    /// 设置存储空间集合。
-    #[must_use]
-    pub fn with_space(mut self, space: SpaceSet) -> Self {
-        self.space = space;
-        self
-    }
-
-    /// 追加一个属性。
-    #[must_use]
-    pub fn with_attr(mut self, attr: Attr) -> Self {
-        self.attrs.push(attr);
-        self
-    }
+    constraint_builders!();
 
     /// 按签名文本渲染，供诊断使用：`mma{m:16..64, n:8..128, dt:[f16,bf16], space:[FAST]}`。
     pub fn signature(&self) -> String {
-        let mut parts = Vec::new();
-        if !self.extent.is_any() {
-            parts.push(format!("{}:{}", self.prim.extent_label(), self.extent));
-        }
-        for (label, span) in [("n", self.n), ("k", self.k)] {
-            if !span.is_any() {
-                parts.push(format!("{label}:{span}"));
-            }
-        }
-        if !self.dt.is_empty() {
-            parts.push(format!("dt:[{}]", self.dt));
-        }
-        if !self.space.is_empty() {
-            parts.push(format!("space:[{}]", self.space));
-        }
-        for attr in &self.attrs {
-            parts.push(format!("{}:{}", attr.key, attr.values.join("|")));
-        }
+        let parts = constraint_parts(
+            self.prim,
+            self.extent,
+            self.n,
+            self.k,
+            self.dt,
+            self.space,
+            &self.attrs,
+        );
         format!("{}{{{}}}", self.prim, parts.join(", "))
     }
 }
@@ -826,7 +802,9 @@ macro_rules! inherent_names {
     };
 }
 
-inherent_names!(Prim, DType, Space, AttrKey, Grade);
+// DType 是 L1 外部类型，不能在本 crate 写固有 impl；它的 `ALL` / `name` / `parse_name`
+// 已在 dtype crate 内定义，调用点直接用 L1 名字。
+inherent_names!(Prim, Space, AttrKey, Grade);
 
 /// 一条可执行的见证（DESIGN §11.3）：源码、入口函数与期望输出。
 ///
@@ -889,47 +867,7 @@ impl Provide {
         }
     }
 
-    /// 设置主维度。
-    #[must_use]
-    pub fn with_extent(mut self, extent: Span) -> Self {
-        self.extent = extent;
-        self
-    }
-
-    /// 设置 `n`。
-    #[must_use]
-    pub fn with_n(mut self, n: Span) -> Self {
-        self.n = n;
-        self
-    }
-
-    /// 设置 `k`。
-    #[must_use]
-    pub fn with_k(mut self, k: Span) -> Self {
-        self.k = k;
-        self
-    }
-
-    /// 设置数据类型集合。
-    #[must_use]
-    pub fn with_dt(mut self, dt: DTypeSet) -> Self {
-        self.dt = dt;
-        self
-    }
-
-    /// 设置存储空间集合。
-    #[must_use]
-    pub fn with_space(mut self, space: SpaceSet) -> Self {
-        self.space = space;
-        self
-    }
-
-    /// 追加属性。
-    #[must_use]
-    pub fn with_attr(mut self, attr: Attr) -> Self {
-        self.attrs.push(attr);
-        self
-    }
+    constraint_builders!();
 
     /// 设置证据等级。
     #[must_use]
@@ -1007,24 +945,15 @@ impl Provide {
 
     /// 单行签名，供 `doctor` 与诊断打印（DESIGN §8.2 的 `have` 行）。
     pub fn summary(&self) -> String {
-        let mut parts = Vec::new();
-        if !self.extent.is_any() {
-            parts.push(format!("{}:{}", self.prim.extent_label(), self.extent));
-        }
-        for (label, span) in [("n", self.n), ("k", self.k)] {
-            if !span.is_any() {
-                parts.push(format!("{label}:{span}"));
-            }
-        }
-        if !self.dt.is_empty() {
-            parts.push(format!("dt:[{}]", self.dt));
-        }
-        if !self.space.is_empty() {
-            parts.push(format!("space:[{}]", self.space));
-        }
-        for attr in &self.attrs {
-            parts.push(format!("{}:{}", attr.key, attr.values.join("|")));
-        }
+        let mut parts = constraint_parts(
+            self.prim,
+            self.extent,
+            self.n,
+            self.k,
+            self.dt,
+            self.space,
+            &self.attrs,
+        );
         parts.push(format!("impl:{}", self.impl_name));
         parts.push(format!("grade:{}", self.grade));
         format!("{}{{{}}}", self.prim, parts.join(", "))
@@ -1082,7 +1011,7 @@ mod tests {
     use super::*;
 
     fn f16_bf16() -> DTypeSet {
-        DTypeSet::of([DType::F16, DType::Bf16])
+        DTypeSet::of([DType::F16, DType::BF16])
     }
 
     #[test]
@@ -1092,7 +1021,7 @@ mod tests {
             assert_eq!(Prim::parse(prim.as_str()), Some(prim));
         }
         for dt in DType::ALL.iter().copied() {
-            assert_eq!(DType::parse(dt.as_str()), Some(dt));
+            assert_eq!(DType::parse_name(dt.name()), Some(dt));
         }
         for space in Space::ALL.iter().copied() {
             assert_eq!(Space::parse(space.as_str()), Some(space));
@@ -1260,6 +1189,6 @@ mod tests {
         assert!(a.is_subset(b));
         assert!(!b.is_subset(a));
         assert_eq!(b.difference(a).names(), vec!["bf16"]);
-        assert_eq!(DType::F4.size_bits(), 4);
+        assert_eq!(DType::F4.bits(), 4);
     }
 }

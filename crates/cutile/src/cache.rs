@@ -51,8 +51,8 @@ pub struct CacheKey {
     pub flags_hash: u64,
     /// 架构键。
     pub arch: String,
-    /// 模板文本哈希。
-    pub template_hash: u64,
+    /// AST 规范编码的哈希：`FNV(ast::encode(&nodes))`，替代旧的裸模板文本哈希。
+    pub ast_hash: u64,
     /// 参与拼接的片段与内容哈希。
     pub fragments: Vec<(Prim, u64)>,
     /// 布局声明式（槽位 → `row` / `col` / `swz<…>` / `pad(p)`）。
@@ -80,7 +80,7 @@ impl CacheKey {
             ("emit", self.emit.to_string()),
             ("flags", format!("{:016x}", self.flags_hash)),
             ("arch", self.arch.clone()),
-            ("template", format!("{:016x}", self.template_hash)),
+            ("ast", format!("{:016x}", self.ast_hash)),
             ("fragments", format!("{fragments:?}")),
             ("layouts", format!("{layouts:?}")),
             ("variant", self.variant.clone()),
@@ -816,7 +816,7 @@ mod tests {
             emit: Emit::C,
             flags_hash: 0x1234,
             arch: "aarch64".to_string(),
-            template_hash: 0xabcd,
+            ast_hash: 0xabcd,
             fragments: vec![(Prim::Dot, 1), (Prim::Load, 2)],
             layouts: vec![("w".to_string(), "row".to_string())],
             variant: "pipe2".to_string(),

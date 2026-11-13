@@ -12,7 +12,6 @@ publish = false
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-einsum = { path = "../einsum", package = "llm-einsum" }
 llm-config = { path = "../config" }
 prof = { path = "../prof", package = "llm-prof" }
 

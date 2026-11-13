@@ -1,0 +1,24 @@
+# 对称 int8 矩阵乘：整数点积 i32 累加（dp4a 签名），再 cvt 成 f32，收缩轴 K=8。
+
+[op]
+name     = "gemm_i8"
+skeleton = "gemm"
+summary  = "Y[m,n] = f32(sum_k i8(A[m,k]) i8(B[k,n]))"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+cvt   = { dt = ["f32", "i32"], sat = ["off"] }
+
+[layouts]
+a = "row"
+b = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

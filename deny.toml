@@ -1,0 +1,40 @@
+# cargo-deny 配置：依赖漏洞、许可证、重复/禁用依赖、外部来源四类检查。
+# 本地或 CI 校验：cargo deny check
+
+[graph]
+# 把所有 feature 都纳入图，避免漏掉只在特定 feature 下出现的依赖。
+all-features = true
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# 0.20 起漏洞/不健全/notice 类命中即错误，无需再配 severity；特定条目可用 ignore 豁免。
+yanked = "deny"        # 被 crates.io 撤回：硬阻断
+unmaintained = "none"  # 停止维护不阻断，需要时手动 cargo audit 查看
+
+[licenses]
+version = 2
+# 宽松且可商用的常见许可证白名单；项目自身是 MIT OR Apache-2.0。
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "BSD-2-Clause",
+  "ISC",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"  # 同一 crate 多版本：警告（强制单版本常引入无谓冲突）
+wildcards = "allow"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

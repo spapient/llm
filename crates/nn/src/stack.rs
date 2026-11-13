@@ -248,14 +248,12 @@ fn projection(header: &Header, entry: &Entry) -> Result<Option<Linear>> {
     let [out_features, in_features] = entry.shape().dims() else {
         return Ok(None);
     };
-    Linear::with_format(
-        name,
-        WeightFormat::of_dtype(entry.dtype()),
-        *in_features,
-        *out_features,
-    )
-    .map(Some)
-    .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())))
+    let Some(format) = WeightFormat::of_dtype(entry.dtype()) else {
+        return Ok(None);
+    };
+    Linear::with_format(name, format, *in_features, *out_features)
+        .map(Some)
+        .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())))
 }
 
 /// 层名：去掉 [`WEIGHT_SUFFIX`]，其它名字原样保留。

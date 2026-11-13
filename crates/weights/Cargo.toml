@@ -10,8 +10,14 @@ description = "Weight files: entries, header validation, plus safetensors archiv
 publish = false
 
 [dependencies]
+dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+mem = { path = "../mem", package = "llm-mem" }
 tensor = { path = "../tensor", package = "llm-tensor" }
+
+[dev-dependencies]
+storage = { path = "../storage", package = "llm-storage", features = ["mmap"] }
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

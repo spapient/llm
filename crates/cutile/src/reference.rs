@@ -26,7 +26,7 @@ pub fn max_rel_err(got: &[f32], want: &[f32]) -> f64 {
 /// 按数据类型的阈值（DESIGN §11.1）：整数精确、f16/bf16 ≤ 1e-3、f32 ≤ 1e-5。
 pub fn tolerance(dt: DType) -> f64 {
     match dt {
-        DType::F16 | DType::Bf16 => 1e-3,
+        DType::F16 | DType::BF16 => 1e-3,
         DType::F32 => 1e-5,
         _ => 0.0,
     }

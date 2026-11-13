@@ -7,9 +7,9 @@
 //! 与 [`crate::gemv_i4`] 的差别只有两点，而且两点都是**类型参数**：权重元素是 `f32` 而不是
 //! 打包字节，形状粒度是 1 而不是量化分组。代价、样本、校验、遍历四条路径一份代码也没有重写。
 
+use crate::einsum::Bits;
 use crate::gemv::{self, Format, OperandSpec};
 use diagnostic::{Code, Error};
-use einsum::Bits;
 
 /// 分块宽度：模板每轮处理这么多元素，标量参考按同一个宽度分块累加。
 ///
@@ -46,7 +46,7 @@ impl<const B: usize> Format for gemv::Dense<B> {
 
     const STEP: usize = B;
 
-    fn formula() -> Result<&'static einsum::Formula, Error> {
+    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
         // 缓存落在这个 impl 里：`Dense<B>` 的表达式与块宽无关，一份缓存覆盖所有实例。
         static CACHE: gemv::Cache = gemv::Cache::new();
         CACHE.get::<Self>()

@@ -216,8 +216,8 @@ fn status(weights: Option<&str>) -> Result<()> {
         ),
     );
 
-    let mut scheduler = engine::Scheduler::new(kv::Cache::new(4, 16)?);
-    let sequence = engine::Sequence::new(0, 8, 4, 16, exec::Stream::new(0))?;
+    let mut scheduler = engine::Scheduler::new(engine::kv::Cache::new(4, 16)?);
+    let sequence = engine::Sequence::new(0, 8, 4, 16, engine::exec::Stream::new(0))?;
     let response = serve::admit(&mut scheduler, &sequence)?;
     report = report.row(
         "调度    engine",
@@ -334,7 +334,7 @@ fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
             .with("llm run")
         })?;
         let sample = op::model::bind(&model, m, n, &x, &w)?;
-        let executed = audit::execute(&catalogue, &settings, operator, device, &sample)?;
+        let executed = cutile::report::execute(&catalogue, &settings, operator, device, &sample)?;
         report = report.row(
             format!("层       {name}"),
             format!(
@@ -592,7 +592,8 @@ mod tests {
             .expect("默认设置");
         let catalogue = cutile::builtin::Catalogue::load(&settings).expect("内置数据");
         let executed =
-            audit::execute(&catalogue, &settings, nn::Linear::DENSE, "cpu", &sample).expect("执行");
+            cutile::report::execute(&catalogue, &settings, nn::Linear::DENSE, "cpu", &sample)
+                .expect("执行");
         let want: Vec<f32> = (0..4)
             .map(|row| (0..8).map(|column| w[row * 8 + column] * x[column]).sum())
             .collect();

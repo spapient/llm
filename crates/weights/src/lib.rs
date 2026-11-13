@@ -33,11 +33,55 @@
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
 
+// 自有 LLPK 容器：私有实现模块，公开类型在末尾统一 re-export。
+mod affine;
+pub mod axes;
+mod codec;
+pub mod crc;
+mod dtype;
+pub mod golay;
+mod ir;
+pub mod lattice;
+mod leb;
+pub mod ledger;
+mod merkle;
+mod rans;
+mod reader;
+pub mod scale;
+mod seg;
+mod sha256;
+mod sink;
+pub mod svd;
+mod writer;
+mod zip;
+
+#[cfg(test)]
+mod testutil;
+
+pub mod dsa;
+pub mod envelope;
+pub mod keccak;
+pub mod mode;
+pub mod ntt;
+pub mod patch;
+
+// 外部格式适配（只读）：safetensors/gguf/bin 已接入。
+pub mod bin;
+pub mod gguf;
 pub mod json;
 pub mod quant;
 pub mod safetensors;
 
+pub use affine::Quant;
+pub use codec::Codec;
+pub use dtype::Wire;
+pub use envelope::Envelope;
+pub use ir::{Graph, Node, Op};
+pub use merkle::Proof;
 pub use quant::Quantized;
+pub use reader::{Archive, Stored};
+pub use seg::Segment;
+pub use writer::Writer;
 
 /// 一个权重条目：名字、元素类型、形状与它在数据段里的字节区间。
 #[derive(Debug, Clone, PartialEq, Eq)]

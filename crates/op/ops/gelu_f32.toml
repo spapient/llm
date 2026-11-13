@@ -1,0 +1,23 @@
+# 逐元素 GELU（精确 erf 版）：y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))。
+# 一元骨架：needs 只有 load/store；erf 写在模板普通 C 里（cc 自带 erff）。
+
+[op]
+name     = "gelu_f32"
+skeleton = "elementwise"
+summary  = "y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+a = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

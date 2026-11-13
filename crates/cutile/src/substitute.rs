@@ -12,6 +12,23 @@ pub use ::op::tpl::{Arg, Segment, error, lex};
 // 片段层的事实源在 `prim` crate（`<vendor>/<prim>.<ext>`）：本模块只做拼接，不持有片段。
 pub use prim::FragmentSet;
 
+/// 片段层缺少 `prim` 时的统一错误：ast 展开与本模块拼接都走这条，免得两处各写一遍格式串。
+pub(crate) fn missing_fragment(
+    line: usize,
+    prim: crate::atom::Prim,
+    fragments: &FragmentSet,
+) -> diagnostic::Error {
+    error(
+        line,
+        format!(
+            "片段层缺少 `{}/{}.{}`：该设备尚未实现 `{prim}`",
+            fragments.vendor(),
+            prim,
+            fragments.ext()
+        ),
+    )
+}
+
 /// ④ substitute：模板槽位 ← 轴/布局取值，`@原语(...)` ← 片段文本。
 pub fn render(
     op: &OpDecl,
@@ -39,15 +56,7 @@ pub fn render(
             }
             Segment::Call { prim, args, line } => {
                 let Some(fragment) = fragments.get(prim) else {
-                    return Err(error(
-                        line,
-                        format!(
-                            "片段层缺少 `{}/{}.{}`：该设备尚未实现 `{prim}`",
-                            fragments.vendor(),
-                            prim,
-                            fragments.ext()
-                        ),
-                    ));
+                    return Err(missing_fragment(line, prim, fragments));
                 };
                 let expanded = splice(fragment, &args, line)?;
                 // 片段是语句块；模板已经提供了 `;`，这里去掉重复的终结符并对齐缩进。
@@ -67,7 +76,10 @@ pub fn render(
 }
 
 /// 片段占位符替换：`$0`..`$9` 是位置参数，`$name` 是命名参数。
-fn splice(fragment: &str, args: &[Arg<'_>], line: usize) -> diagnostic::Result<String> {
+///
+/// 词法占位符的替换规则只有这一份：字符串路径（[`render`]）与结构化路径（`ast::build`）
+/// 都调用它，保证两条路径对同一片段得到完全相同的展开。
+pub(crate) fn splice(fragment: &str, args: &[Arg<'_>], line: usize) -> diagnostic::Result<String> {
     let positional: Vec<&str> = args
         .iter()
         .filter_map(|arg| match arg {

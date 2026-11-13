@@ -1104,8 +1104,8 @@ fn parse_provide(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
     if let Some(value) = entry.get("dt") {
         let mut set = DTypeSet::empty();
         for item in names(&field("dt"), value)? {
-            let dt = DType::parse(&item).ok_or_else(|| {
-                let names: Vec<&str> = DType::ALL.iter().map(|dt| dt.as_str()).collect();
+            let dt = DType::parse_name(&item).ok_or_else(|| {
+                let names: Vec<&str> = DType::ALL.iter().map(|dt| dt.name()).collect();
                 unknown(&field("dt"), &item, &names)
             })?;
             set.insert(dt);

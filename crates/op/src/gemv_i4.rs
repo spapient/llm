@@ -12,9 +12,9 @@
 //! 它当 `int gsz` 实参收，所以 [`forward`] 仍按 `scales` 的长度推分组：一份 32 分组的权重与
 //! 一份 8 分组的权重是同一个类型的两次调用，而不是两份单态化副本。
 
+use crate::einsum::Bits;
 use crate::gemv::{self, Format, OperandSpec};
 use diagnostic::{Code, Error};
-use einsum::Bits;
 
 /// 量化分组。
 ///
@@ -69,7 +69,7 @@ impl<const G: usize> Format for gemv::Quantized<G> {
 
     const STEP: usize = G;
 
-    fn formula() -> Result<&'static einsum::Formula, Error> {
+    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
         // 缓存落在这个 impl 里：`Quantized<G>` 的表达式与粒度无关，一份缓存覆盖所有实例。
         static CACHE: gemv::Cache = gemv::Cache::new();
         CACHE.get::<Self>()

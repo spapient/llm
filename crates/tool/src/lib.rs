@@ -1,32 +1,33 @@
-//! 呈现层工具：[`Report`] 与 [`join_names`]——把各层的诊断信息排成人类可读的文本。
+//! 仓库工具：配置驱动的静态质量门与人可读输出。
 //!
-//! **拥有**：`Report`、`join_names`。**不拥有**：任何领域数据类型（它只接受字符串与列标签）、
-//! 退出码（由调用方映射）。**依赖**：无。**被依赖**：`llm`（组装点的摘要输出）。
+//! **拥有**：词法分析（[`lex`]）、圈复杂度与函数长度（[`ccn`]）、文件行数（[`dup`]）、
+//! 禁止调用形态（[`call`]）、文档漂移（[`docs`]）、测试代码剔除（[`strip`]）、质量门阈值（[`gate`]）、
+//! 回退判定（[`regress`]）、人可读排版（[`Report`]）。
+//! **不拥有**：任何运行时领域数据类型、退出码（由调用方映射）。
+//! **依赖**：`config`（TOML 解析）、`diagnostic`（错误契约）。
 //!
-//! 为什么值得单独一层：格式化是最容易在三个地方各写一遍的东西（`cutile` 的 CLI、`llm` 的摘要、
-//! 将来的服务日志）。把它收成两个函数后，"同一份信息在两处排版不同"这类噪声就不存在了。
-//!
-//! # 例子
-//!
-//! ```
-//! use llm_tool::Report;
-//!
-//! let report = Report::new("llm —— 组装点")
-//!     .row("声明层", "1 个算子")
-//!     .row("档案层", "4 份设备档案");
-//! let text = report.render();
-//! assert!(text.starts_with("llm —— 组装点\n"));
-//! assert!(text.contains("  声明层  1 个算子"));
-//! ```
+//! 设计原则（参考 burn）：标准是数据（项目 `lints/vocabulary.toml` 的 `[gate]`），分析器是纯函数，
+//! 结果可对拍；分析器本身不打印、不退出，门禁是否失败由调用方按 [`Gate`] 判定。
 
 #![deny(unsafe_code)]
 
+pub mod call;
+pub mod ccn;
+pub mod docs;
+pub mod dup;
+pub mod gate;
+pub mod lex;
+pub mod regress;
+pub mod strip;
+
 use std::fmt::Write as _;
 
-/// 一份带标题的键值报告：标题一行，之后每行一个"标签 + 值"。
-///
-/// 排版规则固定为标题 + 两空格缩进 + 标签补齐到同一列，因此调用方不需要关心宽度——
-/// 也就不会出现两份输出对齐不一致的问题。
+pub use ccn::{Finding, analyze};
+pub use gate::Gate;
+pub use lex::{Delim, Pos, Token, parse};
+pub use strip::strip_tests;
+
+/// 一份带标题的键值报告：标题一行，之后每行一个“标签 + 值”。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     title: String,
@@ -59,7 +60,7 @@ impl Report {
         self.rows.is_empty()
     }
 
-    /// 排成文本：标题一行，之后按"标签 + 值"两列输出，末尾带换行。
+    /// 排成文本：标题一行，之后按“标签 + 值”两列输出，末尾带换行。
     pub fn render(&self) -> String {
         let width = self
             .rows
@@ -76,40 +77,12 @@ impl Report {
     }
 }
 
-/// 把名字并成一行，用顿号分隔；空列表返回 `—`（而不是空字符串，否则输出里会少一列）。
+/// 把名字并成一行，用顿号分隔；空列表返回 `—`。
 pub fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
     let joined = names.collect::<Vec<_>>().join("、");
     if joined.is_empty() {
         "—".to_string()
     } else {
         joined
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_report_aligns_labels_to_the_widest_row() {
-        let text = Report::new("标题")
-            .row("a", "1")
-            .row("longer", "2")
-            .render();
-        assert_eq!(text, "标题\n  a       1\n  longer  2\n");
-    }
-
-    #[test]
-    fn an_empty_report_is_only_its_title() {
-        let report = Report::new("标题");
-        assert!(report.is_empty());
-        assert_eq!(report.len(), 0);
-        assert_eq!(report.render(), "标题\n");
-    }
-
-    #[test]
-    fn names_are_joined_and_an_empty_list_shows_a_dash() {
-        assert_eq!(join_names(["a", "b"].into_iter()), "a、b");
-        assert_eq!(join_names([].into_iter()), "—");
     }
 }

@@ -1,0 +1,24 @@
+# 对称 int4 矩阵乘：打包 nibble 解包后整数点积 i32 累加（mma 整数路径），再 cvt 成 f32，K=8。
+
+[op]
+name     = "gemm_i4"
+skeleton = "gemm"
+summary  = "Y[m,n] = f32(sum_k i4(A[m,k]) i4(B[k,n]))"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+cvt   = { dt = ["f32", "i32"], sat = ["off"] }
+
+[layouts]
+a = "row"
+b = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

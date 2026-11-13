@@ -1,0 +1,23 @@
+# RoPE：按位置旋转一对对分量。
+# OpDecl 闭集归到 elementwise；needs 只有 load/store，位置是标量参数。
+
+[op]
+name     = "rope_f32"
+skeleton = "elementwise"
+summary  = "y = rotate(x, pos)"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+x = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

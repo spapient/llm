@@ -120,7 +120,8 @@ impl Kind {
         match dtype {
             DType::F32 => Some(Self::F32),
             DType::I8 | DType::U4 => Some(Self::U8),
-            DType::F16 | DType::BF16 => None,
+            // 其余类型（f16/bf16/fp8/亚字节整数等）没有标量存储，编译期拒绝。
+            _ => None,
         }
     }
 
@@ -392,6 +393,18 @@ fn output_slice<'a, L: Lane>(op: &str, view: &'a mut ViewMut<'_>) -> Result<&'a 
     L::slice_mut(view).ok_or_else(|| wrong_lane(op, "输出", L::KIND, actual))
 }
 
+impl<A: Lane> Inputs for (A,) {
+    type Slices<'a> = (&'a [A],);
+    const KINDS: &'static [Kind] = &[A::KIND];
+
+    fn unpack<'a>(inputs: &'a [View<'a>], op: &str) -> Result<Self::Slices<'a>> {
+        let [a] = inputs else {
+            return Err(wrong_arity(op, Self::KINDS, inputs));
+        };
+        Ok((input_slice::<A>(op, 0, a)?,))
+    }
+}
+
 impl<A: Lane, B: Lane> Inputs for (A, B) {
     type Slices<'a> = (&'a [A], &'a [B]);
     const KINDS: &'static [Kind] = &[A::KIND, B::KIND];
@@ -484,12 +497,92 @@ struct Entry {
 /// 补一行 `match`。
 const KERNELS: [Entry; op::REGISTRY.len()] = [
     Entry {
+        op: "add_f32",
+        run: add_f32,
+    },
+    Entry {
+        op: "attention_f32",
+        run: attention_f32,
+    },
+    Entry {
+        op: "dequant_i4",
+        run: dequant_i4,
+    },
+    Entry {
+        op: "dequant_i8",
+        run: dequant_i8,
+    },
+    Entry {
+        op: "embed_f32",
+        run: embed_f32,
+    },
+    Entry {
+        op: "flash_attention_f32",
+        run: flash_attention_f32,
+    },
+    Entry {
+        op: "gelu_f32",
+        run: gelu_f32,
+    },
+    Entry {
+        op: "gemm_f32",
+        run: gemm_f32,
+    },
+    Entry {
+        op: "gemm_i4",
+        run: gemm_i4,
+    },
+    Entry {
+        op: "gemm_i8",
+        run: gemm_i8,
+    },
+    Entry {
         op: "gemv_f32",
         run: gemv_f32,
     },
     Entry {
         op: "gemv_i4",
         run: gemv_i4,
+    },
+    Entry {
+        op: "gemv_i8",
+        run: gemv_i8,
+    },
+    Entry {
+        op: "mul_f32",
+        run: mul_f32,
+    },
+    Entry {
+        op: "reduce_max_f32",
+        run: reduce_max_f32,
+    },
+    Entry {
+        op: "reduce_sum_f32",
+        run: reduce_sum_f32,
+    },
+    Entry {
+        op: "residual_add_f32",
+        run: residual_add_f32,
+    },
+    Entry {
+        op: "rmsnorm_f32",
+        run: rmsnorm_f32,
+    },
+    Entry {
+        op: "rope_f32",
+        run: rope_f32,
+    },
+    Entry {
+        op: "scale_f32",
+        run: scale_f32,
+    },
+    Entry {
+        op: "silu_f32",
+        run: silu_f32,
+    },
+    Entry {
+        op: "softmax_f32",
+        run: softmax_f32,
     },
 ];
 
@@ -529,10 +622,155 @@ fn gemv_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     op::gemv_i4::forward(x, w, scales, output_slice::<f32>("gemv_i4", output)?)
 }
 
+/// `gemv_i8`：`[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i8::forward` 同一段算术。
+fn gemv_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, "gemv_i8")?;
+    op::gemv_i8::forward(x, w, scales, output_slice::<f32>("gemv_i8", output)?)
+}
+
 /// `gemv_f32`：`[x: f32, w: f32] → y: f32`，与 `op::gemv_f32::forward` 同一段算术。
 fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (x, w) = <(f32, f32) as Inputs>::unpack(inputs, "gemv_f32")?;
     op::gemv_f32::forward(x, w, output_slice::<f32>("gemv_f32", output)?)
+}
+
+/// `add_f32`：`[a: f32, b: f32] → y: f32`，与 `op::add_f32::forward` 同一段算术。
+fn add_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "add_f32")?;
+    op::add_f32::forward(a, b, output_slice::<f32>("add_f32", output)?)
+}
+
+/// `attention_f32`：`[q, k, v: f32] → y: f32`，尺寸由声明宽度推导，复用 `op::attention::forward`。
+fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
+    let out = output_slice::<f32>("attention_f32", output)?;
+    let d = op::attention::MODEL.shape.1;
+    let s = q.len().checked_div(d).unwrap_or(0);
+    op::attention::forward(q, k, v, out, s, d)
+}
+
+/// `flash_attention_f32`：同形参，复用 online softmax 版 `op::attention::flash_forward`。
+fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "flash_attention_f32")?;
+    let out = output_slice::<f32>("flash_attention_f32", output)?;
+    let d = op::attention::MODEL.shape.1;
+    let s = q.len().checked_div(d).unwrap_or(0);
+    op::attention::flash_forward(q, k, v, out, s, d)
+}
+
+/// `dequant_i4`：`[q: u8] → y: f32`，打包字节每字节两个 nibble，与 `op::dequant_i4::forward` 同一段。
+fn dequant_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q,) = <(u8,) as Inputs>::unpack(inputs, "dequant_i4")?;
+    op::dequant_i4::forward(
+        op::dequant_i4::SCALE,
+        op::dequant_i4::ZERO,
+        q,
+        output_slice::<f32>("dequant_i4", output)?,
+    )
+}
+
+/// `dequant_i8`：`[q: f32] → y: f32`，参数取样本常量，与 `op::dequant_i8::forward` 同一段。
+fn dequant_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q,) = <(f32,) as Inputs>::unpack(inputs, "dequant_i8")?;
+    op::dequant_i8::forward(
+        op::dequant_i8::SCALE,
+        op::dequant_i8::ZERO,
+        q,
+        output_slice::<f32>("dequant_i8", output)?,
+    )
+}
+
+/// `embed_f32`：`[idx: f32, table: f32] → y: f32`，与 `op::embed_f32::forward` 同一段 gather。
+fn embed_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (idx, table) = <(f32, f32) as Inputs>::unpack(inputs, "embed_f32")?;
+    op::embed_f32::forward(idx, table, output_slice::<f32>("embed_f32", output)?)
+}
+
+/// `gemm_f32`：`[a: f32, b: f32] → y: f32`，尺寸由缓冲长度推导，与 `op::gemm_f32::forward` 同一段。
+fn gemm_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "gemm_f32")?;
+    let out = output_slice::<f32>("gemm_f32", output)?;
+    let m = a.len() / op::gemm_f32::K;
+    let n = out.len().checked_div(m).unwrap_or(0);
+    op::gemm_f32::forward(a, b, m, n, out)
+}
+
+/// `gemm_i8`：`[a: u8, b: u8] → y: f32`，整数点积后转 f32，与 `op::gemm_i8::forward` 同段算术。
+/// `gemm_i4`：`[a: u8, b: u8] → y: f32`，打包 nibble 解包后整数点积，与 `op::gemm_i4::forward` 同段。
+fn gemm_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, "gemm_i4")?;
+    let out = output_slice::<f32>("gemm_i4", output)?;
+    let m = a.len() / (op::gemm_i4::K / 2);
+    let n = out.len().checked_div(m).unwrap_or(0);
+    op::gemm_i4::forward(a, b, m, n, out)
+}
+
+fn gemm_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, "gemm_i8")?;
+    let out = output_slice::<f32>("gemm_i8", output)?;
+    let m = a.len() / op::gemm_i8::K;
+    let n = out.len().checked_div(m).unwrap_or(0);
+    op::gemm_i8::forward(a, b, m, n, out)
+}
+
+/// `gelu_f32`：`[a: f32] → y: f32`，与 `op::gelu_f32::forward` 同一段算术。
+fn gelu_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a,) = <(f32,) as Inputs>::unpack(inputs, "gelu_f32")?;
+    op::gelu_f32::forward(a, output_slice::<f32>("gelu_f32", output)?)
+}
+
+/// `mul_f32`：`[a: f32, b: f32] → y: f32`，与 `op::mul_f32::forward` 同一段算术。
+fn mul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "mul_f32")?;
+    op::mul_f32::forward(a, b, output_slice::<f32>("mul_f32", output)?)
+}
+
+/// `silu_f32`：`[a: f32] → y: f32`，与 `op::silu_f32::forward` 同一段算术。
+fn silu_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a,) = <(f32,) as Inputs>::unpack(inputs, "silu_f32")?;
+    op::silu_f32::forward(a, output_slice::<f32>("silu_f32", output)?)
+}
+
+/// `softmax_f32`：`[x: f32] → y: f32`，与 `op::softmax_f32::forward` 同一段算术。
+fn softmax_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a,) = <(f32,) as Inputs>::unpack(inputs, "softmax_f32")?;
+    op::softmax_f32::forward(a, output_slice::<f32>("softmax_f32", output)?)
+}
+
+/// `reduce_max_f32`：`[a: f32] → y: f32`，与 `op::reduce_max_f32::forward` 同一段算术。
+fn reduce_max_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a,) = <(f32,) as Inputs>::unpack(inputs, "reduce_max_f32")?;
+    op::reduce_max_f32::forward(a, output_slice::<f32>("reduce_max_f32", output)?)
+}
+
+/// `reduce_sum_f32`：`[a: f32] → y: f32`，与 `op::reduce_sum_f32::forward` 同一段算术。
+fn reduce_sum_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a,) = <(f32,) as Inputs>::unpack(inputs, "reduce_sum_f32")?;
+    op::reduce_sum_f32::forward(a, output_slice::<f32>("reduce_sum_f32", output)?)
+}
+
+/// `rmsnorm_f32`：`[x: f32, gamma: f32] → y: f32`，与 `op::rmsnorm_f32::forward` 同一段算术。
+fn rmsnorm_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (x, gamma) = <(f32, f32) as Inputs>::unpack(inputs, "rmsnorm_f32")?;
+    op::rmsnorm_f32::forward(x, gamma, output_slice::<f32>("rmsnorm_f32", output)?)
+}
+
+/// `rope_f32`：`[x: f32] → y: f32`，位置取样本约定的 7，与 `op::rope_f32::forward` 同一段算术。
+fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a,) = <(f32,) as Inputs>::unpack(inputs, "rope_f32")?;
+    op::rope_f32::forward(7, a, output_slice::<f32>("rope_f32", output)?)
+}
+
+/// `scale_f32`：`[a: f32] → y: f32`，与 `op::scale_f32::forward` 同一段算术。
+fn scale_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a,) = <(f32,) as Inputs>::unpack(inputs, "scale_f32")?;
+    op::scale_f32::forward(a, output_slice::<f32>("scale_f32", output)?)
+}
+
+/// `residual_add_f32`：`[a: f32, b: f32] → y: f32`，与 `op::residual_add_f32::forward` 同一段。
+fn residual_add_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "residual_add_f32")?;
+    op::residual_add_f32::forward(a, b, output_slice::<f32>("residual_add_f32", output)?)
 }
 
 /// 同尺寸缓冲的空闲表：按**正好相等的长度**分档。

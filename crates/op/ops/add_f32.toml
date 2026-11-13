@@ -1,0 +1,30 @@
+# 第一条逐元素算子：y[n] = a[n] + b[n]。
+#
+# 它不套用投影骨架：没有规约轴，一次循环只做一次加法，因此 needs 里没有 dot/reduce/cvt，
+# 只有把两个输入搬进寄存器的 load 与把结果写回的 store。这两个原语 cpu 片段都已具备，
+# 新增算子不需要写一条新片段。
+
+[op]
+name     = "add_f32"
+skeleton = "elementwise"
+summary  = "y[n] = a[n] + b[n]"
+
+# N 是逐元素轴：取值即 tile 宽度，用于轴展开与缓存指纹。
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+# 两个输入都按行连续；输出在签名里是 y，布局契约只描述输入槽位。
+[layouts]
+a = "row"
+b = "row"
+
+# 逐元素算子没有搬运/计算分工，一条 direct 变体即可。
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

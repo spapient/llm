@@ -2,7 +2,7 @@
 
 用 Rust 编写的配置驱动算子训练推理框架：kernel 由声明与档案驱动（`cutile`），上层按层组装成推理与训练链路（`llm`）。
 
-本仓库是一个 Cargo workspace，共 33 个成员（`crates/*` 下的 32 个 crate 与根包 `llm`（入口 bin））。
+本仓库是一个 Cargo workspace，共 26 个成员（`crates/*` 下的 25 个 crate 与根包 `llm`（入口 bin））。
 元数据、依赖版本、lint 策略统一在根 `Cargo.toml` 声明；**模块的层级与依赖方向**写在
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，新增成员时按那里的三步登记。
 
@@ -45,36 +45,33 @@ struct LmHead;   // 生成 impl nn::Layer + 一条“声明仍与 op 数据一�
 
 | 层 | 成员 | 职责 |
 |---|---|---|
-| L1 基础设施 | `diagnostic` `testkit` `llm-config` `tool` `benches` | 统一错误类型、测试夹具、配置分层与路径、人可读输出、基准判定 |
-| L2 数据层 | `einsum` `prof` `op` `prim` | 求和表达式的语义代价、设备档案与能力闭集、算子声明与模板（`gemv_i4` 量化 / `gemv_f32` 稠密）、原语片段与见证（纯数据） |
-| L3 内核 | `cutile` `audit` | `cutile`：协商 → 拼接 → emit → 编译执行，见 [DESIGN](crates/cutile/DESIGN.md)；`audit`：在其上做 doctor/verify/bench 的结构化报告与见证执行 |
-| L4 运行时 | `mem` `tensor` `storage` `exec` `tokenizer` `pack` | 分配、张量元数据、布局搬运、提交执行、文本边界、版本化权重容器 |
-| L5 模型与训练 | `weights` `kv` `autograd` `comm` `proto` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、KV 页、反向图、集合通信、线协议、样本、层定义、切分拓扑 |
-| L6 调度与服务 | `checkpoint` `train` `engine` `serve` `cli` | 检查点格式、训练循环状态、连续批与序列、端点契约、命令行解析 |
+| L1 基础设施 | `diagnostic` `dtype` `testkit` `llm-config` `tool` | 统一错误类型、精度事实源（标量/块量化/微缩放三轴）、测试夹具、配置分层与路径、静态门与回退判定 |
+| L2 数据层 | `prof` `op` `prim` | 设备档案与能力闭集、算子声明与模板（`gemv_i4` 量化 / `gemv_f32` 稠密）及其求和代价（`op/src/einsum/`）、原语片段与见证（纯数据） |
+| L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行（`report/` 子模块在其上做 doctor/verify/bench 的结构化报告与见证执行），见 [DESIGN](crates/cutile/DESIGN.md) |
+| L4 运行时 | `mem` `tensor` `storage` `tokenizer` | 分配、张量元数据、布局搬运、文本边界 |
+| L5 模型与训练 | `weights` `autograd` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、反向图、样本、层定义、切分拓扑 |
+| L6 调度与服务 | `train` `engine` `serve` `cli` | 训练循环状态与检查点格式（`train/src/snapshot/`）、连续批与序列及页账与提交契约（`engine/src/{kv,exec}.rs`）、端点契约与其线格式（`serve/src/proto/`）、命令行解析 |
 | L7 入口 | `llm`（bin） | 组装：把上面各层连起来，不定义新类型；`status` 算下界，`run` 用真实权重执行 |
 
 唯一一条依赖规则：**依赖只能指向更低的层（同层只能依赖更靠左的成员）**。因此向上依赖不可能通过、
 环不可能出现、数据层永远不会知道机制（`op` / `prof` / `prim` 不依赖 `cutile`）。
 这条规则由 `tests/architecture.rs` 在 `cargo test` 里对照 `cargo metadata` 自动核对。
 
-`annotation`（编译期注解）与 `fuzz`（模糊测试契约）是**工具成员**：它们不计入运行时分层，
+`annotation`（编译期注解）、`fuzz`（模糊测试契约）与 `benches`（集中测量容器）是**工具成员**：它们不计入运行时分层，
 也不参与“至少一条依赖边”的统计。
 
 ```text
-llm ──▶ engine ──▶ kv ──▶ tensor ──▶ mem ──▶ diagnostic
-  │        └─────▶ exec                     ▲
-  ├──▶ serve ──▶ proto / tokenizer ─────────┘
+llm ──▶ engine ──▶ tensor ──▶ mem ──▶ diagnostic
+  │        └─────▶ diagnostic               ▲
+  ├──▶ serve ──▶ tokenizer ────────────────┘
   ├──▶ cli ──▶ diagnostic
   ├──▶ nn ──▶ weights / op / annotation
   ├──▶ train ──▶ nn ──▶ op
-  │             ├▶ checkpoint ──▶ weights
-  │             ├▶ autograd ─┐
+  │             ├▶ autograd ─┤
   │             ├▶ data ─────┤
-  │             └▶ shard ──▶ comm
+  │             └▶ shard ────┘
   ├──▶ weights ──▶ storage ──┘
   ├──▶ op / prof / tool
-  │        └─────▶ einsum ──▶ diagnostic
-  ├──▶ audit ──▶ cutile / op / prof / prim
   └──▶ cutile ──┬─▶ op / prof / prim
                 └─▶ llm-config
 ```
@@ -99,15 +96,12 @@ llm ──▶ engine ──▶ kv ──▶ tensor ──▶ mem ──▶ diagn
 │                         # 0014 真实权重执行：同一件内核，换一份样本
 └── crates/
     ├── annotation/       # #[layer] 属性宏：注解 → 校验过的 Layer 实现（零外部依赖）
-    ├── audit/            # 内核审计：doctor / verify / bench 的结构化报告与见证执行
-    ├── checkpoint/       # 检查点文件：恢复事实 + 权重条目表（名字前后缀共享 + 布局重复 + 偏移增量 + CRC-32，流式原子落盘）
     ├── config/           # llm-config：配置分层、键闭集、路径解析、App 身份、TOML 解析器
-    ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行（bin 在根包 `src/bin/cutile.rs`）
-    ├── einsum/           # 语义层：一条求和表达式 → flops 与最少流量（op 的代价来源）
-    ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义（表达式/样本/标量参考）
+    ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行（bin 在根包 `src/bin/cutile.rs`）；report/ 是命令侧报告
+    ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义；einsum/ 是求和代价的来源
     ├── prof/             # 档案层：devices/<vendor>.toml + 能力词汇表
     ├── prim/             # 片段层：<vendor>/<prim>.<ext> + witness
-    └── …                 # 其余 23 个成员见上表，每个 crate 的 //! 文档写明
+    └── …                 # 其余 20 个成员见上表，每个 crate 的 //! 文档写明
                           # “拥有什么 / 不拥有什么 / 依赖谁 / 被谁依赖”
 ```
 

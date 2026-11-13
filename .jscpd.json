@@ -1,0 +1,12 @@
+{
+  "path": ["crates"],
+  "reporters": ["console", "json"],
+  "format": ["rust"],
+  "minLines": 5,
+  "minTokens": 50,
+  "threshold": 1.5,
+  "ignore": [
+    "**/target/**",
+    "**/*.rs.bk"
+  ]
+}

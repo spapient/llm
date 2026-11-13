@@ -10,6 +10,7 @@ description = "Logical tensor metadata: DType, Shape, Strides and a read-only by
 publish = false
 
 [dependencies]
+dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 mem = { path = "../mem", package = "llm-mem" }
 
