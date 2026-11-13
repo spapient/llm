@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "L1 element-type floor: closed scalar, GGML block-quantized and micro-scaled format sets, each with one identity table."
+description = "L1 element-type floor: closed scalar, GGML block-quantized and micro-scaled format sets plus the MX element set, each with one identity table."
 publish = false
 
 [features]

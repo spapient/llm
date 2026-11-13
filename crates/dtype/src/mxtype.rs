@@ -182,11 +182,11 @@ impl Format for Element {
     }
 
     fn name(self) -> &'static str {
-        self.spec().name
+        Element::name(self)
     }
 
     fn bits(self) -> u32 {
-        self.spec().bits
+        Element::bits(self)
     }
 }
 
@@ -450,7 +450,7 @@ mod tests {
     use std::{format, mem::size_of};
 
     #[test]
-    fn discriminant_fits_one_byte() {
+    fn mx_type_discriminant_fits_one_byte() {
         assert_eq!(size_of::<MxType>(), 1, "repr(u8) 加 7 个格式应正好一字节");
     }
 
@@ -465,7 +465,6 @@ mod tests {
             ("e5m2", "E5M2", 8, Some(DType::F8E5M2)),
             ("int8", "Int8", 8, Some(DType::I8)),
         ];
-        assert_eq!(EXPECTED.len(), Element::ALL.len());
         for (element, (name, variant, bits, dtype)) in Element::ALL.iter().zip(EXPECTED) {
             let spec = element.spec();
             assert_eq!(
@@ -482,6 +481,18 @@ mod tests {
     #[test]
     fn element_discriminant_fits_one_byte() {
         assert_eq!(size_of::<Element>(), 1, "repr(u8) 加 6 个元素应正好一字节");
+    }
+
+    #[test]
+    fn accessors_read_the_element_row() {
+        // 行表锁字段，这里锁「取哪一列」：`Element::bits()`/`dtype()` 没有其它读取点。
+        for element in Element::ALL {
+            let spec = element.spec();
+            assert_eq!(element.name(), spec.name);
+            assert_eq!(element.variant(), spec.variant);
+            assert_eq!(element.bits(), spec.bits);
+            assert_eq!(element.dtype(), spec.dtype);
+        }
     }
 
     #[test]

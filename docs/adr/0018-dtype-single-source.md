@@ -77,8 +77,11 @@ scale 种类/家族），反量化与解码算法仍留在 `weights`，`dtype` �
 
 契约因此下沉到 `dtype`：
 
-1. `Format`：闭集身份（`ALL` / `index` / `name` / `bits` / 派生的 `parse_name`），三个格式闭集各实现一次（`Element` 见下一节）；
+1. `Format`：闭集身份（`ALL` / `index` / `name` / `bits` / 派生的 `parse_name`），四个闭集各实现一次（`Element` 见下一节）；
    `prof` 用一条 `impl<T: dtype::Format> Closed for T` blanket 接上，闭集表不再按类型手写。
+   `Display` 也是 `Format` 的 supertrait：名字是闭集对外契约的一部分，泛型代码因此不必再写
+   一条 `where F: Display`；分类枚举（`dtype::Class`、两个 `Scale` 与两个 `Family`）恰好相反，
+   刻意没有规范名——给内部建模细节编一套对外名字，等于把建模方式固化成承诺。
 2. `BlockFormat: Format`：块布局（`block_len` / `block_bytes` / 派生的 `block_count` 与饱和的
    `bytes_for`），`QType`/`MxType` 实现。`DType` 刻意不实现——亚字节标量按位跨元素打包，
    硬套「每块字节」会把 `U4` 的字节数算成两倍。
@@ -86,7 +89,8 @@ scale 种类/家族），反量化与解码算法仍留在 `weights`，`dtype` �
    MXFP4/NVFP4 解码接入时换 `Layout<MxType>`，不必再写第二份 `elems`/`span`。
 
 **不变量没变**：trait 方法是普通 `fn`（stable 还没有 const trait），常量求值仍走各枚举的
-inherent `const fn`，两条路径读同一张 `SPECS`，由 `crates/dtype/tests/identity.rs`（身份）与 `tests/geometry.rs`（几何）逐项对拍。
+inherent `const fn`，两条路径读同一张 `SPECS`，由 `crates/dtype/tests/identity.rs` 一处对四个闭集逐项对拍
+（身份与块几何都在那里）；`tests/geometry.rs` 只管性质（整块取整、单调、饱和与 `Layout` 两条手臂）。
 `dtype` 依旧零依赖、`no_std`，新增抽象不引入分支、分配或堆。
 
 ## 补充（2026-11-13）：`Element` 进入闭集纪律，互操作下沉为可选 feature

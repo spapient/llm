@@ -41,8 +41,8 @@
 //! 「标量元素或块格式」的统一布局来源（`weights` 的 GGUF 支持表用它，将来接 MXFP4 时
 //! 只换泛型参数）。trait 方法不是 `const fn`（stable 无 const trait）：几何与身份的唯一实现
 //! 是各枚举的 inherent `const fn`，trait 只转发；`parse_name` 反过来由 trait 默认实现唯一
-//! 提供，inherent 只转发。两条路径读同一张行表，由 `tests/identity.rs`（身份）与
-//! `tests/geometry.rs`（几何）逐项对拍。
+//! 提供，inherent 只转发。两条路径读同一张行表，由 `tests/identity.rs` 一处对四个闭集逐项
+//! 对拍（身份与块几何都在那里）。
 //!
 //! # 互操作：标准 trait 与可选 feature
 //!

@@ -31,9 +31,6 @@
 //! 块布局与字节数逐项来自 `ggml` 的 `src/ggml-common.h`（每条 `static_assert(sizeof(block_*)==…)`
 //! 锁死），类型名来自 `include/ggml.h` 的 `ggml_type` 枚举。
 
-// 变体名必须与 GGML 官方码名逐字一致（`Q4_K`/`IQ2_XXS`），camel 化会与外部规范脱节。
-// 只在这个枚举上放宽 lint：模块级 `#![allow]` 会把以后新增的所有类型一并豁免。
-
 use crate::blocked::blocked_accessors;
 #[cfg(feature = "serde")]
 use crate::format::impl_serde;
@@ -93,6 +90,10 @@ pub struct QTypeSpec {
 /// 变体顺序与 [`QType::ALL`]、内部 `SPECS` 表一致；新增格式只能追加在末尾。
 ///
 /// `repr(u8)` 让「判别值 = 行表下标」成为类型保证，`SPECS[self as usize]` 不会越界。
+///
+/// 变体名必须与 GGML 官方码名逐字一致（`Q4_K`/`IQ2_XXS`），camel 化会与外部规范脱节，
+/// 所以只在这个枚举上放宽 `non_camel_case_types`：模块级 `#![allow]` 会把以后新增的类型
+/// 一并豁免。
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -547,6 +548,22 @@ mod tests {
                 (name, block_len, block_bytes, bits, scale, family),
                 "{qtype:?} 的布局行被改动"
             );
+        }
+    }
+
+    #[test]
+    fn accessors_read_the_layout_row() {
+        // 行表锁的是字段，公开访问器锁的是「取哪一列」：`bits()` 与 `block_bytes()` 同为
+        // `u32`，把列取错不会让任何一条别的测试变红。`scale()`/`family()` 在该文件外没有
+        // 任何读取点，只能由这里对齐。
+        for qtype in QType::ALL {
+            let spec = qtype.spec();
+            assert_eq!(qtype.name(), spec.name);
+            assert_eq!(qtype.block_len(), spec.block_len);
+            assert_eq!(qtype.block_bytes(), spec.block_bytes);
+            assert_eq!(qtype.bits(), spec.bits);
+            assert_eq!(qtype.scale(), spec.scale);
+            assert_eq!(qtype.family(), spec.family);
         }
     }
 

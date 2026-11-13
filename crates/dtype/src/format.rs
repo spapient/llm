@@ -4,8 +4,8 @@
 //! 一行」完全一样：闭集全量、判别值即下标、规范名、位宽、按名解析、按元素数算字节。实现只有
 //! 一份，trait 只负责把它交给泛型代码：几何走各枚举的 inherent `const fn`（常量求值需要），
 //! trait 方法逐个转发；`parse_name` 反过来由本文件的 trait 默认实现唯一提供（stable 无 const
-//! trait），inherent 方法转发。两条路径读同一张行表，由 `tests/identity.rs`（身份）与
-//! `tests/geometry.rs`（几何）逐项对拍。
+//! trait），inherent 方法转发。两条路径读同一张行表，由 `tests/identity.rs` 一处对四个闭集
+//! 逐项对拍（身份与块几何都在那里）。
 //!
 //! 这份抽象不是为「统一」而统一：`prof` 的位集（`Closed` + `Set<E, WORDS>`）需要一个「闭集」
 //! 契约（`ALL` + 判别值 + 名字），过去只能在 L2 手写 `impl Closed for DType`；`weights` 的
@@ -23,8 +23,8 @@
 //! - `parse_name` 的唯一实现是 [`Format::parse_name`] 的默认方法，各枚举的 inherent
 //!   `parse_name` 只做转调——stable 没有 const trait，解析本来就不可能在常量上下文里调用。
 //!
-//! 这个分工由 `tests/identity.rs` 与 `tests/geometry.rs` 逐项对拍（trait 视角 == `const fn` 视角），
-//! 不是靠约定。
+//! 这个分工由 `tests/identity.rs` 对四个闭集逐项对拍（trait 视角 == `const fn` 视角），不是靠
+//! 约定；`tests/geometry.rs` 只管性质（整块取整、单调、饱和与 `Layout` 两条手臂）。
 //!
 //! # 标准 trait：互操作只有一层转调
 //!
@@ -32,6 +32,14 @@
 //! `From<DType> for u16` 与 `TryFrom<u16>`（稳定线上 code）。
 //! **刻意不提供 `Default`**：一个默认精度会静默宣布一个未经声明的类型，而本 crate 的取舍是
 //! 读不到就失败（[`UnknownName`]/[`UnknownCode`]），不拿一个“差不多”的值顶上。
+//!
+//! # 哪些枚举有规范名
+//!
+//! 只有**格式**有规范名、[`core::fmt::Display`] 与 [`core::str::FromStr`]：名字是它与档案、
+//! 注解、配置之间的对外契约。分类枚举（`dtype::Class`，`qtype` 与 `mxtype` 各自的 `Scale` 与
+//! `Family`）描述的是格式的属性，没有对外拼写，因此刻意不给 `Display`/`FromStr`/serde——
+//! 给内部建模细节编一套名字，等于把建模方式固化成一份对外承诺，而它随时可能为了更准确地
+//! 描述新格式而调整。
 //!
 //! # 泛型代码的用法
 //!
@@ -160,8 +168,12 @@ pub(crate) use impl_serde;
 /// 用排序做诊断顺序）需要的边界：同一个闭集既能当枚举用，也能当集合元素用。
 ///
 /// 标准互操作由这里派生：每个实现它的枚举同时得到 [`core::str::FromStr`]
-/// （见 `impl_from_str!`），`Display` 则输出 [`Format::name`]。
-pub trait Format: Copy + Eq + Ord + core::hash::Hash + core::fmt::Debug + 'static {
+/// （见 `impl_from_str!`），`Display` 则输出 [`Format::name`]。`Display` 本身是本契约的
+/// 一部分（见下面的 supertrait）而不是各 impl 的额外约定：闭集一定有对外名字，泛型代码
+/// 因此不必再写一条 `where F: Display`。
+pub trait Format:
+    Copy + Eq + Ord + core::hash::Hash + core::fmt::Debug + core::fmt::Display + 'static
+{
     /// 闭集全量，顺序即 [`Format::index`]，也是内部行表的下标。
     const ALL: &'static [Self];
 

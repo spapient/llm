@@ -3,6 +3,9 @@
 //!
 //! 断言只依赖公开的几何方法与 `ALL`，不重算实现里的公式：单调性与饱和是**性质**，
 //! 具体字节数由 `src/*.rs` 的行表逐格式锁定。公式改写成等价形式时测试不应误报。
+//!
+//! trait 视角与 `const fn` 视角的对拍（含块几何）在 `tests/identity.rs`：同一份事实只有
+//! 一个断言点，这里不再重复一遍。
 
 use llm_dtype::{BlockFormat, DType, Layout, MxType, QType};
 
@@ -33,19 +36,26 @@ fn assert_whole_blocks<F: BlockFormat>() {
     }
 }
 
-/// 字节数单调不减；极大输入饱和而不是回绕成小值。
-fn assert_monotonic_and_saturating<F: BlockFormat>() {
+/// 字节数随元素数单调不减：抽样扫描 0..=4096。
+///
+/// 块格式与标量共用这一份性质，不按轴手抄两遍。
+fn assert_monotonic(bytes_of: impl Fn(u64) -> u64, label: &str) {
+    let mut previous = 0;
+    for numel in (0..=4096u64).step_by(37) {
+        let bytes = bytes_of(numel);
+        assert!(
+            bytes >= previous,
+            "{label} 在 {numel} 个元素处字节数倒退：{bytes} < {previous}"
+        );
+        previous = bytes;
+    }
+}
+
+/// 块格式：单调，且不受信任的 `numel` 到顶时饱和而不是回绕成小值。
+fn assert_block_bytes<F: BlockFormat>() {
     for format in F::ALL {
-        let mut previous = 0;
-        for numel in (0..=4096u64).step_by(37) {
-            let bytes = format.bytes_for(numel);
-            assert!(
-                bytes >= previous,
-                "{format:?} 在 {numel} 个元素处字节数倒退：{bytes} < {previous}"
-            );
-            previous = bytes;
-        }
-        // 不受信任的 `numel` 到顶时，饱和值不能小于半量级，更不能回绕成十几字节。
+        assert_monotonic(|numel| format.bytes_for(numel), format.name());
+        // 饱和值不能小于半量级，更不能回绕成十几字节。
         let huge = format.bytes_for(u64::MAX);
         assert!(
             huge >= format.bytes_for(u64::MAX / 2),
@@ -65,58 +75,18 @@ fn block_formats_count_whole_blocks() {
 }
 
 #[test]
-fn the_block_trait_forwards_to_the_const_accessors() {
-    // trait 只转发；两条路径必须给出同一份几何。
-    for qtype in QType::ALL {
-        assert_eq!(BlockFormat::block_len(*qtype), qtype.block_len());
-        assert_eq!(BlockFormat::block_bytes(*qtype), qtype.block_bytes());
-        assert_eq!(
-            BlockFormat::block_count(*qtype, 300),
-            qtype.block_count(300)
-        );
-        assert_eq!(BlockFormat::bytes_for(*qtype, 300), qtype.bytes_for(300));
-    }
-    for mx in MxType::ALL {
-        assert_eq!(BlockFormat::block_len(*mx), mx.block_len());
-        assert_eq!(BlockFormat::block_bytes(*mx), mx.block_bytes());
-        assert_eq!(BlockFormat::block_count(*mx, 300), mx.block_count(300));
-        assert_eq!(BlockFormat::bytes_for(*mx, 300), mx.bytes_for(300));
-    }
-}
-
-#[test]
 fn byte_counts_are_monotonic_and_saturate() {
-    assert_monotonic_and_saturating::<QType>();
-    assert_monotonic_and_saturating::<MxType>();
+    assert_block_bytes::<QType>();
+    assert_block_bytes::<MxType>();
     // 标量轴同样单调、同样饱和：全部 24 种都跑一遍，而不只抽一个亚字节类型。
     for dtype in DType::ALL {
-        let mut previous = 0;
-        for numel in (0..=4096u64).step_by(37) {
-            let bytes = dtype.bytes_for(numel);
-            assert!(bytes >= previous, "{dtype:?} 在 {numel} 个元素处字节数倒退");
-            previous = bytes;
-        }
+        assert_monotonic(|numel| dtype.bytes_for(numel), dtype.name());
         assert_eq!(
             dtype.bytes_for(u64::MAX),
             u64::MAX.div_ceil(8),
             "{dtype:?} 的溢出必须饱和到同一个上界"
         );
     }
-}
-
-#[test]
-fn sub_byte_scalars_pack_across_element_boundaries() {
-    // 字面值而不是用 `bits` 重算公式：`U4` 两个元素共用一个字节，`Bool`/`U1` 按位打包，
-    // 整字节类型不额外补齐。
-    assert_eq!((DType::U1.bytes_for(8), DType::U1.bytes_for(9)), (1, 2));
-    assert_eq!((DType::U4.bytes_for(1), DType::U4.bytes_for(2)), (1, 1));
-    assert_eq!(DType::U4.bytes_for(3), 2);
-    assert_eq!((DType::I2.bytes_for(3), DType::I2.bytes_for(4)), (1, 1));
-    assert_eq!((DType::F4.bytes_for(1), DType::F4.bytes_for(8)), (1, 4));
-    assert_eq!((DType::Bool.bytes_for(8), DType::Bool.bytes_for(9)), (1, 2));
-    assert_eq!(DType::U8.bytes_for(1), 1);
-    assert_eq!(DType::F32.bytes_for(3), 12);
-    assert_eq!(DType::F64.bytes_for(2), 16);
 }
 
 #[test]

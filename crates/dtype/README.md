@@ -29,9 +29,11 @@ assert_eq!("q4_k".parse::<QType>(), Ok(QType::Q4_K));
   `const fn`), which the `Format`/`BlockFormat` traits forward to generic code. Name parsing is the
   one exception: it delegates to the trait default because stable Rust has no const traits.
 - **Identity is locked.** Every row is pinned by a literal table in that module's tests: `DType`
-  (wire code, name, variant, bits, class) and the block layout of `QType`/`MxType` (block length,
-  block bytes, scale, family). `Display`, `FromStr` and the optional `serde` representation all
-  read the same name.
+  (wire code, name, variant, bits, class), the MX element set (name, variant, bits, scalar
+  counterpart) and the block layout of `QType`/`MxType` (block length, block bytes, scale,
+  family). Every public accessor is asserted against its own column on top of that, so a getter
+  reading the neighbouring field cannot hide behind a locked table. `Display`, `FromStr` and the
+  optional `serde` representation all read the same name.
 - **Facts, not algorithms.** This crate says *what a format is and how many bytes it takes*; it
   never says *how to decode it*. Dequantization stays in `llm-weights` (ADR 0018).
 
