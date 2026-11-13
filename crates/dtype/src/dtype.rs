@@ -304,7 +304,7 @@ impl DType {
     /// 稳定线上 code（`1..=24`；`0` 保留不分配）。
     ///
     /// 判别值与 [`DType::ALL`] 的声明顺序一致（`Bool` 取 `1`，最后追加的 `F8E5M2FNUZ` 取
-    /// `24`），因此 code 就是判别值加一；`codes_are_a_stable_bijection` 锁死这份编码。
+    /// `24`），因此 code 就是判别值加一；内联测试 `identity_table_is_locked` 逐行锁死这份编码。
     #[must_use]
     pub const fn code(self) -> u16 {
         (self as u16) + 1
@@ -449,19 +449,6 @@ mod tests {
     }
 
     #[test]
-    fn codes_are_a_stable_bijection() {
-        for dtype in DType::ALL {
-            assert_eq!(DType::from_code(dtype.code()), Some(*dtype));
-        }
-        // 边界由闭集长度推出，而不是写死 25：加类型时这里会自动挪到新的末位。
-        let last = u16::try_from(DType::ALL.len()).expect("DType 变体数远小于 u16 上限");
-        assert_eq!(DType::from_code(last), DType::ALL.last().copied());
-        assert_eq!(DType::from_code(last + 1), None);
-        assert_eq!(DType::from_code(0), None);
-        assert_eq!(DType::from_code(u16::MAX), None);
-    }
-
-    #[test]
     fn every_u16_is_either_a_valid_code_or_rejected() {
         // 穷举全部 65536 个 code：合法集恰好是 `1..=ALL.len()`，且往返一致。
         let last = u16::try_from(DType::ALL.len()).expect("DType 变体数远小于 u16 上限");
@@ -479,115 +466,46 @@ mod tests {
     }
 
     #[test]
-    fn from_str_uses_the_canonical_table() {
-        for dtype in DType::ALL {
-            assert_eq!(dtype.name().parse::<DType>(), Ok(*dtype));
-        }
-        assert_eq!("unknown".parse::<DType>(), Err(crate::format::UnknownName));
-    }
-
-    #[test]
-    fn legacy_wire_codes_remain_unchanged() {
-        // 与旧 weights::dtype::Wire 的判别值逐位对齐，保证容器字节兼容。
-        const EXPECTED: [(DType, u16); 22] = [
-            (DType::Bool, 1),
-            (DType::U1, 2),
-            (DType::U2, 3),
-            (DType::U4, 4),
-            (DType::U8, 5),
-            (DType::U16, 6),
-            (DType::U32, 7),
-            (DType::U64, 8),
-            (DType::I1, 9),
-            (DType::I2, 10),
-            (DType::I4, 11),
-            (DType::I8, 12),
-            (DType::I16, 13),
-            (DType::I32, 14),
-            (DType::I64, 15),
-            (DType::F8E4M3, 16),
-            (DType::F8E5M2, 17),
-            (DType::F16, 18),
-            (DType::BF16, 19),
-            (DType::F32, 20),
-            (DType::F64, 21),
-            (DType::F4, 22),
-        ];
-        for (dtype, code) in EXPECTED {
-            assert_eq!(dtype.code(), code, "{dtype:?} 的线上 code 漂移");
-        }
-    }
-
-    #[test]
-    fn names_round_trip() {
-        for dtype in DType::ALL {
-            assert_eq!(DType::parse_name(dtype.name()), Some(*dtype));
-        }
-        assert_eq!(DType::parse_name("unknown"), None);
-    }
-
-    #[test]
-    fn names_and_variants_are_unique() {
-        for (index, dtype) in DType::ALL.iter().enumerate() {
-            for other in &DType::ALL[index + 1..] {
-                assert_ne!(dtype.name(), other.name(), "规范名重复");
-                assert_ne!(dtype.variant(), other.variant(), "变体名重复");
-            }
-        }
-    }
-
-    #[test]
     fn identity_table_is_locked() {
-        // 逐行锁死身份事实：位宽或名字被误改时失败在这一行，而不是靠人眼扫表。
-        const EXPECTED: [(&str, u32, &str, Class); 24] = [
-            ("bool", 1, "Bool", Class::Bool),
-            ("u1", 1, "U1", Class::UInt),
-            ("u2", 2, "U2", Class::UInt),
-            ("u4", 4, "U4", Class::UInt),
-            ("u8", 8, "U8", Class::UInt),
-            ("u16", 16, "U16", Class::UInt),
-            ("u32", 32, "U32", Class::UInt),
-            ("u64", 64, "U64", Class::UInt),
-            ("i1", 1, "I1", Class::SInt),
-            ("i2", 2, "I2", Class::SInt),
-            ("i4", 4, "I4", Class::SInt),
-            ("i8", 8, "I8", Class::SInt),
-            ("i16", 16, "I16", Class::SInt),
-            ("i32", 32, "I32", Class::SInt),
-            ("i64", 64, "I64", Class::SInt),
-            ("f8e4m3", 8, "F8E4M3", Class::Float),
-            ("f8e5m2", 8, "F8E5M2", Class::Float),
-            ("f16", 16, "F16", Class::Float),
-            ("bf16", 16, "BF16", Class::Float),
-            ("f32", 32, "F32", Class::Float),
-            ("f64", 64, "F64", Class::Float),
-            ("f4", 4, "F4", Class::Float),
-            ("f8e4m3fnuz", 8, "F8E4M3FNUZ", Class::Float),
-            ("f8e5m2fnuz", 8, "F8E5M2FNUZ", Class::Float),
+        // 一行一个类型：线上 code、规范名、变体名、位宽、数值类别。长度由 `ALL.len()` 锚定，
+        // 加类型时这张表必须同步（漏写一行直接编译失败）；顺序也在这里锁住——重排会让 code 漂移。
+        const LOCKED: [(u16, &str, &str, u32, Class); DType::ALL.len()] = [
+            (1, "bool", "Bool", 1, Class::Bool),
+            (2, "u1", "U1", 1, Class::UInt),
+            (3, "u2", "U2", 2, Class::UInt),
+            (4, "u4", "U4", 4, Class::UInt),
+            (5, "u8", "U8", 8, Class::UInt),
+            (6, "u16", "U16", 16, Class::UInt),
+            (7, "u32", "U32", 32, Class::UInt),
+            (8, "u64", "U64", 64, Class::UInt),
+            (9, "i1", "I1", 1, Class::SInt),
+            (10, "i2", "I2", 2, Class::SInt),
+            (11, "i4", "I4", 4, Class::SInt),
+            (12, "i8", "I8", 8, Class::SInt),
+            (13, "i16", "I16", 16, Class::SInt),
+            (14, "i32", "I32", 32, Class::SInt),
+            (15, "i64", "I64", 64, Class::SInt),
+            (16, "f8e4m3", "F8E4M3", 8, Class::Float),
+            (17, "f8e5m2", "F8E5M2", 8, Class::Float),
+            (18, "f16", "F16", 16, Class::Float),
+            (19, "bf16", "BF16", 16, Class::Float),
+            (20, "f32", "F32", 32, Class::Float),
+            (21, "f64", "F64", 64, Class::Float),
+            (22, "f4", "F4", 4, Class::Float),
+            (23, "f8e4m3fnuz", "F8E4M3FNUZ", 8, Class::Float),
+            (24, "f8e5m2fnuz", "F8E5M2FNUZ", 8, Class::Float),
         ];
-        assert_eq!(EXPECTED.len(), DType::ALL.len());
-        for (dtype, (name, bits, variant, class)) in DType::ALL.iter().zip(EXPECTED) {
-            let spec = dtype.spec();
+        for (dtype, (code, name, variant, bits, class)) in DType::ALL.iter().zip(LOCKED) {
             assert_eq!(
-                (spec.name, spec.bits, spec.variant, spec.class),
-                (name, bits, variant, class),
+                (
+                    dtype.code(),
+                    dtype.spec().name,
+                    dtype.spec().variant,
+                    dtype.spec().bits,
+                    dtype.spec().class,
+                ),
+                (code, name, variant, bits, class),
                 "{dtype:?} 的身份行被改动"
-            );
-        }
-    }
-
-    #[test]
-    fn names_are_the_lowercase_form_of_variants() {
-        // 规范名与变体名只差大小写，唯一例外是 `bool`/`Bool`：拼错（如 `i7`）不能全绿。
-        for dtype in DType::ALL {
-            if *dtype == DType::Bool {
-                assert_eq!(dtype.name(), "bool");
-                continue;
-            }
-            assert_eq!(
-                dtype.name().to_ascii_uppercase(),
-                dtype.variant(),
-                "{dtype:?} 的规范名与变体名不一致"
             );
         }
     }
@@ -600,13 +518,6 @@ mod tests {
                 format!("{dtype:?}"),
                 "变体名与 Debug 输出必须一致，annotation 生成的 `DType::` 变体才编得过"
             );
-        }
-    }
-
-    #[test]
-    fn display_prints_the_canonical_name() {
-        for dtype in DType::ALL {
-            assert_eq!(format!("{dtype}"), dtype.name());
         }
     }
 
@@ -628,53 +539,37 @@ mod tests {
     }
 
     #[test]
-    fn table_rows_align_with_the_variant_order() {
-        // 索引必须与判别值同序，表与枚举不能分家；整行相等，避免只对上名字。
-        for (index, dtype) in DType::ALL.iter().enumerate() {
-            assert_eq!(SPECS[index], dtype.spec());
-            assert_eq!(SPECS[*dtype as usize], dtype.spec());
-        }
-    }
-
-    #[test]
-    fn widths_and_predicates_are_consistent() {
-        assert_eq!(DType::U4.bytes_for(6), 3);
-        assert_eq!(DType::U1.bytes_for(8), 1);
-        assert_eq!(DType::I2.bytes_for(5), 2);
-        assert_eq!(DType::F32.bytes_for(2), 8);
-        assert!(DType::F4.is_float());
-        assert!(DType::I4.is_signed() && DType::I4.is_sub_byte());
-        assert!(DType::U8.is_integer() && !DType::U8.is_signed());
-        assert!(DType::Bool.is_sub_byte() && !DType::Bool.is_integer());
-        assert_eq!(DType::F64.bits(), 64);
-        assert!(DType::F8E4M3FNUZ.is_float() && DType::F8E5M2FNUZ.is_float());
-    }
-
-    #[test]
-    fn bytes_for_rounds_sub_byte_types_up() {
-        // 逐类型核对：字节数 = ceil(numel * bits / 8)，亚字节不留半字节。
+    fn predicates_read_the_class_column() {
+        let (mut floats, mut integers, mut signed) = (0, 0, 0);
         for dtype in DType::ALL {
-            for numel in 0..=3u64 {
-                let want = (numel * u64::from(dtype.bits())).div_ceil(8);
-                assert_eq!(dtype.bytes_for(numel), want, "{dtype:?} / {numel}");
-            }
+            let class = dtype.spec().class;
+            assert_eq!(dtype.is_float(), class == Class::Float, "{dtype:?}");
+            assert_eq!(dtype.is_signed(), class == Class::SInt, "{dtype:?}");
+            assert_eq!(
+                dtype.is_integer(),
+                matches!(class, Class::UInt | Class::SInt),
+                "{dtype:?}"
+            );
+            assert_eq!(dtype.is_sub_byte(), dtype.bits() < 8, "{dtype:?}");
+            floats += usize::from(dtype.is_float());
+            integers += usize::from(dtype.is_integer());
+            signed += usize::from(dtype.is_signed());
         }
+        // 类别普查：加类型时这里要显式改数，避免行表悄悄多出第 25 个变体。
+        assert_eq!((floats, integers, signed), (9, 14, 7));
     }
 
     #[test]
-    fn floats_and_integers_partition_the_closed_set() {
-        let floats = DType::ALL.iter().filter(|d| d.is_float()).count();
-        let integers = DType::ALL.iter().filter(|d| d.is_integer()).count();
-        assert_eq!(
-            floats + integers + 1,
-            DType::ALL.len(),
-            "只剩 Bool 不属于两类"
-        );
-        assert_eq!((floats, integers), (9, 14));
-        assert_eq!(
-            DType::ALL.iter().filter(|d| d.is_signed()).count(),
-            7,
-            "有符号整数全在 I 族"
-        );
+    fn bytes_for_packs_sub_byte_types_without_partial_bytes() {
+        // 字面值而不是用 `bits` 重算公式：亚字节跨元素打包，整字节类型不额外补齐。
+        assert_eq!((DType::U1.bytes_for(8), DType::U1.bytes_for(9)), (1, 2));
+        assert_eq!((DType::U4.bytes_for(1), DType::U4.bytes_for(2)), (1, 1));
+        assert_eq!(DType::U4.bytes_for(3), 2);
+        assert_eq!((DType::I2.bytes_for(3), DType::I2.bytes_for(4)), (1, 1));
+        assert_eq!((DType::F4.bytes_for(1), DType::F4.bytes_for(8)), (1, 4));
+        assert_eq!((DType::Bool.bytes_for(8), DType::Bool.bytes_for(9)), (1, 2));
+        assert_eq!(DType::U8.bytes_for(1), 1);
+        assert_eq!(DType::F32.bytes_for(3), 12);
+        assert_eq!(DType::F64.bytes_for(2), 16);
     }
 }

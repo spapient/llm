@@ -86,7 +86,7 @@ scale 种类/家族），反量化与解码算法仍留在 `weights`，`dtype` �
    MXFP4/NVFP4 解码接入时换 `Layout<MxType>`，不必再写第二份 `elems`/`span`。
 
 **不变量没变**：trait 方法是普通 `fn`（stable 还没有 const trait），常量求值仍走各枚举的
-inherent `const fn`，两条路径读同一张 `SPECS`，由 `crates/dtype/tests/formats.rs` 逐项对拍。
+inherent `const fn`，两条路径读同一张 `SPECS`，由 `crates/dtype/tests/identity.rs`（身份）与 `tests/geometry.rs`（几何）逐项对拍。
 `dtype` 依旧零依赖、`no_std`，新增抽象不引入分支、分配或堆。
 
 ## 补充（2026-11-13）：`Element` 进入闭集纪律，互操作下沉为可选 feature
@@ -108,5 +108,5 @@ inherent `const fn`，两条路径读同一张 `SPECS`，由 `crates/dtype/tests
    `serde` 的线上名字直接取 `Format::name`——逐变体 `rename` 会是第二份名字表，而 `MxType`
    的 `mxfp8_e4m3` 也不是变体名的小写；`bytemuck` 给 `NoUninit` 与 `CheckedBitPattern`，
    不给 `Pod`：`repr(u8)` 的枚举只有 24/25/7/6 个合法字节值，其余是非法位模式。
-4. `MxType` 仍未接上解码器。`tests/mxfp4.rs` 用 OCP v1.1 的数值表与手写字节块对拍了块长、
+4. `MxType` 仍未接上解码器。`tests/mx_spec.rs` 用 OCP v1.1 的数值表与手写字节块对拍了块长、
    每块字节与 E2M1/E4M3 解码，但真实模型字节流仍待 `weights` 接入 MXFP4 反量化后补。

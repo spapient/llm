@@ -492,7 +492,7 @@ impl_serde!(QType);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{format, mem::size_of};
+    use std::mem::size_of;
 
     #[test]
     fn discriminant_fits_one_byte() {
@@ -500,173 +500,76 @@ mod tests {
     }
 
     #[test]
-    fn names_are_a_stable_bijection() {
-        for qtype in QType::ALL {
-            assert_eq!(QType::parse_name(qtype.name()), Some(*qtype));
-            assert_eq!(qtype.name().parse::<QType>(), Ok(*qtype));
-        }
-        assert_eq!(QType::parse_name("q4_9"), None);
-        assert_eq!(QType::parse_name(""), None);
-        assert_eq!("q4_9".parse::<QType>(), Err(crate::format::UnknownName));
-    }
-
-    #[test]
-    fn display_prints_the_canonical_name() {
-        for qtype in QType::ALL {
-            assert_eq!(format!("{qtype}"), qtype.name());
-        }
-    }
-
-    #[test]
-    fn specs_align_with_the_variant_order() {
-        // 整行相等：不只名字对齐，块大小、位宽、scale、族也必须同序。
-        for (index, qtype) in QType::ALL.iter().enumerate() {
-            assert_eq!(SPECS[index], qtype.spec());
-            assert_eq!(SPECS[*qtype as usize], qtype.spec());
-        }
-    }
-
-    #[test]
-    fn block_layout_is_self_consistent() {
-        // 每块字节必须至少装得下「元素占位」，否则布局表写错。
-        for qtype in QType::ALL {
+    fn layout_table_is_locked() {
+        // 一行一个格式：规范名、块长、块字节、标称位宽、scale 形状、编码族。整表与 `ALL` 同序，
+        // 长度由 `ALL.len()` 锚定。反例就在表里：`q8_k` 属 KQuant 却用 F32 scale，
+        // `iq4_nl` 属 Grid 却只有单个 f16 d——这正是 `Scale` 与 `Family` 分开的理由。
+        const LOCKED: [(&str, u32, u32, u32, Scale, Family); QType::ALL.len()] = [
+            ("q1_0", 128, 18, 1, Scale::F16, Family::Plain),
+            ("q2_0", 64, 18, 2, Scale::F16, Family::Plain),
+            ("q4_0", 32, 18, 4, Scale::F16, Family::Plain),
+            ("q4_1", 32, 20, 4, Scale::F16Pair, Family::Plain),
+            ("q5_0", 32, 22, 5, Scale::F16, Family::Plain),
+            ("q5_1", 32, 24, 5, Scale::F16Pair, Family::Plain),
+            ("q8_0", 32, 34, 8, Scale::F16, Family::Plain),
+            ("q8_1", 32, 36, 8, Scale::F16Pair, Family::Plain),
+            ("q2_k", 256, 84, 2, Scale::SubScale, Family::KQuant),
+            ("q3_k", 256, 110, 3, Scale::SubScale, Family::KQuant),
+            ("q4_k", 256, 144, 4, Scale::SubScale, Family::KQuant),
+            ("q5_k", 256, 176, 5, Scale::SubScale, Family::KQuant),
+            ("q6_k", 256, 210, 6, Scale::SubScale, Family::KQuant),
+            ("q8_k", 256, 292, 8, Scale::F32, Family::KQuant),
+            ("iq1_s", 256, 50, 1, Scale::F16, Family::Grid),
+            ("iq1_m", 256, 56, 1, Scale::SubScale, Family::Grid),
+            ("iq2_xxs", 256, 66, 2, Scale::F16, Family::Grid),
+            ("iq2_xs", 256, 74, 2, Scale::SubScale, Family::Grid),
+            ("iq2_s", 256, 82, 2, Scale::SubScale, Family::Grid),
+            ("iq3_xxs", 256, 98, 3, Scale::F16, Family::Grid),
+            ("iq3_s", 256, 110, 3, Scale::SubScale, Family::Grid),
+            ("iq4_xs", 256, 136, 4, Scale::SubScale, Family::Grid),
+            ("iq4_nl", 32, 18, 4, Scale::F16, Family::Grid),
+            ("tq1_0", 256, 54, 1, Scale::F16, Family::Ternary),
+            ("tq2_0", 256, 66, 2, Scale::F16, Family::Ternary),
+        ];
+        for (qtype, (name, block_len, block_bytes, bits, scale, family)) in
+            QType::ALL.iter().zip(LOCKED)
+        {
             let spec = qtype.spec();
-            assert!(spec.block_len > 0, "{} 的块大小不能为 0", spec.name);
-            assert!(
-                u64::from(spec.block_bytes) * 8 >= u64::from(spec.block_len) * u64::from(spec.bits),
-                "{} 的字节装不下元素位",
-                spec.name
-            );
-        }
-    }
-
-    #[test]
-    fn ggml_block_bytes_are_locked() {
-        // 与 ggml-common.h 的 static_assert 逐项对齐，防止布局漂移。
-        const EXPECTED: [(&str, u32, u32); QType::ALL.len()] = [
-            ("q1_0", 128, 18),
-            ("q2_0", 64, 18),
-            ("q4_0", 32, 18),
-            ("q4_1", 32, 20),
-            ("q5_0", 32, 22),
-            ("q5_1", 32, 24),
-            ("q8_0", 32, 34),
-            ("q8_1", 32, 36),
-            ("q2_k", 256, 84),
-            ("q3_k", 256, 110),
-            ("q4_k", 256, 144),
-            ("q5_k", 256, 176),
-            ("q6_k", 256, 210),
-            ("q8_k", 256, 292),
-            ("iq1_s", 256, 50),
-            ("iq1_m", 256, 56),
-            ("iq2_xxs", 256, 66),
-            ("iq2_xs", 256, 74),
-            ("iq2_s", 256, 82),
-            ("iq3_xxs", 256, 98),
-            ("iq3_s", 256, 110),
-            ("iq4_xs", 256, 136),
-            ("iq4_nl", 32, 18),
-            ("tq1_0", 256, 54),
-            ("tq2_0", 256, 66),
-        ];
-        for (name, block_len, block_bytes) in EXPECTED {
-            let qtype = QType::parse_name(name).expect("名字必须在闭集里");
-            assert_eq!(qtype.block_len(), block_len, "{name} 的每块元素数漂移");
-            assert_eq!(qtype.block_bytes(), block_bytes, "{name} 的每块字节数漂移");
-        }
-    }
-
-    #[test]
-    fn scale_shapes_match_the_block_fields() {
-        // 逐项锁死 ggml-common.h 里实际出现的 scale 字段，防止再写错分类。
-        let f16 = [
-            "q1_0", "q2_0", "q4_0", "q5_0", "q8_0", "iq1_s", "iq2_xxs", "iq3_xxs", "iq4_nl",
-            "tq1_0", "tq2_0",
-        ];
-        for name in f16 {
-            let qtype = QType::parse_name(name).unwrap();
-            assert_eq!(qtype.scale(), Scale::F16, "{name} 只有单个 f16 d");
-        }
-
-        for name in ["q4_1", "q5_1", "q8_1"] {
-            let qtype = QType::parse_name(name).unwrap();
-            assert_eq!(qtype.scale(), Scale::F16Pair, "{name} 是双 f16");
-        }
-
-        let sub_scale = [
-            "q2_k", "q3_k", "q4_k", "q5_k", "q6_k", "iq1_m", "iq2_xs", "iq2_s", "iq3_s", "iq4_xs",
-        ];
-        for name in sub_scale {
-            let qtype = QType::parse_name(name).unwrap();
             assert_eq!(
-                qtype.scale(),
-                Scale::SubScale,
-                "{name} 块内有 sub-scale 数组"
+                (
+                    spec.name,
+                    spec.block_len,
+                    spec.block_bytes,
+                    spec.bits,
+                    spec.scale,
+                    spec.family,
+                ),
+                (name, block_len, block_bytes, bits, scale, family),
+                "{qtype:?} 的布局行被改动"
             );
         }
-
-        assert_eq!(QType::Q8_K.scale(), Scale::F32, "q8_K 的块首字段是 float d");
-        assert_eq!(QType::Q8_K.block_bytes(), 292, "292 = 4 + 256 + 32");
     }
 
     #[test]
-    fn families_partition_the_closed_set() {
-        let plain = QType::ALL
-            .iter()
-            .filter(|q| q.family() == Family::Plain)
-            .count();
-        let k = QType::ALL
-            .iter()
-            .filter(|q| q.family() == Family::KQuant)
-            .count();
-        let grid = QType::ALL
-            .iter()
-            .filter(|q| q.family() == Family::Grid)
-            .count();
-        let ternary = QType::ALL
-            .iter()
-            .filter(|q| q.family() == Family::Ternary)
-            .count();
-        assert_eq!(
-            plain + k + grid + ternary,
-            QType::ALL.len(),
-            "四族必须无遗漏无重叠"
-        );
-        assert_eq!((plain, k, grid, ternary), (8, 6, 9, 2));
+    fn block_bytes_cover_the_payload() {
+        // 「事实是这个数」由上一张表锁定；这里只锁结构性下界，与公式的写法无关。
+        for qtype in QType::ALL {
+            assert!(
+                u64::from(qtype.block_bytes()) * 8
+                    >= u64::from(qtype.block_len()) * u64::from(qtype.bits()),
+                "{} 的字节装不下元素位",
+                qtype.name()
+            );
+        }
     }
 
     #[test]
-    fn family_is_independent_of_the_scale_shape() {
-        // 这两个反例就是分开 Scale/Family 的理由。
-        assert!(
-            QType::Q8_K.family() == Family::KQuant && QType::Q8_K.scale() == Scale::F32,
-            "q8_K 属 K-quant 但 scale 是 f32"
-        );
-        assert!(
-            QType::IQ4_NL.family() == Family::Grid && QType::IQ4_NL.scale() == Scale::F16,
-            "iq4_nl 属 IQ 但只有单 d"
-        );
-    }
-
-    #[test]
-    fn element_bytes_follow_the_block_geometry() {
+    fn bytes_for_pads_to_whole_blocks() {
         assert_eq!(QType::Q4_K.bytes_for(256), 144);
+        assert_eq!(QType::Q4_K.bytes_for(255), 144, "不足一块按整块计");
         assert_eq!(QType::Q4_K.bytes_for(512), 288);
         assert_eq!(QType::Q8_0.bytes_for(64), 68);
         assert_eq!(QType::Q1_0.bytes_for(128), 18);
         assert_eq!(QType::Q8_K.bytes_for(256), 292);
-    }
-
-    #[test]
-    fn nominal_bits_are_locked() {
-        assert_eq!(QType::Q4_0.bits(), 4);
-        assert_eq!(QType::Q5_0.bits(), 5);
-        assert_eq!(QType::Q8_0.bits(), 8);
-        assert_eq!(QType::Q8_1.bits(), 8, "Q8_1 是 8 位量化位，9 bpw 不算位宽");
-        assert_eq!(QType::Q4_K.bits(), 4);
-        assert_eq!(QType::Q2_0.bits(), 2);
-        assert_eq!(QType::Q1_0.bits(), 1);
-        assert_eq!(QType::Q8_K.bits(), 8);
     }
 }

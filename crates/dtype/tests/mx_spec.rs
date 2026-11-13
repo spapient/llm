@@ -1,11 +1,12 @@
-//! MX 布局的规范对照：用 OCP MX v1.1 的数值表解两个手写块。
+//! MX 布局的规范对照：OCP MX v1.1 与 NVFP4 厂商布各一个手写块。
 //!
-//! [`MxType`] 还没有解码器消费者，`block_len`/`block_bytes` 过去只是「照规范推 + 自测」。
-//! 这里把规范表本身搬成金标：块字节与期望数值都逐字写死，不由本文件的辅助函数「先编码再
-//! 解码」推出来——编解码同源的话，打包顺序写反也照样自圆其说。块长、每块字节或元素位宽
-//! 只要漂移，长度或数值就会先对不上。
+//! [`MxType`] 还没有解码器消费者，块几何过去只是「照规范推 + 自测」。这里把规范表本身
+//! 搬成金标：块字节与期望数值都逐字写死，不由本文件的辅助函数「先编码再解码」推出来——
+//! 编解码同源的话，打包顺序写反也照样自圆其说。块长、每块字节、元素位宽、半字节顺序或
+//! E8M0/E4M3 的偏置只要漂移，长度或数值就会先对不上。
 //!
-//! 仍未覆盖：真实模型的 GGUF 权重字节流。那份对照要等 `weights` 接上 MXFP4 反量化。
+//! 仍未覆盖：真实模型的 GGUF 权重字节流。那份对照要等 `weights` 接上 MXFP4 反量化，
+//! 所以本文件是**规范对照**，不是解码实现的验收。
 
 use llm_dtype::{Element, MxType};
 
@@ -69,7 +70,7 @@ fn an_ocp_mxfp4_block_matches_the_specification_table() {
     assert_eq!(format.block_len(), 32, "OCP MX 固定块 32 元素");
     assert_eq!(format.block_bytes(), 17, "16 字节负载 + 1 字节 E8M0 scale");
 
-    // 字面块与字面期望值：长度、字节数、打包顺序、数值表四项里任一项漂移都会先在这里对不上。
+    // 字面块与字面期望值：长度、块字节、半字节顺序、数值表四项里任一项漂移都在这里对不上。
     assert_eq!(
         u64::try_from(MXFP4_BLOCK.len()).expect("块长远小于 u64 上限"),
         format.bytes_for(32),
@@ -103,17 +104,4 @@ fn an_nvfp4_micro_block_matches_the_vendor_layout() {
         decode_payload(e4m3_scale(NVFP4_BLOCK[0]), &NVFP4_BLOCK[1..]).as_slice(),
         &NVFP4_VALUES[..]
     );
-}
-
-#[test]
-fn block_geometry_is_exactly_the_payload_plus_the_scale() {
-    for format in MxType::ALL {
-        let payload = (format.block_len() * format.bits()).div_ceil(8);
-        assert_eq!(
-            format.block_bytes(),
-            payload + 1,
-            "{} 的块字节必须是负载加一字节 scale",
-            format.name()
-        );
-    }
 }

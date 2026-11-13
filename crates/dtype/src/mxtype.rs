@@ -28,7 +28,7 @@
 //! # 消费者
 //!
 //! 当前**还没有**解码器消费 [`MxType`]：7 个格式与 [`Element::dtype`] 只有本 crate 内的测试
-//! 覆盖。布局已经有规范对照——`tests/mxfp4.rs` 用 OCP v1.1 的数值表与手写字节块核了块长、
+//! 覆盖。布局已经有规范对照——`tests/mx_spec.rs` 用 OCP v1.1 的数值表与手写字节块核了块长、
 //! 每块字节与 E2M1/E4M3 解码——但**还没有一条真实模型的权重字节流**校过。因此：接上
 //! MX/NVFP4 反量化之前不再扩格式；接上时先补一条真实字节流的对拍，再谈加格式。
 
@@ -447,21 +447,11 @@ impl_serde!(Element);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{format, mem::size_of, vec, vec::Vec};
+    use std::{format, mem::size_of};
 
     #[test]
     fn discriminant_fits_one_byte() {
         assert_eq!(size_of::<MxType>(), 1, "repr(u8) 加 7 个格式应正好一字节");
-    }
-
-    #[test]
-    fn element_types_map_to_scalar_dtypes() {
-        assert_eq!(Element::E2M1.dtype(), Some(DType::F4));
-        assert_eq!(Element::E4M3.dtype(), Some(DType::F8E4M3));
-        assert_eq!(Element::E5M2.dtype(), Some(DType::F8E5M2));
-        assert_eq!(Element::Int8.dtype(), Some(DType::I8));
-        assert_eq!(Element::E2M3.dtype(), None, "6 位 MX 格式无标量对应");
-        assert_eq!(Element::E3M2.dtype(), None, "6 位 MX 格式无标量对应");
     }
 
     #[test]
@@ -495,83 +485,50 @@ mod tests {
     }
 
     #[test]
-    fn names_are_a_stable_bijection() {
-        for mx in MxType::ALL {
-            assert_eq!(MxType::parse_name(mx.name()), Some(*mx));
-            assert_eq!(mx.name().parse::<MxType>(), Ok(*mx));
-        }
-        assert_eq!(MxType::parse_name("mxfp3"), None);
-        assert_eq!(MxType::parse_name(""), None);
-        assert_eq!("mxfp3".parse::<MxType>(), Err(crate::format::UnknownName));
-    }
-
-    #[test]
-    fn display_prints_the_canonical_name() {
-        for mx in MxType::ALL {
-            assert_eq!(format!("{mx}"), mx.name());
-        }
-    }
-
-    #[test]
-    fn specs_align_with_the_variant_order() {
-        for (index, mx) in MxType::ALL.iter().enumerate() {
-            assert_eq!(SPECS[index], mx.spec());
-            assert_eq!(SPECS[*mx as usize], mx.spec());
-        }
-    }
-
-    #[test]
-    fn block_bytes_are_derived_and_locked() {
-        // 派生公式必须逐格式等于既有字节数：锁定值，再信任公式。
-        const EXPECTED: [(&str, u32); MxType::ALL.len()] = [
-            ("mxfp8_e4m3", 33),
-            ("mxfp8_e5m2", 33),
-            ("mxfp6_e3m2", 25),
-            ("mxfp6_e2m3", 25),
-            ("mxfp4_e2m1", 17),
-            ("mxint8", 33),
-            ("nvfp4", 9),
+    fn layout_table_is_locked() {
+        // 一行一个格式：规范名、块长、块字节、元素、scale、家族。位宽由元素派生，不在这里
+        // 重复一列；块字节是派生量，但派生公式的等价改写不该改变这里锁死的数值——事实先于
+        // 公式。表格是给人逐行核对的，所以跳过格式化、保持一行一个格式。
+        #[rustfmt::skip]
+        const LOCKED: [(&str, u32, u32, Element, Scale, Family); MxType::ALL.len()] = [
+            ("mxfp8_e4m3", 32, 33, Element::E4M3, Scale::E8M0, Family::Ocp),
+            ("mxfp8_e5m2", 32, 33, Element::E5M2, Scale::E8M0, Family::Ocp),
+            ("mxfp6_e3m2", 32, 25, Element::E3M2, Scale::E8M0, Family::Ocp),
+            ("mxfp6_e2m3", 32, 25, Element::E2M3, Scale::E8M0, Family::Ocp),
+            ("mxfp4_e2m1", 32, 17, Element::E2M1, Scale::E8M0, Family::Ocp),
+            ("mxint8", 32, 33, Element::Int8, Scale::E8M0, Family::Ocp),
+            ("nvfp4", 16, 9, Element::E2M1, Scale::E4M3, Family::Vendor),
         ];
-        for (name, block_bytes) in EXPECTED {
-            let mx = MxType::parse_name(name).expect("名字必须在闭集里");
-            assert!(mx.block_len() > 0, "{name} 的块大小不能为 0");
-            assert_eq!(mx.block_bytes(), block_bytes, "{name} 的每块字节数漂移");
-            let payload = (mx.block_len() * mx.bits()).div_ceil(8);
+        for (mx, (name, block_len, block_bytes, element, scale, family)) in
+            MxType::ALL.iter().zip(LOCKED)
+        {
+            let spec = mx.spec();
             assert_eq!(
-                mx.block_bytes(),
-                payload + mx.scale().bytes(),
-                "{name} 的派生值与块布局不一致"
+                (
+                    spec.name,
+                    spec.block_len,
+                    mx.block_bytes(),
+                    spec.element,
+                    spec.scale,
+                    spec.family,
+                ),
+                (name, block_len, block_bytes, element, scale, family),
+                "{mx:?} 的布局行被改动"
             );
         }
+        // 位宽是元素的函数：元素一旦锁死，这三个 `bits()` 就只能是 4/6/8。
+        assert_eq!(
+            (
+                MxType::MxFp4E2M1.bits(),
+                MxType::MxFp6E3M2.bits(),
+                MxType::MxInt8.bits(),
+            ),
+            (4, 6, 8)
+        );
     }
 
     #[test]
-    fn ocp_formats_use_32_element_blocks() {
-        // OCP MX v1.1 固定块 32 元素，E8M0 scale；只有 NVFP4 例外。
-        for mx in MxType::ALL.iter().filter(|mx| mx.family() == Family::Ocp) {
-            assert_eq!(mx.block_len(), 32, "{} 必须是 OCP 的块 32", mx.name());
-            assert_eq!(mx.scale(), Scale::E8M0, "{} 必须是 E8M0 scale", mx.name());
-        }
-        assert_eq!(MxType::MxInt8.bits(), 8);
-        assert_eq!(MxType::MxFp6E3M2.bits(), 6);
-        assert_eq!(MxType::MxFp4E2M1.bits(), 4);
-    }
-
-    #[test]
-    fn nvfp4_is_the_only_vendor_extension() {
-        let vendor: Vec<_> = MxType::ALL
-            .iter()
-            .filter(|mx| mx.family() == Family::Vendor)
-            .copied()
-            .collect();
-        assert_eq!(vendor, vec![MxType::NvFp4], "NVFP4 是唯一的厂商扩展");
-        assert_eq!(MxType::NvFp4.block_len(), 16);
-        assert_eq!(MxType::NvFp4.scale(), Scale::E4M3);
-        assert_eq!(MxType::NvFp4.bits(), 4);
-    }
-
-    #[test]
-    fn element_bytes_follow_the_block_geometry() {
+    fn bytes_for_pads_to_whole_blocks() {
         assert_eq!(MxType::MxFp4E2M1.bytes_for(32), 17);
         assert_eq!(MxType::MxFp4E2M1.bytes_for(64), 34);
         assert_eq!(MxType::MxFp4E2M1.bytes_for(31), 17, "不足一块按整块计");

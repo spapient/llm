@@ -85,7 +85,7 @@ mod byte_view {
 
     /// 闭集之外的每个字节都是非法位模式：受检读取必须失败，而不是造出一个不存在的格式。
     #[test]
-    fn invalid_bit_patterns_are_rejected() {
+    fn every_byte_outside_the_closed_set_is_rejected() {
         // 逐字节穷举 256 个位模式：抽样只测 0xFF 时，「除了 0xFF 全放行」的实现照样能过。
         fn assert_all_codes<F>()
         where

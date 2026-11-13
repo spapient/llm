@@ -4,7 +4,8 @@
 //! 一行」完全一样：闭集全量、判别值即下标、规范名、位宽、按名解析、按元素数算字节。实现只有
 //! 一份，trait 只负责把它交给泛型代码：几何走各枚举的 inherent `const fn`（常量求值需要），
 //! trait 方法逐个转发；`parse_name` 反过来由本文件的 trait 默认实现唯一提供（stable 无 const
-//! trait），inherent 方法转发。两条路径读同一张行表，由 `tests/formats.rs` 对拍。
+//! trait），inherent 方法转发。两条路径读同一张行表，由 `tests/identity.rs`（身份）与
+//! `tests/geometry.rs`（几何）逐项对拍。
 //!
 //! 这份抽象不是为「统一」而统一：`prof` 的位集（`Closed` + `Set<E, WORDS>`）需要一个「闭集」
 //! 契约（`ALL` + 判别值 + 名字），过去只能在 L2 手写 `impl Closed for DType`；`weights` 的
@@ -22,7 +23,8 @@
 //! - `parse_name` 的唯一实现是 [`Format::parse_name`] 的默认方法，各枚举的 inherent
 //!   `parse_name` 只做转调——stable 没有 const trait，解析本来就不可能在常量上下文里调用。
 //!
-//! 这个分工由 `tests/formats.rs` 逐项对拍（trait 视角 == `const fn` 视角），不是靠约定。
+//! 这个分工由 `tests/identity.rs` 与 `tests/geometry.rs` 逐项对拍（trait 视角 == `const fn` 视角），
+//! 不是靠约定。
 //!
 //! # 标准 trait：互操作只有一层转调
 //!
