@@ -5,6 +5,9 @@ use diagnostic::{Code, Error, Result};
 use crate::Batch;
 
 /// 数据集：按批取样本。三个计数语义互不重叠：列宽、完整批总数、还没取走的完整批数。
+///
+/// 它是**对象安全**的（四个方法都只取 `&self` / `&mut self`，没有泛型参数），所以按批消费的代码
+/// 可以只依赖这个 trait，用 `&mut dyn Dataset<'a>` 接收任意实现。
 pub trait Dataset<'a> {
     /// 列宽（每行多少 token）。
     fn cols(&self) -> usize;
@@ -22,24 +25,31 @@ pub trait Dataset<'a> {
 /// 最简实现：一段连续 token 流按固定几何切批。
 ///
 /// 它不做打乱、不做跨样本拼接；那两件事只改变游标推进方式，不改变 [`Batch`] 的形状契约。
-/// 批几何在构造期校验，所以取批只剩「取完了」一种失败。
+/// 批几何与批总数都在构造期算好，所以取批只剩「取完了」一种失败。
 #[derive(Debug, Clone)]
 pub struct Chunks<'a> {
     tokens: &'a [u32],
-    cols: usize,
     rows: usize,
+    cols: usize,
     stride: usize,
-    cursor: usize,
+    /// 完整批总数：`tokens.len() / stride`，构造期算好，不随消费推进。
+    batches: usize,
+    /// 已取走的批数（不是 token 数：游标永远是 `stride` 的整数倍，那是不变量的另一半）。
+    taken: usize,
 }
 
 impl<'a> Chunks<'a> {
-    /// 由 token 流、列宽与每批行数构造：三者任一不合法都报 `Code::Invalid`。
-    pub fn new(tokens: &'a [u32], cols: usize, rows: usize) -> Result<Self> {
-        if cols == 0 {
-            return Err(Error::new(Code::Invalid, "列宽不能为 0").with("data::Chunks::new"));
-        }
+    /// 由 token 流、每批行数与列宽构造：三者任一不合法都报 `Code::Invalid`。
+    ///
+    /// 参数顺序是 `(rows, cols)`，与 [`Batch::new`] 和 `Shape::new([rows, cols])` 一致。两个构造函数
+    /// 曾经一个收 `(rows, cols)`、另一个收 `(cols, rows)`，而两种顺序都通得过校验——同一对数字换个
+    /// 构造函数就是一次静默转置，正是这个 crate 要挡住的那类错值。
+    pub fn new(tokens: &'a [u32], rows: usize, cols: usize) -> Result<Self> {
         if rows == 0 {
             return Err(Error::new(Code::Invalid, "批行数不能为 0").with("data::Chunks::new"));
+        }
+        if cols == 0 {
+            return Err(Error::new(Code::Invalid, "列宽不能为 0").with("data::Chunks::new"));
         }
         let stride = rows.checked_mul(cols).ok_or_else(|| {
             Error::new(
@@ -50,10 +60,11 @@ impl<'a> Chunks<'a> {
         })?;
         Ok(Self {
             tokens,
-            cols,
             rows,
+            cols,
             stride,
-            cursor: 0,
+            batches: tokens.len() / stride,
+            taken: 0,
         })
     }
 
@@ -62,35 +73,77 @@ impl<'a> Chunks<'a> {
         self.rows
     }
 
+    /// 列宽（每行多少 token）。
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
     /// 每批的 token 数（`rows * cols`，构造期算好）。
     pub fn stride(&self) -> usize {
         self.stride
     }
 
-    /// 还没被取走的 token 数。
+    /// 完整批的**总数**——构造期算好，不随消费推进。
+    pub fn batches(&self) -> usize {
+        self.batches
+    }
+
+    /// **还没取走**的完整批数。
+    pub fn remaining_batches(&self) -> usize {
+        self.batches - self.taken
+    }
+
+    /// 还没被取走的 token 数（含凑不满一批的尾巴）。
     pub fn remaining(&self) -> usize {
-        self.tokens.len().saturating_sub(self.cursor)
+        // `taken <= batches = len / stride`，所以 `taken * stride <= len`：既不下溢也不上溢。
+        self.tokens.len() - self.taken * self.stride
     }
 }
 
+/// 迭代器：`next` 就是 [`Dataset::next_batch`]，所以「还剩几条」只有一个来源。
+///
+/// `ExactSizeIterator` 不是装饰：`len()` 与 `size_hint()` 都取自 [`Dataset::remaining_batches`]，
+/// 于是 `collect()` 能一次分配到位，「还能产出几条」也不需要调用方自己再数一遍。
+impl<'a> Iterator for Chunks<'a> {
+    type Item = Batch<'a>;
+
+    fn next(&mut self) -> Option<Batch<'a>> {
+        self.next_batch()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.remaining_batches();
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for Chunks<'_> {}
+
+impl core::iter::FusedIterator for Chunks<'_> {}
+
 impl<'a> Dataset<'a> for Chunks<'a> {
     fn cols(&self) -> usize {
-        self.cols
+        Chunks::cols(self)
     }
 
     fn batches(&self) -> usize {
-        self.tokens.len() / self.stride
+        Chunks::batches(self)
     }
 
     fn remaining_batches(&self) -> usize {
-        self.remaining() / self.stride
+        Chunks::remaining_batches(self)
     }
 
     fn next_batch(&mut self) -> Option<Batch<'a>> {
-        let end = self.cursor.checked_add(self.stride)?;
-        let slice = self.tokens.get(self.cursor..end)?;
-        self.cursor = end;
-        Some(Batch::exact(slice, self.rows, self.cols))
+        if self.taken == self.batches {
+            return None;
+        }
+        // `taken < batches == len / stride` 蕴含 `end <= len`：越界在结构上不可能，因此这里不需要
+        // 一条只能表示「取完了」的 `?`（那会把「内部不变量破了」重新折成 `None`）。
+        let start = self.taken * self.stride;
+        let end = start + self.stride;
+        self.taken += 1;
+        Some(Batch::exact(&self.tokens[start..end], self.rows, self.cols))
     }
 }
 
@@ -101,18 +154,36 @@ mod tests {
     #[test]
     fn a_chunks_stream_rejects_bad_geometry() {
         let tokens = [1, 2, 3, 4];
-        for (cols, rows) in [(0, 1), (1, 0), (2, usize::MAX)] {
+        for (rows, cols) in [(1, 0), (0, 1), (usize::MAX, 2)] {
             assert_eq!(
-                Chunks::new(&tokens, cols, rows).unwrap_err().code(),
+                Chunks::new(&tokens, rows, cols).unwrap_err().code(),
                 Code::Invalid,
-                "cols = {cols}、rows = {rows} 必须在构造期被拒"
+                "rows = {rows}、cols = {cols} 必须在构造期被拒"
             );
         }
     }
 
     #[test]
+    fn both_constructors_read_geometry_in_the_same_order() {
+        let tokens: [u32; 6] = [0, 1, 2, 3, 4, 5];
+        // `(2, 3)` 在两个构造函数里都必须表示「2 行 3 列」。此前 `Chunks::new` 收的是 `(cols, rows)`，
+        // 于是同一对数字换个构造函数就是一次静默转置——而两种顺序都能通过校验，没有一条用例会红。
+        let batch = Batch::new(&tokens, 2, 3).expect("2 x 3");
+        let mut dataset = Chunks::new(&tokens, 2, 3).expect("2 x 3");
+        let first = dataset.next_batch().expect("6 个 token 恰好是一批");
+        assert_eq!(first.shape(), batch.shape(), "两个构造函数必须读出同一形状");
+        assert_eq!(first.tokens(), batch.tokens());
+        assert_eq!(
+            (first.rows(), first.cols()),
+            (2, 3),
+            "顺序反了会得到 (3, 2)"
+        );
+        assert_eq!(dataset.remaining_batches(), 0);
+    }
+
+    #[test]
     fn an_empty_stream_yields_no_batch() {
-        let mut dataset = Chunks::new(&[], 2, 1).expect("空流也是合法输入");
+        let mut dataset = Chunks::new(&[], 1, 2).expect("空流也是合法输入");
         assert_eq!(dataset.cols(), 2);
         assert_eq!(dataset.batches(), 0);
         assert_eq!(dataset.remaining_batches(), 0);
@@ -123,7 +194,7 @@ mod tests {
     #[test]
     fn chunks_drop_the_partial_tail() {
         let tokens = [0, 1, 2, 3, 4, 5, 6];
-        let mut dataset = Chunks::new(&tokens, 2, 1).expect("数据");
+        let mut dataset = Chunks::new(&tokens, 1, 2).expect("数据");
         assert_eq!(dataset.batches(), 3, "7 个 token 按 2 个一行只能凑 3 批");
         assert_eq!(dataset.remaining_batches(), 3);
         for expected in [&tokens[0..2], &tokens[2..4], &tokens[4..6]] {
@@ -140,7 +211,7 @@ mod tests {
     #[test]
     fn consuming_advances_both_counters() {
         let tokens: [u32; 6] = [0, 1, 2, 3, 4, 5];
-        let mut dataset = Chunks::new(&tokens, 2, 1).expect("数据");
+        let mut dataset = Chunks::new(&tokens, 1, 2).expect("数据");
         assert_eq!(
             (
                 dataset.cols(),
@@ -164,7 +235,7 @@ mod tests {
     #[test]
     fn two_batches_can_be_held_at_once() {
         let tokens: [u32; 6] = [0, 1, 2, 3, 4, 5];
-        let mut dataset = Chunks::new(&tokens, 2, 1).expect("数据");
+        let mut dataset = Chunks::new(&tokens, 1, 2).expect("数据");
         let first = dataset.next_batch().expect("第一批");
         let second = dataset.next_batch().expect("第二批");
         // 两批的寿命来自 token 缓冲而不是数据集，所以可以同时存活且不重叠。
@@ -175,5 +246,35 @@ mod tests {
             second.tokens().as_ptr(),
             "两批必须落在缓冲里相邻但不重叠的位置"
         );
+    }
+
+    #[test]
+    fn iterating_yields_exactly_the_declared_batches() {
+        let tokens: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+        let mut dataset = Chunks::new(&tokens, 1, 3).expect("数据");
+        assert_eq!(dataset.len(), 3, "`len()` 就是还没取走的批数");
+        assert_eq!(dataset.size_hint(), (3, Some(3)));
+        let collected: Vec<_> = dataset.by_ref().collect();
+        assert_eq!(collected.len(), 3, "迭代条数必须等于 `batches()`");
+        assert_eq!(collected[2].tokens(), [6, 7, 8]);
+        assert_eq!(dataset.len(), 0);
+        // 取空之后 `len()` 与两种取法都不再变化（`FusedIterator`）。
+        assert!(dataset.next().is_none());
+        assert!(dataset.next_batch().is_none());
+        assert_eq!(dataset.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn next_and_next_batch_advance_the_same_cursor() {
+        let tokens: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+        let mut dataset = Chunks::new(&tokens, 1, 3).expect("数据");
+        assert_eq!(dataset.next().expect("第一条").tokens(), [0, 1, 2]);
+        assert_eq!(dataset.next_batch().expect("第二条").tokens(), [3, 4, 5]);
+        assert_eq!(
+            dataset.by_ref().count(),
+            1,
+            "两种取法共用同一个游标，不会跳批"
+        );
+        assert_eq!(dataset.remaining_batches(), 0);
     }
 }

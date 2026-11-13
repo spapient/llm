@@ -25,7 +25,7 @@ impl Split {
             )
             .with("data::Split::new"));
         }
-        let valid = valid_rows(total, valid_percent)?;
+        let valid = valid_rows(total, valid_percent);
         // 兜底：`valid_percent <= 99` 时它恒等；留着是为了将来放宽百分比时不再产生 0 训练行。
         let valid = valid.min(total - 1);
         Ok(Self {
@@ -50,17 +50,16 @@ impl Split {
     }
 }
 
-/// `total` 行的 `percent`%：中间宽度取 `u128`，因为 `total * percent` 在 `usize` 里会溢出，
-/// 而 `saturating_mul` 在 `total` 接近 `usize::MAX` 时先饱和再除以 100，把比例放大近一倍。
-fn valid_rows(total: usize, percent: u8) -> Result<usize> {
-    let valid = u128::try_from(total)
-        .ok()
-        .and_then(|total| total.checked_mul(u128::from(percent)))
-        .ok_or_else(|| Error::new(Code::Internal, "百分比算术溢出").with("data::Split::new"))?
-        / 100;
-    // `percent <= 99` 保证 `valid <= total`，所以这里必然装得回 `usize`。
-    usize::try_from(valid)
-        .map_err(|_| Error::new(Code::Internal, "验证集行数超出 usize").with("data::Split::new"))
+/// `total` 行的 `percent`%：拆成「整百部分」与「余数部分」两次乘法，两项都装得进 `usize`。
+///
+/// 记 `total = 100q + r`（`r < 100`），则 `total * p / 100 == q * p + r * p / 100`：前者因
+/// `p <= 99` 而 `q * p <= total * p / 100 <= total`，后者 `r * p / 100 < 100`，所以既不会溢出，
+/// 也不需要「中间宽度」或饱和。饱和正是上一轮要修掉的那件事——`saturating_mul` 在 `total` 接近
+/// `usize::MAX` 时先把乘积钉在 `usize::MAX` 再除以 100，会把比例放大近一倍。
+fn valid_rows(total: usize, percent: u8) -> usize {
+    let percent = usize::from(percent);
+    let (hundreds, rest) = (total / 100, total % 100);
+    hundreds * percent + rest * percent / 100
 }
 
 #[cfg(test)]
@@ -79,6 +78,11 @@ mod tests {
         );
         let half = Split::new(2, 50).expect("切分");
         assert_eq!((half.train(), half.valid()), (1, 1));
+        // 2 行的 99% 是 1.98 行：向下取整得 1，于是训练集恰好留下 1 行（夹值在这里恒等）。
+        let almost_half = Split::new(2, 99).expect("切分");
+        assert_eq!((almost_half.train(), almost_half.valid()), (1, 1));
+        let all_training = Split::new(100, 0).expect("切分");
+        assert_eq!((all_training.train(), all_training.valid()), (100, 0));
         // 总行数只有一行时，任何非零比例都只能得到 0 验证行。
         for percent in [0, 1, 99] {
             let split = Split::new(1, percent).expect("切分");
@@ -95,6 +99,26 @@ mod tests {
                 Split::new(total, 100).unwrap_err().code(),
                 Code::Invalid,
                 "total = {total} 时不该接受 100% 验证集"
+            );
+        }
+    }
+
+    #[test]
+    fn a_split_rounds_the_same_way_as_an_exact_proportion() {
+        // 字面表，重点是余数：`100q + r` 的拆分只要漏掉 `r * p / 100` 这一项，
+        // 下面的 `(99, 99)`、`(199, 50)`、`(12345, 37)` 就会各差一行或更多。
+        for (total, percent, valid) in [
+            (99, 99, 98),
+            (101, 99, 99),
+            (199, 50, 99),
+            (999, 99, 989),
+            (1000, 1, 10),
+            (12345, 37, 4567),
+        ] {
+            assert_eq!(
+                Split::new(total, percent).expect("切分").valid(),
+                valid,
+                "{total} 行的 {percent}% 向下取整应为 {valid}"
             );
         }
     }
