@@ -62,6 +62,90 @@ exempt = []
 # the_registry_and_the_model_annotations_are_mirrors}`，以及 `#[frontend]` / `#[model]` 在每个
 # 调用点生成的 `Emit::parse(..)` / `DType::parse(..)` / `output_type()` 断言。
 
+[ownership]
+# 反向所有权校验的存量基线（`tests/architecture.rs::every_public_type_is_listed_or_baselined`）。
+#
+# 规则：每个成员 `crates/<member>/src` 里的 `pub struct|enum|trait` 必须出现在
+# `docs/ARCHITECTURE.md` 第三节的所有权表，或登记在这里。
+#
+# 与 `[closed]` 白名单、`[[gate.debt]]` 同一套路：**存量冻结，新增必进表**。基线不允许过期——
+# 某个名字后来进了表，或不再是 `pub`（删掉/改成私有），对应条目必须删除，否则测试失败。
+# 每条都必须带理由：一份没有理由的豁免等于把规则删掉一半。
+#
+[[ownership.unlisted]]
+crate = "cli"
+names = ["CutileCommand"]
+reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command`，文法稳定后再进表"
+
+[[ownership.unlisted]]
+crate = "config"
+names = ["BadKey", "BadValue", "Cutile", "Origin", "ParseError", "Sources", "Value"]
+reason = "设置层的内部结构（键、来源分层、值与解析错误）；对外只承诺 `Settings` 与 `Key`"
+
+[[ownership.unlisted]]
+crate = "cutile"
+names = ["CallArg", "ChainStep", "CpuDevice", "CudaDevice", "CudaFront", "FragmentGap", "Front", "Frontend", "Language", "LanguageGate", "Lock", "MetalDevice", "NeedReport", "OpenClFront", "Outcome", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
+reason = "内核 DSL 的协商、执行前端与结果类型；仍在按 DESIGN 分节重排，待分节稳定后逐节进表"
+
+[[ownership.unlisted]]
+crate = "dtype"
+names = ["BlockFormat", "Class", "DTypeSpec", "ElementSpec", "Family", "MxTypeSpec", "QTypeSpec", "Scale", "UnknownCode", "UnknownName"]
+reason = "行表类型、分类闭集与解析错误；表形状仍在演进，按闭集整体进表比逐项更清楚"
+
+[[ownership.unlisted]]
+crate = "engine"
+names = ["Executor"]
+reason = "执行器是调度层的内部落地；对外承诺的是 `Scheduler`/`Sequence`"
+
+[[ownership.unlisted]]
+crate = "fuzz"
+names = ["Behaviour", "Seed", "Target"]
+reason = "模糊测试的目标、种子与行为描述；工具成员，不参与运行时分层"
+
+[[ownership.unlisted]]
+crate = "op"
+names = ["Access", "Add", "Arg", "Attention", "Axis", "AxisRole", "AxisSpec", "BinCache", "Binary", "Buffer", "CType", "Dense", "DequantI4", "DequantI8", "Embed", "FlashAttention", "Formula", "Gelu", "Gemm", "GemmI4", "GemmI8", "Max", "Mul", "Param", "ReduceCache", "Residual", "RmsNorm", "Rope", "Scale", "ShapeContext", "Silu", "Skeleton", "Softmax", "Sum", "SymI8", "TileCombo", "Unary", "UnaryCache", "Values", "Variant"]
+reason = "算子声明与语义的内部类型（每个算子一个模块、一张行表）；公开面是 `REGISTRY`"
+
+[[ownership.unlisted]]
+crate = "prim"
+names = ["Builtin"]
+reason = "内嵌片段的条目类型；片段文本表才是对外契约"
+
+[[ownership.unlisted]]
+crate = "prof"
+names = ["Attr", "AttrKey", "Constant", "Detected", "Emit", "Grade", "MatchRule", "Mem", "Meta", "Mismatch", "Need", "Prim", "ProfileError", "Provide", "Simt", "Space", "Span", "Unit", "Witness"]
+reason = "档案行表的列类型与匹配规则；档案的公开面是 `Archive`/`Profile`"
+
+[[ownership.unlisted]]
+crate = "storage"
+names = ["Mmap"]
+reason = "内存映射视图；唯一 unsafe 岛，公开面等第一个真实消费者出现后再定"
+
+[[ownership.unlisted]]
+crate = "testkit"
+names = ["Rng"]
+reason = "测试用的确定性随机源；只在 dev 依赖里出现"
+
+[[ownership.unlisted]]
+crate = "tokenizer"
+names = ["Bytes"]
+reason = "字节级分词视图；对外承诺只有 `Token`/`Tokenizer`"
+
+[[ownership.unlisted]]
+crate = "tool"
+names = ["Call", "Debt", "Direction", "Link", "Metric", "Over"]
+reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Report`"
+
+[[ownership.unlisted]]
+crate = "train"
+names = ["Lane", "Sealed"]
+reason = "激活缓冲的存储 lane 与密封 trait；训练循环的公开面是 `Schedule`/`Step`/`Checkpoint`"
+
+[[ownership.unlisted]]
+crate = "weights"
+names = ["Axis", "Bin", "Cursor", "Gguf", "Mode", "Note", "Params", "Pick", "SecretKey", "Sha256", "Spectral", "Stable", "Svd", "Trunc", "Value", "Zip"]
+reason = "容器内部的游标、模式与后量子/线代暂住类型；待 ADR 0019 的拆分落地后一并进表"
 [gate]
 # 静态质量门阈值（`tool` 分析器消费，`cargo test` 不可绕过）。
 # 重复块不在此列：jscpd 管重复率硬门，cargo dupes 管语义近重复。
@@ -459,14 +543,6 @@ ccn = 9
 [[gate.debt]]
 key = "crates/cutile/src/substitute.rs:splice#0"
 ccn = 12
-
-[[gate.debt]]
-key = "crates/data/src/lib.rs:new#0"
-ccn = 6
-
-[[gate.debt]]
-key = "crates/data/src/lib.rs:next_batch#0"
-ccn = 6
 
 [[gate.debt]]
 key = "crates/diagnostic/src/lib.rs:fmt#1"

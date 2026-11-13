@@ -1,7 +1,7 @@
 //! 层定义：[`Layer`]、[`LayerSpec`]、第一个具体层 [`Linear`]、权重编码 [`WeightFormat`]、
 //! 层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
 //!
-//! **拥有**：`Layer`、`LayerSpec`、`Linear`、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子声明与
+//! **拥有**：`Layer`、`LayerSpec`、`Linear`、`LmHead`、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子声明与
 //! 模板（`op`）、kernel 机制（`cutile`）、设备峰值（`prof`）、权重字节与解析（`weights`）。
 //! **依赖**：`weights`、`tensor`、`op`、`diagnostic`。**被依赖**：`train`。
 //!
@@ -38,7 +38,7 @@
 #![deny(unsafe_code)]
 
 // 生成的代码用 `::nn::..` 指回本 crate，因此 crate 内部也必须能按名字解析到自己：
-// 这样注解在 `nn` 自己身上（下面的 `OutputHead`）与在下游 crate 里是同一套展开。
+// 这样注解在 `nn` 自己身上（`lm_head` 模块里的 `LmHead`）与在下游 crate 里是同一套展开。
 extern crate self as nn;
 
 #[doc(inline)]
@@ -48,10 +48,14 @@ use diagnostic::{Code, Error, Result};
 
 mod bounds;
 mod format;
+mod lm_head;
 mod stack;
 
 #[doc(inline)]
 pub use bounds::Bounds;
+
+#[doc(inline)]
+pub use lm_head::LmHead;
 
 #[doc(inline)]
 pub use format::WeightFormat;
@@ -165,15 +169,6 @@ pub trait Layer {
         None
     }
 }
-
-/// 固定形状的输出头：形状、输入宽度与算子写在注解里，`impl Layer` 由 `#[layer]` 生成。
-///
-/// 与 [`Linear`] 的分工：宽度在编译期就定下来的层用注解（声明即契约），宽度要按模型配置
-/// 计算出来的层用构造函数（`Linear::new` 里做校验）。两者走同一条 `LayerSpec` 校验路径，
-/// 也走同一条下界路径：`in` 给了输入宽度，生成的 `bounds` 就把 `(in, out)` 交给算子语义表。
-#[crate::layer(name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"])]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct OutputHead;
 
 /// 线性层：`y = x · W`。用哪个算子由权重编码 [`WeightFormat`] 决定，而不是一个全局常量。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,7 +407,7 @@ mod tests {
 
     #[test]
     fn an_annotated_layer_is_a_checked_declaration() {
-        let layer = OutputHead;
+        let layer = LmHead;
         assert_eq!(layer.name(), "lm_head");
         assert_eq!(layer.output().dims(), [4096]);
         assert_eq!(layer.spec().ops(), ["gemv_i4"]);
@@ -420,14 +415,14 @@ mod tests {
 
     #[test]
     fn an_annotated_layer_prices_its_floor_from_the_same_semantics() {
-        let floor = OutputHead.bounds().expect("形状合法").expect("有算子");
+        let floor = LmHead.bounds().expect("形状合法").expect("有算子");
         assert_eq!(
             floor,
             Bounds::of_op(Linear::OP, 4096, 4096).expect("同一份语义"),
             "注解层的下界与 Linear 同源"
         );
         // 与手写的同宽度投影逐项相等：注解只是另一种声明方式，不是另一条公式。
-        let linear = Linear::new(OutputHead.name(), 4096, 4096).expect("合法");
+        let linear = Linear::new(LmHead.name(), 4096, 4096).expect("合法");
         assert_eq!(floor, linear.bounds().expect("合法").expect("有算子"));
     }
 
@@ -439,8 +434,8 @@ mod tests {
 
     #[test]
     fn the_annotated_implementation_is_shared_by_every_instance() {
-        let first = OutputHead.spec();
-        let second = OutputHead.spec();
+        let first = LmHead.spec();
+        let second = LmHead.spec();
         assert!(core::ptr::eq(first, second), "规格只构造一次（OnceLock）");
     }
 

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Training samples: token batches, train/valid splits and the Dataset trait."
+description = "Training samples: borrowed token batches (zero-copy, borrowed geometry), train/valid splits and the Dataset trait."
 publish = false
 
 [dependencies]

@@ -72,6 +72,11 @@ diagnostic / llm-config → （叶：被大量成员消费）
 
 ## 三、所有权表（一个类型只能有一个主人）
 
+这张表由 `tests/architecture.rs` **双向**校验：表里写的必须在 `crates/<主人>/src` 里有 `pub` 定义；
+反方向也成立——每个成员源码里的 `pub struct|enum|trait` 必须在表里，或登记在
+`lints/vocabulary.toml` 的 `[[ownership.unlisted]]` 存量基线，且基线不允许过期（某个名字进了表
+或不再是 `pub`，对应条目必须删除）。L7 组装点另有单独一条：`src/**/*.rs` 不得定义任何类型。
+
 | 概念 | 唯一主人 | 说明 |
 |---|---|---|
 | `Error` / `Code` / `Result` | `diagnostic` | 全仓库唯一的错误类型；`op` / `prof` / `prim` / `cutile`（含 `report`）用同一份它，类别由**产生错误的那一层**给（`ProfileError::code`、`prim` 的装载诊断），上层只补上下文。`Error::also` 把同一次校验里的第二条失败追加为同级诊断（各自带类别，不再被 join 成一行 `invalid`）；`Error::from_io` 是"路径不存在 `missing` / 存在但读不出 `io`"的唯一判定；`Code::exit_code` 是类别到 shell 退出码的唯一映射（2/3/4/5/70） |
@@ -105,8 +110,8 @@ diagnostic / llm-config → （叶：被大量成员消费）
 | `Plan` / `Budget` / `Choice` / `Footprint` / `Sizes` | `autograd` | 显存计划：预算内的保留集、释放点与重放步数。`Plan::of` 只读 `Tape`、`Schedule` 与一张形状表，不分配、不执行；与 `cutile::Plan`（单条 kernel 选哪个 tile）不是同一件事 |
 | `Replay` / `Store` | `autograd` | 重放执行：把计划编成"第 `k` 步之前重算哪几步、之后交还哪些激活"的扁平序列表，并驱动整次反向。`Store` 是唯一的口子（`compute` / `free`），真实缓冲归 `train`，这一层不碰数值 |
 | `Envelope` / `Frame` / `Decoder` / `Kind` / `Version` | `serve`（`proto` 子模块） | 端点契约的线格式（ADR 0019 第七次吸收）：版本化信封、零拷贝帧视图与增量解码；帧布局、版本规则、载荷上限与校验尾见 ADR 0016。它不再独立成成员——唯一消费者就是同一个 crate 的 [`Response::frame`] 与 `Endpoint`，独立成员只会让"改协议"与"改端点"跨两次提交 |
-| `Batch` / `Split` / `Dataset` | `data` | 样本与切分 |
-| `Layer` / `LayerSpec` / `Linear` / `WeightFormat` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Layer::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
+| `Batch` / `Split` / `Dataset` / `Chunks` | `data` | 样本与切分。`Batch` 与 `Chunks` 都借用调用方的 token 缓冲（取批零分配、零拷贝）；批几何在 `Chunks::new` 构造期校验，所以 `Dataset::next_batch` 的 `None` 只有一个含义——剩余不足一整批。三个计数各说一件事：`cols` 是列宽、`batches` 是完整批总数、`remaining_batches` 是还没取走的批数，`Chunks::rows` 只表示每批行数 |
+| `Layer` / `LayerSpec` / `Linear` / `LmHead` / `WeightFormat` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`LmHead` 是注解声明的固定形状层（形状、输入宽度与算子写在 `#[layer]` 上，`impl Layer` 与校验测试由宏生成）——它曾经住在 L7 组装点，而组装点不定义类型。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Layer::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
 | `Bounds` | `nn` | 层的性能下界：`read` / `write` / `flops` 三笔，按方向分账（`bytes()` 是派生合计）；由算子语义推出，不认识设备峰值、也不做 roofline 编排 |
 | `Stack` / `Floor` / `Unpriced` | `nn` | 层栈：一串层 + 它们的总下界（`Bounds::plus`）。层的清单可来自声明或权重文件的条目；不是矩阵的条目列进未覆盖清单，是矩阵但推不出下界的列进无法计价清单——两者都不允许静默丢弃，也都不让整张模型算不出下界 |
 | `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` / `Partition` | `shard` | 集合通信契约（进程组、归约、后端 trait）与 TP/PP/DP 拓扑；`world` 是构造期算好的精确值（`tp · pp · dp` 必须能用 `u32` 表示，因为 rank 就是 `u32`），因此 `check` 不会接受一个不可能的进程数、`group` 也不会用回绕的乘积发出"看起来合法"的 rank |

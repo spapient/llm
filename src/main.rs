@@ -8,14 +8,11 @@
 
 use diagnostic::{Code, Error, Result};
 use nn::Layer as _;
+use nn::LmHead;
 use std::process::ExitCode;
 use tokenizer::Tokenizer as _;
 use tool::Report;
 use weights::Loader as _;
-
-/// 由注解声明的固定形状层：形状与算子只写一次，`impl` 与校验测试由宏生成。
-#[nn::layer(name = "lm_head", out = [4096], ops = ["gemv_i4"])]
-struct LmHead;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

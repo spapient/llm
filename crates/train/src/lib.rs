@@ -129,7 +129,7 @@ impl Checkpoint {
     pub fn new(
         step: u64,
         tape: &autograd::Tape,
-        batch: &data::Batch,
+        batch: &data::Batch<'_>,
         layers: usize,
         weights: &weights::Header,
         topology: shard::Topology,
@@ -247,7 +247,8 @@ mod tests {
         let mut tape = autograd::Tape::new();
         let x = tape.leaf();
         tape.record("gemv_i4", &[x]).expect("记录");
-        let batch = data::Batch::new(vec![1, 2, 3, 4], 2, 2).expect("批");
+        let tokens = [1, 2, 3, 4];
+        let batch = data::Batch::new(&tokens, 2, 2).expect("批");
         let header = weights::Header::new(
             vec![weights::Entry::new("w", tensor::DType::F32, Shape::new([2])).at(64)],
             64,
@@ -273,7 +274,8 @@ mod tests {
         let mut tape = autograd::Tape::new();
         let x = tape.leaf();
         tape.record("gemv_i4", &[x]).expect("记录");
-        let batch = data::Batch::new(vec![1, 2, 3, 4], 2, 2).expect("批");
+        let tokens = [1, 2, 3, 4];
+        let batch = data::Batch::new(&tokens, 2, 2).expect("批");
         let header = weights::Header::new(
             vec![weights::Entry::new("w", tensor::DType::F32, Shape::new([2])).at(64)],
             64,
@@ -299,7 +301,8 @@ mod tests {
     #[test]
     fn a_checkpoint_without_layers_is_rejected() {
         let tape = autograd::Tape::new();
-        let batch = data::Batch::new(vec![1], 1, 1).expect("批");
+        let tokens = [1];
+        let batch = data::Batch::new(&tokens, 1, 1).expect("批");
         let header = weights::Header::new(Vec::new(), 0).expect("空头部");
         let topology = shard::Topology::new(1, 1, 1).expect("拓扑");
         assert_eq!(

@@ -190,7 +190,7 @@
 | `tokenizer` | `Token`/`Tokenizer`/`Bytes` | BPE/SentencePiece | **纯契约 + 一个字节级实现** | `tokenizer/src/lib.rs:41-89` |
 | `weights` | 外部格式只读适配 + 自有 LLPK 容器 + JSON/ZIP/rANS/DSA/SHA-256/Keccak/NTT/Golay/SVD | 张量、布局、GPU 搬运 | **职责过载**：一个 crate 承担 5 个领域（P1-1）；crate 头文档已滞后（P1-8） | `weights/src/` 33 文件；`weights/src/lib.rs:1-6` |
 | `autograd` | tape/schedule/account/plan/replay | 数值与激活缓冲 | **深且真实**：可达剪枝、扇出账本、预算解算 | `autograd/src/{tape,schedule,account,plan,replay}.rs` |
-| `data` | `Batch`/`Split`/`Chunks` | 分词、打乱 | **干净**，规模小 | `data/src/lib.rs` |
+| `data` | `Batch`/`Split`/`Dataset`/`Chunks` | 分词、打乱 | **干净**，规模小；`Batch`/`Chunks` 借用调用方缓冲，批几何在构造期校验 | `data/src/{batch,split,dataset}.rs` |
 | `nn` | `Layer`/`LayerSpec`/`Linear`/`WeightFormat`/`Bounds`/`Stack` | 算子声明 | **干净**：格式→算子名唯一映射；推不出下界时点名理由 | `nn/src/bounds.rs:174-181`、`stack.rs:279+` |
 | `shard` | 通信契约 + 三维拓扑 | 后端实现 | **契约 + 算术**；`Collective` 无实现 | `shard/src/collective.rs:11-14`、`topology.rs:118-152` |
 | `train` | 训练状态 + 激活缓冲 + `Kernel` 表 + `snapshot` 子模块 | 反传公式、显存计划 | **干净**；`store.rs` 1 530 行混合 9 项职责（P2-6）；`snapshot` 1 611 行待拆（§11.4） | `train/src/store.rs:1-617,619-1065`、`train/src/snapshot/mod.rs:93-99` |
@@ -775,7 +775,7 @@
 |---|---|---|---|
 | `exec`(188) + `shard`(524) | 都只有 `diagnostic` | **不合并** | 无同一知识的两份实现：`exec` 是提交图与线程几何（`exec/src/lib.rs:31-145`），`shard` 是拓扑秩布局（`shard/src/topology.rs:118-152`）；仅共享"后端未实现"这一状态，应在 `ARCHITECTURE.md` 标为同一档占位，而不是合并 |
 | `tokenizer`(125) + `data`(233) | `tokenizer`:`diagnostic`；`data`:`diagnostic`+`tensor` | **不合并** | `data/src/lib.rs:3-5` 已声明"不拥有分词（`tokenizer`）"；两者是"trait 契约"与"形状即校验"两个不同机制 |
-| `data` + `kv` + `storage` | 都是 `diagnostic`+`tensor` | **不合并** | 批校验（`data/src/lib.rs:36-55`）、页账（`kv/src/lib.rs:228-288`）、布局（`storage/src/lib.rs:67`）三者互不引用，且 `storage` 的处理是并入 `tensor`（§6.3 S2），不是并进这里 |
+| `data` + `kv` + `storage` | 都是 `diagnostic`+`tensor` | **不合并** | 批校验（`data/src/batch.rs:16-37`）、页账（`kv/src/lib.rs:228-288`）、布局（`storage/src/lib.rs:67`）三者互不引用，且 `storage` 的处理是并入 `tensor`（§6.3 S2），不是并进这里 |
 | `serve`(1 461) + `engine`(1 303) | `serve`:`engine`+`tokenizer`(+dev `testkit`) | **不合并**，但删一份规则 | `engine/src/lib.rs:285-287` 的 `fits` 与 `serve/src/lib.rs:168-169` 的 `admit` 把"这条序列还能不能开工"写了两次；让 `admit` 直接调用 `engine` 的判断即可，crate 边界是对的 |
 | `safetensors`(743) + `bin`(626) 与 `gguf`(753) | 同一 crate 内 | **合并为 `format/` 域 + 一张 dtype 映射表** | 三套 dtype 词表并存：`dtype::DType` 22 个、`bin::Kind` 9 个（`bin.rs:21,45-52`）、`gguf::Kind` 15 个（`gguf.rs:26,42-44`）。ADR 0018 允许镜像，但要求可检验；现在**没有任何断言**保证三者一致（`bin.rs:61` 把 I8 与 U8 都映射成 `DType::I8`，只靠注释解释） |
 | `weights::ir`(321) → `exec` | — | **不合并，先降级** | 仓内出现三个同名 `Graph`/`Node`：`weights/src/lib.rs:79`、`exec/src/lib.rs:31-136`、`op::Op`。`ir` 的真实内容是"融合节点表 + 段编码"（`ir.rs:217` 的 `to_segment`），应改为 `exec::Graph` 的一个编码器，而不是自带一套图类型 |

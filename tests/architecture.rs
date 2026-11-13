@@ -141,6 +141,179 @@ fn every_owned_type_is_public_in_the_claimed_crate() {
     }
 }
 
+/// 所有权表必须是**双向**的：上一条只保证「表里写的在源码里 `pub`」，这条保证反方向——
+/// 每个成员源码里的 `pub struct|enum|trait` 要么进表，要么登记在 `lints/vocabulary.toml`
+/// 的 `[[ownership.unlisted]]` 存量基线里。
+///
+/// 基线**不允许过期**（与 `[closed]` 白名单同一判据）：某个名字后来进了表、或不再是 `pub`，
+/// 对应条目就必须删掉，否则「存量冻结」会慢慢退化成「表永远落后于代码」——那正是这条门禁
+/// 之前发现不了 `Chunks` 的原因。
+#[test]
+fn every_public_type_is_listed_or_baselined() {
+    let contract = contract();
+    let listed: BTreeSet<String> = owned_types().into_iter().map(|(_, name)| name).collect();
+    let baseline = unlisted_baseline();
+
+    let mut unlisted = Vec::new();
+    for member in contract.layers.keys().chain(contract.tools.iter()) {
+        // L7 的根包源码在 `src/`，由 `the_entry_point_defines_no_types` 单独守。
+        if member == "llm" {
+            continue;
+        }
+        let root = std::path::Path::new("crates").join(member).join("src");
+        let files = rust_files(&root);
+        if contract.layers.contains_key(member) {
+            assert!(
+                !files.is_empty(),
+                "层表成员 `{member}` 在 {} 下一个源文件都没有：扫描集由层表派生，这里必须扫得到东西",
+                root.display()
+            );
+        }
+        for name in public_types(&files) {
+            if listed.contains(&name) {
+                continue;
+            }
+            if baseline
+                .get(member)
+                .is_some_and(|names| names.contains(&name))
+            {
+                continue;
+            }
+            unlisted.push(format!("{member}:{name}"));
+        }
+    }
+    assert!(
+        unlisted.is_empty(),
+        "这些公开类型既不在 `docs/ARCHITECTURE.md` 第三节的所有权表里，也没登记在 \
+         `lints/vocabulary.toml` 的 `[[ownership.unlisted]]`：{unlisted:?}。\
+         新类型应进表；存量缺口才登记为基线，并写明理由"
+    );
+
+    let mut stale = Vec::new();
+    for (member, names) in &baseline {
+        let root = std::path::Path::new("crates").join(member).join("src");
+        let present = public_types(&rust_files(&root));
+        for name in names {
+            if listed.contains(name) {
+                stale.push(format!("{member}:{name} 已进所有权表"));
+            } else if !present.contains(name) {
+                stale.push(format!(
+                    "{member}:{name} 不再是源码里的 `pub struct|enum|trait`"
+                ));
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "存量基线过期，必须删掉这些条目（基线与 `[closed]` 白名单同一判据：白名单不能过期）：{stale:?}"
+    );
+}
+
+/// L7 是组装点：`docs/ARCHITECTURE.md` 明写它「不得定义新类型」。
+///
+/// 上一个组装点里的类型（`LmHead`）就是这条规则失效的证据：它既不在所有权表里，也不违反
+/// 任何既有断言。类型属于产出它的层，组装点只分派。
+#[test]
+fn the_entry_point_defines_no_types() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let files = rust_files(&root);
+    assert!(
+        !files.is_empty(),
+        "组装点的源码必须扫得到：{}",
+        root.display()
+    );
+    let mut defined = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("源文件可读");
+        for (index, line) in text.lines().enumerate() {
+            if type_definition(line).is_some() {
+                defined.push(format!("{}:{}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        defined.is_empty(),
+        "L7 组装点不得定义类型（把它放回所属的层）：{defined:?}"
+    );
+}
+
+/// 一行顶层的 `struct|enum|trait|union` 定义，返回（是否是 `pub`，名字）。
+fn type_definition(line: &str) -> Option<(bool, &str)> {
+    let trimmed = line.trim_start();
+    let (public, rest) = match trimmed.strip_prefix("pub ") {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, trimmed),
+    };
+    let rest = ["struct", "enum", "trait", "union"]
+        .iter()
+        .find_map(|kind| {
+            rest.strip_prefix(kind)
+                .and_then(|tail| tail.strip_prefix(' '))
+        })?;
+    let name = rest.trim_start();
+    let end = name
+        .find(|value: char| !(value.is_alphanumeric() || value == '_'))
+        .unwrap_or(name.len());
+    let name = &name[..end];
+    (!name.is_empty()).then_some((public, name))
+}
+
+/// `files` 里出现的 `pub struct|enum|trait` 名字（`union` 不在所有权表的口径内）。
+fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Some((true, name)) = type_definition(line) {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+/// `lints/vocabulary.toml` 里的反向所有权存量基线：crate → 登记为「暂未进表」的公开类型名。
+///
+/// 解析走 `config::toml`（与 `tests/contracts.rs` 读同一份文件、同一个解析器），不另写一份。
+fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
+    const VOCABULARY: &str = include_str!("../lints/vocabulary.toml");
+    let root = config::toml::parse(VOCABULARY).expect("`lints/vocabulary.toml` 必须可解析");
+    let entries = root
+        .table("ownership")
+        .and_then(|ownership| ownership.table_array("unlisted"))
+        .unwrap_or_default();
+    let mut baseline: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for entry in entries {
+        let crate_name = entry
+            .string("crate")
+            .unwrap_or_else(|| panic!("`ownership.unlisted` 的条目缺 `crate`"));
+        let reason = entry
+            .string("reason")
+            .unwrap_or_else(|| panic!("`ownership.unlisted` 的 `{crate_name}` 缺 `reason`"));
+        assert!(
+            reason.chars().count() >= 8,
+            "`ownership.unlisted` 的 `{crate_name}` 理由太短：一份没有理由的豁免等于把规则删掉一半"
+        );
+        let names = entry
+            .string_array("names")
+            .unwrap_or_else(|| panic!("`ownership.unlisted` 的 `{crate_name}` 缺 `names`"));
+        assert!(
+            !names.is_empty(),
+            "`ownership.unlisted` 的 `{crate_name}` 一个名字都没登记"
+        );
+        let registered = baseline.entry(crate_name.to_string()).or_default();
+        for name in names {
+            assert!(
+                registered.insert(name.to_string()),
+                "`{name}` 在 `ownership.unlisted` 的 `{crate_name}` 里重复登记"
+            );
+        }
+    }
+    baseline
+}
+
 /// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：凡是被 L7 直接调用的层——数据层
 /// （`op` / `prof` / `prim`）、内核层（`cutile`，含 `report`）——失败类型必须是
 /// `diagnostic::Error`，否则类别与退出码就失去了来源。

@@ -281,7 +281,7 @@ fn unique_names<'a>(names: impl Iterator<Item = &'a str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OutputHead;
+    use crate::LmHead;
     use tensor::{DType, Shape};
 
     fn header(entries: Vec<Entry>) -> Header {
@@ -399,13 +399,13 @@ mod tests {
     #[test]
     fn an_annotated_layer_joins_the_same_sum() {
         let model = Stack::of(vec![
-            Box::new(OutputHead),
+            Box::new(LmHead),
             Box::new(Linear::new("blk.0.attn_q", 4096, 4096).expect("合法")),
         ])
         .expect("名字唯一");
         let floor = model.floor();
         assert!(floor.unpriced().is_empty(), "两侧都有形状");
-        let head = OutputHead.bounds().expect("合法").expect("有算子");
+        let head = LmHead.bounds().expect("合法").expect("有算子");
         let projection = Linear::new("blk.0.attn_q", 4096, 4096)
             .expect("合法")
             .bounds()
