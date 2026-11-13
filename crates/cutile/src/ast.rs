@@ -140,16 +140,7 @@ pub fn render(nodes: &[Node]) -> String {
         match node {
             Node::Text(part) => text.push_str(part),
             Node::Slot(value) => text.push_str(value),
-            Node::Prim(call) => {
-                let trimmed = call.body.trim_end();
-                let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
-                let indent: String = text
-                    .rsplit('\n')
-                    .next()
-                    .map(|prefix| " ".repeat(prefix.chars().count()))
-                    .unwrap_or_default();
-                text.push_str(&trimmed.replace('\n', &format!("\n{indent}")));
-            }
+            Node::Prim(call) => crate::substitute::place(&mut text, &call.body),
         }
     }
     text

@@ -28,6 +28,52 @@ impl Source {
     }
 }
 
+/// DESIGN §16 给片段定的行数上限：超过它说明原语粒度错，先合并原语。
+pub const FRAGMENT_LIMIT: usize = 400;
+
+/// §16 给片段定的内部目标（行数）：达标余量，不是另一条判据。
+pub const FRAGMENT_GOAL: usize = 240;
+
+/// 一份生成的片段：行数与 §16 的口径。
+///
+/// 行数是 P0 里唯一能自动读出的“原语粒度”指标：超过上限不是“代码写得长”，而是这个算子的原语
+/// 切得太细，模板里开始堆特化代码。判定与数字同源（[`Fragment::within_limit`] 就是拿
+/// [`Fragment::lines`] 与 [`FRAGMENT_LIMIT`] 比），前端只负责选词。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fragment {
+    /// 行数。
+    pub lines: usize,
+}
+
+impl Fragment {
+    /// 以行数构造（[`Source::lines`] 是唯一数据源）。
+    pub const fn new(lines: usize) -> Self {
+        Self { lines }
+    }
+
+    /// §16 的上限。
+    pub const fn limit(&self) -> usize {
+        FRAGMENT_LIMIT
+    }
+
+    /// §16 的内部目标。
+    pub const fn goal(&self) -> usize {
+        FRAGMENT_GOAL
+    }
+
+    /// 是否在上限内：§16 “片段 ≤ 400 行”的结论。
+    #[must_use]
+    pub const fn within_limit(&self) -> bool {
+        self.lines <= FRAGMENT_LIMIT
+    }
+
+    /// 是否达到内部目标（与上限分开：目标未达不算失败）。
+    #[must_use]
+    pub const fn within_goal(&self) -> bool {
+        self.lines <= FRAGMENT_GOAL
+    }
+}
+
 /// FNV-1a 64：跨进程稳定的内容哈希（缓存指纹用，不使用 `DefaultHasher`）。
 pub fn fnv1a(text: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -81,6 +127,20 @@ pub fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §16 的片段判据是“同一对数与两个门槛比”：上限管成败，内部目标只是余量。
+    #[test]
+    fn the_fragment_verdict_reads_the_p0_limits() {
+        assert_eq!(FRAGMENT_LIMIT, 400, "DESIGN §16 的上限");
+        assert_eq!(FRAGMENT_GOAL, 240, "DESIGN §16 的内部目标");
+        assert!(Fragment::new(FRAGMENT_LIMIT).within_limit());
+        assert!(!Fragment::new(FRAGMENT_LIMIT + 1).within_limit());
+        assert!(Fragment::new(FRAGMENT_GOAL).within_goal());
+        assert!(
+            !Fragment::new(FRAGMENT_GOAL + 1).within_goal(),
+            "超出目标是余量不足，不是失败"
+        );
+    }
 
     #[test]
     fn fnv_is_stable_and_distinguishes_inputs() {

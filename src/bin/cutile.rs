@@ -1,8 +1,8 @@
 //! 内核层审计的驱动方：解析 → 执行 → 排版 → 退出码（L7 入口，不定义新类型）。
 //!
 //! 三件事分别有各自的归属：语法来自 [`cli`]（`cli::cutile`），计算来自
-//! `cutile::report`，配置覆盖来自 `config`。本文件只把它们接起来并排版，
-//! 因此 `cutile` 不再持有第二套命令行文法，`report` 也不再拼字符串。
+//! `cutile::{bench, doctor, verify}`，配置覆盖来自 `config`。本文件只把它们接起来并排版，
+//! 因此 `cutile` 不再持有第二套命令行文法，命令模块也不再拼字符串。
 //!
 //! ```text
 //! cargo run --bin cutile -- doctor --device cpu
@@ -14,8 +14,11 @@
 
 use cli::cutile::CutileCommand;
 use config::{Cutile, Settings};
+use cutile::bench::{self, Bench, Peak, Performance, Verdict};
 use cutile::builtin::Catalogue;
-use cutile::report::{self, Bench, Doctor, Fragment, Peak, Performance, Verdict, Verified};
+use cutile::doctor::{self, CacheState, CacheWhy, Doctor};
+use cutile::emit::Fragment;
+use cutile::verify::{self, Negotiation, Verified, VerifyEntry, VerifyReport};
 use diagnostic::{Code, Error};
 use std::process::ExitCode;
 use tool::Report;
@@ -97,7 +100,7 @@ fn run(command: &CutileCommand, settings: &Settings<Cutile>) -> diagnostic::Resu
 /// 残留与 LRU 删除分两行：残留不是"空间不够"的产物，它本来就不会命中，报在同一行里
 /// 会让人以为上限调大就能少删几条。
 fn cache_gc(settings: &Settings<Cutile>, limit: Option<u64>) -> diagnostic::Result<String> {
-    let report = report::cache_gc(settings, limit)?;
+    let report = cutile::gc::cache_gc(settings, limit)?;
     let mut out = Report::new(format!("cache gc | 上限 {}", human_bytes(report.limit)))
         .row("目录", settings.cache_dir().display().to_string())
         .row("回收前", human_bytes(report.before))
@@ -133,7 +136,7 @@ fn doctor(
     why: Option<&str>,
 ) -> diagnostic::Result<String> {
     let catalogue = Catalogue::load(settings)?;
-    let report: Doctor = report::doctor(&catalogue, settings, op, device)?;
+    let report: Doctor = doctor::doctor(&catalogue, settings, op, device)?;
 
     let mut head = Report::new(format!(
         "cutile schema v{} | op={} | skeleton={} | {}",
@@ -259,7 +262,7 @@ fn doctor(
                 format!("没有可行变体，无法解释缓存键 `{hex}`"),
             )
         })?;
-        out.push_str(&cache_why(&report::why(settings, &built.key, hex)));
+        out.push_str(&cache_why(&doctor::why(settings, &built.key, hex)));
     }
     Ok(out)
 }
@@ -267,7 +270,7 @@ fn doctor(
 /// `[缓存]` 段：本次构建的键，以及被问的那个键与它的关系。
 ///
 /// 关系类别由 `CacheWhy::state` 给（半截落盘必须排在"差异为空"之前判），这里只选句子。
-fn cache_why(report: &report::CacheWhy) -> String {
+fn cache_why(report: &CacheWhy) -> String {
     let mut out = format!("\n[缓存] 本次 key {}\n", report.current);
     let Some(entry) = &report.entry else {
         out.push_str("  被问的键从未落盘：没构建过，或已被 `cache gc` 回收\n");
@@ -275,15 +278,15 @@ fn cache_why(report: &report::CacheWhy) -> String {
     };
     out.push_str(&format!("  被问的键 {}（{} B）\n", entry.hex, entry.bytes));
     match report.state() {
-        report::CacheState::Match => {
+        CacheState::Match => {
             out.push_str("  与本次构建的键一致：命中的就是这份缓存\n");
             return out;
         }
-        report::CacheState::Partial => {
+        CacheState::Partial => {
             out.push_str("  只有半截落盘（缺 source）：写到一半就没了，重新构建即可\n");
             return out;
         }
-        report::CacheState::Never | report::CacheState::Differs => {}
+        CacheState::Never | CacheState::Differs => {}
     }
     out.push_str(&format!(
         "  与本次构建不同（{} 项）：\n",
@@ -355,19 +358,19 @@ fn verify(
     ledger: bool,
 ) -> diagnostic::Result<String> {
     let catalogue = Catalogue::load(settings)?;
-    let report = report::verify(&catalogue, settings, op, devices)?;
+    let report = verify::verify(&catalogue, settings, op, devices)?;
     let mut out = format!("verify {} @ [{}]\n", report.op, report.devices.join(","));
 
     for entry in &report.entries {
         match entry {
-            report::VerifyEntry::Passed(verified) => {
+            VerifyEntry::Passed(verified) => {
                 let line = passed_line(verified);
                 out.push_str(&line);
                 if ledger {
                     out.push_str(&write_ledger(&catalogue, verified, &line, settings)?);
                 }
             }
-            report::VerifyEntry::Failed { label, error } => {
+            VerifyEntry::Failed { label, error } => {
                 out.push_str(&format!("  {label}: ✗ {error}\n"));
             }
         }
@@ -392,9 +395,9 @@ fn verify(
 /// `[协商]` 汇总：DESIGN §16 的「协商 3/3 命中首档」。
 ///
 /// 这段与上面的逐设备结果正交：执行需要真机，协商只看声明与档案——所以"本机没有该设备"的行
-/// 照样在这里有答案。判定（首档 / 降级 / 无路径 / 无档案）在库里（`report::Negotiation`），
+/// 照样在这里有答案。判定（首档 / 降级 / 无路径 / 无档案）在库里（`Negotiation`），
 /// 这里只排版。
-fn negotiation_summary(report: &report::VerifyReport) -> String {
+fn negotiation_summary(report: &VerifyReport) -> String {
     let (hits, total) = report.head_hits();
     let mut out =
         format!("\n协商首档 {hits}/{total}（DESIGN §16：首选没被选中说明 `needs` 粒度写错了）\n");
@@ -407,25 +410,25 @@ fn negotiation_summary(report: &report::VerifyReport) -> String {
     out
 }
 
-fn describe_negotiation(negotiation: &report::Negotiation) -> String {
+fn describe_negotiation(negotiation: &Negotiation) -> String {
     match negotiation {
-        report::Negotiation::Head { variant, of } => format!("1/{of} 首选 {variant}"),
-        report::Negotiation::Fallback { variant, step, of } => {
+        Negotiation::Head { variant, of } => format!("1/{of} 首选 {variant}"),
+        Negotiation::Fallback { variant, step, of } => {
             format!("{step}/{of} 降级到 {variant}：首选的能力没被满足")
         }
-        report::Negotiation::NoPath { of, unmet } if unmet.is_empty() => {
+        Negotiation::NoPath { of, unmet } if unmet.is_empty() => {
             format!("0/{of} 链上无可行变体")
         }
-        report::Negotiation::NoPath { of, unmet } => {
+        Negotiation::NoPath { of, unmet } => {
             format!("0/{of} 链上无可行变体；首选缺 {}", unmet.join(" "))
         }
-        report::Negotiation::Unknown { reason } => format!("无档案：{reason}"),
+        Negotiation::Unknown { reason } => format!("无档案：{reason}"),
     }
 }
 
 /// §16 的片段行数判定：上限管成败，内部目标只是余量。
 ///
-/// 判定在库里（`report::Fragment`），这里只选词；`doctor` 与 `verify` 用同一句，
+/// 判定在库里（`cutile::emit::Fragment`），这里只选词；`doctor` 与 `verify` 用同一句，
 /// 同一个数在两处不会被说成两种结论。
 fn fragment_note(fragment: Fragment) -> String {
     let limit = if fragment.within_limit() {
@@ -469,7 +472,7 @@ fn counted(count: usize, flags: &str) -> String {
 
 /// §16 的性能判据：每次都给一行结论。
 ///
-/// 判定在 `report::Performance`（达成率连同尺子一起给），这里只负责把每种结论翻译成一句话。
+/// 判定在 `Performance`（达成率连同尺子一起给），这里只负责把每种结论翻译成一句话。
 /// 口径无效或没声明峰值时也要打印：一条只在失败时出声的判据，读者会把“什么都没说”当成通过。
 fn performance_note(performance: Performance, peak: Option<&Peak>) -> String {
     let ratio = performance.ratio.map_or_else(
@@ -615,7 +618,7 @@ fn bench(
     repeat: usize,
 ) -> diagnostic::Result<String> {
     let catalogue = Catalogue::load(settings)?;
-    let measured: Bench = report::bench(&catalogue, settings, op, shape, repeat)?;
+    let measured: Bench = bench::bench(&catalogue, settings, op, shape, repeat)?;
     let (m, n) = measured.shape;
 
     let mut out = format!("bench {} {m}x{n} repeat={}\n", measured.op, measured.repeat);

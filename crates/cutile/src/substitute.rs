@@ -59,20 +59,27 @@ pub fn render(
                     return Err(missing_fragment(line, prim, fragments));
                 };
                 let expanded = splice(fragment, &args, line)?;
-                // 片段是语句块；模板已经提供了 `;`，这里去掉重复的终结符并对齐缩进。
-                let trimmed = expanded.trim_end();
-                let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
-                let indent: String = text
-                    .rsplit('\n')
-                    .next()
-                    .map(|prefix| " ".repeat(prefix.chars().count()))
-                    .unwrap_or_default();
-                text.push_str(&trimmed.replace('\n', &format!("\n{indent}")));
+                place(&mut text, &expanded);
             }
         }
     }
 
     Ok(text)
+}
+
+/// 把一段片段放进输出：去掉模板已提供的重复 `;`，并按调用点当前缩进对齐多行片段。
+///
+/// 字符串路径（[`render`]）与结构化路径（`ast::render`）共用这一份：两条路径的产物逐字节相同
+/// 由 `ast_renders_byte_identical_text` 守着，但规则本身只该写一次。
+pub(crate) fn place(text: &mut String, expanded: &str) {
+    let trimmed = expanded.trim_end();
+    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
+    let indent: String = text
+        .rsplit('\n')
+        .next()
+        .map(|prefix| " ".repeat(prefix.chars().count()))
+        .unwrap_or_default();
+    text.push_str(&trimmed.replace('\n', &format!("\n{indent}")));
 }
 
 /// 片段占位符替换：`$0`..`$9` 是位置参数，`$name` 是命名参数。

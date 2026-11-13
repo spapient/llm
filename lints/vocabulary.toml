@@ -203,89 +203,89 @@ key = "crates/annotation/src/syntax.rs"
 lines = 1228
 
 [[gate.debt]]
-key = "crates/cutile/src/report/common.rs:parse_shape#0"
+key = "crates/cutile/src/pipeline.rs:parse_shape#0"
 ccn = 8
 
 [[gate.debt]]
-key = "crates/cutile/src/report/doctor.rs:doctor#0"
+key = "crates/cutile/src/doctor.rs:doctor#0"
 ccn = 12
 nloc = 95
 
 [[gate.debt]]
-key = "crates/cutile/src/report/bench.rs:bench#0"
+key = "crates/cutile/src/bench.rs:bench#0"
 ccn = 19
 nloc = 69
 
 [[gate.debt]]
-key = "crates/cutile/src/report/bench.rs:classify#0"
+key = "crates/cutile/src/bench.rs:classify#0"
 ccn = 8
 
 [[gate.debt]]
-key = "crates/cutile/src/report/cache.rs:state#0"
+key = "crates/cutile/src/doctor.rs:state#0"
 ccn = 6
 
 [[gate.debt]]
-key = "crates/cutile/src/report/execution.rs:execute#0"
+key = "crates/cutile/src/execution.rs:execute#0"
 ccn = 18
 
 [[gate.debt]]
-key = "crates/cutile/src/report/verify.rs:negotiate#0"
+key = "crates/cutile/src/verify.rs:negotiate#0"
 ccn = 7
 
 [[gate.debt]]
-key = "crates/cutile/src/report/verify.rs:verify#0"
+key = "crates/cutile/src/verify.rs:verify#0"
 ccn = 9
 
 [[gate.debt]]
-key = "crates/cutile/src/report/verify.rs:verify_one#0"
+key = "crates/cutile/src/verify.rs:verify_one#0"
 ccn = 19
 nloc = 105
 
 [[gate.debt]]
-key = "crates/cutile/src/report/verify.rs:verify_one_cuda#0"
+key = "crates/cutile/src/verify.rs:verify_one_cuda#0"
 ccn = 13
 nloc = 64
 
 [[gate.debt]]
-key = "crates/cutile/src/report/verify.rs:witness_note#0"
+key = "crates/cutile/src/verify.rs:witness_note#0"
 ccn = 7
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/device.rs:cuda_program#0"
+key = "crates/cutile/src/device.rs:cuda_program#0"
 ccn = 9
 nloc = 87
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/device.rs:find_cl#0"
+key = "crates/cutile/src/device.rs:find_cl#0"
 ccn = 6
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/device.rs:metal_program#0"
+key = "crates/cutile/src/device.rs:metal_program#0"
 ccn = 10
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/device.rs:program#0"
+key = "crates/cutile/src/device.rs:program#0"
 ccn = 11
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/device.rs:compile_run_cuda#0"
+key = "crates/cutile/src/device.rs:compile_run_cuda#0"
 ccn = 10
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/device.rs:run_metal#0"
+key = "crates/cutile/src/device.rs:run_metal#0"
 ccn = 12
 nloc = 83
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/evidence.rs:establish#0"
+key = "crates/cutile/src/witness.rs:establish#0"
 ccn = 8
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/gate.rs:parse_all#0"
+key = "crates/cutile/src/gate.rs:parse_all#0"
 ccn = 7
 
 [[gate.debt]]
-key = "crates/cutile/src/report/witness/run.rs:compare#0"
+key = "crates/cutile/src/witness.rs:compare#0"
 ccn = 8
 nloc = 67
 

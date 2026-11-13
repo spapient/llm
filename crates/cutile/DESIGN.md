@@ -147,7 +147,7 @@ crates/cutile/                  # 机制：协商、拼接、emit、编译执行
     ├── build.rs      # ⑤ emit + 缓存：指纹 → 查缓存 → 取锁 → 拼接 → 落盘
     └── reference.rs  # 对拍口径：相对误差 + 按数据类型的阈值
 
-crates/audit/                   # 审计：doctor / verify / bench 的命令策略与结构化报告
+crates/cutile/src/                   # 审计：doctor / verify / bench 的命令策略与结构化报告
 ├── Cargo.toml
 ├── README.md      # 这里有什么、不有什么
 └── src/
@@ -156,15 +156,15 @@ crates/audit/                   # 审计：doctor / verify / bench 的命令策�
 ```
 
 内核不含命令策略：形状矩阵（`verify` 跑哪几个形状）、重复次数、工作目录命名、达成率口径
-都在 `crates/audit`（包名 `llm-audit`）——它们**改变的是"怎么审"，不是"产物长什么样"**。
+都在 `crates/cutile/src`（包名 `cutile`）——它们**改变的是"怎么审"，不是"产物长什么样"**。
 内核只提供两件东西给审计：`cutile::build`（⑤ 的指纹、锁、拼接、落盘）与 `cutile::backend`
-（编译执行）。这也是 `audit` 能与 `cutile` 分开的前提：证据采集不拥有任何机制。
+（编译执行）。这也是 `cutile` 能与 `cutile` 分开的前提：证据采集不拥有任何机制。
 
 闭集与解析不在本 crate：布局构造子、调度模板、模板词法、`OpDecl` 的解析都在 `crates/op`
 （`op::layout` / `op::sch` / `op::tpl` / `op::decl`）；`cutile::layout` 与 `cutile::sch` 是
 `pub use` 转发路径，模块路径不变，但闭集只有一份。命令行文法同样不在本 crate：它是
 `llm-cli::cutile` 的 `CutileCommand`，驱动方是根包的 `src/bin/cutile.rs`（L7 入口，只做
-解析 → `audit` → 排版 → 退出码），因此 `cutile` 不再持有第二套命令语法或第二套输出排版。
+解析 → `cutile` → 排版 → 退出码），因此 `cutile` 不再持有第二套命令语法或第二套输出排版。
 
 TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施，已移到 `crates/config`（包名 `llm-config`）。
 `cutile::toml` 保留为转发路径（`pub use llm_config::toml`），因此模块路径不变，但实现只有一份，
@@ -201,7 +201,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 - **unsafe 边界**：本 crate 不含 `unsafe`。`backend` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `backend/` 的新增驱动模块里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
 - **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
-- **配置边界**：依赖方向固定为 `llm → audit → cutile → {op, prof, prim, llm-config}`（`audit` 是"怎么审"，内核是"怎么生成"；反向边不存在，所以去掉审计不会动摇机制），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`llm-config` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
+- **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim, llm-config}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`llm-config` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
   - 缓存目录、工作目录、可选数据根（`data.root`）全部取自 `llm_config::Settings`；
   - 新增配置项必须先在 `llm-config` 的 `Key` 闭集登记，否则配置文件里出现该键会直接报错；没有消费方的键不登记；
   - 默认目录取平台用户目录（macOS `~/Library/Caches/cutile/cache`、Linux `$XDG_CACHE_HOME/cutile/cache`、Windows `%LOCALAPPDATA%\cutile\cache`），与仓库布局、启动目录都无关；仓库里不放配置文件，只在需要偏离默认时写用户级文件。
@@ -298,7 +298,7 @@ for (kb = 0; kb < NB; ++kb) {
 
 **诊断精度承诺**：解析错误定位到 `(文件, 行, 槽位名)`，不承诺列号。这是省代码的正确做法——先把精度降下来，解析器才能小。
 
-**错误契约**：`cutile`（连同 `op`、`prof`、`prim`、`audit`）的失败一律是 `diagnostic::Error`，类别取自闭集 `Code`：缺能力 `unsupported`、输入不合法 `invalid`、缺东西 `missing`、读写 `io`、本层不变量被破坏 `internal`。诊断文字把算子名、形参名、行号作为上下文帧挂上，不再手拼前缀；`Result<_, String>` 在这五个 crate 里已经绝迹（`tests/architecture.rs` 会扫）。数据层（`prof` / `prim`）自己给类别：档案写错、片段第一行不是签名声明是 `invalid`，文件不在是 `missing`（`Error::from_io` 是这条判定的唯一来源），`cutile` 只往上挂"哪个厂商、哪一层"的上下文帧，不重新分类；装载期的多条失败用 `Error::also` 逐行追加，首条决定退出码，其余行各自带类别。类别同时是退出码：`Code::exit_code()` 给出 `2 / 3 / 4 / 5 / 70`，所以 `verify` 遇到"本机没有该设备"是 `3`，而 `--shape 3x1` 写错是 `2`。
+**错误契约**：`cutile`（连同 `op`、`prof`、`prim`、`cutile`）的失败一律是 `diagnostic::Error`，类别取自闭集 `Code`：缺能力 `unsupported`、输入不合法 `invalid`、缺东西 `missing`、读写 `io`、本层不变量被破坏 `internal`。诊断文字把算子名、形参名、行号作为上下文帧挂上，不再手拼前缀；`Result<_, String>` 在这五个 crate 里已经绝迹（`tests/architecture.rs` 会扫）。数据层（`prof` / `prim`）自己给类别：档案写错、片段第一行不是签名声明是 `invalid`，文件不在是 `missing`（`Error::from_io` 是这条判定的唯一来源），`cutile` 只往上挂"哪个厂商、哪一层"的上下文帧，不重新分类；装载期的多条失败用 `Error::also` 逐行追加，首条决定退出码，其余行各自带类别。类别同时是退出码：`Code::exit_code()` 给出 `2 / 3 / 4 / 5 / 70`，所以 `verify` 遇到"本机没有该设备"是 `3`，而 `--shape 3x1` 写错是 `2`。
 
 ### 4.3 一份声明的作用域
 
@@ -463,7 +463,7 @@ grade = "L3"
 witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 ```
 
-规则（全部由 `prof.rs` 与 `llm-audit` 的 `witness` 校验，不是约定）：
+规则（全部由 `prof.rs` 与 `cutile` 的 `witness` 校验，不是约定）：
 
 - `provides` 里出现闭集外的 `prim` / `dt` / `space` → 加载失败。
 - `grade = "L2"` 及以上必须有 `witness = { file, func, expect }`：文件存在、函数在文件里、期望值非空；`verify` 再逐条编译执行并与 `expect` 对拍。
@@ -589,7 +589,7 @@ pub fn negotiate(op: &OpDecl, prof: &Profile) -> Result<Path, NoPath> {
 协商的第二个输入是**这次执行到的证据**（`cap::Proof`，`(原语, 实现名)` 的集合）：档案里的 `grade` 只回答
 "作者说它具备"，`negotiate_with` 还要求这条供给出现在见证执行的结论里。于是同一个布尔被拆成三种状态——
 参数不匹配、等级不够（`L1 < L2`）、以及"写了 `L2` 但这次没跑"。`negotiate`（按档案自述）保留为解释性口径：
-§16 的"首选变体在声明上是否命中"与"本机执行不了的设备"（非 C 档案，`audit::witness::Basis::Declared`）
+§16 的"首选变体在声明上是否命中"与"本机执行不了的设备"（非 C 档案，`witness::Basis::Declared`）
 需要它；任何声称"这台设备能跑"的路径都不许用。
 
 ### 8.2 诊断格式（可解释性的落点）
@@ -709,7 +709,7 @@ pub struct CacheKey {
 - 并发：`<key>/build.lock` 文件 + `O_EXCL`；另一个进程正在生成同一个 key 时等它落盘并复用其产物（上限 5 s），超时即报错（不静默重复编译）。`O_EXCL` 锁是**文件**而不是 flock：持有者被 `kill` 后没人能释放它，这个键会永久卡在"等待超时"上。因此取锁失败时先看锁是否陈旧（`cache::STALE_LOCK` = 60 s，一次 emit 是毫秒级、等锁上限只有 5 s）：陈旧就删掉重试，活着的锁一律不抢。
 - 落盘：写临时文件 → `rename` 原子替换。临时名带进程号与序号：同一份 key 的两个并发构建各自落盘，先 `rename` 的不会把后来者的临时文件搬走（那会让后者拿到 `ENOENT`）。
 - 残留：只在 `rename` 之前崩溃会留下没有 `source` 的目录（临时文件 / `meta.txt` / 锁）。它不是"别人的目录"而是**永远不会命中**的记录（`cache::State::Partial`）：旧实现把它排除在扫描之外，于是它既不计入占用、也永远不被回收。现在扫描按目录内容判状态，`cache gc` 把残留与 LRU 删除分两行报告。
-- GC：按 LRU + 容量上限（默认 2 GiB，`audit::CACHE_LIMIT`），`cutile cache gc [--limit <字节>]` 手动触发。占用**递归**统计：产物在 `bin/` 里，只数顶层文件会让上限看着很空、实际删不掉真正占空间的东西。LRU 的"使用"由读命中（源文本或产物）更新 `meta.txt` 的时间戳来记——不记的话它就退化成"最近写入"，一份天天命中的缓存反而先被删。残留与上限无关、一律回收（它等到任何一次"超限"都不会发生）；可复用条目按 LRU 删到上限内。仍在用的（窗口内被动过，或还有活着的锁）一律跳过，跳过的条数在结果里如实计数。
+- GC：按 LRU + 容量上限（默认 2 GiB，`gc::CACHE_LIMIT`），`cutile cache gc [--limit <字节>]` 手动触发。占用**递归**统计：产物在 `bin/` 里，只数顶层文件会让上限看着很空、实际删不掉真正占空间的东西。LRU 的"使用"由读命中（源文本或产物）更新 `meta.txt` 的时间戳来记——不记的话它就退化成"最近写入"，一份天天命中的缓存反而先被删。残留与上限无关、一律回收（它等到任何一次"超限"都不会发生）；可复用条目按 LRU 删到上限内。仍在用的（窗口内被动过，或还有活着的锁）一律跳过，跳过的条数在结果里如实计数。
 - 可复现：`meta.txt` 记录完整键，`cutile doctor --why <key>` 用 `CacheKey::fields` 与它逐项比较，只列出真正不同的字段（含只在一侧出现的项：新版本加的字段与已删掉的字段同样是"为什么没命中"）。字段定义只有一份，`describe`/哈希/差异都从它派生。结论分四类（`CacheState`）：一致 / 不同 / 从未落盘 / **只有半截落盘**——最后一类必须先判，因为它的差异为空，按差异会把它说成"一致"。键里的 `dtype` 是模型的输出精度，所以换精度既换源文本也换产物——这正是"接入第二个精度时缓存键不会碰撞"的判据。
 
 ---
@@ -856,7 +856,7 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 分成五类：`> 100%` → 口径无效（数据在缓存中）；工作集 ≤ `FAST` → 口径无效（测到的是缓存带宽，
 与主存峰值不可比）；其余才按 70% 门槛判 `Reached` / `Below`；没有峰值则是 `Unknown`。口径无效的
 数字不参与 L3 判定——这正是 §12.3 "任何未附口径的达成率视为未测量"的执行版本。五类与那个门槛
-都收在 `audit::Performance`（`is_measured` / `needs_specialisation`），`bench` 每轮都打一行结论：
+都收在 `bench::Performance`（`is_measured` / `needs_specialisation`），`bench` 每轮都打一行结论：
 口径无效或档案没声明峰值时打印“未测量，不参与判定”，而不是什么都不说——只在失败时出声的判据，
 读者会把沉默当成通过。
 
@@ -898,10 +898,10 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 | `probe` | 120 | 三个后端 + 假指纹注入 |
 | `plan` | 80 | 取声明的 tile + roofline 估算 |
 | `ref` | 60 | 对拍口径（相对误差 + 阈值） |
-| `test` | 180 | 见证 + 对拍用例（执行器在 `llm-audit`） |
-| **合计** | **2,540** | 不含 `audit`：它现在是一门独立成员，见下 |
+| `test` | 180 | 见证 + 对拍用例（执行器在 `cutile`） |
+| **合计** | **2,540** | 不含 `cutile`：它现在是一门独立成员，见下 |
 
-> **审计已移出内核（2026-11-12）**：`doctor` / `verify` / `bench` 的编排（形状矩阵、重复次数、工作目录命名、达成率口径）与见证执行器搬到 `crates/audit`（包名 `llm-audit`，L3 的第二名成员），本 crate 只保留机制：`build`（⑤ 的指纹 / 锁 / 拼接 / 落盘）与 `backend`（编译执行）。原先 `audit = 100` 那行预算随代码一起迁出，P0 合计从 2,640 降到 2,540。实测（不含测试）：本 crate 2,813 行——`cap` 531、`backend` 449、`build` 394、`builtin` 60、`cache` 778、`emit` + `substitute` 205、`plan` 118、`probe` 81、`reference` 39、`space` 87、`lib` 71；`llm-audit` 1,537 行（`lib` 1,101 + `witness` 436）。`cache` 从预算的 140 涨到 708，涨的是**存量管理**——扫描、状态判定、LRU 回收、残留清理、`--why` 的逐字段比较（P0-6 再加编译产物：`ArtifactKey`、`bin/<hash>`、递归占用统计、见证程序登记）：§10.3 一直许诺这些事，只是预算表当初没把它们算进去。这一页换到的是"第二次 `verify` 不调用编译器"——实测 4.6 s → 1.55 s，且产物命中时连 `cc` 是否在 `PATH` 上都不影响结论。拆分的判据不是行数，而是"改命令策略要不要动内核"：此前 `audit` 一个文件 806 行、八倍于它自己的预算，说明预算表量错了对象——命令策略本来就不是内核的一部分。
+> **审计并入内核（2026-11-12）**：`doctor` / `verify` / `bench` 的编排（形状矩阵、重复次数、工作目录命名、达成率口径）与见证执行器搬到 `crates/cutile/src`（包名 `cutile`，L3 的第二名成员），本 crate 同时持有机制与命令策略：`build`（⑤ 的指纹 / 锁 / 拼接 / 落盘）与 `backend`（编译执行）。原先 `audit = 100` 那行预算随代码一起迁出，P0 合计从 2,640 降到 2,540。实测（不含测试）：本 crate 2,813 行——`cap` 531、`backend` 449、`build` 394、`builtin` 60、`cache` 778、`emit` + `substitute` 205、`plan` 118、`probe` 81、`reference` 39、`space` 87、`lib` 71；`cutile` 1,537 行（`lib` 1,101 + `witness` 436）。`cache` 从预算的 140 涨到 708，涨的是**存量管理**——扫描、状态判定、LRU 回收、残留清理、`--why` 的逐字段比较（P0-6 再加编译产物：`ArtifactKey`、`bin/<hash>`、递归占用统计、见证程序登记）：§10.3 一直许诺这些事，只是预算表当初没把它们算进去。这一页换到的是"第二次 `verify` 不调用编译器"——实测 4.6 s → 1.55 s，且产物命中时连 `cc` 是否在 `PATH` 上都不影响结论。拆分的判据不是行数，而是"改命令策略要不要动内核"：此前 `cutile` 一个文件 806 行、八倍于它自己的预算，说明预算表量错了对象——命令策略本来就不是内核的一部分。再修订（2026-11-13）：`report/` 这层目录已删除——它不产出“报告”（排版在驱动方），又让四条命令各写一遍同一条流水线。现在命令策略是 crate 根的 `bench` / `doctor` / `verify` / `execution`，共用一条 `pipeline`（`Run` / `Prepared`）；见证执行是 `witness` + `device` + `gate`，`Fragment` 与 §16 的两个门槛归 `emit`，缓存命令策略在 `gc`。
 
 ### 13.2 P3（12 算子 / 8 设备 / 16 原语 / 4 调度）
 
@@ -920,8 +920,8 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 | `plan` | 80 | 380 | 形状桶 + 3 候选微基准 + 失效 |
 | `ref` | 60 | 160 | 对拍口径：阈值分档 + 随机形状 |
 | `test` | 180 | 700 | 见证矩阵 + 假指纹回归 |
-| `audit`（在 `llm-audit`） | 100 | 240 | `doctor` / `verify` / `bench` 的结构化报告 + `--emit-ledger` 台账（排版在驱动方） |
-| **合计** | **2,540 + 100**（`audit` 在 `llm-audit`） | **9,520** | |
+| `cutile`（在 `cutile`） | 100 | 240 | `doctor` / `verify` / `bench` 的结构化报告 + `--emit-ledger` 台账（排版在驱动方） |
+| **合计** | **2,540 + 100**（`cutile` 在 `cutile`） | **9,520** | |
 
 `ops` 一行的量计在预算里，但它现在不在 `cutile`：声明、模板与算子语义（代价/样本/标量参考）都住在
 `crates/op`，连同**解析本身**（`op::decl`）与三张闭集（`op::layout` / `op::sch` / `op::tpl`）；
@@ -1004,26 +1004,26 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 | 某设备的声明超出档案容量或 bank 数 | 闭集/档案取错，或声明写错：先看诊断里的 need/have 差异 |
 
 「协商 3/3 命中首档」由 `verify` 结尾那段给出（`协商首档 1/3` + 逐设备一行）：分数与原因都在报告里
-（`llm_audit::Negotiation`：首档 / 降级到第 k 档 / 链上无可行变体（列出首选缺的原语）/ 无档案）。
+（`verify::Negotiation`：首档 / 降级到第 k 档 / 链上无可行变体（列出首选缺的原语）/ 无档案）。
 这段与执行结果正交：协商只读声明与档案，**本机没有该设备时照样有答案**——缺设备是执行层面的结论
 （退出码 3），不该把“这台设备本来怎么协商”一起吞掉。降到第 2 档不是失败，而是能力差的证据；
 分数下降只在 `needs` 写得比设备能给的更宽时才算判据不达标。
 
-「片段 ≤ 400 行」由 `llm_audit::Fragment` 判定：`doctor` 的 `[emit]` 与 `verify` 的逐设备结论行都打印
+「片段 ≤ 400 行」由 `emit::Fragment` 判定：`doctor` 的 `[emit]` 与 `verify` 的逐设备结论行都打印
 `片段 53 行（上限 400：达标；内部目标 240：达标）`。上限管成败（超过说明原语粒度错，先合并原语），
 内部目标只是余量、未达不算失败；两处共用同一句排版，打印的数与判定的数是同一个（`within_limit`
 就是行数与 `FRAGMENT_LIMIT` 比），所以不会出现“打印 53 行却说超标”。
 
 「性能」这一条在 P0 只答得起 roofline：`bench` 的尺子是“实测带宽 ÷ 档案声明的峰值”，不是“相对原生库的
 85%”——仓库里没有原生库的对照实现，那个分母要等 P1 才有，85–95% 那组数字因此留在 §12.3 当目标，
-不进这张判据表。判据落在 70% 上（与 §12.1 的 `Reached`、§12.3 的 L3 门槛同一个数），`audit::Performance`
+不进这张判据表。判据落在 70% 上（与 §12.1 的 `Reached`、§12.3 的 L3 门槛同一个数），`bench::Performance`
 把“测到多少”与“这个数算不算数”一起给（`is_measured` / `needs_specialisation`），`bench` 每轮都打印
 一行结论：口径无效（超过 100%、工作集装得进 `FAST`）或档案没有峰值时打印“未测量，不参与 Go/No-Go”，
 而不是不打印。判据只负责说清这个数是不是用同一把尺子量出来的；机器的实测数字照旧要附在验收里。
 与 `docs/lld.md` 的 E7（带宽利用率 > 85%，Must）不是同一条：E7 要求校准后的持续带宽、瓶颈分类与
 置信区间下界，`bench` 的分母只是档案里写明推导式的规格峰值，两者不能互相顶替。
 
-执行命令（P0 交付物：语法在 `llm-cli::cutile`，计算在 `llm-audit`，排版在根包的
+执行命令（P0 交付物：语法在 `llm-cli::cutile`，计算在 `cutile`，排版在根包的
 `src/bin/cutile.rs`；`verify` 在缺设备时返回非零码）：
 
 ```bash

@@ -12,11 +12,11 @@
 |---|---|---|---|
 | L1 基础设施 | `diagnostic`、`dtype`、`testkit`、`llm-config`、`tool` | 错误类型、精度闭集、测试夹具、配置分层与路径、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义 |
 | L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集、算子声明与词汇表闭集（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
-| L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，`cutile::report`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
+| L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `mem`、`tensor`、`storage`、`tokenizer` | 分配、张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 LLPK 容器读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
 | L6 调度与服务 | `train`、`engine`、`serve`、`cli` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、命令行解析 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
-| L7 入口 | `llm`（bin：`llm` 与 `cutile`） | 组装：把上面各层连起来，**不定义新类型**；`cutile` 二进制只做解析 → `cutile::report` → 排版 → 退出码（`Code::exit_code`） | 任何新类型、任何业务逻辑 |
+| L7 入口 | `llm`（bin：`llm` 与 `cutile`） | 组装：把上面各层连起来，**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, execution}` → 排版 → 退出码（`Code::exit_code`） | 任何新类型、任何业务逻辑 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）与 `benches`（集中测量容器）是**工具成员**：
 它们不属于运行时分层，也不参与“至少一条依赖边”的统计。它们的**依赖边不参与方向判定**——
@@ -138,7 +138,7 @@ diagnostic / llm-config → （叶：被大量成员消费）
   算子写成属性、由 `#[layer]` 生成实现与校验测试，后者按配置计算宽度；两者最终都走
   `LayerSpec::new` 的同一条校验路径。注解不建注册表（注册表会成为第二个事实源），
   见 [`adr/0005-annotations-as-contracts.md`](adr/0005-annotations-as-contracts.md)。
-- `cutile::report::Verdict`（达成率口径：`reached` / `below` / `over-peak` / `cache-resident` / `unknown`）
+- `cutile::bench::Verdict`（达成率口径：`reached` / `below` / `over-peak` / `cache-resident` / `unknown`）
   与 `tool::regress::Judgement`（基准回退判定：`pass` / `regressed` / `improved`）**不是同一件事**：
   前者判定“这次测量能不能与档案峰值比较”，后者判定“与基线相比是否回退”。两者会同时出现在
   一份 CI 报告里，所以名字必须不同——`tool::regress` 里的类型因此叫 `Judgement`。

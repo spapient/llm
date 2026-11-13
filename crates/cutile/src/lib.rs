@@ -30,7 +30,7 @@
 //! ```
 //!
 //! 上面用的是**按档案自述**的协商：§16 的判据问的是声明粒度，不该随本机有没有这块卡而变。
-//! 执行路径（`audit` 的 `doctor` / `verify` / `bench`）用 [`cap::negotiate_with`]，它还要求供给
+//! 执行路径（本 crate 的 `doctor` / `verify` / `bench`）用 [`cap::negotiate_with`]，它还要求供给
 //! 出现在这次执行得到的 [`cap::Proof`] 里——`grade` 是执行的结论，不是 TOML 的结论。
 //!
 //! # 工程条款（DESIGN §3.2）
@@ -52,23 +52,26 @@ pub use ::op::{layout, sch};
 
 pub mod ast;
 pub mod backend;
+pub mod bench;
 pub mod build;
 pub mod builtin;
 pub mod cache;
 pub mod cap;
+pub mod doctor;
 pub mod emit;
+pub mod execution;
+pub mod gc;
 pub mod plan;
 pub mod probe;
 pub mod reference;
-pub mod report;
-
-/// 与 `report::witness` 同一条路径的根别名。
-///
-/// `#[annotation::frontend]` 生成的实现写死 `crate::witness::Language`——这条契约属于注解与
-/// 词汇表之间，而不是某个 crate 的目录结构；被标注的类型所在 crate 只需在根上暴露 `witness`。
-pub use report::witness;
 pub mod space;
 pub mod substitute;
+pub mod verify;
+pub mod witness;
+
+mod device;
+mod gate;
+mod pipeline;
 
 /// TOML 解析器由 `llm-config` 提供：实现只有一份，`cutile` 只转发路径。
 pub use llm_config::toml;

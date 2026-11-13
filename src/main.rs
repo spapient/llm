@@ -331,7 +331,8 @@ fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
             .with("llm run")
         })?;
         let sample = op::model::bind(&model, m, n, &x, &w)?;
-        let executed = cutile::report::execute(&catalogue, &settings, operator, device, &sample)?;
+        let executed =
+            cutile::execution::execute(&catalogue, &settings, operator, device, &sample)?;
         report = report.row(
             format!("层       {name}"),
             format!(
@@ -589,7 +590,7 @@ mod tests {
             .expect("默认设置");
         let catalogue = cutile::builtin::Catalogue::load(&settings).expect("内置数据");
         let executed =
-            cutile::report::execute(&catalogue, &settings, nn::Linear::DENSE, "cpu", &sample)
+            cutile::execution::execute(&catalogue, &settings, nn::Linear::DENSE, "cpu", &sample)
                 .expect("执行");
         let want: Vec<f32> = (0..4)
             .map(|row| (0..8).map(|column| w[row * 8 + column] * x[column]).sum())
