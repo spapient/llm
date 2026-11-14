@@ -1,8 +1,8 @@
 //! CRC-32（IEEE 802.3，反射多项式 `0xEDB8_8320`）：八路查表的权威实现。
 //!
 //! 表在编译期由逐位定义展开；一次吃 8 字节，把一条依赖链拆成三条并行查表。正确性另有逐字节
-//! 定义的对拍测试钉住，因此"快"不是靠换算法换来的。`checkpoint` 的尾部校验直接复用本模块，
-//! 容器与快照之间不存在第二份生产实现。
+//! 定义的对拍测试钉住，因此"快"不是靠换算法换来的。容器与检查点的尾部校验直接复用本模块，
+//! 两条字节路径之间不存在第二份生产实现。
 
 /// 位反转多项式：IEEE 802.3 的 `0x04C1_1DB7` 反射形式。
 const POLY: u32 = 0xEDB8_8320;
@@ -38,13 +38,18 @@ const fn slices() -> [[u32; 256]; 8] {
 }
 
 /// 计算一段字节的 CRC-32。
+#[must_use]
+#[inline]
 pub fn crc32(bytes: &[u8]) -> u32 {
     !update(!0, bytes)
 }
 
 /// 从已有状态继续更新，支持分段喂字节。
+#[must_use]
+#[inline]
 pub fn update(mut crc: u32, bytes: &[u8]) -> u32 {
     let (words, rest) = bytes.as_chunks::<8>();
+    // 跨块的 CRC 状态是串行链（下一块依赖上一块结果），不能并行；块内 8 位已用八路查表展开。
     for word in words {
         let head = crc ^ u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
         let tail = u32::from_le_bytes([word[4], word[5], word[6], word[7]]);
@@ -57,6 +62,7 @@ pub fn update(mut crc: u32, bytes: &[u8]) -> u32 {
             ^ SLICE[1][((tail >> 16) & 0xFF) as usize]
             ^ SLICE[0][(tail >> 24) as usize];
     }
+    // 尾部不足 8 字节：状态仍逐字节串行，无法再按块展开。
     for byte in rest {
         crc = SLICE[0][((crc ^ u32::from(*byte)) & 0xFF) as usize] ^ (crc >> 8);
     }

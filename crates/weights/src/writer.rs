@@ -131,7 +131,7 @@ impl Writer {
         measured.put(&VERSION.to_le_bytes());
         measured.put(&self.flags().to_le_bytes());
         measured.put(&[align_log]);
-        leb::write_u32(&mut measured, self.segs.len() as u32);
+        leb::write(&mut measured, self.segs.len());
         write_descs(&self.segs, &packed, self.checksum, &mut measured)?;
         write_data(&packed, align_log, &mut measured);
         Ok(())

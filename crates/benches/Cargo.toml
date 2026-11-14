@@ -13,8 +13,10 @@ publish = false
 # 都是它自己的配置），prof/op 是被测对象。
 [dev-dependencies]
 criterion = { workspace = true }
+cutile = { path = "../cutile" }
 prof = { path = "../prof", package = "llm-prof" }
 op = { path = "../op", package = "llm-op" }
+wire = { path = "../wire", package = "llm-wire" }
 
 # 显式关闭 libtest harness：criterion 提供自己的 main（criterion_main!）。
 # path 指向 criterion/ 子目录，未来可并列加 iai 等其他测量 harness。
@@ -26,6 +28,22 @@ harness = false
 [[bench]]
 name = "span_parse"
 path = "criterion/span_parse.rs"
+harness = false
+
+[[bench]]
+name = "negotiate"
+path = "criterion/negotiate.rs"
+harness = false
+
+[[bench]]
+name = "wire_codec"
+path = "criterion/wire_codec.rs"
+harness = false
+
+# 采样用例：紧循环调用 negotiate，供 sample / samply 定位热帧；不产出基准数字。
+[[example]]
+name = "negotiate_loop"
+path = "examples/negotiate_loop.rs"
 harness = false
 
 [lints]

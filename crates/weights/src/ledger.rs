@@ -139,7 +139,7 @@ pub struct Note {
 impl Note {
     /// 强类型 LEB128 编码。
     pub(crate) fn encode(&self, out: &mut impl Sink) {
-        leb::write_u32(out, self.rank);
+        leb::write(out, self.rank);
         out.put(&[u8::from(self.used)]);
         out.put(&[self.stable as u8]);
         out.put(&self.gap.to_le_bytes());
@@ -176,7 +176,7 @@ impl Note {
 
 /// 标识段：秩、是否使用秩选择、稳定性判定码。
 fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Stable)> {
-    let rank = cur.read_u32()?;
+    let rank = cur.read::<u32>()?;
     let used = cur.read_u8()? != 0;
     let stable = Stable::from_code(cur.read_u8()?)?;
     Ok((rank, used, stable))

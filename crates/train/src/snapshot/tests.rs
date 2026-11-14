@@ -42,7 +42,7 @@ fn seal(payload: &[u8]) -> Vec<u8> {
 }
 
 fn push_varint(bytes: &mut Vec<u8>, value: u64) {
-    varint(&mut VecSink(bytes), value);
+    varint(bytes, value);
 }
 
 fn payload_of(snapshot: &Snapshot) -> Vec<u8> {
@@ -372,7 +372,7 @@ fn a_shared_prefix_may_cut_through_a_character() {
     // 拿文件总长去比名字字节总和永远不成立。
     let bytes = snapshot.encode().expect("编码");
     let payload = &bytes[..bytes.len() - Format::FOOTER_BYTES];
-    let mut cursor = Cursor::new(payload, 0);
+    let mut cursor = Cursor::new(payload, 0).expect("游标定位");
     cursor.take(4 + 2).expect("魔数与版本");
     for _ in 0..5 {
         cursor.varint().expect("头部事实");

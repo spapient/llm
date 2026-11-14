@@ -263,7 +263,7 @@ fn flags_align(bytes: &[u8]) -> Result<(u32, usize)> {
 /// 段计数与描述符；返回数据区起点（绝对偏移）。
 fn read_descs(bytes: &[u8]) -> Result<(Vec<Desc>, usize)> {
     let mut cur = Cursor::new(&bytes[FIXED_HEAD..]);
-    let count = usize::try_from(cur.read_u32()?).map_err(|_| invalid("段数量超 usize"))?;
+    let count = usize::try_from(cur.read::<u32>()?).map_err(|_| invalid("段数量超 usize"))?;
     let mut descs = Vec::with_capacity(count);
     for _ in 0..count {
         descs.push(Desc::decode(&mut cur)?);

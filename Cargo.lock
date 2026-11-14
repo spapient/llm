@@ -33,6 +33,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "arbitrary"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -77,6 +83,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -259,6 +267,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "getrandom"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -301,6 +320,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom",
+ "libc",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -316,6 +345,16 @@ name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "libfuzzer-sys"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
+dependencies = [
+ "arbitrary",
+ "cc",
+]
 
 [[package]]
 name = "llm"
@@ -358,8 +397,10 @@ name = "llm-benches"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "cutile",
  "llm-op",
  "llm-prof",
+ "llm-wire",
 ]
 
 [[package]]
@@ -406,6 +447,7 @@ dependencies = [
 name = "llm-fuzz"
 version = "0.1.0"
 dependencies = [
+ "libfuzzer-sys",
  "llm-cli",
  "llm-diagnostic",
  "llm-weights",
@@ -518,6 +560,7 @@ dependencies = [
  "llm-shard",
  "llm-tensor",
  "llm-weights",
+ "llm-wire",
 ]
 
 [[package]]
@@ -529,6 +572,14 @@ dependencies = [
  "llm-mem",
  "llm-storage",
  "llm-tensor",
+ "llm-wire",
+]
+
+[[package]]
+name = "llm-wire"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
  "llm-testkit",
 ]
 
@@ -614,6 +665,12 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "r-efi"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rayon"

@@ -14,10 +14,10 @@ dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 mem = { path = "../mem", package = "llm-mem" }
 tensor = { path = "../tensor", package = "llm-tensor" }
+wire = { path = "../wire", package = "llm-wire" }
 
 [dev-dependencies]
 storage = { path = "../storage", package = "llm-storage", features = ["mmap"] }
-testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

@@ -171,16 +171,16 @@ impl Graph {
 
     /// 序列化为 LEB128 紧凑字节，写入任意 Sink（算长度与写出同路径）。
     pub(crate) fn encode(&self, out: &mut impl Sink) {
-        leb::write_u32(out, self.nodes.len() as u32);
+        leb::write(out, self.nodes.len());
         for node in &self.nodes {
             out.put(&[node.op.code()]);
-            leb::write_u32(out, node.inputs.len() as u32);
+            leb::write(out, node.inputs.len());
             for input in &node.inputs {
-                leb::write_u32(out, *input);
+                leb::write(out, *input);
             }
             out.put(&[u8::from(node.fused)]);
             let name = node.out.as_bytes();
-            leb::write_u64(out, name.len() as u64);
+            leb::write(out, name.len());
             out.put(name);
         }
     }
@@ -205,7 +205,7 @@ impl Graph {
     /// 从字节解析：未知码、截断、非法 UTF-8 与悬空/自指边都显式报错。
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let mut cursor = Cursor::new(bytes);
-        let count = cursor.read_u32()?;
+        let count = cursor.read::<u32>()?;
         let mut graph = Self::new();
         for _ in 0..count {
             let node = decode_node(&mut cursor)?;
@@ -258,7 +258,7 @@ fn decode_node(cursor: &mut Cursor<'_>) -> Result<Node> {
 /// 节点开头：算子码与输入边（边数先过上限，再逐条读，不为非法条数分配）。
 fn edge_list(cursor: &mut Cursor<'_>) -> Result<(Op, Vec<u32>)> {
     let op = op_at(cursor)?;
-    let n_in = cursor.read_u32()? as usize;
+    let n_in = cursor.read::<u32>()? as usize;
     check_edges(n_in)?;
     Ok((op, edges(cursor, n_in)?))
 }
@@ -272,14 +272,14 @@ fn op_at(cursor: &mut Cursor<'_>) -> Result<Op> {
 fn edges(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<u32>> {
     let mut edges = Vec::with_capacity(count);
     for _ in 0..count {
-        edges.push(cursor.read_u32()?);
+        edges.push(cursor.read::<u32>()?);
     }
     Ok(edges)
 }
 
 /// 输出名：LEB128 长度前缀 + 原始字节，必须是合法 UTF-8。
 fn label(cursor: &mut Cursor<'_>) -> Result<String> {
-    let len = cursor.read_u64()? as usize;
+    let len = cursor.read::<u64>()? as usize;
     let raw = cursor.take(len)?;
     core::str::from_utf8(raw)
         .map_err(|_| bad("ir: 输出名不是合法 UTF-8"))

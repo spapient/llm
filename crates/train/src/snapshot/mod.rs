@@ -3,7 +3,7 @@
 //! **拥有**：`Format`、`Facts`、`Snapshot`——字节布局、完整性校验与原子落盘。**不拥有**：训练循环
 //! 状态（[`crate::Checkpoint`] 是内存里的最小事实集）、参数数据（`weights::Header` 只被引用）、
 //! 张量存储（`tensor`）、检查点路径（`cli::settings` 决定根目录）。**依赖**：`weights`、`tensor`、
-//! `diagnostic`。
+//! `diagnostic`、`wire`（字节码闭集）。
 //!
 //! 四条判据都属于"错了会很贵"那一类：**字节自证**（`LLMC` 魔数 + 版本 + CRC-32 尾部，截断或改一个
 //! 比特都读不出来）；**编码单射**（LEB128、偏移增量、名字与上一条共享前后缀、同布局只写标签 `0`；
@@ -46,6 +46,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
 use weights::{Entry, Header};
+use wire::leb::{Cursor as WireCursor, write};
+use wire::sink::{Count, FileSink, Sealed, Sink, SliceSink};
 
 /// 解码失败的上下文：错误只由这一层产生，排查时不必再猜是哪一段。
 const CONTEXT: &str = "train::snapshot::Snapshot::decode";
@@ -58,9 +60,6 @@ const WRITE_BUFFER: usize = 8 * 1024;
 
 /// 条目表与维度的预分配上限：更大的表按需增长，于是伪造的计数最多多要一块固定大小的内存。
 const PREALLOC: usize = 1024;
-
-/// `u64` 的 LEB128 最多几字节（每字节 7 位）。
-const VARINT_MAX: usize = 10;
 
 /// 检查点文件头：4 字节魔数 + 2 字节小端版本号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,7 +259,7 @@ impl Snapshot {
         let tags = self.tags()?;
         let capacity = self.counted(&tags);
         let mut bytes = Vec::with_capacity(capacity);
-        self.write_to(&mut VecSink(&mut bytes), &tags);
+        self.write_to(&mut bytes, &tags);
         debug_assert_eq!(bytes.len(), capacity, "长度算术与写出的字节必须一致");
         Ok(bytes)
     }
@@ -268,21 +267,17 @@ impl Snapshot {
     /// 写进调用方给的缓冲区，返回写入的字节数；`out` 至少要有 [`Snapshot::encoded_len`] 字节。
     pub fn encode_into(&self, out: &mut [u8]) -> Result<usize> {
         let capacity = out.len();
-        let mut sink = SliceSink {
-            out,
-            at: 0,
-            overflow: false,
-        };
+        let mut sink = SliceSink::new(out);
         let tags = self.tags()?;
         self.write_to(&mut sink, &tags);
-        if sink.overflow {
+        if sink.overflow() {
             let needed = self.counted(&tags);
             let message = format!("缓冲区 {capacity} 字节，检查点需要 {needed} 字节");
             return Err(
                 Error::new(Code::Invalid, message).with("train::snapshot::Snapshot::encode_into")
             );
         }
-        Ok(sink.at)
+        Ok(sink.written())
     }
 
     /// 原子地写到一个路径：同目录临时文件 → 落盘 → 改名（失败返回 [`Code::Io`]，临时文件被清掉）。
@@ -313,22 +308,18 @@ impl Snapshot {
     /// 边编码边写并刷盘：长度承诺在改名之前对账，第一次写失败之后剩下的追加都是空操作。
     fn flush(&self, temp: &Path, tags: &[u8]) -> io::Result<()> {
         let file = io::BufWriter::with_capacity(WRITE_BUFFER, std::fs::File::create(temp)?);
-        let mut sink = FileSink {
-            inner: file,
-            written: 0,
-            error: None,
-        };
+        let mut sink = FileSink::new(file);
         self.write_to(&mut sink, tags);
-        if let Some(error) = sink.error {
+        if let Some(error) = sink.take_error() {
             return Err(error);
         }
         debug_assert_eq!(
-            sink.written,
+            sink.written(),
             self.counted(tags),
             "写下的字节数必须等于承诺的长度"
         );
         let file = sink
-            .inner
+            .into_inner()?
             .into_inner()
             .map_err(io::IntoInnerError::into_error)?;
         file.sync_all()
@@ -372,21 +363,18 @@ impl Snapshot {
     /// 编码正文与校验和：正文写进一个"密封"的接收器，写出的每个字节都自动进入 CRC。
     fn write_to(&self, sink: &mut impl Sink, tags: &[u8]) {
         let crc = {
-            let mut sealed = Sealed {
-                inner: sink,
-                crc: !0,
-            };
+            let mut sealed = Sealed::new(sink);
             self.write_body(&mut sealed, tags);
-            !sealed.crc
+            sealed.checksum()
         };
-        sink.push(&crc.to_le_bytes());
+        sink.put(&crc.to_le_bytes());
     }
 
     /// 写文件头与正文（不含校验和）。
     fn write_body(&self, sink: &mut impl Sink, tags: &[u8]) {
         let facts = self.facts;
-        sink.push(Format::MAGIC.as_slice());
-        sink.push(&Format::VERSION.to_le_bytes());
+        sink.put(Format::MAGIC.as_slice());
+        sink.put(&Format::VERSION.to_le_bytes());
         varint(sink, facts.step());
         varint(sink, facts.world() as u64);
         varint(sink, facts.layers() as u64);
@@ -406,14 +394,14 @@ impl Snapshot {
             varint(sink, front as u64);
             varint(sink, back as u64);
             varint(sink, (name.len() - front - back) as u64);
-            sink.push(&name[front..name.len() - back]);
+            sink.put(&name[front..name.len() - back]);
             // 布局（元素类型 + 形状）也相对上一条：同型同形只占一个字节，否则写 `秩 + 1` 加各维度。
             let dims = entry.shape().dims();
             if previous_layout == Some((entry.dtype(), dims)) {
                 varint(sink, 0);
             } else {
                 varint(sink, (dims.len() + 1) as u64);
-                sink.push(&[tags[index]]);
+                sink.put(&[tags[index]]);
                 for dim in dims {
                     varint(sink, *dim as u64);
                 }
@@ -430,7 +418,7 @@ impl Snapshot {
 
 /// 正文解析：六个头部整数、条目表，最后交给 [`Header`] 与 [`Facts`] 自证。
 fn body(payload: &[u8]) -> Result<(Facts, Header)> {
-    let mut cursor = Cursor::new(payload, Format::HEADER_BYTES);
+    let mut cursor = Cursor::new(payload, Format::HEADER_BYTES)?;
     let (facts, data_start, count) = head(&mut cursor)?;
     let entries = read_entries(&mut cursor, count)?;
     let weights = Header::new(entries, data_start).map_err(|error| error.with(CONTEXT))?;
@@ -604,147 +592,54 @@ fn offset(cursor: &mut Cursor<'_>, index: usize, previous: Option<&Entry>) -> Re
     previous.checked_add(delta).ok_or_else(overflow)
 }
 
-/// 编码器的唯一接口：追加一段字节（放不下由接收器置位，编码本身没有可失败的操作）。
-trait Sink {
-    /// 追加一段字节；放不下时置位而不是返回错误。
-    fn push(&mut self, bytes: &[u8]);
-}
-
-/// 只做加法：`encoded_len` 用它与 `encode` 共用同一份算术。
-struct Count(usize);
-
-impl Sink for Count {
-    fn push(&mut self, bytes: &[u8]) {
-        self.0 += bytes.len();
-    }
-}
-
-/// 写进一块 `Vec`。
-struct VecSink<'a>(&'a mut Vec<u8>);
-
-impl Sink for VecSink<'_> {
-    fn push(&mut self, bytes: &[u8]) {
-        self.0.extend_from_slice(bytes);
-    }
-}
-
-/// 写进调用方的固定缓冲区，放不下就置 `overflow`。
-struct SliceSink<'a> {
-    out: &'a mut [u8],
-    at: usize,
-    overflow: bool,
-}
-
-impl Sink for SliceSink<'_> {
-    fn push(&mut self, bytes: &[u8]) {
-        let Some(end) = self.at.checked_add(bytes.len()) else {
-            self.overflow = true;
-            return;
-        };
-        let Some(slot) = self.out.get_mut(self.at..end) else {
-            self.overflow = true;
-            return;
-        };
-        slot.copy_from_slice(bytes);
-        self.at = end;
-    }
-}
-
-/// 直接写进文件缓冲：整份检查点从不进内存，错误只记一次。
-struct FileSink<W> {
-    inner: W,
-    written: usize,
-    error: Option<io::Error>,
-}
-
-impl<W: io::Write> Sink for FileSink<W> {
-    fn push(&mut self, bytes: &[u8]) {
-        if self.error.is_some() {
-            return;
-        }
-        match self.inner.write_all(bytes) {
-            Ok(()) => self.written += bytes.len(),
-            Err(error) => self.error = Some(error),
-        }
-    }
-}
-
-/// 一边写一边更新 CRC：正文的每个字节都会经过这里，校验范围不可能漏掉字段。
-struct Sealed<'s, S> {
-    inner: &'s mut S,
-    crc: u32,
-}
-
-impl<S: Sink> Sink for Sealed<'_, S> {
-    fn push(&mut self, bytes: &[u8]) {
-        self.crc = weights::crc::update(self.crc, bytes);
-        self.inner.push(bytes);
-    }
-}
-
-/// 写一个 LEB128 变长整数（每字节 7 位，小端，最高位是续位）。
+/// 写一个 LEB128 变长整数；算术与规范性判据归 `wire`，这里只保留快照侧的调用名。
 #[inline]
-fn varint(sink: &mut impl Sink, mut value: u64) {
-    // 绝大多数整数（秩、维度、名字长度）都小于 128：单字节这条路占九成，不必走一遭循环。
-    if value < 0x80 {
-        sink.push(&[value as u8]);
-        return;
-    }
-    let mut buffer = [0u8; VARINT_MAX];
-    let mut len = 0usize;
-    loop {
-        let byte = (value & 0x7F) as u8;
-        value >>= 7;
-        if value == 0 {
-            buffer[len] = byte;
-            len += 1;
-            break;
-        }
-        buffer[len] = byte | 0x80;
-        len += 1;
-    }
-    sink.push(&buffer[..len]);
+fn varint(sink: &mut impl Sink, value: u64) {
+    write(sink, value);
 }
 
-/// 逐字节读取器：每次读取都检查边界，越界时报出当前的偏移。
+/// 逐字节读取器：在 `wire::Cursor` 之上保留快照侧的字段上下文与错误词汇。
 struct Cursor<'a> {
-    bytes: &'a [u8],
+    inner: WireCursor<'a>,
     offset: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8], offset: usize) -> Self {
-        Self { bytes, offset }
+    fn new(bytes: &'a [u8], offset: usize) -> Result<Self> {
+        let mut inner = WireCursor::new(bytes);
+        inner.take(offset).map_err(|_| truncated(offset))?;
+        Ok(Self { inner, offset })
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let at = self.offset;
-        let end = at.checked_add(len).ok_or_else(|| truncated(at))?;
-        let slice = self.bytes.get(at..end).ok_or_else(|| truncated(at))?;
-        self.offset = end;
+        let slice = self
+            .inner
+            .take(len)
+            .map_err(|_| truncated(self.inner.pos()))?;
+        self.offset = self.inner.pos();
         Ok(slice)
     }
 
     fn u8(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
+        let byte = self
+            .inner
+            .read_u8()
+            .map_err(|_| truncated(self.inner.pos()))?;
+        self.offset = self.inner.pos();
+        Ok(byte)
     }
 
-    /// 读一个 LEB128 变长整数；超过 `u64` 宽度、非规范写法（如 `0x87 0x00`）都是错误。
+    /// 读一个 LEB128 变长整数；非规范写法（如 `0x87 0x00`）或超出 `u64` 宽度都拒绝。
     fn varint(&mut self) -> Result<u64> {
-        let start = self.offset;
-        let mut value = 0u64;
-        let mut index = 0usize;
-        loop {
-            let byte = self.u8()?;
-            if index == VARINT_MAX - 1 {
-                last_byte(byte)?;
+        let value = self.inner.read::<u64>().map_err(|error| {
+            if error.message().starts_with("字节不足") {
+                truncated(self.inner.pos())
+            } else {
+                invalid("检查点里的整数非规范写法（含前导零字节）或超出 u64 上限")
             }
-            value |= u64::from(byte & 0x7F) << (7 * index);
-            index += 1;
-            if byte & 0x80 == 0 {
-                return canonical_value(value, self.offset - start, byte);
-            }
-        }
+        })?;
+        self.offset = self.inner.pos();
+        Ok(value)
     }
 
     /// 读一个不能超过 `usize` 的计数；`what` 是字段名，用来把错误指到具体位置。
@@ -755,29 +650,8 @@ impl<'a> Cursor<'a> {
     }
 
     fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.offset)
+        self.inner.remaining().len()
     }
-}
-
-/// 第 10 个字节：`u64` 只剩 1 位可用，续位说明这个整数超过 10 字节。
-fn last_byte(byte: u8) -> Result<()> {
-    if byte & 0x7F > 1 {
-        return Err(invalid("检查点里的整数超过 u64 上限"));
-    }
-    if byte & 0x80 != 0 {
-        return Err(invalid("检查点里的整数超过 10 字节"));
-    }
-    Ok(())
-}
-
-/// 编码是单射：多字节写法不得以 0 结尾，否则同一份快照会有两种字节形态。
-fn canonical_value(value: u64, width: usize, last: u8) -> Result<u64> {
-    if width > 1 && last & 0x7F == 0 {
-        return Err(invalid(format!(
-            "检查点里的整数用了 {width} 字节的非规范写法（末字节为 0）"
-        )));
-    }
-    Ok(value)
 }
 
 /// 条目错误的上下文：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。

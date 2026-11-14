@@ -99,12 +99,12 @@ impl Segment {
         seg_crc: u32,
     ) -> Result<()> {
         let name = self.name.as_bytes();
-        leb::write_u64(out, name.len() as u64);
+        leb::write(out, name.len());
         out.put(name);
-        leb::write_u32(out, u32::from(self.dtype.code()));
-        leb::write_u32(out, self.shape.len() as u32);
+        leb::write(out, self.dtype.code());
+        leb::write(out, self.shape.len());
         for axis in &self.shape {
-            leb::write_u64(out, *axis);
+            leb::write(out, *axis);
         }
         out.put(&[codec.code()]);
         match &self.quant {
@@ -114,8 +114,8 @@ impl Segment {
                 quant.encode(out, self.shape.len() as u32)?;
             }
         }
-        leb::write_u64(out, stored_len);
-        leb::write_u32(out, seg_crc);
+        leb::write(out, stored_len);
+        leb::write(out, seg_crc);
         Ok(())
     }
 }
@@ -164,7 +164,7 @@ impl Desc {
 
 /// 段名：LEB 长度 + UTF-8 + 非空。
 fn decode_name(cur: &mut Cursor<'_>) -> Result<String> {
-    let len = cur.read_u64()?;
+    let len = cur.read::<u64>()?;
     let name = name_bytes(cur, len)?;
     if name.is_empty() {
         return Err(bad("段名不能为空"));
@@ -186,7 +186,7 @@ fn decode_head(cur: &mut Cursor<'_>) -> Result<(String, Wire)> {
 
 /// 形状与 codec：rank 轴长度，随后一个 codec 码。
 fn decode_body(cur: &mut Cursor<'_>) -> Result<(Vec<u64>, u32, Codec)> {
-    let rank = cur.read_u32()?;
+    let rank = cur.read::<u32>()?;
     let shape = decode_shape(cur, rank)?;
     Ok((shape, rank, Codec::from_code(cur.read_u8()?)?))
 }
@@ -196,7 +196,7 @@ fn decode_shape(cur: &mut Cursor<'_>, rank: u32) -> Result<Vec<u64>> {
     let capacity = usize::try_from(rank).map_err(|_| bad("rank 超 usize"))?;
     let mut shape = Vec::with_capacity(capacity);
     for _ in 0..rank {
-        shape.push(cur.read_u64()?);
+        shape.push(cur.read::<u64>()?);
     }
     Ok(shape)
 }
@@ -204,7 +204,7 @@ fn decode_shape(cur: &mut Cursor<'_>, rank: u32) -> Result<Vec<u64>> {
 /// 量化方案与长度字段；`rank` 用于校验量化轴。
 fn decode_tail(cur: &mut Cursor<'_>, rank: u32) -> Result<(Option<Quant>, u64, u32)> {
     let quant = decode_quant(cur, rank)?;
-    Ok((quant, cur.read_u64()?, cur.read_u32()?))
+    Ok((quant, cur.read::<u64>()?, cur.read::<u32>()?))
 }
 
 /// 量化方案：present 标志只能是 0/1。
@@ -245,7 +245,7 @@ pub(crate) fn numel(shape: &[u64]) -> u64 {
 }
 
 fn read_wire(cur: &mut Cursor<'_>) -> Result<Wire> {
-    let code = cur.read_u32()?;
+    let code = cur.read::<u32>()?;
     Wire::from_code(u16::try_from(code).map_err(|_| bad("wire code 超 u16"))?)
         .ok_or_else(|| bad("未知 wire code"))
 }

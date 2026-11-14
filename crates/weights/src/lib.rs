@@ -2,11 +2,11 @@
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自造的 `LLPK`
-//! 容器（`writer`/`reader`/`seg` 与 `crc`/`merkle`/`rans`/`codec`/`sink`/`leb` 这些小件），以及只能由
+//! 容器（`writer`/`reader`/`seg` 与 `merkle`/`rans`/`codec` 这些小件；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
 //! 本层判断的格式适配器与完整性证明（`bin` 的 pickle 栈机、`zip`、`gguf`、`json`，`axes`/`lattice`/
 //! `quant`/`scale` 的量化族，`dsa`/`envelope`/`sha256`/`keccak`/`ntt`/`golay`/`svd`/`ledger`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）、分配（`mem`）。
-//! **依赖**：`dtype`、`diagnostic`、`mem`、`tensor`（`+dev`：`storage`、`testkit`）。
+//! **依赖**：`dtype`、`diagnostic`、`mem`、`tensor`、`wire`（`+dev`：`storage`）。
 //! **被依赖**：`train`、`nn`、`llm`（`+dev`：`fuzz`）。
 //!
 //! 两条读取契约的分工是所有权而不是风格：[`Reader`] 把字节**借**出来（内存切片、映射），
@@ -46,12 +46,10 @@ const SITE: &str = "weights::Header::new";
 mod affine;
 pub mod axes;
 mod codec;
-pub mod crc;
 mod dtype;
 pub mod golay;
 mod ir;
 pub mod lattice;
-mod leb;
 pub mod ledger;
 mod merkle;
 mod rans;
@@ -59,10 +57,23 @@ mod reader;
 pub mod scale;
 mod seg;
 mod sha256;
-mod sink;
 pub mod svd;
 mod writer;
 mod zip;
+
+// 纯字节码基础件归 L1 `wire`（ADR 0024）；这里只做薄转发，保持容器内部路径不变。
+/// CRC-32（转发自 `wire::crc`）。
+pub mod crc {
+    pub use wire::crc::*;
+}
+
+mod leb {
+    pub(crate) use wire::leb::*;
+}
+
+mod sink {
+    pub(crate) use wire::sink::*;
+}
 
 #[cfg(test)]
 mod testutil;

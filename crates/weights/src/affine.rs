@@ -81,12 +81,12 @@ impl Quant {
         self.validate_layout(rank)?;
         self.validate()?;
         out.put(&[0]); // scheme = affine
-        leb::write_u32(out, self.axis);
-        leb::write_u32(out, self.block);
+        leb::write(out, self.axis);
+        leb::write(out, self.block);
         out.put(&[if self.zero { 1 } else { 0 }]);
-        leb::write_u32(out, u32::from(self.scale_ty.code()));
+        leb::write(out, self.scale_ty.code());
         if let Some(zp_ty) = self.zp_ty {
-            leb::write_u32(out, u32::from(zp_ty.code()));
+            leb::write(out, zp_ty.code());
         }
         Ok(())
     }
@@ -112,8 +112,8 @@ fn read_scheme(cur: &mut Cursor<'_>) -> Result<()> {
 
 /// 轴、组宽与 flags；flags 只允许最低位（零点开关），其余位是预留。
 fn read_head(cur: &mut Cursor<'_>) -> Result<(u32, u32, bool)> {
-    let axis = cur.read_u32()?;
-    let block = cur.read_u32()?;
+    let axis = cur.read::<u32>()?;
+    let block = cur.read::<u32>()?;
     let flags = cur.read_u8()?;
     if flags & !1 != 0 {
         return Err(bad("量化 flags 含非零预留位"));
@@ -129,7 +129,7 @@ fn read_types(cur: &mut Cursor<'_>, zero: bool) -> Result<(Wire, Option<Wire>)> 
 }
 
 fn read_wire(cur: &mut Cursor<'_>) -> Result<Wire> {
-    let code = cur.read_u32()?;
+    let code = cur.read::<u32>()?;
     Wire::from_code(u16::try_from(code).map_err(|_| bad("wire code 超出 u16"))?)
         .ok_or_else(|| bad("未知 wire 类型 code"))
 }

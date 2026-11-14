@@ -60,7 +60,7 @@ fn header(cur: &mut leb::Cursor<'_>) -> Result<()> {
 fn body(mut cur: leb::Cursor<'_>) -> Result<[Vec<u8>; 2]> {
     let mut parts = [Vec::new(), Vec::new()];
     for part in &mut parts {
-        let len = cur.read_u32()? as usize;
+        let len = cur.read::<u32>()? as usize;
         *part = cur.take(len)?.to_vec();
     }
     if !cur.remaining().is_empty() {
@@ -86,9 +86,9 @@ impl Envelope {
         let mut out = MAGIC.to_le_bytes().to_vec();
         out.push(VERSION);
         out.push(self.set);
-        leb::write_u32(&mut out, self.pk.len() as u32);
+        leb::write(&mut out, self.pk.len());
         out.extend(&self.pk);
-        leb::write_u32(&mut out, self.sig.len() as u32);
+        leb::write(&mut out, self.sig.len());
         out.extend(&self.sig);
         out
     }
@@ -161,9 +161,9 @@ mod tests {
         let mut bytes = MAGIC.to_le_bytes().to_vec();
         bytes.push(VERSION);
         bytes.push(44);
-        leb::write_u32(&mut bytes, pk.len() as u32);
+        leb::write(&mut bytes, pk.len());
         bytes.extend(&pk);
-        leb::write_u32(&mut bytes, 1);
+        leb::write(&mut bytes, 1u32);
         bytes.push(0);
         let env = Envelope::decode(&bytes).expect("长度前缀自洽，decode 通过");
         assert_eq!(env.sig.len(), 1);

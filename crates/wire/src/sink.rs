@@ -10,16 +10,17 @@ use std::io;
 use crate::crc;
 
 /// 统一字节输出。
-pub(crate) trait Sink {
+pub trait Sink {
     /// 追加一段字节。
     fn put(&mut self, bytes: &[u8]);
 }
 
 /// 只做加法：算长度用，与写出共用同一编码路径。
 #[derive(Default)]
-pub(crate) struct Count(pub usize);
+pub struct Count(pub usize);
 
 impl Sink for Count {
+    #[inline]
     fn put(&mut self, bytes: &[u8]) {
         self.0 += bytes.len();
     }
@@ -27,13 +28,14 @@ impl Sink for Count {
 
 /// `Vec<u8>` 本身就是一个 Sink，便于写函数统一泛型化。
 impl Sink for Vec<u8> {
+    #[inline]
     fn put(&mut self, bytes: &[u8]) {
         self.extend_from_slice(bytes);
     }
 }
 
 /// 写进调用方固定缓冲，放不下就置 `overflow`，不越界、不截断。
-pub(crate) struct SliceSink<'a> {
+pub struct SliceSink<'a> {
     /// 目标缓冲。
     out: &'a mut [u8],
     /// 已写位置。
@@ -44,7 +46,7 @@ pub(crate) struct SliceSink<'a> {
 
 impl<'a> SliceSink<'a> {
     /// 绑定一块缓冲。
-    pub(crate) fn new(out: &'a mut [u8]) -> Self {
+    pub fn new(out: &'a mut [u8]) -> Self {
         Self {
             out,
             at: 0,
@@ -53,17 +55,18 @@ impl<'a> SliceSink<'a> {
     }
 
     /// 已写字节数。
-    pub(crate) fn written(&self) -> usize {
+    pub fn written(&self) -> usize {
         self.at
     }
 
     /// 是否有过溢出。
-    pub(crate) fn overflow(&self) -> bool {
+    pub fn overflow(&self) -> bool {
         self.overflow
     }
 }
 
 impl Sink for SliceSink<'_> {
+    #[inline]
     fn put(&mut self, bytes: &[u8]) {
         let Some(end) = self.at.checked_add(bytes.len()) else {
             self.overflow = true;
@@ -79,7 +82,7 @@ impl Sink for SliceSink<'_> {
 }
 
 /// 直接写进 IO 后端：整份容器从不进内存；写失败只记第一次，之后追加为空操作。
-pub(crate) struct FileSink<W> {
+pub struct FileSink<W> {
     /// 底层写入器（通常是 `BufWriter<File>`）。
     inner: W,
     /// 已写字节数。
@@ -90,7 +93,7 @@ pub(crate) struct FileSink<W> {
 
 impl<W: io::Write> FileSink<W> {
     /// 绑定 IO 后端。
-    pub(crate) fn new(inner: W) -> Self {
+    pub fn new(inner: W) -> Self {
         Self {
             inner,
             written: 0,
@@ -99,17 +102,22 @@ impl<W: io::Write> FileSink<W> {
     }
 
     /// 已写字节数。
-    pub(crate) fn written(&self) -> usize {
+    pub fn written(&self) -> usize {
         self.written
     }
 
     /// 取出第一次写错误。
-    pub(crate) fn error(&self) -> Option<&io::Error> {
+    pub fn error(&self) -> Option<&io::Error> {
         self.error.as_ref()
     }
 
+    /// 取走第一次写错误（消费所有权；`io::Error` 不可克隆）。
+    pub fn take_error(&mut self) -> Option<io::Error> {
+        self.error.take()
+    }
+
     /// 拆解出底层写入器。
-    pub(crate) fn into_inner(self) -> io::Result<W> {
+    pub fn into_inner(self) -> io::Result<W> {
         // 显式 flush，让缓冲内残留字节在拆出前落地。
         let mut inner = self.inner;
         inner.flush()?;
@@ -130,7 +138,7 @@ impl<W: io::Write> Sink for FileSink<W> {
 }
 
 /// 透传且精确计数：需要当前写入位置（做对齐）时查询，长度始终准确。
-pub(crate) struct Measured<'a, S> {
+pub struct Measured<'a, S> {
     /// 下游。
     inner: &'a mut S,
     /// 已写字节数。
@@ -139,17 +147,23 @@ pub(crate) struct Measured<'a, S> {
 
 impl<'a, S: Sink> Measured<'a, S> {
     /// 包装下游。
-    pub(crate) fn new(inner: &'a mut S) -> Self {
+    pub fn new(inner: &'a mut S) -> Self {
         Self { inner, len: 0 }
     }
 
     /// 已写字节数。
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// 是否还没写过任何字节。
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 
 impl<S: Sink> Sink for Measured<'_, S> {
+    #[inline]
     fn put(&mut self, bytes: &[u8]) {
         self.len += bytes.len();
         self.inner.put(bytes);
@@ -157,7 +171,7 @@ impl<S: Sink> Sink for Measured<'_, S> {
 }
 
 /// 一边写一边更新 CRC：经过它的每个字节都进入校验，范围不可能漏字段。
-pub(crate) struct Sealed<'a, S> {
+pub struct Sealed<'a, S> {
     /// 被包装的下游。
     inner: &'a mut S,
     /// 当前 CRC 状态（内部表示，取结果时取反）。
@@ -166,17 +180,18 @@ pub(crate) struct Sealed<'a, S> {
 
 impl<'a, S: Sink> Sealed<'a, S> {
     /// 包装下游，从 CRC 初始内部状态开始。
-    pub(crate) fn new(inner: &'a mut S) -> Self {
+    pub fn new(inner: &'a mut S) -> Self {
         Self { inner, state: !0 }
     }
 
     /// 当前 CRC-32 结果。
-    pub(crate) fn checksum(&self) -> u32 {
+    pub fn checksum(&self) -> u32 {
         !self.state
     }
 }
 
 impl<S: Sink> Sink for Sealed<'_, S> {
+    #[inline]
     fn put(&mut self, bytes: &[u8]) {
         self.state = crc::update(self.state, bytes);
         self.inner.put(bytes);

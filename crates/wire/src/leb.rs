@@ -7,24 +7,56 @@ use diagnostic::{Code, Error, Result};
 
 use crate::sink::Sink;
 
-/// 把 `value` 按 LEB128 追加进任意 Sink。
-pub fn write_u64(out: &mut impl Sink, mut value: u64) {
+/// `u64` 的 LEB128 最多字节数（每字节 7 位）。
+const MAX_BYTES: usize = 10;
+
+/// 可按 LEB128 编码的无符号整数族：归约到 `u64` 这一步只发生在本 trait 内。
+///
+/// 只开放五个原生无符号类型，把可接受的类型闭集写进类型系统；不像裸 `Into<u64>` 那样
+/// 允许不相关的外部类型意外参与编码，也避免在每个调用点散落 `as u64` 强转。
+pub trait Uint: Copy {
+    /// 归约到 LEB128 的内部宽度 `u64`。
+    fn as_u64(self) -> u64;
+}
+
+macro_rules! impl_uint {
+    ($($t:ty),*) => {
+        $(
+            impl Uint for $t {
+                #[inline]
+                fn as_u64(self) -> u64 {
+                    self as u64
+                }
+            }
+        )*
+    };
+}
+
+impl_uint!(u8, u16, u32, u64, usize);
+
+/// 把 `value` 按 LEB128 追加进 `out`。
+///
+/// 各 7 位组先落栈上定长缓冲，**一次** [`Sink::put`] 写出，避免逐字节回调下游。
+/// 分组次数由剩余值决定、且每一组都依赖上一次右移，无法跨组并行；这里保留串行循环，
+/// 批处理体现在收尾的单次 `put`，而不是逐字节回调。
+#[inline]
+pub fn write<N: Uint>(out: &mut impl Sink, value: N) {
+    let mut value = value.as_u64();
+    let mut buffer = [0u8; MAX_BYTES];
+    let mut len = 0;
     loop {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
         if value != 0 {
             byte |= 0x80;
         }
-        out.put(&[byte]);
+        buffer[len] = byte;
+        len += 1;
         if value == 0 {
-            return;
+            break;
         }
     }
-}
-
-/// 把 `u32` 按 LEB128 追加进任意 Sink。
-pub fn write_u32(out: &mut impl Sink, value: u32) {
-    write_u64(out, u64::from(value));
+    out.put(&buffer[..len]);
 }
 
 /// 只读游标：在一段字节上顺序取数，所有越界与非规范都返回错误而不是 panic。
@@ -45,14 +77,15 @@ impl<'a> Cursor<'a> {
     }
 
     /// 读一个原生 `u8`（不是 LEB）。
+    #[inline]
     pub fn read_u8(&mut self) -> Result<u8> {
         let byte = *self.bytes.get(self.pos).ok_or_else(|| end("u8"))?;
         self.pos += 1;
         Ok(byte)
     }
 
-    /// 读一个 LEB128 `u64`，并做规范性校验。
-    pub fn read_u64(&mut self) -> Result<u64> {
+    /// 规范 LEB128 累积到 `u64`：宽度校验引擎。每组依赖上一组的移位，串行不可并行。
+    fn raw(&mut self) -> Result<u64> {
         let mut value = 0u64;
         let mut shift = 0u32;
         loop {
@@ -66,10 +99,14 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    /// 读一个 LEB128 `u32`。
-    pub fn read_u32(&mut self) -> Result<u32> {
-        let value = self.read_u64()?;
-        u32::try_from(value).map_err(|_| bad("LEB128 整数超出 u32"))
+    /// 读一个规范 LEB128 整数，归约到目标无符号类型；超出目标宽度即报错。
+    ///
+    /// 目标类型由绑定推断（`let n: u32 = cur.read()?;`）或 turbofish
+    /// （`cur.read::<u64>()`）给出，不再提供按宽度拆开的包装方法。
+    #[inline]
+    pub fn read<N: TryFrom<u64>>(&mut self) -> Result<N> {
+        let value = self.raw()?;
+        N::try_from(value).map_err(|_| bad("LEB128 整数超出目标宽度"))
     }
 
     /// 从当前位置到末尾的全部剩余字节（不复制、不移动位置）。
@@ -93,6 +130,7 @@ impl<'a> Cursor<'a> {
 /// 一个 7 位组的规范性：第 10 个字节（`shift == 63`）只允许 `0x00`/`0x01`，
 /// 终止字节的有效位全 0 却又不是首字节时属于拉长的非规范编码。
 /// 只判这一组能不能收，不判整串够不够长——长度由 [`Cursor::read_u8`] 报。
+#[inline]
 fn checked_group(byte: u8, shift: u32) -> Result<u64> {
     if shift == 63 && byte > 1 {
         return Err(bad("LEB128 超出 u64 容量"));
@@ -104,11 +142,11 @@ fn checked_group(byte: u8, shift: u32) -> Result<u64> {
 }
 
 fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("weights::leb")
+    Error::new(Code::Invalid, message).with("wire::leb")
 }
 
 fn end(what: &str) -> Error {
-    Error::new(Code::Invalid, format!("字节不足，读不出 {what}")).with("weights::leb")
+    Error::new(Code::Invalid, format!("字节不足，读不出 {what}")).with("wire::leb")
 }
 
 #[cfg(test)]
@@ -119,14 +157,30 @@ mod tests {
     fn integers_round_trip_across_boundaries() {
         for value in [0u64, 1, 127, 128, 16_383, 16_384, u32::MAX as u64, u64::MAX] {
             let mut buf = Vec::new();
-            write_u64(&mut buf, value);
-            assert_eq!(Cursor::new(&buf).read_u64().expect("规范"), value);
+            write(&mut buf, value);
+            assert_eq!(Cursor::new(&buf).read::<u64>().expect("规范"), value);
         }
     }
 
     #[test]
+    fn every_unsigned_width_encodes() {
+        let mut buf = Vec::new();
+        write(&mut buf, 7u8);
+        write(&mut buf, 300u16);
+        write(&mut buf, 40_000u32);
+        write(&mut buf, 9_000_000_000u64);
+        write(&mut buf, 5usize);
+        let mut cur = Cursor::new(&buf);
+        assert_eq!(cur.read::<u64>().expect("u8"), 7);
+        assert_eq!(cur.read::<u64>().expect("u16"), 300);
+        assert_eq!(cur.read::<u32>().expect("u32"), 40_000);
+        assert_eq!(cur.read::<u64>().expect("u64"), 9_000_000_000);
+        assert_eq!(cur.read::<u64>().expect("usize"), 5);
+    }
+
+    #[test]
     fn a_padded_zero_is_rejected() {
-        let error = Cursor::new(&[0x80, 0x00]).read_u64().expect_err("非规范");
+        let error = Cursor::new(&[0x80, 0x00]).read::<u64>().expect_err("非规范");
         assert_eq!(error.code(), Code::Invalid);
     }
 
@@ -134,8 +188,8 @@ mod tests {
     fn an_overflowing_sequence_is_rejected() {
         let mut seq = vec![0x80u8; 9];
         seq.push(0x02); // 第 10 字节用了第 2 位，超出 u64
-        assert!(Cursor::new(&seq).read_u64().is_err());
-        assert!(Cursor::new(&[0x80u8; 11]).read_u64().is_err());
+        assert!(Cursor::new(&seq).read::<u64>().is_err());
+        assert!(Cursor::new(&[0x80u8; 11]).read::<u64>().is_err());
     }
 
     #[test]

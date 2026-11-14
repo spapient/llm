@@ -142,8 +142,13 @@ reason = "激活缓冲的存储 lane 与密封 trait；训练循环的公开面�
 
 [[ownership.unlisted]]
 crate = "weights"
-names = ["Axis", "Bin", "Cursor", "Gguf", "Mode", "Note", "Params", "Pick", "SecretKey", "Sha256", "Spectral", "Stable", "Svd", "Trunc", "Value", "Zip"]
-reason = "容器内部的游标、模式与后量子/线代暂住类型；待 ADR 0019 的拆分落地后一并进表"
+names = ["Axis", "Bin", "Gguf", "Mode", "Note", "Params", "Pick", "SecretKey", "Sha256", "Spectral", "Stable", "Svd", "Trunc", "Value", "Zip"]
+reason = "容器内部的模式与后量子/线代暂住类型；待 ADR 0019 的拆分落地后一并进表。`Cursor` 已随 ADR 0024 迁至 `wire`"
+
+[[ownership.unlisted]]
+crate = "wire"
+names = ["Count", "Cursor", "FileSink", "Measured", "Sealed", "Sink", "SliceSink", "Uint"]
+reason = "字节码闭集的接收器、游标与无符号整数标记族；公开面是 CRC/LEB/Sink 这组函数与 trait，内部实现件待边界稳定后逐项进表"
 
 [gate]
 # 静态质量门阈值（`tool` 分析器消费，`cargo test` 不可绕过）。
