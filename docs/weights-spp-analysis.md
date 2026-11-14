@@ -312,7 +312,7 @@ trait Compress {
 
 约束不变：单 crate、`src/` 全平级无子目录、不留下划线后缀兄弟文件、五个下游公开名（`Entry/Header/Loader/File/crc32`）与签名不动；内部合并只改模块路径，必要时 re-export。
 
-### 已完成的平级合并（工作树，未提交）
+### 已完成的平级合并（提交 `54e60451`）
 
 | 合并后文件 | 来源 | 行数 | 门禁 |
 | --- | --- | ---: | --- |
@@ -333,13 +333,13 @@ trait Compress {
 - 删前全仓核实：`train/nn/serve/根 bin` 无任何对这些模块或符号的引用；`serve` 的 `Envelope` 是其自有 proto 类型，与 weights 无关。
 - 测试数 170 → **104**（被删簇自带的自闭环用例随之移除）；`cargo check --all-targets`（含 nn/train/根）干净。
 
-### SEG 收口与 T2 第一笔（工作树，未提交）
+### SEG 收口与 Writer 单次编码（提交 `af350b7c`）
 
 - **三视图收敛**：`Segment`（写输入）/ `Desc`（解码）/ `Stored`（读视图）共享的 `name/dtype/shape/quant` 抽成内嵌 `pub(crate) Descriptor`，字段单一来源；`Segment` 补对称访问器 `name/dtype/shape/quant`，`data` 仍为公开字段。公开构造 `Segment::new` 与下游消费面不变。
 - **两遍编码合一**：`Writer::finish` 原先先 `encoded_len`（prepare 一遍，逐段 `rans::encode`）再 `write_body`（又 prepare 一遍）。抽出 `write_body_in(packed, ..)`，`finish` 只 prepare 一次，把同一份 packed 复用于长度计数与正文写出；`encoded_len` 仍独立单遍。`encode_into`/`write_to_path` 路径行为不变。
 - 复核结论：`Codec` 仅 `Store/Rans` 两变体，enum+match 分派已清晰，不另套 `Compress` trait（避免为两个策略过度设计）。
 
-### T2 性能第一笔：Merkle 叶子摘要惰性缓存（工作树，未提交）
+### T2 性能第一笔：Merkle 叶子摘要惰性缓存（提交 `3516be5a`）
 
 - **瓶颈定位（criterion 基线，64 段 × 1 KiB f32，集中在既有 `benches` 容器，未新建 crate/目录）**：`merkle_root` 302.92 µs、`prove` 302.59 µs、`verify` 292.01 µs——三者每次都经 `leaves()` 重解压全段再逐段哈希；`parse` 7.69 µs、`get_by_name` 52.3 ns、`finish` 199.34 µs 不在热点。
 - **改动**：`Archive` 增 `OnceLock<Result<Vec<Digest>>>` 惰性缓存；`collect_leaves` 只负责算，`cached_leaves` 首算后复用，`merkle_root/prove/verify` 改走缓存。`get_or_try_init` 在本工具链属未稳定库特性（`once_cell_try`，E0658），故用稳定 `get_or_init` 包裹内层 `Result`：解码失败的错误存下后原样克隆复返（`Error` 已 `Clone`）。容器字节不可变，缓存不引入失效语义；公开 API 与零拷贝读取不变。

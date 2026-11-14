@@ -1,6 +1,7 @@
-use super::*;
-use crate::atom::{Attr, AttrKey, DType, DTypeSet};
-use crate::decl::{Axis, Skeleton};
+use crate::cap::*;
+use crate::atom::{Attr, AttrKey, DType, DTypeSet, Grade, Need, Prim, Provide};
+use crate::decl::{Axis, OpDecl, Skeleton, Variant};
+use crate::prof::Profile;
 use crate::sch::Schedule;
 use diagnostic::data::Value;
 

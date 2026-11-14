@@ -245,7 +245,7 @@ impl<'a> Offer<'a> {
 }
 
 /// 同一原语可能有多条签名（`dot` 的 `dp4a` 与标量 `fma`），挑一条来比对：先看覆盖，再看证据，都不覆盖时取差异最少。
-fn select(prof: &Profile, need: &Need, proof: &Proof) -> Option<(Provide, Vec<Mismatch>)> {
+pub(crate) fn select(prof: &Profile, need: &Need, proof: &Proof) -> Option<(Provide, Vec<Mismatch>)> {
     select_borrowed(prof, need, proof).map(|offer| (offer.have.clone(), offer.diff))
 }
 
@@ -340,7 +340,7 @@ fn failing_report(prof: &Profile, need: &Need, proof: &Proof) -> Option<NeedRepo
 
 /// 一条需求的检查结果。等级本来就不够时不再说"没执行"：那是同一个结论的另一种说法。
 #[cfg(test)]
-fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedReport {
+pub(crate) fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedReport {
     match select_borrowed(prof, need, proof) {
         None => NeedReport {
             need: need.clone(),
@@ -592,6 +592,3 @@ impl fmt::Display for FragmentGap {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

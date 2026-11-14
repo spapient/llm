@@ -102,6 +102,11 @@ pub mod verify;
 pub mod witness;
 
 mod device;
+mod device_cpu;
+mod device_cuda;
+mod device_metal;
+#[cfg(test)]
+mod cap_tests;
 mod gate;
 mod harness;
 mod pipeline;

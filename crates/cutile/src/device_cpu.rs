@@ -1,7 +1,7 @@
 //! C（host CPU）前端：见证本身就是一段 host C，`cc` 把它与 harness 编成可执行文件跑一遍。
 //!
 //! 它证明"这段 C 在这个 ABI 下编得过、跑得出 `expect`"，**不**证明设备具备该能力。
-//! 身份由 `#[frontend]` 生成；共享装载、起进程与回读在 [`super`]。
+//! 身份由 `#[frontend]` 生成；共享装载、起进程与回读在 [`crate::device`]。
 
 use crate::build;
 use crate::dirs::Dirs;
@@ -42,9 +42,9 @@ impl Device for CpuDevice {
         scope: Scope,
     ) -> Result<String> {
         let mut program = c_head(profile, scope, selected);
-        super::push_sources(
+        crate::device::push_sources(
             &mut program,
-            &super::witness_files(selected, dirs, super::C_PARAMS)?,
+            &crate::device::witness_files(selected, dirs, crate::device::C_PARAMS)?,
         );
         program.push_str(&harness::<OUT>(selected));
         Ok(program)
@@ -56,7 +56,7 @@ impl Device for CpuDevice {
         program: &str,
         _count: usize,
         scope: Scope,
-    ) -> Result<super::Readback> {
+    ) -> Result<crate::device::Readback> {
         let (_, flags) = c_compile_inputs(profile, scope);
         // 设备执行与自检是两个不同的缓存命名空间：同一段文本在两套参数下编出的产物不同。
         let tag = match scope {
@@ -67,7 +67,7 @@ impl Device for CpuDevice {
         let (outcome, _artifact) =
             build::run_program(toolchain::detect().as_ref(), &flags, tag, program, dirs)?;
         // stdout 已由 `runner` 解码成 f32，这里只补上 stderr 里的写入个数。
-        Ok((super::parse_counts(&outcome.stderr), outcome.bits))
+        Ok((crate::device::parse_counts(&outcome.stderr), outcome.bits))
     }
 }
 
@@ -78,7 +78,7 @@ fn c_head(profile: &Profile, scope: Scope, selected: &[Selected<'_>]) -> String 
     let metal = selected
         .iter()
         .any(|(_, _, witness)| witness.file.ends_with(".metal"));
-    super::normalize_newline(&mut head);
+    crate::device::normalize_newline(&mut head);
     head.push_str("#include <stdio.h>\n\n");
     if scope == Scope::Host && metal {
         head.push_str("#define thread\n");

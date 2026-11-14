@@ -1,7 +1,7 @@
 //! CUDA 真机前端：nvcc 把见证编进 `__global__` kernel，在 GPU 上按 tid 逐条执行，再 cudaMemcpy 回读。
 //!
 //! 与 `CudaFront` 的主机语法自检不同，这里是真设备执行；它**不**证明别的架构或别的 `-arch` 下成立。
-//! 共享装载、起进程与回读在 [`super`]。
+//! 共享装载、起进程与回读在 [`crate::device`]。
 
 use crate::dirs::Dirs;
 use crate::prof::Profile;
@@ -38,9 +38,9 @@ impl Device for CudaDevice {
         program: &str,
         _count: usize,
         _scope: crate::witness::Scope,
-    ) -> Result<super::Readback> {
+    ) -> Result<crate::device::Readback> {
         let (stdout, stderr) = compile_run_cuda(profile, dirs, program, "witness")?;
-        Ok(super::readback(&stdout, &stderr))
+        Ok(crate::device::readback(&stdout, &stderr))
     }
 }
 
@@ -51,8 +51,8 @@ fn cuda_program<const OUT: usize>(
     selected: &[Selected<'_>],
 ) -> Result<String> {
     let mut program = cuda_head(profile);
-    let files = as_device(super::witness_files(selected, dirs, super::C_PARAMS)?);
-    super::push_sources(&mut program, &files);
+    let files = as_device(crate::device::witness_files(selected, dirs, crate::device::C_PARAMS)?);
+    crate::device::push_sources(&mut program, &files);
     push_cuda_kernel(&mut program, OUT, selected);
     push_cuda_main(&mut program, OUT, selected.len());
     Ok(program)
@@ -70,7 +70,7 @@ fn cuda_head(profile: &Profile) -> String {
 }
 
 /// 给见证定义加 `__device__`：kernel 要调用它们，而 `int witness` 只出现在定义处。
-fn as_device(files: super::Sources) -> super::Sources {
+fn as_device(files: crate::device::Sources) -> crate::device::Sources {
     files
         .into_iter()
         .map(|(file, text)| (file, text.replace("int witness", "__device__ int witness")))
@@ -88,7 +88,7 @@ fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>])
          \x20   int n = 0;\n\
          \x20   switch (tid) {{\n"
     ));
-    super::push_dispatch(program, max, selected, "}}\n\n");
+    crate::device::push_dispatch(program, max, selected, "}}\n\n");
 }
 
 /// host main：分配、发射、同步、回读——stdout 只按实际写入个数打印位模式（与 CPU harness
@@ -131,7 +131,7 @@ pub fn compile_run_cuda(
     program: &str,
     label: &str,
 ) -> Result<(String, String)> {
-    let dir = super::scratch(dirs, &format!("{label}-cuda"));
+    let dir = crate::device::scratch(dirs, &format!("{label}-cuda"));
     let outcome = cuda_in_dir(&dir, profile, program, label);
     let _ = std::fs::remove_dir_all(&dir);
     outcome
@@ -146,10 +146,10 @@ fn cuda_in_dir(
 ) -> Result<(String, String)> {
     let src = dir.join(format!("{label}.cu"));
     let exe = dir.join(format!("{label}.exe"));
-    super::write_text(&src, program)?;
+    crate::device::write_text(&src, program)?;
     cuda_compile(&exe, &src, profile)?;
     let mut command = Command::new(&exe);
-    super::run_exe(&mut command, &exe, "CUDA 执行失败")
+    crate::device::run_exe(&mut command, &exe, "CUDA 执行失败")
 }
 
 /// nvcc 编译：Windows 上用 `-ccbin` 显式指向 cl.exe，不依赖 vcvars/PATH。
@@ -166,5 +166,5 @@ fn cuda_compile(exe: &Path, src: &Path, profile: &Profile) -> Result<()> {
         command.arg("-ccbin").arg(cl);
     }
     command.arg("-o").arg(exe).arg(src);
-    super::run_tool("nvcc", &mut command, src)
+    crate::device::run_tool("nvcc", &mut command, src)
 }

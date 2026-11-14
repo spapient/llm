@@ -2,7 +2,7 @@
 //!
 //! 不能用 host C 自检代替：MSL 没有默认地址空间，`float *out` 在 `.metal` 里是语法错误。
 //! 证明"这条见证在本机 Metal 设备上跑得出 `expect`"，**不**证明它在别的芯片、别的 `-std` 下同样成立。
-//! 共享装载、起进程与回读在 [`super`]。
+//! 共享装载、起进程与回读在 [`crate::device`]。
 
 use crate::dirs::Dirs;
 use crate::prof::Profile;
@@ -42,7 +42,7 @@ impl Device for MetalDevice {
         program: &str,
         count: usize,
         _scope: crate::witness::Scope,
-    ) -> Result<super::Readback> {
+    ) -> Result<crate::device::Readback> {
         // 设备参数来自档案：`-std=metal3.1` 之类决定了这段 MSL 按哪个语言版本编。
         run_metal(program, count, &profile.flags, dirs)
     }
@@ -56,9 +56,9 @@ fn metal_program<const OUT: usize>(
     selected: &[Selected<'_>],
 ) -> Result<String> {
     let mut program = metal_head(profile);
-    super::push_sources(
+    crate::device::push_sources(
         &mut program,
-        &super::witness_files(selected, dirs, MSL_PARAMS)?,
+        &crate::device::witness_files(selected, dirs, MSL_PARAMS)?,
     );
     push_metal_kernel(&mut program, OUT, selected);
     Ok(program)
@@ -67,7 +67,7 @@ fn metal_program<const OUT: usize>(
 /// MSL 的头：档案的 `[compile].preamble`，补齐结尾换行后直接接见证源码。
 fn metal_head(profile: &Profile) -> String {
     let mut head = profile.preamble.clone();
-    super::normalize_newline(&mut head);
+    crate::device::normalize_newline(&mut head);
     head
 }
 
@@ -83,7 +83,7 @@ fn push_metal_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]
          \x20   int n = 0;\n\
          \x20   switch (tid) {{\n"
     ));
-    super::push_dispatch(program, max, selected, "}\n");
+    crate::device::push_dispatch(program, max, selected, "}\n");
 }
 
 /// 编译并执行一次 Metal 见证程序，返回 `(每条写入个数, 按顺序回读的值)`。写、起子进程、回读三步分开；
@@ -93,8 +93,8 @@ fn run_metal(
     count: usize,
     flags: &[String],
     dirs: &Dirs,
-) -> Result<super::Readback> {
-    let dir = super::scratch(dirs, "witness-metal");
+) -> Result<crate::device::Readback> {
+    let dir = crate::device::scratch(dirs, "witness-metal");
     let outcome = metal_in_dir(&dir, program, count, flags);
     let _ = std::fs::remove_dir_all(&dir);
     outcome
@@ -106,7 +106,7 @@ fn metal_in_dir(
     program: &str,
     count: usize,
     flags: &[String],
-) -> Result<super::Readback> {
+) -> Result<crate::device::Readback> {
     let metalib = metal_kernel(dir, program, flags)?;
     let exe = metal_driver_exe(dir)?;
     metal_readback(&exe, &metalib, count)
@@ -117,13 +117,13 @@ fn metal_kernel(dir: &Path, program: &str, flags: &[String]) -> Result<PathBuf> 
     let msl = dir.join("witness.metal");
     let air = dir.join("witness.air");
     let metalib = dir.join("witness.metallib");
-    super::write_text(&msl, program)?;
+    crate::device::write_text(&msl, program)?;
     let mut compile = xcrun("metal", flags);
     compile.arg("-c").arg(&msl).arg("-o").arg(&air);
-    super::run_tool("xcrun metal", &mut compile, &msl)?;
+    crate::device::run_tool("xcrun metal", &mut compile, &msl)?;
     let mut link = xcrun("metallib", &[]);
     link.arg(&air).arg("-o").arg(&metalib);
-    super::run_tool("xcrun metallib", &mut link, &msl)?;
+    crate::device::run_tool("xcrun metallib", &mut link, &msl)?;
     Ok(metalib)
 }
 
@@ -145,23 +145,23 @@ fn metal_driver_exe(dir: &Path) -> Result<PathBuf> {
     };
     let driver = dir.join("driver.m");
     let exe = dir.join("driver");
-    super::write_text(&driver, &metal_driver(MAX_OUT))?;
+    crate::device::write_text(&driver, &metal_driver(MAX_OUT))?;
     let mut clang = Command::new(&compiler.command);
     clang
         .args(["-fobjc-arc", "-O2", "-o"])
         .arg(&exe)
         .arg(&driver);
     clang.args(["-framework", "Foundation", "-framework", "Metal"]);
-    super::run_tool(&compiler.command, &mut clang, &driver)?;
+    crate::device::run_tool(&compiler.command, &mut clang, &driver)?;
     Ok(exe)
 }
 
 /// 起驱动子进程并回读：`metallib` 与条数是它的两个参数。
-fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<super::Readback> {
+fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<crate::device::Readback> {
     let mut command = Command::new(exe);
     command.arg(metalib).arg(count.to_string());
-    let (stdout, stderr) = super::run_exe(&mut command, exe, "Metal 见证执行失败")?;
-    Ok(super::readback(&stdout, &stderr))
+    let (stdout, stderr) = crate::device::run_exe(&mut command, exe, "Metal 见证执行失败")?;
+    Ok(crate::device::readback(&stdout, &stderr))
 }
 
 /// 把 `metallib` 里的 `cutile_witness` 发射到 GPU，回读个数与值。计数走 stderr、值走 stdout

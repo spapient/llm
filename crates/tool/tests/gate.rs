@@ -132,8 +132,11 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn is_production(path: &Path) -> bool {
-    path.components().any(|part| part.as_os_str() == "src")
-        && path.file_name() != Some("tests.rs".as_ref())
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    let test_fixture = name == "tests.rs" || name.ends_with("_tests.rs");
+    path.components().any(|part| part.as_os_str() == "src") && !test_fixture
 }
 
 /// 纳入链接检查的文档：根 README、`docs/**/*.md`（含 ADR）、各成员 README。

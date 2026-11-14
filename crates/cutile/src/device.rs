@@ -4,16 +4,13 @@
 //! 三段共用的装载、命名、起进程与回读各只有一份，算不算证据由 [`crate::witness`] 决定。
 //! 编译器探测与身份在 [`crate::toolchain`]，编译/执行原语在 [`crate::runner`]。
 //!
-//! 各前端实现见 [`cpu`]（host C）、[`metal`]（MSL + Metal 驱动）、[`cuda`]（nvcc 真机）。
+//! 各前端实现见 [`crate::device_cpu`]（host C）、[`crate::device_metal`]（MSL + Metal 驱动）、
+//! [`crate::device_cuda`]（nvcc 真机）。
 
-mod cpu;
-mod cuda;
-mod metal;
-
-pub(crate) use cpu::{CpuDevice, HOST_FLAGS};
-pub(crate) use cuda::CudaDevice;
-pub use cuda::compile_run_cuda;
-pub(crate) use metal::MetalDevice;
+pub(crate) use crate::device_cpu::{CpuDevice, HOST_FLAGS};
+pub(crate) use crate::device_cuda::CudaDevice;
+pub use crate::device_cuda::compile_run_cuda;
+pub(crate) use crate::device_metal::MetalDevice;
 
 use crate::atom::{Prim, Witness};
 use crate::dirs::Dirs;
@@ -49,7 +46,7 @@ fn witness_source(prim: &Prim, witness: &Witness, dirs: &Dirs, params: &str) -> 
 }
 
 /// 本次执行的见证源码：按文件去重，同一文件里的多条见证只出现一次。
-fn witness_files(selected: &[Selected<'_>], dirs: &Dirs, params: &str) -> Result<Sources> {
+pub(crate) fn witness_files(selected: &[Selected<'_>], dirs: &Dirs, params: &str) -> Result<Sources> {
     let mut files = Sources::new();
     for (prim, _, witness) in selected {
         if files.contains_key(&witness.file) {
@@ -64,7 +61,7 @@ fn witness_files(selected: &[Selected<'_>], dirs: &Dirs, params: &str) -> Result
 }
 
 /// 源码段接在头之后：每段补齐换行再空一行，段与段之间因此总有分隔。
-fn push_sources(program: &mut String, files: &Sources) {
+pub(crate) fn push_sources(program: &mut String, files: &Sources) {
     for text in files.values() {
         program.push_str(text);
         if !program.ends_with('\n') {
@@ -75,14 +72,14 @@ fn push_sources(program: &mut String, files: &Sources) {
 }
 
 /// 让一段文本以换行结尾（空文本保持为空）：下一段可以直接接上。
-fn normalize_newline(text: &mut String) {
+pub(crate) fn normalize_newline(text: &mut String) {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
 }
 
 /// 写一个文件，并把它的上层目录建出来：一次性构建目录都只有一层。
-fn write_text(path: &Path, text: &str) -> Result<()> {
+pub(crate) fn write_text(path: &Path, text: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             Error::new(Code::Io, format!("创建 {} 失败：{error}", parent.display()))
@@ -93,7 +90,7 @@ fn write_text(path: &Path, text: &str) -> Result<()> {
 }
 
 /// 跑一条编译器命令；非零退出码时把命令、完整输出与源文件路径一并带进诊断。
-fn run_tool(name: &str, command: &mut Command, source: &Path) -> Result<()> {
+pub(crate) fn run_tool(name: &str, command: &mut Command, source: &Path) -> Result<()> {
     let output = command
         .output()
         .map_err(|error| Error::new(Code::Io, format!("调用 `{name}` 失败：{error}")))?;
@@ -112,7 +109,7 @@ fn run_tool(name: &str, command: &mut Command, source: &Path) -> Result<()> {
 }
 
 /// 跑一个已经编好的可执行文件，返回 `(stdout, stderr)` 原文。非零退出码报 [`Code::Unsupported`]：编得过却跑不起来说明这台机器现在跑不了，不是见证写错了。
-fn run_exe(command: &mut Command, path: &Path, failure: &str) -> Result<(String, String)> {
+pub(crate) fn run_exe(command: &mut Command, path: &Path, failure: &str) -> Result<(String, String)> {
     let output = command
         .output()
         .map_err(|error| Error::new(Code::Io, format!("运行 {} 失败：{error}", path.display())))?;
@@ -141,7 +138,7 @@ pub(crate) fn parse_counts(stderr: &str) -> Vec<i64> {
 
 /// 回读解码：个数走 stderr（`witness N`），值走 stdout 的 f32 位模式；两条通道必须分开，
 /// 否则 [`runner::parse_bits`] 会把计数当成值解出来。
-fn readback(stdout: &str, stderr: &str) -> Readback {
+pub(crate) fn readback(stdout: &str, stderr: &str) -> Readback {
     (parse_counts(stderr), runner::parse_bits(stdout))
 }
 
@@ -158,7 +155,7 @@ pub(crate) fn scratch(dirs: &Dirs, tag: &str) -> PathBuf {
 
 /// 两个后端 kernel 共享的分派段：按 `tid` 的 `switch`、cap 截断与回写循环。`close` 是 kernel
 /// 收尾文本（Metal 与 CUDA 的换行数不同）：`local` 声明留在各自函数里，这里只拼逐字相同的部分。
-fn push_dispatch(program: &mut String, max: usize, selected: &[Selected<'_>], close: &str) {
+pub(crate) fn push_dispatch(program: &mut String, max: usize, selected: &[Selected<'_>], close: &str) {
     for (index, (_, _, witness)) in selected.iter().enumerate() {
         program.push_str(&format!(
             "        case {index}: n = {}(local); break;\n",
