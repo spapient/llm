@@ -11,8 +11,11 @@ publish = false
 
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }
-llm-config = { path = "../config" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [lints]
 workspace = true
+
+[build-dependencies]
+# 构建期共享内核（扫描/读取/生成）在 diagnostic 的 build feature 下，运行期不引入 toml。
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["build"] }
