@@ -85,6 +85,7 @@ pub mod gguf;
 mod gguf_q;
 pub mod json;
 pub mod safetensors;
+mod safetensors_file;
 
 // 纯字节码基础件归 L1 `wire`（ADR 0024）；这里只做薄转发，保持容器内部路径不变。
 /// CRC-32（转发自 `wire::crc`）。
