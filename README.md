@@ -32,8 +32,8 @@ cargo test --workspace                        # 跑全部成员的测试与 doct
 注解声明的层（形状与算子写在属性里）与运行期构造的层（宽度按配置计算）走同一条校验路径：
 
 ```rust
-#[nn::layer(name = "lm_head", out = [4096], ops = ["gemv_i4"])]
-struct LmHead;   // 生成 impl nn::Layer + 一条“声明仍与 op 数据一致”的测试
+#[nn::spec(name = "lm_head", out = [4096], ops = ["gemv_i4"])]
+struct LmHead;   // 生成 impl nn::Contract + 一条“声明仍与 op 数据一致”的测试
 ```
 
 注意：因为根目录本身就是一个包，不带 `-p` / `--workspace` 的 `cargo build`、`cargo test`、`cargo clippy`、`cargo doc`
@@ -96,7 +96,7 @@ llm ──▶ engine ──▶ tensor ──▶ mem ──▶ diagnostic
 │                         # 0012 量化权重的分组与宽度必须同源
 │                         # 0014 真实权重执行：同一件内核，换一份样本
 └── crates/
-    ├── annotation/       # #[layer] 属性宏：注解 → 校验过的 Layer 实现（零外部依赖）
+    ├── annotation/       # #[spec] 属性宏：注解 → 校验过的 Contract 实现（零外部依赖）
     ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行（bin 在根包 `src/bin/cutile.rs`）；report/ 是命令侧报告
     ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义；einsum/ 是求和代价的来源
     ├── prof/             # 档案层：devices/<vendor>.toml + 能力词汇表

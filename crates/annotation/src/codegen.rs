@@ -1,10 +1,10 @@
-//! 代码生成：把 [`Declaration`] 渲染成 `impl nn::Layer` 与一条校验测试。
+//! 代码生成：把 [`Declaration`] 渲染成 `impl nn::Contract` 与一条校验测试。
 //!
 //! 这里只做字符串拼接、不维护任何状态，也不接触 `proc_macro`，因此可以用纯文本断言测试。
 //! 生成的代码是确定的三块（被标注项由调用方原样拼接）：
 //!
-//! 1. 一个私有构造函数 `__layer_spec()`，用 `OnceLock` 保证 `LayerSpec` 只构造一次；
-//! 2. 一份 `impl ::nn::Layer`，只把三个访问器转发给它；
+//! 1. 一个私有构造函数 `__layer_spec()`，用 `OnceLock` 保证 `ContractSpec` 只构造一次；
+//! 2. 一份 `impl ::nn::Contract`，只把三个访问器转发给它；
 //! 3. 一个 `#[cfg(test)]` 模块，在 `cargo test` 时校验"注解里的算子仍然存在"。
 //!
 //! 生成的名字一律带 `__layer_` 前缀：宏展开不该占用一个用户可能想用的普通名字
@@ -21,7 +21,7 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     code
 }
 
-/// 第一块：私有构造函数 `__layer_spec()`，`OnceLock` 保证 `LayerSpec` 只构造一次。
+/// 第一块：私有构造函数 `__layer_spec()`，`OnceLock` 保证 `ContractSpec` 只构造一次。
 fn render_spec(code: &mut String, declaration: &Declaration, ty: &str) {
     let name = literal(&declaration.name);
     let shape = shape(&declaration.out);
@@ -35,13 +35,13 @@ fn render_spec(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("#[automatically_derived]\n");
     code.push_str(&format!("impl {ty} {{\n"));
     code.push_str("    #[doc(hidden)]\n");
-    code.push_str("    fn __layer_spec() -> &'static ::nn::LayerSpec {\n");
+    code.push_str("    fn __layer_spec() -> &'static ::nn::ContractSpec {\n");
     code.push_str(
-        "        static SPEC: ::std::sync::OnceLock<::nn::LayerSpec> = ::std::sync::OnceLock::new();\n",
+        "        static SPEC: ::std::sync::OnceLock<::nn::ContractSpec> = ::std::sync::OnceLock::new();\n",
     );
     code.push_str("        SPEC.get_or_init(|| {\n");
     code.push_str(&format!(
-        "            let declaration = ::nn::LayerSpec::new({name}, {shape}, ::std::vec![{ops}]);\n"
+        "            let declaration = ::nn::ContractSpec::new({name}, {shape}, ::std::vec![{ops}]);\n"
     ));
     code.push_str("            match declaration {\n");
     code.push_str("                ::core::result::Result::Ok(spec) => spec,\n");
@@ -56,16 +56,16 @@ fn render_spec(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("}\n\n");
 }
 
-/// 第二块：`impl nn::Layer`，只把三个访问器转发给 [`render_spec`] 生成的那份 `LayerSpec`。
+/// 第二块：`impl nn::Contract`，只把三个访问器转发给 [`render_spec`] 生成的那份 `ContractSpec`。
 fn render_layer(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("#[automatically_derived]\n");
-    code.push_str(&format!("impl ::nn::Layer for {ty} {{\n"));
+    code.push_str(&format!("impl ::nn::Contract for {ty} {{\n"));
     code.push_str("    fn name(&self) -> &str {\n        <Self>::__layer_spec().name()\n    }\n");
     code.push_str(
         "    fn output(&self) -> &::nn::Shape {\n        <Self>::__layer_spec().output()\n    }\n",
     );
     code.push_str(
-        "    fn spec(&self) -> &::nn::LayerSpec {\n        <Self>::__layer_spec()\n    }\n",
+        "    fn spca(&self) -> &::nn::ContractSpec {\n        <Self>::__layer_spec()\n    }\n",
     );
     // `in` 给了规约轴宽度，下界就有得算；没给就沿用契约里的默认实现（`Ok(None)`），
     // 而不是生成一个“返回空值”的方法把“这一层不懂自己的形状”藏起来。
@@ -117,7 +117,7 @@ fn render_layer_check(code: &mut String, declaration: &Declaration, ty: &str) {
 /// 2. `tag` 不能为空——它进产物身份，空标签会让所有程序的缓存条目挤在一起。
 ///
 /// 路径写成 `crate::witness::..`：本注解只作用于 `audit` 的执行前端，不引入跨 crate 的
-/// 隐式依赖（与 `#[layer]` 指向 `::nn::..` 是同一个约定：注解绑定它所属契约的路径）。
+/// 隐式依赖（与 `#[spec]` 指向 `::nn::..` 是同一个约定：注解绑定它所属契约的路径）。
 pub(crate) fn render_frontend(frontend: &Frontend, ty: &str) -> String {
     let emit = &frontend.emit;
     let emit_literal = literal(emit);
@@ -521,13 +521,13 @@ mod tests {
             "LmHead",
         );
         assert!(code.contains("impl LmHead {"), "{code}");
-        assert!(code.contains("impl ::nn::Layer for LmHead {"), "{code}");
+        assert!(code.contains("impl ::nn::Contract for LmHead {"), "{code}");
         assert!(
-            code.contains("fn __layer_spec() -> &'static ::nn::LayerSpec"),
+            code.contains("fn __layer_spec() -> &'static ::nn::ContractSpec"),
             "{code}"
         );
         assert!(
-            code.contains(r#"::nn::LayerSpec::new("lm_head", ::nn::Shape::new([4096usize]), ::std::vec!["gemv_i4".to_string()])"#),
+            code.contains(r#"::nn::ContractSpec::new("lm_head", ::nn::Shape::new([4096usize]), ::std::vec!["gemv_i4".to_string()])"#),
             "{code}"
         );
     }
@@ -616,17 +616,13 @@ mod tests {
             "{code}"
         );
         assert!(
-            !code.contains("as ::nn::Layer>::spec()"),
-            "`spec` 需要 &self，不能用无接收者的 UFCS：{code}"
+            !code.contains("as ::nn::Contract>::spca()"),
+            "`spca` 需要 &self，不能用无接收者的 UFCS：{code}"
         );
     }
 
-    #[test]
-    fn the_generated_braces_are_balanced() {
-        let code = render(
-            &declaration(r#"name = "q", out = [2, 3], ops = ["gemv_i4"]"#),
-            "Q",
-        );
+    /// 生成代码的花括号必须配平，且中途不出现多余的 `}`。
+    fn assert_balanced_braces(code: &str) {
         let mut depth: i32 = 0;
         for character in code.chars() {
             match character {
@@ -637,6 +633,15 @@ mod tests {
             assert!(depth >= 0, "出现了多余的 `}}`：{code}");
         }
         assert_eq!(depth, 0, "花括号没有配平：{code}");
+    }
+
+    #[test]
+    fn the_generated_braces_are_balanced() {
+        let code = render(
+            &declaration(r#"name = "q", out = [2, 3], ops = ["gemv_i4"]"#),
+            "Q",
+        );
+        assert_balanced_braces(&code);
     }
 
     #[test]
@@ -797,73 +802,42 @@ mod tests {
     #[test]
     fn the_generated_model_code_has_balanced_braces() {
         let code = render_model(&model(r#"name = "q", shape = [8, 4], dtype = "f16""#), "Q");
-        let mut depth: i32 = 0;
-        for character in code.chars() {
-            match character {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                _ => {}
-            }
-            assert!(depth >= 0, "出现了多余的 `}}`：{code}");
-        }
-        assert_eq!(depth, 0, "花括号没有配平：{code}");
+        assert_balanced_braces(&code);
     }
-}
 
-#[cfg(test)]
-mod dump_tests {
-    use super::*;
-    use crate::fixture::lex;
-    use crate::syntax;
-
+    /// 首字母大写规则的边界：空串仍是空串，普通词只动首字符。
     #[test]
-    fn dump_golden() {
-        let layers = [
-            r#"name = "lm_head", out = [4096], ops = ["gemv_i4"]"#,
-            r#"name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"]"#,
-            r#"name = "loss", out = [], ops = ["dot"]"#,
-            r#"name = "q", out = [2, 3], ops = ["a", "b"]"#,
-        ];
-        for text in layers {
-            println!("=== LAYER {text}");
-            println!("{}", render(&syntax::parse(&lex(text)).unwrap(), "T"));
-        }
-        let frontends = [
-            r#"emit = "opencl", ext = "cl", tag = "witness""#,
-            r#"emit = "cuda", ext = "cu", tag = "self""#,
-        ];
-        for text in frontends {
-            println!("=== FRONTEND {text}");
-            println!(
-                "{}",
-                render_frontend(&syntax::parse_frontend(&lex(text)).unwrap(), "T")
-            );
-        }
-        for skeleton in syntax::SKELETONS {
-            let name = if skeleton == "gemm" {
-                "gemm_i8"
-            } else {
-                "op_under_test"
-            };
-            let text = format!(
-                r#"name = "{name}", shape = [8, 4], dtype = "bf16", skeleton = "{skeleton}""#
-            );
-            println!("=== MODEL {text}");
-            println!(
-                "{}",
-                render_model(&syntax::parse_model(&lex(&text)).unwrap(), "T")
-            );
-        }
-        let extra = [
-            r#"name = "q", shape = [8, 4], dtype = "f16""#,
-            r#"name = "flash_attention_f32", shape = [8, 4], dtype = "f32", skeleton = "attention""#,
-        ];
-        for text in extra {
-            println!("=== MODEL {text}");
-            println!(
-                "{}",
-                render_model(&syntax::parse_model(&lex(text)).unwrap(), "T")
-            );
-        }
+    fn capitalisation_leaves_an_empty_name_empty() {
+        assert_eq!(capitalised(""), "");
+        assert_eq!(capitalised("opencl"), "Opencl");
+    }
+
+    /// 闭集一旦被绕过（例如手写构造了一个未映射的 `dtype`），生成器早退回 `compile_error!`，
+    /// 而不是悄悄挑一个别的变体绑进 `MODEL`。
+    #[test]
+    fn an_unmapped_dtype_falls_back_to_a_compile_error() {
+        let decl = ModelDecl {
+            name: "x".to_string(),
+            shape: [8, 4],
+            dtype: "f96".to_string(),
+            skeleton: "gemv".to_string(),
+        };
+        let code = render_model(&decl, "M");
+        assert!(code.contains("compile_error!"), "{code}");
+        assert!(code.contains("DType"), "{code}");
+    }
+
+    /// 骨架表里没有的名字同样早退回编译错误：不允许落到一个默认分支去绑错模型。
+    #[test]
+    fn an_unlisted_skeleton_falls_back_to_a_compile_error() {
+        let decl = ModelDecl {
+            name: "x".to_string(),
+            shape: [8, 4],
+            dtype: "f32".to_string(),
+            skeleton: "ghost".to_string(),
+        };
+        let code = render_model(&decl, "M");
+        assert!(code.contains("compile_error!"), "{code}");
+        assert!(code.contains("骨架"), "{code}");
     }
 }

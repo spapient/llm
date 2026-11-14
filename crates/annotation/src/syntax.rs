@@ -158,7 +158,7 @@ const fn row<'a>(
     }
 }
 
-/// `#[layer(..)]` 的键表，顺序即「未知键」提示里的顺序。
+/// `#[spec(..)]` 的键表，顺序即「未知键」提示里的顺序。
 const LAYER: [KeySpec<'static>; 4] = [
     row(KEYS[0], name_value, "名字只能声明一次", Some(" = \"..\"")),
     row(KEYS[1], out_value, "输出形状只能声明一次", Some(" = [..]")),

@@ -207,7 +207,7 @@ mod tests {
         );
     }
 
-    /// 每个映射到的算子名都必须在 `op` 注册表里真的存在：否则 `LayerSpec::new` 会在构造时
+    /// 每个映射到的算子名都必须在 `op` 注册表里真的存在：否则 `ContractSpec::new` 会在构造时
     /// 以 `missing` 拒绝，这里提前把漂移钉在测试里。
     #[test]
     fn every_mapped_operator_name_is_declared() {

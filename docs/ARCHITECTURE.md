@@ -134,7 +134,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Replay` / `Store` | `autograd` | 重放执行：把计划编成"第 `k` 步之前重算哪几步、之后交还哪些激活"的扁平序列表，并驱动整次反向。`Store` 是唯一的口子（`compute` / `free`），真实缓冲归 `train`，这一层不碰数值 |
 | `Envelope` / `Frame` / `Decoder` / `Kind` / `Version` | `serve`（`proto` 子模块） | 端点契约的线格式（ADR 0019 第七次吸收）：版本化信封、零拷贝帧视图与增量解码；帧布局、版本规则、载荷上限与校验尾见 ADR 0016。它不再独立成成员——唯一消费者就是同一个 crate 的 [`Response::frame`] 与 `Endpoint`，独立成员只会让"改协议"与"改端点"跨两次提交 |
 | `Batch` / `Split` / `Dataset` / `Chunks` | `data` | 样本与切分。`Batch` 与 `Chunks` 都借用调用方的 token 缓冲（取批零分配、零拷贝），两个构造函数都按 `(rows, cols)` 收几何、与 `Shape::new([rows, cols])` 同序——此前 `Chunks::new` 收 `(cols, rows)`，同一对数字换个构造函数就是一次静默转置。批几何与批总数都在 `Chunks::new` 构造期算好，所以 `Dataset::next_batch` 的 `None` 只有一个含义：剩余不足一整批。三个计数各说一件事：`cols` 是列宽、`batches` 是完整批总数、`remaining_batches` 是还没取走的批数，`Chunks::rows` 只表示每批行数；`Chunks` 还是 `ExactSizeIterator`，`len()` 与 `size_hint` 都取自 `remaining_batches`，「还剩几条」因此只有一个来源。`Dataset<'a>` 是对象安全的（`&mut dyn Dataset<'a>` 可用），而 `Split` 的单位是样本行、`Chunks` 的单位是批，两者不互相换算 |
-| `Layer` / `LayerSpec` / `Linear` / `LmHead` / `WeightFormat` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`LmHead` 是注解声明的固定形状层（形状、输入宽度与算子写在 `#[layer]` 上，`impl Layer` 与校验测试由宏生成）——它曾经住在 L7 组装点，而组装点不定义类型。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Layer::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
+| `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`LmHead` 是注解声明的固定形状层（形状、输入宽度与算子写在 `#[spec]` 上，`impl Contract` 与校验测试由宏生成）——它曾经住在 L7 组装点，而组装点不定义类型。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Contract::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
 | `Bounds` | `nn` | 层的性能下界：`read` / `write` / `flops` 三笔，按方向分账（`bytes()` 是派生合计）；由算子语义推出，不认识设备峰值、也不做 roofline 编排 |
 | `Stack` / `Floor` / `Unpriced` | `nn` | 层栈：一串层 + 它们的总下界（`Bounds::plus`）。层的清单可来自声明或权重文件的条目；不是矩阵的条目列进未覆盖清单，是矩阵但推不出下界的列进无法计价清单——两者都不允许静默丢弃，也都不让整张模型算不出下界 |
 | `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` / `Partition` | `shard` | 集合通信契约（进程组、归约、后端 trait）与 TP/PP/DP 拓扑；`world` 是构造期算好的精确值（`tp · pp · dp` 必须能用 `u32` 表示，因为 rank 就是 `u32`），因此 `check` 不会接受一个不可能的进程数、`group` 也不会用回绕的乘积发出"看起来合法"的 rank |
@@ -145,7 +145,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行解析；只分派，不执行任何业务 |
 | `Report` / `join_names` | `tool` | 人可读输出；只接字符串，不接领域类型 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tool` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
-| `layer` / `frontend` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。`frontend` 标的是设备的执行前端，生成 `cutile::witness::Language`（`EMIT` / `EXT` / `TAG`）与两条 `const` 断言（`EXT` 必须等于 `EMIT.ext()`、`TAG` 非空）；执行由手写的 `Device` 给出，`Frontend: Language + Device` 把两半绑死，分发是一张 `const` 表，新增设备 = 标一个类型 + 加一行。语言身份还复用在**语法门**上：`Front` 只加 `TOOL` / `CHECK` 两条常量（clang 的 `-x cuda` / `-x cl`），`const GATES` 表把“见证必须在它自己声称的语言里编得过”做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
+| `spec` / `frontend` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。`frontend` 标的是设备的执行前端，生成 `cutile::witness::Language`（`EMIT` / `EXT` / `TAG`）与两条 `const` 断言（`EXT` 必须等于 `EMIT.ext()`、`TAG` 非空）；执行由手写的 `Device` 给出，`Frontend: Language + Device` 把两半绑死，分发是一张 `const` 表，新增设备 = 标一个类型 + 加一行。语言身份还复用在**语法门**上：`Front` 只加 `TOOL` / `CHECK` 两条常量（clang 的 `-x cuda` / `-x cl`），`const GATES` 表把“见证必须在它自己声称的语言里编得过”做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
 | `Case` / `Baseline` / `Judgement` | `tool` | 回退判定（`tool::regress`）；不做测量（测量集中在工具成员 `benches`）。名字刻意避开 `Verdict`，见下节第三条 |
 
 三个容易混淆、但**不是重复**的东西：
@@ -158,8 +158,8 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 - `cutile::space::Space`（GM/FAST/REG）是 **语言概念**，`prof::atom::Space` 是它的档案表示；
   分配器（`mem`）只认字节，不认地址空间——地址空间由档案声明。
 - `nn::LmHead` 这类**注解声明**与 `Linear::new` 这类**运行期构造**不是两套机制：前者把形状与
-  算子写成属性、由 `#[layer]` 生成实现与校验测试，后者按配置计算宽度；两者最终都走
-  `LayerSpec::new` 的同一条校验路径。注解不建注册表（注册表会成为第二个事实源），
+  算子写成属性、由 `#[spec]` 生成实现与校验测试，后者按配置计算宽度；两者最终都走
+  `ContractSpec::new` 的同一条校验路径。注解不建注册表（注册表会成为第二个事实源），
   见 [`adr/0005-annotations-as-contracts.md`](adr/0005-annotations-as-contracts.md)。
 - `cutile::bench::Verdict`（达成率口径：`reached` / `below` / `over-peak` / `cache-resident` / `unknown`）
   与 `tool::regress::Judgement`（基准回退判定：`pass` / `regressed` / `improved`）**不是同一件事**：

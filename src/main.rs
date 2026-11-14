@@ -7,7 +7,7 @@
 //! `serve` / `train` 仍需 P1 接入；在那之前，任何新类型都应该长在它所属的层里，而不是长在这里。
 
 use diagnostic::{Code, Error, Result};
-use nn::Layer as _;
+use nn::Contract as _;
 use nn::LmHead;
 use std::process::ExitCode;
 use tokenizer::Tokenizer as _;
@@ -115,7 +115,7 @@ fn status(weights: Option<&str>) -> Result<()> {
             "{} → {:?}，算子 {}",
             LmHead.name(),
             LmHead.output().dims(),
-            LmHead.spec().ops().join("、")
+            LmHead.spca().ops().join("、")
         ),
     );
 
@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_real_weight_file_runs_through_generated_kernels() {
-        if cutile::backend::detect().is_none() {
+        if cutile::toolchain::detect().is_none() {
             // 没有 C 编译器就没有执行证据；这条用例在这里不成立，不是通过。
             return;
         }
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
-        if cutile::backend::detect().is_none() {
+        if cutile::toolchain::detect().is_none() {
             return;
         }
         let path = write_dense_model("llm-run-arithmetic.safetensors", &[("blk.0.attn_q", 4, 8)]);

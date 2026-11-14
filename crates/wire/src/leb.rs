@@ -180,7 +180,9 @@ mod tests {
 
     #[test]
     fn a_padded_zero_is_rejected() {
-        let error = Cursor::new(&[0x80, 0x00]).read::<u64>().expect_err("非规范");
+        let error = Cursor::new(&[0x80, 0x00])
+            .read::<u64>()
+            .expect_err("非规范");
         assert_eq!(error.code(), Code::Invalid);
     }
 

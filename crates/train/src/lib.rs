@@ -204,8 +204,8 @@ pub fn resume(checkpoint: &Checkpoint, topology: shard::Topology) -> Result<()> 
 /// 训练层的算子引用：`nn` 的层定义必须先通过 `op` 的闭集校验。
 ///
 /// 这里只提供"取全部算子名"的便利函数，避免训练循环自己拼字符串。
-pub fn operators(layer: &dyn nn::Layer) -> &[String] {
-    layer.spec().ops()
+pub fn operators(layer: &dyn nn::Contract) -> &[String] {
+    layer.spca().ops()
 }
 
 #[cfg(test)]

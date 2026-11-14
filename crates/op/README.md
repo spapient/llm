@@ -78,7 +78,7 @@ crates/op/
   生成物里的 `const _: () = <别名 as Format>::CHECK;` 就是这条规则的求值点（不被引用的关联常量不报错）。
 - **注解 ↔ 输出类型**（`__model_check`，测试期）：注解的 `dtype` 说"回读按什么解释"，`.k` 的可写输出
   说"内核写的是什么"，`signature.output_type()` 把后者读出来逐项比较。两者分家时不该由 `verify`
-  用一个错宽度的缓冲去对拍。`cutile::backend::harness` 另有一道同源闸：非 `float` 的输出在拼任何 C
+  用一个错宽度的缓冲去对拍。`cutile::harness` 另有一道同源闸：非 `float` 的输出在拼任何 C
   之前就被拒，诊断带算子名与缓冲名（而不是 C 编译器的一句 `incompatible pointer type`）。
 - **注解 ↔ 注册表**（`tests/contracts.rs::the_registry_and_the_model_annotations_are_mirrors`，文本门禁）：
   标了 `#[model]` 必须在 `REGISTRY` 里有同名条目；注册表的 `model:` 必须写 `..::MODEL`，不能是手写的

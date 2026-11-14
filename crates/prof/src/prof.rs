@@ -90,7 +90,7 @@ pub struct Meta {
     /// 编译工具名（命令名，`cc` / `nvcc` / `xcrun` …）。
     pub tool: String,
     /// **登记**的工具版本：证据是在哪个工具链上取得的，与 `checked` 同一性质；本机实测值由
-    /// `cutile::backend::Toolchain` 从 `--version` 解析，两者不必相等，所以不参与缓存键与判定。
+    /// `cutile::toolchain::Toolchain` 从 `--version` 解析，两者不必相等，所以不参与缓存键与判定。
     pub tool_ver: String,
     /// 上次核对日期。
     pub checked: String,

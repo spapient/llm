@@ -5,7 +5,7 @@
 //!
 //! 层的清单有两个来源：
 //!
-//! - 声明：[`Stack::new`] 直接给一串 [`Linear`]，[`Stack::of`] 收任意 [`Layer`]（含注解层）；
+//! - 声明：[`Stack::new`] 直接给一串 [`Linear`]，[`Stack::of`] 收任意 [`Contract`]（含注解层）；
 //! - 权重：[`Stack::from_header`] 按权重文件的条目推出来——秩为 2 的条目按 `[out, in]` 视为一次
 //!   投影，名字去掉 `.weight` 后缀，**编码取自条目自己的 `dtype`**；**其余条目进
 //!   [`Stack::uncovered`]，绝不静默丢弃**。
@@ -41,7 +41,7 @@ use std::fmt;
 use diagnostic::{Code, Error, Result};
 use weights::{Entry, Header};
 
-use crate::{Bounds, Layer, Linear, WeightFormat};
+use crate::{Bounds, Contract, Linear, WeightFormat};
 
 /// 权重条目名里表示"这是一个权重矩阵"的后缀；层名去掉它，才能与其它按名查找的地方对齐。
 pub const WEIGHT_SUFFIX: &str = ".weight";
@@ -105,7 +105,7 @@ impl Floor {
 
 /// 一串层及其总下界。
 pub struct Stack {
-    layers: Vec<Box<dyn Layer>>,
+    layers: Vec<Box<dyn Contract>>,
     uncovered: Vec<String>,
 }
 
@@ -137,20 +137,20 @@ impl Stack {
         Self::of(
             layers
                 .into_iter()
-                .map(|layer| Box::new(layer) as Box<dyn Layer>)
+                .map(|layer| Box::new(layer) as Box<dyn Contract>)
                 .collect(),
         )
     }
 
     /// 由任意一串层构造（可以把注解层与手写层混在一起）。
     ///
-    /// 收 `Box<dyn Layer>` 而不是泛型 `L: Layer`：一个栈里既要放 [`Linear`] 这种按模型配置
-    /// 构造的层，也要放 `#[layer]` 注解出来的零大小类型，两者没有共同的静态类型。
+    /// 收 `Box<dyn Contract>` 而不是泛型 `L: Contract`：一个栈里既要放 [`Linear`] 这种按模型配置
+    /// 构造的层，也要放 `#[spec]` 注解出来的零大小类型，两者没有共同的静态类型。
     ///
     /// # Errors
     ///
     /// 层名重复时返回 [`Code::Invalid`]（理由同 [`Stack::new`]）。
-    pub fn of(layers: Vec<Box<dyn Layer>>) -> Result<Self> {
+    pub fn of(layers: Vec<Box<dyn Contract>>) -> Result<Self> {
         unique_names(layers.iter().map(|layer| layer.name()))?;
         Ok(Self {
             layers,
@@ -173,7 +173,7 @@ impl Stack {
     /// - 去掉 `.weight` 后层名重复（[`Code::Invalid`]）。
     pub fn from_header(header: &Header) -> Result<Self> {
         let scales = header.scales_names()?;
-        let mut layers: Vec<Box<dyn Layer>> = Vec::new();
+        let mut layers: Vec<Box<dyn Contract>> = Vec::new();
         let mut uncovered = Vec::new();
         classify(header, &scales, &mut layers, &mut uncovered)?;
         unique_names(layers.iter().map(|layer| layer.name()))?;
@@ -181,7 +181,7 @@ impl Stack {
     }
 
     /// 全部层，保持权重文件里的偏移顺序（构造顺序）。
-    pub fn layers(&self) -> &[Box<dyn Layer>] {
+    pub fn layers(&self) -> &[Box<dyn Contract>] {
         &self.layers
     }
 
@@ -218,7 +218,7 @@ impl Stack {
 fn classify(
     header: &Header,
     scales: &[&str],
-    layers: &mut Vec<Box<dyn Layer>>,
+    layers: &mut Vec<Box<dyn Contract>>,
     uncovered: &mut Vec<String>,
 ) -> Result<()> {
     for entry in header.entries() {
@@ -327,7 +327,7 @@ mod tests {
         assert!(floor.unpriced().is_empty(), "f32 现在有算子");
         let layer = &model.layers()[0];
         assert_eq!(
-            layer.spec().ops(),
+            layer.spca().ops(),
             [Linear::DENSE],
             "f32 权重选的是稠密那条算子"
         );
@@ -495,7 +495,7 @@ mod tests {
             floor.total(),
             Bounds::of_op(Linear::OP, 128, 64).expect("同一份语义")
         );
-        assert_eq!(model.layers()[0].spec().ops(), [Linear::OP]);
+        assert_eq!(model.layers()[0].spca().ops(), [Linear::OP]);
     }
 
     #[test]

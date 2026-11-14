@@ -1,15 +1,15 @@
 //! 注解层：把"声明"写成属性，由编译器检查，而不是手写 trait 样板再靠人复核。
 //!
-//! **拥有**：`#[layer]` / `#[frontend]` / `#[model]` 属性宏。**不拥有**：任何领域类型——宏只
-//! 生成调用点所在 crate 的代码，生成的实现指向契约路径（`#[layer]` 指向 `nn::Layer` /
-//! `nn::LayerSpec`，`#[frontend]` 指向 `crate::witness::Language`，`#[model]` 指向
+//! **拥有**：`#[spec]` / `#[frontend]` / `#[model]` 属性宏。**不拥有**：任何领域类型——宏只
+//! 生成调用点所在 crate 的代码，生成的实现指向契约路径（`#[spec]` 指向 `nn::Contract` /
+//! `nn::ContractSpec`，`#[frontend]` 指向 `crate::witness::Language`，`#[model]` 指向
 //! `op::model::Model`），因此本 crate 对它们**没有**依赖：proc-macro 只在编译期运行，产出的
 //! token 在调用方的 crate 里展开。
 //!
 //! 三套注解共用同一趟展开（`expand_with`）与同一套"注解只能标 struct / enum / 别名、不得带
 //! 泛型"的类型名判据：注解承载的是**可静态判定**的契约（名字/形状/算子、语言/后缀/缓存标签、
 //! 注册名/生产形状/输出类型），执行与业务仍由手写代码给出，两者用 trait bound 绑死
-//! （`nn::Layer`、`witness::Frontend`、`op::gemv::Format`）。
+//! （`nn::Contract`、`witness::Frontend`、`op::gemv::Format`）。
 //!
 //! # 注解里的名字来自词汇表
 //!
@@ -46,11 +46,11 @@
 //!
 //! # 为什么用注解而不是再写一个构造函数
 //!
-//! 层声明是三样东西的组合：名字、输出形状、要用的算子。手写时它们散落在 `new`、`impl Layer`
+//! 层声明是三样东西的组合：名字、输出形状、要用的算子。手写时它们散落在 `new`、`impl Contract`
 //! 与测试里，改名或改形状要改三处；写成注解后只有一处事实源，且两件事被编译器保证：
 //!
 //! 1. `out` 只接受十进制整数，`ops` 只接受字符串——写错类型是**编译错误**而不是运行期解析失败；
-//! 2. 每个注解都会生成一条测试，调用一次 `Layer::spec()`，于是"算子被删了但注解没改"会在
+//! 2. 每个注解都会生成一条测试，调用一次 `Contract::spca()`，于是"算子被删了但注解没改"会在
 //!    `cargo test` 里失败，而不是等到 emit 阶段才报未知算子。
 //!
 //! # 例子
@@ -58,16 +58,16 @@
 //! ```ignore
 //! // `in` 是规约轴宽度：给了它，注解层就能把 `(in, out)` 交给算子语义表，
 //! // 于是和 `Linear` 走同一条下界路径；不给，层照样合法，只是没有可计价的形状。
-//! #[nn::layer(name = "lm_head", out = [32000], in = 4096, ops = ["gemv_i4"])]
+//! #[nn::spec(name = "lm_head", out = [32000], in = 4096, ops = ["gemv_i4"])]
 //! pub struct LmHead;
 //!
-//! let layer: &dyn nn::Layer = &LmHead;
+//! let layer: &dyn nn::Contract = &LmHead;
 //! assert_eq!(layer.name(), "lm_head");
 //! assert_eq!(layer.output().dims(), [32000]);
 //! assert!(layer.bounds().expect("合法").is_some());
 //! ```
 //!
-//! 生成的东西是确定的三块：原样保留的被标注项、一份 `impl nn::Layer`、一个
+//! 生成的东西是确定的三块：原样保留的被标注项、一份 `impl nn::Contract`、一个
 //! `#[cfg(test)]` 校验模块。没有隐藏状态，也没有运行期注册表——注册表会是第二个事实源。
 //!
 //! # 错误
@@ -78,12 +78,13 @@
 //!
 //! # Panics
 //!
-//! 生成的实现会在首次调用 `Layer::spec()` 时构造 `nn::LayerSpec`；若注解引用了 `op` 声明层
+//! 生成的实现会在首次调用 `Contract::spca()` 时构造 `nn::ContractSpec`；若注解引用了 `op` 声明层
 //! 里不存在的算子，这里会 panic 并说明是哪个层。正常情况下走不到：生成的校验测试会在
 //! `cargo test` 里先失败。
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![deny(missing_debug_implementations)]
 
 mod codegen;
 mod syntax;
@@ -94,13 +95,20 @@ mod fixture;
 use proc_macro::{Delimiter, Span, TokenStream, TokenTree};
 use syntax::{Bracket, Error as SyntaxError, Token};
 
-/// 把 `#[layer(name = "..", out = [..], ops = [".."])]` 展开成 `nn::Layer` 的实现。
+/// 把 `#[spec(name = "..", out = [..], ops = [".."])]` 展开成 `nn::Contract` 的实现。
 ///
 /// 被标注的类型必须是无泛型参数的 `struct` 或 `enum`：形状与算子列表在编译期固定，
 /// 带泛型的类型无法用一份注解覆盖所有实例化。
 #[proc_macro_attribute]
-pub fn layer(attribute: TokenStream, item: TokenStream) -> TokenStream {
-    expand(attribute, item)
+pub fn spec(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    expand_with(
+        attribute,
+        item,
+        "spec",
+        syntax::parse,
+        codegen::render,
+        syntax::target_name,
+    )
 }
 
 /// 展开所需的四个动作：读 token、由源码产出、拼接、重新定位 span。
@@ -183,7 +191,7 @@ pub fn frontend(attribute: TokenStream, item: TokenStream) -> TokenStream {
 /// `Format::GRAIN`。于是"注解说的格式"与"实际实现的格式"不可能各说各的：别名不实现
 /// `Format` 就编译不过，生产形状不是粒度的整数倍也是编译错误。
 ///
-/// 与 `#[layer]` / `#[frontend]` 的分工一样，本注解不建注册表：注册表仍是 `REGISTRY` 一张，
+/// 与 `#[spec]` / `#[frontend]` 的分工一样，本注解不建注册表：注册表仍是 `REGISTRY` 一张，
 /// 生成的测试只核对"注册表里的那一条就是这份 `MODEL`"，不另存一份事实。
 #[proc_macro_attribute]
 pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
@@ -197,19 +205,7 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
     )
 }
 
-/// 解析 + 校验 + 生成；失败时一定留下被标注项，避免次生错误埋掉真正的原因。
-fn expand<S: Streams>(attribute: S, item: S) -> S {
-    expand_with(
-        attribute,
-        item,
-        "layer",
-        syntax::parse,
-        codegen::render,
-        syntax::target_name,
-    )
-}
-
-/// 两道注解共用的一趟展开：解析 → 取类型名 → 渲染 → 拼接。
+/// 三道注解共用的一趟展开：解析 → 取类型名 → 渲染 → 拼接。
 ///
 /// 文法与渲染以**具体函数**（不是 `dyn`）传进来：每一步都单态化，公共步骤——错误定位、
 /// "失败也要留下被标注项"、拼接顺序——只有一份实现，于是两道注解不会各错一处。
@@ -335,7 +331,14 @@ mod tests {
 
     #[test]
     fn a_rejected_annotation_keeps_the_annotated_item() {
-        let expanded = expand(text("name = \"x\""), text("pub struct Head;"));
+        let expanded = expand_with(
+            text(r#"name = "x""#),
+            text("pub struct Head;"),
+            "spec",
+            syntax::parse,
+            codegen::render,
+            syntax::target_name,
+        );
         assert!(expanded.0.contains("compile_error!"), "{}", expanded.0);
         assert!(
             expanded.0.contains("pub struct Head;"),

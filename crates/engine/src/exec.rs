@@ -1,7 +1,7 @@
 //! 提交与执行：[`Stream`]、[`Graph`]、[`Node`]、[`Launch`] 与 [`Executor`] 契约。
 //!
 //! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Executor`。**不拥有**：编译 kernel
-//! （`cutile::backend` 负责"源文件 → 可执行文件"，按 `(模板, 档案, flags)` 缓存；本 crate 只负责
+//! （`cutile::runner` 负责"源文件 → 可执行文件"，产物按 `(模板, 档案, flags)` 由 `cutile::build` 缓存；本 crate 只负责
 //! "图提交到流"，每 step 都发生，见 `docs/adr/0002-single-owner-per-type.md`）、缓冲分配（`mem`）。
 //! **依赖**：`diagnostic`。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
 //!

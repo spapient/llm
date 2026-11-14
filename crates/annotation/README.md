@@ -1,0 +1,51 @@
+# `llm-annotation`
+
+编译期注解层：把"一份声明"写成属性宏，由编译器检查，而不是手写 trait 样板再靠人复核。宏只生成
+调用点所在 crate 的代码，不拥有任何领域类型——生成的实现指向契约路径（`nn::Contract`、
+`witness::Language`、`op::model::Model`），因此本 crate 对它们没有运行期依赖。
+
+## 三道注解
+
+| 注解 | 键 | 生成的东西 | 绑定的契约 |
+|---|---|---|---|
+| `#[spec(..)]` | `name`、`out`、可选 `in`、`ops` | 一份 `impl ::nn::Contract`（含懒构造的 `ContractSpec`）+ 一条校验测试 | `nn::Contract` / `nn::ContractSpec` |
+| `#[frontend(..)]` | `emit`、`ext`、`tag` | 一份 `impl crate::witness::Language` + 两条编译期断言 + 一条变体对齐测试 | `witness::Language` |
+| `#[model(..)]` | `name`、`shape`、`dtype`、可选 `skeleton` | `MODEL` 常量、粒度/形状编译期断言 + 一条注册表对拍测试 | `op::model::Model` / `gemv::Format` |
+
+## 结构
+
+文法与 `proc_macro` 解耦是这一层的核心决定：`proc_macro::TokenStream` 只在展开期可用，规则直接
+写在它上面，每条错误路径都无法被测试。
+
+| 层 | 文件 | 职责 | 可测性 |
+|---|---|---|---|
+| 文法 | `src/syntax.rs` | token 模型、键表驱动的解析、全部错误路径 | 纯函数，不接触 `proc_macro` |
+| 渲染 | `src/codegen.rs` | 声明 → `impl` / 常量 / 校验测试的文本拼接 | 纯字符串拼接 |
+| 适配 | `src/lib.rs` | `TokenStream` ↔ token 模型、错误映射回 span；`Streams` 依赖倒置 | 字符串替身实现同一 trait |
+| 夹具 | `src/fixture.rs`（`cfg(test)`） | 注解文本 → token 模型的最小词法器 | 仅供单元测试 |
+
+## 判据与证据
+
+- **闭集只有一份事实源。** `LANGUAGES` / `DTYPES` / `SKELETONS` 是词汇表的投影：与
+  `prof::Emit::ALL`、有阈值的 `DType` 集合、骨架分支表逐项相等，由仓库级契约测试核对；每个调用点
+  生成的测试再把注解字符串与词汇表变体对拍。
+- **错误指在写错的 token 上。** 未知键、重复键、缺必填键、非字面量、转义序列、零宽轴、空算子集、
+  泛型参数、非 `struct`/`enum` 被标注项，都产出指向具体位置的 `compile_error!`，而不是笼统地指
+  在被标注类型上。
+- **失败也保留被标注项。** 解析或生成失败时，原被标注项原样留在输出里，避免次生错误埋掉真正原因。
+- **骨架表一行一条。** 十二条骨架的差异（模块名、`group`、是否泛型单态化、是否带粒度断言）集中在
+  `SKELETON_TABLE`；闭集与分支表一一对应，漏一行先在本 crate 的测试里红掉。
+- **确定性。** 同一注解两次展开得到相同文本；不维护运行期注册表，注册表仍是 `REGISTRY` 一张事实源。
+
+## 性能与边界
+
+- 文法是游标**单趟线性扫描**：名字/闭集只在数组上线性包含，不引入关联容器、正则或惰性初始化
+  （`tests/audit.rs` 静态门禁守住这条）。
+- 运行期依赖只有 `dtype` 这个 L1 零依赖基座；不引入 `syn` / `quote` / `proc-macro2`。
+- 过程宏在编译期运行，输入只是一小段属性；`proc_macro` 适配层只在编译器展开期可用，不参与运行期
+  计时。纯文法与渲染逻辑由单元测试与确定性种子回归覆盖。
+
+## 状态
+
+API 对内稳定，尚未发布到 crates.io（`publish = false`）：发布意味着 MSRV 与 semver 承诺，本仓库
+尚未作出。依赖方向与所有权见 [ARCHITECTURE.md](../../docs/ARCHITECTURE.md)。

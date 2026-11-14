@@ -482,7 +482,7 @@ impl OpDecl {
     fn check_needs(&self, template: &Template<'_>) -> diagnostic::Result<()> {
         for variant in &self.variants {
             let mut declared: Vec<Prim> = variant.needs(self).map(|need| need.prim).collect();
-            declared.extend(variant.schedule.required_prims());
+            declared.extend(variant.schedule.required_prims().iter().copied());
             for (line, prim, _) in template.calls() {
                 if declared.contains(&prim) {
                     continue;

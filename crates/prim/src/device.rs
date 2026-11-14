@@ -47,7 +47,7 @@ pub struct Device {
     pub tool: &'static str,
     /// 档案声明的工具版本（`[meta].tool_ver`）：**登记值**，不是本机实测值。
     ///
-    /// 本机实测值由 `cutile::backend::probe` 读 `--version` 得到，进产物身份（`命令@版本`）
+    /// 本机实测值由 `cutile::toolchain::probe` 读 `--version` 得到，进产物身份（`命令@版本`）
     /// 与 `verify` 报告；登记值只说明"这条证据按哪个版本记的"。
     pub tool_ver: &'static str,
     /// 原语枚举与映射表：这台设备有哪些原语，每个原语在镜像里的入口叫什么。

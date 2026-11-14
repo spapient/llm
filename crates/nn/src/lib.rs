@@ -1,16 +1,16 @@
-//! 层定义：[`Layer`]、[`LayerSpec`]、第一个具体层 [`Linear`]、权重编码 [`WeightFormat`]、
+//! 层定义：[`Contract`]、[`ContractSpec`]、第一个具体层 [`Linear`]、权重编码 [`WeightFormat`]、
 //! 层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
 //!
-//! **拥有**：`Layer`、`LayerSpec`、`Linear`、`LmHead`、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子声明与
+//! **拥有**：`Contract`、`ContractSpec`、`Linear`、`LmHead`、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子声明与
 //! 模板（`op`）、kernel 机制（`cutile`）、设备峰值（`prof`）、权重字节与解析（`weights`）。
 //! **依赖**：`weights`、`tensor`、`op`、`diagnostic`。**被依赖**：`train`。
 //!
-//! `nn` 是 DSL 的**消费者**而不是并列层：层定义唯一的产出是一份 [`LayerSpec`]，里面的算子名
+//! `nn` 是 DSL 的**消费者**而不是并列层：层定义唯一的产出是一份 [`ContractSpec`]，里面的算子名
 //! 必须已经存在于 `op::builtin()`。写错名字在这里就失败，而不是等到 emit 阶段才报"未知算子"。
 //!
 //! # 下界有三种状态，不是一个数
 //!
-//! [`Layer::bounds`] 返回 [`BoundsResult`]，三种情况刻意分开：
+//! [`Contract::bounds`] 返回 [`BoundsResult`]，三种情况刻意分开：
 //!
 //! | 返回值 | 含义 |
 //! |---|---|
@@ -24,11 +24,11 @@
 //! # 例子
 //!
 //! ```
-//! use llm_nn::{Layer, Linear};
+//! use llm_nn::{Contract, Linear};
 //!
 //! let layer = Linear::new("blk.0.attn_q", 4096, 4096).expect("算子已声明");
 //! assert_eq!(layer.output().dims(), [4096]);
-//! assert_eq!(layer.spec().ops(), ["gemv_i4"]);
+//! assert_eq!(layer.spca().ops(), ["gemv_i4"]);
 //!
 //! // 下界按读/写分账：读侧是 int4 权重主导，写侧只有一份 f32 输出。
 //! let floor = layer.bounds().expect("形状合法").expect("有算子");
@@ -42,7 +42,7 @@
 extern crate self as nn;
 
 #[doc(inline)]
-pub use annotation::layer;
+pub use annotation::spec;
 
 use diagnostic::{Code, Error, Result};
 
@@ -63,25 +63,25 @@ pub use format::WeightFormat;
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
 
-/// 形状由 `tensor` 拥有（`docs/adr/0002`），这里再导出：`Layer::output` 本来就返回它，
-/// 消费者与 `#[layer]` 生成的代码都不该为此额外依赖 `tensor`。
+/// 形状由 `tensor` 拥有（`docs/adr/0002`），这里再导出：`Contract::output` 本来就返回它，
+/// 消费者与 `#[spec]` 生成的代码都不该为此额外依赖 `tensor`。
 pub use tensor::Shape;
 
-/// 层下界的结果：[`Layer::bounds`] 的返回类型。
+/// 层下界的结果：[`Contract::bounds`] 的返回类型。
 ///
-/// 单独起名是为了让 `#[layer]` 生成的方法签名不必让调用方依赖 `diagnostic`
+/// 单独起名是为了让 `#[spec]` 生成的方法签名不必让调用方依赖 `diagnostic`
 /// （与 [`Shape`] 再导出是同一个理由）。
 pub type BoundsResult = Result<Option<Bounds>>;
 
 /// 层定义产出的声明：名字、输出形状、要用的算子名。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayerSpec {
+pub struct ContractSpec {
     name: String,
     output: Shape,
     ops: Vec<String>,
 }
 
-impl LayerSpec {
+impl ContractSpec {
     /// 校验并构造：`ops` 必须既存在于 `op::builtin()`，又有 `op::model()` 的语义表。
     ///
     /// 两条都要求是刻意的：只声明不实现的算子无法对拍，也就推不出它的[`Bounds`]，层一旦
@@ -105,14 +105,14 @@ impl LayerSpec {
                             .join("、")
                     ),
                 )
-                .with("nn::LayerSpec::new"));
+                .with("nn::ContractSpec::new"));
             }
             if op::model(wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
                     format!("算子 `{wanted}` 没有语义表，层无法推出下界也无法对拍"),
                 )
-                .with("nn::LayerSpec::new"));
+                .with("nn::ContractSpec::new"));
             }
         }
         Ok(Self {
@@ -139,7 +139,7 @@ impl LayerSpec {
 }
 
 /// 层契约：名字、输出形状、算子列表、它导出的声明，以及**自己的下界**。
-pub trait Layer {
+pub trait Contract {
     /// 层名。
     fn name(&self) -> &str;
 
@@ -147,7 +147,7 @@ pub trait Layer {
     fn output(&self) -> &Shape;
 
     /// 导出给 `cutile` 的声明。
-    fn spec(&self) -> &LayerSpec;
+    fn spca(&self) -> &ContractSpec;
 
     /// 本层的性能下界。
     ///
@@ -162,7 +162,7 @@ pub trait Layer {
 
     /// 若这一层是按形状构造的线性投影，返回它的类型化视图。
     ///
-    /// 默认 `None`：`#[layer]` 声明出来的层只有形状与算子列表，**没有参数表**，因此没有
+    /// 默认 `None`：`#[spec]` 声明出来的层只有形状与算子列表，**没有参数表**，因此没有
     /// "把真实权重的第几行喂给它"这回事。真实权重的执行路径只处理 [`Linear`]——把"任意层
     /// 都能执行"当约定，等于让每个层自己再发明一遍参数绑定，而下界与执行也会各自理解一次形状。
     fn linear(&self) -> Option<&Linear> {
@@ -173,7 +173,7 @@ pub trait Layer {
 /// 线性层：`y = x · W`。用哪个算子由权重编码 [`WeightFormat`] 决定，而不是一个全局常量。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Linear {
-    spec: LayerSpec,
+    spec: ContractSpec,
     in_features: usize,
     out_features: usize,
     format: WeightFormat,
@@ -205,7 +205,7 @@ impl Linear {
     ///
     /// # Errors
     ///
-    /// 任一宽度为零（[`Code::Invalid`]）；算子名由编码给出却没有通过 [`LayerSpec::new`] 的校验
+    /// 任一宽度为零（[`Code::Invalid`]）；算子名由编码给出却没有通过 [`ContractSpec::new`] 的校验
     /// （只可能发生在编码与 `op` 注册表不一致时）。
     pub fn with_format(
         name: impl Into<String>,
@@ -221,7 +221,7 @@ impl Linear {
             .with("nn::Linear::with_format"));
         }
         let ops = format.operator().map(str::to_string).into_iter().collect();
-        let spec = LayerSpec::new(name, Shape::new([out_features]), ops)?;
+        let spec = ContractSpec::new(name, Shape::new([out_features]), ops)?;
         Ok(Self {
             spec,
             in_features,
@@ -245,16 +245,16 @@ impl Linear {
         self.format
     }
 
-    /// 本层的性能下界，见 [`Layer::bounds`]。
+    /// 本层的性能下界，见 [`Contract::bounds`]。
     ///
     /// `(m, n)` 取 `(in_features, out_features)`：对本算子而言规约轴是输入宽度、输出轴是
     /// 输出宽度，与 `op` 里那条求和表达式 `nm,m,ng,n->n` 的轴顺序一致。
     pub fn bounds(&self) -> BoundsResult {
-        <Self as Layer>::bounds(self)
+        <Self as Contract>::bounds(self)
     }
 }
 
-impl Layer for Linear {
+impl Contract for Linear {
     fn name(&self) -> &str {
         self.spec.name()
     }
@@ -263,7 +263,7 @@ impl Layer for Linear {
         self.spec.output()
     }
 
-    fn spec(&self) -> &LayerSpec {
+    fn spca(&self) -> &ContractSpec {
         &self.spec
     }
 
@@ -297,12 +297,12 @@ mod tests {
     use super::*;
 
     /// 只声明了输出、没有输入宽度：层合法，但没有可计价的形状。
-    #[crate::layer(name = "no_axes", out = [8], ops = ["gemv_i4"])]
+    #[crate::spec(name = "no_axes", out = [8], ops = ["gemv_i4"])]
     struct NoAxes;
 
     #[test]
     fn an_unknown_operator_is_rejected_at_definition_time() {
-        let error = LayerSpec::new(
+        let error = ContractSpec::new(
             "bad",
             Shape::new([4]),
             vec!["gemv_i4".to_string(), "flash_attention".to_string()],
@@ -317,7 +317,7 @@ mod tests {
         let layer = Linear::new("blk.0.attn_q", 8, 4).expect("合法");
         assert_eq!(layer.name(), "blk.0.attn_q");
         assert_eq!(layer.output().dims(), [4]);
-        assert_eq!(layer.spec().ops(), ["gemv_i4"]);
+        assert_eq!(layer.spca().ops(), ["gemv_i4"]);
         assert_eq!(layer.out_features(), 4);
         assert_eq!(layer.format(), WeightFormat::INT4);
     }
@@ -360,7 +360,7 @@ mod tests {
         // 同一份权重，文件里写的是 f16：层可以声明，但还没有 16 位元素的算子给它计价。
         let layer = Linear::with_format("blk.0.attn_q", WeightFormat::F16, 4096, 4096)
             .expect("宽度非零即可构造");
-        assert!(layer.spec().ops().is_empty(), "没有算子可声明");
+        assert!(layer.spca().ops().is_empty(), "没有算子可声明");
         let error = layer.bounds().unwrap_err();
         assert_eq!(error.code(), Code::Unsupported);
         assert!(error.to_string().contains("f16"), "{error}");
@@ -371,7 +371,7 @@ mod tests {
     fn a_dense_weight_is_priced_by_the_dense_operator() {
         let layer = Linear::with_format("blk.0.attn_q", WeightFormat::F32, 4096, 4096)
             .expect("宽度非零即可构造");
-        assert_eq!(layer.spec().ops(), [Linear::DENSE]);
+        assert_eq!(layer.spca().ops(), [Linear::DENSE]);
         let floor = layer.bounds().expect("合法").expect("有算子");
         assert_eq!(
             floor,
@@ -410,7 +410,7 @@ mod tests {
         let layer = LmHead;
         assert_eq!(layer.name(), "lm_head");
         assert_eq!(layer.output().dims(), [4096]);
-        assert_eq!(layer.spec().ops(), ["gemv_i4"]);
+        assert_eq!(layer.spca().ops(), ["gemv_i4"]);
     }
 
     #[test]
@@ -434,16 +434,16 @@ mod tests {
 
     #[test]
     fn the_annotated_implementation_is_shared_by_every_instance() {
-        let first = LmHead.spec();
-        let second = LmHead.spec();
+        let first = LmHead.spca();
+        let second = LmHead.spca();
         assert!(core::ptr::eq(first, second), "规格只构造一次（OnceLock）");
     }
 
     #[test]
     fn a_spec_works_as_a_trait_object() {
         let layer = Linear::new("blk.0.attn_k", 32, 6).expect("合法");
-        let dynamic: &dyn Layer = &layer;
-        assert_eq!(dynamic.spec().name(), "blk.0.attn_k");
+        let dynamic: &dyn Contract = &layer;
+        assert_eq!(dynamic.spca().name(), "blk.0.attn_k");
         assert!(dynamic.bounds().expect("合法").is_some());
     }
 }

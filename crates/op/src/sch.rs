@@ -61,13 +61,13 @@ impl Schedule {
         self.to_string()
     }
 
-    /// 该调度需要的原语（协商时逐条检查）。
-    pub fn required_prims(&self) -> Vec<Prim> {
+    /// 该调度需要的原语（协商时逐条检查）。返回静态切片，不为每次协商分配 `Vec`。
+    pub fn required_prims(&self) -> &'static [Prim] {
         match self {
-            Self::Direct => Vec::new(),
-            Self::Pipe { .. } => vec![Prim::Bar],
-            Self::WarpSpecialized { .. } => vec![Prim::Bar, Prim::LoadAsync],
-            Self::PingPong { .. } => vec![Prim::Bar],
+            Self::Direct => &[],
+            Self::Pipe { .. } => &[Prim::Bar],
+            Self::WarpSpecialized { .. } => &[Prim::Bar, Prim::LoadAsync],
+            Self::PingPong { .. } => &[Prim::Bar],
         }
     }
 
@@ -290,7 +290,7 @@ mod tests {
         );
         assert_eq!(
             Schedule::parse("pipe<3>").unwrap().required_prims(),
-            vec![Prim::Bar]
+            &[Prim::Bar]
         );
         assert!(
             Schedule::parse("ws<2,2>")
