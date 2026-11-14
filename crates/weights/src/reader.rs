@@ -8,8 +8,8 @@ use std::borrow::Cow;
 use diagnostic::{Code, Error, Result};
 
 use crate::affine::Quant;
-use crate::codec::Codec;
-use crate::dtype::Wire;
+use crate::Codec;
+use crate::Wire;
 use crate::leb::Cursor;
 use crate::merkle::Proof;
 use crate::rans;

@@ -5,7 +5,7 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::dtype::Wire;
+use crate::Wire;
 use crate::leb::{self, Cursor};
 use crate::sink::Sink;
 

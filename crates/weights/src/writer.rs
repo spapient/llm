@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use diagnostic::{Code, Error, Result};
 
-use crate::codec::Codec;
+use crate::Codec;
 use crate::crc;
 use crate::leb;
 use crate::rans;

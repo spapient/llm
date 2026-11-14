@@ -2,7 +2,7 @@
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自造的 `LLPK`
-//! 容器（`writer`/`reader`/`seg` 与 `merkle`/`rans`/`codec` 这些小件；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
+//! 容器（`writer`/`reader`/`seg` 与 `merkle`/`rans` 这些小件；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
 //! 本层判断的格式适配器与完整性证明（`bin` 的 pickle 栈机、`zip`、`gguf`、`json`，`axes`/`lattice`/
 //! `quant`/`scale` 的量化族，`dsa`/`envelope`/`sha256`/`keccak`/`ntt`/`golay`/`svd`/`ledger`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
@@ -45,8 +45,6 @@ const SITE: &str = "weights::Header::new";
 // 自有 LLPK 容器：私有实现模块，公开类型在末尾统一 re-export。
 mod affine;
 pub mod axes;
-mod codec;
-mod dtype;
 pub mod golay;
 mod ir;
 pub mod lattice;
@@ -93,8 +91,8 @@ pub mod quant;
 pub mod safetensors;
 
 pub use affine::Quant;
-pub use codec::Codec;
-pub use dtype::Wire;
+pub use seg::Codec;
+pub use dtype::DType as Wire;
 pub use envelope::Envelope;
 pub use ir::{Graph, Node, Op};
 pub use merkle::Proof;

@@ -1,6 +1,6 @@
 //! 测试共享夹具：f32 段构造与归档写盘，mode/patch 等模块的测试共用同一份。
 
-use crate::dtype::Wire;
+use crate::Wire;
 use crate::seg::Segment;
 use crate::writer::Writer;
 
