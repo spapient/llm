@@ -1,4 +1,4 @@
-//! 调度：4 个模板（DESIGN §7）。
+//! 调度：4 个模板（cutile README §7）。
 //!
 //! 与 [`crate::layout`] 一样，这是**声明层的词汇表**：`[[variants]]` 的 `schedule` 取值就是
 //! 这里的闭集，声明解析（[`crate::decl`]）要用它，因此事实源在本 crate，机制层只消费。
@@ -41,27 +41,16 @@ impl Schedule {
         if text == "direct" {
             return Ok(Self::Direct);
         }
-        if let Some((name, args)) = split_args(text) {
-            let numbers = parse_numbers(&args)?;
-            return match (name, numbers.as_slice()) {
-                ("pipe", [stages]) if *stages >= 2 => Ok(Self::Pipe { stages: *stages }),
-                ("pingpong", [groups]) if *groups >= 2 => Ok(Self::PingPong { groups: *groups }),
-                ("ws", [producer, consumer]) => Ok(Self::WarpSpecialized {
-                    producer: *producer,
-                    consumer: *consumer,
-                }),
-                _ => Err(Error::new(
-                    Code::Invalid,
-                    format!("`{text}` 的参数不合法（pipe<N≥2> | ws<prod,cons> | pingpong<N≥2>）"),
-                )),
-            };
-        }
-        Err(Error::new(
-            Code::Invalid,
-            format!(
-                "`{text}` 不在调度闭集内（闭集：direct | pipe<N> | ws<prod,cons> | pingpong<N>）"
-            ),
-        ))
+        let Some((name, args)) = split_args(text) else {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "`{text}` 不在调度闭集内（闭集：direct | pipe<N> | ws<prod,cons> | pingpong<N>）"
+                ),
+            ));
+        };
+        let numbers = parse_numbers(&args)?;
+        shape(text, name, &numbers)
     }
 
     /// 渲染回声明层写法。
@@ -133,7 +122,37 @@ fn parse_numbers(args: &str) -> diagnostic::Result<Vec<u32>> {
         .collect()
 }
 
-/// 流水掩盖的阈值（DESIGN §12.2 判据 1）：未掩盖的非 MMA 时间不得超过 20%。
+/// 按模板名与参数构造调度；参数个数 / 下限不合法时报同一个闭集口径错误。
+fn shape(text: &str, name: &str, numbers: &[u32]) -> diagnostic::Result<Schedule> {
+    match (name, numbers) {
+        ("pipe", [stages]) => two(text, *stages).map(|stages| Schedule::Pipe { stages }),
+        ("pingpong", [groups]) => two(text, *groups).map(|groups| Schedule::PingPong { groups }),
+        ("ws", [producer, consumer]) => Ok(Schedule::WarpSpecialized {
+            producer: *producer,
+            consumer: *consumer,
+        }),
+        _ => Err(bad(text)),
+    }
+}
+
+/// `pipe` / `pingpong` 的下限：一级等于没分阶段，按参数不合法处理。
+fn two(text: &str, count: u32) -> diagnostic::Result<u32> {
+    if count >= 2 {
+        Ok(count)
+    } else {
+        Err(bad(text))
+    }
+}
+
+/// 参数个数或下限不合法时的唯一口径。
+fn bad(text: &str) -> Error {
+    Error::new(
+        Code::Invalid,
+        format!("`{text}` 的参数不合法（pipe<N≥2> | ws<prod,cons> | pingpong<N≥2>）"),
+    )
+}
+
+/// 流水掩盖的阈值（cutile README §12.2 判据 1）：未掩盖的非 MMA 时间不得超过 20%。
 pub const UNMASKED_LIMIT: f64 = 0.20;
 
 /// 一个变体的掩盖账：`mma_share`、调度级数与由此推得的未掩盖占比。
@@ -172,7 +191,7 @@ impl Masking {
     }
 }
 
-/// 一句话结论：阈值与取值并排，判定只有一个（DESIGN §12.2 判据 1）。
+/// 一句话结论：阈值与取值并排，判定只有一个（cutile README §12.2 判据 1）。
 impl fmt::Display for Masking {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -197,7 +216,7 @@ pub fn unmasked_share(mma_share: f64, stages: u32) -> f64 {
     ((1.0 - mma_share) / stages).clamp(0.0, 1.0)
 }
 
-/// 降级链**首选**变体的掩盖判据（DESIGN §12.2 判据 1）。
+/// 降级链**首选**变体的掩盖判据（cutile README §12.2 判据 1）。
 ///
 /// 只判首选：链上其余变体存在的理由就是"设备缺原语时仍能跑"，用质量判据把它们判死等于取消
 /// 显式降级——它们的账照样出现在 `doctor`/`bench` 的计划行里（「未掩盖 x% > 20%，兜底」）。
@@ -219,7 +238,7 @@ pub fn check_masking(variant: &str, masking: Masking) -> diagnostic::Result<()> 
     ))
 }
 
-/// 降级链的收益必须单调不增（DESIGN §12.2 判据 3）。
+/// 降级链的收益必须单调不增（cutile README §12.2 判据 3）。
 ///
 /// 只读名字与占比，所以名字泛化到 `AsRef<str>`：装载期能直接传借用的变体名，
 /// 不为了一条判据先拷一份 `String`。

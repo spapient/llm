@@ -1,7 +1,7 @@
 //! ML-DSA 编码与采样（FIPS 204 §7.1、§7.3），零依赖、纯安全。
 //!
-//! 多项式统一为 `[i32; 256]`、系数 `0..q-1`。位打包用一个通用 `bit_pack`（带范围 a,b），
-//! 简单打包是 a=0 的特例，不平行实现。XOF 读取器在本模块的 SHAKE 输出上游标消费，拒绝采样按需取字节。
+//! 多项式统一为 `[i32; 256]`、系数 `0..q-1`；位打包只有一个 `bit_pack`（带范围 a,b），简单打包
+//! 是 a=0 的特例，XOF 由 `Xof` 按需消费。
 
 use crate::keccak;
 use crate::ntt::{self, N};
@@ -96,15 +96,12 @@ impl Xof {
 
 /// 均匀拒绝采样一个 NTT 域多项式（算法 30），seed 已含位置后缀。
 pub fn rej_ntt_poly(seed: &[u8]) -> Poly {
-    let mut xof = Xof::shake(false, seed, N * 8);
+    let bytes = keccak::shake128(seed, N * 8);
+    let (chunks, _) = bytes.as_chunks::<3>();
+    let coeffs = chunks.iter().filter_map(|c| coeff_from_three_bytes(*c));
     let mut w = [0i32; N];
-    let mut j = 0usize;
-    while j < N {
-        let b: [u8; 3] = xof.take(3).try_into().expect("3");
-        if let Some(coeff) = coeff_from_three_bytes(b) {
-            w[j] = coeff;
-            j += 1;
-        }
+    for (slot, coeff) in w.iter_mut().zip(coeffs) {
+        *slot = coeff;
     }
     w
 }
@@ -121,12 +118,9 @@ pub fn expand_s<const K: usize, const L: usize>(
     eta: i32,
     rho: &[u8; 64],
 ) -> ([Poly; L], [Poly; K]) {
-    let s1 = core::array::from_fn(|r| {
-        rej_bounded_poly(eta, &[&rho[..], &(r as u16).to_le_bytes()].concat())
-    });
-    let s2 = core::array::from_fn(|r| {
-        rej_bounded_poly(eta, &[&rho[..], &((r + L) as u16).to_le_bytes()].concat())
-    });
+    let poly = |i: usize| rej_bounded_poly(eta, &[&rho[..], &(i as u16).to_le_bytes()].concat());
+    let s1: [Poly; L] = core::array::from_fn(poly);
+    let s2 = core::array::from_fn(|r| poly(r + L));
     (s1, s2)
 }
 
@@ -164,21 +158,16 @@ pub fn use_hint(gamma2: i32, m: i32, h: i32, r: i32) -> i32 {
     if h == 0 {
         return r1;
     }
-    if r0 > 0 {
-        (r1 + 1).rem_euclid(m)
-    } else {
-        (r1 - 1).rem_euclid(m)
-    }
+    (if r0 > 0 { r1 + 1 } else { r1 - 1 }).rem_euclid(m)
 }
 
 /// ExpandMask（算法 34）：生成 l 个系数在 `[−γ1+1, γ1]` 的掩码多项式，种子后缀绑定 (mu+r)。
 pub fn expand_mask<const L: usize>(gamma1: i32, rho: &[u8; 64], mu: u16) -> [Poly; L] {
-    // 宽度必须与 bit_unpack 内部 BitLen(a+b) 一致（a=γ1−1,b=γ1），即 20，申请 32·20=640 字节。
+    // 宽度与 bit_unpack 的 BitLen(a+b) 一致（a=γ1−1,b=γ1）。
     let width = bit_len(2 * gamma1 - 1);
     core::array::from_fn(|r| {
         let seed = [&rho[..], &(mu + r as u16).to_le_bytes()].concat();
-        let bytes = keccak::shake256(&seed, 32 * width);
-        bit_unpack(&bytes, gamma1 - 1, gamma1)
+        bit_unpack(&keccak::shake256(&seed, 32 * width), gamma1 - 1, gamma1)
     })
 }
 
@@ -251,57 +240,38 @@ pub struct SecretKey {
 /// 签名尝试上限（FIPS 204 附录 C），正确密钥触达概率约 2^−256。
 const MAX_ATTEMPTS: u16 = 814;
 
+/// 一个参数集：`(k, l)` 与 FIPS 204 Table 1 的 `(η, τ, γ1 的位数, γ2 的除数, ω, λ)`。
+const fn params(shape: (usize, usize), rest: (i32, usize, u32, i32, i32, usize)) -> Params {
+    Params {
+        k: shape.0,
+        l: shape.1,
+        eta: rest.0,
+        tau: rest.1,
+        gamma1: 1 << rest.2,
+        gamma2: (ntt::Q as i32 - 1) / rest.3,
+        omega: rest.4,
+        lambda: rest.5,
+    }
+}
+
 /// ML-DSA-44 参数（NIST 安全类别 2）：k=4,l=4,η=2,τ=39,γ1=2^17,γ2=(q-1)/88,ω=80,λ=128。
-pub const ML_DSA_44: Params = Params {
-    k: 4,
-    l: 4,
-    eta: 2,
-    tau: 39,
-    gamma1: 1 << 17,
-    gamma2: (ntt::Q as i32 - 1) / 88,
-    omega: 80,
-    lambda: 128,
-};
+pub const ML_DSA_44: Params = params((4, 4), (2, 39, 17, 88, 80, 128));
 
 /// ML-DSA-65 参数（NIST 安全类别 3）：k=6,l=5,η=4,τ=49,γ1=2^19,γ2=(q-1)/32,ω=55,λ=192。
-pub const ML_DSA_65: Params = Params {
-    k: 6,
-    l: 5,
-    eta: 4,
-    tau: 49,
-    gamma1: 1 << 19,
-    gamma2: (ntt::Q as i32 - 1) / 32,
-    omega: 55,
-    lambda: 192,
-};
+pub const ML_DSA_65: Params = params((6, 5), (4, 49, 19, 32, 55, 192));
 
 /// ML-DSA-87 参数（NIST 安全类别 5）：k=8,l=7,η=2,τ=60,γ1=2^19,γ2=(q-1)/32,ω=75,λ=256。
-pub const ML_DSA_87: Params = Params {
-    k: 8,
-    l: 7,
-    eta: 2,
-    tau: 60,
-    gamma1: 1 << 19,
-    gamma2: (ntt::Q as i32 - 1) / 32,
-    omega: 75,
-    lambda: 256,
-};
+pub const ML_DSA_87: Params = params((8, 7), (2, 60, 19, 32, 75, 256));
 
 /// 系数取模到 `0..q-1`（处理加减后的负值）。
 fn reduce(x: i32) -> i32 {
     x.rem_euclid(ntt::Q as i32)
 }
 
-/// 把 `0..q-1` 非负表示转为中心表示（`>q/2` 的减 q）。
-/// 常规域统一用中心表示（采样天然如此，范数/高低位也需要它），NTT 域保持非负，转换只在桥梁处发生。
+/// 把 `0..q-1` 非负表示转为中心表示：常规域统一用中心表示，转换只发生在 NTT 桥梁处。
 fn center(poly: Poly) -> Poly {
-    poly.map(|v| {
-        if v > ntt::Q as i32 / 2 {
-            v - ntt::Q as i32
-        } else {
-            v
-        }
-    })
+    let half = ntt::Q as i32 / 2;
+    poly.map(|v| if v > half { v - ntt::Q as i32 } else { v })
 }
 
 /// inv_ntt 后立即转中心表示，保证常规域表示一致。
@@ -334,46 +304,70 @@ pub fn mat_vec<const K: usize, const L: usize>(a: &[[Poly; L]; K], v: &[Poly; L]
     })
 }
 
+/// 解出的四件套：`ρ`、`t1`、`c` 与提示向量——`open` 与验签共用这一份形状。
+type Opened = (Vec<u8>, PolyVec, PolyVec, [u8; 32], PolyVec);
+
 impl Params {
     /// t1 系数上界：Power2Round 后高位占 `bit_len(q−1)−d` 位（d=13），即 10 位上界 1023。
     fn t1_bound() -> i32 {
         (1 << (bit_len(ntt::Q as i32 - 1) - 13)) - 1
     }
 
+    /// 公钥字节数：`rho` 加 `k` 个 `t1` 的定长打包；长度由参数集唯一确定，因此是**校验**。
+    #[must_use]
+    pub fn pk_len(&self) -> usize {
+        32 + self.k * (N * bit_len(Self::t1_bound()) / 8)
+    }
+
+    /// 签名的最小字节数：提示段长度可变（`total + k`，`total ≤ omega`），所以这里是下界。
+    #[must_use]
+    pub fn sig_len_min(&self) -> usize {
+        self.lambda / 4 + self.l * (N * (1 + bit_len(self.gamma1 - 1)) / 8) + self.k
+    }
+
     /// 公钥编码（算法 22）：rho 后接 k 个 t1 的简单打包（10 位/系数）。
     pub fn pk_encode(&self, rho: &[u8; 32], t1: &[Poly]) -> Vec<u8> {
-        let bound = Self::t1_bound();
         let mut out = rho.to_vec();
-        for poly in &t1[..self.k] {
-            out.extend(bit_pack(poly, 0, bound));
-        }
+        let bound = Self::t1_bound();
+        out.extend(t1[..self.k].iter().flat_map(|p| bit_pack(p, 0, bound)));
         out
     }
 
-    /// 公钥解码（算法 23）：返回 rho 与 t1。
-    pub fn pk_decode(&self, pk: &[u8]) -> ([u8; 32], PolyVec) {
+    /// 公钥解码（算法 23）：返回 rho 与 t1；截断的公钥是文件里能出现的东西，不是编程错误。
+    pub fn pk_decode(&self, pk: &[u8]) -> Option<([u8; 32], PolyVec)> {
+        if pk.len() != self.pk_len() {
+            return None;
+        }
         let bound = Self::t1_bound();
         let step = N * bit_len(bound) / 8;
-        let mut rho = [0u8; 32];
-        rho.copy_from_slice(&pk[..32]);
+        let rho = copy_of(&pk[..32]);
         let t1 = (0..self.k)
             .map(|i| bit_unpack(&pk[32 + i * step..32 + (i + 1) * step], 0, bound))
             .collect();
-        (rho, t1)
+        Some((rho, t1))
+    }
+
+    /// 公钥与签名一起解码：这是「截断的侧车」唯一的判定点，公钥长度由 `pk_decode` 校验。
+    fn open(&self, pk: &[u8], sig: &[u8]) -> Option<Opened> {
+        let (c_tilde, z, h) = self.sig_decode(sig)?;
+        let (rho, t1) = self.pk_decode(pk)?;
+        Some((c_tilde, z, h, rho, t1))
     }
 
     /// 签名编码（算法 26）：c_tilde、l 个 z 的位打包、提示位打包。
     pub fn sig_encode(&self, c_tilde: &[u8], z: &[Poly], h: &[Poly]) -> Vec<u8> {
         let mut out = c_tilde.to_vec();
-        for poly in &z[..self.l] {
-            out.extend(bit_pack(poly, self.gamma1 - 1, self.gamma1));
-        }
+        let pack = |p: &Poly| bit_pack(p, self.gamma1 - 1, self.gamma1);
+        out.extend(z[..self.l].iter().flat_map(pack));
         out.extend(hint_pack_dyn(&h[..self.k]));
         out
     }
 
-    /// 签名解码（算法 27）：返回 c_tilde、z 与提示向量；提示非法时为 None。
-    pub fn sig_decode(&self, sig: &[u8]) -> (Vec<u8>, PolyVec, Option<PolyVec>) {
+    /// 签名解码（算法 27）：返回 c_tilde、z 与提示向量；长度不足或提示非法时为 `None`。
+    pub fn sig_decode(&self, sig: &[u8]) -> Option<(Vec<u8>, PolyVec, PolyVec)> {
+        if sig.len() < self.sig_len_min() {
+            return None;
+        }
         let c_len = self.lambda / 4;
         let z_step = N * (1 + bit_len(self.gamma1 - 1)) / 8;
         let z_end = c_len + self.l * z_step;
@@ -386,8 +380,8 @@ impl Params {
                 )
             })
             .collect();
-        let h_decoded = hint_unpack_dyn(self.k, self.omega, &sig[z_end..]);
-        (sig[..c_len].to_vec(), z, h_decoded)
+        let h = hint_unpack_dyn(self.k, self.omega, &sig[z_end..])?;
+        Some((sig[..c_len].to_vec(), z, h))
     }
 
     /// 密钥生成（算法 6）：从 32 字节种子确定性生成公钥字节与私钥；K,L 为编译期维度。
@@ -396,12 +390,9 @@ impl Params {
         xi: &[u8; 32],
     ) -> (Vec<u8>, SecretKey) {
         let h = keccak::shake256(&[&xi[..], &[K as u8], &[L as u8]].concat(), 128);
-        let mut rho = [0u8; 32];
-        let mut rho_prime = [0u8; 64];
-        let mut cap_k = [0u8; 32];
-        rho.copy_from_slice(&h[..32]);
-        rho_prime.copy_from_slice(&h[32..96]);
-        cap_k.copy_from_slice(&h[96..128]);
+        let rho = copy_of(&h[..32]);
+        let rho_prime = copy_of(&h[32..96]);
+        let cap_k = copy_of(&h[96..128]);
 
         let (s1, s2) = expand_s::<K, L>(self.eta, &rho_prime);
         let a = expand_a::<K, L>(&rho);
@@ -417,8 +408,7 @@ impl Params {
 
         let (t1, t0) = power2round_vec(&t);
         let pk = self.pk_encode(&rho, &t1);
-        let mut tr = [0u8; 64];
-        tr.copy_from_slice(&keccak::shake256(&pk, 64));
+        let tr = copy_of(&keccak::shake256(&pk, 64));
         let sk = SecretKey {
             rho,
             seed: cap_k,
@@ -430,29 +420,20 @@ impl Params {
         (pk, sk)
     }
 
-    /// 签名（算法 7）：确定性生成签名；rnd 全 0 为确定性签名，否则混入每消息随机。
-    /// 返回 None 表示达到尝试上限（正确密钥概率约 2^−256）。
+    /// 签名（算法 7）：rnd 全 0 为确定性签名，否则混入每消息随机；达到上限（≈2^−256）返回 None。
     pub fn sign_internal<const K: usize, const L: usize>(
         &self,
         sk: &SecretKey,
         mu: &[u8; 64],
         rnd: &[u8; 32],
     ) -> Option<Vec<u8>> {
-        let mut rho_prime = [0u8; 64];
-        let seed = keccak::shake256(&[&sk.seed[..], rnd, mu].concat(), 64);
-        rho_prime.copy_from_slice(&seed);
+        let rho_prime = copy_of(&keccak::shake256(&[&sk.seed[..], rnd, mu].concat(), 64));
         let a = expand_a::<K, L>(&sk.rho);
-        let hat = sk.ntt();
-        let mut kappa = 0u16;
-        for _ in 0..MAX_ATTEMPTS {
-            if let Some((c_tilde, z, h)) =
-                self.sign_attempt::<K, L>(&a, mu, &rho_prime, kappa, &hat)
-            {
-                return Some(self.sig_encode(&c_tilde, &z, &h));
-            }
-            kappa += L as u16;
-        }
-        None
+        let hat = NttSecret::of(sk);
+        (0..MAX_ATTEMPTS).find_map(|i| {
+            let attempt = self.sign_attempt::<K, L>(&a, mu, &rho_prime, i * L as u16, &hat);
+            attempt.map(|(c_tilde, z, h)| self.sig_encode(&c_tilde, &z, &h))
+        })
     }
 
     /// 验证（算法 8）：解码签名、重算承诺哈希并比对，全部通过才为真。
@@ -462,15 +443,15 @@ impl Params {
         mu: &[u8; 64],
         sig: &[u8],
     ) -> bool {
-        let (c_tilde, z, h) = self.sig_decode(sig);
-        let Some(h) = h else { return false };
+        let Some((c_tilde, z, h, rho, t1)) = self.open(pk, sig) else {
+            return false;
+        };
         if infinity_norm(&z) >= self.gamma1 - self.tau as i32 {
             return false;
         }
-        let (rho, t1) = self.pk_decode(pk);
         let a = expand_a::<K, L>(&rho);
         let z_hat: PolyVec = z.iter().map(ntt::ntt).collect();
-        let mut w_approx = mat_vec(&a, &to_array::<L>(&z_hat));
+        let mut w_approx = mat_vec(&a, &core::array::from_fn(|i| z_hat[i]));
         let c = sample_in_ball(self.tau, &c_tilde);
         let c_hat = ntt::ntt(&c);
         let t1_hat: PolyVec = t1.iter().map(ntt::ntt).collect();
@@ -490,9 +471,11 @@ impl Params {
     }
 }
 
-/// Vec 转固定长度数组（长度由调用处 const 保证）。
-fn to_array<const M: usize>(v: &[Poly]) -> [Poly; M] {
-    core::array::from_fn(|i| v[i])
+/// 把切片拷进定长数组（长度由类型给出）。
+fn copy_of<const M: usize>(bytes: &[u8]) -> [u8; M] {
+    let mut out = [0u8; M];
+    out.copy_from_slice(bytes);
+    out
 }
 
 /// 按提示向量还原 w1：逐系数调用 use_hint。
@@ -500,13 +483,7 @@ fn use_hint_vec(h: &[Poly], w: &[Poly], gamma2: i32) -> PolyVec {
     let m = (ntt::Q as i32 - 1) / (2 * gamma2);
     h.iter()
         .zip(w)
-        .map(|(hp, wp)| {
-            let mut out = [0i32; N];
-            for i in 0..N {
-                out[i] = use_hint(gamma2, m, hp[i], wp[i]);
-            }
-            out
-        })
+        .map(|(hp, wp)| core::array::from_fn(|i| use_hint(gamma2, m, hp[i], wp[i])))
         .collect()
 }
 
@@ -517,39 +494,24 @@ fn add_vec(a: &[Poly], b: &[Poly]) -> PolyVec {
 
 /// 对向量中每个多项式做 Power2Round，返回 (t1, t0)。
 fn power2round_vec(r: &[Poly]) -> (PolyVec, PolyVec) {
-    let mut t1 = PolyVec::new();
-    let mut t0 = PolyVec::new();
-    for poly in r {
-        let mut r1 = [0i32; N];
-        let mut r0 = [0i32; N];
-        for (i, &coeff) in poly.iter().enumerate() {
-            (r1[i], r0[i]) = power2round(coeff, 13);
-        }
-        t1.push(r1);
-        t0.push(r0);
-    }
-    (t1, t0)
+    r.iter()
+        .map(|poly| {
+            let pairs: [(i32, i32); N] = core::array::from_fn(|i| power2round(poly[i], 13));
+            (pairs.map(|pair| pair.0), pairs.map(|pair| pair.1))
+        })
+        .unzip()
 }
 
 /// 无限范数：全部系数绝对值的最大值。
 fn infinity_norm(polys: &[Poly]) -> i32 {
-    polys
-        .iter()
-        .flat_map(|p| p.iter())
-        .map(|&c| c.abs())
-        .max()
-        .unwrap_or(0)
+    polys.iter().flatten().map(|c| c.abs()).max().unwrap_or(0)
 }
 
 /// w1 编码（算法 28）：每个系数 0..15 占 4 位，简单打包后拼接。
 fn w1_encode(gamma2: i32, w1: &[Poly]) -> Vec<u8> {
-    // 高位箱数 m=(q-1)/(2γ2)：44 集 m=44 需 6 位，65/87 集 m=16 需 4 位，宽度随参数走。
+    // 上位箱数 m=(q-1)/(2γ2)：44 集需 6 位，65/87 集需 4 位。
     let m = (ntt::Q as i32 - 1) / (2 * gamma2);
-    let mut out = Vec::new();
-    for poly in w1 {
-        out.extend(bit_pack(poly, 0, m - 1));
-    }
-    out
+    w1.iter().flat_map(|p| bit_pack(p, 0, m - 1)).collect()
 }
 
 /// 私钥的 NTT 域预算，循环外算一次，避免每次尝试重复变换。
@@ -559,13 +521,14 @@ struct NttSecret {
     t0: PolyVec,
 }
 
-impl SecretKey {
+impl NttSecret {
     /// 把 s1/s2/t0 一次性变换到 NTT 域。
-    fn ntt(&self) -> NttSecret {
-        NttSecret {
-            s1: self.s1.iter().map(ntt::ntt).collect(),
-            s2: self.s2.iter().map(ntt::ntt).collect(),
-            t0: self.t0.iter().map(ntt::ntt).collect(),
+    fn of(key: &SecretKey) -> Self {
+        let hat = |v: &PolyVec| v.iter().map(ntt::ntt).collect();
+        Self {
+            s1: hat(&key.s1),
+            s2: hat(&key.s2),
+            t0: hat(&key.t0),
         }
     }
 }
@@ -574,7 +537,7 @@ impl SecretKey {
 fn high_bits(polys: &[Poly], gamma2: i32) -> PolyVec {
     polys
         .iter()
-        .map(|p| core::array::from_fn(|i| decompose(gamma2, p[i]).0))
+        .map(|p| p.map(|v| decompose(gamma2, v).0))
         .collect()
 }
 
@@ -582,7 +545,7 @@ fn high_bits(polys: &[Poly], gamma2: i32) -> PolyVec {
 fn low_bits(polys: &[Poly], gamma2: i32) -> PolyVec {
     polys
         .iter()
-        .map(|p| core::array::from_fn(|i| decompose(gamma2, p[i]).1))
+        .map(|p| p.map(|v| decompose(gamma2, v).1))
         .collect()
 }
 
@@ -651,47 +614,46 @@ fn hint_count(h: &[Poly]) -> i32 {
 
 /// 动态维度的提示打包（hint_pack 的 Vec 版），供 Params 方法使用。
 fn hint_pack_dyn(h: &[Poly]) -> Vec<u8> {
-    let total: usize = h
-        .iter()
-        .map(|p| p.iter().filter(|&&c| c == 1).count())
-        .sum();
+    let total = hint_count(h) as usize;
     let mut out = vec![0u8; total + h.len()];
     let mut index = 0usize;
-    for (i, poly) in h.iter().enumerate() {
-        for (j, &coeff) in poly.iter().enumerate() {
-            if coeff == 1 {
+    for (poly, stop) in h.iter().zip(total..) {
+        for (j, coeff) in poly.iter().enumerate() {
+            if *coeff == 1 {
                 out[index] = j as u8;
                 index += 1;
             }
         }
-        out[total + i] = index as u8;
+        out[stop] = index as u8;
     }
     out
 }
 
 /// 动态维度的提示解包（hint_unpack 的 Vec 版），供 Params 方法使用。
 fn hint_unpack_dyn(k: usize, omega: i32, y: &[u8]) -> Option<PolyVec> {
-    let total = y.len() - k;
+    let total = y.len().checked_sub(k)?;
     let mut h = vec![[0i32; N]; k];
     let mut index = 0usize;
-    for i in 0..k {
-        let stop = y[total + i] as usize;
-        if stop < index || stop > omega as usize {
-            return None;
-        }
-        let first = index;
-        while index < stop {
-            if index > first && y[index - 1] >= y[index] {
-                return None;
-            }
-            h[i][y[index] as usize] = 1;
-            index += 1;
-        }
+    for (i, &stop) in y[total..].iter().enumerate() {
+        index = mark_positions(y, &mut h[i], (index, stop as usize), omega as usize)?;
     }
-    if y[index..total].iter().any(|&b| b != 0) {
+    let rest = y.get(index..total)?;
+    rest.iter().all(|&b| b == 0).then_some(h)
+}
+
+/// 写出一段严格递增且不越 ω 的提示位置，返回新的已消耗下标。
+fn mark_positions(y: &[u8], poly: &mut Poly, span: (usize, usize), omega: usize) -> Option<usize> {
+    let (from, stop) = span;
+    if !(from..=omega).contains(&stop) {
         return None;
     }
-    Some(h)
+    for at in from..stop {
+        if at > from && y[at - 1] >= y[at] {
+            return None;
+        }
+        poly[y[at] as usize] = 1;
+    }
+    Some(stop)
 }
 
 /// 小系数拒绝采样（算法 31），系数在 `[−η, η]`。
@@ -702,8 +664,8 @@ pub fn rej_bounded_poly(eta: i32, seed: &[u8]) -> Poly {
     while j < N {
         let z = xof.take(1)[0];
         for half in [z & 0x0f, z >> 4] {
-            if let Some(coeff) = coeff_from_half_byte(eta, half)
-                && j < N
+            if j < N
+                && let Some(coeff) = coeff_from_half_byte(eta, half)
             {
                 w[j] = coeff;
                 j += 1;
@@ -717,17 +679,36 @@ pub fn rej_bounded_poly(eta: i32, seed: &[u8]) -> Poly {
 mod tests {
     use super::*;
 
+    /// M'（算法 2）→ μ：域分隔、空上下文长度、消息体，再对 tr‖M' 取 SHAKE256。
+    fn mu_of(sk: &SecretKey, msg: &[u8]) -> [u8; 64] {
+        let mut input = sk.tr.to_vec();
+        input.extend([0x00, 0x00]);
+        input.extend(msg);
+        copy_of(&keccak::shake256(&input, 64))
+    }
+
     #[test]
-    fn three_bytes_rejects_high_range() {
+    fn a_hint_count_beyond_the_segment_is_rejected() {
+        // 提示段是 `total + k`，`total` 由签名总长反推；这里 `total = 0`，k 个 stop 计数必然越界。
+        let k = ML_DSA_44.k;
+        let mut y = vec![0u8; k];
+        for (i, slot) in y.iter_mut().enumerate() {
+            *slot = (i + 1) as u8;
+        }
+        assert_eq!(
+            hint_unpack_dyn(k, ML_DSA_44.omega, &y),
+            None,
+            "提示计数越界必须判无效"
+        );
+    }
+
+    #[test]
+    fn coeff_decoders_follow_the_rejection_rules() {
         assert_eq!(
             coeff_from_three_bytes([0x12, 0x34, 0x56]),
             Some(0x0056_3412)
         );
         assert_eq!(coeff_from_three_bytes([0x01, 0xe0, 0x7f]), None);
-    }
-
-    #[test]
-    fn half_byte_matches_eta_rules() {
         assert_eq!(coeff_from_half_byte(2, 3), Some(-1));
         assert_eq!(coeff_from_half_byte(4, 8), Some(-4));
         assert_eq!(coeff_from_half_byte(4, 10), None);
@@ -735,26 +716,18 @@ mod tests {
 
     #[test]
     fn pack_unpack_roundtrip() {
-        let w: Poly = core::array::from_fn(|j| (j as i32 * 11) % 44);
-        assert_eq!(bit_unpack(&bit_pack(&w, 0, 44), 0, 44), w);
+        let simple: Poly = core::array::from_fn(|j| (j as i32 * 11) % 44);
+        assert_eq!(bit_unpack(&bit_pack(&simple, 0, 44), 0, 44), simple);
+        let signed: Poly = core::array::from_fn(|j| (j as i32 % 9) - 4);
+        assert_eq!(bit_unpack(&bit_pack(&signed, 4, 4), 4, 4), signed);
     }
 
     #[test]
-    fn signed_pack_roundtrip() {
-        let w: Poly = core::array::from_fn(|j| (j as i32 % 9) - 4);
-        assert_eq!(bit_unpack(&bit_pack(&w, 4, 4), 4, 4), w);
-    }
-
-    #[test]
-    fn bounded_poly_is_in_eta_range() {
-        let w = rej_bounded_poly(4, &[7u8; 40]);
-        assert!(w.iter().all(|&c| (-4..=4).contains(&c)));
-    }
-
-    #[test]
-    fn ntt_poly_is_below_q() {
-        let w = rej_ntt_poly(&[3u8; 40]);
-        assert!(w.iter().all(|&c| (0..ntt::Q as i32).contains(&c)));
+    fn sampled_polys_stay_in_range() {
+        let bounded = rej_bounded_poly(4, &[7u8; 40]);
+        assert!(bounded.iter().all(|&c| (-4..=4).contains(&c)));
+        let uniform = rej_ntt_poly(&[3u8; 40]);
+        assert!(uniform.iter().all(|&c| (0..ntt::Q as i32).contains(&c)));
     }
 
     #[test]
@@ -811,11 +784,9 @@ mod tests {
         };
         let ref_value = crate::json::parse(&text).expect("参考 JSON");
         let get = |key: &str| -> Vec<i32> {
-            ref_value
-                .get(key)
-                .expect("字段")
-                .array()
-                .expect("数组")
+            let field = ref_value.get(key).expect("字段");
+            let values = field.array().expect("数组");
+            values
                 .iter()
                 .map(|v| v.integer().expect("整数") as i32)
                 .collect()
@@ -837,22 +808,11 @@ mod tests {
 
     #[test]
     fn sign_then_verify_roundtrip_and_rejects_tampering() {
-        // 消息封装 M'（算法 2）：域分隔 0x00、空上下文长度 0、消息体。
-        let msg = b"weight-container-manifest".as_slice();
-        let mut m_prime = vec![0x00, 0x00];
-        m_prime.extend(msg);
-
         let xi: [u8; 32] = core::array::from_fn(|j| (j * 7 + 1) as u8);
         let (pk, sk) = ML_DSA_65.key_gen_internal::<6, 5>(&xi);
-
-        let mut mu_input = sk.tr.to_vec();
-        mu_input.extend(&m_prime);
-        let mut mu = [0u8; 64];
-        mu.copy_from_slice(&keccak::shake256(&mu_input, 64));
-
-        let rnd = [0u8; 32]; // 确定性签名
+        let mu = mu_of(&sk, b"weight-container-manifest");
         let sig = ML_DSA_65
-            .sign_internal::<6, 5>(&sk, &mu, &rnd)
+            .sign_internal::<6, 5>(&sk, &mu, &[0u8; 32])
             .expect("签名成功");
         assert!(ML_DSA_65.verify_internal::<6, 5>(&pk, &mu, &sig));
 
@@ -871,14 +831,9 @@ mod tests {
         ) else {
             return;
         };
-        let mut m_prime = vec![0x00, 0x00];
-        m_prime.extend(b"weight-container-manifest".as_slice());
         let xi: [u8; 32] = core::array::from_fn(|j| (j * 7 + 1) as u8);
         let (pk, sk) = params.key_gen_internal::<K, L>(&xi);
-        let mut mu_input = sk.tr.to_vec();
-        mu_input.extend(&m_prime);
-        let mut mu = [0u8; 64];
-        mu.copy_from_slice(&keccak::shake256(&mu_input, 64));
+        let mu = mu_of(&sk, b"weight-container-manifest");
         let sig = params
             .sign_internal::<K, L>(&sk, &mu, &[0u8; 32])
             .expect("签名成功");
@@ -899,12 +854,7 @@ mod tests {
     fn roundtrip<const K: usize, const L: usize>(params: &Params, seed_byte: u8) {
         let xi: [u8; 32] = core::array::from_fn(|j| (j as u8).wrapping_add(seed_byte));
         let (pk, sk) = params.key_gen_internal::<K, L>(&xi);
-        let mut m_prime = vec![0x00, 0x00];
-        m_prime.extend(b"all-parameter-sets".as_slice());
-        let mut mu_input = sk.tr.to_vec();
-        mu_input.extend(&m_prime);
-        let mut mu = [0u8; 64];
-        mu.copy_from_slice(&keccak::shake256(&mu_input, 64));
+        let mu = mu_of(&sk, b"all-parameter-sets");
         let sig = params
             .sign_internal::<K, L>(&sk, &mu, &[0u8; 32])
             .expect("签名成功");

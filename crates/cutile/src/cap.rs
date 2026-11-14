@@ -1,7 +1,5 @@
-//! ② negotiate：需求 ∩ 供给，显式降级（DESIGN §8）。
-//!
-//! 命中第一个可行变体即停：降级链的顺序就是人在 TOML 里写的优先级，不做自动打分——自动
-//! 打分的可解释性成本高于收益。失败时给出的诊断必须包含"缺什么、供给方是什么、最近的可行解与代价"。
+//! ② negotiate：需求 ∩ 供给，显式降级。命中第一个可行变体即停——链序就是 TOML 里写的优先级，
+//! 不做自动打分（可解释性成本高于收益）；失败诊断必须给出"缺什么、供给方是什么、最近的可行解与代价"。
 
 use crate::atom::{Grade, Mismatch, Need, Prim, Provide};
 use crate::decl::{OpDecl, Variant};
@@ -10,7 +8,7 @@ use crate::sch::Schedule;
 use core::fmt;
 use std::collections::BTreeSet;
 
-/// 协商结果：可行的变体 + 调度。
+/// 协商结果：命中的变体、调度与它在降级链里的下标（[`Path::is_head`] 要读下标）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Path {
     /// 变体名。
@@ -24,44 +22,27 @@ pub struct Path {
 }
 
 impl Path {
-    /// 是否命中降级链的首选变体（DESIGN §16「协商 3/3 命中首档」的判据）。
-    ///
-    /// 只看下标：链按 `order` 排好，`index = 0` 就是声明里最优先的那个变体。落到后面的变体
-    /// 说明首选的能力没被满足——`needs` 要么写多了一条，要么这台设备真的缺。
+    /// 是否命中降级链的首选变体：落到后面的档说明首选的能力没被满足。
     #[must_use]
     pub fn is_head(&self) -> bool {
         self.index == 0
     }
 }
 
-/// 这次真的执行过、并且通过了的供给：`(原语, 实现名)` 的集合。
-///
-/// 档案里的 [`Grade`] 是作者的自述；本类型是执行的结论。协商只有在**两者同时成立**时才认为
-/// 一条供给可用——DESIGN §11.3 的"未验证视为不具备"因此对每条命令都成立，而不是只对
-/// `verify` 成立（那里跑完就不再用它，别的命令却还在读档案）。
-///
-/// 空集不是"没有原语"，而是"这次什么都没执行"：协商照样会走完降级链，只是每一档都失败，
-/// 失败原因写成"L2 但没有这次执行的见证"。这正是想要的形状——拒绝的理由必须能被读出来。
+/// 这次真的执行过、并且通过了的供给：档案里的 [`Grade`] 是作者自述，本类型是执行结论；两者同时成立才算可用。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Proof {
     holds: BTreeSet<(Prim, String)>,
 }
 
 impl Proof {
-    /// 什么都没执行过。
-    ///
-    /// 执行路径上用不到它（那里的证据来自见证），但"证据还没到"这件事必须能被表达出来：
-    /// 缺省值就是"一条也不具备"，而不是"按档案全具备"。
+    /// 什么都没执行过：执行路径用不到它，但"证据还没到"必须能被表达，而不是"按档案全具备"。
     #[must_use]
     pub fn none() -> Self {
         Self::default()
     }
 
-    /// 按档案自述：每条 `grade ≥ L2` 的供给都算可用。
-    ///
-    /// 只给**解释性**报告用——§16 的协商判据（"首选变体在声明上是否命中"）与本机执行不了的
-    /// 设备（非 C 档案）。它把 TOML 当结论，所以任何声称"这台设备能跑"的路径都不许用它，
-    /// 否则 `verify` 刚闭合的那条证据链又从别的门开了。用它的报告必须写明依据（`crate::witness::Basis`）。
+    /// 按档案自述：每条 `grade ≥ L2` 的供给都算可用。只给解释性报告用，任何声称"能跑"的路径都不许用它。
     #[must_use]
     pub fn declared(prof: &Profile) -> Self {
         let mut proof = Self::default();
@@ -78,9 +59,7 @@ impl Proof {
         self.holds.insert((prim, impl_name.to_string()));
     }
 
-    /// 这条供给这次是否被证明。
-    ///
-    /// 认 `(原语, 实现名)` 而不是整个签名：同一条供给的参数没变，变的是"这次跑没跑"。
+    /// 这条供给这次是否被证明：认 `(原语, 实现名)`，因为同一供给的参数不变，变的是"跑没跑"。
     #[must_use]
     pub fn holds(&self, have: &Provide) -> bool {
         self.holds.contains(&(have.prim, have.impl_name.clone()))
@@ -99,7 +78,7 @@ impl Proof {
     }
 }
 
-/// 一条需求的检查结果。
+/// 一条需求的检查结果。`blocked_by_grade` 与 `unproven` 必须分开，否则报告说不出"这条能力欠一次执行"。
 #[derive(Debug, Clone, PartialEq)]
 pub struct NeedReport {
     /// 需求。
@@ -108,10 +87,7 @@ pub struct NeedReport {
     pub have: Option<Provide>,
     /// 供给存在但证据等级不足 `L2`。
     pub blocked_by_grade: bool,
-    /// 供给声明了 `L2`，但这次执行没有拿到它的见证结论（[`Proof`] 里没有这一条）。
-    ///
-    /// 它与 `blocked_by_grade` 必须分开：前者是"档案说它具备"、后者是"档案自己就没说"。
-    /// 合成一个布尔值之后，报告就再也说不出"这条能力欠一次执行"。
+    /// 供给声明了 `L2`，但这次执行没有拿到它的见证。
     pub unproven: bool,
     /// 逐项差异。
     pub mismatches: Vec<Mismatch>,
@@ -126,28 +102,9 @@ impl NeedReport {
             && !self.unproven
             && self.have.is_some()
     }
-
-    /// 一行原因：先报参数不匹配，再报证据。
-    ///
-    /// 顺序很重要——"dp4a 不支持 f32" 和"没验证"是两件事，只说后者会让人误以为补见证就能跑。
-    /// 这里只给出一句话的判定，不排版：拼成哪一行、排在哪里由前端决定。
-    pub fn reason(&self) -> String {
-        let mut parts: Vec<String> = self.mismatches.iter().map(ToString::to_string).collect();
-        if self.blocked_by_grade {
-            let grade = self.have.as_ref().map_or(Grade::L0, |have| have.grade);
-            parts.push(format!("{grade} < L2（未验证视为不具备）"));
-        }
-        if self.unproven {
-            parts.push("L2 但没有这次执行的见证（未验证视为不具备）".to_string());
-        }
-        if parts.is_empty() {
-            return "已满足".to_string();
-        }
-        parts.join("；")
-    }
 }
 
-/// 降级链上的一步。
+/// 降级链上的一步。`failures` 只存结构，原因文字由 [`NeedReport::reason`] 给出。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainStep {
     /// 变体名。
@@ -156,16 +113,13 @@ pub struct ChainStep {
     pub schedule: Schedule,
     /// 是否可行。
     pub ok: bool,
-    /// 未满足的需求（`ok` 时为空）。原因文字由 [`NeedReport::reason`] 给出，本结构不持有文本。
+    /// 未满足的需求（`ok` 时为空）。
     pub failures: Vec<NeedReport>,
     /// `mma_share`。
     pub mma_share: f64,
 }
 
-/// 一个变体的需求复核结果，供 `doctor` 逐条解释降级链。
-///
-/// 与 [`negotiate`] 的分工：协商**只跑到第一个可行变体**为止（命中即停），解释则要看完整条链，
-/// 因此本函数总是检查全部变体。两者都不做排版。
+/// 一个变体的需求复核结果，供 `doctor` 逐条解释降级链：协商命中即停，解释则要看完整条链。
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariantCheck {
     /// 变体名。
@@ -200,137 +154,69 @@ pub struct NoPath {
     pub unlock: Option<Unlock>,
 }
 
-/// 降级链一步的原因文字：`原语：原因`，多条以 `；` 连接。
-///
-/// 这是**错误文本**的一部分（[`NoPath`] 的 `Display` 按 DESIGN §8.2 输出它），不是排版：
-/// 换行、缩进、标题由用它的地方决定。
-fn describe_failures(failures: &[NeedReport]) -> String {
-    failures
-        .iter()
-        .map(|report| format!("{}：{}", report.need.prim, report.reason()))
-        .collect::<Vec<_>>()
-        .join("；")
-}
-
-impl fmt::Display for NoPath {
-    /// DESIGN §8.2 的失败诊断：缺什么、供给方是什么、最近的可行解与代价。
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "error: {} 在 {} 上没有可行变体", self.op, self.device)?;
-        for report in &self.needs {
-            writeln!(f, "  need  {}", report.need.signature())?;
-            match &report.have {
-                Some(have) => writeln!(f, "  have  {}", have.summary())?,
-                None => writeln!(f, "  have  —（该档案未声明 `{}`）", report.need.prim)?,
-            }
-            writeln!(f, "         ↳ 不满足：{}", report.reason())?;
-        }
-        writeln!(f, "  降级链：")?;
-        for step in &self.chain {
-            if step.ok {
-                writeln!(
-                    f,
-                    "    {} ✓ （可用，预计 mma_share {:.2}）",
-                    step.variant, step.mma_share
-                )?;
-            } else {
-                writeln!(
-                    f,
-                    "    {} ✗ （{}）",
-                    step.variant,
-                    describe_failures(&step.failures)
-                )?;
-            }
-        }
-        match &self.unlock {
-            Some(unlock) => {
-                let missing: Vec<String> = unlock
-                    .missing
-                    .iter()
-                    .map(|prim| format!("`{prim}`"))
-                    .collect();
-                // 档位也报：建议的解通常不是首选（首选缺得更少时才会是它），读者要能看清
-                // 这个建议换来的代价是“降级到第 k 档”，而不是误以为补完就是满配。
-                let step = self
-                    .chain
-                    .iter()
-                    .position(|step| step.variant == unlock.variant)
-                    .map_or_else(|| "?".to_string(), |index| format!("{}", index + 1));
-                writeln!(
-                    f,
-                    "  建议：在 {device} 补齐 {} 的 L2 见证后可用 {}（第 {step}/{} 档，预计 mma_share {:.2}）",
-                    missing.join(" "),
-                    unlock.variant,
-                    self.chain.len(),
-                    unlock.mma_share,
-                    device = self.device
-                )?;
-            }
-            None => writeln!(
-                f,
-                "  建议：该设备缺失全部原语，先补 `provides` 再谈特化片段"
-            )?,
-        }
-        Ok(())
-    }
-}
-
 impl std::error::Error for NoPath {}
 
-/// 检查一个变体的全部需求；空向量表示可行。
-fn check_variant(op: &OpDecl, prof: &Profile, variant: &Variant, proof: &Proof) -> Vec<NeedReport> {
-    let mut reports = Vec::new();
-    for need in variant.needs(op) {
-        reports.push(check_need(prof, need, proof));
-    }
-    for prim in variant.schedule.required_prims() {
-        let need = Need::of(prim);
-        let report = check_need(prof, &need, proof);
-        if !report.is_satisfied() {
-            reports.push(report);
-        }
-    }
+/// 一档里满足不了的需求；空向量表示这一档可行。判定只做一次，各判一次会让"协商能过"与"报告说不能过"同时成立。
+fn failing_needs(op: &OpDecl, prof: &Profile, variant: &Variant, proof: &Proof) -> Vec<NeedReport> {
+    let mut reports: Vec<NeedReport> = variant
+        .needs(op)
+        .map(|need| check_need(prof, need, proof))
+        .filter(|report| !report.is_satisfied())
+        .collect();
+    // 调度隐式要求的原语（如 `bar`）同样是需求，只留不满足的那几条。
+    reports.extend(
+        variant
+            .schedule
+            .required_prims()
+            .into_iter()
+            .map(|prim| check_need(prof, &Need::of(prim), proof))
+            .filter(|report| !report.is_satisfied()),
+    );
     reports
 }
 
-/// 同一原语可能有多条签名（`dot` 的 `dp4a` 与标量 `fma`），挑一条来比对：
-/// 先看谁能**覆盖**需求，再看**这次有没有执行证据**，最后看证据等级；都不覆盖时取差异最少的
-/// 那条——诊断里的 `have` 行必须指向最接近的那份实现，否则打印出来的是一份与需求无关的签名。
-fn select(prof: &Profile, need: &Need, proof: &Proof) -> Option<(Provide, Vec<Mismatch>)> {
-    let mut best: Option<(Provide, Vec<Mismatch>)> = None;
-    for have in prof.providers(need.prim) {
-        let diff = have.diff(need);
-        let proven = proof.holds(have);
-        let better = match &best {
-            None => true,
-            Some((current, current_diff)) => {
-                let current_proven = proof.holds(current);
-                match (diff.is_empty(), current_diff.is_empty()) {
-                    (true, false) => true,
-                    (false, true) => false,
-                    // 两条都能覆盖：先取真的跑过的，再取等级高的。反过来的话，一份自述过来的
-                    // `L3` 会把本次唯一有见证的那条挤掉，协商结果取决于哪个数字写得更漂亮。
-                    (true, true) => match (proven, current_proven) {
-                        (true, false) => true,
-                        (false, true) => false,
-                        _ => have.grade > current.grade,
-                    },
-                    (false, false) => diff.len() < current_diff.len(),
-                }
-            }
-        };
-        if better {
-            best = Some((have.clone(), diff));
-        }
-    }
-    best
+/// 同一原语的一条候选供给：与需求的签名差异，以及这次执行有没有留下证据；分开算会指向另一条实现。
+struct Offer {
+    have: Provide,
+    diff: Vec<Mismatch>,
+    proven: bool,
 }
 
-/// 片段层与档案的签名差异：协商会挑中的那条实现，片段真的写了吗。
-///
-/// 这是"签名对齐"唯一必须两边一起看的判据：`needs ↔ provides` 由 [`negotiate`] 判，
-/// `provides ↔ witness` 由 `crate::witness` 判，而"档案挑中的实现"与"片段文本写的实现"
-/// 之间没有任何别的检查。少了它，一份档案可以同时"协商可行"且"片段存在"，两者却指向不同的
-/// 实现——错误会晚到构建期，甚至把 `dp4a` 的文本当成 `fma` 用。
+impl Offer {
+    /// 折成可比较的形态：差异只算一次，证据只查一次。
+    fn new(have: &Provide, need: &Need, proof: &Proof) -> Self {
+        Self {
+            have: have.clone(),
+            diff: have.diff(need),
+            proven: proof.holds(have),
+        }
+    }
+
+    /// 是否该替换已选中的候选：先看谁覆盖需求，再看"这次跑过"，最后看证据等级（自述的 `L3` 必须输给本次有见证的 `L2`）。
+    fn beats(&self, current: &Self) -> bool {
+        let proven_first = (self.proven, self.have.grade) > (current.proven, current.have.grade);
+        match (self.diff.is_empty(), current.diff.is_empty()) {
+            (true, false) => true,
+            (false, true) => false,
+            (true, true) => proven_first,
+            (false, false) => self.diff.len() < current.diff.len(),
+        }
+    }
+}
+
+/// 同一原语可能有多条签名（`dot` 的 `dp4a` 与标量 `fma`），挑一条来比对：先看覆盖，再看证据，都不覆盖时取差异最少。
+fn select(prof: &Profile, need: &Need, proof: &Proof) -> Option<(Provide, Vec<Mismatch>)> {
+    let mut best: Option<Offer> = None;
+    for have in prof.providers(need.prim) {
+        let offer = Offer::new(have, need, proof);
+        if best.as_ref().is_none_or(|current| offer.beats(current)) {
+            best = Some(offer);
+        }
+    }
+    best.map(|offer| (offer.have, offer.diff))
+}
+
+/// 片段层与档案的签名差异：协商会挑中的那条实现，片段真的写了吗——缺了它，两者会各自"可行"却指向不同实现。
 #[derive(Debug, Clone, PartialEq)]
 pub struct FragmentGap {
     /// 原语。
@@ -352,34 +238,7 @@ impl FragmentGap {
     }
 }
 
-impl fmt::Display for FragmentGap {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (&self.chosen, &self.declared) {
-            (Some(chosen), Some(declared)) => write!(
-                f,
-                "`{}` 协商会挑中 `{}`（{}），但片段声明实现了 `{declared}`：\
-                 同一原语的两条签名不能互换，先让文本与档案对齐",
-                self.prim, chosen.impl_name, chosen.grade
-            ),
-            (Some(chosen), None) => write!(
-                f,
-                "`{}` 协商会挑中 `{}`（{}），但片段层没有这段文本",
-                self.prim, chosen.impl_name, chosen.grade
-            ),
-            (None, Some(declared)) => write!(
-                f,
-                "片段声明实现了 `{}/{declared}`，但档案里没有 `{}` 的任何签名",
-                self.prim, self.prim
-            ),
-            (None, None) => write!(f, "`{}` 既没有档案签名也没有片段文本", self.prim),
-        }
-    }
-}
-
-/// 逐变体、逐条需求比对"协商会挑中的实现"与"片段声明实现的实现"。
-///
-/// 判据与 [`negotiate`] 同源（同一张需求表、同一个 [`plan::select`](crate::plan::select)），所以"协商能通过"与
-/// "片段能生成"不会各算一份。只返回差异；同一原语在多个变体里重复出现在差异里时去重。
+/// 逐变体比对"协商会挑中的实现"与"片段声明的实现"，判据与 [`negotiate`] 同源，因此两边不会各算一份。
 pub fn fragment_gaps<'a>(
     op: &OpDecl,
     prof: &Profile,
@@ -403,6 +262,7 @@ pub fn fragment_gaps<'a>(
     gaps
 }
 
+/// 一条需求的检查结果。等级本来就不够时不再说"没执行"：那是同一个结论的另一种说法。
 fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedReport {
     match select(prof, need, proof) {
         None => NeedReport {
@@ -415,8 +275,6 @@ fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedReport {
         Some((have, mismatches)) => NeedReport {
             need: need.clone(),
             blocked_by_grade: !have.grade.is_verified(),
-            // 等级本来就不够时不必再说"没执行"：那是同一个结论的另一种说法，两行叠在一起只会
-            // 让人以为补一条见证就能绕过 `L1`。
             unproven: have.grade.is_verified() && !proof.holds(&have),
             have: Some(have),
             mismatches,
@@ -424,39 +282,84 @@ fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedReport {
     }
 }
 
-/// ② negotiate 本体。
-///
-/// 按档案自述协商（[`Proof::declared`]）：调用方没有执行证据时的唯一选择，也是
-/// `verify` 报告里“§16 协商判据”那一栏的口径。执行路径要用 [`negotiate_with`]。
+/// ② negotiate 本体：按档案自述协商（[`Proof::declared`]），这是没有执行证据时的唯一选择，也是 `verify` 报告的口径。
 pub fn negotiate(op: &OpDecl, prof: &Profile) -> Result<Path, Box<NoPath>> {
     negotiate_with(op, prof, &Proof::declared(prof))
 }
 
-/// ② negotiate 本体：供给必须在 `proof` 里，才算这次具备。
-///
-/// `proof` 空集不是错误：它表示“这次什么都没执行”，于是每一档都不可行，而失败原因会写明
-/// 是“L2 但没有这次执行的见证”——拒绝的理由必须能被读出来。
-pub fn negotiate_with(op: &OpDecl, prof: &Profile, proof: &Proof) -> Result<Path, Box<NoPath>> {
-    let mut chain = Vec::new();
-    let mut first_failure: Option<Vec<NeedReport>> = None;
-    // 变体下标与它缺的原语一起记：缺项必须与建议里的变体名同源，否则“补齐这些就能用”是假话。
-    let mut closest: Option<(usize, usize, Vec<Prim>)> = None;
+/// 一次协商的账本：整条降级链、首选那一档的缺项、缺得最少的那一档；失败后再走一遍链就不再是本次发生过的事。
+#[derive(Default)]
+struct Ledger {
+    chain: Vec<ChainStep>,
+    first_failure: Option<Vec<NeedReport>>,
+    closest: Option<(usize, Vec<Prim>)>,
+}
 
-    for (index, variant) in op.variants.iter().enumerate() {
-        let reports = check_variant(op, prof, variant, proof);
-        let ok = reports.iter().all(NeedReport::is_satisfied);
-        let failing: Vec<NeedReport> = reports
-            .into_iter()
-            .filter(|report| !report.is_satisfied())
-            .collect();
-        chain.push(ChainStep {
+impl Ledger {
+    /// 记下一档的结果，返回它是否可行；`ok` 字段与"是否命中"必须是同一个布尔。
+    fn record(&mut self, index: usize, variant: &Variant, failing: Vec<NeedReport>) -> bool {
+        let ok = failing.is_empty();
+        self.chain.push(ChainStep {
             variant: variant.name.clone(),
             schedule: variant.schedule,
             ok,
             failures: failing.clone(),
             mma_share: variant.mma_share,
         });
-        if ok {
+        if !ok {
+            self.remember_failure(index, failing);
+        }
+        ok
+    }
+
+    /// 记下这一档的缺项：`first_failure` 答"首选为什么不行"，`closest` 答"补哪一个就能用"，两者不能互相冒充。
+    fn remember_failure(&mut self, index: usize, failing: Vec<NeedReport>) {
+        let mut missing: Vec<Prim> = Vec::new();
+        for report in &failing {
+            if !missing.contains(&report.need.prim) {
+                missing.push(report.need.prim);
+            }
+        }
+        let fewer = self
+            .closest
+            .as_ref()
+            .is_none_or(|(_, best)| missing.len() < best.len());
+        if fewer {
+            self.closest = Some((index, missing));
+        }
+        if self.first_failure.is_none() {
+            self.first_failure = Some(failing);
+        }
+    }
+
+    /// 最近的解锁路径：变体名与缺项来自同一档（只陈述这一档缺这些原语，不承诺补完必然可行）。
+    fn unlock(&self, op: &OpDecl) -> Option<Unlock> {
+        let (index, missing) = self.closest.as_ref()?;
+        op.variants.get(*index).map(|variant| Unlock {
+            variant: variant.name.clone(),
+            missing: missing.clone(),
+            mma_share: variant.mma_share,
+        })
+    }
+
+    /// 把账本折成失败诊断；设备标签在这里成形（`厂商(编号)`），与档案同源，不接受调用方另传字符串。
+    fn into_no_path(self, op: &OpDecl, prof: &Profile) -> NoPath {
+        let unlock = self.unlock(op);
+        NoPath {
+            op: op.name.clone(),
+            device: format!("{}({})", prof.meta.vendor, prof.meta.id),
+            needs: self.first_failure.unwrap_or_default(),
+            chain: self.chain,
+            unlock,
+        }
+    }
+}
+
+/// ② negotiate 本体：供给必须在 `proof` 里才算这次具备；空集是"这次什么都没执行"，于是每一档都不可行。
+pub fn negotiate_with(op: &OpDecl, prof: &Profile, proof: &Proof) -> Result<Path, Box<NoPath>> {
+    let mut ledger = Ledger::default();
+    for (index, variant) in op.variants.iter().enumerate() {
+        if ledger.record(index, variant, failing_needs(op, prof, variant, proof)) {
             return Ok(Path {
                 variant: variant.name.clone(),
                 index,
@@ -464,65 +367,153 @@ pub fn negotiate_with(op: &OpDecl, prof: &Profile, proof: &Proof) -> Result<Path
                 mma_share: variant.mma_share,
             });
         }
-        // 按原语去重：`needs` 允许同一原语写多个 dtype，调度也会再要一次（`bar`）；建议说的是
-        // “补哪些原语”，所以同样只算一条——“缺得最少”的挑选也用这个数，否则两条 dtype 需求会
-        // 让真正只差一个原语的变体看起来更远。
-        let mut missing: Vec<Prim> = Vec::new();
-        for report in &failing {
-            if !missing.contains(&report.need.prim) {
-                missing.push(report.need.prim);
-            }
-        }
-        if closest
-            .as_ref()
-            .is_none_or(|(_, count, _)| missing.len() < *count)
-        {
-            closest = Some((index, missing.len(), missing));
-        }
-        if first_failure.is_none() {
-            first_failure = Some(failing);
-        }
     }
-
-    let unlock = closest.and_then(|(index, _, missing)| {
-        op.variants.get(index).map(|variant| Unlock {
-            variant: variant.name.clone(),
-            missing,
-            mma_share: variant.mma_share,
-        })
-    });
-
-    Err(Box::new(NoPath {
-        op: op.name.clone(),
-        device: format!("{}({})", prof.meta.vendor, prof.meta.id),
-        needs: first_failure.unwrap_or_default(),
-        chain,
-        unlock,
-    }))
+    Err(Box::new(ledger.into_no_path(op, prof)))
 }
 
-/// 逐变体复核整条降级链：`doctor` 要解释“为何选它、其它变体差在哪”，
-/// 而 [`negotiate`] 命中即停，不持有后面的判定。
-///
-/// 这里只给结构化结果；“✓ 选中/·”这类标记与缩进由前端根据 [`Path::variant`] 排版。
+/// 逐变体复核整条降级链：`doctor` 要解释"为何选它、其它变体差在哪"，而 [`negotiate`] 命中即停、不持有后面的判定。
 pub fn inspect(op: &OpDecl, prof: &Profile) -> Vec<VariantCheck> {
     inspect_with(op, prof, &Proof::declared(prof))
 }
 
 /// 逐变体复核整条降级链，判据与 [`negotiate_with`] 同源。
-///
-/// 这里只给结构化结果；“✓ 选中/·”这类标记与缩进由前端根据 [`Path::variant`] 排版。
 pub fn inspect_with(op: &OpDecl, prof: &Profile, proof: &Proof) -> Vec<VariantCheck> {
     op.variants
         .iter()
         .map(|variant| VariantCheck {
             name: variant.name.clone(),
-            failures: check_variant(op, prof, variant, proof)
-                .into_iter()
-                .filter(|report| !report.is_satisfied())
-                .collect(),
+            failures: failing_needs(op, prof, variant, proof),
         })
         .collect()
+}
+
+impl NeedReport {
+    /// 一行原因：先报参数不匹配，再报证据——"dp4a 不支持 f32"与"没验证"是两件事。
+    pub fn reason(&self) -> String {
+        let mut parts: Vec<String> = self.mismatches.iter().map(ToString::to_string).collect();
+        if self.blocked_by_grade {
+            let grade = self.have.as_ref().map_or(Grade::L0, |have| have.grade);
+            parts.push(format!("{grade} < L2（未验证视为不具备）"));
+        }
+        if self.unproven {
+            parts.push("L2 但没有这次执行的见证（未验证视为不具备）".to_string());
+        }
+        if parts.is_empty() {
+            return "已满足".to_string();
+        }
+        parts.join("；")
+    }
+}
+
+/// 降级链一步的原因文字：`原语：原因`，多条以 `；` 连接；这是错误文本的一部分，排版由调用方决定。
+fn describe_failures(failures: &[NeedReport]) -> String {
+    failures
+        .iter()
+        .map(|report| format!("{}：{}", report.need.prim, report.reason()))
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
+impl fmt::Display for NoPath {
+    /// README §8.2 的失败诊断，四段固定顺序（身份、`need`/`have` 对照、整条链、建议），缺一段就不成立。
+    /// 错误文本是对外接口（终端原样打印、测试按内容断言），所以措辞与判定分开审阅：改一句不该动判定。
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "error: {} 在 {} 上没有可行变体", self.op, self.device)?;
+        write_needs(f, &self.needs)?;
+        write_chain(f, &self.chain)?;
+        write_advice(f, self)
+    }
+}
+
+/// 逐条需求成组输出 `need` / `have` / `↳ 不满足`：少了 `↳` 就没人把它们连成"为什么不行"。
+fn write_needs(f: &mut fmt::Formatter<'_>, needs: &[NeedReport]) -> fmt::Result {
+    for report in needs {
+        writeln!(f, "  need  {}", report.need.signature())?;
+        write_have(f, report)?;
+        writeln!(f, "         ↳ 不满足：{}", report.reason())?;
+    }
+    Ok(())
+}
+
+/// 供给方那一行：档案里最接近的那份签名，或者"该档案未声明"（与"声明了但不够"分开）。
+fn write_have(f: &mut fmt::Formatter<'_>, report: &NeedReport) -> fmt::Result {
+    match &report.have {
+        Some(have) => writeln!(f, "  have  {}", have.summary()),
+        None => writeln!(f, "  have  —（该档案未声明 `{}`）", report.need.prim),
+    }
+}
+
+/// 整条降级链每档一行，✓ 与 ✗ 的差别就是 `ok`：可用的报调度代价，不可用的报缺项。全链都印——
+/// 失败诊断要给的是"这台设备上还有什么"，只印不可行的档等于把读者推回档案原文。
+fn write_chain(f: &mut fmt::Formatter<'_>, chain: &[ChainStep]) -> fmt::Result {
+    writeln!(f, "  降级链：")?;
+    for step in chain {
+        let cost = if step.ok {
+            format!("✓ （可用，预计 mma_share {:.2}）", step.mma_share)
+        } else {
+            format!("✗ （{}）", describe_failures(&step.failures))
+        };
+        writeln!(f, "    {} {cost}", step.variant)?;
+    }
+    Ok(())
+}
+
+/// 建议行：有最近的一档就报"补什么、能用哪档、代价多少"，没有就报"先补档案"。两种形状对应两种现实
+/// （只差几条见证 / 档案与算子没有交集），合成一句会让人去补一条本来不需要的见证。
+fn write_advice(f: &mut fmt::Formatter<'_>, path: &NoPath) -> fmt::Result {
+    let Some(unlock) = &path.unlock else {
+        return writeln!(
+            f,
+            "  建议：该设备缺失全部原语，先补 `provides` 再谈特化片段"
+        );
+    };
+    let missing: Vec<String> = unlock
+        .missing
+        .iter()
+        .map(|prim| format!("`{prim}`"))
+        .collect();
+    // 档位从 1 起：建议换来的常是"降级到第 k 档"，读者要能看清代价，而不是误以为补完就是满配。
+    // 找不到时给 `?` 而不是猜一个数，编出来的档位会让人按错误的位置去改声明。
+    let step = path
+        .chain
+        .iter()
+        .position(|step| step.variant == unlock.variant)
+        .map_or_else(|| "?".to_string(), |index| format!("{}", index + 1));
+    writeln!(
+        f,
+        "  建议：在 {device} 补齐 {} 的 L2 见证后可用 {}（第 {step}/{} 档，预计 mma_share {:.2}）",
+        missing.join(" "),
+        unlock.variant,
+        path.chain.len(),
+        unlock.mma_share,
+        device = path.device
+    )
+}
+
+impl fmt::Display for FragmentGap {
+    /// 一句话说清"协商会挑谁、片段写了谁、差在哪一侧"。四种组合各一种措辞：两侧都有但不同、片段缺、
+    /// 档案缺、两侧都没有——合成一句"未对齐"会把该改档案还是该改片段这件事重新藏起来。
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (&self.chosen, &self.declared) {
+            (Some(chosen), Some(declared)) => write!(
+                f,
+                "`{}` 协商会挑中 `{}`（{}），但片段声明实现了 `{declared}`：\
+                 同一原语的两条签名不能互换，先让文本与档案对齐",
+                self.prim, chosen.impl_name, chosen.grade
+            ),
+            (Some(chosen), None) => write!(
+                f,
+                "`{}` 协商会挑中 `{}`（{}），但片段层没有这段文本",
+                self.prim, chosen.impl_name, chosen.grade
+            ),
+            (None, Some(declared)) => write!(
+                f,
+                "片段声明实现了 `{}/{declared}`，但档案里没有 `{}` 的任何签名",
+                self.prim, self.prim
+            ),
+            (None, None) => write!(f, "`{}` 既没有档案签名也没有片段文本", self.prim),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -531,6 +522,7 @@ mod tests {
     use crate::atom::{Attr, AttrKey, DType, DTypeSet};
     use crate::decl::{Axis, Skeleton};
     use crate::sch::Schedule;
+    use diagnostic::data::Value;
 
     fn op() -> OpDecl {
         let source = &op::builtin_named("gemv_i4").expect("内置");
@@ -545,10 +537,15 @@ mod tests {
         Profile::parse(prof::embedded("nvidia").expect("nvidia 档案")).expect("档案可解析")
     }
 
-    /// 一个模板只用 `dot` 的合成声明：差异全部来自变体级 `extra_needs`。
-    ///
-    /// 内置 `gemv_i4` 的模板由所有变体共享，`load_async` / `commit_wait` / `bar`
-    /// 因此是算子级需求（装载期校验），不能再拿它演示"缺一个原语就降级"。
+    /// cpu 档案去掉这些原语：用来演示"设备缺一条能力就降级"。
+    fn cpu_without(prims: &[Prim]) -> Profile {
+        let mut profile = cpu();
+        profile.provides.retain(|have| !prims.contains(&have.prim));
+        profile
+    }
+
+    /// 一个模板只用 `dot` 的合成声明：内置 `gemv_i4` 的模板由所有变体共享，`load_async` /
+    /// `commit_wait` / `bar` 因此是算子级需求，演示不了"缺一个原语就降级"，差异只能落在 `extra_needs`。
     fn downgrade_op() -> OpDecl {
         // 合成声明只需要一份可解析的签名：协商不读 ABI，但 `OpDecl` 的不变量要求它存在。
         let template = "void cutile_probe_kernel(float *y) { @dot(acc, a, b, k); }\n";
@@ -596,21 +593,14 @@ mod tests {
         let error = negotiate(&op(), &nvidia()).unwrap_err();
         assert!(error.to_string().contains("没有可行变体"));
         assert!(error.chain.iter().all(|step| !step.ok));
-        assert!(
-            error.to_string().contains("L2"),
-            "证据不足要明确指出：{error}"
-        );
+        assert!(error.to_string().contains("L2"), "证据不足：{error}");
     }
 
     #[test]
     fn variant_level_needs_drive_downgrade() {
-        let op = downgrade_op();
-        let mut profile = cpu();
         // 去掉 load_async / commit_wait：pipe2 需要它们，direct 不需要 —— 这正是 extra_needs 的意义。
-        profile
-            .provides
-            .retain(|have| have.prim != Prim::LoadAsync && have.prim != Prim::CommitWait);
-        let path = negotiate(&op, &profile).expect("应降级到 direct");
+        let profile = cpu_without(&[Prim::LoadAsync, Prim::CommitWait]);
+        let path = negotiate(&downgrade_op(), &profile).expect("应降级到 direct");
         assert_eq!(path.variant, "direct");
         assert!(!path.schedule.uses_async());
     }
@@ -618,27 +608,19 @@ mod tests {
     #[test]
     fn diagnostics_name_the_missing_atom_and_the_unlock() {
         // dot 是算子级公共需求：缺它时整条链都不可行，诊断必须点名并给出解锁路径。
-        let mut profile = cpu();
-        profile.provides.retain(|have| have.prim != Prim::Dot);
-        let error = negotiate(&op(), &profile).unwrap_err();
+        let error = negotiate(&op(), &cpu_without(&[Prim::Dot])).unwrap_err();
         let text = error.to_string();
         assert!(text.contains("dot"), "{text}");
         assert!(text.contains("建议："), "{text}");
         assert!(text.contains("L2 见证"), "{text}");
     }
 
-    /// 解锁建议必须自洽：变体名与“还缺哪些原语”来自同一个变体。
-    ///
-    /// 首选缺 `dot` 与 `load_async`、兜底只缺 `dot` 时，建议应指向兜底（第 2 档）且只列 `dot`。
-    /// 把首选的变体名配上兜底的缺项，会让人补完证之后发现仍然不可用。
+    /// 解锁建议必须自洽：变体名与"还缺哪些原语"来自同一档。首选缺 `dot` 与 `load_async`、兜底只缺
+    /// `dot` 时，建议应指向兜底（第 2 档）且只列 `dot`；拼错会让人补完证之后发现仍然不可用。
     #[test]
     fn the_unlock_advice_names_the_variant_its_missing_atoms_belong_to() {
-        let op = downgrade_op();
-        let mut profile = cpu();
-        profile
-            .provides
-            .retain(|have| have.prim != Prim::Dot && have.prim != Prim::LoadAsync);
-        let error = negotiate(&op, &profile).unwrap_err();
+        let error =
+            negotiate(&downgrade_op(), &cpu_without(&[Prim::Dot, Prim::LoadAsync])).unwrap_err();
         let unlock = error.unlock.as_ref().expect("应当给出解锁路径");
         assert_eq!(unlock.variant, "direct", "{unlock:?}");
         assert_eq!(unlock.missing, vec![Prim::Dot], "{unlock:?}");
@@ -647,18 +629,14 @@ mod tests {
         assert!(!text.contains("可用 pipe2"), "{text}");
     }
 
-    /// 缺项按原语去重：调度与 `needs` 都要 `bar` 时，建议只列一次。
-    ///
-    /// 真实数据里就会撞到这条（`pipe<2>` 的调度要 `bar`，声明里往往也写了一条），重复的原语会让
-    /// “补哪些原语”读成“补两条需求”，也会让“缺得最少”的挑选偏向需求条数多的变体。
+    /// 缺项按原语去重：调度与 `needs` 都要 `bar` 时建议只列一次。重复会让"补哪些原语"读成"补两条
+    /// 需求"，也会让"缺得最少"的挑选偏向需求条数多的变体。
     #[test]
     fn the_unlock_advice_lists_each_atom_once() {
         let mut op = downgrade_op();
         op.needs = vec![Need::of(Prim::Bar)];
         op.variants.truncate(1);
-        let mut profile = cpu();
-        profile.provides.retain(|have| have.prim != Prim::Bar);
-        let error = negotiate(&op, &profile).unwrap_err();
+        let error = negotiate(&op, &cpu_without(&[Prim::Bar])).unwrap_err();
         let unlock = error.unlock.as_ref().expect("应当给出解锁路径");
         assert_eq!(unlock.missing, vec![Prim::Bar], "{unlock:?}");
         let text = error.to_string();
@@ -669,23 +647,18 @@ mod tests {
     #[test]
     fn missing_async_atom_only_disables_the_pipelined_variant() {
         let op = downgrade_op();
-        let mut profile = cpu();
-        profile.provides.retain(|have| have.prim != Prim::LoadAsync);
+        let profile = cpu_without(&[Prim::LoadAsync]);
         let path = negotiate(&op, &profile).expect("应降级到 direct");
         assert_eq!(path.variant, "direct");
         // 解释不复用协商结果：inspect 总是看完整条链，因此被跳过的 pipe2 也在。
         let checks = inspect(&op, &profile);
         let piped = &checks[0];
         assert_eq!(piped.name, "pipe2");
-        assert!(
-            !piped.failures.is_empty(),
-            "pipe2 应该报出缺失的 load_async"
-        );
+        assert!(!piped.failures.is_empty(), "pipe2 应报出缺失的 load_async");
     }
 
-    /// P0 的每条需求都必须被某一条签名**结构性**覆盖：剩下的唯一障碍只能是证据等级。
-    ///
-    /// 这正是"签名对齐"的定义——`dt`/`lanes`/`dst` 对不上时补见证也没用，不能混在 L0/L1 里。
+    /// P0 的每条需求都必须被某一条签名**结构性**覆盖，剩下的唯一障碍只能是证据等级——`dt`/`lanes`/`dst`
+    /// 对不上时补见证也没用，不能混在 L0/L1 里。
     #[test]
     fn every_p0_need_is_covered_by_some_signature_on_every_accelerator() {
         for vendor in ["nvidia", "intel", "ascend"] {
@@ -728,111 +701,73 @@ mod tests {
         assert_eq!(checks[1].name, "direct");
     }
 
-    /// 同一份能力签名在两层里换一种合法写法（标量/数组、`bytes`/`m`）必须仍然同构。
-    ///
-    /// 声明层的 `[needs]` 与档案层的 `[[provides]]` 各有一个解析器。它们若无共同词汇，同一份
-    /// 签名就会在一边多出或少掉一个约束，于是"协商通过"与"档案声明"说的不是一回事。这里
-    /// 直接拿协商用的覆盖关系当判据，两种写法两个方向都要成立。
+    /// 同一份签名在两层里换一种合法写法（标量/数组、`bytes`/`m`）必须仍然同构：两层解析器若无共同词汇，
+    /// "协商通过"与"档案声明"说的就不是一回事。这里直接拿协商用的覆盖关系当判据，两个方向都要成立。
     #[test]
     fn one_signature_written_in_either_layer_stays_the_same() {
-        fn declaration(needs: &str) -> OpDecl {
-            let text = format!(
-                "[op]\n\
-                 name = \"probe\"\n\
-                 skeleton = \"gemm\"\n\
-                 summary = \"-\"\n\
-                 \n\
-                 [axes]\n\
-                 GMAX = [32]\n\
-                 \n\
-                 [needs]\n\
-                 {needs}\n\
-                 \n\
-                 [[variants]]\n\
-                 name = \"direct\"\n\
-                 order = 1\n\
-                 schedule = \"direct\"\n\
-                 mma_share = 0.8\n"
-            );
-            let template = "void cutile_probe_kernel(const float *x, float *y) { @load(y, x); }\n";
-            OpDecl::parse(&text, template).expect("合成声明可解析")
+        fn declare(load: &[(&str, Value)]) -> OpDecl {
+            let source = op::builtin_named("gemv_i4").expect("内置");
+            let mut table = source.declaration().clone();
+            table.set("needs.load", Value::table(load.to_vec()));
+            OpDecl::parse(&table, source.template()).expect("合成声明可解析")
         }
 
-        fn provide(entry: &str) -> Provide {
-            let text = format!(
-                "{}\n[[provides]]\n{entry}\ngrade = \"L0\"\n",
-                prof::embedded("cpu").expect("cpu 档案")
-            );
-            Profile::parse(&text)
-                .expect("合成档案可解析")
-                .provides
-                .pop()
-                .expect("新加的供给")
+        fn provide(signature: &[(&str, Value)]) -> Provide {
+            let mut fields = vec![
+                ("prim", Value::text("load")),
+                ("impl", Value::text("alias")),
+            ];
+            fields.extend_from_slice(signature);
+            fields.push(("grade", Value::text("L0")));
+            let mut table = prof::embedded("cpu").expect("cpu 档案").clone();
+            table.push("provides", Value::table(fields));
+            let mut profile = Profile::parse(&table).expect("合成档案可解析");
+            profile.provides.pop().expect("新加的供给")
         }
 
-        fn load(op: &OpDecl) -> Need {
-            op.needs
+        /// 声明里的 `load` 需求被这条供给覆盖了吗。
+        fn assert_covers(op: &OpDecl, have: &Provide, note: &str) {
+            let need = op
+                .needs
                 .iter()
                 .find(|need| need.prim == Prim::Load)
-                .expect("load 需求")
-                .clone()
+                .expect("load 需求");
+            assert!(have.covers(need), "{note}：{:?}", have.diff(need));
         }
 
-        // 声明写标量、档案写数组与 `m`。
-        let scalar = declaration(
-            "load = { bytes = \"<=4096\", dt = \"f32\", space = \"FAST\", src = \"GM\", dst = \"FAST\" }",
-        );
-        let array_provide = provide(
-            "prim = \"load\"\nimpl = \"alias\"\nm = \"<=4096\"\ndt = [\"f32\"]\n\
-             space = [\"FAST\"]\nsrc = [\"GM\"]\ndst = [\"FAST\"]",
-        );
-        let need = load(&scalar);
-        assert!(
-            array_provide.covers(&need),
-            "档案写法必须覆盖同一条声明：{:?}",
-            array_provide.diff(&need)
-        );
-
-        // 反向：声明写数组、档案写标量。
-        let array = declaration(
-            "load = { m = \"<=4096\", dt = [\"f32\"], space = [\"FAST\"], src = [\"GM\"], dst = [\"FAST\"] }",
-        );
-        let scalar_provide = provide(
-            "prim = \"load\"\nimpl = \"alias\"\nbytes = \"<=4096\"\ndt = \"f32\"\n\
-             space = \"FAST\"\nsrc = \"GM\"\ndst = \"FAST\"",
-        );
-        let need = load(&array);
-        assert!(
-            scalar_provide.covers(&need),
-            "声明写法必须覆盖同一条档案：{:?}",
-            scalar_provide.diff(&need)
-        );
+        let scalar = vec![
+            ("bytes", Value::text("<=4096")),
+            ("dt", Value::text("f32")),
+            ("space", Value::text("FAST")),
+            ("src", Value::text("GM")),
+            ("dst", Value::text("FAST")),
+        ];
+        let array = vec![
+            ("m", Value::text("<=4096")),
+            ("dt", Value::array(vec![Value::text("f32")])),
+            ("space", Value::array(vec![Value::text("FAST")])),
+            ("src", Value::array(vec![Value::text("GM")])),
+            ("dst", Value::array(vec![Value::text("FAST")])),
+        ];
+        // 声明写标量、档案写数组与 `m`；反向：声明写数组、档案写标量。
+        assert_covers(&declare(&scalar), &provide(&array), "档案写法覆盖声明");
+        assert_covers(&declare(&array), &provide(&scalar), "声明写法覆盖档案");
     }
 
     #[test]
     fn schedule_primitives_are_part_of_the_requirement() {
-        let op = downgrade_op();
         // 只剩 direct 可用时 bar 不再被需要。
-        let mut profile = cpu();
-        profile.provides.retain(|have| have.prim != Prim::Bar);
-        let path = negotiate(&op, &profile).expect("应降级到 direct");
+        let path = negotiate(&downgrade_op(), &cpu_without(&[Prim::Bar])).expect("应降级到 direct");
         assert_eq!(path.variant, "direct");
-
         // 再去掉公共需求里的 dot：两条链都不可行，诊断必须点名 bar（来自 pipe<2> 调度）。
-        let mut profile = cpu();
-        profile
-            .provides
-            .retain(|have| have.prim != Prim::Bar && have.prim != Prim::Dot);
-        let error = negotiate(&op, &profile).unwrap_err();
+        let error = negotiate(&downgrade_op(), &cpu_without(&[Prim::Bar, Prim::Dot])).unwrap_err();
         assert!(error.to_string().contains("bar"), "{error}");
     }
 
     /// 空证据不是"全都具备"：链会走完，每一档都不可行，原因写的是"欠一次执行"。
     #[test]
     fn an_unexecuted_l2_offer_does_not_negotiate() {
-        let op = op();
-        let profile = cpu();
-        let error = negotiate_with(&op, &profile, &Proof::none()).unwrap_err();
+        let error = negotiate_with(&op(), &cpu(), &Proof::none()).unwrap_err();
         let text = error.to_string();
         assert!(text.contains("没有这次执行的见证"), "{text}");
         assert!(!error.needs.is_empty(), "{error}");
@@ -855,19 +790,15 @@ mod tests {
     /// 档案自述是解释性报告的口径：同一份档案按声明协商照样命中首档。
     #[test]
     fn the_declared_reading_is_still_available_for_reports() {
-        let op = op();
         let profile = cpu();
         let declared = Proof::declared(&profile);
-        assert_eq!(
-            declared.len(),
-            profile
-                .provides
-                .iter()
-                .filter(|have| have.grade.is_verified())
-                .count(),
-            "每一条 grade ≥ L2 的供给都在里面"
-        );
-        let path = negotiate_with(&op, &profile, &declared).expect("按声明可行");
+        let verified = profile
+            .provides
+            .iter()
+            .filter(|have| have.grade.is_verified())
+            .count();
+        assert_eq!(declared.len(), verified, "每一条 grade ≥ L2 的供给都在里面");
+        let path = negotiate_with(&op(), &profile, &declared).expect("按声明可行");
         assert!(path.is_head());
     }
 

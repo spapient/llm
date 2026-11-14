@@ -69,4 +69,4 @@ pub struct LmHead;
 
 这不违反本 ADR 的供应链动机：`dtype` 是 workspace 内部 L1 零依赖成员，`syn` / `quote` /
 `proc-macro2` 仍未进入 `Cargo.lock`。被拒绝的仍是"给过程宏拉一条到 `prof` 的依赖边"——
-`prof` 会带入 `llm-config` / `diagnostic` 的传递依赖，而注解只需要类型身份，`dtype` 已足够。
+`prof` 会带入 `diagnostic` 的传递依赖，而注解只需要类型身份，`dtype` 已足够。

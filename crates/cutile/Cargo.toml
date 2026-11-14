@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Device-agnostic kernel DSL: capability negotiation, fragment assembly, emit, and the doctor/verify/bench reports computed on top of it."
-readme = "DESIGN.md"
+readme = "README.md"
 publish = false
 
 [dependencies]

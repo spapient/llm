@@ -180,13 +180,20 @@ pub fn admit(scheduler: &mut engine::Scheduler, sequence: &engine::Sequence) -> 
             Status::Unavailable,
             "KV 页不足，请稍后重试",
         )),
-        // `invalid` 全是"这次请求自己不成立"，改什么由客户端决定；`internal` 之类才是本侧的 bug。
-        Err(error) if error.code() == Code::Invalid => Ok(Response::error(
-            Status::BadRequest,
-            &format!("请求不合法：{error}"),
-        )),
-        Err(error) => Err(error),
+        Err(error) => refused(error),
     }
+}
+
+/// 准入错误落成响应：`invalid` 全是"这次请求自己不成立"，改什么由客户端决定；
+/// `internal` 之类才是本侧的 bug，继续上抛。
+fn refused(error: Error) -> Result<Response> {
+    if error.code() != Code::Invalid {
+        return Err(error);
+    }
+    Ok(Response::error(
+        Status::BadRequest,
+        &format!("请求不合法：{error}"),
+    ))
 }
 
 #[cfg(test)]

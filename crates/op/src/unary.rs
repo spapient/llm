@@ -4,11 +4,9 @@
 //! 写一个数。`silu_f32` / `gelu_f32` 是同一副骨架的两种 [`Unary`] 实现，骨架（表达式缓存、
 //! 代价、样本、校验、遍历）只有一份，按实现类型单态化。
 
-use crate::einsum::{Bits, Operand};
-use crate::gemv::OperandSpec;
+use crate::einsum::{Bits, Formula, FormulaCache, OperandSpec};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
-use std::sync::OnceLock;
 
 /// 逐元素一元算子随语义变化的那部分。
 pub trait Unary {
@@ -18,51 +16,23 @@ pub trait Unary {
     /// 表达式各项的位宽与方向，顺序与 [`Unary::EXPR`] 一一对应。
     const OPERANDS: &'static [OperandSpec];
 
-    /// 表达式缓存：实现者写成 `static CACHE: UnaryCache = UnaryCache::new(); CACHE.get::<Self>()`。
-    fn formula() -> Result<&'static crate::einsum::Formula, Error>;
+    /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
+    fn cache() -> &'static FormulaCache;
+
+    /// 表达式：第一次调用时解析并校验，之后复用。
+    ///
+    /// # Errors
+    ///
+    /// 表达式与操作数表不自洽时返回说明（带 `op::unary::formula` 帧）。
+    fn formula() -> Result<&'static Formula, Error> {
+        Self::cache().get(Self::EXPR, Self::OPERANDS, "op::unary::formula")
+    }
 
     /// 逐元素函数：一个输入值，一个输出值。
     fn apply(x: f32) -> f32;
 
     /// 输入的确定性取值。
     fn input(len: usize) -> Vec<f32>;
-}
-
-/// 一元骨架的表达式缓存：与 [`crate::elementwise::BinCache`] 同构。
-pub struct UnaryCache(OnceLock<Result<crate::einsum::Formula, Error>>);
-
-impl UnaryCache {
-    /// 空缓存（`static` 初始化用）。
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(OnceLock::new())
-    }
-
-    /// 取这份实现的表达式：第一次调用解析并校验，之后复用。
-    ///
-    /// # Errors
-    ///
-    /// 表达式与操作数表不自洽时返回说明。
-    pub fn get<U: Unary>(&'static self) -> Result<&'static crate::einsum::Formula, Error> {
-        self.0
-            .get_or_init(|| {
-                let operands = U::OPERANDS
-                    .iter()
-                    .map(|spec| Operand::new(spec.name, spec.bits, spec.access))
-                    .collect();
-                crate::einsum::Expr::parse(U::EXPR)
-                    .and_then(|expr| crate::einsum::Formula::new(expr, operands))
-                    .map_err(|error| error.with("op::unary::formula"))
-            })
-            .as_ref()
-            .map_err(Clone::clone)
-    }
-}
-
-impl Default for UnaryCache {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// 一元骨架只有一条轴：既是输入轴也是输出轴。

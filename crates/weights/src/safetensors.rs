@@ -80,29 +80,9 @@ impl<'a> Archive<'a> {
     ///
     /// [`Code::Unsupported`]：`dtype` 不在 [`DTYPES`] 闭集内。
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
-        let prefix = bytes.get(..8).ok_or_else(|| {
-            invalid(format!(
-                "文件只有 {} 字节，读不出 8 字节头部长度",
-                bytes.len()
-            ))
-        })?;
-        let (declared, header_end) = split_prefix(prefix.try_into().expect("恰为 8 字节"))?;
-        let text = bytes.get(8..header_end).ok_or_else(|| {
-            invalid(format!(
-                "头部声明 {declared} 字节，但 {header_end} 已超出文件长度 {}",
-                bytes.len()
-            ))
-        })?;
+        let (header_end, text) = header_slice(bytes)?;
         let header = parse_header(text, header_end)?;
-        let data = bytes.get(header_end..).expect("上方已确认头部在文件内");
-        let covered = header.data_bytes();
-        if covered != data.len() {
-            return Err(invalid(format!(
-                "数据段应为 {covered} 字节（由条目的最大结束偏移推出），实际 {} 字节",
-                data.len()
-            ))
-            .with("weights::safetensors::Archive"));
-        }
+        let data = data_after(bytes, &header, header_end)?;
         Ok(Self { header, data })
     }
 
@@ -124,39 +104,25 @@ impl<'a> Archive<'a> {
 
 impl Reader for Archive<'_> {
     fn read(&self, entry: &Entry) -> Result<&[u8]> {
-        let start = entry
-            .offset()
-            .checked_sub(self.header.data_start())
-            .ok_or_else(|| {
-                Error::new(
-                    Code::Internal,
-                    format!(
-                        "条目 `{}` 的偏移 {} 早于数据段起点 {}",
-                        entry.name(),
-                        entry.offset(),
-                        self.header.data_start()
-                    ),
-                )
-                .with("weights::safetensors::Archive::read")
-            })?;
-        let end = start.checked_add(entry.len()).ok_or_else(|| {
-            Error::new(
-                Code::Internal,
-                format!("条目 `{}` 的长度溢出", entry.name()),
-            )
-            .with("weights::safetensors::Archive::read")
-        })?;
-        self.data.get(start..end).ok_or_else(|| {
-            Error::new(
-                Code::Internal,
-                format!(
-                    "条目 `{}` 声明 {start}..{end}，数据段只有 {} 字节",
-                    entry.name(),
-                    self.data.len()
-                ),
-            )
-            .with("weights::safetensors::Archive::read")
-        })
+        let Some(start) = entry.offset().checked_sub(self.header.data_start()) else {
+            return Err(internal(format!(
+                "条目 `{}` 的偏移 {} 早于数据段起点 {}",
+                entry.name(),
+                entry.offset(),
+                self.header.data_start()
+            )));
+        };
+        let Some(end) = start.checked_add(entry.len()) else {
+            return Err(internal(format!("条目 `{}` 的长度溢出", entry.name())));
+        };
+        let Some(bytes) = self.data.get(start..end) else {
+            return Err(internal(format!(
+                "条目 `{}` 声明 {start}..{end}，数据段只有 {} 字节",
+                entry.name(),
+                self.data.len()
+            )));
+        };
+        Ok(bytes)
     }
 }
 
@@ -217,62 +183,10 @@ impl File {
     /// "文件长度与头部声明不符"——被截断或尾部有多余字节都在这里拦住，而不是等到读某个条目时。
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let mut source = Source::open(path).map_err(|error| io_error(error, "打开", path))?;
-        let file_len = source
-            .metadata()
-            .map_err(|error| io_error(error, "读取长度", path))
-            .and_then(|metadata| {
-                usize::try_from(metadata.len()).map_err(|_| {
-                    invalid(format!(
-                        "文件 `{}` 的 {} 字节超出本机可寻址范围",
-                        path.display(),
-                        metadata.len()
-                    ))
-                })
-            })?;
-
-        let mut prefix = [0u8; 8];
-        source.read_exact(&mut prefix).map_err(|_| {
-            invalid(format!(
-                "文件 `{}` 只有 {file_len} 字节，读不出 8 字节头部长度",
-                path.display()
-            ))
-            .with("weights::safetensors::File::open")
-        })?;
-        let (declared, header_len) = split_prefix(prefix)?;
-        if header_len > file_len {
-            return Err(invalid(format!(
-                "头部声明 {declared} 字节，但文件 `{}` 只有 {file_len} 字节",
-                path.display()
-            ))
-            .with("weights::safetensors::File::open"));
-        }
-
-        // 只读头部：`declared` 由文件自己声明，所以先按它分配——这正是 `header_len > file_len`
-        // 必须先判的原因，否则一个坏掉的 8 字节前缀就能让这里替它分配一块任意大的内存。
-        let mut text = vec![0u8; declared];
-        source.read_exact(&mut text).map_err(|error| {
-            io_error(error, "读取头部", path).with("weights::safetensors::File::open")
-        })?;
-        let header = parse_header(&text, header_len)?;
-
-        let declared_total = header_len
-            .checked_add(header.data_bytes())
-            .ok_or_else(|| invalid(format!("头部长度 {header_len} 与数据段长度相加溢出")))?;
-        if declared_total != file_len {
-            let hint = if declared_total > file_len {
-                "文件被截断"
-            } else {
-                "尾部有多余字节"
-            };
-            return Err(invalid(format!(
-                "文件 `{}` 是 {file_len} 字节，但头部（{header_len} 字节）与条目声明的数据段（{} 字节）合起来是 {declared_total} 字节：{hint}",
-                path.display(),
-                header.data_bytes()
-            ))
-            .with("weights::safetensors::File::open"));
-        }
-
+        let (mut source, file_len) = open_source(path)?;
+        let (declared, header_len) = read_prefix(&mut source, path, file_len)?;
+        let header = read_header(&mut source, path, declared, header_len)?;
+        check_file_len(path, &header, header_len, file_len)?;
         Ok(Self {
             source,
             header,
@@ -340,25 +254,41 @@ fn split_prefix(prefix: [u8; 8]) -> Result<(usize, usize)> {
     Ok((declared, end))
 }
 
-/// 由头部 JSON 构造并校验 [`Header`]：[`Archive`] 与 [`File`] 共用这一份，不各写一遍。
+/// 由头部 JSON 构造并校验 [`Header`]：[`Archive`] 与 [`File`] 共用这一份。
 fn parse_header(text: &[u8], data_start: usize) -> Result<Header> {
-    let text = std::str::from_utf8(text).map_err(|_| invalid("头部不是 UTF-8".to_string()))?;
-    let root = json::parse(text).map_err(|error| error.with("weights::safetensors 头部"))?;
+    let root = root_value(text)?;
     let fields = root
         .object()
         .map_err(|error| error.with(format!("safetensors 头部（{} 字节）的顶层", text.len())))?;
+    let entries = collect_entries(fields, data_start)?;
+    Header::new(entries, data_start)
+}
+
+/// 按文件顺序：元数据只校验，其余解析成条目。
+fn collect_entries(fields: &[(String, Value)], data_start: usize) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for (name, value) in fields {
-        if name == METADATA {
-            // 元数据不参与布局，但形状必须是对象：写成字符串的文件一定是被别的工具改坏了。
-            value
-                .object()
-                .map_err(|error| error.with(format!("`{METADATA}` 必须是对象")))?;
+        if name.as_str() == METADATA {
+            check_metadata(value)?;
             continue;
         }
         entries.push(entry(name, value, data_start)?);
     }
-    Header::new(entries, data_start)
+    Ok(entries)
+}
+
+/// 头部 JSON 根值；不是 UTF-8 或文法坏都在这里报错。
+fn root_value(text: &[u8]) -> Result<Value> {
+    let text = std::str::from_utf8(text).map_err(|_| invalid("头部不是 UTF-8".to_string()))?;
+    json::parse(text).map_err(|error| error.with("weights::safetensors 头部"))
+}
+
+/// 元数据不参与布局，但它的值必须是对象。
+fn check_metadata(value: &Value) -> Result<()> {
+    value
+        .object()
+        .map_err(|error| error.with(format!("`{METADATA}` 必须是对象")))?;
+    Ok(())
 }
 
 fn io_error(error: std::io::Error, what: &str, path: &Path) -> Error {
@@ -371,47 +301,102 @@ fn io_error(error: std::io::Error, what: &str, path: &Path) -> Error {
 
 /// 把一条 JSON 条目解析成 [`Entry`]：字段闭集、形状与区间必须自洽。
 fn entry(name: &str, value: &Value, data_start: usize) -> Result<Entry> {
-    let context = format!("权重条目 `{name}`");
     if name.is_empty() {
         return Err(invalid("条目名不能为空".to_string()).with("weights::safetensors"));
     }
+    let context = format!("权重条目 `{name}`");
     let fields = value.object().map_err(|error| error.with(&context))?;
+    let (dtype, shape, offsets) = collect_fields(fields, &context)?;
+    let (dtype, shape, offsets) = required_fields(dtype, shape, offsets, &context)?;
+    build(name, dtype, shape, offsets, data_start, &context)
+}
+
+/// 条目三个字段的可选槽位。
+type Slots = (Option<DType>, Option<Shape>, Option<(usize, usize)>);
+
+/// 三个字段；重复与未知字段按文件顺序拒绝。
+fn collect_fields(fields: &[(String, Value)], context: &str) -> Result<Slots> {
     let mut dtype = None;
     let mut shape = None;
     let mut offsets = None;
     for (key, value) in fields {
-        match key.as_str() {
-            "dtype" => {
-                if dtype.is_some() {
-                    return Err(invalid("字段 `dtype` 重复".to_string()).with(&context));
-                }
-                dtype = Some(dtype_of(value)?);
-            }
-            "shape" => {
-                if shape.is_some() {
-                    return Err(invalid("字段 `shape` 重复".to_string()).with(&context));
-                }
-                shape = Some(shape_of(value)?);
-            }
-            "data_offsets" => {
-                if offsets.is_some() {
-                    return Err(invalid("字段 `data_offsets` 重复".to_string()).with(&context));
-                }
-                offsets = Some(offsets_of(value)?);
-            }
-            other => {
-                return Err(invalid(format!(
-                    "未知字段 `{other}`（条目只允许 dtype / shape / data_offsets）"
-                ))
-                .with(&context));
-            }
-        }
+        field(key, value, context, &mut dtype, &mut shape, &mut offsets)?;
     }
-    let dtype = dtype.ok_or_else(|| invalid("缺字段 `dtype`".to_string()).with(&context))?;
-    let shape = shape.ok_or_else(|| invalid("缺字段 `shape`".to_string()).with(&context))?;
-    let (begin, end) =
-        offsets.ok_or_else(|| invalid("缺字段 `data_offsets`".to_string()).with(&context))?;
+    Ok((dtype, shape, offsets))
+}
 
+/// 一条字段写进对应槽位；未知字段直接报错。
+fn field(
+    key: &str,
+    value: &Value,
+    context: &str,
+    dtype: &mut Option<DType>,
+    shape: &mut Option<Shape>,
+    offsets: &mut Option<(usize, usize)>,
+) -> Result<()> {
+    match key {
+        "dtype" => dtype_slot(dtype, value, key, context),
+        "shape" => shape_slot(shape, value, key, context),
+        "data_offsets" => offsets_slot(offsets, value, key, context),
+        other => Err(invalid(format!(
+            "未知字段 `{other}`（条目只允许 dtype / shape / data_offsets）"
+        ))
+        .with(context)),
+    }
+}
+
+fn dtype_slot(slot: &mut Option<DType>, value: &Value, key: &str, context: &str) -> Result<()> {
+    set_once(slot, dtype_of(value)?, key, context)
+}
+
+fn shape_slot(slot: &mut Option<Shape>, value: &Value, key: &str, context: &str) -> Result<()> {
+    set_once(slot, shape_of(value)?, key, context)
+}
+
+fn offsets_slot(
+    slot: &mut Option<(usize, usize)>,
+    value: &Value,
+    key: &str,
+    context: &str,
+) -> Result<()> {
+    set_once(slot, offsets_of(value)?, key, context)
+}
+
+/// 字段只允许出现一次。
+fn set_once<T>(slot: &mut Option<T>, value: T, key: &str, context: &str) -> Result<()> {
+    if slot.is_some() {
+        return Err(invalid(format!("字段 `{key}` 重复")).with(context));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+/// 三个必填字段，缺一即报错并指出名字。
+fn required_fields(
+    dtype: Option<DType>,
+    shape: Option<Shape>,
+    offsets: Option<(usize, usize)>,
+    context: &str,
+) -> Result<(DType, Shape, (usize, usize))> {
+    let dtype = required(dtype, "dtype", context)?;
+    let shape = required(shape, "shape", context)?;
+    let offsets = required(offsets, "data_offsets", context)?;
+    Ok((dtype, shape, offsets))
+}
+
+fn required<T>(slot: Option<T>, key: &str, context: &str) -> Result<T> {
+    slot.ok_or_else(|| invalid(format!("缺字段 `{key}`")).with(context))
+}
+
+/// 区间长度与形状自洽，并把相对起点转成绝对偏移。
+fn build(
+    name: &str,
+    dtype: DType,
+    shape: Shape,
+    (begin, end): (usize, usize),
+    data_start: usize,
+    context: &str,
+) -> Result<Entry> {
     let expected = shape.element_bytes(dtype);
     if end - begin != expected {
         return Err(invalid(format!(
@@ -420,11 +405,11 @@ fn entry(name: &str, value: &Value, data_start: usize) -> Result<Entry> {
             dtype,
             shape.dims()
         ))
-        .with(&context));
+        .with(context));
     }
     let offset = data_start
         .checked_add(begin)
-        .ok_or_else(|| invalid(format!("偏移 {begin} 与数据段起点相加溢出")).with(&context))?;
+        .ok_or_else(|| invalid(format!("偏移 {begin} 与数据段起点相加溢出")).with(context))?;
     Ok(Entry::new(name, dtype, shape).at(offset))
 }
 
@@ -460,32 +445,151 @@ fn shape_of(value: &Value) -> Result<Shape> {
 }
 
 fn offsets_of(value: &Value) -> Result<(usize, usize)> {
+    let (begin, end) = pair_of(value)?;
+    let begin = offset(begin)?;
+    let end = offset(end)?;
+    if begin > end {
+        return Err(
+            invalid(format!("`data_offsets` 的起点 {begin} 晚于终点 {end}"))
+                .with("字段 `data_offsets`"),
+        );
+    }
+    Ok((begin, end))
+}
+
+/// `data_offsets` 必须是恰好两个元素的数组。
+fn pair_of(value: &Value) -> Result<(&Value, &Value)> {
     let items = value
         .array()
         .map_err(|error| error.with("字段 `data_offsets`"))?;
-    if items.len() != 2 {
-        return Err(invalid(format!(
+    match items {
+        [begin, end] => Ok((begin, end)),
+        _ => Err(invalid(format!(
             "`data_offsets` 必须是两个整数，实际 {} 个",
             items.len()
         ))
-        .with("字段 `data_offsets`"));
+        .with("字段 `data_offsets`")),
     }
-    let mut pair = [0usize; 2];
-    for (slot, item) in pair.iter_mut().zip(items) {
-        let number = item
-            .integer()
-            .map_err(|error| error.with("字段 `data_offsets`"))?;
-        *slot = usize::try_from(number)
-            .map_err(|_| invalid(format!("偏移 {number} 不能为负")).with("字段 `data_offsets`"))?;
-    }
-    if pair[0] > pair[1] {
+}
+
+/// 一个非负偏移值；负数越界即报错。
+fn offset(value: &Value) -> Result<usize> {
+    let number = value
+        .integer()
+        .map_err(|error| error.with("字段 `data_offsets`"))?;
+    usize::try_from(number)
+        .map_err(|_| invalid(format!("偏移 {number} 不能为负")).with("字段 `data_offsets`"))
+}
+
+/// 8 字节长度前缀与头部 JSON 切片；两者都必须落在文件内。
+fn header_slice(bytes: &[u8]) -> Result<(usize, &[u8])> {
+    let Some(prefix) = bytes.get(..8) else {
         return Err(invalid(format!(
-            "`data_offsets` 的起点 {} 晚于终点 {}",
-            pair[0], pair[1]
-        ))
-        .with("字段 `data_offsets`"));
+            "文件只有 {} 字节，读不出 8 字节头部长度",
+            bytes.len()
+        )));
+    };
+    let mut word = [0u8; 8];
+    word.copy_from_slice(prefix);
+    let (declared, header_end) = split_prefix(word)?;
+    let Some(text) = bytes.get(8..header_end) else {
+        return Err(invalid(format!(
+            "头部声明 {declared} 字节，但 {header_end} 已超出文件长度 {}",
+            bytes.len()
+        )));
+    };
+    Ok((header_end, text))
+}
+
+/// 数据段：必须正好被条目覆盖，不许多余字节。
+fn data_after<'b>(bytes: &'b [u8], header: &Header, header_end: usize) -> Result<&'b [u8]> {
+    let data = &bytes[header_end..];
+    let covered = header.data_bytes();
+    if covered == data.len() {
+        return Ok(data);
     }
-    Ok((pair[0], pair[1]))
+    Err(invalid(format!(
+        "数据段应为 {covered} 字节（由条目的最大结束偏移推出），实际 {} 字节",
+        data.len()
+    ))
+    .with("weights::safetensors::Archive"))
+}
+
+/// 打开文件并取长度；超出 usize 是明确错误而不是截断。
+fn open_source(path: &Path) -> Result<(Source, usize)> {
+    let source = Source::open(path).map_err(|error| io_error(error, "打开", path))?;
+    let metadata = source
+        .metadata()
+        .map_err(|error| io_error(error, "读取长度", path))?;
+    let file_len = usize::try_from(metadata.len()).map_err(|_| {
+        invalid(format!(
+            "文件 `{}` 的 {} 字节超出本机可寻址范围",
+            path.display(),
+            metadata.len()
+        ))
+    })?;
+    Ok((source, file_len))
+}
+
+/// 8 字节前缀；头部声明的长度不得越过文件末尾。
+fn read_prefix(source: &mut Source, path: &Path, file_len: usize) -> Result<(usize, usize)> {
+    let mut prefix = [0u8; 8];
+    source.read_exact(&mut prefix).map_err(|_| {
+        invalid(format!(
+            "文件 `{}` 只有 {file_len} 字节，读不出 8 字节头部长度",
+            path.display()
+        ))
+        .with("weights::safetensors::File::open")
+    })?;
+    let (declared, header_len) = split_prefix(prefix)?;
+    if header_len > file_len {
+        return Err(invalid(format!(
+            "头部声明 {declared} 字节，但文件 `{}` 只有 {file_len} 字节",
+            path.display()
+        ))
+        .with("weights::safetensors::File::open"));
+    }
+    Ok((declared, header_len))
+}
+
+/// 读头部 JSON 并解析；分配前已确认声明长度不超过文件。
+fn read_header(
+    source: &mut Source,
+    path: &Path,
+    declared: usize,
+    header_len: usize,
+) -> Result<Header> {
+    let mut text = vec![0u8; declared];
+    source.read_exact(&mut text).map_err(|error| {
+        io_error(error, "读取头部", path).with("weights::safetensors::File::open")
+    })?;
+    parse_header(&text, header_len)
+}
+
+/// 头部 + 声明数据段必须正好等于文件长度。
+fn check_file_len(path: &Path, header: &Header, header_len: usize, file_len: usize) -> Result<()> {
+    let declared_total = header_len
+        .checked_add(header.data_bytes())
+        .ok_or_else(|| invalid(format!("头部长度 {header_len} 与数据段长度相加溢出")))?;
+    if declared_total == file_len {
+        return Ok(());
+    }
+    let hint = if declared_total > file_len {
+        "文件被截断"
+    } else {
+        "尾部有多余字节"
+    };
+    Err(invalid(format!(
+        "文件 `{}` 是 {file_len} 字节，但头部（{header_len} 字节）与条目声明的数据段（{} 字节）合起来是 {declared_total} 字节：{hint}",
+        path.display(),
+        header.data_bytes()
+    ))
+    .with("weights::safetensors::File::open"))
+}
+
+/// 读端内部错误：偏移越界只可能是头部与数据段漂移。
+fn internal(message: String) -> Error {
+    Error::new(Code::Internal, message).with("weights::safetensors::Archive::read")
 }
 
 fn invalid(message: String) -> Error {

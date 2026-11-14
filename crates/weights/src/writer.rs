@@ -33,7 +33,6 @@ pub const SEG_CRC: u32 = 1 << 1;
 /// 最大对齐指数（2^16 = 64 KiB）。
 pub const MAX_ALIGN_LOG: u8 = 16;
 
-/// 写文件时的缓冲大小。
 const WRITE_BUFFER: usize = 8 * 1024;
 
 /// 权重写者。
@@ -128,53 +127,35 @@ impl Writer {
     fn write_body(&self, out: &mut impl Sink, align_log: u8) -> Result<()> {
         let packed = self.prepare();
         let mut measured = Measured::new(out);
-
         measured.put(&MAGIC.to_le_bytes());
         measured.put(&VERSION.to_le_bytes());
         measured.put(&self.flags().to_le_bytes());
         measured.put(&[align_log]);
         leb::write_u32(&mut measured, self.segs.len() as u32);
-
-        // 描述符：段级 CRC 覆盖实际存储字节，在此算好写进头部。
-        for (segment, (codec, stored)) in self.segs.iter().zip(&packed) {
-            let seg_crc = if self.checksum { crc::crc32(stored) } else { 0 };
-            segment.encode_desc(&mut measured, *codec, stored.len() as u64, seg_crc)?;
-        }
-
-        // 数据区：每段先按对齐补零，再写实际存储字节。
-        let align = 1usize << align_log;
-        for (_, stored) in &packed {
-            let pos = measured.len();
-            let aligned = pos.next_multiple_of(align);
-            let pad = aligned - pos;
-            if pad > 0 {
-                measured.put(&vec![0u8; pad]);
-            }
-            measured.put(stored);
-        }
+        write_descs(&self.segs, &packed, self.checksum, &mut measured)?;
+        write_data(&packed, align_log, &mut measured);
         Ok(())
     }
 
     /// 产出容器字节；`align_log` 是对齐边界的 2 的幂指数（0..=16，常用 6 = 64 B）。
     pub fn finish(&self, align_log: u8) -> Result<Vec<u8>> {
         Self::check_align(align_log)?;
-        let mut buf = Vec::with_capacity(self.encoded_len(align_log));
+        let expected = self.encoded_len(align_log)?;
+        let mut buf = Vec::with_capacity(expected);
         let mut sealed = Sealed::new(&mut buf);
         self.write_body(&mut sealed, align_log)?;
         let global = if self.checksum { sealed.checksum() } else { 0 };
         // 全局 CRC 本身不进 CRC，直接写底层缓冲。
         buf.extend_from_slice(&global.to_le_bytes());
-        debug_assert_eq!(buf.len(), self.encoded_len(align_log), "长度零漂移");
+        debug_assert_eq!(buf.len(), expected, "长度零漂移");
         Ok(buf)
     }
 
     /// 整份容器的精确字节数；与 [`Writer::finish`] 走同一编码路径。
-    #[must_use]
-    pub fn encoded_len(&self, align_log: u8) -> usize {
+    pub fn encoded_len(&self, align_log: u8) -> Result<usize> {
         let mut count = Count::default();
-        self.write_body(&mut count, align_log)
-            .expect("算长度不会失败");
-        count.0 + 4
+        self.write_body(&mut count, align_log)?;
+        Ok(count.0 + 4)
     }
 
     /// 写进调用方固定缓冲，返回写入字节数；装不下时返回错误而不截断。
@@ -221,11 +202,20 @@ impl Writer {
     fn write_temp(&self, temp: &Path, target: &Path, align_log: u8) -> io::Result<()> {
         let file = std::fs::File::create(temp)?;
         let buffered = io::BufWriter::with_capacity(WRITE_BUFFER, file);
-        let mut file_sink = FileSink::new(buffered);
+        self.flush_sink(FileSink::new(buffered), align_log)?;
+        std::fs::rename(temp, target)
+    }
+
+    /// 边编码边写正文与全局 CRC，随后刷盘并 fsync。
+    fn flush_sink(
+        &self,
+        mut file_sink: FileSink<io::BufWriter<std::fs::File>>,
+        align_log: u8,
+    ) -> io::Result<()> {
         let global = {
             let mut sealed = Sealed::new(&mut file_sink);
             self.write_body(&mut sealed, align_log)
-                .map_err(|e| io::Error::other(e.to_string()))?;
+                .map_err(|error| io::Error::other(error.to_string()))?;
             sealed.checksum()
         };
         file_sink.put(&global.to_le_bytes());
@@ -234,17 +224,12 @@ impl Writer {
         }
         debug_assert_eq!(
             file_sink.written(),
-            self.encoded_len(align_log),
+            self.encoded_len(align_log)
+                .map_err(|error| io::Error::other(error.to_string()))?,
             "流式写出与长度承诺零漂移"
         );
-        let mut writer = file_sink.into_inner()?;
-        writer.flush()?;
-        let file = writer
-            .into_inner()
-            .map_err(io::IntoInnerError::into_error)?;
-        file.sync_all()?;
-        std::fs::rename(temp, target)?;
-        Ok(())
+        let writer = file_sink.into_inner()?;
+        flush_file(writer)
     }
 
     fn check_align(align_log: u8) -> Result<()> {
@@ -257,6 +242,47 @@ impl Writer {
         }
         Ok(())
     }
+}
+
+/// 描述符：段级 CRC 覆盖实际存储字节，在这里算好写进头部。
+fn write_descs(
+    segs: &[Segment],
+    packed: &[(Codec, Cow<'_, [u8]>)],
+    checksum: bool,
+    out: &mut impl Sink,
+) -> Result<()> {
+    for (segment, (codec, stored)) in segs.iter().zip(packed) {
+        let seg_crc = if checksum { crc::crc32(stored) } else { 0 };
+        segment.encode_desc(out, *codec, stored.len() as u64, seg_crc)?;
+    }
+    Ok(())
+}
+
+/// 数据区：每段先按对齐补零，再写实际存储字节。
+fn write_data<S: Sink>(
+    packed: &[(Codec, Cow<'_, [u8]>)],
+    align_log: u8,
+    measured: &mut Measured<'_, S>,
+) {
+    let align = 1usize << align_log;
+    for (_, stored) in packed {
+        let pos = measured.len();
+        let aligned = pos.next_multiple_of(align);
+        let pad = aligned - pos;
+        if pad > 0 {
+            measured.put(&vec![0u8; pad]);
+        }
+        measured.put(stored);
+    }
+}
+
+/// 刷出 BufWriter、取出文件并 fsync。
+fn flush_file(mut writer: io::BufWriter<std::fs::File>) -> io::Result<()> {
+    writer.flush()?;
+    let file = writer
+        .into_inner()
+        .map_err(io::IntoInnerError::into_error)?;
+    file.sync_all()
 }
 
 /// 同目录临时路径：放在目标目录才能保证 rename 在同一文件系统上原子。
@@ -294,7 +320,10 @@ mod tests {
         let mut writer = Writer::new();
         writer.push(seg("a", vec![1u8; 400])).expect("追加");
         writer.push(seg("b", vec![2u8; 80])).expect("追加");
-        assert_eq!(writer.encoded_len(6), writer.finish(6).expect("字节").len());
+        assert_eq!(
+            writer.encoded_len(6).expect("长度"),
+            writer.finish(6).expect("字节").len()
+        );
     }
 
     #[test]

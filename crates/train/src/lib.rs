@@ -285,7 +285,7 @@ mod tests {
         let checkpoint = Checkpoint::new(7, &tape, &batch, 2, &header, topology).expect("检查点");
 
         let snapshot = checkpoint.snapshot(&header).expect("快照");
-        let bytes = snapshot.encode();
+        let bytes = snapshot.encode().expect("编码");
         let restored = snapshot::Snapshot::decode(&bytes).expect("解码");
         let facts = restored.facts();
         assert_eq!(facts.step(), checkpoint.step());

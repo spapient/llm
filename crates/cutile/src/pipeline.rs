@@ -13,11 +13,11 @@ use crate::backend;
 use crate::build;
 use crate::cache::CacheKey;
 use crate::cap::{self, NoPath, Path, Proof};
+use crate::dirs::Dirs;
 use crate::emit::Source;
 use crate::plan::{self, Plan};
 use crate::prof::Profile;
 use diagnostic::{Code, Error};
-use llm_config::Settings;
 use op::decl::OpDecl;
 use op::model::{Model, Sample};
 
@@ -59,14 +59,14 @@ impl<'a> Run<'a> {
     pub fn prepare(
         &self,
         path: &Path,
-        settings: &Settings,
+        dirs: &Dirs,
         m: usize,
         n: usize,
     ) -> diagnostic::Result<Prepared> {
         let shape = (self.model.shape_ctx)(m, n)?;
         let cost = (self.model.cost)(&shape)?;
         let plan = plan::select(self.op, self.profile, path, cost)?;
-        let (source, key) = build::source(self.op, self.profile, path, &plan.tile, settings)?;
+        let (source, key) = build::source(self.op, self.profile, path, &plan.tile, dirs)?;
         Ok(Prepared { plan, source, key })
     }
 }
@@ -109,24 +109,37 @@ pub(crate) fn shape(text: Option<&str>, model: &Model) -> diagnostic::Result<(u6
 }
 
 pub(crate) fn parse_shape(shape: &str, group: u64) -> diagnostic::Result<(u64, u64)> {
-    let (m, n) = shape
+    let (m, n) = split(shape)?;
+    let dims = (dim(m)?, dim(n)?);
+    validate(shape, dims, group).map(|()| dims)
+}
+
+/// 拆成两段：缺 `x` 分隔符时把原始文本原样报回去。
+fn split(shape: &str) -> diagnostic::Result<(&str, &str)> {
+    shape
         .split_once('x')
-        .ok_or_else(|| Error::new(Code::Invalid, format!("`{shape}` 不是 `MxN` 形式")))?;
-    let m = m
-        .trim()
-        .parse::<u64>()
-        .map_err(|_| Error::new(Code::Invalid, format!("`{m}` 不是整数")))?;
-    let n = n
-        .trim()
-        .parse::<u64>()
-        .map_err(|_| Error::new(Code::Invalid, format!("`{n}` 不是整数")))?;
-    if m == 0 || n == 0 || !m.is_multiple_of(group) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("形状 {shape} 非法：M 必须是 {group} 的正整数倍"),
-        ));
+        .ok_or_else(|| invalid(format!("`{shape}` 不是 `MxN` 形式")))
+}
+
+/// 单个维度：去掉两侧空白后必须是非负整数。
+fn dim(text: &str) -> diagnostic::Result<u64> {
+    text.trim()
+        .parse()
+        .map_err(|_| invalid(format!("`{text}` 不是整数")))
+}
+
+/// 形状约束：两个维度都为正，且 `M` 是组大小的整数倍。
+fn validate(shape: &str, (m, n): (u64, u64), group: u64) -> diagnostic::Result<()> {
+    if m > 0 && n > 0 && m.is_multiple_of(group) {
+        return Ok(());
     }
-    Ok((m, n))
+    Err(invalid(format!(
+        "形状 {shape} 非法：M 必须是 {group} 的正整数倍"
+    )))
+}
+
+fn invalid(message: String) -> Error {
+    Error::new(Code::Invalid, message)
 }
 
 /// 取算子的语义模型（代价、样本、标量参考）。声明层新增了算子却没有模型时，

@@ -157,6 +157,9 @@ fn atomic_write_produces_a_valid_file_without_temp_residue() {
     std::fs::remove_file(&target).expect("清理目标文件");
 }
 
+// `storage::Mmap` 只在 Unix 目标上存在（`mmap` feature 的 `cfg(all(feature = "mmap", unix))`），
+// 因此这条用例也只在 Unix 上编译——非 Unix 目标不静默跳过，而是根本不存在这条断言。
+#[cfg(unix)]
 #[test]
 fn a_mapped_file_opens_without_copying_into_memory() {
     let mut writer = Writer::new();

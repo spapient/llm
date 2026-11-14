@@ -119,6 +119,9 @@ trait Streams: Sized {
 
     /// 把整段流的 span 换成 `span`（`None` 表示保持原样）。
     fn respan(self, span: Option<Span>) -> Self;
+
+    /// 报错文案拼不成 token 流时的退路：一条固定文案的 `compile_error!`。
+    fn fallback() -> Self;
 }
 
 impl Streams for TokenStream {
@@ -146,6 +149,10 @@ impl Streams for TokenStream {
                 token
             })
             .collect()
+    }
+
+    fn fallback() -> Self {
+        Self::from_code("compile_error!(\"注解层无法构造错误消息\");").unwrap_or_default()
     }
 }
 
@@ -231,8 +238,8 @@ where
 
 /// 把文法错误变成一条指向出错 token 的 `compile_error!`。
 fn reject<S: Streams>(item: S, error: &SyntaxError, tokens: &[TokenTree]) -> S {
-    let span = tokens.get(error.position()).map(TokenTree::span);
-    compile_error::<S>(error.message(), span).append(item)
+    let span = tokens.get(error.position).map(TokenTree::span);
+    compile_error::<S>(&error.message, span).append(item)
 }
 
 /// 拼上生成的实现；生成失败时也要报一条自己的错误，而不是静默丢掉实现。
@@ -250,9 +257,7 @@ fn attach<S: Streams>(item: S, generated: &str) -> S {
 fn compile_error<S: Streams>(message: &str, span: Option<Span>) -> S {
     S::from_code(&format!("compile_error!({message:?});"))
         .map(|code| code.respan(span))
-        .unwrap_or_else(|| {
-            S::from_code("compile_error!(\"注解层无法构造错误消息\");").expect("常量片段合法")
-        })
+        .unwrap_or_else(S::fallback)
 }
 
 /// `proc_macro` 的 token 流 → 本 crate 的 token 模型；两者一一对应，下标因此可以互换。
@@ -317,6 +322,10 @@ mod tests {
 
         fn respan(self, _span: Option<Span>) -> Self {
             self
+        }
+
+        fn fallback() -> Self {
+            Self("compile_error!(\"注解层无法构造错误消息\");".to_string())
         }
     }
 

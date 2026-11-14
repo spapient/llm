@@ -1,4 +1,4 @@
-//! ③ select：按声明顺序取 tile，roofline 只给估值（DESIGN §9、§12.1）。
+//! ③ select：按声明顺序取 tile，roofline 只给估值（README §9、§12.1）。
 //!
 //! P0 不在 tile 候选之间比较：档案里没有能推导占用率或分块收益的常数（`[simt]` 只有组宽度），
 //! 与 tile 相关的量只有 `deq[GMAX]` 的栈占用，它不改 flops、不改 bytes——任何"这个 tile 更快"的
@@ -59,7 +59,7 @@ impl fmt::Display for Plan {
 /// roofline 预测：`max(flops/峰值, bytes/带宽) + 未掩盖项`。
 ///
 /// 未掩盖项取自 [`Masking`] 而不是另算一遍：`doctor`/`bench` 打印的那个百分比，与这里加进去的
-/// 必须是同一个数（DESIGN §12.2 判据 1）。与 tile 无关——这是 §9 的 P0 明确不做候选比较的原因，
+/// 必须是同一个数（README §12.2 判据 1）。与 tile 无关——这是 §9 的 P0 明确不做候选比较的原因，
 /// 不是遗漏。
 pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> Option<f64> {
     let compute = profile
@@ -88,15 +88,31 @@ pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> O
 /// 代价（`flops`/`bytes`）由算子层 `op::model::Model::cost` 给出——流量公式属于算子语义，
 /// 机制层不认识任何算子。
 pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagnostic::Result<Plan> {
-    let tile = expand(op)?.into_iter().next().ok_or_else(|| {
+    let masking = Masking::of(path.mma_share, &path.schedule);
+    Ok(Plan {
+        variant: path.variant.clone(),
+        schedule: path.schedule.as_str(),
+        tile: first_tile(op)?,
+        predicted_s: predicted_s(profile, cost, masking)?,
+        flops: cost.flops,
+        bytes: cost.bytes(),
+        masking,
+    })
+}
+
+/// 轴展开出的第一个 tile：TOML 顺序即优先级，不在这里打分。
+fn first_tile(op: &OpDecl) -> diagnostic::Result<TileCombo> {
+    expand(op)?.into_iter().next().ok_or_else(|| {
         Error::new(
             Code::Internal,
             "轴展开后没有任何 tile 候选（声明解析应当保证至少一个轴）",
         )
-    })?;
-    let masking = Masking::of(path.mma_share, &path.schedule);
-    let predicted_s = predict(profile, cost.flops, cost.bytes(), masking).ok_or_else(|| {
-        // 峰值是能力：档案没给出可求值的峰值，roofline 就无法判定，而不是“预测为 0”。
+    })
+}
+
+/// roofline 估值；峰值是能力：档案没给出可求值的峰值就无法判定，而不是“预测为 0”。
+fn predicted_s(profile: &Profile, cost: Cost, masking: Masking) -> diagnostic::Result<f64> {
+    predict(profile, cost.flops, cost.bytes(), masking).ok_or_else(|| {
         Error::new(
             Code::Unsupported,
             format!(
@@ -104,15 +120,6 @@ pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagno
                 profile.meta.vendor
             ),
         )
-    })?;
-    Ok(Plan {
-        variant: path.variant.clone(),
-        schedule: path.schedule.as_str(),
-        tile,
-        predicted_s,
-        flops: cost.flops,
-        bytes: cost.bytes(),
-        masking,
     })
 }
 
@@ -120,6 +127,7 @@ pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagno
 mod tests {
     use super::*;
     use crate::prof::Profile;
+    use diagnostic::data::Value;
 
     fn profile() -> Profile {
         Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案")
@@ -206,10 +214,12 @@ mod tests {
     fn declaration_order_decides_the_tile_not_its_size() {
         // 轴取值顺序即优先级：把 64 写在前面就取 64，即使它更大。
         let source = &op::builtin_named("gemv_i4").expect("内置");
-        let reordered = source
-            .declaration()
-            .replace("GMAX = [32]", "GMAX = [64, 32]");
-        assert_ne!(reordered, source.declaration(), "声明里的轴写法变了");
+        let mut reordered = source.declaration().clone();
+        reordered.set(
+            "axes.GMAX",
+            Value::array(vec![Value::int(64), Value::int(32)]),
+        );
+        assert_ne!(&reordered, source.declaration(), "声明里的轴写法变了");
         let op = OpDecl::parse(&reordered, source.template()).expect("声明");
         let plan = select(&op, &profile(), &path(0.62), cost()).expect("可选择");
         assert_eq!(plan.tile.summary(), "GMAX=64");
@@ -219,9 +229,11 @@ mod tests {
     fn prediction_is_the_same_for_every_tile() {
         // 模型里没有可比较的量：两个候选的预测必须相同，否则说明有人给 predict 编了常数。
         let source = &op::builtin_named("gemv_i4").expect("内置");
-        let swapped = source
-            .declaration()
-            .replace("GMAX = [32]", "GMAX = [32, 64]");
+        let mut swapped = source.declaration().clone();
+        swapped.set(
+            "axes.GMAX",
+            Value::array(vec![Value::int(32), Value::int(64)]),
+        );
         let wide = OpDecl::parse(&swapped, source.template()).expect("声明");
         let narrow = select(&op(), &profile(), &path(0.62), cost()).expect("可选择");
         let wide = select(&wide, &profile(), &path(0.62), cost()).expect("可选择");

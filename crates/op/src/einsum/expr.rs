@@ -29,20 +29,7 @@ impl Expr {
     /// - 输出项里有重复字母，或输出项里的字母没有出现在任何输入项里。
     pub fn parse(text: &str) -> Result<Self, Error> {
         let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return Err(bad("表达式为空"));
-        }
-        if trimmed.matches(Self::ARROW).count() > 1 {
-            return Err(bad(format!(
-                "`->` 只能出现一次：`{trimmed}`（要拆成多个算子，请分别声明）"
-            )));
-        }
-        let Some((inputs, output)) = trimmed.split_once(Self::ARROW) else {
-            return Err(bad(format!(
-                "缺少 `->`：`{trimmed}`（显式模式必须写出输出轴，例如 `nm,m->n`）"
-            )));
-        };
-
+        let (inputs, output) = sides(trimmed)?;
         let terms = inputs
             .split(',')
             .enumerate()
@@ -106,6 +93,25 @@ pub(crate) const NOT_LABEL: &str = "不是字母（闭集是 `a..z` / `A..Z`）"
 
 fn bad(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("einsum::Expr::parse")
+}
+
+/// `->` 的左右两侧：表达式非空，箭头恰好一个。
+///
+/// 只回答"文本切不切得开"，不回答轴字母是否合法——那是 [`term_labels`]/[`output_labels`] 的事。
+fn sides(trimmed: &str) -> Result<(&str, &str), Error> {
+    if trimmed.is_empty() {
+        return Err(bad("表达式为空"));
+    }
+    if trimmed.matches(Expr::ARROW).count() > 1 {
+        return Err(bad(format!(
+            "`->` 只能出现一次：`{trimmed}`（要拆成多个算子，请分别声明）"
+        )));
+    }
+    trimmed.split_once(Expr::ARROW).ok_or_else(|| {
+        bad(format!(
+            "缺少 `->`：`{trimmed}`（显式模式必须写出输出轴，例如 `nm,m->n`）"
+        ))
+    })
 }
 
 fn term_labels(term: &str, index: usize) -> Result<Vec<char>, Error> {

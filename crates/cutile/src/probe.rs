@@ -1,8 +1,8 @@
-//! 设备探测：只如实探测，不做判断（DESIGN §5.3、§13 的 `probe`）。
+//! 设备探测：只如实探测，不做判断（README §5.3、§13 的 `probe`）。
 //!
 //! P0 只有 CPU 是真实可用的；GPU 档案保留下来，但探测不到设备时协商会拒绝它们。
 
-use crate::prof::{Detected, MatchRule, Profile};
+use crate::prof::{Detected, Profile};
 use diagnostic::{Code, Error};
 
 /// 探测本机 CPU。
@@ -41,76 +41,86 @@ pub fn detect() -> Vec<Detected> {
     vec![detect_cpu()]
 }
 
-/// 构造一个假指纹：用于模拟器、回归测试与 `--device` 显式指定。
+/// 按指纹挑档案：命中的规则条数多者胜出；与**最优者**同等具体才算配置错误。
 ///
-/// 指纹**从档案自己的 `[fingerprint]` 反查**，不另写一张厂商表：规则语义只在 `prof` 里定义
-/// 一次，这里只负责给每条规则填一个能满足它的值（`Exact` 取原文、`Range` 取下界、
-/// `Contains` 取第一个子串、`Set` 取前缀加全部成员、`OneOf` 取第一个分支）。新增一台设备因此
-/// 只需加一份 TOML——手写表的时代，漏掉这里不会让任何编译或测试失败，只会在运行期得到
-/// “没有档案匹配该指纹”。
-///
-/// 档案里没有该 vendor（拼错、或这台机器没带它）时退回 `arch = <vendor>`，
-/// [`select`] 照常报“没有档案匹配”，不静默给一个能命中的指纹。
-pub fn fake(vendor: &str) -> Detected {
-    let Some(profile) = ::prof::builtin()
-        .iter()
-        .filter_map(|archive| Profile::parse(archive.text()).ok())
-        .find(|profile| profile.meta.vendor == vendor)
-    else {
-        return Detected::new().with("arch", vendor);
-    };
-    profile
-        .fingerprint
-        .iter()
-        .fold(Detected::new(), |detected, (key, rule)| {
-            detected.with(key, example_of(rule))
-        })
-}
-
-/// 一条匹配规则的一个满足值。
-fn example_of(rule: &MatchRule) -> String {
-    match rule {
-        MatchRule::Exact(text) => text.clone(),
-        MatchRule::Range { lo, .. } => lo.clone(),
-        MatchRule::Contains(tokens) => tokens.first().cloned().unwrap_or_default(),
-        MatchRule::Set { base, members } => format!("{base}{}", members.join("")),
-        MatchRule::OneOf(branches) => branches.first().map_or_else(String::new, example_of),
-    }
-}
-
-/// 按指纹挑档案：命中的规则条数多者胜出；同等具体多个视为配置错误。
+/// 只在最优档比并列：两份更宽的档案撞在一起不影响“选哪一份”，那是 `Catalogue::validate`
+/// 在装载期回答的问题；这里只回答这次该用谁。
 pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
-    let mut best: Option<usize> = None;
-    for (index, profile) in profiles.iter().enumerate() {
-        if !profile.matches(detected) {
-            continue;
-        }
-        match best {
-            None => best = Some(index),
-            Some(current) => {
-                let current_specificity = profiles[current].specificity();
-                if profile.specificity() > current_specificity {
-                    best = Some(index);
-                } else if profile.specificity() == current_specificity {
-                    return Err(Error::new(
-                        Code::Invalid,
-                        format!(
-                            "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
-                            profiles[current].meta.vendor, profile.meta.vendor
-                        ),
-                    ));
-                }
-            }
-        }
+    let best = profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| profile.matches(detected))
+        .max_by_key(|(_, profile)| profile.specificity());
+    let Some((index, profile)) = best else {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!("没有档案匹配该指纹：{detected}"),
+        ));
+    };
+    match rival(profiles, detected, index, profile.specificity()) {
+        Some(other) => Err(Error::new(
+            Code::Invalid,
+            format!(
+                "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
+                profile.meta.vendor, other.meta.vendor
+            ),
+        )),
+        None => Ok(profile),
     }
-    best.map(|index| &profiles[index])
-        .ok_or_else(|| Error::new(Code::Unsupported, format!("没有档案匹配该指纹：{detected}")))
+}
+
+/// 与最优者同等具体的另一份档案：它让“选谁”没有唯一答案。
+fn rival<'a>(
+    profiles: &'a [Profile],
+    detected: &Detected,
+    best: usize,
+    top: usize,
+) -> Option<&'a Profile> {
+    profiles
+        .iter()
+        .enumerate()
+        .find(|(index, profile)| {
+            *index != best && profile.specificity() == top && profile.matches(detected)
+        })
+        .map(|(_, profile)| profile)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::builtin::Catalogue;
+    use crate::prof::MatchRule;
+
+    /// 假指纹：回归测试替身。指纹从档案自己的 `[fingerprint]` 反查，不另写厂商表——规则语义只在
+    /// `prof` 里定义一次，这里只填一个能满足规则的值；档案里没有该 vendor 时退回 `arch = <vendor>`，
+    /// [`select`] 照常报"没有档案匹配"，不静默给能命中的指纹。
+    fn fake(vendor: &str) -> Detected {
+        let Some(profile) = ::prof::names()
+            .iter()
+            .filter_map(|name| ::prof::embedded(name))
+            .filter_map(|table| Profile::parse(table).ok())
+            .find(|profile| profile.meta.vendor == vendor)
+        else {
+            return Detected::new().with("arch", vendor);
+        };
+        profile
+            .fingerprint
+            .iter()
+            .fold(Detected::new(), |detected, (key, rule)| {
+                detected.with(key, example_of(rule))
+            })
+    }
+
+    /// 一条匹配规则的一个满足值。
+    fn example_of(rule: &MatchRule) -> String {
+        match rule {
+            MatchRule::Exact(text) => text.clone(),
+            MatchRule::Range { lo, .. } => lo.clone(),
+            MatchRule::Contains(tokens) => tokens.first().cloned().unwrap_or_default(),
+            MatchRule::Set { base, members } => format!("{base}{}", members.join("")),
+            MatchRule::OneOf(branches) => branches.first().map_or_else(String::new, example_of),
+        }
+    }
 
     #[test]
     fn cpu_detection_matches_the_cpu_profile() {

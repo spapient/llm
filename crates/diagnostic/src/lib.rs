@@ -9,7 +9,7 @@
 //! **拥有**：`Error`、`Code`、`Result` 与 `data` 的 `Table` / `Value`。**不拥有**：任何领域
 //! 的错误码字面量——各层用自己的语义填 `Code`，但类型只有这一个；也不解释任何领域语义
 //! （`ops/` 属于 `op`，`devices/` 属于 `prof`，`prim/` 属于 `prim`，设置层属于
-//! `cutile::settings`），更不认识 TOML：语料由各 crate 的 `build.rs` 在编译期解析成 `data`
+//! `cli::settings`），更不认识 TOML：语料由各 crate 的 `build.rs` 在编译期解析成 `data`
 //! 的表（ADR 0022），运行期没有任何 TOML 解析器。**依赖**：无（只用 `std`）。**被依赖**：
 //! 除 `testkit` 外的全部成员（见 `docs/ARCHITECTURE.md` 的所有权表）。
 //!

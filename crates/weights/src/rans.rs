@@ -58,16 +58,12 @@ impl Table {
     /// 从已归一化、总和恰为 `TOTAL_FREQ` 的频率构建编码/解码入口。
     fn build(freq: [u32; NSYMBOLS]) -> Self {
         let mut cum = [0u32; NSYMBOLS + 1];
+        let mut enc = [Entry::default(); NSYMBOLS];
         let mut acc = 0u32;
         for symbol in 0..NSYMBOLS {
-            cum[symbol] = acc;
-            acc += freq[symbol];
-        }
-        cum[NSYMBOLS] = acc;
-
-        let mut enc = [Entry::default(); NSYMBOLS];
-        for symbol in 0..NSYMBOLS {
             let f = freq[symbol];
+            cum[symbol] = acc;
+            acc += f;
             // f == 1 时无需倒数（divrem 对 f==1 有专用分支）。
             let rcp = if f >= 2 {
                 (1u64 << 32).div_ceil(u64::from(f)) as u32
@@ -81,12 +77,13 @@ impl Table {
                 xmax: ((STATE_MIN >> LOG2_M) << 8) * f,
             };
         }
+        cum[NSYMBOLS] = acc;
         Self { freq, cum, enc }
     }
 
     /// 构建 64 KiB 解码符号表：槽位 `[cum[s]..cum[s+1])` 填符号 `s`。
     fn symbol_lut(&self) -> Box<[u8; LUT_LEN]> {
-        let mut lut = vec![0u8; LUT_LEN].into_boxed_slice();
+        let mut lut = Box::new([0u8; LUT_LEN]);
         for symbol in 0..NSYMBOLS {
             let start = self.cum[symbol] as usize;
             let end = self.cum[symbol + 1] as usize;
@@ -94,9 +91,7 @@ impl Table {
                 lut[start..end].fill(symbol as u8);
             }
         }
-        // 长度由常量 LUT_LEN 保证，转换恒成立。
-        lut.try_into()
-            .unwrap_or_else(|_| panic!("LUT 长度必须为 {LUT_LEN}"))
+        lut
     }
 }
 
@@ -132,32 +127,39 @@ fn normalize(raw: &[u32; NSYMBOLS]) -> [u32; NSYMBOLS] {
         freq[0] = TOTAL_FREQ;
         return freq;
     }
-
-    let mut sum = 0i64;
+    for (symbol, &count) in raw.iter().enumerate() {
+        freq[symbol] = scaled(count, total);
+    }
     let mut max_symbol = 0usize;
-    for (symbol, &c) in raw.iter().enumerate() {
-        if c > 0 {
-            let f = ((u64::from(c) * u64::from(TOTAL_FREQ) + total / 2) / total).max(1) as u32;
-            freq[symbol] = f;
-            sum += i64::from(f);
-            if f > freq[max_symbol] {
-                max_symbol = symbol;
-            }
+    for (symbol, &f) in freq.iter().enumerate() {
+        if f > freq[max_symbol] {
+            max_symbol = symbol;
         }
     }
+    let sum: i64 = freq.iter().map(|&f| i64::from(f)).sum();
+    absorb(&mut freq, max_symbol, i64::from(TOTAL_FREQ) - sum);
+    freq
+}
 
-    // 缩放误差全部归入最大符号；它在场且足够大，可完全吸收。
-    let mut diff = i64::from(TOTAL_FREQ) - sum;
+/// 单个计数的归一化值：四舍五入到 `TOTAL_FREQ` 的总量上，在场符号至少拿到 1。
+fn scaled(count: u32, total: u64) -> u32 {
+    if count == 0 {
+        return 0;
+    }
+    ((u64::from(count) * u64::from(TOTAL_FREQ) + total / 2) / total).max(1) as u32
+}
+
+/// 缩放误差全部归入最大符号；它在场且足够大，可完全吸收。
+fn absorb(freq: &mut [u32; NSYMBOLS], symbol: usize, mut diff: i64) {
     while diff > 0 {
-        freq[max_symbol] += 1;
+        freq[symbol] += 1;
         diff -= 1;
     }
-    while diff < 0 && freq[max_symbol] > 1 {
-        freq[max_symbol] -= 1;
+    while diff < 0 && freq[symbol] > 1 {
+        freq[symbol] -= 1;
         diff += 1;
     }
     debug_assert_eq!(diff, 0, "归一化必须吸收全部舍入误差");
-    freq
 }
 
 /// 写出频率表：32 字节位图 + 在场符号的 `(freq - 1)` u16。
@@ -180,11 +182,9 @@ fn write_freq(out: &mut Vec<u8>, freq: &[u32; NSYMBOLS]) {
 fn read_freq(cur: &mut &[u8]) -> Result<[u32; NSYMBOLS]> {
     let bitmap = take::<{ NSYMBOLS / 8 }>(cur)?;
     let mut freq = [0u32; NSYMBOLS];
-    for symbol in 0..NSYMBOLS {
-        if bitmap[symbol / 8] & (1 << (symbol % 8)) != 0 {
-            let pair = take::<2>(cur)?;
-            freq[symbol] = u32::from(u16::from_le_bytes(pair)) + 1;
-        }
+    let present = (0..NSYMBOLS).filter(|&symbol| bitmap[symbol / 8] & (1 << (symbol % 8)) != 0);
+    for symbol in present {
+        freq[symbol] = u32::from(u16::from_le_bytes(take::<2>(cur)?)) + 1;
     }
     let sum = freq.iter().try_fold(0u32, |acc, &f| acc.checked_add(f));
     if sum != Some(TOTAL_FREQ) {
@@ -221,16 +221,28 @@ fn renorm(state: &mut u32, stream: &mut &[u8]) -> Result<()> {
     if *state >= STATE_MIN {
         return Ok(());
     }
-    // 快路径：两字节都在，一次算出补 1 或补 2 的候选状态。
-    if let Some(two) = stream.get(..2) {
-        let once = (*state << 8) | u32::from(two[0]);
-        let twice = (once << 8) | u32::from(two[1]);
-        let need_two = once < STATE_MIN;
-        *state = if need_two { twice } else { once };
-        *stream = &stream[if need_two { 2 } else { 1 }..];
-        return Ok(());
+    match stream.get(..2) {
+        Some(two) => {
+            pair(state, stream, two);
+            Ok(())
+        }
+        None => trickle(state, stream),
     }
-    // 流末尾退回逐字节路径，至多补两次。
+}
+
+/// 两字节都在时的快路径：一次算出补 1 与补 2 的候选状态，按 `STATE_MIN` 选一个。
+#[inline]
+fn pair(state: &mut u32, stream: &mut &[u8], two: &[u8]) {
+    let once = (*state << 8) | u32::from(two[0]);
+    let twice = (once << 8) | u32::from(two[1]);
+    let need_two = once < STATE_MIN;
+    *state = if need_two { twice } else { once };
+    *stream = &stream[usize::from(need_two) + 1..];
+}
+
+/// 流末尾的逐字节路径：至多补两次，每次只在仍不足时才取字节。
+#[inline]
+fn trickle(state: &mut u32, stream: &mut &[u8]) -> Result<()> {
     for _ in 0..2 {
         if *state < STATE_MIN {
             let (byte, rest) = stream
@@ -295,64 +307,64 @@ pub(crate) fn encode(src: &[u8]) -> Vec<u8> {
 }
 
 /// 解码自描述帧，返回恢复出的原始字节。
-pub(crate) fn decode(stored: &[u8]) -> Result<Vec<u8>> {
+///
+/// `cap` 是调用方接受的最大输出字节数。帧头里的原始长度**不能**当作分配依据：它只是文件中的
+/// 四个字节，而频率表退化成单符号时"零字节流"也能解出任意长度，所以先核对上限再分配，
+/// "四个字节换 4 GiB"这条放大路径因此不存在。
+pub(crate) fn decode(stored: &[u8], cap: usize) -> Result<Vec<u8>> {
     let mut cur = stored;
-    let src_len = u32::from_le_bytes(take::<4>(&mut cur)?) as usize;
-    let table = Table::build(read_freq(&mut cur)?);
-
-    let mut states = [0u32; NLANES];
-    for state in &mut states {
-        *state = u32::from_le_bytes(take::<4>(&mut cur)?);
-    }
-    let mut lens = [0usize; NLANES];
-    for len in &mut lens {
-        *len = u32::from_le_bytes(take::<4>(&mut cur)?) as usize;
-    }
-
-    let mut streams: [&[u8]; NLANES] = [&[]; NLANES];
-    for lane in 0..NLANES {
-        let (head, rest) = cur
-            .split_at_checked(lens[lane])
-            .ok_or_else(|| fault("rANS lane 流截断"))?;
-        streams[lane] = head;
-        cur = rest;
-    }
-    if !cur.is_empty() {
-        return Err(fault("rANS 帧尾部有多余字节"));
-    }
-
-    let lut = table.symbol_lut();
+    let (src_len, table, words) = header(&mut cur, cap)?;
+    let (mut states, mut streams) = lanes(&mut cur, words)?;
     let mut dst = vec![0u8; src_len];
-
-    // 先处理尾部不对齐的符号（与编码 lane 分配规则一致）。
-    let mut at = src_len;
-    while !at.is_multiple_of(NLANES) {
-        at -= 1;
-        let lane = at % NLANES;
-        decode_one(
-            &mut states[lane],
-            &mut streams[lane],
-            &table,
-            &lut,
-            &mut dst,
-            at,
-        )?;
-    }
-    // 主体按 8 个一组反向推进。
-    while at >= NLANES {
-        at -= NLANES;
-        for lane in 0..NLANES {
-            decode_one(
-                &mut states[lane],
-                &mut streams[lane],
-                &table,
-                &lut,
-                &mut dst,
-                at + lane,
-            )?;
-        }
-    }
+    symbols(&mut dst, &mut states, &mut streams, &table)?;
     Ok(dst)
+}
+
+/// 帧头：原始长度（已核对上限）、归一化频率表，以及状态与长度两组的 16 个 `u32` 原文。
+fn header(cur: &mut &[u8], cap: usize) -> Result<(usize, Table, [u32; 2 * NLANES])> {
+    let len = declared_len(cur, cap)?;
+    let table = Table::build(read_freq(cur)?);
+    let mut words = [0u32; 2 * NLANES];
+    for word in &mut words {
+        *word = u32::from_le_bytes(take::<4>(cur)?);
+    }
+    Ok((len, table, words))
+}
+
+/// 把两组 `u32` 拆成状态与长度，再按长度切出 8 条 lane 流；切完必须正好到帧尾。
+fn lanes<'a>(
+    cur: &mut &'a [u8],
+    words: [u32; 2 * NLANES],
+) -> Result<([u32; NLANES], [&'a [u8]; NLANES])> {
+    let mut states = [0u32; NLANES];
+    states.copy_from_slice(&words[..NLANES]);
+    let mut streams: [&[u8]; NLANES] = [&[]; NLANES];
+    for (stream, len) in streams.iter_mut().zip(&words[NLANES..]) {
+        let (head, rest) = cur
+            .split_at_checked(*len as usize)
+            .ok_or_else(|| fault("rANS lane 流截断"))?;
+        *stream = head;
+        *cur = rest;
+    }
+    if cur.is_empty() {
+        return Ok((states, streams));
+    }
+    Err(fault("rANS 帧尾部有多余字节"))
+}
+
+/// 与编码相反的次序解出全部符号：位置从末尾往前，`at % NLANES` 就给回编码时的 lane。
+fn symbols(
+    dst: &mut [u8],
+    states: &mut [u32; NLANES],
+    streams: &mut [&[u8]; NLANES],
+    table: &Table,
+) -> Result<()> {
+    let lut = table.symbol_lut();
+    for at in (0..dst.len()).rev() {
+        let lane = at % NLANES;
+        decode_one(&mut states[lane], &mut streams[lane], table, &lut, dst, at)?;
+    }
+    Ok(())
 }
 
 /// 解码单个符号：查表定符号，回退状态后重规范化。
@@ -372,6 +384,15 @@ fn decode_one(
     renorm(state, stream)
 }
 
+/// 读出帧头声明的原始长度，并核对调用方给定的上限。
+fn declared_len(cur: &mut &[u8], cap: usize) -> Result<usize> {
+    let len = u32::from_le_bytes(take::<4>(cur)?) as usize;
+    if len > cap {
+        return Err(fault(&format!("rANS 帧声明 {len} 字节，超过上限 {cap}")));
+    }
+    Ok(len)
+}
+
 /// 构造一个内部错误，统一携带模块定位。
 fn fault(message: &str) -> Error {
     Error::new(Code::Invalid, message).with("weights::rans")
@@ -384,7 +405,7 @@ mod tests {
     /// 任意字节往返：解码必须与输入逐字节相等。
     fn assert_roundtrip(src: &[u8]) {
         let frame = encode(src);
-        let back = decode(&frame).expect("解码");
+        let back = decode(&frame, src.len()).expect("解码");
         assert_eq!(back, src, "往返不一致");
     }
 
@@ -441,13 +462,26 @@ mod tests {
     fn truncated_frame_is_rejected() {
         let frame = encode(&vec![3u8; 1000]);
         for cut in [0, 1, 4, 33, frame.len() - 1] {
-            assert!(decode(&frame[..cut]).is_err(), "截断到 {cut} 必须报错");
+            assert!(
+                decode(&frame[..cut], 1000).is_err(),
+                "截断到 {cut} 必须报错"
+            );
         }
     }
 
     #[test]
     fn garbage_is_rejected() {
-        assert!(decode(&[0xFF; 64]).is_err());
+        assert!(decode(&[0xFF; 64], 64).is_err());
+    }
+
+    #[test]
+    fn a_lying_length_is_rejected_before_allocating() {
+        // 帧头的原始长度来自文件，不能当分配依据：把它改成 u32::MAX 之后必须当场拒绝，
+        // 而不是先按它分配再想办法。
+        let mut frame = encode(&[7u8; 64]);
+        frame[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let error = decode(&frame, 64).expect_err("帧自报长度不能当分配依据");
+        assert!(error.to_string().contains("超过上限"), "{error}");
     }
 
     #[test]

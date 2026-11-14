@@ -1,4 +1,4 @@
-//! 布局：4 个构造子的闭集与声明式签名（DESIGN §6）。
+//! 布局：4 个构造子的闭集与声明式签名（cutile README §6）。
 //!
 //! 布局是**声明层的词汇表**：`[layouts]` 的取值就是这里的闭集，声明解析（[`crate::decl`]）
 //! 要用它，因此事实源在本 crate，机制层（`cutile`）只消费。
@@ -18,7 +18,7 @@
 use core::fmt;
 use diagnostic::{Code, Error};
 
-/// 布局构造子闭集（DESIGN §6.1）。`Swz`/`Pad` 只能包裹 `Row`/`Col`。
+/// 布局构造子闭集（cutile README §6.1）。`Swz`/`Pad` 只能包裹 `Row`/`Col`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutSpec {
     /// 行主序紧凑。
@@ -43,44 +43,59 @@ fn invalid(detail: impl Into<String>) -> Error {
     Error::new(Code::Invalid, detail)
 }
 
+/// `swz<b,m,s>`：三个参数是位宽、块宽、步长，各一个 `u8`。
+///
+/// `rest` 是 `<` 之后的文本（含收尾的 `>`）。
+fn swz(text: &str, rest: &str) -> diagnostic::Result<LayoutSpec> {
+    let [b, m, s] = widths(text, closed(text, rest, '>')?)?;
+    Ok(LayoutSpec::Swz { b, m, s })
+}
+
+/// 去掉收尾的分隔符；缺了就是声明写坏了。
+fn closed<'a>(text: &str, rest: &'a str, end: char) -> diagnostic::Result<&'a str> {
+    rest.strip_suffix(end)
+        .ok_or_else(|| invalid(format!("`{text}` 缺少 `{end}`")))
+}
+
+/// 逗号分隔的三个位宽（顺序：位宽、块宽、步长）。
+fn widths(text: &str, inner: &str) -> diagnostic::Result<[u8; 3]> {
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    let [b, m, s] = parts
+        .try_into()
+        .map_err(|_| invalid(format!("`{text}` 需要三个参数：swz<b,m,s>")))?;
+    Ok([width(b)?, width(m)?, width(s)?])
+}
+
+/// 一个位宽：`u8` 十进制。
+fn width(value: &str) -> diagnostic::Result<u8> {
+    value
+        .parse::<u8>()
+        .map_err(|_| invalid(format!("`{value}` 不是合法的位宽")))
+}
+
+/// `pad(p)`：括号里是填充长度（允许首尾空白）。
+fn pad(text: &str, rest: &str) -> diagnostic::Result<LayoutSpec> {
+    let trimmed = closed(text, rest, ')')?.trim();
+    trimmed
+        .parse::<u32>()
+        .map(LayoutSpec::Pad)
+        .map_err(|_| invalid(format!("`{trimmed}` 不是合法的填充长度")))
+}
+
 impl LayoutSpec {
     /// 解析声明层写法：`row`、`col`、`swz<3,3,3>`、`pad(4)`。
     pub fn parse(text: &str) -> diagnostic::Result<Self> {
         let text = text.trim();
-        if text == "row" {
-            return Ok(Self::Row);
-        }
-        if text == "col" {
-            return Ok(Self::Col);
+        match text {
+            "row" => return Ok(Self::Row),
+            "col" => return Ok(Self::Col),
+            _ => {}
         }
         if let Some(rest) = text.strip_prefix("swz<") {
-            let inner = rest
-                .strip_suffix('>')
-                .ok_or_else(|| invalid(format!("`{text}` 缺少 `>`")))?;
-            let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-            if parts.len() != 3 {
-                return Err(invalid(format!("`{text}` 需要三个参数：swz<b,m,s>")));
-            }
-            let parse = |value: &str| {
-                value
-                    .parse::<u8>()
-                    .map_err(|_| invalid(format!("`{value}` 不是合法的位宽")))
-            };
-            return Ok(Self::Swz {
-                b: parse(parts[0])?,
-                m: parse(parts[1])?,
-                s: parse(parts[2])?,
-            });
+            return swz(text, rest);
         }
         if let Some(rest) = text.strip_prefix("pad(") {
-            let inner = rest
-                .strip_suffix(')')
-                .ok_or_else(|| invalid(format!("`{text}` 缺少 `)`")))?;
-            let pad = inner
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| invalid(format!("`{}` 不是合法的填充长度", inner.trim())))?;
-            return Ok(Self::Pad(pad));
+            return pad(text, rest);
         }
         Err(invalid(format!(
             "`{text}` 不在布局闭集内（闭集：row | col | swz<b,m,s> | pad(p)）"

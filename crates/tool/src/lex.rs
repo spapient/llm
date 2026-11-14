@@ -32,6 +32,26 @@ pub enum Delim {
     Bracket,
 }
 
+impl Delim {
+    /// 开括号字符。
+    pub const fn open(self) -> char {
+        match self {
+            Self::Paren => '(',
+            Self::Brace => '{',
+            Self::Bracket => '[',
+        }
+    }
+
+    /// 闭括号字符。
+    pub const fn close(self) -> char {
+        match self {
+            Self::Paren => ')',
+            Self::Brace => '}',
+            Self::Bracket => ']',
+        }
+    }
+}
+
 /// 一个 token：标识符、标点、字面量或分组。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
@@ -112,11 +132,9 @@ impl Lexer {
     fn pos(&self) -> Pos {
         Pos::new(self.line, self.col)
     }
-
     fn peek(&self) -> Option<char> {
         self.chars.get(self.at).copied()
     }
-
     fn peek_at(&self, ahead: usize) -> Option<char> {
         self.chars.get(self.at + ahead).copied()
     }
@@ -134,200 +152,192 @@ impl Lexer {
         Some(ch)
     }
 
+    /// 当前位置是否以 `first` + `second` 两个字符开头。
+    fn at_pair(&self, first: char, second: char) -> bool {
+        self.peek() == Some(first) && self.peek_at(1) == Some(second)
+    }
+
     /// 解析到对应闭括号（或 EOF）；`close` 为 None 表示顶层。
     fn parse_until(&mut self, close: Option<char>) -> diagnostic::Result<Vec<Token>> {
         let mut items = Vec::new();
         loop {
             self.skip_trivia()?;
             let Some(ch) = self.peek() else {
-                if close.is_some() {
-                    return Err(Error::new(Code::Invalid, "括号未闭合").with("tool::lex"));
-                }
-                break;
+                return eof(close, items);
             };
             if close == Some(ch) {
-                break;
+                return Ok(items);
             }
-            items.push(self.next_token()?);
+            items.push(self.next_token(ch)?);
         }
-        Ok(items)
     }
 
     /// 跳过空白与注释（注释内换行同样推进行号）。
     fn skip_trivia(&mut self) -> diagnostic::Result<()> {
         loop {
-            match self.peek() {
-                Some(ch) if ch.is_whitespace() => {
-                    self.bump();
-                }
-                Some('/') if self.peek_at(1) == Some('/') => {
-                    while let Some(ch) = self.peek() {
-                        if ch == '\n' {
-                            break;
-                        }
-                        self.bump();
-                    }
-                }
-                Some('/') if self.peek_at(1) == Some('*') => self.block_comment()?,
-                _ => break,
+            self.skip_space_and_line();
+            if !self.at_pair('/', '*') {
+                return Ok(());
             }
+            self.block_comment()?;
         }
-        Ok(())
     }
 
-    /// 块注释：Rust 允许嵌套，用深度计数。
+    /// 跳过空白与 `//` 行注释（读到换行前停下）；块注释交给调用方。
+    fn skip_space_and_line(&mut self) {
+        loop {
+            if self.peek().is_some_and(char::is_whitespace) {
+                self.bump();
+                continue;
+            }
+            if !self.at_pair('/', '/') {
+                return;
+            }
+            while self.peek().is_some_and(|ch| ch != '\n') {
+                self.bump();
+            }
+        }
+    }
+
+    /// 块注释：Rust 允许嵌套，深度归零即结束。
     fn block_comment(&mut self) -> diagnostic::Result<()> {
         self.bump();
         self.bump();
         let mut depth = 1usize;
         while depth > 0 {
-            match self.peek() {
-                Some('/') if self.peek_at(1) == Some('*') => {
-                    self.bump();
-                    self.bump();
-                    depth += 1;
-                }
-                Some('*') if self.peek_at(1) == Some('/') => {
-                    self.bump();
-                    self.bump();
-                    depth -= 1;
-                }
-                Some(_) => {
-                    self.bump();
-                }
-                None => {
-                    return Err(Error::new(Code::Invalid, "块注释未闭合").with("tool::lex"));
-                }
+            if self.at_pair('/', '*') {
+                depth += 1;
+                self.bump();
+            } else if self.at_pair('*', '/') {
+                depth -= 1;
+                self.bump();
+            }
+            if self.bump().is_none() {
+                return Err(Error::new(Code::Invalid, "块注释未闭合").with("tool::lex"));
             }
         }
         Ok(())
     }
 
-    /// 取下一个非空白 token（调用前已跳过 trivia）。
-    fn next_token(&mut self) -> diagnostic::Result<Token> {
-        let ch = self.peek().expect("token 存在");
+    /// 取下一个非空白 token（调用前已跳过 trivia）：括号分组或叶子 token。
+    fn next_token(&mut self, ch: char) -> diagnostic::Result<Token> {
+        let Some((delim, closer)) = open_delim(ch) else {
+            return match ch {
+                '"' => self.quoted('"', "字符串"),
+                '\'' => self.quote_or_lifetime(),
+                _ => self.word_or_punct(ch),
+            };
+        };
+        let open = self.pos();
+        self.bump();
+        let items = self.parse_until(Some(closer))?;
+        let close = self.pos();
+        self.bump();
+        Ok(Token::Group {
+            delim,
+            items,
+            open,
+            close,
+        })
+    }
+
+    /// 标识符、数字与单字符标点。
+    fn word_or_punct(&mut self, ch: char) -> diagnostic::Result<Token> {
         if is_ident_start(ch) {
-            return self.ident_or_string();
+            return self.ident_or_string(ch);
         }
         if ch.is_ascii_digit() {
-            return self.number();
-        }
-        if ch == '"' {
-            return self.quoted('"');
-        }
-        if ch == '\'' {
-            return self.quote_or_lifetime();
-        }
-        if let Some((delim, close)) = open_delim(ch) {
-            let open = self.pos();
-            self.bump();
-            let items = self.parse_until(Some(close))?;
-            let close_pos = self.pos();
-            self.bump();
-            return Ok(Token::Group {
-                delim,
-                items,
-                open,
-                close: close_pos,
-            });
+            return Ok(self.number());
         }
         let pos = self.pos();
         self.bump();
         Ok(Token::Punct { ch, pos })
     }
 
-    /// 标识符；同时处理 `r"..."`/`r#"..."#` 与 `b"..."` 等带前缀字符串。
-    fn ident_or_string(&mut self) -> diagnostic::Result<Token> {
+    /// 标识符；带字符串前缀（`r#"`、`b"`）时改走字符串分支。
+    fn ident_or_string(&mut self, first: char) -> diagnostic::Result<Token> {
         let start = self.pos();
-        let first = self.peek().expect("ident 起始");
-        // 原始字符串 / 字节原始字符串前缀。
-        let raw = matches!(first, 'r') && matches!(self.peek_at(1), Some('"') | Some('#'));
-        let byte_raw = matches!(first, 'b')
-            && self.peek_at(1) == Some('r')
-            && matches!(self.peek_at(2), Some('"') | Some('#'));
-        if raw || byte_raw {
-            return self.raw_string(start);
-        }
-        if first == 'b' && self.peek_at(1) == Some('"') {
-            self.bump();
-            return self.quoted('"');
+        match self.string_prefix(first) {
+            Some(true) => return self.raw_string(start),
+            Some(false) => {
+                self.bump();
+                return self.quoted('"', "字符串");
+            }
+            None => {}
         }
         let mut text = String::new();
         while let Some(ch) = self.peek() {
-            if is_ident_cont(ch) {
-                text.push(ch);
-                self.bump();
-            } else {
+            if !is_ident_cont(ch) {
                 break;
             }
+            text.push(ch);
+            self.bump();
         }
         Ok(Token::Ident { text, pos: start })
+    }
+
+    /// 前缀形态：`Some(true)` 原始字符串，`Some(false)` 普通字符串，`None` 普通标识符。
+    fn string_prefix(&self, first: char) -> Option<bool> {
+        match (first, self.peek_at(1)) {
+            ('r', Some('"') | Some('#')) => Some(true),
+            ('b', Some('r')) if matches!(self.peek_at(2), Some('"') | Some('#')) => Some(true),
+            ('b', Some('"')) => Some(false),
+            _ => None,
+        }
     }
 
     /// 原始字符串：`r"..."`、`r#"..."#`、`br"..."`（含任意个 `#`）。
     fn raw_string(&mut self, start: Pos) -> diagnostic::Result<Token> {
         let mut text = String::new();
-        while let Some(ch) = self.peek() {
-            if ch == '#' || ch == 'r' || ch == 'b' {
-                text.push(ch);
-                self.bump();
-            } else {
-                break;
-            }
+        while self.peek().is_some_and(|ch| matches!(ch, '#' | 'r' | 'b')) {
+            text.extend(self.bump());
         }
         let hashes = text.matches('#').count();
-        let Some('"') = self.peek() else {
+        if self.peek() != Some('"') {
             return Err(Error::new(Code::Invalid, "原始字符串缺少开引号").with("tool::lex"));
-        };
+        }
         text.push('"');
         self.bump();
-        loop {
-            let Some(ch) = self.peek() else {
-                return Err(Error::new(Code::Invalid, "原始字符串未闭合").with("tool::lex"));
-            };
-            if ch == '"' && self.closes_raw(hashes) {
-                text.push('"');
-                self.bump();
-                for _ in 0..hashes {
-                    text.push('#');
-                    self.bump();
-                }
-                break;
-            }
-            text.push(ch);
-            self.bump();
-        }
+        self.raw_body(&mut text, hashes)?;
         let end = self.after_last(&text, start);
         Ok(Token::Literal { text, start, end })
     }
 
-    /// 当前位置的 `"` 后是否恰好跟 `hashes` 个 `#`（再下一个不能是 `#`，否则属于更长闭合）。
-    fn closes_raw(&self, hashes: usize) -> bool {
-        for ahead in 1..=hashes {
-            if self.peek_at(ahead) != Some('#') {
-                return false;
+    /// 读到与 `hashes` 个 `#` 匹配的闭引号；未闭合是错误。
+    fn raw_body(&mut self, text: &mut String, hashes: usize) -> diagnostic::Result<()> {
+        while let Some(ch) = self.peek() {
+            if ch != '"' || !self.closes_raw(hashes) {
+                text.push(ch);
+                self.bump();
+                continue;
             }
+            for _ in 0..=hashes {
+                text.extend(self.bump());
+            }
+            return Ok(());
         }
-        self.peek_at(hashes + 1) != Some('#')
+        Err(Error::new(Code::Invalid, "原始字符串未闭合").with("tool::lex"))
     }
 
-    /// 普通（字节）字符串：处理反斜杠转义，转义字符整体跳过。
-    fn quoted(&mut self, quote: char) -> diagnostic::Result<Token> {
+    /// 当前位置的 `"` 后是否恰好跟 `hashes` 个 `#`（再多一个 `#` 属更长闭合）。
+    fn closes_raw(&self, hashes: usize) -> bool {
+        (1..=hashes).all(|ahead| self.peek_at(ahead) == Some('#'))
+            && self.peek_at(hashes + 1) != Some('#')
+    }
+
+    /// 读到 `quote` 为止（`\` 后的一个字符整体跳过）；`what` 用于未闭合的错误文案。
+    fn quoted(&mut self, quote: char, what: &str) -> diagnostic::Result<Token> {
         let start = self.pos();
-        let mut text = String::new();
-        text.push(quote);
+        let mut text = String::from(quote);
         self.bump();
         loop {
             let Some(ch) = self.peek() else {
-                return Err(Error::new(Code::Invalid, "字符串未闭合").with("tool::lex"));
+                return Err(Error::new(Code::Invalid, format!("{what}未闭合")).with("tool::lex"));
             };
             text.push(ch);
             self.bump();
             if ch == '\\' {
-                if let Some(escaped) = self.peek() {
-                    text.push(escaped);
-                    self.bump();
-                }
+                text.extend(self.bump());
             } else if ch == quote {
                 break;
             }
@@ -336,85 +346,63 @@ impl Lexer {
         Ok(Token::Literal { text, start, end })
     }
 
-    /// 字符字面量 vs 生命周期：严格局部判定，不在整行内搜索闭合。
-    ///
-    /// 字符字面量只有两种形态：`'x'`（一个内容字符后紧跟 `'`）与 `'\..'`（反斜杠转义）；
-    /// 生命周期（`'a`、`'static`）后面紧跟的不是 `'`。起始 `'` 单独当标点即可。
+    /// 字符字面量 vs 生命周期：只按局部三个字符判定，不在整行内搜索闭合。
     fn quote_or_lifetime(&mut self) -> diagnostic::Result<Token> {
         let start = self.pos();
         let inner = self.peek_at(1);
-        let after = self.peek_at(2);
-        let escaped = inner == Some('\\');
-        let plain = matches!(inner, Some(c) if c != '\'' && c != '\n') && after == Some('\'');
-        if !escaped && !plain {
+        if inner == Some('\\') {
+            return self.quoted('\'', "字符字面量");
+        }
+        let closed =
+            self.peek_at(2) == Some('\'') && inner.is_some_and(|ch| ch != '\'' && ch != '\n');
+        if !closed {
             self.bump();
             return Ok(Token::Punct {
                 ch: '\'',
                 pos: start,
             });
         }
-        self.bump(); // 起始 '
+        self.bump();
         let mut text = String::from('\'');
-        if escaped {
-            self.bump(); // 反斜杠
-            text.push('\\');
-            loop {
-                let Some(ch) = self.peek() else {
-                    return Err(Error::new(Code::Invalid, "字符字面量未闭合").with("tool::lex"));
-                };
-                text.push(ch);
-                self.bump();
-                if ch == '\'' {
-                    break;
-                }
-            }
-        } else {
-            let c = inner.expect("内容字符");
-            text.push(c);
-            self.bump();
-            text.push('\'');
-            self.bump();
-        }
+        text.extend(inner);
+        self.bump();
+        text.push('\'');
+        self.bump();
         let end = self.after_last(&text, start);
         Ok(Token::Literal { text, start, end })
     }
 
     /// 数字字面量：连续读到分隔符为止（含浮点、指数与类型后缀）。
-    fn number(&mut self) -> diagnostic::Result<Token> {
+    fn number(&mut self) -> Token {
         let start = self.pos();
         let mut text = String::new();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || is_open_or_close(ch) {
-                break;
-            }
-            // 范围符号 `..` 不属于字面量。
-            if ch == '.' && self.peek_at(1) == Some('.') {
+            if ch.is_whitespace() || is_open_or_close(ch) || self.at_pair('.', '.') {
                 break;
             }
             text.push(ch);
             self.bump();
         }
         let end = self.after_last(&text, start);
-        Ok(Token::Literal { text, start, end })
+        Token::Literal { text, start, end }
     }
 
     /// 按原文长度推算 token 终点位置（字面量可能跨行）。
     fn after_last(&self, text: &str, start: Pos) -> Pos {
-        let mut line = start.line;
-        let mut col = start.col;
-        for (idx, ch) in text.chars().enumerate() {
-            if idx + 1 == text.chars().count() {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 1;
-            } else {
-                col += 1;
-            }
-        }
-        Pos::new(line, col)
+        let keep = text.chars().count().saturating_sub(1);
+        text.chars().take(keep).fold(start, |pos, ch| match ch {
+            '\n' => Pos::new(pos.line + 1, 1),
+            _ => Pos::new(pos.line, pos.col + 1),
+        })
     }
+}
+
+/// 括号内到达 EOF 是错误，顶层是正常结束。
+fn eof(close: Option<char>, items: Vec<Token>) -> diagnostic::Result<Vec<Token>> {
+    if close.is_none() {
+        return Ok(items);
+    }
+    Err(Error::new(Code::Invalid, "括号未闭合").with("tool::lex"))
 }
 
 fn is_ident_start(ch: char) -> bool {
@@ -450,18 +438,18 @@ pub fn outline(tokens: &[Token], max: usize) -> String {
     tokens
         .iter()
         .take(max)
-        .map(|token| match token {
-            Token::Ident { text, .. } => text.clone(),
-            Token::Punct { ch, .. } => ch.to_string(),
-            Token::Literal { text, .. } => text.clone(),
-            Token::Group { delim, .. } => match delim {
-                Delim::Paren => "(..)".to_string(),
-                Delim::Brace => "{..}".to_string(),
-                Delim::Bracket => "[..]".to_string(),
-            },
-        })
+        .map(outline_piece)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// 单个 token 的调试文本。
+fn outline_piece(token: &Token) -> String {
+    match token {
+        Token::Ident { text, .. } | Token::Literal { text, .. } => text.clone(),
+        Token::Punct { ch, .. } => ch.to_string(),
+        Token::Group { delim, .. } => format!("{}..{}", delim.open(), delim.close()),
+    }
 }
 
 #[cfg(test)]

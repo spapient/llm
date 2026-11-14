@@ -1,8 +1,8 @@
 //! 内核层审计的驱动方：解析 → 执行 → 排版 → 退出码（L7 入口，不定义新类型）。
 //!
-//! 三件事分别有各自的归属：语法来自 [`cli`]（`cli::cutile`），计算来自
-//! `cutile::{bench, doctor, verify}`，配置覆盖来自 `config`。本文件只把它们接起来并排版，
-//! 因此 `cutile` 不再持有第二套命令行文法，命令模块也不再拼字符串。
+//! 三件事分别有各自的归属：语法与配置来自 [`cli`]（`cli::cutile` / `cli::settings`），计算来自
+//! `cutile::{bench, doctor, verify}`。本文件只把它们接起来并排版，因此 `cutile` 不再持有第二套
+//! 命令行文法、也不决定缓存目录在哪，命令模块也不再拼字符串。
 //!
 //! ```text
 //! cargo run --bin cutile -- doctor --device cpu
@@ -13,7 +13,7 @@
 //! ```
 
 use cli::cutile::CutileCommand;
-use config::{Cutile, Settings};
+use cli::settings::Settings;
 use cutile::bench::{self, Bench, Peak, Performance, Verdict};
 use cutile::builtin::Catalogue;
 use cutile::doctor::{self, CacheState, CacheWhy, Doctor};
@@ -25,11 +25,13 @@ use tool::Report;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut settings = match Settings::<Cutile>::load() {
+    let mut settings = match Settings::load() {
         Ok(settings) => settings,
-        Err(error) => return fail(Error::new(Code::Invalid, format!("配置错误：{error}"))),
+        // 配置层自己不读文件，失败只剩 `invalid`（键未登记、`--set` 缺 `=`、值为空），
+        // 这里只补一帧"这次失败发生在配置上"，类别不被折掉，退出码因此仍是 2。
+        Err(error) => return fail(error.with("配置")),
     };
-    let rest = match take_overrides(&args, &mut settings) {
+    let rest = match settings.apply_arguments(&args) {
         Ok(rest) => rest,
         Err(error) => return fail(error),
     };
@@ -56,31 +58,16 @@ fn fail(error: Error) -> ExitCode {
     ExitCode::from(error.code().exit_code())
 }
 
-/// 把 `--set key=value` 摘出来写进设置，返回其余参数（配置覆盖属于配置层，不属于语法）。
-fn take_overrides(
-    args: &[String],
-    settings: &mut Settings<Cutile>,
-) -> diagnostic::Result<Vec<String>> {
-    let mut rest = Vec::new();
-    let mut index = 0;
-    while index < args.len() {
-        if args[index] == "--set" {
-            let pair = args
-                .get(index + 1)
-                .ok_or_else(|| Error::new(Code::Invalid, "`--set` 缺少 `key=value`"))?;
-            settings
-                .apply_override(pair)
-                .map_err(|error| Error::new(Code::Invalid, error.to_string()))?;
-            index += 2;
-            continue;
-        }
-        rest.push(args[index].clone());
-        index += 1;
-    }
-    Ok(rest)
+/// 内核只收三个目录：把解析好的设置投影成那份纯数据（`cutile` 不读环境变量，ADR 0023）。
+fn kernel_dirs(settings: &Settings) -> cutile::dirs::Dirs {
+    cutile::dirs::Dirs::new(
+        settings.cache_dir(),
+        settings.work_dir(),
+        settings.data_root().map(std::path::Path::to_path_buf),
+    )
 }
 
-fn run(command: &CutileCommand, settings: &Settings<Cutile>) -> diagnostic::Result<String> {
+fn run(command: &CutileCommand, settings: &Settings) -> diagnostic::Result<String> {
     match command {
         CutileCommand::Doctor { op, device, why } => doctor(settings, op, device, why.as_deref()),
         CutileCommand::Verify {
@@ -99,10 +86,11 @@ fn run(command: &CutileCommand, settings: &Settings<Cutile>) -> diagnostic::Resu
 ///
 /// 残留与 LRU 删除分两行：残留不是"空间不够"的产物，它本来就不会命中，报在同一行里
 /// 会让人以为上限调大就能少删几条。
-fn cache_gc(settings: &Settings<Cutile>, limit: Option<u64>) -> diagnostic::Result<String> {
-    let report = cutile::gc::cache_gc(settings, limit)?;
+fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<String> {
+    let dirs = kernel_dirs(settings);
+    let report = cutile::gc::cache_gc(&dirs, limit)?;
     let mut out = Report::new(format!("cache gc | 上限 {}", human_bytes(report.limit)))
-        .row("目录", settings.cache_dir().display().to_string())
+        .row("目录", dirs.cache().display().to_string())
         .row("回收前", human_bytes(report.before))
         .row("回收后", human_bytes(report.after))
         .row("按 LRU 删除", format!("{} 项", report.removed))
@@ -130,13 +118,14 @@ fn cache_gc(settings: &Settings<Cutile>, limit: Option<u64>) -> diagnostic::Resu
 }
 
 fn doctor(
-    settings: &Settings<Cutile>,
+    settings: &Settings,
     op: &str,
     device: &str,
     why: Option<&str>,
 ) -> diagnostic::Result<String> {
-    let catalogue = Catalogue::load(settings)?;
-    let report: Doctor = doctor::doctor(&catalogue, settings, op, device)?;
+    let dirs = kernel_dirs(settings);
+    let catalogue = Catalogue::load(&dirs)?;
+    let report: Doctor = doctor::doctor(&catalogue, &dirs, op, device)?;
 
     let mut head = Report::new(format!(
         "cutile schema v{} | op={} | skeleton={} | {}",
@@ -262,7 +251,7 @@ fn doctor(
                 format!("没有可行变体，无法解释缓存键 `{hex}`"),
             )
         })?;
-        out.push_str(&cache_why(&doctor::why(settings, &built.key, hex)));
+        out.push_str(&cache_why(&doctor::why(&dirs, &built.key, hex)));
     }
     Ok(out)
 }
@@ -352,13 +341,14 @@ fn negotiation(report: &Doctor) -> String {
 }
 
 fn verify(
-    settings: &Settings<Cutile>,
+    settings: &Settings,
     op: &str,
     devices: &[String],
     ledger: bool,
 ) -> diagnostic::Result<String> {
-    let catalogue = Catalogue::load(settings)?;
-    let report = verify::verify(&catalogue, settings, op, devices)?;
+    let dirs = kernel_dirs(settings);
+    let catalogue = Catalogue::load(&dirs)?;
+    let report = verify::verify(&catalogue, &dirs, op, devices)?;
     let mut out = format!("verify {} @ [{}]\n", report.op, report.devices.join(","));
 
     for entry in &report.entries {
@@ -367,7 +357,7 @@ fn verify(
                 let line = passed_line(verified);
                 out.push_str(&line);
                 if ledger {
-                    out.push_str(&write_ledger(&catalogue, verified, &line, settings)?);
+                    out.push_str(&write_ledger(&catalogue, verified, &line, &dirs)?);
                 }
             }
             VerifyEntry::Failed { label, error } => {
@@ -385,22 +375,23 @@ fn verify(
         Err(Error::new(
             Code::Unsupported,
             format!(
-                "{out}\n缺设备即失败（DESIGN §11.2）：{} 项未通过",
+                "{out}\n缺设备即失败（cutile README §11.2）：{} 项未通过",
                 failures.len()
             ),
         ))
     }
 }
 
-/// `[协商]` 汇总：DESIGN §16 的「协商 3/3 命中首档」。
+/// `[协商]` 汇总：cutile README §16 的「协商 3/3 命中首档」。
 ///
 /// 这段与上面的逐设备结果正交：执行需要真机，协商只看声明与档案——所以"本机没有该设备"的行
 /// 照样在这里有答案。判定（首档 / 降级 / 无路径 / 无档案）在库里（`Negotiation`），
 /// 这里只排版。
 fn negotiation_summary(report: &VerifyReport) -> String {
     let (hits, total) = report.head_hits();
-    let mut out =
-        format!("\n协商首档 {hits}/{total}（DESIGN §16：首选没被选中说明 `needs` 粒度写错了）\n");
+    let mut out = format!(
+        "\n协商首档 {hits}/{total}（cutile README §16：首选没被选中说明 `needs` 粒度写错了）\n"
+    );
     for (device, negotiation) in report.devices.iter().zip(&report.negotiations) {
         out.push_str(&format!(
             "  {device} = {}\n",
@@ -564,10 +555,10 @@ fn write_ledger(
     catalogue: &Catalogue,
     verified: &Verified,
     conclusion: &str,
-    settings: &Settings<Cutile>,
+    dirs: &cutile::dirs::Dirs,
 ) -> diagnostic::Result<String> {
     let profile = catalogue.resolve(&verified.device)?;
-    let dir = settings.work_dir().join("ledger");
+    let dir = dirs.work().join("ledger");
     std::fs::create_dir_all(&dir)
         .map_err(|error| Error::new(Code::Io, format!("建 {} 失败：{error}", dir.display())))?;
     let path = dir.join(format!("{}.capability.md", profile.meta.vendor));
@@ -612,13 +603,14 @@ fn write_ledger(
 }
 
 fn bench(
-    settings: &Settings<Cutile>,
+    settings: &Settings,
     op: &str,
     shape: Option<&str>,
     repeat: usize,
 ) -> diagnostic::Result<String> {
-    let catalogue = Catalogue::load(settings)?;
-    let measured: Bench = bench::bench(&catalogue, settings, op, shape, repeat)?;
+    let dirs = kernel_dirs(settings);
+    let catalogue = Catalogue::load(&dirs)?;
+    let measured: Bench = bench::bench(&catalogue, &dirs, op, shape, repeat)?;
     let (m, n) = measured.shape;
 
     let mut out = format!("bench {} {m}x{n} repeat={}\n", measured.op, measured.repeat);
@@ -699,9 +691,10 @@ fn human_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    fn settings() -> Settings<Cutile> {
-        let roots = config::Roots::new(std::env::temp_dir().join("cutile-driver-tests"));
-        Settings::<Cutile>::defaults(&roots)
+    fn settings() -> Settings {
+        Settings::defaults(&cli::settings::Roots::new(
+            std::env::temp_dir().join("cutile-driver-tests"),
+        ))
     }
 
     /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。
@@ -820,7 +813,7 @@ mod tests {
 
     #[test]
     fn the_ledger_lists_every_declared_primitive() {
-        let catalogue = Catalogue::load(&settings()).expect("内置数据");
+        let catalogue = Catalogue::load(&kernel_dirs(&settings())).expect("内置数据");
         let profile = catalogue.resolve("cpu").expect("cpu 档案");
         let verified = Verified {
             device: "cpu".to_string(),
@@ -840,8 +833,13 @@ mod tests {
             key: "0".to_string(),
             artifacts: Vec::new(),
         };
-        let note = write_ledger(&catalogue, &verified, &passed_line(&verified), &settings())
-            .expect("应写出台账");
+        let note = write_ledger(
+            &catalogue,
+            &verified,
+            &passed_line(&verified),
+            &kernel_dirs(&settings()),
+        )
+        .expect("应写出台账");
         let path = note.trim().rsplit_once(' ').expect("路径").1;
         let text = std::fs::read_to_string(path).expect("台账可读");
         assert!(text.contains("| 原语 | 实现 | 等级 | 见证 |"), "{text}");

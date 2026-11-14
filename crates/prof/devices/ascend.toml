@@ -36,7 +36,7 @@ space = ["GM", "FAST", "REG"]
 [units.scalar]
 space = ["GM", "FAST", "REG"]
 
-# 容量与峰值留空：P0 只声明"能做什么"，实测后再按 DESIGN §11.2 回填到 L2/L3。
+# 容量与峰值留空：P0 只声明"能做什么"，实测后再按 cutile README §11.2 回填到 L2/L3。
 
 [[provides]]
 prim    = "quant"

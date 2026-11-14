@@ -52,7 +52,7 @@ impl Topology {
     ///
     /// 任一维度为零，或 `tp · pp · dp` 溢出 `usize` / 超过 `u32::MAX` 时返回说明。
     pub fn new(tp: usize, pp: usize, dp: usize) -> Result<Self> {
-        if tp == 0 || pp == 0 || dp == 0 {
+        if [tp, pp, dp].contains(&0) {
             return Err(Error::new(
                 Code::Invalid,
                 format!("并行度必须非零（tp = {tp}，pp = {pp}，dp = {dp}）"),
@@ -116,39 +116,35 @@ impl Topology {
     /// - `Pipeline`：`index` 是 `dp_index`，组大小 `tp * pp`；
     /// - `Data`：`index` 是 `pp_index * tp + tp_index`，组大小 `dp`。
     pub fn group(&self, parallel: Parallel, index: usize) -> Result<Group> {
-        // `plan` 与下面各式的乘积都以 `world` 为上界，而 `world` 在构造期已校验能用 u32 表示，
-        // 所以这里不会回绕——这正是把上限放在 `new` 里的理由。
-        let plan = self.tp * self.pp;
-        let ranks: Vec<usize> = match parallel {
-            Parallel::Tensor => {
-                if index >= self.dp * self.pp {
-                    return Err(self.out_of_range(parallel, index, self.dp * self.pp));
-                }
-                let base = index * self.tp;
-                (0..self.tp).map(|step| base + step).collect()
-            }
-            Parallel::Pipeline => {
-                if index >= self.dp {
-                    return Err(self.out_of_range(parallel, index, self.dp));
-                }
-                let base = index * plan;
-                (0..plan).map(|step| base + step).collect()
-            }
-            Parallel::Data => {
-                if index >= plan {
-                    return Err(self.out_of_range(parallel, index, plan));
-                }
-                (0..self.dp).map(|step| step * plan + index).collect()
-            }
-        };
-        let mut converted = Vec::with_capacity(ranks.len());
-        for rank in ranks {
-            converted.push(u32::try_from(rank).map_err(|_| {
-                Error::new(Code::Invalid, format!("rank {rank} 超出 u32"))
-                    .with("shard::Topology::group")
-            })?);
+        Group::new(self.ranks(parallel, index)?)
+    }
+
+    /// 某一维第 `index` 组的 rank 列表（组内升序，已转成 `u32`）。
+    ///
+    /// 三个维度共用一条公式：`rank = index · span + step · stride`。Tensor 与 Pipeline 的组
+    /// 是一段连续 rank（`stride = 1`，`span = 组大小`），Data 的组跨越整张拓扑（`span = 1`，
+    /// `stride = tp · pp`）。三处各写一遍，正是最容易只改对其中一处的地方。
+    fn ranks(&self, parallel: Parallel, index: usize) -> Result<Vec<u32>> {
+        let (size, stride, span) = self.shape(parallel);
+        let count = self.world() / size;
+        if index >= count {
+            return Err(self.out_of_range(parallel, index, count));
         }
-        Group::new(converted)
+        (0..size)
+            .map(|step| rank_u32(index * span + step * stride))
+            .collect()
+    }
+
+    /// 某一维的切法：`(组大小, 组内步长, 组号在拓扑上的跳幅)`。
+    ///
+    /// 回答「这一维怎么切」，不回答「第 `index` 组是哪几个 rank」。组数恒为 `world / 组大小`。
+    fn shape(&self, parallel: Parallel) -> (usize, usize, usize) {
+        let plan = self.tp * self.pp;
+        match parallel {
+            Parallel::Tensor => (self.tp, 1, self.tp),
+            Parallel::Pipeline => (plan, 1, plan),
+            Parallel::Data => (self.dp, plan, 1),
+        }
     }
 
     fn out_of_range(&self, parallel: Parallel, index: usize, count: usize) -> Error {
@@ -158,6 +154,13 @@ impl Topology {
         )
         .with("shard::Topology::group")
     }
+}
+
+/// rank 必须是 `u32`：`world` 在构造期已被限在 `u32` 以内，这里只是把类型收窄。
+fn rank_u32(rank: usize) -> Result<u32> {
+    u32::try_from(rank).map_err(|_| {
+        Error::new(Code::Invalid, format!("rank {rank} 超出 u32")).with("shard::Topology::group")
+    })
 }
 
 #[cfg(test)]

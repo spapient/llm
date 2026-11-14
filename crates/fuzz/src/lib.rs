@@ -1,13 +1,13 @@
 //! 模糊测试的**契约层**：定义"被测入口"与"确定性用例"，不绑定任何具体解析器。
 //!
 //! **拥有**：`Target`、`Seed`、`Behaviour`、`Finding`、`sweep`。**不拥有**：具体解析器
-//! （`llm-config` 的 TOML、`cutile` 的模板与片段名）、语料库与进程管理（属于 CI 的 fuzz job）。
+//! （`cutile` 的模板与片段名）、语料库与进程管理（属于 CI 的 fuzz job）。
 //! **依赖**：`diagnostic`（运行时只此一个）。**被依赖**：`tests/parsers.rs`（本 crate 自己的
-//! 集成测试，以 `+dev` 依赖接上 `config` / `prof` / `cli` / `weights` 的真实解析器）。
+//! 集成测试，以 `+dev` 依赖接上 `cli` / `weights` 的真实解析器）。
 //!
 //! 为什么表单独立在一个 crate：真正需要它的不是一个解析器，而是**每一个**解析器。把
-//! "什么算失败"写在一处，才能保证 TOML 解析器与模板解析器被同一套判据检查，而不是各写一份
-//! `#[test]` 里再手抄一遍。
+//! "什么算失败"写在一处，才能保证命令行文法与 safetensors 头部被同一套判据检查，而不是各写
+//! 一份 `#[test]` 里再手抄一遍。
 //!
 //! # 三条契约
 //!
@@ -143,6 +143,16 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// 一条证据：哪条用例、什么输入、什么结论、违反了哪条契约。
+    fn new(case: u64, input: Vec<u8>, behaviour: Behaviour, contract: &'static str) -> Self {
+        Self {
+            case,
+            input,
+            behaviour,
+            contract,
+        }
+    }
+
     /// 用例序号（与 [`Seed::derive`] 的参数一致）。
     pub fn case(&self) -> u64 {
         self.case
@@ -168,36 +178,27 @@ impl Finding {
 ///
 /// `cases` 为 0 时不做任何事：遍历范围由调用方决定，本函数不猜"默认跑多少个"。
 pub fn sweep(target: &dyn Target, seed: &Seed, cases: u64) -> Result<(), Finding> {
-    for case in 0..cases {
-        let input = seed.derive(case);
-        let first = judge(target, &input);
-        if matches!(first, Behaviour::Panicked { .. }) {
-            return Err(Finding {
-                case,
-                input,
-                behaviour: first,
-                contract: "不 panic：任何输入都必须被解析成结论，而不是打死宿主",
-            });
-        }
-        if let Behaviour::Rejected { message, .. } = &first
-            && message.trim().is_empty()
-        {
-            return Err(Finding {
-                case,
-                input,
-                behaviour: first,
-                contract: "拒绝时必须给出非空消息",
-            });
-        }
-        let second = judge(target, &input);
-        if first != second {
-            return Err(Finding {
-                case,
-                input,
-                behaviour: second,
-                contract: "同一输入必须给出同一个结论",
-            });
-        }
+    (0..cases).try_for_each(|case| check(target, case, seed.derive(case)))
+}
+
+/// 一条用例：判两次，并逐条核对三条契约。
+///
+/// 先 panic、再空消息、最后确定性：顺序就是报告的优先级，也是 [`Finding`] 只带第一条证据的理由。
+fn check(target: &dyn Target, case: u64, input: Vec<u8>) -> Result<(), Finding> {
+    let first = judge(target, &input);
+    if matches!(first, Behaviour::Panicked { .. }) {
+        let contract = "不 panic：任何输入都必须被解析成结论，而不是打死宿主";
+        return Err(Finding::new(case, input, first, contract));
+    }
+    if let Behaviour::Rejected { message, .. } = &first
+        && message.trim().is_empty()
+    {
+        return Err(Finding::new(case, input, first, "拒绝时必须给出非空消息"));
+    }
+    let second = judge(target, &input);
+    if first != second {
+        let contract = "同一输入必须给出同一个结论";
+        return Err(Finding::new(case, input, second, contract));
     }
     Ok(())
 }

@@ -3,8 +3,8 @@
 //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Scale`] 单态化。
 //! 标量参数框架只支持整数，故 `alpha` 写成与内核模板一致的常量。
 
-use crate::unary::{Unary, UnaryCache};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::unary::Unary;
 
 /// 样本固定的缩放系数（内核模板里写同一常量）。
 pub const ALPHA: f32 = 0.5;
@@ -12,14 +12,13 @@ pub const ALPHA: f32 = 0.5;
 /// 缩放实现：给 [`Unary`] 提供表达式、操作数与逐元素运算。
 pub struct Scale;
 
-static CACHE: UnaryCache = UnaryCache::new();
-
 impl Unary for Scale {
     const EXPR: &'static str = "n,n->n";
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::unary::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::unary::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn apply(x: f32) -> f32 {

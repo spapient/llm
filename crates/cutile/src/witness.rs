@@ -1,50 +1,19 @@
-//! 见证执行器（DESIGN §11.3）：每条已声明的供给都要真的跑一次自己的见证。
+//! 见证执行器（README §11.3）：每条已声明的供给都要真的跑一次自己的见证。
 //!
 //! 档案校验只能证明"文件在、函数名写在源码里"；本模块把见证源码编成可执行文件，逐条调用
-//! `int func(float *out)` 并与 `witness.expect` 对拍。没有跑通的提供不会通过 `verify`，
-//! 因此 `grade` 不再是作者的自述：它是这次执行的结论。
-//!
-//! 执行分两种范围（[`Scope`]），两者不重叠而合起来覆盖每一条声明：
-//! [`run_all`] 是**设备执行**，只要这台设备在本机（`c` 永远在，`metal` 看工具链）就把档案里
-//! 每一条声明的见证跑一遍；[`self_check`] 是**本机自检**，只跑设备执行跑不到的那些——
-//! 它证明"见证写了什么、算得对不对"，不证明设备具备该能力，所以不改变任何 `grade`。
-//!
-//! 选择不按等级：`grade ≥ L2` 才执行，等于让没敢写 `L2` 的设备永远拿不到运行结论——
-//! "自证不具备"。等级是执行的**结论**，不是执行的前提。`L2` 仍然要内核在本机跑通并对拍
-//! （[`crate::verify::verify_one`]），见证执行只完成其中的见证那一段。
-//!
-//! 前端按 `emit` 选：`c` 走 `cc`（ABI 就是 host C）；`metal` 走 `xcrun metal` → `metallib`，
-//! 再由一个 host 驱动把见证发射到 GPU、回读。后者不是锦上添花：MSL 没有默认地址空间，
-//! `float *out` 在 `.metal` 里根本编不过，而 host `cc` 只因为它是纯 C 才放行——没有真前端，
-//! "见证"就只是写在数据里的一句话。
-//!
-//! 第三种结论是**语法门**（[`LanguageGate`]）：设备不在本机时，host 自检只能说明"这段代码在 C
-//! 里成立"，而同一个 Metal 事故说明这句话不够——那份见证从未在它声称的语言里编过一次。于是
-//! `cuda` / `opencl` 另行交给 clang 的对应**语言**前端解析一遍（不需要真机、不需要驱动），
-//! `ascendc` 没有开源前端就如实缺席。语法门不执行任何一行，仍然不是设备证据。
-//!
-//! # 前端 = 注解 + trait + const 泛型
-//!
-//! 一台设备的**语言身份**（`Emit`、产物后缀、缓存标签）由 `#[frontend(..)]` 在编译期生成
-//! （[`Language`]），**怎么跑**由手写的 [`Device`] 实现给出，两者由 [`Frontend`] 的超 trait
-//! 约束绑死：只标注解不写执行、或写了执行没标注解，都拿不到 [`Frontend`]。
-//!
-//! 分发是一张 `const` 表 `FRONTENDS`：每一项都是单态化后的具体函数，没有 `match`、没有
-//! `dyn`。新增一台设备 = 标一个类型 + 在表里加一行；本模块里没有任何需要同步修改的分支。
-//! 每条见证的写出上限 [`MAX_OUT`] 以 const 泛型参数传进前端，生成出来的程序里缓冲区大小
-//! 是字面量，执行期不存在"上限是多少"这个变量。
-//!
-//! 执行前端在 `device`、语法前端在 `gate`：本文件只放契约、证据与编排。
+//! `int func(float *out)` 并与 `witness.expect` 对拍。两种范围（[`Scope`]）合起来覆盖每条声明：
+//! [`run_all`] 是设备执行，[`self_check`] 只跑设备执行跑不到的、证明"算得对"而不改变 `grade`。
+//! 第三种结论是语法门（[`LanguageGate`]）：没有真机时交给 clang 的对应语言前端解析，仍不是设备证据。
 
 pub use crate::prof::Emit;
 
 use crate::atom::{DType, Prim, Witness};
 use crate::cap::Proof;
 use crate::device::{CpuDevice, CudaDevice, MetalDevice};
+use crate::dirs::Dirs;
 use crate::prof::Profile;
 use crate::reference;
 use diagnostic::{Code, Error};
-use llm_config::Settings;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -52,21 +21,12 @@ use crate::device::HOST_FLAGS;
 pub use crate::device::compile_run_cuda;
 pub use crate::gate::{CudaFront, LanguageGate, OpenClFront, language_gate};
 
-/// 一条待执行的见证：`(原语, 实现名, 声明)`。
-///
-/// 前后端与本模块内部都在传这三元组，起个别名，免得每处各写一遍元组类型。
+/// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。
 pub type Selected<'a> = (Prim, String, &'a Witness);
 
-/// 一次见证最多写出多少个值（ABI 上限，DESIGN §11.3）。
-///
-/// 它是**编译期**常量，并以 const 泛型参数的形式传进两个前端：生成的程序里缓冲区大小是
-/// 字面量，执行期不再有"上限是多少"这个变量，也没有按上限做的运行期分支。
+/// 一次见证最多写出多少个值（ABI 上限）；编译期常量，以 const 泛型传进前端，缓冲区大小是字面量。
 pub const MAX_OUT: usize = Witness::MAX_OUT;
-/// 注解生成的**语言身份**。
-///
-/// 三个关联常量都来自 `#[frontend(..)]`，因此编译器知道它们的具体取值；`EXT` 与
-/// `EMIT.ext()` 的一致性由注解展开出的 `const _` 断言在编译期检查，写错即编译失败。
-/// 这里不写任何执行逻辑：身份可以完全由注解生成，"怎么跑"不行。
+/// 注解生成的**语言身份**：三个常量都来自 `#[frontend(..)]`，`EXT` 与 `EMIT.ext()` 的一致性由注解展开的断言检查。
 pub trait Language {
     /// 执行语言（[`Emit`] 闭集里的一个）。
     const EMIT: Emit;
@@ -76,10 +36,7 @@ pub trait Language {
     const TAG: &'static str;
 }
 
-/// 手写的执行能力：本机有没有这台设备、怎么把见证编起来跑。
-///
-/// 与 [`Language`] 分开是因为两者的来源不同：语言身份可以完全由注解生成，而"怎么跑"要调
-/// 编译器、要写驱动，注解生成不了。[`Frontend`] 要求两者同时成立，于是注解与执行不会脱节。
+/// 手写的执行能力：本机有没有这台设备、怎么把见证编起来跑；身份能由注解生成，这一半不行。
 pub trait Device: Sized {
     /// 这台设备此刻是否就在本机。
     fn available(profile: &Profile) -> bool;
@@ -87,7 +44,7 @@ pub trait Device: Sized {
     /// 生成"跑一次全部见证"的程序文本；`OUT` 是每条见证的写出上限。
     fn program<const OUT: usize>(
         profile: &Profile,
-        settings: &Settings,
+        dirs: &Dirs,
         selected: &[Selected<'_>],
         scope: Scope,
     ) -> diagnostic::Result<String>;
@@ -95,25 +52,18 @@ pub trait Device: Sized {
     /// 让程序跑起来，返回 `(每条写入个数, 按顺序回读的值)`。
     fn run(
         profile: &Profile,
-        settings: &Settings,
+        dirs: &Dirs,
         program: &str,
         count: usize,
         scope: Scope,
     ) -> diagnostic::Result<(Vec<i64>, Vec<f32>)>;
 }
 
-/// 执行前端的完整契约：注解给出的语言 + 手写给出的执行。
-///
-/// 空实现体是刻意的：它不提供任何默认方法，只把两条 bound 合成一条，
-/// 于是"泛型入口要求 `Frontend`"同时意味着"注解与执行都在"。
+/// 执行前端的完整契约：把注解给出的语言与手写给出的执行绑成一条 bound，空实现体是刻意的。
 pub trait Frontend: Language + Device {}
 impl<T: Language + Device> Frontend for T {}
 
-/// 一种语言的**语法前端**：把一份翻译单元交给这门语言自己的解析器，只解析、不链接、不执行。
-///
-/// 它与 [`Device`] 是同一份契约的两半：身份（[`Language`]）由 `#[frontend(..)]` 生成，"怎么解析"
-/// 手写。`cuda` / `opencl` 借的是 clang 的这两个**语言**前端，不是某一台设备的前端，所以不需要
-/// 真机；`ascendc` 没有开源前端，`GATES` 里因此没有它。
+/// 一种语言的**语法前端**：只解析、不链接、不执行；借 clang 的语言前端，所以不需要真机。
 pub trait Front: Language {
     /// 解析器：程序名 + 固定前缀参数（`["clang"]`）。
     const TOOL: &'static [&'static str];
@@ -121,10 +71,7 @@ pub trait Front: Language {
     const CHECK: &'static [&'static str];
 }
 
-/// 两个 `&str` 在编译期是否逐字节相同。
-///
-/// `str` 的 `==` 不是 `const`，而注解里的 `ext` 必须与 `Emit::ext()` 在编译期对上——
-/// 这条判据就是注解展开出的那两个 `const _` 断言用的比较。
+/// 两个 `&str` 在编译期是否逐字节相同：`str` 的 `==` 不是 `const`，而注解里的 `ext` 必须与 `Emit::ext()` 对上。
 #[doc(hidden)]
 #[must_use]
 pub const fn same_text(left: &str, right: &str) -> bool {
@@ -141,112 +88,17 @@ pub const fn same_text(left: &str, right: &str) -> bool {
     }
     true
 }
-/// 这次协商的依据。
-///
-/// 两者不能混着说：`Executed` 是"这台机器刚刚跑通了见证"，`Declared` 是"档案这么写，本机
-/// 执行不了这台设备"。报告里必须写出是哪一种，否则读者会把自述当成证据。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Basis {
-    /// 能力来自这次执行：这台机器就是该设备（`c` 就是 CPU，`metal` 就是本机 GPU）。
-    Executed,
-    /// 本机不能执行这台设备：协商只能按档案自述。
-    Declared,
-}
 
-impl fmt::Display for Basis {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Executed => "这次执行",
-            Self::Declared => "档案自述（本机执行不了这台设备）",
-        })
-    }
-}
-
-/// 一台设备这一次的证据：跑通了哪些见证、依据是什么、哪一步不成立。
-///
-/// 它是 `doctor` / `verify` / `bench` 共用的那一份结论。分开算的代价不是性能，而是**不一致**：
-/// 三条命令各自读一遍档案时，同一台设备可以同时"协商可行"（doctor）与"见证不成立"（verify）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Evidence {
-    /// 协商的依据。
-    pub basis: Basis,
-    /// 设备执行通过的见证条数（这台机器就是该设备，结论能归到具体供给）。
-    pub device: usize,
-    /// 本机自检通过的见证条数（设备执行跑不到的那些）。
-    pub host: usize,
-    /// 这次没能确立的证据：见证编译/执行/对拍失败，或声明了 `L2` 却没有见证。
-    ///
-    /// `None` 表示档案里每一条已声明的见证都有执行结论。本机没有这台设备不算证据失败——
-    /// 它写进 [`Evidence::basis`]，而不是这里。
-    pub failure: Option<Error>,
-    /// 设备执行的编译参数（档案的 `[compile].flags`）。
-    ///
-    /// 证据是对着这组参数编出的程序取得的：参数一变，产物身份就变（见
-    /// [`crate::cache::ArtifactKey`]），见证会重编重跑。报告里写出它，读者才能知道这份证据
-    /// 适用于哪一次代码生成——片段、工具链、参数三者合起来才是能力本身。
-    pub device_params: String,
-    /// 本机自检的编译参数（`HOST_FLAGS`）：与设备执行不是同一套，必须分开报。
-    pub host_params: String,
-    /// 见证在**它自己声称的语言**里的合法性（[`LanguageGate`]）。
-    ///
-    /// 设备执行跑得到的设备是 [`LanguageGate::Covered`]；其余设备按 `emit` 找语言前端，
-    /// 用这门语言自己的解析器把见证源码过一遍。它不是设备证据（没有一行在设备上执行），
-    /// 所以不改任何 `grade`；但被拒绝是硬错误——在自己语言里编不过的不算见证。
-    pub language: LanguageGate,
-    /// 真的被证明的供给（执行结论）。
-    proof: Proof,
-}
-
-impl Evidence {
-    /// 协商该用的证据。
-    ///
-    /// [`Basis::Executed`] 时是执行结论；[`Basis::Declared`] 时退回档案自述——本机执行不了
-    /// 这台设备，没有第二条路，所以依据必须由 [`Evidence::basis`] 说出来。
-    #[must_use]
-    pub fn proof(&self, profile: &Profile) -> Proof {
-        match self.basis {
-            Basis::Executed => self.proof.clone(),
-            Basis::Declared => Proof::declared(profile),
-        }
-    }
-}
-
-/// 跑这台设备的全部见证，得到三条命令共用的证据。
-///
-/// 不返回 `Result`：`doctor` 的职责正是解释"为什么不行"，一次见证执行失败也是一条要报的
-/// 事实，而不是让它连报告都交不出来。要失败语义的调用方（`verify` / `bench`）读
-/// [`Evidence::failure`] 自己决定。
+/// 跑这台设备的全部见证，得到三条命令共用的证据；失败也是一条要报的事实，所以不返回 `Result`。
 #[must_use]
-pub fn establish(profile: &Profile, settings: &Settings) -> Evidence {
+pub fn establish(profile: &Profile, dirs: &Dirs) -> Evidence {
     let executed = device_available(profile);
-    let mut proof = Proof::none();
-    let mut device = 0;
     let mut failure = None;
-    match run_all(profile, settings) {
-        Ok(runs) => {
-            device = runs.len();
-            for run in runs {
-                proof.insert(run.prim, &run.impl_name);
-            }
-        }
-        // 设备不在本机时，这里的第一件事就是"本机没有这台设备"：它是设备的存在性结论，
-        // 不是证据不成立。写进 failure 会让 `doctor` 把一台 GPU 说成"见证写错了"。
-        Err(error) => {
-            if executed {
-                failure = Some(error);
-            }
-        }
-    }
-    let host = match self_check(profile, settings) {
-        Ok(runs) => runs.len(),
-        Err(error) => {
-            failure = failure.or(Some(error));
-            0
-        }
-    };
-    let language = language_gate(profile, settings);
+    let (device, proof) = device_evidence(profile, dirs, executed, &mut failure);
+    let host = host_self_check(profile, dirs, &mut failure);
+    let language = language_gate(profile, dirs);
+    // 被自己的语言拒绝是证据缺陷，与"本机没有这台设备"不是同一类事。
     if let LanguageGate::Rejected { reason } = &language {
-        // 被自己的语言拒绝是证据缺陷：它与"本机没有这台设备"不是同一类事。
         failure.get_or_insert_with(|| Error::new(Code::Invalid, reason.clone()));
     }
     Evidence {
@@ -264,14 +116,47 @@ pub fn establish(profile: &Profile, settings: &Settings) -> Evidence {
         proof,
     }
 }
+
+/// 设备执行那一半：只有**设备本来可用**时跑不起来才算失败，否则会让 `doctor` 把 GPU 说成"见证写错了"。
+fn device_evidence(
+    profile: &Profile,
+    dirs: &Dirs,
+    executed: bool,
+    failure: &mut Option<Error>,
+) -> (usize, Proof) {
+    let runs = match run_all(profile, dirs) {
+        Ok(runs) => runs,
+        Err(error) => {
+            if executed {
+                *failure = Some(error);
+            }
+            return (0, Proof::none());
+        }
+    };
+    let mut proof = Proof::none();
+    for run in &runs {
+        proof.insert(run.prim, &run.impl_name);
+    }
+    (runs.len(), proof)
+}
+
+/// 本机自检那一半：host C 前端能编能跑，证明源码可编译、`expect` 算得对（不改等级）。
+fn host_self_check(profile: &Profile, dirs: &Dirs, failure: &mut Option<Error>) -> usize {
+    match self_check(profile, dirs) {
+        Ok(runs) => runs.len(),
+        Err(error) => {
+            failure.get_or_insert(error);
+            0
+        }
+    }
+}
+
 /// 一次见证执行能证明什么：范围不同，结论的效力就不同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// 设备执行：这台机器就是该设备（`c` 的 CPU、`metal` 的本机 GPU），通过即拿到
-    /// `Scope::Device` 结论；`L2` 还要内核跑通并对拍，见 [`crate::verify::verify_one`]。
+    /// 设备执行：这台机器就是该设备（`c` 是 CPU、`metal` 是本机 GPU）；`L2` 还要内核跑通并对拍。
     Device,
-    /// 本机自检：用 host C 前端编译并执行见证函数，证明源码可编译、`expect` 算得对；
-    /// **不**证明设备具备这条能力，所以不改变等级。
+    /// 本机自检：host C 编译并执行，证明源码可编译、`expect` 算得对；**不**证明设备具备该能力。
     Host,
 }
 
@@ -292,7 +177,7 @@ pub struct WitnessRun {
     pub scope: Scope,
 }
 
-/// 档案里的全部已声明见证；缺见证的 `grade ≥ L2` 是错误而不是跳过（DESIGN §11.3）。
+/// 档案里的全部已声明见证；缺见证的 `grade ≥ L2` 是错误而不是跳过（README §11.3）。
 pub(crate) fn declared_witnesses(profile: &Profile) -> diagnostic::Result<Vec<Selected<'_>>> {
     let mut selected = Vec::new();
     for provide in &profile.provides {
@@ -313,10 +198,7 @@ pub(crate) fn declared_witnesses(profile: &Profile) -> diagnostic::Result<Vec<Se
     Ok(selected)
 }
 
-/// 设备执行覆盖不到的见证：只有“本机没有这台设备”时全部进自检。
-///
-/// 设备在本机时 [`run_all`] 已经把每一条声明跑过一遍：设备执行比 host 自检严格，
-/// 同一份见证没有必要再在主机上重跑一次。
+/// 设备执行覆盖不到的见证：设备不在本机时全部进自检，在本机时 [`run_all`] 已更严格地跑过，不必重跑。
 pub(crate) fn self_checkable(profile: &Profile) -> Vec<Selected<'_>> {
     if device_available(profile) {
         return Vec::new();
@@ -334,25 +216,23 @@ pub(crate) fn self_checkable(profile: &Profile) -> Vec<Selected<'_>> {
 }
 
 /// 见证源码的根目录：与 `Catalogue` 的装载根保持一致（`data.root` 优先）。
-pub(crate) fn witness_root(settings: &Settings) -> PathBuf {
-    settings
-        .data_root()
-        .map_or_else(prim::dir, prim::layer_root)
+pub(crate) fn witness_root(dirs: &Dirs) -> PathBuf {
+    dirs.data().map_or_else(prim::dir, prim::layer_root)
 }
 
 /// 见证源码：内置设备读编译期内嵌副本（发布机没有源码树），`data.root` 或未登记的设备走磁盘。
-pub(crate) fn source(witness: &Witness, settings: &Settings) -> diagnostic::Result<String> {
+pub(crate) fn source(witness: &Witness, dirs: &Dirs) -> diagnostic::Result<String> {
     let ext = Path::new(&witness.file)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("");
     let vendor = witness.file.split('/').next().unwrap_or("");
-    if settings.data_root().is_none()
+    if dirs.data().is_none()
         && let Some(text) = prim::builtin_witness(vendor, ext)
     {
         return Ok(text.to_string());
     }
-    let path = witness_root(settings).join(&witness.file);
+    let path = witness_root(dirs).join(&witness.file);
     std::fs::read_to_string(&path).map_err(|error| {
         Error::new(
             Code::Io,
@@ -361,112 +241,136 @@ pub(crate) fn source(witness: &Witness, settings: &Settings) -> diagnostic::Resu
     })
 }
 
-/// 逐条对拍：个数走 stderr、值走 stdout，两路必须与调用顺序一一对应。
-///
-/// C 与 Metal 两个前端只差"怎么让见证跑起来"：编译、计数与对拍完全共用，否则同一份 `expect`
-/// 会在两条路径上被两种口径判定。
+/// 逐条对拍：个数走 stderr、值走 stdout，两路与调用顺序一一对应；两个前端共用编译、计数与对拍口径。
 pub(crate) fn compare(
     selected: &[Selected<'_>],
     scope: Scope,
     counts: &[i64],
     bits: &[f32],
 ) -> diagnostic::Result<Vec<WitnessRun>> {
-    if counts.len() != selected.len() {
-        return Err(Error::new(
-            Code::Internal,
-            format!(
-                "见证执行只回报了 {} 条计数，期望 {} 条：前端没有按顺序调用每条见证",
-                counts.len(),
-                selected.len()
-            ),
-        ));
-    }
-
-    let tolerance = reference::tolerance(DType::F32);
-    let mut offset = 0usize;
+    check_counts(selected, counts)?;
+    let mut cursor = Cursor::new(bits);
     let mut runs = Vec::with_capacity(selected.len());
     for ((prim, impl_name, witness), &count) in selected.iter().zip(counts) {
-        let written = usize::try_from(count).unwrap_or(usize::MAX);
-        if written != witness.expect.len() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "`{prim}` 的见证 `{}` 写了 {count} 个值，档案声明期望 {} 个",
-                    witness.func,
-                    witness.expect.len()
-                ),
-            ));
-        }
-        let end = offset + written;
-        let got = bits.get(offset..end).ok_or_else(|| {
-            Error::new(
-                Code::Internal,
-                format!(
-                    "`{prim}` 的见证 `{}` 只回来了 {} 个值（第 {} 段需要 {written} 个）",
-                    witness.func,
-                    bits.len(),
-                    runs.len() + 1
-                ),
-            )
-        })?;
-        let error = reference::max_rel_err(got, &witness.expect);
-        if error > tolerance {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "`{prim}` 的见证 `{}` 不成立：得到 {got:?}，期望 {:?}，max_rel_err {error:.3e} > {tolerance:.0e}",
-                    witness.func, witness.expect
-                ),
-            ));
-        }
+        let got = cursor.next(*prim, witness, count)?;
         runs.push(WitnessRun {
             prim: *prim,
             impl_name: impl_name.clone(),
             func: witness.func.clone(),
-            values: written,
-            max_rel_err: error,
+            values: got.len(),
+            max_rel_err: checked(*prim, witness, got, reference::tolerance(DType::F32))?,
             scope,
         });
-        offset = end;
     }
-    if offset != bits.len() {
-        return Err(Error::new(
+    cursor.finish().map(|()| runs)
+}
+
+/// 计数行必须与调用顺序一一对应：少一条就是前端漏调了见证。
+fn check_counts(selected: &[Selected<'_>], counts: &[i64]) -> diagnostic::Result<()> {
+    let (got, want) = (counts.len(), selected.len());
+    if got == want {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Internal,
+        format!("见证执行只回报了 {got} 条计数，期望 {want} 条：前端没有按顺序调用每条见证"),
+    ))
+}
+
+/// 与 `expect` 对拍：超过阈值就是这条见证不成立（顺带打印两个数组，差在哪一眼可见）。
+fn checked(prim: Prim, witness: &Witness, got: &[f32], tolerance: f64) -> diagnostic::Result<f64> {
+    let error = reference::max_rel_err(got, &witness.expect);
+    if error <= tolerance {
+        return Ok(error);
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!(
+            "`{prim}` 的见证 `{}` 不成立：得到 {got:?}，期望 {:?}，max_rel_err {error:.3e} > {tolerance:.0e}",
+            witness.func, witness.expect
+        ),
+    ))
+}
+
+/// 一维输出流上的读取位置：按计数行切段，每段才能与自己的 `expect` 对齐，两个前端共用这一套切法。
+struct Cursor<'a> {
+    bits: &'a [f32],
+    offset: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bits: &'a [f32]) -> Self {
+        Self { bits, offset: 0 }
+    }
+
+    /// 下一条见证的输出段：计数必须等于 `expect` 的长度，值必须真的回来了。
+    fn next(&mut self, prim: Prim, witness: &Witness, count: i64) -> diagnostic::Result<&'a [f32]> {
+        let expected = witness.expect.len();
+        if usize::try_from(count).unwrap_or(usize::MAX) != expected {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "`{prim}` 的见证 `{}` 写了 {count} 个值，档案声明期望 {expected} 个",
+                    witness.func
+                ),
+            ));
+        }
+        let got = self.bits.get(self.offset..self.offset + expected);
+        let got = got.ok_or_else(|| self.short(prim, witness))?;
+        self.offset += expected;
+        Ok(got)
+    }
+
+    /// 输出必须正好被计数行说完：多出来的值说明计数行与实际打印不一致。
+    fn finish(&self) -> diagnostic::Result<()> {
+        if self.offset == self.bits.len() {
+            return Ok(());
+        }
+        Err(Error::new(
             Code::Internal,
             format!(
                 "见证输出多出 {} 个值：计数行与实际打印不一致",
-                bits.len() - offset
+                self.bits.len() - self.offset
             ),
-        ));
+        ))
     }
-    Ok(runs)
+
+    /// 段不够长：前端回报的计数比它真正打印出来的多。
+    fn short(&self, prim: Prim, witness: &Witness) -> Error {
+        Error::new(
+            Code::Internal,
+            format!(
+                "`{prim}` 的见证 `{}` 只回来了 {} 个值（偏移 {} 处需要 {} 个）",
+                witness.func,
+                self.bits.len(),
+                self.offset,
+                witness.expect.len()
+            ),
+        )
+    }
 }
 
-/// 一个前端的共享执行流程：生成程序 → 跑 → 逐条对拍。
-///
-/// `F` 与 `OUT` 都参与单态化，所以"生成什么、怎么跑、怎么比"各只有一份实现；差异全部压进
-/// [`Device::program`] 与 [`Device::run`]，这里不认识任何具体语言。
+/// 一个前端的共享执行流程：生成程序 → 跑 → 逐条对拍；`F` 与 `OUT` 都参与单态化，差异全在 [`Device::program`] 与 [`Device::run`]。
 pub(crate) fn execute<F: Frontend, const OUT: usize>(
     profile: &Profile,
-    settings: &Settings,
+    dirs: &Dirs,
     selected: &[Selected<'_>],
     scope: Scope,
 ) -> diagnostic::Result<Vec<WitnessRun>> {
-    let program = F::program::<OUT>(profile, settings, selected, scope)?;
-    let (counts, bits) = F::run(profile, settings, &program, selected.len(), scope)?;
+    let program = F::program::<OUT>(profile, dirs, selected, scope)?;
+    let (counts, bits) = F::run(profile, dirs, &program, selected.len(), scope)?;
     compare(selected, scope, &counts, &bits)
 }
 
-/// 本机接了的执行前端。
-///
-/// 每项都是单态化的具体函数：`drive::<CpuDevice>` 与 `drive::<MetalDevice>` 是两个不同的
-/// 实例，表里存的是它们的地址。运行期只多一次"哪一项"的比较，没有枚举匹配、没有虚表。
+/// 本机接了的执行前端：每项都是单态化的具体函数，表里存的是它们的地址；运行期只多一次
+/// "哪一项"的比较，没有枚举匹配、没有虚表。
 struct Entry {
     /// 这门语言。
     emit: Emit,
     /// 设备是否在本机。
     available: fn(&Profile) -> bool,
     /// 在本机执行全部已声明的见证。
-    run: fn(&Profile, &Settings, &[Selected<'_>]) -> diagnostic::Result<Vec<WitnessRun>>,
+    run: fn(&Profile, &Dirs, &[Selected<'_>]) -> diagnostic::Result<Vec<WitnessRun>>,
 }
 
 /// 全部前端：**加设备就加一行**，不需要改任何 `match`。
@@ -496,23 +400,20 @@ fn frontend(emit: Emit) -> Option<&'static Entry> {
 /// 一个前端的设备执行入口：把 `OUT` 定成 ABI 上限后交给共享的 [`execute`]。
 fn drive<F: Frontend>(
     profile: &Profile,
-    settings: &Settings,
+    dirs: &Dirs,
     selected: &[Selected<'_>],
 ) -> diagnostic::Result<Vec<WitnessRun>> {
-    execute::<F, MAX_OUT>(profile, settings, selected, Scope::Device)
+    execute::<F, MAX_OUT>(profile, dirs, selected, Scope::Device)
 }
 
-/// 在本机执行档案里**每一条**已声明的见证。
-///
-/// 一台设备的 `provides` 通常共用一份见证源码，因此整份文件只编译一次、逐函数调用。
-/// 选哪些不按等级看：`grade` 是执行的结论，先按等级筛会让不敢写 `L2` 的设备永远拿不到
-/// 运行结论。设备不在这台机器上（非 `c` 且工具链/设备缺失）才是拒绝执行的理由。
+/// 在本机执行档案里**每一条**已声明的见证（`provides` 通常共用一份源码，整份只编译一次）；不按等级
+/// 筛：`grade` 是执行的结论，先筛会让不敢写 `L2` 的设备永远拿不到运行结论。
 ///
 /// # Errors
 ///
-/// 本机执行不了这台设备、缺编译器或驱动、见证文件不可读、函数不存在、编译/执行失败、
-/// 返回值个数不符或对拍超出容差时，返回带原语与函数名的说明。
-pub fn run_all(profile: &Profile, settings: &Settings) -> diagnostic::Result<Vec<WitnessRun>> {
+/// 执行不了这台设备、缺编译器或驱动、文件不可读、函数不存在、编译/执行失败、返回值个数不符或
+/// 对拍超出容差时，返回带原语与函数名的说明。
+pub fn run_all(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<WitnessRun>> {
     let selected = declared_witnesses(profile)?;
     if selected.is_empty() {
         return Ok(Vec::new());
@@ -533,50 +434,90 @@ pub fn run_all(profile: &Profile, settings: &Settings) -> diagnostic::Result<Vec
             ),
         )
     })?;
-    (entry.run)(profile, settings, &selected)
+    (entry.run)(profile, dirs, &selected)
 }
 
-/// 这台设备是否就在本机（见证可以在它上面真跑）。
-///
-/// `c` 的设备就是 CPU，永远在；`metal` 看 Metal 工具链是否可用（可用就证明这台机器有 GPU
-/// 和编译器）——本机有没有设备是**事实**，不能用一个配置字段代替。不在表里的 `emit` 没有
-/// 执行前端，一律当作不在：这一句就是"未接前端"与"接前端但本机没设备"的分界。
+/// 这台设备是否就在本机：`c` 的设备是 CPU 永远在，`metal` 看工具链；不在表里的 `emit` 没有执行前端，一律当作不在。
 #[must_use]
 pub fn device_available(profile: &Profile) -> bool {
     frontend(profile.meta.emit).is_some_and(|entry| (entry.available)(profile))
 }
 
-/// 对**设备执行跑不到**的见证做本机自检。
-///
-/// 范围与 [`run_all`] 互补，合起来刚好覆盖每一条已声明的见证：设备在本机时
-/// [`run_all`] 已经跑过全部声明，同一份见证不再重复自检——结论由能给出更强结论的那个
-/// 范围给出；设备不在本机时全部声明都在自检范围内。
-///
-/// 见证的 ABI 是 host C（`int func(float *)`），与片段语言无关：这里跳过档案的
-/// `[compile].preamble` 与 `flags`（`#include <cuda_fp16.h>`、`-arch=sm_100a` 这类只对
-/// 真机编译器有意义），用 host 编译器把见证源码与 harness 编成可执行文件跑一遍。
-/// 非 C 源的地址空间限定符（MSL 的 `thread`）在 host C 里没有对应物，自检前置一行
-/// `#define thread`；这只影响自检，不影响设备前端（那里走真正的 `xcrun metal`）。
-///
-/// 结论的边界写在 [`Scope::Host`] 里：自检通过只说明"见证源码能编译、`expect` 算得对"，
-/// **不**说明设备具备这条能力。因此自检不改写任何 `grade`——`L2` 仍要设备执行（[`run_all`]）。
+/// 对**设备执行跑不到**的见证做本机自检，范围与 [`run_all`] 互补（设备在本机时由更强的那个范围给结论）。
+/// 见证的 ABI 是 host C，与片段语言无关：跳过档案的 `preamble` 与 `flags`，MSL 的 `thread` 前置一行
+/// `#define` 只为自检。自检通过**不**说明设备具备能力，因此不改写任何 `grade`。
 ///
 /// # Errors
 ///
-/// 缺 host C 编译器、见证文件不可读、函数不存在、编译/执行失败、返回值个数不符或对拍
-/// 超出容差时，返回带设备、原语与函数名的说明。
-pub fn self_check(profile: &Profile, settings: &Settings) -> diagnostic::Result<Vec<WitnessRun>> {
+/// 缺 host C 编译器、文件不可读、函数不存在、编译/执行失败、返回值个数不符或对拍超出容差时，
+/// 返回带设备、原语与函数名的说明。
+pub fn self_check(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<WitnessRun>> {
     let selected = self_checkable(profile);
     if selected.is_empty() {
         return Ok(Vec::new());
     }
-    execute::<CpuDevice, MAX_OUT>(profile, settings, &selected, Scope::Host).map_err(|error| {
+    execute::<CpuDevice, MAX_OUT>(profile, dirs, &selected, Scope::Host).map_err(|error| {
         error.with(format!(
             "`{}({})` 的见证自检不成立",
             profile.meta.vendor, profile.meta.id
         ))
     })
 }
+// 证据的形状：字段分三组，报告必须分开写（执行 / 依据 / 不成立的那一步）；合成一个 `bool` 会让
+// "设备不在本机"与"见证写错了"长得一样。
+
+/// 这次协商的依据：`Executed` 是"这台机器刚刚跑通了见证"，`Declared` 是"档案这么写，本机
+/// 执行不了这台设备"。报告必须写出是哪一种，否则读者会把自述当成证据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Basis {
+    /// 能力来自这次执行：这台机器就是该设备（`c` 就是 CPU，`metal` 就是本机 GPU）。
+    Executed,
+    /// 本机不能执行这台设备：协商只能按档案自述。
+    Declared,
+}
+
+impl fmt::Display for Basis {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Executed => "这次执行",
+            Self::Declared => "档案自述（本机执行不了这台设备）",
+        })
+    }
+}
+
+/// 一台设备这一次的证据：跑通了哪些见证、依据是什么、哪一步不成立；三条命令共用它，否则同一台设备能同时"协商可行"与"见证不成立"。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Evidence {
+    /// 协商的依据。
+    pub basis: Basis,
+    /// 设备执行通过的见证条数（这台机器就是该设备，结论能归到具体供给）。
+    pub device: usize,
+    /// 本机自检通过的见证条数（设备执行跑不到的那些）。
+    pub host: usize,
+    /// 这次没能确立的证据：`None` 表示每条已声明的见证都有执行结论；本机没有这台设备不算失败（见 [`Evidence::basis`]）。
+    pub failure: Option<Error>,
+    /// 设备执行的编译参数：参数一变产物身份就变（[`crate::cache::ArtifactKey`]），报告写出它，读者才知道证据适用于哪一次代码生成。
+    pub device_params: String,
+    /// 本机自检的编译参数（`HOST_FLAGS`）：与设备执行不是同一套，必须分开报。
+    pub host_params: String,
+    /// 见证在**它自己声称的语言**里的合法性：不是设备证据（没有一行在设备上执行），所以不改 `grade`，但被拒绝是硬错误。
+    pub language: LanguageGate,
+    /// 真的被证明的供给（执行结论）。
+    pub(crate) proof: Proof,
+}
+
+impl Evidence {
+    /// 协商该用的证据：`Executed` 时是执行结论，`Declared` 时退回档案自述——本机执行不了
+    /// 这台设备，没有第二条路，所以依据必须由 [`Evidence::basis`] 说出来。
+    #[must_use]
+    pub fn proof(&self, profile: &Profile) -> Proof {
+        match self.basis {
+            Basis::Executed => self.proof.clone(),
+            Basis::Declared => Proof::declared(profile),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,9 +526,8 @@ mod tests {
     use crate::device::clang;
     use crate::gate::parse_one;
 
-    fn settings() -> Settings {
-        let roots = llm_config::Roots::new(std::env::temp_dir().join("cutile-witness-tests"));
-        Settings::<llm_config::Cutile>::defaults(&roots)
+    fn dirs() -> Dirs {
+        Dirs::under(std::env::temp_dir().join("cutile-witness-tests"))
     }
 
     fn cpu() -> Profile {
@@ -608,12 +548,12 @@ mod tests {
 
     #[test]
     fn every_declared_witness_executes_on_the_device() {
-        if backend::detect().is_none() {
+        if backend::skip_without_host_compiler() {
             return;
         }
         let profile = cpu();
         let declared = profile.provides.len();
-        let runs = run_all(&profile, &settings()).expect("见证必须全部通过");
+        let runs = run_all(&profile, &dirs()).expect("见证必须全部通过");
         assert_eq!(runs.len(), declared, "每条已声明的见证都要有一条执行结果");
         assert!(
             runs.iter().all(|run| run.scope == Scope::Device),
@@ -624,19 +564,19 @@ mod tests {
 
     #[test]
     fn a_wrong_expectation_is_a_failure() {
-        if backend::detect().is_none() {
+        if backend::skip_without_host_compiler() {
             return;
         }
         let mut profile = cpu();
         profile.provides[0].witness.as_mut().expect("有见证").expect[0] += 1.0;
-        let error = run_all(&profile, &settings()).expect_err("期望值不对必须失败");
+        let error = run_all(&profile, &dirs()).expect_err("期望值不对必须失败");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("quant"), "{error}");
     }
 
     #[test]
     fn a_witness_must_write_exactly_the_declared_number_of_values() {
-        if backend::detect().is_none() {
+        if backend::skip_without_host_compiler() {
             return;
         }
         let mut profile = cpu();
@@ -646,7 +586,7 @@ mod tests {
             .expect("有见证")
             .expect
             .truncate(1);
-        let error = run_all(&profile, &settings()).expect_err("个数不符必须失败");
+        let error = run_all(&profile, &dirs()).expect_err("个数不符必须失败");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("写了 2 个值"), "{error}");
     }
@@ -655,7 +595,7 @@ mod tests {
     fn a_missing_function_is_a_failure_without_compiling() {
         let mut profile = cpu();
         profile.provides[0].witness.as_mut().expect("有见证").func = "witness_absent".to_string();
-        let error = run_all(&profile, &settings()).expect_err("函数不存在必须失败");
+        let error = run_all(&profile, &dirs()).expect_err("函数不存在必须失败");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("witness_absent"), "{error}");
     }
@@ -663,7 +603,7 @@ mod tests {
     /// 每台设备的每条已声明见证恰好被执行一次，且由能给出更强结论的范围执行。
     #[test]
     fn every_declared_witness_is_executed_once_in_the_strongest_scope() {
-        if backend::detect().is_none() {
+        if backend::skip_without_host_compiler() {
             return;
         }
         let catalogue = Catalogue::try_builtin().expect("内置数据");
@@ -674,14 +614,14 @@ mod tests {
                 .iter()
                 .filter(|provide| provide.witness.is_some())
                 .count();
-            let runs = self_check(profile, &settings())
+            let runs = self_check(profile, &dirs())
                 .unwrap_or_else(|error| panic!("{vendor} 的见证自检失败：{error}"));
             assert!(
                 runs.iter().all(|run| run.scope == Scope::Host),
                 "{vendor}: 自检的结论不能被当成设备证据"
             );
             let executed = if device_available(profile) {
-                run_all(profile, &settings())
+                run_all(profile, &dirs())
                     .unwrap_or_else(|error| panic!("{vendor} 的设备执行失败：{error}"))
                     .len()
             } else {
@@ -703,7 +643,7 @@ mod tests {
     /// 低等级声明同样在本机跑一遍，`grade` 才不会两头都不成立。
     #[test]
     fn a_cpu_l0_witness_is_executed_on_the_device_too() {
-        if backend::detect().is_none() {
+        if backend::skip_without_host_compiler() {
             return;
         }
         let profile = cpu();
@@ -714,7 +654,7 @@ mod tests {
             .map(|provide| provide.prim)
             .collect::<Vec<_>>();
         assert!(!unverified.is_empty(), "前提：cpu 至少有一条 L0 声明");
-        let runs = run_all(&profile, &settings()).expect("L0 见证也必须能跑");
+        let runs = run_all(&profile, &dirs()).expect("L0 见证也必须能跑");
         let checked = runs.iter().map(|run| run.prim).collect::<Vec<_>>();
         for prim in unverified {
             assert!(
@@ -730,7 +670,7 @@ mod tests {
         if !device_available(&profile) {
             return;
         }
-        let runs = run_all(&profile, &settings()).expect("Metal 见证必须全部通过");
+        let runs = run_all(&profile, &dirs()).expect("Metal 见证必须全部通过");
         assert_eq!(runs.len(), profile.provides.len(), "每条声明都要有结果");
         assert!(
             runs.iter().all(|run| run.scope == Scope::Device),
@@ -747,7 +687,7 @@ mod tests {
         let program = "#include <metal_stdlib>\nusing namespace metal;\n\
                        int witness_bad(float *out) { out[0] = 1.0f; return 1; }\n";
         let profile = device("metal");
-        let error = MetalDevice::run(&profile, &settings(), program, 1, Scope::Device)
+        let error = MetalDevice::run(&profile, &dirs(), program, 1, Scope::Device)
             .expect_err("MSL 必须要求显式地址空间");
         let text = error.to_string();
         assert!(text.contains("xcrun metal"), "{text}");
@@ -756,24 +696,24 @@ mod tests {
 
     #[test]
     fn the_self_check_ignores_the_device_preamble_and_flags() {
-        if backend::detect().is_none() {
+        if backend::skip_without_host_compiler() {
             return;
         }
         let mut profile = device("nvidia");
         profile.preamble = "#error 设备专属前置声明\n".to_string();
         profile.flags = vec!["-arch=sm_100a".to_string(), "-nocudainc".to_string()];
-        let runs = self_check(&profile, &settings()).expect("自检不得使用设备 preamble/flags");
+        let runs = self_check(&profile, &dirs()).expect("自检不得使用设备 preamble/flags");
         assert!(!runs.is_empty(), "nvidia 有已声明的见证");
     }
 
     #[test]
     fn a_wrong_expectation_fails_even_the_host_self_check() {
-        if backend::detect().is_none() {
+        if backend::skip_without_host_compiler() {
             return;
         }
         let mut profile = device("ascend");
         profile.provides[0].witness.as_mut().expect("有见证").expect[0] += 1.0;
-        let error = self_check(&profile, &settings()).expect_err("期望值不对必须失败");
+        let error = self_check(&profile, &dirs()).expect_err("期望值不对必须失败");
         assert!(error.to_string().contains("见证自检不成立"), "{error}");
         assert!(error.to_string().contains("ascend"), "{error}");
     }
@@ -787,7 +727,7 @@ mod tests {
                 .iter()
                 .filter(|provide| provide.witness.is_some())
                 .count();
-            match language_gate(&profile, &settings()) {
+            match language_gate(&profile, &dirs()) {
                 LanguageGate::Passed { front, witnesses } => {
                     assert!(front.contains(selector), "{vendor}: {front}");
                     assert_eq!(witnesses, declared, "{vendor}: 门要盖住每一条声明");
@@ -796,7 +736,7 @@ mod tests {
                 other => panic!("{vendor} 的见证没有在 `{selector}` 里过一遍：{other}"),
             }
         }
-        match language_gate(&device("ascend"), &settings()) {
+        match language_gate(&device("ascend"), &dirs()) {
             LanguageGate::Absent { reason } => assert!(
                 reason.contains("ascendc"),
                 "缺席也要说清是哪门语言：{reason}"
@@ -807,10 +747,10 @@ mod tests {
 
     #[test]
     fn a_witness_that_runs_on_the_device_needs_no_language_gate() {
-        assert_eq!(language_gate(&cpu(), &settings()), LanguageGate::Covered);
+        assert_eq!(language_gate(&cpu(), &dirs()), LanguageGate::Covered);
         let metal = device("metal");
         assert_eq!(
-            matches!(language_gate(&metal, &settings()), LanguageGate::Covered),
+            matches!(language_gate(&metal, &dirs()), LanguageGate::Covered),
             device_available(&metal),
             "只有能在设备上真跑时才免开语言门"
         );
@@ -818,10 +758,14 @@ mod tests {
 
     #[test]
     fn a_witness_its_own_language_rejects_is_a_defect() {
+        if backend::skip_without_host_compiler() {
+            return;
+        }
         let Some(toolchain) = backend::detect() else {
             return;
         };
         if clang().is_none() {
+            eprintln!("skip: 未探测到 clang（`-x cl` 语法检查需要它），本用例未运行");
             return;
         }
         let dir = std::env::temp_dir().join(format!("cutile-language-gate-{}", std::process::id()));

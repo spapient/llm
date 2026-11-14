@@ -3,8 +3,8 @@
 这份文档回答三个问题：**谁属于哪一层、允许依赖谁、每个类型归谁**。
 它是评审用的检查表：改动依赖方向或新增成员时，逐条核对下面所有约定。
 
-`crates/cutile/DESIGN.md` 描述的是 kernel 层（`cutile` + `op` / `prof` / `prim`）的内部机制；
-本文描述的是**整仓的模块划分与依赖方向**。两者不重叠：改 DSL 机制看 DESIGN，加模块看本文。
+`../crates/cutile/README.md` 描述的是 kernel 层（`cutile` + `op` / `prof` / `prim`）的内部机制；
+本文描述的是**整仓的模块划分与依赖方向**。两者不重叠：改 DSL 机制看该 README，加模块看本文。
 
 ## 一、分层
 
@@ -35,7 +35,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 75 条，含 11 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 74 条，含 10 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → annotation, diagnostic, op, prim, prof（annotation 是工具边：`#[frontend]` 注解）    +dev: testkit
@@ -57,7 +57,7 @@ engine   → tensor, diagnostic    +dev: testkit
 serve    → engine, tokenizer, diagnostic    +dev: testkit
 cli      → diagnostic
 fuzz     → diagnostic    +dev: cli, weights（工具成员，不参与方向判定；`+dev` 的两个是 `tests/parsers.rs` 的驱动对象，解析器本身来自它已经依赖的 `diagnostic`；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
-benches  → +dev: prof, op, tool（工具成员：集中测量容器，不参与方向判定；op 是被测对象，tool 提供回退判定）
+benches  → +dev: prof, op（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象）
 llm      → cli, cutile, diagnostic, engine, nn, op,
            prim, prof, serve, tensor, tokenizer, tool, train, weights
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）
@@ -67,12 +67,12 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 
 七条吸收链（`checkpoint→train`、`audit→cutile`、`regress→tool`、`exec→engine`、`kv→engine`、`einsum→op`、`proto→serve`）
 **已落地**（ADR 0019）：成员从 33（含根包）降到 26，边从 106 条降到 82 条：消失的边是被吸收方的全部出边与全部入边，
-新增的边只有 `cutile → annotation`（工具边）、`benches → +dev: tool` 与 `serve → +dev: testkit`（`proto` 的 CRC 对拍随迁）。
+新增的边只有 `cutile → annotation`（工具边）与 `serve → +dev: testkit`（`proto` 的 CRC 对拍随迁）。
 方向合法性没有变化：七条链都是"同层向左"或"跨层向下"，因此 `tests/architecture.rs` 的方向断言一条都不需要放宽。
 
 第八次是**拆分后删除**（ADR 0020 → 0021）：`llm-config` 没有单一消费者，不能像上面七条那样被某个 crate 整体吸收，
-所以按"谁真的用得上"分成两半——设置层（分层、来源、键闭集、平台目录）只有一个生产消费者，进
-`crates/cutile/src/settings/`；TOML 语法层有六个跨层消费者，进 `diagnostic::toml`（该模块在第九次 ADR 0022 即被删除，现不存在，构建期共享内核现为 `diagnostic::buildgen`；每个读 TOML 的成员本来就已依赖
+所以按"谁真的用得上"分成两半——设置层（分层、来源、键闭集、平台目录）当时只有一个生产消费者，先进了
+`crates/cutile/src/settings/`（第十次又被上移到 `cli::settings`，见下）；TOML 语法层有六个跨层消费者，进 `diagnostic::toml`（该模块在第九次 ADR 0022 即被删除，现不存在，构建期共享内核现为 `diagnostic::buildgen`；每个读 TOML 的成员本来就已依赖
 `diagnostic`，因此这条边不新增、只消失）。成员 26 → **25**，边 82 → **76**，`+dev` 13 → **12**；消失的六条边是
 `op` / `prof` / `tool` / `cutile` / `llm` / `fuzz` 各自指向语法层的那一条。
 
@@ -82,6 +82,14 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 （内置默认 < 环境变量 < `--set` 之外的第四层）连同它的 `schema` 校验、文件相对路径基准、未知键校验一起删除。
 585 行解析器与 8 条复杂度基线消失，成员数与边数不变（解析器原本就在 `diagnostic` 里）；唯一减少的边是
 `fuzz → +dev: prof`——它的 TOML 目标没有入口可灌了。
+
+第十次是**策略上移**（ADR 0023）：删掉第四层之后，`cutile/src/settings/` 只剩"默认值 + `CUTILE_*` +
+`--set`"，而这三件事没有一件是内核机制该决定的——默认目录是**部署策略**，`--set` 是**命令行文法**。
+于是 924 行的分层机制缩成 `cutile::dirs::Dirs`（三个路径的纯数据，64 行），解析、来源追踪与
+`--set` 的 argv 扫描整体搬到 `cli::settings`（`cli` 本来就是"argv + 环境 → 强类型调用参数"的那一层）。
+成员数与边数**一条未增**：`cli` 仍只依赖 `diagnostic`（键表不再借 `prof::atom::Closed`，三个键不值得
+拉一套闭集机制），`cutile` 的五个出边原样；两个二进制各写一个 `kernel_dirs` 投影函数把 `Settings`
+变成 `Dirs`，因此"配置策略"与"内核输入"之间只剩一次显式转换。
 
 ## 三、所有权表（一个类型只能有一个主人）
 
@@ -94,10 +102,11 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 |---|---|---|
 | `Error` / `Code` / `Result` | `diagnostic` | 全仓库唯一的错误类型；同一 crate 的 `data` 子模块（ADR 0022）还拥有 `Table` / `Value`——它们是**声明数据树**，由构建期生成代码构造，运行期没有解析器，因此也不存在"语法错误"这一类；`op` / `prof` / `prim` / `cutile`（含 `report`）用同一份它，类别由**产生错误的那一层**给（`ProfileError::code`、`prim` 的装载诊断），上层只补上下文。`Error::also` 把同一次校验里的第二条失败追加为同级诊断（各自带类别，不再被 join 成一行 `invalid`）；`Error::from_io` 是"路径不存在 `missing` / 存在但读不出 `io`"的唯一判定；`Code::exit_code` 是类别到 shell 退出码的唯一映射（2/3/4/5/70） |
 | `DType` / `QType` / `MxType` / `Element` | `dtype` | 全仓唯一的精度事实源，三个格式轴分文件（`Element` 是 MX 的子闭集）：`dtype.rs` 的 `DType` 是标量闭集（24 个变体，Bool、U1–U64、I1–I64、F8 两种、F4、F16、BF16、F32、F64、`F8E4M3FNUZ`/`F8E5M2FNUZ`），稳定数字 code 与 LLPK 容器逐位兼容（前 21 个与旧 Wire 同码，F4 追加 22、FNUZ 追加 23/24）；`qtype.rs` 的 `QType` 是 GGML 块量化（25 个格式，传统 Q、K-quant、IQ 查表、TQ 三元四族；`Scale` 记块内 scale 前缀形状 f16/双 f16/f32/sub-scale，`Family` 记编码族，二者正交，`q8_K` 的 f32 d 与 `iq4_nl` 的单 d 各按源码如实分类）；`mxtype.rs` 的 `MxType` 是微缩放（OCP MX 六个标准格式 + NVFP4 厂商扩展，块共享纯指数 scale），同文件的 `Element` 是 MX 块内元素格式（E2M1/E2M3/E3M2/E4M3/E5M2/INT8，6 个，只回答位宽与标量对应）。这些格式只放身份与布局元数据，反量化算法留在 `weights`；除 `parse_name`（转调 trait 默认实现）外 inherent 访问器全部 `const fn`，零运行时开销，同一批读法再由 `Format` / `BlockFormat` 提供一次泛型视角（stable 无 const trait：几何的唯一实现是 inherent `const fn`，trait 只转发；`parse_name` 反过来由 trait 默认实现唯一提供），`Layout<B>` 是「标量元素或块格式」的唯一几何（`weights` 的 GGUF 支持表用 `Layout<QType>`，接 MXFP4 时换 `Layout<MxType>`）。各层以再导出（`tensor`、`weights` 的 `Wire`）、trait 或子集表表达局部能力，不再手写跨层映射 |
-| `Settings` / `Key` / `Roots` / `Layer` / `Origin` | `cutile` | 设置层（`crates/cutile/src/settings/`，ADR 0020 → 0022）：三层优先级（内置默认 < 环境变量 < `--set`）、来源追踪、键闭集与平台目录，**没有配置文件**。它曾是独立成员 `llm-config`，但那套机制只有 `cutile` 一个生产消费者、"应用身份"只有一个实现、五种值形状里只有"路径"可达——合进来删掉一个成员、一个类型参数、一套值类型系统与一条依赖边，用户可见行为一条未变（四层优先级、`CUTILE_CACHE` 兼容名、未知键报错、`schema` 校验、两种相对路径基准）。`Key` 现在是 `impl prof::atom::Closed`：`ALL` 是切片，`as_str` / `parse` 由 `inherent_names!` 转发，`[closed]` 白名单不再为配置层开口子。TOML 语法**没有**跟过来：`op` / `prof` / `tool` 也读它，所以解析器先并进同层零依赖的 `diagnostic`（ADR 0021），随后连它自己也被删除——语料改在构建期解析成 `diagnostic::data` 的表（ADR 0022），设置层只剩三层，没有配置文件、没有 `schema` 字段 |
+| `Dirs` | `cutile` | 内核要的三个目录（缓存根、工作目录、可选数据根）——**纯数据**：不带默认值、不读环境变量、不认识命令行。地址是调用方的策略，因此 `cutile` 只依赖 `std::path`，换一个嵌入方（测试给临时目录、服务给容器卷）不用改内核一行（ADR 0023） |
+| `Settings` / `Roots` | `cli` | 三个目录开关的**解析策略**（`crates/cli/src/settings.rs`，ADR 0023）：内置默认 < `CUTILE_*` < `--set`、来源追踪（`值 ← 来源`）、平台默认目录与相对路径基准。键表是一行一个的声明宏（`cache.dir` / `work.dir` / `data.root`，含 `CUTILE_CACHE` 兼容名），`describe` 与"键未登记"的清单都从同一张表派生；**没有配置文件**（ADR 0022）。它曾经是独立成员 `llm-config` 的设置层，并入 `cutile` 后又上移到本层：默认目录是部署策略、`--set` 是命令行文法，都不是内核的职责，上移后成员数与依赖边一条未增——`cli` 仍只依赖 `diagnostic`，`cutile` 仍只收纯数据 |
 | `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` | `op` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；不认识设备、tile 或片段 |
 | `Op` / 模板文本 / `Signature` / `Sample` / `Model` | `op` | 算子声明、模板与算子语义（签名、样本、标量参考），`REGISTRY` 现有 22 条注册（GEMV 与 GEMM 各三个格式、逐元素与归约、形态算子、注意力两条、解量化两条），其中 GEMV 三条共用一份泛型骨架、只差格式契约；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生（`output_type` 与 `Model::dtype` 交叉核对，回读只认 `float`）；代价由 `op::einsum` 推出，`Cost` 只是再导出；`bind` 是真实数据进入样本的唯一入口（只换 `x` / `w`，量化缓冲明确拒绝） |
-| `Format` / `OperandSpec` / `Element` / `Cache` | `op` | GEMV 骨架的格式契约：`Format` 把"随精度变化"的部分（权重元素、位宽、粒度、派生轴、标度、解包循环）收成关联常量与方法，`OperandSpec` 是表达式的操作数表（`const` 数组，装载时再转 `Operand`），`Element` 是样本缓冲的元素闭集（`f32` / `u8`，让 `reference` 不必按变体分发），`Cache` 是每格式一份的表达式缓存（`static` 在泛型作用域里只有一份，所以缓存必须由具体格式持有），`Format::CHECK` 是格式对自身声明的自证（粒度 > 0、派生轴除数就是粒度——两处都拿同一个常数算分组，否则代价与样本是两种语义），由 `#[model]` 生成物在别名上求值；`Quantized<G>` / `Dense<B>` 的 const 参数分别承载声明粒度与累加块宽，`cost` / `sample` / `reference` 按格式单态化，`Model` 里仍是三个 `fn` 指针 |
+| `Format` / `OperandSpec` / `Element` / `FormulaCache` | `op` | GEMV 骨架的格式契约：`Format` 把"随精度变化"的部分（权重元素、位宽、粒度、派生轴、标度、解包循环）收成关联常量与方法，`OperandSpec` 是表达式的操作数表（`const` 数组，装载时再转 `Operand`），`Element` 是样本缓冲的元素闭集（`f32` / `u8`，让 `reference` 不必按变体分发），`FormulaCache` 是四条骨架（GEMV / 逐元素 / 一元 / 归约）共用的唯一一份表达式缓存实现，单元格仍由每个具体格式用 `static` 持有（泛型作用域里的 `static` 只有一份，共用会让两种精度拿到错误的轴表），`Format::CHECK` 是格式对自身声明的自证（粒度 > 0、派生轴除数就是粒度——两处都拿同一个常数算分组，否则代价与样本是两种语义），由 `#[model]` 生成物在别名上求值；`Quantized<G>` / `Dense<B>` 的 const 参数分别承载声明粒度与累加块宽，`cost` / `sample` / `reference` 按格式单态化，`Model` 里仍是三个 `fn` 指针 |
 | `OpDecl` / `Template` / `Segment` / `Registration` / `LayoutSpec` / `Schedule` / `Masking` | `op` | 声明解析的结果与三张闭集（模板词法、布局构造子、调度模板），以及唯一的算子注册表 `REGISTRY`（名字 / 声明 / 模板 / 语义表同属一条注册，`BUILTIN` 与 `model()` 都是它的投影）；`cutile` 只消费，不再持有第二份 |
 | `Profile` / 能力词汇表 | `prof` | 设备档案与闭集；机制代码不得出现 `vendor == "..."` |
 | `Closed` / `Set` | `prof` | 词汇表契约：`Closed` 要求每个闭集只声明 `ALL`（顺序即 `index`）、`as_str` 与 `index`，`parse` 由契约派生；`Set<E, WORDS>` 是全仓唯一的位集（`WORDS` 是 const 参数，容量在单态化时由 `const FITS` 断言，写宽或写窄是编译错误），`DTypeSet` / `SpaceSet` 只是它的别名；`inherent_names!` 把 `ALL` / `as_str` / `parse` 以**同名固有项**转发，于是调用方不必 `use` 一个 trait，而名字表仍然只有一份 |
@@ -140,10 +149,10 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 
 三个容易混淆、但**不是重复**的东西：
 
-- **kernel 侧操作数视图**（DSL 的宿主 API：`&mut` 分片即 `grid`，见 DESIGN §4.4）与
+- **kernel 侧操作数视图**（DSL 的宿主 API：`&mut` 分片即 `grid`，见 cutile README §4.4）与
   `tensor::Tensor` 是两回事：前者不得依赖 `tensor`（内核层不能向上依赖运行时），后者也不得
   假装能做 kernel 分区。这个视图在 P0 **尚未实现**——`cutile` 只接收裸指针与标量，分片由
-  调用方给；等 `llm` 真要直接调用 kernel 时再按 DESIGN §4.4 重建，见
+  调用方给；等 `llm` 真要直接调用 kernel 时再按 cutile README §4.4 重建，见
   [`adr/0003-kernel-and-runtime-types.md`](adr/0003-kernel-and-runtime-types.md) 的修订段。
 - `cutile::space::Space`（GM/FAST/REG）是 **语言概念**，`prof::atom::Space` 是它的档案表示；
   分配器（`mem`）只认字节，不认地址空间——地址空间由档案声明。

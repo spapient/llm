@@ -1,11 +1,8 @@
-//! ⑤ emit + cache：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘（DESIGN §10.3）。
+//! ⑤ emit + cache：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘（README §10.3）。
 //!
-//! 输入全是数据：算子声明、协商出的变体、tile 取值与配置；输出是源文本与它的缓存键。
-//! 键覆盖真正喂给 `cc` 的参数、片段文本、布局声明式与声明的数据类型集合，因此"命中缓存"
-//! 与"重新生成"必然等价。
-//!
-//! 本模块不认识任何命令：审计（`llm-audit`）与将来的落地流程都从 [`source`] 取文本，
-//! 命令策略（形状矩阵、重复次数、工作目录命名）不在内核里。
+//! 输入全是数据：算子声明、协商出的变体、tile 取值与配置；输出是源文本与它的缓存键。键覆盖真正喂给
+//! `cc` 的参数、片段文本、布局声明式与数据类型集合，因此"命中缓存"与"重新生成"必然等价。
+//! 本模块不认识任何命令：审计（`llm-audit`）与将来的落地流程都从 [`source`] 取文本，命令策略不在内核里。
 
 use crate::SCHEMA_VER;
 use crate::ast;
@@ -14,14 +11,14 @@ use crate::backend::{self, Outcome, Toolchain};
 use crate::cache::{Artifact, ArtifactKey, Cache, CacheKey, Lock};
 use crate::cap::Path;
 use crate::decl::{OpDecl, TileCombo};
+use crate::dirs::Dirs;
 use crate::emit::{self, Source};
 use crate::layout::LayoutSpec;
 use crate::prof::Profile;
 use crate::space;
 use crate::substitute::FragmentSet;
 use diagnostic::{Code, Error};
-use llm_config::Settings;
-use std::io::ErrorKind;
+use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -30,9 +27,8 @@ use std::time::{Duration, Instant};
 /// 形状矩阵、两条用例），`pid` 只区分进程，不区分线程。
 static SANDBOX_SEQ: AtomicUsize = AtomicUsize::new(0);
 
-/// ⑤ 的完整流程：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘。
-///
-/// 缓存命中时直接返回已落盘的文本——键相同意味着源文本相同，重新拼一遍不会得到别的东西。
+/// ⑤ 的完整流程：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘。缓存命中时直接返回已落盘的文本——
+/// 键相同意味着源文本相同。
 ///
 /// # Errors
 ///
@@ -42,81 +38,129 @@ pub fn source(
     profile: &Profile,
     path: &Path,
     tile: &TileCombo,
-    settings: &Settings,
+    dirs: &Dirs,
 ) -> diagnostic::Result<(Source, CacheKey)> {
     // 契约先于缓存：声明里的搬运量只影响判定、不影响源文本，所以它不在缓存键里。
     // 如果把判定放在命中之后，一份已落盘的旧源文本就成了“声明越界也免检”的通行证。
     contract(op, profile, path)?;
-    let key = key(op, profile, path, tile, settings);
-    let cache = Cache::from_settings(settings);
-    if let Some(text) = cache.get(&key) {
-        return Ok((
-            Source {
-                lang: profile.meta.emit,
-                text,
-            },
-            key,
-        ));
+    // 片段层与 AST 在键判定前各算一次：命中与未命中复用同一份，未命中不再重读磁盘、
+    // 不再重跑 AST 构建。片段层不可用时保留旧的容错：键回退到模板指纹，命中仍可直接取用。
+    let prepared = Prepared::new(op, profile, tile, dirs);
+    let key = key(op, profile, path, tile, &prepared);
+    let cache = Cache::from_dirs(dirs);
+    if let Some(source) = hit(&cache, &key, profile) {
+        return Ok((source, key));
     }
-
-    let fragments = fragments(profile, settings)?;
-    let variant = op
-        .variant(&path.variant)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("变体 `{}` 不存在", path.variant)))?;
-
-    // 锁必须真的拿到：静默继续会让两个进程同时写同一份 `source`（DESIGN §10.3）。
-    // 但"另一个进程正在为同一个 key 编译"不是错误——它写出的就是我们要的文本，等它落盘
-    // 即可（并行的 `doctor`/`verify` 对同一个 key 是常态）；等不到才报错。
-    let lock = wait_for_lock(&cache, &key)?;
-    if let Some(text) = cache.get(&key) {
-        return Ok((
-            Source {
-                lang: profile.meta.emit,
-                text,
-            },
-            key,
-        ));
-    }
-    // 数据流经过结构化 AST（ADR 0017 L1）：先 build 成节点序列再打印，双射测试保证它与
-    // 直接 `substitute::render` 逐字节相等；字符串路径保留用于回滚与对拍。
-    let nodes = ast::build(op, tile, &fragments)?;
-    let text = ast::render(&nodes);
-    let source = emit::assemble(profile, op, variant, tile, &text);
-    cache.put(&key, &source.text).map_err(|error| {
-        Error::new(
-            Code::Io,
-            format!("写缓存 {} 失败：{error}", cache.dir_for(&key).display()),
-        )
-    })?;
-    drop(lock);
+    let source = publish(&cache, &key, op, profile, path, tile, &prepared)?;
     Ok((source, key))
 }
 
-/// ⑤ 的编译执行：产物已在缓存里就直接跑，否则编一次再落盘。
+/// 键判定前算好的一份输入：片段层与提升后的节点序列，命中与未命中共用同一份。
+struct Prepared {
+    fragments: diagnostic::Result<FragmentSet>,
+    nodes: diagnostic::Result<Vec<ast::Node>>,
+}
+
+impl Prepared {
+    fn new(op: &OpDecl, profile: &Profile, tile: &TileCombo, dirs: &Dirs) -> Self {
+        let fragments = fragments(profile, dirs);
+        let nodes = match &fragments {
+            Ok(set) => ast::build(op, tile, set),
+            Err(error) => Err(error.clone()),
+        };
+        Self { fragments, nodes }
+    }
+}
+
+/// 未命中时的一次生成：取锁 → 再查一次 → 拼接 → 落盘。锁必须真的拿到（否则两个进程同时写同一份
+/// `source`），但"另一个进程正在为同一个 key 编译"不是错误：它写出的就是我们要的文本，所以锁内
+/// 要**再查一次**，查的是等锁期间别人落盘的那一份。
+fn publish(
+    cache: &Cache,
+    key: &CacheKey,
+    op: &OpDecl,
+    profile: &Profile,
+    path: &Path,
+    tile: &TileCombo,
+    prepared: &Prepared,
+) -> diagnostic::Result<Source> {
+    let _lock = wait_for_lock(cache, key)?;
+    match hit(cache, key, profile) {
+        Some(source) => Ok(source),
+        None => build_source(cache, key, op, profile, path, tile, prepared),
+    }
+}
+
+/// 真正拼一次并落盘。变体必须在声明的变体表里：协商给出的名字与声明脱节时，这里是唯一的检查点。
+fn build_source(
+    cache: &Cache,
+    key: &CacheKey,
+    op: &OpDecl,
+    profile: &Profile,
+    path: &Path,
+    tile: &TileCombo,
+    prepared: &Prepared,
+) -> diagnostic::Result<Source> {
+    let variant = op
+        .variant(&path.variant)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("变体 `{}` 不存在", path.variant)))?;
+    // 片段层错误在此透传；片段本身不再参与后续生成——渲染只需要已提升好的节点序列。
+    if let Err(error) = &prepared.fragments {
+        return Err(error.clone());
+    }
+    let nodes = prepared.nodes.clone().map_err(|error| error.clone())?;
+    generate(op, profile, variant, tile, &nodes, cache, key)
+}
+
+/// 缓存命中：键相同意味着源文本相同，重新拼一遍不会得到别的东西。
+fn hit(cache: &Cache, key: &CacheKey, profile: &Profile) -> Option<Source> {
+    cache.get(key).map(|text| Source {
+        lang: profile.meta.emit,
+        text,
+    })
+}
+
+/// 未命中时的一次生成：AST → 文本 → 成文 → 落盘。数据流经过结构化 AST（ADR 0017 L1），双射测试
+/// 保证它与直接 `substitute::render` 逐字节相等；字符串路径保留用于回滚与对拍。
+fn generate(
+    op: &OpDecl,
+    profile: &Profile,
+    variant: &op::decl::Variant,
+    tile: &TileCombo,
+    nodes: &[ast::Node],
+    cache: &Cache,
+    key: &CacheKey,
+) -> diagnostic::Result<Source> {
+    let text = ast::render(nodes);
+    let source = emit::assemble(profile, op, variant, tile, &text);
+    cache.put(key, &source.text).map_err(|error| {
+        Error::new(
+            Code::Io,
+            format!("写缓存 {} 失败：{error}", cache.dir_for(key).display()),
+        )
+    })?;
+    Ok(source)
+}
+
+/// ⑤ 的编译执行：产物已在缓存里就直接跑，否则编一次再落盘。产物身份是 [`ArtifactKey`]（源文本 +
+/// **实测工具链身份** + 主函数），所以"命中产物"与"重新编译"必然等价。
 ///
-/// 产物的身份是 [`ArtifactKey`]（源文本 + **实测工具链身份** + 主函数），因此"命中产物"与
-/// "重新编译"必然等价——工具链版本、形状、样本数据与重复次数都在里面，换一个就换一份产物。
-///
-/// `tool` 是本机探测到的工具链（[`crate::backend::detect`]），可以是 `None`：一份已经验证过
-/// 的产物不该因为这台机器上没有 `cc` 而失效。没有编译器时按产物旁的身份文件认人——
-/// `命令@版本`就写在那里，所以不必先探测工具链才能拼出文件名。只有"既没编译器、缓存里
-/// 也没有这份产物"才失败。
-///
-/// 编译在一次性的沙箱里进行（`work.dir` 下按产物键 + 进程命名），产物拷进缓存后沙箱即删，
-/// 于是"编译过一次"不会在 `work.dir` 里留下第二份可执行文件。
+/// `tool` 可以是 `None`：一份验证过的产物不该因为本机没有 `cc` 而失效——按产物旁的 `.key` 认人即可，
+/// 只有"既没编译器、缓存里也没有这份产物"才失败。编译在一次性的沙箱里进行（`work.dir` 下按产物键 +
+/// 进程命名），产物拷进缓存后沙箱即删。
 ///
 /// # Errors
 ///
-/// 编译器缺失（且缓存里没有这份产物）、编译失败、产物不可执行、缓存不可写时返回说明；
-/// 运行失败由 [`crate::backend::run`] 分类。
+/// 编译器缺失（且缓存里没有这份产物）、编译失败、产物不可执行、缓存不可写时返回说明；运行失败由
+/// [`crate::backend::run`] 分类。
 pub fn execute(
     profile: &Profile,
     tool: Option<&Toolchain>,
     key: &CacheKey,
     harness: &str,
-    settings: &Settings,
+    dirs: &Dirs,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
-    let cache = Cache::from_settings(settings);
+    let cache = Cache::from_dirs(dirs);
     cached_run(
         &cache,
         &key.hex(),
@@ -124,29 +168,25 @@ pub fn execute(
         tool,
         &profile.flags,
         harness,
-        settings,
+        dirs,
     )
 }
 
-/// 一份自建程序的编译执行（见证与将来的探测）：与 [`execute`] 共用同一条产物缓存。
-///
-/// 源文本不来自算子声明，所以条目按程序文本定名（[`Cache::put_program`]）；`flags` 也由
-/// 调用方给——见证自检走的 host C 参数与设备档案的 `[compile].flags` 并不是同一套。
-///
-/// `tool` 同上：`None` 表示本机没有编译器，此时只能复用已落盘的产物。
+/// 一份自建程序的编译执行（见证与将来的探测）：与 [`execute`] 共用同一条产物缓存。源文本不来自算子
+/// 声明，所以条目按程序文本定名（[`Cache::put_program`]），`flags` 也由调用方给；`tool` 为 `None`
+/// 表示本机没有编译器，此时只能复用已落盘的产物。
 ///
 /// # Errors
 ///
-/// 程序不可写盘、编译器缺失（且缓存里没有这份产物）、编译失败、产物不可执行、缓存不可写时
-/// 返回说明。
+/// 程序不可写盘、编译器缺失（且缓存里没有这份产物）、编译失败、产物不可执行或缓存不可写时返回说明。
 pub fn run_program(
     tool: Option<&Toolchain>,
     flags: &[String],
     label: &str,
     program: &str,
-    settings: &Settings,
+    dirs: &Dirs,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
-    let cache = Cache::from_settings(settings);
+    let cache = Cache::from_dirs(dirs);
     let hex = cache
         .put_program(label, program)
         .map_err(|error| Error::new(Code::Io, format!("写程序缓存失败：{error}")))?;
@@ -157,13 +197,11 @@ pub fn run_program(
         tool,
         flags,
         program,
-        settings,
+        dirs,
     )
 }
 
-/// 查产物 → 命中就直接跑；否则编译一次、落盘，再跑缓存里的那一份。
-///
-/// 跑的是缓存里那份而不是沙箱里那份：被缓存的、被报告的、被执行的必须是同一个文件。
+/// 查产物 → 命中就直接跑；否则编译一次、落盘，再跑缓存里的那一份（被缓存的、被报告的、被执行的必须是同一个文件）。
 fn cached_run(
     cache: &Cache,
     source: &str,
@@ -171,7 +209,7 @@ fn cached_run(
     tool: Option<&Toolchain>,
     flags: &[String],
     program: &str,
-    settings: &Settings,
+    dirs: &Dirs,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let Some(tool) = tool else {
         return cached_only(cache, source, params, program);
@@ -179,24 +217,29 @@ fn cached_run(
     // 产物身份用**实测**的工具链与**这次**的编译参数：升一次编译器、换一组参数都是另一套
     // 代码生成，旧产物不再冒充这一轮的产物。
     let key = ArtifactKey::keyed(source, &tool.id(), params, program);
-    if let Some(artifact) = cache.artifact(&key) {
-        return Ok((backend::run(&artifact.path)?, artifact));
+    match cache.artifact(&key) {
+        Some(artifact) => Ok((backend::run(&artifact.path)?, artifact)),
+        None => compile_and_store(cache, tool, flags, program, &key, dirs),
     }
-    // 目录名必须唯一：先编译完的那条会删掉沙箱，共用目录会让另一条的 `cc -o` 失去输出路径
-    // （表现为 linker 报 "cannot open output file"）。
-    let sandbox = settings.work_dir().join(format!(
-        "{}-{}-{}",
-        key.hex(),
-        std::process::id(),
-        SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+}
+
+/// 编一次、落盘、跑缓存里那一份：被缓存的、被报告的、被执行的是同一个文件。
+fn compile_and_store(
+    cache: &Cache,
+    tool: &Toolchain,
+    flags: &[String],
+    program: &str,
+    key: &ArtifactKey,
+    dirs: &Dirs,
+) -> diagnostic::Result<(Outcome, Artifact)> {
+    let sandbox = sandbox(dirs, key);
     let exe = backend::compile(&tool.command, flags, program, &sandbox)?;
-    let artifact = cache.put_artifact(&key, &exe).map_err(|error| {
+    let artifact = cache.put_artifact(key, &exe).map_err(|error| {
         Error::new(
             Code::Io,
             format!(
                 "写产物缓存 {} 失败：{error}",
-                cache.artifact_path(&key).display()
+                cache.artifact_path(key).display()
             ),
         )
     })?;
@@ -204,12 +247,20 @@ fn cached_run(
     Ok((backend::run(&artifact.path)?, artifact))
 }
 
-/// 没有编译器时的唯一出路：复用已经落盘的同一份产物。
-///
-/// 主函数必须逐字相同（形状、样本、重复次数都在里面），**编译参数也必须相同**，工具链可以
-/// 不同——但那时会有多份候选，选哪一份都是替用户决定"用谁的代码生成"，也就替 `bench`
-/// 决定了一组耗时的来历，所以不猜：列出工具链身份（`命令@版本`），让用户装上一个或清掉
-/// 多余的产物。
+/// 编译沙箱：目录名必须唯一，先编译完的那条会删掉它，共用目录会让另一条的 `cc -o`
+/// 失去输出路径（表现为 linker 报 "cannot open output file"）。
+fn sandbox(dirs: &Dirs, key: &ArtifactKey) -> PathBuf {
+    dirs.work().join(format!(
+        "{}-{}-{}",
+        key.hex(),
+        std::process::id(),
+        SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// 没有编译器时的唯一出路：复用已经落盘的同一份产物。主函数与**编译参数**必须逐字相同，工具链可以
+/// 不同——但那时会有多份候选，选哪一份都是替用户决定"用谁的代码生成"，所以不猜：列出工具链身份
+/// （`命令@版本`），让用户装一个或清掉多余的产物。
 fn cached_only(
     cache: &Cache,
     source: &str,
@@ -252,33 +303,16 @@ fn cached_only(
 /// 等锁的上限：另一个进程正常写完缓存就会释放锁，等到超时说明锁文件是残留的。
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
-/// 取锁：另一个进程正在为同一个 key 编译时等它（它的产物就是我们要的文本），等不到才报错。
-///
-/// 不静默继续，也不因为并行就先失败：`doctor`/`verify` 会为同一个 key 并发取锁，谁先写完
-/// 都一样。每次失败都先看锁是否陈旧（[`STALE_LOCK`](crate::cache::STALE_LOCK)）：`O_EXCL`
-/// 锁是文件而不是 flock，持有者被 `kill` 后没人能释放它，不破掉这个键就永久卡在"等待超时"
-/// 上；活着的锁一律不抢，等满 `LOCK_WAIT` 才报错，错误里给出锁文件路径。
+/// 取锁：别人正在为同一个 key 编译时等它（它的产物就是我们要的文本），等不到才报错。每次失败都先看
+/// 锁是否陈旧（[`STALE_LOCK`](crate::cache::STALE_LOCK)）：`O_EXCL` 锁是文件，持有者被 `kill` 后没人
+/// 能释放它；活着的锁一律不抢，等满 `LOCK_WAIT` 才报错，错误里给出锁文件路径。
 fn wait_for_lock(cache: &Cache, key: &CacheKey) -> diagnostic::Result<Lock> {
     let deadline = Instant::now() + LOCK_WAIT;
     loop {
         match cache.lock(key) {
             Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                // 陈旧锁（持有者崩溃）没有谁会来释放它：先破掉再重试，不必等到超时。
-                if cache.break_stale_lock(key) {
-                    continue;
-                }
-                if Instant::now() >= deadline {
-                    return Err(Error::new(
-                        Code::Io,
-                        format!(
-                            "等待缓存 key `{}` 超时：{error}\n锁文件 {}；确认没有并发编译后删除它再重试",
-                            key.hex(),
-                            cache.dir_for(key).join("build.lock").display()
-                        ),
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(5));
+                await_lock(cache, key, &error, deadline)?;
             }
             Err(error) => {
                 return Err(Error::new(
@@ -290,25 +324,47 @@ fn wait_for_lock(cache: &Cache, key: &CacheKey) -> diagnostic::Result<Lock> {
     }
 }
 
+/// 锁已存在时的一次等待：陈旧锁先破掉（没有谁会来释放它），活锁小睡一会儿，等满期限才报错。
+fn await_lock(
+    cache: &Cache,
+    key: &CacheKey,
+    busy: &IoError,
+    deadline: Instant,
+) -> diagnostic::Result<()> {
+    if cache.break_stale_lock(key) {
+        return Ok(());
+    }
+    if Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Io,
+        format!(
+            "等待缓存 key `{}` 超时：{busy}\n锁文件 {}；确认没有并发编译后删除它再重试",
+            key.hex(),
+            cache.dir_for(key).join("build.lock").display()
+        ),
+    ))
+}
+
 /// 缓存目录：只有真正落过盘才返回（尚未生成时 `None`，报告里不出现指向空目录的路径）。
-pub fn dir(key: &CacheKey, settings: &Settings) -> Option<PathBuf> {
-    let cache = Cache::from_settings(settings);
+pub fn dir(key: &CacheKey, dirs: &Dirs) -> Option<PathBuf> {
+    let cache = Cache::from_dirs(dirs);
     let path = cache.dir_for(key);
     path.is_dir().then_some(path)
 }
 
 /// 取片段层：配置了 `data.root` 就一律读磁盘（"不改代码替换数据"的入口），
 /// 否则先查内嵌片段表（按 vendor + 扩展名，不写死任何一个厂商），再退回磁盘的 `<vendor>/`。
-fn fragments(profile: &Profile, settings: &Settings) -> diagnostic::Result<FragmentSet> {
+fn fragments(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<FragmentSet> {
     let ext = profile.meta.emit.ext();
-    if settings.data_root().is_none()
+    if dirs.data().is_none()
         && let Some(set) = prim::builtin(&profile.meta.vendor, ext)
     {
         return Ok(set);
     }
-    let root = settings
-        .data_root()
-        .map_or_else(prim::dir, prim::layer_root);
+    let root = dirs.data().map_or_else(prim::dir, prim::layer_root);
     prim::load(&root, &profile.meta.vendor, ext)
         .map_err(|error| error.with(format!("`{}` 的片段层", profile.meta.vendor)))
 }
@@ -324,16 +380,12 @@ pub struct Usage {
     pub bytes: u64,
 }
 
-/// 构建期存储契约：声明的搬运量与 swizzle 粒度都必须落在档案容量内（DESIGN §6.3）。
-///
-/// 声明的 `extent` 上界就是“一次搬运多少字节”（`load bytes<=4096`）；`*` 表示不限，不参与判定。
-/// 返回值就是判定时真正比较过的那些数：审计把同一份数据打进 `doctor` 报告，报告与门禁
-/// 因此不会各算一份（“为什么它通过了”与“它到底算了什么”是同一组值）。
+/// 构建期存储契约：声明的搬运量与 swizzle 粒度都必须落在档案容量内（README §6.3）。返回值就是判定时
+/// 真正比较过的那些数，审计把它打进 `doctor` 报告，于是"为什么它通过了"与"它到底算了什么"是同一组值。
 ///
 /// # Errors
 ///
-/// 变体不存在、某层的声明搬运量超过档案容量、或 `swz` 的 bank 粒度超过档案声明时
-/// 返回说明。
+/// 变体不存在、某层的声明搬运量超过档案容量、或 `swz` 的 bank 粒度超过档案声明时返回说明。
 pub fn contract(op: &OpDecl, profile: &Profile, path: &Path) -> diagnostic::Result<Vec<Usage>> {
     let variant = op
         .variant(&path.variant)
@@ -359,27 +411,34 @@ pub fn contract(op: &OpDecl, profile: &Profile, path: &Path) -> diagnostic::Resu
         .map(|usage| space::SpaceUse::new(usage.space, usage.bytes))
         .collect();
     space::check_capacity(profile, &charges)?;
-
-    for (slot, spec) in &op.layouts {
-        if let LayoutSpec::Swz { b, .. } = spec {
-            space::check_alignment(profile, *b)
-                .map_err(|error| error.with(format!("布局槽位 `{slot}`")))?;
-        }
-    }
+    check_layouts(op, profile)?;
     Ok(uses)
 }
 
-/// 缓存指纹（DESIGN §10.3）：键覆盖的每一项都必须是"改了它就会改变产物"的输入。
-///
-/// `flags` 与 `preamble` 一起哈希：编译参数既影响产物也影响执行，档案改一个字节就要换键。
-/// 布局与数据类型也取声明而不是编一个具体形状：声明式会插进模板（`{{w}}`），而
-/// `w[n, m/2]` 的步长不会——后者只在给定形状时才有意义，不属于构建期输入。
+/// 布局契约：`swz` 的 bank 粒度必须落在档案声明内；其余构造子不参与这条判定。
+fn check_layouts(op: &OpDecl, profile: &Profile) -> diagnostic::Result<()> {
+    for (slot, spec) in &op.layouts {
+        check_layout(slot, spec, profile)?;
+    }
+    Ok(())
+}
+
+fn check_layout(slot: &str, spec: &LayoutSpec, profile: &Profile) -> diagnostic::Result<()> {
+    let LayoutSpec::Swz { b, .. } = spec else {
+        return Ok(());
+    };
+    space::check_alignment(profile, *b).map_err(|error| error.with(format!("布局槽位 `{slot}`")))
+}
+
+/// 缓存指纹（README §10.3）：键覆盖的每一项都必须是"改了它就会改变产物"的输入。`flags` 与 `preamble`
+/// 一起哈希；布局与数据类型取声明而不是编一个具体形状——声明式会插进模板，给定形状才有的步长不属于
+/// 构建期输入。
 fn key(
     op: &OpDecl,
     profile: &Profile,
     path: &Path,
     tile: &TileCombo,
-    settings: &Settings,
+    prepared: &Prepared,
 ) -> CacheKey {
     let mut flags = profile.flags.join(" ");
     flags.push_str(&format!("|{}", profile.preamble));
@@ -400,9 +459,9 @@ fn key(
         })
         .unwrap_or_default();
 
-    // 片段层只取一次：片段哈希与 AST 指纹都从它派生。
-    let set = fragments(profile, settings);
-    let fragment_hashes: Vec<(Prim, u64)> = set
+    // 片段层只取一次：片段哈希与 AST 指纹都从同一份输入派生。
+    let fragment_hashes: Vec<(Prim, u64)> = prepared
+        .fragments
         .as_ref()
         .map(|set| {
             Prim::ALL
@@ -412,12 +471,10 @@ fn key(
                 .collect()
         })
         .unwrap_or_default();
-    // 缓存指纹锚定结构化 AST：FNV(AST 规范编码)。片段层不可用或 build 失败时回退到模板哈希，
+    // 缓存指纹锚定结构化 AST：FNV(AST 规范编码)。AST 不可用时回退到模板哈希，
     // 保持 key() 不返回 Result 的容错契约；正常路径下两条路径已由双射测试守着。
-    let ast_hash = match set {
-        Ok(set) => ast::build(op, tile, &set)
-            .map(|nodes| emit::fnv1a(&ast::encode(&nodes)))
-            .unwrap_or_else(|_| emit::fnv1a(&op.template)),
+    let ast_hash = match &prepared.nodes {
+        Ok(nodes) => emit::fnv1a(&ast::encode(nodes)),
         Err(_) => emit::fnv1a(&op.template),
     };
 
@@ -438,17 +495,32 @@ fn key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diagnostic::data::{Table, Value};
     use op::model::Sample;
 
     fn cpu_profile() -> Profile {
         Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案可解析")
     }
 
-    /// 只改声明里的某一处（模板不变）：用来构造"缓存键不变、判定结果变了"的输入。
-    fn declared(from_to: (&str, &str)) -> OpDecl {
-        let source = &op::builtin_named("gemv_i4").expect("内置");
-        let text = source.declaration().replace(from_to.0, from_to.1);
-        OpDecl::parse(&text, source.template()).expect("声明可解析")
+    /// 只改声明表里的某一处（模板不变）：用来构造"缓存键不变、判定结果变了"的输入。
+    fn declared(mutate: impl FnOnce(&mut Table)) -> OpDecl {
+        let source = op::builtin_named("gemv_i4").expect("内置");
+        let mut declaration = source.declaration().clone();
+        mutate(&mut declaration);
+        OpDecl::parse(&declaration, source.template()).expect("声明可解析")
+    }
+
+    /// 把所有搬运原语的 `bytes` 上限改到 `limit`。
+    fn declared_bytes(limit: &str) -> OpDecl {
+        declared(|declaration| {
+            for prim in ["load", "store", "load_async"] {
+                declaration.set(&format!("needs.{prim}.bytes"), Value::text(limit));
+            }
+        })
+    }
+
+    fn declared_swizzle() -> OpDecl {
+        declared(|declaration| declaration.set("layouts.w", Value::text("swz<40,3,3>")))
     }
 
     fn builtin() -> OpDecl {
@@ -479,18 +551,13 @@ mod tests {
             .expect("至少一个 tile 取值")
     }
 
-    fn settings(root: &std::path::Path) -> Settings {
-        let roots = llm_config::Roots::new(root.to_path_buf());
-        let mut settings = Settings::defaults(&roots);
-        settings
-            .apply_override(&format!("cache.dir={}", root.join("cache").display()))
-            .expect("cache.dir 覆盖合法");
-        settings
+    fn dirs(root: &std::path::Path) -> Dirs {
+        Dirs::under(root)
     }
 
     #[test]
     fn declared_traffic_beyond_the_fast_capacity_fails_the_build() {
-        let op = declared((r#"bytes = "<=4096""#, r#"bytes = "<=1048576""#));
+        let op = declared_bytes("<=1048576");
         let error = contract(&op, &cpu_profile(), &declared_path(&op)).unwrap_err();
         assert_eq!(error.code(), Code::Unsupported);
         assert!(error.to_string().contains("FAST"), "{error}");
@@ -499,7 +566,7 @@ mod tests {
 
     #[test]
     fn swizzle_beyond_the_bank_count_fails_the_build() {
-        let op = declared((r#"w = "row""#, r#"w = "swz<40,3,3>""#));
+        let op = declared_swizzle();
         let error = contract(&op, &cpu_profile(), &declared_path(&op)).unwrap_err();
         assert_eq!(error.code(), Code::Unsupported);
         assert!(error.to_string().contains("布局槽位 `w`"), "{error}");
@@ -527,15 +594,15 @@ mod tests {
         // 再只把字节数改到超出容量：键不变、缓存必然命中——契约仍必须重新判定。
         let root = std::env::temp_dir().join(format!("cutile-contract-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let settings = settings(&root);
+        let dirs = dirs(&root);
         let profile = cpu_profile();
         let op = builtin();
         let path = cpu_path(&op);
         let tile = first_tile(&op);
-        source(&op, &profile, &path, &tile, &settings).expect("合法声明可构建");
+        source(&op, &profile, &path, &tile, &dirs).expect("合法声明可构建");
 
-        let invalid = declared((r#"bytes = "<=4096""#, r#"bytes = "<=1048576""#));
-        let error = source(&invalid, &profile, &path, &tile, &settings).unwrap_err();
+        let invalid = declared_bytes("<=1048576");
+        let error = source(&invalid, &profile, &path, &tile, &dirs).unwrap_err();
         assert!(
             error.to_string().contains("524288"),
             "缓存命中不能跳过构建期契约：{error}"
@@ -549,11 +616,11 @@ mod tests {
     }
 
     /// 一份带主函数的内核源码与形状：产物身份要用的两个输入。
-    fn built(op: &OpDecl, settings: &Settings) -> (CacheKey, String, Sample) {
+    fn built(op: &OpDecl, dirs: &Dirs) -> (CacheKey, String, Sample) {
         let profile = cpu_profile();
         let path = cpu_path(op);
         let tile = first_tile(op);
-        let (source, key) = source(op, &profile, &path, &tile, settings).expect("可构建");
+        let (source, key) = source(op, &profile, &path, &tile, dirs).expect("可构建");
         let sample = (op::model(&op.name).expect("算子模型").sample)(32, 1);
         op.signature.check(&sample).expect("ABI 对齐");
         let harness =
@@ -571,10 +638,10 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("cutile-execute-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let settings = settings(&root);
+        let dirs = dirs(&root);
         let profile = cpu_profile();
         let op = builtin();
-        let (key, harness, sample) = built(&op, &settings);
+        let (key, harness, sample) = built(&op, &dirs);
 
         let wrapper = root.join("fake-cc.sh");
         std::fs::create_dir_all(&root).expect("临时目录");
@@ -591,7 +658,7 @@ mod tests {
         let wrapper = backend::probe(&wrapper.to_string_lossy()).expect("脚本可探测");
 
         let (first, artifact) =
-            execute(&profile, Some(&wrapper), &key, &harness, &settings).expect("第一次应真的编译");
+            execute(&profile, Some(&wrapper), &key, &harness, &dirs).expect("第一次应真的编译");
         assert!(!artifact.reused, "{artifact:?}");
         assert_eq!(first.bits.len(), sample.n);
         assert_eq!(
@@ -602,13 +669,13 @@ mod tests {
 
         std::fs::remove_file(&wrapper.command).expect("删掉编译器");
         let (second, hit) =
-            execute(&profile, Some(&wrapper), &key, &harness, &settings).expect("应复用产物");
+            execute(&profile, Some(&wrapper), &key, &harness, &dirs).expect("应复用产物");
         assert!(hit.reused, "{hit:?}");
         assert_eq!(second.bits, first.bits, "复用同一份产物，结果必须逐位相同");
 
         // `None` 就是"这台机器上没有编译器"：产物旁的身份文件足以认回同一份文件。
         let (third, from_identity) =
-            execute(&profile, None, &key, &harness, &settings).expect("没有编译器也应复用产物");
+            execute(&profile, None, &key, &harness, &dirs).expect("没有编译器也应复用产物");
         assert!(from_identity.reused, "{from_identity:?}");
         assert_eq!(from_identity.path, hit.path, "按身份找到的还是同一份产物");
         assert_eq!(third.bits, first.bits, "同一份产物，结果逐位相同");
@@ -625,11 +692,11 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("cutile-version-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let settings = settings(&root);
+        let dirs = dirs(&root);
         std::fs::create_dir_all(&root).expect("临时目录");
         let profile = cpu_profile();
         let op = builtin();
-        let (key, harness, _) = built(&op, &settings);
+        let (key, harness, _) = built(&op, &dirs);
 
         let fake = |name: &str, version: &str| {
             let path = root.join(name);
@@ -651,26 +718,23 @@ mod tests {
         assert_ne!(old.id(), new.id(), "前提：两条工具链身份不同");
 
         let (first, older) =
-            execute(&profile, Some(&old), &key, &harness, &settings).expect("第一次编译");
+            execute(&profile, Some(&old), &key, &harness, &dirs).expect("第一次编译");
         assert!(!older.reused, "{older:?}");
         let (second, newer) =
-            execute(&profile, Some(&new), &key, &harness, &settings).expect("第二次编译");
+            execute(&profile, Some(&new), &key, &harness, &dirs).expect("第二次编译");
         assert!(!newer.reused, "换工具链版本必须重新编译：{newer:?}");
         assert_ne!(older.path, newer.path, "两份产物不能共用路径");
         assert_eq!(first.bits, second.bits, "语义相同，结果必须逐位相同");
 
         // 再跑一次新版本：这次才该复用。
-        let (_, again) = execute(&profile, Some(&new), &key, &harness, &settings).expect("应复用");
+        let (_, again) = execute(&profile, Some(&new), &key, &harness, &dirs).expect("应复用");
         assert!(again.reused, "{again:?}");
         assert_eq!(again.path, newer.path);
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 换一组编译参数不许复用旧产物：见证程序的产物也按参数区分。
-    ///
-    /// 见证没有 `CacheKey`（它不来自算子声明），参数只能由调用方给。少了这一项，档案里改一次
-    /// `[compile].flags` 会复用旧参数编出的可执行文件——「这条见证跑通过」于是对着一份不再
-    /// 会被编出来的程序成立。
+    /// 换一组编译参数不许复用旧产物：见证没有 `CacheKey`，参数只能由调用方给；少了这一项，档案里改一次
+    /// `[compile].flags` 就会复用一个不再会被编出来的程序。
     #[cfg(unix)]
     #[test]
     fn a_new_flag_set_does_not_reuse_the_witness_binary() {
@@ -679,7 +743,7 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("cutile-flags-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let settings = settings(&root);
+        let dirs = dirs(&root);
         let program = "#include <stdio.h>\nint main(void){ printf(\"0\\n\"); return 0; }\n";
         let args = |values: &[&str]| -> Vec<String> {
             values.iter().map(|value| (*value).to_string()).collect()
@@ -687,12 +751,12 @@ mod tests {
         let o2 = args(&["-O2", "-std=c99"]);
         let o0 = args(&["-O0", "-std=c99"]);
 
-        let (_, first) = run_program(Some(&tool), &o2, "flags", program, &settings).expect("编译");
+        let (_, first) = run_program(Some(&tool), &o2, "flags", program, &dirs).expect("编译");
         assert!(!first.reused, "{first:?}");
-        let (_, again) = run_program(Some(&tool), &o2, "flags", program, &settings).expect("复用");
+        let (_, again) = run_program(Some(&tool), &o2, "flags", program, &dirs).expect("复用");
         assert!(again.reused, "同一组参数应复用：{again:?}");
 
-        let (_, relaid) = run_program(Some(&tool), &o0, "flags", program, &settings).expect("编译");
+        let (_, relaid) = run_program(Some(&tool), &o0, "flags", program, &dirs).expect("编译");
         assert!(!relaid.reused, "换参数必须重新编译：{relaid:?}");
         assert_ne!(relaid.path, again.path, "两份产物不能共用路径");
         assert_ne!(
@@ -701,7 +765,7 @@ mod tests {
         );
 
         // 没有编译器时也不许拿另一组参数的产物顶替：那不是"同一份产物"的副本。
-        let error = run_program(None, &args(&["-O1"]), "flags", program, &settings).unwrap_err();
+        let error = run_program(None, &args(&["-O1"]), "flags", program, &dirs).unwrap_err();
         assert_eq!(error.code(), Code::Unsupported, "{error}");
         assert!(error.to_string().contains("编译参数"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
@@ -714,11 +778,11 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("cutile-sandbox-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let settings = settings(&root);
+        let dirs = dirs(&root);
         let op = builtin();
-        let (key, harness, _) = built(&op, &settings);
-        execute(&cpu_profile(), Some(&tool), &key, &harness, &settings).expect("应能编译执行");
-        let leftovers: Vec<_> = std::fs::read_dir(settings.work_dir())
+        let (key, harness, _) = built(&op, &dirs);
+        execute(&cpu_profile(), Some(&tool), &key, &harness, &dirs).expect("应能编译执行");
+        let leftovers: Vec<_> = std::fs::read_dir(dirs.work())
             .map(|items| items.flatten().map(|item| item.file_name()).collect())
             .unwrap_or_default();
         assert!(
@@ -732,11 +796,11 @@ mod tests {
     fn without_a_compiler_a_missing_artifact_is_an_explicit_failure() {
         let root = std::env::temp_dir().join(format!("cutile-no-artifact-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let settings = settings(&root);
+        let dirs = dirs(&root);
         let op = builtin();
-        let (key, harness, _) = built(&op, &settings);
+        let (key, harness, _) = built(&op, &dirs);
 
-        let error = execute(&cpu_profile(), None, &key, &harness, &settings).unwrap_err();
+        let error = execute(&cpu_profile(), None, &key, &harness, &dirs).unwrap_err();
         assert_eq!(error.code(), Code::Unsupported, "{error}");
         assert!(error.to_string().contains("没有这份产物"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
@@ -749,10 +813,10 @@ mod tests {
         // 决定了耗时的来历。用两份假产物把这条判定单独钉住（不需要真编译器）。
         let root = std::env::temp_dir().join(format!("cutile-ambiguous-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let settings = settings(&root);
+        let dirs = dirs(&root);
         let op = builtin();
-        let (key, harness, _) = built(&op, &settings);
-        let cache = Cache::from_settings(&settings);
+        let (key, harness, _) = built(&op, &dirs);
+        let cache = Cache::from_dirs(&dirs);
 
         let exe = root.join("fake-exe");
         std::fs::create_dir_all(&root).expect("临时目录");
@@ -769,7 +833,7 @@ mod tests {
                 .expect("落产物");
         }
 
-        let error = execute(&cpu_profile(), None, &key, &harness, &settings).unwrap_err();
+        let error = execute(&cpu_profile(), None, &key, &harness, &dirs).unwrap_err();
         assert_eq!(error.code(), Code::Unsupported, "{error}");
         assert!(error.to_string().contains("cc@17.0.0"), "{error}");
         assert!(error.to_string().contains("clang@18.1.3"), "{error}");

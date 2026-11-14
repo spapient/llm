@@ -16,11 +16,8 @@ const fn slices() -> [[u32; 256]; 8] {
         let mut value = index as u32;
         let mut bit = 0;
         while bit < 8 {
-            value = if value & 1 == 1 {
-                (value >> 1) ^ POLY
-            } else {
-                value >> 1
-            };
+            // 无分支：最低位为 1 时掩码全 1，等价于 `(value >> 1) ^ POLY`。
+            value = (value >> 1) ^ (POLY & 0u32.wrapping_sub(value & 1));
             bit += 1;
         }
         slice[0][index] = value;

@@ -1,11 +1,15 @@
 //! 语法门：设备不在本机时，用一门语言自己的解析器把见证过一遍。
+//!
+//! 它不是执行，也不改任何 `grade`：只证明"这段见证在它自己声称的语言里语法成立"。缺了它会有
+//! 具体的假绿——`metal/witness.metal` 曾写成 `float *out`，host `cc` 能过，而 MSL 没有默认
+//! 地址空间，于是那份证据从未在自己声称的语言里存在过。
 
 use crate::atom::Witness;
 use crate::device::{clang, scratch};
+use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
 use crate::witness::{Front, Language, Selected, declared_witnesses, device_available, source};
 use diagnostic::{Code, Error};
-use llm_config::Settings;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
@@ -60,7 +64,7 @@ struct GateEntry {
     /// 这门语言。
     emit: Emit,
     /// 用这门语言的解析器过一遍全部已声明的见证。
-    parse: fn(&Profile, &Settings) -> diagnostic::Result<LanguageGate>,
+    parse: fn(&Profile, &Dirs) -> diagnostic::Result<LanguageGate>,
 }
 
 /// 全部语法前端：**加一门语言就加一行**。
@@ -106,7 +110,7 @@ impl Front for OpenClFront {
 /// 设备执行跑得到的设备（`c` / `metal`）返回 [`LanguageGate::Covered`]：门是自检的替代品，
 /// 能真跑的就不再只解析。其余设备按 `emit` 找语言前端；找不到就说找不到，不降级成别的东西。
 #[must_use]
-pub fn language_gate(profile: &Profile, settings: &Settings) -> LanguageGate {
+pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
     if device_available(profile) {
         return LanguageGate::Covered;
     }
@@ -120,7 +124,7 @@ pub fn language_gate(profile: &Profile, settings: &Settings) -> LanguageGate {
             ),
         };
     };
-    match (entry.parse)(profile, settings) {
+    match (entry.parse)(profile, dirs) {
         Ok(gate) => gate,
         // 解析器拒绝是证据的缺陷，不能与“本机没东西可用”归一类。
         Err(error) => LanguageGate::Rejected {
@@ -132,9 +136,9 @@ pub fn language_gate(profile: &Profile, settings: &Settings) -> LanguageGate {
 /// 语法门的执行器：`F` 决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
 ///
 /// 源码一律经 [`source`] 取：内嵌副本与 `data.root` 覆盖都由它决定。先前这里直接把
-/// `witness_root(settings).join(file)` 交给 clang，于是在没有源码树的发布机上会报成
+/// `witness_root(dirs).join(file)` 交给 clang，于是在没有源码树的发布机上会报成
 /// “见证被自己的语言拒绝”——真相是“本机没有那份源码”，分类与指向的人都错了。
-fn parse_all<F: Front>(profile: &Profile, settings: &Settings) -> diagnostic::Result<LanguageGate> {
+fn parse_all<F: Front>(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<LanguageGate> {
     let selected = declared_witnesses(profile)?;
     if selected.is_empty() {
         return Ok(LanguageGate::Absent {
@@ -146,8 +150,8 @@ fn parse_all<F: Front>(profile: &Profile, settings: &Settings) -> diagnostic::Re
             reason: format!("`{}` 不在本机", F::TOOL.join(" ")),
         });
     };
-    let dir = scratch(settings, "gate");
-    let parsed = write_and_parse::<F>(&selected, settings, &dir);
+    let dir = scratch(dirs, "gate");
+    let parsed = write_and_parse::<F>(&selected, dirs, &dir);
     let _ = std::fs::remove_dir_all(&dir);
     parsed?;
     Ok(LanguageGate::Passed {
@@ -159,26 +163,22 @@ fn parse_all<F: Front>(profile: &Profile, settings: &Settings) -> diagnostic::Re
 /// 把每份见证按“内嵌优先”的文本落到临时目录，再交给解析器：同一份源码可以没有磁盘副本。
 fn write_and_parse<F: Front>(
     selected: &[Selected<'_>],
-    settings: &Settings,
+    dirs: &Dirs,
     dir: &Path,
 ) -> diagnostic::Result<()> {
     let mut written: BTreeSet<&str> = BTreeSet::new();
     for (_, _, witness) in selected {
         if written.insert(witness.file.as_str()) {
-            write_one::<F>(witness, settings, dir)?;
+            write_one::<F>(witness, dirs, dir)?;
         }
     }
     Ok(())
 }
 
 /// 一份见证：按“内嵌优先”的文本落盘，再交给它自己语言的解析器。
-fn write_one<F: Front>(
-    witness: &Witness,
-    settings: &Settings,
-    dir: &Path,
-) -> diagnostic::Result<()> {
+fn write_one<F: Front>(witness: &Witness, dirs: &Dirs, dir: &Path) -> diagnostic::Result<()> {
     let path = dir.join(&witness.file);
-    write_unit(&path, &source(witness, settings)?)?;
+    write_unit(&path, &source(witness, dirs)?)?;
     parse_one::<F>(&path)
 }
 

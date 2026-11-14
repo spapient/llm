@@ -4,13 +4,11 @@
 //! C 侧与 Rust 侧用同一份 Abramowitz-Stegun 7.1.26 系数（绝对误差上界 1.5e-7），两侧只剩
 //! f32 舍入级差异，对拍 max_rel_err 在 1e-10 量级。
 
-use crate::unary::{Unary, UnaryCache};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::unary::Unary;
 
 /// GELU 实现。
 pub struct Gelu;
-
-static CACHE: UnaryCache = UnaryCache::new();
 
 /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`）。
 fn erf(x: f32) -> f32 {
@@ -31,10 +29,11 @@ fn erf(x: f32) -> f32 {
 
 impl Unary for Gelu {
     const EXPR: &'static str = "n,n->n";
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::unary::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::unary::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn apply(x: f32) -> f32 {

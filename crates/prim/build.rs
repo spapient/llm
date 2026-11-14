@@ -44,7 +44,13 @@ fn main() {
 
     // 整个 crate 目录都算输入：新增一台设备只放文件，构建脚本必须因此重跑。
     println!("cargo:rerun-if-changed={}", manifest.display());
-    println!("cargo:rerun-if-changed={}", prof::dir().display());
+    // 档案层由 `prof` 在构建期生成，但“目录名即档案名”这条约束在这里校验，档案改了也要重跑。
+    let profiles = manifest
+        .parent()
+        .unwrap_or(&manifest)
+        .join("prof")
+        .join("devices");
+    println!("cargo:rerun-if-changed={}", profiles.display());
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEVICE_IMAGE");
     println!("cargo:rerun-if-env-changed=CUTILE_REQUIRE_IMAGE");
 
@@ -177,13 +183,13 @@ fn scan(root: &Path) -> Vec<Vendor> {
 
 /// 目录对应的档案：名字即文件名，`vendor` / `emit` 必须与目录一致。
 fn profile_of(vendor: &str, ext: &str) -> Profile {
-    let text = prof::embedded(vendor).unwrap_or_else(|| {
+    let table = prof::embedded(vendor).unwrap_or_else(|| {
         fail(format!(
             "`{vendor}/` 没有对应的档案 `crates/prof/devices/{vendor}.toml`：\
              设备目录与档案必须同名"
         ))
     });
-    let profile = Profile::parse(text)
+    let profile = Profile::parse(table)
         .unwrap_or_else(|error| fail(format!("`{vendor}` 的档案解析失败：{error}")));
     if profile.meta.vendor != vendor {
         fail(format!(

@@ -23,10 +23,9 @@
 //! 最后一行是刻意的：把"内核已经做成运行时参数"的东西改成类型参数，换来的是每次不同分组都要
 //! 一份单态化副本与一次调用点上的匹配，而不是省下一条分支。
 
-use crate::einsum::{Access, Bits, Expr, Formula, Operand};
+use crate::einsum::{Formula, FormulaCache, OperandSpec};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
-use std::sync::OnceLock;
 
 /// 本骨架的基本轴：`m` 是规约轴（输入宽度），`n` 是输出轴。
 ///
@@ -42,42 +41,6 @@ pub const AXES: &[AxisSpec] = &[
         label: 'n',
     },
 ];
-
-/// 表达式里一个操作数的名字、位宽与方向。
-///
-/// 用 `const` 数组而不是 `Vec<Operand>`：`einsum` 的 [`Operand`] 装着 `String`，构造不了常量；
-/// 这里只放编译期就能定下的三件事，装载时再转成 [`Operand`]。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OperandSpec {
-    /// 缓冲名（与 `.k` 的形参名一致，也是诊断里显示的名字）。
-    pub name: &'static str,
-    /// 元素位宽。
-    pub bits: Bits,
-    /// 读写方向。
-    pub access: Access,
-}
-
-impl OperandSpec {
-    /// 只读操作数。
-    #[must_use]
-    pub const fn read(name: &'static str, bits: Bits) -> Self {
-        Self {
-            name,
-            bits,
-            access: Access::Read,
-        }
-    }
-
-    /// 只写操作数。
-    #[must_use]
-    pub const fn write(name: &'static str, bits: Bits) -> Self {
-        Self {
-            name,
-            bits,
-            access: Access::Write,
-        }
-    }
-}
 
 /// 样本缓冲里能装的元素类型：闭集 `f32` / `u8`（[`Values`] 的两个变体）。
 ///
@@ -188,17 +151,26 @@ pub trait Format {
         );
     };
 
-    /// 这份格式的表达式缓存。
+    /// 这份格式的缓存单元格（每个格式一份）。
     ///
-    /// 实现者写成 `static CACHE: Cache = Cache::new(); CACHE.get::<Self>()`：缓存按**格式**
-    /// 分开，`cost` 因此只解析一次表达式。写在骨架里的泛型 `static` 做不到这件事——Rust 的
-    /// `static` 在泛型作用域里只有一份，两种格式会共用同一个单元格。
-    fn formula() -> Result<&'static Formula, Error>;
+    /// 实现者写成函数体里的 `static CACHE: FormulaCache = FormulaCache::new(); &CACHE`。缓存必须
+    /// 按**格式**分开：写在骨架泛型里的 `static` 在 Rust 里只有一份，两种格式会共用同一个单元格，
+    /// 先跑的那一份会让另一份拿到错误的轴表。
+    fn cache() -> &'static FormulaCache;
+
+    /// 这份格式的表达式：第一次调用时解析并校验，之后复用。
+    ///
+    /// # Errors
+    ///
+    /// 表达式与操作数表不自洽时返回说明（带 `op::gemv::formula` 帧）。
+    fn formula() -> Result<&'static Formula, Error> {
+        Self::cache().get(Self::EXPR, Self::OPERANDS, "op::gemv::formula")
+    }
 
     /// 一行权重占多少个元素。
     fn row(m: usize) -> usize;
 
-    /// 确定性权重：同一形状永远得到同一组取值（DESIGN §12.3 的"可复现"要求）。
+    /// 确定性权重：同一形状永远得到同一组取值（cutile README §12.3 的"可复现"要求）。
     fn weights(m: usize, n: usize) -> Vec<Self::Elem>;
 
     /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
@@ -237,50 +209,6 @@ fn input(m: usize) -> Vec<f32> {
     (0..m)
         .map(|index| ((index * 7) % 13) as f32 * 0.25 - 1.0)
         .collect()
-}
-
-/// 一份表达式缓存：构造一次，之后复用到任意形状。
-///
-/// 缓存**由具体格式持有**（`static CACHE: Cache` 写在 impl 的 `formula()` 里）。写成泛型函数
-/// 里的 `static` 会两种格式共用一份，先跑的那一份表达式会让另一份拿到错误的轴表——这正是
-/// 一次实测里"`g` 不在 `nm,m,n->n` 里"的来源。`Cache::get::<F>` 仍是每格式单态化的，
-/// 没有 `HashMap` 那样的运行期索引。
-///
-/// 初始化失败也一起缓存——同一条常量表达式不会第二次成功。
-pub struct Cache(OnceLock<Result<Formula, Error>>);
-
-impl Cache {
-    /// 空缓存（`static` 初始化用，必须是 `const fn`）。
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(OnceLock::new())
-    }
-
-    /// 取这份格式的表达式：第一次调用时解析并校验，之后直接复用。
-    ///
-    /// # Errors
-    ///
-    /// 表达式或操作数表不自洽时返回第一次得到的说明（带 `op::gemv::formula` 帧）。
-    pub fn get<F: Format>(&'static self) -> Result<&'static Formula, Error> {
-        self.0
-            .get_or_init(|| {
-                let operands = F::OPERANDS
-                    .iter()
-                    .map(|spec| Operand::new(spec.name, spec.bits, spec.access))
-                    .collect();
-                Expr::parse(F::EXPR)
-                    .and_then(|expr| Formula::new(expr, operands))
-                    .map_err(|error| error.with("op::gemv::formula"))
-            })
-            .as_ref()
-            .map_err(Clone::clone)
-    }
-}
-
-impl Default for Cache {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// 把形状对翻译成投影骨架的具名轴上下文：`m` 是规约轴、`n` 是输出轴。
@@ -352,6 +280,55 @@ fn weights<F: Format>(sample: &Sample) -> diagnostic::Result<&[F::Elem]> {
     })
 }
 
+/// 输出维度不能为 0：三条格式与参考实现共同的前置约束。
+///
+/// 写成返回值而不是就地 `if`：`?` 会在调用方的复杂度账上记一格，而这条判据的"为什么"
+/// （空输出让后面的 `chunks(0)` 与 `scales.len() / n` 都失去意义）只需要说一次。
+pub(crate) fn non_empty(n: usize) -> Result<(), Error> {
+    if n == 0 {
+        return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
+    }
+    Ok(())
+}
+
+/// 带标度格式的公共前置约束：`scales` 能按行均分、分组能整除输入宽度。
+///
+/// 返回 `(groups, group)`——每行多少组、每组多少元素。int4 与 int8 只在"一行权重多少个元素"
+/// 与"分组必须是偶数"上不同，那两条留在各自的 `forward` 里：它们属于格式，不属于骨架。
+pub(crate) fn scaled_groups(m: usize, n: usize, scales: usize) -> Result<(usize, usize), Error> {
+    non_empty(n)?;
+    if !scales.is_multiple_of(n) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("scale 长度 {scales} 不是 {n} 的整数倍"),
+        ));
+    }
+    let groups = scales / n;
+    if groups == 0 || !m.is_multiple_of(groups) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("scale 长度 {scales} 推不出能整除 {m} 的分组数"),
+        ));
+    }
+    Ok((groups, m / groups))
+}
+
+/// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
+///
+/// 三条格式与参考实现的说明逐字相同，判据也相同（`>=` 而不是 `==`：调用方可以带多余尾部），
+/// 所以它只有一份。上界用饱和乘：`n · row` 溢出时直接判为"长度不足"，而不是回绕成一个轻松
+/// 满足的小数。
+pub(crate) fn required_weights(weights: usize, n: usize, row: usize) -> Result<usize, Error> {
+    let want = n.saturating_mul(row);
+    if weights < want {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("权重长度 {weights} < {want}"),
+        ));
+    }
+    Ok(want)
+}
+
 /// 标量参考：校验由骨架给出，算术由格式给出。
 ///
 /// 骨架负责的部分与格式无关——输出非空、输入够长、权重够长、结果写进一块新缓冲；格式负责
@@ -363,32 +340,40 @@ fn weights<F: Format>(sample: &Sample) -> diagnostic::Result<&[F::Elem]> {
 pub fn reference<F: Format>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let x = sample.f32("x")?;
     let weights = weights::<F>(sample)?;
-    let scales: &[f32] = match F::SCALES {
-        Some(_) => sample.f32("scales")?,
-        None => &[],
-    };
-    let m = sample.m;
-    let n = sample.n;
+    let scales = scales::<F>(sample)?;
+    let (m, n) = (sample.m, sample.n);
+    gauge(x.len(), m, n)?;
+    run::<F>(&x[..m], weights, scales, m, n)
+}
 
-    if n == 0 {
-        return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
+/// 标度缓冲：只有格式声明了 [`Format::SCALES`] 才读；没有标度的格式拿空切片。
+fn scales<F: Format>(sample: &Sample) -> diagnostic::Result<&[f32]> {
+    match F::SCALES {
+        Some(_) => sample.f32("scales"),
+        None => Ok(&[]),
     }
-    if x.len() < m {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("输入长度 {} < {m}", x.len()),
-        ));
-    }
-    let want = n * F::row(m);
-    if weights.len() < want {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("权重长度 {} < {want}", weights.len()),
-        ));
-    }
+}
 
+/// 骨架侧的尺寸判据：输出非空、输入够长。只问答不答格式——权重够不够由 [`run`] 判。
+fn gauge(x: usize, m: usize, n: usize) -> diagnostic::Result<()> {
+    non_empty(n)?;
+    if x < m {
+        return Err(Error::new(Code::Invalid, format!("输入长度 {x} < {m}")));
+    }
+    Ok(())
+}
+
+/// 权重下界够了之后，把结果交给格式自己的算术（分配也在这里，格式只写缓冲）。
+fn run<F: Format>(
+    x: &[f32],
+    weights: &[F::Elem],
+    scales: &[f32],
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<Vec<f32>> {
+    let want = required_weights(weights.len(), n, F::row(m))?;
     let mut y = vec![0.0f32; n];
-    F::forward(&x[..m], &weights[..want], scales, &mut y)?;
+    F::forward(x, &weights[..want], scales, &mut y)?;
     Ok(y)
 }
 

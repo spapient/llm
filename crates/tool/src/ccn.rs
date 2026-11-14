@@ -38,58 +38,132 @@ struct Range {
     body: Vec<Token>,
 }
 
-/// token 扫描状态：`if` 体待匹配、`else` 归属。
+/// token 扫描时共享的状态：`if` 体待匹配、`else` 归属。
 #[derive(Default)]
 struct State {
     body: bool,
     pending: bool,
 }
 
-/// 分析单份源码，返回按源码位置排序的全部函数 finding。
+/// 遍历上下文：函数范围与逐函数条件数。
+struct Walker<'a> {
+    ranges: &'a [Range],
+    out: Vec<u32>,
+    state: State,
+}
+
+impl Walker<'_> {
+    /// 递归 token 树，按 lizard 口径累计条件；位置归属最内层函数。
+    fn walk(&mut self, tokens: &[Token]) {
+        let mut match_brace = false;
+        for (idx, token) in tokens.iter().enumerate() {
+            match token {
+                Token::Ident { text, pos } => match_brace |= self.ident(text, *pos),
+                Token::Punct { ch, pos } => self.punct(tokens, idx, *ch, *pos),
+                Token::Group {
+                    delim, items, open, ..
+                } => match_brace = self.group(delim, items, *open, match_brace),
+                Token::Literal { .. } => self.state.pending = false,
+            }
+        }
+    }
+
+    /// 标识符：条件词 +1（`else` 只在 let-else 时计）；返回是否还要吃掉花括号（`match`）。
+    fn ident(&mut self, text: &str, pos: Pos) -> bool {
+        let pending = std::mem::take(&mut self.state.pending);
+        if text == "else" {
+            if !pending {
+                self.add(pos, 1);
+            }
+            return false;
+        }
+        if text == "if" {
+            self.state.body = true;
+        }
+        if matches!(text, "if" | "for" | "while" | "catch" | "where") {
+            self.add(pos, 1);
+        }
+        text == "match"
+    }
+
+    /// 标点：`&&`/`||` 与 `?` 各算一个条件。
+    fn punct(&mut self, tokens: &[Token], idx: usize, ch: char, pos: Pos) {
+        self.state.pending = false;
+        if doubled(tokens, idx, ch) || ch == '?' {
+            self.add(pos, 1);
+        }
+    }
+
+    /// 分组：`match` 花括号计臂数（首臂不计），`if` 体决定后续 `else` 归属。
+    fn group(&mut self, delim: &Delim, items: &[Token], open: Pos, match_brace: bool) -> bool {
+        if *delim != Delim::Brace {
+            self.walk(items);
+            self.state.pending = false;
+            return match_brace;
+        }
+        let extra = arrows(items).saturating_sub(1);
+        if match_brace && extra > 0 {
+            self.add(open, extra);
+        }
+        let closes = self.state.body;
+        self.state.body = false;
+        self.walk(items);
+        self.state.pending = closes;
+        false
+    }
+
+    /// 把一个条件记到覆盖该位置的最内层函数。
+    fn add(&mut self, pos: Pos, extra: u32) {
+        if let Some(idx) = holder(self.ranges, pos) {
+            self.out[idx] += extra;
+        }
+    }
+}
+
+/// 分析单份源码，返回按源码位置排序的全部函数 finding（同名函数按源码顺序编号）。
 pub fn analyze(src: &str) -> diagnostic::Result<Vec<Finding>> {
     let prepared = strip_tests(src)?;
     let tokens = parse(&prepared)?;
     let mut ranges = Vec::new();
     collect(&tokens, &mut ranges);
-    order(&mut ranges);
-    let mut hits = vec![0u32; ranges.len()];
-    let mut state = State::default();
-    walk(&tokens, &ranges, &mut hits, &mut state)?;
-    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-    let mut findings = Vec::new();
-    for (idx, range) in ranges.iter().enumerate() {
-        let nth = *seen
-            .entry(range.name.clone())
-            .and_modify(|v| *v += 1)
-            .or_insert(0);
-        findings.push(Finding {
+    ranges.sort_by_key(|r| (r.fn_pos.line, r.fn_pos.col));
+    let hits = {
+        let mut walker = Walker {
+            ranges: &ranges,
+            out: vec![0; ranges.len()],
+            state: State::default(),
+        };
+        walker.walk(&tokens);
+        walker.out
+    };
+    let mut seen = BTreeMap::new();
+    let findings = ranges
+        .iter()
+        .enumerate()
+        .map(|(idx, range)| Finding {
             name: range.name.clone(),
-            nth,
+            nth: *seen
+                .entry(range.name.clone())
+                .and_modify(|v| *v += 1)
+                .or_insert(0),
             start: range.fn_pos.line,
             end: range.close.line,
             ccn: hits[idx] + 1,
             nloc: nloc(range),
-        });
-    }
+        })
+        .collect();
     Ok(findings)
 }
 
-/// 递归收集函数定义；函数指针类型（`fn` 后直接是圆括号组）不算定义。
+/// 递归收集函数定义；宏定义体与函数指针类型都不算定义。
 fn collect(tokens: &[Token], out: &mut Vec<Range>) {
     let mut idx = 0;
     while idx < tokens.len() {
-        // 宏定义体内的 fn 只有展开后才存在（syn 不展开宏），跳过整个宏体不收集。
-        if let Token::Ident { text, .. } = &tokens[idx]
-            && (text == "macro_rules" || text == "macro")
-            && let Some(abs) = brace_after(tokens, idx + 1)
-        {
+        if let Some(abs) = macro_body_end(tokens, idx) {
             idx = abs + 1;
             continue;
         }
-        if is_fn_keyword(&tokens[idx])
-            && matches!(tokens.get(idx + 1), Some(Token::Ident { .. }))
-            && let Some((range, body_idx)) = definition(tokens, idx)
-        {
+        if let Some((range, body_idx)) = function_at(tokens, idx) {
             collect(&range.body, out);
             out.push(range);
             idx = body_idx + 1;
@@ -102,31 +176,43 @@ fn collect(tokens: &[Token], out: &mut Vec<Range>) {
     }
 }
 
-fn is_fn_keyword(token: &Token) -> bool {
-    matches!(token, Token::Ident { text, .. } if text == "fn")
+/// 宏定义体：`macro_rules! name { .. }` 或 `macro name { .. }` 的花括号下标。
+fn macro_body_end(tokens: &[Token], idx: usize) -> Option<usize> {
+    let Token::Ident { text, .. } = &tokens[idx] else {
+        return None;
+    };
+    if text != "macro_rules" && text != "macro" {
+        return None;
+    }
+    brace_after(tokens, idx + 1)
 }
 
-/// 从 `fn` 位置构造函数范围；返回范围与函数体在同级序列中的下标。
-fn definition(tokens: &[Token], at: usize) -> Option<(Range, usize)> {
-    let fn_pos = match &tokens[at] {
-        Token::Ident { pos, .. } => *pos,
-        _ => return None,
+/// `idx` 处的函数定义：范围与函数体在同级序列中的下标。
+fn function_at(tokens: &[Token], idx: usize) -> Option<(Range, usize)> {
+    let Token::Ident { text, pos } = &tokens[idx] else {
+        return None;
     };
-    let name = match tokens.get(at + 1) {
-        Some(Token::Ident { text, .. }) => text.clone(),
-        _ => return None,
+    let Some(Token::Ident { text: name, .. }) = tokens.get(idx + 1) else {
+        return None;
     };
-    for (idx, token) in tokens.iter().enumerate().skip(at + 2) {
+    if text != "fn" {
+        return None;
+    }
+    scan_body(tokens, idx + 2, name, *pos)
+}
+
+/// 从签名之后找函数体：先遇到分号说明只是声明，先遇到花括号就是函数体。
+fn scan_body(tokens: &[Token], from: usize, name: &str, fn_pos: Pos) -> Option<(Range, usize)> {
+    for (idx, token) in tokens.iter().enumerate().skip(from) {
         match token {
             Token::Group {
                 delim: Delim::Brace,
                 items,
                 open,
                 close,
-                ..
             } => {
                 let range = Range {
-                    name,
+                    name: name.to_string(),
                     fn_pos,
                     open: *open,
                     close: *close,
@@ -135,108 +221,34 @@ fn definition(tokens: &[Token], at: usize) -> Option<(Range, usize)> {
                 return Some((range, idx));
             }
             Token::Punct { ch: ';', .. } => return None,
-            // 签名组内只可能有函数指针类型，递归不会产生定义——也就不必再走一遍并丢掉结果。
-            Token::Group { .. } => {}
-            Token::Ident { .. } | Token::Punct { .. } | Token::Literal { .. } => {}
+            _ => {}
         }
     }
     None
-}
-
-fn order(ranges: &mut [Range]) {
-    ranges.sort_by_key(|r| (r.fn_pos.line, r.fn_pos.col));
-}
-
-/// 递归 token 树，按 lizard 口径累计条件；位置归属最内层函数。
-fn walk(
-    tokens: &[Token],
-    ranges: &[Range],
-    out: &mut [u32],
-    state: &mut State,
-) -> diagnostic::Result<()> {
-    let mut idx = 0;
-    let mut match_brace = false;
-    while idx < tokens.len() {
-        match &tokens[idx] {
-            Token::Ident { text, pos } => {
-                if text == "else" {
-                    if !state.pending {
-                        bump(ranges, out, *pos);
-                    }
-                    state.pending = false;
-                } else {
-                    state.pending = false;
-                    if is_word(text) {
-                        bump(ranges, out, *pos);
-                    }
-                    if text == "if" {
-                        state.body = true;
-                    }
-                    if text == "match" {
-                        match_brace = true;
-                    }
-                }
-            }
-            Token::Punct { ch, pos } => {
-                state.pending = false;
-                if doubled(tokens, idx, *ch) || *ch == '?' {
-                    bump(ranges, out, *pos);
-                }
-            }
-            Token::Group {
-                delim, items, open, ..
-            } => {
-                let is_brace = *delim == Delim::Brace;
-                if is_brace && match_brace {
-                    let arrows = arrows(items);
-                    if arrows > 1 {
-                        add(ranges, out, *open, arrows - 1);
-                    }
-                    match_brace = false;
-                }
-                let closes = is_brace && state.body;
-                if is_brace {
-                    state.body = false;
-                }
-                walk(items, ranges, out, state)?;
-                state.pending = closes;
-            }
-            Token::Literal { .. } => {
-                state.pending = false;
-            }
-        }
-        idx += 1;
-    }
-    Ok(())
-}
-
-fn is_word(word: &str) -> bool {
-    matches!(word, "if" | "for" | "while" | "catch" | "where")
 }
 
 /// 从 `from` 开始第一个花括号组的绝对下标。
 fn brace_after(tokens: &[Token], from: usize) -> Option<usize> {
     tokens
         .iter()
-        .enumerate()
         .skip(from)
-        .find_map(|(idx, token)| {
-            matches!(
-                token,
-                Token::Group {
-                    delim: Delim::Brace,
-                    ..
-                }
-            )
-            .then_some(idx)
-        })
+        .position(is_brace)
+        .map(|at| at + from)
+}
+
+fn is_brace(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Group {
+            delim: Delim::Brace,
+            ..
+        }
+    )
 }
 
 fn doubled(tokens: &[Token], idx: usize, ch: char) -> bool {
-    if !matches!(ch, '&' | '|') {
-        return false;
-    }
-    matches!(tokens.get(idx + 1), Some(Token::Punct { ch: next, .. }) if *next == ch)
+    matches!(ch, '&' | '|')
+        && matches!(tokens.get(idx + 1), Some(Token::Punct { ch: next, .. }) if *next == ch)
 }
 
 /// 组内直接 `=>` 箭头数（不递归嵌套组：嵌套组是单个 token，内部箭头由它自己的 match 计数）。
@@ -256,33 +268,16 @@ fn arrows(tokens: &[Token]) -> u32 {
     count
 }
 
-fn add(ranges: &[Range], out: &mut [u32], pos: Pos, extra: u32) {
-    if let Some(idx) = holder(ranges, pos) {
-        out[idx] += extra;
-    }
-}
-
-fn bump(ranges: &[Range], out: &mut [u32], pos: Pos) {
-    add(ranges, out, pos, 1)
-}
-
 /// 位置所属的最内层函数；无函数归属（如顶层 const）的条件不计。
 fn holder(ranges: &[Range], pos: Pos) -> Option<usize> {
-    ranges
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| holds(r, pos))
-        .map(|(idx, _)| idx)
-        .max_by_key(|&idx| (ranges[idx].open.line, ranges[idx].open.col))
+    (0..ranges.len())
+        .filter(|&at| holds(&ranges[at], pos))
+        .max_by_key(|&at| ranges[at].open)
 }
 
 fn holds(range: &Range, pos: Pos) -> bool {
     // 范围从 `fn` 起始：签名里的条件（`?Sized` 的 `?`、`where`）同样归属本函数。
-    ge(pos, range.fn_pos) && ge(range.close, pos)
-}
-
-fn ge(a: Pos, b: Pos) -> bool {
-    a.line > b.line || (a.line == b.line && a.col >= b.col)
+    pos >= range.fn_pos && range.close >= pos
 }
 
 /// 函数体范围内 token 覆盖到的行数（空行与纯注释行无 token，自然不计）。

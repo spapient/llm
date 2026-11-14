@@ -1,4 +1,4 @@
-//! 模板词法：把 `<name>.k` 切成文本、`{{槽位}}` 与 `@原语(...)`（DESIGN §4.2）。
+//! 模板词法：把 `<name>.k` 切成文本、`{{槽位}}` 与 `@原语(...)`（cutile README §4.2）。
 //!
 //! 词法属于声明层：它解释的是 `ops/` 里的文本格式，声明解析（[`crate::decl::OpDecl`]）要用它提前
 //! 拦住 `{{GMAXX}}` 这类笔误。片段拼接（`@原语` → 片段文本）才是机制，留在 `cutile`。
@@ -52,6 +52,17 @@ pub enum Arg<'a> {
     },
 }
 
+/// 一个参数的两种写法。
+impl Arg<'_> {
+    /// 命名参数解成 `(键, 值)`；位置参数返回 `None`。
+    pub fn named(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Expr(_) => None,
+            Self::Named { key, value } => Some((key, value)),
+        }
+    }
+}
+
 /// 一次词法的结果：切好的片段。
 ///
 /// 这是装载期三次校验共用的视图（[`Self::slots`]、[`Self::calls`]），也是 [`lex`] 的容器。
@@ -73,37 +84,19 @@ impl<'a> Template<'a> {
 
         while cursor < template.len() {
             let rest = &template[cursor..];
-            if rest.starts_with("{{")
-                && let Some(end) = rest[2..].find("}}")
-            {
-                if text_start < cursor {
-                    segments.push(Segment::Text(&template[text_start..cursor]));
-                }
-                segments.push(Segment::Slot {
-                    name: rest[2..2 + end].trim(),
-                    line,
-                });
-                cursor = advance(template, cursor, 2 + end + 2, &mut line);
-                text_start = cursor;
+            let Some((consumed, segment)) = construct(rest, line) else {
+                // 普通字符：推进一个字符，顺带数换行；文本段不逐字拷贝，最后整段切走。
+                let width = rest.chars().next().map_or(0, char::len_utf8);
+                line += rest[..width].matches('\n').count();
+                cursor += width;
                 continue;
+            };
+            if text_start < cursor {
+                segments.push(Segment::Text(&template[text_start..cursor]));
             }
-            if rest.starts_with('@')
-                && let Some((consumed, prim, args)) = call(rest)
-            {
-                if text_start < cursor {
-                    segments.push(Segment::Text(&template[text_start..cursor]));
-                }
-                segments.push(Segment::Call { prim, args, line });
-                cursor = advance(template, cursor, consumed, &mut line);
-                text_start = cursor;
-                continue;
-            }
-            // 普通字符：推进一个字符，顺带数换行；文本段不逐字拷贝，最后整段切走。
-            let ch = rest.chars().next().expect("cursor 未到末尾");
-            cursor += ch.len_utf8();
-            if ch == '\n' {
-                line += 1;
-            }
+            segments.push(segment);
+            cursor = advance(template, cursor, consumed, &mut line);
+            text_start = cursor;
         }
         if text_start < template.len() {
             segments.push(Segment::Text(&template[text_start..]));
@@ -163,36 +156,66 @@ fn advance(template: &str, from: usize, consumed: usize, line: &mut usize) -> us
     to
 }
 
-/// 识别 `@原语(...)`，返回 `(消费的字节数, 原语, 参数)`。
-fn call<'a>(rest: &'a str) -> Option<(usize, Prim, Vec<Arg<'a>>)> {
-    let after = &rest[1..];
-    let name_len = after
-        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-        .unwrap_or(after.len());
-    if name_len == 0 || !after[name_len..].starts_with('(') {
-        return None;
+/// 认一个构造：`(消费的字节数, 片段)`。槽位在前、原语调用在后，都不是就返回 `None`。
+fn construct<'a>(rest: &'a str, line: usize) -> Option<(usize, Segment<'a>)> {
+    if rest.starts_with("{{") {
+        return slot(rest, line);
     }
-    let end = matching_paren(&after[name_len..])?;
-    let prim = Prim::parse(&after[..name_len])?;
-    let args = parse_args(&after[name_len + 1..name_len + end]);
-    Some((1 + name_len + end + 1, prim, args))
+    let (consumed, prim, args) = call(rest)?;
+    Some((consumed, Segment::Call { prim, args, line }))
 }
 
+/// `{{槽位}}`：名字去首尾空白，行号取构造起点；未闭合的写法退回文本。
+fn slot<'a>(rest: &'a str, line: usize) -> Option<(usize, Segment<'a>)> {
+    let end = rest[2..].find("}}")?;
+    let name = rest.get(2..2 + end)?.trim();
+    Some((2 + end + 2, Segment::Slot { name, line }))
+}
+
+/// 识别 `@原语(...)`，返回 `(消费的字节数, 原语, 参数)`。
+///
+/// 名字不在闭集里、调用没开括号、括号不配对——三种「不像一个构造」都返回 `None`，
+/// 由 [`Template::parse`] 退回成文本，而不是猜一半再报错。
+fn call<'a>(rest: &'a str) -> Option<(usize, Prim, Vec<Arg<'a>>)> {
+    let after = rest.strip_prefix('@')?;
+    let (name_len, prim) = named(after)?;
+    let open = after.get(name_len..).filter(|tail| tail.starts_with('('))?;
+    let end = matching_paren(open)?;
+    Some((1 + name_len + end + 1, prim, parse_args(&open[1..end])))
+}
+
+/// 调用名：名字占的字节数与它在原语闭集里的身份。
+fn named(text: &str) -> Option<(usize, Prim)> {
+    let skip = |ch: char| !ch.is_ascii_alphanumeric() && ch != '_';
+    let len = text.find(skip).unwrap_or(text.len());
+    Some((len, Prim::parse(&text[..len])?))
+}
+
+/// 从 `(` 找配对的 `)`，返回它的下标（相对 `text` 起点）。
+///
+/// 准入条件是「`text` 从 `(` 开始」：这是调用点唯一会传进来的形状，写进判据就少一条
+/// "深度是否有效"的分支。
 fn matching_paren(text: &str) -> Option<usize> {
+    if !text.starts_with('(') {
+        return None;
+    }
     let mut depth = 0usize;
     for (index, ch) in text.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
+        depth = depth_step(depth, ch)?;
+        if depth == 0 {
+            return Some(index);
         }
     }
     None
+}
+
+/// 括号深度的一步：`(` 加深、`)` 回退（退到 0 之前即不配对），其它字符不动。
+fn depth_step(depth: usize, ch: char) -> Option<usize> {
+    match ch {
+        '(' => Some(depth + 1),
+        ')' => depth.checked_sub(1),
+        _ => Some(depth),
+    }
 }
 
 /// 按顶层逗号切分参数；`key: value` 且键是标识符时是命名参数。
@@ -201,40 +224,39 @@ fn parse_args(inner: &str) -> Vec<Arg<'_>> {
     let mut depth = 0usize;
     let mut start = 0usize;
     for (index, ch) in inner.char_indices() {
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                push_arg(&mut args, &inner[start..index]);
-                start = index + 1;
-            }
-            _ => {}
+        let at_comma = ch == ',' && depth == 0;
+        depth = depth_step(depth, ch).unwrap_or_default();
+        if at_comma {
+            push_arg(&mut args, &inner[start..index]);
+            start = index + 1;
         }
     }
     push_arg(&mut args, &inner[start..]);
     args
 }
 
+/// 一个参数：去空白后空则丢弃，`键: 值` 且键是标识符则是命名参数，否则是位置参数。
 fn push_arg<'a>(args: &mut Vec<Arg<'a>>, piece: &'a str) {
     let piece = piece.trim();
     if piece.is_empty() {
         return;
     }
-    if let Some((key, value)) = piece.split_once(':') {
+    let named = piece.split_once(':').and_then(|(key, value)| {
         let key = key.trim();
-        if !key.is_empty()
-            && key
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
-            args.push(Arg::Named {
-                key,
-                value: value.trim(),
-            });
-            return;
-        }
-    }
-    args.push(Arg::Expr(piece));
+        is_key(key).then_some(Arg::Named {
+            key,
+            value: value.trim(),
+        })
+    });
+    args.push(named.unwrap_or(Arg::Expr(piece)));
+}
+
+/// 命名参数的键：非空、且只由字母数字下划线组成。
+fn is_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 #[cfg(test)]

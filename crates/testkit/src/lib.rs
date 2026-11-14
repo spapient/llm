@@ -4,7 +4,7 @@
 //! 测试夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。**被依赖**：各成员
 //! 的 `[dev-dependencies]`。
 //!
-//! 这里的 [`DEVICE_ENV`] 是**测试门控变量，不是产品配置**：它不进 `llm-config` 的键闭集，
+//! 这里的 [`DEVICE_ENV`] 是**测试门控变量，不是产品配置**：它不进 `cli::settings` 的键表，
 //! 生产代码不得读取它。真机用例的形态固定为"默认跳过、显式开门才跑"：
 //!
 //! ```
@@ -58,10 +58,13 @@ fn matches(spec: &str, vendor: &str) -> bool {
 
 /// 一个已创建的空临时目录，标签用于区分用例。
 ///
-/// 目录名带进程号，避免并行测试互相踩。
+/// 目录名带进程号，避免并行测试互相踩。建不出来不在这里终止测试进程：返回的路径照样交给
+/// 调用方，它紧接着的写入会带出带路径与 io 类别的错误，比一句「创建失败」更有用。
 pub fn scratch_dir(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("llm-testkit-{}-{tag}", std::process::id()));
-    std::fs::create_dir_all(&path).expect("创建测试临时目录");
+    if let Err(error) = std::fs::create_dir_all(&path) {
+        eprintln!("testkit: 无法创建临时目录 `{}`：{error}", path.display());
+    }
     path
 }
 

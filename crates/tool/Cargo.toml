@@ -10,8 +10,11 @@ description = "Repository tool: config-driven static quality gates and human-rea
 publish = false
 
 [dependencies]
-config = { path = "../config", package = "llm-config" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [lints]
 workspace = true
+
+[build-dependencies]
+# 构建期共享内核（读取/生成）在 diagnostic 的 build feature 下，运行期不引入 toml。
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["build"] }

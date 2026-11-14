@@ -1,14 +1,14 @@
 # P0 算子：weight-only int4 解码 GEMV。
-# 选它的理由（DESIGN §16）：带宽受限、无布局推导、roofline 好算、三台设备都能跑。
+# 选它的理由（cutile README §16）：带宽受限、无布局推导、roofline 好算、三台设备都能跑。
 
 [op]
 name     = "gemv_i4"
 skeleton = "gemm"
 summary  = "y[n] = Σ_g scale[n,g] · dot(dequant(w[n, g·G : g·G+G]), x[g·G : g·G+G])"
 
-# 轴取值（DESIGN §4.1）：GMAX 是反量化缓冲 `deq[GMAX]` 的上界，也是 reduce 的轴名。
+# 轴取值（cutile README §4.1）：GMAX 是反量化缓冲 `deq[GMAX]` 的上界，也是 reduce 的轴名。
 # 它必须 ≥ 组大小，而组大小由 `needs.quant.group = ["32"]` 固定成 32；更大的取值只多占栈，
-# 不改 flops、不改流量。P0 不做 tile 比较（DESIGN §9），所以这里只声明实现真正需要的那个值。
+# 不改 flops、不改流量。P0 不做 tile 比较（cutile README §9），所以这里只声明实现真正需要的那个值。
 [axes]
 GMAX = [32]
 

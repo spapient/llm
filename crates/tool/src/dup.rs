@@ -4,29 +4,30 @@
 //! 语义巡检用 `cargo dupes`（AST 归一化识别近重复）。这里只保留两者都不管的单文件行数上限。
 //! 纯函数：调用方传入文本，超限时返回实际行数，不读盘、不打印。
 
-use crate::gate::Gate;
+use crate::gate::{Gate, Metric};
 
-/// 文件行数超限时返回实际行数。
+/// 文件行数超限时返回实际行数；限值由门禁给出，本函数不持有阈值。
 #[must_use]
 pub fn file_lines(text: &str, gate: &Gate) -> Option<usize> {
     let lines = text.lines().count();
-    (lines > gate.max_file_lines).then_some(lines)
+    (lines > gate.limit(Metric::Lines)).then_some(lines)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use diagnostic::data::{Table, Value};
 
     use super::*;
 
+    /// 一份只有阈值的 `[gate]`：行数上限故意收紧到 10，便于用短文本验证边界。
     fn gate() -> Gate {
-        Gate {
-            max_ccn: 5,
-            max_nloc: 60,
-            simd_nloc: 96,
-            max_file_lines: 10,
-            debt: BTreeMap::new(),
-        }
+        let thresholds = vec![
+            ("ccn_max", Value::int(5)),
+            ("nloc_max", Value::int(60)),
+            ("file_max_lines", Value::int(10)),
+        ];
+        Gate::from_table(&Table::from_pairs(vec![("gate", Value::table(thresholds))]))
+            .expect("测试阈值合法")
     }
 
     #[test]

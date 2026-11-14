@@ -1,9 +1,13 @@
 //! 权重文件的结构：[`Entry`]、[`Header`] 与两条读取契约（[`Reader`] / [`Loader`]），以及
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
-//! **拥有**：`Header`、`Entry`、`Reader`、`Loader`、`safetensors::Archive`、`safetensors::File`、
-//! `json`。**不拥有**：张量本身（`tensor`）、布局（`storage`）、GPU 侧的字节搬运（`storage`）。
-//! **依赖**：`tensor`、`diagnostic`。**被依赖**：`train`、`nn`、`llm`。
+//! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自造的 `LLPK`
+//! 容器（`writer`/`reader`/`seg` 与 `crc`/`merkle`/`rans`/`codec`/`sink`/`leb` 这些小件），以及只能由
+//! 本层判断的格式适配器与完整性证明（`bin` 的 pickle 栈机、`zip`、`gguf`、`json`，`axes`/`lattice`/
+//! `quant`/`scale` 的量化族，`dsa`/`envelope`/`sha256`/`keccak`/`ntt`/`golay`/`svd`/`ledger`）。
+//! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）、分配（`mem`）。
+//! **依赖**：`dtype`、`diagnostic`、`mem`、`tensor`（`+dev`：`storage`、`testkit`）。
+//! **被依赖**：`train`、`nn`、`llm`（`+dev`：`fuzz`）。
 //!
 //! 两条读取契约的分工是所有权而不是风格：[`Reader`] 把字节**借**出来（内存切片、映射），
 //! [`Loader`] 把字节**拷进**调用方给的缓冲区——只有后者能由文件实现，因为不引入 `unsafe` 就无法
@@ -30,8 +34,13 @@
 
 #![deny(unsafe_code)]
 
+use std::collections::BTreeSet;
+
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
+
+/// 校验失败时的定位串：两个判据共用同一处标签，改动时不必同步三处。
+const SITE: &str = "weights::Header::new";
 
 // 自有 LLPK 容器：私有实现模块，公开类型在末尾统一 re-export。
 mod affine;
@@ -158,43 +167,14 @@ pub struct Header {
 impl Header {
     /// 校验并构造：名字唯一、区间按偏移有序且不重叠、起点不早于数据段。
     pub fn new(entries: Vec<Entry>, data_start: usize) -> Result<Self> {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for entry in &entries {
-            if !seen.insert(entry.name()) {
-                return Err(
-                    Error::new(Code::Invalid, format!("权重条目 `{}` 重复", entry.name()))
-                        .with("weights::Header::new"),
-                );
-            }
-            if entry.offset < data_start {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "条目 `{}` 的偏移 {} 早于数据段起点 {data_start}",
-                        entry.name(),
-                        entry.offset
-                    ),
-                )
-                .with("weights::Header::new"));
-            }
+            check_entry(&mut seen, entry, data_start)?;
         }
         let mut sorted = entries;
         sorted.sort_by_key(Entry::offset);
         for pair in sorted.windows(2) {
-            let (left, right) = (&pair[0], &pair[1]);
-            if left.end() > right.offset() {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "条目 `{}` 的区间与 `{}` 重叠（{} > {}）",
-                        left.name(),
-                        right.name(),
-                        left.end(),
-                        right.offset()
-                    ),
-                )
-                .with("weights::Header::new"));
-            }
+            check_overlap(&pair[0], &pair[1])?;
         }
         Ok(Self {
             entries: sorted,
@@ -224,6 +204,50 @@ impl Header {
             .map(|entry| entry.end().saturating_sub(self.data_start))
             .unwrap_or(0)
     }
+}
+
+/// 单条目的两条判据：名字不能重复、起点不能早于数据段。
+///
+/// 「区间不重叠」不在这里：它要按偏移排序后才能判，排序是 [`Header::new`] 的事。
+fn check_entry<'a>(
+    seen: &mut BTreeSet<&'a str>,
+    entry: &'a Entry,
+    data_start: usize,
+) -> Result<()> {
+    let name = entry.name();
+    if !seen.insert(name) {
+        let message = format!("权重条目 `{name}` 重复");
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    }
+    if entry.offset < data_start {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "条目 `{name}` 的偏移 {} 早于数据段起点 {data_start}",
+                entry.offset
+            ),
+        )
+        .with(SITE));
+    }
+    Ok(())
+}
+
+/// 相邻两条目（已按偏移排序）不能重叠：重叠意味着后者的起点落在前者的字节区间里。
+fn check_overlap(left: &Entry, right: &Entry) -> Result<()> {
+    if left.end() <= right.offset() {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!(
+            "条目 `{}` 的区间与 `{}` 重叠（{} > {}）",
+            left.name(),
+            right.name(),
+            left.end(),
+            right.offset()
+        ),
+    )
+    .with(SITE))
 }
 
 /// 零拷贝后端：把条目字节**借**出来（内存切片、映射或测试夹具）。

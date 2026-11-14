@@ -25,7 +25,7 @@ use diagnostic::Result;
 /// 一次 kernel 的网格与线程块几何。
 ///
 /// 三轴是设备 API 的公共形态（CUDA / Metal / HIP 都是 `(grid, block)`）；DSL 的宿主 API
-/// （DESIGN §4.4，P0 尚未实现）由分片比推出 `grid.x`，这里只负责承载它。
+/// （cutile README §4.4，P0 尚未实现）由分片比推出 `grid.x`，这里只负责承载它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Launch {
     /// 网格大小（每轴多少个块）。

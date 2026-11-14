@@ -43,14 +43,13 @@ pub enum Kind {
 
 /// 一个已支持格式的布局来源：标量元素按 [`DType`] 计宽，块格式全部委托 [`QType`]。
 ///
-/// 几何（`elems`/`span`/`bytes_for`）只有一份实现，住在 `dtype::Layout<B>`；这里只把块参数
-/// 固化成 [`QType`]。MXFP4/NVFP4 解码接入时换成 `dtype::Layout<MxType>` 即可，不必再写一份
-/// 「标量手臂 + 块手臂」的几何。
+/// 几何（`elems`/`span`/`bytes_for`）只有一份实现，住在 `dtype::Layout<B>`：这里只把块参数固化成
+/// [`QType`]，标量手臂与块手臂的几何都不再另写一份。
 pub type Layout = dtype::Layout<QType>;
 
 /// 本解码器**已实现**反量化的格式表：GGML 码 → 布局来源。
 ///
-/// 这是「支持哪些格式」的唯一事实，[`Kind::from_code`]、[`Kind::elems`] 与 [`Kind::span`]
+/// 这是「支持哪些格式」的唯一事实：[`Kind::from_code`]、[`Kind::elems`] 与 [`Kind::span`]
 /// 都读这张表；新增一种可解码格式只加一行。`dtype` 的 [`QType`] 声明了 25 个块格式，
 /// 这里只实现其中 4 个，其余 21 个尚无解码器——这张表让「表里有、解不了」成为可读清单，
 /// 而不是散在几个 `match` 里的隐式事实。
@@ -65,7 +64,6 @@ pub const SUPPORTED: &[(Kind, Layout)] = &[
 
 impl Kind {
     /// 磁盘类型码。
-    #[must_use]
     pub const fn code(self) -> u32 {
         self as u32
     }
@@ -74,37 +72,34 @@ impl Kind {
     pub fn from_code(code: u32) -> Result<Self> {
         SUPPORTED
             .iter()
-            .map(|(kind, _)| *kind)
-            .find(|kind| kind.code() == code)
+            .find_map(|(kind, _)| (kind.code() == code).then_some(*kind))
             .ok_or_else(|| bad("不支持的 ggml 类型码"))
     }
 
     /// 布局来源；每个变体都必须在 [`SUPPORTED`] 里出现（由 `supported_table_covers_kind` 锁定）。
-    #[must_use]
-    pub const fn layout(self) -> Layout {
-        let mut index = 0;
-        while index < SUPPORTED.len() {
-            let (kind, layout) = SUPPORTED[index];
-            if kind as u32 == self as u32 {
-                return layout;
-            }
-            index += 1;
-        }
-        panic!("Kind 的每个变体都必须在 SUPPORTED 里")
+    pub fn layout(self) -> Result<Layout> {
+        SUPPORTED
+            .iter()
+            .find(|(kind, _)| *kind == self)
+            .map(|(_, layout)| *layout)
+            .ok_or_else(|| {
+                Error::new(Code::Internal, "Kind 的每个变体都必须在 SUPPORTED 里").with("gguf")
+            })
     }
 
     /// 每块元素数：块格式取 [`QType::block_len`]，标量元素按 1。
-    #[must_use]
-    pub fn elems(self) -> usize {
-        self.layout().elems() as usize
+    pub fn elems(self) -> Result<usize> {
+        Ok(self.layout()?.elems() as usize)
     }
 
     /// 每块字节数：块格式取 [`QType::block_bytes`]，标量元素取 [`DType::bytes_for`] 的单元素值。
-    #[must_use]
-    pub fn span(self) -> usize {
-        self.layout().span() as usize
+    pub fn span(self) -> Result<usize> {
+        Ok(self.layout()?.span() as usize)
     }
 }
+
+/// 元数据表：键值对按书写顺序。
+type Meta = Vec<(String, Value)>;
 
 /// 元数据值：整数按有无符号归类，浮点统一 f64。
 #[derive(Debug, Clone, PartialEq)]
@@ -125,7 +120,6 @@ pub enum Value {
 
 impl Value {
     /// 字符串视图。
-    #[must_use]
     pub fn text(&self) -> Option<&str> {
         match self {
             Value::Str(text) => Some(text),
@@ -134,7 +128,6 @@ impl Value {
     }
 
     /// 无符号整数视图。
-    #[must_use]
     pub fn uint(&self) -> Option<u64> {
         match self {
             Value::Uint(value) => Some(*value),
@@ -162,7 +155,7 @@ impl Tensor {
         self.shape
             .iter()
             .try_fold(1usize, |acc, &dim| {
-                usize::try_from(dim).ok().and_then(|n| acc.checked_mul(n))
+                acc.checked_mul(usize::try_from(dim).ok()?)
             })
             .ok_or_else(|| bad("张量形状溢出"))
     }
@@ -170,12 +163,17 @@ impl Tensor {
     /// 磁盘字节数；量化块必须整除元素数。
     pub fn bytes(&self) -> Result<usize> {
         let count = self.count()?;
-        let elem = self.kind.elems();
-        if count % elem != 0 {
+        let elem = self.kind.elems()?;
+        self.blocks(count, elem)
+    }
+
+    /// 块数 × 每块字节数；块大小必须整除元素数，乘法溢出显式失败。
+    fn blocks(&self, count: usize, elem: usize) -> Result<usize> {
+        if !count.is_multiple_of(elem) {
             return Err(bad("量化块大小不整除元素数"));
         }
         (count / elem)
-            .checked_mul(self.kind.span())
+            .checked_mul(self.kind.span()?)
             .ok_or_else(|| bad("张量大小溢出"))
     }
 }
@@ -208,12 +206,16 @@ impl<'a> Reader<'a> {
 
     fn word(&mut self) -> Result<u32> {
         let raw = self.take(4)?;
-        Ok(u32::from_le_bytes(raw.try_into().expect("4")))
+        Ok(u32::from_le_bytes(
+            raw.try_into().map_err(|_| bad("越界读取"))?,
+        ))
     }
 
     fn wide(&mut self) -> Result<u64> {
         let raw = self.take(8)?;
-        Ok(u64::from_le_bytes(raw.try_into().expect("8")))
+        Ok(u64::from_le_bytes(
+            raw.try_into().map_err(|_| bad("越界读取"))?,
+        ))
     }
 
     fn text(&mut self) -> Result<String> {
@@ -224,16 +226,16 @@ impl<'a> Reader<'a> {
 
     fn array_count(&mut self) -> Result<usize> {
         let count = usize::try_from(self.wide()?).map_err(|_| bad("数组长度溢出"))?;
-        if count > self.bytes.len() - self.pos {
-            return Err(bad("数组元素数超过剩余字节"));
+        if count <= self.bytes.len().saturating_sub(self.pos) {
+            return Ok(count);
         }
-        Ok(count)
+        Err(bad("数组元素数超过剩余字节"))
     }
 
     fn value(&mut self, kind: u32) -> Result<Value> {
         match kind {
             7 => Ok(Value::Bool(self.take(1)?[0] != 0)),
-            8 => Ok(Value::Str(self.text()?)),
+            8 => self.text().map(Value::Str),
             9 => self.list(),
             _ => self.scalar(kind),
         }
@@ -243,8 +245,7 @@ impl<'a> Reader<'a> {
         if self.depth >= DEPTH {
             return Err(bad("数组嵌套过深"));
         }
-        let kind = self.word()?;
-        let count = self.array_count()?;
+        let (kind, count) = self.header()?;
         self.depth += 1;
         let mut out = Vec::with_capacity(count.min(4096));
         for _ in 0..count {
@@ -254,34 +255,27 @@ impl<'a> Reader<'a> {
         Ok(Value::Arr(out))
     }
 
+    /// 数组头：元素类型码与元素数（元素数已按剩余字节粗查过）。
+    fn header(&mut self) -> Result<(u32, usize)> {
+        Ok((self.word()?, self.array_count()?))
+    }
+
     fn scalar(&mut self, kind: u32) -> Result<Value> {
-        let (width, class) = NUMBERS
-            .get(kind as usize)
-            .copied()
-            .flatten()
-            .ok_or_else(|| bad("未知值类型码"))?;
+        let packed = NUMBERS.get(kind as usize).copied().unwrap_or(0);
+        if packed == 0 {
+            return Err(bad("未知值类型码"));
+        }
+        let width = usize::from(packed & 0x0F);
         let raw = self.take(width)?;
         let mut buf = [0u8; 8];
         buf[..width].copy_from_slice(raw);
-        Ok(number(class, u64::from_le_bytes(buf), width))
+        Ok(number(packed >> 4, u64::from_le_bytes(buf), width))
     }
 }
 
-/// 值类型码 → (字节宽度, 0=无符号/1=有符号/2=浮点)。
-const NUMBERS: [Option<(usize, u8)>; 13] = [
-    Some((1, 0)),
-    Some((1, 1)),
-    Some((2, 0)),
-    Some((2, 1)),
-    Some((4, 0)),
-    Some((4, 1)),
-    Some((4, 2)),
-    None,
-    None,
-    None,
-    Some((8, 0)),
-    Some((8, 1)),
-    Some((8, 2)),
+/// 值类型码 → `class << 4 | 字节宽度`；`0` 表示这不是标量码（字符串/数组/表外码）。
+const NUMBERS: [u8; 13] = [
+    0x01, 0x11, 0x02, 0x12, 0x04, 0x14, 0x24, 0, 0, 0, 0x08, 0x18, 0x28,
 ];
 
 fn number(class: u8, bits: u64, width: usize) -> Value {
@@ -289,10 +283,9 @@ fn number(class: u8, bits: u64, width: usize) -> Value {
     match class {
         0 => Value::Uint(bits),
         1 => Value::Int(((bits << shift) as i64) >> shift),
-        _ => Value::Float(if width == 4 {
-            f64::from(f32::from_bits(bits as u32))
-        } else {
-            f64::from_bits(bits)
+        _ => Value::Float(match width {
+            4 => f64::from(f32::from_bits(bits as u32)),
+            _ => f64::from_bits(bits),
         }),
     }
 }
@@ -309,24 +302,8 @@ impl<'a> Gguf<'a> {
     /// 解析头部、KV 与张量信息表，定位数据区。
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
         let mut reader = Reader::new(bytes);
-        let magic = reader.take(4)?;
-        if magic != MAGIC {
-            return Err(bad("magic 不匹配"));
-        }
-        let version = reader.word()?;
-        if version != VERSION {
-            return Err(bad(&format!("版本 {version}，期望 {VERSION}")));
-        }
-        let tensor_count = reader.wide()?;
-        let kv_count = reader.wide()?;
-
-        let meta = read_kv(&mut reader, kv_count)?;
-        let tensors = read_tensors(&mut reader, tensor_count)?;
-        let align = alignment(&meta);
-        let data = align_up(reader.pos, align)?;
-        if data > bytes.len() {
-            return Err(bad("数据区偏移超出文件"));
-        }
+        let (tensors, meta) = tables(&mut reader)?;
+        let data = data_start(&meta, reader.pos, bytes.len())?;
         Ok(Self {
             bytes,
             meta,
@@ -336,7 +313,6 @@ impl<'a> Gguf<'a> {
     }
 
     /// 按 key 取元数据。
-    #[must_use]
     pub fn meta(&self, key: &str) -> Option<&Value> {
         self.meta
             .iter()
@@ -357,94 +333,139 @@ impl<'a> Gguf<'a> {
     }
 
     /// 按名取张量信息。
-    #[must_use]
     pub fn tensor(&self, name: &str) -> Option<&Tensor> {
         self.tensors.iter().find(|t| t.name == name)
     }
 
     /// `general.name`。
-    #[must_use]
     pub fn name(&self) -> Option<&str> {
         self.meta("general.name").and_then(Value::text)
     }
 
     /// `general.architecture`。
-    #[must_use]
     pub fn arch(&self) -> Option<&str> {
         self.meta("general.architecture").and_then(Value::text)
     }
 
     /// 张量原始字节视图。
     pub fn raw(&self, tensor: &Tensor) -> Result<&'a [u8]> {
-        let offset = usize::try_from(tensor.offset).map_err(|_| bad("张量偏移溢出"))?;
-        let start = self
-            .data
-            .checked_add(offset)
+        let offset = usize::try_from(tensor.offset).ok();
+        let start = offset
+            .and_then(|offset| self.data.checked_add(offset))
             .ok_or_else(|| bad("张量偏移溢出"))?;
         let len = tensor.bytes()?;
         self.bytes
-            .get(start..start + len)
+            .get(start..start.saturating_add(len))
             .ok_or_else(|| bad("张量字节越界"))
     }
 
     /// 按名反量化为 f32。
     pub fn floats(&self, name: &str) -> Result<Vec<f32>> {
-        let tensor = self
-            .tensor(name)
-            .ok_or_else(|| bad(&format!("无张量 `{name}`")))?;
+        let tensor = self.named(name)?;
         let raw = self.raw(tensor)?;
         let count = tensor.count()?;
         let mut out = vec![0.0f32; count];
         dequantize(tensor.kind, raw, &mut out)?;
         Ok(out)
     }
+
+    /// 按名取张量信息；缺失时显式报错（[`Gguf::tensor`] 的 `Option` 留给调用方自己决定）。
+    fn named(&self, name: &str) -> Result<&Tensor> {
+        self.tensor(name)
+            .ok_or_else(|| bad(&format!("无张量 `{name}`")))
+    }
 }
 
-fn read_kv(reader: &mut Reader<'_>, count: u64) -> Result<Vec<(String, Value)>> {
-    let count = usize::try_from(count).map_err(|_| bad("KV 计数溢出"))?;
+/// 读 `count` 条记录；容量按 4096 封顶——谎报的巨大计数不会换来一次巨额分配。
+fn records<Item>(
+    reader: &mut Reader<'_>,
+    count: u64,
+    overflow: &str,
+    item: impl Fn(&mut Reader<'_>) -> Result<Item>,
+) -> Result<Vec<Item>> {
+    let count = usize::try_from(count).map_err(|_| bad(overflow))?;
     let mut out = Vec::with_capacity(count.min(4096));
     for _ in 0..count {
-        let key = reader.text()?;
-        let kind = reader.word()?;
-        out.push((key, reader.value(kind)?));
+        out.push(item(reader)?);
     }
     Ok(out)
 }
 
-fn read_tensors(reader: &mut Reader<'_>, count: u64) -> Result<Vec<Tensor>> {
-    let count = usize::try_from(count).map_err(|_| bad("张量计数溢出"))?;
-    let mut out = Vec::with_capacity(count.min(4096));
-    for _ in 0..count {
-        let name = reader.text()?;
-        let rank = reader.word()?;
-        if rank > MAX_RANK {
-            return Err(bad("张量维数超限"));
-        }
-        let mut shape = Vec::with_capacity(rank as usize);
-        for _ in 0..rank {
-            shape.push(reader.wide()?);
-        }
-        let kind = Kind::from_code(reader.word()?)?;
-        let offset = reader.wide()?;
-        out.push(Tensor {
-            name,
-            kind,
-            shape,
-            offset,
-        });
-    }
-    Ok(out)
+/// 一对 KV：键、类型码与值。
+fn pair(reader: &mut Reader<'_>) -> Result<(String, Value)> {
+    let key = reader.text()?;
+    let kind = reader.word()?;
+    Ok((key, reader.value(kind)?))
 }
 
+/// 一条张量信息：名字、形状、元素类型与数据区偏移（偏移相对数据区起点）。
+fn tensor(reader: &mut Reader<'_>) -> Result<Tensor> {
+    let name = reader.text()?;
+    let shape = shape(reader)?;
+    let kind = kind_of(reader)?;
+    Ok(Tensor {
+        name,
+        kind,
+        shape,
+        offset: reader.wide()?,
+    })
+}
+
+/// 形状：维数上限 `MAX_RANK`，每维一个 `u64`。
+fn shape(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
+    let rank = reader.word()?;
+    if rank > MAX_RANK {
+        return Err(bad("张量维数超限"));
+    }
+    let mut shape = Vec::with_capacity(rank as usize);
+    for _ in 0..rank {
+        shape.push(reader.wide()?);
+    }
+    Ok(shape)
+}
+
+/// 元素类型码：闭集之外的码显式失败（判据在 [`Kind::from_code`]，这里只做“先读再解”）。
+fn kind_of(reader: &mut Reader<'_>) -> Result<Kind> {
+    Kind::from_code(reader.word()?)
+}
+
+/// 头部 magic 与版本：两个都对得上才继续，不做向后兼容猜测。
+fn stamp(reader: &mut Reader<'_>) -> Result<()> {
+    let magic = reader.take(4)?;
+    if magic != MAGIC {
+        return Err(bad("magic 不匹配"));
+    }
+    let version = reader.word()?;
+    match version == VERSION {
+        true => Ok(()),
+        false => Err(bad(&format!("版本 {version}，期望 {VERSION}"))),
+    }
+}
+
+/// 头部两个计数：张量信息表条目数与 KV 对数。
+fn counts(reader: &mut Reader<'_>) -> Result<(u64, u64)> {
+    Ok((reader.wide()?, reader.wide()?))
+}
+
+/// 头部与两张表：magic/版本、两个计数，接着 KV 表与张量信息表。
+fn tables(reader: &mut Reader<'_>) -> Result<(Vec<Tensor>, Meta)> {
+    stamp(reader)?;
+    let (tensor_count, kv_count) = counts(reader)?;
+    let meta = records(reader, kv_count, "KV 计数溢出", pair)?;
+    Ok((records(reader, tensor_count, "张量计数溢出", tensor)?, meta))
+}
+
+/// `general.alignment` 声明的正整数，未声明或非法时退回 [`DEFAULT_ALIGN`]。
 fn alignment(meta: &[(String, Value)]) -> usize {
     meta.iter()
-        .find(|(key, _)| key == "general.alignment")
+        .find(|(key, _)| *key == "general.alignment")
         .and_then(|(_, value)| value.uint())
         .and_then(|n| usize::try_from(n).ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_ALIGN)
 }
 
+/// 向上取整到 `align` 的整数倍；`align == 0` 与相加溢出都是显式错误。
 fn align_up(pos: usize, align: usize) -> Result<usize> {
     let last = align.checked_sub(1).ok_or_else(|| bad("对齐为零"))?;
     pos.checked_add(last)
@@ -452,41 +473,56 @@ fn align_up(pos: usize, align: usize) -> Result<usize> {
         .ok_or_else(|| bad("对齐溢出"))
 }
 
-// ------------------------------------------------ 反量化
+/// 数据区起点：按 `general.alignment` 对齐，且不能越过文件末尾。
+fn data_start(meta: &[(String, Value)], pos: usize, len: usize) -> Result<usize> {
+    let data = align_up(pos, alignment(meta))?;
+    if data <= len {
+        return Ok(data);
+    }
+    Err(bad("数据区偏移超出文件"))
+}
 
 fn dequantize(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
-    let expect = kind.span() * (out.len() / kind.elems());
-    if raw.len() != expect {
-        return Err(bad("张量字节长度与块布局不符"));
-    }
+    check_len(kind, raw.len(), out.len())?;
     match kind {
-        Kind::F32 => decode_f32(raw, out),
-        Kind::F16 => decode_f16(raw, out),
+        Kind::F32 => decode_scalar::<4>(raw, out, "f32", f32::from_le_bytes),
+        Kind::F16 => decode_scalar::<2>(raw, out, "f16", |b| f16_to_f32(u16::from_le_bytes(b))),
+        block => decode_block(block, raw, out),
+    }
+}
+
+/// 块格式（Q8_0 与 K 超块）的分派；两个标量格式已在 [`dequantize`] 就地分派。
+fn decode_block(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
+    match kind {
         Kind::Q8_0 => decode_q8(raw, out),
-        Kind::Q4_K => decode_q4k(raw, out),
-        Kind::Q5_K => decode_q5k(raw, out),
-        Kind::Q6_K => decode_q6k(raw, out),
+        Kind::Q4_K => decode_k(raw, out, 144, 0),
+        Kind::Q5_K => decode_k(raw, out, 176, 32),
+        _ => decode_q6k(raw, out),
     }
 }
 
-fn decode_f32(raw: &[u8], out: &mut [f32]) -> Result<()> {
-    let (chunks, tail) = raw.as_chunks::<4>();
-    if !tail.is_empty() || chunks.len() != out.len() {
-        return Err(bad("f32 长度不符"));
+/// 字节长度必须正好等于块布局推出的值：短了会读出半个张量，长了会把下一条混进来。
+fn check_len(kind: Kind, raw: usize, count: usize) -> Result<()> {
+    let expect = kind.span()? * (count / kind.elems()?);
+    if raw == expect {
+        return Ok(());
     }
-    for (slot, block) in out.iter_mut().zip(chunks) {
-        *slot = f32::from_le_bytes(*block);
-    }
-    Ok(())
+    Err(bad("张量字节长度与块布局不符"))
 }
 
-fn decode_f16(raw: &[u8], out: &mut [f32]) -> Result<()> {
-    let (chunks, tail) = raw.as_chunks::<2>();
+/// 标量格式：固定宽度小端，逐元素转换；长度不符即报错（`what` 是类型名）。
+fn decode_scalar<const N: usize>(
+    raw: &[u8],
+    out: &mut [f32],
+    what: &str,
+    convert: impl Fn([u8; N]) -> f32,
+) -> Result<()> {
+    let (chunks, tail) = raw.as_chunks::<N>();
     if !tail.is_empty() || chunks.len() != out.len() {
-        return Err(bad("f16 长度不符"));
+        return Err(bad(&format!("{what} 长度不符")));
     }
     for (slot, block) in out.iter_mut().zip(chunks) {
-        *slot = f16_to_f32(u16::from_le_bytes(*block));
+        *slot = convert(*block);
     }
     Ok(())
 }
@@ -525,70 +561,47 @@ fn decode_q8(raw: &[u8], out: &mut [f32]) -> Result<()> {
 /// Q4_K 的 6 位 scale/min 解包。
 fn scale_min(scales: &[u8], index: usize) -> (u8, u8) {
     if index < 4 {
-        (scales[index] & 63, scales[index + 4] & 63)
-    } else {
-        let high = (scales[index - 4] >> 6) << 4;
-        let low = (scales[index] >> 6) << 4;
-        (
-            (scales[index + 4] & 0x0F) | high,
-            (scales[index + 4] >> 4) | low,
-        )
+        return (scales[index] & 63, scales[index + 4] & 63);
     }
+    let high = (scales[index - 4] >> 6) << 4;
+    let low = (scales[index] >> 6) << 4;
+    (
+        (scales[index + 4] & 0x0F) | high,
+        (scales[index + 4] >> 4) | low,
+    )
 }
 
-fn decode_q4k(raw: &[u8], out: &mut [f32]) -> Result<()> {
-    let (blocks, _) = raw.as_chunks::<144>();
+/// Q4_K / Q5_K 共用的解码：Q5_K 多一段 `qh`（每个元素的第 5 位），块长度多 32 字节。
+/// 两者每块都是 4 个 64 元素的组，组内高低半字节分别写 `lane` 与 `lane + 32`。
+fn decode_k(raw: &[u8], out: &mut [f32], block: usize, high_bytes: usize) -> Result<()> {
     let (slots, _) = out.as_chunks_mut::<256>();
-    for (slot, block) in slots.iter_mut().zip(blocks) {
-        let d = half_at(block, 0);
-        let min = half_at(block, 2);
-        let scales = &block[4..16];
-        let nibbles = &block[16..];
-        let (groups, _) = nibbles.as_chunks::<32>();
+    for (slot, bytes) in slots.iter_mut().zip(raw.chunks_exact(block)) {
+        let d = half_at(bytes, 0);
+        let min = half_at(bytes, 2);
+        let scales = &bytes[4..16];
+        let (high, quantized) = bytes[16..].split_at(high_bytes);
+        let (groups, _) = quantized.as_chunks::<32>();
         for (group, qs) in groups.iter().enumerate() {
             let (s0, m0) = scale_min(scales, group * 2);
             let (s1, m1) = scale_min(scales, group * 2 + 1);
             let row = &mut slot[group * 64..];
             for lane in 0..32 {
-                row[lane] = d * f32::from(s0) * f32::from(qs[lane] & 0x0F) - min * f32::from(m0);
-                row[lane + 32] = d * f32::from(s1) * f32::from(qs[lane] >> 4) - min * f32::from(m1);
+                let high0 = high_bit(high, lane, group * 2);
+                let high1 = high_bit(high, lane, group * 2 + 1);
+                let q0 = (qs[lane] & 0x0F) + high0;
+                let q1 = (qs[lane] >> 4) + high1;
+                row[lane] = d * f32::from(s0) * f32::from(q0) - min * f32::from(m0);
+                row[lane + 32] = d * f32::from(s1) * f32::from(q1) - min * f32::from(m1);
             }
         }
     }
     Ok(())
 }
 
-fn decode_q5k(raw: &[u8], out: &mut [f32]) -> Result<()> {
-    let (blocks, _) = raw.as_chunks::<176>();
-    let (slots, _) = out.as_chunks_mut::<256>();
-    for (slot, block) in slots.iter_mut().zip(blocks) {
-        let d = half_at(block, 0);
-        let min = half_at(block, 2);
-        let scales = &block[4..16];
-        let qh = &block[16..48];
-        let ql = &block[48..];
-        let (groups, _) = ql.as_chunks::<32>();
-        for (group, qs) in groups.iter().enumerate() {
-            let (s0, m0) = scale_min(scales, group * 2);
-            let (s1, m1) = scale_min(scales, group * 2 + 1);
-            let bit0 = 1u8 << (group * 2);
-            let bit1 = 1u8 << (group * 2 + 1);
-            let row = &mut slot[group * 64..];
-            for lane in 0..32 {
-                let high0 = u8::from(qh[lane] & bit0 != 0) << 4;
-                let high1 = u8::from(qh[lane] & bit1 != 0) << 4;
-                row[lane] =
-                    d * f32::from(s0) * f32::from((qs[lane] & 0x0F) + high0) - min * f32::from(m0);
-                row[lane + 32] =
-                    d * f32::from(s1) * f32::from((qs[lane] >> 4) + high1) - min * f32::from(m1);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn six_bit(q: u8) -> f32 {
-    (q as i32 - 32) as f32
+/// Q5_K 的第 5 位：`high` 为空（Q4_K）时恒为 0。
+fn high_bit(high: &[u8], lane: usize, bit: usize) -> u8 {
+    high.get(lane)
+        .map_or(0, |byte| u8::from(byte & (1 << bit) != 0) << 4)
 }
 
 fn decode_q6k(raw: &[u8], out: &mut [f32]) -> Result<()> {
@@ -607,10 +620,10 @@ fn decode_q6k(raw: &[u8], out: &mut [f32]) -> Result<()> {
                 let q2 = (ql[lane + 32] & 0x0F) | (((qh[lane] >> 2) & 0x03) << 4);
                 let q3 = (ql[lane] >> 4) | (((qh[lane] >> 4) & 0x03) << 4);
                 let q4 = (ql[lane + 32] >> 4) | (((qh[lane] >> 6) & 0x03) << 4);
-                row[lane] = d * f32::from(scales[base] as i8) * six_bit(q1);
-                row[lane + 32] = d * f32::from(scales[base + 2] as i8) * six_bit(q2);
-                row[lane + 64] = d * f32::from(scales[base + 4] as i8) * six_bit(q3);
-                row[lane + 96] = d * f32::from(scales[base + 6] as i8) * six_bit(q4);
+                row[lane] = d * f32::from(scales[base] as i8) * (q1 as i32 - 32) as f32;
+                row[lane + 32] = d * f32::from(scales[base + 2] as i8) * (q2 as i32 - 32) as f32;
+                row[lane + 64] = d * f32::from(scales[base + 4] as i8) * (q3 as i32 - 32) as f32;
+                row[lane + 96] = d * f32::from(scales[base + 6] as i8) * (q4 as i32 - 32) as f32;
             }
         }
     }
@@ -627,7 +640,6 @@ mod tests {
 
     #[test]
     fn kind_maps_ggml_codes_and_delegates_layout() {
-        // 锁定的码表：这 6 个码是当前唯一能解码的格式。
         const CODES: [(u32, Kind); 6] = [
             (0, Kind::F32),
             (1, Kind::F16),
@@ -646,24 +658,58 @@ mod tests {
         assert!(Kind::from_code(2).is_err(), "未支持的 ggml 码必须显式失败");
         assert!(Kind::from_code(15).is_err(), "未支持的 ggml 码必须显式失败");
 
-        // 布局事实只有 dtype crate 一份：块格式取 QType，标量取 DType 的位宽。
-        assert_eq!(Kind::F32.layout(), Layout::Scalar(DType::F32));
-        assert_eq!(Kind::F16.layout(), Layout::Scalar(DType::F16));
-        assert_eq!(Kind::Q8_0.layout(), Layout::Block(QType::Q8_0));
-        assert_eq!(Kind::Q4_K.layout(), Layout::Block(QType::Q4_K));
-        assert_eq!(Kind::Q5_K.layout(), Layout::Block(QType::Q5_K));
-        assert_eq!(Kind::Q6_K.layout(), Layout::Block(QType::Q6_K));
-        assert_eq!(Kind::Q8_0.elems(), QType::Q8_0.block_len() as usize);
-        assert_eq!(Kind::Q8_0.span(), QType::Q8_0.block_bytes() as usize);
-        assert_eq!(Kind::Q4_K.elems(), QType::Q4_K.block_len() as usize);
-        assert_eq!(Kind::Q4_K.span(), QType::Q4_K.block_bytes() as usize);
-        assert_eq!(Kind::F32.span(), DType::F32.bytes_for(1) as usize);
-        assert_eq!(Kind::F16.span(), DType::F16.bytes_for(1) as usize);
+        assert_eq!(
+            Kind::F32.layout().expect("布局"),
+            Layout::Scalar(DType::F32)
+        );
+        assert_eq!(
+            Kind::F16.layout().expect("布局"),
+            Layout::Scalar(DType::F16)
+        );
+        assert_eq!(
+            Kind::Q8_0.layout().expect("布局"),
+            Layout::Block(QType::Q8_0)
+        );
+        assert_eq!(
+            Kind::Q4_K.layout().expect("布局"),
+            Layout::Block(QType::Q4_K)
+        );
+        assert_eq!(
+            Kind::Q5_K.layout().expect("布局"),
+            Layout::Block(QType::Q5_K)
+        );
+        assert_eq!(
+            Kind::Q6_K.layout().expect("布局"),
+            Layout::Block(QType::Q6_K)
+        );
+        assert_eq!(
+            Kind::Q8_0.elems().expect("布局"),
+            QType::Q8_0.block_len() as usize
+        );
+        assert_eq!(
+            Kind::Q8_0.span().expect("布局"),
+            QType::Q8_0.block_bytes() as usize
+        );
+        assert_eq!(
+            Kind::Q4_K.elems().expect("布局"),
+            QType::Q4_K.block_len() as usize
+        );
+        assert_eq!(
+            Kind::Q4_K.span().expect("布局"),
+            QType::Q4_K.block_bytes() as usize
+        );
+        assert_eq!(
+            Kind::F32.span().expect("布局"),
+            DType::F32.bytes_for(1) as usize
+        );
+        assert_eq!(
+            Kind::F16.span().expect("布局"),
+            DType::F16.bytes_for(1) as usize
+        );
     }
 
     #[test]
     fn undecoded_qtypes_are_explicit() {
-        // dtype 声明 25 个块格式，本解码器只实现 4 个；差额是一份可读清单，不是隐式事实。
         let decoded: Vec<QType> = SUPPORTED
             .iter()
             .filter_map(|(_, layout)| match layout {
@@ -703,28 +749,7 @@ mod tests {
         word(out, kind);
     }
 
-    fn q8_block() -> Vec<u8> {
-        let mut out = 0x3C00u16.to_le_bytes().to_vec();
-        out.extend((0..32).map(|i| (i as i8) - 16).map(|q| q as u8));
-        out
-    }
-    fn q4_block() -> Vec<u8> {
-        let mut out = 0x3C00u16.to_le_bytes().to_vec();
-        out.extend(0u16.to_le_bytes());
-        out.extend([1u8; 12]);
-        out.extend([0x21u8; 128]);
-        out
-    }
-    fn q6_block() -> Vec<u8> {
-        let mut out = vec![0x21u8; 128];
-        out.extend([0u8; 64]);
-        out.extend([1u8; 16]);
-        out.extend(0x3C00u16.to_le_bytes());
-        out
-    }
-
-    type Piece = (&'static str, Vec<u64>, Kind, Vec<u8>);
-    fn pieces() -> Vec<Piece> {
+    fn build() -> Vec<u8> {
         let f32s: Vec<u8> = [1.0f32, -0.5, 3.25, 0.0]
             .into_iter()
             .flat_map(f32::to_le_bytes)
@@ -733,17 +758,23 @@ mod tests {
             .into_iter()
             .flat_map(u16::to_le_bytes)
             .collect();
-        vec![
+        let mut q8 = 0x3C00u16.to_le_bytes().to_vec();
+        q8.extend((0..32).map(|i| (i as i8) - 16).map(|q| q as u8));
+        let mut q4 = 0x3C00u16.to_le_bytes().to_vec();
+        q4.extend(0u16.to_le_bytes());
+        q4.extend([1u8; 12]);
+        q4.extend([0x21u8; 128]);
+        let mut q6 = vec![0x21u8; 128];
+        q6.extend([0u8; 64]);
+        q6.extend([1u8; 16]);
+        q6.extend(0x3C00u16.to_le_bytes());
+        let pieces = vec![
             ("f32.weight", vec![2, 2], Kind::F32, f32s),
             ("half.weight", vec![4], Kind::F16, halves),
-            ("q8.weight", vec![32], Kind::Q8_0, q8_block()),
-            ("q4.weight", vec![256], Kind::Q4_K, q4_block()),
-            ("q6.weight", vec![256], Kind::Q6_K, q6_block()),
-        ]
-    }
-
-    fn build() -> Vec<u8> {
-        let pieces = pieces();
+            ("q8.weight", vec![32], Kind::Q8_0, q8),
+            ("q4.weight", vec![256], Kind::Q4_K, q4),
+            ("q6.weight", vec![256], Kind::Q6_K, q6),
+        ];
         let mut head = Vec::new();
         head.extend_from_slice(&MAGIC);
         word(&mut head, VERSION);
@@ -840,5 +871,22 @@ mod tests {
             offset: 0,
         };
         assert!(tensor.bytes().is_err());
+    }
+
+    #[test]
+    fn raw_rejects_an_offset_whose_length_overflows() {
+        let raw = build();
+        let file = Gguf::parse(&raw).unwrap();
+        let offset = u64::try_from(usize::MAX - file.data).unwrap();
+        let tensor = Tensor {
+            name: "straddle".into(),
+            kind: Kind::F32,
+            shape: vec![1],
+            offset,
+        };
+        assert!(
+            file.raw(&tensor).is_err(),
+            "偏移 + 长度溢出必须走错误分支，而不是靠 debug 的算术溢出 panic"
+        );
     }
 }

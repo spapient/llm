@@ -57,31 +57,37 @@ impl Segment {
     }
 
     /// 自洽校验。
+    ///
+    /// 逐轴没有可判的东西：轴长度允许 0（零元素张量），`u64` 本来就非负，越界形状由 `numel` 的
+    /// 饱和乘与下面的字节数交叉校验兜住。真正有主体的只有三条：段名、rank 与数据长度。
     pub fn validate(&self) -> Result<()> {
+        let rank = self.rank()?;
+        self.check_len()?;
+        check_quant(self.quant.as_ref(), rank)
+    }
+
+    /// 段名非空，rank 可表示；不回答字节长度。
+    fn rank(&self) -> Result<u32> {
         if self.name.is_empty() {
             return Err(bad("段名不能为空"));
         }
-        let rank = u32::try_from(self.shape.len()).map_err(|_| bad("rank 超出 u32"))?;
-        for axis in &self.shape {
-            // 轴长度允许 0（零元素张量），不允许负数（u64 本来就非负）。
-            let _ = axis;
-        }
+        u32::try_from(self.shape.len()).map_err(|_| bad("rank 超出 u32"))
+    }
+
+    /// 数据字节数必须等于类型 × 元素个数。
+    fn check_len(&self) -> Result<()> {
+        let actual = u64::try_from(self.data.len()).map_err(|_| bad("段长度超 u64"))?;
         let expected = self.expected_bytes();
-        if u64::try_from(self.data.len()).expect("usize <= u64") != expected {
-            return Err(bad(&format!(
-                "段 `{}` 的数据是 {} 字节，{:?} {:?} 推出 {expected} 字节",
-                self.name,
-                self.data.len(),
-                self.dtype,
-                self.shape
-            )));
+        if actual == expected {
+            return Ok(());
         }
-        if let Some(quant) = &self.quant
-            && quant.axis > rank
-        {
-            return Err(bad("量化轴超出 rank"));
-        }
-        Ok(())
+        Err(bad(&format!(
+            "段 `{}` 的数据是 {} 字节，{:?} {:?} 推出 {expected} 字节",
+            self.name,
+            self.data.len(),
+            self.dtype,
+            self.shape
+        )))
     }
 
     /// 编码描述符（不含数据字节）；`stored_len` 是实际写入数据区的字节数（可能已压缩）。
@@ -128,46 +134,10 @@ pub(crate) struct Desc {
 
 impl Desc {
     pub(crate) fn decode(cur: &mut Cursor<'_>) -> Result<Self> {
-        let name_len = cur.read_u64()?;
-        let name_bytes =
-            cur.take(usize::try_from(name_len).map_err(|_| bad("名字长度超 usize"))?)?;
-        let name = std::str::from_utf8(name_bytes)
-            .map_err(|_| bad("段名不是 UTF-8"))?
-            .to_owned();
-        if name.is_empty() {
-            return Err(bad("段名不能为空"));
-        }
-        let dtype = read_wire(cur)?;
-        let rank = cur.read_u32()?;
-        let mut shape = Vec::with_capacity(usize::try_from(rank).expect("u32 -> usize"));
-        for _ in 0..rank {
-            shape.push(cur.read_u64()?);
-        }
-        let codec = Codec::from_code(cur.read_u8()?)?;
-        let present = cur.read_u8()?;
-        let quant = match present {
-            0 => None,
-            1 => Some(Quant::decode(cur, rank)?),
-            other => return Err(bad(&format!("quant present 标志只能是 0/1，实际 {other}"))),
-        };
-        let data_len = cur.read_u64()?;
-        let seg_crc = cur.read_u32()?;
-
-        let expected = dtype.bytes_for(numel(&shape));
-        match codec {
-            Codec::Store if data_len != expected => {
-                return Err(bad(&format!(
-                    "段 `{name}` 声明 {data_len} 字节，store 段应为 {expected} 字节"
-                )));
-            }
-            // rans 帧只有严格小于原始字节才会被写端选用。
-            Codec::Rans if data_len >= expected => {
-                return Err(bad(&format!(
-                    "段 `{name}` 的 rans 帧 {data_len} 字节未小于原始 {expected} 字节"
-                )));
-            }
-            _ => {}
-        }
+        let (name, dtype) = decode_head(cur)?;
+        let (shape, rank, codec) = decode_body(cur)?;
+        let (quant, data_len, seg_crc) = decode_tail(cur, rank)?;
+        check_frame(&name, codec, data_len, dtype.bytes_for(numel(&shape)))?;
         Ok(Self {
             name,
             dtype,
@@ -190,6 +160,83 @@ impl Desc {
             self.seg_crc,
         )
     }
+}
+
+/// 段名：LEB 长度 + UTF-8 + 非空。
+fn decode_name(cur: &mut Cursor<'_>) -> Result<String> {
+    let len = cur.read_u64()?;
+    let name = name_bytes(cur, len)?;
+    if name.is_empty() {
+        return Err(bad("段名不能为空"));
+    }
+    Ok(name.to_owned())
+}
+
+/// 名字字节：长度可表示且是 UTF-8。
+fn name_bytes<'c>(cur: &mut Cursor<'c>, len: u64) -> Result<&'c str> {
+    let len = usize::try_from(len).map_err(|_| bad("名字长度超 usize"))?;
+    std::str::from_utf8(cur.take(len)?).map_err(|_| bad("段名不是 UTF-8"))
+}
+
+/// 段名与元素类型；两者都先于形状出现。
+fn decode_head(cur: &mut Cursor<'_>) -> Result<(String, Wire)> {
+    let name = decode_name(cur)?;
+    Ok((name, read_wire(cur)?))
+}
+
+/// 形状与 codec：rank 轴长度，随后一个 codec 码。
+fn decode_body(cur: &mut Cursor<'_>) -> Result<(Vec<u64>, u32, Codec)> {
+    let rank = cur.read_u32()?;
+    let shape = decode_shape(cur, rank)?;
+    Ok((shape, rank, Codec::from_code(cur.read_u8()?)?))
+}
+
+/// `rank` 个轴长度。
+fn decode_shape(cur: &mut Cursor<'_>, rank: u32) -> Result<Vec<u64>> {
+    let capacity = usize::try_from(rank).map_err(|_| bad("rank 超 usize"))?;
+    let mut shape = Vec::with_capacity(capacity);
+    for _ in 0..rank {
+        shape.push(cur.read_u64()?);
+    }
+    Ok(shape)
+}
+
+/// 量化方案与长度字段；`rank` 用于校验量化轴。
+fn decode_tail(cur: &mut Cursor<'_>, rank: u32) -> Result<(Option<Quant>, u64, u32)> {
+    let quant = decode_quant(cur, rank)?;
+    Ok((quant, cur.read_u64()?, cur.read_u32()?))
+}
+
+/// 量化方案：present 标志只能是 0/1。
+fn decode_quant(cur: &mut Cursor<'_>, rank: u32) -> Result<Option<Quant>> {
+    match cur.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(Quant::decode(cur, rank)?)),
+        other => Err(bad(&format!("quant present 标志只能是 0/1，实际 {other}"))),
+    }
+}
+
+/// 存储帧长度必须与 codec 的口径一致：store 恰好相等，rans 严格更小。
+fn check_frame(name: &str, codec: Codec, data_len: u64, expected: u64) -> Result<()> {
+    match codec {
+        Codec::Store if data_len != expected => Err(bad(&format!(
+            "段 `{name}` 声明 {data_len} 字节，store 段应为 {expected} 字节"
+        ))),
+        Codec::Rans if data_len >= expected => Err(bad(&format!(
+            "段 `{name}` 的 rans 帧 {data_len} 字节未小于原始 {expected} 字节"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// 量化轴不得超出 rank；没有量化方案时无事可做。
+fn check_quant(quant: Option<&Quant>, rank: u32) -> Result<()> {
+    if let Some(quant) = quant
+        && quant.axis > rank
+    {
+        return Err(bad("量化轴超出 rank"));
+    }
+    Ok(())
 }
 
 /// 形状的元素乘积，溢出饱和。

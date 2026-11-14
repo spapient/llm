@@ -1,4 +1,4 @@
-//! 片段拼接（DESIGN §4.2、§10.1、§10.2 的 ④）。
+//! 片段拼接（README §4.2、§10.1、§10.2 的 ④）。
 //!
 //! 词法（`{{槽位}}` / `@原语(...)` 怎么切）属于声明层，在 [`op::tpl`]；本模块只把切出来的片段
 //! 换成取值与片段文本。
@@ -63,58 +63,79 @@ pub(crate) fn place(text: &mut String, expanded: &str) {
 /// 词法占位符的替换规则只有这一份：字符串路径（[`render`]）与结构化路径（`ast::build`）
 /// 都调用它，保证两条路径对同一片段得到完全相同的展开。
 pub(crate) fn splice(fragment: &str, args: &[Arg<'_>], line: usize) -> diagnostic::Result<String> {
-    let positional: Vec<&str> = args
-        .iter()
-        .filter_map(|arg| match arg {
-            Arg::Expr(text) => Some(*text),
-            Arg::Named { .. } => None,
-        })
-        .collect();
-    let named: BTreeMap<&str, &str> = args
-        .iter()
-        .filter_map(|arg| match arg {
-            Arg::Named { key, value } => Some((*key, *value)),
-            Arg::Expr(_) => None,
-        })
-        .collect();
-
+    let table = Args::new(args);
     let mut out = String::with_capacity(fragment.len());
-    let mut chars = fragment.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '$' {
-            out.push(ch);
-            continue;
+    let mut rest = fragment;
+    while let Some((head, name, tail)) = next_hole(rest) {
+        out.push_str(head);
+        out.push_str(table.resolve(name, line)?);
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// 一段片段里的占位符切成“字面量 + 名字”：位置参数是 `$0`，命名参数是 `$name`。
+///
+/// 返回下一处占位符前面的文本、名字与剩下的部分；没有占位符时返回 `None`，剩下的文本原样输出。
+fn next_hole(text: &str) -> Option<(&str, &str, &str)> {
+    let mut from = 0;
+    loop {
+        let dollar = from + text[from..].find('$')?;
+        let start = dollar + 1;
+        let len = text[start..]
+            .bytes()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            .count();
+        if len > 0 {
+            return Some((
+                &text[..dollar],
+                &text[start..start + len],
+                &text[start + len..],
+            ));
         }
-        let mut name = String::new();
-        while let Some(next) = chars.peek() {
-            if next.is_ascii_alphanumeric() || *next == '_' {
-                name.push(*next);
-                chars.next();
-            } else {
-                break;
+        // 孤立的 `$` 是字面量，从它后面继续找。
+        from = start;
+    }
+}
+
+/// 片段的实参表：位置参数按序号、命名参数按名字，拼接时各查一次。
+struct Args<'a> {
+    positional: Vec<&'a str>,
+    named: BTreeMap<&'a str, &'a str>,
+}
+
+impl<'a> Args<'a> {
+    fn new(args: &'a [Arg<'a>]) -> Self {
+        let mut positional = Vec::new();
+        let mut named = BTreeMap::new();
+        for arg in args {
+            match arg {
+                Arg::Expr(text) => positional.push(*text),
+                Arg::Named { key, value } => {
+                    named.insert(*key, *value);
+                }
             }
         }
-        if name.is_empty() {
-            out.push('$');
-            continue;
-        }
+        Self { positional, named }
+    }
+
+    /// 一个占位符的取值；缺参是模板错误，而不是空串。
+    fn resolve(&self, name: &str, line: usize) -> diagnostic::Result<&'a str> {
         if let Ok(index) = name.parse::<usize>() {
-            let Some(value) = positional.get(index) else {
-                return Err(error(
+            return self.positional.get(index).copied().ok_or_else(|| {
+                error(
                     line,
                     format!(
                         "片段占用了 `${index}`，但模板只给了 {} 个位置参数",
-                        positional.len()
+                        self.positional.len()
                     ),
-                ));
-            };
-            out.push_str(value);
-            continue;
+                )
+            });
         }
-        let Some(value) = named.get(name.as_str()) else {
-            return Err(error(line, format!("片段引用了未提供的命名参数 `${name}`")));
-        };
-        out.push_str(value);
+        self.named
+            .get(name)
+            .copied()
+            .ok_or_else(|| error(line, format!("片段引用了未提供的命名参数 `${name}`")))
     }
-    Ok(out)
 }

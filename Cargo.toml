@@ -19,7 +19,6 @@ doc = false
 
 [dependencies]
 cli = { path = "crates/cli", package = "llm-cli" }
-config = { path = "crates/config", package = "llm-config" }
 cutile = { path = "crates/cutile" }
 diagnostic = { path = "crates/diagnostic", package = "llm-diagnostic" }
 engine = { path = "crates/engine", package = "llm-engine" }
@@ -78,3 +77,4 @@ strip = "debuginfo"
 # 工作区共享的第三方依赖版本：各 crate 用 `{ workspace = true }` 引用，避免版本漂移。
 [workspace.dependencies]
 criterion = "0.8.2"
+toml = "1.2.1"

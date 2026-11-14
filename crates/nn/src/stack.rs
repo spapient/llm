@@ -172,20 +172,10 @@ impl Stack {
     /// - 条目形状为 `[0, n]` / `[n, 0]`：宽度为零的投影没有意义（[`Code::Invalid`]）；
     /// - 去掉 `.weight` 后层名重复（[`Code::Invalid`]）。
     pub fn from_header(header: &Header) -> Result<Self> {
-        // 标度条目不是层：它的分组已经算进某条权重那一层的流量（算子语义里 `ng` 那条派生轴），
-        // 单独列进"未覆盖"清单只会让读者以为漏了东西。
         let scales = header.scales_names()?;
         let mut layers: Vec<Box<dyn Layer>> = Vec::new();
         let mut uncovered = Vec::new();
-        for entry in header.entries() {
-            if scales.contains(&entry.name()) {
-                continue;
-            }
-            match projection(header, entry)? {
-                Some(layer) => layers.push(Box::new(layer)),
-                None => uncovered.push(entry.name().to_string()),
-            }
-        }
+        classify(header, &scales, &mut layers, &mut uncovered)?;
         unique_names(layers.iter().map(|layer| layer.name()))?;
         Ok(Self { layers, uncovered })
     }
@@ -219,6 +209,28 @@ impl Stack {
         }
         Floor { total, unpriced }
     }
+}
+
+/// 条目归到两侧：一次投影进层清单，其余进未覆盖清单。
+///
+/// `scales` 里的标度条目不是层：它的分组已经算进某条权重那一层的流量（算子语义里 `ng` 那条
+/// 派生轴），单独列进"未覆盖"只会让读者以为漏了东西，所以它两边都不进。
+fn classify(
+    header: &Header,
+    scales: &[&str],
+    layers: &mut Vec<Box<dyn Layer>>,
+    uncovered: &mut Vec<String>,
+) -> Result<()> {
+    for entry in header.entries() {
+        if scales.contains(&entry.name()) {
+            continue;
+        }
+        match projection(header, entry)? {
+            Some(layer) => layers.push(Box::new(layer)),
+            None => uncovered.push(entry.name().to_string()),
+        }
+    }
+    Ok(())
 }
 
 /// 一个条目能否被视为一次投影：能则给出层，不能则返回 `None`（进未覆盖清单）。

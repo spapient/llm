@@ -17,9 +17,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// 门禁配置：与 dylint 规则读同一份。
-const CONFIG: &str = include_str!("../lints/vocabulary.toml");
-
 /// 扫描下限：近 30 个 crate、80+ 个源文件；低于此数说明遍历逻辑坏了（而不是"没有违规"）。
 const MIN_SOURCES: usize = 70;
 
@@ -89,13 +86,12 @@ fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
     out
 }
 
-/// 白名单里的 crate 与理由。
+/// 白名单里的 crate 与理由；配置来自 `tool` 构建期生成的词汇表（同一份文件只解析一次）。
 fn exempt(section: &str) -> Vec<(String, String)> {
-    let table = config::toml::parse(CONFIG).expect("`lints/vocabulary.toml` 必须可解析");
-    let entries = table
+    let table = tool::vocabulary()
         .table(section)
         .unwrap_or_else(|| panic!("`lints/vocabulary.toml` 缺 `[{section}]`"));
-    entries
+    table
         .table_array("exempt")
         .unwrap_or_else(|| panic!("`lints/vocabulary.toml` 缺 `{section}.exempt`"))
         .iter()
@@ -481,25 +477,28 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
     let lib = fs::read_to_string(root().join("crates/op/src/lib.rs"))
         .expect("`crates/op/src/lib.rs` 必须存在");
+    // 注册表是一张表：`registry! { "名字" => 语义模块, .. }`，一行一对。字段由宏展开成
+    // `Registration { name, template, model: <模块>::MODEL }`，所以表里剩下的就是"哪条算子用
+    // 哪个模块的 `MODEL`"——这正是本测试要核对的那件事，逐字抄 22 份结构不携带任何额外信息。
     let start = lib
-        .find("pub const REGISTRY:")
+        .find("registry! {")
         .expect("`REGISTRY` 不见了：它是语义表的唯一入口");
-    let open = start + lib[start..].find('[').expect("注册表必须是数组");
-    let close = open + lib[open..].find("\n];").expect("注册表必须闭合");
+    let open = start + lib[start..].find('{').expect("注册表必须是一张表");
+    let close = open + lib[open..].find("\n}").expect("注册表必须闭合");
     let mut names: Vec<String> = Vec::new();
     let mut models: Vec<String> = Vec::new();
     for line in lib[open..close].lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("name:") {
-            names.push(
-                rest.trim()
-                    .trim_end_matches(',')
-                    .trim_matches('"')
-                    .to_string(),
-            );
-        } else if let Some(rest) = line.strip_prefix("model:") {
-            models.push(rest.trim().trim_end_matches(',').to_string());
-        }
+        let Some((name, module)) = line.trim().split_once("=>") else {
+            continue;
+        };
+        let name = name
+            .trim()
+            .trim_end_matches(',')
+            .trim_matches('"')
+            .to_string();
+        let module = module.trim().trim_end_matches(',');
+        models.push(format!("{module}::MODEL"));
+        names.push(name);
     }
     assert_eq!(
         names.len(),

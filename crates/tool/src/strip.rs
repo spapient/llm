@@ -13,56 +13,63 @@ pub fn strip_tests(src: &str) -> Result<String> {
     let mut blank = vec![false; src.lines().count()];
     collect(&tokens, &mut blank);
 
-    let out: Vec<String> = src
+    let out: Vec<&str> = src
         .lines()
         .enumerate()
-        .map(|(i, line)| {
-            if blank[i] {
-                String::new()
-            } else {
-                line.to_string()
-            }
-        })
+        .map(|(at, line)| if blank[at] { "" } else { line })
         .collect();
     Ok(out.join("\n"))
 }
 
+/// 一层里的属性归属：首个属性的起始行与是否 `cfg(test)`。
+#[derive(Default)]
+struct Attr {
+    start: Option<usize>,
+    is_test: bool,
+}
+
+impl Attr {
+    /// 吸收一个属性：首个属性的起始行与 `cfg(test)` 口径。
+    fn absorb(&mut self, hash: &Token, bracket: &Token) {
+        self.start = self.start.or(Some(hash.start_line()));
+        if let Token::Group { items, .. } = bracket {
+            self.is_test |= is_cfg_test(items);
+        }
+    }
+
+    /// 口径为 test 时，把条目覆盖的行置空。
+    fn blank_if_test(&self, last: &Token, blank: &mut [bool]) {
+        if !self.is_test {
+            return;
+        }
+        let from = self.start.unwrap_or(last.start_line());
+        for line in from..=last.end_line() {
+            if let Some(flag) = blank.get_mut(line - 1) {
+                *flag = true;
+            }
+        }
+    }
+}
+
 /// 递归遍历一层 token：标记本层 cfg(test) 条目，并进入分组处理嵌套的 cfg(test)。
 fn collect(tokens: &[Token], blank: &mut [bool]) {
-    let mut attr_start = None;
-    let mut attr_is_test = false;
+    let mut attr = Attr::default();
     let mut idx = 0;
     while idx < tokens.len() {
         if is_attr(tokens, idx) {
-            if attr_start.is_none() {
-                attr_start = Some(tokens[idx].start_line());
-            }
-            if let Token::Group { items, .. } = &tokens[idx + 1]
-                && is_cfg_test(items)
-            {
-                attr_is_test = true;
-            }
+            attr.absorb(&tokens[idx], &tokens[idx + 1]);
             idx += 2; // 跳过 `#` 与 `[..]`
             continue;
         }
 
         let end = item_end(tokens, idx);
-        let last = &tokens[end];
-        if attr_is_test {
-            let start = attr_start.unwrap_or_else(|| last.start_line());
-            for line in start..=last.end_line() {
-                if let Some(flag) = blank.get_mut(line - 1) {
-                    *flag = true;
-                }
-            }
-        }
+        attr.blank_if_test(&tokens[end], blank);
         for token in &tokens[idx..=end] {
             if let Token::Group { items, .. } = token {
                 collect(items, blank);
             }
         }
-        attr_start = None;
-        attr_is_test = false;
+        attr = Attr::default();
         idx = end + 1;
     }
 }
@@ -123,43 +130,30 @@ fn is_test_body(body: &str) -> bool {
     compact == "test" || (compact.starts_with("all(") && contains_token(&compact, "test"))
 }
 
-/// `test` 是否作为独立 token 出现（边界不是标识符字符）。
+/// `test` 是否作为独立 token 出现（两侧边界都不是标识符字符）。
 fn contains_token(body: &str, token: &str) -> bool {
-    let mut from = 0;
-    while let Some(at) = body[from..].find(token) {
-        let start = from + at;
-        let end = start + token.len();
-        let before = body[..start].chars().next_back();
-        let after = body[end..].chars().next();
-        let boundary = |ch: Option<char>| ch.is_none_or(|c| !c.is_alphanumeric() && c != '_');
-        if boundary(before) && boundary(after) {
-            return true;
-        }
-        from = end;
-    }
-    false
+    let boundary = |ch: Option<char>| ch.is_none_or(|c| !c.is_alphanumeric() && c != '_');
+    body.match_indices(token).any(|(at, _)| {
+        let before = body[..at].chars().next_back();
+        let after = body[at + token.len()..].chars().next();
+        boundary(before) && boundary(after)
+    })
 }
 
 /// 把 token 渲染回紧凑文本（字面量保留原文，分组补括号）。
 fn render(tokens: &[Token]) -> String {
-    let mut out = String::new();
-    for token in tokens {
-        match token {
-            Token::Ident { text, .. } | Token::Literal { text, .. } => out.push_str(text),
-            Token::Punct { ch, .. } => out.push(*ch),
-            Token::Group { delim, items, .. } => {
-                let (open, close) = match delim {
-                    Delim::Paren => ('(', ')'),
-                    Delim::Brace => ('{', '}'),
-                    Delim::Bracket => ('[', ']'),
-                };
-                out.push(open);
-                out.push_str(&render(items));
-                out.push(close);
-            }
+    tokens.iter().map(piece).collect()
+}
+
+/// 单个 token 的紧凑文本。
+fn piece(token: &Token) -> String {
+    match token {
+        Token::Ident { text, .. } | Token::Literal { text, .. } => text.clone(),
+        Token::Punct { ch, .. } => ch.to_string(),
+        Token::Group { delim, items, .. } => {
+            format!("{}{}{}", delim.open(), render(items), delim.close())
         }
     }
-    out
 }
 
 #[cfg(test)]

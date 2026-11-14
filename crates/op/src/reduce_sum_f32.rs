@@ -2,19 +2,18 @@
 //!
 //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::reduce`] 骨架按 [`Sum`] 单态化。
 
-use crate::reduce::{Reduce, ReduceCache};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::reduce::Reduce;
 
 /// 求和实现：初值 0，折叠用加法。
 pub struct Sum;
 
-static CACHE: ReduceCache = ReduceCache::new();
-
 impl Reduce for Sum {
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::reduce::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::reduce::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn start() -> f32 {

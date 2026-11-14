@@ -3,19 +3,29 @@
 //! 输入轴 `n` 被规约消掉，输出轴 `o` 长度恒为 1。`reduce_sum_f32` / `reduce_max_f32` 是同一副
 //! 骨架的两种 [`Reduce`] 实现，骨架（表达式缓存、代价、样本、校验、遍历）只有一份，按类型单态化。
 
-use crate::einsum::{Bits, Operand};
-use crate::gemv::OperandSpec;
+use crate::einsum::{Bits, Formula, FormulaCache, OperandSpec};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
-use std::sync::OnceLock;
 
 /// 归约算子随语义变化的部分。
 pub trait Reduce {
     /// 表达式各项的位宽与方向（表达式固定为 `n,o->o`）。
     const OPERANDS: &'static [OperandSpec];
 
-    /// 表达式缓存。
-    fn formula() -> Result<&'static crate::einsum::Formula, Error>;
+    /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
+    fn cache() -> &'static FormulaCache;
+
+    /// 表达式：固定的 `n,o->o`，第一次调用时解析并校验，之后复用。
+    ///
+    /// 表达式不随实现变化，所以它不是关联常量：多一份可以写歪的事实，而这条骨架本来就只有
+    /// 一种求和形状（输出轴长度恒为 1）。
+    ///
+    /// # Errors
+    ///
+    /// 表达式与操作数表不自洽时返回说明（带 `op::reduce::formula` 帧）。
+    fn formula() -> Result<&'static Formula, Error> {
+        Self::cache().get("n,o->o", Self::OPERANDS, "op::reduce::formula")
+    }
 
     /// 累加初值。
     fn start() -> f32;
@@ -25,43 +35,6 @@ pub trait Reduce {
 
     /// 确定性输入。
     fn input(len: usize) -> Vec<f32>;
-}
-
-/// 归约骨架的表达式缓存。
-pub struct ReduceCache(OnceLock<Result<crate::einsum::Formula, Error>>);
-
-impl ReduceCache {
-    /// 空缓存。
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(OnceLock::new())
-    }
-
-    /// 取表达式：`n,o->o`，输入读、输出写，输出轴长度 1。
-    ///
-    /// # Errors
-    ///
-    /// 表达式与操作数不自洽时返回说明。
-    pub fn get<R: Reduce>(&'static self) -> Result<&'static crate::einsum::Formula, Error> {
-        self.0
-            .get_or_init(|| {
-                let operands = R::OPERANDS
-                    .iter()
-                    .map(|spec| Operand::new(spec.name, spec.bits, spec.access))
-                    .collect();
-                crate::einsum::Expr::parse("n,o->o")
-                    .and_then(|expr| crate::einsum::Formula::new(expr, operands))
-                    .map_err(|error| error.with("op::reduce::formula"))
-            })
-            .as_ref()
-            .map_err(Clone::clone)
-    }
-}
-
-impl Default for ReduceCache {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// 两条轴：输入轴 `n`（被规约），输出轴 `o`。

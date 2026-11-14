@@ -40,6 +40,18 @@ pub enum WeightFormat {
     },
 }
 
+/// 元素类型 ↔ 权重编码的唯一事实源：`of_dtype` 与 `dtype()` 是它的两个方向。
+///
+/// 表里只有「编码就是元素类型本身」的五种；[`WeightFormat::Int4`] 刻意不在表里，
+/// 因为它多了一个元素类型表达不了的事实（分组），落到哪个元素类型由 `dtype()` 说。
+const FORMATS: &[(DType, WeightFormat)] = &[
+    (DType::F32, WeightFormat::F32),
+    (DType::F16, WeightFormat::F16),
+    (DType::BF16, WeightFormat::Bf16),
+    (DType::I8, WeightFormat::I8),
+    (DType::U4, WeightFormat::Packed4),
+];
+
 impl WeightFormat {
     /// 量化侧的默认格式：int4 + 32 元素分组，即 [`crate::Linear::OP`] 的输入格式。
     ///
@@ -47,21 +59,17 @@ impl WeightFormat {
     /// [`WeightFormat::operator`] 与测试共同保证。
     pub const INT4: Self = Self::Int4 { group: 32 };
 
-    /// 由权重的元素类型推出格式。
+    /// 由权重的元素类型推出格式：查 `FORMATS` 的那一个方向。
     ///
     /// `U4` 只给出 [`WeightFormat::Packed4`]：分组没有出现在元素类型里，任何具体数字都只能是
-    /// 猜的。需要计价时用 [`WeightFormat::int4`] 明确声明分组。
+    /// 猜的。需要计价时用 [`WeightFormat::int4`] 明确声明分组；闭集里的其他类型不是权重
+    /// 存储格式，调用方按未覆盖处理。
     #[must_use]
     pub fn of_dtype(dtype: DType) -> Option<Self> {
-        match dtype {
-            DType::F32 => Some(Self::F32),
-            DType::F16 => Some(Self::F16),
-            DType::BF16 => Some(Self::Bf16),
-            DType::I8 => Some(Self::I8),
-            DType::U4 => Some(Self::Packed4),
-            // 闭集里的其他类型不是权重存储格式：调用方按未覆盖处理，不强行归类。
-            _ => None,
-        }
+        FORMATS
+            .iter()
+            .find(|(element, _)| *element == dtype)
+            .map(|(_, format)| *format)
     }
 
     /// 显式声明 4 位量化的分组。
@@ -69,15 +77,15 @@ impl WeightFormat {
         Self::Int4 { group }
     }
 
-    /// 这种编码在内存里的元素类型（[`WeightFormat::Packed4`] 与 [`WeightFormat::Int4`] 都是 `U4`）。
+    /// 这种编码在内存里的元素类型：查 `FORMATS` 的另一个方向。
+    ///
+    /// [`WeightFormat::Int4`] 不在表里，落到 `U4`：分组不是元素宽度，两种 4 位编码
+    /// （[`WeightFormat::Packed4`] 与它）存的是同一种元素。
     pub fn dtype(self) -> DType {
-        match self {
-            Self::F32 => DType::F32,
-            Self::F16 => DType::F16,
-            Self::Bf16 => DType::BF16,
-            Self::I8 => DType::I8,
-            Self::Packed4 | Self::Int4 { .. } => DType::U4,
-        }
+        FORMATS
+            .iter()
+            .find(|(_, format)| *format == self)
+            .map_or(DType::U4, |(element, _)| *element)
     }
 
     /// 本格式对应的已声明算子；`None` = 还没有这个格式的算子，因此这一层无法计价。
@@ -124,12 +132,10 @@ impl WeightFormat {
 impl fmt::Display for WeightFormat {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::F32 => formatter.write_str("f32"),
-            Self::F16 => formatter.write_str("f16"),
-            Self::Bf16 => formatter.write_str("bf16"),
-            Self::I8 => formatter.write_str("i8"),
             Self::Packed4 => formatter.write_str("4 位打包（未声明分组）"),
             Self::Int4 { group } => write!(formatter, "int4（分组 {group}）"),
+            // 其余四种编码的名字就是元素类型的规范名，不在这里再写一遍字面量。
+            element => formatter.write_str(element.dtype().name()),
         }
     }
 }

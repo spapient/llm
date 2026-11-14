@@ -14,16 +14,24 @@ use crate::syntax::{Declaration, Frontend, ModelDecl};
 
 /// 渲染实现；`ty` 必须是 [`crate::syntax::target_name`] 给出的类型名。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
-    let name = literal(declaration.name());
-    let shape = shape(declaration.out());
+    let mut code = String::new();
+    render_spec(&mut code, declaration, ty);
+    render_layer(&mut code, declaration, ty);
+    render_layer_check(&mut code, declaration, ty);
+    code
+}
+
+/// 第一块：私有构造函数 `__layer_spec()`，`OnceLock` 保证 `LayerSpec` 只构造一次。
+fn render_spec(code: &mut String, declaration: &Declaration, ty: &str) {
+    let name = literal(&declaration.name);
+    let shape = shape(&declaration.out);
     let ops = declaration
-        .ops()
+        .ops
         .iter()
         .map(|op| format!("{}.to_string()", literal(op)))
         .collect::<Vec<_>>()
         .join(", ");
 
-    let mut code = String::new();
     code.push_str("#[automatically_derived]\n");
     code.push_str(&format!("impl {ty} {{\n"));
     code.push_str("    #[doc(hidden)]\n");
@@ -46,7 +54,10 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     code.push_str("        })\n");
     code.push_str("    }\n");
     code.push_str("}\n\n");
+}
 
+/// 第二块：`impl nn::Layer`，只把三个访问器转发给 [`render_spec`] 生成的那份 `LayerSpec`。
+fn render_layer(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("#[automatically_derived]\n");
     code.push_str(&format!("impl ::nn::Layer for {ty} {{\n"));
     code.push_str("    fn name(&self) -> &str {\n        <Self>::__layer_spec().name()\n    }\n");
@@ -58,8 +69,8 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     );
     // `in` 给了规约轴宽度，下界就有得算；没给就沿用契约里的默认实现（`Ok(None)`），
     // 而不是生成一个“返回空值”的方法把“这一层不懂自己的形状”藏起来。
-    if let Some(width) = declaration.input() {
-        let out = declaration.out()[0];
+    if let Some(width) = declaration.input {
+        let out = declaration.out[0];
         code.push_str("    fn bounds(&self) -> ::nn::BoundsResult {\n");
         code.push_str(&format!(
             "        ::nn::Bounds::of_ops(<Self>::__layer_spec().ops(), {width}usize, {out}usize).map(::core::option::Option::Some)\n"
@@ -67,7 +78,11 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
         code.push_str("    }\n");
     }
     code.push_str("}\n\n");
+}
 
+/// 第三块：`#[cfg(test)]` 校验模块，在 `cargo test` 时核对"注解里的算子仍然存在"。
+fn render_layer_check(code: &mut String, declaration: &Declaration, ty: &str) {
+    let name = literal(&declaration.name);
     code.push_str("#[cfg(test)]\n#[allow(non_snake_case)]\n");
     code.push_str(&format!("mod __layer_check_{ty} {{\n"));
     code.push_str("    #[test]\n    fn the_annotation_still_matches_the_declared_operators() {\n");
@@ -77,14 +92,13 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     code.push_str(&format!("        assert_eq!(spec.name(), {name});\n"));
     code.push_str(&format!(
         "        assert_eq!(spec.output().dims(), &{:?});\n",
-        declaration.out()
+        declaration.out
     ));
     code.push_str(&format!(
         "        assert_eq!(spec.ops(), &{:?});\n",
-        declaration.ops()
+        declaration.ops
     ));
     code.push_str("    }\n}\n");
-    code
 }
 
 /// 把 `#[frontend(..)]` 渲染成 `crate::witness::Language` 的实现 + 两条编译期断言。
@@ -105,10 +119,10 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
 /// 路径写成 `crate::witness::..`：本注解只作用于 `audit` 的执行前端，不引入跨 crate 的
 /// 隐式依赖（与 `#[layer]` 指向 `::nn::..` 是同一个约定：注解绑定它所属契约的路径）。
 pub(crate) fn render_frontend(frontend: &Frontend, ty: &str) -> String {
-    let emit = frontend.emit();
+    let emit = &frontend.emit;
     let emit_literal = literal(emit);
-    let ext = literal(frontend.ext());
-    let tag = literal(frontend.tag());
+    let ext = literal(&frontend.ext);
+    let tag = literal(&frontend.tag);
     let variant = language_variant(emit);
 
     let mut code = String::new();
@@ -164,10 +178,8 @@ fn language_variant(emit: &str) -> String {
 /// 不再手写「名字 → 变体」表：`dtype` 的 [`DType::variant`] 是变体名的唯一事实源，
 /// 缩写词的全大写规则（`bf16 → BF16`）也住在那里。闭集已在文法层（[`crate::syntax::DTYPES`]）
 /// 校验过，这里只做名字到变体的查找。
-fn dtype_variant(dtype: &str) -> String {
-    dtype::DType::parse_name(dtype)
-        .map(|dtype| dtype.variant().to_string())
-        .unwrap_or_else(|| panic!("`{dtype}` 已在文法层被挡在 DTYPES 闭集外"))
+fn dtype_variant(dtype: &str) -> Option<String> {
+    dtype::DType::parse_name(dtype).map(|dtype| dtype.variant().to_string())
 }
 
 /// 首字母大写、其余原样：语言闭集（`opencl → Opencl`）用这一条命名规则。
@@ -185,6 +197,10 @@ fn capitalised(word: &str) -> String {
 /// 实例，`group` 直接取 `Format::GRAIN`。注解里的字面量因此只管注册名、生产形状与输出类型，
 /// "这份语义是哪份格式"由类型参数保证——别名不实现 `Format` 就编译不过。
 ///
+/// 十二条骨架的 `MODEL` 字段逐字相同，差别只有四件：`op` 模块名、`group` 的写法、入口是否按
+/// 类型参数单态化、以及是否附带粒度断言。这四件写在 [`SKELETON_TABLE`] 里，"加一条骨架"
+/// 因此是加一行——[`crate::syntax::SKELETONS`] 与 `every_skeleton_has_a_branch` 会一起要求它。
+///
 /// 两条断言是注解与类型之间的契约，全部在编译期成立，但**只由 `gemv` 骨架生成**——只有它拿
 /// 得到 `Format::GRAIN` 这个粒度（其余骨架的粒度写在 `op` 的语义表里，不经过类型参数）：
 ///
@@ -192,185 +208,188 @@ fn capitalised(word: &str) -> String {
 /// 2. 生产形状的 `M` 必须是它的整数倍——量化算子按分组对齐，写错在 `cargo check` 就失败，
 ///    而不是等 `doctor` 算代价时才报。
 ///
-/// `gemm` 骨架按注册名在 `syntax::GEMM_SKELETON_NAMES` 里选 `op::gemm_*` 模块；名字不在表里时
-/// 文法层直接拒绝，生成器不会退化成别的骨架。
-///
 /// 生成的测试把四份事实对齐：注册表里的语义就是这份 `MODEL`、样本与 `.k` 签名一致、生产形状
 /// 能算出代价、注解里的 `dtype` 字符串解析成同一个变体。任何一处漂移都在 `cargo test` 里
 /// 失败，而不是在审计报告里表现成一个奇怪的数。
 pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
-    let name = literal(declaration.name());
-    let [m, n] = declaration.shape();
-    let dtype_name = literal(declaration.dtype());
-    let dtype = dtype_variant(declaration.dtype());
+    let [m, n] = declaration.shape;
+
+    let Some(dtype) = dtype_variant(&declaration.dtype) else {
+        // 与骨架同一类失配：文法层挡在 `DTYPES` 闭集外，走到这里说明闭集加了成员、词汇表没有。
+        return format!(
+            "compile_error!(\"注解层内部错误：输出类型 `{}` 没有 `DType` 变体\");\n",
+            declaration.dtype
+        );
+    };
+    let Some(shape) = skeleton_of(&declaration.skeleton) else {
+        // 文法层保证 `skeleton` 在闭集里，所以走到这里只剩一个原因：闭集加了成员、表没加行。
+        // 早退回一条编译错误，而不是悄悄挑一个别的骨架——那会生成一份编译得过、却绑错格式的
+        // `MODEL`。
+        return format!(
+            "compile_error!(\"注解层内部错误：骨架 `{}` 没有生成分支\");\n",
+            declaration.skeleton
+        );
+    };
 
     let mut code = String::new();
     code.push_str(&format!(
         "#[doc = \"`{ty}` 的语义表（`#[model]` 生成）：生产形状、输出类型与三条单态化入口。\"]\n"
     ));
     code.push_str("pub const MODEL: ::llm_op::model::Model = ::llm_op::model::Model {\n");
-    if declaration.skeleton() == "elementwise" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::elementwise::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::elementwise::project_shape,\n");
-        code.push_str(&format!("    cost: ::llm_op::elementwise::cost::<{ty}>,\n"));
-        code.push_str(&format!(
-            "    sample: ::llm_op::elementwise::sample::<{ty}>,\n"
-        ));
-        code.push_str(&format!(
-            "    reference: ::llm_op::elementwise::reference::<{ty}>,\n"
-        ));
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "unary" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::unary::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::unary::project_shape,\n");
-        code.push_str(&format!("    cost: ::llm_op::unary::cost::<{ty}>,\n"));
-        code.push_str(&format!("    sample: ::llm_op::unary::sample::<{ty}>,\n"));
-        code.push_str(&format!(
-            "    reference: ::llm_op::unary::reference::<{ty}>,\n"
-        ));
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "reduce" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::reduce::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::reduce::project_shape,\n");
-        code.push_str(&format!("    cost: ::llm_op::reduce::cost::<{ty}>,\n"));
-        code.push_str(&format!("    sample: ::llm_op::reduce::sample::<{ty}>,\n"));
-        code.push_str(&format!(
-            "    reference: ::llm_op::reduce::reference::<{ty}>,\n"
-        ));
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "rmsnorm" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::rmsnorm_f32::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::rmsnorm_f32::project_shape,\n");
-        code.push_str("    cost: ::llm_op::rmsnorm_f32::cost,\n");
-        code.push_str("    sample: ::llm_op::rmsnorm_f32::sample,\n");
-        code.push_str("    reference: ::llm_op::rmsnorm_f32::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "softmax" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::softmax_f32::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::softmax_f32::project_shape,\n");
-        code.push_str("    cost: ::llm_op::softmax_f32::cost,\n");
-        code.push_str("    sample: ::llm_op::softmax_f32::sample,\n");
-        code.push_str("    reference: ::llm_op::softmax_f32::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "rope" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::rope_f32::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::rope_f32::project_shape,\n");
-        code.push_str("    cost: ::llm_op::rope_f32::cost,\n");
-        code.push_str("    sample: ::llm_op::rope_f32::sample,\n");
-        code.push_str("    reference: ::llm_op::rope_f32::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "embed" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::embed_f32::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::embed_f32::project_shape,\n");
-        code.push_str("    cost: ::llm_op::embed_f32::cost,\n");
-        code.push_str("    sample: ::llm_op::embed_f32::sample,\n");
-        code.push_str("    reference: ::llm_op::embed_f32::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "dequant" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::dequant_i8::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::dequant_i8::project_shape,\n");
-        code.push_str("    cost: ::llm_op::dequant_i8::cost,\n");
-        code.push_str("    sample: ::llm_op::dequant_i8::sample,\n");
-        code.push_str("    reference: ::llm_op::dequant_i8::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "dequant_i4" {
-        // 打包粒度：每 2 个输出元素占一个字节，group=2 让 verify 从偶数形状起步、并对齐形状约束。
-        code.push_str("    group: 2u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::dequant_i4::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::dequant_i4::project_shape,\n");
-        code.push_str("    cost: ::llm_op::dequant_i4::cost,\n");
-        code.push_str("    sample: ::llm_op::dequant_i4::sample,\n");
-        code.push_str("    reference: ::llm_op::dequant_i4::reference,\n");
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "attention" {
-        code.push_str("    group: 1u32,\n");
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::attention::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::attention::project_shape,\n");
-        code.push_str("    cost: ::llm_op::attention::cost,\n");
-        code.push_str("    sample: ::llm_op::attention::sample,\n");
-        if declaration.name() == "flash_attention_f32" {
-            code.push_str("    reference: ::llm_op::attention::flash_reference,\n");
-        } else {
-            code.push_str("    reference: ::llm_op::attention::reference,\n");
-        }
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "gemv" {
-        code.push_str(&format!(
-            "    group: <{ty} as ::llm_op::gemv::Format>::GRAIN as u32,\n"
-        ));
-        code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-        code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-        code.push_str("    axes: ::llm_op::gemv::AXES,\n");
-        code.push_str("    shape_ctx: ::llm_op::gemv::project_shape,\n");
-        code.push_str(&format!("    cost: ::llm_op::gemv::cost::<{ty}>,\n"));
-        code.push_str(&format!("    sample: ::llm_op::gemv::sample::<{ty}>,\n"));
-        code.push_str(&format!(
-            "    reference: ::llm_op::gemv::reference::<{ty}>,\n"
-        ));
-        code.push_str("};\n\n");
+    render_fields(&mut code, shape, &declaration.name, ty, (m, n), &dtype);
+    render_model_check(&mut code, declaration);
+    code
+}
 
-        // 格式自证交给 `Format::CHECK`：粒度与派生轴除数同源这条规则属于格式契约，不属于宏。
-        // 注解唯一要做的，是让它在**生产别名上**被求值——不被引用的关联常量不会报错。
-        code.push_str(&format!(
-            "const _: () = <{ty} as ::llm_op::gemv::Format>::CHECK;\n\n"
-        ));
-        code.push_str("const _: () = {\n");
-        code.push_str(&format!(
-            // 用"除回去乘回来"而不是 `%`：粒度可以是 1（稠密格式），`x % 1` 会被 clippy 的
-            // `modulo_one` 判为恒真，而这里要表达的正是"形状能被粒度整除"。
-            "    assert!({m}usize / <{ty} as ::llm_op::gemv::Format>::GRAIN * <{ty} as ::llm_op::gemv::Format>::GRAIN == {m}usize, \"生产形状的 M 必须是形状粒度的整数倍\");\n"
-        ));
-        code.push_str("};\n\n");
-    } else if declaration.skeleton() == "gemm" {
-        // 文法层保证名字在 `GEMM_SKELETON_NAMES` 里，而三种名字就是 `op` 的模块名：不必为
-        // 每种名字各写一份逐字相同的字段列表。
-        render_concrete_body(
-            &mut code,
-            "1u32",
-            declaration.name(),
-            &format!("::llm_op::{}::reference", declaration.name()),
-            m,
-            n,
-            &dtype,
-        );
-    } else {
-        // 文法层保证 `skeleton` 在闭集里、`gemm` 的注册名在 `GEMM_SKELETON_NAMES` 里，所以走到
-        // 这里只剩一个原因：闭集加了成员、生成器没加分支。早退回一条编译错误，而不是悄悄挑
-        // 一个别的骨架——那会生成一份编译得过、却绑错格式的 `MODEL`。
-        return format!(
-            "compile_error!(\"注解层内部错误：骨架 `{}` 没有生成分支\");\n",
-            declaration.skeleton()
-        );
+/// 一条骨架在生成器眼里的全部差异。
+///
+/// 早先这里是一串 `else if declaration.skeleton() == ".."`，每条各写 8 行逐字相同的字段
+/// 列表（`group` / `shape` / `dtype` / `axes` / `shape_ctx` / `cost` / `sample` / `reference`）。
+/// 加一条骨架要改三处，而漏改一处的后果不是编译错误，是一份**编译得过、却绑错模型**的
+/// `MODEL`——十一段拷贝换不来任何区分度。
+struct Skeleton {
+    /// 注解里 `skeleton = ".."` 的可选值（[`crate::syntax::SKELETONS`] 的成员）。
+    name: &'static str,
+    /// `op` 里承载这套语义的模块名；`None` 表示"用注册名"——`gemm` 的三种格式各有一个模块。
+    module: Option<&'static str>,
+    /// `MODEL.group` 的写法，`{ty}` 在渲染时替换成类型参数。
+    group: &'static str,
+    /// 入口按 `ty` 单态化（`cost::<T>`），还是模块里的具体函数（`module::cost`）。
+    generic: bool,
+    /// 附带粒度契约的编译期断言（只有拿得到 `Format::GRAIN` 的骨架有）。
+    grain: bool,
+}
+
+/// 表项构造：`module` 用 `Option` 而不是空串哨兵，与 [`Skeleton`] 的字段名一一对应。
+const fn row(
+    name: &'static str,
+    module: Option<&'static str>,
+    group: &'static str,
+    generic: bool,
+    grain: bool,
+) -> Skeleton {
+    Skeleton {
+        name,
+        module,
+        group,
+        generic,
+        grain,
     }
+}
 
+/// 十二条骨架的差异表，顺序与 [`crate::syntax::SKELETONS`] 一致。
+///
+/// `dequant_i4` 的 `group` 是 2 而不是 1：每 2 个输出元素占一个字节，`verify` 从偶数形状
+/// 起步并对齐这个约束。`gemv` 的 `group` 指向类型参数上的 `Format::GRAIN`——粒度是格式的
+/// 编译期事实，注解里不该再写一个数。
+const SKELETON_TABLE: [Skeleton; 12] = [
+    row(
+        "gemv",
+        Some("gemv"),
+        "<{ty} as ::llm_op::gemv::Format>::GRAIN as u32",
+        true,
+        true,
+    ),
+    row("gemm", None, "1u32", false, false),
+    row("elementwise", Some("elementwise"), "1u32", true, false),
+    row("unary", Some("unary"), "1u32", true, false),
+    row("reduce", Some("reduce"), "1u32", true, false),
+    row("rmsnorm", Some("rmsnorm_f32"), "1u32", false, false),
+    row("softmax", Some("softmax_f32"), "1u32", false, false),
+    row("rope", Some("rope_f32"), "1u32", false, false),
+    row("embed", Some("embed_f32"), "1u32", false, false),
+    row("dequant", Some("dequant_i8"), "1u32", false, false),
+    row("dequant_i4", Some("dequant_i4"), "2u32", false, false),
+    row("attention", Some("attention"), "1u32", false, false),
+];
+
+/// 按注册名改写 `reference` 入口的例外表。
+///
+/// `attention` 的两条参考实现都在 `op::attention` 里，只是算法不同（flash 版分块、朴素版一遍
+/// 算完），骨架名、轴表、代价都相同。这条差异按**注册名**描述而不是给骨架表加一列：它不属于
+/// "这份语义是哪副骨架"，而属于"这对权重用哪种算法"。
+const REFERENCE_OVERRIDES: [(&str, &str); 1] = [(
+    "flash_attention_f32",
+    "::llm_op::attention::flash_reference",
+)];
+
+/// 按注解里写的骨架名取表项。
+fn skeleton_of(name: &str) -> Option<&'static Skeleton> {
+    SKELETON_TABLE.iter().find(|row| row.name == name)
+}
+
+/// 渲染 `MODEL` 的八个字段，以及（`gemv`）随字段一起求值的粒度断言。
+fn render_fields(
+    code: &mut String,
+    shape: &Skeleton,
+    name: &str,
+    ty: &str,
+    dims: (usize, usize),
+    dtype: &str,
+) {
+    let (m, n) = dims;
+    let module = shape.module.unwrap_or(name);
+    let suffix = if shape.generic {
+        format!("::<{ty}>")
+    } else {
+        String::new()
+    };
+    code.push_str(&format!(
+        "    group: {},\n",
+        shape.group.replace("{ty}", ty)
+    ));
+    code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
+    code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
+    code.push_str(&format!("    axes: ::llm_op::{module}::AXES,\n"));
+    code.push_str(&format!(
+        "    shape_ctx: ::llm_op::{module}::project_shape,\n"
+    ));
+    code.push_str(&format!("    cost: ::llm_op::{module}::cost{suffix},\n"));
+    code.push_str(&format!(
+        "    sample: ::llm_op::{module}::sample{suffix},\n"
+    ));
+    code.push_str(&format!(
+        "    reference: {},\n",
+        reference_path(module, &suffix, name)
+    ));
+    code.push_str("};\n\n");
+    if shape.grain {
+        render_grain_asserts(code, ty, m);
+    }
+}
+
+/// `reference` 字段的路径：默认 `module::reference`，例外见 [`REFERENCE_OVERRIDES`]。
+fn reference_path(module: &str, suffix: &str, name: &str) -> String {
+    REFERENCE_OVERRIDES
+        .iter()
+        .find(|(op, _)| *op == name)
+        .map_or_else(
+            || format!("::llm_op::{module}::reference{suffix}"),
+            |(_, path)| format!("{path}{suffix}"),
+        )
+}
+
+/// `gemv` 的两条编译期断言，在**生产别名上**求值。
+///
+/// 格式自证交给 `Format::CHECK`：粒度与派生轴除数同源这条规则属于格式契约，不属于宏。宏唯一
+/// 要做的，是让它在生产别名上被求值——不被引用的关联常量不会报错。
+fn render_grain_asserts(code: &mut String, ty: &str, m: usize) {
+    code.push_str(&format!(
+        "const _: () = <{ty} as ::llm_op::gemv::Format>::CHECK;\n\n"
+    ));
+    code.push_str("const _: () = {\n");
+    code.push_str(&format!(
+        // 用"除回去乘回来"而不是 `%`：粒度可以是 1（稠密格式），`x % 1` 会被 clippy 的
+        // `modulo_one` 判为恒真，而这里要表达的正是"形状能被粒度整除"。
+        "    assert!({m}usize / <{ty} as ::llm_op::gemv::Format>::GRAIN * <{ty} as ::llm_op::gemv::Format>::GRAIN == {m}usize, \"生产形状的 M 必须是形状粒度的整数倍\");\n"
+    ));
+    code.push_str("};\n\n");
+}
+
+/// `#[cfg(test)] mod __model_check`：把注解、注册表与 `.k` 签名三份事实对齐。
+fn render_model_check(code: &mut String, declaration: &ModelDecl) {
+    let name = literal(&declaration.name);
+    let dtype_name = literal(&declaration.dtype);
     code.push_str("#[cfg(test)]\nmod __model_check {\n");
     code.push_str("    #[test]\n");
     code.push_str("    fn the_annotation_agrees_with_the_registered_kernel() {\n");
@@ -425,38 +444,11 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     );
     code.push_str(&format!(
         "            \"注解写 `dtype = {}`，但 `.k` 的可写输出是 `{{}}`：回读按 `MODEL.dtype` 解释，两者必须是同一个类型\",\n",
-        declaration.dtype(),
+        declaration.dtype,
     ));
     code.push_str("            signature.output_type().map_or(\"-\", |ctype| ctype.c_name()),\n");
     code.push_str("        );\n");
     code.push_str("    }\n}\n");
-    code
-}
-
-/// `MODEL` 体里"模块路径完全确定"的那一半：`cost`/`sample`/`reference` 都是非泛型函数。
-///
-/// 七种具体骨架（含按名字选模块的三种 gemm）逐字相同，只有模块名、`reference` 入口与
-/// `group` 不同；把它们写在一张表里，而不是七段 9 行的拷贝。
-fn render_concrete_body(
-    code: &mut String,
-    group: &str,
-    module: &str,
-    reference: &str,
-    m: usize,
-    n: usize,
-    dtype: &str,
-) {
-    code.push_str(&format!("    group: {group},\n"));
-    code.push_str(&format!("    shape: ({m}usize, {n}usize),\n"));
-    code.push_str(&format!("    dtype: ::llm_op::model::DType::{dtype},\n"));
-    code.push_str(&format!("    axes: ::llm_op::{module}::AXES,\n"));
-    code.push_str(&format!(
-        "    shape_ctx: ::llm_op::{module}::project_shape,\n"
-    ));
-    code.push_str(&format!("    cost: ::llm_op::{module}::cost,\n"));
-    code.push_str(&format!("    sample: ::llm_op::{module}::sample,\n"));
-    code.push_str(&format!("    reference: {reference},\n"));
-    code.push_str("};\n\n");
 }
 
 /// 形状表达式：空切片表示标量，必须显式写类型，否则 `new([])` 推断不出元素类型。
@@ -734,12 +726,71 @@ mod tests {
                 "骨架 `{skeleton}` 必须绑定一份轴表：{code}"
             );
         }
+        for row in SKELETON_TABLE {
+            assert!(
+                syntax::SKELETONS.contains(&row.name),
+                "骨架表里的 `{}` 不在闭集里：闭集是可选值的唯一来源，反向漏一行就等于允许了它",
+                row.name
+            );
+        }
+        assert_eq!(
+            SKELETON_TABLE.len(),
+            syntax::SKELETONS.len(),
+            "表与闭集必须一一对应：多一行是死数据，少一行是生成不出 MODEL 的骨架"
+        );
+    }
+
+    /// 表里三行不显然的事实各钉一条：具体骨架**不带** turbofish、`dequant_i4` 的粒度是 2、
+    /// flash attention 走另一条参考实现。三条都是"改一个字符就静默换掉生成代码"的点——它们
+    /// 原本散在三段 `else if` 里，现在集中在表里，所以判据也集中在这里。
+    #[test]
+    fn the_table_keeps_the_rows_that_are_easy_to_get_wrong() {
+        let concrete = render_model(
+            &model(r#"name = "rmsnorm_f32", shape = [8, 4], dtype = "f32", skeleton = "rmsnorm""#),
+            "M",
+        );
+        assert!(
+            concrete.contains("    cost: ::llm_op::rmsnorm_f32::cost,\n")
+                && concrete.contains("    reference: ::llm_op::rmsnorm_f32::reference,\n"),
+            "具体骨架的函数不是泛型的，不能带 `::<T>`：{concrete}"
+        );
+        let packed = render_model(
+            &model(
+                r#"name = "dequant_i4", shape = [8, 4], dtype = "f32", skeleton = "dequant_i4""#,
+            ),
+            "M",
+        );
+        assert!(
+            packed.contains("    group: 2u32,\n"),
+            "int4 每 2 个输出元素占一个字节，粒度写 1 会让 `verify` 从奇数形状起步：{packed}"
+        );
+        let flash = render_model(
+            &model(
+                r#"name = "flash_attention_f32", shape = [8, 4], dtype = "f32", skeleton = "attention""#,
+            ),
+            "M",
+        );
+        assert!(
+            flash.contains("    reference: ::llm_op::attention::flash_reference,\n")
+                && !flash.contains("    reference: ::llm_op::attention::reference,\n"),
+            "flash 版与朴素版共用骨架，只有 `reference` 分叉：{flash}"
+        );
+        let plain = render_model(
+            &model(
+                r#"name = "attention_f32", shape = [8, 4], dtype = "f32", skeleton = "attention""#,
+            ),
+            "M",
+        );
+        assert!(
+            plain.contains("    reference: ::llm_op::attention::reference,\n"),
+            "非 flash 的 attention 走朴素实现：{plain}"
+        );
     }
 
     #[test]
     fn every_dtype_name_maps_to_the_expected_variant() {
         for (name, variant) in [("f16", "F16"), ("bf16", "BF16"), ("f32", "F32")] {
-            assert_eq!(dtype_variant(name), variant, "{name}");
+            assert_eq!(dtype_variant(name).as_deref(), Some(variant), "{name}");
         }
     }
 
@@ -756,5 +807,63 @@ mod tests {
             assert!(depth >= 0, "出现了多余的 `}}`：{code}");
         }
         assert_eq!(depth, 0, "花括号没有配平：{code}");
+    }
+}
+
+#[cfg(test)]
+mod dump_tests {
+    use super::*;
+    use crate::fixture::lex;
+    use crate::syntax;
+
+    #[test]
+    fn dump_golden() {
+        let layers = [
+            r#"name = "lm_head", out = [4096], ops = ["gemv_i4"]"#,
+            r#"name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"]"#,
+            r#"name = "loss", out = [], ops = ["dot"]"#,
+            r#"name = "q", out = [2, 3], ops = ["a", "b"]"#,
+        ];
+        for text in layers {
+            println!("=== LAYER {text}");
+            println!("{}", render(&syntax::parse(&lex(text)).unwrap(), "T"));
+        }
+        let frontends = [
+            r#"emit = "opencl", ext = "cl", tag = "witness""#,
+            r#"emit = "cuda", ext = "cu", tag = "self""#,
+        ];
+        for text in frontends {
+            println!("=== FRONTEND {text}");
+            println!(
+                "{}",
+                render_frontend(&syntax::parse_frontend(&lex(text)).unwrap(), "T")
+            );
+        }
+        for skeleton in syntax::SKELETONS {
+            let name = if skeleton == "gemm" {
+                "gemm_i8"
+            } else {
+                "op_under_test"
+            };
+            let text = format!(
+                r#"name = "{name}", shape = [8, 4], dtype = "bf16", skeleton = "{skeleton}""#
+            );
+            println!("=== MODEL {text}");
+            println!(
+                "{}",
+                render_model(&syntax::parse_model(&lex(&text)).unwrap(), "T")
+            );
+        }
+        let extra = [
+            r#"name = "q", shape = [8, 4], dtype = "f16""#,
+            r#"name = "flash_attention_f32", shape = [8, 4], dtype = "f32", skeleton = "attention""#,
+        ];
+        for text in extra {
+            println!("=== MODEL {text}");
+            println!(
+                "{}",
+                render_model(&syntax::parse_model(&lex(text)).unwrap(), "T")
+            );
+        }
     }
 }

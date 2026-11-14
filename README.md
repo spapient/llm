@@ -2,7 +2,7 @@
 
 用 Rust 编写的配置驱动算子训练推理框架：kernel 由声明与档案驱动（`cutile`），上层按层组装成推理与训练链路（`llm`）。
 
-本仓库是一个 Cargo workspace，共 26 个成员（`crates/*` 下的 25 个 crate 与根包 `llm`（入口 bin））。
+本仓库是一个 Cargo workspace，共 25 个成员（`crates/*` 下的 24 个 crate 与根包 `llm`（入口 bin））。
 元数据、依赖版本、lint 策略统一在根 `Cargo.toml` 声明；**模块的层级与依赖方向**写在
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，新增成员时按那里的三步登记。
 
@@ -45,9 +45,9 @@ struct LmHead;   // 生成 impl nn::Layer + 一条“声明仍与 op 数据一�
 
 | 层 | 成员 | 职责 |
 |---|---|---|
-| L1 基础设施 | `diagnostic` `dtype` `testkit` `llm-config` `tool` | 统一错误类型、精度事实源（标量/块量化/微缩放三轴）、测试夹具、配置分层与路径、静态门与回退判定 |
-| L2 数据层 | `prof` `op` `prim` | 设备档案与能力闭集、算子声明与模板（`gemv_i4` 量化 / `gemv_f32` 稠密）及其求和代价（`op/src/einsum/`）、原语片段与见证（纯数据） |
-| L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行（`report/` 子模块在其上做 doctor/verify/bench 的结构化报告与见证执行），见 [DESIGN](crates/cutile/DESIGN.md) |
+| L1 基础设施 | `diagnostic` `dtype` `testkit` `tool` | 统一错误类型与声明数据树（`data`：构建期语料在运行期的形状，没有解析器）、精度事实源（标量/块量化/微缩放三轴）、测试夹具、静态门与回退判定 |
+| L2 数据层 | `prof` `op` `prim` | 设备档案与能力闭集、算子声明与模板（22 条，`op::REGISTRY` 是唯一清单）及其求和代价（`op/src/einsum/`）、原语片段与见证（纯数据） |
+| L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行与见证执行；`doctor` / `verify` / `bench` / `execution` 四条命令共用一条流水线（`pipeline`），报告本身只是数据、排版在驱动方；设计契约见 [cutile README](crates/cutile/README.md) |
 | L4 运行时 | `mem` `tensor` `storage` `tokenizer` | 分配、张量元数据、布局搬运、文本边界 |
 | L5 模型与训练 | `weights` `autograd` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、反向图、样本、层定义、切分拓扑 |
 | L6 调度与服务 | `train` `engine` `serve` `cli` | 训练循环状态与检查点格式（`train/src/snapshot/`）、连续批与序列及页账与提交契约（`engine/src/{kv,exec}.rs`）、端点契约与其线格式（`serve/src/proto/`）、命令行解析 |
@@ -73,7 +73,7 @@ llm ──▶ engine ──▶ tensor ──▶ mem ──▶ diagnostic
   ├──▶ weights ──▶ storage ──┘
   ├──▶ op / prof / tool
   └──▶ cutile ──┬─▶ op / prof / prim
-                └─▶ llm-config
+                └─▶ diagnostic（错误类型 + toml）
 ```
 
 ## 目录结构
@@ -86,7 +86,8 @@ llm ──▶ engine ──▶ tensor ──▶ mem ──▶ diagnostic
 ├── docs/
 │   ├── ARCHITECTURE.md   # 分层、依赖规则、所有权表、新增成员三步
 │   └── adr/              # 0001 分层序 / 0002 单一主人 / 0003 kernel 与运行时类型
-│                         # 0004 占位策略 / 0005 注解即契约 / 0006 配置机制与身份分离
+│                         # 0004 占位策略 / 0005 注解即契约 / 0006 配置机制与身份分离（身份段已被 0020 取代）
+│                         # 0020 设置层吸收进 cutile / 0021 TOML 语法层并进 diagnostic / 0022 语料改构建期解析
 │                         # 0007 代价来自一条求和表达式 / 0008 层下界来自算子语义
 │                         # 0013 加第二条算子只加数据（稠密 f32 投影）
 │                         # 0009 真实权重 → 层栈 → 模型下界
@@ -96,12 +97,11 @@ llm ──▶ engine ──▶ tensor ──▶ mem ──▶ diagnostic
 │                         # 0014 真实权重执行：同一件内核，换一份样本
 └── crates/
     ├── annotation/       # #[layer] 属性宏：注解 → 校验过的 Layer 实现（零外部依赖）
-    ├── config/           # llm-config：配置分层、键闭集、路径解析、App 身份、TOML 解析器
     ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行（bin 在根包 `src/bin/cutile.rs`）；report/ 是命令侧报告
     ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义；einsum/ 是求和代价的来源
     ├── prof/             # 档案层：devices/<vendor>.toml + 能力词汇表
     ├── prim/             # 片段层：<vendor>/<prim>.<ext> + witness
-    └── …                 # 其余 20 个成员见上表，每个 crate 的 //! 文档写明
+    └── …                 # 其余 19 个成员见上表，每个 crate 的 //! 文档写明
                           # “拥有什么 / 不拥有什么 / 依赖谁 / 被谁依赖”
 ```
 
@@ -128,20 +128,22 @@ cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU
 
 ## 配置
 
-运行时的值与目录只有一处来源——`llm-config`，默认值面向**发布后的二进制**：不依赖仓库布局，也不依赖启动目录。
-配置的**机制**（分层、来源、键闭集）与**身份**（目录名、文件名、环境前缀）是分开的：
-`Settings<A: App>` 的类型参数只决定名字，`Cutile` 是默认身份。其它层要读自己的配置时写
-`Settings::<你的应用>::load()`，不需要复制一层分层逻辑（见 [ADR 0006](docs/adr/0006-config-mechanism-vs-identity.md)）。
+运行时的值与目录只有一处来源——`cli::settings`（`crates/cli/src/settings.rs`），默认值面向**发布后的二进制**：
+不依赖仓库布局，也不依赖启动目录。它以前是独立成员 `llm-config` 的一半（
+[ADR 0020](docs/adr/0020-settings-layer-absorption.md)），后来并入 `cutile`；第四层（用户级配置文件）
+在 [ADR 0022](docs/adr/0022-build-time-corpora.md) 随运行期 TOML 解析器一起删除，剩下的策略再上移到
+命令行层（[ADR 0023](docs/adr/0023-settings-to-cli.md)）：默认目录是部署策略、`--set` 是命令行文法，
+都不是内核的职责。内核只收 `cutile::dirs::Dirs` 这份纯数据。**没有配置文件**：只有下面三层。
 
 ```text
-内置默认 < 用户级配置文件 < CUTILE_* 环境变量 < --set key=value
+内置默认 < CUTILE_* 环境变量 < --set key=value
 ```
 
-| 平台 | 配置文件 | 缓存根 |
-|---|---|---|
-| macOS | `~/Library/Application Support/cutile/cutile.toml` | `~/Library/Caches/cutile` |
-| Linux/BSD | `${XDG_CONFIG_HOME:-~/.config}/cutile/cutile.toml` | `${XDG_CACHE_HOME:-~/.cache}/cutile` |
-| Windows | `%APPDATA%\cutile\cutile.toml` | `%LOCALAPPDATA%\cutile` |
+| 平台 | 缓存根 |
+|---|---|
+| macOS | `~/Library/Caches/cutile` |
+| Linux/BSD | `${XDG_CACHE_HOME:-~/.cache}/cutile` |
+| Windows | `%LOCALAPPDATA%\cutile` |
 
 | 键 | 环境变量 | 默认值 |
 |---|---|---|
@@ -149,7 +151,8 @@ cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU
 | `work.dir` | `CUTILE_WORK_DIR` | `<缓存根>/work` |
 | `data.root` | `CUTILE_DATA_DIR` | 未设置（用编译期内嵌的 `crates/op/ops/`、`crates/prof/devices/` 与 `crates/prim/<vendor>/`） |
 
-仓库里**不放**配置文件：默认值的唯一来源是 `crates/config/src/paths.rs`；出现未登记的键会直接报错而不是被忽略。
+**没有配置文件**：默认值的唯一来源是 `crates/cli/src/settings.rs`，要偏离默认只能用上面的环境变量或
+`--set`；`--set` 里出现未登记的键会直接报错而不是被忽略。
 
 ```bash
 cargo run --bin cutile -- doctor --op gemv_i4 --device cpu    # [配置] 段逐键标注来源
@@ -178,8 +181,8 @@ cargo new --lib crates/<name>       # 或 cargo new --bin
 | 文档 | 内容 |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层、依赖规则、所有权表、如何被守住 |
-| [`docs/adr/`](docs/adr/) | 架构决策记录（分层序、单一主人、kernel/运行时类型、占位策略、注解即契约、配置机制与身份分离、层下界、真实权重、借出与载入、量化分组、真实权重执行） |
-| [`crates/cutile/DESIGN.md`](crates/cutile/DESIGN.md) | kernel 层机制：三层数据、闭集、无 IR lowering、证据分级 |
+| [`docs/adr/`](docs/adr/) | 架构决策记录（分层序、单一主人、kernel/运行时类型、占位策略、注解即契约、配置机制与身份分离、层下界、真实权重、借出与载入、量化分组、真实权重执行、设置层吸收、TOML 语法层归属、语料改构建期解析） |
+| [`crates/cutile/README.md`](crates/cutile/README.md) | kernel 层机制：三层数据、闭集、无 IR lowering、证据分级 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 变更记录 |
 
 ## 许可证

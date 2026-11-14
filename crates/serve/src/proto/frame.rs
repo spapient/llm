@@ -78,22 +78,31 @@ pub(crate) fn scan(bytes: &[u8]) -> Result<Scan<'_>> {
         });
     }
     let payload = &bytes[HEADER_LEN..HEADER_LEN + header.len];
-    if header.version.has_checksum() {
-        let at = HEADER_LEN + header.len;
-        let written = u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-        let computed = crc32(&bytes[..at]);
-        if written != computed {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("校验和不符：帧头与载荷算出 {computed:#010x}，帧尾写的是 {written:#010x}"),
-            ));
-        }
-    }
+    verify_checksum(bytes, &header)?;
     Ok(Scan::Frame {
         header,
         payload,
         total,
     })
+}
+
+/// 校验尾必须与「帧头 + 载荷」算出的 CRC 一致；第 1 版没有校验尾，直接通过。
+///
+/// 回答「这帧是不是被改过」，不回答「帧有多长」——切帧与上限在 [`scan`] 里。
+fn verify_checksum(bytes: &[u8], header: &Header) -> Result<()> {
+    if !header.version.has_checksum() {
+        return Ok(());
+    }
+    let at = HEADER_LEN + header.len;
+    let written = u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let computed = crc32(&bytes[..at]);
+    if written == computed {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!("校验和不符：帧头与载荷算出 {computed:#010x}，帧尾写的是 {written:#010x}"),
+    ))
 }
 
 /// 解析 10 字节帧头：魔数、版本、类型与载荷长度各判一次。
@@ -107,45 +116,60 @@ pub(crate) fn header(bytes: &[u8]) -> Result<Header> {
             format!("魔数不匹配：期望 {MAGIC:#06x}，得到 {magic:#06x}"),
         ));
     }
+    Ok(Header {
+        version: version_at(bytes)?,
+        kind: kind_at(bytes)?,
+        len: length_at(bytes)?,
+    })
+}
+
+/// 版本字段：只有本端支持的版本才算读出来，其余交给 [`version_error`] 说清是哪一种。
+fn version_at(bytes: &[u8]) -> Result<Version> {
     let version = Version::new(u16::from_le_bytes([bytes[2], bytes[3]]));
-    if !version.is_supported() {
-        // 版本 0 与"比本端新"是两件不同的事：前者是本端或对端的 bug（`Invalid`），后者只需
-        // 升级本端（`Unsupported`）。合成一个码，脚本就没法区分该升级还是该查日志。
-        return Err(if version > Version::current() {
-            Error::new(
-                Code::Unsupported,
-                format!(
-                    "协议版本 {} 高于本端支持的 {}",
-                    version.get(),
-                    Version::current().get()
-                ),
-            )
-        } else {
-            Error::new(
-                Code::Invalid,
-                format!(
-                    "协议版本 {} 无效：本端支持 {}..={}",
-                    version.get(),
-                    Version::FIRST.get(),
-                    Version::current().get()
-                ),
-            )
-        });
+    if version.is_supported() {
+        return Ok(version);
     }
+    Err(version_error(version))
+}
+
+/// 不受支持的版本：比本端新只需升级本端（`Unsupported`），版本 0 之类是本端或对端的 bug
+/// （`Invalid`）。合成一个码，脚本就没法区分该升级还是该查日志。
+fn version_error(version: Version) -> Error {
+    let current = Version::current().get();
+    if version > Version::current() {
+        return Error::new(
+            Code::Unsupported,
+            format!("协议版本 {} 高于本端支持的 {current}", version.get()),
+        );
+    }
+    Error::new(
+        Code::Invalid,
+        format!(
+            "协议版本 {} 无效：本端支持 {}..={current}",
+            version.get(),
+            Version::FIRST.get()
+        ),
+    )
+}
+
+/// 帧类型字段：未知 code 是坏帧。
+fn kind_at(bytes: &[u8]) -> Result<Kind> {
     let code = u16::from_le_bytes([bytes[4], bytes[5]]);
-    let kind = Kind::from_code(code)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("未知帧类型 {code}")))?;
+    Kind::from_code(code).ok_or_else(|| Error::new(Code::Invalid, format!("未知帧类型 {code}")))
+}
+
+/// 载荷长度字段：先判上限再等比载荷——`len` 是对端写的数，可以是 `u32::MAX`，
+/// 替对端攒够 4 GiB 等于用十个字节换一次拒绝服务。
+fn length_at(bytes: &[u8]) -> Result<usize> {
     let declared = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
     let len = usize::try_from(declared).unwrap_or(usize::MAX);
-    if len > MAX_PAYLOAD {
-        // 先判上限再等比载荷：`len` 是对端写的数，可以是 `u32::MAX`——替对端攒够 4 GiB 等于
-        // 用十个字节换一次拒绝服务。
-        return Err(Error::new(
-            Code::Invalid,
-            format!("载荷声明 {len} 字节，超过单帧上限 {MAX_PAYLOAD}"),
-        ));
+    if len <= MAX_PAYLOAD {
+        return Ok(len);
     }
-    Ok(Header { version, kind, len })
+    Err(Error::new(
+        Code::Invalid,
+        format!("载荷声明 {len} 字节，超过单帧上限 {MAX_PAYLOAD}"),
+    ))
 }
 
 /// 一帧的零拷贝视图：帧头三段 + 借来的载荷。

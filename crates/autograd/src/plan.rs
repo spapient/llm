@@ -1,32 +1,14 @@
 //! 显存计划：[`Plan`] 把"反向图 + 每变量字节数 + 预算"变成一组显存决策。
 //!
-//! 这一层只做算术：不分配、不提交 kernel、也不假装自己会重放。它回答三个问题——
+//! 三个问题：[`Plan::saved`] 留谁；[`Plan::release`] 何时释放——"最后一次被需要"，含重算；
+//! [`Plan::replayed`] 与 [`Plan::peak`] 代价多大，`peak <= budget` 由构造保证。预算不够时按字节
+//! 等分切段：段界留检查点、段内丢弃后就地重放，段长由预算解出来，不是常数。
 //!
-//! 1. **留谁**：[`Plan::saved`] 是反向开始前就必须存在的激活（检查点）；
-//! 2. **何时释放**：[`Plan::release`] 是每个保留的激活在反向走到第几步之后可以还给分配器。
-//!    释放点由"最后一次被需要"决定——既包括直接消费它的步骤，也包括以它为起点重算的更晚步骤；
-//!    不按作用域，这是显存收益的唯一来源；
-//! 3. **代价多大**：[`Plan::replayed`] 是一次反向里要重算的步数，[`Plan::peak`] 是按本计划
-//!    执行的峰值字节数，`peak <= budget` 由构造保证。
-//!
-//! # 模型
-//!
-//! 一个节点的输出值只在"把它当输入的、loss 可达的反向步骤"里被需要。于是每个激活的寿命都是
-//! 从前向结束到它**最后一次**被消费；全部保留时的峰值就是这些激活的字节和。预算不够时按段切：
-//! 每隔若干前向步留一个检查点，其余丢弃、需要时就地重放。段长由预算解出来，不是常数——
-//! 旧实现里写死的 256 只是这条公式的一个特例。
-//!
-//! 峰值是**保守上界**：保留的激活按整段反向都活着计，因此 `peak <= budget` 不会低估真实占用。
-//! 反过来，每个候选计划都用同一份账核对过，[`Plan::of`] 不会给出实际会超预算的计划。
-//!
-//! # 为什么不声称最优
-//!
-//! 这是图上的 pebbling 问题：一般 DAG 的最优解是 PSPACE 难的，任何"我最省"的说法都无法验证。
-//! 所以这里给的是三个可核对的数：保守峰值、[`Plan::floor`]（任何计划都绕不过的下界）、以及
-//! 重放步数。等字节时峰值约为 `total/√n` 的两倍，取的就是这个量级。
+//! 一般 DAG 的最优是 PSPACE 难的，所以这里不声称最优，只给三个可核对的数：保守峰值、
+//! [`Plan::floor`]（任何计划都绕不过的下界）、重放步数。
 
 use crate::error::invalid;
-use crate::{Schedule, Tape, Var};
+use crate::{Node, Schedule, Tape, Var};
 use diagnostic::Result;
 use tensor::{DType, Shape};
 
@@ -63,9 +45,7 @@ impl<F: Footprint + ?Sized> Footprint for &F {
     }
 }
 
-/// 变量形状表：记录前向时顺手登记，[`Plan`] 直接换算成字节。
-///
-/// 只存形状与元素类型，不存数据——激活本身仍然归运行时缓冲，这里不复制任何张量。
+/// 变量形状表：记录前向时顺手登记，[`Plan`] 直接换算成字节；只存形状与元素类型，不复制张量。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sizes {
     entries: Vec<Option<(Shape, DType)>>,
@@ -89,9 +69,6 @@ impl Sizes {
     }
 
     /// 一个变量登记的形状与元素类型；没登记时为 `None`。
-    ///
-    /// 计划只关心字节数（[`Footprint`]），而真正要把值写进一块内存的一方还需要知道"形状多大、
-    /// 按哪种元素读写"——分配缓冲需要的就是这两个事实。
     pub fn get(&self, var: Var) -> Option<(&Shape, DType)> {
         self.entries
             .get(var.id() as usize)
@@ -119,10 +96,7 @@ impl Footprint for Sizes {
     }
 }
 
-/// 显存预算（字节）。
-///
-/// 只是一个数：预算从哪来（配置、设备容量、上一次的峰值）不归这一层管，所以不读环境变量、
-/// 也不读 TOML——配置在 `llm-config`，设备容量在 `prof`。
+/// 显存预算（字节）：只是一个数，不读环境变量也不读 TOML（配置在 `cli::settings`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Budget {
     bytes: u64,
@@ -149,11 +123,7 @@ pub enum Choice {
     Recompute,
 }
 
-/// 一次反向外加前向重放时的显存决策。
-///
-/// 三个数一起看才有意义：`saved` 少了会推高 `replayed`，`replayed` 少了会推高 `peak`。
-/// 计划是纯数据（可比较、可缓存）；把计划变成动作的是 [`crate::Replay`]，它按这些释放点
-/// 编排重算与交还，值由调用方的 [`crate::Store`] 提供。
+/// 一次反向外加前向重放时的显存决策：纯数据（可比较、可缓存），变成动作的是 [`crate::Replay`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     choice: Choice,
@@ -169,10 +139,6 @@ pub struct Plan {
 
 impl Plan {
     /// 由反向调度、字节数与预算算出计划。
-    ///
-    /// `tape` 用来区分"参数/输入"（叶子，常驻，不进预算）与算子输出；`schedule` 决定"谁在图上、
-    /// 按什么顺序反向、每一步要哪些输入"；`footprint` 决定每个激活多大；`budget` 是可用的显存
-    /// 字节数。
     ///
     /// # 例子
     ///
@@ -198,8 +164,7 @@ impl Plan {
     ///
     /// # Errors
     ///
-    /// 预算低于必然下界（一次算子的输入必须同时在场），或者低于任何分段方案能取到的最小
-    /// 峰值时返回 [`diagnostic::Code::Invalid`]：这是"这次请求与这张图不相容"，不是缺能力。
+    /// 预算低于必然下界，或低于任何分段方案能取到的最小峰值时返回 [`diagnostic::Code::Invalid`]：
     /// 宁可报"放不下"，也不给出实际会超预算的计划。
     pub fn of(
         tape: &Tape,
@@ -245,10 +210,6 @@ impl Plan {
     }
 
     /// 该变量在反向走到第几步之后可以释放；不保留时为 `None`。
-    ///
-    /// 释放点是它的**最后一次被需要**：既包括直接消费它的反向步骤，也包括以它为起点重算的更晚
-    /// 步骤。后一种不是冗余——一个变量可能一边被深层节点直接消费、一边是某个更浅的被丢弃值的
-    /// 祖先，后者排得更晚；漏掉它就会在还需要的时候把检查点还回去。
     pub fn release(&self, var: Var) -> Option<usize> {
         let step = *self.release.get(var.id() as usize)?;
         if step == NONE || !self.keep(var) {
@@ -278,7 +239,7 @@ impl Plan {
     }
 }
 
-/// 从调度读出的事实：全部只读，构造一次，之后每次评估计划都复用它。
+/// 从调度读出的事实：只读，构造一次，之后每次评估计划都复用它。
 struct Facts {
     /// 每个变量的字节数；不是候选（叶子、没有被消费的节点输出）为 0。
     bytes: Vec<u64>,
@@ -292,11 +253,6 @@ struct Facts {
     order: Vec<u32>,
     /// `order` 的字节前缀和，含自身。
     prefix: Vec<u64>,
-    /// 该激活能否丢弃后重放：字节数大于 0，并且本次调度里有它的生产者。
-    ///
-    /// 零字节的激活不值得丢——留着不占预算，丢了只烧算力；detach 出去的值则是无处重放。
-    /// 两种都由 [`Facts::candidates`] 的保留路径兜住，不必让调用方在形状表里补 0。
-    droppable: Vec<bool>,
     /// 全留时的峰值：所有候选的字节和。
     total: u64,
     /// 必然下界：某一步同时要放下的输入字节和的最大值。
@@ -304,45 +260,21 @@ struct Facts {
 }
 
 impl Facts {
-    fn new<F: Footprint + ?Sized>(tape: &Tape, schedule: &Schedule, footprint: &F) -> Self {
+    /// 一遍扫描定"生产者与最后一次消费"，再按候选算字节、前缀和与下界。
+    fn new(tape: &Tape, schedule: &Schedule, footprint: &impl Footprint) -> Self {
         let steps = schedule.steps();
-        // 按**整张图**的变量数开表，而不是按调度里出现过的最大编号：释放点的传播要沿被丢弃的
-        // 链往上走，链上可能有本次调度没排进去的祖先——它们的编号可能超出调度的上界。
         let vars = tape.vars();
-        let len = vars as usize;
-
-        let mut last_use = vec![NONE; len];
-        let mut producer = vec![NONE; len];
-        for (index, step) in steps.iter().enumerate() {
-            let output = step.output().id() as usize;
-            producer[output] = index as u32;
-            for input in step.inputs() {
-                // 反向顺序遍历，最后一次覆盖就是"最后一次被消费"。
-                last_use[input.id() as usize] = index as u32;
-            }
-        }
-
-        // 候选 = 被调度消费过的**算子输出**：叶子是权重与输入（常驻），loss 的输出没人消费。
-        // 用 `tape` 判断"是不是算子输出"，而不是让调用方在形状表里补 0——少一个出错的口子。
-        let candidate: Vec<bool> = (0..vars)
-            .map(|id| last_use[id as usize] != NONE && tape.node(Var::at(id)).is_some())
-            .collect();
+        // 按**整张图**的变量数开表：释放点的传播会沿被丢弃的链往上走，链上可能有调度外的祖先。
+        let (last_use, producer) = uses(steps, vars as usize);
+        // 候选 = 被调度消费过的**算子输出**：叶子常驻、loss 的输出没人消费，都不进预算。
+        let output = |id: u32| last_use[id as usize] != NONE && tape.node(Var::at(id)).is_some();
         let bytes: Vec<u64> = (0..vars)
-            .map(|id| match candidate[id as usize] {
+            .map(|id| match output(id) {
                 true => footprint.bytes(Var::at(id)),
                 false => 0,
             })
             .collect();
-        // detach 出去的值仍是真实缓冲，但本次调度里没有"重放它"的一步：只能留，不能丢。
-        // 零字节的激活同理反过来：丢它不省任何预算，只多算一遍。
-        let droppable: Vec<bool> = (0..vars)
-            .map(|id| {
-                candidate[id as usize] && bytes[id as usize] > 0 && producer[id as usize] != NONE
-            })
-            .collect();
-        let total = bytes.iter().copied().fold(0u64, u64::saturating_add);
-
-        let candidates: Vec<u32> = (0..vars).filter(|id| candidate[*id as usize]).collect();
+        let candidates: Vec<u32> = (0..vars).filter(|id| output(*id)).collect();
         let order: Vec<u32> = candidates
             .iter()
             .copied()
@@ -354,24 +286,8 @@ impl Facts {
             running = running.saturating_add(bytes[*id as usize]);
             prefix.push(running);
         }
-
-        // 下界：同一步的输入必须同时在场。重复出现的同一个输入只算一次（只有一块缓冲）。
-        let mut stamp = vec![0u32; len];
-        let mut floor = 0u64;
-        for (index, step) in steps.iter().enumerate() {
-            let mark = index as u32 + 1;
-            let mut sum = 0u64;
-            for input in step.inputs() {
-                let slot = input.id() as usize;
-                if stamp[slot] == mark {
-                    continue;
-                }
-                stamp[slot] = mark;
-                sum = sum.saturating_add(bytes[slot]);
-            }
-            floor = floor.max(sum);
-        }
-
+        let total = bytes.iter().copied().fold(0u64, u64::saturating_add);
+        let floor = floor_of(steps, &bytes);
         Self {
             bytes,
             last_use,
@@ -379,7 +295,6 @@ impl Facts {
             candidates,
             order,
             prefix,
-            droppable,
             total,
             floor,
         }
@@ -388,9 +303,9 @@ impl Facts {
     /// 全留：预算装得下时这是唯一不引入重放的计划。
     fn keep_all(&self, tape: &Tape, schedule: &Schedule, budget: Budget) -> Plan {
         let mut keep = vec![false; self.bytes.len()];
-        for id in &self.candidates {
-            keep[*id as usize] = true;
-        }
+        self.candidates
+            .iter()
+            .for_each(|id| keep[*id as usize] = true);
         let ledger = self.account(tape, schedule, &keep);
         self.assemble(keep, ledger, budget)
     }
@@ -401,13 +316,50 @@ impl Facts {
             // total > budget 且 order 为空只可能是 total 与 budget 都为 0，已被全留路径拦下。
             return Err(invalid(SITE, "没有需要保留的激活，但预算为 0"));
         }
-        // 均匀等字节切分下峰值 ≈ k·(total/n) + total/k，在 k = √n 处取到最小；预算另外给出
-        // 一个"保留量不超过预算一半"的估计。两者各扫 ±2 档，足够覆盖字节分布不均的情形。
+        // 每个候选段数都记一份账：能装下的取段数最多的一份，保留多一些、重放少一些。
+        let mut scored: Vec<(usize, Vec<bool>, Ledger)> = self
+            .trials(budget)
+            .into_iter()
+            .map(|segments| {
+                let keep = self.segmented(segments);
+                let ledger = self.account(tape, schedule, &keep);
+                (segments, keep, ledger)
+            })
+            .collect();
+        let fitted = scored
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, ledger))| ledger.peak <= budget.bytes())
+            .max_by_key(|(_, (segments, _, _))| *segments)
+            .map(|(index, _)| index);
+        match fitted {
+            Some(index) => {
+                let (_, keep, ledger) = scored.swap_remove(index);
+                Ok(self.assemble(keep, ledger, budget))
+            }
+            None => {
+                let minimum = scored.iter().map(|(_, _, ledger)| ledger.peak).min();
+                Err(invalid(
+                    SITE,
+                    format!(
+                        "预算 {} 字节放不下：{} 个激活共 {} 字节，最小峰值约 {} 字节（下界 {} 字节）",
+                        budget.bytes(),
+                        self.order.len(),
+                        self.total,
+                        minimum.unwrap_or(self.total),
+                        self.floor
+                    ),
+                ))
+            }
+        }
+    }
+
+    /// 候选段数：在 `√n` 与"保留量不超过预算一半"两个中心各扫 ±2 档，然后去重。
+    fn trials(&self, budget: Budget) -> Vec<usize> {
+        // 等字节切分下峰值 ≈ k·(total/n) + total/k，在 k = √n 处取到最小。
         let count = self.order.len();
         let root = (count as f64).sqrt() as usize;
-        let half = (budget.bytes() / 2).max(1);
-        let quota = self.total.div_ceil(half) as usize;
-
+        let quota = self.total.div_ceil((budget.bytes() / 2).max(1)) as usize;
         let mut trials: Vec<usize> = Vec::new();
         for centre in [root, quota] {
             for offset in [-2i64, -1, 0, 1, 2] {
@@ -419,53 +371,16 @@ impl Facts {
         }
         trials.sort_unstable();
         trials.dedup();
-
-        let mut best: Option<(u64, Vec<bool>, Ledger)> = None;
-        let mut feasible: Option<(usize, Vec<bool>, Ledger)> = None;
-        for segments in &trials {
-            let keep = self.segmented(*segments);
-            let ledger = self.account(tape, schedule, &keep);
-            if ledger.peak <= budget.bytes() {
-                // 都能装下时取段数最多的一份：保留多一些，重放少一些。
-                if feasible
-                    .as_ref()
-                    .is_none_or(|(seen, _, _)| *segments > *seen)
-                {
-                    feasible = Some((*segments, keep, ledger));
-                }
-            } else if best.as_ref().is_none_or(|(peak, _, _)| ledger.peak < *peak) {
-                best = Some((ledger.peak, keep, ledger));
-            }
-        }
-
-        match feasible {
-            Some((_, keep, ledger)) => Ok(self.assemble(keep, ledger, budget)),
-            None => {
-                let minimum = best.map_or(self.total, |(peak, _, _)| peak);
-                Err(invalid(
-                    SITE,
-                    format!(
-                        "预算 {} 字节放不下：{} 个激活共 {} 字节，最小峰值约 {} 字节（下界 {} 字节）",
-                        budget.bytes(),
-                        count,
-                        self.total,
-                        minimum,
-                        self.floor
-                    ),
-                ))
-            }
-        }
+        trials
     }
 
-    /// 分段后的保留集：段界上是检查点，不可丢弃的激活（detach 出去的值、零字节的）无条件保留。
+    /// 分段后的保留集：段界上是检查点；零字节的与 detach 出去的值无处重放，无条件留。
     fn segmented(&self, segments: usize) -> Vec<bool> {
         let mut keep = self.boundaries(segments);
-        for id in &self.candidates {
-            let slot = *id as usize;
-            if !self.droppable[slot] {
-                keep[slot] = true;
-            }
-        }
+        self.candidates
+            .iter()
+            .filter(|id| self.bytes[**id as usize] == 0 || self.producer[**id as usize] == NONE)
+            .for_each(|id| keep[*id as usize] = true);
         keep
     }
 
@@ -486,14 +401,24 @@ impl Facts {
 
     /// 用同一份账核对一个保留集：保留量、峰值（保守）、重放步数、释放点。
     fn account(&self, tape: &Tape, schedule: &Schedule, keep: &[bool]) -> Ledger {
-        let mut retained = 0u64;
-        for id in &self.order {
-            if keep[*id as usize] {
-                retained = retained.saturating_add(self.bytes[*id as usize]);
-            }
+        let (wide, work) = self.widths(schedule, keep);
+        let (transient, replayed) = self.transient(schedule, keep, &wide, &work);
+        let retained = self
+            .order
+            .iter()
+            .filter(|id| keep[**id as usize])
+            .fold(0u64, |sum, id| sum.saturating_add(self.bytes[*id as usize]));
+        Ledger {
+            retained,
+            peak: retained.saturating_add(transient),
+            replayed,
+            release: self.release(tape, keep),
         }
+    }
 
-        // 重放一个激活要先重放它的、被丢弃的输入；输入编号必然小于输出，所以前向一遍即可。
+    /// 重算一个激活要先重算它被丢弃的输入：`wide` 是瞬时占用，`work` 是步数。
+    fn widths(&self, schedule: &Schedule, keep: &[bool]) -> (Vec<u64>, Vec<u64>) {
+        // 输入编号必然小于输出，所以前向一遍即可。
         let mut wide = vec![0u64; self.bytes.len()];
         let mut work = vec![0u64; self.bytes.len()];
         for id in &self.order {
@@ -503,72 +428,64 @@ impl Facts {
             }
             let step = &schedule.steps()[self.producer[slot] as usize];
             let mut width = 0u64;
-            let mut steps = 1u64;
+            let mut chain = 1u64;
             for input in step.inputs() {
                 let source = input.id() as usize;
                 if keep[source] {
                     continue;
                 }
                 width = width.max(wide[source]);
-                steps = steps.saturating_add(work[source]);
+                chain = chain.saturating_add(work[source]);
             }
             wide[slot] = self.bytes[slot].saturating_add(width);
-            work[slot] = steps;
+            work[slot] = chain;
         }
+        (wide, work)
+    }
 
-        // 每一步的瞬时工作集：它要的、被丢弃的输入要同时在场。同一个输入重复出现只算一次。
+    /// 每一步的瞬时工作集与重放步数：它要的、被丢弃的输入要同时在场。
+    fn transient(
+        &self,
+        schedule: &Schedule,
+        keep: &[bool],
+        wide: &[u64],
+        work: &[u64],
+    ) -> (u64, u64) {
         let mut stamp = vec![0u32; self.bytes.len()];
         let mut transient = 0u64;
         let mut replayed = 0u64;
         for (index, step) in schedule.steps().iter().enumerate() {
-            let mark = index as u32 + 1;
             let mut sum = 0u64;
-            for input in step.inputs() {
-                let slot = input.id() as usize;
-                if keep[slot] || stamp[slot] == mark {
-                    continue;
+            each_input(step, &mut stamp, index as u32 + 1, |slot| {
+                if keep[slot] {
+                    return;
                 }
-                stamp[slot] = mark;
                 sum = sum.saturating_add(wide[slot]);
                 replayed = replayed.saturating_add(work[slot]);
-            }
+            });
             transient = transient.max(sum);
         }
+        (transient, replayed)
+    }
 
-        // 释放点从"直接的最后一次消费"出发，再沿被丢弃的链往上传播：某个值要重算，链上所有
-        // 仍然保留的祖先都得活到那一步。节点编号沿边严格递增，所以按编号降序走一遍即可，
-        // 每个消费者都已经处理完（重算需求只会来自更高的编号）。
+    /// 释放点从"直接的最后一次消费"出发，再沿被丢弃的链往上传播。
+    fn release(&self, tape: &Tape, keep: &[bool]) -> Vec<u32> {
         let mut release = self.last_use.clone();
+        // 节点编号沿边严格递增，所以按编号降序走一遍即可：重算需求只会来自更高的编号。
         for node in tape.nodes().iter().rev() {
-            let output = node.output().id() as usize;
-            if keep[output] || release[output] == NONE {
-                continue;
-            }
-            let needed = release[output];
-            for input in node.inputs() {
-                let slot = input.id() as usize;
-                if self.bytes[slot] > 0 && (release[slot] == NONE || release[slot] < needed) {
-                    release[slot] = needed;
-                }
-            }
+            carry(&mut release, node, keep, &self.bytes);
         }
-
-        Ledger {
-            retained,
-            peak: retained.saturating_add(transient),
-            replayed,
-            release,
-        }
+        release
     }
 
     /// 把保留集装配成计划：释放点来自账本对"最后一次需要"的传播。
     fn assemble(&self, keep: Vec<bool>, ledger: Ledger, budget: Budget) -> Plan {
-        let mut saved = Vec::new();
-        for id in &self.candidates {
-            if keep[*id as usize] {
-                saved.push(Var::at(*id));
-            }
-        }
+        let saved = self
+            .candidates
+            .iter()
+            .filter(|id| keep[**id as usize])
+            .map(|id| Var::at(*id))
+            .collect();
         // 只看候选：叶子与 loss 的输出从来不是保留对象，不该影响"是否走了重放"。
         let kept = self.order.iter().filter(|id| keep[**id as usize]).count();
         let choice = match kept == self.order.len() {
@@ -587,6 +504,66 @@ impl Facts {
             replayed: ledger.replayed,
         }
     }
+}
+
+/// 每个变量的生产者与最后一次被消费的反向步号；没被消费为 [`NONE`]。
+fn uses(steps: &[Node], len: usize) -> (Vec<u32>, Vec<u32>) {
+    let mut last_use = vec![NONE; len];
+    let mut producer = vec![NONE; len];
+    for (index, step) in steps.iter().enumerate() {
+        producer[step.output().id() as usize] = index as u32;
+        for input in step.inputs() {
+            // 反向顺序遍历，最后一次覆盖就是"最后一次被消费"。
+            last_use[input.id() as usize] = index as u32;
+        }
+    }
+    (last_use, producer)
+}
+
+/// 必然下界：某一步同时要放下的输入字节和的最大值。
+fn floor_of(steps: &[Node], bytes: &[u64]) -> u64 {
+    let mut stamp = vec![0u32; bytes.len()];
+    let mut floor = 0u64;
+    for (index, step) in steps.iter().enumerate() {
+        let mut sum = 0u64;
+        each_input(step, &mut stamp, index as u32 + 1, |slot| {
+            sum = sum.saturating_add(bytes[slot]);
+        });
+        floor = floor.max(sum);
+    }
+    floor
+}
+
+/// 一步的输入去重后逐个交给 `visit`：同一个输入只算一次（只有一块缓冲）。
+fn each_input(step: &Node, stamp: &mut [u32], mark: u32, mut visit: impl FnMut(usize)) {
+    for input in step.inputs() {
+        let slot = input.id() as usize;
+        if stamp[slot] == mark {
+            continue;
+        }
+        stamp[slot] = mark;
+        visit(slot);
+    }
+}
+
+/// 把一步的重算需求推给它的输入：输出被丢弃且仍被需要，链上的祖先就得活到那一步。
+fn carry(release: &mut [u32], node: &Node, keep: &[bool], bytes: &[u64]) {
+    let output = node.output().id() as usize;
+    if keep[output] || release[output] == NONE {
+        return;
+    }
+    let needed = release[output];
+    for input in node.inputs() {
+        let slot = input.id() as usize;
+        if later(release[slot], needed, bytes[slot]) {
+            release[slot] = needed;
+        }
+    }
+}
+
+/// 释放点是否要往后推到 `needed`：零字节的不占预算，没记过（`NONE`）与记得更早的都算。
+fn later(seen: u32, needed: u32, bytes: u64) -> bool {
+    bytes > 0 && (seen == NONE || seen < needed)
 }
 
 /// 一个保留集的账：所有数字必须来自同一次统计，否则峰值、重放步数与释放点会对不上。
@@ -862,5 +839,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 固定图形与预算下的计划摘要：`saved`/`release`/`replayed`/`peak` 逐值冻结。
+    fn summarize(
+        case: &str,
+        tape: &Tape,
+        schedule: &Schedule,
+        bytes: &[u64],
+        budget: u64,
+    ) -> String {
+        let Ok(plan) = Plan::of(tape, schedule, bytes, Budget::new(budget)) else {
+            return format!("{case}/{budget}: 放不下");
+        };
+        let saved: Vec<u32> = plan.saved().iter().map(|var| var.id()).collect();
+        let release: Vec<Option<usize>> =
+            plan.saved().iter().map(|var| plan.release(*var)).collect();
+        format!(
+            "{case}/{budget}: {:?} saved={saved:?} release={release:?} replayed={} peak={}",
+            plan.choice(),
+            plan.replayed(),
+            plan.peak()
+        )
+    }
+
+    /// 改造重构前的实测值：同一组图形与预算必须逐字相同。
+    const FROZEN: [&str; 3] = [
+        "chain16/1048576: KeepAll saved=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] release=[Some(15), Some(14), Some(13), Some(12), Some(11), Some(10), Some(9), Some(8), Some(7), Some(6), Some(5), Some(4), Some(3), Some(2), Some(1), Some(0)] replayed=0 peak=256",
+        "chain16/200: Recompute saved=[1, 3, 6, 8, 11, 14, 16] release=[Some(15), Some(13), Some(10), Some(8), Some(5), Some(2), Some(0)] replayed=12 peak=144",
+        "chain16/0: 放不下",
+    ];
+
+    #[test]
+    fn the_plan_numbers_are_frozen() {
+        let mut lines = Vec::new();
+        let (tape, schedule) = chain(16);
+        for budget in [1 << 20, 200, 0] {
+            let bytes = uniform(&tape, 16);
+            lines.push(summarize("chain16", &tape, &schedule, &bytes, budget));
+        }
+        println!("{}", lines.join("\n"));
+        assert_eq!(lines, FROZEN);
     }
 }

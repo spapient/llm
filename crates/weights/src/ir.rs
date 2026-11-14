@@ -43,36 +43,31 @@ pub enum Op {
     Attention,
 }
 
+/// 闭集算子的码位顺序：[`Op::code`] 给下标，[`Op::read`] 收回下标。
+///
+/// 码位表只此一份：两边都读它，“写出来的码能读回来”才是结构性事实而不是测试巧合。
+const CODES: [Op; 8] = [
+    Op::Gemm,
+    Op::Rms,
+    Op::Adam,
+    Op::Scan,
+    Op::ScanFix,
+    Op::ScanDot,
+    Op::ScanEmit,
+    Op::Attention,
+];
+
 impl Op {
     /// 稳定数字码位：线上格式只认数字，不认变体名。
     fn code(self) -> u8 {
-        match self {
-            Self::Gemm => 0,
-            Self::Rms => 1,
-            Self::Adam => 2,
-            Self::Scan => 3,
-            Self::ScanFix => 4,
-            Self::ScanDot => 5,
-            Self::ScanEmit => 6,
-            Self::Attention => 7,
-        }
+        CODES.iter().position(|&op| op == self).unwrap_or(0) as u8
     }
 
     /// 码位 → 算子；闭集之外显式报错。
     fn read(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::Gemm),
-            1 => Ok(Self::Rms),
-            2 => Ok(Self::Adam),
-            3 => Ok(Self::Scan),
-            4 => Ok(Self::ScanFix),
-            5 => Ok(Self::ScanDot),
-            6 => Ok(Self::ScanEmit),
-            7 => Ok(Self::Attention),
-            other => {
-                Err(Error::new(Code::Invalid, format!("ir: 未知算子码 {other}")).with("ir::Op"))
-            }
-        }
+        CODES.get(code as usize).copied().ok_or_else(|| {
+            Error::new(Code::Invalid, format!("ir: 未知算子码 {code}")).with("ir::Op")
+        })
     }
 }
 
@@ -162,21 +157,9 @@ impl Graph {
         if out.is_empty() {
             return Err(bad("ir: 输出名不能为空"));
         }
-        if inputs.len() > MAX_IN {
-            return Err(bad(&format!(
-                "ir: 输入边 {} 条超过上限 {MAX_IN}",
-                inputs.len()
-            )));
-        }
-        let limit = self.nodes.len() as u32;
-        for input in inputs {
-            if *input >= limit {
-                return Err(bad(&format!(
-                    "ir: 输入边指向不存在的节点 {input}（当前只有 {limit} 个节点）"
-                )));
-            }
-        }
-        let id = limit;
+        let id = self.nodes.len() as u32;
+        check_edges(inputs.len())?;
+        check_into(inputs, id)?;
         self.nodes.push(Node {
             op,
             inputs: inputs.to_vec(),
@@ -225,23 +208,9 @@ impl Graph {
         let count = cursor.read_u32()?;
         let mut graph = Self::new();
         for _ in 0..count {
-            let op = Op::read(cursor.read_u8()?)?;
-            let n_in = cursor.read_u32()? as usize;
-            if n_in > MAX_IN {
-                return Err(bad(&format!("ir: 输入边 {n_in} 条超过上限 {MAX_IN}")));
-            }
-            let mut inputs = Vec::with_capacity(n_in);
-            for _ in 0..n_in {
-                inputs.push(cursor.read_u32()?);
-            }
-            let fused = cursor.read_u8()? == 1;
-            let len = cursor.read_u64()? as usize;
-            let raw = cursor.take(len)?;
-            let out = core::str::from_utf8(raw)
-                .map_err(|_| bad("ir: 输出名不是合法 UTF-8"))?
-                .to_string();
-            // 复用构造校验：解码出的边同样必须指向已存在节点，挡住篡改出的悬空/自指/环。
-            graph.add(op, &inputs, &out, fused)?;
+            let node = decode_node(&mut cursor)?;
+            check_into(&node.inputs, graph.nodes.len() as u32)?;
+            graph.nodes.push(node);
         }
         Ok(graph)
     }
@@ -250,6 +219,71 @@ impl Graph {
 /// 构造一个"输入不合法"错误。
 fn bad(message: &str) -> Error {
     Error::new(Code::Invalid, message).with("ir")
+}
+
+/// 单节点的输入边上限：`MAX_IN` 是声明预算，构造与解码两个入口共用同一句文案。
+fn check_edges(count: usize) -> Result<()> {
+    if count <= MAX_IN {
+        return Ok(());
+    }
+    Err(bad(&format!("ir: 输入边 {count} 条超过上限 {MAX_IN}")))
+}
+
+/// 每条输入边必须指向已存在的更早节点：新节点的 id 恰好是当前节点数，
+/// 所以这条判据同时挡掉自引用与前向边（不需要额外的环检测）。
+fn check_into(inputs: &[u32], limit: u32) -> Result<()> {
+    for input in inputs {
+        if *input >= limit {
+            return Err(bad(&format!(
+                "ir: 输入边指向不存在的节点 {input}（当前只有 {limit} 个节点）"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 一条节点记录：算子码与输入边先读，再是融合位与输出名。
+fn decode_node(cursor: &mut Cursor<'_>) -> Result<Node> {
+    let (op, inputs) = edge_list(cursor)?;
+    let fused = cursor.read_u8()? == 1;
+    let out = label(cursor)?;
+    Ok(Node {
+        op,
+        inputs,
+        out,
+        fused,
+    })
+}
+
+/// 节点开头：算子码与输入边（边数先过上限，再逐条读，不为非法条数分配）。
+fn edge_list(cursor: &mut Cursor<'_>) -> Result<(Op, Vec<u32>)> {
+    let op = op_at(cursor)?;
+    let n_in = cursor.read_u32()? as usize;
+    check_edges(n_in)?;
+    Ok((op, edges(cursor, n_in)?))
+}
+
+/// 算子码：先读一个字节再解闭集，两段都可能失败，所以合成一个入口。
+fn op_at(cursor: &mut Cursor<'_>) -> Result<Op> {
+    Op::read(cursor.read_u8()?)
+}
+
+/// 输入边列表；条数已由调用方校验，这里只逐条读。
+fn edges(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<u32>> {
+    let mut edges = Vec::with_capacity(count);
+    for _ in 0..count {
+        edges.push(cursor.read_u32()?);
+    }
+    Ok(edges)
+}
+
+/// 输出名：LEB128 长度前缀 + 原始字节，必须是合法 UTF-8。
+fn label(cursor: &mut Cursor<'_>) -> Result<String> {
+    let len = cursor.read_u64()? as usize;
+    let raw = cursor.take(len)?;
+    core::str::from_utf8(raw)
+        .map_err(|_| bad("ir: 输出名不是合法 UTF-8"))
+        .map(str::to_string)
 }
 
 #[cfg(test)]

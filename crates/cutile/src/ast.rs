@@ -1,30 +1,13 @@
 //! 单 kernel 级结构化 AST（ADR 0017 的 L1）。
 //!
-//! 这是模板渲染的**可见中间产物**：`substitute::render` 是 [`build`] + [`render`] 的薄包装，
-//! 本模块把词法片段先提升成拥有所有权的节点序列（[`Node`]），再由 [`render`] 打印回文本。节点对应
-//! **模板级结构**（文本 / 槽位 / 原语调用），不解析 C 语句本身——原语的后端片段仍以文本挂在
-//! [`PrimCall::body`] 上，后端真正分叉的 lowering 不会被强行抽象掉。
-//!
-//! # 单一路径
-//!
-//! 字符串路径不是并行的第二套实现，它就是这两步：
-//!
-//! ```text
-//! lex → ast::build → Vec<Node> → ast::render → String
-//!                    ↖ substitute::render 直接调用它们
-//! ```
-//!
-//! 槽位解析只在 [`build`]、占位符替换只在 `substitute::splice`、缩进对齐与分号裁剪只在
-//! `substitute::place` 里各写一遍。`ast_renders_byte_identical_text` 保留为回归门：它防的是
-//! 将来有人给其中一步再补一份规则，而不是在测两份手抄的循环是否一致。
-//!
-//! # 规范编码
-//!
-//! [`encode`] 给出确定性、无歧义的节点序列编码，作为缓存指纹的输入：改任何一个节点的任何字段都
-//! 换编码，且不依赖 Rust 的 `Debug` 格式（那不是稳定的跨版本契约）。
+//! 这是模板渲染的**可见中间产物**：词法片段先提升成拥有所有权的节点序列（[`Node`]），再由 [`render`]
+//! 打印回文本。节点只对应模板级结构（文本 / 槽位 / 原语调用），不解析 C 语句本身——原语片段仍以文本
+//! 挂在 [`PrimCall::body`] 上。[`encode`] 给出确定性编码作为缓存指纹输入，不依赖 `Debug` 格式。
+//! 单一路径：`substitute::render` 就是 [`build`] + [`render`] 的薄包装，没有第二套字符串实现。
 
 use crate::decl::{OpDecl, TileCombo};
-use crate::substitute::{self, Arg, FragmentSet, error, lex};
+use crate::substitute::{self, Arg, FragmentSet, Segment, error, lex};
+use core::fmt::{self, Write as _};
 use prof::atom::Prim;
 
 /// 模板级节点：拥有所有权，不借用模板正文。
@@ -95,40 +78,63 @@ pub fn build(
     combo: &TileCombo,
     fragments: &FragmentSet,
 ) -> diagnostic::Result<Vec<Node>> {
-    let mut nodes = Vec::new();
-    for segment in lex(&op.template) {
-        match segment {
-            crate::substitute::Segment::Text(part) => nodes.push(Node::Text(part.to_string())),
-            crate::substitute::Segment::Slot { name, line } => {
-                let value = if name == "op" {
-                    op.name.clone()
-                } else if let Some(value) = combo.get(name) {
-                    value.to_string()
-                } else if let Some(spec) = op.layout(name) {
-                    spec.as_str().to_string()
-                } else {
-                    return Err(error(
-                        line,
-                        format!("槽位 `{{{{{name}}}}}` 既不是轴也不是布局槽位"),
-                    ));
-                };
-                nodes.push(Node::Slot(value));
-            }
-            crate::substitute::Segment::Call { prim, args, line } => {
-                let Some(fragment) = fragments.get(prim) else {
-                    return Err(crate::substitute::missing_fragment(line, prim, fragments));
-                };
-                let body = substitute::splice(fragment, &args, line)?;
-                let call_args = args.iter().map(CallArg::from_ref).collect();
-                nodes.push(Node::Prim(PrimCall {
-                    prim,
-                    args: call_args,
-                    body,
-                }));
-            }
-        }
+    let segments = lex(&op.template);
+    let mut nodes = Vec::with_capacity(segments.len());
+    for segment in &segments {
+        nodes.push(node(op, combo, fragments, segment)?);
     }
     Ok(nodes)
+}
+
+/// 一个词法片段 → 一个节点：三种片段各有唯一的一条转换。
+fn node(
+    op: &OpDecl,
+    combo: &TileCombo,
+    fragments: &FragmentSet,
+    segment: &Segment<'_>,
+) -> diagnostic::Result<Node> {
+    match segment {
+        Segment::Text(part) => Ok(Node::Text((*part).to_string())),
+        Segment::Slot { name, line } => Ok(Node::Slot(slot_value(op, combo, name, *line)?)),
+        Segment::Call { prim, args, line } => prim_node(fragments, *prim, args, *line),
+    }
+}
+
+/// 槽位取值：算子名 / 轴取值 / 布局构造子，三者之外的槽位是声明错误。
+fn slot_value(
+    op: &OpDecl,
+    combo: &TileCombo,
+    name: &str,
+    line: usize,
+) -> diagnostic::Result<String> {
+    if name == "op" {
+        return Ok(op.name.clone());
+    }
+    combo
+        .get(name)
+        .map(|value| value.to_string())
+        .or_else(|| op.layout(name).map(|spec| spec.as_str().to_string()))
+        .ok_or_else(|| {
+            error(
+                line,
+                format!("槽位 `{{{{{name}}}}}` 既不是轴也不是布局槽位"),
+            )
+        })
+}
+
+/// 原语调用节点：片段必须存在，占位符必须能全部解析。
+fn prim_node(
+    fragments: &FragmentSet,
+    prim: Prim,
+    args: &[Arg<'_>],
+    line: usize,
+) -> diagnostic::Result<Node> {
+    let Some(fragment) = fragments.get(prim) else {
+        return Err(substitute::missing_fragment(line, prim, fragments));
+    };
+    let body = substitute::splice(fragment, args, line)?;
+    let args = args.iter().map(CallArg::from_ref).collect();
+    Ok(Node::Prim(PrimCall { prim, args, body }))
 }
 
 /// 把节点序列打印回源文本：[`substitute::render`] 就是 [`build`] + 本函数的薄包装。
@@ -154,59 +160,58 @@ pub fn render(nodes: &[Node]) -> String {
 pub fn encode(nodes: &[Node]) -> String {
     let mut out = String::new();
     for node in nodes {
-        match node {
-            Node::Text(part) => {
-                out.push_str("T ");
-                out.push_str(&escape(part));
-                out.push('\n');
-            }
-            Node::Slot(value) => {
-                out.push_str("S ");
-                out.push_str(&escape(value));
-                out.push('\n');
-            }
-            Node::Prim(call) => {
-                out.push_str("P ");
-                out.push_str(call.prim.as_str());
-                out.push(' ');
-                for arg in &call.args {
-                    match arg {
-                        CallArg::Expr(value) => {
-                            out.push('e');
-                            out.push_str(&escape(value));
-                            out.push('|');
-                        }
-                        CallArg::Named { key, value } => {
-                            out.push('n');
-                            out.push_str(&escape(key));
-                            out.push('=');
-                            out.push_str(&escape(value));
-                            out.push('|');
-                        }
-                    }
-                }
-                out.push(' ');
-                out.push_str(&escape(&call.body));
-                out.push('\n');
-            }
-        }
+        // 写入 `String` 永远不会失败：只有格式化实现本身出错才会走到 `Err`。
+        let _ = write_node(&mut out, node);
     }
     out
+}
+
+/// 一个节点一行：`T`/`S`/`P` 三种前缀，字段一律经 [`escape`] 转义。
+fn write_node(out: &mut String, node: &Node) -> fmt::Result {
+    match node {
+        Node::Text(part) => writeln!(out, "T {}", escape(part)),
+        Node::Slot(value) => writeln!(out, "S {}", escape(value)),
+        Node::Prim(call) => writeln!(
+            out,
+            "P {} {} {}",
+            call.prim.as_str(),
+            encode_args(&call.args),
+            escape(&call.body)
+        ),
+    }
+}
+
+/// 参数序列：位置参数 `e…|`、命名参数 `n…=…|`，两者都以 `|` 结尾。
+fn encode_args(args: &[CallArg]) -> String {
+    args.iter()
+        .map(|arg| match arg {
+            CallArg::Expr(value) => format!("e{}|", escape(value)),
+            CallArg::Named { key, value } => format!("n{}={}|", escape(key), escape(value)),
+        })
+        .collect()
 }
 
 /// 转义：反斜杠、换行与字段分隔符各有唯一编码，保证编码可逆且无歧义。
 fn escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '|' => out.push_str("\\p"),
-            '=' => out.push_str("\\q"),
-            other => out.push(other),
+        match escape_char(ch) {
+            Some(coded) => out.push_str(coded),
+            None => out.push(ch),
         }
     }
     out
+}
+
+/// 单个字符的编码；`None` 表示原样输出。闭集只有四个，多一个就多一种解码可能。
+fn escape_char(ch: char) -> Option<&'static str> {
+    match ch {
+        '\\' => Some("\\\\"),
+        '\n' => Some("\\n"),
+        '|' => Some("\\p"),
+        '=' => Some("\\q"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

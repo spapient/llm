@@ -4,17 +4,15 @@
 //! 写一个数。`add_f32` / `mul_f32` 是同一副骨架的两种 [`Binary`] 实现，骨架（表达式缓存、代价、
 //! 样本、校验、遍历）只有一份，按实现类型单态化，`Model` 里仍是三个 `fn` 指针而不是热路径分发。
 
-use crate::gemv::OperandSpec;
+use crate::einsum::{Bits, Formula, FormulaCache, OperandSpec};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use diagnostic::{Code, Error};
 
 /// 逐元素骨架只有一条轴：它既是输入轴也是输出轴，按输入角色声明。
 pub const AXES: &[AxisSpec] = &[AxisSpec {
     role: AxisRole::Input,
     label: 'n',
 }];
-use crate::einsum::{Bits, Operand};
-use diagnostic::{Code, Error};
-use std::sync::OnceLock;
 
 /// 逐元素二元算子随语义变化的那部分。
 pub trait Binary {
@@ -24,8 +22,17 @@ pub trait Binary {
     /// 表达式各项的位宽与方向，顺序与 [`Binary::EXPR`] 一一对应。
     const OPERANDS: &'static [OperandSpec];
 
-    /// 表达式缓存：实现者写成 `static CACHE: Cache = Cache::new(); CACHE.get::<Self>()`。
-    fn formula() -> Result<&'static crate::einsum::Formula, Error>;
+    /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
+    fn cache() -> &'static FormulaCache;
+
+    /// 表达式：第一次调用时解析并校验，之后复用。
+    ///
+    /// # Errors
+    ///
+    /// 表达式与操作数表不自洽时返回说明（带 `op::elementwise::formula` 帧）。
+    fn formula() -> Result<&'static Formula, Error> {
+        Self::cache().get(Self::EXPR, Self::OPERANDS, "op::elementwise::formula")
+    }
 
     /// 逐元素运算：两个输入值，一个输出值。
     fn apply(x: f32, y: f32) -> f32;
@@ -35,43 +42,6 @@ pub trait Binary {
 
     /// 第二路输入的确定性取值。
     fn input_b(len: usize) -> Vec<f32>;
-}
-
-/// 逐元素骨架的表达式缓存：与 [`crate::gemv::Cache`] 同构，按具体类型单态化。
-pub struct BinCache(OnceLock<Result<crate::einsum::Formula, Error>>);
-
-impl BinCache {
-    /// 空缓存（`static` 初始化用，必须是 `const fn`）。
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(OnceLock::new())
-    }
-
-    /// 取这份实现的表达式：第一次调用时解析并校验，之后复用。
-    ///
-    /// # Errors
-    ///
-    /// 表达式与操作数表不自洽时返回第一次得到的说明。
-    pub fn get<B: Binary>(&'static self) -> Result<&'static crate::einsum::Formula, Error> {
-        self.0
-            .get_or_init(|| {
-                let operands = B::OPERANDS
-                    .iter()
-                    .map(|spec| Operand::new(spec.name, spec.bits, spec.access))
-                    .collect();
-                crate::einsum::Expr::parse(B::EXPR)
-                    .and_then(|expr| crate::einsum::Formula::new(expr, operands))
-                    .map_err(|error| error.with("op::elementwise::formula"))
-            })
-            .as_ref()
-            .map_err(Clone::clone)
-    }
-}
-
-impl Default for BinCache {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// 逐元素单轴形状：轴 `n` 取第一个参数（元素数），第二个参数不用。

@@ -158,60 +158,77 @@ fn analyze<'a>(weight: &'a Entry, scales: &'a Entry) -> Result<Option<Quantized<
         weight.name(),
         scales.name()
     );
-    let [out, second] = weight.shape().dims() else {
-        return Err(invalid(format!(
-            "打包权重必须是秩 2（out × in），实际 {:?}",
-            weight.shape().dims()
-        ))
-        .with(&context));
-    };
-    let [scaled_out, groups] = scales.shape().dims() else {
-        return Err(invalid(format!(
-            "标度必须是秩 2（out × 分组数），实际 {:?}",
-            scales.shape().dims()
-        ))
-        .with(&context));
-    };
-    if scaled_out != out {
-        return Err(invalid(format!(
-            "标度的输出维 {scaled_out} 与权重的输出维 {out} 不等：分组无法对齐到每一行"
-        ))
-        .with(&context));
-    }
-    if !matches!(scales.dtype(), DType::F32 | DType::F16 | DType::BF16) {
-        // 整数标度是另一种方案（int4 + int8 scale），不猜。
+    let Some((second, groups)) = dims(weight, scales, &context)? else {
         return Ok(None);
-    }
-
-    // 每行的逻辑输入宽度：8 位元素类型两个 nibble 一个字节，4 位元素类型一个元素就是一个元素。
-    let in_features = match weight.dtype().bits() {
-        4 => *second,
-        8 => match second.checked_mul(2) {
-            Some(width) => width,
-            None => {
-                return Err(invalid(format!(
-                    "形状 {:?} 的第二维 {} 乘 2 时溢出",
-                    weight.shape().dims(),
-                    second
-                ))
-                .with(&context));
-            }
-        },
-        // 16 / 32 位元素不可能是 4 位量化：交给按元素类型判断的那条路。
-        _ => return Ok(None),
     };
-    if *groups == 0 || !in_features.is_multiple_of(*groups) {
-        return Err(invalid(format!(
-            "标度声明 {groups} 个分组，但输入宽度 {in_features} 不是它的整数倍"
-        ))
-        .with(&context));
-    }
+    let Some((in_features, group)) = pack(weight, second, groups, &context)? else {
+        return Ok(None);
+    };
     Ok(Some(Quantized {
         weight,
         scales,
         in_features,
-        group: in_features / groups,
+        group,
     }))
+}
+
+/// 形状与类型口径：两个条目都必须是秩 2、输出维相等，标度必须是浮点。
+///
+/// 返回 `(权重第二维, 标度分组数)`；`None` 表示这是**另一种**方案（整数标度），不猜。
+fn dims(weight: &Entry, scales: &Entry, context: &str) -> Result<Option<(usize, usize)>> {
+    let [out, second] = rank2(weight, "打包权重必须是秩 2（out × in）", context)?;
+    let [scaled_out, groups] = rank2(scales, "标度必须是秩 2（out × 分组数）", context)?;
+    if scaled_out != out {
+        return Err(invalid(format!(
+            "标度的输出维 {scaled_out} 与权重的输出维 {out} 不等：分组无法对齐到每一行"
+        ))
+        .with(context));
+    }
+    let float = matches!(scales.dtype(), DType::F32 | DType::F16 | DType::BF16);
+    Ok(float.then_some((second, groups)))
+}
+
+/// 一个条目的秩 2 形状；`expected` 说明要的是哪种秩 2（权重还是标度）。
+fn rank2(entry: &Entry, expected: &str, context: &str) -> Result<[usize; 2]> {
+    let dims = entry.shape().dims();
+    match dims {
+        [first, second] => Ok([*first, *second]),
+        _ => Err(invalid(format!("{expected}，实际 {dims:?}")).with(context)),
+    }
+}
+
+/// 分组：逻辑输入宽度必须被标度声明的分组数整除。`None` 表示元素类型不可能是 4 位量化。
+fn pack(
+    weight: &Entry,
+    second: usize,
+    groups: usize,
+    context: &str,
+) -> Result<Option<(usize, usize)>> {
+    let Some(in_features) = width(weight, second, context)? else {
+        return Ok(None);
+    };
+    if groups == 0 || !in_features.is_multiple_of(groups) {
+        return Err(invalid(format!(
+            "标度声明 {groups} 个分组，但输入宽度 {in_features} 不是它的整数倍"
+        ))
+        .with(context));
+    }
+    Ok(Some((in_features, in_features / groups)))
+}
+
+/// 每行的逻辑输入宽度：4 位元素类型一个元素就是一个元素，8 位元素类型两个 nibble 一个字节。
+fn width(weight: &Entry, second: usize, context: &str) -> Result<Option<usize>> {
+    match weight.dtype().bits() {
+        4 => Ok(Some(second)),
+        8 => second.checked_mul(2).map(Some).ok_or_else(|| {
+            invalid(format!(
+                "形状 {:?} 的第二维 {second} 乘 2 时溢出",
+                weight.shape().dims()
+            ))
+            .with(context)
+        }),
+        _ => Ok(None),
+    }
 }
 
 fn invalid(message: String) -> Error {

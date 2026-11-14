@@ -1,7 +1,10 @@
 //! 只读内存映射：全仓唯一的 `unsafe` 孤岛，对外只暴露一个拥有型、只读的字节视图。
 //!
-//! 本模块只在 `mmap` feature 开启时编译；默认构建不含任何 unsafe，storage 仍满足
-//! `deny(unsafe_code)`。所有 `mmap`/`munmap` 的 FFI 与裸指针操作都收敛在本文件。
+//! 本模块只在 `mmap` feature 开启**且目标为 Unix** 时编译：`mmap`/`munmap` 是 POSIX 系统调用，
+//! 非 Unix 目标没有这套 FFI，模块在 `lib.rs` 的 `cfg(all(feature = "mmap", unix))` 处就被裁掉。
+//! 默认构建不含任何 unsafe，storage 仍满足 `deny(unsafe_code)`。所有 `mmap`/`munmap` 的 FFI
+//! 与裸指针操作都收敛在本文件。
+//!
 //! 映射以 `PROT_READ | MAP_PRIVATE` 建立，内容不可改、写时复制不触发，因此把它当作 `&[u8]`
 //! 共享是线程安全的。[`Mmap`] 在 `Drop` 时自动 `munmap`，不泄漏映射。
 //! 上层把该切片交给 `weights::Archive::parse` 做零拷贝打开。

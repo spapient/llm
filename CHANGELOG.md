@@ -7,6 +7,98 @@
 
 ### Changed
 
+- **存量债务清零：`[[gate.debt]]` 203 条 → 0 条**。上一轮结清 `crates/cutile` 的 45 条后，剩下的 203 条分散在
+  16 个成员里（`weights` 83、`op` 34、`tool` 20、`prof` 19、`annotation` 12、`train` 11、`autograd` 7，
+  其余 9 个成员 17），这一轮全部改到限值以内，表也随之清空——`[gate]` 现在没有任何豁免，`Gate::stale`
+  再也找不到可留的条目，新增超标项直接失败。三类做法：① **巨型函数按职责拆开**——`weights/bin.rs` 的
+  `execute`（ccn 76）拆成读取分派 + `frame`/`placeholder`/`storage_of`/`offset_of`/`shape_of`，`op/decl.rs`
+  的 `parse`（ccn 50）按「段 → 键 → 取值文法」拆开，`annotation/syntax.rs` 三个读键 `match`（ccn 40/34/21）
+  收成一张 `KeySpec` 表 + `collect`/`read_one`/`key_index`，`prof.rs` 的 `validate`/`parse_provide`/`parse`
+  （ccn 38/47/34）按判据拆成 30 余个单一职责函数，`train/store.rs` 的 22 个内核适配器收成
+  `unary!`/`binary!`/`gemm!` 三个宏；② **文件压回 899 行**——`train/store.rs` 1477 → 786（测试按仓库既有约定
+  搬到 `store/tests.rs`，与 `snapshot/tests.rs` 同形）、`annotation/syntax.rs` 1228 → 817（测试搬到
+  `syntax/tests.rs`）、`cutile/backend.rs` 945 → 898、`prof.rs` 1216 行的单文件拆成 `prof.rs` 442 +
+  `prof/parse.rs` 563 + `prof/check.rs` 253（公开路径 `prof::Profile` 等一字未变）；③ **裸调用清零**——
+  `tool`/`prim`/`weights`/`annotation` 里生产代码的 `unwrap`/`expect`/`panic!` 全部换成带上下文的诊断或
+  `let-else` 提前返回（`CALLS` 归零）。
+  **判据没有被放宽**：错误文案、错误类别、退出码、生成文本逐字比对——`annotation` 用 98 条解析对拍
+  （`Ok(Debug)` 与 `Err((位置, 文案))` 全等）+ 81 条 codegen 输出对拍，`cutile` 用缓存目录 `diff -r` 证明
+  harness 源文本逐字节相同，`autograd` 用冻结的 `saved/release/replayed/peak` 数值表（13 个图形 × 预算）
+  锁住显存计划。实测：`cargo test --workspace --all-features` 全绿、`cargo test -p llm-tool --test gate` 在
+  **空基线**上通过、`gate.rs` 的两个单元测试改为「项目配置没有豁免」与「登记值由本地表给出」（它们原先借
+  项目基线里的真实条目做样本，基线清空后必须自带 fixture）。
+
+- **`crates/cutile` 的 45 条存量债务清零：`[[gate.debt]]` 249 → 204，代码 9,526 → 9,403 行**。
+  本轮不加规则、不抬基线、不新增目录，只把"曾经超线所以被豁免"的地方改回正常尺寸：九类卡点函数按职责拆分
+  （`cap` 的协商与诊断排版、`witness` 的建立与比对、`backend`/`device` 的三种前端程序拼装与执行、
+  `verify`/`bench`/`doctor`/`execution` 的"跑→判→报"三段），`cache.rs` 从 1,245 行的历史棘轮降到 **900 行**
+  （门限 899，整文件含测试），`builtin.rs` 的两处裸 `expect` 换成带上下文的诊断。同一轮里把几处"先收集再遍历"
+  改成一次扫描：`ast::encode`/`escape` 逐字段写出而不是先拼 `char` 迭代器，`substitute::splice` 用
+  `find('$')` 定位占位符而不是 `chars().peekable()` 逐字符推进，`pipeline::parse_shape`、`probe::select`
+  （`max_by_key` 一次挑出最具体的档案）、`plan::select`（tile 取值与 roofline 估值分开）同理。
+  **判据没有被放宽**：`probe::select` 的"同等具体算配置错误"只在**最优档**比较——两份更宽的档案撞在一起
+  不影响"选哪一份"，那是 `Catalogue::validate` 在装载期回答的问题；错误文案、退出类别、报告字段逐字未变。
+  实测：`cargo test -p cutile --all-features` **149 单测 + 2 doctest**（条数与断言逐条保留，压缩的是注释与重复段，
+  不是覆盖点）；`crates/cutile/src` 含测试 9,526 → **9,403** 行、剔除内联测试 6,468 → **6,455** 行；
+  `cache`/`device`/`backend`/`verify`/`witness` 五个最大文件逐一下降；`cargo test -p llm-tool --test gate` 绿且
+  报告"已达标，删除基线条目"的 45 条全部结清（`cutile` 成员不再有任何复杂度/行长/裸调用豁免）。
+
+- **质量门成为真正的棘轮（细节见 `docs/audit.md` §22）**。`crates/tool` 的静态质量门在实现里违反了自己的
+  三条声明，本轮全部收口：① 限值只有 `Gate::limit(Metric)` 一个出口，阈值字段转私有，`Over` 不再携带
+  调用方可任意填的 `limit`，测量方（`tests/gate.rs`）只报"测到多少"；② 棘轮按（身份, 度量）结清——
+  `Gate::stale` 改收 `BTreeMap<String, BTreeSet<Metric>>`，一个函数改好 `ccn` 却还超标 `nloc` 时不再能
+  永久保留已达标的那条；③ "只准降"落地为"登记值必须等于实测值"，登记表从预算变成快照。接上后第一次运行
+  即抓到 **31 个陈旧登记值**与 **3 个过期豁免**，全部按实测下调（`[[gate.debt]]` 249 → 248 条，0 新增、
+  0 抬高；例如 `verify_one` 的 `nloc 105 → 77`、`atom.rs` 的 `lines 1264 → 1199`）。同时删除从未被读到的
+  `[gate] simd_nloc = 96` 档位（Rust 侧无 SIMD 微核，向量代码在 `prim` 的 C 片段里、由 `cc` 编译），
+  `[gate]` 改为闭集、拼错的键直接报错；`unreachable!` 纳入禁止形态（它是 panic 路径且无 lint 兜底）。
+  `crates/tool/tests/gate.rs` 因此从"既测量又判定"退化为纯测量。
+
+- **`cutile` 的文档与代码收敛到同一份事实源：`DESIGN.md` 改名 `README.md`，且每一处旧引用都改到了它**。
+  这份 1,179 行的文档既是 crate 的 README，也是整条流水线的设计契约，于是它过期就不再是文风问题、而是错误信息。
+  本轮先修最容易被证伪的三处：① **§0.1「现在能跑什么」**是新增的实测表——算子 22、设备档案 5（nvidia / intel /
+  metal / ascend / cpu）、片段 5×9 + 见证、布局/调度各 4、机制代码 9,526 行（含内联测试；剔除后 6,468）、
+  用例 146 单测 + 2 doctest，每行都附复核命令；② **§3.1 目录树重建**：原文在 `crates/cutile` 下又列了一遍
+  `crates/cutile/src`（`Cargo.toml`、`README.md` 与 `lib.rs` + `witness.rs`），并把已删除的 `DESIGN.md` 当成员列出，
+  现在按 `op` / `prof` / `prim` / `cutile` 四个真实目录逐模块写职责，并说明「机制（`build`/`backend`/`cap`/`cache`）
+  与命令策略（`doctor`/`verify`/`bench`/`execution`/`gc`）同处一个 crate 但只经 `pipeline` 相接」；③ **§13.1 的
+  预算说明刷新**：原来那串「本 crate 2,813 行」早已不成立，改为按当前实测逐模块列出，并新增一段「预算 2,540 对实测
+  6,468、2.5 倍」，把超出归到 `cache` / `device` / `backend` / `witness` 四块**证据采集基础设施**与它们各自支撑的
+  判据，而不是笼统记成"写多了"。同时把全仓约 40 处 `DESIGN §x` / `DESIGN.md` 引用（`crates/{cutile,op,prof}` 源码与
+  片段注释、两份 crate README、`docs/ARCHITECTURE.md`、`src/bin/cutile.rs` 打印给用户的提示）改为 `README §x` /
+  `cutile README §x`，于是 `cargo run --bin cutile -- verify` 的提示里也不再出现一份不存在的文档。
+  代码侧同步：`cutile/src/lib.rs` 新增「模块地图」（五步流水线 → 具体模块，并写明 `device`/`gate`/`pipeline` 为何是
+  私有接缝），`bench`/`doctor`/`verify`/`execution`/`gate`/`device` 六个模块的文档从一行扩成"证明什么、不证明什么"
+  （例如 `gate` 只证明"见证在自己声称的语言里语法成立"，不改 `grade`；`doctor` 不执行内核，`verify` 的失败是错误
+  而不是跳过）。**门禁扩面**：`crates/tool/tests/gate.rs` 的链接漂移检查原先只扫 `docs/` 顶层，现在覆盖根 `README.md`、
+  `docs/**/*.md`（含全部 ADR）与每个成员的 `README.md`，并加「至少 30 份文档」的防假绿下限——crate README 曾经不在
+  门里，这正是上面那棵过期目录树能长期存在的原因；扩面后全仓零失效链接。
+  验证：`cargo test -p cutile --all-features` **146 通过 + 2 doctest**、`cargo test -p llm-tool --test gate` 绿
+  （`[[gate.debt]]` 250 条不变，未新增未抬高）、`cargo clippy -p cutile -p llm-tool -p llm-op -p llm-prof
+  --all-targets --all-features -- -D warnings` 与 `RUSTDOCFLAGS="-D warnings" cargo doc -p cutile --no-deps` 各 0 告警；
+  README 里新写的四条命令逐条实跑：`doctor` 打印整条链、`verify --devices nvidia` 在无卡时**失败**（退出码 3）并报
+  "见证自检 17 条 + 语言门通过"、`bench --repeat 5` 给出 min/p50 与工作集口径、`cache gc --limit …` 正常回收。
+
+- **配置策略上移到命令行层，`cutile` 只收三个目录（ADR 0023）**。删掉第四层（配置文件）之后，
+  `crates/cutile/src/settings/` 只剩「默认值 + `CUTILE_*` + `--set`」，而这三件事没有一件是内核机制该决定的：
+  默认目录是**部署策略**（同一个 crate 被测试/服务嵌入时应当能换），`--set` 是**命令行文法**。
+  于是 4 文件 924 行整块上移：内核只声明输入形状 `crates/cutile/src/dirs.rs::Dirs`（64 行纯数据，
+  不读环境变量、不拼平台路径），策略、来源追踪与两个二进制里原来那段 `take_overrides` 都进
+  `crates/cli/src/settings.rs`（660 行，含 13 条测试），键表改成一行一个的 `keys!` 声明宏
+  （`cache.dir` / `work.dir` / `data.root`，含 `CUTILE_CACHE` 兼容名），`describe` 与"键未登记"的
+  清单都从同一张表派生；键表不再借 `prof::atom::Closed`（`cli` 本就不依赖 `prof`，三个键不值得拉一套位集机制）。
+  12 个 `cutile` 模块与两个二进制的参数由 `&Settings` 改为 `&Dirs`，两个 bin 各写一个 3 行
+  `kernel_dirs` 投影——刻意不引入 `cli → cutile` 依赖，因此**成员 25、依赖边 75（`+dev` 11）一条未增**。
+  搬迁自身净 −200 行 / −3 文件（`cutile/src/settings/**` −924、`dirs.rs` +64、`cli/src/settings.rs` +660）；
+  `[[gate.debt]]` 251 → 250（删 `crates/cutile/src/settings/source.rs:cli_override#0`，未新增未抬高）；
+  用例 59 目标 / 1 074 → **1 068 通过 / 0 失败 / 1 忽略**（19 → 13 条，6 条只覆盖随第四层消失的行为）。
+  用户可见行为逐字不变：三层标题、`← 内置默认值` / `← CUTILE_WORK_DIR（env）` / `← --set …（cli）`
+  三行排版、兼容名、空值与未登记键拒绝、`invalid` → 2。详见 `docs/audit.md` §21。
+
+- **两张 22 条的注册表各收成"一行一对"**（§8.2 第二梯队第 7 项）。`op::REGISTRY` 原本逐条手写 `Registration { name, template: include_str!(..), model: .. }`（110 行），现在是一张 `registry! { "名字" => 语义模块 }`（22 行 + 15 行宏），数组长度由表本身数出（`<[()]>::len(&[..])`），不再另写一个会漂移的 `22`；`train::KERNELS` 原本每行把同一个名字写两遍（`Entry { op: "gemv_i4", run: gemv_i4 }`，88 行），现在只有一列标识符，名字由 `stringify!` 派生——判据没有省掉：`const _: () = same_order(&KERNELS, &op::REGISTRY)` 仍在，本轮把两行对调验证过，编译期报"名字或顺序漂移"。`op/src/lib.rs` 479 → 431、`train/src/store.rs` 1531 → 1479、`crates/*/src` 55 138 → 55 086 行。`tests/contracts.rs` 的"注册表与注解互为镜像"门禁随之改为解析新形状（仍检查注解→注册表、注册表→注解、`MODEL` 必须由注解生成三个方向，断言一条未减）。新增 1 条用例（注册表与生成表逐条互查）。**"22 个 `forward` shim 宏化"这一半经实测撤回**：24 个 `pub fn forward` 里真正单行委托的只有 9 个，宏化只省 18 行却把 9 个公开签名藏进宏；`train` 的 22 个逐算子转接段属"内容差异"不属"结构重复"，一并保留。`[[gate.debt]]` 仍 250 条，`store.rs` 的 `lines` 基线 1529 → 1479（只降）。详见 `docs/audit.md` §20。
+
+- **`#[model]` 的十二段同形分支改成一张骨架表**（§8.2 第二梯队第 8 项）。`annotation/src/codegen.rs` 原先每个骨架各写 8 行逐字相同的字段列表（`group`/`shape`/`dtype`/`axes`/`shape_ctx`/`cost`/`sample`/`reference`），合起来是 152 行 `else if`，而真实差异只有四类：模块名、`group` 的写法、入口是否泛型、是否附带粒度断言。现在是一张 12 行的 `SKELETON_TABLE`（`codegen.rs:262-286`）加 6 个小函数，加一个骨架 = 加一行数据。`render_model` 实测 **ccn 15 → 2、nloc 233 → 19**，全仓最长函数因此从它变成 `prof/src/prof.rs:validate`（202 行）。三个例外留在数据里而不是回到分支：`gemv` 的粒度取 `Format::GRAIN` 并生成两条编译期断言、`gemm` 的模块名就是注册名（`module = None`）、`flash_attention_f32` 的 `reference` 由一张按注册名的改写表给出——后者就是 P1-5「宏知道算子名」的全部剩余。**行数没有下降**：`codegen.rs` 761 → 794（+33），因为表从两列变成五列、每一件新东西都带一段"为什么"；本轮买的是单函数复杂度与"加骨架只加一行"，已按实测记录，不按预估的 −80 记。`crates/annotation` 用例 53 → 54（新增锁表测试，并在既有测试里加了两条反向断言：表里每行必须在闭集内、表长必须等于闭集长度）；`[[gate.debt]]` 251 → 250（`render_model#0` 实测 2/19，删除成立）。顺带修 `syntax.rs:452` 的"缺省为 `gemm`"（实际是 `gemv`）与 `syntax.rs:384-387` 的"自己的分支"（现在是"自己的一行"）。详见 `docs/audit.md` §19。
+
 - **`data` 的可执行代码覆盖率收敛到 100%**。逐行覆盖报告暴露 `Dataset` 的三个 trait 方法（`cols`/`batches`/`remaining_batches`）在具体类型上的同名调用全部解析到 inherent 方法，trait 转发路径从未被执行（区域覆盖 96.3%）。新增一个通过 `&mut dyn Dataset` 取数的测试，走完整对象安全路径，验证三个转发与 `next_batch` 流；`batch`/`dataset`/`split` 三个含逻辑文件的行与区域覆盖均为 100%（`lib.rs` 仅含 `mod`/`pub use` 与文档，无可执行体，其 0% 是工具对纯声明模块的已知现象）。Miri 复测零 UB，全 workspace clippy（`-D warnings`）、测试零失败。
 
 - **elementwise 的计时不再手写在测试里，改为 criterion 基准**。`crates/benches/tests/elementwise_regress.rs` 原先用 `WARMUP = 8` / `TIMED = 64` 加 `Instant` 自己实现了一遍预热与计时——而预热多久、采样多少次、测多久正是 criterion 的配置项（`--warm-up-time` / `--measurement-time` / `--sample-size`），手写这套既不可配置也没有统计口径。现在该文件删除，`crates/benches/criterion/elementwise.rs` 只声明"一次迭代是什么"（`bench_function`）与"一次迭代处理多少元素"（`Throughput::Elements`，报告直接给 elems/s），测量细节交给 criterion；`llm-benches` 因此不再需要 `tool` 这个 dev 依赖（回退判定仍由 `tool::regress` 的单元测试锁住，固定硬件上的 bench job 再接线）。同步：`docs/ARCHITECTURE.md` 的边表 75 → 74、`+dev` 11 → 10，`span_parse` 文档里已不存在的 `llm-regress` 改为 `tool::regress`。
@@ -27,7 +119,7 @@
 
 - **运行期删除 TOML 解析器：语料改在构建期解析（ADR 0022）**。ADR 0021 只解决了「解析器住谁家」，没回答「运行期为什么要解析」：`ops/*.toml`、`devices/*.toml`、`lints/vocabulary.toml` 都是随二进制发布的编译期资产，而唯一属于用户的输入是配置文件，它只有三个路径键——这两条都意味着常驻解析器是纯成本。于是新增三个 `build.rs`（`crates/{op,prof,tool}/build.rs`）用 `toml` **构建期依赖**把语料展开成 `diagnostic::data::{Table, Value}` 字面量（`op::declared` / `prof::embedded` / `tool::vocabulary`），入口随之改为 `OpDecl::parse(&Table, tmpl)` 与 `Profile::parse(&Table)`，`op::load`/`dir`/`BUILTIN`、`prof::load`/`dir`/`Archive`/`builtin`、`cutile::builtin::{from_dir,from_repo,from_layers,disk_profiles}` 与 `ProfileError::Syntax` 全部删除——运行期没有「按目录装载语料」这件事。数据树补上构造与路径改写（`Table::from_pairs`、`Value::text/int/real/flag`、`Table::{set,push,remove,at,at_mut}`），原先靠拼接 TOML 文本制造非法声明的测试改为表改写，类型仍由编译器检查。运行期配置层再砍一层：`cutile::settings` 只剩「内置默认 < `CUTILE_*` < `--set`」，**没有配置文件**、没有 `schema` 字段、没有文件相对路径基准；`missing`/`io` 两个分支随读取一起消失（退出码契约不变）。`fuzz` 的 `Toml`/`Profile` 两个目标删除（没有运行期入口可灌），`fuzz → +dev: prof` 成为死边并删除。实测：`crates/*/src` 54 959 → **54 519** 行（−440，删掉 585 行解析器）、`[[gate.debt]]` **271 → 255**、成员 25 不变、边 **76 → 75**（`+dev` 12 → 11）、用例 **1 052 通过 / 0 失败**、`cargo tree -e normal` 里仍无 `toml`/`serde`（运行时第三方依赖 0）。
 
-- **`llm-config` 解耦删除：TOML 语法层并进 `diagnostic`（ADR 0021）**。设置层在 ADR 0020 里已经搬进 `crates/cutile/src/settings/`，只剩 583 行语法层；改名 `llm-toml` 的写法被否决——成员数、边数、指向它的六个 `use` 一个都不会变，那只是把名字换得更准确一点。真正的事实是那条边本来就冗余：`op`（`ops/*.toml`）、`prof`（`devices/*.toml`）、`tool`（`lints/vocabulary.toml` 阈值）、`cutile`（经设置层）、根包与 `fuzz` 全部已经依赖 `diagnostic`（错误类型全仓共用），于是语法层直接进同层零依赖的那个成员：`crates/config/src/toml.rs` → `crates/diagnostic/src/toml.rs`（`pub mod toml;`），`crates/config` 目录删除。**成员 26 → 25，依赖边 82 → 76，新增零条边**（消失的六条是上述成员各自指向语法层的那一条）；`prof` 的 `pub use llm_config::toml` 再导出随之删除——它自己有 17 处 `crate::toml`，说明「借道 `prof`」一直在发生，现在改为 `use diagnostic::toml`。语法错误仍只带行号与说明（`ParseError`），类别由调用方按语义给：语法层不该知道一次失败该算 `invalid` 还是 `missing`。门禁同步：`[gate.debt]` 8 条键改路径（ccn / nloc 逐条不变，搬家不降复杂度）、`[[ownership.unlisted]]` 的 `config` 条目改为 `diagnostic`，`tests/architecture.rs` 删掉 `member == "config"` 例外（成员不存在了），改成**文件级**豁免 `crates/diagnostic/src/toml.rs`——那里的 `String` 是消息片段，对外一直是 `ParseError`，例外因此是被收窄而不是取消。用例 62 目标 / 1 063 通过 → 60 目标 / 1 062 通过：少的 1 条是 `llm-config` 自己的 doctest 目标，`toml.rs` 内 13 个测试随文件继续执行。文档同步：`README.md` 成员表与依赖图、`docs/ARCHITECTURE.md` 层表/边表/所有权表/吸收链、`crates/cutile/DESIGN.md` 的配置边界、ADR 0005 的传递依赖说明。
+- **`llm-config` 解耦删除：TOML 语法层并进 `diagnostic`（ADR 0021）**。设置层在 ADR 0020 里已经搬进 `crates/cutile/src/settings/`，只剩 583 行语法层；改名 `llm-toml` 的写法被否决——成员数、边数、指向它的六个 `use` 一个都不会变，那只是把名字换得更准确一点。真正的事实是那条边本来就冗余：`op`（`ops/*.toml`）、`prof`（`devices/*.toml`）、`tool`（`lints/vocabulary.toml` 阈值）、`cutile`（经设置层）、根包与 `fuzz` 全部已经依赖 `diagnostic`（错误类型全仓共用），于是语法层直接进同层零依赖的那个成员：`crates/config/src/toml.rs` → `crates/diagnostic/src/toml.rs`（`pub mod toml;`），`crates/config` 目录删除。**成员 26 → 25，依赖边 82 → 76，新增零条边**（消失的六条是上述成员各自指向语法层的那一条）；`prof` 的 `pub use llm_config::toml` 再导出随之删除——它自己有 17 处 `crate::toml`，说明「借道 `prof`」一直在发生，现在改为 `use diagnostic::toml`。语法错误仍只带行号与说明（`ParseError`），类别由调用方按语义给：语法层不该知道一次失败该算 `invalid` 还是 `missing`。门禁同步：`[gate.debt]` 8 条键改路径（ccn / nloc 逐条不变，搬家不降复杂度）、`[[ownership.unlisted]]` 的 `config` 条目改为 `diagnostic`，`tests/architecture.rs` 删掉 `member == "config"` 例外（成员不存在了），改成**文件级**豁免 `crates/diagnostic/src/toml.rs`——那里的 `String` 是消息片段，对外一直是 `ParseError`，例外因此是被收窄而不是取消。用例 62 目标 / 1 063 通过 → 60 目标 / 1 062 通过：少的 1 条是 `llm-config` 自己的 doctest 目标，`toml.rs` 内 13 个测试随文件继续执行。文档同步：`README.md` 成员表与依赖图、`docs/ARCHITECTURE.md` 层表/边表/所有权表/吸收链、`crates/cutile/README.md` 的配置边界、ADR 0005 的传递依赖说明。
 
 - **`cutile` 收掉最后几处「同一事实两份」：设备探测、Metal 驱动、MSVC 查找、模板渲染**。① `probe::detect_cpu` 不再用 `cfg!(target_feature)`——那回答的是「这个二进制按什么指令集编的」：默认 baseline 构建下永远报不出 `avx2`，`-C target-cpu=native` 的产物拷到别的机器又会虚报能力；现在改 `is_x86_feature_detected!` / `is_aarch64_feature_detected!` 运行期问 CPU，测试与 cpuid 对拍。② `probe::fake` 不再手写 nvidia/intel/ascend/metal 四张指纹，改为从档案自己的 `[fingerprint]` 反查（`Exact` 取原文、`Range` 取下界、`Contains` 取第一个子串、`Set` 取前缀加成员、`OneOf` 取第一个分支），加一台设备只需要一份 TOML，不再是「漏改代码只有在运行期报『没有档案匹配』」。③ Metal host 驱动里写死的三处 `8` 改为 `WITNESS_MAX_OUT`，由 `witness::MAX_OUT` 注入 `#define`——MSL kernel 侧一直是 const 泛型 `{max}`，驱动侧是裸字面量，这是跨 FFI 边界唯一没有编译期保护的重复（`MAX_OUT` 一变就错位）。④ `find_cl` 不再写死五个开发机盘符、也不再 `sort()` 后取「最新」（`9.29` 按字符串序排在 `17.10` 之后，多版本共存时会选中更旧的一套）：改 `vswhere -find` 加 `VCINSTALLDIR`/`VSINSTALLDIR`，按版本号数值比较，标准安装路径不再漏掉。⑤ 见证语法门 `parse_all` 改走 `witness::source` 的「内嵌优先」：把文本落到一次性目录再交给语言前端，不再直接把 `witness_root(settings).join(file)` 交给 clang——在没有源码树的发布机上，原来会把「本机没有这份源码」报成「见证被自己的语言拒绝」。⑥ `substitute::render` 变成 `ast::render(&ast::build(..))` 的薄包装，槽位解析不再有两份逐行相同的循环（`ast_renders_byte_identical_text` 保留为回归门）。⑦ 判定型返回值补 `#[must_use]`（`cap::Path::is_head`、`NeedReport::is_satisfied`、`FragmentGap::is_aligned`、`Timing::min_ns`/`p50_ns`、`emit::Source::lines`/`ext`），删掉只有测试在用的 `Proof::with`，`cap` 里两处指向旧 `audit::witness` 的文档改到 `crate::witness`；`DESIGN.md` §5.4 的 CPU 指纹键从虚构的 `isa = …` 改为代码实际读的 `arch`/`features`。复杂度基线净减 3（`find_cl`、`gate::parse_all`、`substitute::render` 已达标，条目删除，无新增）。
 
@@ -213,7 +305,7 @@
 
 - 设计文档同步实现细节：模块表补 `reference.rs` / `toml.rs` / `main.rs`，并明确 `axes`（tile 候选）与 `[[variants]]`（降级链）是两个维度。
 - 设计文档重写为 v1.0《cutile DSL —— 设备无关的替换式 kernel DSL》：改为以设备无关为核心的三层声明（算子声明 / 设备档案 / 原语片段）+ 三组闭集（16 原语、4 布局、4 调度）+ 无 IR 的 lowering，并把预算拆成 P0 / P3 两档（当前值见 DESIGN §13.1：2,640 / 9,520）。
-- `README.md` 的成员表与目录树同步：`cutile` 职责改为“设备无关 kernel DSL”，并链接 `crates/cutile/DESIGN.md`。
+- `README.md` 的成员表与目录树同步：`cutile` 职责改为“设备无关 kernel DSL”，并链接 `crates/cutile/README.md`。
 
 - MSRV 提升到 1.100：`Cargo.toml` 的 `[workspace.package] rust-version`、`clippy.toml` 的 `msrv`、CI 的 `msrv` job 与 `README` 统一为 1.100。
 - `rust-toolchain.toml` 的工具链改为 `nightly-2026-09-01`（rustc 1.100.0-nightly）：1.100 正式版发布前只能用该 nightly 构建，发布后把 `channel` 改为 `"1.100"` 即可。

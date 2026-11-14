@@ -1,5 +1,9 @@
 //! 声明层：算子声明（`ops/<name>.toml`）、模板（`ops/<name>.k`）与它们的解析。
 //!
+//! 声明语料在**构建期**由 [`build.rs`](../build.rs) 用构建依赖 `toml` 解析 `ops/*.toml`，展开成
+//! `diagnostic::data::{Table, Value}` 字面量写进 `$OUT_DIR/declared.rs`，再由 [`declared`] / [`names`]
+//! 暴露（ADR 0022）。运行期只遍历这棵树：不读 `ops/`，也没有任何 TOML 解析器。
+//!
 //! 这一层是**内容**而不是机制：写算子的人只改本 crate 的 `ops/` 与 `src/<name>.rs`，`cutile` 负责协商能力、
 //! 拼接片段、emit 与对拍。因此新增算子不必改 `cutile` 的任何一行代码，领域数据也不会
 //! 与机制代码混在同一个 crate 里。
@@ -7,10 +11,10 @@
 //! 两段文本的语义（骨架 / 轴 / 需求 / 布局 / 降级链，模板里的 `{{插值}}` 与 `@原语`）在这里
 //! 被解析成[`decl::OpDecl`]，词汇表（[`layout`]、[`sch`]、[`tpl`]、[`sig`]）也在这里：机制层只消费
 //! 解析结果，不再看 TOML。模板的入口签名是 ABI 的唯一事实源：实参顺序与输出缓冲名都从它派生。
-//! 闭集的内容与书写规则见 [`DESIGN.md`](../../cutile/DESIGN.md) §4。
+//! 闭集的内容与书写规则见 [`README.md`](../../cutile/README.md) §4。
 //!
 //! 除了声明与模板，算子语义也在本 crate：求和表达式、确定性样本与标量参考（[`mod@model`]）。它们是
-//! 第二份实现，与声明、模板共同构成"正确性来自双源"（DESIGN §11.1）；`cutile` 只提供对拍口径
+//! 第二份实现，与声明、模板共同构成"正确性来自双源"（cutile README §11.1）；`cutile` 只提供对拍口径
 //! 与执行环境，不认识任何算子名。
 //!
 //! 同一副骨架的多种精度写在 [`gemv`]：一份泛型实现（求和、代价、样本、校验、遍历）+ 每个格式
@@ -28,7 +32,7 @@
 //! ```
 //! // 注册表里的每一条都自带声明与模板；要哪一条就按名字取，不靠位置。
 //! for op in llm_op::builtin() {
-//!     assert!(op.declaration().contains("[op]"), "{}", op.name());
+//!     assert!(op.declaration().table("op").is_some(), "{}", op.name());
 //!     assert!(!op.template().is_empty(), "{}", op.name());
 //! }
 //! let int4 = llm_op::builtin_named("gemv_i4").expect("已注册");
@@ -81,166 +85,77 @@ pub mod softmax_f32;
 pub mod tpl;
 pub mod unary;
 
-use diagnostic::{Code, Error};
-use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use diagnostic::data::Table;
 
 use model::Model;
 
-/// 一次注册：一个算子的四件事——名字、声明、模板、语义表。
+/// 一次注册：一个算子的三件事——名字、模板、语义表。
 ///
-/// **这是唯一一处注册表**：加一个算子只改这里。[`BUILTIN`] 与 [`model()`] 都从 [`REGISTRY`]
-/// 投影出来，不存在"声明层有、语义层没有"（或反过来）的第二份事实。
+/// **这是唯一一处注册表**：加一个算子只改这里。声明正文由 [`build.rs`](../build.rs) 在编译期
+/// 从 `ops/<name>.toml` 生成，[`builtin()`] 与 [`model()`] 都从 [`REGISTRY`] 投影出来，不存在
+/// "声明层有、语义层没有"（或反过来）的第二份事实。
 #[derive(Debug, Clone, Copy)]
 pub struct Registration {
     /// 算子名（与 `ops/<name>.toml` 的文件名一致）。
     pub name: &'static str,
-    /// `<name>.toml` 的正文。
-    pub declaration: &'static str,
     /// `<name>.k` 的正文。
     pub template: &'static str,
     /// 代价、样本与标量参考。
     pub model: Model,
 }
 
-/// 编译期内嵌的算子注册表。
+/// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => 语义模块`。
 ///
-/// 新增算子在这里补一行，否则发布出去的二进制里没有它；`builtin_matches_disk` 测试会把
-/// "磁盘上有、内嵌里没有"直接判为失败。
-pub const REGISTRY: [Registration; 22] = [
-    Registration {
-        name: "add_f32",
-        declaration: include_str!("../ops/add_f32.toml"),
-        template: include_str!("../ops/add_f32.k"),
-        model: add_f32::MODEL,
-    },
-    Registration {
-        name: "attention_f32",
-        declaration: include_str!("../ops/attention_f32.toml"),
-        template: include_str!("../ops/attention_f32.k"),
-        model: attention::MODEL,
-    },
-    Registration {
-        name: "dequant_i4",
-        declaration: include_str!("../ops/dequant_i4.toml"),
-        template: include_str!("../ops/dequant_i4.k"),
-        model: dequant_i4::MODEL,
-    },
-    Registration {
-        name: "dequant_i8",
-        declaration: include_str!("../ops/dequant_i8.toml"),
-        template: include_str!("../ops/dequant_i8.k"),
-        model: dequant_i8::MODEL,
-    },
-    Registration {
-        name: "embed_f32",
-        declaration: include_str!("../ops/embed_f32.toml"),
-        template: include_str!("../ops/embed_f32.k"),
-        model: embed_f32::MODEL,
-    },
-    Registration {
-        name: "flash_attention_f32",
-        declaration: include_str!("../ops/flash_attention_f32.toml"),
-        template: include_str!("../ops/flash_attention_f32.k"),
-        model: flash_attention::MODEL,
-    },
-    Registration {
-        name: "gelu_f32",
-        declaration: include_str!("../ops/gelu_f32.toml"),
-        template: include_str!("../ops/gelu_f32.k"),
-        model: gelu_f32::MODEL,
-    },
-    Registration {
-        name: "gemm_f32",
-        declaration: include_str!("../ops/gemm_f32.toml"),
-        template: include_str!("../ops/gemm_f32.k"),
-        model: gemm_f32::MODEL,
-    },
-    Registration {
-        name: "gemm_i4",
-        declaration: include_str!("../ops/gemm_i4.toml"),
-        template: include_str!("../ops/gemm_i4.k"),
-        model: gemm_i4::MODEL,
-    },
-    Registration {
-        name: "gemm_i8",
-        declaration: include_str!("../ops/gemm_i8.toml"),
-        template: include_str!("../ops/gemm_i8.k"),
-        model: gemm_i8::MODEL,
-    },
-    Registration {
-        name: "gemv_f32",
-        declaration: include_str!("../ops/gemv_f32.toml"),
-        template: include_str!("../ops/gemv_f32.k"),
-        model: gemv_f32::MODEL,
-    },
-    Registration {
-        name: "gemv_i4",
-        declaration: include_str!("../ops/gemv_i4.toml"),
-        template: include_str!("../ops/gemv_i4.k"),
-        model: gemv_i4::MODEL,
-    },
-    Registration {
-        name: "gemv_i8",
-        declaration: include_str!("../ops/gemv_i8.toml"),
-        template: include_str!("../ops/gemv_i8.k"),
-        model: gemv_i8::MODEL,
-    },
-    Registration {
-        name: "mul_f32",
-        declaration: include_str!("../ops/mul_f32.toml"),
-        template: include_str!("../ops/mul_f32.k"),
-        model: mul_f32::MODEL,
-    },
-    Registration {
-        name: "reduce_max_f32",
-        declaration: include_str!("../ops/reduce_max_f32.toml"),
-        template: include_str!("../ops/reduce_max_f32.k"),
-        model: reduce_max_f32::MODEL,
-    },
-    Registration {
-        name: "reduce_sum_f32",
-        declaration: include_str!("../ops/reduce_sum_f32.toml"),
-        template: include_str!("../ops/reduce_sum_f32.k"),
-        model: reduce_sum_f32::MODEL,
-    },
-    Registration {
-        name: "residual_add_f32",
-        declaration: include_str!("../ops/residual_add_f32.toml"),
-        template: include_str!("../ops/residual_add_f32.k"),
-        model: residual_add_f32::MODEL,
-    },
-    Registration {
-        name: "rmsnorm_f32",
-        declaration: include_str!("../ops/rmsnorm_f32.toml"),
-        template: include_str!("../ops/rmsnorm_f32.k"),
-        model: rmsnorm_f32::MODEL,
-    },
-    Registration {
-        name: "rope_f32",
-        declaration: include_str!("../ops/rope_f32.toml"),
-        template: include_str!("../ops/rope_f32.k"),
-        model: rope_f32::MODEL,
-    },
-    Registration {
-        name: "scale_f32",
-        declaration: include_str!("../ops/scale_f32.toml"),
-        template: include_str!("../ops/scale_f32.k"),
-        model: scale_f32::MODEL,
-    },
-    Registration {
-        name: "silu_f32",
-        declaration: include_str!("../ops/silu_f32.toml"),
-        template: include_str!("../ops/silu_f32.k"),
-        model: silu_f32::MODEL,
-    },
-    Registration {
-        name: "softmax_f32",
-        declaration: include_str!("../ops/softmax_f32.toml"),
-        template: include_str!("../ops/softmax_f32.k"),
-        model: softmax_f32::MODEL,
-    },
-];
+/// 名字同时是 `ops/<name>.toml` 与 `ops/<name>.k` 的文件名（`include_str!` 由它拼出路径），模块是
+/// `MODEL` 所在的 `src/<模块>.rs`。两列多数同名，只有 `attention_f32` 与 `flash_attention_f32`
+/// 不同名——它们共用 [`attention`] 的全部语义，只换标量参考（见 [`flash_attention`]）。
+///
+/// 一条注册原本要写五句、把同一份结构逐字抄 22 遍（110 行），而能变的只有这两列。加一个算子
+/// 仍然只改本调用里的一行 + `ops/` 两个文件 + 一个模块。
+macro_rules! registry {
+    ($($name:literal => $module:ident),* $(,)?) => {
+        /// 编译期内嵌的算子注册表。
+        ///
+        /// 新增算子在这里补一行，否则发布出去的二进制里没有它；
+        /// `the_registry_covers_the_generated_table_exactly` 把"生成表里有、注册表里没有"（或反过来）
+        /// 直接判为失败。数组长度由表本身数出来，不另写一个常数——那是第二个会漂移的数字。
+        pub const REGISTRY: [Registration; <[()]>::len(&[$(registry!(@one $name)),*])] = [
+            $(
+                Registration {
+                    name: $name,
+                    template: include_str!(concat!("../ops/", $name, ".k")),
+                    model: $module::MODEL,
+                }
+            ),*
+        ];
+    };
+    (@one $name:literal) => { () };
+}
+
+registry! {
+    "add_f32" => add_f32,
+    "attention_f32" => attention,
+    "dequant_i4" => dequant_i4,
+    "dequant_i8" => dequant_i8,
+    "embed_f32" => embed_f32,
+    "flash_attention_f32" => flash_attention,
+    "gelu_f32" => gelu_f32,
+    "gemm_f32" => gemm_f32,
+    "gemm_i4" => gemm_i4,
+    "gemm_i8" => gemm_i8,
+    "gemv_f32" => gemv_f32,
+    "gemv_i4" => gemv_i4,
+    "gemv_i8" => gemv_i8,
+    "mul_f32" => mul_f32,
+    "reduce_max_f32" => reduce_max_f32,
+    "reduce_sum_f32" => reduce_sum_f32,
+    "residual_add_f32" => residual_add_f32,
+    "rmsnorm_f32" => rmsnorm_f32,
+    "rope_f32" => rope_f32,
+    "scale_f32" => scale_f32,
+    "silu_f32" => silu_f32,
+    "softmax_f32" => softmax_f32,
+}
 
 /// 算子语义注册表：声明层有的算子，这里必须有它的代价、样本与标量参考。
 ///
@@ -252,66 +167,48 @@ pub fn model(name: &str) -> Option<Model> {
         .map(|entry| entry.model)
 }
 
-/// 编译期内嵌的声明层：`(名字, 声明, 模板)`，由 [`REGISTRY`] 投影而来。
-pub const BUILTIN: [(&str, &str, &str); REGISTRY.len()] = project(&REGISTRY);
-
-/// 把注册表投影成"名字 / 声明 / 模板"三元组，供只关心文本的一方使用。
-const fn project<const N: usize>(
-    registry: &[Registration; N],
-) -> [(&'static str, &'static str, &'static str); N] {
-    let mut out = [("", "", ""); N];
-    let mut index = 0;
-    while index < N {
-        out[index] = (
-            registry[index].name,
-            registry[index].declaration,
-            registry[index].template,
-        );
-        index += 1;
-    }
-    out
+/// 构建期生成的声明表（`build.rs` 读 `ops/*.toml` 展开成 `Table` 字面量）。
+#[allow(clippy::all, missing_docs)]
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/declared.rs"));
 }
 
-/// 一份算子声明：`<name>.toml` 的正文与同名 `<name>.k` 模板。
+pub use generated::{declared, names};
+
+/// 一份算子声明：编译期生成的声明表与同名 `<name>.k` 模板。
 ///
-/// 字段是 [`Cow`]：内嵌的算子直接借用编译进去的文本（[`builtin`] 不拷贝一个字符），从磁盘
-/// 装载的全是 `String`。两边共用同一个类型，调用方看不到这个差别。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 两段内容都是 `'static`：声明表随二进制发布，模板由 `include_str!` 编进来，[`builtin`]
+/// 不拷贝一个字符。运行期没有 TOML 文本，也没有解析器。
+#[derive(Debug, Clone, PartialEq)]
 pub struct Op {
-    name: Cow<'static, str>,
-    declaration: Cow<'static, str>,
-    template: Cow<'static, str>,
+    name: &'static str,
+    declaration: &'static Table,
+    template: &'static str,
 }
 
 impl Op {
-    /// 由三段文本构造；名字取 `<name>.toml` 的文件名。
-    ///
-    /// 接受 `&'static str`（内嵌）与 `String`（磁盘）：前者不拷贝，后者移进来。
-    pub fn new(
-        name: impl Into<Cow<'static, str>>,
-        declaration: impl Into<Cow<'static, str>>,
-        template: impl Into<Cow<'static, str>>,
-    ) -> Self {
+    /// 由名字、声明表与模板构造；名字取 `<name>.toml` 的文件名。
+    pub fn new(name: &'static str, declaration: &'static Table, template: &'static str) -> Self {
         Self {
-            name: name.into(),
-            declaration: declaration.into(),
-            template: template.into(),
+            name,
+            declaration,
+            template,
         }
     }
 
     /// 算子名（与 `<name>.toml` 的文件名一致）。
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> &'static str {
+        self.name
     }
 
-    /// 声明正文：`[op]` / `[axes]` / `[needs]` / `[layouts]` / `[[variants]]`。
-    pub fn declaration(&self) -> &str {
-        &self.declaration
+    /// 声明表：`[op]` / `[axes]` / `[needs]` / `[layouts]` / `[[variants]]`。
+    pub fn declaration(&self) -> &'static Table {
+        self.declaration
     }
 
     /// 模板正文：C 风格文本 + `{{插值}}` + `@原语` 槽位。
-    pub fn template(&self) -> &str {
-        &self.template
+    pub fn template(&self) -> &'static str {
+        self.template
     }
 }
 
@@ -321,107 +218,66 @@ impl Op {
 /// （`builtin()[0]`）在注册表从一条变成两条的那天会静默换人——而算子之间并不等价（稠密 f32
 /// 与 int4 的代价差 8 倍）。
 pub fn builtin_named(name: &str) -> Option<Op> {
-    REGISTRY
-        .iter()
-        .find(|entry| entry.name == name)
-        .map(|entry| Op::new(entry.name, entry.declaration, entry.template))
+    let entry = REGISTRY.iter().find(|entry| entry.name == name)?;
+    Some(Op::new(entry.name, declared(entry.name)?, entry.template))
 }
 
 /// 内嵌声明，顺序与 [`REGISTRY`] 一致。
 ///
-/// 文本是编译进去的常量，所以这里只有一次 `Vec` 分配：不再为每个算子把三段文本各拷一份。
+/// 声明表是编译进去的常量，模板也是；这里的 `Vec` 只装指针，不拷贝任何正文。注册表里
+/// 缺一条生成表时会被跳过——`cargo test` 的 `every_builtin_entry_declares_an_operator`
+/// 会把这种漂移判为失败。
 pub fn builtin() -> Vec<Op> {
     REGISTRY
         .iter()
-        .map(|entry| Op::new(entry.name, entry.declaration, entry.template))
+        .filter_map(|entry| {
+            let declaration = declared(entry.name)?;
+            Some(Op::new(entry.name, declaration, entry.template))
+        })
         .collect()
-}
-
-/// 声明层目录：本 crate 根下的 `ops/`，即磁盘上的事实源。
-pub fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ops")
-}
-
-/// 从目录装载声明：`<name>.toml` 必须与同名 `<name>.k` 成对，结果按名字排序。
-///
-/// # Errors
-///
-/// 目录不可读、文件名不是合法 UTF-8、或缺同名模板时返回带路径的说明。
-pub fn load(dir: &Path) -> diagnostic::Result<Vec<Op>> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|error| Error::new(Code::Io, format!("读取 {} 失败：{error}", dir.display())))?;
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_file())
-        .collect();
-    paths.sort();
-
-    let mut ops = Vec::new();
-    for path in paths {
-        if path.extension().and_then(|value| value.to_str()) != Some("toml") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!("`{}` 的文件名不是合法 UTF-8", path.display()),
-                )
-            })?;
-        let template_path = path.with_extension("k");
-        let template = std::fs::read_to_string(&template_path).map_err(|_| {
-            Error::new(
-                Code::Missing,
-                format!(
-                    "`{}` 缺少同名模板 `{}`",
-                    path.display(),
-                    template_path.display()
-                ),
-            )
-        })?;
-        let declaration = read(&path)?;
-        ops.push(Op::new(name.to_string(), declaration, template));
-    }
-    Ok(ops)
-}
-
-fn read(path: &Path) -> diagnostic::Result<String> {
-    std::fs::read_to_string(path)
-        .map_err(|error| Error::new(Code::Io, format!("读取 {} 失败：{error}", path.display())))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("op-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("建临时目录");
-        dir
-    }
-
-    #[test]
-    fn builtin_matches_disk() {
-        let disk = load(&dir()).expect("磁盘上的声明层可解析");
-        let embedded = builtin();
-        assert_eq!(
-            disk.iter().map(Op::name).collect::<Vec<_>>(),
-            embedded.iter().map(Op::name).collect::<Vec<_>>(),
-            "`ops/` 里新增或删除了算子，但 `BUILTIN` 没跟着改"
-        );
-        assert_eq!(disk, embedded);
-    }
+    use diagnostic::Code;
+    use diagnostic::data::Value;
 
     #[test]
     fn every_builtin_entry_declares_an_operator() {
         for op in builtin() {
             assert!(!op.name().is_empty());
-            assert!(op.declaration().contains("[op]"), "{}", op.name());
+            assert!(op.declaration().table("op").is_some(), "{}", op.name());
             assert!(!op.template().is_empty(), "{}", op.name());
         }
+    }
+
+    /// 生成表按文件名升序（旧的 `op::load(dir)` 也这样排序）。
+    #[test]
+    fn declared_names_are_sorted() {
+        let generated = names();
+        assert!(
+            generated.windows(2).all(|pair| pair[0] < pair[1]),
+            "{generated:?}"
+        );
+        for name in generated {
+            assert!(declared(name).is_some(), "{name} 有名字却没有表");
+        }
+    }
+
+    /// 注册表与构建期生成的声明表必须逐条对上。
+    ///
+    /// 少一条是"声明层有、注册表没有"——[`builtin`] 会静默跳过它，于是算子发布了却取不到；
+    /// 多一条是"注册表有、`ops/` 里没有这个文件"，`include_str!` 让它在编译期就挂。两个方向都判。
+    #[test]
+    fn the_registry_covers_the_generated_table_exactly() {
+        let registered: Vec<&str> = REGISTRY.iter().map(|entry| entry.name).collect();
+        assert_eq!(
+            registered,
+            names(),
+            "注册表与 `ops/*.toml` 的算子集必须一一对应"
+        );
+        assert_eq!(builtin().len(), REGISTRY.len(), "每条注册都必须有声明");
     }
 
     /// 声明与语义同属一条注册：不该出现"内嵌里有、语义表没有"的算子。
@@ -437,52 +293,67 @@ mod tests {
     ///
     /// 按位置取会在注册表从一条变两条的那天静默换人——而两条算子并不等价（稠密 f32 与 int4
     /// 的代价差 8 倍）。名字写在这里，注册表增删都不会让这条测试去验另一个算子。
-    fn int4() -> (&'static str, &'static str, &'static str) {
-        BUILTIN
-            .iter()
-            .copied()
-            .find(|(name, _, _)| *name == "gemv_i4")
-            .expect("gemv_i4 已注册")
+    fn int4() -> Op {
+        builtin_named("gemv_i4").expect("gemv_i4 已注册")
+    }
+
+    /// 在 `variants` 里按名字取一个变体表；测试改写声明时定位到具体变体。
+    fn variant_mut<'a>(declaration: &'a mut Table, name: &str) -> &'a mut Table {
+        declaration
+            .array_mut("variants")
+            .expect("variants")
+            .iter_mut()
+            .find_map(|value| {
+                let Value::Table(variant) = value else {
+                    return None;
+                };
+                (variant.string("name") == Some(name)).then_some(variant)
+            })
+            .expect("变体存在")
     }
 
     #[test]
     fn the_builtin_template_only_uses_declared_primitives() {
-        let (name, declaration, template) = int4();
-        let op = decl::OpDecl::parse(declaration, template).expect("内置声明必须自洽");
-        assert_eq!(op.name, name);
+        let op = int4();
+        let declaration =
+            decl::OpDecl::parse(op.declaration(), op.template()).expect("内置声明必须自洽");
+        assert_eq!(declaration.name, op.name());
     }
 
     #[test]
     fn a_signature_with_an_unsupported_buffer_type_is_rejected_at_load() {
         // ABI 的唯一事实源是 `.k` 的签名：把 `scales` 写成 `double *` 必须在装载期就失败，
         // 而不是等 `cc` 报 C 的指针类型不兼容——诊断要带算子名与形参名。
-        let (name, declaration, template) = int4();
-        let broken = template.replace("const float *scales", "double *scales");
-        let error = decl::OpDecl::parse(declaration, &broken).expect_err("类型不在闭集内");
+        let op = int4();
+        let broken = op
+            .template()
+            .replace("const float *scales", "double *scales");
+        let error = decl::OpDecl::parse(op.declaration(), &broken).expect_err("类型不在闭集内");
         let text = error.to_string();
-        assert!(text.contains(name), "{text}");
+        assert!(text.contains(op.name()), "{text}");
         assert!(text.contains("scales"), "{text}");
         assert!(text.contains("double"), "{text}");
     }
 
     #[test]
     fn a_template_primitive_must_be_declared_in_needs() {
-        let (name, declaration, template) = int4();
-        let template = format!("{template}\n@atomic(y, n, out);\n");
-        let error = decl::OpDecl::parse(declaration, &template)
+        let op = int4();
+        let template = format!("{}\n@atomic(y, n, out);\n", op.template());
+        let error = decl::OpDecl::parse(op.declaration(), &template)
             .expect_err("模板里的原语不在 needs 里必须报错");
         assert!(error.to_string().contains("atomic"), "{error}");
-        assert!(error.to_string().contains(name), "{error}");
+        assert!(error.to_string().contains(op.name()), "{error}");
     }
 
     /// 模板传的能力参数必须被 `[needs]` 允许：否则设备按声明验、代码按模板生成。
     #[test]
     fn a_call_argument_must_match_the_declared_need() {
-        let (name, declaration, template) = int4();
-        let broken = template.replace("sat: off", "sat: on");
-        let error = decl::OpDecl::parse(declaration, &broken).expect_err("模板与需求矛盾必须报错");
+        let op = int4();
+        let broken = op.template().replace("sat: off", "sat: on");
+        let error =
+            decl::OpDecl::parse(op.declaration(), &broken).expect_err("模板与需求矛盾必须报错");
         let text = error.to_string();
-        assert!(text.contains(name), "{text}");
+        assert!(text.contains(op.name()), "{text}");
         assert!(text.contains("cvt"), "{text}");
         assert!(text.contains("sat"), "{text}");
         assert!(text.contains("on"), "{text}");
@@ -491,12 +362,14 @@ mod tests {
     /// 闭集内的能力属性传了却没声明，等于协商永远不检查它。
     #[test]
     fn a_capability_argument_must_be_declared_in_needs() {
-        let (name, declaration, template) = int4();
-        let broken = template.replace("sat: off", "sat: off, accuracy: approx");
+        let op = int4();
+        let broken = op
+            .template()
+            .replace("sat: off", "sat: off, accuracy: approx");
         let error =
-            decl::OpDecl::parse(declaration, &broken).expect_err("未声明的能力参数必须报错");
+            decl::OpDecl::parse(op.declaration(), &broken).expect_err("未声明的能力参数必须报错");
         let text = error.to_string();
-        assert!(text.contains(name), "{text}");
+        assert!(text.contains(op.name()), "{text}");
         assert!(text.contains("cvt"), "{text}");
         assert!(text.contains("accuracy"), "{text}");
     }
@@ -504,36 +377,40 @@ mod tests {
     /// 闭集之外的命名参数是片段级提示，不构成能力声明，不能被这条判据误伤。
     #[test]
     fn a_fragment_only_named_argument_stays_legal() {
-        let (_, declaration, template) = int4();
-        let extra = template.replace("sat: off", "sat: off, along: 32");
-        decl::OpDecl::parse(declaration, &extra).expect("片段级命名参数不该被能力判据拒绝");
+        let op = int4();
+        let extra = op.template().replace("sat: off", "sat: off, along: 32");
+        decl::OpDecl::parse(op.declaration(), &extra).expect("片段级命名参数不该被能力判据拒绝");
     }
 
     #[test]
     fn every_variant_must_cover_the_shared_template() {
-        let (_, declaration, template) = int4();
+        let op = int4();
         // 把 `bar` 从算子级需求挪到只有 `pipe2` 的增量需求里：`direct` 仍然会 emit 出 `@bar`，
         // 所以装载期必须拒绝，而不是等协商选中 `direct` 才在 substitute 里发现片段缺失。
-        let broken = declaration.replace("bar         = {}\n", "").replace(
-            "schedule  = \"pipe<2>\"\nmma_share = 0.62\n",
-            "schedule  = \"pipe<2>\"\nmma_share = 0.62\nextra_needs.bar = {}\n",
-        );
+        let mut broken = op.declaration().clone();
+        broken.table_mut("needs").expect("needs").remove("bar");
+        variant_mut(&mut broken, "pipe2").set("extra_needs.bar", Value::table(vec![]));
         let error =
-            decl::OpDecl::parse(&broken, template).expect_err("变体没有覆盖共享模板必须报错");
+            decl::OpDecl::parse(&broken, op.template()).expect_err("变体没有覆盖共享模板必须报错");
         assert!(error.to_string().contains("direct"), "{error}");
         assert!(error.to_string().contains("bar"), "{error}");
     }
 
-    /// 判据 1（DESIGN §12.2）：首选变体必须把非 MMA 工作盖住，否则该换 S3/S4。
+    /// 判据 1（cutile README §12.2）：首选变体必须把非 MMA 工作盖住，否则该换 S3/S4。
     #[test]
     fn the_preferred_variant_must_hide_its_non_mma_work() {
-        let (_, declaration, template) = int4();
+        let op = int4();
         // 占比降下来链仍然单调（0.10 → 0.05），所以先失败的只会是掩盖判据。
-        let hidden = declaration
-            .replace("mma_share = 0.62", "mma_share = 0.10")
-            .replace("mma_share = 0.35", "mma_share = 0.05");
-        assert_ne!(hidden, declaration, "声明里的占比写法变了");
-        let error = decl::OpDecl::parse(&hidden, template).expect_err("首选变体掩盖不足必须报错");
+        let mut hidden = op.declaration().clone();
+        variant_mut(&mut hidden, "pipe2").set("mma_share", Value::real(0.10));
+        variant_mut(&mut hidden, "direct").set("mma_share", Value::real(0.05));
+        assert_ne!(
+            hidden.at("variants[0].mma_share"),
+            op.declaration().at("variants[0].mma_share"),
+            "声明里的占比写法变了"
+        );
+        let error =
+            decl::OpDecl::parse(&hidden, op.template()).expect_err("首选变体掩盖不足必须报错");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("首选变体 `pipe2`"), "{error}");
         assert!(error.to_string().contains("45%"), "{error}");
@@ -542,39 +419,12 @@ mod tests {
     /// 兜底变体的掩盖账超阈值是事实，不是声明错误：它存在的理由正是"设备缺原语时仍能跑"。
     #[test]
     fn a_falling_back_variant_may_miss_the_masking_bar() {
-        let (_, declaration, template) = int4();
-        let op = decl::OpDecl::parse(declaration, template).expect("内置声明应当通过");
+        let op = int4();
+        let op = decl::OpDecl::parse(op.declaration(), op.template()).expect("内置声明应当通过");
         let direct = op.variant("direct").expect("兜底变体");
         let masking = sch::Masking::of(direct.mma_share, &direct.schedule);
         assert!(masking.claims_mma(), "{masking}");
         assert!(!masking.within_limit(), "{masking}");
         assert!(masking.to_string().contains("降级兜底"), "{masking}");
-    }
-
-    #[test]
-    fn a_missing_template_names_both_files() {
-        let dir = temp_dir("missing");
-        std::fs::write(dir.join("foo.toml"), "[op]\n").expect("写");
-        let error = load(&dir).unwrap_err();
-        assert_eq!(error.code(), Code::Missing);
-        assert!(error.to_string().contains("缺少同名模板"), "{error}");
-        assert!(error.to_string().contains("foo.k"), "{error}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn files_are_loaded_in_name_order() {
-        let dir = temp_dir("order");
-        for name in ["b", "a"] {
-            std::fs::write(dir.join(format!("{name}.toml")), "[op]\n").expect("写");
-            std::fs::write(dir.join(format!("{name}.k")), "x\n").expect("写");
-        }
-        let names: Vec<String> = load(&dir)
-            .expect("装载")
-            .into_iter()
-            .map(|op| op.name().to_string())
-            .collect();
-        assert_eq!(names, ["a", "b"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

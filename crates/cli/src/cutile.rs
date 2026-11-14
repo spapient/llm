@@ -1,7 +1,7 @@
 //! `cutile` 子命令：内核层审计（doctor / verify / bench / cache）的**参数文法**。
 //!
 //! 语法只有一份：内核层的驱动方（`cargo run --bin cutile`）与 `llm cutile ...` 都走这里，
-//! 执行在 `llm-audit`，排版在驱动方。`--set key=value` 属于配置层（`llm-config`），
+//! 执行在 `cutile::{doctor, verify, bench, gc}`，排版在驱动方。`--set key=value` 属于配置层（`crate::settings`），
 //! 由驱动方在交给本模块之前摘走。
 
 use diagnostic::{Code, Error, Result};
@@ -68,161 +68,197 @@ pub enum CutileCommand {
     },
 }
 
+/// 选项形态：带一个取值，还是不带取值的开关。
+#[derive(Clone, Copy)]
+enum Kind {
+    Value,
+    Switch,
+}
+
+use Kind::{Switch, Value};
+
+/// 一个子命令的选项文法：选项名与它要不要取值。
+type Grammar = &'static [(&'static str, Kind)];
+
+/// 一个子命令的组装：把解析后的选项变成命令（取值非法时返回诊断）。
+type Build = fn(&Flags) -> Result<CutileCommand>;
+
+/// `doctor` 的选项文法。
+const DOCTOR: Grammar = &[("--op", Value), ("--device", Value), ("--why", Value)];
+
+/// `verify` 的选项文法：`--emit-ledger` 是不带取值的开关。
+const VERIFY: Grammar = &[
+    ("--op", Value),
+    ("--devices", Value),
+    ("--emit-ledger", Switch),
+];
+
+/// `bench` 的选项文法。
+const BENCH: Grammar = &[("--op", Value), ("--shape", Value), ("--repeat", Value)];
+
+/// `cache gc` 的选项文法：上限是字节数，与 `--repeat` 的次数不同。
+const CACHE: Grammar = &[("--limit", Value)];
+
+/// 子命令表：名字、选项文法、命令组装。表即文法，新增子命令只加一行。
+///
+/// `cache` 还要先吃一个动作词（`gc`），它不在表里，由 [`dispatch`] 单独分派。
+const SUBCOMMANDS: &[(&str, Grammar, Build)] = &[
+    ("doctor", DOCTOR, doctor),
+    ("verify", VERIFY, verify),
+    ("bench", BENCH, bench),
+];
+
 impl CutileCommand {
     /// 解析参数（不含 `argv[0]`）。
     ///
     /// # Errors
     ///
-    /// 缺少子命令、未知子命令、未知选项、缺少取值或取值非法都返回 [`Code::Invalid`]，
-    /// 并在消息里给出 [`USAGE`]。
+    /// 缺子命令、未知子命令/选项、缺取值或取值非法都返回 [`Code::Invalid`] 并附 [`USAGE`]。
     pub fn parse(args: &[String]) -> Result<Self> {
-        let (head, rest) = args.split_first().ok_or_else(|| invalid("缺子命令"))?;
-        match head.as_str() {
-            "doctor" => {
-                let mut words = Words::new(rest);
-                let mut op = DEFAULT_OP.to_string();
-                let mut device = "auto".to_string();
-                let mut why = None;
-                while let Some(flag) = words.next_flag()? {
-                    match flag.as_str() {
-                        "--op" => op = words.value(&flag)?,
-                        "--device" => device = words.value(&flag)?,
-                        "--why" => why = Some(words.value(&flag)?),
-                        other => return Err(invalid(format!("未知参数 `{other}`"))),
-                    }
-                }
-                Ok(Self::Doctor { op, device, why })
-            }
-            "verify" => {
-                let mut words = Words::new(rest);
-                let mut op = DEFAULT_OP.to_string();
-                let mut devices = Vec::new();
-                let mut ledger = false;
-                while let Some(flag) = words.next_flag()? {
-                    match flag.as_str() {
-                        "--op" => op = words.value(&flag)?,
-                        "--devices" => {
-                            devices = words
-                                .value(&flag)?
-                                .split(',')
-                                .map(str::trim)
-                                .filter(|name| !name.is_empty())
-                                .map(str::to_string)
-                                .collect();
-                        }
-                        "--emit-ledger" => ledger = true,
-                        other => return Err(invalid(format!("未知参数 `{other}`"))),
-                    }
-                }
-                if devices.is_empty() {
-                    devices.push("cpu".to_string());
-                }
-                Ok(Self::Verify {
-                    op,
-                    devices,
-                    ledger,
-                })
-            }
-            "bench" => {
-                let mut words = Words::new(rest);
-                let mut op = DEFAULT_OP.to_string();
-                let mut shape = None;
-                let mut repeat = 50usize;
-                while let Some(flag) = words.next_flag()? {
-                    match flag.as_str() {
-                        "--op" => op = words.value(&flag)?,
-                        "--shape" => shape = Some(words.value(&flag)?),
-                        "--repeat" => {
-                            repeat = words
-                                .value(&flag)?
-                                .parse::<usize>()
-                                .map_err(|_| invalid("`--repeat` 需要正整数"))?;
-                        }
-                        other => return Err(invalid(format!("未知参数 `{other}`"))),
-                    }
-                }
-                Ok(Self::Bench { op, shape, repeat })
-            }
-            "cache" => {
-                let mut words = Words::new(rest);
-                let action = words.positional("子命令")?;
-                if action != "gc" {
-                    return Err(invalid(format!("未知子命令 `cache {action}`")));
-                }
-                let mut limit = None;
-                while let Some(flag) = words.next_flag()? {
-                    match flag.as_str() {
-                        "--limit" => {
-                            limit = Some(
-                                words
-                                    .value(&flag)?
-                                    .parse::<u64>()
-                                    .map_err(|_| invalid("`--limit` 需要字节数（十进制）"))?,
-                            );
-                        }
-                        other => return Err(invalid(format!("未知参数 `{other}`"))),
-                    }
-                }
-                Ok(Self::Cache { limit })
-            }
-            "help" | "-h" | "--help" => {
-                Err(Error::new(Code::Invalid, USAGE).with("cli::cutile::parse"))
-            }
-            other => Err(invalid(format!("未知子命令 `{other}`"))),
+        let Some((head, rest)) = args.split_first() else {
+            return Err(invalid("缺子命令"));
+        };
+        let Some(out) = dispatch(head, rest) else {
+            return Err(invalid(format!("未知子命令 `{head}`")));
+        };
+        out
+    }
+}
+
+/// 子命令名 → 解析结果；`None` 表示这个名字不在文法里。
+fn dispatch(head: &str, rest: &[String]) -> Option<Result<CutileCommand>> {
+    if matches!(head, "help" | "-h" | "--help") {
+        return Some(Err(
+            Error::new(Code::Invalid, USAGE).with("cli::cutile::parse")
+        ));
+    }
+    if head == "cache" {
+        return Some(cache(rest));
+    }
+    let (_, grammar, build) = SUBCOMMANDS.iter().find(|(name, ..)| *name == head)?;
+    Some(Flags::parse(rest, grammar).and_then(|flags| build(&flags)))
+}
+
+/// `doctor`：打印整条流水线。
+fn doctor(flags: &Flags) -> Result<CutileCommand> {
+    Ok(CutileCommand::Doctor {
+        op: flags.text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        device: flags.text("--device").unwrap_or_else(|| "auto".to_string()),
+        why: flags.text("--why"),
+    })
+}
+
+/// `verify`：逐设备验证。
+fn verify(flags: &Flags) -> Result<CutileCommand> {
+    Ok(CutileCommand::Verify {
+        op: flags.text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        devices: devices(flags.text("--devices")),
+        ledger: flags.switch("--emit-ledger"),
+    })
+}
+
+/// `bench`：跑一次并报告达成率。
+fn bench(flags: &Flags) -> Result<CutileCommand> {
+    Ok(CutileCommand::Bench {
+        op: flags.text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        shape: flags.text("--shape"),
+        repeat: flags
+            .number("--repeat", "`--repeat` 需要正整数")?
+            .unwrap_or(50),
+    })
+}
+
+/// `cache`：唯一动作是 `gc`；缺动作与写错动作分开报错，不静默当成 `gc`。
+fn cache(rest: &[String]) -> Result<CutileCommand> {
+    let Some(action) = rest.first().filter(|word| !word.starts_with('-')) else {
+        return Err(invalid("缺少子命令"));
+    };
+    if action != "gc" {
+        return Err(invalid(format!("未知子命令 `cache {action}`")));
+    }
+    Ok(CutileCommand::Cache {
+        limit: Flags::parse(&rest[1..], CACHE)?
+            .number("--limit", "`--limit` 需要字节数（十进制）")?,
+    })
+}
+
+/// 设备列表：逗号分隔、去空白、丢弃空项；一个都没有时退回 `cpu`（与缺省一致）。
+fn devices(text: Option<String>) -> Vec<String> {
+    let mut names: Vec<String> = text
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
+    if names.is_empty() {
+        names.push("cpu".to_string());
+    }
+    names
+}
+
+/// 解析后的选项：名字与取值（开关没有取值），同名重复以最后一次为准。
+struct Flags(Vec<(String, Option<String>)>);
+
+impl Flags {
+    /// 按文法收选项：名字必须在 `grammar` 里，带取值的必须后面跟着合法取值。
+    fn parse(rest: &[String], grammar: Grammar) -> Result<Self> {
+        let mut out = Vec::new();
+        let mut words = rest.iter();
+        while let Some(word) = words.next() {
+            let value = match kind_of(grammar, word)? {
+                Kind::Value => Some(value(words.next(), word)?),
+                Kind::Switch => None,
+            };
+            out.push((word.clone(), value));
+        }
+        Ok(Self(out))
+    }
+
+    /// 某个选项的取值；没出现就是 `None`。
+    fn text(&self, flag: &str) -> Option<String> {
+        self.0.iter().rfind(|(name, _)| name == flag)?.1.clone()
+    }
+
+    /// 开关选项是否出现。
+    fn switch(&self, flag: &str) -> bool {
+        self.0.iter().any(|(name, _)| name == flag)
+    }
+
+    /// 数值选项：十进制解析失败按 `message` 报错（单位由选项自己给）。
+    fn number<T: std::str::FromStr>(&self, flag: &str, message: &str) -> Result<Option<T>> {
+        match self.text(flag) {
+            Some(text) => text.parse().map(Some).map_err(|_| invalid(message)),
+            None => Ok(None),
         }
     }
+}
+
+/// 选项形态：`-` 开头且在文法里才算选项，其余按「多余参数」报错。
+fn kind_of(grammar: Grammar, word: &str) -> Result<Kind> {
+    if !word.starts_with('-') {
+        return Err(invalid(format!("多余参数 `{word}`")));
+    }
+    grammar
+        .iter()
+        .find(|(name, _)| *name == word)
+        .map(|(_, kind)| *kind)
+        .ok_or_else(|| invalid(format!("未知参数 `{word}`")))
+}
+
+/// 选项取值：不能缺失，不能为空，也不能看起来像另一个选项。
+fn value(given: Option<&String>, flag: &str) -> Result<String> {
+    let Some(value) = given else {
+        return Err(invalid(format!("`{flag}` 缺少取值")));
+    };
+    if value.is_empty() || value.starts_with('-') {
+        return Err(invalid(format!("`{flag}` 的取值不合法：`{value}`")));
+    }
+    Ok(value.clone())
 }
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, format!("{}\n{USAGE}", message.into())).with("cli::cutile::parse")
-}
-
-/// 选项游标：`next_flag` 取下一个 `-` 开头的词，`value` 取其取值。
-struct Words<'a> {
-    rest: &'a [String],
-    index: usize,
-}
-
-impl<'a> Words<'a> {
-    fn new(rest: &'a [String]) -> Self {
-        Self { rest, index: 0 }
-    }
-
-    /// 位置参数（子命令名之类）：缺词或以 `-` 开头都算缺。
-    fn positional(&mut self, what: &str) -> Result<String> {
-        let word = self
-            .rest
-            .get(self.index)
-            .ok_or_else(|| invalid(format!("缺少{what}")))?;
-        if word.starts_with('-') {
-            return Err(invalid(format!("缺少{what}")));
-        }
-        self.index += 1;
-        Ok(word.clone())
-    }
-
-    fn next_flag(&mut self) -> Result<Option<String>> {
-        let Some(word) = self.rest.get(self.index) else {
-            return Ok(None);
-        };
-        if !word.starts_with('-') {
-            return Err(invalid(format!("多余参数 `{word}`")));
-        }
-        self.index += 1;
-        Ok(Some(word.clone()))
-    }
-
-    fn value(&mut self, flag: &str) -> Result<String> {
-        let value = self
-            .rest
-            .get(self.index)
-            .ok_or_else(|| invalid(format!("`{flag}` 缺少取值")))?;
-        if value.is_empty() || value.starts_with('-') {
-            return Err(invalid(format!("`{flag}` 的取值不合法：`{value}`")));
-        }
-        self.index += 1;
-        Ok(value.clone())
-    }
 }
 
 #[cfg(test)]

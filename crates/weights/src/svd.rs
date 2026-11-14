@@ -70,84 +70,128 @@ pub fn compute(a: &[f64], m: usize, n: usize) -> Result<Svd> {
     for i in 0..n {
         v[i * n + i] = 1.0;
     }
+    orthogonalize(&mut u, &mut v, m, n);
+    let sigma = singular_values(&mut u, m, n);
+    let (sigma, u, v) = sorted_columns(&sigma, &u, &v, m, n, k);
+    Ok(Svd { sigma, u, v, m, n })
+}
 
+/// 反复扫描直到收敛；硬上限防止病态输入死循环。
+fn orthogonalize(u: &mut [f64], v: &mut [f64], m: usize, n: usize) {
     for _ in 0..MAX_SWEEPS {
-        let mut converged = true;
-        for p in 0..n {
-            for q in (p + 1)..n {
-                let mut alpha = 0.0;
-                let mut beta = 0.0;
-                let mut gamma = 0.0;
-                for row in 0..m {
-                    let x = u[row * n + p];
-                    let y = u[row * n + q];
-                    alpha += x * x;
-                    beta += y * y;
-                    gamma += x * y;
-                }
-                if gamma.abs() <= TOL * (alpha * beta).sqrt() {
-                    continue;
-                }
-                converged = false;
-                let (c, s) = rotation(alpha, beta, gamma);
-                for row in 0..m {
-                    let x = u[row * n + p];
-                    let y = u[row * n + q];
-                    u[row * n + p] = c * x - s * y;
-                    u[row * n + q] = s * x + c * y;
-                }
-                for row in 0..n {
-                    let x = v[row * n + p];
-                    let y = v[row * n + q];
-                    v[row * n + p] = c * x - s * y;
-                    v[row * n + q] = s * x + c * y;
-                }
-            }
-        }
-        if converged {
+        if sweep(u, v, m, n) {
             break;
         }
     }
+}
 
-    // 列长度 → 奇异值，归一化 U 列；V 列已是单位（旋转保持）。
-    let mut sigma = vec![0.0f64; n];
-    for j in 0..n {
-        let mut norm = 0.0;
-        for row in 0..m {
-            norm += u[row * n + j].powi(2);
-        }
-        sigma[j] = norm.sqrt();
-    }
-    for j in 0..n {
-        if sigma[j] > 0.0 {
-            for row in 0..m {
-                u[row * n + j] /= sigma[j];
+/// 一轮扫描：逐个列对旋转，返回本轮是否全部已正交。
+fn sweep(u: &mut [f64], v: &mut [f64], m: usize, n: usize) -> bool {
+    let mut converged = true;
+    for p in 0..n {
+        for q in (p + 1)..n {
+            if rotate_pair(u, v, m, n, p, q) {
+                converged = false;
             }
         }
     }
+    converged
+}
 
-    // 降序排列，同步重排 U、V 的列。
+/// 一对列：已正交返回 `false`，做了旋转返回 `true`。
+fn rotate_pair(u: &mut [f64], v: &mut [f64], m: usize, n: usize, p: usize, q: usize) -> bool {
+    let (mut alpha, mut beta, mut gamma) = (0.0, 0.0, 0.0);
+    for row in 0..m {
+        let x = u[row * n + p];
+        let y = u[row * n + q];
+        alpha += x * x;
+        beta += y * y;
+        gamma += x * y;
+    }
+    if gamma.abs() <= TOL * (alpha * beta).sqrt() {
+        return false;
+    }
+    let (c, s) = rotation(alpha, beta, gamma);
+    rotate_columns(u, m, n, p, q, c, s);
+    rotate_columns(v, n, n, p, q, c, s);
+    true
+}
+
+/// 对 `mat` 的第 p、q 列施加旋转 `(c, s)`；`cols` 是行跨度。
+fn rotate_columns(mat: &mut [f64], rows: usize, cols: usize, p: usize, q: usize, c: f64, s: f64) {
+    for row in 0..rows {
+        let x = mat[row * cols + p];
+        let y = mat[row * cols + q];
+        mat[row * cols + p] = c * x - s * y;
+        mat[row * cols + q] = s * x + c * y;
+    }
+}
+
+/// 列长度即奇异值；随后把 U 的列归一化。
+fn singular_values(u: &mut [f64], m: usize, n: usize) -> Vec<f64> {
+    let mut sigma = vec![0.0f64; n];
+    for (j, value) in sigma.iter_mut().enumerate() {
+        *value = column_norm(u, m, n, j);
+    }
+    for (j, &sigma) in sigma.iter().enumerate() {
+        normalize_column(u, m, n, j, sigma);
+    }
+    sigma
+}
+
+/// 一列的欧氏长度。
+fn column_norm(u: &[f64], m: usize, n: usize, j: usize) -> f64 {
+    let mut norm = 0.0;
+    for row in 0..m {
+        norm += u[row * n + j].powi(2);
+    }
+    norm.sqrt()
+}
+
+/// 列除以它的长度；零列保持为零。
+fn normalize_column(u: &mut [f64], m: usize, n: usize, j: usize, sigma: f64) {
+    if sigma <= 0.0 {
+        return;
+    }
+    for row in 0..m {
+        u[row * n + j] /= sigma;
+    }
+}
+
+/// 按奇异值降序重排 U、V 的列，只保留前 k 列。
+fn sorted_columns(
+    sigma: &[f64],
+    u: &[f64],
+    v: &[f64],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| sigma[b].total_cmp(&sigma[a]));
-    let sorted_sigma: Vec<f64> = order.iter().map(|&j| sigma[j]).take(k).collect();
+    let sorted_sigma = order.iter().map(|&j| sigma[j]).take(k).collect();
     let mut sorted_u = vec![0.0f64; m * k];
     let mut sorted_v = vec![0.0f64; n * k];
     for (new_col, &old_col) in order.iter().take(k).enumerate() {
-        for row in 0..m {
-            sorted_u[row * k + new_col] = u[row * n + old_col];
-        }
-        for row in 0..n {
-            sorted_v[row * k + new_col] = v[row * n + old_col];
-        }
+        copy_column(u, m, n, &mut sorted_u, k, old_col, new_col);
+        copy_column(v, n, n, &mut sorted_v, k, old_col, new_col);
     }
+    (sorted_sigma, sorted_u, sorted_v)
+}
 
-    Ok(Svd {
-        sigma: sorted_sigma,
-        u: sorted_u,
-        v: sorted_v,
-        m,
-        n,
-    })
+/// 把 `src` 的第 `from` 列拷进 `dst` 的第 `to` 列。
+fn copy_column(
+    src: &[f64],
+    rows: usize,
+    src_stride: usize,
+    dst: &mut [f64],
+    dst_stride: usize,
+    from: usize,
+    to: usize,
+) {
+    for row in 0..rows {
+        dst[row * dst_stride + to] = src[row * src_stride + from];
+    }
 }
 
 /// 由列 Gram 参数算 Jacobi 旋转系数 `(c, s)`。

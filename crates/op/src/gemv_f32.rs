@@ -1,14 +1,14 @@
 //! `gemv_f32` 的算子语义：稠密 f32 权重投影。
 //!
 //! 骨架在 [`crate::gemv`]，本文件只有"稠密权重"这一份格式契约：表达式、操作数位宽、分块宽度
-//! 与内核本体。模板在 `ops/gemv_f32.k`，本模块是它的第二份实现（DESIGN §11.1）：片段只与这里
+//! 与内核本体。模板在 `ops/gemv_f32.k`，本模块是它的第二份实现（cutile README §11.1）：片段只与这里
 //! 对拍，片段之间不互相对拍。内核实参不在这里手写：它由 `.k` 的签名与样本派生（[`crate::sig`]）。
 //!
 //! 与 [`crate::gemv_i4`] 的差别只有两点，而且两点都是**类型参数**：权重元素是 `f32` 而不是
 //! 打包字节，形状粒度是 1 而不是量化分组。代价、样本、校验、遍历四条路径一份代码也没有重写。
 
-use crate::einsum::Bits;
-use crate::gemv::{self, Format, OperandSpec};
+use crate::einsum::{Bits, FormulaCache, OperandSpec};
+use crate::gemv::{self, Format};
 use diagnostic::{Code, Error};
 
 /// 分块宽度：模板每轮处理这么多元素，标量参考按同一个宽度分块累加。
@@ -46,10 +46,10 @@ impl<const B: usize> Format for gemv::Dense<B> {
 
     const STEP: usize = B;
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
+    fn cache() -> &'static FormulaCache {
         // 缓存落在这个 impl 里：`Dense<B>` 的表达式与块宽无关，一份缓存覆盖所有实例。
-        static CACHE: gemv::Cache = gemv::Cache::new();
-        CACHE.get::<Self>()
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn row(m: usize) -> usize {
@@ -73,39 +73,45 @@ impl<const B: usize> Format for gemv::Dense<B> {
         let m = x.len();
         let n = out.len();
 
-        if n == 0 {
-            return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
-        }
-        if !scales.is_empty() {
-            // 稠密格式没有标度：拿着标度调用说明调用方把两条格式搞混了。静默忽略会让
-            // "换错算子"表现成数值正确，那比报错难查得多。
-            return Err(Error::new(
-                Code::Invalid,
-                format!("稠密格式没有标度，收到 {} 个", scales.len()),
-            ));
-        }
-        if weights.len() < n * m {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("权重长度 {} < {}", weights.len(), n * m),
-            ));
-        }
+        dense_checks(scales, weights.len(), m, n)?;
 
         // 每行只看自己那一段：切片一次算好，内层就不再做 `row × 列数 + base` 的乘加。
         for (row, value) in out.iter_mut().enumerate() {
-            let w_row = &weights[row * m..][..m];
-            let mut acc = 0.0f32;
-            for (w_block, x_block) in w_row.chunks(B).zip(x.chunks(B)) {
-                let mut dot = 0.0f32;
-                for (weight, input) in w_block.iter().zip(x_block) {
-                    dot += weight * input;
-                }
-                acc += dot;
-            }
-            *value = acc;
+            *value = dot_row::<B>(&weights[row * m..][..m], x);
         }
         Ok(())
     }
+}
+
+/// 稠密格式的前置校验：输出非空、没有标度、权重够长。
+///
+/// 「没有标度」是**格式**判据而不是骨架判据：拿着标度调用说明调用方把两条格式搞混了。
+/// 静默忽略会让"换错算子"表现成数值正确，那比报错难查得多。
+fn dense_checks(scales: &[f32], weights: usize, m: usize, n: usize) -> diagnostic::Result<()> {
+    gemv::non_empty(n)?;
+    if scales.is_empty() {
+        gemv::required_weights(weights, n, m)?;
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!("稠密格式没有标度，收到 {} 个", scales.len()),
+    ))
+}
+
+/// 一行的点积：按块宽推进，块内交给迭代器展开。
+fn dot_row<const B: usize>(w_row: &[f32], x: &[f32]) -> f32 {
+    w_row
+        .chunks(B)
+        .zip(x.chunks(B))
+        .map(|(w_block, x_block)| {
+            w_block
+                .iter()
+                .zip(x_block)
+                .map(|(weight, input)| weight * input)
+                .sum::<f32>()
+        })
+        .sum()
 }
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果**写进调用方给的缓冲**。

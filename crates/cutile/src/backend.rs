@@ -1,12 +1,8 @@
 //! ⑤ 编译与执行：`c` 后端通过子进程调用 `cc`，不涉及 FFI，也不需要 `unsafe`。
 //!
-//! 只有"能跑出数"才算 L2 证据（DESIGN §11.2）：这里负责把生成的源文件编成可执行文件、
-//! 跑一遍、把 f32 结果的位模式读回来交给 [`crate::reference`] 对拍。
-//!
-//! 编译参数由调用方从档案的 `[compile].flags` 传进来——与缓存指纹里哈希的是**同一份**，
-//! 代码里不写死优化级别，否则"缓存键描述了它、实际编译却没用它"。
-//!
-//! 样本由算子层给出（`op::model`），实参顺序与输出名由 `.k` 的签名给出（`op::sig`）：本模块
+//! 只有"能跑出数"才算 L2 证据（README §11.2）：编译、运行、把 f32 结果位模式读回来交给
+//! [`crate::reference`] 对拍；编译参数由调用方传入档案 `[compile].flags`，与缓存指纹哈希的
+//! 是同一份，代码里不写死优化级别。样本由 `op::model` 给出、实参顺序由 `op::sig` 给出：本模块
 //! 只按名字与类型把缓冲渲染成 C 数组，不认识任何算子。
 
 use diagnostic::{Code, Error};
@@ -15,6 +11,7 @@ use op::sig::{CType, Signature};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// 一次执行的产物。
 #[derive(Debug, Clone, PartialEq)]
@@ -27,10 +24,7 @@ pub struct Outcome {
     pub stderr: String,
 }
 
-/// 计时样本：每个样本是一次内核调用的墙钟耗时（纳秒）。
-///
-/// 用 `CLOCK_MONOTONIC` 而不是 `clock()`：后者是 CPU 时间，跨核迁移、睡眠与频率变化下
-/// 都不是墙钟，也无法与 `bytes/ns` 的口径对齐（DESIGN §12.1）。
+/// 计时样本：每个样本是一次内核调用的墙钟耗时（纳秒），只在 Rust 侧算 `min`/`p50`（README §12.1）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Timing {
     /// 全部样本（纳秒，按执行顺序；warmup 已排除）。
@@ -47,11 +41,10 @@ impl Timing {
     /// 中位数（偶数个样本取中间两个的平均值）：与 [`Self::min_ns`] 的差距即抖动幅度。
     #[must_use]
     pub fn p50_ns(&self) -> Option<f64> {
-        if self.samples_ns.is_empty() {
+        let sorted = self.sorted();
+        if sorted.is_empty() {
             return None;
         }
-        let mut sorted = self.samples_ns.clone();
-        sorted.sort_by(f64::total_cmp);
         let middle = sorted.len() / 2;
         Some(if sorted.len().is_multiple_of(2) {
             (sorted[middle - 1] + sorted[middle]) / 2.0
@@ -59,34 +52,84 @@ impl Timing {
             sorted[middle]
         })
     }
+
+    /// 95 分位（最近秩法）：尾部离群的上界；样本很少时它退化成最大值。达成率仍按 [`Self::p50_ns`]，
+    /// 这里只把离群幅度摊开，不做静默剔除——剔除了哪几样本应当可见、可复核。
+    #[must_use]
+    pub fn p95_ns(&self) -> Option<f64> {
+        let sorted = self.sorted();
+        if sorted.is_empty() {
+            return None;
+        }
+        let rank = ((0.95 * sorted.len() as f64).ceil() as usize).min(sorted.len());
+        Some(sorted[rank - 1])
+    }
+
+    /// 升序样本：空表返回空，分位方法各自判空。
+    fn sorted(&self) -> Vec<f64> {
+        let mut sorted = self.samples_ns.clone();
+        sorted.sort_by(f64::total_cmp);
+        sorted
+    }
 }
 
 /// 把样本与内核源码拼成一个可执行的 `main()`：warmup 若干次后逐次计时、打印输出位模式。
 ///
-/// 计量口径（DESIGN §12.1）：`CLOCK_MONOTONIC` 墙钟、warmup 不计入、每个样本是若干次内核调用
-/// （校准后自动定批量：大内核 1 次，亚微秒内核放大到能跨过时钟分辨率），C 侧按批量折算成单次
-/// 耗时，`min`/`p50` 在 Rust 侧算。缓冲按 [`Sample`] 的名字与类型声明：`output` 那个声明为可写
-/// 并清零，其余是运行时从 `volatile const` 初值拷入的普通数组（避免常量折叠）。实参列表与
-/// 输出名都由签名派生（`op::sig`），本函数不持有任何算子名或参数表。
+/// 计量口径见 README §12.1：墙钟取样、warmup 不计入，批量校准在 C 侧、`min`/`p50` 在 Rust 侧。
 ///
-/// # Errors
-///
-/// 签名没有可写输出、样本里没有输出缓冲、输出缓冲不是 f32，或签名与样本不一致时返回说明。
+/// # Errors：签名没有可写输出、样本缺输出缓冲、输出不是 f32，或签名与样本不一致。
 pub fn harness(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
     repeat: usize,
 ) -> diagnostic::Result<String> {
+    let (output, values) = output_of(signature, sample)?;
+    let kernel = signature.kernel();
+    let warmup = warmup_runs(repeat);
+    let args = signature.call_args(sample)?;
+    let mut text = prelude(kernel_source, &kernel, sample, repeat, warmup);
+    let (decls, init) = input_buffers(sample, output);
+    text.push_str(&decls);
+    text.push_str(&main(
+        output,
+        values.len(),
+        &kernel,
+        &args,
+        &init,
+        repeat,
+        warmup,
+    ));
+    Ok(text)
+}
+
+/// 可写输出与它的样本值：回读按 `float` 位模式解释，所以只认 `float *`；签名声明成别的类型时
+/// C 编译器只会报一句 `incompatible pointer type`，不带算子名与缓冲名，故在生成程序之前先说清。
+pub(crate) fn output_of<'a>(
+    signature: &'a Signature,
+    sample: &'a Sample,
+) -> diagnostic::Result<(&'a str, &'a [f32])> {
+    let output = output_name(signature)?;
+    let out = sample
+        .buffer(output)
+        .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有输出缓冲 `{output}`")))?;
+    let Values::F32(values) = &out.values else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("输出缓冲 `{output}` 必须是 f32"),
+        ));
+    };
+    Ok((output, values))
+}
+
+/// 可写输出名：装载期已校验，这里只能是实现漂移。
+fn output_name(signature: &Signature) -> diagnostic::Result<&str> {
     let output = signature.output().ok_or_else(|| {
         Error::new(
             Code::Internal,
             "内核签名没有可写输出缓冲（装载期已经校验过，这里只能是实现漂移）",
         )
     })?;
-    // 回读只认 `float`：输出按 `float` 的位模式打印，`y` 也声明成 `float[]`。若 `.k` 把可写
-    // 指针声明成别的类型，C 编译器只会报一句 `incompatible pointer type`，不带算子名与缓冲名；
-    // 所以在这里先说清楚是"哪一份签名的哪一个形参"不满足回读口径。
     if signature.output_type() != Some(CType::F32) {
         return Err(Error::new(
             Code::Unsupported,
@@ -97,20 +140,17 @@ pub fn harness(
             ),
         ));
     }
-    let out = sample
-        .buffer(output)
-        .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有输出缓冲 `{output}`")))?;
-    let Values::F32(out_values) = &out.values else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("输出缓冲 `{output}` 必须是 f32"),
-        ));
-    };
-    let call_args = signature.call_args(sample)?;
-    let kernel = signature.kernel();
-    let len = out_values.len();
-    let warmup = warmup_runs(repeat);
+    Ok(output)
+}
 
+/// 文件头：POSIX 声明、身份注释、内核源码与计时运行时。
+fn prelude(
+    kernel_source: &str,
+    kernel: &str,
+    sample: &Sample,
+    repeat: usize,
+    warmup: usize,
+) -> String {
     let mut text = String::new();
     // `clock_gettime` 在 `-std=c99` 下需要先声明 POSIX 版本，且必须在任何系统头之前。
     text.push_str("#define _POSIX_C_SOURCE 200809L\n");
@@ -122,8 +162,12 @@ pub fn harness(
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(
-        "\n#include <stdio.h>\n#include <time.h>\n\n\
+    text.push_str(RUNTIME);
+    text
+}
+
+/// 计时运行时：`CLOCK_MONOTONIC` 取样、编译器屏障、`f32` 位模式回读。
+const RUNTIME: &str = "\n#include <stdio.h>\n#include <time.h>\n\n\
 static double cutile_now_ns(void) {\n\
     struct timespec ts;\n\
     clock_gettime(CLOCK_MONOTONIC, &ts);\n\
@@ -135,11 +179,12 @@ static double cutile_now_ns(void) {\n\
 #define CUTILE_BARRIER() __asm__ __volatile__(\"\" ::: \"memory\")\n\
 #else\n\
 #define CUTILE_BARRIER() ((void)0)\n\
-#endif\n\n",
-    );
+#endif\n\n";
 
-    // 输入先落在 `volatile const` 的初值数组里，再在运行时拷进真正的缓冲：
-    // 这样 `-O3` 无法把常量输入折进内核（32x1 会被折成空循环），每次调用的代价才是真的。
+/// 输入缓冲的两段文本：声明，以及"初值 → 缓冲"的拷贝循环。初值先落在 `volatile const` 里再拷入，
+/// 故 `-O3` 折不进内核（32x1 会被折成空循环）。
+fn input_buffers(sample: &Sample, output: &str) -> (String, String) {
+    let mut decls = String::new();
     let mut init = String::new();
     for buffer in &sample.buffers {
         if buffer.name == output {
@@ -147,7 +192,7 @@ static double cutile_now_ns(void) {\n\
         }
         let ctype = c_type(&buffer.values);
         let size = buffer.values.len();
-        text.push_str(&format!(
+        decls.push_str(&format!(
             "static volatile const {ctype} cutile_init_{name}[{size}] = {{{literal}}};\n\
              static {ctype} {name}[{size}];\n",
             name = buffer.name,
@@ -159,16 +204,29 @@ static double cutile_now_ns(void) {\n\
             name = buffer.name
         ));
     }
+    (decls, init)
+}
 
-    // `CUTILE_BARRIER()` + `volatile` 出口读一起让每次调用都必须真的发生：
-    // 只有屏障挡得住"提到循环外"，只有出口读挡得住"只保留最后一次的写"（两者缺一，
-    // 32x1 都会退化成空循环或一次调用）。
+/// 主函数：warmup、校准批量、逐样本计时，最后按位模式回读输出。`CUTILE_BARRIER()` 挡"提到循环外"，
+/// `volatile` 出口读挡"只留最后一次写"：缺一，32x1 就退化成空循环。
+fn main(
+    output: &str,
+    len: usize,
+    kernel: &str,
+    call_args: &str,
+    init: &str,
+    repeat: usize,
+    warmup: usize,
+) -> String {
+    // 出口保活整个输出数组：只读 `y[0]` 时其余写入可能被优化掉，故逐元素写进 `volatile` sink。
     let sink = if len > 0 {
-        format!("        cutile_sink = {output}[0];\n")
+        format!(
+            "        for (int cutile_s = 0; cutile_s < {len}; ++cutile_s) {{ cutile_sink = {output}[cutile_s]; }}\n"
+        )
     } else {
         String::new()
     };
-    text.push_str(&format!(
+    format!(
         "int main(void) {{
     float {output}[{len}];
     volatile float cutile_sink = 0.0f;
@@ -178,10 +236,16 @@ static double cutile_now_ns(void) {\n\
         {kernel}({call_args});
         CUTILE_BARRIER();
 {sink}    }}
-    /* 校准：一次调用决定批量，让亚微秒内核也能跨过时钟分辨率；校准本身不算样本 */
-    double cutile_c0 = cutile_now_ns();
-    {kernel}({call_args});
-    double cutile_calib = cutile_now_ns() - cutile_c0;
+    /* 校准：16 次调用取最短单次，定批量，让亚微秒内核也能跨过时钟分辨率；校准本身不算样本 */
+    double cutile_calib = 1e18;
+    for (int cutile_c = 0; cutile_c < 16; ++cutile_c) {{
+        double cutile_c0 = cutile_now_ns();
+        {kernel}({call_args});
+        CUTILE_BARRIER();
+        double cutile_c1 = cutile_now_ns();
+        double cutile_cd = cutile_c1 - cutile_c0;
+        if (cutile_cd < cutile_calib) {{ cutile_calib = cutile_cd; }}
+    }}
     int cutile_batch = (int)(1e6 / (cutile_calib > 1.0 ? cutile_calib : 1.0));
     if (cutile_batch < 1) {{ cutile_batch = 1; }}
     if (cutile_batch > 1024) {{ cutile_batch = 1024; }}
@@ -203,158 +267,15 @@ static double cutile_now_ns(void) {\n\
     return 0;
 }}
 "
-    ));
-    Ok(text)
+    )
 }
-
 /// warmup 次数：至少一次，约为测量次数的 1/10。
 fn warmup_runs(repeat: usize) -> usize {
     (repeat / 10).max(1)
 }
 
-/// 拼出可在 GPU 上真实执行的 CUDA 程序：`.k` 内核转 `__device__`，单线程 `__global__`
-/// 包装在 `<<<1,1>>>` 里调用它，host `main` 负责 `cudaMalloc`/`cudaMemcpy`/回读。
-///
-/// 这是**语义对拍门**：数据落在设备内存、内核在 GPU 上执行、结果真实回读，验证跨设备数值一致；
-/// 单线程串行不做并行 tile，并行性能由独立的 roofline 门承载，报告里如实标注，不拿它冒充性能门。
-///
-/// # Errors
-///
-/// 缺输出缓冲、输出不是 f32、样本缺缓冲，或签名与样本不一致时返回说明。
-pub fn cuda_harness(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-) -> diagnostic::Result<String> {
-    let output = signature.output().ok_or_else(|| {
-        Error::new(
-            Code::Internal,
-            "内核签名没有可写输出缓冲（装载期已校验，这里只能是漂移）",
-        )
-    })?;
-    if signature.output_type() != Some(CType::F32) {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "算子 `{}` 的可写输出 `{output}` 不是 `float *`，CUDA 回读只认 f32",
-                signature.op()
-            ),
-        ));
-    }
-    let out = sample
-        .buffer(output)
-        .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有输出缓冲 `{output}`")))?;
-    let Values::F32(out_values) = &out.values else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("输出缓冲 `{output}` 必须是 f32"),
-        ));
-    };
-    let params = signature.params();
-    let kernel = signature.kernel();
-    let len = out_values.len();
-
-    // 形参声明（__global__ 与 __device__ 同签名）。
-    let decl = |param: &op::sig::Param| match param.ctype {
-        CType::F32 => format!("float *{}", param.name),
-        CType::U8 => format!("unsigned char *{}", param.name),
-        CType::Int => format!("int {}", param.name),
-    };
-    let param_decl = params.iter().map(&decl).collect::<Vec<_>>().join(", ");
-
-    // launch 实参：缓冲传设备指针 d_<name>，标量取样本值。
-    let mut launch_args = Vec::with_capacity(params.len());
-    for param in params {
-        if param.ctype.is_buffer() {
-            launch_args.push(format!("d_{}", param.name));
-        } else {
-            let value = sample.scalar(&param.name).ok_or_else(|| {
-                Error::new(
-                    Code::Internal,
-                    format!("标量实参 `{}` 没有取值", param.name),
-                )
-            })?;
-            launch_args.push(value.to_string());
-        }
-    }
-    let launch_args = launch_args.join(", ");
-
-    let mut text = String::new();
-    text.push_str("#include <cuda_runtime.h>\n#include <cstdio>\n");
-    text.push_str(&format!("/* cutile cuda harness | kernel={kernel} m={} n={} | 单线程设备执行（语义门，非并行性能门） */\n", sample.m, sample.n));
-    // .k 内核整体转 __device__：入口定义只有一处。
-    let device_src = kernel_source.replace(
-        &format!("void {kernel}("),
-        &format!("__device__ void {kernel}("),
-    );
-    text.push_str(&device_src);
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(&format!(
-        "\n__global__ void cutile_launch({param_decl}) {{\n    {kernel}({launch_args});\n}}\n\n"
-    ));
-
-    // host 侧：输入静态初始化 + 设备分配/拷贝，输出仅分配。
-    text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_buffers(sample, params)?);
-    text.push_str(&format!(
-        "    cutile_launch<<<1, 1>>>({launch_args});\n\
-         \x20   cudaError_t error = cudaDeviceSynchronize();\n\
-         \x20   if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
-    ));
-    text.push_str(&format!(
-        "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n\
-         \x20   for (int i = 0; i < {len}; ++i) {{\n\
-         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
-         \x20       printf(\"%u\\n\", v.u);\n\
-         \x20   }}\n"
-    ));
-    for param in params {
-        if param.ctype.is_buffer() {
-            text.push_str(&format!("    cudaFree(d_{});\n", param.name));
-        }
-    }
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
-}
-
-/// host 侧的缓冲声明、设备分配，以及只读缓冲的入向拷贝。
-fn cuda_host_buffers(sample: &Sample, params: &[op::sig::Param]) -> diagnostic::Result<String> {
-    let mut text = String::new();
-    for param in params {
-        if !param.ctype.is_buffer() {
-            continue;
-        }
-        let Some(buffer) = sample.buffer(&param.name) else {
-            return Err(Error::new(Code::Internal, "签名与样本已对齐（漂移）"));
-        };
-        let ctype = c_type(&buffer.values);
-        let size = buffer.values.len();
-        if param.mutable {
-            text.push_str(&format!("    {ctype} h_{}[{size}];\n", param.name));
-            text.push_str(&format!(
-                "    {ctype} *d_{name} = 0;\n    cudaMalloc((void **)&d_{name}, {size} * sizeof({ctype}));\n",
-                name = param.name
-            ));
-        } else {
-            text.push_str(&format!(
-                "    static const {ctype} h_{name}[{size}] = {{{literal}}};\n",
-                name = param.name,
-                literal = c_literal(&buffer.values)
-            ));
-            text.push_str(&format!(
-                "    {ctype} *d_{name} = 0;\n    cudaMalloc((void **)&d_{name}, {size} * sizeof({ctype}));\n",
-                name = param.name
-            ));
-            text.push_str(&format!(
-                "    cudaMemcpy(d_{name}, h_{name}, {size} * sizeof({ctype}), cudaMemcpyHostToDevice);\n",
-                name = param.name
-            ));
-        }
-    }
-    Ok(text)
-}
+/// CUDA 算子封装生成器：实现见 `crate::cuda`（私有模块，只在文档里指名）；保留 `backend::cuda_harness` 这条既有调用路径。
+pub use crate::cuda::cuda_harness;
 
 /// 缓冲的 C 元素类型。
 pub(crate) fn c_type(values: &Values) -> &'static str {
@@ -380,11 +301,8 @@ pub(crate) fn c_literal(values: &Values) -> String {
     }
 }
 
-/// 一条被真正解析出来的工具链：命令名、实测版本与它在 `--version` 里自报的那一行。
-///
-/// 为什么必须实测：档案里的 `[meta].tool_ver` 是人写的登记值（`cpu.toml` 曾写 `clang-17`，
-/// 而本机是 Apple clang 21），代码生成的差异却由**真正调用的那个编译器**决定。产物身份与
-/// 报告都要用实测值，否则升一次编译器仍会命中同一份产物（DESIGN §10.3、§11.2）。
+/// 一条被真正解析出来的工具链。档案里的 `[meta].tool_ver` 是人写的登记值，代码生成的差异却由
+/// **真正调用的那个编译器**决定：产物身份与报告一律用实测值。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toolchain {
     /// 命令名（`cc` / `clang` / `gcc`）。
@@ -396,10 +314,7 @@ pub struct Toolchain {
 }
 
 impl Toolchain {
-    /// 身份：`命令@实测版本`，进产物身份与报告。
-    ///
-    /// 解析不出版本时用 `-`：宁可让两份来历不明的产物共用一条身份，也不假装知道版本；
-    /// 报告里同时打印 [`Self::banner`]，人一眼能看出是哪种情况。
+    /// 身份：`命令@实测版本`，进产物身份与报告；解析不出版本时用 `-`，不假装知道版本。
     #[must_use]
     pub fn id(&self) -> String {
         format!(
@@ -409,10 +324,7 @@ impl Toolchain {
         )
     }
 
-    /// 档案登记的版本是否与实测相容：只比**主版本号**，族名不同不算一致。
-    ///
-    /// 登记值是人写的证据出处（`clang-17`、`13.3`），实测是这台机器上的事实，两者**不必**
-    /// 相等——证据可以在别的机器上取得。所以这条判定不改等级，只让 `verify` 把差异说出来。
+    /// 档案登记的版本是否与实测相容：只比**主版本号**（`clang-17` 的族名不算差异），不改判定等级。
     #[must_use]
     pub fn agrees_with(&self, declared: &str) -> bool {
         let Some(actual) = self.version.as_deref() else {
@@ -435,12 +347,8 @@ impl fmt::Display for Toolchain {
     }
 }
 
-/// 从 `--version` 的输出里取第一段版本号。
-///
-/// 各家写法不同（`Apple clang version 21.0.0 (clang-2100.4.1.1)`、
-/// `gcc (Ubuntu 13.2.0-23ubuntu4) 13.2.0`、`Cuda compilation tools, release 13.3, V13.3.44`），
-/// 所以先看含 `version` / `release` 的行，再退回任意行；每行取**第一段**“数字与点”，
-/// 且必须带点——`-O2`、`sm_100` 里的孤立数字不是版本号。
+/// 从 `--version` 的输出里取第一段版本号：先看含 `version` / `release` 的行，再退回任意行；每行
+/// 取第一段带点的"数字与点"——`-O2`、`sm_100` 里的孤立数字不是版本号。
 pub fn parse_version(text: &str) -> Option<String> {
     let lines: Vec<&str> = text
         .lines()
@@ -451,43 +359,43 @@ pub fn parse_version(text: &str) -> Option<String> {
         let lower = line.to_ascii_lowercase();
         lower.contains("version") || lower.contains("release")
     });
-    keyed.chain(lines.iter().copied()).find_map(version_in)
+    keyed.chain(lines.iter().copied()).find_map(|line| {
+        line.split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+            .map(|token| token.trim_end_matches('.'))
+            .find(|token| token.contains('.'))
+            .map(str::to_string)
+    })
 }
 
-/// 一行里的第一段版本号（数字与点，去掉尾部孤立的点）。
-fn version_in(line: &str) -> Option<String> {
-    let chars: Vec<char> = line.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        if !chars[index].is_ascii_digit() {
-            index += 1;
-            continue;
-        }
-        let start = index;
-        while index < chars.len() && (chars[index].is_ascii_digit() || chars[index] == '.') {
-            index += 1;
-        }
-        let mut token: String = chars[start..index].iter().collect();
-        while token.ends_with('.') {
-            token.pop();
-        }
-        if token.contains('.') {
-            return Some(token);
-        }
-    }
-    None
-}
+/// 进程内缓存的探测结果：同一台机器的工具链不会变，反复 `--version` 起子进程是纯浪费。
+static C_TOOLCHAIN: OnceLock<Option<Toolchain>> = OnceLock::new();
+static NVCC_TOOLCHAIN: OnceLock<Option<Toolchain>> = OnceLock::new();
 
-/// 探测一个可用的 C 编译器（`cc` → `clang` → `gcc`），并读出它自报的版本。
+/// 探测可用的 C 编译器（`cc` → `clang` → `gcc`）并读出它自报的版本；结果当作进程级快照缓存，
+/// 进程启动后新装的编译器要重启才看得见。
 pub fn detect() -> Option<Toolchain> {
-    ["cc", "clang", "gcc"].into_iter().find_map(probe)
+    C_TOOLCHAIN
+        .get_or_init(|| ["cc", "clang", "gcc"].into_iter().find_map(probe))
+        .clone()
 }
 
-/// 探测 nvcc（CUDA 编译器）：`nvcc --version` 只打印版本、不调用宿主 cl，故可独立成功；
-/// 真正设备编译时的宿主编译器（Windows 上的 cl.exe）由调用方用 `-ccbin` 另行指定。
+/// 探测 nvcc（CUDA 编译器）：`nvcc --version` 只打印版本、不调用宿主 cl，故可独立成功；宿主编译器由
+/// 调用方用 `-ccbin` 另行指定。
 #[must_use]
 pub fn detect_nvcc() -> Option<Toolchain> {
-    probe("nvcc")
+    NVCC_TOOLCHAIN.get_or_init(|| probe("nvcc")).clone()
+}
+
+/// 测试门控：没有主机 C 编译器时，编译/执行类用例在 CI 上不该伪装成通过；返回 `true` 表示跳过，
+/// 原因写进 stderr（标准测试框架没有正式 skip 信号，这里只让"空转通过"在输出里可见）。
+#[cfg(test)]
+pub(crate) fn skip_without_host_compiler() -> bool {
+    if detect().is_none() {
+        eprintln!("skip: 未探测到主机 C 编译器（cc/clang/gcc），本用例未运行");
+        true
+    } else {
+        false
+    }
 }
 
 /// 探测指定命令：跑一次 `--version`，成功才返回（版本解析不出也算可用）。
@@ -514,14 +422,10 @@ pub fn probe(command: &str) -> Option<Toolchain> {
     })
 }
 
-/// 只编译：把源文本写到 `dir/kernel.c` 并编成 `dir/kernel`，返回可执行文件路径。
+/// 只编译：把源文本写到 `dir/kernel.c` 并编成 `dir/kernel`，返回可执行文件路径。与 [`run`] 分开
+/// 是因为编译产物可以落进缓存（`cutile::cache`）：命中时整步跳过，没有编译器也能跑已验证产物。
 ///
-/// 与 [`run`] 分开是因为编译产物可以落进缓存（`cutile::cache`）：命中时整步跳过，
-/// 没有编译器也要能跑一次已经验证过的产物。
-///
-/// # Errors
-///
-/// 目录不可建、源文件不可写、编译器不存在，或编译失败（诊断带命令、完整输出与源文件路径）。
+/// # Errors：目录不可建、源文件不可写、编译器不存在，或编译失败（诊断带命令、完整输出与路径）。
 pub fn compile(
     tool: &str,
     flags: &[String],
@@ -560,9 +464,7 @@ pub fn compile(
 
 /// 只执行：读 stdout 的位模式与 stderr 的计时样本。
 ///
-/// # Errors
-///
-/// 可执行文件不可运行（权限、架构不符）或退出码非零时返回说明，`stderr` 原样带进诊断。
+/// # Errors：可执行文件不可运行（权限、架构不符）或退出码非零，`stderr` 原样带进诊断。
 pub fn run(exe: &Path) -> diagnostic::Result<Outcome> {
     let run = Command::new(exe)
         .output()
@@ -628,28 +530,59 @@ mod tests {
     }
 
     fn sample() -> Sample {
+        let buffers = [
+            ("x", Values::F32(vec![1.0, 1.0, 1.0, 1.0])),
+            ("w", Values::U8(vec![0x98, 0x76])),
+            ("scales", Values::F32(vec![0.5, 0.5])),
+            ("y", Values::F32(vec![0.0, 0.0])),
+        ];
         Sample {
             m: 4,
             n: 2,
             scalars: vec![("M", 4), ("N", 2), ("gsz", 4)],
-            buffers: vec![
-                Buffer {
-                    name: "x",
-                    values: Values::F32(vec![1.0, 1.0, 1.0, 1.0]),
-                },
-                Buffer {
-                    name: "w",
-                    values: Values::U8(vec![0x98, 0x76]),
-                },
-                Buffer {
-                    name: "scales",
-                    values: Values::F32(vec![0.5, 0.5]),
-                },
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0, 0.0]),
-                },
-            ],
+            buffers: buffers
+                .into_iter()
+                .map(|(name, values)| Buffer { name, values })
+                .collect(),
+        }
+    }
+
+    /// 生成 C/CUDA 封装文本；`CUTILE_CAPTURE_GOLDEN` 显式打开时才把副本写到 `/tmp/cutile-golden`。
+    #[test]
+    fn golden_capture() {
+        let capture = std::env::var("CUTILE_CAPTURE_GOLDEN").is_ok();
+        let dir = std::path::PathBuf::from("/tmp/cutile-golden");
+        for repeat in [1usize, 3, 50] {
+            let text = harness(
+                "void cutile_x_kernel(void) {}\n",
+                &signature(),
+                &sample(),
+                repeat,
+            )
+            .expect("可生成");
+            assert!(!text.is_empty(), "封装文本不能为空");
+            assert!(text.contains("cutile_x_kernel("), "封装里要调用内核");
+            if capture {
+                std::fs::create_dir_all(&dir).expect("目录");
+                std::fs::write(dir.join(format!("c_harness_{repeat}.txt")), text).expect("写");
+            }
+        }
+        let kernel = "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
+             float *y, int M, int N, int gsz) {\n}\n";
+        let text = cuda_harness(kernel, &signature(), &sample()).expect("可生成");
+        assert!(!text.is_empty(), "CUDA 封装文本不能为空");
+        if capture {
+            std::fs::create_dir_all(&dir).expect("目录");
+            std::fs::write(dir.join("cuda_harness.txt"), text).expect("写");
+        }
+        let text = harness(kernel, &signature(), &sample(), 3).expect("可生成");
+        assert!(
+            text.contains("cutile_init_"),
+            "输入初值要内联进封装，否则常量输入会被折叠"
+        );
+        if capture {
+            std::fs::create_dir_all(&dir).expect("目录");
+            std::fs::write(dir.join("c_harness_kernel.txt"), text).expect("写");
         }
     }
 
@@ -669,7 +602,10 @@ mod tests {
         assert!(source.contains("#define CUTILE_BARRIER()"));
         assert!(source.contains("CUTILE_BARRIER();"));
         assert!(source.contains("volatile float cutile_sink"));
-        assert!(source.contains("cutile_sink = y[0];"));
+        assert!(
+            source.contains("cutile_sink = y[cutile_s];"),
+            "整个输出都要保活进 sink"
+        );
         assert!(source.contains("float y[2]"));
         assert!(
             !source.contains("static volatile const float cutile_init_y"),
@@ -714,8 +650,10 @@ mod tests {
         };
         assert_eq!(timing.min_ns(), Some(10.0));
         assert_eq!(timing.p50_ns(), Some(25.0));
+        assert_eq!(timing.p95_ns(), Some(40.0));
         assert_eq!(Timing::default().min_ns(), None);
         assert_eq!(Timing::default().p50_ns(), None);
+        assert_eq!(Timing::default().p95_ns(), None);
     }
 
     #[test]
@@ -737,8 +675,7 @@ mod tests {
         assert!(error.to_string().contains("必须是 f32"), "{error}");
     }
 
-    /// 回读只认 `float`：`.k` 把可写指针写成字节缓冲时，要在拼 C 之前报，并带算子名与缓冲名
-    /// （否则只会由 C 编译器吐一句 `incompatible pointer type`，没有上下文）。
+    /// 回读只认 `float`：可写指针不是 `float *` 时要在拼 C 之前报，否则只有编译器的一句 `incompatible pointer type`。
     #[test]
     fn a_non_float_output_is_rejected_before_any_c_is_generated() {
         let signature = Signature::parse(

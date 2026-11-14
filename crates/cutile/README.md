@@ -1,8 +1,10 @@
 # cutile DSL —— 设备无关的替换式 kernel DSL
 
-> 版本 v1.0 · 2026-11-11 · 状态：待评审（替代 v0.3 的 `tess` 草案）
-> 落地位置：`crates/cutile`；本文只定义 cutile，不涉及运行时之外的训练/服务层
-> 参照实现与行数口径见附录 A，所有数字可在本机复现；`tess` 仅作为历史代号保留
+> 版本 v1.1 · 2026-11-14 · 状态：P0 纵切面已落地，P1–P4 仍是 §17 的目标（替代 v0.3 的 `tess` 草案）
+> 落地位置：机制在 `crates/cutile`，三层数据在 `crates/op`、`crates/prof`、`crates/prim`；
+> 本文只定义 cutile，不涉及运行时之外的训练/服务层
+> 本文既是本 crate 的 README，也是整条流水线的设计契约：§0 给结论与现状，§3–§12 给机制，
+> §13–§16 给预算与判据，附录给行数口径与复现命令；`tess` 仅作为历史代号保留
 
 ---
 
@@ -13,10 +15,38 @@
 三条边界先说清，后面所有取舍都由它们推导出来：
 
 1. **不做通用编译器。** 没有中间表示，没有 pass 流水线，没有自动布局推导。只有一条"展开 → 协商 → 替换 → 发出 → 缓存"的 lowering，每一步都能打印出来给人看。
-2. **不做通用算子。** 算子闭集 12 个、原语闭集 16 个、布局闭集 4 个、调度闭集 4 个、设备档案 ≤ 8 份。申请闭集之外的组合，显式报错并给出最近可行解，**绝不静默变慢**。
+2. **不做通用算子。** 算子闭集今天 22 条声明（§13.2 的 12 是下一阶段的预算口径，见 §0.1）、原语闭集 16 个、布局闭集 4 个、调度闭集 4 个、设备档案 ≤ 8 份。申请闭集之外的组合，显式报错并给出最近可行解，**绝不静默变慢**。
 3. **设备无关是硬约束，不是卖点。** 同一份算子声明与同一份模板，必须能在 NVIDIA / AMD / Intel / Apple / 昇腾 / MUSA / CPU / 可移植 GPU 上产出可运行代码；任何"只在某一家的硬件上成立"的设计，直接出局。
 
 这三条对应三个已知的失败模式：CubeCL 用通用 IR 换覆盖面，代价是 30 万行；CuTile 用绑定单一硬件换表达力，代价是换不了设备；TileLang 用 pass 推导换易用性，代价是布局不可控。cutile 选的是第四条路：**声明足够窄，窄到可以穷举；穷举足够全，全到覆盖 LLM 的算子面。**
+
+### 0.1 现在能跑什么（2026-11-14 实测）
+
+设计目标是 §13 的 9,520 行 / 12 算子 / 8 设备。**目标与现状在本文分开写**：§13–§16 的预算是目标，
+下表是这条流水线今天真正跑起来的部分——读文档时先看这张表，就不会把预算当成已完成的事实。
+
+| 维度 | 本文目标 | 当前实测 | 复核命令 |
+|---|---|---|---|
+| 算子声明 | 12 | **22** | `ls crates/op/ops/*.toml \| wc -l` |
+| 设备档案 | 8 | **5**：nvidia / intel / metal / ascend / cpu | `ls crates/prof/devices/*.toml` |
+| 原语闭集 | 16 | 16 | `prof::atom::Prim::ALL` |
+| 片段 | 16 × ≤8 | 5 厂商 × 9 段片段 + 见证 | `ls crates/prim/<vendor>/` |
+| 布局 / 调度 | 4 / 4 | 4 / 4 | `op::layout::LayoutSpec` / `op::sch::Schedule` |
+| 机制代码 | 9,520（预算） | 9,403 行（含内联测试；剔除后 6,455） | `wc -l crates/cutile/src/*.rs` |
+| 用例 | — | 149 单测 + 2 doctest | `cargo test -p cutile --all-features` |
+
+"P0 已落地"指 §16 的五项判据都已有可执行答案；四条命令就是它的全部入口：
+
+```bash
+cargo run --bin cutile -- doctor --op gemv_i4 --device cpu   # 整条链逐行打印
+cargo run --bin cutile -- verify --op gemv_i4 --devices cpu  # 见证 + 对拍 + 协商首档
+cargo run --bin cutile -- bench  --op gemv_i4 --repeat 5     # 达成率（未测量时明说，不省略）
+cargo run --bin cutile -- cache gc --limit 1073741824        # 容量回收
+```
+
+CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err 0.000e0`；GPU 档案的片段与见证
+齐全，但本机没有那些设备时 `verify` 以退出码 3 失败而**不是跳过**——这条区分是 §11.2 的判据，
+也是"证据分级"与"有档就算有设备"两种做法最容易被混淆的地方。
 
 ---
 
@@ -52,8 +82,8 @@
 
 | 对手 | 强在哪 | cutile 的取舍 |
 |---|---|---|
-| CuTile Rust | 借用检查器级别的数据竞争证明；Tile IR 里有 NVIDIA 自己的调度器 | cutile 计划用宿主侧 `partition()` 继承 Rust 借用检查（DESIGN §4.4，**P0 尚未实现**），但**不接管设备调度**，交给各家原生编译器 |
-| TileLang | 算子生态与 Python 上手速度；tile 级 API 覆盖广 | cutile 只覆盖 12 个算子，超出即报错；不提供 Python 前端 |
+| CuTile Rust | 借用检查器级别的数据竞争证明；Tile IR 里有 NVIDIA 自己的调度器 | cutile 计划用宿主侧 `partition()` 继承 Rust 借用检查（§4.4，**P0 尚未实现**），但**不接管设备调度**，交给各家原生编译器 |
+| TileLang | 算子生态与 Python 上手速度；tile 级 API 覆盖广 | cutile 只覆盖闭集里的算子（今天 22 条），超出即报错；不提供 Python 前端 |
 | CubeCL | IR 级优化、后端成熟度、社区 | cutile 放弃 IR，因此**拿不到跨算子融合**，只做算子内融合 |
 | CuTe DSL | 布局代数的表达完备性 | cutile 用 4 构造子的闭集换可判定性，非常规布局在闭集外直接拒绝 |
 | 旧工程 `llm.u` | 真机覆盖面与性能台账的严谨度 | cutile 继承它的台账方法（证据分级），但用自动生成的见证替代人填 |
@@ -102,63 +132,73 @@
 ### 3.1 目录与模块
 
 ```
-crates/op/                      # 声明层：纯数据，不含机制
+crates/op/                      # 声明层：纯数据 + 解析，不含机制
 ├── Cargo.toml
 ├── README.md                   # 两个文件各写什么、如何新增算子
-├── ops/                        # 12 个算子（闭集）
+├── build.rs                    # ops/*.toml → $OUT_DIR/declared.rs（运行期无 TOML）
+├── ops/                        # 22 份声明（.toml 声明 + .k 模板成对出现）
 │   ├── attn_decode.toml        #   { skeleton, axes, needs, variants, layouts }
 │   └── attn_decode.k           #   模板文本（C 风格 + {{插值}} + @原语）
-└── src/lib.rs                  # BUILTIN 内嵌 / load 目录装载 / dir 目录位置
+└── src/
+    ├── lib.rs                  # REGISTRY / builtin / model；声明表来自构建期生成物
+    ├── decl.rs                 # OpDecl：轴展开、变体链、调用点参数校验
+    ├── tpl.rs                  # 模板词法：文本 / {{槽位}} / @原语(...)
+    ├── sig.rs                  # 能力签名的声明侧（与档案层同一张属性键表）
+    ├── layout.rs / sch.rs      # 布局与调度的闭集（4 + 4）
+    ├── model.rs                # 一条求和表达式 + 确定性样本 + 标量参考
+    ├── einsum/                 # flops / bytes 由表达式与操作数位宽推出
+    └── <op>.rs                 # 每个算子的语义（代价、样本、参考），与 ops/<op>.k 一一对应
 
 crates/prof/                    # 档案层：纯数据，不含机制
 ├── Cargo.toml
 ├── README.md                   # 一份档案写什么、如何新增设备
-├── devices/                    # 8 份档案
-│   ├── cpu.toml                #   [meta] / [fingerprint] / [space] / [[provides]]
-│   └── nvidia.toml
-└── src/                        # BUILTIN / load / dir + prof.rs（schema）+ atom.rs（词汇表）
+├── build.rs                    # devices/*.toml → $OUT_DIR/embedded.rs
+├── devices/                    # 5 份档案（目标 8）：ascend / cpu / intel / metal / nvidia
+└── src/
+    ├── lib.rs                  # BUILTIN 内嵌档案与索引
+    ├── prof.rs                 # schema：指纹、存储、能力、证据等级
+    └── atom.rs                 # 词汇表：原语 / 存储 / 属性键 / 证据等级
 
 crates/prim/                    # 片段层：纯数据，不含机制
 ├── Cargo.toml
 ├── README.md                   # 片段与见证各写什么、如何新增设备
-├── cpu/                        # 16 原语 × ≤8 设备，文件名即原语名
+├── build.rs                    # <vendor>/<prim>.<ext> → $OUT_DIR/tables.rs
+├── cpu/                        # 9 段片段 + witness.c，文件名即原语名
 │   ├── dot.c
 │   ├── reduce.c
 │   └── witness.c               # 见证源码（L2 证据），装载片段时跳过
-├── nvidia/                     # cu：同样 9 段 P0 片段 + witness.cu
-├── intel/                      # cl
-├── ascend/                     # cpp
-└── src/lib.rs                  # BUILTIN 内嵌 / builtin 查表 / load 目录装载 / dir 与 layer_root
-
-crates/cutile/                  # 机制：协商、拼接、emit、编译执行
-├── DESIGN.md
-├── Cargo.toml
+├── nvidia/  intel/  metal/  ascend/   # 同构：cu / cl / metal / cpp
 └── src/
-    ├── lib.rs
-    ├── backend.rs    # 编译与执行：`cc` 子进程 + 结果解码（无 unsafe）
-    ├── builtin.rs    # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
-    ├── cap.rs        # 协商、降级链、诊断构造
-    ├── space.rs      # GM/FAST/REG 三级存储与寻址
-    ├── substitute.rs # ④ substitute：模板槽位与 `@原语` 替换
-    ├── emit.rs       # ⑤ emit：加头、加前导、拼正文
-    ├── cache.rs      # 指纹、锁、原子落盘、GC
-    ├── probe.rs      # 设备探测（可注入假指纹）
-    ├── plan.rs       # tile 取值 + roofline 估值
-    ├── build.rs      # ⑤ emit + 缓存：指纹 → 查缓存 → 取锁 → 拼接 → 落盘
-    └── reference.rs  # 对拍口径：相对误差 + 按数据类型的阈值
+    ├── lib.rs                  # BUILTIN / WITNESS 查表、Fragment::parse（签名声明）
+    ├── device.rs               # 设备镜像：这次构建带上的源码与可选设备侧二进制
+    └── tables.rs               # 构建期生成物的 include! 落点（只有数据）
 
-crates/cutile/src/                   # 审计：doctor / verify / bench 的命令策略与结构化报告
+crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit、编译执行、审计
 ├── Cargo.toml
-├── README.md      # 这里有什么、不有什么
+├── README.md                   # 本文
 └── src/
-    ├── lib.rs     # doctor / verify / bench：报告字段全是数据，排版在驱动方
-    └── witness.rs # 见证执行器：每一条已声明的见证在本机（C / Metal 前端）执行并对拍
+    ├── lib.rs                  # 公开面、re-export、SCHEMA_VER
+    ├── builtin.rs              # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
+    ├── cap.rs                  # ② negotiate：需求 ∩ 供给、降级链、诊断构造
+    ├── space.rs                # GM/FAST/REG 三级存储与寻址
+    ├── ast.rs                  # 模板渲染的可见中间产物（ADR 0017 的 L1）
+    ├── substitute.rs           # ④ 槽位与 `@原语` 替换
+    ├── emit.rs                 # ⑤ 加头、加前导、拼正文；片段行数判据
+    ├── build.rs                # ⑤ 指纹 → 查缓存 → 取锁 → 拼接 → 落盘
+    ├── cache.rs / gc.rs        # 缓存机制（指纹、锁、原子落盘）与回收策略
+    ├── probe.rs / plan.rs      # 设备探测、tile 取值与 roofline
+    ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
+    ├── backend.rs / device.rs  # 编译与执行：`cc` / cu / metal 子进程 + 结果解码（无 unsafe）
+    ├── gate.rs / witness.rs    # 语言门与见证执行器
+    ├── pipeline.rs             # 四条命令共用的流水线（Run / Prepared / …）
+    └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
 ```
 
-内核不含命令策略：形状矩阵（`verify` 跑哪几个形状）、重复次数、工作目录命名、达成率口径
-都在 `crates/cutile/src`（包名 `cutile`）——它们**改变的是"怎么审"，不是"产物长什么样"**。
-内核只提供两件东西给审计：`cutile::build`（⑤ 的指纹、锁、拼接、落盘）与 `cutile::backend`
-（编译执行）。这也是 `cutile` 能与 `cutile` 分开的前提：证据采集不拥有任何机制。
+命令策略与机制同处 `crates/cutile`，但**分层不混**：`build` / `backend` / `cap` / `cache` / `emit`
+是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` / `gc` 是命令策略
+（决定"跑哪些形状、跑几次、工作目录怎么命名、达成率按什么口径算"），后者只经由 `pipeline`
+调用前者。这条接缝是可检验的：改"怎么审"不需要动任何一行生成逻辑，`pipeline.rs` 是唯一的
+共同入口——四条命令各写一遍流水线曾让同一台设备在两个命令里得出不同结论。
 
 闭集与解析不在本 crate：布局构造子、调度模板、模板词法、`OpDecl` 的解析都在 `crates/op`
 （`op::layout` / `op::sch` / `op::tpl` / `op::decl`）；`cutile::layout` 与 `cutile::sch` 是
@@ -166,9 +206,15 @@ crates/cutile/src/                   # 审计：doctor / verify / bench 的命�
 `llm-cli::cutile` 的 `CutileCommand`，驱动方是根包的 `src/bin/cutile.rs`（L7 入口，只做
 解析 → `cutile` → 排版 → 退出码），因此 `cutile` 不再持有第二套命令语法或第二套输出排版。
 
-TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施，已移到 `crates/config`（包名 `llm-config`）。
-`cutile::toml` 保留为转发路径（`pub use llm_config::toml`），因此模块路径不变，但实现只有一份，
-`llm` 将来读自己的配置时不必反向依赖 `cutile`。
+TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施。语料（`ops/*.toml`、`devices/*.toml`）
+在构建期由各自的 `build.rs` 解析成 `diagnostic::data` 的表，运行期没有任何 TOML 解析器
+（[ADR 0022](../../docs/adr/0022-build-time-corpora.md)）；
+配置策略同样不在本 crate：本 crate 只声明"我要哪三个目录"（`crate::dirs::Dirs`，纯数据），默认目录、
+`CUTILE_*`、`--set` 与来源追踪都在命令行层 `llm-cli::settings`
+（[ADR 0023](../../docs/adr/0023-settings-to-cli.md)）。默认目录是部署策略、
+`--set` 是命令行文法，两者都属于调用方；内核因此只依赖 `std::path`，测试给临时目录、服务给容器卷时
+都不必改本 crate 一行。它曾在本 crate 的 `settings/` 里（ADR 0020），删掉配置文件层（ADR 0022）之后
+剩下的三层不足以撑起一套分层机制，于是整块上移。
 
 声明层数据也不在本 crate：它在 `crates/op`（包名 `op`，只依赖 `std`），`cutile` 单向依赖它。
 因此新增算子、改声明或改模板都不必动本 crate 的代码，数据与机制不会混成一处。
@@ -201,16 +247,17 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 - **unsafe 边界**：本 crate 不含 `unsafe`。`backend` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `backend/` 的新增驱动模块里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
 - **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
-- **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim, llm-config}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`llm-config` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
-  - 缓存目录、工作目录、可选数据根（`data.root`）全部取自 `llm_config::Settings`；
-  - 新增配置项必须先在 `llm-config` 的 `Key` 闭集登记，否则配置文件里出现该键会直接报错；没有消费方的键不登记；
-  - 默认目录取平台用户目录（macOS `~/Library/Caches/cutile/cache`、Linux `$XDG_CACHE_HOME/cutile/cache`、Windows `%LOCALAPPDATA%\cutile\cache`），与仓库布局、启动目录都无关；仓库里不放配置文件，只在需要偏离默认时写用户级文件。
+- **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`diagnostic` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
+  - 缓存目录、工作目录、可选数据根（`data.root`）以 `crate::dirs::Dirs` 传入，**纯数据**：内核不读环境变量、不拼默认路径；
+  - 新增配置项的入口在 `llm-cli::settings` 的键表（一行一个）；`--set` 里未登记的键由那一层直接报错，本 crate 不认键名；
+  - 默认目录取平台用户目录（macOS `~/Library/Caches/cutile/cache`、Linux `$XDG_CACHE_HOME/cutile/cache`、Windows `%LOCALAPPDATA%\cutile\cache`），与仓库布局、启动目录都无关；没有配置文件，需要偏离默认时用 `CUTILE_*` 环境变量或 `--set`。
 
 ---
 
 ## 4. 声明层：用户写什么
 
-用户只写两个文件，都在 `crates/op/ops/` 下（本 crate 只读数据，不解释存放位置）。
+用户只写两个文件，都在 `crates/op/ops/` 下（`ops/*.toml` 在构建期由 `op` 的 `build.rs` 解析成声明表，
+`cutile` 只消费解析结果，不解释存放位置）。
 
 ### 4.1 算子声明（`crates/op/ops/attn_decode.toml`）
 
@@ -624,7 +671,7 @@ error: attn_decode 在 ascend(sm-) 上没有可行变体
 error: `layout = "interleaved"` 不在闭集内
   闭集：row | col | swz<B,M,S> | pad(base,p)
   最近的等价表达：swz<2,4,3>(row(64,128)) 覆盖 4 交错
-  若是新需求，需走 DESIGN.md §6 的闭集变更流程（含预算重算）
+  若是新需求，需走本文 §6.4 的闭集变更流程（含预算重算）
 ```
 
 ---
@@ -901,7 +948,14 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 | `test` | 180 | 见证 + 对拍用例（执行器在 `cutile`） |
 | **合计** | **2,540** | 不含 `cutile`：它现在是一门独立成员，见下 |
 
-> **审计并入内核（2026-11-12）**：`doctor` / `verify` / `bench` 的编排（形状矩阵、重复次数、工作目录命名、达成率口径）与见证执行器搬到 `crates/cutile/src`（包名 `cutile`，L3 的第二名成员），本 crate 同时持有机制与命令策略：`build`（⑤ 的指纹 / 锁 / 拼接 / 落盘）与 `backend`（编译执行）。原先 `audit = 100` 那行预算随代码一起迁出，P0 合计从 2,640 降到 2,540。实测（不含测试）：本 crate 2,813 行——`cap` 531、`backend` 449、`build` 394、`builtin` 60、`cache` 778、`emit` + `substitute` 205、`plan` 118、`probe` 81、`reference` 39、`space` 87、`lib` 71；`cutile` 1,537 行（`lib` 1,101 + `witness` 436）。`cache` 从预算的 140 涨到 708，涨的是**存量管理**——扫描、状态判定、LRU 回收、残留清理、`--why` 的逐字段比较（P0-6 再加编译产物：`ArtifactKey`、`bin/<hash>`、递归占用统计、见证程序登记）：§10.3 一直许诺这些事，只是预算表当初没把它们算进去。这一页换到的是"第二次 `verify` 不调用编译器"——实测 4.6 s → 1.55 s，且产物命中时连 `cc` 是否在 `PATH` 上都不影响结论。拆分的判据不是行数，而是"改命令策略要不要动内核"：此前 `cutile` 一个文件 806 行、八倍于它自己的预算，说明预算表量错了对象——命令策略本来就不是内核的一部分。再修订（2026-11-13）：`report/` 这层目录已删除——它不产出“报告”（排版在驱动方），又让四条命令各写一遍同一条流水线。现在命令策略是 crate 根的 `bench` / `doctor` / `verify` / `execution`，共用一条 `pipeline`（`Run` / `Prepared`）；见证执行是 `witness` + `device` + `gate`，`Fragment` 与 §16 的两个门槛归 `emit`，缓存命令策略在 `gc`。
+> **审计并入内核（2026-11-12）**：`doctor` / `verify` / `bench` 的编排（形状矩阵、重复次数、工作目录命名、达成率口径）与见证执行器搬到 `crates/cutile/src`（包名 `cutile`，L3 的第二名成员），本 crate 同时持有机制与命令策略：`build`（⑤ 的指纹 / 锁 / 拼接 / 落盘）与 `backend`（编译执行）。原先 `audit = 100` 那行预算随代码一起迁出，P0 合计从 2,640 降到 2,540。实测（剔除内联测试的 6,455 行，含测试 9,403 行）：`device` 757、`backend` 635、`cache` 578、`verify` 545、`witness` 520、`cap` 518、`build` 473、`bench` 335、`doctor` 328、`builtin` 242、`gate` 222、`pipeline` 175、`execution` 170、`substitute` 141、`emit` 128、`plan` 125、`probe` 125、`lib` 109、`reference` 103、`space` 87、`ast` 61、`dirs` 58、`gc` 20。`cache` 从预算的 140 涨到 807，涨的是**存量管理**——扫描、状态判定、LRU 回收、残留清理、`--why` 的逐字段比较（P0-6 再加编译产物：`ArtifactKey`、`bin/<hash>`、递归占用统计、见证程序登记）：§10.3 一直许诺这些事，只是预算表当初没把它们算进去。这一页换到的是"第二次 `verify` 不调用编译器"——实测 4.6 s → 1.55 s，且产物命中时连 `cc` 是否在 `PATH` 上都不影响结论。拆分的判据不是行数，而是"改命令策略要不要动内核"：此前 `cutile` 一个文件 806 行、八倍于它自己的预算，说明预算表量错了对象——命令策略本来就不是内核的一部分。再修订（2026-11-13）：`report/` 这层目录已删除——它不产出“报告”（排版在驱动方），又让四条命令各写一遍同一条流水线。现在命令策略是 crate 根的 `bench` / `doctor` / `verify` / `execution`，共用一条 `pipeline`（`Run` / `Prepared`）；见证执行是 `witness` + `device` + `gate`，`Fragment` 与 §16 的两个门槛归 `emit`，缓存命令策略在 `gc`。
+
+**预算与实测的差**（2026-11-14）：P0 预算 2,540 行，实测 6,455 行（剔除内联测试），2.5 倍。超出不是
+"顺手写复杂了"，而是四块**证据采集基础设施**当初没进预算：`cache` 807（存量管理：产物身份、锁、
+LRU 回收、残留清理）、`device` 791 + `backend` 615（三种前端的编译与执行，含 CUDA / Metal 的命令行
+与结果解码）、`witness` 577（每条已声明的供给都要真跑一次）。它们支撑的正是"第二次 `verify`
+不调用编译器"与"没跑通的供给不算具备"这两条判据；砍掉它们，§11.2 的证据分级就退回作者自述。
+**因此这张表按"哪一块超了、超在哪条判据上"读，不要按合计读**；P3 的 9,520 仍是目标，不是承诺。
 
 ### 13.2 P3（12 算子 / 8 设备 / 16 原语 / 4 调度）
 
@@ -923,6 +977,10 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 | `cutile`（在 `cutile`） | 100 | 240 | `doctor` / `verify` / `bench` 的结构化报告 + `--emit-ledger` 台账（排版在驱动方） |
 | **合计** | **2,540 + 100**（`cutile` 在 `cutile`） | **9,520** | |
 
+**这张表按 12 个算子写，实际闭集是 22 条**（§0.1）：`ops` 一行若按今天的规模重算就是 22 × 220 ≈ 4,840 行，
+P3 合计随之约 11,060 行。差额不是「预算失效」，而是 D1（§18 的 12 个算子清单）在落地时被更早的需求顶开——
+本表保留原口径是为了让每一笔增量都对得上，而不是拿新总数掩盖旧估算。
+
 `ops` 一行的量计在预算里，但它现在不在 `cutile`：声明、模板与算子语义（代价/样本/标量参考）都住在
 `crates/op`，连同**解析本身**（`op::decl`）与三张闭集（`op::layout` / `op::sch` / `op::tpl`）；
 `cutile` 侧只剩装载与交叉校验（`builtin.rs`）、拼接与 emit，以及对拍口径。P3 增加算子
@@ -934,7 +992,7 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 
 | 消元 | 朴素做法 | cutile | 比值 |
 |---|---|---|---|
-| **笛卡尔积** | 12 算子 × 8 设备 × 191 行手写内核 = 18,240 行（191 取自旧工程 `cuda.c` 4,778 行 / 25 类内核） | 声明 2,640 + 片段 1,240 = 3,880 行 | **4.7×** |
+| **笛卡尔积** | 12 算子 × 8 设备 × 191 行手写内核 = 18,240 行（191 取自旧工程 `cuda.c` 4,778 行 / 25 类内核；按今天的 22 算子则是 33,440 行） | 声明 2,640 + 片段 1,240 = 3,880 行 | **4.7×**（按 22 算子 8.6×） |
 | **布局代数** | CubeCL `cubecl-tile/{layout,space,stage}` 16,666 行（唯一可核实的口径；TileLang 对应层只有 3,520 行，其余在 C++ 侧） | 460 行闭集 + 2 种合法动作（改模板或失败） | 按 CubeCL 口径 36× |
 | **变体组合** | 每设备每形状一份手调参数 | 8 变体上限 + plan 表 + 3 候选搜索 | 搜索空间从 `2ⁿ` 降到 ≤ 24 |
 
@@ -1029,7 +1087,7 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 ```bash
 cargo run --bin cutile -- doctor   --op gemv_i4 --device auto
 cargo run --bin cutile -- doctor   --op gemv_i4 --device cpu --why 83a3ecdb31cd1225
-cargo run --bin cutile -- verify   --op gemv_i4 --devices cpu,opencl,cuda
+cargo run --bin cutile -- verify   --op gemv_i4 --devices cpu,intel,nvidia
 cargo run --bin cutile -- bench    --op gemv_i4 --repeat 50   # 形状缺省取算子的生产形状
 cargo run --bin cutile -- cache gc --limit 1073741824         # 缺省上限 2 GiB
 ```
@@ -1052,7 +1110,7 @@ cargo run --bin cutile -- cache gc --limit 1073741824         # 缺省上限 2 G
 
 | # | 待决 | 影响 | 建议决策点 |
 |---|---|---|---|
-| D1 | 12 个算子的最终清单（本文 §4 已给候选：`tok_embed` / `rms_norm_res` / `rope` / `gemv_i4` / `gemm_bf16` / `mlp_gate_up` / `attn_decode` / `attn_prefill` / `kv_store` / `ssm_scan` / `sampler` / `adamw`） | 决定 `ops/` 是 2,640 行还是更多 | P1 开始前定稿；超出 12 个必须按 §13.2 重算并重定闭集 |
+| D1 | ~~12 个算子的最终清单~~ **已按需求落地**：闭集今天 22 条声明（`op::REGISTRY` 是唯一事实源，见 §0.1），§4 的 12 条候选是当时的预算口径 | `ops/` 一行按 22 × 220 ≈ 4,840 行重算，P3 合计约 11,060 行（§13.2） | 再扩一条算子须先改 `REGISTRY` 与 `ops/<op>.{toml,k}`，并按 §13.2 重算预算 |
 | D2 | 布局闭集取哪 4 个构造子（本文取 row/col/swz/pad） | 决定是否需要 `@repack` | P1 用 row + swz 两种跑通，P2 补 col/pad；片段能声明布局之后再补 `@repack` 计费 |
 | D3 | `cutile` 是否直接依赖 `syn`/`serde`/`toml` | 影响供应链治理与 `substitute`/`emit` 行数 | P0 用手写解析 + 手写序列化，证明可行性后再评估 |
 | D4 | 昇腾与可移植 GPU 的 `provides` 来源 | 只能 L0/L1 | 先标 `grade = L1`，协商自动降级；有真机再补见证 |

@@ -8,27 +8,31 @@
 ```
 crates/op/
 ├── Cargo.toml
+├── build.rs             # 构建期解析 ops/*.toml → $OUT_DIR/declared.rs（运行期没有 TOML 解析）
 ├── ops/
 │   ├── gemv_f32.toml    # 声明：稠密 f32 投影（骨架 / 轴 / 需求 / 布局 / 降级链）
 │   ├── gemv_f32.k       # 模板：分块点积，未量化
 │   ├── gemv_i4.toml     # 声明：weight-only int4 解码 GEMV
 │   └── gemv_i4.k        # 模板：C 风格文本 + {{插值}} + @原语 槽位
 └── src/
-    ├── lib.rs           # 注册表（REGISTRY）与它的两张投影（BUILTIN / model）、目录装载（load）、目录位置（dir）
+    ├── lib.rs           # 注册表（REGISTRY）与它的两张投影（builtin / model）；声明表取自构建期生成物
     ├── decl.rs          # `<name>.toml` 的解析与轴展开：OpDecl / Variant / Axis / TileCombo
     ├── layout.rs        # 布局构造子闭集（row / col / swz / pad）与声明式签名
     ├── sch.rs           # 调度模板闭集（direct / pipe / ws / pingpong）与降级链的两条判据（单调性、掩盖）
     ├── tpl.rs           # 模板词法：文本 / {{槽位}} / @原语(...) 与行号；借用正文，装载期只切一遍
     ├── model.rs         # 算子语义的类型：样本 Sample、语义表 Model（生产形状 / 输出类型 / Cost）
     ├── sig.rs           # `.k` 入口签名的解析与样本对齐（ABI 的唯一事实源）
-    ├── gemv.rs          # 一条 GEMV 骨架 + 权重格式契约（Format / Element / OperandSpec / Cache）
+    ├── gemv.rs          # 一条 GEMV 骨架 + 权重格式契约（Format / Element）与三条格式共用的输入校验
+    ├── einsum/          # 求和表达式：Expr / Formula / OperandSpec，以及四条骨架共用的 FormulaCache
     ├── gemv_f32.rs      # 稠密格式：`Dense<B>` 的表达式、位宽、块宽与解包循环
     └── gemv_i4.rs       # int4 格式：`Quantized<G>` 的表达式、位宽、粒度与解包循环
 ```
 
-同一个算子的两个文件必须**同名成对**（`<name>.toml` ↔ `<name>.k`），缺模板会在装载时报错并指出两个路径。
-**解析就在本 crate**（`decl` + 三张闭集 + `tpl`）：`cutile` 只消费 `OpDecl`，它的 `layout`/`sch` 是
-`pub use` 转发路径——闭集与解析各只有一份，改声明语法不必动机制层。
+同一个算子的两个文件必须**同名成对**（`<name>.toml` ↔ `<name>.k`）：`<name>.toml` 在**构建期**由
+`build.rs` 解析成 `Table` 字面量写进 `$OUT_DIR/declared.rs`，`<name>.k` 由 `include_str!` 编进二进制；
+运行期从不读 `ops/`，也不解析任何 TOML（ADR 0022）。表结构与闭集校验就在本 crate（`decl` + 三张闭集 +
+`tpl`）：`cutile` 只消费 `OpDecl`，它的 `layout`/`sch` 是 `pub use` 转发路径——闭集与解析各只有一份，
+改声明语法不必动机制层。
 
 ## 两个文件各写什么
 
@@ -38,7 +42,7 @@ crates/op/
 | `<name>.k` | 模板正文：`{{槽位}}` 插值、`@原语(...)` 替换点 | `op::tpl`（词法）、`cutile::substitute`（拼接）、`cutile::emit`（成文） |
 
 闭集（骨架 5 种、原语 16 个、布局构造子 4 个、调度模板 4 个）与书写规则见
-[DESIGN §4](../cutile/DESIGN.md)。声明与模板的**解析**在 `op::decl`（并在这里做闭集校验），
+[cutile README §4](../cutile/README.md)。声明与模板的**解析**在 `op::decl`（并在这里做闭集校验），
 `cutile` 只接住 `OpDecl`——所以 schema 只有一份，改动它不会出现第二处需要同步的地方。
 
 语义（`src/<name>.rs`）是声明的第二份实现：一条**求和表达式**（`EXPR`，如 `nm,m,ng,n->n`）加每个
@@ -102,14 +106,23 @@ crates/op/
 （这块张量确实只有 `n · m/32` 个元素），不能参与运算次数。`Extents::group` 用一条推导来表达这件事，
 `Formula::axes` 因此能把每条轴标成批 / 自由 / 规约 / 分组四类角色。
 
-## 现有的两条算子
+## 现有的算子
 
-| 算子 | 输入格式 | 求和表达式 | 用途 |
-|---|---|---|---|
-| `gemv_i4` | 4 位打包 + 每 32 元素一个标度 | `nm,m,ng,n->n` | weight-only 量化推理（带宽受限） |
-| `gemv_f32` | f32（无标度） | `nm,m,n->n` | 稠密权重；真实 safetensors 最常见的形态 |
+清单**不在这里维护**：`REGISTRY`（`src/lib.rs`）是唯一事实源，`cargo test -p llm-op` 的
+`every_builtin_entry_declares_an_operator` 与 `declared_names_are_sorted` 会把注册表、`build.rs` 从
+`ops/` 生成的声明表与模板三者逐条对齐。当前 22 条注册，按族看：
 
-两条算子**只差数据**：同一副 `gemm` 骨架、同一批 CPU 原语（9 条 L2 见证）、同一条 lowering 流水线；
+| 族 | 注册 | 共同点 / 差别 |
+|---|---|---|
+| GEMV | `gemv_f32` / `gemv_i4` / `gemv_i8` | 同一副 `gemv` 骨架，只差 `Format` 契约；代价不能互相顶替 |
+| GEMM | `gemm_f32` / `gemm_i4` / `gemm_i8` | 轴契约在 `gemm::AXES`，每个格式自带 `cost` / `sample` / `reference` |
+| 逐元素 | `add_f32` / `mul_f32` / `scale_f32` / `residual_add_f32` | `Binary` / `Unary` trait，轴集合是 `AXES` |
+| 归约 | `reduce_sum_f32` / `reduce_max_f32` | `Reduce` trait |
+| 形态 | `rmsnorm_f32` / `softmax_f32` / `rope_f32` / `silu_f32` / `gelu_f32` / `embed_f32` | 各自 `<name>.rs` 的 `#[model]` 语义 |
+| 注意力 | `attention_f32` / `flash_attention_f32` | 后者单独成模块，只因 `#[model]` 每个模块固定生成一个 `MODEL` |
+| 解量化 | `dequant_i4` / `dequant_i8` | 打包粒度 2 / 1，各占一个模块 |
+
+GEMV 那三条**只差数据**：同一副骨架、同一批 CPU 原语（9 条 L2 见证）、同一条 lowering 流水线；
 `cutile` 与 `prim` 在加入 `gemv_f32` 时一行未改（ADR 0013）。它们的代价不能互相顶替——同一份
 `[4096, 4096]` 权重，f32 的读下界是 int4 的 8 倍，所以"格式 → 算子名"是 `nn::WeightFormat` 的映射，
 不是一个全局默认值。
@@ -120,10 +133,11 @@ crates/op/
 2. 在 `src/<name>.rs` 写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`，
    并以 `#[annotation::model(..)]` 标注生成 `MODEL`（不要手写 `Model { .. }`）；样本里的缓冲名与
    标量名必须和 `.k` 签名一致，实参列表不在这里写；
-3. 在 `src/lib.rs` 的 `REGISTRY` 里补一条 `Registration`（名字 + 两段 `include_str!` + `MODEL`）：
-   声明、模板与语义表是同一条注册，`BUILTIN` 与 `model()` 都是它的投影，因此不存在
-   "内嵌里有、语义表里没有"的第二份事实；
-4. `cargo test -p llm-op` —— `builtin_matches_disk` 会把"磁盘有、内嵌无"直接判为失败；
+3. 在 `src/lib.rs` 的 `REGISTRY` 里补一条 `Registration`（名字 + `include_str!` 模板 + `MODEL`）：
+   名字是声明表的主键（`build.rs` 按文件 stem 生成），`builtin()` 与 `model()` 都是它的投影，
+   因此不存在"生成表里有、语义表里没有"的第二份事实；
+4. `cargo test -p llm-op` —— `every_builtin_entry_declares_an_operator` 与 `declared_names_are_sorted`
+   会把注册表、生成表与模板三者之间的漂移判为失败；
 5. `cargo run --bin cutile -- doctor --op <name> --device cpu` 看协商与 emit 结果，
    `cargo run --bin cutile -- verify --op <name> --devices cpu` 与标量参考对拍。
 
@@ -132,7 +146,8 @@ crates/op/
 - **设备档案**（`devices/*.toml`）：在 `crates/prof`，描述"设备能做什么"，与算子无关。
 - **原语片段**（`prim/<vendor>/<prim>.<ext>`）与见证源码：在 `crates/prim`，描述"具体指令怎么写"。
 - **机制**（协商、片段拼接、emit、编译与对拍）：在 `cutile`，本 crate 不依赖它——依赖方向固定为
-  `llm → cutile → op → einsum`；`op` 的依赖只有 `einsum`（代价语义）、`diagnostic`（错误类型：
-  `invalid` / `missing` / `io`，与 `Code::exit_code` 的退出码同一套）与同层的 `prof` / `llm-config`，
-  不出现任何机制代码。命令行的参数文法也不在这里，在 `llm-cli::cutile`。
+  `llm → cutile → op`。`op` 的依赖只有三条：`annotation`（`#[model]` 等注解）、`diagnostic`（错误类
+  型：`invalid` / `missing` / `io`，与 `Code::exit_code` 的退出码同一套）与同层的 `prof`（能力词汇表
+  `atom`），不出现任何机制代码。求和表达式那一层（`Expr` / `Formula` / `Extents`）已并入本 crate 的
+  `op::einsum`（ADR 0019），不再是独立成员。命令行的参数文法也不在这里，在 `llm-cli::cutile`。
 - 构建与工具链配置：见根目录的 `Cargo.toml`、`clippy.toml`、`rustfmt.toml`。

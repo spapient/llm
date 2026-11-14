@@ -82,7 +82,7 @@ pub fn forward(
     n: usize,
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
-    if a.len() != m * K || b.len() != K * n || out.len() != m * n {
+    if [a.len(), b.len(), out.len()] != [m * K, K * n, m * n] {
         return Err(Error::new(Code::Invalid, "gemm 缓冲尺寸不符"));
     }
     for i in 0..m {

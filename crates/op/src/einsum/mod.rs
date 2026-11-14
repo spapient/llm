@@ -4,7 +4,8 @@
 //! 要搬多少字节。它不认识 `cutile`、`prof`、`prim`，因此可以在任何机器上离线复现——roofline
 //! 的分子从此只有一个来源，而不是每个算子各写一遍公式。
 //!
-//! **拥有**：[`Expr`]、[`Extents`]、[`Axis`] / [`Axes`]、[`Operand`]、[`Bits`]、[`Cost`]。
+//! **拥有**：[`Expr`]、[`Extents`]、[`Axis`] / [`Axes`]、[`Operand`] / [`OperandSpec`]、[`Bits`]、
+//! [`Cost`]，以及四条骨架共用的表达式缓存 [`FormulaCache`]。
 //! **不拥有**：设备峰值（[`prof`]）、roofline 的编排（`cutile::plan`）、算子声明与样本（[`crate`]）。
 //! **依赖**：`diagnostic`（全仓唯一的错误类型）。**被依赖**：`op` 的算子语义（用本模块推导代价）。
 //!
@@ -84,13 +85,15 @@
 //! assert_eq!(cost.write, 8 * 4);
 //! ```
 
+mod cache;
 mod expr;
 mod extents;
 mod formula;
 
+pub use cache::FormulaCache;
 pub use expr::Expr;
 pub use extents::Extents;
-pub use formula::{Access, Axes, Axis, AxisRole, Formula, Operand};
+pub use formula::{Access, Axes, Axis, AxisRole, Formula, Operand, OperandSpec};
 
 /// 元素位宽闭集（bit）。
 ///
@@ -161,7 +164,7 @@ impl Bits {
     }
 }
 
-/// 一次计算的标量代价，roofline 的分子（DESIGN §12.1）。
+/// 一次计算的标量代价，roofline 的分子（cutile README §12.1）。
 ///
 /// 流量按**方向**分账：读与写的上限不是同一个数，把它们加成一个总量之后，任何"这层到底卡在
 /// 哪一侧"的结论都失去了依据，而"把读挪成写、总量不变"也会变得看起来等价（`nn::Bounds`

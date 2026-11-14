@@ -11,10 +11,7 @@ use crate::error::invalid;
 use crate::graph::{Node, Requirement, Var};
 use crate::schedule::Schedule;
 
-/// 反向图：按插入顺序记录节点，逆序就是反向顺序。
-///
-/// 四个平行数组是刻意的：编号就是下标，查需求、查深度、查生产者都不需要哈希表；
-/// 叶子与算子输出共用一套编号，于是"输入必须已存在"只是一次越界检查。
+/// 反向图：按插入顺序记录节点，逆序就是反向顺序；四个平行数组共用一套稠密编号（编号即下标）。
 #[derive(Debug, Clone, Default)]
 pub struct Tape {
     nodes: Vec<Node>,
@@ -30,10 +27,7 @@ impl Tape {
         Self::default()
     }
 
-    /// 清空整张图但保留已分配的内存。
-    ///
-    /// 训练循环每步复用一个 `Tape` 时用它，稳定态不会再有分配。清空后编号从 0 重新开始，
-    /// 之前拿到的 [`Var`] 一律作废——它们会与新变量撞号，那种错不会报错，只会在反向时算错。
+    /// 清空整张图但保留已分配的内存；编号从 0 重新开始，之前拿到的 [`Var`] 一律作废。
     pub fn clear(&mut self) {
         self.nodes.clear();
         self.requirement.clear();
@@ -52,11 +46,7 @@ impl Tape {
         self.fresh(Requirement::Grad, 0)
     }
 
-    /// 把已存在的叶子升级为梯度终点。
-    ///
-    /// 只允许升级**还没被任何节点引用**的叶子：父节点的需求在记录时就定了，事后再改会让
-    /// 一个已经按"常量"剪掉的输入漏掉梯度，这种图看起来能跑但结果是错的，所以直接报错。
-    /// 已经是终点时幂等返回。
+    /// 把已存在的叶子升级为梯度终点；只允许升级**还没被任何节点引用**的叶子（否则会漏掉梯度）。
     pub fn retain(&mut self, var: Var) -> Result<()> {
         let index = self.check(var, "autograd::Tape::retain")?;
         if self.producer[index].is_some() {
@@ -81,18 +71,13 @@ impl Tape {
         Ok(())
     }
 
-    /// 记录一次算子调用，需求由输入推出：有输入要梯度就是 [`Requirement::Backward`]，
-    /// 全都不需要则是 [`Requirement::None`]（算子照常执行，只是不进反向图）。
+    /// 记录一次算子调用，需求由输入推出：有输入要梯度就是反向步，全不要就不进图。
     pub fn record(&mut self, op: impl Into<String>, inputs: &[Var]) -> Result<Var> {
         let requirement = self.infer(inputs, "autograd::Tape::record")?;
         self.record_with(op, inputs, requirement)
     }
 
-    /// 记录一次算子调用并显式声明输出的需求。
-    ///
-    /// `None` 表示断开（detach）：输出与输入之间没有反向边，梯度到此为止。
-    /// `Backward` / `Grad` 要求至少有一个输入要梯度——没有那条边就没有梯度可传，
-    /// 声明成终点会得到一个"永远收不到贡献"的变量。
+    /// 记录一次算子调用并显式声明输出的需求；`None` 即 detach，梯度到此为止。
     pub fn record_with(
         &mut self,
         op: impl Into<String>,
@@ -100,19 +85,7 @@ impl Tape {
         requirement: Requirement,
     ) -> Result<Var> {
         let op = op.into();
-        if op.trim().is_empty() {
-            return Err(invalid("autograd::Tape::record_with", "算子名不能为空"));
-        }
-        let inferred = self.infer(inputs, "autograd::Tape::record_with")?;
-        if requirement.requires() && !inferred.requires() {
-            return Err(invalid(
-                "autograd::Tape::record_with",
-                format!(
-                    "算子 {op} 声明为 {}，但没有任何输入需要梯度",
-                    requirement.name()
-                ),
-            ));
-        }
+        self.checked(&op, inputs, requirement)?;
         let depth = match requirement.requires() {
             true => self.deepest(inputs) + 1,
             false => 0,
@@ -128,6 +101,24 @@ impl Tape {
             requirement,
         ));
         Ok(output)
+    }
+
+    /// 记录的公共校验：算子名非空、输入存在、声明的需求与输入相容。
+    fn checked(&self, op: &str, inputs: &[Var], requirement: Requirement) -> Result<()> {
+        if op.trim().is_empty() {
+            return Err(invalid("autograd::Tape::record_with", "算子名不能为空"));
+        }
+        let inferred = self.infer(inputs, "autograd::Tape::record_with")?;
+        if requirement.requires() && !inferred.requires() {
+            return Err(invalid(
+                "autograd::Tape::record_with",
+                format!(
+                    "算子 {op} 声明为 {}，但没有任何输入需要梯度",
+                    requirement.name()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// 全部节点，按前向顺序。
@@ -156,10 +147,7 @@ impl Tape {
         self.next
     }
 
-    /// 由编号取回变量；编号不存在时为 `None`。
-    ///
-    /// 运行时缓冲按编号稠密布局，要在"编号"与"变量"之间来回换需要这个入口：
-    /// 直接构造一个没校验过的 `Var` 会让打错的编号变成一张看起来正常的图。
+    /// 由编号取回变量；编号不存在时为 `None`（缓冲按编号稠密布局，拿来回路转用）。
     pub fn var(&self, id: u32) -> Option<Var> {
         (id < self.next).then(|| Var::at(id))
     }
@@ -174,9 +162,7 @@ impl Tape {
         self.nodes.is_empty()
     }
 
-    /// 反向顺序：**全部**节点的逆序，不做可达性剪枝。
-    ///
-    /// 要执行反向请用 [`Tape::backward`] / [`Tape::plan_into`]：它们剪掉与 loss 无关的分支。
+    /// 反向顺序：**全部**节点的逆序，不做可达性剪枝（执行反向请用 [`Tape::backward`]）。
     pub fn backward_order(&self) -> Vec<Var> {
         self.nodes.iter().rev().map(Node::output).collect()
     }
@@ -190,10 +176,7 @@ impl Tape {
         Ok(schedule)
     }
 
-    /// 把 `loss` 的反向调度写进已有的 `schedule`，**复用它的缓冲**。
-    ///
-    /// 稳定态不分配：步骤表、可达位图、终点表都是 `clear` 后重填，容量留在原处。
-    /// 失败时 `schedule` 保持原样——调用方拿到 `Err` 时不会得到半份计划。
+    /// 把 `loss` 的反向调度写进已有的 `schedule`，**复用它的缓冲**（失败时它保持原样）。
     pub fn plan_into(&self, schedule: &mut Schedule, loss: Var) -> Result<()> {
         schedule.plan(self, loss)
     }

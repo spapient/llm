@@ -48,12 +48,7 @@ pub fn sample(len: usize, _: usize) -> Sample {
 /// 标量参考：三趟，与内核同一公式。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let x = sample.f32("x")?;
-    let mut max = f32::MIN;
-    for value in x {
-        if *value > max {
-            max = *value;
-        }
-    }
+    let max = x.iter().copied().fold(f32::MIN, f32::max);
     let mut sum = 0.0;
     let exps: Vec<f32> = x
         .iter()
@@ -78,12 +73,7 @@ pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
             format!("缓冲长度不一致：x {}、out {}", x.len(), out.len()),
         ));
     }
-    let mut max = f32::MIN;
-    for value in x {
-        if *value > max {
-            max = *value;
-        }
-    }
+    let max = x.iter().copied().fold(f32::MIN, f32::max);
     let mut sum = 0.0;
     for value in x {
         sum += (value - max).exp();

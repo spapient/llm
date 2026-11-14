@@ -51,31 +51,24 @@ impl Quant {
         if self.axis > rank {
             return Err(bad("量化轴超出张量 rank"));
         }
-        if self.is_per_tensor(rank) {
-            if self.block != 0 {
-                return Err(bad("per-tensor 方案的 block 必须为 0"));
-            }
-        } else if self.block == 0 {
-            return Err(bad("沿轴分组的方案 block 不能为 0"));
+        match (self.is_per_tensor(rank), self.block == 0) {
+            (true, false) => Err(bad("per-tensor 方案的 block 必须为 0")),
+            (false, true) => Err(bad("沿轴分组的方案 block 不能为 0")),
+            _ => Ok(()),
         }
-        Ok(())
     }
 
-    /// 结构校验：标度必须浮点、零点必须整数。
+    /// 结构校验：标度必须浮点；零点声明与类型必须配套，且类型必须是整数。
     pub fn validate(&self) -> Result<()> {
         if !self.scale_ty.is_float() {
             return Err(bad("量化标度必须是浮点类型"));
         }
-        if self.zero {
-            match self.zp_ty {
-                Some(zp_ty) if !zp_ty.is_float() && zp_ty != Wire::Bool => {}
-                Some(_) => return Err(bad("零点必须是整数类型")),
-                None => return Err(bad("声明零点却没给零点类型")),
-            }
-        } else if self.zp_ty.is_some() {
-            return Err(bad("无零点方案不该带零点类型"));
+        match (self.zero, self.zp_ty.map(Wire::is_integer)) {
+            (true, None) => Err(bad("声明零点却没给零点类型")),
+            (false, Some(_)) => Err(bad("无零点方案不该带零点类型")),
+            (true, Some(false)) => Err(bad("零点必须是整数类型")),
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     /// 是否为 per-tensor（需要结合 rank 判断）。
@@ -100,34 +93,39 @@ impl Quant {
 
     /// 从游标解码。
     pub(crate) fn decode(cur: &mut Cursor<'_>, rank: u32) -> Result<Self> {
-        let scheme = cur.read_u8().map_err(|e| e.with("量化方案"))?;
-        if scheme != 0 {
-            return Err(Error::new(
-                Code::Unsupported,
-                format!("未知量化 scheme {scheme}，当前只支持 affine(0)"),
-            )
-            .with("weights::quant"));
-        }
-        let axis = cur.read_u32()?;
-        let block = cur.read_u32()?;
-        let flags = cur.read_u8()?;
-        let zero = flags & 1 == 1;
-        if flags & !1 != 0 {
-            return Err(bad("量化 flags 含非零预留位"));
-        }
-        let scale_ty = read_wire(cur)?;
-        let zp_ty = if zero { Some(read_wire(cur)?) } else { None };
-        let quant = Self {
-            axis,
-            block,
-            zero,
-            scale_ty,
-            zp_ty,
-        };
-        quant.validate_layout(rank)?;
-        quant.validate()?;
-        Ok(quant)
+        read_scheme(cur)?;
+        let (axis, block, zero) = read_head(cur)?;
+        let (scale_ty, zp_ty) = read_types(cur, zero)?;
+        Self::new(rank, axis, block, zero, scale_ty, zp_ty)
     }
+}
+
+/// 首字节判据：当前只认 affine(0)，其余按 unsupported 报错（`scheme` 写进文案）。
+fn read_scheme(cur: &mut Cursor<'_>) -> Result<()> {
+    let scheme = cur.read_u8().map_err(|e| e.with("量化方案"))?;
+    if scheme == 0 {
+        return Ok(());
+    }
+    let message = format!("未知量化 scheme {scheme}，当前只支持 affine(0)");
+    Err(Error::new(Code::Unsupported, message).with("weights::quant"))
+}
+
+/// 轴、组宽与 flags；flags 只允许最低位（零点开关），其余位是预留。
+fn read_head(cur: &mut Cursor<'_>) -> Result<(u32, u32, bool)> {
+    let axis = cur.read_u32()?;
+    let block = cur.read_u32()?;
+    let flags = cur.read_u8()?;
+    if flags & !1 != 0 {
+        return Err(bad("量化 flags 含非零预留位"));
+    }
+    Ok((axis, block, flags & 1 == 1))
+}
+
+/// 标度类型；有零点时紧随其后读零点类型，无零点则不占字节。
+fn read_types(cur: &mut Cursor<'_>, zero: bool) -> Result<(Wire, Option<Wire>)> {
+    let scale_ty = read_wire(cur)?;
+    let zp_ty = if zero { Some(read_wire(cur)?) } else { None };
+    Ok((scale_ty, zp_ty))
 }
 
 fn read_wire(cur: &mut Cursor<'_>) -> Result<Wire> {

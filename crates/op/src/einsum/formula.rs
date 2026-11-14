@@ -12,6 +12,43 @@ pub enum Access {
     Write,
 }
 
+/// 表达式里一个操作数的**编译期**形态：名字、元素位宽与读/写方向。
+///
+/// [`Operand`] 装着 `String`，构造不出常量；这里只放编译期就能定下的三件事，装载成 [`Operand`]
+/// 时再补上拥有型名字。它属于表达式层而不是某条骨架：四条骨架（GEMV / 逐元素 / 一元 / 归约）
+/// 都要声明操作数表，放在其中任何一条里都会让另外三条反向依赖它。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperandSpec {
+    /// 缓冲名（与 `.k` 的形参名一致，也是诊断里显示的名字）。
+    pub name: &'static str,
+    /// 元素位宽。
+    pub bits: Bits,
+    /// 读写方向。
+    pub access: Access,
+}
+
+impl OperandSpec {
+    /// 只读操作数。
+    #[must_use]
+    pub const fn read(name: &'static str, bits: Bits) -> Self {
+        Self {
+            name,
+            bits,
+            access: Access::Read,
+        }
+    }
+
+    /// 只写操作数。
+    #[must_use]
+    pub const fn write(name: &'static str, bits: Bits) -> Self {
+        Self {
+            name,
+            bits,
+            access: Access::Write,
+        }
+    }
+}
+
 /// 一个操作数：名字、元素位宽与读/写方向。
 ///
 /// 名字只是诊断用的标签（与内核模板的形参名一致），但必须唯一：同名缓冲出现在两个位置会被
@@ -185,6 +222,18 @@ impl Axes {
             .filter(|axis| axis.role != AxisRole::Grouped)
             .try_fold(1u128, |total, axis| multiply(total, axis.extent))
     }
+
+    /// 运算次数：有规约轴时按"每个规约元素一次乘加（2 flops）"，否则只算输出元素。
+    ///
+    /// # Errors
+    ///
+    /// 乘积超出 `u128` 时返回说明。
+    pub fn flops(&self) -> Result<f64, Error> {
+        if self.reduces() {
+            return Ok(2.0 * self.all_elements()? as f64);
+        }
+        Ok(self.output_elements()? as f64)
+    }
 }
 
 /// 一份可估算的语义：表达式 + 每个操作数的位宽与方向。
@@ -214,48 +263,9 @@ impl Formula {
             )
             .with("einsum::Formula::new"));
         }
-
-        let mut names: Vec<&str> = Vec::with_capacity(operands.len());
-        let mut writes = 0usize;
-        for operand in &operands {
-            if names.contains(&operand.name()) {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "操作数 `{}` 出现了两次：同名缓冲会被重复计费",
-                        operand.name()
-                    ),
-                )
-                .with("einsum::Formula::new"));
-            }
-            names.push(operand.name());
-            if operand.access() == Access::Write {
-                writes += 1;
-            }
-        }
-        if writes > 1 {
-            return Err(
-                Error::new(Code::Invalid, "有多个写入操作数：一次计算只有一个出口")
-                    .with("einsum::Formula::new"),
-            );
-        }
-
-        for (operand, term) in operands.iter().zip(expr.terms()) {
-            if operand.access() != Access::Write {
-                continue;
-            }
-            if let Some(label) = term.iter().find(|label| !expr.output().contains(label)) {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "写入操作数 `{}` 的轴 `{label}` 不在输出里：写回中间量不是算子语义",
-                        operand.name()
-                    ),
-                )
-                .with("einsum::Formula::new"));
-            }
-        }
-
+        unique(&operands)?;
+        single_write(&operands)?;
+        writes_only_outputs(&expr, &operands)?;
         Ok(Self { expr, operands })
     }
 
@@ -275,47 +285,61 @@ impl Formula {
     ///
     /// 表达式里的字母没有给长度、给了长度的字母没出现在表达式里，或乘积超出 `u128`。
     pub fn axes(&self, extents: &Extents) -> Result<Axes, Error> {
+        let mut axes = self.output_axes(extents)?;
+        self.push_reduced(extents, &mut axes)?;
+        self.check_used(extents, &axes)?;
+        Ok(Axes { axes })
+    }
+
+    /// 输出轴：角色看"有几个读操作数共享它"（多于一个即 batch）。
+    ///
+    /// 派生轴不能出现在输出里——它的长度是从基准轴推出来的，写回去等于把一个视图当缓冲。
+    fn output_axes(&self, extents: &Extents) -> Result<Vec<Axis>, Error> {
         let mut axes: Vec<Axis> = Vec::with_capacity(extents.len());
-
         for &label in self.expr.output() {
-            if let Some((base, divisor)) = extents.grouped(label) {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("轴 `{label}` 是 `{base}` 按 {divisor} 分组的派生轴，不能出现在输出里"),
-                )
-                .with("einsum::Formula::axes"));
-            }
-            let extent = extent(extents, label)?;
-            let shared = self
-                .operands
-                .iter()
-                .zip(self.expr.terms())
-                .filter(|(operand, term)| operand.access() == Access::Read && term.contains(&label))
-                .count();
-            let role = if shared > 1 {
-                AxisRole::Batch
-            } else {
-                AxisRole::Free
+            let Some((base, divisor)) = extents.grouped(label) else {
+                let extent = extent(extents, label)?;
+                axes.push(Axis {
+                    label,
+                    extent,
+                    role: self.output_role(label),
+                });
+                continue;
             };
-            axes.push(Axis {
-                label,
-                extent,
-                role,
-            });
+            return Err(Error::new(
+                Code::Invalid,
+                format!("轴 `{label}` 是 `{base}` 按 {divisor} 分组的派生轴，不能出现在输出里"),
+            )
+            .with("einsum::Formula::axes"));
         }
+        Ok(axes)
+    }
 
+    /// 输出轴的角色：被多个读操作数共享的是 batch，否则是 free。
+    fn output_role(&self, label: char) -> AxisRole {
+        let shared = self
+            .operands
+            .iter()
+            .zip(self.expr.terms())
+            .filter(|(operand, term)| operand.access() == Access::Read && term.contains(&label))
+            .count();
+        if shared > 1 {
+            AxisRole::Batch
+        } else {
+            AxisRole::Free
+        }
+    }
+
+    /// 输入项里还没被收进来的轴：派生轴是 [`AxisRole::Grouped`]，其余是 [`AxisRole::Reduced`]。
+    fn push_reduced(&self, extents: &Extents, axes: &mut Vec<Axis>) -> Result<(), Error> {
         for term in self.expr.terms() {
             for &label in term {
-                if self.expr.output().contains(&label)
-                    || axes.iter().any(|axis| axis.label == label)
-                {
+                if axes.iter().any(|axis| axis.label == label) {
                     continue;
                 }
-                let role = if extents.grouped(label).is_some() {
-                    AxisRole::Grouped
-                } else {
-                    AxisRole::Reduced
-                };
+                let role = extents
+                    .grouped(label)
+                    .map_or(AxisRole::Reduced, |_| AxisRole::Grouped);
                 axes.push(Axis {
                     label,
                     extent: extent(extents, label)?,
@@ -323,22 +347,26 @@ impl Formula {
                 });
             }
         }
+        Ok(())
+    }
 
+    /// 给了长度却没出现在表达式里的轴：多半是笔误。
+    fn check_used(&self, extents: &Extents, axes: &[Axis]) -> Result<(), Error> {
         for label in extents.labels() {
-            if !axes.iter().any(|axis| axis.label == label) {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "轴 `{label}` 有长度 {} 但没出现在表达式 `{}` 里：多半是笔误",
-                        extent(extents, label)?,
-                        self.expr
-                    ),
-                )
-                .with("einsum::Formula::axes"));
+            if axes.iter().any(|axis| axis.label == label) {
+                continue;
             }
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "轴 `{label}` 有长度 {} 但没出现在表达式 `{}` 里：多半是笔误",
+                    extent(extents, label)?,
+                    self.expr
+                ),
+            )
+            .with("einsum::Formula::axes"));
         }
-
-        Ok(Axes { axes })
+        Ok(())
     }
 
     /// 计算代价。
@@ -348,36 +376,112 @@ impl Formula {
     /// 轴分解失败（见 [`Formula::axes`]）、维度乘积溢出，或流量超出 `u64`。
     pub fn cost(&self, extents: &Extents) -> Result<Cost, Error> {
         let axes = self.axes(extents)?;
-        let flops = if axes.reduces() {
-            2.0 * axes.all_elements()? as f64
-        } else {
-            axes.output_elements()? as f64
-        };
+        self.estimate(extents, &axes)
+    }
 
-        // 两个方向各自累加：合成一个数之后，"读受限还是写受限"就再也推不出来了。
+    /// 一次算完：flops 与两个方向的流量。
+    ///
+    /// 两个方向各自累加：合成一个数之后，"读受限还是写受限"就再也推不出来了。
+    fn estimate(&self, extents: &Extents, axes: &Axes) -> Result<Cost, Error> {
+        let flops = axes.flops()?;
+        let (read, write) = self.traffic(extents)?;
+        Ok(Cost {
+            flops,
+            read: bytes(read, "读")?,
+            write: bytes(write, "写")?,
+        })
+    }
+
+    /// 流量：每个操作数按自己的项长 × 位宽计费，读与写分开累加。
+    fn traffic(&self, extents: &Extents) -> Result<(u128, u128), Error> {
         let mut read: u128 = 0;
         let mut write: u128 = 0;
         for (operand, term) in self.operands.iter().zip(self.expr.terms()) {
-            let elements = term.iter().try_fold(1u128, |total, label| {
-                multiply(total, extent(extents, *label)?)
-            })?;
+            let elements = term_elements(extents, term)?;
             let bytes = operand.bits().bytes_for(elements);
-            match operand.access() {
-                Access::Read => read = read.checked_add(bytes).ok_or_else(overflow)?,
-                Access::Write => write = write.checked_add(bytes).ok_or_else(overflow)?,
-            }
+            let total = match operand.access() {
+                Access::Read => &mut read,
+                Access::Write => &mut write,
+            };
+            accumulate(total, bytes)?;
         }
-
-        let read = u64::try_from(read).map_err(|_| {
-            Error::new(Code::Invalid, format!("读流量 {read} 字节超出 u64"))
-                .with("einsum::Formula::cost")
-        })?;
-        let write = u64::try_from(write).map_err(|_| {
-            Error::new(Code::Invalid, format!("写流量 {write} 字节超出 u64"))
-                .with("einsum::Formula::cost")
-        })?;
-        Ok(Cost { flops, read, write })
+        Ok((read, write))
     }
+}
+
+/// 同名缓冲只允许出现一次：否则同一块内存会被重复计费。
+fn unique(operands: &[Operand]) -> Result<(), Error> {
+    let mut names: Vec<&str> = Vec::with_capacity(operands.len());
+    for operand in operands {
+        if names.contains(&operand.name()) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "操作数 `{}` 出现了两次：同名缓冲会被重复计费",
+                    operand.name()
+                ),
+            )
+            .with("einsum::Formula::new"));
+        }
+        names.push(operand.name());
+    }
+    Ok(())
+}
+
+/// 一次计算只有一个出口。
+fn single_write(operands: &[Operand]) -> Result<(), Error> {
+    let writes = operands
+        .iter()
+        .filter(|operand| operand.access() == Access::Write)
+        .count();
+    if writes > 1 {
+        return Err(
+            Error::new(Code::Invalid, "有多个写入操作数：一次计算只有一个出口")
+                .with("einsum::Formula::new"),
+        );
+    }
+    Ok(())
+}
+
+/// 写入操作数只能写输出轴：写回中间量不是算子语义。
+fn writes_only_outputs(expr: &Expr, operands: &[Operand]) -> Result<(), Error> {
+    for (operand, term) in operands.iter().zip(expr.terms()) {
+        if operand.access() != Access::Write {
+            continue;
+        }
+        if let Some(label) = term.iter().find(|label| !expr.output().contains(label)) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "写入操作数 `{}` 的轴 `{label}` 不在输出里：写回中间量不是算子语义",
+                    operand.name()
+                ),
+            )
+            .with("einsum::Formula::new"));
+        }
+    }
+    Ok(())
+}
+
+/// 一项的元素数：该项每条轴长度的乘积。
+fn term_elements(extents: &Extents, term: &[char]) -> Result<u128, Error> {
+    term.iter().try_fold(1u128, |total, label| {
+        multiply(total, extent(extents, *label)?)
+    })
+}
+
+/// 按方向累加：两个计数器各自溢出都要报。
+fn accumulate(total: &mut u128, bytes: u128) -> Result<(), Error> {
+    *total = total.checked_add(bytes).ok_or_else(overflow)?;
+    Ok(())
+}
+
+/// 流量收口到 `u64`：`Cost` 的字段是 `u64`，装不下说明形状不可能是真的。
+fn bytes(value: u128, kind: &str) -> Result<u64, Error> {
+    u64::try_from(value).map_err(|_| {
+        Error::new(Code::Invalid, format!("{kind}流量 {value} 字节超出 u64"))
+            .with("einsum::Formula::cost")
+    })
 }
 
 fn extent(extents: &Extents, label: char) -> Result<usize, Error> {

@@ -1,13 +1,13 @@
 /* prim/intel/witness.cl —— gen12 每条 provide 的最小见证。
  *
  * 统一 ABI：`int witness_<name>(float *out)` 返回写入的元素个数（≤ 8），
- * 值按 f32 读回后与档案里的 `witness.expect` 对拍（DESIGN §11.3）。
+ * 值按 f32 读回后与档案里的 `witness.expect` 对拍（cutile README §11.3）。
  * 内容按执行器的 host ABI 写（扩展名跟随 `emit = opencl`，与同目录片段一致）；
  * P0 的见证执行器只执行 `emit = c`，所以等级仍是 L1——OpenCL 的 host harness
  * 与真机证据随非 C 执行器一起补。
  *
  * 一条签名一个函数：见证回答"这条签名写的是什么算法"，两条签名共用一份见证时，
- * 执行通过的结论无法归属到哪一条（DESIGN §11.3）。
+ * 执行通过的结论无法归属到哪一条（cutile README §11.3）。
  *
  * 末尾六条是 P0 模板不用、但 gen12 确实具备的能力（Xe 矩阵引擎、subgroup 交换/广播/
  * 扫描、`native_exp2`/`native_recip`）。它们的等级是 L0：有见证源码，没有片段文本，

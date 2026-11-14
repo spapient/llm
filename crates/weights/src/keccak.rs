@@ -40,43 +40,38 @@ const ROT: [[u32; 5]; 5] = [
     [27, 20, 39, 8, 14],
 ];
 
-/// `Keccak-f[1600]`：24 轮原地置换。
+/// `Keccak-f[1600]`：24 轮原地置换，每轮 θ → ρπ → χ → ι 四步。
 fn keccak_f(state: &mut [u64; 25]) {
     for &rc in RC.iter() {
-        // θ
-        let mut c = [0u64; 5];
-        for x in 0..5 {
-            c[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
+        // θ：每列的奇偶校验（`c`）与相邻两列滚一位的距离（`d`）异或回整列。
+        let c: [u64; 5] = std::array::from_fn(|x| {
+            state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20]
+        });
+        let d: [u64; 5] = std::array::from_fn(|x| c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1));
+        for (index, lane) in state.iter_mut().enumerate() {
+            *lane ^= d[index % 5];
         }
-        let mut d = [0u64; 5];
-        for x in 0..5 {
-            d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
+        // ρπ 先算出整块 `b`：χ 要同时读同行的三条 lane，原地写会互相干扰。
+        let b = rho_pi(state);
+        // χ：每行五条 lane 的非线性混合（π 之后 `x+1`/`x+2` 才是同一行的相邻列）。
+        for (index, lane) in state.iter_mut().enumerate() {
+            let (x, row) = (index % 5, 5 * (index / 5));
+            *lane = b[index] ^ (!b[(x + 1) % 5 + row] & b[(x + 2) % 5 + row]);
         }
-        for x in 0..5 {
-            for y in 0..5 {
-                state[x + 5 * y] ^= d[x];
-            }
-        }
-
-        // ρ + π：B[y, 2x+3y] = rot(A[x,y])
-        let mut b = [0u64; 25];
-        for x in 0..5 {
-            for y in 0..5 {
-                b[y + 5 * ((2 * x + 3 * y) % 5)] = state[x + 5 * y].rotate_left(ROT[x][y]);
-            }
-        }
-
-        // χ
-        for x in 0..5 {
-            for y in 0..5 {
-                state[x + 5 * y] =
-                    b[x + 5 * y] ^ ((!b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y]);
-            }
-        }
-
         // ι
         state[0] ^= rc;
     }
+}
+
+/// ρ 旋转 + π 换位：`B[y, 2x+3y] = rot(A[x,y], ROT[x][y])`，偏移表按 `[x][y]` 索引。
+fn rho_pi(state: &[u64; 25]) -> [u64; 25] {
+    let mut b = [0u64; 25];
+    for x in 0..5 {
+        for y in 0..5 {
+            b[y + 5 * ((2 * x + 3 * y) % 5)] = state[x + 5 * y].rotate_left(ROT[x][y]);
+        }
+    }
+    b
 }
 
 /// 海绵构造：吸收输入后挤出 `out_len` 字节。`rate` 是字节率，`suffix` 是域分隔后缀。
@@ -100,15 +95,11 @@ fn sponge(rate: usize, suffix: u8, input: &[u8], out_len: usize) -> Vec<u8> {
         keccak_f(&mut state);
     }
 
-    // 挤出
+    // 挤出：每次取前 `rate` 字节（不足一整个块时按剩余长度截断），再置换。
     let mut out = Vec::with_capacity(out_len);
     while out.len() < out_len {
-        let mut block = Vec::with_capacity(rate);
-        for lane in &state {
-            block.extend_from_slice(&lane.to_le_bytes());
-        }
         let take = rate.min(out_len - out.len());
-        out.extend_from_slice(&block[..take]);
+        out.extend(state.iter().flat_map(|lane| lane.to_le_bytes()).take(take));
         keccak_f(&mut state);
     }
     out

@@ -2,19 +2,18 @@
 //!
 //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::reduce`] 骨架按 [`Max`] 单态化。
 
-use crate::reduce::{Reduce, ReduceCache};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::reduce::Reduce;
 
 /// 最大值实现：初值取 f32 最小值（与内核 `-FLT_MAX` 同档），折叠取较大者。
 pub struct Max;
 
-static CACHE: ReduceCache = ReduceCache::new();
-
 impl Reduce for Max {
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::reduce::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::reduce::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn start() -> f32 {

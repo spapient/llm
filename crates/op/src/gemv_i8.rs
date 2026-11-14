@@ -4,9 +4,8 @@
 //! 标度取值与内核本体。模板在 `ops/gemv_i8.k`，片段只与这里对拍。`u8` 承载 int8 位模式，
 //! 算术时按 `i8` 解释。
 
-use crate::einsum::Bits;
-use crate::gemv::{self, Format, OperandSpec};
-use diagnostic::{Code, Error};
+use crate::einsum::{Bits, FormulaCache, OperandSpec};
+use crate::gemv::{self, Format};
 
 /// 量化分组（声明粒度，与 `gemv_i4` 同档）。
 pub const GROUP: usize = 32;
@@ -42,10 +41,10 @@ impl<const G: usize> Format for gemv::SymI8<G> {
 
     const STEP: usize = G;
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
+    fn cache() -> &'static FormulaCache {
         // 一份缓存覆盖所有 SymI8<G> 实例：表达式与粒度无关。
-        static CACHE: gemv::Cache = gemv::Cache::new();
-        CACHE.get::<Self>()
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn row(m: usize) -> usize {
@@ -69,7 +68,8 @@ impl<const G: usize> Format for gemv::SymI8<G> {
     ) -> diagnostic::Result<()> {
         let m = x.len();
         let n = out.len();
-        let (groups, group) = layout(m, n, scales.len(), weights.len())?;
+        let (groups, group) = gemv::scaled_groups(m, n, scales.len())?;
+        gemv::required_weights(weights.len(), n, m)?;
 
         // 每行只看自己那一段；每组只乘一次 scale。u8 按 i8 解释（对称零点 0）。
         for (row, value) in out.iter_mut().enumerate() {
@@ -77,49 +77,18 @@ impl<const G: usize> Format for gemv::SymI8<G> {
             let s_row = &scales[row * groups..][..groups];
             let mut acc = 0.0f32;
             for ((w_chunk, scale), x_chunk) in w_row.chunks(group).zip(s_row).zip(x.chunks(group)) {
-                let mut dot = 0.0f32;
-                for (packed, xv) in w_chunk.iter().zip(x_chunk) {
-                    dot += (*packed as i8) as f32 * xv;
-                }
+                // u8 按 i8 解释（对称零点 0）：先点积，整组只乘一次标度。
+                let dot: f32 = w_chunk
+                    .iter()
+                    .zip(x_chunk)
+                    .map(|(packed, xv)| ((*packed as i8) as f32) * xv)
+                    .sum();
                 acc += dot * scale;
             }
             *value = acc;
         }
         Ok(())
     }
-}
-
-/// 校验输入尺寸并推导分组数与每组宽度：纯前置约束，不碰数据。
-fn layout(
-    m: usize,
-    n: usize,
-    scales_len: usize,
-    weights_len: usize,
-) -> diagnostic::Result<(usize, usize)> {
-    if n == 0 {
-        return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
-    }
-    if !scales_len.is_multiple_of(n) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("scale 长度 {} 不是 {n} 的整数倍", scales_len),
-        ));
-    }
-    let groups = scales_len / n;
-    if groups == 0 || !m.is_multiple_of(groups) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("scale 长度 {} 推不出能整除 {m} 的分组数", scales_len),
-        ));
-    }
-    let group = m / groups;
-    if weights_len < n * m {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("权重长度 {} < {}", weights_len, n * m),
-        ));
-    }
-    Ok((groups, group))
 }
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。

@@ -1,14 +1,14 @@
 /* prim/ascend/witness.cpp —— 910b 每条 provide 的最小见证。
  *
  * 统一 ABI：`int witness_<name>(float *out)` 返回写入的元素个数（≤ 8），
- * 值按 f32 读回后与档案里的 `witness.expect` 对拍（DESIGN §11.3）。
+ * 值按 f32 读回后与档案里的 `witness.expect` 对拍（cutile README §11.3）。
  * 内容按执行器的 host ABI 写（扩展名跟随 `emit = ascendc`，与同目录片段一致）；
  * P0 的见证执行器只执行 `emit = c`，所以等级仍是 L0——AscendC 的 host harness
  * 与真机证据随非 C 执行器一起补。
  *
  * 每条签名一条函数：`dot` 的 `mmad`（Cube，f16 分块）与 `scalar_fma`（scalar，f32）
  * 是两种能力，不能共用一个见证；`quant` / `load` / `load_async` 的特化实现与标量实现
- * 虽然语义相同，也各自保留入口——一条见证只能证明一条签名（DESIGN §11.3）。
+ * 虽然语义相同，也各自保留入口——一条见证只能证明一条签名（cutile README §11.3）。
  *
  * 末尾六条是 P0 模板不用、但 910b 确实具备的能力（Cube 的 tile `mmad`、vector 的
  * 置换/广播/前缀和与 `vexp`/`vrec`）。它们的等级是 L0：有见证源码，没有片段文本，

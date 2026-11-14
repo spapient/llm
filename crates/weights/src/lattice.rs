@@ -168,8 +168,8 @@ pub fn dequantize(packed: &[u8], scales: &[f32], bits: u8, dst: &mut [f32]) -> R
     check_bits(bits)?;
     let stride = DIM * bits as usize / 8 + usize::from(!(DIM * bits as usize).is_multiple_of(8));
     for (i, out) in dst.chunks_mut(DIM).enumerate() {
-        let Some(&scale) = scales.get(i) else { break };
-        let Some(bytes) = packed.get(i * stride..(i + 1) * stride) else {
+        let block = i * stride..(i + 1) * stride;
+        let Some((&scale, bytes)) = scales.get(i).zip(packed.get(block)) else {
             break;
         };
         for (slot, &q) in out.iter_mut().zip(unpack(bytes, bits).iter()) {
@@ -399,10 +399,10 @@ pub fn quantize8(data: &[f32], bits: u8) -> Result<(Vec<u8>, Vec<f32>)> {
 /// 8 维全量解码；短读时剩余 `dst` 不写（调用方按 0 初始化即可）。
 pub fn dequantize8(packed: &[u8], scales: &[f32], bits: u8, dst: &mut [f32]) -> Result<()> {
     check_bits(bits)?;
+    let width = bits as usize;
     for (i, out) in dst.chunks_mut(WIDE).enumerate() {
-        let Some(&scale) = scales.get(i) else { break };
-        let at = i * bits as usize;
-        let Some(bytes) = packed.get(at..at + bits as usize) else {
+        let at = i * width;
+        let Some((&scale, bytes)) = scales.get(i).zip(packed.get(at..at + width)) else {
             break;
         };
         for (slot, &q) in out
@@ -417,16 +417,6 @@ pub fn dequantize8(packed: &[u8], scales: &[f32], bits: u8, dst: &mut [f32]) -> 
 
 // ---------------------------------------------------------------- 3×E8（24 维）
 
-fn fit24(block: &[f32], bits: u8) -> f32 {
-    let hi = span(bits);
-    let top = peak(block);
-    if top <= 0.0 || hi <= 0.0 {
-        1.0
-    } else {
-        top / hi
-    }
-}
-
 /// 24 维编码：3×E8 直积（Leech Λ24 的退化替代），单块 scale。
 pub fn quantize24(data: &[f32], bits: u8) -> Result<(Vec<u8>, Vec<f32>)> {
     check_bits(bits)?;
@@ -434,7 +424,7 @@ pub fn quantize24(data: &[f32], bits: u8) -> Result<(Vec<u8>, Vec<f32>)> {
     let mut packed = Vec::with_capacity(data.len().div_ceil(DIM) * stride);
     let mut scales = Vec::with_capacity(data.len().div_ceil(DIM));
     for chunk in data.chunks(DIM) {
-        let scale = fit24(chunk, bits);
+        let scale = fit8(chunk, bits);
         scales.push(scale);
         for j in 0..DIM / WIDE {
             let sub = chunk.get(j * WIDE..).unwrap_or(&[]);
@@ -449,19 +439,25 @@ pub fn dequantize24(packed: &[u8], scales: &[f32], bits: u8, dst: &mut [f32]) ->
     check_bits(bits)?;
     let stride = DIM * bits as usize / 8;
     for (i, out) in dst.chunks_mut(DIM).enumerate() {
-        let Some(&scale) = scales.get(i) else { break };
-        let Some(bytes) = packed.get(i * stride..(i + 1) * stride) else {
+        let block = i * stride..(i + 1) * stride;
+        let Some((&scale, bytes)) = scales.get(i).zip(packed.get(block)) else {
             break;
         };
-        for (j, sub) in out.chunks_mut(WIDE).enumerate() {
-            let at = j * bits as usize;
-            let point = point8(unpack8(&bytes[at..at + bits as usize], bits), bits);
-            for (slot, &q) in sub.iter_mut().zip(point.iter()) {
-                *slot = q * scale;
-            }
+        for (slot, &q) in out.iter_mut().zip(block24(bytes, bits).iter()) {
+            *slot = q * scale;
         }
     }
     Ok(())
+}
+
+/// 一块 24 维字节 → 3 个 E8 点首尾相接；每个 8 维子块一个 `bits` 字节索引。
+fn block24(bytes: &[u8], bits: u8) -> [f32; DIM] {
+    let mut point = [0.0f32; DIM];
+    for (sub, index) in point.chunks_mut(WIDE).zip(0..) {
+        let at = index * bits as usize;
+        sub.copy_from_slice(&point8(unpack8(&bytes[at..], bits), bits));
+    }
+    point
 }
 
 #[cfg(test)]

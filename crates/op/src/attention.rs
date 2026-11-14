@@ -88,6 +88,11 @@ fn sqrt_d(sample: &Sample) -> f32 {
     (sample.n as f32).sqrt()
 }
 
+/// 三个输入缓冲：朴素与 flash 路径读同一份 `q/k/v`，缺失时的文案因此只写一次。
+fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
+    Ok((sample.f32("q")?, sample.f32("k")?, sample.f32("v")?))
+}
+
 /// 行 `row` 与行 `col` 的点积：四个朴素/flash 实现共用，免得每处重写 `d` 长的累加循环。
 fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
     let mut sum = 0.0f32;
@@ -105,83 +110,85 @@ fn check_len(q: &[f32], k: &[f32], v: &[f32], out: &[f32], len: usize) -> diagno
     Ok(())
 }
 
-/// 单行的 online（flash）注意力：跑一遍 `j` 维护最大值、归一化分母与累加向量，返回 `(acc, sum)`。
-/// flash 参考与 flash 内核共用同一份计算，只差最后写回各自的 `out`。
-fn online_row(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    row: usize,
+/// 注意力的一行机器：三个操作数与行几何（`s`、`d`、`√d`），四个入口共用同一份算式。
+struct Rows<'a> {
+    q: &'a [f32],
+    k: &'a [f32],
+    v: &'a [f32],
     s: usize,
     d: usize,
     scale: f32,
-) -> (Vec<f32>, f32) {
-    let mut max = f32::MIN;
-    let mut sum = 0.0f32;
-    let mut acc = vec![0.0f32; d];
-    for j in 0..s {
-        let score = dot(q, k, row, j, d) / scale;
-        let new_max = max.max(score);
-        let reweight = (max - new_max).exp();
-        let prob = (score - new_max).exp();
-        sum = sum * reweight + prob;
-        for h in 0..d {
-            acc[h] = acc[h] * reweight + prob * v[j * d + h];
-        }
-        max = new_max;
-    }
-    (acc, sum)
 }
 
-/// 朴素路径的 V 加权求和：按归一化概率逐列累加写进 `out[row]`，参考与内核共用。
-fn weight_v(v: &[f32], exps: &[f32], sum: f32, s: usize, d: usize, row: usize, out: &mut [f32]) {
-    for h in 0..d {
-        let mut acc = 0.0f32;
-        for j in 0..s {
-            acc += (exps[j] / sum) * v[j * d + h];
+impl<'a> Rows<'a> {
+    /// 从样本取三个操作数。
+    fn of(sample: &'a Sample) -> diagnostic::Result<Self> {
+        let (q, k, v) = qkv(sample)?;
+        Ok(Self {
+            q,
+            k,
+            v,
+            s: sample.m,
+            d: sample.n,
+            scale: sqrt_d(sample),
+        })
+    }
+
+    /// 朴素路径的一行：分数 p[j] = dot(q[row], k[j]) / √d → 数值稳定 softmax → 对 `V` 加权。
+    fn naive(&self, row: usize, out: &mut [f32]) {
+        let scores: Vec<f32> = (0..self.s)
+            .map(|col| dot(self.q, self.k, row, col, self.d) / self.scale)
+            .collect();
+        let max = scores.iter().copied().fold(f32::MIN, f32::max);
+        let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        for h in 0..self.d {
+            let mut acc = 0.0f32;
+            for j in 0..self.s {
+                acc += (exps[j] / sum) * self.v[j * self.d + h];
+            }
+            out[row * self.d + h] = acc;
         }
-        out[row * d + h] = acc;
+    }
+
+    /// online（flash）路径的一行：跑一遍 `j` 维护最大值、归一化分母与累加向量，返回 `(acc, sum)`。
+    fn online(&self, row: usize) -> (Vec<f32>, f32) {
+        let mut max = f32::MIN;
+        let mut sum = 0.0f32;
+        let mut acc = vec![0.0f32; self.d];
+        for col in 0..self.s {
+            let score = dot(self.q, self.k, row, col, self.d) / self.scale;
+            let new_max = max.max(score);
+            let reweight = (max - new_max).exp();
+            let prob = (score - new_max).exp();
+            sum = sum * reweight + prob;
+            for h in 0..self.d {
+                acc[h] = acc[h] * reweight + prob * self.v[col * self.d + h];
+            }
+            max = new_max;
+        }
+        (acc, sum)
     }
 }
 
 /// 朴素参考：落地完整分数矩阵，逐行 softmax，再乘 `V`。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    let (s, d) = (sample.m, sample.n);
-    let q = sample.f32("q")?;
-    let k = sample.f32("k")?;
-    let v = sample.f32("v")?;
-    let scale = sqrt_d(sample);
-    let mut out = vec![0.0f32; s * d];
-
-    for i in 0..s {
-        // 1) 分数行 p[j] = dot(q[i], k[j]) / sqrt(d)。
-        let mut scores = vec![0.0f32; s];
-        for (j, score) in scores.iter_mut().enumerate() {
-            *score = dot(q, k, i, j, d) / scale;
-        }
-        // 2) 数值稳定 softmax。
-        let max = scores.iter().copied().fold(f32::MIN, f32::max);
-        let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
-        let sum: f32 = exps.iter().sum();
-        // 3) 对 V 加权求和。
-        weight_v(v, &exps, sum, s, d, i, &mut out);
+    let rows = Rows::of(sample)?;
+    let mut out = vec![0.0f32; rows.s * rows.d];
+    for row in 0..rows.s {
+        rows.naive(row, &mut out);
     }
     Ok(out)
 }
 
 /// Flash 参考：online softmax 分块（这里块取整条序列，语义与分块等价），单遍 K/V。
 pub fn flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    let (s, d) = (sample.m, sample.n);
-    let q = sample.f32("q")?;
-    let k = sample.f32("k")?;
-    let v = sample.f32("v")?;
-    let scale = sqrt_d(sample);
-    let mut out = vec![0.0f32; s * d];
-
-    for i in 0..s {
-        let (acc, sum) = online_row(q, k, v, i, s, d, scale);
-        for h in 0..d {
-            out[i * d + h] = acc[h] / sum;
+    let rows = Rows::of(sample)?;
+    let mut out = vec![0.0f32; rows.s * rows.d];
+    for row in 0..rows.s {
+        let (acc, sum) = rows.online(row);
+        for h in 0..rows.d {
+            out[row * rows.d + h] = acc[h] / sum;
         }
     }
     Ok(out)
@@ -200,18 +207,17 @@ pub fn forward(
     s: usize,
     d: usize,
 ) -> diagnostic::Result<()> {
-    let len = s * d;
-    check_len(q, k, v, out, len)?;
-    let scale = (d as f32).sqrt();
-    for i in 0..s {
-        let mut scores = vec![0.0f32; s];
-        for (j, score) in scores.iter_mut().enumerate() {
-            *score = dot(q, k, i, j, d) / scale;
-        }
-        let max = scores.iter().copied().fold(f32::MIN, f32::max);
-        let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
-        let sum: f32 = exps.iter().sum();
-        weight_v(v, &exps, sum, s, d, i, out);
+    check_len(q, k, v, out, s * d)?;
+    let rows = Rows {
+        q,
+        k,
+        v,
+        s,
+        d,
+        scale: (d as f32).sqrt(),
+    };
+    for row in 0..s {
+        rows.naive(row, out);
     }
     Ok(())
 }
@@ -229,13 +235,19 @@ pub fn flash_forward(
     s: usize,
     d: usize,
 ) -> diagnostic::Result<()> {
-    let len = s * d;
-    check_len(q, k, v, out, len)?;
-    let scale = (d as f32).sqrt();
-    for i in 0..s {
-        let (acc, sum) = online_row(q, k, v, i, s, d, scale);
+    check_len(q, k, v, out, s * d)?;
+    let rows = Rows {
+        q,
+        k,
+        v,
+        s,
+        d,
+        scale: (d as f32).sqrt(),
+    };
+    for row in 0..s {
+        let (acc, sum) = rows.online(row);
         for h in 0..d {
-            out[i * d + h] = acc[h] / sum;
+            out[row * d + h] = acc[h] / sum;
         }
     }
     Ok(())

@@ -23,6 +23,27 @@ pub struct Group {
     divisor: usize,
 }
 
+/// 分组声明的静态判据：轴名合法、不以自己为基准、因子非零。
+///
+/// 这三条只读声明的字面量，不读表；「基准有没有长度、能不能整除」属于 [`Extents::base_length`]。
+fn declared(label: char, base: char, divisor: usize) -> Result<(), Error> {
+    if !is_label(label) {
+        return Err(blame(format!("轴 `{label}` {NOT_LABEL}")));
+    }
+    if label == base {
+        return Err(blame(format!("轴 `{label}` 不能以自己为分组基准")));
+    }
+    if divisor != 0 {
+        return Ok(());
+    }
+    Err(blame(format!("轴 `{label}` 的分组因子不能为 0")))
+}
+
+/// 分组错误的统一边框：类别恒为 `invalid`，上下文固定到 [`Extents::group`]。
+fn blame(message: String) -> Error {
+    Error::new(Code::Invalid, message).with("einsum::Extents::group")
+}
+
 impl Extents {
     /// 由 `(字母, 长度)` 构造。
     ///
@@ -74,32 +95,28 @@ impl Extents {
     /// - `base` 没有长度；
     /// - `divisor` 为 `0`，或 `base` 的长度不是它的整数倍。
     pub fn group(mut self, label: char, base: char, divisor: usize) -> Result<Self, Error> {
-        let blame =
-            |message: String| Error::new(Code::Invalid, message).with("einsum::Extents::group");
-        if !is_label(label) {
-            return Err(blame(format!("轴 `{label}` {NOT_LABEL}")));
-        }
-        if label == base {
-            return Err(blame(format!("轴 `{label}` 不能以自己为分组基准")));
-        }
-        if divisor == 0 {
-            return Err(blame(format!("轴 `{label}` 的分组因子不能为 0")));
-        }
-        let Some(length) = self.entries.get(&base).copied() else {
-            return Err(blame(format!(
-                "轴 `{label}` 以 `{base}` 为分组基准，但 `{base}` 没有长度（先声明基准轴）"
-            )));
-        };
-        if !length.is_multiple_of(divisor) {
-            return Err(blame(format!(
-                "轴 `{base}` 的长度 {length} 不是分组因子 {divisor} 的整数倍"
-            )));
-        }
+        declared(label, base, divisor)?;
+        let length = self.base_length(label, base, divisor)?;
         if self.entries.insert(label, length / divisor).is_some() {
             return Err(blame(format!("轴 `{label}` 被声明了两次")));
         }
         self.groups.insert(label, Group { base, divisor });
         Ok(self)
+    }
+
+    /// 基准轴的分组长度：基准必须先声明，且长度能被因子整除。
+    fn base_length(&self, label: char, base: char, divisor: usize) -> Result<usize, Error> {
+        let Some(length) = self.entries.get(&base).copied() else {
+            return Err(blame(format!(
+                "轴 `{label}` 以 `{base}` 为分组基准，但 `{base}` 没有长度（先声明基准轴）"
+            )));
+        };
+        if length.is_multiple_of(divisor) {
+            return Ok(length);
+        }
+        Err(blame(format!(
+            "轴 `{base}` 的长度 {length} 不是分组因子 {divisor} 的整数倍"
+        )))
     }
 
     /// 一条轴的分组来历；普通轴返回 `None`。

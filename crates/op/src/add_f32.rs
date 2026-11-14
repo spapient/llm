@@ -3,20 +3,19 @@
 //! 语义表由 `#[annotation::model]` 生成（`tests/contracts.rs` 要求语义表只有这一个生产者），
 //! 算术与遍历由 [`crate::elementwise`] 骨架按 [`Add`] 类型单态化。
 
-use crate::elementwise::{BinCache, Binary};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::elementwise::Binary;
 
 /// 加法实现：给 [`Binary`] 提供表达式、操作数与逐元素运算。
 pub struct Add;
 
-static CACHE: BinCache = BinCache::new();
-
 impl Binary for Add {
     const EXPR: &'static str = "n,n,n->n";
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::elementwise::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::elementwise::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn apply(x: f32, y: f32) -> f32 {

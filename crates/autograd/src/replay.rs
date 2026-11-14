@@ -1,26 +1,12 @@
 //! 重放执行：[`Replay`] 把 [`Plan`] 编译成一条可执行的指令序列，并驱动整次反向。
 //!
-//! [`Plan`] 只回答"留谁、何时释放、重放多少步"；这一层把它变成**可执行**的东西：反向第 `k` 步
-//! 之前先重算哪几步（拓扑序），执行完之后交还哪些激活。序列在构造时一次算好，执行时每一步只是
-//! 两次切片遍历——稳定态不分配、不递归、不查哈希。
+//! 反向第 `k` 步之前重算哪几步（拓扑序）、之后交还哪些激活，构造时编成两张扁平区间表，执行时
+//! 每步只是两次切片遍历——稳定态不分配、不递归、不查哈希。数值不在本 crate：[`Store`] 是唯一的
+//! 口子，真实缓冲在 `train`，测试里是一张标量表，于是"重算出来的值对不对"可以逐位对拍。
 //!
-//! # 谁来算
-//!
-//! 数值不在本 crate：[`Store`] 是唯一的口子。`compute` 拿算子名与输入变量、写出输出变量，
-//! `free` 交还一块激活；真实缓冲在 `train`，测试里是一张标量表，于是"重算出来的值对不对"
-//! 可以逐位对拍。
-//!
-//! # 为什么释放时机是安全的
-//!
-//! [`Plan::release`] 给的是"最后一次被需要"的步骤。这里有个容易漏掉的情形：一个检查点可能
-//! 一边被深层节点直接消费、一边是某个更浅的被丢弃值的祖先——后者排得更晚。计划已经把重算需求
-//! 沿被丢弃的链传播过了（见 `plan.rs` 的账本），所以只要照它的释放点走，就不会在还需要的时候
-//! 把值还回去；`Replay` 本身不再做第二份判断。
-//!
-//! # 代价是可核对的
-//!
-//! [`Plan::replayed`] 是计划承诺的重算步数，[`Replay::run`] 返回实际执行的步数。共享的祖先在同
-//! 一步里只展开一次，所以实际值只会更小；一旦更大，说明计划低估了代价，直接报错而不是继续跑。
+//! 释放时机照 [`Plan::release`] 走：计划已经把重算需求沿被丢弃的链传播过了（见 `plan.rs` 的
+//! 账本），`Replay` 不再做第二份判断。承诺的步数是 [`Plan::replayed`]，实际值只会更小（共享祖先
+//! 在同一步里只展开一次）；一旦更大就报错，而不是继续跑。
 
 use diagnostic::Result;
 
@@ -32,28 +18,15 @@ const BUILD: &str = "autograd::Replay::of";
 const RUN: &str = "autograd::Replay::run";
 
 /// 激活值的存放：重放只决定"算哪一步、什么时候丢"，真的算与存由调用方给。
-///
-/// 方法只有两个，语义都很窄：`compute` 用**当前**存着的输入值算出一步前向，`free` 交还一块
-/// 激活。读值的口子不在 trait 里——反向公式本来就由调用方写，它掌握自己的缓冲布局。
 pub trait Store {
-    /// 重算一步前向：`op(inputs) -> output`，输入此刻必须都在。
-    ///
-    /// # Errors
-    ///
-    /// 输入缺失、设备失败、算子未知——由实现决定，[`Replay::run`] 原样向上抛。
+    /// 重算一步前向 `op(inputs) -> output`；输入此刻必须都在，失败由 [`Replay::run`] 原样上抛。
     fn compute(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()>;
 
-    /// 交还一块激活：之后它的值不再被读，直到被重新算出来。
-    ///
-    /// 交还的可能是保留的检查点，也可能是刚重算出来的临时值，实现不必区分。
+    /// 交还一块激活：之后它的值不再被读，直到被重新算出来；实现不必区分检查点与临时值。
     fn free(&mut self, var: Var);
 }
 
-/// 一条可执行的重放序列：与反向调度逐步对齐的两张区间表。
-///
-/// 反向第 `k` 步之前执行 `compute[k]`（前向拓扑序），之后交还 `free[k]`。两张表都是扁平的，
-/// 第 `k` 步是两次切片遍历，没有逐步骤的 `Vec`——`Plan` 每步新建，重放序列也一样，稳定态
-/// 不留下碎片。
+/// 一条可执行的重放序列：与反向调度逐步对齐的两张扁平区间表（稳定态不留下碎片）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replay {
     compute: Vec<Var>,
@@ -64,16 +37,11 @@ pub struct Replay {
 }
 
 impl Replay {
-    /// 把计划编译成指令序列。
-    ///
-    /// 只要三样东西：`tape`（重算时要知道每一步的算子与输入）、`schedule`（反向顺序与每一步
-    /// 的输入）、`plan`（谁保留、谁丢弃、何时释放）。三者必须描述同一张图，否则 [`Replay::run`]
-    /// 在第一步之前就会拒绝。
+    /// 把计划编译成指令序列：`tape` 给算子与输入、`schedule` 给反向顺序、`plan` 给保留与丢弃。
     ///
     /// # Errors
     ///
-    /// 只有一个来源：计划丢掉了一个本次调度里无处重放的值。那说明计划与图不一致，属于内部
-    /// 不变量被破坏，不是调用方写错了参数。
+    /// 只有一个来源：计划丢掉了一个本次调度里无处重放的值——内部不变量被破坏，不是调用方参数错。
     pub fn of(tape: &Tape, schedule: &Schedule, plan: &Plan) -> Result<Self> {
         let mut builder = Builder::new(tape, schedule.steps().len(), plan);
         for (index, step) in schedule.steps().iter().enumerate() {
@@ -91,13 +59,7 @@ impl Replay {
         self.expected
     }
 
-    /// 按计划执行整次反向：该重算的先重算，再让调用方算这一步的梯度，最后交还到寿的激活。
-    ///
-    /// `backward` 是调用方的反向公式：它拿到的变量值一定都在，因为重算已经在此之前做完。
-    /// 交还放在它之后——一个激活的寿命就是"直到最后一次被需要"，不按作用域。
-    ///
-    /// 返回**实际**重算的前向步数：共享的祖先在同一步里只展开一次，所以它可以小于
-    /// [`Replay::expected`]，但绝不会大于。
+    /// 按计划执行整次反向：先重算、再让调用方算这一步的梯度、最后交还到寿的激活。返回实际重算步数。
     ///
     /// # Errors
     ///
@@ -113,40 +75,75 @@ impl Replay {
         S: Store,
         F: FnMut(&mut S, &Node) -> Result<()>,
     {
-        if schedule.steps().len() + 1 != self.compute_at.len() {
-            return Err(invalid(
-                RUN,
-                format!(
-                    "重放序列按 {} 步编排，这次调度有 {} 步：序列与调度不是同一张图",
-                    self.compute_at.len() - 1,
-                    schedule.steps().len()
-                ),
-            ));
-        }
+        self.matches(schedule)?;
+        let computed = self.drive(tape, schedule, store, &mut backward)?;
+        self.affirm(computed)
+    }
+
+    /// 逐步执行：先按需重算，再跑调用方的反向公式，最后交还到寿的激活。
+    fn drive<S, F>(
+        &self,
+        tape: &Tape,
+        schedule: &Schedule,
+        store: &mut S,
+        backward: &mut F,
+    ) -> Result<u64>
+    where
+        S: Store,
+        F: FnMut(&mut S, &Node) -> Result<()>,
+    {
         let mut computed = 0u64;
         for (index, step) in schedule.steps().iter().enumerate() {
-            for &var in slice(&self.compute, &self.compute_at, index) {
-                let node = tape.node(var).ok_or_else(|| {
-                    internal(RUN, format!("变量 {} 没有生产者，无法重算", var.id()))
-                })?;
-                store.compute(node.op(), node.inputs(), var)?;
-                computed += 1;
-            }
+            computed += self.recompute(tape, store, index)?;
             backward(store, step)?;
-            for &var in slice(&self.free, &self.free_at, index) {
-                store.free(var);
-            }
-        }
-        if computed > self.expected {
-            return Err(internal(
-                RUN,
-                format!(
-                    "实际重算 {computed} 步，超过计划承诺的 {} 步",
-                    self.expected
-                ),
-            ));
+            // 交还放在反向公式之后：一个激活的寿命就是"直到最后一次被需要"。
+            slice(&self.free, &self.free_at, index)
+                .iter()
+                .for_each(|var| store.free(*var));
         }
         Ok(computed)
+    }
+
+    /// 序列与调度必须是同一张图：步骤数对不上就拒绝执行。
+    fn matches(&self, schedule: &Schedule) -> Result<()> {
+        if schedule.steps().len() + 1 == self.compute_at.len() {
+            return Ok(());
+        }
+        Err(invalid(
+            RUN,
+            format!(
+                "重放序列按 {} 步编排，这次调度有 {} 步：序列与调度不是同一张图",
+                self.compute_at.len() - 1,
+                schedule.steps().len()
+            ),
+        ))
+    }
+
+    /// 第 `index` 步之前要重算的全部前向步，返回本步重算的个数。
+    fn recompute<S: Store>(&self, tape: &Tape, store: &mut S, index: usize) -> Result<u64> {
+        let mut computed = 0u64;
+        for &var in slice(&self.compute, &self.compute_at, index) {
+            let node = tape
+                .node(var)
+                .ok_or_else(|| internal(RUN, format!("变量 {} 没有生产者，无法重算", var.id())))?;
+            store.compute(node.op(), node.inputs(), var)?;
+            computed += 1;
+        }
+        Ok(computed)
+    }
+
+    /// 实际重算不能超过承诺：一旦超过，说明计划低估了代价。
+    fn affirm(&self, computed: u64) -> Result<u64> {
+        if computed <= self.expected {
+            return Ok(computed);
+        }
+        Err(internal(
+            RUN,
+            format!(
+                "实际重算 {computed} 步，超过计划承诺的 {} 步",
+                self.expected
+            ),
+        ))
     }
 }
 
@@ -214,38 +211,44 @@ impl<'a> Builder<'a> {
         self.stack.push((root, false));
         while let Some((var, expanded)) = self.stack.pop() {
             if expanded {
+                // 出栈的是"输入都已就绪"的节点：轮到它自己了。
                 self.replay.compute.push(var);
                 self.frees.push((self.current, var));
                 continue;
             }
-            // 叶子是参数与输入：常驻，不进激活预算，也不必重算。
-            let Some(node) = self.tape.node(var) else {
-                continue;
-            };
-            // 保留的检查点就是重放的起点：它的值从反向一开始就在。
-            if self.plan.keep(var) {
-                continue;
-            }
-            if !node.requirement().requires() {
-                return Err(internal(
-                    BUILD,
-                    format!(
-                        "变量 {} 被丢弃了，但它不在反向图上、这次调度里没有一步能重放它",
-                        var.id()
-                    ),
-                ));
-            }
-            let slot = var.id() as usize;
-            if self.stamp[slot] == self.mark {
-                continue;
-            }
-            self.stamp[slot] = self.mark;
-            // 先登记自身、再压输入：出栈顺序是"输入先、自身后"，也就是合法的前向拓扑序。
-            self.stack.push((var, true));
-            for input in node.inputs().iter().rev() {
-                self.stack.push((*input, false));
-            }
+            self.visit(var)?;
         }
+        Ok(())
+    }
+
+    /// 访问一个输入：叶子与检查点不重算，被丢弃的节点展开成"输入先、自身后"的拓扑序。
+    fn visit(&mut self, var: Var) -> Result<()> {
+        // 叶子是参数与输入：常驻，不进激活预算，也不必重算。
+        let Some(node) = self.tape.node(var) else {
+            return Ok(());
+        };
+        // 保留的检查点就是重放的起点：它的值从反向一开始就在。
+        if self.plan.keep(var) {
+            return Ok(());
+        }
+        if !node.requirement().requires() {
+            return Err(internal(
+                BUILD,
+                format!(
+                    "变量 {} 被丢弃了，但它不在反向图上、这次调度里没有一步能重放它",
+                    var.id()
+                ),
+            ));
+        }
+        let slot = var.id() as usize;
+        if self.stamp[slot] == self.mark {
+            return Ok(());
+        }
+        self.stamp[slot] = self.mark;
+        // 先登记自身、再压输入：出栈顺序是"输入先、自身后"，也就是合法的前向拓扑序。
+        self.stack.push((var, true));
+        self.stack
+            .extend(node.inputs().iter().rev().map(|input| (*input, false)));
         Ok(())
     }
 
@@ -259,15 +262,19 @@ impl<'a> Builder<'a> {
         // 按 (步骤, 编号) 排序：每一步内部顺序稳定，同一张图每次编出来的序列都相同。
         self.frees
             .sort_unstable_by_key(|(step, var)| (*step, var.id()));
-        let mut cursor = 0usize;
+        let mut start = 0usize;
         for step in 0..=self.steps {
-            self.replay.free_at[step] = cursor as u32;
-            while cursor < self.frees.len() && self.frees[cursor].0 as usize == step {
-                self.replay.free.push(self.frees[cursor].1);
-                cursor += 1;
-            }
+            let count = self.frees[start..]
+                .iter()
+                .take_while(|(at, _)| *at as usize == step)
+                .count();
+            self.replay.free_at[step] = start as u32;
+            self.replay
+                .free
+                .extend(self.frees[start..start + count].iter().map(|(_, var)| *var));
+            start += count;
         }
-        debug_assert_eq!(cursor, self.frees.len(), "释放点越过了最后一步");
+        debug_assert_eq!(start, self.frees.len(), "释放点越过了最后一步");
         self.replay
     }
 }
@@ -280,10 +287,7 @@ mod tests {
     use crate::{Budget, Choice, Requirement};
     use testkit::Rng;
 
-    /// 标量表：值的真值 + 当前活着的值 + 峰值。
-    ///
-    /// 三件事一起做：重算出来的值与真值逐位对拍、读已释放的值立刻报错、活着的字节数记峰值。
-    /// 于是"重放执行"不是"跑完没崩"，而是"每一步都对得上"。
+    /// 标量表：值的真值 + 当前活着的值 + 峰值（逐位对拍、读已释放值即报错、活着的字节数）。
     struct Table {
         truth: Vec<f32>,
         bytes: Vec<u64>,
@@ -294,10 +298,7 @@ mod tests {
     }
 
     impl Table {
-        /// 前向刚结束时的状态：叶子常驻，计划保留的激活都还在。
-        ///
-        /// 叶子（参数与输入）不算进 `live`：它们常驻，不属于激活预算，计划也不为它们记账，
-        /// 于是实测峰值与 [`Plan::peak`] 可以直接比。
+        /// 前向刚结束时的状态：叶子常驻，计划保留的激活都还在（叶子不计入 `live`）。
         fn new(tape: &Tape, plan: &Plan, truth: &[f32], bytes: &[u64]) -> Self {
             let mut values = vec![None; truth.len()];
             let mut live = 0u64;
@@ -509,8 +510,6 @@ mod tests {
     }
 
     /// 一个检查点可能既是深层节点的直接输入、又是更浅的被丢弃值的祖先：后者排得更晚。
-    ///
-    /// 计划必须把重算需求沿被丢弃的链传播上去，否则这个用例会在第 4 步读到已经释放的 `v`。
     #[test]
     fn a_checkpoint_that_anchors_a_later_replay_is_not_freed_early() {
         let mut tape = Tape::new();

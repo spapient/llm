@@ -7,6 +7,10 @@
 //! 布局是"同一组元素在扁平缓冲里的排列方式"，所以它只需要形状、不需要数据类型：搬运在这里
 //! 是元素级别的重排，按位打包（int4）由 `tensor::DType` 与具体算子负责。
 //!
+//! `mmap` feature 只在 **Unix** 目标上生效：`Mmap` 是 `mmap(2)` 的薄封装，非 Unix 目标没有
+//! 这套 FFI。其它目标上该 feature 是空操作、`Mmap` 不存在——这是刻意的取舍：用"整文件读入"
+//! 冒充映射会让"不占内存"这个前提失真，而缺失的类型在消费者那里是编译错误，不是静默降级。
+//!
 //! # 例子
 //!
 //! ```
@@ -23,9 +27,9 @@
 
 #![deny(unsafe_code)]
 
-#[cfg(feature = "mmap")]
+#[cfg(all(feature = "mmap", unix))]
 mod mmap;
-#[cfg(feature = "mmap")]
+#[cfg(all(feature = "mmap", unix))]
 pub use mmap::Mmap;
 
 use diagnostic::{Code, Error, Result};

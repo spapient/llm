@@ -2,20 +2,19 @@
 //!
 //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Silu`] 单态化。
 
-use crate::unary::{Unary, UnaryCache};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::unary::Unary;
 
 /// SiLU 实现：`x / (1 + exp(-x))`。
 pub struct Silu;
 
-static CACHE: UnaryCache = UnaryCache::new();
-
 impl Unary for Silu {
     const EXPR: &'static str = "n,n->n";
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::unary::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::unary::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn apply(x: f32) -> f32 {

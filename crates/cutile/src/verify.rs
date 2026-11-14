@@ -1,18 +1,29 @@
-//! `verify`：逐设备执行见证 + 协商 + 拼接 + 编译 + 与标量参考对拍。
+//! `verify`：逐设备把三件事钉在一起——见证跑通、协商选中首档、内核与标量参考对拍（README §11）。
+//!
+//! 形状矩阵固定在 `pipeline`：生产形状、小形状、非整除形状，后者专门抓"按 16 对齐成立、按 3 不成立"
+//! 这类错误。失败一律是错误而不是跳过：设备不在本机是 `unsupported`（退出码 3），声明或输入写错是
+//! `invalid`（退出码 2）。两条执行通道（本机 C、nvcc/CUDA）共用同一套步骤，设备差异收在 `Lane` 里。
 
 use crate::backend;
 use crate::build;
 use crate::builtin::Catalogue;
-use crate::cap::{self, Proof};
+use crate::cache::Artifact;
+use crate::cap::{self, NoPath, Path, Proof};
+use crate::dirs::Dirs;
 use crate::emit::Fragment;
-use crate::pipeline::{Run, parse_shape, rejected_shapes, verify_shapes};
+use crate::gate::LanguageGate;
+use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
+use crate::prof::{Emit, Profile};
 use crate::witness;
 use diagnostic::{Code, Error};
-use llm_config::Settings;
 use op::decl::OpDecl;
-use prof::prof::Profile;
+use op::model::Sample;
 
-/// 一台设备通过 L2 的证据。
+/// 设备不在本机时唯一的说法：通道、协商与报告都用它。
+const NO_DEVICE: &str = "本机没有该设备，只能真机验证";
+
+/// 一台设备通过 `L2` 的证据：这次执行真的产生了什么。档案登记值（`tool_ver`）与实测值（`toolchain`）
+/// 分开列：两者不一致不改等级，但报告必须把差异说出来。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Verified {
     /// 用户给的设备名（`auto` 或档案名）。
@@ -21,38 +32,32 @@ pub struct Verified {
     pub vendor: String,
     /// 档案 id。
     pub id: String,
-    /// 变体。
+    /// 协商选中的变体。
     pub variant: String,
-    /// tile。
+    /// 选中的 tile。
     pub tile: String,
-    /// 实际跑过的形状（`verify` 的形状矩阵）。
+    /// 实际跑过的形状（形状矩阵）。
     pub shapes: Vec<(u64, u64)>,
-    /// 执行通过的见证条数（每条 `grade ≥ L2` 的供给一条，结论是 L2 证据）。
+    /// 执行通过的见证条数（每条 `grade ≥ L2` 的供给一条）。
     pub witnesses: usize,
-    /// 本机自检通过的见证条数（设备执行跑不到的那些：非 C 设备的全部，C 设备的 `L0`/`L1`）。
-    ///
-    /// 与 [`Verified::witnesses`] 相加等于这台设备声明的全部见证：一份见证只被执行一次，
-    /// 由能给出更强结论的那个范围执行。
+    /// 本机自检通过的见证条数（设备执行跑不到的那些）；与 `witnesses` 相加是声明的全部见证。
     pub self_checked: usize,
     /// 与标量参考的相对误差（取全部形状的最大值）。
     pub max_rel_err: f64,
-    /// 源文件行数与 §16 的口径。
+    /// 源文件行数（§16 口径）。
     pub fragment: Fragment,
-    /// 档案登记的工具版本：与 [`Verified::toolchain`] 对照用，不参与任何判定。
+    /// 档案登记的工具版本：只与 `toolchain` 对照，不参与任何判定。
     pub tool_ver: String,
     /// 实测的工具链身份（`命令@版本`）；本机没有编译器时为 `None`（那一轮只复用已落盘产物）。
     pub toolchain: Option<String>,
-    /// 实测工具链是否与档案登记的版本相容（只比主版本号）。
-    ///
-    /// 不相容不改等级：证据可以在别的机器上取得，登记值说明的是"这条证据按哪个版本记的"。
-    /// 但报告必须把差异说出来，否则"换了一台机器、换了一个编译器"会静悄悄地发生。
+    /// 实测工具链是否与档案登记的版本相容（只比主版本号）：不一致不改等级，但报告要说出差异。
     pub toolchain_agrees: bool,
     /// 这次编译用的参数（档案的 `[compile].flags`）：证据与产物都对它成立。
     pub flags: String,
     /// 缓存键（十六进制）。
     pub key: String,
     /// 编译产物：形状矩阵的每一项一份（`reused` 为真表示那次没调用编译器）。
-    pub artifacts: Vec<crate::cache::Artifact>,
+    pub artifacts: Vec<Artifact>,
 }
 
 /// 一台设备的结果。
@@ -79,7 +84,7 @@ impl VerifyEntry {
     }
 }
 
-/// 一台设备的协商结论（DESIGN §16 判据「协商 3/3 命中首档」）。
+/// 一台设备的协商结论（README §16 判据「协商 3/3 命中首档」）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Negotiation {
     /// 命中降级链的首选变体；`of` 是链长。
@@ -155,9 +160,7 @@ impl VerifyReport {
     }
 }
 
-/// 逐设备的协商结论，与 `devices` 一一对应。
-///
-/// 判据是 `cap::negotiate`——**按档案自述**协商的那一档，不是这次执行得到的 `Proof`。
+/// 逐设备的协商结论，与 `devices` 一一对应；判据是 `cap::negotiate`——**按档案自述**的那一档，不是这次的 `Proof`。
 pub fn negotiations(op: &OpDecl, catalogue: &Catalogue, devices: &[String]) -> Vec<Negotiation> {
     devices
         .iter()
@@ -165,116 +168,123 @@ pub fn negotiations(op: &OpDecl, catalogue: &Catalogue, devices: &[String]) -> V
         .collect()
 }
 
+/// 按档案自述协商，把结果折成一个结论。回答什么：这台设备在**这份档案**下命中哪一档、落到链上第几步；
+/// 不回答什么：这次执行有没有证据。
 fn negotiate(op: &OpDecl, catalogue: &Catalogue, device: &str) -> Negotiation {
-    let profile = match catalogue.resolve(device) {
-        Ok(profile) => profile,
-        Err(error) => {
-            return Negotiation::Unknown {
-                reason: error.to_string(),
-            };
-        }
-    };
     let of = op.variants.len();
-    match cap::negotiate(op, profile) {
-        Ok(path) if path.is_head() => Negotiation::Head {
-            variant: path.variant,
-            of,
+    match catalogue.resolve(device) {
+        Ok(profile) => match cap::negotiate(op, profile) {
+            Ok(path) if path.is_head() => Negotiation::Head {
+                variant: path.variant,
+                of,
+            },
+            Ok(path) => Negotiation::Fallback {
+                variant: path.variant,
+                step: path.index + 1,
+                of,
+            },
+            Err(no_path) => unmet(&no_path),
         },
-        Ok(path) => Negotiation::Fallback {
-            variant: path.variant,
-            step: path.index + 1,
-            of,
+        Err(error) => Negotiation::Unknown {
+            reason: error.to_string(),
         },
-        Err(no_path) => {
-            // `needs` 是首选变体的完整明细（含已满足的项）：只报真正缺的那些，且一个原语只报一次。
-            let mut unmet: Vec<String> = Vec::new();
-            for report in no_path.needs.iter().filter(|report| !report.is_satisfied()) {
-                let prim = report.need.prim.to_string();
-                if !unmet.contains(&prim) {
-                    unmet.push(prim)
-                }
-            }
-            Negotiation::NoPath {
-                of: no_path.chain.len(),
-                unmet,
-            }
-        }
     }
 }
 
-/// 见证先跑：一条 `grade ≥ L2` 的供给如果没有自己的执行结果，后面的形状对拍就不再
-/// 是证据链的一部分（DESIGN §11.3）。
+/// 首选变体缺哪些原语：只报真正缺的，一个原语只报一次，顺序按 `needs`。
+fn unmet(no_path: &NoPath) -> Negotiation {
+    let mut prims: Vec<String> = no_path
+        .needs
+        .iter()
+        .filter(|report| !report.is_satisfied())
+        .map(|report| report.need.prim.to_string())
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    prims.retain(|prim| seen.insert(prim.clone()));
+    Negotiation::NoPath {
+        of: no_path.chain.len(),
+        unmet: prims,
+    }
+}
+
+/// 逐设备的 L2 证据与协商结论。见证先跑：一条 `grade ≥ L2` 的供给如果没有执行结果，后面的形状对拍
+/// 就不再是证据链的一部分；协商结论另算，它只看档案自述。
+///
+/// 回答什么：每台设备这次是否通过、失败原因与协商档位。不回答什么：某台设备为什么不该被选中。
 ///
 /// # Errors
 ///
 /// 算子不存在时返回说明；设备失败不算错误（写在 [`VerifyReport`] 里）。
 pub fn verify(
     catalogue: &Catalogue,
-    settings: &Settings,
+    dirs: &Dirs,
     op_name: &str,
     devices: &[String],
 ) -> diagnostic::Result<VerifyReport> {
     let op = catalogue
         .op(op_name)
         .ok_or_else(|| Error::new(Code::Missing, format!("没有算子 `{op_name}`")))?;
-    let mut entries = Vec::with_capacity(devices.len());
-    for device in devices {
-        let profile = match catalogue.resolve(device) {
-            Ok(profile) => profile,
-            Err(error) => {
-                entries.push(VerifyEntry::Failed {
-                    label: device.clone(),
-                    error,
-                });
-                continue;
-            }
-        };
-        let label = format!("{}({})", profile.meta.vendor, profile.meta.id);
-        // 见证先跑，且三条命令共用这一份结论：同一台设备因此可以同时“协商可行”与“见证不成立”。
-        let evidence = crate::witness::establish(profile, settings);
-        let witnesses = evidence.device;
-        let self_checked = evidence.host;
-        if let Some(error) = evidence.failure {
-            entries.push(VerifyEntry::Failed {
-                label,
-                error: match witness_note(witnesses, self_checked, &evidence.language) {
-                    Some(note) => error.with(note),
-                    None => error,
-                },
-            });
-            continue;
-        }
-        entries.push(
-            match verify_one(op, profile, settings, &evidence.proof(profile)) {
-                Ok(mut verified) => {
-                    verified.device = device.clone();
-                    verified.witnesses = witnesses;
-                    verified.self_checked = self_checked;
-                    VerifyEntry::Passed(verified)
-                }
-                Err(error) => VerifyEntry::Failed {
-                    label,
-                    error: match witness_note(witnesses, self_checked, &evidence.language) {
-                        Some(note) => error.with(note),
-                        None => error,
-                    },
-                },
-            },
-        );
-    }
     Ok(VerifyReport {
         op: op_name.to_string(),
         devices: devices.to_vec(),
-        entries,
+        entries: devices
+            .iter()
+            .map(|device| one_device(op, catalogue, dirs, device))
+            .collect(),
         negotiations: negotiations(op, catalogue, devices),
     })
 }
 
-/// 失败文案后面补一句"哪些见证真的跑过了"。
-///
-/// 设备执行、自检、语法门是三种效力不同的结论，不能合成一个数。三样都没有时不补句子。
-fn witness_note(device: usize, host: usize, gate: &crate::witness::LanguageGate) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
+/// 一台设备的结果：先取档案，再跑见证，最后才轮到形状对拍。回答什么：这次通过还是失败；不回答什么：失败该不该让整次 `verify` 退出。
+fn one_device(op: &OpDecl, catalogue: &Catalogue, dirs: &Dirs, device: &str) -> VerifyEntry {
+    let profile = match catalogue.resolve(device) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return VerifyEntry::Failed {
+                label: device.to_string(),
+                error,
+            };
+        }
+    };
+    let label = format!("{}({})", profile.meta.vendor, profile.meta.id);
+    let evidence = witness::establish(profile, dirs);
+    let note = witness_note(evidence.device, evidence.host, &evidence.language);
+    let proof = evidence.proof(profile);
+    let done = match evidence.failure {
+        Some(error) => Err(error),
+        None => verify_one(op, profile, dirs, &proof),
+    };
+    match done {
+        Ok(mut verified) => {
+            verified.device = device.to_string();
+            verified.witnesses = evidence.device;
+            verified.self_checked = evidence.host;
+            VerifyEntry::Passed(verified)
+        }
+        Err(error) => VerifyEntry::Failed {
+            label,
+            error: match note {
+                Some(note) => error.with(note),
+                None => error,
+            },
+        },
+    }
+}
+
+/// 失败文案后面补一句这次真的跑过了哪些见证。设备执行、本机自检与语言门是三种效力不同的结论，不合成
+/// 一个数；三样都没有时不补句子。它只追加，不改写 `Evidence::failure`。
+fn witness_note(device: usize, host: usize, gate: &LanguageGate) -> Option<String> {
+    let mut parts = count_parts(device, host);
+    parts.extend(gate_parts(gate));
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("、"))
+}
+
+/// 两档执行的计数：各说各的，不合成一个总和。
+fn count_parts(device: usize, host: usize) -> Vec<String> {
+    let mut parts = Vec::new();
     if device > 0 {
         parts.push(format!("见证设备执行 {device} 条通过"));
     }
@@ -283,26 +293,23 @@ fn witness_note(device: usize, host: usize, gate: &crate::witness::LanguageGate)
             "见证自检 {host} 条通过（host C ABI，不含设备执行）"
         ));
     }
+    parts
+}
+
+/// 语言门这一档：设备执行已覆盖、或被自己的语言拒绝时都不追加——前者是重复，后者已经写进
+/// `Evidence::failure`，再说一遍只会把同一句报错印两次。
+fn gate_parts(gate: &LanguageGate) -> Option<String> {
     match gate {
-        // 设备执行已经覆盖：再说一次语法门只是重复。
-        crate::witness::LanguageGate::Covered => {}
-        crate::witness::LanguageGate::Passed { front, witnesses } => {
-            parts.push(format!("语言门 {front} 通过（{witnesses} 条）"));
+        LanguageGate::Passed { front, witnesses } => {
+            Some(format!("语言门 {front} 通过（{witnesses} 条）"))
         }
-        crate::witness::LanguageGate::Absent { reason } => {
-            parts.push(format!("语言门不可用：{reason}"));
-        }
-        // 拒绝已经写进 `Evidence::failure`，这里再说一遍只会把同一句报错印两次。
-        crate::witness::LanguageGate::Rejected { .. } => {}
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("、"))
+        LanguageGate::Absent { reason } => Some(format!("语言门不可用：{reason}")),
+        _ => None,
     }
 }
 
-/// 一台设备的 L2 证据：逐形状编译、执行、与参考对拍。
+/// 一台设备的 L2 证据：逐形状编译、执行、与参考对拍。回答什么：产物在形状矩阵每一格上算出来的数
+/// 是不是标量参考的数。不回答什么：见证是否成立、协商该不该命中首档。
 ///
 /// # Errors
 ///
@@ -310,97 +317,197 @@ fn witness_note(device: usize, host: usize, gate: &crate::witness::LanguageGate)
 pub fn verify_one(
     op: &OpDecl,
     profile: &Profile,
-    settings: &Settings,
+    dirs: &Dirs,
     proof: &Proof,
 ) -> diagnostic::Result<Verified> {
     let run = Run::new(op, profile, proof.clone())?;
-    if profile.meta.emit == crate::prof::Emit::Cuda {
-        return verify_one_cuda(&run, settings);
-    }
-    if profile.meta.emit != crate::prof::Emit::C {
-        return Err(Error::new(Code::Unsupported, unsupported_emit(profile)));
-    }
-
+    let (lane, tool) = Lane::ready(profile)?;
     let path = run
         .negotiate()
         .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
-    let group = u64::from(run.model.group.max(1));
-    check_rejected_shapes(group)?;
+    check_rejected_shapes(u64::from(run.model.group.max(1)))?;
+    let mut verified = blank(&run, tool.as_ref());
+    verified.variant = path.variant.clone();
+    let sweep = Sweep {
+        run: &run,
+        dirs,
+        lane,
+        tool,
+        path,
+        tolerance: crate::reference::tolerance(run.model.dtype),
+        verified,
+    };
+    sweep.measure()
+}
 
-    // 没有编译器不等于没有结论：产物若已落盘，`build::execute` 会按产物旁的身份文件复用它。
-    let tool = backend::detect();
-    let tolerance = crate::reference::tolerance(run.model.dtype);
+/// 一个形状“怎么编译执行”：设备差异只在这里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    /// 本机 C 编译器 + 产物缓存（命中就不调编译器）。
+    Host,
+    /// nvcc 临时编译、GPU 执行、回读；不进产物缓存，产物因此为空。
+    Cuda,
+}
 
-    let mut max_rel_err = 0.0f64;
-    let mut shapes = Vec::new();
-    let mut artifacts = Vec::new();
-    let mut fragment = Fragment::new(0);
-    let mut key = String::new();
-    let mut tile = String::new();
-
-    for (m, n) in verify_shapes(&run.model) {
-        let (m, n) = (m as usize, n as usize);
-        let sample = (run.model.sample)(m, n);
-        let prepared = run.prepare(&path, settings, m, n)?;
-        let run_harness = prepared.harness(op, &sample, 1)?;
-        // 产物进缓存：命中就不调用编译器，L2 证据因此不必每次重编一遍。
-        let (outcome, artifact) = build::execute(
-            profile,
-            tool.as_ref(),
-            &prepared.key,
-            &run_harness,
-            settings,
-        )?;
-        let expected_len = sample
-            .buffer("y")
-            .map(|buffer| buffer.values.len())
-            .unwrap_or(sample.n);
-        if outcome.bits.len() != expected_len {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "形状 {m}x{n}：内核只输出 {} 个数，期望 {expected_len}",
-                    outcome.bits.len()
-                ),
-            ));
+impl Lane {
+    /// 档案声明的 `emit` 对应哪条通道，以及这条通道此刻能不能跑（`None` 表示没有编译器，只能复用产物）。本机没有执行路径时在这里 fail-fast。
+    fn ready(profile: &Profile) -> diagnostic::Result<(Self, Option<backend::Toolchain>)> {
+        match profile.meta.emit {
+            Emit::C => Ok((Self::Host, backend::detect())),
+            Emit::Cuda if witness::device_available(profile) => {
+                Ok((Self::Cuda, backend::detect_nvcc()))
+            }
+            Emit::Cuda => Err(Error::new(Code::Unsupported, NO_DEVICE.to_string())),
+            _ => Err(Error::new(Code::Unsupported, unsupported_emit(profile))),
         }
-        let want = (run.model.reference)(&sample)?;
-        let error = crate::reference::max_rel_err(&outcome.bits, &want);
-        if error > tolerance {
-            // 对拍失败不是“环境问题”：产物不满足它自己声明的语义，类别是 `invalid`。
-            return Err(Error::new(
-                Code::Invalid,
-                format!("形状 {m}x{n} 对拍失败：max_rel_err {error:.3e} > {tolerance:.0e}"),
-            ));
+    }
+}
+
+/// 一次遍历：流水线、执行通道、选中的路径、对拍阈值，以及逐形状填的报告。
+struct Sweep<'a> {
+    run: &'a Run<'a>,
+    dirs: &'a Dirs,
+    lane: Lane,
+    tool: Option<backend::Toolchain>,
+    path: Path,
+    tolerance: f64,
+    verified: Verified,
+}
+
+impl Sweep<'_> {
+    /// 逐形状跑一遍：一格失败即整台失败，证据链不接受“其余形状还行”；失败只给错误，不给半份报告。
+    fn measure(mut self) -> diagnostic::Result<Verified> {
+        for shape in verify_shapes(&self.run.model) {
+            self.cell(shape)?;
         }
-        max_rel_err = max_rel_err.max(error);
-        fragment = Fragment::new(prepared.source.lines());
-        key = prepared.key.hex();
-        tile = prepared.plan.tile.to_string();
-        shapes.push((m as u64, n as u64));
-        artifacts.push(artifact);
+        Ok(self.verified)
     }
 
-    Ok(Verified {
+    /// 一格：样本、计划、参考与判据两条通道完全相同，只有“怎么编译执行”按通道分。
+    /// 回答什么：这一格算不算数；不回答什么：这一格为什么不算（错误原样上报，不在这里解释）。
+    fn cell(&mut self, shape: (u64, u64)) -> diagnostic::Result<()> {
+        let (sample, prepared) = self.prepare(shape)?;
+        let (bits, artifact) = self.kernel(&sample, &prepared)?;
+        let want = (self.run.model.reference)(&sample)?;
+        let expect = self.expected(&sample, &want);
+        let error = parity(&bits, &want, expect, shape, self.tolerance)?;
+        let out = &mut self.verified;
+        out.max_rel_err = out.max_rel_err.max(error);
+        out.shapes.push(shape);
+        out.artifacts.extend(artifact);
+        out.fragment = Fragment::new(prepared.source.lines());
+        out.key = prepared.key.hex();
+        out.tile = prepared.plan.tile.to_string();
+        Ok(())
+    }
+
+    /// 形状 → 样本 + 产物：两条通道共用的前半段。
+    fn prepare(&self, (m, n): (u64, u64)) -> diagnostic::Result<(Sample, Prepared)> {
+        let (m, n) = (m as usize, n as usize);
+        let sample = (self.run.model.sample)(m, n);
+        let prepared = self.run.prepare(&self.path, self.dirs, m, n)?;
+        Ok((sample, prepared))
+    }
+
+    /// 输出个数该是多少：C 通道看样本声明的 `y`，CUDA 通道看参考输出的长度。
+    fn expected(&self, sample: &Sample, want: &[f32]) -> usize {
+        match self.lane {
+            Lane::Host => sample.buffer("y").map_or(sample.n, |y| y.values.len()),
+            Lane::Cuda => want.len(),
+        }
+    }
+
+    /// 一格怎么跑：返回回读的输出与产物记录（CUDA 通道每次临时编译，没有产物）。
+    fn kernel(
+        &self,
+        sample: &Sample,
+        prepared: &Prepared,
+    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
+        match self.lane {
+            Lane::Host => self.host(sample, prepared),
+            Lane::Cuda => self.cuda(sample, prepared),
+        }
+    }
+
+    /// C 通道：缓存编译（命中就不调编译器），产物因此进报告。
+    fn host(
+        &self,
+        sample: &Sample,
+        prepared: &Prepared,
+    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
+        let program = prepared.harness(self.run.op, sample, 1)?;
+        let (outcome, artifact) = build::execute(
+            self.run.profile,
+            self.tool.as_ref(),
+            &prepared.key,
+            &program,
+            self.dirs,
+        )?;
+        Ok((outcome.bits, Some(artifact)))
+    }
+
+    /// CUDA 通道：nvcc 临时编译、GPU 执行、回读；签名与样本先对齐（与 C 通道同一条判据）。
+    fn cuda(
+        &self,
+        sample: &Sample,
+        prepared: &Prepared,
+    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
+        self.run.op.signature.check(sample)?;
+        let program = backend::cuda_harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let (stdout, _stderr) =
+            witness::compile_run_cuda(self.run.profile, self.dirs, &program, "verify")?;
+        Ok((backend::parse_bits(&stdout), None))
+    }
+}
+
+/// 空报告：设备与工具链身份先写进去，形状层面的字段随每一格填。
+fn blank(run: &Run<'_>, tool: Option<&backend::Toolchain>) -> Verified {
+    Verified {
         device: String::new(),
-        vendor: profile.meta.vendor.to_string(),
-        id: profile.meta.id.to_string(),
-        variant: path.variant,
-        tile,
-        shapes,
+        vendor: run.profile.meta.vendor.to_string(),
+        id: run.profile.meta.id.to_string(),
+        variant: String::new(),
+        tile: String::new(),
+        shapes: Vec::new(),
         witnesses: 0,
         self_checked: 0,
-        max_rel_err,
-        fragment,
-        tool_ver: profile.meta.tool_ver.clone(),
-        toolchain: tool.as_ref().map(backend::Toolchain::id),
-        toolchain_agrees: tool
-            .as_ref()
-            .is_some_and(|tool| tool.agrees_with(&profile.meta.tool_ver)),
-        flags: profile.flags.join(" "),
-        key,
-        artifacts,
-    })
+        max_rel_err: 0.0,
+        fragment: Fragment::new(0),
+        tool_ver: run.profile.meta.tool_ver.clone(),
+        toolchain: tool.map(backend::Toolchain::id),
+        toolchain_agrees: tool.is_some_and(|tool| tool.agrees_with(&run.profile.meta.tool_ver)),
+        flags: run.profile.flags.join(" "),
+        key: String::new(),
+        artifacts: Vec::new(),
+    }
+}
+
+/// 对拍：个数与误差两条判据，返回实测最大相对误差。个数先于值：个数不符时连参考都不必逐点比。
+/// 它不判断证据等级（等级由见证决定），也不解释误差从哪来。
+fn parity(
+    bits: &[f32],
+    want: &[f32],
+    expect: usize,
+    (m, n): (u64, u64),
+    tolerance: f64,
+) -> diagnostic::Result<f64> {
+    if bits.len() != expect {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "形状 {m}x{n}：内核只输出 {} 个数，期望 {expect}",
+                bits.len()
+            ),
+        ));
+    }
+    let error = crate::reference::max_rel_err(bits, want);
+    if error > tolerance {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("形状 {m}x{n} 对拍失败：max_rel_err {error:.3e} > {tolerance:.0e}"),
+        ));
+    }
+    Ok(error)
 }
 
 /// 非 C 前端的说明：设备在本机与不在本机是两句不同的话。
@@ -417,7 +524,7 @@ fn unsupported_emit(profile: &Profile) -> String {
             profile.meta.emit
         )
     } else {
-        "本机没有该设备，只能真机验证".to_string()
+        NO_DEVICE.to_string()
     };
     format!("{why}；档案声明的等级：{}", declared.join(" "))
 }
@@ -436,107 +543,100 @@ fn check_rejected_shapes(group: u64) -> diagnostic::Result<()> {
     Ok(())
 }
 
-/// 设备可用性 guard：设备不在本机时给出统一的 Unsupported，可用时放行。
-fn require_device(profile: &Profile) -> diagnostic::Result<()> {
-    if witness::device_available(profile) {
-        Ok(())
-    } else {
-        Err(Error::new(
-            Code::Unsupported,
-            "本机没有该设备，只能真机验证".to_string(),
-        ))
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gate::LanguageGate;
 
-/// CUDA 设备的 L2 证据：逐形状生成 `.cu`、nvcc 编译、GPU 单线程执行、回读、与标量参考对拍。
-///
-/// 与 C 路径同形状、同参考、同容差，差别只在编译执行走 [`crate::witness::compile_run_cuda`]。
-/// 当前不进 build 产物缓存（每次临时编译，与 witness 路径一致），故 `artifacts` 为空，如实标注。
-///
-/// # Errors
-///
-/// 协商失败、编译/执行失败、输出个数不符或对拍超出容差时返回说明。
-fn verify_one_cuda(run: &Run<'_>, settings: &Settings) -> diagnostic::Result<Verified> {
-    // 设备不在本机（无 nvcc 工具链）时 fail-fast：后面的编译/回读整条都无意义，
-    // 统一返回 Unsupported，由 verify 主流程再挂上“见证自检 N 条通过”的说明。
-    require_device(run.profile)?;
-    let path = run
-        .negotiate()
-        .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
-    let tolerance = crate::reference::tolerance(run.model.dtype);
-    let nvcc = backend::detect_nvcc();
-
-    let mut max_rel_err = 0.0f64;
-    let mut shapes = Vec::new();
-    let mut fragment = Fragment::new(0);
-    let mut key = String::new();
-    let mut tile = String::new();
-
-    for (m, n) in verify_shapes(&run.model) {
-        let (m, n) = (m as usize, n as usize);
-        let sample = (run.model.sample)(m, n);
-        let prepared = run.prepare(&path, settings, m, n)?;
-        // CUDA 走自己的 harness；签名与样本仍要先对齐（与 C 路径同一条判据）。
-        run.op.signature.check(&sample)?;
-        let program = backend::cuda_harness(&prepared.source.text, &run.op.signature, &sample)?;
-        let (stdout, _stderr) =
-            witness::compile_run_cuda(run.profile, settings, &program, "verify")?;
-        let bits = backend::parse_bits(&stdout);
-        let want = (run.model.reference)(&sample)?;
-        let error = cuda_parity(&bits, &want, m, n, tolerance)?;
-        max_rel_err = max_rel_err.max(error);
-        fragment = Fragment::new(prepared.source.lines());
-        key = prepared.key.hex();
-        tile = prepared.plan.tile.to_string();
-        shapes.push((m as u64, n as u64));
+    fn failed(label: &str) -> VerifyEntry {
+        VerifyEntry::Failed {
+            label: label.to_string(),
+            error: Error::new(Code::Invalid, "测试失败"),
+        }
     }
 
-    Ok(Verified {
-        device: String::new(),
-        vendor: run.profile.meta.vendor.to_string(),
-        id: run.profile.meta.id.to_string(),
-        variant: path.variant,
-        tile,
-        shapes,
-        witnesses: 0,
-        self_checked: 0,
-        max_rel_err,
-        fragment,
-        tool_ver: run.profile.meta.tool_ver.clone(),
-        toolchain: nvcc.as_ref().map(backend::Toolchain::id),
-        toolchain_agrees: nvcc
-            .as_ref()
-            .is_some_and(|tool| tool.agrees_with(&run.profile.meta.tool_ver)),
-        flags: run.profile.flags.join(" "),
-        key,
-        artifacts: Vec::new(),
-    })
-}
+    #[test]
+    fn witness_note_is_absent_when_nothing_ran() {
+        assert!(witness_note(0, 0, &LanguageGate::Covered).is_none());
+        // Rejected 不追加句子：拒绝已写进 Evidence::failure，这里再印一次只是重复。
+        let rejected = LanguageGate::Rejected {
+            reason: "第一行报错".to_string(),
+        };
+        assert!(witness_note(0, 0, &rejected).is_none());
+    }
 
-/// CUDA 对拍：先核对输出个数，再算最大相对误差，超容差即失败。
-fn cuda_parity(
-    bits: &[f32],
-    want: &[f32],
-    m: usize,
-    n: usize,
-    tolerance: f64,
-) -> diagnostic::Result<f64> {
-    if bits.len() != want.len() {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "形状 {m}x{n}：内核只输出 {} 个数，期望 {}",
-                bits.len(),
-                want.len()
-            ),
-        ));
+    #[test]
+    fn witness_note_counts_device_and_host_separately() {
+        let note = witness_note(2, 3, &LanguageGate::Covered).expect("有结论");
+        assert!(note.contains("见证设备执行 2 条通过"), "{note}");
+        assert!(note.contains("见证自检 3 条通过"), "{note}");
+        // Covered 表示设备执行已覆盖，不再重复语言门。
+        assert!(!note.contains("语言门"), "{note}");
     }
-    let error = crate::reference::max_rel_err(bits, want);
-    if error > tolerance {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("形状 {m}x{n} 对拍失败：max_rel_err {error:.3e} > {tolerance:.0e}"),
-        ));
+
+    #[test]
+    fn witness_note_renders_the_language_gate_branches() {
+        let passed = LanguageGate::Passed {
+            front: "clang@21".to_string(),
+            witnesses: 4,
+        };
+        assert!(
+            witness_note(0, 0, &passed)
+                .expect("有结论")
+                .contains("语言门 clang@21 通过（4 条）")
+        );
+        let absent = LanguageGate::Absent {
+            reason: "缺 clang".to_string(),
+        };
+        assert!(
+            witness_note(0, 0, &absent)
+                .expect("有结论")
+                .contains("语言门不可用：缺 clang")
+        );
     }
-    Ok(error)
+
+    #[test]
+    fn a_negotiation_classifies_head_and_path() {
+        let head = Negotiation::Head {
+            variant: "v0".to_string(),
+            of: 3,
+        };
+        assert!(head.head_hit() && head.has_path());
+        let fallback = Negotiation::Fallback {
+            variant: "v1".to_string(),
+            step: 2,
+            of: 3,
+        };
+        assert!(!fallback.head_hit() && fallback.has_path());
+        let no_path = Negotiation::NoPath {
+            of: 3,
+            unmet: vec!["wmma".to_string()],
+        };
+        assert!(!no_path.head_hit() && !no_path.has_path());
+        let unknown = Negotiation::Unknown {
+            reason: "无档案".to_string(),
+        };
+        assert!(!unknown.head_hit() && !unknown.has_path());
+    }
+
+    #[test]
+    fn the_report_collects_failures_and_head_hits() {
+        let report = VerifyReport {
+            op: "gemv".to_string(),
+            devices: vec!["a".to_string(), "b".to_string()],
+            entries: vec![failed("a"), failed("b")],
+            negotiations: vec![
+                Negotiation::Head {
+                    variant: "v0".to_string(),
+                    of: 1,
+                },
+                Negotiation::NoPath {
+                    of: 1,
+                    unmet: Vec::new(),
+                },
+            ],
+        };
+        assert_eq!(report.failures().len(), 2, "两个 Failed 条目各给出一条错误");
+        assert_eq!(report.head_hits(), (1, 2), "两台设备里一台命中首档");
+    }
 }

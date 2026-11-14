@@ -2,7 +2,7 @@
 //!
 //! 声明（`ops/<name>.toml`）说"需要什么能力"，本模块说"算什么、拿什么对拍"。两者都是算子
 //! 内容，住在同一个 crate；`cutile` 只消费它们，不认识任何一个算子名，因此新增算子不改
-//! `cutile` 的任何一行（DESIGN §13.2）。
+//! `cutile` 的任何一行（cutile README §13.2）。
 //!
 //! 用函数指针而不是 trait：注册表可以是一张 `const` 表，新增算子只加一行，不需要 `dyn` 或
 //! 工厂的样板代码。
@@ -68,7 +68,7 @@ pub struct Buffer {
 /// 名字与类型由 `.k` 的签名界定（[`crate::sig::Signature::check`]）：缓冲顺序**不**参与 ABI，
 /// 实参顺序由签名给出，样本只负责提供同名取值。
 ///
-/// 样本必须确定性——同一形状永远得到同一组输入（DESIGN §12.3 的"可复现"）。
+/// 样本必须确定性——同一形状永远得到同一组输入（cutile README §12.3 的"可复现"）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sample {
     /// 规约维度。
@@ -179,6 +179,16 @@ impl Sample {
 /// `m` 不是分组的整数倍、`x` 长度不是 `m`、`w` 长度不是 `n · m`，或该算子的权重缓冲不是 f32
 /// 时返回说明。
 pub fn bind(model: &Model, m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnostic::Result<Sample> {
+    shape(model, m, n)?;
+    lengths(m, n, x, w)?;
+    let mut sample = (model.sample)(m, n);
+    dense(&sample)?;
+    fill(&mut sample, x, w)?;
+    Ok(sample)
+}
+
+/// 形状判据：`m` 必须是形状粒度 `group` 的正整数倍。
+fn shape(model: &Model, m: usize, n: usize) -> diagnostic::Result<()> {
     let group = model.group.max(1) as usize;
     if m == 0 || n == 0 || !m.is_multiple_of(group) {
         return Err(Error::new(
@@ -187,6 +197,11 @@ pub fn bind(model: &Model, m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnost
         )
         .with("op::model::bind"));
     }
+    Ok(())
+}
+
+/// 长度判据：`x` 覆盖输入宽度，`w` 覆盖整张权重；两条各报各的。
+fn lengths(m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnostic::Result<()> {
     if x.len() != m {
         return Err(Error::new(
             Code::Invalid,
@@ -201,26 +216,28 @@ pub fn bind(model: &Model, m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnost
         )
         .with("op::model::bind"));
     }
+    Ok(())
+}
 
-    let mut sample = (model.sample)(m, n);
+/// 只有稠密（f32）权重能注入真实数据：打包字节里的 `w` 读出来是半份字节。
+fn dense(sample: &Sample) -> diagnostic::Result<()> {
     match sample.buffer("w").map(|buffer| &buffer.values) {
-        Some(Values::F32(_)) => {}
-        Some(Values::U8(_)) => {
-            return Err(Error::new(
-                Code::Unsupported,
-                "该算子的权重缓冲是打包字节（量化），真实 f32 权重不能注入：先按算子声明的分组量化",
-            )
-            .with("op::model::bind"));
-        }
+        Some(Values::F32(_)) => Ok(()),
+        Some(Values::U8(_)) => Err(Error::new(
+            Code::Unsupported,
+            "该算子的权重缓冲是打包字节（量化），真实 f32 权重不能注入：先按算子声明的分组量化",
+        )
+        .with("op::model::bind")),
         None => {
-            return Err(
-                Error::new(Code::Missing, "算子样本里没有权重缓冲 `w`").with("op::model::bind")
-            );
+            Err(Error::new(Code::Missing, "算子样本里没有权重缓冲 `w`").with("op::model::bind"))
         }
     }
+}
+
+/// 用真实数据替掉样本里的 `x` / `w`。
+fn fill(sample: &mut Sample, x: &[f32], w: &[f32]) -> diagnostic::Result<()> {
     sample.set("x", Values::F32(x.to_vec()))?;
-    sample.set("w", Values::F32(w.to_vec()))?;
-    Ok(sample)
+    sample.set("w", Values::F32(w.to_vec()))
 }
 
 /// 一条基本轴的语义角色（闭集）。

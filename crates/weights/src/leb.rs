@@ -57,22 +57,9 @@ impl<'a> Cursor<'a> {
         let mut shift = 0u32;
         loop {
             let byte = self.read_u8().map_err(|error| error.with("LEB128 整数"))?;
-            let group = u64::from(byte & 0x7F);
-            if shift >= 64 {
-                return Err(bad("LEB128 超过 10 个字节"));
-            }
-            if shift == 63 {
-                // 第 10 字节只有 1 个有效位，且不允许再带 continuation。
-                if byte & 0x80 != 0 || group > 1 {
-                    return Err(bad("LEB128 超出 u64 容量"));
-                }
-            }
+            let group = checked_group(byte, shift)?;
             value |= group << shift;
             if byte & 0x80 == 0 {
-                // 最后一个字节的有效位全 0，却不是唯一的首字节：这是拉长的非规范编码。
-                if group == 0 && shift != 0 {
-                    return Err(bad("LEB128 含多余的前导零字节"));
-                }
                 return Ok(value);
             }
             shift += 7;
@@ -101,6 +88,19 @@ impl<'a> Cursor<'a> {
         self.pos = stop;
         Ok(slice)
     }
+}
+
+/// 一个 7 位组的规范性：第 10 个字节（`shift == 63`）只允许 `0x00`/`0x01`，
+/// 终止字节的有效位全 0 却又不是首字节时属于拉长的非规范编码。
+/// 只判这一组能不能收，不判整串够不够长——长度由 [`Cursor::read_u8`] 报。
+fn checked_group(byte: u8, shift: u32) -> Result<u64> {
+    if shift == 63 && byte > 1 {
+        return Err(bad("LEB128 超出 u64 容量"));
+    }
+    if byte == 0 && shift != 0 {
+        return Err(bad("LEB128 含多余的前导零字节"));
+    }
+    Ok(u64::from(byte & 0x7F))
 }
 
 fn bad(message: &str) -> Error {

@@ -2,20 +2,19 @@
 //!
 //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Mul`] 单态化。
 
-use crate::elementwise::{BinCache, Binary};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::elementwise::Binary;
 
 /// 乘法实现：与 [`crate::add_f32::Add`] 同构，只改逐元素运算。
 pub struct Mul;
 
-static CACHE: BinCache = BinCache::new();
-
 impl Binary for Mul {
     const EXPR: &'static str = "n,n,n->n";
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::elementwise::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::elementwise::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn apply(x: f32, y: f32) -> f32 {

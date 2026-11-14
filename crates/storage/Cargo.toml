@@ -12,6 +12,7 @@ publish = false
 [features]
 default = []
 # 启用只读内存映射：本 feature 是全仓唯一的 unsafe 代码路径。
+# 仅 Unix 目标生效（`mmap(2)`）；其它平台上本 feature 是空操作，`Mmap` 不存在。
 mmap = []
 
 [dependencies]

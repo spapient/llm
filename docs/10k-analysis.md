@@ -138,7 +138,7 @@ cubecl 约 **10 倍**，vllm.rs 约 **2.6 倍**；而本仓库**零外部依赖*
 
 - 架构门 **失败 2 项**（ir 无依赖边、层表与成员不一致）；clippy **5 个 warning**，CI `-D warnings` 会挂。
 - 违反 ADR 0004（禁止 `add(2,2)` 占位）、新增成员三步、依赖边规则；包名缺 `llm-` 前缀。
-- “无 IR”是核心论点（DESIGN §1/§10）：放弃跨算子融合是显式接受的取舍；cutile 已有 Plan/Path/Proof
+- “无 IR”是核心论点（cutile README §1/§10）：放弃跨算子融合是显式接受的取舍；cutile 已有 Plan/Path/Proof
   等可打印中间产物承担可解释性。cubecl 291k 是通用 IR 的实测成本。
 
 待拍板的三个方向：
@@ -147,7 +147,7 @@ cubecl 约 **10 倍**，vllm.rs 约 **2.6 倍**；而本仓库**零外部依赖*
 |---|---|---|
 | 移除 ir（推荐） | 删除模板，恢复无 IR 论点 | 门禁 6/6、CI 绿；P3 触发条件满足再以 ADR 重建 |
 | 保留位置 | 归拢现有中间产物到 ir，不写 pass | 需补文档、依赖边、层表、ADR |
-| 通用 IR | 融合 + autotune + pass | 新 ADR 推翻 DESIGN §1/§10，万行预算作废 |
+| 通用 IR | 融合 + autotune + pass | 新 ADR 推翻 cutile README §1/§10，万行预算作废 |
 
 重建 IR 的触发条件：实测算子边界开销可量化且 roofline 未达带宽上限，或片段无法表达所需融合。
 

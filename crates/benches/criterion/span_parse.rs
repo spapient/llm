@@ -1,6 +1,6 @@
 //! `Span::parse` 的微基准：测量四种写法的解析成本。
 //!
-//! 这里只负责"测量"，产出实测耗时；是否回退由 `llm-regress` 的基线判定负责，
+//! 这里只负责"测量"，产出实测耗时；是否回退由 `tool::regress` 的基线判定负责，
 //! 两者分工，bench 本身不写性能目标数字。
 
 use criterion::{Criterion, criterion_group, criterion_main};

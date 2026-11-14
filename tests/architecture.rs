@@ -259,28 +259,48 @@ fn type_definition(line: &str) -> Option<(bool, &str)> {
 }
 
 /// `files` 里出现的 `pub struct|enum|trait` 名字（`union` 不在所有权表的口径内）。
+///
+/// `vocabulary! { Name { ... } }` 宏展开出的 `pub enum`：名字在宏块后一行、行首没有 `pub`，
+/// 逐行正则看不到，这里按宏块结构补一份识别（prof 的四个闭集都走这个生成器）。
 fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for path in files {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
+        let mut in_vocabulary = false;
         for line in text.lines() {
             if let Some((true, name)) = type_definition(line) {
                 names.insert(name.to_string());
+            }
+            let trimmed = line.trim();
+            if trimmed.starts_with("vocabulary!") {
+                in_vocabulary = true;
+                continue;
+            }
+            if in_vocabulary && !trimmed.is_empty() && !trimmed.starts_with("///") {
+                if let Some(name) = macro_block_name(trimmed) {
+                    names.insert(name.to_string());
+                }
+                in_vocabulary = false;
             }
         }
     }
     names
 }
 
+/// 宏块开头行 `Name {`：取 `{` 前的标识符，首字母大写才算类型名。
+fn macro_block_name(line: &str) -> Option<&str> {
+    let name = line.split('{').next()?.trim();
+    (!name.is_empty() && name.chars().next()?.is_ascii_uppercase()).then_some(name)
+}
+
 /// `lints/vocabulary.toml` 里的反向所有权存量基线：crate → 登记为「暂未进表」的公开类型名。
 ///
-/// 解析走 `config::toml`（与 `tests/contracts.rs` 读同一份文件、同一个解析器），不另写一份。
+/// 读 `llm_tool` 构建期生成的词汇表：同一份文件只解析一次，运行期没有解析器；与
+/// `tests/contracts.rs` 读的是同一棵树，不另写一份。
 fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
-    const VOCABULARY: &str = include_str!("../lints/vocabulary.toml");
-    let root = config::toml::parse(VOCABULARY).expect("`lints/vocabulary.toml` 必须可解析");
-    let entries = root
+    let entries = tool::vocabulary()
         .table("ownership")
         .and_then(|ownership| ownership.table_array("unlisted"))
         .unwrap_or_default();
@@ -314,6 +334,12 @@ fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
     baseline
 }
 
+/// 允许用 `String` 做**消息片段**的文件（不是"允许用 `String` 报错"）。
+///
+/// 现在是空的：唯一一份"把失败原因写成字符串"的实现是手写 TOML 解析器，它随 ADR 0022 一起
+/// 删除（语料改在构建期解析）。留着这张表是为了让下一条同类豁免有地方登记，而不是散在断言里。
+const MESSAGE_FRAGMENTS: &[&str] = &[];
+
 /// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：凡是被 L7 直接调用的层——数据层
 /// （`op` / `prof` / `prim`）、内核层（`cutile`，含 `report`）——失败类型必须是
 /// `diagnostic::Error`，否则类别与退出码就失去了来源。
@@ -323,8 +349,8 @@ fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
 /// 反过来，层表里每个成员都必须扫出至少一个文件，否则同样失败。
 ///
 /// 扫描的是"`Result<…, String>`"这一形态本身，不是某个函数：新加的函数同样被覆盖。
-/// `llm-config` 的 `Error` 是唯一剩下的存量（它是数据层自己的类型，`Settings::load` 用它），
-/// 刻意不在扫描范围。
+/// 豁免表 [`MESSAGE_FRAGMENTS`] 现在是空的：随着手写 TOML 解析器删除，最后一处"把失败原因
+/// 写成字符串"的实现也没有了。
 #[test]
 fn the_error_boundary_does_not_fall_back_to_strings() {
     let contract = contract();
@@ -332,11 +358,6 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
     for member in contract.layers.keys() {
         // L7 是根包：它的源码在 `src/`，不在 `crates/<member>/src/`。
         if member == "llm" {
-            continue;
-        }
-        // `llm-config` 的 `Error` 是数据层自己的类型（`Settings::load` 用它），
-        // 按第三节的约定刻意不在扫描范围——这是唯一的例外，写在代码里而不是靠记忆。
-        if member == "config" {
             continue;
         }
         let root = std::path::PathBuf::from("crates").join(member).join("src");
@@ -353,6 +374,12 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
 
     let mut offences = Vec::new();
     for path in paths {
+        if MESSAGE_FRAGMENTS
+            .iter()
+            .any(|exempt| path == std::path::Path::new(exempt))
+        {
+            continue;
+        }
         let text = std::fs::read_to_string(&path).expect("源文件可读");
         for (index, line) in text.lines().enumerate() {
             if line.trim_start().starts_with("//") {
@@ -387,7 +414,7 @@ fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// `llm-op`、`llm-config` 与文档里的 `op`、`llm-config` 指同一个成员。
+/// `llm-op` 与文档里的 `op` 指同一个成员（包名带 `llm-` 前缀，层表用短名）。
 fn short(name: &str) -> String {
     let name = name.trim();
     name.strip_prefix("llm-").unwrap_or(name).to_string()

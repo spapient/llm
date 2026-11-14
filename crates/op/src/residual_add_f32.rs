@@ -2,20 +2,19 @@
 //!
 //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Residual`] 单态化。
 
-use crate::elementwise::{BinCache, Binary};
-use diagnostic::Error;
+use crate::einsum::FormulaCache;
+use crate::elementwise::Binary;
 
 /// 残差实现：与 `add` 同一段加法，独立成类型以对应网络残差层。
 pub struct Residual;
 
-static CACHE: BinCache = BinCache::new();
-
 impl Binary for Residual {
     const EXPR: &'static str = "n,n,n->n";
-    const OPERANDS: &'static [crate::gemv::OperandSpec] = &crate::elementwise::f32_operands();
+    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::elementwise::f32_operands();
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
-        CACHE.get::<Self>()
+    fn cache() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn apply(a: f32, b: f32) -> f32 {

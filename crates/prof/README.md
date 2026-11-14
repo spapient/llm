@@ -20,7 +20,7 @@ crates/prof/
 │   └── nvidia.toml      # P0 只有 L0/L1：见证已声明，未执行的能力视为不具备
 └── src/
     ├── atom.rs          # 能力词汇表：16 原语、位集、Need/Provide、AttrKey 闭集（含 exec）
-    ├── lib.rs           # 内嵌（BUILTIN）、目录装载（load）、目录位置（dir）
+    ├── lib.rs           # 构建期生成的档案表（embedded / names）：运行期不解析 TOML、不读目录
     └── prof.rs          # 档案 schema：解析、闭集字段、[units] 一致性、见证校验
 ```
 
@@ -81,7 +81,7 @@ exec  = ["cube"]         # 加载期校验：cube 必须访问得到上面声明
 
 `[peak]` 的 `value` 与 `src` 必须一致：`src` 只能是数值字面量与 `+ - * /`、括号组成的表达式，
 装载期会求值并与 `value` 比对，不一致或含变量名/单位都会在解析期报错。量纲与物理含义写在
-TOML 注释里，峰值数字因此只有一个事实源（DESIGN §12.1）。
+TOML 注释里，峰值数字因此只有一个事实源（cutile README §12.1）。
 
 证据等级的含义：`L3` 真机性能达标、`L2` 与参考实现对拍通过、`L1` 仅源码可生成、`L0` 未验证。
 协商只使用等级 ≥ `L2` 的能力，因此**档案里的乐观声明不会变成错误结果**。
@@ -140,7 +140,7 @@ host 自检），值不对就整台设备失败。
 
 1. 在 `devices/` 下写 `<name>.toml`（键必须属于闭集，写错字段会在解析期报错）；
 2. 在 `src/lib.rs` 的 `BUILTIN` 里补一行 `include_str!`（否则发布出去的二进制里没有它）；
-3. `cargo test -p prof` —— `builtin_matches_disk` 会把"磁盘有、内嵌无"直接判为失败；
+3. `cargo test -p prof` —— `every_embedded_entry_is_a_device_archive` 会把"生成表里缺一份档案"直接判为失败；
 4. `cargo run --bin cutile -- doctor --op gemv_i4 --device <name>` 看协商结果（`units:` 那一行就是本档案的执行单元）；
 5. 有真机时 `cargo run --bin cutile -- verify --op gemv_i4 --devices <name>` 对拍并回填 `grade` / `witness`。
 

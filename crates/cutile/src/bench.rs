@@ -1,18 +1,25 @@
-//! `bench`：跑一次并报告达成率（DESIGN §12.3）。
+//! `bench`：量一次，并把它折成"达成率"这个可判定的数（README §12.3）。
+//!
+//! 它不产生新证据：计时之前必须已有见证，[`Bench::proven`] 记录跑通了几条，没有证据的能力不进入
+//! 计时。达成率按 `p50` 而非 `min`——单次抖动与 CPU 频率状态会把 `min` 抬成"最好情况"，那不是这条
+//! 判据要回答的问题；工作集装得下缓存时测到的是缓存带宽而不是主存峰值，判定时被排除。
 
 use crate::backend;
 use crate::build;
 use crate::builtin::Catalogue;
+use crate::dirs::Dirs;
 use crate::pipeline::{self, Run, model_for};
-use crate::witness;
+use crate::prof::Profile;
+use crate::witness::{self, Evidence};
 use diagnostic::{Code, Error};
-use llm_config::Settings;
+use op::decl::OpDecl;
 use op::model::{Sample, Values};
+use std::path::PathBuf;
 
-/// L3 达成率门槛（DESIGN §12.3）：低于它就是"没有可用证据"。
+/// L3 达成率门槛（README §12.3）：低于它就是"没有可用证据"。
 pub const L3_THRESHOLD: f64 = 0.7;
 
-/// 一次 `bench` 的实测口径（DESIGN §12.3 的台账）。
+/// 一次 `bench` 的实测口径（README §12.3 的台账）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bench {
     /// 算子名。
@@ -27,18 +34,19 @@ pub struct Bench {
     pub per_run_ns: f64,
     /// 每次调用的耗时中位数（纳秒）：达成率按它计算，对单次抖动与频率状态更稳。
     pub p50_ns: f64,
+    /// 每次调用的 95 分位耗时（纳秒）：尾部离群上界，与 p50 的差距即抖动幅度；不参与达成率判定。
+    pub p95_ns: f64,
     /// 实测吞吐。
     pub measured: Throughput,
     /// 档案声明的带宽峰值与来源。
     pub peak: Option<Peak>,
-    /// 输入工作集（字节）：权重 + scales + 激活，不含输出。
-    ///
-    /// 达成率离开它就没有意义：工作集小于缓存时测到的是缓存带宽，不是档案里的主存峰值。
+    /// 输入工作集（字节）：权重 + scales + 激活，不含输出。达成率离开它没有意义——装得进缓存时
+    /// 测到的是缓存带宽，不是档案里的主存峰值。
     pub working_set: u64,
     /// 档案声明的 FAST 容量（字节，0 表示未声明）。
     pub fast_bytes: u64,
     /// 缓存目录。
-    pub cache_dir: Option<std::path::PathBuf>,
+    pub cache_dir: Option<PathBuf>,
     /// 这次跑的那份编译产物：`reused` 为真表示没调用编译器。
     pub artifact: crate::cache::Artifact,
     /// 这次跑通的见证条数：计时之前必须已有证据，否则测的是一条未经确认的能力。
@@ -59,7 +67,7 @@ impl Bench {
     }
 }
 
-/// `bench` 的口径结论（DESIGN §12.1/§12.3）。
+/// `bench` 的口径结论（README §12.1/§12.3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// 档案没有带宽峰值：无法判定。
@@ -74,16 +82,26 @@ pub enum Verdict {
     Below,
 }
 
-/// 由达成率与工作集判定口径。
-///
-/// `> 1` 不是"更好"，而是说明测量与档案峰值不是同一口径。
+/// 判据：这个达成率能不能比 L3 门槛、不能的话为什么；不回答"实现好在哪"——`> 1` 不是"更好"。
 fn classify(ratio: Option<f64>, cache_resident: bool) -> Verdict {
-    match ratio {
-        None => Verdict::Unknown,
-        Some(ratio) if ratio > 1.0 => Verdict::OverPeak,
-        _ if cache_resident => Verdict::CacheResident,
-        Some(ratio) if ratio >= L3_THRESHOLD => Verdict::Reached,
-        Some(_) => Verdict::Below,
+    let Some(ratio) = ratio else {
+        return Verdict::Unknown;
+    };
+    if ratio > 1.0 {
+        return Verdict::OverPeak;
+    }
+    if cache_resident {
+        return Verdict::CacheResident;
+    }
+    attainment(ratio)
+}
+
+/// 判据：口径有效的达成率过没过 70%；不回答"差的那部分该改哪行代码"。
+fn attainment(ratio: f64) -> Verdict {
+    if ratio >= L3_THRESHOLD {
+        Verdict::Reached
+    } else {
+        Verdict::Below
     }
 }
 
@@ -127,7 +145,7 @@ pub struct Throughput {
     pub bandwidth_ratio: Option<f64>,
 }
 
-/// 档案里的一个峰值：取值与人可读的来源（DESIGN §12.1 要求每个数都带推导式来源）。
+/// 档案里的一个峰值：取值与人可读的来源（README §12.1 要求每个数都带推导式来源）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Peak {
     /// 以 B/s 计的取值。
@@ -136,26 +154,45 @@ pub struct Peak {
     pub src: String,
 }
 
-/// `shape` 是命令行覆盖；`None` 时用算子的生产形状（`Model::shape`），审计不持有一个缺省方阵。
+/// 判据：这台设备的达成率台账（回答"是多少、分母凭什么"；不回答"实现该怎么改"）。
 ///
-/// # Errors
-///
-/// 形状非法、协商失败、缺编译器、编译/执行失败或内核没有给出计时样本时返回说明。
+/// `shape` 是命令行覆盖，`None` 时用算子的生产形状（`Model::shape`）。形状非法、协商失败、缺编译器、
+/// 编译/执行失败或内核没有给出计时样本时返回说明。
 pub fn bench(
     catalogue: &Catalogue,
-    settings: &Settings,
+    dirs: &Dirs,
     op_name: &str,
     shape: Option<&str>,
     repeat: usize,
 ) -> diagnostic::Result<Bench> {
+    let (op, (m, n)) = target(catalogue, op_name, shape)?;
+    let (profile, evidence) = verified(catalogue, dirs)?;
+    let run = Run::new(op, profile, evidence.proof(profile))?;
+    let timed = run_sample(&run, dirs, (m as usize, n as usize), repeat.max(1))?;
+    Ok(assemble(op_name, timed, profile, &evidence))
+}
+
+/// 判据：名字存在吗、形状是多少；不回答"这台设备能不能跑它"——那是 [`verified`] 与协商的事。
+fn target<'a>(
+    catalogue: &'a Catalogue,
+    op_name: &str,
+    shape: Option<&str>,
+) -> diagnostic::Result<(&'a OpDecl, (u64, u64))> {
     let op = catalogue
         .op(op_name)
         .ok_or_else(|| Error::new(Code::Missing, format!("没有算子 `{op_name}`")))?;
     let model = model_for(&op.name)?;
-    let (m, n) = pipeline::shape(shape, &model)?;
+    Ok((op, pipeline::shape(shape, &model)?))
+}
+
+/// 判据：有没有一条刚由本机执行证明的能力；不回答"跑得多快"——计时在 [`run_sample`]。
+fn verified<'a>(
+    catalogue: &'a Catalogue,
+    dirs: &Dirs,
+) -> diagnostic::Result<(&'a Profile, Evidence)> {
     let profile = catalogue.resolve("auto")?;
-    // 计时之前必须先有证据：否则测的是一条“档案说它能跑”的能力，而不是这台机器能跑的能力。
-    let evidence = witness::establish(profile, settings);
+    // 计时之前必须先有证据：否则测的是"档案说它能跑"，不是"这台机器能跑"。
+    let evidence = witness::establish(profile, dirs);
     if let Some(error) = &evidence.failure {
         return Err(error.clone().with("bench 不能给一台没有执行证据的设备计时"));
     }
@@ -168,62 +205,106 @@ pub fn bench(
             ),
         ));
     }
-    let run = Run::new(op, profile, evidence.proof(profile))?;
+    Ok((profile, evidence))
+}
+
+/// 判据：测了什么、测到多少（形状、样本数、耗时、工作集与产物）；不回答"离档案峰值差多少"。
+struct Timed {
+    shape: (u64, u64),
+    repeat: usize,
+    per_run_ns: f64,
+    p50_ns: f64,
+    p95_ns: f64,
+    working_set: u64,
+    plan: crate::plan::Plan,
+    artifact: crate::cache::Artifact,
+    cache_dir: Option<PathBuf>,
+}
+
+/// 判据：跑了几次、每次多久、工作集多大；不回答"这个数是不是缓存带宽"——工作集随样本一起交回。
+fn run_sample(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    (m, n): (usize, usize),
+    repeat: usize,
+) -> diagnostic::Result<Timed> {
+    let prepared = prepare(run, dirs, m, n)?;
+    let sample = (run.model.sample)(m, n);
+    // 重复次数也是产物身份的一部分：换 `--repeat` 就换一份产物。
+    let harness = prepared.harness(run.op, &sample, repeat)?;
+    // 命中产物时连编译器都不需要：工具链只是"能重新编译"的前提，不是跑 bench 的前提。
+    let tool = backend::detect();
+    let (outcome, artifact) =
+        build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
+    let (per_run_ns, p50_ns, p95_ns) = timings(&outcome)?;
+    Ok(Timed {
+        shape: (m as u64, n as u64),
+        repeat,
+        per_run_ns,
+        p50_ns,
+        p95_ns,
+        working_set: working_set(&sample, run.op.signature.output().unwrap_or_default()),
+        cache_dir: build::dir(&prepared.key, dirs),
+        plan: prepared.plan,
+        artifact,
+    })
+}
+
+/// 判据：选了哪条变体、按什么形状编哪份源文本；不回答"它编不编得过"——编译在 [`run_sample`]。
+fn prepare(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<pipeline::Prepared> {
     let path = run
         .negotiate()
         .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
-    let (m, n) = (m as usize, n as usize);
-    let prepared = run.prepare(&path, settings, m, n)?;
-    let sample = (run.model.sample)(m, n);
+    run.prepare(&path, dirs, m, n)
+}
 
-    // 命中产物时连编译器都不需要，所以工具链只是“能重新编译”的前提，不是跑 bench 的前提。
-    let tool = backend::detect();
-    let repeat = repeat.max(1);
-    // 重复次数在主函数里，所以它也是产物身份的一部分：换 `--repeat` 就换一份产物。
-    let run_harness = prepared.harness(op, &sample, repeat)?;
-    let (outcome, artifact) = build::execute(
-        profile,
-        tool.as_ref(),
-        &prepared.key,
-        &run_harness,
-        settings,
-    )?;
+/// 判据：每调用耗时是多少；不回答"样本够不够多"——p50/p95 缺失时退回 min，不把缺项变成第二个失败条件。
+fn timings(outcome: &backend::Outcome) -> diagnostic::Result<(f64, f64, f64)> {
     let per_run_ns = outcome
         .timing
         .min_ns()
         .ok_or_else(|| Error::new(Code::Internal, "内核没有报告可用的计时样本"))?;
-    // 中位数只用于报告抖动；样本缺失时退回 min，不让"没有 p50"变成第二个失败条件。
     let p50_ns = outcome.timing.p50_ns().unwrap_or(per_run_ns);
+    let p95_ns = outcome.timing.p95_ns().unwrap_or(per_run_ns);
+    Ok((per_run_ns, p50_ns, p95_ns))
+}
+
+/// 判据：达成率与它的口径各是什么；不回答"实现该怎么改"——它只摊开数，不给建议。
+fn assemble(op_name: &str, timed: Timed, profile: &Profile, evidence: &Evidence) -> Bench {
     let peak = profile.peak.bw.as_ref().map(|peak| Peak {
         value: peak.value,
         src: peak.src.clone(),
     });
-    let cache_dir = build::dir(&prepared.key, settings);
-    let plan = prepared.plan;
-    Ok(Bench {
+    Bench {
         op: op_name.to_string(),
-        shape: (m as u64, n as u64),
-        repeat,
+        shape: timed.shape,
+        repeat: timed.repeat,
         measured: throughput(
-            plan.bytes,
-            plan.flops,
-            p50_ns,
+            timed.plan.bytes,
+            timed.plan.flops,
+            timed.p50_ns,
             peak.as_ref().map(|peak| peak.value),
         ),
-        plan,
-        per_run_ns,
-        p50_ns,
+        plan: timed.plan,
+        per_run_ns: timed.per_run_ns,
+        p50_ns: timed.p50_ns,
+        p95_ns: timed.p95_ns,
         peak,
-        working_set: working_set(&sample, op.signature.output().unwrap_or_default()),
+        working_set: timed.working_set,
         fast_bytes: profile.mem.fast_bytes,
-        cache_dir,
-        artifact,
+        cache_dir: timed.cache_dir,
+        artifact: timed.artifact,
         proven: evidence.device,
         flags: profile.flags.join(" "),
-    })
+    }
 }
 
-/// 输入工作集：除输出外的全部缓冲（权重、scales、激活）。
+/// 判据：除输出外的全部缓冲占多少字节；不回答"它装不装得进缓存"——那要与 FAST 容量一起看。
 fn working_set(sample: &Sample, output: &str) -> u64 {
     sample
         .buffers
@@ -236,8 +317,10 @@ fn working_set(sample: &Sample, output: &str) -> u64 {
         .sum()
 }
 
-/// `bytes / ns` 直接就是 GB/s、`flops / ns` 直接就是 GFLOP/s（两者都以 1e9 为单位），
-/// 但达成率必须换算回 B/s 再除以档案峰值——直接用量纲不同的 GB/s 去除会差 1e9 倍。
+/// 判据：每秒搬了多少字节 / 算了多少次浮点、占档案峰值的几成；不回答"这个口径是否可比"。
+///
+/// `bytes / ns` 直接就是 GB/s、`flops / ns` 直接就是 GFLOP/s，但达成率必须换算回 B/s 再除以档案
+/// 峰值——直接用量纲不同的 GB/s 去除会差 1e9 倍。
 pub fn throughput(bytes: u64, flops: f64, per_run_ns: f64, peak_bw: Option<f64>) -> Throughput {
     if per_run_ns <= 0.0 {
         return Throughput {

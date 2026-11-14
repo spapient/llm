@@ -17,26 +17,29 @@ pub struct Link {
 pub fn links(text: &str) -> Vec<Link> {
     let mut out = Vec::new();
     for (line_no, line) in text.lines().enumerate() {
-        let mut rest = line;
-        while let Some(open) = rest.find("](") {
-            let after = &rest[open + 2..];
-            let Some(close) = after.find(')') else {
-                break;
-            };
-            let raw = after[..close].trim();
-            if is_relative(raw) {
-                let target = raw.split('#').next().unwrap_or(raw).trim();
-                if !target.is_empty() {
-                    out.push(Link {
-                        target: target.to_string(),
-                        line: line_no + 1,
-                    });
-                }
-            }
-            rest = &after[close + 1..];
-        }
+        line_links(line, line_no + 1, &mut out);
     }
     out
+}
+
+/// 一行的全部相对链接；外部链接、纯锚点与空路径都不计。
+fn line_links(line: &str, line_no: usize, out: &mut Vec<Link>) {
+    let mut rest = line;
+    while let Some(open) = rest.find("](") {
+        let after = &rest[open + 2..];
+        let Some(close) = after.find(')') else {
+            return;
+        };
+        let raw = after[..close].trim();
+        let target = raw.split('#').next().unwrap_or(raw).trim();
+        if is_relative(raw) && !target.is_empty() {
+            out.push(Link {
+                target: target.to_string(),
+                line: line_no,
+            });
+        }
+        rest = &after[close + 1..];
+    }
 }
 
 fn is_relative(raw: &str) -> bool {

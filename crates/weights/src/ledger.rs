@@ -26,9 +26,6 @@ pub enum Stable {
 }
 
 impl Stable {
-    fn code(self) -> u8 {
-        self as u8
-    }
     fn from_code(code: u8) -> Result<Self> {
         match code {
             0 => Ok(Self::Pass),
@@ -63,9 +60,9 @@ pub fn spectral(w: &[f32], m: usize, n: usize, r: usize) -> Result<Spectral> {
     let sigr = decomposed.sigma[r - 1];
     let sig1 = decomposed.sigma[r];
     let full = decomposed.reconstruct(k);
-    let alg = full
+    let alg = a
         .iter()
-        .zip(&a)
+        .zip(&full)
         .map(|(x, y)| (x - y).powi(2))
         .sum::<f64>()
         .sqrt();
@@ -103,20 +100,19 @@ pub fn truncate(w: &[f32], m: usize, n: usize, r: usize) -> Result<Trunc> {
     let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
     let decomposed = svd::compute(&a, m, n)?;
     let low64 = decomposed.reconstruct(r);
-    let mut low = vec![0.0f32; m * n];
-    let mut rest = vec![0.0f32; m * n];
-    let mut decomp = 0.0f64;
-    for (i, (&l, &orig)) in low64.iter().zip(&a).enumerate() {
-        low[i] = l as f32;
-        let c = orig - l;
-        rest[i] = c as f32;
-        decomp += c * c;
-    }
-    Ok(Trunc {
-        low,
-        rest,
-        decomp: decomp.sqrt(),
-    })
+    let low: Vec<f32> = low64.iter().map(|&l| l as f32).collect();
+    let rest: Vec<f32> = a
+        .iter()
+        .zip(&low64)
+        .map(|(orig, l)| (orig - l) as f32)
+        .collect();
+    let decomp = a
+        .iter()
+        .zip(&low64)
+        .map(|(orig, low)| (orig - low) * (orig - low))
+        .sum::<f64>()
+        .sqrt();
+    Ok(Trunc { low, rest, decomp })
 }
 
 /// 一张张量的谱隙证书账目（闭集强类型字段）。
@@ -145,7 +141,7 @@ impl Note {
     pub(crate) fn encode(&self, out: &mut impl Sink) {
         leb::write_u32(out, self.rank);
         out.put(&[u8::from(self.used)]);
-        out.put(&[self.stable.code()]);
+        out.put(&[self.stable as u8]);
         out.put(&self.gap.to_le_bytes());
         out.put(&self.eps.to_le_bytes());
         out.put(&self.decomp.to_le_bytes());
@@ -153,16 +149,10 @@ impl Note {
         out.put(&[u8::from(self.lossless)]);
     }
 
-    /// 强类型解码；字段不符显式报错。
+    /// 强类型解码；字段不符显式报错。逐段按 `Note::encode` 的顺序读，段内报错点与逐字段读一致。
     pub fn decode(cur: &mut Cursor<'_>) -> Result<Self> {
-        let rank = cur.read_u32()?;
-        let used = cur.read_u8()? != 0;
-        let stable = Stable::from_code(cur.read_u8()?)?;
-        let gap = read_f64(cur)?;
-        let eps = read_f64(cur)?;
-        let decomp = read_f64(cur)?;
-        let equal = cur.read_u8()? != 0;
-        let lossless = cur.read_u8()? != 0;
+        let (rank, used, stable) = head(cur)?;
+        let ([gap, eps, decomp], [equal, lossless]) = tail(cur)?;
         Ok(Self {
             rank,
             used,
@@ -184,35 +174,63 @@ impl Note {
     }
 }
 
+/// 标识段：秩、是否使用秩选择、稳定性判定码。
+fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Stable)> {
+    let rank = cur.read_u32()?;
+    let used = cur.read_u8()? != 0;
+    let stable = Stable::from_code(cur.read_u8()?)?;
+    Ok((rank, used, stable))
+}
+
+/// 实数与标志段：三个 f64（谱隙、总扰动、截断误差）小端连排，其后是两条布尔（非 0 即真）。
+fn tail(cur: &mut Cursor<'_>) -> Result<([f64; 3], [bool; 2])> {
+    let mut reals = [0.0f64; 3];
+    for value in &mut reals {
+        *value = read_f64(cur)?;
+    }
+    let mut flags = [false; 2];
+    for flag in &mut flags {
+        *flag = cur.read_u8()? != 0;
+    }
+    Ok((reals, flags))
+}
+
 /// 六项不变量校验（收敛为可执行的四条核心约束，逐条对应旧版 F1–F4/A2/D2）。
 pub fn check(n: &Note) -> Result<()> {
-    for v in [n.gap, n.eps, n.decomp] {
-        if !v.is_finite() {
-            return Err(bad("存在非有限值"));
-        }
+    let rules = [
+        (
+            [n.gap, n.eps, n.decomp].iter().all(|v| v.is_finite()),
+            "存在非有限值",
+        ),
+        (
+            n.lossless == (n.decomp == 0.0 && n.equal),
+            "无损判定与逐位/误差不一致",
+        ),
+        (
+            !(n.used && n.stable == Stable::Pass && n.gap <= 2.0 * n.eps),
+            "Pass 但谱隙不满足严格阈值",
+        ),
+        (n.gap >= 0.0, "谱隙不能为负"),
+    ];
+    match rules.iter().find(|(holds, _)| !*holds) {
+        Some((_, why)) => Err(bad(why)),
+        None => Ok(()),
     }
-    // F2：is_lossless = 截断误差为 0 ∧ 逐位一致。
-    if n.lossless != (n.decomp == 0.0 && n.equal) {
-        return Err(bad("无损判定与逐位/误差不一致"));
-    }
-    // A2：使用秩选择且 Pass 时，强制 γ_r > 2ε（gap、eps 已在上面验证 finite）。
-    if n.used && n.stable == Stable::Pass && n.gap <= 2.0 * n.eps {
-        return Err(bad("Pass 但谱隙不满足严格阈值"));
-    }
-    // 谱隙非负（降序奇异值）。
-    if n.gap < 0.0 {
-        return Err(bad("谱隙不能为负"));
-    }
-    Ok(())
 }
 
 fn check_rank(len: usize, m: usize, n: usize, r: usize) -> Result<()> {
-    if m == 0 || n == 0 || len != m * n || r < 1 || r >= m.min(n) {
-        return Err(bad(&format!(
-            "要求 1 <= r < min(m,n)，实际 m={m} n={n} r={r}"
-        )));
+    let fits = [
+        m != 0,
+        n != 0,
+        m.checked_mul(n) == Some(len),
+        (1..m.min(n)).contains(&r),
+    ];
+    if fits.iter().all(|ok| *ok) {
+        return Ok(());
     }
-    Ok(())
+    Err(bad(&format!(
+        "要求 1 <= r < min(m,n)，实际 m={m} n={n} r={r}"
+    )))
 }
 
 fn read_f64(cur: &mut Cursor<'_>) -> Result<f64> {

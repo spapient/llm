@@ -4,19 +4,20 @@
 //! 而不是与真实输入毫无关系的噪声——真实缺陷几乎总在这些边角上（多一个字节的长度、写错的
 //! 分组数、半个转义序列）。同一 `(seed, case)` 在任何机器上都得到同一串字节，失败可复现。
 //!
-//! 覆盖的是文本与字节两类边界：`config` 的 TOML 子集、`prof` 的档案、`cli` 的参数文法、
-//! `weights` 的 JSON 与 safetensors 头部。它们都是"外部来的字节"，也都把错误当返回值，
-//! 因此"不 panic / 结论稳定 / 拒绝有话说"三条契约在这里是同一件事。
+//! 覆盖的是文本与字节两类边界：`cli` 的参数文法、`weights` 的 JSON 与 safetensors 头部。
+//! 它们都是"外部来的字节"，也都把错误当返回值，因此"不 panic / 结论稳定 / 拒绝有话说"
+//! 三条契约在这里是同一件事。
 //!
-//! `op` 的声明与模板同样在闭集里，但它们的入口要一份模板正文作上下文（`OpDecl::parse`
-//! 同时吃声明与模板），已经由 `op` 自己的单测逐条覆盖，这里不重复构造第二份模板。
+//! **不再覆盖 TOML**：`ops/`、`devices/`、`lints/vocabulary.toml` 在构建期就被解析成表
+//! （ADR 0022），运行期没有 TOML 入口可灌；`op` 的声明入口要一份模板正文作上下文，由
+//! `op` 自己的单测逐条覆盖。
 
 use diagnostic::{Code, Error};
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
 ///
-/// 512 条 × 5 个目标 = 2560 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能覆盖
+/// 512 条 × 3 个目标 = 1536 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能覆盖
 /// 每个字节位置被扰动一次"就够——加密强度的随机源在这里没有价值，可复现才有。
 const CASES: u64 = 512;
 
@@ -27,39 +28,6 @@ const CASES: u64 = 512;
 fn text(input: &[u8]) -> Result<&str, Error> {
     std::str::from_utf8(input)
         .map_err(|_| Error::new(Code::Invalid, "输入不是 UTF-8").with("fuzz::parsers"))
-}
-
-/// 配置文件的 TOML 子集。
-struct Toml;
-
-impl Target for Toml {
-    fn name(&self) -> &str {
-        "config::toml"
-    }
-
-    fn run(&self, input: &[u8]) -> Result<(), Error> {
-        // `ParseError` 只带行号与说明，类别在调用方由"这是文本语法"决定。
-        config::toml::parse(text(input)?)
-            .map(|_| ())
-            .map_err(|error| Error::new(Code::Invalid, error.to_string()).with("config::toml"))
-    }
-}
-
-/// 设备档案：同一份 TOML 子集，但在 `prof` 里还要满足闭集与数字的一致性。
-struct Profile;
-
-impl Target for Profile {
-    fn name(&self) -> &str {
-        "prof::Profile"
-    }
-
-    fn run(&self, input: &[u8]) -> Result<(), Error> {
-        prof::prof::Profile::parse(text(input)?)
-            .map(|_| ())
-            .map_err(|error| {
-                Error::new(error.code(), error.to_string()).with("prof::Profile::parse")
-            })
-    }
 }
 
 /// 命令行：空白切词，再交给唯一的文法。
@@ -105,9 +73,6 @@ impl Target for Safetensors {
     }
 }
 
-/// 一份**合法**的 TOML 子集：表、键值、整数、字符串、布尔与表数组各一个。
-const TOML: &[u8] = b"[a]\nb = 1\nc = \"x\"\nd = true\n[[e]]\nf = [1, 2]\n";
-
 /// 一份合法的命令行：默认命令 + 一个带取值的选项。
 const ARGS: &[u8] = b"status --weights model.safetensors";
 
@@ -122,16 +87,9 @@ fn safetensors() -> Vec<u8> {
     file
 }
 
-/// 种子的取值在这里定：档案直接取磁盘上真实装载的那一份（`prof` 的格式变一次，这里跟着变）。
-fn profile() -> Vec<u8> {
-    include_bytes!("../../prof/devices/cpu.toml").to_vec()
-}
-
 #[test]
 fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
-    let targets: [(&dyn Target, Seed); 5] = [
-        (&Toml, Seed::new(TOML.to_vec())),
-        (&Profile, Seed::new(profile())),
+    let targets: [(&dyn Target, Seed); 3] = [
         (&Invocation, Seed::new(ARGS.to_vec())),
         (&Json, Seed::new(HEADER.as_bytes().to_vec())),
         (&Safetensors, Seed::new(safetensors())),
@@ -153,9 +111,7 @@ fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
 /// "合法输入也只许有一种结论"这条就没人验。
 #[test]
 fn every_seed_is_a_valid_input() {
-    let targets: [(&dyn Target, Seed); 5] = [
-        (&Toml, Seed::new(TOML.to_vec())),
-        (&Profile, Seed::new(profile())),
+    let targets: [(&dyn Target, Seed); 3] = [
         (&Invocation, Seed::new(ARGS.to_vec())),
         (&Json, Seed::new(HEADER.as_bytes().to_vec())),
         (&Safetensors, Seed::new(safetensors())),

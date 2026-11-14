@@ -27,6 +27,11 @@
 
 use diagnostic::{Code, Error, Result};
 
+/// 配置错误：上下文统一带 `tool::regress::` 前缀。
+fn invalid(context: &str, message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with(format!("tool::regress::{context}"))
+}
+
 /// 指标方向：越大越好，还是越小越好。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
@@ -42,6 +47,14 @@ impl Direction {
         match self {
             Self::Higher => "higher-is-better",
             Self::Lower => "lower-is-better",
+        }
+    }
+
+    /// 折算到「越大越好」的可比坐标：`Lower` 取相反数（取负对浮点是精确的）。
+    fn polar(self, value: f64) -> f64 {
+        match self {
+            Self::Higher => value,
+            Self::Lower => -value,
         }
     }
 }
@@ -64,18 +77,16 @@ impl Case {
         direction: Direction,
     ) -> Result<Self> {
         if !baseline.is_finite() || baseline <= 0.0 {
-            return Err(Error::new(
-                Code::Invalid,
+            return Err(invalid(
+                "Case::new",
                 format!("基线必须是正的有限数，得到 {baseline}"),
-            )
-            .with("tool::regress::Case::new"));
+            ));
         }
         if !(0.0..=100.0).contains(&budget_percent) {
-            return Err(Error::new(
-                Code::Invalid,
+            return Err(invalid(
+                "Case::new",
                 format!("预算必须落在 0..=100，得到 {budget_percent}"),
-            )
-            .with("tool::regress::Case::new"));
+            ));
         }
         Ok(Self {
             name: name.into(),
@@ -117,32 +128,27 @@ impl Case {
     /// 判定一次实测。
     pub fn judge(&self, observed: f64) -> Judgement {
         if !observed.is_finite() {
-            return Judgement::Regressed {
-                observed,
-                baseline: self.baseline,
-            };
+            return self.regressed(observed);
         }
-        let better = match self.direction {
-            Direction::Higher => observed > self.baseline,
-            Direction::Lower => observed < self.baseline,
-        };
-        if better {
+        let seen = self.direction.polar(observed);
+        if seen > self.direction.polar(self.baseline) {
             return Judgement::Improved {
                 observed,
                 baseline: self.baseline,
             };
         }
-        let within = match self.direction {
-            Direction::Higher => observed >= self.limit(),
-            Direction::Lower => observed <= self.limit(),
-        };
-        if within {
+        if seen >= self.direction.polar(self.limit()) {
             Judgement::Pass
         } else {
-            Judgement::Regressed {
-                observed,
-                baseline: self.baseline,
-            }
+            self.regressed(observed)
+        }
+    }
+
+    /// 回退结论：携带实测与基线。
+    fn regressed(&self, observed: f64) -> Judgement {
+        Judgement::Regressed {
+            observed,
+            baseline: self.baseline,
         }
     }
 }
@@ -199,17 +205,15 @@ impl Baseline {
     /// 校验并构造：至少一个场景，名字不得重复。
     pub fn new(cases: Vec<Case>) -> Result<Self> {
         if cases.is_empty() {
-            return Err(
-                Error::new(Code::Invalid, "基线不能为空").with("tool::regress::Baseline::new")
-            );
+            return Err(invalid("Baseline::new", "基线不能为空"));
         }
         let mut seen = std::collections::BTreeSet::new();
         for case in &cases {
             if !seen.insert(case.name()) {
-                return Err(
-                    Error::new(Code::Invalid, format!("场景 `{}` 重复", case.name()))
-                        .with("tool::regress::Baseline::new"),
-                );
+                return Err(invalid(
+                    "Baseline::new",
+                    format!("场景 `{}` 重复", case.name()),
+                ));
             }
         }
         Ok(Self { cases })

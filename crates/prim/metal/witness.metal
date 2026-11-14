@@ -1,8 +1,8 @@
 /* prim/metal/witness.metal —— M5 Pro 每条 provide 的最小见证。
  *
  * 统一 ABI：`int witness_<name>(thread float *out)` 返回写入的元素个数（≤ 8），
- * 值按 f32 读回后与档案里的 `witness.expect` 对拍（DESIGN §11.3）。
- * 比较口径固定为 max|got-want| / max|want|，f32 阈值 1e-5（DESIGN §11.1）。
+ * 值按 f32 读回后与档案里的 `witness.expect` 对拍（cutile README §11.3）。
+ * 比较口径固定为 max|got-want| / max|want|，f32 阈值 1e-5（cutile README §11.1）。
  *
  * 这些函数是**证据**而不是片段：不参与 `@prim` 拼接，也不进 kernel。出参的地址空间必须显式
  * 写成 `thread`：MSL 没有默认地址空间，`float *out` 在这里是语法错误——`cc` 能过、`xcrun metal`
@@ -10,11 +10,11 @@
  * 走 `xcrun metal` + `metallib` + GPU，`.c` 走 `cc`），见 `audit::witness`。
  *
  * 一条签名一个函数：见证回答"这条签名写的是什么算法"，两条签名共用一份见证时，
- * 执行通过的结论无法归属到哪一条（DESIGN §11.3）。
+ * 执行通过的结论无法归属到哪一条（cutile README §11.3）。
  *
  * 末尾六条是 P0 模板不用、但 M 系列 GPU 确实具备的能力（simdgroup 矩阵单元、lane 交换/广播/
  * 扫描、SFU 的 `exp2`/`rcp`）。它们的等级是 L0：有见证源码、也在设备上执行过，但没有片段文本，
- * 而 `L2` 要的是**内核**在本机跑通并与标量参考对拍（DESIGN §11.3），见证执行本身不等于 L2。
+ * 而 `L2` 要的是**内核**在本机跑通并与标量参考对拍（cutile README §11.3），见证执行本身不等于 L2。
  */
 
 /* dot/simd_dp4a: 4 个 i8 分量乘加（dp4a 的语义），累加器是 i32 → 10.0 */

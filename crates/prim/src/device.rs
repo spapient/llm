@@ -202,9 +202,9 @@ mod tests {
     #[test]
     fn every_device_names_its_own_archive() {
         for device in devices() {
-            let text = prof::embedded(device.vendor)
+            let table = prof::embedded(device.vendor)
                 .unwrap_or_else(|| panic!("`{}` 没有档案", device.vendor));
-            let profile = prof::prof::Profile::parse(text).expect("档案可解析");
+            let profile = prof::prof::Profile::parse(table).expect("档案可解析");
             assert_eq!(profile.meta.vendor, device.vendor);
             assert_eq!(profile.meta.emit.as_str(), device.emit);
             assert_eq!(profile.meta.emit.ext(), device.ext);

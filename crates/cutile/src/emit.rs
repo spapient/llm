@@ -1,7 +1,7 @@
-//! ⑤ emit：把拼接结果包成最终源文件（DESIGN §10.2）。
+//! ⑤ emit：把拼接结果包成最终源文件（README §10.2）。
 //!
 //! 这一层刻意只做"加头、加前导、拼正文"，不做任何重写——换 `emit` 语言时改的是片段，
-//! 不是模板（DESIGN 风险 R6）。
+//! 不是模板（cutile README 风险 R6）。
 
 use crate::SCHEMA_VER;
 use crate::decl::{OpDecl, TileCombo, Variant};
@@ -30,7 +30,7 @@ impl Source {
     }
 }
 
-/// DESIGN §16 给片段定的行数上限：超过它说明原语粒度错，先合并原语。
+/// README §16 给片段定的行数上限：超过它说明原语粒度错，先合并原语。
 pub const FRAGMENT_LIMIT: usize = 400;
 
 /// §16 给片段定的内部目标（行数）：达标余量，不是另一条判据。
@@ -133,8 +133,8 @@ mod tests {
     /// §16 的片段判据是“同一对数与两个门槛比”：上限管成败，内部目标只是余量。
     #[test]
     fn the_fragment_verdict_reads_the_p0_limits() {
-        assert_eq!(FRAGMENT_LIMIT, 400, "DESIGN §16 的上限");
-        assert_eq!(FRAGMENT_GOAL, 240, "DESIGN §16 的内部目标");
+        assert_eq!(FRAGMENT_LIMIT, 400, "README §16 的上限");
+        assert_eq!(FRAGMENT_GOAL, 240, "README §16 的内部目标");
         assert!(Fragment::new(FRAGMENT_LIMIT).within_limit());
         assert!(!Fragment::new(FRAGMENT_LIMIT + 1).within_limit());
         assert!(Fragment::new(FRAGMENT_GOAL).within_goal());

@@ -1,8 +1,8 @@
 /* prim/cpu/witness.c —— 每段只调用一个原语的最小见证 + 期望值。
  *
  * 统一 ABI：`int witness_<name>(float *out)` 返回写入的元素个数（≤ 8），
- * 值按 f32 读回后与档案里的 `witness.expect` 对拍（DESIGN §11.3）。
- * 比较口径固定为 max|got-want| / max|want|，f32 阈值 1e-5（DESIGN §11.1）。
+ * 值按 f32 读回后与档案里的 `witness.expect` 对拍（cutile README §11.3）。
+ * 比较口径固定为 max|got-want| / max|want|，f32 阈值 1e-5（cutile README §11.1）。
  * 本文件不依赖模板，也不参与 `@prim` 拼接。
  *
  * 两个范围互不重叠、合起来覆盖全部声明：`grade ≥ L2` 的见证由**设备执行**（emit = c 时

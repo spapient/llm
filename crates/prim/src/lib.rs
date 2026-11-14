@@ -127,32 +127,8 @@ impl Fragment {
     /// 第一行不是签名声明、声明里的原语与文件名不一致、或缺少 `impl` 名时返回 `invalid`。
     fn parse(prim: Prim, source: impl Into<String>) -> diagnostic::Result<Self> {
         let source = source.into();
-        let (first, body) = source.split_once('\n').ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("片段 `{prim}` 只有签名声明，没有实现"),
-            )
-        })?;
-        let declared = first
-            .strip_prefix("/*")
-            .and_then(|rest| rest.strip_suffix("*/"))
-            .map(str::trim)
-            .and_then(|rest| rest.strip_prefix(SIGN_MARKER))
-            .map(str::trim)
-            .ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!(
-                        "片段 `{prim}` 的第一行必须是 `/* {SIGN_MARKER} {prim}/<impl> */`，实际是 `{first}`"
-                    ),
-                )
-            })?;
-        let (declared_prim, implementation) = declared.split_once('/').ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("`{prim}` 的签名声明 `{declared}` 不是 `<prim>/<impl>`"),
-            )
-        })?;
+        let (first, body) = split_declaration(&source, prim)?;
+        let (declared_prim, implementation) = declaration_parts(first, prim)?;
         if Prim::parse(declared_prim.trim()) != Some(prim) {
             return Err(Error::new(
                 Code::Invalid,
@@ -178,6 +154,42 @@ impl Fragment {
             implementation,
         })
     }
+}
+
+/// 片段文本 → 「声明行」与「实现体」：只有声明没有实现的片段不是片段。
+fn split_declaration(source: &str, prim: Prim) -> diagnostic::Result<(&str, &str)> {
+    source.split_once('\n').ok_or_else(|| {
+        Error::new(
+            Code::Invalid,
+            format!("片段 `{prim}` 只有签名声明，没有实现"),
+        )
+    })
+}
+
+/// 声明行 → `<prim>/<impl>` 两半：注释外壳与 [`SIGN_MARKER`] 标记都要在这里对上。
+///
+/// 回答「这一行声明了什么」，不回答「声明与文件名是否一致」——那是调用点的事。
+fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)> {
+    let declared = first
+        .strip_prefix("/*")
+        .and_then(|rest| rest.strip_suffix("*/"))
+        .map(str::trim)
+        .and_then(|rest| rest.strip_prefix(SIGN_MARKER))
+        .map(str::trim)
+        .ok_or_else(|| {
+            Error::new(
+                Code::Invalid,
+                format!(
+                    "片段 `{prim}` 的第一行必须是 `/* {SIGN_MARKER} {prim}/<impl> */`，实际是 `{first}`"
+                ),
+            )
+        })?;
+    declared.split_once('/').ok_or_else(|| {
+        Error::new(
+            Code::Invalid,
+            format!("`{prim}` 的签名声明 `{declared}` 不是 `<prim>/<impl>`"),
+        )
+    })
 }
 
 /// 某个 vendor 的片段集合。
@@ -261,17 +273,15 @@ pub fn layer_root(data_root: &Path) -> PathBuf {
 
 /// 按 `(vendor, ext)` 查内嵌片段；没有登记时返回 `None`（调用方改读磁盘）。
 ///
-/// # Panics
-///
-/// 内嵌片段的第一行不是签名声明时 panic：`BUILTIN` 是编译期数据，写成非法形态就是 crate
-/// 缺陷，由 `builtin_matches_disk` 与 `builtin_signs_are_declared` 兜住。
+/// 内嵌片段声明的签名读不出来也算「这台设备没有内嵌片段」：`BUILTIN` 是编译期数据，
+/// 写成非法形态就是 crate 缺陷，那与其在运行期 panic，不如让调用方回到磁盘的同一份文本。
 pub fn builtin(vendor: &str, ext: &str) -> Option<FragmentSet> {
     let entry = BUILTIN
         .iter()
         .find(|entry| entry.vendor == vendor && entry.ext == ext)?;
     let mut set = FragmentSet::new(entry.vendor, entry.ext);
     for (prim, source) in entry.fragments {
-        set.insert(*prim, *source).expect("内置片段必须声明签名");
+        set.insert(*prim, *source).ok()?;
     }
     Some(set)
 }
@@ -291,27 +301,33 @@ pub fn load(root: &Path, vendor: &str, ext: &str) -> diagnostic::Result<Fragment
     let entries = std::fs::read_dir(&dir).map_err(|error| Error::from_io(&dir, &error))?;
     for entry in entries {
         let entry = entry.map_err(|error| Error::new(Code::Io, error.to_string()))?;
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some(ext) {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if stem == WITNESS_STEM {
-            continue;
-        }
-        let Some(prim) = Prim::parse(stem) else {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("`{}` 的文件名 `{stem}` 不在原语闭集内", path.display()),
-            ));
-        };
-        let source =
-            std::fs::read_to_string(&path).map_err(|error| Error::from_io(&path, &error))?;
-        set.insert(prim, source)?;
+        add(&mut set, &entry.path(), ext)?;
     }
     Ok(set)
+}
+
+/// 把一个目录项装进集合；不是片段就什么都不做。
+///
+/// 回答「这个文件算不算一段片段」，不回答「目录能不能读」——后者在 [`load`]。
+fn add(set: &mut FragmentSet, path: &Path, ext: &str) -> diagnostic::Result<()> {
+    let Some(stem) = fragment_stem(path, ext) else {
+        return Ok(());
+    };
+    let prim = Prim::parse(stem).ok_or_else(|| {
+        Error::new(
+            Code::Invalid,
+            format!("`{}` 的文件名 `{stem}` 不在原语闭集内", path.display()),
+        )
+    })?;
+    let source = std::fs::read_to_string(path).map_err(|error| Error::from_io(path, &error))?;
+    set.insert(prim, source)
+}
+
+/// 文件名里的原语名：扩展名不对、或叫 `witness` 的文件都不是片段。
+fn fragment_stem<'a>(path: &'a Path, ext: &str) -> Option<&'a str> {
+    let stem = path.file_stem().and_then(|value| value.to_str())?;
+    let right_ext = path.extension().and_then(|value| value.to_str()) == Some(ext);
+    (right_ext && stem != WITNESS_STEM).then_some(stem)
 }
 
 #[cfg(test)]

@@ -1,15 +1,15 @@
 /* prim/nvidia/witness.cu —— sm75（T600）每条 provide 的最小见证。
  *
  * 统一 ABI：`int witness_<name>(float *out)` 返回写入的元素个数（≤ 8），
- * 值按 f32 读回后与档案里的 `witness.expect` 对拍（DESIGN §11.3）。
- * 比较口径固定为 max|got-want| / max|want|，f32 阈值 1e-5（DESIGN §11.1）。
+ * 值按 f32 读回后与档案里的 `witness.expect` 对拍（cutile README §11.3）。
+ * 比较口径固定为 max|got-want| / max|want|，f32 阈值 1e-5（cutile README §11.1）。
  *
  * 这些函数是**证据**而不是片段：不参与 `@prim` 拼接，也不进 kernel。
  * 本机没有 CUDA 设备，P0 的见证执行器只执行 `emit = c` 的档案，所以下面的
  * 等级仍是 L1——文件先把"证据是什么"写成数据，真机与工具链到位后再执行。
  *
  * 一条签名一个函数：见证回答"这条签名写的是什么算法"，两条签名共用一份见证时，
- * 执行通过的结论无法归属到哪一条（DESIGN §11.3）。
+ * 执行通过的结论无法归属到哪一条（cutile README §11.3）。
  *
  * 末尾六条是 P0 模板不用、但 sm75 确实具备的能力（Turing 张量核、lane 交换/广播/扫描、
  * SFU 的 `ex2`/`rcp`）。它们的等级是 L0：有见证源码，没有片段文本，也没有真机执行。

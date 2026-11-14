@@ -1,8 +1,13 @@
-//! 命令行前端：把 `argv` 解析成 [`Command`]，**不执行任何业务**。
+//! 命令行前端：把 `argv` 与环境变量解析成 [`Command`] 与 [`settings::Settings`]，**不执行任何业务**。
 //!
-//! **拥有**：`Command`、`Invocation`、`USAGE`、`parse`，以及内核层审计的子命令文法 [`cutile::CutileCommand`]。
-//! **不拥有**：业务实现（各层自己）、输出排版（`tool`）、配置（`llm-config`）、退出码语义（`llm` 决定）。
+//! **拥有**：`Command`、`Invocation`、`USAGE`、`parse`、内核层审计的子命令文法 [`cutile::CutileCommand`]，
+//! 以及三个目录开关的解析策略 [`settings`]（默认值、`CUTILE_*`、`--set`、来源追踪）。
+//! **不拥有**：业务实现（各层自己）、输出排版（`tool`）、退出码语义（`llm` 决定）。
 //! **依赖**：`diagnostic`。**被依赖**：`llm`（`llm` 与它的 `cutile` 二进制）。
+//!
+//! 配置为什么在这一层：默认目录是**部署策略**（面向发布后的二进制），`--set` 是**命令行文法**；
+//! 两者都是"这次调用怎么来的"，而不是"内核怎么实现"。内核只收 `cutile::dirs::Dirs` 这份纯数据，
+//! 于是它可以被测试、服务或别的宿主按各自的约定接管（ADR 0023）。
 //!
 //! 解析与执行分开的理由：`llm` 是组装点，它的 `main` 只该做"解析 → 分派 → 退出码"三件事。
 //! 把参数文法写进组装点或写进被驱动的层（`cutile` 曾经自己认 `doctor` / `verify` / `bench`），
@@ -26,6 +31,7 @@
 #![deny(unsafe_code)]
 
 pub mod cutile;
+pub mod settings;
 
 use diagnostic::{Code, Error, Result};
 
@@ -85,6 +91,36 @@ pub struct Invocation {
     command: Command,
 }
 
+/// 参数游标：按词推进，`peek` 用于「下一个词是不是这个选项」。
+type Words<'a> =
+    std::iter::Peekable<std::iter::Map<std::slice::Iter<'a, String>, fn(&String) -> &str>>;
+
+/// 只接受一个选项的子命令：名字、唯一选项、取值说明、命令构造。
+///
+/// 表即文法：`status` 只认 `--weights`，`verify`/`bench` 只认 `--op`；新增这类子命令只加一行。
+const SINGLE: &[Single] = &[
+    ("status", "--weights", "文件", |weights| Command::Status {
+        weights,
+    }),
+    ("verify", "--op", "算子", |op| Command::Verify { op }),
+    ("bench", "--op", "算子", |op| Command::Bench { op }),
+];
+
+/// 只接受一个选项的子命令：名字、唯一选项、取值说明、命令构造。
+type Single = (
+    &'static str,
+    &'static str,
+    &'static str,
+    fn(Option<String>) -> Command,
+);
+
+/// `run` 的选项与取值说明：顺序自由，权重文件必需。
+const RUN: &[(&str, &str)] = &[
+    ("--weights", "文件"),
+    ("--input", "数值列表"),
+    ("--device", "设备"),
+];
+
 impl Invocation {
     /// 解析参数（不含 `argv[0]`）。
     ///
@@ -93,56 +129,14 @@ impl Invocation {
     /// 未知命令、未知选项、缺少取值、重复选项都返回 [`Code::Invalid`]，
     /// 并在消息里给出 [`USAGE`]——错误信息本身就是下一条命令的提示。
     pub fn parse(args: &[String]) -> Result<Self> {
-        let mut words = args.iter().map(String::as_str).peekable();
-        let command = match words.next() {
-            None | Some("status") => Command::Status {
-                weights: parse_weights(&mut words)?,
-            },
-            Some("help" | "-h" | "--help") => Command::Help,
-            Some("verify") => Command::Verify {
-                op: parse_op(&mut words)?,
-            },
-            Some("bench") => Command::Bench {
-                op: parse_op(&mut words)?,
-            },
-            Some("run") => {
-                // `run` 有三个带取值的选项，顺序自由：循环读到空为止，未知选项立刻报错
-                // （猜一个默认值只会把"写错了"变成"跑出一份别的结果"）。
-                let mut weights = None;
-                let mut input = None;
-                let mut device = None;
-                while let Some(next) = words.peek().copied() {
-                    match next {
-                        "--weights" => weights = parse_value(&mut words, "--weights", "文件")?,
-                        "--input" => input = parse_value(&mut words, "--input", "数值列表")?,
-                        "--device" => device = parse_value(&mut words, "--device", "设备")?,
-                        other => {
-                            return Err(Error::new(
-                                Code::Invalid,
-                                format!("`run` 不接受 `{other}`"),
-                            )
-                            .with("cli::Invocation::parse"));
-                        }
-                    }
-                }
-                let weights = weights.ok_or_else(|| {
-                    Error::new(Code::Invalid, "`run` 需要 `--weights <文件>`")
-                        .with("cli::Invocation::parse")
-                })?;
-                Command::Run {
-                    weights,
-                    input,
-                    device,
-                }
-            }
-            Some(other) => {
-                return Err(Error::new(Code::Invalid, format!("未知命令 `{other}`"))
-                    .with("cli::Invocation::parse"));
-            }
-        };
+        let mut words = args
+            .iter()
+            .map(String::as_str as fn(&String) -> &str)
+            .peekable();
+        let head = words.next();
+        let command = command(head, &mut words)?;
         if let Some(extra) = words.next() {
-            return Err(Error::new(Code::Invalid, format!("多余参数 `{extra}`"))
-                .with("cli::Invocation::parse"));
+            return Err(invalid(format!("多余参数 `{extra}`")));
         }
         Ok(Self { command })
     }
@@ -153,42 +147,68 @@ impl Invocation {
     }
 }
 
-/// `--op <name>`：最多出现一次，取值不能为空或看起来像另一个选项。
-fn parse_op<'a>(words: &mut impl Iterator<Item = &'a str>) -> Result<Option<String>> {
-    parse_value(words, "--op", "算子")
+/// 子命令名 → 命令；缺名字即默认命令 `status`。
+fn command(name: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
+    let name = name.unwrap_or("status");
+    if matches!(name, "help" | "-h" | "--help") {
+        return Ok(Command::Help);
+    }
+    if name == "run" {
+        return run(words);
+    }
+    let Some((_, flag, what, build)) = SINGLE.iter().find(|(known, ..)| *known == name) else {
+        return Err(invalid(format!("未知命令 `{name}`")));
+    };
+    Ok(build(parse_value(words, flag, what)?))
 }
 
-/// `--weights <文件>`：同 [`parse_op`] 的规则；取值是路径，因此不对内容做白名单。
-fn parse_weights<'a>(words: &mut impl Iterator<Item = &'a str>) -> Result<Option<String>> {
-    parse_value(words, "--weights", "文件")
+/// `run`：三个选项顺序自由，但 `--weights` 必需——猜一个默认文件只会把"写错了"变成"跑出别的结果"。
+fn run(words: &mut Words<'_>) -> Result<Command> {
+    let mut slots: [Option<String>; 3] = [None, None, None];
+    while let Some(flag) = words.peek().copied() {
+        let Some(slot) = RUN.iter().position(|(known, _)| *known == flag) else {
+            return Err(invalid(format!("`run` 不接受 `{flag}`")));
+        };
+        slots[slot] = parse_value(words, RUN[slot].0, RUN[slot].1)?;
+    }
+    let [weights, input, device] = slots;
+    Ok(Command::Run {
+        weights: weights.ok_or_else(missing_weights)?,
+        input,
+        device,
+    })
 }
 
-/// 一个“带取值的选项”：最多出现一次，取值不能为空或看起来像另一个选项。
-fn parse_value<'a>(
-    words: &mut impl Iterator<Item = &'a str>,
-    flag: &str,
-    what: &str,
-) -> Result<Option<String>> {
+/// 一个“带取值的选项”：没出现返回 `None`，出现了就必须有合法取值。
+fn parse_value(words: &mut Words<'_>, flag: &str, what: &str) -> Result<Option<String>> {
     let Some(given) = words.next() else {
         return Ok(None);
     };
     if given != flag {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("期望 `{flag} <{what}>`，得到 `{given}`"),
-        )
-        .with("cli::Invocation::parse"));
+        return Err(invalid(format!("期望 `{flag} <{what}>`，得到 `{given}`")));
     }
-    let value = words.next().ok_or_else(|| {
-        Error::new(Code::Invalid, format!("`{flag}` 缺少取值")).with("cli::Invocation::parse")
-    })?;
+    value(words.next(), flag).map(Some)
+}
+
+/// 选项的取值：不能缺失、不能为空、不能看起来像另一个选项。
+fn value(given: Option<&str>, flag: &str) -> Result<String> {
+    let Some(value) = given else {
+        return Err(invalid(format!("`{flag}` 缺少取值")));
+    };
     if value.is_empty() || value.starts_with('-') {
-        return Err(
-            Error::new(Code::Invalid, format!("`{flag}` 的取值不合法：`{value}`"))
-                .with("cli::Invocation::parse"),
-        );
+        return Err(invalid(format!("`{flag}` 的取值不合法：`{value}`")));
     }
-    Ok(Some(value.to_string()))
+    Ok(value.to_string())
+}
+
+/// `run` 缺权重文件：不猜一个默认文件，那只会把"写错了"变成"跑出别的结果"。
+fn missing_weights() -> Error {
+    invalid("`run` 需要 `--weights <文件>`")
+}
+
+/// 一条顶层命令文法的诊断：上下文固定在这一层。
+fn invalid(message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message.into()).with("cli::Invocation::parse")
 }
 
 #[cfg(test)]

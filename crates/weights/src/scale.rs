@@ -22,6 +22,20 @@ pub fn encode(scales: &[f32]) -> Result<Vec<u8>> {
     if scales.is_empty() {
         return Ok(Vec::new());
     }
+    check_scales(scales)?;
+    let base = scales.iter().copied().fold(f32::MIN, f32::max);
+    let min = scales.iter().copied().fold(f32::MAX, f32::min);
+    let range = (-(min / base).log2()).max(0.0);
+
+    let mut out = Vec::with_capacity(HEAD_LEN + scales.len());
+    out.extend_from_slice(&base.to_le_bytes());
+    out.extend_from_slice(&range.to_le_bytes());
+    out.extend(scales.iter().map(|scale| code(*scale, base, range)));
+    Ok(out)
+}
+
+/// 每个 scale 必须是正有限值；这条判据不回答块数或布局。
+fn check_scales(scales: &[f32]) -> Result<()> {
     for &scale in scales {
         if !scale.is_finite() || scale <= 0.0 {
             return Err(
@@ -30,24 +44,17 @@ pub fn encode(scales: &[f32]) -> Result<Vec<u8>> {
             );
         }
     }
-    let base = scales.iter().copied().reduce(f32::max).expect("非空");
-    let min = scales.iter().copied().reduce(f32::min).expect("非空");
-    let range = (-(min / base).log2()).max(0.0);
+    Ok(())
+}
 
-    let mut out = Vec::with_capacity(HEAD_LEN + scales.len());
-    out.extend_from_slice(&base.to_le_bytes());
-    out.extend_from_slice(&range.to_le_bytes());
-    for &scale in scales {
-        let code = if range > 0.0 {
-            let t = (scale / base).log2();
-            255.0 * (1.0 + t / range)
-        } else {
-            255.0
-        };
-        let clamped = (code.round() as i64).clamp(1, 255) as u8;
-        out.push(clamped);
-    }
-    Ok(out)
+/// 一个 scale 的定点码：相对基准 1.0 对应 255，动态范围为 0 时全码。
+fn code(scale: f32, base: f32, range: f32) -> u8 {
+    let raw = if range > 0.0 {
+        255.0 * (1.0 + (scale / base).log2() / range)
+    } else {
+        255.0
+    };
+    (raw.round() as i64).clamp(1, 255) as u8
 }
 
 /// 紧凑字节 → 各块 scale；截断或字节不足显式报错。
@@ -55,22 +62,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<f32>> {
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    if bytes.len() < HEAD_LEN {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("scale 区至少 {HEAD_LEN} 字节，实际 {}", bytes.len()),
-        )
-        .with("scale::decode"));
-    }
-    let mut base = [0u8; 4];
-    let mut range = [0u8; 4];
-    base.copy_from_slice(&bytes[..4]);
-    range.copy_from_slice(&bytes[4..8]);
-    let base = f32::from_le_bytes(base);
-    let range = f32::from_le_bytes(range);
-    if !base.is_finite() || base <= 0.0 || !range.is_finite() || range < 0.0 {
-        return Err(Error::new(Code::Invalid, "scale 基准/动态范围不合法").with("scale::decode"));
-    }
+    let (base, range) = head(bytes)?;
     let mut scales = Vec::with_capacity(bytes.len() - HEAD_LEN);
     for &code in &bytes[HEAD_LEN..] {
         if code == 0 {
@@ -83,6 +75,28 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<f32>> {
         scales.push(base * 2.0f32.powf(t));
     }
     Ok(scales)
+}
+
+/// 基准区：base 与动态范围 D，并校验两者合法。
+fn head(bytes: &[u8]) -> Result<(f32, f32)> {
+    if bytes.len() < HEAD_LEN {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("scale 区至少 {HEAD_LEN} 字节，实际 {}", bytes.len()),
+        )
+        .with("scale::decode"));
+    }
+    let base = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let range = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    if !valid_head(base, range) {
+        return Err(Error::new(Code::Invalid, "scale 基准/动态范围不合法").with("scale::decode"));
+    }
+    Ok((base, range))
+}
+
+/// base 必须正、有限；D 必须非负、有限。
+fn valid_head(base: f32, range: f32) -> bool {
+    base.is_finite() && base > 0.0 && range.is_finite() && range >= 0.0
 }
 
 #[cfg(test)]

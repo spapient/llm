@@ -89,40 +89,10 @@ impl Signature {
 
     /// 解析主体；错误带上行号，文件帧由 [`Self::parse`] 统一追加。
     fn scan(op: &str, template: &str) -> diagnostic::Result<Self> {
-        // 模板保留 `{{op}}` 插值；直接检查已展开的文本也接受（测试与将来的内联模板）。
-        let marker = format!("cutile_{op}_kernel(");
-        // 一次定位：`find` 已经给出起点，再 `contains` 一遍只是把同一段文本扫两次。
-        let (start, width) = [marker.as_str(), "cutile_{{op}}_kernel("]
-            .into_iter()
-            .find_map(|entry| template.find(entry).map(|start| (start, entry.len())))
-            .ok_or_else(|| {
-                at(
-                    1,
-                    format!("算子 `{op}` 的模板缺少内核入口 `cutile_{{op}}_kernel(`"),
-                )
-            })?;
-        let open = start + width - 1;
-        let close = matching(template, open).ok_or_else(|| {
-            at(
-                line_of(template, open),
-                format!("算子 `{op}` 的内核签名括号不配对"),
-            )
-        })?;
-        let inner = &template[open + 1..close];
-
-        let mut params = Vec::new();
-        if inner.trim() != "void" && !inner.trim().is_empty() {
-            for (offset, text) in split(inner) {
-                // 参数可能从下一行开始：行号要落在非空白字符上，而不是逗号之后。
-                let indent = inner[offset..].len() - inner[offset..].trim_start().len();
-                let line = line_of(template, open + 1 + offset + indent);
-                params.push(parse_param(op, text, line)?);
-            }
-        }
-
+        let (open, close) = entry(op, template)?;
         let signature = Self {
             op: op.to_string(),
-            params,
+            params: params(op, template, open, close)?,
         };
         signature.check_shape()?;
         Ok(signature)
@@ -154,7 +124,7 @@ impl Signature {
     /// 唯一可写输出缓冲的类型（与 [`Self::output`] 同源）。
     ///
     /// 单独暴露类型而不是只给名字：回读路径按它检查"内核写的到底是不是 float"，
-    /// 而不必再猜一次 `Model::dtype`（DESIGN §11.3 的输出契约）。
+    /// 而不必再猜一次 `Model::dtype`（cutile README §11.3 的输出契约）。
     pub fn output_type(&self) -> Option<CType> {
         self.params
             .iter()
@@ -168,29 +138,16 @@ impl Signature {
     ///
     /// 任一不匹配都返回带算子名、形参名与两侧类型的说明。
     pub fn check(&self, sample: &Sample) -> diagnostic::Result<()> {
+        self.check_params(sample)?;
+        self.check_extra_buffers(sample)?;
+        self.check_extra_scalars(sample)
+    }
+
+    /// 逐个形参对齐样本：缓冲同名同类型，标量有取值。
+    fn check_params(&self, sample: &Sample) -> diagnostic::Result<()> {
         for param in &self.params {
             if param.ctype.is_buffer() {
-                let buffer = sample.buffer(&param.name).ok_or_else(|| {
-                    Error::new(
-                        Code::Missing,
-                        format!(
-                            "算子 `{}` 的内核签名有缓冲 `{}`，样本里没有同名缓冲",
-                            self.op, param.name
-                        ),
-                    )
-                })?;
-                let actual = describe(&buffer.values);
-                if !type_matches(param.ctype, &buffer.values) {
-                    return Err(Error::new(
-                        Code::Invalid,
-                        format!(
-                            "算子 `{}` 的缓冲 `{}`：`.k` 声明为 `{} *`，样本给的是 `{actual}`",
-                            self.op,
-                            param.name,
-                            param.ctype.c_name()
-                        ),
-                    ));
-                }
+                self.check_buffer(param, sample)?;
             } else if sample.scalar(&param.name).is_none() {
                 return Err(Error::new(
                     Code::Missing,
@@ -201,13 +158,39 @@ impl Signature {
                 ));
             }
         }
+        Ok(())
+    }
 
+    /// 一个缓冲形参：同名缓冲必须存在，元素类型必须与 `.k` 的声明一致。
+    fn check_buffer(&self, param: &Param, sample: &Sample) -> diagnostic::Result<()> {
+        let buffer = sample.buffer(&param.name).ok_or_else(|| {
+            Error::new(
+                Code::Missing,
+                format!(
+                    "算子 `{}` 的内核签名有缓冲 `{}`，样本里没有同名缓冲",
+                    self.op, param.name
+                ),
+            )
+        })?;
+        if type_matches(param.ctype, &buffer.values) {
+            return Ok(());
+        }
+        Err(Error::new(
+            Code::Invalid,
+            format!(
+                "算子 `{}` 的缓冲 `{}`：`.k` 声明为 `{} *`，样本给的是 `{}`",
+                self.op,
+                param.name,
+                param.ctype.c_name(),
+                describe(&buffer.values)
+            ),
+        ))
+    }
+
+    /// 样本里多出来的缓冲名：签名没有它，emit 时谁也接不住。
+    fn check_extra_buffers(&self, sample: &Sample) -> diagnostic::Result<()> {
         for buffer in &sample.buffers {
-            if !self
-                .params
-                .iter()
-                .any(|param| param.ctype.is_buffer() && param.name == buffer.name)
-            {
+            if !self.has_buffer(buffer.name) {
                 return Err(Error::new(
                     Code::Invalid,
                     format!(
@@ -217,12 +200,13 @@ impl Signature {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// 样本里多出来的标量名：同上，签名之外的实参无法传给内核。
+    fn check_extra_scalars(&self, sample: &Sample) -> diagnostic::Result<()> {
         for (name, _) in &sample.scalars {
-            if !self
-                .params
-                .iter()
-                .any(|param| !param.ctype.is_buffer() && param.name == *name)
-            {
+            if !self.has_scalar(name) {
                 return Err(Error::new(
                     Code::Invalid,
                     format!("算子 `{}` 的样本标量 `{name}` 不在 `.k` 签名里", self.op),
@@ -232,6 +216,20 @@ impl Signature {
         Ok(())
     }
 
+    /// 签名里有没有这个缓冲形参。
+    fn has_buffer(&self, name: &str) -> bool {
+        self.params
+            .iter()
+            .any(|param| param.ctype.is_buffer() && param.name == name)
+    }
+
+    /// 签名里有没有这个标量形参。
+    fn has_scalar(&self, name: &str) -> bool {
+        self.params
+            .iter()
+            .any(|param| !param.ctype.is_buffer() && param.name == name)
+    }
+
     /// 按签名顺序渲染内核实参：缓冲名原样、标量取样本里的值。
     ///
     /// # Errors
@@ -239,26 +237,39 @@ impl Signature {
     /// 签名与样本不一致时先由 [`Self::check`] 返回说明。
     pub fn call_args(&self, sample: &Sample) -> diagnostic::Result<String> {
         self.check(sample)?;
-        let mut parts = Vec::with_capacity(self.params.len());
-        for param in &self.params {
-            if param.ctype.is_buffer() {
-                parts.push(param.name.clone());
-            } else {
-                // `check` 刚过，这里取不到只能是实现与校验不同步——内部不变量，不是调用方的错。
-                let value = sample.scalar(&param.name).ok_or_else(|| {
-                    Error::new(
-                        Code::Internal,
-                        format!("算子 `{}` 的标量实参 `{}` 没有取值", self.op, param.name),
-                    )
-                })?;
-                parts.push(value.to_string());
-            }
-        }
+        let parts: Vec<String> = self
+            .params
+            .iter()
+            .map(|param| self.argument(param, sample))
+            .collect::<diagnostic::Result<_>>()?;
         Ok(parts.join(", "))
+    }
+
+    /// 一个形参在调用点的写法：缓冲给名字，标量给样本里的取值。
+    fn argument(&self, param: &Param, sample: &Sample) -> diagnostic::Result<String> {
+        if param.ctype.is_buffer() {
+            return Ok(param.name.clone());
+        }
+        // `check` 刚过，这里取不到只能是实现与校验不同步——内部不变量，不是调用方的错。
+        sample
+            .scalar(&param.name)
+            .map(|value| value.to_string())
+            .ok_or_else(|| {
+                Error::new(
+                    Code::Internal,
+                    format!("算子 `{}` 的标量实参 `{}` 没有取值", self.op, param.name),
+                )
+            })
     }
 
     /// 装载期结构校验：名字唯一、可写缓冲恰好一个。
     fn check_shape(&self) -> diagnostic::Result<()> {
+        self.check_unique()?;
+        self.check_single_output()
+    }
+
+    /// 形参名只能出现一次：重名会让「按名字取实参」变成看运气。
+    fn check_unique(&self) -> diagnostic::Result<()> {
         for (index, param) in self.params.iter().enumerate() {
             if let Some(other) = self.params[..index]
                 .iter()
@@ -273,12 +284,12 @@ impl Signature {
                 ));
             }
         }
-        let outputs = self
-            .params
-            .iter()
-            .filter(|param| param.ctype.is_buffer() && param.mutable)
-            .count();
-        match outputs {
+        Ok(())
+    }
+
+    /// 可写缓冲恰好一个：P0 的执行侧只支持一个输出。
+    fn check_single_output(&self) -> diagnostic::Result<()> {
+        match self.outputs() {
             1 => Ok(()),
             0 => Err(at(
                 1,
@@ -295,6 +306,14 @@ impl Signature {
                 ),
             )),
         }
+    }
+
+    /// 可写缓冲的个数（`output`/`output_type` 是它的两种投影）。
+    fn outputs(&self) -> usize {
+        self.params
+            .iter()
+            .filter(|param| param.ctype.is_buffer() && param.mutable)
+            .count()
     }
 }
 
@@ -320,21 +339,66 @@ fn line_of(text: &str, offset: usize) -> usize {
         + 1
 }
 
+/// 入口函数的括号区间：`cutile_{op}_kernel(` 的 `(` 与配对的 `)`。
+///
+/// 模板保留 `{{op}}` 插值，已展开的文本也接受（测试与将来的内联模板）。
+fn entry(op: &str, template: &str) -> diagnostic::Result<(usize, usize)> {
+    let marker = format!("cutile_{op}_kernel(");
+    // 一次定位：`find` 已经给出起点，再 `contains` 一遍只是把同一段文本扫两次。
+    let (start, width) = [marker.as_str(), "cutile_{{op}}_kernel("]
+        .into_iter()
+        .find_map(|entry| template.find(entry).map(|start| (start, entry.len())))
+        .ok_or_else(|| {
+            at(
+                1,
+                format!("算子 `{op}` 的模板缺少内核入口 `cutile_{{op}}_kernel(`"),
+            )
+        })?;
+    let open = start + width - 1;
+    let close = matching(template, open).ok_or_else(|| {
+        at(
+            line_of(template, open),
+            format!("算子 `{op}` 的内核签名括号不配对"),
+        )
+    })?;
+    Ok((open, close))
+}
+
+/// 括号里的形参表：`void` 与空表都是「没有形参」，其余按顶层逗号切开逐个解析。
+fn params(op: &str, template: &str, open: usize, close: usize) -> diagnostic::Result<Vec<Param>> {
+    let inner = &template[open + 1..close];
+    if inner.trim() == "void" || inner.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    split(inner)
+        .into_iter()
+        .map(|(offset, text)| {
+            // 参数可能从下一行开始：行号要落在非空白字符上，而不是逗号之后。
+            let indent = inner[offset..].len() - inner[offset..].trim_start().len();
+            parse_param(op, text, line_of(template, open + 1 + offset + indent))
+        })
+        .collect()
+}
+
+/// 从 `open` 处的 `(` 找配对的 `)`：深度归零的那一格就是答案。
 fn matching(text: &str, open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (index, ch) in text[open..].char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(open + index);
-                }
-            }
-            _ => {}
+        depth = depth_step(depth, ch)?;
+        if depth == 0 {
+            return Some(open + index);
         }
     }
     None
+}
+
+/// 括号深度的一步：`(` 加深、`)` 回退（退到 0 之前即不配对），其它字符不动。
+fn depth_step(depth: usize, ch: char) -> Option<usize> {
+    match ch {
+        '(' => Some(depth + 1),
+        ')' => depth.checked_sub(1),
+        _ => Some(depth),
+    }
 }
 
 /// 按顶层逗号切分形参，返回 `(相对起点, 文本)`。
@@ -343,14 +407,12 @@ fn split(inner: &str) -> Vec<(usize, &str)> {
     let mut depth = 0usize;
     let mut start = 0usize;
     for (index, ch) in inner.char_indices() {
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                parts.push((start, inner[start..index].trim()));
-                start = index + 1;
-            }
-            _ => {}
+        let at_comma = ch == ',' && depth == 0;
+        // 括号不配对时按"没看见"处理：切分不做校验，配对留给 [`matching`]。
+        depth = depth_step(depth, ch).unwrap_or_default();
+        if at_comma {
+            parts.push((start, inner[start..index].trim()));
+            start = index + 1;
         }
     }
     let tail = inner[start..].trim();
@@ -360,68 +422,99 @@ fn split(inner: &str) -> Vec<(usize, &str)> {
     parts
 }
 
+/// 一个形参：先认名字（最后一个词），再按「指针 / 标量」两条闭集解析类型。
 fn parse_param(op: &str, text: &str, line: usize) -> diagnostic::Result<Param> {
     let pointer = text.contains('*');
-    let qualifiers: Vec<&str> = text
-        .split(|ch: char| ch.is_whitespace() || ch == '*')
-        .filter(|token| !token.is_empty())
-        .collect();
-    let readonly = qualifiers.contains(&"const");
-    let mut tokens = qualifiers;
-    let name = tokens.pop().ok_or_else(|| {
-        at(
-            line,
-            format!("算子 `{op}` 的签名里有一个空的形参声明 `{text}`"),
-        )
-    })?;
-    if !name
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
-        return Err(at(
-            line,
-            format!("算子 `{op}` 的形参名 `{name}` 不是 C 标识符"),
-        ));
-    }
-    let ty: Vec<&str> = tokens
-        .into_iter()
-        .filter(|token| !matches!(*token, "const" | "volatile" | "restrict" | "__restrict"))
-        .collect();
-    let ty = ty.join(" ");
-
-    let ctype = if pointer {
-        match ty.as_str() {
-            "float" => CType::F32,
-            "u8" | "unsigned char" => CType::U8,
-            _ => {
-                return Err(at(
-                    line,
-                    format!(
-                        "算子 `{op}` 的缓冲形参 `{name}` 用类型 `{ty} *`；支持的缓冲类型只有 `float`（f32）与 `unsigned char`/`u8`"
-                    ),
-                ));
-            }
-        }
-    } else {
-        match ty.as_str() {
-            "int" | "long" | "long long" | "unsigned" | "unsigned int" | "unsigned long"
-            | "size_t" => CType::Int,
-            _ => {
-                return Err(at(
-                    line,
-                    format!(
-                        "算子 `{op}` 的标量形参 `{name}` 用类型 `{ty}`；只支持整数标量（int、long、unsigned、size_t）"
-                    ),
-                ));
-            }
-        }
-    };
-
+    let words = words(text);
+    let name = param_name(op, &words, text, line)?;
+    let ty = type_text(&words);
+    let ctype = ctype(op, name, &ty, line, pointer)?;
     Ok(Param {
         name: name.to_string(),
         ctype,
-        mutable: pointer && !readonly,
+        mutable: pointer && !words.contains(&"const"),
     })
+}
+
+/// C 类型：指针读声明表里的缓冲类型，其余是标量类型。
+fn ctype(op: &str, name: &str, ty: &str, line: usize, pointer: bool) -> diagnostic::Result<CType> {
+    if pointer {
+        buffer_ctype(op, name, ty, line)
+    } else {
+        scalar_ctype(op, name, ty, line)
+    }
+}
+
+/// 声明里的词：按空白与 `*` 切开，`const` 这类限定词与类型名都在里面。
+fn words(text: &str) -> Vec<&str> {
+    text.split(|ch: char| ch.is_whitespace() || ch == '*')
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+/// 形参名：最后一个词，必须是 C 标识符。
+fn param_name<'a>(
+    op: &str,
+    words: &'a [&'a str],
+    text: &str,
+    line: usize,
+) -> diagnostic::Result<&'a str> {
+    let Some(name) = words.last() else {
+        return Err(at(
+            line,
+            format!("算子 `{op}` 的签名里有一个空的形参声明 `{text}`"),
+        ));
+    };
+    if name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Ok(name);
+    }
+    Err(at(
+        line,
+        format!("算子 `{op}` 的形参名 `{name}` 不是 C 标识符"),
+    ))
+}
+
+/// 类型文本：去掉形参名与 `const`/`volatile`/`restrict` 这些限定词。
+fn type_text(words: &[&str]) -> String {
+    words
+        .iter()
+        .take(words.len().saturating_sub(1))
+        .filter(|token| !matches!(**token, "const" | "volatile" | "restrict" | "__restrict"))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 缓冲形参的类型：只有 `float` 与 `unsigned char`/`u8`。
+fn buffer_ctype(op: &str, name: &str, ty: &str, line: usize) -> diagnostic::Result<CType> {
+    match ty {
+        "float" => Ok(CType::F32),
+        "u8" | "unsigned char" => Ok(CType::U8),
+        _ => Err(at(
+            line,
+            format!(
+                "算子 `{op}` 的缓冲形参 `{name}` 用类型 `{ty} *`；支持的缓冲类型只有 `float`（f32）与 `unsigned char`/`u8`"
+            ),
+        )),
+    }
+}
+
+/// 标量形参的类型：只支持整数标量。
+fn scalar_ctype(op: &str, name: &str, ty: &str, line: usize) -> diagnostic::Result<CType> {
+    match ty {
+        "int" | "long" | "long long" | "unsigned" | "unsigned int" | "unsigned long" | "size_t" => {
+            Ok(CType::Int)
+        }
+        _ => Err(at(
+            line,
+            format!(
+                "算子 `{op}` 的标量形参 `{name}` 用类型 `{ty}`；只支持整数标量（int、long、unsigned、size_t）"
+            ),
+        )),
+    }
 }
 
 #[cfg(test)]

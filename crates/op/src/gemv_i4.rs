@@ -1,7 +1,7 @@
 //! `gemv_i4` 的算子语义：4 位打包权重 + 每 [`GROUP`] 个元素一条标度。
 //!
 //! 骨架在 [`crate::gemv`]，本文件只有"4 位打包"这一份格式契约：表达式、操作数位宽、声明粒度、
-//! 标度取值与内核本体。模板在 `ops/gemv_i4.k`，本模块是它的第二份实现（DESIGN §11.1）：
+//! 标度取值与内核本体。模板在 `ops/gemv_i4.k`，本模块是它的第二份实现（cutile README §11.1）：
 //! 片段只与这里对拍，片段之间不互相对拍。内核实参不在这里手写：它由 `.k` 的签名与样本派生
 //! （[`crate::sig`]）。
 //!
@@ -12,8 +12,8 @@
 //! 它当 `int gsz` 实参收，所以 [`forward`] 仍按 `scales` 的长度推分组：一份 32 分组的权重与
 //! 一份 8 分组的权重是同一个类型的两次调用，而不是两份单态化副本。
 
-use crate::einsum::Bits;
-use crate::gemv::{self, Format, OperandSpec};
+use crate::einsum::{Bits, FormulaCache, OperandSpec};
+use crate::gemv::{self, Format};
 use diagnostic::{Code, Error};
 
 /// 量化分组。
@@ -69,10 +69,10 @@ impl<const G: usize> Format for gemv::Quantized<G> {
 
     const STEP: usize = G;
 
-    fn formula() -> Result<&'static crate::einsum::Formula, Error> {
+    fn cache() -> &'static FormulaCache {
         // 缓存落在这个 impl 里：`Quantized<G>` 的表达式与粒度无关，一份缓存覆盖所有实例。
-        static CACHE: gemv::Cache = gemv::Cache::new();
-        CACHE.get::<Self>()
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
     }
 
     fn row(m: usize) -> usize {
@@ -102,60 +102,59 @@ impl<const G: usize> Format for gemv::Quantized<G> {
         let m = x.len();
         let n = out.len();
 
-        if n == 0 {
-            return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
-        }
-        if !scales.len().is_multiple_of(n) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("scale 长度 {} 不是 {n} 的整数倍", scales.len()),
-            ));
-        }
-        let groups = scales.len() / n;
-        if groups == 0 || !m.is_multiple_of(groups) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("scale 长度 {} 推不出能整除 {m} 的分组数", scales.len()),
-            ));
-        }
-        let group = m / groups;
-        if !group.is_multiple_of(2) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("分组 {group} 必须是偶数"),
-            ));
-        }
-        if weights.len() < n * (m / 2) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("权重长度 {} < {}", weights.len(), n * (m / 2)),
-            ));
-        }
+        let (groups, group) = quantized_groups(m, n, scales.len(), weights.len())?;
 
         // 每行只看自己那一段：切片一次算好，内层就不再做 `row × 列数 + g` 的乘加与边界检查。
-        // 每个分组只乘一次 `scale`（整组共用一个），而不是每个元素各乘一次。
         let half = m / 2;
         let per_group = group / 2;
         for (row, value) in out.iter_mut().enumerate() {
             let w_row = &weights[row * half..][..half];
             let s_row = &scales[row * groups..][..groups];
-            let mut acc = 0.0f32;
-            for ((packed, scale), xs) in w_row
-                .chunks_exact(per_group)
-                .zip(s_row)
-                .zip(x.chunks_exact(group))
-            {
-                let mut dot = 0.0f32;
-                for (byte, pair) in packed.iter().zip(xs.as_chunks::<2>().0) {
-                    dot += DEQUANT[usize::from(*byte & 0x0F)] * pair[0];
-                    dot += DEQUANT[usize::from(*byte >> 4)] * pair[1];
-                }
-                acc += dot * scale;
-            }
-            *value = acc;
+            *value = dot_row(w_row, x, s_row, per_group, group);
         }
         Ok(())
     }
+}
+
+/// 量化格式的前置约束：骨架的分组推导 + 本节格式自己的"分组必须是偶数"。
+///
+/// 两个 4 位码共用一个字节，所以分组为奇数时"每行 m / 2 字节"没有意义。
+fn quantized_groups(
+    m: usize,
+    n: usize,
+    scales: usize,
+    weights: usize,
+) -> diagnostic::Result<(usize, usize)> {
+    let (groups, group) = gemv::scaled_groups(m, n, scales)?;
+    if !group.is_multiple_of(2) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("分组 {group} 必须是偶数"),
+        ));
+    }
+    gemv::required_weights(weights, n, m / 2)?;
+    Ok((groups, group))
+}
+
+/// 一行的点积：按分组推进，组内解包两个 4 位码，整组共用同一个标度。
+///
+/// 累加顺序与朴素写法逐位一致（同一个字节的低半字节在前），否则舍入顺序一变，
+/// 对拍就不再是同一个算术。
+fn dot_row(packed_row: &[u8], x: &[f32], s_row: &[f32], per_group: usize, group: usize) -> f32 {
+    let mut acc = 0.0f32;
+    for ((packed, scale), xs) in packed_row
+        .chunks_exact(per_group)
+        .zip(s_row)
+        .zip(x.chunks_exact(group))
+    {
+        let mut dot = 0.0f32;
+        for (byte, pair) in packed.iter().zip(xs.as_chunks::<2>().0) {
+            dot += DEQUANT[usize::from(*byte & 0x0F)] * pair[0];
+            dot += DEQUANT[usize::from(*byte >> 4)] * pair[1];
+        }
+        acc += dot * scale;
+    }
+    acc
 }
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果**写进调用方给的缓冲**。

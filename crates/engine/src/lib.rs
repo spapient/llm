@@ -265,7 +265,24 @@ impl Scheduler {
     /// 超过整个页池，这条序列独占页池也跑不完，放进来只会让批卡在 [`Progress::Blocked`] 上、
     /// 而没有任何序列能结束，页也永远回不来。这种请求同样返回 `false`。
     pub fn admit(&mut self, sequence: &Sequence) -> Result<bool> {
-        if self.running.iter().any(|item| item.id == sequence.id()) {
+        self.check_admissible(sequence)?;
+        let needed = sequence.pages_needed();
+        if !self.fits(sequence) || self.cache.free_pages() < needed {
+            return Ok(false);
+        }
+        let table = self.reserve(needed, "engine::Scheduler::admit")?;
+        let needs_page = self.needs_page(sequence, &table);
+        self.running.push(Running {
+            id: sequence.id(),
+            table,
+            needs_page,
+        });
+        Ok(true)
+    }
+
+    /// 准入的状态判据：重名、已结束、页宽不符都是调用方的状态错误；页够不够由调用点判。
+    fn check_admissible(&self, sequence: &Sequence) -> Result<()> {
+        if self.position(sequence.id()).is_some() {
             return Err(
                 Error::new(Code::Invalid, format!("序列 {} 已经在批里", sequence.id()))
                     .with("engine::Scheduler::admit"),
@@ -278,29 +295,30 @@ impl Scheduler {
             )
             .with("engine::Scheduler::admit"));
         }
-        self.check_width(sequence, "engine::Scheduler::admit")?;
-        if !self.fits(sequence) {
-            return Ok(false);
-        }
-        let needed = sequence.pages_needed();
-        if self.cache.free_pages() < needed {
-            return Ok(false);
-        }
+        self.check_width(sequence, "engine::Scheduler::admit")
+    }
+
+    /// 从页池里占 `needed` 页装成新页表；该不该占由调用点判。
+    fn reserve(&mut self, needed: usize, site: &'static str) -> Result<crate::kv::Table> {
         let mut table = crate::kv::Table::new(needed)?;
-        for _ in 0..needed {
-            let page = self.cache.alloc().ok_or_else(|| {
-                Error::new(Code::Internal, "空闲页数与实际分配不符")
-                    .with("engine::Scheduler::admit")
-            })?;
+        Self::fill(&mut self.cache, &mut table, needed, site)?;
+        Ok(table)
+    }
+
+    /// 往页表里追加 `extra` 个新页：分配与入表成对发生，缺页说明空闲页数已被推翻。
+    fn fill(
+        cache: &mut crate::kv::Cache,
+        table: &mut crate::kv::Table,
+        extra: usize,
+        site: &'static str,
+    ) -> Result<()> {
+        for _ in 0..extra {
+            let page = cache
+                .alloc()
+                .ok_or_else(|| Error::new(Code::Internal, "空闲页数与实际分配不符").with(site))?;
             table.push(page)?;
         }
-        let needs_page = self.needs_page(sequence, &table);
-        self.running.push(Running {
-            id: sequence.id(),
-            table,
-            needs_page,
-        });
-        Ok(true)
+        Ok(())
     }
 
     /// 这条序列在这个页池里有没有可能跑完：最坏情况的页数不超过页池总数。
@@ -323,17 +341,28 @@ impl Scheduler {
     /// 序列不在批里（没 `admit`、或已经 `finish`）、已经结束、或页宽与页池不一致时报错；
     /// 这些都属于调用方的状态错误，而不是"页不够"。
     pub fn advance(&mut self, sequence: &mut Sequence) -> Result<Progress> {
-        let Some(index) = self
-            .running
-            .iter()
-            .position(|item| item.id == sequence.id())
-        else {
-            return Err(Error::new(
+        let index = self.check_advance(sequence)?;
+        if !self.extend(
+            index,
+            self.next_pages(sequence),
+            "engine::Scheduler::advance",
+        )? {
+            return Ok(Progress::Blocked);
+        }
+        self.take_step(index, sequence)
+    }
+
+    /// 生成的前置判据：序列必须在批里、还没结束、页宽与页池一致。
+    ///
+    /// 返回它在批里的下标；三种不符都是调用方的状态错误，而不是「页不够」。
+    fn check_advance(&self, sequence: &Sequence) -> Result<usize> {
+        let index = self.position(sequence.id()).ok_or_else(|| {
+            Error::new(
                 Code::Invalid,
                 format!("序列 {} 不在批里：生成必须先 `admit`", sequence.id()),
             )
-            .with("engine::Scheduler::advance"));
-        };
+            .with("engine::Scheduler::advance")
+        })?;
         if sequence.is_done() {
             return Err(
                 Error::new(Code::Invalid, format!("序列 {} 已结束", sequence.id()))
@@ -341,32 +370,40 @@ impl Scheduler {
             );
         }
         self.check_width(sequence, "engine::Scheduler::advance")?;
-        let needed = self.next_pages(sequence);
-        let table = &mut self.running[index].table;
-        let extra = needed.saturating_sub(table.len());
-        if extra > 0 {
-            // 先看池够不够，再动容量与分配：不够时三者都不变。
-            if self.cache.free_pages() < extra {
-                return Ok(Progress::Blocked);
-            }
-            table.grow(extra)?;
-            for _ in 0..extra {
-                let page = self.cache.alloc().ok_or_else(|| {
-                    Error::new(Code::Internal, "空闲页数与实际分配不符")
-                        .with("engine::Scheduler::advance")
-                })?;
-                table.push(page)?;
-            }
+        Ok(index)
+    }
+
+    /// 把第 `index` 条页表扩到 `needed` 页；池不够时返回 `false`，三者都不动。
+    ///
+    /// 先看池够不够，再动容量与分配：不够时页池、页表、序列全不变，调用方可以原样重试。
+    fn extend(&mut self, index: usize, needed: usize, site: &'static str) -> Result<bool> {
+        let extra = needed.saturating_sub(self.running[index].table.len());
+        if extra == 0 {
+            return Ok(true);
         }
+        if self.cache.free_pages() < extra {
+            return Ok(false);
+        }
+        self.running[index].table.grow(extra)?;
+        Self::fill(&mut self.cache, &mut self.running[index].table, extra, site)?;
+        Ok(true)
+    }
+
+    /// 走完一步并刷新批级派生值：推进计数器、重算「下一次要不要新页」、给出结局。
+    fn take_step(&mut self, index: usize, sequence: &mut Sequence) -> Result<Progress> {
         sequence.step()?;
-        let table = &self.running[index].table;
-        let needs_page = self.needs_page(sequence, table);
+        let needs_page = self.needs_page(sequence, &self.running[index].table);
         self.running[index].needs_page = needs_page;
         Ok(if sequence.is_done() {
             Progress::Done
         } else {
             Progress::Running
         })
+    }
+
+    /// 某个序列在批里的下标（插入顺序即批内顺序）。
+    fn position(&self, id: u64) -> Option<usize> {
+        self.running.iter().position(|item| item.id == id)
     }
 
     /// 现在拿不到页、必须先等别人结束的序列（按插入顺序）。
@@ -388,7 +425,7 @@ impl Scheduler {
 
     /// 结束一个序列并归还它的页；返回它是否在批里。
     pub fn finish(&mut self, id: u64) -> Result<bool> {
-        let Some(index) = self.running.iter().position(|item| item.id == id) else {
+        let Some(index) = self.position(id) else {
             return Ok(false);
         };
         let running = self.running.remove(index);
@@ -405,10 +442,7 @@ impl Scheduler {
 
     /// 某个序列占的页表。
     pub fn pages_of(&self, id: u64) -> Option<&crate::kv::Table> {
-        self.running
-            .iter()
-            .find(|item| item.id == id)
-            .map(|item| &item.table)
+        self.position(id).map(|index| &self.running[index].table)
     }
 
     /// 页池（只读）。

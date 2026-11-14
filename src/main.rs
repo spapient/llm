@@ -81,7 +81,7 @@ fn device_images() -> String {
 /// `weights` 是 `--weights <文件>` 给的 safetensors 路径：给了就读真实条目，不给就只用声明层。
 fn status(weights: Option<&str>) -> Result<()> {
     let ops = op::builtin();
-    let profiles = prof::builtin();
+    let profiles = prof::names();
     let mut report = Report::new("llm —— 组装点（各层最小实例）")
         .row(
             "声明层  op",
@@ -96,7 +96,7 @@ fn status(weights: Option<&str>) -> Result<()> {
             format!(
                 "{} 份设备档案（{}）",
                 profiles.len(),
-                tool::join_names(profiles.iter().map(prof::Archive::name))
+                tool::join_names(profiles.iter().copied())
             ),
         )
         .row(
@@ -237,16 +237,25 @@ fn status(weights: Option<&str>) -> Result<()> {
 /// "这些层真的算出来是多少"（协商 → 拼接 → emit → 编译 → 执行 → 与标量参考对拍）。两者用同一份
 /// 层清单与同一张算子语义表，因此下界与结果不会各说一套。
 ///
+/// 内核只收三个目录：把解析好的设置投影成那份纯数据（`cutile` 不读环境变量，ADR 0023）。
+fn kernel_dirs(settings: &cli::settings::Settings) -> cutile::dirs::Dirs {
+    cutile::dirs::Dirs::new(
+        settings.cache_dir(),
+        settings.work_dir(),
+        settings.data_root().map(std::path::Path::to_path_buf),
+    )
+}
+
 /// 三个刻意的边界，都在输出里如实写出来而不是悄悄降级：
 ///
 /// - 只跑**连续的一条链**：某一层的输入宽度与当前向量不等时停下，不再猜"是不是该换一份输入"；
 /// - 只跑有算子的编码：没有算子的格式（f16 / bf16 / i8 / 分组不明的 4 位打包）停下并说明缺什么；
 /// - 权重按需读：每层只读它自己那条条目，不把整份文件搬进内存。
 fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
-    // 配置与档案的装载在核心里；本函数只决定"跑哪些层、用什么数据"。
-    let settings = config::Settings::<config::Cutile>::load()
-        .map_err(|error| Error::new(Code::Invalid, format!("配置错误：{error}")))?;
-    let catalogue = cutile::builtin::Catalogue::load(&settings)?;
+    // 配置解析在命令行层、档案装载在核心里；本函数只决定"跑哪些层、用什么数据"。
+    let settings = cli::settings::Settings::load().map_err(|error| error.with("配置"))?;
+    let dirs = kernel_dirs(&settings);
+    let catalogue = cutile::builtin::Catalogue::load(&dirs)?;
     let device = device.unwrap_or("auto");
     let file = weights::safetensors::File::open(weights).map_err(|error| error.with("llm run"))?;
     let stack = nn::Stack::from_header(file.header())?;
@@ -265,7 +274,7 @@ fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
 
     let mut x = match input {
         Some(text) => parse_input(text)?,
-        // 确定性图案：不给输入时也必须可复现（DESIGN §12.3 的同一条要求）。
+        // 确定性图案：不给输入时也必须可复现（cutile README §12.3 的同一条要求）。
         None => (0..first.in_features())
             .map(|index| (index % 8) as f32 * 0.125 - 0.5)
             .collect(),
@@ -331,8 +340,7 @@ fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
             .with("llm run")
         })?;
         let sample = op::model::bind(&model, m, n, &x, &w)?;
-        let executed =
-            cutile::execution::execute(&catalogue, &settings, operator, device, &sample)?;
+        let executed = cutile::execution::execute(&catalogue, &dirs, operator, device, &sample)?;
         report = report.row(
             format!("层       {name}"),
             format!(
@@ -585,12 +593,13 @@ mod tests {
         let model = op::model(nn::Linear::DENSE).expect("稠密语义");
         let sample = op::model::bind(&model, 8, 4, &x, &w).expect("形状自洽");
 
-        let settings = config::Settings::<config::Cutile>::load()
-            .map_err(|error| Error::new(Code::Invalid, format!("配置错误：{error}")))
+        let settings = cli::settings::Settings::load()
+            .map_err(|error| error.with("配置"))
             .expect("默认设置");
-        let catalogue = cutile::builtin::Catalogue::load(&settings).expect("内置数据");
+        let dirs = kernel_dirs(&settings);
+        let catalogue = cutile::builtin::Catalogue::load(&dirs).expect("内置数据");
         let executed =
-            cutile::execution::execute(&catalogue, &settings, nn::Linear::DENSE, "cpu", &sample)
+            cutile::execution::execute(&catalogue, &dirs, nn::Linear::DENSE, "cpu", &sample)
                 .expect("执行");
         let want: Vec<f32> = (0..4)
             .map(|row| (0..8).map(|column| w[row * 8 + column] * x[column]).sum())

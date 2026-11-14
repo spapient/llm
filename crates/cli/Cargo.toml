@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Command-line front end: parse argv into a typed command, execute nothing."
+description = "Command-line front end: parse argv and the environment into a typed command and settings, execute nothing."
 publish = false
 
 [dependencies]

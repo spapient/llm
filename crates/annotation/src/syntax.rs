@@ -1,41 +1,21 @@
 //! 注解文法：与 `proc_macro` 解耦的纯解析层。
 //!
-//! 分成这一层的理由是可测性：`proc_macro::TokenStream` 只在过程宏展开期可用，若把文法直接写在
-//! 它上面，每一条错误路径都"只有宏展开时才走得到"，等于永远没有测试。本模块只依赖下面这个
-//! 最小 token 模型，因此 `cargo test` 能逐条覆盖正常路径与全部错误路径；上一层
-//! [`crate::layer`] 只负责把 `TokenStream` 翻译成 [`Token`]，并把错误定位回 span。
+//! 文法是一句话：`键 = 值 (, 键 = 值)*`，值只接受字符串字面量、十进制整数或方括号数组，键顺序随意、
+//! 尾随逗号允许、每个键只能出现一次。三道注解共用同一台读键机：一个键就是 [`KeySpec`] 表里的一行
+//! ——名字、取值文法、重复与缺失时的提示，于是"加一个键"是加一行。
 //!
-//! 文法就是一句话：`键 = 值 (, 键 = 值)*`，键是 [`KEYS`] 里的闭集，值只接受字符串字面量或
-//! 方括号数组，键顺序随意、尾随逗号允许、每个键只能出现一次。
+//! 分成这一层是为了可测性：本模块不碰 `proc_macro`，`cargo test` 因此能逐条覆盖全部错误路径。
 
-use std::fmt;
-
-/// token 在输入里的下标。错误用它指回用户写的那一处，再由上层换成 span。
+/// token 在输入里的下标；错误用它指回用户写的那一处，再由上层换成 span。
 pub(crate) type Position = usize;
 
-/// 括号种类：不直接用 `proc_macro::Delimiter`，否则本模块又绑回过程宏 API。
+/// 括号种类：不直接用 `proc_macro::Delimiter`；`Invisible` 是那种不显示的分组。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bracket {
-    /// `(..)`。
     Paren,
-    /// `[..]`。
     Square,
-    /// `{..}`。
     Brace,
-    /// `proc_macro::Delimiter::None`：不显示的分组，按 `(..)` 之外的第三种处理。
     Invisible,
-}
-
-impl Bracket {
-    /// 错误信息里怎么称呼它。
-    pub(crate) fn text(self) -> &'static str {
-        match self {
-            Self::Paren => "`(..)`",
-            Self::Square => "`[..]`",
-            Self::Brace => "`{..}`",
-            Self::Invisible => "不可见分组",
-        }
-    }
 }
 
 /// 一个 token：够文法用即可，不复制 `proc_macro` 的全部种类。
@@ -51,6 +31,18 @@ pub(crate) enum Token {
     Group(Bracket, Vec<Token>),
 }
 
+impl Bracket {
+    /// 错误信息里怎么读一个分组：括号种类各自的写法，`Invisible` 没有可读的括号。
+    fn describe(self) -> String {
+        match self {
+            Self::Paren => "`(..)`".to_string(),
+            Self::Square => "`[..]`".to_string(),
+            Self::Brace => "`{..}`".to_string(),
+            Self::Invisible => "不可见分组".to_string(),
+        }
+    }
+}
+
 impl Token {
     /// 错误信息里怎么读它。
     fn describe(&self) -> String {
@@ -58,19 +50,16 @@ impl Token {
             Self::Ident(word) => format!("`{word}`"),
             Self::Punct(punct) => format!("`{punct}`"),
             Self::Literal(text) => format!("字面量 `{text}`"),
-            Self::Group(bracket, _) => bracket.text().to_string(),
+            Self::Group(bracket, _) => bracket.describe(),
         }
     }
 }
 
-/// 文法错误：出错位置 + 一句可执行的提示。
-///
-/// `position` 是输入 token 的下标，上层用它取出真实 span，因此错误能指在用户写错的那个词上，
-/// 而不是笼统地指在被标注的类型上。
+/// 文法错误：出错 token 的下标 + 一句可执行的提示。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Error {
-    position: Position,
-    message: String,
+    pub(crate) position: Position,
+    pub(crate) message: String,
 }
 
 impl Error {
@@ -81,314 +70,415 @@ impl Error {
         }
     }
 
-    /// 把组内错误指回组本身：组内 token 没有独立 span 可指，指向方括号最清楚。
+    /// 把组内（或字面量内）的错误指回它所属的那个 token。
     fn rebased(self, position: Position) -> Self {
-        Self {
-            position,
-            message: self.message,
-        }
-    }
-
-    /// 出错 token 的下标。
-    pub(crate) fn position(&self) -> Position {
-        self.position
-    }
-
-    /// 一句可执行的提示。
-    pub(crate) fn message(&self) -> &str {
-        &self.message
+        Self { position, ..self }
     }
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// 注解解析后的四件事实：名字、输出形状、输入宽度、算子列表。
-///
-/// `input` 是可选件：没有它，层仍然是一份合法的声明（名字 + 输出 + 算子），只是算不出下界——
-/// 算子语义表要的是 `(规约轴, 输出轴)`，缺一半就宁可不给数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Declaration {
-    name: String,
-    out: Vec<usize>,
-    input: Option<usize>,
-    ops: Vec<String>,
-}
-
-impl Declaration {
     /// 层名（与权重条目前缀一致）。
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// 输出形状；空切片表示标量输出。
-    pub(crate) fn out(&self) -> &[usize] {
-        &self.out
-    }
-
+    pub(crate) name: String,
+    /// 输出形状；空表示标量输出。
+    pub(crate) out: Vec<usize>,
     /// 输入（规约轴）宽度；`None` 表示这一层没有可计价的形状。
-    pub(crate) fn input(&self) -> Option<usize> {
-        self.input
-    }
-
+    pub(crate) input: Option<usize>,
     /// 要引用的算子名，已去重且非空。
-    pub(crate) fn ops(&self) -> &[String] {
-        &self.ops
-    }
+    pub(crate) ops: Vec<String>,
 }
 
 /// 注解允许的键；顺序即错误信息里的提示顺序。
 pub(crate) const KEYS: [&str; 4] = ["name", "out", "in", "ops"];
 
-/// 解析注解本体；任何一处不合文法都只产出一条带位置的错误。
-pub(crate) fn parse(tokens: &[Token]) -> Result<Declaration, Error> {
-    let mut cursor = Cursor::new(tokens);
-    let mut name: Option<String> = None;
-    let mut out: Option<Vec<usize>> = None;
-    let mut input: Option<(usize, Position)> = None;
-    let mut ops: Option<Vec<String>> = None;
+/// 一个键解析出的值；`Empty` 只表示可选键没写。
+#[derive(Clone, PartialEq, Eq)]
+enum Value {
+    Empty,
+    Text(String),
+    Width(usize, Position),
+    Axes(Vec<usize>, Position),
+    Names(Vec<String>),
+}
 
-    while !cursor.is_empty() {
-        let key_position = cursor.position();
-        let key = cursor.ident("键名")?;
-        cursor.punct('=', "键与值之间的 `=`")?;
-        match key.as_str() {
-            "name" => {
-                if name.is_some() {
-                    return Err(Error::at(
-                        key_position,
-                        "注解键 `name` 重复：名字只能声明一次",
-                    ));
-                }
-                let token = cursor.next("`name` 的值")?;
-                let text = string(token).map_err(|error| error.rebased(key_position))?;
-                checked_name(&text).map_err(|error| error.rebased(key_position))?;
-                name = Some(text);
-            }
-            "out" => {
-                if out.is_some() {
-                    return Err(Error::at(
-                        key_position,
-                        "注解键 `out` 重复：输出形状只能声明一次",
-                    ));
-                }
-                let (group, array) = cursor.group(Bracket::Square, "`out = [..]` 的方括号")?;
-                let mut dims = Vec::with_capacity(array.len());
-                for item in elements(group, array, "`out` 的元素")? {
-                    let dimension = unsigned(item).map_err(|error| error.rebased(group))?;
-                    if dimension == 0 {
-                        return Err(Error::at(
-                            group,
-                            "输出形状的每个轴都必须大于 0：零宽轴不是一个可计算的形状",
-                        ));
-                    }
-                    dims.push(dimension);
-                }
-                out = Some(dims);
-            }
-            "in" => {
-                if input.is_some() {
-                    return Err(Error::at(
-                        key_position,
-                        "注解键 `in` 重复：输入宽度只能声明一次",
-                    ));
-                }
-                let token = cursor.next("`in` 的值")?;
-                let width = unsigned(token).map_err(|error| error.rebased(key_position))?;
-                if width == 0 {
-                    return Err(Error::at(
-                        key_position,
-                        "输入宽度必须大于 0：零宽的规约轴没有下界",
-                    ));
-                }
-                input = Some((width, key_position));
-            }
-            "ops" => {
-                if ops.is_some() {
-                    return Err(Error::at(
-                        key_position,
-                        "注解键 `ops` 重复：算子列表只能声明一次",
-                    ));
-                }
-                let (group, array) = cursor.group(Bracket::Square, "`ops = [\"..\"]` 的方括号")?;
-                let mut names: Vec<String> = Vec::with_capacity(array.len());
-                for item in elements(group, array, "`ops` 的元素")? {
-                    let text = string(item).map_err(|error| error.rebased(group))?;
-                    checked_name(&text).map_err(|error| error.rebased(group))?;
-                    if names.contains(&text) {
-                        return Err(Error::at(
-                            group,
-                            format!("算子 `{text}` 在同一个层里出现了两次：多写的这一次不会生效"),
-                        ));
-                    }
-                    names.push(text);
-                }
-                ops = Some(names);
-            }
-            other => {
-                return Err(Error::at(
-                    key_position,
-                    format!("未知的注解键 `{other}`（可用：{}）", KEYS.join("、")),
-                ));
-            }
+impl Value {
+    /// 名字或闭集字面量：取值文法保证类型，落空即空串。
+    fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text,
+            _ => "",
         }
-        if cursor.is_empty() {
-            break;
-        }
-        cursor.punct(',', "键之间的 `,`")?;
     }
 
-    let name = name.ok_or_else(|| Error::at(0, "缺少必填键 `name = \"..\"`"))?;
-    let out = out.ok_or_else(|| Error::at(0, "缺少必填键 `out = [..]`"))?;
-    let ops = ops.ok_or_else(|| Error::at(0, "缺少必填键 `ops = [\"..\"]`"))?;
+    /// 名字数组；`ops` 之外的键没有名字列表，落空即空切片。
+    fn names(&self) -> &[String] {
+        match self {
+            Self::Names(names) => names,
+            _ => &[],
+        }
+    }
+
+    /// 方括号数组的内容与方括号的位置。
+    fn axes(&self) -> (&[usize], Position) {
+        match self {
+            Self::Axes(axes, at) => (axes, *at),
+            _ => (&[], 0),
+        }
+    }
+}
+
+/// 一个键的取值文法：`(游标, 键的位置, 这一行) -> 值`。
+type Grammar = fn(&mut Cursor<'_>, Position, &KeySpec<'_>) -> Result<Value, Error>;
+
+/// 一个注解键的全部文法就是表里的一行：名字、取值文法、重复与缺失时的提示。
+#[derive(Clone, Copy)]
+struct KeySpec<'a> {
+    /// 键名；也是「未知键」提示里列出的顺序。
+    name: &'a str,
+    grammar: Grammar,
+    /// 重复时写在「注解键 `x` 重复：」之后的半句。
+    dup: &'static str,
+    /// 缺少必填键时接在键名后面的写法（` = \"..\"`）；`None` 表示可选。
+    form: Option<&'static str>,
+}
+
+/// 表项构造：与 [`KeySpec`] 的字段一一对应，于是每条键占表里的一行。
+const fn row<'a>(
+    name: &'a str,
+    grammar: Grammar,
+    dup: &'static str,
+    form: Option<&'static str>,
+) -> KeySpec<'a> {
+    KeySpec {
+        name,
+        grammar,
+        dup,
+        form,
+    }
+}
+
+/// `#[layer(..)]` 的键表，顺序即「未知键」提示里的顺序。
+const LAYER: [KeySpec<'static>; 4] = [
+    row(KEYS[0], name_value, "名字只能声明一次", Some(" = \"..\"")),
+    row(KEYS[1], out_value, "输出形状只能声明一次", Some(" = [..]")),
+    row(KEYS[2], in_value, "输入宽度只能声明一次", None),
+    row(
+        KEYS[3],
+        ops_value,
+        "算子列表只能声明一次",
+        Some(" = [\"..\"]"),
+    ),
+];
+
+/// 解析注解本体；任何一处不合文法都只产出一条带位置的错误。
+pub(crate) fn parse(tokens: &[Token]) -> Result<Declaration, Error> {
+    let values = collect(tokens, &LAYER)?;
+    require(&values, &LAYER)?;
+    let ops = values[3].names().to_vec();
     if ops.is_empty() {
         return Err(Error::at(
             tokens.len().saturating_sub(1),
             "`ops` 不能为空：一个层至少要引用一个已声明的算子",
         ));
     }
-    if let Some((width, position)) = input
-        && out.len() != 1
-    {
-        // `(m, n)` 只描述“一条规约轴 + 一条输出轴”。多轴输出需要形状上下文，
-        // 而不是把某一根轴冒充 `n`；宁可让注解在这里失败，也不要生成一个假的下界。
-        return Err(Error::at(
-            position,
-            format!(
-                "`in = {width}` 只对单轴输出（一次投影）有意义：`out` 现在有 {} 个轴",
-                out.len()
-            ),
-        ));
-    }
     Ok(Declaration {
-        name,
-        out,
-        input: input.map(|(width, _)| width),
+        name: values[0].text().to_string(),
+        out: values[1].axes().0.to_vec(),
+        input: input_width(&values)?,
         ops,
     })
 }
 
-/// `#[frontend(..)]` 的键闭集：语言、产物后缀、缓存标签。
-pub(crate) const FRONTEND_KEYS: [&str; 3] = ["emit", "ext", "tag"];
+/// `in` 只对单轴输出（一次投影）有意义：多轴输出把某一根轴冒充 `n`，只会给出假下界。
+fn input_width(values: &[Value]) -> Result<Option<usize>, Error> {
+    let out = values[1].axes().0;
+    let Value::Width(width, at) = &values[2] else {
+        return Ok(None);
+    };
+    if out.len() == 1 {
+        return Ok(Some(*width));
+    }
+    Err(Error::at(
+        *at,
+        format!(
+            "`in = {width}` 只对单轴输出（一次投影）有意义：`out` 现在有 {} 个轴",
+            out.len()
+        ),
+    ))
+}
+
+/// 读完一条注解的全部 `键 = 值`；一次只报一条错误，顺序是「键 → 重复 → 值」。
+fn collect<'a>(tokens: &[Token], table: &'a [KeySpec<'a>]) -> Result<Vec<Value>, Error> {
+    let mut cursor = Cursor { tokens, index: 0 };
+    let mut values = vec![Value::Empty; table.len()];
+    while !cursor.is_empty() {
+        read_one(&mut cursor, table, &mut values)?;
+    }
+    Ok(values)
+}
+
+/// 读一对 `键 = 值` 并放回槽位：认键、查重、读值、吃分隔符。
+fn read_one<'a>(
+    cursor: &mut Cursor<'_>,
+    table: &'a [KeySpec<'a>],
+    values: &mut [Value],
+) -> Result<(), Error> {
+    let (index, at) = key_index(cursor, table)?;
+    if !matches!(values[index], Value::Empty) {
+        return Err(Error::at(
+            at,
+            format!("注解键 `{}` 重复：{}", table[index].name, table[index].dup),
+        ));
+    }
+    values[index] = (table[index].grammar)(cursor, at, &table[index])?;
+    if cursor.is_empty() {
+        return Ok(());
+    }
+    cursor.punct(',', "键之间的 `,`")
+}
+
+/// 读 `键 =`：返回它在表里的下标与键的位置；不在闭集里就点名并列出可用键。
+fn key_index<'a>(
+    cursor: &mut Cursor<'_>,
+    table: &[KeySpec<'a>],
+) -> Result<(usize, Position), Error> {
+    let at = cursor.index;
+    let key = key_name(cursor, at)?;
+    cursor.punct('=', "键与值之间的 `=`")?;
+    let found = table.iter().position(|spec| spec.name == key);
+    let index = found.ok_or_else(|| unknown_key(table, key, at))?;
+    Ok((index, at))
+}
+
+/// 读一个键名：非标识符就是一条「期望键名」的错误。
+fn key_name<'a>(cursor: &mut Cursor<'a>, at: Position) -> Result<&'a str, Error> {
+    match cursor.next("键名")? {
+        Token::Ident(key) => Ok(key.as_str()),
+        other => Err(Error::at(
+            at,
+            format!("期望键名（标识符），得到 {}", other.describe()),
+        )),
+    }
+}
+
+/// 不在闭集里的键：点名它并列出这张表的全部可用键。
+fn unknown_key(table: &[KeySpec<'_>], key: &str, at: Position) -> Error {
+    let available: Vec<&str> = table.iter().map(|spec| spec.name).collect();
+    Error::at(
+        at,
+        format!("未知的注解键 `{key}`（可用：{}）", available.join("、")),
+    )
+}
+
+/// 必填键一个都不能少；缺了就是一条点名这个键的「缺少必填键」。
+fn require(values: &[Value], table: &[KeySpec<'_>]) -> Result<(), Error> {
+    for (index, spec) in table.iter().enumerate() {
+        let (true, Some(form)) = (matches!(values[index], Value::Empty), spec.form) else {
+            continue;
+        };
+        return Err(Error::at(0, format!("缺少必填键 `{}{form}`", spec.name)));
+    }
+    Ok(())
+}
+
+/// 字符串字面量键值；字面量自身的错误指回键的位置。
+fn text_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<String, Error> {
+    let token = cursor.next(&format!("`{}` 的值", spec.name))?;
+    string(token).map_err(|error| error.rebased(at))
+}
+
+/// 十进制无符号整数键值。
+fn number_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<usize, Error> {
+    let token = cursor.next(&format!("`{}` 的值", spec.name))?;
+    unsigned(token).map_err(|error| error.rebased(at))
+}
+
+/// 名字类键值：`name` / `ext` / `tag` 共用。
+fn name_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    let text = text_value(cursor, at, spec)?;
+    checked_name(&text, at)?;
+    Ok(Value::Text(text))
+}
+
+/// 非零轴数组：括号与元素的措辞由键名推出，零宽轴那一句由调用方给。
+fn axes(cursor: &mut Cursor<'_>, spec: &KeySpec<'_>, zero: &str) -> Result<Value, Error> {
+    let group_what = format!("`{} = [..]` 的方括号", spec.name);
+    let (group, array) = cursor.group(Bracket::Square, &group_what)?;
+    let mut axes: Vec<usize> = Vec::with_capacity(array.len());
+    for item in elements(group, array, &format!("`{}` 的元素", spec.name))? {
+        axes.push(axis_value(item, group, zero)?);
+    }
+    Ok(Value::Axes(axes, group))
+}
+
+/// 一个轴：十进制无符号整数，且大于 0——零宽轴不是一个可计算的形状。
+fn axis_value(item: &Token, group: Position, zero: &str) -> Result<usize, Error> {
+    let axis = unsigned(item).map_err(|error| error.rebased(group))?;
+    if axis == 0 {
+        return Err(Error::at(group, zero));
+    }
+    Ok(axis)
+}
+
+/// `out = [..]`：输出形状的轴，轴宽随意但不能是 0。
+fn out_value(cursor: &mut Cursor<'_>, _: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    axes(
+        cursor,
+        spec,
+        "输出形状的每个轴都必须大于 0：零宽轴不是一个可计算的形状",
+    )
+}
+
+/// `shape = [..]`：生产形状，两个轴由 [`two_axes`] 再核一次。
+fn shape_value(cursor: &mut Cursor<'_>, _: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    axes(
+        cursor,
+        spec,
+        "生产形状的每个轴都必须大于 0：零宽形状不是一个可计算的形状",
+    )
+}
+
+/// `ops = [".."]`：名字数组，逐项校验、去重；空表由 [`parse`] 单独拦。
+fn ops_value(cursor: &mut Cursor<'_>, _: Position, _: &KeySpec<'_>) -> Result<Value, Error> {
+    let (group, array) = cursor.group(Bracket::Square, "`ops = [\"..\"]` 的方括号")?;
+    let mut names: Vec<String> = Vec::with_capacity(array.len());
+    for item in elements(group, array, "`ops` 的元素")? {
+        push_name(&mut names, item, group)?;
+    }
+    Ok(Value::Names(names))
+}
+
+/// 一个算子名：字符串字面量 + [`checked_name`]；重复的那一次不会生效，所以在这里就拒。
+fn push_name(names: &mut Vec<String>, item: &Token, group: Position) -> Result<(), Error> {
+    let text = string(item).map_err(|error| error.rebased(group))?;
+    checked_name(&text, group)?;
+    if names.contains(&text) {
+        return Err(Error::at(
+            group,
+            format!("算子 `{text}` 在同一个层里出现了两次：多写的这一次不会生效"),
+        ));
+    }
+    names.push(text);
+    Ok(())
+}
+
+/// `in = ..`：大于 0 的规约轴宽度，位置留着给 [`input_width`] 报跨键的错。
+fn in_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    let width = number_value(cursor, at, spec)?;
+    if width == 0 {
+        return Err(Error::at(at, "输入宽度必须大于 0：零宽的规约轴没有下界"));
+    }
+    Ok(Value::Width(width, at))
+}
+
+/// `emit = ".."`：语言名，先过 [`checked_name`] 再过语言闭集。
+fn emit_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    let text = text_value(cursor, at, spec)?;
+    checked_name(&text, at)?;
+    closed(&text, at, spec, "语言", &LANGUAGES)?;
+    Ok(Value::Text(text))
+}
+
+/// `dtype = ".."`：对拍有阈值的输出类型闭集。
+fn dtype_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    let text = text_value(cursor, at, spec)?;
+    closed(&text, at, spec, "输出类型", &DTYPES)?;
+    Ok(Value::Text(text))
+}
+
+/// `skeleton = ".."`：骨架闭集。
+fn skeleton_value(
+    cursor: &mut Cursor<'_>,
+    at: Position,
+    spec: &KeySpec<'_>,
+) -> Result<Value, Error> {
+    let text = text_value(cursor, at, spec)?;
+    closed(&text, at, spec, "骨架", &SKELETONS)?;
+    Ok(Value::Text(text))
+}
+
+/// 闭集校验：`what` 是「语言 / 输出类型 / 骨架」，提示里直接列出可用名字。
+fn closed(
+    text: &str,
+    at: Position,
+    spec: &KeySpec<'_>,
+    what: &str,
+    set: &[&str],
+) -> Result<(), Error> {
+    if set.contains(&text) {
+        return Ok(());
+    }
+    Err(Error::at(
+        at,
+        format!(
+            "`{} = \"{text}\"` 不在{what}闭集内（可用：{}）",
+            spec.name,
+            set.join("、")
+        ),
+    ))
+}
 
 /// `Emit` 闭集的语言名：一条注解能声明的**全部**语言。
 ///
-/// 注解里的 `emit = ".."` 只接受这张表里的名字：它决定生成的 `Language::EMIT`，写错是
-/// 文法错误而不是拼出一段永远匹配不上的代码。`ext` 随后还会在编译期与 `Emit::ext()` 比对，
-/// 所以"注解说的语言"与"注解说的后缀"不可能各说各的。
-///
-/// 这张表不是第三份事实源，而是 `prof::Emit` 的**投影**：它必须与 `Emit::ALL` 逐项相等，
-/// 且每个名字的变体名必须等于 [`crate::codegen`] 的机械结果（首字母大写，`opencl → Opencl`）。
-/// 两条同时被核对：`tests/contracts.rs` 的 `annotation_names_come_from_the_vocabulary` 管
-/// 全量与映射规则，`#[frontend]` 生成的测试管**每一个调用点**用的是不是同一个变体。
+/// 这张表不是第三份事实源，而是 `prof::Emit` 的**投影**：它必须与 `Emit::ALL` 逐项相等，且每个名字的
+/// 变体名必须等于 [`crate::codegen`] 的机械结果（首字母大写，`opencl → Opencl`）。全量与映射规则由
+/// `tests/contracts.rs::annotation_names_come_from_the_vocabulary` 核对，每个调用点由 `#[frontend]`
+/// 生成的测试核对。
 pub(crate) const LANGUAGES: [&str; 9] = [
     "cuda", "ptx", "hip", "opencl", "spirv", "metal", "ascendc", "c", "wgsl",
 ];
 
-/// `#[frontend(..)]` 解析后的三件事：语言、产物后缀、缓存标签。
-///
-/// 三者都是编译期常量：语言决定协商依据与 `Scope`，后缀决定见证文件叫什么，标签决定产物
-/// 缓存的命名空间。没有一件需要运行期再判断。
+/// `#[frontend(..)]` 解析后的三件事：语言、产物后缀、缓存标签，都是编译期常量。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Frontend {
-    emit: String,
-    ext: String,
-    tag: String,
-}
-
-impl Frontend {
     /// 语言名（[`LANGUAGES`] 里的一个）。
-    pub(crate) fn emit(&self) -> &str {
-        &self.emit
-    }
-
+    pub(crate) emit: String,
     /// 产物后缀，必须等于该语言的 `Emit::ext()`（编译期断言）。
-    pub(crate) fn ext(&self) -> &str {
-        &self.ext
-    }
-
+    pub(crate) ext: String,
     /// 产物缓存的标签（`witness` / `self` …）。
-    pub(crate) fn tag(&self) -> &str {
-        &self.tag
-    }
+    pub(crate) tag: String,
 }
 
-/// 解析 `#[frontend(emit = "..", ext = "..", tag = "..")]`。
-///
-/// 三个键都是必填：缺一个就意味着某处只能靠默认值猜——语言猜错会把见证编成另一门语言，
-/// 后缀猜错会让 `every_device_fragment_set_splices_the_p0_template` 找不到文件。
+/// `#[frontend(..)]` 的键表：语言、产物后缀、缓存标签。
+const FRONTEND: [KeySpec<'static>; 3] = [
+    row(
+        "emit",
+        emit_value,
+        "一个前端只有一份 `emit`",
+        Some(" = \"..\""),
+    ),
+    row(
+        "ext",
+        name_value,
+        "一个前端只有一份 `ext`",
+        Some(" = \"..\""),
+    ),
+    row(
+        "tag",
+        name_value,
+        "一个前端只有一份 `tag`",
+        Some(" = \"..\""),
+    ),
+];
+
+/// 解析 `#[frontend(emit = "..", ext = "..", tag = "..")]`。三个键都必填：缺一个就只能靠默认值猜，
+/// 而语言猜错会把见证编成另一门语言、后缀猜错会让 P0 模板拼接找不到文件。
 pub(crate) fn parse_frontend(tokens: &[Token]) -> Result<Frontend, Error> {
-    let mut cursor = Cursor::new(tokens);
-    let mut emit: Option<String> = None;
-    let mut ext: Option<String> = None;
-    let mut tag: Option<String> = None;
-
-    while !cursor.is_empty() {
-        let key_position = cursor.position();
-        let key = cursor.ident("键名")?;
-        cursor.punct('=', "键与值之间的 `=`")?;
-        let what = format!("`{key}` 的值");
-        let token = cursor.next(&what)?;
-        let text = string(token).map_err(|error| error.rebased(key_position))?;
-        checked_name(&text).map_err(|error| error.rebased(key_position))?;
-        let slot = match key.as_str() {
-            "emit" => &mut emit,
-            "ext" => &mut ext,
-            "tag" => &mut tag,
-            other => {
-                return Err(Error::at(
-                    key_position,
-                    format!(
-                        "未知的注解键 `{other}`（可用：{}）",
-                        FRONTEND_KEYS.join("、")
-                    ),
-                ));
-            }
-        };
-        if slot.is_some() {
-            return Err(Error::at(
-                key_position,
-                format!("注解键 `{key}` 重复：一个前端只有一份 `{key}`"),
-            ));
-        }
-        if key == "emit" && !LANGUAGES.contains(&text.as_str()) {
-            return Err(Error::at(
-                key_position,
-                format!(
-                    "`emit = \"{text}\"` 不在语言闭集内（可用：{}）",
-                    LANGUAGES.join("、")
-                ),
-            ));
-        }
-        *slot = Some(text);
-        if cursor.is_empty() {
-            break;
-        }
-        cursor.punct(',', "键之间的 `,`")?;
-    }
-
-    let emit = emit.ok_or_else(|| Error::at(0, "缺少必填键 `emit = \"..\"`"))?;
-    let ext = ext.ok_or_else(|| Error::at(0, "缺少必填键 `ext = \"..\"`"))?;
-    let tag = tag.ok_or_else(|| Error::at(0, "缺少必填键 `tag = \"..\"`"))?;
-    Ok(Frontend { emit, ext, tag })
+    let values = collect(tokens, &FRONTEND)?;
+    require(&values, &FRONTEND)?;
+    Ok(Frontend {
+        emit: values[0].text().to_string(),
+        ext: values[1].text().to_string(),
+        tag: values[2].text().to_string(),
+    })
 }
-
-/// `#[model(..)]` 的键闭集：注册名、生产形状、输出类型。
-pub(crate) const MODEL_KEYS: [&str; 4] = ["name", "shape", "dtype", "skeleton"];
 
 /// `skeleton` 闭集：决定生成的 `MODEL` 走哪副算子骨架。
 ///
-/// 每个成员在 `codegen::render_model` 里都有**自己的分支**（`every_skeleton_has_a_branch` 逐项
-/// 渲染核对）；`gemm` 唯一特殊：它按注册名在 [`GEMM_SKELETON_NAMES`] 里挑具体的 gemm 模块。
-///
-/// 缺省值是 `gemv`。早期版本把缺省写成 `gemm`，而 `gemm` 又靠「名字不是 `gemm_*` 就落到 gemv」
-/// 收尾——于是没写 `skeleton` 的 `gemv_f32`/`gemv_i8`/`gemv_i4` 实际一直用着 gemv 骨架，
-/// 声明里却写着 `gemm`。
+/// 每个成员在 `codegen` 的骨架表里都有**自己的一行**（`every_skeleton_has_a_branch` 逐项渲染核对）；
+/// `gemm` 特殊：模块名用注册名，名字必须先在 [`GEMM_SKELETON_NAMES`] 里。缺省值是 `gemv`：早期版本把
+/// 缺省写成 `gemm`，而 `gemm` 又靠「名字不是 `gemm_*` 就落到 gemv」收尾——声明与行为各说一套。
 pub(crate) const SKELETONS: [&str; 12] = [
     "gemv",
     "gemm",
@@ -404,195 +494,93 @@ pub(crate) const SKELETONS: [&str; 12] = [
     "attention",
 ];
 
-/// `gemm` 骨架认识的注册名：这三种各自有 `op::gemm_*` 模块，名字就是模块选择器。
-///
-/// 这张表同时是文法层的判据——`skeleton = "gemm"` 配上别的名字会在这里被拒，而不是在生成器里
-/// 悄悄退化成 gemv。
+/// `gemm` 骨架认识的注册名：三种格式各有 `op::gemm_*` 模块，名字就是模块选择器。
 pub(crate) const GEMM_SKELETON_NAMES: [&str; 3] = ["gemm_f32", "gemm_i8", "gemm_i4"];
 
 /// `#[model(..)]` 的 `dtype` 闭集：对拍**有阈值**的那几种输出类型。
 ///
-/// 注解只允许写出**输出**类型（对拍读回的宽度由它定）。闭集之外的名字在这里失败，而不是
-/// 生成一个不存在的 `DType` 变体——那样错误会指向生成的代码，而不是写错的那一个 token。
-///
-/// 判据不是"手挑三个"：它与 `cutile::reference::tolerance` 给出非零阈值的 `DType` 集合
-/// **逐项相等**（`tests/contracts.rs` 的 `annotation_names_come_from_the_vocabulary`）。
-/// 于是新增一种可对拍的浮点输出时，失败的是"注解写不出它"，而不是它悄悄地无法被声明。
+/// 注解只允许写出**输出**类型（对拍读回的宽度由它定），闭集之外的名字在这里失败，而不是生成一个不
+/// 存在的 `DType` 变体。判据不是"手挑三个"：它与 `cutile::reference::tolerance` 给出非零阈值的
+/// `DType` 集合**逐项相等**（`tests/contracts.rs`），于是新增一种可对拍的浮点输出时，失败的是"注解
+/// 写不出它"，而不是它悄悄地无法被声明。
 pub(crate) const DTYPES: [&str; 3] = ["f16", "bf16", "f32"];
 
-/// `#[model(..)]` 解析后的三件事：注册名、生产形状、输出类型。
-///
-/// 三者都是编译期常量：注册名是 `REGISTRY` 的键，生产形状决定审计用的方阵，输出类型决定
-/// 对拍阈值。没有一件需要运行期再判断。
+/// `#[model(..)]` 解析后的四件事：注册名、生产形状、输出类型、骨架，都是编译期常量。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelDecl {
-    name: String,
-    shape: [usize; 2],
-    dtype: String,
-    skeleton: String,
-}
-
-impl ModelDecl {
     /// 注册表的键（与 `ops/<name>.toml` 同名）。
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-
+    pub(crate) name: String,
     /// 生产形状 `(m, n)`。
-    pub(crate) fn shape(&self) -> [usize; 2] {
-        self.shape
-    }
-
+    pub(crate) shape: [usize; 2],
     /// 输出类型名（[`DTYPES`] 里的一个）。
-    pub(crate) fn dtype(&self) -> &str {
-        &self.dtype
-    }
-
-    /// 骨架名（[`SKELETONS`] 里的一个），缺省为 `gemm`。
-    pub(crate) fn skeleton(&self) -> &str {
-        &self.skeleton
-    }
+    pub(crate) dtype: String,
+    /// 骨架名（[`SKELETONS`] 里的一个），缺省为 `gemv`。
+    pub(crate) skeleton: String,
 }
 
-/// 解析 `#[model(name = "..", shape = [..], dtype = "..")]`。
-///
-/// 三个键都是必填：缺 `name` 就没有注册表的键，缺 `shape` 就没有生产形状，缺 `dtype` 就只能
-/// 靠默认值猜输出宽度。`shape` 恰好两个轴——`Model::shape` 就是 `(m, n)`。
+/// `#[model(..)]` 的键表：注册名、生产形状、输出类型、骨架。
+const MODEL: [KeySpec<'static>; 4] = [
+    row(
+        "name",
+        name_value,
+        "一条语义只有一个注册名",
+        Some(" = \"..\""),
+    ),
+    row(
+        "shape",
+        shape_value,
+        "生产形状只能声明一次",
+        Some(" = [m, n]"),
+    ),
+    row(
+        "dtype",
+        dtype_value,
+        "输出类型只能声明一次",
+        Some(" = \"..\""),
+    ),
+    row("skeleton", skeleton_value, "一条语义只有一个骨架", None),
+];
+
+/// 解析 `#[model(name = "..", shape = [..], dtype = "..")]`。三个键都必填，`shape` 恰好两个轴。
 pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
-    let mut cursor = Cursor::new(tokens);
-    let mut name: Option<String> = None;
-    let mut shape: Option<[usize; 2]> = None;
-    let mut dtype: Option<String> = None;
-    let mut skeleton: Option<String> = None;
-
-    while !cursor.is_empty() {
-        let key_position = cursor.position();
-        let key = cursor.ident("键名")?;
-        cursor.punct('=', "键与值之间的 `=`")?;
-        match key.as_str() {
-            "name" => {
-                if name.is_some() {
-                    return Err(Error::at(
-                        key_position,
-                        "注解键 `name` 重复：一条语义只有一个注册名",
-                    ));
-                }
-                let token = cursor.next("`name` 的值")?;
-                let text = string(token).map_err(|error| error.rebased(key_position))?;
-                checked_name(&text).map_err(|error| error.rebased(key_position))?;
-                name = Some(text);
-            }
-            "shape" => {
-                if shape.is_some() {
-                    return Err(Error::at(
-                        key_position,
-                        "注解键 `shape` 重复：生产形状只能声明一次",
-                    ));
-                }
-                let (group, array) = cursor.group(Bracket::Square, "`shape = [..]` 的方括号")?;
-                let mut dims = Vec::with_capacity(array.len());
-                for item in elements(group, array, "`shape` 的元素")? {
-                    let dimension = unsigned(item).map_err(|error| error.rebased(group))?;
-                    if dimension == 0 {
-                        return Err(Error::at(
-                            group,
-                            "生产形状的每个轴都必须大于 0：零宽形状不是一个可计算的形状",
-                        ));
-                    }
-                    dims.push(dimension);
-                }
-                let [m, n] = dims.as_slice() else {
-                    return Err(Error::at(
-                        group,
-                        format!(
-                            "生产形状必须写成两个轴 `[m, n]`，得到 {} 个：`Model::shape` 是 `(m, n)`",
-                            dims.len()
-                        ),
-                    ));
-                };
-                shape = Some([*m, *n]);
-            }
-            "dtype" => {
-                if dtype.is_some() {
-                    return Err(Error::at(
-                        key_position,
-                        "注解键 `dtype` 重复：输出类型只能声明一次",
-                    ));
-                }
-                let token = cursor.next("`dtype` 的值")?;
-                let text = string(token).map_err(|error| error.rebased(key_position))?;
-                if !DTYPES.contains(&text.as_str()) {
-                    return Err(Error::at(
-                        key_position,
-                        format!(
-                            "`dtype = \"{text}\"` 不在输出类型闭集内（可用：{}）",
-                            DTYPES.join("、")
-                        ),
-                    ));
-                }
-                dtype = Some(text);
-            }
-            "skeleton" => skeleton_value(&mut cursor, key_position, &mut skeleton)?,
-            other => {
-                return Err(Error::at(
-                    key_position,
-                    format!("未知的注解键 `{other}`（可用：{}）", MODEL_KEYS.join("、")),
-                ));
-            }
-        }
-        if cursor.is_empty() {
-            break;
-        }
-        cursor.punct(',', "键之间的 `,`")?;
-    }
-
-    let name = name.ok_or_else(|| Error::at(0, "缺少必填键 `name = \"..\"`"))?;
-    let shape = shape.ok_or_else(|| Error::at(0, "缺少必填键 `shape = [m, n]`"))?;
-    let dtype = dtype.ok_or_else(|| Error::at(0, "缺少必填键 `dtype = \"..\"`"))?;
-    let skeleton = skeleton.unwrap_or_else(|| "gemv".to_string());
-    check_gemm_name(&skeleton, &name)?;
+    let values = collect(tokens, &MODEL)?;
+    require(&values, &MODEL)?;
+    let name = values[0].text();
+    let skeleton = chosen_skeleton(&values[3]);
+    check_gemm_name(skeleton, name)?;
     Ok(ModelDecl {
-        name,
-        shape,
-        dtype,
-        skeleton,
+        name: name.to_string(),
+        shape: two_axes(&values[1])?,
+        dtype: values[2].text().to_string(),
+        skeleton: skeleton.to_string(),
     })
 }
 
-/// `skeleton = ".."` 这一个键：重复与闭集之外都在这里拒绝。
-///
-/// 单独成函数是为了让 `parse_model` 的每个键都是同一形状：它已经有四种键各自的分支，
-/// 骨架判定（重复 + 闭集）再展开一次只会让"加一个键"越来越难读。
-fn skeleton_value(
-    cursor: &mut Cursor<'_>,
-    key_position: Position,
-    slot: &mut Option<String>,
-) -> Result<(), Error> {
-    if slot.is_some() {
-        return Err(Error::at(
-            key_position,
-            "注解键 `skeleton` 重复：一条语义只有一个骨架",
-        ));
+/// 骨架名的缺省值：没写 `skeleton` 时用 `gemv`——生成器实际走的那条分支。
+fn chosen_skeleton(value: &Value) -> &str {
+    match value.text() {
+        "" => "gemv",
+        name => name,
     }
-    let token = cursor.next("`skeleton` 的值")?;
-    let text = string(token).map_err(|error| error.rebased(key_position))?;
-    if !SKELETONS.contains(&text.as_str()) {
-        return Err(Error::at(
-            key_position,
-            format!(
-                "`skeleton = \"{text}\"` 不在骨架闭集内（可用：{}）",
-                SKELETONS.join("、")
-            ),
-        ));
-    }
-    *slot = Some(text);
-    Ok(())
 }
 
-/// `gemm` 骨架按注册名选模块：名字不在 [`GEMM_SKELETON_NAMES`] 里就没有骨架可用。
-///
-/// 宁可在这里报错，也不要让生成器落到别的骨架上去（那会生成一份编译得过、却绑错格式的
-/// `MODEL`）。
+/// `shape` 恰好两个轴：`Model::shape` 就是 `(m, n)`。
+fn two_axes(value: &Value) -> Result<[usize; 2], Error> {
+    let (axes, at) = value.axes();
+    let [m, n] = axes else {
+        return Err(Error::at(
+            at,
+            format!(
+                "生产形状必须写成两个轴 `[m, n]`，得到 {} 个：`Model::shape` 是 `(m, n)`",
+                axes.len()
+            ),
+        ));
+    };
+    Ok([*m, *n])
+}
+
+/// `gemm` 骨架按注册名选模块：名字不在 [`GEMM_SKELETON_NAMES`] 里就没有骨架可用（否则会生成一份
+/// 编译得过、却绑错格式的 `MODEL`）。
 fn check_gemm_name(skeleton: &str, name: &str) -> Result<(), Error> {
     if skeleton != "gemm" || GEMM_SKELETON_NAMES.contains(&name) {
         return Ok(());
@@ -606,102 +594,109 @@ fn check_gemm_name(skeleton: &str, name: &str) -> Result<(), Error> {
     ))
 }
 
-/// `#[model]` 标注的是**一个具体格式的别名**：`type 名字 = <具体实例>;`。
-///
-/// 与 [`target_name`] 不同（那两道注解标 struct / enum），这里是别名：`MODEL` 的入口要写成
-/// `<名字 as Format>`，名字必须能被当作类型用，而泛型别名不能。
-pub(crate) fn model_target(tokens: &[Token], attribute: &str) -> Result<String, Error> {
-    for (position, token) in tokens.iter().enumerate() {
-        let Token::Ident(word) = token else {
-            continue;
-        };
-        match word.as_str() {
-            "type" => {
-                let Some(Token::Ident(name)) = tokens.get(position + 1) else {
-                    return Err(Error::at(position, "`type` 后应当紧跟别名"));
-                };
-                return match tokens.get(position + 2) {
-                    Some(Token::Punct('=')) => Ok(name.clone()),
-                    Some(Token::Punct('<')) => Err(Error::at(
-                        position + 1,
-                        format!(
-                            "`#[{attribute}]` 不支持泛型别名：`{name}` 请先固定成一个具体实例（例如 `Quantized<32>`）"
-                        ),
-                    )),
-                    _ => Err(Error::at(
-                        position + 1,
-                        format!(
-                            "`{name}` 必须写成 `type {name} = <具体格式>;`：语义表要绑到那个类型上"
-                        ),
-                    )),
-                };
+/// 一项里的关键字闭集：注解只看这些词，`pub`、名字与宏名一律跳过。
+const KEYWORDS: [&str; 10] = [
+    "struct", "enum", "fn", "trait", "impl", "mod", "union", "type", "static", "const",
+];
+
+/// 一项里第一个关键字：判据只认它，位置留着指错。
+fn keyword(tokens: &[Token]) -> Option<(Position, &str)> {
+    tokens
+        .iter()
+        .enumerate()
+        .find_map(|(position, token)| match token {
+            Token::Ident(word) if KEYWORDS.contains(&word.as_str()) => {
+                Some((position, word.as_str()))
             }
-            "struct" | "enum" | "fn" | "trait" | "impl" | "mod" | "union" | "static" | "const" => {
-                return Err(Error::at(
-                    position,
-                    format!(
-                        "`#[{attribute}]` 只能标注 `type` 别名，得到 `{word}`：语义表绑的是\"哪份格式契约\"，不是行为"
-                    ),
-                ));
-            }
-            _ => {}
-        }
-    }
-    Err(Error::at(
-        0,
-        format!("`#[{attribute}]` 只能标注 `type` 别名：找不到类型定义"),
-    ))
+            _ => None,
+        })
 }
 
-/// 与 [`model_target`] 同一判据，只是错误里写的注解名不同。
-///
-/// 三道注解标的是同一类东西——"一份配置 + 一个具体类型"。判据只有一份，所以
-/// `#[frontend]` 与 `#[layer]` 不会对"能不能标 fn / 能不能带泛型"给出两种答案。
-/// 注解名作为参数传进来，是为了让错误文案指向用户真正写下的那一个。
-pub(crate) fn target_name(tokens: &[Token], attribute: &str) -> Result<String, Error> {
-    for (position, token) in tokens.iter().enumerate() {
-        let Token::Ident(word) = token else {
-            continue;
-        };
-        match word.as_str() {
-            "fn" | "trait" | "impl" | "mod" | "union" | "type" | "static" | "const" => {
-                return Err(Error::at(
-                    position,
-                    format!(
-                        "`#[{attribute}]` 只能标注 struct / enum，得到 `{word}`：注解标的是类型，不是行为"
-                    ),
-                ));
-            }
-            "struct" | "enum" => {
-                let Some(Token::Ident(name)) = tokens.get(position + 1) else {
-                    return Err(Error::at(position, format!("`{word}` 后应当紧跟类型名")));
-                };
-                if matches!(tokens.get(position + 2), Some(Token::Punct('<'))) {
-                    return Err(Error::at(
-                        position + 1,
-                        format!(
-                            "`#[{attribute}]` 不支持泛型参数：`{name}` 请改成形状固定的具体类型"
-                        ),
-                    ));
-                }
-                return Ok(name.clone());
-            }
-            _ => {}
-        }
+/// `#[model]` 标注的是**一个具体格式的别名**：`type 名字 = <具体实例>;`。`MODEL` 的入口要写成
+/// `<名字 as Format>`，名字必须能被当作类型用，而泛型别名不能。
+pub(crate) fn model_target(tokens: &[Token], attribute: &str) -> Result<String, Error> {
+    let Some((position, word)) = keyword(tokens) else {
+        return Err(Error::at(
+            0,
+            format!("`#[{attribute}]` 只能标注 `type` 别名：找不到类型定义"),
+        ));
+    };
+    if word != "type" {
+        return Err(Error::at(
+            position,
+            format!(
+                "`#[{attribute}]` 只能标注 `type` 别名，得到 `{word}`：语义表绑的是\"哪份格式契约\"，不是行为"
+            ),
+        ));
     }
-    Err(Error::at(
-        0,
-        format!("`#[{attribute}]` 只能标注 struct / enum：找不到类型定义"),
-    ))
+    alias(tokens, position, attribute)
+}
+
+/// `type 名字 = ..;`：别名后必须是 `=`，带 `<..>` 的泛型别名不能当类型用。
+fn alias(tokens: &[Token], position: Position, attribute: &str) -> Result<String, Error> {
+    let Some(Token::Ident(name)) = tokens.get(position + 1) else {
+        return Err(Error::at(position, "`type` 后应当紧跟别名"));
+    };
+    match tokens.get(position + 2) {
+        Some(Token::Punct('=')) => Ok(name.clone()),
+        Some(Token::Punct('<')) => Err(Error::at(
+            position + 1,
+            format!(
+                "`#[{attribute}]` 不支持泛型别名：`{name}` 请先固定成一个具体实例（例如 `Quantized<32>`）"
+            ),
+        )),
+        _ => Err(Error::at(
+            position + 1,
+            format!("`{name}` 必须写成 `type {name} = <具体格式>;`：语义表要绑到那个类型上"),
+        )),
+    }
+}
+
+/// 与 [`model_target`] 同一判据，只是错误里写的注解名不同：三道注解标的是同一类东西——"一份配置
+/// + 一个具体类型"，判据只有一份，注解名作为参数传进来只是为了让文案指向用户真正写下的那一个。
+pub(crate) fn target_name(tokens: &[Token], attribute: &str) -> Result<String, Error> {
+    let Some((position, word)) = keyword(tokens) else {
+        return Err(Error::at(
+            0,
+            format!("`#[{attribute}]` 只能标注 struct / enum：找不到类型定义"),
+        ));
+    };
+    match word {
+        "struct" | "enum" => named(tokens, position, word, attribute),
+        _ => Err(Error::at(
+            position,
+            format!(
+                "`#[{attribute}]` 只能标注 struct / enum，得到 `{word}`：注解标的是类型，不是行为"
+            ),
+        )),
+    }
+}
+
+/// `struct` / `enum` 后的类型名；泛型参数在此拒绝（形状必须在编译期固定）。
+fn named(
+    tokens: &[Token],
+    position: Position,
+    word: &str,
+    attribute: &str,
+) -> Result<String, Error> {
+    let Some(Token::Ident(name)) = tokens.get(position + 1) else {
+        return Err(Error::at(position, format!("`{word}` 后应当紧跟类型名")));
+    };
+    if matches!(tokens.get(position + 2), Some(Token::Punct('<'))) {
+        return Err(Error::at(
+            position + 1,
+            format!("`#[{attribute}]` 不支持泛型参数：`{name}` 请改成形状固定的具体类型"),
+        ));
+    }
+    Ok(name.clone())
 }
 
 /// 数组元素：`元素 (, 元素)*`，允许尾随逗号；任何错误都指回方括号组。
 fn elements<'a>(group: Position, tokens: &'a [Token], what: &str) -> Result<Vec<&'a Token>, Error> {
-    let mut cursor = Cursor::new(tokens);
+    let mut cursor = Cursor { tokens, index: 0 };
     let mut elements = Vec::new();
     while !cursor.is_empty() {
-        let item = cursor.next(what).map_err(|error| error.rebased(group))?;
-        elements.push(item);
+        elements.push(cursor.next(what).map_err(|error| error.rebased(group))?);
         if cursor.is_empty() {
             break;
         }
@@ -712,17 +707,18 @@ fn elements<'a>(group: Position, tokens: &'a [Token], what: &str) -> Result<Vec<
     Ok(elements)
 }
 
-/// 名字（层名与算子名）的公共约束：非空、不含空白与控制字符。
-fn checked_name(name: &str) -> Result<(), Error> {
+/// 名字（层名、算子名、语言与缓存标签）的公共约束：非空、不含空白与控制字符。错误指在 `at` 上：
+/// 名字本身没有独立 span，能指的最具体位置就是写下它的那个键。
+fn checked_name(name: &str, at: Position) -> Result<(), Error> {
     if name.is_empty() {
-        return Err(Error::at(0, "名字不能是空字符串"));
+        return Err(Error::at(at, "名字不能是空字符串"));
     }
     if let Some(bad) = name
         .chars()
         .find(|character| character.is_whitespace() || character.is_control())
     {
         return Err(Error::at(
-            0,
+            at,
             format!("名字不能包含空白或控制字符（发现 `{bad:?}`）：`{name}`"),
         ));
     }
@@ -773,23 +769,15 @@ fn unsigned(token: &Token) -> Result<usize, Error> {
         .map_err(|_| Error::at(0, format!("`{text}` 超出 `usize` 范围")))
 }
 
-/// 注解参数的最小游标：只认标识符、`=`、`,` 与括号组。
+/// 注解参数的最小游标：只认标识符、`=`、`,` 与括号组；`index` 同时是「错误指在这里」的位置。
 struct Cursor<'a> {
     tokens: &'a [Token],
     index: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, index: 0 }
-    }
-
     fn is_empty(&self) -> bool {
         self.index >= self.tokens.len()
-    }
-
-    fn position(&self) -> Position {
-        self.index
     }
 
     fn next(&mut self, what: &str) -> Result<&'a Token, Error> {
@@ -800,17 +788,6 @@ impl<'a> Cursor<'a> {
             .ok_or_else(|| Error::at(position, format!("缺少{what}")))?;
         self.index += 1;
         Ok(token)
-    }
-
-    fn ident(&mut self, what: &str) -> Result<String, Error> {
-        let position = self.index;
-        match self.next(what)? {
-            Token::Ident(ident) => Ok(ident.clone()),
-            other => Err(Error::at(
-                position,
-                format!("期望{what}（标识符），得到 {}", other.describe()),
-            )),
-        }
     }
 
     fn punct(&mut self, expected: char, what: &str) -> Result<(), Error> {
@@ -837,393 +814,4 @@ impl<'a> Cursor<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixture::lex;
-
-    fn parse_text(text: &str) -> Result<Declaration, Error> {
-        parse(&lex(text))
-    }
-
-    fn parse_frontend_text(text: &str) -> Result<Frontend, Error> {
-        parse_frontend(&lex(text))
-    }
-
-    /// 三个键都是必填，且键顺序不影响结果：注解是配置，不该有顺序语义。
-    #[test]
-    fn a_frontend_annotation_carries_the_language_the_suffix_and_the_tag() {
-        let frontend = parse_frontend_text(r#"tag = "witness", emit = "metal", ext = "metal""#)
-            .expect("合法前端注解");
-        assert_eq!(frontend.emit(), "metal");
-        assert_eq!(frontend.ext(), "metal");
-        assert_eq!(frontend.tag(), "witness");
-    }
-
-    /// 缺一个键就必须报错：缺 `ext` 会让见证按另一门语言的后缀去找文件。
-    #[test]
-    fn a_frontend_annotation_requires_all_three_keys() {
-        for (text, missing) in [
-            (r#"emit = "metal", ext = "metal""#, "tag"),
-            (r#"emit = "metal", tag = "witness""#, "ext"),
-            (r#"ext = "metal", tag = "witness""#, "emit"),
-        ] {
-            let error = parse_frontend_text(text).expect_err("缺必填键");
-            assert!(
-                error.to_string().contains(missing),
-                "报错要点名缺的键 `{missing}`：{error}"
-            );
-        }
-    }
-
-    /// 闭集之外的写法一律拒收：未知键、未知语言、同一个键写两遍。
-    #[test]
-    fn a_frontend_annotation_rejects_anything_outside_the_closed_sets() {
-        let error = parse_frontend_text(r#"emit = "metal", ext = "metal", tag = "w", nope = "x""#)
-            .expect_err("未知键");
-        assert!(error.to_string().contains("nope"), "{error}");
-
-        let error = parse_frontend_text(r#"emit = "vulkan", ext = "spv", tag = "w""#)
-            .expect_err("语言不在闭集内");
-        assert!(error.to_string().contains("vulkan"), "{error}");
-
-        let error = parse_frontend_text(r#"emit = "metal", emit = "metal", ext = "m", tag = "w""#)
-            .expect_err("重复键");
-        assert!(error.to_string().contains("重复"), "{error}");
-    }
-
-    #[test]
-    fn a_full_annotation_parses_in_any_order() {
-        let declaration =
-            parse_text(r#"out = [4096], name = "lm_head", ops = ["gemv_i4"]"#).expect("合法注解");
-        assert_eq!(declaration.name(), "lm_head");
-        assert_eq!(declaration.out(), [4096]);
-        assert_eq!(declaration.ops(), ["gemv_i4"]);
-    }
-
-    #[test]
-    fn a_trailing_comma_and_empty_shape_are_accepted() {
-        let declaration = parse_text(r#"name = "loss", out = [], ops = ["dot"],"#)
-            .expect("尾随逗号与标量输出都合法");
-        assert!(declaration.out().is_empty(), "空形状即标量输出");
-        assert_eq!(declaration.ops(), ["dot"]);
-    }
-
-    #[test]
-    fn a_rank_two_shape_keeps_its_axis_order() {
-        let declaration =
-            parse_text(r#"name = "q", out = [2, 3], ops = ["gemv_i4"]"#).expect("合法注解");
-        assert_eq!(declaration.out(), [2, 3], "轴序不能被重排");
-    }
-
-    #[test]
-    fn an_input_width_is_optional_and_kept_as_given() {
-        let declaration =
-            parse_text(r#"name = "q", out = [8], in = 32, ops = ["gemv_i4"]"#).expect("合法注解");
-        assert_eq!(declaration.input(), Some(32));
-        assert_eq!(
-            parse_text(r#"name = "q", out = [8], ops = ["gemv_i4"]"#)
-                .expect("合法注解")
-                .input(),
-            None,
-            "没有 `in` 只是没有可计价的形状，不是文法错误"
-        );
-    }
-
-    #[test]
-    fn an_input_width_only_fits_a_single_axis_output() {
-        let error = parse_text(r#"name = "q", out = [2, 3], in = 32, ops = ["gemv_i4"]"#)
-            .expect_err("多轴输出没有单一的输出轴");
-        assert!(error.message().contains("单轴输出"), "{error}");
-    }
-
-    #[test]
-    fn a_zero_input_width_is_rejected() {
-        let error = parse_text(r#"name = "q", out = [8], in = 0, ops = ["gemv_i4"]"#)
-            .expect_err("零宽规约轴");
-        assert!(error.message().contains("大于 0"), "{error}");
-    }
-
-    #[test]
-    fn an_unknown_key_lists_the_closed_set() {
-        let error = parse_text(r#"name = "x", out = [1], ops = ["dot"], dtype = "f32""#)
-            .expect_err("未知键");
-        assert!(error.message().contains("dtype"), "{error}");
-        for key in KEYS {
-            assert!(error.message().contains(key), "{error} 应列出 {key}");
-        }
-    }
-
-    #[test]
-    fn a_repeated_key_is_rejected_for_every_key() {
-        for text in [
-            r#"name = "a", name = "b", out = [1], ops = ["dot"]"#,
-            r#"name = "a", out = [1], out = [2], ops = ["dot"]"#,
-            r#"name = "a", out = [1], in = 4, in = 8, ops = ["dot"]"#,
-            r#"name = "a", out = [1], ops = ["dot"], ops = ["dot"]"#,
-        ] {
-            let error = parse_text(text).expect_err("重复键");
-            assert!(error.message().contains("重复"), "{text}: {error}");
-        }
-    }
-
-    #[test]
-    fn a_missing_key_says_which_one() {
-        let cases = [
-            (r#"out = [1], ops = ["dot"]"#, "name"),
-            (r#"name = "a", ops = ["dot"]"#, "out"),
-            (r#"name = "a", out = [1]"#, "ops"),
-        ];
-        for (text, missing) in cases {
-            let error = parse_text(text).expect_err("缺键");
-            assert!(error.message().contains(missing), "{text}: {error}");
-        }
-    }
-
-    #[test]
-    fn a_non_string_name_is_rejected() {
-        let error = parse_text(r#"name = 42, out = [1], ops = ["dot"]"#).expect_err("非字符串");
-        assert!(error.message().contains("字符串字面量"), "{error}");
-    }
-
-    #[test]
-    fn an_escaped_name_is_rejected_because_it_would_stop_being_literal() {
-        let tokens = vec![
-            Token::Ident("name".to_string()),
-            Token::Punct('='),
-            Token::Literal(r#""a\nb""#.to_string()),
-            Token::Punct(','),
-            Token::Ident("out".to_string()),
-            Token::Punct('='),
-            Token::Group(Bracket::Square, vec![Token::Literal("1".to_string())]),
-            Token::Punct(','),
-            Token::Ident("ops".to_string()),
-            Token::Punct('='),
-            Token::Group(
-                Bracket::Square,
-                vec![Token::Literal(r#""dot""#.to_string())],
-            ),
-        ];
-        let error = parse(&tokens).expect_err("转义");
-        assert!(error.message().contains("转义"), "{error}");
-    }
-
-    #[test]
-    fn a_hex_dimension_is_not_a_decimal() {
-        let tokens = vec![
-            Token::Ident("name".to_string()),
-            Token::Punct('='),
-            Token::Literal(r#""x""#.to_string()),
-            Token::Punct(','),
-            Token::Ident("out".to_string()),
-            Token::Punct('='),
-            Token::Group(Bracket::Square, vec![Token::Literal("0x10".to_string())]),
-            Token::Punct(','),
-            Token::Ident("ops".to_string()),
-            Token::Punct('='),
-            Token::Group(
-                Bracket::Square,
-                vec![Token::Literal(r#""dot""#.to_string())],
-            ),
-        ];
-        let error = parse(&tokens).expect_err("十六进制");
-        assert!(error.message().contains("十进制"), "{error}");
-    }
-
-    #[test]
-    fn a_zero_width_axis_is_rejected() {
-        let error = parse_text(r#"name = "x", out = [0], ops = ["dot"]"#).expect_err("零宽轴");
-        assert!(error.message().contains("大于 0"), "{error}");
-    }
-
-    #[test]
-    fn an_empty_operator_list_is_rejected() {
-        let error = parse_text(r#"name = "x", out = [1], ops = []"#).expect_err("空算子集");
-        assert!(error.message().contains("至少要引用一个"), "{error}");
-    }
-
-    #[test]
-    fn a_duplicated_operator_is_rejected() {
-        let error =
-            parse_text(r#"name = "x", out = [1], ops = ["dot", "dot"]"#).expect_err("重复算子");
-        assert!(error.message().contains("出现了两次"), "{error}");
-    }
-
-    #[test]
-    fn a_name_with_whitespace_is_rejected() {
-        let error = parse_text(r#"name = "a b", out = [1], ops = ["dot"]"#).expect_err("空白");
-        assert!(error.message().contains("空白"), "{error}");
-        let error = parse_text(r#"name = "", out = [1], ops = ["dot"]"#).expect_err("空名字");
-        assert!(error.message().contains("空字符串"), "{error}");
-    }
-
-    #[test]
-    fn a_missing_separator_is_reported_at_the_offending_token() {
-        let error = parse_text(r#"name = "a" out = [1], ops = ["dot"]"#).expect_err("缺逗号");
-        assert_eq!(error.position(), 3, "缺的那个逗号在下标 3 处");
-        assert!(error.message().contains("`,`"), "{error}");
-    }
-
-    #[test]
-    fn an_error_points_at_the_token_the_user_wrote() {
-        let tokens = lex(r#"name = "a", out = [1], ops = ["dot"], bogus = "x""#);
-        let error = parse(&tokens).expect_err("未知键");
-        assert_eq!(error.position(), 12, "`bogus` 是自己那一处，不是注解开头");
-        assert_eq!(
-            &tokens[error.position()],
-            &Token::Ident("bogus".to_string())
-        );
-    }
-
-    #[test]
-    fn a_group_error_points_at_the_bracket_group() {
-        let tokens = lex(r#"name = "a", out = [1], ops = ["dot", 7]"#);
-        let error = parse(&tokens).expect_err("非字符串算子");
-        assert_eq!(error.position(), 10, "错误指向 `ops` 的方括号组");
-        assert!(matches!(tokens[error.position()], Token::Group(..)));
-    }
-
-    #[test]
-    fn structures_and_enums_are_both_acceptable_targets() {
-        assert_eq!(
-            target_name(&lex("pub struct OutputHead;"), "layer").expect("struct"),
-            "OutputHead"
-        );
-        assert_eq!(
-            target_name(&lex("pub(crate) enum Head { A }"), "layer").expect("enum"),
-            "Head"
-        );
-    }
-
-    #[test]
-    fn behaviour_is_not_a_layer() {
-        for (text, keyword) in [
-            ("fn f() {}", "fn"),
-            ("trait T {}", "trait"),
-            ("impl T {}", "impl"),
-            ("mod m {}", "mod"),
-            ("union U { a: u8 }", "union"),
-            ("type A = u8;", "type"),
-        ] {
-            let error = target_name(&lex(text), "layer").expect_err(keyword);
-            assert!(error.message().contains(keyword), "{text}: {error}");
-        }
-    }
-
-    #[test]
-    fn a_generic_target_is_rejected_with_the_reason() {
-        let error = target_name(&lex("struct Head<T> { inner: T }"), "layer").expect_err("泛型");
-        assert!(error.message().contains("泛型"), "{error}");
-        assert_eq!(error.position(), 1, "错误指向类型名");
-    }
-
-    #[test]
-    fn an_empty_item_is_rejected_rather_than_guessed() {
-        let error = target_name(&[], "layer").expect_err("空项");
-        assert!(error.message().contains("找不到类型定义"), "{error}");
-    }
-    #[test]
-    fn a_model_declaration_carries_name_shape_and_dtype() {
-        let model = parse_model(&lex(
-            r#"name = "gemv_i4", shape = [4096, 4096], dtype = "f32""#,
-        ))
-        .expect("合法注解");
-        assert_eq!(model.name(), "gemv_i4");
-        assert_eq!(model.shape(), [4096, 4096]);
-        assert_eq!(model.dtype(), "f32");
-    }
-
-    #[test]
-    fn a_model_needs_all_three_keys() {
-        for (text, key) in [
-            (r#"shape = [4, 4], dtype = "f32""#, "name"),
-            (r#"name = "a", dtype = "f32""#, "shape"),
-            (r#"name = "a", shape = [4, 4]"#, "dtype"),
-        ] {
-            let error = parse_model(&lex(text)).expect_err(key);
-            assert!(error.message().contains(key), "{text}: {error}");
-        }
-    }
-
-    #[test]
-    fn a_model_shape_is_exactly_two_axes() {
-        let error = parse_model(&lex(r#"name = "a", shape = [4, 4, 4], dtype = "f32""#))
-            .expect_err("三个轴");
-        assert!(error.message().contains("两个轴"), "{error}");
-        assert!(
-            parse_model(&lex(r#"name = "a", shape = [4], dtype = "f32""#)).is_err(),
-            "一条轴上没有可计价的投影"
-        );
-        assert!(
-            parse_model(&lex(r#"name = "a", shape = [4, 0], dtype = "f32""#)).is_err(),
-            "零宽轴不是一个可计算的形状"
-        );
-    }
-
-    #[test]
-    fn a_model_dtype_is_a_closed_set() {
-        let error = parse_model(&lex(r#"name = "a", shape = [4, 4], dtype = "f64""#))
-            .expect_err("闭集之外");
-        assert!(error.message().contains("闭集"), "{error}");
-        let error = parse_model(&lex(
-            r#"name = "a", shape = [4, 4], dtype = "f32", extra = 1"#,
-        ))
-        .expect_err("未知键");
-        assert!(error.message().contains("未知的注解键"), "{error}");
-        assert!(
-            parse_model(&lex(
-                r#"name = "a", shape = [4, 4], dtype = "f32", name = "b""#
-            ))
-            .is_err(),
-            "重复键"
-        );
-    }
-
-    #[test]
-    fn a_model_skeleton_defaults_to_the_branch_it_actually_takes() {
-        // 缺省值必须等于生成器实际走的那条分支：早期缺省写 `gemm`，而 `gemm` 又靠"名字不是
-        // `gemm_*` 就落到 gemv"收尾，声明与行为于是各说一套。
-        let model = parse_model(&lex(r#"name = "gemv_i4", shape = [4, 4], dtype = "f32""#))
-            .expect("合法注解");
-        assert_eq!(model.skeleton(), "gemv");
-    }
-
-    #[test]
-    fn the_gemm_skeleton_only_accepts_its_registered_names() {
-        for name in GEMM_SKELETON_NAMES {
-            let text =
-                format!(r#"name = "{name}", shape = [4, 4], dtype = "f32", skeleton = "gemm""#);
-            assert_eq!(
-                parse_model(&lex(&text)).expect("名字在表里").skeleton(),
-                "gemm"
-            );
-        }
-        let error = parse_model(&lex(
-            r#"name = "gemv_f32", shape = [4, 4], dtype = "f32", skeleton = "gemm""#,
-        ))
-        .expect_err("`gemm` 骨架按名字选模块，`gemv_f32` 不在其中");
-        assert!(error.message().contains("gemm_f32"), "{error}");
-    }
-
-    #[test]
-    fn a_repeated_skeleton_key_is_rejected() {
-        let error = parse_model(&lex(
-            r#"name = "gemm_f32", shape = [4, 4], dtype = "f32", skeleton = "gemm", skeleton = "gemm""#,
-        ))
-        .expect_err("重复键");
-        assert!(error.message().contains("重复"), "{error}");
-    }
-
-    #[test]
-    fn a_model_annotation_targets_a_type_alias() {
-        assert_eq!(
-            model_target(&lex("pub type I4 = Quantized<32>;"), "model").expect("别名"),
-            "I4"
-        );
-        // 行为不是配置：标注 struct 是错的，`MODEL` 要绑的是"哪份格式"。
-        let error = model_target(&lex("pub struct Head;"), "model").expect_err("struct");
-        assert!(error.message().contains("type"), "{error}");
-        // 泛型别名不能当类型用。
-        let error = model_target(&lex("pub type Head<T> = T;"), "model").expect_err("泛型别名");
-        assert!(error.message().contains("泛型"), "{error}");
-    }
-}
+mod tests;
