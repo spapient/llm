@@ -88,7 +88,7 @@ crate 外真实引用：`Header` / `Entry` / `Reader` / `Loader`、`safetensors:
 |---|---|---|
 | S1 | **已落地**：抽 `wire` L1（crc/leb/sink）；weights 薄转发；snapshot 删重复 `Sink/Cursor/varint` 改复用；同步架构表/边/所有权基线；移除 weights 孤儿 dev 依赖 testkit | 239 用例不丢（wire 11 + weights 160 + 往返 10 + train 50 + storage 8）；clippy 0；架构门 8 绿；静态门 36 绿；deny 干净；行覆盖 87.09%（基线 87.15%，持平） |
 | S1b | **已落地**：wire LEB 全泛型收口——写端标记族 `Uint`（u8/u16/u32/u64/usize，`as_u64()` 单点归约）+ 单一泛型 `write<N: Uint>`；读端私有 `raw()` 累积引擎 + 单一泛型 `read<N: TryFrom<u64>>`；删除 `write_u64/write_u32/read_u64/read_u32/read_varint` 全部宽度包装；LEB 定长 10 字节栈缓冲一次 `put`；CRC 八路查表；热函数补 `#[inline]`；循环仅限串行依赖链并注释保留理由；`benches/wire_codec` criterion 基准带 `Throughput`（Bytes/Elements）出吞吐 | wire 12 用例不丢；clippy 0；架构门 8 绿；基准（release，100 样本/5s，中位数[95%CI]）：CRC 4KiB 1.526µs（2.48 GiB/s）、编码 8 值 3.13ns（2.52 Gelem/s）、解码 22.26ns（355 Melem/s，较原始 35.8ns 降约 38%）、密封 1KiB 455.5ns（2.07 GiB/s）；热路径无堆分配 |
-| S2 | 模块体量再平衡：近空件并入同族，超大件按职责拆分；不新增 src 子目录 | 文件行数 ≤ 899、ccn/nloc 门绿。切片 S2a 已落地：`dtype.rs`（Wire 别名垫片）并入 lib 再导出，`codec.rs`（Codec 闭集）并入 `seg.rs`，weights 文件 30 → 28，160 用例不丢、clippy/架构门/契约/静态门/deny 全绿 |
+| S2 | 模块体量再平衡：近空件并入同族，超大件按职责拆分；不新增 src 子目录 | 文件行数 ≤ 899、ccn/nloc 门绿。切片 S2a 已落地：`dtype.rs`（Wire 别名垫片）并入 lib 再导出，`codec.rs`（Codec 闭集）并入 `seg.rs`；S2b 已落地：`gguf.rs` 反量化簇（标量/块解码、f16 转换）拆到同级 `gguf_q.rs`，档案解析留在 `gguf.rs`，测试随迁，160 用例不丢、clippy/架构门/契约/静态门/deny 全绿 |
 | S3 | 测试与覆盖加固：薄弱文件、快照黄金向量、错误分支负例 | 行覆盖不低于基线并向 ≥95% 收敛 |
 | S4 | 性能：benches 补容器/remap/CRC 基准，热路径去冗余分配 | criterion 出数；行为用例不变 |
 | S5 | 成熟度收口：文档漂移、所有权/词汇基线复核、fuzz 边界补齐 | 架构门、词汇门、deny 全绿 |

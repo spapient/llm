@@ -86,6 +86,7 @@ pub mod patch;
 // 外部格式适配（只读）：safetensors/gguf/bin 已接入。
 pub mod bin;
 pub mod gguf;
+mod gguf_q;
 pub mod json;
 pub mod quant;
 pub mod safetensors;
