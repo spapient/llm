@@ -90,14 +90,18 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: {}", self.code, self.message)?;
-        for frame in &self.context {
-            write!(formatter, " → {frame}")?;
-        }
-        for note in &self.notes {
-            write!(formatter, "\n  {note}")?;
-        }
+        render(&self.context, " → ", formatter)?;
+        render(&self.notes, "\n  ", formatter)?;
         Ok(())
     }
+}
+
+/// 逐行渲染一组帧，各自带固定前缀；把循环收敛到一处以便 Display 保持低复杂度。
+fn render(frames: &[String], prefix: &str, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    for frame in frames {
+        write!(formatter, "{prefix}{frame}")?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for Error {}

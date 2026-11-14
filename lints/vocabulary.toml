@@ -1,8 +1,10 @@
 # 词汇表契约的门禁配置（`docs/ARCHITECTURE.md` 第三节「闭集与位集」）。
 #
-# 今天的消费方只有一份：`tests/contracts.rs`（纯文本扫描，`cargo test` 即门禁）。
+# 消费方：`crates/tool/build.rs` 在**构建期**用 `toml` 把本文件展开成 `Table` 字面量，运行期由
+# `tool::vocabulary()` 读取（ADR 0022）；`tests/contracts.rs`、`tests/architecture.rs` 与
+# `crates/tool` 的门禁共用这棵树，不再各自解析文本。
 #
-# dylint 规则（HIR 版，`ui-toml` 配置指向本文件）是**计划中的**第二消费方，用于在 IDE 里即时
+# dylint 规则（HIR 版，`ui-toml` 配置指向本文件）是**计划中的**下一个消费方，用于在 IDE 里即时
 # 提示同一条契约；它尚未落地，所以本文件的任何改动都以 `cargo test --test contracts` 为准，
 # 不要假设有另一处也在读它。
 #
@@ -18,10 +20,6 @@
 [[closed.exempt]]
 crate = "diagnostic"
 reason = "L1：错误类别是错误类型的词汇表，反向依赖 L2 的 prof 会成环"
-
-[[closed.exempt]]
-crate = "config"
-reason = "L1：设置键是配置层自己的词汇表"
 
 [[closed.exempt]]
 crate = "shard"
@@ -78,9 +76,9 @@ names = ["CutileCommand"]
 reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command`，文法稳定后再进表"
 
 [[ownership.unlisted]]
-crate = "config"
-names = ["BadKey", "BadValue", "Cutile", "Origin", "ParseError", "Sources", "Value"]
-reason = "设置层的内部结构（键、来源分层、值与解析错误）；对外只承诺 `Settings` 与 `Key`"
+crate = "diagnostic"
+names = ["Value"]
+reason = "声明数据树的值（ADR 0022：语料在构建期被解析成 `diagnostic::data` 的表，运行期没有解析器）；`Table` 已在所有权表（`engine` 的 KV 页表同名，按名字判）"
 
 [[ownership.unlisted]]
 crate = "cutile"
@@ -229,6 +227,10 @@ key = "crates/cutile/src/execution.rs:execute#0"
 ccn = 18
 
 [[gate.debt]]
+key = "crates/cutile/src/settings/source.rs:cli_override#0"
+ccn = 6
+
+[[gate.debt]]
 key = "crates/cutile/src/verify.rs:negotiate#0"
 ccn = 7
 
@@ -342,7 +344,7 @@ ccn = 6
 
 [[gate.debt]]
 key = "crates/train/src/snapshot/mod.rs"
-lines = 1611
+lines = 978
 call = 1
 
 [[gate.debt]]
@@ -357,70 +359,6 @@ ccn = 19
 [[gate.debt]]
 key = "crates/cli/src/lib.rs:parse_value#0"
 ccn = 7
-
-[[gate.debt]]
-key = "crates/config/src/error.rs:fmt#0"
-ccn = 6
-
-[[gate.debt]]
-key = "crates/config/src/source.rs:cli_override#0"
-ccn = 6
-
-[[gate.debt]]
-key = "crates/config/src/source.rs:collect_leaves#0"
-ccn = 6
-
-[[gate.debt]]
-key = "crates/config/src/source.rs:file#0"
-ccn = 8
-
-[[gate.debt]]
-key = "crates/config/src/source.rs:scalar#0"
-ccn = 6
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:descend#0"
-ccn = 8
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:parse#0"
-ccn = 19
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:parse_number#0"
-ccn = 6
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:parse_value#0"
-ccn = 22
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:push_table_array#0"
-ccn = 8
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:split_top_level#0"
-ccn = 12
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:strip_comment#0"
-ccn = 8
-
-[[gate.debt]]
-key = "crates/config/src/toml.rs:unescape#0"
-ccn = 8
-
-[[gate.debt]]
-key = "crates/config/src/value.rs:from_toml#0"
-ccn = 6
-
-[[gate.debt]]
-key = "crates/config/src/value.rs:parse#0"
-ccn = 13
-
-[[gate.debt]]
-key = "crates/config/src/value.rs:type_name#0"
-ccn = 6
 
 [[gate.debt]]
 key = "crates/cutile/src/ast.rs:build#0"
@@ -533,10 +471,6 @@ key = "crates/cutile/src/substitute.rs:splice#0"
 ccn = 12
 
 [[gate.debt]]
-key = "crates/diagnostic/src/lib.rs:fmt#1"
-ccn = 6
-
-[[gate.debt]]
 key = "crates/op/src/einsum/expr.rs:parse#0"
 ccn = 7
 
@@ -620,10 +554,6 @@ ccn = 6
 [[gate.debt]]
 key = "crates/op/src/layout.rs:parse#0"
 ccn = 14
-
-[[gate.debt]]
-key = "crates/op/src/lib.rs:load#0"
-ccn = 8
 
 [[gate.debt]]
 key = "crates/op/src/model.rs:bind#0"
@@ -727,10 +657,6 @@ key = "crates/prof/src/atom.rs"
 lines = 1264
 
 [[gate.debt]]
-key = "crates/prof/src/lib.rs:load#0"
-ccn = 7
-
-[[gate.debt]]
 key = "crates/prof/src/prof.rs:as_str#0"
 ccn = 9
 
@@ -749,10 +675,6 @@ ccn = 6
 [[gate.debt]]
 key = "crates/prof/src/prof.rs:ext#0"
 ccn = 9
-
-[[gate.debt]]
-key = "crates/prof/src/prof.rs:fmt#3"
-ccn = 6
 
 [[gate.debt]]
 key = "crates/prof/src/prof.rs:matches#0"
@@ -783,7 +705,7 @@ nloc = 202
 
 [[gate.debt]]
 key = "crates/prof/src/prof.rs"
-lines = 1711
+lines = 1216
 
 [[gate.debt]]
 key = "crates/serve/src/proto/frame.rs:header#0"
@@ -845,10 +767,6 @@ ccn = 6
 [[gate.debt]]
 key = "crates/tool/src/gate.rs:check#0"
 ccn = 8
-
-[[gate.debt]]
-key = "crates/tool/src/gate.rs:load#0"
-ccn = 13
 
 [[gate.debt]]
 key = "crates/tool/src/lex.rs:block_comment#0"
@@ -995,10 +913,6 @@ ccn = 18
 [[gate.debt]]
 key = "crates/weights/src/bin.rs:reduce#0"
 ccn = 9
-
-[[gate.debt]]
-key = "crates/weights/src/bin.rs:set_items#0"
-ccn = 6
 
 [[gate.debt]]
 key = "crates/weights/src/bin.rs:storage_dtype#0"
