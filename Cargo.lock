@@ -400,6 +400,7 @@ dependencies = [
  "cutile",
  "llm-op",
  "llm-prof",
+ "llm-weights",
  "llm-wire",
 ]
 

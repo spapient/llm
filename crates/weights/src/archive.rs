@@ -8,6 +8,7 @@
 //! XOR 的增量补丁（自逆，base 缺失或不等长即按全量保留）。
 
 use std::borrow::Cow;
+use std::sync::OnceLock;
 
 use diagnostic::{Code, Error, Result};
 
@@ -89,6 +90,9 @@ pub struct Archive<'a> {
     bytes: &'a [u8],
     segs: Vec<Stored>,
     flags: u32,
+    /// 叶子摘要惰性缓存：同一份不可变字节只解压+哈希一次，root/prove/verify 复用。
+    /// 内层带错误：`get_or_init` 是稳定接口，解码失败存下后原样克隆复返。
+    leaves: OnceLock<Result<Vec<Digest>>>,
 }
 
 impl<'a> Archive<'a> {
@@ -98,7 +102,12 @@ impl<'a> Archive<'a> {
         let (descs, data_start) = read_descs(bytes)?;
         let footer_pos = bytes.len() - FOOTER_LEN;
         let segs = layout(descs, bytes, data_start, footer_pos, align)?;
-        let archive = Self { bytes, segs, flags };
+        let archive = Self {
+            bytes,
+            segs,
+            flags,
+            leaves: OnceLock::new(),
+        };
         archive.verify_checksums(footer_pos)?;
         Ok(archive)
     }
@@ -179,7 +188,7 @@ impl<'a> Archive<'a> {
     }
 
     /// 收集每段逻辑字节的叶子哈希；用解压后字节，证明独立于压缩选择。
-    fn leaves(&self) -> Result<Vec<Digest>> {
+    fn collect_leaves(&self) -> Result<Vec<Digest>> {
         let mut leaves = Vec::with_capacity(self.segs.len());
         for seg in &self.segs {
             let logical = self.load(seg)?;
@@ -188,22 +197,30 @@ impl<'a> Archive<'a> {
         Ok(leaves)
     }
 
+    /// 惰性取叶子摘要：首次调用解压+哈希全段，之后复用缓存，不再重复解压。
+    fn cached_leaves(&self) -> Result<&[Digest]> {
+        match self.leaves.get_or_init(|| self.collect_leaves()) {
+            Ok(leaves) => Ok(leaves.as_slice()),
+            Err(error) => Err(error.clone()),
+        }
+    }
+
     /// 逐张量 Merkle 根。
     pub fn merkle_root(&self) -> Result<Digest> {
-        let leaves = self.leaves()?;
-        Ok(crate::proof::root(&leaves))
+        let leaves = self.cached_leaves()?;
+        Ok(crate::proof::root(leaves))
     }
 
     /// 为下标生成包含证明；下标越界返回错误。
     pub fn prove(&self, index: usize) -> Result<Proof> {
-        let leaves = self.leaves()?;
-        crate::proof::prove(&leaves, index)
+        let leaves = self.cached_leaves()?;
+        crate::proof::prove(leaves, index)
             .ok_or_else(|| invalid(format!("段下标 {index} 越界，共 {} 段", leaves.len())))
     }
 
     /// 仅用下标、证明与根验证归属，不接触其他张量。
     pub fn verify(&self, index: usize, proof: &Proof, root: &Digest) -> Result<bool> {
-        let leaves = self.leaves()?;
+        let leaves = self.cached_leaves()?;
         let Some(leaf_hash) = leaves.get(index) else {
             return Ok(false);
         };

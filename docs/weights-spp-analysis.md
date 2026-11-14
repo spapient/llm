@@ -339,9 +339,16 @@ trait Compress {
 - **两遍编码合一**：`Writer::finish` 原先先 `encoded_len`（prepare 一遍，逐段 `rans::encode`）再 `write_body`（又 prepare 一遍）。抽出 `write_body_in(packed, ..)`，`finish` 只 prepare 一次，把同一份 packed 复用于长度计数与正文写出；`encoded_len` 仍独立单遍。`encode_into`/`write_to_path` 路径行为不变。
 - 复核结论：`Codec` 仅 `Store/Rans` 两变体，enum+match 分派已清晰，不另套 `Compress` trait（避免为两个策略过度设计）。
 
+### T2 性能第一笔：Merkle 叶子摘要惰性缓存（工作树，未提交）
+
+- **瓶颈定位（criterion 基线，64 段 × 1 KiB f32，集中在既有 `benches` 容器，未新建 crate/目录）**：`merkle_root` 302.92 µs、`prove` 302.59 µs、`verify` 292.01 µs——三者每次都经 `leaves()` 重解压全段再逐段哈希；`parse` 7.69 µs、`get_by_name` 52.3 ns、`finish` 199.34 µs 不在热点。
+- **改动**：`Archive` 增 `OnceLock<Result<Vec<Digest>>>` 惰性缓存；`collect_leaves` 只负责算，`cached_leaves` 首算后复用，`merkle_root/prove/verify` 改走缓存。`get_or_try_init` 在本工具链属未稳定库特性（`once_cell_try`，E0658），故用稳定 `get_or_init` 包裹内层 `Result`：解码失败的错误存下后原样克隆复返（`Error` 已 `Clone`）。容器字节不可变，缓存不引入失效语义；公开 API 与零拷贝读取不变。
+- **复测（同基准）**：`merkle_root` 302.92 → **18.68 µs**（约 16×，余下为对缓存叶子建树）；`prove` 302.59 → **19.32 µs**（约 16×）；`verify` 292.01 → **1.82 µs**（约 160×，只用命中缓存的单叶核对）；`parse` 7.66 µs、`get_by_name` 53.9 ns、`finish` 201.93 µs 均在噪声内持平。
+- **基准登记**：`crates/benches/criterion/weights_container.rs`（parse / root / prove / verify / get / finish），`benches` 增 dev 依赖 `weights`；架构文档边表同步登记 `benches → +dev: weights`（边 76→77，`+dev` 12→13）。
+
 ### 延后项（需更大改动或实测证据，本轮不强行推进）
 
-- T2 性能：`Archive::leaves` 每次重解压+哈希全段（证明/校验重复），加惰性缓存需引入可变状态，属取舍；`Header::get`/`Archive::get` 名字线性查找，加名字索引会增加结构与代码；生产 `File` 后端按条目 seek+read，`storage::Mmap` 目前仅测试用，进生产要把 storage 提为运行时依赖；rANS 小帧预检阈值需要基准支撑。
+- T2 性能：`Header::get`/`Archive::get` 名字线性查找，基准 52 ns（64 段），加名字索引会增加结构与代码，实测无收益，暂不做；生产 `File` 后端按条目 seek+read，`storage::Mmap` 目前仅测试用，进生产要把 storage 提为运行时依赖；rANS 小帧预检阈值需要基准支撑；`finish` 约 310 MiB/s，已是单次编码，未见第二遍冗余。
 - 质量补欠：`bin` 负例与覆盖在 `tests/` 内补回；fuzz 从 `json` 扩到 gguf/zip/seg/写端。
 
 ### 门禁同步

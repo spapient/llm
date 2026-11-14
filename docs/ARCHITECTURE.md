@@ -35,7 +35,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 76 条，含 12 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 77 条，含 13 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → annotation, diagnostic, op, prim, prof（annotation 是工具边：`#[frontend]` 注解）    +dev: testkit
@@ -56,7 +56,7 @@ engine   → tensor, diagnostic    +dev: testkit
 serve    → engine, tokenizer, diagnostic    +dev: testkit
 cli      → diagnostic
 fuzz     → diagnostic    +dev: cli, weights（工具成员，不参与方向判定；`+dev` 的两个是 `tests/parsers.rs` 的驱动对象，解析器本身来自它已经依赖的 `diagnostic`；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
-benches  → +dev: prof, op, cutile, wire（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象）
+benches  → +dev: prof, op, cutile, wire, weights（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象）
 llm      → cli, cutile, diagnostic, engine, nn, op,
            prim, prof, serve, tensor, tokenizer, tool, train, weights
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）

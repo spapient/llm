@@ -17,6 +17,7 @@ cutile = { path = "../cutile" }
 prof = { path = "../prof", package = "llm-prof" }
 op = { path = "../op", package = "llm-op" }
 wire = { path = "../wire", package = "llm-wire" }
+weights = { path = "../weights", package = "llm-weights" }
 
 # 显式关闭 libtest harness：criterion 提供自己的 main（criterion_main!）。
 # path 指向 criterion/ 子目录，未来可并列加 iai 等其他测量 harness。
@@ -38,6 +39,11 @@ harness = false
 [[bench]]
 name = "wire_codec"
 path = "criterion/wire_codec.rs"
+harness = false
+
+[[bench]]
+name = "weights_container"
+path = "criterion/weights_container.rs"
 harness = false
 
 [lints]
