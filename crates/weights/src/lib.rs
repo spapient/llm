@@ -51,22 +51,40 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
     value.div_ceil(align).checked_mul(align)
 }
 
-// 自有 LLPK 容器：私有实现模块，公开类型在末尾统一 re-export。
-mod affine;
-pub mod axes;
-pub mod golay;
-mod ir;
-pub mod lattice;
-pub mod ledger;
-mod merkle;
-mod rans;
-mod reader;
-pub mod scale;
-mod seg;
-mod sha256;
-pub mod svd;
+// —— LLPK 容器：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod writer;
+mod reader;
+mod seg;
+mod ir;
+pub mod ledger;
+mod rans;
 mod zip;
+pub mod mode;
+pub mod patch;
+
+// —— 量化族：仿射方案、块 scale、外部量化条目、五轴选码、格向量量化 ——
+mod affine;
+pub mod scale;
+pub mod quant;
+pub mod axes;
+pub mod lattice;
+
+// —— 完整性与后量子证明：Merkle/哈希/编码/NTT/SVD/ML-DSA/签名侧车 ——
+mod merkle;
+mod sha256;
+pub mod keccak;
+pub mod golay;
+pub mod ntt;
+pub mod svd;
+pub mod dsa;
+pub mod envelope;
+
+// —— 外部格式只读适配：safetensors/gguf/bin/json ——
+pub mod bin;
+pub mod gguf;
+mod gguf_q;
+pub mod json;
+pub mod safetensors;
 
 // 纯字节码基础件归 L1 `wire`（ADR 0024）；这里只做薄转发，保持容器内部路径不变。
 /// CRC-32（转发自 `wire::crc`）。
@@ -84,21 +102,6 @@ mod sink {
 
 #[cfg(test)]
 mod testutil;
-
-pub mod dsa;
-pub mod envelope;
-pub mod keccak;
-pub mod mode;
-pub mod ntt;
-pub mod patch;
-
-// 外部格式适配（只读）：safetensors/gguf/bin 已接入。
-pub mod bin;
-pub mod gguf;
-mod gguf_q;
-pub mod json;
-pub mod quant;
-pub mod safetensors;
 
 pub use affine::Quant;
 pub use seg::Codec;
