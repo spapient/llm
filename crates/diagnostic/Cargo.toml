@@ -10,6 +10,13 @@ description = "Std-only L1 base: the workspace's single error type, exit-code co
 publish = false
 
 [dependencies]
+# 仅在 `build` feature 下、供各 crate 的 build.rs 使用；默认 feature 保持纯 std、零依赖。
+toml = { workspace = true, optional = true }
+
+[features]
+default = []
+# 构建期共享内核：扫描语料、读取 TOML、展开成 data 树的构造表达式。
+build = ["dep:toml"]
 
 [lints]
 workspace = true

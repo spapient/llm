@@ -34,5 +34,8 @@ pub mod code;
 pub mod data;
 pub mod error;
 
+#[cfg(feature = "build")]
+pub mod buildgen;
+
 pub use code::Code;
 pub use error::{Error, Result};
