@@ -465,17 +465,11 @@ fn alignment(meta: &[(String, Value)]) -> usize {
         .unwrap_or(DEFAULT_ALIGN)
 }
 
-/// 向上取整到 `align` 的整数倍；`align == 0` 与相加溢出都是显式错误。
-fn align_up(pos: usize, align: usize) -> Result<usize> {
-    let last = align.checked_sub(1).ok_or_else(|| bad("对齐为零"))?;
-    pos.checked_add(last)
-        .map(|rounded| rounded / align * align)
-        .ok_or_else(|| bad("对齐溢出"))
-}
-
 /// 数据区起点：按 `general.alignment` 对齐，且不能越过文件末尾。
 fn data_start(meta: &[(String, Value)], pos: usize, len: usize) -> Result<usize> {
-    let data = align_up(pos, alignment(meta))?;
+    let Some(data) = crate::align_up(pos, alignment(meta)) else {
+        return Err(bad("对齐必须是 2 的幂且对齐后不溢出"));
+    };
     if data <= len {
         return Ok(data);
     }

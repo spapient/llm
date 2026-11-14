@@ -42,6 +42,15 @@ use tensor::{DType, Shape};
 /// 校验失败时的定位串：两个判据共用同一处标签，改动时不必同步三处。
 const SITE: &str = "weights::Header::new";
 
+/// 向上取整到 `align` 的整数倍：`align` 必须是 2 的幂；非法对齐或对齐后溢出返回 `None`。
+/// 调用方把 `None` 映射到各自站点的诊断，算术与幂次判据只在此处收口一处。
+fn align_up(value: usize, align: usize) -> Option<usize> {
+    if align == 0 || !align.is_power_of_two() {
+        return None;
+    }
+    value.div_ceil(align).checked_mul(align)
+}
+
 // 自有 LLPK 容器：私有实现模块，公开类型在末尾统一 re-export。
 mod affine;
 pub mod axes;

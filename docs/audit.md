@@ -326,8 +326,8 @@
 - `train/src/store.rs`（1 530 行）：分配器（`:1-99`）、形态/`Lane`（`:101-218`）、缓冲视图（`:220-330`）、`Inputs`（`:333-434`）、`Kernel`/`Reference`（`:436-479`）、kernel 表（`:481-617`）、每算子适配（`:619-774`）、空闲表池（`:776-855`）、`Buffers`（`:857-1065`）、测试（`:1067-1531`）——9 段可独立命名。
 
 **P2-7 重复实现的共享规则（"同一规则三份"）**
-- 对齐：`mem::align_up`（`mem/src/lib.rs:31`）、`gguf::align_up`（`weights/src/gguf.rs:420`）、`writer.rs:148` 的 `next_multiple_of`。
-- LEB128：`weights/src/leb.rs:11,55` 与 `train/src/snapshot/mod.rs:756,812`（连"非规范形式必须拒绝"的论证都各写一遍）。
+- 对齐：~~三份~~ **已收口**。`mem` 已硬删除；`reader::align_up` 与 `gguf::align_up` 合并为 `weights::align_up`（lib.rs 私有，2 的幂 + 溢出校验），两处只映射各自站点诊断。`writer::check_align` 是 log2 指数范围校验，语义不同，不并入。
+- LEB128：~~两份~~ **已收口**（ADR 0024）：编解码单一实现在 L1 `wire::leb`，weights 薄转发，snapshot 复用 `wire::leb::read/write`，本地 Cursor 只挂错误上下文。
 - 步幅：`tensor::Strides::contiguous`（`tensor/src/lib.rs:99`）与 `storage::Layout::strides`（`storage/src/lib.rs:67`）。
 - 元素数：`tensor::Shape::numel`（`tensor/src/lib.rs:74`）与 `weights::seg::numel`（`seg.rs:196`），根因是 `seg` 用 `Vec<u64>` 而 `Shape` 用 `usize`。
 

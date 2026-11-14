@@ -300,21 +300,12 @@ fn layout(
     Ok(stored)
 }
 
-/// 向上取整到 `align` 的整数倍；`align` 必须是 2 的幂，对齐后溢出显式报错。
-fn align_up(value: usize, align: usize) -> Result<usize> {
-    if align == 0 || !align.is_power_of_two() {
-        return Err(invalid(format!("对齐必须是 2 的幂，得到 {align}")));
-    }
-    value
-        .div_ceil(align)
-        .checked_mul(align)
-        .ok_or_else(|| invalid("对齐后长度溢出"))
-}
-
 /// 一个描述符落到字节区间：填充为 0、长度可表示、相加不溢出。
 fn place(desc: Desc, bytes: &[u8], cursor: usize, align: usize) -> Result<(Stored, usize)> {
     let (name, dtype, shape, quant, codec, data_len, crc) = desc.into_parts();
-    let start = align_up(cursor, align)?;
+    let Some(start) = crate::align_up(cursor, align) else {
+        return Err(invalid("对齐必须是 2 的幂且对齐后不溢出"));
+    };
     let pad_ok = bytes
         .get(cursor..start)
         .is_some_and(|pad| pad.iter().all(|b| *b == 0));
