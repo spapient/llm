@@ -1,20 +1,23 @@
-//! 读端：解析并自证合法——固定头、描述符、对齐填充、两级 CRC，一处都不放宽。
+//! 读端容器与生命周期变换：解析自证、模式判定、发布剥离与增量补丁。
 //!
-//! 段的绝对偏移不进文件，由「数据区起点 + 对齐规则 + 各段长度」重算，再核对填充、段级与全局 CRC。
-//! 截断、改一个比特、尾部多余字节、非零填充都在打开期失败。
+//! 解析固定头、描述符、对齐填充与两级 CRC，一处都不放宽；段的绝对偏移不进文件，由「数据区
+//! 起点 + 对齐规则 + 各段长度」重算，再核对填充、段级与全局 CRC。截断、改一个比特、尾部多余
+//! 字节、非零填充都在打开期失败。
+//!
+//! 在此之上挂两类只依赖已读 `Archive` 的变换：训练/发布模式判定与 `opt.` 状态剥离；以及逐字节
+//! XOR 的增量补丁（自逆，base 缺失或不等长即按全量保留）。
 
 use std::borrow::Cow;
 
 use diagnostic::{Code, Error, Result};
 
-use crate::affine::Quant;
 use crate::Codec;
 use crate::Wire;
 use crate::leb::Cursor;
-use crate::merkle::Proof;
+use crate::proof::{Digest, Proof};
+use crate::quant::Quant;
 use crate::rans;
-use crate::seg::{Desc, numel};
-use crate::sha256::Digest;
+use crate::seg::{Desc, Segment, numel};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 
 /// 固定头长度：magic 4 + version 2 + flags 4 + align 1（count 是 LEB，不计入）。
@@ -182,7 +185,7 @@ impl<'a> Archive<'a> {
         let mut leaves = Vec::with_capacity(self.segs.len());
         for seg in &self.segs {
             let logical = self.load(seg)?;
-            leaves.push(crate::merkle::leaf(&seg.name, &logical));
+            leaves.push(crate::proof::leaf(&seg.name, &logical));
         }
         Ok(leaves)
     }
@@ -190,13 +193,13 @@ impl<'a> Archive<'a> {
     /// 逐张量 Merkle 根。
     pub fn merkle_root(&self) -> Result<Digest> {
         let leaves = self.leaves()?;
-        Ok(crate::merkle::root(&leaves))
+        Ok(crate::proof::root(&leaves))
     }
 
     /// 为下标生成包含证明；下标越界返回错误。
     pub fn prove(&self, index: usize) -> Result<Proof> {
         let leaves = self.leaves()?;
-        crate::merkle::prove(&leaves, index)
+        crate::proof::prove(&leaves, index)
             .ok_or_else(|| invalid(format!("段下标 {index} 越界，共 {} 段", leaves.len())))
     }
 
@@ -206,7 +209,7 @@ impl<'a> Archive<'a> {
         let Some(leaf_hash) = leaves.get(index) else {
             return Ok(false);
         };
-        Ok(crate::merkle::verify_proof(leaf_hash, proof, root))
+        Ok(crate::proof::verify_proof(leaf_hash, proof, root))
     }
 }
 
@@ -333,4 +336,220 @@ fn place(desc: Desc, bytes: &[u8], cursor: usize, align: usize) -> Result<(Store
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("weights::Archive")
+}
+
+// —— 容器生命周期模式：训练断点 / 推理发布 ——
+
+/// 模式标记段的保留名。
+pub const MODE_NAME: &str = "llm.mode";
+/// 优化器状态段的命名空间前缀。
+const OPT_PREFIX: &str = "opt.";
+
+/// 容器生命周期模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// 训练断点：含优化器/动量/方差等 `opt.` 状态。
+    Train,
+    /// 推理发布：剥离训练状态的精简产物。
+    Infer,
+}
+
+impl Mode {
+    fn code(self) -> u8 {
+        match self {
+            Mode::Train => 0,
+            Mode::Infer => 1,
+        }
+    }
+
+    fn from_code(code: u8) -> Result<Self> {
+        match code {
+            0 => Ok(Mode::Train),
+            1 => Ok(Mode::Infer),
+            other => Err(bad(&format!("mode: 未知码 {other}"))),
+        }
+    }
+
+    /// 编码为可写进容器的标记段：保留名、`U8` 单轴、1 字节。
+    pub fn to_segment(self) -> Result<Segment> {
+        Segment::new(MODE_NAME, Wire::U8, vec![1], None, vec![self.code()])
+    }
+}
+
+/// 读取模式；无标记段的旧文件按推理模式处理。
+pub fn mode_of(archive: &Archive<'_>) -> Mode {
+    archive
+        .get(MODE_NAME)
+        .and_then(|seg| archive.read(seg).first().copied())
+        .map_or(Mode::Infer, |code| {
+            Mode::from_code(code).unwrap_or(Mode::Infer)
+        })
+}
+
+/// 段名是否属于优化器状态。
+pub fn is_opt(name: &str) -> bool {
+    name.starts_with(OPT_PREFIX)
+}
+
+/// 发布转换：剥离所有 `opt.` 段，保留其余段并标记为推理模式。
+pub fn release(src: &Archive<'_>) -> Result<Vec<Segment>> {
+    let mut out = Vec::new();
+    for seg in src.segments() {
+        if !is_opt(seg.name()) {
+            out.push(keep_segment(src, seg)?);
+        }
+    }
+    out.push(Mode::Infer.to_segment()?);
+    Ok(out)
+}
+
+/// 把读端段还原成写端段：加载逻辑字节，沿用名字/类型/形状/量化方案。
+fn keep_segment(src: &Archive<'_>, seg: &Stored) -> Result<Segment> {
+    let data = src.load(seg)?.into_owned();
+    Segment::new(
+        seg.name(),
+        seg.dtype(),
+        seg.shape().to_vec(),
+        seg.quant().cloned(),
+        data,
+    )
+}
+
+fn bad(message: &str) -> Error {
+    Error::new(Code::Invalid, message).with("mode")
+}
+
+// —— 增量补丁：逐字节 XOR，读端按 base 自逆合成 ——
+
+/// 计算 cur 相对 base 的补丁段（逻辑字节，未压缩；交给 Writer 落盘并按需 rans）。
+pub fn diff(base: &Archive<'_>, cur: &Archive<'_>) -> Result<Vec<Segment>> {
+    rebuild(base, cur)
+}
+
+/// 用 base 与补丁归档合成完整段。
+pub fn join(base: &Archive<'_>, patch: &Archive<'_>) -> Result<Vec<Segment>> {
+    rebuild(base, patch)
+}
+
+/// diff 与 join 同构：对 right 每个段，base 有同名等长段就 XOR，否则按全量保留。
+fn rebuild(base: &Archive<'_>, right: &Archive<'_>) -> Result<Vec<Segment>> {
+    let mut out = Vec::new();
+    for seg in right.segments() {
+        let bytes = right.load(seg)?.into_owned();
+        let data = apply(base, seg.name(), bytes)?;
+        out.push(Segment::new(
+            seg.name(),
+            seg.dtype(),
+            seg.shape().to_vec(),
+            seg.quant().cloned(),
+            data,
+        )?);
+    }
+    Ok(out)
+}
+
+/// 同名等长则 XOR；base 缺失或长度不同则原样返回（全量）。
+fn apply(base: &Archive<'_>, name: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    let Some(prev) = base.get(name) else {
+        return Ok(bytes);
+    };
+    let prev_bytes = base.load(prev)?;
+    if prev_bytes.len() != bytes.len() {
+        return Ok(bytes);
+    }
+    Ok(xor(&bytes, &prev_bytes))
+}
+
+fn xor(a: &[u8], b: &[u8]) -> Vec<u8> {
+    a.iter().zip(b).map(|(x, y)| x ^ y).collect()
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    use crate::testutil::{archive, f32_segment};
+
+    #[test]
+    fn release_strips_opt_and_marks_infer() {
+        let bytes = archive(vec![
+            f32_segment("w", &[1.0, 2.0]),
+            f32_segment("opt.m.w", &[0.5, 0.5]),
+        ]);
+        let src = Archive::parse(&bytes).expect("src");
+
+        let released = release(&src).expect("release");
+        let names: Vec<&str> = released.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"w"));
+        assert!(!names.iter().any(|n| is_opt(n)));
+
+        let released_bytes = archive(released);
+        let released_archive = Archive::parse(&released_bytes).expect("x");
+        assert_eq!(mode_of(&released_archive), Mode::Infer);
+    }
+
+    #[test]
+    fn missing_marker_defaults_infer() {
+        let bytes = archive(vec![f32_segment("w", &[1.0])]);
+        assert_eq!(mode_of(&Archive::parse(&bytes).expect("a")), Mode::Infer);
+    }
+
+    #[test]
+    fn train_marker_roundtrips() {
+        let mut segments = vec![f32_segment("w", &[1.0])];
+        segments.push(Mode::Train.to_segment().expect("标记"));
+        let bytes = archive(segments);
+        let parsed = Archive::parse(&bytes).expect("a");
+        assert_eq!(mode_of(&parsed), Mode::Train);
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+    use crate::testutil::{archive, f32_segment};
+    use crate::writer::Writer;
+
+    #[test]
+    fn xor_roundtrip_recovers_cur() {
+        let base_bytes = archive(vec![f32_segment("w", &[1.0, 2.0, 3.0])]);
+        let base = Archive::parse(&base_bytes).expect("base");
+        let cur_bytes = archive(vec![f32_segment("w", &[1.0, 2.0, 3.5])]);
+        let cur = Archive::parse(&cur_bytes).expect("cur");
+
+        let patch_bytes = archive(diff(&base, &cur).expect("diff"));
+        let patch = Archive::parse(&patch_bytes).expect("patch");
+
+        let joined = join(&base, &patch).expect("join");
+        let expected = cur.load(&cur.segments()[0]).expect("cur 字节");
+        assert_eq!(joined[0].data, &expected[..]);
+    }
+
+    #[test]
+    fn small_change_patch_is_smaller() {
+        let base_bytes = archive(vec![f32_segment("w", &[1.0; 4096])]);
+        let base = Archive::parse(&base_bytes).expect("base");
+        let mut changed = vec![1.0f32; 4096];
+        changed[10] = 1.0001;
+        let cur_bytes = archive(vec![f32_segment("w", &changed)]);
+        let cur = Archive::parse(&cur_bytes).expect("cur");
+
+        let mut w = Writer::new();
+        w.compress(true);
+        for seg in diff(&base, &cur).expect("diff") {
+            w.push(seg).expect("push");
+        }
+        assert!(w.finish(6).expect("patch").len() < cur_bytes.len());
+    }
+
+    #[test]
+    fn missing_base_is_full_not_garbage() {
+        let base_bytes = archive(vec![f32_segment("a", &[1.0])]);
+        let base = Archive::parse(&base_bytes).expect("base");
+        let cur_bytes = archive(vec![f32_segment("b", &[9.0])]);
+        let cur = Archive::parse(&cur_bytes).expect("cur");
+
+        let patch = diff(&base, &cur).expect("diff");
+        assert_eq!(patch[0].name, "b");
+        assert_eq!(patch[0].data, f32_segment("b", &[9.0]).data);
+    }
 }

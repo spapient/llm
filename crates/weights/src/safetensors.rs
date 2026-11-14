@@ -29,6 +29,10 @@
 //! assert_eq!(header.get("w").map(|entry| entry.len()), Some(24));
 //! ```
 
+use std::fs::File as Source;
+use std::io::{Read as _, Seek as _, SeekFrom};
+use std::path::Path;
+
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
 
@@ -131,8 +135,172 @@ impl Loader for Archive<'_> {
     }
 }
 
-/// 磁盘后端（只解析头部、按条目回读），定义在 [`safetensors_file`] 以保持本文件只做内存适配。
-pub use crate::safetensors_file::File;
+/// 磁盘上的 safetensors 文件：只解析头部，数据段按条目读。
+///
+/// 与 [`Archive`] 的差别在内存，不在校验：`Archive` 要求调用方把整份文件交进来（内存或映射），
+/// `File` 只读 8 字节前缀与头部 JSON，数据段留在磁盘上。7B 级权重是十几 GB，"整份读入"在真实模型
+/// 上不可用，而按条目读只需要一次 `seek + read`。
+///
+/// 自证合法的口径一个字都没放宽：打开时用**文件长度**核对"头部 + 条目声明的数据段"是否正好等于
+/// 整个文件——与 [`Archive::parse`] 用切片长度核对是同一个判断，只是长度从 `metadata` 来。
+#[derive(Debug)]
+pub struct File {
+    source: Source,
+    header: Header,
+    header_len: usize,
+    file_len: usize,
+}
+
+impl File {
+    /// 打开并校验一个 safetensors 文件，只读头部。
+    ///
+    /// # Errors
+    ///
+    /// [`Code::Io`]：打不开、取不到长度、`seek` 或 `read` 失败。
+    ///
+    /// [`Code::Invalid`] / [`Code::Unsupported`]：与 [`Archive::parse`] 同口径，外加"文件长度与头部
+    /// 声明不符"——被截断或尾部有多余字节都在这里拦住，而不是等到读某个条目时。
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let (mut source, file_len) = open_source(path)?;
+        let (declared, header_len) = read_prefix(&mut source, path, file_len)?;
+        let header = read_header(&mut source, path, declared, header_len)?;
+        check_file_len(path, &header, header_len, file_len)?;
+        Ok(Self {
+            source,
+            header,
+            header_len,
+            file_len,
+        })
+    }
+
+    /// 已校验的头部。
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    /// 打开时从磁盘读了多少字节（8 字节前缀 + 头部 JSON），与数据段大小无关。
+    pub fn header_len(&self) -> usize {
+        self.header_len
+    }
+
+    /// 文件总长度。
+    pub fn file_len(&self) -> usize {
+        self.file_len
+    }
+}
+
+impl Loader for File {
+    fn copy_into(&self, entry: &Entry, out: &mut [u8]) -> Result<()> {
+        check_capacity(entry, out)?;
+        let mut source = &self.source;
+        source
+            .seek(SeekFrom::Start(entry.offset() as u64))
+            .map_err(|error| {
+                Error::new(
+                    Code::Io,
+                    format!(
+                        "定位到条目 `{}` 的偏移 {} 失败：{error}",
+                        entry.name(),
+                        entry.offset()
+                    ),
+                )
+                .with("weights::safetensors::File::copy_into")
+            })?;
+        source.read_exact(out).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!(
+                    "读条目 `{}`（{} 字节，偏移 {}）失败：{error}",
+                    entry.name(),
+                    out.len(),
+                    entry.offset()
+                ),
+            )
+            .with("weights::safetensors::File::copy_into")
+        })
+    }
+}
+
+/// 打开文件并取长度；超出 usize 是明确错误而不是截断。
+fn open_source(path: &Path) -> Result<(Source, usize)> {
+    let source = Source::open(path).map_err(|error| io_error(error, "打开", path))?;
+    let metadata = source
+        .metadata()
+        .map_err(|error| io_error(error, "读取长度", path))?;
+    let file_len = usize::try_from(metadata.len()).map_err(|_| {
+        invalid(format!(
+            "文件 `{}` 的 {} 字节超出本机可寻址范围",
+            path.display(),
+            metadata.len()
+        ))
+    })?;
+    Ok((source, file_len))
+}
+
+/// 8 字节前缀；头部声明的长度不得越过文件末尾。
+fn read_prefix(source: &mut Source, path: &Path, file_len: usize) -> Result<(usize, usize)> {
+    let mut prefix = [0u8; 8];
+    source.read_exact(&mut prefix).map_err(|_| {
+        invalid(format!(
+            "文件 `{}` 只有 {file_len} 字节，读不出 8 字节头部长度",
+            path.display()
+        ))
+        .with("weights::safetensors::File::open")
+    })?;
+    let (declared, header_len) = split_prefix(prefix)?;
+    if header_len > file_len {
+        return Err(invalid(format!(
+            "头部声明 {declared} 字节，但文件 `{}` 只有 {file_len} 字节",
+            path.display()
+        ))
+        .with("weights::safetensors::File::open"));
+    }
+    Ok((declared, header_len))
+}
+
+/// 读头部 JSON 并解析；分配前已确认声明长度不超过文件。
+fn read_header(
+    source: &mut Source,
+    path: &Path,
+    declared: usize,
+    header_len: usize,
+) -> Result<Header> {
+    let mut text = vec![0u8; declared];
+    source.read_exact(&mut text).map_err(|error| {
+        io_error(error, "读取头部", path).with("weights::safetensors::File::open")
+    })?;
+    parse_header(&text, header_len)
+}
+
+/// 头部 + 声明数据段必须正好等于文件长度。
+fn check_file_len(path: &Path, header: &Header, header_len: usize, file_len: usize) -> Result<()> {
+    let declared_total = header_len
+        .checked_add(header.data_bytes())
+        .ok_or_else(|| invalid(format!("头部长度 {header_len} 与数据段长度相加溢出")))?;
+    if declared_total == file_len {
+        return Ok(());
+    }
+    let hint = if declared_total > file_len {
+        "文件被截断"
+    } else {
+        "尾部有多余字节"
+    };
+    Err(invalid(format!(
+        "文件 `{}` 是 {file_len} 字节，但头部（{header_len} 字节）与条目声明的数据段（{} 字节）合起来是 {declared_total} 字节：{hint}",
+        path.display(),
+        header.data_bytes()
+    ))
+    .with("weights::safetensors::File::open"))
+}
+
+fn io_error(error: std::io::Error, what: &str, path: &Path) -> Error {
+    Error::new(
+        Code::Io,
+        format!("{what}文件 `{}` 失败：{error}", path.display()),
+    )
+    .with("weights::safetensors::File")
+}
 
 /// 解 8 字节小端长度前缀：给出头部 JSON 的长度与头部终点（即数据段起点）。
 pub(crate) fn split_prefix(prefix: [u8; 8]) -> Result<(usize, usize)> {
@@ -181,7 +349,6 @@ fn check_metadata(value: &Value) -> Result<()> {
         .map_err(|error| error.with(format!("`{METADATA}` 必须是对象")))?;
     Ok(())
 }
-
 
 /// 把一条 JSON 条目解析成 [`Entry`]：字段闭集、形状与区间必须自洽。
 fn entry(name: &str, value: &Value, data_start: usize) -> Result<Entry> {
@@ -398,10 +565,6 @@ fn data_after<'b>(bytes: &'b [u8], header: &Header, header_end: usize) -> Result
     ))
     .with("weights::safetensors::Archive"))
 }
-
-
-
-
 
 /// 读端内部错误：偏移越界只可能是头部与数据段漂移。
 fn internal(message: String) -> Error {

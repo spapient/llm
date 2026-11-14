@@ -5,9 +5,9 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::affine::Quant;
 use crate::Wire;
 use crate::leb::{self, Cursor};
+use crate::quant::Quant;
 use crate::sink::Sink;
 
 /// 段级编解码闭集：码位稳定，未知码在打开期拒绝。

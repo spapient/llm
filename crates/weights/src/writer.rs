@@ -94,9 +94,9 @@ impl Writer {
         let leaves: Vec<_> = self
             .segs
             .iter()
-            .map(|segment| crate::merkle::leaf(&segment.name, &segment.data))
+            .map(|segment| crate::proof::leaf(&segment.name, &segment.data))
             .collect();
-        crate::merkle::root(&leaves)
+        crate::proof::root(&leaves)
     }
 
     /// 为每段选定存储表示：压缩开启且 rans 帧严格变小时才用 rans，否则原样存储。
@@ -303,7 +303,7 @@ fn temp_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::Wire;
-    use crate::reader::Archive;
+    use crate::archive::Archive;
 
     fn seg(name: &str, data: Vec<u8>) -> Segment {
         Segment::new(name, Wire::F32, vec![data.len() as u64 / 4], None, data).expect("自洽")

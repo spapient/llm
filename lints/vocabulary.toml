@@ -142,8 +142,8 @@ reason = "激活缓冲的存储 lane 与密封 trait；训练循环的公开面�
 
 [[ownership.unlisted]]
 crate = "weights"
-names = ["Axis", "Bin", "Gguf", "Mode", "Note", "Params", "Pick", "SecretKey", "Sha256", "Spectral", "Stable", "Svd", "Trunc", "Value", "Zip"]
-reason = "容器内部的模式与后量子/线代暂住类型；待 ADR 0019 的拆分落地后一并进表。`Cursor` 已随 ADR 0024 迁至 `wire`"
+names = ["Bin", "Gguf", "Mode", "Sha256", "Value"]
+reason = "格式适配器与容器模式的暂住类型：bin/gguf 解析件、发布模式与哈希内部件；公开生产面是所有权表里的读写契约与容器类型"
 
 [[ownership.unlisted]]
 crate = "wire"

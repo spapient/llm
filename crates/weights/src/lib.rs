@@ -2,9 +2,8 @@
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自造的 `LLPK`
-//! 容器（`writer`/`reader`/`seg` 与 `merkle`/`rans` 这些小件；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
-//! 本层判断的格式适配器与完整性证明（`bin` 的 pickle 栈机、`zip`、`gguf`、`json`，`axes`/`lattice`/
-//! `quant`/`scale` 的量化族，`dsa`/`envelope`/`sha256`/`keccak`/`ntt`/`golay`/`svd`/`ledger`）。
+//! 容器（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
+//! 本层判断的格式适配器与量化方案（`bin` 栈机含 ZIP_STORED 读取、`gguf`、`json`、`quant`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
 //! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`+dev`：`storage`）。
 //! **被依赖**：`train`、`nn`、`llm`（`+dev`：`fuzz`）。
@@ -52,40 +51,22 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
 }
 
 // —— LLPK 容器：描述符、读/写、帧编码、增量补丁与双模式 ——
-mod writer;
-mod reader;
-mod seg;
-mod ir;
-pub mod ledger;
+mod archive;
 mod rans;
-mod zip;
-pub mod mode;
-pub mod patch;
+mod seg;
+mod writer;
 
-// —— 量化族：仿射方案、块 scale、外部量化条目、五轴选码、格向量量化 ——
-mod affine;
-pub mod scale;
+// —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
-pub mod axes;
-pub mod lattice;
 
-// —— 完整性与后量子证明：Merkle/哈希/编码/NTT/SVD/ML-DSA/签名侧车 ——
-mod merkle;
-mod sha256;
-pub mod keccak;
-pub mod golay;
-pub mod ntt;
-pub mod svd;
-pub mod dsa;
-pub mod envelope;
+// —— 完整性证明：Merkle + SHA-256 ——
+mod proof;
 
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
-mod gguf_q;
 pub mod json;
 pub mod safetensors;
-mod safetensors_file;
 
 // 纯字节码基础件归 L1 `wire`（ADR 0024）；这里只做薄转发，保持容器内部路径不变。
 /// CRC-32（转发自 `wire::crc`）。
@@ -101,17 +82,24 @@ mod sink {
     pub(crate) use wire::sink::*;
 }
 
+/// 生命周期模式薄转发：实现见 [`crate::archive`]。
+pub mod mode {
+    pub use crate::archive::{MODE_NAME, Mode, is_opt, mode_of, release};
+}
+
+/// 增量补丁薄转发：实现见 [`crate::archive`]。
+pub mod patch {
+    pub use crate::archive::{diff, join};
+}
+
 #[cfg(test)]
 mod testutil;
 
-pub use affine::Quant;
-pub use seg::Codec;
+pub use archive::{Archive, Stored};
 pub use dtype::DType as Wire;
-pub use envelope::Envelope;
-pub use ir::{Graph, Node, Op};
-pub use merkle::Proof;
-pub use quant::Quantized;
-pub use reader::{Archive, Stored};
+pub use proof::Proof;
+pub use quant::{Quant, Quantized};
+pub use seg::Codec;
 pub use seg::Segment;
 pub use writer::Writer;
 

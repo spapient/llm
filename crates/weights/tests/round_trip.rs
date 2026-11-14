@@ -1,6 +1,6 @@
 //! 端到端契约：全 wire 类型往返、量化段往返、对齐布局，以及两级 CRC 对损坏/截断的拦截。
 
-use llm_weights::{Archive, Envelope, Quant, Segment, Wire, Writer, dsa, patch};
+use llm_weights::{Archive, Quant, Segment, Wire, Writer, patch};
 
 /// 给每个 wire 类型造一个 `n` 元素的段，数据填递增字节，长度正好是形状推出的字节数。
 fn segment_of(wire: Wire, index: usize) -> Segment {
@@ -235,32 +235,4 @@ fn incremental_patch_recovers_cur_byte_for_byte() {
     let joined = patch::join(&base, &patch_archive).expect("join");
     let cur_logical = cur.load(&cur.segments()[0]).expect("cur 字节");
     assert_eq!(joined[0].data, cur_logical.as_ref());
-}
-
-#[test]
-fn a_signed_container_is_verified_and_a_tampered_one_is_rejected() {
-    let mut writer = Writer::new();
-    writer.checksum(false); // 关闭 CRC，让篡改穿过解析、由签名层拦截，精确验证 fail-closed
-    writer.push(segment_of(Wire::F32, 0)).expect("push");
-    writer.push(segment_of(Wire::F16, 1)).expect("push");
-    let root = writer.merkle_root();
-
-    let xi: [u8; 32] = core::array::from_fn(|j| (j * 3 + 2) as u8);
-    let (pk, sk) = dsa::ML_DSA_65.key_gen_internal::<6, 5>(&xi);
-    let env = Envelope::seal(&dsa::ML_DSA_65, &pk, &sk, &root).expect("封侧车");
-
-    // 容器字节落盘后，读端重算根并 fail-closed 校验。
-    let bytes = writer.finish(6).expect("容器");
-    let archive = Archive::parse(&bytes).expect("解析");
-    let seen_root = archive.merkle_root().expect("读端根");
-    let sidecar = Envelope::decode(&env.encode()).expect("侧车解析");
-    sidecar.check(&seen_root).expect("签名通过");
-
-    // 篡改一个数据字节，读端根变化，验签必须拒绝。
-    let mut damaged = bytes.clone();
-    let start = archive.segments()[0].start();
-    damaged[start] ^= 0x01;
-    let bad_archive = Archive::parse(&damaged).expect("CRC 已关闭，可解析");
-    let bad_root = bad_archive.merkle_root().expect("坏根");
-    assert!(sidecar.check(&bad_root).is_err(), "篡改必须 fail-closed");
 }
