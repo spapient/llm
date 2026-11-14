@@ -48,7 +48,7 @@ struct LmHead;   // 生成 impl nn::Contract + 一条“声明仍与 op 数据�
 | L1 基础设施 | `diagnostic` `dtype` `testkit` `tool` | 统一错误类型与声明数据树（`data`：构建期语料在运行期的形状，没有解析器）、精度事实源（标量/块量化/微缩放三轴）、测试夹具、静态门与回退判定 |
 | L2 数据层 | `prof` `op` `prim` | 设备档案与能力闭集、算子声明与模板（22 条，`op::REGISTRY` 是唯一清单）及其求和代价（`op/src/einsum/`）、原语片段与见证（纯数据） |
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行与见证执行；`doctor` / `verify` / `bench` / `execution` 四条命令共用一条流水线（`pipeline`），报告本身只是数据、排版在驱动方；设计契约见 [cutile README](crates/cutile/README.md) |
-| L4 运行时 | `mem` `tensor` `storage` `tokenizer` | 分配、张量元数据、布局搬运、文本边界 |
+| L4 运行时 | `tensor` `storage` `tokenizer` | 张量元数据、布局搬运、文本边界 |
 | L5 模型与训练 | `weights` `autograd` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、反向图、样本、层定义、切分拓扑 |
 | L6 调度与服务 | `train` `engine` `serve` `cli` | 训练循环状态与检查点格式（`train/src/snapshot/`）、连续批与序列及页账与提交契约（`engine/src/{kv,exec}.rs`）、端点契约与其线格式（`serve/src/proto/`）、命令行解析 |
 | L7 入口 | `llm`（bin） | 组装：把上面各层连起来，不定义新类型；`status` 算下界，`run` 用真实权重执行 |
@@ -61,7 +61,7 @@ struct LmHead;   // 生成 impl nn::Contract + 一条“声明仍与 op 数据�
 也不参与“至少一条依赖边”的统计。
 
 ```text
-llm ──▶ engine ──▶ tensor ──▶ mem ──▶ diagnostic
+llm ──▶ engine ──▶ tensor ──▶ diagnostic
   │        └─────▶ diagnostic               ▲
   ├──▶ serve ──▶ tokenizer ────────────────┘
   ├──▶ cli ──▶ diagnostic

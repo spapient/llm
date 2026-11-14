@@ -5,8 +5,8 @@
 //! 容器（`writer`/`reader`/`seg` 与 `merkle`/`rans`/`codec` 这些小件；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
 //! 本层判断的格式适配器与完整性证明（`bin` 的 pickle 栈机、`zip`、`gguf`、`json`，`axes`/`lattice`/
 //! `quant`/`scale` 的量化族，`dsa`/`envelope`/`sha256`/`keccak`/`ntt`/`golay`/`svd`/`ledger`）。
-//! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）、分配（`mem`）。
-//! **依赖**：`dtype`、`diagnostic`、`mem`、`tensor`、`wire`（`+dev`：`storage`）。
+//! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
+//! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`+dev`：`storage`）。
 //! **被依赖**：`train`、`nn`、`llm`（`+dev`：`fuzz`）。
 //!
 //! 两条读取契约的分工是所有权而不是风格：[`Reader`] 把字节**借**出来（内存切片、映射），

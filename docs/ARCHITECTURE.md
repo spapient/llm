@@ -13,7 +13,7 @@
 | L1 基础设施 | `diagnostic`、`dtype`、`testkit`、`wire`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、测试夹具、与领域无关的字节码闭集（`wire`：CRC-32、LEB128 变长整数、计数/切片/文件 Sink 与 CRC 密封）、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集（`devices/*.toml` 在构建期解析成表）、算子声明与词汇表闭集（`ops/*.toml` 同上）（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
-| L4 运行时 | `mem`、`tensor`、`storage`、`tokenizer` | 分配、张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
+| L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 LLPK 容器读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
 | L6 调度与服务 | `train`、`engine`、`serve`、`cli` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、命令行解析 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `llm`（bin：`llm` 与 `cutile`） | 组装：把上面各层连起来，**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, execution}` → 排版 → 退出码（`Code::exit_code`） | 任何新类型、任何业务逻辑 |
@@ -35,7 +35,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 79 条，含 12 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 76 条，含 12 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → annotation, diagnostic, op, prim, prof（annotation 是工具边：`#[frontend]` 注解）    +dev: testkit
@@ -43,11 +43,10 @@ op       → annotation, diagnostic, prof（工具边：`#[model]` 注解，不�
 annotation → dtype（工具边：变体名唯一事实源 `DType::variant`，不参与方向判定）
 prim     → prof, diagnostic
 prof     → diagnostic, dtype
-mem      → diagnostic
-tensor   → mem, diagnostic, dtype
+tensor   → diagnostic, dtype
 storage  → tensor, diagnostic
 tokenizer→ diagnostic
-weights  → mem, tensor, diagnostic, dtype, wire    +dev: storage
+weights  → tensor, diagnostic, dtype, wire    +dev: storage
 autograd → tensor, diagnostic    +dev: testkit
 data     → tensor, diagnostic
 nn       → tensor, op, weights, diagnostic, annotation
@@ -120,7 +119,6 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Negotiation` | `cutile` | 一台设备的协商结论（首档 / 降级 / 无路径 / 无档案）：只读声明与档案，与执行成败分开记；文本在前端 |
 | `Fragment` | `cutile` | 一份生成片段的行数与 §16 口径（`FRAGMENT_LIMIT` / `FRAGMENT_GOAL`）：上限管成败、目标只是余量，`within_limit` 就是判据本身 |
 | `Bench` / `Throughput` / `Peak` / `Verdict` / `Performance` | `cutile` | `bench` 的实测口径与达成率判定；门槛常数（`L3_THRESHOLD`）也在这里。`Performance` 把达成率与它的尺子绑在一起：口径无效（超过 100%、工作集装得进 `FAST`）或没有峰值时 `is_measured` 为假，`needs_specialisation` 就是 §16 的“某设备 < 70%” |
-| `Arena` / `Region` | `mem` | 分配；不定义布局 |
 | `Tensor` / `View` / `Element` / `Shape` / `Strides` | `tensor` | `Tensor` 是**字节**视图，`View<E>` 是**元素**零拷贝视图（不分配、不装 `unsafe`）；`SUPPORTED` 子集表声明本层可构造的五种精度 |
 | `Layout` / `Order` / `remap` | `storage` | 物理布局与搬运；不分配 |
 | `Stream` / `Graph` / `Launch` | `engine` | 提交与执行；不编译 kernel |
@@ -156,7 +154,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
   调用方给；等 `llm` 真要直接调用 kernel 时再按 cutile README §4.4 重建，见
   [`adr/0003-kernel-and-runtime-types.md`](adr/0003-kernel-and-runtime-types.md) 的修订段。
 - `cutile::space::Space`（GM/FAST/REG）是 **语言概念**，`prof::atom::Space` 是它的档案表示；
-  分配器（`mem`）只认字节，不认地址空间——地址空间由档案声明。
+  档案侧只认字节，不认地址空间——地址空间由档案声明。
 - `nn::LmHead` 这类**注解声明**与 `Linear::new` 这类**运行期构造**不是两套机制：前者把形状与
   算子写成属性、由 `#[spec]` 生成实现与校验测试，后者按配置计算宽度；两者最终都走
   `ContractSpec::new` 的同一条校验路径。注解不建注册表（注册表会成为第二个事实源），

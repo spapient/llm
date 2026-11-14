@@ -3,7 +3,7 @@
 //! **拥有**：`Tensor`、`View`、`Shape`、`Strides`、`Element` 与计算层子集 [`SUPPORTED`]。**不拥有**：
 //! 元素类型闭集（L1 `dtype`，这里只再导出 `DType`）、kernel 侧的操作数视图
 //! （DSL 的宿主 API，两者语义不同，见 `docs/adr/0003-kernel-and-runtime-types.md`）、
-//! 缓冲分配（`mem`）、布局搬运（`storage`）。**依赖**：`dtype`、`mem`、`diagnostic`。
+//! 布局搬运（`storage`）。**依赖**：`dtype`、`diagnostic`。
 //! **被依赖**：`storage`、`weights`、`kv`、`autograd`、`data`、`nn`、`engine`、`llm`。
 //!
 //! 这个类型只描述"数据长什么样、放在哪几个字节里"，**不做 `&mut` 分区**——分区是 DSL 的所有权
@@ -159,23 +159,6 @@ impl<'a> Tensor<'a> {
             strides,
             data,
         })
-    }
-
-    /// 由分配器发出的区间构造：视图借用 `arena`，不复制。
-    pub fn from_region(
-        arena: &'a mem::Arena,
-        region: mem::Region,
-        dtype: DType,
-        shape: Shape,
-    ) -> Result<Self> {
-        let data = arena.slice(region).ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("区间 {region:?} 超出分配器的已分配范围"),
-            )
-            .with("tensor::Tensor::from_region")
-        })?;
-        Self::new(dtype, shape, data)
     }
 
     /// 元素类型。
@@ -477,17 +460,6 @@ mod tests {
             0,
             "真有一轴为 0 才是 0 个元素"
         );
-    }
-
-    #[test]
-    fn a_region_view_borrows_the_arena() {
-        let mut arena = mem::Arena::new();
-        let region = arena.alloc(8, 8).expect("分配");
-        let tensor =
-            Tensor::from_region(&arena, region, DType::F32, Shape::new([2])).expect("视图");
-        assert_eq!(tensor.data(), &[0u8; 8]);
-        let too_large = mem::Region::new(0, 1);
-        assert!(Tensor::from_region(&arena, too_large, DType::F32, Shape::new([2])).is_err());
     }
 
     #[test]

@@ -454,13 +454,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-mem"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
-]
-
-[[package]]
 name = "llm-nn"
 version = "0.1.0"
 dependencies = [
@@ -527,7 +520,6 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-dtype",
- "llm-mem",
 ]
 
 [[package]]
@@ -569,7 +561,6 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-dtype",
- "llm-mem",
  "llm-storage",
  "llm-tensor",
  "llm-wire",
