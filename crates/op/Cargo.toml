@@ -12,8 +12,11 @@ publish = false
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-llm-config = { path = "../config" }
 prof = { path = "../prof", package = "llm-prof" }
 
 [lints]
 workspace = true
+
+[build-dependencies]
+# 构建期共享内核（扫描/读取/生成）在 diagnostic 的 build feature 下，运行期不引入 toml。
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["build"] }
