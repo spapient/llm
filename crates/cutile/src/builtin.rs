@@ -262,6 +262,13 @@ mod tests {
     }
 
     #[test]
+    fn cached_catalogue_is_identical_across_calls() {
+        let first = Catalogue::try_builtin().expect("内置数据");
+        let second = Catalogue::try_builtin().expect("内置数据");
+        assert_eq!(first, second, "进程内缓存返回的必须是同一份目录的克隆");
+    }
+
+    #[test]
     fn builtin_witness_files_exist() {
         let catalogue = Catalogue::try_builtin().expect("内置数据");
         catalogue

@@ -9,12 +9,12 @@
 //! - [`Prepared`]：某个 `(m, n)` 的可执行产物（计划 + 源文本 + 缓存键）；
 //! - [`Prepared::harness`]：把样本变成实参，签名与样本在这里对齐。
 
-use crate::backend;
 use crate::build;
 use crate::cache::CacheKey;
 use crate::cap::{self, NoPath, Path, Proof};
 use crate::dirs::Dirs;
 use crate::emit::Source;
+use crate::harness;
 use crate::plan::{self, Plan};
 use crate::prof::Profile;
 use diagnostic::{Code, Error};
@@ -93,7 +93,7 @@ impl Prepared {
         repeat: usize,
     ) -> diagnostic::Result<String> {
         op.signature.check(sample)?;
-        backend::harness(&self.source.text, &op.signature, sample, repeat)
+        harness::harness(&self.source.text, &op.signature, sample, repeat)
     }
 }
 

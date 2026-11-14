@@ -3,7 +3,6 @@
 //! 它是唯一"全部打印"的命令：头部、证据、逐变体复核、协商、估值、布局、存储与 emit 摘要都能逐行
 //! 对照 README。它不执行内核——"能生成"与"能算对"是两条判据，跑不跑由 `verify` / `bench` 决定。
 
-use crate::backend;
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::cache::{Cache, CacheKey, Changed, Entry};
@@ -14,6 +13,7 @@ use crate::pipeline::Run;
 use crate::plan::Plan;
 use crate::prof::Profile;
 use crate::space;
+use crate::toolchain;
 use crate::witness::{self, Evidence};
 use diagnostic::{Code, Error};
 use op::decl::{OpDecl, expand};
@@ -100,7 +100,7 @@ pub struct DeviceInfo {
     /// 档案登记的工具版本（人写的证据出处，不参与缓存键）。
     pub tool_ver: String,
     /// 实测的工具链身份（`命令@版本`）：探测的是档案声明的那个命令（`[meta].tool`），本机没装它时
-    /// 为 `None`。`verify` 报的是另一件事——真正编出产物的那条（`backend::detect`）。
+    /// 为 `None`。`verify` 报的是另一件事——真正编出产物的那条（`toolchain::detect`）。
     pub toolchain: Option<String>,
     /// 编译参数（档案的 `[compile].flags`）：能力是「片段 + 工具链 + 参数」三元组。
     pub flags: String,
@@ -195,7 +195,7 @@ fn device_info(profile: &Profile) -> DeviceInfo {
         emit: profile.meta.emit.to_string(),
         tool: profile.meta.tool.to_string(),
         tool_ver: profile.meta.tool_ver.to_string(),
-        toolchain: backend::probe(&profile.meta.tool).map(|tool| tool.id()),
+        toolchain: toolchain::probe(&profile.meta.tool).map(|tool| tool.id()),
         flags: profile.flags.join(" "),
         spaces: [
             space::physical(profile, Space::Gm).to_string(),
@@ -384,7 +384,7 @@ mod tests {
     /// 协商用的是这次执行到的证据：条数与依据都要能对上档案。
     #[test]
     fn doctor_reports_the_evidence_it_ran() {
-        if crate::backend::skip_without_host_compiler() {
+        if crate::toolchain::skip_without_host_compiler() {
             return;
         }
         let catalogue = catalogue();
@@ -423,7 +423,7 @@ mod tests {
     /// 见证对不上时能力就不成立：同一份档案只把一处期望值写错，协商也必须全线不可行。
     #[test]
     fn a_witness_that_does_not_hold_removes_the_capability() {
-        if crate::backend::skip_without_host_compiler() {
+        if crate::toolchain::skip_without_host_compiler() {
             return;
         }
         let mut profile = crate::prof::Profile::parse(prof::embedded("cpu").expect("cpu 档案"))

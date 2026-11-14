@@ -4,12 +4,13 @@
 //! 计时。达成率按 `p50` 而非 `min`——单次抖动与 CPU 频率状态会把 `min` 抬成"最好情况"，那不是这条
 //! 判据要回答的问题；工作集装得下缓存时测到的是缓存带宽而不是主存峰值，判定时被排除。
 
-use crate::backend;
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::dirs::Dirs;
 use crate::pipeline::{self, Run, model_for};
 use crate::prof::Profile;
+use crate::runner;
+use crate::toolchain;
 use crate::witness::{self, Evidence};
 use diagnostic::{Code, Error};
 use op::decl::OpDecl;
@@ -233,7 +234,7 @@ fn run_sample(
     // 重复次数也是产物身份的一部分：换 `--repeat` 就换一份产物。
     let harness = prepared.harness(run.op, &sample, repeat)?;
     // 命中产物时连编译器都不需要：工具链只是"能重新编译"的前提，不是跑 bench 的前提。
-    let tool = backend::detect();
+    let tool = toolchain::detect();
     let (outcome, artifact) =
         build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
     let (per_run_ns, p50_ns, p95_ns) = timings(&outcome)?;
@@ -264,7 +265,7 @@ fn prepare(
 }
 
 /// 判据：每调用耗时是多少；不回答"样本够不够多"——p50/p95 缺失时退回 min，不把缺项变成第二个失败条件。
-fn timings(outcome: &backend::Outcome) -> diagnostic::Result<(f64, f64, f64)> {
+fn timings(outcome: &runner::Outcome) -> diagnostic::Result<(f64, f64, f64)> {
     let per_run_ns = outcome
         .timing
         .min_ns()

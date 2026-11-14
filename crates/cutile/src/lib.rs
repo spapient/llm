@@ -21,16 +21,19 @@
 //! | ④ 槽位与 `@原语` 替换 | [`substitute`]、[`ast`] |
 //! | ⑤ 成文与片段行数判据 | [`emit`] |
 //! | ⑤ 指纹、锁、落盘 | [`build`] |
-//! | 缓存机制 / 缓存回收策略 | [`cache`]、[`gc`] |
+//! | ⑤ 指纹、锁、落盘与容量回收 | [`cache`] |
 //! | 设备探测、存储容量与寻址 | [`probe`]、[`space`] |
 //! | 对拍口径（相对误差 + 按 dtype 阈值） | [`mod@reference`] |
-//! | 编译与执行（`cc` / `cuda` / `metal`） | [`backend`]、`device` |
+//! | 工具链探测与身份 | [`toolchain`] |
+//! | 编译/执行/回读原语 | `runner` |
+//! | 被测内核的基准封装（`cc` / `cuda`） | `harness` |
+//! | 见证前端（C / Metal / CUDA） | `device` |
 //! | 见证执行与语言门 | [`witness`]、`gate` |
 //! | 四条命令共用的流水线 | `pipeline` |
 //! | 命令策略与结构化报告 | [`doctor`]、[`verify`]、[`mod@bench`]、[`execution`] |
 //! | 输入形状：三个目录，纯数据 | [`dirs`] |
 //!
-//! 上表按"机制 / 命令策略"分界读：`device`、`gate` 与 `pipeline` 是私有模块，因为它们是接缝
+//! 上表按"机制 / 命令策略"分界读：`runner`、`harness`、`device`、`gate`、`pipeline` 是私有模块，因为它们是接缝
 //! 而不是 API——外部只该看到"能跑/不能跑"的结论，不该直接拼一次编译。
 //!
 //! # 例子
@@ -60,7 +63,7 @@
 //!
 //! # 工程条款（README §3.2）
 //!
-//! - `unsafe` 在本 crate 被整体禁止；P0 的 `c` 后端通过子进程调用 `cc`，不需要 FFI。
+//! - `unsafe` 在本 crate 被整体禁止；P0 的 C 通道通过子进程调用 `cc`，不需要 FFI。
 //! - 公开项必须有文档；私有项不豁免 clippy。
 //! - **配置是输入，不是职责**：本 crate 只声明我要哪三个目录（[`dirs::Dirs`]），默认值、环境
 //!   变量与 `--set` 的解析住在调用方（`cli::settings`，ADR 0023）。因此内核里没有一处读
@@ -79,29 +82,30 @@ pub use ::op::decl;
 pub use ::op::{layout, sch};
 
 pub mod ast;
-pub mod backend;
 pub mod bench;
 pub mod build;
 pub mod builtin;
 pub mod cache;
+mod cache_key;
 pub mod cap;
 pub mod dirs;
 pub mod doctor;
 pub mod emit;
 pub mod execution;
-pub mod gc;
 pub mod plan;
 pub mod probe;
 pub mod reference;
 pub mod space;
 pub mod substitute;
+pub mod toolchain;
 pub mod verify;
 pub mod witness;
 
-mod cuda;
 mod device;
 mod gate;
+mod harness;
 mod pipeline;
+mod runner;
 
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
 ///

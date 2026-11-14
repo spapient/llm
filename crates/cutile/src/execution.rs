@@ -117,7 +117,7 @@ fn run_once(
     prepared: &Prepared,
 ) -> diagnostic::Result<Execution> {
     let harness = prepared.harness(run.op, sample, 1)?;
-    let tool = crate::backend::detect();
+    let tool = crate::toolchain::detect();
     let (outcome, _) = build::execute(profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
     let expected = (run.model.reference)(sample)?;
     let tolerance = crate::reference::tolerance(run.model.dtype);

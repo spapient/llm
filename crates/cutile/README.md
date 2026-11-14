@@ -185,17 +185,25 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
     ├── substitute.rs           # ④ 槽位与 `@原语` 替换
     ├── emit.rs                 # ⑤ 加头、加前导、拼正文；片段行数判据
     ├── build.rs                # ⑤ 指纹 → 查缓存 → 取锁 → 拼接 → 落盘
-    ├── cache.rs / gc.rs        # 缓存机制（指纹、锁、原子落盘）与回收策略
+    ├── cache.rs                # 缓存存储：条目、锁、原子落盘与 LRU 回收
+    ├── cache_key.rs            # 缓存身份：源文本指纹、产物键与逐项差异
     ├── probe.rs / plan.rs      # 设备探测、tile 取值与 roofline
     ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
-    ├── backend.rs / device.rs  # 编译与执行：`cc` / cu / metal 子进程 + 结果解码（无 unsafe）
+    ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）
+    ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
+    ├── runner.rs              # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
+    ├── dirs.rs                # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
+    ├── device.rs              # 见证前端伞模块：共享装载/起进程/回读/分派（无 unsafe）
+    │   ├── cpu.rs             # host C 前端：cc 编 harness 跑一遍
+    │   ├── metal.rs           # MSL → metallib → host 驱动发射回读
+    │   └── cuda.rs            # nvcc 真机前端：kernel + cudaMemcpy 回读
     ├── gate.rs / witness.rs    # 语言门与见证执行器
     ├── pipeline.rs             # 四条命令共用的流水线（Run / Prepared / …）
     └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
 ```
 
-命令策略与机制同处 `crates/cutile`，但**分层不混**：`build` / `backend` / `cap` / `cache` / `emit`
-是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` / `gc` 是命令策略
+命令策略与机制同处 `crates/cutile`，但**分层不混**：`build` / `runner` / `toolchain` / `harness` / `cap` / `cache` / `emit`
+是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` 是命令策略
 （决定"跑哪些形状、跑几次、工作目录怎么命名、达成率按什么口径算"），后者只经由 `pipeline`
 调用前者。这条接缝是可检验的：改"怎么审"不需要动任何一行生成逻辑，`pipeline.rs` 是唯一的
 共同入口——四条命令各写一遍流水线曾让同一台设备在两个命令里得出不同结论。
@@ -245,7 +253,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 `crates/cutile` 已是 workspace 成员，继承 `version/edition/rust-version/license/repository` 与 `[lints] workspace = true`。`missing_docs`、`unsafe_op_in_unsafe_fn`、`clippy::all`+`cargo` 全部生效，因此本设计必须自带三条工程条款：
 
-- **unsafe 边界**：本 crate 不含 `unsafe`。`backend` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `backend/` 的新增驱动模块里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
+- **unsafe 边界**：本 crate 不含 `unsafe`。`runner` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `device/` 的新增驱动模块里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
 - **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
 - **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`diagnostic` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
   - 缓存目录、工作目录、可选数据根（`data.root`）以 `crate::dirs::Dirs` 传入，**纯数据**：内核不读环境变量、不拼默认路径；
@@ -751,12 +759,12 @@ pub struct CacheKey {
 ```
 
 - 目录：`$CUTILE_CACHE/<key[0..2]>/<key>/`，内含 `source`（生成的源文本）与 `meta.txt`（键的逐项快照，一行 `字段=值`）；编译产物落在同一条目的 `bin/<hash>` 下。
-- 产物：命中只跳过"重新拼装"是不够的——真正慢的是 `cc`。产物的身份是 `ArtifactKey` = 源文本键 + **实测工具链身份**（`命令@版本`，由 `backend::Toolchain::id` 从 `--version` 解析）+ **编译参数**（`ArtifactKey::params`：算子取 `CacheKey::flags_hash`，见证程序取实际那一行 `flags` 的指纹）+ **主函数**（形状、样本、重复次数都在 `main()` 里），因此"命中产物"与"重新编译"必然等价：换形状、换 `--repeat`、换输出精度、换 `-O3`/`-O0` 都换一份产物，而同一份产物在第二次 `verify`/`bench` 里连编译器都不需要（本机没有 `cc` 也照样跑得出已验证的结论）。参数这一项是能力的第三个维度，不是锦上添花：片段与工具链都在 `ArtifactKey` 里，唯独参数此前只进了**算子**的缓存键，见证程序按 `标记;程序文本` 定名，于是改一次 `[compile].flags` 会复用旧参数编出的可执行文件——「这条见证跑通过」是对着一份不再会被编出来的程序成立的。少 `params=` 的旧产物一律算"没有身份"（缓存可重建，重编一次远比把证据挂到未知参数上便宜）。编译在 `work.dir` 下的一次性沙箱里进行，产物拷进缓存后沙箱即删，`work.dir` 不残留第二份可执行文件。代价要说清：样本是编译进可执行文件的 C 数组，产物体积与工作集同阶（`gemv_i4` 的 4096×4096 一份约 10 MiB），所以这笔账由 GC 兜底——一次 `cc` 约 3 s，上限内每多留一份都是净赚。身份写在产物旁边（`bin/<hex>.key`，`ArtifactKey::describe` 原文）：没有编译器的机器不必先解析工具链就能把产物认回来——`build::execute` 的 `tool` 因此是 `Option`，按「源文本 + 编译参数 + 主函数」在条目里找候选，唯一一份就直接复用；多份候选（同一个源文本被不同编译器编过）则报错而不是替用户选，因为选哪一份都替 `bench` 决定了耗时的来历。
+- 产物：命中只跳过"重新拼装"是不够的——真正慢的是 `cc`。产物的身份是 `ArtifactKey` = 源文本键 + **实测工具链身份**（`命令@版本`，由 `toolchain::Toolchain::id` 从 `--version` 解析）+ **编译参数**（`ArtifactKey::params`：算子取 `CacheKey::flags_hash`，见证程序取实际那一行 `flags` 的指纹）+ **主函数**（形状、样本、重复次数都在 `main()` 里），因此"命中产物"与"重新编译"必然等价：换形状、换 `--repeat`、换输出精度、换 `-O3`/`-O0` 都换一份产物，而同一份产物在第二次 `verify`/`bench` 里连编译器都不需要（本机没有 `cc` 也照样跑得出已验证的结论）。参数这一项是能力的第三个维度，不是锦上添花：片段与工具链都在 `ArtifactKey` 里，唯独参数此前只进了**算子**的缓存键，见证程序按 `标记;程序文本` 定名，于是改一次 `[compile].flags` 会复用旧参数编出的可执行文件——「这条见证跑通过」是对着一份不再会被编出来的程序成立的。少 `params=` 的旧产物一律算"没有身份"（缓存可重建，重编一次远比把证据挂到未知参数上便宜）。编译在 `work.dir` 下的一次性沙箱里进行，产物拷进缓存后沙箱即删，`work.dir` 不残留第二份可执行文件。代价要说清：样本是编译进可执行文件的 C 数组，产物体积与工作集同阶（`gemv_i4` 的 4096×4096 一份约 10 MiB），所以这笔账由 GC 兜底——一次 `cc` 约 3 s，上限内每多留一份都是净赚。身份写在产物旁边（`bin/<hex>.key`，`ArtifactKey::describe` 原文）：没有编译器的机器不必先解析工具链就能把产物认回来——`build::execute` 的 `tool` 因此是 `Option`，按「源文本 + 编译参数 + 主函数」在条目里找候选，唯一一份就直接复用；多份候选（同一个源文本被不同编译器编过）则报错而不是替用户选，因为选哪一份都替 `bench` 决定了耗时的来历。
 - 见证同路：见证程序用 `Cache::put_program` 按程序文本登记成普通条目（条目名只由标签与程序文本决定——编译器是产物身份的一部分，`meta.txt` 记 `program=` 而不是算子指纹），自检因此也只在第一次调用编译器，产物同样计入占用、同样被 LRU 回收——而不是缓存根下一个扫不到也删不掉的角落。
 - 并发：`<key>/build.lock` 文件 + `O_EXCL`；另一个进程正在生成同一个 key 时等它落盘并复用其产物（上限 5 s），超时即报错（不静默重复编译）。`O_EXCL` 锁是**文件**而不是 flock：持有者被 `kill` 后没人能释放它，这个键会永久卡在"等待超时"上。因此取锁失败时先看锁是否陈旧（`cache::STALE_LOCK` = 60 s，一次 emit 是毫秒级、等锁上限只有 5 s）：陈旧就删掉重试，活着的锁一律不抢。
 - 落盘：写临时文件 → `rename` 原子替换。临时名带进程号与序号：同一份 key 的两个并发构建各自落盘，先 `rename` 的不会把后来者的临时文件搬走（那会让后者拿到 `ENOENT`）。
 - 残留：只在 `rename` 之前崩溃会留下没有 `source` 的目录（临时文件 / `meta.txt` / 锁）。它不是"别人的目录"而是**永远不会命中**的记录（`cache::State::Partial`）：旧实现把它排除在扫描之外，于是它既不计入占用、也永远不被回收。现在扫描按目录内容判状态，`cache gc` 把残留与 LRU 删除分两行报告。
-- GC：按 LRU + 容量上限（默认 2 GiB，`gc::CACHE_LIMIT`），`cutile cache gc [--limit <字节>]` 手动触发。占用**递归**统计：产物在 `bin/` 里，只数顶层文件会让上限看着很空、实际删不掉真正占空间的东西。LRU 的"使用"由读命中（源文本或产物）更新 `meta.txt` 的时间戳来记——不记的话它就退化成"最近写入"，一份天天命中的缓存反而先被删。残留与上限无关、一律回收（它等到任何一次"超限"都不会发生）；可复用条目按 LRU 删到上限内。仍在用的（窗口内被动过，或还有活着的锁）一律跳过，跳过的条数在结果里如实计数。
+- GC：按 LRU + 容量上限（默认 2 GiB，`cache::CACHE_LIMIT`），`cutile cache gc [--limit <字节>]` 手动触发。占用**递归**统计：产物在 `bin/` 里，只数顶层文件会让上限看着很空、实际删不掉真正占空间的东西。LRU 的"使用"由读命中（源文本或产物）更新 `meta.txt` 的时间戳来记——不记的话它就退化成"最近写入"，一份天天命中的缓存反而先被删。残留与上限无关、一律回收（它等到任何一次"超限"都不会发生）；可复用条目按 LRU 删到上限内。仍在用的（窗口内被动过，或还有活着的锁）一律跳过，跳过的条数在结果里如实计数。
 - 可复现：`meta.txt` 记录完整键，`cutile doctor --why <key>` 用 `CacheKey::fields` 与它逐项比较，只列出真正不同的字段（含只在一侧出现的项：新版本加的字段与已删掉的字段同样是"为什么没命中"）。字段定义只有一份，`describe`/哈希/差异都从它派生。结论分四类（`CacheState`）：一致 / 不同 / 从未落盘 / **只有半截落盘**——最后一类必须先判，因为它的差异为空，按差异会把它说成"一致"。键里的 `dtype` 是模型的输出精度，所以换精度既换源文本也换产物——这正是"接入第二个精度时缓存键不会碰撞"的判据。
 
 ---
@@ -769,7 +777,7 @@ pub struct CacheKey {
 
 输出类型也只有一份说法：`.k` 的可写输出是什么，回读就按什么解释。`op::sig::Signature::output_type`
 把它读出来，`#[annotation::model]` 生成的校验把 `Model::dtype` 与它逐项比较（注解写 `f16` 而内核写
-`float *y` 是测试红灯，而不是"阈值看起来不太对"），`backend::harness` 在拼任何 C 之前就拒掉非
+`float *y` 是测试红灯，而不是"阈值看起来不太对"），`harness::harness` 在拼任何 C 之前就拒掉非
 `float` 的输出——否则 C 编译器只会吐一句 `incompatible pointer type`，不带算子名与缓冲名。本节开头
 那条阈值因此不是注释里的约定，而是三处可执行判据的交点：注解声明的类型、签名的类型、回读的类型。
 
@@ -864,7 +872,7 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 这一段（它的 lane 交换由向量单元 `vgather`/`vbroadcast` 承担），默认值 1 不代表没有并行。
 
 **证据带工具链身份**：档案里的 `[meta].tool` / `tool_ver` 是**登记值**——人写下"这条证据是在哪个
-工具链上取得的"，它和 `checked` 一样是出处，不是这台机器的事实。实测值由 `backend::probe`
+工具链上取得的"，它和 `checked` 一样是出处，不是这台机器的事实。实测值由 `toolchain::probe`
 （跑一次 `--version`，按 clang / gcc / nvcc 的共同形状取第一段“数字与点”）给出，
 `Toolchain::id()` 是 `命令@版本`，`verify` 的报告与台账都打印两者：
 `产物 3 份（复用 0，cc@21.0.0） | 工具链 cc@21.0.0（档案登记 clang-17，不一致）`。

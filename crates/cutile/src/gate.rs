@@ -5,9 +5,10 @@
 //! 地址空间，于是那份证据从未在自己声称的语言里存在过。
 
 use crate::atom::Witness;
-use crate::device::{clang, scratch};
+use crate::device::scratch;
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
+use crate::toolchain::clang;
 use crate::witness::{Front, Language, Selected, declared_witnesses, device_available, source};
 use diagnostic::{Code, Error};
 use std::collections::BTreeSet;

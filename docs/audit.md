@@ -2457,3 +2457,105 @@ cargo test --workspace --all-features       # 59 目标 / 1 071 通过 / 0 失�
 - **两套防假绿下限**（`crates/tool/tests/gate.rs` 的 `MIN_SOURCES = 100` 与 `tests/contracts.rs` 的 `70`）未统一。
 - §11.4 队列（`weights` 零引用模块、`storage` 布局并入 `tensor`、`snapshot` 拆文件等）与 §15.4 的
   `rans` 全局上限原样。
+
+---
+
+## 二十三、2026-11-14 复测：协商热路径、substitute 测试与缓存族归并
+
+本节数字均为本轮本地实测，命令可复跑；未在真机上测量的项在表里标 **未知/缺口**，不并入达标结论。
+
+### 23.1 协商热路径基准（`cargo bench -p llm-benches --bench negotiate`，release）
+
+| 阶段 | 中位数 | 区间 | 手段 |
+| --- | ---: | --- | --- |
+| 基线 | 1.4881 µs | — | 首档 `pipe2` 命中即停 |
+| 优化 ① | 1.4656 µs | [1.4585, 1.4747] | `Offer` 改借用量供给；`Proof` 查找不克隆 `impl_name` |
+| 优化 ② | 1.0937 µs | [1.0838, 1.1050] | `ProofState` 拆 `Declared(usize)` / `Holds(..)`，自述等级判定 O(1) |
+| 优化 ③ | 1.0662 / 1.0704 µs | [1.0499, 1.0933] | `required_prims` 返回 `&'static [Prim]`，去掉每次 `vec!` |
+| 缓存拆分后复测 | **1.0556 µs** | [1.0496, 1.0630] | 身份键外迁，热路径无变化 |
+| device 前端拆缝后复测 | **1.0648 µs** | [1.0540, 1.0761] | 模块拆分，热路径无变化 |
+| 优化 ④ 满足路径去分配 | **182.40 ns** | [180.82, 184.17] | 满足需求不再克隆胜出 `Provide`、不构造随后丢弃的 `NeedReport`；见 §23.8 |
+
+达标判定：**<1.5 µs、<1.1 µs、<0.9 µs（中位数）均已达成**。热点由 `sample` 紧循环采样坐实（§23.8）：主成本是满足路径上被丢弃的 `Provide` 克隆与报告堆分配；消除后剩余为 `Provide::diff` 的属性比对与单次 `ChainStep` 分配，收益递减，且 `atom.rs` 属并发 WIP，不再下压。
+
+### 23.2 测试与覆盖率（`cargo llvm-cov -p cutile --all-features`）
+
+- `substitute.rs` 行覆盖 40.68% → **55.62%**（函数覆盖 73.91%）：补位置/命名占位、重复占位、缺位置/命名参数报错、孤立 `$` 字面量、分号剥离与缩进对齐共 7 个离线用例。
+- 清掉旧 profraw 残留后干净重建：本轮 refactor 后复测 cutile **行覆盖 83.87%**、**函数 84.03%**、**区域 84.75%**（拆分前口径 行 84.63% / 函数 84.66% / 区域 85.45%）；两组均高于 CI 硬门 75/70。此前 66.1%/65.8% 是含 `backend.rs` 旧残留的口径，已作废。
+- `cuda.rs`（基准 CUDA 封装方言）从 **0% → 99.5%**（182/183）：补正常路径（`__device__` 内核、`__global__` 包装、`<<<1,1>>>` 发射、回读、`cudaFree`）、缺标量、缺缓冲三类离线用例。
+- cutile **167** 单测 + 2 doctest，全过；工作区总数受 train/wire 在途重构影响，本轮未全量复跑（见 §23.7）。
+- CI 覆盖硬门（§23.7）：`cargo llvm-cov -p cutile --fail-under-lines 75 --fail-under-functions 70`，下限低于本地干净基线，给 ubuntu 上不可用的 Metal/NVCC 探测分支留平台余量，只防整体回退。
+
+### 23.3 缓存族归并与体量平衡
+
+- 删除 `gc.rs`（原 20 行生产代码：`CACHE_LIMIT` + 一个无独立调用方的 `cache_gc` 包装），常量与函数并入 `cache.rs`。
+- `cache.rs` 原本 885 行、距 899 行硬上限仅 14 行余量，直接并入会顶破 `file_max_lines`。先把**身份键**（`CacheKey` / `Changed` / `ArtifactKey`）抽到 `cache_key.rs`（173 行）：
+  - `cache.rs` 563 → **410 生产行**（759 总行），只留条目、锁、原子落盘与 LRU 回收；
+  - `cache_key.rs` 只回答"一条输入长什么样、一份产物由哪几项指认"，不碰目录/锁/时间戳；
+  - 旧路径 `cutile::cache::CacheKey` 等经 `cache.rs` 重新导出，外部引用不变（`src/bin/cutile.rs` 的 `cutile::gc::cache_gc` 改为 `cutile::cache::cache_gc`）。
+- 归并后 cutile 共 29 个 `.rs`（28 生产 + `cap/tests.rs` 外迁测试模块）；最小生产行是 `dirs.rs`（58，共享纯数据值对象，被 6 个内部模块与 cli 消费，并入任一消费方会反转依赖，保留）。
+- 基准封装方言归并：顶层 `cuda.rs`（CUDA 语义对拍封装）并入 `harness.rs`，与 C 封装同模块复用 `c_type`/`c_literal`/`output_of`；合并后 `harness.rs` 604 行（限 899），`verify.rs` 调用路径改 `harness::cuda_harness`。`device/cuda.rs` 是见证真机前端，与此无关，未动。
+
+### 23.4 门禁复测结果（全绿）
+
+| 工具/门禁 | 结果 |
+| --- | --- |
+| `cargo fmt -p cutile --check` | 干净 |
+| `clippy --all-targets --all-features -D warnings` | 干净 |
+| `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` | 干净 |
+| `cargo deny check` | advisories / bans / licenses / sources 全 ok |
+| `cargo machete` | 0 未用依赖 |
+| `npx jscpd` | 重复行 1.36%（阈值 1.5%）；cutile 0 克隆，余下列举克隆在 train/weights 在途 crate |
+| `tests/architecture.rs` | 8 passed，边集与 `cargo metadata` 一致 |
+| `tests/contracts.rs` | 6 passed |
+| `llm-tool`（36 + gate 1） | 全绿；`Call`=0（零 panic 预算），无新增 ccn/nloc/lines 超限 |
+| 工作区测试 | 1 071 passed / 0 failed |
+
+### 23.5 六维度现状（按可测证据，不打无依据的 S++ 标签）
+
+| 维度 | 本轮证据 | 判定 | 未闭合缺口 |
+| --- | --- | --- | --- |
+| 内聚与模块职责 | 架构门可执行；缓存族按"身份键 / 存储回收"分界；`device` 拆为伞模块 + cpu/metal/cuda 子模块；`cap` 测试模块外迁 `cap/tests.rs`；模块文档 owns/depends 写清 | 契约层强 | 其余大文件 verify/witness 待评估再拆；公开面收窄与文档对账仍是待办 |
+| 证据判据纪律 | 契约门 6 通过；`Proof` 自述/执行两态；闭集匹配 | 强 | 真机见证只在本地跑，无真机 CI |
+| 静态强制门禁 | fmt/clippy/doc/deny/machete/词汇表门/jscpd 1.5% 全绿；cutile 0 unsafe 块、`Call`=0 | 仓内最硬一维 | `[gate]` 外仍有 4 处盲区（§22.8） |
+| 测试质量 | 167 cutile 用例 + property；干净重建行覆盖 83.95%、函数 84.09%；CI 行/函数覆盖率硬门 75/70；cuda 封装 99.5% | A− | 无 libfuzzer harness、无 fuzz CI job；verify/bench/execution 为真机门控分支 |
+| 性能工程 | criterion 微基准 182.40 ns [180.82, 184.17]；`sample` 紧循环采样坐实热点并消除满足路径克隆；<0.9 µs 达标 | A− | CI 仍仅 `--no-run` 编译基准，无固定硬件回归门；剩余 `diff` 属性比对与单次 `ChainStep` 分配未下压（收益递减、`atom.rs` 属并发 WIP） |
+| 广度与生产成熟度 | 5 份设备档案（cpu/nvidia/intel/metal/ascend） | C | 仅 C/cc 一条可执行路径；无 CUDA/Metal 真机 runner、无融合、无集合通信/分词、无发布体系；仓内一轮无法闭合 |
+
+### 23.6 与 Burn 的对标边界（沿用 §8.1，不重复放大）
+
+- 领先项：运行时第三方依赖 0、cutile 零 `unsafe` 块、可执行架构门（Burn 无同类等价物）。
+- 落后项：可执行后端数量、kernel 融合、no_std 子集、后端对拍矩阵、常驻 fuzz、产品化传输/集合通信/分词。
+- **"超越 Burn 十倍"在仓内没有测量依据**：我方约 4.05 万生产行，Burn 约 36.9 万行（§8.1），体量与交付面均为对方的子集；可宣称的是治理纪律，不是功能体量。
+
+### 23.7 `device.rs` 按前端拆缝（内聚与体量平衡）
+
+原 `device.rs` 722 行（648 生产行）是 cutile 最大文件，三段前端与共享管线混装。拆为伞模块 + 三个前端子模块：
+
+| 文件 | 总行 | 职责 |
+| --- | ---: | --- |
+| `device.rs` | 234 | 共享装载/命名/起进程/回读/分派段；`Sources`/`Readback`/`C_PARAMS`；三个设备的重新导出 |
+| `device/cpu.rs` | 112 | host C 前端：`CpuDevice`、头、harness 包装、`HOST_FLAGS`/编译输入 |
+| `device/metal.rs` | 275 | Metal 前端：`MetalDevice`、MSL 程序、`xcrun` 链、ObjC 驱动主体与宽度断言测试 |
+| `device/cuda.rs` | 170 | CUDA 真机前端：`CudaDevice`、`__global__` 分派、host main、nvcc 编译 |
+
+- 接线不变：`witness.rs` 仍 `use crate::device::{CpuDevice, CudaDevice, MetalDevice}`，经伞模块重新导出；`compile_run_cuda` 仍 pub、`HOST_FLAGS`/`scratch`/`parse_counts` 仍 `pub(crate)`。
+- 宏兼容：`#[frontend]` 展开的测试模块用 `super::{ty}` 相对项模块解析，struct 移入子模块后断言仍成立（已核 `annotation::codegen::render_frontend`）。
+- 复测：cutile **167** 单测 + 2 doctest 全过；clippy/fmt 干净；协商基准 **1.0648 µs** [1.0540, 1.0761]，与拆分前持平、无回归。
+- 净行略增（722 → 791）来自子模块文档头、`super::` 限定与测试拆分；拆分换来的是单文件内聚与体量均衡，不是行数下降。
+- 并发 WIP 干扰：架构门 `the_declared_edges...` 当前报 `train → wire` 边——`crates/wire/` 尚为未跟踪目录、`llm-train` 已不再依赖 wire，属另一进程在途重构，与本次 cutile 拆缝无关，未回滚。
+
+### 23.8 性能采样坐实与满足路径去分配
+
+- 首轮工具：`samply record --save-only --main-thread-only -d 6` 直跑 criterion 二进制；release `strip = "debuginfo"` 剥掉符号，仅 4 个样本、`pages` 空、`symbolicated=false`，热点不可解析。
+- 采样用例：新增 `crates/benches/examples/negotiate_loop.rs`——不起 criterion，release 紧循环调用 `cap::negotiate`，次数由 `ITERATIONS` 环境变量覆盖；编译须保留符号：
+  `CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=false cargo build -p llm-benches --example negotiate_loop --release`。
+- 复采：macOS 内置 `sample <pid> 4 -mayDie`（`pgrep -x negotiate_loop` 按进程名取 pid，避免采到包装 shell）。采样帧显示满足路径上 `select` 克隆胜出 `Provide`（`String impl_name` + `Vec<Attr>` + witness）、构造随后被 `is_satisfied()` 过滤丢弃的 `NeedReport`，对应的 malloc/memmove/free 占主成本。
+- 改动（不触公开 API）：`select_borrowed` 只借档案供给不克隆；`failing_report` 仅在需求失败时克隆胜出供给并构造报告，满足路径直接返回 `None`；`Offer::satisfied()` 收束覆盖/等级/见证判定；`check_need` 降为 `#[cfg(test)]` 测试夹具。`NeedReport` 公有字段与契约断言不变。
+- 复测：criterion 中位数 **182.40 ns** [180.82, 184.17]（拆分前 1.0648 µs，约 5.8×）；紧循环单次 196.8 ns。复采确认 `Provide` 克隆/报告堆分配已从满足路径消失。
+- 剩余：`Provide::diff` 的属性 `filter_map`/`memcmp` 与单次 `ChainStep` 分配；进一步下压要改 `prof/src/atom.rs`（并发 WIP），收益递减，本轮停止。
+- 体量：`cap.rs` 测试模块迁出为 `cap/tests.rs`（生产 597 行 / 测试 323 行），均在 `file_max_lines=899` 内；`failing_report` 圈复杂度 4（限 5）。
+
+
+
+

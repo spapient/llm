@@ -521,10 +521,9 @@ impl Evidence {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend;
     use crate::builtin::Catalogue;
-    use crate::device::clang;
     use crate::gate::parse_one;
+    use crate::toolchain::{self, clang};
 
     fn dirs() -> Dirs {
         Dirs::under(std::env::temp_dir().join("cutile-witness-tests"))
@@ -548,7 +547,7 @@ mod tests {
 
     #[test]
     fn every_declared_witness_executes_on_the_device() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
         let profile = cpu();
@@ -564,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_wrong_expectation_is_a_failure() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
         let mut profile = cpu();
@@ -576,7 +575,7 @@ mod tests {
 
     #[test]
     fn a_witness_must_write_exactly_the_declared_number_of_values() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
         let mut profile = cpu();
@@ -603,7 +602,7 @@ mod tests {
     /// 每台设备的每条已声明见证恰好被执行一次，且由能给出更强结论的范围执行。
     #[test]
     fn every_declared_witness_is_executed_once_in_the_strongest_scope() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
         let catalogue = Catalogue::try_builtin().expect("内置数据");
@@ -643,7 +642,7 @@ mod tests {
     /// 低等级声明同样在本机跑一遍，`grade` 才不会两头都不成立。
     #[test]
     fn a_cpu_l0_witness_is_executed_on_the_device_too() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
         let profile = cpu();
@@ -696,7 +695,7 @@ mod tests {
 
     #[test]
     fn the_self_check_ignores_the_device_preamble_and_flags() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
         let mut profile = device("nvidia");
@@ -708,7 +707,7 @@ mod tests {
 
     #[test]
     fn a_wrong_expectation_fails_even_the_host_self_check() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
         let mut profile = device("ascend");
@@ -758,10 +757,10 @@ mod tests {
 
     #[test]
     fn a_witness_its_own_language_rejects_is_a_defect() {
-        if backend::skip_without_host_compiler() {
+        if toolchain::skip_without_host_compiler() {
             return;
         }
-        let Some(toolchain) = backend::detect() else {
+        let Some(toolchain) = toolchain::detect() else {
             return;
         };
         if clang().is_none() {

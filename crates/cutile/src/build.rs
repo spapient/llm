@@ -7,7 +7,6 @@
 use crate::SCHEMA_VER;
 use crate::ast;
 use crate::atom::{DType, DTypeSet, Prim, Space};
-use crate::backend::{self, Outcome, Toolchain};
 use crate::cache::{Artifact, ArtifactKey, Cache, CacheKey, Lock};
 use crate::cap::Path;
 use crate::decl::{OpDecl, TileCombo};
@@ -15,8 +14,10 @@ use crate::dirs::Dirs;
 use crate::emit::{self, Source};
 use crate::layout::LayoutSpec;
 use crate::prof::Profile;
+use crate::runner::{self, Outcome};
 use crate::space;
 use crate::substitute::FragmentSet;
+use crate::toolchain::Toolchain;
 use diagnostic::{Code, Error};
 use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
@@ -152,7 +153,7 @@ fn generate(
 /// # Errors
 ///
 /// 编译器缺失（且缓存里没有这份产物）、编译失败、产物不可执行、缓存不可写时返回说明；运行失败由
-/// [`crate::backend::run`] 分类。
+/// `runner::run` 分类。
 pub fn execute(
     profile: &Profile,
     tool: Option<&Toolchain>,
@@ -218,7 +219,7 @@ fn cached_run(
     // 代码生成，旧产物不再冒充这一轮的产物。
     let key = ArtifactKey::keyed(source, &tool.id(), params, program);
     match cache.artifact(&key) {
-        Some(artifact) => Ok((backend::run(&artifact.path)?, artifact)),
+        Some(artifact) => Ok((runner::run(&artifact.path)?, artifact)),
         None => compile_and_store(cache, tool, flags, program, &key, dirs),
     }
 }
@@ -233,7 +234,7 @@ fn compile_and_store(
     dirs: &Dirs,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let sandbox = sandbox(dirs, key);
-    let exe = backend::compile(&tool.command, flags, program, &sandbox)?;
+    let exe = runner::compile(&tool.command, flags, program, &sandbox)?;
     let artifact = cache.put_artifact(key, &exe).map_err(|error| {
         Error::new(
             Code::Io,
@@ -244,7 +245,7 @@ fn compile_and_store(
         )
     })?;
     let _ = std::fs::remove_dir_all(&sandbox);
-    Ok((backend::run(&artifact.path)?, artifact))
+    Ok((runner::run(&artifact.path)?, artifact))
 }
 
 /// 编译沙箱：目录名必须唯一，先编译完的那条会删掉它，共用目录会让另一条的 `cc -o`
@@ -276,7 +277,7 @@ fn cached_only(
         .filter(|artifact| artifact.key.harness == harness && artifact.key.params == params)
         .collect();
     match candidates.as_slice() {
-        [one] => Ok((backend::run(&one.path)?, one.clone())),
+        [one] => Ok((runner::run(&one.path)?, one.clone())),
         [] => Err(Error::new(
             Code::Unsupported,
             format!(
@@ -495,6 +496,7 @@ fn key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::toolchain;
     use diagnostic::data::{Table, Value};
     use op::model::Sample;
 
@@ -612,7 +614,7 @@ mod tests {
 
     /// 本机实测的工具链（本机没有编译器时返回 `None`，用例跳过）。
     fn tool() -> Option<Toolchain> {
-        crate::backend::detect()
+        crate::toolchain::detect()
     }
 
     /// 一份带主函数的内核源码与形状：产物身份要用的两个输入。
@@ -624,7 +626,7 @@ mod tests {
         let sample = (op::model(&op.name).expect("算子模型").sample)(32, 1);
         op.signature.check(&sample).expect("ABI 对齐");
         let harness =
-            crate::backend::harness(&source.text, &op.signature, &sample, 1).expect("可生成");
+            crate::harness::harness(&source.text, &op.signature, &sample, 1).expect("可生成");
         (key, harness, sample)
     }
 
@@ -655,7 +657,7 @@ mod tests {
         std::fs::set_permissions(&wrapper, perms).expect("可执行");
         // 身份也是探测出来的：脚本 `--version` 转调真正的编译器，所以版本是真的，
         // 命令名是脚本路径——两者合起来就是这份产物的来历。
-        let wrapper = backend::probe(&wrapper.to_string_lossy()).expect("脚本可探测");
+        let wrapper = toolchain::probe(&wrapper.to_string_lossy()).expect("脚本可探测");
 
         let (first, artifact) =
             execute(&profile, Some(&wrapper), &key, &harness, &dirs).expect("第一次应真的编译");
@@ -711,7 +713,7 @@ mod tests {
             let mut perms = std::fs::metadata(&path).expect("脚本").permissions();
             std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
             std::fs::set_permissions(&path, perms).expect("可执行");
-            backend::probe(&path.to_string_lossy()).expect("脚本可探测")
+            toolchain::probe(&path.to_string_lossy()).expect("脚本可探测")
         };
         let old = fake("cc17.sh", "17.0.0");
         let new = fake("cc21.sh", "21.0.0");

@@ -4,7 +4,6 @@
 //! 这类错误。失败一律是错误而不是跳过：设备不在本机是 `unsupported`（退出码 3），声明或输入写错是
 //! `invalid`（退出码 2）。两条执行通道（本机 C、nvcc/CUDA）共用同一套步骤，设备差异收在 `Lane` 里。
 
-use crate::backend;
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::cache::Artifact;
@@ -15,6 +14,7 @@ use crate::gate::LanguageGate;
 use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
 use crate::prof::{Emit, Profile};
 use crate::witness;
+use crate::{harness, runner, toolchain};
 use diagnostic::{Code, Error};
 use op::decl::OpDecl;
 use op::model::Sample;
@@ -351,11 +351,11 @@ enum Lane {
 
 impl Lane {
     /// 档案声明的 `emit` 对应哪条通道，以及这条通道此刻能不能跑（`None` 表示没有编译器，只能复用产物）。本机没有执行路径时在这里 fail-fast。
-    fn ready(profile: &Profile) -> diagnostic::Result<(Self, Option<backend::Toolchain>)> {
+    fn ready(profile: &Profile) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
         match profile.meta.emit {
-            Emit::C => Ok((Self::Host, backend::detect())),
+            Emit::C => Ok((Self::Host, toolchain::detect())),
             Emit::Cuda if witness::device_available(profile) => {
-                Ok((Self::Cuda, backend::detect_nvcc()))
+                Ok((Self::Cuda, toolchain::detect_nvcc()))
             }
             Emit::Cuda => Err(Error::new(Code::Unsupported, NO_DEVICE.to_string())),
             _ => Err(Error::new(Code::Unsupported, unsupported_emit(profile))),
@@ -368,7 +368,7 @@ struct Sweep<'a> {
     run: &'a Run<'a>,
     dirs: &'a Dirs,
     lane: Lane,
-    tool: Option<backend::Toolchain>,
+    tool: Option<toolchain::Toolchain>,
     path: Path,
     tolerance: f64,
     verified: Verified,
@@ -453,15 +453,15 @@ impl Sweep<'_> {
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
-        let program = backend::cuda_harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let program = harness::cuda_harness(&prepared.source.text, &self.run.op.signature, sample)?;
         let (stdout, _stderr) =
             witness::compile_run_cuda(self.run.profile, self.dirs, &program, "verify")?;
-        Ok((backend::parse_bits(&stdout), None))
+        Ok((runner::parse_bits(&stdout), None))
     }
 }
 
 /// 空报告：设备与工具链身份先写进去，形状层面的字段随每一格填。
-fn blank(run: &Run<'_>, tool: Option<&backend::Toolchain>) -> Verified {
+fn blank(run: &Run<'_>, tool: Option<&toolchain::Toolchain>) -> Verified {
     Verified {
         device: String::new(),
         vendor: run.profile.meta.vendor.to_string(),
@@ -474,7 +474,7 @@ fn blank(run: &Run<'_>, tool: Option<&backend::Toolchain>) -> Verified {
         max_rel_err: 0.0,
         fragment: Fragment::new(0),
         tool_ver: run.profile.meta.tool_ver.clone(),
-        toolchain: tool.map(backend::Toolchain::id),
+        toolchain: tool.map(toolchain::Toolchain::id),
         toolchain_agrees: tool.is_some_and(|tool| tool.agrees_with(&run.profile.meta.tool_ver)),
         flags: run.profile.flags.join(" "),
         key: String::new(),

@@ -88,7 +88,7 @@ fn run(command: &CutileCommand, settings: &Settings) -> diagnostic::Result<Strin
 /// 会让人以为上限调大就能少删几条。
 fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<String> {
     let dirs = kernel_dirs(settings);
-    let report = cutile::gc::cache_gc(&dirs, limit)?;
+    let report = cutile::cache::cache_gc(&dirs, limit)?;
     let mut out = Report::new(format!("cache gc | 上限 {}", human_bytes(report.limit)))
         .row("目录", dirs.cache().display().to_string())
         .row("回收前", human_bytes(report.before))

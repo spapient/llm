@@ -6,7 +6,7 @@ use crate::decl::{OpDecl, Variant};
 use crate::prof::Profile;
 use crate::sch::Schedule;
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 协商结果：命中的变体、调度与它在降级链里的下标（[`Path::is_head`] 要读下标）。
 #[derive(Debug, Clone, PartialEq)]
@@ -29,10 +29,27 @@ impl Path {
     }
 }
 
+/// 证据来源：自述（档案等级 ≥ L2 即算具备）与本次执行见证分开存，自述路径不为每次协商重建集合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProofState {
+    /// 按档案自述：`grade ≥ L2` 即视为具备；计数只用于报告条数。
+    Declared(usize),
+    /// 本次执行记下的见证集合（原语 → 实现名集合）。
+    Holds(BTreeMap<Prim, BTreeSet<String>>),
+}
+
 /// 这次真的执行过、并且通过了的供给：档案里的 [`Grade`] 是作者自述，本类型是执行结论；两者同时成立才算可用。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proof {
-    holds: BTreeSet<(Prim, String)>,
+    state: ProofState,
+}
+
+impl Default for Proof {
+    fn default() -> Self {
+        Self {
+            state: ProofState::Holds(BTreeMap::new()),
+        }
+    }
 }
 
 impl Proof {
@@ -45,36 +62,54 @@ impl Proof {
     /// 按档案自述：每条 `grade ≥ L2` 的供给都算可用。只给解释性报告用，任何声称"能跑"的路径都不许用它。
     #[must_use]
     pub fn declared(prof: &Profile) -> Self {
-        let mut proof = Self::default();
-        for have in &prof.provides {
-            if have.grade.is_verified() {
-                proof.insert(have.prim, &have.impl_name);
-            }
+        let verified = prof
+            .provides
+            .iter()
+            .filter(|have| have.grade.is_verified())
+            .count();
+        Self {
+            state: ProofState::Declared(verified),
         }
-        proof
     }
 
-    /// 记下一条真正跑通的供给。
+    /// 记下一条真正跑通的供给。执行路径从 [`Proof::none`] 起步；若误从自述模式写入，先落到空见证集合。
     pub fn insert(&mut self, prim: Prim, impl_name: &str) {
-        self.holds.insert((prim, impl_name.to_string()));
+        if let ProofState::Declared(_) = self.state {
+            self.state = ProofState::Holds(BTreeMap::new());
+        }
+        let ProofState::Holds(map) = &mut self.state else {
+            return;
+        };
+        map.entry(prim).or_default().insert(impl_name.to_string());
     }
 
     /// 这条供给这次是否被证明：认 `(原语, 实现名)`，因为同一供给的参数不变，变的是"跑没跑"。
     #[must_use]
     pub fn holds(&self, have: &Provide) -> bool {
-        self.holds.contains(&(have.prim, have.impl_name.clone()))
+        match &self.state {
+            ProofState::Declared(_) => have.grade.is_verified(),
+            ProofState::Holds(map) => map
+                .get(&have.prim)
+                .is_some_and(|impls| impls.contains(have.impl_name.as_str())),
+        }
     }
 
     /// 被证明的供给条数。
     #[must_use]
     pub fn len(&self) -> usize {
-        self.holds.len()
+        match &self.state {
+            ProofState::Declared(count) => *count,
+            ProofState::Holds(map) => map.values().map(BTreeSet::len).sum(),
+        }
     }
 
     /// 一条也没有。
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.holds.is_empty()
+        match &self.state {
+            ProofState::Declared(_) => false,
+            ProofState::Holds(map) => map.is_empty(),
+        }
     }
 }
 
@@ -160,33 +195,33 @@ impl std::error::Error for NoPath {}
 fn failing_needs(op: &OpDecl, prof: &Profile, variant: &Variant, proof: &Proof) -> Vec<NeedReport> {
     let mut reports: Vec<NeedReport> = variant
         .needs(op)
-        .map(|need| check_need(prof, need, proof))
-        .filter(|report| !report.is_satisfied())
+        .filter_map(|need| failing_report(prof, need, proof))
         .collect();
     // 调度隐式要求的原语（如 `bar`）同样是需求，只留不满足的那几条。
     reports.extend(
         variant
             .schedule
             .required_prims()
-            .into_iter()
-            .map(|prim| check_need(prof, &Need::of(prim), proof))
-            .filter(|report| !report.is_satisfied()),
+            .iter()
+            .copied()
+            .map(Need::of)
+            .filter_map(|need| failing_report(prof, &need, proof)),
     );
     reports
 }
 
 /// 同一原语的一条候选供给：与需求的签名差异，以及这次执行有没有留下证据；分开算会指向另一条实现。
-struct Offer {
-    have: Provide,
+struct Offer<'a> {
+    have: &'a Provide,
     diff: Vec<Mismatch>,
     proven: bool,
 }
 
-impl Offer {
-    /// 折成可比较的形态：差异只算一次，证据只查一次。
-    fn new(have: &Provide, need: &Need, proof: &Proof) -> Self {
+impl<'a> Offer<'a> {
+    /// 折成可比较的形态：差异只算一次，证据只查一次；候选只借档案里的供给，胜出后才克隆。
+    fn new(have: &'a Provide, need: &Need, proof: &Proof) -> Self {
         Self {
-            have: have.clone(),
+            have,
             diff: have.diff(need),
             proven: proof.holds(have),
         }
@@ -202,18 +237,28 @@ impl Offer {
             (false, false) => self.diff.len() < current.diff.len(),
         }
     }
+
+    /// 需求被这条供给真正满足：签名全覆盖、等级已验证、这次有见证。
+    fn satisfied(&self) -> bool {
+        self.diff.is_empty() && self.have.grade.is_verified() && self.proven
+    }
 }
 
 /// 同一原语可能有多条签名（`dot` 的 `dp4a` 与标量 `fma`），挑一条来比对：先看覆盖，再看证据，都不覆盖时取差异最少。
 fn select(prof: &Profile, need: &Need, proof: &Proof) -> Option<(Provide, Vec<Mismatch>)> {
-    let mut best: Option<Offer> = None;
+    select_borrowed(prof, need, proof).map(|offer| (offer.have.clone(), offer.diff))
+}
+
+/// 挑出胜出候选，只借档案里的供给、不克隆；确认为失败的报告才在 [`select`] 或构造器里克隆。
+fn select_borrowed<'a>(prof: &'a Profile, need: &Need, proof: &Proof) -> Option<Offer<'a>> {
+    let mut best: Option<Offer<'_>> = None;
     for have in prof.providers(need.prim) {
         let offer = Offer::new(have, need, proof);
         if best.as_ref().is_none_or(|current| offer.beats(current)) {
             best = Some(offer);
         }
     }
-    best.map(|offer| (offer.have, offer.diff))
+    best
 }
 
 /// 片段层与档案的签名差异：协商会挑中的那条实现，片段真的写了吗——缺了它，两者会各自"可行"却指向不同实现。
@@ -247,7 +292,14 @@ pub fn fragment_gaps<'a>(
     let mut gaps: Vec<FragmentGap> = Vec::new();
     for variant in &op.variants {
         let mut needs: Vec<Need> = variant.needs(op).cloned().collect();
-        needs.extend(variant.schedule.required_prims().into_iter().map(Need::of));
+        needs.extend(
+            variant
+                .schedule
+                .required_prims()
+                .iter()
+                .copied()
+                .map(Need::of),
+        );
         for need in &needs {
             let gap = FragmentGap {
                 prim: need.prim,
@@ -262,9 +314,34 @@ pub fn fragment_gaps<'a>(
     gaps
 }
 
+/// 仅当需求不满足时构造报告；满足路径不克隆胜出供给、也不构造随后被过滤丢弃的报告。
+fn failing_report(prof: &Profile, need: &Need, proof: &Proof) -> Option<NeedReport> {
+    let Some(offer) = select_borrowed(prof, need, proof) else {
+        return Some(NeedReport {
+            need: need.clone(),
+            have: None,
+            blocked_by_grade: false,
+            unproven: false,
+            mismatches: vec![Mismatch::PrimAbsent { prim: need.prim }],
+        });
+    };
+    let verified = offer.have.grade.is_verified();
+    if offer.satisfied() {
+        return None;
+    }
+    Some(NeedReport {
+        need: need.clone(),
+        blocked_by_grade: !verified,
+        unproven: verified && !offer.proven,
+        have: Some(offer.have.clone()),
+        mismatches: offer.diff,
+    })
+}
+
 /// 一条需求的检查结果。等级本来就不够时不再说"没执行"：那是同一个结论的另一种说法。
+#[cfg(test)]
 fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedReport {
-    match select(prof, need, proof) {
+    match select_borrowed(prof, need, proof) {
         None => NeedReport {
             need: need.clone(),
             have: None,
@@ -272,12 +349,12 @@ fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedReport {
             unproven: false,
             mismatches: vec![Mismatch::PrimAbsent { prim: need.prim }],
         },
-        Some((have, mismatches)) => NeedReport {
+        Some(offer) => NeedReport {
             need: need.clone(),
-            blocked_by_grade: !have.grade.is_verified(),
-            unproven: have.grade.is_verified() && !proof.holds(&have),
-            have: Some(have),
-            mismatches,
+            blocked_by_grade: !offer.have.grade.is_verified(),
+            unproven: offer.have.grade.is_verified() && !offer.proven,
+            have: Some(offer.have.clone()),
+            mismatches: offer.diff,
         },
     }
 }
@@ -517,328 +594,4 @@ impl fmt::Display for FragmentGap {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::atom::{Attr, AttrKey, DType, DTypeSet};
-    use crate::decl::{Axis, Skeleton};
-    use crate::sch::Schedule;
-    use diagnostic::data::Value;
-
-    fn op() -> OpDecl {
-        let source = &op::builtin_named("gemv_i4").expect("内置");
-        OpDecl::parse(source.declaration(), source.template()).expect("声明可解析")
-    }
-
-    fn cpu() -> Profile {
-        Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案可解析")
-    }
-
-    fn nvidia() -> Profile {
-        Profile::parse(prof::embedded("nvidia").expect("nvidia 档案")).expect("档案可解析")
-    }
-
-    /// cpu 档案去掉这些原语：用来演示"设备缺一条能力就降级"。
-    fn cpu_without(prims: &[Prim]) -> Profile {
-        let mut profile = cpu();
-        profile.provides.retain(|have| !prims.contains(&have.prim));
-        profile
-    }
-
-    /// 一个模板只用 `dot` 的合成声明：内置 `gemv_i4` 的模板由所有变体共享，`load_async` /
-    /// `commit_wait` / `bar` 因此是算子级需求，演示不了"缺一个原语就降级"，差异只能落在 `extra_needs`。
-    fn downgrade_op() -> OpDecl {
-        // 合成声明只需要一份可解析的签名：协商不读 ABI，但 `OpDecl` 的不变量要求它存在。
-        let template = "void cutile_probe_kernel(float *y) { @dot(acc, a, b, k); }\n";
-        OpDecl {
-            name: "probe".to_string(),
-            skeleton: Skeleton::Gemm,
-            summary: "-".to_string(),
-            axes: vec![Axis {
-                name: "GMAX".to_string(),
-                values: vec![32],
-            }],
-            needs: vec![Need::of(Prim::Dot)],
-            layouts: Vec::new(),
-            variants: vec![
-                Variant {
-                    name: "pipe2".to_string(),
-                    order: 1,
-                    schedule: Schedule::parse("pipe<2>").expect("调度"),
-                    mma_share: 0.62,
-                    extra_needs: vec![Need::of(Prim::LoadAsync), Need::of(Prim::CommitWait)],
-                },
-                Variant {
-                    name: "direct".to_string(),
-                    order: 2,
-                    schedule: Schedule::parse("direct").expect("调度"),
-                    mma_share: 0.35,
-                    extra_needs: Vec::new(),
-                },
-            ],
-            template: template.to_string(),
-            signature: op::sig::Signature::parse("probe", template).expect("签名"),
-        }
-    }
-
-    #[test]
-    fn cpu_hits_the_first_variant() {
-        let path = negotiate(&op(), &cpu()).expect("CPU 应命中首档");
-        assert_eq!(path.variant, "pipe2");
-        assert_eq!(path.index, 0);
-        assert!(path.schedule.uses_async());
-    }
-
-    #[test]
-    fn missing_evidence_blocks_every_variant() {
-        let error = negotiate(&op(), &nvidia()).unwrap_err();
-        assert!(error.to_string().contains("没有可行变体"));
-        assert!(error.chain.iter().all(|step| !step.ok));
-        assert!(error.to_string().contains("L2"), "证据不足：{error}");
-    }
-
-    #[test]
-    fn variant_level_needs_drive_downgrade() {
-        // 去掉 load_async / commit_wait：pipe2 需要它们，direct 不需要 —— 这正是 extra_needs 的意义。
-        let profile = cpu_without(&[Prim::LoadAsync, Prim::CommitWait]);
-        let path = negotiate(&downgrade_op(), &profile).expect("应降级到 direct");
-        assert_eq!(path.variant, "direct");
-        assert!(!path.schedule.uses_async());
-    }
-
-    #[test]
-    fn diagnostics_name_the_missing_atom_and_the_unlock() {
-        // dot 是算子级公共需求：缺它时整条链都不可行，诊断必须点名并给出解锁路径。
-        let error = negotiate(&op(), &cpu_without(&[Prim::Dot])).unwrap_err();
-        let text = error.to_string();
-        assert!(text.contains("dot"), "{text}");
-        assert!(text.contains("建议："), "{text}");
-        assert!(text.contains("L2 见证"), "{text}");
-    }
-
-    /// 解锁建议必须自洽：变体名与"还缺哪些原语"来自同一档。首选缺 `dot` 与 `load_async`、兜底只缺
-    /// `dot` 时，建议应指向兜底（第 2 档）且只列 `dot`；拼错会让人补完证之后发现仍然不可用。
-    #[test]
-    fn the_unlock_advice_names_the_variant_its_missing_atoms_belong_to() {
-        let error =
-            negotiate(&downgrade_op(), &cpu_without(&[Prim::Dot, Prim::LoadAsync])).unwrap_err();
-        let unlock = error.unlock.as_ref().expect("应当给出解锁路径");
-        assert_eq!(unlock.variant, "direct", "{unlock:?}");
-        assert_eq!(unlock.missing, vec![Prim::Dot], "{unlock:?}");
-        let text = error.to_string();
-        assert!(text.contains("可用 direct（第 2/2 档"), "{text}");
-        assert!(!text.contains("可用 pipe2"), "{text}");
-    }
-
-    /// 缺项按原语去重：调度与 `needs` 都要 `bar` 时建议只列一次。重复会让"补哪些原语"读成"补两条
-    /// 需求"，也会让"缺得最少"的挑选偏向需求条数多的变体。
-    #[test]
-    fn the_unlock_advice_lists_each_atom_once() {
-        let mut op = downgrade_op();
-        op.needs = vec![Need::of(Prim::Bar)];
-        op.variants.truncate(1);
-        let error = negotiate(&op, &cpu_without(&[Prim::Bar])).unwrap_err();
-        let unlock = error.unlock.as_ref().expect("应当给出解锁路径");
-        assert_eq!(unlock.missing, vec![Prim::Bar], "{unlock:?}");
-        let text = error.to_string();
-        let advice = text.split("建议：").nth(1).expect("有建议行");
-        assert_eq!(advice.matches("`bar`").count(), 1, "{advice}");
-    }
-
-    #[test]
-    fn missing_async_atom_only_disables_the_pipelined_variant() {
-        let op = downgrade_op();
-        let profile = cpu_without(&[Prim::LoadAsync]);
-        let path = negotiate(&op, &profile).expect("应降级到 direct");
-        assert_eq!(path.variant, "direct");
-        // 解释不复用协商结果：inspect 总是看完整条链，因此被跳过的 pipe2 也在。
-        let checks = inspect(&op, &profile);
-        let piped = &checks[0];
-        assert_eq!(piped.name, "pipe2");
-        assert!(!piped.failures.is_empty(), "pipe2 应报出缺失的 load_async");
-    }
-
-    /// P0 的每条需求都必须被某一条签名**结构性**覆盖，剩下的唯一障碍只能是证据等级——`dt`/`lanes`/`dst`
-    /// 对不上时补见证也没用，不能混在 L0/L1 里。
-    #[test]
-    fn every_p0_need_is_covered_by_some_signature_on_every_accelerator() {
-        for vendor in ["nvidia", "intel", "ascend"] {
-            let profile =
-                Profile::parse(prof::embedded(vendor).expect("内置档案")).expect("档案可解析");
-            let checks = inspect(&op(), &profile);
-            assert!(!checks.is_empty(), "{vendor} 应当有降级链");
-            for check in &checks {
-                for failure in &check.failures {
-                    assert!(
-                        failure.mismatches.is_empty(),
-                        "{vendor}: {} 仍然不同构：{}",
-                        failure.need.signature(),
-                        failure.reason()
-                    );
-                    assert!(failure.blocked_by_grade, "{vendor}: 只应被证据等级挡住");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_signature_that_covers_the_need_is_the_one_compared() {
-        let profile = nvidia();
-        let need = Need::of(Prim::Dot)
-            .with_dt(DTypeSet::of([DType::F32]))
-            .with_attr(Attr::new(AttrKey::Lanes, ["1"]));
-        // 这条用例只验"签名比对挑中了哪条供给"，与证据等级无关：按档案自述取证据即可。
-        let report = check_need(&profile, &need, &Proof::declared(&profile));
-        assert!(report.mismatches.is_empty(), "{}", report.reason());
-        assert_eq!(report.have.expect("nvidia 有 dot 供给").impl_name, "fma");
-    }
-
-    #[test]
-    fn inspect_reports_the_whole_chain_as_data() {
-        let checks = inspect(&op(), &cpu());
-        assert_eq!(checks.len(), 2);
-        assert!(checks.iter().all(|check| check.failures.is_empty()));
-        assert_eq!(checks[0].name, "pipe2");
-        assert_eq!(checks[1].name, "direct");
-    }
-
-    /// 同一份签名在两层里换一种合法写法（标量/数组、`bytes`/`m`）必须仍然同构：两层解析器若无共同词汇，
-    /// "协商通过"与"档案声明"说的就不是一回事。这里直接拿协商用的覆盖关系当判据，两个方向都要成立。
-    #[test]
-    fn one_signature_written_in_either_layer_stays_the_same() {
-        fn declare(load: &[(&str, Value)]) -> OpDecl {
-            let source = op::builtin_named("gemv_i4").expect("内置");
-            let mut table = source.declaration().clone();
-            table.set("needs.load", Value::table(load.to_vec()));
-            OpDecl::parse(&table, source.template()).expect("合成声明可解析")
-        }
-
-        fn provide(signature: &[(&str, Value)]) -> Provide {
-            let mut fields = vec![
-                ("prim", Value::text("load")),
-                ("impl", Value::text("alias")),
-            ];
-            fields.extend_from_slice(signature);
-            fields.push(("grade", Value::text("L0")));
-            let mut table = prof::embedded("cpu").expect("cpu 档案").clone();
-            table.push("provides", Value::table(fields));
-            let mut profile = Profile::parse(&table).expect("合成档案可解析");
-            profile.provides.pop().expect("新加的供给")
-        }
-
-        /// 声明里的 `load` 需求被这条供给覆盖了吗。
-        fn assert_covers(op: &OpDecl, have: &Provide, note: &str) {
-            let need = op
-                .needs
-                .iter()
-                .find(|need| need.prim == Prim::Load)
-                .expect("load 需求");
-            assert!(have.covers(need), "{note}：{:?}", have.diff(need));
-        }
-
-        let scalar = vec![
-            ("bytes", Value::text("<=4096")),
-            ("dt", Value::text("f32")),
-            ("space", Value::text("FAST")),
-            ("src", Value::text("GM")),
-            ("dst", Value::text("FAST")),
-        ];
-        let array = vec![
-            ("m", Value::text("<=4096")),
-            ("dt", Value::array(vec![Value::text("f32")])),
-            ("space", Value::array(vec![Value::text("FAST")])),
-            ("src", Value::array(vec![Value::text("GM")])),
-            ("dst", Value::array(vec![Value::text("FAST")])),
-        ];
-        // 声明写标量、档案写数组与 `m`；反向：声明写数组、档案写标量。
-        assert_covers(&declare(&scalar), &provide(&array), "档案写法覆盖声明");
-        assert_covers(&declare(&array), &provide(&scalar), "声明写法覆盖档案");
-    }
-
-    #[test]
-    fn schedule_primitives_are_part_of_the_requirement() {
-        // 只剩 direct 可用时 bar 不再被需要。
-        let path = negotiate(&downgrade_op(), &cpu_without(&[Prim::Bar])).expect("应降级到 direct");
-        assert_eq!(path.variant, "direct");
-        // 再去掉公共需求里的 dot：两条链都不可行，诊断必须点名 bar（来自 pipe<2> 调度）。
-        let error = negotiate(&downgrade_op(), &cpu_without(&[Prim::Bar, Prim::Dot])).unwrap_err();
-        assert!(error.to_string().contains("bar"), "{error}");
-    }
-
-    /// 空证据不是"全都具备"：链会走完，每一档都不可行，原因写的是"欠一次执行"。
-    #[test]
-    fn an_unexecuted_l2_offer_does_not_negotiate() {
-        let error = negotiate_with(&op(), &cpu(), &Proof::none()).unwrap_err();
-        let text = error.to_string();
-        assert!(text.contains("没有这次执行的见证"), "{text}");
-        assert!(!error.needs.is_empty(), "{error}");
-        assert!(
-            error.needs.iter().all(|need| !need.is_satisfied()),
-            "空证据下一档都不能满足：{:?}",
-            error.needs
-        );
-        // 它不是因为"档案没写"而失败：这些供给都写着 L2，缺的是执行。
-        assert!(
-            error
-                .needs
-                .iter()
-                .all(|need| !need.blocked_by_grade && need.unproven),
-            "{:?}",
-            error.needs
-        );
-    }
-
-    /// 档案自述是解释性报告的口径：同一份档案按声明协商照样命中首档。
-    #[test]
-    fn the_declared_reading_is_still_available_for_reports() {
-        let profile = cpu();
-        let declared = Proof::declared(&profile);
-        let verified = profile
-            .provides
-            .iter()
-            .filter(|have| have.grade.is_verified())
-            .count();
-        assert_eq!(declared.len(), verified, "每一条 grade ≥ L2 的供给都在里面");
-        let path = negotiate_with(&op(), &profile, &declared).expect("按声明可行");
-        assert!(path.is_head());
-    }
-
-    /// 两条覆盖同一需求的供给：先取这次真的跑过的那条，而不是等级写得漂亮的那条。
-    #[test]
-    fn a_proven_supply_wins_over_a_higher_grade_that_was_not_executed() {
-        let op = op();
-        let need = op
-            .needs
-            .iter()
-            .find(|need| need.prim == Prim::Dot)
-            .expect("dot 需求")
-            .clone();
-        let mut profile = cpu();
-        // 一条从没被执行过的 `L3`：签名与 `scalar_f32` 逐项相同，只有等级写得更漂亮。
-        let mut vendor = profile
-            .providers(Prim::Dot)
-            .next()
-            .cloned()
-            .expect("cpu 有 dot 供给");
-        vendor.impl_name = "vendor_dot".to_string();
-        vendor.grade = Grade::L3;
-        profile.provides.push(vendor);
-
-        let mut proof = Proof::none();
-        for have in &profile.provides {
-            if have.impl_name != "vendor_dot" {
-                proof.insert(have.prim, &have.impl_name);
-            }
-        }
-        let (chosen, _) = select(&profile, &need, &proof).expect("有供给");
-        assert_eq!(
-            chosen.impl_name, "scalar_f32",
-            "不能拿没执行过的等级去挤掉跑过的实现"
-        );
-
-        // 反向：它真的跑过了，就按等级取它。
-        let mut proven = proof.clone();
-        proven.insert(Prim::Dot, "vendor_dot");
-        let (chosen, _) = select(&profile, &need, &proven).expect("有供给");
-        assert_eq!(chosen.impl_name, "vendor_dot");
-    }
-}
+mod tests;
