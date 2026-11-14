@@ -333,15 +333,18 @@ trait Compress {
 - 删前全仓核实：`train/nn/serve/根 bin` 无任何对这些模块或符号的引用；`serve` 的 `Envelope` 是其自有 proto 类型，与 weights 无关。
 - 测试数 170 → **104**（被删簇自带的自闭环用例随之移除）；`cargo check --all-targets`（含 nn/train/根）干净。
 
-### 剩余 T1/T2 项
+### SEG 收口与 T2 第一笔（工作树，未提交）
 
-- `seg.rs` 三视图（`Segment` 写输入 / `Desc` 解码 / `Stored` 读视图）收敛为共享 `Descriptor`，消除字段双份漂移。
-- `rans.rs` 以 `Compress` trait 替代 `Codec` 的 match 分支（§5.3）。
-- T2 性能：叶子惰性缓存、两遍编码合一、排序索引、mmap 后端、rANS 预检、基准守卫。
+- **三视图收敛**：`Segment`（写输入）/ `Desc`（解码）/ `Stored`（读视图）共享的 `name/dtype/shape/quant` 抽成内嵌 `pub(crate) Descriptor`，字段单一来源；`Segment` 补对称访问器 `name/dtype/shape/quant`，`data` 仍为公开字段。公开构造 `Segment::new` 与下游消费面不变。
+- **两遍编码合一**：`Writer::finish` 原先先 `encoded_len`（prepare 一遍，逐段 `rans::encode`）再 `write_body`（又 prepare 一遍）。抽出 `write_body_in(packed, ..)`，`finish` 只 prepare 一次，把同一份 packed 复用于长度计数与正文写出；`encoded_len` 仍独立单遍。`encode_into`/`write_to_path` 路径行为不变。
+- 复核结论：`Codec` 仅 `Store/Rans` 两变体，enum+match 分派已清晰，不另套 `Compress` trait（避免为两个策略过度设计）。
+
+### 延后项（需更大改动或实测证据，本轮不强行推进）
+
+- T2 性能：`Archive::leaves` 每次重解压+哈希全段（证明/校验重复），加惰性缓存需引入可变状态，属取舍；`Header::get`/`Archive::get` 名字线性查找，加名字索引会增加结构与代码；生产 `File` 后端按条目 seek+read，`storage::Mmap` 目前仅测试用，进生产要把 storage 提为运行时依赖；rANS 小帧预检阈值需要基准支撑。
 - 质量补欠：`bin` 负例与覆盖在 `tests/` 内补回；fuzz 从 `json` 扩到 gguf/zip/seg/写端。
 
-### 门禁同步（工作树，未提交）
+### 门禁同步
 
 - 架构门禁 `every_public_type_is_listed_or_baselined` 初跑报 10 条过期基线：`Axis/Note/Params/Pick/SecretKey/Spectral/Stable/Svd/Trunc/Zip`（孤儿簇已删、`Zip` 合并后私有化）。已从 `lints/vocabulary.toml` 的 `[[ownership.unlisted]]` weights 段清除；现存适配器内部件保留 `Bin/Gguf/Mode/Sha256/Value`。
-- 复测：`tests/architecture.rs` 8/8 通过；`cargo nextest --workspace` **952/952** 通过；`cargo clippy --workspace --all-targets` 0 告警；`cargo fmt --all --check` 0 diff。
-- 复核结论：`Codec` 仅 `Store/Rans` 两变体，enum+match 分派已清晰，不另套 `Compress` trait（避免为两个策略过度设计）；seg 三视图共享四字段的 `Descriptor` 收敛列为可选后续，本轮不动公开面。
+- 复测：`tests/architecture.rs` 8/8 通过；`cargo nextest --workspace` **952/952** 通过；`cargo clippy --workspace --all-targets` 0 告警；`cargo fmt --all --check` 0 diff；weights 12 个平级源文件，全部 ≤899 行。

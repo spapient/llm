@@ -68,9 +68,9 @@ impl Writer {
     /// 追加一个已自洽的段；重名在这里被拒。
     pub fn push(&mut self, segment: Segment) -> Result<&mut Self> {
         segment.validate()?;
-        if self.segs.iter().any(|known| known.name == segment.name) {
+        if self.segs.iter().any(|known| known.name() == segment.name()) {
             return Err(
-                Error::new(Code::Invalid, format!("段 `{}` 重复", segment.name))
+                Error::new(Code::Invalid, format!("段 `{}` 重复", segment.name()))
                     .with("weights::Writer::push"),
             );
         }
@@ -94,7 +94,7 @@ impl Writer {
         let leaves: Vec<_> = self
             .segs
             .iter()
-            .map(|segment| crate::proof::leaf(&segment.name, &segment.data))
+            .map(|segment| crate::proof::leaf(segment.name(), &segment.data))
             .collect();
         crate::proof::root(&leaves)
     }
@@ -126,24 +126,39 @@ impl Writer {
     /// 把除全局 CRC 外的全部正文写进 `out`；位置由 [`Measured`] 精确跟踪以做对齐。
     fn write_body(&self, out: &mut impl Sink, align_log: u8) -> Result<()> {
         let packed = self.prepare();
+        self.write_body_in(&packed, out, align_log)
+    }
+
+    /// 用已算好的 `packed` 写正文；长度预演与实际写出共用同一份编码结果，避免再编一遍。
+    fn write_body_in(
+        &self,
+        packed: &[(Codec, Cow<'_, [u8]>)],
+        out: &mut impl Sink,
+        align_log: u8,
+    ) -> Result<()> {
         let mut measured = Measured::new(out);
         measured.put(&MAGIC.to_le_bytes());
         measured.put(&VERSION.to_le_bytes());
         measured.put(&self.flags().to_le_bytes());
         measured.put(&[align_log]);
         leb::write(&mut measured, self.segs.len());
-        write_descs(&self.segs, &packed, self.checksum, &mut measured)?;
-        write_data(&packed, align_log, &mut measured);
+        write_descs(&self.segs, packed, self.checksum, &mut measured)?;
+        write_data(packed, align_log, &mut measured);
         Ok(())
     }
 
     /// 产出容器字节；`align_log` 是对齐边界的 2 的幂指数（0..=16，常用 6 = 64 B）。
     pub fn finish(&self, align_log: u8) -> Result<Vec<u8>> {
         Self::check_align(align_log)?;
-        let expected = self.encoded_len(align_log)?;
+        let packed = self.prepare();
+        let expected = {
+            let mut count = Count::default();
+            self.write_body_in(&packed, &mut count, align_log)?;
+            count.0 + 4
+        };
         let mut buf = Vec::with_capacity(expected);
         let mut sealed = Sealed::new(&mut buf);
-        self.write_body(&mut sealed, align_log)?;
+        self.write_body_in(&packed, &mut sealed, align_log)?;
         let global = if self.checksum { sealed.checksum() } else { 0 };
         // 全局 CRC 本身不进 CRC，直接写底层缓冲。
         buf.extend_from_slice(&global.to_le_bytes());
@@ -153,8 +168,9 @@ impl Writer {
 
     /// 整份容器的精确字节数；与 [`Writer::finish`] 走同一编码路径。
     pub fn encoded_len(&self, align_log: u8) -> Result<usize> {
+        let packed = self.prepare();
         let mut count = Count::default();
-        self.write_body(&mut count, align_log)?;
+        self.write_body_in(&packed, &mut count, align_log)?;
         Ok(count.0 + 4)
     }
 

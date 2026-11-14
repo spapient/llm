@@ -40,17 +40,40 @@ impl Codec {
     }
 }
 
+/// 段元数据：名字、类型、形状与可选量化。写端段、解码描述符与读视图三份共用这一份，
+/// 避免同一组字段在三处各自漂移。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Descriptor {
+    pub(crate) name: String,
+    pub(crate) dtype: Wire,
+    pub(crate) shape: Vec<u64>,
+    pub(crate) quant: Option<Quant>,
+}
+
+impl Descriptor {
+    /// 元素个数（乘积，溢出饱和）。
+    fn numel(&self) -> u64 {
+        numel(&self.shape)
+    }
+
+    /// 形状推出的字节数。
+    fn expected_bytes(&self) -> u64 {
+        self.dtype.bytes_for(self.numel())
+    }
+
+    /// 段名非空，rank 可表示；不回答字节长度。
+    fn rank(&self) -> Result<u32> {
+        if self.name.is_empty() {
+            return Err(bad("段名不能为空"));
+        }
+        u32::try_from(self.shape.len()).map_err(|_| bad("rank 超出 u32"))
+    }
+}
+
 /// 一个权重段（写端的输入）。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Segment {
-    /// 权重名（非空）。
-    pub name: String,
-    /// 元素类型。
-    pub dtype: Wire,
-    /// 形状（各轴长度）。
-    pub shape: Vec<u64>,
-    /// 可选量化方案。
-    pub quant: Option<Quant>,
+    desc: Descriptor,
     /// 逻辑字节。
     pub data: Vec<u8>,
 }
@@ -65,24 +88,46 @@ impl Segment {
         data: Vec<u8>,
     ) -> Result<Self> {
         let segment = Self {
-            name: name.into(),
-            dtype,
-            shape,
-            quant,
+            desc: Descriptor {
+                name: name.into(),
+                dtype,
+                shape,
+                quant,
+            },
             data,
         };
         segment.validate()?;
         Ok(segment)
     }
 
+    /// 权重名。
+    pub fn name(&self) -> &str {
+        &self.desc.name
+    }
+
+    /// 元素类型。
+    pub fn dtype(&self) -> Wire {
+        self.desc.dtype
+    }
+
+    /// 形状（各轴长度）。
+    pub fn shape(&self) -> &[u64] {
+        &self.desc.shape
+    }
+
+    /// 可选量化方案。
+    pub fn quant(&self) -> Option<&Quant> {
+        self.desc.quant.as_ref()
+    }
+
     /// 元素个数（乘积，溢出饱和）。
     pub fn numel(&self) -> u64 {
-        numel(&self.shape)
+        self.desc.numel()
     }
 
     /// 形状推出的字节数。
     pub fn expected_bytes(&self) -> u64 {
-        self.dtype.bytes_for(self.numel())
+        self.desc.expected_bytes()
     }
 
     /// 自洽校验。
@@ -90,32 +135,24 @@ impl Segment {
     /// 逐轴没有可判的东西：轴长度允许 0（零元素张量），`u64` 本来就非负，越界形状由 `numel` 的
     /// 饱和乘与下面的字节数交叉校验兜住。真正有主体的只有三条：段名、rank 与数据长度。
     pub fn validate(&self) -> Result<()> {
-        let rank = self.rank()?;
+        let rank = self.desc.rank()?;
         self.check_len()?;
-        check_quant(self.quant.as_ref(), rank)
-    }
-
-    /// 段名非空，rank 可表示；不回答字节长度。
-    fn rank(&self) -> Result<u32> {
-        if self.name.is_empty() {
-            return Err(bad("段名不能为空"));
-        }
-        u32::try_from(self.shape.len()).map_err(|_| bad("rank 超出 u32"))
+        check_quant(self.desc.quant.as_ref(), rank)
     }
 
     /// 数据字节数必须等于类型 × 元素个数。
     fn check_len(&self) -> Result<()> {
         let actual = u64::try_from(self.data.len()).map_err(|_| bad("段长度超 u64"))?;
-        let expected = self.expected_bytes();
+        let expected = self.desc.expected_bytes();
         if actual == expected {
             return Ok(());
         }
         Err(bad(&format!(
             "段 `{}` 的数据是 {} 字节，{:?} {:?} 推出 {expected} 字节",
-            self.name,
+            self.desc.name,
             self.data.len(),
-            self.dtype,
-            self.shape
+            self.desc.dtype,
+            self.desc.shape
         )))
     }
 
@@ -127,20 +164,20 @@ impl Segment {
         stored_len: u64,
         seg_crc: u32,
     ) -> Result<()> {
-        let name = self.name.as_bytes();
+        let name = self.desc.name.as_bytes();
         leb::write(out, name.len());
         out.put(name);
-        leb::write(out, self.dtype.code());
-        leb::write(out, self.shape.len());
-        for axis in &self.shape {
+        leb::write(out, self.desc.dtype.code());
+        leb::write(out, self.desc.shape.len());
+        for axis in &self.desc.shape {
             leb::write(out, *axis);
         }
         out.put(&[codec.code()]);
-        match &self.quant {
+        match &self.desc.quant {
             None => out.put(&[0]),
             Some(quant) => {
                 out.put(&[1]);
-                quant.encode(out, self.shape.len() as u32)?;
+                quant.encode(out, self.desc.shape.len() as u32)?;
             }
         }
         leb::write(out, stored_len);
@@ -152,10 +189,7 @@ impl Segment {
 /// 解码后的描述符（数据区间在解析数据区时再确定）。
 #[derive(Debug)]
 pub(crate) struct Desc {
-    name: String,
-    dtype: Wire,
-    shape: Vec<u64>,
-    quant: Option<Quant>,
+    desc: Descriptor,
     codec: Codec,
     data_len: u64,
     seg_crc: u32,
@@ -168,26 +202,20 @@ impl Desc {
         let (quant, data_len, seg_crc) = decode_tail(cur, rank)?;
         check_frame(&name, codec, data_len, dtype.bytes_for(numel(&shape)))?;
         Ok(Self {
-            name,
-            dtype,
-            shape,
-            quant,
+            desc: Descriptor {
+                name,
+                dtype,
+                shape,
+                quant,
+            },
             codec,
             data_len,
             seg_crc,
         })
     }
 
-    pub(crate) fn into_parts(self) -> (String, Wire, Vec<u64>, Option<Quant>, Codec, u64, u32) {
-        (
-            self.name,
-            self.dtype,
-            self.shape,
-            self.quant,
-            self.codec,
-            self.data_len,
-            self.seg_crc,
-        )
+    pub(crate) fn into_parts(self) -> (Descriptor, Codec, u64, u32) {
+        (self.desc, self.codec, self.data_len, self.seg_crc)
     }
 }
 

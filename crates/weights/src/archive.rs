@@ -17,7 +17,7 @@ use crate::leb::Cursor;
 use crate::proof::{Digest, Proof};
 use crate::quant::Quant;
 use crate::rans;
-use crate::seg::{Desc, Segment, numel};
+use crate::seg::{Desc, Descriptor, Segment, numel};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 
 /// 固定头长度：magic 4 + version 2 + flags 4 + align 1（count 是 LEB，不计入）。
@@ -25,13 +25,10 @@ const FIXED_HEAD: usize = 11;
 
 const FOOTER_LEN: usize = 4;
 
-/// 一个已解析的段：描述符 + 重算出的绝对字节区间。
+/// 一个已解析的段：共享描述符 + 重算出的绝对字节区间。
 #[derive(Debug, Clone)]
 pub struct Stored {
-    name: String,
-    dtype: Wire,
-    shape: Vec<u64>,
-    quant: Option<Quant>,
+    desc: Descriptor,
     codec: Codec,
     start: usize,
     len: usize,
@@ -41,7 +38,7 @@ pub struct Stored {
 impl Stored {
     /// 段名。
     pub fn name(&self) -> &str {
-        &self.name
+        &self.desc.name
     }
 
     /// 存储编解码方式。
@@ -51,17 +48,17 @@ impl Stored {
 
     /// 元素类型。
     pub fn dtype(&self) -> Wire {
-        self.dtype
+        self.desc.dtype
     }
 
     /// 形状。
     pub fn shape(&self) -> &[u64] {
-        &self.shape
+        &self.desc.shape
     }
 
     /// 量化方案（若有）。
     pub fn quant(&self) -> Option<&Quant> {
-        self.quant.as_ref()
+        self.desc.quant.as_ref()
     }
 
     /// 数据起点。
@@ -81,7 +78,7 @@ impl Stored {
 
     /// 逻辑字节数：元素类型 × 元素个数，也是 `rans::decode` 的分配上限（来自描述符而非帧）。
     pub fn logical_len(&self) -> Result<usize> {
-        usize::try_from(self.dtype.bytes_for(numel(&self.shape)))
+        usize::try_from(self.desc.dtype.bytes_for(numel(&self.desc.shape)))
             .map_err(|_| invalid("段的逻辑长度超 usize"))
     }
 }
@@ -149,7 +146,8 @@ impl<'a> Archive<'a> {
             if actual != seg.crc {
                 return Err(invalid(format!(
                     "段 `{}` 的 CRC 不匹配：声明 {:#010x}，实算 {actual:#010x}",
-                    seg.name, seg.crc
+                    seg.name(),
+                    seg.crc
                 )));
             }
         }
@@ -163,7 +161,7 @@ impl<'a> Archive<'a> {
 
     /// 按名查段。
     pub fn get(&self, name: &str) -> Option<&Stored> {
-        self.segs.iter().find(|seg| seg.name == name)
+        self.segs.iter().find(|seg| seg.name() == name)
     }
 
     /// 借用段的原始存储字节（零拷贝，不做解压）。
@@ -185,7 +183,7 @@ impl<'a> Archive<'a> {
         let mut leaves = Vec::with_capacity(self.segs.len());
         for seg in &self.segs {
             let logical = self.load(seg)?;
-            leaves.push(crate::proof::leaf(&seg.name, &logical));
+            leaves.push(crate::proof::leaf(seg.name(), &logical));
         }
         Ok(leaves)
     }
@@ -289,7 +287,7 @@ fn layout(
         if end > footer_pos {
             return Err(invalid(format!(
                 "段 `{}` 的区间超出数据区，文件被截断",
-                segment.name
+                segment.name()
             )));
         }
         stored.push(segment);
@@ -305,7 +303,7 @@ fn layout(
 
 /// 一个描述符落到字节区间：填充为 0、长度可表示、相加不溢出。
 fn place(desc: Desc, bytes: &[u8], cursor: usize, align: usize) -> Result<(Stored, usize)> {
-    let (name, dtype, shape, quant, codec, data_len, crc) = desc.into_parts();
+    let (meta, codec, data_len, crc) = desc.into_parts();
     let Some(start) = crate::align_up(cursor, align) else {
         return Err(invalid("对齐必须是 2 的幂且对齐后不溢出"));
     };
@@ -313,7 +311,10 @@ fn place(desc: Desc, bytes: &[u8], cursor: usize, align: usize) -> Result<(Store
         .get(cursor..start)
         .is_some_and(|pad| pad.iter().all(|b| *b == 0));
     if !pad_ok {
-        return Err(invalid(format!("段 `{name}` 之前的对齐填充含非零字节")));
+        return Err(invalid(format!(
+            "段 `{}` 之前的对齐填充含非零字节",
+            meta.name
+        )));
     }
     let len = usize::try_from(data_len).map_err(|_| invalid("段长度超 usize"))?;
     let Some(end) = start.checked_add(len) else {
@@ -321,10 +322,7 @@ fn place(desc: Desc, bytes: &[u8], cursor: usize, align: usize) -> Result<(Store
     };
     Ok((
         Stored {
-            name,
-            dtype,
-            shape,
-            quant,
+            desc: meta,
             codec,
             start,
             len,
@@ -478,7 +476,7 @@ mod mode_tests {
         let src = Archive::parse(&bytes).expect("src");
 
         let released = release(&src).expect("release");
-        let names: Vec<&str> = released.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = released.iter().map(|s| s.name()).collect();
         assert!(names.contains(&"w"));
         assert!(!names.iter().any(|n| is_opt(n)));
 
@@ -549,7 +547,7 @@ mod patch_tests {
         let cur = Archive::parse(&cur_bytes).expect("cur");
 
         let patch = diff(&base, &cur).expect("diff");
-        assert_eq!(patch[0].name, "b");
+        assert_eq!(patch[0].name(), "b");
         assert_eq!(patch[0].data, f32_segment("b", &[9.0]).data);
     }
 }
