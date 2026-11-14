@@ -40,11 +40,5 @@ name = "wire_codec"
 path = "criterion/wire_codec.rs"
 harness = false
 
-# 采样用例：紧循环调用 negotiate，供 sample / samply 定位热帧；不产出基准数字。
-[[example]]
-name = "negotiate_loop"
-path = "examples/negotiate_loop.rs"
-harness = false
-
 [lints]
 workspace = true

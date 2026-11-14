@@ -2548,13 +2548,22 @@ cargo test --workspace --all-features       # 59 目标 / 1 071 通过 / 0 失�
 ### 23.8 性能采样坐实与满足路径去分配
 
 - 首轮工具：`samply record --save-only --main-thread-only -d 6` 直跑 criterion 二进制；release `strip = "debuginfo"` 剥掉符号，仅 4 个样本、`pages` 空、`symbolicated=false`，热点不可解析。
-- 采样用例：新增 `crates/benches/examples/negotiate_loop.rs`——不起 criterion，release 紧循环调用 `cap::negotiate`，次数由 `ITERATIONS` 环境变量覆盖；编译须保留符号：
-  `CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=false cargo build -p llm-benches --example negotiate_loop --release`。
-- 复采：macOS 内置 `sample <pid> 4 -mayDie`（`pgrep -x negotiate_loop` 按进程名取 pid，避免采到包装 shell）。采样帧显示满足路径上 `select` 克隆胜出 `Provide`（`String impl_name` + `Vec<Attr>` + witness）、构造随后被 `is_satisfied()` 过滤丢弃的 `NeedReport`，对应的 malloc/memmove/free 占主成本。
+- 采样方式：在保留符号的 release 构建上紧循环调用 `cap::negotiate`（次数由环境变量覆盖）；编译须保留符号：
+  `CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=false cargo bench -p llm-benches --bench negotiate --no-run`。
+  该采样辅助不落地为 `example` 目标（非生产代码只允许 criterion 基准或测试），需要时按上述临时构建复采。
+- 复采：macOS 内置 `sample <pid> 4 -mayDie` 按进程名取 pid，避免采到包装 shell。采样帧显示满足路径上 `select` 克隆胜出 `Provide`（`String impl_name` + `Vec<Attr>` + witness）、构造随后被 `is_satisfied()` 过滤丢弃的 `NeedReport`，对应的 malloc/memmove/free 占主成本。
 - 改动（不触公开 API）：`select_borrowed` 只借档案供给不克隆；`failing_report` 仅在需求失败时克隆胜出供给并构造报告，满足路径直接返回 `None`；`Offer::satisfied()` 收束覆盖/等级/见证判定；`check_need` 降为 `#[cfg(test)]` 测试夹具。`NeedReport` 公有字段与契约断言不变。
 - 复测：criterion 中位数 **182.40 ns** [180.82, 184.17]（拆分前 1.0648 µs，约 5.8×）；紧循环单次 196.8 ns。复采确认 `Provide` 克隆/报告堆分配已从满足路径消失。
 - 剩余：`Provide::diff` 的属性 `filter_map`/`memcmp` 与单次 `ChainStep` 分配；进一步下压要改 `prof/src/atom.rs`（并发 WIP），收益递减，本轮停止。
 - 体量：`cap.rs` 测试模块迁出为 `cap/tests.rs`（生产 597 行 / 测试 323 行），均在 `file_max_lines=899` 内；`failing_report` 圈复杂度 4（限 5）。
+
+### 23.9 libfuzzer harness 与 fuzz CI job
+
+- 契约层 `llm-fuzz` 运行时仍只依赖 `diagnostic`；三个解析器适配（`cli::Invocation`、`weights::json`、`weights::safetensors::Archive`）抽到共享 `drivers.rs`，确定性 `sweep` 测试与 libfuzzer harness 取同一份定义，两份判据不漂移。
+- libFuzzer 运行时 `libfuzzer-sys 0.4.13` 走可选 `engine` feature；默认 `cargo test/build/clippy` 不编译它。三个 harness 是 `harness = false` 的独立 `[[test]]` 目标（不是 `example`），位置 `tests/fuzz_*.rs`；`cli`/`weights` 仍是 dev-dependency，契约边界与架构门声明不变。
+- CI 新增 `fuzz` job（ubuntu）：装 clang，按 libfuzzer-sys 手册开 sancov 覆盖 + `-Z sanitizer=address`，每个目标有界 30 秒运行；崩溃/ASan 报错非零退出，复现输入上传为 artifact。
+- 非生产代码只允许 criterion 基准或测试：移除原 `benches/examples/negotiate_loop.rs` 采样样例及其 `[[example]]` 声明；仓内 `[[example]]` 声明为 0。
+- 遗留：`crates/weights/examples/dump_bin.rs` 仍是 example 目标（并发 weights WIP，未改动）；它实质是运维导出 CLI，应在该 WIP 落地时迁为 `src/bin` 工具，并把"无 example 目标"补成架构门断言。
 
 
 

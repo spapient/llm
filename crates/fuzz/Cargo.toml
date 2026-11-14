@@ -9,13 +9,40 @@ readme.workspace = true
 description = "Fuzz contract: deterministic seeds, target trait and the invariants a parser must keep."
 publish = false
 
+[features]
+# 只在构建 libfuzzer harness 时启用；默认 `cargo test/build` 不编译 libFuzzer 运行时。
+engine = ["dep:libfuzzer-sys"]
+
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+# libFuzzer 运行时只服务 harness；契约库不引用它，未启用 `engine` 时不编译。
+libfuzzer-sys = { version = "0.4.13", optional = true }
 
-# 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）。只在测试里用，不进运行时。
+# 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）与 libfuzzer harness（见 `tests/fuzz_*.rs`）。
+# 只在测试与 harness 里用，不进契约库运行时。
 [dev-dependencies]
 cli = { path = "../cli", package = "llm-cli" }
 weights = { path = "../weights", package = "llm-weights" }
+
+# libfuzzer 目标是 `harness = false` 的独立测试二进制：拿 dev-dependencies，但不走 libtest；
+# 不作为 `example` 样例目标存在。仅在 `engine` feature 下编译。
+[[test]]
+name = "fuzz_cli"
+path = "tests/fuzz_cli.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_weights_json"
+path = "tests/fuzz_weights_json.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_weights_safetensors"
+path = "tests/fuzz_weights_safetensors.rs"
+harness = false
+required-features = ["engine"]
 
 [lints]
 workspace = true

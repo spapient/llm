@@ -8,11 +8,16 @@
 //! 它们都是"外部来的字节"，也都把错误当返回值，因此"不 panic / 结论稳定 / 拒绝有话说"
 //! 三条契约在这里是同一件事。
 //!
+//! 适配定义统一来自 [`drivers`]，与 libfuzzer harness 共用，避免两份判据漂移。
+//!
 //! **不再覆盖 TOML**：`ops/`、`devices/`、`lints/vocabulary.toml` 在构建期就被解析成表
 //! （ADR 0022），运行期没有 TOML 入口可灌；`op` 的声明入口要一份模板正文作上下文，由
 //! `op` 自己的单测逐条覆盖。
 
-use diagnostic::{Code, Error};
+#[path = "../drivers.rs"]
+mod drivers;
+
+use drivers::{Invocation, Json, Safetensors};
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
@@ -20,58 +25,6 @@ use llm_fuzz::{Seed, Target, sweep};
 /// 512 条 × 3 个目标 = 1536 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能覆盖
 /// 每个字节位置被扰动一次"就够——加密强度的随机源在这里没有价值，可复现才有。
 const CASES: u64 = 512;
-
-/// 文本解析器的公共外壳：非 UTF-8 不是"解析失败"，而是"这份输入不适用于文本入口"。
-///
-/// 仍然是一个合法的拒绝（带类别的非空消息），因此不影响三条契约；把它区分出来只是为了让
-/// 之后加字节入口时不必再想一遍。
-fn text(input: &[u8]) -> Result<&str, Error> {
-    std::str::from_utf8(input)
-        .map_err(|_| Error::new(Code::Invalid, "输入不是 UTF-8").with("fuzz::parsers"))
-}
-
-/// 命令行：空白切词，再交给唯一的文法。
-struct Invocation;
-
-impl Target for Invocation {
-    fn name(&self) -> &str {
-        "cli::Invocation"
-    }
-
-    fn run(&self, input: &[u8]) -> Result<(), Error> {
-        let words: Vec<String> = text(input)?
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        cli::Invocation::parse(&words).map(|_| ())
-    }
-}
-
-/// safetensors 头部里的 JSON。
-struct Json;
-
-impl Target for Json {
-    fn name(&self) -> &str {
-        "weights::json"
-    }
-
-    fn run(&self, input: &[u8]) -> Result<(), Error> {
-        weights::json::parse(text(input)?).map(|_| ())
-    }
-}
-
-/// safetensors 整体：8 字节头长 + JSON 头 + 数据段。
-struct Safetensors;
-
-impl Target for Safetensors {
-    fn name(&self) -> &str {
-        "weights::safetensors::Archive"
-    }
-
-    fn run(&self, input: &[u8]) -> Result<(), Error> {
-        weights::safetensors::Archive::parse(input).map(|_| ())
-    }
-}
 
 /// 一份合法的命令行：默认命令 + 一个带取值的选项。
 const ARGS: &[u8] = b"status --weights model.safetensors";

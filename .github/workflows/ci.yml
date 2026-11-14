@@ -150,3 +150,43 @@ jobs:
       # CI 只保证基准代码始终可编译；实测与基线判定在固定硬件上跑（跨机器绝对值不可比）。
       - name: Build benchmarks
         run: cargo bench --workspace --all-features --locked --no-run
+
+  fuzz:
+    name: fuzz (libfuzzer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-01"
+      - uses: Swatinem/rust-cache@v2
+      # libFuzzer 运行时与 ASan 由 clang 提供；Rust 侧只接 `libfuzzer-sys` 垫片。
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang
+      # 覆盖引导 + 地址 sanitizer：按 libfuzzer-sys 手册传 sancov 覆盖标志与 `-Z sanitizer=address`。
+      # harness 在 `engine` feature 后才编译，常规 test/clippy 不构建 libFuzzer 运行时。
+      # `harness = false` 的测试二进制带哈希名、留在 build out 目录，运行前按目标名解析路径。
+      - name: Build fuzz harnesses
+        run: |
+          for target in fuzz_cli fuzz_weights_json fuzz_weights_safetensors; do
+            cargo rustc -p llm-fuzz --features engine --test "$target" --release --locked -- \
+              -C passes='sancov-module' \
+              -C llvm-args='-sanitizer-coverage-level=3' \
+              -C llvm-args='-sanitizer-coverage-inline-8bit-counters' \
+              -Z sanitizer=address
+          done
+      # 有界运行：每个目标 30 秒；崩溃/ASan 报错以非零退出，libFuzzer 把复现输入留在 artifact 目录。
+      - name: Run fuzz targets (bounded)
+        run: |
+          mkdir -p fuzz-artifacts
+          for target in fuzz_cli fuzz_weights_json fuzz_weights_safetensors; do
+            bin="$(find target/release/build/llm-fuzz -type f -name "$target"-* ! -name '*.d' ! -name '*.o' | head -1)"
+            "$bin" -max_total_time=30 -print_final_stats=1 -artifact_prefix=./fuzz-artifacts/
+          done
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-artifacts
+          path: fuzz-artifacts/
+          retention-days: 14
