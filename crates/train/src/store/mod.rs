@@ -285,6 +285,18 @@ fn output_slice<'a, L: Lane>(op: &str, view: &'a mut ViewMut<'_>) -> Result<&'a 
     L::slice_mut(view).ok_or_else(|| wrong_lane(op, "输出", L::KIND, actual))
 }
 
+/// 输出长度按行宽 `k` 求批次数；`k` 为 0 或不能整除时显式报错，不把维度错误静默成 0。
+fn batches(op: &str, len: usize, k: usize) -> Result<usize> {
+    if k == 0 || !len.is_multiple_of(k) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("`{op}` 输出 {len} 个元素不能按行宽 {k} 整除"),
+        )
+        .with(SITE));
+    }
+    Ok(len / k)
+}
+
 /// 元数 1..=3 的拆包：元数、顺序与形态在同一次单态化里核对。
 macro_rules! inputs {
     ($(($lane:ident, $value:ident): $index:literal),+ $(,)?) => {
@@ -374,7 +386,8 @@ macro_rules! gemm {
             let (a, b) = <($lane, $lane) as Inputs>::unpack(inputs, stringify!($run))?;
             let out = output_slice::<f32>(stringify!($run), output)?;
             let m = a.len() / $div;
-            op::$run::forward(a, b, m, out.len().checked_div(m).unwrap_or(0), out)
+            let rows = batches(stringify!($run), out.len(), m)?;
+            op::$run::forward(a, b, m, rows, out)
         }
     )*};
 }
@@ -418,7 +431,8 @@ fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = op::attention::MODEL.shape.1;
-    op::attention::forward(q, k, v, out, q.len().checked_div(d).unwrap_or(0), d)
+    let heads = batches("attention_f32", q.len(), d)?;
+    op::attention::forward(q, k, v, out, heads, d)
 }
 
 /// 同形参，走 online softmax 版 `op::attention::flash_forward`。
@@ -426,7 +440,8 @@ fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "flash_attention_f32")?;
     let out = output_slice::<f32>("flash_attention_f32", output)?;
     let d = op::attention::MODEL.shape.1;
-    op::attention::flash_forward(q, k, v, out, q.len().checked_div(d).unwrap_or(0), d)
+    let heads = batches("flash_attention_f32", q.len(), d)?;
+    op::attention::flash_forward(q, k, v, out, heads, d)
 }
 
 /// `[q: u8] → y: f32`：打包字节每字节两个 nibble，参数取样本常量。
