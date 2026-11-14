@@ -34,7 +34,7 @@ crate 外真实引用：`Header` / `Entry` / `Reader` / `Loader`、`safetensors:
 - **已成立**：`Entry/Header/Reader/Loader` 契约自洽；`storage` 只做物理布局；`train` 只记恢复事实。
 - **差距 1（真重复，跨 crate）**：`train::snapshot` 自造了第二套 `Sink`（Count/Vec/Slice/File/Sealed）、
   `Cursor`、LEB128 编解码与非规范拒绝判定，而 `weights::sink/leb` 已有同一套，只是 `pub(crate)`
-  借不出来。审计 §P2-7 已记账。
+  借不出来。审计 §P2-7 已记账；其后 `reader`/`gguf` 两份 `align_up` 也已收口到 weights 私有共享件（2 的幂 + 溢出校验，gguf 收紧为拒绝非 2 的幂对齐）。
 - **差距 2（错层）**：纯字节码基础件（CRC/LEB/Sink）位于 L5 权重层；L6 为取 CRC 向上借权重依赖。
 - **差距 3（扁平混杂）**：weights 34 个文件平铺六类关注——契约、字节码、LLPK 容器、外部格式适配、
   量化族、后量子证明；lib 文档有分组但无边界强制。
