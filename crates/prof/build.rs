@@ -40,7 +40,11 @@ fn run() -> diagnostic::Result<()> {
             .and_then(|stem| stem.to_str())
             .unwrap_or_else(|| panic!("`{}` 的文件名不是合法 UTF-8", path.display()));
         let table = buildgen::read(path)?;
-        let _ = writeln!(code, "            (\"{name}\", {}),", buildgen::emit(&table, name)?);
+        let _ = writeln!(
+            code,
+            "            (\"{name}\", {}),",
+            buildgen::emit(&table, name)?
+        );
         names.push(name);
     }
 

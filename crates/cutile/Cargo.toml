@@ -13,7 +13,6 @@ publish = false
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 prim = { path = "../prim", package = "llm-prim" }
-llm-config = { path = "../config" }
 op = { path = "../op", package = "llm-op" }
 prof = { path = "../prof", package = "llm-prof" }
 

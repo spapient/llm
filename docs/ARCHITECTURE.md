@@ -10,8 +10,8 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`dtype`、`testkit`、`llm-config`、`tool` | 错误类型、精度闭集、测试夹具、配置分层与路径、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义 |
-| L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集、算子声明与词汇表闭集（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
+| L1 基础设施 | `diagnostic`、`dtype`、`testkit`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、测试夹具、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
+| L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集（`devices/*.toml` 在构建期解析成表）、算子声明与词汇表闭集（`ops/*.toml` 同上）（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `mem`、`tensor`、`storage`、`tokenizer` | 分配、张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 LLPK 容器读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
@@ -35,14 +35,14 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 82 条，含 13 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 75 条，含 11 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
-cutile   → annotation, diagnostic, llm-config, op, prim, prof（annotation 是工具边：`#[frontend]` 注解）    +dev: testkit
-op       → annotation, diagnostic, llm-config, prof（工具边：`#[model]` 注解，不参与方向判定）
+cutile   → annotation, diagnostic, op, prim, prof（annotation 是工具边：`#[frontend]` 注解）    +dev: testkit
+op       → annotation, diagnostic, prof（工具边：`#[model]` 注解，不参与方向判定）
 annotation → dtype（工具边：变体名唯一事实源 `DType::variant`，不参与方向判定）
 prim     → prof, diagnostic
-prof     → llm-config, diagnostic, dtype
+prof     → diagnostic, dtype
 mem      → diagnostic
 tensor   → mem, diagnostic, dtype
 storage  → tensor, diagnostic
@@ -56,19 +56,32 @@ train    → nn, autograd, data, weights, shard, op, tensor, diagnostic
 engine   → tensor, diagnostic    +dev: testkit
 serve    → engine, tokenizer, diagnostic    +dev: testkit
 cli      → diagnostic
-fuzz     → diagnostic    +dev: cli, llm-config, prof, weights（工具成员，不参与方向判定；`+dev` 的四个是 `tests/parsers.rs` 的驱动对象）
+fuzz     → diagnostic    +dev: cli, weights（工具成员，不参与方向判定；`+dev` 的两个是 `tests/parsers.rs` 的驱动对象，解析器本身来自它已经依赖的 `diagnostic`；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
 benches  → +dev: prof, op, tool（工具成员：集中测量容器，不参与方向判定；op 是被测对象，tool 提供回退判定）
-llm      → cli, cutile, diagnostic, engine, llm-config, nn, op,
+llm      → cli, cutile, diagnostic, engine, nn, op,
            prim, prof, serve, tensor, tokenizer, tool, train, weights
-tool     → llm-config, diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定）
+tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）
 testkit  → （叶：无出边，被 cutile / autograd / serve / engine / weights 的 dev 依赖消费）
-diagnostic / llm-config → （叶：被大量成员消费）
+diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自己的出边为零）
 ```
 
 七条吸收链（`checkpoint→train`、`audit→cutile`、`regress→tool`、`exec→engine`、`kv→engine`、`einsum→op`、`proto→serve`）
-**已落地**（ADR 0019）：成员从 33（含根包）降到 26，边从 106 条降到 81 条：消失的边是被吸收方的全部出边与全部入边，
+**已落地**（ADR 0019）：成员从 33（含根包）降到 26，边从 106 条降到 82 条：消失的边是被吸收方的全部出边与全部入边，
 新增的边只有 `cutile → annotation`（工具边）、`benches → +dev: tool` 与 `serve → +dev: testkit`（`proto` 的 CRC 对拍随迁）。
 方向合法性没有变化：七条链都是"同层向左"或"跨层向下"，因此 `tests/architecture.rs` 的方向断言一条都不需要放宽。
+
+第八次是**拆分后删除**（ADR 0020 → 0021）：`llm-config` 没有单一消费者，不能像上面七条那样被某个 crate 整体吸收，
+所以按"谁真的用得上"分成两半——设置层（分层、来源、键闭集、平台目录）只有一个生产消费者，进
+`crates/cutile/src/settings/`；TOML 语法层有六个跨层消费者，进 `diagnostic::toml`（该模块在第九次 ADR 0022 即被删除，现不存在，构建期共享内核现为 `diagnostic::buildgen`；每个读 TOML 的成员本来就已依赖
+`diagnostic`，因此这条边不新增、只消失）。成员 26 → **25**，边 82 → **76**，`+dev` 13 → **12**；消失的六条边是
+`op` / `prof` / `tool` / `cutile` / `llm` / `fuzz` 各自指向语法层的那一条。
+
+第九次是**解析器退场**（ADR 0022）：那六个消费者真正需要的不是"能解析 TOML"，而是"已经解析好的那棵树"。
+于是 `ops/`、`devices/`、`lints/vocabulary.toml` 改由 `op` / `prof` / `tool` 各自的 `build.rs` 在构建期解析
+（`toml` 只作 `[build-dependencies]`），生成 `diagnostic::data::Table` 字面量；`cutile` 的运行期配置文件层
+（内置默认 < 环境变量 < `--set` 之外的第四层）连同它的 `schema` 校验、文件相对路径基准、未知键校验一起删除。
+585 行解析器与 8 条复杂度基线消失，成员数与边数不变（解析器原本就在 `diagnostic` 里）；唯一减少的边是
+`fuzz → +dev: prof`——它的 TOML 目标没有入口可灌了。
 
 ## 三、所有权表（一个类型只能有一个主人）
 
@@ -79,11 +92,11 @@ diagnostic / llm-config → （叶：被大量成员消费）
 
 | 概念 | 唯一主人 | 说明 |
 |---|---|---|
-| `Error` / `Code` / `Result` | `diagnostic` | 全仓库唯一的错误类型；`op` / `prof` / `prim` / `cutile`（含 `report`）用同一份它，类别由**产生错误的那一层**给（`ProfileError::code`、`prim` 的装载诊断），上层只补上下文。`Error::also` 把同一次校验里的第二条失败追加为同级诊断（各自带类别，不再被 join 成一行 `invalid`）；`Error::from_io` 是"路径不存在 `missing` / 存在但读不出 `io`"的唯一判定；`Code::exit_code` 是类别到 shell 退出码的唯一映射（2/3/4/5/70） |
+| `Error` / `Code` / `Result` | `diagnostic` | 全仓库唯一的错误类型；同一 crate 的 `data` 子模块（ADR 0022）还拥有 `Table` / `Value`——它们是**声明数据树**，由构建期生成代码构造，运行期没有解析器，因此也不存在"语法错误"这一类；`op` / `prof` / `prim` / `cutile`（含 `report`）用同一份它，类别由**产生错误的那一层**给（`ProfileError::code`、`prim` 的装载诊断），上层只补上下文。`Error::also` 把同一次校验里的第二条失败追加为同级诊断（各自带类别，不再被 join 成一行 `invalid`）；`Error::from_io` 是"路径不存在 `missing` / 存在但读不出 `io`"的唯一判定；`Code::exit_code` 是类别到 shell 退出码的唯一映射（2/3/4/5/70） |
 | `DType` / `QType` / `MxType` / `Element` | `dtype` | 全仓唯一的精度事实源，三个格式轴分文件（`Element` 是 MX 的子闭集）：`dtype.rs` 的 `DType` 是标量闭集（24 个变体，Bool、U1–U64、I1–I64、F8 两种、F4、F16、BF16、F32、F64、`F8E4M3FNUZ`/`F8E5M2FNUZ`），稳定数字 code 与 LLPK 容器逐位兼容（前 21 个与旧 Wire 同码，F4 追加 22、FNUZ 追加 23/24）；`qtype.rs` 的 `QType` 是 GGML 块量化（25 个格式，传统 Q、K-quant、IQ 查表、TQ 三元四族；`Scale` 记块内 scale 前缀形状 f16/双 f16/f32/sub-scale，`Family` 记编码族，二者正交，`q8_K` 的 f32 d 与 `iq4_nl` 的单 d 各按源码如实分类）；`mxtype.rs` 的 `MxType` 是微缩放（OCP MX 六个标准格式 + NVFP4 厂商扩展，块共享纯指数 scale），同文件的 `Element` 是 MX 块内元素格式（E2M1/E2M3/E3M2/E4M3/E5M2/INT8，6 个，只回答位宽与标量对应）。这些格式只放身份与布局元数据，反量化算法留在 `weights`；除 `parse_name`（转调 trait 默认实现）外 inherent 访问器全部 `const fn`，零运行时开销，同一批读法再由 `Format` / `BlockFormat` 提供一次泛型视角（stable 无 const trait：几何的唯一实现是 inherent `const fn`，trait 只转发；`parse_name` 反过来由 trait 默认实现唯一提供），`Layout<B>` 是「标量元素或块格式」的唯一几何（`weights` 的 GGUF 支持表用 `Layout<QType>`，接 MXFP4 时换 `Layout<MxType>`）。各层以再导出（`tensor`、`weights` 的 `Wire`）、trait 或子集表表达局部能力，不再手写跨层映射 |
-| `Settings` / `Key` / `Roots` / `App` | `llm-config` | 配置分层、路径解析与**应用身份**；其它 crate 用 `Settings::<自己的 App>::load()` 而不是复制分层逻辑 |
+| `Settings` / `Key` / `Roots` / `Layer` / `Origin` | `cutile` | 设置层（`crates/cutile/src/settings/`，ADR 0020 → 0022）：三层优先级（内置默认 < 环境变量 < `--set`）、来源追踪、键闭集与平台目录，**没有配置文件**。它曾是独立成员 `llm-config`，但那套机制只有 `cutile` 一个生产消费者、"应用身份"只有一个实现、五种值形状里只有"路径"可达——合进来删掉一个成员、一个类型参数、一套值类型系统与一条依赖边，用户可见行为一条未变（四层优先级、`CUTILE_CACHE` 兼容名、未知键报错、`schema` 校验、两种相对路径基准）。`Key` 现在是 `impl prof::atom::Closed`：`ALL` 是切片，`as_str` / `parse` 由 `inherent_names!` 转发，`[closed]` 白名单不再为配置层开口子。TOML 语法**没有**跟过来：`op` / `prof` / `tool` 也读它，所以解析器先并进同层零依赖的 `diagnostic`（ADR 0021），随后连它自己也被删除——语料改在构建期解析成 `diagnostic::data` 的表（ADR 0022），设置层只剩三层，没有配置文件、没有 `schema` 字段 |
 | `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` | `op` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；不认识设备、tile 或片段 |
-| `Op` / 模板文本 / `Signature` / `Sample` / `Model` | `op` | 算子声明、模板与算子语义（签名、样本、标量参考），现有两条算子 `gemv_i4`（4 位）与 `gemv_f32`（稠密），它们共用一份泛型骨架、只差格式契约；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生（`output_type` 与 `Model::dtype` 交叉核对，回读只认 `float`）；代价由 `op::einsum` 推出，`Cost` 只是再导出；`bind` 是真实数据进入样本的唯一入口（只换 `x` / `w`，量化缓冲明确拒绝） |
+| `Op` / 模板文本 / `Signature` / `Sample` / `Model` | `op` | 算子声明、模板与算子语义（签名、样本、标量参考），`REGISTRY` 现有 22 条注册（GEMV 与 GEMM 各三个格式、逐元素与归约、形态算子、注意力两条、解量化两条），其中 GEMV 三条共用一份泛型骨架、只差格式契约；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生（`output_type` 与 `Model::dtype` 交叉核对，回读只认 `float`）；代价由 `op::einsum` 推出，`Cost` 只是再导出；`bind` 是真实数据进入样本的唯一入口（只换 `x` / `w`，量化缓冲明确拒绝） |
 | `Format` / `OperandSpec` / `Element` / `Cache` | `op` | GEMV 骨架的格式契约：`Format` 把"随精度变化"的部分（权重元素、位宽、粒度、派生轴、标度、解包循环）收成关联常量与方法，`OperandSpec` 是表达式的操作数表（`const` 数组，装载时再转 `Operand`），`Element` 是样本缓冲的元素闭集（`f32` / `u8`，让 `reference` 不必按变体分发），`Cache` 是每格式一份的表达式缓存（`static` 在泛型作用域里只有一份，所以缓存必须由具体格式持有），`Format::CHECK` 是格式对自身声明的自证（粒度 > 0、派生轴除数就是粒度——两处都拿同一个常数算分组，否则代价与样本是两种语义），由 `#[model]` 生成物在别名上求值；`Quantized<G>` / `Dense<B>` 的 const 参数分别承载声明粒度与累加块宽，`cost` / `sample` / `reference` 按格式单态化，`Model` 里仍是三个 `fn` 指针 |
 | `OpDecl` / `Template` / `Segment` / `Registration` / `LayoutSpec` / `Schedule` / `Masking` | `op` | 声明解析的结果与三张闭集（模板词法、布局构造子、调度模板），以及唯一的算子注册表 `REGISTRY`（名字 / 声明 / 模板 / 语义表同属一条注册，`BUILTIN` 与 `model()` 都是它的投影）；`cutile` 只消费，不再持有第二份 |
 | `Profile` / 能力词汇表 | `prof` | 设备档案与闭集；机制代码不得出现 `vendor == "..."` |
@@ -160,7 +173,7 @@ diagnostic / llm-config → （叶：被大量成员消费）
 - `Set<E, WORDS>` 是唯一的位集：`WORDS` 是 const 参数，`Set<E, 1>` 装不下 `E::ALL.len() > 64`
   是**编译错误**（`const FITS: () = assert!(..)` 在单态化时求值），因此"加第 65 个原语"会先在
   编译期被拦住，而不是等到越界；
-- 不在契约可达范围内的成员（`diagnostic` / `config` / `tensor` / `shard` / `serve`：都在
+- 不在契约可达范围内的成员（`diagnostic` / `tensor` / `shard` / `serve`：都在
   `prof` 之下，反向依赖会成环）允许把词汇表留在本地，但必须登记在
   `lints/vocabulary.toml` 并写明理由；`serve` 的豁免条目指的是它的 `proto` 子模块（帧类型 `Kind`）。
 
@@ -206,7 +219,7 @@ diagnostic / llm-config → （叶：被大量成员消费）
 `annotation` 仍然零外部依赖，只依赖 `dtype` 这个 L1 零依赖基座：`syn` / `quote` / `proc-macro2`
 仍然不进入供应链（见 ADR 0005），而 `dtype` 名 → 变体名的映射取唯一事实源 `DType::variant`，
 不再靠手写映射 + 门禁核对两份规则；给过程宏拉一条到 `prof` 的依赖边仍然被拒绝（`prof` 会带入
-`llm-config` / `diagnostic` 的传递依赖，且 `dtype` 已经提供了注解所需的全部类型身份）。
+`diagnostic` 的传递依赖，且 `dtype` 已经提供了注解所需的全部类型身份）。
 
 ## 四、占位策略
 
