@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Single error type for the workspace: closed Code set plus context-carrying Error."
+description = "Std-only L1 base: the workspace's single error type, exit-code contract and declarative data tree."
 publish = false
 
 [dependencies]
