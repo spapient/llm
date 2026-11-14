@@ -277,4 +277,21 @@ mod tests {
         );
         assert_eq!(dataset.remaining_batches(), 0);
     }
+
+    #[test]
+    fn the_trait_object_reports_and_yields_the_same_stream() {
+        let tokens: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+        let mut chunks = Chunks::new(&tokens, 1, 3).expect("数据");
+        // 走 trait 对象路径：具体类型上的同名调用会解析到 inherent 方法，只有 `dyn Dataset`
+        // 才真正执行 trait 实现里的三个转发，从而验证对象安全契约与转发正确性。
+        let ds: &mut dyn Dataset<'_> = &mut chunks;
+        assert_eq!(ds.cols(), 3);
+        assert_eq!(ds.batches(), 3);
+        assert_eq!(ds.remaining_batches(), 3);
+        for expected in [&tokens[0..3], &tokens[3..6], &tokens[6..9]] {
+            assert_eq!(ds.next_batch().expect("整批").tokens(), expected);
+        }
+        assert_eq!(ds.remaining_batches(), 0);
+        assert!(ds.next_batch().is_none(), "取空后 trait 路径同样终止");
+    }
 }
