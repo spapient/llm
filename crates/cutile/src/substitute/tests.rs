@@ -1,4 +1,5 @@
 use super::*;
+use diagnostic::Code;
 
 #[test]
 fn splice_substitutes_positional_and_named_holes() {
@@ -25,12 +26,14 @@ fn missing_positional_arg_is_an_error() {
     let args = [Arg::Expr("x")];
     let err = splice("$1", &args, 7).expect_err("缺位置参数");
     assert!(err.to_string().contains("$1"), "{err}");
+    assert_eq!(err.code(), Code::Invalid, "缺绑定是模板/片段契约不合法");
 }
 
 #[test]
 fn missing_named_arg_is_an_error() {
     let err = splice("$nope", &[], 7).expect_err("缺命名参数");
     assert!(err.to_string().contains("nope"), "{err}");
+    assert_eq!(err.code(), Code::Invalid, "缺绑定是模板/片段契约不合法");
 }
 
 #[test]

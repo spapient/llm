@@ -27,6 +27,10 @@ pub struct CacheKey {
     pub flags_hash: u64,
     /// 架构键。
     pub arch: String,
+    /// 内核实现标签（与档案 `provides.impl_name` 同源）；同原语不同实现必须是两条独立条目（ADR 0027 §6）。
+    pub impl_name: String,
+    /// 分块宽度（tile 尺寸 / 量化块宽）；标量实现记 `1`，P1 plan 层填真实块宽。
+    pub block: String,
     /// AST 规范编码的哈希：`FNV(ast::encode(&nodes))`。
     pub ast_hash: u64,
     /// 参与拼接的片段与内容哈希。
@@ -54,6 +58,8 @@ impl CacheKey {
             ("emit", self.emit.to_string()),
             ("flags", format!("{:016x}", self.flags_hash)),
             ("arch", self.arch.clone()),
+            ("impl", self.impl_name.clone()),
+            ("block", self.block.clone()),
             ("ast", format!("{:016x}", self.ast_hash)),
             ("fragments", format!("{fragments:?}")),
             ("layouts", format!("{layouts:?}")),

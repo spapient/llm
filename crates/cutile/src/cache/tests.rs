@@ -7,6 +7,8 @@ fn key() -> CacheKey {
         emit: Emit::C,
         flags_hash: 0x1234,
         arch: "aarch64".to_string(),
+        impl_name: "scalar".to_string(),
+        block: "1".to_string(),
         ast_hash: 0xabcd,
         fragments: vec![(Prim::Dot, 1), (Prim::Load, 2)],
         layouts: vec![("w".to_string(), "row".to_string())],
@@ -78,6 +80,17 @@ fn changing_any_field_changes_the_hash() {
     assert_ne!(key().hash(), other.hash());
     other.variant = "direct".to_string();
     assert_ne!(key().hash(), other.hash());
+}
+
+/// 内核身份字段（实现名 / 块宽）必须进指纹：同原语不同实现或不同块宽不能互相命中。
+#[test]
+fn kernel_identity_fields_change_the_hash() {
+    let mut other = key();
+    other.impl_name = "dp4a".to_string();
+    assert_ne!(key().hash(), other.hash(), "换实现必须换键");
+    other.impl_name = key().impl_name.clone();
+    other.block = "32".to_string();
+    assert_ne!(key().hash(), other.hash(), "换块宽必须换键");
 }
 /// 工具链不属于源文本：它的身份在 [`ArtifactKey`] 里，而且是实测值。换编译器不该让源文本失效。
 #[test]

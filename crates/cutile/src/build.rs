@@ -431,6 +431,23 @@ fn check_layout(slot: &str, spec: &LayoutSpec, profile: &Profile) -> diagnostic:
     space::check_alignment(profile, *b).map_err(|error| error.with(format!("布局槽位 `{slot}`")))
 }
 
+/// 内核实现标签：参与展开片段的实现名并集排序去重；片段装载失败时回退空标签。
+fn impl_tag(fragments: &diagnostic::Result<FragmentSet>) -> String {
+    fragments
+        .as_ref()
+        .map(|set| {
+            let mut names: Vec<&str> = Prim::ALL
+                .iter()
+                .copied()
+                .filter_map(|prim| set.implementation(prim))
+                .collect();
+            names.sort();
+            names.dedup();
+            names.join(",")
+        })
+        .unwrap_or_default()
+}
+
 /// 缓存指纹（README §10.3）：键覆盖的每一项都必须是"改了它就会改变产物"的输入。`flags` 与 `preamble`
 /// 一起哈希；布局与数据类型取声明而不是编一个具体形状——声明式会插进模板，给定形状才有的步长不属于
 /// 构建期输入。
@@ -472,6 +489,8 @@ fn key(
                 .collect()
         })
         .unwrap_or_default();
+    // 内核实现标签：参与展开片段的实现名并集排序去重；同原语多实现时各自成独立缓存条目（ADR 0027 §6）。
+    let impl_name = impl_tag(&prepared.fragments);
     // 缓存指纹锚定结构化 AST：FNV(AST 规范编码)。AST 不可用时回退到模板哈希，
     // 保持 key() 不返回 Result 的容错契约；正常路径下两条路径已由双射测试守着。
     let ast_hash = match &prepared.nodes {
@@ -484,6 +503,8 @@ fn key(
         emit: profile.meta.emit,
         flags_hash: emit::fnv1a(&flags),
         arch: profile.meta.id.clone(),
+        impl_name,
+        block: "1".to_string(),
         ast_hash,
         fragments: fragment_hashes,
         layouts,
