@@ -81,6 +81,15 @@ const SCENARIOS: &[Scenario] = &[
         dtype: "f32",
         batch: 1,
     },
+    Scenario {
+        group: "attention_f32",
+        benchmark: "flash_decode_128x64",
+        scenario: "attention_f32/flash_decode_128x64",
+        op: "op::attention",
+        shape: &[128, 64],
+        dtype: "f32",
+        batch: 1,
+    },
 ];
 
 /// 各主机登记基线：`(host, scenario, ns/iter, 允许的相对偏差%)`。
@@ -101,6 +110,13 @@ const BASELINES: &[(&str, &str, f64, f64)] = &[
     ("macos-aarch64", "rope_f32/decode_1x4096", 9_487.0, 10.0),
     // M4 Pro（2026-11-16，两趟标量参考）：2374 ns / 100 次采样；噪声相对均值约 1.5%，预算取 10%。
     ("macos-aarch64", "rmsnorm_f32/decode_1x4096", 2_374.0, 10.0),
+    // M4 Pro（2026-11-16，online flash 参考 128×64）：517442 ns / 100 次采样；噪声相对均值约 1.5%，预算取 10%。
+    (
+        "macos-aarch64",
+        "attention_f32/flash_decode_128x64",
+        517_442.0,
+        10.0,
+    ),
 ];
 
 /// 本机标识：`os-arch`。criterion 的绝对值只在同一台机器上可比，标识也就到这一层。
