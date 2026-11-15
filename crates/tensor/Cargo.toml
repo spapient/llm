@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Logical tensor metadata: DType, Shape, Strides and a read-only byte view."
 publish = false
+autotests = false
 
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }
