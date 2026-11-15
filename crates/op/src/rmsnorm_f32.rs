@@ -53,34 +53,25 @@ pub fn sample(len: usize, _: usize) -> Sample {
     }
 }
 
-/// 标量参考：两趟，与内核同一公式。
-pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    let x = sample.f32("x")?;
-    let gamma = sample.f32("gamma")?;
+/// 参考两参前置：长度一致且非空（空行没有可统计的均方根）。
+fn check_ref(x: &[f32], gamma: &[f32]) -> diagnostic::Result<()> {
     if x.len() != gamma.len() {
         return Err(Error::new(
             Code::Invalid,
             format!("x 与 gamma 长度不一致：{} 与 {}", x.len(), gamma.len()),
         ));
     }
-    let len = x.len();
-    let mut sum_sq = 0.0;
-    for value in x {
-        sum_sq += value * value;
+    if x.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            "rmsnorm 输入不能为空：均方根无定义",
+        ));
     }
-    let rms = (sum_sq / (len as f32) + EPS).sqrt();
-    Ok(x.iter()
-        .zip(gamma.iter())
-        .map(|(value, weight)| weight * value / rms)
-        .collect())
+    Ok(())
 }
 
-/// 内核本体：结果写进调用方给的缓冲。
-///
-/// # Errors
-///
-/// 三个缓冲等长，否则返回说明。
-pub fn forward(x: &[f32], gamma: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+/// 内核三参前置：等长且非空。
+fn check_kernel(x: &[f32], gamma: &[f32], out: &[f32]) -> diagnostic::Result<()> {
     if x.len() != gamma.len() || x.len() != out.len() {
         return Err(Error::new(
             Code::Invalid,
@@ -92,12 +83,48 @@ pub fn forward(x: &[f32], gamma: &[f32], out: &mut [f32]) -> diagnostic::Result<
             ),
         ));
     }
-    let len = x.len();
-    let mut sum_sq = 0.0;
-    for value in x {
-        sum_sq += value * value;
+    if x.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            "rmsnorm 输入不能为空：均方根无定义",
+        ));
     }
-    let rms = (sum_sq / (len as f32) + EPS).sqrt();
+    Ok(())
+}
+
+/// 归一化第一趟：平方和。累加是串行依赖，保留逐元素循环；参考与内核共用同一份口径。
+fn sum_sq(x: &[f32]) -> f32 {
+    let mut sum = 0.0;
+    for value in x {
+        sum += value * value;
+    }
+    sum
+}
+
+/// 标量参考：两趟，与内核同一公式。
+///
+/// # Errors
+///
+/// 输入为空时返回说明：空行没有可统计的均方根。
+pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+    let x = sample.f32("x")?;
+    let gamma = sample.f32("gamma")?;
+    check_ref(x, gamma)?;
+    let rms = (sum_sq(x) / (x.len() as f32) + EPS).sqrt();
+    Ok(x.iter()
+        .zip(gamma.iter())
+        .map(|(value, weight)| weight * value / rms)
+        .collect())
+}
+
+/// 内核本体：结果写进调用方给的缓冲。
+///
+/// # Errors
+///
+/// 三个缓冲等长，或输入为空时返回说明：空行没有可统计的均方根。
+pub fn forward(x: &[f32], gamma: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    check_kernel(x, gamma, out)?;
+    let rms = (sum_sq(x) / (x.len() as f32) + EPS).sqrt();
     for ((out, x), gamma) in out.iter_mut().zip(x).zip(gamma) {
         *out = gamma * x / rms;
     }

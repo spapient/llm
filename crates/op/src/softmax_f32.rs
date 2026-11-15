@@ -46,8 +46,18 @@ pub fn sample(len: usize, _: usize) -> Sample {
 }
 
 /// 标量参考：三趟，与内核同一公式。
+///
+/// # Errors
+///
+/// 输入为空时返回说明：空行没有可归一化的分母。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let x = sample.f32("x")?;
+    if x.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            "softmax 输入不能为空：归一化分母无定义",
+        ));
+    }
     let max = x.iter().copied().fold(f32::MIN, f32::max);
     let mut sum = 0.0;
     let exps: Vec<f32> = x
@@ -65,12 +75,18 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 ///
 /// # Errors
 ///
-/// 输入与输出等长，否则返回说明。
+/// 输入与输出等长，或输入为空时返回说明：空行没有可归一化的分母。
 pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
     if x.len() != out.len() {
         return Err(Error::new(
             Code::Invalid,
             format!("缓冲长度不一致：x {}、out {}", x.len(), out.len()),
+        ));
+    }
+    if x.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            "softmax 输入不能为空：归一化分母无定义",
         ));
     }
     let max = x.iter().copied().fold(f32::MIN, f32::max);

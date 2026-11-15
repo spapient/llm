@@ -10,3 +10,10 @@ fn softmax_matches_the_scalar_reference_and_sums_to_one() {
     forward(sample.f32("x").expect("x"), &mut out).expect("等长");
     assert_eq!(out, expected);
 }
+
+#[test]
+fn softmax_rejects_empty_input() {
+    let mut out = vec![];
+    assert!(forward(&[], &mut out).is_err(), "空行没有可归一化的分母");
+    assert!(reference(&sample(0, 1)).is_err(), "参考同样拒绝空行");
+}
