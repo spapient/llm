@@ -14,7 +14,7 @@ default-run = "llm"
 # `target/doc/cutile/index.html`（cargo#6313），文件取决于构建顺序。
 [[bin]]
 name = "cutile"
-path = "src/bin/cutile.rs"
+path = "src/bin/cutile/main.rs"
 doc = false
 
 [dependencies]

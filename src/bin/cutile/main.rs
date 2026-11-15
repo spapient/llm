@@ -18,10 +18,13 @@ use cutile::bench::{self, Bench, Peak, Performance, Verdict};
 use cutile::builtin::Catalogue;
 use cutile::doctor::{self, CacheState, CacheWhy, Doctor};
 use cutile::emit::Fragment;
+use cutile::ledger;
 use cutile::verify::{self, Negotiation, Verified, VerifyEntry, VerifyReport};
 use diagnostic::{Code, Error};
 use std::process::ExitCode;
 use tool::Report;
+
+mod ledger_view;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -78,6 +81,7 @@ fn run(command: &CutileCommand, settings: &Settings) -> diagnostic::Result<Strin
         CutileCommand::Bench { op, shape, repeat } => {
             bench(settings, op, shape.as_deref(), *repeat)
         }
+        CutileCommand::Ledger { out } => ledger(settings, out.as_deref()),
         CutileCommand::Cache { limit } => cache_gc(settings, *limit),
     }
 }
@@ -115,6 +119,24 @@ fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<Strin
         ));
     }
     Ok(out)
+}
+
+/// 跨档案台账：聚合现有见证证据，渲染成矩阵 markdown。
+fn ledger(settings: &Settings, out: Option<&str>) -> diagnostic::Result<String> {
+    let dirs = kernel_dirs(settings);
+    let catalogue = Catalogue::load(&dirs)?;
+    let rows = ledger::ledger(&catalogue, &dirs);
+    let text = ledger_view::render(&rows);
+    match out {
+        Some(path) => {
+            let path = std::path::Path::new(path);
+            std::fs::write(path, &text).map_err(|error| {
+                Error::new(Code::Io, format!("写 {} 失败：{error}", path.display()))
+            })?;
+            Ok(format!("ledger → {}\n{text}", path.display()))
+        }
+        None => Ok(text),
+    }
 }
 
 fn doctor(

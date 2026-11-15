@@ -370,7 +370,7 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
         );
         paths.extend(files);
     }
-    paths.push(std::path::PathBuf::from("src/bin/cutile.rs"));
+    paths.extend(rust_files(std::path::Path::new("src/bin/cutile")));
 
     let mut offences = Vec::new();
     for path in paths {

@@ -166,7 +166,7 @@ nloc = 136
 reason = "根入口状态汇总：逐段拼装各层簿记输出；待排版逻辑下沉 tool"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:doctor#0"
+key = "src/bin/cutile/main.rs:doctor#0"
 ccn = 17
 nloc = 127
 reason = "cutile 入口诊断编排：设备/片段/见证多条件分支；待诊断报告组装下沉 tool"
@@ -187,36 +187,36 @@ ccn = 8
 reason = "根入口装载分支：权重/设备/缓存多路径；待引擎装载接缝定型后收口"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:verify#0"
+key = "src/bin/cutile/main.rs:verify#0"
 ccn = 8
 reason = "cutile 入口校验编排：结果分级与退出码分支；待报告组装下沉 tool"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:negotiation#0"
+key = "src/bin/cutile/main.rs:negotiation#0"
 ccn = 7
 reason = "cutile 入口协商排版分支；待下沉 tool"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:describe_negotiation#0"
+key = "src/bin/cutile/main.rs:describe_negotiation#0"
 ccn = 6
 reason = "cutile 入口协商描述排版；待下沉 tool"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:performance_note#0"
+key = "src/bin/cutile/main.rs:performance_note#0"
 ccn = 7
 reason = "cutile 入口性能附注排版分支；待下沉 tool"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:passed_line#0"
+key = "src/bin/cutile/main.rs:passed_line#0"
 ccn = 6
 reason = "cutile 入口报告行排版；待下沉 tool"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:write_ledger#0"
+key = "src/bin/cutile/main.rs:write_ledger#0"
 ccn = 7
 reason = "cutile 入口台账落盘分支；待归 tool"
 
 [[gate.debt]]
-key = "src/bin/cutile.rs:bench#0"
+key = "src/bin/cutile/main.rs:bench#0"
 ccn = 6
 reason = "cutile 入口基准命令排版；待下沉 tool"

@@ -14,6 +14,7 @@ pub const USAGE: &str = "\
   doctor                  打印协商链、布局声明、emit 结果与缓存指纹
   verify                  逐设备验证：协商 + 拼接 + 编译 + 与标量参考对拍
   bench                   跑一次并报告带宽达成率
+  ledger                  跨档案能力台账：每条供给这次执行到的结论
   cache gc                按 LRU 把缓存回收到容量上限以内
 
 选项：
@@ -22,6 +23,7 @@ pub const USAGE: &str = "\
   --why <缓存键>          doctor 用；解释该键与本次构建的键差在哪
   --devices <列表>        verify 用；逗号分隔（缺省 `cpu`）
   --emit-ledger           把能力台账写到 `<work_dir>/ledger/`
+  --out <文件>            ledger 用；给出后把 markdown 台账写到该文件
   --shape <MxN>           bench 用（缺省：算子的生产形状）
   --repeat <次数>         bench 用（缺省 50）
   --limit <字节>          cache gc 用（缺省 2 GiB）
@@ -61,6 +63,11 @@ pub enum CutileCommand {
         /// 重复次数。
         repeat: usize,
     },
+    /// 跨档案能力台账。
+    Ledger {
+        /// 台账 markdown 落盘路径；`None` 只打印到 stdout。
+        out: Option<String>,
+    },
     /// 缓存维护：把缓存回收到容量上限以内。
     Cache {
         /// 容量上限（字节）；`None` 表示用缺省上限。
@@ -96,6 +103,9 @@ const VERIFY: Grammar = &[
 /// `bench` 的选项文法。
 const BENCH: Grammar = &[("--op", Value), ("--shape", Value), ("--repeat", Value)];
 
+/// `ledger` 的选项文法。
+const LEDGER: Grammar = &[("--out", Value)];
+
 /// `cache gc` 的选项文法：上限是字节数，与 `--repeat` 的次数不同。
 const CACHE: Grammar = &[("--limit", Value)];
 
@@ -106,6 +116,7 @@ const SUBCOMMANDS: &[(&str, Grammar, Build)] = &[
     ("doctor", DOCTOR, doctor),
     ("verify", VERIFY, verify),
     ("bench", BENCH, bench),
+    ("ledger", LEDGER, ledger),
 ];
 
 impl CutileCommand {
@@ -165,6 +176,13 @@ fn bench(flags: &Flags) -> Result<CutileCommand> {
         repeat: flags
             .number("--repeat", "`--repeat` 需要正整数")?
             .unwrap_or(50),
+    })
+}
+
+/// `ledger`：跨档案能力台账。
+fn ledger(flags: &Flags) -> Result<CutileCommand> {
+    Ok(CutileCommand::Ledger {
+        out: flags.text("--out"),
     })
 }
 

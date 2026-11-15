@@ -91,6 +91,7 @@ pub mod dirs;
 pub mod doctor;
 pub mod emit;
 pub mod execution;
+pub mod ledger;
 pub mod plan;
 pub mod probe;
 pub mod reference;
