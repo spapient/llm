@@ -421,3 +421,50 @@ fn a_kernel_signature_mismatch_names_the_slot() {
     assert!(error.to_string().contains("第 1 个输入"), "{error}");
     assert_eq!(store.live(), RESIDENT, "失败的这一次没有留下占用");
 }
+
+/// 一条 decode 主路径的三算子链：`gemv_f32 → rope_f32 → softmax_f32` 串在同一张图上，
+/// 训练缓冲逐节点算出的末端值，与手工逐环调用算子参考逐位一致。
+#[test]
+fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
+    const N: usize = 4;
+    let mut tape = Tape::new();
+    let (x, w) = (tape.parameter(), tape.leaf());
+    let h = tape.record("gemv_f32", &[x, w]).expect("记录 gemv");
+    let r = tape.record("rope_f32", &[h]).expect("记录 rope");
+    let p = tape.record("softmax_f32", &[r]).expect("记录 softmax");
+
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(x, Shape::new([N]), DType::F32);
+    sizes.set(w, Shape::new([N, N]), DType::F32);
+    for node in tape.nodes() {
+        sizes.set(node.output(), Shape::new([N]), DType::F32);
+    }
+
+    let input: Vec<f32> = (0..N).map(|i| i as f32 * 0.25 - 1.0).collect();
+    let weights: Vec<f32> = (0..N * N)
+        .map(|i| ((i * 37) % 251) as f32 * 0.125 - 8.0)
+        .collect();
+
+    let mut store = Buffers::new(sizes, Reference);
+    store.load(x, Data::F32(input.clone())).expect("输入");
+    store.load(w, Data::F32(weights.clone())).expect("权重");
+    for node in tape.nodes() {
+        store
+            .compute(node.op(), node.inputs(), node.output())
+            .expect("前向可算");
+    }
+
+    // 手工逐环：与图上同一顺序、同一套算子参考。rope 在参考内核里固定位置 7。
+    let mut h_ref = vec![0.0f32; N];
+    op::gemv_f32::forward(&input, &weights, &mut h_ref).expect("gemv 参考");
+    let mut r_ref = vec![0.0f32; N];
+    op::rope_f32::forward(7, &h_ref, &mut r_ref).expect("rope 参考");
+    let mut expected = vec![0.0f32; N];
+    op::softmax_f32::forward(&r_ref, &mut expected).expect("softmax 参考");
+
+    assert_eq!(
+        f32s(&store, p),
+        expected,
+        "三算子链末端必须与逐环参考逐位一致"
+    );
+}
