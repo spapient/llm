@@ -80,6 +80,14 @@ impl AsRef<u32> for Token {
 ///
 /// 必需方法只覆盖最薄的编码/解码面；对齐元数据、反查、计数与特殊句柄都有默认实现，
 /// 实现者按需覆盖。
+///
+/// # 不变量
+///
+/// - [`encode`](Self::encode) 产出的每个编号都满足 `token.id() < self.vocab_size()`；
+///   解码方据此把越界视为输入错误，而不是回绕取模。
+/// - 对词表内可表达的文本，`decode(&encode(text)?)` 必须还原原文本；词表外片段按各自
+///   实现的 OOV 策略报错或回退到未知编号。
+/// - 特殊 token 由 [`special_tokens`](Self::special_tokens) 句柄登记，不占普通词片查表路径。
 pub trait Tokenizer {
     /// 词表大小（含特殊 token）。
     fn vocab_size(&self) -> usize;
