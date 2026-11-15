@@ -65,8 +65,21 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 
 /// 共享旋转：参考与内核的同一套数学。末尾若有无法配对的元素，原样透传。
 fn rotate(x: &[f32], pos: f32) -> diagnostic::Result<Vec<f32>> {
+    let mut out = vec![0.0; x.len()];
+    rotate_into(x, pos, &mut out)?;
+    Ok(out)
+}
+
+/// 旋转写进给定缓冲：参考与内核共用的算术本体。内核路径由此直写调用方缓冲，
+/// 不再先落一份临时 `Vec` 再整块拷贝；末尾不成对的元素原样透传。
+fn rotate_into(x: &[f32], pos: f32, out: &mut [f32]) -> diagnostic::Result<()> {
+    if x.len() != out.len() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("缓冲长度不一致：x {}、out {}", x.len(), out.len()),
+        ));
+    }
     let d = x.len();
-    let mut out = vec![0.0; d];
     let pairs = d / 2;
     for i in 0..pairs {
         let freq = BASE.powf(-((2 * i) as f32) / d as f32);
@@ -79,7 +92,7 @@ fn rotate(x: &[f32], pos: f32) -> diagnostic::Result<Vec<f32>> {
     if d % 2 == 1 {
         out[d - 1] = x[d - 1];
     }
-    Ok(out)
+    Ok(())
 }
 
 /// 内核本体：结果写进调用方给的缓冲。
@@ -88,15 +101,7 @@ fn rotate(x: &[f32], pos: f32) -> diagnostic::Result<Vec<f32>> {
 ///
 /// 输入与输出等长且为偶数，否则返回说明。
 pub fn forward(pos: usize, x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-    if x.len() != out.len() {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("缓冲长度不一致：x {}、out {}", x.len(), out.len()),
-        ));
-    }
-    let rotated = rotate(x, pos as f32)?;
-    out.copy_from_slice(&rotated);
-    Ok(())
+    rotate_into(x, pos as f32, out)
 }
 
 /// 标记类型：承载 `#[model]` 语义。
