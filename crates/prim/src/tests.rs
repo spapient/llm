@@ -117,3 +117,63 @@ fn a_signature_needs_an_implementation_name() {
         .expect_err("缺 impl 必须报错");
     assert!(error.to_string().contains("impl"), "{error}");
 }
+
+/// 去掉注释并压缩空白：跨设备只比对可执行语句，注释语言与设备说明不参与同构判定。
+fn normalize_body(body: &str) -> String {
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match (chars[i], chars.get(i + 1).copied()) {
+            ('/', Some('*')) => {
+                i += 2;
+                while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                    i += 1;
+                }
+                i = (i + 2).min(chars.len());
+            }
+            ('/', Some('/')) => {
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 同一原语在多台设备上的标量片段必须同构：改点积/解包口径要同时改到，不能只改一台。
+///
+/// 这只约束当前的标量实现；P3 出现设备特化指令（dp4a / mmad / wmma）后，按 `impl`
+/// 分组比对，不同实现之间不再强制同构（ADR 0027 §4）。
+#[test]
+fn same_primitive_bodies_are_isomorphic_across_vendors() {
+    let vendors: Vec<(&str, &str)> = devices()
+        .iter()
+        .map(|device| (device.vendor, device.ext))
+        .collect();
+    for prim in Prim::ALL {
+        let mut bodies = Vec::new();
+        for (vendor, ext) in &vendors {
+            let Some(set) = builtin(vendor, ext) else {
+                continue;
+            };
+            let Some(body) = set.get(*prim) else {
+                continue;
+            };
+            bodies.push(normalize_body(body));
+        }
+        if bodies.len() > 1 {
+            let first = &bodies[0];
+            assert!(
+                bodies.iter().all(|body| body == first),
+                "`{prim}` 跨设备片段正文不一致：标量口径必须同源"
+            );
+        }
+    }
+}
