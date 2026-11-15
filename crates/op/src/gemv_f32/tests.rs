@@ -71,6 +71,18 @@ fn the_reference_is_exact_on_the_deterministic_sample() {
     }
 }
 
+/// 内核本体与标量参考在同一份确定性样本上逐位一致（softmax / rope 同口径）。
+#[test]
+fn forward_matches_the_scalar_reference_on_the_deterministic_sample() {
+    let sample = gemv::sample::<F32>(64, 4);
+    let expected = gemv::reference::<F32>(&sample).expect("参考可计算");
+    let x = sample.f32("x").expect("x");
+    let w = sample.f32("w").expect("w");
+    let mut out = vec![0.0f32; expected.len()];
+    forward(x, w, &mut out).expect("合法形状");
+    assert_eq!(out, expected, "稠密 GEMV 内核与参考必须逐位一致");
+}
+
 #[test]
 fn a_row_that_is_shorter_than_declared_is_rejected() {
     let x = [1.0f32; 4];

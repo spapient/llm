@@ -52,6 +52,16 @@ path = "criterion/gemv_f32.rs"
 harness = false
 
 [[bench]]
+name = "softmax_f32"
+path = "criterion/softmax_f32.rs"
+harness = false
+
+[[bench]]
+name = "rope_f32"
+path = "criterion/rope_f32.rs"
+harness = false
+
+[[bench]]
 name = "weights_container"
 path = "criterion/weights_container.rs"
 harness = false
