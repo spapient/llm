@@ -128,6 +128,21 @@ fn exact_supply_covers_identical_need() {
     );
 }
 #[test]
+fn an_alignment_demand_is_matched_by_a_supply_of_the_same_or_wider_align() {
+    let need = Need::of(Prim::Load).with_attr(Attr::new(AttrKey::Align, ["16"]));
+    let scalar = Provide::of(Prim::Load, "memcpy").with_attr(Attr::new(AttrKey::Align, ["1"]));
+    assert!(!scalar.covers(&need));
+    assert_eq!(
+        scalar.diff(&need),
+        vec![Mismatch::AttrMissing {
+            key: AttrKey::Align,
+            missing: vec!["16".to_string()],
+        }]
+    );
+    let vector = Provide::of(Prim::Load, "neon").with_attr(Attr::new(AttrKey::Align, ["1", "16"]));
+    assert!(vector.covers(&need));
+}
+#[test]
 fn missing_prim_is_reported_first() {
     let need = Need::of(Prim::LoadAsync);
     let have = Provide::of(Prim::Load, "memcpy");

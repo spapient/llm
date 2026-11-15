@@ -210,25 +210,25 @@ impl Prim {
     pub fn attr_keys(self) -> &'static [AttrKey] {
         const ACCURACY: &[AttrKey] = &[AttrKey::Accuracy];
         const LANES: &[AttrKey] = &[AttrKey::Lanes];
-        const TRANSFER: &[AttrKey] = &[AttrKey::Src, AttrKey::Dst];
+        const ALIGNED: &[AttrKey] = &[AttrKey::Src, AttrKey::Dst, AttrKey::Align];
         const AXIS_OP: &[AttrKey] = &[AttrKey::Axis, AttrKey::Op];
         const ATTR_KEYS: [&[AttrKey]; 16] = [
-            ACCURACY,                                       // Mma
-            LANES,                                          // Dot
-            TRANSFER,                                       // Load
-            &[AttrKey::Src, AttrKey::Dst, AttrKey::Stages], // LoadAsync
-            &[AttrKey::Group],                              // CommitWait
-            TRANSFER,                                       // Store
-            &[],                                            // Bar
-            LANES,                                          // Shuffle
-            LANES,                                          // Broadcast
-            AXIS_OP,                                        // Reduce
-            AXIS_OP,                                        // Scan
-            ACCURACY,                                       // Exp2
-            &[AttrKey::Kind, AttrKey::Accuracy],            // Rcp
-            &[AttrKey::Sat],                                // Cvt
-            &[AttrKey::Group],                              // Quant
-            &[AttrKey::Op],                                 // Atomic
+            ACCURACY,                                                       // Mma
+            LANES,                                                          // Dot
+            ALIGNED,                                                        // Load
+            &[AttrKey::Src, AttrKey::Dst, AttrKey::Stages, AttrKey::Align], // LoadAsync
+            &[AttrKey::Group],                                              // CommitWait
+            ALIGNED,                                                        // Store
+            &[],                                                            // Bar
+            LANES,                                                          // Shuffle
+            LANES,                                                          // Broadcast
+            AXIS_OP,                                                        // Reduce
+            AXIS_OP,                                                        // Scan
+            ACCURACY,                                                       // Exp2
+            &[AttrKey::Kind, AttrKey::Accuracy],                            // Rcp
+            &[AttrKey::Sat],                                                // Cvt
+            &[AttrKey::Group],                                              // Quant
+            &[AttrKey::Op],                                                 // Atomic
         ];
         ATTR_KEYS[self as usize]
     }
@@ -382,6 +382,8 @@ vocabulary! {
         #[doc = "预取级数。"] Stages => "stages",
         #[doc = "实现这个原语的硬件单元；单元名由档案的 `[units]` 给出，机制层不认识具体名字。"]
         Exec => "exec",
+        #[doc = "加载 / 存储的起始对齐字节数（1 = 任意对齐）。"]
+        Align => "align",
     }
 }
 inherent_names!(AttrKey);

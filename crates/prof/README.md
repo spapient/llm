@@ -65,7 +65,8 @@ exec  = ["cube"]         # 加载期校验：cube 必须访问得到上面声明
 不同的算法（`dp4a` 的文本被当作 `fma` 用），而这种错在构建期之外没有任何地方能发现。
 
 一个签名由哪些参数构成也是闭集：`Prim::attr_keys` 给出 16 个原语各自的属性键——`dot` /
-`shuffle` / `broadcast` 是 `lanes`，搬运是 `src` / `dst` / `stages`，`reduce` / `scan` 是
+`shuffle` / `broadcast` 是 `lanes`，搬运是 `src` / `dst` / `align`（`load_async` 另带
+`stages`），`reduce` / `scan` 是
 `axis` / `op`，`cvt` 是 `sat`，`rcp` 是 `kind` / `accuracy`，`atomic` 是 `op`，`mma` 是
 `accuracy`，`quant` / `commit_wait` 是 `group`，`bar` 没有；`exec` 对每条原语都成立。档案里
 写上与该原语无关的键（`load.sat`）在装载期就报错，而不是等它永远不被协商检查——协商只比对

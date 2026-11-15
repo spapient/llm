@@ -2,6 +2,8 @@
 // 槽位：{{GMAX}} 来自 [axes]，{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 逻辑只有一份；设备差异全部在 prim/<vendor>/<prim>.<ext> 里。
 // 布局契约（由声明层校验）：w={{w}} x={{x}}
+// 打包前提：M 与 gsz 均为偶数、M 整除 gsz；奇数宽度在 op 前置校验处被拒，模板按 M/2、
+// gsz/2 成对解包，不处理补齐 nibble。
 typedef unsigned char u8;
 
 void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,

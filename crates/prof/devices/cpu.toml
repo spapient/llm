@@ -67,6 +67,7 @@ dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
+align   = ["1"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_load", expect = [1.0] }
 
@@ -79,6 +80,7 @@ space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
 stages  = ["2", "3"]
+align   = ["1"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_load_async", expect = [1.0] }
 
@@ -94,6 +96,7 @@ impl    = "memcpy_out"
 m       = "<=65536"
 dt      = ["f32"]
 space   = ["GM", "REG"]
+align   = ["1"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_store", expect = [3.25] }
 

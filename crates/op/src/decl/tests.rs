@@ -59,7 +59,7 @@ fn an_attr_key_must_belong_to_its_primitive() {
     let text = error.to_string();
     assert!(text.contains("`store`"), "{text}");
     assert!(text.contains("`sat`"), "{text}");
-    assert!(text.contains("src | dst | exec"), "{text}");
+    assert!(text.contains("src | dst | align | exec"), "{text}");
 }
 
 /// 降级链的单调性判据接受借用名：装载期不为它拷一份 `String`。
