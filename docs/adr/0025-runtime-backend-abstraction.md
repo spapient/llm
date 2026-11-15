@@ -1,6 +1,6 @@
 # 0025：运行时后端抽象与多后端预留边界
 
-- 状态：提议（P0 落档；实现随 P1 CPU 后端、P3 Metal/CUDA 落地）
+- 状态：接受（P1 地基 trait 形状与 CPU 安全实现已落地；真实 CPU 内核、P3 Metal/CUDA 边界实现随后续阶段填入）
 - 日期：2026-11-15
 - 相关：[0003](0003-kernel-and-runtime-types.md)（kernel 侧与运行时类型分离）、[0012](0012-quantized-weights.md)（量化权重同源）、[0017](0017-kernel-ast-and-ir-freeze.md)（无 IR 冻结）；路线见 [`../engine-benchmark-roadmap.md`](../engine-benchmark-roadmap.md) §5、§6
 
@@ -28,6 +28,13 @@
 - `Executor`：图提交到流（扩展现有 trait，补流同步与设备关联的形状）。
 
 trait 定义归运行时一侧；具体 crate 归属在 P1 落地时按 [`../ARCHITECTURE.md`](../ARCHITECTURE.md) 层表定。后端实现放在**独立后端边界 crate**，依赖方向只能从边界 crate 指向运行时 trait，禁止反向（ADR 0001）。
+
+**P1 归属裁决（2026-11-15 落地）**：
+
+- `Buffer`（拥有的扁平字节缓冲）、`Allocator`（`alloc` / `free` / 显式 `copy_into`）与 `CpuAllocator`（安全 `Vec<u8>`，无 `unsafe`）归 `storage`（L4 内存/布局层）；
+- `OwnedTensor`（元数据 + 持有字节向量）归 `tensor`（L4 元数据层）。`tensor` 不反向依赖 `storage`：分配器产出字节后，由编排层把字节向量交给 `OwnedTensor::from_bytes`，两层只经字节握手；
+- `Device`（厂商 / 架构轻量标签）与扩展后的 `Executor` 归 `engine`（L6）。`Device` 是 `String` 标签，不直接引用 `prof` 档案类型（避免给 `engine` 新增 `prof` 依赖边）；标签与档案闭集的对应在编排层 / 后端边界完成。
+- `Executor` 形状：`device(&self) -> &Device`、`submit(&mut self, &Graph, Stream)`、`sync(&mut self, Stream)`；`sync` 提供空默认实现，CPU 可立即返回，设备后端在此做事件同步。
 
 ### 2. 张量双形态
 
@@ -78,3 +85,4 @@ Metal / CUDA 的 FFI 与 `unsafe` 只允许出现在后端边界 crate；生产�
 ## 修订
 
 - 2026-11-15：初稿，P0 落档。P1 CPU 实现落地后回填 trait 最终形状；P3 后端边界规则另出 ADR。
+- 2026-11-15：P1 地基落地。`storage::Buffer` / `Allocator` / `CpuAllocator`、`tensor::OwnedTensor`、`engine::Device` 与扩展 `Executor`（`device` / `submit` / `sync`）已实现并通过单测；归属与依赖方向按层表裁决见 §1。可写张量形态落地（§2），设备句柄仍不泄漏到模型与调度层；真实 CPU 算子内核、KV 页缓冲绑定与跨设备拷贝实现随 P1 后续子步填入。
