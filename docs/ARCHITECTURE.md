@@ -35,11 +35,11 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 76 条，含 13 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 77 条，含 14 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
-op       → annotation, diagnostic, prof（工具边：`#[model]` 注解，不参与方向判定）
+op       → annotation, diagnostic, prof    +dev: testkit（工具边：`#[model]` 注解，不参与方向判定）
 annotation → dtype（工具边：变体名唯一事实源 `DType::variant`，不参与方向判定）
 prim     → prof, diagnostic
 prof     → diagnostic, dtype
@@ -60,7 +60,7 @@ benches  → +dev: prof, op, cutile, wire, weights（工具成员：集中测量
 llm      → cli, cutile, diagnostic, engine, nn, op,
            prim, prof, serve, tensor, tokenizer, tool, train, weights
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）
-testkit  → （叶：无出边，被 cutile / autograd / serve / engine / weights 的 dev 依赖消费）
+testkit  → （叶：无出边，被 cutile / autograd / serve / engine / wire / op 的 dev 依赖消费）
 wire     → diagnostic（纯字节码闭集：CRC-32、LEB128、Sink；不认识张量或容器布局）    +dev: testkit
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自己的出边为零）
 ```
@@ -133,7 +133,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Summary` | `autograd` | 图规模与可达性的只读计数快照：角色分布、边数、最大深度、可达变量与死分支；不存变量列表，供诊断、缓存键与容量预估 |
 | `Envelope` / `Frame` / `Decoder` / `Kind` / `Version` | `serve`（`proto` 子模块） | 端点契约的线格式（ADR 0019 第七次吸收）：版本化信封、零拷贝帧视图与增量解码；帧布局、版本规则、载荷上限与校验尾见 ADR 0016。它不再独立成成员——唯一消费者就是同一个 crate 的 [`Response::frame`] 与 `Endpoint`，独立成员只会让"改协议"与"改端点"跨两次提交 |
 | `Batch` / `Split` / `Dataset` / `Chunks` | `data` | 样本与切分。`Batch` 与 `Chunks` 都借用调用方的 token 缓冲（取批零分配、零拷贝），两个构造函数都按 `(rows, cols)` 收几何、与 `Shape::new([rows, cols])` 同序——此前 `Chunks::new` 收 `(cols, rows)`，同一对数字换个构造函数就是一次静默转置。批几何与批总数都在 `Chunks::new` 构造期算好，所以 `Dataset::next_batch` 的 `None` 只有一个含义：剩余不足一整批。三个计数各说一件事：`cols` 是列宽、`batches` 是完整批总数、`remaining_batches` 是还没取走的批数，`Chunks::rows` 只表示每批行数；`Chunks` 还是 `ExactSizeIterator`，`len()` 与 `size_hint` 都取自 `remaining_batches`，「还剩几条」因此只有一个来源。`Dataset<'a>` 是对象安全的（`&mut dyn Dataset<'a>` 可用），而 `Split` 的单位是样本行、`Chunks` 的单位是批，两者不互相换算 |
-| `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`LmHead` 是注解声明的固定形状层（形状、输入宽度与算子写在 `#[spec]` 上，`impl Contract` 与校验测试由宏生成）——它曾经住在 L7 组装点，而组装点不定义类型。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Contract::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
+| `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`LmHead` 是注解声明的固定形状层（形状、输入宽度与算子写在 `#[spec]` 上，`impl Contract` 与校验测试由宏生成）——它曾经住在 L7 组装点，而组装点不定义类型。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、int8 → `gemv_i8`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / 裸 i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Contract::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
 | `RmsNorm` / `Softmax` / `Gelu` / `Silu` / `Rope` / `Scale` / `Add` / `Mul` / `ResidualAdd` / `ReduceSum` / `ReduceMax` / `Embedding` / `Attention` / `AttentionAlgo` / `MatMul` | `nn` | 单算子层：归一化、激活、位置编码、逐元素二元、标量缩放、归约、查表、注意力与矩阵乘。各层只固定自己绑定的已注册算子名与形状口径，规格校验、访问器委托与下界路径共享内核；下界仍由算子语义表推出，层里不写第二份流量常数。`AttentionAlgo` 在朴素与 Flash 两条已注册注意力算子之间选型；`MatMul` 是矩阵 × 矩阵的三轴骨架，收缩轴由 `gemm` 算子固定，层只声明输出行/列宽 |
 | `Bounds` | `nn` | 层的性能下界：`read` / `write` / `flops` 三笔，按方向分账（`bytes()` 是派生合计）；由算子语义推出，不认识设备峰值、也不做 roofline 编排 |
 | `Stack` / `Floor` / `Unpriced` | `nn` | 层栈：一串层 + 它们的总下界（`Bounds::plus`）。层的清单可来自声明或权重文件的条目；不是矩阵的条目列进未覆盖清单，是矩阵但推不出下界的列进无法计价清单——两者都不允许静默丢弃，也都不让整张模型算不出下界 |
