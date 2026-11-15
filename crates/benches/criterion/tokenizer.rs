@@ -7,11 +7,19 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use tokenizer::{Bytes, DecoderStream, Tokenizer};
 
-/// 混合语料：ASCII 单词、CJK 与 emoji，循环到固定字节长度。
+/// 混合语料：ASCII 单词、CJK 与 emoji，循环填充到 4 KiB 的字符边界。
+const TARGET_BYTES: usize = 4096;
 const CHUNK: usize = 32;
 
 fn sample() -> String {
-    "hello 世界 🚀 tokenizer ".repeat(64)
+    let mut out = String::new();
+    for ch in "hello 世界 🚀 tokenizer ".chars().cycle() {
+        if out.len() + ch.len_utf8() > TARGET_BYTES {
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn bench_encode(c: &mut Criterion) {
