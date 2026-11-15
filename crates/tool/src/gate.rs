@@ -36,15 +36,15 @@ pub struct Gate {
 
 /// 一个存量债项的登记度量（只登记仍超标的字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Debt {
+struct Debt {
     /// 登记的圈复杂度。
-    pub ccn: Option<usize>,
+    ccn: Option<usize>,
     /// 登记的函数长度。
-    pub nloc: Option<usize>,
+    nloc: Option<usize>,
     /// 登记的文件行数。
-    pub lines: Option<usize>,
+    lines: Option<usize>,
     /// 登记的禁止形态数量。
-    pub call: Option<usize>,
+    call: Option<usize>,
 }
 
 impl Debt {

@@ -112,6 +112,9 @@ impl Token {
 }
 
 /// 词法器：持有字符游标与当前位置。
+///
+/// 源码先收集成 `Vec<char>`：前缀判定需要向前看一两个字符（[`Lexer::peek_at`]），
+/// 按字符而非字节计数列号，中文注释与字符串也能正确定位；这是静态分析器，不追求零拷贝。
 struct Lexer {
     chars: Vec<char>,
     at: usize,
@@ -432,29 +435,28 @@ pub fn parse(src: &str) -> diagnostic::Result<Vec<Token>> {
     lexer.parse_until(None)
 }
 
-/// 前 N 个顶层 token 的调试文本（测试与诊断用）。
-#[must_use]
-pub fn outline(tokens: &[Token], max: usize) -> String {
-    tokens
-        .iter()
-        .take(max)
-        .map(outline_piece)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// 单个 token 的调试文本。
-fn outline_piece(token: &Token) -> String {
-    match token {
-        Token::Ident { text, .. } | Token::Literal { text, .. } => text.clone(),
-        Token::Punct { ch, .. } => ch.to_string(),
-        Token::Group { delim, .. } => format!("{}..{}", delim.open(), delim.close()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 前 N 个顶层 token 的调试文本。
+    fn outline(tokens: &[Token], max: usize) -> String {
+        tokens
+            .iter()
+            .take(max)
+            .map(outline_piece)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// 单个 token 的调试文本。
+    fn outline_piece(token: &Token) -> String {
+        match token {
+            Token::Ident { text, .. } | Token::Literal { text, .. } => text.clone(),
+            Token::Punct { ch, .. } => ch.to_string(),
+            Token::Group { delim, .. } => format!("{}..{}", delim.open(), delim.close()),
+        }
+    }
 
     #[test]
     fn strips_comments_and_strings_before_analysis() {

@@ -4,9 +4,7 @@
 //! 以及 match 臂（`=>`，首臂不计）。`if` 的 `else` 不重复计数。
 //! 复杂度 `ccn = 1 + 条件计数`；函数长度 `nloc` 为函数体范围内 token 覆盖到的行数。
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use diagnostic::{Code, Error};
+use std::collections::BTreeMap;
 
 use crate::lex::{Delim, Pos, Token, parse};
 use crate::strip::strip_tests;
@@ -30,12 +28,12 @@ pub struct Finding {
 
 /// 函数范围：身份与函数体引用。
 #[derive(Debug)]
-struct Range {
+struct Range<'a> {
     name: String,
     fn_pos: Pos,
     open: Pos,
     close: Pos,
-    body: Vec<Token>,
+    body: &'a [Token],
 }
 
 /// token 扫描时共享的状态：`if` 体待匹配、`else` 归属。
@@ -47,7 +45,7 @@ struct State {
 
 /// 遍历上下文：函数范围与逐函数条件数。
 struct Walker<'a> {
-    ranges: &'a [Range],
+    ranges: &'a [Range<'a>],
     out: Vec<u32>,
     state: State,
 }
@@ -156,7 +154,7 @@ pub fn analyze(src: &str) -> diagnostic::Result<Vec<Finding>> {
 }
 
 /// 递归收集函数定义；宏定义体与函数指针类型都不算定义。
-fn collect(tokens: &[Token], out: &mut Vec<Range>) {
+fn collect<'a>(tokens: &'a [Token], out: &mut Vec<Range<'a>>) {
     let mut idx = 0;
     while idx < tokens.len() {
         if let Some(abs) = macro_body_end(tokens, idx) {
@@ -164,7 +162,7 @@ fn collect(tokens: &[Token], out: &mut Vec<Range>) {
             continue;
         }
         if let Some((range, body_idx)) = function_at(tokens, idx) {
-            collect(&range.body, out);
+            collect(range.body, out);
             out.push(range);
             idx = body_idx + 1;
             continue;
@@ -188,7 +186,7 @@ fn macro_body_end(tokens: &[Token], idx: usize) -> Option<usize> {
 }
 
 /// `idx` 处的函数定义：范围与函数体在同级序列中的下标。
-fn function_at(tokens: &[Token], idx: usize) -> Option<(Range, usize)> {
+fn function_at<'a>(tokens: &'a [Token], idx: usize) -> Option<(Range<'a>, usize)> {
     let Token::Ident { text, pos } = &tokens[idx] else {
         return None;
     };
@@ -202,7 +200,12 @@ fn function_at(tokens: &[Token], idx: usize) -> Option<(Range, usize)> {
 }
 
 /// 从签名之后找函数体：先遇到分号说明只是声明，先遇到花括号就是函数体。
-fn scan_body(tokens: &[Token], from: usize, name: &str, fn_pos: Pos) -> Option<(Range, usize)> {
+fn scan_body<'a>(
+    tokens: &'a [Token],
+    from: usize,
+    name: &str,
+    fn_pos: Pos,
+) -> Option<(Range<'a>, usize)> {
     for (idx, token) in tokens.iter().enumerate().skip(from) {
         match token {
             Token::Group {
@@ -216,7 +219,7 @@ fn scan_body(tokens: &[Token], from: usize, name: &str, fn_pos: Pos) -> Option<(
                     fn_pos,
                     open: *open,
                     close: *close,
-                    body: items.clone(),
+                    body: items,
                 };
                 return Some((range, idx));
             }
@@ -269,38 +272,38 @@ fn arrows(tokens: &[Token]) -> u32 {
 }
 
 /// 位置所属的最内层函数；无函数归属（如顶层 const）的条件不计。
-fn holder(ranges: &[Range], pos: Pos) -> Option<usize> {
+fn holder(ranges: &[Range<'_>], pos: Pos) -> Option<usize> {
     (0..ranges.len())
         .filter(|&at| holds(&ranges[at], pos))
         .max_by_key(|&at| ranges[at].open)
 }
 
-fn holds(range: &Range, pos: Pos) -> bool {
+fn holds(range: &Range<'_>, pos: Pos) -> bool {
     // 范围从 `fn` 起始：签名里的条件（`?Sized` 的 `?`、`where`）同样归属本函数。
     pos >= range.fn_pos && range.close >= pos
 }
 
 /// 函数体范围内 token 覆盖到的行数（空行与纯注释行无 token，自然不计）。
-fn nloc(range: &Range) -> u32 {
-    let mut lines = BTreeSet::new();
-    mark(&range.body, &mut lines);
-    lines.range(range.open.line..=range.close.line).count() as u32
+fn nloc(range: &Range<'_>) -> u32 {
+    let mut marked = vec![false; range.close.line];
+    mark(range.body, &mut marked);
+    marked[range.open.line - 1..]
+        .iter()
+        .filter(|&&flag| flag)
+        .count() as u32
 }
 
-fn mark(tokens: &[Token], lines: &mut BTreeSet<usize>) {
+fn mark(tokens: &[Token], marked: &mut [bool]) {
     for token in tokens {
         for line in token.start_line()..=token.end_line() {
-            lines.insert(line);
+            if let Some(slot) = marked.get_mut(line - 1) {
+                *slot = true;
+            }
         }
         if let Token::Group { items, .. } = token {
-            mark(items, lines);
+            mark(items, marked);
         }
     }
-}
-
-/// 内部不变量失败时的统一构造。
-pub fn error(message: impl Into<String>) -> Error {
-    Error::new(Code::Internal, message)
 }
 
 #[cfg(test)]

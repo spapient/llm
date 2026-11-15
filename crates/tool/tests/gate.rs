@@ -111,21 +111,29 @@ fn judge(
 
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    walk(dir, &mut out);
+    walk(dir, &mut out, "rs", true, &is_production);
     out
 }
 
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+/// 递归收集匹配扩展名的文件；`skip_target` 为真时跳过 `target` 目录，`keep` 是文件谓词。
+fn walk(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    ext: &str,
+    skip_target: bool,
+    keep: &dyn Fn(&Path) -> bool,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if path.file_name() != Some("target".as_ref()) {
-                walk(&path, out);
+            let is_target = path.file_name() == Some("target".as_ref());
+            if !(skip_target && is_target) {
+                walk(&path, out, ext, skip_target, keep);
             }
-        } else if path.extension().is_some_and(|ext| ext == "rs") && is_production(&path) {
+        } else if path.extension().is_some_and(|e| e == ext) && keep(&path) {
             out.push(path);
         }
     }
@@ -145,7 +153,7 @@ fn is_production(path: &Path) -> bool {
 /// 设计文档写的是"现在有什么"，它过期就是错误信息，不是文风问题。
 fn document_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    walk_markdown(&root.join("docs"), &mut out);
+    walk(&root.join("docs"), &mut out, "md", false, &|_| true);
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -163,18 +171,4 @@ fn document_files(root: &Path) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-fn walk_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_markdown(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            out.push(path);
-        }
-    }
 }
