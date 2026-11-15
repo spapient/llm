@@ -51,6 +51,11 @@ impl Bpe {
         right_ranks.get(&parts[index + 1]).copied()
     }
 
+    /// `rank` 是否严格优于当前最优对；空集合视为优于既有候选。
+    fn strictly_better(best: Option<(usize, usize)>, rank: usize) -> bool {
+        best.is_none_or(|(_, min_rank)| rank < min_rank)
+    }
+
     /// 扫描一轮相邻片段，返回本轮应归并的最左最小秩下标；无可用对返回 [`None`]。
     fn best_pair(&self, parts: &[Vec<u8>]) -> Option<usize> {
         let mut best: Option<(usize, usize)> = None;
@@ -58,7 +63,7 @@ impl Bpe {
             let Some(rank) = self.pair_rank(i, parts) else {
                 continue;
             };
-            if best.is_none_or(|(_, min_rank)| rank < min_rank) {
+            if Self::strictly_better(best, rank) {
                 best = Some((i, rank));
             }
         }
