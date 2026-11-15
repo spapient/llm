@@ -515,4 +515,5 @@ fn integer_value(at: usize, bytes: &[u8]) -> Result<i64> {
 }
 
 #[cfg(test)]
+#[path = "json_tests.rs"]
 mod tests;

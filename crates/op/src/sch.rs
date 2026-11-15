@@ -262,4 +262,5 @@ pub fn check_monotonic<S: AsRef<str>>(variants: &[(S, f64)]) -> diagnostic::Resu
 }
 
 #[cfg(test)]
+#[path = "sch_tests.rs"]
 mod tests;

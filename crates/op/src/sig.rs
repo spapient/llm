@@ -518,4 +518,5 @@ fn scalar_ctype(op: &str, name: &str, ty: &str, line: usize) -> diagnostic::Resu
 }
 
 #[cfg(test)]
+#[path = "sig_tests.rs"]
 mod tests;

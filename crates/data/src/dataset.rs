@@ -148,4 +148,5 @@ impl<'a> Dataset<'a> for Chunks<'a> {
 }
 
 #[cfg(test)]
+#[path = "dataset_tests.rs"]
 mod tests;

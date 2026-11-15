@@ -290,4 +290,5 @@ impl<'a> Builder<'a> {
 }
 
 #[cfg(test)]
+#[path = "replay_tests.rs"]
 mod tests;

@@ -165,4 +165,5 @@ fn map_failed() -> *mut c_void {
 }
 
 #[cfg(test)]
+#[path = "mmap_tests.rs"]
 mod tests;

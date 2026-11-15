@@ -260,4 +260,5 @@ fn is_key(key: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "tpl_tests.rs"]
 mod tests;

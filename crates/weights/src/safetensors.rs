@@ -574,4 +574,5 @@ pub(crate) fn invalid(message: String) -> Error {
 }
 
 #[cfg(test)]
+#[path = "safetensors_tests.rs"]
 mod tests;

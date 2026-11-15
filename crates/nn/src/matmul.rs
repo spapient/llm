@@ -72,4 +72,5 @@ impl Contract for MatMul {
 }
 
 #[cfg(test)]
+#[path = "matmul_tests.rs"]
 mod tests;

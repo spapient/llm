@@ -112,4 +112,5 @@ pub struct Rope;
 pub type RopeF32 = Rope;
 
 #[cfg(test)]
+#[path = "rope_f32_tests.rs"]
 mod tests;

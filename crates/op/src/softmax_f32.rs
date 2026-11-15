@@ -92,4 +92,5 @@ pub struct Softmax;
 pub type SoftmaxF32 = Softmax;
 
 #[cfg(test)]
+#[path = "softmax_f32_tests.rs"]
 mod tests;

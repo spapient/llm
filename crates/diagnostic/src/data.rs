@@ -356,4 +356,5 @@ fn walk_mut<'a>(
 }
 
 #[cfg(test)]
+#[path = "data_tests.rs"]
 mod tests;

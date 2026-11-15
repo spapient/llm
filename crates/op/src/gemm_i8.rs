@@ -86,4 +86,5 @@ pub fn forward(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> diagn
 pub type GemmI8Model = GemmI8;
 
 #[cfg(test)]
+#[path = "gemm_i8_tests.rs"]
 mod tests;

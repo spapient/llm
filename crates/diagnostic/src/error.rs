@@ -110,4 +110,5 @@ impl std::error::Error for Error {}
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[cfg(test)]
+#[path = "error_tests.rs"]
 mod tests;

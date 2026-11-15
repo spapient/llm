@@ -174,4 +174,5 @@ pub(crate) fn rejected_shapes(group: u64) -> Vec<(u64, u64)> {
 }
 
 #[cfg(test)]
+#[path = "pipeline_tests.rs"]
 mod tests;

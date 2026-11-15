@@ -722,4 +722,5 @@ impl fmt::Display for Mismatch {
 }
 
 #[cfg(test)]
+#[path = "atom_tests.rs"]
 mod tests;

@@ -155,4 +155,5 @@ impl fmt::Display for Extents {
 }
 
 #[cfg(test)]
+#[path = "extents_tests.rs"]
 mod tests;

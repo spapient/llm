@@ -389,4 +389,5 @@ fn literal(text: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "codegen_tests.rs"]
 mod tests;

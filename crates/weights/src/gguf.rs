@@ -674,4 +674,5 @@ fn bad(message: &str) -> Error {
 }
 
 #[cfg(test)]
+#[path = "gguf_tests.rs"]
 mod tests;

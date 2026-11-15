@@ -77,4 +77,5 @@ layer_delegate!(
 );
 
 #[cfg(test)]
+#[path = "pointwise_tests.rs"]
 mod tests;

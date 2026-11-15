@@ -179,4 +179,5 @@ pub trait Executor {
 }
 
 #[cfg(test)]
+#[path = "exec_tests.rs"]
 mod tests;

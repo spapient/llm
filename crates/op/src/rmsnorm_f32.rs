@@ -112,4 +112,5 @@ pub type RmsNormF32 = RmsNorm;
 pub struct RmsNorm;
 
 #[cfg(test)]
+#[path = "rmsnorm_f32_tests.rs"]
 mod tests;

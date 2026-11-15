@@ -515,4 +515,5 @@ fn key(
 }
 
 #[cfg(test)]
+#[path = "build_tests.rs"]
 mod tests;

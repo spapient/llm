@@ -248,4 +248,5 @@ fn fragments_for(profile: &Profile, root: Option<&Path>) -> diagnostic::Result<p
 }
 
 #[cfg(test)]
+#[path = "builtin_tests.rs"]
 mod tests;

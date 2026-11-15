@@ -226,4 +226,5 @@ impl Cache {
 }
 
 #[cfg(test)]
+#[path = "kv_tests.rs"]
 mod tests;

@@ -491,4 +491,5 @@ impl_from_str!(QType);
 impl_serde!(QType);
 
 #[cfg(test)]
+#[path = "qtype_tests.rs"]
 mod tests;

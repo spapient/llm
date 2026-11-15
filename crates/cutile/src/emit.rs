@@ -127,4 +127,5 @@ pub fn assemble(
 }
 
 #[cfg(test)]
+#[path = "emit_tests.rs"]
 mod tests;

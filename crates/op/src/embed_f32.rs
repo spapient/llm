@@ -99,4 +99,5 @@ pub struct Embed;
 pub type EmbedF32 = Embed;
 
 #[cfg(test)]
+#[path = "embed_f32_tests.rs"]
 mod tests;

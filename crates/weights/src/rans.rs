@@ -399,4 +399,5 @@ fn fault(message: &str) -> Error {
 }
 
 #[cfg(test)]
+#[path = "rans_tests.rs"]
 mod tests;

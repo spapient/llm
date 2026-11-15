@@ -195,7 +195,7 @@ fn sample_is_deterministic_and_sized_to_the_group() {
 
 #[test]
 fn call_arguments_follow_the_template_signature() {
-    let signature = crate::sig::Signature::parse("gemv_i4", include_str!("../../ops/gemv_i4.k"))
+    let signature = crate::sig::Signature::parse("gemv_i4", include_str!("../ops/gemv_i4.k"))
         .expect("签名可解析");
     assert_eq!(
         signature

@@ -250,4 +250,5 @@ impl Baseline {
 }
 
 #[cfg(test)]
+#[path = "regress_tests.rs"]
 mod tests;

@@ -109,4 +109,5 @@ pub fn forward(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> diagn
 pub type GemmI4Model = GemmI4;
 
 #[cfg(test)]
+#[path = "gemm_i4_tests.rs"]
 mod tests;

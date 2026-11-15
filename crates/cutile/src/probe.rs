@@ -86,4 +86,5 @@ fn rival<'a>(
 }
 
 #[cfg(test)]
+#[path = "probe_tests.rs"]
 mod tests;

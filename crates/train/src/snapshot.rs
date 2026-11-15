@@ -764,4 +764,5 @@ fn mismatch(message: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
+#[path = "snapshot_tests.rs"]
 mod tests;

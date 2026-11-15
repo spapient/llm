@@ -280,4 +280,5 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
+#[path = "cutile_tests.rs"]
 mod tests;

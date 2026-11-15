@@ -150,4 +150,5 @@ fn end(what: &str) -> Error {
 }
 
 #[cfg(test)]
+#[path = "leb_tests.rs"]
 mod tests;

@@ -179,4 +179,5 @@ pub fn forward(
 }
 
 #[cfg(test)]
+#[path = "gemv_i4_tests.rs"]
 mod tests;

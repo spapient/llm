@@ -101,4 +101,5 @@ pub fn forward(
 }
 
 #[cfg(test)]
+#[path = "gemv_i8_tests.rs"]
 mod tests;

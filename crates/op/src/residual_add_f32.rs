@@ -44,4 +44,5 @@ pub fn forward(a: &[f32], b: &[f32], out: &mut [f32]) -> diagnostic::Result<()> 
 }
 
 #[cfg(test)]
+#[path = "residual_add_f32_tests.rs"]
 mod tests;

@@ -177,4 +177,5 @@ impl Bounds {
 }
 
 #[cfg(test)]
+#[path = "bounds_tests.rs"]
 mod tests;

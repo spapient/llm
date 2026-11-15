@@ -88,4 +88,5 @@ fn macro_call(tokens: &[Token], idx: usize) -> Option<Call> {
 }
 
 #[cfg(test)]
+#[path = "call_tests.rs"]
 mod tests;

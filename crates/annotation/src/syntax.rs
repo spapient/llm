@@ -751,4 +751,5 @@ impl<'a> Cursor<'a> {
 }
 
 #[cfg(test)]
+#[path = "syntax_tests.rs"]
 mod tests;

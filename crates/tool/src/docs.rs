@@ -48,4 +48,5 @@ fn is_relative(raw: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "docs_tests.rs"]
 mod tests;

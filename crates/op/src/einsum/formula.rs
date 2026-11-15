@@ -503,4 +503,5 @@ fn overflow() -> Error {
 }
 
 #[cfg(test)]
+#[path = "formula_tests.rs"]
 mod tests;

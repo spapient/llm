@@ -250,4 +250,5 @@ fn msvc_version(cl: &Path) -> Vec<u32> {
 }
 
 #[cfg(test)]
+#[path = "toolchain_tests.rs"]
 mod tests;

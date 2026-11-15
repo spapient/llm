@@ -215,4 +215,5 @@ fn parse_one(spec: &GateSpec, path: &Path) -> diagnostic::Result<()> {
 }
 
 #[cfg(test)]
+#[path = "gate_tests.rs"]
 mod tests;

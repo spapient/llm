@@ -151,4 +151,5 @@ fn parse_samples(stderr: &str) -> Vec<f64> {
 }
 
 #[cfg(test)]
+#[path = "runner_tests.rs"]
 mod tests;

@@ -69,4 +69,5 @@ impl<'a> Batch<'a> {
 }
 
 #[cfg(test)]
+#[path = "batch_tests.rs"]
 mod tests;

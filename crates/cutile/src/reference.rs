@@ -117,4 +117,5 @@ pub fn within(got: &[f32], want: &[f32], dt: DType) -> bool {
 }
 
 #[cfg(test)]
+#[path = "reference_tests.rs"]
 mod tests;

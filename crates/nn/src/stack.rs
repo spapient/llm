@@ -300,4 +300,5 @@ fn unique_names<'a>(names: impl Iterator<Item = &'a str>) -> Result<()> {
 }
 
 #[cfg(test)]
+#[path = "stack_tests.rs"]
 mod tests;

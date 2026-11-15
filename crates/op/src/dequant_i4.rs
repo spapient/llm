@@ -92,4 +92,5 @@ pub struct DequantI4;
 pub type DequantI4F32 = DequantI4;
 
 #[cfg(test)]
+#[path = "dequant_i4_tests.rs"]
 mod tests;

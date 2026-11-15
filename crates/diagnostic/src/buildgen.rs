@@ -132,4 +132,5 @@ pub fn relative(base: &Path, path: &Path) -> String {
 }
 
 #[cfg(test)]
+#[path = "buildgen_tests.rs"]
 mod tests;

@@ -86,4 +86,5 @@ pub fn check_alignment(profile: &Profile, swizzle_bits: u8) -> diagnostic::Resul
 }
 
 #[cfg(test)]
+#[path = "space_tests.rs"]
 mod tests;

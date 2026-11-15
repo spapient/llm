@@ -169,4 +169,5 @@ fn check_parity(bits: &[f32], expected: &[f32], tolerance: f64) -> diagnostic::R
 }
 
 #[cfg(test)]
+#[path = "execution_tests.rs"]
 mod tests;

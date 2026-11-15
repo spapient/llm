@@ -29,4 +29,5 @@ impl Reduce {
 }
 
 #[cfg(test)]
+#[path = "reduce_tests.rs"]
 mod tests;

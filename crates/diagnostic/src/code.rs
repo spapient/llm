@@ -75,4 +75,5 @@ impl fmt::Display for Code {
 }
 
 #[cfg(test)]
+#[path = "code_tests.rs"]
 mod tests;
