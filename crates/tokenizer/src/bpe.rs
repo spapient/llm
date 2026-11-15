@@ -91,8 +91,11 @@ impl Tokenizer for Bpe {
             .iter()
             .map(|piece| {
                 self.vocab.lookup(piece).ok_or_else(|| {
-                    Error::new(Code::Invalid, "编码后的片段不在词表内")
-                        .with("tokenizer::Bpe::encode")
+                    Error::new(
+                        Code::Invalid,
+                        format!("编码后的片段不在词表内（片段 {} 字节）", piece.len()),
+                    )
+                    .with("tokenizer::Bpe::encode")
                 })
             })
             .collect()
