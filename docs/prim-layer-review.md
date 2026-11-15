@@ -189,7 +189,7 @@ graph TD
 
 #### C2. 片段参数无类型化契约
 **现状**：`splice` 只校验槽位有无实参（`substitute.rs:124-140`）；哪根是 A、哪根是 B、累加器、长度、dtype、空间、对齐，全靠片段注释约定，装载期不与档案 `provides` 的 `dt/space/lanes/align/...` 逐条对齐。
-**定性**：**部分落地，片段类型签名随 P1**。档案能力维度（dt/space/extent/attrs）已由 `cap::diff` 在协商期逐条核对；片段体内槽位的角色与类型标注当前不存在，装载期交叉校验随 P1 首条真实内核的参数签名一起落地（ADR 0027 §3），本轮不造空中类型契约。
+**定性**：**部分落地，片段类型签名随 P1**。能力维度核对已分三层闭环并有反例守护：模板调用点命名参数 ∈ 变体需求属性闭集（`op::decl::check_call_arguments`），需求 ∩ 档案的 prim/extent/n/k/dt/space/attrs 逐条比对（`cap::Offer::new` → `Provide::diff`），片段 `impl` ↔ 档案选中实现对齐（`builtin::validate::fragment_errors` → `cap::fragment_gaps`）。片段体内槽位的角色与类型标注当前不存在，装载期交叉校验随 P1 首条真实内核的参数签名一起落地（ADR 0027 §3），本轮不造空中类型契约。
 
 #### C3. 测试无片段语义对拍
 **现状**：`prim` 测试只验证内嵌=磁盘、声明合法、闭集名；片段正文算出的数是否与标量参考一致，只由 witness host 自检覆盖 L2 那 9 条；L0 片段（无文本）与占位片段的语义无对拍断言。
