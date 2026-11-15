@@ -1,61 +1,54 @@
-//! CUDA 真机前端：nvcc 把见证编进 `__global__` kernel，在 GPU 上按 tid 逐条执行，再 cudaMemcpy 回读。
+//! CUDA 真机编排：nvcc 把见证编进 `__global__` kernel，在 GPU 上按 tid 逐条执行，再 cudaMemcpy 回读。
 //!
 //! 与 `CudaFront` 的主机语法自检不同，这里是真设备执行；它**不**证明别的架构或别的 `-arch` 下成立。
-//! 共享装载、起进程与回读在 [`crate::device`]。
+//! 片段本体来自 `prim`，本层只做编译编排与回读。共享装载、起进程与回读在 [`crate::device`]。
 
+use crate::device::{self, C_PARAMS, Readback, Sources};
 use crate::dirs::Dirs;
 use crate::prof::Profile;
 use crate::toolchain;
-use crate::witness::{Device, Selected};
+use crate::witness::{MAX_OUT, Selected};
 use diagnostic::{Code, Error, Result};
 use std::path::Path;
 use std::process::Command;
 
-/// CUDA 真机前端：nvcc 把见证编进 `__global__` kernel，在 GPU 上按 tid 逐条执行，再 cudaMemcpy 回读
-/// （与 `CudaFront` 的主机语法自检不同，这里是真设备执行）。它**不**证明别的架构或别的 `-arch` 下成立。
-#[annotation::frontend(emit = "cuda", ext = "cu", tag = "witness")]
-pub struct CudaDevice;
-
-impl Device for CudaDevice {
-    fn available(_profile: &Profile) -> bool {
-        // nvcc 在，且 Windows 上能找到宿主 cl（Linux 上 nvcc 用系统 gcc，不需要 cl）。
-        toolchain::detect_nvcc().is_some()
-            && (std::env::consts::OS != "windows" || toolchain::find_cl().is_some())
-    }
-
-    fn program<const OUT: usize>(
-        profile: &Profile,
-        dirs: &Dirs,
-        selected: &[Selected<'_>],
-        _scope: crate::witness::Scope,
-    ) -> Result<String> {
-        cuda_program::<OUT>(profile, dirs, selected)
-    }
-
-    fn run(
-        profile: &Profile,
-        dirs: &Dirs,
-        program: &str,
-        _count: usize,
-        _scope: crate::witness::Scope,
-    ) -> Result<crate::device::Readback> {
-        let (stdout, stderr) = compile_run_cuda(profile, dirs, program, "witness")?;
-        Ok(crate::device::readback(&stdout, &stderr))
-    }
+pub(crate) fn cuda_available(_: &Profile) -> bool {
+    // nvcc 在，且 Windows 上能找到宿主 cl（Linux 上 nvcc 用系统 gcc，不需要 cl）。
+    toolchain::detect_nvcc().is_some()
+        && (std::env::consts::OS != "windows" || toolchain::find_cl().is_some())
 }
 
-/// CUDA 源：头 + `__device__` 见证 + `__global__` 分派 kernel + host main；见证只在 kernel 里调用。
-fn cuda_program<const OUT: usize>(
+pub(crate) fn cuda_program(
+    profile: &Profile,
+    dirs: &Dirs,
+    selected: &[Selected<'_>],
+    _scope: crate::witness::Scope,
+) -> Result<String> {
+    cuda_program_inner::<MAX_OUT>(profile, dirs, selected)
+}
+
+fn cuda_program_inner<const OUT: usize>(
     profile: &Profile,
     dirs: &Dirs,
     selected: &[Selected<'_>],
 ) -> Result<String> {
     let mut program = cuda_head(profile);
-    let files = as_device(crate::device::witness_files(selected, dirs, crate::device::C_PARAMS)?);
-    crate::device::push_sources(&mut program, &files);
+    let files = as_device(device::witness_files(selected, dirs, C_PARAMS)?);
+    device::push_sources(&mut program, &files);
     push_cuda_kernel(&mut program, OUT, selected);
     push_cuda_main(&mut program, OUT, selected.len());
     Ok(program)
+}
+
+pub(crate) fn cuda_run(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    _count: usize,
+    _scope: crate::witness::Scope,
+) -> Result<Readback> {
+    let (stdout, stderr) = compile_run_cuda(profile, dirs, program, "witness")?;
+    Ok(device::readback(&stdout, &stderr))
 }
 
 /// CUDA 的头：runtime 与 `stdio` 的 include，加上档案的 `[compile].preamble`。非空 preamble 之后固定补一个
@@ -70,7 +63,7 @@ fn cuda_head(profile: &Profile) -> String {
 }
 
 /// 给见证定义加 `__device__`：kernel 要调用它们，而 `int witness` 只出现在定义处。
-fn as_device(files: crate::device::Sources) -> crate::device::Sources {
+fn as_device(files: Sources) -> Sources {
     files
         .into_iter()
         .map(|(file, text)| (file, text.replace("int witness", "__device__ int witness")))
@@ -88,7 +81,7 @@ fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>])
          \x20   int n = 0;\n\
          \x20   switch (tid) {{\n"
     ));
-    crate::device::push_dispatch(program, max, selected, "}}\n\n");
+    device::push_dispatch(program, max, selected, "}}\n\n");
 }
 
 /// host main：分配、发射、同步、回读——stdout 只按实际写入个数打印位模式（与 CPU harness
@@ -131,7 +124,7 @@ pub fn compile_run_cuda(
     program: &str,
     label: &str,
 ) -> Result<(String, String)> {
-    let dir = crate::device::scratch(dirs, &format!("{label}-cuda"));
+    let dir = device::scratch(dirs, &format!("{label}-cuda"));
     let outcome = cuda_in_dir(&dir, profile, program, label);
     let _ = std::fs::remove_dir_all(&dir);
     outcome
@@ -146,10 +139,10 @@ fn cuda_in_dir(
 ) -> Result<(String, String)> {
     let src = dir.join(format!("{label}.cu"));
     let exe = dir.join(format!("{label}.exe"));
-    crate::device::write_text(&src, program)?;
+    device::write_text(&src, program)?;
     cuda_compile(&exe, &src, profile)?;
     let mut command = Command::new(&exe);
-    crate::device::run_exe(&mut command, &exe, "CUDA 执行失败")
+    device::run_exe(&mut command, &exe, "CUDA 执行失败")
 }
 
 /// nvcc 编译：Windows 上用 `-ccbin` 显式指向 cl.exe，不依赖 vcvars/PATH。
@@ -166,5 +159,5 @@ fn cuda_compile(exe: &Path, src: &Path, profile: &Profile) -> Result<()> {
         command.arg("-ccbin").arg(cl);
     }
     command.arg("-o").arg(exe).arg(src);
-    crate::device::run_tool("nvcc", &mut command, src)
+    device::run_tool("nvcc", &mut command, src)
 }

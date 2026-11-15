@@ -1,22 +1,22 @@
-//! 见证前端：C / Metal / CUDA 的程序生成与执行。
+//! 见证设备：一台统一的执行器，按 [`Emit`] 在描述符表里分发到对应编排行。
 //!
-//! 每个前端分三段：**头**（前置声明）、**内核包装**（分派与回读）、**主函数**（拼成文本）；
-//! 三段共用的装载、命名、起进程与回读各只有一份，算不算证据由 [`crate::witness`] 决定。
-//! 编译器探测与身份在 [`crate::toolchain`]，编译/执行原语在 [`crate::runner`]。
+//! 片段本体来自 `prim`、能力档案来自 `prof`，本层只消费：把见证源码拼进模板、编译、起子进程、
+//! 回读对拍。各语言的差异全部是表内函数指针行（探测 / 程序生成 / 执行回读），没有按厂商各写一套
+//! Rust 前端类型；新增设备只在 [`SPECS`] 加一行，不改任何 `match`。
 //!
-//! 各前端实现见 [`crate::device_cpu`]（host C）、[`crate::device_metal`]（MSL + Metal 驱动）、
-//! [`crate::device_cuda`]（nvcc 真机）。
+//! 共享的装载、命名、起进程与回读各只有一份；编译器探测在 [`crate::toolchain`]，编译/执行原语在
+//! [`crate::runner`]。CUDA 编排在 [`crate::device_cuda`]，Metal 编排在 [`crate::device_metal`]。
 
-pub(crate) use crate::device_cpu::{CpuDevice, HOST_FLAGS};
-pub(crate) use crate::device_cuda::CudaDevice;
 pub use crate::device_cuda::compile_run_cuda;
-pub(crate) use crate::device_metal::MetalDevice;
 
 use crate::atom::{Prim, Witness};
+use crate::build;
+use crate::device_cuda::{cuda_available, cuda_program, cuda_run};
+use crate::device_metal::{metal_available, metal_program, metal_run};
 use crate::dirs::Dirs;
-use crate::runner;
-use crate::witness::Selected;
-use crate::witness::source;
+use crate::prof::{Emit, Profile};
+use crate::toolchain;
+use crate::witness::{MAX_OUT, Scope, Selected};
 use diagnostic::{Code, Error, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,10 +31,59 @@ pub(crate) type Sources = BTreeMap<String, String>;
 /// 一次执行回读出来的东西：每条见证写出的个数 + 按顺序回读的 f32 值。
 pub(crate) type Readback = (Vec<i64>, Vec<f32>);
 
+/// 一台设备的执行描述：差异全是表内的函数指针，运行期只多一次“按 emit 找行”，没有枚举匹配、没有虚表。
+pub(crate) struct Spec {
+    /// 这门语言。
+    pub(crate) emit: Emit,
+    /// 设备是否在本机。
+    pub(crate) available: fn(&Profile) -> bool,
+    /// 生成“跑一次全部见证”的程序文本；写出上限定在 ABI 常量 [`MAX_OUT`]。
+    pub(crate) program: fn(&Profile, &Dirs, &[Selected<'_>], Scope) -> Result<String>,
+    /// 让程序跑起来，返回 `(每条写入个数, 按顺序回读的值)`。
+    pub(crate) run: fn(&Profile, &Dirs, &str, usize, Scope) -> Result<Readback>,
+}
+
+/// 全部设备：**加设备就加一行**，不需要改任何 `match`。
+const SPECS: &[Spec] = &[
+    Spec {
+        emit: Emit::C,
+        available: c_available,
+        program: c_program,
+        run: c_run,
+    },
+    Spec {
+        emit: Emit::Metal,
+        available: metal_available,
+        program: metal_program,
+        run: metal_run,
+    },
+    Spec {
+        emit: Emit::Cuda,
+        available: cuda_available,
+        program: cuda_program,
+        run: cuda_run,
+    },
+];
+
+/// 按 `emit` 找设备描述；找不到就是“本机没有这门语言的执行前端”。
+pub(crate) fn spec(emit: Emit) -> Option<&'static Spec> {
+    SPECS.iter().find(|entry| entry.emit == emit)
+}
+
+/// 已登记的全部执行语言：错误报告里列出“本机接了哪些”。
+pub(crate) fn specs() -> &'static [Spec] {
+    SPECS
+}
+
+// ---------------------------------------------------------------------------
+// 共享装载、命名、起进程与回读
+// ---------------------------------------------------------------------------
+
 /// 一份见证源文件：读出来，并确认里面有这个前端能调用的函数（签名由编译器回答）。
 /// 错误里带原语名，是因为同一个文件被多条见证共用时，光有文件名定位不了是哪一条。
 fn witness_source(prim: &Prim, witness: &Witness, dirs: &Dirs, params: &str) -> Result<String> {
-    let text = source(witness, dirs).map_err(|error| error.with(format!("`{prim}` 的")))?;
+    let text = crate::witness::source(witness, dirs)
+        .map_err(|error| error.with(format!("`{prim}` 的")))?;
     if !text.contains(&format!("{}(", witness.func)) {
         let message = format!(
             "`{prim}` 的见证 `{}` 里没有函数 `{}({params})`",
@@ -46,7 +95,11 @@ fn witness_source(prim: &Prim, witness: &Witness, dirs: &Dirs, params: &str) -> 
 }
 
 /// 本次执行的见证源码：按文件去重，同一文件里的多条见证只出现一次。
-pub(crate) fn witness_files(selected: &[Selected<'_>], dirs: &Dirs, params: &str) -> Result<Sources> {
+pub(crate) fn witness_files(
+    selected: &[Selected<'_>],
+    dirs: &Dirs,
+    params: &str,
+) -> Result<Sources> {
     let mut files = Sources::new();
     for (prim, _, witness) in selected {
         if files.contains_key(&witness.file) {
@@ -109,7 +162,11 @@ pub(crate) fn run_tool(name: &str, command: &mut Command, source: &Path) -> Resu
 }
 
 /// 跑一个已经编好的可执行文件，返回 `(stdout, stderr)` 原文。非零退出码报 [`Code::Unsupported`]：编得过却跑不起来说明这台机器现在跑不了，不是见证写错了。
-pub(crate) fn run_exe(command: &mut Command, path: &Path, failure: &str) -> Result<(String, String)> {
+pub(crate) fn run_exe(
+    command: &mut Command,
+    path: &Path,
+    failure: &str,
+) -> Result<(String, String)> {
     let output = command
         .output()
         .map_err(|error| Error::new(Code::Io, format!("运行 {} 失败：{error}", path.display())))?;
@@ -137,9 +194,9 @@ pub(crate) fn parse_counts(stderr: &str) -> Vec<i64> {
 }
 
 /// 回读解码：个数走 stderr（`witness N`），值走 stdout 的 f32 位模式；两条通道必须分开，
-/// 否则 [`runner::parse_bits`] 会把计数当成值解出来。
+/// 否则 [`crate::runner::parse_bits`] 会把计数当成值解出来。
 pub(crate) fn readback(stdout: &str, stderr: &str) -> Readback {
-    (parse_counts(stderr), runner::parse_bits(stdout))
+    (parse_counts(stderr), crate::runner::parse_bits(stdout))
 }
 
 /// 一个新的一次性目录：`<work_dir>/<tag>-<pid>-<序号>`，调用方负责删除。pid 隔开进程、序号
@@ -155,7 +212,12 @@ pub(crate) fn scratch(dirs: &Dirs, tag: &str) -> PathBuf {
 
 /// 两个后端 kernel 共享的分派段：按 `tid` 的 `switch`、cap 截断与回写循环。`close` 是 kernel
 /// 收尾文本（Metal 与 CUDA 的换行数不同）：`local` 声明留在各自函数里，这里只拼逐字相同的部分。
-pub(crate) fn push_dispatch(program: &mut String, max: usize, selected: &[Selected<'_>], close: &str) {
+pub(crate) fn push_dispatch(
+    program: &mut String,
+    max: usize,
+    selected: &[Selected<'_>],
+    close: &str,
+) {
     for (index, (_, _, witness)) in selected.iter().enumerate() {
         program.push_str(&format!(
             "        case {index}: n = {}(local); break;\n",
@@ -172,10 +234,107 @@ pub(crate) fn push_dispatch(program: &mut String, max: usize, selected: &[Select
     ));
 }
 
+// ---------------------------------------------------------------------------
+// C（host CPU）编排：见证本身就是一段 host C，`cc` 把它与 harness 编成可执行文件跑一遍。
+// 它证明“这段 C 在这个 ABI 下编得过、跑得出 `expect`”，不证明设备具备该能力。
+// ---------------------------------------------------------------------------
+
+/// 自检用的 host C 参数：设备档案的 `[compile].flags` 在本机要么指向不存在的头，要么只对真机编译器有意义；它与设备执行是两个参数集。
+pub(crate) const HOST_FLAGS: [&str; 2] = ["-O2", "-std=c99"];
+
+/// C 编排的编译输入：前置声明 + 参数。自检只走 host C ABI，理由见 [`HOST_FLAGS`]。
+fn c_inputs(profile: &Profile, scope: Scope) -> (String, Vec<String>) {
+    match scope {
+        Scope::Device => (profile.preamble.clone(), profile.flags.clone()),
+        Scope::Host => (
+            String::new(),
+            HOST_FLAGS.iter().map(|flag| (*flag).to_string()).collect(),
+        ),
+    }
+}
+
+fn c_available(_: &Profile) -> bool {
+    // `c` 的设备就是本机 CPU：它永远在。
+    true
+}
+
+fn c_program(
+    profile: &Profile,
+    dirs: &Dirs,
+    selected: &[Selected<'_>],
+    scope: Scope,
+) -> Result<String> {
+    let mut program = c_head(profile, scope, selected);
+    push_sources(&mut program, &witness_files(selected, dirs, C_PARAMS)?);
+    program.push_str(&c_harness::<MAX_OUT>(selected));
+    Ok(program)
+}
+
+fn c_run(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    _count: usize,
+    scope: Scope,
+) -> Result<Readback> {
+    let (_, flags) = c_inputs(profile, scope);
+    // 设备执行与自检是两个不同的缓存命名空间：同一段文本在两套参数下编出的产物不同。
+    let tag = match scope {
+        Scope::Device => "witness",
+        Scope::Host => "self",
+    };
+    // 见证程序也进产物缓存：第二次 `verify` 只在第一次调用编译器。
+    let (outcome, _artifact) =
+        build::run_program(toolchain::detect().as_ref(), &flags, tag, program, dirs)?;
+    // stdout 已由 `runner` 解码成 f32，这里只补上 stderr 里的写入个数。
+    Ok((parse_counts(&outcome.stderr), outcome.bits))
+}
+
+/// C 前端的头：档案前置声明 + `stdio.h`；自检时再吞掉 MSL 的地址空间限定符。`#define thread` 只服务
+/// 于自检，设备前端走真正的 `xcrun metal`，所以这里的放宽不会被当成设备证据。
+fn c_head(profile: &Profile, scope: Scope, selected: &[Selected<'_>]) -> String {
+    let (mut head, _) = c_inputs(profile, scope);
+    let metal = selected
+        .iter()
+        .any(|(_, _, witness)| witness.file.ends_with(".metal"));
+    normalize_newline(&mut head);
+    head.push_str("#include <stdio.h>\n\n");
+    if scope == Scope::Host && metal {
+        head.push_str("#define thread\n");
+    }
+    head
+}
+
+/// C 前端的内核包装与主函数：`main()` 逐条调用见证函数，值走 stdout，个数走 stderr。
+fn c_harness<const OUT: usize>(selected: &[Selected<'_>]) -> String {
+    let mut text = format!("\nint main(void) {{\n    float out[{OUT}];\n    int n;\n");
+    // 每条见证是一句互不相同的调用语句，顺序由见证清单决定：这里只能逐条生成，不能批处理。
+    for (_, _, witness) in selected {
+        push_witness(&mut text, &witness.func, OUT);
+    }
+    text.push_str("    return 0;\n}\n");
+    text
+}
+
+/// 一次见证调用：算一遍、报个数、按写出的个数打印位模式；`max` 是 const 泛型传下来的字面量，截断在生成的代码里是常数比较。
+fn push_witness(text: &mut String, func: &str, max: usize) {
+    text.push_str("    n = ");
+    text.push_str(func);
+    text.push_str("(out);\n");
+    text.push_str("    fprintf(stderr, \"witness %d\\n\", n);\n");
+    text.push_str("    if (n < 0) n = 0;\n");
+    text.push_str(&format!("    if (n > {max}) n = {max};\n"));
+    text.push_str("    for (int i = 0; i < n; ++i) {\n");
+    text.push_str("        union { float f; unsigned int u; } v;\n");
+    text.push_str("        v.f = out[i];\n");
+    text.push_str("        printf(\"%u\\n\", v.u);\n");
+    text.push_str("    }\n");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::witness::{Device, MAX_OUT, Scope};
+    use crate::builtin::Catalogue;
 
     /// 生成各前端的见证源码。默认只断言生成非空；`CUTILE_CAPTURE_GOLDEN` 显式打开时才把副本
     /// 写到 `/tmp/cutile-golden` 供人工比对，不常驻产物。
@@ -184,25 +343,23 @@ mod tests {
         let capture = std::env::var("CUTILE_CAPTURE_GOLDEN").is_ok();
         let dir = std::path::PathBuf::from("/tmp/cutile-golden");
         let dirs = Dirs::under(std::env::temp_dir().join("cutile-golden-work"));
-        let catalogue = crate::builtin::Catalogue::try_builtin().expect("内置数据");
+        let catalogue = Catalogue::try_builtin().expect("内置数据");
         for (vendor, file) in [
             ("cpu", "witness_c.txt"),
             ("metal", "witness_metal.txt"),
             ("nvidia", "witness_cuda.txt"),
         ] {
-            let profile = catalogue.profile(vendor).cloned().expect("档案");
+            let Some(profile) = catalogue.profile(vendor).cloned() else {
+                continue;
+            };
+            let Some(front) = spec(profile.meta.emit) else {
+                continue;
+            };
             let selected = crate::witness::declared_witnesses(&profile).expect("见证");
             if selected.is_empty() {
                 continue;
             }
-            let text = match vendor {
-                "cpu" => CpuDevice::program::<MAX_OUT>(&profile, &dirs, &selected, Scope::Device),
-                "metal" => {
-                    MetalDevice::program::<MAX_OUT>(&profile, &dirs, &selected, Scope::Device)
-                }
-                _ => CudaDevice::program::<MAX_OUT>(&profile, &dirs, &selected, Scope::Device),
-            }
-            .expect("可生成");
+            let text = (front.program)(&profile, &dirs, &selected, Scope::Device).expect("可生成");
             assert!(!text.is_empty(), "{vendor} 生成文本不能为空");
             if capture {
                 std::fs::create_dir_all(&dir).expect("目录");
@@ -211,8 +368,8 @@ mod tests {
         }
         let metal = catalogue.profile("metal").cloned().expect("档案");
         let selected = crate::witness::declared_witnesses(&metal).expect("见证");
-        let text =
-            CpuDevice::program::<MAX_OUT>(&metal, &dirs, &selected, Scope::Host).expect("可生成");
+        let c_front = spec(Emit::C).expect("c 前端");
+        let text = (c_front.program)(&metal, &dirs, &selected, Scope::Host).expect("可生成");
         assert!(!text.is_empty(), "metal 档案的 host 自检文本不能为空");
         if capture {
             std::fs::create_dir_all(&dir).expect("目录");
@@ -227,5 +384,33 @@ mod tests {
         let second = scratch(&dirs, "gate");
         assert_ne!(first, second);
         assert_eq!(first.parent(), Some(dirs.work()));
+    }
+
+    /// 执行前端登记表：每个 `emit` 恰好一行，且表不许被清空。
+    ///
+    /// 旧的「trait 实现 + 语言注解 + 装配表」三位一体契约已由描述符表取代：语言身份就是
+    /// [`Spec::emit`]（`Emit` 闭集保证取值合法），三指针的接线由类型系统保证。这里只守两类
+    /// 文本/表结构事故：同一语言重复登记（`spec(..)` 命中第一行，后一行静默失效），以及表被
+    /// 清空/拆坏后测试误判为"没有违规"。
+    #[test]
+    fn specs_register_each_execution_frontend_once() {
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in SPECS {
+            assert!(
+                seen.insert(entry.emit),
+                "执行前端 `{}` 在 SPECS 里重复登记：后一行会被 `spec(..)` 静默忽略",
+                entry.emit.as_str()
+            );
+            assert!(
+                spec(entry.emit).is_some(),
+                "表内 `{}` 的查找行与登记表分家",
+                entry.emit.as_str()
+            );
+        }
+        assert!(
+            SPECS.len() >= 3,
+            "执行前端登记表行数 {} 低于基线 3：扫描布局或表被拆坏",
+            SPECS.len()
+        );
     }
 }

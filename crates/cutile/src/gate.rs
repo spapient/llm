@@ -60,7 +60,7 @@ impl fmt::Display for LanguageGate {
     }
 }
 
-/// 本机接了的语法前端：与 `FRONTENDS` 同构，存的也是单态化后的函数地址。
+/// 本机接了的语法前端：与执行层 `const SPECS` 同构，存的也是单态化后的函数地址。
 struct GateEntry {
     /// 这门语言。
     emit: Emit,

@@ -143,7 +143,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行解析；只分派，不执行任何业务 |
 | `Report` / `join_names` | `tool` | 人可读输出；只接字符串，不接领域类型 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tool` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
-| `spec` / `frontend` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。`frontend` 标的是设备的执行前端，生成 `cutile::witness::Language`（`EMIT` / `EXT` / `TAG`）与两条 `const` 断言（`EXT` 必须等于 `EMIT.ext()`、`TAG` 非空）；执行由手写的 `Device` 给出，`Frontend: Language + Device` 把两半绑死，分发是一张 `const` 表，新增设备 = 标一个类型 + 加一行。语言身份还复用在**语法门**上：`Front` 只加 `TOOL` / `CHECK` 两条常量（clang 的 `-x cuda` / `-x cl`），`const GATES` 表把“见证必须在它自己声称的语言里编得过”做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
+| `spec` / `frontend` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。`frontend` 标的是语言身份，生成 `cutile::witness::Language`（`EMIT` / `EXT` / `TAG`）与两条 `const` 断言（`EXT` 必须等于 `EMIT.ext()`、`TAG` 非空）；设备执行不走注解——一张 `const SPECS` 描述符表按 `Emit` 登记探测、程序生成、执行回读三个函数指针，新增设备 = 表里加一行。语言身份还复用在**语法门**上：`Front` 只加 `TOOL` / `CHECK` 两条常量（clang 的 `-x cuda` / `-x cl`），`const GATES` 表把“见证必须在它自己声称的语言里编得过”做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
 | `Case` / `Baseline` / `Judgement` | `tool` | 回退判定（`tool::regress`）；不做测量（测量集中在工具成员 `benches`）。名字刻意避开 `Verdict`，见下节第三条 |
 
 三个容易混淆、但**不是重复**的东西：

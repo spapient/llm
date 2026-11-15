@@ -9,7 +9,7 @@
 //! 三套注解共用同一趟展开（`expand_with`）与同一套"注解只能标 struct / enum / 别名、不得带
 //! 泛型"的类型名判据：注解承载的是**可静态判定**的契约（名字/形状/算子、语言/后缀/缓存标签、
 //! 注册名/生产形状/输出类型），执行与业务仍由手写代码给出，两者用 trait bound 绑死
-//! （`nn::Contract`、`witness::Frontend`、`op::gemv::Format`）。
+//! （`nn::Contract`、`witness::Front`、`op::gemv::Format`）。
 //!
 //! # 注解里的名字来自词汇表
 //!
@@ -167,9 +167,8 @@ impl Streams for TokenStream {
 /// 把 `#[frontend(emit = "..", ext = "..", tag = "..")]` 展开成 `crate::witness::Language` 的
 /// 实现 + 两条编译期断言。
 ///
-/// 注解只承载"这台设备是什么语言"这类**可静态判定**的身份（语言、产物后缀、缓存标签），
-/// 执行仍然是手写的 `Device` 实现：`Frontend: Language + Device` 把两者绑在一起，所以只标注解
-/// 不写执行、或写了执行却没标注解，都拿不到 `Frontend`，泛型入口也不会接受它。
+/// 注解只承载"这门语言是什么"这类**可静态判定**的身份（语言、产物后缀、缓存标签）；
+/// 设备执行由 cutile 的 `const SPECS` 描述符表按 `Emit` 登记，注解不参与执行绑定。
 #[proc_macro_attribute]
 pub fn frontend(attribute: TokenStream, item: TokenStream) -> TokenStream {
     expand_with(

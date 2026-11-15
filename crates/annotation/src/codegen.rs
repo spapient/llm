@@ -104,8 +104,8 @@ fn render_layer_check(code: &mut String, declaration: &Declaration, ty: &str) {
 /// 把 `#[frontend(..)]` 渲染成 `crate::witness::Language` 的实现 + 两条编译期断言。
 ///
 /// 生成的东西只有三块，都是常量：语言（生成 `Emit` 的具体变体）、后缀、缓存标签。
-/// 注解不负责执行——执行是手写的 `Device` 实现，由 `Frontend: Language + Device` 这条
-/// 超 trait 绑死：只标注解不写执行，类型就拿不到 `Frontend`，泛型入口也就不接受它。
+/// 注解不负责执行——设备执行由 cutile 的 `const SPECS` 描述符表按 `Emit` 登记；这里生成的
+/// `Language` 只绑定语法门 `Front`。
 ///
 /// 另外生成一个 `#[cfg(test)]` 模块：把注解里的**字符串**与词汇表里的**变体**对齐
 /// （`Emit::parse(emit) == Language::EMIT`）。它是“注解与词汇表不脱节”在**这个调用点**

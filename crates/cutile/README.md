@@ -193,10 +193,9 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
     ├── runner.rs              # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
     ├── dirs.rs                # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
-    ├── device.rs              # 见证前端伞模块：共享装载/起进程/回读/分派（无 unsafe）
-    │   ├── cpu.rs             # host C 前端：cc 编 harness 跑一遍
-    │   ├── metal.rs           # MSL → metallib → host 驱动发射回读
-    │   └── cuda.rs            # nvcc 真机前端：kernel + cudaMemcpy 回读
+    ├── device.rs              # 统一设备：按 Emit 查描述符表，共享装载/起进程/回读 + host C 编排（无 unsafe）
+    │   ├── device_cuda.rs     # nvcc 真机编排：kernel + cudaMemcpy 回读
+    │   └── device_metal.rs    # MSL → metallib → host 驱动发射回读
     ├── gate.rs / witness.rs    # 语言门与见证执行器
     ├── pipeline.rs             # 四条命令共用的流水线（Run / Prepared / …）
     └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
@@ -253,7 +252,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 `crates/cutile` 已是 workspace 成员，继承 `version/edition/rust-version/license/repository` 与 `[lints] workspace = true`。`missing_docs`、`unsafe_op_in_unsafe_fn`、`clippy::all`+`cargo` 全部生效，因此本设计必须自带三条工程条款：
 
-- **unsafe 边界**：本 crate 不含 `unsafe`。`runner` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `device_cpu` / `device_cuda` / `device_metal` 前端模块的新增驱动段里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
+- **unsafe 边界**：本 crate 不含 `unsafe`。`runner` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `device` / `device_cuda` / `device_metal` 编排模块的新增驱动段里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
 - **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
 - **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`diagnostic` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
   - 缓存目录、工作目录、可选数据根（`data.root`）以 `crate::dirs::Dirs` 传入，**纯数据**：内核不读环境变量、不拼默认路径；
@@ -822,13 +821,7 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 两头落空。现在 `Verified.witnesses`（设备执行）与 `Verified.self_checked`（自检）相加等于该设备
 声明的全部见证：一份见证只执行一次，由能给出更强结论的范围执行。
 
-**前端是注解 + trait + const 泛型**：一台设备的语言身份（`Emit`、产物后缀、缓存标签）由
-`#[frontend(emit = .., ext = .., tag = ..)]` 在编译期生成 `Language`，其中 `EXT` 与
-`Emit::ext()` 由注解展开出的 `const _` 断言在编译期比对（写错即编译失败）；“怎么跑”由手写的
-`Device` 实现给出；`Frontend: Language + Device` 把两半绑死，只标注解不写执行、或写了执行没标
-注解，都拿不到 `Frontend`。分发是一张 `const FRONTENDS` 表，每一项都是单态化后的具体函数：
-没有 `match`、没有 `dyn`，新增设备 = 标一个类型 + 在表里加一行。每条见证的写出上限以 const 泛型
-`OUT` 传进前端，生成的程序里缓冲区尺寸是字面量。`emit = metal` 因此有了真正的设备执行：MSL →
+**设备是一张 `const` 描述符表**：执行层只有一台统一设备，按档案的 `Emit` 在 `const SPECS` 表里分发；每一行登记这门语言的探测、程序生成与执行回读三个函数指针，没有 `match`、没有 `dyn`，也不按厂商各写一套 Rust 前端类型。片段本体来自 `prim`，本层只拼接、编译、起进程、回读。语言身份注解 `#[frontend]` 只保留给语法门（`CudaFront` / `OpenClFront`），在编译期生成 `Language`（`EMIT` / `EXT` / `TAG`），其中 `EXT` 与 `Emit::ext()` 由注解展开出的 `const _` 断言比对（写错即编译失败）。每条见证的写出上限以 const 泛型 `OUT` 传进程序生成函数，生成的程序里缓冲区尺寸是字面量。`emit = metal` 因此有了真正的设备执行：MSL →
 `metallib` → host 驱动发射到 GPU → 回读；等级仍停在 `L1`，因为 `L2` 要的是**内核**跑通并对拍，
 见证执行只完成其中的见证那一段。
 

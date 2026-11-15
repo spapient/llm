@@ -227,66 +227,56 @@ fn closed_vocabularies_are_declared_once() {
     );
 }
 
-/// 执行前端必须"三位一体"：`#[annotation::frontend(..)]` 注解、`impl Device`、`FRONTENDS` 表项。
+/// 执行前端必须登记进 `cutile::device` 的描述符表，且四个槽位齐全：语言身份 `emit`、探测
+/// `available`、程序生成 `program`、执行回读 `run`。
 ///
-/// 类型系统只保证"登记进表的类型两半齐全"（`Frontend: Language + Device`），却管不到两件事故：
-/// 写了 `impl Device` 却忘了标注解（那时它就没有 `Language`，只要没人要求 `Frontend` 就不报错），
-/// 以及标注解、实现了、但忘了加进表（那台设备的见证会永远只走 host 自检，一切看起来正常）。
-/// 这两件事都只能靠文本契约守，所以它进 `lints/vocabulary.toml` 的白名单配置而不是 `#[allow]`。
+/// 表驱动之后，执行前端不再有 `Device` trait 或单独的前端类型：差异全是表内的函数指针行，
+/// "写了实现却忘了进表"这一事故在结构上消失——要执行就必须出现在表的一行里。文本契约守另一类
+/// 事故：表行漏了某个槽位（缺探测 / 缺程序 / 缺回读），或 `emit` 没绑到 `Emit` 闭集。
+/// 加设备只在表内加一行，不改任何 `match`。
 #[test]
-fn every_device_front_end_is_annotated_and_entered() {
-    let allowed = exempt("frontend");
-    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
+fn every_device_front_end_is_entered() {
+    let path = root().join("crates/cutile/src/device.rs");
+    let text = fs::read_to_string(&path).expect("`crates/cutile/src/device.rs` 必须存在");
+    assert!(
+        text.contains("const SPECS"),
+        "执行前端描述符表 `const SPECS` 必须存在"
+    );
+
     let mut checked = 0;
     let mut failures: Vec<String> = Vec::new();
-    // `FRONTENDS` 是 crate 级装配表：拆分后类型定义与表项可分处同 crate 的不同文件，
-    // 因此 drive 检查按 crate 合并文本，而注解与类型定义仍要求在同一文件。
-    let mut crate_text: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for (crate_name, file) in sources() {
-        if let Ok(text) = fs::read_to_string(&file) {
-            crate_text.entry(crate_name).or_default().push_str(&text);
-        }
-    }
-    for (name, file) in sources() {
-        if names.contains(&name.as_str()) {
+    let mut slots: Vec<&str> = Vec::new();
+    let mut in_spec = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Spec {") {
+            in_spec = true;
+            slots.clear();
             continue;
         }
-        let Ok(text) = fs::read_to_string(&file) else {
+        if !in_spec {
             continue;
-        };
-        for (index, line) in text.lines().enumerate() {
-            let Some(rest) = line.trim().strip_prefix("impl Device for ") else {
-                continue;
-            };
-            let ty = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .trim_end_matches('{');
-            if ty.is_empty() {
-                continue;
-            }
+        }
+        if trimmed == "}," || trimmed == "}" {
             checked += 1;
-            let where_ = format!("{name} {}:{}", file.display(), index + 1);
-            let annotated = text.contains("annotation::frontend")
-                && (text.contains(&format!("pub struct {ty};"))
-                    || text.contains(&format!("struct {ty} ")));
-            if !annotated {
-                failures.push(format!(
-                    "{where_}: `impl Device for {ty}` 没有配套的 `#[annotation::frontend(..)]`：\
-                     语言身份不能靠手写常量"
-                ));
+            if !slots
+                .iter()
+                .any(|line| line.starts_with("emit:") && line.contains("Emit::"))
+            {
+                failures.push("执行前端表行缺少 `emit: Emit::<..>` 语言身份槽位".to_string());
             }
-            let entered = crate_text
-                .get(&name)
-                .is_some_and(|joined| joined.contains(&format!("drive::<{ty}>")));
-            if !entered {
-                failures.push(format!(
-                    "{where_}: `{ty}` 没有出现在 `FRONTENDS` 表里（缺 `drive::<{ty}>`）：\
-                     它的见证永远只能走 host 自检"
-                ));
+            for slot in ["available", "program", "run"] {
+                if !slots
+                    .iter()
+                    .any(|line| line.starts_with(&format!("{slot}:")))
+                {
+                    failures.push(format!("执行前端表行缺少 `{slot}` 函数指针槽位"));
+                }
             }
+            in_spec = false;
+            slots.clear();
+        } else {
+            slots.push(trimmed);
         }
     }
     assert!(
@@ -294,22 +284,6 @@ fn every_device_front_end_is_annotated_and_entered() {
         "扫描器只看到 {checked} 个执行前端：扫描逻辑或文件布局坏了，而不是\"没有违规\""
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-
-    // 白名单不能过期：写了豁免却没有 `impl Device`，说明条目该删。
-    for (name, _) in &allowed {
-        let has_device = sources()
-            .iter()
-            .filter(|(crate_name, _)| crate_name == name)
-            .any(|(_, file)| {
-                fs::read_to_string(file)
-                    .map(|text| text.contains("impl Device for "))
-                    .unwrap_or(false)
-            });
-        assert!(
-            has_device,
-            "`lints/vocabulary.toml` 里的 `{name}` 没有执行前端，删除这条豁免"
-        );
-    }
 }
 
 /// 语法前端同样要"三位一体"：`#[annotation::frontend(..)]` 注解、`impl Front`、`GATES` 表项。

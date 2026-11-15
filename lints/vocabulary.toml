@@ -31,11 +31,12 @@ reason = "L6：帧类型是线格式的词汇表（`proto` 子模块），与设
 
 
 [frontend]
-# 允许"有 `impl Device` 但没有配套 `#[annotation::frontend(..)]` 与 `FRONTENDS` 表项"的 crate。
+# 允许"有 `impl Front` 但没有配套 `#[annotation::frontend(..)]` 与 `GATES` 表项"的 crate。
 #
-# 规则：执行前端三位一体——注解给语言身份（`Language::EMIT` / `EXT` / `TAG`），手写实现给
-# "怎么跑"（`Device`），`const FRONTENDS` 表把它接进分发。空清单本身是判据：类型系统只能保证
-# 登记进表的类型两半齐全，管不到"写了实现忘了加表"——那种设备会一直静默地只跑 host 自检。
+# 规则：语法前端三位一体——注解给语言身份（`Language::EMIT` / `EXT` / `TAG`），手写实现给
+# "怎么解析"（`Front`），`const GATES` 表把它接进语法门。执行前端是另一套：登记在 `cutile` 的
+# `const SPECS` 描述符表里，按 `Emit` 存 `available` / `program` / `run` 函数指针，没有独立
+# 前端类型。空清单本身是判据：类型系统只能保证登记进表的类型两半齐全，管不到"写了实现忘了加表"。
 
 exempt = []
 
@@ -82,7 +83,7 @@ reason = "声明数据树的值（ADR 0022：语料在构建期被解析成 `dia
 
 [[ownership.unlisted]]
 crate = "cutile"
-names = ["CallArg", "ChainStep", "CpuDevice", "CudaDevice", "CudaFront", "FragmentGap", "Front", "Frontend", "Language", "LanguageGate", "Lock", "MetalDevice", "NeedReport", "OpenClFront", "Outcome", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
+names = ["CallArg", "ChainStep", "CudaFront", "FragmentGap", "Front", "Language", "LanguageGate", "Lock", "NeedReport", "OpenClFront", "Outcome", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
 reason = "内核 DSL 的协商、执行前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表"
 
 [[ownership.unlisted]]

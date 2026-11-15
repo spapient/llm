@@ -9,7 +9,7 @@ pub use crate::prof::Emit;
 
 use crate::atom::{DType, Prim, Witness};
 use crate::cap::Proof;
-use crate::device::{CpuDevice, CudaDevice, MetalDevice};
+use crate::device::{self, HOST_FLAGS};
 use crate::dirs::Dirs;
 use crate::prof::Profile;
 use crate::reference;
@@ -17,14 +17,13 @@ use diagnostic::{Code, Error};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::device::HOST_FLAGS;
 pub use crate::device::compile_run_cuda;
 pub use crate::gate::{CudaFront, LanguageGate, OpenClFront, language_gate};
 
 /// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。
 pub type Selected<'a> = (Prim, String, &'a Witness);
 
-/// 一次见证最多写出多少个值（ABI 上限）；编译期常量，以 const 泛型传进前端，缓冲区大小是字面量。
+/// 一次见证最多写出多少个值（ABI 上限）；程序生成时把它烘焙进缓冲区尺寸字面量。
 pub const MAX_OUT: usize = Witness::MAX_OUT;
 /// 注解生成的**语言身份**：三个常量都来自 `#[frontend(..)]`，`EXT` 与 `EMIT.ext()` 的一致性由注解展开的断言检查。
 pub trait Language {
@@ -35,33 +34,6 @@ pub trait Language {
     /// 产物缓存的标签。
     const TAG: &'static str;
 }
-
-/// 手写的执行能力：本机有没有这台设备、怎么把见证编起来跑；身份能由注解生成，这一半不行。
-pub trait Device: Sized {
-    /// 这台设备此刻是否就在本机。
-    fn available(profile: &Profile) -> bool;
-
-    /// 生成"跑一次全部见证"的程序文本；`OUT` 是每条见证的写出上限。
-    fn program<const OUT: usize>(
-        profile: &Profile,
-        dirs: &Dirs,
-        selected: &[Selected<'_>],
-        scope: Scope,
-    ) -> diagnostic::Result<String>;
-
-    /// 让程序跑起来，返回 `(每条写入个数, 按顺序回读的值)`。
-    fn run(
-        profile: &Profile,
-        dirs: &Dirs,
-        program: &str,
-        count: usize,
-        scope: Scope,
-    ) -> diagnostic::Result<(Vec<i64>, Vec<f32>)>;
-}
-
-/// 执行前端的完整契约：把注解给出的语言与手写给出的执行绑成一条 bound，空实现体是刻意的。
-pub trait Frontend: Language + Device {}
-impl<T: Language + Device> Frontend for T {}
 
 /// 一种语言的**语法前端**：只解析、不链接、不执行；借 clang 的语言前端，所以不需要真机。
 pub trait Front: Language {
@@ -350,60 +322,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// 一个前端的共享执行流程：生成程序 → 跑 → 逐条对拍；`F` 与 `OUT` 都参与单态化，差异全在 [`Device::program`] 与 [`Device::run`]。
-pub(crate) fn execute<F: Frontend, const OUT: usize>(
+/// 一台设备的共享执行流程：生成程序 → 跑 → 逐条对拍；差异全在 [`crate::device::Spec`] 的两行指针里。
+pub(crate) fn execute(
+    spec: &crate::device::Spec,
     profile: &Profile,
     dirs: &Dirs,
     selected: &[Selected<'_>],
     scope: Scope,
 ) -> diagnostic::Result<Vec<WitnessRun>> {
-    let program = F::program::<OUT>(profile, dirs, selected, scope)?;
-    let (counts, bits) = F::run(profile, dirs, &program, selected.len(), scope)?;
+    let program = (spec.program)(profile, dirs, selected, scope)?;
+    let (counts, bits) = (spec.run)(profile, dirs, &program, selected.len(), scope)?;
     compare(selected, scope, &counts, &bits)
-}
-
-/// 本机接了的执行前端：每项都是单态化的具体函数，表里存的是它们的地址；运行期只多一次
-/// "哪一项"的比较，没有枚举匹配、没有虚表。
-struct Entry {
-    /// 这门语言。
-    emit: Emit,
-    /// 设备是否在本机。
-    available: fn(&Profile) -> bool,
-    /// 在本机执行全部已声明的见证。
-    run: fn(&Profile, &Dirs, &[Selected<'_>]) -> diagnostic::Result<Vec<WitnessRun>>,
-}
-
-/// 全部前端：**加设备就加一行**，不需要改任何 `match`。
-const FRONTENDS: &[Entry] = &[
-    Entry {
-        emit: <CpuDevice as Language>::EMIT,
-        available: <CpuDevice as Device>::available,
-        run: drive::<CpuDevice>,
-    },
-    Entry {
-        emit: <MetalDevice as Language>::EMIT,
-        available: <MetalDevice as Device>::available,
-        run: drive::<MetalDevice>,
-    },
-    Entry {
-        emit: <CudaDevice as Language>::EMIT,
-        available: <CudaDevice as Device>::available,
-        run: drive::<CudaDevice>,
-    },
-];
-
-/// 按 `emit` 找前端；找不到就是"本机没有这门语言的执行前端"。
-fn frontend(emit: Emit) -> Option<&'static Entry> {
-    FRONTENDS.iter().find(|entry| entry.emit == emit)
-}
-
-/// 一个前端的设备执行入口：把 `OUT` 定成 ABI 上限后交给共享的 [`execute`]。
-fn drive<F: Frontend>(
-    profile: &Profile,
-    dirs: &Dirs,
-    selected: &[Selected<'_>],
-) -> diagnostic::Result<Vec<WitnessRun>> {
-    execute::<F, MAX_OUT>(profile, dirs, selected, Scope::Device)
 }
 
 /// 在本机执行档案里**每一条**已声明的见证（`provides` 通常共用一份源码，整份只编译一次）；不按等级
@@ -418,8 +347,8 @@ pub fn run_all(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<Witness
     if selected.is_empty() {
         return Ok(Vec::new());
     }
-    let entry = frontend(profile.meta.emit).ok_or_else(|| {
-        let known: Vec<String> = FRONTENDS
+    let spec = device::spec(profile.meta.emit).ok_or_else(|| {
+        let known: Vec<String> = device::specs()
             .iter()
             .map(|entry| entry.emit.to_string())
             .collect();
@@ -434,13 +363,13 @@ pub fn run_all(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<Witness
             ),
         )
     })?;
-    (entry.run)(profile, dirs, &selected)
+    execute(spec, profile, dirs, &selected, Scope::Device)
 }
 
 /// 这台设备是否就在本机：`c` 的设备是 CPU 永远在，`metal` 看工具链；不在表里的 `emit` 没有执行前端，一律当作不在。
 #[must_use]
 pub fn device_available(profile: &Profile) -> bool {
-    frontend(profile.meta.emit).is_some_and(|entry| (entry.available)(profile))
+    device::spec(profile.meta.emit).is_some_and(|spec| (spec.available)(profile))
 }
 
 /// 对**设备执行跑不到**的见证做本机自检，范围与 [`run_all`] 互补（设备在本机时由更强的那个范围给结论）。
@@ -456,7 +385,9 @@ pub fn self_check(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<Witn
     if selected.is_empty() {
         return Ok(Vec::new());
     }
-    execute::<CpuDevice, MAX_OUT>(profile, dirs, &selected, Scope::Host).map_err(|error| {
+    let c_spec = device::spec(Emit::C)
+        .ok_or_else(|| Error::new(Code::Internal, "C 自检前端没有登记到设备描述表"))?;
+    execute(c_spec, profile, dirs, &selected, Scope::Host).map_err(|error| {
         error.with(format!(
             "`{}({})` 的见证自检不成立",
             profile.meta.vendor, profile.meta.id
@@ -686,7 +617,8 @@ mod tests {
         let program = "#include <metal_stdlib>\nusing namespace metal;\n\
                        int witness_bad(float *out) { out[0] = 1.0f; return 1; }\n";
         let profile = device("metal");
-        let error = MetalDevice::run(&profile, &dirs(), program, 1, Scope::Device)
+        let metal = device::spec(Emit::Metal).expect("metal 前端");
+        let error = (metal.run)(&profile, &dirs(), program, 1, Scope::Device)
             .expect_err("MSL 必须要求显式地址空间");
         let text = error.to_string();
         assert!(text.contains("xcrun metal"), "{text}");

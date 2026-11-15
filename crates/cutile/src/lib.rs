@@ -27,7 +27,7 @@
 //! | 工具链探测与身份 | [`toolchain`] |
 //! | 编译/执行/回读原语 | `runner` |
 //! | 被测内核的基准封装（`cc` / `cuda`） | `harness` |
-//! | 见证前端（C / Metal / CUDA） | `device` |
+//! | 统一设备：按 `Emit` 分发的描述符表与编排行 | `device` |
 //! | 见证执行与语言门 | [`witness`]、`gate` |
 //! | 四条命令共用的流水线 | `pipeline` |
 //! | 命令策略与结构化报告 | [`doctor`]、[`verify`]、[`mod@bench`]、[`execution`] |
@@ -101,12 +101,11 @@ pub mod toolchain;
 pub mod verify;
 pub mod witness;
 
-mod device;
-mod device_cpu;
-mod device_cuda;
-mod device_metal;
 #[cfg(test)]
 mod cap_tests;
+mod device;
+mod device_cuda;
+mod device_metal;
 mod gate;
 mod harness;
 mod pipeline;
