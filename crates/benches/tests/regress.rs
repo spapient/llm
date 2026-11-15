@@ -90,6 +90,15 @@ const SCENARIOS: &[Scenario] = &[
         dtype: "f32",
         batch: 1,
     },
+    Scenario {
+        group: "gemm_f32",
+        benchmark: "prefill_256x256_k8",
+        scenario: "gemm_f32/prefill_256x256_k8",
+        op: "op::gemm_f32",
+        shape: &[256, 256],
+        dtype: "f32",
+        batch: 1,
+    },
 ];
 
 /// 各主机登记基线：`(host, scenario, ns/iter, 允许的相对偏差%)`。
@@ -115,6 +124,13 @@ const BASELINES: &[(&str, &str, f64, f64)] = &[
         "macos-aarch64",
         "attention_f32/flash_decode_128x64",
         517_442.0,
+        10.0,
+    ),
+    // M4 Pro（2026-11-16，三重循环参考 256×256，K=8）：16599 ns / 100 次采样；噪声相对均值约 1.5%，预算取 10%。
+    (
+        "macos-aarch64",
+        "gemm_f32/prefill_256x256_k8",
+        16_599.0,
         10.0,
     ),
 ];
