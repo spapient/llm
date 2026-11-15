@@ -178,6 +178,82 @@ pub trait Executor {
     }
 }
 
+/// 一条已提交到本地队列、尚未随其流同步的节点快照。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queued {
+    stream: Stream,
+    node: Node,
+}
+
+impl Queued {
+    /// 归属流。
+    pub fn stream(&self) -> Stream {
+        self.stream
+    }
+
+    /// 节点快照。
+    pub fn node(&self) -> &Node {
+        &self.node
+    }
+}
+
+/// 同步 CPU 后端：把图节点按提交顺序记入本地队列，[`sync`](Executor::sync) 按流排水。
+///
+/// 这是 [`Executor`] 的第一个落地实现：单线程、不提交设备命令、不绑定算子与缓冲——节点到算子/
+/// 缓冲的绑定、cutile 产物复用属于后续接内核执行体的后端（见模块顶部边界）。本实现只守住契约：
+/// 同一流内节点按图序入队，`sync` 后排干该流；编排层可以先接上执行入口，执行体后补。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalExecutor {
+    device: Device,
+    queue: Vec<Queued>,
+}
+
+impl LocalExecutor {
+    /// 绑定一台 CPU 设备，构造空队列后端。
+    pub fn new(device: Device) -> Self {
+        Self {
+            device,
+            queue: Vec::new(),
+        }
+    }
+
+    /// 尚未同步的提交，按入队顺序。
+    pub fn pending(&self) -> &[Queued] {
+        &self.queue
+    }
+
+    /// 队列里尚未同步的条数。
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// 队列是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+impl Executor for LocalExecutor {
+    fn device(&self) -> &Device {
+        &self.device
+    }
+
+    fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()> {
+        for node in graph.nodes() {
+            self.queue.push(Queued {
+                stream,
+                node: node.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn sync(&mut self, stream: Stream) -> Result<()> {
+        self.queue.retain(|queued| queued.stream != stream);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[path = "exec_tests.rs"]
 mod tests;

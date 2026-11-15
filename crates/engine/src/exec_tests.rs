@@ -48,3 +48,67 @@ fn an_executor_only_needs_submit() {
     assert_eq!(executor.device().vendor(), "cpu");
     executor.sync(Stream::new(0)).expect("CPU 同步是空操作");
 }
+
+fn graph(names: &[&str]) -> Graph {
+    let mut graph = Graph::new();
+    for name in names {
+        graph.push(Node::new(*name, Launch::new([1, 1, 1], [1, 1, 1])));
+    }
+    graph
+}
+
+#[test]
+fn local_executor_keeps_submission_order_within_a_stream() {
+    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    executor
+        .submit(&graph(&["a", "b"]), Stream::new(0))
+        .expect("提交第一幅图");
+    executor
+        .submit(&graph(&["c"]), Stream::new(0))
+        .expect("提交第二幅图");
+
+    let names: Vec<&str> = executor
+        .pending()
+        .iter()
+        .map(|queued| queued.node().name())
+        .collect();
+    assert_eq!(names, ["a", "b", "c"], "同流内必须按图序与节点序入队");
+    assert_eq!(executor.len(), 3);
+}
+
+#[test]
+fn local_sync_drains_only_the_named_stream() {
+    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    executor
+        .submit(&graph(&["x", "y"]), Stream::new(0))
+        .expect("流 0 入队");
+    executor
+        .submit(&graph(&["z"]), Stream::new(1))
+        .expect("流 1 入队");
+
+    executor.sync(Stream::new(0)).expect("排干流 0");
+
+    let remaining: Vec<&str> = executor
+        .pending()
+        .iter()
+        .map(|queued| queued.node().name())
+        .collect();
+    assert_eq!(remaining, ["z"], "流 1 的提交不许被流 0 的同步带走");
+    assert_eq!(executor.pending()[0].stream(), Stream::new(1));
+}
+
+#[test]
+fn local_executor_empty_graph_submits_nothing() {
+    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    executor
+        .submit(&Graph::new(), Stream::new(0))
+        .expect("空图提交");
+    assert!(executor.is_empty(), "空图不应入队任何节点");
+}
+
+#[test]
+fn local_executor_reports_bound_device() {
+    let executor = LocalExecutor::new(Device::new("cpu", "aarch64"));
+    assert_eq!(executor.device().vendor(), "cpu");
+    assert_eq!(executor.device().arch(), "aarch64");
+}
