@@ -98,12 +98,3 @@ fn skip_registers_reason_and_count() {
             .any(|reason| reason == "测试用临时跳过原因")
     );
 }
-
-#[test]
-fn real_weights_dir_keeps_an_existing_directory_only() {
-    let dir = scratch_dir("weights");
-    assert_eq!(existing_dir(dir.clone()), Some(dir.clone()));
-    let missing = dir.join("no-such-sample");
-    assert_eq!(existing_dir(missing), None);
-    let _ = std::fs::remove_dir_all(&dir);
-}

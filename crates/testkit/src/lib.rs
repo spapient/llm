@@ -1,11 +1,11 @@
 //! 测试约定：浮点对拍、真机门控、临时目录、跳过登记。**只作 dev-dependency**。
 //!
-//! **拥有**：`approx_eq`、`device_enabled`、`real_weights_dir`、`scratch_dir`、`Rng`、
+//! **拥有**：`approx_eq`、`device_enabled`、`scratch_dir`、`Rng`、
 //! `cosine_similarity`、回归阈值 `COSINE_GUARD` 与跳过登记 [`skip`]。**不拥有**：任何生产
 //! 逻辑——它是测试夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
-//! 这里的 [`DEVICE_ENV`] 是**测试门控变量，不是产品配置**：它不进 `cli::settings` 的键表，
+//! 这里的真机门控变量是**测试门控，不是产品配置**：它不进 `cli::settings` 的键表，
 //! 生产代码不得读取它。真机用例的形态固定为"默认跳过、显式开门才跑"：
 //!
 //! ```
@@ -23,17 +23,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// 真机门控环境变量（测试专用，不是产品配置）。
-///
-/// 取值是逗号分隔的 vendor 列表（`cpu,nvidia`），`all` 表示全部打开；未设置表示全部关闭。
-pub const DEVICE_ENV: &str = "LLM_TEST_DEVICE";
-
-/// 真实权重样本目录环境变量（测试专用，不是产品配置）。
-///
-/// 仓库内不打包任何模型权重样本：未设置该变量时真实样本用例一律跳过；接入外部模型时把
-/// 样本目录写进该变量，格式解析由调用方（weights/op 测试）完成——本 crate 不依赖被测 crate，
-/// 也不认识任何文件格式。
-pub const WEIGHTS_ENV: &str = "LLM_TEST_WEIGHTS";
+/// 真机门控环境变量名（测试专用，不是产品配置）。取值是逗号分隔的 vendor 列表
+/// （`cpu,nvidia`），`all` 表示全部打开；未设置表示全部关闭。
+const DEVICE_ENV: &str = "LLM_TEST_DEVICE";
 
 /// 量化 logits 与 f32 参考的余弦回归下界（方向一致性，尺度不变）。
 ///
@@ -69,20 +61,6 @@ pub fn device_enabled(vendor: &str) -> bool {
         Ok(spec) => matches(&spec, vendor),
         Err(_) => false,
     }
-}
-
-/// 真实权重样本目录：环境变量未设置、或路径不是目录时返回 [`None`]，用例据此默认跳过。
-///
-/// 与 [`device_enabled`] 同一套"默认跳过、显式开门"约定；这里只做定位与存在性判断，
-/// 不读文件、不解析格式。
-pub fn real_weights_dir() -> Option<PathBuf> {
-    let path = std::env::var(WEIGHTS_ENV).ok().map(PathBuf::from)?;
-    existing_dir(path)
-}
-
-/// 路径是目录才原样返回；纯存在性判断，便于在测试里直接喂路径。
-fn existing_dir(path: PathBuf) -> Option<PathBuf> {
-    path.is_dir().then_some(path)
 }
 
 /// 进程内跳过计数与原因清单：标准测试框架没有正式 skip 信号，集中登记后才能在报告里
