@@ -1,10 +1,10 @@
-//! 标量参考内核：把 [`super::shape`] 的视图适配到 `op` 的标量参考实现。
+//! 标量参考内核：把 [`crate::shape`] 的视图适配到 `op` 的标量参考实现。
 //!
 //! 算术全部复用 `op` 自己的参考语义；本层不定义算子、不决定显存计划。内核表长度与顺序同
 //! `op::REGISTRY` 在编译期锁死，"注册了算子却没有参考实现"是编译错误。
 
-use super::SITE;
-use super::shape::{Inputs, View, ViewMut, output_slice};
+use crate::shape::{Inputs, View, ViewMut, output_slice};
+use crate::store::SITE;
 use diagnostic::{Code, Error, Result};
 
 /// 一步前向：`op(inputs) → output`；契约是"输入此刻都在"与"输出要被完整写入"。

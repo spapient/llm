@@ -3,9 +3,9 @@
 //! 块本身来自内部空闲表，稳定态不再向系统要内存；分配走 `try_reserve_exact`，形状可能来自
 //! 不受信任的权重文件头，分配失败是一条错误而不是 abort。
 
-use super::SITE;
-use super::kernel::Kernel;
-use super::shape::{Data, Kind, View, no_storage, zeroed};
+use crate::kernel::Kernel;
+use crate::shape::{Data, Kind, View, no_storage, zeroed};
+use crate::store::SITE;
 use autograd::{Sizes, Store, Var};
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};

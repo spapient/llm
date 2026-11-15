@@ -1,9 +1,9 @@
 //! 缓冲形态、视图与输入拆包：`f32` 与按位打包 `u8` 两条 lane 的静态契约。
 //!
 //! 这里只承载"元素类型 → 形态"、不可变/可变视图与元数 1..=3 的类型级拆包；算子适配在
-//! [`super::kernel`]，分配复用在 [`super::pool`]。
+//! [`crate::kernel`]，分配复用在 [`crate::pool`]。
 
-use super::SITE;
+use crate::store::SITE;
 use diagnostic::{Code, Error, Result};
 use tensor::DType;
 

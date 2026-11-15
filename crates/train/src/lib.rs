@@ -31,7 +31,10 @@
 #![deny(unsafe_code)]
 
 mod checkpoint;
+mod kernel;
+mod pool;
 mod schedule;
+mod shape;
 pub mod snapshot;
 mod store;
 
