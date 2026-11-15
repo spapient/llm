@@ -5,6 +5,16 @@
 //!
 //! 这个文件只**测量**：限值一律问 `Gate::limit`，本文件不持有阈值、也不决定「哪个度量用
 //! 哪个数」。判定与结清都在 `llm_tool::gate` 里，因此换阈值不需要动这里。
+//!
+//! 扫描分四类，适用的度量不同：
+//!
+//! - **生产代码**（`crates/*/src` 非测试夹具）与**根入口**（根包 `src/`）：全套门——
+//!   裸 unwrap/expect/panic、ccn、nloc、单文件行数、词法。
+//! - **构建脚本**（`crates/*/build.rs`）：守门词法与单文件行数；脚本对 cargo 注入的环境变量
+//!   用 `expect`、用 `fail()` panic 是构建期惯例，不套运行时零 panic 门，复杂度指标随脚本
+//!   清理再纳入。
+//! - **外部集成测试**（`crates/*/tests/`）：测试代码惯例可用 `expect`/`unwrap`，只守门词法
+//!   能解析，不套生产限值。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -25,11 +35,17 @@ fn every_source_passes_the_static_gate() {
         .parent()
         .and_then(Path::parent)
         .expect("workspace root");
-    let files = rust_files(&root.join("crates"));
+    let crates = root.join("crates");
+
+    let production = rust_files(&crates);
+    let entries = entry_files(&root.join("src"));
+    let build_scripts = build_script_files(&crates);
+    let integration_tests = integration_test_files(&crates);
+
+    let scanned = production.len() + entries.len() + build_scripts.len();
     assert!(
-        files.len() >= MIN_SOURCES,
-        "扫描文件数 {} 低于下限 {MIN_SOURCES}",
-        files.len()
+        scanned >= MIN_SOURCES,
+        "扫描文件数 {scanned} 低于下限 {MIN_SOURCES}",
     );
 
     let gate = Gate::load().expect("阈值配置加载");
@@ -37,25 +53,14 @@ fn every_source_passes_the_static_gate() {
     // 身份 → 本次仍超限的度量；棘轮按（身份, 度量）结清，不按身份。
     let mut live = BTreeMap::new();
 
-    for path in &files {
-        let name = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
-        let raw = std::fs::read_to_string(path).expect("read source");
-        let text = strip_tests(&raw).unwrap_or_else(|err| panic!("{name}: {err:?}"));
-
-        if let Some(lines) = dup::file_lines(&text, &gate) {
-            judge(&gate, &name, Metric::Lines, lines, &mut bad, &mut live);
-        }
-        for finding in ccn::analyze(&text).expect("ccn 分析") {
-            let key = format!("{name}:{}#{}", finding.name, finding.nth);
-            let (ccn, nloc) = (finding.ccn as usize, finding.nloc as usize);
-            judge(&gate, &key, Metric::Ccn, ccn, &mut bad, &mut live);
-            judge(&gate, &key, Metric::Nloc, nloc, &mut bad, &mut live);
-        }
-        let calls = call::scan(&text).expect("call 扫描").len();
-        judge(&gate, &name, Metric::Call, calls, &mut bad, &mut live);
-        if let Err(err) = lex::parse(&raw) {
-            bad.push(format!("{name}: 词法错误 {err:?}"));
-        }
+    for path in production.iter().chain(entries.iter()) {
+        scan_production(&gate, root, path, &mut bad, &mut live);
+    }
+    for path in &build_scripts {
+        scan_build_script(&gate, root, path, &mut bad, &mut live);
+    }
+    for path in &integration_tests {
+        scan_integration_test(root, path, &mut bad);
     }
 
     bad.extend(gate.stale(&live));
@@ -85,6 +90,61 @@ fn every_source_passes_the_static_gate() {
     assert!(bad.is_empty(), "静态质量门失败：\n  {}", bad.join("\n  "));
 }
 
+/// 生产代码与根入口：全套度量。内联 `#[cfg(test)]` 条目先剔除再量复杂度/行数/调用形态。
+fn scan_production(
+    gate: &Gate,
+    root: &Path,
+    path: &Path,
+    bad: &mut Vec<String>,
+    live: &mut BTreeMap<String, BTreeSet<Metric>>,
+) {
+    let name = label(root, path);
+    let raw = std::fs::read_to_string(path).expect("read source");
+    let text = strip_tests(&raw).unwrap_or_else(|err| panic!("{name}: {err:?}"));
+
+    if let Some(lines) = dup::file_lines(&text, gate) {
+        judge(gate, &name, Metric::Lines, lines, bad, live);
+    }
+    for finding in ccn::analyze(&text).expect("ccn 分析") {
+        let key = format!("{name}:{}#{}", finding.name, finding.nth);
+        let (ccn, nloc) = (finding.ccn as usize, finding.nloc as usize);
+        judge(gate, &key, Metric::Ccn, ccn, bad, live);
+        judge(gate, &key, Metric::Nloc, nloc, bad, live);
+    }
+    let calls = call::scan(&text).expect("call 扫描").len();
+    judge(gate, &name, Metric::Call, calls, bad, live);
+    if let Err(err) = lex::parse(&raw) {
+        bad.push(format!("{name}: 词法错误 {err:?}"));
+    }
+}
+
+/// 构建脚本：词法 + 单文件行数。构建期 `expect(OUT_DIR)` 与 `fail()` panic 不纳入零 panic 门。
+fn scan_build_script(
+    gate: &Gate,
+    root: &Path,
+    path: &Path,
+    bad: &mut Vec<String>,
+    live: &mut BTreeMap<String, BTreeSet<Metric>>,
+) {
+    let name = label(root, path);
+    let raw = std::fs::read_to_string(path).expect("read build script");
+    if let Some(lines) = dup::file_lines(&raw, gate) {
+        judge(gate, &name, Metric::Lines, lines, bad, live);
+    }
+    if let Err(err) = lex::parse(&raw) {
+        bad.push(format!("{name}: 词法错误 {err:?}"));
+    }
+}
+
+/// 外部集成测试：只守门词法可解析；生产限值不套到测试代码上。
+fn scan_integration_test(root: &Path, path: &Path, bad: &mut Vec<String>) {
+    let name = label(root, path);
+    let raw = std::fs::read_to_string(path).expect("read integration test");
+    if let Err(err) = lex::parse(&raw) {
+        bad.push(format!("{name}: 词法错误 {err:?}"));
+    }
+}
+
 /// 记录一次测量：先问门禁是否超限，超限才进入判定与结清名单。
 ///
 /// 「是否超限」也是门禁的回答（[`Gate::limit`]），所以这里既没有阈值也没有比较方向。
@@ -112,6 +172,43 @@ fn judge(
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk(dir, &mut out, "rs", true, &is_production);
+    out
+}
+
+/// 根包入口：`src/main.rs` 与 `src/bin/*.rs`，没有 `crates/*/src` 那层目录谓词。
+fn entry_files(src: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    walk(src, &mut out, "rs", true, &|_| true);
+    out
+}
+
+/// 各 crate 根目录下的 `build.rs`（不在 `src` 里，原扫描集漏掉了这一类）。
+fn build_script_files(crates: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(crates) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let build = entry.path().join("build.rs");
+        if build.is_file() {
+            out.push(build);
+        }
+    }
+    out
+}
+
+/// 各 crate `tests/` 目录下的外部集成测试（与内联 `#[cfg(test)]` 模块分开）。
+fn integration_test_files(crates: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(crates) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let tests = entry.path().join("tests");
+        if tests.is_dir() {
+            walk(&tests, &mut out, "rs", true, &|_| true);
+        }
+    }
     out
 }
 
@@ -145,6 +242,14 @@ fn is_production(path: &Path) -> bool {
     };
     let test_fixture = name == "tests.rs" || name.ends_with("_tests.rs");
     path.components().any(|part| part.as_os_str() == "src") && !test_fixture
+}
+
+/// 仓库内相对路径，失败时退回原样，保证坏消息里能定位文件。
+fn label(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// 纳入链接检查的文档：根 README、`docs/**/*.md`（含 ADR）、各成员 README。

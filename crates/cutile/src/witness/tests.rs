@@ -1,6 +1,7 @@
 use super::*;
 use crate::builtin::Catalogue;
 use crate::toolchain;
+use testkit;
 
 fn dirs() -> Dirs {
     Dirs::under(std::env::temp_dir().join("cutile-witness-tests"))
@@ -144,6 +145,7 @@ fn a_cpu_l0_witness_is_executed_on_the_device_too() {
 fn every_metal_witness_runs_on_the_gpu() {
     let profile = device("metal");
     if !device_available(&profile) {
+        testkit::skip("cutile: Metal 设备不在本机，GPU 见证用例未运行");
         return;
     }
     let runs = run_all(&profile, &dirs()).expect("Metal 见证必须全部通过");
@@ -158,6 +160,7 @@ fn every_metal_witness_runs_on_the_gpu() {
 #[test]
 fn a_plain_c_signature_does_not_survive_the_metal_front_end() {
     if !device_available(&device("metal")) {
+        testkit::skip("cutile: Metal 设备不在本机，MSL 前端用例未运行");
         return;
     }
     let program = "#include <metal_stdlib>\nusing namespace metal;\n\

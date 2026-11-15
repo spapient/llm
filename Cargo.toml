@@ -74,6 +74,11 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
+[dev-dependencies]
+assert_cmd = "2.2.2"
+autograd = { path = "crates/autograd", package = "llm-autograd" }
+testkit = { path = "crates/testkit", package = "llm-testkit" }
+
 # 工作区共享的第三方依赖版本：各 crate 用 `{ workspace = true }` 引用，避免版本漂移。
 [workspace.dependencies]
 criterion = "0.8.2"

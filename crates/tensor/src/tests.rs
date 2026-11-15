@@ -160,6 +160,45 @@ fn a_row_strided_view_still_serves_contiguous_rows() {
     assert!(!view.is_contiguous(), "行之间跳过了元素，整体不连续");
 }
 
+/// 属性骨架：随机小形状保持 numel、连续步长与字节数公式不变量。
+///
+/// 维度由 PRNG 串行生成（下一个轴依赖上次状态）；溢出饱和、零元素与越界偏移由既有单独用例锁定，
+/// 这里只覆盖普通形状的几何一致性。
+#[test]
+fn random_shapes_keep_geometry_invariants() {
+    let mut rng = testkit::Rng::new(0x7E_12);
+    for _ in 0..32 {
+        let rank = rng.below(4) as usize;
+        let dims: Vec<usize> = (0..rank).map(|_| rng.below(8) as usize + 1).collect();
+        let shape = Shape::new(dims);
+        let strides = Strides::contiguous(&shape);
+
+        assert_eq!(shape.numel(), shape.dims().iter().product::<usize>());
+        for axis in 0..rank {
+            let expected = shape.dims()[axis + 1..].iter().product::<usize>();
+            assert_eq!(strides.get(axis), Some(expected));
+        }
+        for dtype in [DType::F32, DType::I8, DType::U4] {
+            let bits = shape.numel() * dtype.bits() as usize;
+            assert_eq!(shape.element_bytes(dtype), bits.div_ceil(8));
+        }
+    }
+}
+
+/// 属性骨架：随机长度的一维视图，缓冲短于形状必须被拒绝，等长才放行。
+#[test]
+fn random_views_reject_a_short_buffer() {
+    let mut rng = testkit::Rng::new(0x91);
+    for _ in 0..16 {
+        let n = rng.below(16) as usize + 1;
+        let shape = Shape::new([n]);
+        let values: Vec<f32> = vec![0.0; n];
+        assert!(View::new(shape.clone(), &values).is_ok());
+        let short: Vec<f32> = vec![0.0; n - 1];
+        assert!(View::new(shape, &short).is_err());
+    }
+}
+
 #[test]
 fn a_zero_element_view_needs_an_empty_buffer() {
     let empty: [f32; 0] = [];

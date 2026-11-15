@@ -497,16 +497,17 @@ fn declared_edges() -> (BTreeSet<Edge>, usize, usize) {
             Some((normal, dev_part)) => (normal, dev_part),
             None => (rhs, ""),
         };
-        if normal.contains("（叶") {
-            continue;
-        }
+        // 「叶」标记只表示没有运行时出边；同一行仍可以登记 `+dev` 测试夹具边。
+        let normal_is_leaf = normal.contains("（叶");
         for from in &froms {
-            for to in names(normal) {
-                edges.insert(Edge {
-                    from: from.clone(),
-                    to,
-                    dev: false,
-                });
+            if !normal_is_leaf {
+                for to in names(normal) {
+                    edges.insert(Edge {
+                        from: from.clone(),
+                        to,
+                        dev: false,
+                    });
+                }
             }
             for to in names(dev_part) {
                 edges.insert(Edge {

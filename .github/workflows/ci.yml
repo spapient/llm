@@ -55,7 +55,25 @@ jobs:
       # lib / 集成 / 二进制测试由 nextest 按测试二进制并行隔离运行。libfuzzer harness
       # 不是 libtest 运行器，已在 `.config/nextest.toml` 按二进制名排除，交独立 fuzz job。
       # doc-test 不在 nextest 范围，由 `doc` job 的 `cargo test --doc` 负责。
-      - run: cargo nextest run --workspace --all-features --locked
+      # LLM_TEST_SKIP_DIR 让 testkit 把"前提不满足而跳过"的用例落到结构化日志，供下一步汇总，
+      # 避免静默空转在绿测里不可见。
+      - name: Test
+        env:
+          LLM_TEST_SKIP_DIR: ${{ github.workspace }}/target/skips
+        run: cargo nextest run --workspace --all-features --locked
+
+      # 跳过不是失败：这里只汇总条数与原因，不按跳过数阻断。
+      - name: Report skipped tests
+        if: always()
+        run: |
+          if [ -f target/skips/skips.log ]; then
+            count=$(wc -l < target/skips/skips.log)
+            echo "::group::Skipped tests ($count)"
+            sort target/skips/skips.log | uniq -c
+            echo "::endgroup::"
+          else
+            echo "No skipped-test records."
+          fi
 
   msrv:
     name: msrv (1.100.0)
@@ -144,6 +162,15 @@ jobs:
       # 给 ubuntu 上不可用的 Metal/NVCC 探测分支留出平台差异余量，只防整体回退、不卡单次波动。
       - name: Coverage floor (cutile)
         run: cargo llvm-cov nextest -p cutile --all-features --locked --fail-under-lines 75 --fail-under-functions 70
+      # 其余核心基座按同一口径加保守下限：本地干净基线 wire 行 75.0% / 函数 71.8%，
+      # dtype 行 96.4% / 函数 97.3%，weights 行 78.3% / 函数 71.9%（torch legacy 路径样本
+      # 门控跳过，bin.rs 覆盖偏低）。下限留平台与样本差异余量，只防整体回退。
+      - name: Coverage floor (wire)
+        run: cargo llvm-cov nextest -p llm-wire --all-features --locked --fail-under-lines 68 --fail-under-functions 64
+      - name: Coverage floor (dtype)
+        run: cargo llvm-cov nextest -p llm-dtype --all-features --locked --fail-under-lines 88 --fail-under-functions 88
+      - name: Coverage floor (weights)
+        run: cargo llvm-cov nextest -p llm-weights --all-features --locked --fail-under-lines 70 --fail-under-functions 64
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -163,6 +190,18 @@ jobs:
       # CI 只保证基准代码始终可编译；实测与基线判定在固定硬件上跑（跨机器绝对值不可比）。
       - name: Build benchmarks
         run: cargo bench --workspace --all-features --locked --no-run
+      # 回退判定本身也要被编译与执行一次：没有本机基线/没有测量时它登记跳过（`llm-testkit[skip]`），
+      # 有基线的固定靶机上才会真的判 pass/regressed。判定规则只有 `tool::regress` 一份。
+      - name: Judge the gemv_f32 baseline
+        run: cargo test -p llm-benches --test regress --locked -- --nocapture
+      - name: Upload bench report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: target/bench-report/
+          retention-days: 14
+          if-no-files-found: ignore
 
   fuzz:
     name: fuzz (libfuzzer)
@@ -181,7 +220,8 @@ jobs:
       # `harness = false` 的测试二进制带哈希名、留在 build out 目录，运行前按目标名解析路径。
       - name: Build fuzz harnesses
         run: |
-          for target in fuzz_cli fuzz_weights_json fuzz_weights_safetensors; do
+          for target in fuzz_cli fuzz_weights_json fuzz_weights_safetensors \
+              fuzz_train_snapshot fuzz_serve_frames fuzz_wire_sealed; do
             cargo rustc -p llm-fuzz --features engine --test "$target" --release --locked -- \
               -C passes='sancov-module' \
               -C llvm-args='-sanitizer-coverage-level=3' \
@@ -192,7 +232,8 @@ jobs:
       - name: Run fuzz targets (bounded)
         run: |
           mkdir -p fuzz-artifacts
-          for target in fuzz_cli fuzz_weights_json fuzz_weights_safetensors; do
+          for target in fuzz_cli fuzz_weights_json fuzz_weights_safetensors \
+              fuzz_train_snapshot fuzz_serve_frames fuzz_wire_sealed; do
             bin="$(find target/release/build/llm-fuzz -type f -name "$target"-* ! -name '*.d' ! -name '*.o' | head -1)"
             "$bin" -max_total_time=30 -print_final_stats=1 -artifact_prefix=./fuzz-artifacts/
           done

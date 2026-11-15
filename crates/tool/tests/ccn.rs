@@ -16,8 +16,9 @@ const MIN_FILES: usize = 40;
 
 #[test]
 fn ccn_matches_the_syn_baseline_on_every_old_source() {
-    if !Path::new(OLD_BIN).exists() {
-        eprintln!("skip: 旧 tool 二进制不存在（{OLD_BIN}）");
+    if testkit::skip(format!(
+        "tool: 旧 tool 基线二进制不存在（{OLD_BIN}），CCN 对拍用例未运行"
+    )) {
         return;
     }
     let files = sources(Path::new(OLD_ROOT));

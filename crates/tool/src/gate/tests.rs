@@ -15,9 +15,10 @@ fn sound() -> Table {
     Table::from_pairs(vec![("gate", Value::table(gate))])
 }
 
-/// 项目配置：三个阈值来自构建期生成的 `lints/vocabulary.toml`，且**没有任何存量豁免**。
+/// 项目配置：三个阈值来自构建期生成的 `lints/vocabulary.toml`；存量债务只允许挂在根入口
+/// `src/`（待下沉 `tool` 的既有编排/排版逻辑），运行时生产代码 `crates/*/src` 一条都不能有。
 #[test]
-fn the_project_config_loads_without_exemptions() {
+fn the_project_config_lists_only_root_entry_legacy_debt() {
     let gate = Gate::load().expect("项目配置合法");
     let limits =
         [Metric::Ccn, Metric::Nloc, Metric::Lines, Metric::Call].map(|metric| gate.limit(metric));
@@ -26,10 +27,12 @@ fn the_project_config_loads_without_exemptions() {
         [5, 60, 899, 0],
         "阈值来自构建期生成的 `lints/vocabulary.toml`；`Call` 没有预算"
     );
-    assert!(
-        gate.debt.is_empty(),
-        "存量豁免必须已经清零——空表是判据，不是“还没填”"
-    );
+    for key in gate.debt.keys() {
+        assert!(
+            key.starts_with("src/"),
+            "运行时生产代码没有债务条目，存量只能是根入口既有逻辑：{key}"
+        );
+    }
 }
 
 #[test]

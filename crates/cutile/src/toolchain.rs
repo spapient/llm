@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+#[cfg(test)]
+use testkit;
+
 /// 一条被真正解析出来的工具链。产物身份与报告用它，而不是档案里的登记版本。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toolchain {
@@ -131,12 +134,11 @@ pub fn probe(command: &str) -> Option<Toolchain> {
 }
 
 /// 测试门控：没有主机 C 编译器时，编译/执行类用例在 CI 上不该伪装成通过；返回 `true` 表示跳过，
-/// 原因写进 stderr（标准测试框架没有正式 skip 信号，这里只让"空转通过"在输出里可见）。
+/// 原因经 [`testkit::skip`] 登记计数（标准测试框架没有正式 skip 信号）。
 #[cfg(test)]
 pub(crate) fn skip_without_host_compiler() -> bool {
     if detect().is_none() {
-        eprintln!("skip: 未探测到主机 C 编译器（cc/clang/gcc），本用例未运行");
-        true
+        testkit::skip("cutile: 未探测到主机 C 编译器（cc/clang/gcc），编译/执行用例未运行")
     } else {
         false
     }

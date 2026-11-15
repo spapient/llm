@@ -10,7 +10,7 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`dtype`、`testkit`、`wire`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、测试夹具、与领域无关的字节码闭集（`wire`：CRC-32、LEB128 变长整数、计数/切片/文件 Sink 与 CRC 密封）、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
+| L1 基础设施 | `diagnostic`、`testkit`、`dtype`、`wire`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、测试夹具、精度闭集、与领域无关的字节码闭集（`wire`：CRC-32、LEB128 变长整数、计数/切片/文件 Sink 与 CRC 密封）、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集（`devices/*.toml` 在构建期解析成表）、算子声明与词汇表闭集（`ops/*.toml` 同上）（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
@@ -35,7 +35,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 77 条，含 14 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 89 条，含 26 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -43,10 +43,11 @@ op       → annotation, diagnostic, prof    +dev: testkit（工具边：`#[mode
 annotation → dtype（工具边：变体名唯一事实源 `DType::variant`，不参与方向判定）
 prim     → prof, diagnostic
 prof     → diagnostic, dtype
-tensor   → diagnostic, dtype
+dtype    → （叶：精度闭集，无运行期工作区依赖）    +dev: testkit
+tensor   → diagnostic, dtype    +dev: testkit
 storage  → tensor, diagnostic
 tokenizer→ diagnostic
-weights  → tensor, diagnostic, dtype, wire    +dev: storage
+weights  → tensor, diagnostic, dtype, wire    +dev: storage, testkit
 autograd → tensor, diagnostic    +dev: testkit
 data     → tensor, diagnostic
 nn       → tensor, op, weights, diagnostic, annotation
@@ -55,12 +56,13 @@ train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire
 engine   → tensor, diagnostic    +dev: testkit
 serve    → engine, tokenizer, diagnostic    +dev: testkit
 cli      → diagnostic
-fuzz     → diagnostic    +dev: cli, weights（工具成员，不参与方向判定；`+dev` 的两个是 `tests/parsers.rs` 的驱动对象，解析器本身来自它已经依赖的 `diagnostic`；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
-benches  → +dev: prof, op, cutile, wire, weights（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象）
+fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor（工具成员，不参与方向判定；`+dev` 的是 `drivers.rs` 里的六个驱动对象：`cli` 参数文法、`weights` JSON 与 safetensors、`train` 检查点、`serve` 帧解码、`wire` 接收器不变量，`tensor` 只为给检查点夹具写形状；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
+benches  → +dev: prof, op, cutile, wire, weights, tool, testkit（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过）
 llm      → cli, cutile, diagnostic, engine, nn, op,
            prim, prof, serve, tensor, tokenizer, tool, train, weights
-tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）
-testkit  → （叶：无出边，被 cutile / autograd / serve / engine / wire / op 的 dev 依赖消费）
+           +dev: autograd, testkit（`tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段对拍：`autograd` 出 `Tape`/`Sizes`，`testkit` 出三档浮点口径）
+tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）    +dev: testkit
+testkit  → （叶：无出边，被 cutile / autograd / serve / engine / wire / op / dtype / tensor / tool / weights 的 dev 依赖消费）
 wire     → diagnostic（纯字节码闭集：CRC-32、LEB128、Sink；不认识张量或容器布局）    +dev: testkit
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自己的出边为零）
 ```

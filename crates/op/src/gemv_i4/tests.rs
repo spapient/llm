@@ -132,6 +132,11 @@ fn shape_mismatch_is_an_error() {
     assert!(
         gemv::reference::<I4>(&with(5, 1, vec![1.0; 5], vec![0u8; 3], vec![1.0, 1.0])).is_err()
     );
+    // 奇数宽度无论分组奇偶都进不到解包：奇组被偶校验拦，偶组被整除校验拦。
+    assert!(gemv::reference::<I4>(&with(7, 1, vec![1.0; 7], vec![0u8; 4], vec![1.0])).is_err());
+    assert!(
+        gemv::reference::<I4>(&with(7, 1, vec![1.0; 7], vec![0u8; 4], vec![1.0, 1.0])).is_err()
+    );
 }
 
 #[test]

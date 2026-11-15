@@ -57,6 +57,7 @@ fn quantiles_are_ordered_for_random_samples() {
 fn compiler_gets_the_flags_it_was_given() {
     // 真机用例：默认跳过，`LLM_TEST_DEVICE=cpu` 才真的编译一次。
     if !testkit::device_enabled("cpu") {
+        testkit::skip("cutile: 未显式启用 CPU 真机编译用例（LLM_TEST_DEVICE=cpu）");
         return;
     }
     let workdir = std::env::temp_dir().join(format!("cutile-runner-{}", std::process::id()));

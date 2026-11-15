@@ -18,6 +18,10 @@ prof = { path = "../prof", package = "llm-prof" }
 op = { path = "../op", package = "llm-op" }
 wire = { path = "../wire", package = "llm-wire" }
 weights = { path = "../weights", package = "llm-weights" }
+# 基线判定与报告归档：`tests/regress.rs` 用 `tool::regress` 判、用 `weights::json` 读
+# criterion 的 estimates.json（本成员没有生产依赖，全部在 dev）。
+tool = { path = "../tool", package = "llm-tool" }
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 # 显式关闭 libtest harness：criterion 提供自己的 main（criterion_main!）。
 # path 指向 criterion/ 子目录，未来可并列加 iai 等其他测量 harness。
@@ -39,6 +43,11 @@ harness = false
 [[bench]]
 name = "wire_codec"
 path = "criterion/wire_codec.rs"
+harness = false
+
+[[bench]]
+name = "gemv_f32"
+path = "criterion/gemv_f32.rs"
 harness = false
 
 [[bench]]

@@ -23,6 +23,10 @@ libfuzzer-sys = { version = "0.4.13", optional = true }
 [dev-dependencies]
 cli = { path = "../cli", package = "llm-cli" }
 weights = { path = "../weights", package = "llm-weights" }
+train = { path = "../train", package = "llm-train" }
+serve = { path = "../serve", package = "llm-serve" }
+wire = { path = "../wire", package = "llm-wire" }
+tensor = { path = "../tensor", package = "llm-tensor" }
 
 # libfuzzer 目标是 `harness = false` 的独立测试二进制：拿 dev-dependencies，但不走 libtest；
 # 不作为 `example` 样例目标存在。仅在 `engine` feature 下编译。
@@ -41,6 +45,24 @@ required-features = ["engine"]
 [[test]]
 name = "fuzz_weights_safetensors"
 path = "tests/fuzz_weights_safetensors.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_train_snapshot"
+path = "tests/fuzz_train_snapshot.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_serve_frames"
+path = "tests/fuzz_serve_frames.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_wire_sealed"
+path = "tests/fuzz_wire_sealed.rs"
 harness = false
 required-features = ["engine"]
 

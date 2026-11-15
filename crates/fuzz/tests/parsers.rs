@@ -4,9 +4,10 @@
 //! 而不是与真实输入毫无关系的噪声——真实缺陷几乎总在这些边角上（多一个字节的长度、写错的
 //! 分组数、半个转义序列）。同一 `(seed, case)` 在任何机器上都得到同一串字节，失败可复现。
 //!
-//! 覆盖的是文本与字节两类边界：`cli` 的参数文法、`weights` 的 JSON 与 safetensors 头部。
-//! 它们都是"外部来的字节"，也都把错误当返回值，因此"不 panic / 结论稳定 / 拒绝有话说"
-//! 三条契约在这里是同一件事。
+//! 覆盖的是文本与字节两类边界：`cli` 的参数文法、`weights` 的 JSON 与 safetensors 头部、
+//! `train` 的检查点、`serve` 的帧解码，以及 `wire` 三种接收器的不变量。它们都是"外部来的
+//! 字节"，也都把错误当返回值，因此"不 panic / 结论稳定 / 拒绝有话说"三条契约在这里是
+//! 同一件事；最后一个不拒绝任何输入，它验的是"三条承诺互相一致"。
 //!
 //! 适配定义统一来自 [`drivers`]，与 libfuzzer harness 共用，避免两份判据漂移。
 //!
@@ -17,12 +18,12 @@
 #[path = "../drivers.rs"]
 mod drivers;
 
-use drivers::{Invocation, Json, Safetensors};
+use drivers::{Frames, Invocation, Json, Safetensors, Sealed, Snapshot};
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
 ///
-/// 512 条 × 3 个目标 = 1536 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能覆盖
+/// 512 条 × 6 个目标 = 3072 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能覆盖
 /// 每个字节位置被扰动一次"就够——加密强度的随机源在这里没有价值，可复现才有。
 const CASES: u64 = 512;
 
@@ -40,12 +41,40 @@ fn safetensors() -> Vec<u8> {
     file
 }
 
+/// 一份合法的检查点：两条条目、事实四个数都取最小合法值。
+///
+/// 种子必须是**能解码**的，否则遍历只在错误路径上打转；因此这里直接经库编码一份，
+/// 而不是照字节格式手抄（手抄的版本一旦格式演进就会悄悄变成"合法种子其实不合法"）。
+fn snapshot() -> Vec<u8> {
+    let facts = train::snapshot::Facts::new(1, 1, 1, 1).expect("事实合法");
+    let entry = weights::Entry::new("w", tensor::DType::F32, tensor::Shape::new([2, 3])).at(8);
+    let header = weights::Header::new(vec![entry], 8).expect("条目表合法");
+    train::snapshot::Snapshot::new(facts, header)
+        .encode()
+        .expect("编码合法检查点")
+}
+
+/// 一条合法的帧：`Request` + 载荷 `hi`，含头尾校验。
+fn frame() -> Vec<u8> {
+    serve::proto::Envelope::new(
+        serve::proto::Version::current(),
+        serve::proto::Kind::Request,
+        b"hi".to_vec(),
+    )
+    .frame()
+    .expect("编码合法帧")
+    .to_vec()
+}
+
 #[test]
 fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
-    let targets: [(&dyn Target, Seed); 3] = [
+    let targets: [(&dyn Target, Seed); 6] = [
         (&Invocation, Seed::new(ARGS.to_vec())),
         (&Json, Seed::new(HEADER.as_bytes().to_vec())),
         (&Safetensors, Seed::new(safetensors())),
+        (&Snapshot, Seed::new(snapshot())),
+        (&Frames, Seed::new(frame())),
+        (&Sealed, Seed::new(frame())),
     ];
     for (target, seed) in targets {
         if let Err(finding) = sweep(target, &seed, CASES) {
@@ -64,10 +93,13 @@ fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
 /// "合法输入也只许有一种结论"这条就没人验。
 #[test]
 fn every_seed_is_a_valid_input() {
-    let targets: [(&dyn Target, Seed); 3] = [
+    let targets: [(&dyn Target, Seed); 6] = [
         (&Invocation, Seed::new(ARGS.to_vec())),
         (&Json, Seed::new(HEADER.as_bytes().to_vec())),
         (&Safetensors, Seed::new(safetensors())),
+        (&Snapshot, Seed::new(snapshot())),
+        (&Frames, Seed::new(frame())),
+        (&Sealed, Seed::new(frame())),
     ];
     for (target, seed) in targets {
         assert!(

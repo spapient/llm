@@ -806,8 +806,9 @@ fn bad(message: &str) -> Error {
 mod tests {
     use super::*;
 
-    fn real_bytes() -> Option<Vec<u8>> {
-        std::fs::read("/tmp/pt/model.bin").ok()
+    pub(crate) fn real_bytes() -> Option<Vec<u8>> {
+        let bytes = std::fs::read("/tmp/pt/model.bin").ok();
+        bytes.or_else(|| testkit::skip_none("weights 样本缺失"))
     }
 
     #[test]
@@ -861,7 +862,7 @@ mod zip_tests {
 
     #[test]
     fn parses_real_torch_zip() {
-        let Ok(raw) = std::fs::read("/tmp/pt/model.bin") else {
+        let Some(raw) = super::tests::real_bytes() else {
             return;
         };
         let zip = Zip::parse(&raw).expect("解析");

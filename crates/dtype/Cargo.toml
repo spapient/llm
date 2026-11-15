@@ -23,6 +23,7 @@ bytemuck = { version = "1.25.2", features = ["derive"], optional = true }
 [dev-dependencies]
 # 只用于可选 feature 的互操作测试，生产依赖不受影响。
 serde_json = "1.0.154"
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

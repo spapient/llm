@@ -1,5 +1,5 @@
 use super::*;
-use testkit::{Rng, cosine_similarity};
+use testkit::{COSINE_GUARD, Rng, cosine_similarity};
 
 #[test]
 fn forward_matches_a_hand_written_sum() {
@@ -77,7 +77,7 @@ fn quantized_logits_keep_cosine_with_the_f32_reference() {
 
     let cosine = cosine_similarity(&reference, &quantized).expect("两条向量非零");
     assert!(
-        cosine >= 0.999,
-        "int8 量化 logits 与 f32 参考余弦 {cosine:.5} < 0.999"
+        cosine >= COSINE_GUARD,
+        "int8 量化 logits 与 f32 参考余弦 {cosine:.5} < {COSINE_GUARD:.3}"
     );
 }

@@ -12,6 +12,9 @@ publish = false
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+
 [lints]
 workspace = true
 

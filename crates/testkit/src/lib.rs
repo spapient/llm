@@ -1,8 +1,9 @@
-//! 测试约定：浮点对拍、真机门控、临时目录。**只作 dev-dependency**。
+//! 测试约定：浮点对拍、真机门控、临时目录、跳过登记。**只作 dev-dependency**。
 //!
-//! **拥有**：`approx_eq`、`device_enabled`、`scratch_dir`。**不拥有**：任何生产逻辑——它是
-//! 测试夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。**被依赖**：各成员
-//! 的 `[dev-dependencies]`。
+//! **拥有**：`approx_eq`、`device_enabled`、`real_weights_dir`、`scratch_dir`、`Rng`、
+//! `cosine_similarity`、回归阈值 `COSINE_GUARD` 与跳过登记 [`skip`]。**不拥有**：任何生产
+//! 逻辑——它是测试夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
+//! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
 //! 这里的 [`DEVICE_ENV`] 是**测试门控变量，不是产品配置**：它不进 `cli::settings` 的键表，
 //! 生产代码不得读取它。真机用例的形态固定为"默认跳过、显式开门才跑"：
@@ -12,22 +13,44 @@
 //!     // 需要 nvcc + 真卡的用例
 //! }
 //! ```
+//!
+//! 前提不满足的用例必须走 [`skip`] 登记，禁止裸 `return` 空转：跳过原因进进程内计数与
+//! 结构化日志，设置 `LLM_TEST_SKIP_DIR` 时还会追加到该目录的 `skips.log`，供 CI 汇总。
 
 #![deny(unsafe_code)]
 
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// 真机门控环境变量（测试专用，不是产品配置）。
 ///
 /// 取值是逗号分隔的 vendor 列表（`cpu,nvidia`），`all` 表示全部打开；未设置表示全部关闭。
 pub const DEVICE_ENV: &str = "LLM_TEST_DEVICE";
 
-/// 逐个元素比较，`NaN` 与 `NaN` 视为相等（对拍时它两边同源，不该因为 `NaN != NaN` 失败）。
+/// 真实权重样本目录环境变量（测试专用，不是产品配置）。
+///
+/// 仓库内不打包任何模型权重样本：未设置该变量时真实样本用例一律跳过；接入外部模型时把
+/// 样本目录写进该变量，格式解析由调用方（weights/op 测试）完成——本 crate 不依赖被测 crate，
+/// 也不认识任何文件格式。
+pub const WEIGHTS_ENV: &str = "LLM_TEST_WEIGHTS";
+
+/// 量化 logits 与 f32 参考的余弦回归下界（方向一致性，尺度不变）。
+///
+/// 合成基准与未来的真实样本集共用这一条阈值，避免各用例各抄一个数字、判据悄悄漂移。
+pub const COSINE_GUARD: f32 = 0.999;
+
+/// 逐个元素**绝对误差**比较：两套同尺度算法变体对拍走这一档。`NaN` 与 `NaN` 视为相等
+/// （对拍时它两边同源，不该因为 `NaN != NaN` 失败）。
 ///
 /// 两个**相同的无限大**也算相等：`inf - inf` 是 `NaN`，只看差值的判定会把「两边同为无穷」
 /// 判成不等，而它与 `NaN` 对 `NaN` 是同一个理由。
 ///
 /// 长度不同直接返回 `false`：对拍的首要条件是形状一致。
+///
+/// 判据分三档，不要混用：同尺度逐元素对拍用本函数；量化 logits 的方向一致性用
+/// [`cosine_similarity`] + [`COSINE_GUARD`]；解析梯度 vs 数值梯度这类随量级缩放的比对，
+/// 误差预算是「绝对 + 相对」双项，由用例本地按步长写 slack，不套绝对容差。
 pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
     if left.len() != right.len() {
         return false;
@@ -46,6 +69,77 @@ pub fn device_enabled(vendor: &str) -> bool {
         Ok(spec) => matches(&spec, vendor),
         Err(_) => false,
     }
+}
+
+/// 真实权重样本目录：环境变量未设置、或路径不是目录时返回 [`None`]，用例据此默认跳过。
+///
+/// 与 [`device_enabled`] 同一套"默认跳过、显式开门"约定；这里只做定位与存在性判断，
+/// 不读文件、不解析格式。
+pub fn real_weights_dir() -> Option<PathBuf> {
+    let path = std::env::var(WEIGHTS_ENV).ok().map(PathBuf::from)?;
+    existing_dir(path)
+}
+
+/// 路径是目录才原样返回；纯存在性判断，便于在测试里直接喂路径。
+fn existing_dir(path: PathBuf) -> Option<PathBuf> {
+    path.is_dir().then_some(path)
+}
+
+/// 进程内跳过计数与原因清单：标准测试框架没有正式 skip 信号，集中登记后才能在报告里
+/// 区分"通过"与"前提不满足而未运行"。
+static SKIPPED: AtomicUsize = AtomicUsize::new(0);
+static SKIP_REASONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// 登记一条"环境前提不满足"的跳过；恒返回 `true`，调用方据此立即 `return`。
+///
+/// 每条跳过写一行结构化记录 `llm-testkit[skip]: <原因>`，并计入进程内计数；若设置了
+/// `LLM_TEST_SKIP_DIR`，同时追加到该目录的 `skips.log`，跨测试二进制汇总时按文件读取。
+/// 原因要写清缺什么（设备 / 编译器 / 样本目录 / 旧基线二进制），不留"不知道为什么没跑"。
+pub fn skip(reason: impl Into<String>) -> bool {
+    let reason = reason.into();
+    SKIPPED.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut reasons) = SKIP_REASONS.lock() {
+        reasons.push(reason.clone());
+    }
+    eprintln!("llm-testkit[skip]: {reason}");
+    if let Some(dir) = std::env::var_os("LLM_TEST_SKIP_DIR") {
+        let dir = PathBuf::from(dir);
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let path = dir.join("skips.log");
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                use std::io::Write;
+                let _ = writeln!(file, "{reason}");
+            }
+        }
+    }
+    true
+}
+
+/// 登记一条跳过并返回 `None`：供 `Option` 链式表达式（如 `ok().or_else(...)`）内联使用，
+/// 避免在测试臂里再开一个语句块；类型 `T` 由上下文推断。
+#[must_use]
+pub fn skip_none<T>(reason: impl Into<String>) -> Option<T> {
+    skip(reason);
+    None
+}
+
+/// 本进程已登记的跳过条数。
+#[must_use]
+pub fn skip_count() -> usize {
+    SKIPPED.load(Ordering::Relaxed)
+}
+
+/// 本进程已登记的跳过原因（按登记顺序）。
+#[must_use]
+pub fn skipped_reasons() -> Vec<String> {
+    SKIP_REASONS
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 /// 逗号列表匹配：`all` 全开，空白被忽略，空列表等于没开。

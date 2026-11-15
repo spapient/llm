@@ -48,3 +48,21 @@ fn taking_past_the_end_is_an_error() {
     assert_eq!(cursor.pos(), 2);
     assert!(cursor.take(2).is_err());
 }
+
+/// 属性骨架：随机 `u64` 编码后必须规范解码回原值。
+///
+/// 用例串行生成——下一个输入依赖上一次 PRNG 状态，无法预生成批量；不变量是往返一致与
+/// 字节数上界，边界值（0、127、128、u32::MAX、u64::MAX）由 `integers_round_trip_across_boundaries`
+/// 单独锁定，这里只覆盖中间分布。
+#[test]
+fn random_u64_values_round_trip_through_canonical_encoding() {
+    let mut rng = testkit::Rng::new(0x1E_B12E);
+    for _ in 0..64 {
+        let value = ((rng.below(u32::MAX) as u64) << 32) | rng.below(u32::MAX) as u64;
+        let mut buf = Vec::new();
+        write(&mut buf, value);
+        assert!(buf.len() <= 10, "u64 的 LEB128 最多 10 字节");
+        let decoded: u64 = Cursor::new(&buf).read().expect("随机值必为规范编码");
+        assert_eq!(decoded, value);
+    }
+}
