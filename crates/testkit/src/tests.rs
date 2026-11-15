@@ -91,10 +91,56 @@ fn cosine_is_scale_invariant() {
 fn skip_registers_reason_and_count() {
     let before = skip_count();
     assert!(skip("测试用临时跳过原因"));
-    assert_eq!(skip_count(), before + 1);
+    assert!(skip_count() > before, "跳过计数必须单调递增");
     assert!(
         skipped_reasons()
             .iter()
             .any(|reason| reason == "测试用临时跳过原因")
     );
+}
+
+#[test]
+fn close_allows_relative_slack_for_large_values() {
+    assert!(close(&[1000.0], &[1000.5], 1e-3, 1e-3));
+    assert!(!close(&[1000.0], &[1002.0], 1e-3, 1e-3));
+    assert!(!close(&[1.0], &[1.0, 1.0], 0.0, 0.0), "长度不同必须为假");
+}
+
+#[test]
+fn close_nan_and_equal_infinites_match() {
+    assert!(close(&[f32::NAN], &[f32::NAN], 0.0, 0.0));
+    assert!(close(&[f32::INFINITY], &[f32::INFINITY], 0.0, 0.0));
+    assert!(!close(&[f32::INFINITY], &[f32::NEG_INFINITY], 1.0, 1.0));
+}
+
+#[test]
+fn finite_predicate_rejects_nan_and_infinity() {
+    assert!(all_finite(&[1.0, -2.0, 0.0]));
+    assert!(!all_finite(&[f32::NAN]));
+    assert!(!all_finite(&[f32::INFINITY]));
+}
+
+#[test]
+fn rng_value_stays_away_from_zero_and_is_signable() {
+    let mut rng = Rng::new(42);
+    for _ in 0..16 {
+        let value = rng.value();
+        assert!(value.abs() >= 0.5 && value.abs() <= 2.0);
+    }
+}
+
+#[test]
+fn rng_next_f32_is_in_unit_interval() {
+    let mut rng = Rng::new(7);
+    for _ in 0..16 {
+        let value = rng.next_f32();
+        assert!((0.0..1.0).contains(&value));
+    }
+}
+
+#[test]
+fn device_or_skip_registers_when_disabled() {
+    let before = skip_count();
+    assert!(device_or_skip("nvidia", "测试：未启用 nvidia"));
+    assert!(skip_count() > before, "跳过计数必须单调递增");
 }

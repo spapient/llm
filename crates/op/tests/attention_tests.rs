@@ -10,7 +10,7 @@ fn flash_and_plain_attention_agree_and_rows_are_distributions() {
         "两套算法必须一致：逐元素绝对容差 1e-5"
     );
     // 每个 query 行的注意力权重隐含归一化：输出对全 1 的 V 应得 1，这里直接核对确定性结果非 NaN。
-    assert!(plain.iter().all(|value| value.is_finite()));
+    assert!(testkit::all_finite(&plain));
 
     let mut out = vec![0.0f32; 64];
     forward(

@@ -5,6 +5,7 @@
 //! 同一前向重复反向必须逐位一致，图外参数的梯度必须恰好为 0。
 
 use llm_autograd::{Node, Requirement, Schedule, Tape, Var};
+use testkit::Rng;
 
 /// 绝对项（`llm.u` 的 gradcheck 口径）。
 const ABSOLUTE: f64 = 2e-3;
@@ -286,31 +287,4 @@ fn random_case(rng: &mut Rng) -> Case {
 /// 从已有变量里随机挑一个。
 fn pick(rng: &mut Rng, vars: &[Var]) -> Var {
     vars[rng.below(vars.len() as u32) as usize]
-}
-
-/// 确定性 PRNG：不给依赖表加 `rand`，同时让失败可复现。
-struct Rng {
-    state: u64,
-}
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn below(&mut self, bound: u32) -> u32 {
-        self.state ^= self.state << 13;
-        self.state ^= self.state >> 7;
-        self.state ^= self.state << 17;
-        (self.state % u64::from(bound.max(1))) as u32
-    }
-
-    /// `±[0.5, 2]`：远离 0，避免 `square` 的差分为 0 与无谓的抵消。
-    fn value(&mut self) -> f64 {
-        let magnitude = 0.5 + 1.5 * f64::from(self.below(1_000)) / 1_000.0;
-        match self.below(2) {
-            0 => magnitude,
-            _ => -magnitude,
-        }
-    }
 }

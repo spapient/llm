@@ -1,7 +1,7 @@
 //! 测试约定：浮点对拍、真机门控、临时目录、跳过登记。**只作 dev-dependency**。
 //!
-//! **拥有**：`approx_eq`、`device_enabled`、`scratch_dir`、`Rng`、
-//! `cosine_similarity`、回归阈值 `COSINE_GUARD` 与跳过登记 [`skip`]。**不拥有**：任何生产
+//! **拥有**：`approx_eq`、`close`、`all_finite`、`device_enabled`、`device_or_skip`、
+//! `scratch_dir`、`Rng`、`cosine_similarity`、回归阈值 `COSINE_GUARD` 与跳过登记 [`skip`]。**不拥有**：任何生产
 //! 逻辑——它是测试夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
@@ -42,7 +42,7 @@ pub const COSINE_GUARD: f32 = 0.999;
 ///
 /// 判据分三档，不要混用：同尺度逐元素对拍用本函数；量化 logits 的方向一致性用
 /// [`cosine_similarity`] + [`COSINE_GUARD`]；解析梯度 vs 数值梯度这类随量级缩放的比对，
-/// 误差预算是「绝对 + 相对」双项，由用例本地按步长写 slack，不套绝对容差。
+/// 走 [`close`] 的「绝对 + 相对」双项预算，不套绝对容差。
 pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
     if left.len() != right.len() {
         return false;
@@ -53,6 +53,39 @@ pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
         }
         (a - b).abs() <= tolerance
     })
+}
+
+/// 双项容差标量判定：`|a-b| ≤ abs + rel·max(|a|,|b|)`。
+///
+/// 两侧同为 NaN、同为同号无穷算相等；异号无穷不算相等。
+fn close_scalar(a: f32, b: f32, abs: f32, rel: f32) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.is_nan() {
+        return b.is_nan();
+    }
+    if a.is_infinite() {
+        return false;
+    }
+    if b.is_infinite() {
+        return false;
+    }
+    let tolerance = abs + rel * a.abs().max(b.abs());
+    (a - b).abs() <= tolerance
+}
+
+/// 绝对 + 相对双项容差逐元素对拍：随量级缩放的比对（解析梯度 vs 数值梯度）走这一档。
+///
+/// 判据分三档：同尺度逐元素用 [`approx_eq`]；方向一致性用 [`cosine_similarity`]；
+/// 量级相关的误差预算用本函数。长度不同直接返回 `false`。
+pub fn close(left: &[f32], right: &[f32], abs: f32, rel: f32) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .all(|(a, b)| close_scalar(*a, *b, abs, rel))
 }
 
 /// 这台设备的真机用例是否被显式打开。
@@ -120,6 +153,17 @@ pub fn skipped_reasons() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 真机门控与跳过登记合一：设备未显式打开时登记原因并返回 `true`（调用方立即 `return`）；
+/// 已打开返回 `false`。等价于 `if !device_enabled(v) { skip(reason) }`，省掉重复的成对写法。
+pub fn device_or_skip(vendor: &str, reason: impl Into<String>) -> bool {
+    if device_enabled(vendor) {
+        false
+    } else {
+        skip(reason);
+        true
+    }
+}
+
 /// 逗号列表匹配：`all` 全开，空白被忽略，空列表等于没开。
 fn matches(spec: &str, vendor: &str) -> bool {
     spec.split(',')
@@ -140,7 +184,7 @@ pub fn scratch_dir(tag: &str) -> PathBuf {
     path
 }
 
-/// 确定性 PRNG（xorshift）：测试共享，不给依赖表加 `rand`，同时让失败可复现。
+/// 确定性 PRNG（xorshift32）：测试共享，不给依赖表加 `rand`，同时让失败可复现。
 pub struct Rng {
     state: u32,
 }
@@ -158,6 +202,20 @@ impl Rng {
         self.state ^= self.state >> 17;
         self.state ^= self.state << 5;
         self.state % bound.max(1)
+    }
+
+    /// `±[0.5, 2]` 的确定性值：远离 0，避免平方类算子的差分为 0 造成无谓抵消。
+    pub fn value(&mut self) -> f64 {
+        let magnitude = 0.5 + 1.5 * f64::from(self.below(1_000)) / 1_000.0;
+        match self.below(2) {
+            0 => magnitude,
+            _ => -magnitude,
+        }
+    }
+
+    /// `[0, 1)` 内的确定性 f32。
+    pub fn next_f32(&mut self) -> f32 {
+        self.below(1_000_000) as f32 / 1_000_000.0
     }
 }
 
@@ -179,6 +237,12 @@ pub fn crc32_bitwise(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// 切片内全部为有限值（非 NaN、非无穷）；数值对拍前的前置谓词。
+#[must_use]
+pub fn all_finite(values: &[f32]) -> bool {
+    values.iter().all(|value| value.is_finite())
 }
 
 /// 两条同长向量的余弦相似度；长度不同、或任一向量范数为零时返回 [`None`]。
