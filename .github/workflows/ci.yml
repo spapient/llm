@@ -69,7 +69,10 @@ jobs:
           rustup toolchain install nightly-2026-09-01 --profile minimal --no-self-update
           rustup default nightly-2026-09-01
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features --locked
+      # libtest 会收集 `[[test]]` 目标：三个 libfuzzer harness 是 `harness = false`、`no_main`，
+      # 被 libtest 直接运行会进入模糊循环。它们归独立 fuzz job 构建与有界运行；这里排除整个
+      # llm-fuzz crate，其确定性 sweep 用例由 test job 的 nextest（按二进制名过滤）覆盖。
+      - run: cargo test --workspace --all-features --locked --exclude llm-fuzz
 
   doc:
     name: doc
