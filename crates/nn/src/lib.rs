@@ -1,7 +1,9 @@
-//! 层定义：[`Contract`]、[`ContractSpec`]、第一个具体层 [`Linear`]、权重编码 [`WeightFormat`]、
-//! 层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
+//! 层定义：[`Contract`]、[`ContractSpec`]、投影层 [`Linear`] 与 [`LmHead`]，单轴层
+//! ([`RmsNorm`]、[`Softmax`]、[`Gelu`]、[`Silu`]、[`Rope`]、[`Scale`]、[`Add`]、[`Mul`]、
+//! [`ResidualAdd`])、归约层 ([`ReduceSum`]、[`ReduceMax`])、查表层 [`Embedding`] 与注意力层
+//! [`Attention`]；权重编码 [`WeightFormat`]、层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
 //!
-//! **拥有**：`Contract`、`ContractSpec`、`Linear`、`LmHead`、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子声明与
+//! **拥有**：`Contract`、`ContractSpec`、上述各层、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子声明与
 //! 模板（`op`）、kernel 机制（`cutile`）、设备峰值（`prof`）、权重字节与解析（`weights`）。
 //! **依赖**：`weights`、`tensor`、`op`、`diagnostic`。**被依赖**：`train`。
 //!
@@ -46,19 +48,35 @@ pub use annotation::spec;
 
 use diagnostic::{Code, Error, Result};
 
+mod attention;
 mod bounds;
+mod embed;
 mod format;
 mod lm_head;
+mod pointwise;
+mod reduce;
 mod stack;
 
 #[doc(inline)]
+pub use attention::{Attention, AttentionAlgo};
+
+#[doc(inline)]
 pub use bounds::Bounds;
+
+#[doc(inline)]
+pub use embed::Embedding;
 
 #[doc(inline)]
 pub use lm_head::LmHead;
 
 #[doc(inline)]
 pub use format::WeightFormat;
+
+#[doc(inline)]
+pub use pointwise::{Add, Gelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax};
+
+#[doc(inline)]
+pub use reduce::{ReduceMax, ReduceSum};
 
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};

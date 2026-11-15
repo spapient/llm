@@ -70,6 +70,35 @@ impl Bounds {
         })
     }
 
+    /// 通用形状入口：把 `(a, b)` 交给算子自己的 [`Model::shape_ctx`](op::model::Model::shape_ctx)
+    /// 翻成具名轴，再由 [`Model::cost`](op::model::Model::cost) 推出下界。
+    ///
+    /// 与 [`of_op`] 的分工：投影算子按轴角色（输入/输出）把宽度填进规约轴与输出轴；单轴逐元素、
+    /// 归约、注意力这类形状由算子骨架自己定义的，走本入口。两条路径都只调用算子语义表的
+    /// `shape_ctx` 与 `cost`，`nn` 里没有第二份流量常数。
+    ///
+    /// # Errors
+    ///
+    /// - 算子没有语义表（[`Code::Missing`]）：声明了却不能对拍，也就无法定义下界；
+    /// - 形状上下文构造失败，或代价模型拒绝该形状（错误原样上报并点名算子）。
+    pub fn of_context(op: &str, a: usize, b: usize) -> Result<Self> {
+        let model = op::model(op).ok_or_else(|| {
+            Error::new(
+                Code::Missing,
+                format!("算子 `{op}` 没有语义表，无法推出下界"),
+            )
+            .with("nn::Bounds::of_context")
+        })?;
+        let shape =
+            (model.shape_ctx)(a, b).map_err(|error| error.with("nn::Bounds::of_context"))?;
+        let cost = (model.cost)(&shape).map_err(|error| error.with("nn::Bounds::of_context"))?;
+        Ok(Self {
+            read: cost.read,
+            write: cost.write,
+            flops: cost.flops,
+        })
+    }
+
     /// 一串算子在**同一个形状**上的下界之和：组合层自己的下界。
     ///
     /// 空列表是 [`Bounds::ZERO`]——"没有可计价的算子"与"代价为零"在数值上一致，两者的区别由
