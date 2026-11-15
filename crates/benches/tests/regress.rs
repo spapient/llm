@@ -99,6 +99,15 @@ const SCENARIOS: &[Scenario] = &[
         dtype: "f32",
         batch: 1,
     },
+    Scenario {
+        group: "silu_f32",
+        benchmark: "decode_1x4096",
+        scenario: "silu_f32/decode_1x4096",
+        op: "op::silu_f32",
+        shape: &[4096],
+        dtype: "f32",
+        batch: 1,
+    },
 ];
 
 /// 各主机登记基线：`(host, scenario, ns/iter, 允许的相对偏差%)`。
@@ -133,6 +142,8 @@ const BASELINES: &[(&str, &str, f64, f64)] = &[
         16_599.0,
         10.0,
     ),
+    // M4 Pro（2026-11-16，逐元素 SiLU 参考）：3287 ns / 100 次采样；噪声相对均值约 1.5%，预算取 10%。
+    ("macos-aarch64", "silu_f32/decode_1x4096", 3_287.0, 10.0),
 ];
 
 /// 本机标识：`os-arch`。criterion 的绝对值只在同一台机器上可比，标识也就到这一层。

@@ -80,6 +80,11 @@ path = "criterion/gemm_f32.rs"
 harness = false
 
 [[bench]]
+name = "silu_f32"
+path = "criterion/silu_f32.rs"
+harness = false
+
+[[bench]]
 name = "weights_container"
 path = "criterion/weights_container.rs"
 harness = false
