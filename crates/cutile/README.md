@@ -193,9 +193,7 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
     ├── runner.rs              # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
     ├── dirs.rs                # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
-    ├── device.rs              # 统一设备：按 Emit 查描述符表，共享装载/起进程/回读 + host C 编排（无 unsafe）
-    │   ├── device_cuda.rs     # nvcc 真机编排：kernel + cudaMemcpy 回读
-    │   └── device_metal.rs    # MSL → metallib → host 驱动发射回读
+    ├── device.rs              # 统一设备：按 Emit 查描述符表；共享装载/起进程/回读 + C/CUDA/Metal 三段编排（无 unsafe）
     ├── gate.rs / witness.rs    # 语言门与见证执行器
     ├── pipeline.rs             # 四条命令共用的流水线（Run / Prepared / …）
     └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
@@ -252,7 +250,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 `crates/cutile` 已是 workspace 成员，继承 `version/edition/rust-version/license/repository` 与 `[lints] workspace = true`。`missing_docs`、`unsafe_op_in_unsafe_fn`、`clippy::all`+`cargo` 全部生效，因此本设计必须自带三条工程条款：
 
-- **unsafe 边界**：本 crate 不含 `unsafe`。`runner` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `device` / `device_cuda` / `device_metal` 编排模块的新增驱动段里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
+- **unsafe 边界**：本 crate 不含 `unsafe`。`runner` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `device` 编排模块的新增驱动段里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
 - **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
 - **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`diagnostic` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
   - 缓存目录、工作目录、可选数据根（`data.root`）以 `crate::dirs::Dirs` 传入，**纯数据**：内核不读环境变量、不拼默认路径；

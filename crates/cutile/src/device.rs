@@ -5,14 +5,11 @@
 //! Rust 前端类型；新增设备只在 [`SPECS`] 加一行，不改任何 `match`。
 //!
 //! 共享的装载、命名、起进程与回读各只有一份；编译器探测在 [`crate::toolchain`]，编译/执行原语在
-//! [`crate::runner`]。CUDA 编排在 [`crate::device_cuda`]，Metal 编排在 [`crate::device_metal`]。
-
-pub use crate::device_cuda::compile_run_cuda;
+//! [`crate::runner`]。C / CUDA / Metal 三段编排在本文件内各占一节私有函数；用到设备时只按档案里的
+//! [`Emit`] 选表行，不在调用侧再写一套后端代码。
 
 use crate::atom::{Prim, Witness};
 use crate::build;
-use crate::device_cuda::{cuda_available, cuda_program, cuda_run};
-use crate::device_metal::{metal_available, metal_program, metal_run};
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
 use crate::toolchain;
@@ -331,6 +328,384 @@ fn push_witness(text: &mut String, func: &str, max: usize) {
     text.push_str("    }\n");
 }
 
+// ---------------------------------------------------------------------------
+// CUDA 真机编排：nvcc 把见证编进 `__global__` kernel，在 GPU 上按 tid 逐条执行，再 cudaMemcpy 回读。
+//
+// 与 `CudaFront` 的主机语法自检不同，这里是真设备执行；它**不**证明别的架构或别的 `-arch` 下成立。
+// 片段本体来自 `prim`，本层只做编译编排与回读。
+// ---------------------------------------------------------------------------
+
+fn cuda_available(_: &Profile) -> bool {
+    // nvcc 在，且 Windows 上能找到宿主 cl（Linux 上 nvcc 用系统 gcc，不需要 cl）。
+    toolchain::detect_nvcc().is_some()
+        && (std::env::consts::OS != "windows" || toolchain::find_cl().is_some())
+}
+
+fn cuda_program(
+    profile: &Profile,
+    dirs: &Dirs,
+    selected: &[Selected<'_>],
+    _scope: Scope,
+) -> Result<String> {
+    cuda_program_inner::<MAX_OUT>(profile, dirs, selected)
+}
+
+fn cuda_program_inner<const OUT: usize>(
+    profile: &Profile,
+    dirs: &Dirs,
+    selected: &[Selected<'_>],
+) -> Result<String> {
+    let mut program = cuda_head(profile);
+    let files = as_device(witness_files(selected, dirs, C_PARAMS)?);
+    push_sources(&mut program, &files);
+    push_cuda_kernel(&mut program, OUT, selected);
+    push_cuda_main(&mut program, OUT, selected.len());
+    Ok(program)
+}
+
+fn cuda_run(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    _count: usize,
+    _scope: Scope,
+) -> Result<Readback> {
+    let (stdout, stderr) = compile_run_cuda(profile, dirs, program, "witness")?;
+    Ok(readback(&stdout, &stderr))
+}
+
+/// CUDA 的头：runtime 与 `stdio` 的 include，加上档案的 `[compile].preamble`。非空 preamble 之后固定补一个
+/// 换行——统一成"缺了才补"会改掉每一份已缓存的程序文本。
+fn cuda_head(profile: &Profile) -> String {
+    let mut head = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
+    if !profile.preamble.is_empty() {
+        head.push_str(&profile.preamble);
+        head.push('\n');
+    }
+    head
+}
+
+/// 给见证定义加 `__device__`：kernel 要调用它们，而 `int witness` 只出现在定义处。
+fn as_device(files: Sources) -> Sources {
+    files
+        .into_iter()
+        .map(|(file, text)| (file, text.replace("int witness", "__device__ int witness")))
+        .collect()
+}
+
+/// 内核包装：`__global__` 按 `blockIdx.x` 分派，一个 block 一条见证。
+fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]) {
+    program.push_str(&format!(
+        "__global__ void cutile_witness(float *out, int *counts, int total) {{\n\
+         \x20   int tid = blockIdx.x;\n\
+         \x20   if (tid >= total) return;\n\
+         \x20   float local[{max}];\n\
+         \x20   for (int i = 0; i < {max}; ++i) local[i] = 0.0f;\n\
+         \x20   int n = 0;\n\
+         \x20   switch (tid) {{\n"
+    ));
+    push_dispatch(program, max, selected, "}}\n\n");
+}
+
+/// host main：分配、发射、同步、回读——stdout 只按实际写入个数打印位模式（与 CPU harness
+/// 同口径），counts 走 stderr。
+fn push_cuda_main(program: &mut String, max: usize, total: usize) {
+    program.push_str(&format!(
+        "int main() {{\n\
+         \x20   const int total = {total};\n\
+         \x20   float *d_out = 0; int *d_counts = 0;\n\
+         \x20   cudaMalloc((void **)&d_out, total * {max} * sizeof(float));\n\
+         \x20   cudaMalloc((void **)&d_counts, total * sizeof(int));\n\
+         \x20   cutile_witness<<<total, 1>>>(d_out, d_counts, total);\n\
+         \x20   cudaError_t error = cudaDeviceSynchronize();\n\
+         \x20   if (error != cudaSuccess) {{\n\
+         \x20       fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error));\n\
+         \x20       return 1;\n\
+         \x20   }}\n\
+         \x20   float h_out[total * {max}]; int h_counts[total];\n\
+         \x20   cudaMemcpy(h_out, d_out, total * {max} * sizeof(float), cudaMemcpyDeviceToHost);\n\
+         \x20   cudaMemcpy(h_counts, d_counts, total * sizeof(int), cudaMemcpyDeviceToHost);\n\
+         \x20   for (int t = 0; t < total; ++t) {{\n\
+         \x20       for (int i = 0; i < h_counts[t]; ++i) {{\n\
+         \x20           union {{ float f; unsigned int u; }} v;\n\
+         \x20           v.f = h_out[t * {max} + i];\n\
+         \x20           printf(\"%u\\n\", v.u);\n\
+         \x20       }}\n\
+         \x20       fprintf(stderr, \"witness %d\\n\", h_counts[t]);\n\
+         \x20   }}\n\
+         \x20   cudaFree(d_out); cudaFree(d_counts);\n\
+         \x20   return 0;\n\
+         \x20   }}\n"
+    ));
+}
+
+/// 编译并运行任意 CUDA 程序，返回 `(stdout, stderr)` 原文：临时目录、nvcc（Windows 用 `-ccbin` 指向 cl）、
+/// 执行。见证与算子 verify 共用这一条；写、编、跑三段分开。
+pub fn compile_run_cuda(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    label: &str,
+) -> Result<(String, String)> {
+    let dir = scratch(dirs, &format!("{label}-cuda"));
+    let outcome = cuda_in_dir(&dir, profile, program, label);
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
+/// 一次性目录里的一条 CUDA 程序：写源 → nvcc 编 → 跑一遍。
+fn cuda_in_dir(
+    dir: &Path,
+    profile: &Profile,
+    program: &str,
+    label: &str,
+) -> Result<(String, String)> {
+    let src = dir.join(format!("{label}.cu"));
+    let exe = dir.join(format!("{label}.exe"));
+    write_text(&src, program)?;
+    cuda_compile(&exe, &src, profile)?;
+    let mut command = Command::new(&exe);
+    run_exe(&mut command, &exe, "CUDA 执行失败")
+}
+
+/// nvcc 编译：Windows 上用 `-ccbin` 显式指向 cl.exe，不依赖 vcvars/PATH。
+fn cuda_compile(exe: &Path, src: &Path, profile: &Profile) -> Result<()> {
+    let mut command = Command::new("nvcc");
+    command.args(&profile.flags);
+    if std::env::consts::OS == "windows" {
+        let Some(cl) = toolchain::find_cl() else {
+            return Err(Error::new(
+                Code::Unsupported,
+                "找不到 MSVC cl.exe：nvcc 设备编译需要它".to_string(),
+            ));
+        };
+        command.arg("-ccbin").arg(cl);
+    }
+    command.arg("-o").arg(exe).arg(src);
+    run_tool("nvcc", &mut command, src)
+}
+
+// ---------------------------------------------------------------------------
+// Metal 编排：MSL → `metallib` → host 驱动发射到 GPU → 回读。
+//
+// 不能用 host C 自检代替：MSL 没有默认地址空间，`float *out` 在 `.metal` 里是语法错误。
+// 证明"这条见证在本机 Metal 设备上跑得出 `expect`"，**不**证明它在别的芯片、别的 `-std` 下同样成立。
+// 片段本体来自 `prim`，本层只做两段编译、驱动发射与回读。
+// ---------------------------------------------------------------------------
+
+/// MSL 的形参必须带地址空间：MSL 没有默认地址空间，裸 `float *` 在那里是语法错误。
+const MSL_PARAMS: &str = "thread float *";
+
+fn metal_available(_: &Profile) -> bool {
+    // 工具链在，就说明这台机器有 Metal 编译器；再往下才是"有没有 GPU"。
+    toolchain::detect_metal().is_some()
+}
+
+fn metal_program(
+    profile: &Profile,
+    dirs: &Dirs,
+    selected: &[Selected<'_>],
+    _scope: Scope,
+) -> Result<String> {
+    metal_program_inner::<MAX_OUT>(profile, dirs, selected)
+}
+
+fn metal_program_inner<const OUT: usize>(
+    profile: &Profile,
+    dirs: &Dirs,
+    selected: &[Selected<'_>],
+) -> Result<String> {
+    let mut program = metal_head(profile);
+    push_sources(&mut program, &witness_files(selected, dirs, MSL_PARAMS)?);
+    push_metal_kernel(&mut program, OUT, selected);
+    Ok(program)
+}
+
+fn metal_run(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    count: usize,
+    _scope: Scope,
+) -> Result<Readback> {
+    // 设备参数来自档案：`-std=metal3.1` 之类决定了这段 MSL 按哪个语言版本编。
+    run_metal(program, count, &profile.flags, dirs)
+}
+
+/// MSL 的头：档案的 `[compile].preamble`，补齐结尾换行后直接接见证源码。
+fn metal_head(profile: &Profile) -> String {
+    let mut head = profile.preamble.clone();
+    normalize_newline(&mut head);
+    head
+}
+
+/// 内核包装：`cutile_witness` 按 `tid` 分派到一条见证，把个数与值写回缓冲区。`local` 声明留在
+/// 这里而不是公共分派段：Metal 的 `thread` 地址空间在 CUDA 里没有对应物。
+fn push_metal_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]) {
+    program.push_str(&format!(
+        "kernel void cutile_witness(device float *out [[buffer(0)]],\n\
+         \x20                          device int *counts [[buffer(1)]],\n\
+         \x20                          uint tid [[thread_position_in_grid]]) {{\n\
+         \x20   thread float local[{max}];\n\
+         \x20   for (int i = 0; i < {max}; ++i) local[i] = 0.0f;\n\
+         \x20   int n = 0;\n\
+         \x20   switch (tid) {{\n"
+    ));
+    push_dispatch(program, max, selected, "}\n");
+}
+
+/// 编译并执行一次 Metal 见证程序，返回 `(每条写入个数, 按顺序回读的值)`。写、起子进程、回读三步分开；
+/// 编不过与跑不起来都带完整输出，否则只会以一句 "compile failed" 出现。
+fn run_metal(program: &str, count: usize, flags: &[String], dirs: &Dirs) -> Result<Readback> {
+    let dir = scratch(dirs, "witness-metal");
+    let outcome = metal_in_dir(&dir, program, count, flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
+/// 一次性目录里的一条：写 MSL → 编成 `metallib` → 编驱动 → 跑 → 回读。
+fn metal_in_dir(dir: &Path, program: &str, count: usize, flags: &[String]) -> Result<Readback> {
+    let metalib = metal_kernel(dir, program, flags)?;
+    let exe = metal_driver_exe(dir)?;
+    metal_readback(&exe, &metalib, count)
+}
+
+/// 写 MSL 并编成 `metallib`：`xcrun metal` 管语言层、`metallib` 管链接；诊断里带 `.metal` 路径。
+fn metal_kernel(dir: &Path, program: &str, flags: &[String]) -> Result<PathBuf> {
+    let msl = dir.join("witness.metal");
+    let air = dir.join("witness.air");
+    let metalib = dir.join("witness.metallib");
+    write_text(&msl, program)?;
+    let mut compile = xcrun("metal", flags);
+    compile.arg("-c").arg(&msl).arg("-o").arg(&air);
+    run_tool("xcrun metal", &mut compile, &msl)?;
+    let mut link = xcrun("metallib", &[]);
+    link.arg(&air).arg("-o").arg(&metalib);
+    run_tool("xcrun metallib", &mut link, &msl)?;
+    Ok(metalib)
+}
+
+/// 一条 `xcrun -sdk macosx <tool> <flags>` 命令：Metal 的编译与链接都从这里起。
+fn xcrun(tool: &str, flags: &[String]) -> Command {
+    let mut command = Command::new("xcrun");
+    command.args(["-sdk", "macosx"]).arg(tool).args(flags);
+    command
+}
+
+/// host 驱动：写 `driver.m`，用本机 clang 编成可执行文件（链接 Foundation 与 Metal）。驱动只负责
+/// 把 `metallib` 发射出去并回读，不判断"算得对不对"；模板逐字不变是设备证据的前提。
+fn metal_driver_exe(dir: &Path) -> Result<PathBuf> {
+    let Some(compiler) = toolchain::detect() else {
+        return Err(Error::new(
+            Code::Unsupported,
+            "缺少 host C 编译器：Metal 见证需要一个 host 驱动把内核发射到 GPU".to_string(),
+        ));
+    };
+    let driver = dir.join("driver.m");
+    let exe = dir.join("driver");
+    write_text(&driver, &metal_driver(MAX_OUT))?;
+    let mut clang = Command::new(&compiler.command);
+    clang
+        .args(["-fobjc-arc", "-O2", "-o"])
+        .arg(&exe)
+        .arg(&driver);
+    clang.args(["-framework", "Foundation", "-framework", "Metal"]);
+    run_tool(&compiler.command, &mut clang, &driver)?;
+    Ok(exe)
+}
+
+/// 起驱动子进程并回读：`metallib` 与条数是它的两个参数。
+fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<Readback> {
+    let mut command = Command::new(exe);
+    command.arg(metalib).arg(count.to_string());
+    let (stdout, stderr) = run_exe(&mut command, exe, "Metal 见证执行失败")?;
+    Ok(readback(&stdout, &stderr))
+}
+
+/// 把 `metallib` 里的 `cutile_witness` 发射到 GPU，回读个数与值。计数走 stderr、值走 stdout
+/// ——与 C harness 同一口径，`compare` 因此只认一条路径；缓冲区用共享存储，看的是值不是带宽。
+fn metal_driver(max: usize) -> String {
+    format!("#define WITNESS_MAX_OUT {max}\n{METAL_DRIVER}")
+}
+
+/// 驱动主体：每条见证的缓冲宽度用 `WITNESS_MAX_OUT`，由 [`metal_driver`] 注入。这个数字曾经是 kernel 里的
+/// const 泛型 `{max}` 与这里的三个裸字面量 `8`——跨 FFI 唯一失去编译期保护的重复：`MAX_OUT` 一旦不是 8，
+/// 写入与回读就错位且不会有任何编译错误。
+const METAL_DRIVER: &str = r#"#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, const char **argv) {
+    @autoreleasepool {
+        if (argc < 3) {
+            fprintf(stderr, "usage: driver <metallib> <count>\n");
+            return 2;
+        }
+        const int count = atoi(argv[2]);
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device) {
+            fprintf(stderr, "本机没有 Metal 设备\n");
+            return 3;
+        }
+        NSError *error = nil;
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        if (!library) {
+            fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String);
+            return 4;
+        }
+        id<MTLFunction> function = [library newFunctionWithName:@"cutile_witness"];
+        if (!function) {
+            fprintf(stderr, "metallib 里没有 cutile_witness\n");
+            return 5;
+        }
+        id<MTLComputePipelineState> pipeline =
+            [device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) {
+            fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String);
+            return 6;
+        }
+        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * WITNESS_MAX_OUT * sizeof(float)
+                                                  options:MTLResourceStorageModeShared];
+        id<MTLBuffer> counts = [device newBufferWithLength:(NSUInteger)count * sizeof(int)
+                                                   options:MTLResourceStorageModeShared];
+        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLCommandBuffer> buffer = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:values offset:0 atIndex:0];
+        [encoder setBuffer:counts offset:0 atIndex:1];
+        [encoder dispatchThreads:MTLSizeMake((NSUInteger)count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake((NSUInteger)count, 1, 1)];
+        [encoder endEncoding];
+        [buffer commit];
+        [buffer waitUntilCompleted];
+        if (buffer.error) {
+            fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String);
+            return 7;
+        }
+        const int *written = (const int *)counts.contents;
+        const float *out = (const float *)values.contents;
+        for (int i = 0; i < count; ++i) {
+            fprintf(stderr, "witness %d\n", written[i]);
+        }
+        fflush(stderr);
+        for (int i = 0; i < count; ++i) {
+            int n = written[i];
+            if (n < 0) n = 0;
+            if (n > WITNESS_MAX_OUT) n = WITNESS_MAX_OUT;
+            for (int j = 0; j < n; ++j) {
+                union { float f; unsigned int u; } v;
+                v.f = out[i * WITNESS_MAX_OUT + j];
+                printf("%u\n", v.u);
+            }
+        }
+    }
+    return 0;
+}
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +787,26 @@ mod tests {
             "执行前端登记表行数 {} 低于基线 3：扫描布局或表被拆坏",
             SPECS.len()
         );
+    }
+
+    #[test]
+    fn the_metal_driver_takes_its_width_from_the_witness_limit() {
+        let driver = metal_driver(MAX_OUT);
+        assert!(driver.contains(&format!("#define WITNESS_MAX_OUT {MAX_OUT}")));
+        // 一处定义 + 四处使用（上限判断那行出现两次）：每个宽度用点都必须走宏。
+        assert_eq!(
+            driver.matches("WITNESS_MAX_OUT").count(),
+            5,
+            "驱动里还有写死的宽度"
+        );
+        for literal in ["count * 8", "out[i * 8", "(n > 8)"] {
+            assert!(!driver.contains(literal), "仍是字面量：{literal}");
+        }
+    }
+
+    #[test]
+    fn metal_driver_wrapper_is_nonempty() {
+        let driver = metal_driver(MAX_OUT);
+        assert!(!driver.is_empty());
     }
 }

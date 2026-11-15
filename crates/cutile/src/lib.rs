@@ -103,9 +103,8 @@ pub mod witness;
 
 #[cfg(test)]
 mod cap_tests;
+
 mod device;
-mod device_cuda;
-mod device_metal;
 mod gate;
 mod harness;
 mod pipeline;
