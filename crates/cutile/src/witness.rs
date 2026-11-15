@@ -414,5 +414,5 @@ impl Evidence {
 }
 
 #[cfg(test)]
-#[path = "witness_tests.rs"]
+#[path = "../tests/witness_tests.rs"]
 mod tests;

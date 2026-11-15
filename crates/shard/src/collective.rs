@@ -14,5 +14,5 @@ pub trait Collective {
 }
 
 #[cfg(test)]
-#[path = "collective_tests.rs"]
+#[path = "../tests/collective_tests.rs"]
 mod tests;

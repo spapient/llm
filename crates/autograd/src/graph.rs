@@ -182,5 +182,5 @@ impl Node {
 }
 
 #[cfg(test)]
-#[path = "graph_tests.rs"]
+#[path = "../tests/graph_tests.rs"]
 mod tests;

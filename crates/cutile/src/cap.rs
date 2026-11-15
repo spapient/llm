@@ -598,5 +598,5 @@ impl fmt::Display for FragmentGap {
 }
 
 #[cfg(test)]
-#[path = "cap_tests.rs"]
+#[path = "../tests/cap_tests.rs"]
 mod tests;

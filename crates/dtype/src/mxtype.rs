@@ -445,5 +445,5 @@ impl_serde!(MxType);
 impl_serde!(Element);
 
 #[cfg(test)]
-#[path = "mxtype_tests.rs"]
+#[path = "../tests/mxtype_tests.rs"]
 mod tests;

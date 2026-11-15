@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Std-only L1 base: the workspace's single error type, exit-code contract and declarative data tree."
 publish = false
+autotests = false
 
 [dependencies]
 # 仅在 `build` feature 下、供各 crate 的 build.rs 使用；默认 feature 保持纯 std、零依赖。

@@ -52,5 +52,5 @@ impl Group {
 }
 
 #[cfg(test)]
-#[path = "group_tests.rs"]
+#[path = "../tests/group_tests.rs"]
 mod tests;

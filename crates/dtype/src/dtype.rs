@@ -439,5 +439,5 @@ impl TryFrom<u16> for DType {
 }
 
 #[cfg(test)]
-#[path = "dtype_tests.rs"]
+#[path = "../tests/dtype_tests.rs"]
 mod tests;

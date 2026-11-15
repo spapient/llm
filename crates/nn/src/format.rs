@@ -204,5 +204,5 @@ fn kernel_group(op: &str) -> Option<usize> {
 }
 
 #[cfg(test)]
-#[path = "format_tests.rs"]
+#[path = "../tests/format_tests.rs"]
 mod tests;

@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "L1 element-type floor: closed scalar, GGML block-quantized and micro-scaled format sets plus the MX element set, each with one identity table."
 publish = false
+autotests = false
 
 [features]
 default = []
@@ -27,3 +28,23 @@ testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "geometry"
+path = "tests/geometry.rs"
+
+[[test]]
+name = "identity"
+path = "tests/identity.rs"
+
+[[test]]
+name = "interop"
+path = "tests/interop.rs"
+
+[[test]]
+name = "mx_spec"
+path = "tests/mx_spec.rs"
+
+[[test]]
+name = "properties"
+path = "tests/properties.rs"

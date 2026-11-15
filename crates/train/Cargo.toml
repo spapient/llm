@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Training loop state: learning-rate schedule, step records, resumable checkpoints and their byte format."
 publish = false
+autotests = false
 
 [dependencies]
 autograd = { path = "../autograd", package = "llm-autograd" }

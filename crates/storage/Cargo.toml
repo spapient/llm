@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Physical layouts over flat buffers: Order, Layout and the remap pass."
 publish = false
+autotests = false
 
 [features]
 default = []

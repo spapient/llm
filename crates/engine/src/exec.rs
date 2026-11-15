@@ -2,7 +2,7 @@
 //!
 //! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Executor`。**不拥有**：编译 kernel
 //! （`cutile::runner` 负责"源文件 → 可执行文件"，产物按 `(模板, 档案, flags)` 由 `cutile::build` 缓存；本 crate 只负责
-//! "图提交到流"，每 step 都发生，见 `docs/adr/0002-single-owner-per-type.md`）、缓冲分配（`mem`）。
+//! "图提交到流"，每 step 都发生，见 `docs/adr/0002-single-owner-per-type.md`）、缓冲分配（`storage`）。
 //! **依赖**：`diagnostic`。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
 //!
 //! 现在只有契约：没有真实的流、没有设备队列。缺的是实现，不是接口——后端的差异会落在
@@ -255,5 +255,5 @@ impl Executor for LocalExecutor {
 }
 
 #[cfg(test)]
-#[path = "exec_tests.rs"]
+#[path = "../tests/exec_tests.rs"]
 mod tests;

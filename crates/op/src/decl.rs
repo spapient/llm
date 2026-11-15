@@ -754,5 +754,5 @@ fn as_string(path: &str, item: &Value) -> Result<String, Error> {
 }
 
 #[cfg(test)]
-#[path = "decl_tests.rs"]
+#[path = "../tests/decl_tests.rs"]
 mod tests;

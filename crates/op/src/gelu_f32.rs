@@ -59,5 +59,5 @@ pub fn forward(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "gelu_f32_tests.rs"]
+#[path = "../tests/gelu_f32_tests.rs"]
 mod tests;

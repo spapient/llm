@@ -50,5 +50,5 @@ pub(crate) use crate::pool::Pool;
 pub use crate::shape::{Data, Inputs, Kind, Lane, View, ViewMut};
 
 #[cfg(test)]
-#[path = "store_tests.rs"]
+#[path = "../tests/store_tests.rs"]
 mod tests;

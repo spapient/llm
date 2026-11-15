@@ -436,5 +436,5 @@ pub fn parse(src: &str) -> diagnostic::Result<Vec<Token>> {
 }
 
 #[cfg(test)]
-#[path = "lex_tests.rs"]
+#[path = "../tests/lex_tests.rs"]
 mod tests;

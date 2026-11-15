@@ -164,5 +164,5 @@ fn rank_u32(rank: usize) -> Result<u32> {
 }
 
 #[cfg(test)]
-#[path = "topology_tests.rs"]
+#[path = "../tests/topology_tests.rs"]
 mod tests;

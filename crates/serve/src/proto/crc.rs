@@ -42,5 +42,5 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 }
 
 #[cfg(test)]
-#[path = "crc_tests.rs"]
+#[path = "../../tests/crc_tests.rs"]
 mod tests;

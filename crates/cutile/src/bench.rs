@@ -342,5 +342,5 @@ pub fn throughput(bytes: u64, flops: f64, per_run_ns: f64, peak_bw: Option<f64>)
 }
 
 #[cfg(test)]
-#[path = "bench_tests.rs"]
+#[path = "../tests/bench_tests.rs"]
 mod tests;

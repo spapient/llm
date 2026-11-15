@@ -316,5 +316,5 @@ fn temp_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[path = "writer_tests.rs"]
+#[path = "../tests/writer_tests.rs"]
 mod tests;

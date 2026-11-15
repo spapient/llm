@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Command-line front end: parse argv and the environment into a typed command and settings, execute nothing."
 publish = false
+autotests = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }

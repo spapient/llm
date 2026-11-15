@@ -261,5 +261,5 @@ pub struct Attention;
 pub type AttentionF32 = Attention;
 
 #[cfg(test)]
-#[path = "attention_tests.rs"]
+#[path = "../tests/attention_tests.rs"]
 mod tests;

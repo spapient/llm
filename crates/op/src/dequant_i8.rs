@@ -84,5 +84,5 @@ pub struct DequantI8;
 pub type DequantI8F32 = DequantI8;
 
 #[cfg(test)]
-#[path = "dequant_i8_tests.rs"]
+#[path = "../tests/dequant_i8_tests.rs"]
 mod tests;

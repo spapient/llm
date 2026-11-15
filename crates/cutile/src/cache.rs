@@ -590,5 +590,5 @@ fn fields_of(dir: &Path) -> Vec<(String, String)> {
 }
 
 #[cfg(test)]
-#[path = "cache_tests.rs"]
+#[path = "../tests/cache_tests.rs"]
 mod tests;

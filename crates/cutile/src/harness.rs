@@ -356,5 +356,5 @@ fn cuda_host_buffers(sample: &Sample, params: &[Param]) -> diagnostic::Result<St
 }
 
 #[cfg(test)]
-#[path = "harness_tests.rs"]
+#[path = "../tests/harness_tests.rs"]
 mod tests;

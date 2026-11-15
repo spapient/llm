@@ -50,5 +50,5 @@ impl Partition {
 }
 
 #[cfg(test)]
-#[path = "partition_tests.rs"]
+#[path = "../tests/partition_tests.rs"]
 mod tests;

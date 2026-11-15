@@ -215,5 +215,5 @@ fn escape_char(ch: char) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-#[path = "ast_tests.rs"]
+#[path = "../tests/ast_tests.rs"]
 mod tests;

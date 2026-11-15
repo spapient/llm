@@ -157,5 +157,5 @@ pub fn device(vendor: &str) -> Option<&'static Device> {
 }
 
 #[cfg(test)]
-#[path = "device_tests.rs"]
+#[path = "../tests/device_tests.rs"]
 mod tests;

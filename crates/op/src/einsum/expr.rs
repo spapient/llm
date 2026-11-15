@@ -160,5 +160,5 @@ fn check_output(terms: &[Vec<char>], output: &[char], text: &str) -> Result<(), 
 }
 
 #[cfg(test)]
-#[path = "expr_tests.rs"]
+#[path = "../../tests/expr_tests.rs"]
 mod tests;

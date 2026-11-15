@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Attribute macros that turn a declarative annotation into a checked contract (no external dependencies)."
 publish = false
+autotests = false
 
 [lib]
 proc-macro = true
@@ -17,3 +18,7 @@ dtype = { path = "../dtype", package = "llm-dtype" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "audit"
+path = "tests/audit.rs"

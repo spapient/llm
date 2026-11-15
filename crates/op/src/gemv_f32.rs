@@ -126,5 +126,5 @@ pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Resul
 }
 
 #[cfg(test)]
-#[path = "gemv_f32_tests.rs"]
+#[path = "../tests/gemv_f32_tests.rs"]
 mod tests;

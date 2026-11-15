@@ -478,5 +478,5 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
-#[path = "settings_tests.rs"]
+#[path = "../tests/settings_tests.rs"]
 mod tests;

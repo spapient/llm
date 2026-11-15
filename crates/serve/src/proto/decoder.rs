@@ -138,5 +138,5 @@ impl Decoder {
 }
 
 #[cfg(test)]
-#[path = "decoder_tests.rs"]
+#[path = "../../tests/decoder_tests.rs"]
 mod tests;

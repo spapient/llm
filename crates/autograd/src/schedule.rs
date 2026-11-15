@@ -234,5 +234,5 @@ fn compare(ordering: Ordering, left: &Node, right: &Node) -> core::cmp::Ordering
 }
 
 #[cfg(test)]
-#[path = "schedule_tests.rs"]
+#[path = "../tests/schedule_tests.rs"]
 mod tests;

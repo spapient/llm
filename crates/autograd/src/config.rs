@@ -32,5 +32,5 @@ impl Config {
 }
 
 #[cfg(test)]
-#[path = "config_tests.rs"]
+#[path = "../tests/config_tests.rs"]
 mod tests;

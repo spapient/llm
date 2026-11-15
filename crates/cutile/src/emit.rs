@@ -127,5 +127,5 @@ pub fn assemble(
 }
 
 #[cfg(test)]
-#[path = "emit_tests.rs"]
+#[path = "../tests/emit_tests.rs"]
 mod tests;

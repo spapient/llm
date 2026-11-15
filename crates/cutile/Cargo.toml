@@ -8,6 +8,8 @@ repository.workspace = true
 description = "Device-agnostic kernel DSL: capability negotiation, fragment assembly, emit, and the doctor/verify/bench reports computed on top of it."
 readme = "README.md"
 publish = false
+# tests/ 下是经 src 模块 #[path] 挂回的白盒单测，不作为独立集成测试目标自动编译。
+autotests = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }

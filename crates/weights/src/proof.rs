@@ -350,5 +350,5 @@ pub(crate) fn verify_proof(leaf_hash: &Digest, proof: &Proof, merkle_root: &Dige
 }
 
 #[cfg(test)]
-#[path = "proof_tests.rs"]
+#[path = "../tests/proof_tests.rs"]
 mod tests;

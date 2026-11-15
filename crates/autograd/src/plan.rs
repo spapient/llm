@@ -665,3 +665,7 @@ struct Ledger {
     /// 每个变量最后一次被需要（直接消费或作为重算起点）的反向步号。
     release: Vec<u32>,
 }
+
+#[cfg(test)]
+#[path = "../tests/plan_tests.rs"]
+mod tests;

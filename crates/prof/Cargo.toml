@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Archive layer: per-device capability archives consumed by cutile."
 readme = "README.md"
 publish = false
+autotests = false
 
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }

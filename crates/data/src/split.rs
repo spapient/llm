@@ -63,5 +63,5 @@ fn valid_rows(total: usize, percent: u8) -> usize {
 }
 
 #[cfg(test)]
-#[path = "split_tests.rs"]
+#[path = "../tests/split_tests.rs"]
 mod tests;

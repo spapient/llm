@@ -155,5 +155,5 @@ pub fn operators(layer: &dyn nn::Contract) -> &[String] {
 }
 
 #[cfg(test)]
-#[path = "checkpoint_tests.rs"]
+#[path = "../tests/checkpoint_tests.rs"]
 mod tests;

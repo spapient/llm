@@ -544,5 +544,5 @@ fn check_rejected_shapes(group: u64) -> diagnostic::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "verify_tests.rs"]
+#[path = "../tests/verify_tests.rs"]
 mod tests;

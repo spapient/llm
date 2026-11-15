@@ -124,5 +124,5 @@ fn predicted_s(profile: &Profile, cost: Cost, masking: Masking) -> diagnostic::R
 }
 
 #[cfg(test)]
-#[path = "plan_tests.rs"]
+#[path = "../tests/plan_tests.rs"]
 mod tests;

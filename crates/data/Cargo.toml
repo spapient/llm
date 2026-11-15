@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Training samples: borrowed token batches (zero-copy, borrowed geometry), train/valid splits and the Dataset trait."
 publish = false
+autotests = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }

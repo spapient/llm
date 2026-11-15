@@ -265,5 +265,5 @@ fn debts(table: &Table) -> Result<BTreeMap<String, Debt>> {
 }
 
 #[cfg(test)]
-#[path = "gate_tests.rs"]
+#[path = "../tests/gate_tests.rs"]
 mod tests;

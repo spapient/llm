@@ -199,5 +199,5 @@ impl<S: Sink> Sink for Sealed<'_, S> {
 }
 
 #[cfg(test)]
-#[path = "sink_tests.rs"]
+#[path = "../tests/sink_tests.rs"]
 mod tests;

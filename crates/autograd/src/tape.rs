@@ -266,5 +266,5 @@ impl Tape {
 }
 
 #[cfg(test)]
-#[path = "tape_tests.rs"]
+#[path = "../tests/tape_tests.rs"]
 mod tests;

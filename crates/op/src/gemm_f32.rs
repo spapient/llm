@@ -83,5 +83,5 @@ pub fn forward(
 pub type GemmF32 = Dense;
 
 #[cfg(test)]
-#[path = "gemm_f32_tests.rs"]
+#[path = "../tests/gemm_f32_tests.rs"]
 mod tests;

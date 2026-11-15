@@ -707,5 +707,5 @@ int main(int argc, const char **argv) {
 "#;
 
 #[cfg(test)]
-#[path = "device_tests.rs"]
+#[path = "../tests/device_tests.rs"]
 mod tests;

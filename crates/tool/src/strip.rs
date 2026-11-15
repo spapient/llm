@@ -157,5 +157,5 @@ fn piece(token: &Token) -> String {
 }
 
 #[cfg(test)]
-#[path = "strip_tests.rs"]
+#[path = "../tests/strip_tests.rs"]
 mod tests;

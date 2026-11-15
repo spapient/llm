@@ -141,5 +141,5 @@ impl<'a> Args<'a> {
 }
 
 #[cfg(test)]
-#[path = "substitute_tests.rs"]
+#[path = "../tests/substitute_tests.rs"]
 mod tests;

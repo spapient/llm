@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "TP/PP/DP topology: world size, per-axis process groups and partition slicing."
 publish = false
+autotests = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }

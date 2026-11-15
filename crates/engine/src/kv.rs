@@ -1,6 +1,6 @@
 //! 分页 KV 缓存的簿记：[`Page`]、[`Table`]、[`Cache`]。
 //!
-//! **拥有**：`Page`、`Table`、`Cache`。**不拥有**：页里的数据（那是 `mem` 分配的缓冲，形状由
+//! **拥有**：`Page`、`Table`、`Cache`。**不拥有**：页里的数据（那是 `storage` 分配的缓冲，形状由
 //! [`Cache::block_shape`] 给出）、注意力算子（`cutile` 的 `op` 会声明它）。
 //! **依赖**：`tensor`、`diagnostic`。**被依赖**：`engine::Scheduler`（本模块并入后与它同 crate）。
 //!
@@ -226,5 +226,5 @@ impl Cache {
 }
 
 #[cfg(test)]
-#[path = "kv_tests.rs"]
+#[path = "../tests/kv_tests.rs"]
 mod tests;

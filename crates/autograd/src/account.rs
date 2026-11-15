@@ -171,5 +171,5 @@ impl Account {
 }
 
 #[cfg(test)]
-#[path = "account_tests.rs"]
+#[path = "../tests/account_tests.rs"]
 mod tests;

@@ -43,5 +43,5 @@ pub fn forward(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "reduce_max_f32_tests.rs"]
+#[path = "../tests/reduce_max_f32_tests.rs"]
 mod tests;

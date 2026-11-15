@@ -383,5 +383,5 @@ fn run<F: Format>(
 }
 
 #[cfg(test)]
-#[path = "gemv_tests.rs"]
+#[path = "../tests/gemv_tests.rs"]
 mod tests;

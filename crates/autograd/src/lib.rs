@@ -67,9 +67,6 @@ mod schedule;
 mod summary;
 mod tape;
 
-#[cfg(test)]
-mod plan_tests;
-
 pub use account::Account;
 pub use config::Config;
 pub use graph::{Node, Requirement, Role, Var};

@@ -122,5 +122,5 @@ impl Schedule {
 }
 
 #[cfg(test)]
-#[path = "schedule_tests.rs"]
+#[path = "../tests/schedule_tests.rs"]
 mod tests;

@@ -123,5 +123,5 @@ impl fmt::Display for LayoutSpec {
 }
 
 #[cfg(test)]
-#[path = "layout_tests.rs"]
+#[path = "../tests/layout_tests.rs"]
 mod tests;

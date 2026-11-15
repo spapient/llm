@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Fragment layer: per-device primitive implementations consumed by cutile."
 readme = "README.md"
 publish = false
+autotests = false
 build = "build.rs"
 
 [dependencies]

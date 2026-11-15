@@ -327,5 +327,5 @@ pub fn why(dirs: &Dirs, current: &CacheKey, hex: &str) -> CacheWhy {
 }
 
 #[cfg(test)]
-#[path = "doctor_tests.rs"]
+#[path = "../tests/doctor_tests.rs"]
 mod tests;

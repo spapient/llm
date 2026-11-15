@@ -307,5 +307,5 @@ fn mark(tokens: &[Token], marked: &mut [bool]) {
 }
 
 #[cfg(test)]
-#[path = "ccn_tests.rs"]
+#[path = "../tests/ccn_tests.rs"]
 mod tests;

@@ -14,5 +14,5 @@ pub fn file_lines(text: &str, gate: &Gate) -> Option<usize> {
 }
 
 #[cfg(test)]
-#[path = "dup_tests.rs"]
+#[path = "../tests/dup_tests.rs"]
 mod tests;

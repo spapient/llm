@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Declaration layer: per-operator declarations, templates, their parsing and operator semantics."
 readme = "README.md"
 publish = false
+autotests = false
 
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }

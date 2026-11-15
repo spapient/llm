@@ -127,5 +127,5 @@ impl Summary {
 }
 
 #[cfg(test)]
-#[path = "summary_tests.rs"]
+#[path = "../tests/summary_tests.rs"]
 mod tests;
