@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use diagnostic::Result;
 
+use crate::config::Config;
 use crate::error::invalid;
-use crate::graph::{Node, Requirement, Var};
+use crate::graph::{Node, Requirement, Role, Var};
 use crate::schedule::Schedule;
 
 /// 反向图：按插入顺序记录节点，逆序就是反向顺序；四个平行数组共用一套稠密编号（编号即下标）。
@@ -131,6 +132,30 @@ impl Tape {
         self.requirement.get(var.id() as usize).copied()
     }
 
+    /// 变量出身（参数 / 常量 / 激活）；编号不存在时为 `None`。
+    pub fn role(&self, var: Var) -> Option<Role> {
+        let requirement = self.requirement(var)?;
+        Some(Role::of(requirement, self.node(var).is_none()))
+    }
+
+    /// 整图审计：逐个节点复核输入存在、算子名非空、声明的需求与输入相容。
+    ///
+    /// 记录时这些校验已经逐条做过；本方法给"拿到一张外部拼出来的图"一个统一的复核入口，
+    /// 失败时上下文里带上出问题节点的编号与算子名，而不是等到反向中途才报错。
+    pub fn validate(&self) -> Result<()> {
+        for node in self.nodes() {
+            self.checked(node.op(), node.inputs(), node.requirement())
+                .map_err(|error| {
+                    error.with(format!(
+                        "节点 {}（算子 `{}`）",
+                        node.output().id(),
+                        node.op()
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     /// 变量深度；编号不存在时为 `None`。
     pub fn depth(&self, var: Var) -> Option<u32> {
         self.depth.get(var.id() as usize).copied()
@@ -179,6 +204,11 @@ impl Tape {
     /// 把 `loss` 的反向调度写进已有的 `schedule`，**复用它的缓冲**（失败时它保持原样）。
     pub fn plan_into(&self, schedule: &mut Schedule, loss: Var) -> Result<()> {
         schedule.plan(self, loss)
+    }
+
+    /// 按 [`Config`] 里的排序策略生成调度，同样复用 `schedule` 的缓冲。
+    pub fn plan_config(&self, schedule: &mut Schedule, loss: Var, config: &Config) -> Result<()> {
+        schedule.plan_config(self, loss, config)
     }
 
     /// 分配一个新编号，需求与深度写进平行数组。
@@ -238,6 +268,8 @@ impl Tape {
 #[cfg(test)]
 mod tests {
     use diagnostic::Code;
+
+    use crate::{MemoryPolicy, Ordering};
 
     use super::*;
 
@@ -343,6 +375,30 @@ mod tests {
             Code::Invalid
         );
         assert!(tape.is_empty());
+    }
+
+    #[test]
+    fn plan_config_follows_the_configured_ordering() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let y = tape.record("mul", &[x]).expect("记录");
+        let z = tape.record("add", &[y]).expect("记录");
+        let config = Config::new(Ordering::Insertion, MemoryPolicy::Auto);
+        let mut schedule = Schedule::default();
+        tape.plan_config(&mut schedule, z, &config).expect("规划");
+        assert_eq!(schedule.ordering(), Ordering::Insertion);
+    }
+
+    #[test]
+    fn roles_separate_parameters_constants_and_activations() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let c = tape.leaf();
+        let y = tape.record("relu", &[x]).expect("记录");
+        assert_eq!(tape.role(x), Some(Role::Parameter));
+        assert_eq!(tape.role(c), Some(Role::Constant));
+        assert_eq!(tape.role(y), Some(Role::Activation));
+        assert!(tape.validate().is_ok());
     }
 
     #[test]

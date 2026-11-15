@@ -5,13 +5,34 @@
 use diagnostic::Result;
 
 use crate::account::Account;
+use crate::config::Config;
 use crate::error::invalid;
 use crate::graph::{Node, Requirement, Var};
 use crate::tape::Tape;
 
+/// 反向步骤的排序策略：两种都是合法的反向拓扑序，差别只在同层之间的次序。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Ordering {
+    /// 深度降序、同深度编号降序：同层互不依赖，分层 [`Schedule::levels`] 直接可用。
+    #[default]
+    Depth,
+    /// 记录编号降序：与前向磁带严格逆序，不重算深度，图很深时规划更省一次比较。
+    Insertion,
+}
+
+impl Ordering {
+    /// 策略短名：诊断与报告里的稳定标签。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Depth => "depth",
+            Self::Insertion => "insertion",
+        }
+    }
+}
+
 /// 一次反向传播的计划：只含 loss 可达的节点，按反向拓扑序排列。
 ///
-/// 顺序是"深度降序、同深度编号降序"：
+/// 默认顺序是"深度降序、同深度编号降序"：
 ///
 /// - 深度降序保证输出总在输入之前（向后一步），因此是合法的反向拓扑序；
 /// - 同深度互不依赖，编号降序只是让同一种图每次排出来的顺序都一样，便于缓存与对拍。
@@ -22,6 +43,7 @@ use crate::tape::Tape;
 pub struct Schedule {
     loss: Var,
     vars: u32,
+    ordering: Ordering,
     graph: Vec<bool>,
     steps: Vec<Node>,
     endpoints: Vec<Var>,
@@ -33,6 +55,7 @@ impl Default for Schedule {
         Self {
             loss: Var::at(0),
             vars: 0,
+            ordering: Ordering::default(),
             graph: Vec::new(),
             steps: Vec::new(),
             endpoints: Vec::new(),
@@ -87,6 +110,11 @@ impl Schedule {
             .chunk_by(|left, right| left.depth() == right.depth())
     }
 
+    /// 本计划采用的排序策略。
+    pub fn ordering(&self) -> Ordering {
+        self.ordering
+    }
+
     /// 按这个计划执行反向的账本。
     pub fn account(&self) -> Account {
         let mut account = Account::new();
@@ -99,13 +127,24 @@ impl Schedule {
         &self.graph
     }
 
-    /// 把 `loss` 的规划写进本对象；失败时保持原样。
+    /// 把 `loss` 的规划写进本对象（默认 [`Ordering::Depth`]）；失败时保持原样。
     pub(crate) fn plan(&mut self, tape: &Tape, loss: Var) -> Result<()> {
+        self.plan_with(tape, loss, Ordering::default())
+    }
+
+    /// 按指定排序策略把 `loss` 的规划写进本对象；失败时保持原样。
+    pub(crate) fn plan_with(&mut self, tape: &Tape, loss: Var, ordering: Ordering) -> Result<()> {
         Self::validate(tape, loss)?;
         self.reset(loss, tape.vars());
+        self.ordering = ordering;
         self.mark(tape, loss);
         self.harvest(tape);
         Ok(())
+    }
+
+    /// 按配置里的排序策略规划；失败时保持原样。
+    pub(crate) fn plan_config(&mut self, tape: &Tape, loss: Var, config: &Config) -> Result<()> {
+        self.plan_with(tape, loss, config.ordering())
     }
 
     /// 校验起点：它必须存在，而且必须在图上。
@@ -159,12 +198,13 @@ impl Schedule {
         }
     }
 
-    /// 把可达节点按深度降序搬进步骤表，并收集终点。
+    /// 把可达节点按选定策略搬进步骤表，并收集终点。
     fn harvest(&mut self, tape: &Tape) {
         let Self {
             graph,
             steps,
             endpoints,
+            ordering,
             ..
         } = self;
         steps.extend(
@@ -173,17 +213,23 @@ impl Schedule {
                 .filter(|node| graph[node.output().id() as usize])
                 .cloned(),
         );
-        steps.sort_by(|left, right| {
-            right
-                .depth()
-                .cmp(&left.depth())
-                .then(right.output().id().cmp(&left.output().id()))
-        });
+        steps.sort_by(|left, right| compare(*ordering, left, right));
         endpoints.extend(graph.iter().enumerate().filter_map(|(index, seen)| {
             let var = Var::at(index as u32);
             let endpoint = *seen && tape.requirement(var) == Some(Requirement::Grad);
             endpoint.then_some(var)
         }));
+    }
+}
+
+/// 两种策略各自的比较方向；都是合法反向拓扑序（输出编号必大于输入）。
+fn compare(ordering: Ordering, left: &Node, right: &Node) -> core::cmp::Ordering {
+    match ordering {
+        Ordering::Depth => right
+            .depth()
+            .cmp(&left.depth())
+            .then(right.output().id().cmp(&left.output().id())),
+        Ordering::Insertion => right.output().id().cmp(&left.output().id()),
     }
 }
 
@@ -195,6 +241,21 @@ mod tests {
     use testkit::Rng;
 
     use super::*;
+
+    #[test]
+    fn insertion_order_is_the_reverse_record_order() {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let y = tape.record("mul", &[x]).expect("记录");
+        let z = tape.record("add", &[y]).expect("记录");
+        let mut schedule = Schedule::default();
+        schedule
+            .plan_with(&tape, z, Ordering::Insertion)
+            .expect("规划");
+        let outputs: Vec<_> = schedule.steps().iter().map(|node| node.output()).collect();
+        assert_eq!(outputs, [z, y]);
+        assert_eq!(schedule.ordering(), Ordering::Insertion);
+    }
 
     /// 分支不参与 loss 时不进计划、也不是梯度终点。
     #[test]

@@ -59,6 +59,16 @@ impl Replay {
         self.expected
     }
 
+    /// 编入的重算指令条数：同一激活在不同步重复展开会各记一条，供审计与容量预估。
+    pub fn compute_count(&self) -> usize {
+        self.compute.len()
+    }
+
+    /// 编入的释放指令条数：到寿激活逐块交还，一条指令对应一次 [`Store::free`]。
+    pub fn free_count(&self) -> usize {
+        self.free.len()
+    }
+
     /// 按计划执行整次反向：先重算、再让调用方算这一步的梯度、最后交还到寿的激活。返回实际重算步数。
     ///
     /// # Errors
@@ -455,6 +465,29 @@ mod tests {
         assert!(table.peak <= plan.budget().bytes(), "峰值超预算");
         assert_eq!(table.live, 0, "执行完不该留下任何激活");
         assert_eq!(table.reads_of_dead, 0);
+    }
+
+    #[test]
+    fn replay_counts_listed_instructions() {
+        let (tape, loss) = chain(16);
+        let schedule = tape.backward(loss).expect("在图上");
+        let bytes = vec![8u64; tape.vars() as usize];
+        let plan = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(96)).expect("可分段");
+        let replay = Replay::of(&tape, &schedule, &plan).expect("可执行");
+        assert_eq!(replay.compute_count(), plan.replayed() as usize);
+        assert!(
+            replay.free_count() > 0,
+            "到寿激活逐块交还，至少一条释放指令"
+        );
+
+        let (tape, loss) = chain(4);
+        let schedule = tape.backward(loss).expect("在图上");
+        let bytes = vec![8u64; tape.vars() as usize];
+        let plan =
+            Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("放得下");
+        let replay = Replay::of(&tape, &schedule, &plan).expect("可执行");
+        assert_eq!(replay.compute_count(), 0, "全留路径不编入重算");
+        assert!(replay.free_count() > 0, "不重放也要按时编入释放");
     }
 
     #[test]

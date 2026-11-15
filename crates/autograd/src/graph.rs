@@ -5,6 +5,57 @@
 
 use std::sync::Arc;
 
+/// 一个变量在图里的出身：叶子是参数还是常量，算子输出都是激活。
+///
+/// 角色是 [`Requirement`] 与"是否有生产者"的**派生事实**，不另存一份：同一个变量的出身
+/// 只能由这两者推出，单独记账会让两处漂移。它回答"谁要取走梯度、谁只是常驻输入"，
+/// 不回答数值——数值仍由运行时缓冲持有。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Role {
+    /// 不参与反向的叶子：输入 token、常量权重之外的数据、detach 之前的常量。
+    #[default]
+    Constant,
+    /// 梯度终点叶子：可训练参数、显式 retain 的变量。
+    Parameter,
+    /// 算子调用产生的中间结果（含显式 retain 的中间输出）。
+    Activation,
+}
+
+impl Role {
+    /// 由需求与"是否为叶子"推出角色；没有生产者的才是叶子。
+    pub fn of(requirement: Requirement, is_leaf: bool) -> Self {
+        match is_leaf {
+            true if requirement.is_endpoint() => Self::Parameter,
+            true => Self::Constant,
+            false => Self::Activation,
+        }
+    }
+
+    /// 该角色是否要取走梯度：只有参数终点有自己的梯度缓冲。
+    pub fn is_parameter(self) -> bool {
+        matches!(self, Self::Parameter)
+    }
+
+    /// 不参与反向的常量叶子。
+    pub fn is_constant(self) -> bool {
+        matches!(self, Self::Constant)
+    }
+
+    /// 算子调用产生的中间结果。
+    pub fn is_activation(self) -> bool {
+        matches!(self, Self::Activation)
+    }
+
+    /// 短名：诊断与报告里的稳定标签，与变体一一对应。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Constant => "constant",
+            Self::Parameter => "parameter",
+            Self::Activation => "activation",
+        }
+    }
+}
+
 /// 一个变量对反向传播的要求。
 ///
 /// `None` 与另外两种是**图内/图外**的分界：不进图的变量既不产生反向步骤，也不接收梯度，
@@ -133,6 +184,7 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::Requirement::{Backward, Grad, None};
+    use super::Role;
 
     #[test]
     fn only_two_none_inputs_merge_to_none() {
@@ -163,6 +215,31 @@ mod tests {
                 if left.is_none() { None } else { Backward }
             );
         }
+    }
+
+    #[test]
+    fn role_is_derived_from_requirement_and_leaf_status() {
+        let cases = [
+            (None, true, Role::Constant),
+            (Grad, true, Role::Parameter),
+            (Backward, true, Role::Constant),
+            (None, false, Role::Activation),
+            (Backward, false, Role::Activation),
+            (Grad, false, Role::Activation),
+        ];
+        for (requirement, is_leaf, expected) in cases {
+            assert_eq!(Role::of(requirement, is_leaf), expected);
+        }
+        assert!(Role::Parameter.is_parameter());
+        assert!(!Role::Constant.is_parameter() && !Role::Activation.is_parameter());
+        assert_eq!(
+            [
+                Role::Constant.as_str(),
+                Role::Parameter.as_str(),
+                Role::Activation.as_str()
+            ],
+            ["constant", "parameter", "activation"]
+        );
     }
 
     #[test]

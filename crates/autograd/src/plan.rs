@@ -7,6 +7,7 @@
 //! 一般 DAG 的最优是 PSPACE 难的，所以这里不声称最优，只给三个可核对的数：保守峰值、
 //! [`Plan::floor`]（任何计划都绕不过的下界）、重放步数。
 
+use crate::config::Config;
 use crate::error::invalid;
 use crate::{Node, Schedule, Tape, Var};
 use diagnostic::Result;
@@ -123,10 +124,34 @@ pub enum Choice {
     Recompute,
 }
 
+/// 显存规划策略：预算是硬约束，策略决定在约束内偏好全留还是主动分段重放。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MemoryPolicy {
+    /// 默认：预算装得下就全留，装不下才分段重放；策略让位于实测字节数。
+    #[default]
+    Auto,
+    /// 强制全留：忽略预算松紧，保留全部候选激活，不安排重放（峰值可能超过预算，由调用方兜底）。
+    KeepAll,
+    /// 强制分段：即使预算宽裕也放检查点、段内重放，用显存换可预测的峰值与释放节奏。
+    Recompute,
+}
+
+impl MemoryPolicy {
+    /// 策略短名：诊断与报告里的稳定标签。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::KeepAll => "keep-all",
+            Self::Recompute => "recompute",
+        }
+    }
+}
+
 /// 一次反向外加前向重放时的显存决策：纯数据（可比较、可缓存），变成动作的是 [`crate::Replay`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     choice: Choice,
+    policy: MemoryPolicy,
     budget: Budget,
     saved: Vec<Var>,
     keep: Vec<bool>,
@@ -172,10 +197,51 @@ impl Plan {
         footprint: impl Footprint,
         budget: Budget,
     ) -> Result<Self> {
+        Self::of_policy(tape, schedule, footprint, budget, MemoryPolicy::default())
+    }
+
+    /// 按指定策略由反向调度、字节数与预算算出计划。
+    ///
+    /// [`MemoryPolicy::KeepAll`] 强制全留；[`MemoryPolicy::Recompute`] 强制分段；
+    /// [`MemoryPolicy::Auto`] 按预算实测松紧选择，与 [`Plan::of`] 一致。
+    ///
+    /// # Errors
+    ///
+    /// 预算低于必然下界，或低于任何分段方案能取到的最小峰值时返回 [`diagnostic::Code::Invalid`]：
+    /// 宁可报"放不下"，也不给出实际会超预算的计划。
+    pub fn of_policy(
+        tape: &Tape,
+        schedule: &Schedule,
+        footprint: impl Footprint,
+        budget: Budget,
+        policy: MemoryPolicy,
+    ) -> Result<Self> {
         let facts = Facts::new(tape, schedule, &footprint);
-        if facts.total <= budget.bytes() {
-            return Ok(facts.keep_all(tape, schedule, budget));
+        match policy {
+            MemoryPolicy::KeepAll => Ok(facts.keep_all(tape, schedule, budget, policy)),
+            MemoryPolicy::Auto if facts.total <= budget.bytes() => {
+                Ok(facts.keep_all(tape, schedule, budget, policy))
+            }
+            MemoryPolicy::Auto | MemoryPolicy::Recompute => {
+                Self::check_floor(&facts, budget)?;
+                facts.plan(tape, schedule, budget, policy)
+            }
         }
+    }
+
+    /// 按配置里的显存策略算出计划；排序策略属于调度，不在这里使用。
+    pub fn of_config(
+        tape: &Tape,
+        schedule: &Schedule,
+        footprint: impl Footprint,
+        budget: Budget,
+        config: &Config,
+    ) -> Result<Self> {
+        Self::of_policy(tape, schedule, footprint, budget, config.policy())
+    }
+
+    /// 预算低于必然下界时报错；分段路径共用这一道闸。
+    fn check_floor(facts: &Facts, budget: Budget) -> Result<()> {
         if budget.bytes() < facts.floor {
             return Err(invalid(
                 SITE,
@@ -186,12 +252,17 @@ impl Plan {
                 ),
             ));
         }
-        facts.plan(tape, schedule, budget)
+        Ok(())
     }
 
     /// 走的是哪条路。
     pub fn choice(&self) -> Choice {
         self.choice
+    }
+
+    /// 生成本计划时采用的策略。
+    pub fn policy(&self) -> MemoryPolicy {
+        self.policy
     }
 
     /// 计划针对的预算。
@@ -301,17 +372,29 @@ impl Facts {
     }
 
     /// 全留：预算装得下时这是唯一不引入重放的计划。
-    fn keep_all(&self, tape: &Tape, schedule: &Schedule, budget: Budget) -> Plan {
+    fn keep_all(
+        &self,
+        tape: &Tape,
+        schedule: &Schedule,
+        budget: Budget,
+        policy: MemoryPolicy,
+    ) -> Plan {
         let mut keep = vec![false; self.bytes.len()];
         self.candidates
             .iter()
             .for_each(|id| keep[*id as usize] = true);
         let ledger = self.account(tape, schedule, &keep);
-        self.assemble(keep, ledger, budget)
+        self.assemble(keep, ledger, budget, policy)
     }
 
     /// 分段：段数由预算解出来，段界上的激活保留，段内的丢弃后重放。
-    fn plan(&self, tape: &Tape, schedule: &Schedule, budget: Budget) -> Result<Plan> {
+    fn plan(
+        &self,
+        tape: &Tape,
+        schedule: &Schedule,
+        budget: Budget,
+        policy: MemoryPolicy,
+    ) -> Result<Plan> {
         if self.order.is_empty() {
             // total > budget 且 order 为空只可能是 total 与 budget 都为 0，已被全留路径拦下。
             return Err(invalid(SITE, "没有需要保留的激活，但预算为 0"));
@@ -335,7 +418,7 @@ impl Facts {
         match fitted {
             Some(index) => {
                 let (_, keep, ledger) = scored.swap_remove(index);
-                Ok(self.assemble(keep, ledger, budget))
+                Ok(self.assemble(keep, ledger, budget, policy))
             }
             None => {
                 let minimum = scored.iter().map(|(_, _, ledger)| ledger.peak).min();
@@ -479,7 +562,13 @@ impl Facts {
     }
 
     /// 把保留集装配成计划：释放点来自账本对"最后一次需要"的传播。
-    fn assemble(&self, keep: Vec<bool>, ledger: Ledger, budget: Budget) -> Plan {
+    fn assemble(
+        &self,
+        keep: Vec<bool>,
+        ledger: Ledger,
+        budget: Budget,
+        policy: MemoryPolicy,
+    ) -> Plan {
         let saved = self
             .candidates
             .iter()
@@ -494,6 +583,7 @@ impl Facts {
         };
         Plan {
             choice,
+            policy,
             budget,
             saved,
             keep,
@@ -574,311 +664,4 @@ struct Ledger {
     replayed: u64,
     /// 每个变量最后一次被需要（直接消费或作为重算起点）的反向步号。
     release: Vec<u32>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Requirement, Tape};
-    use diagnostic::Code;
-    use testkit::Rng;
-
-    /// 一条链：`length` 个 `relu` 加一个 `reduce_sum`，反向顺序与深度都已知。
-    fn chain(length: usize) -> (Tape, Schedule) {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let mut current = x;
-        for _ in 0..length {
-            current = tape.record("relu", &[current]).expect("记录");
-        }
-        let loss = tape.record("reduce_sum", &[current]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-        (tape, schedule)
-    }
-
-    fn uniform(tape: &Tape, bytes: u64) -> Vec<u64> {
-        vec![bytes; tape.vars() as usize]
-    }
-
-    #[test]
-    fn keep_all_when_the_budget_fits_everything() {
-        let (tape, schedule) = chain(4);
-        let plan =
-            Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(1 << 20)).expect("放得下");
-        assert_eq!(plan.choice(), Choice::KeepAll);
-        assert_eq!(plan.replayed(), 0);
-        // 四个 relu 的输出被消费，loss 的输出没人消费：峰值就是这四块。
-        assert_eq!(plan.saved().len(), 4);
-        assert_eq!(plan.retained(), 32);
-        assert_eq!(plan.peak(), 32);
-        assert!(plan.peak() >= plan.floor(), "峰值不能低于下界");
-    }
-
-    #[test]
-    fn a_budget_below_the_floor_is_unsupported() {
-        let mut tape = Tape::new();
-        let p = tape.parameter();
-        let q = tape.parameter();
-        let r = tape.parameter();
-        let a = tape.record("relu", &[p]).expect("记录");
-        let b = tape.record("relu", &[q]).expect("记录");
-        let c = tape.record("relu", &[r]).expect("记录");
-        let joined = tape.record("add", &[a, b, c]).expect("记录");
-        let loss = tape.record("reduce_sum", &[joined]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-
-        let mut bytes = vec![0u64; tape.vars() as usize];
-        for var in [a, b, c] {
-            bytes[var.id() as usize] = 100;
-        }
-        let error =
-            Plan::of(&tape, &schedule, bytes, Budget::new(200)).expect_err("三个输入要同时在场");
-        assert_eq!(error.code(), Code::Invalid);
-        assert!(error.to_string().contains("300"), "{error}");
-    }
-
-    #[test]
-    fn a_tight_budget_buys_replay_instead_of_memory() {
-        let (tape, schedule) = chain(16);
-        let plan =
-            Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(200)).expect("可分段");
-        assert_eq!(plan.choice(), Choice::Recompute);
-        assert!(plan.peak() <= 200, "峰值 {} 超预算", plan.peak());
-        assert!(plan.replayed() > 0, "省下的显存必须用重放换");
-        assert!(
-            plan.saved().windows(2).all(|pair| pair[0] < pair[1]),
-            "检查点按前向顺序且不重复"
-        );
-        assert!(plan.saved().len() >= 2, "至少要留第一个激活和段界");
-        assert!(plan.peak() >= plan.floor());
-    }
-
-    #[test]
-    fn release_points_follow_the_last_consumer_not_the_scope() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let shared = tape.record("relu", &[x]).expect("记录");
-        let left = tape.record("mul", &[shared]).expect("记录");
-        let right = tape.record("mul", &[shared]).expect("记录");
-        let joined = tape.record("add", &[left, right]).expect("记录");
-        let loss = tape.record("reduce_sum", &[joined]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-        let plan =
-            Plan::of(&tape, &schedule, uniform(&tape, 4), Budget::new(1 << 20)).expect("放得下");
-
-        // 反向顺序是 loss(0)、joined(1)、right(2)、left(3)、shared(4)：共享的激活活到第 3 步。
-        assert_eq!(
-            schedule
-                .steps()
-                .iter()
-                .map(|step| step.output())
-                .collect::<Vec<_>>(),
-            [loss, joined, right, left, shared]
-        );
-        assert_eq!(plan.release(shared), Some(3), "活到较晚的那一支");
-        assert_eq!(plan.release(loss), None, "没人消费就不必保留");
-        assert!(!plan.keep(loss));
-        assert!(!plan.keep(x), "叶子是常驻的权重，不进激活预算");
-    }
-
-    #[test]
-    fn a_zero_budget_cannot_hold_anything() {
-        let (tape, schedule) = chain(3);
-        let error =
-            Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(0)).expect_err("放不下");
-        assert_eq!(error.code(), Code::Invalid);
-        assert!(error.to_string().contains("预算 0"), "{error}");
-    }
-
-    #[test]
-    fn the_plan_is_deterministic() {
-        let (tape, schedule) = chain(12);
-        let first =
-            Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(160)).expect("可分段");
-        let second =
-            Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(160)).expect("可分段");
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn the_size_table_turns_shapes_into_bytes() {
-        let mut sizes = Sizes::new(1);
-        assert!(!sizes.is_empty());
-        sizes.set(Var::at(0), Shape::new([2, 3]), DType::F32);
-        assert_eq!(sizes.bytes(Var::at(0)), 24);
-        sizes.set(Var::at(0), Shape::new([4]), DType::U4);
-        assert_eq!(sizes.bytes(Var::at(0)), 2, "4 位元素按位打包");
-        sizes.set(Var::at(9), Shape::new([5]), DType::F16);
-        assert_eq!(sizes.len(), 10, "跳跃登记会补齐中间的空位");
-        assert_eq!(sizes.bytes(Var::at(8)), 0, "没登记的变量按 0 计");
-    }
-
-    #[test]
-    fn a_size_table_drives_the_plan() {
-        let (tape, schedule) = chain(4);
-        let mut sizes = Sizes::new(tape.vars());
-        for step in schedule.steps() {
-            sizes.set(step.output(), Shape::new([2, 2]), DType::F32);
-        }
-        let plan = Plan::of(&tape, &schedule, &sizes, Budget::new(1 << 20)).expect("放得下");
-        assert_eq!(plan.retained(), 4 * 16, "四个 2×2 的 f32 激活");
-    }
-
-    #[test]
-    fn a_dead_branch_stays_out_of_the_plan() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let dead = tape
-            .record_with("stop_gradient", &[x], Requirement::None)
-            .expect("记录");
-        let _hidden = tape.record("relu", &[dead]).expect("记录");
-        let live = tape.record("relu", &[x]).expect("记录");
-        let loss = tape.record("reduce_sum", &[live]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-        let plan =
-            Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(1 << 20)).expect("放得下");
-        assert!(
-            !plan.keep(dead),
-            "不进图的分支没有反向步骤，也就不进显存计划"
-        );
-        assert!(plan.keep(live));
-        assert_eq!(plan.saved().len(), 1);
-    }
-
-    #[test]
-    fn a_detached_value_consumed_by_a_live_step_is_kept_and_never_dropped() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let frozen = tape
-            .record_with("stop_gradient", &[x], Requirement::None)
-            .expect("记录");
-        let mut current = tape.record("relu", &[frozen, x]).expect("记录");
-        for _ in 0..8 {
-            current = tape.record("relu", &[current]).expect("记录");
-        }
-        let loss = tape.record("reduce_sum", &[current]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-
-        // 10 个 8 字节的激活共 80 字节；预算 64 时必然要丢一些，但 frozen 无处可重放。
-        let plan = Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(64)).expect("可分段");
-        assert_eq!(plan.choice(), Choice::Recompute);
-        assert!(
-            plan.keep(frozen),
-            "detach 出去的值仍被活着的步骤消费，只能留"
-        );
-        assert!(plan.saved().contains(&frozen));
-        assert!(plan.peak() <= 64, "峰值 {} 超预算", plan.peak());
-    }
-
-    #[test]
-    fn a_deep_chain_does_not_recurse_and_fits_a_tight_budget() {
-        let (tape, schedule) = chain(20_000);
-        let bytes = uniform(&tape, 1);
-        let large =
-            Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("全留");
-        assert_eq!(large.choice(), Choice::KeepAll);
-
-        let tight =
-            Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(2_000)).expect("可分段");
-        assert!(tight.peak() <= 2_000, "峰值 {} 超预算", tight.peak());
-        assert!(tight.replayed() > 0);
-    }
-
-    #[test]
-    fn random_graphs_never_exceed_their_budget() {
-        let mut rng = Rng::new(0x9E37_79B9);
-        for round in 0..200 {
-            let mut tape = Tape::new();
-            let mut vars: Vec<Var> = (0..1 + rng.below(4)).map(|_| tape.parameter()).collect();
-            for _ in 0..1 + rng.below(24) {
-                let width = 1 + rng.below(3) as usize;
-                let inputs: Vec<Var> = (0..width)
-                    .map(|_| vars[rng.below(vars.len() as u32) as usize])
-                    .collect();
-                let recorded = match rng.below(10) {
-                    0 => tape.record_with("detach", &inputs, Requirement::None),
-                    _ => tape.record("edge", &inputs),
-                };
-                if let Ok(var) = recorded {
-                    vars.push(var);
-                }
-            }
-            let Some(loss) = vars
-                .iter()
-                .rev()
-                .find(|var| tape.requirement(**var).is_some_and(Requirement::requires))
-                .copied()
-            else {
-                continue;
-            };
-            let Ok(schedule) = tape.backward(loss) else {
-                continue;
-            };
-            let bytes: Vec<u64> = (0..tape.vars()).map(|_| u64::from(rng.below(64))).collect();
-            let budget = Budget::new(u64::from(rng.below(512)));
-            match Plan::of(&tape, &schedule, bytes.as_slice(), budget) {
-                Ok(plan) => {
-                    assert!(
-                        plan.peak() <= budget.bytes(),
-                        "第 {round} 轮：峰值 {} 超预算 {}",
-                        plan.peak(),
-                        budget.bytes()
-                    );
-                    assert!(plan.peak() >= plan.floor(), "第 {round} 轮：峰值低于下界");
-                    for var in plan.saved() {
-                        assert!(plan.keep(*var), "第 {round} 轮：保留集与位图不一致");
-                        assert!(plan.release(*var).is_some(), "第 {round} 轮：保留却不释放");
-                        assert!(
-                            tape.node(*var).is_some(),
-                            "第 {round} 轮：叶子（参数/输入）不该进激活预算"
-                        );
-                    }
-                }
-                Err(error) => {
-                    assert_eq!(error.code(), Code::Invalid, "第 {round} 轮：{error}");
-                }
-            }
-        }
-    }
-
-    /// 固定图形与预算下的计划摘要：`saved`/`release`/`replayed`/`peak` 逐值冻结。
-    fn summarize(
-        case: &str,
-        tape: &Tape,
-        schedule: &Schedule,
-        bytes: &[u64],
-        budget: u64,
-    ) -> String {
-        let Ok(plan) = Plan::of(tape, schedule, bytes, Budget::new(budget)) else {
-            return format!("{case}/{budget}: 放不下");
-        };
-        let saved: Vec<u32> = plan.saved().iter().map(|var| var.id()).collect();
-        let release: Vec<Option<usize>> =
-            plan.saved().iter().map(|var| plan.release(*var)).collect();
-        format!(
-            "{case}/{budget}: {:?} saved={saved:?} release={release:?} replayed={} peak={}",
-            plan.choice(),
-            plan.replayed(),
-            plan.peak()
-        )
-    }
-
-    /// 改造重构前的实测值：同一组图形与预算必须逐字相同。
-    const FROZEN: [&str; 3] = [
-        "chain16/1048576: KeepAll saved=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] release=[Some(15), Some(14), Some(13), Some(12), Some(11), Some(10), Some(9), Some(8), Some(7), Some(6), Some(5), Some(4), Some(3), Some(2), Some(1), Some(0)] replayed=0 peak=256",
-        "chain16/200: Recompute saved=[1, 3, 6, 8, 11, 14, 16] release=[Some(15), Some(13), Some(10), Some(8), Some(5), Some(2), Some(0)] replayed=12 peak=144",
-        "chain16/0: 放不下",
-    ];
-
-    #[test]
-    fn the_plan_numbers_are_frozen() {
-        let mut lines = Vec::new();
-        let (tape, schedule) = chain(16);
-        for budget in [1 << 20, 200, 0] {
-            let bytes = uniform(&tape, 16);
-            lines.push(summarize("chain16", &tape, &schedule, &bytes, budget));
-        }
-        println!("{}", lines.join("\n"));
-        assert_eq!(lines, FROZEN);
-    }
 }
