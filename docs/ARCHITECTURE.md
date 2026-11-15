@@ -124,7 +124,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Tensor` / `View` / `Element` / `Shape` / `Strides` | `tensor` | `Tensor` 是**字节**视图，`View<E>` 是**元素**零拷贝视图（不分配、不装 `unsafe`）；`SUPPORTED` 子集表声明本层可构造的五种精度 |
 | `Layout` / `Order` / `remap` | `storage` | 物理布局与搬运；不分配 |
 | `Stream` / `Graph` / `Launch` | `engine` | 提交与执行；不编译 kernel |
-| `Tokenizer` / `Token` | `tokenizer` | 文本 ↔ token 的唯一边界 |
+| `Tokenizer` / `Token` / `Bytes` / `SpecialTokens` / `Encoding` / `Strategy` / `Truncation` / `Padding` / `PadDirection` / `Fingerprint` / `DecoderStream` | `tokenizer` | 文本 ↔ token 的唯一边界：编号、编码对齐记录（编号/字节区间/特殊标记等长）、序列策略配置、词表身份指纹与 UTF-8 边界安全的流式解码；`Bytes` 是字节级基线实现 |
 | `Header` / `Entry` / `Reader` / `Loader` / `Archive` / `File` / `Quantized`；自有容器 `Writer` / `Stored` / `Segment` / `Quant` / `Codec` / `Proof`（llpk 模块） | `weights` | 权重文件，分两半：外部格式（safetensors）只读适配 + 自有 LLPK 容器读写。外部两条读取契约分工在**所有权**：`Reader` 把字节借出来（内存/映射），`Loader` 把字节拷进调用方缓冲区（文件）。LLPK 侧 `Writer`/`Archive` 读写对称，精度 code 由 `dtype` 单一事实源提供（`Wire` 是它的再导出别名，前 22 个 code 与旧线格式逐位兼容），另有显式量化、rANS、Merkle 证明、对齐与两级 CRC、原子写。`Quantized` 是外部量化条目与其标度伙伴的推断结果：分组、逻辑输入宽度、输出宽度出自**同一次**推断 |
 | `Format` / `Facts` / `Snapshot` | `train` | 检查点的字节格式与恢复事实：`Format` 是魔数与版本（当前第 3 版），`Facts` 是恢复后必须逐项相同的四个数（步号 / 并行度 / 层数 / 批行数）——放在一个类型里才能整体比较，`Snapshot` 是"事实 + 权重条目表"（条目表本身归 `weights`，不复制）。字节只写**相对上一条**的差：名字共享前后缀、布局同型同形时只写一个标签、偏移存增量，全部 LEB128；尾部 CRC-32（八路查表）让截断与改动在**解码期**失败，每种"还能省却没省"的写法也被解码器拒掉，于是同一份快照只有一种字节形态。`encoded_len` 与 `encode` 共用一个编码器，`write` 把同一个编码器直接接到同目录临时文件上（整份字节不进内存，`rename` 不留半截）。恢复前的两道校验分开：`verify` 只验字节不建表，`check_weights` 要求条目表与手头的权重文件逐条相同——形状对、内容错位不会在读取时炸，只会在训练若干步后表现成 loss 不降 |
 | `Page` / `Table` / `Cache` | `engine` | 分页 KV 的页管理：`Table::grow` 只抬容量（页仍由 `Cache` 发），`Cache` 用每页一字节的存活位图判重复归还（O(1)），不持有页里的数据 |

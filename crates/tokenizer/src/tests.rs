@@ -1,4 +1,5 @@
 use super::*;
+use diagnostic::Code;
 
 #[test]
 fn encoding_and_decoding_round_trip() {
@@ -29,4 +30,116 @@ fn an_incomplete_utf8_sequence_is_refused_with_a_message() {
         !error.message().trim().is_empty(),
         "拒绝不能说空话：{error}"
     );
+}
+
+#[test]
+fn special_tokens_register_and_match_ids() {
+    let special = SpecialTokens::empty().with_bos(1).with_eos(2).with_unk(0);
+    assert_eq!(special.len(), 3);
+    assert!(!special.is_empty());
+    assert!(special.is_special(1));
+    assert!(special.is_special(2));
+    assert!(special.is_special(0));
+    assert!(!special.is_special(7));
+    assert_eq!(special.bos(), Some(Token::new(1)));
+    assert_eq!(special.eos(), Some(Token::new(2)));
+    assert_eq!(special.pad(), None);
+}
+
+#[test]
+fn encoding_rejects_mismatched_metadata_lengths() {
+    let ids = vec![Token::new(1), Token::new(2)];
+    let offsets = vec![(0, 1)];
+    let special = vec![false, true];
+    let error = Encoding::new(ids, offsets, special).expect_err("长度不齐必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn detailed_encoding_carries_byte_offsets() {
+    let encoding = Bytes.encode_detailed("hé").expect("详细编码");
+    assert_eq!(encoding.len(), "hé".len());
+    assert_eq!(encoding.offsets(), &[(0, 1), (1, 2), (2, 3)]);
+    assert_eq!(encoding.is_special(0), Some(false));
+    assert!(encoding.offsets().len() == encoding.len());
+}
+
+#[test]
+fn count_is_zero_allocation_length_for_bytes() {
+    assert_eq!(Bytes.count("中文🙂").expect("计数"), "中文🙂".len());
+}
+
+#[test]
+fn lookup_and_piece_are_inverse_for_single_bytes() {
+    for byte in [0u8, 65, 255] {
+        let token = Bytes.lookup(&[byte]).expect("查表").expect("单字节必命中");
+        assert_eq!(token.id(), u32::from(byte));
+        assert_eq!(Bytes.piece(token).expect("反查"), Some(vec![byte]));
+    }
+    assert!(Bytes.lookup(&[1, 2]).expect("多字节返回空").is_none());
+}
+
+#[test]
+fn fingerprint_is_stable_for_a_descriptor() {
+    let first = Fingerprint::new("bytes", 256, "one-token-per-byte");
+    let second = Fingerprint::new("bytes", 256, "one-token-per-byte");
+    assert_eq!(first, second);
+    assert_eq!(first.hex().len(), 16);
+    assert_eq!(first.family(), "bytes");
+    assert_eq!(first.vocab_size(), 256);
+
+    let other = Fingerprint::new("bytes", 256, "different");
+    assert_ne!(first.digest(), other.digest());
+}
+
+#[test]
+fn padding_rejects_zero_length() {
+    let error = Padding::new(0, 0, PadDirection::Right).expect_err("零长度填充必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn strategy_defaults_to_no_op() {
+    let strategy = Strategy::default();
+    assert!(!strategy.add_bos());
+    assert!(!strategy.add_eos());
+    assert_eq!(strategy.max_len(), None);
+    assert_eq!(strategy.truncation(), None);
+    assert!(strategy.padding().is_none());
+
+    let padded = Strategy::no_op()
+        .with_max_len(128)
+        .with_truncation(Truncation::Right)
+        .with_padding(Padding::new(128, 0, PadDirection::Left).expect("填充配置"));
+    assert_eq!(padded.max_len(), Some(128));
+    assert_eq!(padded.truncation(), Some(Truncation::Right));
+    assert!(padded.padding().is_some());
+}
+
+#[test]
+fn stream_decodes_across_chunk_boundaries() {
+    let mut stream = DecoderStream::new();
+    // "中" 是三字节 EF BC 93；切成两块喂入。
+    let prefix = stream.push(&[0xE4, 0xB8]).expect("首块不完整，前缀为空");
+    assert_eq!(prefix, "");
+    let complete = stream.push(&[0xAD]).expect("次块拼出完整字符");
+    assert_eq!(complete, "中");
+    assert_eq!(stream.finish().expect("收尾"), "");
+}
+
+#[test]
+fn stream_rejects_interior_invalid_bytes() {
+    let mut stream = DecoderStream::new();
+    let error = stream
+        .push(&[0xE4, 0x00])
+        .expect_err("中间非法字节必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn stream_finish_refuses_incomplete_tail() {
+    let mut stream = DecoderStream::new();
+    stream.push(&[0xE4]).expect("不完整尾字节留在缓冲");
+    let error = stream.finish().expect_err("收尾仍不完整必须报错");
+    assert_eq!(error.code(), Code::Invalid);
 }

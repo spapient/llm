@@ -116,11 +116,6 @@ names = ["Rng"]
 reason = "测试用的确定性随机源；只在 dev 依赖里出现"
 
 [[ownership.unlisted]]
-crate = "tokenizer"
-names = ["Bytes"]
-reason = "字节级分词视图；对外承诺只有 `Token`/`Tokenizer`"
-
-[[ownership.unlisted]]
 crate = "tool"
 names = ["Call", "Direction", "Link", "Metric", "Over"]
 reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Report`"
