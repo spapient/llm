@@ -86,7 +86,6 @@ pub mod bench;
 pub mod build;
 pub mod builtin;
 pub mod cache;
-mod cache_key;
 pub mod cap;
 pub mod dirs;
 pub mod doctor;
@@ -100,9 +99,6 @@ pub mod substitute;
 pub mod toolchain;
 pub mod verify;
 pub mod witness;
-
-#[cfg(test)]
-mod cap_tests;
 
 mod device;
 mod gate;

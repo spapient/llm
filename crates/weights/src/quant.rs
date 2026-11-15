@@ -14,10 +14,11 @@
 //!
 //! 曾经想要的第三条是"字节数必须等于 `out × ceil(in / 2)`"，但它在本层是**结构性自证**的：
 //! [`Entry`] 的长度由 `shape × dtype` 推出，safetensors 又要求声明区间等于这个乘积，所以任何
-//! 从 [`Header`] 构造出来的条目都自动满足它——在这里再比一次，等于拿一个值与自己比。更要紧的
-//! 是它挡不住真正含糊的那件事：8 位元素类型的第二维究竟是"逐元素 int8 的 `in` 个字节"还是
-//! "两个 nibble 一个字节"，形状上看不出来。本层如实按字节读（宽度翻倍，分组也跟着翻倍），
-//! 由上层拿分组与内核声明的一比：不相等就不计价，而不是套一条用错分组的内核。
+//! 从 [`Header`] 构造出来的条目都自动满足它——在这里再比一次，等于拿一个值与自己比。
+//!
+//! 8 位条目到底是"逐元素 int8"还是"两个 nibble 一个字节"，由元素类型的**符号性**分流：
+//! [`DType::I8`] 是逐元素有符号字节，第二维就是元素数；[`DType::U8`] 是无符号字节，一个字节
+//! 两个 nibble，第二维是字节数、宽度翻倍。分组仍由标度条目形状推出，weights 不认识算子分组档。
 
 use diagnostic::{Code, Error, Result};
 use tensor::DType;
@@ -189,9 +190,9 @@ impl<'a> Quantized<'a> {
 
     /// 逻辑输入宽度（元素数）。
     ///
-    /// **不要从 [`Quantized::weight`] 的形状里读这个数**：8 位元素类型的第二维是打包后的字节数，
-    /// 一个字节两个 nibble。宽度与分组必须由同一处给出，否则会出现"分组按 128 个元素算、宽度按
-    /// 64 个元素算"的错配——那种错不会报错，只会把下界算成真值的一半。
+    /// **不要从 [`Quantized::weight`] 的形状里读这个数**：`U8` 打包条目的第二维是字节数（一个字节
+    /// 两个 nibble），`I8` 逐元素条目的第二维就是元素数。宽度与分组必须由同一处给出，否则会出现
+    /// "分组按 128 个元素算、宽度按 64 个元素算"的错配——那种错不会报错，只会把下界算成真值的一半。
     pub fn in_features(&self) -> usize {
         self.in_features
     }
@@ -201,9 +202,12 @@ impl<'a> Quantized<'a> {
         self.weight.shape().dims()[0]
     }
 
-    /// 每个元素的位数。目前只认 4 位打包。
+    /// 每个元素的位数：逐元素 `I8` 为 8，打包的 `U8`/`U4` 为 4。
     pub fn bits(&self) -> u8 {
-        4
+        match self.weight.dtype() {
+            DType::I8 => 8,
+            _ => 4,
+        }
     }
 
     /// 标度条目的名字。
@@ -271,10 +275,9 @@ fn scales_candidates(name: &str) -> Vec<String> {
 
 /// 由一对条目推出分组：形状自相矛盾就报错，不是 4 位量化就返回 `None`。
 ///
-/// 输入宽度不是直接读第二维：**8 位元素类型的第二维是打包后的字节数**（一个字节两个 nibble），
-/// 而 4 位元素类型（解包视图）的第二维才是元素数。这条换算不是约定，是"safetensors 要求
-/// `shape × dtype` 的字节数等于声明区间"的直接后果：想用一个 8 位 dtype 表达 4 位打包，就只能
-/// 把形状按字节写。
+/// 输入宽度不是直接读第二维：`U8` 打包条目的第二维是字节数（一个字节两个 nibble），`I8` 逐元素
+/// 与 `U4` 解包视图的第二维才是元素数。这条换算不是约定，是"safetensors 要求 `shape × dtype` 的
+/// 字节数等于声明区间"的直接后果：想用无符号字节表达 4 位打包，就只能把形状按字节写。
 fn analyze<'a>(weight: &'a Entry, scales: &'a Entry) -> Result<Option<Quantized<'a>>> {
     let context = format!(
         "量化条目 `{}` 与它的标度 `{}`",
@@ -339,11 +342,11 @@ fn pack(
     Ok(Some((in_features, in_features / groups)))
 }
 
-/// 每行的逻辑输入宽度：4 位元素类型一个元素就是一个元素，8 位元素类型两个 nibble 一个字节。
+/// 每行的逻辑输入宽度：解包视图与逐元素 int8 的第二维就是元素数；无符号字节一个字节两个 nibble。
 fn width(weight: &Entry, second: usize, context: &str) -> Result<Option<usize>> {
-    match weight.dtype().bits() {
-        4 => Ok(Some(second)),
-        8 => second.checked_mul(2).map(Some).ok_or_else(|| {
+    match weight.dtype() {
+        DType::U4 | DType::I8 => Ok(Some(second)),
+        DType::U8 => second.checked_mul(2).map(Some).ok_or_else(|| {
             invalid(format!(
                 "形状 {:?} 的第二维 {second} 乘 2 时溢出",
                 weight.shape().dims()
@@ -437,9 +440,9 @@ mod pair_tests {
         Entry::new(name, dtype, Shape::new([out, groups]))
     }
 
-    /// 真实文件的条目：8 位元素类型，第二维是**字节数**（一个字节两个 nibble）。
+    /// 真实文件的打包条目：`U8` 一个字节两个 nibble，第二维是字节数。
     fn nibbles(name: &str, out: usize, in_features: usize) -> Entry {
-        Entry::new(name, DType::I8, Shape::new([out, in_features / 2]))
+        Entry::new(name, DType::U8, Shape::new([out, in_features / 2]))
     }
 
     #[test]
@@ -541,7 +544,7 @@ mod pair_tests {
 
     #[test]
     fn the_real_file_shape_reports_the_same_group_as_the_unpacked_view() {
-        // 同一层权重，两种书写：解包视图（U4，第二维 = 元素数）与真实文件（8 位，第二维 = 字节数）。
+        // 同一层权重，两种书写：解包视图（U4，第二维 = 元素数）与真实文件（U8 打包，第二维 = 字节数）。
         let unpacked = header(vec![
             packed("a.weight", 8, 128),
             scales("a.scales", 8, 4, DType::F16),
@@ -559,27 +562,38 @@ mod pair_tests {
             .expect("自洽")
             .expect("量化");
         assert_eq!(from_unpacked.group(), 32);
-        assert_eq!(from_file.group(), 32, "8 位条目的第二维是字节数");
+        assert_eq!(from_file.group(), 32, "U8 条目的第二维是字节数");
         assert_eq!(from_file.in_features(), 128, "宽度是元素数，不是字节数");
         assert_eq!(from_file.out_features(), 8);
         assert_eq!(from_unpacked.in_features(), from_file.in_features());
     }
 
     #[test]
-    fn an_element_per_byte_entry_doubles_the_width_and_so_the_group() {
-        // 逐元素 int8 与"打包 nibble"在形状上无法区分，本层如实把宽度读成两倍：分组因此也翻倍，
-        // 上层拿算子声明的分组一比就会拒绝，而不是算出一个用错分组的流量。
+    fn a_signed_byte_entry_is_one_element_per_byte() {
+        // 逐元素 int8：第二维就是元素数，宽度不翻倍，分组按元素数推。
         let weight = Entry::new("a.weight", DType::I8, Shape::new([8, 64]));
         let header = header(vec![weight, scales("a.scales", 8, 2, DType::F16)]);
         let quantized = header
             .quantization("a.weight")
             .expect("自洽")
-            .expect("是 8 位 + 标度");
-        assert_eq!(
-            quantized.group(),
-            64,
-            "64 个字节 = 128 个 nibble，/2 组 = 64"
-        );
+            .expect("逐元素 int8");
+        assert_eq!(quantized.bits(), 8);
+        assert_eq!(quantized.in_features(), 64);
+        assert_eq!(quantized.group(), 32, "64 元素 / 2 组 = 32");
+    }
+
+    #[test]
+    fn an_unsigned_byte_entry_packs_two_nibbles_per_byte() {
+        // 无符号字节打包：一个字节两个 nibble，宽度按字节数翻倍。
+        let weight = Entry::new("a.weight", DType::U8, Shape::new([8, 32]));
+        let header = header(vec![weight, scales("a.scales", 8, 2, DType::F16)]);
+        let quantized = header
+            .quantization("a.weight")
+            .expect("自洽")
+            .expect("打包 nibble");
+        assert_eq!(quantized.bits(), 4);
+        assert_eq!(quantized.in_features(), 64, "32 字节 ×2 = 64 个 nibble");
+        assert_eq!(quantized.group(), 32, "64 元素 / 2 组 = 32");
     }
 
     #[test]

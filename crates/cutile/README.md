@@ -185,8 +185,7 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
     ├── substitute.rs           # ④ 槽位与 `@原语` 替换
     ├── emit.rs                 # ⑤ 加头、加前导、拼正文；片段行数判据
     ├── build.rs                # ⑤ 指纹 → 查缓存 → 取锁 → 拼接 → 落盘
-    ├── cache.rs                # 缓存存储：条目、锁、原子落盘与 LRU 回收
-    ├── cache_key.rs            # 缓存身份：源文本指纹、产物键与逐项差异
+    ├── cache.rs                # 缓存存储：身份键（源文本指纹、产物键、逐项差异）、条目、锁、原子落盘与 LRU 回收
     ├── probe.rs / plan.rs      # 设备探测、tile 取值与 roofline
     ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
     ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）

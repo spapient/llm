@@ -1,5 +1,5 @@
+use super::*;
 use crate::atom::{Attr, AttrKey, DType, DTypeSet, Grade, Need, Prim, Provide};
-use crate::cap::*;
 use crate::decl::{Axis, OpDecl, Skeleton, Variant};
 use crate::prof::Profile;
 use crate::sch::Schedule;
@@ -10,12 +10,16 @@ fn op() -> OpDecl {
     OpDecl::parse(source.declaration(), source.template()).expect("声明可解析")
 }
 
+fn profile_for(vendor: &str) -> Profile {
+    Profile::parse(prof::embedded(vendor).expect("内置档案")).expect("档案可解析")
+}
+
 fn cpu() -> Profile {
-    Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案可解析")
+    profile_for("cpu")
 }
 
 fn nvidia() -> Profile {
-    Profile::parse(prof::embedded("nvidia").expect("nvidia 档案")).expect("档案可解析")
+    profile_for("nvidia")
 }
 
 /// cpu 档案去掉这些原语：用来演示"设备缺一条能力就降级"。
@@ -143,8 +147,7 @@ fn missing_async_atom_only_disables_the_pipelined_variant() {
 #[test]
 fn every_p0_need_is_covered_by_some_signature_on_every_accelerator() {
     for vendor in ["nvidia", "intel", "ascend"] {
-        let profile =
-            Profile::parse(prof::embedded(vendor).expect("内置档案")).expect("档案可解析");
+        let profile = profile_for(vendor);
         let checks = inspect(&op(), &profile);
         assert!(!checks.is_empty(), "{vendor} 应当有降级链");
         for check in &checks {

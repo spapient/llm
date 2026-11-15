@@ -109,62 +109,31 @@ pub fn crc32_bitwise(bytes: &[u8]) -> u32 {
     !crc
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn comparison_is_elementwise_and_length_sensitive() {
-        assert!(approx_eq(&[1.0, 2.0], &[1.0, 2.0], 0.0));
-        assert!(approx_eq(&[1.0, 2.0], &[1.0, 2.0004], 1e-3));
-        assert!(!approx_eq(&[1.0, 2.0], &[1.0, 2.01], 1e-3));
-        assert!(!approx_eq(&[1.0], &[1.0, 1.0], 1.0), "长度不同必须为假");
+/// 两条同长向量的余弦相似度；长度不同、或任一向量范数为零时返回 [`None`]。
+///
+/// 回归判据用：量化前向的 logits 与 f32 参考比对方向一致性（不要求逐元素相等）。累加在 `f64`
+/// 完成，避免长向量上 `f32` 平方和与点积的累加误差把相似度压低；返回值落在 `[-1, 1]`。
+#[must_use]
+pub fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
+    if left.len() != right.len() {
+        return None;
     }
-
-    #[test]
-    fn nan_matches_nan() {
-        assert!(approx_eq(&[f32::NAN], &[f32::NAN], 0.0));
+    let mut dot = 0.0f64;
+    let mut left_sq = 0.0f64;
+    let mut right_sq = 0.0f64;
+    for (a, b) in left.iter().zip(right) {
+        let a = f64::from(*a);
+        let b = f64::from(*b);
+        dot += a * b;
+        left_sq += a * a;
+        right_sq += b * b;
     }
-
-    /// `inf - inf` 是 `NaN`：差值判定会把「两边同为无穷」判成不等，而它与 NaN 对 NaN 同理。
-    #[test]
-    fn equal_infinities_match() {
-        for value in [f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(approx_eq(&[value], &[value], 0.0), "{value}");
-        }
-        assert!(!approx_eq(&[f32::INFINITY], &[f32::NEG_INFINITY], 1.0));
-        assert!(!approx_eq(&[f32::INFINITY], &[1.0], 1.0));
+    let denom = (left_sq * right_sq).sqrt();
+    if denom == 0.0 {
+        return None;
     }
-
-    #[test]
-    fn gating_accepts_all_lists_and_ignores_blank_entries() {
-        assert!(matches("all", "nvidia"));
-        assert!(matches("cpu, nvidia", "nvidia"));
-        assert!(matches(" cpu ", "cpu"));
-        assert!(!matches("", "cpu"));
-        assert!(!matches("cpu", "nvidia"));
-    }
-
-    #[test]
-    fn the_same_tag_reuses_one_directory() {
-        let first = scratch_dir("a");
-        let second = scratch_dir("a");
-        assert!(first.is_dir());
-        assert_eq!(first, second, "同标签同进程应复用同一目录");
-        assert_ne!(first, scratch_dir("b"), "不同标签必须各自一个目录");
-        let _ = std::fs::remove_dir_all(&first);
-        let _ = std::fs::remove_dir_all(scratch_dir("b"));
-    }
-
-    #[test]
-    fn rng_is_deterministic_and_bounded() {
-        let mut left = Rng::new(1234);
-        let mut right = Rng::new(1234);
-        for _ in 0..16 {
-            let value = left.below(10);
-            assert_eq!(value, right.below(10), "同种子序列一致");
-            assert!(value < 10, "结果落在界内");
-        }
-        assert_eq!(Rng::new(7).below(1), 0, "bound=1 恒为 0");
-    }
+    Some((dot / denom) as f32)
 }
+
+#[cfg(test)]
+mod tests;

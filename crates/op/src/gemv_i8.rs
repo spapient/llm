@@ -10,11 +10,6 @@ use crate::gemv::{self, Format};
 /// 量化分组（声明粒度，与 `gemv_i4` 同档）。
 pub const GROUP: usize = 32;
 
-/// 标度取值：`0.03125` 的 1..=4 倍，落在 2 的负幂网格，f32 精确。
-fn scale_of(index: usize) -> f32 {
-    0.031_25 * (1 + (index % 4)) as f32
-}
-
 /// 对称 int8 格式的语义类型：声明粒度 [`GROUP`]、每行 `m` 个字节。
 #[annotation::model(name = "gemv_i8", shape = [4096, 4096], dtype = "f32")]
 pub type I8 = gemv::SymI8<GROUP>;
@@ -37,7 +32,7 @@ impl<const G: usize> Format for gemv::SymI8<G> {
 
     const DERIVED: Option<(char, char, usize)> = Some(('g', 'm', G));
 
-    const SCALES: Option<fn(usize) -> f32> = Some(scale_of);
+    const SCALES: Option<fn(usize) -> f32> = Some(gemv::scale_of);
 
     const STEP: usize = G;
 
@@ -104,3 +99,6 @@ pub fn forward(
 ) -> diagnostic::Result<()> {
     <I8 as Format>::forward(x, weights, scales, out)
 }
+
+#[cfg(test)]
+mod tests;

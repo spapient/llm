@@ -596,3 +596,6 @@ impl fmt::Display for FragmentGap {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
