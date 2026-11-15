@@ -38,7 +38,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
-    name: test (${{ matrix.os }})
+    name: test (nextest, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -50,7 +50,12 @@ jobs:
         with:
           toolchain: "nightly-2026-09-01"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --all-features --locked
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      # lib / 集成 / 二进制测试由 nextest 按测试二进制并行隔离运行。libfuzzer harness
+      # 不是 libtest 运行器，已在 `.config/nextest.toml` 按二进制名排除，交独立 fuzz job。
+      # doc-test 不在 nextest 范围，由 `doc` job 的 `cargo test --doc` 负责。
+      - run: cargo nextest run --workspace --all-features --locked
 
   msrv:
     name: msrv (1.100.0)
@@ -78,6 +83,8 @@ jobs:
           toolchain: "nightly-2026-09-01"
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features --locked
+      # doc-test 不由 nextest 执行：这里单独跑，文档块里的示例也必须编得过、断言成立。
+      - run: cargo test --doc --workspace --all-features --locked
 
   dup:
     name: duplication
@@ -90,7 +97,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # 硬门：重复率超过 .jscpd.json 的 threshold（2%）即失败。
+      # 硬门：重复率超过 .jscpd.json 的 threshold（1.5%）即失败。
       - name: jscpd hard gate
         run: npx --yes jscpd
       # 语义巡检：AST 归一化暴露近重复，只出报告不阻断（硬门已由 jscpd 负责）。
@@ -125,12 +132,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      # 覆盖率采集与主测试运行器一致走 nextest（lib/集成/二进制测试并行隔离执行）。
       - name: Generate lcov
-        run: cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --workspace --all-features --locked --lcov --output-path lcov.info
       # 硬门：cutile 行/函数覆盖率低于下限即失败。下限低于本地干净基线（行 82.9% / 函数 83.2%），
       # 给 ubuntu 上不可用的 Metal/NVCC 探测分支留出平台差异余量，只防整体回退、不卡单次波动。
       - name: Coverage floor (cutile)
-        run: cargo llvm-cov -p cutile --all-features --locked --fail-under-lines 75 --fail-under-functions 70
+        run: cargo llvm-cov nextest -p cutile --all-features --locked --fail-under-lines 75 --fail-under-functions 70
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:

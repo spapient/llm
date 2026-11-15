@@ -7,6 +7,7 @@
   "threshold": 1.5,
   "ignore": [
     "**/target/**",
-    "**/*.rs.bk"
+    "**/*.rs.bk",
+    "**/build.rs"
   ]
 }
