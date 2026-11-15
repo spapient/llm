@@ -7,7 +7,7 @@ use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
 // 收缩轴、三轴契约、形状投影与取轴辅助复用 gemm 家族共享模块。
-pub use crate::gemm::{axis, AXES, K, project_shape};
+pub use crate::gemm::{AXES, K, axis, project_shape};
 
 /// 标量代价：`2*m*k*n` 次浮点运算（乘加各一），读 A/B、写 Y。
 ///

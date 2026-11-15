@@ -14,7 +14,7 @@ pub use crate::gemm::K;
 pub const ZERO: i32 = 8;
 
 // 三轴契约、形状投影与取轴辅助复用 gemm 家族共享模块。
-pub use crate::gemm::{axis, AXES, project_shape};
+pub use crate::gemm::{AXES, axis, project_shape};
 
 /// 代价：整数乘加按 `2*m*k*n` 计；A/B 为打包 nibble（每 2 元素 1 字节），Y 每元素 4 字节。
 ///

@@ -8,7 +8,7 @@ use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
 // 收缩轴、三轴契约、形状投影与取轴辅助复用 gemm 家族共享模块（dp4a 一次 4 个，K=8 即两次）。
-pub use crate::gemm::{axis, AXES, K, project_shape};
+pub use crate::gemm::{AXES, K, axis, project_shape};
 
 /// 代价：整数乘加按 `2*m*k*n` 计；A/B 各占 1 字节，Y 每元素 4 字节。
 ///

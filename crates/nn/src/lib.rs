@@ -1,4 +1,4 @@
-//! 层定义：[`Contract`]、[`ContractSpec`]、投影层 [`Linear`] 与 [`LmHead`]，单轴层
+//! 层定义：[`Contract`]、[`ContractSpec`]、投影层 [`Linear`]、矩阵乘层 [`MatMul`] 与 [`LmHead`]，单轴层
 //! ([`RmsNorm`]、[`Softmax`]、[`Gelu`]、[`Silu`]、[`Rope`]、[`Scale`]、[`Add`]、[`Mul`]、
 //! [`ResidualAdd`])、归约层 ([`ReduceSum`]、[`ReduceMax`])、查表层 [`Embedding`] 与注意力层
 //! [`Attention`]；权重编码 [`WeightFormat`]、层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
@@ -53,6 +53,7 @@ mod bounds;
 mod embed;
 mod format;
 mod lm_head;
+mod matmul;
 mod pointwise;
 mod reduce;
 mod stack;
@@ -68,6 +69,9 @@ pub use embed::Embedding;
 
 #[doc(inline)]
 pub use lm_head::LmHead;
+
+#[doc(inline)]
+pub use matmul::MatMul;
 
 #[doc(inline)]
 pub use format::WeightFormat;
