@@ -7,8 +7,8 @@
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
-// 收缩轴、三轴契约与形状投影复用 gemm 家族共享模块（dp4a 一次 4 个，K=8 即两次）。
-pub use crate::gemm::{AXES, K, project_shape};
+// 收缩轴、三轴契约、形状投影与取轴辅助复用 gemm 家族共享模块（dp4a 一次 4 个，K=8 即两次）。
+pub use crate::gemm::{axis, AXES, K, project_shape};
 
 /// 代价：整数乘加按 `2*m*k*n` 计；A/B 各占 1 字节，Y 每元素 4 字节。
 ///
@@ -16,20 +16,14 @@ pub use crate::gemm::{AXES, K, project_shape};
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let m = axis(shape, 'm')?;
-    let k = axis(shape, 'k')?;
-    let n = axis(shape, 'n')?;
+    let m = axis(shape, 'm', "gemm_i8")?;
+    let k = axis(shape, 'k', "gemm_i8")?;
+    let n = axis(shape, 'n', "gemm_i8")?;
     Ok(Cost {
         flops: (2 * m * k * n) as f64,
         read: (m * k + k * n) as u64,
         write: (m * n) as u64 * 4,
     })
-}
-
-fn axis(shape: &ShapeContext, label: char) -> Result<usize, Error> {
-    shape
-        .get(label)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("gemm_i8 形状缺轴 `{label}`")))
 }
 
 /// 确定性样本：A、B 取对称小整数（-8..7）的 int8 位模式，Y 为 f32。

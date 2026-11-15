@@ -6,7 +6,7 @@
 //! 不在热路径上引入运行时分发。与 [`crate::gemv`] 的两轴骨架对称，只是这里多一条收缩轴。
 
 use crate::model::{AxisRole, AxisSpec, ShapeContext};
-use diagnostic::Error;
+use diagnostic::{Code, Error};
 
 /// 收缩轴长度（固定档）。
 pub const K: usize = 8;
@@ -34,4 +34,14 @@ pub const AXES: &[AxisSpec] = &[
 /// 当前实现不会失败。
 pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
     ShapeContext::new([('m', m), ('k', K), ('n', n)])
+}
+
+/// 从形状上下文取一条轴；缺轴时按 `op` 标签报 [`Code::Invalid`]。
+///
+/// 三份格式对轴的判读逐字相同，只有诊断里点名的算子名不同——标签作为参数传入，避免三份
+/// 平行的取轴辅助各抄一遍。
+pub fn axis(shape: &ShapeContext, label: char, op: &str) -> Result<usize, Error> {
+    shape
+        .get(label)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("{op} 形状缺轴 `{label}`")))
 }

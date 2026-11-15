@@ -13,8 +13,8 @@ pub use crate::gemm::K;
 /// 对称零点：nibble 0..15 减去 8 得到 -8..7。
 pub const ZERO: i32 = 8;
 
-// 三轴契约与形状投影复用 gemm 家族共享模块。
-pub use crate::gemm::{AXES, project_shape};
+// 三轴契约、形状投影与取轴辅助复用 gemm 家族共享模块。
+pub use crate::gemm::{axis, AXES, project_shape};
 
 /// 代价：整数乘加按 `2*m*k*n` 计；A/B 为打包 nibble（每 2 元素 1 字节），Y 每元素 4 字节。
 ///
@@ -22,20 +22,14 @@ pub use crate::gemm::{AXES, project_shape};
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let m = axis(shape, 'm')?;
-    let k = axis(shape, 'k')?;
-    let n = axis(shape, 'n')?;
+    let m = axis(shape, 'm', "gemm_i4")?;
+    let k = axis(shape, 'k', "gemm_i4")?;
+    let n = axis(shape, 'n', "gemm_i4")?;
     Ok(Cost {
         flops: (2 * m * k * n) as f64,
         read: ((m * k + k * n) / 2) as u64,
         write: (m * n) as u64 * 4,
     })
-}
-
-fn axis(shape: &ShapeContext, label: char) -> Result<usize, Error> {
-    shape
-        .get(label)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("gemm_i4 形状缺轴 `{label}`")))
 }
 
 /// 把打包字节解成有符号 nibble（低 4 位在前、高 4 位在后），输出长度是字节数的 2 倍。

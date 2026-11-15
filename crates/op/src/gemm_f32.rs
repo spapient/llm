@@ -6,8 +6,8 @@
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
-// 收缩轴、三轴契约与形状投影复用 gemm 家族共享模块。
-pub use crate::gemm::{AXES, K, project_shape};
+// 收缩轴、三轴契约、形状投影与取轴辅助复用 gemm 家族共享模块。
+pub use crate::gemm::{axis, AXES, K, project_shape};
 
 /// 标量代价：`2*m*k*n` 次浮点运算（乘加各一），读 A/B、写 Y。
 ///
@@ -15,20 +15,14 @@ pub use crate::gemm::{AXES, K, project_shape};
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let m = axis(shape, 'm')?;
-    let k = axis(shape, 'k')?;
-    let n = axis(shape, 'n')?;
+    let m = axis(shape, 'm', "gemm")?;
+    let k = axis(shape, 'k', "gemm")?;
+    let n = axis(shape, 'n', "gemm")?;
     Ok(Cost {
         flops: (2 * m * k * n) as f64,
         read: ((m * k + k * n) as u64) * 4,
         write: ((m * n) as u64) * 4,
     })
-}
-
-fn axis(shape: &ShapeContext, label: char) -> Result<usize, Error> {
-    shape
-        .get(label)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("gemm 形状缺轴 `{label}`")))
 }
 
 /// 确定性样本：A（m×k）、B（k×n）、Y（m×n）。
@@ -61,12 +55,7 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let a = sample.f32("a")?;
     let b = sample.f32("b")?;
     let mut out = vec![0.0; m * n];
-    for i in 0..m {
-        let row = &a[i * K..i * K + K];
-        for j in 0..n {
-            out[i * n + j] = dot_k(row, b, n, j);
-        }
-    }
+    matmul(a, b, m, n, &mut out);
     Ok(out)
 }
 
@@ -85,13 +74,19 @@ pub fn forward(
     if [a.len(), b.len(), out.len()] != [m * K, K * n, m * n] {
         return Err(Error::new(Code::Invalid, "gemm 缓冲尺寸不符"));
     }
+    matmul(a, b, m, n, out);
+    Ok(())
+}
+
+/// 三重循环骨架：`reference` 与 `forward` 共用，外层遍历只写一份；固定 K 的点积落在
+/// [`dot_k`]。
+fn matmul(a: &[f32], b: &[f32], m: usize, n: usize, out: &mut [f32]) {
     for i in 0..m {
         let row = &a[i * K..i * K + K];
         for j in 0..n {
             out[i * n + j] = dot_k(row, b, n, j);
         }
     }
-    Ok(())
 }
 
 /// 固定 K=8 点积：a 的一行（连续）与 b 的一列（按 n 跨步）。
