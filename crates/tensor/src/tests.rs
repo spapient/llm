@@ -210,3 +210,31 @@ fn a_zero_element_view_needs_an_empty_buffer() {
         View::strided(Shape::new([0, 3]), Strides::new([3, 1]), &[1.0f32]).expect_err("非空缓冲");
     assert!(error.to_string().contains("零元素"), "{error}");
 }
+
+#[test]
+fn owned_tensor_zeros_allocates_the_required_bytes() {
+    let shape = Shape::new([2, 3]);
+    let owned = OwnedTensor::zeros(DType::F32, shape).expect("分配");
+    assert_eq!(owned.numel(), 6);
+    assert_eq!(owned.data().len(), 24);
+    assert!(owned.data().iter().all(|byte| *byte == 0));
+    assert!(owned.is_contiguous());
+}
+
+#[test]
+fn owned_tensor_rejects_a_short_or_unsupported_buffer() {
+    let short = OwnedTensor::from_bytes(DType::F32, Shape::new([2]), vec![0u8; 4]);
+    assert_eq!(short.unwrap_err().code(), Code::Invalid);
+    let unsupported = OwnedTensor::zeros(DType::I32, Shape::new([1]));
+    assert_eq!(unsupported.unwrap_err().code(), Code::Invalid);
+}
+
+#[test]
+fn owned_tensor_writes_through_the_mutable_path_and_loans_a_read_view() {
+    let mut owned = OwnedTensor::zeros(DType::F32, Shape::new([2])).expect("分配");
+    owned.data_mut()[..4].copy_from_slice(&1.0f32.to_ne_bytes());
+    let view = owned.view().expect("借出只读视图");
+    assert_eq!(view.dtype(), DType::F32);
+    assert_eq!(view.numel(), 2);
+    assert_eq!(owned.data()[..4], 1.0f32.to_ne_bytes());
+}

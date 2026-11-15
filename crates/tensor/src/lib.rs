@@ -1,6 +1,6 @@
-//! 逻辑张量：`DType` + `Shape` + `Strides` + 只读字节视图 [`Tensor`]。
+//! 逻辑张量：`DType` + `Shape` + `Strides` + 只读字节视图 [`Tensor`] 与拥有形态 [`OwnedTensor`]。
 //!
-//! **拥有**：`Tensor`、`View`、`Shape`、`Strides`、`Element` 与计算层子集 [`SUPPORTED`]。**不拥有**：
+//! **拥有**：`Tensor`、`OwnedTensor`、`View`、`Shape`、`Strides`、`Element` 与计算层子集 [`SUPPORTED`]。**不拥有**：
 //! 元素类型闭集（L1 `dtype`，这里只再导出 `DType`）、kernel 侧的操作数视图
 //! （DSL 的宿主 API，两者语义不同，见 `docs/adr/0003-kernel-and-runtime-types.md`）、
 //! 布局搬运（`storage`）。**依赖**：`dtype`、`diagnostic`。
@@ -406,6 +406,97 @@ impl<'a, E: Element> View<'a, E> {
         }
         let start = self.axis_offset(0, row)?;
         self.data.get(start..start.checked_add(columns)?)
+    }
+}
+
+/// 拥有缓冲的可写张量：元数据 + 持有字节向量。
+///
+/// 与只读 [`Tensor<'a>`] 视图互补：`Tensor` 是调用方持有的零拷贝读路径，`OwnedTensor`
+/// 是分配出来、可写入的拥有形态。`dtype` / `shape` / `strides` 与设备无关；设备地址
+/// 藏在分配器返回的句柄里，本层不泄漏（ADR 0025 §2）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedTensor {
+    dtype: DType,
+    shape: Shape,
+    strides: Strides,
+    bytes: Vec<u8>,
+}
+
+impl OwnedTensor {
+    /// 按形状分配并清零；`dtype` 必须在 [`SUPPORTED`] 子集内。
+    pub fn zeros(dtype: DType, shape: Shape) -> Result<Self> {
+        let required = shape.element_bytes(dtype);
+        Self::from_bytes(dtype, shape, vec![0u8; required])
+    }
+
+    /// 由已有字节向量构造：`dtype` 受支持且缓冲够长，布局取行主序连续。
+    pub fn from_bytes(dtype: DType, shape: Shape, bytes: Vec<u8>) -> Result<Self> {
+        if !supports(dtype) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{dtype:?} 不在计算层支持的元素子集内"),
+            )
+            .with("tensor::OwnedTensor::from_bytes"));
+        }
+        let required = shape.element_bytes(dtype);
+        if bytes.len() < required {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "缓冲 {} 字节，{dtype:?} 的 {:?} 需要 {required} 字节",
+                    bytes.len(),
+                    shape.dims()
+                ),
+            )
+            .with("tensor::OwnedTensor::from_bytes"));
+        }
+        let strides = Strides::contiguous(&shape);
+        Ok(Self {
+            dtype,
+            shape,
+            strides,
+            bytes,
+        })
+    }
+
+    /// 元素类型。
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    /// 形状。
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    /// 步长。
+    pub fn strides(&self) -> &Strides {
+        &self.strides
+    }
+
+    /// 元素个数。
+    pub fn numel(&self) -> usize {
+        self.shape.numel()
+    }
+
+    /// 只读字节。
+    pub fn data(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// 可写字节。
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes
+    }
+
+    /// 借出只读字节视图（零拷贝读路径）；元数据构造时已校验缓冲够长，这里只做一次同口径复核。
+    pub fn view(&self) -> Result<Tensor<'_>> {
+        Tensor::new(self.dtype, self.shape.clone(), &self.bytes)
+    }
+
+    /// 是否为行主序连续布局。
+    pub fn is_contiguous(&self) -> bool {
+        self.strides == Strides::contiguous(&self.shape)
     }
 }
 
