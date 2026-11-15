@@ -27,17 +27,19 @@ impl Anneal {
         }
     }
 
+    /// 归一化形状：`1.0` 为峰值、`0.0` 为谷底；谷底比例由 [`factor`](Self::factor) 统一插值。
+    fn shaped(self, progress: f32) -> f32 {
+        match self {
+            Self::Constant => 1.0,
+            Self::Linear => 1.0 - progress,
+            Self::Cosine => 0.5 * (1.0 + (core::f32::consts::PI * progress).cos()),
+        }
+    }
+
     /// 曲线在进度 `progress ∈ [0, 1]` 处的因子：`min_ratio` 为谷底，`1.0` 为峰值。
     fn factor(self, progress: f32, min_ratio: f32) -> f32 {
         let progress = progress.clamp(0.0, 1.0);
-        match self {
-            Self::Constant => 1.0,
-            Self::Linear => min_ratio + (1.0 - min_ratio) * (1.0 - progress),
-            Self::Cosine => {
-                let shaped = 0.5 * (1.0 + (core::f32::consts::PI * progress).cos());
-                min_ratio + (1.0 - min_ratio) * shaped
-            }
-        }
+        min_ratio + (1.0 - min_ratio) * self.shaped(progress)
     }
 }
 

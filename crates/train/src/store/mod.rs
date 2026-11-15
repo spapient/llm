@@ -34,6 +34,8 @@
 //! assert!(store.value(y).and_then(|view| view.f32()).is_some());
 //! ```
 
+// `kernel.rs` 物理位于 crate 根，模块层级仍归 store：路径对齐，不移动文件。
+#[path = "../kernel.rs"]
 mod kernel;
 mod pool;
 mod shape;
