@@ -186,7 +186,7 @@ fn bpe_requires_a_merge_table_and_others_reject_one() {
     };
     let with_merges = VocabSource {
         family: VocabFamily::Bpe,
-        pieces: vec![b"a".to_vec(), b"ab".to_vec()],
+        pieces: vec![b"a".to_vec(), b"b".to_vec(), b"ab".to_vec()],
         merges: vec![merge],
         ..VocabSource::default()
     };
@@ -200,6 +200,42 @@ fn bpe_requires_a_merge_table_and_others_reject_one() {
         ..word_level(vec!["a".as_bytes()])
     };
     let error = Vocab::try_new(stray).expect_err("非 BPE 携带合并表必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn bpe_merge_sides_must_be_in_the_vocabulary() {
+    let source = VocabSource {
+        family: VocabFamily::Bpe,
+        pieces: vec![b"a".to_vec(), b"ab".to_vec()],
+        merges: vec![Merge {
+            left: b"a".to_vec(),
+            right: b"b".to_vec(),
+        }],
+        ..VocabSource::default()
+    };
+    let error = Vocab::try_new(source).expect_err("合并右片不在词表内必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn bpe_rejects_a_duplicate_merge_pair() {
+    let source = VocabSource {
+        family: VocabFamily::Bpe,
+        pieces: vec![b"a".to_vec(), b"b".to_vec(), b"ab".to_vec()],
+        merges: vec![
+            Merge {
+                left: b"a".to_vec(),
+                right: b"b".to_vec(),
+            },
+            Merge {
+                left: b"a".to_vec(),
+                right: b"b".to_vec(),
+            },
+        ],
+        ..VocabSource::default()
+    };
+    let error = Vocab::try_new(source).expect_err("重复合并对必须拒绝");
     assert_eq!(error.code(), Code::Invalid);
 }
 

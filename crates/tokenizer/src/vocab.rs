@@ -6,7 +6,7 @@
 
 use crate::{Fingerprint, SpecialTokens, Token};
 use diagnostic::{Code, Error, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// 词表算法族。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +101,13 @@ impl Vocab {
         let len = source.pieces.len();
         let piece_map = build_map(&source.pieces)?;
         check_special(&source.special, len)?;
-        check_attachments(source.family, &source.scores, &source.merges, len)?;
+        check_attachments(
+            source.family,
+            &source.scores,
+            &source.merges,
+            &piece_map,
+            len,
+        )?;
         let mut fingerprint = Fingerprint::from_pieces(source.family.as_str(), len, &source.pieces);
         fingerprint = fold_merges(fingerprint, &source.merges);
         fingerprint = fold_scores(fingerprint, &source.scores);
@@ -241,15 +247,21 @@ fn check_attachments(
     family: VocabFamily,
     scores: &[f32],
     merges: &[Merge],
+    piece_map: &HashMap<Vec<u8>, u32>,
     len: usize,
 ) -> Result<()> {
-    check_merges(family, merges)?;
+    check_merges(family, merges, piece_map)?;
     check_scores(family, scores, len)?;
     Ok(())
 }
 
-/// 合并表只属于 BPE：缺表报 [`Code::Missing`]，错挂报 [`Code::Invalid`]。
-fn check_merges(family: VocabFamily, merges: &[Merge]) -> Result<()> {
+/// 合并表只属于 BPE：缺表报 [`Code::Missing`]，错挂报 [`Code::Invalid`]；
+/// 两侧必须命中词表，且同一对不得重复登记（后者只留后登记秩会静默改写秩序）。
+fn check_merges(
+    family: VocabFamily,
+    merges: &[Merge],
+    piece_map: &HashMap<Vec<u8>, u32>,
+) -> Result<()> {
     if family.requires_merges() && merges.is_empty() {
         return Err(
             Error::new(Code::Missing, "BPE 词表缺少合并表").with("tokenizer::Vocab::try_new")
@@ -260,7 +272,40 @@ fn check_merges(family: VocabFamily, merges: &[Merge]) -> Result<()> {
             Error::new(Code::Invalid, "非 BPE 词表携带了合并表").with("tokenizer::Vocab::try_new")
         );
     }
+    check_merge_sides(merges, piece_map)
+}
+
+/// 逐条解析合并双侧编号并拒绝重复对；按秩下标定位报错位置。
+fn check_merge_sides(merges: &[Merge], piece_map: &HashMap<Vec<u8>, u32>) -> Result<()> {
+    let mut seen: HashSet<(u32, u32)> = HashSet::new();
+    for (rank, merge) in merges.iter().enumerate() {
+        let pair = resolve_side_pair(rank, merge, piece_map)?;
+        if !seen.insert(pair) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("合并表第 {rank} 条与此前登记的合并对重复"),
+            )
+            .with("tokenizer::Vocab::try_new"));
+        }
+    }
     Ok(())
+}
+
+/// 取合并双侧的词表编号；任一侧未命中报 [`Code::Invalid`]。
+fn resolve_side_pair(
+    rank: usize,
+    merge: &Merge,
+    piece_map: &HashMap<Vec<u8>, u32>,
+) -> Result<(u32, u32)> {
+    let left = piece_map.get(&merge.left).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("合并表第 {rank} 条左片不在词表内"))
+            .with("tokenizer::Vocab::try_new")
+    })?;
+    let right = piece_map.get(&merge.right).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("合并表第 {rank} 条右片不在词表内"))
+            .with("tokenizer::Vocab::try_new")
+    })?;
+    Ok((*left, *right))
 }
 
 /// 分数表只属于 Unigram，且个数与词片齐平；错挂或不齐报 [`Code::Invalid`]。
