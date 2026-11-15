@@ -234,6 +234,11 @@ impl<'a> ViewMut<'a> {
     pub fn f32(&mut self) -> Option<&mut [f32]> {
         <f32 as Lane>::slice_mut(self)
     }
+
+    /// 当成按位打包的整型写；不是 `u8` 缓冲时为 `None`。
+    pub fn u8(&mut self) -> Option<&mut [u8]> {
+        <u8 as Lane>::slice_mut(self)
+    }
 }
 
 /// 一组输入 lane 的**类型级**表示：`(f32, u8, f32)` ↔ `(&[f32], &[u8], &[f32])`。
@@ -672,10 +677,14 @@ impl<K: Kernel> Buffers<K> {
         self.pool.pooled()
     }
 
-    /// 一次性归零：换训练步、或换图时调用，空闲表与峰值统计一起重置。
+    /// 一次性归零：换训练步、或换图时调用。在场块回到空闲表留待等长复用，只清占用与峰值记账，
+    /// 稳定态不再向分配器要内存。
     pub fn clear(&mut self) {
-        self.slots.fill(None);
-        self.pool = Pool::default();
+        for slot in &mut self.slots {
+            if let Some(block) = slot.take() {
+                self.pool.recycle(block);
+            }
+        }
         self.live = 0;
         self.peak = 0;
     }

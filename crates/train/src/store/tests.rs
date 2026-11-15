@@ -352,10 +352,11 @@ fn clear_returns_everything_and_resets_the_peak() {
     assert!(store.peak() > RESIDENT);
 
     store.clear();
-    assert_eq!((store.live(), store.peak(), store.pooled()), (0, 0, 0));
+    assert_eq!((store.live(), store.peak()), (0, 0));
+    assert!(store.pooled() >= 3, "在场块回空闲表留待等长复用");
     assert!(store.value(fixture.x).is_none(), "常驻值也要还回去");
 
-    // 归零之后同一个实例可以接着用：形状表还在，值要重新装。
+    // 归零之后同一个实例可以接着用：形状表还在，值要重新装，块直接从池里取回复用。
     store.load(fixture.x, input()).expect("重新装入");
     assert_eq!(store.live(), WIDTH as u64 * 4, "只算刚装进来的那一块");
 }
