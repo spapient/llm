@@ -133,13 +133,49 @@ impl Stream {
     }
 }
 
+/// 设备标识与能力标签：`vendor` / `arch` 是登记标签，不持有设备私有句柄的具体类型
+/// （ADR 0025 §1）。与 `prof` 设备档案的对应由编排层完成，本层不反向依赖档案闭集。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Device {
+    vendor: String,
+    arch: String,
+}
+
+impl Device {
+    /// 由厂商与架构标签构造。
+    pub fn new(vendor: impl Into<String>, arch: impl Into<String>) -> Self {
+        Self {
+            vendor: vendor.into(),
+            arch: arch.into(),
+        }
+    }
+
+    /// 厂商标签（`cpu` / `metal` / `cuda` …）。
+    pub fn vendor(&self) -> &str {
+        &self.vendor
+    }
+
+    /// 架构标签（`aarch64` / `neon` / `sm_90` …），只作登记，不产生热路径分发。
+    pub fn arch(&self) -> &str {
+        &self.arch
+    }
+}
+
 /// 后端要实现的东西：把一张图提交到一条流。
 ///
 /// 实现放在后端（CPU 线程池 / CUDA / Metal …）；调度与模型代码只认这个 trait，
 /// 因此换后端不改上层。
 pub trait Executor {
+    /// 该执行器绑定的设备。
+    fn device(&self) -> &Device;
+
     /// 提交并发起执行；返回时表示"已入队"，不表示已完成（同步由流负责）。
     fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()>;
+
+    /// 等待一条流上已提交的工作完成。CPU 实现可立即返回；设备后端在此做事件同步。
+    fn sync(&mut self, _stream: Stream) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
