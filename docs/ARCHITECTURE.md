@@ -35,7 +35,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 89 条，含 26 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 90 条，含 27 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -57,7 +57,7 @@ engine   → tensor, diagnostic    +dev: testkit
 serve    → engine, tokenizer, diagnostic    +dev: testkit
 cli      → diagnostic
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor（工具成员，不参与方向判定；`+dev` 的是 `drivers.rs` 里的六个驱动对象：`cli` 参数文法、`weights` JSON 与 safetensors、`train` 检查点、`serve` 帧解码、`wire` 接收器不变量，`tensor` 只为给检查点夹具写形状；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
-benches  → +dev: prof, op, cutile, wire, weights, tool, testkit（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过）
+benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过）
 llm      → cli, cutile, diagnostic, engine, nn, op,
            prim, prof, serve, tensor, tokenizer, tool, train, weights
            +dev: autograd, testkit（`tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段对拍：`autograd` 出 `Tape`/`Sizes`，`testkit` 出三档浮点口径）
