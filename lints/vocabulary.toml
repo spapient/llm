@@ -30,16 +30,6 @@ crate = "serve"
 reason = "L6：帧类型是线格式的词汇表（`proto` 子模块），与设备能力无关；`serve` 在 `prof` 下游，反向依赖会成环"
 
 
-[frontend]
-# 允许"有 `impl Front` 但没有配套 `#[annotation::frontend(..)]` 与 `GATES` 表项"的 crate。
-#
-# 规则：语法前端三位一体——注解给语言身份（`Language::EMIT` / `EXT` / `TAG`），手写实现给
-# "怎么解析"（`Front`），`const GATES` 表把它接进语法门。执行前端是另一套：登记在 `cutile` 的
-# `const SPECS` 描述符表里，按 `Emit` 存 `available` / `program` / `run` 函数指针，没有独立
-# 前端类型。空清单本身是判据：类型系统只能保证登记进表的类型两半齐全，管不到"写了实现忘了加表"。
-
-exempt = []
-
 [bitset]
 exempt = []
 
@@ -48,18 +38,17 @@ exempt = []
 # 规则：位集只有 `prof::atom::Set<E, WORDS>` 一份实现（`WORDS` 是 const 参数，容量在编译期
 # 自证）。本清单为空是有意的——空清单本身是判据，不是"还没填"。
 
-# 注解文法的闭集（`crates/annotation/src/syntax.rs` 的 `LANGUAGES` / `DTYPES`）没有豁免节：
+# 注解文法的闭集（`crates/annotation/src/syntax.rs` 的 `DTYPES`）没有豁免节：
 #
-# 规则：注解里的名字必须是词汇表的**投影**——`LANGUAGES` 与 `Emit::ALL` 逐项相等，
-# `DTYPES` 与「`cutile::reference::tolerance` 给出非零阈值」的 `DType` 集合逐项相等，
-# 且两边都用变体名（首字母大写）核对 `codegen` 的机械映射。这三条都是等式，不是"尽量"：
-# 少一个名字就有一台设备/一种输出永远无法被声明，多一个就拼出匹配不上的代码。
+# 规则：注解里的名字必须是词汇表的**投影**——`DTYPES` 与「`cutile::reference::tolerance`
+# 给出非零阈值」的 `DType` 集合逐项相等，且用变体名核对 `codegen` 的机械映射。这是等式，
+# 不是"尽量"：少一个名字就有一种输出永远无法被声明，多一个就拼出匹配不上的代码。
 #
 # 语义表与注册表的镜像（`#[model]` 标了必须注册、注册的 `model:` 必须是 `..::MODEL`）同样没有
 # 豁免节：两条规则互为反面，出现例外说明契约该改，而不是某个 crate 该豁免。
 # 门禁：`tests/contracts.rs::{annotation_names_come_from_the_vocabulary,
-# the_registry_and_the_model_annotations_are_mirrors}`，以及 `#[frontend]` / `#[model]` 在每个
-# 调用点生成的 `Emit::parse(..)` / `DType::parse(..)` / `output_type()` 断言。
+# the_registry_and_the_model_annotations_are_mirrors}`，以及 `#[model]` 在每个
+# 调用点生成的 `DType::parse(..)` / `output_type()` 断言。
 
 [ownership]
 # 反向所有权校验的存量基线（`tests/architecture.rs::every_public_type_is_listed_or_baselined`）。
@@ -83,7 +72,7 @@ reason = "声明数据树的值（ADR 0022：语料在构建期被解析成 `dia
 
 [[ownership.unlisted]]
 crate = "cutile"
-names = ["CallArg", "ChainStep", "CudaFront", "FragmentGap", "Front", "Language", "LanguageGate", "Lock", "NeedReport", "OpenClFront", "Outcome", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
+names = ["CallArg", "ChainStep", "FragmentGap", "LanguageGate", "Lock", "NeedReport", "Outcome", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
 reason = "内核 DSL 的协商、执行前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表"
 
 [[ownership.unlisted]]

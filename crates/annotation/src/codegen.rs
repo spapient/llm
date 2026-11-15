@@ -10,7 +10,7 @@
 //! 生成的名字一律带 `__layer_` 前缀：宏展开不该占用一个用户可能想用的普通名字
 //! （`declaration` 这类名字太容易撞车，撞了之后报错会指向用户自己的方法）。
 
-use crate::syntax::{Declaration, Frontend, ModelDecl};
+use crate::syntax::{Declaration, ModelDecl};
 
 /// 渲染实现；`ty` 必须是 [`crate::syntax::target_name`] 给出的类型名。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
@@ -101,78 +101,6 @@ fn render_layer_check(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("    }\n}\n");
 }
 
-/// 把 `#[frontend(..)]` 渲染成 `crate::witness::Language` 的实现 + 两条编译期断言。
-///
-/// 生成的东西只有三块，都是常量：语言（生成 `Emit` 的具体变体）、后缀、缓存标签。
-/// 注解不负责执行——设备执行由 cutile 的 `const SPECS` 描述符表按 `Emit` 登记；这里生成的
-/// `Language` 只绑定语法门 `Front`。
-///
-/// 另外生成一个 `#[cfg(test)]` 模块：把注解里的**字符串**与词汇表里的**变体**对齐
-/// （`Emit::parse(emit) == Language::EMIT`）。它是“注解与词汇表不脱节”在**这个调用点**
-/// 的证据；全量与映射规则由 `tests/contracts.rs` 统一核对。
-///
-/// 两条断言是注解与数据之间的契约，全部在编译期成立：
-///
-/// 1. `ext` 必须等于 `Emit::ext()`——写错会把见证编成一门语言、却按另一门的后缀找文件；
-/// 2. `tag` 不能为空——它进产物身份，空标签会让所有程序的缓存条目挤在一起。
-///
-/// 路径写成 `crate::witness::..`：本注解只作用于 `audit` 的执行前端，不引入跨 crate 的
-/// 隐式依赖（与 `#[spec]` 指向 `::nn::..` 是同一个约定：注解绑定它所属契约的路径）。
-pub(crate) fn render_frontend(frontend: &Frontend, ty: &str) -> String {
-    let emit = &frontend.emit;
-    let emit_literal = literal(emit);
-    let ext = literal(&frontend.ext);
-    let tag = literal(&frontend.tag);
-    let variant = language_variant(emit);
-
-    let mut code = String::new();
-    code.push_str("#[automatically_derived]\n");
-    code.push_str(&format!("impl crate::witness::Language for {ty} {{\n"));
-    code.push_str(&format!(
-        "    const EMIT: crate::witness::Emit = crate::witness::Emit::{variant};\n"
-    ));
-    code.push_str(&format!("    const EXT: &'static str = {ext};\n"));
-    code.push_str(&format!("    const TAG: &'static str = {tag};\n"));
-    code.push_str("}\n\n");
-    code.push_str("const _: () = {\n");
-    code.push_str(&format!(
-        "    assert!(crate::witness::same_text(\n\
-         \x20       <{ty} as crate::witness::Language>::EXT,\n\
-         \x20       <{ty} as crate::witness::Language>::EMIT.ext(),\n\
-         \x20   ));\n"
-    ));
-    code.push_str(&format!(
-        "    assert!(!<{ty} as crate::witness::Language>::TAG.is_empty());\n"
-    ));
-    code.push_str("};\n\n");
-
-    // 注解里的 `emit` 是**字符串**，`EMIT` 是**变体**，两者由「首字母大写」这条规则联系。
-    // 这条测试把`首字母大写`与词汇表的名字钉在一起：`Emit::parse("opencl")` 必须就是
-    // `Language::EMIT` 那个值。词汇表改名而注解不改，这里就会红；另一头（全量、顺序、
-    // 变体名）在 `tests/contracts.rs` 里统一核对。
-    code.push_str("#[cfg(test)]\n#[allow(non_snake_case)]\n");
-    code.push_str(&format!("mod __frontend_check_{ty} {{\n"));
-    code.push_str("    #[test]\n");
-    code.push_str("    fn the_annotation_names_a_language_in_the_vocabulary() {\n");
-    code.push_str(&format!(
-        "        assert_eq!(\n\
-         \x20           crate::witness::Emit::parse({emit_literal}),\n\
-         \x20           Some(<super::{ty} as crate::witness::Language>::EMIT),\n\
-         \x20           \"注解里的 `emit` 必须解析成 `Language::EMIT` 用的那个变体（词汇表是唯一名字源）\",\n\
-         \x20       );\n"
-    ));
-    code.push_str("    }\n}\n");
-    code
-}
-
-/// 语言名 → `Emit` 的变体名：首字母大写、其余原样。
-///
-/// 不做第二张"语言 → 变体"表：文法层已经用 [`crate::syntax::LANGUAGES`] 校验过闭集，
-/// 这里再抄一份就有两个事实源，早晚会分家。`opencl → Opencl`、`ascendc → Ascendc` 也落在这条规则里。
-fn language_variant(emit: &str) -> String {
-    capitalised(emit)
-}
-
 /// `dtype` 名 → 变体名。
 ///
 /// 不再手写「名字 → 变体」表：`dtype` 的 [`DType::variant`] 是变体名的唯一事实源，
@@ -180,15 +108,6 @@ fn language_variant(emit: &str) -> String {
 /// 校验过，这里只做名字到变体的查找。
 fn dtype_variant(dtype: &str) -> Option<String> {
     dtype::DType::parse_name(dtype).map(|dtype| dtype.variant().to_string())
-}
-
-/// 首字母大写、其余原样：语言闭集（`opencl → Opencl`）用这一条命名规则。
-fn capitalised(word: &str) -> String {
-    let mut characters = word.chars();
-    match characters.next() {
-        Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
-        None => String::new(),
-    }
 }
 
 /// 把 `#[model(..)]` 渲染成 `MODEL` + 两条编译期断言 + 一条校验测试。
@@ -477,41 +396,6 @@ mod tests {
 
     fn declaration(text: &str) -> Declaration {
         syntax::parse(&lex(text)).expect("合法注解")
-    }
-
-    /// 渲染出来的东西必须是常量 + 编译期断言：语言名机械映射到 `Emit` 变体，
-    /// `ext` 与 `Emit::ext()` 的一致性、以及"标签非空"都在编译期判定。
-    #[test]
-    fn the_generated_front_end_binds_the_annotation_to_the_language_trait() {
-        let frontend =
-            syntax::parse_frontend(&lex(r#"emit = "opencl", ext = "cl", tag = "witness""#))
-                .expect("合法前端注解");
-        let code = render_frontend(&frontend, "ClBackend");
-        assert!(
-            code.contains("impl crate::witness::Language for ClBackend"),
-            "{code}"
-        );
-        assert!(
-            code.contains("crate::witness::Emit::Opencl"),
-            "语言名要机械映射到变体，不能另抄一张表：{code}"
-        );
-        assert!(code.contains("const EXT: &'static str = \"cl\";"), "{code}");
-        assert!(
-            code.contains("crate::witness::same_text"),
-            "`ext` 必须与 `Emit::ext()` 在编译期比对：{code}"
-        );
-        assert!(
-            code.contains("TAG.is_empty()"),
-            "空标签会让所有程序挤进同一组缓存条目：{code}"
-        );
-        assert!(
-            code.contains("mod __frontend_check_ClBackend"),
-            "每个调用点都要核对注解里的名字与词汇表变体：{code}"
-        );
-        assert!(
-            code.contains(r#"crate::witness::Emit::parse("opencl")"#),
-            "绑定必须走词汇表的 `parse`，而不是注解自己再抄一张映射表：{code}"
-        );
     }
 
     #[test]
@@ -803,13 +687,6 @@ mod tests {
     fn the_generated_model_code_has_balanced_braces() {
         let code = render_model(&model(r#"name = "q", shape = [8, 4], dtype = "f16""#), "Q");
         assert_balanced_braces(&code);
-    }
-
-    /// 首字母大写规则的边界：空串仍是空串，普通词只动首字符。
-    #[test]
-    fn capitalisation_leaves_an_empty_name_empty() {
-        assert_eq!(capitalised(""), "");
-        assert_eq!(capitalised("opencl"), "Opencl");
     }
 
     /// 闭集一旦被绕过（例如手写构造了一个未映射的 `dtype`），生成器早退回 `compile_error!`，

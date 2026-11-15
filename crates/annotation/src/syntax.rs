@@ -1,7 +1,7 @@
 //! 注解文法：与 `proc_macro` 解耦的纯解析层。
 //!
 //! 文法是一句话：`键 = 值 (, 键 = 值)*`，值只接受字符串字面量、十进制整数或方括号数组，键顺序随意、
-//! 尾随逗号允许、每个键只能出现一次。三道注解共用同一台读键机：一个键就是 [`KeySpec`] 表里的一行
+//! 尾随逗号允许、每个键只能出现一次。两道注解共用同一台读键机：一个键就是 [`KeySpec`] 表里的一行
 //! ——名字、取值文法、重复与缺失时的提示，于是"加一个键"是加一行。
 //!
 //! 分成这一层是为了可测性：本模块不碰 `proc_macro`，`cargo test` 因此能逐条覆盖全部错误路径。
@@ -372,14 +372,6 @@ fn in_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result
     Ok(Value::Width(width, at))
 }
 
-/// `emit = ".."`：语言名，先过 [`checked_name`] 再过语言闭集。
-fn emit_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
-    let text = text_value(cursor, at, spec)?;
-    checked_name(&text, at)?;
-    closed(&text, at, spec, "语言", &LANGUAGES)?;
-    Ok(Value::Text(text))
-}
-
 /// `dtype = ".."`：对拍有阈值的输出类型闭集。
 fn dtype_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
     let text = text_value(cursor, at, spec)?;
@@ -417,61 +409,6 @@ fn closed(
             set.join("、")
         ),
     ))
-}
-
-/// `Emit` 闭集的语言名：一条注解能声明的**全部**语言。
-///
-/// 这张表不是第三份事实源，而是 `prof::Emit` 的**投影**：它必须与 `Emit::ALL` 逐项相等，且每个名字的
-/// 变体名必须等于 [`crate::codegen`] 的机械结果（首字母大写，`opencl → Opencl`）。全量与映射规则由
-/// `tests/contracts.rs::annotation_names_come_from_the_vocabulary` 核对，每个调用点由 `#[frontend]`
-/// 生成的测试核对。
-pub(crate) const LANGUAGES: [&str; 9] = [
-    "cuda", "ptx", "hip", "opencl", "spirv", "metal", "ascendc", "c", "wgsl",
-];
-
-/// `#[frontend(..)]` 解析后的三件事：语言、产物后缀、缓存标签，都是编译期常量。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Frontend {
-    /// 语言名（[`LANGUAGES`] 里的一个）。
-    pub(crate) emit: String,
-    /// 产物后缀，必须等于该语言的 `Emit::ext()`（编译期断言）。
-    pub(crate) ext: String,
-    /// 产物缓存的标签（`witness` / `self` …）。
-    pub(crate) tag: String,
-}
-
-/// `#[frontend(..)]` 的键表：语言、产物后缀、缓存标签。
-const FRONTEND: [KeySpec<'static>; 3] = [
-    row(
-        "emit",
-        emit_value,
-        "一个前端只有一份 `emit`",
-        Some(" = \"..\""),
-    ),
-    row(
-        "ext",
-        name_value,
-        "一个前端只有一份 `ext`",
-        Some(" = \"..\""),
-    ),
-    row(
-        "tag",
-        name_value,
-        "一个前端只有一份 `tag`",
-        Some(" = \"..\""),
-    ),
-];
-
-/// 解析 `#[frontend(emit = "..", ext = "..", tag = "..")]`。三个键都必填：缺一个就只能靠默认值猜，
-/// 而语言猜错会把见证编成另一门语言、后缀猜错会让 P0 模板拼接找不到文件。
-pub(crate) fn parse_frontend(tokens: &[Token]) -> Result<Frontend, Error> {
-    let values = collect(tokens, &FRONTEND)?;
-    require(&values, &FRONTEND)?;
-    Ok(Frontend {
-        emit: values[0].text().to_string(),
-        ext: values[1].text().to_string(),
-        tag: values[2].text().to_string(),
-    })
 }
 
 /// `skeleton` 闭集：决定生成的 `MODEL` 走哪副算子骨架。
@@ -652,7 +589,7 @@ fn alias(tokens: &[Token], position: Position, attribute: &str) -> Result<String
     }
 }
 
-/// 与 [`model_target`] 同一判据，只是错误里写的注解名不同：三道注解标的是同一类东西——"一份配置
+/// 与 [`model_target`] 同一判据，只是错误里写的注解名不同：两道注解标的是同一类东西——"一份配置
 /// + 一个具体类型"，判据只有一份，注解名作为参数传进来只是为了让文案指向用户真正写下的那一个。
 pub(crate) fn target_name(tokens: &[Token], attribute: &str) -> Result<String, Error> {
     let Some((position, word)) = keyword(tokens) else {

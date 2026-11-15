@@ -10,7 +10,6 @@ readme = "README.md"
 publish = false
 
 [dependencies]
-annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 prim = { path = "../prim", package = "llm-prim" }
 op = { path = "../op", package = "llm-op" }

@@ -2,14 +2,13 @@
 
 编译期注解层：把"一份声明"写成属性宏，由编译器检查，而不是手写 trait 样板再靠人复核。宏只生成
 调用点所在 crate 的代码，不拥有任何领域类型——生成的实现指向契约路径（`nn::Contract`、
-`witness::Language`、`op::model::Model`），因此本 crate 对它们没有运行期依赖。
+`op::model::Model`），因此本 crate 对它们没有运行期依赖。
 
-## 三道注解
+## 两道注解
 
 | 注解 | 键 | 生成的东西 | 绑定的契约 |
 |---|---|---|---|
 | `#[spec(..)]` | `name`、`out`、可选 `in`、`ops` | 一份 `impl ::nn::Contract`（含懒构造的 `ContractSpec`）+ 一条校验测试 | `nn::Contract` / `nn::ContractSpec` |
-| `#[frontend(..)]` | `emit`、`ext`、`tag` | 一份 `impl crate::witness::Language` + 两条编译期断言 + 一条变体对齐测试 | `witness::Language` |
 | `#[model(..)]` | `name`、`shape`、`dtype`、可选 `skeleton` | `MODEL` 常量、粒度/形状编译期断言 + 一条注册表对拍测试 | `op::model::Model` / `gemv::Format` |
 
 ## 结构
@@ -26,8 +25,8 @@
 
 ## 判据与证据
 
-- **闭集只有一份事实源。** `LANGUAGES` / `DTYPES` / `SKELETONS` 是词汇表的投影：与
-  `prof::Emit::ALL`、有阈值的 `DType` 集合、骨架分支表逐项相等，由仓库级契约测试核对；每个调用点
+- **闭集只有一份事实源。** `DTYPES` / `SKELETONS` 是词汇表的投影：与
+  有阈值的 `DType` 集合、骨架分支表逐项相等，由仓库级契约测试核对；每个调用点
   生成的测试再把注解字符串与词汇表变体对拍。
 - **错误指在写错的 token 上。** 未知键、重复键、缺必填键、非字面量、转义序列、零宽轴、空算子集、
   泛型参数、非 `struct`/`enum` 被标注项，都产出指向具体位置的 `compile_error!`，而不是笼统地指

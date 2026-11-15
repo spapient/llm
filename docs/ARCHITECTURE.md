@@ -35,10 +35,10 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 77 条，含 13 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 76 条，含 13 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
-cutile   → annotation, diagnostic, op, prim, prof（annotation 是工具边：`#[frontend]` 注解）    +dev: testkit
+cutile   → diagnostic, op, prim, prof    +dev: testkit
 op       → annotation, diagnostic, prof（工具边：`#[model]` 注解，不参与方向判定）
 annotation → dtype（工具边：变体名唯一事实源 `DType::variant`，不参与方向判定）
 prim     → prof, diagnostic
@@ -145,7 +145,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行解析；只分派，不执行任何业务 |
 | `Report` / `join_names` | `tool` | 人可读输出；只接字符串，不接领域类型 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tool` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
-| `spec` / `frontend` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。`frontend` 标的是语言身份，生成 `cutile::witness::Language`（`EMIT` / `EXT` / `TAG`）与两条 `const` 断言（`EXT` 必须等于 `EMIT.ext()`、`TAG` 非空）；设备执行不走注解——一张 `const SPECS` 描述符表按 `Emit` 登记探测、程序生成、执行回读三个函数指针，新增设备 = 表里加一行。语言身份还复用在**语法门**上：`Front` 只加 `TOOL` / `CHECK` 两条常量（clang 的 `-x cuda` / `-x cl`），`const GATES` 表把“见证必须在它自己声称的语言里编得过”做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
+| `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。语言身份不走注解：设备执行是 `cutile` 的 `const SPECS` 描述符表按 `Emit` 登记探测、程序生成、执行回读三个函数指针，新增设备 = 表里加一行；语法门 `const GATES` 表行只带工具名与语法检查参数，"见证必须在它自己声称的语言里编得过"做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
 | `Case` / `Baseline` / `Judgement` | `tool` | 回退判定（`tool::regress`）；不做测量（测量集中在工具成员 `benches`）。名字刻意避开 `Verdict`，见下节第三条 |
 
 三个容易混淆、但**不是重复**的东西：
@@ -194,15 +194,14 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 
 #### 注解里的名字也是词汇表的名字
 
-属性宏收的是**字符串**（`emit = "opencl"`、`dtype = "f32"`），词汇表里是**变体**，`codegen` 用
-「首字母大写」把前者翻成后者。三处必须同时成立，否则改名会变成一处静默漂移：
+属性宏收的是**字符串**（`dtype = "f32"`），词汇表里是**变体**，`codegen` 按
+`DType::variant` 把前者翻成后者。三处必须同时成立，否则改名会变成一处静默漂移：
 
-- `crates/annotation/src/syntax.rs` 的 `LANGUAGES` 与 `Emit::ALL` 逐项相等，
-  `DTYPES` 与「`cutile::reference::tolerance` 给出非零阈值」的 `DType` 集合逐项相等
-  （`tests/contracts.rs` 的 `annotation_names_come_from_the_vocabulary`）。这两条是**等式**：
-  少一个名字就有一门语言 / 一种输出永远无法被声明，多一个就拼出匹配不上的代码；
+- `crates/annotation/src/syntax.rs` 的 `DTYPES` 与「`cutile::reference::tolerance` 给出非零阈值」的 `DType` 集合逐项相等
+  （`tests/contracts.rs` 的 `annotation_names_come_from_the_vocabulary`）。这是**等式**：
+  少一个名字就有一种输出永远无法被声明，多一个就拼出匹配不上的代码；
 - 每个注解调用点生成的 `#[cfg(test)]` 模块把字面量与变体对齐
-  （`Emit::parse(emit) == Language::EMIT`、`DType::parse_name(dtype) == Some(MODEL.dtype)`），
+  （`DType::parse_name(dtype) == Some(MODEL.dtype)`），
   并把 `Model::dtype` 与 `.k` 的可写输出类型对齐（`signature.output_type()` 的 `CType::dtype()`）——
   注解说"按什么解释"、模板说"写的什么"，两者分家就对拍不上；失败指向被标注的那一行，而不是另一张表；
 - 变体名取 `DType::variant`：`dtype` 名 → 变体名不再在注解里手写一份映射（缩写词全大写

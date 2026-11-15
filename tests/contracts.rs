@@ -113,7 +113,7 @@ fn exempt(section: &str) -> Vec<(String, String)> {
 
 /// 注解文法里的闭集表：`const <名字>: [&str; N] = [ "..", .. ];`。
 ///
-/// 只能读源码：proc-macro crate 不导出非宏项，`syntax::LANGUAGES` / `DTYPES` 在 crate 外
+/// 只能读源码：proc-macro crate 不导出非宏项，`syntax::DTYPES` 在 crate 外
 /// 不可见。扫描只认 `= [ .. ]` 之间的逗号分隔字面量，排版怎么折行都不影响；声明里的 `N`
 /// 一并核对，防止“表删了一项、长度还写着 9”。
 fn annotation_list(name: &str) -> Vec<String> {
@@ -153,19 +153,6 @@ fn annotation_list(name: &str) -> Vec<String> {
         items.len()
     );
     items
-}
-
-/// 词汇表侧的变体名规则：首字母大写、其余原样。
-///
-/// 与 `annotation::codegen::capitalised` 是**同一条规则的两处表述**：那份把 `"opencl"`
-/// 渲染成 `Emit::Opencl`，这份把它和真实的 `Debug` 变体名对比。两份必须同时成立，
-/// 否则生成代码会指向一个不存在的变体。
-fn capitalised(word: &str) -> String {
-    let mut characters = word.chars();
-    match characters.next() {
-        Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
-        None => String::new(),
-    }
 }
 
 fn describe(hits: &[Hit]) -> String {
@@ -286,61 +273,6 @@ fn every_device_front_end_is_entered() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// 语法前端同样要"三位一体"：`#[annotation::frontend(..)]` 注解、`impl Front`、`GATES` 表项。
-///
-/// 它比执行前端更容易漏：语法门不是必要条件，缺了不会编译失败，只是那门语言永远"不可用"——
-/// 报告里写的是"本机没有语法前端"，看起来像机器的问题，实际是有人忘了一行。
-#[test]
-fn every_language_front_is_annotated_and_entered() {
-    let allowed = exempt("frontend");
-    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
-    let mut checked = 0;
-    let mut failures: Vec<String> = Vec::new();
-    for (name, file) in sources() {
-        if names.contains(&name.as_str()) {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(&file) else {
-            continue;
-        };
-        for (index, line) in text.lines().enumerate() {
-            let Some(rest) = line.trim().strip_prefix("impl Front for ") else {
-                continue;
-            };
-            let ty = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .trim_end_matches('{');
-            if ty.is_empty() {
-                continue;
-            }
-            checked += 1;
-            let where_ = format!("{name} {}:{}", file.display(), index + 1);
-            let annotated = text.contains("annotation::frontend")
-                && (text.contains(&format!("pub struct {ty};"))
-                    || text.contains(&format!("struct {ty} ")));
-            if !annotated {
-                failures.push(format!(
-                    "{where_}: `impl Front for {ty}` 没有配套的 `#[annotation::frontend(..)]`：\
-                     语言身份不能靠手写常量"
-                ));
-            }
-            if !text.contains(&format!("parse_all::<{ty}>")) {
-                failures.push(format!(
-                    "{where_}: `{ty}` 没有出现在 `GATES` 表里（缺 `parse_all::<{ty}>`）：\
-                     那门语言的见证会被说成\"本机没有前端\""
-                ));
-            }
-        }
-    }
-    assert!(
-        checked >= 2,
-        "扫描器只看到 {checked} 个语法前端：扫描逻辑或文件布局坏了，而不是\"没有违规\""
-    );
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
 #[test]
 fn bitsets_have_exactly_one_implementation() {
     // 手写位集：`struct FooSet(u32)` 一类。
@@ -367,43 +299,15 @@ fn bitsets_have_exactly_one_implementation() {
 
 /// 注解的闭集必须由词汇表与对拍口径**推出来**，而不是第三份手抄表。
 ///
-/// 两条规则互为反方向：
+/// `DTYPES` 与「[`cutile::reference::tolerance`] 给出非零阈值」的 `DType` 集合逐项相等——
+/// 注解能写出的输出类型必须正好是对拍能给结论的那些：多一个，`verify` 会拿 0 当阈值，
+/// 少一个，那门输出就永远无法被声明成算子。
 ///
-/// 1. `LANGUAGES` 与 `Emit::ALL` 逐项相等——少一个，那台设备就永远不能标注自己的语言
-///    （它的见证只能一直走 host 自检）；多一个，注解能拼出一段永远匹配不上的代码；
-/// 2. `DTYPES` 与「[`cutile::reference::tolerance`] 给出非零阈值」的 `DType` 集合逐项相等——
-///    注解能写出的输出类型必须正好是对拍能给结论的那些：多一个，`verify` 会拿 0 当阈值，
-///    少一个，那门输出就永远无法被声明成算子。
-///
-/// 两处都用 `Debug` 变体名再核一遍：`codegen` 按「首字母大写」把名字翻成变体，
+/// 变体名再核一遍：`codegen` 按 `DType::variant` 把名字翻成变体，
 /// 名字与变体一旦分家，生成代码会指向不存在的变体——错误会出现在被标注的 crate 里，
 /// 而不是写错字的那张表上。
 #[test]
 fn annotation_names_come_from_the_vocabulary() {
-    // 语言：全量、双向、变体名。
-    let languages = annotation_list("LANGUAGES");
-    let mut vocabulary: Vec<&str> = cutile::prof::Emit::ALL
-        .iter()
-        .map(|emit| emit.as_str())
-        .collect();
-    vocabulary.sort_unstable();
-    let mut written: Vec<&str> = languages.iter().map(String::as_str).collect();
-    written.sort_unstable();
-    assert_eq!(
-        written, vocabulary,
-        "`LANGUAGES` 必须与 `Emit::ALL` 逐项相等：注解能声明每一门执行语言，一门不多一门不少"
-    );
-    for language in &languages {
-        let emit = cutile::prof::Emit::parse(language)
-            .unwrap_or_else(|| panic!("`LANGUAGES` 里的 `{language}` 不在 `Emit` 闭集里"));
-        assert_eq!(emit.as_str(), language, "`{language}` 必须能往返解析");
-        assert_eq!(
-            format!("{emit:?}"),
-            capitalised(language),
-            "`{language}` 的变体名与 `codegen` 的「首字母大写」规则不一致"
-        );
-    }
-
     // 输出类型：与「对拍有阈值」的那一组相等。
     let dtypes = annotation_list("DTYPES");
     let mut comparable: Vec<&str> = cutile::atom::DType::ALL

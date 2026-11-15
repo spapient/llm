@@ -819,7 +819,7 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 两头落空。现在 `Verified.witnesses`（设备执行）与 `Verified.self_checked`（自检）相加等于该设备
 声明的全部见证：一份见证只执行一次，由能给出更强结论的范围执行。
 
-**设备是一张 `const` 描述符表**：执行层只有一台统一设备，按档案的 `Emit` 在 `const SPECS` 表里分发；每一行登记这门语言的探测、程序生成与执行回读三个函数指针，没有 `match`、没有 `dyn`，也不按厂商各写一套 Rust 前端类型。片段本体来自 `prim`，本层只拼接、编译、起进程、回读。语言身份注解 `#[frontend]` 只保留给语法门（`CudaFront` / `OpenClFront`），在编译期生成 `Language`（`EMIT` / `EXT` / `TAG`），其中 `EXT` 与 `Emit::ext()` 由注解展开出的 `const _` 断言比对（写错即编译失败）。每条见证的写出上限以 const 泛型 `OUT` 传进程序生成函数，生成的程序里缓冲区尺寸是字面量。`emit = metal` 因此有了真正的设备执行：MSL →
+**设备是一张 `const` 描述符表**：执行层只有一台统一设备，按档案的 `Emit` 在 `const SPECS` 表里分发；每一行登记这门语言的探测、程序生成与执行回读三个函数指针，没有 `match`、没有 `dyn`，也不按厂商各写一套 Rust 前端类型。片段本体来自 `prim`，本层只拼接、编译、起进程、回读。每条见证的写出上限以 const 泛型 `OUT` 传进程序生成函数，生成的程序里缓冲区尺寸是字面量。`emit = metal` 因此有了真正的设备执行：MSL →
 `metallib` → host 驱动发射到 GPU → 回读；等级仍停在 `L1`，因为 `L2` 要的是**内核**跑通并对拍，
 见证执行只完成其中的见证那一段。
 
@@ -828,8 +828,8 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 在自己声称的语言里存在过。于是设备不在本机时，见证还要交给**它自己语言的解析器**只解析一遍：
 `cuda` → `clang -x cuda --cuda-host-only`（只 host 那一半，`__syncthreads()` 在 host 函数里必须
 被拒），`opencl` → `clang -x cl -cl-std=CL3.0`（`double` 没开 `cl_khr_fp64` 是错误），`ascendc`
-没有开源前端就 `Absent`。语法前端与执行前端同构：`Front` 只加两条常量（`TOOL` / `CHECK`），
-身份仍由 `#[frontend]` 生成，分发是 `const GATES` 表。门不执行任何一行，所以不改 `grade`；但
+没有开源前端就 `Absent`。语法前端与执行前端同构：`const GATES` 表一行一个 `GateSpec`
+（`emit` / `tool` / `check`），加一门语言就是加一行，没有独立的前端类型，也没有按语言单态化的函数。门不执行任何一行，所以不改 `grade`；但
 `Rejected` 会进 `Evidence::failure`——被自己的语言拒绝是证据缺陷，不是“本机没有这台设备”。
 
 **证据只算一次，三条命令同一结论**：`witness::establish` 把设备执行与自检合成一份 `Evidence`

@@ -22,9 +22,7 @@ fn run() -> diagnostic::Result<()> {
     code.push_str("// Source: lints/vocabulary.toml.\n");
     code.push_str("use std::sync::OnceLock;\n\n");
     code.push_str("use diagnostic::data::{Table, Value};\n\n");
-    code.push_str(
-        "/// 编译期生成的词汇表：`[closed]` / `[frontend]` / `[bitset]` / `[ownership]` / `[gate]`。\n",
-    );
+    code.push_str("/// 编译期生成的词汇表：`[closed]` / `[bitset]` / `[ownership]` / `[gate]`。\n");
     code.push_str("pub fn vocabulary() -> &'static Table {\n");
     code.push_str("    static VOCABULARY: OnceLock<Table> = OnceLock::new();\n");
     code.push_str("    VOCABULARY.get_or_init(|| ");

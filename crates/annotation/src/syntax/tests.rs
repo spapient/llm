@@ -98,27 +98,6 @@ fn an_error_points_at_the_token_the_user_wrote() {
     assert!(matches!(tokens[error.position], Token::Group(..)));
 }
 
-/// 前端注解：三个键都是必填，键顺序不影响结果，闭集之外一律拒收。
-#[test]
-fn a_frontend_annotation_carries_three_keys_from_the_closed_sets() {
-    let text = r#"tag = "w", emit = "metal", ext = "metal""#;
-    let frontend = parse_frontend(&lex(text)).expect("合法前端");
-    assert_eq!(
-        (frontend.emit, frontend.ext, frontend.tag),
-        ("metal".to_string(), "metal".to_string(), "w".to_string())
-    );
-    for (text, needle) in [
-        (r#"emit = "metal", ext = "metal""#, "tag"),
-        (r#"emit = "metal", tag = "w""#, "ext"),
-        (r#"ext = "metal", tag = "w""#, "emit"),
-        (r#"emit = "vulkan", ext = "spv", tag = "w""#, "vulkan"),
-        (r#"emit = "metal", emit = "metal""#, "重复"),
-        (r#"emit = "metal", nope = "x""#, "nope"),
-    ] {
-        reject(parse_frontend(&lex(text)), needle);
-    }
-}
-
 /// 行为不是配置：两道类型注解只标具体类型，泛型与行为都在这里被拒；`#[model]` 只标别名。
 #[test]
 fn only_a_concrete_type_is_annotated() {
@@ -335,7 +314,6 @@ fn a_deterministic_sweep_keeps_every_parser_resilient_and_stable() {
         let length = (rng.next() % 12) as usize;
         let text: String = (0..length).map(|_| rng.pick(&POOL)).collect();
         sweep_one(parse, &text, case);
-        sweep_one(parse_frontend, &text, case);
         sweep_one(parse_model, &text, case);
     }
 }
