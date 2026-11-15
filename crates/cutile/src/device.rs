@@ -628,9 +628,9 @@ fn metal_driver(max: usize) -> String {
     format!("#define WITNESS_MAX_OUT {max}\n{METAL_DRIVER}")
 }
 
-/// 驱动主体：每条见证的缓冲宽度用 `WITNESS_MAX_OUT`，由 [`metal_driver`] 注入。这个数字曾经是 kernel 里的
-/// const 泛型 `{max}` 与这里的三个裸字面量 `8`——跨 FFI 唯一失去编译期保护的重复：`MAX_OUT` 一旦不是 8，
-/// 写入与回读就错位且不会有任何编译错误。
+/// 驱动主体：每条见证的缓冲宽度用 `WITNESS_MAX_OUT`，由 [`metal_driver`] 按 [`MAX_OUT`] 注入；
+/// 内核侧宽度走 const 泛型 `{max}`（同样锚定 [`MAX_OUT`]），两侧不再各写一份字面量。
+/// 跨 FFI 这段生成文本仍没有编译期保护：改动 [`MAX_OUT`] 时要同时核内核与驱动两段宽度。
 const METAL_DRIVER: &str = r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <stdio.h>
