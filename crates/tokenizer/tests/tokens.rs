@@ -81,7 +81,7 @@ fn contract_id_range_holds_for_both_impls() {
     for text in ["", "a", "hé", "中文", "🙂"] {
         contract_id_range(&Bytes, text);
     }
-    for text in ["abc", "bc", "cab"] {
+    for text in ["abc", "bc", "cab", ""] {
         contract_id_range(&bpe, text);
     }
 }
@@ -106,7 +106,7 @@ fn contract_count_matches_for_both_impls() {
     for text in ["", "a", "hé", "中文", "🙂"] {
         contract_count_matches(&Bytes, text);
     }
-    for text in ["abc", "bc", "cab"] {
+    for text in ["abc", "bc", "cab", ""] {
         contract_count_matches(&bpe, text);
     }
 }
@@ -114,10 +114,19 @@ fn contract_count_matches_for_both_impls() {
 #[test]
 fn contract_round_trip_for_encodable_texts() {
     let bpe = bpe_fixture();
-    for text in ["", "a", "hé", "中文", "🙂", "line\nbreak\ttab"] {
+    for text in [
+        "",
+        "a",
+        "hé",
+        "中文",
+        "🙂",
+        "line\nbreak\ttab",
+        "  空格  重复",
+        "混合abc中文🙂",
+    ] {
         contract_round_trip(&Bytes, text);
     }
-    for text in ["abc", "bc", "cab"] {
+    for text in ["abc", "bc", "cab", ""] {
         contract_round_trip(&bpe, text);
     }
 }
