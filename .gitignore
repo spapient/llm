@@ -8,6 +8,7 @@ target/
 /.claude/
 /.idea/
 /.vscode/
+/.junie/
 
 # 系统文件
 .DS_Store
