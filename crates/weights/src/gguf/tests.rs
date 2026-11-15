@@ -9,6 +9,24 @@ fn half_specials() {
 }
 
 #[test]
+fn value_views_match_variant() {
+    assert_eq!(Value::Int(-7).int(), Some(-7));
+    assert_eq!(Value::Float(1.5).float(), Some(1.5));
+    assert_eq!(Value::Bool(true).bool(), Some(true));
+
+    let pieces = Value::Arr(vec![Value::Str("a".into()), Value::Str("b".into())]);
+    assert_eq!(pieces.text_array(), Some(vec!["a", "b"]));
+    let scores = Value::Arr(vec![Value::Float(0.1), Value::Float(-0.2)]);
+    assert_eq!(scores.float_array(), Some(vec![0.1, -0.2]));
+
+    // 错型与混型返回 None，不做隐式转换。
+    assert!(Value::Uint(3).int().is_none());
+    let mixed = Value::Arr(vec![Value::Str("a".into()), Value::Float(1.0)]);
+    assert!(mixed.text_array().is_none());
+    assert!(Value::Str("x".to_string()).arr().is_none());
+}
+
+#[test]
 fn kind_maps_ggml_codes_and_delegates_layout() {
     const CODES: [(u32, Kind); 6] = [
         (0, Kind::F32),

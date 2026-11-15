@@ -134,6 +134,48 @@ impl Value {
             _ => None,
         }
     }
+
+    /// 有符号整数视图。
+    pub fn int(&self) -> Option<i64> {
+        match self {
+            Value::Int(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// 浮点视图。
+    pub fn float(&self) -> Option<f64> {
+        match self {
+            Value::Float(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// 布尔视图。
+    pub fn bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// 数组视图。
+    pub fn arr(&self) -> Option<&[Value]> {
+        match self {
+            Value::Arr(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    /// 字符串数组：元素必须同为 [`Value::Str`]，混型或缺失返回 `None`。
+    pub fn text_array(&self) -> Option<Vec<&str>> {
+        self.arr()?.iter().map(Value::text).collect()
+    }
+
+    /// 浮点数组：元素必须同为 [`Value::Float`]，混型或缺失返回 `None`。
+    pub fn float_array(&self) -> Option<Vec<f64>> {
+        self.arr()?.iter().map(Value::float).collect()
+    }
 }
 
 /// 张量信息表条目；offset 相对数据区起点。
