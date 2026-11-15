@@ -1,7 +1,8 @@
 //! `store` 的测试：装载、重放、峰值与池的复用，全部走 `Reference` 参考实现。
 
 use super::*;
-use autograd::{Budget, Footprint, Plan, Replay, Tape};
+use autograd::{Budget, Footprint, Plan, Replay, Store, Tape};
+use diagnostic::{Code, Result};
 
 /// 每层都是 `y = gemv_i4(x, w, scales)`：`m = n = 8`，`scales` 只有一组（组大小 8）。
 const WIDTH: usize = 8;
