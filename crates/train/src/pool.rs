@@ -252,6 +252,14 @@ impl<K: Kernel> Store for Buffers<K> {
 
     fn free(&mut self, var: Var) {
         let slot = var.id() as usize;
+        // 计划/磁带错位把槽位之外的变量交回来是内部不变量破坏；release 下 Store::free 没有
+        // 返回通道，只能在 debug 构建里尽早暴露，release 维持静默跳过以免污染训练步。
+        debug_assert!(
+            slot < self.slots.len(),
+            "free 交还了槽位 {} 之外的变量（共 {} 槽）",
+            slot,
+            self.slots.len()
+        );
         if slot < self.slots.len() {
             self.release(slot);
         }

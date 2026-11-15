@@ -68,7 +68,8 @@ impl Checkpoint {
         self.step
     }
 
-    /// 反向图的节点数（恢复后必须一致，否则图和参数对不上）。
+    /// 反向图节点数的内存诊断量；不进快照、恢复时不据此对账。图结构一致性由权重条目表
+    /// 与层算子契约守卫，而不是靠节点数。
     pub fn tape_nodes(&self) -> usize {
         self.tape_nodes
     }
@@ -104,18 +105,46 @@ impl Checkpoint {
     }
 }
 
-/// 一个检查点能否在同一拓扑上恢复。
+/// 一个检查点能否在同一结构上恢复。
 ///
-/// 并行度不同意味着参数切分不同，强行恢复只会读出形状正确、内容错位的权重——这是最贵的一类
-/// 静默错误，所以在这里拦住。
-pub fn resume(checkpoint: &Checkpoint, topology: shard::Topology) -> Result<()> {
+/// 并行度、层数与批行数不一致，强行恢复只会读出形状正确、内容错位的权重——这是最贵的一类
+/// 静默错误，所以在这里逐项拦住。`layers` / `batch_rows` 是当前运行的对应事实，用于和快照
+/// 里记录的事实对账。
+pub fn resume(
+    checkpoint: &Checkpoint,
+    topology: &shard::Topology,
+    layers: usize,
+    batch_rows: usize,
+) -> Result<()> {
     topology.check(checkpoint.world()).map_err(|error| {
         error.with(format!(
             "检查点在第 {} 步、{} 进程下保存",
             checkpoint.step(),
             checkpoint.world()
         ))
-    })
+    })?;
+    let context = format!("检查点在第 {} 步保存", checkpoint.step());
+    if checkpoint.layers() != layers {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "训练层数不一致：检查点记录 {} 层，当前是 {layers} 层",
+                checkpoint.layers()
+            ),
+        )
+        .with(context));
+    }
+    if checkpoint.batch_rows() != batch_rows {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "批行数不一致：检查点记录 {} 行，当前是 {batch_rows} 行",
+                checkpoint.batch_rows()
+            ),
+        )
+        .with(context));
+    }
+    Ok(())
 }
 
 /// 训练层的算子引用：`nn` 的层定义必须先通过 `op` 的闭集校验。
