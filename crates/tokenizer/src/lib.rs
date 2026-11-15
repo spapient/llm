@@ -1,9 +1,10 @@
 //! 文本 ↔ token 的唯一边界：[`Token`]、[`Tokenizer`] 与字节级参考实现 [`Bytes`]。
 //!
 //! **拥有**：`Tokenizer`、`Token`、`Bytes` 以及中性契约值对象（[`SpecialTokens`]、
-//! [`Encoding`]、[`Strategy`]、[`Fingerprint`]、[`DecoderStream`]、[`Vocab`]）。
-//! **不拥有**：BPE / SentencePiece 词表（P1 落地，属于实现而不是接口）、采样（由
-//! `engine` 的调用方决定）。**依赖**：`diagnostic`。**被依赖**：`serve`。
+//! [`Encoding`]、[`Strategy`]、[`Fingerprint`]、[`DecoderStream`]、[`Vocab`]），
+//! 与 BPE 具体实现 [`Bpe`]。
+//! **不拥有**：Unigram / WordPiece / SentencePiece 算法与容器加载（后续变体落地）、
+//! 采样（由 `engine` 的调用方决定）。**依赖**：`diagnostic`。**被依赖**：`serve`。
 //!
 //! 先有 trait 再有实现：上层（调度、服务）只认 trait，所以换词表不影响它们。`Bytes` 不是玩具，
 //! 它是"最坏情况下的 1 token/byte"基线，对拍与回归都用得上。
@@ -20,6 +21,7 @@
 
 #![deny(unsafe_code)]
 
+mod bpe;
 mod bytes;
 mod encoding;
 mod fingerprint;
@@ -28,6 +30,7 @@ mod strategy;
 mod stream;
 mod vocab;
 
+pub use bpe::Bpe;
 pub use bytes::Bytes;
 pub use encoding::Encoding;
 pub use fingerprint::Fingerprint;

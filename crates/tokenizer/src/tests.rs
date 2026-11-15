@@ -224,6 +224,90 @@ fn unigram_scores_must_match_piece_count() {
     Vocab::try_new(balanced).expect("分数与词片齐平的 Unigram");
 }
 
+fn bpe_vocab() -> Vocab {
+    let source = VocabSource {
+        family: VocabFamily::Bpe,
+        pieces: vec![
+            b"a".to_vec(),  // 0
+            b"b".to_vec(),  // 1
+            b"c".to_vec(),  // 2
+            b"ab".to_vec(), // 3
+            b"bc".to_vec(), // 4
+        ],
+        merges: vec![
+            Merge {
+                left: b"a".to_vec(),
+                right: b"b".to_vec(),
+            }, // rank 0
+            Merge {
+                left: b"b".to_vec(),
+                right: b"c".to_vec(),
+            }, // rank 1
+        ],
+        ..VocabSource::default()
+    };
+    Vocab::try_new(source).expect("BPE 词表构造")
+}
+
+#[test]
+fn bpe_merges_by_lowest_rank_and_round_trips() {
+    let encoder = Bpe::new(bpe_vocab()).expect("BPE 实例");
+
+    // a b c：(a,b) 秩 0 先于 (b,c) 秩 1 归并，得到 ab + c。
+    assert_eq!(
+        encoder.encode("abc").expect("编码"),
+        [Token::new(3), Token::new(2)]
+    );
+    assert_eq!(
+        encoder
+            .decode(&[Token::new(3), Token::new(2)])
+            .expect("解码"),
+        "abc"
+    );
+
+    // b c：唯一对归并为 bc。
+    assert_eq!(encoder.encode("bc").expect("编码"), [Token::new(4)]);
+    assert_eq!(encoder.decode(&[Token::new(4)]).expect("解码"), "bc");
+}
+
+#[test]
+fn bpe_keeps_unmerged_split_bytes() {
+    let encoder = Bpe::new(bpe_vocab()).expect("BPE 实例");
+    // c a b：先归并尾部 a b，c 保留单字节。
+    assert_eq!(
+        encoder.encode("cab").expect("编码"),
+        [Token::new(2), Token::new(3)]
+    );
+}
+
+#[test]
+fn bpe_rejects_non_bpe_family() {
+    let source = VocabSource {
+        family: VocabFamily::Unigram,
+        pieces: vec![b"a".to_vec()],
+        scores: vec![0.0],
+        ..VocabSource::default()
+    };
+    let vocab = Vocab::try_new(source).expect("Unigram 词表");
+    let error = Bpe::new(vocab).expect_err("非 BPE 族必须拒绝");
+    assert_eq!(error.code(), Code::Unsupported);
+}
+
+#[test]
+fn bpe_rejects_piece_absent_from_vocab() {
+    let encoder = Bpe::new(bpe_vocab()).expect("BPE 实例");
+    let error = encoder.encode("d").expect_err("词表外字节必须报错");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn bpe_lookup_and_piece_are_inverse() {
+    let encoder = Bpe::new(bpe_vocab()).expect("BPE 实例");
+    let token = encoder.lookup(b"ab").expect("查表").expect("ab 命中");
+    assert_eq!(token.id(), 3);
+    assert_eq!(encoder.piece(token).expect("反查"), Some(b"ab".to_vec()));
+}
+
 #[test]
 fn stream_decodes_across_chunk_boundaries() {
     let mut stream = DecoderStream::new();
