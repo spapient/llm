@@ -71,7 +71,7 @@
 | unsafe 策略 | `unsafe_code = "deny"`，生产核心无 `unsafe` | `Cargo.toml:56` |
 | 生产依赖 | 生产路径仅 `dtype` 可选 feature 引入 `serde`/`bytemuck`，`fuzz` 可选 `libfuzzer-sys`；`criterion`/`clap` 等属 dev/build 依赖 | 各 `Cargo.toml` |
 | 基准 | criterion 结构/编解码基准 + 三条 decode 行宽 kernel 基准（`gemv_f32` / `softmax_f32` / `rope_f32` 均已入 `tool::regress` 基线判定；macos-aarch64 首跑 mean 已登记：gemv 2186061 ns、softmax 15492 ns、rope 9487 ns，跨机绝对值不可比） | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
-| 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.24% / token 1.46%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`.jscpd.json`、`.github/workflows/ci.yml` |
+| 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.27% / token 1.47%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`.jscpd.json`、`.github/workflows/ci.yml` |
 
 ## 4. 能力维度对标矩阵
 
