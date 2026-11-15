@@ -19,6 +19,9 @@ op = { path = "../op", package = "llm-op" }
 wire = { path = "../wire", package = "llm-wire" }
 weights = { path = "../weights", package = "llm-weights" }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
+train = { path = "../train", package = "llm-train" }
+autograd = { path = "../autograd", package = "llm-autograd" }
+tensor = { path = "../tensor", package = "llm-tensor" }
 # 基线判定与报告归档：`tests/regress.rs` 用 `tool::regress` 判、用 `weights::json` 读
 # criterion 的 estimates.json（本成员没有生产依赖，全部在 dev）。
 tool = { path = "../tool", package = "llm-tool" }
@@ -84,6 +87,11 @@ harness = false
 [[bench]]
 name = "tokenizer"
 path = "criterion/tokenizer.rs"
+harness = false
+
+[[bench]]
+name = "train"
+path = "criterion/train.rs"
 harness = false
 
 [lints]
