@@ -309,6 +309,66 @@ fn bpe_lookup_and_piece_are_inverse() {
 }
 
 #[test]
+fn fingerprint_separates_bpe_merge_order() {
+    let pieces = vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()];
+    let order_a = VocabSource {
+        family: VocabFamily::Bpe,
+        pieces: pieces.clone(),
+        merges: vec![
+            Merge {
+                left: b"a".to_vec(),
+                right: b"b".to_vec(),
+            },
+            Merge {
+                left: b"b".to_vec(),
+                right: b"c".to_vec(),
+            },
+        ],
+        ..VocabSource::default()
+    };
+    let order_b = VocabSource {
+        family: VocabFamily::Bpe,
+        pieces: pieces.clone(),
+        merges: vec![
+            Merge {
+                left: b"b".to_vec(),
+                right: b"c".to_vec(),
+            },
+            Merge {
+                left: b"a".to_vec(),
+                right: b"b".to_vec(),
+            },
+        ],
+        ..VocabSource::default()
+    };
+    let vocab_a = Vocab::try_new(order_a).expect("词表 A");
+    let vocab_b = Vocab::try_new(order_b).expect("词表 B");
+    assert_ne!(
+        vocab_a.fingerprint().digest(),
+        vocab_b.fingerprint().digest(),
+        "合并秩序不同必须得到不同指纹"
+    );
+}
+
+#[test]
+fn fingerprint_separates_unigram_scores() {
+    let pieces = vec![b"a".to_vec(), b"b".to_vec()];
+    let scored = |scores: Vec<f32>| VocabSource {
+        family: VocabFamily::Unigram,
+        pieces: pieces.clone(),
+        scores,
+        ..VocabSource::default()
+    };
+    let first = Vocab::try_new(scored(vec![0.1, 0.2])).expect("词表 A");
+    let second = Vocab::try_new(scored(vec![0.1, 0.3])).expect("词表 B");
+    assert_ne!(
+        first.fingerprint().digest(),
+        second.fingerprint().digest(),
+        "分数内容不同必须得到不同指纹"
+    );
+}
+
+#[test]
 fn stream_decodes_across_chunk_boundaries() {
     let mut stream = DecoderStream::new();
     // "中" 是三字节 EF BC 93；切成两块喂入。

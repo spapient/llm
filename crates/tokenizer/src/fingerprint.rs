@@ -42,6 +42,16 @@ impl Fingerprint {
         }
     }
 
+    /// 在现有摘要上追加一段有序字节段，返回新指纹；用于把合并秩序、分数等附属内容纳入身份。
+    #[must_use]
+    pub fn fold_extra(&self, bytes: &[u8]) -> Self {
+        Self {
+            digest: mix(self.digest, bytes),
+            family: self.family,
+            vocab_size: self.vocab_size,
+        }
+    }
+
     /// 词表族名（实现标识，如 `bytes`、`bpe`、`unigram`）。
     #[must_use]
     pub fn family(&self) -> &'static str {

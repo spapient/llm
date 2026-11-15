@@ -102,7 +102,9 @@ impl Vocab {
         let piece_map = build_map(&source.pieces)?;
         check_special(&source.special, len)?;
         check_attachments(source.family, &source.scores, &source.merges, len)?;
-        let fingerprint = Fingerprint::from_pieces(source.family.as_str(), len, &source.pieces);
+        let mut fingerprint = Fingerprint::from_pieces(source.family.as_str(), len, &source.pieces);
+        fingerprint = fold_merges(fingerprint, &source.merges);
+        fingerprint = fold_scores(fingerprint, &source.scores);
         Ok(Self {
             family: source.family,
             pieces: source.pieces,
@@ -175,6 +177,25 @@ impl Vocab {
     pub fn is_special(&self, id: u32) -> bool {
         self.special.is_special(id)
     }
+}
+
+/// 把合并对按表内顺序（即秩序）折叠进指纹；两侧先长度前缀再字节，避免边界串扰。
+fn fold_merges(mut fingerprint: Fingerprint, merges: &[Merge]) -> Fingerprint {
+    for merge in merges {
+        fingerprint = fingerprint.fold_extra(&merge.left.len().to_le_bytes());
+        fingerprint = fingerprint.fold_extra(&merge.left);
+        fingerprint = fingerprint.fold_extra(&merge.right.len().to_le_bytes());
+        fingerprint = fingerprint.fold_extra(&merge.right);
+    }
+    fingerprint
+}
+
+/// 把逐片分数按下标顺序折叠进指纹。
+fn fold_scores(mut fingerprint: Fingerprint, scores: &[f32]) -> Fingerprint {
+    for score in scores {
+        fingerprint = fingerprint.fold_extra(&score.to_le_bytes());
+    }
+    fingerprint
 }
 
 /// 建反向查表；重复词片或编号溢出报 [`Code::Invalid`]。
