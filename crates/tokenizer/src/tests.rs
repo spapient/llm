@@ -103,6 +103,7 @@ fn strategy_defaults_to_no_op() {
     let strategy = Strategy::default();
     assert!(!strategy.add_bos());
     assert!(!strategy.add_eos());
+    assert!(!strategy.add_sep());
     assert_eq!(strategy.max_len(), None);
     assert_eq!(strategy.truncation(), None);
     assert!(strategy.padding().is_none());
@@ -114,6 +115,113 @@ fn strategy_defaults_to_no_op() {
     assert_eq!(padded.max_len(), Some(128));
     assert_eq!(padded.truncation(), Some(Truncation::Right));
     assert!(padded.padding().is_some());
+}
+
+#[test]
+fn strategy_sep_flag_is_off_by_default() {
+    assert!(!Strategy::no_op().add_sep());
+    assert!(Strategy::no_op().with_sep().add_sep());
+}
+
+fn word_level(pieces: Vec<&[u8]>) -> VocabSource {
+    VocabSource {
+        family: VocabFamily::WordLevel,
+        pieces: pieces
+            .into_iter()
+            .map(|piece: &[u8]| piece.to_vec())
+            .collect(),
+        ..VocabSource::default()
+    }
+}
+
+#[test]
+fn vocab_builds_bidirectional_lookup() {
+    let special = SpecialTokens::EMPTY.with_bos(0);
+    let source = VocabSource {
+        special,
+        ..word_level(vec!["a".as_bytes(), "bc".as_bytes(), "中".as_bytes()])
+    };
+    let vocab = Vocab::try_new(source).expect("词表构造");
+
+    assert_eq!(vocab.vocab_size(), 3);
+    assert_eq!(vocab.family(), VocabFamily::WordLevel);
+    assert_eq!(vocab.lookup(b"bc"), Some(Token::new(1)));
+    assert_eq!(vocab.piece(2), Some("中".as_bytes()));
+    assert!(vocab.lookup(b"missing").is_none());
+    assert_eq!(vocab.fingerprint().vocab_size(), 3);
+    assert!(vocab.is_special(0));
+}
+
+#[test]
+fn vocab_rejects_duplicate_piece() {
+    let source = word_level(vec!["a".as_bytes(), "a".as_bytes()]);
+    let error = Vocab::try_new(source).expect_err("重复词片必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn vocab_rejects_special_id_out_of_range() {
+    let special = SpecialTokens::EMPTY.with_bos(9);
+    let source = VocabSource {
+        special,
+        ..word_level(vec!["a".as_bytes()])
+    };
+    let error = Vocab::try_new(source).expect_err("越界特殊编号必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn bpe_requires_a_merge_table_and_others_reject_one() {
+    let empty = VocabSource {
+        family: VocabFamily::Bpe,
+        pieces: vec![b"a".to_vec()],
+        ..VocabSource::default()
+    };
+    let error = Vocab::try_new(empty).expect_err("BPE 缺合并表");
+    assert_eq!(error.code(), Code::Missing);
+
+    let merge = Merge {
+        left: vec![b'a'],
+        right: vec![b'b'],
+    };
+    let with_merges = VocabSource {
+        family: VocabFamily::Bpe,
+        pieces: vec![b"a".to_vec(), b"ab".to_vec()],
+        merges: vec![merge],
+        ..VocabSource::default()
+    };
+    Vocab::try_new(with_merges).expect("带合并表的 BPE");
+
+    let stray = VocabSource {
+        merges: vec![Merge {
+            left: vec![b'a'],
+            right: vec![b'b'],
+        }],
+        ..word_level(vec!["a".as_bytes()])
+    };
+    let error = Vocab::try_new(stray).expect_err("非 BPE 携带合并表必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn unigram_scores_must_match_piece_count() {
+    let pieces = vec![b"a".to_vec(), b"b".to_vec()];
+    let mismatch = VocabSource {
+        family: VocabFamily::Unigram,
+        pieces: pieces.clone(),
+        scores: vec![0.1],
+        ..VocabSource::default()
+    };
+    let error = Vocab::try_new(mismatch).expect_err("分数个数不齐必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+
+    let balanced = VocabSource {
+        family: VocabFamily::Unigram,
+        scores: vec![0.1, -0.2],
+        pieces,
+        ..VocabSource::default()
+    };
+    Vocab::try_new(balanced).expect("分数与词片齐平的 Unigram");
 }
 
 #[test]

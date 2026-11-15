@@ -26,6 +26,22 @@ impl Fingerprint {
         }
     }
 
+    /// 由族名、词表大小与词片序列构造；每个词片的长度与字节进入 FNV-1a 混合，
+    /// 不依赖外部文件名或路径。
+    pub fn from_pieces(family: &'static str, vocab_size: usize, pieces: &[Vec<u8>]) -> Self {
+        let mut digest = mix(FNV_OFFSET, family.as_bytes());
+        digest = mix(digest, &vocab_size.to_le_bytes());
+        for piece in pieces {
+            digest = mix(digest, &piece.len().to_le_bytes());
+            digest = mix(digest, piece);
+        }
+        Self {
+            family,
+            vocab_size,
+            digest,
+        }
+    }
+
     /// 词表族名（实现标识，如 `bytes`、`bpe`、`unigram`）。
     #[must_use]
     pub fn family(&self) -> &'static str {
@@ -51,12 +67,16 @@ impl Fingerprint {
     }
 }
 
-/// FNV-1a 64 位：逐字节异或再乘质数；串行依赖来自哈希链，无法整块并行。
-fn fnv1a(text: &str) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for byte in text.bytes() {
-        hash ^= u64::from(byte);
+/// FNV-1a 64 位：在已有哈希状态上逐字节异或再乘质数；串行依赖来自哈希链，无法整块并行。
+fn mix(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
+}
+
+/// FNV-1a 64 位入口：从偏移基数起混合一段文本。
+fn fnv1a(text: &str) -> u64 {
+    mix(FNV_OFFSET, text.as_bytes())
 }

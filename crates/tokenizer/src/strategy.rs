@@ -69,6 +69,7 @@ impl Padding {
 pub struct Strategy {
     add_bos: bool,
     add_eos: bool,
+    add_sep: bool,
     max_len: Option<usize>,
     truncation: Option<Truncation>,
     padding: Option<Padding>,
@@ -86,6 +87,7 @@ impl Strategy {
         Self {
             add_bos: false,
             add_eos: false,
+            add_sep: false,
             max_len: None,
             truncation: None,
             padding: None,
@@ -103,6 +105,13 @@ impl Strategy {
     #[must_use]
     pub const fn with_eos(mut self) -> Self {
         self.add_eos = true;
+        self
+    }
+
+    /// 在片段分界处补 SEP。
+    #[must_use]
+    pub const fn with_sep(mut self) -> Self {
+        self.add_sep = true;
         self
     }
 
@@ -137,6 +146,12 @@ impl Strategy {
     #[must_use]
     pub fn add_eos(&self) -> bool {
         self.add_eos
+    }
+
+    /// 是否在片段分界处补 SEP。
+    #[must_use]
+    pub fn add_sep(&self) -> bool {
+        self.add_sep
     }
 
     /// 最大长度上限。

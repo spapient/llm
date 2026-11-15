@@ -1,7 +1,7 @@
 //! 文本 ↔ token 的唯一边界：[`Token`]、[`Tokenizer`] 与字节级参考实现 [`Bytes`]。
 //!
 //! **拥有**：`Tokenizer`、`Token`、`Bytes` 以及中性契约值对象（[`SpecialTokens`]、
-//! [`Encoding`]、[`Strategy`]、[`Fingerprint`]、[`DecoderStream`]）。
+//! [`Encoding`]、[`Strategy`]、[`Fingerprint`]、[`DecoderStream`]、[`Vocab`]）。
 //! **不拥有**：BPE / SentencePiece 词表（P1 落地，属于实现而不是接口）、采样（由
 //! `engine` 的调用方决定）。**依赖**：`diagnostic`。**被依赖**：`serve`。
 //!
@@ -26,6 +26,7 @@ mod fingerprint;
 mod special;
 mod strategy;
 mod stream;
+mod vocab;
 
 pub use bytes::Bytes;
 pub use encoding::Encoding;
@@ -33,6 +34,7 @@ pub use fingerprint::Fingerprint;
 pub use special::SpecialTokens;
 pub use strategy::{PadDirection, Padding, Strategy, Truncation};
 pub use stream::DecoderStream;
+pub use vocab::{Merge, Vocab, VocabFamily, VocabSource};
 
 use diagnostic::Result;
 
