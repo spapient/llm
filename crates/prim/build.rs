@@ -30,10 +30,9 @@ use std::process::Command;
 use prof::atom::Prim;
 use prof::prof::{Emit, Profile};
 
-/// 片段第一行的签名声明标记。
-///
-/// 与 `prim::SIGN_MARKER` 同一个字符串：构建脚本不能依赖它正在构建的 crate，所以只能各写一份。
-const SIGN_MARKER: &str = "cutile-sign:";
+// 签名剥壳与切分规则与 crate 装载期共用同一份纯函数源码（ADR 0027 §5）：
+// 构建脚本不依赖正在构建的 crate 编译产物，只 include 这份源码文本，规则因此只有一份。
+include!("src/signature.rs");
 
 /// 生成器入口。
 fn main() {
@@ -209,23 +208,16 @@ fn profile_of(vendor: &str, ext: &str) -> Profile {
 
 /// 片段第一行的签名声明：`/* cutile-sign: <prim>/<impl> */`。
 ///
-/// 与 `prim::Fragment::parse` 同一套规则，但刻意不共用：构建脚本不能依赖它正在构建的 crate。
+/// 剥壳与切分走 [`include!`] 进来的共享规则（ADR 0027 §5）；这里只补原语比对与构建失败。
 fn signature(prim: Prim, source: &str, path: &Path) -> String {
     let first = source.lines().next().unwrap_or_default();
-    let declared = first
-        .trim()
-        .strip_prefix("/*")
-        .and_then(|rest| rest.strip_suffix("*/"))
-        .map(str::trim)
-        .and_then(|rest| rest.strip_prefix(SIGN_MARKER))
-        .map(str::trim)
-        .unwrap_or_else(|| {
-            fail(format!(
-                "`{}` 的第一行必须是 `/* {SIGN_MARKER} <prim>/<impl> */`，实际是 `{first}`",
-                path.display()
-            ))
-        });
-    let (declared_prim, implementation) = declared.split_once('/').unwrap_or_else(|| {
+    let declared = strip_marker(first).unwrap_or_else(|| {
+        fail(format!(
+            "`{}` 的第一行必须是 `/* {MARKER} <prim>/<impl> */`，实际是 `{first}`",
+            path.display()
+        ))
+    });
+    let (declared_prim, implementation) = split_slash(declared).unwrap_or_else(|| {
         fail(format!(
             "`{}` 的签名声明不是 `<prim>/<impl>`",
             path.display()

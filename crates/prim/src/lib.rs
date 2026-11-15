@@ -56,6 +56,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod device;
+/// 签名声明的纯字符串规则；与 `build.rs` 经 `include!` 共用同一份源码（ADR 0027 §5）。
+mod signature;
 mod tables;
 
 pub use device::{Device, Image, Status, device, devices};
@@ -88,7 +90,9 @@ pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
 }
 
 /// 签名声明的标记：片段第一行 `/* cutile-sign: <prim>/<impl> */` 里的 `cutile-sign:`。
-pub const SIGN_MARKER: &str = "cutile-sign:";
+///
+/// 与 [`signature`] 模块内的 `MARKER` 同值；共享规则见该模块。
+pub const SIGN_MARKER: &str = signature::MARKER;
 
 /// 一段片段：文本，以及它声明实现的那条签名。
 ///
@@ -168,28 +172,23 @@ fn split_declaration(source: &str, prim: Prim) -> diagnostic::Result<(&str, &str
 
 /// 声明行 → `<prim>/<impl>` 两半：注释外壳与 [`SIGN_MARKER`] 标记都要在这里对上。
 ///
-/// 回答「这一行声明了什么」，不回答「声明与文件名是否一致」——那是调用点的事。
+/// 剥壳与切分走 [`signature`] 共享规则；这里只补原语上下文与诊断错误。
 fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)> {
-    let declared = first
-        .strip_prefix("/*")
-        .and_then(|rest| rest.strip_suffix("*/"))
-        .map(str::trim)
-        .and_then(|rest| rest.strip_prefix(SIGN_MARKER))
-        .map(str::trim)
-        .ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!(
-                    "片段 `{prim}` 的第一行必须是 `/* {SIGN_MARKER} {prim}/<impl> */`，实际是 `{first}`"
-                ),
-            )
-        })?;
-    declared.split_once('/').ok_or_else(|| {
+    let declared = signature::strip_marker(first).ok_or_else(|| {
+        Error::new(
+            Code::Invalid,
+            format!(
+                "片段 `{prim}` 的第一行必须是 `/* {SIGN_MARKER} {prim}/<impl> */`，实际是 `{first}`"
+            ),
+        )
+    })?;
+    let (declared_prim, implementation) = signature::split_slash(declared).ok_or_else(|| {
         Error::new(
             Code::Invalid,
             format!("`{prim}` 的签名声明 `{declared}` 不是 `<prim>/<impl>`"),
         )
-    })
+    })?;
+    Ok((declared_prim, implementation))
 }
 
 /// 某个 vendor 的片段集合。
