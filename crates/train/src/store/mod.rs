@@ -532,9 +532,9 @@ struct Pool {
     u8s: Vec<(usize, Vec<Vec<u8>>)>,
 }
 
-/// 一条 lane 的三件套：取、还、数（查找是一次线性扫描，档数由形状的个数决定，通常是个位数）。
+/// 一条 lane 的四件套：取、还、数块数、数字节（查找是一次线性扫描，档数由形状的个数决定，通常是个位数）。
 macro_rules! buckets {
-    ($(($acquire:ident, $give:ident, $pooled:ident, $lane:ty, $pile:ident)),* $(,)?) => {$(
+    ($(($acquire:ident, $give:ident, $pooled:ident, $bytes:ident, $lane:ty, $pile:ident)),* $(,)?) => {$(
         impl Pool {
             /// 取一块长度正好是 `len` 的缓冲：池里有就复用（只对齐长度），否则零值分配。
             fn $acquire(&mut self, len: usize) -> Result<Vec<$lane>> {
@@ -563,13 +563,22 @@ macro_rules! buckets {
             fn $pooled(&self) -> usize {
                 self.$pile.iter().map(|(_, blocks)| blocks.len()).sum()
             }
+
+            /// 档里空闲块占用的字节数，与 [`Buffers::live`] 同口径对账。
+            fn $bytes(&self) -> u64 {
+                self.$pile
+                    .iter()
+                    .flat_map(|(_, blocks)| blocks.iter())
+                    .map(|block| (block.len() * size_of::<$lane>()) as u64)
+                    .sum()
+            }
         }
     )*};
 }
 
 buckets!(
-    (acquire_f32, give_f32, pooled_f32, f32, f32s),
-    (acquire_u8, give_u8, pooled_u8, u8, u8s),
+    (acquire_f32, give_f32, pooled_f32, bytes_f32, f32, f32s),
+    (acquire_u8, give_u8, pooled_u8, bytes_u8, u8, u8s),
 );
 
 impl Pool {
@@ -593,6 +602,11 @@ impl Pool {
     /// 空闲表里的块数。
     fn pooled(&self) -> usize {
         self.pooled_f32() + self.pooled_u8()
+    }
+
+    /// 空闲表里的字节数。
+    fn pooled_bytes(&self) -> u64 {
+        self.bytes_f32() + self.bytes_u8()
     }
 }
 
@@ -675,6 +689,11 @@ impl<K: Kernel> Buffers<K> {
     /// 空闲表里现成可复用的块数（诊断用：稳定态应当不增长）。
     pub fn pooled(&self) -> usize {
         self.pool.pooled()
+    }
+
+    /// 空闲表里可复用的字节数，与 [`live`](Self::live) / [`peak`](Self::peak) 同口径。
+    pub fn pooled_bytes(&self) -> u64 {
+        self.pool.pooled_bytes()
     }
 
     /// 一次性归零：换训练步、或换图时调用。在场块回到空闲表留待等长复用，只清占用与峰值记账，

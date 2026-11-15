@@ -154,9 +154,15 @@ fn freeing_returns_the_buffer_and_lowers_live_immediately() {
     store.free(fixture.loss);
     assert_eq!(store.live(), RESIDENT, "交还当场生效，不等作用域结束");
     assert_eq!(store.pooled(), 1, "块进了空闲表");
+    assert_eq!(
+        store.pooled_bytes(),
+        activation,
+        "空闲字节与交还的激活块一致"
+    );
 
     fixture.step(&mut store, fixture.loss).expect("可算");
     assert_eq!(store.pooled(), 0, "第二次算复用同一块");
+    assert_eq!(store.pooled_bytes(), 0, "复用后池里没有残留空闲字节");
     assert_eq!(store.live(), RESIDENT + activation);
 }
 
@@ -354,6 +360,11 @@ fn clear_returns_everything_and_resets_the_peak() {
     store.clear();
     assert_eq!((store.live(), store.peak()), (0, 0));
     assert!(store.pooled() >= 3, "在场块回空闲表留待等长复用");
+    assert_eq!(
+        store.pooled_bytes(),
+        RESIDENT + WIDTH as u64 * 4,
+        "在场块的字节全部留存在空闲表里"
+    );
     assert!(store.value(fixture.x).is_none(), "常驻值也要还回去");
 
     // 归零之后同一个实例可以接着用：形状表还在，值要重新装，块直接从池里取回复用。
