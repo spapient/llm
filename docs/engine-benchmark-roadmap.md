@@ -58,7 +58,7 @@
 | 项 | 现状 | 证据 |
 |---|---|---|
 | 成员规模 | 24 个 `crates/*` + 根包 `llm`；317 个 `.rs` | `ls crates/*/`；`find crates -name '*.rs'` |
-| 测试 | nextest 1079 passed / 0 failed / 0 skipped；doc-test 全过 | 本次工作树实测 |
+| 测试 | nextest 1102 passed / 0 failed / 0 skipped；doc-test 全过 | 本次工作树实测 |
 | 注册算子 | 22 个命名算子（gemv/gemm/attention/flash_attention/rope/rmsnorm/softmax/激活/归约/量化反量化等） | `crates/op/src/lib.rs` 注册表投影 |
 | 输出语言闭集 | 9 种 Emit：Cuda、Ptx、Hip、Opencl、Spirv、Metal、Ascendc、C、Wgsl | `crates/prof/src/prof.rs:16-35` |
 | 执行后端 | **只有契约**：图/流/节点/启动几何，没有真实流、设备队列或 kernel launch | `crates/engine/src/exec.rs:8` |
@@ -70,7 +70,7 @@
 | 外部 FFI | 全仓唯一生产 FFI 是 `storage` 的 mmap 内存映射 | `crates/storage/src/mmap.rs:28` |
 | unsafe 策略 | `unsafe_code = "deny"`，生产核心无 `unsafe` | `Cargo.toml:56` |
 | 生产依赖 | 生产路径仅 `dtype` 可选 feature 引入 `serde`/`bytemuck`，`fuzz` 可选 `libfuzzer-sys`；`criterion`/`clap` 等属 dev/build 依赖 | 各 `Cargo.toml` |
-| 基准 | criterion 结构/编解码基准 + 三条 decode 行宽 kernel 基准（`gemv_f32` 已入 `tool::regress` 基线判定；`softmax_f32` / `rope_f32` 已建采样入口，基线待靶机首次实测登记） | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
+| 基准 | criterion 结构/编解码基准 + 三条 decode 行宽 kernel 基准（`gemv_f32` / `softmax_f32` / `rope_f32` 均已入 `tool::regress` 基线判定；macos-aarch64 首跑 mean 已登记：gemv 2186061 ns、softmax 15492 ns、rope 9487 ns，跨机绝对值不可比） | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
 | 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.24% / token 1.46%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`.jscpd.json`、`.github/workflows/ci.yml` |
 
 ## 4. 能力维度对标矩阵

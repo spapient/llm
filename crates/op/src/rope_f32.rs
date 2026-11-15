@@ -99,7 +99,7 @@ fn rotate_into(x: &[f32], pos: f32, out: &mut [f32]) -> diagnostic::Result<()> {
 ///
 /// # Errors
 ///
-/// 输入与输出等长且为偶数，否则返回说明。
+/// 输入与输出长度不一致时返回说明；末尾无法配对的奇数元素原样透传（不报错）。
 pub fn forward(pos: usize, x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
     rotate_into(x, pos as f32, out)
 }
