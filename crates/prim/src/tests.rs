@@ -147,18 +147,20 @@ fn normalize_body(body: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// 同一原语在多台设备上的标量片段必须同构：改点积/解包口径要同时改到，不能只改一台。
+/// 同一 `(原语, 实现)` 在多台设备上的片段必须同构：改点积/解包口径要同时改到，不能只改一台。
 ///
-/// 这只约束当前的标量实现；P3 出现设备特化指令（dp4a / mmad / wmma）后，按 `impl`
-/// 分组比对，不同实现之间不再强制同构（ADR 0027 §4）。
+/// 比对按 `impl` 分组（ADR 0027 §4）：标量循环、NEON/DP4A/WMMA 等设备特化指令是不同实现，
+/// 彼此不强制同构；只有声明了同一条签名的片段才要求正文同源。
 #[test]
 fn same_primitive_bodies_are_isomorphic_across_vendors() {
+    use std::collections::BTreeMap;
+
     let vendors: Vec<(&str, &str)> = devices()
         .iter()
         .map(|device| (device.vendor, device.ext))
         .collect();
+    let mut groups: BTreeMap<(Prim, String), Vec<String>> = BTreeMap::new();
     for prim in Prim::ALL {
-        let mut bodies = Vec::new();
         for (vendor, ext) in &vendors {
             let Some(set) = builtin(vendor, ext) else {
                 continue;
@@ -166,13 +168,21 @@ fn same_primitive_bodies_are_isomorphic_across_vendors() {
             let Some(body) = set.get(*prim) else {
                 continue;
             };
-            bodies.push(normalize_body(body));
+            let Some(implementation) = set.implementation(*prim) else {
+                continue;
+            };
+            groups
+                .entry((*prim, implementation.to_string()))
+                .or_default()
+                .push(normalize_body(body));
         }
+    }
+    for ((prim, implementation), bodies) in &groups {
         if bodies.len() > 1 {
             let first = &bodies[0];
             assert!(
                 bodies.iter().all(|body| body == first),
-                "`{prim}` 跨设备片段正文不一致：标量口径必须同源"
+                "`{prim}/{implementation}` 跨设备片段正文不一致：同实现口径必须同源"
             );
         }
     }

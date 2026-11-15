@@ -39,7 +39,7 @@ bw        = { value = 42.656e9, src = "2*8*2666e6" }
 
 [compile]
 flags = ["-O3", "-std=c99"]
-preamble = "#include <stdint.h>\n#include <string.h>"
+preamble = "#include <stdint.h>\n#include <string.h>\n#if defined(__aarch64__)\n#include <arm_neon.h>\n#endif"
 
 [[provides]]
 prim    = "quant"
