@@ -18,49 +18,13 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub use crate::device::compile_run_cuda;
-pub use crate::gate::{CudaFront, LanguageGate, OpenClFront, language_gate};
+pub use crate::gate::{LanguageGate, language_gate};
 
 /// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。
 pub type Selected<'a> = (Prim, String, &'a Witness);
 
 /// 一次见证最多写出多少个值（ABI 上限）；程序生成时把它烘焙进缓冲区尺寸字面量。
 pub const MAX_OUT: usize = Witness::MAX_OUT;
-/// 注解生成的**语言身份**：三个常量都来自 `#[frontend(..)]`，`EXT` 与 `EMIT.ext()` 的一致性由注解展开的断言检查。
-pub trait Language {
-    /// 执行语言（[`Emit`] 闭集里的一个）。
-    const EMIT: Emit;
-    /// 见证与片段的文件后缀，必须等于 `EMIT.ext()`。
-    const EXT: &'static str;
-    /// 产物缓存的标签。
-    const TAG: &'static str;
-}
-
-/// 一种语言的**语法前端**：只解析、不链接、不执行；借 clang 的语言前端，所以不需要真机。
-pub trait Front: Language {
-    /// 解析器：程序名 + 固定前缀参数（`["clang"]`）。
-    const TOOL: &'static [&'static str];
-    /// 只做语法检查的参数；源文件路径由执行器追加在末尾。
-    const CHECK: &'static [&'static str];
-}
-
-/// 两个 `&str` 在编译期是否逐字节相同：`str` 的 `==` 不是 `const`，而注解里的 `ext` 必须与 `Emit::ext()` 对上。
-#[doc(hidden)]
-#[must_use]
-pub const fn same_text(left: &str, right: &str) -> bool {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-
 /// 跑这台设备的全部见证，得到三条命令共用的证据；失败也是一条要报的事实，所以不返回 `Result`。
 #[must_use]
 pub fn establish(profile: &Profile, dirs: &Dirs) -> Evidence {
@@ -453,8 +417,7 @@ impl Evidence {
 mod tests {
     use super::*;
     use crate::builtin::Catalogue;
-    use crate::gate::parse_one;
-    use crate::toolchain::{self, clang};
+    use crate::toolchain;
 
     fn dirs() -> Dirs {
         Dirs::under(std::env::temp_dir().join("cutile-witness-tests"))
@@ -685,42 +648,6 @@ mod tests {
             device_available(&metal),
             "只有能在设备上真跑时才免开语言门"
         );
-    }
-
-    #[test]
-    fn a_witness_its_own_language_rejects_is_a_defect() {
-        if toolchain::skip_without_host_compiler() {
-            return;
-        }
-        let Some(toolchain) = toolchain::detect() else {
-            return;
-        };
-        if clang().is_none() {
-            eprintln!("skip: 未探测到 clang（`-x cl` 语法检查需要它），本用例未运行");
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("cutile-language-gate-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("临时目录");
-        let source = dir.join("witness.cl");
-        std::fs::write(
-            &source,
-            "int witness_double(float *out) { double x = 2.0; out[0] = (float)x; return 1; }\n",
-        )
-        .expect("写见证");
-
-        let rejected = parse_one::<OpenClFront>(&source).expect_err("OpenCL C 不允许裸 double");
-        assert!(rejected.to_string().contains("witness.cl"), "{rejected}");
-        assert!(rejected.to_string().contains("-x cl"), "{rejected}");
-
-        let host = dir.join("witness.c");
-        std::fs::copy(&source, &host).expect("复制");
-        let status = std::process::Command::new(&toolchain.command)
-            .args(["-std=c99", "-fsyntax-only"])
-            .arg(&host)
-            .status()
-            .expect("跑 host C 编译器");
-        assert!(status.success(), "前提：同一份源码在 host C 里合法");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

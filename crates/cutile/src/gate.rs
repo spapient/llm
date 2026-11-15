@@ -9,7 +9,7 @@ use crate::device::scratch;
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
 use crate::toolchain::clang;
-use crate::witness::{Front, Language, Selected, declared_witnesses, device_available, source};
+use crate::witness::{Selected, declared_witnesses, device_available, source};
 use diagnostic::{Code, Error};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -60,51 +60,37 @@ impl fmt::Display for LanguageGate {
     }
 }
 
-/// 本机接了的语法前端：与执行层 `const SPECS` 同构，存的也是单态化后的函数地址。
-struct GateEntry {
+/// 一门语言的语法前端：与执行层 [`crate::device::Spec`] 同构，差异全是表内常量行——解析器程序与
+/// 固定语法检查参数；没有独立的前端类型，也没有按语言单态化的泛型函数。
+struct GateSpec {
     /// 这门语言。
     emit: Emit,
-    /// 用这门语言的解析器过一遍全部已声明的见证。
-    parse: fn(&Profile, &Dirs) -> diagnostic::Result<LanguageGate>,
+    /// 解析器：程序名 + 固定前缀参数（`["clang"]`）。
+    tool: &'static [&'static str],
+    /// 只做语法检查的参数；源文件路径由执行器追加在末尾。
+    check: &'static [&'static str],
 }
 
-/// 全部语法前端：**加一门语言就加一行**。
-const GATES: &[GateEntry] = &[
-    GateEntry {
-        emit: <CudaFront as Language>::EMIT,
-        parse: parse_all::<CudaFront>,
+/// 全部语法前端：**加一门语言就加一行**，与 `const SPECS` 同一套登记方式。
+const GATES: &[GateSpec] = &[
+    GateSpec {
+        emit: Emit::Cuda,
+        tool: &["clang"],
+        check: &[
+            "-x",
+            "cuda",
+            "--cuda-host-only",
+            "-nocudainc",
+            "-nocudalib",
+            "-fsyntax-only",
+        ],
     },
-    GateEntry {
-        emit: <OpenClFront as Language>::EMIT,
-        parse: parse_all::<OpenClFront>,
+    GateSpec {
+        emit: Emit::Opencl,
+        tool: &["clang"],
+        check: &["-x", "cl", "-cl-std=CL3.0", "-fsyntax-only"],
     },
 ];
-
-/// clang 的 CUDA 前端：`--cuda-host-only` 只解析 host 那一半——见证的 ABI 就是 host C，
-/// 而 `__syncthreads()` 这类设备内建在 host 函数里必须被拒。
-#[annotation::frontend(emit = "cuda", ext = "cu", tag = "gate")]
-pub struct CudaFront;
-
-impl Front for CudaFront {
-    const TOOL: &'static [&'static str] = &["clang"];
-    const CHECK: &'static [&'static str] = &[
-        "-x",
-        "cuda",
-        "--cuda-host-only",
-        "-nocudainc",
-        "-nocudalib",
-        "-fsyntax-only",
-    ];
-}
-
-/// clang 的 OpenCL 前端：`double` 在没开 `cl_khr_fp64` 的 OpenCL C 里是错误，host `cc` 却照收。
-#[annotation::frontend(emit = "opencl", ext = "cl", tag = "gate")]
-pub struct OpenClFront;
-
-impl Front for OpenClFront {
-    const TOOL: &'static [&'static str] = &["clang"];
-    const CHECK: &'static [&'static str] = &["-x", "cl", "-cl-std=CL3.0", "-fsyntax-only"];
-}
 
 /// 用一台设备**自己声称的语言**把它的全部已声明见证过一遍。
 ///
@@ -125,7 +111,7 @@ pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
             ),
         };
     };
-    match (entry.parse)(profile, dirs) {
+    match parse_all(entry, profile, dirs) {
         Ok(gate) => gate,
         // 解析器拒绝是证据的缺陷，不能与“本机没东西可用”归一类。
         Err(error) => LanguageGate::Rejected {
@@ -134,12 +120,16 @@ pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
     }
 }
 
-/// 语法门的执行器：`F` 决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
+/// 语法门的执行器：表行决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
 ///
 /// 源码一律经 [`source`] 取：内嵌副本与 `data.root` 覆盖都由它决定。先前这里直接把
 /// `witness_root(dirs).join(file)` 交给 clang，于是在没有源码树的发布机上会报成
 /// “见证被自己的语言拒绝”——真相是“本机没有那份源码”，分类与指向的人都错了。
-fn parse_all<F: Front>(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<LanguageGate> {
+fn parse_all(
+    spec: &GateSpec,
+    profile: &Profile,
+    dirs: &Dirs,
+) -> diagnostic::Result<LanguageGate> {
     let selected = declared_witnesses(profile)?;
     if selected.is_empty() {
         return Ok(LanguageGate::Absent {
@@ -148,21 +138,22 @@ fn parse_all<F: Front>(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Lan
     }
     let Some(toolchain) = clang() else {
         return Ok(LanguageGate::Absent {
-            reason: format!("`{}` 不在本机", F::TOOL.join(" ")),
+            reason: format!("`{}` 不在本机", spec.tool.join(" ")),
         });
     };
     let dir = scratch(dirs, "gate");
-    let parsed = write_and_parse::<F>(&selected, dirs, &dir);
+    let parsed = write_and_parse(spec, &selected, dirs, &dir);
     let _ = std::fs::remove_dir_all(&dir);
     parsed?;
     Ok(LanguageGate::Passed {
-        front: format!("{} {}", toolchain.id(), F::CHECK.join(" ")),
+        front: format!("{} {}", toolchain.id(), spec.check.join(" ")),
         witnesses: selected.len(),
     })
 }
 
 /// 把每份见证按“内嵌优先”的文本落到临时目录，再交给解析器：同一份源码可以没有磁盘副本。
-fn write_and_parse<F: Front>(
+fn write_and_parse(
+    spec: &GateSpec,
     selected: &[Selected<'_>],
     dirs: &Dirs,
     dir: &Path,
@@ -170,17 +161,22 @@ fn write_and_parse<F: Front>(
     let mut written: BTreeSet<&str> = BTreeSet::new();
     for (_, _, witness) in selected {
         if written.insert(witness.file.as_str()) {
-            write_one::<F>(witness, dirs, dir)?;
+            write_one(spec, witness, dirs, dir)?;
         }
     }
     Ok(())
 }
 
 /// 一份见证：按“内嵌优先”的文本落盘，再交给它自己语言的解析器。
-fn write_one<F: Front>(witness: &Witness, dirs: &Dirs, dir: &Path) -> diagnostic::Result<()> {
+fn write_one(
+    spec: &GateSpec,
+    witness: &Witness,
+    dirs: &Dirs,
+    dir: &Path,
+) -> diagnostic::Result<()> {
     let path = dir.join(&witness.file);
     write_unit(&path, &source(witness, dirs)?)?;
-    parse_one::<F>(&path)
+    parse_one(spec, &path)
 }
 
 /// 写一份翻译单元：`witness.file` 形如 `<vendor>/<name>.<ext>`，父目录要自己建。
@@ -195,10 +191,10 @@ fn write_unit(path: &Path, text: &str) -> diagnostic::Result<()> {
 }
 
 /// 解析一份翻译单元；失败时只带编译器的第一行报错（整段 stderr 进不了报告）。
-pub(crate) fn parse_one<F: Front>(path: &Path) -> diagnostic::Result<()> {
-    let program = F::TOOL[0];
+fn parse_one(spec: &GateSpec, path: &Path) -> diagnostic::Result<()> {
+    let program = spec.tool[0];
     let mut command = std::process::Command::new(program);
-    command.args(&F::TOOL[1..]).args(F::CHECK).arg(path);
+    command.args(&spec.tool[1..]).args(spec.check).arg(path);
     let output = command
         .output()
         .map_err(|error| Error::new(Code::Unsupported, format!("`{program}` 不可执行：{error}")))?;
@@ -215,9 +211,59 @@ pub(crate) fn parse_one<F: Front>(path: &Path) -> diagnostic::Result<()> {
         Code::Invalid,
         format!(
             "`{} {}` 拒绝 `{}`：{first}",
-            F::TOOL.join(" "),
-            F::CHECK.join(" "),
+            spec.tool.join(" "),
+            spec.check.join(" "),
             path.display()
         ),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::toolchain;
+
+    /// OpenCL 前端表行：拒绝用例要拿它的参数过一遍裸 `double`。
+    fn opencl() -> &'static GateSpec {
+        GATES
+            .iter()
+            .find(|entry| entry.emit == Emit::Opencl)
+            .expect("OpenCL 语法前端已登记")
+    }
+
+    #[test]
+    fn a_witness_its_own_language_rejects_is_a_defect() {
+        if toolchain::skip_without_host_compiler() {
+            return;
+        }
+        let Some(toolchain) = toolchain::detect() else {
+            return;
+        };
+        if clang().is_none() {
+            eprintln!("skip: 未探测到 clang（`-x cl` 语法检查需要它），本用例未运行");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cutile-language-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        let source = dir.join("witness.cl");
+        std::fs::write(
+            &source,
+            "int witness_double(float *out) { double x = 2.0; out[0] = (float)x; return 1; }\n",
+        )
+        .expect("写见证");
+
+        let rejected = parse_one(opencl(), &source).expect_err("OpenCL C 不允许裸 double");
+        assert!(rejected.to_string().contains("witness.cl"), "{rejected}");
+        assert!(rejected.to_string().contains("-x cl"), "{rejected}");
+
+        let host = dir.join("witness.c");
+        std::fs::copy(&source, &host).expect("复制");
+        let status = std::process::Command::new(&toolchain.command)
+            .args(["-std=c99", "-fsyntax-only"])
+            .arg(&host)
+            .status()
+            .expect("跑 host C 编译器");
+        assert!(status.success(), "前提：同一份源码在 host C 里合法");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
