@@ -426,7 +426,19 @@ impl OwnedTensor {
     /// 按形状分配并清零；`dtype` 必须在 [`SUPPORTED`] 子集内。
     pub fn zeros(dtype: DType, shape: Shape) -> Result<Self> {
         let required = shape.element_bytes(dtype);
-        Self::from_bytes(dtype, shape, vec![0u8; required])
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(required).map_err(|_| {
+            Error::new(
+                Code::Invalid,
+                format!(
+                    "{dtype:?} 的 {:?} 需要 {required} 字节：超出可用内存或地址空间",
+                    shape.dims()
+                ),
+            )
+            .with("tensor::OwnedTensor::zeros")
+        })?;
+        bytes.resize(required, 0);
+        Self::from_bytes(dtype, shape, bytes)
     }
 
     /// 由已有字节向量构造：`dtype` 受支持且缓冲够长，布局取行主序连续。

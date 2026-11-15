@@ -92,3 +92,10 @@ fn copy_into_matches_lengths_and_rejects_mismatch() {
     let err = alloc.copy_into(&[1, 2], &mut dst).unwrap_err();
     assert_eq!(err.code(), Code::Invalid);
 }
+
+#[test]
+fn an_unaffordable_allocation_is_an_error_not_an_abort() {
+    let mut alloc = CpuAllocator::new();
+    let error = alloc.alloc(usize::MAX).expect_err("地址空间装不下");
+    assert_eq!(error.code(), Code::Invalid);
+}

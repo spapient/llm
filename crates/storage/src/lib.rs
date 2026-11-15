@@ -214,7 +214,16 @@ impl CpuAllocator {
 
 impl Allocator for CpuAllocator {
     fn alloc(&mut self, bytes: usize) -> Result<Buffer> {
-        Ok(Buffer::from_bytes(vec![0u8; bytes]))
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(bytes).map_err(|_| {
+            Error::new(
+                Code::Invalid,
+                format!("分配 {bytes} 字节：超出可用内存或地址空间"),
+            )
+            .with("storage::CpuAllocator::alloc")
+        })?;
+        owned.resize(bytes, 0);
+        Ok(Buffer::from_bytes(owned))
     }
 
     fn free(&mut self, _buffer: Buffer) {}

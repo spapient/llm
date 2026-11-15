@@ -238,3 +238,10 @@ fn owned_tensor_writes_through_the_mutable_path_and_loans_a_read_view() {
     assert_eq!(view.numel(), 2);
     assert_eq!(owned.data()[..4], 1.0f32.to_ne_bytes());
 }
+
+#[test]
+fn an_unaffordable_owned_tensor_is_an_error_not_an_abort() {
+    let error =
+        OwnedTensor::zeros(DType::F32, Shape::new([usize::MAX])).expect_err("地址空间装不下");
+    assert_eq!(error.code(), Code::Invalid);
+}
