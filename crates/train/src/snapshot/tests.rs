@@ -685,3 +685,37 @@ fn a_corrupted_file_names_its_path() {
     assert!(error.to_string().contains("step-7.llmc"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 版本 3 布局的固定字节黄金向量：往返测试只能证明"编码与解码对称"，布局若被对称地改动它
+/// 察觉不到；黄金向量把当前字段顺序、类型标签与压缩写法钉死。任何不是格式版本递增的布局漂移，
+/// 都会在这里逐字节失败。
+#[test]
+fn a_golden_vector_pins_the_version_three_layout() {
+    const GOLDEN: [u8; 24] = [
+        0x4C, 0x4C, 0x4D, 0x43, // `LLMC`
+        0x03, 0x00, // 版本 3（小端 u16）
+        0x01, 0x01, 0x01, 0x01, // step=1、world=1、layers=1、batch_rows=1
+        0x00, // data_start=0
+        0x01, // 条目数 1
+        0x00, 0x00, 0x01, 0x77, // 名：前 0 后 0，中段 1 字节 `w`
+        0x02, 0x00, 0x01, // 布局：秩+1=2，F32 标签 00，秩 1
+        0x00, // 偏移增量 0
+        0x99, 0x66, 0x9D, 0x14, // CRC-32（小端）
+    ];
+
+    let facts = Facts::new(1, 1, 1, 1).expect("事实");
+    let header =
+        Header::new(vec![Entry::new("w", DType::F32, Shape::new([1])).at(0)], 0).expect("头部");
+    let snapshot = Snapshot::new(facts, header);
+
+    let bytes = snapshot.encode().expect("编码");
+    assert_eq!(
+        bytes.as_slice(),
+        &GOLDEN,
+        "布局改动必须先递增格式版本并更新黄金向量"
+    );
+
+    Snapshot::verify(&GOLDEN).expect("黄金向量自带校验和");
+    let restored = Snapshot::decode(&GOLDEN).expect("解码黄金向量");
+    assert_eq!(restored, snapshot);
+}
