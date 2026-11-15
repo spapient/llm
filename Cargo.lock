@@ -435,6 +435,7 @@ dependencies = [
  "llm-op",
  "llm-prof",
  "llm-testkit",
+ "llm-tokenizer",
  "llm-tool",
  "llm-weights",
  "llm-wire",
