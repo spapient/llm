@@ -82,12 +82,12 @@ mod sink {
     pub(crate) use wire::sink::*;
 }
 
-/// 生命周期模式薄转发：实现见 [`crate::archive`]。
+/// 生命周期模式薄转发：实现见内部 `archive` 模块。
 pub mod mode {
     pub use crate::archive::{MODE_NAME, Mode, is_opt, mode_of, release};
 }
 
-/// 增量补丁薄转发：实现见 [`crate::archive`]。
+/// 增量补丁薄转发：实现见内部 `archive` 模块。
 pub mod patch {
     pub use crate::archive::{diff, join};
 }

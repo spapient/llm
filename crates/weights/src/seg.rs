@@ -13,7 +13,7 @@ use crate::sink::Sink;
 /// 段级编解码闭集：码位稳定，未知码在打开期拒绝。
 ///
 /// - [`Codec::Store`]：原样存储，读端零拷贝；
-/// - [`Codec::Rans`]：[`crate::rans`] 熵编码帧，仅在严格变小时才会被写端选用。
+/// - [`Codec::Rans`]：`rans` 熵编码帧，仅在严格变小时才会被写端选用。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Codec {
     /// 原样字节（code 0）。
