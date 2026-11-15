@@ -1,62 +1,66 @@
-//! 矩阵乘：`Y[m,n] = sum_k A[m,k] * B[k,n]`。
+//! 稠密 f32 矩阵乘：`Y[m,n] = Σ_k A[m,k] · B[k,n]`。
 //!
-//! CPU 片段没有 MMA 原语，本实现退化成标量三重循环（语义正确，SIMD/tile 化在 P4 后端补），
-//! 收缩轴固定为 `K = 8` 以控制标量成本。本模块自带形状、代价、样本、参考与遍历。
+//! 骨架在 [`crate::gemm`]，本文件只有"稠密 f32"这一份格式契约：元素类型、位宽、样本取值与
+//! 点积算术。CPU 片段没有 MMA 原语，遍历退化成标量双重循环（SIMD/tile 化在 P4 后端补），
+//! 收缩轴固定 [`K`]。
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
-use diagnostic::{Code, Error};
+use crate::einsum::Bits;
+use crate::gemm::{self, Gemm};
+use crate::model::{Cost, Sample, ShapeContext};
+use diagnostic::Error;
 
-// 收缩轴、三轴契约、形状投影与取轴辅助复用 gemm 家族共享模块。
-pub use crate::gemm::{AXES, K, axis, project_shape};
+// 收缩轴、三轴契约、形状投影复用 gemm 家族共享模块。
+pub use crate::gemm::{AXES, K, project_shape};
 
-/// 标量代价：`2*m*k*n` 次浮点运算（乘加各一），读 A/B、写 Y。
+/// 稠密 f32 格式的标记类型：承载 `#[model]` 语义。
+pub struct Dense;
+
+impl Gemm for Dense {
+    type Elem = f32;
+
+    const OP: &'static str = "gemm_f32";
+
+    const BITS: Bits = Bits::ThirtyTwo;
+
+    fn sample_a(m: usize) -> Vec<f32> {
+        (0..m * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect()
+    }
+
+    fn sample_b(n: usize) -> Vec<f32> {
+        (0..K * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect()
+    }
+
+    fn a_len(m: usize) -> usize {
+        m * K
+    }
+
+    fn b_len(n: usize) -> usize {
+        K * n
+    }
+
+    fn dot(a: &[f32], b: &[f32], n: usize, i: usize, j: usize) -> f32 {
+        let row = &a[i * K..][..K];
+        row.iter().enumerate().map(|(p, x)| x * b[p * n + j]).sum()
+    }
+}
+
+/// 标量代价：由骨架按 f32 位宽推导。
 ///
 /// # Errors
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let m = axis(shape, 'm', "gemm")?;
-    let k = axis(shape, 'k', "gemm")?;
-    let n = axis(shape, 'n', "gemm")?;
-    Ok(Cost {
-        flops: (2 * m * k * n) as f64,
-        read: ((m * k + k * n) as u64) * 4,
-        write: ((m * n) as u64) * 4,
-    })
+    gemm::cost::<Dense>(shape)
 }
 
-/// 确定性样本：A（m×k）、B（k×n）、Y（m×n）。
+/// 确定性样本：A（`m×K`）、B（`K×n`）、Y（`m×n`）。
 pub fn sample(m: usize, n: usize) -> Sample {
-    Sample {
-        m,
-        n,
-        scalars: vec![("M", m as i64), ("K", K as i64), ("N", n as i64)],
-        buffers: vec![
-            Buffer {
-                name: "a",
-                values: Values::F32((0..m * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect()),
-            },
-            Buffer {
-                name: "b",
-                values: Values::F32((0..K * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect()),
-            },
-            Buffer {
-                name: "y",
-                values: Values::F32(vec![0.0; m * n]),
-            },
-        ],
-    }
+    gemm::sample::<Dense>(m, n)
 }
 
 /// 标量参考：三重循环，与内核同一公式。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    let m = sample.m;
-    let n = sample.n;
-    let a = sample.f32("a")?;
-    let b = sample.f32("b")?;
-    let mut out = vec![0.0; m * n];
-    matmul(a, b, m, n, &mut out);
-    Ok(out)
+    gemm::reference::<Dense>(sample)
 }
 
 /// 内核本体：结果写进调用方给的缓冲。
@@ -71,42 +75,12 @@ pub fn forward(
     n: usize,
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
-    if [a.len(), b.len(), out.len()] != [m * K, K * n, m * n] {
-        return Err(Error::new(Code::Invalid, "gemm 缓冲尺寸不符"));
-    }
-    matmul(a, b, m, n, out);
-    Ok(())
+    gemm::forward::<Dense>(a, b, m, n, out)
 }
-
-/// 三重循环骨架：`reference` 与 `forward` 共用，外层遍历只写一份；固定 K 的点积落在
-/// [`dot_k`]。
-fn matmul(a: &[f32], b: &[f32], m: usize, n: usize, out: &mut [f32]) {
-    for i in 0..m {
-        let row = &a[i * K..i * K + K];
-        for j in 0..n {
-            out[i * n + j] = dot_k(row, b, n, j);
-        }
-    }
-}
-
-/// 固定 K=8 点积：a 的一行（连续）与 b 的一列（按 n 跨步）。
-///
-/// 走切片迭代且长度固定，编译器把它展开成 8 个标量乘加，没有运行时循环控制开销，
-/// 也消除了 reference 与 forward 之间重复的内层循环。
-fn dot_k(a_row: &[f32], b: &[f32], n: usize, j: usize) -> f32 {
-    a_row
-        .iter()
-        .enumerate()
-        .map(|(p, x)| x * b[p * n + j])
-        .sum()
-}
-
-/// 标记类型：承载 `#[model]` 语义。
-pub struct Gemm;
 
 /// 矩阵乘的具体语义别名。
 #[annotation::model(name = "gemm_f32", shape = [16, 16], dtype = "f32", skeleton = "gemm")]
-pub type GemmF32 = Gemm;
+pub type GemmF32 = Dense;
 
 #[cfg(test)]
 mod tests;
