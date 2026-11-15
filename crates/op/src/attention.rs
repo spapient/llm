@@ -110,6 +110,14 @@ fn check_len(q: &[f32], k: &[f32], v: &[f32], out: &[f32], len: usize) -> diagno
     Ok(())
 }
 
+/// 头宽不能为 0：`√d` 作分数除数，`d=0` 会让每条分数除零成 NaN。
+fn check_width(d: usize) -> diagnostic::Result<()> {
+    if d == 0 {
+        return Err(Error::new(Code::Invalid, "注意力头宽不能为 0"));
+    }
+    Ok(())
+}
+
 /// 注意力的一行机器：三个操作数与行几何（`s`、`d`、`√d`），四个入口共用同一份算式。
 struct Rows<'a> {
     q: &'a [f32],
@@ -124,6 +132,7 @@ impl<'a> Rows<'a> {
     /// 从样本取三个操作数。
     fn of(sample: &'a Sample) -> diagnostic::Result<Self> {
         let (q, k, v) = qkv(sample)?;
+        check_width(sample.n)?;
         Ok(Self {
             q,
             k,
@@ -198,7 +207,7 @@ pub fn flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 ///
 /// # Errors
 ///
-/// 长度不符时返回说明。
+/// 长度不符或头宽为 0 时返回说明。
 pub fn forward(
     q: &[f32],
     k: &[f32],
@@ -208,6 +217,7 @@ pub fn forward(
     d: usize,
 ) -> diagnostic::Result<()> {
     check_len(q, k, v, out, s * d)?;
+    check_width(d)?;
     let rows = Rows {
         q,
         k,
@@ -226,7 +236,7 @@ pub fn forward(
 ///
 /// # Errors
 ///
-/// 长度不符时返回说明。
+/// 长度不符或头宽为 0 时返回说明。
 pub fn flash_forward(
     q: &[f32],
     k: &[f32],
@@ -236,6 +246,7 @@ pub fn flash_forward(
     d: usize,
 ) -> diagnostic::Result<()> {
     check_len(q, k, v, out, s * d)?;
+    check_width(d)?;
     let rows = Rows {
         q,
         k,

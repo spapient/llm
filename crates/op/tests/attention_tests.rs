@@ -36,3 +36,17 @@ fn flash_and_plain_attention_agree_and_rows_are_distributions() {
     .expect("flash 内核");
     assert!(testkit::approx_eq(&flash_out, &flash, 1e-5));
 }
+
+#[test]
+fn attention_rejects_zero_head_width() {
+    // d=0：三个输入与输出都是空缓冲，长度校验放行后由头宽守卫拦下，避免 √d 除零成 NaN。
+    let empty: &[f32] = &[];
+    let mut out = vec![];
+    assert!(forward(empty, empty, empty, &mut out, 8, 0).is_err());
+    assert!(flash_forward(empty, empty, empty, &mut out, 8, 0).is_err());
+    assert!(reference(&sample(8, 0)).is_err(), "朴素参考同样守卫头宽");
+    assert!(
+        flash_reference(&sample(8, 0)).is_err(),
+        "flash 参考同样守卫头宽"
+    );
+}
