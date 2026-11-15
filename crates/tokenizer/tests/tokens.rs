@@ -4,7 +4,8 @@
 //! 非法 UTF-8 与越界编号必须报错而不是替换，以及 `vocab_size` 与可接受编号范围一致。
 
 use llm_tokenizer::{
-    Bpe, Bytes, DecoderStream, Merge, Token, Tokenizer, Vocab, VocabFamily, VocabSource,
+    Bpe, Bytes, DecoderStream, Merge, SpecialTokens, Token, Tokenizer, Unigram, Vocab, VocabFamily,
+    VocabSource,
 };
 
 /// 合成 BPE 词表：`a b c` 单字节 + `ab`/`bc` 合并片；秩按 merges 表内顺序。
@@ -32,6 +33,26 @@ fn bpe_fixture() -> Bpe {
     };
     let vocab = Vocab::try_new(source).expect("合成 BPE 词表构造");
     Bpe::new(vocab).expect("合成 BPE 实例")
+}
+
+/// 合成 Unigram 词表：单字母 -1.0，`ab` -0.1，`abc` -2.0，`<unk>` 编号 5。
+fn unigram_fixture() -> Unigram {
+    let source = VocabSource {
+        family: VocabFamily::Unigram,
+        pieces: vec![
+            b"a".to_vec(),
+            b"b".to_vec(),
+            b"c".to_vec(),
+            b"ab".to_vec(),
+            b"abc".to_vec(),
+            b"<unk>".to_vec(),
+        ],
+        scores: vec![-1.0, -1.0, -1.0, -0.1, -2.0, 0.0],
+        special: SpecialTokens::empty().with_unk(5),
+        ..VocabSource::default()
+    };
+    let vocab = Vocab::try_new(source).expect("合成 Unigram 词表构造");
+    Unigram::new(vocab).expect("合成 Unigram 实例")
 }
 
 /// 编码产出的编号必须全部落在声明词表内——这是解码方不越界的共同前提。
@@ -78,42 +99,55 @@ fn contract_round_trip(tokenizer: &dyn Tokenizer, text: &str) {
 #[test]
 fn contract_id_range_holds_for_both_impls() {
     let bpe = bpe_fixture();
+    let unigram = unigram_fixture();
     for text in ["", "a", "hé", "中文", "🙂"] {
         contract_id_range(&Bytes, text);
     }
     for text in ["abc", "bc", "cab", ""] {
         contract_id_range(&bpe, text);
     }
+    for text in ["abc", "ab", "a", "b", "c", ""] {
+        contract_id_range(&unigram, text);
+    }
 }
 
 #[test]
 fn contract_out_of_range_rejected_for_both_impls() {
     let bpe = bpe_fixture();
+    let unigram = unigram_fixture();
     contract_out_of_range_rejected(&Bytes);
     contract_out_of_range_rejected(&bpe);
+    contract_out_of_range_rejected(&unigram);
 }
 
 #[test]
 fn contract_empty_sequence_for_both_impls() {
     let bpe = bpe_fixture();
+    let unigram = unigram_fixture();
     contract_empty_round_trip(&Bytes);
     contract_empty_round_trip(&bpe);
+    contract_empty_round_trip(&unigram);
 }
 
 #[test]
 fn contract_count_matches_for_both_impls() {
     let bpe = bpe_fixture();
+    let unigram = unigram_fixture();
     for text in ["", "a", "hé", "中文", "🙂"] {
         contract_count_matches(&Bytes, text);
     }
     for text in ["abc", "bc", "cab", ""] {
         contract_count_matches(&bpe, text);
     }
+    for text in ["abc", "ab", "a", "b", "c", ""] {
+        contract_count_matches(&unigram, text);
+    }
 }
 
 #[test]
 fn contract_round_trip_for_encodable_texts() {
     let bpe = bpe_fixture();
+    let unigram = unigram_fixture();
     for text in [
         "",
         "a",
@@ -128,6 +162,9 @@ fn contract_round_trip_for_encodable_texts() {
     }
     for text in ["abc", "bc", "cab", ""] {
         contract_round_trip(&bpe, text);
+    }
+    for text in ["abc", "ab", "a", "b", "c", ""] {
+        contract_round_trip(&unigram, text);
     }
 }
 

@@ -2,8 +2,8 @@
 //!
 //! **拥有**：`Tokenizer`、`Token`、`Bytes` 以及中性契约值对象（[`SpecialTokens`]、
 //! [`Encoding`]、[`Strategy`]、[`Fingerprint`]、[`DecoderStream`]、[`Vocab`]），
-//! 与 BPE 具体实现 [`Bpe`]。
-//! **不拥有**：Unigram / WordPiece / SentencePiece 算法与容器加载（后续变体落地）、
+//! 与 BPE 具体实现 [`Bpe`]、Unigram 具体实现 [`Unigram`]。
+//! **不拥有**：WordPiece / SentencePiece 算法与容器加载（后续变体落地）、
 //! 采样（由 `engine` 的调用方决定）。**依赖**：`diagnostic`。**被依赖**：`serve`。
 //!
 //! 先有 trait 再有实现：上层（调度、服务）只认 trait，所以换词表不影响它们。`Bytes` 不是玩具，
@@ -28,6 +28,7 @@ mod fingerprint;
 mod special;
 mod strategy;
 mod stream;
+mod unigram;
 mod vocab;
 
 pub use bpe::Bpe;
@@ -37,6 +38,7 @@ pub use fingerprint::Fingerprint;
 pub use special::SpecialTokens;
 pub use strategy::{PadDirection, Padding, Strategy, Truncation};
 pub use stream::DecoderStream;
+pub use unigram::Unigram;
 pub use vocab::{Merge, Vocab, VocabFamily, VocabSource};
 
 use diagnostic::Result;

@@ -404,6 +404,94 @@ fn fingerprint_separates_unigram_scores() {
     );
 }
 
+/// 合成 Unigram 词表：单字母 -1.0，`ab` -0.1（更优），`abc` -2.0，`<unk>` 0.0（编号 5）。
+fn unigram_source(register_unk: bool) -> VocabSource {
+    let special = SpecialTokens::empty().with_unk(5);
+    VocabSource {
+        family: VocabFamily::Unigram,
+        pieces: vec![
+            b"a".to_vec(),
+            b"b".to_vec(),
+            b"c".to_vec(),
+            b"ab".to_vec(),
+            b"abc".to_vec(),
+            b"<unk>".to_vec(),
+        ],
+        scores: vec![-1.0, -1.0, -1.0, -0.1, -2.0, 0.0],
+        special: if register_unk {
+            special
+        } else {
+            SpecialTokens::EMPTY
+        },
+        ..VocabSource::default()
+    }
+}
+
+fn unigram_vocab() -> Vocab {
+    Vocab::try_new(unigram_source(true)).expect("合成 Unigram 词表构造")
+}
+
+#[test]
+fn unigram_prefers_the_higher_scored_segment() {
+    let encoder = Unigram::new(unigram_vocab()).expect("Unigram 实例");
+    // ab（-0.1）优于 a+b（-2.0）。
+    assert_eq!(encoder.encode("ab").expect("编码"), [Token::new(3)]);
+}
+
+#[test]
+fn unigram_viterbi_picks_the_best_multi_piece_path() {
+    let encoder = Unigram::new(unigram_vocab()).expect("Unigram 实例");
+    // ab+c（-1.1）优于 abc（-2.0）与 a+b+c（-3.0）。
+    assert_eq!(
+        encoder.encode("abc").expect("编码"),
+        [Token::new(3), Token::new(2)]
+    );
+}
+
+#[test]
+fn unigram_round_trips_through_decode() {
+    let encoder = Unigram::new(unigram_vocab()).expect("Unigram 实例");
+    let tokens = encoder.encode("abc").expect("编码");
+    assert_eq!(encoder.decode(&tokens).expect("解码"), "abc");
+}
+
+#[test]
+fn unigram_falls_back_to_registered_unknown_token() {
+    let encoder = Unigram::new(unigram_vocab()).expect("Unigram 实例");
+    // d 不在词表：回退到编号 5 的 unknown 片。
+    assert_eq!(encoder.encode("d").expect("编码"), [Token::new(5)]);
+}
+
+#[test]
+fn unigram_rejects_uncovered_input_without_an_unknown_slot() {
+    let vocab = Vocab::try_new(unigram_source(false)).expect("无 unk 词表");
+    let encoder = Unigram::new(vocab).expect("Unigram 实例");
+    let error = encoder
+        .encode("d")
+        .expect_err("无覆盖路径且未配 unk 必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn unigram_rejects_non_unigram_family() {
+    let source = VocabSource {
+        family: VocabFamily::Byte,
+        pieces: vec![b"a".to_vec()],
+        ..VocabSource::default()
+    };
+    let vocab = Vocab::try_new(source).expect("字节词表");
+    let error = Unigram::new(vocab).expect_err("族不匹配必须拒绝");
+    assert_eq!(error.code(), Code::Unsupported);
+}
+
+#[test]
+fn unigram_lookup_and_piece_are_inverse() {
+    let encoder = Unigram::new(unigram_vocab()).expect("Unigram 实例");
+    let token = encoder.lookup(b"ab").expect("查表").expect("ab 命中");
+    assert_eq!(token.id(), 3);
+    assert_eq!(encoder.piece(token).expect("反查"), Some(b"ab".to_vec()));
+}
+
 #[test]
 fn stream_decodes_across_chunk_boundaries() {
     let mut stream = DecoderStream::new();
