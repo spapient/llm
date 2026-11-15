@@ -11,7 +11,7 @@
 
 ## 0. 结论与定位
 
-**北极星目标：在明确、可测量的指标上逐对象超越 llama.cpp、burn、candle，并长期对照 vLLM / TensorRT-LLM 的服务化指标。** 超越是终局目标，不是当前能力——当前运行时是契约级原型（无真实后端、无可写缓冲、无可运行内核）。本路线的职责是：
+**北极星目标：在明确、可测量的指标上逐对象超越 llama.cpp、burn、candle，并长期对照 vLLM / TensorRT-LLM 的服务化指标。** 超越是终局目标，不是当前能力——设备后端仍是契约级原型（无真实设备队列或 kernel launch）；CPU 侧已有参考内核、可写张量与分配器，经训练缓冲通路跑通链式前向。本路线的职责是：
 
 1. 把终局目标拆成可验证的追平/超越里程碑，每个里程碑都有同硬件、同输入的对照基准；
 2. **现在就把通向目标的抽象边界定死**（后端、张量、内存、KV、量化、通信、调度、基准），避免到 P3 接后端时推倒重写；
@@ -58,11 +58,11 @@
 | 项 | 现状 | 证据 |
 |---|---|---|
 | 成员规模 | 24 个 `crates/*` + 根包 `llm`；317 个 `.rs` | `ls crates/*/`；`find crates -name '*.rs'` |
-| 测试 | nextest 980 passed / 0 failed / 0 skipped；doc-test 全过 | 本次工作树实测 |
+| 测试 | nextest 1079 passed / 0 failed / 0 skipped；doc-test 全过 | 本次工作树实测 |
 | 注册算子 | 22 个命名算子（gemv/gemm/attention/flash_attention/rope/rmsnorm/softmax/激活/归约/量化反量化等） | `crates/op/src/lib.rs` 注册表投影 |
 | 输出语言闭集 | 9 种 Emit：Cuda、Ptx、Hip、Opencl、Spirv、Metal、Ascendc、C、Wgsl | `crates/prof/src/prof.rs:16-35` |
 | 执行后端 | **只有契约**：图/流/节点/启动几何，没有真实流、设备队列或 kernel launch | `crates/engine/src/exec.rs:8` |
-| 张量存储 | 只读 `&'a [u8]` 视图；无可写缓冲、无分配器、无跨设备拷贝 | `crates/tensor/src/lib.rs:126-185` |
+| 张量存储 | 只读 `&'a [u8]` 视图 + 可写 `OwnedTensor`（元数据 + 拥有字节向量）；CPU `Buffer` / `Allocator` / `CpuAllocator`；跨设备拷贝是 `Allocator` 显式方法、后端实现未落地 | `crates/tensor/src/lib.rs`、`crates/storage/src/lib.rs` |
 | KV 缓存 | 只有页表/存活位图簿记，页里不持有数据 | `crates/engine/src/kv.rs:3,7` |
 | 服务端点 | 路由/响应/线格式契约，无 socket；HTTP/gRPC 是待实现的 `Endpoint` 后端 | `crates/serve/src/lib.rs` |
 | 训练侧 | 循环状态、检查点、激活缓冲簿记；反传公式在 `autograd`，激活显存计划未定 | `crates/train/src/lib.rs:1-15` |
@@ -70,7 +70,7 @@
 | 外部 FFI | 全仓唯一生产 FFI 是 `storage` 的 mmap 内存映射 | `crates/storage/src/mmap.rs:28` |
 | unsafe 策略 | `unsafe_code = "deny"`，生产核心无 `unsafe` | `Cargo.toml:56` |
 | 生产依赖 | 生产路径仅 `dtype` 可选 feature 引入 `serde`/`bytemuck`，`fuzz` 可选 `libfuzzer-sys`；`criterion`/`clap` 等属 dev/build 依赖 | 各 `Cargo.toml` |
-| 基准 | 5 个 criterion 结构/编解码基准（elementwise、span_parse、negotiate、wire_codec、weights_container），无 kernel 吞吐测量 | `crates/benches/Cargo.toml` |
+| 基准 | criterion 结构/编解码基准 + 三条 decode 行宽 kernel 基准（`gemv_f32` 已入 `tool::regress` 基线判定；`softmax_f32` / `rope_f32` 已建采样入口，基线待靶机首次实测登记） | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
 | 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.24% / token 1.46%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`.jscpd.json`、`.github/workflows/ci.yml` |
 
 ## 4. 能力维度对标矩阵
