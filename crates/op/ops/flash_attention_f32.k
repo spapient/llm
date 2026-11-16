@@ -17,8 +17,8 @@ void cutile_{{op}}_kernel(const float *q, const float *k, const float *v, float 
             @dot(dot, q + i * D, k + j * D, D);
             float score = dot / scale;
             float new_max = row_max > score ? row_max : score;
-            float reweight = expf(row_max - new_max);
-            float prob = expf(score - new_max);
+            float reweight = _cutile_exp_f32(row_max - new_max);
+            float prob = _cutile_exp_f32(score - new_max);
             prob_sum = prob_sum * reweight + prob;
             for (int h = 0; h < D; ++h) {
                 acc[h] = acc[h] * reweight + prob * v[j * D + h];
