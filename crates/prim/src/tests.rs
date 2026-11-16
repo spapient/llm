@@ -118,6 +118,39 @@ fn a_signature_needs_an_implementation_name() {
     assert!(error.to_string().contains("impl"), "{error}");
 }
 
+/// 同一原语可以登记多条实现：按实现名取对应片段，首份留给未筛选的兼容入口。
+#[test]
+fn same_primitive_multiple_implementations_are_selectable() {
+    let mut set = FragmentSet::new("fake", "c");
+    set.insert(Prim::Load, "/* cutile-sign: load/memcpy */\n{ $0 = $1; }\n")
+        .expect("首份可登记");
+    set.insert(
+        Prim::Load,
+        "/* cutile-sign: load/vector */\n{ $0 += $1; }\n",
+    )
+    .expect("第二份可登记");
+    assert_eq!(set.len(), 2);
+    assert_eq!(set.implementation(Prim::Load), Some("memcpy"));
+    let memcpy = set.get_impl(Prim::Load, "memcpy").expect("memcpy 片段在");
+    let vector = set.get_impl(Prim::Load, "vector").expect("vector 片段在");
+    assert!(memcpy.contains("$0 = $1"), "{memcpy}");
+    assert!(vector.contains("$0 += $1"), "{vector}");
+    assert!(set.get_impl(Prim::Load, "absent").is_none());
+}
+
+/// 同一原语同名实现不能放两份：否则协商无法对齐到唯一片段。
+#[test]
+fn duplicate_implementation_is_rejected() {
+    let mut set = FragmentSet::new("fake", "c");
+    set.insert(Prim::Load, "/* cutile-sign: load/memcpy */\n{ $0 = $1; }\n")
+        .expect("首份可登记");
+    let error = set
+        .insert(Prim::Load, "/* cutile-sign: load/memcpy */\n{ $0 = $1; }\n")
+        .expect_err("同名实现重复必须报错");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(error.to_string().contains("memcpy"), "{error}");
+}
+
 /// 去掉注释并压缩空白：跨设备只比对可执行语句，注释语言与设备说明不参与同构判定。
 fn normalize_body(body: &str) -> String {
     let chars: Vec<char> = body.chars().collect();

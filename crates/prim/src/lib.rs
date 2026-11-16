@@ -192,11 +192,14 @@ fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)
 }
 
 /// 某个 vendor 的片段集合。
+///
+/// 同一原语可以挂多条片段：每条声明自己的 `impl`（[`Fragment::implementation`]），协商按选中的
+/// 实现名取对应那一段。未按实现筛选时，[`FragmentSet::get`] 返回登记的首份，保留单片段设备的旧行为。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FragmentSet {
     vendor: String,
     ext: String,
-    fragments: BTreeMap<Prim, Fragment>,
+    fragments: BTreeMap<Prim, Vec<Fragment>>,
 }
 
 impl FragmentSet {
@@ -213,25 +216,61 @@ impl FragmentSet {
     ///
     /// # Errors
     ///
-    /// 第一行不是签名声明、声明里的原语与文件名不一致、或缺少 `impl` 名时返回 `invalid`。
+    /// 第一行不是签名声明、声明里的原语与文件名不一致、缺少 `impl` 名，或同一原语同名实现重复登记时
+    /// 返回 `invalid`。
     pub fn insert(&mut self, prim: Prim, source: impl Into<String>) -> diagnostic::Result<()> {
-        self.fragments.insert(prim, Fragment::parse(prim, source)?);
+        let fragment = Fragment::parse(prim, source)?;
+        let list = self.fragments.entry(prim).or_default();
+        if list
+            .iter()
+            .any(|existing| existing.implementation == fragment.implementation)
+        {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "`{prim}` 已登记 `{}` 实现：同一原语的同名片段不能放两份",
+                    fragment.implementation
+                ),
+            ));
+        }
+        list.push(fragment);
         Ok(())
     }
 
-    /// 取一段片段。
+    /// 取登记的首份片段正文（单片段设备的兼容入口）。
     pub fn get(&self, prim: Prim) -> Option<&str> {
-        self.fragments.get(&prim).map(Fragment::body)
+        self.first(&prim).map(Fragment::body)
     }
 
-    /// 取一段片段（含它的签名声明）。
+    /// 取某条实现对应的片段正文；没有这条实现时返回 `None`。
+    pub fn get_impl(&self, prim: Prim, implementation: &str) -> Option<&str> {
+        self.fragment_impl(prim, implementation).map(Fragment::body)
+    }
+
+    /// 取登记的首份片段（含它的签名声明）。
     pub fn fragment(&self, prim: Prim) -> Option<&Fragment> {
-        self.fragments.get(&prim)
+        self.first(&prim)
+    }
+
+    /// 取某条实现对应的片段（含签名声明）。
+    pub fn fragment_impl(&self, prim: Prim, implementation: &str) -> Option<&Fragment> {
+        self.fragments
+            .get(&prim)?
+            .iter()
+            .find(|fragment| fragment.implementation == implementation)
     }
 
     /// 片段声明实现的 `impl` 名；没有这段片段时 `None`。
     pub fn implementation(&self, prim: Prim) -> Option<&str> {
-        self.fragments.get(&prim).map(Fragment::implementation)
+        self.first(&prim).map(Fragment::implementation)
+    }
+
+    /// 遍历某原语登记的全部片段（按登记顺序）。
+    pub fn fragments_of(&self, prim: Prim) -> &[Fragment] {
+        self.fragments
+            .get(&prim)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     /// 设备名。
@@ -244,14 +283,19 @@ impl FragmentSet {
         &self.ext
     }
 
-    /// 片段数。
+    /// 片段总数（同一原语的多条实现分别计数）。
     pub fn len(&self) -> usize {
-        self.fragments.len()
+        self.fragments.values().map(Vec::len).sum()
     }
 
     /// 是否为空。
     pub fn is_empty(&self) -> bool {
-        self.fragments.is_empty()
+        self.fragments.values().all(Vec::is_empty)
+    }
+
+    /// 取某原语登记的首份片段。
+    fn first(&self, prim: &Prim) -> Option<&Fragment> {
+        self.fragments.get(prim)?.first()
     }
 }
 
