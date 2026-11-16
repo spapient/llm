@@ -14,9 +14,7 @@ void cutile_{{op}}_kernel(const float *q, const float *k, const float *v, float 
         for (int h = 0; h < D; ++h) { acc[h] = 0.0f; }
         for (int j = 0; j < S; ++j) {
             float dot = 0.0f;
-            for (int h = 0; h < D; ++h) {
-                dot += q[i * D + h] * k[j * D + h];
-            }
+            @dot(dot, q + i * D, k + j * D, D);
             float score = dot / scale;
             float new_max = row_max > score ? row_max : score;
             float reweight = expf(row_max - new_max);

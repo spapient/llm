@@ -10,8 +10,9 @@ summary  = "O = softmax(QK^T/sqrt(d)) V"
 N = [8]
 
 [needs]
-load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
-store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+dot    = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
+load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 
 [layouts]
 q = "row"

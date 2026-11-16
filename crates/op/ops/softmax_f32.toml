@@ -10,8 +10,9 @@ summary  = "y[n] = softmax(x)[n]"
 N = [32]
 
 [needs]
-load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
-store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
+load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 
 [layouts]
 x = "row"
