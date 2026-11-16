@@ -104,7 +104,39 @@ pub fn compile(
             ),
         ));
     }
+    require_executable(dir, &exe)
+}
+
+/// 编译成功但产物没落盘：把目录内容交给诊断，而不是让下游在复制阶段拿到一个不存在的裸路径。
+fn require_executable(dir: &Path, base: &Path) -> diagnostic::Result<PathBuf> {
+    let Some(exe) = compiled_executable(dir, base) else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "编译成功但产物未落盘到 {}：目录内找不到可执行文件",
+                dir.display()
+            ),
+        ));
+    };
     Ok(exe)
+}
+
+/// 编译器把可执行文件写成什么名字由驱动决定：Windows 上驱动常自动补 `.exe`，`-o` 给的裸名
+/// 并不会落盘。编译成功后以磁盘上真实存在的那份为准回传，避免下游复制/执行拿到不存在的裸路径。
+fn compiled_executable(dir: &Path, base: &Path) -> Option<PathBuf> {
+    if base.exists() {
+        return Some(base.to_path_buf());
+    }
+    let with_extension = base.with_extension("exe");
+    if with_extension.exists() {
+        return Some(with_extension);
+    }
+    // 驱动另起了默认名（如 `a.exe`）：目录里除源文本外的第一个文件就是本次产物。
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.is_file() && path.extension().map(|ext| ext != "c").unwrap_or(true))
 }
 
 /// 只执行：读 stdout 的位模式与 stderr 的计时样本。
