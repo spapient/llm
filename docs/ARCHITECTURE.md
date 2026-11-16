@@ -35,7 +35,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 94 条，含 31 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 95 条，含 31 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -53,7 +53,7 @@ data     → tensor, diagnostic
 nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
 train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
-engine   → tensor, diagnostic    +dev: testkit
+engine   → tensor, diagnostic, storage    +dev: testkit
 serve    → engine, tokenizer, diagnostic    +dev: testkit
 cli      → diagnostic
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的八个驱动对象：`cli` 参数文法、`weights` JSON / safetensors / LLPK 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量，`tensor` 为检查点与 LLPK 夹具写形状；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）

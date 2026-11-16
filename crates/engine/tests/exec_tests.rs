@@ -1,4 +1,5 @@
 use super::*;
+use storage::CpuAllocator;
 
 struct Counting {
     device: Device,
@@ -59,7 +60,8 @@ fn graph(names: &[&str]) -> Graph {
 
 #[test]
 fn local_executor_keeps_submission_order_within_a_stream() {
-    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    let mut executor =
+        LocalExecutor::new(Device::new("cpu", "generic"), Box::new(CpuAllocator::new()));
     executor
         .submit(&graph(&["a", "b"]), Stream::new(0))
         .expect("提交第一幅图");
@@ -78,7 +80,8 @@ fn local_executor_keeps_submission_order_within_a_stream() {
 
 #[test]
 fn local_sync_drains_only_the_named_stream() {
-    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    let mut executor =
+        LocalExecutor::new(Device::new("cpu", "generic"), Box::new(CpuAllocator::new()));
     executor
         .submit(&graph(&["x", "y"]), Stream::new(0))
         .expect("流 0 入队");
@@ -99,7 +102,8 @@ fn local_sync_drains_only_the_named_stream() {
 
 #[test]
 fn local_executor_empty_graph_submits_nothing() {
-    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    let mut executor =
+        LocalExecutor::new(Device::new("cpu", "generic"), Box::new(CpuAllocator::new()));
     executor
         .submit(&Graph::new(), Stream::new(0))
         .expect("空图提交");
@@ -108,9 +112,21 @@ fn local_executor_empty_graph_submits_nothing() {
 
 #[test]
 fn local_executor_reports_bound_device() {
-    let executor = LocalExecutor::new(Device::new("cpu", "aarch64"));
+    let executor = LocalExecutor::new(Device::new("cpu", "aarch64"), Box::new(CpuAllocator::new()));
     assert_eq!(executor.device().vendor(), "cpu");
     assert_eq!(executor.device().arch(), "aarch64");
+}
+
+#[test]
+fn local_executor_bounds_injected_allocator() {
+    let mut executor =
+        LocalExecutor::new(Device::new("cpu", "generic"), Box::new(CpuAllocator::new()));
+    let buffer = executor.allocator_mut().alloc(16).expect("分配 16 字节");
+    assert_eq!(buffer.len(), 16);
+    executor.allocator_mut().free(buffer);
+
+    let empty = executor.allocator_mut().alloc(0).expect("零字节分配");
+    assert!(empty.is_empty());
 }
 
 #[test]
@@ -140,7 +156,8 @@ fn queued_node_keeps_its_operand_bindings() {
     node.bind_input(3).bind_output(4);
     graph.push(node);
 
-    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    let mut executor =
+        LocalExecutor::new(Device::new("cpu", "generic"), Box::new(CpuAllocator::new()));
     executor.submit(&graph, Stream::new(0)).expect("提交");
 
     let queued = executor.pending();

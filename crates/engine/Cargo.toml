@@ -13,6 +13,7 @@ autotests = false
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
+storage = { path = "../storage", package = "llm-storage" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }

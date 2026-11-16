@@ -3,10 +3,13 @@
 //! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Operand`、`Executor`。**不拥有**：编译 kernel
 //! （`cutile::runner` 负责"源文件 → 可执行文件"，产物按 `(模板, 档案, flags)` 由 `cutile::build` 缓存；本 crate 只负责
 //! "图提交到流"，每 step 都发生，见 `docs/adr/0002-single-owner-per-type.md`）、缓冲分配（`storage`）。
-//! **依赖**：`diagnostic`。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
+//! **依赖**：`diagnostic`、`tensor`、`storage`（仅 [`Allocator`] trait 对象；`Buffer`/`Allocator`
+//! 类型定义归 `storage`）。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
 //!
 //! 节点绑定的只是不透明操作数引用（[`Operand`]：编号 + 只读/可写角色）；编号到实际缓冲的解析、
 //! 缓冲生命周期与设备句柄都在后端边界侧（ADR 0025 §2/§3），本层不持缓冲字节、不引用 `op` 算子闭集。
+//! 执行器只持有分配器 [`Allocator`] trait 对象（与设备同生命周期），不持有 [`storage::Buffer`]
+//! 字节；缓冲的分配、解析与写回仍由后端执行体经分配器完成。
 //!
 //! 现在只有契约：没有真实的流、没有设备队列。缺的是实现，不是接口——后端的差异会落在
 //! `Executor` 的实现里，而不是散到调度与模型代码中。
@@ -24,6 +27,8 @@
 //! ```
 
 use diagnostic::Result;
+use std::fmt;
+use storage::Allocator;
 
 /// 一次 kernel 的网格与线程块几何。
 ///
@@ -286,19 +291,43 @@ impl Queued {
 /// 这是 [`Executor`] 的第一个落地实现：单线程、不提交设备命令、不解析操作数引用——节点携带的
 /// 不透明编号到缓冲的解析、算子内核的挂载与 cutile 产物复用属于后续接内核执行体的后端（见模块顶部
 /// 边界）。本实现只守住契约：同一流内节点按图序入队，`sync` 后排干该流；编排层可以先接上执行入口，执行体后补。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// 构造时注入 [`Allocator`] trait 对象；执行器只持有分配器，不持有 [`storage::Buffer`] 字节，
+/// 分配与写回由后端执行体经分配器完成。分配器是有状态后端句柄，因此本类型不派生克隆与相等。
 pub struct LocalExecutor {
     device: Device,
+    allocator: Box<dyn Allocator>,
     queue: Vec<Queued>,
 }
 
+impl fmt::Debug for LocalExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalExecutor")
+            .field("device", &self.device)
+            .field("pending", &self.queue.len())
+            .finish()
+    }
+}
+
 impl LocalExecutor {
-    /// 绑定一台 CPU 设备，构造空队列后端。
-    pub fn new(device: Device) -> Self {
+    /// 绑定一台 CPU 设备与其缓冲分配器，构造空队列后端。
+    pub fn new(device: Device, allocator: Box<dyn Allocator>) -> Self {
         Self {
             device,
+            allocator,
             queue: Vec::new(),
         }
+    }
+
+    /// 绑定的缓冲分配器（trait 对象；只持分配器，不持缓冲字节）。
+    pub fn allocator(&self) -> &dyn Allocator {
+        self.allocator.as_ref()
+    }
+
+    /// 可变借用分配器：分配与归还经此入口，缓冲字节不升到本层。
+    pub fn allocator_mut(&mut self) -> &mut dyn Allocator {
+        self.allocator.as_mut()
     }
 
     /// 尚未同步的提交，按入队顺序。
