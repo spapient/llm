@@ -16,6 +16,7 @@ engine = ["dep:libfuzzer-sys"]
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 # libFuzzer 运行时只服务 harness；契约库不引用它，未启用 `engine` 时不编译。
+# Cargo 不允许 dev-dependencies 可选，因此保留在常规依赖侧并由 `engine` feature 门控。
 libfuzzer-sys = { version = "0.4.13", optional = true }
 
 # 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）与 libfuzzer harness（见 `tests/fuzz_*.rs`）。
@@ -27,6 +28,13 @@ train = { path = "../train", package = "llm-train" }
 serve = { path = "../serve", package = "llm-serve" }
 wire = { path = "../wire", package = "llm-wire" }
 tensor = { path = "../tensor", package = "llm-tensor" }
+
+# 语料生成器：`harness = false` 的普通二进制，默认 feature 即可构建；把合法范例写到
+# corpus/<目标>/seed.bin。不走 libtest，由 CI fuzz job 显式调用。
+[[test]]
+name = "gen_corpus"
+path = "tests/gen_corpus.rs"
+harness = false
 
 # libfuzzer 目标是 `harness = false` 的独立测试二进制：拿 dev-dependencies，但不走 libtest；
 # 不作为 `example` 样例目标存在。仅在 `engine` feature 下编译。
@@ -49,6 +57,12 @@ harness = false
 required-features = ["engine"]
 
 [[test]]
+name = "fuzz_weights_archive"
+path = "tests/fuzz_weights_archive.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
 name = "fuzz_train_snapshot"
 path = "tests/fuzz_train_snapshot.rs"
 harness = false
@@ -63,6 +77,12 @@ required-features = ["engine"]
 [[test]]
 name = "fuzz_wire_sealed"
 path = "tests/fuzz_wire_sealed.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_wire_leb"
+path = "tests/fuzz_wire_leb.rs"
 harness = false
 required-features = ["engine"]
 

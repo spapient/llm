@@ -12,3 +12,6 @@ target/
 
 # 系统文件
 .DS_Store
+
+# fuzz 种子语料由 tests/gen_corpus.rs 从库编码生成，二进制不入库；字典与说明除外
+/crates/fuzz/corpus/*/*.bin

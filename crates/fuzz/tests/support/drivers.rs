@@ -5,7 +5,7 @@
 //! 文本/字节边界的处理在两处悄悄漂移。
 //!
 //! 运行时只把"任意字节 → 接受/拒绝"的结果交回契约层；解析器本身在 `cli` / `weights` /
-//! `train::snapshot` / `serve::proto`，不变量本身在 `wire`。
+//! `train::snapshot` / `serve::proto` / `wire`，不变量本身在 `wire`。
 //!
 //! 每个 harness 例子只取其中一个适配，未被该消费方引用的项是有意保留的整组定义，不报 dead_code。
 #![allow(dead_code)]
@@ -66,6 +66,22 @@ impl Target for Safetensors {
     }
 }
 
+/// LLPK 自造容器：描述符表 + 对齐数据段 + 两级 CRC 尾部。
+///
+/// 与 safetensors 是两条独立的布局路径：段名唯一性、区间不重叠、两级校验和都在这条入口上
+/// 暴露给任意字节。
+pub struct Llpk;
+
+impl Target for Llpk {
+    fn name(&self) -> &str {
+        "weights::Archive"
+    }
+
+    fn run(&self, input: &[u8]) -> Result<(), Error> {
+        weights::Archive::parse(input).map(|_| ())
+    }
+}
+
 /// 训练检查点：魔数 + 版本 + 事实 + 条目表 + CRC-32 尾部。
 ///
 /// `decode` 内部先跑 `verify`，所以这一条同时覆盖"校验和在错误路径上不 panic"与
@@ -101,6 +117,24 @@ impl Target for Frames {
     }
 }
 
+/// LEB128 变长整数游标：一段字节里读一个规范无符号整数。
+///
+/// 非规范编码（前导零字节、超 `u64` 容量、第 10 字节越界）与字节不足都返回错误；游标本身
+/// 不要求消费完整段，尾部多余字节留给流式上层判断，这里只验"读一个数不 panic、结论稳定"。
+pub struct Leb;
+
+impl Target for Leb {
+    fn name(&self) -> &str {
+        "wire::leb::Cursor"
+    }
+
+    fn run(&self, input: &[u8]) -> Result<(), Error> {
+        let mut cursor = wire::leb::Cursor::new(input);
+        let _: u64 = cursor.read()?;
+        Ok(())
+    }
+}
+
 /// 线格式的密封与计量：同一批字节经三种 `Sink` 必须得到互相一致的结论。
 ///
 /// 这一条不拒绝任何输入（`Sink` 没有"格式错"这种状态），它验的是**不变量**：密封算出的
@@ -125,14 +159,15 @@ impl Target for Sealed {
         let mut slice = vec![0u8; input.len()];
         let mut buffer = wire::sink::SliceSink::new(&mut slice);
         buffer.put(input);
-        let mismatches = [
+        let inconsistent = [
             checksum != wire::crc::crc32(input),
             counted.0 != input.len(),
             written.as_slice() != input,
             buffer.overflow(),
             buffer.written() != input.len(),
-        ];
-        if mismatches.iter().any(|bad| *bad) {
+        ]
+        .contains(&true);
+        if inconsistent {
             return Err(
                 Error::new(Code::Internal, "三种接收器对同一批字节给出了不一致的结论")
                     .with("fuzz::drivers::Sealed"),
