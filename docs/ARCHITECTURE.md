@@ -5,6 +5,7 @@
 
 `../crates/cutile/README.md` 描述的是 kernel 层（`cutile` + `op` / `prof` / `prim`）的内部机制；
 本文描述的是**整仓的模块划分与依赖方向**。两者不重叠：改 DSL 机制看该 README，加模块看本文。
+`cutile` 25 个模块的清单、职责判决与五设备取证见 [`cutile-analysis.md`](cutile-analysis.md)；设备数据与机制的边界裁决见 [ADR 0028](adr/0028-device-data-vs-mechanism-boundary.md)。
 
 ## 一、分层
 

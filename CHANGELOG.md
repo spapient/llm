@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`cutile` 整体分析落档，本轮零代码改动**：[`docs/cutile-analysis.md`](docs/cutile-analysis.md) 逐块判完 25 个模块
+  （7077 行：唯一机制 12 / 命令策略 5 / 设备编排 5 / 纯数据 3），取证 CPU 从 `.k` 模板 → `prim/cpu` 片段 →
+  `cpu.toml` 前导 → 见证 → 子进程对拍的完整链路，并给出五设备 × 十六原语矩阵与 Metal 缺口的三类拆分；
+  边界裁决落在 [ADR 0028](docs/adr/0028-device-data-vs-mechanism-boundary.md)：设备数据归 L2（`prim` / `prof`），
+  机制留 L3（`cutile`），真设备运行时后端不进 `cutile`；显式记录本轮偏离 roadmap §5/P3「独立后端边界 crate」
+  （不新建成员），落点与触发条件随 P3 动工前的边界 ADR 复核。`crates/**` 无 `.rs` / `.toml` 改动。
+
 ### Changed
 
 - **存量债务清零：`[[gate.debt]]` 203 条 → 0 条**。上一轮结清 `crates/cutile` 的 45 条后，剩下的 203 条分散在

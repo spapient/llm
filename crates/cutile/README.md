@@ -131,6 +131,8 @@ CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err
 
 ### 3.1 目录与模块
 
+25 个模块的逐条清单、行数与四类职责判决，以及 CPU 链路取证和五设备矩阵，见 [`docs/cutile-analysis.md`](../../docs/cutile-analysis.md)；数据 / 机制 / 运行时后端的边界裁决见 [ADR 0028](../../docs/adr/0028-device-data-vs-mechanism-boundary.md)。
+
 ```
 crates/op/                      # 声明层：纯数据 + 解析，不含机制
 ├── Cargo.toml
