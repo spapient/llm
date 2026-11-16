@@ -64,14 +64,10 @@
 
 #![deny(unsafe_code)]
 
-mod crc;
-mod decoder;
-mod frame;
-
 use core::fmt;
 
-pub use self::decoder::Decoder;
-pub use self::frame::{Envelope, Frame};
+pub use crate::decoder::Decoder;
+pub use crate::frame::{Envelope, Frame};
 
 /// 魔数：`0x4C4C`（"LL"），用来在第一时间拒绝"连错端口"。
 pub const MAGIC: u16 = 0x4c4c;
@@ -136,60 +132,24 @@ impl fmt::Display for Version {
     }
 }
 
-/// 帧类型闭集。
-///
-/// 加一个变体要同步 [`Kind::ALL`] 与 [`Kind::code`]：类型是日志与对端行为的对外契约。
-/// [`Kind::from_code`] 由 `ALL` 推出，不再单独维护一张解码表——那样漏一处只有发送端能编、
-/// 接收端却认不出，正是跨版本互通最难查的一类问题。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Kind {
-    /// 一个请求的开始。
-    Request,
-    /// 一个流式数据块。
-    Chunk,
-    /// 一个错误响应。
-    Error,
-    /// 流的结束。
-    Done,
-}
-
-impl Kind {
-    /// 全部类型，供遍历与用例。
-    pub const ALL: [Self; 4] = [Self::Request, Self::Chunk, Self::Error, Self::Done];
-
-    /// 线上编码。
-    pub fn code(self) -> u16 {
-        match self {
-            Self::Request => 1,
-            Self::Chunk => 2,
-            Self::Error => 3,
-            Self::Done => 4,
-        }
-    }
-
-    /// 由编码还原；未知编码返回 `None`。
+code_name_set! {
+    /// 帧类型闭集。
     ///
-    /// 唯一的事实源是 [`Kind::code`]：这里的查找由 [`Kind::ALL`] 驱动，不再手写第二张表。
-    pub fn from_code(code: u16) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.code() == code)
-    }
-
-    /// 稳定的短名：写进日志与诊断，不随翻译变化（线上用的是 [`Kind::code`]）。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Request => "request",
-            Self::Chunk => "chunk",
-            Self::Error => "error",
-            Self::Done => "done",
-        }
-    }
-}
-
-impl fmt::Display for Kind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+    /// 加一个变体只改表内一行：类型是日志与对端行为的对外契约。[`Kind::from_code`] 由 `ALL`
+    /// 推出，不再单独维护一张解码表——那样漏一处只有发送端能编、接收端却认不出，正是跨版本
+    /// 互通最难查的一类问题。
+    pub enum Kind {
+        /// 一个请求的开始。
+        Request => 1, "request",
+        /// 一个流式数据块。
+        Chunk => 2, "chunk",
+        /// 一个错误响应。
+        Error => 3, "error",
+        /// 流的结束。
+        Done => 4, "done",
     }
 }
 
 #[cfg(test)]
+#[path = "../tests/protocol_tests.rs"]
 mod tests;

@@ -5,8 +5,8 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::proto::crc::crc32;
-use crate::proto::{HEADER_LEN, Kind, MAGIC, MAX_PAYLOAD, TRAILER_LEN, Version};
+use crate::crc::crc32;
+use crate::protocol::{HEADER_LEN, Kind, MAGIC, MAX_PAYLOAD, TRAILER_LEN, Version};
 
 /// 解析出来的帧头。
 #[derive(Debug, Clone, Copy)]
@@ -174,7 +174,7 @@ fn length_at(bytes: &[u8]) -> Result<usize> {
 
 /// 一帧的零拷贝视图：帧头三段 + 借来的载荷。
 ///
-/// [`crate::proto::Decoder`] 交付的是它；要留住这帧、或要把它放进别的结构里时，用 [`Frame::envelope`] 换一份
+/// [`crate::protocol::Decoder`] 交付的是它；要留住这帧、或要把它放进别的结构里时，用 [`Frame::envelope`] 换一份
 /// 拥有载荷的 [`Envelope`]。一帧最大 [`MAX_PAYLOAD`]，所以"复制一次"的代价是有上界的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame<'a> {
@@ -184,7 +184,7 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    /// 由扫描结果组装：只有本模块与 [`crate::proto::Decoder`] 能造，格式已在上游校验过。
+    /// 由扫描结果组装：只有本模块与 [`crate::protocol::Decoder`] 能造，格式已在上游校验过。
     pub(crate) fn new(version: Version, kind: Kind, payload: &'a [u8]) -> Self {
         Self {
             version,

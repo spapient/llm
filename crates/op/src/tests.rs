@@ -48,6 +48,15 @@ fn every_builtin_entry_has_a_model() {
     assert!(model("no_such_op").is_none());
 }
 
+/// const 归属查询与整条注册表一致：在册为真，闭集外为假。
+#[test]
+fn registry_contains_matches_table() {
+    for entry in REGISTRY {
+        assert!(contains(entry.name), "{} 在册却查不到", entry.name);
+    }
+    assert!(!contains("no_such_op_f32"));
+}
+
 /// 测试要的是**量化那条**算子，不是"注册表里的第一条"。
 ///
 /// 按位置取会在注册表从一条变两条的那天静默换人——而两条算子并不等价（稠密 f32 与 int4

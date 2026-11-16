@@ -27,7 +27,7 @@ reason = "L1：分片种类（张量流水线/数据）是调度层的词汇表"
 
 [[closed.exempt]]
 crate = "serve"
-reason = "L6：帧类型是线格式的词汇表（`proto` 子模块），与设备能力无关；`serve` 在 `prof` 下游，反向依赖会成环"
+reason = "L6：帧类型是线格式的词汇表（`protocol` 模块，`proto` 为兼容重导出路径），与设备能力无关；`serve` 在 `prof` 下游，反向依赖会成环"
 
 
 [bitset]

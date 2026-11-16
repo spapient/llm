@@ -1,11 +1,11 @@
 use super::*;
-use crate::proto::{Envelope, Kind, Version};
+use crate::protocol::{Envelope, Kind, Version};
 
 /// 一条混着四种类型、两种版本、若干载荷长度的流。
 fn stream() -> (Vec<u8>, Vec<Envelope>) {
     let mut bytes = Vec::new();
     let mut frames = Vec::new();
-    for (index, kind) in Kind::ALL.into_iter().enumerate() {
+    for (index, kind) in Kind::ALL.iter().copied().enumerate() {
         let version = if index % 2 == 0 {
             Version::FIRST
         } else {

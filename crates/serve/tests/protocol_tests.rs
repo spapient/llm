@@ -43,7 +43,7 @@ fn the_wire_layout_is_pinned() {
     );
     assert_eq!(
         &current[first.len()..],
-        &crc::crc32(&current[..first.len()]).to_le_bytes()
+        &crate::crc::crc32(&current[..first.len()]).to_le_bytes()
     );
 }
 
@@ -224,7 +224,7 @@ fn kind_codes_are_a_closed_set() {
         [1, 2, 3, 4],
         "线上编码是对端契约，不允许随枚举顺序漂移"
     );
-    for kind in Kind::ALL {
+    for &kind in Kind::ALL {
         assert_eq!(Kind::from_code(kind.code()), Some(kind));
         assert!(!kind.as_str().is_empty());
         assert_eq!(kind.to_string(), kind.as_str());

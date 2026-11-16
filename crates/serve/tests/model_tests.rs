@@ -1,5 +1,6 @@
 use super::*;
 use crate::Predict;
+use crate::assembly::{CpuModel, Params};
 use diagnostic::Code;
 use engine::Sequence;
 use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};

@@ -122,7 +122,7 @@ graph TD
 | C1 | 请求字段名、未知键提示、缺字段提示散落在 `set` / `finish` 三个分支，新增字段要改匹配臂 + 错误文案 + 取值三处 | `request.rs:83-149` | P0 |
 | C2 | 算子族别表 `UNARY_OPS` / `NORM_OPS` 是裸 `&[&str]` 常量，族别归属与 plan 构造分在两个文件区域 | `assemble.rs:114-117`、`assemble.rs:356-376` | P1 |
 | C3 | 协议/端点文案常量 `NEVER_FITS` / `FULL` 与状态码映射分居 `lib.rs` 与 `Status::code`；状态语义（哪个失败态对应哪种客户端动作）没有一处集中声明 | `lib.rs:42-45`、`lib.rs:117-124` | P1 |
-| C4 | 编号基址 `WEIGHT_BASE = 10_000`、激活基址 `1` 是装配期魔数，未在一处说明编号空间划分 | `assemble.rs:17`、`assemble.rs:379-411` | P2 |
+| C4 | 编号基址 `WEIGHT_BASE = 10_000`、激活基址 `1` 是装配期魔数，未在一处说明编号空间划分 | `assemble.rs:17`、`assemble.rs:379-411` | P2（**已落地**：`INPUT_SLOT` / `ACTIVATION_BASE` / `WEIGHT_BASE` 三段常量 + 分区注释） |
 
 ### 3.3 泛型缺口
 
@@ -139,8 +139,8 @@ graph TD
 | P1 | 贪心选最大下标是双趟：先 `fold` 求最大值，再 `position` 找首个相等下标；可一趟 argmax，tie-break 规则不变 | `generate.rs:129-133` | P0 |
 | P2 | `Generation::frame` 逐 token `flat_map` 展开，未预分配容量；输出长度已知（`tokens.len() * 4`） | `generate.rs:77-82` | P0 |
 | P3 | `answer` 先把 `Vec<Token>` 收集成 `Vec<u32>`，两次分配：`encode` 出 `Vec<Token>`，`map(Token::id)` 再收集一次 | `completion.rs:107-111`、`completion.rs:176` | P0 |
-| P4 | `CpuModel::forward` 每步 `input.to_vec()` 再 `bind`；输入缓冲已预绑，理想路径是覆写而不是整块替换 | `assemble.rs:534`；受 `engine::Executor::bind` API 限制（见 §9.2） | P2 |
-| P5 | `Predict::logits` 每步返回 `Vec<f32>`，调用方无法复用 logits 缓冲；属端口签名演进，牵动测试桩 | `generate.rs:24` | P2 |
+| P4 | `CpuModel::forward` 每步 `input.to_vec()` 再 `bind`；输入缓冲已预绑，理想路径是覆写而不是整块替换 | `assemble.rs:576`；**阻塞**：`engine::Bindings` 只有 `bind(id, Vec<f32>) -> Option<Vec<f32>>` / `get(id) -> Option<&[f32]>`，无可变取数入口（`exec.rs:407-414`、`517-529`）；需 engine 先补 `get_mut` / 覆写写入口 | P2（阻塞） |
+| P5 | `Predict::logits` 每步返回 `Vec<f32>`，调用方无法复用 logits 缓冲；属端口签名演进，牵动测试桩 | `generate.rs:24`；**阻塞**：演进方向 `logits_into(&mut self, &Sequence, &mut Vec<f32>)`，牵动 `Fixed` / `Broken` / `StopAfter` 测试桩与 `completion_tests.rs`，单独立项 | P2（阻塞） |
 | P6 | `Params` 用 `BTreeMap<String, Vec<f32>>`，装配期按名查找；装载期一次性成本，不在生成循环内，保持即可 | `assemble.rs:21-51` | — |
 
 ### 3.5 质量与架构能力
@@ -149,7 +149,7 @@ graph TD
 |---|---|---|---|
 | Q1 | 端点管线（解析 → 编词 → 准入 → 生成 → 包帧）写死在 `Completion::answer`，第二个端点（健康检查 / 未来的 chat）无法复用阶段机与错误归位规则 | `completion.rs:174-183` | P2 |
 | Q2 | `Step` 枚举是 `Progress` 的服务侧投影 + 停止态；两个状态机概念并存，映射规则 `progress()` 手写 | `completion.rs:41-67`、`completion.rs:296-302` | P1 |
-| Q3 | 编译期注册表子集断言手写三个 `const fn`（字节逐字符比较），`op` 侧若已有 const 查询能力可复用 | `model/mod.rs:203-239` | P1 |
+| Q3 | 编译期注册表子集断言手写三个 `const fn`（字节逐字符比较），`op` 侧若已有 const 查询能力可复用 | `model/mod.rs:203-239` | P1（**已落地**：`op::contains` const 入口上线，serve 本地副本删除） |
 | Q4 | `encode_prompt` 是单行转发，没有附加契约逻辑；作为文档化边界可保留，但要明确它不是第二套分词入口 | `lib.rs:184-189` | — |
 
 ---
@@ -195,7 +195,7 @@ graph TD
 
 ### ADR-0029：准入三态翻译收敛为 `Admitter` 端口
 
-**状态**：草案
+**状态**：已采纳（P1 落地），正式条目 [adr/0029](adr/0029-admitter-port.md)
 **上下文**：`admit`（`Scheduler`）与 `admit_batch`（`Batch`）是同一套三态判定的两份拷贝（D1）。`Batch` 是端点生产路径，`Scheduler` 路径被根二进制演示与测试使用。两份拷贝漂移的风险是：未来改 400/503 判定时只改一处。
 
 **决策**：在 serve 内定义端口：
@@ -223,7 +223,7 @@ pub trait Admitter {
 
 ### ADR-0030：请求文法改为声明式字段描述符（不引入解析器）
 
-**状态**：草案
+**状态**：已采纳（P0 落地），正式条目 [adr/0030](adr/0030-request-field-descriptor.md)
 **上下文**：`Request` 的三个字段各有一套 setter（D2/C1），字段名、解析类型、错误文案三处重复。ADR 0022 禁止引入运行期解析器，所以方案不能是 serde / TOML。
 
 **决策**：用编译期字段描述符表驱动一行解析：
@@ -249,13 +249,13 @@ struct Field<T> {
 
 ### ADR-0031：内核适配表由宏单一事实源派生
 
-**状态**：草案
+**状态**：已采纳（P0 落地；Q3 注册表 const 查询复用已落地），正式条目 [adr/0031](adr/0031-kernel-macro-derived-table.md)
 **上下文**：三套适配宏同构（D3），表项名字符串与函数名双份（D4）。算子名是 `op::$run` 的词汇表事实，serve 表不该再抄一份字符串。
 
 **决策**：
 1. 合并为一个 `kernel!` 宏，按 arity 分支（`unary` / `binary` / `gemv` / `attention`），适配函数名与注册名都由 `stringify!($run)` 派生；
 2. `KERNELS` 表项不再手写 `op: "..."`，宏展开时从标识符取名字；
-3. 编译期子集断言改为调 `op` 侧可复用的 const 查询（若 `REGISTRY` 尚未暴露 const `contains`，先在 `op` 补一个 const fn，serve 不保留自己的字节比较实现）。
+3. 编译期子集断言改为调 `op` 侧可复用的 const 查询：`op::contains` 已补出，serve 不保留自己的字节比较实现。
 
 **备选**：
 - 上提为 `#[kernel]` proc-macro —— 当前内核族与调用方都只有 serve 一处，proc-macro 是 P2；等第二处消费再做。
@@ -268,7 +268,7 @@ struct Field<T> {
 
 ### ADR-0032：装配族别收成描述符表，消除四套 plan 构造
 
-**状态**：草案
+**状态**：已采纳（P1 落地；实现为闭集枚举 + 描述符表，非草案的 trait-per-family），正式条目 [adr/0032](adr/0032-assembly-family-descriptor.md)
 **上下文**：`assemble.rs` 569 行是全 crate 最大文件；四族 plan 各一个构造函数（D5），族别用字符串表匹配（G3），十六个小函数层层转发。
 
 **决策**：定义族别描述符：
@@ -313,7 +313,7 @@ trait Pipeline {
 
 ### ADR-0034：闭集样板复用方式 —— 先本地宏，不新拉 `prof` 依赖
 
-**状态**：草案
+**状态**：已采纳（P1 落地），正式条目 [adr/0034](adr/0034-local-closed-set-macro.md)
 **上下文**：`Status` / `Kind` / `Ending` 三处闭集同构（D6）。`prof::Closed` + `inherent_names!` 是仓库既有闭集契约，但 serve 当前不依赖 `prof`，新增运行时出边要改架构表与门禁。
 
 **决策**：第一阶段在 serve 内写一个等价的本地 `closed_set!` 宏（`ALL` / `code` / `as_str` 派生），三处闭集接入；若未来闭集数量继续增长或 `prof` 对 L6 开放为合法依赖，再评估切到 `prof::Closed`。
@@ -337,7 +337,7 @@ trait Pipeline {
 | 状态码映射 / 失败态语义 | `Status::code` + 散落注释 | `Status` 闭集宏 + 一处语义注释 | 本地闭集宏（ADR-0034） |
 | 准入文案 `NEVER_FITS` / `FULL` | `lib.rs` 顶层常量 | 准入端口实现内联，文案仍集中 | 随 ADR-0029 收敛 |
 | 内核算子名 | 表项字符串 + 函数名双份 | 宏派生标识符（ADR-0031） | 编译期展开 |
-| 编号空间基址 | `assemble.rs` 魔数 | 装配模块顶部常量区，注明激活/权重分区 | 常量归位（C4，P2） |
+| 编号空间基址 | `assemble.rs` 魔数 | 装配模块顶部常量区，注明激活/权重分区 | **已落地**：`INPUT_SLOT` / `ACTIVATION_BASE` / `WEIGHT_BASE` 三段常量（C4） |
 | 协议常量 `MAGIC` / `HEADER_LEN` / `TRAILER_LEN` / `MAX_PAYLOAD` | `proto/mod.rs` | 保持现状：本就是协议事实源，不动 | — |
 
 **不做的事**：不引入环境变量层、不引入配置文件、不做运行期旋钮；任何"可调参数"必须有生产消费方才进表（ADR 0020 教训：没有消费者的键是转了不生效的旋钮）。
@@ -445,31 +445,34 @@ trait Pipeline {
 
 ## 12. 分阶段路线与验收口径
 
-### 阶段 P0：确定性减法（不改公开 API，不新依赖）
+### 阶段 P0：确定性减法（不改公开 API，不新依赖）—— 已落地
 
-1. 贪心一趟 argmax（P1）；帧编码预分配（P2）；编词路径消除二次收集（P3）。
+1. 贪心一趟 argmax；帧编码预分配；编词路径消除二次收集。
 2. 内核三宏合一、表项名字派生（ADR-0031 第一步）。
 3. 请求描述符表驱动（ADR-0030）。
 
-### 阶段 P1：内部泛型与结构收敛
+### 阶段 P1：内部泛型与结构收敛 —— 已落地
 
 1. `Admitter` 端口 + 三态翻译唯一实现（ADR-0029），旧入口薄委托。
 2. Router 泛型挂载（G1）；`State` 自由方法归位（G4）；`Step` / `Progress` 映射收敛（Q2）。
-3. 族别描述符表（ADR-0032）；本地闭集宏（ADR-0034）；注册表断言复用上游 const 查询（Q3）。
+3. 族别描述符表（ADR-0032）；本地闭集宏（ADR-0034）。
+4. Q3 注册表断言复用上游 const 查询：`op::contains` 已上线，serve 本地 const 字节比较副本删除。
 
-### 阶段 P2：条件触发项
+### 阶段 P2：条件触发项 / 上游阻塞项
 
-1. 第二端点落地时抽阶段机（ADR-0033）。
-2. 第二处内核桥时上提 `#[kernel]` / `#[route]` proc-macro（§7.2）。
-3. engine 缓冲入口就绪后推进 P4/P5；编号基址归位（C4）。
+1. 第二端点落地时抽阶段机（ADR-0033）；当前生产端点只有 Completion 一个，不提前造 Pipeline trait。
+2. 第二处内核桥时上提 `#[kernel]` / `#[route]` proc-macro（§7.2）；未出现第二消费者前不上提。
+3. **P4 输入缓冲覆写**：阻塞于 engine 补可变缓冲入口（见 §3.4）。
+4. **P5 logits 缓冲复用**：阻塞于 `Predict` 端口签名演进（见 §3.4）。
+5. C4 编号基址归位已落地（`INPUT_SLOT` / `ACTIVATION_BASE` / `WEIGHT_BASE` 三段分区常量）。
 
 ### 验收口径
 
 - `cargo test -p llm-serve`：101 条单测 + 3 条 doctest 全绿；行为类测试一条不删（删测试必须对应被删分支，按 ADR 0020 口径记录）。
 - `cargo clippy -p llm-serve`：无新增警告。
 - 依赖表：P0/P1 不新增运行时出边；`#![deny(unsafe_code)]` 保持。
-- 行数预估（投影，非承诺）：生产源码 2 533 → 约 2 150–2 250 行（净减 10%–15%），主要来自 assemble 族别收敛与准入/请求重复消除；测试行数随行为保留基本不变。
-- 每个 ADR 采纳后在 `docs/adr/` 落正式条目，编号接 0028。
+- 行数与布局：结构性重复已消除（闭集清单/映射、族别归属表、准入三态、plan 字面量、注册表归属查询各归一处）；前置设施为本地闭集宏 `macros.rs`、`Admitter` 端口适配层、族别描述符与共享构造。源码目录已平铺到 `src/` 根：`model/`、`proto/` 子目录撤销，内联测试统一收在 `tests/`，`model` / `proto` 仅作为 lib.rs 内的兼容重导出路径保留。进一步压缩留给 P2/P3 触发项（阶段机、proc-macro 上提、输入缓冲覆写、logits 缓冲复用）。
+- 每个 ADR 采纳后在 `docs/adr/` 落正式条目，编号接 0028；本轮已落 0029、0030、0031、0032、0034，0033 暂缓。
 
 ---
 
@@ -482,12 +485,17 @@ trait Pipeline {
 | `router.rs` | — | 泛型 `mount` | 端点索引表（N 增长后） |
 | `generate.rs` | 一趟 argmax；帧预分配 | 闭集宏接入 | logits 缓冲复用 |
 | `completion.rs` | 编词路径去二次收集 | 方法归位 `State`；`Step` 收敛 | `Pipeline` trait 拆分 |
-| `model/mod.rs` | 宏合一；名字派生 | const 断言复用上游 | `#[kernel]` 上提 |
-| `model/assemble.rs` | — | 族别描述符；常量归位 | 输入缓冲覆写 |
-| `proto/*` | — | 闭集宏接入 `Kind` | — |
+| `kernels.rs`（原 `model/mod.rs`） | 宏合一；名字派生 | const 断言复用上游 `op::contains`（Q3 已落地） | `#[kernel]` 上提 |
+| `assembly.rs`（原 `model/assemble.rs`） | — | 族别描述符；编号基址常量归位（C4 已落地） | 输入缓冲覆写（P4，阻塞） |
+| `protocol.rs` / `frame.rs` / `decoder.rs` / `crc.rs`（原 `proto/`） | — | 闭集宏接入 `Kind` | — |
+
+> 目录已平铺到 `src/` 根；`model` / `proto` 仅保留为 lib.rs 内的兼容重导出模块（fuzz 与外部测试仍走 `llm_serve::proto::…` 路径）。
 
 ## 附录 B：评审待决问题
 
-1. `admit`（Scheduler 路径）是否还有生产消费者？若根二进制演示可切到 `Batch`，旧路径可随 P1 删除而非委托保留。
-2. `op::REGISTRY` 是否暴露 const 查询入口？若没有，P1 在 `op` 补 const `contains` 的边界归属需另一条 ADR。
-3. 闭集复用：本地宏 vs 申请 serve→prof 依赖边，需架构门禁负责人确认后者是否合规。
+1. `admit`（Scheduler 路径）是否还有生产消费者？**现状**：公开 `admit` 仍被 11 处调用点依赖——根演示 `src/main.rs:218`、`serve/src/tests.rs` 8 处、`serve/tests/protocol.rs` 3 处；生产端点 Completion 走 `admit_batch`（Batch 路径）。**阻塞点**：删除属公开 API 变更；**复核判据**：传输层落地、演示与测试全部切到 `Batch` 路径后，再裁决移除旧 Scheduler 委托与对应用例。
+2. ~~`op::REGISTRY` 是否暴露 const 查询入口~~ **已解决**：`op::contains` const fn 上线（`crates/op/src/lib.rs`），serve 子集断言改调上游，本地 const 字节比较副本删除（ADR-0031 Q3）。遗留小注：本工具链 const 上下文 `str` 相等比较未稳定，逐字节比对收在 `op::contains` 私有 helper 内；const `str` 比较稳定后可再简化。
+3. 闭集复用：**已决**本轮走本地宏（ADR-0034），不申请 serve→prof 边；若闭集继续增长或 prof 对本层成为合法依赖，再重议切换。
+4. **Q1 阶段机（ADR-0033）**：阻塞于第二端点出现。当前只有 Completion 一个生产端点；健康检查 / chat 等第二套端点落地时，再抽 `Pipeline` trait 收解析→编词→准入→生成→包帧阶段机与错误归位规则。
+5. **proc-macro 上提**：阻塞于第二处消费者。出现第二处内核桥（设备后端适配器）或第二套端点声明时，再评估 `#[kernel]` / `#[route]` 上提到 `llm-annotation`（§7.2）。
+6. **P4 / P5 上游阻塞**：P4 等 engine 补可变缓冲取数入口；P5 等 `Predict::logits` 签名演进为可复用缓冲形态。两项都不在 serve 侧绕路。

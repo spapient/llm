@@ -1,6 +1,6 @@
 //! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`] 宿主执行。
 //!
-//! 内核适配表留在 [`super`](super)；本模块只负责层族别分流、宽度链与权重形状校验、图接线
+//! 内核适配表留在 [`kernels`](crate::kernels)；本模块只负责层族别分流、宽度链与权重形状校验、图接线
 //! 与前向取数，不认识算子内核算式。
 
 use std::collections::BTreeMap;
@@ -11,9 +11,21 @@ use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
 use nn::{Contract, Embedding, Linear, Shape, Stack, WEIGHT_SUFFIX, WeightFormat};
 use weights::{Entry as WeightEntry, Header, Loader, Wire, decode_f32};
 
-use super::SITE;
+use crate::kernels::SITE;
 
-/// 激活编号与权重编号的隔离基址：权重整块从这个编号起登记，避免与逐层复用的激活编号撞上。
+/// 编号空间分区（与 [`engine::exec::Bindings`](../engine/exec) 的 u32 编号一一对应）：
+///
+/// - [`INPUT_SLOT`]：首层输入（提示词）占位编号，由 [`chain`](chain) 的 `prev` 初始绑定；
+/// - [`ACTIVATION_BASE`] .. 权重基址之前：逐层激活输出编号；
+/// - [`WEIGHT_BASE`] 及之后：驻留权重整块编号。
+///
+/// 两段基址分开登记，避免逐层复用的激活编号与驻留权重编号撞上。
+const INPUT_SLOT: u32 = 0;
+
+/// 激活输出编号起始基址；输入占位占 [`INPUT_SLOT`]。
+const ACTIVATION_BASE: u32 = 1;
+
+/// 权重编号起始基址；激活段 `1..WEIGHT_BASE` 留给逐层输出。
 const WEIGHT_BASE: u32 = 10_000;
 
 /// 驻留权重表：条目名 → f32 整块。装载期一次性解码进来，生成循环内不再读文件。
@@ -110,15 +122,43 @@ enum LayerKind {
     Embedding,
 }
 
-/// 一元点wise族算子：一进一出、无权重，输入输出等长。
-const UNARY_OPS: &[&str] = &["gelu_f32", "scale_f32", "silu_f32", "softmax_f32"];
+impl LayerKind {
+    /// 链上本层与上一层输出对齐的宽度：投影/查表对齐输入宽，等长族（一元/归一化）对齐输出宽。
+    fn chain_width(self, plan: &LayerPlan) -> usize {
+        match self {
+            Self::Projection | Self::Embedding => plan.in_features,
+            Self::Unary | Self::Norm => plan.out_features,
+        }
+    }
+}
 
-/// 归一化族算子：输入 + gamma 向量 → 等长输出。
-const NORM_OPS: &[&str] = &["rmsnorm_f32"];
+/// 算子族别描述：一个算子名集合归到一个装配族。
+///
+/// 类型视图族（投影走 `Linear`、查表走 `Embedding`）不在这张表里——它们由类型化视图优先分流；
+/// 这张表只收按算子名归类的等长族。新增族别在此加一行，plan 构造与链轴规则随 [`LayerKind`] 走。
+struct OperatorFamily {
+    kind: LayerKind,
+    operators: &'static [&'static str],
+}
 
-/// 算子名是否在一张常量表内（闭集检索，表为编译期定长切片）。
-fn in_table(operator: &str, table: &[&str]) -> bool {
-    table.contains(&operator)
+/// 等长族算子归属表：编译期定长切片，检索即闭集查找。
+const OPERATOR_FAMILIES: &[OperatorFamily] = &[
+    OperatorFamily {
+        kind: LayerKind::Unary,
+        operators: &["gelu_f32", "scale_f32", "silu_f32", "softmax_f32"],
+    },
+    OperatorFamily {
+        kind: LayerKind::Norm,
+        operators: &["rmsnorm_f32"],
+    },
+];
+
+/// 按算子名查装配族；未归属的算子返回 `None`（由分流层报不支持）。
+fn family_of(operator: &str) -> Option<LayerKind> {
+    OPERATOR_FAMILIES
+        .iter()
+        .find(|family| family.operators.contains(&operator))
+        .map(|family| family.kind)
 }
 
 /// 一层装配所需的族别、算子名、权重条目名、几何宽度与驻留权重期望长度。
@@ -184,10 +224,7 @@ fn check_chain(prev_out: Option<usize>, plan: &LayerPlan, name: &str) -> Result<
     let Some(previous) = prev_out else {
         return Ok(());
     };
-    let required = match plan.kind {
-        LayerKind::Projection | LayerKind::Embedding => plan.in_features,
-        LayerKind::Unary | LayerKind::Norm => plan.out_features,
-    };
+    let required = plan.kind.chain_width(plan);
     if previous != required {
         return Err(Error::new(
             Code::Invalid,
@@ -198,15 +235,11 @@ fn check_chain(prev_out: Option<usize>, plan: &LayerPlan, name: &str) -> Result<
     Ok(())
 }
 
-/// 驻留权重期望长度：族别在出计划时填好（投影 `in × out`、归一化 gamma `width`、查表 `vocab × dim`）；
-/// 一元点wise无权重返回 `None`。
-fn weight_len(plan: &LayerPlan) -> Option<usize> {
-    plan.weight_len
-}
-
 /// 核对驻留权重条目存在且长度符合族别；一元点wise无权重，直接通过。
+///
+/// 期望长度由族别在出计划时填好（投影 `in × out`、归一化 gamma `width`、查表 `vocab × dim`）。
 fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
-    let Some(expected) = weight_len(plan) else {
+    let Some(expected) = plan.weight_len else {
         return Ok(());
     };
     let Some(entry) = &plan.entry else {
@@ -239,6 +272,30 @@ fn check_plan(
     check_weight(plan, params)
 }
 
+/// 填一份层计划：族别几何由调用方给出，条目名与权重长度随权重形态保持一致。
+fn build_plan(
+    kind: LayerKind,
+    operator: String,
+    entry: Option<String>,
+    in_features: usize,
+    out_features: usize,
+    weight_len: Option<usize>,
+) -> LayerPlan {
+    LayerPlan {
+        kind,
+        operator,
+        entry,
+        in_features,
+        out_features,
+        weight_len,
+    }
+}
+
+/// 驻留权重条目名：层名 + 权重后缀。
+fn entry_name(layer: &dyn Contract) -> String {
+    format!("{}{WEIGHT_SUFFIX}", layer.name())
+}
+
 /// 投影层装配计划：身份、F32 格式、算子名与 `[out, in]` 权重整块。
 fn projection_plan(
     layer: &dyn Contract,
@@ -247,49 +304,37 @@ fn projection_plan(
     params: &Params,
 ) -> Result<LayerPlan> {
     let operator = plan_operator(layer.name(), linear)?;
-    let plan = LayerPlan {
-        kind: LayerKind::Projection,
-        operator: operator.to_string(),
-        entry: Some(format!("{}{WEIGHT_SUFFIX}", layer.name())),
-        in_features: linear.in_features(),
-        out_features: linear.out_features(),
-        weight_len: Some(linear.in_features() * linear.out_features()),
-    };
+    let plan = build_plan(
+        LayerKind::Projection,
+        operator.to_string(),
+        Some(entry_name(layer)),
+        linear.in_features(),
+        linear.out_features(),
+        Some(linear.in_features() * linear.out_features()),
+    );
     check_plan(prev_out, &plan, layer.name(), params)?;
     Ok(plan)
 }
 
-/// 一元点wise计划：等长、无权重；宽度取自输出形状。
-fn unary_plan(layer: &dyn Contract, operator: &str, prev_out: Option<usize>) -> Result<LayerPlan> {
-    let width = axis_width(layer.output(), layer.name())?;
-    let plan = LayerPlan {
-        kind: LayerKind::Unary,
-        operator: operator.to_string(),
-        entry: None,
-        in_features: width,
-        out_features: width,
-        weight_len: None,
-    };
-    check_chain(prev_out, &plan, layer.name())?;
-    Ok(plan)
-}
-
-/// 归一化计划：等长、驻留 gamma `[width]`；宽度取自输出形状。
-fn norm_plan(
+/// 等长族计划（一元点wise / 归一化）：宽度取自输出形状；归一化带 gamma `[width]`，一元点wise无权重。
+fn width_plan(
+    kind: LayerKind,
     layer: &dyn Contract,
     operator: &str,
     prev_out: Option<usize>,
     params: &Params,
 ) -> Result<LayerPlan> {
     let width = axis_width(layer.output(), layer.name())?;
-    let plan = LayerPlan {
-        kind: LayerKind::Norm,
-        operator: operator.to_string(),
-        entry: Some(format!("{}{WEIGHT_SUFFIX}", layer.name())),
-        in_features: width,
-        out_features: width,
-        weight_len: Some(width),
-    };
+    // 等长族里只有归一化带 gamma `[width]`；一元点wise无权重。
+    let weight_len = (kind == LayerKind::Norm).then_some(width);
+    let plan = build_plan(
+        kind,
+        operator.to_string(),
+        weight_len.map(|_| entry_name(layer)),
+        width,
+        width,
+        weight_len,
+    );
     check_plan(prev_out, &plan, layer.name(), params)?;
     Ok(plan)
 }
@@ -314,14 +359,14 @@ fn embedding_plan(
         .with(SITE));
     }
     let (vocab, dim) = (emb.vocab(), emb.dim());
-    let plan = LayerPlan {
-        kind: LayerKind::Embedding,
-        operator: operator.to_string(),
-        entry: Some(format!("{}{WEIGHT_SUFFIX}", layer.name())),
-        in_features: tokens,
-        out_features: dim,
-        weight_len: Some(vocab * dim),
-    };
+    let plan = build_plan(
+        LayerKind::Embedding,
+        operator.to_string(),
+        Some(entry_name(layer)),
+        tokens,
+        dim,
+        Some(vocab * dim),
+    );
     check_plan(prev_out, &plan, layer.name(), params)?;
     Ok(plan)
 }
@@ -352,27 +397,24 @@ fn view_plan(
     Ok(None)
 }
 
-/// 算子族别层：按常量表归类一元点wise / 归一化；其余族别报 [`Code::Unsupported`]。
+/// 算子族别层：按 [`OPERATOR_FAMILIES`] 归类等长族；其余族别报 [`Code::Unsupported`]。
 fn operator_plan(
     layer: &dyn Contract,
     prev_out: Option<usize>,
     params: &Params,
 ) -> Result<LayerPlan> {
     let operator = first_operator(layer)?;
-    if in_table(operator, UNARY_OPS) {
-        return unary_plan(layer, operator, prev_out);
-    }
-    if in_table(operator, NORM_OPS) {
-        return norm_plan(layer, operator, prev_out, params);
-    }
-    Err(Error::new(
-        Code::Unsupported,
-        format!(
-            "层 `{}` 的算子 `{operator}` 不在当前装配族别（投影/查表/一元点wise/归一化）",
-            layer.name()
-        ),
-    )
-    .with(SITE))
+    let Some(kind) = family_of(operator) else {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "层 `{}` 的算子 `{operator}` 不在当前装配族别（投影/查表/一元点wise/归一化）",
+                layer.name()
+            ),
+        )
+        .with(SITE));
+    };
+    width_plan(kind, layer, operator, prev_out, params)
 }
 
 /// 层序号换算成编号：`base + index`；层序号不可能溢出 u32，溢出归内部错误。
@@ -392,7 +434,7 @@ fn push_node(
     index: usize,
     plan: &LayerPlan,
 ) -> Result<u32> {
-    let output_id = slot_id(index, 1)?;
+    let output_id = slot_id(index, ACTIVATION_BASE)?;
     let mut node = Node::new(
         plan.operator.clone(),
         Launch::new([1, 1, 1], [plan.out_features as u32, 1, 1]),
@@ -418,7 +460,7 @@ fn chain(
     weights: &mut Vec<(u32, String)>,
     activations: &mut Vec<(u32, usize)>,
 ) -> Result<(usize, usize, u32, LayerKind)> {
-    let mut prev = 0;
+    let mut prev = INPUT_SLOT;
     let mut prev_out: Option<usize> = None;
     let mut input_len = 0;
     let mut last_out = 0;
@@ -455,7 +497,7 @@ fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
 
     Ok(Assembly {
         graph,
-        input: 0,
+        input: INPUT_SLOT,
         output,
         input_len,
         output_len,
@@ -508,7 +550,7 @@ impl CpuModel {
     /// 由层栈与驻留参数表装配；形状、宽度、权重缺失都在构造期报出。
     pub fn new(stack: &Stack, params: &Params) -> Result<Self> {
         let mut executor = CpuExecutor::new(Device::new("cpu", "generic"));
-        super::register_cpu(&mut executor)?;
+        crate::kernels::register_cpu(&mut executor)?;
         let assembly = assemble(stack, params)?;
         bind_weights(&mut executor, &assembly, params)?;
         bind_activations(&mut executor, &assembly);

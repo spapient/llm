@@ -157,6 +157,37 @@ registry! {
     "softmax_f32" => softmax_f32,
 }
 
+/// 名字是否在注册表里；const 上下文可用。
+///
+/// 装配期的"内核表子集断言"走这个入口，归属判定只此一份；运行期查找仍由 [`builtin_named`]
+/// / [`model`] 给出整条记录。本工具链 const 上下文尚未稳定 `str` 相等比较，逐字节比对收在这里。
+pub const fn contains(name: &str) -> bool {
+    let mut index = 0;
+    while index < REGISTRY.len() {
+        if same_bytes(name, REGISTRY[index].name) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+/// const 上下文里逐字节比两个名字。
+const fn same_bytes(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 /// 算子语义注册表：声明层有的算子，这里必须有它的代价、样本与标量参考。
 ///
 /// 语义表和声明同属一条注册（[`REGISTRY`]），因此两者不会漂移，`cutile` 一侧不动。

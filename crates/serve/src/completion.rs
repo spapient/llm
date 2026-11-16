@@ -150,7 +150,7 @@ where
     /// `finish` 在生成之后无条件执行（先取结局、再取归还结果）：模型或采样报错时页也必须
     /// 回来，否则一次失败的请求会永久占住页池——失败路径上的泄漏只有在服务跑久了才暴露。
     fn complete(&self, state: &mut State<M, S>, id: u64) -> diagnostic::Result<Response> {
-        let generated = generate(state, id);
+        let generated = state.generate(id);
         let finished = state.batch.finish(id);
         let generated = generated?;
         finished?;
@@ -203,96 +203,82 @@ where
     }
 }
 
-/// 反复走一步，直到结束、被挡或出错。
-fn generate<M, S>(state: &mut State<M, S>, id: u64) -> diagnostic::Result<Option<Generation>>
+impl<M, S> State<M, S>
 where
     M: Predict,
     S: Sampling,
 {
-    loop {
-        let step = step(state, id)?;
-        if step.blocks() {
+    /// 反复走一步，直到结束、被挡或出错。
+    fn generate(&mut self, id: u64) -> diagnostic::Result<Option<Generation>> {
+        loop {
+            let step = self.step(id)?;
+            if step.blocks() {
+                return Ok(None);
+            }
+            if let Some(ending) = step.ending() {
+                return self.done(id, ending);
+            }
+        }
+    }
+
+    /// 结束在这一步：把历史与结局装成一次生成的结果。
+    fn done(&self, id: u64, ending: Ending) -> diagnostic::Result<Option<Generation>> {
+        Ok(Some(Generation::new(self.history(id)?, ending)))
+    }
+
+    /// 已经生成的历史：序列是唯一存放处，端点不另存一份。
+    fn history(&self, id: u64) -> diagnostic::Result<Vec<u32>> {
+        Ok(self
+            .batch
+            .sequence(id)
+            .ok_or_else(|| missing(id))?
+            .tokens()
+            .to_vec())
+    }
+
+    /// 一步：算 logits、采样、推进页账。
+    ///
+    /// 采样在 `advance` 之前：先确认"这一步该是哪个 token"，再由页账为它占位。反过来（先占页
+    /// 再采样）在采样报错时会留下一个已经推进的序列。
+    fn step(&mut self, id: u64) -> diagnostic::Result<Step> {
+        let Some(logits) = self.logits(id)? else {
+            return Ok(Step::Limit);
+        };
+        self.sample(id, logits)
+    }
+
+    /// 算这一步的 logits；序列已经跑完时返回 `None`（那是"到上限了"，不是"没页"）。
+    ///
+    /// 单独一支是因为借用必须分开：前向要读序列（借 `batch`），又要改模型（借 `model`），
+    /// 直接从 `&mut State` 上同时拿这两样会让借用检查器拒绝——两个字段互不重叠，函数内部拆开就成立。
+    fn logits(&mut self, id: u64) -> diagnostic::Result<Option<Vec<f32>>> {
+        let State { model, batch, .. } = self;
+        let Some(sequence) = batch.sequence(id) else {
+            return Err(missing(id));
+        };
+        if sequence.is_done() {
             return Ok(None);
         }
-        if let Some(ending) = step.ending() {
-            return done(state, id, ending);
-        }
+        model.logits(sequence).map(Some)
     }
-}
 
-/// 结束在这一步：把历史与结局装成一次生成的结果。
-fn done<M, S>(
-    state: &State<M, S>,
-    id: u64,
-    ending: Ending,
-) -> diagnostic::Result<Option<Generation>> {
-    Ok(Some(Generation::new(history(state, id)?, ending)))
-}
-
-/// 已经生成的历史：序列是唯一存放处，端点不另存一份。
-fn history<M, S>(state: &State<M, S>, id: u64) -> diagnostic::Result<Vec<u32>> {
-    Ok(state
-        .batch
-        .sequence(id)
-        .ok_or_else(|| missing(id))?
-        .tokens()
-        .to_vec())
-}
-
-/// 一步：算 logits、采样、推进页账。
-///
-/// 采样在 `advance` 之前：先确认"这一步该是哪个 token"，再由页账为它占位。反过来（先占页
-/// 再采样）在采样报错时会留下一个已经推进的序列。
-fn step<M, S>(state: &mut State<M, S>, id: u64) -> diagnostic::Result<Step>
-where
-    M: Predict,
-    S: Sampling,
-{
-    let Some(logits) = logits(state, id)? else {
-        return Ok(Step::Limit);
-    };
-    sample(state, id, logits)
-}
-
-/// 算这一步的 logits；序列已经跑完时返回 `None`（那是"到上限了"，不是"没页"）。
-///
-/// 单独一支是因为借用必须分开：前向要读序列（借 `batch`），又要改模型（借 `model`），
-/// 直接从 `&mut State` 上同时拿这两样会让借用检查器拒绝——两个字段互不重叠，函数内部拆开就成立。
-fn logits<M, S>(state: &mut State<M, S>, id: u64) -> diagnostic::Result<Option<Vec<f32>>>
-where
-    M: Predict,
-{
-    let State { model, batch, .. } = state;
-    let Some(sequence) = batch.sequence(id) else {
-        return Err(missing(id));
-    };
-    if sequence.is_done() {
-        return Ok(None);
+    /// 从一步 logits 里取下一个 token，并把它记进序列与页账；`None` 是停止符。
+    fn sample(&mut self, id: u64, logits: Vec<f32>) -> diagnostic::Result<Step> {
+        let Some(token) = self.sampling.sample(&logits)? else {
+            return self.stop(id);
+        };
+        // 记账与推进是同一个调用：`Blocked` 时 token 不会留在历史里。
+        Ok(progress(self.batch.emit(id, token)?))
     }
-    model.logits(sequence).map(Some)
-}
 
-/// 从一步 logits 里取下一个 token，并把它记进序列与页账；`None` 是停止符。
-fn sample<M, S>(state: &mut State<M, S>, id: u64, logits: Vec<f32>) -> diagnostic::Result<Step>
-where
-    M: Predict,
-    S: Sampling,
-{
-    let Some(token) = state.sampling.sample(&logits)? else {
-        return stop(state, id);
-    };
-    // 记账与推进是同一个调用：`Blocked` 时 token 不会留在历史里。
-    Ok(progress(state.batch.emit(id, token)?))
-}
-
-/// 采到停止符：让序列提前结束（页仍由 `finish` 归还）。
-fn stop<M, S>(state: &mut State<M, S>, id: u64) -> diagnostic::Result<Step> {
-    state
-        .batch
-        .sequence_mut(id)
-        .ok_or_else(|| missing(id))?
-        .stop()?;
-    Ok(Step::Stop)
+    /// 采到停止符：让序列提前结束（页仍由 `finish` 归还）。
+    fn stop(&mut self, id: u64) -> diagnostic::Result<Step> {
+        self.batch
+            .sequence_mut(id)
+            .ok_or_else(|| missing(id))?
+            .stop()?;
+        Ok(Step::Stop)
+    }
 }
 
 /// 调度器的结局映射成一步的结局：`Blocked` 与 `Done` 必须分开，否则"没页"会被当成"跑完了"。

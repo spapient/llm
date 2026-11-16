@@ -6,13 +6,13 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::proto::HEADER_LEN;
-use crate::proto::frame::{self, Frame, Scan};
+use crate::frame::{self, Frame, Scan};
+use crate::protocol::HEADER_LEN;
 
 /// 增量解码器。
 ///
 /// 内存有上界：本对象持有的字节数不超过"一次 `push` 的量 + 一帧"（一帧最多
-/// [`HEADER_LEN`] + [`crate::proto::MAX_PAYLOAD`] + [`crate::proto::TRAILER_LEN`] 字节），超限的
+/// [`HEADER_LEN`] + [`crate::protocol::MAX_PAYLOAD`] + [`crate::protocol::TRAILER_LEN`] 字节），超限的
 /// 声明在帧头到达时就被拒绝，不会替对端攒载荷。
 ///
 /// 失败是一次性的：帧头坏掉之后没有可靠的重同步点（长度字段本身可能正是坏掉的那部分），所以
@@ -138,5 +138,5 @@ impl Decoder {
 }
 
 #[cfg(test)]
-#[path = "../../tests/decoder_tests.rs"]
+#[path = "../tests/decoder_tests.rs"]
 mod tests;

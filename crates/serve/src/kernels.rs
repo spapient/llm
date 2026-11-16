@@ -1,6 +1,6 @@
 //! CPU 推理内核桥：把 `op` 的 f32 标量参考适配成 engine 可登记的 [`Program`]。
 //!
-//! 落点裁决见 [`backend-runtime-design.md`](../../../docs/backend-runtime-design.md) §4：
+//! 落点裁决见 [`backend-runtime-design.md`](../../docs/backend-runtime-design.md) §4：
 //! 端点契约、路由与线格式保持模型无关；CPU 模型实现作为注入 [`Predict`](crate::Predict)
 //! 的提供者收在本模块内，真设备后端仍按 ADR 0025 收在独立边界 crate，不回流这里。
 //!
@@ -12,7 +12,7 @@
 //! - 适配函数只做拆切片 + 调 `op::<op>::forward`，算术不重写。模式复刻 `train::KERNELS`
 //!   （`crates/train/src/kernel.rs`），但不带 train 的 `View`/`Lane` 适配层：engine 缓冲
 //!   形态就是 `Vec<f32>` 切片。
-//! - 层栈装配、驻留参数表与前向宿主收在 [`assemble`] 子模块，本文件只留内核适配表。
+//! - 层栈装配、驻留参数表与前向宿主收在 [`assembly`](crate::assembly) 模块，本文件只留内核适配表。
 //!
 //! # 不拥有
 //!
@@ -24,15 +24,10 @@
 //! 只接纯切片签名的 f32 算子；`rope_f32` 的位置标量、decode 变长历史几何随后续 KV 工作
 //! 一起落地（设计文档 §5.1）。u8 lane 量化族延后 P3（§5.3）。
 
-mod assemble;
-
 use diagnostic::{Code, Error, Result};
 use engine::exec::{CpuExecutor, Launch, Program};
-use op::REGISTRY;
 
-pub use assemble::{CpuModel, Params};
-
-const SITE: &str = "serve::model";
+pub(crate) const SITE: &str = "serve::model";
 
 /// 注意力内核入口：`q/k/v → out`，序列长 `s` 与头宽 `d` 随几何传入。
 type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> Result<()>;
@@ -151,45 +146,19 @@ const KERNELS: &[Entry] = kernel_table![
     softmax_f32,
 ];
 
-const _: () = all_in_registry(KERNELS, &REGISTRY);
+const _: () = all_in_registry(KERNELS);
 
-/// 编译期断言：表内每个算子名都能在 `op::REGISTRY` 里找到（子集即可，不必等长）。
-const fn all_in_registry(entries: &[Entry], registry: &[op::Registration]) {
+/// 编译期断言：表内每个算子名都能在 `op::REGISTRY` 里找到（子集即可，不必等长）；
+/// 归属查询复用上游 `op::contains`，本层不自抄 const 字节比较。
+const fn all_in_registry(entries: &[Entry]) {
     let mut index = 0;
     while index < entries.len() {
         assert!(
-            name_located(entries[index].op, registry),
+            op::contains(entries[index].op),
             "serve::model 内核表含注册表之外的算子"
         );
         index += 1;
     }
-}
-
-/// `const` 上下文里没有 `str` 比较，逐字节比名字。
-const fn name_located(name: &str, registry: &[op::Registration]) -> bool {
-    let mut index = 0;
-    while index < registry.len() {
-        if same_str(name, registry[index].name) {
-            return true;
-        }
-        index += 1;
-    }
-    false
-}
-
-const fn same_str(left: &str, right: &str) -> bool {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
 }
 
 /// 表条目对 engine [`Program`] 契约的适配：名字随表走，执行入口落到适配函数。
@@ -218,5 +187,5 @@ pub fn register_cpu(executor: &mut CpuExecutor) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/model_tests.rs"]
+#[path = "../tests/model_tests.rs"]
 mod tests;

@@ -26,10 +26,13 @@ impl Router {
 
     /// 挂载一条端点；同一 `方法 路径` 已经存在时返回 `invalid`。
     ///
+    /// 泛型接收具体端点，只在存进路由表时装箱；调用方不必先 `Box::new`，也能保留具体类型
+    /// 供测试与单态化使用。
+    ///
     /// # Errors
     ///
     /// 重复路由（方法与路径都相同）。
-    pub fn mount(&mut self, endpoint: Box<dyn Endpoint>) -> Result<()> {
+    pub fn mount<E: Endpoint + 'static>(&mut self, endpoint: E) -> Result<()> {
         let route = endpoint.route().clone();
         if self.find(route.method(), route.path()).is_some() {
             return Err(Error::new(
@@ -42,7 +45,7 @@ impl Router {
             )
             .with("serve::Router::mount"));
         }
-        self.endpoints.push(endpoint);
+        self.endpoints.push(Box::new(endpoint));
         Ok(())
     }
 

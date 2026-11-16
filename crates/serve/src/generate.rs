@@ -93,25 +93,13 @@ impl Generation {
     }
 }
 
-/// 生成为什么停下：到上限，还是采到了停止符。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Ending {
-    /// 跑满了 `max_new`。
-    Limit,
-    /// 采到了停止符（会由调度器归还页）。
-    Stop,
-}
-
-impl Ending {
-    /// 全部结局，供日志与测试遍历。
-    pub const ALL: [Self; 2] = [Self::Limit, Self::Stop];
-
-    /// 稳定的短名。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Limit => "limit",
-            Self::Stop => "stop",
-        }
+name_set! {
+    /// 生成为什么停下：到上限，还是采到了停止符。
+    pub enum Ending {
+        /// 跑满了 `max_new`。
+        Limit => "limit",
+        /// 采到了停止符（会由调度器归还页）。
+        Stop => "stop",
     }
 }
 
