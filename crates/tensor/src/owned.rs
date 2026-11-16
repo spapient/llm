@@ -6,11 +6,11 @@
 
 use diagnostic::{Code, Error, Result};
 
+use crate::DType;
 use crate::shape::Shape;
 use crate::strides::Strides;
 use crate::tensor::Tensor;
 use crate::validate;
-use crate::DType;
 
 /// 拥有缓冲的可写张量：元数据 + 持有字节向量。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +42,12 @@ impl OwnedTensor {
 
     /// 由已有字节向量构造：`dtype` 受支持且缓冲够长，布局取行主序连续。
     pub fn from_bytes(dtype: DType, shape: Shape, bytes: Vec<u8>) -> Result<Self> {
-        validate::check_byte_buffer(dtype, &shape, bytes.len(), "tensor::OwnedTensor::from_bytes")?;
+        validate::check_byte_buffer(
+            dtype,
+            &shape,
+            bytes.len(),
+            "tensor::OwnedTensor::from_bytes",
+        )?;
         let strides = Strides::contiguous(&shape);
         Ok(Self {
             dtype,

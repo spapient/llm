@@ -2,10 +2,10 @@
 
 use diagnostic::Result;
 
+use crate::DType;
 use crate::shape::Shape;
 use crate::strides::Strides;
 use crate::validate;
-use crate::DType;
 
 /// 逻辑张量：元数据 + 只读字节视图。
 #[derive(Debug, Clone)]

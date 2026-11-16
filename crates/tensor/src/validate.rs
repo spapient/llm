@@ -6,7 +6,7 @@
 use diagnostic::{Code, Error, Result};
 
 use crate::shape::Shape;
-use crate::{supports, DType};
+use crate::{DType, supports};
 
 /// 校验 `dtype` 属于计算层支持子集；不支持时附上构造点标记。
 pub(crate) fn check_supported(dtype: DType, marker: &str) -> Result<()> {

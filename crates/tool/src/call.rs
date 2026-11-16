@@ -100,7 +100,8 @@ fn ufcs_target(tokens: &[Token], idx: usize) -> Option<(&str, Pos)> {
         tokens.get(idx + 1),
         tokens.get(idx + 2),
         tokens.get(idx + 3),
-    ] else {
+    ]
+    else {
         return None;
     };
     Some((text.as_str(), *pos))
