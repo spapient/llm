@@ -4,12 +4,23 @@ fn nothing(_: &str) -> Option<String> {
     None
 }
 
+/// 测试用的用户根：必须是当前平台认可的绝对路径，否则 `is_absolute` 在 Windows 上为假。
+#[cfg(unix)]
+fn test_home() -> PathBuf {
+    PathBuf::from("/home/u")
+}
+
+#[cfg(windows)]
+fn test_home() -> PathBuf {
+    PathBuf::from(r"C:\Users\u")
+}
+
 #[test]
 fn defaults_are_absolute_user_level_paths() {
-    let roots = Roots::new("/home/u");
+    let roots = Roots::new(test_home());
     let settings = Settings::defaults(&roots);
-    assert_eq!(settings.cache_dir(), PathBuf::from("/home/u/cutile/cache"));
-    assert_eq!(settings.work_dir(), PathBuf::from("/home/u/cutile/work"));
+    assert_eq!(settings.cache_dir(), roots.default_cache_dir(APP));
+    assert_eq!(settings.work_dir(), roots.default_work_dir(APP));
     assert!(settings.cache_dir().is_absolute());
     assert_eq!(settings.data_root(), None);
 }
