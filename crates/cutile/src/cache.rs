@@ -365,23 +365,37 @@ impl Cache {
         evict(&entries, now, &mut gc)?;
         Ok(gc)
     }
+    /// 产物锁路径：与产物同目录、按产物键定名；同一份产物在同一时刻只允许一个写入者。
+    pub fn artifact_lock_path(&self, key: &ArtifactKey) -> PathBuf {
+        self.artifact_path(key)
+            .with_file_name(format!("{}.build.lock", key.hex()))
+    }
     /// 删陈旧锁：持有者已崩溃，没人能来释放它（删失败也返回 `false`，多半别人先删了）；活着的锁不动。
     pub fn break_stale_lock(&self, key: &CacheKey) -> bool {
-        let path = self.dir_for(key).join("build.lock");
-        let stale = match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
+        self.break_stale_lock_at(&self.dir_for(key).join("build.lock"))
+    }
+    /// 删陈旧锁（按锁路径）：见 [`Self::break_stale_lock`]。
+    pub fn break_stale_lock_at(&self, path: &Path) -> bool {
+        let stale = match std::fs::metadata(path).and_then(|meta| meta.modified()) {
             Ok(time) => SystemTime::now().duration_since(time).unwrap_or_default() >= STALE_LOCK,
             // 读不到时间戳只可能是锁已经不在了：`remove_file` 会失败，结果仍是 `false`。
             Err(_) => true,
         };
-        stale && std::fs::remove_file(&path).is_ok()
+        stale && std::fs::remove_file(path).is_ok()
     }
     /// 取锁（`O_EXCL` 语义）；调用方 `drop` 即释放。
     pub fn lock(&self, key: &CacheKey) -> std::io::Result<Lock> {
-        let dir = self.dir_for(key);
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join("build.lock");
-        std::fs::File::create_new(&path)?;
-        Ok(Lock { path })
+        self.lock_at(&self.dir_for(key).join("build.lock"))
+    }
+    /// 取锁（按锁路径）：见 [`Self::lock`]。
+    pub fn lock_at(&self, path: &Path) -> std::io::Result<Lock> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::File::create_new(path)?;
+        Ok(Lock {
+            path: path.to_path_buf(),
+        })
     }
     /// 全部目录（含半截落盘的残留）。
     #[must_use]

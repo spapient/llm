@@ -826,7 +826,7 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 `metal/witness.metal` 曾写成 `float *out`——host `cc` 绿灯、`xcrun metal` 编不过，那份见证从未
 在自己声称的语言里存在过。于是设备不在本机时，见证还要交给**它自己语言的解析器**只解析一遍：
 `cuda` → `clang -x cuda --cuda-host-only`（只 host 那一半，`__syncthreads()` 在 host 函数里必须
-被拒），`opencl` → `clang -x cl -cl-std=CL3.0`（`double` 没开 `cl_khr_fp64` 是错误），`ascendc`
+被拒），`opencl` → `clang -x cl -cl-std=CL3.0`（函数指针在 OpenCL C 中被明确禁止），`ascendc`
 没有开源前端就 `Absent`。语法前端与执行前端同构：`const GATES` 表一行一个 `GateSpec`
 （`emit` / `tool` / `check`），加一门语言就是加一行，没有独立的前端类型，也没有按语言单态化的函数。门不执行任何一行，所以不改 `grade`；但
 `Rejected` 会进 `Evidence::failure`——被自己的语言拒绝是证据缺陷，不是“本机没有这台设备”。

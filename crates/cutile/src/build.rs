@@ -20,7 +20,7 @@ use crate::substitute::FragmentSet;
 use crate::toolchain::Toolchain;
 use diagnostic::{Code, Error};
 use std::io::{Error as IoError, ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -233,6 +233,37 @@ fn compile_and_store(
     key: &ArtifactKey,
     dirs: &Dirs,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
+    // 同一份产物可能被并行用例同时编译：先取产物键锁，锁内再查一次——等锁期间别人落的那一份
+    // 就是我们要的，重编会和正在执行的二进制争同一个路径（Linux 下表现为 ETXTBSY）。锁持有到
+    // 本次执行结束，避免另一条路径在我们 exec 期间替换文件。
+    let _lock = wait_for_artifact_lock(cache, key)?;
+    if let Some(reused) = reuse_cached(cache, key)? {
+        return Ok(reused);
+    }
+    compile_fresh(cache, tool, flags, program, key, dirs)
+}
+
+/// 锁内复查缓存：等锁期间别人落的那一份直接复用；没有命中返回 `None` 走新编。
+fn reuse_cached(
+    cache: &Cache,
+    key: &ArtifactKey,
+) -> diagnostic::Result<Option<(Outcome, Artifact)>> {
+    let Some(artifact) = cache.artifact(key) else {
+        return Ok(None);
+    };
+    let outcome = runner::run(&artifact.path)?;
+    Ok(Some((outcome, artifact)))
+}
+
+/// 未命中：新编一次、落盘产物缓存，再跑落盘那一份。
+fn compile_fresh(
+    cache: &Cache,
+    tool: &Toolchain,
+    flags: &[String],
+    program: &str,
+    key: &ArtifactKey,
+    dirs: &Dirs,
+) -> diagnostic::Result<(Outcome, Artifact)> {
     let sandbox = sandbox(dirs, key);
     let exe = runner::compile(&tool.command, flags, program, &sandbox)?;
     let artifact = cache.put_artifact(key, &exe).map_err(|error| {
@@ -304,21 +335,31 @@ fn cached_only(
 /// 等锁的上限：另一个进程正常写完缓存就会释放锁，等到超时说明锁文件是残留的。
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
+/// 取源码缓存锁：别人正在为同一个 key 编译时等它（它的产物就是我们要的文本），等不到才报错。
+fn wait_for_lock(cache: &Cache, key: &CacheKey) -> diagnostic::Result<Lock> {
+    wait_for_lock_at(cache, &cache.dir_for(key).join("build.lock"))
+}
+
+/// 取产物缓存锁：同一产物键的并行编译在这里排队，锁内复查缓存命中（见 [`compile_and_store`]）。
+fn wait_for_artifact_lock(cache: &Cache, key: &ArtifactKey) -> diagnostic::Result<Lock> {
+    wait_for_lock_at(cache, &cache.artifact_lock_path(key))
+}
+
 /// 取锁：别人正在为同一个 key 编译时等它（它的产物就是我们要的文本），等不到才报错。每次失败都先看
 /// 锁是否陈旧（[`STALE_LOCK`](crate::cache::STALE_LOCK)）：`O_EXCL` 锁是文件，持有者被 `kill` 后没人
 /// 能释放它；活着的锁一律不抢，等满 `LOCK_WAIT` 才报错，错误里给出锁文件路径。
-fn wait_for_lock(cache: &Cache, key: &CacheKey) -> diagnostic::Result<Lock> {
+fn wait_for_lock_at(cache: &Cache, path: &StdPath) -> diagnostic::Result<Lock> {
     let deadline = Instant::now() + LOCK_WAIT;
     loop {
-        match cache.lock(key) {
+        match cache.lock_at(path) {
             Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                await_lock(cache, key, &error, deadline)?;
+                await_lock_at(cache, path, &error, deadline)?;
             }
             Err(error) => {
                 return Err(Error::new(
                     Code::Io,
-                    format!("为缓存 key `{}` 取锁失败：{error}", key.hex()),
+                    format!("取锁失败：{error}（{}）", path.display()),
                 ));
             }
         }
@@ -326,13 +367,13 @@ fn wait_for_lock(cache: &Cache, key: &CacheKey) -> diagnostic::Result<Lock> {
 }
 
 /// 锁已存在时的一次等待：陈旧锁先破掉（没有谁会来释放它），活锁小睡一会儿，等满期限才报错。
-fn await_lock(
+fn await_lock_at(
     cache: &Cache,
-    key: &CacheKey,
+    path: &StdPath,
     busy: &IoError,
     deadline: Instant,
 ) -> diagnostic::Result<()> {
-    if cache.break_stale_lock(key) {
+    if cache.break_stale_lock_at(path) {
         return Ok(());
     }
     if Instant::now() < deadline {
@@ -342,9 +383,8 @@ fn await_lock(
     Err(Error::new(
         Code::Io,
         format!(
-            "等待缓存 key `{}` 超时：{busy}\n锁文件 {}；确认没有并发编译后删除它再重试",
-            key.hex(),
-            cache.dir_for(key).join("build.lock").display()
+            "等待缓存锁超时：{busy}\n锁文件 {}；确认没有并发编译后删除它再重试",
+            path.display()
         ),
     ))
 }

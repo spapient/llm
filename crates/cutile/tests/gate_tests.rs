@@ -1,7 +1,7 @@
 use super::*;
 use crate::toolchain;
 
-/// OpenCL 前端表行：拒绝用例要拿它的参数过一遍裸 `double`。
+/// OpenCL 前端表行：拒绝用例要拿它的参数过一遍 OpenCL C 不支持的构造。
 fn opencl() -> &'static GateSpec {
     GATES
         .iter()
@@ -24,13 +24,16 @@ fn a_witness_its_own_language_rejects_is_a_defect() {
     let dir = std::env::temp_dir().join(format!("cutile-language-gate-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("临时目录");
     let source = dir.join("witness.cl");
+    // 函数指针是 OpenCL C 明确排除的构造（标准与两个 clang 前端都拒绝）；`double` 依赖
+    // FP64 扩展与前端默认配置，不同构建可能收下，不能当稳定的拒绝夹具。同一份源码在 host
+    // C99 里合法，下面先跑 host 编译器把这个前提钉住。
     std::fs::write(
         &source,
-        "int witness_double(float *out) { double x = 2.0; out[0] = (float)x; return 1; }\n",
+        "int add(int a, int b) { return a + b; }\nint witness_fnptr(int (*fp)(int, int)) { return fp(1, 2); }\n",
     )
     .expect("写见证");
 
-    let rejected = parse_one(opencl(), &source).expect_err("OpenCL C 不允许裸 double");
+    let rejected = parse_one(opencl(), &source).expect_err("OpenCL C 不允许函数指针");
     assert!(rejected.to_string().contains("witness.cl"), "{rejected}");
     assert!(rejected.to_string().contains("-x cl"), "{rejected}");
 
