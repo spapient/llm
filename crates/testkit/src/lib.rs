@@ -1,7 +1,8 @@
 //! 测试约定：浮点对拍、真机门控、临时目录、跳过登记。**只作 dev-dependency**。
 //!
 //! **拥有**：`approx_eq`、`close`、`all_finite`、`device_enabled`、`device_or_skip`、
-//! `scratch_dir`、`Rng`、`cosine_similarity`、回归阈值 `COSINE_GUARD` 与跳过登记 [`skip`]。**不拥有**：任何生产
+//! `scratch_dir`、`scratch_clean`、`skip_none`、`Rng`、`crc32_bitwise`、`cosine_similarity`、
+//! 回归阈值 `COSINE_GUARD` 与跳过登记 [`skip`]。**不拥有**：任何生产
 //! 逻辑——它是测试夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
@@ -178,6 +179,19 @@ fn matches(spec: &str, vendor: &str) -> bool {
 /// 调用方，它紧接着的写入会带出带路径与 io 类别的错误，比一句「创建失败」更有用。
 pub fn scratch_dir(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("llm-testkit-{}-{tag}", std::process::id()));
+    if let Err(error) = std::fs::create_dir_all(&path) {
+        eprintln!("testkit: 无法创建临时目录 `{}`：{error}", path.display());
+    }
+    path
+}
+
+/// 先删掉旧目录再建一个空目录：进入用例时目录里不该带上一次运行的残留。
+///
+/// 与 [`scratch_dir`] 的复用语义不同，这里每次都清空；适用于要逐条枚举目录内容
+/// （如"写回后目录里只有这一个产物"）的对拍。目录名带进程号，并行测试互不踩。
+pub fn scratch_clean(tag: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("llm-testkit-clean-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
     if let Err(error) = std::fs::create_dir_all(&path) {
         eprintln!("testkit: 无法创建临时目录 `{}`：{error}", path.display());
     }

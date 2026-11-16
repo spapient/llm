@@ -600,6 +600,7 @@ dependencies = [
  "llm-op",
  "llm-shard",
  "llm-tensor",
+ "llm-testkit",
  "llm-weights",
  "llm-wire",
 ]

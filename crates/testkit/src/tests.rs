@@ -44,6 +44,20 @@ fn the_same_tag_reuses_one_directory() {
 }
 
 #[test]
+fn scratch_clean_wipes_prior_content() {
+    let dir = scratch_clean("clean");
+    std::fs::write(dir.join("leftover.txt"), "x").expect("写入残留");
+    assert!(dir.join("leftover.txt").exists());
+    let again = scratch_clean("clean");
+    assert!(again.is_dir());
+    assert!(
+        !again.join("leftover.txt").exists(),
+        "第二次取同标签必须先清空残留"
+    );
+    let _ = std::fs::remove_dir_all(&again);
+}
+
+#[test]
 fn rng_is_deterministic_and_bounded() {
     let mut left = Rng::new(1234);
     let mut right = Rng::new(1234);

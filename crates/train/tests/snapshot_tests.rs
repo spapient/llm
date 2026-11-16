@@ -598,7 +598,7 @@ fn a_snapshot_larger_than_the_write_buffer_lands_byte_for_byte() {
         snapshot.encoded_len().expect("长度")
     );
 
-    let dir = scratch("stream");
+    let dir = testkit::scratch_clean("stream");
     let path = dir.join("step-7.llmc");
     snapshot.write(&path).expect("写");
     let meta = std::fs::metadata(&path).expect("文件存在");
@@ -618,16 +618,9 @@ fn a_snapshot_larger_than_the_write_buffer_lands_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("llm-checkpoint-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("临时目录");
-    dir
-}
-
 #[test]
 fn write_then_read_restores_the_snapshot_and_leaves_no_residue() {
-    let dir = scratch("write");
+    let dir = testkit::scratch_clean("write");
     let path = dir.join("step-7.llmc");
     let snapshot = snapshot();
     snapshot.write(&path).expect("写");
@@ -651,7 +644,7 @@ fn write_then_read_restores_the_snapshot_and_leaves_no_residue() {
 
 #[test]
 fn a_missing_checkpoint_is_missing_and_a_failed_write_is_io() {
-    let dir = scratch("io");
+    let dir = testkit::scratch_clean("io");
     let error = Snapshot::read(&dir.join("absent.llmc")).expect_err("不存在");
     assert_eq!(error.code(), Code::Missing);
 
@@ -671,7 +664,7 @@ fn a_missing_checkpoint_is_missing_and_a_failed_write_is_io() {
 
 #[test]
 fn a_corrupted_file_names_its_path() {
-    let dir = scratch("corrupt");
+    let dir = testkit::scratch_clean("corrupt");
     let path = dir.join("step-7.llmc");
     snapshot().write(&path).expect("写");
 
