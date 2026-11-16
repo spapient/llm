@@ -11,6 +11,7 @@ N = [8]
 
 [needs]
 dot    = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
+reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
 store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 
 [layouts]
