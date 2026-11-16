@@ -12,6 +12,9 @@ const LOCAL_SIG: u32 = 0x0403_4B50;
 const ZIP64_SIG: u32 = 0x0606_4B50;
 const STORED: u16 = 0;
 const EOCD64_LOCATOR_SIG: u32 = 0x0706_4B50;
+/// 条目最小 46+1 字节；预分配上限 4096，谎报计数先按剩余字节粗查。
+const MIN_ENTRY_BYTES: usize = 47;
+const MAX_ENTRY_PREALLOC: usize = 4096;
 
 #[derive(Debug, Clone)]
 struct ZipEntry {
@@ -29,7 +32,10 @@ struct Zip<'a> {
 impl<'a> Zip<'a> {
     fn parse(bytes: &'a [u8]) -> Result<Self> {
         let (mut at, total) = directory(bytes)?;
-        let mut entries = Vec::with_capacity(total);
+        if total > bytes.len() / MIN_ENTRY_BYTES {
+            return Err(bad("条目数超出归档能容纳的规模"));
+        }
+        let mut entries = Vec::with_capacity(total.min(MAX_ENTRY_PREALLOC));
         for _ in 0..total {
             let (entry, next) = entry(bytes, at)?;
             entries.push(entry);
@@ -62,8 +68,8 @@ impl<'a> Zip<'a> {
 
 fn directory(bytes: &[u8]) -> Result<(usize, usize)> {
     let eocd = locate_eocd(bytes)?;
-    let at = u32le(bytes, eocd + 16)? as usize;
-    let total = u16le(bytes, eocd + 10)? as usize;
+    let at = u32::from_le_bytes(le(bytes, eocd + 16)?) as usize;
+    let total = u16::from_le_bytes(le(bytes, eocd + 10)?) as usize;
     if needs_zip64(at, total) {
         return zip64_directory(bytes, eocd);
     }
@@ -76,15 +82,15 @@ fn needs_zip64(at: usize, total: usize) -> bool {
 
 fn zip64_directory(bytes: &[u8], eocd: usize) -> Result<(usize, usize)> {
     let z64 = zip64_record(bytes, eocd)?;
-    let total = u64le(bytes, z64 + 32)? as usize;
-    let at = u64le(bytes, z64 + 48)? as usize;
+    let total = u64::from_le_bytes(le(bytes, z64 + 32)?) as usize;
+    let at = u64::from_le_bytes(le(bytes, z64 + 48)?) as usize;
     Ok((at, total))
 }
 
 fn zip64_record(bytes: &[u8], eocd: usize) -> Result<usize> {
     let locator = find_sig_back(bytes, EOCD64_LOCATOR_SIG, eocd.saturating_sub(20))?;
-    let z64 = u32le(bytes, locator + 8)? as usize;
-    if u32le(bytes, z64)? != ZIP64_SIG {
+    let z64 = u32::from_le_bytes(le(bytes, locator + 8)?) as usize;
+    if u32::from_le_bytes(le(bytes, z64)?) != ZIP64_SIG {
         return Err(bad("ZIP64 EOCD 签名不符"));
     }
     Ok(z64)
@@ -138,8 +144,7 @@ fn fixed_fields(bytes: &[u8], at: usize) -> Result<&[u8]> {
 }
 
 fn entry_name(bytes: &[u8], at: usize, len: usize) -> Result<String> {
-    let name = slice(bytes, at + 46, len)?;
-    String::from_utf8(name.to_vec()).map_err(|_| bad("条目名不是 UTF-8"))
+    String::from_utf8(slice(bytes, at + 46, len)?.to_vec()).map_err(|_| bad("条目名不是 UTF-8"))
 }
 
 fn zip64_sizes(
@@ -171,7 +176,7 @@ fn next_offset(at: usize, name_len: usize, extra_len: usize, comment_len: usize)
 }
 
 fn local_start(bytes: &[u8], local: usize) -> Result<usize> {
-    if u32le(bytes, local)? != LOCAL_SIG {
+    if u32::from_le_bytes(le(bytes, local)?) != LOCAL_SIG {
         return Err(bad("本地头签名不符"));
     }
     let (name_len, extra_len) = local_lengths(bytes, local)?;
@@ -183,8 +188,8 @@ fn local_start(bytes: &[u8], local: usize) -> Result<usize> {
 
 fn local_lengths(bytes: &[u8], local: usize) -> Result<(usize, usize)> {
     Ok((
-        u16le(bytes, local + 26)? as usize,
-        u16le(bytes, local + 28)? as usize,
+        u16::from_le_bytes(le(bytes, local + 26)?) as usize,
+        u16::from_le_bytes(le(bytes, local + 28)?) as usize,
     ))
 }
 
@@ -200,8 +205,8 @@ fn zip64_extra(bytes: &[u8], extra_start: usize, extra_len: usize, field: usize)
     let stop = extra_start.saturating_add(extra_len);
     let mut at = extra_start;
     while at.checked_add(4).is_some_and(|end| end <= stop) {
-        let header_id = u16le(bytes, at)?;
-        let size = u16le(bytes, at + 2)? as usize;
+        let header_id = u16::from_le_bytes(le(bytes, at)?);
+        let size = u16::from_le_bytes(le(bytes, at + 2)?) as usize;
         let body = at + 4;
         if header_id == 0x0001 {
             return zip64_field(bytes, body, size, field);
@@ -219,7 +224,7 @@ fn zip64_field(bytes: &[u8], body: usize, size: usize, field: usize) -> Result<u
     if end > size {
         return Err(bad("ZIP64 extra 声明长度不足，字段被截断"));
     }
-    Ok(u64le(bytes, body.saturating_add(end.saturating_sub(8)))? as usize)
+    Ok(u64::from_le_bytes(le(bytes, body.saturating_add(end.saturating_sub(8)))?) as usize)
 }
 
 fn locate_eocd(bytes: &[u8]) -> Result<usize> {
@@ -230,7 +235,7 @@ fn locate_eocd(bytes: &[u8]) -> Result<usize> {
 fn find_sig_back(bytes: &[u8], sig: u32, from: usize) -> Result<usize> {
     let mut at = bytes.len().saturating_sub(4);
     while at >= from {
-        if u32le(bytes, at)? == sig {
+        if u32::from_le_bytes(le(bytes, at)?) == sig {
             return Ok(at);
         }
         if at == 0 {
@@ -246,21 +251,11 @@ fn slice(bytes: &[u8], at: usize, len: usize) -> Result<&[u8]> {
     bytes.get(at..stop).ok_or_else(|| bad("ZIP 字段越界"))
 }
 
-fn u16le(bytes: &[u8], at: usize) -> Result<u16> {
-    let s = slice(bytes, at, 2)?;
-    Ok(u16::from_le_bytes([s[0], s[1]]))
-}
-
-fn u32le(bytes: &[u8], at: usize) -> Result<u32> {
-    let s = slice(bytes, at, 4)?;
-    Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
-}
-
-fn u64le(bytes: &[u8], at: usize) -> Result<u64> {
-    let s = slice(bytes, at, 8)?;
-    Ok(u64::from_le_bytes([
-        s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-    ]))
+fn le<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N]> {
+    let s = slice(bytes, at, N)?;
+    let mut out = [0; N];
+    out.copy_from_slice(s);
+    Ok(out)
 }
 
 #[derive(Debug, Clone)]
@@ -563,6 +558,10 @@ impl Vm {
 
     fn store_memo(&mut self, idx: usize) -> Result<()> {
         let value = or_bad(self.stack.last(), "空栈无法写 memo")?.clone();
+        // memo 槽位由更早的存槽 opcode 占用，索引不可能超过流长度；谎报大索引先拒绝，避免稀疏巨表。
+        if idx > self.pkl.len() {
+            return Err(bad("memo 索引超出 pickle 流长度"));
+        }
         if idx >= self.memo.len() {
             self.memo.resize(idx + 1, Value::Scalar);
         }
@@ -854,15 +853,16 @@ mod tests {
         let error = Vm::run(b"}(K\x01u.").expect_err("奇数项必须报错");
         assert!(error.to_string().contains("奇数"), "{error}");
     }
-}
 
-#[cfg(test)]
-mod zip_tests {
-    use super::*;
+    #[test]
+    fn a_huge_memo_index_is_rejected_not_resized() {
+        let error = Vm::run(b"K\x01r\xff\xff\xff\xff.").expect_err("memo 索引必须报错");
+        assert!(error.to_string().contains("memo"), "{error}");
+    }
 
     #[test]
     fn parses_real_torch_zip() {
-        let Some(raw) = super::tests::real_bytes() else {
+        let Some(raw) = real_bytes() else {
             return;
         };
         let zip = Zip::parse(&raw).expect("解析");

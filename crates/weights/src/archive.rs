@@ -278,11 +278,28 @@ fn flags_align(bytes: &[u8]) -> Result<(u32, usize)> {
     Ok((flags, 1usize << align_log))
 }
 
+/// 单条描述符占有的最小字节（名长度 8 + 名 1 + dtype 1 + rank 4 + codec 1 +
+/// quant 标志 1 + data_len 8 + seg_crc 4）；计数先按剩余字节粗查。
+const MIN_DESC_BYTES: usize = 28;
+/// 描述符表预分配上限：真实归档段数远小于此，超出部分由 `Vec` 按需增长；谎报的巨大
+/// 计数不会换来一次巨额分配。
+const MAX_DESC_PREALLOC: usize = 4096;
+
+/// 段计数：读 u32 计数并按剩余字节粗查；谎报的巨大计数不换来巨额预分配。
+fn read_count(cur: &mut Cursor<'_>) -> Result<usize> {
+    let count = usize::try_from(cur.read::<u32>()?).map_err(|_| invalid("段数量超 usize"))?;
+    let plausible = cur.remaining().len().saturating_div(MIN_DESC_BYTES);
+    if count > plausible {
+        return Err(invalid("段数量超出剩余字节能容纳的规模"));
+    }
+    Ok(count)
+}
+
 /// 段计数与描述符；返回数据区起点（绝对偏移）。
 fn read_descs(bytes: &[u8]) -> Result<(Vec<Desc>, usize)> {
     let mut cur = Cursor::new(&bytes[FIXED_HEAD..]);
-    let count = usize::try_from(cur.read::<u32>()?).map_err(|_| invalid("段数量超 usize"))?;
-    let mut descs = Vec::with_capacity(count);
+    let count = read_count(&mut cur)?;
+    let mut descs = Vec::with_capacity(count.min(MAX_DESC_PREALLOC));
     for _ in 0..count {
         descs.push(Desc::decode(&mut cur)?);
     }
@@ -532,6 +549,31 @@ mod mode_tests {
         let error = mode_of(&parsed).expect_err("未知码必须报错");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("mode"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod malformed_tests {
+    use super::*;
+
+    /// fuzz 实测崩溃产物：段计数被篡改为 `u32::MAX`，剩余字节远不够这么多描述符。
+    /// 旧实现按计数直接 `with_capacity` 触发约 39 GiB 分配；现在计数先按剩余字节粗查。
+    const FUZZ_CRASH: [u8; 114] = [
+        0x4c, 0x4c, 0x50, 0x4b, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x06, 0xff, 0xff, 0xff, 0xff,
+        0x01, 0x01, 0x77, 0x14, 0x02, 0x02, 0x03, 0x00, 0x00, 0x18, 0xa2, 0x94, 0x87, 0x9e, 0x0a,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x80, 0x60, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x60, 0x64, 0x35,
+    ];
+
+    #[test]
+    fn a_count_exceeding_remaining_bytes_is_rejected_not_an_oom() {
+        let error = Archive::parse(&FUZZ_CRASH).expect_err("谎报计数必须报错");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("规模"), "{error}");
     }
 }
 

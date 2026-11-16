@@ -241,6 +241,9 @@ fn decode_head(cur: &mut Cursor<'_>) -> Result<(String, Wire)> {
     Ok((name, read_wire(cur)?))
 }
 
+/// 张量轴数上限：真实张量的维数远小于此；谎报的 rank 不换来巨额预分配。
+const MAX_RANK: u32 = 8;
+
 /// 形状与 codec：rank 轴长度，随后一个 codec 码。
 fn decode_body(cur: &mut Cursor<'_>) -> Result<(Vec<u64>, u32, Codec)> {
     let rank = cur.read::<u32>()?;
@@ -248,10 +251,12 @@ fn decode_body(cur: &mut Cursor<'_>) -> Result<(Vec<u64>, u32, Codec)> {
     Ok((shape, rank, Codec::from_code(cur.read_u8()?)?))
 }
 
-/// `rank` 个轴长度。
+/// `rank` 个轴长度；维数先过 [`MAX_RANK`] 守卫。
 fn decode_shape(cur: &mut Cursor<'_>, rank: u32) -> Result<Vec<u64>> {
-    let capacity = usize::try_from(rank).map_err(|_| bad("rank 超 usize"))?;
-    let mut shape = Vec::with_capacity(capacity);
+    if rank > MAX_RANK {
+        return Err(bad(&format!("张量维数 {rank} 超过 {MAX_RANK}")));
+    }
+    let mut shape = Vec::with_capacity(rank as usize);
     for _ in 0..rank {
         shape.push(cur.read::<u64>()?);
     }
@@ -335,6 +340,13 @@ mod tests {
             Segment::new("empty", Wire::F32, vec![0], None, Vec::new()).expect("零元素段");
         assert_eq!(segment.numel(), 0);
         assert_eq!(segment.expected_bytes(), 0);
+    }
+
+    #[test]
+    fn an_overlarge_rank_is_rejected_before_allocation() {
+        let mut cur = Cursor::new(&[9, 0, 0, 0, 0]);
+        let error = decode_shape(&mut cur, MAX_RANK + 1).expect_err("rank 超限必须报错");
+        assert!(error.to_string().contains("维数"), "{error}");
     }
 
     #[test]
