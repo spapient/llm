@@ -130,7 +130,7 @@ impl Data {
         }
     }
 
-    /// 只读视图：[`Kernel`] 看到的输入。
+    /// 只读视图：[`crate::Kernel`] 看到的输入。
     pub fn view(&self) -> View<'_> {
         match self {
             Self::F32(values) => View::F32(values),
@@ -138,7 +138,7 @@ impl Data {
         }
     }
 
-    /// 可变视图：[`Kernel`] 写的输出。
+    /// 可变视图：[`crate::Kernel`] 写的输出。
     pub fn view_mut(&mut self) -> ViewMut<'_> {
         match self {
             Self::F32(values) => ViewMut::F32(values),
@@ -152,7 +152,7 @@ impl Data {
     }
 }
 
-/// 只读视图：一次 [`Kernel::compute`] 的输入。
+/// 只读视图：一次 [`crate::Kernel::compute`] 的输入。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum View<'a> {
     /// 32 位浮点。
@@ -181,7 +181,7 @@ impl<'a> View<'a> {
     }
 }
 
-/// 可写视图：一次 [`Kernel::compute`] 的输出。
+/// 可写视图：一次 [`crate::Kernel::compute`] 的输出。
 #[derive(Debug, PartialEq)]
 pub enum ViewMut<'a> {
     /// 32 位浮点。

@@ -52,7 +52,7 @@ pub fn axis(shape: &ShapeContext, label: char, op: &str) -> Result<usize, Error>
 /// 矩阵乘格式：一条 GEMM 里随精度变化的那部分。
 ///
 /// 实现者只写"这份格式用什么元素、什么位宽、怎么取样、怎么打包、怎么点积"；代价、样本装配、
-/// 矩阵遍历与尺寸校验由本模块骨架（[`cost`] / [`sample`] / [`reference`] / [`forward`]）
+/// 矩阵遍历与尺寸校验由本模块骨架（[`cost`] / [`sample`] / [`reference()`] / [`forward`]）
 /// 收口。所有关联项都是编译期常量：没有一件需要运行期再判断一次。
 pub trait Gemm {
     /// 样本缓冲里的元素类型（[`Values`] 的两个闭集变体）。

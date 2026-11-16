@@ -91,7 +91,7 @@ pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
 
 /// 签名声明的标记：片段第一行 `/* cutile-sign: <prim>/<impl> */` 里的 `cutile-sign:`。
 ///
-/// 与 [`signature`] 模块内的 `MARKER` 同值；共享规则见该模块。
+/// 与 `signature` 模块内的 `MARKER` 同值；共享规则见该模块。
 pub const SIGN_MARKER: &str = signature::MARKER;
 
 /// 一段片段：文本，以及它声明实现的那条签名。

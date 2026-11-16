@@ -118,12 +118,12 @@ pub trait Tokenizer {
         Ok(Encoding::from_ids(self.encode(text)?))
     }
 
-    /// 词片字节 → 编号；词表不支持反查时返回 [`Ok(None)`]。
+    /// 词片字节 → 编号；词表不支持反查时返回 `Ok(None)`。
     fn lookup(&self, _piece: &[u8]) -> Result<Option<Token>> {
         Ok(None)
     }
 
-    /// 编号 → 词片字节；词表不支持反查时返回 [`Ok(None)`]。
+    /// 编号 → 词片字节；词表不支持反查时返回 `Ok(None)`。
     fn piece(&self, token: Token) -> Result<Option<Vec<u8>>> {
         let _ = token;
         Ok(None)
