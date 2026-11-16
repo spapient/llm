@@ -404,7 +404,7 @@ fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>])
          \x20   int n = 0;\n\
          \x20   switch (tid) {{\n"
     ));
-    push_dispatch(program, max, selected, "}}\n\n");
+    push_dispatch(program, max, selected, "}\n\n");
 }
 
 /// host main：分配、发射、同步、回读——stdout 只按实际写入个数打印位模式（与 CPU harness

@@ -99,3 +99,27 @@ fn metal_driver_wrapper_is_nonempty() {
     let driver = metal_driver(MAX_OUT);
     assert!(!driver.is_empty());
 }
+
+/// 设备生成文本的花括号必须配对。无 nvcc/Metal 后端的环境编不到设备端产物，CI 只能在文本层
+/// 守住这一条：kernel 函数体与 switch 各闭合一次，多余的 `}` 会把后续声明顶到全局作用域。
+#[test]
+fn generated_device_program_braces_are_balanced() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-brace-work"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    for vendor in ["nvidia", "metal"] {
+        let Some(profile) = catalogue.profile(vendor).cloned() else {
+            continue;
+        };
+        let Some(front) = spec(profile.meta.emit) else {
+            continue;
+        };
+        let selected = crate::witness::declared_witnesses(&profile).expect("见证");
+        let text = (front.program)(&profile, &dirs, &selected, Scope::Device).expect("可生成");
+        let open = text.chars().filter(|c| *c == '{').count();
+        let close = text.chars().filter(|c| *c == '}').count();
+        assert_eq!(
+            open, close,
+            "{vendor} 生成文本花括号不配对：{open} != {close}"
+        );
+    }
+}
