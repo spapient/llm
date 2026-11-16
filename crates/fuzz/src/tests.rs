@@ -227,7 +227,7 @@ fn an_unstable_target_is_caught_with_its_case_and_input() {
     assert_eq!(finding.input(), seed.derive(0).as_slice());
 }
 
-/// `exercise` 单条输入跑三条契约，违约以证据返回；harness 再经 `exercise_or_panic` 转 panic。
+/// `exercise` 单条输入跑三条契约，违约以证据返回；harness 边界再把这份证据转成 panic。
 #[test]
 fn exercise_runs_the_same_contracts_as_sweep() {
     let finding = Unstable(Cell::new(false))
@@ -235,25 +235,6 @@ fn exercise_runs_the_same_contracts_as_sweep() {
         .expect_err("harness 入口也要抓不稳定结论");
     assert_eq!(finding.contract(), "同一输入必须给出同一个结论");
     assert_eq!(finding.case(), 0, "模糊输入没有派生用例号");
-}
-
-/// `exercise_or_panic` 把违约转成 panic，载荷里带完整报告（目标名、用例号、输入）。
-#[test]
-fn exercise_or_panic_panics_with_the_finding_report() {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Unstable(Cell::new(false)).exercise_or_panic(b"abc");
-    }));
-    let payload = result.expect_err("不稳定结论必须 panic");
-    let message = payload
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| payload.downcast_ref::<&str>().copied())
-        .unwrap_or_default();
-    assert!(
-        message.contains("unstable"),
-        "panic 载荷要带目标名：{message}"
-    );
-    assert!(message.contains("case #0"), "报告要带用例号：{message}");
 }
 
 /// `sweep_all` 收齐全部违约证据，不提前退出。

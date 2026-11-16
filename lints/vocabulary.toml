@@ -87,8 +87,8 @@ reason = "执行器是调度层的内部落地；对外承诺的是 `Scheduler`/
 
 [[ownership.unlisted]]
 crate = "fuzz"
-names = ["Behaviour", "Seed", "Target"]
-reason = "模糊测试的目标、种子与行为描述；工具成员，不参与运行时分层"
+names = ["Behaviour", "Repro", "Seed", "Target"]
+reason = "模糊测试的目标、种子、行为描述与复现样本；工具成员，不参与运行时分层"
 
 [[ownership.unlisted]]
 crate = "op"

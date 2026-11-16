@@ -94,8 +94,22 @@ const BOUNDARY: [u8; 12] = [
     0x00, 0x7F, 0x80, 0xFF, 0x01, 0x7E, 0xFE, 0x20, 0x0A, 0x0D, 0xBF, 0xC0,
 ];
 
-/// 单步变异数量；用例内每一步都从这张表里抽。新增一步只改这里与 [`mutate`] 的匹配。
+/// 单步变异数量；用例内每一步都从 [`MUTATIONS`] 表里抽。新增一步只改表与这个计数。
 const STEPS: usize = 9;
+
+/// 变异步表：下标即 [`Rng::below`] 抽中的编号；表分派把调度分支移出 [`mutate`]，
+/// 每一步仍是独立小函数，空/单字节边界各自退化安全。
+const MUTATIONS: [fn(&mut Vec<u8>, &mut Rng); STEPS] = [
+    flip_bit,
+    substitute_boundary,
+    replace_byte,
+    nudge_byte,
+    insert_byte,
+    delete_byte,
+    truncate,
+    append_bytes,
+    duplicate_region,
+];
 
 impl Seed {
     /// 派生第 `index` 个用例：范例的一份确定性扰动。
@@ -128,22 +142,14 @@ fn mutate(out: &mut Vec<u8>, rng: &mut Rng) {
     }
     let steps = 1 + rng.below(3);
     for _ in 0..steps {
-        match rng.below(STEPS) {
-            0 => flip_bit(out, rng),
-            1 => substitute_boundary(out, rng),
-            2 => replace_byte(out, rng),
-            3 => nudge_byte(out, rng),
-            4 => insert_byte(out, rng),
-            5 => delete_byte(out, rng),
-            6 => truncate(out, rng),
-            7 => append_bytes(out, rng),
-            _ => duplicate_region(out, rng),
-        }
+        MUTATIONS[rng.below(STEPS)](out, rng);
     }
 }
 
 /// 翻转一个随机位；空串无可选位置，跳过。
-fn flip_bit(out: &mut [u8], rng: &mut Rng) {
+// 分派表要求统一成 `&mut Vec<u8>`；这几步只按下标改写，不改长度。
+#[allow(clippy::ptr_arg)]
+fn flip_bit(out: &mut Vec<u8>, rng: &mut Rng) {
     if out.is_empty() {
         return;
     }
@@ -152,7 +158,8 @@ fn flip_bit(out: &mut [u8], rng: &mut Rng) {
 }
 
 /// 把一个位置换成流里的随机字节；空串跳过。
-fn replace_byte(out: &mut [u8], rng: &mut Rng) {
+#[allow(clippy::ptr_arg)]
+fn replace_byte(out: &mut Vec<u8>, rng: &mut Rng) {
     if out.is_empty() {
         return;
     }
@@ -161,7 +168,8 @@ fn replace_byte(out: &mut [u8], rng: &mut Rng) {
 }
 
 /// 把一个位置换成表格里的边界字节；空串跳过。
-fn substitute_boundary(out: &mut [u8], rng: &mut Rng) {
+#[allow(clippy::ptr_arg)]
+fn substitute_boundary(out: &mut Vec<u8>, rng: &mut Rng) {
     if out.is_empty() {
         return;
     }
@@ -170,7 +178,8 @@ fn substitute_boundary(out: &mut [u8], rng: &mut Rng) {
 }
 
 /// 一个字节做环绕 +1 / -1：长度、偏移、计数值这类整数字段的差一错误走这一步；空串跳过。
-fn nudge_byte(out: &mut [u8], rng: &mut Rng) {
+#[allow(clippy::ptr_arg)]
+fn nudge_byte(out: &mut Vec<u8>, rng: &mut Rng) {
     if out.is_empty() {
         return;
     }

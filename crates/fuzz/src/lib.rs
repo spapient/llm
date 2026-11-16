@@ -93,19 +93,6 @@ pub trait Target {
     {
         check(self, 0, input.to_vec())
     }
-
-    /// harness 入口：与 [`Self::exercise`] 同一套判据，违约时把 [`Finding`] 转成 panic。
-    ///
-    /// harness 没有上报通道，违约必须终止进程；libFuzzer 会留下触发输入作为复现样本。panic
-    /// 转换只此一处，各 harness 不再各写一遍 `if let Err(...) { panic!(...) }`。
-    fn exercise_or_panic(&self, input: &[u8])
-    where
-        Self: Sized,
-    {
-        if let Err(finding) = self.exercise(input) {
-            panic!("{finding}");
-        }
-    }
 }
 
 #[cfg(test)]
