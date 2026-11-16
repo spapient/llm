@@ -1,8 +1,9 @@
 //! 扫描前预处理：剔除 `#[cfg(test)]` 条目并保留行号。
 //!
 //! 基于 [`crate::lex`] token 树定位条目，而不是逐行匹配大括号：字符串/原始字符串/字符/注释里的
-//! `{`、`}` 不会被当成真实括号。`#[cfg(test)]` 与 `#[cfg(all(.. test ..))]` 标注的整个条目
-//! 被空行替换（行号不变），`#[cfg(not(test))]` 不算。
+//! `{`、`}` 不会被当成真实括号。`#[cfg(test)]`、`#[cfg(all(.. test ..))]` 与
+//! `#[cfg(any(.. test ..))]` 标注的整个条目被空行替换（行号不变）；outer `#[..]` 与 inner
+//! `#![..]` 两种属性都认，`#[cfg(not(test))]` 不算。
 
 use crate::lex::{Delim, Token, parse};
 use diagnostic::Result;
@@ -56,9 +57,9 @@ fn collect(tokens: &[Token], blank: &mut [bool]) {
     let mut attr = Attr::default();
     let mut idx = 0;
     while idx < tokens.len() {
-        if is_attr(tokens, idx) {
-            attr.absorb(&tokens[idx], &tokens[idx + 1]);
-            idx += 2; // 跳过 `#` 与 `[..]`
+        if let Some((hash, bracket)) = attr_at(tokens, idx) {
+            attr.absorb(&tokens[hash], &tokens[bracket]);
+            idx = bracket + 1; // 跳过 `#`（与可选 `!`）与 `[..]`
             continue;
         }
 
@@ -74,16 +75,27 @@ fn collect(tokens: &[Token], blank: &mut [bool]) {
     }
 }
 
-/// 顶层位置 `idx` 是否是属性：`#` 后跟一个方括号分组。
-fn is_attr(tokens: &[Token], idx: usize) -> bool {
-    matches!(tokens.get(idx), Some(Token::Punct { ch: '#', .. }))
-        && matches!(
-            tokens.get(idx + 1),
+/// 属性起始：返回 `#` 下标与方括号分组下标。
+///
+/// 认两种形态：outer `#[..]` 与 inner `#![..]`；其余位置不是属性。
+fn attr_at(tokens: &[Token], idx: usize) -> Option<(usize, usize)> {
+    let Some(Token::Punct { ch: '#', .. }) = tokens.get(idx) else {
+        return None;
+    };
+    match tokens.get(idx + 1) {
+        Some(Token::Group {
+            delim: Delim::Bracket,
+            ..
+        }) => Some((idx, idx + 1)),
+        Some(Token::Punct { ch: '!', .. }) => match tokens.get(idx + 2) {
             Some(Token::Group {
                 delim: Delim::Bracket,
                 ..
-            })
-        )
+            }) => Some((idx, idx + 2)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// 从条目首个 token 起，定位其结束 token：带体的条目结束于花括号分组，否则结束于分号。
@@ -121,13 +133,21 @@ fn is_cfg_test(items: &[Token]) -> bool {
     false
 }
 
-/// 口径与旧实现一致：只认纯 `test` 与 `all(.. test ..)`；`not(test)` 与 `any(..)` 不剔除。
+/// 口径：纯 `test`、`all(.. test ..)`、`any(.. test ..)` 都算测试编译口径；
+/// 只要出现 `not(test)` 就不剔除（`any(not(test), ..)` 也不剔）。
 fn is_test_body(body: &str) -> bool {
     let compact: String = body.chars().filter(|ch| !ch.is_whitespace()).collect();
     if compact.contains("not(test)") {
         return false;
     }
-    compact == "test" || (compact.starts_with("all(") && contains_token(&compact, "test"))
+    compact == "test" || wrapped_in_test_cfg(&compact)
+}
+
+/// `all(..)` / `any(..)` 包装里是否含独立 `test` 分支。
+fn wrapped_in_test_cfg(compact: &str) -> bool {
+    ["all(", "any("]
+        .iter()
+        .any(|prefix| compact.starts_with(prefix) && contains_token(compact, "test"))
 }
 
 /// `test` 是否作为独立 token 出现（两侧边界都不是标识符字符）。

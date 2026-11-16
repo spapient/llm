@@ -22,6 +22,19 @@ fn unwrap_inside_a_string_is_not_flagged() {
 }
 
 #[test]
+fn ufcs_unwrap_expect_are_caught() {
+    let src = "fn f() { let a = Option::unwrap(x); let b = Result::expect(y, \"m\"); }";
+    let kinds: Vec<Kind> = scan(src).unwrap().iter().map(|c| c.kind).collect();
+    assert_eq!(kinds, vec![Kind::Unwrap, Kind::Expect]);
+}
+
+#[test]
+fn ordinary_associated_function_is_not_flagged() {
+    let src = "fn f() { let v = Type::new(x); }";
+    assert!(scan(src).unwrap().is_empty());
+}
+
+#[test]
 fn result_returning_code_is_clean() {
     let src = "fn f() -> Result<u32, E> { let v = ok()?; Ok(v) }";
     assert!(scan(src).unwrap().is_empty());

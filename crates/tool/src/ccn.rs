@@ -3,6 +3,9 @@
 //! 条件 token：关键字 `if/for/while/catch/where`、`&&`/`||`、`?`、let-else 的 `else`，
 //! 以及 match 臂（`=>`，首臂不计）。`if` 的 `else` 不重复计数。
 //! 复杂度 `ccn = 1 + 条件计数`；函数长度 `nloc` 为函数体范围内 token 覆盖到的行数。
+//!
+//! 已知限制：`macro_rules!` / `macro` 定义体是生成模板，不是函数，整体跳过——宏臂内的
+//! 条件不计入任何函数的复杂度；模板分支的密度目前不在本门口径内。
 
 use std::collections::BTreeMap;
 

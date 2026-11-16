@@ -19,8 +19,19 @@ fn keeps_not_test_items() {
 #[test]
 fn detects_compound_test_cfg() {
     assert!(is_test_body("all(test, feature = \"x\")"));
+    assert!(is_test_body("any(test, feature = \"x\")"));
     assert!(!is_test_body("not(test)"));
+    assert!(!is_test_body("any(not(test), feature)"));
     assert!(!is_test_body("feature = \"testing\""));
+}
+
+#[test]
+fn strips_inner_cfg_test_attribute() {
+    let src = "#![cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn keep() {}\n";
+    let stripped = strip_tests(src).expect("strip");
+    assert_eq!(stripped.lines().count(), src.lines().count());
+    assert!(!stripped.contains("mod tests"));
+    assert!(stripped.contains("fn keep"));
 }
 
 #[test]

@@ -15,6 +15,8 @@
 //!   清理再纳入。
 //! - **外部集成测试**（`crates/*/tests/`）：测试代码惯例可用 `expect`/`unwrap`，只守门词法
 //!   能解析，不套生产限值。
+//!
+//! 本仓不设 `examples/`：可演示的用法由测试夹具与集成测试承担，不再单开一类示例程序。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -64,6 +66,7 @@ fn every_source_passes_the_static_gate() {
     }
 
     bad.extend(gate.stale(&live));
+    bad.extend(forbidden_example_dirs(root, &crates));
 
     let documents = document_files(root);
     assert!(
@@ -195,6 +198,25 @@ fn build_script_files(crates: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// 本仓不设示例程序：根与各 crate 下出现 `examples/` 目录即判失败，可演示用法由测试夹具
+/// 与集成测试承担。
+fn forbidden_example_dirs(root: &Path, crates: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut check = |dir: &Path| {
+        let example = dir.join("examples");
+        if example.is_dir() {
+            found.push(example.display().to_string());
+        }
+    };
+    check(root);
+    if let Ok(entries) = std::fs::read_dir(crates) {
+        for entry in entries.flatten() {
+            check(&entry.path());
+        }
+    }
+    found
 }
 
 /// 各 crate `tests/` 目录下的外部集成测试（与内联 `#[cfg(test)]` 模块分开）。
