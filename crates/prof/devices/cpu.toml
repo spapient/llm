@@ -147,7 +147,9 @@ static inline float32x4_t _cutile_exp4_f32(float32x4_t x) {
     p = vfmaq_f32(vdupq_n_f32(1.0f), r, p);
     int32x4_t e = vshlq_n_s32(vaddq_s32(k, vdupq_n_s32(127)), 23);
     uint32x4_t under = vcltq_s32(k, vdupq_n_s32(-126));
+    uint32x4_t over = vreinterpretq_u32_s32(vcgeq_s32(k, vdupq_n_s32(128)));
     float32x4_t res = vmulq_f32(p, vreinterpretq_f32_s32(e));
+    res = vbslq_f32(over, vreinterpretq_f32_u32(vdupq_n_u32(0x7F800000u)), res);
     return vreinterpretq_f32_s32(vandq_s32(vreinterpretq_s32_f32(res),
         vreinterpretq_s32_u32(vmvnq_u32(under))));
 }
