@@ -267,11 +267,12 @@ fn is_production(path: &Path) -> bool {
 }
 
 /// 仓库内相对路径，失败时退回原样，保证坏消息里能定位文件。
+/// 分隔符统一成 `/`：台账基线按正斜杠登记，Windows 的反斜杠不能参与匹配。
 fn label(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
-        .into_owned()
+        .replace('\\', "/")
 }
 
 /// 纳入链接检查的文档：根 README、`docs/**/*.md`（含 ADR）、各成员 README。
