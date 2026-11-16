@@ -1,5 +1,5 @@
 # 逐元素 SiLU：y[n] = a[n] * sigmoid(a[n])。
-# 一元骨架：没有规约轴，needs 只有 load/store；exp 写在模板普通 C 里（cc 自带 expf）。
+# 一元骨架：没有规约轴，needs 只有 load/store；exp 走 preamble 软件标量接口。
 
 [op]
 name     = "silu_f32"

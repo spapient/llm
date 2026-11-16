@@ -3,12 +3,12 @@
 // 布局契约（由声明层校验）：a={{a}}
 //
 // 一元骨架：读一个数、算 0.5*x*(1+erf(x/sqrt(2)))、写一个数。
-// erf 用 Abramowitz-Stegun 7.1.26（与 op::gelu_f32::erf 同一份系数），保证两侧对拍零漂移。
-#include <math.h>
+// erf 用 Abramowitz-Stegun 7.1.26（与 op::gelu_f32::erf 同一份系数），保证两侧对拍零漂移；
+// 其中的 exp 走 preamble 软件标量接口，绝对值用条件取，不依赖数学库。
 
 static float gelu_erf(float x) {
     float sign = x < 0.0f ? -1.0f : 1.0f;
-    float ax = fabsf(x);
+    float ax = sign < 0.0f ? -x : x;
     const float p = 0.3275911f;
     const float a1 = 0.254829592f;
     const float a2 = -0.284496736f;
@@ -17,7 +17,7 @@ static float gelu_erf(float x) {
     const float a5 = 1.061405429f;
     float t = 1.0f / (1.0f + p * ax);
     float series = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
-    float y = 1.0f - series * expf(-ax * ax);
+    float y = 1.0f - series * _cutile_exp_f32(-ax * ax);
     return sign * y;
 }
 
