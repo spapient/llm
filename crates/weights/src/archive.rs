@@ -392,13 +392,17 @@ impl Mode {
 }
 
 /// 读取模式；无标记段的旧文件按推理模式处理。
-pub fn mode_of(archive: &Archive<'_>) -> Mode {
-    archive
+///
+/// 有标记段但码位不在闭集内时显式报错，不静默落进推理模式：未知码通常意味着文件损坏
+/// 或版本错位，按推理放行会丢掉训练状态段。
+pub fn mode_of(archive: &Archive<'_>) -> Result<Mode> {
+    match archive
         .get(MODE_NAME)
         .and_then(|seg| archive.read(seg).first().copied())
-        .map_or(Mode::Infer, |code| {
-            Mode::from_code(code).unwrap_or(Mode::Infer)
-        })
+    {
+        None => Ok(Mode::Infer),
+        Some(code) => Mode::from_code(code),
+    }
 }
 
 /// 段名是否属于优化器状态。
@@ -499,13 +503,16 @@ mod mode_tests {
 
         let released_bytes = archive(released);
         let released_archive = Archive::parse(&released_bytes).expect("x");
-        assert_eq!(mode_of(&released_archive), Mode::Infer);
+        assert_eq!(mode_of(&released_archive).expect("模式"), Mode::Infer);
     }
 
     #[test]
     fn missing_marker_defaults_infer() {
         let bytes = archive(vec![f32_segment("w", &[1.0])]);
-        assert_eq!(mode_of(&Archive::parse(&bytes).expect("a")), Mode::Infer);
+        assert_eq!(
+            mode_of(&Archive::parse(&bytes).expect("a")).expect("模式"),
+            Mode::Infer
+        );
     }
 
     #[test]
@@ -514,7 +521,17 @@ mod mode_tests {
         segments.push(Mode::Train.to_segment().expect("标记"));
         let bytes = archive(segments);
         let parsed = Archive::parse(&bytes).expect("a");
-        assert_eq!(mode_of(&parsed), Mode::Train);
+        assert_eq!(mode_of(&parsed).expect("模式"), Mode::Train);
+    }
+
+    #[test]
+    fn an_unknown_mode_code_is_rejected_not_fallen_back_to_infer() {
+        let bad = Segment::new(MODE_NAME, Wire::U8, vec![1], None, vec![7]).expect("段");
+        let bytes = archive(vec![f32_segment("w", &[1.0]), bad]);
+        let parsed = Archive::parse(&bytes).expect("a");
+        let error = mode_of(&parsed).expect_err("未知码必须报错");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("mode"), "{error}");
     }
 }
 
