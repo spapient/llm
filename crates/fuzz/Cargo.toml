@@ -15,8 +15,11 @@ engine = ["dep:libfuzzer-sys"]
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+
 # libFuzzer 运行时只服务 harness；契约库不引用它，未启用 `engine` 时不编译。
 # Cargo 不允许 dev-dependencies 可选，因此保留在常规依赖侧并由 `engine` feature 门控。
+# 运行时只在 Unix 提供可链接入口；Windows/MSVC 下没有 libFuzzer 运行时，harness 退化为空 main 桩。
+[target.'cfg(unix)'.dependencies]
 libfuzzer-sys = { version = "0.4.13", optional = true }
 
 # 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）与 libfuzzer harness（见 `tests/fuzz_*.rs`）。

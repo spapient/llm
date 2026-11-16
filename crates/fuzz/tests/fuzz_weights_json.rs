@@ -1,5 +1,5 @@
 //! libfuzzer harness：safetensors 头部 JSON。
-#![no_main]
+#![cfg_attr(unix, no_main)]
 
 #[path = "support/drivers.rs"]
 mod drivers;
