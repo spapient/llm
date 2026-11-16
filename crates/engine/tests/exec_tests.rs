@@ -112,3 +112,38 @@ fn local_executor_reports_bound_device() {
     assert_eq!(executor.device().vendor(), "cpu");
     assert_eq!(executor.device().arch(), "aarch64");
 }
+
+#[test]
+fn a_new_node_has_no_operands() {
+    let node = Node::new("softmax_f32", Launch::new([1, 1, 1], [1, 1, 1]));
+    assert!(node.inputs().is_empty());
+    assert!(node.outputs().is_empty());
+}
+
+#[test]
+fn node_binds_input_and_output_operands() {
+    let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [1, 1, 1]));
+    node.bind_input(0).bind_input(1).bind_output(2);
+
+    let inputs: Vec<u32> = node.inputs().iter().map(Operand::id).collect();
+    let outputs: Vec<u32> = node.outputs().iter().map(Operand::id).collect();
+    assert_eq!(inputs, [0, 1]);
+    assert_eq!(outputs, [2]);
+    assert_eq!(node.inputs()[0].role(), OperandRole::Input);
+    assert_eq!(node.outputs()[0].role(), OperandRole::Output);
+}
+
+#[test]
+fn queued_node_keeps_its_operand_bindings() {
+    let mut graph = Graph::new();
+    let mut node = Node::new("rope_f32", Launch::new([1, 1, 1], [1, 1, 1]));
+    node.bind_input(3).bind_output(4);
+    graph.push(node);
+
+    let mut executor = LocalExecutor::new(Device::new("cpu", "generic"));
+    executor.submit(&graph, Stream::new(0)).expect("提交");
+
+    let queued = executor.pending();
+    assert_eq!(queued[0].node().inputs()[0].id(), 3);
+    assert_eq!(queued[0].node().outputs()[0].id(), 4);
+}

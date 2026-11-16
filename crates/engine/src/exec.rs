@@ -1,9 +1,12 @@
-//! 提交与执行：[`Stream`]、[`Graph`]、[`Node`]、[`Launch`] 与 [`Executor`] 契约。
+//! 提交与执行：[`Stream`]、[`Graph`]、[`Node`]、[`Launch`]、[`Operand`] 与 [`Executor`] 契约。
 //!
-//! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Executor`。**不拥有**：编译 kernel
+//! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Operand`、`Executor`。**不拥有**：编译 kernel
 //! （`cutile::runner` 负责"源文件 → 可执行文件"，产物按 `(模板, 档案, flags)` 由 `cutile::build` 缓存；本 crate 只负责
 //! "图提交到流"，每 step 都发生，见 `docs/adr/0002-single-owner-per-type.md`）、缓冲分配（`storage`）。
 //! **依赖**：`diagnostic`。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
+//!
+//! 节点绑定的只是不透明操作数引用（[`Operand`]：编号 + 只读/可写角色）；编号到实际缓冲的解析、
+//! 缓冲生命周期与设备句柄都在后端边界侧（ADR 0025 §2/§3），本层不持缓冲字节、不引用 `op` 算子闭集。
 //!
 //! 现在只有契约：没有真实的流、没有设备队列。缺的是实现，不是接口——后端的差异会落在
 //! `Executor` 的实现里，而不是散到调度与模型代码中。
@@ -52,20 +55,91 @@ impl Launch {
     }
 }
 
+/// 操作数角色：只读输入还是可写输出。
+///
+/// 语义对齐算子签名里的可变标记（`const` 指针为输入、可变指针为输出），但本层不依赖 `op` 声明，
+/// 角色词汇在这里自定；具体缓冲的可写性由后端按算子签名复核。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperandRole {
+    /// 只读输入：节点消费它，不写入。
+    Input,
+    /// 可写输出：节点写入它。
+    Output,
+}
+
+/// 一个节点操作数的不透明引用：编号 + 角色。
+///
+/// 引擎侧只持引用编号，不持缓冲字节、不持设备地址；编号到实际缓冲的映射、
+/// 拥有/借用生命周期与设备句柄都在后端边界侧完成（ADR 0025 §2/§3）。编号的分配与去重
+/// 归编排层，本层不解释编号含义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Operand {
+    /// 编排层分配的不透明引用编号。
+    id: u32,
+    /// 只读/可写角色。
+    role: OperandRole,
+}
+
+impl Operand {
+    /// 只读输入操作数。
+    pub fn input(id: u32) -> Self {
+        Self {
+            id,
+            role: OperandRole::Input,
+        }
+    }
+
+    /// 可写输出操作数。
+    pub fn output(id: u32) -> Self {
+        Self {
+            id,
+            role: OperandRole::Output,
+        }
+    }
+
+    /// 不透明引用编号。
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// 操作数角色。
+    pub fn role(&self) -> OperandRole {
+        self.role
+    }
+}
+
 /// 图里的一个节点：一次 kernel 调用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     name: String,
     launch: Launch,
+    /// 只读输入操作数，按声明顺序。
+    inputs: Vec<Operand>,
+    /// 可写输出操作数，按声明顺序。
+    outputs: Vec<Operand>,
 }
 
 impl Node {
-    /// 由算子名与几何构造。
+    /// 由算子名与几何构造，暂不绑定操作数（绑定由 [`Node::bind_input`] / [`Node::bind_output`] 追加）。
     pub fn new(name: impl Into<String>, launch: Launch) -> Self {
         Self {
             name: name.into(),
             launch,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
         }
+    }
+
+    /// 追加一个只读输入操作数。
+    pub fn bind_input(&mut self, id: u32) -> &mut Self {
+        self.inputs.push(Operand::input(id));
+        self
+    }
+
+    /// 追加一个可写输出操作数。
+    pub fn bind_output(&mut self, id: u32) -> &mut Self {
+        self.outputs.push(Operand::output(id));
+        self
     }
 
     /// 算子名（与 `op::Op::name` 一致，便于把执行与声明对上）。
@@ -76,6 +150,16 @@ impl Node {
     /// 几何。
     pub fn launch(&self) -> Launch {
         self.launch
+    }
+
+    /// 只读输入操作数，按声明顺序。
+    pub fn inputs(&self) -> &[Operand] {
+        &self.inputs
+    }
+
+    /// 可写输出操作数，按声明顺序。
+    pub fn outputs(&self) -> &[Operand] {
+        &self.outputs
     }
 }
 
@@ -199,9 +283,9 @@ impl Queued {
 
 /// 同步 CPU 后端：把图节点按提交顺序记入本地队列，[`sync`](Executor::sync) 按流排水。
 ///
-/// 这是 [`Executor`] 的第一个落地实现：单线程、不提交设备命令、不绑定算子与缓冲——节点到算子/
-/// 缓冲的绑定、cutile 产物复用属于后续接内核执行体的后端（见模块顶部边界）。本实现只守住契约：
-/// 同一流内节点按图序入队，`sync` 后排干该流；编排层可以先接上执行入口，执行体后补。
+/// 这是 [`Executor`] 的第一个落地实现：单线程、不提交设备命令、不解析操作数引用——节点携带的
+/// 不透明编号到缓冲的解析、算子内核的挂载与 cutile 产物复用属于后续接内核执行体的后端（见模块顶部
+/// 边界）。本实现只守住契约：同一流内节点按图序入队，`sync` 后排干该流；编排层可以先接上执行入口，执行体后补。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalExecutor {
     device: Device,
