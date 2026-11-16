@@ -39,7 +39,78 @@ bw        = { value = 42.656e9, src = "2*8*2666e6" }
 
 [compile]
 flags = ["-O3", "-std=c99"]
-preamble = "#include <stdint.h>\n#include <string.h>\n#if defined(__aarch64__)\n#include <arm_neon.h>\n#endif\n/* 归约独立接口：统一数组入口 (a, n, stride)；n==1 走标量快通道，n>1 按步长数组归约。\n   双通道判断与遍历封装在这里，模板业务代码只调一行，不掺和分支。 */\nstatic inline float _cutile_sum_f32(const float *a, int n, int stride) { if (n == 1) { return a[0]; } float acc = 0.0f; for (int i = 0; i < n; ++i) { acc += a[i * stride]; } return acc; }\nstatic inline float _cutile_max_f32(const float *a, int n, int stride) { if (n == 1) { return a[0]; } float acc = -3.402823466e38f; for (int i = 0; i < n; ++i) { const float x = a[i * stride]; if (x > acc) { acc = x; } } return acc; }"
+preamble = """
+#include <stdint.h>
+#include <string.h>
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+/* 归约独立接口：统一数组入口 (a, n, stride)；n==1 走标量快通道，n>1 按步长数组归约。
+   双通道判断与遍历封装在这里，模板业务代码只调一行，不掺和分支。
+   aarch64 且 stride==1 走 NEON 连续归约：四累加器打破单条加法/取大依赖链；余下元素按
+   4-wide 收口、标量补齐。stride>1 或其余架构回退顺序标量折叠。向量分路累加顺序与标量
+   参考不同，数值以内核对拍为准（f32 阈值 1e-5）；max 对有限输入取大，NaN 边界由算子层守。 */
+static inline float _cutile_sum_f32(const float *a, int n, int stride) {
+    if (n == 1) { return a[0]; }
+#if defined(__aarch64__)
+    if (stride == 1) {
+        float32x4_t s0 = vdupq_n_f32(0.0f);
+        float32x4_t s1 = vdupq_n_f32(0.0f);
+        float32x4_t s2 = vdupq_n_f32(0.0f);
+        float32x4_t s3 = vdupq_n_f32(0.0f);
+        int k = 0;
+        for (; k + 16 <= n; k += 16) {
+            s0 = vaddq_f32(s0, vld1q_f32(a + k));
+            s1 = vaddq_f32(s1, vld1q_f32(a + k + 4));
+            s2 = vaddq_f32(s2, vld1q_f32(a + k + 8));
+            s3 = vaddq_f32(s3, vld1q_f32(a + k + 12));
+        }
+        s0 = vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3));
+        for (; k + 4 <= n; k += 4) {
+            s0 = vaddq_f32(s0, vld1q_f32(a + k));
+        }
+        float32x2_t lo = vget_low_f32(s0);
+        float32x2_t hi = vget_high_f32(s0);
+        lo = vadd_f32(lo, hi);
+        lo = vpadd_f32(lo, lo);
+        float acc = vget_lane_f32(lo, 0);
+        for (; k < n; ++k) { acc += a[k]; }
+        return acc;
+    }
+#endif
+    float acc = 0.0f;
+    for (int i = 0; i < n; ++i) { acc += a[i * stride]; }
+    return acc;
+}
+static inline float _cutile_max_f32(const float *a, int n, int stride) {
+    if (n == 1) { return a[0]; }
+#if defined(__aarch64__)
+    if (stride == 1) {
+        float32x4_t m0 = vdupq_n_f32(-3.402823466e38f);
+        float32x4_t m1 = vdupq_n_f32(-3.402823466e38f);
+        float32x4_t m2 = vdupq_n_f32(-3.402823466e38f);
+        float32x4_t m3 = vdupq_n_f32(-3.402823466e38f);
+        int k = 0;
+        for (; k + 16 <= n; k += 16) {
+            m0 = vmaxq_f32(m0, vld1q_f32(a + k));
+            m1 = vmaxq_f32(m1, vld1q_f32(a + k + 4));
+            m2 = vmaxq_f32(m2, vld1q_f32(a + k + 8));
+            m3 = vmaxq_f32(m3, vld1q_f32(a + k + 12));
+        }
+        m0 = vmaxq_f32(vmaxq_f32(m0, m1), vmaxq_f32(m2, m3));
+        for (; k + 4 <= n; k += 4) {
+            m0 = vmaxq_f32(m0, vld1q_f32(a + k));
+        }
+        float acc = vmaxvq_f32(m0);
+        for (; k < n; ++k) { const float x = a[k]; if (x > acc) acc = x; }
+        return acc;
+    }
+#endif
+    float acc = -3.402823466e38f;
+    for (int i = 0; i < n; ++i) { const float x = a[i * stride]; if (x > acc) acc = x; }
+    return acc;
+}
+"""
 
 [[provides]]
 prim    = "quant"
