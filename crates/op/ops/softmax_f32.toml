@@ -1,5 +1,5 @@
 # Softmax：y[n] = exp(x[n]-max)/sum(exp(x-max))。
-# OpDecl 闭集归到 elementwise（三趟逐元素）；needs 只有 load/store。
+# OpDecl 闭集归到 elementwise（三趟逐元素）；max 归约申请 reduce，exp 映射走 preamble 软件向量接口。
 
 [op]
 name     = "softmax_f32"
@@ -11,8 +11,6 @@ N = [32]
 
 [needs]
 reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
-load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
-store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 
 [layouts]
 x = "row"
