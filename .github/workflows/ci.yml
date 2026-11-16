@@ -65,6 +65,7 @@ jobs:
       # 跳过不是失败：这里只汇总条数与原因，不按跳过数阻断。
       - name: Report skipped tests
         if: always()
+        shell: bash
         run: |
           if [ -f target/skips/skips.log ]; then
             count=$(wc -l < target/skips/skips.log)
