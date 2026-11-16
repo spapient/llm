@@ -7,6 +7,70 @@
 
 ### Added
 
+- **`engine` 从"页号簿记 + 记账执行器"推进到"页里真的有 KV、提交真的只入队"**。
+  `kv` 新增 `Pager`：页池加上它背后的 `f32` 缓冲（一页 = `page_size` 行 × `width` 个元素，整池构造时一次分配，
+  借出与归还都不再碰分配器），`row` / `row_mut` / `write` 只经 `Slot` 寻址并先验"页还活着、偏移在页内"，
+  `release` 是唯一清零点——归还即清零，因此"复用的页带出上一条序列的字节"没有发生的路径（此前 `Cache`
+  只发页号，页里根本没有数据）。`Scheduler` / `Batch` 因此改持 `Pager`，并补 `write_kv` / `kv`：写 KV 只经
+  页表，既写不出超前于页表的位置、也写不进一张已归还的页。
+  `Sequence` 新增 `tokens`（只读）与 `push_token`（仅同 crate 可见），`Batch::emit` 把"记账 + 推进"收成
+  一个调用——`Blocked` 时不多记一个 token，重试因此不会看见一个并不存在的输出；`Predict` 于是能从序列读到
+  自己的历史，服务端点不再维护一份平行列表。
+  `exec` 的 `CpuExecutor` 改成真正的"提交入队、`sync` 才执行"：`submit` 只按图序入队（跨流交错保持提交
+  顺序），`sync` 只排指定流、成功一条才出队一条（失败的那条留在 `pending` 里），与 `Executor` 契约里
+  "提交不等于完成"一致——此前 `submit` 会同步算完，让"按流写出依赖顺序"这件事在上层根本没法表达。
+  随之调整的对外签名只有一处：`Completion::new` 改收 `Pager` 而不是 `Cache`——行宽
+  （`2 · kv_heads · head_dim` 这类数）只有装载模型的一侧知道，服务层不替它猜。
+  **实测**：`cargo test -p llm-engine -p llm-serve --all-features` 61 + 9 + 65 + 8 条测试与 3 + 3 条文档测试
+  全绿（新增 13 条：页池写读/清零/失效槽位/零行宽/多层同行/跨页不共享、`emit` 记账与 `Blocked` 不记账、
+  KV 经页表读写与复用页不串数据、执行器按流排水与失败留队、模型能读到已生成历史）；
+  `cargo test -p llm-tool --test gate`、`cargo test -p llm --test architecture --test contracts
+  --test cross_layer --test cli`（8 / 9 / 5 / 4）、`cargo clippy --workspace --all-targets --all-features
+  -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo doc` 与 `cargo run --bin llm -- status`（占 1 页、
+  响应 200）逐项通过，新增函数全部在 ccn ≤ 5 以内、未新增债务。
+
+- **引擎、分片与服务从"契约/簿记"推进到可执行实现，成员数与依赖方向一条未变**。
+  `engine`：`exec` 新增 `Program`（按名字登记的内核体）、`Bindings`（编号 ↔ 平坦 `f32` 缓冲，按编号排序）
+  与 `CpuExecutor`——按图序查内核、把操作数从表里**借出**、执行、再放回（失败路径也放回）；借出/放回
+  而不是同时取 `&` 与 `&mut`，因为"两组编号不重叠"是运行期事实、借用检查器证明不了，这样不必装 `unsafe`；
+  `kv` 新增 `Slot`（页号 + 页内偏移，`Table::slot` 是寻址的唯一一次除法）与 `Table::truncate`
+  （摘页与还页成对，`Scheduler::finish` 因此不会再漏最后一页），`Scheduler` 补 `page_size` / `slot`，
+  `Sequence::stop` 让"采到停止符"与"到 `max_new`"都只改状态；新增 `Batch` + `Admission` 把页账与
+  正在跑的序列收在一处——准入不够时把序列原样退回（服务层据此报可重试的 503），而不是把"现在满"和
+  "请求不成立"混成同一个错误。
+  `shard`：`Partition` 的口径固定为**恰好覆盖**（余数摊给前几份，流水并行的层分配因此合法），
+  `Reduce` 补上 `identity` / `apply` / `fold`（极值以无穷为单位元、NaN 传播、空输入返回 `None`），
+  rank 的正解、反解与进程组统一走 `dp·(tp·pp) + pp·tp + tp` 一条布局规则；新增 `Sharding` / `Tiling`
+  （按列切不通信、按行切要 `all_reduce(Sum)`；不整除在构造期失败——各 rank 形状必须一致）与进程内集合
+  通信 `Local`，让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证。
+  `serve`：新增 `Request`（`id` / `prompt` / `max_new` 行文法，未知键、重复键、缺字段、坏数字都是 400）、
+  `Predict` / `Sampling` / `Greedy`（确定性贪心：等值取最小下标、非有限值报错）、`Generation` + `Ending`、
+  端点 `Completion`（解析 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包成帧；客户端错误 400、页不够 503、
+  只有模型或采样失败才 `Err`，**失败路径同样归还页**）与 `Router`（方法大小写不敏感、重复路由拒绝、
+  未命中 404，`Status` 因此多一个 `NotFound`）。于是"一条请求能不能跑完"今天就能在进程内验证，传输层
+  落地时只需调用 `Router::call`。
+  **实测**：`cargo test -p llm-engine -p llm-serve -p llm-shard --all-features` **160 条单元与集成测试
+  + 8 条文档测试全部通过**；`cargo test -p llm --test architecture --test contracts --test cross_layer
+  --test cli` 8 / 9 / 5 / 4 全绿；`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  与 `cargo test -p llm-tool --test gate` 零告警零失败（新增函数全部在 ccn ≤ 5 以内，未登记新债务）。
+  文档同步：`docs/ARCHITECTURE.md` §三 增一张"运行时实现新增的类型"表（`Program`/`Bindings`/`CpuExecutor`、
+  `Slot`、`Batch`/`Admission`、`Sharding`/`Tiling`、`Local`、`Status`/`Request`、生成协作者、`Completion`/`Router`），
+  并把在途新增的 `benches → nn` dev 边补进边集（边 95/31 → **96/32**）。
+
+- **基准归档补上 roofline 定位：上界、达成率与瓶颈侧，进报告也进门禁**。`crates/benches` 新增
+  `criterion/mem_stream.rs`：16 KiB / 1 MiB / 64 MiB 三档工作集、读 / 写分开测的搬往上界——读侧用
+  无符号整数异或归约（浮点求和不可重排，会把循环串行化成加法延迟），写侧用 `fill`。**不用厂商峰值**：
+  `docs/lld.md` E6 把「仅有未验证的峰值规格」判为不可计算。`tests/regress.rs` 因此多三样东西：
+  ① `HOSTS` 主机档案（机型 / 系统 / 工具链，随报告归档；这一轮同时修掉了注释里把 Apple M5 Pro
+  写成 M4 Pro 的旧错）；② `CEILINGS` 上界表（6 条，与基线一样由 `tool::regress` 判回退）；
+  ③ 报告新增 `read_bytes` / `write_bytes` / `flops` / `working_set_bytes` / `cache_tier` /
+  `roofline_ns` / `bottleneck_side` / `achieved_percent` / `mflops` / `bottleneck`，分子由
+  `nn::Bounds` 从算子语义推出（不写第二份流量公式），分母取同机同档位的实测值。后端标识也从常量
+  改成 `SCENARIOS` 的一列：新增后端是加一行数据，不是改报告代码。定位结论见
+  `docs/bench-roofline-analysis.md`——七条基准没有一条达到 85% 带宽门槛（`gemv` 36% 最近、
+  `attention` 0.15% 最远），「四算子内存型」只在「算术强度 <1 flop/字节」的意义上成立，
+  在「实测卡在带宽上」的意义上不被数据支持。
+
 - **`cutile` 整体分析落档，本轮零代码改动**：[`docs/cutile-analysis.md`](docs/cutile-analysis.md) 逐块判完 25 个模块
   （7077 行：唯一机制 12 / 命令策略 5 / 设备编排 5 / 纯数据 3），取证 CPU 从 `.k` 模板 → `prim/cpu` 片段 →
   `cpu.toml` 前导 → 见证 → 子进程对拍的完整链路，并给出五设备 × 十六原语矩阵与 Metal 缺口的三类拆分；

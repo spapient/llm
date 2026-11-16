@@ -184,6 +184,7 @@ cargo new --lib crates/<name>       # 或 cargo new --bin
 | [`docs/adr/`](docs/adr/) | 架构决策记录（分层序、单一主人、kernel/运行时类型、占位策略、注解即契约、配置机制与身份分离、层下界、真实权重、借出与载入、量化分组、真实权重执行、设置层吸收、TOML 语法层归属、语料改构建期解析） |
 | [`crates/cutile/README.md`](crates/cutile/README.md) | kernel 层机制：三层数据、闭集、无 IR lowering、证据分级 |
 | [`docs/cutile-analysis.md`](docs/cutile-analysis.md) | `cutile` 25 模块清单与职责判决、CPU 链路取证、五设备 × 十六原语矩阵与 Metal 缺口 |
+| [`docs/backend-runtime-design.md`](docs/backend-runtime-design.md) | 推理后端整仓分析：现状可复用面、P1→P2→P3 缺口、serve 复用落点与边表、trait 形状裁决与分阶段出口门 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 变更记录 |
 
 ## 许可证

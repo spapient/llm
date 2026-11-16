@@ -5,7 +5,7 @@
 //! （服务端自身故障才上抛，请求不成立必须落成响应）。
 
 use engine::exec::Stream;
-use engine::kv::Cache;
+use engine::kv::{Cache, Pager};
 use engine::{Scheduler, Sequence};
 use llm_serve::proto::{Decoder, Envelope, HEADER_LEN, Kind, MAX_PAYLOAD, TRAILER_LEN, Version};
 use llm_serve::{Response, Route, Status};
@@ -120,7 +120,8 @@ fn a_response_carries_its_status_into_the_frame() {
 
 #[test]
 fn admission_answers_with_a_retryable_or_terminal_status() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 8).expect("页池"));
+    let pager = Pager::new(Cache::new(2, 8).expect("页池"), 2).expect("行宽");
+    let mut scheduler = Scheduler::new(pager);
     // 提示 8 + 生成 8 = 16 个 token，需要 2 页，池正好 2 页：进去。
     let fits = Sequence::new(1, 8, 8, 8, Stream::new(1)).expect("序列");
     let response = llm_serve::admit(&mut scheduler, &fits).expect("准入不崩");

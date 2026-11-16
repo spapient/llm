@@ -433,6 +433,7 @@ dependencies = [
  "criterion",
  "cutile",
  "llm-autograd",
+ "llm-nn",
  "llm-op",
  "llm-prof",
  "llm-tensor",
@@ -543,8 +544,11 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-engine",
+ "llm-nn",
+ "llm-op",
  "llm-testkit",
  "llm-tokenizer",
+ "llm-weights",
 ]
 
 [[package]]

@@ -294,6 +294,30 @@ pub trait Loader {
     }
 }
 
+/// 把一段小端 f32 条目字节解包成 `Vec<f32>`；字节数必须是 4 的整数倍。
+///
+/// 元素解包是权重条目进入内存缓冲的唯一入口：读端不另写 `from_le_bytes` 循环，
+/// 半字节目节在此报 [`Code::Invalid`]，不带进装配期。
+///
+/// # Errors
+///
+/// 余字节非零时返回 [`Code::Invalid`]（条目不是完整 f32）。
+pub fn decode_f32(bytes: &[u8]) -> Result<Vec<f32>> {
+    let (words, rest) = bytes.as_chunks::<4>();
+    if !rest.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "条目长度 {} 不是 f32 的整数倍（余 {} 字节）",
+                bytes.len(),
+                rest.len()
+            ),
+        )
+        .with("weights::decode_f32"));
+    }
+    Ok(words.iter().map(|word| f32::from_le_bytes(*word)).collect())
+}
+
 /// 缓冲区长度必须与条目声明一致：短了会读出半个张量，长了会把相邻条目混进来。
 fn check_capacity(entry: &Entry, out: &[u8]) -> Result<()> {
     if out.len() == entry.len() {

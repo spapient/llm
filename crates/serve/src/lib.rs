@@ -1,12 +1,16 @@
-//! 端点契约：[`Route`]、[`Status`]、[`Response`]、[`Endpoint`]。
+//! 端点契约与它的第一个真实实现：[`Route`]、[`Status`]、[`Response`]、[`Endpoint`]、
+//! 请求文法 [`Request`]、生成协作者 [`Predict`] / [`Sampling`] / [`Greedy`]、
+//! 补全端点 [`Completion`] 与路由分派 [`Router`]。
 //!
-//! **拥有**：`Route`、`Endpoint`、`Response`、`Status`，以及线格式（`proto` 子模块：
-//! `Envelope`/`Frame`/`Decoder`/`Kind`/`Version`）。**不拥有**：序列状态与准入（`engine`）、
-//! 分词（`tokenizer`）、HTTP/gRPC 服务器（P1：它是 `Endpoint` 的实现）。
-//! **依赖**：`engine`、`tokenizer`、`diagnostic`。**被依赖**：`llm`。
+//! **拥有**：`Route`、`Endpoint`、`Response`、`Status`、`Request`，以及线格式（`proto` 子模块：
+//! `Envelope`/`Frame`/`Decoder`/`Kind`/`Version`）；`model` 模块内是注入 [`Predict`](crate::Predict)
+//! 的 CPU 模型提供者。**不拥有**：序列状态与页账（`engine`）、分词（`tokenizer`）、算子算术
+//! （`op`）、层定义（`nn`）、权重条目字节与读取契约（`weights`）、HTTP/gRPC 服务器（P1：它是 [`Router`] 的调用方）；
+//! Metal/CUDA 真设备后端收在独立边界 crate，不回流本层。**依赖**：`engine`、`nn`、`op`、`tokenizer`、`diagnostic`、`weights`。**被依赖**：`llm`。
 //!
-//! 这里没有 socket：先把"一个请求进来会发生什么"定死——解析路由、编码提示、尝试准入、
-//! 把结果包成帧。等真服务器落地时，它只需要调用 [`Endpoint::call`]。
+//! 这里仍然没有 socket：传输层把 `方法 + 路径 + 请求体` 交给 [`Router::call`]，后者分派到
+//! [`Completion`]，后者完成"解析 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包成帧"。
+//! 因此"一条请求能不能跑完"今天就可以在进程内验证，而不必等 HTTP 服务器落地。
 //!
 //! # 例子
 //!
@@ -22,7 +26,23 @@
 
 #![deny(unsafe_code)]
 
+mod completion;
+mod generate;
+pub mod model;
 pub mod proto;
+mod request;
+mod router;
+
+pub use completion::Completion;
+pub use generate::{Ending, Generation, Greedy, Predict, Sampling};
+pub use request::Request;
+pub use router::Router;
+
+/// 最坏长度超过整个页池时的说明：两个准入入口共用同一句话。
+const NEVER_FITS: &str = "这条请求的最坏长度超过整个 KV 页池：调小 max_new 或加大页池";
+
+/// 页都借出去时的说明：可重试，所以是 `503`。
+const FULL: &str = "KV 页不足，请稍后重试";
 
 use crate::proto::{Envelope, Kind, Version};
 use diagnostic::{Code, Error, Result};
@@ -69,22 +89,36 @@ impl Route {
 }
 
 /// 响应状态：闭集，映射到 HTTP 码。
+///
+/// 三个失败态各对应一类不同的客户端动作：`400` 改请求、`404` 改路径、`503` 等一会儿重试。
+/// 把它们合并成“请求失败”会让客户端只能盲重试。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     /// 正常返回。
     Ok,
     /// 请求不合法。
     BadRequest,
+    /// 没有这条路由。
+    NotFound,
     /// 容量不足或设备不可用。
     Unavailable,
 }
 
 impl Status {
+    /// 全部状态，供日志与测试遍历。
+    pub const ALL: [Self; 4] = [
+        Self::Ok,
+        Self::BadRequest,
+        Self::NotFound,
+        Self::Unavailable,
+    ];
+
     /// 对应的 HTTP 状态码。
     pub fn code(self) -> u16 {
         match self {
             Self::Ok => 200,
             Self::BadRequest => 400,
+            Self::NotFound => 404,
             Self::Unavailable => 503,
         }
     }
@@ -169,23 +203,38 @@ pub fn encode_prompt(
 /// 服务端故障（`internal` / `io` 等）才继续上抛，状态码与诊断类别因此不会互相打架。
 pub fn admit(scheduler: &mut engine::Scheduler, sequence: &engine::Sequence) -> Result<Response> {
     if !scheduler.fits(sequence) {
-        return Ok(Response::error(
-            Status::BadRequest,
-            "这条请求的最坏长度超过整个 KV 页池：调小 max_new 或加大页池",
-        ));
+        return Ok(Response::error(Status::BadRequest, NEVER_FITS));
     }
     match scheduler.admit(sequence) {
         Ok(true) => Ok(Response::ok(sequence.id().to_le_bytes().to_vec())),
-        Ok(false) => Ok(Response::error(
-            Status::Unavailable,
-            "KV 页不足，请稍后重试",
-        )),
+        Ok(false) => Ok(Response::error(Status::Unavailable, FULL)),
         Err(error) => refused(error),
     }
 }
 
-/// 准入错误落成响应：`invalid` 全是"这次请求自己不成立"，改什么由客户端决定；
-/// `internal` 之类才是本侧的 bug，继续上抛。
+/// 把一个序列交进 [`engine::Batch`]：与 [`admit`] 同一套判定，而批会同时持有序列与页账。
+///
+/// 端点走这条入口：它需要"页进去了"与"序列在批里"同时成立，否则调用方还得自己维护
+/// 第二份列表——那正是两份状态开始漂移的地方。
+///
+/// # Errors
+///
+/// 序列自身不成立（重名、已结束、页宽与调度器不一致）且错误类别不是 `invalid` 时上抛；
+/// `invalid` 一律落成 `400`。
+pub fn admit_batch(batch: &mut engine::Batch, sequence: engine::Sequence) -> Result<Response> {
+    if !batch.fits(&sequence) {
+        return Ok(Response::error(Status::BadRequest, NEVER_FITS));
+    }
+    let id = sequence.id();
+    match batch.admit(sequence) {
+        Ok(engine::Admission::Admitted) => Ok(Response::ok(id.to_le_bytes().to_vec())),
+        Ok(engine::Admission::Full(_)) => Ok(Response::error(Status::Unavailable, FULL)),
+        Err(error) => refused(error),
+    }
+}
+
+/// 请求侧错误一律落成 400（`invalid` 全是"这次请求自己不成立"，改什么由客户端决定）；
+/// 其余类别（`internal` / `io`）才是本侧的 bug，继续上抛给传输层。
 fn refused(error: Error) -> Result<Response> {
     if error.code() != Code::Invalid {
         return Err(error);

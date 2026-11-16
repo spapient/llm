@@ -213,7 +213,7 @@ fn status(weights: Option<&str>) -> Result<()> {
         ),
     );
 
-    let mut scheduler = engine::Scheduler::new(engine::kv::Cache::new(4, 16)?);
+    let mut scheduler = engine::Scheduler::new(status_pager()?);
     let sequence = engine::Sequence::new(0, 8, 4, 16, engine::exec::Stream::new(0))?;
     let response = serve::admit(&mut scheduler, &sequence)?;
     report = report.row(
@@ -229,6 +229,11 @@ fn status(weights: Option<&str>) -> Result<()> {
 
     print!("{}", report.render());
     Ok(())
+}
+
+/// `status` 用的 KV 页池：这里没有模型，行宽取 1——页里的数不参与账目。
+fn status_pager() -> Result<engine::kv::Pager> {
+    engine::kv::Pager::new(engine::kv::Cache::new(4, 16)?, 1)
 }
 
 /// `run`：用权重文件里的**真实数值**算一条前向链，每层一次真机内核。

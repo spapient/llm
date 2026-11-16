@@ -1,6 +1,11 @@
 use super::*;
-use engine::kv::Cache;
+use engine::kv::{Cache, Pager};
 use engine::{Scheduler, Sequence};
+
+/// 页池：2 页、每页 16 个 token、每行 2 个元素。
+fn scheduler() -> Scheduler {
+    Scheduler::new(Pager::new(Cache::new(2, 16).expect("页池"), 2).expect("行宽"))
+}
 
 #[test]
 fn a_route_needs_exactly_one_method_and_an_absolute_path() {
@@ -45,7 +50,7 @@ fn a_prompt_is_encoded_through_the_tokenizer_contract() {
 
 #[test]
 fn admission_turns_into_an_ok_or_a_retryable_status() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = scheduler();
     let small = Sequence::new(1, 4, 2, 16, engine::exec::Stream::new(0)).expect("序列");
     let response = admit(&mut scheduler, &small).expect("准入");
     assert_eq!(response.status(), Status::Ok);
@@ -62,7 +67,7 @@ fn admission_turns_into_an_ok_or_a_retryable_status() {
 /// 最坏情况装不下与"现在满"不是一回事：重试没有用，必须改请求，所以不给 503。
 #[test]
 fn an_impossible_request_is_a_bad_request_not_a_retry() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = scheduler();
     let endless = Sequence::new(9, 4, 1024, 16, engine::exec::Stream::new(0)).expect("序列");
     let response = admit(&mut scheduler, &endless).expect("拒绝不是错误");
     assert_eq!(response.status().code(), 400);
@@ -77,7 +82,7 @@ fn an_impossible_request_is_a_bad_request_not_a_retry() {
 /// 请求自己不成立不能变成传输层错误：客户端看不到 5xx 之外的任何理由。
 #[test]
 fn a_request_that_cannot_enter_at_all_is_a_bad_request_not_an_error() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = scheduler();
     let small = Sequence::new(1, 4, 2, 16, engine::exec::Stream::new(0)).expect("序列");
     assert_eq!(
         admit(&mut scheduler, &small).expect("准入").status(),
@@ -103,7 +108,7 @@ fn a_request_that_cannot_enter_at_all_is_a_bad_request_not_an_error() {
 /// 已结束的序列不该再进批（占一页白等）：这是请求状态错了，不是服务端坏了。
 #[test]
 fn a_finished_sequence_is_a_bad_request_rather_than_a_server_failure() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = scheduler();
     let mut sequence = Sequence::new(5, 0, 1, 16, engine::exec::Stream::new(0)).expect("序列");
     assert_eq!(
         admit(&mut scheduler, &sequence).expect("准入").status(),

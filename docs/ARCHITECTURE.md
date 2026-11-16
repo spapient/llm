@@ -16,7 +16,7 @@
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 LLPK 容器读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
-| L6 调度与服务 | `train`、`engine`、`serve`、`cli` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、命令行解析 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L6 调度与服务 | `train`、`engine`、`serve`、`cli` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`）、命令行解析 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `llm`（bin：`llm` 与 `cutile`） | 组装：把上面各层连起来，**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, execution}` → 排版 → 退出码（`Code::exit_code`） | 任何新类型、任何业务逻辑 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）与 `benches`（集中测量容器）是**工具成员**：
@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 95 条，含 31 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 99 条，含 32 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -55,10 +55,10 @@ nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
 train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit
-serve    → engine, tokenizer, diagnostic    +dev: testkit
+serve    → engine, nn, op, tokenizer, diagnostic, weights    +dev: testkit
 cli      → diagnostic
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的八个驱动对象：`cli` 参数文法、`weights` JSON / safetensors / LLPK 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量，`tensor` 为检查点与 LLPK 夹具写形状；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
-benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型）
+benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型，`nn` 出层下界与栈合计）
 llm      → cli, cutile, diagnostic, engine, nn, op,
            prim, prof, serve, tensor, tokenizer, tool, train, weights
            +dev: autograd, testkit（`tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段对拍：`autograd` 出 `Tape`/`Sizes`，`testkit` 出三档浮点口径）
@@ -129,7 +129,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Tokenizer` / `Token` / `Bytes` / `Bpe` / `Unigram` / `SpecialTokens` / `Encoding` / `Strategy` / `Truncation` / `Padding` / `PadDirection` / `Fingerprint` / `DecoderStream` / `Vocab` / `VocabSource` / `VocabFamily` / `Merge` | `tokenizer` | 文本 ↔ token 的唯一边界：编号、编码对齐记录（编号/字节区间/特殊标记等长）、序列策略配置、词表身份指纹与 UTF-8 边界安全的流式解码；`Vocab` 是格式无关的中性词表值对象（双向查表、特殊编号范围与族附属表在构造期闭合），`VocabSource` 是装配点传入的纯数据，`Merge` 为 BPE 合并对；`Bytes` 是字节级基线实现，`Bpe` 是在 `Vocab` 上按合并秩迭代归并的 BPE 具体实现，`Unigram` 是按逐片分数做前向 Viterbi 最优切分的 Unigram 具体实现（预切分层待 D2） |
 | `Header` / `Entry` / `Reader` / `Loader` / `Archive` / `File` / `Quantized`；自有容器 `Writer` / `Stored` / `Segment` / `Quant` / `Codec` / `Proof`（llpk 模块） | `weights` | 权重文件，分两半：外部格式（safetensors）只读适配 + 自有 LLPK 容器读写。外部两条读取契约分工在**所有权**：`Reader` 把字节借出来（内存/映射），`Loader` 把字节拷进调用方缓冲区（文件）。LLPK 侧 `Writer`/`Archive` 读写对称，精度 code 由 `dtype` 单一事实源提供（`Wire` 是它的再导出别名，前 22 个 code 与旧线格式逐位兼容），另有显式量化、rANS、Merkle 证明、对齐与两级 CRC、原子写。`Quantized` 是外部量化条目与其标度伙伴的推断结果：分组、逻辑输入宽度、输出宽度出自**同一次**推断 |
 | `Format` / `Facts` / `Snapshot` | `train` | 检查点的字节格式与恢复事实：`Format` 是魔数与版本（当前第 3 版），`Facts` 是恢复后必须逐项相同的四个数（步号 / 并行度 / 层数 / 批行数）——放在一个类型里才能整体比较，`Snapshot` 是"事实 + 权重条目表"（条目表本身归 `weights`，不复制）。字节只写**相对上一条**的差：名字共享前后缀、布局同型同形时只写一个标签、偏移存增量，全部 LEB128；尾部 CRC-32（八路查表）让截断与改动在**解码期**失败，每种"还能省却没省"的写法也被解码器拒掉，于是同一份快照只有一种字节形态。`encoded_len` 与 `encode` 共用一个编码器，`write` 把同一个编码器直接接到同目录临时文件上（整份字节不进内存，`rename` 不留半截）。恢复前的两道校验分开：`verify` 只验字节不建表，`check_weights` 要求条目表与手头的权重文件逐条相同——形状对、内容错位不会在读取时炸，只会在训练若干步后表现成 loss 不降 |
-| `Page` / `Table` / `Cache` | `engine` | 分页 KV 的页管理：`Table::grow` 只抬容量（页仍由 `Cache` 发），`Cache` 用每页一字节的存活位图判重复归还（O(1)），不持有页里的数据 |
+| `Page` / `Table` / `Cache` / `Pager` | `engine` | 分页 KV 的页管理与页里的数据：`Table::grow` 只抬容量（页仍由 `Cache` 发），`Cache` 用每页一字节的存活位图判重复归还（O(1)）且不持有数据，`Pager` 是页池加上它背后的 `f32` 缓冲——借出一页就有可写的行，归还即清零，因此"复用的页带出上一条序列的字节"没有发生的路径；行宽（一个 token 位置的 KV 宽度）由装载模型的一侧给，页池不认识层与头 |
 | `Tape` / `Var` / `Node` / `Requirement` / `Role` | `autograd` | 反向图的记录：变量的需求（不进图 / 中间 / 终点）、出身（参数 / 常量 / 激活，由需求与是否有生产者派生）、边、深度 |
 | `Schedule` / `Account` / `Ordering` / `Config` | `autograd` | 反向调度（可达剪枝 + 可配置排序 + 同深度分层）与扇出账本（谁的梯度已齐全）；`Ordering` 是排序策略闭集，`Config` 把排序与显存策略收成一份纯数据约定；两者都在原对象上重填，训练循环不必每步新建 |
 | `Plan` / `Budget` / `Choice` / `Footprint` / `Sizes` / `MemoryPolicy` | `autograd` | 显存计划：预算内的保留集、释放点与重放步数；`MemoryPolicy` 是自动 / 强制全留 / 强制分段的策略闭集。`Plan::of` 只读 `Tape`、`Schedule` 与一张形状表，不分配、不执行；与 `cutile::Plan`（单条 kernel 选哪个 tile）不是同一件事 |
@@ -144,7 +144,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` / `Partition` | `shard` | 集合通信契约（进程组、归约、后端 trait）与 TP/PP/DP 拓扑；`world` 是构造期算好的精确值（`tp · pp · dp` 必须能用 `u32` 表示，因为 rank 就是 `u32`），因此 `check` 不会接受一个不可能的进程数、`group` 也不会用回绕的乘积发出"看起来合法"的 rank |
 | `Schedule` / `Anneal` / `Step` / `Checkpoint` | `train` | 训练循环状态：`Schedule` 是纯函数学习率调度，`Anneal` 是 warmup 之后的衰减曲线闭集（线性 / 余弦 / 恒定）与最小学习率下限 |
 | `Buffers` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Inputs` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地——按 `Sizes` 分配、按计划的释放点当场交还、按等长空闲表复用。`load` 要求变量已登记形状与元素类型（缺登记是 `internal`，不是"跳过校验"），分配走 `try_reserve_exact`（形状可能来自权重文件头，分配失败是一条错误而不是 `abort`）。算术交给 `Kernel`（默认 `Reference` 调 `op` 的标量语义），本层不定义算子、不决定显存计划、不碰 `unsafe`。两条存储 lane（`f32` 与按位打包 `u8`）由密封 trait `Lane` 承载，形态标签 `Kind` 只在"元素类型 → 形态"处出现一次；`Reference` 的算子表长度与顺序同 `op::REGISTRY` 在编译期锁死，`Inputs` 把每组输入的 lane 写成类型 |
-| `Sequence` / `Scheduler` / `Progress` | `engine` | 连续批与序列状态；准入只预留提示的页，之后每生成一个 token 由 `Scheduler::advance` 预留它要落的那页（池不够返回 `Blocked` 且不改任何状态），`Sequence::step` 因此不是公开 API；`blocked()` 给出批级阻塞集 |
+| `Sequence` / `Scheduler` / `Progress` | `engine` | 连续批与序列状态；准入只预留提示的页，之后每生成一个 token 由 `Scheduler::advance` 预留它要落的那页（池不够返回 `Blocked` 且不改任何状态），`Sequence::step` 因此不是公开 API；`blocked()` 给出批级阻塞集。`Sequence` 还是已生成 token 的唯一存放处（`tokens` 只读、`push_token` 仅同 crate 可见）：`Predict` 只看得到序列，历史存到别处就等于把"模型能读到自己的输出"降级成调用方约定。记账与推进成对走 `Batch::emit`——`Blocked` 时不多记一个 token，否则重试会看见一个并不存在的输出 |
 | `Route` / `Endpoint` / `Response` | `serve` | 端点契约。`Endpoint::call` 的 `Err` 只留给"服务端自己坏了"，请求侧的不合法必须落成 `Response::error(BadRequest, …)`——准入就是个例子：id 重复、序列已结束、页宽与调度器不一致都是客户端能改的错，`503` 只用于"现在满、可重试"，`400` 只用于"永远装不下或请求自相矛盾" |
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行解析；只分派，不执行任何业务 |
 | `Report` / `join_names` | `tool` | 人可读输出；只接字符串，不接领域类型 |
@@ -169,6 +169,25 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
   与 `tool::regress::Judgement`（基准回退判定：`pass` / `regressed` / `improved`）**不是同一件事**：
   前者判定“这次测量能不能与档案峰值比较”，后者判定“与基线相比是否回退”。两者会同时出现在
   一份 CI 报告里，所以名字必须不同——`tool::regress` 里的类型因此叫 `Judgement`。
+
+### 运行时实现新增的类型
+
+下面这张表与上面那张同属所有权表（判据完全相同：表里写的必须在主人里有 `pub` 定义，反向亦然），
+分开列是因为它们全部来自"把引擎、分片与服务从契约推进到可执行"这一轮改动，评审时应当能一眼看到
+新增了什么、每个类型归谁。
+
+| 概念 | 唯一主人 | 说明 |
+|---|---|---|
+| `Program` / `Bindings` / `CpuExecutor` | `engine` | CPU 执行体的三件：`Program` 是一段可执行内核体（名字 + 在只读输入与可写输出上就地计算），按名字登记、重名拒绝；`Bindings` 是编号 ↔ 平坦 `f32` 缓冲的操作数表，按编号排序，因此诊断输出与插入顺序无关；`CpuExecutor` 把图**入队**、在 `sync` 时按图序真的执行——查内核、借出操作数、调用、放回，失败路径也放回，而没跑完的条目留在队列里（`pending` 查得到）。`sync` 只排指定流：跨流先后不属于本层，`submit` 返回只表示"已入队"，这与 `Executor` 契约里"提交不等于完成"一致。它与只记账的 `LocalExecutor` 共用 `Executor` trait，"换后端不改上层"不因多了实现而改变。借出/放回是安全的：编号到缓冲的映射是运行期值，借用检查器无法证明两组编号不重叠，所以执行器把缓冲从表里取出来、用完放回，不装 `unsafe` |
+| `Slot` | `engine` | 一个 token 在 KV 缓存里的位置（页号 + 页内偏移）：`Table::slot` 用页宽除出偏移，`Scheduler::slot` 连"先准入"这一前提一起校验。写 kernel 的一侧因此不必自己拿页表再算一遍偏移 |
+| `Pager` | `engine` | 页池加上页里的数据：一页 = `page_size` 行、每行 `width` 个 `f32`，整池构造时一次分配，借出不再碰分配器。`row` / `row_mut` / `write` 只经 `Slot` 寻址，并且先验"页还活着"与"偏移在页内"——失效的 `Slot` 不是合法地址。`release` 是唯一清零点：归还即清零，所以复用页读到的永远是零。行宽由装载模型的一侧给，页池不认识层与头；多层模型拿整行再按自己的层偏移切 |
+| `Batch` / `Admission` | `engine` | 连续批：`Batch` 把页账（`Scheduler`）与它正在跑的 `Sequence` 收在一处，准入、推进、结束与 KV 读写都只有这一个来源，`sequences` 与 `running` 顺序相同；`emit(id, token)` 是"记账 + 推进"的唯一入口，`Blocked` 时不多记一个 token；`Admission` 是准入结局——已进批，或页不够时把序列原样退回（服务层据此报可重试的 503）。与 `data::Batch`（一批 token 行）同名不同物：前者是调度单位，后者是数据单位 |
+| `Sharding` / `Tiling` | `shard` | 张量并行的两种线性层切法（`Column` 切输出维、分片直接进下一层；`Row` 切输入维、每 rank 一份部分和）与一层权重的切分计划：每个 rank 的权重形状、被切维区间、以及"合并要不要 `all_reduce(Sum)`"。切分必须整除（各 rank 形状一致），不整除在构造期失败，而不是摊余数 |
+| `Local` | `shard` | 进程内的集合通信实现：每个 rank 一份镜像，`load` 写入输入、`all_reduce` 按 `Group` 的 rank 升序归约并写回每个成员。它让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
+| `Status` / `Request` | `serve` | 响应状态闭集（200 / 400 / 404 / 503，三个失败态各对应一种客户端动作）与请求文法：`id` / `prompt` / `max_new` 三行的行文法，未知键、重复键、缺字段与坏数字都是 `invalid`（服务层据此报 400）。停止符不在请求里——"采到哪个 token 算停"是采样策略的事 |
+| `Predict` / `Sampling` / `Greedy` / `Generation` / `Ending` | `serve` | 生成的协作者与结局：`Predict` 给一步 logits、`Sampling` 选一个 token（`None` 即停止）、`Greedy` 是确定性贪心（等值取最小下标、非有限值报错）；`Generation` 是"采到的 token + 为何停下"，`Ending` 是闭集（`Limit` / `Stop`）。端点不认识模型，模型也不认识页账 |
+| `Completion` / `Router` | `serve` | `Completion` 是第一条真实端点：解析请求 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包成帧；客户端错误落 400、页不够落 503、只有模型或采样失败才 `Err`，失败路径同样归还页。`Router` 按 `方法 + 路径` 分派（方法大小写不敏感、重复路由拒绝、未命中 404）。二者合起来让"一条请求能不能跑完"在进程内可验证，传输层只需调用 `Router::call` |
+| `CpuModel` / `Params` | `serve` | CPU 模型宿主与驻留参数表：`Params` 是条目名 → f32 整块的内存表，装载期一次性解码进来，生成循环内不再读文件；`CpuModel` 把 `nn::Stack` 的 F32 投影层装配成 `engine::Graph`，权重整块在构造期驻留一次，`forward` 每步只覆写输入与逐层激活缓冲。形状、宽度链与权重缺失都在装配期报出，非 F32 / 非线性层按 `Unsupported` 拒绝；接回 token 序列的 `Predict` 实现等嵌入通路落地后再补，宿主不另存 KV 账 |
 
 ### 闭集与位集：一份声明，编译期核对
 

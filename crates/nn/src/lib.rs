@@ -191,6 +191,14 @@ pub trait Contract {
     fn linear(&self) -> Option<&Linear> {
         None
     }
+
+    /// 若这一层是查表层，返回它的类型化视图。
+    ///
+    /// 默认 `None`：与 [`linear`](Self::linear) 同一类类型化访问器，装配侧据此取词表/行宽几何，
+    /// 不靠层类型匹配特判。
+    fn embedding(&self) -> Option<&Embedding> {
+        None
+    }
 }
 
 /// 线性层：`y = x · W`。用哪个算子由权重编码 [`WeightFormat`] 决定，而不是一个全局常量。

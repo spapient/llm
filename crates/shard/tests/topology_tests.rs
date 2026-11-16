@@ -104,3 +104,39 @@ fn axis_names_are_stable() {
     let names: Vec<&str> = Parallel::ALL.iter().map(|axis| axis.as_str()).collect();
     assert_eq!(names, ["tp", "pp", "dp"]);
 }
+
+/// 布局规则只有一个方向是可读的公式，反解必须与它逐点互逆——否则 `group` 与
+/// "我在第几段"会各说一套。
+#[test]
+fn rank_and_indices_are_inverses() {
+    for (tp, pp, dp) in [(1, 1, 1), (2, 2, 2), (3, 1, 4), (1, 5, 2)] {
+        let topology = Topology::new(tp, pp, dp).expect("合法");
+        for rank in 0..topology.world() {
+            let (tp_index, pp_index, dp_index) = topology
+                .indices(u32::try_from(rank).expect("world 收窄"))
+                .expect("反解");
+            assert!(tp_index < tp && pp_index < pp && dp_index < dp);
+            assert_eq!(
+                topology.rank(tp_index, pp_index, dp_index),
+                Ok(u32::try_from(rank).expect("world 收窄")),
+                "{tp}·{pp}·{dp} 的 rank {rank} 反解后不再等于自己"
+            );
+        }
+        assert_eq!(
+            topology
+                .indices(u32::try_from(topology.world()).expect("world 收窄"))
+                .unwrap_err()
+                .code(),
+            Code::Invalid
+        );
+    }
+}
+
+#[test]
+fn an_index_outside_its_own_degree_is_refused() {
+    let topology = Topology::new(2, 3, 4).expect("合法");
+    assert_eq!(topology.rank(2, 0, 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(topology.rank(0, 3, 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(topology.rank(0, 0, 4).unwrap_err().code(), Code::Invalid);
+    assert_eq!(topology.rank(1, 2, 3), Ok(23));
+}

@@ -1,10 +1,11 @@
-# Embedding 查表：y[n] = table[idx[n]]。
-# OpDecl 闭集归到 elementwise（gather 遍历）；needs 只有 load/store，表长是标量参数。
+# Embedding 行查表：y[n, :] = table[idx[n], :]（行向量 gather）。
+# OpDecl 闭集归到 elementwise（按 token 遍历，每行拷贝 D 个元素）；needs 只有 load/store，
+# 词表大小与行宽是标量参数。
 
 [op]
 name     = "embed_f32"
 skeleton = "elementwise"
-summary  = "y[n] = table[idx[n]]"
+summary  = "y[n,:] = table[idx[n],:]"
 
 [axes]
 N = [32]
@@ -16,6 +17,7 @@ store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 [layouts]
 idx   = "row"
 table = "row"
+y     = "row"
 
 [[variants]]
 name      = "direct"

@@ -1,14 +1,19 @@
 use super::*;
-use crate::kv::Cache;
+use crate::kv::{Cache, Pager};
 use testkit::Rng;
 
 fn sequence(id: u64, prompt: usize, max_new: usize) -> Sequence {
     Sequence::new(id, prompt, max_new, 16, crate::exec::Stream::new(0)).expect("序列")
 }
 
+/// 页池 + 行宽 4：这些测试只关心页账，行里的数由 `kv_tests` 覆盖。
+fn pool(total: usize, page_size: usize) -> Pager {
+    Pager::new(Cache::new(total, page_size).expect("页池"), 4).expect("行宽")
+}
+
 #[test]
 fn a_sequence_generates_until_its_limit_then_stops() {
-    let mut scheduler = Scheduler::new(Cache::new(4, 16).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(4, 16));
     let mut sequence = sequence(1, 4, 2);
     assert_eq!(sequence.state(), State::Waiting);
     assert!(scheduler.admit(&sequence).expect("准入"));
@@ -59,7 +64,7 @@ fn pages_required_covers_the_whole_run_not_just_the_prompt() {
 /// 独占整个页池也跑不完的序列不进批：否则整批会卡在 `Blocked` 上，而没人能结束。
 #[test]
 fn a_sequence_that_can_never_finish_is_refused() {
-    let mut scheduler = Scheduler::new(Cache::new(4, 4).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(4, 4));
     let endless = Sequence::new(1, 4, 40, 4, crate::exec::Stream::new(0)).expect("序列");
     assert_eq!(endless.pages_needed(), 1, "当前只占一页");
     assert!(
@@ -72,7 +77,7 @@ fn a_sequence_that_can_never_finish_is_refused() {
 
 #[test]
 fn admission_occupies_and_finish_returns_the_pages() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(2, 16));
     let sequence = sequence(1, 20, 4);
     assert!(scheduler.admit(&sequence).expect("准入"));
     assert_eq!(scheduler.running(), 1);
@@ -89,7 +94,7 @@ fn admission_occupies_and_finish_returns_the_pages() {
 
 #[test]
 fn a_sequence_that_does_not_fit_is_refused_not_partially_admitted() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(2, 16));
     let big = sequence(7, 64, 4);
     assert!(
         !scheduler.admit(&big).expect("页不够"),
@@ -101,7 +106,7 @@ fn a_sequence_that_does_not_fit_is_refused_not_partially_admitted() {
 
 #[test]
 fn admitting_the_same_sequence_twice_is_a_bug() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(2, 16));
     let sequence = sequence(3, 8, 4);
     assert!(scheduler.admit(&sequence).expect("准入"));
     assert_eq!(
@@ -136,7 +141,7 @@ fn impossible_sequence_parameters_are_rejected() {
 /// 生成会跨页：页表按"要写的位置"增长，而不是停在准入那一刻。
 #[test]
 fn a_growing_sequence_takes_a_page_each_time_it_crosses_one() {
-    let mut scheduler = Scheduler::new(Cache::new(4, 4).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(4, 4));
     let mut sequence = Sequence::new(1, 3, 10, 4, crate::exec::Stream::new(0)).expect("序列");
     assert!(scheduler.admit(&sequence).expect("准入"));
     assert_eq!(scheduler.cache().in_use(), 1, "提示长度 3 只占一页");
@@ -157,7 +162,7 @@ fn a_growing_sequence_takes_a_page_each_time_it_crosses_one() {
 /// 池被别人占满时这一步不生成：序列、页表、页池三者都不动；等对方结束后原样重试即可。
 #[test]
 fn a_step_that_cannot_get_a_page_is_blocked_without_side_effects() {
-    let mut scheduler = Scheduler::new(Cache::new(3, 4).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(3, 4));
     let mut a = Sequence::new(1, 4, 8, 4, crate::exec::Stream::new(0)).expect("序列");
     let b = Sequence::new(2, 4, 8, 4, crate::exec::Stream::new(0)).expect("序列");
     assert!(scheduler.admit(&b).expect("准入"));
@@ -194,7 +199,7 @@ fn a_step_that_cannot_get_a_page_is_blocked_without_side_effects() {
 /// 判据本身也是公开的：服务层要按它区分"现在满"与"永远装不下"。
 #[test]
 fn fits_separates_a_full_pool_from_a_never_finishable_request() {
-    let scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let scheduler = Scheduler::new(pool(2, 16));
     assert!(scheduler.fits(&sequence(1, 4, 2)), "两页里跑得完");
     let endless = Sequence::new(2, 4, 1024, 16, crate::exec::Stream::new(0)).expect("序列");
     assert!(!scheduler.fits(&endless), "最坏情况远超两页");
@@ -203,7 +208,7 @@ fn fits_separates_a_full_pool_from_a_never_finishable_request() {
 
 #[test]
 fn advancing_a_sequence_that_is_not_in_the_batch_is_a_bug() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(2, 16));
     let mut sequence = sequence(4, 4, 4);
     assert_eq!(
         scheduler.advance(&mut sequence).unwrap_err().code(),
@@ -221,7 +226,7 @@ fn advancing_a_sequence_that_is_not_in_the_batch_is_a_bug() {
 /// 页宽是页数的唯一依据：序列与页池不一致时，准入必须拒绝而不是少占页。
 #[test]
 fn a_sequence_whose_page_width_disagrees_with_the_pool_is_rejected() {
-    let mut scheduler = Scheduler::new(Cache::new(4, 16).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(4, 16));
     let narrow = Sequence::new(5, 16, 4, 8, crate::exec::Stream::new(0)).expect("序列");
     assert_eq!(scheduler.admit(&narrow).unwrap_err().code(), Code::Invalid);
     assert_eq!(scheduler.cache().in_use(), 0, "拒绝不能留下分配");
@@ -236,7 +241,7 @@ fn a_sequence_whose_page_width_disagrees_with_the_pool_is_rejected() {
 
 #[test]
 fn a_done_sequence_is_not_admitted() {
-    let mut scheduler = Scheduler::new(Cache::new(2, 16).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(2, 16));
     let mut sequence = sequence(7, 0, 1);
     assert!(scheduler.admit(&sequence).expect("准入"));
     assert_eq!(
@@ -259,7 +264,7 @@ fn a_done_sequence_is_not_admitted() {
 #[test]
 fn random_batches_keep_the_page_accounts_consistent() {
     let mut rng = Rng::new(0x5eed);
-    let mut scheduler = Scheduler::new(Cache::new(6, 4).expect("页池"));
+    let mut scheduler = Scheduler::new(pool(6, 4));
     let mut sequences: Vec<Sequence> = (0..4u64)
         .map(|id| {
             let prompt = rng.below(8) as usize;

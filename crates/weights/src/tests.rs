@@ -40,3 +40,16 @@ fn a_zero_sized_entry_is_allowed_and_costs_nothing() {
     assert_eq!(header.data_bytes(), 0);
     assert!(header.get("missing").is_none());
 }
+
+#[test]
+fn decode_f32_unpacks_little_endian_words() {
+    let bytes = [0u8, 0, 128, 63, 0, 0, 0, 0];
+    let values = decode_f32(&bytes).expect("完整 f32 段");
+    assert_eq!(values, [1.0, 0.0]);
+}
+
+#[test]
+fn decode_f32_rejects_a_partial_tail_word() {
+    let error = decode_f32(&[0u8, 1, 2]).expect_err("余字节");
+    assert_eq!(error.code(), Code::Invalid);
+}

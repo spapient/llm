@@ -70,7 +70,7 @@
 | 外部 FFI | 全仓唯一生产 FFI 是 `storage` 的 mmap 内存映射 | `crates/storage/src/mmap.rs:28` |
 | unsafe 策略 | `unsafe_code = "deny"`，生产核心无 `unsafe` | `Cargo.toml:56` |
 | 生产依赖 | 生产路径仅 `dtype` 可选 feature 引入 `serde`/`bytemuck`，`fuzz` 可选 `libfuzzer-sys`；`criterion`/`clap` 等属 dev/build 依赖 | 各 `Cargo.toml` |
-| 基准 | criterion 结构/编解码基准 + 三条 decode 行宽 kernel 基准（`gemv_f32` / `softmax_f32` / `rope_f32` 均已入 `tool::regress` 基线判定；macos-aarch64 首跑 mean 已登记：gemv 2186061 ns、softmax 15492 ns、rope 9487 ns，跨机绝对值不可比） | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
+| 基准 | criterion 结构/编解码基准 + 七条真实算子基准（`gemv_f32` / `softmax_f32` / `rope_f32` / `rmsnorm_f32` / `attention_f32` / `gemm_f32` / `silu_f32`）全部入 `tool::regress` 基线判定；macos-aarch64 首跑 mean 已登记（gemv 2186061 ns、softmax 15492 ns、rope 9487 ns、rmsnorm 2374 ns、attention 517442 ns、gemm 16599 ns、silu 3287 ns，跨机绝对值不可比）；另有 `mem_stream` 三档读写搬往上界作 roofline 分母，定位结果见 [`bench-roofline-analysis.md`](bench-roofline-analysis.md) | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
 | 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.27% / token 1.47%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`.jscpd.json`、`.github/workflows/ci.yml` |
 
 ## 4. 能力维度对标矩阵
@@ -86,7 +86,7 @@
 | 批处理调度 | continuous batching、prefix cache、并发准入 | 基础批次 | 单序列/小批 | 调度契约 | `engine/src/exec.rs` | P2 |
 | 量化 | AWQ/GPTQ/FP8/INT4 反量化内核与权重布局 | 部分量化 | 多比特量化矩阵 | 精度事实源 + 权重分组推断，无计算内核 | `dtype`、`weights` | P3 |
 | 分布式 | TP/PP + 集合通信（NCCL 等） | 有限 | 有限 | 拓扑簿记，无通信后端 | `shard/src/*` | P3 |
-| 性能测量 | 吞吐/时延/带宽 roofline 回归门禁 | criterion/bench 对拍矩阵 | 自研 bench | CPU 结构路径基准，无 kernel 吞吐 | `benches/` | P1 搭骨架，P2/P3 接内核 |
+| 性能测量 | 吞吐/时延/带宽 roofline 回归门禁 | criterion/bench 对拍矩阵 | 自研 bench | CPU 参考实现基准 + 本机 roofline 定位（7 条算子 + 3 档搬运上界），无 kernel 吞吐 | `benches/`、`docs/bench-roofline-analysis.md` | P1 搭骨架，P2/P3 接内核 |
 | 模型端到端 | 主流权重开箱前向 | 模型仓库 | 主流模型 | 读 safetensors，对拍标量参考，无模型前向 | `weights`、`llm` bin | P4 |
 | 服务化 | HTTP/gRPC 服务、并发、流式 | 有限 | 有限 | 端点契约 + 线格式，无 socket | `serve/src/lib.rs` | P4 |
 | 架构纪律 | vLLM 服务单体；TRT 绑定厂商 | burn trait 塔；candle 三后端重复 | C 过程式 | 分层所有权、依赖方向门、闭集、单一所有者 | `ARCHITECTURE.md`、`crates/tool/tests/gate.rs` | 已领先，P0 加固 |
@@ -107,7 +107,7 @@
 | 通信接口 | 拓扑簿记与集合通信 trait 分离；先定 trait 形状，P3 填后端实现 | P3 接通信要翻 `shard` 拓扑结构 | P2 留接口，P3 填实现 |
 | 调度与后端解耦 | continuous batching 策略不依赖具体执行后端；准入决策只看能力闭集与 KV 状态 | 调度器绑死 CPU 假设，换后端要重写 | P2 |
 | 产物缓存 | 内容寻址 key/artifact/复用计数；为 AOT/JIT 产物预留 | 特化产物复用路径后期重搭 | P0/P1 |
-| 基准 harness | 统一测量接口（形状、硬件、批次、精度、后端标识）；新后端自动接入对照 | P3 没有可对比的吞吐基线，无法判定超越 | P1 |
+| 基准 harness | 统一测量接口（形状、硬件、批次、精度、后端标识、roofline 上界）；新后端自动接入对照 | P3 没有可对比的吞吐基线，无法判定超越 | P1 |
 
 ## 6. 分阶段路线与超越里程碑
 
@@ -131,7 +131,7 @@
   - 可写张量与 CPU 分配器；视图保留为零拷贝读路径；
   - 落地 ≥3 个真实算子，按 decode 主路径优先：`gemv_f32`（decode 带宽瓶颈）、`softmax_f32`、`rope_f32`，elementwise 次之；每个同时保留标量参考对拍；
   - 一层模型端到端前向，数值与标量参考对拍达标；
-  - 基准 harness 统一记录硬件/形状/批次/后端；criterion 产出真实时延/吞吐采样入回归基线。
+  - 基准 harness 统一记录硬件/形状/批次/后端与 roofline 上界；criterion 产出真实时延/吞吐采样入回归基线（现状见 [`bench-roofline-analysis.md`](bench-roofline-analysis.md)）。
 - **里程碑 M1**：CPU 前向可重复运行；对拍 `max_rel_err` 在容忍阈值内；跑出与 llama.cpp 同模型同硬件的首批对照数字并回填文档；架构门通过；新增 unsafe 为零。
 - **暂缓**：GPU 后端、连续批、量化内核、分布式。
 

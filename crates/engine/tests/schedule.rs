@@ -5,12 +5,14 @@
 //! 三个状态不会互相越界。
 
 use llm_engine::exec::Stream;
-use llm_engine::kv::Cache;
+use llm_engine::kv::{Cache, Pager};
 use llm_engine::{Progress, Scheduler, Sequence};
 
-/// 页池：`pages` 个页，每页 `page_size` 个 token。
+/// 页池：`pages` 个页，每页 `page_size` 个 token、每行 2 个元素。
 fn scheduler(pages: usize, page_size: usize) -> Scheduler {
-    Scheduler::new(Cache::new(pages, page_size).expect("页池参数合法"))
+    let pager =
+        Pager::new(Cache::new(pages, page_size).expect("页池参数合法"), 2).expect("行宽参数合法");
+    Scheduler::new(pager)
 }
 
 fn sequence(id: u64, prompt: usize, max_new: usize, page_size: usize) -> Sequence {
@@ -158,5 +160,75 @@ fn admitting_the_same_id_twice_is_rejected_with_a_category() {
         error.code().as_str(),
         "invalid",
         "重复 id 是请求自己不成立，重试不会好"
+    );
+}
+
+/// KV 也经页表进出：写进去的行按页寻址读回，页不存在或序列已离开批时读写都失败。
+///
+/// 这是"模型不必自己拿页表再算一次偏移"的对外承诺——调用方只给 id 与位置。
+#[test]
+fn kv_rows_are_addressed_through_the_page_table() {
+    let mut scheduler = scheduler(4, 4);
+    let sequence = sequence(1, 5, 2, 4);
+    assert!(scheduler.admit(&sequence).expect("准入"));
+    // 提示 5 个 token 占 2 页（8 个位置），所以第 0..8 个位置都已经有页。
+    scheduler.write_kv(1, 0, &[1.5, 2.5]).expect("写第一行");
+    scheduler
+        .write_kv(1, 5, &[3.5, 4.5])
+        .expect("写跨页的那一行");
+    assert_eq!(scheduler.kv(1, 0).expect("读第一行"), [1.5, 2.5]);
+    assert_eq!(scheduler.kv(1, 5).expect("读跨页的那一行"), [3.5, 4.5]);
+
+    // 第 8 个位置落在第三页上，而这条序列只占了两页：没有地址可写。
+    assert_eq!(
+        scheduler
+            .write_kv(1, 8, &[0.0, 0.0])
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "invalid"
+    );
+    // 行宽必须恰好等于页池的行宽：半行会让同一页里的后续行错位。
+    assert_eq!(
+        scheduler
+            .write_kv(1, 1, &[1.0])
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "invalid"
+    );
+    // 不在批里的 id 没有页表，也就没有地址。
+    assert_eq!(scheduler.kv(2, 0).unwrap_err().code().as_str(), "invalid");
+
+    assert!(scheduler.finish(1).expect("结束"));
+    assert_eq!(
+        scheduler.kv(1, 0).unwrap_err().code().as_str(),
+        "invalid",
+        "离开批的序列不能再用旧地址读"
+    );
+}
+
+/// 页复用时读到的是零：上一条序列的 KV 不会漏给下一条。
+///
+/// 这条断言必须经调度器走完整回路（准入 → 写 → 结束 → 再准入），因为清零发生在归还那一刻。
+#[test]
+fn a_reused_page_does_not_leak_the_previous_sequences_kv() {
+    let mut scheduler = scheduler(1, 4);
+    let first = sequence(1, 3, 1, 4);
+    assert!(scheduler.admit(&first).expect("准入"));
+    scheduler.write_kv(1, 0, &[9.0, 9.0]).expect("写第一行");
+    assert!(scheduler.finish(1).expect("结束"));
+    assert_eq!(
+        scheduler.cache().in_use(),
+        0,
+        "页已归还，会被下一条序列复用"
+    );
+
+    let second = sequence(2, 3, 1, 4);
+    assert!(scheduler.admit(&second).expect("同一页再借出来"));
+    assert_eq!(
+        scheduler.kv(2, 0).expect("读"),
+        [0.0, 0.0],
+        "复用页不能带出上一条序列的字节"
     );
 }

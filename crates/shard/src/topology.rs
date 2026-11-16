@@ -1,7 +1,11 @@
 //! 三维并行拓扑：[`Parallel`] 与 [`Topology`]。
 //!
 //! rank 的唯一布局规则写在这里：`rank = dp_index * (tp * pp) + pp_index * tp + tp_index`。
-//! 有了它，"某个并行维的进程组"就是一串等差数列，[`crate::group::Group`] 的升序要求也自然满足。
+//!
+//! 正反两个方向都从这一条规则派生：[`Topology::rank`] 由三个下标算 rank，
+//! [`Topology::indices`] 由 rank 反解三个下标，[`Topology::group`] 则把「某一维的第 `index` 组」
+//! 还原成三个下标再逐 rank 求值。于是"某个并行维的进程组"就是一串等差数列，
+//! [`crate::group::Group`] 的升序要求也自然满足——不需要第二套 stride/span 公式。
 
 use crate::group::Group;
 use diagnostic::{Code, Error, Result};
@@ -110,6 +114,37 @@ impl Topology {
         Ok(())
     }
 
+    /// 由三个下标算出全局 rank：`dp_index · (tp · pp) + pp_index · tp + tp_index`。
+    ///
+    /// # Errors
+    ///
+    /// 任一下标超出它那一维的并行度。
+    pub fn rank(&self, tp_index: usize, pp_index: usize, dp_index: usize) -> Result<u32> {
+        self.check_axis(Parallel::Tensor, tp_index)?;
+        self.check_axis(Parallel::Pipeline, pp_index)?;
+        self.check_axis(Parallel::Data, dp_index)?;
+        rank_u32(dp_index * self.plan() + pp_index * self.tp + tp_index)
+    }
+
+    /// [`Topology::rank`] 的反解：`(tp_index, pp_index, dp_index)`。
+    ///
+    /// # Errors
+    ///
+    /// `rank` 不在 `0..world`。
+    pub fn indices(&self, rank: u32) -> Result<(usize, usize, usize)> {
+        let position = rank as usize;
+        if position >= self.world() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("rank {rank} 超出 0..{}", self.world()),
+            )
+            .with("shard::Topology::indices"));
+        }
+        let plan = self.plan();
+        let within = position % plan;
+        Ok((within % self.tp, within / self.tp, position / plan))
+    }
+
     /// 第 `index` 个指定维度的进程组。
     ///
     /// - `Tensor`：`index` 是 `dp_index * pp + pp_index`，组大小 `tp`；
@@ -119,32 +154,66 @@ impl Topology {
         Group::new(self.ranks(parallel, index)?)
     }
 
+    /// `tp · pp`：数据维之外的世界大小（也是 `Data` 组内的 rank 步长）。
+    fn plan(&self) -> usize {
+        self.tp * self.pp
+    }
+
+    /// 某一维的组大小。
+    fn size(&self, parallel: Parallel) -> usize {
+        match parallel {
+            Parallel::Tensor => self.tp,
+            Parallel::Pipeline => self.plan(),
+            Parallel::Data => self.dp,
+        }
+    }
+
+    /// 某一维的组数：`world / 组大小`。
+    fn groups(&self, parallel: Parallel) -> usize {
+        self.world() / self.size(parallel)
+    }
+
     /// 某一维第 `index` 组的 rank 列表（组内升序，已转成 `u32`）。
-    ///
-    /// 三个维度共用一条公式：`rank = index · span + step · stride`。Tensor 与 Pipeline 的组
-    /// 是一段连续 rank（`stride = 1`，`span = 组大小`），Data 的组跨越整张拓扑（`span = 1`，
-    /// `stride = tp · pp`）。三处各写一遍，正是最容易只改对其中一处的地方。
     fn ranks(&self, parallel: Parallel, index: usize) -> Result<Vec<u32>> {
-        let (size, stride, span) = self.shape(parallel);
-        let count = self.world() / size;
+        let count = self.groups(parallel);
         if index >= count {
             return Err(self.out_of_range(parallel, index, count));
         }
-        (0..size)
-            .map(|step| rank_u32(index * span + step * stride))
+        (0..self.size(parallel))
+            .map(|step| {
+                let (tp, pp, dp) = self.place(parallel, index, step);
+                self.rank(tp, pp, dp)
+            })
             .collect()
     }
 
-    /// 某一维的切法：`(组大小, 组内步长, 组号在拓扑上的跳幅)`。
+    /// 组的第 `step` 个成员在三个维上的下标：`index` 是组号，`step` 是组内下标。
     ///
-    /// 回答「这一维怎么切」，不回答「第 `index` 组是哪几个 rank」。组数恒为 `world / 组大小`。
-    fn shape(&self, parallel: Parallel) -> (usize, usize, usize) {
-        let plan = self.tp * self.pp;
+    /// 三个维度共用一条布局规则（[`Topology::rank`]），这里只回答"这一步动的是哪一维"：
+    /// `Tensor` 动 tp、`Pipeline` 动 pp、`Data` 动 dp，另两维由组号定死。
+    fn place(&self, parallel: Parallel, index: usize, step: usize) -> (usize, usize, usize) {
         match parallel {
-            Parallel::Tensor => (self.tp, 1, self.tp),
-            Parallel::Pipeline => (plan, 1, plan),
-            Parallel::Data => (self.dp, plan, 1),
+            Parallel::Tensor => (step, index % self.pp, index / self.pp),
+            Parallel::Pipeline => (step % self.tp, step / self.tp, index),
+            Parallel::Data => (index % self.tp, index / self.tp, step),
         }
+    }
+
+    /// 某一维的下标必须落在它自己的并行度以内。
+    fn check_axis(&self, parallel: Parallel, index: usize) -> Result<()> {
+        let limit = match parallel {
+            Parallel::Tensor => self.tp,
+            Parallel::Pipeline => self.pp,
+            Parallel::Data => self.dp,
+        };
+        if index >= limit {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{} 下标 {index} 超出 0..{limit}", parallel.as_str()),
+            )
+            .with("shard::Topology::rank"));
+        }
+        Ok(())
     }
 
     fn out_of_range(&self, parallel: Parallel, index: usize, count: usize) -> Error {

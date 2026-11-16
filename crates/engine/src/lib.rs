@@ -1,8 +1,9 @@
-//! 服务侧状态机：[`Sequence`]、[`State`]、[`Scheduler`]。
+//! 服务侧状态机：[`Sequence`]、[`State`]、[`Scheduler`] 与连续批 [`Batch`]。
 //!
-//! **拥有**：`Sequence`、`Scheduler`、`State`，以及页账（[`kv`]）与提交契约（[`exec`]）。
-//! **不拥有**：采样策略（P1：它只决定 `advance` 取哪个 token，不改变状态机）。
-//! **依赖**：`tensor`、`diagnostic`。**被依赖**：`serve`、`llm`。
+//! **拥有**：`Sequence`、`Scheduler`、`Batch`、`Admission`、`State`，以及页账（[`kv`]）、
+//! 提交与执行（[`exec`]）。**不拥有**：采样策略（它只决定 `advance` 取哪个 token，不改变状态机）、
+//! kernel 编译（`cutile`）、缓冲分配（`storage`）。**依赖**：`tensor`、`diagnostic`、`storage`。
+//! **被依赖**：`serve`、`llm`。
 //!
 //! 页账与提交契约原是两个独立成员（`llm-kv` / `llm-exec`）：它们的生产消费者只有本 crate，
 //! 合并后"谁在借页"与"谁在提交"的不变量在同一处断言，成员与依赖边各少一个。
@@ -20,6 +21,14 @@
 //! `Sequence::step` 因此不是公开 API：它只推进计数、不碰页，唯一的调用者是 [`Scheduler::advance`]。
 //! "生成必须经过页账"因此是编译期就能保证的，而不是一句约定。
 //!
+//! # KV 数据只经页表进入
+//!
+//! 页里的数在 [`kv::Pager`] 里，而拿到一行只经 [`Scheduler::slot`]：先 `admit`、再按位置问页。
+//! 于是"往一个还没有页的位置写 KV"写不出来（那个位置根本不在页表里），而"往已经归还的页写"
+//! 会在 [`kv::Pager`] 的存活校验上失败——失效的 [`kv::Slot`] 不会被当成合法的写入地址。
+//! [`Scheduler::write_kv`] 与 [`Scheduler::kv`] 只是把这条路径说完整：模型不必自己拿页表再算
+//! 一次偏移，而页表与数据的口径只有一个。
+//!
 //! # 活性：准入保证"各自跑得完"，批内仍需调用方腾页
 //!
 //! 准入还会拒绝 [`Sequence::pages_required`] 超过整个页池的请求——那种序列独占页池也跑不完，
@@ -35,9 +44,9 @@
 //! ```
 //! use llm_engine::{Progress, Scheduler, Sequence};
 //! use llm_engine::exec::Stream;
-//! use llm_engine::kv::Cache;
+//! use llm_engine::kv::{Cache, Pager};
 //!
-//! let mut scheduler = Scheduler::new(Cache::new(4, 16).expect("页池"));
+//! let mut scheduler = Scheduler::new(Pager::new(Cache::new(4, 16).expect("页池"), 4).expect("行宽"));
 //! let mut sequence = Sequence::new(0, 8, 4, 16, Stream::new(0)).expect("序列");
 //! assert!(scheduler.admit(&sequence).expect("准入"));
 //! assert_eq!(
@@ -51,8 +60,11 @@
 
 #![deny(unsafe_code)]
 
+pub mod batch;
 pub mod exec;
 pub mod kv;
+
+pub use batch::{Admission, Batch};
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
@@ -98,6 +110,7 @@ pub struct Sequence {
     page_size: usize,
     state: State,
     stream: crate::exec::Stream,
+    tokens: Vec<u32>,
 }
 
 impl Sequence {
@@ -135,6 +148,7 @@ impl Sequence {
             page_size,
             state: State::Waiting,
             stream,
+            tokens: Vec::new(),
         })
     }
 
@@ -158,6 +172,37 @@ impl Sequence {
         self.max_new
     }
 
+    /// 已经采样出的 token，按生成顺序。
+    ///
+    /// 序列是这条历史的唯一存放处：`Predict` 只看得到 [`Sequence`]，如果 token 存在别处，
+    /// "模型能读到自己的历史"就变成了调用方的约定。
+    pub fn tokens(&self) -> &[u32] {
+        &self.tokens
+    }
+
+    /// 记录一个已经采样出来的 token；**不**推进计数、也不碰页账。
+    ///
+    /// 只对同 crate 可见：[`Batch::emit`] 是"记账 + 推进"成对的唯一入口，绕过它单独记一笔
+    /// 会让 `tokens` 与 `produced` 各说一套。上限也只有一处：`max_new`。
+    ///
+    /// # Errors
+    ///
+    /// `max_new` 已经记满时返回 `invalid`。
+    pub(crate) fn push_token(&mut self, token: u32) -> Result<()> {
+        if self.tokens.len() >= self.max_new {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "序列 {} 已经记满 {} 个生成 token：再多一个就超出上限",
+                    self.id, self.max_new
+                ),
+            )
+            .with("engine::Sequence::push_token"));
+        }
+        self.tokens.push(token);
+        Ok(())
+    }
+
     /// 当前状态。
     pub fn state(&self) -> State {
         self.state
@@ -166,6 +211,25 @@ impl Sequence {
     /// 提交所在的流。
     pub fn stream(&self) -> crate::exec::Stream {
         self.stream
+    }
+
+    /// 提前结束（采到停止符）：只改状态，不生成 token、也不碰页账。
+    ///
+    /// 与 `max_new` 到顶的区别只在计数：两种结束都不增不删页，页由 [`Scheduler::finish`] 归还。
+    /// 已经结束的序列再 `stop` 是调用方的 bug——重复结束会让"为什么结束"变成两种说法。
+    ///
+    /// # Errors
+    ///
+    /// 序列已经结束时返回 `invalid`。
+    pub fn stop(&mut self) -> Result<()> {
+        if self.state == State::Done {
+            return Err(
+                Error::new(Code::Invalid, format!("序列 {} 已结束", self.id))
+                    .with("engine::Sequence::stop"),
+            );
+        }
+        self.state = State::Done;
+        Ok(())
     }
 
     /// 推进一个 token；已经结束时再推进是调用方的 bug。
@@ -241,17 +305,20 @@ struct Running {
 }
 
 /// 连续批调度器：准入、占用页、结束后归还。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Scheduler {
-    cache: crate::kv::Cache,
+    pager: crate::kv::Pager,
     running: Vec<Running>,
 }
 
 impl Scheduler {
-    /// 由页池构造。
-    pub fn new(cache: crate::kv::Cache) -> Self {
+    /// 由 KV 页池构造：页号簿记与页里的数据一起进来。
+    ///
+    /// 行宽由装载模型的一侧决定（`2 · kv_heads · head_dim` 这类数），页池不替它猜；
+    /// 调度器只认"第几个 token 落在哪一页哪一格"，与行里装了什么无关。
+    pub fn new(pager: crate::kv::Pager) -> Self {
         Self {
-            cache,
+            pager,
             running: Vec::new(),
         }
     }
@@ -267,7 +334,7 @@ impl Scheduler {
     pub fn admit(&mut self, sequence: &Sequence) -> Result<bool> {
         self.check_admissible(sequence)?;
         let needed = sequence.pages_needed();
-        if !self.fits(sequence) || self.cache.free_pages() < needed {
+        if !self.fits(sequence) || self.pager.free_pages() < needed {
             return Ok(false);
         }
         let table = self.reserve(needed, "engine::Scheduler::admit")?;
@@ -301,19 +368,22 @@ impl Scheduler {
     /// 从页池里占 `needed` 页装成新页表；该不该占由调用点判。
     fn reserve(&mut self, needed: usize, site: &'static str) -> Result<crate::kv::Table> {
         let mut table = crate::kv::Table::new(needed)?;
-        Self::fill(&mut self.cache, &mut table, needed, site)?;
+        Self::fill(&mut self.pager, &mut table, needed, site)?;
         Ok(table)
     }
 
     /// 往页表里追加 `extra` 个新页：分配与入表成对发生，缺页说明空闲页数已被推翻。
+    ///
+    /// 分配走 [`kv::Pager::alloc`] 而不是页号分配器：页号与页背后的数据是同一个池，
+    /// "借到了页却没有那块数据"因此没有可能。
     fn fill(
-        cache: &mut crate::kv::Cache,
+        pager: &mut crate::kv::Pager,
         table: &mut crate::kv::Table,
         extra: usize,
         site: &'static str,
     ) -> Result<()> {
         for _ in 0..extra {
-            let page = cache
+            let page = pager
                 .alloc()
                 .ok_or_else(|| Error::new(Code::Internal, "空闲页数与实际分配不符").with(site))?;
             table.push(page)?;
@@ -327,7 +397,7 @@ impl Scheduler {
     /// 据此区分两种拒绝：**现在满**（等别人结束，返回可重试的 503）与**永远装不下**
     /// （`max_new` 太大，重试多少次都一样，该返回 400）。两处共用一个定义，规则不会漂。
     pub fn fits(&self, sequence: &Sequence) -> bool {
-        sequence.pages_required() <= self.cache.total()
+        sequence.pages_required() <= self.pager.total()
     }
 
     /// 生成一个 token：先为它要落的那个位置预留页，再推进序列。
@@ -381,11 +451,11 @@ impl Scheduler {
         if extra == 0 {
             return Ok(true);
         }
-        if self.cache.free_pages() < extra {
+        if self.pager.free_pages() < extra {
             return Ok(false);
         }
         self.running[index].table.grow(extra)?;
-        Self::fill(&mut self.cache, &mut self.running[index].table, extra, site)?;
+        Self::fill(&mut self.pager, &mut self.running[index].table, extra, site)?;
         Ok(true)
     }
 
@@ -413,7 +483,7 @@ impl Scheduler {
     /// 页表一直按 `len` 刚好够用，所以下一步最多多要一页，于是"要新页且空闲为零"就是全部
     /// 阻塞条件。
     pub fn blocked(&self) -> Vec<u64> {
-        if self.cache.free_pages() > 0 {
+        if self.pager.free_pages() > 0 {
             return Vec::new();
         }
         self.running
@@ -424,13 +494,16 @@ impl Scheduler {
     }
 
     /// 结束一个序列并归还它的页；返回它是否在批里。
+    ///
+    /// 归还走[`kv::Table::truncate`]：摘页与还页成对发生，因此"最后一页"不会因为循环写到
+    /// `len - 1` 而被漏掉。
     pub fn finish(&mut self, id: u64) -> Result<bool> {
         let Some(index) = self.position(id) else {
             return Ok(false);
         };
-        let running = self.running.remove(index);
-        for page in running.table.pages() {
-            self.cache.release(*page)?;
+        let mut running = self.running.remove(index);
+        for page in running.table.truncate(0)? {
+            self.pager.release(page)?;
         }
         Ok(true)
     }
@@ -445,9 +518,61 @@ impl Scheduler {
         self.position(id).map(|index| &self.running[index].table)
     }
 
-    /// 页池（只读）。
+    /// 页号分配器（只读）：服务层报"占了多少页"时用它，页里的数据不在这里。
     pub fn cache(&self) -> &crate::kv::Cache {
-        &self.cache
+        self.pager.cache()
+    }
+
+    /// KV 页池（只读）：页号与页里的数据是同一个对象。
+    pub fn pager(&self) -> &crate::kv::Pager {
+        &self.pager
+    }
+
+    /// 页宽（每页多少 token）：调用方算"要几页"时不必再去拿页池。
+    pub fn page_size(&self) -> usize {
+        self.pager.page_size()
+    }
+
+    /// 批里某个序列的第 `token` 个位置落在哪一页的哪一格。
+    ///
+    /// 这是"KV 写到哪里"的唯一入口：页号归本层，页内偏移由页宽除出来。写 kernel 的一侧
+    /// 因此不需要自己拿页表再算一遍偏移。
+    ///
+    /// # Errors
+    ///
+    /// 序列不在批里，或那个 token 还没有页（页表只盖住已经生成的位置）。
+    pub fn slot(&self, id: u64, token: usize) -> Result<crate::kv::Slot> {
+        let table = self.pages_of(id).ok_or_else(|| {
+            Error::new(
+                Code::Invalid,
+                format!("序列 {id} 不在批里：先 `admit` 再问页位置"),
+            )
+            .with("engine::Scheduler::slot")
+        })?;
+        table.slot(token, self.pager.page_size())
+    }
+
+    /// 把第 `token` 个位置的 KV 行写进页池（长度必须等于页池的行宽）。
+    ///
+    /// 位置必须已经有页：页表只盖住"已经生成到的地方"，所以这条路径写不出超前于生成的位置；
+    /// 也不会写进一张已经归还的页（[`kv::Pager`] 会拒绝一个失效的 [`kv::Slot`]）。
+    ///
+    /// # Errors
+    ///
+    /// 序列不在批里、位置还没有页、行宽不符、或那页已归还。
+    pub fn write_kv(&mut self, id: u64, token: usize, values: &[f32]) -> Result<()> {
+        let slot = self.slot(id, token)?;
+        self.pager.write(slot, values)
+    }
+
+    /// 读回第 `token` 个位置的 KV 行（只读）。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Scheduler::write_kv`] 的前两种情形。
+    pub fn kv(&self, id: u64, token: usize) -> Result<&[f32]> {
+        let slot = self.slot(id, token)?;
+        self.pager.row(slot)
     }
 
     /// 下一次生成要不要新页：页表按 `len` 刚好够用，所以差数只可能是 0 或 1。
@@ -464,12 +589,12 @@ impl Scheduler {
     /// `pages_for(len + 1)` 时，任一处改成 `len` 或 `>=`，[`Scheduler::blocked`] 就会把无辜的
     /// 序列报成受害者，而调用方会据此结束错的序列。
     fn next_pages(&self, sequence: &Sequence) -> usize {
-        pages_for(sequence.len() + 1, self.cache.page_size())
+        pages_for(sequence.len() + 1, self.pager.page_size())
     }
 
     /// 页宽必须与页池一致：页数是按它算的，差一档就会少占一页。
     fn check_width(&self, sequence: &Sequence, site: &'static str) -> Result<()> {
-        if sequence.page_size() == self.cache.page_size() {
+        if sequence.page_size() == self.pager.page_size() {
             return Ok(());
         }
         Err(Error::new(
@@ -478,7 +603,7 @@ impl Scheduler {
                 "序列 {} 的页宽 {} 与页池的 {} 不一致：页数会算错",
                 sequence.id(),
                 sequence.page_size(),
-                self.cache.page_size()
+                self.pager.page_size()
             ),
         )
         .with(site))
