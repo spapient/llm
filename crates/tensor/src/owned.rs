@@ -9,7 +9,8 @@ use diagnostic::{Code, Error, Result};
 use crate::shape::Shape;
 use crate::strides::Strides;
 use crate::tensor::Tensor;
-use crate::{DType, supports};
+use crate::validate;
+use crate::DType;
 
 /// 拥有缓冲的可写张量：元数据 + 持有字节向量。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,25 +42,7 @@ impl OwnedTensor {
 
     /// 由已有字节向量构造：`dtype` 受支持且缓冲够长，布局取行主序连续。
     pub fn from_bytes(dtype: DType, shape: Shape, bytes: Vec<u8>) -> Result<Self> {
-        if !supports(dtype) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("{dtype:?} 不在计算层支持的元素子集内"),
-            )
-            .with("tensor::OwnedTensor::from_bytes"));
-        }
-        let required = shape.element_bytes(dtype);
-        if bytes.len() < required {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "缓冲 {} 字节，{dtype:?} 的 {:?} 需要 {required} 字节",
-                    bytes.len(),
-                    shape.dims()
-                ),
-            )
-            .with("tensor::OwnedTensor::from_bytes"));
-        }
+        validate::check_byte_buffer(dtype, &shape, bytes.len(), "tensor::OwnedTensor::from_bytes")?;
         let strides = Strides::contiguous(&shape);
         Ok(Self {
             dtype,

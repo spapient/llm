@@ -1,9 +1,9 @@
 //! 逻辑张量：`DType` + [`Shape`] + [`Strides`] + 只读字节视图 [`Tensor`]、元素视图
 //! [`View`] 与拥有形态 [`OwnedTensor`]。
 //!
-//! **拥有**：[`Tensor`]、[`OwnedTensor`]、[`View`]、[`Shape`]、[`Strides`]、[`Element`]
-//! 与计算层子集 [`SUPPORTED`]。**不拥有**：元素类型闭集（L1 `dtype`，这里只再导出 `DType`）、
-//! kernel 侧的操作数视图（DSL 的宿主 API，两者语义不同，见
+//! **拥有**：[`Tensor`]、[`OwnedTensor`]、[`View`]、[`Shape`]、[`Strides`]、[`Order`]、
+//! [`Element`] 与计算层子集 [`SUPPORTED`]。**不拥有**：元素类型闭集（L1 `dtype`，这里只再导出
+//! `DType`）、kernel 侧的操作数视图（DSL 的宿主 API，两者语义不同，见
 //! `docs/adr/0003-kernel-and-runtime-types.md`）、布局搬运（`storage`）、设备句柄（ADR 0025）。
 //! **依赖**：`dtype`、`diagnostic`。**被依赖**：`storage`、`weights`、`kv`、`autograd`、
 //! `data`、`nn`、`engine`、`llm`。
@@ -27,16 +27,19 @@
 #![deny(unsafe_code)]
 
 mod element;
+mod order;
 mod owned;
 mod shape;
 mod strides;
 mod tensor;
+mod validate;
 mod view;
 
 // 元素类型的唯一事实源在 L1 `dtype`：全精度 24 变体，这里不再自定义枚举。
 pub use dtype::DType;
 
 pub use element::Element;
+pub use order::Order;
 pub use owned::OwnedTensor;
 pub use shape::Shape;
 pub use strides::Strides;

@@ -1,10 +1,11 @@
 //! 逻辑张量：元数据 + 只读字节视图。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
 
 use crate::shape::Shape;
 use crate::strides::Strides;
-use crate::{DType, supports};
+use crate::validate;
+use crate::DType;
 
 /// 逻辑张量：元数据 + 只读字节视图。
 #[derive(Debug, Clone)]
@@ -18,25 +19,7 @@ pub struct Tensor<'a> {
 impl<'a> Tensor<'a> {
     /// 由元数据与连续布局的缓冲构造：`dtype` 必须在 [`crate::SUPPORTED`] 子集内、`data` 必须够长。
     pub fn new(dtype: DType, shape: Shape, data: &'a [u8]) -> Result<Self> {
-        if !supports(dtype) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("{dtype:?} 不在计算层支持的元素子集内"),
-            )
-            .with("tensor::Tensor::new"));
-        }
-        let required = shape.element_bytes(dtype);
-        if data.len() < required {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "缓冲 {} 字节，{dtype:?} 的 {:?} 需要 {required} 字节",
-                    data.len(),
-                    shape.dims()
-                ),
-            )
-            .with("tensor::Tensor::new"));
-        }
+        validate::check_byte_buffer(dtype, &shape, data.len(), "tensor::Tensor::new")?;
         let strides = Strides::contiguous(&shape);
         Ok(Self {
             dtype,

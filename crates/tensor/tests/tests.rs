@@ -1,4 +1,4 @@
-use crate::{DType, Element, OwnedTensor, Shape, Strides, Tensor, View};
+use crate::{DType, Element, Order, OwnedTensor, Shape, Strides, Tensor, View};
 use diagnostic::Code;
 
 #[test]
@@ -10,6 +10,39 @@ fn a_scalar_has_one_element_and_no_strides() {
     let tensor = Tensor::new(DType::F32, shape, &[0u8; 4]).expect("标量");
     assert_eq!(tensor.numel(), 1);
     assert!(tensor.is_contiguous());
+}
+
+#[test]
+fn row_major_order_matches_the_continuous_strides() {
+    for dims in [&[] as &[usize], &[5], &[2, 3], &[2, 3, 4]] {
+        let shape = Shape::new(dims.to_vec());
+        assert_eq!(
+            Strides::ordered(&shape, Order::RowMajor).as_slice(),
+            Strides::contiguous(&shape).as_slice(),
+            "行主序必须与连续步长同源：{dims:?}"
+        );
+    }
+}
+
+#[test]
+fn col_major_order_accumulates_along_the_first_axis() {
+    assert_eq!(
+        Strides::ordered(&Shape::new([2, 3]), Order::ColMajor).as_slice(),
+        [1, 2]
+    );
+    assert_eq!(
+        Strides::ordered(&Shape::new([2, 3, 4]), Order::ColMajor).as_slice(),
+        [1, 2, 6]
+    );
+}
+
+#[test]
+fn a_scalar_has_one_element_and_no_strides_col_major_too() {
+    let shape = Shape::new([]);
+    assert_eq!(
+        Strides::ordered(&shape, Order::ColMajor).as_slice(),
+        [] as [usize; 0]
+    );
 }
 
 #[test]

@@ -76,6 +76,7 @@ crates/tensor/src/
   tensor.rs     // Tensor<'a>：字节只读视图
   view.rs       // View<'a, E>：元素零拷贝视图与下标→偏移校验
   owned.rs      // OwnedTensor：元数据 + 拥有字节向量
+  validate.rs    // 构造期共享校验：元素子集 + 字节缓冲长度（私有，不进公开面）
 tests/tests.rs  // 既有白盒测试，#[path = "../tests/tests.rs"] 接入
 ```
 
@@ -89,6 +90,8 @@ tests/tests.rs  // 既有白盒测试，#[path = "../tests/tests.rs"] 接入
 2. **校验口径集中**：`View` 的秩匹配、零元素口径、最高偏移可达性保留现有 `checked_mul` / `checked_add` 饱和路径；错误构造点标记维持 `tensor::View::strided`。
 3. **文档对齐**：crate 头注释的「拥有 / 不拥有 / 依赖 / 被依赖」与最终代码逐条对齐，不写未落地的能力。
 4. **测试保持白盒**：测试仍经 `#[path]` 以内部模块视角访问既有字段；不为删除的算子面补测试。
+5. **可达性校验去临时分配**：`View::check_reach` 不再构造 `dim - 1` 的临时 `Vec`，改由 `highest_offset` 把 `dim × stride` 逐轴配对累加；累积串行依赖保留循环并注释。
+6. **构造期校验共享**：`Tensor::new` 与 `OwnedTensor::from_bytes` 的「支持子集 + 字节长度」两段重复口径收敛到 `validate.rs` 的私有辅助，错误文案与上下文标记逐字不变。
 
 ## 6. 影响面评估
 

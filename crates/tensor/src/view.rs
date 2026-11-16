@@ -93,13 +93,7 @@ impl<'a, E: Element> View<'a, E> {
         if self.shape.numel() == 0 {
             return Ok(());
         }
-        let last: Vec<usize> = self
-            .shape
-            .dims()
-            .iter()
-            .map(|dimension| dimension - 1)
-            .collect();
-        let highest = self.offset(&last).ok_or_else(|| {
+        let highest = self.highest_offset().ok_or_else(|| {
             Self::invalid(format!(
                 "形状 {:?} 与步长 {:?} 算出溢出",
                 self.shape.dims(),
@@ -113,6 +107,21 @@ impl<'a, E: Element> View<'a, E> {
             "最高偏移 {highest} 超出缓冲（{} 个元素）：步长与形状对不上",
             self.data.len()
         )))
+    }
+
+    /// 最高下标（每轴最后一位）走出的总偏移；任一轴越界或累加溢出则 `None`。
+    ///
+    /// 不构造下标的临时数组：直接把 `dim - 1` 与步长逐轴配对累加。偏移累积存在串行依赖，
+    /// 保留逐轴循环；轴数数据相关，无法整块展开。
+    fn highest_offset(&self) -> Option<usize> {
+        self.shape
+            .dims()
+            .iter()
+            .zip(self.strides.as_slice())
+            .try_fold(0usize, |acc, (&dim, &step)| {
+                let position = dim.checked_sub(1)?;
+                acc.checked_add(position.checked_mul(step)?)
+            })
     }
 
     /// 本视图的 `Invalid` 错误：四处校验共用同一条构造点标记，文案由调用点给出。

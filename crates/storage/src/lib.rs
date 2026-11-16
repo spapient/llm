@@ -1,7 +1,8 @@
-//! 物理布局、搬运与缓冲分配：[`Order`] + [`Layout`] + [`remap`] + [`Buffer`] + [`Allocator`]。
+//! 物理布局、搬运与缓冲分配：[`Layout`] + [`remap`] + [`Buffer`] + [`Allocator`]。
 //!
-//! **拥有**：`Layout`、`Order`、`remap`、`Buffer`、`Allocator`、`CpuAllocator`。
-//! **不拥有**：逻辑张量元数据（归 `tensor`）、地址空间（`GM` / `FAST` / `REG` 归
+//! **拥有**：`Layout`、`remap`、`Buffer`、`Allocator`、`CpuAllocator`。
+//! **不拥有**：排列顺序与步幅累积（归 `tensor`，这里再导出 [`Order`] 保持路径兼容）、
+//! 逻辑张量元数据（归 `tensor`）、地址空间（`GM` / `FAST` / `REG` 归
 //! `cutile` / `prof`）、设备私有句柄（藏在后端边界 crate 后，ADR 0025 §2）。
 //! **依赖**：`tensor`、`diagnostic`。**被依赖**：`weights`。
 //!
@@ -36,16 +37,10 @@ pub use mmap::Mmap;
 use diagnostic::{Code, Error, Result};
 use tensor::{Shape, Strides};
 
-/// 元素在扁平缓冲里的排列顺序。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Order {
-    /// 行主序：最后一轴相邻（C / numpy 默认）。
-    RowMajor,
-    /// 列主序：第一轴相邻（Fortran / cuBLAS 的 `T` 位）。
-    ColMajor,
-}
+/// 排列顺序的主人在 `tensor`；这里再导出，保持 `storage::Order` 的既有路径。
+pub use tensor::Order;
 
-/// 形状 + 排列顺序；步长由它推出，避免两处各写一份。
+/// 形状 + 排列顺序；步长由 [`Strides::ordered`] 推出，累积规则只有一份。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Layout {
     shape: Shape,
@@ -70,24 +65,7 @@ impl Layout {
 
     /// 按顺序推出的步长。
     pub fn strides(&self) -> Strides {
-        let dims = self.shape.dims();
-        let mut strides = vec![0; dims.len()];
-        let mut acc = 1usize;
-        match self.order {
-            Order::RowMajor => {
-                for axis in (0..dims.len()).rev() {
-                    strides[axis] = acc;
-                    acc = acc.saturating_mul(dims[axis]);
-                }
-            }
-            Order::ColMajor => {
-                for axis in 0..dims.len() {
-                    strides[axis] = acc;
-                    acc = acc.saturating_mul(dims[axis]);
-                }
-            }
-        }
-        Strides::new(strides)
+        Strides::ordered(&self.shape, self.order)
     }
 }
 

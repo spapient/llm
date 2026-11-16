@@ -1,5 +1,6 @@
-//! 步长：沿每个轴前进一个下标要走多少个元素；连续性判定的唯一实现。
+//! 步长：沿每个轴前进一个下标要走多少个元素；连续性判定与顺序累积的唯一实现。
 
+use crate::order::Order;
 use crate::shape::Shape;
 
 /// 步长：沿每个轴前进一个下标要走多少个元素。
@@ -12,18 +13,34 @@ impl Strides {
         Self(strides.into())
     }
 
-    /// 行主序连续布局：最后一轴步长为 1，向前累乘。
-    pub fn contiguous(shape: &Shape) -> Self {
+    /// 按排列顺序推出的连续步长：行主序反向累乘，列主序正向累乘。
+    ///
+    /// 累积存在串行依赖（下一轴 = 本轴长度 × 当前累积），保留循环；形状维度数据相关，
+    /// 无法整块展开。饱和乘积与 [`Shape::numel`](crate::Shape::numel) 同一套溢出口径。
+    pub fn ordered(shape: &Shape, order: Order) -> Self {
         let dims = shape.dims();
         let mut strides = vec![0; dims.len()];
-        // 反向累积存在串行依赖（下一轴 = 本轴长度 × 当前累积），保留循环；
-        // 形状维度数据相关，无法整块展开。
         let mut acc = 1usize;
-        for axis in (0..dims.len()).rev() {
-            strides[axis] = acc;
-            acc = acc.saturating_mul(dims[axis]);
+        match order {
+            Order::RowMajor => {
+                for axis in (0..dims.len()).rev() {
+                    strides[axis] = acc;
+                    acc = acc.saturating_mul(dims[axis]);
+                }
+            }
+            Order::ColMajor => {
+                for axis in 0..dims.len() {
+                    strides[axis] = acc;
+                    acc = acc.saturating_mul(dims[axis]);
+                }
+            }
         }
         Self(strides)
+    }
+
+    /// 行主序连续布局：最后一轴步长为 1，向前累乘。
+    pub fn contiguous(shape: &Shape) -> Self {
+        Self::ordered(shape, Order::RowMajor)
     }
 
     /// 各轴步长。
