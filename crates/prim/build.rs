@@ -92,22 +92,33 @@ struct Vendor {
     entries: Vec<(Prim, String)>,
 }
 
+/// 列出目录下的条目路径；`want_files` 为真收文件，否则收子目录。
+///
+/// 目录打不开、或单个条目读失败（权限/竞态）都显式失败：静默跳过条目会让生成表缺项
+/// 而构建仍然绿，漏一台设备只能等到运行期才暴露。
+fn read_dir_paths(dir: &Path, want_files: bool) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| fail(format!("读取 {} 失败：{error}", dir.display())));
+    for entry in entries {
+        let entry = entry
+            .unwrap_or_else(|error| fail(format!("读取 {} 的目录项失败：{error}", dir.display())));
+        let path = entry.path();
+        if path.is_file() == want_files {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// 扫描 `<root>/<vendor>/`：有见证的目录才算设备目录，其余（`src`、`target`）跳过。
 fn scan(root: &Path) -> Vec<Vendor> {
-    let mut dirs: Vec<PathBuf> = fs::read_dir(root)
-        .unwrap_or_else(|error| fail(format!("读取 {} 失败：{error}", root.display())))
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_dir())
-        .collect();
+    let mut dirs = read_dir_paths(root, false);
     dirs.sort();
 
     let mut vendors = Vec::new();
     for dir in dirs {
-        let files: Vec<PathBuf> = fs::read_dir(&dir)
-            .unwrap_or_else(|error| fail(format!("读取 {} 失败：{error}", dir.display())))
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.is_file())
-            .collect();
+        let files = read_dir_paths(&dir, true);
         let witness = files
             .iter()
             .find(|path| stem(path) == Some("witness"))
