@@ -11,7 +11,6 @@ N = [8]
 
 [needs]
 dot    = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
-load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
 store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 
 [layouts]
