@@ -1,5 +1,7 @@
 use super::*;
+use crate::Predict;
 use diagnostic::Code;
+use engine::Sequence;
 use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
 use nn::{Add, Embedding, Linear, RmsNorm, Silu, Stack, WeightFormat};
 use testkit::{all_finite, close};
@@ -196,6 +198,33 @@ fn softmax_and_reduce_run_through_the_registered_kernel() {
     assert_close(&softmax, &softmax_ref);
     assert_close(&max, &max_ref);
     assert_close(&sum, &sum_ref);
+}
+
+/// 注意力三路 q/k/v 经登记内核执行，朴素与 Flash 分别对拍同算子参考实现。
+#[test]
+fn attention_runs_through_the_registered_kernel() {
+    let sample = op::attention::sample(2, 8);
+    let q = sample.f32("q").expect("q");
+    let k = sample.f32("k").expect("k");
+    let v = sample.f32("v").expect("v");
+    let d = op::attention::MODEL.shape.1;
+    let s = q.len() / d;
+
+    let mut plain = vec![0.0; q.len()];
+    op::attention::forward(q, k, v, &mut plain, s, d).expect("朴素参考");
+    let mut flash = vec![0.0; q.len()];
+    op::attention::flash_forward(q, k, v, &mut flash, s, d).expect("flash 参考");
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, q);
+    bind(&mut executor, 1, k);
+    bind(&mut executor, 2, v);
+
+    let produced_plain = run_one(&mut executor, "attention_f32", &[0, 1, 2], 3, q.len());
+    let produced_flash = run_one(&mut executor, "flash_attention_f32", &[0, 1, 2], 4, q.len());
+
+    assert_close(&produced_plain, &plain);
+    assert_close(&produced_flash, &flash);
 }
 
 /// 图序就是执行序：第二个节点读到第一个节点写过的编号，参考路径串行重算同一结果。
@@ -609,5 +638,45 @@ fn a_multi_token_embedding_is_not_assembled_yet() {
     params.insert("tok_emb.weight", embed_table(8, 4));
 
     let error = CpuModel::new(&stack, &params).expect_err("多 token 矩阵通路留后续");
+    assert_eq!(error.code(), Code::Unsupported);
+}
+
+/// Predict 一步前向：序列末位 token 折成索引，查表→投影主链对拍张量级 forward。
+#[test]
+fn predict_logits_from_an_embedding_sequence_match_the_reference() {
+    let (vocab, dim) = (8, 4);
+    let table = embed_table(vocab, dim);
+    let w = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
+
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, dim, 1).expect("层")),
+        Box::new(Linear::with_format("proj", WeightFormat::F32, dim, 2).expect("层")),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", table.clone());
+    params.insert("proj.weight", w.to_vec());
+
+    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let produced = model.logits(&sequence).expect("一步前向");
+    let reference = model.forward(&[2.0]).expect("张量级参考");
+
+    assert_close(&produced, &reference);
+}
+
+/// 投影首层拿不到隐向量：序列只持有 token id，Predict 通路按 `Unsupported` 拒绝。
+#[test]
+fn predict_with_a_projection_first_layer_is_not_assembled_yet() {
+    let stack = Stack::new(vec![
+        Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("blk.0.weight", vec![0.0; 6]);
+
+    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
+    let error = model.logits(&sequence).expect_err("投影首层不给向量输入");
     assert_eq!(error.code(), Code::Unsupported);
 }

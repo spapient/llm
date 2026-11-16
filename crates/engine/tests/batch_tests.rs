@@ -7,7 +7,8 @@ fn pool(total: usize, page_size: usize) -> Pager {
 }
 
 fn sequence(id: u64, prompt: usize, max_new: usize, page_size: usize) -> Sequence {
-    Sequence::new(id, prompt, max_new, page_size, Stream::new(0)).expect("序列")
+    let prompt = vec![0u32; prompt];
+    Sequence::new(id, &prompt, max_new, page_size, Stream::new(0)).expect("序列")
 }
 
 #[test]

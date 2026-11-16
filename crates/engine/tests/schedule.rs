@@ -16,7 +16,8 @@ fn scheduler(pages: usize, page_size: usize) -> Scheduler {
 }
 
 fn sequence(id: u64, prompt: usize, max_new: usize, page_size: usize) -> Sequence {
-    Sequence::new(id, prompt, max_new, page_size, Stream::new(id as u32)).expect("序列参数合法")
+    let prompt = vec![0u32; prompt];
+    Sequence::new(id, &prompt, max_new, page_size, Stream::new(id as u32)).expect("序列参数合法")
 }
 
 #[test]
@@ -117,9 +118,9 @@ fn a_blocked_step_neither_generates_nor_moves_pages() {
 
 #[test]
 fn parameters_that_cannot_work_are_rejected_with_categories() {
-    let error = Sequence::new(0, 1, 0, 4, Stream::new(0)).expect_err("max_new 为 0");
+    let error = Sequence::new(0, &[0; 1], 0, 4, Stream::new(0)).expect_err("max_new 为 0");
     assert_eq!(error.code().as_str(), "invalid");
-    let error = Sequence::new(0, 1, 1, 0, Stream::new(0)).expect_err("页宽为 0");
+    let error = Sequence::new(0, &[0; 1], 1, 0, Stream::new(0)).expect_err("页宽为 0");
     assert_eq!(error.code().as_str(), "invalid");
     let error = Cache::new(0, 4).expect_err("零页池");
     assert_eq!(error.code().as_str(), "invalid");

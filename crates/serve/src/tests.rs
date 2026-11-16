@@ -51,12 +51,12 @@ fn a_prompt_is_encoded_through_the_tokenizer_contract() {
 #[test]
 fn admission_turns_into_an_ok_or_a_retryable_status() {
     let mut scheduler = scheduler();
-    let small = Sequence::new(1, 4, 2, 16, engine::exec::Stream::new(0)).expect("序列");
+    let small = Sequence::new(1, &[0; 4], 2, 16, engine::exec::Stream::new(0)).expect("序列");
     let response = admit(&mut scheduler, &small).expect("准入");
     assert_eq!(response.status(), Status::Ok);
 
     // 提示就占满剩下的一页，但跑到最后要第二页：现在不行，等别人结束再试。
-    let full = Sequence::new(2, 20, 4, 16, engine::exec::Stream::new(0)).expect("序列");
+    let full = Sequence::new(2, &[0; 20], 4, 16, engine::exec::Stream::new(0)).expect("序列");
     assert_eq!(scheduler.cache().free_pages(), 1);
     let refused = admit(&mut scheduler, &full).expect("拒绝不是错误");
     assert_eq!(refused.status(), Status::Unavailable);
@@ -68,7 +68,7 @@ fn admission_turns_into_an_ok_or_a_retryable_status() {
 #[test]
 fn an_impossible_request_is_a_bad_request_not_a_retry() {
     let mut scheduler = scheduler();
-    let endless = Sequence::new(9, 4, 1024, 16, engine::exec::Stream::new(0)).expect("序列");
+    let endless = Sequence::new(9, &[0; 4], 1024, 16, engine::exec::Stream::new(0)).expect("序列");
     let response = admit(&mut scheduler, &endless).expect("拒绝不是错误");
     assert_eq!(response.status().code(), 400);
     assert_eq!(
@@ -83,7 +83,7 @@ fn an_impossible_request_is_a_bad_request_not_a_retry() {
 #[test]
 fn a_request_that_cannot_enter_at_all_is_a_bad_request_not_an_error() {
     let mut scheduler = scheduler();
-    let small = Sequence::new(1, 4, 2, 16, engine::exec::Stream::new(0)).expect("序列");
+    let small = Sequence::new(1, &[0; 4], 2, 16, engine::exec::Stream::new(0)).expect("序列");
     assert_eq!(
         admit(&mut scheduler, &small).expect("准入").status(),
         Status::Ok
@@ -99,7 +99,7 @@ fn a_request_that_cannot_enter_at_all_is_a_bad_request_not_an_error() {
     );
 
     // 页宽与调度器不一致：同样只能改请求，不能靠重试。
-    let wrong_page = Sequence::new(2, 4, 2, 8, engine::exec::Stream::new(0)).expect("序列");
+    let wrong_page = Sequence::new(2, &[0; 4], 2, 8, engine::exec::Stream::new(0)).expect("序列");
     let mismatched = admit(&mut scheduler, &wrong_page).expect("拒绝不是错误");
     assert_eq!(mismatched.status().code(), 400);
     assert_eq!(scheduler.running(), 1);
@@ -109,7 +109,8 @@ fn a_request_that_cannot_enter_at_all_is_a_bad_request_not_an_error() {
 #[test]
 fn a_finished_sequence_is_a_bad_request_rather_than_a_server_failure() {
     let mut scheduler = scheduler();
-    let mut sequence = Sequence::new(5, 0, 1, 16, engine::exec::Stream::new(0)).expect("序列");
+    let mut sequence =
+        Sequence::new(5, &[0; 0], 1, 16, engine::exec::Stream::new(0)).expect("序列");
     assert_eq!(
         admit(&mut scheduler, &sequence).expect("准入").status(),
         Status::Ok

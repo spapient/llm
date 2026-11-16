@@ -104,22 +104,27 @@ where
     }
 
     /// 解析请求并编词；两步都是"客户端能改的错"。
-    fn parse(&self, body: &[u8]) -> diagnostic::Result<(Request, Vec<tokenizer::Token>)> {
+    ///
+    /// 编词结果就地取编号：端口交出的是 [`tokenizer::Token`] 整块，这里一趟收集成 `u32`，
+    /// 不在端点里再留一份 token 中间向量。
+    fn parse(&self, body: &[u8]) -> diagnostic::Result<(Request, Vec<u32>)> {
         let request = Request::parse(body)?;
-        let prompt = self.tokenizer.encode(request.prompt())?;
+        let tokens = self.tokenizer.encode(request.prompt())?;
+        let prompt = tokens.iter().map(tokenizer::Token::id).collect();
         Ok((request, prompt))
     }
 
-    /// 构造序列：页宽取自页池，因此这里不需要第二个"每页多少 token"的来源。
+    /// 构造序列：提示段 token 整段留存进序列；页宽取自页池，因此这里不需要第二个
+    /// "每页多少 token"的来源。
     fn sequence(
         &self,
         state: &State<M, S>,
         request: &Request,
-        prompt_len: usize,
+        prompt: &[u32],
     ) -> diagnostic::Result<Sequence> {
         Sequence::new(
             request.id(),
-            prompt_len,
+            prompt,
             request.max_new(),
             state.batch.scheduler().page_size(),
             Stream::new(0),
@@ -134,9 +139,9 @@ where
         &self,
         state: &mut State<M, S>,
         request: &Request,
-        prompt_len: usize,
+        prompt: &[u32],
     ) -> diagnostic::Result<Response> {
-        let sequence = self.sequence(state, request, prompt_len)?;
+        let sequence = self.sequence(state, request, prompt)?;
         crate::admit_batch(&mut state.batch, sequence)
     }
 
@@ -173,7 +178,7 @@ where
     fn answer(&self, body: &[u8]) -> diagnostic::Result<Response> {
         let (request, prompt) = self.parse(body)?;
         let mut state = self.lock()?;
-        let admitted = self.admit(&mut state, &request, prompt.len())?;
+        let admitted = self.admit(&mut state, &request, &prompt)?;
         if admitted.status() != Status::Ok {
             return Ok(admitted);
         }

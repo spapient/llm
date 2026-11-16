@@ -17,6 +17,7 @@
 //! - 停止符不在这里：采到哪个 token 算"停"是采样策略的事（[`crate::Sampling`]）。
 
 use diagnostic::{Code, Error, Result};
+use std::str::FromStr;
 
 /// 一条补全请求。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +61,39 @@ impl Request {
     const SITE: &'static str = "serve::Request::parse";
 }
 
+/// 请求字段闭集：键名、类型名与取值槽位的唯一事实源；新增字段在这里加一条，
+/// 键名清单与未知键文案随之派生，不再散落在匹配臂与错误消息里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Id,
+    Prompt,
+    MaxNew,
+}
+
+impl Field {
+    /// 全部字段，供键名检索与"只认哪些"清单遍历。
+    const ALL: [Self; 3] = [Self::Id, Self::Prompt, Self::MaxNew];
+
+    /// 线上键名。
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::Prompt => "prompt",
+            Self::MaxNew => "max_new",
+        }
+    }
+
+    /// 按键名找回字段；未知键返回 `None`。
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.key() == key)
+    }
+
+    /// 识别出的键名清单：未知键错误里列出"只认"哪些。
+    fn known_names() -> String {
+        Self::ALL.map(|field| field.key()).join(" / ")
+    }
+}
+
 /// 逐行累积的请求构造器；字段全是 `Option`，好让"缺了哪个"在 `finish` 时一次说清。
 #[derive(Debug, Default)]
 struct Builder {
@@ -81,63 +115,66 @@ impl Builder {
     }
 
     fn set(&mut self, number: usize, key: &str, value: &str) -> Result<()> {
-        match key {
-            "id" => self.set_id(number, value),
-            "prompt" => self.set_prompt(number, value),
-            "max_new" => self.set_max_new(number, value),
-            other => Err(Self::line_error(
+        let field = Field::from_key(key).ok_or_else(|| {
+            Self::line_error(
                 number,
-                &format!("未知字段 `{other}`：只认 id / prompt / max_new"),
-            )),
+                &format!("未知字段 `{key}`：只认 {}", Field::known_names()),
+            )
+        })?;
+        match field {
+            Field::Id => Self::set_parsed(&mut self.id, number, key, value, "u64"),
+            Field::Prompt => Self::set_text(&mut self.prompt, number, key, value),
+            Field::MaxNew => Self::set_parsed(&mut self.max_new, number, key, value, "usize"),
         }
     }
 
-    fn set_id(&mut self, number: usize, value: &str) -> Result<()> {
-        if self.id.is_some() {
-            return Err(Self::line_error(number, "字段 `id` 出现了两次"));
+    /// 文本字段：重复键拒绝，原值存入。辅助件只碰传入槽位，不借整个构造器。
+    fn set_text(slot: &mut Option<String>, number: usize, key: &str, value: &str) -> Result<()> {
+        if slot.is_some() {
+            return Err(Self::duplicate(number, key));
         }
-        let id = value
-            .parse()
-            .map_err(|_| Self::line_error(number, &format!("`id` 不是 u64：`{value}`")))?;
-        self.id = Some(id);
+        *slot = Some(value.to_string());
         Ok(())
     }
 
-    fn set_prompt(&mut self, number: usize, value: &str) -> Result<()> {
-        if self.prompt.is_some() {
-            return Err(Self::line_error(number, "字段 `prompt` 出现了两次"));
+    /// 数值字段：重复键拒绝，按 [`FromStr`] 解析；`type_name` 只用于错误文案。
+    fn set_parsed<T: FromStr>(
+        slot: &mut Option<T>,
+        number: usize,
+        key: &str,
+        value: &str,
+        type_name: &str,
+    ) -> Result<()> {
+        if slot.is_some() {
+            return Err(Self::duplicate(number, key));
         }
-        self.prompt = Some(value.to_string());
-        Ok(())
-    }
-
-    fn set_max_new(&mut self, number: usize, value: &str) -> Result<()> {
-        if self.max_new.is_some() {
-            return Err(Self::line_error(number, "字段 `max_new` 出现了两次"));
-        }
-        let max_new = value
-            .parse()
-            .map_err(|_| Self::line_error(number, &format!("`max_new` 不是 usize：`{value}`")))?;
-        self.max_new = Some(max_new);
+        let parsed = value.parse::<T>().map_err(|_| {
+            Self::line_error(number, &format!("`{key}` 不是 {type_name}：`{value}`"))
+        })?;
+        *slot = Some(parsed);
         Ok(())
     }
 
     /// 三个必填字段逐个取出：缺哪个就报哪个，而不是笼统说"请求不完整"。
     fn finish(self) -> Result<Request> {
         let Some(id) = self.id else {
-            return Err(Self::missing("id"));
+            return Err(Self::missing(Field::Id.key()));
         };
         let Some(prompt) = self.prompt else {
-            return Err(Self::missing("prompt"));
+            return Err(Self::missing(Field::Prompt.key()));
         };
         let Some(max_new) = self.max_new else {
-            return Err(Self::missing("max_new"));
+            return Err(Self::missing(Field::MaxNew.key()));
         };
         Ok(Request {
             id,
             prompt,
             max_new,
         })
+    }
+
+    fn duplicate(number: usize, key: &str) -> Error {
+        Self::line_error(number, &format!("字段 `{key}` 出现了两次"))
     }
 
     fn line_error(number: usize, message: &str) -> Error {

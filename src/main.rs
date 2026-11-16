@@ -214,7 +214,7 @@ fn status(weights: Option<&str>) -> Result<()> {
     );
 
     let mut scheduler = engine::Scheduler::new(status_pager()?);
-    let sequence = engine::Sequence::new(0, 8, 4, 16, engine::exec::Stream::new(0))?;
+    let sequence = engine::Sequence::new(0, &[0; 8], 4, 16, engine::exec::Stream::new(0))?;
     let response = serve::admit(&mut scheduler, &sequence)?;
     report = report.row(
         "调度    engine",

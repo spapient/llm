@@ -172,11 +172,11 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 
 | # | 现状证据 | 缺口 | 归属 |
 |---|---|---|---|
-| G7 | `attention_f32(q,k,v,out,heads,d)` 是纯切片签名；`Pager` 行只能经 `Batch::kv`/`write_kv` 按 id+token 访问（`batch.rs:127-138`） | 注意力内核尚未接 KV 页：装配侧要把序列已有 K/V 行映射成操作数；Q/K/V 投影后按层偏移写回 KV 行 | `serve::model` 装配 + attention Program |
+| G7 | 两条 prefill 注意力（`attention_f32` / `flash_attention_f32`）已登记进 serve CPU 内核表（三路 `q/k/v`，头宽 `d` 取静态语义表、`s` 由切片长推）；decode 变长历史变体未登记；`Pager` 行仍只能经 `Batch::kv`/`write_kv` 按 id+token 访问（`batch.rs`） | 注意力尚未接 KV 页：装配侧要把序列已有 K/V 行映射成操作数；Q/K/V 投影后按层偏移写回 KV 行；残差旁路与图扇出通道待扩 | `serve::model` 装配 + attention Program |
 | G8 | `Table` 独占 `Page`，无共享引用（`kv.rs:59-183`） | prefix cache：前缀页共引用、引用计数、回收判定；页表结构要留共享句柄 | engine `kv` + `serve::model` |
-| G9 | `Batch::step` 逐序列推进页账，但没有模型侧批量前向（`batch.rs:148-158`） | 多序列端到端：每序列一步前向 → logits → 采样；当前只有单序列 `llm run` 伪前向 | `serve::model` `Predict` |
+| G9 | `Batch::step` 逐序列推进页账；`CpuModel` 已接单序列 `Predict`，尚无模型侧批量前向 | 多序列端到端：批内每序列一步前向 → logits → 采样；当前主链只接单 token decode | `serve::model` `Predict` |
 | G10 | 基准只有 7 条算子 criterion benches；无 decode 整步/整模型 harness | M2 需要单序列与批次的 TPOT/吞吐/内存对照口径 | benches（工具成员）+ `serve::model` facade |
-| G11 | `Predict::logits(&mut self, &Sequence)` 签名不带批/KV 视图（`generate.rs:24`） | 模型写 KV 需要访问页池；trait 是否扩 KV 上下文待定（§5.4） | serve trait 评审 |
+| G11 | `Predict::logits(&mut self, &Sequence)` 单序列签名已由 `CpuModel` 实现；不带批/KV 视图（`generate.rs:24`） | 模型读写 KV 需要访问页池；trait 路线 B 只读视图传参随 G7 接注意力时定形（§5.4） | serve trait 评审 |
 
 ### 3.3 P3 缺口
 
@@ -260,7 +260,7 @@ L6 顺序不变：`train` → `engine` → `serve` → `cli`；不新增成员�
 | 算子 | 额外形参 | 来源 |
 |---|---|---|
 | `rope_f32` | `pos: usize`（解码位置） | `Sequence::produced + prompt_len`，随步变化 |
-| `attention_f32` / `flash_attention_f32` | `heads`、`head_dim` | 层构造期静态值；`train::kernel.rs:121-131` 先例：`d` 取 `op::attention::MODEL.shape.1`，`heads = q.len() / d` |
+| `attention_f32` / `flash_attention_f32` | 序列长 `s`、头宽 `d` | 两条 prefill 已进 serve CPU 内核桥：`d` 取静态 `op::attention::MODEL.shape.1`，`s = q.len()/d`；decode 变体 `q_rows = q.len()/d`、`hist = k.len()/d` 同法切片长推，均不需运行时标量槽 |
 | `embed_f32` | 运行时无额外形参；行宽 `D` 由 `out.len()/idx.len()` 推导，表长锁 `V·D` | 切片几何自洽 |
 | 量化族 | u8 lane，P3 再议 | — |
 
@@ -283,9 +283,14 @@ P1/P2 的 `Program` 保持 f32 切片闭集。u8 适配随 P3 量化内核一起
 `Predict::logits(&mut self, &Sequence)` 当前拿不到页池。两条路线：
 
 - **路线 A**：`Predict` 实现内部持 KV 缓存（按 sequence id 索引），trait 不变；serve 完成页账回收后通知模型淘汰条目。
-- **路线 B**：扩 trait，把批/KV 只读视图作为参数传入；模型直接读 `Batch` 页行。
+- **路线 B**：扩 trait，把批/KV 视图作为参数传入；模型直接读 `Batch` 页行、写回当前步 K/V。
 
-P1 单序列不用定；P2 动工前按"调度与后端解耦"原则评审：倾向 B 的只读视图传参（模型不另存一份 KV 账），但要先确认借用拆分可行（`completion.rs:256-263` 已示范 model/batch 分字段拆开借用法）。
+**裁决（P2-4 主体动工前定形）**：走路线 B，弃用 A。模型不另存一份 KV 账——路线 A 的内部账（`SequenceKv`/`KvCache`）已从 src 移除（见 P2-4a 记录），机制待按 Batch 页行视图重落。
+
+- **trait 形态**：`logits(&mut self, sequence: &Sequence, batch: &mut Batch)`。读历史经 `batch.kv(id, token)`（`&self` 方法在 `&mut Batch` 上自动只读重借）；写回当前步 K/V 经 `batch.write_kv(id, token, values)`；序列上下文仍由 `&Sequence` 形参给。一步内只持一个 `&mut Batch`，不并存 `&Batch` 与 `&mut Batch`。
+- **借用拆分**：`completion.rs::logits` 已示范字段级拆借——`let State { model, batch, .. } = state;`，`model` 与 `batch` 是不重叠字段，两个 `&mut` 并存成立；trait 调用点沿用这套拆法，不在 `&mut State` 上整体借。
+- **图层能力**：`Node` 已支持多输入、多输出，同一编号可被多个下游节点读；Q/K/V 扇出（一个 hidden 喂三投影）与残差旁路（Add 引用旁路 hidden）在装配 plan 层补编号接线即可，engine `exec` 不改、不新增标量槽。
+- **装配缺口（主体刀）**：plan 需记录旁路编号与注意力三路输入编号；nn 侧 Q/K/V 投影组织约定（三个 `Linear` 同名前缀分组，还是一个组合块）在主体刀按 `nn::Contract` 视图定形；历史 K/V 页行在前向一步前整块读入绑定缓冲（slice 批量拷贝，不逐元素循环）。
 
 ### 5.5 对拍口径
 
@@ -373,7 +378,7 @@ P1 单序列不用定；P2 动工前按"调度与后端解耦"原则评审：倾
 - arity 不变：`forward(idx, table, out)` 三参，train `binary!` 桥与注册表行不动；复用 `embed` 骨架（闭集 12 个不扩），注解 shape `[8,64]`。
 - 测试：行 gather 参考对拍；下标越界、表长不符两条拒绝用例。
 - 本刀门禁：op 167、nn 65 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增 pub 类型与依赖边。
-- **未做（切分）**：`Sequence` 补完整 prompt token（#60）。
+- **未做（切分）**：`Sequence` 补完整 prompt token 归 P2-2c 落地。
 
 #### 落地记录（P2-2b：`Embedding` 接入 serve 装配族）
 
@@ -383,7 +388,40 @@ P1 单序列不用定；P2 动工前按"调度与后端解耦"原则评审：倾
 - 运行时词表行数不再锁死样本档 `V=64`：表长按行宽整除推行数，下标越界对照实际行数；`VOCAB` 仅用于样本生成。
 - 测试：单步查表对拍、查表→投影链串行 `embed → gemv` 对拍；缺词表 `Missing`、表长不符 `Invalid`、多 token `Unsupported` 共五条。
 - 本刀门禁：serve 90、nn 65、op 167 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增 pub 类型与依赖边。
-- **未做（切分）**：`Sequence` 补完整 prompt token（#60）；多 token 矩阵主链归 P2-5 连续批；归档头部推层目前只认秩 2 `Linear`，`Embedding` 经 `Stack::of` 直构，头部推查表层留装载串联刀。
+- **未做（切分）**：多 token 矩阵主链归 P2-5 连续批；归档头部推层目前只认秩 2 `Linear`，`Embedding` 经 `Stack::of` 直构，头部推查表层留装载串联刀。
+
+#### 落地记录（P2-2c：`Sequence` 留存完整 prompt token）
+
+- 单一 `all: Vec<u32>` 存完整上下文（提示段在前、生成段在后），`prompt_len` 标记分界；`tokens()` 仍切出生成段，客户端历史口径不变；新增 `context()` 返回整段序列，供嵌入查表与注意力回看历史。
+- 构造改为 `Sequence::new(id, prompt: &[u32], max_new, page_size, stream)`，`prompt_len` 由切片长推出（避免长度两处漂移）；`prompt_len + max_new` 溢出校验沿用 `checked_add`；`push_token` 上限按生成段长度 `all.len() - prompt_len` 判定，追加进 `all`。
+- 生产链路（`completion`）：`parse` 已得到编码后的 `Token` 序列，`.id()` 转 `u32` 整段传入序列；`history()` 仍只取 `tokens()`，响应不含提示段。
+- 测试：`context()` 含提示+生成、`tokens()` 只剩生成段一条内联对拍；各测试 helper 内部造占位切片，保住页数/长度断言语义。
+- 附带修正：`attention::check_decode_len` 条件叠加到 CCN=8，拆出 `check_rows` / `check_pair` 两个低复杂度小校验，主函数只串 `?`；测试仍只断言 `is_err`，错误消息泛化但语义不变。
+- 本刀门禁：engine 62、serve 90、op 171 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增 pub 类型与依赖边。
+
+#### 落地记录（P2-3：`CpuModel` 实现单序列 `Predict`）
+
+- `CpuModel` 接 `crate::Predict`：`logits` 先经 `predict_input` 把序列当前位置折成一步输入，再走既有张量级 `forward`；模型不另存 KV 账，页账仍归调度器。
+- `Assembly` 记首层族别 `input_kind`（装配期 `chain` 取出首层 `LayerPlan`）。查表层首层收一个索引：decode 一步取 `Sequence::context()` 末位 token，`u32 as f32` 喂入（索引 f32 承载是既有 `embed_f32` 契约）；投影/点wise/归一化首层需要隐向量，而序列只持有 token id，给不出向量，按 `Unsupported` 拒绝——向量主链随连续批刀落地。
+- **trait 签名本刀未扩**：路线 B 的 Batch/KV 只读视图传参留 P2-4 接注意力 KV 时定形（§5.4）；当前单序列前向只需序列上下文，不为假想的 KV 读写提前扩面。借用拆分沿用 `completion.rs` 示范的 model/batch 分字段借用法。
+- 测试：查表→投影链序列 `logits` 对拍同栈张量级 `forward`；投影首层 `logits` 报 `Unsupported`；空序列（无 token）报 `Invalid`。
+- 本刀门禁：serve 92、engine 62、op 171 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增 pub 类型与依赖边。
+
+#### 落地记录（P2-4a：注意力 prefill 两条进 CPU 内核表 + 模块拆分）
+
+- `attention_f32` / `flash_attention_f32` 登记进 serve CPU 内核表：三路 `q/k/v → out`，头宽 `d` 取静态 `op::attention::MODEL.shape.1`，序列长 `s` 由 `q.len()/d` 推出，形状不符交算子参考校验；朴素与 Flash 同几何只换内核算式。几何口径复刻 `train` 桥（`d` 取静态语义表、`s` 由切片长推），本刀不引入 Program 运行时标量槽。
+- 模块拆分：原 `model.rs` 超 899 行行数上限，按职责拆成 `model/mod.rs`（编译期锁定的算子表与适配函数）与 `model/assemble.rs`（层栈装配、驻留参数表、前向宿主 `CpuModel`）；`mod.rs` 经 `pub use` 把 `CpuModel` / `Params` 放回 `serve::model` 路径，外部引用不变。
+- 清理过渡死账：路线 A 模型内部 KV 账（`SequenceKv` / `KvCache`）无持有者，且将被 §5.4 路线 B 的 Batch 只读视图取代，删除其 src 副本与平行测试副本；行追加、历史拼接与淘汰机制待 P2-4 主体按 Batch 页行视图重新落地，不在无视图通道时预留死代码。
+- **未做（切分主体）**：Q/K/V 三路投影写回页行、历史 K/V 读入拼块、注意力族接装配链、残差旁路、decode 变长历史变体登记；Predict 路线 B 视图形态与图扇出/旁路通道在主体刀定形（§5.1、§5.4）。
+- 本刀门禁：serve 93 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增成员与依赖边。
+
+#### 落地记录（P2-4b：nn `AttentionBlock` 注意力组合块）
+
+- nn 侧新增 `AttentionBlock`：内聚 Q/K/V 三个投影（`hidden → kv_width`）+ `Attention` + 输出投影（`kv_width → hidden`），作为单个 `Contract` 层；子层按 `{块名}.q` / `.k` / `.v` / `.attn` / `.o` 前缀对齐权重条目。`Contract` 新增 `attention_block()` 类型化视图（默认 `None`），装配侧经此取回子层与块几何，不在外层按层名前缀分组扇出。
+- 几何与下界：`hidden` / `kv_width` / `head_dim` / `seq` 非零，`kv_width` 整除 `head_dim`（头数为整数）；块下界逐子层求和，任一子层无可计价形状则整块上报 `None`；块级 ops 列去重后的投影算子 + 注意力算子。
+- 边界：组合块不内聚残差旁路与层归一化——二者引用块外主干隐藏向量，归装配侧接线；多头展平与头内切片仍由 `Attention` 既有几何口径承担。`AttentionAlgo::operator()` 升为公开算子名访问器（取代私有 `op()`），供组合块拼块级 ops。
+- **未做（装配主体）**：把组合块拆成 q/k/v/attn/o 子节点接进图、三路扇出与 KV 页行读写、残差旁路编号接线；Predict 路线 B 视图形态与图扇出/旁路通道在 P2-4 主体刀定形（§5.1、§5.4）。
+- 本刀门禁：nn 全绿；workspace 0 失败；`clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增成员与依赖边。
 
 ### P2（M2：多序列端到端、CPU 同档 decode、KV 对拍与边界测试）
 

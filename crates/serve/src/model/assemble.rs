@@ -1,230 +1,20 @@
-//! CPU 推理内核桥：把 `op` 的 f32 标量参考适配成 engine 可登记的 [`Program`]。
+//! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`] 宿主执行。
 //!
-//! 落点裁决见 [`backend-runtime-design.md`](../../../docs/backend-runtime-design.md) §4：
-//! 端点契约、路由与线格式保持模型无关；CPU 模型实现作为注入 [`Predict`](crate::Predict)
-//! 的提供者收在本模块内，真设备后端仍按 ADR 0025 收在独立边界 crate，不回流这里。
-//!
-//! # 职责
-//!
-//! - 编译期锁定的算子表：表内每个名字都必须在 `op::REGISTRY` 内（`const` 子集断言）；
-//!   表未覆盖的算子不登记，执行时由 [`CpuExecutor`](engine::exec::CpuExecutor) 按名拒绝，
-//!   不留静默空入口。
-//! - 适配函数只做拆切片 + 调 `op::<op>::forward`，算术不重写。模式复刻 `train::KERNELS`
-//!   （`crates/train/src/kernel.rs`），但不带 train 的 `View`/`Lane` 适配层：engine 缓冲
-//!   形态就是 `Vec<f32>` 切片。
-//!
-//! # 不拥有
-//!
-//! 执行/调度/KV 簿记（`engine`）、算子声明与参考算术（`op`）、层形状语义（`nn`）、
-//! 权重字节读取（`weights`）。本模块不出现设备厂商或后端类型的特判分支。
-//!
-//! # P1 范围
-//!
-//! 只接纯切片签名的 f32 算子；`rope_f32` 的位置标量、`attention_*` 的头几何随 P2 KV
-//! 工作一起落地（设计文档 §5.1）。u8 lane 量化族延后 P3（§5.3）。
+//! 内核适配表留在 [`super`](super)；本模块只负责层族别分流、宽度链与权重形状校验、图接线
+//! 与前向取数，不认识算子内核算式。
 
 use std::collections::BTreeMap;
 
 use diagnostic::{Code, Error, Result};
-use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Program, Stream};
+use engine::Sequence;
+use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
 use nn::{Contract, Embedding, Linear, Shape, Stack, WEIGHT_SUFFIX, WeightFormat};
-use op::REGISTRY;
 use weights::{Entry as WeightEntry, Header, Loader, Wire, decode_f32};
 
-const SITE: &str = "serve::model";
+use super::SITE;
 
 /// 激活编号与权重编号的隔离基址：权重整块从这个编号起登记，避免与逐层复用的激活编号撞上。
 const WEIGHT_BASE: u32 = 10_000;
-
-/// 适配入口：拆好切片后调用算子参考实现。
-type KernelFn = fn(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()>;
-
-/// 表内一行：算子名（与 `op::REGISTRY` 同名）+ 缓冲级函数指针。
-struct Entry {
-    op: &'static str,
-    run: KernelFn,
-}
-
-/// 一元 `[f32] → [f32]` 适配：套用算子的标量实现。
-macro_rules! unary {
-    ($($run:ident),* $(,)?) => {$(
-        fn $run(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
-            let (Some(input), Some(output)) = (inputs.first(), outputs.first_mut()) else {
-                return Err(Error::new(
-                    Code::Invalid,
-                    concat!(stringify!($run), " 需要一进一出"),
-                )
-                .with(SITE));
-            };
-            op::$run::forward(input, output)
-        }
-    )*};
-}
-
-/// 二元 `[f32, f32] → [f32]` 适配。
-macro_rules! binary {
-    ($($run:ident),* $(,)?) => {$(
-        fn $run(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
-            let (Some(left), Some(right), Some(output)) =
-                (inputs.first(), inputs.get(1), outputs.first_mut())
-            else {
-                return Err(Error::new(
-                    Code::Invalid,
-                    concat!(stringify!($run), " 需要两进一出"),
-                )
-                .with(SITE));
-            };
-            op::$run::forward(left, right, output)
-        }
-    )*};
-}
-
-/// 二路适配：`[激活/索引, 驻留权重整块] → [out]`；第一路是输入向量或索引序列，第二路是驻留权重。
-macro_rules! gemv {
-    ($($run:ident),* $(,)?) => {$(
-        fn $run(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
-            let (Some(x), Some(weights), Some(output)) =
-                (inputs.first(), inputs.get(1), outputs.first_mut())
-            else {
-                return Err(Error::new(
-                    Code::Invalid,
-                    concat!(stringify!($run), " 需要两进一出"),
-                )
-                .with(SITE));
-            };
-            op::$run::forward(x, weights, output)
-        }
-    )*};
-}
-
-unary!(
-    gelu_f32,
-    reduce_max_f32,
-    reduce_sum_f32,
-    scale_f32,
-    silu_f32,
-    softmax_f32
-);
-binary!(add_f32, mul_f32, residual_add_f32, rmsnorm_f32);
-gemv!(embed_f32, gemv_f32);
-
-/// CPU 内核表：按 `op::REGISTRY` 顺序排列的 f32 纯切片子集；长度由表本身数出。
-const KERNELS: &[Entry] = &[
-    Entry {
-        op: "add_f32",
-        run: add_f32,
-    },
-    Entry {
-        op: "embed_f32",
-        run: embed_f32,
-    },
-    Entry {
-        op: "gelu_f32",
-        run: gelu_f32,
-    },
-    Entry {
-        op: "gemv_f32",
-        run: gemv_f32,
-    },
-    Entry {
-        op: "mul_f32",
-        run: mul_f32,
-    },
-    Entry {
-        op: "reduce_max_f32",
-        run: reduce_max_f32,
-    },
-    Entry {
-        op: "reduce_sum_f32",
-        run: reduce_sum_f32,
-    },
-    Entry {
-        op: "residual_add_f32",
-        run: residual_add_f32,
-    },
-    Entry {
-        op: "rmsnorm_f32",
-        run: rmsnorm_f32,
-    },
-    Entry {
-        op: "scale_f32",
-        run: scale_f32,
-    },
-    Entry {
-        op: "silu_f32",
-        run: silu_f32,
-    },
-    Entry {
-        op: "softmax_f32",
-        run: softmax_f32,
-    },
-];
-
-const _: () = all_in_registry(KERNELS, &REGISTRY);
-
-/// 编译期断言：表内每个算子名都能在 `op::REGISTRY` 里找到（子集即可，不必等长）。
-const fn all_in_registry(entries: &[Entry], registry: &[op::Registration]) {
-    let mut index = 0;
-    while index < entries.len() {
-        assert!(
-            name_located(entries[index].op, registry),
-            "serve::model 内核表含注册表之外的算子"
-        );
-        index += 1;
-    }
-}
-
-/// `const` 上下文里没有 `str` 比较，逐字节比名字。
-const fn name_located(name: &str, registry: &[op::Registration]) -> bool {
-    let mut index = 0;
-    while index < registry.len() {
-        if same_str(name, registry[index].name) {
-            return true;
-        }
-        index += 1;
-    }
-    false
-}
-
-const fn same_str(left: &str, right: &str) -> bool {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-
-/// 表条目对 engine [`Program`] 契约的适配：名字随表走，执行入口落到适配函数。
-struct Kernel {
-    entry: &'static Entry,
-}
-
-impl Program for Kernel {
-    fn name(&self) -> &str {
-        self.entry.op
-    }
-
-    fn run(&self, _launch: Launch, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
-        (self.entry.run)(inputs, outputs)
-    }
-}
-
-/// 把表内全部 CPU 内核登记进执行器；重名由 [`CpuExecutor::register`] 拒绝。
-///
-/// 装配侧在构造 CPU 模型宿主时调用一次；之后执行器只收图与操作数编号，不再改内核表。
-pub fn register_cpu(executor: &mut CpuExecutor) -> Result<()> {
-    for entry in KERNELS {
-        executor.register(Box::new(Kernel { entry }))?;
-    }
-    Ok(())
-}
 
 /// 驻留权重表：条目名 → f32 整块。装载期一次性解码进来，生成循环内不再读文件。
 #[derive(Debug, Clone, Default)]
@@ -299,6 +89,8 @@ struct Assembly {
     output: u32,
     input_len: usize,
     output_len: usize,
+    /// 首层族别：决定一步前向的输入是 token 索引还是隐向量。
+    input_kind: LayerKind,
     weights: Vec<(u32, String)>,
     activations: Vec<(u32, usize)>,
 }
@@ -625,22 +417,24 @@ fn chain(
     graph: &mut Graph,
     weights: &mut Vec<(u32, String)>,
     activations: &mut Vec<(u32, usize)>,
-) -> Result<(usize, usize, u32)> {
+) -> Result<(usize, usize, u32, LayerKind)> {
     let mut prev = 0;
     let mut prev_out: Option<usize> = None;
     let mut input_len = 0;
     let mut last_out = 0;
+    let mut input_kind = LayerKind::Projection;
 
     for (index, layer) in layers.iter().enumerate() {
         let plan = layer_plan(layer.as_ref(), prev_out, params)?;
         if prev_out.is_none() {
             input_len = plan.in_features;
+            input_kind = plan.kind;
         }
         prev = push_node(graph, weights, activations, prev, index, &plan)?;
         prev_out = Some(plan.out_features);
         last_out = plan.out_features;
     }
-    Ok((input_len, last_out, prev))
+    Ok((input_len, last_out, prev, input_kind))
 }
 
 /// 把层栈装配成图：逐层接线，上一层输出即下一层输入。
@@ -656,7 +450,7 @@ fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     let mut graph = Graph::new();
     let mut activations = Vec::new();
     let mut weights: Vec<(u32, String)> = Vec::new();
-    let (input_len, output_len, output) =
+    let (input_len, output_len, output, input_kind) =
         chain(layers, params, &mut graph, &mut weights, &mut activations)?;
 
     Ok(Assembly {
@@ -665,6 +459,7 @@ fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
         output,
         input_len,
         output_len,
+        input_kind,
         weights,
         activations,
     })
@@ -713,7 +508,7 @@ impl CpuModel {
     /// 由层栈与驻留参数表装配；形状、宽度、权重缺失都在构造期报出。
     pub fn new(stack: &Stack, params: &Params) -> Result<Self> {
         let mut executor = CpuExecutor::new(Device::new("cpu", "generic"));
-        register_cpu(&mut executor)?;
+        super::register_cpu(&mut executor)?;
         let assembly = assemble(stack, params)?;
         bind_weights(&mut executor, &assembly, params)?;
         bind_activations(&mut executor, &assembly);
@@ -744,8 +539,31 @@ impl CpuModel {
     pub fn output_len(&self) -> usize {
         self.assembly.output_len
     }
+
+    /// 按首层族别把序列当前位置 token 折成一步前向的输入缓冲。
+    ///
+    /// 查表层首层收一个索引（decode 一步取上下文末位 token）；投影/点wise/归一化首层需要的是
+    /// 隐向量，而序列只持有 token id，给不出向量，当前通路拒绝，向量主链随连续批刀落地。
+    fn predict_input(&self, sequence: &Sequence) -> Result<Vec<f32>> {
+        match self.assembly.input_kind {
+            LayerKind::Embedding => {
+                let token = sequence.context().last().copied().ok_or_else(|| {
+                    Error::new(Code::Invalid, "序列为空：没有可前向的 token").with(SITE)
+                })?;
+                Ok(vec![token as f32])
+            }
+            LayerKind::Projection | LayerKind::Unary | LayerKind::Norm => Err(Error::new(
+                Code::Unsupported,
+                "首层不是查表层：序列只持有 token id，无法提供隐向量输入；向量主链通路随连续批落地",
+            )
+            .with(SITE)),
+        }
+    }
 }
 
-#[cfg(test)]
-#[path = "../tests/model_tests.rs"]
-mod tests;
+impl crate::Predict for CpuModel {
+    fn logits(&mut self, sequence: &Sequence) -> Result<Vec<f32>> {
+        let input = self.predict_input(sequence)?;
+        self.forward(&input)
+    }
+}

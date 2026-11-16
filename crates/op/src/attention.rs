@@ -264,6 +264,161 @@ pub fn flash_forward(
     Ok(())
 }
 
+/// decode 注意力的一行机器：query 行数与 K/V 历史行数解耦（典型 decode 步 `q_rows = 1`，
+/// `hist` 是这条序列已经缓存的 K/V 行数）。列循环扫 `hist`，与 [`Rows`] 的同长自注意力
+/// 共用同一个 [`dot`] 点积，只是不再假设两边行数相等。
+struct DecodeRows<'a> {
+    q: &'a [f32],
+    k: &'a [f32],
+    v: &'a [f32],
+    hist: usize,
+    d: usize,
+    scale: f32,
+}
+
+impl<'a> DecodeRows<'a> {
+    /// 朴素一行：对全部历史列算分数 → 数值稳定 softmax → 对 `V` 加权。
+    fn naive(&self, row: usize, out: &mut [f32]) {
+        let scores: Vec<f32> = (0..self.hist)
+            .map(|col| dot(self.q, self.k, row, col, self.d) / self.scale)
+            .collect();
+        let max = scores.iter().copied().fold(f32::MIN, f32::max);
+        let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        for h in 0..self.d {
+            let mut acc = 0.0f32;
+            for j in 0..self.hist {
+                acc += (exps[j] / sum) * self.v[j * self.d + h];
+            }
+            out[row * self.d + h] = acc;
+        }
+    }
+
+    /// online（flash）一行：单遍扫历史 K/V，维护 running max、归一化分母与累加向量。
+    fn online(&self, row: usize) -> (Vec<f32>, f32) {
+        let mut max = f32::MIN;
+        let mut sum = 0.0f32;
+        let mut acc = vec![0.0f32; self.d];
+        for col in 0..self.hist {
+            let score = dot(self.q, self.k, row, col, self.d) / self.scale;
+            let new_max = max.max(score);
+            let reweight = (max - new_max).exp();
+            let prob = (score - new_max).exp();
+            sum = sum * reweight + prob;
+            for h in 0..self.d {
+                acc[h] = acc[h] * reweight + prob * self.v[col * self.d + h];
+            }
+            max = new_max;
+        }
+        (acc, sum)
+    }
+}
+
+/// decode 缓冲长度校验：`q`/`out` 是 `q_rows·d`，`k`/`v` 是 `hist·d`；两边行数可以不同。
+/// decode 查询与历史行数都必须非零。
+fn check_rows(q_rows: usize, hist: usize) -> diagnostic::Result<()> {
+    if q_rows == 0 || hist == 0 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("decode 查询行数 {q_rows} 与历史行数 {hist} 都必须非零"),
+        ));
+    }
+    Ok(())
+}
+
+/// 一对切片都必须等于预期长度。
+fn check_pair(first: &[f32], second: &[f32], expect: usize, what: &str) -> diagnostic::Result<()> {
+    if first.len() != expect || second.len() != expect {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("{what} 长度与预期 {expect} 不一致"),
+        ));
+    }
+    Ok(())
+}
+
+fn check_decode_len(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &[f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> diagnostic::Result<()> {
+    check_width(d)?;
+    check_rows(q_rows, hist)?;
+    let q_len = q_rows * d;
+    let kv_len = hist * d;
+    check_pair(q, out, q_len, "q/out")?;
+    check_pair(k, v, kv_len, "k/v")?;
+    Ok(())
+}
+
+/// decode 朴素内核：`q`（`q_rows·d`）对历史 K/V（`hist·d`）做注意力，结果写进 `out`（`q_rows·d`）。
+///
+/// 与 [`forward`] 的 prefill 同长自注意力不同，本入口不要求 `q_rows == hist`；典型 decode
+/// 一步 `q_rows = 1`，`hist` 随生成增长。
+///
+/// # Errors
+///
+/// 长度不符、头宽为 0，或查询/历史行数为 0 时返回说明。
+pub fn decode_forward(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> diagnostic::Result<()> {
+    check_decode_len(q, k, v, out, q_rows, hist, d)?;
+    let rows = DecodeRows {
+        q,
+        k,
+        v,
+        hist,
+        d,
+        scale: (d as f32).sqrt(),
+    };
+    for row in 0..q_rows {
+        rows.naive(row, out);
+    }
+    Ok(())
+}
+
+/// decode flash 内核：online softmax 单遍扫历史 K/V，写进 `out`。形状口径同 [`decode_forward`]。
+///
+/// # Errors
+///
+/// 同 [`decode_forward`]。
+pub fn decode_flash_forward(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> diagnostic::Result<()> {
+    check_decode_len(q, k, v, out, q_rows, hist, d)?;
+    let rows = DecodeRows {
+        q,
+        k,
+        v,
+        hist,
+        d,
+        scale: (d as f32).sqrt(),
+    };
+    for row in 0..q_rows {
+        let (acc, sum) = rows.online(row);
+        for h in 0..d {
+            out[row * d + h] = acc[h] / sum;
+        }
+    }
+    Ok(())
+}
+
 /// 标记类型：承载 `#[model]` 语义。
 pub struct Attention;
 

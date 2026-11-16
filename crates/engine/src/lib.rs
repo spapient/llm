@@ -47,7 +47,7 @@
 //! use llm_engine::kv::{Cache, Pager};
 //!
 //! let mut scheduler = Scheduler::new(Pager::new(Cache::new(4, 16).expect("页池"), 4).expect("行宽"));
-//! let mut sequence = Sequence::new(0, 8, 4, 16, Stream::new(0)).expect("序列");
+//! let mut sequence = Sequence::new(0, &[0; 8], 4, 16, Stream::new(0)).expect("序列");
 //! assert!(scheduler.admit(&sequence).expect("准入"));
 //! assert_eq!(
 //!     scheduler.advance(&mut sequence).expect("生成一个 token"),
@@ -110,14 +110,16 @@ pub struct Sequence {
     page_size: usize,
     state: State,
     stream: crate::exec::Stream,
-    tokens: Vec<u32>,
+    /// 完整上下文：提示段在前、生成段在后；[`tokens`](Self::tokens) 切出后半段。
+    all: Vec<u32>,
 }
 
 impl Sequence {
-    /// 由请求参数构造：`page_size` 来自页池，用于算需要多少页。
+    /// 由请求参数构造：`prompt` 是提示段的 token id（整段留存，供嵌入查表与历史回看），
+    /// `page_size` 来自页池，用于算需要多少页。
     pub fn new(
         id: u64,
-        prompt_len: usize,
+        prompt: &[u32],
         max_new: usize,
         page_size: usize,
         stream: crate::exec::Stream,
@@ -131,6 +133,7 @@ impl Sequence {
                     .with("engine::Sequence::new"),
             );
         }
+        let prompt_len = prompt.len();
         // 上下文长度在整条生命周期里只增不减，`len()` 与 `len() + 1` 都不该溢出：一次校验
         // 比每处调用点各写一个 `saturating_add` 便宜，也避免“同一族量一处回绕、一处饱和”。
         if prompt_len.checked_add(max_new).is_none() {
@@ -148,7 +151,7 @@ impl Sequence {
             page_size,
             state: State::Waiting,
             stream,
-            tokens: Vec::new(),
+            all: prompt.to_vec(),
         })
     }
 
@@ -172,12 +175,19 @@ impl Sequence {
         self.max_new
     }
 
-    /// 已经采样出的 token，按生成顺序。
+    /// 已经采样出的生成 token，按生成顺序（不含提示段）。
     ///
-    /// 序列是这条历史的唯一存放处：`Predict` 只看得到 [`Sequence`]，如果 token 存在别处，
-    /// "模型能读到自己的历史"就变成了调用方的约定。
+    /// 序列是这条历史的唯一存放处：端点把它作为结果返回时只该带生成段，提示段由请求侧
+    /// 自己持有。需要完整上下文（嵌入查表、注意力回看历史）用 [`context`](Self::context)。
     pub fn tokens(&self) -> &[u32] {
-        &self.tokens
+        &self.all[self.prompt_len..]
+    }
+
+    /// 完整上下文：提示段在前、生成段在后。
+    ///
+    /// 模型前向只看得到 [`Sequence`]：整段 token 存在这里，模型不必让调用方再喂一遍历史。
+    pub fn context(&self) -> &[u32] {
+        &self.all
     }
 
     /// 记录一个已经采样出来的 token；**不**推进计数、也不碰页账。
@@ -189,7 +199,7 @@ impl Sequence {
     ///
     /// `max_new` 已经记满时返回 `invalid`。
     pub(crate) fn push_token(&mut self, token: u32) -> Result<()> {
-        if self.tokens.len() >= self.max_new {
+        if self.all.len() - self.prompt_len >= self.max_new {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
@@ -199,7 +209,7 @@ impl Sequence {
             )
             .with("engine::Sequence::push_token"));
         }
-        self.tokens.push(token);
+        self.all.push(token);
         Ok(())
     }
 

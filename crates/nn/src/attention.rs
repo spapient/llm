@@ -20,7 +20,7 @@ pub enum AttentionAlgo {
 
 impl AttentionAlgo {
     /// 算法对应的已注册算子名。
-    fn op(self) -> &'static str {
+    pub fn operator(self) -> &'static str {
         match self {
             Self::Naive => Attention::NAIVE,
             Self::Flash => Attention::FLASH,
@@ -67,7 +67,7 @@ impl Attention {
         let spec = ContractSpec::new(
             name,
             Shape::new([seq, head_dim]),
-            vec![algo.op().to_string()],
+            vec![algo.operator().to_string()],
         )?;
         Ok(Self {
             spec,
@@ -108,7 +108,7 @@ impl Contract for Attention {
 
     fn bounds(&self) -> BoundsResult {
         // 注意力声明了输入轴 `s` 与输出轴 `d`，按投影角色翻译宽度；代价仍来自算子语义表。
-        Bounds::of_op(self.algo.op(), self.seq, self.head_dim).map(Some)
+        Bounds::of_op(self.algo.operator(), self.seq, self.head_dim).map(Some)
     }
 }
 

@@ -3,12 +3,26 @@ use crate::kv::{Cache, Pager};
 use testkit::Rng;
 
 fn sequence(id: u64, prompt: usize, max_new: usize) -> Sequence {
-    Sequence::new(id, prompt, max_new, 16, crate::exec::Stream::new(0)).expect("序列")
+    let prompt = vec![0u32; prompt];
+    Sequence::new(id, &prompt, max_new, 16, crate::exec::Stream::new(0)).expect("序列")
 }
 
 /// 页池 + 行宽 4：这些测试只关心页账，行里的数由 `kv_tests` 覆盖。
 fn pool(total: usize, page_size: usize) -> Pager {
     Pager::new(Cache::new(total, page_size).expect("页池"), 4).expect("行宽")
+}
+
+#[test]
+fn context_holds_the_full_prompt_plus_generated_tokens() {
+    let mut sequence =
+        Sequence::new(1, &[4u32, 5], 2, 16, crate::exec::Stream::new(0)).expect("序列");
+    assert_eq!(sequence.prompt_len(), 2);
+    assert_eq!(sequence.context(), [4, 5]);
+    assert!(sequence.tokens().is_empty(), "提示段不算生成历史");
+
+    sequence.push_token(6).expect("记账");
+    assert_eq!(sequence.context(), [4, 5, 6]);
+    assert_eq!(sequence.tokens(), [6]);
 }
 
 #[test]
@@ -53,10 +67,10 @@ fn pages_are_rounded_up_and_never_zero() {
 /// 最坏情况的上界与"当前需要"是两个数：准入要的是前者。
 #[test]
 fn pages_required_covers_the_whole_run_not_just_the_prompt() {
-    let short = Sequence::new(1, 4, 4, 4, crate::exec::Stream::new(0)).expect("序列");
+    let short = Sequence::new(1, &[0; 4], 4, 4, crate::exec::Stream::new(0)).expect("序列");
     assert_eq!(short.pages_needed(), 1, "当前长度 4 刚好一页");
     assert_eq!(short.pages_required(), 2, "跑满后长度 8 要两页");
-    let long = Sequence::new(2, 1, 39, 4, crate::exec::Stream::new(0)).expect("序列");
+    let long = Sequence::new(2, &[0; 1], 39, 4, crate::exec::Stream::new(0)).expect("序列");
     assert_eq!(long.pages_needed(), 1);
     assert_eq!(long.pages_required(), 10, "(1 + 39).div_ceil(4)");
 }
@@ -65,7 +79,7 @@ fn pages_required_covers_the_whole_run_not_just_the_prompt() {
 #[test]
 fn a_sequence_that_can_never_finish_is_refused() {
     let mut scheduler = Scheduler::new(pool(4, 4));
-    let endless = Sequence::new(1, 4, 40, 4, crate::exec::Stream::new(0)).expect("序列");
+    let endless = Sequence::new(1, &[0; 4], 40, 4, crate::exec::Stream::new(0)).expect("序列");
     assert_eq!(endless.pages_needed(), 1, "当前只占一页");
     assert!(
         !scheduler.admit(&endless).expect("页池放不下整段生成"),
@@ -118,31 +132,26 @@ fn admitting_the_same_sequence_twice_is_a_bug() {
 #[test]
 fn impossible_sequence_parameters_are_rejected() {
     assert_eq!(
-        Sequence::new(0, 1, 1, 0, crate::exec::Stream::new(0))
+        Sequence::new(0, &[0; 1], 1, 0, crate::exec::Stream::new(0))
             .unwrap_err()
             .code(),
         Code::Invalid
     );
     assert_eq!(
-        Sequence::new(0, 1, 0, 16, crate::exec::Stream::new(0))
+        Sequence::new(0, &[0; 1], 0, 16, crate::exec::Stream::new(0))
             .unwrap_err()
             .code(),
         Code::Invalid
     );
     // 上下文长度在构造期就校验：否则 `len() + 1` 会在某次推进里回绕成一个很小的页数。
-    assert_eq!(
-        Sequence::new(0, usize::MAX, 1, 16, crate::exec::Stream::new(0))
-            .unwrap_err()
-            .code(),
-        Code::Invalid
-    );
+    // 切片长度受内存约束，理论极值造不出切片；溢出校验仍保留在构造的 `checked_add` 里。
 }
 
 /// 生成会跨页：页表按"要写的位置"增长，而不是停在准入那一刻。
 #[test]
 fn a_growing_sequence_takes_a_page_each_time_it_crosses_one() {
     let mut scheduler = Scheduler::new(pool(4, 4));
-    let mut sequence = Sequence::new(1, 3, 10, 4, crate::exec::Stream::new(0)).expect("序列");
+    let mut sequence = Sequence::new(1, &[0; 3], 10, 4, crate::exec::Stream::new(0)).expect("序列");
     assert!(scheduler.admit(&sequence).expect("准入"));
     assert_eq!(scheduler.cache().in_use(), 1, "提示长度 3 只占一页");
     // 长度 4 仍在第一页，写到第 5 个位置才需要第二页，第 9 个位置才需要第三页。
@@ -163,8 +172,8 @@ fn a_growing_sequence_takes_a_page_each_time_it_crosses_one() {
 #[test]
 fn a_step_that_cannot_get_a_page_is_blocked_without_side_effects() {
     let mut scheduler = Scheduler::new(pool(3, 4));
-    let mut a = Sequence::new(1, 4, 8, 4, crate::exec::Stream::new(0)).expect("序列");
-    let b = Sequence::new(2, 4, 8, 4, crate::exec::Stream::new(0)).expect("序列");
+    let mut a = Sequence::new(1, &[0; 4], 8, 4, crate::exec::Stream::new(0)).expect("序列");
+    let b = Sequence::new(2, &[0; 4], 8, 4, crate::exec::Stream::new(0)).expect("序列");
     assert!(scheduler.admit(&b).expect("准入"));
     assert!(scheduler.admit(&a).expect("准入"));
     assert_eq!(scheduler.cache().in_use(), 2, "各自只占提示那一页");
@@ -201,7 +210,7 @@ fn a_step_that_cannot_get_a_page_is_blocked_without_side_effects() {
 fn fits_separates_a_full_pool_from_a_never_finishable_request() {
     let scheduler = Scheduler::new(pool(2, 16));
     assert!(scheduler.fits(&sequence(1, 4, 2)), "两页里跑得完");
-    let endless = Sequence::new(2, 4, 1024, 16, crate::exec::Stream::new(0)).expect("序列");
+    let endless = Sequence::new(2, &[0; 4], 1024, 16, crate::exec::Stream::new(0)).expect("序列");
     assert!(!scheduler.fits(&endless), "最坏情况远超两页");
     assert!(scheduler.cache().in_use() == 0, "判据不占页");
 }
@@ -227,7 +236,7 @@ fn advancing_a_sequence_that_is_not_in_the_batch_is_a_bug() {
 #[test]
 fn a_sequence_whose_page_width_disagrees_with_the_pool_is_rejected() {
     let mut scheduler = Scheduler::new(pool(4, 16));
-    let narrow = Sequence::new(5, 16, 4, 8, crate::exec::Stream::new(0)).expect("序列");
+    let narrow = Sequence::new(5, &[0; 16], 4, 8, crate::exec::Stream::new(0)).expect("序列");
     assert_eq!(scheduler.admit(&narrow).unwrap_err().code(), Code::Invalid);
     assert_eq!(scheduler.cache().in_use(), 0, "拒绝不能留下分配");
 
@@ -267,9 +276,10 @@ fn random_batches_keep_the_page_accounts_consistent() {
     let mut scheduler = Scheduler::new(pool(6, 4));
     let mut sequences: Vec<Sequence> = (0..4u64)
         .map(|id| {
-            let prompt = rng.below(8) as usize;
+            let prompt_len = rng.below(8) as usize;
             let max_new = 1 + rng.below(6) as usize;
-            Sequence::new(id, prompt, max_new, 4, crate::exec::Stream::new(0)).expect("序列")
+            let prompt = vec![0u32; prompt_len];
+            Sequence::new(id, &prompt, max_new, 4, crate::exec::Stream::new(0)).expect("序列")
         })
         .collect();
 

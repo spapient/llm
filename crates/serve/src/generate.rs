@@ -73,12 +73,13 @@ impl Generation {
     /// 线格式：每个 token 4 字节小端，顺序与 [`Generation::tokens`] 一致。
     ///
     /// 与 `serve::Response::ok(sequence.id().to_le_bytes())` 用同一套字节序：端点返回的
-    /// 载荷不需要第二种编码。
+    /// 载荷不需要第二种编码。输出长度已知（`tokens.len() * 4`），一次性预分配，不再逐元素扩容。
     pub fn frame(&self) -> Vec<u8> {
-        self.tokens
-            .iter()
-            .flat_map(|token| token.to_le_bytes())
-            .collect()
+        let mut out = Vec::with_capacity(self.tokens.len() * 4);
+        for token in &self.tokens {
+            out.extend_from_slice(&token.to_le_bytes());
+        }
+        out
     }
 
     /// 用词表把 token 还原成文本（越界编号由分词器报错，不在这里替换）。
@@ -126,11 +127,17 @@ fn best(logits: &[f32]) -> Result<u32> {
         )
         .with("serve::Greedy"));
     }
-    let top = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let index = logits
-        .iter()
-        .position(|value| *value == top)
-        .ok_or_else(|| Error::new(Code::Internal, "最大值不在 logits 里").with("serve::Greedy"))?;
+    // 一趟 argmax：比较链有串行依赖，保留折叠；严格大于才更新，等值时先出现（编号更小）的下标胜出。
+    let (index, _) = logits.iter().copied().enumerate().fold(
+        (0usize, f32::NEG_INFINITY),
+        |(best_index, best_value), (index, value)| {
+            if value > best_value {
+                (index, value)
+            } else {
+                (best_index, best_value)
+            }
+        },
+    );
     u32::try_from(index).map_err(|_| {
         Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32")).with("serve::Greedy")
     })

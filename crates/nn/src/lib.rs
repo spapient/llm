@@ -49,6 +49,7 @@ pub use annotation::spec;
 use diagnostic::{Code, Error, Result};
 
 mod attention;
+mod attention_block;
 mod axis;
 mod bounds;
 mod embed;
@@ -61,6 +62,9 @@ mod stack;
 
 #[doc(inline)]
 pub use attention::{Attention, AttentionAlgo};
+
+#[doc(inline)]
+pub use attention_block::AttentionBlock;
 
 #[doc(inline)]
 pub use bounds::Bounds;
@@ -197,6 +201,14 @@ pub trait Contract {
     /// 默认 `None`：与 [`linear`](Self::linear) 同一类类型化访问器，装配侧据此取词表/行宽几何，
     /// 不靠层类型匹配特判。
     fn embedding(&self) -> Option<&Embedding> {
+        None
+    }
+
+    /// 若这一层是注意力组合块，返回它的类型化视图。
+    ///
+    /// 默认 `None`：装配侧经此取回 Q/K/V/注意力/输出投影五个子层与块几何，不在外层按层名前缀
+    /// 分组扇出。
+    fn attention_block(&self) -> Option<&crate::attention_block::AttentionBlock> {
         None
     }
 }

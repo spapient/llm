@@ -123,7 +123,7 @@ fn admission_answers_with_a_retryable_or_terminal_status() {
     let pager = Pager::new(Cache::new(2, 8).expect("页池"), 2).expect("行宽");
     let mut scheduler = Scheduler::new(pager);
     // 提示 8 + 生成 8 = 16 个 token，需要 2 页，池正好 2 页：进去。
-    let fits = Sequence::new(1, 8, 8, 8, Stream::new(1)).expect("序列");
+    let fits = Sequence::new(1, &[0; 8], 8, 8, Stream::new(1)).expect("序列");
     let response = llm_serve::admit(&mut scheduler, &fits).expect("准入不崩");
     assert_eq!(response.status().code(), 200);
     assert_eq!(
@@ -137,7 +137,7 @@ fn admission_answers_with_a_retryable_or_terminal_status() {
     assert_eq!(duplicate.status().code(), 400);
 
     // 池里只剩两条序列的余量：再要一条 3 页的，永远装不下，也是 400。
-    let too_big = Sequence::new(2, 8, 8, 4, Stream::new(2)).expect("序列");
+    let too_big = Sequence::new(2, &[0; 8], 8, 4, Stream::new(2)).expect("序列");
     let response = llm_serve::admit(&mut scheduler, &too_big).expect("准入不崩");
     assert_eq!(response.status().code(), 400);
 }
