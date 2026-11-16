@@ -82,11 +82,14 @@ int witness_cvt(float *out) {
     return 1;
 }
 
-/* reduce: 单线程部分和即总和 */
+/* reduce: 求和折叠 {1.5, 2.0, 4.0} = 7.5（单线程部分和即总和） */
 int witness_reduce(float *out) {
-    const float partial = 7.5f;
-    float total = partial;
-    out[0] = total;
+    const float a[3] = {1.5f, 2.0f, 4.0f};
+    float acc = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        acc += a[i];
+    }
+    out[0] = acc;
     return 1;
 }
 

@@ -39,7 +39,7 @@ bw        = { value = 42.656e9, src = "2*8*2666e6" }
 
 [compile]
 flags = ["-O3", "-std=c99"]
-preamble = "#include <stdint.h>\n#include <string.h>\n#if defined(__aarch64__)\n#include <arm_neon.h>\n#endif"
+preamble = "#include <stdint.h>\n#include <string.h>\n#if defined(__aarch64__)\n#include <arm_neon.h>\n#endif\n/* 归约独立接口：统一数组入口 (a, n, stride)；n==1 走标量快通道，n>1 按步长数组归约。\n   双通道判断与遍历封装在这里，模板业务代码只调一行，不掺和分支。 */\nstatic inline float _cutile_sum_f32(const float *a, int n, int stride) { if (n == 1) { return a[0]; } float acc = 0.0f; for (int i = 0; i < n; ++i) { acc += a[i * stride]; } return acc; }\nstatic inline float _cutile_max_f32(const float *a, int n, int stride) { if (n == 1) { return a[0]; } float acc = -3.402823466e38f; for (int i = 0; i < n; ++i) { const float x = a[i * stride]; if (x > acc) { acc = x; } } return acc; }"
 
 [[provides]]
 prim    = "quant"

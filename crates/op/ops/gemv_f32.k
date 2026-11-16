@@ -31,7 +31,7 @@ void cutile_{{op}}_kernel(const float *x, const float *w, float *y,
         float v = 0.0f;
         float out = 0.0f;
         @cvt(v, acc, sat: off);
-        @reduce(out, v, op: sum, axis: GMAX);
+        @reduce(out, &v, 1, 1, op: sum, axis: GMAX, func: _cutile_sum_f32);
         @store(y, n, out);
     }
 }
