@@ -59,5 +59,5 @@ scripts/mechanism_lines.sh --csv    # 机器可读 CSV：layer,files,lines
 
 ## 5. 未决
 
-- 内联 `#[cfg(test)]` 体的逐行扣除尚未接进脚本（依赖 `tool::strip_tests` 作为可调用计数入口）；当前表为目录级上界。
+- 内联 `#[cfg(test)]` 体的逐行扣除尚未接进脚本：`tool::strip_tests` 目前仅被 `ccn.rs` 静态门内部调用，tool 无独立可执行计数入口（`ccn`/`gate` 是 `[[test]]` 目标而非 CLI 子命令）；2026-11-17 收口刀评估：不加新 helper 二进制、不扩 cli `Command` 枚举的前提下接不进 `mechanism_lines.sh`，按规则暂缓，待行计数子命令（或 gate 输出附带 stripped 行数）落地后再接；当前表为目录级上界。
 - 各框架同口径机制行分母未采集；M3/M4 出口在同口径下回填实际倍数，未重测前不写倍数结论。
