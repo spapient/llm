@@ -2,7 +2,7 @@
 
 用 Rust 编写的配置驱动算子训练推理框架：kernel 由声明与档案驱动（`cutile`），上层按层组装成推理与训练链路，入口组合根是 `llm-cli`（bin：`llm` / `cutile`）。
 
-本仓库是一个纯 Cargo workspace，共 25 个 crate，全部位于 `crates/*`；入口二进制归 `llm-cli` 包，根 `Cargo.toml` 只声明 workspace 元数据、依赖版本与 lint 策略。**模块的层级与依赖方向**写在
+本仓库是一个纯 Cargo workspace，共 24 个 crate，全部位于 `crates/*`；入口二进制归 `llm-cli` 包，根 `Cargo.toml` 只声明 workspace 元数据、依赖版本与 lint 策略。**模块的层级与依赖方向**写在
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，新增成员时按那里的三步登记。
 
 ## 快速开始
@@ -98,7 +98,7 @@ cli ──▶ engine ──▶ tensor ──▶ diagnostic
     ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义；einsum/ 是求和代价的来源
     ├── prof/             # 档案层：devices/<vendor>.toml + 能力词汇表
     ├── prim/             # 片段层：<vendor>/<prim>.<ext> + witness
-    └── …                 # 其余 19 个成员见上表，每个 crate 的 //! 文档写明
+    └── …                 # 其余 18 个成员见上表，每个 crate 的 //! 文档写明
                           # “拥有什么 / 不拥有什么 / 依赖谁 / 被谁依赖”
 ```
 
