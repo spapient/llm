@@ -243,3 +243,219 @@ fn recording_past_the_limit_is_refused() {
     );
     assert_eq!(sequence.tokens(), [1, 2], "失败的记账不留痕");
 }
+
+/// 批内两条以上、不同长度与不同前缀的序列同批跑多步：各自历史与进度对拍，不串台。
+///
+/// 三条序列：一条短提示、一条长提示、一条与首条共享整页前缀；每轮同批 `step`，再按 id
+/// 把采样结果 `emit` 记进各自历史。轮次结束后逐条核对生成数、生成历史与上下文长度，
+/// 共享前缀那条的提示段不能被另两条的生成 token 顶替。已跑满的序列不再参与记账。
+#[test]
+fn multi_sequence_batch_runs_their_own_history_and_progress() {
+    // 页宽 2：前缀整页共享；页池 12 页，三条各自提示与跨页增长都放得下，不互相挡页。
+    let mut batch = Batch::new(pool(12, 2));
+    batch
+        .admit(sequence_with(1, &[7, 7], 3, 2))
+        .expect("准入第一条");
+    batch
+        .admit(sequence_with(2, &[8, 8, 9, 9], 2, 2))
+        .expect("准入第二条");
+    batch
+        .admit(sequence_with(3, &[7, 7], 2, 2))
+        .expect("准入第三条（与第一条共享整页前缀）");
+
+    // 每轮三条各走一步；采样 token 按序列各自编号，记账与推进成对（`emit` 内部先预留位再记账）。
+    for round in 0..3 {
+        let ids: Vec<u64> = batch.ids().collect();
+        let mut recorded: Vec<Progress> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if batch.sequence(id).expect("在批里").is_done() {
+                recorded.push(Progress::Done);
+                continue;
+            }
+            let token = id as u32 * 10 + round as u32;
+            let progress = batch.emit(id, token).expect("记账推进");
+            recorded.push(progress);
+        }
+        // 批量视图把本轮结局按准入顺序对齐到每条序列：不串台。
+        let view = batch.outcomes(&recorded);
+        assert_eq!(view.len(), 3, "批量视图与准入序列一一对应");
+    }
+
+    let first = batch.sequence(1).expect("第一条在批里");
+    let second = batch.sequence(2).expect("第二条在批里");
+    let third = batch.sequence(3).expect("第三条在批里");
+
+    assert_eq!(first.tokens(), [10, 11, 12], "第一条历史按自己的生成顺序");
+    assert_eq!(second.tokens(), [20, 21], "第二条先跑满 max_new");
+    assert_eq!(third.tokens(), [30, 31], "第三条历史不与第一条串");
+    assert_eq!(first.produced(), 3);
+    assert_eq!(second.produced(), 2);
+    assert_eq!(third.produced(), 2);
+    assert!(first.is_done(), "第一条跑满上限");
+    assert!(second.is_done(), "第二条跑满上限");
+    assert!(third.is_done(), "第三条跑满上限");
+
+    // 上下文 = 提示段 + 各自生成段：共享前缀那条的提示仍是 [7, 7]，没被生成历史冲掉。
+    assert_eq!(first.context(), [7, 7, 10, 11, 12]);
+    assert_eq!(second.context(), [8, 8, 9, 9, 20, 21]);
+    assert_eq!(third.context(), [7, 7, 30, 31]);
+}
+
+/// 批量结果视图：`outcomes` 按准入顺序把每条序列的历史与本步进度对齐，视图间互不重叠。
+#[test]
+fn batch_outcomes_pair_each_progress_with_its_own_sequence() {
+    let mut batch = Batch::new(pool(4, 4));
+    batch.admit(sequence(1, 0, 2, 4)).expect("准入第一条");
+    batch.admit(sequence(2, 0, 1, 4)).expect("准入第二条");
+
+    // 第一步走 `emit`（预留位 + 记账成对）；结局按准入顺序收进批量视图。
+    let first = batch.emit(1, 5).expect("第一条第一步");
+    let second = batch.emit(2, 6).expect("第二条第一步");
+    let outcomes = [first, second];
+    let view = batch.outcomes(&outcomes);
+    assert_eq!(view.len(), 2);
+
+    assert_eq!(view[0].id(), 1);
+    assert_eq!(view[0].progress(), Progress::Running);
+    assert_eq!(view[0].produced(), 1);
+    assert_eq!(view[0].tokens(), [5], "第一条历史挂在自己序列上");
+    assert_eq!(view[1].id(), 2);
+    // 第二条 `max_new = 1`，这一步即跑满：结局是 `Done`，不是 `Running`。
+    assert_eq!(view[1].progress(), Progress::Done);
+    assert_eq!(view[1].tokens(), [6], "第二条历史挂在自己序列上");
+    assert!(view[1].is_done());
+
+    // 第二条已结束不再推进；第一条再走一步，视图仍按准入位置对齐到各自序列。
+    let third = batch.emit(1, 7).expect("第一条第二步");
+    let view = batch.outcomes(&[third, Progress::Done]);
+    assert_eq!(view[0].tokens(), [5, 7], "第一条两步历史不串");
+    assert_eq!(view[1].tokens(), [6], "第二条历史仍是第一步那一笔");
+
+    // 按序号取单条视图，越界返回 `None`。
+    assert_eq!(batch.outcome(0, third).expect("首条").id(), 1);
+    assert!(batch.outcome(2, third).is_none(), "越界序号无视图");
+    assert_eq!(batch.sequence_at(1).expect("按序号取序列").id(), 2);
+    assert!(batch.sequence_at(2).is_none());
+}
+
+/// 准入满批退回：页不够时序列原样退回、不占页，重试前页账与退回前一致。
+#[test]
+fn admission_full_handles_back_without_touching_the_page_accounts() {
+    // 池 2 页、页宽 2：第一条提示 2 占 1 页；第二条提示 2、`max_new = 4`，最坏情况要 3 页，
+    // 既超过池总页数、空闲也只剩 1 页，准入补不出差额，整页退回，不留半个分配。
+    let mut batch = Batch::new(pool(2, 2));
+    batch
+        .admit(sequence_with(1, &[7, 7], 1, 2))
+        .expect("准入第一条");
+    let rejected = match batch
+        .admit(sequence_with(2, &[8, 8], 4, 2))
+        .expect("准入判定")
+    {
+        Admission::Full(sequence) => sequence,
+        Admission::Admitted => panic!("空闲页不够，第二条应原样退回"),
+    };
+    assert_eq!(rejected.id(), 2);
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch.scheduler().cache().in_use(), 1, "退回不占页");
+    assert_eq!(batch.scheduler().cache().free_pages(), 1);
+
+    // 第一条结束腾出页位后：第二条最坏情况仍要 3 页，池只有 2 页，`fits` 不通过，
+    // 继续按"现在装不下"退回，而不是被部分准入；它的页账原样不动。
+    assert!(batch.finish(1).expect("结束第一条"));
+    assert_eq!(batch.scheduler().cache().in_use(), 0);
+    match batch.admit(rejected).expect("腾页后重试仍判容量") {
+        Admission::Full(sequence) => {
+            assert_eq!(sequence.id(), 2, "装不下的序列原样退回");
+            assert_eq!(batch.scheduler().cache().in_use(), 0, "重试失败不留分配");
+        }
+        Admission::Admitted => panic!("池只有 2 页，第二条最坏情况要 3 页，不该准入"),
+    }
+}
+
+/// 结束序列的页随序列回收：独占新页全部回池，增长出来的页也一并归还，不残留占用。
+#[test]
+fn finishing_a_sequence_releases_all_of_its_pages() {
+    let mut batch = Batch::new(pool(4, 2));
+    batch.admit(sequence_with(1, &[3, 3], 3, 2)).expect("准入");
+    // 提示长度 2 占 1 页；再生成三步：长度 4 跨进第二页，长度 6 跨进第三页，末步跑满上限。
+    for (index, token) in (10..13).enumerate() {
+        let expected = if index == 2 {
+            Progress::Done
+        } else {
+            Progress::Running
+        };
+        assert_eq!(batch.emit(1, token).expect("生成"), expected);
+    }
+    assert_eq!(batch.scheduler().cache().in_use(), 3, "增长后占三页");
+
+    assert!(batch.finish(1).expect("结束"));
+    assert!(batch.is_empty());
+    assert_eq!(batch.scheduler().cache().in_use(), 0, "全部页归还");
+    assert_eq!(
+        batch.scheduler().cache().free_pages(),
+        batch.scheduler().cache().total(),
+        "归还后空闲等于池总页"
+    );
+}
+
+/// 共享前缀引用计数正确：先结束共享方不释放前缀页，后结束最后持有者才回池；不重复释放。
+#[test]
+fn shared_prefix_reference_counting_is_correct_across_finish_order() {
+    let mut batch = Batch::new(pool(4, 2));
+    batch
+        .admit(sequence_with(1, &[5, 5], 1, 2))
+        .expect("准入源序列");
+    batch
+        .admit(sequence_with(2, &[5, 5], 1, 2))
+        .expect("准入共享序列");
+
+    let shared = batch.scheduler().pages_of(1).expect("源表").pages()[0];
+    assert_eq!(
+        batch.scheduler().cache().reference_count(shared),
+        2,
+        "前缀页被两张表引用"
+    );
+
+    // 源序列先结束：前缀页计数降为 1，仍存活、不回池、不清零。
+    assert!(batch.finish(1).expect("源序列先结束"));
+    assert_eq!(batch.scheduler().cache().reference_count(shared), 1);
+    assert!(batch.scheduler().cache().is_live(shared));
+    assert_eq!(batch.scheduler().cache().in_use(), 1, "共享页只占一个池页");
+
+    // 最后持有者结束：计数归 0，页回池；重复 finish 是恒等、不会二次归还。
+    assert!(batch.finish(2).expect("最后持有者结束"));
+    assert_eq!(batch.scheduler().cache().reference_count(shared), 0);
+    assert_eq!(batch.scheduler().cache().in_use(), 0);
+    assert!(
+        !batch.finish(2).expect("重复结束恒等"),
+        "重复结束不再次归还"
+    );
+}
+
+/// 三方可共享同一前缀：计数随每张表 +1，逐张结束逐张 -1，最后一张结束才回池。
+#[test]
+fn shared_prefix_refcount_supports_three_holders() {
+    let mut batch = Batch::new(pool(6, 2));
+    batch
+        .admit(sequence_with(1, &[4, 4], 1, 2))
+        .expect("第一条");
+    batch
+        .admit(sequence_with(2, &[4, 4], 1, 2))
+        .expect("第二条");
+    batch
+        .admit(sequence_with(3, &[4, 4], 1, 2))
+        .expect("第三条");
+
+    let shared = batch.scheduler().pages_of(1).expect("源表").pages()[0];
+    assert_eq!(batch.scheduler().cache().reference_count(shared), 3);
+    assert_eq!(batch.scheduler().cache().in_use(), 1, "三方共享一个池页");
+
+    assert!(batch.finish(2).expect("第二条先结束"));
+    assert_eq!(batch.scheduler().cache().reference_count(shared), 2);
+    assert!(batch.scheduler().cache().is_live(shared));
+    assert!(batch.finish(1).expect("第一条结束"));
+    assert_eq!(batch.scheduler().cache().reference_count(shared), 1);
+    assert!(batch.finish(3).expect("第三条结束"));
+    assert_eq!(batch.scheduler().cache().reference_count(shared), 0);
+    assert_eq!(batch.scheduler().cache().in_use(), 0);
+}

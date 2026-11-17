@@ -1,7 +1,7 @@
-//! 优化器矩状态与累积窗口梯度的快照类型、编码与解码。
+//! 优化器矩状态、累积窗口梯度与权重绑定表的快照类型、编码与解码。
 //!
-//! 两份表平行入快照：矩状态归优化器自持，累积梯度归训练会话；快照只搬运 f32 表与计数，
-//! 不在这一层解释算术。
+//! 各份表平行入快照：矩状态归优化器自持，累积梯度与绑定关系归训练会话；快照只搬运 f32 表、
+//! 计数与下标对，不在这一层解释算术。
 
 use diagnostic::{Code, Error, Result};
 use wire::sink::Sink;
@@ -110,6 +110,31 @@ impl GradAccum {
     }
 }
 
+/// 权重绑定表：`(源槽下标, 回填槽下标)` 对，与会话登记的 `register_tie` 同口径。
+///
+/// 下标按恢复后重新登记的参数槽顺序对齐；快照只搬运绑定关系，不在这一层解释共享权重算术。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Ties {
+    pairs: Vec<(usize, usize)>,
+}
+
+impl Ties {
+    /// 空绑定表：没有源/回填槽共享权重。
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// 由绑定对构造；每对为 `(源槽下标, 回填槽下标)`。
+    pub fn new(pairs: Vec<(usize, usize)>) -> Self {
+        Self { pairs }
+    }
+
+    /// 已登记的绑定对。
+    pub fn pairs(&self) -> &[(usize, usize)] {
+        &self.pairs
+    }
+}
+
 /// 矩状态段：槽位数 → 每槽长度 + 一阶/二阶矩 f32 小端 → 优化器步数。
 pub(crate) fn write_moments(sink: &mut impl Sink, moments: &Moments) {
     super::varint(sink, moments.slots.len() as u64);
@@ -163,6 +188,15 @@ fn read_moment_slot(cursor: &mut Cursor<'_>, index: usize) -> Result<SlotMoments
     SlotMoments::new(m, v).map_err(context(index))
 }
 
+/// 权重绑定段：绑定对数 → 每对源槽/回填槽下标（varint）；布局与矩状态/累积段平行。
+pub(crate) fn write_ties(sink: &mut impl Sink, ties: &Ties) {
+    super::varint(sink, ties.pairs().len() as u64);
+    for &(source, tied) in ties.pairs() {
+        super::varint(sink, source as u64);
+        super::varint(sink, tied as u64);
+    }
+}
+
 /// 累积梯度段解码：长度先对账，再逐槽重建 f32 表。
 pub(crate) fn read_grad_accum(cursor: &mut Cursor<'_>) -> Result<GradAccum> {
     let count = cursor.count("累积窗口批数")?;
@@ -185,6 +219,19 @@ fn read_accum_slots(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Vec<f32
 fn read_accum_slot(cursor: &mut Cursor<'_>, index: usize) -> Result<Vec<f32>> {
     let len = cursor.count("累积梯度长度")?;
     read_f32_table(cursor, len).map_err(context(index))
+}
+
+/// 权重绑定段解码：对数先与剩余字节对账，再逐对重建下标表。
+pub(crate) fn read_ties(cursor: &mut Cursor<'_>) -> Result<Ties> {
+    let count = cursor.count("权重绑定对数")?;
+    bound_slots(count, cursor.remaining(), "权重绑定")?;
+    let mut pairs = Vec::with_capacity(count.min(super::PREALLOC));
+    for _ in 0..count {
+        let source = cursor.count("绑定源槽")?;
+        let tied = cursor.count("绑定回填槽")?;
+        pairs.push((source, tied));
+    }
+    Ok(Ties::new(pairs))
 }
 
 /// 槽位数与剩余字节对账：伪造的计数撑不大分配。

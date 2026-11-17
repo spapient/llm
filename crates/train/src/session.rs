@@ -19,6 +19,7 @@ use tensor::{DType, Shape};
 use crate::optimizer::Optimizer;
 use crate::pool::Buffers;
 use crate::schedule::Schedule as LrSchedule;
+use crate::snapshot::{GradAccum, Ties};
 use crate::{Data, Kernel, Slot};
 
 /// 本模块诊断站点。
@@ -332,6 +333,32 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
     /// 当前窗口内已汇总的 micro-batch 数（未满 [`TrainConfig::accumulation`] 不步进）。
     pub fn accumulated_microbatches(&self) -> u32 {
         self.accum
+    }
+
+    /// 当前累积窗口汇总：逐参数槽的汇总梯度（未装入的槽取空表）与已汇总 micro-batch 数，
+    /// 供快照导出；槽位顺序与 [`Self::slots`] 对齐，口径与 [`GradAccum`] 一致。
+    pub fn accum_snapshot(&self) -> GradAccum {
+        let slots = self
+            .slots
+            .iter()
+            .map(|slot| {
+                self.buffers
+                    .gradient(slot.var())
+                    .map(|grads| grads.to_vec())
+                    .unwrap_or_default()
+            })
+            .collect();
+        GradAccum::new(slots, self.accum)
+    }
+
+    /// 已登记的权重绑定对：`(源槽下标, 回填槽下标)`，供快照导出与回填对账。
+    pub fn ties(&self) -> &[(usize, usize)] {
+        &self.ties
+    }
+
+    /// 当前登记的权重绑定表快照；下标按 [`Self::slots`] 顺序对齐。
+    pub fn ties_snapshot(&self) -> Ties {
+        Ties::new(self.ties.clone())
     }
 
     /// 清空全部梯度缓冲；参数值与激活不动。

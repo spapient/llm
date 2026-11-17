@@ -1,11 +1,13 @@
 use super::*;
 
+use crate::snapshot::{Facts, Moments, Snapshot};
 use crate::{Data, Reference, Sgd};
 use autograd::{Sizes, Store, Tape, Var};
 use data::{Chunks, Dataset};
 use diagnostic::{Code, Result};
 use nn::ParamRole;
 use tensor::{DType, Shape};
+use weights::Header;
 
 /// 夹具向量宽度。
 const N: usize = 4;
@@ -21,6 +23,25 @@ fn fixture() -> (Tape, Sizes, Var, Var, Var) {
     sizes.set(x, Shape::new([N]), DType::F32);
     sizes.set(loss, Shape::new([N]), DType::F32);
     (tape, sizes, p, x, loss)
+}
+
+/// 两层共享权重夹具：`h = add(x, w_source)`，`t = add(h, w_tied)`，`loss = add(t, u)`；
+/// `w_source` / `w_tied` 待注册权重绑定，`u` 是未绑定参数，三层都可达 loss。
+#[allow(clippy::type_complexity)]
+fn two_layer_fixture() -> (Tape, Sizes, Var, Var, Var, Var, Var, Var, Var) {
+    let mut tape = Tape::new();
+    let w_source = tape.parameter();
+    let w_tied = tape.parameter();
+    let u = tape.parameter();
+    let x = tape.leaf();
+    let h = tape.record("add_f32", &[x, w_source]).expect("第一层");
+    let t = tape.record("add_f32", &[h, w_tied]).expect("第二层");
+    let loss = tape.record("add_f32", &[t, u]).expect("loss");
+    let mut sizes = Sizes::new(tape.vars());
+    for var in [w_source, w_tied, u, x, h, t, loss] {
+        sizes.set(var, Shape::new([N]), DType::F32);
+    }
+    (tape, sizes, w_source, w_tied, u, x, h, t, loss)
 }
 
 /// 夹具语料按批跑通指定步数：前向 → 计划分类终点 → 梯度缓冲 → 优化器步，loss 逐步入账。
@@ -157,6 +178,99 @@ fn tied_parameter_copies_source_on_backfill() -> Result<()> {
 
     let error = session.register_tie(loss, p).expect_err("loss 不是参数槽");
     assert_eq!(error.code(), Code::Invalid);
+    Ok(())
+}
+
+/// 两层真实装配夹具：源/回填槽经若干 micro-batch 各自更新分化后，回填把 tied 整块复制成
+/// source；未绑定参数不被改动。
+#[test]
+fn tied_parameter_copies_source_across_a_two_layer_fixture() -> Result<()> {
+    let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
+    let config = TrainConfig::new(1e-2, 0, 2, None, 1)?;
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(w_source, ParamRole::Trainable, vec![1.0; N])?;
+    session.register_parameter(w_tied, ParamRole::Trainable, vec![0.0; N])?;
+    session.register_parameter(u, ParamRole::Trainable, vec![2.0; N])?;
+    session.register_tie(w_source, w_tied)?;
+
+    // 两个 micro-batch 各走一步：源/回填槽按自身梯度分化，u 梯度为 0 保持不动。
+    for (source_grad, tied_grad) in [(1.0_f32, 2.0_f32), (0.5, 2.0)] {
+        session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+        session.buffers().compute("add_f32", &[x, w_source], h)?;
+        session.buffers().compute("add_f32", &[h, w_tied], t)?;
+        session.buffers().compute("add_f32", &[t, u], loss)?;
+        session.plan(loss)?;
+        session.accumulate_gradient(w_source, &[source_grad; N])?;
+        session.accumulate_gradient(w_tied, &[tied_grad; N])?;
+        session.accumulate_gradient(u, &[0.0; N])?;
+        session.optimize()?;
+    }
+
+    let source_after_step = session.slots()[0].params().to_vec();
+    let u_before = session.slots()[2].params().to_vec();
+    session.backfill_ties()?;
+    assert_eq!(
+        session.slots()[1].params(),
+        source_after_step,
+        "回填槽逐元素取源槽值"
+    );
+    assert_eq!(
+        session.slots()[2].params(),
+        u_before,
+        "未绑定参数不被回填改动"
+    );
+    Ok(())
+}
+
+/// 会话窗口状态入快照：多次累积后的梯度总和、micro-batch 计数与绑定表写进快照再读回，
+/// 逐字段相等；空累积窗口路径由快照侧用例覆盖。
+#[test]
+fn session_window_state_round_trips_through_snapshot() -> Result<()> {
+    let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
+    let config = TrainConfig::new(1e-2, 0, 4, None, 4)?;
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(w_source, ParamRole::Trainable, vec![1.0; N])?;
+    session.register_parameter(w_tied, ParamRole::Trainable, vec![0.0; N])?;
+    session.register_parameter(u, ParamRole::Trainable, vec![2.0; N])?;
+    session.register_tie(w_source, w_tied)?;
+
+    // 三个 micro-batch 累积进同一窗口（窗口 4，未满不步进）。
+    let source_batches = [1.0_f32, 0.5, 0.25];
+    let tied_batches = [2.0_f32, 1.0, 0.5];
+    for batch in 0..3 {
+        session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+        session.buffers().compute("add_f32", &[x, w_source], h)?;
+        session.buffers().compute("add_f32", &[h, w_tied], t)?;
+        session.buffers().compute("add_f32", &[t, u], loss)?;
+        session.plan(loss)?;
+        session.accumulate_gradient(w_source, &[source_batches[batch]; N])?;
+        session.accumulate_gradient(w_tied, &[tied_batches[batch]; N])?;
+        session.accumulate_gradient(u, &[0.0; N])?;
+        session.optimize()?;
+    }
+    assert_eq!(session.accumulated_microbatches(), 3);
+
+    let facts = Facts::new(session.step(), 1, 2, 1, N)?;
+    let snapshot = Snapshot::new_with_all(
+        facts,
+        Header::new(Vec::new(), 0)?,
+        Moments::empty(),
+        session.accum_snapshot(),
+        session.ties_snapshot(),
+    );
+    let restored = Snapshot::decode(&snapshot.encode()?)?;
+
+    assert_eq!(restored.accum().count(), 3, "窗口批数往返一致");
+    assert_eq!(restored.ties().pairs(), &[(0, 1)], "绑定关系往返一致");
+    assert_eq!(restored.accum(), snapshot.accum(), "累积梯度逐槽往返一致");
+    assert_eq!(restored.ties(), snapshot.ties(), "绑定表往返一致");
+
+    // 显式对拍三批总和：源槽 1.75/元素，回填槽 3.5/元素，未绑定槽零梯度。
+    let slots = restored.accum().slots();
+    assert_eq!(slots.len(), 3);
+    assert!(slots[0].iter().all(|g| (g - 1.75).abs() < 1e-6));
+    assert!(slots[1].iter().all(|g| (g - 3.5).abs() < 1e-6));
+    assert!(slots[2].iter().all(|g| *g == 0.0));
     Ok(())
 }
 

@@ -93,7 +93,7 @@ mod tests {
     /// 提交与同步在占位适配上都是 `Unsupported`，不排队、不碰句柄。
     #[test]
     fn submit_and_sync_are_unsupported() {
-        let mut backend = UnsupportedBackend::new(Device::new("cuda", "sm_90"));
+        let mut backend = UnsupportedBackend::new(Device::new("cuda", "cuda-placeholder"));
         let graph = Graph::new();
         let stream = Stream::new(0);
 
@@ -144,9 +144,9 @@ mod tests {
         assert_eq!(metal.device().vendor(), "metal");
         assert_eq!(metal.device().arch(), "aarch64");
 
-        let cuda = CudaBackend::new("sm_90");
+        let cuda = CudaBackend::new("cuda-placeholder");
         assert_eq!(cuda.device().vendor(), "cuda");
-        assert_eq!(cuda.device().arch(), "sm_90");
+        assert_eq!(cuda.device().arch(), "cuda-placeholder");
     }
 
     /// 候选挂载算子必须都在全局算子注册表内，且不重复；名字只是能力登记，不代表已挂载内核。
@@ -154,7 +154,7 @@ mod tests {
     fn mounted_candidates_belong_to_the_registry() {
         let backends = [
             MetalBackend::new("aarch64").mounted(),
-            CudaBackend::new("sm_90").mounted(),
+            CudaBackend::new("cuda-placeholder").mounted(),
         ];
         for mounted in backends {
             let mut seen = std::collections::BTreeSet::new();
@@ -170,6 +170,6 @@ mod tests {
     fn placeholders_share_the_same_unsupported_contract() {
         assert_all_entries_unsupported(&mut UnsupportedBackend::new(Device::new("cpu", "generic")));
         assert_all_entries_unsupported(&mut MetalBackend::new("aarch64"));
-        assert_all_entries_unsupported(&mut CudaBackend::new("sm_90"));
+        assert_all_entries_unsupported(&mut CudaBackend::new("cuda-placeholder"));
     }
 }

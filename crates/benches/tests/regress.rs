@@ -249,9 +249,174 @@ const BASELINES: &[Baseline] = &[
     },
 ];
 
+/// 装载基准夹具镜像：条目数 / 每条元素数，与 `criterion/weights_load.rs` 同源。
+///
+/// 台账复制基准常量而不是反过来读夹具：基准二进制不被测试目标依赖，分组 / 用例名与形状
+/// 同样逐字镜像（见 [`SCENARIOS`]）。
+const LOAD_ENTRIES: usize = 8;
+const LOAD_ELEMS: usize = 256;
+/// 每条 F32 张量字节数（4 字节 / 元素）。
+const LOAD_BYTES_FIRST: u64 = (LOAD_ELEMS * 4) as u64;
+/// 数据段总字节数（全量装载）。
+const LOAD_BYTES_ALL: u64 = LOAD_ENTRIES as u64 * LOAD_BYTES_FIRST;
+
+/// 整模型一步基准夹具镜像：隐藏宽 / 输出宽，与 `criterion/model_decode.rs` 同源。
+const MODEL_DIM: usize = 8;
+const MODEL_OUT: usize = 8;
+
+/// 一条装载基准场景：IO 路径 × 首条 / 全量 × 冷开 / 热复用。
+///
+/// 不进基线表：跨机绝对值不可比，记录只承载本机一次测量与身份（见模块文档「三条不可比」）。
+struct LoadScenario {
+    /// criterion 分组名。
+    group: &'static str,
+    /// criterion 用例名。
+    benchmark: &'static str,
+    /// 记录名：`<分组>/<用例>`。
+    scenario: &'static str,
+    /// IO 路径后端标识：文件流 / 映射。
+    backend: &'static str,
+    /// 形状（每条 F32 张量宽度）。
+    shape: &'static [usize],
+    /// 批大小：首条 1，全量为条目数。
+    batch: u32,
+    /// 元素精度。
+    dtype: &'static str,
+    /// 每迭代装载字节数，与基准 `Throughput::Bytes` 同源。
+    bytes: u64,
+}
+
+/// 装载基准台账；分组 / 用例名与 `criterion/weights_load.rs` 逐字一致。
+///
+/// mmap 条目仅在 Unix 目标编译，与基准里的 `#[cfg(unix)]` 门控同源。
+const LOAD_SCENARIOS: &[LoadScenario] = &[
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "read_all_reopen",
+        scenario: "weights/load/read_all_reopen",
+        backend: "file-stream",
+        shape: &[LOAD_ELEMS],
+        batch: LOAD_ENTRIES as u32,
+        dtype: "f32",
+        bytes: LOAD_BYTES_ALL,
+    },
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "read_first_reopen",
+        scenario: "weights/load/read_first_reopen",
+        backend: "file-stream",
+        shape: &[LOAD_ELEMS],
+        batch: 1,
+        dtype: "f32",
+        bytes: LOAD_BYTES_FIRST,
+    },
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "read_all_open",
+        scenario: "weights/load/read_all_open",
+        backend: "file-stream",
+        shape: &[LOAD_ELEMS],
+        batch: LOAD_ENTRIES as u32,
+        dtype: "f32",
+        bytes: LOAD_BYTES_ALL,
+    },
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "read_first_open",
+        scenario: "weights/load/read_first_open",
+        backend: "file-stream",
+        shape: &[LOAD_ELEMS],
+        batch: 1,
+        dtype: "f32",
+        bytes: LOAD_BYTES_FIRST,
+    },
+    #[cfg(unix)]
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "mmap_all_reopen",
+        scenario: "weights/load/mmap_all_reopen",
+        backend: "mmap",
+        shape: &[LOAD_ELEMS],
+        batch: LOAD_ENTRIES as u32,
+        dtype: "f32",
+        bytes: LOAD_BYTES_ALL,
+    },
+    #[cfg(unix)]
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "mmap_first_reopen",
+        scenario: "weights/load/mmap_first_reopen",
+        backend: "mmap",
+        shape: &[LOAD_ELEMS],
+        batch: 1,
+        dtype: "f32",
+        bytes: LOAD_BYTES_FIRST,
+    },
+    #[cfg(unix)]
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "mmap_all_open",
+        scenario: "weights/load/mmap_all_open",
+        backend: "mmap",
+        shape: &[LOAD_ELEMS],
+        batch: LOAD_ENTRIES as u32,
+        dtype: "f32",
+        bytes: LOAD_BYTES_ALL,
+    },
+    #[cfg(unix)]
+    LoadScenario {
+        group: "weights/load",
+        benchmark: "mmap_first_open",
+        scenario: "weights/load/mmap_first_open",
+        backend: "mmap",
+        shape: &[LOAD_ELEMS],
+        batch: 1,
+        dtype: "f32",
+        bytes: LOAD_BYTES_FIRST,
+    },
+];
+
+/// 一条整模型一步基准场景：单序列 / 同批四条。
+///
+/// 不进基线表：整模型一步的 TPOT 与吞吐只承载本机一次测量，回退判定留给后续刀。
+struct DecodeScenario {
+    /// criterion 分组名。
+    group: &'static str,
+    /// criterion 用例名。
+    benchmark: &'static str,
+    /// 记录名：`<分组>/<用例>`。
+    scenario: &'static str,
+    /// 批大小：同批序列数。
+    batch: u32,
+    /// 每迭代产出 token 数，与基准 `Throughput::Elements` 同源。
+    tokens: u64,
+    /// 准入后页池 `in_use()` 可观测账目：每条提示预留一页（提示长 1、页宽 4）。
+    pages: usize,
+}
+
+/// 整模型一步基准台账；分组 / 用例名与 `criterion/model_decode.rs` 逐字一致。
+const DECODE_SCENARIOS: &[DecodeScenario] = &[
+    DecodeScenario {
+        group: "model_decode",
+        benchmark: "single_step",
+        scenario: "model_decode/single_step",
+        batch: 1,
+        tokens: 1,
+        pages: 1,
+    },
+    DecodeScenario {
+        group: "model_decode",
+        benchmark: "batch4_step",
+        scenario: "model_decode/batch4_step",
+        batch: 4,
+        tokens: 4,
+        pages: 4,
+    },
+];
+
 /// 一台机器的档案：标识、机型、系统、工具链。
 ///
-/// 机型写成数据而不是注释，是因为它必须随报告归档：上一轮的注释把 M5 Pro 写成了 M4 Pro，
+/// 机型写成数据而不是注释，是因为它必须随报告归档：上一轮的注释把 M5 Pro 写成 M4 Pro，
 /// 而 `os-arch` 完全看不出这个差别。没有档案的主机不判——跨机数字不可比。档案经构造器填进
 /// [`Harness`]，本结构不再直接进 JSON 渲染。
 struct HostProfile {
@@ -525,6 +690,63 @@ fn ceiling_record(host: &HostProfile, ceiling: &Ceiling, observed: f64) -> Bench
     )
     .expect("上界记录合法：身份 / 几何 / 后端通过构造自检");
     record.with_observed(observed).expect("实测有限")
+}
+
+/// 构造一条装载基准的统一记录（算子级）。
+///
+/// 装载是算子级 IO 路径，记 [`EntryKind::Op`]；整机峰值带宽 / 算力未在本机测得，上界留
+/// [`None`]，不拿标称值顶替。字节吞吐是 Report 侧由字节账目与实测 ns 派生的分析件，
+/// 不塞进记录。
+fn load_record(host: &HostProfile, scenario: &LoadScenario, observed: f64) -> BenchRecord {
+    let geometry = Geometry::new(scenario.shape.to_vec(), scenario.batch, scenario.dtype)
+        .expect("装载几何合法：形状 / 批次 / 精度通过构造自检");
+    let record = BenchRecord::new(
+        EntryKind::Op,
+        scenario.scenario,
+        scenario.backend,
+        geometry,
+        harness_of(host, scenario.backend),
+        RecordRoofline::default(),
+    )
+    .expect("装载记录合法：身份 / 几何 / 后端通过构造自检");
+    record.with_observed(observed).expect("实测有限")
+}
+
+/// 构造一条整模型一步基准的统一记录（模型级）。
+///
+/// 整模型一步记 [`EntryKind::Model`]；整机峰值 BW / GFLOPS 未测得，上界留 [`None`]。
+/// tokens/s 与页数是 Report 侧账目 / 派生件，不塞进记录。
+fn model_record(host: &HostProfile, scenario: &DecodeScenario, observed: f64) -> BenchRecord {
+    let geometry = Geometry::new(vec![MODEL_DIM, MODEL_OUT], scenario.batch, "f32")
+        .expect("模型几何合法：形状 / 批次 / 精度通过构造自检");
+    let record = BenchRecord::new(
+        EntryKind::Model,
+        scenario.scenario,
+        "cpu-reference",
+        geometry,
+        harness_of(host, "cpu-reference"),
+        RecordRoofline::default(),
+    )
+    .expect("模型记录合法：身份 / 几何 / 后端通过构造自检");
+    record.with_observed(observed).expect("实测有限")
+}
+
+/// 字节吞吐：bytes/iter ÷ ns/iter，十进制 GB/s（1 GB = 1e9 B）。
+fn gb_per_s(bytes: u64, ns: f64) -> f64 {
+    if ns > 0.0 {
+        bytes as f64 / ns * NS_PER_SECOND / BYTES_PER_GB
+    } else {
+        0.0
+    }
+}
+
+/// token 吞吐：tokens/iter ÷ ns/iter，tokens/s。
+fn tokens_per_s(tokens: u64, ns: f64) -> f64 {
+    if ns > 0.0 {
+        tokens as f64 / ns * NS_PER_SECOND
+    } else {
+        0.0
+    }
 }
 
 /// 一条基准的 roofline 口径：下界流量、所落的存储档位、该档实测上界、达成率。
@@ -824,6 +1046,125 @@ fn judge_ceiling(manifest: &Path, host: &HostProfile, ceiling: &Ceiling) -> Opti
     );
 }
 
+/// 一份装载归档：统一记录 + 字节账目；无基线、无判定结论（跨机绝对值不可比）。
+struct LoadReport<'a> {
+    scenario: &'a LoadScenario,
+    record: BenchRecord,
+}
+
+impl LoadReport<'_> {
+    /// 渲染成整数数值的 JSON（整数约定见 [`Report`]）。
+    fn render(&self) -> String {
+        let scenario = self.scenario;
+        let record = &self.record;
+        let harness = record.harness();
+        let observed = record.observed().expect("记录已回填实测");
+        format!(
+            "{{\n  \"surface\": \"{}\",\n  \"benchmark\": \"{}\",\n  \
+             \"scenario\": \"{}\",\n  \"kind\": \"{}\",\n  \"backend\": \"{}\",\n  \
+             \"shape\": {},\n  \"batch\": {},\n  \"dtype\": \"{}\",\n  \"bytes_per_iter\": {},\n  \
+             \"metric\": \"ns_per_iter\",\n  \"observed_ns\": {},\n  \"gb_per_s\": {},\n  \
+             \"host\": \"{}\",\n  \"cpu\": \"{}\",\n  \"os\": \"{}\",\n  \"toolchain\": \"{}\",\n  \"arch\": \"{}\",\n  \
+             \"profile\": \"bench\"\n}}\n",
+            scenario.group,
+            scenario.benchmark,
+            record.name(),
+            record.kind().as_str(),
+            record.backend(),
+            shape_json(record.geometry().shape()),
+            record.geometry().batch(),
+            record.geometry().dtype(),
+            scenario.bytes,
+            observed.round() as i64,
+            gb_per_s(scenario.bytes, observed).round() as i64,
+            harness.host(),
+            harness.cpu(),
+            harness.os(),
+            harness.toolchain(),
+            harness.arch(),
+        )
+    }
+}
+
+/// 一份整模型一步归档：统一记录 + token 与页数账目；无基线、无判定结论。
+struct DecodeReport<'a> {
+    scenario: &'a DecodeScenario,
+    record: BenchRecord,
+}
+
+impl DecodeReport<'_> {
+    /// 渲染成整数数值的 JSON（整数约定见 [`Report`]）。
+    fn render(&self) -> String {
+        let scenario = self.scenario;
+        let record = &self.record;
+        let harness = record.harness();
+        let observed = record.observed().expect("记录已回填实测");
+        format!(
+            "{{\n  \"surface\": \"{}\",\n  \"benchmark\": \"{}\",\n  \
+             \"scenario\": \"{}\",\n  \"kind\": \"{}\",\n  \"backend\": \"{}\",\n  \
+             \"shape\": {},\n  \"batch\": {},\n  \"dtype\": \"{}\",\n  \"tokens_per_iter\": {},\n  \"pages_in_use\": {},\n  \
+             \"metric\": \"ns_per_iter\",\n  \"observed_ns\": {},\n  \"tokens_per_s\": {},\n  \
+             \"host\": \"{}\",\n  \"cpu\": \"{}\",\n  \"os\": \"{}\",\n  \"toolchain\": \"{}\",\n  \"arch\": \"{}\",\n  \
+             \"profile\": \"bench\"\n}}\n",
+            scenario.group,
+            scenario.benchmark,
+            record.name(),
+            record.kind().as_str(),
+            record.backend(),
+            shape_json(record.geometry().shape()),
+            record.geometry().batch(),
+            record.geometry().dtype(),
+            scenario.tokens,
+            scenario.pages,
+            observed.round() as i64,
+            tokens_per_s(scenario.tokens, observed).round() as i64,
+            harness.host(),
+            harness.cpu(),
+            harness.os(),
+            harness.toolchain(),
+            harness.arch(),
+        )
+    }
+}
+
+/// 归档一条装载基准：读本机实测，建记录，写归档 JSON；没有测量则跳过。
+fn archive_load(manifest: &Path, host: &HostProfile, scenario: &LoadScenario) -> Option<()> {
+    let observed = observed_ns(&estimates(manifest, scenario.group, scenario.benchmark))?;
+    let record = load_record(host, scenario, observed);
+    let dir = manifest
+        .join("../..")
+        .join("target/bench-report")
+        .join(host.host);
+    std::fs::create_dir_all(&dir).expect("归档目录可建");
+    let rendered = LoadReport { scenario, record }.render();
+    weights::json::parse(&rendered).expect("归档必须是合法 JSON");
+    std::fs::write(
+        dir.join(format!("weights_load_{}.json", scenario.benchmark)),
+        rendered,
+    )
+    .expect("归档可写");
+    Some(())
+}
+
+/// 归档一条整模型一步基准：读本机实测，建记录，写归档 JSON；没有测量则跳过。
+fn archive_model(manifest: &Path, host: &HostProfile, scenario: &DecodeScenario) -> Option<()> {
+    let observed = observed_ns(&estimates(manifest, scenario.group, scenario.benchmark))?;
+    let record = model_record(host, scenario, observed);
+    let dir = manifest
+        .join("../..")
+        .join("target/bench-report")
+        .join(host.host);
+    std::fs::create_dir_all(&dir).expect("归档目录可建");
+    let rendered = DecodeReport { scenario, record }.render();
+    weights::json::parse(&rendered).expect("归档必须是合法 JSON");
+    std::fs::write(
+        dir.join(format!("model_decode_{}.json", scenario.benchmark)),
+        rendered,
+    )
+    .expect("归档可写");
+    Some(())
+}
+
 /// 本机档案；有基线却没有档案时直接失败，而不是拿一个没有机型的 host 字符串判。
 fn local_profile(host: &str) -> Option<&'static HostProfile> {
     let profile = profile_for(host);
@@ -993,6 +1334,175 @@ fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
                 .and_then(|value| value.integer().ok()),
             Some((report.roofline.read + report.roofline.write) as i64),
             "工作集是档位的判据：写错档位，达成率就没有意义"
+        );
+    }
+}
+
+#[test]
+fn registered_load_records_archive_when_measured() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let host = host();
+    let Some(profile) = local_profile(&host) else {
+        testkit::skip(format!(
+            "benches: 主机 `{host}` 没有建档，装载记录无从归档（跨机绝对值不可比）"
+        ));
+        return;
+    };
+
+    for scenario in LOAD_SCENARIOS {
+        if archive_load(manifest, profile, scenario).is_none() {
+            return;
+        }
+    }
+}
+
+#[test]
+fn load_records_carry_every_field_a_reader_needs_to_judge_it() {
+    let host = &HOSTS[0];
+    let expected = if cfg!(unix) { 8 } else { 4 };
+    assert_eq!(
+        LOAD_SCENARIOS.len(),
+        expected,
+        "装载台账条目数与基准用例逐条对齐：File 四条 + mmap 四条（仅 Unix）"
+    );
+    for scenario in LOAD_SCENARIOS {
+        let record = load_record(host, scenario, 1_500.0);
+        // 记录身份 / 几何 / 后端必须与场景描述符逐字段对上，避免归档元数据串台。
+        assert_eq!(record.kind(), EntryKind::Op);
+        assert_eq!(record.name(), scenario.scenario);
+        assert_eq!(record.backend(), scenario.backend);
+        assert_eq!(record.geometry().shape(), scenario.shape);
+        assert_eq!(record.geometry().batch(), scenario.batch);
+        assert_eq!(record.geometry().dtype(), scenario.dtype);
+        assert_eq!(record.harness().host(), host.host);
+        assert_eq!(record.harness().cpu(), host.cpu);
+        assert_eq!(record.harness().os(), host.os);
+        assert_eq!(record.harness().toolchain(), host.toolchain);
+        assert_eq!(record.harness().driver(), scenario.backend);
+        // 整机峰值未测得：留 None，不预填标称值。
+        assert!(record.roofline().peak_bw_gb_s().is_none());
+        assert!(record.roofline().peak_gflops().is_none());
+        assert_eq!(record.observed(), Some(1_500.0));
+
+        let report = LoadReport { scenario, record };
+        let rendered = report.render();
+        for field in [
+            "\"surface\"",
+            "\"shape\"",
+            "\"dtype\"",
+            "\"backend\"",
+            "\"metric\"",
+            "\"bytes_per_iter\"",
+            "\"observed_ns\"",
+            "\"gb_per_s\"",
+            "\"host\"",
+            "\"cpu\"",
+            "\"os\"",
+            "\"toolchain\"",
+            "\"arch\"",
+        ] {
+            assert!(
+                rendered.contains(field),
+                "装载报告缺少 {field}：读者无法自己判断结论"
+            );
+        }
+        let parsed = weights::json::parse(&rendered).expect("合法 JSON");
+        assert_eq!(
+            parsed.get("batch").and_then(|value| value.integer().ok()),
+            Some(scenario.batch as i64)
+        );
+        assert_eq!(
+            parsed
+                .get("bytes_per_iter")
+                .and_then(|value| value.integer().ok()),
+            Some(scenario.bytes as i64),
+            "字节账目与基准 Throughput::Bytes 同源"
+        );
+    }
+}
+
+#[test]
+fn registered_model_records_archive_when_measured() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let host = host();
+    let Some(profile) = local_profile(&host) else {
+        testkit::skip(format!(
+            "benches: 主机 `{host}` 没有建档，模型记录无从归档（跨机绝对值不可比）"
+        ));
+        return;
+    };
+
+    for scenario in DECODE_SCENARIOS {
+        if archive_model(manifest, profile, scenario).is_none() {
+            return;
+        }
+    }
+}
+
+#[test]
+fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
+    let host = &HOSTS[0];
+    assert_eq!(DECODE_SCENARIOS.len(), 2, "单序列与同批四条各一条");
+    for scenario in DECODE_SCENARIOS {
+        let record = model_record(host, scenario, 1_500_000.0);
+        // 记录身份 / 几何 / 后端必须与场景描述符逐字段对上，避免归档元数据串台。
+        assert_eq!(record.kind(), EntryKind::Model);
+        assert_eq!(record.name(), scenario.scenario);
+        assert_eq!(record.backend(), "cpu-reference");
+        assert_eq!(record.geometry().shape(), &[MODEL_DIM, MODEL_OUT]);
+        assert_eq!(record.geometry().batch(), scenario.batch);
+        assert_eq!(record.geometry().dtype(), "f32");
+        assert_eq!(record.harness().host(), host.host);
+        assert_eq!(record.harness().cpu(), host.cpu);
+        assert_eq!(record.harness().os(), host.os);
+        assert_eq!(record.harness().toolchain(), host.toolchain);
+        assert_eq!(record.harness().driver(), "cpu-reference");
+        // 整机峰值 BW / GFLOPS 未测得：留 None，不预填标称值。
+        assert!(record.roofline().peak_bw_gb_s().is_none());
+        assert!(record.roofline().peak_gflops().is_none());
+        assert_eq!(record.observed(), Some(1_500_000.0));
+
+        let report = DecodeReport { scenario, record };
+        let rendered = report.render();
+        for field in [
+            "\"surface\"",
+            "\"shape\"",
+            "\"dtype\"",
+            "\"backend\"",
+            "\"metric\"",
+            "\"tokens_per_iter\"",
+            "\"pages_in_use\"",
+            "\"observed_ns\"",
+            "\"tokens_per_s\"",
+            "\"host\"",
+            "\"cpu\"",
+            "\"os\"",
+            "\"toolchain\"",
+            "\"arch\"",
+        ] {
+            assert!(
+                rendered.contains(field),
+                "模型报告缺少 {field}：读者无法自己判断结论"
+            );
+        }
+        let parsed = weights::json::parse(&rendered).expect("合法 JSON");
+        assert_eq!(
+            parsed.get("batch").and_then(|value| value.integer().ok()),
+            Some(scenario.batch as i64),
+            "批大小是口径的一部分：1 行 = decode 步，与 prefill 的多行批差三个数量级"
+        );
+        assert_eq!(
+            parsed
+                .get("tokens_per_iter")
+                .and_then(|value| value.integer().ok()),
+            Some(scenario.tokens as i64)
+        );
+        assert_eq!(
+            parsed
+                .get("pages_in_use")
+                .and_then(|value| value.integer().ok()),
+            Some(scenario.pages as i64),
+            "页数是页池 in_use() 的可观测账目，不虚构峰值字节"
         );
     }
 }

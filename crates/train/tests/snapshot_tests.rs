@@ -152,6 +152,69 @@ fn accumulated_gradients_round_trip_bit_for_bit() {
     }
 }
 
+/// 窗口内多次 micro-batch 累加后的梯度总和、批数与绑定表一起往返：逐位对梯度、逐对对绑定。
+#[test]
+fn accumulated_window_sums_count_and_ties_round_trip_bit_for_bit() {
+    // 三批逐批累加：源槽 1.0 + 0.5 + 0.25 = 1.75；回填槽 2.0 + 1.0 + 0.5 = 3.5。
+    let accum = GradAccum::new(vec![vec![1.75, -0.75], vec![3.5]], 3);
+    let ties = Ties::new(vec![(0, 1)]);
+    let snapshot = Snapshot::new_with_all(
+        facts(),
+        Header::new(Vec::new(), 0).expect("空头部"),
+        Moments::empty(),
+        accum,
+        ties,
+    );
+    let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
+
+    let got = restored.accum();
+    assert_eq!(got.count(), 3, "窗口批数必须恢复");
+    let before = snapshot.accum().slots();
+    let after = got.slots();
+    assert_eq!(before.len(), after.len(), "槽位数必须一致");
+    for (index, (want, got)) in before.iter().zip(after).enumerate() {
+        let want_bits: Vec<u32> = want.iter().map(|value| value.to_bits()).collect();
+        let got_bits: Vec<u32> = got.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(got_bits, want_bits, "第 {index} 槽累积梯度逐位一致");
+    }
+    assert_eq!(
+        restored.ties().pairs(),
+        snapshot.ties().pairs(),
+        "绑定关系逐对一致"
+    );
+}
+
+/// 绑定表逐对往返：源槽/回填槽下标在字节里按 varint 成对出现，顺序不被重排。
+#[test]
+fn tie_bindings_round_trip_pair_for_pair() {
+    let ties = Ties::new(vec![(0, 2), (1, 3)]);
+    let snapshot = Snapshot::new_with_all(
+        facts(),
+        Header::new(Vec::new(), 0).expect("空头部"),
+        Moments::empty(),
+        GradAccum::empty(),
+        ties,
+    );
+    let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
+    assert_eq!(restored.ties().pairs(), &[(0, 2), (1, 3)], "绑定对逐对一致");
+}
+
+/// 空累积窗口往返：零批、零梯度槽、零绑定对；快照整体与解码回的对象逐字段相等。
+#[test]
+fn an_empty_accumulation_window_round_trips_without_state() {
+    let snapshot = Snapshot::new_with_state(
+        facts(),
+        Header::new(Vec::new(), 0).expect("空头部"),
+        Moments::empty(),
+        GradAccum::empty(),
+    );
+    let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
+    assert_eq!(restored.accum().count(), 0, "空窗口批数为 0");
+    assert!(restored.accum().slots().is_empty(), "空窗口没有累积槽");
+    assert!(restored.ties().pairs().is_empty(), "空绑定表");
+    assert_eq!(&restored, &snapshot);
+}
+
 #[test]
 fn a_slot_with_uneven_moments_is_rejected_before_encoding() {
     let error = SlotMoments::new(vec![1.0], vec![1.0, 2.0]).expect_err("长度不符");
@@ -406,6 +469,8 @@ fn handcrafted(entries: &[(u64, u64, &str, usize, u64)]) -> Vec<u8> {
     push_varint(&mut payload, 0);
     // 累积梯度段：窗口批数 0、0 个槽。
     push_varint(&mut payload, 0);
+    push_varint(&mut payload, 0);
+    // 权重绑定段：0 对绑定。
     push_varint(&mut payload, 0);
     seal(&payload)
 }
@@ -749,14 +814,14 @@ fn a_corrupted_file_names_its_path() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 版本 3 布局的固定字节黄金向量：往返测试只能证明"编码与解码对称"，布局若被对称地改动它
+/// 版本 5 布局的固定字节黄金向量：往返测试只能证明"编码与解码对称"，布局若被对称地改动它
 /// 察觉不到；黄金向量把当前字段顺序、类型标签与压缩写法钉死。任何不是格式版本递增的布局漂移，
 /// 都会在这里逐字节失败。
 #[test]
-fn a_golden_vector_pins_the_version_four_layout() {
-    const GOLDEN: [u8; 29] = [
+fn a_golden_vector_pins_the_version_five_layout() {
+    const GOLDEN: [u8; 30] = [
         0x4C, 0x4C, 0x4D, 0x43, // `LLMC`
-        0x04, 0x00, // 版本 4（小端 u16）
+        0x05, 0x00, // 版本 5（小端 u16）
         0x01, 0x01, 0x01, 0x01, 0x01, // step=1、world=1、layers=1、rows=1、cols=1
         0x00, // data_start=0
         0x01, // 条目数 1
@@ -765,7 +830,8 @@ fn a_golden_vector_pins_the_version_four_layout() {
         0x00, // 偏移增量 0
         0x00, 0x00, // 矩状态：0 槽、步数 0
         0x00, 0x00, // 累积梯度：窗口 0 批、0 槽
-        0xFF, 0xF0, 0x7A, 0xE0, // CRC-32（小端）
+        0x00, // 权重绑定：0 对
+        0x30, 0x1E, 0xC8, 0xE8, // CRC-32（小端）
     ];
 
     let facts = Facts::new(1, 1, 1, 1, 1).expect("事实");

@@ -35,6 +35,49 @@ pub struct Batch {
     sequences: Vec<Sequence>,
 }
 
+/// 批量结果视图：批内一条序列在本轮 `step` 后的结局。
+///
+/// 只读借片，生命周期跟随 [`Batch`]：序列事实（历史、计数、状态）与本步 [`Progress`] 成对持有，
+/// 两条序列的视图互不重叠，历史不会串到别的条上。批量前向（多序列同一步）的结果按这个视图
+/// 逐条对齐；单序列旧路径仍直接从 [`Batch::sequence`] 取事实，语义不变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SequenceOutcome<'a> {
+    sequence: &'a Sequence,
+    progress: Progress,
+}
+
+impl<'a> SequenceOutcome<'a> {
+    /// 这条序列在批里的编号。
+    pub fn id(&self) -> u64 {
+        self.sequence.id()
+    }
+
+    /// 本步结局：生成了一步、已结束，还是没拿到页。
+    pub fn progress(&self) -> Progress {
+        self.progress
+    }
+
+    /// 序列本身（只读事实）：历史、计数与状态从这里取，不经过本视图另存一份。
+    pub fn sequence(&self) -> &'a Sequence {
+        self.sequence
+    }
+
+    /// 已生成 token，按生成顺序（不含提示段）；与 [`Sequence::tokens`] 同一口径。
+    pub fn tokens(&self) -> &'a [u32] {
+        self.sequence.tokens()
+    }
+
+    /// 已生成步数；与 [`Sequence::produced`] 同一口径。
+    pub fn produced(&self) -> usize {
+        self.sequence.produced()
+    }
+
+    /// 这条序列是否已结束。
+    pub fn is_done(&self) -> bool {
+        self.sequence.is_done()
+    }
+}
+
 impl Batch {
     /// 由 KV 页池构造一个空批。
     pub fn new(pager: Pager) -> Self {
@@ -42,6 +85,16 @@ impl Batch {
             scheduler: Scheduler::new(pager),
             sequences: Vec::new(),
         }
+    }
+
+    /// 一条序列在本轮 `step` 后的批量结局视图：它自己的序列事实与本步进度成对持有。
+    ///
+    /// 视图是只读借片：历史（[`Sequence::tokens`]）与进度分属两条序列，不会跨条合并；批量结果
+    /// 只负责把本轮 [`Batch::step`] 的结局按准入顺序对齐到每条序列。
+    pub fn outcome(&self, index: usize, progress: Progress) -> Option<SequenceOutcome<'_>> {
+        self.sequences
+            .get(index)
+            .map(|sequence| SequenceOutcome { sequence, progress })
     }
 
     /// 尝试准入：页够就把序列交进批里，不够就原样退回。
@@ -210,6 +263,29 @@ impl Batch {
         self.sequences
             .iter_mut()
             .find(|sequence| sequence.id() == id)
+    }
+
+    /// 批内第 `index` 条序列（只读）：位置即 [`Batch::sequences`] 的准入顺序。
+    ///
+    /// 批量视图按序号取视图：模型侧按批内几何逐条前向时，用序号对齐本轮结果，不必自己再按
+    /// id 重排。`index` 越界返回 `None`，批内顺序在同一轮 `step` 内稳定。
+    pub fn sequence_at(&self, index: usize) -> Option<&Sequence> {
+        self.sequences.get(index)
+    }
+
+    /// 本步批量结局：每条在跑序列一条进度，按准入顺序排列，与 [`Batch::sequences`] 一一对应。
+    ///
+    /// 批量结果视图不另存历史：进度只回答"这一步生成没生成"，历史仍在各自的 [`Sequence`] 里，
+    /// 两条序列的 `tokens` 不会在这个视图里串台。调用方按序号与 [`Batch::sequence_at`] 对齐。
+    pub fn outcomes(&self, step: &[Progress]) -> Vec<SequenceOutcome<'_>> {
+        self.sequences
+            .iter()
+            .zip(step)
+            .map(|(sequence, progress)| SequenceOutcome {
+                sequence,
+                progress: *progress,
+            })
+            .collect()
     }
 
     /// 全部序列，按准入顺序。

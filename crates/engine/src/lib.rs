@@ -64,7 +64,7 @@ pub mod batch;
 pub mod exec;
 pub mod kv;
 
-pub use batch::{Admission, Batch};
+pub use batch::{Admission, Batch, SequenceOutcome};
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;

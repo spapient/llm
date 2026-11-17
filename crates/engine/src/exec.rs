@@ -265,6 +265,11 @@ impl Graph {
         &self.nodes
     }
 
+    /// 全部节点的可变视图：装配宿主在提交前回填逐步变化的标量槽（如 rope 位置），不改执行几何。
+    pub fn nodes_mut(&mut self) -> &mut [Node] {
+        &mut self.nodes
+    }
+
     /// 节点数。
     pub fn len(&self) -> usize {
         self.nodes.len()

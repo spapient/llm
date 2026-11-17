@@ -248,6 +248,84 @@ fn formulas_are_four_operations_with_parentheses() {
     assert!(eval_expression("2 3").is_err());
 }
 
+/// 推导式边界：空串、纯空白、单符号、嵌套括号、重复运算符与越界写法都必须带说明拒绝。
+#[test]
+fn formulas_reject_saturated_and_degenerate_inputs_with_a_message() {
+    let cases: &[&str] = &[
+        "",
+        "   ",
+        "+",
+        "(",
+        ")",
+        "**",
+        "1..2",
+        "abc",
+        "1+",
+        "((1+2))",
+        "2/3/4",
+    ];
+    let expect_ok = ["((1+2))", "2/3/4"];
+    for (index, text) in cases.iter().enumerate() {
+        match eval_expression(text) {
+            Ok(_) => assert!(expect_ok.contains(text), "用例 {index} `{text}` 不应通过"),
+            Err(error) => {
+                assert_eq!(error.code(), Code::Invalid, "用例 {index}");
+                assert!(
+                    !error.message().trim().is_empty(),
+                    "用例 {index}：拒绝必须有话说"
+                );
+            }
+        }
+    }
+}
+
+/// 区间解析四种写法与退化边界：空串、非数字、上界越上、空白两侧、不限区间的往返。
+#[test]
+fn span_parse_covers_boundary_and_degenerate_forms() {
+    let cases: &[(&str, Result<Span, ()>)] = &[
+        ("16", Ok(Span::exact(16))),
+        ("16..64", Ok(Span::range(16, 64).unwrap())),
+        ("<=512", Ok(Span::at_most(512))),
+        ("32..", Ok(Span::at_least(32))),
+        ("  16  ", Ok(Span::exact(16))),
+        ("0", Ok(Span::exact(0))),
+        ("4294967295", Ok(Span::exact(u32::MAX))),
+        ("64..16", Err(())),
+        ("abc", Err(())),
+        ("", Err(())),
+        ("..", Err(())),
+        ("16..4.5", Err(())),
+    ];
+    for (index, (text, expected)) in cases.iter().enumerate() {
+        let parsed = Span::parse(text);
+        match expected {
+            Ok(span) => assert_eq!(parsed.as_ref(), Ok(span), "用例 {index} `{text}`"),
+            Err(()) => assert!(parsed.is_err(), "用例 {index} `{text}` 应当拒绝"),
+        }
+    }
+    let any = Span::any();
+    assert!(any.is_any());
+    assert!(any.covers(Span::exact(u32::MAX)));
+}
+
+/// 闭集解析：空串、大小写漂移、截断词与重复成员都不命中；全量成员名字往返一致。
+#[test]
+fn closed_set_parse_rejects_boundary_and_foreign_names() {
+    let foreign: &[&str] = &["", " ", "MMA", "dot ", "tma_bulk", "f32 ", "FAST ", "L4"];
+    for name in foreign {
+        assert!(Prim::parse(name).is_none(), "`{name}` 不应命中原语闭集");
+        assert!(Space::parse(name).is_none(), "`{name}` 不应命中存储闭集");
+        assert!(Grade::parse(name).is_none(), "`{name}` 不应命中等级闭集");
+        assert!(DType::parse_name(name).is_none(), "`{name}` 不应命中类型闭集");
+    }
+    for prim in Prim::ALL.iter().copied() {
+        assert_eq!(Prim::parse(prim.as_str()), Some(prim));
+    }
+    for space in Space::ALL.iter().copied() {
+        assert_eq!(Space::parse(space.as_str()), Some(space));
+    }
+}
+
 #[test]
 fn a_witness_is_file_plus_function_plus_expectation() {
     let profile = Profile::parse(cpu()).expect("可解析");

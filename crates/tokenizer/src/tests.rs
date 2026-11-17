@@ -519,3 +519,133 @@ fn stream_finish_refuses_incomplete_tail() {
     let error = stream.finish().expect_err("收尾仍不完整必须报错");
     assert_eq!(error.code(), Code::Invalid);
 }
+
+// —— P0-6 属性边界用例：空输入、非对齐长度、越界索引、饱和值与重复边界 ——
+
+/// 空词表装配：没有任何词片，查表与反查都必须返回空，族附属表按各自规则校验。
+#[test]
+fn vocab_empty_vocabulary_has_no_lookup_hits() {
+    let source = VocabSource::default();
+    let vocab = Vocab::try_new(source).expect("空词表构造合法");
+    assert_eq!(vocab.vocab_size(), 0);
+    assert!(vocab.lookup(b"a").is_none());
+    assert!(vocab.piece(0).is_none());
+    assert!(vocab.piece(u32::MAX).is_none());
+}
+
+/// 编号边界：越界编号（词表大小、`u32::MAX`）反查为空；词表内编号往返一致。
+#[test]
+fn vocab_piece_lookup_saturates_at_the_vocabulary_boundary() {
+    let source = word_level(vec!["a".as_bytes(), "bc".as_bytes()]);
+    let vocab = Vocab::try_new(source).expect("词表构造");
+    let out_of_range = [vocab.vocab_size() as u32, u32::MAX];
+    for id in out_of_range {
+        assert!(vocab.piece(id).is_none(), "编号 {id} 越界必须返回空");
+    }
+    for id in 0..vocab.vocab_size() as u32 {
+        let piece = vocab.piece(id).expect("词表内编号必命中");
+        assert_eq!(vocab.lookup(piece), Some(Token::new(id)));
+    }
+}
+
+/// 词片键边界：空片、重复字节、多字节片段在查表路径上互不串扰。
+#[test]
+fn vocab_lookup_handles_empty_repeated_and_multibyte_pieces() {
+    let source = word_level(vec![b"".as_slice(), b"aa".as_slice(), "中".as_bytes()]);
+    let vocab = Vocab::try_new(source).expect("词表构造");
+    assert_eq!(vocab.lookup(b""), Some(Token::new(0)));
+    assert_eq!(vocab.lookup(b"aa"), Some(Token::new(1)));
+    assert_eq!(vocab.lookup(b"a"), None, "单字节不是 `aa` 的前缀命中");
+    assert_eq!(vocab.lookup(&[0xE4, 0xB8, 0xAD]), Some(Token::new(2)));
+    assert_eq!(vocab.lookup(&[0xE4, 0xB8, 0xAD, 0x00]), None);
+}
+
+/// 特殊句柄：空句柄与边界编号查询都不命中；登记的编号逐个可反查。
+#[test]
+fn special_handles_boundary_ids_do_not_collide() {
+    let empty = SpecialTokens::EMPTY;
+    assert!(empty.is_empty());
+    for id in [0u32, 1, 255, u32::MAX] {
+        assert!(!empty.is_special(id));
+    }
+    let handles = SpecialTokens::empty()
+        .with_bos(0)
+        .with_eos(1)
+        .with_unk(2)
+        .with_pad(3)
+        .with_sep(4)
+        .with_cls(5)
+        .with_mask(6);
+    assert_eq!(handles.len(), 7);
+    for id in 0..=6 {
+        assert!(handles.is_special(id));
+    }
+    assert!(!handles.is_special(7));
+}
+
+/// 编码元数据三段长度不齐：编号多、区间多、标记多三种非对齐都必须拒绝。
+#[test]
+fn encoding_rejects_each_misaligned_metadata_side() {
+    let ids = vec![Token::new(1), Token::new(2)];
+    let offsets = vec![(0, 1), (1, 2)];
+    let special = vec![false, true];
+    let cases = [
+        (ids.clone(), offsets.clone(), vec![false], "special 少一段"),
+        (ids.clone(), vec![(0, 1)], special.clone(), "offsets 少一段"),
+        (vec![Token::new(1)], offsets.clone(), special.clone(), "ids 少一段"),
+    ];
+    for (i, (left, middle, right, label)) in cases.into_iter().enumerate() {
+        let error = Encoding::new(left, middle, right).expect_err(label);
+        assert_eq!(error.code(), Code::Invalid, "用例 {i}：{label}");
+    }
+    let aligned = Encoding::new(ids, offsets, special).expect("三段齐平合法");
+    assert_eq!(aligned.len(), 2);
+    assert!(!aligned.is_empty());
+    assert_eq!(aligned.is_special(0), Some(false));
+    assert_eq!(aligned.is_special(2), None, "标记越界返回空");
+}
+
+/// 字节级解码：上界编号、截断多字节、非法续节与重复字节边界都带说明拒绝。
+#[test]
+fn bytes_decode_rejects_saturated_ids_and_invalid_utf8() {
+    let cases: [&[Token]; 5] = [
+        &[Token::new(256)],
+        &[Token::new(u32::MAX)],
+        &[Token::new(0xE4)],
+        &[Token::new(0xE4), Token::new(0x00)],
+        &[Token::new(u32::from(b'a')), Token::new(u32::from(b'a'))],
+    ];
+    // 最后一例是合法 ASCII 重复字节；前四例必须拒绝。
+    for (index, tokens) in cases.iter().enumerate() {
+        match Bytes.decode(tokens) {
+            Ok(text) => assert_eq!(text, "aa", "重复 ASCII 往返为原文本"),
+            Err(error) => {
+                assert_eq!(error.code(), Code::Invalid, "用例 {index}");
+                assert!(!error.message().trim().is_empty(), "拒绝必须有话说");
+            }
+        }
+    }
+}
+
+/// 解码空序列为空串；空文本编码为空编号，计数为零。
+#[test]
+fn bytes_empty_round_trips_through_encode_decode_count() {
+    assert_eq!(Bytes.encode("").expect("空编码"), []);
+    assert_eq!(Bytes.decode(&[]).expect("空解码"), "");
+    assert_eq!(Bytes.count("").expect("空计数"), 0);
+}
+
+/// 流式解码：空块、跨块完整字符、重复续节与收尾残留边界。
+#[test]
+fn stream_handles_empty_chunks_and_repeated_tail_bytes() {
+    let mut stream = DecoderStream::new();
+    assert_eq!(stream.push(&[]).expect("空块放行"), "");
+    assert_eq!(stream.push("ab".as_bytes()).expect("完整 ASCII"), "ab");
+    assert_eq!(stream.finish().expect("收尾"), "");
+
+    let mut repeated = DecoderStream::new();
+    repeated.push(&[0xE4, 0xB8]).expect("首块留尾");
+    repeated.push(&[0xAD, 0xE4, 0xB8]).expect("次块拼出首字并再留尾");
+    let error = repeated.finish().expect_err("残留半字符必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}

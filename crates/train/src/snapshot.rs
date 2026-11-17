@@ -12,8 +12,8 @@
 //! [`Snapshot::encode`] 共用一个编码器，写盘时边编码边写，整份检查点从不进内存）；**恢复两道前置校验**
 //! （[`Snapshot::verify`] 只验字节，[`Snapshot::check_weights`] 再确认条目表与手头的权重文件逐条相同）。
 //!
-//! 职责轴拆分：`cursor` 读取游标与错误词汇，`entry` 权重条目表编解码，`state` 矩状态与累积
-//! 梯度段；字节格式仍是本模块单源。
+//! 职责轴拆分：`cursor` 读取游标与错误词汇，`entry` 权重条目表编解码，`state` 矩状态、累积
+//! 梯度段与权重绑定段；字节格式仍是本模块单源。
 //!
 //! # 例子
 //!
@@ -54,11 +54,13 @@ mod cursor;
 mod entry;
 mod state;
 
-pub use state::{GradAccum, Moments, SlotMoments};
+pub use state::{GradAccum, Moments, SlotMoments, Ties};
 
 use cursor::{Cursor, invalid, mismatch, need, truncated};
 use entry::{common_prefix, common_suffix, difference, read_entries, tag};
-use state::{read_grad_accum, read_moments, write_grad_accum, write_moments};
+use state::{
+    read_grad_accum, read_moments, read_ties, write_grad_accum, write_moments, write_ties,
+};
 
 /// 一个条目最少占 5 字节：解码据此把声明的条目数与剩余字节对账，伪造的计数撑不大内存。
 const MIN_ENTRY: usize = 5;
@@ -78,7 +80,7 @@ impl Format {
     pub const MAGIC: [u8; 4] = *b"LLMC";
 
     /// 当前格式版本：字段集、编码顺序或校验方式变化时必须递增；版本之间不兼容，只支持当前版本。
-    pub const VERSION: u16 = 4;
+    pub const VERSION: u16 = 5;
 
     /// 文件头字节数（魔数 + 版本）。
     pub const HEADER_BYTES: usize = Self::MAGIC.len() + 2;
@@ -191,29 +193,30 @@ fn require_nonzero(name: &str, value: usize) -> Result<()> {
     Ok(())
 }
 
-/// 一次落盘的快照：恢复事实 + 权重条目表 + 优化器矩状态 + 累积窗口梯度。
+/// 一次落盘的快照：恢复事实 + 权重条目表 + 优化器矩状态 + 累积窗口梯度 + 权重绑定表。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     facts: Facts,
     weights: Header,
     moments: Moments,
     accum: GradAccum,
+    ties: Ties,
 }
 
 impl Snapshot {
-    /// 由事实与权重条目表构造（矩状态与累积梯度为空）。
+    /// 由事实与权重条目表构造（矩状态、累积梯度与绑定表为空）。
     #[must_use]
     pub fn new(facts: Facts, weights: Header) -> Self {
         Self::new_with_state(facts, weights, Moments::empty(), GradAccum::empty())
     }
 
-    /// 由事实、权重条目表与优化器矩状态构造（累积梯度为空）。
+    /// 由事实、权重条目表与优化器矩状态构造（累积梯度与绑定表为空）。
     #[must_use]
     pub fn new_with_moments(facts: Facts, weights: Header, moments: Moments) -> Self {
         Self::new_with_state(facts, weights, moments, GradAccum::empty())
     }
 
-    /// 由事实、权重条目表、矩状态与累积梯度构造。
+    /// 由事实、权重条目表、矩状态与累积梯度构造（绑定表为空）。
     #[must_use]
     pub fn new_with_state(
         facts: Facts,
@@ -221,11 +224,24 @@ impl Snapshot {
         moments: Moments,
         accum: GradAccum,
     ) -> Self {
+        Self::new_with_all(facts, weights, moments, accum, Ties::empty())
+    }
+
+    /// 由事实、权重条目表、矩状态、累积梯度与权重绑定表构造。
+    #[must_use]
+    pub fn new_with_all(
+        facts: Facts,
+        weights: Header,
+        moments: Moments,
+        accum: GradAccum,
+        ties: Ties,
+    ) -> Self {
         Self {
             facts,
             weights,
             moments,
             accum,
+            ties,
         }
     }
 
@@ -242,6 +258,11 @@ impl Snapshot {
     /// 累积窗口内的梯度汇总。
     pub fn accum(&self) -> &GradAccum {
         &self.accum
+    }
+
+    /// 权重绑定表：源槽 → 回填槽的下标对。
+    pub fn ties(&self) -> &Ties {
+        &self.ties
     }
 
     /// 步号。
@@ -404,8 +425,9 @@ impl Snapshot {
     /// 从字节解码：先由 [`Snapshot::verify`] 判文件头与校验和，再解析正文。
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         Self::verify(bytes)?;
-        let (facts, weights, moments, accum) = body(&bytes[..bytes.len() - Format::FOOTER_BYTES])?;
-        Ok(Self::new_with_state(facts, weights, moments, accum))
+        let (facts, weights, moments, accum, ties) =
+            body(&bytes[..bytes.len() - Format::FOOTER_BYTES])?;
+        Ok(Self::new_with_all(facts, weights, moments, accum, ties))
     }
 
     /// 编码正文与校验和：正文写进一个"密封"的接收器，写出的每个字节都自动进入 CRC。
@@ -465,16 +487,19 @@ impl Snapshot {
 
         write_moments(sink, &self.moments);
         write_grad_accum(sink, &self.accum);
+        write_ties(sink, &self.ties);
     }
 }
 
-/// 正文解析：头部整数、条目表、矩状态段、累积梯度段，最后交给 [`Header`] 与 [`Facts`] 自证。
-fn body(payload: &[u8]) -> Result<(Facts, Header, Moments, GradAccum)> {
+/// 正文解析：头部整数、条目表、矩状态段、累积梯度段与绑定段，最后交给 [`Header`] 与 [`Facts`] 自证。
+fn body(payload: &[u8]) -> Result<(Facts, Header, Moments, GradAccum, Ties)> {
     let mut cursor = Cursor::new(payload, Format::HEADER_BYTES)?;
     let (facts, weights) = head_and_weights(&mut cursor)?;
     let moments = read_moments(&mut cursor)?;
     let accum = tail_state(&mut cursor)?;
-    Ok((facts, weights, moments, accum))
+    let ties = read_ties(&mut cursor)?;
+    reject_tail(&cursor)?;
+    Ok((facts, weights, moments, accum, ties))
 }
 
 /// 正文开头整数与权重条目表。
@@ -492,11 +517,9 @@ fn read_weights_header(cursor: &mut Cursor<'_>) -> Result<Header> {
     Header::new(entries, data_start).map_err(error_context)
 }
 
-/// 矩状态之后的累积梯度段与尾部余量对账。
+/// 矩状态之后的累积梯度段；绑定段与尾部余量对账在 [`body`](self::body) 收尾。
 fn tail_state(cursor: &mut Cursor<'_>) -> Result<GradAccum> {
-    let accum = read_grad_accum(cursor)?;
-    reject_tail(cursor)?;
-    Ok(accum)
+    read_grad_accum(cursor)
 }
 
 /// 条目表之后若还有未消费字节，就是半截或多写。

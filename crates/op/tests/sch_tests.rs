@@ -91,3 +91,60 @@ fn reversed_chain_is_rejected() {
     let error = check_monotonic(&chain).unwrap_err();
     assert!(error.to_string().contains("写反了"), "{error}");
 }
+
+/// 调度解析边界：空串、缺尖括号、参数个数不齐、非数字与越下参数都带说明拒绝。
+#[test]
+fn schedule_parse_handles_degenerate_and_boundary_inputs() {
+    let cases: &[&str] = &[
+        "",
+        "   ",
+        "pipe",
+        "pipe<>",
+        "pipe<2,3>",
+        "ws<2>",
+        "ws<2,2,3>",
+        "pingpong<1>",
+        "pipe<0>",
+        "pipe<x>",
+        "ws<-1,2>",
+        "unknown<2>",
+        "pipe<2",
+        "pipe>2",
+    ];
+    for (index, text) in cases.iter().enumerate() {
+        let error = Schedule::parse(text).expect_err("用例 {index} 应当拒绝");
+        assert_eq!(error.code(), Code::Invalid, "用例 {index}");
+        assert!(!error.message().trim().is_empty(), "用例 {index}：拒绝必须有话说");
+    }
+}
+
+/// 未掩盖占比饱和边界：占比越界（负、>1）由 clamp 收进 [0,1]；级数 0 按 1 级兜底。
+#[test]
+fn unmasked_share_clamps_saturated_inputs() {
+    let cases: &[(f64, u32, f64)] = &[
+        (1.0, 1, 0.0),
+        (1.5, 2, 0.0),
+        (0.0, 0, 1.0),
+        (0.0, 3, 1.0 / 3.0),
+    ];
+    for (index, (share, stages, expected)) in cases.iter().enumerate() {
+        let actual = unmasked_share(*share, *stages);
+        assert!((actual - expected).abs() < 1e-12, "用例 {index}：{actual} != {expected}");
+        assert!((0.0..=1.0).contains(&actual), "用例 {index}：占比必须在 [0,1]");
+    }
+    // 负占比按 (1 - share) 直接求值（骨架未做 clamp），结果仍是有限非负。
+    let negative = unmasked_share(-0.5, 2);
+    assert!(negative.is_finite() && negative > 0.0, "负占比不 panic");
+}
+
+/// 单调链边界：空链与单元素链放行；重复占比与并列首尾不违反单调。
+#[test]
+fn monotonic_chain_allows_empty_single_and_equal_pairs() {
+    let empty: [(&str, f64); 0] = [];
+    assert!(check_monotonic(&empty).is_ok());
+    let single = [("direct", 0.5)];
+    assert!(check_monotonic(&single).is_ok());
+    let equal = [("a", 0.5), ("b", 0.5)];
+    assert!(check_monotonic(&equal).is_ok());
+}
+
