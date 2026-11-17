@@ -176,7 +176,7 @@
 | P0-3 | 大文件按职责轴拆分（design §5.4 表）：先 `weights/bin.rs`、`src/bin/cutile/main.rs`、`train/snapshot.rs` | 对应 crate | 行数预算 | 解析/排版/台账移出机制文件；单文件 ≤899 | gate 行数与 ccn 过门；测试断言不削 | 其余大文件随阶段内拆 |
 | P0-4 | 报告/排版合一：audit/tool/witness 三处报告器收敛为一个 | `tool` / `diagnostic` | 10k-analysis §6.2 | 单一报告器，三处调用 | 输出条目不丢；测试不跌 | — |
 | P0-5 | 手写解析收敛到一份；是否引入唯一解析依赖按 D5 实测阈值裁决 | `diagnostic` | D5 | 解析单源；依赖取舍入 ADR | 解析负例全绿 | toml+serde 引入未拍板前不接 |
-| P0-6 | 关键纯函数属性/模糊加固：解析、归约、归一化、词表查找等补表驱动边界用例；退化情形进 `fuzz` sweep | `fuzz` / 对应 crate | 无 | 纯函数边界用例集；fuzz 种子与 sweep 接入 | 负例覆盖空/非对齐/越界/饱和；不新增生产依赖 | libfuzzer harness 仅 feature 门控 |
+| P0-6 | 关键纯函数属性/模糊加固：解析、归约、归一化、词表查找等补表驱动边界用例；退化情形进 `fuzz` sweep | `fuzz` / 对应 crate | 无 | 纯函数边界用例集；fuzz 种子与 sweep 接入 | 负例覆盖空/非对齐/越界/饱和；不新增生产依赖 | libfuzzer harness 仅 feature 门控。现状注记：三族内部纯函数 / 结构化张量的 fuzz sweep 接线经裁决移除（与 fuzz 入口解析器契约边界错配），边界用例归各自仓内单测；fuzz 只保留不可信字节入口解析器目标 |
 | P0-7 | 片段参数类型签名交叉校验：注解/声明/模板三者参数类型一致，不一致编译期或测试期拒绝 | `annotation` / `op` | P0-2 | 交叉校验条目 + 守护测试 | 错配片段被拒；既有 24 条全过 | 跨设备文本同构校验随后端阶段 |
 | P0-8 | 已具备能力回归守护：P9 多格式往返 round_trip、P13 设备档案 L0–L3 闭集，纳入常驻回归 | `weights` / `prof` / `tool` | 无 | 守护测试入 workspace 回归 | 格式往返全绿；档案闭集不被绕过 | — |
 
