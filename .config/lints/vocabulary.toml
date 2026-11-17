@@ -121,18 +121,13 @@ names = ["Call", "Direction", "Link", "Metric", "Over"]
 reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Report`"
 
 [[ownership.unlisted]]
-crate = "train"
-names = ["Lane", "Sealed"]
-reason = "激活缓冲的存储 lane 与密封 trait；训练循环的公开面是 `Schedule`/`Step`/`Checkpoint`"
-
-[[ownership.unlisted]]
 crate = "weights"
 names = ["Bin", "Gguf", "Mode", "Sha256", "Value"]
 reason = "格式适配器与容器模式的暂住类型：bin/gguf 解析件、发布模式与哈希内部件；公开生产面是所有权表里的读写契约与容器类型"
 
 [[ownership.unlisted]]
 crate = "wire"
-names = ["Count", "Cursor", "FileSink", "Measured", "Sealed", "Sink", "SliceSink", "Uint"]
+names = ["Count", "Cursor", "FileSink", "Measured", "Sink", "SliceSink", "Uint"]
 reason = "字节码闭集的接收器、游标与无符号整数标记族；公开面是 CRC/LEB/Sink 这组函数与 trait，内部实现件待边界稳定后逐项进表"
 
 [gate]
@@ -155,7 +150,7 @@ file_max_lines = 899 # 单文件行数硬上限
 
 [[gate.debt]]
 key = "src/main.rs:run#0"
-ccn = 25
+ccn = 24
 nloc = 121
 reason = "根入口命令编排：分支按命令与设备分派；待把可复用规则下沉 cli/tool 后拆分"
 

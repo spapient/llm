@@ -2,7 +2,7 @@
 target/
 
 # jscpd 重复检测报告
-/report/
+/.config/report/
 
 # 工具与编辑器的本地状态
 /.claude/
