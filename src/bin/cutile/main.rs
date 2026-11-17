@@ -1,8 +1,9 @@
 //! 内核层审计的驱动方：解析 → 执行 → 排版 → 退出码（L7 入口，不定义新类型）。
 //!
 //! 三件事分别有各自的归属：语法与配置来自 [`cli`]（`cli::cutile` / `cli::settings`），计算来自
-//! `cutile::{bench, doctor, verify}`。本文件只把它们接起来并排版，因此 `cutile` 不再持有第二套
-//! 命令行文法、也不决定缓存目录在哪，命令模块也不再拼字符串。
+//! `cutile::{bench, doctor, verify}`，人可读排版聚簇在本目录的 [`report`] 模块。本文件只把它们
+//! 接起来并收退出码，因此 `cutile` 不再持有第二套命令行文法、也不决定缓存目录在哪，命令模块也不再
+//! 拼字符串。
 //!
 //! ```text
 //! cargo run --bin cutile -- doctor --device cpu
@@ -14,17 +15,17 @@
 
 use cli::cutile::CutileCommand;
 use cli::settings::Settings;
-use cutile::bench::{self, Bench, Peak, Performance, Verdict};
+use cutile::bench::{self, Bench};
 use cutile::builtin::Catalogue;
-use cutile::doctor::{self, CacheState, CacheWhy, Doctor};
-use cutile::emit::Fragment;
+use cutile::doctor::{self, Doctor};
 use cutile::ledger;
-use cutile::verify::{self, Negotiation, Verified, VerifyEntry, VerifyReport};
+use cutile::verify::{self, Verified, VerifyEntry};
 use diagnostic::{Code, Error};
 use std::process::ExitCode;
 use tool::Report;
 
 mod ledger_view;
+mod report;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -93,17 +94,20 @@ fn run(command: &CutileCommand, settings: &Settings) -> diagnostic::Result<Strin
 fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<String> {
     let dirs = kernel_dirs(settings);
     let report = cutile::cache::cache_gc(&dirs, limit)?;
-    let mut out = Report::new(format!("cache gc | 上限 {}", human_bytes(report.limit)))
-        .row("目录", dirs.cache().display().to_string())
-        .row("回收前", human_bytes(report.before))
-        .row("回收后", human_bytes(report.after))
-        .row("按 LRU 删除", format!("{} 项", report.removed))
-        .render();
+    let mut out = Report::new(format!(
+        "cache gc | 上限 {}",
+        tool::human_bytes(report.limit)
+    ))
+    .row("目录", dirs.cache().display().to_string())
+    .row("回收前", tool::human_bytes(report.before))
+    .row("回收后", tool::human_bytes(report.after))
+    .row("按 LRU 删除", format!("{} 项", report.removed))
+    .render();
     if report.residue.items > 0 {
         out.push_str(&format!(
             "  清理残留 {} 项（{}）：半截落盘，本来就不会命中\n",
             report.residue.items,
-            human_bytes(report.residue.bytes)
+            tool::human_bytes(report.residue.bytes)
         ));
     }
     if report.skipped > 0 {
@@ -115,7 +119,7 @@ fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<Strin
     if report.after > report.limit {
         out.push_str(&format!(
             "  仍高于上限：还需再删 {}\n",
-            human_bytes(report.after - report.limit)
+            tool::human_bytes(report.after - report.limit)
         ));
     }
     Ok(out)
@@ -156,23 +160,7 @@ fn doctor(
         report.op.skeleton,
         report.op.summary
     ))
-    .row(
-        "device",
-        format!(
-            "{}({}) emit={} tool={} 档案 {} 实测 {} 参数 {}",
-            report.device.vendor,
-            report.device.id,
-            report.device.emit,
-            report.device.tool,
-            report.device.tool_ver,
-            report
-                .device
-                .toolchain
-                .as_deref()
-                .unwrap_or("未知（没有编译器，只能复用已落盘产物）"),
-            params_note(&report.device.flags)
-        ),
-    )
+    .row("device", report::device_value(&report))
     .row(
         "spaces",
         format!(
@@ -180,92 +168,26 @@ fn doctor(
             report.device.spaces[0], report.device.spaces[1], report.device.spaces[2]
         ),
     );
-    if !report.device.units.is_empty() {
-        let units: Vec<String> = report
-            .device
-            .units
-            .iter()
-            .map(|(name, space)| format!("{name}({space})"))
-            .collect();
-        head = head.row("units", units.join(" "));
+    if let Some(units) = report::units_value(&report) {
+        head = head.row("units", units);
     }
     let mut out = head
-        .row(
-            "声明",
-            format!(
-                "needs={} variants={} tiles={} | 生产形状 {}x{}",
-                report.op.needs,
-                report.op.variants,
-                report.op.tiles,
-                report.shape.0,
-                report.shape.1
-            ),
-        )
+        .row("声明", report::declaration_value(&report))
         .render();
     out.push('\n');
     out.push_str(&settings.describe());
 
-    out.push_str("\n[证据] 依据 ");
-    out.push_str(&report.evidence.basis.to_string());
-    out.push_str(&format!(
-        " | 设备执行 {} | 本机自检 {} | 语言门 {}\n",
-        counted(report.evidence.device, &report.evidence.device_params),
-        counted(report.evidence.host, &report.evidence.host_params),
-        report.evidence.language
-    ));
-    if let Some(error) = &report.evidence.failure {
-        out.push_str(&format!("  见证不成立：{error}\n"));
-    }
+    out.push_str(&report::evidence_block(&report));
 
     out.push_str("\n[协商]\n");
-    out.push_str(&negotiation(&report));
+    out.push_str(&report::negotiation(&report));
 
     if report.path.is_none() {
         out.push_str("\n[emit] 无可行变体，未生成源文件\n");
         return Ok(out);
     }
-    if let Some(plan) = &report.plan {
-        out.push_str(&format!("\n[plan] {plan}\n"));
-    }
-    out.push_str("\n[布局]\n");
-    for row in &report.layouts {
-        out.push_str(&format!("  {} = {}\n", row.slot, row.spec));
-    }
-    if !report.storage.is_empty() {
-        out.push_str("\n[存储]\n");
-        for row in &report.storage {
-            // 容量与用量并排：判定比较的就是这两个数，少一个就无法复核。
-            let capacity = row
-                .capacity
-                .map_or_else(|| "不限".to_string(), |bytes| format!("{bytes} B"));
-            let declared = if row.declared.is_empty() {
-                "无".to_string()
-            } else {
-                let parts: Vec<String> = row
-                    .declared
-                    .iter()
-                    .map(|usage| format!("{}<={} B", usage.prim, usage.bytes))
-                    .collect();
-                parts.join(" ")
-            };
-            out.push_str(&format!(
-                "  {}={} 容量 {} | 声明 {}\n",
-                row.space, row.physical, capacity, declared
-            ));
-        }
-    }
-    if let Some(source) = &report.source {
-        out.push_str(&format!(
-            "\n[emit] {} | {} | cache key {}\n  {}\n",
-            fragment_note(source.fragment),
-            source.ext,
-            source.key.hex(),
-            source.key.describe()
-        ));
-        if let Some(dir) = &source.cache_dir {
-            out.push_str(&format!("  cache dir {}\n", dir.display()));
-        }
-    }
+    out.push_str(&report::post_path_blocks(&report));
+
     if let Some(hex) = why {
         let built = report.source.as_ref().ok_or_else(|| {
             Error::new(
@@ -273,93 +195,9 @@ fn doctor(
                 format!("没有可行变体，无法解释缓存键 `{hex}`"),
             )
         })?;
-        out.push_str(&cache_why(&doctor::why(&dirs, &built.key, hex)));
+        out.push_str(&report::cache_why(&doctor::why(&dirs, &built.key, hex)));
     }
     Ok(out)
-}
-
-/// `[缓存]` 段：本次构建的键，以及被问的那个键与它的关系。
-///
-/// 关系类别由 `CacheWhy::state` 给（半截落盘必须排在"差异为空"之前判），这里只选句子。
-fn cache_why(report: &CacheWhy) -> String {
-    let mut out = format!("\n[缓存] 本次 key {}\n", report.current);
-    let Some(entry) = &report.entry else {
-        out.push_str("  被问的键从未落盘：没构建过，或已被 `cache gc` 回收\n");
-        return out;
-    };
-    out.push_str(&format!("  被问的键 {}（{} B）\n", entry.hex, entry.bytes));
-    match report.state() {
-        CacheState::Match => {
-            out.push_str("  与本次构建的键一致：命中的就是这份缓存\n");
-            return out;
-        }
-        CacheState::Partial => {
-            out.push_str("  只有半截落盘（缺 source）：写到一半就没了，重新构建即可\n");
-            return out;
-        }
-        CacheState::Never | CacheState::Differs => {}
-    }
-    out.push_str(&format!(
-        "  与本次构建不同（{} 项）：\n",
-        report.changes.len()
-    ));
-    for change in &report.changes {
-        // 只在一侧出现的项也要打印：新版本加的字段与已删除的字段都是“为什么没命中”。
-        let stored = change.stored.as_deref().unwrap_or("—");
-        let current = change.current.as_deref().unwrap_or("—");
-        out.push_str(&format!(
-            "    {}：缓存 {stored} | 本次 {current}\n",
-            change.field
-        ));
-    }
-    out
-}
-
-/// `[协商]` 段：成功时逐变体给标记，失败时原样给出诊断。
-///
-/// 判定（`VariantCheck`）与错误文本（`NoPath`）都在库里，这里只负责标记与缩进。
-fn negotiation(report: &Doctor) -> String {
-    if let Some(no_path) = &report.no_path {
-        return no_path.to_string();
-    }
-    let Some(path) = &report.path else {
-        return String::new();
-    };
-    let mut out = format!(
-        "path: {} (schedule {}) mma_share {:.2} | 第 {}/{} 档{}\n",
-        path.variant,
-        path.schedule,
-        path.mma_share,
-        path.index + 1,
-        report.variants.len(),
-        if path.is_head() {
-            "（首档）"
-        } else {
-            "（降级）"
-        }
-    );
-    for (index, check) in report.variants.iter().enumerate() {
-        let mark = if index == path.index {
-            "✓ 选中"
-        } else {
-            "·"
-        };
-        if check.failures.is_empty() {
-            out.push_str(&format!("  {mark} {}\n", check.name));
-        } else {
-            let reasons: Vec<String> = check
-                .failures
-                .iter()
-                .map(|failure| format!("{}：{}", failure.need.prim, failure.reason()))
-                .collect();
-            out.push_str(&format!(
-                "  {mark} {} ✗ {}\n",
-                check.name,
-                reasons.join("；")
-            ));
-        }
-    }
-    out
 }
 
 fn verify(
@@ -376,7 +214,7 @@ fn verify(
     for entry in &report.entries {
         match entry {
             VerifyEntry::Passed(verified) => {
-                let line = passed_line(verified);
+                let line = report::passed_line(verified);
                 out.push_str(&line);
                 if ledger {
                     out.push_str(&write_ledger(&catalogue, verified, &line, &dirs)?);
@@ -387,7 +225,7 @@ fn verify(
             }
         }
     }
-    out.push_str(&negotiation_summary(&report));
+    out.push_str(&report::negotiation_summary(&report));
 
     let failures = report.failures();
     if failures.is_empty() {
@@ -402,174 +240,6 @@ fn verify(
             ),
         ))
     }
-}
-
-/// `[协商]` 汇总：cutile README §16 的「协商 3/3 命中首档」。
-///
-/// 这段与上面的逐设备结果正交：执行需要真机，协商只看声明与档案——所以"本机没有该设备"的行
-/// 照样在这里有答案。判定（首档 / 降级 / 无路径 / 无档案）在库里（`Negotiation`），
-/// 这里只排版。
-fn negotiation_summary(report: &VerifyReport) -> String {
-    let (hits, total) = report.head_hits();
-    let mut out = format!(
-        "\n协商首档 {hits}/{total}（cutile README §16：首选没被选中说明 `needs` 粒度写错了）\n"
-    );
-    for (device, negotiation) in report.devices.iter().zip(&report.negotiations) {
-        out.push_str(&format!(
-            "  {device} = {}\n",
-            describe_negotiation(negotiation)
-        ));
-    }
-    out
-}
-
-fn describe_negotiation(negotiation: &Negotiation) -> String {
-    match negotiation {
-        Negotiation::Head { variant, of } => format!("1/{of} 首选 {variant}"),
-        Negotiation::Fallback { variant, step, of } => {
-            format!("{step}/{of} 降级到 {variant}：首选的能力没被满足")
-        }
-        Negotiation::NoPath { of, unmet } if unmet.is_empty() => {
-            format!("0/{of} 链上无可行变体")
-        }
-        Negotiation::NoPath { of, unmet } => {
-            format!("0/{of} 链上无可行变体；首选缺 {}", unmet.join(" "))
-        }
-        Negotiation::Unknown { reason } => format!("无档案：{reason}"),
-    }
-}
-
-/// §16 的片段行数判定：上限管成败，内部目标只是余量。
-///
-/// 判定在库里（`cutile::emit::Fragment`），这里只选词；`doctor` 与 `verify` 用同一句，
-/// 同一个数在两处不会被说成两种结论。
-fn fragment_note(fragment: Fragment) -> String {
-    let limit = if fragment.within_limit() {
-        "达标"
-    } else {
-        "超出上限：原语粒度错，先合并原语"
-    };
-    let goal = if fragment.within_goal() {
-        "达标"
-    } else {
-        "未达（余量不足）"
-    };
-    format!(
-        "片段 {} 行（上限 {}：{limit}；内部目标 {}：{goal}）",
-        fragment.lines,
-        fragment.limit(),
-        fragment.goal()
-    )
-}
-
-/// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。
-///
-/// 参数是能力的第三个维度（片段、工具链、参数）：同一份片段换一组参数就是另一次代码生成，
-/// 所以结论行、证据行与产物行都把它写出来，而不是只留一个哈希。
-fn params_note(flags: &str) -> String {
-    if flags.is_empty() {
-        "无".to_string()
-    } else {
-        flags.to_string()
-    }
-}
-
-/// 一条"跑了几条、用什么参数跑的"：零条时不带参数，免得给一个没有内容的括号。
-fn counted(count: usize, flags: &str) -> String {
-    if count == 0 {
-        "0 条".to_string()
-    } else {
-        format!("{count} 条（{}）", params_note(flags))
-    }
-}
-
-/// §16 的性能判据：每次都给一行结论。
-///
-/// 判定在 `Performance`（达成率连同尺子一起给），这里只负责把每种结论翻译成一句话。
-/// 口径无效或没声明峰值时也要打印：一条只在失败时出声的判据，读者会把“什么都没说”当成通过。
-fn performance_note(performance: Performance, peak: Option<&Peak>) -> String {
-    let ratio = performance.ratio.map_or_else(
-        || "未测到".to_string(),
-        |ratio| format!("{:.1}%", ratio * 100.0),
-    );
-    let ruler = peak.map_or_else(
-        || "档案没有声明带宽峰值".to_string(),
-        |peak| format!("峰值 {:.1} GB/s，口径：{}", peak.value / 1e9, peak.src),
-    );
-    match performance.verdict {
-        Verdict::OverPeak => format!(
-            "  ⚠ 口径无效：达成率 {ratio}（{ruler}）超过 100%，数据在缓存中；\
-             这个数不参与 §16 判定\n"
-        ),
-        Verdict::CacheResident => format!(
-            "  ⚠ 口径无效：达成率 {ratio}（{ruler}）——工作集装得进 FAST 容量，\
-             测到的是缓存带宽；这个数不参与 §16 判定\n"
-        ),
-        Verdict::Reached => format!(
-            "  带宽达成率 {ratio}（{ruler}）→ 达到 70% 门槛\
-             （尺子是 roofline：实测 ÷ 档案峰值，不是“相对原生库的 85%”）\n"
-        ),
-        Verdict::Below => format!(
-            "  带宽达成率 {ratio}（{ruler}）→ 低于 70% 门槛：\
-             按 §16 这台设备承认需要特化代码（手写 + 片段复用）\n"
-        ),
-        Verdict::Unknown => format!("  ⚠ 未测量：{ruler}；§16 的性能判据不参与 Go/No-Go\n"),
-    }
-}
-
-/// 一台设备的 L2 结论行。
-///
-/// 形状矩阵与见证条数必须打印：它们才是"这条 L2 是跑出来的"的证据，而不是档案里的自述。
-fn passed_line(verified: &Verified) -> String {
-    let shapes = verified
-        .shapes
-        .iter()
-        .map(|(m, n)| format!("{m}x{n}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    // 产物行是"编译过几次"的证据：全部复用说明这一轮没调用过编译器；编译器名说明这份产物
-    // 是谁编出来的——复用的若是别人编的那份，它与本机装了什么无关。
-    let artifacts = verified.artifacts.len();
-    let reused = verified
-        .artifacts
-        .iter()
-        .filter(|artifact| artifact.reused)
-        .count();
-    let compiler = verified
-        .artifacts
-        .first()
-        .map_or("未知", |artifact| artifact.key.tool.as_str());
-    // 工具链身份进结论行：它是"这份 L2 是谁编出来的"的一部分，而不是档案里的自述。
-    // 档案登记值与实测值不一致时明说——证据可以在别的机器上取得，但差异不能被藏起来。
-    let toolchain = match (&verified.toolchain, verified.tool_ver.as_str()) {
-        (Some(actual), declared) if verified.toolchain_agrees => {
-            format!(" | 工具链 {actual}（档案登记 {declared}）")
-        }
-        (Some(actual), "") => format!(" | 工具链 {actual}"),
-        (Some(actual), declared) => {
-            format!(" | 工具链 {actual}（档案登记 {declared}，不一致）")
-        }
-        (None, declared) => format!(" | 工具链 未知（档案登记 {declared}，本轮复用已落盘产物）"),
-    };
-    // 自检与设备执行分开报：前者只说明“见证源码算得对”，不能与 L2 证据合成一个数。
-    let checked = if verified.self_checked == 0 {
-        String::new()
-    } else {
-        format!("，自检 {} 条", verified.self_checked)
-    };
-    format!(
-        "  {}({}): ✓ L2 | variant {} | tile {} | 形状 {} | 见证 {} 条{checked} | max_rel_err {:.3e} | {} | 产物 {artifacts} 份（复用 {reused}，{compiler}，{}）{toolchain} | key {}\n",
-        verified.vendor,
-        verified.id,
-        verified.variant,
-        verified.tile,
-        shapes,
-        verified.witnesses,
-        verified.max_rel_err,
-        fragment_note(verified.fragment),
-        params_note(&verified.flags),
-        verified.key
-    )
 }
 
 /// 能力台账：人可读的 markdown，属于呈现场景，所以留在前端。
@@ -643,75 +313,25 @@ fn bench(
     ));
     out.push_str(&format!(
         "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s\n",
-        per_run(measured.per_run_ns),
-        per_run(measured.p50_ns),
+        tool::per_run(measured.per_run_ns),
+        tool::per_run(measured.p50_ns),
         measured.measured.gb_s,
         measured.measured.gflops
     ));
-    out.push_str(&format!(
-        "  工作集 {} / FAST {}（{}）\n",
-        human_bytes(measured.working_set),
-        human_bytes(measured.fast_bytes),
-        if measured.in_fast() {
-            "在容量内，重复执行会命中缓存"
-        } else {
-            "超出容量"
-        }
-    ));
-    out.push_str(&performance_note(
+    out.push_str(&report::working_set_line(&measured));
+    out.push_str(&report::performance_note(
         measured.performance(),
         measured.peak.as_ref(),
     ));
-    out.push_str(&format!(
-        "  产物  {}（{} / {}：{}）\n",
-        measured.artifact.key.hex(),
-        measured.artifact.key.tool,
-        params_note(&measured.flags),
-        if measured.artifact.reused {
-            format!("复用，未调用编译器 | {}", measured.artifact.path.display())
-        } else {
-            format!("新编译并落盘 | {}", measured.artifact.path.display())
-        }
-    ));
-    out.push_str(&format!(
-        "  缓存  {}\n",
-        measured
-            .cache_dir
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "-".to_string())
-    ));
+    out.push_str(&report::artifact_line(&measured));
+    out.push_str(&report::cache_dir_line(&measured));
     Ok(out)
-}
-
-/// 单次耗时：亚微秒内核用 ns，否则用 ms（避免一串 `0.000`）。
-fn per_run(ns: f64) -> String {
-    if ns < 1e3 {
-        format!("{ns:.1} ns/次")
-    } else {
-        format!("{:.3} ms/次", ns / 1e6)
-    }
-}
-
-/// 人读的字节数（工作集与 FAST 容量对照用）。
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cutile::emit::Fragment;
 
     fn settings() -> Settings {
         Settings::defaults(&cli::settings::Roots::new(
@@ -722,27 +342,36 @@ mod tests {
     /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。
     #[test]
     fn the_performance_line_is_printed_even_when_nothing_was_measured() {
-        let peak = Peak {
+        let peak = cutile::bench::Peak {
             value: 68.0e9,
             src: "2*8*2666e6".to_string(),
         };
 
-        let reached = performance_note(Performance::new(Some(0.72), false), Some(&peak));
+        let reached = report::performance_note(
+            cutile::bench::Performance::new(Some(0.72), false),
+            Some(&peak),
+        );
         assert!(reached.contains("72.0%"), "{reached}");
         assert!(reached.contains("达到 70% 门槛"), "{reached}");
         assert!(reached.contains("不是“相对原生库的 85%”"), "{reached}");
 
-        let below = performance_note(Performance::new(Some(0.0069), false), Some(&peak));
+        let below = report::performance_note(
+            cutile::bench::Performance::new(Some(0.0069), false),
+            Some(&peak),
+        );
         assert!(below.contains("0.7%"), "{below}");
         assert!(below.contains("低于 70% 门槛"), "{below}");
         assert!(below.contains("特化代码"), "{below}");
 
-        let cached = performance_note(Performance::new(Some(0.19), true), Some(&peak));
+        let cached = report::performance_note(
+            cutile::bench::Performance::new(Some(0.19), true),
+            Some(&peak),
+        );
         assert!(cached.contains("口径无效"), "{cached}");
         assert!(cached.contains("不参与 §16 判定"), "{cached}");
 
         // 没有峰值：判据没有尺子，仍要说清“未测量”，而不是静默通过。
-        let unknown = performance_note(Performance::new(None, false), None);
+        let unknown = report::performance_note(cutile::bench::Performance::new(None, false), None);
         assert!(unknown.contains("未测量"), "{unknown}");
         assert!(unknown.contains("不参与 Go/No-Go"), "{unknown}");
         assert!(!unknown.contains("门槛"), "{unknown}");
@@ -858,7 +487,7 @@ mod tests {
         let note = write_ledger(
             &catalogue,
             &verified,
-            &passed_line(&verified),
+            &report::passed_line(&verified),
             &kernel_dirs(&settings()),
         )
         .expect("应写出台账");
@@ -866,18 +495,5 @@ mod tests {
         let text = std::fs::read_to_string(path).expect("台账可读");
         assert!(text.contains("| 原语 | 实现 | 等级 | 见证 |"), "{text}");
         assert!(text.contains("pipe2"), "{text}");
-    }
-
-    #[test]
-    fn a_sub_microsecond_kernel_is_reported_in_nanoseconds() {
-        assert_eq!(per_run(1.9), "1.9 ns/次");
-        assert_eq!(per_run(13_300_000.0), "13.300 ms/次");
-    }
-
-    #[test]
-    fn byte_sizes_are_printable_next_to_the_fast_capacity() {
-        assert_eq!(human_bytes(148), "148 B");
-        assert_eq!(human_bytes(10_485_760), "10.0 MiB");
-        assert_eq!(human_bytes(524_288), "512.0 KiB");
     }
 }

@@ -24,35 +24,56 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    dispatch(invocation)
+}
+
+/// 命令分派：每个命令只接一个薄壳函数，退出码汇总统一走 [`finish`]。
+fn dispatch(invocation: cli::Invocation) -> ExitCode {
     match invocation.command() {
         cli::Command::Help => {
             print!("{}", cli::USAGE);
             ExitCode::SUCCESS
         }
-        cli::Command::Status { weights } => match status(weights.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("✗ {error}");
-                ExitCode::from(error.code().exit_code())
-            }
-        },
+        cli::Command::Status { weights } => finish(status(weights.as_deref())),
         cli::Command::Run {
             weights,
             input,
             device,
-        } => match run(weights, input.as_deref(), device.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("✗ {error}");
-                ExitCode::from(error.code().exit_code())
-            }
-        },
-        cli::Command::Verify { .. } | cli::Command::Bench { .. } => {
-            // 组装点只分派：这两个审计命令今天由 `cutile` 二进制提供，`llm` 不复制实现。
-            eprintln!("✗ 该命令当前由 `cargo run --bin cutile -- ...` 提供（`llm` 只负责组装）");
-            ExitCode::from(2)
+        } => finish(run(weights, input.as_deref(), device.as_deref())),
+        cli::Command::Verify { .. } | cli::Command::Bench { .. } => audit_note(),
+        cli::Command::Train {
+            lr,
+            warmup,
+            steps,
+            clip,
+            accumulation,
+            load,
+        } => finish(train_run(
+            lr.as_deref(),
+            warmup.as_deref(),
+            steps.as_deref(),
+            clip.as_deref(),
+            accumulation.as_deref(),
+            load.as_deref(),
+        )),
+    }
+}
+
+/// 命令结果 → 退出码：成功走 0，失败按诊断码分级打印。
+fn finish(result: Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("✗ {error}");
+            ExitCode::from(error.code().exit_code())
         }
     }
+}
+
+/// 组装点不复制审计实现：这两个命令今天由 `cutile` 二进制提供。
+fn audit_note() -> ExitCode {
+    eprintln!("✗ 该命令当前由 `cargo run --bin cutile -- ...` 提供（`llm` 只负责组装）");
+    ExitCode::from(2)
 }
 
 /// 每台设备的设备侧代码这次构建带了什么：只有源码，还是连镜像一起带上了。
@@ -328,7 +349,7 @@ fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
                 )
                 .with("llm run")
             })?;
-        let w = decode_f32(&file.load(entry)?)?;
+        let w = weights::load_f32(entry, &file)?;
         if w.len() != n * m {
             stopped = Some(format!(
                 "`{name}`：条目是 {} 个元素，而形状 {n}×{m} 需要 {}",
@@ -385,25 +406,143 @@ fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// 条目字节 → 小端 f32 元素。
+/// `train` 分派：把 cli 搬下来的字符串解析成 [`train::TrainConfig`]，`--load` 从快照恢复事实与矩状态。
 ///
-/// 用 `as_chunks` 而不是 `chunks_exact(4)`：块宽是常量时前者同时给出整块与余数。余数非空意味着
-/// 条目长度不是一个 f32 的整数倍——这是数据问题，必须报错而不是把尾巴悄悄丢掉（丢掉的正好是
-/// 最后一列，算出来的数会"看起来对"）。
-fn decode_f32(bytes: &[u8]) -> Result<Vec<f32>> {
-    let (words, rest) = bytes.as_chunks::<4>();
-    if !rest.is_empty() {
-        return Err(Error::new(
-            Code::Invalid,
+/// 前向/反传会话循环在 `train::Session`（夹具级闭环见 train 测试）；本组装点不复制模型装载，
+/// 真实权重通路仍属未接入范围。
+fn train_run(
+    lr: Option<&str>,
+    warmup: Option<&str>,
+    steps: Option<&str>,
+    clip: Option<&str>,
+    accumulation: Option<&str>,
+    load: Option<&str>,
+) -> Result<()> {
+    let config = build_train_config(lr, warmup, steps, clip, accumulation)?;
+    match load {
+        Some(path) => report_recovered(path),
+        None => {
+            report_train_config(&config);
+            Ok(())
+        }
+    }
+}
+
+/// 把 cli 搬下来的字符串解析成 [`train::TrainConfig`]；数值口径归组装点。
+fn build_train_config(
+    lr: Option<&str>,
+    warmup: Option<&str>,
+    steps: Option<&str>,
+    clip: Option<&str>,
+    accumulation: Option<&str>,
+) -> Result<train::TrainConfig> {
+    let (learning_rate, clip_norm) = parse_lr_clip(lr, clip)?;
+    let (warmup_steps, max_steps, accum) = parse_counts(warmup, steps, accumulation)?;
+    train::TrainConfig::new(learning_rate, warmup_steps, max_steps, clip_norm, accum)
+        .map_err(|error| error.with("llm train"))
+}
+
+/// 学习率与裁剪阈值：两个 f32 选项。
+fn parse_lr_clip(lr: Option<&str>, clip: Option<&str>) -> Result<(f32, Option<f32>)> {
+    let learning_rate = parse_optional_f32(lr, "--lr")?.unwrap_or(1e-3);
+    let clip_norm = parse_optional_f32(clip, "--clip")?;
+    Ok((learning_rate, clip_norm))
+}
+
+/// warmup、总步数与累积窗口：三个无符号整数选项。
+fn parse_counts(
+    warmup: Option<&str>,
+    steps: Option<&str>,
+    accumulation: Option<&str>,
+) -> Result<(u64, u64, u32)> {
+    let warmup_steps = parse_optional_uint(warmup, "--warmup")?.unwrap_or(0);
+    let max_steps = parse_optional_uint(steps, "--steps")?.unwrap_or(1);
+    let accum = parse_optional_uint(accumulation, "--accumulation")?.unwrap_or(1);
+    Ok((warmup_steps, max_steps, accum))
+}
+
+/// `--load`：从快照读出恢复事实、条目表与矩状态并排版汇报。
+fn report_recovered(path: &str) -> Result<()> {
+    let snapshot = train::snapshot::Snapshot::read(std::path::Path::new(path))?;
+    let facts = snapshot.facts();
+    let moments = snapshot.moments();
+    let report = Report::new("llm —— 从检查点恢复")
+        .row("步数", format!("第 {} 步", facts.step()))
+        .row(
+            "批形状",
+            format!("{} × {}", facts.batch_rows(), facts.batch_cols()),
+        )
+        .row(
+            "层 / 条目",
             format!(
-                "条目长度 {} 不是 f32 的整数倍（余 {} 字节）",
-                bytes.len(),
-                rest.len()
+                "{} 层，{} 条权重",
+                facts.layers(),
+                snapshot.weights().entries().len()
             ),
         )
-        .with("llm run"));
+        .row(
+            "矩状态",
+            format!(
+                "{} 槽，优化器第 {} 步",
+                moments.slots().len(),
+                moments.step()
+            ),
+        );
+    print!("{}", report.render());
+    Ok(())
+}
+
+/// 无 `--load`：排版配置；会话闭环由 `train::Session` 装配。
+fn report_train_config(config: &train::TrainConfig) {
+    let report = Report::new("llm —— 训练配置（会话闭环由 train::Session 装配）")
+        .row("学习率", format!("{}", config.learning_rate))
+        .row(
+            "调度",
+            format!("warmup {}/{} 步", config.warmup_steps, config.max_steps),
+        )
+        .row(
+            "裁剪",
+            config
+                .clip_norm
+                .map_or_else(|| "不裁剪".to_string(), |value| format!("{value}")),
+        )
+        .row("累积", format!("{} micro-batch", config.accumulation()));
+    print!("{}", report.render());
+}
+
+/// 可选 f32：缺失返回 `None`；非法或非有限数是 [`Code::Invalid`]。
+fn parse_optional_f32(text: Option<&str>, flag: &str) -> Result<Option<f32>> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let value: f32 = text.parse().map_err(|_| {
+        Error::new(Code::Invalid, format!("`{flag}` 的 `{text}` 不是 f32")).with("llm train")
+    })?;
+    if !value.is_finite() {
+        return Err(
+            Error::new(Code::Invalid, format!("`{flag}` 的 `{text}` 不是有限数")).with("llm train"),
+        );
     }
-    Ok(words.iter().map(|word| f32::from_le_bytes(*word)).collect())
+    Ok(Some(value))
+}
+
+/// 可选无符号整数：解析在组装点，文法层只搬字符串。
+fn parse_optional_uint<T>(text: Option<&str>, flag: &str) -> Result<Option<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let value = text.parse().map_err(|error| {
+        Error::new(
+            Code::Invalid,
+            format!("`{flag}` 的 `{text}` 不是整数：{error}"),
+        )
+        .with("llm train")
+    })?;
+    Ok(Some(value))
 }
 
 /// `--input a,b,c` → 向量；空段被跳过，段内空白被裁剪。
@@ -591,7 +730,7 @@ mod tests {
             .header()
             .get(&format!("blk.0.attn_q{}", nn::WEIGHT_SUFFIX))
             .expect("条目存在");
-        let w = decode_f32(&file.load(entry).expect("按需读")).expect("f32 条目");
+        let w = weights::load_f32(entry, &file).expect("f32 条目");
         let x: Vec<f32> = (0..8)
             .map(|index| (index % 8) as f32 * 0.125 - 0.5)
             .collect();
