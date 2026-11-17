@@ -273,3 +273,79 @@ fn batch_rejects_non_multiple_length_and_zero_batch() {
         .is_err()
     );
 }
+
+#[test]
+fn batch_var_keeps_mixed_history_lengths_independent_and_plain_matches_flash() {
+    let (q_rows, heads, d) = (1, 2, 3);
+    let hist = [3usize, 5];
+    let batch = hist.len();
+    let q_seq = heads * q_rows * d;
+    let mut q = Vec::new();
+    let mut k = Vec::new();
+    for (seq, &h) in hist.iter().enumerate() {
+        q.extend(det_headed(heads, q_rows, d, -0.5 + seq as f32, 0.13));
+        k.extend(det_headed(heads, h, d, 0.4 + seq as f32, -0.09));
+    }
+    // V 按序列段取常数：段 0 全 1、段 1 全 2。softmax 权重和为 1，常数 V 下段输出恒等于
+    // 该段常数，借此核对两条不同历史长度的序列结果互不串段。
+    let mut v = Vec::new();
+    for (seq, &h) in hist.iter().enumerate() {
+        let constant = 1.0 + seq as f32;
+        v.extend(std::iter::repeat_n(constant, heads * h * d));
+    }
+
+    let mut plain = vec![0.0; batch * q_seq];
+    decode_forward_batch_var(&q, &k, &v, &mut plain, q_rows, &hist, d, heads)
+        .expect("朴素变长批量 decode");
+    let mut flash = vec![0.0; batch * q_seq];
+    decode_flash_forward_batch_var(&q, &k, &v, &mut flash, q_rows, &hist, d, heads)
+        .expect("flash 变长批量 decode");
+
+    assert!(testkit::all_finite(&plain));
+    assert!(testkit::approx_eq(&flash, &plain, 1e-5));
+    for seq in 0..batch {
+        let constant = 1.0 + seq as f32;
+        let span = &plain[seq * q_seq..(seq + 1) * q_seq];
+        assert!(
+            span.iter().all(|value| (value - constant).abs() < 1e-5),
+            "序列 {seq}（历史 {hist:?}）输出应恒等于本段 V 常数 {constant}，得到 {span:?}"
+        );
+    }
+}
+
+#[test]
+fn batch_var_one_entry_matches_the_multi_head_kernel() {
+    let (q_rows, hist, heads, d) = (1, 4, 2, 3);
+    let q = det_headed(heads, q_rows, d, -0.5, 0.13);
+    let k = det_headed(heads, hist, d, 0.4, -0.09);
+    let v = det_headed(heads, hist, d, -0.2, 0.11);
+
+    let mut multi = vec![0.0; heads * q_rows * d];
+    decode_forward_heads(&q, &k, &v, &mut multi, q_rows, hist, d).expect("多头朴素");
+    let mut batch = vec![0.0; heads * q_rows * d];
+    decode_forward_batch_var(&q, &k, &v, &mut batch, q_rows, &[hist], d, heads)
+        .expect("变长入口单段");
+    assert_eq!(multi, batch, "batch=1 变长入口必须与多头入口逐元素等价");
+}
+
+#[test]
+fn batch_var_rejects_mismatched_kv_length_empty_or_zero_history() {
+    let (q_rows, heads, d) = (1, 2, 3);
+    let hist = [3usize, 5];
+    let q: Vec<_> = (0..heads * q_rows * d * hist.len()).map(|_| 0.1).collect();
+    let k: Vec<_> = (0..heads * hist.iter().sum::<usize>() * d)
+        .map(|_| 0.2)
+        .collect();
+    let v: Vec<_> = k.clone();
+    let mut out = vec![0.0; q.len()];
+
+    // K/V 总长与逐段历史之和不符：游标切段守不住，直接拒绝。
+    assert!(
+        decode_forward_batch_var(&q, &k[..k.len() - 1], &v, &mut out, q_rows, &hist, d, heads)
+            .is_err()
+    );
+    // 空历史表：序列数必须非零。
+    assert!(decode_forward_batch_var(&q, &k, &v, &mut out, q_rows, &[], d, heads).is_err());
+    // 某段历史为 0：段内行数守卫拦下。
+    assert!(decode_forward_batch_var(&q, &k, &v, &mut out, q_rows, &[3, 0], d, heads).is_err());
+}
