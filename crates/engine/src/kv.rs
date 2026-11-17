@@ -6,9 +6,11 @@
 //!
 //! 簿记与数据分开是两个类型，而不是一个类型里的两个字段：
 //!
-//! - [`Cache`] 只回答"哪些页被借出"，[`Table`] 只回答"这条序列占了哪些页"——两者都不碰页里的数；
-//! - [`Pager`] 把页号与页背后的缓冲绑在一起：借出一页就同时有了可写的数据块，归还一页就同时把
-//!   这块数据清零。于是"页被复用时看到上一条序列的字节"这件事没有发生的路径——清零点只有一处。
+//! - [`Cache`] 只回答"哪些页被借出、各被几个持有者引用"，[`Table`] 只回答"这条序列占了哪些页"
+//!   ——两者都不碰页里的数；
+//! - [`Pager`] 把页号与页背后的缓冲绑在一起：借出一页就同时有了可写的数据块，最后一个持有者
+//!   归还一页才同时把这块数据清零。于是"页被复用时看到上一条序列的字节"这件事没有发生的路径
+//!   ——清零点只有一处。
 //!
 //! 连续批的关键就是把页的粒度与序列长度解耦，所以页表必须是显式类型——不能藏在向量里靠约定。
 //! [`Pager`] 因此也不持有页表：它只认 [`Slot`]，"第几页第几格"由页表算好再交给它。
@@ -16,8 +18,14 @@
 //! 页表随序列增长：[`Table::grow`] 抬高容量，页仍从 [`Cache`] 取、由调用方 [`Table::push`]。
 //! 于是"这条序列还要几页"是一次显式计算，而不是等 KV 缓冲越界才暴露。
 //!
-//! [`Cache::release`] 用每页一字节的存活位图判重复归还（O(1)）：一次 `finish` 要归还整条序列的页，
-//! 线性查"这页是否已经在空闲表里"会把回收变成 O(总页数 × 页数)（页数即待归还的页）。
+//! [`Cache`] 给每页记引用计数：`alloc` 置 1，[`Cache::share`] 在另一张表里采纳同一前缀页时 +1，
+//! [`Cache::release`] 减 1；计数归 0 才把页退回空闲池。重复归还、越界页与计数下溢都按 `Invalid`
+//! 报错，O(1) 命中。一次 `finish` 要归还整条序列的页，线性查"这页是否已经在空闲表里"会把回收
+//! 变成 O(总页数 × 页数)（页数即待归还的页）。
+//!
+//! 共享期内前缀行是只读的：模型只写前缀之后的新页；页数据在最后一次 `release` 之前不清零，
+//! 计数归零时才回到空闲池并清零。前缀匹配的准入策略（哪条请求复用哪段前缀）、LRU 淘汰与跨序列
+//! 向量复用都不在本类型内——这里只落共享句柄、计数与回收判定原语。
 //!
 //! # 例子
 //!
@@ -270,17 +278,31 @@ impl Pager {
         self.cache.alloc()
     }
 
-    /// 归还一页并**清零它的数据**。
+    /// 采纳一页给另一张页表共享：只递增引用计数，不动页里的数据。
     ///
-    /// 清零点只有这一处：借出一页时不做第二次清零，因为页只可能经这里回到池里。
-    /// 先让页池判定越界与重复归还，再清数据——归还失败时那页仍然是活的，数据不能动。
+    /// 与 [`Pager::alloc`] 分开：新页从池里取（计数置 1），前缀共享页只经这里 +1。
+    ///
+    /// # Errors
+    ///
+    /// 页越界，或不在借出状态。
+    pub fn share(&mut self, page: Page) -> Result<()> {
+        self.cache.share(page)
+    }
+
+    /// 归还一页；只有这是最后一个持有者时才**清零它的数据**。
+    ///
+    /// 清零点只有这一处：借出一页时不做第二次清零，因为页只可能经这里回到池里。先让页池
+    /// 判定越界与重复归还，再清数据——归还失败时那页仍然是活的，数据不能动；仍被共享时
+    /// 前缀行必须保持可读，也不能清零。
     ///
     /// # Errors
     ///
     /// 页不在池里，或不在借出状态。
     pub fn release(&mut self, page: Page) -> Result<()> {
-        self.cache.release(page)?;
-        self.clear(page);
+        let last = self.cache.release(page)?;
+        if last {
+            self.clear(page);
+        }
         Ok(())
     }
 
@@ -394,14 +416,14 @@ impl Pager {
 
 /// 页号分配器：固定 `total` 页，每页 `page_size` 个 token 位。
 ///
-/// `live` 是按页编号索引的存活位图：`release` 因此能 O(1) 判"这页是否已经在空闲表里"。
-/// 位图是稠密的，每页一字节；相对页里的 KV 数据可以忽略。页里的数据不在本类型：那是
-/// [`Pager`] 的事，本类型只管"哪些页被借出"。
+/// `refs` 是按页编号索引的引用计数：`release` 因此能 O(1) 判"这页是否已经在空闲表里"，
+/// 也能回答"它还被几个持有者引用"。计数是稠密的，每页一个 `u32`；相对页里的 KV 数据可以忽略。
+/// 页里的数据不在本类型：那是 [`Pager`] 的事，本类型只管"哪些页被借出、被几个人借"。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cache {
     page_size: usize,
     free: Vec<Page>,
-    live: Vec<bool>,
+    refs: Vec<u32>,
     in_use: usize,
 }
 
@@ -424,7 +446,7 @@ impl Cache {
         Ok(Self {
             page_size,
             free,
-            live: vec![false; total],
+            refs: vec![0; total],
             in_use: 0,
         })
     }
@@ -432,35 +454,68 @@ impl Cache {
     /// 取一页；池空时返回 `None`（调用方决定是拒绝请求还是排队）。
     pub fn alloc(&mut self) -> Option<Page> {
         let page = self.free.pop()?;
-        self.live[page.id() as usize] = true;
+        self.refs[page.id() as usize] = 1;
         self.in_use += 1;
         Some(page)
     }
 
-    /// 归还一页：越界或重复归还是调用方的 bug，直接报错。
+    /// 把一页再交给另一张页表引用：前缀页被多条序列共享时的采纳入口。
     ///
-    /// 两个判定都查存活位图：越界是 `None`，重复归还是 `Some(false)`。
-    pub fn release(&mut self, page: Page) -> Result<()> {
-        match self.live.get_mut(page.id() as usize) {
-            None => Err(
+    /// 只递增计数，不从空闲池取、也不动页里的数据。采纳方把同一 [`Page`] 推进自己的
+    /// [`Table`]；独占新页仍走 [`Cache::alloc`]，两条路径分开。
+    ///
+    /// # Errors
+    ///
+    /// 页越界，或不在借出状态（从未分配、已经归还）。
+    pub fn share(&mut self, page: Page) -> Result<()> {
+        let Some(count) = self.refs.get_mut(page.id() as usize) else {
+            return Err(
+                Error::new(Code::Invalid, format!("页 {} 不在页池范围内", page.id()))
+                    .with("engine::kv::Cache::share"),
+            );
+        };
+        if *count == 0 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "页 {} 不在借出状态：要么被重复共享，要么从未分配",
+                    page.id()
+                ),
+            )
+            .with("engine::kv::Cache::share"));
+        }
+        *count += 1;
+        Ok(())
+    }
+
+    /// 归还一页：越界、重复归还或计数下溢都是调用方的 bug，直接报错。
+    ///
+    /// 计数减 1，**只有归 0** 才把页退回空闲池；仍被引用时页保持存活、数据不动。返回
+    /// `true` 表示这是最后一个持有者（调用方据此清零页数据），`false` 表示仍有共享者。
+    pub fn release(&mut self, page: Page) -> Result<bool> {
+        let Some(count) = self.refs.get_mut(page.id() as usize) else {
+            return Err(
                 Error::new(Code::Invalid, format!("页 {} 不在页池范围内", page.id()))
                     .with("engine::kv::Cache::release"),
-            ),
-            Some(live) if !*live => Err(Error::new(
+            );
+        };
+        if *count == 0 {
+            return Err(Error::new(
                 Code::Invalid,
                 format!(
                     "页 {} 不在借出状态：要么被重复归还，要么从未分配",
                     page.id()
                 ),
             )
-            .with("engine::kv::Cache::release")),
-            Some(live) => {
-                *live = false;
-                self.free.push(page);
-                self.in_use -= 1;
-                Ok(())
-            }
+            .with("engine::kv::Cache::release"));
         }
+        *count -= 1;
+        if *count > 0 {
+            return Ok(false);
+        }
+        self.free.push(page);
+        self.in_use -= 1;
+        Ok(true)
     }
 
     /// 页宽（每页多少 token）。
@@ -470,7 +525,7 @@ impl Cache {
 
     /// 页总数。
     pub fn total(&self) -> usize {
-        self.live.len()
+        self.refs.len()
     }
 
     /// 已占用页数。
@@ -488,12 +543,17 @@ impl Cache {
         Shape::new([rows, self.page_size])
     }
 
-    /// 这一页当前是否被借出。
+    /// 这一页当前是否被借出（引用计数 > 0）。
     ///
     /// [`Pager`] 用它拒绝"往已归还的页里写"：[`Slot`] 是可以在 `finish` 之后继续存在的值，
     /// 而它指向的页此时可能已经属于另一条序列——写进去就是一次静默的串数据。
     pub fn is_live(&self, page: Page) -> bool {
-        self.live.get(page.id() as usize).copied().unwrap_or(false)
+        self.reference_count(page) > 0
+    }
+
+    /// 这一页当前的引用计数；越界页返回 0。
+    pub fn reference_count(&self, page: Page) -> u32 {
+        self.refs.get(page.id() as usize).copied().unwrap_or(0)
     }
 }
 

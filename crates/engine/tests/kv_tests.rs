@@ -238,6 +238,72 @@ fn pages_do_not_share_rows() {
     assert_eq!((pager.total(), pager.page_size()), (2, 2));
 }
 
+/// 两表共引一页：第一张表归还后页仍存活、前缀行未被清零；最后一个持有者归还才回池并清零。
+#[test]
+fn a_shared_page_survives_the_first_table_releasing_it() {
+    let mut pager = Pager::new(Cache::new(2, 2).expect("页池"), 3).expect("行宽");
+    let page = pager.alloc().expect("第一页");
+    let slot = Slot { page, offset: 0 };
+    pager.write(slot, &[1.0, 2.0, 3.0]).expect("写前缀行");
+
+    pager.share(page).expect("另一张表采纳前缀页");
+    assert_eq!(pager.cache().reference_count(page), 2);
+
+    pager.release(page).expect("第一张表归还");
+    assert!(pager.cache().is_live(page), "还有共享者，页仍存活");
+    assert_eq!(
+        pager.row(slot).expect("读"),
+        [1.0, 2.0, 3.0],
+        "共享期内前缀行只读，不能清零"
+    );
+    assert_eq!(pager.in_use(), 1);
+
+    pager.release(page).expect("最后一个持有者归还");
+    assert!(!pager.cache().is_live(page));
+    assert_eq!(pager.in_use(), 0);
+    let again = pager.alloc().expect("同一页再借出来");
+    assert_eq!(again, page, "空闲表按页号复用");
+    assert_eq!(
+        pager.row(slot).expect("读"),
+        [0.0, 0.0, 0.0],
+        "归零时才清零"
+    );
+}
+
+/// 引用计数口径：共享两次、释放两次后仍剩一个持有者；归零时才回空闲池。
+#[test]
+fn reference_count_is_accounted_across_share_and_release() {
+    let mut cache = Cache::new(2, 4).expect("页池");
+    let page = cache.alloc().expect("分配");
+    assert_eq!(cache.reference_count(page), 1);
+
+    cache.share(page).expect("第一次共享");
+    cache.share(page).expect("第二次共享");
+    assert_eq!(cache.reference_count(page), 3);
+    assert_eq!((cache.in_use(), cache.free_pages()), (1, 1));
+
+    cache.release(page).expect("第一次归还");
+    cache.release(page).expect("第二次归还");
+    assert_eq!(cache.reference_count(page), 1);
+    assert!(cache.is_live(page), "仍有一个持有者，页不能回池");
+
+    cache.release(page).expect("最后一次归还");
+    assert_eq!(cache.reference_count(page), 0);
+    assert_eq!((cache.in_use(), cache.free_pages()), (0, 2));
+}
+
+/// 共享入口同样校验越界与非存活页；失败不能改账目。
+#[test]
+fn sharing_an_out_of_range_or_dead_page_is_rejected() {
+    let mut cache = Cache::new(1, 4).expect("页池");
+    assert_eq!(cache.share(Page::new(9)).unwrap_err().code(), Code::Invalid);
+    let page = cache.alloc().expect("分配");
+    cache.release(page).expect("先归还");
+    assert_eq!(cache.share(page).unwrap_err().code(), Code::Invalid);
+    assert_eq!(cache.in_use(), 0, "共享失败不动占用");
+    assert_eq!(cache.free_pages(), 1, "共享失败不把页塞进空闲表");
+}
+
 /// 多层模型共用一行：每层切自己那段，层与层不重叠。
 ///
 /// 页池不知道层，所以"第 `l` 层从哪个元素开始"只能由模型给偏移——这条测试锁住的是

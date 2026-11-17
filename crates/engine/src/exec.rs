@@ -34,6 +34,41 @@ use diagnostic::{Code, Error, Result};
 use std::fmt;
 use storage::Allocator;
 
+/// 定长类型化闭集标量槽（D9 / ADR 0043）：首批仅 rope 解码位置。
+///
+/// 槽位集合冻结在 ADR 0043，新增槽位走 ADR 修订；不用字符串键名值表，也不用 `HashMap` 标量
+/// 上下文，热路径没有查表。位置这类语义参数不编进 1 元素 f32 缓冲——缓冲切片通道仍由
+/// [`Program::run`](super::exec::Program::run) 的 `inputs` / `outputs` 承担。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ScalarSlots {
+    /// `rope_f32` 的解码位置；该算子尚未接入模型路径时保持 `None`。
+    rope_position: Option<u32>,
+}
+
+impl ScalarSlots {
+    /// 空槽：一个标量都没填。
+    pub const fn new() -> Self {
+        Self {
+            rope_position: None,
+        }
+    }
+
+    /// 写入 rope 解码位置。
+    pub fn set_rope_position(&mut self, position: u32) {
+        self.rope_position = Some(position);
+    }
+
+    /// rope 解码位置（只读；未填为 `None`）。
+    pub fn rope_position(&self) -> Option<u32> {
+        self.rope_position
+    }
+
+    /// 是否一个槽位都没填。
+    pub fn is_empty(&self) -> bool {
+        self.rope_position.is_none()
+    }
+}
+
 /// 一次 kernel 的网格与线程块几何。
 ///
 /// 三轴是设备 API 的公共形态（CUDA / Metal / HIP 都是 `(grid, block)`）；DSL 的宿主 API
@@ -44,12 +79,35 @@ pub struct Launch {
     pub grid: [u32; 3],
     /// 线程块大小（每块多少线程）。
     pub block: [u32; 3],
+    /// 定长类型化标量槽（D9 / ADR 0043）；几何之外的语义参数走这里。
+    scalars: ScalarSlots,
 }
 
 impl Launch {
-    /// 由网格与线程块构造。
+    /// 由网格与线程块构造；标量槽默认全空。
     pub fn new(grid: [u32; 3], block: [u32; 3]) -> Self {
-        Self { grid, block }
+        Self {
+            grid,
+            block,
+            scalars: ScalarSlots::new(),
+        }
+    }
+
+    /// 替换整套标量槽（构造期装配；几何之外的参数一次性给定）。
+    #[must_use]
+    pub fn with_scalars(mut self, scalars: ScalarSlots) -> Self {
+        self.scalars = scalars;
+        self
+    }
+
+    /// 标量槽（只读）。
+    pub fn scalars(&self) -> &ScalarSlots {
+        &self.scalars
+    }
+
+    /// 标量槽（可写）。
+    pub fn scalars_mut(&mut self) -> &mut ScalarSlots {
+        &mut self.scalars
     }
 
     /// 总线程数：`grid` 与 `block` 的逐轴乘积再相乘。
@@ -159,6 +217,16 @@ impl Node {
     /// 几何。
     pub fn launch(&self) -> Launch {
         self.launch
+    }
+
+    /// 标量槽（只读，D9 / ADR 0043）。
+    pub fn scalars(&self) -> &ScalarSlots {
+        &self.launch.scalars
+    }
+
+    /// 标量槽（可写，D9 / ADR 0043）。
+    pub fn scalars_mut(&mut self) -> &mut ScalarSlots {
+        &mut self.launch.scalars
     }
 
     /// 只读输入操作数，按声明顺序。

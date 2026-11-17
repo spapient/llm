@@ -11,6 +11,11 @@ fn sequence(id: u64, prompt: usize, max_new: usize, page_size: usize) -> Sequenc
     Sequence::new(id, &prompt, max_new, page_size, Stream::new(0)).expect("序列")
 }
 
+/// 指定提示 token 的序列：用于需要避开前缀整页共享的夹具（两条提示不同就不会采纳同一页）。
+fn sequence_with(id: u64, tokens: &[u32], max_new: usize, page_size: usize) -> Sequence {
+    Sequence::new(id, tokens, max_new, page_size, Stream::new(0)).expect("序列")
+}
+
 #[test]
 fn an_admitted_sequence_is_owned_by_the_batch() {
     let mut batch = Batch::new(pool(4, 4));
@@ -136,10 +141,11 @@ fn emit_records_the_token_in_the_sequence() {
 /// 被挡的那一步没有生成：历史里不能多一个 token，否则重试会看见一个不存在的输出。
 #[test]
 fn a_blocked_step_does_not_record_a_token() {
-    // 两页、每页 2 个 token：两条序列各占一页，各自下一步都要新页。
+    // 两页、每页 2 个 token：两条序列各占一页，各自下一步都要新页。提示刻意不同，
+    // 不触发前缀整页共享，才能复现"两条各独占一页、池被占满"的阻塞账。
     let mut batch = Batch::new(pool(2, 2));
-    batch.admit(sequence(1, 2, 1, 2)).expect("准入");
-    batch.admit(sequence(2, 2, 1, 2)).expect("准入");
+    batch.admit(sequence_with(1, &[0, 0], 1, 2)).expect("准入");
+    batch.admit(sequence_with(2, &[1, 1], 1, 2)).expect("准入");
     assert_eq!(batch.blocked(), [1, 2], "两条都在等页");
 
     assert_eq!(batch.emit(1, 5).expect("被挡不是错误"), Progress::Blocked);
@@ -151,6 +157,75 @@ fn a_blocked_step_does_not_record_a_token() {
     assert!(batch.finish(2).expect("腾页"));
     assert_eq!(batch.emit(1, 5).expect("重试"), Progress::Done);
     assert_eq!(batch.sequence(1).expect("在批里").tokens(), [5]);
+}
+
+/// 整页相同前缀被采纳为共享页：同一页号进新表，引用计数 2，池里只占一个页位。
+#[test]
+fn identical_prefix_is_adopted_as_shared_pages() {
+    let mut batch = Batch::new(pool(4, 2));
+    batch.admit(sequence_with(1, &[0, 0], 1, 2)).expect("准入");
+    batch.admit(sequence_with(2, &[0, 0], 1, 2)).expect("准入");
+
+    let first = batch.scheduler().pages_of(1).expect("源表");
+    let second = batch.scheduler().pages_of(2).expect("新表");
+    let shared = first.pages()[0];
+    assert_eq!(second.pages()[0], shared, "前缀整页被采纳进新表");
+    assert_eq!(
+        batch.scheduler().cache().reference_count(shared),
+        2,
+        "共享页有两个持有者"
+    );
+    assert_eq!(batch.scheduler().cache().in_use(), 1, "共享页只占一个池页");
+}
+
+/// 源序列结束后共享前缀行仍可读；最后一个持有者归还后页才回池清零。
+#[test]
+fn shared_prefix_row_survives_source_finish_until_last_holder_releases() {
+    let mut batch = Batch::new(pool(4, 2));
+    batch.admit(sequence_with(1, &[3, 3], 1, 2)).expect("准入");
+    batch.admit(sequence_with(2, &[3, 3], 1, 2)).expect("准入");
+    batch.write_kv(1, 0, &[9.0, 9.0]).expect("写前缀行");
+
+    assert!(batch.finish(1).expect("源序列结束"));
+    let shared = batch.scheduler().pages_of(2).expect("新表").pages()[0];
+    assert!(
+        batch.scheduler().cache().is_live(shared),
+        "仍被新序列引用，页不能清零"
+    );
+    assert_eq!(batch.kv(2, 0).expect("读共享前缀行"), [9.0, 9.0]);
+
+    assert!(batch.finish(2).expect("最后持有者结束"));
+    assert_eq!(batch.scheduler().cache().in_use(), 0, "最后归还后页回池");
+}
+
+/// 首页内发散的前缀不共享：新序列另取新页，两条各占一个池页位。
+#[test]
+fn diverging_prefix_takes_fresh_pages() {
+    let mut batch = Batch::new(pool(4, 2));
+    batch.admit(sequence_with(1, &[0, 0], 1, 2)).expect("准入");
+    batch.admit(sequence_with(2, &[0, 1], 1, 2)).expect("准入");
+
+    let first = batch.scheduler().pages_of(1).expect("源表");
+    let second = batch.scheduler().pages_of(2).expect("新表");
+    assert_ne!(second.pages()[0], first.pages()[0], "首页内发散，不共享");
+    assert_eq!(batch.scheduler().cache().in_use(), 2, "两条各独占一页");
+}
+
+/// 公共前缀不满一页时不拆页：整页共享只对齐到页边界。
+#[test]
+fn prefix_shorter_than_one_page_is_not_split() {
+    let mut batch = Batch::new(pool(4, 4));
+    batch.admit(sequence_with(1, &[0, 0], 1, 4)).expect("准入");
+    batch.admit(sequence_with(2, &[0, 0], 1, 4)).expect("准入");
+
+    let first = batch.scheduler().pages_of(1).expect("源表");
+    let second = batch.scheduler().pages_of(2).expect("新表");
+    assert_ne!(
+        second.pages()[0],
+        first.pages()[0],
+        "前缀 2 token < 页宽 4，落在新页"
+    );
+    assert_eq!(batch.scheduler().cache().in_use(), 2);
 }
 
 /// 记满之后再记是调用方多记了一次：上限只有 `max_new` 一处。

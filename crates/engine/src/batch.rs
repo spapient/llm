@@ -51,11 +51,39 @@ impl Batch {
     /// 序列自身不合法（重名、已结束、`max_new` 为零）时返回 `invalid`——那是调用方的状态
     /// 错误，与"页不够"不是一回事。
     pub fn admit(&mut self, sequence: Sequence) -> Result<Admission> {
-        if !self.scheduler.admit(&sequence)? {
+        let share = self.prefix_share(sequence.context());
+        if !self.scheduler.admit_shared(&sequence, share)? {
             return Ok(Admission::Full(sequence));
         }
         self.sequences.push(sequence);
         Ok(Admission::Admitted)
+    }
+
+    /// 前缀匹配（D12）：在批内找公共前缀最长的序列，返回 `(源序列 id, 可整页共享的页数)`。
+    ///
+    /// 只按页边界整页共享：不满一页的前缀不拆页（那一页混着非前缀 token），落在新页里；
+    /// 共享页数不超过源序列当前页表长度。比较 token 在这里做（序列上下文归批持有），页采纳与
+    /// 引用计数归调度器。
+    fn prefix_share(&self, context: &[u32]) -> Option<(u64, usize)> {
+        let page_size = self.scheduler.page_size();
+        let mut best: Option<(usize, u64, usize)> = None;
+        for existing in &self.sequences {
+            let prefix = common_prefix(context, existing.context());
+            let shared_pages = (prefix / page_size).min(
+                self.scheduler
+                    .pages_of(existing.id())
+                    .map(|table| table.len())
+                    .unwrap_or(0),
+            );
+            if shared_pages == 0 {
+                continue;
+            }
+            let better = best.is_none_or(|(best_prefix, _, _)| prefix > best_prefix);
+            if better {
+                best = Some((prefix, existing.id(), shared_pages));
+            }
+        }
+        best.map(|(_, id, pages)| (id, pages))
     }
 
     /// 这条序列在这个页池里有没有可能跑完（与 [`Scheduler::fits`] 同源）。
@@ -224,6 +252,14 @@ impl Batch {
             .iter()
             .position(|sequence| sequence.id() == id)
     }
+}
+
+/// 两段上下文的公共前缀长度；逐位比较有串行依赖，保留 zip 折叠。
+fn common_prefix(a: &[u32], b: &[u32]) -> usize {
+    a.iter()
+        .zip(b)
+        .take_while(|(left, right)| left == right)
+        .count()
 }
 
 #[cfg(test)]

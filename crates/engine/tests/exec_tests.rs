@@ -25,6 +25,27 @@ fn total_threads_multiplies_grid_and_block() {
 }
 
 #[test]
+fn scalar_slots_start_empty() {
+    let launch = Launch::new([1, 1, 1], [1, 1, 1]);
+    assert!(launch.scalars().is_empty());
+    assert_eq!(launch.scalars().rope_position(), None);
+}
+
+#[test]
+fn a_rope_position_round_trips_through_the_node() {
+    let mut scalars = ScalarSlots::new();
+    scalars.set_rope_position(7);
+    let launch = Launch::new([1, 1, 1], [8, 1, 1]).with_scalars(scalars);
+    let node = Node::new("rope_f32", launch);
+    assert_eq!(node.scalars().rope_position(), Some(7));
+    assert_eq!(node.launch().scalars().rope_position(), Some(7));
+
+    let mut other = Node::new("rope_f32", Launch::new([1, 1, 1], [8, 1, 1]));
+    other.scalars_mut().set_rope_position(12);
+    assert_eq!(other.scalars().rope_position(), Some(12));
+}
+
+#[test]
 fn a_graph_keeps_insertion_order() {
     let mut graph = Graph::new();
     assert!(graph.is_empty());

@@ -342,12 +342,35 @@ impl Scheduler {
     /// 超过整个页池，这条序列独占页池也跑不完，放进来只会让批卡在 [`Progress::Blocked`] 上、
     /// 而没有任何序列能结束，页也永远回不来。这种请求同样返回 `false`。
     pub fn admit(&mut self, sequence: &Sequence) -> Result<bool> {
+        self.admit_shared(sequence, None)
+    }
+
+    /// 准入并可选采纳一条在批序列的前缀页（D12 / prefix cache）。
+    ///
+    /// `share = Some((源序列 id, 共享页数))`：前缀按页边界对齐后，整页经 [`Pager::share`]
+    /// 采纳进新页表，引用计数 +1；其余页仍从池里新取。共享判定与源序列由 [`Batch`] 给出，
+    /// 调度器只负责页表与计数，不比较 token。源序列不在批里是调用方状态错误。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`admit`](Self::admit)；共享页越界或不在借出状态由 [`Pager::share`] 报 `invalid`。
+    pub fn admit_shared(
+        &mut self,
+        sequence: &Sequence,
+        share: Option<(u64, usize)>,
+    ) -> Result<bool> {
         self.check_admissible(sequence)?;
         let needed = sequence.pages_needed();
-        if !self.fits(sequence) || self.pager.free_pages() < needed {
+        if !self.fits(sequence) {
             return Ok(false);
         }
-        let table = self.reserve(needed, "engine::Scheduler::admit")?;
+        let (source_id, shared_requested) = share.unwrap_or((0, 0));
+        let shared_pages = shared_requested.min(needed);
+        let fresh = needed - shared_pages;
+        if self.pager.free_pages() < fresh {
+            return Ok(false);
+        }
+        let table = self.admit_table(needed, source_id, shared_pages, fresh)?;
         let needs_page = self.needs_page(sequence, &table);
         self.running.push(Running {
             id: sequence.id(),
@@ -355,6 +378,64 @@ impl Scheduler {
             needs_page,
         });
         Ok(true)
+    }
+
+    /// 建新页表：先采纳共享前缀页，再从池里补足剩余新页。
+    fn admit_table(
+        &mut self,
+        needed: usize,
+        source_id: u64,
+        shared_pages: usize,
+        fresh: usize,
+    ) -> Result<crate::kv::Table> {
+        let mut table = crate::kv::Table::new(needed)?;
+        self.adopt_shared(&mut table, source_id, shared_pages)?;
+        Self::fill(
+            &mut self.pager,
+            &mut table,
+            fresh,
+            "engine::Scheduler::admit_shared",
+        )?;
+        Ok(table)
+    }
+
+    /// 把源序列前缀的 `shared_pages` 页采纳进新页表：逐页 `share` 递增引用计数后入表。
+    fn adopt_shared(
+        &mut self,
+        table: &mut crate::kv::Table,
+        source_id: u64,
+        shared_pages: usize,
+    ) -> Result<()> {
+        let source_pages = self.source_pages(source_id, shared_pages)?;
+        for page in source_pages {
+            self.pager.share(page)?;
+            table.push(page)?;
+        }
+        Ok(())
+    }
+
+    /// 取源序列前缀页号；先整块复制出来，避免不可变借源表与可变借页池同时存续。
+    ///
+    /// 源序列不在批里是调用方状态错误，报 `Invalid`；共享页数为 0 时返回空表。
+    fn source_pages(&self, source_id: u64, shared_pages: usize) -> Result<Vec<crate::kv::Page>> {
+        if shared_pages == 0 {
+            return Ok(Vec::new());
+        }
+        let source = self.pages_of(source_id).ok_or_else(|| {
+            Error::new(
+                Code::Invalid,
+                format!("前缀源序列 {source_id} 不在批里：共享页无页表可取"),
+            )
+            .with("engine::Scheduler::admit_shared")
+        })?;
+        if shared_pages > source.len() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("前缀源序列 {source_id} 共享页数 {shared_pages} 超出页表"),
+            )
+            .with("engine::Scheduler::admit_shared"));
+        }
+        Ok(source.pages()[..shared_pages].to_vec())
     }
 
     /// 准入的状态判据：重名、已结束、页宽不符都是调用方的状态错误；页够不够由调用点判。
@@ -373,13 +454,6 @@ impl Scheduler {
             .with("engine::Scheduler::admit"));
         }
         self.check_width(sequence, "engine::Scheduler::admit")
-    }
-
-    /// 从页池里占 `needed` 页装成新页表；该不该占由调用点判。
-    fn reserve(&mut self, needed: usize, site: &'static str) -> Result<crate::kv::Table> {
-        let mut table = crate::kv::Table::new(needed)?;
-        Self::fill(&mut self.pager, &mut table, needed, site)?;
-        Ok(table)
     }
 
     /// 往页表里追加 `extra` 个新页：分配与入表成对发生，缺页说明空闲页数已被推翻。
