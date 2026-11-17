@@ -22,9 +22,9 @@ pub fn safetensors() -> Vec<u8> {
     file
 }
 
-/// 一份合法的检查点：事实四个数取最小合法值，一个 2×3 的 f32 条目。
+/// 一份合法的检查点：事实五个数取最小合法值，一个 2×3 的 f32 条目。
 pub fn snapshot() -> Vec<u8> {
-    let facts = train::snapshot::Facts::new(1, 1, 1, 1).expect("事实合法");
+    let facts = train::snapshot::Facts::new(1, 1, 1, 1, 1).expect("事实合法");
     let entry = weights::Entry::new("w", tensor::DType::F32, tensor::Shape::new([2, 3])).at(8);
     let header = weights::Header::new(vec![entry], 8).expect("条目表合法");
     train::snapshot::Snapshot::new(facts, header)
@@ -74,8 +74,11 @@ pub fn edges() -> [(&'static str, Vec<u8>); 3] {
     ]
 }
 
+/// 一份合法的词法输入：含函数体、局部绑定与字面量，分组与字符串都闭合。
+pub const LEX: &[u8] = b"fn f() { let x = 1; }";
+
 /// harness 目标名 → 合法范例；顺序与 CI 的 `FUZZ_TARGETS`、`drivers.rs` 的驱动一一对应。
-pub fn exemplars() -> [(&'static str, Vec<u8>); 8] {
+pub fn exemplars() -> [(&'static str, Vec<u8>); 9] {
     [
         ("fuzz_cli", ARGS.to_vec()),
         ("fuzz_weights_json", HEADER.as_bytes().to_vec()),
@@ -85,5 +88,6 @@ pub fn exemplars() -> [(&'static str, Vec<u8>); 8] {
         ("fuzz_serve_frames", frame()),
         ("fuzz_wire_sealed", frame()),
         ("fuzz_wire_leb", leb()),
+        ("fuzz_lex", LEX.to_vec()),
     ]
 }

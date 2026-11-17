@@ -4,8 +4,9 @@
 //! 而不是与真实输入毫无关系的噪声——真实缺陷几乎总在这些边角上（多一个字节的长度、写错的
 //! 分组数、半个转义序列）。同一 `(seed, case)` 在任何机器上都得到同一串字节，失败可复现。
 //!
-//! 覆盖文本与字节两类边界：`cli` 的参数文法、`weights` 的 JSON / safetensors / LLPK 容器、
-//! `train` 的检查点、`serve` 的帧解码、`wire` 的 LEB128 游标，以及 `wire` 三种接收器的
+//! 覆盖文本与字节两类边界：`cli` 的参数文法、`tool` 的词法解析、`weights` 的 JSON /
+//! safetensors / LLPK 容器、`train` 的检查点、`serve` 的帧解码、`wire` 的 LEB128 游标，以及
+//! `wire` 三种接收器的
 //! 不变量。它们都是"外部来的字节"，也都把错误当返回值，因此"不 panic / 结论稳定 / 拒绝有
 //! 话说"三条契约在这里是同一件事；最后一个不拒绝任何输入，它验的是"三条承诺互相一致"。
 //!
@@ -22,19 +23,19 @@ mod drivers;
 #[path = "support/seeds.rs"]
 mod seeds;
 
-use drivers::{Frames, Invocation, Json, Leb, Llpk, Safetensors, Sealed, Snapshot};
+use drivers::{Frames, Invocation, Json, Leb, Lex, Llpk, Safetensors, Sealed, Snapshot};
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
 ///
-/// 512 条 × 8 个目标 = 4096 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能
+/// 512 条 × 9 个目标 = 4608 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能
 /// 覆盖每个字节位置被扰动一次"就够——加密强度的随机源在这里没有价值，可复现才有。
 const CASES: u64 = 512;
 
 /// 全部被测入口及其合法种子；适配器顺序与 [`seeds::exemplars`] 一一对应，种子字节只在
 /// 范例清单里构造一次，遍历与种子校验两条测试共用这份配对。
-fn targets() -> [(&'static dyn Target, Seed); 8] {
-    let adapters: [&'static dyn Target; 8] = [
+fn targets() -> [(&'static dyn Target, Seed); 9] {
+    let adapters: [&'static dyn Target; 9] = [
         &Invocation,
         &Json,
         &Safetensors,
@@ -43,6 +44,7 @@ fn targets() -> [(&'static dyn Target, Seed); 8] {
         &Frames,
         &Leb,
         &Sealed,
+        &Lex,
     ];
     let exemplars = seeds::exemplars();
     std::array::from_fn(|i| (adapters[i], Seed::new(exemplars[i].1.clone())))

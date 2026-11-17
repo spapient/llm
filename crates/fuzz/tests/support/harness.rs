@@ -14,7 +14,7 @@ use llm_fuzz::Target;
 /// harness 边界：契约核对违约时把 [`Finding`] 转成 panic，交给 libFuzzer 留下触发输入。
 ///
 /// 契约库本身不出现 panic（生产 `src` 零 panic 门）；终止进程这一步只属于 harness 入口，
-/// 八个目标共用这一处转换，不再各写一遍 `if let Err(...) { panic!(...) }`。
+/// 全部目标共用这一处转换，不再各写一遍 `if let Err(...) { panic!(...) }`。
 #[cfg(unix)]
 fn panic_on_finding<T: Target>(target: &T, data: &[u8]) {
     if let Err(finding) = target.exercise(data) {

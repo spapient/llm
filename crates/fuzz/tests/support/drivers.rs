@@ -40,6 +40,19 @@ impl Target for Invocation {
     }
 }
 
+/// 词法解析：文本入口，覆盖未闭合分组/注释/字符串与饱和标识符等边角。
+pub struct Lex;
+
+impl Target for Lex {
+    fn name(&self) -> &str {
+        "tool::lex::parse"
+    }
+
+    fn run(&self, input: &[u8]) -> Result<(), Error> {
+        tool::parse(text(input)?).map(|_| ())
+    }
+}
+
 /// safetensors 头部里的 JSON。
 pub struct Json;
 
