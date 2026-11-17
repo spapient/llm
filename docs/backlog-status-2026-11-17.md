@@ -19,9 +19,9 @@
 | `cargo machete` | 无未用依赖 |
 | jscpd | 1.42% 行 / 1.71% token，117 clones，416 文件，exit 0（行阈 1.5%） |
 | `cargo bench --workspace --all-features --locked --no-run` | exit 0，全部基准目标编译通过 |
-| `unsafe` | 生产唯一岛 `crates/storage/src/mmap.rs`；本轮新增 unsafe 为零；backend/metal/cuda 零 unsafe |
+| `unsafe` | 生产唯一岛 `crates/storage/src/mmap.rs`；本轮新增 unsafe 为零；Metal/CUDA 后端未落地，设备侧零 unsafe |
 
-各成员 lib 测试数（`cargo test -p <pkg> --lib` 实测）：annotation 34、autograd 65、backend 3、cli 27、
+各成员 lib 测试数（`cargo test -p <pkg> --lib` 实测）：annotation 34、autograd 65、cli 27、
 cutile 167、data 16、diagnostic 12、dtype 18、engine 71、fuzz 17、nn 79、op 174、prim 19、prof 45、
 serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool 51、train 75、weights 113、wire 13。
 
@@ -93,14 +93,14 @@ serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool
 
 **总前置（未满足前 M3 不动工）**：
 1. **ADR-0035 仍为 Proposed（待评审）**：本稿只定 unsafe/FFI 边界规则，**不是 M3 实现放行**；不得标 Accepted，不得据此展开后端真实 FFI / 设备内核。评审通过后作为 M3-1 前置约束。
-2. **硬件前提（两侧实测，不是硬件缺失）**：本机 MBP = Apple M5 Pro，20 核 / Metal 4 / arm64 / 24GB，rustc 1.100.0-nightly；Apple Silicon GPU 与 Metal 4 可用。远端 Windows（SSH `win`，192.168.0.65，user fei）实测 NVIDIA T600 4096MiB、compute capability 7.5（sm_75，Turing）、driver 596.71、CUDA 13.3（nvcc V13.3.33）；rustup 已装 stable 1.99 与 `nightly-2026-09-01-x86_64-pc-windows-msvc`（与本机同一快照：rustc/cargo/rustfmt/clippy/rust-std 均 1.100-nightly），全局默认已对齐 nightly，仓库内 `rust-toolchain.toml` pin 同一通道。两侧硬件都不缺：Metal 在本地，CUDA 在 win。
-3. **真正剩余门槛（M3 动工前置）**：① ADR-0035 仍 Proposed 待评审，workspace 全局 `unsafe_code=deny`，真实设备 FFI / 设备句柄 / kernel launch 必须等边界规则评审通过后落进边界 crate，不得自行标 Accepted；② D5 生产零外部依赖：不引 cuda-sys / metal-rs 之类 FFI crate，要么手写 FFI 绑定，要么走 ADR 评审放宽策略；③ 仓库尚未同步到 win（本地 main 领先 origin 2 提交，win 暂无 clone），CUDA kernel / 命令队列 / 缓冲映射 / launch 管线未建；④ T600 是 sm_75 / 4GB，后续内核与批量尺寸按此能力约束，占位测试标签不写死任何 SM 版本。
+2. **硬件前提（两侧实测，不是硬件缺失）**：本机 MBP = Apple M5 Pro，20 核 / Metal 4 / arm64 / 24GB，rustc 1.100.0-nightly；Apple Silicon GPU 与 Metal 4 可用。远端 Windows（SSH 别名 `win`，192.168.0.65，user fei）实测 NVIDIA T600 4096MiB、compute capability 7.5（sm_75，Turing）、driver 596.71、CUDA 13.3（nvcc V13.3.33，`CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3`）；rustup 全局默认已切到 `nightly-2026-09-01-x86_64-pc-windows-msvc`，与本机同一快照（rustc/cargo/rustfmt/clippy/rust-std 均 1.100-nightly），stable 1.99 仅作备用通道；home 目录 `rust-toolchain.toml` 覆盖也已对齐 nightly（备份 `.bak`）。两侧硬件都不缺：Metal 在本地，CUDA 在 win。
+3. **真正剩余门槛（M3 动工前置）**：① ADR-0035 仍 Proposed 待评审，workspace 全局 `unsafe_code=deny`，真实设备 FFI / 设备句柄 / kernel launch 必须等边界规则评审通过后落进边界 crate，不得自行标 Accepted；② D5 生产零外部依赖：不引 cuda-sys / metal-rs 之类 FFI crate，要么手写 FFI 绑定，要么走 ADR 评审放宽策略；③ 源码同步与跨机构建未通：本地 main 与 origin 齐平，win 上仅 `C:\Users\fei\llm` 一份无 `.git` 的源码副本，尚未建 git 工作树、未在 win 跑过 `cargo check`，CUDA kernel / 命令队列 / 缓冲映射 / launch 管线未建；④ T600 是 sm_75 / 4GB，后续内核与批量尺寸按此能力约束，占位测试标签不写死任何 SM 版本。
 4. **D6 形状约束**：第二后端出现前不预埋设备泛型参数；四 trait（`Executor`/`Allocator`/`Collective`/`Program`）已定形。
 
 | ID | 状态 | 现状（已落地骨架） | 阻塞边界 / 前置条件 |
 |---|---|---|---|
-| M3-1 | 阻塞 | `backend` 占位适配：`UnsupportedBackend` + `MetalBackend`/`CudaBackend` 能力候选表（`MOUNTED` 名字均在 op 注册表内、不重复）；五个运行入口统一 `Code::Unsupported`，`free` 留空；`vendor_labels_round_trip_per_backend`、`mounted_candidates_belong_to_the_registry`、`placeholders_share_the_same_unsupported_contract`；零 FFI crate、零 unsafe | 前置 0035 评审通过；新建边界成员的依赖方向守门；边界 crate 之外零新增 unsafe；第三加速链路暂缓 |
-| M3-2 | 阻塞 | 同一 `Executor`/`Allocator` 端口契约在位（占位三件套同入口行为对拍） | 前置 M3-1；Metal 本机跑通 M2 同一前向、CUDA 在 win（T600 sm_75 / CUDA 13.3）验；同输入同形状对拍一致；两侧未建设备内核前不出吞吐数字；图 capture 特化暂缓 |
+| M3-1 | 阻塞 | 边界 crate `llm-backend` 占位骨架（`UnsupportedBackend`/`MetalBackend`/`CudaBackend`）已从工作树移除，当前 24 成员中无后端边界 crate；trait 端口仍在运行时一侧：`Executor`（`engine::exec`）、`Allocator`（`storage`），CPU 侧 `CpuExecutor`/`CpuAllocator` 在位，设备后端实现未落地；零 FFI crate、零设备 unsafe | 前置 0035 评审通过；若重建边界成员，依赖方向只能从边界 crate 指向运行时 trait 并守门；边界 crate 之外零新增 unsafe；第三加速链路暂缓 |
+| M3-2 | 阻塞 | `Executor`/`Allocator`/`Collective` 端口契约在位；CPU 实现 `CpuExecutor`/`CpuAllocator`/`shard::Local`，`shard::Remote` 为 `Collective` 占位；无边界 crate 的设备实现与跨后端行为对拍 | 前置 M3-1；Metal 本机跑通 M2 同一前向、CUDA 在 win（T600 sm_75 / CUDA 13.3）验；同输入同形状对拍一致；两侧未建设备内核前不出吞吐数字；图 capture 特化暂缓 |
 | M3-3 | 阻塞 | `gemv_i4`/`gemv_i8`/`gemm_i4`/`gemm_i8`/`dequant_i4`/`dequant_i8` 骨架在 `gemv.rs`/`gemm.rs` 泛型内；注册表 24 条含 6 条量化 lane | 前置 M3-1；i4/i8 lane Program 适配 + 反量化内核挂载；量化权重对拍、零点 / 分组负例；FP8 / AWQ / GPTQ 新格式在 M3-3 之后按格式 ADR 接入 |
 | M3-4 | 阻塞 | `shard::Remote` 占位后端与 `Local` 同一 `Collective` 端口；`all_reduce` 返回 `Unsupported` 且拒绝时不改调用方缓冲；`all_reduce_is_unsupported_and_leaves_the_buffer_untouched`、`local_and_remote_share_the_collective_port` | 前置 M3-1；真实 NCCL / MPI / Gloo / Metal 对等：组内握手、通信句柄池、拓扑绑定、心跳；集合对拍；拓扑簿记不改；大规模分布式暂缓 |
 | M3-5 | 阻塞 | mem_stream 三档（l1/l2/dram）读写实测速率作 roofline 分母；regress 达成率 / 瓶颈分类分析件在位 | 前置 M3-2；按 decode 瓶颈序逐算子优化；同后端对比 burn/candle 需同机对照数字；wmma/wgmma 手写张量核暂缓 |
@@ -123,7 +123,7 @@ serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool
 |---|---|---|---|---|
 | annotation | 1,641 → 1,641 | 98 → 98 | 3 → 3 | 解析游标串行依赖保留 |
 | autograd | 2,094 → 2,094 | 154 → 154 | 23 → 23 | 未改算术 |
-| backend | 256 → 313 | 27 → 31 | 0 → 2 | 占位骨架 + 守护测试；2 条循环在 `#[cfg(test)]` 内（BTreeSet 去重判定），生产路径零循环 |
+| backend | 256 → 313 | 27 → 31 | 0 → 2 | 占位骨架 + 守护测试；**该成员后已从工作树移除，本行仅为历史快照**；2 条循环在 `#[cfg(test)]` 内（BTreeSet 去重判定），生产路径零循环 |
 | cli | 1,201 → 1,203 | 71 → 72 | 4 → 4 | `parse_slots` 合一 run/train 槽位解析 |
 | cutile | 7,077 → 7,090 | 367 → 369 | 40 → 41 | 复用合一新增私有助手；1 条循环为台账分组归组 |
 | data | 384 → 384 | 28 → 28 | 0 → 0 | 零改动 |

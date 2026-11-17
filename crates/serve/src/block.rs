@@ -222,10 +222,7 @@ fn wire_output(
 /// 把注意力块拆成子节点接进图；返回块输出激活编号。
 fn push_block(sink: &mut NodeSink<'_>, prev: u32, block: &AttentionBlock) -> Result<u32> {
     let ops = block_operators(block)?;
-    let (q_slot, k_slot, v_slot) = wire_qkv(sink, block, prev, &ops)?;
-    // q/k 先过 RoPE 旋转再进注意力；写回页行的 K 同样取旋转后的一路（与注意力读到的一致）。
-    let q_slot = wire_rope(sink, q_slot, block.kv_width())?;
-    let k_slot = wire_rope(sink, k_slot, block.kv_width())?;
+    let (q_slot, k_slot, v_slot) = wire_qkv_rope(sink, block, prev, &ops)?;
     let (hist_k, hist_v, attn_slot) = wire_attention(sink, block, q_slot)?;
     let out_slot = wire_output(sink, block, prev, attn_slot, &ops)?;
     sink.blocks.push(BlockBinding {
@@ -236,6 +233,19 @@ fn push_block(sink: &mut NodeSink<'_>, prev: u32, block: &AttentionBlock) -> Res
         kv_width: block.kv_width(),
     });
     Ok(out_slot)
+}
+
+/// q/k/v 投影后，q/k 各插一路 RoPE 旋转再进注意力；写回页行的 K 取旋转后的一路。
+fn wire_qkv_rope(
+    sink: &mut NodeSink<'_>,
+    block: &AttentionBlock,
+    prev: u32,
+    ops: &ProjectionOps,
+) -> Result<(u32, u32, u32)> {
+    let (q_slot, k_slot, v_slot) = wire_qkv(sink, block, prev, ops)?;
+    let q_slot = wire_rope(sink, q_slot, block.kv_width())?;
+    let k_slot = wire_rope(sink, k_slot, block.kv_width())?;
+    Ok((q_slot, k_slot, v_slot))
 }
 
 /// 注意力块层：几何/权重校验后拆成 q/k/v/o + decode 注意力 + 残差子节点。

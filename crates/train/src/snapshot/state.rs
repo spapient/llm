@@ -227,11 +227,16 @@ pub(crate) fn read_ties(cursor: &mut Cursor<'_>) -> Result<Ties> {
     bound_slots(count, cursor.remaining(), "权重绑定")?;
     let mut pairs = Vec::with_capacity(count.min(super::PREALLOC));
     for _ in 0..count {
-        let source = cursor.count("绑定源槽")?;
-        let tied = cursor.count("绑定回填槽")?;
-        pairs.push((source, tied));
+        pairs.push(read_tie_pair(cursor)?);
     }
     Ok(Ties::new(pairs))
+}
+
+/// 一对绑定下标：源槽与回填槽。
+fn read_tie_pair(cursor: &mut Cursor<'_>) -> Result<(usize, usize)> {
+    let source = cursor.count("绑定源槽")?;
+    let tied = cursor.count("绑定回填槽")?;
+    Ok((source, tied))
 }
 
 /// 槽位数与剩余字节对账：伪造的计数撑不大分配。

@@ -494,12 +494,23 @@ impl Snapshot {
 /// 正文解析：头部整数、条目表、矩状态段、累积梯度段与绑定段，最后交给 [`Header`] 与 [`Facts`] 自证。
 fn body(payload: &[u8]) -> Result<(Facts, Header, Moments, GradAccum, Ties)> {
     let mut cursor = Cursor::new(payload, Format::HEADER_BYTES)?;
-    let (facts, weights) = head_and_weights(&mut cursor)?;
-    let moments = read_moments(&mut cursor)?;
-    let accum = tail_state(&mut cursor)?;
-    let ties = read_ties(&mut cursor)?;
-    reject_tail(&cursor)?;
+    read_sections(&mut cursor)
+}
+
+/// 依次读矩状态、累积梯度与绑定段；读完对账尾部余量。
+fn read_sections(cursor: &mut Cursor<'_>) -> Result<(Facts, Header, Moments, GradAccum, Ties)> {
+    let (facts, weights) = head_and_weights(cursor)?;
+    let moments = read_moments(cursor)?;
+    let (accum, ties) = read_accum_ties(cursor)?;
+    reject_tail(cursor)?;
     Ok((facts, weights, moments, accum, ties))
+}
+
+/// 累积梯度段紧随矩状态；绑定段收尾在前。
+fn read_accum_ties(cursor: &mut Cursor<'_>) -> Result<(GradAccum, Ties)> {
+    let accum = tail_state(cursor)?;
+    let ties = read_ties(cursor)?;
+    Ok((accum, ties))
 }
 
 /// 正文开头整数与权重条目表。

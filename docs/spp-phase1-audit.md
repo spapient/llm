@@ -195,7 +195,7 @@
 
 ### 7.3 未动工与后续专项（不在本轮干净增量内）
 
-- **#56 Metal（本机）/ CUDA（Linux 云主机）挂载与跨后端契约对拍**：`llm-backend` 骨架已落（`UnsupportedBackend` + `MetalBackend`/`CudaBackend` 能力候选表），真实命令队列/设备缓冲映射/kernel launch/事件同步未接；口径：无 GPU 只编译 + 契约/形状对拍，不跑真内核、不出设备数字、不引 FFI crate、不写 unsafe。
+- **#56 Metal（本机 M5 Pro / Metal 4）/ CUDA（win 远端 T600 sm_75 / CUDA 13.3）挂载与跨后端契约对拍**：边界 `llm-backend` 占位骨架已从工作树移除，树内只保留运行时一侧 `Executor`/`Allocator`/`Collective`/`Program` trait 与 CPU/进程内实现；真实命令队列/设备缓冲映射/kernel launch/事件同步未接。口径：设备内核管线未建前只做编译 + 契约/形状对拍，不跑真内核、不出设备数字、不引 FFI crate、不写 unsafe；硬件两侧均具备，剩余前置是 ADR-0035 评审、FFI 策略与跨机构建打通。
 - **#57 量化 lane 适配与通信原型**：u8/i4/i8 lane 的 Program 适配与反量化内核挂载（参照 `train/src/kernel.rs` u8 View 先例）；`shard::Collective` 通信后端原型；拓扑簿记不改。
 - **后续专项**：Program 形状/lane 泛型化（P3，中风险）；profiling 闭环（pprof/flamegraph）、proptest 属性测试、变异测试（P6）；tracing/metrics 可观测接入（P4，需先定依赖策略 ADR）。
 - **待用户拍板**：D1 cli 数值解析是否放宽下沉；D2 排版函数归属；D3 错误是否补 source 链（本轮选保留值类型模型）；D4 是否引 iai/proptest；D5 提交粒度与未跟踪分析文档、`report/` 目录归属。

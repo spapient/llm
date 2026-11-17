@@ -139,16 +139,7 @@ impl<'a> NodeSink<'a> {
         if let Some(bypass) = bypass {
             node.bind_input(bypass);
         }
-        if let Some(entry) = &plan.entry {
-            let weight_id = self.slots.weight()?;
-            node.bind_input(weight_id);
-            self.weights.push((weight_id, entry.clone()));
-            self.descriptors.push(BindingDesc {
-                id: weight_id,
-                entry: Some(entry.clone()),
-                shape: plan.weight_shape.clone(),
-            });
-        }
+        self.bind_entry(&mut node, plan)?;
         node.bind_output(output_id);
         self.graph.push(node);
         self.activations.push((output_id, plan.out_features));
@@ -161,6 +152,21 @@ impl<'a> NodeSink<'a> {
             self.rope.push(output_id);
         }
         Ok(output_id)
+    }
+
+    /// 投影/归一化/查表层的驻留权重输入与台账；一元点wise/二元/位置编码没有条目分支。
+    fn bind_entry(&mut self, node: &mut Node, plan: &LayerPlan) -> Result<()> {
+        if let Some(entry) = &plan.entry {
+            let weight_id = self.slots.weight()?;
+            node.bind_input(weight_id);
+            self.weights.push((weight_id, entry.clone()));
+            self.descriptors.push(BindingDesc {
+                id: weight_id,
+                entry: Some(entry.clone()),
+                shape: plan.weight_shape.clone(),
+            });
+        }
+        Ok(())
     }
 
     /// 单个投影子节点：输入向量 + 驻留权重整块 `[out, in]` → 输出向量；块内 q/k/v/o 复用。

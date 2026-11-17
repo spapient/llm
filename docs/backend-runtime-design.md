@@ -5,6 +5,7 @@
 - 范围：全 workspace（24 个 `crates/*` 成员 + 根包 `llm`）。回答两个问题：**从整仓看，真实后端落在哪、按什么顺序落**；以及**现有契约面哪些可直接复用、哪些缺口必须先补 trait**。
 - 取证口径：静态只读。所有断言回链 `文件:行`；性能数字一律不预填，M1/M2/M3 实测后回填 [`engine-benchmark-roadmap.md`](engine-benchmark-roadmap.md) §1.1。工作树混有并行会话未提交改动，本文以磁盘现状为准，不 stage、不回退。
 - 立场：本文是**整体分析 + 目标设计**，不是实现代码。落地步骤见 §7；trait 形状的最终变更须在动工前以 ADR 回填（§9）。
+- 当前状态：后端边界 crate（`llm-backend`）占位骨架已从工作树移除，树内只有运行时一侧的 `Executor`/`Allocator`/`Collective`/`Program` trait 与 CPU/进程内实现；真实 Metal/CUDA 后端未落地。文中涉及该 crate 的落地记录为历史快照，现状裁决以 G12 与活树为准。
 - 配套：[`ARCHITECTURE.md`](ARCHITECTURE.md)（分层/边/所有权门禁）、[`ADR 0025`](adr/0025-runtime-backend-abstraction.md)（后端抽象三件套）、[`ADR 0014`](adr/0014-real-weights-execution.md)（真实权重执行）、[`ADR 0028`](adr/0028-device-data-vs-mechanism-boundary.md)（设备数据与机制边界）、[`cutile-analysis.md`](cutile-analysis.md)（L3 机制层取证）。
 
 ---
@@ -182,7 +183,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 
 | # | 现状证据 | 缺口 | 归属 |
 |---|---|---|---|
-| G12 | 后端边界成员 `backend`（`llm-backend`）骨架已落地：trait 定义留在 `engine::exec` / `storage`，`UnsupportedBackend` 占位同时实现 `Executor` 与 `Allocator`，只回读 `Device` 登记标签；submit/sync/alloc/copy_into 统一 `Unsupported`，`free` 留空；无 FFI、无 `unsafe`、不暴露设备句柄，不写第二套运行时 trait | 真实 Metal/CUDA 实现随 #56/P3：事件同步、设备缓冲映射、命令队列与 kernel launch；逐厂商边界模块布局本刀只在文档预留，未写空模块；边界 crate 不反向依赖 serve/nn/op | `backend` 边界成员 |
+| G12 | 边界 crate `llm-backend` 占位骨架已从工作树移除，当前 24 成员中无后端边界成员；trait 定义仍留在 `engine::exec`（`Executor`）/ `storage`（`Allocator`），CPU 侧 `CpuExecutor`/`CpuAllocator` 在位，设备后端实现未落地；无 FFI、无 `unsafe`、不暴露设备句柄，不写第二套运行时 trait | 真实 Metal/CUDA 实现随 P3：事件同步、设备缓冲映射、命令队列与 kernel launch；逐厂商边界模块布局本刀只在文档预留，未写空模块；边界 crate 不反向依赖 serve/nn/op | 待建后端边界成员 |
 | G13 | 核心 `unsafe_code = "deny"`（`Cargo.toml` workspace lints）；规则已落档 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)：越界白名单四类、`allow(unsafe_code)` 收敛边界模块、依赖方向、unsafe 块最小化 | 边界 crate 的真实 FFI/unsafe 实现随 P3 填入；核心继续 deny | 文档 + 边界成员 |
 | G14 | 量化族注册表 lane 为 `i4`/`i8`（本节旧称 u8 指字节/量化通道形态，非独立 dtype），`Program` 现签名不可表达 | i4/i8 lane 的 Program 适配、反量化内核挂载 | 边界/`serve::model`，P3 |
 | G15 | `Collective` 只有 trait 与 `Local` 镜像（`collective.rs:11-14`） | 通信后端实现（NCCL/Metal 对等），拓扑簿记不改 | 边界成员 |
@@ -463,6 +464,8 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 - 本刀门禁：`cargo test --workspace` 0 失败（既有 1 个 ignored 保留，1322 passed）；`cargo test -p llm-engine` 65 + 9 + 3；`cargo test -p llm-benches` regress 4 passed；`cargo clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`cargo fmt --all --check` 干净；architecture 8、contracts 5、gate 1 全过。
 
 #### 落地记录（P3-#55：后端边界 crate 骨架 + Unsupported 占位适配）
+
+> **状态注记（2026-11-17 复核）**：该 `crates/backend`（`llm-backend`）占位骨架随后已从工作树移除，当前 24 成员中无后端边界 crate；以下小节保留为当时落地的历史记录。trait 端口仍在 `engine::exec` / `storage`，若重建边界成员仍按本节方向与依赖方向守门。
 
 - 新成员 `crates/backend`（包名 `llm-backend`）：模块文档引用 ADR 0025 §1/§9 三件套与依赖方向、ADR 0035 越界白名单四类、`allow(unsafe_code)` 收敛点、unsafe 块最小化与失败走 diagnostic 闭集；逐后端模块布局只在文档预留，不写空模块凑数。
 - 占位适配 `UnsupportedBackend`（pub）：持一台登记用 `Device`，同时实现 `engine::exec::Executor` 与 `storage::Allocator`；`device()` 回读标签，`submit`/`sync`/`alloc`/`copy_into` 统一返回 `Code::Unsupported`（文案指明后端未挂载），`free` 按 trait 签名留空；不写厂商特判分支，不把设备指针/句柄类型泄到边界之外。

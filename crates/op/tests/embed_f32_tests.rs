@@ -37,3 +37,19 @@ fn embed_rejects_a_table_wrong_length() {
         "表长不符行宽应被拒绝"
     );
 }
+
+/// 退化与重复边界：空索引拒绝；行重复取值时逐行 gather 与参考一致。
+#[test]
+fn embed_handles_empty_and_repeated_indices() {
+    let sample = sample(4, 3);
+    let table = sample.f32("table").expect("table");
+    let mut out = vec![];
+    assert!(forward(&[], table, &mut out).is_err(), "空索引必须拒绝");
+    let repeated = vec![0.0, 0.0, 1.0, 1.0];
+    let mut out = vec![0.0; repeated.len() * 3];
+    let mut repeat_sample = crate::embed_f32::sample(repeated.len(), 3);
+    repeat_sample.buffers[0].values = crate::model::Values::F32(repeated.clone());
+    let expected = reference(&repeat_sample).expect("参考可计算");
+    forward(&repeated, table, &mut out).expect("重复索引不越界");
+    assert_eq!(out, expected);
+}

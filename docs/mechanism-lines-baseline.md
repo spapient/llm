@@ -36,13 +36,15 @@
 | L3 内核 | `cutile` | 25 | 7,090 |
 | L4 运行时 | `tensor` `storage` `tokenizer` | 23 | 3,068 |
 | L5 模型与训练 | `weights` `autograd` `data` `nn` `shard` | 53 | 11,353 |
-| L6 调度与服务 | `train` `engine` `serve` `backend` `cli` | 42 | 11,041 |
+| L6 调度与服务 | `train` `engine` `serve` `cli` | 42 | 11,041 |
 | L7 入口 | `llm` bin（`src/`，含 `src/bin/cutile/`） | 7 | 1,911 |
 | **合计** | | **233** | **50,713** |
 
 > 50,713 为目录级口径（含内联测试体、注释与空行）；扣除内联测试体后的严格机制行以
 > `tool::strip_tests` 跑出的结果为准，回填时在本表加一列"严格机制行"。工具成员
 > （`annotation` 1,641 / `fuzz` 849 / `benches` 测量容器）未计入上表。
+> 注：上表成员清单已对齐当前活树；旧快照的行数/文件数仍含已移除的 `backend` 边界 crate，
+> 未随其删除重算，待 M1-C1 按脚本口径整体回填。
 
 ## 4. 可复跑
 
