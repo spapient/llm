@@ -1317,3 +1317,43 @@ fn a_composite_missing_embedding_table_is_reported_at_assembly() {
 
     rejected_at_assembly(stack, params, Code::Missing);
 }
+
+/// 记录逐条调用次序的桩：默认批量回退必须按输入顺序逐条调 [`Predict::logits`]。
+struct OrderProbe {
+    calls: Vec<u64>,
+}
+
+impl Predict for OrderProbe {
+    fn logits(
+        &mut self,
+        sequence: &Sequence,
+        _batch: &mut Batch,
+    ) -> diagnostic::Result<Vec<f32>> {
+        self.calls.push(sequence.id());
+        Ok(vec![sequence.id() as f32])
+    }
+}
+
+/// 默认 `logits_batch` 逐条回退：行序与输入序列一一对应，空批返回空，不吞调用次序。
+#[test]
+fn logits_batch_default_runs_each_sequence_in_input_order() {
+    let pager = Pager::new(Cache::new(2, 16).expect("页池"), 2).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let first = Sequence::new(7, &[2u32], 2, 16, Stream::new(0)).expect("序列");
+    let second = Sequence::new(3, &[2u32], 2, 16, Stream::new(0)).expect("序列");
+    batch.admit(first.clone()).expect("准入");
+    batch.admit(second.clone()).expect("准入");
+    let sequences: Vec<Sequence> = batch.sequences().to_vec();
+
+    let mut model = OrderProbe { calls: Vec::new() };
+    let rows = model.logits_batch(&sequences, &mut batch).expect("批量回退");
+
+    assert_eq!(model.calls, [7, 3], "默认回退必须按准入顺序逐条调用");
+    assert_eq!(rows.len(), 2, "返回行数与输入条数一致");
+    assert_eq!(rows[0], [7.0]);
+    assert_eq!(rows[1], [3.0]);
+    assert!(
+        model.logits_batch(&[], &mut batch).expect("空批").is_empty(),
+        "空序列批量返回空行"
+    );
+}

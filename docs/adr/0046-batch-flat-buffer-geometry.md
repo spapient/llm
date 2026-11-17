@@ -1,6 +1,6 @@
 # 0046：序列批量几何——扁平批缓冲与内核批维，图不复制实例（M2-2）
 
-- 状态：草案（路线与布局合同定型；op 批维地基先行，engine 缓冲扩批与 serve 批量视图分刀落地）
+- 状态：路线与布局合同定型；op 批维地基与 Predict 批量视图接口已落地，engine 缓冲扩批与 serve 整批前向分刀落地
 - 日期：2026-11-17
 - 相关：[0043](0043-program-scalar-slots.md)（标量槽闭集，语义参数不进几何维）；[0044](0044-bindings-metadata.md)（编号到缓冲，引擎不解释形状）；[0025](0025-runtime-backend-abstraction.md)（后端三 trait 分立）
 
@@ -54,11 +54,25 @@ op 新增 batch 入口：按段 stride 切出每条序列，段内复用现有�
 - `batch = 1` 退化等价多头入口；
 - 缓冲长度不是段长整数倍、段宽不符时返回 `Invalid`。
 
-### 5. Predict 批量视图：单条方法保留，批量入口后续接
+### 5. Predict 批量视图：单条方法保留，批量入口已定稿
 
-`Predict::logits` 单序列方法保持原样作为默认与回归基线。批量入口
-`logits_batch(&[Sequence], &mut Batch) -> Vec<Vec<f32>>` 的最终形状在 engine 接线刀定稿；op /
-engine 阶段不接 serve 批量方法。单条前向可走批量入口 `batch = 1` 退化，但不要求改造既有调用。
+[`Predict::logits`](../../crates/serve/src/generate.rs) 单序列方法保持原样作为默认与回归基线。批量入口签名定稿为：
+
+```text
+logits_batch(&[Sequence], &mut Batch) -> Result<Vec<Vec<f32>>>
+```
+
+- 输入是只读序列快照切片；返回每行一条 logits，行序与输入切片一一对应（即 [`Batch::sequences`](../../crates/engine/src/batch.rs) 的准入顺序），调用方按序号对齐，不按 id 重排。
+- 默认实现逐条回退 `logits`，与逐串前向行为等价；内核整批通路落地后由模型实现覆写本方法，不改 trait 形状。
+- 任一条失败即上抛，已记账序列的页账不在模型层回滚，归调度器统一归还。
+
+### 6. 批数几何通道：长度反推，不进标量槽、不占 grid 维
+
+沿用既有内核几何全部从缓冲长度反推的范式（头数 `q.len()/d`、历史行数 `k.len()/(heads·d)`、查表行宽 `out.len()/tokens`）：
+
+- 批数 `batch = 整块缓冲长 / 装配期单序列段长`；单序列段长是装配台账事实（激活 `activations` 登记宽、注意力块 `kv_width·heads`），不运行期猜测。
+- 批数是几何事实，不复制进冻结标量槽（ADR 0043）；[`Launch`](../../crates/engine/src/exec.rs) 的 `grid` 三轴当前不承载批维，`block` 第二维仍只承载头宽。批内各段头数、头宽、段长一致，段内复用多头 / 单头 / 行批内核。
+- 缓冲容量在装配期段长已知；运行期按本轮批长绑定整块，一份编号不随批数翻倍。
 
 ## 备选方案
 
@@ -71,8 +85,8 @@ engine 阶段不接 serve 批量方法。单条前向可走批量入口 `batch =
 
 ## 后果
 
-- op 补 batch 入口与段编排；engine 缓冲容量按批扩；serve 批量视图在后续刀接 `step_batch` 整批前向。
+- 已落地：op batch 入口与段编排（#31）；`Predict::logits_batch` 批量视图接口，默认逐条回退（#33）。
+- 剩余接线按依赖序分刀：① 激活 / 历史缓冲容量按批长预留；② 查表多行输入放开（`tokens` 批口径）；③ 投影由 `gemv` 单向量切到 `gemm` 行批，m=批内段数、共享驻留权重；④ decode 注意力接 op batch 入口；⑤ rope 按段独立位置循环；⑥ K/V 历史段拼接装载、按段写回页行；⑦ `step_batch` 改走整批一次 `logits_batch`。
 - 不变量沿用调度层对拍：批内段隔离、页表归属不违反、失败序列不回滚好序列。
 - 暂缓：序列并行、prefill 多 token 矩阵主链、变长 ragged 历史、chunked prefill、头内并行特化。
-- 未定通道（PARTIAL）：批数在 Launch 几何维 / 缓冲形状上的最终承载位置，待 engine 缓冲扩批刀取证
-  定型；本刀 op 入口以显式 `batch` 参数与段 stride 承载，不预埋 engine 侧通道。
+- 未定通道：批数承载位置已定（§6 长度反推，不进标量槽 / grid）；仅变长 ragged 各段独立 `hist_b` 的 stride 映射合同待后续刀提案。

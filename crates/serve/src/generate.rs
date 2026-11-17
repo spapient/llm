@@ -29,6 +29,25 @@ pub trait Predict {
         sequence: &engine::Sequence,
         batch: &mut engine::Batch,
     ) -> Result<Vec<f32>>;
+
+    /// 批量一步前向：一次收多条只读序列快照，返回每行 logits，行序与 `sequences` 一一对应。
+    ///
+    /// 默认实现逐条回退 [`logits`]，与逐串前向行为等价；内核整批通路落地后由实现覆写本方法。
+    /// 序列只读、前向不推进计数，页账与计数仍由调度器推进，口径同 [`logits`]。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`logits`]；任一条失败即上抛，已记账序列的页账不在此回滚，归调度器统一处理。
+    fn logits_batch(
+        &mut self,
+        sequences: &[engine::Sequence],
+        batch: &mut engine::Batch,
+    ) -> Result<Vec<Vec<f32>>> {
+        sequences
+            .iter()
+            .map(|sequence| self.logits(sequence, batch))
+            .collect()
+    }
 }
 
 /// 采样策略：从一步 logits 里选一个 token；`None` 表示遇到停止符、序列到此结束。
