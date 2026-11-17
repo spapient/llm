@@ -371,6 +371,15 @@ impl Settings {
             .map(|slot| slot.value.as_path())
     }
 
+    /// 投影成内核只认的三目录纯数据：缓存 / 工作 / 数据根；`cutile` 不读环境变量（ADR 0023）。
+    pub fn dirs(&self) -> cutile::dirs::Dirs {
+        cutile::dirs::Dirs::new(
+            self.cache_dir(),
+            self.work_dir(),
+            self.data_root().map(Path::to_path_buf),
+        )
+    }
+
     /// 逐键打印"值 ← 来源"，供 `doctor` 与故障排查使用。
     pub fn describe(&self) -> String {
         let mut out = String::from("[配置] 默认 < 环境变量 < 命令行\n");

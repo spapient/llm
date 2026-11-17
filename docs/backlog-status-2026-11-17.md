@@ -17,7 +17,7 @@
 | architecture | **8/8**；contracts **6/6**；静态 gate **1/1** |
 | `cargo deny check` | advisories / bans / licenses / sources 四项 ok（许可白名单含 NCSA、Unicode-3.0） |
 | `cargo machete` | 无未用依赖 |
-| jscpd | 1.42% 行 / 1.71% token，117 clones，417 文件，exit 0（行阈 1.5%） |
+| jscpd | 1.42% 行 / 1.71% token，117 clones，416 文件，exit 0（行阈 1.5%） |
 | `cargo bench --workspace --all-features --locked --no-run` | exit 0，全部基准目标编译通过 |
 | `unsafe` | 生产唯一岛 `crates/storage/src/mmap.rs`；本轮新增 unsafe 为零；backend/metal/cuda 零 unsafe |
 
@@ -33,7 +33,7 @@ serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool
 |---|---|---|---|
 | P0-1 | 已落地 | 文档计数与指针回填：design §1.2/§1.5、plan D-1…D-7、roadmap §3、code-audit；gate 1/1、architecture 8/8 守住文档链接门 | 历史快照刀次记录不回写：`backend-runtime-design.md:472` 仍记该刀 1325 / contracts 5，属当时快照 |
 | P0-2 | 已落地 | annotation：`OP_OVERRIDES` 一行三列 `(名, 参考覆盖, 模块覆盖)`；annotation lib 34 + audit 集成 2；无第二份按名查找循环 | — |
-| P0-3 | 已落地 | 大文件按职责轴拆分：weights `bin.rs` → `bin_zip.rs` / `bin_pickle.rs`；cutile `main.rs` → `report.rs`；train `snapshot.rs` → `cursor/entry/state`；入口编排拆 `cmd/run.rs` / `cmd/status.rs` / `cmd/train.rs`；gate 行数 ≤899、ccn/nloc 过门 | 其余大文件随后续阶段内拆；入口七条债务条目登记在 `.config/lints/vocabulary.toml`（`crates/cli/src/cmd/` 与 `src/bin/cutile.rs`），待排版下沉 tool 后删除 |
+| P0-3 | 已落地 | 大文件按职责轴拆分：weights `bin.rs` → `bin_zip.rs` / `bin_pickle.rs`；cutile `main.rs` → `report.rs`；train `snapshot.rs` → `cursor/entry/state`；入口编排拆 `cmd/run.rs` / `cmd/status.rs` / `cmd/train.rs`；gate 行数 ≤899、ccn/nloc 过门 | 其余大文件随后续阶段内拆；入口编排函数已重构回 ccn/nloc 阈值内，`[gate.debt]` 存量为零，无待删基线条目 |
 | P0-4 | 已落地 | 报告 / 排版收敛 `tool::Report` 单一报告器；tool lib 51（含 ccn 1、gate 1） | — |
 | P0-5 | 已落地 | 手写解析收敛 diagnostic 单源；ADR 0039 草案记依赖策略；diagnostic lib 12 + 集成 1，解析负例全绿 | toml+serde 唯一解析依赖未拍板前不接（D5） |
 | P0-6 | 进行中 | 切片内纯函数属性用例 + fuzz sweep 骨架在位：fuzz lib 17 + parsers 集成 2；`check/sweep/sweep_all` 契约在 | tokenizer / op / prof 的属性边界用例在切片外，尚未逐族补齐；libfuzzer harness 仅 feature 门控 |
@@ -164,3 +164,4 @@ serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool
 - **串行瓶颈**：共享 `target/` 的 cargo 锁——并行轨构建排队互锁，期间各轨先做编辑 / 读码；文档计数与所有权回填在编排侧串行收口。未执行 `cargo clean`，指纹增量命中。
 - **增量门耗时**：缓存命中后 `-p <pkg>` 的 check / clippy / fmt 为亚秒级；每轨收口只跑所属 crate 的增量门，未在中间轮次重跑全仓 doctest / criterion target / fuzz harness。
 - **合并门耗时**（warm-cache，用户态）：`check` ≈ 0.07s、`clippy --all-features` ≈ 0.17s、`fmt --check` 亚秒；全量 `cargo test --workspace` 1,396 条为合并门主要墙钟耗时；arch/contracts/gate 三条约 0.16–0.44s 各自完成。冷全量重编耗时未单列（CI 环境口径）。
+- **本轮收口实测**（warm-cache，2026-11-17 复核刀）：`check --workspace` 0.49s、`fmt --check` 0.35s、`architecture` 0.70s、`contracts` 0.91s、静态 gate 0.49s、nextest 1.92s（1365 条）、全量 clippy 4.73s（含 benches/fuzz 全部 target）。本轮未并行派发施工子代理：活树同时有外部会话在改 cli 入口，编排侧按单轨串行收口；cargo 仍串行化共享 `target/` 锁。交错写入期间出现过未完成编辑被构建误报编译失败，单包复跑即分辨，未回滚外部半成品。

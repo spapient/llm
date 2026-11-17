@@ -145,10 +145,5 @@ file_max_lines = 899 # 单文件行数硬上限
 
 # `[[gate.debt]]` 存量棘轮：只登记入口编排层既有超标（cli 的 `cmd/` 分派与 `bin/cutile.rs`）。
 # 登记表是实测快照：登记值必须等于实测值，改善后必须删掉对应度量条目（`Gate::stale`），
-# 恶化必失败。入口的排版/编排逻辑待下沉 `tool`（audit P3-3 / P3-4），下沉后这些条目删除。
+# 恶化必失败。当前存量债务为零；入口排版/编排逻辑后续下沉 `tool` 后若再超标，按此表登记。
 # 运行时生产代码（`crates/*/src` 除 cli 入口外）没有债务条目：超限即新增，直接失败。
-
-[[gate.debt]]
-key = "crates/cli/src/bin/cutile.rs:write_ledger#0"
-ccn = 7
-reason = "cutile 入口台账落盘分支：档案行渲染与文件写入；待归 tool"

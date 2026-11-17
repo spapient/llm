@@ -10,6 +10,9 @@
 use assert_cmd::Command;
 use std::path::PathBuf;
 
+#[cfg(test)]
+mod tests;
+
 /// 用法文本里必须出现的那几行：命令表是 `llm help` 的唯一职责。
 const USAGE_COMMANDS: [&str; 5] = ["status", "run", "verify", "bench", "help"];
 
