@@ -146,11 +146,9 @@ fn multi_head_decode_keeps_each_head_independent_and_plain_matches_flash() {
     }
 
     let mut plain = vec![0.0; heads * q_rows * d];
-    decode_forward_heads(&q, &k, &v, &mut plain, q_rows, hist, d)
-        .expect("朴素多头 decode");
+    decode_forward_heads(&q, &k, &v, &mut plain, q_rows, hist, d).expect("朴素多头 decode");
     let mut flash = vec![0.0; heads * q_rows * d];
-    decode_flash_forward_heads(&q, &k, &v, &mut flash, q_rows, hist, d)
-        .expect("flash 多头 decode");
+    decode_flash_forward_heads(&q, &k, &v, &mut flash, q_rows, hist, d).expect("flash 多头 decode");
 
     assert!(testkit::all_finite(&plain));
     assert!(testkit::approx_eq(&flash, &plain, 1e-5));
@@ -186,9 +184,7 @@ fn multi_head_rejects_non_multiple_buffer_length() {
     let v = det_headed(heads, hist, d, -0.2, 0.11);
     let mut out = vec![0.0; heads * q_rows * d];
     // q 只给一个头的长度，而 k/v 是两头：头块倍数校验应拦下。
-    assert!(
-        decode_forward_heads(&q[..q_rows * d], &k, &v, &mut out, q_rows, hist, d).is_err()
-    );
+    assert!(decode_forward_heads(&q[..q_rows * d], &k, &v, &mut out, q_rows, hist, d).is_err());
     // q 长度不是 q_rows·d 的整数倍：无法推出整头，直接拒绝。
     let mut ragged = vec![0.0; q.len() - 1];
     assert!(decode_forward_heads(&q[..q.len() - 1], &k, &v, &mut ragged, q_rows, hist, d).is_err());

@@ -14,7 +14,9 @@ use std::path::PathBuf;
 mod tests;
 
 /// 用法文本里必须出现的那几行：命令表是 `llm help` 的唯一职责。
-const USAGE_COMMANDS: [&str; 5] = ["status", "run", "verify", "bench", "help"];
+const USAGE_COMMANDS: [&str; 8] = [
+    "status", "run", "verify", "bench", "train", "import", "inspect", "check",
+];
 
 fn llm() -> Command {
     Command::cargo_bin("llm").expect("二进制在测试构建里必须存在")
@@ -202,6 +204,151 @@ fn train_load_reports_accumulation_window_and_tie_pairs() {
         .expect("进程可派生");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("0 对"), "无绑定时报 0 对：{stdout}");
+}
+
+/// 合成一份 `.u` 容器：复用现有 safetensors 样板经 `import` 落盘，再交给 `inspect` / `check`。
+fn imported_container(tag: &str) -> PathBuf {
+    let header = r#"{"blk.0.attn_q.weight": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]},
+                    "blk.0.norm.weight": {"dtype": "F32", "shape": [4], "data_offsets": [64, 80]}}"#;
+    let source = write_weights(tag, header, 80);
+    let container = std::env::temp_dir().join(format!("llm-cli-{}-{tag}.u", std::process::id()));
+    let output = llm()
+        .args(["import", "--in"])
+        .arg(&source)
+        .args(["--out"])
+        .arg(&container)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "合法 safetensors 下 `import` 必须成功：{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    container
+}
+
+#[test]
+fn import_then_inspect_reports_live_metrics() {
+    let container = imported_container("inspect");
+    let output = llm()
+        .args(["inspect", "--in"])
+        .arg(&container)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "合法容器下 `inspect` 必须成功：{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for field in [
+        "条目数",
+        "参数总数",
+        "V_artifact",
+        "V_FP16",
+        "ratio",
+        "lossless",
+        "REF 命中",
+    ] {
+        assert!(
+            stdout.contains(field),
+            "`inspect` 必须报出 `{field}`：{stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("blk.0.attn_q.weight"),
+        "条目清单要列出名字：{stdout}"
+    );
+    assert!(stdout.contains("f32"), "条目清单要列出 dtype：{stdout}");
+}
+
+#[test]
+fn check_decodes_every_tensor_of_a_valid_container() {
+    let container = imported_container("check");
+    let output = llm()
+        .args(["check", "--in"])
+        .arg(&container)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "合法容器下 `check` 必须成功：{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("2 tensors decoded"),
+        "解码口径要报出条目数：{stdout}"
+    );
+}
+
+#[test]
+fn check_rejects_a_truncated_or_tampered_container() {
+    let container = imported_container("tampered");
+    let mut bytes = std::fs::read(&container).expect("读回容器");
+
+    // 截断尾部：全局 CRC 与末段帧被砍掉，打开期自证失败。
+    let truncated = container.with_extension("u.truncated");
+    std::fs::write(&truncated, &bytes[..bytes.len() - 16]).expect("写入截断版");
+    let output = llm()
+        .args(["check", "--in"])
+        .arg(&truncated)
+        .output()
+        .expect("进程可派生");
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "截断容器必须以非零退出码失败"
+    );
+
+    // 翻转正文一个比特：段级 / 全局 CRC 不符，解码路径不会走到。
+    let tampered = container.with_extension("u.tampered");
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xff;
+    std::fs::write(&tampered, &bytes).expect("写入篡改版");
+    let output = llm()
+        .args(["check", "--in"])
+        .arg(&tampered)
+        .output()
+        .expect("进程可派生");
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "篡改容器必须以非零退出码失败"
+    );
+}
+
+#[test]
+fn archive_commands_reject_missing_or_unknown_grammar() {
+    // `import` 缺 `--out`：两个选项都必需，不猜默认输出路径。
+    let source = good_weights("grammar").0;
+    let output = llm()
+        .args(["import", "--in"])
+        .arg(&source)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(output.status.code(), Some(2), "缺 `--out` 是 invalid=2");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--out"), "错误要点名缺哪个选项：{stderr}");
+
+    // `inspect` 缺 `--in`；`check` 给了未知选项；多余参数同样是文法错误。
+    let output = llm().args(["inspect"]).output().expect("进程可派生");
+    assert_eq!(output.status.code(), Some(2), "缺 `--in` 是 invalid=2");
+
+    let output = llm()
+        .args(["check", "--in", "model.u", "--op", "gemv_i4"])
+        .output()
+        .expect("进程可派生");
+    assert_eq!(output.status.code(), Some(2), "未知选项是 invalid=2");
+
+    let output = llm()
+        .args(["inspect", "--in", "model.u", "extra"])
+        .output()
+        .expect("进程可派生");
+    assert_eq!(output.status.code(), Some(2), "多余参数是 invalid=2");
 }
 
 #[test]

@@ -18,7 +18,7 @@ use crate::leb::Cursor;
 use crate::proof::{Digest, Proof};
 use crate::quant::Quant;
 use crate::rans;
-use crate::seg::{Desc, Descriptor, Segment, numel};
+use crate::seg::{Desc, DescBody, Descriptor, numel};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 
 /// 固定头长度：magic 4 + version 2 + flags 4 + align 1（count 是 LEB，不计入）。
@@ -30,10 +30,25 @@ const FOOTER_LEN: usize = 4;
 #[derive(Debug, Clone)]
 pub struct Stored {
     desc: Descriptor,
-    codec: Codec,
-    start: usize,
-    len: usize,
-    crc: u32,
+    inner: StoredInner,
+}
+
+/// 段的存储形态：内联帧在本段名下；引用段解引用到代表段，区间/编码/CRC 在布局时复制自代表段。
+#[derive(Debug, Clone)]
+enum StoredInner {
+    Inline {
+        codec: Codec,
+        start: usize,
+        len: usize,
+        crc: u32,
+    },
+    Ref {
+        rep: usize,
+        codec: Codec,
+        start: usize,
+        len: usize,
+        crc: u32,
+    },
 }
 
 impl Stored {
@@ -42,9 +57,11 @@ impl Stored {
         &self.desc.name
     }
 
-    /// 存储编解码方式。
+    /// 存储编解码方式；引用段沿用代表段的 codec。
     pub fn codec(&self) -> Codec {
-        self.codec
+        match &self.inner {
+            StoredInner::Inline { codec, .. } | StoredInner::Ref { codec, .. } => *codec,
+        }
     }
 
     /// 元素类型。
@@ -62,25 +79,55 @@ impl Stored {
         self.desc.quant.as_ref()
     }
 
-    /// 数据起点。
+    /// 数据起点；引用段沿用代表段的区间。
     pub fn start(&self) -> usize {
-        self.start
+        match &self.inner {
+            StoredInner::Inline { start, .. } | StoredInner::Ref { start, .. } => *start,
+        }
     }
 
-    /// 存储字节数。
+    /// 存储字节数；引用段沿用代表段的帧长。
     pub fn len(&self) -> usize {
-        self.len
+        match &self.inner {
+            StoredInner::Inline { len, .. } | StoredInner::Ref { len, .. } => *len,
+        }
     }
 
     /// 是否零字节。
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len() == 0
+    }
+
+    /// 是否为引用段（共享代表段字节，自身数据区不占帧）。
+    pub fn is_ref(&self) -> bool {
+        matches!(self.inner, StoredInner::Ref { .. })
+    }
+
+    /// 代表段下标；内联段返回 `None`。
+    pub fn rep_index(&self) -> Option<usize> {
+        match &self.inner {
+            StoredInner::Ref { rep, .. } => Some(*rep),
+            StoredInner::Inline { .. } => None,
+        }
     }
 
     /// 逻辑字节数：元素类型 × 元素个数，也是 `rans::decode` 的分配上限（来自描述符而非帧）。
     pub fn logical_len(&self) -> Result<usize> {
         usize::try_from(self.desc.dtype.bytes_for(numel(&self.desc.shape)))
             .map_err(|_| invalid("段的逻辑长度超 usize"))
+    }
+
+    /// 压缩比：存储字节 / 逻辑字节；逻辑字节为 0 时返回 `None`。
+    pub fn compression_ratio(&self) -> Option<f64> {
+        let logical = self.logical_len().ok()?;
+        (logical != 0).then(|| self.len() as f64 / logical as f64)
+    }
+
+    /// 段级 CRC；引用段复制自代表段，不另存校验字段。
+    fn crc(&self) -> u32 {
+        match &self.inner {
+            StoredInner::Inline { crc, .. } | StoredInner::Ref { crc, .. } => *crc,
+        }
     }
 }
 
@@ -141,24 +188,39 @@ impl<'a> Archive<'a> {
         Ok(())
     }
 
-    /// 段级 CRC：开启时逐段匹配，关闭时所有段字段必须为 0。
+    /// 段级 CRC：开启时逐段匹配，关闭时所有段字段必须为 0。引用段复用代表段的校验，
+    /// 不单独重算。
     fn verify_segments(&self) -> Result<()> {
         if self.flags & SEG_CRC == 0 {
-            return if self.segs.iter().any(|seg| seg.crc != 0) {
-                Err(invalid("段级 CRC 已关闭却写了非零值"))
-            } else {
-                Ok(())
-            };
+            return self.check_disabled_segment_crc();
         }
         for seg in &self.segs {
-            let actual = crate::crc::crc32(&self.bytes[seg.start..seg.start + seg.len]);
-            if actual != seg.crc {
-                return Err(invalid(format!(
-                    "段 `{}` 的 CRC 不匹配：声明 {:#010x}，实算 {actual:#010x}",
-                    seg.name(),
-                    seg.crc
-                )));
-            }
+            self.check_segment_crc(seg)?;
+        }
+        Ok(())
+    }
+
+    /// 关闭段级 CRC 时，所有段的 CRC 字段必须为 0。
+    fn check_disabled_segment_crc(&self) -> Result<()> {
+        let nonzero = self.segs.iter().any(|seg| seg.crc() != 0);
+        if nonzero {
+            return Err(invalid("段级 CRC 已关闭却写了非零值"));
+        }
+        Ok(())
+    }
+
+    /// 单条内联段的帧 CRC 比对；引用段跳过，校验归代表段。
+    fn check_segment_crc(&self, seg: &Stored) -> Result<()> {
+        if seg.is_ref() {
+            return Ok(());
+        }
+        let actual = crate::crc::crc32(&self.bytes[seg.start()..seg.start() + seg.len()]);
+        if actual != seg.crc() {
+            return Err(invalid(format!(
+                "段 `{}` 的 CRC 不匹配：声明 {:#010x}，实算 {actual:#010x}",
+                seg.name(),
+                seg.crc()
+            )));
         }
         Ok(())
     }
@@ -173,15 +235,15 @@ impl<'a> Archive<'a> {
         self.segs.iter().find(|seg| seg.name() == name)
     }
 
-    /// 借用段的原始存储字节（零拷贝，不做解压）。
+    /// 借用段的原始存储字节（零拷贝，不做解压）。引用段返回代表段的帧。
     pub fn read(&self, seg: &Stored) -> &'a [u8] {
-        &self.bytes[seg.start..seg.start + seg.len]
+        &self.bytes[seg.start()..seg.start() + seg.len()]
     }
 
-    /// 加载段的逻辑字节：`store` 段零拷贝借用，`rans` 段解压为新缓冲。
+    /// 加载段的逻辑字节：`store` 段零拷贝借用，`rans` 段解压为新缓冲。引用段解引用到代表段。
     pub fn load(&self, seg: &Stored) -> Result<Cow<'a, [u8]>> {
         let raw = self.read(seg);
-        match seg.codec {
+        match seg.codec() {
             Codec::Store => Ok(Cow::Borrowed(raw)),
             Codec::Rans => Ok(Cow::Owned(rans::decode(raw, seg.logical_len()?)?)),
         }
@@ -225,6 +287,130 @@ impl<'a> Archive<'a> {
             return Ok(false);
         };
         Ok(crate::proof::verify_proof(leaf_hash, proof, root))
+    }
+
+    /// 容器度量：打开后由现场字节与段表现算，不解析文件内保存的任何度量字段。
+    pub fn metrics(&self) -> Result<Metrics> {
+        let mut acc = MetricsAcc::default();
+        for seg in &self.segs {
+            acc.add(seg)?;
+        }
+        let ratio = if acc.v_fp16 == 0 {
+            0.0
+        } else {
+            self.bytes.len() as f64 / acc.v_fp16 as f64
+        };
+        Ok(Metrics {
+            entries: self.segs.len(),
+            params: acc.params,
+            v_artifact: self.bytes.len(),
+            v_fp16: acc.v_fp16,
+            ratio,
+            lossless: acc.lossless,
+            ref_hits: acc.ref_hits,
+            ref_saved_bytes: acc.ref_saved_bytes,
+        })
+    }
+}
+
+/// 度量累加器：逐段把 numel、FP16 参考体积、无损判定与 REF 命中/节省字节收拢到一处。
+struct MetricsAcc {
+    params: u64,
+    v_fp16: u64,
+    ref_hits: usize,
+    ref_saved_bytes: u64,
+    lossless: bool,
+}
+
+impl Default for MetricsAcc {
+    /// 空容器按无损计：无条目即无有损段；逐段再用「与」收口，任一段有损即整体有损。
+    fn default() -> Self {
+        Self {
+            params: 0,
+            v_fp16: 0,
+            ref_hits: 0,
+            ref_saved_bytes: 0,
+            lossless: true,
+        }
+    }
+}
+
+impl MetricsAcc {
+    /// 累加单段；引用段计入命中数与逻辑字节节省。
+    fn add(&mut self, seg: &Stored) -> Result<()> {
+        let numel = numel(seg.shape());
+        self.params = self.params.saturating_add(numel);
+        self.v_fp16 = self.v_fp16.saturating_add(numel.saturating_mul(2));
+        self.lossless = self.lossless && self.is_lossless(seg);
+        if seg.is_ref() {
+            self.ref_hits += 1;
+            let logical = u64::try_from(seg.logical_len()?).unwrap_or(u64::MAX);
+            self.ref_saved_bytes = self.ref_saved_bytes.saturating_add(logical);
+        }
+        Ok(())
+    }
+
+    /// 单段是否无损：不带量化方案，且 codec 属于无损的 `Store`/`Rans`。
+    fn is_lossless(&self, seg: &Stored) -> bool {
+        seg.quant().is_none() && matches!(seg.codec(), Codec::Store | Codec::Rans)
+    }
+}
+
+/// 容器度量：条目数、参数总数、体积对比与无损口径；全部在打开容器后现算。
+///
+/// 不读文件内保存的度量字段，也不替量化条目下"无损"结论：带量化方案的条目按既有
+/// [`Quant`] 语义判为有损，未识别的 codec 同样不计入无损。
+#[derive(Debug, Clone)]
+pub struct Metrics {
+    entries: usize,
+    params: u64,
+    v_artifact: usize,
+    v_fp16: u64,
+    ratio: f64,
+    lossless: bool,
+    ref_hits: usize,
+    ref_saved_bytes: u64,
+}
+
+impl Metrics {
+    /// 条目总数（段表行数，含引用段）。
+    pub fn entries(&self) -> usize {
+        self.entries
+    }
+
+    /// 参数总数：各段 `numel` 乘积之和，溢出饱和。
+    pub fn params(&self) -> u64 {
+        self.params
+    }
+
+    /// 容器文件字节数（含头部、对齐填充与两级 CRC）。
+    pub fn v_artifact(&self) -> usize {
+        self.v_artifact
+    }
+
+    /// 全量 FP16 参考体积：Σ `numel × 2`，溢出饱和。
+    pub fn v_fp16(&self) -> u64 {
+        self.v_fp16
+    }
+
+    /// 体积比：`V_artifact / V_FP16`；`V_FP16` 为 0 时记 0。
+    pub fn ratio(&self) -> f64 {
+        self.ratio
+    }
+
+    /// 无损标志：所有条目都不带量化方案，且 codec 属于无损的 `Store`/`Rans`。
+    pub fn lossless(&self) -> bool {
+        self.lossless
+    }
+
+    /// REF 命中数：被去重写成引用的段数。
+    pub fn ref_hits(&self) -> usize {
+        self.ref_hits
+    }
+
+    /// REF 节省字节数：引用段逻辑字节之和（未重复落盘的部分），溢出饱和。
+    pub fn ref_saved_bytes(&self) -> u64 {
+        self.ref_saved_bytes
     }
 }
 
@@ -278,9 +464,9 @@ fn flags_align(bytes: &[u8]) -> Result<(u32, usize)> {
     Ok((flags, 1usize << align_log))
 }
 
-/// 单条描述符占有的最小字节（名长度 8 + 名 1 + dtype 1 + rank 4 + codec 1 +
-/// quant 标志 1 + data_len 8 + seg_crc 4）；计数先按剩余字节粗查。
-const MIN_DESC_BYTES: usize = 28;
+/// 单条描述符占有的最小字节（名字长度 LEB 1 + 名字 1 + dtype 1 + rank 1 + 量化标志 1 +
+/// 引用下标 1；内联帧另带 codec/长度/CRC）；计数先按剩余字节粗查。
+const MIN_DESC_BYTES: usize = 6;
 /// 描述符表预分配上限：真实归档段数远小于此，超出部分由 `Vec` 按需增长；谎报的巨大
 /// 计数不会换来一次巨额分配。
 const MAX_DESC_PREALLOC: usize = 4096;
@@ -306,7 +492,7 @@ fn read_descs(bytes: &[u8]) -> Result<(Vec<Desc>, usize)> {
     Ok((descs, FIXED_HEAD + cur.pos()))
 }
 
-/// 重算每段的绝对区间；末尾必须正好接上 footer。
+/// 重算每段的绝对区间；末尾必须正好接上 footer。引用段不占数据区，区间在代表段落位后回填。
 fn layout(
     descs: Vec<Desc>,
     bytes: &[u8],
@@ -314,19 +500,16 @@ fn layout(
     footer_pos: usize,
     align: usize,
 ) -> Result<Vec<Stored>> {
+    validate_names(&descs)?;
+    validate_refs(&descs)?;
     let mut cursor = data_start;
-    let mut stored = Vec::with_capacity(descs.len());
-    for desc in descs {
-        let (segment, end) = place(desc, bytes, cursor, align)?;
-        if end > footer_pos {
-            return Err(invalid(format!(
-                "段 `{}` 的区间超出数据区，文件被截断",
-                segment.name()
-            )));
-        }
+    let mut stored: Vec<Stored> = Vec::with_capacity(descs.len());
+    for desc in &descs {
+        let (segment, end) = place_next(desc, bytes, cursor, align, footer_pos)?;
         stored.push(segment);
         cursor = end;
     }
+    resolve_refs(&mut stored)?;
     if cursor != footer_pos {
         return Err(invalid(format!(
             "数据区结束于 {cursor}，尾部在 {footer_pos}：存在多余字节"
@@ -335,9 +518,170 @@ fn layout(
     Ok(stored)
 }
 
+/// 单条描述符落到数据区：内联段占一帧，引用段不占字节、区间待回填。
+fn place_next(
+    desc: &Desc,
+    bytes: &[u8],
+    cursor: usize,
+    align: usize,
+    footer_pos: usize,
+) -> Result<(Stored, usize)> {
+    match desc.body() {
+        DescBody::Inline {
+            codec,
+            data_len,
+            seg_crc,
+        } => {
+            let (segment, end) = place_inline(
+                desc.descriptor(),
+                bytes,
+                cursor,
+                align,
+                *codec,
+                *data_len,
+                *seg_crc,
+            )?;
+            if end > footer_pos {
+                return Err(invalid(format!(
+                    "段 `{}` 的区间超出数据区，文件被截断",
+                    segment.name()
+                )));
+            }
+            Ok((segment, end))
+        }
+        DescBody::Ref { rep } => Ok((
+            Stored {
+                desc: desc.descriptor().clone(),
+                inner: StoredInner::Ref {
+                    rep: *rep as usize,
+                    codec: Codec::Store,
+                    start: 0,
+                    len: 0,
+                    crc: 0,
+                },
+            },
+            cursor,
+        )),
+    }
+}
+
+/// 段名唯一：重名条目在打开期拒绝，不交给上层按名查找时静默覆盖。
+fn validate_names(descs: &[Desc]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for desc in descs {
+        let name = desc.descriptor().name.as_str();
+        if !seen.insert(name) {
+            return Err(invalid(format!("段名 `{name}` 重复")));
+        }
+    }
+    Ok(())
+}
+
+/// 引用图校验：悬空/越界下标、自引用、代表段是引用、元数据不一致、引用成环，一律 `Invalid`。
+fn validate_refs(descs: &[Desc]) -> Result<()> {
+    let mut colors = vec![0u8; descs.len()];
+    for index in 0..descs.len() {
+        check_ref(index, descs, &mut colors)?;
+    }
+    Ok(())
+}
+
+/// 单色 DFS：0 未访 / 1 在途 / 2 完成；回到在途节点即成环。
+fn check_ref(index: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
+    match colors[index] {
+        2 => return Ok(()),
+        1 => return Err(invalid("引用段成环")),
+        _ => {}
+    }
+    colors[index] = 1;
+    let DescBody::Ref { rep } = descs[index].body() else {
+        colors[index] = 2;
+        return Ok(());
+    };
+    let rep = *rep as usize;
+    validate_ref_target(index, rep, descs)?;
+    check_ref(rep, descs, colors)?;
+    colors[index] = 2;
+    Ok(())
+}
+
+/// 引用下标与代表段元数据校验：越界、自引用、代表段是引用、取值元数据不一致一律 `Invalid`。
+fn validate_ref_target(index: usize, rep: usize, descs: &[Desc]) -> Result<()> {
+    let name = descs[index].descriptor().name.clone();
+    if rep >= descs.len() {
+        return Err(invalid(format!("引用段 `{name}` 指向越界下标 {rep}")));
+    }
+    if rep == index {
+        return Err(invalid(format!("引用段 `{name}` 自引用")));
+    }
+    let target = &descs[rep];
+    if !matches!(target.body(), DescBody::Inline { .. }) {
+        return Err(invalid(format!(
+            "引用段 `{name}` 的代表段 `{rep}` 本身是引用"
+        )));
+    }
+    if !descs[index].descriptor().same_value(target.descriptor()) {
+        return Err(invalid(format!(
+            "引用段 `{name}` 与代表段 `{rep}` 的类型/形状/量化元数据不一致"
+        )));
+    }
+    Ok(())
+}
+
+/// 代表段落位后，把其区间、codec 与 CRC 回填到引用段。先收集回填决议再落地，
+/// 避免同一轮迭代里可变借用与不可变借用叠在同一份段表上。
+fn resolve_refs(stored: &mut [Stored]) -> Result<()> {
+    let mut resolutions = Vec::new();
+    for (index, seg) in stored.iter().enumerate() {
+        let StoredInner::Ref { rep, .. } = &seg.inner else {
+            continue;
+        };
+        let resolution = resolve_one(stored, index, *rep)?;
+        resolutions.push((index, resolution));
+    }
+    for (index, (codec, start, len, crc)) in resolutions {
+        if let StoredInner::Ref {
+            codec: c,
+            start: s,
+            len: l,
+            crc: r,
+            ..
+        } = &mut stored[index].inner
+        {
+            *c = codec;
+            *s = start;
+            *l = len;
+            *r = crc;
+        }
+    }
+    Ok(())
+}
+
+/// 取一条引用段的代表段区间快照；代表段仍是引用则拒绝。
+fn resolve_one(stored: &[Stored], index: usize, rep: usize) -> Result<(Codec, usize, usize, u32)> {
+    match &stored[rep].inner {
+        StoredInner::Inline {
+            codec,
+            start,
+            len,
+            crc,
+        } => Ok((*codec, *start, *len, *crc)),
+        StoredInner::Ref { .. } => Err(invalid(format!(
+            "引用段 `{index}` 的代表段 `{rep}` 本身是引用"
+        ))),
+    }
+}
+
 /// 一个描述符落到字节区间：填充为 0、长度可表示、相加不溢出。
-fn place(desc: Desc, bytes: &[u8], cursor: usize, align: usize) -> Result<(Stored, usize)> {
-    let (meta, codec, data_len, crc) = desc.into_parts();
+fn place_inline(
+    meta: &Descriptor,
+    bytes: &[u8],
+    cursor: usize,
+    align: usize,
+    codec: Codec,
+    data_len: u64,
+    seg_crc: u32,
+) -> Result<(Stored, usize)> {
     let Some(start) = crate::align_up(cursor, align) else {
         return Err(invalid("对齐必须是 2 的幂且对齐后不溢出"));
     };
@@ -356,11 +700,13 @@ fn place(desc: Desc, bytes: &[u8], cursor: usize, align: usize) -> Result<(Store
     };
     Ok((
         Stored {
-            desc: meta,
-            codec,
-            start,
-            len,
-            crc,
+            desc: meta.clone(),
+            inner: StoredInner::Inline {
+                codec,
+                start,
+                len,
+                crc: seg_crc,
+            },
         },
         end,
     ))
@@ -370,303 +716,9 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("weights::Archive")
 }
 
-// —— 容器生命周期模式：训练断点 / 推理发布 ——
-
-/// 模式标记段的保留名。
-pub const MODE_NAME: &str = "llm.mode";
-/// 优化器状态段的命名空间前缀。
-const OPT_PREFIX: &str = "opt.";
-
-/// 容器生命周期模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// 训练断点：含优化器/动量/方差等 `opt.` 状态。
-    Train,
-    /// 推理发布：剥离训练状态的精简产物。
-    Infer,
-}
-
-impl Mode {
-    fn code(self) -> u8 {
-        match self {
-            Mode::Train => 0,
-            Mode::Infer => 1,
-        }
-    }
-
-    fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Mode::Train),
-            1 => Ok(Mode::Infer),
-            other => Err(bad(&format!("mode: 未知码 {other}"))),
-        }
-    }
-
-    /// 编码为可写进容器的标记段：保留名、`U8` 单轴、1 字节。
-    pub fn to_segment(self) -> Result<Segment> {
-        Segment::new(MODE_NAME, Wire::U8, vec![1], None, vec![self.code()])
-    }
-}
-
-/// 读取模式；无标记段的旧文件按推理模式处理。
-///
-/// 有标记段但码位不在闭集内时显式报错，不静默落进推理模式：未知码通常意味着文件损坏
-/// 或版本错位，按推理放行会丢掉训练状态段。
-pub fn mode_of(archive: &Archive<'_>) -> Result<Mode> {
-    match archive
-        .get(MODE_NAME)
-        .and_then(|seg| archive.read(seg).first().copied())
-    {
-        None => Ok(Mode::Infer),
-        Some(code) => Mode::from_code(code),
-    }
-}
-
-/// 段名是否属于优化器状态。
-pub fn is_opt(name: &str) -> bool {
-    name.starts_with(OPT_PREFIX)
-}
-
-/// 发布转换：剥离所有 `opt.` 段，保留其余段并标记为推理模式。
-pub fn release(src: &Archive<'_>) -> Result<Vec<Segment>> {
-    let mut out = Vec::new();
-    for seg in src.segments() {
-        if !is_opt(seg.name()) {
-            out.push(keep_segment(src, seg)?);
-        }
-    }
-    out.push(Mode::Infer.to_segment()?);
-    Ok(out)
-}
-
-/// 把读端段还原成写端段：沿用名字/类型/形状/量化方案，`data` 是已就位的逻辑字节。
-/// `release` 与补丁重建共用这一份字段装配，避免四处各拼一遍 `Segment::new`。
-fn to_segment(seg: &Stored, data: Vec<u8>) -> Result<Segment> {
-    Segment::new(
-        seg.name(),
-        seg.dtype(),
-        seg.shape().to_vec(),
-        seg.quant().cloned(),
-        data,
-    )
-}
-
-/// 把读端段还原成写端段：先加载逻辑字节，再交 [`to_segment`] 装配。
-fn keep_segment(src: &Archive<'_>, seg: &Stored) -> Result<Segment> {
-    let data = src.load(seg)?.into_owned();
-    to_segment(seg, data)
-}
-
-fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("mode")
-}
-
-// —— 增量补丁：逐字节 XOR，读端按 base 自逆合成 ——
-
-/// 计算 cur 相对 base 的补丁段（逻辑字节，未压缩；交给 Writer 落盘并按需 rans）。
-pub fn diff(base: &Archive<'_>, cur: &Archive<'_>) -> Result<Vec<Segment>> {
-    rebuild(base, cur)
-}
-
-/// 用 base 与补丁归档合成完整段。
-pub fn join(base: &Archive<'_>, patch: &Archive<'_>) -> Result<Vec<Segment>> {
-    rebuild(base, patch)
-}
-
-/// diff 与 join 同构：对 right 每个段，base 有同名等长段就 XOR，否则按全量保留。
-fn rebuild(base: &Archive<'_>, right: &Archive<'_>) -> Result<Vec<Segment>> {
-    let mut out = Vec::new();
-    for seg in right.segments() {
-        let bytes = right.load(seg)?.into_owned();
-        let data = apply(base, seg.name(), bytes)?;
-        out.push(to_segment(seg, data)?);
-    }
-    Ok(out)
-}
-
-/// 同名等长则 XOR；base 缺失或长度不同则原样返回（全量）。
-fn apply(base: &Archive<'_>, name: &str, bytes: Vec<u8>) -> Result<Vec<u8>> {
-    let Some(prev) = base.get(name) else {
-        return Ok(bytes);
-    };
-    let prev_bytes = base.load(prev)?;
-    if prev_bytes.len() != bytes.len() {
-        return Ok(bytes);
-    }
-    Ok(xor(&bytes, &prev_bytes))
-}
-
-fn xor(a: &[u8], b: &[u8]) -> Vec<u8> {
-    a.iter().zip(b).map(|(x, y)| x ^ y).collect()
-}
+/// 词表段保留名：字节容器占位；字节 → `VocabSource` 解析留给后续刀，本层不接 tokenizer。
+pub const VOCAB_NAME: &str = "llm.vocab";
 
 #[cfg(test)]
-mod mode_tests {
-    use super::*;
-    use crate::testutil::{archive, f32_segment};
-
-    #[test]
-    fn release_strips_opt_and_marks_infer() {
-        let bytes = archive(vec![
-            f32_segment("w", &[1.0, 2.0]),
-            f32_segment("opt.m.w", &[0.5, 0.5]),
-        ]);
-        let src = Archive::parse(&bytes).expect("src");
-
-        let released = release(&src).expect("release");
-        let names: Vec<&str> = released.iter().map(|s| s.name()).collect();
-        assert!(names.contains(&"w"));
-        assert!(!names.iter().any(|n| is_opt(n)));
-
-        let released_bytes = archive(released);
-        let released_archive = Archive::parse(&released_bytes).expect("x");
-        assert_eq!(mode_of(&released_archive).expect("模式"), Mode::Infer);
-    }
-
-    #[test]
-    fn missing_marker_defaults_infer() {
-        let bytes = archive(vec![f32_segment("w", &[1.0])]);
-        assert_eq!(
-            mode_of(&Archive::parse(&bytes).expect("a")).expect("模式"),
-            Mode::Infer
-        );
-    }
-
-    #[test]
-    fn train_marker_roundtrips() {
-        let mut segments = vec![f32_segment("w", &[1.0])];
-        segments.push(Mode::Train.to_segment().expect("标记"));
-        let bytes = archive(segments);
-        let parsed = Archive::parse(&bytes).expect("a");
-        assert_eq!(mode_of(&parsed).expect("模式"), Mode::Train);
-    }
-
-    #[test]
-    fn an_unknown_mode_code_is_rejected_not_fallen_back_to_infer() {
-        let bad = Segment::new(MODE_NAME, Wire::U8, vec![1], None, vec![7]).expect("段");
-        let bytes = archive(vec![f32_segment("w", &[1.0]), bad]);
-        let parsed = Archive::parse(&bytes).expect("a");
-        let error = mode_of(&parsed).expect_err("未知码必须报错");
-        assert_eq!(error.code(), Code::Invalid);
-        assert!(error.to_string().contains("mode"), "{error}");
-    }
-}
-
-#[cfg(test)]
-mod malformed_tests {
-    use super::*;
-
-    /// fuzz 实测崩溃产物：段计数被篡改为 `u32::MAX`，剩余字节远不够这么多描述符。
-    /// 旧实现按计数直接 `with_capacity` 触发约 39 GiB 分配；现在计数先按剩余字节粗查。
-    const FUZZ_CRASH: [u8; 114] = [
-        0x4c, 0x4c, 0x50, 0x4b, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x06, 0xff, 0xff, 0xff, 0xff,
-        0x01, 0x01, 0x77, 0x14, 0x02, 0x02, 0x03, 0x00, 0x00, 0x18, 0xa2, 0x94, 0x87, 0x9e, 0x0a,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x80, 0x60, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x60, 0x64, 0x35,
-    ];
-
-    #[test]
-    fn a_count_exceeding_remaining_bytes_is_rejected_not_an_oom() {
-        let error = Archive::parse(&FUZZ_CRASH).expect_err("谎报计数必须报错");
-        assert_eq!(error.code(), Code::Invalid);
-        assert!(error.to_string().contains("规模"), "{error}");
-    }
-}
-
-#[cfg(test)]
-mod patch_tests {
-    use super::*;
-    use crate::testutil::{archive, f32_segment};
-    use crate::writer::Writer;
-
-    #[test]
-    fn xor_roundtrip_recovers_cur() {
-        let base_bytes = archive(vec![f32_segment("w", &[1.0, 2.0, 3.0])]);
-        let base = Archive::parse(&base_bytes).expect("base");
-        let cur_bytes = archive(vec![f32_segment("w", &[1.0, 2.0, 3.5])]);
-        let cur = Archive::parse(&cur_bytes).expect("cur");
-
-        let patch_bytes = archive(diff(&base, &cur).expect("diff"));
-        let patch = Archive::parse(&patch_bytes).expect("patch");
-
-        let joined = join(&base, &patch).expect("join");
-        let expected = cur.load(&cur.segments()[0]).expect("cur 字节");
-        assert_eq!(joined[0].data, &expected[..]);
-    }
-
-    #[test]
-    fn small_change_patch_is_smaller() {
-        let base_bytes = archive(vec![f32_segment("w", &[1.0; 4096])]);
-        let base = Archive::parse(&base_bytes).expect("base");
-        let mut changed = vec![1.0f32; 4096];
-        changed[10] = 1.0001;
-        let cur_bytes = archive(vec![f32_segment("w", &changed)]);
-        let cur = Archive::parse(&cur_bytes).expect("cur");
-
-        let mut w = Writer::new();
-        w.compress(true);
-        for seg in diff(&base, &cur).expect("diff") {
-            w.push(seg).expect("push");
-        }
-        assert!(w.finish(6).expect("patch").len() < cur_bytes.len());
-    }
-
-    #[test]
-    fn missing_base_is_full_not_garbage() {
-        let base_bytes = archive(vec![f32_segment("a", &[1.0])]);
-        let base = Archive::parse(&base_bytes).expect("base");
-        let cur_bytes = archive(vec![f32_segment("b", &[9.0])]);
-        let cur = Archive::parse(&cur_bytes).expect("cur");
-
-        let patch = diff(&base, &cur).expect("diff");
-        assert_eq!(patch[0].name(), "b");
-        assert_eq!(patch[0].data, f32_segment("b", &[9.0]).data);
-    }
-}
-
-#[cfg(test)]
-mod cow_tests {
-    use super::*;
-    use crate::seg::Segment;
-    use crate::testutil::{archive, f32_segment};
-    use crate::writer::Writer;
-
-    /// 关闭压缩写出的段必然是 `Store`：`load` 必须返回 `Cow::Borrowed`，不复制逻辑字节。
-    #[test]
-    fn store_segment_loads_as_borrowed() {
-        let mut w = Writer::new();
-        w.compress(false);
-        w.push(f32_segment("w", &[1.0, 2.0, 3.0, 4.0]))
-            .expect("push");
-        let bytes = w.finish(6).expect("字节");
-        let src = Archive::parse(&bytes).expect("src");
-
-        let seg = src.get("w").expect("store 段");
-        let cow = src.load(seg).expect("store 加载");
-        assert!(matches!(cow, Cow::Borrowed(_)), "Store 段必须借用");
-        assert_eq!(&cow[..], &f32_segment("w", &[1.0, 2.0, 3.0, 4.0]).data);
-    }
-
-    /// 高偏斜 U8 段经 rANS 严格变小，写端选 `Rans`：`load` 必须返回 `Cow::Owned` 解压缓冲。
-    #[test]
-    fn rans_segment_loads_as_owned() {
-        let mut sparse = vec![0u8; 4000];
-        for i in (0..sparse.len()).step_by(10) {
-            sparse[i] = (i % 7) as u8 + 1;
-        }
-        let seg = Segment::new("sparse", Wire::U8, vec![4000], None, sparse.clone()).expect("段");
-        let bytes = archive(vec![seg]);
-        let src = Archive::parse(&bytes).expect("src");
-
-        let seg = src.get("sparse").expect("rans 段");
-        assert_eq!(seg.codec, Codec::Rans, "偏斜段应被压缩");
-        let cow = src.load(seg).expect("rans 加载");
-        assert!(matches!(cow, Cow::Owned(_)), "Rans 段必须解压为 Owned");
-        assert_eq!(cow.len(), 4000);
-        assert_eq!(&cow[..], &sparse[..]);
-    }
-}
+#[path = "../tests/archive_tests.rs"]
+mod tests;

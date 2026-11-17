@@ -5,6 +5,7 @@
 //! 全局 CRC 用 [`sink::Sealed`] 覆盖正文每一个字节，文件路径下也不会漏字段。
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,15 +15,16 @@ use diagnostic::{Code, Error, Result};
 use crate::Codec;
 use crate::crc;
 use crate::leb;
+use crate::proof::Digest;
 use crate::rans;
 use crate::seg::Segment;
 use crate::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 
-/// 魔数 `"LLPK"`。
-pub const MAGIC: u32 = 0x4B50_4C4C;
+/// 魔数 `.u\0\0`：小端字节 `[0x2E, 0x75, 0x00, 0x00]`，第三、四字节 NUL 收尾（ADR 0045）。
+pub const MAGIC: u32 = 0x0000_752E;
 
-/// 当前格式版本。
-pub const VERSION: u16 = 1;
+/// 当前格式版本（自有 `.u` 容器 v2）。
+pub const VERSION: u16 = 2;
 
 /// `flags` 位：全局 CRC 存在。
 pub const GLOBAL_CRC: u32 = 1 << 0;
@@ -99,20 +101,57 @@ impl Writer {
         crate::proof::root(&leaves)
     }
 
-    /// 为每段选定存储表示：压缩开启且 rans 帧严格变小时才用 rans，否则原样存储。
-    fn prepare(&self) -> Vec<(Codec, Cow<'_, [u8]>)> {
-        let mut packed = Vec::with_capacity(self.segs.len());
-        for segment in &self.segs {
-            if self.compress {
-                let frame = rans::encode(&segment.data);
-                if frame.len() < segment.data.len() {
-                    packed.push((Codec::Rans, Cow::Owned(frame)));
-                    continue;
-                }
+    /// 为每段选定存储表示：压缩开启且 rans 帧严格变小时才用 rans，否则原样存储；
+    /// 取值与既有内联段逐位相等的段改写引用，数据区不再重复占字节。
+    fn plan(&self) -> Result<Vec<Plan<'_>>> {
+        let mut reps: HashMap<(u16, Vec<u64>, Digest), Vec<usize>> = HashMap::new();
+        let mut out = Vec::with_capacity(self.segs.len());
+        for (index, segment) in self.segs.iter().enumerate() {
+            let key = (
+                segment.dtype().code(),
+                segment.shape().to_vec(),
+                crate::proof::hash_bytes(&segment.data),
+            );
+            if let Some(rep) = self.find_rep(&reps, &key, segment) {
+                out.push(Plan::Ref { rep });
+                continue;
             }
-            packed.push((Codec::Store, Cow::Borrowed(segment.data.as_slice())));
+            let packed = self.pack_inline(segment);
+            reps.entry(key).or_default().push(index);
+            out.push(packed);
         }
-        packed
+        Ok(out)
+    }
+
+    /// 哈希命中后逐位比对元数据与字节；碰撞只错过复用，绝不错配。
+    fn find_rep(
+        &self,
+        reps: &HashMap<(u16, Vec<u64>, Digest), Vec<usize>>,
+        key: &(u16, Vec<u64>, Digest),
+        segment: &Segment,
+    ) -> Option<usize> {
+        let candidates = reps.get(key)?;
+        candidates
+            .iter()
+            .copied()
+            .find(|&rep| self.segs[rep].same_value(segment) && self.segs[rep].data == segment.data)
+    }
+
+    /// 内联段存储表示：压缩开启且 rans 帧严格变小时选 `Rans`，否则原样 `Store`。
+    fn pack_inline<'a>(&self, segment: &'a Segment) -> Plan<'a> {
+        if self.compress {
+            let frame = rans::encode(&segment.data);
+            if frame.len() < segment.data.len() {
+                return Plan::Inline {
+                    codec: Codec::Rans,
+                    stored: Cow::Owned(frame),
+                };
+            }
+        }
+        Plan::Inline {
+            codec: Codec::Store,
+            stored: Cow::Borrowed(segment.data.as_slice()),
+        }
     }
 
     fn flags(&self) -> u32 {
@@ -125,40 +164,31 @@ impl Writer {
 
     /// 把除全局 CRC 外的全部正文写进 `out`；位置由 [`Measured`] 精确跟踪以做对齐。
     fn write_body(&self, out: &mut impl Sink, align_log: u8) -> Result<()> {
-        let packed = self.prepare();
-        self.write_body_in(&packed, out, align_log)
+        let plan = self.plan()?;
+        self.write_body_in(&plan, out, align_log)
     }
 
-    /// 用已算好的 `packed` 写正文；长度预演与实际写出共用同一份编码结果，避免再编一遍。
-    fn write_body_in(
-        &self,
-        packed: &[(Codec, Cow<'_, [u8]>)],
-        out: &mut impl Sink,
-        align_log: u8,
-    ) -> Result<()> {
+    /// 用已算好的 `plan` 写正文；长度预演与实际写出共用同一份编码结果，避免再编一遍。
+    fn write_body_in(&self, plan: &[Plan<'_>], out: &mut impl Sink, align_log: u8) -> Result<()> {
         let mut measured = Measured::new(out);
         measured.put(&MAGIC.to_le_bytes());
         measured.put(&VERSION.to_le_bytes());
         measured.put(&self.flags().to_le_bytes());
         measured.put(&[align_log]);
         leb::write(&mut measured, self.segs.len());
-        write_descs(&self.segs, packed, self.checksum, &mut measured)?;
-        write_data(packed, align_log, &mut measured);
+        write_descs(&self.segs, plan, self.checksum, &mut measured)?;
+        write_data(plan, align_log, &mut measured);
         Ok(())
     }
 
     /// 产出容器字节；`align_log` 是对齐边界的 2 的幂指数（0..=16，常用 6 = 64 B）。
     pub fn finish(&self, align_log: u8) -> Result<Vec<u8>> {
         Self::check_align(align_log)?;
-        let packed = self.prepare();
-        let expected = {
-            let mut count = Count::default();
-            self.write_body_in(&packed, &mut count, align_log)?;
-            count.0 + 4
-        };
+        let plan = self.plan()?;
+        let expected = self.expected_len(&plan, align_log)?;
         let mut buf = Vec::with_capacity(expected);
         let mut sealed = Sealed::new(&mut buf);
-        self.write_body_in(&packed, &mut sealed, align_log)?;
+        self.write_body_in(&plan, &mut sealed, align_log)?;
         let global = if self.checksum { sealed.checksum() } else { 0 };
         // 全局 CRC 本身不进 CRC，直接写底层缓冲。
         buf.extend_from_slice(&global.to_le_bytes());
@@ -166,11 +196,18 @@ impl Writer {
         Ok(buf)
     }
 
+    /// 预演编码路径得到的整份字节数（正文 + 4 字节全局 CRC），与实际写出共用同一 plan。
+    fn expected_len(&self, plan: &[Plan<'_>], align_log: u8) -> Result<usize> {
+        let mut count = Count::default();
+        self.write_body_in(plan, &mut count, align_log)?;
+        Ok(count.0 + 4)
+    }
+
     /// 整份容器的精确字节数；与 [`Writer::finish`] 走同一编码路径。
     pub fn encoded_len(&self, align_log: u8) -> Result<usize> {
-        let packed = self.prepare();
+        let plan = self.plan()?;
         let mut count = Count::default();
-        self.write_body_in(&packed, &mut count, align_log)?;
+        self.write_body_in(&plan, &mut count, align_log)?;
         Ok(count.0 + 4)
     }
 
@@ -260,28 +297,48 @@ impl Writer {
     }
 }
 
-/// 描述符：段级 CRC 覆盖实际存储字节，在这里算好写进头部。
+/// 写端布局：内联段带自己的存储帧与段级 CRC；引用段只记代表段下标，存储帧与校验都归代表段。
+enum Plan<'a> {
+    Inline { codec: Codec, stored: Cow<'a, [u8]> },
+    Ref { rep: usize },
+}
+
+/// 描述符：内联段级 CRC 覆盖实际存储字节，在这里算好写进头部；引用段不写 CRC。
 fn write_descs(
     segs: &[Segment],
-    packed: &[(Codec, Cow<'_, [u8]>)],
+    plan: &[Plan<'_>],
     checksum: bool,
     out: &mut impl Sink,
 ) -> Result<()> {
-    for (segment, (codec, stored)) in segs.iter().zip(packed) {
-        let seg_crc = if checksum { crc::crc32(stored) } else { 0 };
-        segment.encode_desc(out, *codec, stored.len() as u64, seg_crc)?;
+    for (segment, item) in segs.iter().zip(plan) {
+        write_one_desc(segment, item, checksum, out)?;
     }
     Ok(())
 }
 
-/// 数据区：每段先按对齐补零，再写实际存储字节。
-fn write_data<S: Sink>(
-    packed: &[(Codec, Cow<'_, [u8]>)],
-    align_log: u8,
-    measured: &mut Measured<'_, S>,
-) {
+/// 单条描述符：内联段级 CRC 覆盖实际存储字节；引用段只写代表段下标，不写 CRC。
+fn write_one_desc(
+    segment: &Segment,
+    item: &Plan<'_>,
+    checksum: bool,
+    out: &mut impl Sink,
+) -> Result<()> {
+    match item {
+        Plan::Inline { codec, stored } => {
+            let seg_crc = if checksum { crc::crc32(stored) } else { 0 };
+            segment.encode_desc(out, *codec, stored.len() as u64, seg_crc)
+        }
+        Plan::Ref { rep } => segment.encode_ref_desc(out, *rep as u32),
+    }
+}
+
+/// 数据区：内联段先按对齐补零再写存储帧；引用段不占数据区。
+fn write_data<S: Sink>(plan: &[Plan<'_>], align_log: u8, measured: &mut Measured<'_, S>) {
     let align = 1usize << align_log;
-    for (_, stored) in packed {
+    for item in plan {
+        let Plan::Inline { stored, .. } = item else {
+            continue;
+        };
         let pos = measured.len();
         let aligned = pos.next_multiple_of(align);
         let pad = aligned - pos;

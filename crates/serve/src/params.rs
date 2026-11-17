@@ -89,11 +89,7 @@ impl Params {
 
     /// 按层栈与权重头部，经借用后端（内存归档、只读映射）把 F32 条目解码进驻留表；
     /// 条目字节不经过一次拷贝，解包后的驻留缓冲仍由本表拥有。
-    pub fn from_reader_stack(
-        stack: &Stack,
-        header: &Header,
-        reader: &impl Reader,
-    ) -> Result<Self> {
+    pub fn from_reader_stack(stack: &Stack, header: &Header, reader: &impl Reader) -> Result<Self> {
         Self::assemble(stack, header, &ReaderSource(reader))
     }
 

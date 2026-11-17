@@ -420,15 +420,8 @@ pub fn decode_flash_forward(
 }
 
 /// 单头 decode 内核的函数指针：朴素与 flash 包装共用同一段头分段编排。
-type SingleHead = fn(
-    &[f32],
-    &[f32],
-    &[f32],
-    &mut [f32],
-    usize,
-    usize,
-    usize,
-) -> diagnostic::Result<()>;
+type SingleHead =
+    fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> diagnostic::Result<()>;
 
 /// 多头 decode：头优先块布局——`q`/`out` 为 `heads · q_rows · d`，`k`/`v` 为 `heads · hist · d`，
 /// 第 `h` 个头是一段连续的 `q_rows · d` / `hist · d`。头数由 `q` 长度按 `q_rows · d` 推出，

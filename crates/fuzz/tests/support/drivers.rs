@@ -79,13 +79,13 @@ impl Target for Safetensors {
     }
 }
 
-/// LLPK 自造容器：描述符表 + 对齐数据段 + 两级 CRC 尾部。
+/// 自有 `.u` 容器 v2：描述符表 + 对齐数据段 + 两级 CRC 尾部。
 ///
 /// 与 safetensors 是两条独立的布局路径：段名唯一性、区间不重叠、两级校验和都在这条入口上
 /// 暴露给任意字节。
-pub struct Llpk;
+pub struct UContainer;
 
-impl Target for Llpk {
+impl Target for UContainer {
     fn name(&self) -> &str {
         "weights::Archive"
     }

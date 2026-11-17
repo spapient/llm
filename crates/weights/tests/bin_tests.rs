@@ -39,3 +39,26 @@ fn bytes_match_torch_storage() {
 fn rejects_non_bin() {
     assert!(Bin::parse(b"definitely not a torch bin").is_err());
 }
+
+#[test]
+fn import_keeps_torch_tensors_as_neutral_segments() {
+    let Some(raw) = real_bin_bytes() else {
+        return;
+    };
+    let bin = Bin::parse(&raw).expect("解析");
+    let segments = crate::import::segments_from_bin(&bin).expect("导入中性段流");
+    assert_eq!(segments.len(), bin.tensors().len());
+    for (segment, tensor) in segments.iter().zip(bin.tensors()) {
+        assert_eq!(segment.name(), tensor.name());
+        assert_eq!(segment.dtype(), tensor.dtype());
+        assert_eq!(segment.shape(), tensor.shape());
+        assert_eq!(segment.data, bin.data(tensor).expect("字节"));
+    }
+}
+
+#[test]
+fn import_propagates_unreadable_bin() {
+    let error = Bin::parse(b"definitely not a torch bin")
+        .and_then(|bin| crate::import::segments_from_bin(&bin));
+    assert!(error.is_err(), "读不通的 bin 必须显式失败");
+}

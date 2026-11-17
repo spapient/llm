@@ -179,7 +179,12 @@ fn decode_attention_f32(
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    decode_paths(&launch, inputs, outputs, op::attention::decode_forward_heads)
+    decode_paths(
+        &launch,
+        inputs,
+        outputs,
+        op::attention::decode_forward_heads,
+    )
 }
 
 fn decode_flash_attention_f32(
@@ -187,7 +192,12 @@ fn decode_flash_attention_f32(
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    decode_paths(&launch, inputs, outputs, op::attention::decode_flash_forward_heads)
+    decode_paths(
+        &launch,
+        inputs,
+        outputs,
+        op::attention::decode_flash_forward_heads,
+    )
 }
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：4 位量化乘加，与 `op::gemv_i4::forward` 同一段算术。

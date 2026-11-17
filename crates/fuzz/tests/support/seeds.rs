@@ -32,8 +32,8 @@ pub fn snapshot() -> Vec<u8> {
         .expect("编码合法检查点")
 }
 
-/// 一份合法的 LLPK 容器：一个 2×3 的 f32 段，24 字节数据，64 字节对齐。
-pub fn llpk() -> Vec<u8> {
+/// 一份合法的自有 `.u` 容器 v2：一个 2×3 的 f32 段，24 字节数据，64 字节对齐。
+pub fn u_container() -> Vec<u8> {
     let segment = weights::Segment::new("w", tensor::DType::F32, vec![2, 3], None, vec![0u8; 24])
         .expect("段合法");
     weights::Writer::new()
@@ -83,7 +83,7 @@ pub fn exemplars() -> [(&'static str, Vec<u8>); 9] {
         ("fuzz_cli", ARGS.to_vec()),
         ("fuzz_weights_json", HEADER.as_bytes().to_vec()),
         ("fuzz_weights_safetensors", safetensors()),
-        ("fuzz_weights_archive", llpk()),
+        ("fuzz_weights_archive", u_container()),
         ("fuzz_train_snapshot", snapshot()),
         ("fuzz_serve_frames", frame()),
         ("fuzz_wire_sealed", frame()),

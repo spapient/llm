@@ -148,7 +148,7 @@ fn atomic_write_produces_a_valid_file_without_temp_residue() {
         .expect("时间")
         .as_nanos();
     let target =
-        std::env::temp_dir().join(format!("llm_atomic_{}_{}.pk", std::process::id(), nanos));
+        std::env::temp_dir().join(format!("llm_atomic_{}_{}.u", std::process::id(), nanos));
 
     writer.write_to_path(6, &target).expect("原子写");
     let on_disk = std::fs::read(&target).expect("读回");
@@ -156,7 +156,7 @@ fn atomic_write_produces_a_valid_file_without_temp_residue() {
     assert_eq!(archive.segments().len(), 2);
 
     // 同目录不应留下本次的 .tmp 临时文件。
-    let prefix = format!(".llm_atomic_{}_{}.pk", std::process::id(), nanos);
+    let prefix = format!(".llm_atomic_{}_{}.u", std::process::id(), nanos);
     let mut residue = std::fs::read_dir(std::env::temp_dir())
         .expect("读目录")
         .filter_map(Result::ok)
@@ -180,7 +180,7 @@ fn a_mapped_file_opens_without_copying_into_memory() {
         .expect("时间")
         .as_nanos();
     let target =
-        std::env::temp_dir().join(format!("llm_mmap_open_{}_{}.pk", std::process::id(), nanos));
+        std::env::temp_dir().join(format!("llm_mmap_open_{}_{}.u", std::process::id(), nanos));
     writer.write_to_path(6, &target).expect("原子写");
 
     // 映射文件，直接在映射字节上解析，数据段不复制进内存。

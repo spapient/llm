@@ -1,8 +1,8 @@
 //! 权重文件的结构：[`Entry`]、[`Header`] 与两条读取契约（[`Reader`] / [`Loader`]），以及
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
-//! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自造的 `LLPK`
-//! 容器（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
+//! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自有的 `.u`
+//! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
 //! 本层判断的格式适配器与量化方案（`bin` 栈机含 ZIP_STORED 读取、`gguf`、`json`、`quant`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
 //! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`storage` 经可选 `mmap` feature 引入，
@@ -51,8 +51,9 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
     value.div_ceil(align).checked_mul(align)
 }
 
-// —— LLPK 容器：描述符、读/写、帧编码、增量补丁与双模式 ——
+// —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;
+mod lifecycle;
 mod rans;
 mod seg;
 mod writer;
@@ -66,6 +67,7 @@ mod proof;
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
+pub mod import;
 pub mod json;
 pub mod safetensors;
 
@@ -87,20 +89,23 @@ mod sink {
     pub(crate) use wire::sink::*;
 }
 
-/// 生命周期模式薄转发：实现见内部 `archive` 模块。
+/// 生命周期模式薄转发：实现见内部 `lifecycle` 模块。
 pub mod mode {
-    pub use crate::archive::{MODE_NAME, Mode, is_opt, mode_of, release};
+    pub use crate::lifecycle::{MODE_NAME, Mode, is_opt, mode_of, release};
 }
 
-/// 增量补丁薄转发：实现见内部 `archive` 模块。
+/// 增量补丁薄转发：实现见内部 `lifecycle` 模块。
 pub mod patch {
-    pub use crate::archive::{diff, join};
+    pub use crate::lifecycle::{diff, join};
 }
 
 #[cfg(test)]
 mod testutil;
 
-pub use archive::{Archive, Stored};
+/// 词表段保留名（字节容器占位，不接 tokenizer）。
+pub use crate::archive::VOCAB_NAME;
+
+pub use archive::{Archive, Metrics, Stored};
 pub use dtype::DType as Wire;
 pub use proof::Proof;
 pub use quant::{Quant, Quantized};

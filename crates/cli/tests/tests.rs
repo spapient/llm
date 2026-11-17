@@ -144,6 +144,49 @@ fn an_operator_is_carried_through_without_defaulting_here() {
 }
 
 #[test]
+fn archive_commands_carry_paths_through_without_opening_here() {
+    assert_eq!(
+        Invocation::parse(&args(&[
+            "import",
+            "--in",
+            "model.safetensors",
+            "--out",
+            "model.u"
+        ]))
+        .expect("合法")
+        .command(),
+        &Command::Import {
+            input: "model.safetensors".to_string(),
+            output: "model.u".to_string(),
+        }
+    );
+    assert_eq!(
+        Invocation::parse(&args(&["inspect", "--in", "model.u"]))
+            .expect("合法")
+            .command(),
+        &Command::Inspect {
+            input: "model.u".to_string()
+        }
+    );
+    assert_eq!(
+        Invocation::parse(&args(&["check", "--in", "model.u"]))
+            .expect("合法")
+            .command(),
+        &Command::Check {
+            input: "model.u".to_string()
+        }
+    );
+
+    let missing_out =
+        Invocation::parse(&args(&["import", "--in", "model.safetensors"])).expect_err("缺 --out");
+    assert!(missing_out.to_string().contains("--out"), "{missing_out}");
+    let missing_in = Invocation::parse(&args(&["check"])).expect_err("缺 --in");
+    assert!(missing_in.to_string().contains("--in"), "{missing_in}");
+    let unknown = Invocation::parse(&args(&["inspect", "--op", "gemv_i4"])).expect_err("未知选项");
+    assert!(unknown.to_string().contains("--op"), "{unknown}");
+}
+
+#[test]
 fn unknown_words_and_flags_are_rejected_with_the_usage_hint() {
     let unknown = Invocation::parse(&args(&["frobnicate"])).expect_err("未知命令");
     assert_eq!(unknown.code(), Code::Invalid);
@@ -158,7 +201,9 @@ fn unknown_words_and_flags_are_rejected_with_the_usage_hint() {
 
 #[test]
 fn the_usage_text_lists_every_command() {
-    for command in ["status", "verify", "bench", "train", "help"] {
+    for command in [
+        "status", "verify", "bench", "train", "import", "inspect", "check", "help",
+    ] {
         assert!(USAGE.contains(command), "{command}");
     }
 }

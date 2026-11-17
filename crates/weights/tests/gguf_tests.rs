@@ -163,6 +163,27 @@ fn build() -> Vec<u8> {
         ("q4.weight", vec![256], Kind::Q4_K, q4),
         ("q6.weight", vec![256], Kind::Q6_K, q6),
     ];
+    assemble(&pieces)
+}
+
+/// 只有标量 F32/F16 的最小夹具：供导入通路的成功路径对拍。
+fn plain_build() -> Vec<u8> {
+    let f32s: Vec<u8> = [1.0f32, -0.5]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    let halves: Vec<u8> = [0x3800u16, 0xC000]
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let pieces = vec![
+        ("f32.weight", vec![2], Kind::F32, f32s),
+        ("half.weight", vec![2], Kind::F16, halves),
+    ];
+    assemble(&pieces)
+}
+
+fn assemble(pieces: &[(&str, Vec<u64>, Kind, Vec<u8>)]) -> Vec<u8> {
     let mut head = Vec::new();
     head.extend_from_slice(&MAGIC);
     word(&mut head, VERSION);
@@ -180,7 +201,7 @@ fn build() -> Vec<u8> {
     let mut offset = 0u64;
     let mut infos = Vec::new();
     let mut body = Vec::new();
-    for (name, shape, kind, bytes) in &pieces {
+    for (name, shape, kind, bytes) in pieces {
         offset = offset.div_ceil(DEFAULT_ALIGN as u64) * DEFAULT_ALIGN as u64;
         text(&mut infos, name);
         word(&mut infos, shape.len() as u32);
@@ -268,4 +289,32 @@ fn raw_rejects_an_offset_whose_length_overflows() {
         file.raw(&tensor).is_err(),
         "偏移 + 长度溢出必须走错误分支，而不是靠 debug 的算术溢出 panic"
     );
+}
+
+#[test]
+fn import_maps_scalar_tensors_to_neutral_segments() {
+    let raw = plain_build();
+    let file = Gguf::parse(&raw).unwrap();
+    let segments = crate::import::segments_from_gguf(&file).expect("标量张量可导入");
+    assert_eq!(segments.len(), 2);
+
+    let f32 = &segments[0];
+    assert_eq!(f32.name(), "f32.weight");
+    assert_eq!(f32.dtype(), DType::F32);
+    assert_eq!(f32.shape(), &[2]);
+    assert_eq!(f32.data.len(), 8);
+
+    let half = &segments[1];
+    assert_eq!(half.name(), "half.weight");
+    assert_eq!(half.dtype(), DType::F16);
+    assert_eq!(half.shape(), &[2]);
+    assert_eq!(half.data.len(), 4);
+}
+
+#[test]
+fn import_rejects_block_quantization_without_dequantizing() {
+    let raw = build();
+    let file = Gguf::parse(&raw).unwrap();
+    let error = crate::import::segments_from_gguf(&file).expect_err("块量化必须显式失败");
+    assert_eq!(error.code(), Code::Unsupported);
 }

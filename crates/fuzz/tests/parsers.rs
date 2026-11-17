@@ -5,7 +5,7 @@
 //! 分组数、半个转义序列）。同一 `(seed, case)` 在任何机器上都得到同一串字节，失败可复现。
 //!
 //! 覆盖文本与字节两类边界：`cli` 的参数文法、`tool` 的词法解析、`weights` 的 JSON /
-//! safetensors / LLPK 容器、`train` 的检查点、`serve` 的帧解码、`wire` 的 LEB128 游标，以及
+//! safetensors / 自有 `.u` 容器、`train` 的检查点、`serve` 的帧解码、`wire` 的 LEB128 游标，以及
 //! `wire` 三种接收器的
 //! 不变量。它们都是"外部来的字节"，也都把错误当返回值，因此"不 panic / 结论稳定 / 拒绝有
 //! 话说"三条契约在这里是同一件事；最后一个不拒绝任何输入，它验的是"三条承诺互相一致"。
@@ -23,7 +23,7 @@ mod drivers;
 #[path = "support/seeds.rs"]
 mod seeds;
 
-use drivers::{Frames, Invocation, Json, Leb, Lex, Llpk, Safetensors, Sealed, Snapshot};
+use drivers::{Frames, Invocation, Json, Leb, Lex, Safetensors, Sealed, Snapshot, UContainer};
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
@@ -39,7 +39,7 @@ fn targets() -> [(&'static dyn Target, Seed); 9] {
         &Invocation,
         &Json,
         &Safetensors,
-        &Llpk,
+        &UContainer,
         &Snapshot,
         &Frames,
         &Leb,

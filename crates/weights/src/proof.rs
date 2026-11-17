@@ -254,6 +254,18 @@ pub(crate) fn leaf(name: &str, data: &[u8]) -> Digest {
     ctx.finish()
 }
 
+/// 纯字节摘要：域前缀 0x02，不绑名字；供写端 REF 去重的代表表做哈希键。
+///
+/// 哈希只做快速分流，不等于复用判据：命中后仍要逐位比对元数据与字节，碰撞只错过复用，
+/// 不会错配（见 `writer` 的代表表）。
+#[must_use]
+pub(crate) fn hash_bytes(data: &[u8]) -> Digest {
+    let mut ctx = Sha256::new();
+    ctx.update(&[0x02]);
+    ctx.update(data);
+    ctx.finish()
+}
+
 /// 内部节点：域前缀 0x01，与叶子区分。
 fn pair(left: &Digest, right: &Digest) -> Digest {
     let mut ctx = Sha256::new();

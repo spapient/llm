@@ -33,6 +33,7 @@
 
 #![deny(unsafe_code)]
 
+mod archive;
 mod run;
 mod status;
 mod train;
@@ -52,11 +53,16 @@ pub const USAGE: &str = "\
   verify --op <算子>      校验一个算子的协商与对拍
   bench  --op <算子>      测量一个算子的带宽与达成率
   train [选项]            跑训练闭环（配置数值由组装点解析，本层只搬字符串）
+  import --in <源> --out <文件> 把 safetensors / gguf / bin 条目流写成自有 `.u` 容器
+  inspect --in <文件>     读 `.u` 容器：条目清单与现场现算的度量
+  check --in <文件>       逐段解码还原 `.u` 容器，校验完整性
   help                   打印本说明
 
 选项：
   --op <算子>             算子名（`verify` / `bench` 用，缺省为 `gemv_i4`）
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
+  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` 的 `.u` 容器；三者都必需）
+  --out <文件>            输出路径（`import` 的 `.u` 容器，必需）
   --input <a,b,c>         `run` 的输入向量（逗号分隔 f32；不给则用确定性图案）
   --device <设备>         `run` 的设备名（缺省 `auto`，按指纹选）
   --lr <数值>             训练峰值学习率（`train` 用；缺省由调度表定）
@@ -110,6 +116,23 @@ pub enum Command {
         /// 恢复用快照路径；`None` 表示从零开始。
         load: Option<String>,
     },
+    /// 从 safetensors 源导入自有 `.u` 容器；两个路径都必需。
+    Import {
+        /// 源权重文件路径（按扩展名分派适配通路）。
+        input: String,
+        /// 输出 `.u` 容器路径。
+        output: String,
+    },
+    /// 检查 `.u` 容器条目清单与现场度量；路径必需。
+    Inspect {
+        /// 待读 `.u` 容器路径。
+        input: String,
+    },
+    /// 逐段解码校验 `.u` 容器；路径必需。
+    Check {
+        /// 待校验 `.u` 容器路径。
+        input: String,
+    },
     /// 打印用法。
     Help,
 }
@@ -160,6 +183,12 @@ const TRAIN: &[(&str, &str)] = &[
     ("--load", "检查点"),
 ];
 
+/// `inspect` / `check` 的选项：只有 `--in`，必需。
+const INSPECT: &[(&str, &str)] = &[("--in", "文件")];
+
+/// `import` 的选项：`--in`（safetensors 源）与 `--out`（`.u` 容器），两者都必需。
+const IMPORT: &[(&str, &str)] = &[("--in", "源"), ("--out", "文件")];
+
 impl Invocation {
     /// 解析参数（不含 `argv[0]`）。
     ///
@@ -193,8 +222,39 @@ fn command(name: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
         "help" | "-h" | "--help" => Ok(Command::Help),
         "run" => run(words),
         "train" => train(words),
+        "import" => import(words),
+        "inspect" => single_required(words, INSPECT, "inspect", |input| Command::Inspect {
+            input,
+        }),
+        "check" => single_required(words, INSPECT, "check", |input| Command::Check { input }),
         known => single(known, words),
     }
+}
+
+/// 单选项必需命令：表内唯一槽位，缺省即 [`missing_required`]；`--in` 不允许悬空。
+fn single_required(
+    words: &mut Words<'_>,
+    table: &[(&str, &str)],
+    command: &str,
+    build: fn(String) -> Command,
+) -> Result<Command> {
+    let slots = parse_slots(words, table, command)?;
+    let input = slots[0]
+        .clone()
+        .ok_or_else(|| missing_required(table[0].0, command))?;
+    Ok(build(input))
+}
+
+/// `import`：`--in` / `--out` 顺序自由，两者都必需——缺源或缺输出都是写错了，不猜默认路径。
+fn import(words: &mut Words<'_>) -> Result<Command> {
+    let slots = parse_slots(words, IMPORT, "import")?;
+    let input = slots[0]
+        .clone()
+        .ok_or_else(|| missing_required(IMPORT[0].0, "import"))?;
+    let output = slots[1]
+        .clone()
+        .ok_or_else(|| missing_required(IMPORT[1].0, "import"))?;
+    Ok(Command::Import { input, output })
 }
 
 /// 单参数命令表命中；未知名命令报 [`Code::Invalid`]。
@@ -272,6 +332,11 @@ fn missing_weights() -> Error {
     invalid("`run` 需要 `--weights <文件>`")
 }
 
+/// 命令缺必需选项：缺哪个选项就点名哪个，不替调用方补默认值。
+fn missing_required(flag: &str, command: &str) -> Error {
+    invalid(format!("`{command}` 需要 `{flag} <文件>`"))
+}
+
 /// 一条顶层命令文法的诊断：上下文固定在这一层。
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message.into()).with("cli::Invocation::parse")
@@ -292,6 +357,9 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
             device,
         } => run::run(weights, input.as_deref(), device.as_deref()),
         Command::Verify { .. } | Command::Bench { .. } => audit_note(),
+        Command::Import { input, output } => archive::import(input, output),
+        Command::Inspect { input } => archive::inspect(input),
+        Command::Check { input } => archive::check(input),
         Command::Train {
             lr,
             warmup,

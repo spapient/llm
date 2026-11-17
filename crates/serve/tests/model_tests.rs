@@ -713,8 +713,7 @@ fn entries_from_a_reader_source_load_into_params() {
     ]);
     let archive = Archive::parse(&bytes).expect("归档合法");
     let stack = Stack::from_header(archive.header()).expect("层栈");
-    let params =
-        Params::from_reader_stack(&stack, archive.header(), &archive).expect("借用装载");
+    let params = Params::from_reader_stack(&stack, archive.header(), &archive).expect("借用装载");
     let mut model = assemble(stack, params);
     let produced = model.forward(&x).expect("前向");
 
