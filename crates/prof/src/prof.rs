@@ -442,21 +442,17 @@ impl Profile {
 /// 命中规则条数（[`Profile::specificity`]）最多者胜出；与最优者同等具体的另一份也算
 /// 配置错误——“选谁”没有唯一答案就不该静默挑一份。没有任何档案命中时返回
 /// [`Code::Unsupported`]。选择判定是档案层职责，机制层只传入解析好的档案列表。
-pub fn select<'a>(
-    profiles: &'a [Profile],
-    detected: &Detected,
-) -> diagnostic::Result<&'a Profile> {
+pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
     let Some((index, profile)) = profiles
         .iter()
         .enumerate()
         .filter(|(_, profile)| profile.matches(detected))
         .max_by_key(|(_, profile)| profile.specificity())
     else {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!("没有档案匹配该指纹：{detected}"),
-        )
-        .with("prof::select"));
+        return Err(
+            Error::new(Code::Unsupported, format!("没有档案匹配该指纹：{detected}"))
+                .with("prof::select"),
+        );
     };
     match rival(profiles, detected, index, profile.specificity()) {
         Some(other) => Err(Error::new(

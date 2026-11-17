@@ -1,7 +1,7 @@
 use super::*;
-use diagnostic::Code;
 use crate::builtin::Catalogue;
 use crate::prof::MatchRule;
+use diagnostic::Code;
 
 /// 假指纹：回归测试替身。指纹从档案自己的 `[fingerprint]` 反查，不另写厂商表——规则语义只在
 /// `prof` 里定义一次，这里只填一个能满足规则的值；档案里没有该 vendor 时退回 `arch = <vendor>`，

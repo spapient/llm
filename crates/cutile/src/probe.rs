@@ -41,10 +41,7 @@ pub fn detect() -> Vec<Detected> {
 }
 
 /// 按指纹挑档案：匹配、具体度排序与平局判定都归 [`prof::select`]，本模块只做本机探测。
-pub fn select<'a>(
-    profiles: &'a [Profile],
-    detected: &Detected,
-) -> diagnostic::Result<&'a Profile> {
+pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
     crate::prof::select(profiles, detected)
 }
 
