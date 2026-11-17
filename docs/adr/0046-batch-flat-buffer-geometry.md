@@ -106,4 +106,4 @@ serve 整批前向动工前，下面三条是已从源码取证的阻塞契约�
 - [`embedding_plan`](../../crates/serve/src/plan.rs) 的 `tokens != 1` 拒绝的是**层声明**为多 token 的 prefill 矩阵层，不是运行期批大小；decode 模型层声明恒为 `tokens=1`，运行期一次喂多条索引的几何由内核适配从输出长度反推 `tokens = out.len()/dim`，放开多行输入不需要动这条装配期形状检查。
 - embed / gemv / rmsnorm 当前都走 serve `binary` 适配宏，几何全部从缓冲长度反推；批维接线时这些适配函数要按段 stride 切片或切到对应 op batch 入口。
 - 调度侧 [`step_batch`](../../crates/serve/src/completion.rs) 现状逐条 `logits → 采样 → 记账`；整批一次 `logits_batch` 后再逐条采样，失败条目的页账不回滚语义要在模型整批覆写时一并对拍，不能只切调用点。
-- 当前 `model_tests` 只有单序列 gemv 链夹具，缺 batch=2 端到端对拍；整批接线动工前先补这条回归基线。
+- batch=2 端到端回归基线夹具已补（默认逐条回退下两行 logits 与各自 KV 归属对拍）；整批几何接线后沿用同一份对拍口径。

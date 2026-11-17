@@ -109,6 +109,24 @@ fn decode_batch(kv: usize, history: &[f32]) -> (Batch, Sequence) {
     (batch, sequence)
 }
 
+/// 两条各带一行种子历史的 decode 批：A 取 token 2、B 取 token 5，页行按序列号归属；
+/// 批量前向回归基线夹具——当前走 `logits_batch` 默认逐条回退，整批几何接线后仍跑同一份对拍。
+fn decode_batch_two(
+    kv: usize,
+    history_a: &[f32],
+    history_b: &[f32],
+) -> (Batch, Sequence, Sequence) {
+    let pager = Pager::new(Cache::new(4, 4).expect("页池"), 2 * kv).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let a = Sequence::new(0, &[2u32], 2, 4, Stream::new(0)).expect("序列 A");
+    let b = Sequence::new(1, &[5u32], 2, 4, Stream::new(0)).expect("序列 B");
+    batch.admit(a.clone()).expect("准入 A");
+    batch.admit(b.clone()).expect("准入 B");
+    batch.write_kv(0, 0, history_a).expect("种子历史 A");
+    batch.write_kv(1, 0, history_b).expect("种子历史 B");
+    (batch, a, b)
+}
+
 /// 参考链一层 gemv：`x · w` 写进新向量返回，输出宽度按权重行数推得。
 fn gemv_hidden(x: &[f32], w: &[f32]) -> Vec<f32> {
     let out = w.len() / x.len();
@@ -1088,6 +1106,72 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     let (written_k, written_v) = row.split_at(kv);
     assert_close(written_k, &k_rot);
     assert_close(written_v, &v);
+}
+
+/// 两条序列同批走 `logits_batch`：行序对齐准入序，各自对拍参考块，KV 写回各归各的页行。
+/// 当前默认逐条回退；整批几何接线后本用例作为回归基线，不改变对拍口径。
+#[test]
+fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
+    let (vocab, hidden, kv) = (8, 8, 8);
+    let hist = 1;
+
+    let table = embed_table(vocab, hidden);
+    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let (hist_k_a, hist_v_a) = history_kv(kv);
+    let hist_k_b: Vec<f32> = hist_k_a.iter().map(|value| value * 1.7).collect();
+    let hist_v_b: Vec<f32> = hist_v_a.iter().map(|value| value * 1.3).collect();
+    let history_a = history_row(&hist_k_a, &hist_v_a);
+    let history_b = history_row(&hist_k_b, &hist_v_b);
+
+    let stack = embed_block_stack(vocab, hidden, kv, 4);
+    let params = block_params(
+        table.clone(),
+        wq.clone(),
+        wk.clone(),
+        wv.clone(),
+        wo.clone(),
+    );
+
+    let mut model = assemble(stack, params);
+    let (mut batch, a, b) = decode_batch_two(kv, &history_a, &history_b);
+    let rows = model
+        .logits_batch(&[a.clone(), b.clone()], &mut batch)
+        .expect("批量前向");
+    assert_eq!(rows.len(), 2, "两行 logits 与输入切片一一对应");
+
+    let embedded_a = &table[2 * hidden..3 * hidden];
+    let embedded_b = &table[5 * hidden..6 * hidden];
+    let (ref_a, k_a, v_a) = reference_block(
+        embedded_a,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k_a, &hist_v_a),
+        hist,
+        kv,
+        kv,
+        hidden,
+        a.len(),
+    );
+    let (ref_b, k_b, v_b) = reference_block(
+        embedded_b,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k_b, &hist_v_b),
+        hist,
+        kv,
+        kv,
+        hidden,
+        b.len(),
+    );
+    assert_close(&rows[0], &ref_a);
+    assert_close(&rows[1], &ref_b);
+
+    let row_a = batch.kv(0, a.len()).expect("A 当前步页行");
+    let row_b = batch.kv(1, b.len()).expect("B 当前步页行");
+    let (written_k_a, written_v_a) = row_a.split_at(kv);
+    let (written_k_b, written_v_b) = row_b.split_at(kv);
+    assert_close(written_k_a, &k_a);
+    assert_close(written_v_a, &v_a);
+    assert_close(written_k_b, &k_b);
+    assert_close(written_v_b, &v_b);
 }
 
 /// 块内一个投影条目缺失：装配期按名报 `Missing`。
