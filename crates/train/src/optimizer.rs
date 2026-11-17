@@ -96,6 +96,18 @@ pub trait Optimizer {
     ///
     /// 任一槽位参数/梯度长度不一致（[`Code::Invalid`]）时返回说明，不做半截更新。
     fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()>;
+
+    /// 从快照回载矩状态与优化器步数；无矩优化器只接受空表。
+    ///
+    /// # Errors
+    ///
+    /// 两张表槽位数或每槽长度不符（[`Code::Invalid`]），或无矩优化器收到非空矩表。
+    fn restore(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        step: u64,
+    ) -> Result<()>;
 }
 
 /// 全局梯度范数（L2）：跨全部槽位汇总，裁剪按这个范数统一缩比。
@@ -175,6 +187,23 @@ impl Optimizer for Sgd {
                 let update = scale * grad + decay * *param;
                 *param -= lr * update;
             }
+        }
+        Ok(())
+    }
+
+    fn restore(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        _step: u64,
+    ) -> Result<()> {
+        if !momentum.is_empty() || !variance.is_empty() {
+            let message = format!(
+                "SGD 无矩状态：快照带回 {} 个一阶矩槽、{} 个二阶矩槽，无法回载",
+                momentum.len(),
+                variance.len()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
         }
         Ok(())
     }
@@ -262,37 +291,6 @@ impl Adam {
     /// 优化器全局步数（偏差修正分母）。
     pub fn step_count(&self) -> u64 {
         self.step
-    }
-
-    /// 从快照回载矩状态与步数；两张表槽位数与每槽长度必须一致，否则是 [`Code::Invalid`]。
-    pub fn restore(
-        &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
-        step: u64,
-    ) -> Result<()> {
-        if momentum.len() != variance.len() {
-            let message = format!(
-                "矩状态槽位数不一致：一阶矩 {} 槽，二阶矩 {} 槽",
-                momentum.len(),
-                variance.len()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        for (index, (m, v)) in momentum.iter().zip(&variance).enumerate() {
-            if m.len() != v.len() {
-                let message = format!(
-                    "第 {index} 槽矩长度不一致：一阶矩 {} 元素，二阶矩 {} 元素",
-                    m.len(),
-                    v.len()
-                );
-                return Err(Error::new(Code::Invalid, message).with(SITE));
-            }
-        }
-        self.momentum = momentum;
-        self.variance = variance;
-        self.step = step;
-        Ok(())
     }
 }
 

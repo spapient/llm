@@ -269,6 +269,77 @@ fn formulas_reject_saturated_and_degenerate_inputs_with_a_message() {
     }
 }
 
+/// 合法推导式：字面量、嵌套括号、左结合加减与乘除优先级链式求值都对得上手算。
+#[test]
+fn formulas_evaluate_priority_chains_and_parenthesized_groups() {
+    let cases: &[(&str, f64)] = &[
+        ("0", 0.0),
+        ("1.5", 1.5),
+        ("2*3+4", 10.0),
+        ("2+3*4", 14.0),
+        ("(2+3)*4", 20.0),
+        ("(1+2)*(3+4)", 21.0),
+        ("10-6+2", 6.0),
+        ("10-(6+2)", 2.0),
+        ("8*4096/8", 4096.0),
+    ];
+    for (index, (text, expected)) in cases.iter().enumerate() {
+        let actual = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
+        assert!((actual - expected).abs() < 1e-9, "用例 {index} `{text}`：{actual} != {expected}");
+    }
+}
+
+/// 拒绝用例表驱动：除零、括号不闭合/不成对、运算符续接、连续运算符、非法字符与悬空括号，
+/// 每条都必须带非空说明消息；非法字面量也按位置报出。
+#[test]
+fn formulas_reject_each_degenerate_shape_with_a_message() {
+    let cases: &[&str] = &[
+        "1/0",
+        "(1+2",
+        "1+2)",
+        "1+2)*3",
+        "8*",
+        "1+2-",
+        "*3",
+        "**2",
+        "1++2",
+        "1--2",
+        "1*/2",
+        "2 3",
+        "1a2",
+        "3GHz",
+        ".",
+        "1.2.3",
+        "e5",
+        "1e",
+    ];
+    for (index, text) in cases.iter().enumerate() {
+        let error = eval_expression(text).expect_err("用例 {index} `{text}` 应当拒绝");
+        assert_eq!(error.code(), Code::Invalid, "用例 {index} `{text}`");
+        assert!(
+            !error.message().trim().is_empty(),
+            "用例 {index} `{text}`：拒绝必须带说明"
+        );
+    }
+}
+
+/// 饱和字面量：极大指数与相邻大数乘积按 f64 折叠（可溢出成 inf），既不 panic 也不静默截断。
+#[test]
+fn formulas_handle_saturated_large_literals_without_panic() {
+    let cases: &[&str] = &[
+        "1e308",
+        "1e308*1e308",
+        "0.0",
+        "0*1e308",
+        "1e-308+1e-308",
+        "4294967295",
+    ];
+    for (index, text) in cases.iter().enumerate() {
+        let value = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
+        assert!(value.is_finite() || value.is_infinite(), "用例 {index}：不应是 NaN");
+    }
+}
+
 /// 区间解析四种写法与退化边界：空串、非数字、上界越上、空白两侧、不限区间的往返。
 #[test]
 fn span_parse_covers_boundary_and_degenerate_forms() {
