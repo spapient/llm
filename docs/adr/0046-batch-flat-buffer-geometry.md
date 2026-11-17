@@ -95,11 +95,15 @@ logits_batch(&[Sequence], &mut Batch) -> Result<Vec<Vec<f32>>>
 
 serve 整批前向动工前，下面三条是已从源码取证的阻塞契约缺口；在裁决落地前不铺图接线：
 
-1. **投影行批算术路径**。`gemv_f32` 输入 / 输出宽度任意，但是单向量几何；`gemm_f32` 行批骨架的收缩轴 `K=8` 是固定档（[`gemm::K`](../../crates/op/src/gemm.rs)），不接任意 `in_features` 的真实驻留权重。两条候选：
-   - **A. 行循环 gemv**：批内每段调一次既有 `gemv_f32`，共享同一份权重；实现直接、不动 op 契约，但内层按行循环。
-   - **B. gemm 收缩轴运行期化**：整块矩阵乘符合批处理偏好，但要先证明放宽 `K` 不破坏 `gemm_i4` / `gemm_i8` 的分组打包契约与样本 / 校验。
-   - 未裁决前不在装配层把投影算子名钉死成 `gemm_f32`。
-2. **归一化行分组**。`rmsnorm_f32` 现按整段求均方根；行批下每条序列是独立段，必须按段分组各算各的归一化，`gamma` 按段复用，不能把批内多段平方和混进同一均值。
+1. **投影行批算术路径**（已裁决：方案 A）。`gemv_f32` 输入 / 输出宽度任意，但是单向量几何；`gemm_f32` 行批骨架的收缩轴 `K=8` 是固定档（[`gemm::K`](../../crates/op/src/gemm.rs)），不接任意 `in_features` 的真实驻留权重。两条候选：
+   - **A. 行循环 gemv（采用）**：批内每段调一次既有 `gemv_f32`，共享同一份权重；实现直接、不动 op 契约，但内层按行循环。
+   - **B. gemm 收缩轴运行期化（搁置）**：整块矩阵乘符合批处理偏好，但要先证明放宽 `K` 不破坏 `gemm_i4` / `gemm_i8` 的分组打包契约与样本 / 校验。
+2. **归一化行分组**。`rmsnorm_f32` 行分组 op 入口 `forward_batch` 已就位（各段独立 RMS、`gamma` 按行宽复用）；serve 内核适配接行批分段仍待接线。
 3. **缓冲绑定时点**。装配期只存单序列段长（台账 `activations` 登记宽、块 `kv_width`）；整块容量在运行期按本轮批长绑定，编号不随批数翻倍。
 
-embed 多行查表 op 已就位；[`embedding_plan`](../../crates/serve/src/plan.rs) 仍硬限 `tokens==1`，放开条件是输入侧先构造多条索引切片。
+### 取证备注（接线刀不要误判）
+
+- [`embedding_plan`](../../crates/serve/src/plan.rs) 的 `tokens != 1` 拒绝的是**层声明**为多 token 的 prefill 矩阵层，不是运行期批大小；decode 模型层声明恒为 `tokens=1`，运行期一次喂多条索引的几何由内核适配从输出长度反推 `tokens = out.len()/dim`，放开多行输入不需要动这条装配期形状检查。
+- embed / gemv / rmsnorm 当前都走 serve `binary` 适配宏，几何全部从缓冲长度反推；批维接线时这些适配函数要按段 stride 切片或切到对应 op batch 入口。
+- 调度侧 [`step_batch`](../../crates/serve/src/completion.rs) 现状逐条 `logits → 采样 → 记账`；整批一次 `logits_batch` 后再逐条采样，失败条目的页账不回滚语义要在模型整批覆写时一并对拍，不能只切调用点。
+- 当前 `model_tests` 只有单序列 gemv 链夹具，缺 batch=2 端到端对拍；整批接线动工前先补这条回归基线。
