@@ -1,8 +1,9 @@
 //! [`BenchRecord`] 的受限 JSON 写出与回读（M2-4）。
 //!
 //! 全仓零外部依赖，所以这里手写一个只服务归档记录的读写层：写出侧只暴露记录已校验过的
-//! 字段，未测量的实测与未测得的 roofline 上界写 `null`；回读侧按固定台账取回，并在解析期
-//! 拒绝重复键、嵌套过深、截断输入与非有限数（`NaN` / `Infinity` 不是 JSON 词法）。
+//! 字段，未测量的实测与未测得的 roofline 上界写 `null`；回读侧按固定台账边扫边取字段，
+//! 不保留通用对象 / 数组值树，也不按键名查表，并在解析期拒绝重复键、嵌套过深、截断输入与
+//! 非有限数（`NaN` / `Infinity` 不是 JSON 词法）。
 //!
 //! **不拥有**：采样、基线结论、跨机对照；数值口径沿用 [`bench`](crate::bench) 各类型的构造自检。
 
@@ -121,7 +122,7 @@ fn write_control(out: &mut String, ch: char) {
 }
 
 // ---------------------------------------------------------------------------
-// 回读：受限词法读取器 + 台账取值
+// 回读：面向固定台账的流式读取器
 // ---------------------------------------------------------------------------
 
 /// 回读一段完整 JSON 文本，按归档记录台账取回一条 [`BenchRecord`]。
@@ -131,245 +132,166 @@ fn write_control(out: &mut String, ch: char) {
 /// 词法 / 文法错误、重复键、嵌套过深、截断输入、非有限数、缺必填字段或类型不符，一律
 /// [`Code::Invalid`]；解析期错误消息带出错字节位置，台账层错误消息带字段名。
 pub fn from_json(text: &str) -> Result<BenchRecord> {
-    let value = parse(text)?;
-    let object = value.object()?;
-    record_of(object)
-}
-
-fn record_of(object: &[(String, Value)]) -> Result<BenchRecord> {
-    let (kind, name, backend) = head_of(object)?;
-    let geometry = geometry_of(object)?;
-    let harness = harness_of(object)?;
-    let roofline = roofline_of(object)?;
-    assemble(kind, name, backend, geometry, harness, roofline, object)
-}
-
-fn head_of(object: &[(String, Value)]) -> Result<(EntryKind, String, String)> {
-    let kind = kind_of(field(object, "kind")?)?;
-    let name = str_field(object, "name")?.to_string();
-    let backend = str_field(object, "backend")?.to_string();
-    Ok((kind, name, backend))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn assemble(
-    kind: EntryKind,
-    name: String,
-    backend: String,
-    geometry: Geometry,
-    harness: Harness,
-    roofline: Roofline,
-    object: &[(String, Value)],
-) -> Result<BenchRecord> {
-    let observed = optional_number_field(object, "observed")?;
-    let record = BenchRecord::new(kind, name, backend, geometry, harness, roofline)?;
-    apply_observed(record, observed)
-}
-
-fn apply_observed(record: BenchRecord, observed: Option<f64>) -> Result<BenchRecord> {
-    match observed {
-        Some(number) => record.with_observed(number),
-        None => Ok(record),
-    }
-}
-
-fn kind_of(value: &Value) -> Result<EntryKind> {
-    let text = string_of(value)?;
-    match text {
-        "op" => Ok(EntryKind::Op),
-        "layer" => Ok(EntryKind::Layer),
-        "model" => Ok(EntryKind::Model),
-        other => Err(invalid(format!(
-            "条目层级 `{other}` 不在 op / layer / model 之内"
-        ))),
-    }
-}
-
-fn geometry_of(object: &[(String, Value)]) -> Result<Geometry> {
-    let geo = nested(object, "geometry")?;
-    let shape = shape_of(geo)?;
-    build_geometry(geo, shape)
-}
-
-fn build_geometry(geo: &[(String, Value)], shape: Vec<usize>) -> Result<Geometry> {
-    let batch = batch_of(geo)?;
-    let dtype = str_field(geo, "dtype")?.to_string();
-    Geometry::new(shape, batch, dtype)
-}
-
-fn shape_of(geo: &[(String, Value)]) -> Result<Vec<usize>> {
-    let items = arr_field(geo, "shape")?;
-    let mut shape = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        shape.push(dim_usize(item, &format!("shape[{index}]"))?);
-    }
-    Ok(shape)
-}
-
-fn batch_of(geo: &[(String, Value)]) -> Result<u32> {
-    let batch = dim_usize(field(geo, "batch")?, "batch")?;
-    u32::try_from(batch).map_err(|_| invalid("`batch` 超出 u32 范围"))
-}
-
-fn harness_of(object: &[(String, Value)]) -> Result<Harness> {
-    let har = nested(object, "harness")?;
-    let host = str_field(har, "host")?.to_string();
-    let cpu = str_field(har, "cpu")?.to_string();
-    let os = str_field(har, "os")?.to_string();
-    build_harness(har, host, cpu, os)
-}
-
-fn build_harness(
-    har: &[(String, Value)],
-    host: String,
-    cpu: String,
-    os: String,
-) -> Result<Harness> {
-    let arch = str_field(har, "arch")?.to_string();
-    let toolchain = str_field(har, "toolchain")?.to_string();
-    let driver = str_field(har, "driver")?.to_string();
-    Ok(Harness::new(host, cpu, os, arch, toolchain, driver))
-}
-
-fn roofline_of(object: &[(String, Value)]) -> Result<Roofline> {
-    let roof = nested(object, "roofline")?;
-    let bw = optional_number_field(roof, "peak_bw_gb_s")?;
-    let gflops = optional_number_field(roof, "peak_gflops")?;
-    Roofline::new(bw, gflops)
-}
-
-/// 数组 / 形状维度：非负整数；小数、负数与越界整数都在这里拒。
-fn dim_usize(value: &Value, field: &str) -> Result<usize> {
-    let number = number_of(value, field)?;
-    if number < 0.0 || number.fract() != 0.0 {
-        return Err(invalid(format!("字段 `{field}` 必须是非负整数")));
-    }
-    let integer = number as u128;
-    if integer > usize::MAX as u128 {
-        return Err(invalid(format!("字段 `{field}` 超出 usize 范围")));
-    }
-    Ok(integer as usize)
-}
-
-/// 可选数值：`null` 取回 `None`，有限数取回 `Some`；类型不符或非有限数报错。
-fn optional_number_field(object: &[(String, Value)], key: &str) -> Result<Option<f64>> {
-    let value = field(object, key)?;
-    match value {
-        Value::Null => Ok(None),
-        Value::Number(number) => finite_number(*number, key),
-        other => Err(invalid(format!(
-            "字段 `{key}` 期望数值或 null，得到{}",
-            other.kind()
-        ))),
-    }
-}
-
-fn finite_number(number: f64, key: &str) -> Result<Option<f64>> {
-    if !number.is_finite() {
-        return Err(invalid(format!("字段 `{key}` 必须是有限数")));
-    }
-    Ok(Some(number))
-}
-
-fn number_of(value: &Value, field: &str) -> Result<f64> {
-    match value {
-        Value::Number(number) => Ok(*number),
-        Value::Null => Err(invalid(format!("字段 `{field}` 不能是 null"))),
-        other => Err(invalid(format!(
-            "字段 `{field}` 期望数值，得到{}",
-            other.kind()
-        ))),
-    }
-}
-
-fn str_field<'a>(object: &'a [(String, Value)], key: &str) -> Result<&'a str> {
-    string_of(field(object, key)?)
-}
-
-fn arr_field<'a>(object: &'a [(String, Value)], key: &str) -> Result<&'a [Value]> {
-    field(object, key)?.array()
-}
-
-fn nested<'a>(object: &'a [(String, Value)], key: &str) -> Result<&'a [(String, Value)]> {
-    field(object, key)?.object()
-}
-
-/// 台账对象里按键名取字段；缺字段报字段名，不猜默认值。
-fn field<'a>(object: &'a [(String, Value)], key: &str) -> Result<&'a Value> {
-    object
-        .iter()
-        .find(|(name, _)| name == key)
-        .map(|(_, value)| value)
-        .ok_or_else(|| invalid(format!("缺少必填字段 `{key}`")))
-}
-
-fn string_of(value: &Value) -> Result<&str> {
-    match value {
-        Value::String(text) => Ok(text),
-        other => Err(invalid(format!("期望字符串，得到{}", other.kind()))),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 词法读取器
-// ---------------------------------------------------------------------------
-
-/// 受限 JSON 值树：只取归档记录用到的几种形态。
-#[derive(Debug, Clone, PartialEq)]
-enum Value {
-    /// `null`。
-    Null,
-    /// 有限数；整数与小数统一存 `f64`，整数口径在台账层再校。
-    Number(f64),
-    /// 字符串；转义与代理对已解码。
-    String(String),
-    /// 数组。
-    Array(Vec<Value>),
-    /// 对象：保持书写顺序，重复键在解析期即被拒绝。
-    Object(Vec<(String, Value)>),
-}
-
-impl Value {
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::Array(_) => "数组",
-            Self::Object(_) => "对象",
-            Self::Null => "null",
-            Self::Number(_) => "数值",
-            Self::String(_) => "字符串",
-        }
-    }
-
-    fn object(&self) -> Result<&[(String, Value)]> {
-        match self {
-            Self::Object(fields) => Ok(fields),
-            other => Err(invalid(format!("期望对象，得到{}", other.kind()))),
-        }
-    }
-
-    fn array(&self) -> Result<&[Value]> {
-        match self {
-            Self::Array(items) => Ok(items),
-            other => Err(invalid(format!("期望数组，得到{}", other.kind()))),
-        }
-    }
-}
-
-/// 解析一段完整的 JSON 文本。
-fn parse(text: &str) -> Result<Value> {
     let mut reader = Reader::new(text);
-    let value = reader.value(0)?;
+    let record = reader.read_record()?;
     reader.skip_space();
     if reader.pos != reader.bytes.len() {
-        return Err(reader.fail("值之后还有多余内容"));
+        return Err(reader.fail("记录之后还有多余内容"));
     }
-    Ok(value)
+    Ok(record)
+}
+
+/// 台账草稿：顶层七个槽位，逐一在遍历时就地填好；`None` 表示该键尚未出现。
+struct RecordDraft {
+    kind: Option<EntryKind>,
+    name: Option<String>,
+    backend: Option<String>,
+    geometry: Option<Geometry>,
+    harness: Option<Harness>,
+    roofline: Option<Roofline>,
+    observed: Option<Option<f64>>,
+}
+
+impl RecordDraft {
+    fn new() -> Self {
+        Self {
+            kind: None,
+            name: None,
+            backend: None,
+            geometry: None,
+            harness: None,
+            roofline: None,
+            observed: None,
+        }
+    }
+
+    /// 七个槽位到齐后交回记录构造自检；`observed` 外层 `None` 表示键缺失。
+    fn build(mut self) -> Result<BenchRecord> {
+        let record = self.assemble()?;
+        self.fill_observed(record)
+    }
+
+    fn assemble(&mut self) -> Result<BenchRecord> {
+        let head = self.head()?;
+        let rest = self.rest()?;
+        BenchRecord::new(head.0, head.1, head.2, rest.0, rest.1, rest.2)
+    }
+
+    fn head(&mut self) -> Result<(EntryKind, String, String)> {
+        Ok((
+            require(self.kind.take(), "kind")?,
+            require(self.name.take(), "name")?,
+            require(self.backend.take(), "backend")?,
+        ))
+    }
+
+    fn rest(&mut self) -> Result<(Geometry, Harness, Roofline)> {
+        Ok((
+            require(self.geometry.take(), "geometry")?,
+            require(self.harness.take(), "harness")?,
+            require(self.roofline.take(), "roofline")?,
+        ))
+    }
+
+    fn fill_observed(self, record: BenchRecord) -> Result<BenchRecord> {
+        match self.observed {
+            Some(Some(number)) => record.with_observed(number),
+            Some(None) => Ok(record),
+            None => Err(invalid("缺少必填字段 `observed`")),
+        }
+    }
+}
+
+/// 几何草稿：形状、批次、数据类型三个槽位。
+struct GeometryDraft {
+    shape: Option<Vec<usize>>,
+    batch: Option<usize>,
+    dtype: Option<String>,
+}
+
+impl GeometryDraft {
+    fn new() -> Self {
+        Self {
+            shape: None,
+            batch: None,
+            dtype: None,
+        }
+    }
+
+    fn build(self) -> Result<Geometry> {
+        let shape = require(self.shape, "shape")?;
+        let batch = require(self.batch, "batch")?;
+        let dtype = require(self.dtype, "dtype")?;
+        let batch = u32::try_from(batch).map_err(|_| invalid("`batch` 超出 u32 范围"))?;
+        Geometry::new(shape, batch, dtype)
+    }
+}
+
+/// Roofline 草稿：两个可选峰值槽位。
+struct RooflineSlots {
+    bw: Option<Option<f64>>,
+    gflops: Option<Option<f64>>,
+}
+
+impl RooflineSlots {
+    fn new() -> Self {
+        Self {
+            bw: None,
+            gflops: None,
+        }
+    }
+}
+
+/// 档案草稿：六个身份字段逐一填好。
+struct HarnessDraft {
+    host: Option<String>,
+    cpu: Option<String>,
+    os: Option<String>,
+    arch: Option<String>,
+    toolchain: Option<String>,
+    driver: Option<String>,
+}
+
+impl HarnessDraft {
+    fn new() -> Self {
+        Self {
+            host: None,
+            cpu: None,
+            os: None,
+            arch: None,
+            toolchain: None,
+            driver: None,
+        }
+    }
+
+    fn build(mut self) -> Result<Harness> {
+        let head = self.head()?;
+        let tail = self.tail()?;
+        Ok(Harness::new(head.0, head.1, head.2, tail.0, tail.1, tail.2))
+    }
+
+    fn head(&mut self) -> Result<(String, String, String)> {
+        Ok((
+            require(self.host.take(), "host")?,
+            require(self.cpu.take(), "cpu")?,
+            require(self.os.take(), "os")?,
+        ))
+    }
+
+    fn tail(&mut self) -> Result<(String, String, String)> {
+        Ok((
+            require(self.arch.take(), "arch")?,
+            require(self.toolchain.take(), "toolchain")?,
+            require(self.driver.take(), "driver")?,
+        ))
+    }
 }
 
 /// 逐字节推进的读取器：`pos` 同时是报错位置，所以不缓存、不跳读。
 struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Reader<'a> {
@@ -377,6 +299,7 @@ impl<'a> Reader<'a> {
         Self {
             bytes: text.as_bytes(),
             pos: 0,
+            depth: 0,
         }
     }
 
@@ -413,98 +336,16 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn literal(&mut self, word: &str, value: Value) -> Result<Value> {
-        let at = self.pos;
-        let end = at + word.len();
-        let slice = self
-            .bytes
-            .get(at..end)
-            .ok_or_else(|| self.fail_at(at, format!("期望 `{word}`，但内容不足")))?;
-        if slice != word.as_bytes() {
-            return Err(self.fail_at(at, format!("期望 `{word}`")));
-        }
-        self.pos = end;
-        Ok(value)
-    }
-
-    fn value(&mut self, depth: usize) -> Result<Value> {
-        if depth > MAX_DEPTH {
+    /// 开一个容器：先查深度，再消费开头字节；离开容器时调用方把 `depth` 减回。
+    fn open_container(&mut self, opening: u8) -> Result<()> {
+        if self.depth >= MAX_DEPTH {
             return Err(self.fail(format!("嵌套超过 {MAX_DEPTH} 层")));
         }
-        self.skip_space();
-        let opened = self
-            .peek()
-            .ok_or_else(|| self.fail("期望一个值，但已到末尾"))?;
-        self.by_opening(opened, depth)
+        self.depth += 1;
+        self.eat(opening)
     }
 
-    /// 按开头字节分派：标量就地转换，结构化值交给容器读取器。
-    fn by_opening(&mut self, opened: u8, depth: usize) -> Result<Value> {
-        match opened {
-            b'"' => self.string().map(Value::String),
-            b'-' | b'0'..=b'9' => self.number(),
-            b'n' => self.literal("null", Value::Null),
-            _ => self.container(opened, depth),
-        }
-    }
-
-    fn container(&mut self, opened: u8, depth: usize) -> Result<Value> {
-        match opened {
-            b'{' => self.object(depth),
-            b'[' => self.array(depth),
-            _ => {
-                Err(self.fail("无法识别的值开头（归档记录不接受布尔、NaN / Infinity 或裸标识符）"))
-            }
-        }
-    }
-
-    fn object(&mut self, depth: usize) -> Result<Value> {
-        let open = self.pos;
-        self.eat(b'{')?;
-        let mut fields: Vec<(String, Value)> = Vec::new();
-        if self.close(b'}') {
-            return Ok(Value::Object(fields));
-        }
-        loop {
-            let (field, more) = self.member(open, depth + 1, &fields)?;
-            fields.push(field);
-            if !more {
-                return Ok(Value::Object(fields));
-            }
-        }
-    }
-
-    fn array(&mut self, depth: usize) -> Result<Value> {
-        let open = self.pos;
-        self.eat(b'[')?;
-        let mut items = Vec::new();
-        if self.close(b']') {
-            return Ok(Value::Array(items));
-        }
-        loop {
-            let (item, more) = self.element(open, depth)?;
-            items.push(item);
-            if !more {
-                return Ok(Value::Array(items));
-            }
-        }
-    }
-
-    fn member(
-        &mut self,
-        open: usize,
-        depth: usize,
-        seen: &[(String, Value)],
-    ) -> Result<((String, Value), bool)> {
-        let field = self.field(depth, seen)?;
-        Ok((field, self.separator(open, b'}', "对象")?))
-    }
-
-    fn element(&mut self, open: usize, depth: usize) -> Result<(Value, bool)> {
-        let value = self.value(depth + 1)?;
-        Ok((value, self.separator(open, b']', "数组")?))
-    }
-
+    /// 容器已结束：跳过空白后若撞上收尾字节就消费掉，返回 `false`；否则返回 `true` 继续。
     fn close(&mut self, closing: u8) -> bool {
         self.skip_space();
         if self.peek() != Some(closing) {
@@ -514,129 +355,420 @@ impl<'a> Reader<'a> {
         true
     }
 
-    fn field(&mut self, depth: usize, seen: &[(String, Value)]) -> Result<(String, Value)> {
+    /// 成员键：读字符串、查重、消费冒号，键名留在草稿分派。
+    fn member_key(&mut self, seen: &mut Vec<String>) -> Result<String> {
         self.skip_space();
         let at = self.pos;
-        let key = self.string()?;
-        if seen.iter().any(|(existing, _)| *existing == key) {
+        let key = self.read_string()?;
+        if seen.iter().any(|existing| existing == &key) {
             return Err(self.fail_at(at, format!("对象里出现重复键 `{key}`")));
         }
+        seen.push(key.clone());
         self.skip_space();
         self.eat(b':')?;
-        let value = self.value(depth)?;
-        Ok((key, value))
+        self.skip_space();
+        Ok(key)
     }
 
-    fn separator(&mut self, open: usize, close: u8, what: &str) -> Result<bool> {
+    /// 成员之间：逗号续读；收尾括号留给循环的 `close` 消费，这里只做预判。
+    fn require_next(&mut self, close: u8, what: &str) -> Result<()> {
         self.skip_space();
-        match self.bump() {
-            Some(b',') => Ok(true),
-            Some(byte) if byte == close => Ok(false),
-            Some(_) => Err(self.fail_at(
-                self.pos - 1,
-                format!("{what}里期望 `,` 或 `{}`", close as char),
-            )),
-            None => Err(self.fail_at(open, format!("{what}没有闭合"))),
+        match self.peek() {
+            Some(b',') => {
+                self.pos += 1;
+                Ok(())
+            }
+            Some(byte) if byte == close => Ok(()),
+            Some(_) => {
+                Err(self.fail_at(self.pos, format!("{what}里期望 `,` 或 `{}`", close as char)))
+            }
+            None => Err(self.fail_at(self.pos, format!("{what}没有闭合"))),
         }
     }
 
-    fn string(&mut self) -> Result<String> {
+    /// 遍历一个对象的成员：键交给 `visit` 分派到草稿槽位。
+    fn walk_object<T>(
+        &mut self,
+        close: u8,
+        what: &str,
+        seen: &mut Vec<String>,
+        ctx: &mut T,
+        visit: fn(&mut Self, &str, &mut T) -> Result<()>,
+    ) -> Result<()> {
+        while !self.close(close) {
+            let key = self.member_key(seen)?;
+            visit(self, &key, ctx)?;
+            self.require_next(close, what)?;
+        }
+        Ok(())
+    }
+
+    // ---- 台账结构 ---------------------------------------------------------
+
+    fn read_record(&mut self) -> Result<BenchRecord> {
+        self.open_container(b'{')?;
+        let mut draft = RecordDraft::new();
+        self.read_top_level(&mut draft)?;
+        draft.build()
+    }
+
+    fn read_top_level(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        let mut seen = Vec::new();
+        self.walk_object(b'}', "记录", &mut seen, draft, Self::visit_top)
+    }
+
+    fn visit_top(&mut self, key: &str, draft: &mut RecordDraft) -> Result<()> {
+        self.assign_top_level(key, draft)
+    }
+
+    fn assign_top_level(&mut self, key: &str, draft: &mut RecordDraft) -> Result<()> {
+        match key {
+            "kind" => self.fill_kind(draft),
+            "name" => self.fill_name(draft),
+            "backend" => self.fill_backend(draft),
+            "observed" => self.fill_observed_slot(draft),
+            other => self.assign_nested_top(other, draft),
+        }
+    }
+
+    fn assign_nested_top(&mut self, key: &str, draft: &mut RecordDraft) -> Result<()> {
+        match key {
+            "geometry" => self.fill_geometry(draft),
+            "harness" => self.fill_harness(draft),
+            "roofline" => self.fill_roofline(draft),
+            other => Err(invalid(format!("未知字段 `{other}`"))),
+        }
+    }
+
+    fn fill_kind(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        draft.kind = Some(self.read_kind()?);
+        Ok(())
+    }
+
+    fn fill_name(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        draft.name = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn fill_backend(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        draft.backend = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn fill_observed_slot(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        draft.observed = Some(self.read_optional_number()?);
+        Ok(())
+    }
+
+    fn fill_geometry(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        draft.geometry = Some(self.read_geometry()?);
+        Ok(())
+    }
+
+    fn fill_harness(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        draft.harness = Some(self.read_harness()?);
+        Ok(())
+    }
+
+    fn fill_roofline(&mut self, draft: &mut RecordDraft) -> Result<()> {
+        draft.roofline = Some(self.read_roofline()?);
+        Ok(())
+    }
+
+    fn read_geometry(&mut self) -> Result<Geometry> {
+        self.open_container(b'{')?;
+        let mut draft = GeometryDraft::new();
+        self.read_geometry_members(&mut draft)?;
+        self.depth -= 1;
+        draft.build()
+    }
+
+    fn read_geometry_members(&mut self, draft: &mut GeometryDraft) -> Result<()> {
+        let mut seen = Vec::new();
+        self.walk_object(b'}', "几何", &mut seen, draft, Self::visit_geometry)
+    }
+
+    fn visit_geometry(&mut self, key: &str, draft: &mut GeometryDraft) -> Result<()> {
+        self.assign_geometry(key, draft)
+    }
+
+    fn assign_geometry(&mut self, key: &str, draft: &mut GeometryDraft) -> Result<()> {
+        match key {
+            "shape" => self.fill_shape(draft),
+            "batch" => self.fill_batch(draft),
+            "dtype" => self.fill_dtype(draft),
+            other => Err(invalid(format!("几何对象里未知字段 `{other}`"))),
+        }
+    }
+
+    fn fill_shape(&mut self, draft: &mut GeometryDraft) -> Result<()> {
+        draft.shape = Some(self.read_shape()?);
+        Ok(())
+    }
+
+    fn fill_batch(&mut self, draft: &mut GeometryDraft) -> Result<()> {
+        draft.batch = Some(self.read_usize("batch")?);
+        Ok(())
+    }
+
+    fn fill_dtype(&mut self, draft: &mut GeometryDraft) -> Result<()> {
+        draft.dtype = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn read_shape(&mut self) -> Result<Vec<usize>> {
+        self.open_container(b'[')?;
+        let mut shape = Vec::new();
+        while !self.close(b']') {
+            self.push_shape_item(&mut shape)?;
+            self.require_next(b']', "形状")?;
+        }
+        self.depth -= 1;
+        Ok(shape)
+    }
+
+    fn push_shape_item(&mut self, shape: &mut Vec<usize>) -> Result<()> {
+        let index = shape.len();
+        let number = self.read_number()?;
+        let dim = dim_usize(number, &format!("shape[{index}]"))?;
+        shape.push(dim);
+        Ok(())
+    }
+
+    fn read_harness(&mut self) -> Result<Harness> {
+        self.open_container(b'{')?;
+        let mut draft = HarnessDraft::new();
+        self.read_harness_members(&mut draft)?;
+        self.depth -= 1;
+        draft.build()
+    }
+
+    fn read_harness_members(&mut self, draft: &mut HarnessDraft) -> Result<()> {
+        let mut seen = Vec::new();
+        self.walk_object(b'}', "档案", &mut seen, draft, Self::visit_harness)
+    }
+
+    fn visit_harness(&mut self, key: &str, draft: &mut HarnessDraft) -> Result<()> {
+        self.assign_harness(key, draft)
+    }
+
+    fn assign_harness(&mut self, key: &str, draft: &mut HarnessDraft) -> Result<()> {
+        match key {
+            "host" => self.fill_host(draft),
+            "cpu" => self.fill_cpu(draft),
+            "os" => self.fill_os(draft),
+            other => self.assign_harness_tail(other, draft),
+        }
+    }
+
+    fn assign_harness_tail(&mut self, key: &str, draft: &mut HarnessDraft) -> Result<()> {
+        match key {
+            "arch" => self.fill_arch(draft),
+            "toolchain" => self.fill_toolchain(draft),
+            "driver" => self.fill_driver(draft),
+            other => Err(invalid(format!("档案对象里未知字段 `{other}`"))),
+        }
+    }
+
+    fn fill_host(&mut self, draft: &mut HarnessDraft) -> Result<()> {
+        draft.host = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn fill_cpu(&mut self, draft: &mut HarnessDraft) -> Result<()> {
+        draft.cpu = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn fill_os(&mut self, draft: &mut HarnessDraft) -> Result<()> {
+        draft.os = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn fill_arch(&mut self, draft: &mut HarnessDraft) -> Result<()> {
+        draft.arch = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn fill_toolchain(&mut self, draft: &mut HarnessDraft) -> Result<()> {
+        draft.toolchain = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn fill_driver(&mut self, draft: &mut HarnessDraft) -> Result<()> {
+        draft.driver = Some(self.read_string()?);
+        Ok(())
+    }
+
+    fn read_roofline(&mut self) -> Result<Roofline> {
+        self.open_container(b'{')?;
+        let mut slots = RooflineSlots::new();
+        let mut seen = Vec::new();
+        self.walk_object(
+            b'}',
+            "roofline",
+            &mut seen,
+            &mut slots,
+            Self::visit_roofline,
+        )?;
+        self.depth -= 1;
+        Roofline::new(slots.bw.flatten(), slots.gflops.flatten())
+    }
+
+    fn visit_roofline(&mut self, key: &str, slots: &mut RooflineSlots) -> Result<()> {
+        self.assign_roofline(key, slots)
+    }
+
+    fn assign_roofline(&mut self, key: &str, slots: &mut RooflineSlots) -> Result<()> {
+        match key {
+            "peak_bw_gb_s" => self.fill_bw(slots),
+            "peak_gflops" => self.fill_gflops(slots),
+            other => Err(invalid(format!("roofline 未知字段 `{other}`"))),
+        }
+    }
+
+    fn fill_bw(&mut self, slots: &mut RooflineSlots) -> Result<()> {
+        slots.bw = Some(self.read_optional_number()?);
+        Ok(())
+    }
+
+    fn fill_gflops(&mut self, slots: &mut RooflineSlots) -> Result<()> {
+        slots.gflops = Some(self.read_optional_number()?);
+        Ok(())
+    }
+
+    // ---- 标量 ------------------------------------------------------------
+
+    fn read_kind(&mut self) -> Result<EntryKind> {
+        let text = self.read_string()?;
+        match text.as_str() {
+            "op" => Ok(EntryKind::Op),
+            "layer" => Ok(EntryKind::Layer),
+            "model" => Ok(EntryKind::Model),
+            other => Err(invalid(format!(
+                "条目层级 `{other}` 不在 op / layer / model 之内"
+            ))),
+        }
+    }
+
+    fn read_usize(&mut self, field: &str) -> Result<usize> {
+        let number = self.read_number()?;
+        dim_usize(number, field)
+    }
+
+    /// 可选数值：`null` 取回 `None`，有限数取回 `Some`；类型不符或非有限数报错。
+    fn read_optional_number(&mut self) -> Result<Option<f64>> {
+        if self.peek() == Some(b'n') {
+            self.read_null()?;
+            return Ok(None);
+        }
+        Ok(Some(self.read_number()?))
+    }
+
+    fn read_null(&mut self) -> Result<()> {
+        let at = self.pos;
+        let end = at + 4;
+        let Some(slice) = self.bytes.get(at..end) else {
+            return Err(self.fail_at(at, "`null` 不完整"));
+        };
+        if slice != b"null" {
+            return Err(self.fail_at(
+                at,
+                "无法识别的值开头（归档记录不接受布尔、NaN / Infinity 或裸标识符）",
+            ));
+        }
+        self.pos = end;
+        Ok(())
+    }
+
+    /// 读一个 JSON 字符串；转义与 UTF-8 就地解码，不先落通用值树。
+    fn read_string(&mut self) -> Result<String> {
         let open = self.pos;
         self.eat(b'"')?;
         let mut text = String::new();
-        while let Some(chunk) = self.chunk(open)? {
-            text.push_str(&chunk);
+        loop {
+            let Some(byte) = self.bump() else {
+                return Err(self.fail_at(open, "字符串没有闭合"));
+            };
+            if self.advance_string(&mut text, byte)? {
+                break;
+            }
         }
         Ok(text)
     }
 
-    fn chunk(&mut self, open: usize) -> Result<Option<String>> {
-        let at = self.pos;
-        let byte = self
-            .bump()
-            .ok_or_else(|| self.fail_at(open, "字符串没有闭合"))?;
-        if byte == b'"' {
-            return Ok(None);
-        }
-        Ok(Some(self.fragment(open, at, byte)?))
-    }
-
-    fn fragment(&mut self, open: usize, at: usize, byte: u8) -> Result<String> {
+    /// 推进一个字符串字节；返回 `true` 表示撞上收尾引号。
+    fn advance_string(&mut self, text: &mut String, byte: u8) -> Result<bool> {
         match byte {
-            b'\\' => self.escape(open, at).map(String::from),
-            0x00..=0x1f => Err(self.fail_at(at, "控制字符必须转义")),
-            _ => self.utf8(at),
+            b'"' => Ok(true),
+            b'\\' => self.push_escape(text),
+            0x00..=0x1f => Err(self.fail_at(self.pos - 1, "控制字符必须转义")),
+            _ => self.push_utf8(text, byte),
         }
     }
 
-    fn escape(&mut self, open: usize, at: usize) -> Result<char> {
-        let escaped = self
-            .bump()
-            .ok_or_else(|| self.fail_at(at, "转义序列不完整"))?;
-        if escaped == b'u' {
-            return self.unicode_escape(open);
-        }
-        simple_escape(escaped)
-            .ok_or_else(|| self.fail_at(at, format!("未知转义 `\\{}`", escaped as char)))
+    fn push_escape(&mut self, text: &mut String) -> Result<bool> {
+        text.push(self.read_escape()?);
+        Ok(false)
     }
 
-    fn utf8(&mut self, at: usize) -> Result<String> {
-        let Some(width) = sequence_width(self.bytes[at]) else {
-            return Err(self.fail_at(at, "非法的 UTF-8 起始字节"));
+    fn push_utf8(&mut self, text: &mut String, first: u8) -> Result<bool> {
+        text.push_str(self.utf8_run(first)?);
+        Ok(false)
+    }
+
+    fn read_escape(&mut self) -> Result<char> {
+        let at = self.pos;
+        let Some(byte) = self.bump() else {
+            return Err(self.fail_at(at, "转义序列不完整"));
         };
-        let end = at + width;
-        let Some(slice) = self.bytes.get(at..end) else {
-            return Err(self.fail_at(at, "多字节字符被截断"));
+        match byte {
+            b'u' => Err(self.fail_at(at, "本记录字符串不接受 `\\u` 转义")),
+            _ => simple_escape(byte)
+                .ok_or_else(|| self.fail_at(at, format!("未知转义 `\\{}`", byte as char))),
+        }
+    }
+
+    /// 取出自当前 `pos` 起的一个合法 UTF-8 字符片段，并把指针推到片段末尾。
+    fn utf8_run(&mut self, first: u8) -> Result<&str> {
+        let Some(width) = sequence_width(first) else {
+            return Err(self.fail_at(self.pos - 1, "非法的 UTF-8 起始字节"));
         };
-        let text = std::str::from_utf8(slice).map_err(|_| self.fail_at(at, "非法的 UTF-8 序列"))?;
+        let end = self.pos - 1 + width;
+        let Some(slice) = self.bytes.get(self.pos - 1..end) else {
+            return Err(self.fail_at(self.pos - 1, "多字节字符被截断"));
+        };
+        let text = std::str::from_utf8(slice)
+            .map_err(|_| self.fail_at(self.pos - 1, "非法的 UTF-8 序列"))?;
         self.pos = end;
-        Ok(text.to_string())
-    }
-
-    fn unicode_escape(&mut self, open: usize) -> Result<char> {
-        let high = self.hex4()?;
-        if is_high_surrogate(high) {
-            return code_point(open, self.pair_surrogate(high)?);
-        }
-        if is_low_surrogate(high) {
-            return Err(self.fail_at(open, "孤立的低位代理"));
-        }
-        code_point(open, high)
-    }
-
-    fn pair_surrogate(&mut self, high: u32) -> Result<u32> {
-        let at = self.pos;
-        if self.bump() != Some(b'\\') || self.bump() != Some(b'u') {
-            return Err(self.fail_at(at, "高位代理后必须紧跟 `\\u` 低位代理"));
-        }
-        let low = self.hex4()?;
-        if !is_low_surrogate(low) {
-            return Err(self.fail_at(at, "低位代理必须落在 U+DC00..U+DFFF"));
-        }
-        Ok(0x1_0000 + ((high - 0xd800) << 10) + (low - 0xdc00))
-    }
-
-    fn hex4(&mut self) -> Result<u32> {
-        let at = self.pos;
-        let mut value = 0u32;
-        for _ in 0..4 {
-            value = value * 16 + self.hex_digit(at)?;
-        }
-        Ok(value)
-    }
-
-    fn hex_digit(&mut self, at: usize) -> Result<u32> {
-        let byte = self
-            .bump()
-            .ok_or_else(|| self.fail_at(at, "`\\u` 需要 4 位十六进制"))?;
-        (byte as char)
-            .to_digit(16)
-            .ok_or_else(|| self.fail_at(at, "`\\u` 需要 4 位十六进制"))
+        Ok(text)
     }
 
     /// 读一个 JSON 数值：按文法切片，`f64` 解析后必须有限。
-    fn number(&mut self) -> Result<Value> {
-        let text = self.number_text()?.to_string();
+    fn read_number(&mut self) -> Result<f64> {
+        self.skip_space();
+        let text = self.number_text()?;
+        self.parse_finite(&text)
+    }
+
+    fn number_text(&mut self) -> Result<String> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        self.consume_int(start)?;
+        self.consume_fraction()?;
+        self.consume_exponent()?;
+        self.slice_text(start)
+    }
+
+    fn slice_text(&self, start: usize) -> Result<String> {
+        let text = std::str::from_utf8(self.bytes.get(start..self.pos).unwrap_or_default())
+            .map_err(|_| self.fail_at(start, "数值不是 ASCII"))?;
+        Ok(text.to_string())
+    }
+
+    fn parse_finite(&self, text: &str) -> Result<f64> {
         let at = self.pos;
         let number: f64 = text
             .parse()
@@ -644,47 +776,23 @@ impl<'a> Reader<'a> {
         if !number.is_finite() {
             return Err(self.fail_at(at, "数值必须是有限数（不接受 NaN / Infinity）"));
         }
-        Ok(Value::Number(number))
+        Ok(number)
     }
 
-    /// 按 JSON 数词法切出字节片：符号、整数、小数与指数分段推进。
-    fn number_text(&mut self) -> Result<&str> {
-        let start = self.pos;
-        self.number_sign()?;
-        self.int_part(start)?;
-        self.fraction()?;
-        self.exponent()?;
-        std::str::from_utf8(self.bytes.get(start..self.pos).unwrap_or_default())
-            .map_err(|_| self.fail_at(start, "数值不是 ASCII"))
-    }
-
-    fn number_sign(&mut self) -> Result<()> {
-        if self.peek() == Some(b'-') {
-            self.pos += 1;
-        }
-        Ok(())
-    }
-
-    /// 整数部分：`0` 或非零开头的一串数字；前导零在本地拒。
-    fn int_part(&mut self, start: usize) -> Result<()> {
-        let digit_at = self.pos;
-        let first = self
-            .peek()
-            .ok_or_else(|| self.fail_at(digit_at, "数值整数部分缺少数字"))?;
-        if first == b'0' {
-            self.pos += 1;
-            return self.reject_leading_zero(start);
-        }
-        if !matches!(first, b'1'..=b'9') {
-            return Err(self.fail_at(digit_at, "数值整数部分缺少数字"));
-        }
-        self.consume_digits();
-        Ok(())
-    }
-
-    fn reject_leading_zero(&mut self, start: usize) -> Result<()> {
-        if matches!(self.peek(), Some(b'0'..=b'9')) {
-            return Err(self.fail_at(start, "数值整数部分不能有前导零"));
+    fn consume_int(&mut self, start: usize) -> Result<()> {
+        let at = self.pos;
+        let Some(first) = self.peek() else {
+            return Err(self.fail_at(at, "数值整数部分缺少数字"));
+        };
+        match first {
+            b'0' => {
+                self.pos += 1;
+                if matches!(self.peek(), Some(b'0'..=b'9')) {
+                    return Err(self.fail_at(start, "数值整数部分不能有前导零"));
+                }
+            }
+            b'1'..=b'9' => self.consume_digits(),
+            _ => return Err(self.fail_at(at, "数值整数部分缺少数字")),
         }
         Ok(())
     }
@@ -695,7 +803,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn fraction(&mut self) -> Result<()> {
+    fn consume_fraction(&mut self) -> Result<()> {
         if self.peek() != Some(b'.') {
             return Ok(());
         }
@@ -704,13 +812,11 @@ impl<'a> Reader<'a> {
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
             return Err(self.fail_at(at, "小数部分缺少数字"));
         }
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.pos += 1;
-        }
+        self.consume_digits();
         Ok(())
     }
 
-    fn exponent(&mut self) -> Result<()> {
+    fn consume_exponent(&mut self) -> Result<()> {
         if !matches!(self.peek(), Some(b'e' | b'E')) {
             return Ok(());
         }
@@ -722,11 +828,29 @@ impl<'a> Reader<'a> {
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
             return Err(self.fail_at(at, "指数部分缺少数字"));
         }
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.pos += 1;
-        }
+        self.consume_digits();
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// 台账 / 词法辅助
+// ---------------------------------------------------------------------------
+
+/// 数组 / 形状维度：非负整数；小数、负数与越界整数都在这里拒。
+fn dim_usize(number: f64, field: &str) -> Result<usize> {
+    if number < 0.0 || number.fract() != 0.0 {
+        return Err(invalid(format!("字段 `{field}` 必须是非负整数")));
+    }
+    let integer = number as u128;
+    if integer > usize::MAX as u128 {
+        return Err(invalid(format!("字段 `{field}` 超出 usize 范围")));
+    }
+    Ok(integer as usize)
+}
+
+fn require<T>(option: Option<T>, field: &str) -> Result<T> {
+    option.ok_or_else(|| invalid(format!("缺少必填字段 `{field}`")))
 }
 
 /// 带位置前缀的解析错误；台账层错误不带位置，另走 [`invalid`]。
@@ -740,7 +864,7 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("tool::bench_json::from_json")
 }
 
-/// 简单转义表：`\X` 的第二个字节 → 字符，`'\0'` 表示不是简单转义（`u` 另行处理）。
+/// 简单转义表：`\X` 的第二个字节 → 字符，`'\0'` 表示不是简单转义。
 const SIMPLE: [char; 128] = {
     let mut table = ['\0'; 128];
     table[b'"' as usize] = '"';
@@ -766,16 +890,4 @@ fn sequence_width(byte: u8) -> Option<usize> {
         0xf0..=0xf7 => Some(4),
         _ => None,
     }
-}
-
-fn code_point(at: usize, code: u32) -> Result<char> {
-    char::from_u32(code).ok_or_else(|| located(at, format!("U+{code:04X} 不是合法字符")))
-}
-
-fn is_high_surrogate(code: u32) -> bool {
-    (0xd800..=0xdbff).contains(&code)
-}
-
-fn is_low_surrogate(code: u32) -> bool {
-    (0xdc00..=0xdfff).contains(&code)
 }

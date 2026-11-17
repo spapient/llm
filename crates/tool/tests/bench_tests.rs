@@ -28,6 +28,26 @@ fn record(name: &str, backend: &str, geom: Geometry) -> Result<BenchRecord> {
     )
 }
 
+/// 负例夹具共用的档案与 roofline 片段（身份值在各用例里保持一致）。
+const HARNESS_JSON: &str =
+    r#"{"host": "h", "cpu": "c", "os": "o", "arch": "a", "toolchain": "t", "driver": "d"}"#;
+const ROOFLINE_JSON: &str = r#"{"peak_bw_gb_s": null, "peak_gflops": null}"#;
+
+/// 拼几何对象片段：`shape` / `batch` 已是 JSON 词法，`dtype` 作为字符串转义。
+fn geometry_json(shape: &str, batch: &str, dtype: &str) -> String {
+    format!(r#"{{"shape": {shape}, "batch": {batch}, "dtype": {dtype:?}}}"#)
+}
+
+/// 按 `(键, JSON 值片段)` 拼一条记录对象；缺字段的用例只省略对应条目。
+fn record_json(fields: &[(&str, &str)]) -> String {
+    let inner = fields
+        .iter()
+        .map(|(key, value)| format!(r#""{key}": {value}"#))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{inner}}}")
+}
+
 #[test]
 fn a_minimal_record_keeps_observed_and_roofline_optional() {
     let geom = geometry(vec![4096, 4096], 1, "f32").expect("几何合法");
@@ -167,75 +187,74 @@ fn json_rejects_malformed_and_truncated_input() {
 
 #[test]
 fn json_rejects_duplicate_keys() {
-    let top_level = r#"
-        {"kind": "op", "kind": "layer", "name": "x", "backend": "b",
-         "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
-         "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                     "toolchain": "t", "driver": "d"},
-         "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-         "observed": null}
-    "#;
-    let err = from_json(top_level).expect_err("顶层重复键必须拒绝");
+    let top_level = format!(
+        r#"{{"kind": "op", "kind": "layer", "name": "x", "backend": "b",
+           "geometry": {}, "harness": {}, "roofline": {}, "observed": null}}"#,
+        geometry_json("[1]", "1", "f32"),
+        HARNESS_JSON,
+        ROOFLINE_JSON,
+    );
+    let err = from_json(&top_level).expect_err("顶层重复键必须拒绝");
     assert_eq!(err.code(), Code::Invalid);
 
-    let nested = r#"
-        {"kind": "op", "name": "x", "backend": "b",
-         "geometry": {"shape": [1], "shape": [2], "batch": 1, "dtype": "f32"},
-         "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                     "toolchain": "t", "driver": "d"},
-         "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-         "observed": null}
-    "#;
-    let err = from_json(nested).expect_err("几何对象内重复键必须拒绝");
+    let nested = format!(
+        r#"{{"kind": "op", "name": "x", "backend": "b",
+           "geometry": {{"shape": [1], "shape": [2], "batch": 1, "dtype": "f32"}},
+           "harness": {}, "roofline": {}, "observed": null}}"#,
+        HARNESS_JSON, ROOFLINE_JSON,
+    );
+    let err = from_json(&nested).expect_err("几何对象内重复键必须拒绝");
     assert_eq!(err.code(), Code::Invalid);
 }
 
 #[test]
 fn json_rejects_non_finite_and_wrong_typed_values() {
     let base = |observed: &str| -> String {
-        format!(
-            r#"
-            {{"kind": "op", "name": "x", "backend": "b",
-              "geometry": {{"shape": [1], "batch": 1, "dtype": "f32"}},
-              "harness": {{"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                          "toolchain": "t", "driver": "d"}},
-              "roofline": {{"peak_bw_gb_s": null, "peak_gflops": null}},
-              "observed": {observed}}}
-            "#
-        )
+        record_json(&[
+            ("kind", r#""op""#),
+            ("name", r#""x""#),
+            ("backend", r#""b""#),
+            ("geometry", &geometry_json("[1]", "1", "f32")),
+            ("harness", HARNESS_JSON),
+            ("roofline", ROOFLINE_JSON),
+            ("observed", observed),
+        ])
     };
+    let dense = record_json(&[
+        ("kind", r#""dense""#),
+        ("name", r#""x""#),
+        ("backend", r#""b""#),
+        ("geometry", &geometry_json("[1]", "1", "f32")),
+        ("harness", HARNESS_JSON),
+        ("roofline", ROOFLINE_JSON),
+        ("observed", "null"),
+    ]);
+    let batch_fraction = record_json(&[
+        ("kind", r#""op""#),
+        ("name", r#""x""#),
+        ("backend", r#""b""#),
+        ("geometry", &geometry_json("[1]", "1.5", "f32")),
+        ("harness", HARNESS_JSON),
+        ("roofline", ROOFLINE_JSON),
+        ("observed", "null"),
+    ]);
+    let shape_text = record_json(&[
+        ("kind", r#""op""#),
+        ("name", r#""x""#),
+        ("backend", r#""b""#),
+        ("geometry", &geometry_json(r#"["x"]"#, "1", "f32")),
+        ("harness", HARNESS_JSON),
+        ("roofline", ROOFLINE_JSON),
+        ("observed", "null"),
+    ]);
     let cases = [
         base("NaN"),
         base("Infinity"),
         base("-Infinity"),
-        base("\"12\""),
-        r#"
-            {"kind": "dense", "name": "x", "backend": "b",
-             "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
-             "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                         "toolchain": "t", "driver": "d"},
-             "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-             "observed": null}
-        "#
-        .to_string(),
-        r#"
-            {"kind": "op", "name": "x", "backend": "b",
-             "geometry": {"shape": [1], "batch": 1.5, "dtype": "f32"},
-             "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                         "toolchain": "t", "driver": "d"},
-             "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-             "observed": null}
-        "#
-        .to_string(),
-        r#"
-            {"kind": "op", "name": "x", "backend": "b",
-             "geometry": {"shape": ["x"], "batch": 1, "dtype": "f32"},
-             "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                         "toolchain": "t", "driver": "d"},
-             "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-             "observed": null}
-        "#
-        .to_string(),
+        base(r#""12""#),
+        dense,
+        batch_fraction,
+        shape_text,
     ];
     for text in cases {
         let err = from_json(&text).expect_err("坏数值 / 类型不符必须拒绝");
@@ -245,41 +264,35 @@ fn json_rejects_non_finite_and_wrong_typed_values() {
 
 #[test]
 fn json_rejects_missing_required_fields() {
-    let cases = [
-        r#"{"name": "x", "backend": "b",
-            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
-            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                        "toolchain": "t", "driver": "d"},
-            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-            "observed": null}"#,
-        r#"{"kind": "op", "backend": "b",
-            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
-            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                        "toolchain": "t", "driver": "d"},
-            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-            "observed": null}"#,
-        r#"{"kind": "op", "name": "x", "backend": "b",
-            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                        "toolchain": "t", "driver": "d"},
-            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-            "observed": null}"#,
-        r#"{"kind": "op", "name": "x", "backend": "b",
-            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
-            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
-            "observed": null}"#,
-        r#"{"kind": "op", "name": "x", "backend": "b",
-            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
-            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                        "toolchain": "t", "driver": "d"},
-            "observed": null}"#,
-        r#"{"kind": "op", "name": "x", "backend": "b",
-            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
-            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
-                        "toolchain": "t", "driver": "d"},
-            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null}}"#,
-    ];
+    let cases = ["kind", "name", "backend", "geometry", "harness", "roofline"]
+        .iter()
+        .map(|omit| record_without(omit))
+        .collect::<Vec<_>>();
     for text in cases {
-        let err = from_json(text).expect_err("缺必填字段必须拒绝");
+        let err = from_json(&text).expect_err("缺必填字段必须拒绝");
         assert_eq!(err.code(), Code::Invalid, "输入：{text}");
     }
+}
+
+/// 全字段记录里删掉 `omitted` 这一键，其余片段与正例保持一致。
+fn record_without(omitted: &str) -> String {
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let mut add = |key: &str, value: String| {
+        if omitted != key {
+            fields.push((key.to_string(), value));
+        }
+    };
+    add("kind", "\"op\"".to_string());
+    add("name", "\"x\"".to_string());
+    add("backend", "\"b\"".to_string());
+    add("geometry", geometry_json("[1]", "1", "f32"));
+    add("harness", HARNESS_JSON.to_string());
+    add("roofline", ROOFLINE_JSON.to_string());
+    add("observed", "null".to_string());
+    let inner = fields
+        .iter()
+        .map(|(key, value)| format!(r#""{key}": {value}"#))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{inner}}}")
 }
