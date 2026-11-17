@@ -24,7 +24,7 @@
 各成员 lib 测试数（`cargo test -p <pkg> --lib` 实测）：annotation 34、autograd 65、cli 25、
 cutile 167、data 16、diagnostic 12、dtype 18、engine 77、fuzz 17、nn 79、op 198、prim 19、prof 48、
 serve 124、shard 29、storage 13、tensor 25、testkit 17、tokenizer 44、tool 51、train 80、weights 116、wire 13。
-集成 / 文档补充：fuzz p06 3 + parsers 2；tokenizer tokens 16；op 集成 2；prof atom 1；benches regress 8；
+集成 / 文档补充：fuzz parsers 2；tokenizer tokens 16；op 集成 2；prof atom 1；benches regress 8；
 serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3。
 
 ---
@@ -38,7 +38,7 @@ serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3
 | P0-3 | 已落地 | 大文件按职责轴拆分：weights `bin.rs` → `bin_zip.rs` / `bin_pickle.rs`；cutile `main.rs` → `report.rs`；train `snapshot.rs` → `cursor/entry/state`；入口编排拆 `cmd/run.rs` / `cmd/status.rs` / `cmd/train.rs`；gate 行数 ≤899、ccn/nloc 过门 | 其余大文件随后续阶段内拆；入口编排函数已重构回 ccn/nloc 阈值内，`[gate.debt]` 存量为零，无待删基线条目 |
 | P0-4 | 已落地 | 报告 / 排版收敛 `tool::Report` 单一报告器；tool lib 51（含 ccn 1、gate 1） | — |
 | P0-5 | 已落地 | 手写解析收敛 diagnostic 单源；ADR 0039 草案记依赖策略；diagnostic lib 12 + 集成 1，解析负例全绿 | toml+serde 唯一解析依赖未拍板前不接（D5） |
-| P0-6 | 已落地 | 三族纯函数表驱动边界用例 + fuzz 契约 sweep 接线：tokenizer 44 lib + tokens 16；op 198 lib + 2 集成；prof 48 lib + atom 1；fuzz lib 17 + p06 集成 3 + parsers 2。23 个适配器接入 `check/sweep/sweep_all` 与种子语料（tokenizer 4 / op 15 / prof 4；prof 的原语 / 存储 / 类型 3 个闭集目标走独立 sweep，不强制种子接受）；p06 三条：`every_p06_target_turns_arbitrary_bytes_into_a_stable_verdict`（512 用例 sweep）、`every_p06_seed_is_a_valid_input`、`closed_set_parsers_are_stable_on_arbitrary_bytes`；op 边界新增 mul / scale / embed / rope / dequant_i4 / dequant_i8 六条空值/非对齐/越界/饱和/重复对拍；9 个 libfuzzer harness 保持 `harness=false` + `required-features=["engine"]` 门控；零新生产依赖，tokenizer/op/prof 三族仅进 fuzz `[dev-dependencies]` | prof `eval_expression` 为 `pub(super)` 未接 fuzz（仓内单测覆盖）；`DType` 名字往返由 `dtype/tests/properties.rs` 覆盖；`--all-features` libfuzzer 链接编译本轮未跑 |
+| P0-6 | 部分落地 | 三族纯函数表驱动边界用例落在各自仓内单测：tokenizer 44 lib + tokens 16；op 198 lib + 2 集成；prof 48 lib + atom 1；op 边界新增 mul / scale / embed / rope / dequant_i4 / dequant_i8 六条空值/非对齐/越界/饱和/重复对拍。fuzz 侧只保留不可信字节入口解析器目标（parsers 2 + 9 个 libfuzzer harness，`harness=false` + `required-features=["engine"]` 门控）；三族内部纯函数 / 结构化张量接进 sweep 的 p06 接线范式与 fuzz 契约边界错配，已按规范移除，`tokenizer`/`op`/`prof` 不进 fuzz `[dev-dependencies]`，零新生产依赖 | prof `eval_expression` 为 `pub(super)` 未接 fuzz（仓内单测覆盖）；`DType` 名字往返由 `dtype/tests/properties.rs` 覆盖；`--all-features` libfuzzer 链接编译本轮未跑 |
 | P0-7 | 已落地 | 注解 / 声明 / 模板三方参数类型签名交叉校验；注册表 24 条全过；codegen 检查模块 `the_annotation_still_matches_the_declared_operators` | 跨设备文本同构校验随后端阶段 |
 | P0-8 | 已落地 | 已具备能力常驻回归：weights `tests/round_trip.rs` 12 条多格式往返；prof Grade L0–L3 闭集往返（prof lib 48 + 1） | — |
 
