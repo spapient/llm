@@ -29,6 +29,7 @@ fn it_groups_qkv_attention_and_output_under_one_prefix() {
     assert_eq!(layer.hidden(), 32);
     assert_eq!(layer.kv_width(), 16);
     assert_eq!(layer.head_dim(), 8);
+    assert_eq!(layer.heads(), 2);
     assert_eq!(layer.seq(), 4);
     assert_eq!(layer.algo(), AttentionAlgo::Naive);
 }

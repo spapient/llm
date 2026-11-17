@@ -137,6 +137,11 @@ impl AttentionBlock {
         self.head_dim
     }
 
+    /// 头数：`kv_width / head_dim`；构造校验已保证整除，这里是纯派生，不再二次取余。
+    pub fn heads(&self) -> usize {
+        self.kv_width / self.head_dim
+    }
+
     /// 序列长（注意力层几何）。
     pub fn seq(&self) -> usize {
         self.attn.seq()

@@ -104,6 +104,41 @@ pub fn forward(pos: usize, x: &[f32], out: &mut [f32]) -> diagnostic::Result<()>
     rotate_into(x, pos as f32, out)
 }
 
+/// 校验多头旋转长度并派生头数；非法头宽、不等长或非头宽倍数在此一次性拦下。
+fn rope_heads(x: &[f32], out: &[f32], head_dim: usize) -> diagnostic::Result<usize> {
+    if head_dim == 0 || x.len() != out.len() || !x.len().is_multiple_of(head_dim) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "RoPE 头宽 {head_dim} 非法，或长度 {} 与其/输出长度不符",
+                x.len()
+            ),
+        ));
+    }
+    Ok(x.len() / head_dim)
+}
+
+/// 多头旋转：头优先块布局 `[heads, head_dim]`，每段独立按头宽重计频率（段内下标从 0 起），
+/// 不把整段长度当一个头宽；段内旋转算术复用 [`rotate_into`]，这里只做头分段编排。
+///
+/// # Errors
+///
+/// 头宽为 0、缓冲不是头宽的整数倍，或输入输出长度不一致时返回说明。
+pub fn forward_heads(
+    pos: usize,
+    x: &[f32],
+    out: &mut [f32],
+    head_dim: usize,
+) -> diagnostic::Result<()> {
+    let heads = rope_heads(x, out, head_dim)?;
+    for head in 0..heads {
+        let start = head * head_dim;
+        let span = start..start + head_dim;
+        rotate_into(&x[span.clone()], pos as f32, &mut out[span])?;
+    }
+    Ok(())
+}
+
 /// 标记类型：承载 `#[model]` 语义。
 pub struct Rope;
 

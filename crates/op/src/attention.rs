@@ -419,6 +419,109 @@ pub fn decode_flash_forward(
     Ok(())
 }
 
+/// 单头 decode 内核的函数指针：朴素与 flash 包装共用同一段头分段编排。
+type SingleHead = fn(
+    &[f32],
+    &[f32],
+    &[f32],
+    &mut [f32],
+    usize,
+    usize,
+    usize,
+) -> diagnostic::Result<()>;
+
+/// 多头 decode：头优先块布局——`q`/`out` 为 `heads · q_rows · d`，`k`/`v` 为 `heads · hist · d`，
+/// 第 `h` 个头是一段连续的 `q_rows · d` / `hist · d`。头数由 `q` 长度按 `q_rows · d` 推出，
+/// 头间互不耦合、每个头独立 softmax；头内算术复用传入的单头内核，这里只做头分段编排。
+///
+/// # Errors
+///
+/// `q` 不是 `q_rows · d` 的整数倍、缓冲长度不成头块倍数，或任一头段长度/宽度/行数不符时返回说明。
+/// 校验多头块长度并派生头数：`q`/`out` 是 `heads·q_rows·d`，`k`/`v` 是 `heads·hist·d`；
+/// 头内宽度与行数守卫交给逐段调用的单头内核。
+fn headed_heads(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &[f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> diagnostic::Result<usize> {
+    let q_stride = q_rows * d;
+    let kv_stride = hist * d;
+    if q_stride == 0 || !q.len().is_multiple_of(q_stride) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("q 长度 {} 不是 q_rows·d（{q_stride}）的整数倍", q.len()),
+        ));
+    }
+    let heads = q.len() / q_stride;
+    check_pair(q, out, heads * q_stride, "q/out")?;
+    check_pair(k, v, heads * kv_stride, "k/v")?;
+    Ok(heads)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_heads(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+    single: SingleHead,
+) -> diagnostic::Result<()> {
+    let heads = headed_heads(q, k, v, out, q_rows, hist, d)?;
+    let q_stride = q_rows * d;
+    let kv_stride = hist * d;
+    for head in 0..heads {
+        let q_start = head * q_stride;
+        let kv_start = head * kv_stride;
+        let qh = &q[q_start..q_start + q_stride];
+        let kh = &k[kv_start..kv_start + kv_stride];
+        let vh = &v[kv_start..kv_start + kv_stride];
+        let oh = &mut out[q_start..q_start + q_stride];
+        single(qh, kh, vh, oh, q_rows, hist, d)?;
+    }
+    Ok(())
+}
+
+/// 多头朴素 decode 内核：头数由 `q` 长度派生，布局同 [`decode_heads`]，头内走 [`decode_forward`]。
+///
+/// # Errors
+///
+/// 同 [`decode_heads`]。
+pub fn decode_forward_heads(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> diagnostic::Result<()> {
+    decode_heads(q, k, v, out, q_rows, hist, d, decode_forward)
+}
+
+/// 多头 flash decode 内核：头数由 `q` 长度派生，布局同 [`decode_heads`]，头内走 [`decode_flash_forward`]。
+///
+/// # Errors
+///
+/// 同 [`decode_heads`]。
+pub fn decode_flash_forward_heads(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> diagnostic::Result<()> {
+    decode_heads(q, k, v, out, q_rows, hist, d, decode_flash_forward)
+}
+
 /// 标记类型：承载 `#[model]` 语义。
 pub struct Attention;
 
