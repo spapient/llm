@@ -154,33 +154,40 @@ fn flash_attention_f32(
     attention_paths(inputs, outputs, op::attention::flash_forward)
 }
 
-/// decode 三路适配：`q/hist_k/hist_v → out`；头宽 `d` 取算子静态语义表，查询行数 `q_rows` 由
-/// `q.len()/d` 推出，历史行数 `hist` 由 `k.len()/d` 推出，形状不符交算子参考校验。
-fn decode_paths(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>], run: DecodeKernel) -> Result<()> {
+/// decode 三路适配：`q/hist_k/hist_v → out`；头宽 `d` 取算子静态语义表（ADR 0043 §3），查询行数
+/// `q_rows` 由 `q.len()/d`、历史行数 `hist` 由 `k.len()/(heads·d)` 推出，头数由 `q.len()/d` 派生，
+/// 形状不符交算子参考校验。
+fn decode_paths(
+    _launch: &Launch,
+    inputs: &[View<'_>],
+    outputs: &mut [ViewMut<'_>],
+    run: DecodeKernel,
+) -> Result<()> {
     let q = input_f32("decode_attention", inputs, 0)?;
     let k = input_f32("decode_attention", inputs, 1)?;
     let v = input_f32("decode_attention", inputs, 2)?;
     let out = output_f32("decode_attention", outputs, 0)?;
     let d = op::decode_attention::MODEL.shape.1;
-    let q_rows = q.len() / d;
-    let hist = k.len() / d;
+    let heads = q.len() / d;
+    let q_rows = q.len() / (heads * d);
+    let hist = k.len() / (heads * d);
     run(q, k, v, out, q_rows, hist, d)
 }
 
 fn decode_attention_f32(
-    _launch: Launch,
+    launch: Launch,
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    decode_paths(inputs, outputs, op::attention::decode_forward)
+    decode_paths(&launch, inputs, outputs, op::attention::decode_forward_heads)
 }
 
 fn decode_flash_attention_f32(
-    _launch: Launch,
+    launch: Launch,
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    decode_paths(inputs, outputs, op::attention::decode_flash_forward)
+    decode_paths(&launch, inputs, outputs, op::attention::decode_flash_forward_heads)
 }
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：4 位量化乘加，与 `op::gemv_i4::forward` 同一段算术。
@@ -215,7 +222,17 @@ fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>])
     op::dequant_i8::forward(op::dequant_i8::SCALE, op::dequant_i8::ZERO, q, out)
 }
 
-/// RoPE 适配：位置走标量槽（D9 / ADR 0043），未填位置给 `Invalid`；旋转算术走 `op::rope_f32`。
+/// 按头宽选 RoPE 入口：头宽 0 或等于整段（单头）走单头旋转，否则按头分段重计频率。
+fn run_rope(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
+    if head_dim == 0 || head_dim == x.len() {
+        op::rope_f32::forward(pos, x, out)
+    } else {
+        op::rope_f32::forward_heads(pos, x, out, head_dim)
+    }
+}
+
+/// RoPE 适配：位置走标量槽（D9 / ADR 0043），未填位置给 `Invalid`；头宽取 Launch 几何第二维，
+/// 单头（头宽 0 或等于整段）走单头旋转，多头按头宽分段重计频率。
 fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let x = input_f32("rope_f32", inputs, 0)?;
     let out = output_f32("rope_f32", outputs, 0)?;
@@ -223,7 +240,8 @@ fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) ->
         .scalars()
         .rope_position()
         .ok_or_else(|| Error::new(Code::Invalid, "rope_f32 位置标量未填").with(SITE))?;
-    op::rope_f32::forward(pos as usize, x, out)
+    let head_dim = launch.block[1] as usize;
+    run_rope(pos as usize, x, out, head_dim)
 }
 
 /// 内核表展开：每条例子取适配函数标识符，算子名由 `stringify!` 派生，避免名字与函数名各写一份。

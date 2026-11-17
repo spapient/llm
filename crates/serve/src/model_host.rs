@@ -99,6 +99,8 @@ impl CpuModel {
         let hist = sequence.len();
         for block in &self.assembly.blocks {
             let kv = block.kv_width;
+            let head_dim = block.head_dim;
+            let heads = kv / head_dim;
             let len = hist * kv;
             // 用占位空 Vec 换出旧历史块，填好后再绑回执行器。
             let mut hist_k = self
@@ -124,10 +126,7 @@ impl CpuModel {
                     )
                     .with(SITE));
                 }
-                let (k, v) = row.split_at(kv);
-                let start = token * kv;
-                hist_k[start..start + kv].copy_from_slice(k);
-                hist_v[start..start + kv].copy_from_slice(v);
+                reorder_history_row(&mut hist_k, &mut hist_v, row, kv, head_dim, heads, hist, token);
             }
             self.executor.bind(block.hist_k, hist_k);
             self.executor.bind(block.hist_v, hist_v);

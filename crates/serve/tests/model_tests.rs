@@ -184,14 +184,16 @@ fn block_zero_params() -> Params {
     ])
 }
 
-/// 参考注意力块：embed 行 → q/k/v gemv → RoPE → decode → o 投影 → 残差；
-/// 返回残差输出、旋转后 K 与明文 V（写回页行对拍用）。
+/// 参考注意力块：embed 行 → q/k/v gemv → RoPE（按头宽分段）→ decode 多头 → o 投影 → 残差；
+/// 返回残差输出、旋转后 K 与明文 V（写回页行对拍用）。`head_dim` 为单头头宽，头数 = `kv/head_dim`。
+#[allow(clippy::too_many_arguments)]
 fn reference_block(
     embedded: &[f32],
     (wq, wk, wv, wo): (&[f32], &[f32], &[f32], &[f32]),
     (hist_k, hist_v): (&[f32], &[f32]),
     hist: usize,
     kv: usize,
+    head_dim: usize,
     hidden: usize,
     pos: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -202,11 +204,11 @@ fn reference_block(
     let mut v = vec![0.0; kv];
     op::gemv_f32::forward(embedded, wv, &mut v).expect("参考 v");
     let mut q_rot = vec![0.0; kv];
-    op::rope_f32::forward(pos, &q, &mut q_rot).expect("参考 rope q");
+    op::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
     let mut k_rot = vec![0.0; kv];
-    op::rope_f32::forward(pos, &k, &mut k_rot).expect("参考 rope k");
+    op::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
     let mut attn = vec![0.0; kv];
-    op::attention::decode_forward(&q_rot, hist_k, hist_v, &mut attn, 1, hist, kv)
+    op::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
         .expect("参考注意力");
     let mut o = vec![0.0; hidden];
     op::gemv_f32::forward(&attn, wo, &mut o).expect("参考 o");
@@ -1093,6 +1095,7 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
         (&hist_k, &hist_v),
         hist,
         kv,
+        kv,
         hidden,
         sequence.len(),
     );
@@ -1150,30 +1153,63 @@ fn a_block_weight_length_mismatch_is_rejected_at_assembly() {
     rejected_at_assembly(stack, params, Code::Invalid);
 }
 
-/// 多头展平（`kv_width ≠ head_dim`）：单头通路按 `Unsupported` 拒绝，多头切片留后续。
+/// 多头展平（`kv_width = heads · head_dim`）端到端：嵌入 → q/k/v + 分段 RoPE → 多头 decode 注意力 →
+/// o 投影 → 残差；CPU 参考数值链按同一头优先块布局串行重算并对拍，K/V 页行回环一致。
 #[test]
-fn a_multi_head_block_is_not_assembled_yet() {
-    let stack = Stack::of(vec![Box::new(
-        AttentionBlock::new(
-            "blk.0",
-            8,
-            16,
-            8,
-            4,
-            AttentionAlgo::Naive,
-            WeightFormat::F32,
-        )
-        .expect("层"),
-    )])
-    .expect("栈");
-    let params = params_of(&[
-        ("blk.0.q.weight", vec![0.0; 16 * 8]),
-        ("blk.0.k.weight", vec![0.0; 16 * 8]),
-        ("blk.0.v.weight", vec![0.0; 16 * 8]),
-        ("blk.0.o.weight", vec![0.0; 8 * 16]),
-    ]);
+fn a_multi_head_block_decodes_against_the_reference() {
+    let (vocab, hidden, kv, head_dim) = (8, 8, 16, 8);
+    let hist = 1;
 
-    rejected_at_assembly(stack, params, Code::Unsupported);
+    let table = embed_table(vocab, hidden);
+    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let (hist_k, hist_v) = history_kv(kv);
+    let history = history_row(&hist_k, &hist_v);
+
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new(
+                "blk.0",
+                hidden,
+                kv,
+                head_dim,
+                4,
+                AttentionAlgo::Naive,
+                WeightFormat::F32,
+            )
+            .expect("层"),
+        ),
+    ])
+    .expect("栈");
+    let params = block_params(
+        table.clone(),
+        wq.clone(),
+        wk.clone(),
+        wv.clone(),
+        wo.clone(),
+    );
+
+    let mut model = assemble(stack, params);
+    let (mut batch, sequence) = decode_batch(kv, &history);
+    let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
+
+    let embedded = &table[2 * hidden..3 * hidden];
+    let (reference, k_rot, v) = reference_block(
+        embedded,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k, &hist_v),
+        hist,
+        kv,
+        head_dim,
+        hidden,
+        sequence.len(),
+    );
+    assert_close(&produced, &reference);
+
+    let row = batch.kv(0, sequence.len()).expect("当前步页行");
+    let (written_k, written_v) = row.split_at(kv);
+    assert_close(written_k, &k_rot);
+    assert_close(written_v, &v);
 }
 
 /// 两层合成模型端到端：嵌入 → 注意力块（q/k/v + RoPE + decode 注意力 + 残差）→ 归一化 →
@@ -1229,6 +1265,7 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
         (&wq, &wk, &wv, &wo),
         (&hist_k, &hist_v),
         hist,
+        kv,
         kv,
         hidden,
         sequence.len(),

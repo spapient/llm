@@ -19,8 +19,10 @@ pub(crate) struct BlockBinding {
     pub(crate) v: u32,
     pub(crate) hist_k: u32,
     pub(crate) hist_v: u32,
-    /// K/V 宽度（单头口径 = 头宽），页行按它切 K/V 半行。
+    /// K/V 整段宽度（`heads · head_dim`），页行按它切 K/V 半行。
     pub(crate) kv_width: usize,
+    /// 单头头宽；历史与激活按头分段，头数 = `kv_width / head_dim`。
+    pub(crate) head_dim: usize,
 }
 
 /// 块内投影条目名：`{块名}.{level}.weight`。
@@ -42,21 +44,9 @@ fn check_block(block: &AttentionBlock, prev_out: Option<usize>, params: &Params)
     check_block_weights(block, params)
 }
 
-/// 单头几何与宽度链衔接：`kv_width == head_dim`；块输入对齐上一层输出宽度。
+/// 几何与宽度链衔接：`kv_width` 是 `heads · head_dim`（整除由 nn 构造校验）；块输入对齐上一层输出宽度。
 fn check_head(block: &AttentionBlock, prev_out: Option<usize>) -> Result<()> {
     let hidden = block.hidden();
-    let kv = block.kv_width();
-    let head = block.head_dim();
-    if kv != head {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "注意力块 `{}` 是多头展平（kv_width {kv} ≠ head_dim {head}）；单头通路本刀落地，多头切片留后续",
-                block.name()
-            ),
-        )
-        .with(SITE));
-    }
     if let Some(previous) = prev_out
         && previous != hidden
     {
@@ -135,12 +125,13 @@ fn wire_qkv(
     Ok((q, k, v))
 }
 
-/// RoPE 子节点：对一路投影向量按位置做旋转；位置走标量槽，由宿主每步回填。返回旋转后编号。
-fn wire_rope(sink: &mut NodeSink<'_>, input: u32, width: usize) -> Result<u32> {
+/// RoPE 子节点：对一路投影向量按位置做旋转；位置走标量槽，由宿主每步回填。
+/// 头宽走 Launch 几何第二维（ADR 0043 §3：静态几何不进标量槽），单头时等于整段宽度。返回旋转后编号。
+fn wire_rope(sink: &mut NodeSink<'_>, input: u32, width: usize, head_dim: usize) -> Result<u32> {
     let output = sink.slots.activation()?;
     let mut node = Node::new(
         "rope_f32".to_string(),
-        Launch::new([1, 1, 1], [width as u32, 1, 1]),
+        Launch::new([1, 1, 1], [width as u32, head_dim as u32, 1]),
     );
     node.bind_input(input);
     node.bind_output(output);
@@ -179,7 +170,7 @@ fn wire_attention(
     let attn_slot = sink.slots.activation()?;
     let mut attention = Node::new(
         decode_operator(block.algo()).to_string(),
-        Launch::new([1, 1, 1], [kv as u32, 1, 1]),
+        Launch::new([1, 1, 1], [kv as u32, block.head_dim() as u32, 1]),
     );
     attention.bind_input(q_slot);
     attention.bind_input(hist_k);
@@ -231,6 +222,7 @@ fn push_block(sink: &mut NodeSink<'_>, prev: u32, block: &AttentionBlock) -> Res
         hist_k,
         hist_v,
         kv_width: block.kv_width(),
+        head_dim: block.head_dim(),
     });
     Ok(out_slot)
 }
@@ -243,8 +235,9 @@ fn wire_qkv_rope(
     ops: &ProjectionOps,
 ) -> Result<(u32, u32, u32)> {
     let (q_slot, k_slot, v_slot) = wire_qkv(sink, block, prev, ops)?;
-    let q_slot = wire_rope(sink, q_slot, block.kv_width())?;
-    let k_slot = wire_rope(sink, k_slot, block.kv_width())?;
+    let head_dim = block.head_dim();
+    let q_slot = wire_rope(sink, q_slot, block.kv_width(), head_dim)?;
+    let k_slot = wire_rope(sink, k_slot, block.kv_width(), head_dim)?;
     Ok((q_slot, k_slot, v_slot))
 }
 
