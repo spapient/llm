@@ -11,17 +11,17 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`testkit`、`dtype`、`wire`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、测试夹具、精度闭集、与领域无关的字节码闭集（`wire`：CRC-32、LEB128 变长整数、计数/切片/文件 Sink 与 CRC 密封）、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
+| L1 基础设施 | `diagnostic`、`dtype`、`wire`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、与领域无关的字节码闭集（`wire`：CRC-32、LEB128 变长整数、计数/切片/文件 Sink 与 CRC 密封）、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集（`devices/*.toml` 在构建期解析成表）、算子声明与词汇表闭集（`ops/*.toml` 同上）（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 LLPK 容器读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
-| L6 调度与服务 | `train`、`engine`、`serve`、`backend`、`cli` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`）、设备后端边界实现（`backend`：`Executor`/`Allocator`/`Device` 的具体侧，trait 定义归 `engine`/`storage`）、命令行解析 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
-| L7 入口 | `llm`（bin：`llm` 与 `cutile`） | 组装：把上面各层连起来，**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, execution}` → 排版 → 退出码（`Code::exit_code`） | 任何新类型、任何业务逻辑 |
+| L6 调度与服务 | `train`、`engine`、`serve`、`backend` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`）、设备后端边界实现（`backend`：`Executor`/`Allocator`/`Device` 的具体侧，trait 定义归 `engine`/`storage`） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法与配置解析归本层，把上面各层连起来装配、取值解析与人可读排版；编排入口（`cmd/` 与两个 bin）**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, execution}` → 排版 → 退出码（`Code::exit_code`） | 编排入口新增领域类型；在本层复制内核机制 |
 
-`annotation`（编译期注解）、`fuzz`（模糊测试契约）与 `benches`（集中测量容器）是**工具成员**：
+`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benches`（集中测量容器）与 `testkit`（测试夹具与工作区契约门禁）是**工具成员**：
 它们不属于运行时分层，也不参与“至少一条依赖边”的统计。它们的**依赖边不参与方向判定**——
-工具没有运行时层级。
+工具没有运行时层级。`testkit` 的库体只出浮点口径、随机数与暂存目录等夹具；跨层对拍与架构/契约守卫在其 `tests/` 下以集成测试运行，被测内核只出现在它的 dev-dependencies 里，因此不会被夹具库反向依赖进任何产品路径。
 
 ## 二、依赖规则（唯一一条，但严格执行）
 
@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 107 条，含 36 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -57,14 +57,11 @@ train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire   
 engine   → tensor, diagnostic, storage    +dev: testkit
 serve    → engine, nn, op, tokenizer, diagnostic, weights    +dev: testkit
 backend  → engine, storage, diagnostic（设备后端边界：只实现运行时 trait，不定义第二套 trait，不反向依赖 serve/nn/op；依赖方向只能从本 crate 指向 engine/storage 的 trait）    +dev: op
-cli      → diagnostic
+cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型；运行时依赖覆盖被装配的各层）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / LLPK 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 LLPK 夹具写形状、`tool` 词汇片段解析；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
 benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型，`nn` 出层下界与栈合计；`engine` 出页账与序列几何、`serve` 出宿主与 Predict 路线 B，供整模型一步夹具装配）
-llm      → cli, cutile, diagnostic, engine, nn, op,
-           prim, prof, serve, tensor, tokenizer, tool, train, weights
-           +dev: autograd, testkit（`tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段对拍：`autograd` 出 `Tape`/`Sizes`，`testkit` 出三档浮点口径）
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）    +dev: testkit
-testkit  → （叶：无出边，被 cutile / autograd / serve / engine / wire / op / dtype / tensor / tool / weights 的 dev 依赖消费）
+testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 工作区契约门禁；跨层对拍 `tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段，`autograd` 出 `Tape`/`Sizes`，`tool` 出词汇片段解析；被测层只出现在 dev-dependencies，不进产品路径）
 wire     → diagnostic（纯字节码闭集：CRC-32、LEB128、Sink；不认识张量或容器布局）    +dev: testkit
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自己的出边为零）
 ```

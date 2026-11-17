@@ -87,7 +87,11 @@ fn every_edge_points_to_a_lower_layer_or_to_the_left() {
     let contract = contract();
     for edge in &edges {
         // 工具成员没有运行时层级，它们的边不参与方向判定（ARCHITECTURE §一）。
-        if contract.tools.contains(&edge.from) || contract.tools.contains(&edge.to) {
+        // `+dev` 边只服务测试/夹具，不进任何产品二进制，同样不约束运行时分层方向。
+        if edge.dev
+            || contract.tools.contains(&edge.from)
+            || contract.tools.contains(&edge.to)
+        {
             continue;
         }
         let from = contract
@@ -161,10 +165,6 @@ fn every_public_type_is_listed_or_baselined() {
 
     let mut unlisted = Vec::new();
     for member in contract.layers.keys().chain(contract.tools.iter()) {
-        // L7 的根包源码在 `src/`，由 `the_entry_point_defines_no_types` 单独守。
-        if member == "llm" {
-            continue;
-        }
         let root = workspace_root().join("crates").join(member).join("src");
         let files = rust_files(&root);
         if contract.layers.contains_key(member) {
@@ -361,10 +361,6 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
     let contract = contract();
     let mut paths = Vec::new();
     for member in contract.layers.keys() {
-        // L7 是根包：它的源码在 `src/`，不在 `crates/<member>/src/`。
-        if member == "llm" {
-            continue;
-        }
         let root = workspace_root().join("crates").join(member).join("src");
         let files = rust_files(&root);
         assert!(
