@@ -2,7 +2,7 @@
 //! 再由 [`entry`] 分派到 `run` / `status` / `train` 编排入口；两个二进制 `llm` 与 `cutile` 都在本包
 //! （入口见 `src/main.rs` 与 `src/cutile_bin.rs`）。
 //!
-//! **拥有**：`Command`、`Invocation`、`USAGE`、`parse`、内核层审计的子命令文法 [`cutile::CutileCommand`]，
+//! **拥有**：`Command`、`Invocation`、`USAGE`、`parse`、内核层审计的子命令文法 [`cutile_command::CutileCommand`]，
 //! 三个目录开关的解析策略 [`settings`]（默认值、`CUTILE_*`、`--set`、来源追踪），以及编排分派。
 //! **不拥有**：内核业务实现（各层库自己）、输出排版（`tool`）。编排入口只装配、取值解析与人可读排版，不定义新类型；
 //! `main` 把 [`entry`] 的 [`Result`] 转成退出码。
@@ -37,7 +37,7 @@ mod run;
 mod status;
 mod train;
 
-pub mod cutile;
+pub mod cutile_command;
 pub mod settings;
 
 use diagnostic::{Code, Error, Result};

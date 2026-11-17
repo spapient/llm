@@ -1,6 +1,6 @@
 //! 内核层审计的驱动方：解析 → 执行 → 排版 → 退出码（L7 入口，不定义新类型）。
 //!
-//! 三件事分别有各自的归属：语法与配置来自 `llm_cli::cutile` / `llm_cli::settings`，计算来自
+//! 三件事分别有各自的归属：语法与配置来自 `llm_cli::cutile_command` / `llm_cli::settings`，计算来自
 //! `cutile::{bench, doctor, verify}`，人可读排版聚簇在 [`report`] 模块。本文件只把它们
 //! 接起来并收退出码，因此 `cutile` 不再持有第二套命令行文法、也不决定缓存目录在哪，命令模块也不再
 //! 拼字符串。
@@ -19,7 +19,7 @@ use cutile::doctor::{self, Doctor};
 use cutile::ledger;
 use cutile::verify::{self, Verified, VerifyEntry};
 use diagnostic::{Code, Error};
-use llm_cli::cutile::CutileCommand;
+use llm_cli::cutile_command::CutileCommand;
 use llm_cli::settings::Settings;
 use std::process::ExitCode;
 use tool::Report;

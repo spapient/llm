@@ -140,7 +140,7 @@ impl CutileCommand {
 fn dispatch(head: &str, rest: &[String]) -> Option<Result<CutileCommand>> {
     if matches!(head, "help" | "-h" | "--help") {
         return Some(Err(
-            Error::new(Code::Invalid, USAGE).with("cli::cutile::parse")
+            Error::new(Code::Invalid, USAGE).with("cli::cutile_command::parse")
         ));
     }
     if head == "cache" {
@@ -276,7 +276,7 @@ fn value(given: Option<&String>, flag: &str) -> Result<String> {
 }
 
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, format!("{}\n{USAGE}", message.into())).with("cli::cutile::parse")
+    Error::new(Code::Invalid, format!("{}\n{USAGE}", message.into())).with("cli::cutile_command::parse")
 }
 
 #[cfg(test)]
