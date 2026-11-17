@@ -8,10 +8,12 @@
 //! 四条判据都属于"错了会很贵"那一类：**字节自证**（`LLMC` 魔数 + 版本 + CRC-32 尾部，截断或改一个
 //! 比特都读不出来）；**编码单射**（LEB128、偏移增量、名字与上一条共享前后缀、同布局只写标签 `0`；
 //! 解码器重算一遍并拒掉任何"还能省却没这么写"的编码，于是 `decode(encode(x)) == x` 与
-//! `encode(decode(b)) == b` 同时成立）；**长度先算准**（`encoded_len` 与 `encode` 共用一个编码器，
-//! 写盘时边编码边写，整份检查点从不进内存）；**恢复两道前置校验**（[`Snapshot::verify`] 只验字节，
-//! [`Snapshot::check_weights`] 再确认条目表与手头的权重文件逐条相同——形状对、内容错位不在读取时
-//! 炸，而是训练若干步之后才表现成 loss 不降）。
+//! `encode(decode(b)) == b` 同时成立）；**长度先算准**（[`Snapshot::encoded_len`] 与
+//! [`Snapshot::encode`] 共用一个编码器，写盘时边编码边写，整份检查点从不进内存）；**恢复两道前置校验**
+//! （[`Snapshot::verify`] 只验字节，[`Snapshot::check_weights`] 再确认条目表与手头的权重文件逐条相同）。
+//!
+//! 职责轴拆分：[`cursor`] 读取游标与错误词汇，[`entry`] 权重条目表编解码，[`state`] 矩状态与累积
+//! 梯度段；字节格式仍是本模块单源。
 //!
 //! # 例子
 //!
@@ -25,7 +27,7 @@
 //!     64,
 //! )
 //! .expect("头部");
-//! let facts = Facts::new(7, 2, 2, 3).expect("恢复事实");
+//! let facts = Facts::new(7, 2, 2, 3, 3).expect("恢复事实");
 //! let snapshot = Snapshot::new(facts, header);
 //!
 //! let bytes = snapshot.encode().expect("编码");
@@ -39,18 +41,24 @@
 //! ```
 
 use std::io;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use diagnostic::{Code, Error, Result};
-use tensor::{DType, Shape};
-use weights::{Entry, Header};
-use wire::leb::{Cursor as WireCursor, write};
+use tensor::DType;
+use weights::Header;
+use wire::leb::write;
 use wire::sink::{Count, FileSink, Sealed, Sink, SliceSink};
 
-/// 解码失败的上下文：错误只由这一层产生，排查时不必再猜是哪一段。
-const CONTEXT: &str = "train::snapshot::Snapshot::decode";
+mod cursor;
+mod entry;
+mod state;
+
+pub use state::{GradAccum, Moments, SlotMoments};
+
+use cursor::{Cursor, invalid, mismatch, need, truncated};
+use entry::{common_prefix, common_suffix, difference, read_entries, tag};
+use state::{read_grad_accum, read_moments, write_grad_accum, write_moments};
 
 /// 一个条目最少占 5 字节：解码据此把声明的条目数与剩余字节对账，伪造的计数撑不大内存。
 const MIN_ENTRY: usize = 5;
@@ -70,7 +78,7 @@ impl Format {
     pub const MAGIC: [u8; 4] = *b"LLMC";
 
     /// 当前格式版本：字段集、编码顺序或校验方式变化时必须递增；版本之间不兼容，只支持当前版本。
-    pub const VERSION: u16 = 3;
+    pub const VERSION: u16 = 4;
 
     /// 文件头字节数（魔数 + 版本）。
     pub const HEADER_BYTES: usize = Self::MAGIC.len() + 2;
@@ -111,38 +119,40 @@ fn version_error(version: u16) -> Error {
     Error::new(Code::Invalid, message).with("train::snapshot::Format::check")
 }
 
-/// 取一段字节；不足时按起始偏移报截断。
-fn need(bytes: &[u8], span: Range<usize>, offset: usize) -> Result<&[u8]> {
-    match bytes.get(span) {
-        Some(slice) => Ok(slice),
-        None => Err(truncated(offset)),
-    }
-}
-
-/// 一次训练恢复后必须逐项相同的事实：步号、并行度、层数与批行数（整体比较才是判据）。
+/// 一次训练恢复后必须逐项相同的事实：步号、并行度、层数与批几何（行、列整体比较才是判据）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Facts {
     step: u64,
     world: usize,
     layers: usize,
     batch_rows: usize,
+    batch_cols: usize,
 }
 
 impl Facts {
-    /// 构造：并行度、层数与批行数必须非零（步号可以为 0）；任一为零时返回 [`Code::Invalid`]。
-    pub fn new(step: u64, world: usize, layers: usize, batch_rows: usize) -> Result<Self> {
-        let zeros = [("并行度", world), ("层数", layers), ("批行数", batch_rows)];
+    /// 构造：并行度、层数与批行列必须非零（步号可以为 0）；任一为零时返回 [`Code::Invalid`]。
+    pub fn new(
+        step: u64,
+        world: usize,
+        layers: usize,
+        batch_rows: usize,
+        batch_cols: usize,
+    ) -> Result<Self> {
+        let zeros = [
+            ("并行度", world),
+            ("层数", layers),
+            ("批行数", batch_rows),
+            ("批列宽", batch_cols),
+        ];
         for (name, value) in zeros {
-            if value == 0 {
-                let message = format!("检查点的{name}不能为 0");
-                return Err(Error::new(Code::Invalid, message).with("train::snapshot::Facts::new"));
-            }
+            require_nonzero(name, value)?;
         }
         Ok(Self {
             step,
             world,
             layers,
             batch_rows,
+            batch_cols,
         })
     }
 
@@ -165,35 +175,73 @@ impl Facts {
     pub fn batch_rows(&self) -> usize {
         self.batch_rows
     }
+
+    /// 批的列宽。
+    pub fn batch_cols(&self) -> usize {
+        self.batch_cols
+    }
 }
 
-/// 一次落盘的快照：恢复事实 + 权重条目表。
-///
-/// 字节布局（全部小端）：
-///
-/// ```text
-/// LLMC | 版本 u16
-/// 步号 | 并行度 | 层数 | 批行数 | 权重数据段起点 | 条目数            （LEB128）
-/// 每条目：共享前缀 | 共享后缀 | 中段长度 | 中段
-///         | 布局 | [类型 u8 | 秩 | 各维度…] | 偏移增量              （LEB128 + 字节）
-/// CRC-32 u32                                                         （覆盖以上全部）
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 一项恢复事实为零：把字段名带在消息里。
+fn require_nonzero(name: &str, value: usize) -> Result<()> {
+    if value == 0 {
+        let message = format!("检查点的{name}不能为 0");
+        return Err(Error::new(Code::Invalid, message).with("train::snapshot::Facts::new"));
+    }
+    Ok(())
+}
+
+/// 一次落盘的快照：恢复事实 + 权重条目表 + 优化器矩状态 + 累积窗口梯度。
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     facts: Facts,
     weights: Header,
+    moments: Moments,
+    accum: GradAccum,
 }
 
 impl Snapshot {
-    /// 由事实与权重条目表构造（两个入参已各自自证合法，这一层没有第二条判据可加）。
+    /// 由事实与权重条目表构造（矩状态与累积梯度为空）。
     #[must_use]
     pub fn new(facts: Facts, weights: Header) -> Self {
-        Self { facts, weights }
+        Self::new_with_state(facts, weights, Moments::empty(), GradAccum::empty())
     }
 
-    /// 恢复事实（四个数整体比较）。
+    /// 由事实、权重条目表与优化器矩状态构造（累积梯度为空）。
+    #[must_use]
+    pub fn new_with_moments(facts: Facts, weights: Header, moments: Moments) -> Self {
+        Self::new_with_state(facts, weights, moments, GradAccum::empty())
+    }
+
+    /// 由事实、权重条目表、矩状态与累积梯度构造。
+    #[must_use]
+    pub fn new_with_state(
+        facts: Facts,
+        weights: Header,
+        moments: Moments,
+        accum: GradAccum,
+    ) -> Self {
+        Self {
+            facts,
+            weights,
+            moments,
+            accum,
+        }
+    }
+
+    /// 恢复事实（五个数整体比较）。
     pub fn facts(&self) -> Facts {
         self.facts
+    }
+
+    /// 优化器矩状态表。
+    pub fn moments(&self) -> &Moments {
+        &self.moments
+    }
+
+    /// 累积窗口内的梯度汇总。
+    pub fn accum(&self) -> &GradAccum {
+        &self.accum
     }
 
     /// 步号。
@@ -356,8 +404,8 @@ impl Snapshot {
     /// 从字节解码：先由 [`Snapshot::verify`] 判文件头与校验和，再解析正文。
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         Self::verify(bytes)?;
-        let (facts, weights) = body(&bytes[..bytes.len() - Format::FOOTER_BYTES])?;
-        Ok(Self::new(facts, weights))
+        let (facts, weights, moments, accum) = body(&bytes[..bytes.len() - Format::FOOTER_BYTES])?;
+        Ok(Self::new_with_state(facts, weights, moments, accum))
     }
 
     /// 编码正文与校验和：正文写进一个"密封"的接收器，写出的每个字节都自动进入 CRC。
@@ -379,6 +427,7 @@ impl Snapshot {
         varint(sink, facts.world() as u64);
         varint(sink, facts.layers() as u64);
         varint(sink, facts.batch_rows() as u64);
+        varint(sink, facts.batch_cols() as u64);
         varint(sink, self.weights.data_start() as u64);
 
         let entries = self.weights.entries();
@@ -413,327 +462,72 @@ impl Snapshot {
             previous_offset = entry.offset();
             previous_name = name;
         }
+
+        write_moments(sink, &self.moments);
+        write_grad_accum(sink, &self.accum);
     }
 }
 
-/// 正文解析：六个头部整数、条目表，最后交给 [`Header`] 与 [`Facts`] 自证。
-fn body(payload: &[u8]) -> Result<(Facts, Header)> {
+/// 正文解析：头部整数、条目表、矩状态段、累积梯度段，最后交给 [`Header`] 与 [`Facts`] 自证。
+fn body(payload: &[u8]) -> Result<(Facts, Header, Moments, GradAccum)> {
     let mut cursor = Cursor::new(payload, Format::HEADER_BYTES)?;
-    let (facts, data_start, count) = head(&mut cursor)?;
-    let entries = read_entries(&mut cursor, count)?;
-    let weights = Header::new(entries, data_start).map_err(|error| error.with(CONTEXT))?;
+    let (facts, weights) = head_and_weights(&mut cursor)?;
+    let moments = read_moments(&mut cursor)?;
+    let accum = tail_state(&mut cursor)?;
+    Ok((facts, weights, moments, accum))
+}
+
+/// 正文开头整数与权重条目表。
+fn head_and_weights(cursor: &mut Cursor<'_>) -> Result<(Facts, Header)> {
+    let facts = facts(cursor)?;
+    let weights = read_weights_header(cursor)?;
     Ok((facts, weights))
 }
 
-/// 正文开头的六个整数：恢复事实加上权重数据段起点与条目数。
-fn head(cursor: &mut Cursor<'_>) -> Result<(Facts, usize, usize)> {
-    let facts = facts(cursor)?;
+/// 权重数据段起点、条目计数对账后重建条目表并装配 [`Header`]。
+fn read_weights_header(cursor: &mut Cursor<'_>) -> Result<Header> {
     let data_start = cursor.count("权重数据段起点")?;
     let count = cursor.count("权重条目数")?;
-    Ok((facts, data_start, count))
+    let entries = read_entries(cursor, count, MIN_ENTRY, PREALLOC)?;
+    Header::new(entries, data_start).map_err(error_context)
 }
 
-/// 四个恢复事实，顺序即格式顺序。
+/// 矩状态之后的累积梯度段与尾部余量对账。
+fn tail_state(cursor: &mut Cursor<'_>) -> Result<GradAccum> {
+    let accum = read_grad_accum(cursor)?;
+    reject_tail(cursor)?;
+    Ok(accum)
+}
+
+/// 条目表之后若还有未消费字节，就是半截或多写。
+fn reject_tail(cursor: &Cursor<'_>) -> Result<()> {
+    let leftover = cursor.remaining();
+    if leftover > 0 {
+        return Err(invalid(format!("检查点尾部多出 {leftover} 字节")));
+    }
+    Ok(())
+}
+
+/// 五个恢复事实，顺序即格式顺序；四个形状计数共用一条读取循环。
 fn facts(cursor: &mut Cursor<'_>) -> Result<Facts> {
     let step = cursor.varint()?;
-    let world = cursor.count("并行度")?;
-    let layers = cursor.count("层数")?;
-    let batch_rows = cursor.count("批行数")?;
-    Facts::new(step, world, layers, batch_rows).map_err(|error| error.with(CONTEXT))
-}
-
-/// 条目表：先按最小体积对账（伪造的计数撑不大内存），再逐条重建，最后确认没留尾巴。
-fn read_entries(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Entry>> {
-    if count > cursor.remaining() / MIN_ENTRY {
-        return Err(invalid(format!(
-            "检查点声明了 {count} 个权重条目，但剩余 {} 字节最多容纳 {} 个",
-            cursor.remaining(),
-            cursor.remaining() / MIN_ENTRY
-        )));
+    let labels = ["并行度", "层数", "批行数", "批列宽"];
+    let mut counts = [0usize; 4];
+    for (slot, label) in counts.iter_mut().zip(labels) {
+        *slot = cursor.count(label)?;
     }
-    let mut entries = Vec::with_capacity(count.min(PREALLOC));
-    let mut rebuild = Vec::new();
-    for index in 0..count {
-        let entry = entry(cursor, index, entries.last(), &mut rebuild)?;
-        entries.push(entry);
-    }
-    if cursor.remaining() > 0 {
-        return Err(invalid(format!(
-            "检查点尾部多出 {} 字节",
-            cursor.remaining()
-        )));
-    }
-    Ok(entries)
+    Facts::new(step, counts[0], counts[1], counts[2], counts[3]).map_err(error_context)
 }
 
-/// 一个条目：名字、布局与偏移；上一条同时提供名字共享与布局重复的基准。
-fn entry(
-    cursor: &mut Cursor<'_>,
-    index: usize,
-    previous: Option<&Entry>,
-    rebuild: &mut Vec<u8>,
-) -> Result<Entry> {
-    let previous_name = previous.map_or(&[][..], |entry| entry.name().as_bytes());
-    let name = rebuild_name(cursor, index, previous_name, rebuild)?;
-    let (dtype, dims) = layout(cursor, index, previous)?;
-    let offset = offset(cursor, index, previous)?;
-    Ok(Entry::new(name, dtype, Shape::new(dims)).at(offset))
-}
-
-/// 按上一条名字拼回整串，并拒掉"共享不是最长"的写法（否则同一份快照有多种字节形态）。
-fn rebuild_name<'b>(
-    cursor: &mut Cursor<'_>,
-    index: usize,
-    previous: &[u8],
-    out: &'b mut Vec<u8>,
-) -> Result<&'b str> {
-    let (front, back, len) = name_lengths(cursor, index, previous.len())?;
-    let middle = cursor.take(len).map_err(context(index))?;
-    out.clear();
-    out.extend_from_slice(&previous[..front]);
-    out.extend_from_slice(middle);
-    out.extend_from_slice(&previous[previous.len() - back..]);
-    let want_front = common_prefix(previous, out);
-    let want_back = common_suffix(&previous[want_front..], &out[want_front..]);
-    if (front, back) != (want_front, want_back) {
-        return Err(context(index)(invalid(format!(
-            "条目名的共享不是最长写法（写了前 {front} 后 {back}，\
-             应为前 {want_front} 后 {want_back}）"
-        ))));
-    }
-    std::str::from_utf8(out)
-        .map_err(|error| context(index)(invalid(format!("条目名不是 UTF-8：{error}"))))
-}
-
-/// 共享长度得分得开：前后两段不能重叠，也不能超过上一条名字。
-fn fits_share(shared: usize, front: usize, back: usize, index: usize) -> Result<()> {
-    if front > shared || back > shared - front {
-        let message = format!("上一条目名只有 {shared} 字节，却要共享前 {front} 后 {back} 字节");
-        return Err(context(index)(invalid(message)));
-    }
-    Ok(())
-}
-
-/// 名字的三段长度：共享前后缀必须分得开，中段长度随后读出。
-fn name_lengths(
-    cursor: &mut Cursor<'_>,
-    index: usize,
-    shared: usize,
-) -> Result<(usize, usize, usize)> {
-    let front = cursor.count("名字的共享前缀").map_err(context(index))?;
-    let back = cursor.count("名字的共享后缀").map_err(context(index))?;
-    fits_share(shared, front, back, index)?;
-    let len = cursor.count("条目名中段长度").map_err(context(index))?;
-    Ok((front, back, len))
-}
-
-/// 布局标签：`0` 表示与上一条同型同形，否则是 `秩 + 1` 加类型与各维度。
-fn layout(
-    cursor: &mut Cursor<'_>,
-    index: usize,
-    previous: Option<&Entry>,
-) -> Result<(DType, Vec<usize>)> {
-    let label = cursor.count("布局标签").map_err(context(index))?;
-    if label == 0 {
-        return repeated(previous, index);
-    }
-    fresh(cursor, index, label - 1, previous)
-}
-
-/// 与上一条同型同形；第一个条目没有上一条。
-fn repeated(previous: Option<&Entry>, index: usize) -> Result<(DType, Vec<usize>)> {
-    let Some(previous) = previous else {
-        return Err(context(index)(invalid(
-            "第一个条目不能与上一条共享布局（还没有上一条）",
-        )));
-    };
-    Ok((previous.dtype(), previous.shape().dims().to_vec()))
-}
-
-/// 重写布局：类型标签与各维度。
-fn fresh(
-    cursor: &mut Cursor<'_>,
-    index: usize,
-    rank: usize,
-    previous: Option<&Entry>,
-) -> Result<(DType, Vec<usize>)> {
-    let dtype = dtype(cursor.u8().map_err(context(index))?)?;
-    let dims = dims(cursor, index, rank)?;
-    canonical(previous, dtype, &dims, index).map(|()| (dtype, dims))
-}
-
-/// 与上一条同型同形却重写了布局是非规范写法：同一份快照不能既有"重复"又有"重写"。
-fn canonical(previous: Option<&Entry>, dtype: DType, dims: &[usize], index: usize) -> Result<()> {
-    if let Some(previous) = previous
-        && previous.dtype() == dtype
-        && previous.shape().dims() == dims
-    {
-        return Err(context(index)(invalid(
-            "布局与上一条相同却没有写成重复（标签 0）",
-        )));
-    }
-    Ok(())
-}
-
-/// 形状的各维度：预分到 [`PREALLOC`] 为止，伪造的秩也只能骗到一块固定大小的内存。
-fn dims(cursor: &mut Cursor<'_>, index: usize, rank: usize) -> Result<Vec<usize>> {
-    let mut dims = Vec::with_capacity(rank.min(PREALLOC));
-    for _ in 0..rank {
-        dims.push(cursor.count("维度").map_err(context(index))?);
-    }
-    Ok(dims)
-}
-
-/// 偏移按增量存：上一条的偏移加增量，溢出就是坏数据。
-fn offset(cursor: &mut Cursor<'_>, index: usize, previous: Option<&Entry>) -> Result<usize> {
-    let previous = previous.map_or(0, Entry::offset);
-    let delta = cursor.count("偏移增量").map_err(context(index))?;
-    let overflow = || context(index)(invalid(format!("偏移 {previous} + {delta} 溢出")));
-    previous.checked_add(delta).ok_or_else(overflow)
+/// Header 构造失败挂上解码上下文。
+fn error_context(error: Error) -> Error {
+    error.with(cursor::CONTEXT)
 }
 
 /// 写一个 LEB128 变长整数；算术与规范性判据归 `wire`，这里只保留快照侧的调用名。
 #[inline]
 fn varint(sink: &mut impl Sink, value: u64) {
     write(sink, value);
-}
-
-/// 逐字节读取器：在 `wire::Cursor` 之上保留快照侧的字段上下文与错误词汇。
-struct Cursor<'a> {
-    inner: WireCursor<'a>,
-    offset: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8], offset: usize) -> Result<Self> {
-        let mut inner = WireCursor::new(bytes);
-        inner.take(offset).map_err(|_| truncated(offset))?;
-        Ok(Self { inner, offset })
-    }
-
-    fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let slice = self
-            .inner
-            .take(len)
-            .map_err(|_| truncated(self.inner.pos()))?;
-        self.offset = self.inner.pos();
-        Ok(slice)
-    }
-
-    fn u8(&mut self) -> Result<u8> {
-        let byte = self
-            .inner
-            .read_u8()
-            .map_err(|_| truncated(self.inner.pos()))?;
-        self.offset = self.inner.pos();
-        Ok(byte)
-    }
-
-    /// 读一个 LEB128 变长整数；非规范写法（如 `0x87 0x00`）或超出 `u64` 宽度都拒绝。
-    fn varint(&mut self) -> Result<u64> {
-        let value = self.inner.read::<u64>().map_err(|error| {
-            if error.message().starts_with("字节不足") {
-                truncated(self.inner.pos())
-            } else {
-                invalid("检查点里的整数非规范写法（含前导零字节）或超出 u64 上限")
-            }
-        })?;
-        self.offset = self.inner.pos();
-        Ok(value)
-    }
-
-    /// 读一个不能超过 `usize` 的计数；`what` 是字段名，用来把错误指到具体位置。
-    fn count(&mut self, what: &str) -> Result<usize> {
-        let value = self.varint()?;
-        usize::try_from(value)
-            .map_err(|_| invalid(format!("检查点的{what} {value} 超出 usize 上限")))
-    }
-
-    fn remaining(&self) -> usize {
-        self.inner.remaining().len()
-    }
-}
-
-/// 条目错误的上下文：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。
-fn context(index: usize) -> impl Fn(Error) -> Error {
-    move |error| error.with(format!("第 {index} 个权重条目"))
-}
-
-/// 两条名字共有的最大字节前缀（按字节比：共享长度最终要能直接切出字节区间）。
-fn common_prefix(left: &[u8], right: &[u8]) -> usize {
-    let limit = left.len().min(right.len());
-    let mut at = 0;
-    while at < limit && left[at] == right[at] {
-        at += 1;
-    }
-    at
-}
-
-/// 两条名字共有的最大字节后缀；调用方传进来的总是已经被前缀吃掉的那两段尾巴。
-fn common_suffix(left: &[u8], right: &[u8]) -> usize {
-    let limit = left.len().min(right.len());
-    let mut at = 0;
-    while at < limit && left[left.len() - 1 - at] == right[right.len() - 1 - at] {
-        at += 1;
-    }
-    at
-}
-
-/// 快照格式的元素类型标签：闭集 5 种（`tag` 与 `dtype` 共用同一张表）。
-const TYPES: [(DType, u8); 5] = [
-    (DType::F32, 0),
-    (DType::F16, 1),
-    (DType::BF16, 2),
-    (DType::I8, 3),
-    (DType::U4, 4),
-];
-
-/// 元素类型在快照字节里的标签：闭集外的类型显式报错。
-fn tag(dtype: DType) -> Result<u8> {
-    TYPES
-        .iter()
-        .find(|(known, _)| *known == dtype)
-        .map(|(_, byte)| *byte)
-        .ok_or_else(|| invalid(format!("快照格式不支持 {dtype:?} 元素类型")))
-}
-
-/// 标签 → 元素类型。
-fn dtype(tag: u8) -> Result<DType> {
-    TYPES
-        .iter()
-        .find(|(_, byte)| *byte == tag)
-        .map(|(known, _)| *known)
-        .ok_or_else(|| invalid(format!("未知的元素类型标签 {tag}")))
-}
-
-/// 第 `index` 个条目的第一处不同；两者一致时为 `None`。
-fn difference(index: usize, want: &Entry, have: &Entry) -> Option<String> {
-    let name = want.name();
-    if name != have.name() {
-        let other = have.name();
-        return Some(format!(
-            "第 {index} 个条目：检查点里是 `{name}`，权重文件里是 `{other}`"
-        ));
-    }
-    if want.dtype() != have.dtype() {
-        let (a, b) = (want.dtype(), have.dtype());
-        return Some(format!(
-            "条目 `{name}` 的元素类型：检查点里是 {a:?}，权重文件里是 {b:?}"
-        ));
-    }
-    if want.shape() != have.shape() {
-        let (a, b) = (want.shape().dims(), have.shape().dims());
-        return Some(format!(
-            "条目 `{name}` 的形状：检查点里是 {a:?}，权重文件里是 {b:?}"
-        ));
-    }
-    if want.offset() != have.offset() {
-        let (a, b) = (want.offset(), have.offset());
-        return Some(format!(
-            "条目 `{name}` 的偏移：检查点里是 {a}，权重文件里是 {b}"
-        ));
-    }
-    None
 }
 
 /// 临时文件名：同目录 + 进程号 + 进程内序号（两个写者不会互相搬走半截文件）。
@@ -748,19 +542,6 @@ fn temp_path(path: &Path) -> PathBuf {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ))
-}
-
-fn truncated(offset: usize) -> Error {
-    Error::new(Code::Invalid, format!("检查点在偏移 {offset} 处截断")).with(CONTEXT)
-}
-
-fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(CONTEXT)
-}
-
-/// 检查点与手头的权重表不一致：只由 [`Snapshot::check_weights`] 产生。
-fn mismatch(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with("train::snapshot::Snapshot::check_weights")
 }
 
 #[cfg(test)]

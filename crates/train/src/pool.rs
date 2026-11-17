@@ -104,6 +104,8 @@ pub struct Buffers<K: Kernel> {
     sizes: Sizes,
     kernel: K,
     slots: Vec<Option<Data>>,
+    /// 梯度缓冲：autograd 只出 tape / plan / Replay，梯度存储由训练侧自持，与激活槽平行按变量编号。
+    gradients: Vec<Option<Vec<f32>>>,
     pool: Pool,
     live: u64,
     peak: u64,
@@ -112,8 +114,10 @@ pub struct Buffers<K: Kernel> {
 impl<K: Kernel> Buffers<K> {
     /// 由形状表与内核构造：槽位数与 `sizes.len()` 同口径（即 `Tape::vars()`）。
     pub fn new(sizes: Sizes, kernel: K) -> Self {
+        let slots = sizes.len();
         Self {
-            slots: vec![None; sizes.len()],
+            slots: vec![None; slots],
+            gradients: vec![None; slots],
             sizes,
             kernel,
             pool: Pool::default(),
@@ -153,6 +157,86 @@ impl<K: Kernel> Buffers<K> {
             .get(var.id() as usize)
             .and_then(Option::as_ref)
             .map(Data::view)
+    }
+
+    /// 装入一个参数槽的当前梯度；长度必须与登记形状一致，梯度 lane 只有 f32。
+    ///
+    /// 梯度存储在训练侧：autograd 只给 tape / plan / Replay，不持有梯度；这里是梯度唯一落点。
+    ///
+    /// # Errors
+    ///
+    /// 变量未登记形状（[`Code::Internal`]）、登记类型不是 f32 或长度不符（[`Code::Invalid`]）。
+    pub fn load_gradient(&mut self, var: Var, grads: &[f32]) -> Result<()> {
+        self.validate_gradient(var, grads)?;
+        self.gradients[var.id() as usize] = Some(grads.to_vec());
+        Ok(())
+    }
+
+    /// 把一批微批梯度累加进现有梯度缓冲；缓冲为空时先装入副本。
+    ///
+    /// 累积窗口跨多个 micro-batch：梯度逐批相加而不是覆盖，窗口满了才由优化器步进。
+    /// 长度校验与 [`load_gradient`](Self::load_gradient) 同口径。
+    ///
+    /// # Errors
+    ///
+    /// 变量未登记形状（[`Code::Internal`]）、登记类型不是 f32 或长度不符（[`Code::Invalid`]）。
+    pub fn accumulate_gradient(&mut self, var: Var, grads: &[f32]) -> Result<()> {
+        self.validate_gradient(var, grads)?;
+        let slot = var.id() as usize;
+        match &mut self.gradients[slot] {
+            Some(existing) => {
+                // 逐元素相加：长度已在上面校验一致，串行依赖 `a += b`，无法整块搬运。
+                for (accumulated, incoming) in existing.iter_mut().zip(grads) {
+                    *accumulated += *incoming;
+                }
+            }
+            None => self.gradients[slot] = Some(grads.to_vec()),
+        }
+        Ok(())
+    }
+
+    /// 梯度长度/类型校验：装入与累加共用同一条判据。
+    fn validate_gradient(&self, var: Var, grads: &[f32]) -> Result<()> {
+        let slot = self.slot(var)?;
+        let Some((shape, dtype)) = self.sizes.get(var) else {
+            return Err(unregistered(var));
+        };
+        if dtype != DType::F32 {
+            let message = format!("变量 {} 登记为 {dtype:?}，梯度 lane 只存 f32", var.id());
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        if grads.len() != shape.numel() {
+            let message = format!(
+                "梯度长度 {} 与变量 {} 的形状 {:?}（{} 元素）不一致",
+                grads.len(),
+                var.id(),
+                shape.dims(),
+                shape.numel()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        debug_assert!(slot < self.gradients.len());
+        Ok(())
+    }
+
+    /// 读一个变量当前的梯度；未装入时为 `None`。
+    pub fn gradient(&self, var: Var) -> Option<&[f32]> {
+        self.gradients
+            .get(var.id() as usize)
+            .and_then(Option::as_deref)
+    }
+
+    /// 读一个变量当前梯度的可变视图；未装入时为 `None`。
+    pub fn gradient_mut(&mut self, var: Var) -> Option<&mut [f32]> {
+        self.gradients
+            .get_mut(var.id() as usize)
+            .and_then(Option::as_deref_mut)
+    }
+
+    /// 清空全部梯度缓冲：参数/激活槽不动，只归还梯度 lane 的向量。
+    pub fn clear_gradients(&mut self) {
+        // 槽位长度保留（索引对应变量编号），只把梯度 lane 的向量整块置空。
+        self.gradients.fill(None);
     }
 
     /// 当前占用的字节数（含常驻值）。

@@ -145,6 +145,26 @@ fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<
     op::attention::flash_forward(q, k, v, out, heads, d)
 }
 
+/// decode 注意力：`q/k/v → out`；`q_rows` 由 q 长、`hist` 由 k 长按头宽 `d` 推出。
+fn decode_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_attention_f32")?;
+    let out = output_slice::<f32>("decode_attention_f32", output)?;
+    let d = op::decode_attention::MODEL.shape.1;
+    let q_rows = batches("decode_attention_f32", q.len(), d)?;
+    let hist = batches("decode_attention_f32", k.len(), d)?;
+    op::attention::decode_forward(q, k, v, out, q_rows, hist, d)
+}
+
+/// 同 decode 几何，走 online softmax 版 `op::attention::decode_flash_forward`。
+fn decode_flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_flash_attention_f32")?;
+    let out = output_slice::<f32>("decode_flash_attention_f32", output)?;
+    let d = op::decode_attention::MODEL.shape.1;
+    let q_rows = batches("decode_flash_attention_f32", q.len(), d)?;
+    let hist = batches("decode_flash_attention_f32", k.len(), d)?;
+    op::attention::decode_flash_forward(q, k, v, out, q_rows, hist, d)
+}
+
 /// `[q: u8] → y: f32`：打包字节每字节两个 nibble，参数取样本常量。
 fn dequant_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q,) = <(u8,) as Inputs>::unpack(inputs, "dequant_i4")?;
@@ -169,6 +189,8 @@ fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
 const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     add_f32,
     attention_f32,
+    decode_attention_f32,
+    decode_flash_attention_f32,
     dequant_i4,
     dequant_i8,
     embed_f32,

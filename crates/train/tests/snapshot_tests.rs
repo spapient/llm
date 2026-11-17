@@ -1,9 +1,11 @@
 //! `snapshot` 的测试：往返、截断、篡改与"长度即承诺"的逐条对拍。
 
 use super::*;
+use tensor::Shape;
+use weights::Entry;
 
 fn facts() -> Facts {
-    Facts::new(7, 2, 2, 3).expect("恢复事实")
+    Facts::new(7, 2, 2, 3, 3).expect("恢复事实")
 }
 
 fn snapshot() -> Snapshot {
@@ -98,6 +100,66 @@ fn a_snapshot_round_trips_through_its_bytes() {
 
 /// 变长整数的每个宽度边界都要对上：错一档就是半个检查点。
 #[test]
+fn optimizer_moments_round_trip_bit_for_bit() {
+    let slots = vec![
+        SlotMoments::new(vec![1.0, -0.5], vec![2.0, 0.25]).expect("一阶/二阶等长"),
+        SlotMoments::new(vec![3.25], vec![0.125]).expect("一阶/二阶等长"),
+    ];
+    let moments = Moments::new(slots, 7);
+    let snapshot = Snapshot::new_with_moments(
+        facts(),
+        Header::new(Vec::new(), 0).expect("空头部"),
+        moments,
+    );
+    let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
+
+    let restored_moments = restored.moments();
+    assert_eq!(restored_moments.step(), 7, "优化器步数必须恢复");
+    let before = snapshot.moments().slots();
+    let after = restored_moments.slots();
+    assert_eq!(before.len(), after.len(), "槽位数必须一致");
+    for (index, (want, got)) in before.iter().zip(after).enumerate() {
+        // 位级比较：f32 经小端字节往返不能只差一位。
+        let want_m: Vec<u32> = want.m().iter().map(|value| value.to_bits()).collect();
+        let got_m: Vec<u32> = got.m().iter().map(|value| value.to_bits()).collect();
+        let want_v: Vec<u32> = want.v().iter().map(|value| value.to_bits()).collect();
+        let got_v: Vec<u32> = got.v().iter().map(|value| value.to_bits()).collect();
+        assert_eq!(got_m, want_m, "第 {index} 槽一阶矩逐位一致");
+        assert_eq!(got_v, want_v, "第 {index} 槽二阶矩逐位一致");
+    }
+}
+
+#[test]
+fn accumulated_gradients_round_trip_bit_for_bit() {
+    let accum = GradAccum::new(vec![vec![0.5, -0.25], vec![1.5]], 2);
+    let snapshot = Snapshot::new_with_state(
+        facts(),
+        Header::new(Vec::new(), 0).expect("空头部"),
+        Moments::empty(),
+        accum,
+    );
+    let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
+
+    let got = restored.accum();
+    assert_eq!(got.count(), 2, "窗口批数必须恢复");
+    let before = snapshot.accum().slots();
+    let after = got.slots();
+    assert_eq!(before.len(), after.len(), "槽位数必须一致");
+    for (index, (want, got)) in before.iter().zip(after).enumerate() {
+        let want_bits: Vec<u32> = want.iter().map(|value| value.to_bits()).collect();
+        let got_bits: Vec<u32> = got.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(got_bits, want_bits, "第 {index} 槽累积梯度逐位一致");
+    }
+}
+
+#[test]
+fn a_slot_with_uneven_moments_is_rejected_before_encoding() {
+    let error = SlotMoments::new(vec![1.0], vec![1.0, 2.0]).expect_err("长度不符");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(error.to_string().contains("长度不一致"), "{error}");
+}
+
+#[test]
 fn the_length_promise_holds_at_every_varint_boundary() {
     let steps = [0u64, 1, 127, 128, 16_383, 16_384, 4_294_967_295, u64::MAX];
     for (index, step) in steps.into_iter().enumerate() {
@@ -108,7 +170,7 @@ fn the_length_promise_holds_at_every_varint_boundary() {
         )
         .expect("头部");
         let size = index + 1;
-        let facts = Facts::new(step, size, size, size).expect("事实");
+        let facts = Facts::new(step, size, size, size, size).expect("事实");
         assert_round_trip(&Snapshot::new(facts, header));
     }
 }
@@ -319,7 +381,7 @@ fn a_sealed_but_short_payload_names_the_offset() {
 fn handcrafted(entries: &[(u64, u64, &str, usize, u64)]) -> Vec<u8> {
     let mut payload = Format::MAGIC.to_vec();
     payload.extend_from_slice(&Format::VERSION.to_le_bytes());
-    for value in [7, 1, 1, 1, 64] {
+    for value in [7, 1, 1, 1, 1, 64] {
         push_varint(&mut payload, value);
     }
     push_varint(&mut payload, entries.len() as u64);
@@ -339,6 +401,12 @@ fn handcrafted(entries: &[(u64, u64, &str, usize, u64)]) -> Vec<u8> {
         push_varint(&mut payload, (*offset - previous) as u64);
         previous = *offset;
     }
+    // 矩状态段：0 个槽 + 步数 0（旧手改样本没有矩状态）。
+    push_varint(&mut payload, 0);
+    push_varint(&mut payload, 0);
+    // 累积梯度段：窗口批数 0、0 个槽。
+    push_varint(&mut payload, 0);
+    push_varint(&mut payload, 0);
     seal(&payload)
 }
 
@@ -374,7 +442,8 @@ fn a_shared_prefix_may_cut_through_a_character() {
     let payload = &bytes[..bytes.len() - Format::FOOTER_BYTES];
     let mut cursor = Cursor::new(payload, 0).expect("游标定位");
     cursor.take(4 + 2).expect("魔数与版本");
-    for _ in 0..5 {
+    for _ in 0..6 {
+        // 五个恢复事实 + 权重数据段起点。
         cursor.varint().expect("头部事实");
     }
     assert_eq!(cursor.count("条目数").expect("条目数"), 2);
@@ -506,7 +575,7 @@ fn an_integer_wider_than_u64_is_rejected() {
 #[test]
 fn an_entry_count_beyond_the_bytes_is_rejected_before_allocating() {
     let mut payload = snapshot().encode().expect("编码")[..Format::HEADER_BYTES].to_vec();
-    for value in [0u64, 1, 1, 1, 0] {
+    for value in [0u64, 1, 1, 1, 1, 0] {
         push_varint(&mut payload, value);
     }
     push_varint(&mut payload, 1_000_000);
@@ -516,8 +585,8 @@ fn an_entry_count_beyond_the_bytes_is_rejected_before_allocating() {
 
 #[test]
 fn a_checkpoint_without_layers_is_rejected() {
-    for (world, layers, rows) in [(0, 1, 1), (1, 0, 1), (1, 1, 0)] {
-        let error = Facts::new(0, world, layers, rows).expect_err("零值");
+    for (world, layers, rows, cols) in [(0, 1, 1, 1), (1, 0, 1, 1), (1, 1, 0, 1), (1, 1, 1, 0)] {
+        let error = Facts::new(0, world, layers, rows, cols).expect_err("零值");
         assert_eq!(error.code(), Code::Invalid);
     }
 }
@@ -560,6 +629,7 @@ fn random_snapshots_keep_the_length_promise_and_the_bytes() {
         let size = |state: &mut u64| 1 + (lcg(state) % 64) as usize;
         let facts = Facts::new(
             lcg(&mut state),
+            size(&mut state),
             size(&mut state),
             size(&mut state),
             size(&mut state),
@@ -683,20 +753,22 @@ fn a_corrupted_file_names_its_path() {
 /// 察觉不到；黄金向量把当前字段顺序、类型标签与压缩写法钉死。任何不是格式版本递增的布局漂移，
 /// 都会在这里逐字节失败。
 #[test]
-fn a_golden_vector_pins_the_version_three_layout() {
-    const GOLDEN: [u8; 24] = [
+fn a_golden_vector_pins_the_version_four_layout() {
+    const GOLDEN: [u8; 29] = [
         0x4C, 0x4C, 0x4D, 0x43, // `LLMC`
-        0x03, 0x00, // 版本 3（小端 u16）
-        0x01, 0x01, 0x01, 0x01, // step=1、world=1、layers=1、batch_rows=1
+        0x04, 0x00, // 版本 4（小端 u16）
+        0x01, 0x01, 0x01, 0x01, 0x01, // step=1、world=1、layers=1、rows=1、cols=1
         0x00, // data_start=0
         0x01, // 条目数 1
         0x00, 0x00, 0x01, 0x77, // 名：前 0 后 0，中段 1 字节 `w`
         0x02, 0x00, 0x01, // 布局：秩+1=2，F32 标签 00，秩 1
         0x00, // 偏移增量 0
-        0x99, 0x66, 0x9D, 0x14, // CRC-32（小端）
+        0x00, 0x00, // 矩状态：0 槽、步数 0
+        0x00, 0x00, // 累积梯度：窗口 0 批、0 槽
+        0xFF, 0xF0, 0x7A, 0xE0, // CRC-32（小端）
     ];
 
-    let facts = Facts::new(1, 1, 1, 1).expect("事实");
+    let facts = Facts::new(1, 1, 1, 1, 1).expect("事实");
     let header =
         Header::new(vec![Entry::new("w", DType::F32, Shape::new([1])).at(0)], 0).expect("头部");
     let snapshot = Snapshot::new(facts, header);

@@ -32,12 +32,16 @@
 
 mod checkpoint;
 mod kernel;
+mod optimizer;
 mod pool;
 mod schedule;
+mod session;
 mod shape;
 pub mod snapshot;
 mod store;
 
 pub use checkpoint::{Checkpoint, Step, operators, resume};
+pub use optimizer::{Adam, Group, Optimizer, Sgd, Slot};
 pub use schedule::{Anneal, Schedule};
+pub use session::{ParamSlot, Session, TrainConfig};
 pub use store::{Buffers, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};

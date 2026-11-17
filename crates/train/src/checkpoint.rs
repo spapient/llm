@@ -35,6 +35,7 @@ pub struct Checkpoint {
     step: u64,
     tape_nodes: usize,
     batch_rows: usize,
+    batch_cols: usize,
     layers: usize,
     weight_entries: usize,
     world: usize,
@@ -57,6 +58,7 @@ impl Checkpoint {
             step,
             tape_nodes: tape.len(),
             batch_rows: batch.rows(),
+            batch_cols: batch.cols(),
             layers,
             weight_entries: weights.entries().len(),
             world: topology.world(),
@@ -79,6 +81,11 @@ impl Checkpoint {
         self.batch_rows
     }
 
+    /// 批的列宽。
+    pub fn batch_cols(&self) -> usize {
+        self.batch_cols
+    }
+
     /// 训练层数。
     pub fn layers(&self) -> usize {
         self.layers
@@ -99,8 +106,13 @@ impl Checkpoint {
     /// 文件格式由 [`crate::snapshot`] 拥有：本层只回答"恢复需要知道什么"，编码、版本与偏移校验
     /// 不在训练循环里再做一遍。
     pub fn snapshot(&self, weights: &weights::Header) -> Result<crate::snapshot::Snapshot> {
-        let facts =
-            crate::snapshot::Facts::new(self.step, self.world, self.layers, self.batch_rows)?;
+        let facts = crate::snapshot::Facts::new(
+            self.step,
+            self.world,
+            self.layers,
+            self.batch_rows,
+            self.batch_cols,
+        )?;
         Ok(crate::snapshot::Snapshot::new(facts, weights.clone()))
     }
 }
@@ -115,6 +127,7 @@ pub fn resume(
     topology: &shard::Topology,
     layers: usize,
     batch_rows: usize,
+    batch_cols: usize,
 ) -> Result<()> {
     topology.check(checkpoint.world()).map_err(|error| {
         error.with(format!(
@@ -140,6 +153,16 @@ pub fn resume(
             format!(
                 "批行数不一致：检查点记录 {} 行，当前是 {batch_rows} 行",
                 checkpoint.batch_rows()
+            ),
+        )
+        .with(context));
+    }
+    if checkpoint.batch_cols() != batch_cols {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "批列宽不一致：检查点记录 {} 列，当前是 {batch_cols} 列",
+                checkpoint.batch_cols()
             ),
         )
         .with(context));

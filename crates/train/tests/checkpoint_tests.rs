@@ -19,23 +19,29 @@ fn a_checkpoint_records_the_minimum_state_needed_to_resume() {
     assert_eq!(checkpoint.step(), 7);
     assert_eq!(checkpoint.tape_nodes(), 1);
     assert_eq!(checkpoint.batch_rows(), 2);
+    assert_eq!(checkpoint.batch_cols(), 2);
     assert_eq!(checkpoint.weight_entries(), 1);
     assert_eq!(checkpoint.world(), 2);
-    resume(&checkpoint, &topology, 2, 2).expect("同结构可恢复");
+    resume(&checkpoint, &topology, 2, 2, 2).expect("同结构可恢复");
     let other = shard::Topology::new(1, 1, 4).expect("拓扑");
     assert_eq!(
-        resume(&checkpoint, &other, 2, 2).unwrap_err().code(),
+        resume(&checkpoint, &other, 2, 2, 2).unwrap_err().code(),
         Code::Invalid
     );
     assert_eq!(
-        resume(&checkpoint, &topology, 3, 2).unwrap_err().code(),
+        resume(&checkpoint, &topology, 3, 2, 2).unwrap_err().code(),
         Code::Invalid,
         "层数不一致必须拒绝"
     );
     assert_eq!(
-        resume(&checkpoint, &topology, 2, 4).unwrap_err().code(),
+        resume(&checkpoint, &topology, 2, 4, 2).unwrap_err().code(),
         Code::Invalid,
         "批行数不一致必须拒绝"
+    );
+    assert_eq!(
+        resume(&checkpoint, &topology, 2, 2, 4).unwrap_err().code(),
+        Code::Invalid,
+        "批列宽不一致必须拒绝"
     );
 }
 
@@ -62,6 +68,7 @@ fn a_checkpoint_becomes_a_snapshot_that_round_trips() {
     assert_eq!(facts.world(), checkpoint.world());
     assert_eq!(facts.layers(), checkpoint.layers());
     assert_eq!(facts.batch_rows(), checkpoint.batch_rows());
+    assert_eq!(facts.batch_cols(), checkpoint.batch_cols());
     assert_eq!(
         restored.weights().entries().len(),
         checkpoint.weight_entries()
