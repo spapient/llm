@@ -71,3 +71,57 @@ fn heads_rope_rejects_bad_head_dimension() {
     let mut short = vec![0.0; 7];
     assert!(forward_heads(0, &[1.0; 8], &mut short, 4).is_err());
 }
+
+#[test]
+fn batch_rotates_each_segment_at_its_own_position() {
+    let head_dim = 4;
+    let heads = 2;
+    let batch = 2;
+    let seg = heads * head_dim;
+    let x: Vec<f32> = (0..batch * seg)
+        .map(|i| i as f32 * 0.5 - 2.0)
+        .collect();
+    let positions = [3usize, 9];
+
+    let mut out = vec![0.0; x.len()];
+    forward_batch(&positions, &x, &mut out, head_dim).expect("批量旋转");
+
+    // 参考：每段按自己的位置独立走多头入口，段间不串段。
+    let mut expected = vec![0.0; x.len()];
+    for (seq, &pos) in positions.iter().enumerate() {
+        let span = seq * seg..(seq + 1) * seg;
+        forward_heads(pos, &x[span.clone()], &mut expected[span], head_dim)
+            .expect("段内参考");
+    }
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn batch_one_entry_matches_the_heads_kernel() {
+    let head_dim = 4;
+    let heads = 2;
+    let seg = heads * head_dim;
+    let x: Vec<f32> = (0..seg).map(|i| i as f32 * 0.5 - 2.0).collect();
+    let mut multi = vec![0.0; seg];
+    forward_heads(5, &x, &mut multi, head_dim).expect("多头");
+    let mut batch = vec![0.0; seg];
+    forward_batch(&[5], &x, &mut batch, head_dim).expect("单段经批量入口");
+    assert_eq!(multi, batch, "batch=1 必须与多头入口逐元素等价");
+}
+
+#[test]
+fn batch_rejects_empty_positions_and_bad_length() {
+    let head_dim = 4;
+    let x = vec![1.0; 8];
+    let mut out = vec![0.0; 8];
+    // 空位置切片。
+    assert!(forward_batch(&[], &x, &mut out, head_dim).is_err());
+    // 头宽为 0。
+    assert!(forward_batch(&[0], &x, &mut out, 0).is_err());
+    // 长度不是 batch·head_dim 的整数倍。
+    let mut ragged = vec![0.0; 7];
+    assert!(forward_batch(&[0], &x[..7], &mut ragged, head_dim).is_err());
+    // 输入输出不等长。
+    let mut short = vec![0.0; 7];
+    assert!(forward_batch(&[0], &x, &mut short, head_dim).is_err());
+}

@@ -139,6 +139,54 @@ pub fn forward_heads(
     Ok(())
 }
 
+/// 批量校验：返回单序列段长 `heads·head_dim`；批数取 `positions.len()`，段内头宽/倍数守卫
+/// 交给 [`forward_heads`]。
+fn rope_batch_segments(
+    positions: &[usize],
+    x: &[f32],
+    out: &[f32],
+    head_dim: usize,
+) -> diagnostic::Result<usize> {
+    let batch = positions.len();
+    if batch == 0 || head_dim == 0 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("批量序列数 {batch} 与头宽 {head_dim} 都必须非零"),
+        ));
+    }
+    if x.len() != out.len() || !x.len().is_multiple_of(batch * head_dim) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "x 长度 {} 不是 batch·head_dim（{}）的整数倍，或与输出不等长",
+                x.len(),
+                batch * head_dim
+            ),
+        ));
+    }
+    Ok(x.len() / batch)
+}
+
+/// 批量旋转：`[batch, heads, head_dim]` 头优先块，第 `b` 段连续 `heads·head_dim`，每序列
+/// 独立位置 `positions[b]`；段内复用 [`forward_heads`] 头分段编排，段间互不串段。
+///
+/// # Errors
+///
+/// `positions` 为空、头宽为 0、输入输出不等长或长度不是批段整数倍时返回说明。
+pub fn forward_batch(
+    positions: &[usize],
+    x: &[f32],
+    out: &mut [f32],
+    head_dim: usize,
+) -> diagnostic::Result<()> {
+    let seg = rope_batch_segments(positions, x, out, head_dim)?;
+    for (seq, &pos) in positions.iter().enumerate() {
+        let start = seq * seg;
+        forward_heads(pos, &x[start..start + seg], &mut out[start..start + seg], head_dim)?;
+    }
+    Ok(())
+}
+
 /// 标记类型：承载 `#[model]` 语义。
 pub struct Rope;
 
