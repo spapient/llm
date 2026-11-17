@@ -193,12 +193,7 @@ impl Writer {
     }
 
     /// 正文写进密封接收器，全局 CRC 收尾后落回底层缓冲；全局 CRC 本身不进 CRC。
-    fn write_sealed(
-        &self,
-        plan: &[Plan<'_>],
-        align_log: u8,
-        buf: &mut Vec<u8>,
-    ) -> Result<()> {
+    fn write_sealed(&self, plan: &[Plan<'_>], align_log: u8, buf: &mut Vec<u8>) -> Result<()> {
         let global = {
             let mut sealed = Sealed::new(buf);
             self.write_body_in(plan, &mut sealed, align_log)?;

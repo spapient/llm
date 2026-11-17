@@ -252,12 +252,7 @@ impl Desc {
     }
 
     /// 按描述符形态分派到内联或引用解码；未知形态显式拒绝。
-    fn decode_body(
-        cur: &mut Cursor<'_>,
-        form: u8,
-        desc: Descriptor,
-        rank: u32,
-    ) -> Result<Self> {
+    fn decode_body(cur: &mut Cursor<'_>, form: u8, desc: Descriptor, rank: u32) -> Result<Self> {
         match form {
             FORM_INLINE => Self::decode_inline(cur, desc, rank),
             FORM_REF => Self::decode_ref(cur, desc, rank),

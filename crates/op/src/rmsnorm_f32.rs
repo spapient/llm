@@ -179,7 +179,11 @@ pub fn forward_batch(
     let batch = rmsnorm_batch_segments(x, gamma, out, row_dim)?;
     for b in 0..batch {
         let start = b * row_dim;
-        forward(&x[start..start + row_dim], gamma, &mut out[start..start + row_dim])?;
+        forward(
+            &x[start..start + row_dim],
+            gamma,
+            &mut out[start..start + row_dim],
+        )?;
     }
     Ok(())
 }

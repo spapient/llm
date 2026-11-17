@@ -78,9 +78,7 @@ fn batch_rotates_each_segment_at_its_own_position() {
     let heads = 2;
     let batch = 2;
     let seg = heads * head_dim;
-    let x: Vec<f32> = (0..batch * seg)
-        .map(|i| i as f32 * 0.5 - 2.0)
-        .collect();
+    let x: Vec<f32> = (0..batch * seg).map(|i| i as f32 * 0.5 - 2.0).collect();
     let positions = [3usize, 9];
 
     let mut out = vec![0.0; x.len()];
@@ -90,8 +88,7 @@ fn batch_rotates_each_segment_at_its_own_position() {
     let mut expected = vec![0.0; x.len()];
     for (seq, &pos) in positions.iter().enumerate() {
         let span = seq * seg..(seq + 1) * seg;
-        forward_heads(pos, &x[span.clone()], &mut expected[span], head_dim)
-            .expect("段内参考");
+        forward_heads(pos, &x[span.clone()], &mut expected[span], head_dim).expect("段内参考");
     }
     assert_eq!(out, expected);
 }

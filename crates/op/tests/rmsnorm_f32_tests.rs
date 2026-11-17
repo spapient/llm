@@ -92,9 +92,7 @@ fn rmsnorm_saturating_and_repeated_inputs_match_reference() {
 fn batch_normalizes_each_segment_independently() {
     let row_dim = 3;
     let batch = 2;
-    let x: Vec<f32> = (0..batch * row_dim)
-        .map(|i| i as f32 * 0.5 - 2.0)
-        .collect();
+    let x: Vec<f32> = (0..batch * row_dim).map(|i| i as f32 * 0.5 - 2.0).collect();
     let gamma: Vec<f32> = (0..row_dim).map(|i| 0.6 + i as f32 * 0.1).collect();
 
     let mut out = vec![0.0; x.len()];

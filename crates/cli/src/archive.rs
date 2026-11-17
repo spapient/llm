@@ -46,9 +46,8 @@ pub(crate) fn import(input: &str, output: &str) -> Result<()> {
 
 /// 读容器字节：IO 失败按 `Code::Io` 补命令站点诊断。
 fn read_container(input: &str, site: &str) -> Result<Vec<u8>> {
-    std::fs::read(input).map_err(|error| {
-        Error::new(Code::Io, format!("读取 {input} 失败：{error}")).with(site)
-    })
+    std::fs::read(input)
+        .map_err(|error| Error::new(Code::Io, format!("读取 {input} 失败：{error}")).with(site))
 }
 
 /// `inspect`：读字节 → 解析 → 现场现算度量，条目清单与度量排成报告。
@@ -88,11 +87,7 @@ fn metrics_report(archive: &Archive<'_>, metrics: &weights::Metrics) -> Report {
 
 /// 无损标志的人可读取值。
 fn lossless_label(lossless: bool) -> &'static str {
-    if lossless {
-        "true"
-    } else {
-        "false"
-    }
+    if lossless { "true" } else { "false" }
 }
 
 /// `check`：打开期 CRC 已校验；逐段 `load` 触发解码与逐位还原，按解码条目数汇报。

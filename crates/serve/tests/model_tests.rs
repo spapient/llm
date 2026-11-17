@@ -260,6 +260,31 @@ fn archive_of(entries: &[ArchiveEntry]) -> Vec<u8> {
     file
 }
 
+/// 两层 3→2→2 合成模型夹具：输入、归档字节与串行参考输出；装载路线由各用例自选。
+fn two_layer_archive_fixture() -> ([f32; 3], Vec<u8>, Vec<f32>) {
+    let x = [1.0, 2.0, 3.0];
+    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let w2 = [1.0, 1.0, 2.0, 0.0];
+    let hidden = gemv_hidden(&x, &w1);
+    let mut reference = vec![0.0; 2];
+    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
+    let bytes = archive_of(&[
+        ArchiveEntry {
+            name: "blk.0.weight",
+            shape: [2, 3],
+            dtype: "F32",
+            bytes: f32_block(&w1),
+        },
+        ArchiveEntry {
+            name: "blk.1.weight",
+            shape: [2, 2],
+            dtype: "F32",
+            bytes: f32_block(&w2),
+        },
+    ]);
+    (x, bytes, reference)
+}
+
 /// 空头部归档：没有任何条目。
 fn empty_archive() -> Vec<u8> {
     let json = b"{}";
@@ -654,28 +679,7 @@ fn a_width_chain_break_is_rejected_at_assembly() {
 /// 内存归档装载：头部推出层栈、Loader 取出条目字节、解码进驻留表，装配后 forward 与串行参考对拍。
 #[test]
 fn entries_from_an_in_memory_archive_load_into_params() {
-    let x = [1.0, 2.0, 3.0];
-    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-    let w2 = [1.0, 1.0, 2.0, 0.0];
-
-    let hidden = gemv_hidden(&x, &w1);
-    let mut reference = vec![0.0; 2];
-    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
-
-    let bytes = archive_of(&[
-        ArchiveEntry {
-            name: "blk.0.weight",
-            shape: [2, 3],
-            dtype: "F32",
-            bytes: f32_block(&w1),
-        },
-        ArchiveEntry {
-            name: "blk.1.weight",
-            shape: [2, 2],
-            dtype: "F32",
-            bytes: f32_block(&w2),
-        },
-    ]);
+    let (x, bytes, reference) = two_layer_archive_fixture();
     let archive = Archive::parse(&bytes).expect("归档合法");
     let stack = Stack::from_header(archive.header()).expect("层栈");
     let params = Params::from_stack(&stack, archive.header(), &archive).expect("装载");
@@ -689,28 +693,7 @@ fn entries_from_an_in_memory_archive_load_into_params() {
 /// 与 Loader 拷贝路径同判据、同产物。
 #[test]
 fn entries_from_a_reader_source_load_into_params() {
-    let x = [1.0, 2.0, 3.0];
-    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-    let w2 = [1.0, 1.0, 2.0, 0.0];
-
-    let hidden = gemv_hidden(&x, &w1);
-    let mut reference = vec![0.0; 2];
-    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
-
-    let bytes = archive_of(&[
-        ArchiveEntry {
-            name: "blk.0.weight",
-            shape: [2, 3],
-            dtype: "F32",
-            bytes: f32_block(&w1),
-        },
-        ArchiveEntry {
-            name: "blk.1.weight",
-            shape: [2, 2],
-            dtype: "F32",
-            bytes: f32_block(&w2),
-        },
-    ]);
+    let (x, bytes, reference) = two_layer_archive_fixture();
     let archive = Archive::parse(&bytes).expect("归档合法");
     let stack = Stack::from_header(archive.header()).expect("层栈");
     let params = Params::from_reader_stack(&stack, archive.header(), &archive).expect("借用装载");
@@ -1324,11 +1307,7 @@ struct OrderProbe {
 }
 
 impl Predict for OrderProbe {
-    fn logits(
-        &mut self,
-        sequence: &Sequence,
-        _batch: &mut Batch,
-    ) -> diagnostic::Result<Vec<f32>> {
+    fn logits(&mut self, sequence: &Sequence, _batch: &mut Batch) -> diagnostic::Result<Vec<f32>> {
         self.calls.push(sequence.id());
         Ok(vec![sequence.id() as f32])
     }
@@ -1346,14 +1325,19 @@ fn logits_batch_default_runs_each_sequence_in_input_order() {
     let sequences: Vec<Sequence> = batch.sequences().to_vec();
 
     let mut model = OrderProbe { calls: Vec::new() };
-    let rows = model.logits_batch(&sequences, &mut batch).expect("批量回退");
+    let rows = model
+        .logits_batch(&sequences, &mut batch)
+        .expect("批量回退");
 
     assert_eq!(model.calls, [7, 3], "默认回退必须按准入顺序逐条调用");
     assert_eq!(rows.len(), 2, "返回行数与输入条数一致");
     assert_eq!(rows[0], [7.0]);
     assert_eq!(rows[1], [3.0]);
     assert!(
-        model.logits_batch(&[], &mut batch).expect("空批").is_empty(),
+        model
+            .logits_batch(&[], &mut batch)
+            .expect("空批")
+            .is_empty(),
         "空序列批量返回空行"
     );
 }

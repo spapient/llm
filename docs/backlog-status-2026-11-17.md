@@ -12,20 +12,20 @@
 | `cargo check --workspace --all-targets` | 干净，0 error / 0 warning |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 零告警 |
 | `cargo fmt --all --check` | 0 diff |
-| `cargo nextest run --workspace --all-features --locked` | **1,429/1,429 passed，0 skipped**（nextest 口径，9 个 libfuzzer harness + gen_corpus 二进制被 `.config/nextest.toml` 排除） |
-| `cargo test --workspace`（libtest 口径；fuzz libFuzzer harness 由 CI fuzz job 单独引导，不进 libtest） | 收口实测 **1,452 passed / 0 failed / 1 ignored**；与 nextest 是两种口径，计数不可混用 |
+| `cargo nextest run --workspace --all-features --locked` | **1,470/1,470 passed，0 skipped**（nextest 口径，9 个 libfuzzer harness + gen_corpus 二进制被 `.config/nextest.toml` 排除） |
+| `cargo test --workspace --all-features --locked --exclude llm-fuzz`（libtest 口径；fuzz libFuzzer harness 由 CI fuzz job 单独引导，不进 libtest） | 收口实测 **1,493 passed / 0 failed / 1 ignored**；与 nextest 是两种口径，计数不可混用 |
 | architecture | **8/8**；contracts **6/6**；静态 gate **1/1**（testkit 合计 35/35） |
 | `cargo deny check` | advisories / bans / licenses / sources 四项 ok（许可白名单含 NCSA、Unicode-3.0） |
 | `cargo machete` | 无未用依赖 |
-| jscpd | 1.34% 行 / 1.62% token，116 clones，420 文件，81,262 行，exit 0（行阈 1.5%；token 未设硬阈） |
+| jscpd | 1.48% 行 / 1.77% token，132 clones，425 文件，83,676 行，exit 0（行阈 1.5%；token 未设硬阈） |
 | `cargo bench --workspace --all-features --locked --no-run` | exit 0，全部基准目标编译通过 |
 | `unsafe` | 生产唯一岛 `crates/storage/src/mmap.rs`；本轮新增 unsafe 为零；Metal/CUDA 后端未落地，设备侧零 unsafe |
 
 各成员 lib 测试数（`cargo test -p <pkg> --lib` 实测）：annotation 34、autograd 65、cli 25、
-cutile 167、data 16、diagnostic 12、dtype 18、engine 77、fuzz 17、nn 79、op 198、prim 19、prof 53、
-serve 124、shard 29、storage 13、tensor 25、testkit 17、tokenizer 44、tool 57、train 82、weights 116、wire 13。
+cutile 167、data 16、diagnostic 12、dtype 18、engine 77、fuzz 17、nn 79、op 213、prim 19、prof 53、
+serve 126、shard 29、storage 13、tensor 25、testkit 17、tokenizer 44、tool 57、train 82、weights 129、wire 13。
 集成 / 文档补充：fuzz parsers 2；tokenizer tokens 16；op 集成 2；prof atom 1；benches regress 8；
-serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3；cli cutile_bin 9 + 集成 18 + doc 2；tool doc 1。
+serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3；cli cutile_bin 9 + 集成 23 + doc 2；tool doc 1；weights import_tests 3 + round_trip 12。
 
 ---
 
@@ -50,6 +50,7 @@ serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3
 | M1-A2 | 已落地 | `weights::MmapSource`（mmap feature 双门控）复用 `storage::Mmap` 唯一 unsafe 岛；`mmap_source_tests.rs`；mmap 口径 weights 116 lib / storage 13 lib；压缩段保持 `Owned` 断言 | 设备权重驻留、热更新暂缓 |
 | M1-A3 | 已落地 | `load_f32` / `decode_entry_f32` 驻留解码；`load_f32_decodes_an_entry_into_the_resident_buffer`、`a_non_f32_entry_is_not_unpacked_into_the_resident_buffer`、`decode_entry_f32_passes_through_the_partial_tail_word_rejection`；`StubLoader` 测试件 | 真实权重端到端装载属 M4-1 |
 | M1-A4 | 已落地 | `regress.rs` 装载 8 条 Op 记录归档（File 4 + mmap 4，`#[cfg(unix)]`）；`registered_load_records_archive_when_measured`、`load_records_carry_every_field_a_reader_needs_to_judge_it`；Harness / Geometry / Roofline / observed 全字段入台账；Roofline 双 None，不采 RSS；criterion `weights_load.rs` 测量循环保留 | 未采 RSS 进程读数；无跨机基线结论；tree 内无 criterion `estimates.json`，归档测试走 skip 路径；冷热缓存对照入 regress 基线待后续刀 |
+| M1-A5 | 已落地 | 自有 `.u` 容器 v2（ADR-0045，魔数 `.u\0\0` / VERSION 2）：REF 跨段去重——写入期哈希预检 + 逐位比对定代表段，引用段只带量化方案与代表段下标，打开期单色 DFS 拒悬空 / 越界 / 自引用 / 代表段是引用 / 元数据不一致 / 成环；中性条目流导入按扩展名分派：safetensors File/Archive seek+read 借用整份字节、GGUF 标量 F32/F16 直映、GGML 块量化显式 `Code::Unsupported`（不反量化、不塞伪装段）、bin/ZIP_STORED+pickle 栈机、`.pt` 走 bin 通路、未登记后缀拒绝；打开后现场现算 `Metrics`（条目数 / 参数 / V_artifact / V_FP16 / ratio / lossless / REF 命中 / 节省字节，不读文件内保存字段）；CLI `import --in/--out`、`inspect --in`、`check --in`。weights lib 129 + import_tests 3 + round_trip 12；cli lib 25 + cutile_bin 9 + 集成 23 + doc 2；fuzz parsers 2；doc weights 3。保留名 `llm.mode` / `llm.vocab`（字节占位，不接 tokenizer）/ `opt.` 前缀 | 码本 / 格码低位宽压缩、分片多文件清单与显式随机访问索引、`llm.vocab`→`VocabSource` 解析、真实权重端到端生成 / HTTP 后端 / 同机对照基准、strided / block-sparse 布局见 M4-1 与 ADR-0045 未决节；v1 LLPK 字节不被 v2 读端兼容，无 v1→v2 解码器 |
 
 ## 3. M1-B CPU 单序列前向闭环
 
@@ -111,7 +112,7 @@ serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3
 
 | ID | 状态 | 现状 | 阻塞边界 / 前置条件 |
 |---|---|---|---|
-| M4-1 | 阻塞 | M1-A 源抽象 / Reader / Loader 在位；中性 `VocabSource`、`Vocab::try_new`、`Fingerprint` 在位；Tokenizer 现由外部注入 | 前置 M1-A + M2 通路；容器字节 → `VocabSource` 解析未接；给定真实权重跑通生成、词表指纹对拍；vision / 多模态暂缓 |
+| M4-1 | 阻塞 | M1-A 源抽象 / Reader / Loader 在位；`.u` v2 容器读写 / REF 去重 / 外部格式导入 / 现场度量在位；中性 `VocabSource`、`Vocab::try_new`、`Fingerprint` 在位；Tokenizer 现由外部注入 | 前置 M1-A + M2 通路；`.u` v2 容器字节（含预留 `llm.vocab` 段）→ `VocabSource` 解析未接；给定真实权重跑通生成、词表指纹对拍；vision / 多模态暂缓 |
 | M4-2 | 阻塞 | `Router` / `Endpoint` / `Request` / `Response` 契约与桩路由在位；serve lib 124 + protocol 8 | 前置 D8 端点契约稳定；真实 HTTP 后端替换桩路由；并发 / 流式通路；gRPC 在 HTTP 通路稳定后 |
 | M4-3 | 阻塞 | 基准记录结构（M1-C2）与 mem_stream 分母在位 | 前置 M4-2；并发与 P50/P99、TTFT/TPOT、prefix 命中入表；同负载对照 vLLM / TRT-LLM 口径登记；通用 GPU 峰值竞争暂缓 |
 
@@ -170,3 +171,4 @@ serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3
 - **本轮收口实测**（warm-cache，2026-11-17 复核刀）：`check --workspace` 0.49s、`fmt --check` 0.35s、`architecture` 0.70s、`contracts` 0.91s、静态 gate 0.49s、nextest 1.92s（1365 条）、全量 clippy 4.73s（含 benches/fuzz 全部 target）。本轮未并行派发施工子代理：活树同时有外部会话在改 cli 入口，编排侧按单轨串行收口；cargo 仍串行化共享 `target/` 锁。交错写入期间出现过未完成编辑被构建误报编译失败，单包复跑即分辨，未回滚外部半成品。
 - **P0-6 / M1-A4 / M1-B3 / T1-5 / M2-2 / M2-4 六轨收口实测**（warm-cache，2026-11-17 晚刀）：nextest **1,418/1,418**、libtest **1,454 / 0 / 1**；clippy / fmt / doc / deny / machete / bench `--no-run` / testkit 35/35 全绿；jscpd **1.36% 行**（118 clones / 1,093 行，421 文件）。三族测试夹具抽私有助手去重（serve model_tests、benches regress、train session/snapshot），用例零删除零改名。期间外部并行会话一次回滚曾把 fuzz `p06` 接线连同三条 dev 边从磁盘抹掉，已从提交 `3403d5f4` 恢复 `p06.rs` / `p06_drivers.rs` / 种子块并对齐当前 rustfmt；恢复后 p06 3 条 sweep 用例复跑全绿。注记（2026-11-17 复核）：该 p06 三族 sweep 接线随后按规范裁决移除（范式与 fuzz 入口解析器契约边界错配），上句"恢复 p06 并复跑全绿"为当时历史记录；当前活树 fuzz 仅保留 parsers 解析器目标与 9 个 harness，三族边界由各自仓内单测覆盖。
 - **本轮四切片收口实测**（warm-cache，2026-11-17 晚刀二）：nextest **1,429/1,429**、libtest **1,452 / 0 / 1**、doc **43 / 0**；clippy `-D warnings` / fmt / deny / machete / bench `--no-run` / testkit 35/35 全绿；jscpd **1.34% 行**（116 clones / 1,090 行，420 文件，81,262 行）。S1 回载接缝初版两条助手 CCN 超 5，拆私有助手（矩表/累积表槽位对账分派）后静态门转绿；S2 初版回读侧照抄 weights 通用 Value/Reader 骨架造成跨 crate 261 行克隆，改为固定 schema 流式草稿读取器并抽测试夹具助手后，bench_json↔weights 对拍降到 2 对 26 行字节原语，bench_tests 自重复清零。本轮零新增生产 unsafe、零生产外部新依赖（`git diff HEAD -- '*Cargo.toml'` 空），依赖方向未反向；fuzz 三族 dev 边保持移除。活树另有外部并行会话（codex app-server / RustRover ACP）自动提交的 cutile probe / prof select 半成品，本刀未回滚、未纳入切片证据。
+- **`.u` 容器 v2 落地刀实测**（warm-cache，2026-11-17 晚刀三）：nextest **1,470/1,470**、libtest（`--exclude llm-fuzz` 口径）**1,493 / 0 / 1**、doc **43 / 0**；clippy `-D warnings` / fmt / deny / machete / bench `--no-run` / 静态 gate 1/1 全绿；jscpd **1.48% 行**（132 clones / 1,242 行，425 文件，83,676 行，行阈 1.5%）。Stage1/2 落地：REF 跨段去重（哈希预检 + 逐位比对，打开期单色 DFS 校验引用图）、外部格式中性条目流导入（safetensors / GGUF 标量 / bin·pt；GGML 块量化显式 Unsupported）、打开后现场 `Metrics`、`import`/`inspect`/`check` CLI（ADR-0045）。CCN 超阈函数按职责轴拆私有助手（archive 引用回填 / writer 封段 / seg 描述符元数据与形态分派 / cli 命令与报告装配 / import 按通路分派）；外部会话新增 `rmsnorm_batch_segments` 复合长度校验 CCN=6，拆 `check_batch_rows` 后门转绿；serve 两层归档装载两条用例抽 `two_layer_archive_fixture` 夹具后重复块回落。口径注记：libtest 必须 `--exclude llm-fuzz`——`engine` feature 开启时 9 个 libFuzzer harness 是 `harness=false` 独立二进制，被普通 `cargo test` 直接拉起会进入无限 fuzz 循环（98.7% CPU），归 CI 独立 fuzz job 引导。本轮零新增生产 unsafe、零生产外部新依赖；Stage3 边界（码本/格码、分片索引、词表段解析、真实生成/HTTP/基准、稀疏布局）按 ADR-0045 未决节登记，不回填历史证人数字。活树外部会话的 op 批入口 / serve K·V 重排 / ADR-0046 半成品不属于本刀，未回滚、未纳入本刀证据。

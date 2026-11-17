@@ -182,7 +182,12 @@ pub fn forward_batch(
     let seg = rope_batch_segments(positions, x, out, head_dim)?;
     for (seq, &pos) in positions.iter().enumerate() {
         let start = seq * seg;
-        forward_heads(pos, &x[start..start + seg], &mut out[start..start + seg], head_dim)?;
+        forward_heads(
+            pos,
+            &x[start..start + seg],
+            &mut out[start..start + seg],
+            head_dim,
+        )?;
     }
     Ok(())
 }

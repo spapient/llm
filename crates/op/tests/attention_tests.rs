@@ -259,7 +259,17 @@ fn batch_rejects_non_multiple_length_and_zero_batch() {
     // q 长度不是批段整数倍：无法推出整段，直接拒绝。
     let mut ragged = vec![0.0; q.len() - 1];
     assert!(
-        decode_forward_batch(&q[..q.len() - 1], &k, &v, &mut ragged, q_rows, hist, d, heads, 1)
-            .is_err()
+        decode_forward_batch(
+            &q[..q.len() - 1],
+            &k,
+            &v,
+            &mut ragged,
+            q_rows,
+            hist,
+            d,
+            heads,
+            1
+        )
+        .is_err()
     );
 }

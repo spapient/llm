@@ -630,7 +630,18 @@ pub fn decode_flash_forward_batch(
     heads: usize,
     batch: usize,
 ) -> diagnostic::Result<()> {
-    decode_batch(q, k, v, out, q_rows, hist, d, heads, batch, decode_flash_forward)
+    decode_batch(
+        q,
+        k,
+        v,
+        out,
+        q_rows,
+        hist,
+        d,
+        heads,
+        batch,
+        decode_flash_forward,
+    )
 }
 
 /// 标记类型：承载 `#[model]` 语义。
