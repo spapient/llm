@@ -127,7 +127,10 @@ impl CpuModel {
         if flat.len() != batch * width {
             return Err(Error::new(
                 Code::Internal,
-                format!("整批输出长度 {len} 与 {batch}×{width} 不符", len = flat.len()),
+                format!(
+                    "整批输出长度 {len} 与 {batch}×{width} 不符",
+                    len = flat.len()
+                ),
             )
             .with(SITE));
         }
@@ -244,7 +247,10 @@ impl crate::Predict for CpuModel {
         if self.assembly.blocks.is_empty() {
             self.batch_forward(sequences)
         } else {
-            sequences.iter().map(|sequence| self.logits(sequence, batch)).collect()
+            sequences
+                .iter()
+                .map(|sequence| self.logits(sequence, batch))
+                .collect()
         }
     }
 }
