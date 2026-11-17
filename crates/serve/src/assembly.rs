@@ -58,9 +58,7 @@ impl Assembly {
                 .graph
                 .nodes_mut()
                 .iter_mut()
-                .find(|node| {
-                    node.outputs().first().map_or(false, |operand| operand.id() == id)
-                });
+                .find(|node| node.outputs().first().is_some_and(|operand| operand.id() == id));
             if let Some(node) = node {
                 node.scalars_mut().set_rope_position(position);
             }
@@ -121,6 +119,8 @@ pub(crate) struct NodeSink<'a> {
     pub(crate) weights: &'a mut Vec<(u32, String)>,
     pub(crate) activations: &'a mut Vec<(u32, usize)>,
     pub(crate) descriptors: &'a mut Vec<BindingDesc>,
+    /// 注意力块接线记录：运行时按它装载历史 K/V、取回当前步 K/V 写回页行。
+    pub(crate) blocks: &'a mut Vec<BlockBinding>,
     pub(crate) slots: &'a mut Slots,
     /// rope 节点输出槽编号清单：位置标量槽回填按它走。
     pub(crate) rope: &'a mut Vec<u32>,

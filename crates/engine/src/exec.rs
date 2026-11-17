@@ -805,19 +805,29 @@ impl CpuExecutor {
     }
 
     /// 把一组缓冲从操作数表里借出来；缺一个就整体放回（不留半个状态）。
+    ///
+    /// 同一编号在本节点重复作为只读输入（如逐元素二元两路借同一块残差流）：第二次取到的是
+    /// 已借出那份的克隆，输入视图互不持有可写引用；放回时按编号写回，不改动执行几何。
     fn take(&mut self, operands: &[Operand]) -> Taken {
         let mut ids = Vec::with_capacity(operands.len());
         let mut values = Vec::with_capacity(operands.len());
         for operand in operands {
-            let Some(value) = self.bindings.values.remove(&operand.id()) else {
-                self.restore(Taken { ids, values });
-                return Taken {
-                    ids: Vec::new(),
-                    values: Vec::new(),
-                };
-            };
-            ids.push(operand.id());
-            values.push(value);
+            match self.bindings.values.remove(&operand.id()) {
+                Some(value) => {
+                    ids.push(operand.id());
+                    values.push(value);
+                }
+                None => match ids.iter().position(|&id| id == operand.id()) {
+                    Some(taken_at) => values.push(values[taken_at].clone()),
+                    None => {
+                        self.restore(Taken { ids, values });
+                        return Taken {
+                            ids: Vec::new(),
+                            values: Vec::new(),
+                        };
+                    }
+                },
+            }
         }
         Taken { ids, values }
     }
