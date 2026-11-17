@@ -192,6 +192,26 @@ fn block_params(table: Vec<f32>, wq: Vec<f32>, wk: Vec<f32>, wv: Vec<f32>, wo: V
     ])
 }
 
+/// 嵌入 + 单头注意力块装配夹具：返回模型、嵌入表与 q/k/v/o 四路投影，decode 对拍链复用。
+fn block_fixture(
+    vocab: usize,
+    hidden: usize,
+    kv: usize,
+) -> (CpuModel, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    let table = embed_table(vocab, hidden);
+    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let stack = embed_block_stack(vocab, hidden, kv, 4);
+    let params = block_params(
+        table.clone(),
+        wq.clone(),
+        wk.clone(),
+        wv.clone(),
+        wo.clone(),
+    );
+    let model = assemble(stack, params);
+    (model, table, wq, wk, wv, wo)
+}
+
 /// 块四路零权重参数表（几何/缺键负例共用）。
 fn block_zero_params() -> Params {
     params_of(&[
@@ -336,8 +356,7 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
     let mut reference = vec![0.0; n * 2];
     for row in 0..2 {
         let xs = &x[row * m..(row + 1) * m];
-        op::gemv_f32::forward(xs, &w, &mut reference[row * n..(row + 1) * n])
-            .expect("参考行");
+        op::gemv_f32::forward(xs, &w, &mut reference[row * n..(row + 1) * n]).expect("参考行");
     }
 
     let mut executor = cpu();
@@ -345,10 +364,7 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
     bind(&mut executor, 1, &w);
     let output = 2;
     executor.bind(output, vec![0.0; n * 2]);
-    let mut node = Node::new(
-        "gemv_f32",
-        Launch::new([1, 1, 1], [n as u32, m as u32, 1]),
-    );
+    let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [n as u32, m as u32, 1]));
     node.bind_input(0);
     node.bind_input(1);
     node.bind_output(output);
@@ -366,10 +382,7 @@ fn gemv_row_batch_rejects_inconsistent_geometry() {
     bind(&mut executor, 1, &[0.0; 6]);
     let output = 2;
     executor.bind(output, vec![0.0; 4]);
-    let mut node = Node::new(
-        "gemv_f32",
-        Launch::new([1, 1, 1], [2, 3, 1]),
-    );
+    let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [2, 3, 1]));
     node.bind_input(0);
     node.bind_input(1);
     node.bind_output(output);
@@ -1033,6 +1046,41 @@ fn predict_logits_from_an_embedding_sequence_match_the_reference() {
     assert_close(&produced, &reference);
 }
 
+/// 串行参考：单 token 查表 → 投影一行；权重 `[out, in]`，输出宽 `w.len()/dim`。
+fn reference_row(table: &[f32], w: &[f32], token: u32, dim: usize) -> Vec<f32> {
+    let mut embedded = vec![0.0; dim];
+    op::embed_f32::forward(&[token as f32], table, &mut embedded).expect("参考查表");
+    let mut out = vec![0.0; w.len() / dim];
+    op::gemv_f32::forward(&embedded, w, &mut out).expect("参考投影");
+    out
+}
+
+/// 无块查表→投影链整批：两条序列一次前向，各行与串行 embed→gemv 参考对拍，行序对齐准入序。
+#[test]
+fn logits_batch_runs_two_sequences_through_the_flat_projection_chain() {
+    let (vocab, dim) = (8, 4);
+    let table = embed_table(vocab, dim);
+    let w = projection_matrix(2, dim, 1.0);
+
+    let stack = embed_projection_stack(vocab, dim);
+    let params = params_of(&[
+        ("tok_emb.weight", table.clone()),
+        ("proj.weight", w.clone()),
+    ]);
+    let mut model = assemble(stack, params);
+    let mut batch = plain_batch();
+    let a = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列 A");
+    let b = Sequence::new(1, &[5u32], 2, 16, Stream::new(0)).expect("序列 B");
+
+    let rows = model
+        .logits_batch(&[a.clone(), b.clone()], &mut batch)
+        .expect("整批前向");
+    assert_eq!(rows.len(), 2, "两行 logits 与输入切片一一对应");
+
+    assert_close(&rows[0], &reference_row(&table, &w, 2, dim));
+    assert_close(&rows[1], &reference_row(&table, &w, 5, dim));
+}
+
 /// 投影首层拿不到隐向量：序列只持有 token id，Predict 通路按 `Unsupported` 拒绝。
 #[test]
 fn predict_with_a_projection_first_layer_is_not_assembled_yet() {
@@ -1120,21 +1168,10 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     let (vocab, hidden, kv) = (8, 8, 8);
     let hist = 1;
 
-    let table = embed_table(vocab, hidden);
-    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let (mut model, table, wq, wk, wv, wo) = block_fixture(vocab, hidden, kv);
     let (hist_k, hist_v) = history_kv(kv);
     let history = history_row(&hist_k, &hist_v);
 
-    let stack = embed_block_stack(vocab, hidden, kv, 4);
-    let params = block_params(
-        table.clone(),
-        wq.clone(),
-        wk.clone(),
-        wv.clone(),
-        wo.clone(),
-    );
-
-    let mut model = assemble(stack, params);
     let (mut batch, sequence) = decode_batch(kv, &history);
     let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
 
@@ -1166,24 +1203,13 @@ fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
     let (vocab, hidden, kv) = (8, 8, 8);
     let hist = 1;
 
-    let table = embed_table(vocab, hidden);
-    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let (mut model, table, wq, wk, wv, wo) = block_fixture(vocab, hidden, kv);
     let (hist_k_a, hist_v_a) = history_kv(kv);
     let hist_k_b: Vec<f32> = hist_k_a.iter().map(|value| value * 1.7).collect();
     let hist_v_b: Vec<f32> = hist_v_a.iter().map(|value| value * 1.3).collect();
     let history_a = history_row(&hist_k_a, &hist_v_a);
     let history_b = history_row(&hist_k_b, &hist_v_b);
 
-    let stack = embed_block_stack(vocab, hidden, kv, 4);
-    let params = block_params(
-        table.clone(),
-        wq.clone(),
-        wk.clone(),
-        wv.clone(),
-        wo.clone(),
-    );
-
-    let mut model = assemble(stack, params);
     let (mut batch, a, b) = decode_batch_two(kv, &history_a, &history_b);
     let rows = model
         .logits_batch(&[a.clone(), b.clone()], &mut batch)

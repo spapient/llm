@@ -229,7 +229,11 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
     for row in 0..x.len() / m {
         let start = row * m;
         let out_start = row * n;
-        op::gemv_f32::forward(&x[start..start + m], weights, &mut out[out_start..out_start + n])?;
+        op::gemv_f32::forward(
+            &x[start..start + m],
+            weights,
+            &mut out[out_start..out_start + n],
+        )?;
     }
     Ok(())
 }

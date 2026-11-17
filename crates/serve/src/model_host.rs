@@ -70,23 +70,68 @@ impl CpuModel {
     /// 查表层首层收一个索引（decode 一步取上下文末位 token）；投影/点wise/归一化/注意力块首层需要的是
     /// 隐向量，而序列只持有 token id，给不出向量，当前通路拒绝，向量主链随连续批刀落地。
     fn predict_input(&self, sequence: &Sequence) -> Result<Vec<f32>> {
-        match self.assembly.input_kind {
-            LayerKind::Embedding => {
-                let token = sequence.context().last().copied().ok_or_else(|| {
-                    Error::new(Code::Invalid, "序列为空：没有可前向的 token").with(SITE)
-                })?;
-                Ok(vec![token as f32])
-            }
-            LayerKind::Projection
-            | LayerKind::Unary
-            | LayerKind::Norm
-            | LayerKind::Binary
-            | LayerKind::Rope => Err(Error::new(
+        self.predict_input_batch(std::slice::from_ref(sequence))
+    }
+
+    /// 批量收集各序列末位 token，按准入序折成整批索引缓冲；非查表层首层拒绝。
+    fn predict_input_batch(&self, sequences: &[Sequence]) -> Result<Vec<f32>> {
+        if self.assembly.input_kind != LayerKind::Embedding {
+            return Err(Error::new(
                 Code::Unsupported,
                 "首层不是查表层：序列只持有 token id，无法提供隐向量输入；向量主链通路随连续批落地",
             )
-            .with(SITE)),
+            .with(SITE));
         }
+        sequences
+            .iter()
+            .map(|sequence| {
+                sequence
+                    .context()
+                    .last()
+                    .copied()
+                    .ok_or_else(|| {
+                        Error::new(Code::Invalid, "序列为空：没有可前向的 token").with(SITE)
+                    })
+                    .map(|token| token as f32)
+            })
+            .collect()
+    }
+
+    /// 把输入与各逐层激活缓冲重绑到 `batch` 份单序列段长；驻留权重不乘批。
+    ///
+    /// 前向每步覆写输入、op 逐层覆写激活，无跨步残留；历史 K/V 块缓冲由 [`load_history`](Self::load_history)
+    /// 单独重绑，不在本台账内。
+    fn resize_for_batch(&mut self, batch: usize) {
+        self.executor.bind(
+            self.assembly.input,
+            vec![0.0; self.assembly.input_len * batch],
+        );
+        for (id, len) in &self.assembly.activations {
+            self.executor.bind(*id, vec![0.0; len * batch]);
+        }
+    }
+
+    /// 无 K/V 块的整批前向：一次图提交，输出整块按单序列输出宽拆回各行；行序对齐准入序。
+    fn batch_forward(&mut self, sequences: &[Sequence]) -> Result<Vec<Vec<f32>>> {
+        if sequences.is_empty() {
+            return Ok(Vec::new());
+        }
+        let batch = sequences.len();
+        let input = self.predict_input_batch(sequences)?;
+        self.resize_for_batch(batch);
+        self.executor.bind(self.assembly.input, input);
+        // 无块链没有 rope 节点：位置取 0（角度为 0 的恒等旋转）。
+        self.assembly.set_rope_positions(0);
+        let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
+        let width = self.assembly.output_len;
+        if flat.len() != batch * width {
+            return Err(Error::new(
+                Code::Internal,
+                format!("整批输出长度 {len} 与 {batch}×{width} 不符", len = flat.len()),
+            )
+            .with(SITE));
+        }
+        Ok(flat.chunks(width).map(|row| row.to_vec()).collect())
     }
 
     /// 从页账把各块已缓存的历史 K/V 整行读出，按块拼接进历史缓冲；每步重绑，不另存模型侧 KV 账。
@@ -181,11 +226,25 @@ fn bound_slice<'a>(executor: &'a CpuExecutor, id: u32, what: &str) -> Result<&'a
 impl crate::Predict for CpuModel {
     fn logits(&mut self, sequence: &Sequence, batch: &mut Batch) -> Result<Vec<f32>> {
         let input = self.predict_input(sequence)?;
+        self.resize_for_batch(1);
         self.executor.bind(self.assembly.input, input);
         self.assembly.set_rope_positions(sequence.len() as u32);
         self.load_history(sequence, batch)?;
         let logits = submit_and_fetch(&mut self.executor, &self.assembly)?;
         self.write_current_kv(sequence, batch)?;
         Ok(logits)
+    }
+
+    fn logits_batch(
+        &mut self,
+        sequences: &[engine::Sequence],
+        batch: &mut Batch,
+    ) -> Result<Vec<Vec<f32>>> {
+        // 含注意力块的链整批 K/V 搬运尚未接线：回退逐条前向，保持与单条路径等价。
+        if self.assembly.blocks.is_empty() {
+            self.batch_forward(sequences)
+        } else {
+            sequences.iter().map(|sequence| self.logits(sequence, batch)).collect()
+        }
     }
 }

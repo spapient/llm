@@ -185,7 +185,10 @@ impl<'a> NodeSink<'a> {
         let weight_id = self.slots.weight()?;
         let mut node = Node::new(
             operator.to_string(),
-            Launch::new([1, 1, 1], [linear.out_features() as u32, linear.in_features() as u32, 1]),
+            Launch::new(
+                [1, 1, 1],
+                [linear.out_features() as u32, linear.in_features() as u32, 1],
+            ),
         );
         node.bind_input(input);
         node.bind_input(weight_id);
