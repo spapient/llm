@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -74,11 +75,13 @@ fn relative_strips_the_base_prefix() {
     assert_eq!(relative(base, &path), "ops/add.toml");
 }
 
-/// 以纳秒时间戳命名的唯一临时目录，避免并行测试撞名。
+/// 临时目录：进程号 + 原子序号 + 纳秒，避免同纳秒内并行用例撞名。
 fn temp_dir() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("buildgen-{nanos}"))
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("buildgen-{}-{seq}-{nanos}", std::process::id()))
 }
