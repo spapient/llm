@@ -100,7 +100,6 @@ impl CpuModel {
         for block in &self.assembly.blocks {
             let kv = block.kv_width;
             let head_dim = block.head_dim;
-            let heads = kv / head_dim;
             let len = hist * kv;
             // 用占位空 Vec 换出旧历史块，填好后再绑回执行器。
             let mut hist_k = self
@@ -126,7 +125,7 @@ impl CpuModel {
                     )
                     .with(SITE));
                 }
-                reorder_history_row(&mut hist_k, &mut hist_v, row, kv, head_dim, heads, hist, token);
+                reorder_history_row(&mut hist_k, &mut hist_v, row, kv, head_dim, hist, token);
             }
             self.executor.bind(block.hist_k, hist_k);
             self.executor.bind(block.hist_v, hist_v);
@@ -148,6 +147,27 @@ impl CpuModel {
             batch.write_kv(id, position, &row)?;
         }
         Ok(())
+    }
+}
+
+/// 把一行页行 `[k(head,d) | v(head,d)]` 按头优先块 `[head, token, d]` 写进历史缓冲；
+/// heads=1 时排列与行优先一致。页行到块的重排是布局搬运，头段整块 `copy_from_slice`。
+fn reorder_history_row(
+    hist_k: &mut [f32],
+    hist_v: &mut [f32],
+    row: &[f32],
+    kv: usize,
+    head_dim: usize,
+    hist: usize,
+    token: usize,
+) {
+    let heads = kv / head_dim;
+    let (k, v) = row.split_at(kv);
+    for head in 0..heads {
+        let seg = head * head_dim;
+        let start = head * hist * head_dim + token * head_dim;
+        hist_k[start..start + head_dim].copy_from_slice(&k[seg..seg + head_dim]);
+        hist_v[start..start + head_dim].copy_from_slice(&v[seg..seg + head_dim]);
     }
 }
 
