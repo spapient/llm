@@ -276,7 +276,8 @@ fn value(given: Option<&String>, flag: &str) -> Result<String> {
 }
 
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, format!("{}\n{USAGE}", message.into())).with("cli::cutile_command::parse")
+    Error::new(Code::Invalid, format!("{}\n{USAGE}", message.into()))
+        .with("cli::cutile_command::parse")
 }
 
 #[cfg(test)]

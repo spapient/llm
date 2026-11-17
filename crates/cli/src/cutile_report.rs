@@ -8,8 +8,8 @@ use cutile::bench::{Bench, Peak, Performance, Verdict};
 use cutile::cap::VariantCheck;
 use cutile::doctor::{Built, CacheState, CacheWhy, Doctor};
 use cutile::emit::Fragment;
-use cutile::prof::Profile;
 use cutile::ledger::{BackendRow, LedgerCell, Status};
+use cutile::prof::Profile;
 use cutile::verify::{Negotiation, Verified, VerifyReport};
 use tool::Report;
 

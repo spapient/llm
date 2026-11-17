@@ -869,6 +869,109 @@ fn shape_json(shape: &[usize]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+/// 归档 JSON 字段的标量取值：字符串加引号、整数按整数约定直出，`Raw` 是预渲染的 JSON 片段。
+#[derive(Clone)]
+enum Field {
+    Str(String),
+    Int(i64),
+    Raw(String),
+}
+
+impl Field {
+    /// 渲染成 JSON 右值（不含键名）。
+    fn render(&self) -> String {
+        match self {
+            Field::Str(value) => format!("\"{value}\""),
+            Field::Int(value) => value.to_string(),
+            Field::Raw(value) => value.clone(),
+        }
+    }
+}
+
+/// 一份归档报告从记录侧取齐的公共取值：身份 / 几何 / 主机档案与实测。
+///
+/// 装载与模型两组报告共用这一层；各自独有的账目字段（字节吞吐 / tokens、页数）留在各自
+/// 报告里，不进记录也不进这里。
+struct ReportRecord<'a> {
+    name: &'a str,
+    kind: &'a str,
+    backend: &'a str,
+    shape: String,
+    batch: u32,
+    dtype: &'a str,
+    observed: f64,
+    host: &'a str,
+    cpu: &'a str,
+    os: &'a str,
+    toolchain: &'a str,
+    arch: &'a str,
+}
+
+impl<'a> ReportRecord<'a> {
+    /// 从回填过实测的记录上一次取齐公共字段。
+    fn from(record: &'a BenchRecord) -> Self {
+        let geometry = record.geometry();
+        let harness = record.harness();
+        Self {
+            name: record.name(),
+            kind: record.kind().as_str(),
+            backend: record.backend(),
+            shape: shape_json(geometry.shape()),
+            batch: geometry.batch(),
+            dtype: geometry.dtype(),
+            observed: record.observed().expect("记录已回填实测"),
+            host: harness.host(),
+            cpu: harness.cpu(),
+            os: harness.os(),
+            toolchain: harness.toolchain(),
+            arch: harness.arch(),
+        }
+    }
+}
+
+/// 渲染一份无基线归档 JSON：公共身份 / 几何 / 主机字段 + 两组各自的账目字段。
+///
+/// `front` 插在 `dtype` 之后（每迭代账目），`tail` 插在 `observed_ns` 之后（派生速率）；
+/// 键序沿用既有报告书写顺序，解析器按键名读回，不依赖顺序。
+fn report_json(
+    group: &str,
+    benchmark: &str,
+    meta: &ReportRecord,
+    front: &[(&str, Field)],
+    tail: &[(&str, Field)],
+) -> String {
+    let mut fields: Vec<(&str, Field)> = Vec::new();
+    fields.push(("surface", Field::Str(group.to_string())));
+    fields.push(("benchmark", Field::Str(benchmark.to_string())));
+    fields.push(("scenario", Field::Str(meta.name.to_string())));
+    fields.push(("kind", Field::Str(meta.kind.to_string())));
+    fields.push(("backend", Field::Str(meta.backend.to_string())));
+    fields.push(("shape", Field::Raw(meta.shape.clone())));
+    fields.push(("batch", Field::Int(meta.batch as i64)));
+    fields.push(("dtype", Field::Str(meta.dtype.to_string())));
+    for (key, value) in front {
+        fields.push((key, value.clone()));
+    }
+    fields.push(("metric", Field::Str("ns_per_iter".to_string())));
+    fields.push(("observed_ns", Field::Int(meta.observed.round() as i64)));
+    for (key, value) in tail {
+        fields.push((key, value.clone()));
+    }
+    fields.push(("host", Field::Str(meta.host.to_string())));
+    fields.push(("cpu", Field::Str(meta.cpu.to_string())));
+    fields.push(("os", Field::Str(meta.os.to_string())));
+    fields.push(("toolchain", Field::Str(meta.toolchain.to_string())));
+    fields.push(("arch", Field::Str(meta.arch.to_string())));
+    fields.push(("profile", Field::Str("bench".to_string())));
+
+    let inner = fields
+        .iter()
+        .map(|(key, value)| format!("  \"{key}\": {}", value.render()))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("{{\n{inner}\n}}\n")
+}
+
 impl Report<'_> {
     /// 渲染成整数数值的 JSON（见模块文档最后一段）。
     fn render(&self) -> String {

@@ -44,6 +44,61 @@ fn two_layer_fixture() -> (Tape, Sizes, Var, Var, Var, Var, Var, Var, Var) {
     (tape, sizes, w_source, w_tied, u, x, h, t, loss)
 }
 
+/// 装配一个裸会话：优化器用默认 SGD，配置由用例给定。
+fn open_session(tape: Tape, sizes: Sizes, config: TrainConfig) -> Session<Reference, Sgd> {
+    Session::new(tape, sizes, Reference, Sgd::new(), config).expect("会话")
+}
+
+/// 接收一批 token、装输入、前向到终点并登记计划；批形状固定 1 × N。
+fn forward_fixture(
+    session: &mut Session<Reference, Sgd>,
+    tokens: &[u32],
+    op_inputs: &[Var],
+    x: Var,
+    loss: Var,
+) -> Result<()> {
+    session.accept_batch(1, N, tokens.len())?;
+    let inputs: Vec<f32> = tokens.iter().map(|token| *token as f32 * 0.1).collect();
+    session.buffers().load(x, Data::F32(inputs))?;
+    session.buffers().compute("add_f32", op_inputs, loss)?;
+    session.plan(loss)?;
+    Ok(())
+}
+
+/// 登记两层夹具的三个参数并绑定源/回填槽；初值沿用夹具口径。
+fn register_two_layer(
+    session: &mut Session<Reference, Sgd>,
+    w_source: Var,
+    w_tied: Var,
+    u: Var,
+) -> Result<()> {
+    session.register_parameter(w_source, ParamRole::Trainable, vec![1.0; N])?;
+    session.register_parameter(w_tied, ParamRole::Trainable, vec![0.0; N])?;
+    session.register_parameter(u, ParamRole::Trainable, vec![2.0; N])?;
+    session.register_tie(w_source, w_tied)?;
+    Ok(())
+}
+
+/// 两层夹具前向：常量输入 → 第一层 → 第二层 → 未绑定参数终点，并登记计划终点。
+#[allow(clippy::too_many_arguments)]
+fn forward_two_layer(
+    session: &mut Session<Reference, Sgd>,
+    x: Var,
+    w_source: Var,
+    h: Var,
+    w_tied: Var,
+    t: Var,
+    u: Var,
+    loss: Var,
+) -> Result<()> {
+    session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+    session.buffers().compute("add_f32", &[x, w_source], h)?;
+    session.buffers().compute("add_f32", &[h, w_tied], t)?;
+    session.buffers().compute("add_f32", &[t, u], loss)?;
+    session.plan(loss)?;
+    Ok(())
+}
+
 /// 夹具语料按批跑通指定步数：前向 → 计划分类终点 → 梯度缓冲 → 优化器步，loss 逐步入账。
 #[test]
 fn a_fixture_dataset_runs_the_declared_steps() {
@@ -51,30 +106,14 @@ fn a_fixture_dataset_runs_the_declared_steps() {
     let tokens: Vec<u32> = (0..12).collect();
     let mut chunks = Chunks::new(&tokens, 1, N).expect("批 1 x 4");
     let config = TrainConfig::new(1e-2, 0, 3, None, 1).expect("配置合法");
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config).expect("会话");
+    let mut session = open_session(tape, sizes, config);
     session
         .register_parameter(p, ParamRole::Trainable, vec![1.0; N])
         .expect("登记参数");
 
     let mut steps = 0;
     while let Some(batch) = chunks.next_batch() {
-        session
-            .accept_batch(batch.rows(), batch.cols(), batch.tokens().len())
-            .expect("批形状往返一致");
-        let inputs: Vec<f32> = batch
-            .tokens()
-            .iter()
-            .map(|token| *token as f32 * 0.1)
-            .collect();
-        session
-            .buffers()
-            .load(x, Data::F32(inputs))
-            .expect("装载输入");
-        session
-            .buffers()
-            .compute("add_f32", &[p, x], loss)
-            .expect("前向可算");
-        session.plan(loss).expect("参数可达");
+        forward_fixture(&mut session, batch.tokens(), &[p, x], x, loss).expect("前向");
         session.record_loss(loss).expect("loss 在场");
         session.zero_gradients();
         session.load_gradient(p, &[1.0; N]).expect("梯度就位");
@@ -96,30 +135,14 @@ fn gradients_accumulate_over_the_window_before_one_step() {
     let tokens: Vec<u32> = (0..8).collect();
     let mut chunks = Chunks::new(&tokens, 1, N).expect("批 1 x 4");
     let config = TrainConfig::new(1e-1, 0, 2, None, 2).expect("累积窗口 2");
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config).expect("会话");
+    let mut session = open_session(tape, sizes, config);
     session
         .register_parameter(p, ParamRole::Trainable, vec![1.0; N])
         .expect("登记参数");
 
     // 第一批：梯度 1.0/元素累加进窗口；未满 2，参数不动。
     let batch = chunks.next_batch().expect("第一批");
-    session
-        .accept_batch(batch.rows(), batch.cols(), batch.tokens().len())
-        .expect("批形状往返一致");
-    let inputs: Vec<f32> = batch
-        .tokens()
-        .iter()
-        .map(|token| *token as f32 * 0.1)
-        .collect();
-    session
-        .buffers()
-        .load(x, Data::F32(inputs))
-        .expect("装载输入");
-    session
-        .buffers()
-        .compute("add_f32", &[p, x], loss)
-        .expect("前向可算");
-    session.plan(loss).expect("参数可达");
+    forward_fixture(&mut session, batch.tokens(), &[p, x], x, loss).expect("前向");
     session
         .accumulate_gradient(p, &[1.0; N])
         .expect("累加第一批");
@@ -129,23 +152,7 @@ fn gradients_accumulate_over_the_window_before_one_step() {
 
     // 第二批：再累加 1.0，汇总梯度 2.0/元素；窗口满，步进一次。
     let batch = chunks.next_batch().expect("第二批");
-    session
-        .accept_batch(batch.rows(), batch.cols(), batch.tokens().len())
-        .expect("批形状往返一致");
-    let inputs: Vec<f32> = batch
-        .tokens()
-        .iter()
-        .map(|token| *token as f32 * 0.1)
-        .collect();
-    session
-        .buffers()
-        .load(x, Data::F32(inputs))
-        .expect("装载输入");
-    session
-        .buffers()
-        .compute("add_f32", &[p, x], loss)
-        .expect("前向可算");
-    session.plan(loss).expect("参数可达");
+    forward_fixture(&mut session, batch.tokens(), &[p, x], x, loss).expect("前向");
     session
         .accumulate_gradient(p, &[1.0; N])
         .expect("累加第二批");
@@ -187,19 +194,12 @@ fn tied_parameter_copies_source_on_backfill() -> Result<()> {
 fn tied_parameter_copies_source_across_a_two_layer_fixture() -> Result<()> {
     let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
     let config = TrainConfig::new(1e-2, 0, 2, None, 1)?;
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
-    session.register_parameter(w_source, ParamRole::Trainable, vec![1.0; N])?;
-    session.register_parameter(w_tied, ParamRole::Trainable, vec![0.0; N])?;
-    session.register_parameter(u, ParamRole::Trainable, vec![2.0; N])?;
-    session.register_tie(w_source, w_tied)?;
+    let mut session = open_session(tape, sizes, config);
+    register_two_layer(&mut session, w_source, w_tied, u)?;
 
     // 两个 micro-batch 各走一步：源/回填槽按自身梯度分化，u 梯度为 0 保持不动。
     for (source_grad, tied_grad) in [(1.0_f32, 2.0_f32), (0.5, 2.0)] {
-        session.buffers().load(x, Data::F32(vec![0.1; N]))?;
-        session.buffers().compute("add_f32", &[x, w_source], h)?;
-        session.buffers().compute("add_f32", &[h, w_tied], t)?;
-        session.buffers().compute("add_f32", &[t, u], loss)?;
-        session.plan(loss)?;
+        forward_two_layer(&mut session, x, w_source, h, w_tied, t, u, loss)?;
         session.accumulate_gradient(w_source, &[source_grad; N])?;
         session.accumulate_gradient(w_tied, &[tied_grad; N])?;
         session.accumulate_gradient(u, &[0.0; N])?;
@@ -228,21 +228,14 @@ fn tied_parameter_copies_source_across_a_two_layer_fixture() -> Result<()> {
 fn session_window_state_round_trips_through_snapshot() -> Result<()> {
     let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
     let config = TrainConfig::new(1e-2, 0, 4, None, 4)?;
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
-    session.register_parameter(w_source, ParamRole::Trainable, vec![1.0; N])?;
-    session.register_parameter(w_tied, ParamRole::Trainable, vec![0.0; N])?;
-    session.register_parameter(u, ParamRole::Trainable, vec![2.0; N])?;
-    session.register_tie(w_source, w_tied)?;
+    let mut session = open_session(tape, sizes, config);
+    register_two_layer(&mut session, w_source, w_tied, u)?;
 
     // 三个 micro-batch 累积进同一窗口（窗口 4，未满不步进）。
     let source_batches = [1.0_f32, 0.5, 0.25];
     let tied_batches = [2.0_f32, 1.0, 0.5];
     for batch in 0..3 {
-        session.buffers().load(x, Data::F32(vec![0.1; N]))?;
-        session.buffers().compute("add_f32", &[x, w_source], h)?;
-        session.buffers().compute("add_f32", &[h, w_tied], t)?;
-        session.buffers().compute("add_f32", &[t, u], loss)?;
-        session.plan(loss)?;
+        forward_two_layer(&mut session, x, w_source, h, w_tied, t, u, loss)?;
         session.accumulate_gradient(w_source, &[source_batches[batch]; N])?;
         session.accumulate_gradient(w_tied, &[tied_batches[batch]; N])?;
         session.accumulate_gradient(u, &[0.0; N])?;

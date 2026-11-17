@@ -63,6 +63,52 @@ fn assert_close(produced: &[f32], reference: &[f32]) {
     );
 }
 
+/// 参数表：按名驻留整块 f32 条目；无条目时传空切片。
+fn params_of(entries: &[(&str, Vec<f32>)]) -> Params {
+    let mut params = Params::new();
+    for (name, values) in entries {
+        params.insert(*name, values.clone());
+    }
+    params
+}
+
+/// 装配一份栈与参数表；对拍路径上装配失败即测试失败。
+fn assemble(stack: Stack, params: Params) -> CpuModel {
+    CpuModel::new(&stack, &params).expect("装配")
+}
+
+/// 装配后跑张量级前向并与参考对拍；输出长度与参考向量对齐核对。
+fn forward_close(stack: Stack, params: Params, input: &[f32], reference: &[f32]) {
+    let mut model = assemble(stack, params);
+    assert_eq!(model.output_len(), reference.len());
+    let produced = model.forward(input).expect("前向");
+    assert_close(&produced, reference);
+}
+
+/// 装配必须被既有错误路径拒绝，并核对诊断码；不 panic、不静默跳过。
+fn rejected_at_assembly(stack: Stack, params: Params, expected: Code) {
+    let error = CpuModel::new(&stack, &params).expect_err("装配必须拒绝");
+    assert_eq!(error.code(), expected);
+}
+
+/// 种子历史页行：`[k | v]` 按行宽拼回一条历史行。
+fn history_row(hist_k: &[f32], hist_v: &[f32]) -> Vec<f32> {
+    let mut row = Vec::with_capacity(hist_k.len() + hist_v.len());
+    row.extend_from_slice(hist_k);
+    row.extend_from_slice(hist_v);
+    row
+}
+
+/// 一条带一行种子历史的 decode 批：页池 4 页、行宽 `2·kv`，序列位 2。
+fn decode_batch(kv: usize, history: &[f32]) -> (Batch, Sequence) {
+    let pager = Pager::new(Cache::new(4, 4).expect("页池"), 2 * kv).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let sequence = Sequence::new(0, &[2u32], 2, 4, Stream::new(0)).expect("序列");
+    batch.admit(sequence.clone()).expect("准入");
+    batch.write_kv(0, 0, history).expect("种子历史");
+    (batch, sequence)
+}
+
 /// 归档条目：名、形状 `[out, in]`、dtype 名与原始字节段。
 struct ArchiveEntry {
     name: &'static str,
@@ -416,15 +462,12 @@ fn a_two_layer_chain_forward_matches_the_reference() {
         Linear::with_format("blk.1", WeightFormat::F32, 2, 2).expect("层"),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", w1.to_vec());
-    params.insert("blk.1.weight", w2.to_vec());
+    let params = params_of(&[
+        ("blk.0.weight", w1.to_vec()),
+        ("blk.1.weight", w2.to_vec()),
+    ]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
-    assert_eq!(model.output_len(), 2);
-    let produced = model.forward(&x).expect("前向");
-
-    assert_close(&produced, &reference);
+    forward_close(stack, params, &x, &reference);
 }
 
 /// 描述表把编号映射回条目名与声明形状；激活缓冲没有条目名，形状只记单轴长度（D10 / ADR 0044）。
@@ -435,10 +478,11 @@ fn descriptors_map_ids_back_to_entries_and_shapes() {
         Linear::with_format("blk.1", WeightFormat::F32, 2, 2).expect("层"),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 6]);
-    params.insert("blk.1.weight", vec![0.0; 4]);
-    let model = CpuModel::new(&stack, &params).expect("装配");
+    let params = params_of(&[
+        ("blk.0.weight", vec![0.0; 6]),
+        ("blk.1.weight", vec![0.0; 4]),
+    ]);
+    let model = assemble(stack, params);
 
     let descriptors = model.descriptors();
     let weight = |entry: &str| {
@@ -465,11 +509,9 @@ fn a_weight_length_mismatch_is_rejected_at_assembly() {
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 5]); // 需要 3×2 = 6
+    let params = params_of(&[("blk.0.weight", vec![0.0; 5])]); // 需要 3×2 = 6
 
-    let error = CpuModel::new(&stack, &params).expect_err("长度不符必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, params, Code::Invalid);
 }
 
 /// 参数表缺条目：装配期按名报 `Missing`。
@@ -480,19 +522,16 @@ fn a_missing_weight_is_rejected_at_assembly() {
     ])
     .expect("栈");
 
-    let error = CpuModel::new(&stack, &Params::new()).expect_err("缺权重必须拒绝");
-    assert_eq!(error.code(), Code::Missing);
+    rejected_at_assembly(stack, Params::new(), Code::Missing);
 }
 
 /// 非 F32 编码（默认 int4）：P1 只接稠密浮点，装配期报 `Unsupported`。
 #[test]
 fn a_non_f32_layer_is_rejected_at_assembly() {
     let stack = Stack::new(vec![Linear::new("blk.0", 3, 2).expect("层")]).expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 6]);
+    let params = params_of(&[("blk.0.weight", vec![0.0; 6])]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("非 F32 必须拒绝");
-    assert_eq!(error.code(), Code::Unsupported);
+    rejected_at_assembly(stack, params, Code::Unsupported);
 }
 
 /// 层间宽度链断裂：上一层输出宽度对不上本层输入宽度，装配期报 `Invalid`。
@@ -503,12 +542,12 @@ fn a_width_chain_break_is_rejected_at_assembly() {
         Linear::with_format("blk.1", WeightFormat::F32, 3, 2).expect("层"),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 6]);
-    params.insert("blk.1.weight", vec![0.0; 6]);
+    let params = params_of(&[
+        ("blk.0.weight", vec![0.0; 6]),
+        ("blk.1.weight", vec![0.0; 6]),
+    ]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("宽度链断裂必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, params, Code::Invalid);
 }
 
 /// 内存归档装载：头部推出层栈、Loader 取出条目字节、解码进驻留表，装配后 forward 与串行参考对拍。
@@ -543,7 +582,7 @@ fn entries_from_an_in_memory_archive_load_into_params() {
     let archive = Archive::parse(&bytes).expect("归档合法");
     let stack = Stack::from_header(archive.header()).expect("层栈");
     let params = Params::from_stack(&stack, archive.header(), &archive).expect("装载");
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let mut model = assemble(stack, params);
     let produced = model.forward(&x).expect("前向");
 
     assert_close(&produced, &reference);
@@ -582,14 +621,9 @@ fn a_projection_then_unary_activation_matches_the_reference() {
         Box::new(Silu::new("act", 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", w1.to_vec());
+    let params = params_of(&[("blk.0.weight", w1.to_vec())]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
-    assert_eq!(model.output_len(), 2);
-    let produced = model.forward(&x).expect("前向");
-
-    assert_close(&produced, &reference);
+    forward_close(stack, params, &x, &reference);
 }
 
 /// 投影后接归一化：gamma 作为驻留权重整块装配，参考路径串行 `gemv → rmsnorm` 重算。
@@ -612,15 +646,12 @@ fn a_projection_then_rmsnorm_matches_the_reference() {
         Box::new(RmsNorm::new("norm.0", 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", w1.to_vec());
-    params.insert("norm.0.weight", gamma.to_vec());
+    let params = params_of(&[
+        ("blk.0.weight", w1.to_vec()),
+        ("norm.0.weight", gamma.to_vec()),
+    ]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
-    assert_eq!(model.output_len(), 2);
-    let produced = model.forward(&x).expect("前向");
-
-    assert_close(&produced, &reference);
+    forward_close(stack, params, &x, &reference);
 }
 
 /// 一元层宽度与上一层输出不等长：装配期报 `Invalid`。
@@ -631,11 +662,9 @@ fn a_unary_width_chain_break_is_rejected_at_assembly() {
         Box::new(Silu::new("act", 3).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 6]);
+    let params = params_of(&[("blk.0.weight", vec![0.0; 6])]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("宽度链断裂必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, params, Code::Invalid);
 }
 
 /// 归一化缺驻留 gamma：装配期按名报 `Missing`。
@@ -646,11 +675,9 @@ fn a_missing_rmsnorm_gamma_is_reported_at_assembly() {
         Box::new(RmsNorm::new("norm.0", 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 6]);
+    let params = params_of(&[("blk.0.weight", vec![0.0; 6])]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("缺 gamma 必须拒绝");
-    assert_eq!(error.code(), Code::Missing);
+    rejected_at_assembly(stack, params, Code::Missing);
 }
 
 /// 逐元素二元层：主链输入 + 旁路激活两路接线，参考路径对旁路持有张量逐元素相加。
@@ -672,14 +699,9 @@ fn a_binary_layer_takes_a_bypass_activation_matches_the_reference() {
         Box::new(Add::new("res", 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", w1.to_vec());
+    let params = params_of(&[("blk.0.weight", w1.to_vec())]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
-    assert_eq!(model.output_len(), 2);
-    let produced = model.forward(&x).expect("前向");
-
-    assert_close(&produced, &reference);
+    forward_close(stack, params, &x, &reference);
 }
 
 /// 逐元素乘法同族接线：参考路径对旁路持有张量逐元素相乘。
@@ -701,21 +723,16 @@ fn a_binary_mul_layer_takes_a_bypass_activation_matches_the_reference() {
         Box::new(Mul::new("gate", 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", w1.to_vec());
+    let params = params_of(&[("blk.0.weight", w1.to_vec())]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
-    let produced = model.forward(&x).expect("前向");
-
-    assert_close(&produced, &reference);
+    forward_close(stack, params, &x, &reference);
 }
 
 /// 二元层前面没有可借用的旁路激活（首层即二元）：装配期报 `Invalid`，不静默走单输入。
 #[test]
 fn a_binary_layer_without_a_bypass_activation_is_rejected_at_assembly() {
     let stack = Stack::of(vec![Box::new(Add::new("res", 2).expect("层"))]).expect("栈");
-    let error = CpuModel::new(&stack, &Params::new()).expect_err("无旁路必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, Params::new(), Code::Invalid);
 }
 
 /// 非 F32 条目不在装载期解包；参数表留空，装配期按格式报 `Unsupported`。
@@ -732,8 +749,7 @@ fn a_non_f32_entry_is_skipped_and_rejected_at_assembly() {
     let params = Params::from_stack(&stack, archive.header(), &archive).expect("装载");
     assert!(params.is_empty());
 
-    let error = CpuModel::new(&stack, &params).expect_err("非 F32 必须拒绝");
-    assert_eq!(error.code(), Code::Unsupported);
+    rejected_at_assembly(stack, params, Code::Unsupported);
 }
 
 /// 查表行：行 `k` 的第 `d` 维为 `k + d·0.1`，便于逐行核对 gather 取的是整行。
@@ -761,14 +777,9 @@ fn an_embedding_single_step_matches_the_reference() {
         Embedding::new("tok_emb", vocab, dim, 1).expect("层"),
     )])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", table.clone());
+    let params = params_of(&[("tok_emb.weight", table.clone())]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
-    assert_eq!(model.output_len(), dim);
-    let produced = model.forward(&idx).expect("前向");
-
-    assert_close(&produced, &reference);
+    forward_close(stack, params, &idx, &reference);
 }
 
 /// 查表后接投影：嵌入行向量作为投影输入，参考路径串行 `embed → gemv` 重算。
@@ -793,15 +804,12 @@ fn an_embedding_then_projection_matches_the_reference() {
         Box::new(Linear::with_format("proj", WeightFormat::F32, dim, 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", table.clone());
-    params.insert("proj.weight", w.to_vec());
+    let params = params_of(&[
+        ("tok_emb.weight", table.clone()),
+        ("proj.weight", w.to_vec()),
+    ]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
-    assert_eq!(model.output_len(), 2);
-    let produced = model.forward(&idx).expect("前向");
-
-    assert_close(&produced, &reference);
+    forward_close(stack, params, &idx, &reference);
 }
 
 /// 查表缺驻留词表：装配期按名报 `Missing`。
@@ -812,8 +820,7 @@ fn a_missing_embedding_table_is_reported_at_assembly() {
     )])
     .expect("栈");
 
-    let error = CpuModel::new(&stack, &Params::new()).expect_err("缺词表必须拒绝");
-    assert_eq!(error.code(), Code::Missing);
+    rejected_at_assembly(stack, Params::new(), Code::Missing);
 }
 
 /// 词表元素数与 `vocab × dim` 不符：装配期报 `Invalid`。
@@ -823,11 +830,9 @@ fn an_embedding_table_length_mismatch_is_rejected_at_assembly() {
         Embedding::new("tok_emb", 8, 4, 1).expect("层"),
     )])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", vec![0.0; 8 * 4 - 1]);
+    let params = params_of(&[("tok_emb.weight", vec![0.0; 8 * 4 - 1])]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("表长不符必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, params, Code::Invalid);
 }
 
 /// 多 token 查表需要矩阵主链通路，当前向量主链按 `Unsupported` 拒绝，留连续批刀落地。
@@ -837,11 +842,9 @@ fn a_multi_token_embedding_is_not_assembled_yet() {
         Embedding::new("tok_emb", 8, 4, 3).expect("层"),
     )])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", embed_table(8, 4));
+    let params = params_of(&[("tok_emb.weight", embed_table(8, 4))]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("多 token 矩阵通路留后续");
-    assert_eq!(error.code(), Code::Unsupported);
+    rejected_at_assembly(stack, params, Code::Unsupported);
 }
 
 /// Predict 一步前向：序列末位 token 折成索引，查表→投影主链对拍张量级 forward。
@@ -857,11 +860,12 @@ fn predict_logits_from_an_embedding_sequence_match_the_reference() {
         Box::new(Linear::with_format("proj", WeightFormat::F32, dim, 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", table.clone());
-    params.insert("proj.weight", w.to_vec());
+    let params = params_of(&[
+        ("tok_emb.weight", table.clone()),
+        ("proj.weight", w.to_vec()),
+    ]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let mut model = assemble(stack, params);
     let mut batch = plain_batch();
     let produced = model.logits(&sequence, &mut batch).expect("一步前向");
     let reference = model.forward(&[2.0]).expect("张量级参考");
@@ -876,10 +880,9 @@ fn predict_with_a_projection_first_layer_is_not_assembled_yet() {
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 6]);
+    let params = params_of(&[("blk.0.weight", vec![0.0; 6])]);
 
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let mut model = assemble(stack, params);
     let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
     let mut batch = plain_batch();
     let error = model

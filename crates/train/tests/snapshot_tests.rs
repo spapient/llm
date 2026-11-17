@@ -1,11 +1,55 @@
 //! `snapshot` 的测试：往返、截断、篡改与"长度即承诺"的逐条对拍。
 
 use super::*;
+use std::path::Path;
 use tensor::Shape;
 use weights::Entry;
 
 fn facts() -> Facts {
     Facts::new(7, 2, 2, 3, 3).expect("恢复事实")
+}
+
+/// 空权重头部（快照侧对拍常用）。
+fn empty_header() -> Header {
+    Header::new(Vec::new(), 0).expect("空头部")
+}
+
+/// 累积梯度逐槽位级对拍：f32 经小端往返不能只差一位。
+fn assert_accum_bits(snapshot: &Snapshot, restored: &Snapshot) {
+    let before = snapshot.accum().slots();
+    let after = restored.accum().slots();
+    assert_eq!(before.len(), after.len(), "槽位数必须一致");
+    for (index, (want, got)) in before.iter().zip(after).enumerate() {
+        let want_bits: Vec<u32> = want.iter().map(|value| value.to_bits()).collect();
+        let got_bits: Vec<u32> = got.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(got_bits, want_bits, "第 {index} 槽累积梯度逐位一致");
+    }
+}
+
+/// 目录下的文件名清单（写盘后"不留残骸"对账用）。
+fn dir_entry_names(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .expect("目录")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// 写盘后对账：文件长度 = 承诺长度、读回逐对象相等，返回目录文件名清单供残骸断言。
+fn assert_written_snapshot(dir: &Path, path: &Path, snapshot: &Snapshot) -> Vec<String> {
+    let meta = std::fs::metadata(path).expect("文件存在");
+    assert_eq!(
+        meta.len() as usize,
+        snapshot.encoded_len().expect("长度")
+    );
+    assert_eq!(Snapshot::read(path).expect("读"), snapshot);
+    dir_entry_names(dir)
+}
+
+/// 手改样本里的重名条目必须被条目表校验拦下。
+fn reject_duplicate_name(bytes: Vec<u8>) {
+    let error = Snapshot::decode(&bytes).expect_err("重名");
+    assert!(error.to_string().contains("重复"), "{error}");
 }
 
 fn snapshot() -> Snapshot {
@@ -108,7 +152,7 @@ fn optimizer_moments_round_trip_bit_for_bit() {
     let moments = Moments::new(slots, 7);
     let snapshot = Snapshot::new_with_moments(
         facts(),
-        Header::new(Vec::new(), 0).expect("空头部"),
+        empty_header(),
         moments,
     );
     let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
@@ -134,7 +178,7 @@ fn accumulated_gradients_round_trip_bit_for_bit() {
     let accum = GradAccum::new(vec![vec![0.5, -0.25], vec![1.5]], 2);
     let snapshot = Snapshot::new_with_state(
         facts(),
-        Header::new(Vec::new(), 0).expect("空头部"),
+        empty_header(),
         Moments::empty(),
         accum,
     );
@@ -142,14 +186,7 @@ fn accumulated_gradients_round_trip_bit_for_bit() {
 
     let got = restored.accum();
     assert_eq!(got.count(), 2, "窗口批数必须恢复");
-    let before = snapshot.accum().slots();
-    let after = got.slots();
-    assert_eq!(before.len(), after.len(), "槽位数必须一致");
-    for (index, (want, got)) in before.iter().zip(after).enumerate() {
-        let want_bits: Vec<u32> = want.iter().map(|value| value.to_bits()).collect();
-        let got_bits: Vec<u32> = got.iter().map(|value| value.to_bits()).collect();
-        assert_eq!(got_bits, want_bits, "第 {index} 槽累积梯度逐位一致");
-    }
+    assert_accum_bits(&snapshot, &restored);
 }
 
 /// 窗口内多次 micro-batch 累加后的梯度总和、批数与绑定表一起往返：逐位对梯度、逐对对绑定。
@@ -160,7 +197,7 @@ fn accumulated_window_sums_count_and_ties_round_trip_bit_for_bit() {
     let ties = Ties::new(vec![(0, 1)]);
     let snapshot = Snapshot::new_with_all(
         facts(),
-        Header::new(Vec::new(), 0).expect("空头部"),
+        empty_header(),
         Moments::empty(),
         accum,
         ties,
@@ -169,14 +206,7 @@ fn accumulated_window_sums_count_and_ties_round_trip_bit_for_bit() {
 
     let got = restored.accum();
     assert_eq!(got.count(), 3, "窗口批数必须恢复");
-    let before = snapshot.accum().slots();
-    let after = got.slots();
-    assert_eq!(before.len(), after.len(), "槽位数必须一致");
-    for (index, (want, got)) in before.iter().zip(after).enumerate() {
-        let want_bits: Vec<u32> = want.iter().map(|value| value.to_bits()).collect();
-        let got_bits: Vec<u32> = got.iter().map(|value| value.to_bits()).collect();
-        assert_eq!(got_bits, want_bits, "第 {index} 槽累积梯度逐位一致");
-    }
+    assert_accum_bits(&snapshot, &restored);
     assert_eq!(
         restored.ties().pairs(),
         snapshot.ties().pairs(),
@@ -190,7 +220,7 @@ fn tie_bindings_round_trip_pair_for_pair() {
     let ties = Ties::new(vec![(0, 2), (1, 3)]);
     let snapshot = Snapshot::new_with_all(
         facts(),
-        Header::new(Vec::new(), 0).expect("空头部"),
+        empty_header(),
         Moments::empty(),
         GradAccum::empty(),
         ties,
@@ -204,7 +234,7 @@ fn tie_bindings_round_trip_pair_for_pair() {
 fn an_empty_accumulation_window_round_trips_without_state() {
     let snapshot = Snapshot::new_with_state(
         facts(),
-        Header::new(Vec::new(), 0).expect("空头部"),
+        empty_header(),
         Moments::empty(),
         GradAccum::empty(),
     );
@@ -240,7 +270,7 @@ fn the_length_promise_holds_at_every_varint_boundary() {
 
 #[test]
 fn a_snapshot_without_entries_still_round_trips() {
-    let header = Header::new(Vec::new(), 0).expect("空头部");
+    let header = empty_header();
     assert_round_trip(&Snapshot::new(facts(), header));
 }
 
