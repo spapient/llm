@@ -6,12 +6,46 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Command-line front end: parse argv and the environment into a typed command and settings, execute nothing."
+description = "Command-line combination root: parse argv and settings, assemble the kernel layers, and expose the `llm` binary."
 publish = false
 autotests = false
 
+[[bin]]
+name = "llm"
+path = "src/main.rs"
+doc = false
+
+# 与 `crates/cutile` 同名：不产出它的文档，否则两者写到同一个 `target/doc/cutile/index.html`（cargo#6313）。
+[[bin]]
+name = "cutile"
+path = "src/bin/cutile.rs"
+doc = false
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+
+[features]
+# 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prim/build.rs`）。
+device-image = ["cutile/device-image"]
+
 [dependencies]
+cutile = { path = "../cutile" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+engine = { path = "../engine", package = "llm-engine" }
+nn = { path = "../nn", package = "llm-nn" }
+op = { path = "../op", package = "llm-op" }
+prim = { path = "../prim", package = "llm-prim" }
+prof = { path = "../prof", package = "llm-prof" }
+serve = { path = "../serve", package = "llm-serve" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
+tool = { path = "../tool", package = "llm-tool" }
+train = { path = "../train", package = "llm-train" }
+weights = { path = "../weights", package = "llm-weights" }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
 
 [lints]
 workspace = true

@@ -30,6 +30,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod cmd;
 pub mod cutile;
 pub mod settings;
 
@@ -268,6 +269,46 @@ fn missing_weights() -> Error {
 /// 一条顶层命令文法的诊断：上下文固定在这一层。
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message.into()).with("cli::Invocation::parse")
+}
+
+/// 命令分派：解析后的命令接到对应编排；输出由各编排函数落到 stdout，
+/// 错误交给二进制入口汇总成退出码。
+pub fn entry(invocation: &Invocation) -> Result<()> {
+    match invocation.command() {
+        Command::Help => {
+            print!("{USAGE}");
+            Ok(())
+        }
+        Command::Status { weights } => cmd::status(weights.as_deref()),
+        Command::Run { weights, input, device } => {
+            cmd::run(weights, input.as_deref(), device.as_deref())
+        }
+        Command::Verify { .. } | Command::Bench { .. } => audit_note(),
+        Command::Train {
+            lr,
+            warmup,
+            steps,
+            clip,
+            accumulation,
+            load,
+        } => cmd::train_run(
+            lr.as_deref(),
+            warmup.as_deref(),
+            steps.as_deref(),
+            clip.as_deref(),
+            accumulation.as_deref(),
+            load.as_deref(),
+        ),
+    }
+}
+
+/// 组装点不复制审计实现：这两个命令由 `cutile` 二进制提供。
+fn audit_note() -> Result<()> {
+    Err(Error::new(
+        Code::Invalid,
+        "该命令当前由 `cutile` 二进制提供（`llm` 只负责组装）",
+    )
+    .with("cli::entry"))
 }
 
 #[cfg(test)]

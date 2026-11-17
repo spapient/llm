@@ -6,10 +6,33 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Test fixtures shared across the workspace: float comparison, device gating, scratch dirs."
+description = "Test fixtures shared across the workspace: float comparison, device gating, scratch dirs, and workspace-level contract gates."
 publish = false
 
 [dependencies]
+
+# 只服务 tests/ 下的跨层对拍与工作区契约门禁；不进夹具库运行时。
+[dev-dependencies]
+autograd = { path = "../autograd", package = "llm-autograd" }
+cutile = { path = "../cutile" }
+nn = { path = "../nn", package = "llm-nn" }
+op = { path = "../op", package = "llm-op" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+tool = { path = "../tool", package = "llm-tool" }
+train = { path = "../train", package = "llm-train" }
+weights = { path = "../weights", package = "llm-weights" }
+
+[[test]]
+name = "cross_layer"
+path = "tests/cross_layer.rs"
+
+[[test]]
+name = "contracts"
+path = "tests/contracts.rs"
+
+[[test]]
+name = "architecture"
+path = "tests/architecture.rs"
 
 [lints]
 workspace = true
