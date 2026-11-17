@@ -16,8 +16,7 @@ fn sound() -> Table {
 }
 
 /// 项目配置：三个阈值来自构建期生成的 `lints/vocabulary.toml`；存量债务只允许挂在入口编排层
-///（旧根入口 `src/`，或迁入后的 `crates/cli/src/cmd/`、`crates/cli/src/bin/`），运行时生产代码
-/// `crates/*/src` 一条都不能有。
+///（`crates/cli/src/` 下的编排与二进制入口），运行时生产代码 `crates/*/src` 一条都不能有。
 #[test]
 fn the_project_config_lists_only_root_entry_legacy_debt() {
     let gate = Gate::load().expect("项目配置合法");
@@ -30,9 +29,7 @@ fn the_project_config_lists_only_root_entry_legacy_debt() {
     );
     for key in gate.debt.keys() {
         assert!(
-            key.starts_with("src/")
-                || key.starts_with("crates/cli/src/cmd/")
-                || key.starts_with("crates/cli/src/bin/"),
+            key.starts_with("crates/cli/src/"),
             "运行时生产代码没有债务条目，存量只能是入口编排既有逻辑：{key}"
         );
     }

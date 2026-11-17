@@ -318,4 +318,3 @@ fn audit_note() -> Result<()> {
     )
     .with("cli::entry"))
 }
-

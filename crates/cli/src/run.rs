@@ -8,11 +8,6 @@ use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
 use tool::Report;
 
-/// 内核只收三个目录：把解析好的设置投影成那份纯数据（`cutile` 不读环境变量，ADR 0023）。
-fn kernel_dirs(settings: &crate::settings::Settings) -> cutile::dirs::Dirs {
-    settings.dirs()
-}
-
 /// 打开权重文件；打开失败把命令帧补到错误链上。
 fn open_file(weights: &str) -> Result<weights::safetensors::File> {
     weights::safetensors::File::open(weights).map_err(|error| error.with("llm run"))
@@ -261,7 +256,7 @@ fn finish(
 /// 配置与档案目录：设置装载失败只补命令帧，目录由设置投影出来。
 fn prepare() -> Result<(cutile::dirs::Dirs, cutile::builtin::Catalogue)> {
     let settings = crate::settings::Settings::load().map_err(|error| error.with("配置"))?;
-    let dirs = kernel_dirs(&settings);
+    let dirs = settings.dirs();
     let catalogue = cutile::builtin::Catalogue::load(&dirs)?;
     Ok((dirs, catalogue))
 }
@@ -422,7 +417,7 @@ mod tests {
         let settings = crate::settings::Settings::load()
             .map_err(|error| error.with("配置"))
             .expect("默认设置");
-        let dirs = kernel_dirs(&settings);
+        let dirs = settings.dirs();
         let catalogue = cutile::builtin::Catalogue::load(&dirs).expect("内置数据");
         let executed =
             cutile::execution::execute(&catalogue, &dirs, nn::Linear::DENSE, "cpu", &sample)

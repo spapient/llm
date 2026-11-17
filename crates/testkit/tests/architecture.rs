@@ -217,12 +217,15 @@ fn every_public_type_is_listed_or_baselined() {
 /// 任何既有断言。类型属于产出它的层，编排入口只分派。
 #[test]
 fn the_entry_point_defines_no_types() {
-    let root = workspace_root().join("crates/cli/src/cmd");
-    let files = rust_files(&root);
+    let cli_src = workspace_root().join("crates/cli/src");
+    let files = ["run.rs", "status.rs", "train.rs"]
+        .iter()
+        .map(|name| cli_src.join(name))
+        .collect::<Vec<_>>();
     assert!(
         !files.is_empty(),
         "组装点的源码必须扫得到：{}",
-        root.display()
+        cli_src.display()
     );
     let mut defined = Vec::new();
     for path in &files {
@@ -371,7 +374,10 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
         );
         paths.extend(files);
     }
-    paths.extend(rust_files(&workspace_root().join("crates/cli/src/bin")));
+    let cli_src = workspace_root().join("crates/cli/src");
+    for entry in ["cutile_bin.rs", "cutile_report.rs"] {
+        paths.push(cli_src.join(entry));
+    }
 
     let mut offences = Vec::new();
     for path in paths {

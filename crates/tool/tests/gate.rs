@@ -8,7 +8,7 @@
 //!
 //! 扫描分四类，适用的度量不同：
 //!
-//! - **生产代码**（`crates/*/src` 非测试夹具；入口二进制 `cli` 的 `src/main.rs` 与 `src/bin/` 也在此列）：全套门——
+//! - **生产代码**（`crates/*/src` 非测试夹具；入口二进制 `cli` 的 `src/main.rs` 与 `src/cutile_bin.rs` 也在此列）：全套门——
 //!   裸 unwrap/expect/panic、ccn、nloc、单文件行数、词法。
 //! - **构建脚本**（`crates/*/build.rs`）：守门词法与单文件行数；脚本对 cargo 注入的环境变量
 //!   用 `expect`、用 `fail()` panic 是构建期惯例，不套运行时零 panic 门，复杂度指标随脚本
