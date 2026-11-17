@@ -207,3 +207,31 @@ fn dtype_set_ops() {
     assert_eq!(b.difference(a).names(), vec!["bf16"]);
     assert_eq!(DType::F4.bits(), 4);
 }
+
+#[test]
+fn kernel_key_packs_the_seven_dimensions() {
+    let key = KernelKey::new(Prim::Dot, "scalar_f32", DType::F32, Space::Fast, 4, "cpu", 16);
+    assert_eq!(key.prim, Prim::Dot);
+    assert_eq!(key.impl_name, "scalar_f32");
+    assert_eq!(key.dtype, DType::F32);
+    assert_eq!(key.space, Space::Fast);
+    assert_eq!(key.lanes, 4);
+    assert_eq!(key.arch, "cpu");
+    assert_eq!(key.block, 16);
+}
+
+#[test]
+fn kernel_key_normalizes_zero_lanes_and_block_to_scalar() {
+    let key = KernelKey::new(Prim::Mma, "mma", DType::F16, Space::Gm, 0, "cuda", 0);
+    assert_eq!(key.lanes, 1);
+    assert_eq!(key.block, 1);
+}
+
+#[test]
+fn kernel_key_signature_keeps_the_adrd_order() {
+    let key = KernelKey::new(Prim::Dot, "scalar_f32", DType::F32, Space::Fast, 4, "cpu", 16);
+    assert_eq!(
+        key.signature(),
+        "dot{dt:f32, space:FAST, lanes:4, arch:cpu, block:16}/impl:scalar_f32"
+    );
+}
