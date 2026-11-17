@@ -153,10 +153,16 @@ fn rmsnorm_batch_segments(
             format!("x {} 与 out {} 长度不一致", x.len(), out.len()),
         ));
     }
+    check_batch_rows(x, row_dim)?;
+    Ok(x.len() / row_dim)
+}
+
+/// 批行校验：缓冲非空且为行宽整数倍；空行没有可统计的均方根。
+fn check_batch_rows(x: &[f32], row_dim: usize) -> Result<(), Error> {
     if x.is_empty() || !x.len().is_multiple_of(row_dim) {
         return Err(Error::new(Code::Invalid, "rmsnorm 批缓冲不是行宽整数倍"));
     }
-    Ok(x.len() / row_dim)
+    Ok(())
 }
 
 /// 批量入口：`[batch, row_dim]` 段连续，每段独立 RMS 归一化，gamma 按行宽复用。
