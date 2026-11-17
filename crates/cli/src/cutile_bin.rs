@@ -134,29 +134,6 @@ fn ledger(settings: &Settings, out: Option<&str>) -> diagnostic::Result<String> 
     }
 }
 
-/// 报告头部：schema、设备、容量档、units 可选行与声明行。
-fn doctor_head(report: &Doctor) -> Report {
-    let mut head = Report::new(format!(
-        "cutile schema v{} | op={} | skeleton={} | {}",
-        cutile::SCHEMA_VER,
-        report.op.name,
-        report.op.skeleton,
-        report.op.summary
-    ))
-    .row("device", report::device_value(report))
-    .row(
-        "spaces",
-        format!(
-            "GM={} FAST={} REG={}",
-            report.device.spaces[0], report.device.spaces[1], report.device.spaces[2]
-        ),
-    );
-    if let Some(units) = report::units_value(report) {
-        head = head.row("units", units);
-    }
-    head.row("声明", report::declaration_value(report))
-}
-
 /// `--why` 缓存键解释段；没给键或没有可行变体时返回空串。
 fn doctor_why(
     dirs: &cutile::dirs::Dirs,
@@ -185,7 +162,7 @@ fn doctor(
     let catalogue = Catalogue::load(&dirs)?;
     let report: Doctor = doctor::doctor(&catalogue, &dirs, op, device)?;
 
-    let mut out = doctor_head(&report).render();
+    let mut out = report::doctor_head(&report).render();
     out.push('\n');
     out.push_str(&settings.describe());
 
@@ -258,51 +235,6 @@ fn verify(
     finish_verify(out, &failures)
 }
 
-/// 台账头部：标题、档案出处、工具链实测/登记对照与结论行。
-fn ledger_header(profile: &cutile::prof::Profile, verified: &Verified, conclusion: &str) -> String {
-    let mut text = format!(
-        "# {} 能力台账（由 `cutile verify --emit-ledger` 生成）\n\n",
-        profile.meta.vendor
-    );
-    text.push_str(&format!(
-        "- 档案：`{}` ({})\n",
-        profile.meta.id, profile.meta.checked
-    ));
-    // 台账要能回答"这条证据是谁编出来的"：实测值来自 `--version`，登记值是人写的出处。
-    let actual = verified
-        .toolchain
-        .as_deref()
-        .unwrap_or("未知（没有编译器，只能复用已落盘产物）");
-    let agrees = if verified.toolchain_agrees {
-        ""
-    } else {
-        "，与登记值不一致"
-    };
-    text.push_str(&format!(
-        "- 工具链：实测 `{actual}`，档案登记 `{}`{agrees}\n",
-        verified.tool_ver
-    ));
-    text.push_str(&format!("- 结论：{}", conclusion.trim()));
-    text
-}
-
-/// 台账原语表：逐条列出实现、等级与见证出处。
-fn ledger_primitives(profile: &cutile::prof::Profile) -> String {
-    let mut text = String::from("\n\n| 原语 | 实现 | 等级 | 见证 |\n|---|---|---|---|\n");
-    for have in &profile.provides {
-        let witness = have
-            .witness
-            .as_ref()
-            .map(|witness| format!("{}({})", witness.file, witness.func))
-            .unwrap_or_else(|| "—".to_string());
-        text.push_str(&format!(
-            "| `{}` | {} | {} | {} |\n",
-            have.prim, have.impl_name, have.grade, witness
-        ));
-    }
-    text
-}
-
 /// 能力台账：人可读的 markdown，属于呈现场景，所以留在前端。
 fn write_ledger(
     catalogue: &Catalogue,
@@ -315,8 +247,8 @@ fn write_ledger(
     std::fs::create_dir_all(&dir)
         .map_err(|error| Error::new(Code::Io, format!("建 {} 失败：{error}", dir.display())))?;
     let path = dir.join(format!("{}.capability.md", profile.meta.vendor));
-    let mut text = ledger_header(profile, verified, conclusion);
-    text.push_str(&ledger_primitives(profile));
+    let mut text = report::ledger_header(profile, verified, conclusion);
+    text.push_str(&report::ledger_primitives(profile));
     std::fs::write(&path, text)
         .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", path.display())))?;
     Ok(format!("    ledger → {}\n", path.display()))

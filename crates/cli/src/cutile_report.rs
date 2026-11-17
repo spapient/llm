@@ -8,8 +8,10 @@ use cutile::bench::{Bench, Peak, Performance, Verdict};
 use cutile::cap::VariantCheck;
 use cutile::doctor::{Built, CacheState, CacheWhy, Doctor};
 use cutile::emit::Fragment;
+use cutile::prof::Profile;
 use cutile::ledger::{BackendRow, LedgerCell, Status};
 use cutile::verify::{Negotiation, Verified, VerifyReport};
+use tool::Report;
 
 /// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。
 ///
@@ -93,6 +95,29 @@ pub(super) fn declaration_value(report: &Doctor) -> String {
         "needs={} variants={} tiles={} | 生产形状 {}x{}",
         report.op.needs, report.op.variants, report.op.tiles, report.shape.0, report.shape.1
     )
+}
+
+/// 报告头部：schema、设备、容量档、units 可选行与声明行。
+pub(super) fn doctor_head(report: &Doctor) -> Report {
+    let mut head = Report::new(format!(
+        "cutile schema v{} | op={} | skeleton={} | {}",
+        cutile::SCHEMA_VER,
+        report.op.name,
+        report.op.skeleton,
+        report.op.summary
+    ))
+    .row("device", device_value(report))
+    .row(
+        "spaces",
+        format!(
+            "GM={} FAST={} REG={}",
+            report.device.spaces[0], report.device.spaces[1], report.device.spaces[2]
+        ),
+    );
+    if let Some(units) = units_value(report) {
+        head = head.row("units", units);
+    }
+    head.row("声明", declaration_value(report))
 }
 
 /// `[证据]` 段：依据类别、设备执行 / 本机自检条数与语言门；不成立的见证单列一行。
@@ -548,4 +573,49 @@ fn ledger_evidence_notes(rows: &[BackendRow]) -> String {
 /// 矩阵格：状态标签 + 档案等级；实现名与理由放在证据说明里，避免格子塞字。
 fn ledger_cell_text(cell: &LedgerCell) -> String {
     format!("{} · {}", cell.status.label(), cell.grade)
+}
+
+/// 台账档案头：厂商、档案编号、工具链实测/登记一致性与结论。
+pub(super) fn ledger_header(profile: &Profile, verified: &Verified, conclusion: &str) -> String {
+    let mut text = format!(
+        "# {} 能力台账（由 `cutile verify --emit-ledger` 生成）\n\n",
+        profile.meta.vendor
+    );
+    text.push_str(&format!(
+        "- 档案：`{}` ({})\n",
+        profile.meta.id, profile.meta.checked
+    ));
+    // 台账要能回答"这条证据是谁编出来的"：实测值来自 `--version`，登记值是人写的出处。
+    let actual = verified
+        .toolchain
+        .as_deref()
+        .unwrap_or("未知（没有编译器，只能复用已落盘产物）");
+    let agrees = if verified.toolchain_agrees {
+        ""
+    } else {
+        "，与登记值不一致"
+    };
+    text.push_str(&format!(
+        "- 工具链：实测 `{actual}`，档案登记 `{}`{agrees}\n",
+        verified.tool_ver
+    ));
+    text.push_str(&format!("- 结论：{}", conclusion.trim()));
+    text
+}
+
+/// 台账原语表：逐条列出实现、等级与见证出处。
+pub(super) fn ledger_primitives(profile: &Profile) -> String {
+    let mut text = String::from("\n\n| 原语 | 实现 | 等级 | 见证 |\n|---|---|---|---|\n");
+    for have in &profile.provides {
+        let witness = have
+            .witness
+            .as_ref()
+            .map(|witness| format!("{}({})", witness.file, witness.func))
+            .unwrap_or_else(|| "—".to_string());
+        text.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            have.prim, have.impl_name, have.grade, witness
+        ));
+    }
+    text
 }
