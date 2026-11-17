@@ -105,5 +105,7 @@ serve 整批前向动工前，下面三条是已从源码取证的阻塞契约�
 
 - [`embedding_plan`](../../crates/serve/src/plan.rs) 的 `tokens != 1` 拒绝的是**层声明**为多 token 的 prefill 矩阵层，不是运行期批大小；decode 模型层声明恒为 `tokens=1`，运行期一次喂多条索引的几何由内核适配从输出长度反推 `tokens = out.len()/dim`，放开多行输入不需要动这条装配期形状检查。
 - embed / gemv / rmsnorm 当前都走 serve `binary` 适配宏，几何全部从缓冲长度反推；批维接线时这些适配函数要按段 stride 切片或切到对应 op batch 入口。
+- engine [`View`](../../crates/engine/src/exec.rs) / `ViewMut` 是整块 `&[f32]` 切片，**不带 offset 或 stride**；扁平批缓冲的段区间由适配层在拿到整块后用切片子区间（`split_at` / 步长索引）切出，再交给 op batch 入口，不在引擎视图层引入偏移描述。
+- 方案 A 行循环 gemv 的适配需要输入宽 `m` 与输出宽 `n`：单向量几何下 `m=x.len()`、`n=out.len()` 可自洽反推；行批整块 `x` 为 `batch·m`、`out` 为 `batch·n`、权重 `n·m`，单从长度拆不出 `batch/m/n`。动工前要把 `in_features` 一并送进节点 Launch 几何（当前投影节点 Launch 第二维只承载头宽，投影只登记了 `out_features`），适配再按 `m` 切段逐行调 `gemv_f32`，行间共享同一份驻留权重。
 - 调度侧 [`step_batch`](../../crates/serve/src/completion.rs) 现状逐条 `logits → 采样 → 记账`；整批一次 `logits_batch` 后再逐条采样，失败条目的页账不回滚语义要在模型整批覆写时一并对拍，不能只切调用点。
 - batch=2 端到端回归基线夹具已补（默认逐条回退下两行 logits 与各自 KV 归属对拍）；整批几何接线后沿用同一份对拍口径。
