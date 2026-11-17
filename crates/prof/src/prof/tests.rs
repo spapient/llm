@@ -285,7 +285,10 @@ fn formulas_evaluate_priority_chains_and_parenthesized_groups() {
     ];
     for (index, (text, expected)) in cases.iter().enumerate() {
         let actual = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
-        assert!((actual - expected).abs() < 1e-9, "用例 {index} `{text}`：{actual} != {expected}");
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "用例 {index} `{text}`：{actual} != {expected}"
+        );
     }
 }
 
@@ -294,24 +297,8 @@ fn formulas_evaluate_priority_chains_and_parenthesized_groups() {
 #[test]
 fn formulas_reject_each_degenerate_shape_with_a_message() {
     let cases: &[&str] = &[
-        "1/0",
-        "(1+2",
-        "1+2)",
-        "1+2)*3",
-        "8*",
-        "1+2-",
-        "*3",
-        "**2",
-        "1++2",
-        "1--2",
-        "1*/2",
-        "2 3",
-        "1a2",
-        "3GHz",
-        ".",
-        "1.2.3",
-        "e5",
-        "1e",
+        "1/0", "(1+2", "1+2)", "1+2)*3", "8*", "1+2-", "*3", "**2", "1++2", "1--2", "1*/2", "2 3",
+        "1a2", "3GHz", ".", "1.2.3", "e5", "1e",
     ];
     for (index, text) in cases.iter().enumerate() {
         let error = eval_expression(text).expect_err("用例 {index} `{text}` 应当拒绝");
@@ -336,7 +323,10 @@ fn formulas_handle_saturated_large_literals_without_panic() {
     ];
     for (index, text) in cases.iter().enumerate() {
         let value = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
-        assert!(value.is_finite() || value.is_infinite(), "用例 {index}：不应是 NaN");
+        assert!(
+            value.is_finite() || value.is_infinite(),
+            "用例 {index}：不应是 NaN"
+        );
     }
 }
 

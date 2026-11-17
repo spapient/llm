@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::snapshot::{Facts, Moments, Snapshot};
+use crate::snapshot::{Facts, GradAccum, Moments, SlotMoments, Snapshot, Ties};
 use crate::{Data, Reference, Sgd};
 use autograd::{Sizes, Store, Tape, Var};
 use data::{Chunks, Dataset};
@@ -264,6 +264,119 @@ fn session_window_state_round_trips_through_snapshot() -> Result<()> {
     assert!(slots[0].iter().all(|g| (g - 1.75).abs() < 1e-6));
     assert!(slots[1].iter().all(|g| (g - 3.5).abs() < 1e-6));
     assert!(slots[2].iter().all(|g| *g == 0.0));
+    Ok(())
+}
+
+/// 会话状态快照回载：源会话窗口汇总/绑定表/步号写进快照，回载到另一个同装配会话后
+/// accum / ties / 步号逐字段一致；矩状态走优化器 restore（SGD 对应空表）。
+#[test]
+fn session_state_round_trips_through_restore_snapshot() -> Result<()> {
+    let (tape, sizes, w_source, w_tied, u, x, h, t, loss) = two_layer_fixture();
+    let config = TrainConfig::new(1e-2, 0, 4, None, 4)?;
+    let mut source = open_session(tape, sizes, config);
+    register_two_layer(&mut source, w_source, w_tied, u)?;
+
+    // 三个 micro-batch 累积进同一窗口（窗口 4，未满不步进）。
+    let source_batches = [1.0_f32, 0.5, 0.25];
+    let tied_batches = [2.0_f32, 1.0, 0.5];
+    for batch in 0..3 {
+        forward_two_layer(&mut source, x, w_source, h, w_tied, t, u, loss)?;
+        source.accumulate_gradient(w_source, &[source_batches[batch]; N])?;
+        source.accumulate_gradient(w_tied, &[tied_batches[batch]; N])?;
+        source.accumulate_gradient(u, &[0.0; N])?;
+        source.optimize()?;
+    }
+
+    let facts = Facts::new(5, 1, 2, 1, N)?;
+    let snapshot = Snapshot::new_with_all(
+        facts,
+        Header::new(Vec::new(), 0)?,
+        Moments::empty(),
+        source.accum_snapshot(),
+        source.ties_snapshot(),
+    );
+
+    // 目标会话：同图同槽位顺序装配，初始窗口为空；回载不重建 tape / 槽位 / 权重。
+    let (tape, sizes, w_source, w_tied, u, _x, _h, _t, _loss) = two_layer_fixture();
+    let mut target = open_session(tape, sizes, TrainConfig::new(1e-2, 0, 4, None, 4)?);
+    register_two_layer(&mut target, w_source, w_tied, u)?;
+    target.restore_snapshot(&snapshot)?;
+
+    assert_eq!(target.step(), 5, "步号回载一致");
+    assert_eq!(
+        target.accumulated_microbatches(),
+        source.accumulated_microbatches(),
+        "窗口批数回载一致"
+    );
+    assert_eq!(
+        target.accum_snapshot(),
+        *snapshot.accum(),
+        "累积窗口逐槽回载"
+    );
+    assert_eq!(target.ties(), snapshot.ties().pairs(), "绑定表回载一致");
+    Ok(())
+}
+
+/// 回载对账：累积槽位数错位、槽长度不符、ties 编号越界、矩槽位数错位，一律 [`Code::Invalid`]，
+/// 拒绝前不改写会话状态。
+#[test]
+fn restore_snapshot_rejects_mismatched_state() -> Result<()> {
+    let (tape, sizes, w_source, w_tied, u, _x, _h, _t, _loss) = two_layer_fixture();
+    let mut target = open_session(tape, sizes, TrainConfig::default());
+    register_two_layer(&mut target, w_source, w_tied, u)?;
+
+    let facts = Facts::new(0, 1, 2, 1, N)?;
+    let header = Header::new(Vec::new(), 0)?;
+
+    // 槽位数错位：累积表只有 2 槽，会话 3 槽。
+    let fewer = GradAccum::new(vec![vec![1.0; N], vec![2.0; N]], 1);
+    let snapshot = Snapshot::new_with_all(
+        facts,
+        header.clone(),
+        Moments::empty(),
+        fewer,
+        Ties::empty(),
+    );
+    let error = target
+        .restore_snapshot(&snapshot)
+        .expect_err("累积槽位数不符");
+    assert_eq!(error.code(), Code::Invalid);
+
+    // 槽长度不符：第三槽梯度长 N − 1。
+    let wrong_len = GradAccum::new(vec![vec![1.0; N], vec![2.0; N], vec![3.0; N - 1]], 1);
+    let snapshot = Snapshot::new_with_all(
+        facts,
+        header.clone(),
+        Moments::empty(),
+        wrong_len,
+        Ties::empty(),
+    );
+    let error = target
+        .restore_snapshot(&snapshot)
+        .expect_err("累积槽长度不符");
+    assert_eq!(error.code(), Code::Invalid);
+
+    // ties 编号越界：回填槽 5 超出 3 槽。
+    let snapshot = Snapshot::new_with_all(
+        facts,
+        header.clone(),
+        Moments::empty(),
+        GradAccum::empty(),
+        Ties::new(vec![(0, 5)]),
+    );
+    let error = target
+        .restore_snapshot(&snapshot)
+        .expect_err("ties 编号越界");
+    assert_eq!(error.code(), Code::Invalid);
+
+    // 矩表槽位数错位：非空矩表只 1 槽，会话 3 槽。
+    let moments = Moments::new(vec![SlotMoments::new(vec![0.0; N], vec![0.0; N])?], 1);
+    let snapshot =
+        Snapshot::new_with_all(facts, header, moments, GradAccum::empty(), Ties::empty());
+    let error = target
+        .restore_snapshot(&snapshot)
+        .expect_err("矩槽位数不符");
+    assert_eq!(error.code(), Code::Invalid);
     Ok(())
 }
 

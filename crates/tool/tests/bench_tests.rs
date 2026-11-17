@@ -1,4 +1,5 @@
 use super::*;
+use crate::bench_json::{from_json, to_json};
 use diagnostic::Code;
 
 fn harness() -> Harness {
@@ -99,4 +100,183 @@ fn entry_kind_short_names_are_stable() {
     assert_eq!(EntryKind::Op.as_str(), "op");
     assert_eq!(EntryKind::Layer.as_str(), "layer");
     assert_eq!(EntryKind::Model.as_str(), "model");
+}
+
+fn filled_record() -> BenchRecord {
+    let geom = geometry(vec![4096, 4096], 4, "f32").expect("几何合法");
+    let roofline = Roofline::new(Some(1024.0), Some(512.0)).expect("上界合法");
+    BenchRecord::new(
+        EntryKind::Model,
+        "batch4_step",
+        "cpu-reference",
+        geom,
+        harness(),
+        roofline,
+    )
+    .expect("记录合法")
+    .with_observed(1_500_000.0)
+    .expect("实测有限")
+}
+
+fn assert_round_trip(record: &BenchRecord) {
+    let text = to_json(record);
+    let parsed = from_json(&text).expect("回读合法");
+    assert_eq!(&parsed, record);
+}
+
+#[test]
+fn json_round_trips_record_without_observed() {
+    let geom = geometry(vec![4096], 1, "f32").expect("几何合法");
+    let record = record("gemv \"v1\" / \\x", "cpu-reference", geom).expect("记录合法");
+    assert_round_trip(&record);
+
+    let parsed = from_json(&to_json(&record)).expect("回读合法");
+    assert!(parsed.observed().is_none());
+    assert!(parsed.roofline().peak_bw_gb_s().is_none());
+    assert!(parsed.roofline().peak_gflops().is_none());
+}
+
+#[test]
+fn json_round_trips_record_with_observed_and_roofline() {
+    let record = filled_record();
+    assert_round_trip(&record);
+
+    let parsed = from_json(&to_json(&record)).expect("回读合法");
+    assert_eq!(parsed.kind(), EntryKind::Model);
+    assert_eq!(parsed.observed(), Some(1_500_000.0));
+    assert_eq!(parsed.roofline().peak_bw_gb_s(), Some(1024.0));
+    assert_eq!(parsed.roofline().peak_gflops(), Some(512.0));
+}
+
+#[test]
+fn json_rejects_malformed_and_truncated_input() {
+    let cases = [
+        "{",
+        "{\"kind\": \"op\"",
+        "{\"geometry\": {\"shape\": [4",
+        "{\"name\": \"x\"",
+        "[1, 2]",
+        "{} trailing",
+        "not json",
+    ];
+    for text in cases {
+        let err = from_json(text).expect_err("截断 / 非法输入必须拒绝");
+        assert_eq!(err.code(), Code::Invalid, "输入：{text}");
+    }
+}
+
+#[test]
+fn json_rejects_duplicate_keys() {
+    let top_level = r#"
+        {"kind": "op", "kind": "layer", "name": "x", "backend": "b",
+         "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
+         "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                     "toolchain": "t", "driver": "d"},
+         "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+         "observed": null}
+    "#;
+    let err = from_json(top_level).expect_err("顶层重复键必须拒绝");
+    assert_eq!(err.code(), Code::Invalid);
+
+    let nested = r#"
+        {"kind": "op", "name": "x", "backend": "b",
+         "geometry": {"shape": [1], "shape": [2], "batch": 1, "dtype": "f32"},
+         "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                     "toolchain": "t", "driver": "d"},
+         "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+         "observed": null}
+    "#;
+    let err = from_json(nested).expect_err("几何对象内重复键必须拒绝");
+    assert_eq!(err.code(), Code::Invalid);
+}
+
+#[test]
+fn json_rejects_non_finite_and_wrong_typed_values() {
+    let base = |observed: &str| -> String {
+        format!(
+            r#"
+            {{"kind": "op", "name": "x", "backend": "b",
+              "geometry": {{"shape": [1], "batch": 1, "dtype": "f32"}},
+              "harness": {{"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                          "toolchain": "t", "driver": "d"}},
+              "roofline": {{"peak_bw_gb_s": null, "peak_gflops": null}},
+              "observed": {observed}}}
+            "#
+        )
+    };
+    let cases = [
+        base("NaN"),
+        base("Infinity"),
+        base("-Infinity"),
+        base("\"12\""),
+        r#"
+            {"kind": "dense", "name": "x", "backend": "b",
+             "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
+             "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                         "toolchain": "t", "driver": "d"},
+             "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+             "observed": null}
+        "#.to_string(),
+        r#"
+            {"kind": "op", "name": "x", "backend": "b",
+             "geometry": {"shape": [1], "batch": 1.5, "dtype": "f32"},
+             "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                         "toolchain": "t", "driver": "d"},
+             "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+             "observed": null}
+        "#.to_string(),
+        r#"
+            {"kind": "op", "name": "x", "backend": "b",
+             "geometry": {"shape": ["x"], "batch": 1, "dtype": "f32"},
+             "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                         "toolchain": "t", "driver": "d"},
+             "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+             "observed": null}
+        "#.to_string(),
+    ];
+    for text in cases {
+        let err = from_json(&text).expect_err("坏数值 / 类型不符必须拒绝");
+        assert_eq!(err.code(), Code::Invalid, "输入：{text}");
+    }
+}
+
+#[test]
+fn json_rejects_missing_required_fields() {
+    let cases = [
+        r#"{"name": "x", "backend": "b",
+            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
+            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                        "toolchain": "t", "driver": "d"},
+            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+            "observed": null}"#,
+        r#"{"kind": "op", "backend": "b",
+            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
+            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                        "toolchain": "t", "driver": "d"},
+            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+            "observed": null}"#,
+        r#"{"kind": "op", "name": "x", "backend": "b",
+            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                        "toolchain": "t", "driver": "d"},
+            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+            "observed": null}"#,
+        r#"{"kind": "op", "name": "x", "backend": "b",
+            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
+            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
+            "observed": null}"#,
+        r#"{"kind": "op", "name": "x", "backend": "b",
+            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
+            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                        "toolchain": "t", "driver": "d"},
+            "observed": null}"#,
+        r#"{"kind": "op", "name": "x", "backend": "b",
+            "geometry": {"shape": [1], "batch": 1, "dtype": "f32"},
+            "harness": {"host": "h", "cpu": "c", "os": "o", "arch": "a",
+                        "toolchain": "t", "driver": "d"},
+            "roofline": {"peak_bw_gb_s": null, "peak_gflops": null}}"#,
+    ];
+    for text in cases {
+        let err = from_json(text).expect_err("缺必填字段必须拒绝");
+        assert_eq!(err.code(), Code::Invalid, "输入：{text}");
+    }
 }

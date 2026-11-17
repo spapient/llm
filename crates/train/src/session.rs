@@ -19,7 +19,7 @@ use tensor::{DType, Shape};
 use crate::optimizer::Optimizer;
 use crate::pool::Buffers;
 use crate::schedule::Schedule as LrSchedule;
-use crate::snapshot::{GradAccum, Ties};
+use crate::snapshot::{GradAccum, Moments, Snapshot, Ties};
 use crate::{Data, Kernel, Slot};
 
 /// 本模块诊断站点。
@@ -359,6 +359,107 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
     /// 当前登记的权重绑定表快照；下标按 [`Self::slots`] 顺序对齐。
     pub fn ties_snapshot(&self) -> Ties {
         Ties::new(self.ties.clone())
+    }
+
+    /// 把快照状态回载到这个**已装配**会话：矩状态走优化器 restore，累积窗口汇总、绑定表与
+    /// 步数按槽位编号对齐校验。
+    ///
+    /// 本接缝不从快照重建 tape / 参数槽 / 内核 / 权重（真实权重通路属后续里程碑）；回载前
+    /// 会话必须已按同一张图、同一槽位顺序装配。
+    ///
+    /// # Errors
+    ///
+    /// 矩表/累积表槽位数或槽内长度不符、ties 编号越界或两端长度不符，一律 [`Code::Invalid`]。
+    pub fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
+        self.restore_moments(snapshot.moments())?;
+        self.restore_accum(snapshot.accum())?;
+        self.restore_ties(snapshot.ties())?;
+        self.step = snapshot.facts().step();
+        Ok(())
+    }
+
+    /// 矩状态回载：空表对应无矩优化器；非空表槽位数与每槽长度必须对齐会话参数槽。
+    fn restore_moments(&mut self, moments: &Moments) -> Result<()> {
+        let slots = moments.slots();
+        if !slots.is_empty() && slots.len() != self.slots.len() {
+            let message = format!(
+                "矩状态槽位数不符：快照 {} 槽，会话 {} 槽",
+                slots.len(),
+                self.slots.len()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        for (index, slot) in slots.iter().enumerate() {
+            let want = self.slots[index].params().len();
+            if slot.m().len() != want || slot.v().len() != want {
+                let message = format!(
+                    "第 {index} 槽矩长度不符：快照 {} 元素，会话 {} 元素",
+                    slot.m().len(),
+                    want
+                );
+                return Err(Error::new(Code::Invalid, message).with(SITE));
+            }
+        }
+        let momentum = slots.iter().map(|s| s.m().to_vec()).collect();
+        let variance = slots.iter().map(|s| s.v().to_vec()).collect();
+        self.optimizer
+            .restore(momentum, variance, moments.step())
+            .map_err(|error| error.with(SITE))?;
+        Ok(())
+    }
+
+    /// 累积窗口回载：槽位数对齐；空梯度表表示该槽窗口内未装入，跳过不覆盖。
+    fn restore_accum(&mut self, accum: &GradAccum) -> Result<()> {
+        let slots = accum.slots();
+        if slots.len() != self.slots.len() {
+            let message = format!(
+                "累积梯度槽位数不符：快照 {} 槽，会话 {} 槽",
+                slots.len(),
+                self.slots.len()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        for (index, grads) in slots.iter().enumerate() {
+            if grads.is_empty() {
+                continue;
+            }
+            let want = self.slots[index].params().len();
+            if grads.len() != want {
+                let message = format!(
+                    "第 {index} 槽累积梯度长度不符：快照 {} 元素，会话 {} 元素",
+                    grads.len(),
+                    want
+                );
+                return Err(Error::new(Code::Invalid, message).with(SITE));
+            }
+            self.buffers
+                .load_gradient(self.slots[index].var(), grads)
+                .map_err(|error| error.with(SITE))?;
+        }
+        self.accum = accum.count();
+        Ok(())
+    }
+
+    /// 绑定表回载：编号必须落在会话槽位内，两端长度一致；回载替换既有绑定表。
+    fn restore_ties(&mut self, ties: &Ties) -> Result<()> {
+        let slot_count = self.slots.len();
+        for &(source, tied) in ties.pairs() {
+            if source >= slot_count || tied >= slot_count {
+                let message =
+                    format!("绑定对 ({source}, {tied}) 编号越界：会话只有 {slot_count} 个参数槽");
+                return Err(Error::new(Code::Invalid, message).with(SITE));
+            }
+            if self.slots[source].params().len() != self.slots[tied].params().len() {
+                let message = format!(
+                    "绑定两端长度不一致：源槽 {} 元素，回填槽 {} 元素",
+                    self.slots[source].params().len(),
+                    self.slots[tied].params().len()
+                );
+                return Err(Error::new(Code::Invalid, message).with(SITE));
+            }
+        }
+        self.ties = ties.pairs().to_vec();
+        Ok(())
     }
 
     /// 清空全部梯度缓冲；参数值与激活不动。

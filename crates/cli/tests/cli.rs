@@ -161,6 +161,49 @@ fn status_reads_headers_from_a_weights_file() {
     );
 }
 
+/// 写一份合成快照：3 槽累积梯度、3 个 micro-batch、可选绑定对；权重段为空。
+fn write_snapshot(tag: &str, ties: Vec<(usize, usize)>) -> PathBuf {
+    use train::snapshot::{Facts, GradAccum, Moments, Snapshot, Ties};
+    let facts = Facts::new(5, 1, 2, 1, 4).expect("恢复事实");
+    let header = weights::Header::new(Vec::new(), 0).expect("空头部");
+    let accum = GradAccum::new(vec![vec![1.0; 4], vec![2.0; 4], vec![3.0; 4]], 3);
+    let snapshot = Snapshot::new_with_all(facts, header, Moments::empty(), accum, Ties::new(ties));
+    let path = std::env::temp_dir().join(format!("llm-cli-{}-{tag}.snap", std::process::id()));
+    snapshot.write(&path).expect("快照可写");
+    path
+}
+
+#[test]
+fn train_load_reports_accumulation_window_and_tie_pairs() {
+    let tied = write_snapshot("tied", vec![(0, 1)]);
+    let output = llm()
+        .args(["train", "--load"])
+        .arg(&tied)
+        .args(["--accumulation", "4"])
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "合法快照下 `--load` 必须成功"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("3 / 4 micro-batch"),
+        "累积窗口要报已汇总数 / 窗口：{stdout}"
+    );
+    assert!(stdout.contains("1 对"), "绑定对数要随快照报出：{stdout}");
+
+    let loose = write_snapshot("loose", Vec::new());
+    let output = llm()
+        .args(["train", "--load"])
+        .arg(&loose)
+        .output()
+        .expect("进程可派生");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("0 对"), "无绑定时报 0 对：{stdout}");
+}
+
 #[test]
 fn audit_commands_are_dispatched_elsewhere_and_say_so() {
     for command in ["verify", "bench"] {

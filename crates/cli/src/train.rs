@@ -1,4 +1,5 @@
-//! `train` 命令：把 cli 搬下来的字符串解析成 [`train::TrainConfig`]，`--load` 从快照恢复事实与矩状态。
+//! `train` 命令：把 cli 搬下来的字符串解析成 [`train::TrainConfig`]，`--load` 从快照恢复事实、
+//! 矩状态、累积窗口与权重绑定表。
 //!
 //! 前向/反传会话循环在 `train::Session`（夹具级闭环见 train 测试）；本组装点不复制模型装载，
 //! 真实权重通路仍属未接入范围。本模块只解析到 [`Option`]，不复制第二份默认值。
@@ -17,7 +18,7 @@ pub(crate) fn train_run(
 ) -> Result<()> {
     let config = build_train_config(lr, warmup, steps, clip, accumulation)?;
     match load {
-        Some(path) => report_recovered(path),
+        Some(path) => report_recovered(path, &config),
         None => {
             report_train_config(&config);
             Ok(())
@@ -60,8 +61,8 @@ fn parse_train_uints(
     ))
 }
 
-/// `--load`：从快照读出恢复事实、条目表与矩状态并排版汇报。
-fn report_recovered(path: &str) -> Result<()> {
+/// `--load`：从快照读出恢复事实、条目表、矩状态、累积窗口与权重绑定表并排版汇报。
+fn report_recovered(path: &str, config: &train::TrainConfig) -> Result<()> {
     let snapshot = train::snapshot::Snapshot::read(std::path::Path::new(path))?;
     let facts = snapshot.facts();
     let moments = snapshot.moments();
@@ -86,7 +87,16 @@ fn report_recovered(path: &str) -> Result<()> {
                 moments.slots().len(),
                 moments.step()
             ),
-        );
+        )
+        .row(
+            "累积窗口",
+            format!(
+                "{} / {} micro-batch",
+                snapshot.accum().count(),
+                config.accumulation()
+            ),
+        )
+        .row("权重绑定", format!("{} 对", snapshot.ties().pairs().len()));
     print!("{}", report.render());
     Ok(())
 }

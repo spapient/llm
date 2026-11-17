@@ -341,6 +341,36 @@ impl Optimizer for Adam {
         }
         Ok(())
     }
+
+    fn restore(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        step: u64,
+    ) -> Result<()> {
+        if momentum.len() != variance.len() {
+            let message = format!(
+                "矩状态槽位数不一致：一阶矩 {} 槽，二阶矩 {} 槽",
+                momentum.len(),
+                variance.len()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        for (index, (m, v)) in momentum.iter().zip(&variance).enumerate() {
+            if m.len() != v.len() {
+                let message = format!(
+                    "第 {index} 槽矩长度不一致：一阶矩 {} 元素，二阶矩 {} 元素",
+                    m.len(),
+                    v.len()
+                );
+                return Err(Error::new(Code::Invalid, message).with(SITE));
+            }
+        }
+        self.momentum = momentum;
+        self.variance = variance;
+        self.step = step;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
