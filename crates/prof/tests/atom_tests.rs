@@ -178,6 +178,26 @@ fn grade_gate_is_l2() {
     assert!(Grade::L3.is_verified());
     assert!(Grade::L3 > Grade::L2);
 }
+
+/// 等级闭集常驻 L0–L3：全量、名字往返与下标顺序冻结；闭集外等级解析为 `None`，不许旁路自造等级。
+#[test]
+fn grade_closed_set_runs_l0_to_l3() {
+    assert_eq!(Grade::ALL.len(), 4);
+    let names: Vec<&str> = Grade::ALL
+        .iter()
+        .map(|&grade| Grade::as_str(grade))
+        .collect();
+    assert_eq!(names, ["L0", "L1", "L2", "L3"]);
+    for grade in Grade::ALL.iter().copied() {
+        assert_eq!(Grade::parse(grade.as_str()), Some(grade));
+        assert_eq!(
+            grade.index(),
+            Grade::ALL.iter().position(|&item| item == grade).unwrap()
+        );
+    }
+    assert_eq!(Grade::parse("L4"), None);
+    assert_eq!(Grade::parse("verified"), None);
+}
 #[test]
 fn dtype_set_ops() {
     let a = DTypeSet::of([DType::F16]);

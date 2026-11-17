@@ -184,6 +184,43 @@ fn l2_without_witness_is_rejected() {
     );
 }
 
+/// 协商双证据口径：档案等级达到 L2+ 且形状覆盖才满足；L0/L1 即使形状覆盖也被拒，不许降级成
+/// "形状对上就算有"。见证存在性由 [`l2_without_witness_is_rejected`] 与 L3 用例守住。
+#[test]
+fn negotiate_rejects_unverified_suppliers_even_when_covering() {
+    let mut profile = Profile::parse(cpu()).expect("可解析");
+    let prim = profile.provides[0].prim;
+    let need = Need::of(prim);
+
+    profile.provides[0].grade = Grade::L2;
+    assert!(profile.satisfies(&need), "L2 且形状覆盖应当满足");
+
+    for grade in [Grade::L0, Grade::L1] {
+        profile.provides[0].grade = grade;
+        assert!(
+            !profile.satisfies(&need),
+            "grade {grade} 形状虽覆盖，未验证也不许满足"
+        );
+    }
+}
+
+/// L3 与 L2 同属已验证等级：缺见证同样在校验期报 `Witness`，不许只对 L2 守见证口径。
+#[test]
+fn l3_without_witness_is_rejected_by_validation() {
+    let mut profile = Profile::parse(cpu()).expect("可解析");
+    for provide in &mut profile.provides {
+        provide.grade = Grade::L3;
+        provide.witness = None;
+    }
+    let errors = profile.validate(None).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error, ProfileError::Witness { .. })),
+        "L3 同样必须带见证：{errors:?}"
+    );
+}
+
 #[test]
 fn a_peak_must_equal_its_own_formula() {
     // 108.8e9 是旧档案里的手抄值：与 8*2.6e9*8*2 差了三倍，装载期必须报出来。
