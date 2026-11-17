@@ -102,26 +102,33 @@ impl<'a> Archive<'a> {
 
 impl Reader for Archive<'_> {
     fn read(&self, entry: &Entry) -> Result<&[u8]> {
-        let Some(start) = entry.offset().checked_sub(self.header.data_start()) else {
-            return Err(internal(format!(
-                "条目 `{}` 的偏移 {} 早于数据段起点 {}",
-                entry.name(),
-                entry.offset(),
-                self.header.data_start()
-            )));
-        };
-        let Some(end) = start.checked_add(entry.len()) else {
-            return Err(internal(format!("条目 `{}` 的长度溢出", entry.name())));
-        };
-        let Some(bytes) = self.data.get(start..end) else {
-            return Err(internal(format!(
-                "条目 `{}` 声明 {start}..{end}，数据段只有 {} 字节",
-                entry.name(),
-                self.data.len()
-            )));
-        };
-        Ok(bytes)
+        entry_slice(&self.header, self.data, entry)
     }
+}
+
+/// 按头部数据段起点，从一段已校验的数据字节里切出条目区间。
+///
+/// 借用后端（内存归档、映射源）共用这一份边界判断：起点早于数据段、长度溢出、越界都在这里
+/// 报 [`Code::Internal`]，不在各后端里写第二份区间算术。
+pub(crate) fn entry_slice<'a>(header: &Header, data: &'a [u8], entry: &Entry) -> Result<&'a [u8]> {
+    let Some(start) = entry.offset().checked_sub(header.data_start()) else {
+        return Err(internal(format!(
+            "条目 `{}` 的偏移 {} 早于数据段起点 {}",
+            entry.name(),
+            entry.offset(),
+            header.data_start()
+        )));
+    };
+    let Some(end) = start.checked_add(entry.len()) else {
+        return Err(internal(format!("条目 `{}` 的长度溢出", entry.name())));
+    };
+    data.get(start..end).ok_or_else(|| {
+        internal(format!(
+            "条目 `{}` 声明 {start}..{end}，数据段只有 {} 字节",
+            entry.name(),
+            data.len()
+        ))
+    })
 }
 
 impl Loader for Archive<'_> {

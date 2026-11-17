@@ -20,3 +20,11 @@ pub(crate) fn archive(segments: Vec<Segment>) -> Vec<u8> {
     }
     w.finish(6).expect("字节")
 }
+
+/// 读取本机 torch `.bin` 样本；样本缺失返回 `None`，测试跳过而不是伪造字节。
+#[cfg(test)]
+pub(crate) fn real_bin_bytes() -> Option<Vec<u8>> {
+    std::fs::read("/tmp/pt/model.bin")
+        .ok()
+        .or_else(|| testkit::skip_none("weights 样本缺失"))
+}

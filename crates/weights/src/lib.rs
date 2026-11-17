@@ -5,7 +5,8 @@
 //! 容器（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
 //! 本层判断的格式适配器与量化方案（`bin` 栈机含 ZIP_STORED 读取、`gguf`、`json`、`quant`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
-//! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`+dev`：`storage`）。
+//! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`storage` 经可选 `mmap` feature 引入，
+//! 只在 Unix 上提供映射源；`+dev`：`testkit`）。
 //! **被依赖**：`train`、`nn`、`llm`（`+dev`：`fuzz`）。
 //!
 //! 两条读取契约的分工是所有权而不是风格：[`Reader`] 把字节**借**出来（内存切片、映射），
@@ -68,6 +69,10 @@ pub mod gguf;
 pub mod json;
 pub mod safetensors;
 
+// 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛（ADR 0036）。
+#[cfg(all(feature = "mmap", unix))]
+mod mmap;
+
 // 纯字节码基础件归 L1 `wire`（ADR 0024）；这里只做薄转发，保持容器内部路径不变。
 /// CRC-32（转发自 `wire::crc`）。
 pub mod crc {
@@ -102,6 +107,9 @@ pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;
 pub use writer::Writer;
+
+#[cfg(all(feature = "mmap", unix))]
+pub use mmap::MmapSource;
 
 /// 一个权重条目：名字、元素类型、形状与它在数据段里的字节区间。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +324,29 @@ pub fn decode_f32(bytes: &[u8]) -> Result<Vec<f32>> {
         .with("weights::decode_f32"));
     }
     Ok(words.iter().map(|word| f32::from_le_bytes(*word)).collect())
+}
+
+/// 把一条 F32 条目解码进驻留 `f32` 缓冲：装载期一次性读出并解包，生成循环内不再读文件、
+/// 也不二次分配元素缓冲。
+///
+/// 类型判据与字节解包都收口在这里：非 F32 条目不进 f32 缓冲（返回 [`Code::Unsupported`]，
+/// 由装配层按格式拒绝），余字节非零的半字节目节在 [`decode_f32`] 报 [`Code::Invalid`]。
+pub fn load_f32(entry: &Entry, loader: &impl Loader) -> Result<Vec<f32>> {
+    let bytes = loader.load(entry)?;
+    decode_entry_f32(entry, &bytes)
+}
+
+/// 按条目类型把一段已读回的字节解包成 `f32` 驻留缓冲；`Reader` 借用路径与 `Loader` 拷贝
+/// 路径共用这一份类型/边界判据。
+pub fn decode_entry_f32(entry: &Entry, bytes: &[u8]) -> Result<Vec<f32>> {
+    if entry.dtype() != Wire::F32 {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!("条目 `{}` 不是 F32，不能进 f32 驻留缓冲", entry.name()),
+        )
+        .with("weights::decode_entry_f32"));
+    }
+    decode_f32(bytes)
 }
 
 /// 缓冲区长度必须与条目声明一致：短了会读出半个张量，长了会把相邻条目混进来。

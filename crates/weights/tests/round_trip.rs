@@ -1,6 +1,15 @@
 //! 端到端契约：全 wire 类型往返、量化段往返、对齐布局，以及两级 CRC 对损坏/截断的拦截。
 
-use llm_weights::{Archive, Quant, Segment, Wire, Writer, patch};
+use llm_weights::safetensors::{Archive as SfArchive, File as SfFile};
+use llm_weights::{Archive, Loader, Quant, Reader, Segment, Wire, Writer, patch};
+
+/// 按 safetensors 布局拼文件：8 字节小端长度前缀 + 头部 JSON + 数据段。
+fn safetensors_file(json: &str, data: &[u8]) -> Vec<u8> {
+    let mut bytes = (json.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(json.as_bytes());
+    bytes.extend_from_slice(data);
+    bytes
+}
 
 /// 给每个 wire 类型造一个 `n` 元素的段，数据填递增字节，长度正好是形状推出的字节数。
 fn segment_of(wire: Wire, index: usize) -> Segment {
@@ -235,4 +244,76 @@ fn incremental_patch_recovers_cur_byte_for_byte() {
     let joined = patch::join(&base, &patch_archive).expect("join");
     let cur_logical = cur.load(&cur.segments()[0]).expect("cur 字节");
     assert_eq!(joined[0].data, cur_logical.as_ref());
+}
+
+#[test]
+fn safetensors_entries_round_trip_byte_for_byte() {
+    let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
+                   "b": {"dtype": "F16", "shape": [4], "data_offsets": [24, 32]}}"#;
+    let data: Vec<u8> = (0..32).collect();
+    let bytes = safetensors_file(json, &data);
+    let archive = SfArchive::parse(&bytes).expect("头部自证合法");
+
+    let a = archive.header().get("a").expect("条目 a");
+    assert_eq!(Reader::read(&archive, a).expect("可读"), &data[..24]);
+    let b = archive.header().get("b").expect("条目 b");
+    assert_eq!(Reader::read(&archive, b).expect("可读"), &data[24..]);
+}
+
+#[test]
+fn safetensors_file_backend_reads_back_the_same_bytes() {
+    let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
+                   "b": {"dtype": "I8", "shape": [4], "data_offsets": [24, 28]}}"#;
+    let data: Vec<u8> = (0..28).collect();
+    let bytes = safetensors_file(json, &data);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("时间")
+        .as_nanos();
+    let target = std::env::temp_dir().join(format!(
+        "llm_st_roundtrip_{}_{}.safetensors",
+        std::process::id(),
+        nanos
+    ));
+    std::fs::write(&target, &bytes).expect("写临时文件");
+
+    let on_disk = SfFile::open(&target).expect("头部自证合法");
+    let archive = SfArchive::parse(&bytes).expect("内存副本合法");
+    for entry in archive.header().entries() {
+        assert_eq!(
+            Loader::load(&on_disk, entry).expect("磁盘可读"),
+            Loader::load(&archive, entry).expect("内存可读"),
+            "条目 `{}` 两个后端字节一致",
+            entry.name()
+        );
+    }
+    std::fs::remove_file(&target).expect("清理");
+}
+
+#[test]
+fn quantized_grouping_survives_a_safetensors_round_trip() {
+    // 真实 4 位打包：权重按 U8 存两个 nibble 一个字节（第二维是字节数），标度每分组一个 F16。
+    // 分组由标度形状推出，不经打包条目猜；这条往返守护推断结果不退化。
+    let json = r#"{"w.weight": {"dtype": "U8", "shape": [8, 32], "data_offsets": [0, 256]},
+                   "w.scales": {"dtype": "F16", "shape": [8, 2], "data_offsets": [256, 288]}}"#;
+    let data = vec![0u8; 288];
+    let bytes = safetensors_file(json, &data);
+    let archive = SfArchive::parse(&bytes).expect("头部自证合法");
+
+    let quantized = archive
+        .header()
+        .quantization("w.weight")
+        .expect("成对条目自洽")
+        .expect("是量化权重");
+    assert_eq!(quantized.group(), 32, "64 个 nibble / 2 个分组");
+    assert_eq!(quantized.in_features(), 64, "宽度是元素数，不是字节数");
+    assert_eq!(quantized.out_features(), 8);
+    assert_eq!(quantized.bits(), 4);
+    assert_eq!(quantized.scales_name(), "w.scales");
+    assert_eq!(
+        archive.header().scales_names().expect("自洽"),
+        ["w.scales"],
+        "标度伙伴被同一规则排除"
+    );
 }

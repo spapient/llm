@@ -627,3 +627,46 @@ mod patch_tests {
         assert_eq!(patch[0].data, f32_segment("b", &[9.0]).data);
     }
 }
+
+#[cfg(test)]
+mod cow_tests {
+    use super::*;
+    use crate::seg::Segment;
+    use crate::testutil::{archive, f32_segment};
+    use crate::writer::Writer;
+
+    /// 关闭压缩写出的段必然是 `Store`：`load` 必须返回 `Cow::Borrowed`，不复制逻辑字节。
+    #[test]
+    fn store_segment_loads_as_borrowed() {
+        let mut w = Writer::new();
+        w.compress(false);
+        w.push(f32_segment("w", &[1.0, 2.0, 3.0, 4.0]))
+            .expect("push");
+        let bytes = w.finish(6).expect("字节");
+        let src = Archive::parse(&bytes).expect("src");
+
+        let seg = src.get("w").expect("store 段");
+        let cow = src.load(seg).expect("store 加载");
+        assert!(matches!(cow, Cow::Borrowed(_)), "Store 段必须借用");
+        assert_eq!(&cow[..], &f32_segment("w", &[1.0, 2.0, 3.0, 4.0]).data);
+    }
+
+    /// 高偏斜 U8 段经 rANS 严格变小，写端选 `Rans`：`load` 必须返回 `Cow::Owned` 解压缓冲。
+    #[test]
+    fn rans_segment_loads_as_owned() {
+        let mut sparse = vec![0u8; 4000];
+        for i in (0..sparse.len()).step_by(10) {
+            sparse[i] = (i % 7) as u8 + 1;
+        }
+        let seg = Segment::new("sparse", Wire::U8, vec![4000], None, sparse.clone()).expect("段");
+        let bytes = archive(vec![seg]);
+        let src = Archive::parse(&bytes).expect("src");
+
+        let seg = src.get("sparse").expect("rans 段");
+        assert_eq!(seg.codec, Codec::Rans, "偏斜段应被压缩");
+        let cow = src.load(seg).expect("rans 加载");
+        assert!(matches!(cow, Cow::Owned(_)), "Rans 段必须解压为 Owned");
+        assert_eq!(cow.len(), 4000);
+        assert_eq!(&cow[..], &sparse[..]);
+    }
+}

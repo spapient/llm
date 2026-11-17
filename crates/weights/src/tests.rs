@@ -53,3 +53,39 @@ fn decode_f32_rejects_a_partial_tail_word() {
     let error = decode_f32(&[0u8, 1, 2]).expect_err("余字节");
     assert_eq!(error.code(), Code::Invalid);
 }
+
+/// 测试用 Loader：按条目长度把持有字节拷进缓冲，边界判断复用 [`check_capacity`]。
+struct StubLoader(Vec<u8>);
+
+impl Loader for StubLoader {
+    fn copy_into(&self, entry: &Entry, out: &mut [u8]) -> Result<()> {
+        check_capacity(entry, out)?;
+        out.copy_from_slice(&self.0[..out.len()]);
+        Ok(())
+    }
+}
+
+#[test]
+fn load_f32_decodes_an_entry_into_the_resident_buffer() {
+    let bytes: Vec<u8> = [1.0f32, 0.0, 2.5]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let entry = Entry::new("w", DType::F32, Shape::new([3])).at(64);
+    let values = load_f32(&entry, &StubLoader(bytes)).expect("装载");
+    assert_eq!(values, [1.0, 0.0, 2.5]);
+}
+
+#[test]
+fn a_non_f32_entry_is_not_unpacked_into_the_resident_buffer() {
+    let entry = Entry::new("q", DType::F16, Shape::new([4])).at(64);
+    let error = load_f32(&entry, &StubLoader(vec![0u8; 8])).expect_err("非 F32 必须拒绝");
+    assert_eq!(error.code(), Code::Unsupported);
+}
+
+#[test]
+fn decode_entry_f32_passes_through_the_partial_tail_word_rejection() {
+    let entry = Entry::new("w", DType::F32, Shape::new([2])).at(64);
+    let error = decode_entry_f32(&entry, &[0u8, 1, 2]).expect_err("余字节");
+    assert_eq!(error.code(), Code::Invalid);
+}

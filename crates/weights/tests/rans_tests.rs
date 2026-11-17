@@ -73,6 +73,14 @@ fn garbage_is_rejected() {
 }
 
 #[test]
+fn a_trailing_extra_byte_is_rejected() {
+    let mut frame = encode(&vec![3u8; 1000]);
+    frame.push(0x77);
+    let error = decode(&frame, 1000).expect_err("帧尾多余字节必须报错");
+    assert!(error.to_string().contains("多余字节"), "{error}");
+}
+
+#[test]
 fn a_lying_length_is_rejected_before_allocating() {
     // 帧头的原始长度来自文件，不能当分配依据：把它改成 u32::MAX 之后必须当场拒绝，
     // 而不是先按它分配再想办法。

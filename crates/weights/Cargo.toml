@@ -8,13 +8,22 @@ repository.workspace = true
 readme.workspace = true
 description = "Weight files: entries, header validation, plus safetensors archives (whole-buffer or header-only file backend)."
 publish = false
+# `bin.rs` 的 `pickle`/`zip` 子模块以 `#[path]` 挂到扁平文件（`bin_pickle.rs`/`bin_zip.rs`），
+# 不是二进制目标；禁用 bin 自动发现，避免 Cargo 误把它们当可执行 crate 编译。
+autobins = false
 autotests = false
+
+[features]
+default = []
+# 只读内存映射源：复用 `storage` 的唯一 unsafe 岛；仅 Unix 目标有实现，其它平台该模块不编译。
+mmap = ["dep:storage", "storage/mmap"]
 
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 wire = { path = "../wire", package = "llm-wire" }
+storage = { path = "../storage", package = "llm-storage", optional = true }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
