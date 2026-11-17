@@ -214,13 +214,13 @@ fn every_public_type_is_listed_or_baselined() {
     );
 }
 
-/// L7 是组装点：`docs/ARCHITECTURE.md` 明写它「不得定义新类型」。
+/// 组合根是 `cli`：编排入口「不得定义新类型」。
 ///
 /// 上一个组装点里的类型（`LmHead`）就是这条规则失效的证据：它既不在所有权表里，也不违反
-/// 任何既有断言。类型属于产出它的层，组装点只分派。
+/// 任何既有断言。类型属于产出它的层，编排入口只分派。
 #[test]
 fn the_entry_point_defines_no_types() {
-    let root = workspace_root().join("src");
+    let root = workspace_root().join("crates/cli/src/cmd");
     let files = rust_files(&root);
     assert!(
         !files.is_empty(),
@@ -375,7 +375,7 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
         );
         paths.extend(files);
     }
-    paths.extend(rust_files(&workspace_root().join("src/bin/cutile")));
+    paths.extend(rust_files(&workspace_root().join("crates/cli/src/bin")));
 
     let mut offences = Vec::new();
     for path in paths {
