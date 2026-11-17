@@ -8,7 +8,7 @@
 
 | 项 | 实测值 | 备注 |
 |---|---:|---|
-| workspace 成员 | 24 个 `crates/*` + 根包 `llm` | 工具成员 `annotation`/`fuzz`/`benches` 计入目录数 |
+| workspace 成员 | 24 个 `crates/*` 成员；根目录为纯 workspace 根，无独立 package，`llm` / `cutile` 两个 bin 在 `llm-cli` crate 内 | 工具成员 `annotation`/`fuzz`/`benches` 计入目录数 |
 | Rust 总行数（粗口径，含测试） | 76,839 | `find crates src -name '*.rs'`，不含 `target/` |
 | 外部测试 | 166 文件 / 21,480 行 | `crates/**/tests/*.rs` |
 | 内联 `#[cfg(test)]` 模块 | 164 个 | 测试体行数未单列 |

@@ -93,7 +93,7 @@ cli ──▶ engine ──▶ tensor ──▶ diagnostic
 │                         # 0014 真实权重执行：同一件内核，换一份样本
 └── crates/
     ├── annotation/       # #[spec] 属性宏：注解 → 校验过的 Contract 实现（零外部依赖）
-    ├── cli/              # 组合根（lib + 两个 bin）：文法解析、`cmd/` 编排入口；`llm` 入口在 `src/main.rs`，`cutile` bin 在 `src/bin/`
+    ├── cli/              # 组合根（lib + 两个 bin）：文法解析、`cmd/` 编排入口；`llm` 入口在 `src/main.rs`，`cutile` bin 在 `src/cutile_bin.rs`
     ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行；命令侧报告在 `cli` 包
     ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义；einsum/ 是求和代价的来源
     ├── prof/             # 档案层：devices/<vendor>.toml + 能力词汇表
