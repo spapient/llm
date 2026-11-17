@@ -531,6 +531,39 @@ fn rmsnorm_groups_batch_rows_against_the_single_row_reference() {
     assert_close(&produced, &reference);
 }
 
+/// 两段批 RoPE：第二路位置表逐序列给位置，段内独立旋转、互不串段；参考逐段 `forward_heads` 重算。
+#[test]
+fn rope_rotates_batch_segments_by_the_position_table() {
+    let x = [1.0, 2.0, 3.0, 4.0];
+    let positions = [2.0, 5.0];
+    let head_dim = 2;
+    let mut reference = vec![0.0; 4];
+    for (seq, &pos) in positions.iter().enumerate() {
+        let start = seq * head_dim;
+        op::rope_f32::forward_heads(
+            pos as usize,
+            &x[start..start + head_dim],
+            &mut reference[start..start + head_dim],
+            head_dim,
+        )
+        .expect("参考：逐段旋转");
+    }
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &x);
+    bind(&mut executor, 1, &positions);
+    executor.bind(2, vec![0.0; 4]);
+    let mut node = Node::new(
+        "rope_f32",
+        Launch::new([1, 1, 1], [head_dim as u32, head_dim as u32, 1]),
+    );
+    node.bind_input(0).bind_input(1).bind_output(2);
+    executor.run(&node).expect("执行");
+    let produced = executor.get(2).expect("输出缓冲").to_vec();
+
+    assert_close(&produced, &reference);
+}
+
 #[test]
 fn binary_elementwise_runs_through_the_registered_kernel() {
     let a = [1.0, 2.0];

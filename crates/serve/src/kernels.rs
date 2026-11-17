@@ -293,16 +293,36 @@ fn run_rope(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<(
     }
 }
 
-/// RoPE 适配：位置走标量槽（D9 / ADR 0043），未填位置给 `Invalid`；头宽取 Launch 几何第二维，
-/// 单头（头宽 0 或等于整段）走单头旋转，多头按头宽分段重计频率。
+/// RoPE 适配：单序列位置走标量槽（ADR 0043 §1）；批形态第二路输入为逐序列位置表
+/// （ADR 0043 §5），元素折 f32、内核 `as usize`，批节点绑表后不再读标量槽。头宽取 Launch
+/// 几何第二维，单头走单头旋转，多头按头宽分段重计频率。
 fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let x = input_f32("rope_f32", inputs, 0)?;
     let out = output_f32("rope_f32", outputs, 0)?;
+    let head_dim = launch.block[1] as usize;
+    match inputs.get(1).and_then(View::f32) {
+        Some(table) => rope_batch(table, x, out, head_dim),
+        None => rope_single(&launch, x, out, head_dim),
+    }
+}
+
+/// 批位置表通道：`positions[b]` 折 usize，段内复用多头旋转编排。
+fn rope_batch(table: &[f32], x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
+    let positions: Vec<usize> = table.iter().map(|&pos| pos as usize).collect();
+    op::rope_f32::forward_batch(&positions, x, out, head_dim)
+}
+
+/// 单序列标量槽通道：未填位置给 `Invalid`；头宽 0 或等于整段走单头旋转。
+fn rope_single(
+    launch: &Launch,
+    x: &[f32],
+    out: &mut [f32],
+    head_dim: usize,
+) -> Result<()> {
     let pos = launch
         .scalars()
         .rope_position()
         .ok_or_else(|| Error::new(Code::Invalid, "rope_f32 位置标量未填").with(SITE))?;
-    let head_dim = launch.block[1] as usize;
     run_rope(pos as usize, x, out, head_dim)
 }
 
