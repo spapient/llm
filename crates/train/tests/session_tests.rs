@@ -317,8 +317,8 @@ fn session_state_round_trips_through_restore_snapshot() -> Result<()> {
     Ok(())
 }
 
-/// 回载对账：累积槽位数错位、槽长度不符、ties 编号越界、矩槽位数错位，一律 [`Code::Invalid`]，
-/// 拒绝前不改写会话状态。
+/// 回载对账：累积槽位数错位、槽长度不符、ties 编号越界、矩槽位数/长度错位，一律
+/// [`Code::Invalid`]，拒绝前不改写会话状态。
 #[test]
 fn restore_snapshot_rejects_mismatched_state() -> Result<()> {
     let (tape, sizes, w_source, w_tied, u, _x, _h, _t, _loss) = two_layer_fixture();
@@ -367,6 +367,27 @@ fn restore_snapshot_rejects_mismatched_state() -> Result<()> {
     let error = target
         .restore_snapshot(&snapshot)
         .expect_err("ties 编号越界");
+    assert_eq!(error.code(), Code::Invalid);
+
+    // 矩表槽长度不符：第一槽矩向量长 N − 1，会话槽参数长 N。
+    let moments = Moments::new(
+        vec![
+            SlotMoments::new(vec![0.0; N - 1], vec![0.0; N - 1])?,
+            SlotMoments::new(vec![0.0; N], vec![0.0; N])?,
+            SlotMoments::new(vec![0.0; N], vec![0.0; N])?,
+        ],
+        1,
+    );
+    let snapshot = Snapshot::new_with_all(
+        facts,
+        header.clone(),
+        moments,
+        GradAccum::empty(),
+        Ties::empty(),
+    );
+    let error = target
+        .restore_snapshot(&snapshot)
+        .expect_err("矩槽长度不符");
     assert_eq!(error.code(), Code::Invalid);
 
     // 矩表槽位数错位：非空矩表只 1 槽，会话 3 槽。
