@@ -652,10 +652,11 @@ fn resolve_refs(stored: &mut [Stored]) -> Result<()> {
     Ok(())
 }
 
+/// 一条回填决议：引用段下标 + 代表段的 codec / 起点 / 长度 / CRC 快照。
+type Resolution = (usize, (Codec, usize, usize, u32));
+
 /// 先收集每条引用段的代表段区间快照；与落地分成两轮，避免可变借用叠在段表上。
-fn collect_resolutions(
-    stored: &[Stored],
-) -> Result<Vec<(usize, (Codec, usize, usize, u32))>> {
+fn collect_resolutions(stored: &[Stored]) -> Result<Vec<Resolution>> {
     let mut resolutions = Vec::new();
     for (index, seg) in stored.iter().enumerate() {
         let StoredInner::Ref { rep, .. } = &seg.inner else {
@@ -668,10 +669,7 @@ fn collect_resolutions(
 }
 
 /// 把代表段区间、codec 与 CRC 回填到引用段槽位。
-fn apply_resolutions(
-    stored: &mut [Stored],
-    resolutions: Vec<(usize, (Codec, usize, usize, u32))>,
-) {
+fn apply_resolutions(stored: &mut [Stored], resolutions: Vec<Resolution>) {
     for (index, (codec, start, len, crc)) in resolutions {
         if let StoredInner::Ref {
             codec: c,
