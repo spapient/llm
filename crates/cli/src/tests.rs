@@ -63,6 +63,55 @@ fn run_carries_its_options_in_any_order_and_refuses_to_guess_the_file() {
 }
 
 #[test]
+fn train_carries_its_options_without_parsing_numbers() {
+    assert_eq!(
+        Invocation::parse(&args(&[
+            "train",
+            "--lr",
+            "0.01",
+            "--warmup",
+            "10",
+            "--steps",
+            "100",
+            "--clip",
+            "1.0",
+            "--accumulation",
+            "2",
+            "--load",
+            "ckpt.snap",
+        ]))
+        .expect("合法")
+        .command(),
+        &Command::Train {
+            lr: Some("0.01".to_string()),
+            warmup: Some("10".to_string()),
+            steps: Some("100".to_string()),
+            clip: Some("1.0".to_string()),
+            accumulation: Some("2".to_string()),
+            load: Some("ckpt.snap".to_string()),
+        }
+    );
+    // 不带任何选项也是合法命令：数值缺省由组装点的训练配置决定。
+    assert_eq!(
+        Invocation::parse(&args(&["train"]))
+            .expect("无选项")
+            .command(),
+        &Command::Train {
+            lr: None,
+            warmup: None,
+            steps: None,
+            clip: None,
+            accumulation: None,
+            load: None,
+        }
+    );
+    let unknown = Invocation::parse(&args(&["train", "--op", "gemv_i4"])).expect_err("未知选项");
+    assert!(unknown.to_string().contains("--op"), "{unknown}");
+    let missing = Invocation::parse(&args(&["train", "--lr"])).expect_err("缺取值");
+    assert!(missing.to_string().contains("缺少取值"), "{missing}");
+}
+
+#[test]
 fn help_has_three_spellings() {
     for spelling in ["help", "-h", "--help"] {
         assert_eq!(
@@ -108,7 +157,7 @@ fn unknown_words_and_flags_are_rejected_with_the_usage_hint() {
 
 #[test]
 fn the_usage_text_lists_every_command() {
-    for command in ["status", "verify", "bench", "help"] {
+    for command in ["status", "verify", "bench", "train", "help"] {
         assert!(USAGE.contains(command), "{command}");
     }
 }

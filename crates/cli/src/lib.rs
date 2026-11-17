@@ -44,6 +44,7 @@ pub const USAGE: &str = "\
   run    --weights <文件> 用真实权重算一次前向（每条链一层内核）
   verify --op <算子>      校验一个算子的协商与对拍
   bench  --op <算子>      测量一个算子的带宽与达成率
+  train [选项]            跑训练闭环（配置数值由组装点解析，本层只搬字符串）
   help                   打印本说明
 
 选项：
@@ -51,6 +52,12 @@ pub const USAGE: &str = "\
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
   --input <a,b,c>         `run` 的输入向量（逗号分隔 f32；不给则用确定性图案）
   --device <设备>         `run` 的设备名（缺省 `auto`，按指纹选）
+  --lr <数值>             训练峰值学习率（`train` 用；缺省由调度表定）
+  --warmup <步数>         学习率预热步数（`train` 用）
+  --steps <步数>         总训练步数（`train` 用）
+  --clip <范数>          全局梯度裁剪范数（`train` 用）
+  --accumulation <步数>  梯度累积步数（`train` 用；缺省 1）
+  --load <检查点>         从快照恢复参数、矩状态与步数（`train` 用）
   -h, --help             等价于 `help`
 ";
 
@@ -80,6 +87,21 @@ pub enum Command {
         input: Option<String>,
         /// 设备名；`None` 表示 `auto`（按指纹选）。
         device: Option<String>,
+    },
+    /// 跑训练闭环。配置只搬字符串：f32 / 整数的解析在组装点，文法层不猜默认值。
+    Train {
+        /// 峰值学习率；`None` 取调度表默认。
+        lr: Option<String>,
+        /// 学习率预热步数；`None` 取调度表默认。
+        warmup: Option<String>,
+        /// 总训练步数；`None` 取配置默认。
+        steps: Option<String>,
+        /// 全局梯度裁剪范数；`None` 表示不裁剪。
+        clip: Option<String>,
+        /// 梯度累积步数；`None` 表示每步更新一次。
+        accumulation: Option<String>,
+        /// 恢复用快照路径；`None` 表示从零开始。
+        load: Option<String>,
     },
     /// 打印用法。
     Help,
@@ -121,6 +143,16 @@ const RUN: &[(&str, &str)] = &[
     ("--device", "设备"),
 ];
 
+/// `train` 的选项与取值说明：全部可选，顺序自由；数值解析留给组装点。
+const TRAIN: &[(&str, &str)] = &[
+    ("--lr", "数值"),
+    ("--warmup", "步数"),
+    ("--steps", "步数"),
+    ("--clip", "范数"),
+    ("--accumulation", "步数"),
+    ("--load", "检查点"),
+];
+
 impl Invocation {
     /// 解析参数（不含 `argv[0]`）。
     ///
@@ -150,14 +182,19 @@ impl Invocation {
 /// 子命令名 → 命令；缺名字即默认命令 `status`。
 fn command(name: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
     let name = name.unwrap_or("status");
-    if matches!(name, "help" | "-h" | "--help") {
-        return Ok(Command::Help);
+    match name {
+        "help" | "-h" | "--help" => Ok(Command::Help),
+        "run" => run(words),
+        "train" => train(words),
+        known => single(known, words),
     }
-    if name == "run" {
-        return run(words);
-    }
-    let Some((_, flag, what, build)) = SINGLE.iter().find(|(known, ..)| *known == name) else {
-        return Err(invalid(format!("未知命令 `{name}`")));
+}
+
+/// 单参数命令表命中；未知名命令报 [`Code::Invalid`]。
+fn single(known: &str, words: &mut Words<'_>) -> Result<Command> {
+    let Some((_, flag, what, build)) = SINGLE.iter().find(|(candidate, ..)| *candidate == known)
+    else {
+        return Err(invalid(format!("未知命令 `{known}`")));
     };
     Ok(build(parse_value(words, flag, what)?))
 }
@@ -176,6 +213,26 @@ fn run(words: &mut Words<'_>) -> Result<Command> {
         weights: weights.ok_or_else(missing_weights)?,
         input,
         device,
+    })
+}
+
+/// `train`：六个选项顺序自由，全部可缺省；文法层只搬字符串，不解析 f32 / 步数。
+fn train(words: &mut Words<'_>) -> Result<Command> {
+    let mut slots: [Option<String>; 6] = [None, None, None, None, None, None];
+    while let Some(flag) = words.peek().copied() {
+        let Some(slot) = TRAIN.iter().position(|(known, _)| *known == flag) else {
+            return Err(invalid(format!("`train` 不接受 `{flag}`")));
+        };
+        slots[slot] = parse_value(words, TRAIN[slot].0, TRAIN[slot].1)?;
+    }
+    let [lr, warmup, steps, clip, accumulation, load] = slots;
+    Ok(Command::Train {
+        lr,
+        warmup,
+        steps,
+        clip,
+        accumulation,
+        load,
     })
 }
 
