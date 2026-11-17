@@ -40,6 +40,11 @@ name = "gen_corpus"
 path = "tests/gen_corpus.rs"
 harness = false
 
+# P0-6 契约遍历：libtest 集成测试，默认 feature 下编译，不走 libfuzzer 运行时。
+[[test]]
+name = "p06"
+path = "tests/p06.rs"
+
 # libfuzzer 目标是 `harness = false` 的独立测试二进制：拿 dev-dependencies，但不走 libtest；
 # 不作为 `example` 样例目标存在。仅在 `engine` feature 下编译。
 [[test]]
