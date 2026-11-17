@@ -146,7 +146,11 @@ fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_
     attention_paths(inputs, outputs, op::attention::forward)
 }
 
-fn flash_attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn flash_attention_f32(
+    _launch: Launch,
+    inputs: &[View<'_>],
+    outputs: &mut [ViewMut<'_>],
+) -> Result<()> {
     attention_paths(inputs, outputs, op::attention::flash_forward)
 }
 
@@ -163,11 +167,19 @@ fn decode_paths(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>], run: DecodeKer
     run(q, k, v, out, q_rows, hist, d)
 }
 
-fn decode_attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn decode_attention_f32(
+    _launch: Launch,
+    inputs: &[View<'_>],
+    outputs: &mut [ViewMut<'_>],
+) -> Result<()> {
     decode_paths(inputs, outputs, op::attention::decode_forward)
 }
 
-fn decode_flash_attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn decode_flash_attention_f32(
+    _launch: Launch,
+    inputs: &[View<'_>],
+    outputs: &mut [ViewMut<'_>],
+) -> Result<()> {
     decode_paths(inputs, outputs, op::attention::decode_flash_forward)
 }
 
@@ -207,9 +219,10 @@ fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>])
 fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let x = input_f32("rope_f32", inputs, 0)?;
     let out = output_f32("rope_f32", outputs, 0)?;
-    let pos = launch.scalars().rope_position().ok_or_else(|| {
-        Error::new(Code::Invalid, "rope_f32 位置标量未填").with(SITE)
-    })?;
+    let pos = launch
+        .scalars()
+        .rope_position()
+        .ok_or_else(|| Error::new(Code::Invalid, "rope_f32 位置标量未填").with(SITE))?;
     op::rope_f32::forward(pos as usize, x, out)
 }
 

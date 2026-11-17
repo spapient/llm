@@ -1204,16 +1204,8 @@ fn a_composite_width_break_is_rejected_at_assembly() {
     let stack = Stack::of(vec![
         Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
         Box::new(
-            AttentionBlock::new(
-                "blk.0",
-                8,
-                8,
-                8,
-                2,
-                AttentionAlgo::Naive,
-                WeightFormat::F32,
-            )
-            .expect("层"),
+            AttentionBlock::new("blk.0", 8, 8, 8, 2, AttentionAlgo::Naive, WeightFormat::F32)
+                .expect("层"),
         ),
     ])
     .expect("栈");
