@@ -125,7 +125,8 @@ fn wire_qkv(
     Ok((q, k, v))
 }
 
-/// RoPE 子节点：对一路投影向量按位置做旋转；位置走标量槽，由宿主每步回填。
+/// RoPE 子节点：对一路投影向量按位置做旋转；单序列位置走标量槽，由宿主每步回填；
+/// 批形态逐序列位置走独立输入位置表（ADR 0043 §5），两通道不在同节点并存。
 /// 头宽走 Launch 几何第二维（ADR 0043 §3：静态几何不进标量槽），单头时等于整段宽度。返回旋转后编号。
 fn wire_rope(sink: &mut NodeSink<'_>, input: u32, width: usize, head_dim: usize) -> Result<u32> {
     let output = sink.slots.activation()?;

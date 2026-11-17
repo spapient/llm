@@ -23,7 +23,9 @@
 //!
 //! 接纯切片签名的 f32 算子，以及 i4/i8 量化 lane（`gemv_i4`/`gemv_i8`/`dequant_i4`/
 //! `dequant_i8`）；量化权重文件侧的半精度与零点解码仍留后，本轮量化通路以内存夹具对拍
-//! 验证。`rope_f32` 的位置走标量槽回填；decode 变长历史几何仍随后续 KV 工作落地（设计文档 §5.1）。
+//! 验证。`rope_f32` 单序列位置走标量槽回填；批形态逐序列位置表走独立输入缓冲（ADR 0043 §5）。
+//! decode 变长历史段紧排布局已定（ADR 0046 §7，op `*_batch_var` 入口就位），serve 批装填 / 写回
+//! 随块链整批刀落地。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{CpuExecutor, Launch, Program, View, ViewMut};

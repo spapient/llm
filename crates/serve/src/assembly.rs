@@ -52,6 +52,7 @@ pub(crate) struct Assembly {
 
 impl Assembly {
     /// 把当前位置写进全部 rope 节点的标量槽；提交前由宿主按当前步回填，图结构不改。
+    /// 批形态逐序列位置改绑位置表输入缓冲（ADR 0043 §5），不再回填标量槽。
     pub(crate) fn set_rope_positions(&mut self, position: u32) {
         for &id in &self.rope {
             let node = self.graph.nodes_mut().iter_mut().find(|node| {
