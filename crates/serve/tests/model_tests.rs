@@ -135,8 +135,11 @@ fn gemv_hidden(x: &[f32], w: &[f32]) -> Vec<f32> {
     h
 }
 
+/// 块四路投影向量：q/k/v/o。
+type Projections = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
+
 /// 块四路投影小值矩阵：q/k/v 取种子 0/1/2，o 取种子 3。
-fn block_projections(hidden: usize, kv: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+fn block_projections(hidden: usize, kv: usize) -> Projections {
     (
         projection_matrix(kv, hidden, 0.0),
         projection_matrix(kv, hidden, 1.0),
@@ -193,23 +196,19 @@ fn block_params(table: Vec<f32>, wq: Vec<f32>, wk: Vec<f32>, wv: Vec<f32>, wo: V
 }
 
 /// 嵌入 + 单头注意力块装配夹具：返回模型、嵌入表与 q/k/v/o 四路投影，decode 对拍链复用。
-fn block_fixture(
-    vocab: usize,
-    hidden: usize,
-    kv: usize,
-) -> (CpuModel, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+fn block_fixture(vocab: usize, hidden: usize, kv: usize) -> (CpuModel, Vec<f32>, Projections) {
     let table = embed_table(vocab, hidden);
-    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let projections = block_projections(hidden, kv);
     let stack = embed_block_stack(vocab, hidden, kv, 4);
     let params = block_params(
         table.clone(),
-        wq.clone(),
-        wk.clone(),
-        wv.clone(),
-        wo.clone(),
+        projections.0.clone(),
+        projections.1.clone(),
+        projections.2.clone(),
+        projections.3.clone(),
     );
     let model = assemble(stack, params);
-    (model, table, wq, wk, wv, wo)
+    (model, table, projections)
 }
 
 /// 块四路零权重参数表（几何/缺键负例共用）。
@@ -1168,7 +1167,7 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     let (vocab, hidden, kv) = (8, 8, 8);
     let hist = 1;
 
-    let (mut model, table, wq, wk, wv, wo) = block_fixture(vocab, hidden, kv);
+    let (mut model, table, (wq, wk, wv, wo)) = block_fixture(vocab, hidden, kv);
     let (hist_k, hist_v) = history_kv(kv);
     let history = history_row(&hist_k, &hist_v);
 
@@ -1203,7 +1202,7 @@ fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
     let (vocab, hidden, kv) = (8, 8, 8);
     let hist = 1;
 
-    let (mut model, table, wq, wk, wv, wo) = block_fixture(vocab, hidden, kv);
+    let (mut model, table, (wq, wk, wv, wo)) = block_fixture(vocab, hidden, kv);
     let (hist_k_a, hist_v_a) = history_kv(kv);
     let hist_k_b: Vec<f32> = hist_k_a.iter().map(|value| value * 1.7).collect();
     let hist_v_b: Vec<f32> = hist_v_a.iter().map(|value| value * 1.3).collect();
