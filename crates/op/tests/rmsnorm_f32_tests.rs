@@ -87,3 +87,52 @@ fn rmsnorm_saturating_and_repeated_inputs_match_reference() {
         assert!(out.iter().all(|v| v.is_finite()), "用例 {index}：结果有限");
     }
 }
+
+#[test]
+fn batch_normalizes_each_segment_independently() {
+    let row_dim = 3;
+    let batch = 2;
+    let x: Vec<f32> = (0..batch * row_dim)
+        .map(|i| i as f32 * 0.5 - 2.0)
+        .collect();
+    let gamma: Vec<f32> = (0..row_dim).map(|i| 0.6 + i as f32 * 0.1).collect();
+
+    let mut out = vec![0.0; x.len()];
+    forward_batch(&x, &gamma, &mut out, row_dim).expect("批量归一化");
+
+    // 参考：每段独立走单行入口，gamma 逐段复用，段间不混均值。
+    let mut expected = vec![0.0; x.len()];
+    for (b, seg) in x.chunks(row_dim).enumerate() {
+        let span = b * row_dim..(b + 1) * row_dim;
+        forward(seg, &gamma, &mut expected[span]).expect("段内参考");
+    }
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn batch_one_entry_matches_the_single_row_kernel() {
+    let x = vec![1.0, -2.0, 0.5, 3.0];
+    let gamma = vec![0.7, 0.6, 0.8, 0.5];
+    let mut single = vec![0.0; x.len()];
+    forward(&x, &gamma, &mut single).expect("单行");
+    let mut batch = vec![0.0; x.len()];
+    forward_batch(&x, &gamma, &mut batch, x.len()).expect("单段经批量入口");
+    assert_eq!(single, batch, "batch=1 必须与单行入口逐元素等价");
+}
+
+#[test]
+fn batch_rejects_bad_row_dimension_and_length() {
+    let x = vec![1.0, 2.0, 3.0, 4.0];
+    let gamma = vec![0.5; 2];
+    let mut out = vec![0.0; 4];
+    // 行宽为 0。
+    assert!(forward_batch(&x, &gamma, &mut out, 0).is_err());
+    // gamma 长度与行宽不符。
+    let wrong_gamma = vec![0.5; 3];
+    assert!(forward_batch(&x, &wrong_gamma, &mut out, 2).is_err());
+    // x 与 out 不等长。
+    let mut short = vec![0.0; 3];
+    assert!(forward_batch(&x, &gamma, &mut short, 2).is_err());
+    // 缓冲不是行宽整数倍。
+    assert!(forward_batch(&x[..3], &gamma, &mut short, 2).is_err());
+}

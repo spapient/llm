@@ -131,6 +131,53 @@ pub fn forward(x: &[f32], gamma: &[f32], out: &mut [f32]) -> diagnostic::Result<
     Ok(())
 }
 
+/// 批段前置：行宽非空、gamma 与行宽等长、x/out 等长且为行宽整数倍；返回批内段数。
+fn rmsnorm_batch_segments(
+    x: &[f32],
+    gamma: &[f32],
+    out: &[f32],
+    row_dim: usize,
+) -> Result<usize, Error> {
+    if row_dim == 0 {
+        return Err(Error::new(Code::Invalid, "rmsnorm 行宽不能为 0"));
+    }
+    if gamma.len() != row_dim {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("gamma 长度 {} 不等于行宽 {row_dim}", gamma.len()),
+        ));
+    }
+    if x.len() != out.len() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("x {} 与 out {} 长度不一致", x.len(), out.len()),
+        ));
+    }
+    if x.is_empty() || !x.len().is_multiple_of(row_dim) {
+        return Err(Error::new(Code::Invalid, "rmsnorm 批缓冲不是行宽整数倍"));
+    }
+    Ok(x.len() / row_dim)
+}
+
+/// 批量入口：`[batch, row_dim]` 段连续，每段独立 RMS 归一化，gamma 按行宽复用。
+///
+/// # Errors
+///
+/// 行宽为 0、gamma 与行宽不等长、x/out 不等长、缓冲非行宽倍数或为空时返回说明。
+pub fn forward_batch(
+    x: &[f32],
+    gamma: &[f32],
+    out: &mut [f32],
+    row_dim: usize,
+) -> diagnostic::Result<()> {
+    let batch = rmsnorm_batch_segments(x, gamma, out, row_dim)?;
+    for b in 0..batch {
+        let start = b * row_dim;
+        forward(&x[start..start + row_dim], gamma, &mut out[start..start + row_dim])?;
+    }
+    Ok(())
+}
+
 /// RMSNorm 的具体语义别名：`#[model]` 在它上面生成 `MODEL`。
 #[annotation::model(name = "rmsnorm_f32", shape = [4096, 4096], dtype = "f32", skeleton = "rmsnorm")]
 pub type RmsNormF32 = RmsNorm;
