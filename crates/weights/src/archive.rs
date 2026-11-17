@@ -502,14 +502,25 @@ fn layout(
 ) -> Result<Vec<Stored>> {
     validate_names(&descs)?;
     validate_refs(&descs)?;
-    let mut cursor = data_start;
+    let mut stored = place_all(descs, bytes, data_start, align, footer_pos)?;
+    resolve_refs(&mut stored)?;
+    Ok(stored)
+}
+
+/// 逐条落位到数据区，并校验数据区正好接到 footer；引用段区间待 `resolve_refs` 回填。
+fn place_all(
+    descs: Vec<Desc>,
+    bytes: &[u8],
+    mut cursor: usize,
+    align: usize,
+    footer_pos: usize,
+) -> Result<Vec<Stored>> {
     let mut stored: Vec<Stored> = Vec::with_capacity(descs.len());
     for desc in &descs {
         let (segment, end) = place_next(desc, bytes, cursor, align, footer_pos)?;
         stored.push(segment);
         cursor = end;
     }
-    resolve_refs(&mut stored)?;
     if cursor != footer_pos {
         return Err(invalid(format!(
             "数据区结束于 {cursor}，尾部在 {footer_pos}：存在多余字节"
@@ -591,18 +602,23 @@ fn check_ref(index: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
     match colors[index] {
         2 => return Ok(()),
         1 => return Err(invalid("引用段成环")),
-        _ => {}
+        _ => {
+            colors[index] = 1;
+            walk_ref(index, descs, colors)?;
+            colors[index] = 2;
+        }
     }
-    colors[index] = 1;
+    Ok(())
+}
+
+/// 在途节点沿代表下标递归；内联段直接收口，引用段交代表段继续 DFS。
+fn walk_ref(index: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
     let DescBody::Ref { rep } = descs[index].body() else {
-        colors[index] = 2;
         return Ok(());
     };
     let rep = *rep as usize;
     validate_ref_target(index, rep, descs)?;
-    check_ref(rep, descs, colors)?;
-    colors[index] = 2;
-    Ok(())
+    check_ref(rep, descs, colors)
 }
 
 /// 引用下标与代表段元数据校验：越界、自引用、代表段是引用、取值元数据不一致一律 `Invalid`。
@@ -631,6 +647,15 @@ fn validate_ref_target(index: usize, rep: usize, descs: &[Desc]) -> Result<()> {
 /// 代表段落位后，把其区间、codec 与 CRC 回填到引用段。先收集回填决议再落地，
 /// 避免同一轮迭代里可变借用与不可变借用叠在同一份段表上。
 fn resolve_refs(stored: &mut [Stored]) -> Result<()> {
+    let resolutions = collect_resolutions(stored)?;
+    apply_resolutions(stored, resolutions);
+    Ok(())
+}
+
+/// 先收集每条引用段的代表段区间快照；与落地分成两轮，避免可变借用叠在段表上。
+fn collect_resolutions(
+    stored: &[Stored],
+) -> Result<Vec<(usize, (Codec, usize, usize, u32))>> {
     let mut resolutions = Vec::new();
     for (index, seg) in stored.iter().enumerate() {
         let StoredInner::Ref { rep, .. } = &seg.inner else {
@@ -639,6 +664,14 @@ fn resolve_refs(stored: &mut [Stored]) -> Result<()> {
         let resolution = resolve_one(stored, index, *rep)?;
         resolutions.push((index, resolution));
     }
+    Ok(resolutions)
+}
+
+/// 把代表段区间、codec 与 CRC 回填到引用段槽位。
+fn apply_resolutions(
+    stored: &mut [Stored],
+    resolutions: Vec<(usize, (Codec, usize, usize, u32))>,
+) {
     for (index, (codec, start, len, crc)) in resolutions {
         if let StoredInner::Ref {
             codec: c,
@@ -654,7 +687,6 @@ fn resolve_refs(stored: &mut [Stored]) -> Result<()> {
             *r = crc;
         }
     }
-    Ok(())
 }
 
 /// 取一条引用段的代表段区间快照；代表段仍是引用则拒绝。

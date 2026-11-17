@@ -187,13 +187,25 @@ impl Writer {
         let plan = self.plan()?;
         let expected = self.expected_len(&plan, align_log)?;
         let mut buf = Vec::with_capacity(expected);
-        let mut sealed = Sealed::new(&mut buf);
-        self.write_body_in(&plan, &mut sealed, align_log)?;
-        let global = if self.checksum { sealed.checksum() } else { 0 };
-        // 全局 CRC 本身不进 CRC，直接写底层缓冲。
-        buf.extend_from_slice(&global.to_le_bytes());
+        self.write_sealed(&plan, align_log, &mut buf)?;
         debug_assert_eq!(buf.len(), expected, "长度零漂移");
         Ok(buf)
+    }
+
+    /// 正文写进密封接收器，全局 CRC 收尾后落回底层缓冲；全局 CRC 本身不进 CRC。
+    fn write_sealed(
+        &self,
+        plan: &[Plan<'_>],
+        align_log: u8,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        let global = {
+            let mut sealed = Sealed::new(buf);
+            self.write_body_in(plan, &mut sealed, align_log)?;
+            if self.checksum { sealed.checksum() } else { 0 }
+        };
+        buf.extend_from_slice(&global.to_le_bytes());
+        Ok(())
     }
 
     /// 预演编码路径得到的整份字节数（正文 + 4 字节全局 CRC），与实际写出共用同一 plan。
