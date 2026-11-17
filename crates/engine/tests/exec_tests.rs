@@ -196,14 +196,20 @@ impl Program for Scale {
         "scale"
     }
 
-    fn run(&self, _launch: Launch, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
+    fn run(&self, _launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
         let (Some(input), Some(output)) = (inputs.first(), outputs.first_mut()) else {
             return Err(Error::new(Code::Invalid, "scale 需要一进一出").with("test::Scale"));
         };
+        let input = input.f32().ok_or_else(|| {
+            Error::new(Code::Invalid, "scale 输入不是浮点缓冲").with("test::Scale")
+        })?;
+        let output = output.f32_mut().ok_or_else(|| {
+            Error::new(Code::Invalid, "scale 输出不是浮点缓冲").with("test::Scale")
+        })?;
         if input.len() != output.len() {
             return Err(Error::new(Code::Invalid, "形状不一致").with("test::Scale"));
         }
-        for (slot, value) in output.iter_mut().zip(*input) {
+        for (slot, value) in output.iter_mut().zip(input) {
             *slot = value * self.factor;
         }
         Ok(())
@@ -218,16 +224,25 @@ impl Program for Add {
         "add"
     }
 
-    fn run(&self, _launch: Launch, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
+    fn run(&self, _launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
         let (Some(left), Some(right), Some(output)) =
             (inputs.first(), inputs.get(1), outputs.first_mut())
         else {
             return Err(Error::new(Code::Invalid, "add 需要两进一出").with("test::Add"));
         };
+        let left = left
+            .f32()
+            .ok_or_else(|| Error::new(Code::Invalid, "add 左输入不是浮点缓冲").with("test::Add"))?;
+        let right = right
+            .f32()
+            .ok_or_else(|| Error::new(Code::Invalid, "add 右输入不是浮点缓冲").with("test::Add"))?;
+        let output = output
+            .f32_mut()
+            .ok_or_else(|| Error::new(Code::Invalid, "add 输出不是浮点缓冲").with("test::Add"))?;
         if left.len() != right.len() || left.len() != output.len() {
             return Err(Error::new(Code::Invalid, "形状不一致").with("test::Add"));
         }
-        for ((slot, a), b) in output.iter_mut().zip(*left).zip(*right) {
+        for ((slot, a), b) in output.iter_mut().zip(left).zip(right) {
             *slot = a + b;
         }
         Ok(())
@@ -355,8 +370,8 @@ fn a_failing_kernel_still_returns_its_buffers() {
         fn run(
             &self,
             _launch: Launch,
-            _inputs: &[&[f32]],
-            _outputs: &mut [&mut [f32]],
+            _inputs: &[View<'_>],
+            _outputs: &mut [ViewMut<'_>],
         ) -> Result<()> {
             Err(Error::new(Code::Internal, "内核自己失败了").with("test::Wrong"))
         }
@@ -375,8 +390,8 @@ fn a_failing_kernel_still_returns_its_buffers() {
 fn bindings_replace_and_report_their_size() {
     let mut bindings = Bindings::new();
     assert!(bindings.is_empty());
-    assert_eq!(bindings.bind(0, vec![1.0]), None);
-    assert_eq!(bindings.bind(0, vec![2.0]), Some(vec![1.0]));
+    assert_eq!(bindings.bind_f32(0, vec![1.0]), None);
+    assert_eq!(bindings.bind_f32(0, vec![2.0]), Some(vec![1.0]));
     assert_eq!(bindings.get(0), Some(&[2.0][..]));
     assert_eq!(bindings.get(1), None);
     assert_eq!(bindings.len(), 1);

@@ -4,6 +4,14 @@
 //! 相对预算、"回退"与"改进"），`nn::Bounds` 只负责给出**下界**（这层至少要搬多少、算多少），
 //! 本文件只负责**搬运**与**归档**。判定规则不在这里重写，代价公式也不在这里写第二份。
 //!
+//! # 记录与分析件的分工
+//!
+//! 每条基准先构造一条 [`tool::bench::BenchRecord`]：身份（场景名 / 后端）、几何（形状 / 批次 /
+//! 精度）、主机档案（[`Harness`]）、上界（[`RecordRoofline`]）与回填后的实测；达成率、瓶颈侧、
+//! MB/s、flops、档位、verdict、基线与预算这些**本地分析件**仍由 Report 侧派生，不塞进记录。
+//! [`Scenario`] 保留为 criterion 侧描述符：分组 / 用例名 / 算子 / 上下界这些测量定位信息不进
+//! BenchRecord。未测得的整机峰值带宽 / 算力在记录里留 `None`，不拿标称值顶替。
+//!
 //! # 三条"不可比"的处理
 //!
 //! - **跨机不可比**：基线按 `os-arch` 登记（见 [`baseline_for`]）。没有本机基线时跳过，而不是
@@ -32,18 +40,20 @@
 //! 归档在 `target/bench-report/<host>/<group>.json`，由 CI 的 bench job 收成 artifact。
 
 use std::path::{Path, PathBuf};
+use tool::bench::{BenchRecord, EntryKind, Geometry, Harness, Roofline as RecordRoofline};
 use tool::regress::{Case, Direction, Judgement};
 
 /// 一条回归基线场景：criterion 被测面 + 归档元数据。
 ///
 /// 基线数值不写在结构里（基线随主机变化），由 [`baseline_for`] 按 `(host, backend, scenario)`
-/// 查 [`BASELINES`]；结构只描述"测哪条基准、报告怎么写"。
+/// 查 [`BASELINES`]；结构只描述"测哪条基准、报告怎么写"。分组 / 用例名 / 算子 / 上下界是
+/// criterion 侧的测量定位信息，不进 [`BenchRecord`]。
 struct Scenario {
     /// criterion 分组名（`target/criterion/<group>/...`）。
     group: &'static str,
     /// criterion 用例名（`.../<benchmark>/new/estimates.json`）。
     benchmark: &'static str,
-    /// 场景名：`<算子>/<形状>`，同时是 regress `Case` 名与归档口径的一部分。
+    /// 场景名：`<算子>/<形状>`，同时是 regress `Case` 名、记录名与归档口径的一部分。
     scenario: &'static str,
     /// 后端标识：同一算子在不同后端上各占一行，基线按它区分（不是写死的常量）。
     backend: &'static str,
@@ -242,7 +252,8 @@ const BASELINES: &[Baseline] = &[
 /// 一台机器的档案：标识、机型、系统、工具链。
 ///
 /// 机型写成数据而不是注释，是因为它必须随报告归档：上一轮的注释把 M5 Pro 写成了 M4 Pro，
-/// 而 `os-arch` 完全看不出这个差别。没有档案的主机不判——跨机数字不可比。
+/// 而 `os-arch` 完全看不出这个差别。没有档案的主机不判——跨机数字不可比。档案经构造器填进
+/// [`Harness`]，本结构不再直接进 JSON 渲染。
 struct HostProfile {
     /// `os-arch` 标识，与 [`host`] 的返回值一致。
     host: &'static str,
@@ -365,6 +376,9 @@ const NS_PER_SECOND: f64 = 1e9;
 /// 一兆字节：把字节 / ns 换算成 MB/s。
 const BYTES_PER_MB: f64 = 1e6;
 
+/// 一吉字节（十进制）：把 MB/s 换算成 GB/s，填进记录的上界带宽字段。
+const BYTES_PER_GB: f64 = 1e9;
+
 /// 工作集落在哪一档：`l1` / `l2` / `dram`。
 fn tier(working_set: u64) -> &'static str {
     if working_set <= L1_LIMIT {
@@ -458,7 +472,65 @@ fn mbps(ceiling: &Ceiling) -> f64 {
     ceiling.bytes as f64 / ceiling.ns * NS_PER_SECOND / BYTES_PER_MB
 }
 
+/// 由主机档案与后端标识构造记录的 [`Harness`]：arch 取运行环境，driver 填后端标识。
+fn harness_of(host: &HostProfile, driver: &str) -> Harness {
+    Harness::new(
+        host.host,
+        host.cpu,
+        host.os,
+        std::env::consts::ARCH,
+        host.toolchain,
+        driver,
+    )
+}
+
+/// 由场景描述符构造几何（形状 / 批次 / 精度），构造自检失败属于登记数据错误，直接 panic。
+fn geometry_of(scenario: &Scenario) -> Geometry {
+    Geometry::new(scenario.shape.to_vec(), scenario.batch, scenario.dtype)
+        .expect("场景几何合法：形状 / 批次 / 精度通过构造自检")
+}
+
+/// 构造一条算子基准的统一记录，并回填实测 ns/iter。
+///
+/// 整机峰值带宽 / 算力没有在本机测得：上界字段留 [`None`]，不拿标称值或他机数字顶替。分档
+/// 搬运输送率属于 Report 侧的 roofline 分析件，不重复塞进记录。
+fn record_for(host: &HostProfile, scenario: &Scenario, observed: f64) -> BenchRecord {
+    let record = BenchRecord::new(
+        EntryKind::Op,
+        scenario.scenario,
+        scenario.backend,
+        geometry_of(scenario),
+        harness_of(host, scenario.backend),
+        RecordRoofline::default(),
+    )
+    .expect("算子记录合法：身份 / 几何 / 后端通过构造自检");
+    record.with_observed(observed).expect("实测有限")
+}
+
+/// 构造一条上界基准的统一记录：实测搬运速率登记进峰值带宽字段，峰值算力未测得留 [`None`]。
+fn ceiling_record(host: &HostProfile, ceiling: &Ceiling, observed: f64) -> BenchRecord {
+    let geometry = Geometry::new(vec![ceiling.bytes as usize], 1, "u8")
+        .expect("上界几何合法：每迭代字节数作为一维");
+    // MB/s（十进制）→ GB/s：记录上界字段按 GB/s 口径。
+    let peak_bw_gb_s = mbps(ceiling) * BYTES_PER_MB / BYTES_PER_GB;
+    let roofline = RecordRoofline::new(Some(peak_bw_gb_s), None).expect("上界带宽非负有限");
+    let name = format!("mem_stream/{}_{}", ceiling.tier, ceiling.traffic);
+    let record = BenchRecord::new(
+        EntryKind::Op,
+        name,
+        "cpu-reference",
+        geometry,
+        harness_of(host, "cpu-reference"),
+        roofline,
+    )
+    .expect("上界记录合法：身份 / 几何 / 后端通过构造自检");
+    record.with_observed(observed).expect("实测有限")
+}
+
 /// 一条基准的 roofline 口径：下界流量、所落的存储档位、该档实测上界、达成率。
+///
+/// 这是 Report 侧的本地分析件，不进 [`BenchRecord`]：达成率、瓶颈侧、MB/s、flops、档位都由
+/// 算子语义与本机上界在此派生。
 struct Roofline {
     /// 下界读入字节（`nn::Bounds`，由算子语义推出，不是手写常数）。
     read: u64,
@@ -559,13 +631,12 @@ impl Roofline {
     }
 }
 
-/// 一份归档报告：元数据 + 实测 + 结论 + roofline 口径。
+/// 一份归档报告：统一记录（身份 / 几何 / 后端 / 上界 / 实测）+ 本地分析件 + 结论。
 struct Report<'a> {
     scenario: &'a Scenario,
-    host: &'a HostProfile,
+    record: BenchRecord,
     roofline: Roofline,
     verdict: &'static str,
-    observed_ns: f64,
     baseline_ns: f64,
     budget_percent: f64,
 }
@@ -580,30 +651,27 @@ impl Report<'_> {
     /// 渲染成整数数值的 JSON（见模块文档最后一段）。
     fn render(&self) -> String {
         let scenario = self.scenario;
+        let record = &self.record;
         let roofline = &self.roofline;
+        let harness = record.harness();
+        let geometry = record.geometry();
+        let observed = record.observed().expect("记录已回填实测");
         format!(
             "{{\n  \"surface\": \"{}\",\n  \"benchmark\": \"{}\",\n  \
              \"scenario\": \"{}\",\n  \"op\": \"{}\",\n  \"backend\": \"{}\",\n  \
              \"shape\": {},\n  \"batch\": {},\n  \"dtype\": \"{}\",\n  \
              \"read_bytes\": {},\n  \"write_bytes\": {},\n  \"working_set_bytes\": {},\n  \
              \"cache_tier\": \"{}\",\n  \"flops\": {},\n  \
-             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n  \
-             \"budget_percent\": {},\n  \"baseline_ns\": {},\n  \"observed_ns\": {},\n  \
-             \"verdict\": \"{}\",\n  \
-             \"host\": \"{}\",\n  \"cpu\": \"{}\",\n  \"os\": \"{}\",\n  \
-             \"toolchain\": \"{}\",\n  \"arch\": \"{}\",\n  \
-             \"read_ceiling_mbps\": {},\n  \"write_ceiling_mbps\": {},\n  \
-             \"roofline_ns\": {},\n  \"bottleneck_side\": \"{}\",\n  \
-             \"achieved_percent\": {},\n  \"mflops_per_s\": {},\n  \"bottleneck\": \"{}\",\n  \
+             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n             \"budget_percent\": {},\n             \"baseline_ns\": {},\n             \"observed_ns\": {},\n             \"verdict\": \"{}\",\n             \"host\": \"{}\",\n             \"cpu\": \"{}\",\n             \"os\": \"{}\",\n             \"toolchain\": \"{}\",\n             \"arch\": \"{}\",\n             \"read_ceiling_mbps\": {},\n             \"write_ceiling_mbps\": {},\n             \"roofline_ns\": {},\n             \"bottleneck_side\": \"{}\",\n             \"achieved_percent\": {},\n             \"mflops_per_s\": {},\n             \"bottleneck\": \"{}\",\n             \
              \"profile\": \"bench\"\n}}\n",
             scenario.group,
             scenario.benchmark,
-            scenario.scenario,
+            record.name(),
             scenario.op,
-            scenario.backend,
-            shape_json(scenario.shape),
-            scenario.batch,
-            scenario.dtype,
+            record.backend(),
+            shape_json(geometry.shape()),
+            geometry.batch(),
+            geometry.dtype(),
             roofline.read,
             roofline.write,
             roofline.read + roofline.write,
@@ -612,13 +680,13 @@ impl Report<'_> {
             Direction::Lower.as_str(),
             self.budget_percent.round() as i64,
             self.baseline_ns.round() as i64,
-            self.observed_ns.round() as i64,
+            observed.round() as i64,
             self.verdict,
-            self.host.host,
-            self.host.cpu,
-            self.host.os,
-            self.host.toolchain,
-            std::env::consts::ARCH,
+            harness.host(),
+            harness.cpu(),
+            harness.os(),
+            harness.toolchain(),
+            harness.arch(),
             roofline.read_ceiling_mbps.round() as i64,
             roofline.write_ceiling_mbps.round() as i64,
             roofline.ns.round() as i64,
@@ -651,10 +719,9 @@ fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario) -> Option
     std::fs::create_dir_all(&dir).expect("归档目录可建");
     let report = Report {
         scenario,
-        host,
+        record: record_for(host, scenario, observed),
         roofline: Roofline::of(host, scenario, observed),
         verdict: judgement.as_str(),
-        observed_ns: observed,
         baseline_ns: baseline.ns,
         budget_percent: baseline.budget_percent,
     };
@@ -676,27 +743,24 @@ fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario) -> Option
     );
 }
 
-/// 一份上界归档：这一档的实测搬运速率本身也是一条被守护的基线。
+/// 一份上界归档：统一记录（含实测带宽上界）+ 结论。
 struct CeilingReport<'a> {
     ceiling: &'a Ceiling,
-    host: &'a HostProfile,
+    record: BenchRecord,
     verdict: &'static str,
-    observed_ns: f64,
 }
 
 impl CeilingReport<'_> {
     /// 渲染成整数数值的 JSON。
     fn render(&self) -> String {
         let ceiling = self.ceiling;
+        let harness = self.record.harness();
+        let observed = self.record.observed().expect("记录已回填实测");
         format!(
             "{{\n  \"surface\": \"{}\",\n  \"benchmark\": \"{}\",\n  \
              \"scenario\": \"mem_stream/{}_{}\",\n  \"kind\": \"ceiling\",\n  \
-             \"tier\": \"{}\",\n  \"traffic\": \"{}\",\n  \"bytes_per_iter\": {},\n  \
-             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n  \
-             \"budget_percent\": {},\n  \"baseline_ns\": {},\n  \"observed_ns\": {},\n  \
-             \"verdict\": \"{}\",\n  \
-             \"host\": \"{}\",\n  \"cpu\": \"{}\",\n  \"os\": \"{}\",\n  \
-             \"toolchain\": \"{}\",\n  \"mb_per_s\": {},\n  \"profile\": \"bench\"\n}}\n",
+             \"tier\": \"{}\",\n  \"traffic\": \"{}\",\n             \"bytes_per_iter\": {},\n  \
+             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n             \"budget_percent\": {},\n             \"baseline_ns\": {},\n             \"observed_ns\": {},\n             \"verdict\": \"{}\",\n             \"host\": \"{}\",\n             \"cpu\": \"{}\",\n             \"os\": \"{}\",\n             \"toolchain\": \"{}\",\n             \"mb_per_s\": {},\n             \"profile\": \"bench\"\n}}\n",
             ceiling.group,
             ceiling.benchmark,
             ceiling.tier,
@@ -707,12 +771,12 @@ impl CeilingReport<'_> {
             Direction::Lower.as_str(),
             ceiling.budget_percent.round() as i64,
             ceiling.ns.round() as i64,
-            self.observed_ns.round() as i64,
+            observed.round() as i64,
             self.verdict,
-            self.host.host,
-            self.host.cpu,
-            self.host.os,
-            self.host.toolchain,
+            harness.host(),
+            harness.cpu(),
+            harness.os(),
+            harness.toolchain(),
             mbps(ceiling).round() as i64,
         )
     }
@@ -737,9 +801,8 @@ fn judge_ceiling(manifest: &Path, host: &HostProfile, ceiling: &Ceiling) -> Opti
     std::fs::create_dir_all(&dir).expect("归档目录可建");
     let rendered = CeilingReport {
         ceiling,
-        host,
+        record: ceiling_record(host, ceiling, observed),
         verdict: judgement.as_str(),
-        observed_ns: observed,
     }
     .render();
     weights::json::parse(&rendered).expect("归档必须是合法 JSON");
@@ -854,16 +917,33 @@ fn every_registered_host_is_fully_described() {
 fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
     let host = &HOSTS[0];
     for scenario in SCENARIOS {
+        let record = record_for(host, scenario, 1_500_000.0);
+        // 记录身份 / 几何 / 后端必须与场景描述符逐字段对上，避免归档元数据串台。
+        assert_eq!(record.kind(), EntryKind::Op);
+        assert_eq!(record.name(), scenario.scenario);
+        assert_eq!(record.backend(), scenario.backend);
+        assert_eq!(record.geometry().shape(), scenario.shape);
+        assert_eq!(record.geometry().batch(), scenario.batch);
+        assert_eq!(record.geometry().dtype(), scenario.dtype);
+        assert_eq!(record.harness().host(), host.host);
+        assert_eq!(record.harness().cpu(), host.cpu);
+        assert_eq!(record.harness().os(), host.os);
+        assert_eq!(record.harness().toolchain(), host.toolchain);
+        assert_eq!(record.harness().driver(), scenario.backend);
+        // 整机峰值未测得：留 None，不预填标称值。
+        assert!(record.roofline().peak_bw_gb_s().is_none());
+        assert!(record.roofline().peak_gflops().is_none());
+        assert_eq!(record.observed(), Some(1_500_000.0));
+
         let report = Report {
             scenario,
-            host,
+            record,
             roofline: Roofline::of(host, scenario, 2_000_000.0),
             verdict: Judgement::Improved {
                 observed: 1.0,
                 baseline: 2.0,
             }
             .as_str(),
-            observed_ns: 1_500_000.0,
             baseline_ns: 2_000_000.0,
             budget_percent: 5.0,
         };

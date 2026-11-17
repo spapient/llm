@@ -1,44 +1,5 @@
-[package]
-name = "llm"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-description = "An LLM runtime written in Rust."
-license.workspace = true
-repository.workspace = true
-readme = "README.md"
-publish = false
-default-run = "llm"
-
-# 这个 bin 与 `crates/cutile` 同名：不产出它的文档，否则 cargo 会把两者写到同一个
-# `target/doc/cutile/index.html`（cargo#6313），文件取决于构建顺序。
-[[bin]]
-name = "cutile"
-path = "src/bin/cutile/main.rs"
-doc = false
-
-[dependencies]
-cli = { path = "crates/cli", package = "llm-cli" }
-cutile = { path = "crates/cutile" }
-diagnostic = { path = "crates/diagnostic", package = "llm-diagnostic" }
-engine = { path = "crates/engine", package = "llm-engine" }
-nn = { path = "crates/nn", package = "llm-nn" }
-op = { path = "crates/op", package = "llm-op" }
-prim = { path = "crates/prim", package = "llm-prim" }
-prof = { path = "crates/prof", package = "llm-prof" }
-serve = { path = "crates/serve", package = "llm-serve" }
-tensor = { path = "crates/tensor", package = "llm-tensor" }
-tokenizer = { path = "crates/tokenizer", package = "llm-tokenizer" }
-tool = { path = "crates/tool", package = "llm-tool" }
-train = { path = "crates/train", package = "llm-train" }
-weights = { path = "crates/weights", package = "llm-weights" }
-
-[features]
-# 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prim/build.rs`）。
-device-image = ["cutile/device-image"]
-
-[lints]
-workspace = true
+# 纯 workspace 根：不再持有 package、二进制或依赖。
+# 组合根与两个二进制（`llm` / `cutile`）都在 `crates/cli`；工作区成员见下方 `members`。
 
 [workspace]
 members = ["crates/*"]
@@ -73,11 +34,6 @@ opt-level = 2
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
-
-[dev-dependencies]
-assert_cmd = "2.2.2"
-autograd = { path = "crates/autograd", package = "llm-autograd" }
-testkit = { path = "crates/testkit", package = "llm-testkit" }
 
 # 工作区共享的第三方依赖版本：各 crate 用 `{ workspace = true }` 引用，避免版本漂移。
 [workspace.dependencies]

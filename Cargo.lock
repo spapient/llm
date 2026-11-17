@@ -388,29 +388,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "cutile",
- "llm-autograd",
- "llm-cli",
- "llm-diagnostic",
- "llm-engine",
- "llm-nn",
- "llm-op",
- "llm-prim",
- "llm-prof",
- "llm-serve",
- "llm-tensor",
- "llm-testkit",
- "llm-tokenizer",
- "llm-tool",
- "llm-train",
- "llm-weights",
-]
-
-[[package]]
 name = "llm-annotation"
 version = "0.1.0"
 dependencies = [

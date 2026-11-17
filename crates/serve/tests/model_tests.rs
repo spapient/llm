@@ -29,6 +29,11 @@ fn bind(executor: &mut CpuExecutor, id: u32, values: &[f32]) {
     executor.bind(id, values.to_vec());
 }
 
+/// 绑一块打包字节缓冲（量化 lane 权重 / 码点）。
+fn bind_u8(executor: &mut CpuExecutor, id: u32, values: &[u8]) {
+    executor.bind_u8(id, values.to_vec());
+}
+
 /// 跑一个单节点：输出整块零初始化，执行后取回。
 fn run_one(
     executor: &mut CpuExecutor,
@@ -122,6 +127,113 @@ fn gemv_runs_through_the_registered_kernel() {
     let produced = run_one(&mut executor, "gemv_f32", &[0, 1], 2, 2);
 
     assert_close(&produced, &reference);
+}
+
+/// 把 [-8, 7] 的 int4 码按低 nibble 在前打成字节，口径与 `op::gemv_i4` 参考一致。
+fn packed_i4(codes: &[i8]) -> Vec<u8> {
+    codes
+        .chunks(2)
+        .map(|pair| {
+            let low = (pair[0] + 8) as u8 & 0x0F;
+            let high = pair.get(1).copied().unwrap_or(0) + 8;
+            low | ((high as u8) & 0x0F) << 4
+        })
+        .collect()
+}
+
+/// 4 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
+#[test]
+fn gemv_i4_runs_through_the_registered_kernel() {
+    let x = [1.0, 2.0, 3.0, 4.0];
+    let w = packed_i4(&[1, 2, 3, 4]);
+    let scales = [0.5f32];
+    let mut reference = vec![0.0; 1];
+    op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &x);
+    bind_u8(&mut executor, 1, &w);
+    bind(&mut executor, 2, &scales);
+    let produced = run_one(&mut executor, "gemv_i4", &[0, 1, 2], 3, 1);
+
+    assert_close(&produced, &reference);
+}
+
+/// 8 位量化乘加：权重逐元素 int8 位模式打包进 `u8`，与独立 `op` 参考对拍。
+#[test]
+fn gemv_i8_runs_through_the_registered_kernel() {
+    let x = [1.0, 2.0, 3.0, 4.0];
+    let w: Vec<u8> = [1i8, 2, 3, 4].iter().map(|value| *value as u8).collect();
+    let scales = [0.5f32];
+    let mut reference = vec![0.0; 1];
+    op::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &x);
+    bind_u8(&mut executor, 1, &w);
+    bind(&mut executor, 2, &scales);
+    let produced = run_one(&mut executor, "gemv_i8", &[0, 1, 2], 3, 1);
+
+    assert_close(&produced, &reference);
+}
+
+/// 4 位反量化：打包字节每字节两个 nibble，scale/zero 取样本常量，与独立 `op` 参考对拍。
+#[test]
+fn dequant_i4_runs_through_the_registered_kernel() {
+    let q = [0x52u8];
+    let mut reference = vec![0.0; 2];
+    op::dequant_i4::forward(
+        op::dequant_i4::SCALE,
+        op::dequant_i4::ZERO,
+        &q,
+        &mut reference,
+    )
+    .expect("参考");
+
+    let mut executor = cpu();
+    bind_u8(&mut executor, 0, &q);
+    let produced = run_one(&mut executor, "dequant_i4", &[0], 1, 2);
+
+    assert_close(&produced, &reference);
+}
+
+/// 8 位反量化：码点本身是 `f32`，scale/zero 取样本常量，与独立 `op` 参考对拍。
+#[test]
+fn dequant_i8_runs_through_the_registered_kernel() {
+    let q = [8.0f32, 12.0];
+    let mut reference = vec![0.0; 2];
+    op::dequant_i8::forward(
+        op::dequant_i8::SCALE,
+        op::dequant_i8::ZERO,
+        &q,
+        &mut reference,
+    )
+    .expect("参考");
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &q);
+    let produced = run_one(&mut executor, "dequant_i8", &[0], 1, 2);
+
+    assert_close(&produced, &reference);
+}
+
+/// 量化权重槽误绑成浮点缓冲：执行期形态核对给 `Invalid`，不静默按字节解释。
+#[test]
+fn a_quantized_weight_bound_as_f32_is_rejected_by_the_kernel() {
+    let mut executor = cpu();
+    bind(&mut executor, 0, &[1.0; 4]);
+    bind(&mut executor, 1, &[0.0; 2]);
+    bind(&mut executor, 2, &[0.5]);
+    executor.bind(3, vec![0.0; 1]);
+
+    let mut node = Node::new("gemv_i4", Launch::new([1, 1, 1], [1, 1, 1]));
+    node.bind_input(0)
+        .bind_input(1)
+        .bind_input(2)
+        .bind_output(3);
+
+    let error = executor.run(&node).expect_err("权重形态不符必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
 }
 
 #[test]

@@ -66,8 +66,8 @@
 | # | 位置 | 旧写法 | 实测现状 | 修正动作 |
 |---|---|---|---|---|
 | D-1 | 设计 §1.4、backend §0/§1.2、roadmap §3/§4 | 注册表 22 条 | **24 条**（含 `decode_attention_f32`、`decode_flash_attention_f32`） | 三处计数与证据指针回填 24 |
-| D-2 | 设计 §1.2、roadmap §3 | 测试 1,305 / 1,102 通过 | **1,391 通过 / 0 失败**（`cargo test --workspace`，1 ignored） | 基线计数回填；口径注明"测试结果"与"测试函数数"不可混 |
-| D-3 | 设计 §1.2 | Rust 总行数 70,577 | 粗口径 **71,482**（含测试，不含 `target/`） | 回填；机制代码分母待 §5.3 同口径重测 |
+| D-2 | 设计 §1.2、roadmap §3 | 测试 1,305 / 1,102 通过 | **1,396 通过 / 0 失败**（`cargo test --workspace`，1 ignored） | 基线计数回填；口径注明"测试结果"与"测试函数数"不可混 |
+| D-3 | 设计 §1.2 | Rust 总行数 70,577 | 粗口径 **76,839**（含测试，不含 `target/`） | 回填；机制代码分母见 §5.3 分账表 |
 | D-4 | roadmap §3、iteration §2 P2 | KV"页内不持数据，只有页表/位图簿记" | `engine::kv::Cache` 页池已持真实 `Vec<f32>`（`kv.rs:220`，`row/row_mut/write` 经 Slot 寻址）；模型侧历史读/当前步写回已接路线 B | 改为"页池数据已落地；前缀页共享引用、多序列批量循环未接" |
 | D-5 | 设计附录 A | Predict 首层限制指针 `assembly.rs:585-603` | 宿主段已拆到 `serve/src/model_host.rs::predict_input`（:63） | 指针改指 `model_host.rs` |
 | D-6 | backend §9 末行 | unsafe 边界 ADR 标注"ADR 0029" | 0029 是 admitter 端口；边界裁决文档为 `0035-unsafe-ffi-boundary.md`（并发产物，待评审） | 编号订正；P3 动工前按 0035 复核 |
@@ -85,7 +85,7 @@
 2. **缺任务级 backlog**：阶段目标到了"做什么"，但没到"谁做、依赖谁、交付什么、门是什么、暂缓什么" → 本文 §3。
 3. **决策看板**：v1.0 的 D1–D10 只列倾向与触发条件；v1.2 已逐条定形（选定项/被否备选/取证依据/ADR 落点），并补 D11–D13 → 本文 §4。
 4. **注解双表合一未进任务**：`annotation::codegen.rs` 的 `REFERENCE_OVERRIDES` / `MODULE_OVERRIDES` 同以注册名为键，两张表可合一为一行三列（审计 §4.2），未列入减量 backlog → §3 P0-2。
-5. **密度基线未按机制口径重测**：71,482 含测试；§5.3 的机制代码分母（排除 tests/内联测试/fuzz/benches/build.rs/生成片段/vendor）尚未分账 → M1-C 首项任务。
+5. **密度基线**：粗口径 76,839 含测试；机制代码分母已按 §5.3 分账（M1-C1，见 `mechanism-lines-baseline.md` 目录级 50,713），严格口径（逐行扣除内联 `#[cfg(test)]` 体）仍待 `strip_tests` 接入脚本。
 
 ## 2. 编码方式规范（泛型 / 注解 / 配置化优先）
 

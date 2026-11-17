@@ -38,7 +38,7 @@ use storage::Allocator;
 ///
 /// 槽位集合冻结在 ADR 0043，新增槽位走 ADR 修订；不用字符串键名值表，也不用 `HashMap` 标量
 /// 上下文，热路径没有查表。位置这类语义参数不编进 1 元素 f32 缓冲——缓冲切片通道仍由
-/// [`Program::run`](super::exec::Program::run) 的 `inputs` / `outputs` 承担。
+/// [`Program::run`] 的 `inputs` / `outputs` 承担。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ScalarSlots {
     /// `rope_f32` 的解码位置；该算子尚未接入模型路径时保持 `None`。
@@ -442,10 +442,122 @@ impl Executor for LocalExecutor {
     }
 }
 
+/// 一段已绑定缓冲的存储形态：32 位浮点，或按位打包的字节（i4/i8 lane）。
+///
+/// 形态只承载元素宽度这一事实；形状与条目名描述留在装配侧（G4），本层不解释编号。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Buffer {
+    /// 32 位浮点。
+    F32(Vec<f32>),
+    /// 按位打包的整型：i8 逐元素一字节，i4 每字节两个 nibble；字节序与内核一致。
+    U8(Vec<u8>),
+}
+
+impl Buffer {
+    /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
+    pub fn f32(&self) -> Option<&[f32]> {
+        match self {
+            Self::F32(values) => Some(values),
+            Self::U8(_) => None,
+        }
+    }
+
+    /// 当成打包字节读；不是字节缓冲时为 `None`。
+    pub fn u8(&self) -> Option<&[u8]> {
+        match self {
+            Self::U8(values) => Some(values),
+            Self::F32(_) => None,
+        }
+    }
+
+    /// 元素个数：f32 元素数或打包字节数。
+    pub fn len(&self) -> usize {
+        match self {
+            Self::F32(values) => values.len(),
+            Self::U8(values) => values.len(),
+        }
+    }
+
+    /// 是否没有元素。
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// 只读视图。
+    fn view(&self) -> View<'_> {
+        match self {
+            Self::F32(values) => View::F32(values),
+            Self::U8(values) => View::U8(values),
+        }
+    }
+
+    /// 可写视图。
+    fn view_mut(&mut self) -> ViewMut<'_> {
+        match self {
+            Self::F32(values) => ViewMut::F32(values),
+            Self::U8(values) => ViewMut::U8(values),
+        }
+    }
+}
+
+/// 只读视图：一次 [`Program::run`] 的输入操作数。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum View<'a> {
+    /// 32 位浮点。
+    F32(&'a [f32]),
+    /// 按位打包的整型。
+    U8(&'a [u8]),
+}
+
+impl<'a> View<'a> {
+    /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
+    pub fn f32(&self) -> Option<&'a [f32]> {
+        match self {
+            Self::F32(values) => Some(*values),
+            Self::U8(_) => None,
+        }
+    }
+
+    /// 当成打包字节读；不是字节缓冲时为 `None`。
+    pub fn u8(&self) -> Option<&'a [u8]> {
+        match self {
+            Self::U8(values) => Some(*values),
+            Self::F32(_) => None,
+        }
+    }
+}
+
+/// 可写视图：一次 [`Program::run`] 的输出操作数。
+#[derive(Debug, PartialEq)]
+pub enum ViewMut<'a> {
+    /// 32 位浮点。
+    F32(&'a mut [f32]),
+    /// 按位打包的整型。
+    U8(&'a mut [u8]),
+}
+
+impl<'a> ViewMut<'a> {
+    /// 当成 `f32` 写；不是浮点缓冲时为 `None`。
+    pub fn f32_mut(&mut self) -> Option<&mut [f32]> {
+        match self {
+            Self::F32(values) => Some(values),
+            Self::U8(_) => None,
+        }
+    }
+
+    /// 当成打包字节写；不是字节缓冲时为 `None`。
+    pub fn u8_mut(&mut self) -> Option<&mut [u8]> {
+        match self {
+            Self::U8(values) => Some(values),
+            Self::F32(_) => None,
+        }
+    }
+}
+
 /// 一段可执行的内核体：按节点名字登记，在绑定好的缓冲上就地计算。
 ///
-/// 本层不编译 kernel（那是 `cutile` 的 `runner` 与 `build`），也不解释操作数编号——
-/// `inputs` / `outputs` 是执行器按节点角色拆好的切片，与 [`Node::inputs`] /
+/// 本层不编译 kernel（那是 `cutile` 的 runner 与 `build`），也不解释操作数编号——
+/// `inputs` / `outputs` 是执行器按节点角色拆好的视图，与 [`Node::inputs`] /
 /// [`Node::outputs`] 一一对应、顺序一致。因此"哪个编号是张量"这件事到不了本层：
 /// 执行器只接线，内核只算数。
 pub trait Program {
@@ -453,7 +565,7 @@ pub trait Program {
     fn name(&self) -> &str;
 
     /// 运行一次：`inputs` 只读、`outputs` 可写，两组编号互不重叠。
-    fn run(&self, launch: Launch, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()>;
+    fn run(&self, launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()>;
 }
 
 /// 执行器持有的操作数表：编号 ↔ 平坦的 `f32` 缓冲。
@@ -462,7 +574,7 @@ pub trait Program {
 /// 遍历顺序与插入顺序无关——同一张图的两次执行打印出来是同一份。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Bindings {
-    values: std::collections::BTreeMap<u32, Vec<f32>>,
+    values: std::collections::BTreeMap<u32, Buffer>,
 }
 
 impl Bindings {
@@ -471,14 +583,35 @@ impl Bindings {
         Self::default()
     }
 
-    /// 绑定一个编号；返回被替换掉的旧缓冲。
-    pub fn bind(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
-        self.values.insert(id, values)
+    /// 绑定一个 `f32` 编号；返回被替换掉的旧浮点块。
+    pub fn bind_f32(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
+        match self.values.insert(id, Buffer::F32(values)) {
+            Some(Buffer::F32(old)) => Some(old),
+            Some(Buffer::U8(_)) | None => None,
+        }
     }
 
-    /// 某个编号的当前内容。
+    /// 绑定一个打包字节编号；返回被替换掉的旧字节块。
+    pub fn bind_u8(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
+        match self.values.insert(id, Buffer::U8(values)) {
+            Some(Buffer::U8(old)) => Some(old),
+            Some(Buffer::F32(_)) | None => None,
+        }
+    }
+
+    /// 某个编号的 `f32` 内容；字节缓冲返回 `None`。
     pub fn get(&self, id: u32) -> Option<&[f32]> {
-        self.values.get(&id).map(Vec::as_slice)
+        self.values.get(&id).and_then(Buffer::f32)
+    }
+
+    /// 某个编号的打包字节内容；浮点缓冲返回 `None`。
+    pub fn get_u8(&self, id: u32) -> Option<&[u8]> {
+        self.values.get(&id).and_then(Buffer::u8)
+    }
+
+    /// 某个编号绑定的缓冲（只读）。
+    pub fn buffer(&self, id: u32) -> Option<&Buffer> {
+        self.values.get(&id)
     }
 
     /// 已绑定的编号数。
@@ -499,13 +632,18 @@ impl Bindings {
 #[derive(Default)]
 struct Taken {
     ids: Vec<u32>,
-    values: Vec<Vec<f32>>,
+    values: Vec<Buffer>,
 }
 
 impl Taken {
-    /// 按节点角色取切片；`Taken` 被 mut 借用时给出可写视图。
-    fn views(&self) -> Vec<&[f32]> {
-        self.values.iter().map(Vec::as_slice).collect()
+    /// 按节点角色取只读视图。
+    fn views(&self) -> Vec<View<'_>> {
+        self.values.iter().map(Buffer::view).collect()
+    }
+
+    /// 按节点角色取可写视图。
+    fn views_mut(&mut self) -> Vec<ViewMut<'_>> {
+        self.values.iter_mut().map(Buffer::view_mut).collect()
     }
 }
 
@@ -581,9 +719,14 @@ impl CpuExecutor {
         Ok(())
     }
 
-    /// 绑定一个操作数编号；返回被替换掉的旧缓冲。
+    /// 绑定一个 `f32` 操作数编号；返回被替换掉的旧浮点块。
     pub fn bind(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
-        self.bindings.bind(id, values)
+        self.bindings.bind_f32(id, values)
+    }
+
+    /// 绑定一个打包字节操作数编号；返回被替换掉的旧字节块。
+    pub fn bind_u8(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
+        self.bindings.bind_u8(id, values)
     }
 
     /// 当前操作数表。
@@ -591,9 +734,14 @@ impl CpuExecutor {
         &self.bindings
     }
 
-    /// 某个编号的当前内容。
+    /// 某个编号的 `f32` 内容；字节缓冲返回 `None`。
     pub fn get(&self, id: u32) -> Option<&[f32]> {
         self.bindings.get(id)
+    }
+
+    /// 某个编号的打包字节内容；浮点缓冲返回 `None`。
+    pub fn get_u8(&self, id: u32) -> Option<&[u8]> {
+        self.bindings.get_u8(id)
     }
 
     /// 执行一个节点：查内核、借出操作数、跑、放回。
@@ -606,10 +754,9 @@ impl CpuExecutor {
         self.check_operands(node)?;
         let mut inputs = self.take(node.inputs());
         let mut outputs = self.take(node.outputs());
-        let mut writable: Vec<&mut [f32]> =
-            outputs.values.iter_mut().map(Vec::as_mut_slice).collect();
-        let result = self.programs[index].run(node.launch(), &inputs.views(), &mut writable);
-        drop(writable);
+        let input_views = inputs.views();
+        let mut output_views = outputs.views_mut();
+        let result = self.programs[index].run(node.launch(), &input_views, &mut output_views);
         // 缓冲先放回、再报错：执行失败不该把操作数留在一个"查不到"的状态里。
         self.restore(std::mem::take(&mut inputs));
         self.restore(std::mem::take(&mut outputs));
@@ -630,7 +777,7 @@ impl CpuExecutor {
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。
     fn check_operands(&self, node: &Node) -> Result<()> {
         for operand in node.inputs().iter().chain(node.outputs()) {
-            if self.bindings.get(operand.id()).is_none() {
+            if self.bindings.buffer(operand.id()).is_none() {
                 return Err(Error::new(
                     Code::Invalid,
                     format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),

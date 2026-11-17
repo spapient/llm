@@ -80,6 +80,15 @@
 
 ### Changed
 
+- **L7 入口内聚拆分与文档链接收口（对外接口契约不变）**。`llm` 根包 `main.rs` 837 → 78 行：
+  `status` / `run` / `train` 命令的装配、输入解析与汇报分别归位到根包内同层子模块
+  （`status.rs` / `run.rs` / `train.rs`），`main.rs` 只留入口、分派与退出码；公共命令行行为与
+  输出口径未变。`diagnostic::Error` 的 `impl std::error::Error` 补显式 `source() -> None` 与取舍注释：
+  保留可克隆、可比较的值类型错误模型，不引入 `Box<dyn Error>` 链（会破 `Eq`/`Clone`）。`serve`
+  采样温度默认值提为具名常量 `DEFAULT_TEMPERATURE`。同时修正一批 rustdoc 内链：失效的 `Pager::share`
+  路径、冗余显式链接目标、指向私有模块/条目/字段的链接，以及 `bench`/`model` 同名歧义；
+  `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 全绿。
+
 - **存量债务清零：`[[gate.debt]]` 203 条 → 0 条**。上一轮结清 `crates/cutile` 的 45 条后，剩下的 203 条分散在
   16 个成员里（`weights` 83、`op` 34、`tool` 20、`prof` 19、`annotation` 12、`train` 11、`autograd` 7，
   其余 9 个成员 17），这一轮全部改到限值以内，表也随之清空——`[gate]` 现在没有任何豁免，`Gate::stale`

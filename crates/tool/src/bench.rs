@@ -3,7 +3,7 @@
 //!
 //! 本模块只持有**记录**，不测量、不写性能结论：实测值由调用方在跑完后填入，基线是否登记
 //! 由 [`regress::Baseline`](crate::regress::Baseline) 判定。没有登记基线的条目跳过回退判定，
-//! 不在此伪造基线数字；未测得的硬件峰值上界留 [`None`](Option::None)，不预填。
+//! 不在此伪造基线数字；未测得的硬件峰值上界留 [`None`]，不预填。
 //!
 //! **拥有**：[`EntryKind`]、[`Harness`]、[`Roofline`]、[`Geometry`]、[`BenchRecord`]。
 //! **不拥有**：测量采样、基线台账、跨机对照结论。
@@ -100,7 +100,7 @@ impl Harness {
     }
 }
 
-/// roofline 上界：同一硬件的峰值带宽与峰值算力。任一项未测得即留 [`None`](Option::None)，
+/// roofline 上界：同一硬件的峰值带宽与峰值算力。任一项未测得即留 [`None`]，
 /// 不拿标称值或他机数字顶替。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Roofline {

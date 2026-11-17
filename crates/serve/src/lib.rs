@@ -4,7 +4,7 @@
 //!
 //! **拥有**：`Route`、`Endpoint`、`Response`、`Status`、`Request`，以及线格式
 //! （`protocol`：`Envelope`/`Frame`/`Decoder`/`Kind`/`Version`；`proto` 是兼容重导出路径）；
-//! 注入 [`Predict`](crate::Predict) 的 CPU 模型提供者收在 `kernels` / `assembly`（`model` 是兼容重导出路径）。
+//! 注入 [`Predict`] 的 CPU 模型提供者收在 `kernels` / `assembly`（`model` 是兼容重导出路径）。
 //! **不拥有**：序列状态与页账（`engine`）、分词（`tokenizer`）、算子算术
 //! （`op`）、层定义（`nn`）、权重条目字节与读取契约（`weights`）、HTTP/gRPC 服务器（P1：它是 [`Router`] 的调用方）；
 //! Metal/CUDA 真设备后端收在独立边界 crate，不回流本层。**依赖**：`engine`、`nn`、`op`、`tokenizer`、`diagnostic`、`weights`。**被依赖**：`llm`。

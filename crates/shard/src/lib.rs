@@ -2,8 +2,8 @@
 //!
 //! 本 crate 收口三类正交事实：
 //!
-//! - 通信：[`Group`]（升序进程组）、[`Reduce`]（归约闭集与它的算术）、[`Collective`]（后端契约）
-//!   与进程内实现 [`Local`]；
+//! - 通信：[`Group`]（升序进程组）、[`Reduce`]（归约闭集与它的算术）、[`Collective`]（后端契约）、
+//!   进程内实现 [`Local`] 与未挂载的远端占位 [`Remote`]；
 //! - 拓扑：[`Topology`]（TP/PP/DP 世界与进程组）、[`Parallel`]（并行维度）、[`Partition`]（恰好覆盖的切分）；
 //! - 切分：[`Sharding`]（按列 / 按行）与 [`Tiling`]（一层线性权重的 TP 形状与合并方式）。
 //!
@@ -48,6 +48,7 @@ mod group;
 mod local;
 mod partition;
 mod reduce;
+mod remote;
 mod tiling;
 mod topology;
 
@@ -56,5 +57,6 @@ pub use group::Group;
 pub use local::Local;
 pub use partition::Partition;
 pub use reduce::Reduce;
+pub use remote::Remote;
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};

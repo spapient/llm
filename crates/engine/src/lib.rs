@@ -347,13 +347,13 @@ impl Scheduler {
 
     /// 准入并可选采纳一条在批序列的前缀页（D12 / prefix cache）。
     ///
-    /// `share = Some((源序列 id, 共享页数))`：前缀按页边界对齐后，整页经 [`Pager::share`]
+    /// `share = Some((源序列 id, 共享页数))`：前缀按页边界对齐后，整页经 [`kv::Pager::share`]
     /// 采纳进新页表，引用计数 +1；其余页仍从池里新取。共享判定与源序列由 [`Batch`] 给出，
     /// 调度器只负责页表与计数，不比较 token。源序列不在批里是调用方状态错误。
     ///
     /// # Errors
     ///
-    /// 同 [`admit`](Self::admit)；共享页越界或不在借出状态由 [`Pager::share`] 报 `invalid`。
+    /// 同 [`admit`](Self::admit)；共享页越界或不在借出状态由 [`kv::Pager::share`] 报 `invalid`。
     pub fn admit_shared(
         &mut self,
         sequence: &Sequence,

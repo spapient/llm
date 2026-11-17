@@ -80,7 +80,7 @@
 ### C. 错误处理 / 安全
 
 - **C1（中）错误无底层 source 链**：`crates/diagnostic/src/error.rs` 的 `Error{code,message,context,notes}` 把 `io::Error` 经 `from_io` 格式化进 message（:80-87），未保留底层错误类型与 `source()` 链；`std::error::Error` 为空 impl（:107）。可回溯性弱于 thiserror 风格的枚举包裹。
-- **C2（中）生产侧裸 `unwrap/expect/panic` 计数偏高**：全仓 `src` 命中 379 处；偏高 crate：weights 69、tokenizer 51、prof 50、engine 49、nn 25、prim 18。静态门 `every_source_passes_the_static_gate` 当前放行，但需逐处区分"编译期/不可达断言"与"可恢复路径误用"，把后者改为 `Result`。
+- **C2（中，口径已修正）**：下表"全仓 `src` 命中 379 处"是**未剥测试的表面计数**（含 `#[cfg(test)]` 模块与集成测试，测试代码惯例可用 `expect`/`unwrap`）。实施核对：静态门扫描生产代码前先 `strip_tests` 剔除测试条目，生产侧裸 `unwrap/expect/panic/unreachable` 经门禁 **Call 限值 0 且 debt 表无条目**，即生产侧裸 panic 为零；样本核实 `weights/archive.rs` 的 33 个 `expect` 全在 503/555/580/589 行之后的 `cfg(test)` 模块内。剩余裸调用面仅在测试夹具，不属生产错误处理缺口。
 - **C3（低）unsafe 收敛良好**：唯一生产 unsafe 岛在 `storage/src/mmap.rs`（FFI `extern "C"`、`Send/Sync` impl、`from_raw_parts`、`munmap`），其余 crate 文档明确不装 unsafe；`unsafe_code = "deny"` 工作空间级生效。后续 Metal/CUDA 边界需按 ADR 白名单逐块写安全不变式。
 - **C4（低）无错误枚举派生宏**：`Code` 为手写枚举 + `ALL`/`as_str` 对照；新增类别需多处同步。可考虑 derive/代码生成收口（对照 `annotation::buildgen` 既有模式）。
 
@@ -167,3 +167,35 @@
 - **D5（提交粒度）**：当前在途 WIP 未提交；后续每刀是否单独成提交，还是按阶段汇总提交。
 
 > 下一步：确认 §6 决策与 §4 刀次顺序后，从 P1（L7 续刀）进入第二阶段实施；每刀先跑基线门禁，改动后复跑全部门禁，不留编译失败或半成品。
+
+## 7. 实施回写：P1–P7 核对结论（2026-11-17）
+
+> 本节记录第一阶段落地后的核对结论。决策口径按保守默认推进（用户未逐条回答 D1–D5）：D1 cli 维持"只搬字符串、不解析数值"既有裁决；D4 基准先扩 criterion，本轮不引 iai/proptest；D5 改动留工作树，不擅自 commit/stage。业务行为与对外接口契约不变。
+
+### 7.1 刀次结论
+
+| 刀次 | 结论 | 落地改动 | 公共契约 |
+|---|---|---|---|
+| P1 L7 拆分 | **已完成，实质改动** | `src/main.rs` 837→78 行；拆 `status.rs`（命令装配/汇报 + 4 测试）、`run.rs`（前向命令 + 输入解析 + 2 测试）、`train.rs`（配置解析与汇报）；`main.rs` 只留 main/分派/退出码。守护测试 `the_entry_point_defines_no_types` 禁止 L7 定义新类型，拆分后仍通过 | 不变 |
+| P2 serve 拆分 | **已核对，无新代码** | 在途 `plan.rs`（335 行，计划/族别分流/校验）、`block.rs`（236 行，注意力块 q/k/v/o）已被 `lib.rs` 声明且编译通过；`assembly.rs` 855→312 行，仅剩编号分区常数与装配/接线，内聚清晰；plan/block 内类型均 `pub(crate)`，不进公共所有权表 | 不变 |
+| P3 类型系统 | **评审结论：现状到位，不改代码** | 无 downcast/类型擦除滥用——`dyn Any` downcast 仅在 `fuzz/contract.rs` 提取 panic 消息的固有场景；泛型 trait 仅 `data::Dataset`，其余用关联类型或 f32 握手。`Program`/`Predict`/`Sampling` 的扁平 f32 握手保留；形状/lane 收进类型属中风险专项（需全 Program 实现迁移 + 契约对拍），本轮不动。`nn::Linear::new(in, out)` 两相邻 usize 存在传反可能，但改 newtype 到 pub 签名属不兼容变更，保留 | 不变 |
+| P4 错误/安全 | **已收口一处文档化，其余维持** | 保留自研 `diagnostic::Error` 值类型（derive Debug/Clone/PartialEq/Eq），不换 thiserror/anyhow，不引入 `Box<dyn Error>` source 链（会破 Eq/Clone）；`error.rs` 补显式 `source() -> None` + 取舍注释；`from_io` 已按 ErrorKind 归类（NotFound→Missing，否则 Io）。生产裸 panic 为零（见 C2 修正）。唯一 unsafe 岛 `storage/mmap.rs` 本轮不动。tracing/metrics 按 ADR 0039 依赖策略与"外部依赖极薄"刻意决策，本轮不引入 | 不变 |
+| P5 配置收口 | **评审结论 + 一处单点收口** | 常数归类：编号分区基址、算子粒度、缓存 TOUCH/LOCK_WINDOW 属算法与编号不变式及 cutile 内部策略（ADR 0023 cutile 不读 env），留源码；采样温度/top-k/top-p、train 超参已是类型化档案 + `with_overrides` + `Default`；无跨文件散落重复魔法数（4096 仅出现在文档示例）。落地：`serve/generate.rs` 温度默认 `unwrap_or(1.0)` 提为具名常量 `DEFAULT_TEMPERATURE` | 不变 |
+| P6 测试/基准 | **评审结论：覆盖充足，不堆测试** | 按测试数纠正 G1 口径：tensor 26、tokenizer 36、prof 32、prim 12 + device_tests；覆盖标量/行列主序/步幅/视图越界/溢出饱和/owned 分配/借读/签名/峰值公式/协商拒绝。基准 18 条 criterion：`model_decode` single/batch、`train` schedule/snapshot/buffers、`decode_attention` hist 128/512；`benches/tests/regress.rs` 基线按 os-arch/口径/版本登记，含 roofline read/write 双向对账。proptest/iai 本轮不引（新依赖需走 cargo-deny 白名单与 ADR）；变异测试列入后续专项 | 不变 |
+| P7 文档/供应链 | **已完成核对与修复** | `cargo deny check`：advisories/bans/licenses/sources 全 ok；编译期 missing-docs 告警为零；`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 全绿。本轮修复一批 rustdoc 内链：engine `Pager::share` 失效路径、tool/op/serve 冗余显式目标、backend/train 指向私有模块/条目的链接、tool `bench` 与 op `model` 同名歧义。CHANGELOG Unreleased 已补记本轮内部整理；edition 2024、MSRV 1.100 锁定 | 不变 |
+
+### 7.2 门禁终验（P7 收尾复跑）
+
+- `cargo test --workspace`：**1391 passed / 0 failed / 1 ignored**。
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`：零告警。
+- `cargo fmt --all --check`：0 diff。
+- `cargo test -p llm --test architecture --test contracts`：arch 8、contracts 6 全绿；`cargo test -p llm-tool --test gate`：1 绿。
+- rustdoc `-D warnings`：全绿；`cargo deny check`：四项全 ok。
+- 已知现象：gate 在 workspace 并行跑时曾误报 FAILED；单跑稳定通过，判定为并行中间态/竞争，非真实违例。
+
+### 7.3 未动工与后续专项（不在本轮干净增量内）
+
+- **#56 Metal（本机）/ CUDA（Linux 云主机）挂载与跨后端契约对拍**：`llm-backend` 骨架已落（`UnsupportedBackend` + `MetalBackend`/`CudaBackend` 能力候选表），真实命令队列/设备缓冲映射/kernel launch/事件同步未接；口径：无 GPU 只编译 + 契约/形状对拍，不跑真内核、不出设备数字、不引 FFI crate、不写 unsafe。
+- **#57 量化 lane 适配与通信原型**：u8/i4/i8 lane 的 Program 适配与反量化内核挂载（参照 `train/src/kernel.rs` u8 View 先例）；`shard::Collective` 通信后端原型；拓扑簿记不改。
+- **后续专项**：Program 形状/lane 泛型化（P3，中风险）；profiling 闭环（pprof/flamegraph）、proptest 属性测试、变异测试（P6）；tracing/metrics 可观测接入（P4，需先定依赖策略 ADR）。
+- **待用户拍板**：D1 cli 数值解析是否放宽下沉；D2 排版函数归属；D3 错误是否补 source 链（本轮选保留值类型模型）；D4 是否引 iai/proptest；D5 提交粒度与未跟踪分析文档、`report/` 目录归属。

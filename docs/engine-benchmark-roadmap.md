@@ -58,7 +58,7 @@
 | 项 | 现状 | 证据 |
 |---|---|---|
 | 成员规模 | 24 个 `crates/*` + 根包 `llm`；317 个 `.rs` | `ls crates/*/`；`find crates -name '*.rs'` |
-| 测试 | 1,391 passed / 0 failed（1 ignored）；doc-test 全过 | 收口工作树实测（2026-11-17） |
+| 测试 | 1,396 passed / 0 failed（1 ignored）；doc-test 全过 | 收口工作树实测（2026-11-17） |
 | 注册算子 | 24 个命名算子（gemv/gemm/attention/flash_attention/decode_attention/decode_flash_attention/rope/rmsnorm/softmax/激活/归约/量化反量化等） | `crates/op/src/lib.rs` 注册表投影 |
 | 输出语言闭集 | 9 种 Emit：Cuda、Ptx、Hip、Opencl、Spirv、Metal、Ascendc、C、Wgsl | `crates/prof/src/prof.rs:16-35` |
 | 执行后端 | **只有契约**：图/流/节点/启动几何，没有真实流、设备队列或 kernel launch | `crates/engine/src/exec.rs:8` |
@@ -71,7 +71,7 @@
 | unsafe 策略 | `unsafe_code = "deny"`，生产核心无 `unsafe` | `Cargo.toml:56` |
 | 生产依赖 | 生产路径仅 `dtype` 可选 feature 引入 `serde`/`bytemuck`，`fuzz` 可选 `libfuzzer-sys`；`criterion`/`clap` 等属 dev/build 依赖 | 各 `Cargo.toml` |
 | 基准 | criterion 结构/编解码基准 + 七条真实算子基准（`gemv_f32` / `softmax_f32` / `rope_f32` / `rmsnorm_f32` / `attention_f32` / `gemm_f32` / `silu_f32`）全部入 `tool::regress` 基线判定；macos-aarch64 首跑 mean 已登记（gemv 2186061 ns、softmax 15492 ns、rope 9487 ns、rmsnorm 2374 ns、attention 517442 ns、gemm 16599 ns、silu 3287 ns，跨机绝对值不可比）；另有 `mem_stream` 三档读写搬往上界作 roofline 分母，定位结果见 [`bench-roofline-analysis.md`](bench-roofline-analysis.md) | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
-| 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.27% / token 1.47%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`../.config/.jscpd.json`、`.github/workflows/ci.yml` |
+| 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.44% / token 1.73%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`../.config/.jscpd.json`、`.github/workflows/ci.yml` |
 
 ## 4. 能力维度对标矩阵
 

@@ -164,7 +164,7 @@ registry! {
 /// 名字是否在注册表里；const 上下文可用。
 ///
 /// 装配期的"内核表子集断言"走这个入口，归属判定只此一份；运行期查找仍由 [`builtin_named`]
-/// / [`model`] 给出整条记录。本工具链 const 上下文尚未稳定 `str` 相等比较，逐字节比对收在这里。
+/// / [`model()`] 给出整条记录。本工具链 const 上下文尚未稳定 `str` 相等比较，逐字节比对收在这里。
 pub const fn contains(name: &str) -> bool {
     let mut index = 0;
     while index < REGISTRY.len() {
