@@ -8,6 +8,11 @@ use crate::sch::Schedule;
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// 档案身份标签：`厂商(编号)`；失败诊断与 verify 报告共用这一种写法，不在各自排版里另拼。
+pub(crate) fn device_label(profile: &Profile) -> String {
+    format!("{}({})", profile.meta.vendor, profile.meta.id)
+}
+
 /// 协商结果：命中的变体、调度与它在降级链里的下标（[`Path::is_head`] 要读下标）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Path {
@@ -428,7 +433,7 @@ impl Ledger {
         let unlock = self.unlock(op);
         NoPath {
             op: op.name.clone(),
-            device: format!("{}({})", prof.meta.vendor, prof.meta.id),
+            device: device_label(prof),
             needs: self.first_failure.unwrap_or_default(),
             chain: self.chain,
             unlock,

@@ -7,7 +7,7 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, spec_accessors};
 
 /// 注意力实现算法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,17 +94,7 @@ impl Attention {
 }
 
 impl Contract for Attention {
-    fn name(&self) -> &str {
-        self.spec.name()
-    }
-
-    fn output(&self) -> &Shape {
-        self.spec.output()
-    }
-
-    fn spca(&self) -> &ContractSpec {
-        &self.spec
-    }
+    spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
         // 注意力声明了输入轴 `s` 与输出轴 `d`，按投影角色翻译宽度；代价仍来自算子语义表。

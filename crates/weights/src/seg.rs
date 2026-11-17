@@ -238,7 +238,7 @@ fn name_bytes<'c>(cur: &mut Cursor<'c>, len: u64) -> Result<&'c str> {
 /// 段名与元素类型；两者都先于形状出现。
 fn decode_head(cur: &mut Cursor<'_>) -> Result<(String, Wire)> {
     let name = decode_name(cur)?;
-    Ok((name, read_wire(cur)?))
+    Ok((name, crate::read_wire(cur)?))
 }
 
 /// 张量轴数上限：真实张量的维数远小于此；谎报的 rank 不换来巨额预分配。
@@ -304,12 +304,6 @@ fn check_quant(quant: Option<&Quant>, rank: u32) -> Result<()> {
 /// 形状的元素乘积，溢出饱和。
 pub(crate) fn numel(shape: &[u64]) -> u64 {
     shape.iter().fold(1u64, |acc, dim| acc.saturating_mul(*dim))
-}
-
-fn read_wire(cur: &mut Cursor<'_>) -> Result<Wire> {
-    let code = cur.read::<u32>()?;
-    Wire::from_code(u16::try_from(code).map_err(|_| bad("wire code 超 u16"))?)
-        .ok_or_else(|| bad("未知 wire code"))
 }
 
 fn bad(message: &str) -> Error {

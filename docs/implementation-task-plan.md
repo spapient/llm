@@ -66,7 +66,7 @@
 | # | 位置 | 旧写法 | 实测现状 | 修正动作 |
 |---|---|---|---|---|
 | D-1 | 设计 §1.4、backend §0/§1.2、roadmap §3/§4 | 注册表 22 条 | **24 条**（含 `decode_attention_f32`、`decode_flash_attention_f32`） | 三处计数与证据指针回填 24 |
-| D-2 | 设计 §1.2、roadmap §3 | 测试 1,305 / 1,102 通过 | **1,314 通过 / 0 失败**（`cargo test --workspace`） | 基线计数回填；口径注明"测试结果"与"测试函数数"不可混 |
+| D-2 | 设计 §1.2、roadmap §3 | 测试 1,305 / 1,102 通过 | **1,391 通过 / 0 失败**（`cargo test --workspace`，1 ignored） | 基线计数回填；口径注明"测试结果"与"测试函数数"不可混 |
 | D-3 | 设计 §1.2 | Rust 总行数 70,577 | 粗口径 **71,482**（含测试，不含 `target/`） | 回填；机制代码分母待 §5.3 同口径重测 |
 | D-4 | roadmap §3、iteration §2 P2 | KV"页内不持数据，只有页表/位图簿记" | `engine::kv::Cache` 页池已持真实 `Vec<f32>`（`kv.rs:220`，`row/row_mut/write` 经 Slot 寻址）；模型侧历史读/当前步写回已接路线 B | 改为"页池数据已落地；前缀页共享引用、多序列批量循环未接" |
 | D-5 | 设计附录 A | Predict 首层限制指针 `assembly.rs:585-603` | 宿主段已拆到 `serve/src/model_host.rs::predict_input`（:63） | 指针改指 `model_host.rs` |
@@ -171,7 +171,7 @@
 
 | ID | 任务 | 归属 crate | 依赖 | 交付物 | 验收门 | 暂缓 |
 |---|---|---|---|---|---|---|
-| P0-1 | 回填 §1.1 事实漂移：注册表 24、测试 1,314、行数 71,482、KV 数据状态、指针与 ADR 编号（本轮活文档已回填，留一次一致性复核） | 全仓文档 | 无 | design/roadmap/backend/iteration/ARCHITECTURE 计数与指针一致 | 文档链接门通过；无陈旧计数；历史快照不回写 | — |
+| P0-1 | 回填 §1.1 事实漂移：注册表 24、测试 1,391、行数粗口径待优化后重测、KV 数据状态、指针与 ADR 编号（本轮活文档已回填，留一次一致性复核） | 全仓文档 | 无 | design/roadmap/backend/iteration/ARCHITECTURE 计数与指针一致 | 文档链接门通过；无陈旧计数；历史快照不回写 | — |
 | P0-2 | 注解双表合一：`REFERENCE_OVERRIDES`+`MODULE_OVERRIDES` 合并为一行三列表 | `annotation` | D7 | 单表 `(名, 参考覆盖, 模块覆盖)`；查找仍闭集 | 注解生成测试全绿；无第二份按名查找循环 | 宏去留裁决留 D7 |
 | P0-3 | 大文件按职责轴拆分（design §5.4 表）：先 `weights/bin.rs`、`src/bin/cutile/main.rs`、`train/snapshot.rs` | 对应 crate | 行数预算 | 解析/排版/台账移出机制文件；单文件 ≤899 | gate 行数与 ccn 过门；测试断言不削 | 其余大文件随阶段内拆 |
 | P0-4 | 报告/排版合一：audit/tool/witness 三处报告器收敛为一个 | `tool` / `diagnostic` | 10k-analysis §6.2 | 单一报告器，三处调用 | 输出条目不丢；测试不跌 | — |

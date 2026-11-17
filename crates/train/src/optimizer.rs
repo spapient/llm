@@ -41,14 +41,19 @@ impl Group {
         }
     }
 
-    /// 组短名：诊断与快照标签，与变体一一对应。
-    pub const fn as_str(self) -> &'static str {
+    /// 组 → 角色的回映：标签与豁免判定都从 [`ParamRole`] 取，组侧不抄第二份名字表。
+    const fn role(self) -> ParamRole {
         match self {
-            Self::Trainable => "trainable",
-            Self::Bias => "bias",
-            Self::Norm => "norm",
-            Self::Embedding => "embedding",
+            Self::Trainable => ParamRole::Trainable,
+            Self::Bias => ParamRole::Bias,
+            Self::Norm => ParamRole::Norm,
+            Self::Embedding => ParamRole::Embedding,
         }
+    }
+
+    /// 组短名：诊断与快照标签，字符串事实源在 [`ParamRole::as_str`]。
+    pub const fn as_str(self) -> &'static str {
+        self.role().as_str()
     }
 }
 
@@ -101,6 +106,11 @@ fn global_norm(slots: &[Slot<'_>]) -> f32 {
         .map(|g| g * g)
         .sum::<f32>();
     squares.sqrt()
+}
+
+/// 该角色参与的解耦衰减系数：豁免组为 `0`，其余取配置系数；豁免判定只从 [`ParamRole`] 派生。
+fn decay_rate(role: ParamRole, weight_decay: f32) -> f32 {
+    if role.wd_exempt() { 0.0 } else { weight_decay }
 }
 
 /// 裁剪系数：范数未超阈值为 `1.0`；超阈值按 `max_norm / norm` 等比缩小。
@@ -159,11 +169,7 @@ impl Optimizer for Sgd {
         check_slots(slots)?;
         let scale = clip_scale(global_norm(slots), self.clip_norm);
         for slot in slots {
-            let decay = if slot.role.wd_exempt() {
-                0.0
-            } else {
-                self.weight_decay
-            };
+            let decay = decay_rate(slot.role, self.weight_decay);
             // 逐元素串行写回：每个参数只依赖自己的梯度与现值，长度随槽位数据而定。
             for (param, grad) in slot.params.iter_mut().zip(slot.grads.iter()) {
                 let update = scale * grad + decay * *param;
@@ -317,11 +323,7 @@ impl Optimizer for Adam {
         let (beta1, beta2, eps, weight_decay) =
             (self.beta1, self.beta2, self.eps, self.weight_decay);
         for (index, slot) in slots.iter_mut().enumerate() {
-            let decay = if slot.role.wd_exempt() {
-                0.0
-            } else {
-                weight_decay
-            };
+            let decay = decay_rate(slot.role, weight_decay);
             let (m, v) = self.moments(index, slot.params.len());
             // 逐元素串行更新：m/v 对每个元素有跨步依赖，长度随参数数据而定，不能向量化展开。
             for ((param, grad), (m_value, v_value)) in slot

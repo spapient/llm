@@ -64,13 +64,7 @@ fn method_call(tokens: &[Token], idx: usize) -> Option<Call> {
         return None;
     };
     let kind = unwrap_expect(text)?;
-    let paren = matches!(
-        tokens.get(idx + 2),
-        Some(Token::Group {
-            delim: Delim::Paren,
-            ..
-        })
-    );
+    let paren = has_paren(tokens, idx + 2);
     paren.then_some(Call { kind, pos: *pos })
 }
 
@@ -78,14 +72,19 @@ fn method_call(tokens: &[Token], idx: usize) -> Option<Call> {
 fn ufcs_call(tokens: &[Token], idx: usize) -> Option<Call> {
     let (text, pos) = ufcs_target(tokens, idx)?;
     let kind = unwrap_expect(text)?;
-    let paren = matches!(
-        tokens.get(idx + 4),
+    let paren = has_paren(tokens, idx + 4);
+    paren.then_some(Call { kind, pos })
+}
+
+/// 该下标处是否为圆括号分组；方法与 UFCS 两条形态共用同一种判定。
+fn has_paren(tokens: &[Token], index: usize) -> bool {
+    matches!(
+        tokens.get(index),
         Some(Token::Group {
             delim: Delim::Paren,
             ..
         })
-    );
-    paren.then_some(Call { kind, pos })
+    )
 }
 
 /// UFCS 前缀 `Type::method`：返回方法名与位置；前缀不成立则 `None`。

@@ -133,3 +133,23 @@ macro_rules! layer_delegate {
         }
     };
 }
+
+/// 对"持有 `spec: ContractSpec` 字段"的层，把层名/输出形状/规格三件委托收口一份；
+/// 各层仍在自己的 `Contract` impl 里补类型化访问器与下界。
+#[doc(hidden)]
+#[macro_export]
+macro_rules! spec_accessors {
+    () => {
+        fn name(&self) -> &str {
+            self.spec.name()
+        }
+
+        fn output(&self) -> &$crate::Shape {
+            self.spec.output()
+        }
+
+        fn spca(&self) -> &$crate::ContractSpec {
+            &self.spec
+        }
+    };
+}

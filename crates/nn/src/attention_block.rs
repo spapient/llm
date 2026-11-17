@@ -14,7 +14,7 @@ use tensor::Shape;
 
 use crate::{
     Attention, AttentionAlgo, Bounds, BoundsResult, Contract, ContractSpec, Linear, WEIGHT_SUFFIX,
-    WeightFormat,
+    WeightFormat, spec_accessors,
 };
 
 /// 一个注意力块：`hidden → [q, k, v] → attention → o → hidden`。
@@ -191,17 +191,7 @@ impl AttentionBlock {
 }
 
 impl Contract for AttentionBlock {
-    fn name(&self) -> &str {
-        self.spec.name()
-    }
-
-    fn output(&self) -> &Shape {
-        self.spec.output()
-    }
-
-    fn spca(&self) -> &ContractSpec {
-        &self.spec
-    }
+    spec_accessors!();
 
     fn attention_block(&self) -> Option<&AttentionBlock> {
         Some(self)

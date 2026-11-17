@@ -8,7 +8,7 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};
 
 /// 矩阵乘层：结果形状 `[rows, cols]`，收缩轴由算子固定。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,17 +57,7 @@ impl MatMul {
 }
 
 impl Contract for MatMul {
-    fn name(&self) -> &str {
-        self.spec.name()
-    }
-
-    fn output(&self) -> &Shape {
-        self.spec.output()
-    }
-
-    fn spca(&self) -> &ContractSpec {
-        &self.spec
-    }
+    spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
         // 三轴骨架：收缩轴 `k` 由算子的 `project_shape` 固定，层只给 `(m, n)`，走通用形状入口，

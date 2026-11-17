@@ -5,7 +5,7 @@
 //! 判据要回答的问题；工作集装得下缓存时测到的是缓存带宽而不是主存峰值，判定时被排除。
 
 use crate::build;
-use crate::builtin::Catalogue;
+use crate::builtin::{AUTO_DEVICE, Catalogue};
 use crate::dirs::Dirs;
 use crate::pipeline::{self, Run, model_for};
 use crate::prof::Profile;
@@ -191,7 +191,7 @@ fn verified<'a>(
     catalogue: &'a Catalogue,
     dirs: &Dirs,
 ) -> diagnostic::Result<(&'a Profile, Evidence)> {
-    let profile = catalogue.resolve("auto")?;
+    let profile = catalogue.resolve(AUTO_DEVICE)?;
     // 计时之前必须先有证据：否则测的是"档案说它能跑"，不是"这台机器能跑"。
     let evidence = witness::establish(profile, dirs);
     if let Some(error) = &evidence.failure {

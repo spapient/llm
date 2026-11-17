@@ -41,6 +41,9 @@ pub trait Sampling {
     fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>>;
 }
 
+/// 未启用温度时的缩放系数：1.0 表示不缩放 logits（与贪心同口径）。
+const DEFAULT_TEMPERATURE: f32 = 1.0;
+
 /// 贪心采样：取最大 logit，等值时取编号最小的那个。
 ///
 /// "等值取最小下标"是确定性要求：否则同一份 logits 在不同实现上会给出不同 token，
@@ -201,7 +204,7 @@ impl Sampling for Classical {
     fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
         usable(logits)?;
         self.params.validate(logits.len())?;
-        let temperature = self.params.temperature().unwrap_or(1.0);
+        let temperature = self.params.temperature().unwrap_or(DEFAULT_TEMPERATURE);
         // 温度缩放是逐元素映射，整块切片一次算完，不保留逐元素手写循环以外的遍历。
         let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
 

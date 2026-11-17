@@ -7,7 +7,7 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};
 
 /// 嵌入查表层。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,17 +69,7 @@ impl Embedding {
 }
 
 impl Contract for Embedding {
-    fn name(&self) -> &str {
-        self.spec.name()
-    }
-
-    fn output(&self) -> &Shape {
-        self.spec.output()
-    }
-
-    fn spca(&self) -> &ContractSpec {
-        &self.spec
-    }
+    spec_accessors!();
 
     fn embedding(&self) -> Option<&Embedding> {
         Some(self)

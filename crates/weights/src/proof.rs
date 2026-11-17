@@ -263,6 +263,23 @@ fn pair(left: &Digest, right: &Digest) -> Digest {
     ctx.finish()
 }
 
+/// 奇数层复制末节点补齐成对；`root` 与 `prove` 共用这一份补奇规则，避免两处各写一遍。
+fn pad(level: &mut Vec<Digest>) {
+    if !level.len().is_multiple_of(2)
+        && let Some(last) = level.last().copied()
+    {
+        level.push(last);
+    }
+}
+
+/// 补齐后的一层两两 `pair`，折出下一层。
+fn fold(level: Vec<Digest>) -> Vec<Digest> {
+    level
+        .chunks(2)
+        .map(|chunk| pair(&chunk[0], &chunk[1]))
+        .collect()
+}
+
 /// 由叶子列表计算 Merkle 根；空列表返回全零（调用方应拒绝空账本）。
 #[must_use]
 pub(crate) fn root(leaves: &[Digest]) -> Digest {
@@ -271,15 +288,8 @@ pub(crate) fn root(leaves: &[Digest]) -> Digest {
     }
     let mut level = leaves.to_vec();
     while level.len() > 1 {
-        if !level.len().is_multiple_of(2)
-            && let Some(last) = level.last().copied()
-        {
-            level.push(last);
-        }
-        level = level
-            .chunks(2)
-            .map(|chunk| pair(&chunk[0], &chunk[1]))
-            .collect();
+        pad(&mut level);
+        level = fold(level);
     }
     level[0]
 }
@@ -317,17 +327,10 @@ pub(crate) fn prove(leaves: &[Digest], index: usize) -> Option<Proof> {
     let mut idx = index;
     let mut siblings = Vec::new();
     while level.len() > 1 {
-        if !level.len().is_multiple_of(2)
-            && let Some(last) = level.last().copied()
-        {
-            level.push(last);
-        }
+        pad(&mut level);
         let sibling = idx ^ 1;
         siblings.push(level[sibling]);
-        level = level
-            .chunks(2)
-            .map(|chunk| pair(&chunk[0], &chunk[1]))
-            .collect();
+        level = fold(level);
         idx /= 2;
     }
     Some(Proof { index, siblings })

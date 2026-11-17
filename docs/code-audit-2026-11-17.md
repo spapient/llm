@@ -12,7 +12,7 @@
 | Rust 总行数（粗口径，含测试） | 71,482 | `find crates src -name '*.rs'`，不含 `target/` |
 | 外部测试 | 156 文件 / 19,878 行 | `crates/**/tests/*.rs` |
 | 内联 `#[cfg(test)]` 模块 | 153 个 | 测试体行数未单列 |
-| 测试结果 | 1,314 通过 / 0 失败 | `cargo test --workspace`（含在途新增 decode 用例） |
+| 测试结果 | 1,391 通过 / 0 失败（1 ignored 保留） | `cargo test --workspace`（收口实测 2026-11-17） |
 | 静态质量门 | 全绿（`llm-tool --test gate` 1/1） | ccn≤5、函数≤60 行、单文件≤899 行 |
 | clippy | 全工作区无警告、无错误 | `--all-targets` |
 | 真实 `unsafe` | 仅 `storage/src/mmap.rs`（FFI + Send/Sync 实现） | 其余 `unsafe` 字样为 `deny` 注释 |

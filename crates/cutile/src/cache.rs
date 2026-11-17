@@ -333,26 +333,37 @@ impl Cache {
     /// 写缓存：先写临时文件再 `rename`（避免半截文件）；`meta.txt` 逐行 `字段=值`，便于 `doctor --why` 比对。
     pub fn put(&self, key: &CacheKey, source: &str) -> std::io::Result<PathBuf> {
         let dir = self.dir_for(key);
-        std::fs::create_dir_all(&dir)?;
-        let temp = temp_path(&dir, "source");
-        std::fs::write(&temp, source)?;
-        let fields = key.fields();
-        let meta: String = fields.iter().map(|(n, v)| format!("{n}={v}\n")).collect();
-        std::fs::write(dir.join("meta.txt"), meta)?;
-        std::fs::rename(&temp, dir.join("source"))?;
+        let meta: String = key
+            .fields()
+            .iter()
+            .map(|(n, v)| format!("{n}={v}\n"))
+            .collect();
+        self.write_source(&dir, "source", source, &meta)?;
         Ok(dir.join("source"))
     }
     /// 写一份不来自算子声明的程序（见证、探测）：条目按程序文本定名，返回的键与 [`CacheKey::hex`] 同形。
     pub fn put_program(&self, label: &str, program: &str) -> std::io::Result<String> {
         let hex = format!("{:016x}", fnv1a(&format!("{label};{program}")));
         let dir = self.entry_dir(&hex);
-        std::fs::create_dir_all(&dir)?;
-        let temp = temp_path(&dir, "program");
-        std::fs::write(&temp, program)?;
         let hash = format!("program={label}\nprogram_hash={:016x}\n", fnv1a(program));
-        std::fs::write(dir.join("meta.txt"), hash)?;
-        std::fs::rename(&temp, dir.join("source"))?;
+        self.write_source(&dir, "program", program, &hash)?;
         Ok(hex)
+    }
+    /// 原子落一份条目：目录建好后，源文本先写临时名、`meta.txt` 同目录写好，再把临时名换成 `source`；
+    /// 读路径因此要么拿到完整旧份，要么拿到完整新份，不会读到半截。两份写入（算子缓存 / 见证程序）共用这一条。
+    fn write_source(
+        &self,
+        dir: &Path,
+        temp_tag: &str,
+        source: &str,
+        meta: &str,
+    ) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let temp = temp_path(dir, temp_tag);
+        std::fs::write(&temp, source)?;
+        std::fs::write(dir.join("meta.txt"), meta)?;
+        std::fs::rename(&temp, dir.join("source"))?;
+        Ok(())
     }
     /// 回收：先清残留，再按 LRU 删到上限以内；仍在用的（[`Entry::building`]）跳过——删它会把别人的产物变半截。
     pub fn gc(&self, limit: u64) -> diagnostic::Result<Gc> {

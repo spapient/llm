@@ -439,9 +439,9 @@ pub fn release(src: &Archive<'_>) -> Result<Vec<Segment>> {
     Ok(out)
 }
 
-/// 把读端段还原成写端段：加载逻辑字节，沿用名字/类型/形状/量化方案。
-fn keep_segment(src: &Archive<'_>, seg: &Stored) -> Result<Segment> {
-    let data = src.load(seg)?.into_owned();
+/// 把读端段还原成写端段：沿用名字/类型/形状/量化方案，`data` 是已就位的逻辑字节。
+/// `release` 与补丁重建共用这一份字段装配，避免四处各拼一遍 `Segment::new`。
+fn to_segment(seg: &Stored, data: Vec<u8>) -> Result<Segment> {
     Segment::new(
         seg.name(),
         seg.dtype(),
@@ -449,6 +449,12 @@ fn keep_segment(src: &Archive<'_>, seg: &Stored) -> Result<Segment> {
         seg.quant().cloned(),
         data,
     )
+}
+
+/// 把读端段还原成写端段：先加载逻辑字节，再交 [`to_segment`] 装配。
+fn keep_segment(src: &Archive<'_>, seg: &Stored) -> Result<Segment> {
+    let data = src.load(seg)?.into_owned();
+    to_segment(seg, data)
 }
 
 fn bad(message: &str) -> Error {
@@ -473,13 +479,7 @@ fn rebuild(base: &Archive<'_>, right: &Archive<'_>) -> Result<Vec<Segment>> {
     for seg in right.segments() {
         let bytes = right.load(seg)?.into_owned();
         let data = apply(base, seg.name(), bytes)?;
-        out.push(Segment::new(
-            seg.name(),
-            seg.dtype(),
-            seg.shape().to_vec(),
-            seg.quant().cloned(),
-            data,
-        )?);
+        out.push(to_segment(seg, data)?);
     }
     Ok(out)
 }

@@ -87,6 +87,27 @@ impl TrainConfig {
         })
     }
 
+    /// 按可选覆盖构造：未给的字段取 [`Default`]。
+    ///
+    /// 默认值只在 [`Default`] 一份；调用方把缺项留成 `None` 透传，不复制第二份常数。校验仍走
+    /// [`Self::new`]。
+    pub fn with_overrides(
+        learning_rate: Option<f32>,
+        warmup_steps: Option<u64>,
+        max_steps: Option<u64>,
+        clip_norm: Option<f32>,
+        accumulation: Option<u32>,
+    ) -> Result<Self> {
+        let base = Self::default();
+        Self::new(
+            learning_rate.unwrap_or(base.learning_rate),
+            warmup_steps.unwrap_or(base.warmup_steps),
+            max_steps.unwrap_or(base.max_steps),
+            clip_norm.or(base.clip_norm),
+            accumulation.unwrap_or(base.accumulation),
+        )
+    }
+
     /// 梯度累积窗口。
     pub fn accumulation(&self) -> u32 {
         self.accumulation

@@ -349,6 +349,15 @@ pub fn decode_entry_f32(entry: &Entry, bytes: &[u8]) -> Result<Vec<f32>> {
     decode_f32(bytes)
 }
 
+/// 从游标读一个线上类型码并解析成 [`Wire`]：seg 描述符与 quant 方案共用这一份解码，
+/// 避免两份"u32 → u16 → from_code"的同构步骤漂移。
+pub(crate) fn read_wire(cur: &mut leb::Cursor<'_>) -> Result<Wire> {
+    let code = cur.read::<u32>()?;
+    let code = u16::try_from(code)
+        .map_err(|_| Error::new(Code::Invalid, "wire code 超出 u16").with("weights"))?;
+    Wire::from_code(code).ok_or_else(|| Error::new(Code::Invalid, "未知 wire code").with("weights"))
+}
+
 /// 缓冲区长度必须与条目声明一致：短了会读出半个张量，长了会把相邻条目混进来。
 fn check_capacity(entry: &Entry, out: &[u8]) -> Result<()> {
     if out.len() == entry.len() {

@@ -1,6 +1,6 @@
 # 0035：unsafe/FFI 安全边界规则（P3 动工前置裁决，缺口 G13）
 
-- 状态：接受（P3 前置裁决；边界 crate 实现随 P3 填入，本轮不改任何 `src` 代码）
+- 状态：Proposed（待评审；本稿只定 unsafe/FFI 边界规则，不是 M3 实现放行。评审通过后作为 M3-1 前置约束，未评审前 M3 不动工；边界 crate 实现随 P3 填入，本轮不改任何 `src` 代码）
 - 日期：2026-11-17
 - 相关：[0025](0025-runtime-backend-abstraction.md)（后端三件套、trait 归属与依赖方向、§9 unsafe/FFI 预告）、[0028](0028-device-data-vs-mechanism-boundary.md)（运行时后端落点与触发条件）、[0001](0001-layered-dependency-order.md)（依赖方向）；设计取证见 [`../backend-runtime-design.md`](../backend-runtime-design.md) §3.3 G13、§5、§7 P3 前置步骤
 

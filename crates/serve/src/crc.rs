@@ -33,6 +33,9 @@ const fn table() -> [u32; 256] {
 }
 
 /// 计算一段字节的 CRC-32。
+///
+/// 逐字节链：下一字节的表项索引依赖上一轮 CRC 状态，是串行依赖，无法整块展开；
+/// 块内八路查表展开在 `wire` 侧，协议层保持单字节表以不拖入额外依赖。
 pub fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
     for byte in bytes {

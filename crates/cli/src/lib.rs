@@ -199,40 +199,42 @@ fn single(known: &str, words: &mut Words<'_>) -> Result<Command> {
     Ok(build(parse_value(words, flag, what)?))
 }
 
+/// 按文法表把逐个出现的开关填进对应槽位；未知开关交 [`invalid`]，缺取值交 [`parse_value`]。
+fn parse_slots(
+    words: &mut Words<'_>,
+    table: &[(&str, &str)],
+    command: &str,
+) -> Result<Vec<Option<String>>> {
+    let mut slots: Vec<Option<String>> = table.iter().map(|_| None).collect();
+    while let Some(flag) = words.peek().copied() {
+        let Some(slot) = table.iter().position(|(known, _)| *known == flag) else {
+            return Err(invalid(format!("`{command}` 不接受 `{flag}`")));
+        };
+        slots[slot] = parse_value(words, table[slot].0, table[slot].1)?;
+    }
+    Ok(slots)
+}
+
 /// `run`：三个选项顺序自由，但 `--weights` 必需——猜一个默认文件只会把"写错了"变成"跑出别的结果"。
 fn run(words: &mut Words<'_>) -> Result<Command> {
-    let mut slots: [Option<String>; 3] = [None, None, None];
-    while let Some(flag) = words.peek().copied() {
-        let Some(slot) = RUN.iter().position(|(known, _)| *known == flag) else {
-            return Err(invalid(format!("`run` 不接受 `{flag}`")));
-        };
-        slots[slot] = parse_value(words, RUN[slot].0, RUN[slot].1)?;
-    }
-    let [weights, input, device] = slots;
+    let slots = parse_slots(words, RUN, "run")?;
     Ok(Command::Run {
-        weights: weights.ok_or_else(missing_weights)?,
-        input,
-        device,
+        weights: slots[0].clone().ok_or_else(missing_weights)?,
+        input: slots[1].clone(),
+        device: slots[2].clone(),
     })
 }
 
 /// `train`：六个选项顺序自由，全部可缺省；文法层只搬字符串，不解析 f32 / 步数。
 fn train(words: &mut Words<'_>) -> Result<Command> {
-    let mut slots: [Option<String>; 6] = [None, None, None, None, None, None];
-    while let Some(flag) = words.peek().copied() {
-        let Some(slot) = TRAIN.iter().position(|(known, _)| *known == flag) else {
-            return Err(invalid(format!("`train` 不接受 `{flag}`")));
-        };
-        slots[slot] = parse_value(words, TRAIN[slot].0, TRAIN[slot].1)?;
-    }
-    let [lr, warmup, steps, clip, accumulation, load] = slots;
+    let slots = parse_slots(words, TRAIN, "train")?;
     Ok(Command::Train {
-        lr,
-        warmup,
-        steps,
-        clip,
-        accumulation,
-        load,
+        lr: slots[0].clone(),
+        warmup: slots[1].clone(),
+        steps: slots[2].clone(),
+        clip: slots[3].clone(),
+        accumulation: slots[4].clone(),
+        load: slots[5].clone(),
     })
 }
 

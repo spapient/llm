@@ -104,7 +104,15 @@ fn render(frames: &[String], prefix: &str, formatter: &mut fmt::Formatter<'_>) -
     Ok(())
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    /// 底层源因刻意不挂进错误链：[`Error`] 是可克隆、可比较的值类型（退出码契约与诊断对拍
+    /// 依赖 `Clone`/`PartialEq`/`Eq`），而 `Box<dyn Error>` 无法满足这两条。底层 `io::Error`
+    /// 的类别已由 [`Self::from_io`] 归进 [`Code`]，消息也格式化进 [`Self::message`]；需要回溯
+    /// 原始系统错误时从 `Code::Io` 与 message 文本取。不引入 `source` 链是刻意取舍，不是遗漏。
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
 
 /// 本 crate 的结果别名：`Result<T, llm_diagnostic::Error>`。
 pub type Result<T> = core::result::Result<T, Error>;

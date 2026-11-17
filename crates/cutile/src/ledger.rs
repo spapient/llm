@@ -10,6 +10,7 @@ use crate::dirs::Dirs;
 use crate::witness::{self, Basis, Evidence};
 use prof::atom::{Grade, Prim, Provide};
 use prof::prof::Profile;
+use std::collections::BTreeMap;
 
 /// 一条供给在本次台账里的结论。闭集全量，渲染层不得临时新造一个词。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,13 +92,15 @@ fn row(profile: &Profile, dirs: &Dirs) -> BackendRow {
     let available = witness::device_available(profile);
     let gate = evidence.language.to_string();
 
+    // 供给按原语归一次组：随后逐原语取组内条目，不再每个原语都全量过滤一遍 `provides`。
+    let mut by_prim: BTreeMap<Prim, Vec<&Provide>> = BTreeMap::new();
+    for have in &profile.provides {
+        by_prim.entry(have.prim).or_default().push(have);
+    }
+
     let mut cells = Vec::new();
     for prim in Prim::ALL {
-        let mut declared: Vec<&Provide> = profile
-            .provides
-            .iter()
-            .filter(|have| have.prim == *prim)
-            .collect();
+        let mut declared = by_prim.get(prim).cloned().unwrap_or_default();
         if declared.is_empty() {
             cells.push(LedgerCell {
                 prim: *prim,

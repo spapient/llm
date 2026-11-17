@@ -7,7 +7,7 @@
 
 pub use crate::prof::Emit;
 
-use crate::atom::{DType, Prim, Witness};
+use crate::atom::{DType, Prim, Provide, Witness};
 use crate::cap::Proof;
 use crate::device::{self, HOST_FLAGS};
 use crate::dirs::Dirs;
@@ -113,23 +113,30 @@ pub struct WitnessRun {
     pub scope: Scope,
 }
 
+/// 一条供给上的见证三元组；没挂见证返回 `None`。装配口径只此一份，校验与自检两条路径共用。
+fn provide_selected(provide: &Provide) -> Option<Selected<'_>> {
+    provide
+        .witness
+        .as_ref()
+        .map(|witness| (provide.prim, provide.impl_name.clone(), witness))
+}
+
 /// 档案里的全部已声明见证；缺见证的 `grade ≥ L2` 是错误而不是跳过（README §11.3）。
 pub(crate) fn declared_witnesses(profile: &Profile) -> diagnostic::Result<Vec<Selected<'_>>> {
     let mut selected = Vec::new();
     for provide in &profile.provides {
-        let Some(witness) = provide.witness.as_ref() else {
-            if provide.grade.is_verified() {
-                return Err(Error::new(
-                    Code::Missing,
-                    format!(
-                        "`{}`（{}）声明了 {}，但没有可执行的见证：等级必须是跑出来的结论",
-                        provide.prim, provide.impl_name, provide.grade
-                    ),
-                ));
-            }
-            continue;
-        };
-        selected.push((provide.prim, provide.impl_name.clone(), witness));
+        if provide.witness.is_none() && provide.grade.is_verified() {
+            return Err(Error::new(
+                Code::Missing,
+                format!(
+                    "`{}`（{}）声明了 {}，但没有可执行的见证：等级必须是跑出来的结论",
+                    provide.prim, provide.impl_name, provide.grade
+                ),
+            ));
+        }
+        if let Some(entry) = provide_selected(provide) {
+            selected.push(entry);
+        }
     }
     Ok(selected)
 }
@@ -142,12 +149,7 @@ pub(crate) fn self_checkable(profile: &Profile) -> Vec<Selected<'_>> {
     profile
         .provides
         .iter()
-        .filter_map(|provide| {
-            provide
-                .witness
-                .as_ref()
-                .map(|witness| (provide.prim, provide.impl_name.clone(), witness))
-        })
+        .filter_map(provide_selected)
         .collect()
 }
 

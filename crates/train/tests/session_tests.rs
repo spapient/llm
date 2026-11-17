@@ -232,3 +232,30 @@ fn stepping_without_a_gradient_is_rejected() -> Result<()> {
     assert_eq!(session.slots()[0].params(), &[1.0; N], "拒绝前不改写参数");
     Ok(())
 }
+
+/// 可选覆盖：缺项取默认值、给出的字段生效；非法值仍走 [`TrainConfig::new`] 校验。
+#[test]
+fn overrides_fall_back_to_default_without_duplicating_constants() {
+    let base = TrainConfig::default();
+
+    let all_default =
+        TrainConfig::with_overrides(None, None, None, None, None).expect("缺省配置合法");
+    assert_eq!(all_default, base, "全缺省应与默认配置逐字段一致");
+
+    let overridden = TrainConfig::with_overrides(Some(2e-3), Some(2), Some(5), Some(0.5), Some(2))
+        .expect("部分覆盖合法");
+    assert_eq!(overridden.learning_rate, 2e-3);
+    assert_eq!(overridden.warmup_steps, 2);
+    assert_eq!(overridden.max_steps, 5);
+    assert_eq!(overridden.clip_norm, Some(0.5));
+    assert_eq!(overridden.accumulation, 2);
+
+    let bad_steps = TrainConfig::with_overrides(None, None, Some(0), None, None);
+    assert_eq!(bad_steps.expect_err("总步数不能为 0").code(), Code::Invalid);
+
+    let bad_accum = TrainConfig::with_overrides(None, None, None, None, Some(0));
+    assert_eq!(
+        bad_accum.expect_err("累积窗口不能为 0").code(),
+        Code::Invalid
+    );
+}

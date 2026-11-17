@@ -5,7 +5,7 @@
 //! 地址空间，于是那份证据从未在自己声称的语言里存在过。
 
 use crate::atom::Witness;
-use crate::device::scratch;
+use crate::device::{scratch, write_text};
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
 use crate::toolchain::clang;
@@ -171,19 +171,8 @@ fn write_one(
     dir: &Path,
 ) -> diagnostic::Result<()> {
     let path = dir.join(&witness.file);
-    write_unit(&path, &source(witness, dirs)?)?;
+    write_text(&path, &source(witness, dirs)?)?;
     parse_one(spec, &path)
-}
-
-/// 写一份翻译单元：`witness.file` 形如 `<vendor>/<name>.<ext>`，父目录要自己建。
-fn write_unit(path: &Path, text: &str) -> diagnostic::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            Error::new(Code::Io, format!("创建 {} 失败：{error}", parent.display()))
-        })?;
-    }
-    std::fs::write(path, text)
-        .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", path.display())))
 }
 
 /// 解析一份翻译单元；失败时只带编译器的第一行报错（整段 stderr 进不了报告）。

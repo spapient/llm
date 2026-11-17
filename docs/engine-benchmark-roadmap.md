@@ -58,7 +58,7 @@
 | 项 | 现状 | 证据 |
 |---|---|---|
 | 成员规模 | 24 个 `crates/*` + 根包 `llm`；317 个 `.rs` | `ls crates/*/`；`find crates -name '*.rs'` |
-| 测试 | 1,314 passed / 0 failed；doc-test 全过 | 本次工作树实测（2026-11-17） |
+| 测试 | 1,391 passed / 0 failed（1 ignored）；doc-test 全过 | 收口工作树实测（2026-11-17） |
 | 注册算子 | 24 个命名算子（gemv/gemm/attention/flash_attention/decode_attention/decode_flash_attention/rope/rmsnorm/softmax/激活/归约/量化反量化等） | `crates/op/src/lib.rs` 注册表投影 |
 | 输出语言闭集 | 9 种 Emit：Cuda、Ptx、Hip、Opencl、Spirv、Metal、Ascendc、C、Wgsl | `crates/prof/src/prof.rs:16-35` |
 | 执行后端 | **只有契约**：图/流/节点/启动几何，没有真实流、设备队列或 kernel launch | `crates/engine/src/exec.rs:8` |

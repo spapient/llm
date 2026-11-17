@@ -1,6 +1,6 @@
 # cargo-nextest 仓库配置（https://nexte.st/book/registry-config.html）。
 #
-# 八个 fuzz harness（crates/fuzz/tests/fuzz_*.rs）是 libFuzzer 运行时，`gen_corpus` 是
+# 九个 fuzz harness（crates/fuzz/tests/fuzz_*.rs）是 libFuzzer 运行时，`gen_corpus` 是
 # 语料生成器：都是 `harness = false`，不走 libtest。nextest 若把它们当普通测试二进制去
 # `--list --format terse` 会失败。它们由 CI 的 fuzz job 单独构建、调用；这里按二进制名排除。
 # 默认 features 下 harness 被 `required-features = ["engine"]` 关掉，过滤器为空匹配、不影响计数。
@@ -9,4 +9,4 @@
 # 超过 60s 仍未结束的测试标注为慢测试（只报告，不终止：关键路径会起子进程编 C/Metal）。
 slow-timeout = "60s"
 # 排除非 libtest 的 libfuzzer harness，其余 lib/集成/二进制测试照常并行运行。
-default-filter = '''!binary(gen_corpus) & !binary(fuzz_cli) & !binary(fuzz_weights_json) & !binary(fuzz_weights_safetensors) & !binary(fuzz_weights_archive) & !binary(fuzz_train_snapshot) & !binary(fuzz_serve_frames) & !binary(fuzz_wire_sealed) & !binary(fuzz_wire_leb)'''
+default-filter = '''!binary(gen_corpus) & !binary(fuzz_cli) & !binary(fuzz_weights_json) & !binary(fuzz_weights_safetensors) & !binary(fuzz_weights_archive) & !binary(fuzz_train_snapshot) & !binary(fuzz_serve_frames) & !binary(fuzz_wire_sealed) & !binary(fuzz_wire_leb) & !binary(fuzz_lex)'''

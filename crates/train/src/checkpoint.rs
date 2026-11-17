@@ -137,37 +137,34 @@ pub fn resume(
         ))
     })?;
     let context = format!("检查点在第 {} 步保存", checkpoint.step());
-    if checkpoint.layers() != layers {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "训练层数不一致：检查点记录 {} 层，当前是 {layers} 层",
-                checkpoint.layers()
-            ),
-        )
-        .with(context));
-    }
-    if checkpoint.batch_rows() != batch_rows {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "批行数不一致：检查点记录 {} 行，当前是 {batch_rows} 行",
-                checkpoint.batch_rows()
-            ),
-        )
-        .with(context));
-    }
-    if checkpoint.batch_cols() != batch_cols {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "批列宽不一致：检查点记录 {} 列，当前是 {batch_cols} 列",
-                checkpoint.batch_cols()
-            ),
-        )
-        .with(context));
-    }
+    reconcile(&context, "训练层数", "层", checkpoint.layers(), layers)?;
+    reconcile(
+        &context,
+        "批行数",
+        "行",
+        checkpoint.batch_rows(),
+        batch_rows,
+    )?;
+    reconcile(
+        &context,
+        "批列宽",
+        "列",
+        checkpoint.batch_cols(),
+        batch_cols,
+    )?;
     Ok(())
+}
+
+/// 一项恢复事实必须与当前运行逐项相同；口径与 [`resume`] 一致，三条对账共用同一份判据。
+fn reconcile(context: &str, label: &str, unit: &str, saved: usize, current: usize) -> Result<()> {
+    if saved == current {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!("{label}不一致：检查点记录 {saved} {unit}，当前是 {current} {unit}"),
+    )
+    .with(context))
 }
 
 /// 训练层的算子引用：`nn` 的层定义必须先通过 `op` 的闭集校验。

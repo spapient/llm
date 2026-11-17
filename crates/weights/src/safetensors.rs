@@ -493,11 +493,15 @@ fn shape_of(value: &Value) -> Result<Shape> {
         let number = item
             .integer()
             .map_err(|error| error.with("字段 `shape` 的轴长度"))?;
-        let axis = usize::try_from(number)
-            .map_err(|_| invalid(format!("轴长度 {number} 不能为负")).with("字段 `shape`"))?;
+        let axis = nonnegative(number, "轴长度", "字段 `shape`")?;
         dims.push(axis);
     }
     Ok(Shape::new(dims))
+}
+
+/// 一个非负整数换算成 `usize`；负数（或超出可寻址范围）按 `Invalid` 拒绝，给出字段站点。
+fn nonnegative(number: i64, what: &str, context: &str) -> Result<usize> {
+    usize::try_from(number).map_err(|_| invalid(format!("{what} {number} 不能为负")).with(context))
 }
 
 fn offsets_of(value: &Value) -> Result<(usize, usize)> {
@@ -533,8 +537,7 @@ fn offset(value: &Value) -> Result<usize> {
     let number = value
         .integer()
         .map_err(|error| error.with("字段 `data_offsets`"))?;
-    usize::try_from(number)
-        .map_err(|_| invalid(format!("偏移 {number} 不能为负")).with("字段 `data_offsets`"))
+    nonnegative(number, "偏移", "字段 `data_offsets`")
 }
 
 /// 8 字节长度前缀与头部 JSON 切片；两者都必须落在文件内。

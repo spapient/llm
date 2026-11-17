@@ -246,7 +246,7 @@ fn one_device(op: &OpDecl, catalogue: &Catalogue, dirs: &Dirs, device: &str) -> 
             };
         }
     };
-    let label = format!("{}({})", profile.meta.vendor, profile.meta.id);
+    let label = cap::device_label(profile);
     let evidence = witness::establish(profile, dirs);
     let note = witness_note(evidence.device, evidence.host, &evidence.language);
     let proof = evidence.proof(profile);

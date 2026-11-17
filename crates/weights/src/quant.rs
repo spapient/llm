@@ -144,15 +144,13 @@ fn read_head(cur: &mut Cursor<'_>) -> Result<(u32, u32, bool)> {
 
 /// 标度类型；有零点时紧随其后读零点类型，无零点则不占字节。
 fn read_types(cur: &mut Cursor<'_>, zero: bool) -> Result<(Wire, Option<Wire>)> {
-    let scale_ty = read_wire(cur)?;
-    let zp_ty = if zero { Some(read_wire(cur)?) } else { None };
+    let scale_ty = crate::read_wire(cur)?;
+    let zp_ty = if zero {
+        Some(crate::read_wire(cur)?)
+    } else {
+        None
+    };
     Ok((scale_ty, zp_ty))
-}
-
-fn read_wire(cur: &mut Cursor<'_>) -> Result<Wire> {
-    let code = cur.read::<u32>()?;
-    Wire::from_code(u16::try_from(code).map_err(|_| bad("wire code 超出 u16"))?)
-        .ok_or_else(|| bad("未知 wire 类型 code"))
 }
 
 fn bad(message: &str) -> Error {

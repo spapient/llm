@@ -331,17 +331,7 @@ impl Linear {
 }
 
 impl Contract for Linear {
-    fn name(&self) -> &str {
-        self.spec.name()
-    }
-
-    fn output(&self) -> &Shape {
-        self.spec.output()
-    }
-
-    fn spca(&self) -> &ContractSpec {
-        &self.spec
-    }
+    spec_accessors!();
 
     fn linear(&self) -> Option<&Linear> {
         Some(self)

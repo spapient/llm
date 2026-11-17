@@ -36,10 +36,12 @@ mod router;
 
 // CPU 内核桥与装配宿主（平铺；`model` 兼容路径见下）。
 mod assembly;
+mod block;
 mod descriptors;
 mod kernels;
 mod model_host;
 mod params;
+mod plan;
 
 // 线协议：常量/闭集在 `protocol`，帧、增量解码、CRC 各一文件（`proto` 兼容路径见下）。
 mod crc;
