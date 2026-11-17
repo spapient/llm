@@ -2,7 +2,7 @@
 //!
 //! **拥有**：`Schedule`、`Anneal`、`Step`、`Checkpoint`、`Buffers`、`Kernel`、`Reference`、`Data`、
 //! `View`、`ViewMut`，以及承载静态契约的 `Kind`、`Lane`、`Inputs`；`offload` 只留
-//! [`WeightOffload`](crate::WeightOffload) 暂缓接缝，真实换入换出通路未建。
+//! [`WeightOffload`] 暂缓接缝，真实换入换出通路未建。
 //! **不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
 //! 计划（`autograd::Plan`）、样本生成（`data`）、层定义（`nn`）、参数（`weights`）、拓扑
 //! （`shard`）、算子语义（`op`）。**依赖**：`nn`、`autograd`、`data`、`weights`、`shard`、
