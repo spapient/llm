@@ -7,7 +7,7 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole};
 
 /// 嵌入查表层。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +38,12 @@ impl Embedding {
                 .with("nn::Embedding::new"));
             }
         }
-        let spec = ContractSpec::new(name, Shape::new([tokens, dim]), vec![Self::OP.to_string()])?;
+        let spec = ContractSpec::new_with_role(
+            name,
+            Shape::new([tokens, dim]),
+            vec![Self::OP.to_string()],
+            ParamRole::Embedding,
+        )?;
         Ok(Self {
             spec,
             vocab,

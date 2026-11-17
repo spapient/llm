@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::{Bounds, Contract};
+use crate::{Bounds, Contract, ParamRole};
 use diagnostic::Code;
 
 fn assert_layer<L: Contract>(layer: &L, name: &str, op: &str, len: usize) {
@@ -70,6 +70,16 @@ fn each_pointwise_layer_binds_its_declared_operator() {
         ResidualAdd::OP,
         128,
     );
+}
+
+#[test]
+fn normalization_declares_the_norm_role_and_other_axis_layers_the_trainable_role() {
+    let norm = RmsNorm::new("blk.0.norm", 128).expect("合法");
+    assert_eq!(norm.spca().role(), ParamRole::Norm);
+    assert!(norm.spca().role().wd_exempt());
+
+    let activation = Gelu::new("mlp.gelu", 128).expect("合法");
+    assert_eq!(activation.spca().role(), ParamRole::Trainable);
 }
 
 #[test]

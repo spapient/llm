@@ -56,6 +56,7 @@ mod embed;
 mod format;
 mod lm_head;
 mod matmul;
+mod param_role;
 mod pointwise;
 mod reduce;
 mod stack;
@@ -82,6 +83,9 @@ pub use matmul::MatMul;
 pub use format::WeightFormat;
 
 #[doc(inline)]
+pub use param_role::ParamRole;
+
+#[doc(inline)]
 pub use pointwise::{Add, Gelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax};
 
 #[doc(inline)]
@@ -100,12 +104,13 @@ pub use tensor::Shape;
 /// （与 [`Shape`] 再导出是同一个理由）。
 pub type BoundsResult = Result<Option<Bounds>>;
 
-/// 层定义产出的声明：名字、输出形状、要用的算子名。
+/// 层定义产出的声明：名字、输出形状、要用的算子名与参数角色。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractSpec {
     name: String,
     output: Shape,
     ops: Vec<String>,
+    role: ParamRole,
 }
 
 impl ContractSpec {
@@ -118,6 +123,17 @@ impl ContractSpec {
     /// 空 `ops` 是合法的：那表示"这一层存在，但它的编码还没有算子"（见 [`WeightFormat`]）。
     /// 这种情况不是校验失败——层仍然有自己的名字与输出形状，只是推不出下界。
     pub fn new(name: impl Into<String>, output: Shape, ops: Vec<String>) -> Result<Self> {
+        Self::new_with_role(name, output, ops, ParamRole::Trainable)
+    }
+
+    /// 校验并构造，并显式声明参数角色；投影之外的层（归一化系数、偏置、嵌入表）必须经此入口
+    /// 填角色——优化器分组从角色派生，猜字段名或层名前缀会把衰减组与豁免组放错。
+    pub fn new_with_role(
+        name: impl Into<String>,
+        output: Shape,
+        ops: Vec<String>,
+        role: ParamRole,
+    ) -> Result<Self> {
         let known = op::builtin();
         for wanted in &ops {
             if !known.iter().any(|declared| declared.name() == wanted) {
@@ -146,12 +162,18 @@ impl ContractSpec {
             name: name.into(),
             output,
             ops,
+            role,
         })
     }
 
     /// 层名（与权重条目的前缀一致）。
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// 参数角色：优化器分组与权重衰减豁免的派生依据。
+    pub fn role(&self) -> ParamRole {
+        self.role
     }
 
     /// 输出形状。
@@ -270,7 +292,12 @@ impl Linear {
             .with("nn::Linear::with_format"));
         }
         let ops = format.operator().map(str::to_string).into_iter().collect();
-        let spec = ContractSpec::new(name, Shape::new([out_features]), ops)?;
+        let spec = ContractSpec::new_with_role(
+            name,
+            Shape::new([out_features]),
+            ops,
+            ParamRole::Trainable,
+        )?;
         Ok(Self {
             spec,
             in_features,

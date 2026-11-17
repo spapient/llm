@@ -9,6 +9,8 @@ fn an_embedding_declares_its_table_and_output_shape() {
     assert_eq!(layer.tokens(), 8);
     assert_eq!(layer.output().dims(), [8, 128]);
     assert_eq!(layer.spca().ops(), [Embedding::OP]);
+    assert_eq!(layer.spca().role(), ParamRole::Embedding);
+    assert!(layer.spca().role().wd_exempt());
 }
 
 #[test]

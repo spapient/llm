@@ -8,7 +8,7 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole};
 
 /// 矩阵乘层：结果形状 `[rows, cols]`，收缩轴由算子固定。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,12 @@ impl MatMul {
             )
             .with("nn::MatMul::new"));
         }
-        let spec = ContractSpec::new(name, Shape::new([rows, cols]), vec![Self::OP.to_string()])?;
+        let spec = ContractSpec::new_with_role(
+            name,
+            Shape::new([rows, cols]),
+            vec![Self::OP.to_string()],
+            ParamRole::Trainable,
+        )?;
         Ok(Self { spec, rows, cols })
     }
 

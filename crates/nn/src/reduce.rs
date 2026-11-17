@@ -4,6 +4,7 @@
 //! 输入轴 `n`，输出轴 `o` 恒为 1，因此层的声明形状是标量 [`Shape`]（空轴）。下界仍由归约算子
 //! 的语义表推出，层不手写公式。
 
+use crate::ParamRole;
 use crate::axis::{AxisCore, OutputShape};
 use crate::layer_delegate;
 
@@ -16,7 +17,8 @@ layer_delegate!(
     ReduceSum,
     "reduce_sum_f32",
     "归约层输入",
-    OutputShape::Scalar
+    OutputShape::Scalar,
+    ParamRole::Trainable
 );
 
 /// 最大值归约：`y = max(a[0..n])`，输出单个标量。
@@ -28,7 +30,8 @@ layer_delegate!(
     ReduceMax,
     "reduce_max_f32",
     "归约层输入",
-    OutputShape::Scalar
+    OutputShape::Scalar,
+    ParamRole::Trainable
 );
 
 #[cfg(test)]

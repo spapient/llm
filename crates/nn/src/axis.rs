@@ -7,7 +7,7 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, ContractSpec};
+use crate::{Bounds, BoundsResult, ContractSpec, ParamRole};
 
 /// 层声明的输出形状口径：单轴族透传一条轴，归约族折叠成标量。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,7 @@ impl AxisCore {
         len: usize,
         output: OutputShape,
         kind: &str,
+        role: ParamRole,
     ) -> Result<Self> {
         if len == 0 {
             return Err(Error::new(
@@ -50,7 +51,7 @@ impl AxisCore {
             OutputShape::Single => Shape::new([len]),
             OutputShape::Scalar => Shape::new([]),
         };
-        let spec = ContractSpec::new(name, shape, vec![op.to_string()])?;
+        let spec = ContractSpec::new_with_role(name, shape, vec![op.to_string()], role)?;
         Ok(Self { spec, len })
     }
 
@@ -86,11 +87,11 @@ impl AxisCore {
 /// 为一个已显式声明的层绑定算子名、构造器、访问器与 [`Contract`] 委托。
 ///
 /// 类型声明留在源码里（架构门禁按 `pub struct` 行核对）；本宏只展开构造与委托。`$shape` 是输出
-/// 形状口径（[`OutputShape`]），`$kind` 是诊断文案里的族别名。
+/// 形状口径（[`OutputShape`]），`$kind` 是诊断文案里的族别名，`$role` 是该层参数槽的角色。
 #[doc(hidden)]
 #[macro_export]
 macro_rules! layer_delegate {
-    ($ty:ident, $op:literal, $kind:literal, $shape:expr) => {
+    ($ty:ident, $op:literal, $kind:literal, $shape:expr, $role:expr) => {
         impl $ty {
             /// 本层绑定的算子名。
             pub const OP: &str = $op;
@@ -98,7 +99,7 @@ macro_rules! layer_delegate {
             /// 由层名与元素数构造；元素数为零、或算子未在 `op` 注册时返回说明。
             pub fn new(name: impl Into<String>, len: usize) -> diagnostic::Result<Self> {
                 Ok(Self {
-                    inner: $crate::axis::AxisCore::new(name, Self::OP, len, $shape, $kind)?,
+                    inner: $crate::axis::AxisCore::new(name, Self::OP, len, $shape, $kind, $role)?,
                 })
             }
 

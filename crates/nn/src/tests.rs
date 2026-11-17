@@ -150,3 +150,30 @@ fn a_spec_works_as_a_trait_object() {
     assert_eq!(dynamic.spca().name(), "blk.0.attn_k");
     assert!(dynamic.bounds().expect("合法").is_some());
 }
+
+#[test]
+fn a_spec_without_an_explicit_role_defaults_to_trainable() {
+    let spec = ContractSpec::new("legacy", Shape::new([4]), vec!["gemv_i4".to_string()])
+        .expect("算子已声明");
+    assert_eq!(spec.role(), ParamRole::Trainable);
+}
+
+#[test]
+fn an_explicit_role_is_round_trip_declared() {
+    let spec = ContractSpec::new_with_role(
+        "blk.0.norm",
+        Shape::new([128]),
+        vec!["rmsnorm_f32".to_string()],
+        ParamRole::Norm,
+    )
+    .expect("算子已声明");
+    assert_eq!(spec.role(), ParamRole::Norm);
+    assert!(spec.role().wd_exempt());
+}
+
+#[test]
+fn a_projection_layer_declares_the_trainable_role() {
+    let layer = Linear::new("blk.0.attn_q", 8, 4).expect("合法");
+    assert_eq!(layer.spca().role(), ParamRole::Trainable);
+    assert!(!layer.spca().role().wd_exempt());
+}
