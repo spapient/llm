@@ -1,10 +1,14 @@
 use super::*;
 use crate::Predict;
-use crate::assembly::{CpuModel, Params};
+use crate::assembly::Params;
+use crate::model_host::CpuModel;
 use diagnostic::Code;
-use engine::Sequence;
 use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
-use nn::{Add, Embedding, Linear, RmsNorm, Silu, Stack, WeightFormat};
+use engine::kv::{Cache, Pager};
+use engine::{Batch, Sequence};
+use nn::{
+    Add, AttentionAlgo, AttentionBlock, Embedding, Linear, RmsNorm, Silu, Stack, WeightFormat,
+};
 use testkit::{all_finite, close};
 use weights::safetensors::Archive;
 
@@ -13,6 +17,11 @@ fn cpu() -> CpuExecutor {
     let mut executor = CpuExecutor::new(Device::new("cpu", "generic"));
     register_cpu(&mut executor).expect("登记 CPU 内核");
     executor
+}
+
+/// 一条空批（无历史 KV）：查表/投影主链的 Predict 调用不读页行。
+fn plain_batch() -> Batch {
+    Batch::new(Pager::new(Cache::new(2, 16).expect("页池"), 2).expect("行宽"))
 }
 
 /// 绑一块输入缓冲。
@@ -304,6 +313,37 @@ fn a_two_layer_chain_forward_matches_the_reference() {
     let produced = model.forward(&x).expect("前向");
 
     assert_close(&produced, &reference);
+}
+
+/// 描述表把编号映射回条目名与声明形状；激活缓冲没有条目名，形状只记单轴长度（D10 / ADR 0044）。
+#[test]
+fn descriptors_map_ids_back_to_entries_and_shapes() {
+    let stack = Stack::new(vec![
+        Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
+        Linear::with_format("blk.1", WeightFormat::F32, 2, 2).expect("层"),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("blk.0.weight", vec![0.0; 6]);
+    params.insert("blk.1.weight", vec![0.0; 4]);
+    let model = CpuModel::new(&stack, &params).expect("装配");
+
+    let descriptors = model.descriptors();
+    let weight = |entry: &str| {
+        descriptors
+            .iter()
+            .find(|desc| desc.entry.as_deref() == Some(entry))
+            .expect("权重描述")
+    };
+    assert_eq!(weight("blk.0.weight").shape, [2, 3]);
+    assert_eq!(weight("blk.1.weight").shape, [2, 2]);
+
+    let activations: Vec<_> = descriptors
+        .iter()
+        .filter(|desc| desc.entry.is_none())
+        .collect();
+    assert_eq!(activations.len(), 2, "两层各一条激活输出");
+    assert!(activations.iter().all(|desc| desc.shape.len() == 1));
 }
 
 /// 权重元素数与形状不符：装配期就拦住，不带进执行期。
@@ -660,7 +700,8 @@ fn predict_logits_from_an_embedding_sequence_match_the_reference() {
     params.insert("proj.weight", w.to_vec());
 
     let mut model = CpuModel::new(&stack, &params).expect("装配");
-    let produced = model.logits(&sequence).expect("一步前向");
+    let mut batch = plain_batch();
+    let produced = model.logits(&sequence, &mut batch).expect("一步前向");
     let reference = model.forward(&[2.0]).expect("张量级参考");
 
     assert_close(&produced, &reference);
@@ -678,6 +719,228 @@ fn predict_with_a_projection_first_layer_is_not_assembled_yet() {
 
     let mut model = CpuModel::new(&stack, &params).expect("装配");
     let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
-    let error = model.logits(&sequence).expect_err("投影首层不给向量输入");
+    let mut batch = plain_batch();
+    let error = model
+        .logits(&sequence, &mut batch)
+        .expect_err("投影首层不给向量输入");
+    assert_eq!(error.code(), Code::Unsupported);
+}
+
+/// 投影权重 `[out, in]`：确定性小值矩阵，便于参考路径串行重算。
+fn projection_matrix(out: usize, width_in: usize, seed: f32) -> Vec<f32> {
+    (0..out * width_in)
+        .map(|index| seed + index as f32 * 0.01)
+        .collect()
+}
+
+/// decode 两条注意力内核经登记表跑通：与独立 `op` decode 参考对拍。
+#[test]
+fn decode_attention_kernels_match_the_reference() {
+    let sample = op::decode_attention::sample(1, 8);
+    let q = sample.f32("q").expect("q").to_vec();
+    let k = sample.f32("k").expect("k").to_vec();
+    let v = sample.f32("v").expect("v").to_vec();
+    let (d, hist) = (8, 4);
+
+    let mut naive_reference = vec![0.0; d];
+    op::attention::decode_forward(&q, &k, &v, &mut naive_reference, 1, hist, d).expect("朴素参考");
+    let mut flash_reference = vec![0.0; d];
+    op::attention::decode_flash_forward(&q, &k, &v, &mut flash_reference, 1, hist, d)
+        .expect("flash 参考");
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &q);
+    bind(&mut executor, 1, &k);
+    bind(&mut executor, 2, &v);
+    let produced_naive = run_one(&mut executor, "decode_attention_f32", &[0, 1, 2], 3, d);
+    let produced_flash = run_one(
+        &mut executor,
+        "decode_flash_attention_f32",
+        &[0, 1, 2],
+        4,
+        d,
+    );
+
+    assert_close(&produced_naive, &naive_reference);
+    assert_close(&produced_flash, &flash_reference);
+}
+
+/// 空历史走 decode 内核：`check_rows` 报 `Invalid`，不带进执行期。
+#[test]
+fn an_empty_decode_history_is_rejected_by_the_kernel() {
+    let d = 8;
+    let mut executor = cpu();
+    bind(&mut executor, 0, &vec![0.0; d]);
+    bind(&mut executor, 1, &[]);
+    bind(&mut executor, 2, &[]);
+    executor.bind(3, vec![0.0; d]);
+
+    let mut node = Node::new(
+        "decode_attention_f32",
+        Launch::new([1, 1, 1], [d as u32, 1, 1]),
+    );
+    node.bind_input(0);
+    node.bind_input(1);
+    node.bind_input(2);
+    node.bind_output(3);
+
+    let error = executor.run(&node).expect_err("空历史必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+/// 注意力块 decode 一步：embed → q/k/v → decode 注意力 → o → 残差旁路，与独立参考对拍；
+/// 当前步 K/V 写回页行并按 `[k|v]` 切回对拍。
+#[test]
+fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
+    let (vocab, hidden, kv) = (8, 8, 8);
+    let hist = 1;
+
+    let table = embed_table(vocab, hidden);
+    let wq = projection_matrix(kv, hidden, 0.0);
+    let wk = projection_matrix(kv, hidden, 1.0);
+    let wv = projection_matrix(kv, hidden, 2.0);
+    let wo = projection_matrix(hidden, kv, 3.0);
+
+    let hist_k: Vec<f32> = (0..kv).map(|i| -0.3 + i as f32 * 0.05).collect();
+    let hist_v: Vec<f32> = (0..kv).map(|i| 0.2 - i as f32 * 0.04).collect();
+    let mut history_row = Vec::with_capacity(2 * kv);
+    history_row.extend_from_slice(&hist_k);
+    history_row.extend_from_slice(&hist_v);
+
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new(
+                "blk.0",
+                hidden,
+                kv,
+                kv,
+                4,
+                AttentionAlgo::Naive,
+                WeightFormat::F32,
+            )
+            .expect("层"),
+        ),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", table.clone());
+    params.insert("blk.0.q.weight", wq.clone());
+    params.insert("blk.0.k.weight", wk.clone());
+    params.insert("blk.0.v.weight", wv.clone());
+    params.insert("blk.0.o.weight", wo.clone());
+
+    let pager = Pager::new(Cache::new(4, 4).expect("页池"), 2 * kv).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let sequence = Sequence::new(0, &[2u32], 2, 4, Stream::new(0)).expect("序列");
+    batch.admit(sequence.clone()).expect("准入");
+    batch.write_kv(0, 0, &history_row).expect("种子历史");
+
+    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
+
+    let embedded = &table[2 * hidden..3 * hidden];
+    let mut q = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, &wq, &mut q).expect("参考 q");
+    let mut k = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, &wk, &mut k).expect("参考 k");
+    let mut v = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, &wv, &mut v).expect("参考 v");
+    let mut attn = vec![0.0; kv];
+    op::attention::decode_forward(&q, &hist_k, &hist_v, &mut attn, 1, hist, kv)
+        .expect("参考注意力");
+    let mut o = vec![0.0; hidden];
+    op::gemv_f32::forward(&attn, &wo, &mut o).expect("参考 o");
+    let mut reference = vec![0.0; hidden];
+    op::residual_add_f32::forward(&o, embedded, &mut reference).expect("参考残差");
+
+    assert_close(&produced, &reference);
+
+    let row = batch.kv(0, sequence.len()).expect("当前步页行");
+    let (written_k, written_v) = row.split_at(kv);
+    assert_close(written_k, &k);
+    assert_close(written_v, &v);
+}
+
+/// 块内一个投影条目缺失：装配期按名报 `Missing`。
+#[test]
+fn a_missing_block_projection_weight_is_reported_at_assembly() {
+    let stack = Stack::of(vec![Box::new(
+        AttentionBlock::new("blk.0", 8, 8, 8, 4, AttentionAlgo::Naive, WeightFormat::F32)
+            .expect("层"),
+    )])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("blk.0.k.weight", vec![0.0; 64]);
+    params.insert("blk.0.v.weight", vec![0.0; 64]);
+    params.insert("blk.0.o.weight", vec![0.0; 64]);
+
+    let error = CpuModel::new(&stack, &params).expect_err("缺 q 权重必须拒绝");
+    assert_eq!(error.code(), Code::Missing);
+}
+
+/// 上一层输出宽度与块隐藏宽度不符：装配期报 `Invalid`。
+#[test]
+fn a_block_width_chain_break_is_rejected_at_assembly() {
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new("blk.0", 8, 8, 8, 4, AttentionAlgo::Naive, WeightFormat::F32)
+                .expect("层"),
+        ),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", embed_table(8, 4));
+    params.insert("blk.0.q.weight", vec![0.0; 64]);
+    params.insert("blk.0.k.weight", vec![0.0; 64]);
+    params.insert("blk.0.v.weight", vec![0.0; 64]);
+    params.insert("blk.0.o.weight", vec![0.0; 64]);
+
+    let error = CpuModel::new(&stack, &params).expect_err("宽度链断裂必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+/// 块内权重元素数与 `in × out` 不符：装配期报 `Invalid`。
+#[test]
+fn a_block_weight_length_mismatch_is_rejected_at_assembly() {
+    let stack = Stack::of(vec![Box::new(
+        AttentionBlock::new("blk.0", 8, 8, 8, 4, AttentionAlgo::Naive, WeightFormat::F32)
+            .expect("层"),
+    )])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("blk.0.q.weight", vec![0.0; 63]);
+    params.insert("blk.0.k.weight", vec![0.0; 64]);
+    params.insert("blk.0.v.weight", vec![0.0; 64]);
+    params.insert("blk.0.o.weight", vec![0.0; 64]);
+
+    let error = CpuModel::new(&stack, &params).expect_err("权重长度不符必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+/// 多头展平（`kv_width ≠ head_dim`）：单头通路按 `Unsupported` 拒绝，多头切片留后续。
+#[test]
+fn a_multi_head_block_is_not_assembled_yet() {
+    let stack = Stack::of(vec![Box::new(
+        AttentionBlock::new(
+            "blk.0",
+            8,
+            16,
+            8,
+            4,
+            AttentionAlgo::Naive,
+            WeightFormat::F32,
+        )
+        .expect("层"),
+    )])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("blk.0.q.weight", vec![0.0; 16 * 8]);
+    params.insert("blk.0.k.weight", vec![0.0; 16 * 8]);
+    params.insert("blk.0.v.weight", vec![0.0; 16 * 8]);
+    params.insert("blk.0.o.weight", vec![0.0; 8 * 16]);
+
+    let error = CpuModel::new(&stack, &params).expect_err("多头通路留后续");
     assert_eq!(error.code(), Code::Unsupported);
 }

@@ -32,6 +32,9 @@ pub(crate) const SITE: &str = "serve::model";
 /// 注意力内核入口：`q/k/v → out`，序列长 `s` 与头宽 `d` 随几何传入。
 type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> Result<()>;
 
+/// decode 注意力内核入口：`q/k/v → out`，查询行数 `q_rows`、历史行数 `hist` 与头宽 `d` 随几何传入。
+type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
+
 /// 适配入口：拆好切片后调用算子参考实现。
 type KernelFn = fn(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()>;
 
@@ -121,6 +124,31 @@ fn flash_attention_f32(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<
     attention_paths(inputs, outputs, op::attention::flash_forward)
 }
 
+/// decode 三路适配：`q/hist_k/hist_v → out`；头宽 `d` 取算子静态语义表，查询行数 `q_rows` 由
+/// `q.len()/d` 推出，历史行数 `hist` 由 `k.len()/d` 推出，形状不符交算子参考校验。
+fn decode_paths(inputs: &[&[f32]], outputs: &mut [&mut [f32]], run: DecodeKernel) -> Result<()> {
+    let (Some(q), Some(k), Some(v), Some(out)) = (
+        inputs.first(),
+        inputs.get(1),
+        inputs.get(2),
+        outputs.first_mut(),
+    ) else {
+        return Err(Error::new(Code::Invalid, "decode 注意力需要三进一出").with(SITE));
+    };
+    let d = op::decode_attention::MODEL.shape.1;
+    let q_rows = q.len() / d;
+    let hist = k.len() / d;
+    run(q, k, v, out, q_rows, hist, d)
+}
+
+fn decode_attention_f32(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
+    decode_paths(inputs, outputs, op::attention::decode_forward)
+}
+
+fn decode_flash_attention_f32(inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> Result<()> {
+    decode_paths(inputs, outputs, op::attention::decode_flash_forward)
+}
+
 /// 内核表展开：每条例子取适配函数标识符，算子名由 `stringify!` 派生，避免名字与函数名各写一份。
 macro_rules! kernel_table {
     ($( $run:ident ),* $(,)?) => {
@@ -128,10 +156,16 @@ macro_rules! kernel_table {
     };
 }
 
-/// CPU 内核表：按 `op::REGISTRY` 顺序排列的 f32 纯切片子集；长度由表本身数出。
+/// CPU 内核表：`op::REGISTRY` 的 f32 纯切片子集，不是全覆盖。
+///
+/// 对照 `train` 的参考全覆盖表（24/24 同序锁死）：本表只登记 serve CPU 通路实际用到的纯切片
+/// f32 适配器，未覆盖的算子执行时由 [`CpuExecutor`](engine::exec::CpuExecutor) 按名拒绝。
+/// 新算子进注册表时，两处表的职责不要混写——train 补参考覆盖，serve 只接自己通路用到的。
 const KERNELS: &[Entry] = kernel_table![
     add_f32,
     attention_f32,
+    decode_attention_f32,
+    decode_flash_attention_f32,
     embed_f32,
     flash_attention_f32,
     gelu_f32,

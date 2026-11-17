@@ -10,18 +10,25 @@
 //! 惩罚都会改变"什么时候停"。端点因此不需要知道策略，策略也不需要知道页账。
 
 use diagnostic::{Code, Error, Result};
+use std::cmp::Ordering;
 
-/// 一步前向：给定序列，给出下一个位置的 logits。
+/// 一步前向：给定序列与批页账视图，给出下一个位置的 logits。
 ///
-/// 序列只读：前向不该改状态（页账与计数都由调度器推进）。长度与形状由实现按
-/// [`engine::Sequence::len`] 自行决定——本层不假设词表大小。
+/// 序列本身只读：前向不该推进计数（页账与计数都由调度器推进）。历史 K/V 经 `batch` 从页池
+/// 读回，当前步 K/V 写回对应页行；一次调用内只持一个 `&mut Batch`，只读的序列事实由调用方
+/// 先取走再进入可变借用。长度与形状由实现按 [`engine::Sequence::len`] 自行决定——本层不假设
+/// 词表大小。
 pub trait Predict {
     /// 计算下一个位置的 logits；返回值长度由模型决定。
     ///
     /// # Errors
     ///
-    /// 模型自己失败（权重缺失、形状不符）时返回错误，服务层会把它当成服务端故障。
-    fn logits(&mut self, sequence: &engine::Sequence) -> Result<Vec<f32>>;
+    /// 模型自己失败（权重缺失、形状不符、页账读不出历史）时返回错误，服务层会把它当成服务端故障。
+    fn logits(
+        &mut self,
+        sequence: &engine::Sequence,
+        batch: &mut engine::Batch,
+    ) -> Result<Vec<f32>>;
 }
 
 /// 采样策略：从一步 logits 里选一个 token；`None` 表示遇到停止符、序列到此结束。
@@ -45,6 +52,242 @@ impl Sampling for Greedy {
     fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
         best(logits).map(Some)
     }
+}
+
+/// 经典采样参数闭集档案：温度 / top-k / top-p；`None` 表示该档不启用。
+///
+/// 参数在装配采样器时一次性给定（闭集档案），不随步变化；越界值在采样时对照候选条数校验。
+/// 档案只有类型化槽位，不持字符串键名表，热路径也不做查表。随机采样不在本刀：截断之后仍是
+/// 确定性 argmax（等值取最小编号），与 [`Greedy`] 同一套可复现口径。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SamplingParams {
+    /// 温度；`None` 等价 `1.0`。
+    temperature: Option<f32>,
+    /// top-k：保留最大的 k 个候选；`None` 不截断。
+    top_k: Option<usize>,
+    /// top-p：保留累计概率到 `p` 的最小候选集；`None` 不核采样。
+    top_p: Option<f32>,
+}
+
+impl SamplingParams {
+    /// 空档案：三档都不启用。
+    pub const fn new() -> Self {
+        Self {
+            temperature: None,
+            top_k: None,
+            top_p: None,
+        }
+    }
+
+    /// 温度：必须是大于 0 的有限值。
+    #[must_use]
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    /// top-k：保留最大的 k 个候选；条数在采样时对照候选个数校验。
+    #[must_use]
+    pub fn with_top_k(mut self, top_k: usize) -> Self {
+        self.top_k = Some(top_k);
+        self
+    }
+
+    /// top-p：必须在 `(0, 1]` 内的有限值。
+    #[must_use]
+    pub fn with_top_p(mut self, top_p: f32) -> Self {
+        self.top_p = Some(top_p);
+        self
+    }
+
+    /// 温度档案值（未启用为 `None`）。
+    pub fn temperature(&self) -> Option<f32> {
+        self.temperature
+    }
+
+    /// top-k 档案值（未启用为 `None`）。
+    pub fn top_k(&self) -> Option<usize> {
+        self.top_k
+    }
+
+    /// top-p 档案值（未启用为 `None`）。
+    pub fn top_p(&self) -> Option<f32> {
+        self.top_p
+    }
+
+    /// 按候选条数校验三档参数；非有限、越界、空候选报 `Invalid`。
+    fn validate(&self, candidates: usize) -> Result<()> {
+        self.check_temperature()?;
+        self.check_top_k(candidates)?;
+        self.check_top_p()?;
+        Ok(())
+    }
+
+    /// 温度必须是大于 0 的有限值；未启用不校验。
+    fn check_temperature(&self) -> Result<()> {
+        if let Some(temperature) = self.temperature
+            && (!temperature.is_finite() || temperature <= 0.0)
+        {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("温度 {temperature} 必须是大于 0 的有限值"),
+            )
+            .with("serve::SamplingParams"));
+        }
+        Ok(())
+    }
+
+    /// top-k 必须落在 `1..=候选条数`；未启用不校验。
+    fn check_top_k(&self, candidates: usize) -> Result<()> {
+        if let Some(k) = self.top_k
+            && (k == 0 || k > candidates)
+        {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("top-k {k} 不在 1..={candidates} 范围内"),
+            )
+            .with("serve::SamplingParams"));
+        }
+        Ok(())
+    }
+
+    /// top-p 必须在 `(0, 1]` 内且有限；未启用不校验。
+    fn check_top_p(&self) -> Result<()> {
+        if let Some(p) = self.top_p
+            && (!p.is_finite() || p <= 0.0 || p > 1.0)
+        {
+            return Err(
+                Error::new(Code::Invalid, format!("top-p {p} 必须在 (0, 1] 内"))
+                    .with("serve::SamplingParams"),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Default for SamplingParams {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 经典采样：温度缩放 → top-k 截断 → top-p 核采样 → 保留集 argmax。
+///
+/// 不接随机数：截断后的选择仍是确定性 argmax（等值取最小编号）；随机采样留后续档位，
+/// 本刀不预埋 RNG。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classical {
+    params: SamplingParams,
+}
+
+impl Classical {
+    /// 由参数闭集档案构造。
+    pub fn new(params: SamplingParams) -> Self {
+        Self { params }
+    }
+
+    /// 不启用任何截断：温度 1、不核采样，选择口径与贪心一致。
+    pub fn greedy_like() -> Self {
+        Self::new(SamplingParams::new())
+    }
+
+    /// 参数档案（只读）。
+    pub fn params(&self) -> &SamplingParams {
+        &self.params
+    }
+}
+
+impl Sampling for Classical {
+    fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
+        usable(logits)?;
+        self.params.validate(logits.len())?;
+        let temperature = self.params.temperature().unwrap_or(1.0);
+        // 温度缩放是逐元素映射，整块切片一次算完，不保留逐元素手写循环以外的遍历。
+        let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
+
+        let retained: Vec<usize> = (0..logits.len()).collect();
+        let best_index = self.select(&scaled, retained)?;
+        u32::try_from(best_index)
+            .map_err(|_| {
+                Error::new(Code::Invalid, format!("token 编号 {best_index} 超出 u32"))
+                    .with("serve::Classical")
+            })
+            .map(Some)
+    }
+}
+
+impl Classical {
+    /// 截断与选优：top-k → top-p 核采样 → 保留集 argmax；返回最优候选编号。
+    fn select(&self, scaled: &[f32], retained: Vec<usize>) -> Result<usize> {
+        let mut retained = retained;
+        if let Some(k) = self.params.top_k() {
+            retained = top_k(scaled, retained, k);
+        }
+        if let Some(p) = self.params.top_p() {
+            retained = nucleus(scaled, retained, p);
+        }
+        argmax_index(scaled, retained)
+    }
+}
+
+/// top-k 截断：按缩放分数降序（等值取最小编号）排序后保留前 `k` 个候选。
+fn top_k(scaled: &[f32], mut candidates: Vec<usize>, k: usize) -> Vec<usize> {
+    candidates.sort_by(|&a, &b| {
+        scaled[b]
+            .partial_cmp(&scaled[a])
+            .unwrap_or(Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    candidates.truncate(k);
+    candidates
+}
+
+/// 保留集上确定性 argmax：严格大于才更新，等值时编号更小者胜出；候选为空报错。
+fn argmax_index(scaled: &[f32], candidates: Vec<usize>) -> Result<usize> {
+    let best = candidates.into_iter().fold(None, |best, index| match best {
+        None => Some(index),
+        Some(best_index) => {
+            if scaled[index] > scaled[best_index] {
+                Some(index)
+            } else {
+                Some(best_index)
+            }
+        }
+    });
+    best.ok_or_else(|| {
+        Error::new(Code::Invalid, "截断后候选为空：无 token 可选").with("serve::Classical")
+    })
+}
+
+/// top-p 核采样：按 softmax 概率降序累计，保留累计概率不超过 `p` 的最小前缀（含越出阈值的第一项）。
+///
+/// 归约与排序有串行依赖，保留遍历；`scaled` 整块读入，指数与累计不写回调用方缓冲。
+fn nucleus(scaled: &[f32], mut candidates: Vec<usize>, p: f32) -> Vec<usize> {
+    let max = candidates
+        .iter()
+        .map(|&index| scaled[index])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let exponentials: Vec<f32> = candidates
+        .iter()
+        .map(|&index| (scaled[index] - max).exp())
+        .collect();
+    let total: f32 = exponentials.iter().sum();
+    let mut ranked: Vec<(usize, f32)> = candidates.drain(..).zip(exponentials).collect();
+    ranked.sort_by(|&(a, ea), &(b, eb)| {
+        eb.partial_cmp(&ea)
+            .unwrap_or(Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    let mut kept = Vec::with_capacity(ranked.len());
+    let mut cumulative = 0.0;
+    for (index, exponential) in ranked {
+        kept.push(index);
+        cumulative += exponential / total;
+        if cumulative >= p {
+            break;
+        }
+    }
+    kept
 }
 
 /// 一步生成的结局：采到的 token + 它为什么停下。
@@ -103,8 +346,8 @@ name_set! {
     }
 }
 
-/// 最大 logit 的最小下标；空输入与非有限值都报错。
-fn best(logits: &[f32]) -> Result<u32> {
+/// logits 可用性预检：空输入与非有限值都报错；所有采样策略共用同一份预检。
+fn usable(logits: &[f32]) -> Result<()> {
     if logits.is_empty() || logits.iter().any(|value| !value.is_finite()) {
         return Err(Error::new(
             Code::Invalid,
@@ -115,6 +358,12 @@ fn best(logits: &[f32]) -> Result<u32> {
         )
         .with("serve::Greedy"));
     }
+    Ok(())
+}
+
+/// 最大 logit 的最小下标；空输入与非有限值都报错。
+fn best(logits: &[f32]) -> Result<u32> {
+    usable(logits)?;
     // 一趟 argmax：比较链有串行依赖，保留折叠；严格大于才更新，等值时先出现（编号更小）的下标胜出。
     let (index, _) = logits.iter().copied().enumerate().fold(
         (0usize, f32::NEG_INFINITY),

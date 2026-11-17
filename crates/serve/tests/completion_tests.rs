@@ -5,7 +5,7 @@ use crate::{Endpoint, Greedy};
 struct Fixed(Vec<f32>);
 
 impl Predict for Fixed {
-    fn logits(&mut self, _sequence: &Sequence) -> diagnostic::Result<Vec<f32>> {
+    fn logits(&mut self, _sequence: &Sequence, _batch: &mut Batch) -> diagnostic::Result<Vec<f32>> {
         Ok(self.0.clone())
     }
 }
@@ -29,7 +29,7 @@ impl Sampling for StopAfter {
 struct Broken;
 
 impl Predict for Broken {
-    fn logits(&mut self, _sequence: &Sequence) -> diagnostic::Result<Vec<f32>> {
+    fn logits(&mut self, _sequence: &Sequence, _batch: &mut Batch) -> diagnostic::Result<Vec<f32>> {
         Err(diagnostic::Error::new(diagnostic::Code::Internal, "权重缺失").with("test::Broken"))
     }
 }
@@ -129,7 +129,11 @@ fn the_model_sees_the_generated_history() {
     struct Watching(Rc<RefCell<Vec<Vec<u32>>>>);
 
     impl Predict for Watching {
-        fn logits(&mut self, sequence: &Sequence) -> diagnostic::Result<Vec<f32>> {
+        fn logits(
+            &mut self,
+            sequence: &Sequence,
+            _batch: &mut Batch,
+        ) -> diagnostic::Result<Vec<f32>> {
             self.0.borrow_mut().push(sequence.tokens().to_vec());
             Ok(vec![0.0, 1.0])
         }
@@ -146,6 +150,156 @@ fn the_model_sees_the_generated_history() {
         [Vec::new(), vec![1], vec![1, 1]],
         "第一步看到空历史，之后每一步看到上一步的输出"
     );
+}
+
+/// 一条按 id 失败的模型桩：命中 `fail` 上抛内部错误，其余序列照常给 logits。
+struct Split {
+    fail: u64,
+}
+
+impl Predict for Split {
+    fn logits(&mut self, sequence: &Sequence, _batch: &mut Batch) -> diagnostic::Result<Vec<f32>> {
+        if sequence.id() == self.fail {
+            return Err(
+                diagnostic::Error::new(diagnostic::Code::Internal, "权重缺失").with("test::Split"),
+            );
+        }
+        Ok(vec![0.0, 1.0])
+    }
+}
+
+/// 采样桩：第一次正常给 token，第二次报不可用——核对采样失败同样不污染已记账序列。
+struct FlakySampler {
+    calls: u32,
+}
+
+impl Sampling for FlakySampler {
+    fn sample(&mut self, _logits: &[f32]) -> diagnostic::Result<Option<u32>> {
+        self.calls += 1;
+        if self.calls == 2 {
+            return Err(
+                diagnostic::Error::new(diagnostic::Code::Invalid, "logits 不可用")
+                    .with("test::FlakySampler"),
+            );
+        }
+        Ok(Some(1))
+    }
+}
+
+/// 把当前步 KV 行按序列号写成标记：核对每条序列的页行归属不串行。
+struct Recorder;
+
+impl Predict for Recorder {
+    fn logits(&mut self, sequence: &Sequence, batch: &mut Batch) -> diagnostic::Result<Vec<f32>> {
+        let marker = sequence.id() as f32;
+        batch.write_kv(sequence.id(), sequence.len(), &[marker, 0.0])?;
+        Ok(vec![0.0, 1.0])
+    }
+}
+
+fn admit_sequence(
+    state: &mut State<impl Predict, impl Sampling>,
+    id: u64,
+    prompt_len: usize,
+    max_new: usize,
+) {
+    let page_size = state.batch.scheduler().page_size();
+    let prompt = vec![0u32; prompt_len];
+    let sequence = Sequence::new(
+        id,
+        &prompt,
+        max_new,
+        page_size,
+        engine::exec::Stream::new(0),
+    )
+    .expect("序列");
+    state.batch.admit(sequence).expect("准入");
+}
+
+/// 两条序列同批准入、同批步进：各自记账，跑完一起摘出，页全部归还。
+#[test]
+fn two_admitted_sequences_step_together_and_keep_their_own_history() {
+    let endpoint = endpoint(Fixed(vec![0.0, 5.0]), Greedy, 8);
+    let mut finished = Vec::new();
+    {
+        let mut state = endpoint.lock().expect("锁");
+        admit_sequence(&mut state, 1, 2, 2);
+        admit_sequence(&mut state, 2, 2, 2);
+        while !state.batch.is_empty() {
+            finished.extend(state.step_batch().expect("一轮步进"));
+        }
+    }
+    finished.sort_by_key(|(id, _)| *id);
+    assert_eq!(finished.len(), 2);
+    assert_eq!(finished[0].1.tokens(), [1, 1]);
+    assert_eq!(finished[1].1.tokens(), [1, 1]);
+    assert_eq!(endpoint.in_use_pages(), Some(0), "跑完必须归还页");
+}
+
+/// 页不足的序列留在批里、历史不变；其余序列照常推进，批不整体停摆。
+#[test]
+fn a_blocked_sequence_stays_in_the_batch_with_unchanged_history() {
+    let endpoint = endpoint(Fixed(vec![0.0, 1.0]), Greedy, 2);
+    let mut state = endpoint.lock().expect("锁");
+    admit_sequence(&mut state, 1, 0, 8);
+    admit_sequence(&mut state, 2, 4, 4);
+
+    let round = state.step_batch().expect("一轮步进");
+    assert!(round.is_empty(), "这一轮谁都没跑完");
+    let running = state.batch.sequence(1).expect("在批里");
+    let blocked = state.batch.sequence(2).expect("在批里");
+    assert_eq!(running.produced(), 1, "有页的那条照常推进");
+    assert_eq!(blocked.produced(), 0, "被挡的那条计数不动");
+    assert!(blocked.tokens().is_empty(), "被挡不记 token");
+    assert_eq!(state.batch.blocked(), [2]);
+}
+
+/// 批内一条模型失败：已记账的另一条状态不回滚；失败序列归还页并摘出，错误上抛。
+#[test]
+fn one_failed_sequence_does_not_pollute_the_accounted_other() {
+    let endpoint = endpoint(Split { fail: 1 }, Greedy, 8);
+    let mut state = endpoint.lock().expect("锁");
+    admit_sequence(&mut state, 2, 1, 2);
+    admit_sequence(&mut state, 1, 1, 1);
+
+    let error = state.step_batch().expect_err("坏序列上抛服务端错误");
+    assert_eq!(error.code(), diagnostic::Code::Internal);
+
+    let good = state.batch.sequence(2).expect("好序列仍在批里");
+    assert_eq!(good.tokens(), [1], "已记账的 token 不回滚");
+    assert!(state.batch.sequence(1).is_none(), "失败序列已摘出批");
+}
+
+/// 采样失败与模型失败同一条隔离路径：先记账的序列不回滚，坏序列归还页摘出。
+#[test]
+fn a_failed_sampling_step_does_not_pollute_the_accounted_other() {
+    let endpoint = endpoint(Fixed(vec![0.0, 1.0]), FlakySampler { calls: 0 }, 8);
+    let mut state = endpoint.lock().expect("锁");
+    admit_sequence(&mut state, 2, 1, 2);
+    admit_sequence(&mut state, 1, 1, 1);
+
+    let error = state.step_batch().expect_err("采样坏序列上抛");
+    assert_eq!(error.code(), diagnostic::Code::Invalid);
+
+    let good = state.batch.sequence(2).expect("好序列仍在批里");
+    assert_eq!(good.tokens(), [1], "已记账的 token 不回滚");
+    assert!(state.batch.sequence(1).is_none(), "采样失败序列已摘出批");
+}
+
+/// 当前步 KV 行按序列号写进各自页行：两条同批互不覆盖。
+#[test]
+fn kv_rows_are_attributed_to_their_own_sequence() {
+    let endpoint = endpoint(Recorder, Greedy, 8);
+    let mut state = endpoint.lock().expect("锁");
+    admit_sequence(&mut state, 3, 1, 2);
+    admit_sequence(&mut state, 4, 1, 2);
+
+    state.step_batch().expect("一轮步进");
+    for id in [3u64, 4] {
+        let row = state.batch.kv(id, 1).expect("读到本序列的页行");
+        assert_eq!(row[0], id as f32, "页行标记归属序列号 {id}");
+        assert_eq!(row[1], 0.0);
+    }
 }
 
 /// 同一端点连续两次调用不能互相干扰：页账与序列都在每次调用结束时回到空。

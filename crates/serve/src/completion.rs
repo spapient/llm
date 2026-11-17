@@ -10,9 +10,9 @@
 //! 一条序列跑完一定 `finish`：成功、被挡或出错都归还页，因此"页泄漏"不会只在某一条分支上
 //! 发生——那正是这类端点最常见的残留问题。
 //!
-//! 当前实现一次只处理一条序列（`Mutex` 串行化）：连续批需要的 [`engine::Batch`] 已经就位，
-//! 但真正的并发入口属于传输层（P1，尚未落地）。端点因此先保证"一条请求能端到端跑完"这件事
-//! 是对的，再谈吞吐。
+//! 单条请求端点仍一次答一条；批步进在 [`State::step_batch`] 落地：批内多条准入序列一轮依次
+//! 走 logits → 采样 → 记账，结束的归还页摘出，被挡的原样保留。模型一步仍是单序列几何，真正的
+//! 并发传输入口属于传输层（M4，尚未落地）。
 
 use crate::generate::{Ending, Generation, Predict, Sampling};
 use crate::{Request, Response, Route, Status};
@@ -145,6 +145,15 @@ where
         crate::admit_batch(&mut state.batch, sequence)
     }
 
+    /// 推进批内所有准入序列一轮；返回本轮跑完的 `(id, 生成结果)`。
+    ///
+    /// 模型仍是单序列几何：一步一条序列，调度侧把多条排在同一批里依次走；内核级批处理形状
+    /// 不在本刀范围。被挡的序列留在批里、历史不变，下一轮原样重试；并发传输入口留 M4。
+    pub fn advance_batch(&self) -> diagnostic::Result<Vec<(u64, Generation)>> {
+        let mut state = self.lock()?;
+        state.step_batch()
+    }
+
     /// 跑完一条已经进批的序列：生成 + 归还页。
     ///
     /// `finish` 在生成之后无条件执行（先取结局、再取归还结果）：模型或采样报错时页也必须
@@ -249,17 +258,18 @@ where
 
     /// 算这一步的 logits；序列已经跑完时返回 `None`（那是"到上限了"，不是"没页"）。
     ///
-    /// 单独一支是因为借用必须分开：前向要读序列（借 `batch`），又要改模型（借 `model`），
-    /// 直接从 `&mut State` 上同时拿这两样会让借用检查器拒绝——两个字段互不重叠，函数内部拆开就成立。
+    /// 借用必须分开：前向要把序列交给模型，又要持 `&mut Batch` 读写页账。序列是从 `batch`
+    /// 借出的，继续持有那个不可变借用会和可变借用冲突——这里先克隆一份只读的序列事实交出，
+    /// 不可变借用随即释放，再以 `&mut Batch` 进入模型。两个字段互不重叠，函数内部拆开就成立。
     fn logits(&mut self, id: u64) -> diagnostic::Result<Option<Vec<f32>>> {
         let State { model, batch, .. } = self;
-        let Some(sequence) = batch.sequence(id) else {
+        let Some(sequence) = batch.sequence(id).cloned() else {
             return Err(missing(id));
         };
         if sequence.is_done() {
             return Ok(None);
         }
-        model.logits(sequence).map(Some)
+        model.logits(&sequence, batch).map(Some)
     }
 
     /// 从一步 logits 里取下一个 token，并把它记进序列与页账；`None` 是停止符。
@@ -278,6 +288,52 @@ where
             .ok_or_else(|| missing(id))?
             .stop()?;
         Ok(Step::Stop)
+    }
+
+    /// 结束一条序列：装出生成结果、归还页并摘出批。
+    fn finish_one(&mut self, id: u64, ending: Ending) -> diagnostic::Result<Generation> {
+        let generation = self.done(id, ending)?;
+        self.batch.finish(id)?;
+        generation.ok_or_else(|| missing(id))
+    }
+
+    /// 批内推进一条序列一步；跑完返回它的结局，被挡或还在跑返回 `None`。
+    ///
+    /// 模型/采样报错时由 [`step_batch`](Self::step_batch) 统一归还页，这里只把错误上抛。
+    fn advance_one(&mut self, id: u64) -> diagnostic::Result<Option<(u64, Generation)>> {
+        let step = self.step(id)?;
+        if step.blocks() {
+            return Ok(None);
+        }
+        let Some(ending) = step.ending() else {
+            return Ok(None);
+        };
+        let generation = self.finish_one(id, ending)?;
+        Ok(Some((id, generation)))
+    }
+
+    /// 批内一轮：每条在跑序列各走一步；结束的摘出批并归还页，被挡的原样保留、不中断其余序列。
+    ///
+    /// 本轮已记账的序列不会因后面一条报错而回滚；报错那条先归还页，再把错误上抛。序列号在
+    /// 进入可变借用前一次性取走（owned `u64`），不持有 `batch` 的不可变借用。
+    fn step_batch(&mut self) -> diagnostic::Result<Vec<(u64, Generation)>> {
+        let ids: Vec<u64> = self.batch.ids().collect();
+        let mut finished = Vec::new();
+        for id in ids {
+            match self.advance_one(id) {
+                Ok(Some(pair)) => finished.push(pair),
+                Ok(None) => {}
+                Err(mut error) => {
+                    // 归还页优先于报错上抛；归还本身失败时作为同级诊断附注保留，
+                    // 不能用它覆盖原始故障——否则客户端看不到模型/采样那一类服务端错误。
+                    if let Err(cleanup) = self.batch.finish(id) {
+                        error = error.also(&cleanup);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(finished)
     }
 }
 

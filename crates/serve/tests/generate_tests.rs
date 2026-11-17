@@ -62,3 +62,96 @@ fn ending_names_are_stable() {
     let names: Vec<&str> = Ending::ALL.iter().map(|ending| ending.as_str()).collect();
     assert_eq!(names, ["limit", "stop"]);
 }
+
+/// 不启用任何截断的经典采样与贪心同口径：同一批 logits 给出同一个 token。
+#[test]
+fn classical_without_filters_matches_greedy() {
+    let mut classical = Classical::greedy_like();
+    for logits in [
+        [0.1, 0.9, 0.5].as_slice(),
+        &[-3.0, -1.0, -2.0],
+        &[2.0, 2.0, 2.0],
+    ] {
+        let greedy = Greedy.sample(logits).expect("贪心可采");
+        assert_eq!(classical.sample(logits).expect("经典可采"), greedy);
+    }
+}
+
+/// 温度只缩放、不改写序：任意正温度下 argmax 赢家不变（确定性口径）。
+#[test]
+fn temperature_does_not_change_the_argmax_winner() {
+    let logits = [1.0f32, 0.9, -0.5];
+    for temperature in [0.5, 1.0, 2.0, 7.0] {
+        let mut classical = Classical::new(SamplingParams::new().with_temperature(temperature));
+        assert_eq!(classical.sample(&logits).expect("可采"), Some(0));
+    }
+}
+
+/// 温度必须是大于 0 的有限值：0、负数、NaN、无穷都报 `Invalid`。
+#[test]
+fn a_bad_temperature_is_rejected() {
+    for temperature in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut classical = Classical::new(SamplingParams::new().with_temperature(temperature));
+        assert_eq!(
+            classical.sample(&[1.0, 2.0]).unwrap_err().code(),
+            Code::Invalid,
+            "温度 {temperature} 必须被拒绝"
+        );
+    }
+}
+
+/// top-k 必须落在 `1..=候选条数`：0 与超出词表都报 `Invalid`。
+#[test]
+fn top_k_must_be_within_the_candidates() {
+    let logits = [1.0f32, 2.0, 3.0];
+    for top_k in [0, 4] {
+        let mut classical = Classical::new(SamplingParams::new().with_top_k(top_k));
+        assert_eq!(
+            classical.sample(&logits).unwrap_err().code(),
+            Code::Invalid,
+            "top-k {top_k} 必须被拒绝"
+        );
+    }
+    let mut classical = Classical::new(SamplingParams::new().with_top_k(2));
+    assert_eq!(classical.sample(&logits).expect("top-k=2 可采"), Some(2));
+}
+
+/// top-p 必须在 `(0, 1]` 内：0、负数、大于 1、NaN 都报 `Invalid`。
+#[test]
+fn top_p_must_be_in_the_unit_interval() {
+    for top_p in [0.0, -0.2, 1.5, f32::NAN] {
+        let mut classical = Classical::new(SamplingParams::new().with_top_p(top_p));
+        assert_eq!(
+            classical.sample(&[1.0, 2.0]).unwrap_err().code(),
+            Code::Invalid,
+            "top-p {top_p} 必须被拒绝"
+        );
+    }
+    let mut classical = Classical::new(SamplingParams::new().with_top_p(1.0));
+    assert_eq!(
+        classical.sample(&[1.0, 2.0]).expect("top-p=1 可采"),
+        Some(1)
+    );
+}
+
+/// 空 logits 与非有限值在经典采样下同样预检拦截，不猜 token。
+#[test]
+fn classical_rejects_unusable_logits() {
+    let mut classical = Classical::greedy_like();
+    assert_eq!(classical.sample(&[]).unwrap_err().code(), Code::Invalid);
+    assert_eq!(
+        classical.sample(&[1.0, f32::NAN]).unwrap_err().code(),
+        Code::Invalid
+    );
+}
+
+/// top-p 核采样按概率降序保留前缀：小 p 只留头名，p 放宽到覆盖第二名字才入集。
+#[test]
+fn nucleus_keeps_the_probability_prefix() {
+    let scaled = [3.0f32, 2.0, 1.0];
+    let candidates = vec![0usize, 1, 2];
+    let tight = super::nucleus(&scaled, candidates.clone(), 0.5);
+    assert_eq!(tight, [0]);
+    let wide = super::nucleus(&scaled, candidates, 0.9);
+    assert_eq!(wide, [0, 1]);
+}
