@@ -131,9 +131,13 @@ impl<'a> NodeSink<'a> {
     /// 再加驻留权重编号，一元点wise/二元/位置编码只有各自的输入路数。
     fn push_node(&mut self, prev: u32, plan: &LayerPlan, bypass: Option<u32>) -> Result<u32> {
         let output_id = self.slots.activation()?;
+        // 投影/查表第二维登记输入宽（行批切段用）；等长族第二维占位 0。
+        let width_in = matches!(plan.kind, LayerKind::Projection | LayerKind::Embedding)
+            .then_some(plan.in_features)
+            .unwrap_or(0);
         let mut node = Node::new(
             plan.operator.clone(),
-            Launch::new([1, 1, 1], [plan.out_features as u32, 1, 1]),
+            Launch::new([1, 1, 1], [plan.out_features as u32, width_in as u32, 1]),
         );
         node.bind_input(prev);
         if let Some(bypass) = bypass {
@@ -181,7 +185,7 @@ impl<'a> NodeSink<'a> {
         let weight_id = self.slots.weight()?;
         let mut node = Node::new(
             operator.to_string(),
-            Launch::new([1, 1, 1], [linear.out_features() as u32, 1, 1]),
+            Launch::new([1, 1, 1], [linear.out_features() as u32, linear.in_features() as u32, 1]),
         );
         node.bind_input(input);
         node.bind_input(weight_id);

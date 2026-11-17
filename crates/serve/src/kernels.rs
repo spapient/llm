@@ -122,8 +122,7 @@ kernel!(
     mul_f32,
     residual_add_f32,
     rmsnorm_f32,
-    embed_f32,
-    gemv_f32; binary
+    embed_f32; binary
 );
 
 /// 注意力三路适配：`q/k/v → out`；头宽 `d` 取算子静态语义表，序列长 `s` 由 `q` 长推出，
@@ -198,6 +197,41 @@ fn decode_flash_attention_f32(
         outputs,
         op::attention::decode_flash_forward_heads,
     )
+}
+
+/// 稠密投影适配：单向量走原 gemv；行批整块按输入宽 `m`（Launch 第二维）切段，逐行共享同一份
+/// 驻留权重调 gemv。`m=0` 是装配期占位，退回单向量几何（长度自洽交由内核校验）。
+fn gemv_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+    let (x, weights, out) = gemv_inputs(inputs, outputs)?;
+    let m = launch.block[1] as usize;
+    if m == 0 || x.len() == m {
+        return op::gemv_f32::forward(x, weights, out);
+    }
+    project_rows(x, weights, out, m, launch.block[0] as usize)
+}
+
+/// 取出投影两个读入与一个写出的 f32 视图。
+fn gemv_inputs<'a, 'b>(
+    inputs: &'b [View<'_>],
+    outputs: &'a mut [ViewMut<'_>],
+) -> Result<(&'b [f32], &'b [f32], &'a mut [f32])> {
+    let x = input_f32("gemv_f32", inputs, 0)?;
+    let weights = input_f32("gemv_f32", inputs, 1)?;
+    let out = output_f32("gemv_f32", outputs, 0)?;
+    Ok((x, weights, out))
+}
+
+/// 行批投影：整块 `x` 按 `m` 切段、`out` 按 `n` 切段，逐行点积；权重 `n·m` 整块复用。
+fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
+    if !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
+        return Err(Error::new(Code::Invalid, "gemv 行批几何不自洽").with(SITE));
+    }
+    for row in 0..x.len() / m {
+        let start = row * m;
+        let out_start = row * n;
+        op::gemv_f32::forward(&x[start..start + m], weights, &mut out[out_start..out_start + n])?;
+    }
+    Ok(())
 }
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：4 位量化乘加，与 `op::gemv_i4::forward` 同一段算术。
