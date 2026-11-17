@@ -1,7 +1,7 @@
 # 0046：序列批量几何——扁平批缓冲与内核批维，图不复制实例（M2-2）
 
-- 状态：路线与布局合同定型；op 批维地基与 Predict 批量视图接口已落地，engine 缓冲扩批与 serve 整批前向分刀落地
-- 日期：2026-11-17
+- 状态：路线与布局合同定型；op 批维地基与 Predict 批量视图接口已落地，engine 缓冲扩批与 serve 整批前向分刀落地；2026-11-18 补 §7：变长 ragged 历史 K/V 段映射合同
+- 日期：2026-11-17（2026-11-18 补 §7 ragged 历史段布局）
 - 相关：[0043](0043-program-scalar-slots.md)（标量槽闭集，语义参数不进几何维）；[0044](0044-bindings-metadata.md)（编号到缓冲，引擎不解释形状）；[0025](0025-runtime-backend-abstraction.md)（后端三 trait 分立）
 
 ## 背景
@@ -39,11 +39,11 @@
 一份 `Buffer` 容量 = `batch · 单序列长度`；图节点不为序列复制第二组编号。权重编号与批数无关，
 一份驻留权重被所有批内段复用。
 
-### 3. 本刀限等长批，变长历史留后续刀
+### 3. 等长批先行；变长 ragged 历史段合同见 §7
 
-本阶段批内各序列历史长度一致（统一 `hist`）。continuous batching 的变长 ragged stride、各段独立
-`hist_b` 映射不在本刀定；待 engine 缓冲扩批刀再立切片合同。prefill 多 token 主链与 chunked prefill
-仍按 §3.8 排除边界暂缓。
+等长批（统一 `hist`）先把扁平布局与段编排打通。op 变长批段入口 `decode_forward_batch_var` /
+`decode_flash_forward_batch_var`（各段独立 `hist_b`）已落地；serve 装填 / 写回侧的 ragged 段映射
+合同收口在 §7。prefill 多 token 主链与 chunked prefill 仍按 §3.8 排除边界暂缓。
 
 ### 4. 内核批维编排复用既有单序列 / 多头内核
 
@@ -74,12 +74,34 @@ logits_batch(&[Sequence], &mut Batch) -> Result<Vec<Vec<f32>>>
 - 批数是几何事实，不复制进冻结标量槽（ADR 0043）；[`Launch`](../../crates/engine/src/exec.rs) 的 `grid` 三轴当前不承载批维，`block` 第二维仍只承载头宽。批内各段头数、头宽、段长一致，段内复用多头 / 单头 / 行批内核。
 - 缓冲容量在装配期段长已知；运行期按本轮批长绑定整块，一份编号不随批数翻倍。
 
+### 7. 变长 ragged：历史 K/V 段紧排映射与写回拆行
+
+op 变长批段入口已按紧排游标切段；serve 装填 / 写回侧沿用同一份段几何，不在引擎层引入 stride：
+
+- **段布局**：历史 K/V 扁平一块，`[batch, heads, hist_b, d]`，段间紧排。第 `b` 段起点为累计游标
+  `Σ_{j<b} heads·hist_j·d`，段长 `heads·hist_b·d`，缓冲总长 `Σ_b heads·hist_b·d`；与 op
+  [`decode_batch_var`](../../crates/op/src/attention.rs) 的 `kv_cursor` 累计口径一致，两侧不各写一份
+  段算术。`hist_b = sequence.len()`，按准入序对齐。
+- **段内复用既有重排**：段内仍是头优先块 `[head, token, d]`，沿用现有 `reorder_history_row` 头分段
+  整段 `copy_from_slice`；ragged 只改段间偏移，不改段内布局。
+- **装填**：本轮批历史缓冲总长按各段 `hist_b` 之和预留；第 `b` 段内第 `token` 行经
+  `batch.kv(id, token)` 取页行，映射到该段偏移写进 `hist_k` / `hist_v`。段偏移算术与子区间切片归
+  serve 适配层——engine `View` / `ViewMut` 是整块切片、不带 offset / stride（见取证备注），引擎不
+  解释段布局。
+- **写回拆行**：当前步 K/V 只取该序列段内当前行，拼成 `[k|v]` 页行经 `batch.write_kv(id, position, row)`
+  写回各自页账；不跨段读写，页行归属仍按序列号。
+- **编号不翻倍**：历史 K/V 仍是两个编号（`hist_k` / `hist_v`），不为 ragged 多开编号；段长运行期按
+  本轮 `hist` 表绑定整块，沿用 §2 编号分区口径。
+
+批装填 / 写回函数与块链整批 `logits_batch` 覆写随整批接线刀落地；本 ADR 只定段映射与写回归属，不
+预埋空函数或第二份段游标。
+
 ## 备选方案
 
 - **路线 A：每序列一套编号实例**——拒绝。编号台账与节点数 ×N，装配期按批展开实例；多头阶段已否
   装配层展开实例路线。页账按序列独立只要求历史读取按归属取行，不要求缓冲编号按序列复制。
-- **变长 ragged 批先行**——拒绝。各段独立 `hist_b` 的 stride 与历史映射合同尚未取证落地，先在
-  等长批把扁平布局与段编排打通，变长在 engine 缓冲扩批刀单独提案。
+- **合同定型前先铺变长 ragged 接线**——拒绝。段映射合同（§7）未定前不在装配层堆变长历史搬运；
+  合同定型后，装填 / 写回函数随块链整批接线刀落地。
 - **批数进标量槽**——拒绝。批数是几何事实，标量槽闭集冻结在 ADR 0043；几何通道由 Launch 几何维
   或缓冲形状派生（engine 接线刀最终化），不新增字符串键 / `HashMap`。
 
@@ -88,8 +110,10 @@ logits_batch(&[Sequence], &mut Batch) -> Result<Vec<Vec<f32>>>
 - 已落地：op batch 入口与段编排（#31）；`Predict::logits_batch` 批量视图接口，默认逐条回退（#33）。
 - 剩余接线按依赖序分刀：① 激活 / 历史缓冲容量按批长预留；② 查表多行输入放开（`tokens` 批口径）；③ 投影行批（算术路径按下文"接线前置裁决"选定），m=批内段数、共享驻留权重；④ decode 注意力接 op batch 入口；⑤ rope 按段独立位置循环；⑥ K/V 历史段拼接装载、按段写回页行；⑦ `step_batch` 改走整批一次 `logits_batch`。
 - 不变量沿用调度层对拍：批内段隔离、页表归属不违反、失败序列不回滚好序列。
-- 暂缓：序列并行、prefill 多 token 矩阵主链、变长 ragged 历史、chunked prefill、头内并行特化。
-- 未定通道：批数承载位置已定（§6 长度反推，不进标量槽 / grid）；仅变长 ragged 各段独立 `hist_b` 的 stride 映射合同待后续刀提案。
+- 暂缓：序列并行、prefill 多 token 矩阵主链、chunked prefill、头内并行特化；变长 ragged 历史的
+  装填 / 写回接线（段合同见 §7）随块链整批刀落地。
+- 已定通道：批数承载位置走 §6 长度反推，不进标量槽 / grid；变长 ragged 各段独立 `hist_b` 的段
+  映射与写回拆行见 §7。剩余未定只在装配 / 接线实现侧，不在通道归属。
 
 ## 接线前置裁决（engine / serve 动工前取证）
 
