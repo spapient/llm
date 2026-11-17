@@ -92,7 +92,7 @@ reason = "模糊测试的目标、种子、行为描述与复现样本；工具�
 
 [[ownership.unlisted]]
 crate = "op"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "CType", "Dense", "DequantI4", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "GemmI4", "GemmI8", "Max", "Param", "Residual", "ShapeContext", "Skeleton", "Sum", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
+names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI4", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "GemmI4", "GemmI8", "Max", "Param", "Residual", "ShapeContext", "Skeleton", "Sum", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
 reason = "算子声明与语义的内部类型（每个算子一个模块、一张行表）；公开面是 `REGISTRY`"
 
 [[ownership.unlisted]]
@@ -167,14 +167,8 @@ reason = "根入口状态汇总：逐段拼装各层簿记输出；待排版逻�
 
 [[gate.debt]]
 key = "src/bin/cutile/main.rs:doctor#0"
-ccn = 17
-nloc = 127
-reason = "cutile 入口诊断编排：设备/片段/见证多条件分支；待诊断报告组装下沉 tool"
-
-[[gate.debt]]
-key = "src/main.rs:main#0"
-ccn = 7
-reason = "根入口参数解析与分派薄壳；随 run 拆分一并收口"
+ccn = 8
+reason = "cutile 入口诊断编排：库调用错误传播 + 设备/产物/缓存可选分支；段级排版已聚簇到 report 模块，剩余复杂度随错误接缝收口"
 
 [[gate.debt]]
 key = "src/main.rs:parse_input#0"
@@ -189,34 +183,9 @@ reason = "根入口装载分支：权重/设备/缓存多路径；待引擎装�
 [[gate.debt]]
 key = "src/bin/cutile/main.rs:verify#0"
 ccn = 8
-reason = "cutile 入口校验编排：结果分级与退出码分支；待报告组装下沉 tool"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:negotiation#0"
-ccn = 7
-reason = "cutile 入口协商排版分支；待下沉 tool"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:describe_negotiation#0"
-ccn = 6
-reason = "cutile 入口协商描述排版；待下沉 tool"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:performance_note#0"
-ccn = 7
-reason = "cutile 入口性能附注排版分支；待下沉 tool"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:passed_line#0"
-ccn = 6
-reason = "cutile 入口报告行排版；待下沉 tool"
+reason = "cutile 入口校验编排：结果分级、台账落盘与退出码分支；段级排版已聚簇到 report 模块"
 
 [[gate.debt]]
 key = "src/bin/cutile/main.rs:write_ledger#0"
 ccn = 7
-reason = "cutile 入口台账落盘分支；待归 tool"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:bench#0"
-ccn = 6
-reason = "cutile 入口基准命令排版；待下沉 tool"
+reason = "cutile 入口台账落盘分支：档案行渲染与文件写入；待归 tool"

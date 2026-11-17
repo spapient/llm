@@ -53,6 +53,8 @@ extern crate self as llm_op;
 pub mod add_f32;
 pub mod attention;
 pub mod decl;
+pub mod decode_attention;
+pub mod decode_flash_attention;
 pub mod dequant_i4;
 pub mod dequant_i8;
 pub mod einsum;
@@ -135,6 +137,8 @@ macro_rules! registry {
 registry! {
     "add_f32" => add_f32,
     "attention_f32" => attention,
+    "decode_attention_f32" => decode_attention,
+    "decode_flash_attention_f32" => decode_flash_attention,
     "dequant_i4" => dequant_i4,
     "dequant_i8" => dequant_i8,
     "embed_f32" => embed_f32,

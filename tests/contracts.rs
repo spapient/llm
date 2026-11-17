@@ -469,6 +469,48 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// 模板签名 / 注册表语义表 / 注解声明三者的参数类型必须逐项对齐。
+///
+/// 每条注册都走同一条链：从 `.k` 解析签名 → 用注册表语义表的 `sample` 构造确定性样本 →
+/// [`op::sig::Signature::check`] 对齐缓冲同名同类型、标量有取值、样本没有多出签名之外的名字；
+/// 再核对可写输出的 C 类型与 `Model::dtype` 指同一个类型（前者说内核写什么，后者说回读按什么
+/// 解释）。错配在测试期拒绝，而不是等到 `cc` 报 C 的指针类型不兼容。生成的 `__model_check`
+/// 逐条再守一遍；本测试是注册表级的整表扫，防止某条注解展开被剥离后只剩单条防线。
+#[test]
+fn every_registered_kernel_signature_matches_its_model_sample() {
+    let mut checked = 0;
+    let mut failures: Vec<String> = Vec::new();
+    for entry in op::REGISTRY {
+        let signature = match op::sig::Signature::parse(entry.name, entry.template) {
+            Ok(signature) => signature,
+            Err(error) => {
+                failures.push(format!("`{}`：签名解析失败：{error}", entry.name));
+                continue;
+            }
+        };
+        let sample = (entry.model.sample)(entry.model.shape.0, entry.model.shape.1);
+        if let Err(error) = signature.check(&sample) {
+            failures.push(format!("`{}`：样本与 `.k` 签名不一致：{error}", entry.name));
+        }
+        let output_dtype = signature.output_type().and_then(|ctype| ctype.dtype());
+        if output_dtype != Some(entry.model.dtype) {
+            failures.push(format!(
+                "`{}`：`.k` 可写输出是 `{}`，语义表 dtype 是 `{:?}`，两者必须是同一个类型",
+                entry.name,
+                signature.output_type().map_or("-", op::sig::CType::c_name),
+                entry.model.dtype
+            ));
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 2,
+        "扫描器只看到 {checked} 条注册：扫描逻辑或表布局坏了"
+    );
+    assert_eq!(checked, op::REGISTRY.len(), "注册表每条都必须过签名对齐");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// 一条命中的行号（从 1 开始），用于把失败指回源码。
 fn line_number(text: &str, line: &str) -> String {
     text.lines()

@@ -222,19 +222,41 @@ const SKELETON_TABLE: [Skeleton; 12] = [
     row("attention", Some("attention"), "1u32", false, false),
 ];
 
-/// 按注册名改写 `reference` 入口的例外表。
+/// 按注册名覆盖 `reference` 入口与语义模块的例外表：一行三列 `(注册名, 参考覆盖, 模块覆盖)`。
 ///
-/// `attention` 的两条参考实现都在 `op::attention` 里，只是算法不同（flash 版分块、朴素版一遍
-/// 算完），骨架名、轴表、代价都相同。这条差异按**注册名**描述而不是给骨架表加一列：它不属于
-/// "这份语义是哪副骨架"，而属于"这对权重用哪种算法"。
-const REFERENCE_OVERRIDES: [(&str, &str); 1] = [(
-    "flash_attention_f32",
-    "::llm_op::attention::flash_reference",
-)];
+/// 两列缺省都回落骨架默认：`reference` 缺省 `module::reference`；`module` 缺省骨架自带模块、
+/// 再回注册名本身。两条差异都按**注册名**描述，不属于骨架表那一行的属性：flash 版与朴素版共用
+/// 骨架、只有参考实现分叉；decode 两条算子样本几何不同，各自独立模块。闭集只有这一张表，查找
+/// 走 [`override_for`]，不再有第二份按名循环。
+const OP_OVERRIDES: [(&str, Option<&str>, Option<&str>); 3] = [
+    (
+        "flash_attention_f32",
+        Some("::llm_op::attention::flash_reference"),
+        None,
+    ),
+    ("decode_attention_f32", None, Some("decode_attention")),
+    (
+        "decode_flash_attention_f32",
+        Some("::llm_op::decode_attention::decode_flash_reference"),
+        Some("decode_flash_attention"),
+    ),
+];
 
 /// 按注解里写的骨架名取表项。
 fn skeleton_of(name: &str) -> Option<&'static Skeleton> {
     SKELETON_TABLE.iter().find(|row| row.name == name)
+}
+
+/// 按注册名在例外表里闭集查找；未登记的名字回落骨架默认。
+fn override_for(name: &str) -> Option<(&'static str, Option<&'static str>, Option<&'static str>)> {
+    OP_OVERRIDES.iter().find(|(op, _, _)| *op == name).copied()
+}
+
+/// 模块名：先取例外表的模块覆盖，再回落到骨架自带模块，最后用注册名本身。
+fn module_for<'a>(skeleton: Option<&'a str>, name: &'a str) -> &'a str {
+    override_for(name)
+        .and_then(|(_, _, module)| module)
+        .unwrap_or_else(|| skeleton.unwrap_or(name))
 }
 
 /// 渲染 `MODEL` 的八个字段，以及（`gemv`）随字段一起求值的粒度断言。
@@ -247,7 +269,7 @@ fn render_fields(
     dtype: &str,
 ) {
     let (m, n) = dims;
-    let module = shape.module.unwrap_or(name);
+    let module = module_for(shape.module, name);
     let suffix = if shape.generic {
         format!("::<{ty}>")
     } else {
@@ -277,15 +299,12 @@ fn render_fields(
     }
 }
 
-/// `reference` 字段的路径：默认 `module::reference`，例外见 [`REFERENCE_OVERRIDES`]。
+/// `reference` 字段的路径：默认 `module::reference`，例外表里登记的入口优先。
 fn reference_path(module: &str, suffix: &str, name: &str) -> String {
-    REFERENCE_OVERRIDES
-        .iter()
-        .find(|(op, _)| *op == name)
-        .map_or_else(
-            || format!("::llm_op::{module}::reference{suffix}"),
-            |(_, path)| format!("{path}{suffix}"),
-        )
+    match override_for(name).and_then(|(_, reference, _)| reference) {
+        Some(path) => format!("{path}{suffix}"),
+        None => format!("::llm_op::{module}::reference{suffix}"),
+    }
 }
 
 /// `gemv` 的两条编译期断言，在**生产别名上**求值。

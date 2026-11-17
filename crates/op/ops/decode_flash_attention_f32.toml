@@ -1,0 +1,26 @@
+# decode flash 注意力：online softmax 单遍扫历史 K/V，不落地完整分数矩阵。
+# OpDecl 闭集没有专用骨架，归到 elementwise；needs 只有 load/store（数学走标量函数）。
+
+[op]
+name     = "decode_flash_attention_f32"
+skeleton = "elementwise"
+summary  = "O = online-softmax(QK^T/sqrt(d)) V over cached history"
+
+[axes]
+N = [8]
+
+[needs]
+dot   = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+q = "row"
+k = "row"
+v = "row"
+y = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0
