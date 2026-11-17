@@ -564,6 +564,55 @@ fn rope_rotates_batch_segments_by_the_position_table() {
     assert_close(&produced, &reference);
 }
 
+/// 两段批 decode 注意力：第四路段长表给各段历史行数，段间紧排、互不串段；参考逐段 `decode_forward_heads` 重算。
+#[test]
+fn decode_attention_groups_batch_segments_by_the_history_table() {
+    let (heads, d, q_rows) = (1usize, 2usize, 1usize);
+    let hist = [2usize, 2];
+    let q = [0.1, 0.2, 0.3, 0.4];
+    let k = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2];
+    let v = [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0];
+    let hist_table: Vec<f32> = hist.iter().map(|&h| h as f32).collect();
+
+    let q_seq = heads * q_rows * d;
+    let mut reference = vec![0.0; hist.len() * q_seq];
+    let mut kv_cursor = 0;
+    for (seq, &h) in hist.iter().enumerate() {
+        let kv_seq = heads * h * d;
+        op::attention::decode_forward_heads(
+            &q[seq * q_seq..(seq + 1) * q_seq],
+            &k[kv_cursor..kv_cursor + kv_seq],
+            &v[kv_cursor..kv_cursor + kv_seq],
+            &mut reference[seq * q_seq..(seq + 1) * q_seq],
+            q_rows,
+            h,
+            d,
+        )
+        .expect("参考：逐段 decode");
+        kv_cursor += kv_seq;
+    }
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &q);
+    bind(&mut executor, 1, &k);
+    bind(&mut executor, 2, &v);
+    bind(&mut executor, 3, &hist_table);
+    executor.bind(4, vec![0.0; reference.len()]);
+    let mut node = Node::new(
+        "decode_attention_f32",
+        Launch::new([1, 1, 1], [(heads * d) as u32, d as u32, 1]),
+    );
+    node.bind_input(0)
+        .bind_input(1)
+        .bind_input(2)
+        .bind_input(3)
+        .bind_output(4);
+    executor.run(&node).expect("执行");
+    let produced = executor.get(4).expect("输出缓冲").to_vec();
+
+    assert_close(&produced, &reference);
+}
+
 #[test]
 fn binary_elementwise_runs_through_the_registered_kernel() {
     let a = [1.0, 2.0];

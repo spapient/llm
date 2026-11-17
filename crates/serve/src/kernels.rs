@@ -38,6 +38,21 @@ type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> R
 /// decode 注意力内核入口：`q/k/v → out`，查询行数 `q_rows`、历史行数 `hist` 与头宽 `d` 随几何传入。
 type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
 
+/// decode 批段内核入口：`q/k/v → out`，`hist` 为逐序列段长表（ragged 紧排），头数/头宽静态传入。
+type BatchDecodeKernel = fn(
+    &[f32],
+    &[f32],
+    &[f32],
+    &mut [f32],
+    usize,
+    &[usize],
+    usize,
+    usize,
+) -> Result<()>;
+
+/// decode 拆出的三路读入与一路写出视图。
+type DecodeViews<'a, 'b> = (&'a [f32], &'a [f32], &'a [f32], &'b mut [f32]);
+
 /// 适配入口：拆好视图后调用算子参考实现；launch 承载逐步变化的标量槽（如 rope 位置）。
 type KernelFn = fn(Launch, &[View<'_>], &mut [ViewMut<'_>]) -> Result<()>;
 
@@ -167,24 +182,70 @@ fn flash_attention_f32(
     attention_paths(inputs, outputs, op::attention::flash_forward)
 }
 
-/// decode 三路适配：`q/hist_k/hist_v → out`；头宽 `d` 取算子静态语义表（ADR 0043 §3），查询行数
-/// `q_rows` 由 `q.len()/d`、历史行数 `hist` 由 `k.len()/(heads·d)` 推出，头数由 `q.len()/d` 派生，
-/// 形状不符交算子参考校验。
+/// decode 三路适配：`q/hist_k/hist_v → out`；第四路输入为 ragged 段长表（ADR 0046 §8）走批段
+/// 入口，缺省回退单序列 heads 入口。头数/头宽静态取 Launch 几何，段长表折 usize，形状不符交算子校验。
 fn decode_paths(
-    _launch: &Launch,
+    launch: &Launch,
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
-    run: DecodeKernel,
+    single: DecodeKernel,
+    batch: BatchDecodeKernel,
 ) -> Result<()> {
+    let (q, k, v, out) = decode_views(inputs, outputs)?;
+    match inputs.get(3).and_then(View::f32) {
+        Some(hist_table) => decode_batch(launch, q, k, v, out, hist_table, batch),
+        None => decode_single(q, k, v, out, single),
+    }
+}
+
+/// 拆出 decode 三路读入与一路写出视图；编号缺失或形态不符交输入助手报 `Invalid`。
+fn decode_views<'a, 'b>(
+    inputs: &'a [View<'a>],
+    outputs: &'b mut [ViewMut<'_>],
+) -> Result<DecodeViews<'a, 'b>> {
     let q = input_f32("decode_attention", inputs, 0)?;
     let k = input_f32("decode_attention", inputs, 1)?;
     let v = input_f32("decode_attention", inputs, 2)?;
     let out = output_f32("decode_attention", outputs, 0)?;
+    Ok((q, k, v, out))
+}
+
+/// 单序列路径：头宽取算子静态语义表，头数/查询行数/历史行数由缓冲长度反推。
+fn decode_single(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    single: DecodeKernel,
+) -> Result<()> {
     let d = op::decode_attention::MODEL.shape.1;
     let heads = q.len() / d;
     let q_rows = q.len() / (heads * d);
     let hist = k.len() / (heads * d);
-    run(q, k, v, out, q_rows, hist, d)
+    single(q, k, v, out, q_rows, hist, d)
+}
+
+/// 批段路径：头数/头宽取 Launch 静态几何，段长表逐序列给历史行数；查询行数由 q 总长反推。
+fn decode_batch(
+    launch: &Launch,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    hist_table: &[f32],
+    batch: BatchDecodeKernel,
+) -> Result<()> {
+    let head_dim = launch.block[1] as usize;
+    if head_dim == 0 {
+        return Err(Error::new(Code::Invalid, "decode 批段头宽为 0").with(SITE));
+    }
+    let heads = launch.block[0] as usize / head_dim;
+    let hist: Vec<usize> = hist_table.iter().map(|&h| h as usize).collect();
+    if hist.is_empty() {
+        return Err(Error::new(Code::Invalid, "decode 批段长表为空").with(SITE));
+    }
+    let q_rows = q.len() / (hist.len() * heads * head_dim);
+    batch(q, k, v, out, q_rows, &hist, head_dim, heads)
 }
 
 fn decode_attention_f32(
@@ -197,6 +258,7 @@ fn decode_attention_f32(
         inputs,
         outputs,
         op::attention::decode_forward_heads,
+        op::attention::decode_forward_batch_var,
     )
 }
 
@@ -210,6 +272,7 @@ fn decode_flash_attention_f32(
         inputs,
         outputs,
         op::attention::decode_flash_forward_heads,
+        op::attention::decode_flash_forward_batch_var,
     )
 }
 
