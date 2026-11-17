@@ -38,11 +38,8 @@ fn dir_entry_names(dir: &Path) -> Vec<String> {
 /// 写盘后对账：文件长度 = 承诺长度、读回逐对象相等，返回目录文件名清单供残骸断言。
 fn assert_written_snapshot(dir: &Path, path: &Path, snapshot: &Snapshot) -> Vec<String> {
     let meta = std::fs::metadata(path).expect("文件存在");
-    assert_eq!(
-        meta.len() as usize,
-        snapshot.encoded_len().expect("长度")
-    );
-    assert_eq!(Snapshot::read(path).expect("读"), snapshot);
+    assert_eq!(meta.len() as usize, snapshot.encoded_len().expect("长度"));
+    assert_eq!(&Snapshot::read(path).expect("读"), snapshot);
     dir_entry_names(dir)
 }
 
@@ -150,11 +147,7 @@ fn optimizer_moments_round_trip_bit_for_bit() {
         SlotMoments::new(vec![3.25], vec![0.125]).expect("一阶/二阶等长"),
     ];
     let moments = Moments::new(slots, 7);
-    let snapshot = Snapshot::new_with_moments(
-        facts(),
-        empty_header(),
-        moments,
-    );
+    let snapshot = Snapshot::new_with_moments(facts(), empty_header(), moments);
     let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
 
     let restored_moments = restored.moments();
@@ -176,12 +169,7 @@ fn optimizer_moments_round_trip_bit_for_bit() {
 #[test]
 fn accumulated_gradients_round_trip_bit_for_bit() {
     let accum = GradAccum::new(vec![vec![0.5, -0.25], vec![1.5]], 2);
-    let snapshot = Snapshot::new_with_state(
-        facts(),
-        empty_header(),
-        Moments::empty(),
-        accum,
-    );
+    let snapshot = Snapshot::new_with_state(facts(), empty_header(), Moments::empty(), accum);
     let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
 
     let got = restored.accum();
@@ -195,13 +183,7 @@ fn accumulated_window_sums_count_and_ties_round_trip_bit_for_bit() {
     // 三批逐批累加：源槽 1.0 + 0.5 + 0.25 = 1.75；回填槽 2.0 + 1.0 + 0.5 = 3.5。
     let accum = GradAccum::new(vec![vec![1.75, -0.75], vec![3.5]], 3);
     let ties = Ties::new(vec![(0, 1)]);
-    let snapshot = Snapshot::new_with_all(
-        facts(),
-        empty_header(),
-        Moments::empty(),
-        accum,
-        ties,
-    );
+    let snapshot = Snapshot::new_with_all(facts(), empty_header(), Moments::empty(), accum, ties);
     let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
 
     let got = restored.accum();
@@ -510,9 +492,7 @@ fn handcrafted(entries: &[(u64, u64, &str, usize, u64)]) -> Vec<u8> {
 #[test]
 fn a_sealed_checkpoint_still_has_its_entry_table_validated() {
     // 名字都写全（共享长度 0）、布局按规则写、校验和也对，不合法的只剩"名字重复"。
-    let bytes = handcrafted(&[(0, 0, "aaa", 64, 2), (3, 0, "", 80, 0)]);
-    let error = Snapshot::decode(&bytes).expect_err("重名");
-    assert!(error.to_string().contains("重复"), "{error}");
+    reject_duplicate_name(handcrafted(&[(0, 0, "aaa", 64, 2), (3, 0, "", 80, 0)]));
 }
 
 /// 共享是按**字节**算的：两条名字的公共前缀可以正好切在一个 UTF-8 字符中间。`块.0.注意_é`
@@ -610,9 +590,7 @@ fn a_non_maximal_name_share_is_rejected() {
         "aac"
     );
     // 空中段也合法：`aaa` 后面还是 `aaa` 时前后缀就已拼满（重名由 `Header` 拦下）。
-    let bytes = handcrafted(&[(0, 0, "aaa", 64, 2), (3, 0, "", 80, 0)]);
-    let error = Snapshot::decode(&bytes).expect_err("重名");
-    assert!(error.to_string().contains("重复"), "{error}");
+    reject_duplicate_name(handcrafted(&[(0, 0, "aaa", 64, 2), (3, 0, "", 80, 0)]));
 }
 
 /// 布局同样只有一种写法：与上一条同类型同形状就必须写标签 `0`，否则同一份快照可以既有
@@ -766,19 +744,11 @@ fn a_snapshot_larger_than_the_write_buffer_lands_byte_for_byte() {
     let dir = testkit::scratch_clean("stream");
     let path = dir.join("step-7.llmc");
     snapshot.write(&path).expect("写");
-    let meta = std::fs::metadata(&path).expect("文件存在");
-    assert_eq!(meta.len() as usize, snapshot.encoded_len().expect("长度"));
     assert_eq!(
         std::fs::read(&path).expect("字节"),
         snapshot.encode().expect("编码")
     );
-    assert_eq!(Snapshot::read(&path).expect("读"), snapshot);
-
-    let names: Vec<String> = std::fs::read_dir(&dir)
-        .expect("目录")
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
+    let names = assert_written_snapshot(&dir, &path, &snapshot);
     assert_eq!(names, ["step-7.llmc"], "跨缓冲刷写也不留临时文件");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -790,19 +760,7 @@ fn write_then_read_restores_the_snapshot_and_leaves_no_residue() {
     let snapshot = snapshot();
     snapshot.write(&path).expect("写");
 
-    let meta = std::fs::metadata(&path).expect("文件存在");
-    assert_eq!(
-        meta.len() as usize,
-        snapshot.encoded_len().expect("长度"),
-        "写下的字节数就是承诺的字节数"
-    );
-    assert_eq!(Snapshot::read(&path).expect("读"), snapshot);
-
-    let names: Vec<String> = std::fs::read_dir(&dir)
-        .expect("目录")
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
+    let names = assert_written_snapshot(&dir, &path, &snapshot);
     assert_eq!(names, ["step-7.llmc"], "成功后不留临时文件");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -818,11 +776,7 @@ fn a_missing_checkpoint_is_missing_and_a_failed_write_is_io() {
         .expect_err("目录不存在");
     assert_eq!(error.code(), Code::Io);
     assert!(error.to_string().contains("写入"), "{error}");
-    let names: Vec<String> = std::fs::read_dir(&dir)
-        .expect("目录")
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
+    let names = dir_entry_names(&dir);
     assert!(names.is_empty(), "失败不留残骸：{names:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }

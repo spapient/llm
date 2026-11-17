@@ -936,19 +936,20 @@ impl<'a> ReportRecord<'a> {
 fn report_json(
     group: &str,
     benchmark: &str,
-    meta: &ReportRecord,
+    meta: &ReportRecord<'_>,
     front: &[(&str, Field)],
     tail: &[(&str, Field)],
 ) -> String {
-    let mut fields: Vec<(&str, Field)> = Vec::new();
-    fields.push(("surface", Field::Str(group.to_string())));
-    fields.push(("benchmark", Field::Str(benchmark.to_string())));
-    fields.push(("scenario", Field::Str(meta.name.to_string())));
-    fields.push(("kind", Field::Str(meta.kind.to_string())));
-    fields.push(("backend", Field::Str(meta.backend.to_string())));
-    fields.push(("shape", Field::Raw(meta.shape.clone())));
-    fields.push(("batch", Field::Int(meta.batch as i64)));
-    fields.push(("dtype", Field::Str(meta.dtype.to_string())));
+    let mut fields: Vec<(&str, Field)> = vec![
+        ("surface", Field::Str(group.to_string())),
+        ("benchmark", Field::Str(benchmark.to_string())),
+        ("scenario", Field::Str(meta.name.to_string())),
+        ("kind", Field::Str(meta.kind.to_string())),
+        ("backend", Field::Str(meta.backend.to_string())),
+        ("shape", Field::Raw(meta.shape.clone())),
+        ("batch", Field::Int(meta.batch as i64)),
+        ("dtype", Field::Str(meta.dtype.to_string())),
+    ];
     for (key, value) in front {
         fields.push((key, value.clone()));
     }
@@ -970,6 +971,91 @@ fn report_json(
         .collect::<Vec<_>>()
         .join(",\n");
     format!("{{\n{inner}\n}}\n")
+}
+
+/// 一条记录对拍所期望的身份 / 几何 / 实测；主机档案取自 [`HostProfile`]。
+struct RecordExpectation<'a> {
+    name: &'a str,
+    backend: &'a str,
+    shape: &'a [usize],
+    batch: u32,
+    dtype: &'a str,
+    observed: f64,
+}
+
+impl<'a> RecordExpectation<'a> {
+    fn new(
+        name: &'a str,
+        backend: &'a str,
+        shape: &'a [usize],
+        batch: u32,
+        dtype: &'a str,
+        observed: f64,
+    ) -> Self {
+        Self {
+            name,
+            backend,
+            shape,
+            batch,
+            dtype,
+            observed,
+        }
+    }
+}
+
+/// 逐字段核对一条记录的身份 / 几何 / 主机档案与实测；屋顶上界按未测得留 [`None`]。
+///
+/// 族别（Op / Model）由调用方单独断言，其余字段三条归档口径一致；driver 与后端同值。
+fn assert_record_fields(record: &BenchRecord, host: &HostProfile, expect: &RecordExpectation<'_>) {
+    assert_eq!(record.name(), expect.name);
+    assert_eq!(record.backend(), expect.backend);
+    assert_eq!(record.geometry().shape(), expect.shape);
+    assert_eq!(record.geometry().batch(), expect.batch);
+    assert_eq!(record.geometry().dtype(), expect.dtype);
+    assert_eq!(record.harness().host(), host.host);
+    assert_eq!(record.harness().cpu(), host.cpu);
+    assert_eq!(record.harness().os(), host.os);
+    assert_eq!(record.harness().toolchain(), host.toolchain);
+    assert_eq!(record.harness().driver(), expect.backend);
+    assert!(record.roofline().peak_bw_gb_s().is_none());
+    assert!(record.roofline().peak_gflops().is_none());
+    assert_eq!(record.observed(), Some(expect.observed));
+}
+
+/// 核对一条算子级归档记录：族别 Op，身份 / 几何取自台账描述符，主机档案逐字段对上。
+fn assert_op_record(
+    host: &HostProfile,
+    record: &BenchRecord,
+    fields: (&str, &str, &[usize], u32, &str),
+    observed: f64,
+) {
+    let (name, backend, shape, batch, dtype) = fields;
+    assert_eq!(record.kind(), EntryKind::Op);
+    assert_record_fields(
+        record,
+        host,
+        &RecordExpectation::new(name, backend, shape, batch, dtype, observed),
+    );
+}
+
+/// 断言归档 JSON 含全部读者必需字段；`what` 是报告类别前缀，进失败文案。
+fn assert_present(rendered: &str, fields: &[&str], what: &str) {
+    for field in fields {
+        assert!(
+            rendered.contains(field),
+            "{what}报告缺少 {field}：读者无法自己判断结论"
+        );
+    }
+}
+
+/// 读回归档 JSON：必须能被仓库唯一解析器读懂（整数约定见模块文档）。
+fn parsed_report(rendered: &str) -> weights::json::Value {
+    weights::json::parse(rendered).expect("合法 JSON")
+}
+
+/// 取归档 JSON 里的批大小整数；键缺失或非整数返回 `None`。
+fn parsed_batch(parsed: &weights::json::Value) -> Option<i64> {
+    parsed.get("batch").and_then(|value| value.integer().ok())
 }
 
 impl Report<'_> {
@@ -1159,32 +1245,17 @@ impl LoadReport<'_> {
     /// 渲染成整数数值的 JSON（整数约定见 [`Report`]）。
     fn render(&self) -> String {
         let scenario = self.scenario;
-        let record = &self.record;
-        let harness = record.harness();
-        let observed = record.observed().expect("记录已回填实测");
-        format!(
-            "{{\n  \"surface\": \"{}\",\n  \"benchmark\": \"{}\",\n  \
-             \"scenario\": \"{}\",\n  \"kind\": \"{}\",\n  \"backend\": \"{}\",\n  \
-             \"shape\": {},\n  \"batch\": {},\n  \"dtype\": \"{}\",\n  \"bytes_per_iter\": {},\n  \
-             \"metric\": \"ns_per_iter\",\n  \"observed_ns\": {},\n  \"gb_per_s\": {},\n  \
-             \"host\": \"{}\",\n  \"cpu\": \"{}\",\n  \"os\": \"{}\",\n  \"toolchain\": \"{}\",\n  \"arch\": \"{}\",\n  \
-             \"profile\": \"bench\"\n}}\n",
+        let meta = ReportRecord::from(&self.record);
+        let bytes = scenario.bytes;
+        report_json(
             scenario.group,
             scenario.benchmark,
-            record.name(),
-            record.kind().as_str(),
-            record.backend(),
-            shape_json(record.geometry().shape()),
-            record.geometry().batch(),
-            record.geometry().dtype(),
-            scenario.bytes,
-            observed.round() as i64,
-            gb_per_s(scenario.bytes, observed).round() as i64,
-            harness.host(),
-            harness.cpu(),
-            harness.os(),
-            harness.toolchain(),
-            harness.arch(),
+            &meta,
+            &[("bytes_per_iter", Field::Int(bytes as i64))],
+            &[(
+                "gb_per_s",
+                Field::Int(gb_per_s(bytes, meta.observed).round() as i64),
+            )],
         )
     }
 }
@@ -1199,73 +1270,75 @@ impl DecodeReport<'_> {
     /// 渲染成整数数值的 JSON（整数约定见 [`Report`]）。
     fn render(&self) -> String {
         let scenario = self.scenario;
-        let record = &self.record;
-        let harness = record.harness();
-        let observed = record.observed().expect("记录已回填实测");
-        format!(
-            "{{\n  \"surface\": \"{}\",\n  \"benchmark\": \"{}\",\n  \
-             \"scenario\": \"{}\",\n  \"kind\": \"{}\",\n  \"backend\": \"{}\",\n  \
-             \"shape\": {},\n  \"batch\": {},\n  \"dtype\": \"{}\",\n  \"tokens_per_iter\": {},\n  \"pages_in_use\": {},\n  \
-             \"metric\": \"ns_per_iter\",\n  \"observed_ns\": {},\n  \"tokens_per_s\": {},\n  \
-             \"host\": \"{}\",\n  \"cpu\": \"{}\",\n  \"os\": \"{}\",\n  \"toolchain\": \"{}\",\n  \"arch\": \"{}\",\n  \
-             \"profile\": \"bench\"\n}}\n",
+        let meta = ReportRecord::from(&self.record);
+        let tokens = scenario.tokens;
+        let pages = scenario.pages;
+        report_json(
             scenario.group,
             scenario.benchmark,
-            record.name(),
-            record.kind().as_str(),
-            record.backend(),
-            shape_json(record.geometry().shape()),
-            record.geometry().batch(),
-            record.geometry().dtype(),
-            scenario.tokens,
-            scenario.pages,
-            observed.round() as i64,
-            tokens_per_s(scenario.tokens, observed).round() as i64,
-            harness.host(),
-            harness.cpu(),
-            harness.os(),
-            harness.toolchain(),
-            harness.arch(),
+            &meta,
+            &[
+                ("tokens_per_iter", Field::Int(tokens as i64)),
+                ("pages_in_use", Field::Int(pages as i64)),
+            ],
+            &[(
+                "tokens_per_s",
+                Field::Int(tokens_per_s(tokens, meta.observed).round() as i64),
+            )],
         )
     }
 }
 
-/// 归档一条装载基准：读本机实测，建记录，写归档 JSON；没有测量则跳过。
-fn archive_load(manifest: &Path, host: &HostProfile, scenario: &LoadScenario) -> Option<()> {
-    let observed = observed_ns(&estimates(manifest, scenario.group, scenario.benchmark))?;
-    let record = load_record(host, scenario, observed);
+/// 归档一条无基线基准：读本机实测，建记录，写归档 JSON；没有测量则跳过。
+///
+/// `make` 用实测 ns 构造记录，`render` 把记录渲染成归档报告，`file` 是归档文件名；
+/// 装载与模型两组只在记录构造、独有账目字段与文件名上不同。
+fn archive_record(
+    manifest: &Path,
+    host: &HostProfile,
+    group: &str,
+    benchmark: &str,
+    file: String,
+    make: impl FnOnce(&HostProfile, f64) -> BenchRecord,
+    render: impl FnOnce(BenchRecord) -> String,
+) -> Option<()> {
+    let observed = observed_ns(&estimates(manifest, group, benchmark))?;
+    let record = make(host, observed);
     let dir = manifest
         .join("../..")
         .join("target/bench-report")
         .join(host.host);
     std::fs::create_dir_all(&dir).expect("归档目录可建");
-    let rendered = LoadReport { scenario, record }.render();
+    let rendered = render(record);
     weights::json::parse(&rendered).expect("归档必须是合法 JSON");
-    std::fs::write(
-        dir.join(format!("weights_load_{}.json", scenario.benchmark)),
-        rendered,
-    )
-    .expect("归档可写");
+    std::fs::write(dir.join(file), rendered).expect("归档可写");
     Some(())
+}
+
+/// 归档一条装载基准：读本机实测，建记录，写归档 JSON；没有测量则跳过。
+fn archive_load(manifest: &Path, host: &HostProfile, scenario: &LoadScenario) -> Option<()> {
+    archive_record(
+        manifest,
+        host,
+        scenario.group,
+        scenario.benchmark,
+        format!("weights_load_{}.json", scenario.benchmark),
+        |host, observed| load_record(host, scenario, observed),
+        |record| LoadReport { scenario, record }.render(),
+    )
 }
 
 /// 归档一条整模型一步基准：读本机实测，建记录，写归档 JSON；没有测量则跳过。
 fn archive_model(manifest: &Path, host: &HostProfile, scenario: &DecodeScenario) -> Option<()> {
-    let observed = observed_ns(&estimates(manifest, scenario.group, scenario.benchmark))?;
-    let record = model_record(host, scenario, observed);
-    let dir = manifest
-        .join("../..")
-        .join("target/bench-report")
-        .join(host.host);
-    std::fs::create_dir_all(&dir).expect("归档目录可建");
-    let rendered = DecodeReport { scenario, record }.render();
-    weights::json::parse(&rendered).expect("归档必须是合法 JSON");
-    std::fs::write(
-        dir.join(format!("model_decode_{}.json", scenario.benchmark)),
-        rendered,
+    archive_record(
+        manifest,
+        host,
+        scenario.group,
+        scenario.benchmark,
+        format!("model_decode_{}.json", scenario.benchmark),
+        |host, observed| model_record(host, scenario, observed),
+        |record| DecodeReport { scenario, record }.render(),
     )
-    .expect("归档可写");
-    Some(())
 }
 
 /// 本机档案；有基线却没有档案时直接失败，而不是拿一个没有机型的 host 字符串判。
@@ -1362,22 +1435,18 @@ fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
     let host = &HOSTS[0];
     for scenario in SCENARIOS {
         let record = record_for(host, scenario, 1_500_000.0);
-        // 记录身份 / 几何 / 后端必须与场景描述符逐字段对上，避免归档元数据串台。
-        assert_eq!(record.kind(), EntryKind::Op);
-        assert_eq!(record.name(), scenario.scenario);
-        assert_eq!(record.backend(), scenario.backend);
-        assert_eq!(record.geometry().shape(), scenario.shape);
-        assert_eq!(record.geometry().batch(), scenario.batch);
-        assert_eq!(record.geometry().dtype(), scenario.dtype);
-        assert_eq!(record.harness().host(), host.host);
-        assert_eq!(record.harness().cpu(), host.cpu);
-        assert_eq!(record.harness().os(), host.os);
-        assert_eq!(record.harness().toolchain(), host.toolchain);
-        assert_eq!(record.harness().driver(), scenario.backend);
-        // 整机峰值未测得：留 None，不预填标称值。
-        assert!(record.roofline().peak_bw_gb_s().is_none());
-        assert!(record.roofline().peak_gflops().is_none());
-        assert_eq!(record.observed(), Some(1_500_000.0));
+        assert_op_record(
+            host,
+            &record,
+            (
+                scenario.scenario,
+                scenario.backend,
+                scenario.shape,
+                scenario.batch,
+                scenario.dtype,
+            ),
+            1_500_000.0,
+        );
 
         let report = Report {
             scenario,
@@ -1392,42 +1461,41 @@ fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
             budget_percent: 5.0,
         };
         let rendered = report.render();
-        for field in [
-            "\"surface\"",
-            "\"shape\"",
-            "\"dtype\"",
-            "\"backend\"",
-            "\"metric\"",
-            "\"direction\"",
-            "\"budget_percent\"",
-            "\"baseline_ns\"",
-            "\"observed_ns\"",
-            "\"verdict\"",
-            "\"host\"",
-            "\"cpu\"",
-            "\"os\"",
-            "\"toolchain\"",
-            "\"read_bytes\"",
-            "\"write_bytes\"",
-            "\"working_set_bytes\"",
-            "\"cache_tier\"",
-            "\"flops\"",
-            "\"read_ceiling_mbps\"",
-            "\"write_ceiling_mbps\"",
-            "\"roofline_ns\"",
-            "\"bottleneck_side\"",
-            "\"achieved_percent\"",
-            "\"mflops_per_s\"",
-            "\"bottleneck\"",
-        ] {
-            assert!(
-                rendered.contains(field),
-                "报告缺少 {field}：读者无法自己判断结论"
-            );
-        }
-        let parsed = weights::json::parse(&rendered).expect("合法 JSON");
+        assert_present(
+            &rendered,
+            &[
+                "\"surface\"",
+                "\"shape\"",
+                "\"dtype\"",
+                "\"backend\"",
+                "\"metric\"",
+                "\"direction\"",
+                "\"budget_percent\"",
+                "\"baseline_ns\"",
+                "\"observed_ns\"",
+                "\"verdict\"",
+                "\"host\"",
+                "\"cpu\"",
+                "\"os\"",
+                "\"toolchain\"",
+                "\"read_bytes\"",
+                "\"write_bytes\"",
+                "\"working_set_bytes\"",
+                "\"cache_tier\"",
+                "\"flops\"",
+                "\"read_ceiling_mbps\"",
+                "\"write_ceiling_mbps\"",
+                "\"roofline_ns\"",
+                "\"bottleneck_side\"",
+                "\"achieved_percent\"",
+                "\"mflops_per_s\"",
+                "\"bottleneck\"",
+            ],
+            "",
+        );
+        let parsed = parsed_report(&rendered);
         assert_eq!(
-            parsed.get("batch").and_then(|value| value.integer().ok()),
+            parsed_batch(&parsed),
             Some(scenario.batch as i64),
             "批大小是口径的一部分：1 行 = decode 步，与 prefill 的多行批差三个数量级"
         );
@@ -1470,50 +1538,42 @@ fn load_records_carry_every_field_a_reader_needs_to_judge_it() {
     );
     for scenario in LOAD_SCENARIOS {
         let record = load_record(host, scenario, 1_500.0);
-        // 记录身份 / 几何 / 后端必须与场景描述符逐字段对上，避免归档元数据串台。
-        assert_eq!(record.kind(), EntryKind::Op);
-        assert_eq!(record.name(), scenario.scenario);
-        assert_eq!(record.backend(), scenario.backend);
-        assert_eq!(record.geometry().shape(), scenario.shape);
-        assert_eq!(record.geometry().batch(), scenario.batch);
-        assert_eq!(record.geometry().dtype(), scenario.dtype);
-        assert_eq!(record.harness().host(), host.host);
-        assert_eq!(record.harness().cpu(), host.cpu);
-        assert_eq!(record.harness().os(), host.os);
-        assert_eq!(record.harness().toolchain(), host.toolchain);
-        assert_eq!(record.harness().driver(), scenario.backend);
-        // 整机峰值未测得：留 None，不预填标称值。
-        assert!(record.roofline().peak_bw_gb_s().is_none());
-        assert!(record.roofline().peak_gflops().is_none());
-        assert_eq!(record.observed(), Some(1_500.0));
+        assert_op_record(
+            host,
+            &record,
+            (
+                scenario.scenario,
+                scenario.backend,
+                scenario.shape,
+                scenario.batch,
+                scenario.dtype,
+            ),
+            1_500.0,
+        );
 
         let report = LoadReport { scenario, record };
         let rendered = report.render();
-        for field in [
-            "\"surface\"",
-            "\"shape\"",
-            "\"dtype\"",
-            "\"backend\"",
-            "\"metric\"",
-            "\"bytes_per_iter\"",
-            "\"observed_ns\"",
-            "\"gb_per_s\"",
-            "\"host\"",
-            "\"cpu\"",
-            "\"os\"",
-            "\"toolchain\"",
-            "\"arch\"",
-        ] {
-            assert!(
-                rendered.contains(field),
-                "装载报告缺少 {field}：读者无法自己判断结论"
-            );
-        }
-        let parsed = weights::json::parse(&rendered).expect("合法 JSON");
-        assert_eq!(
-            parsed.get("batch").and_then(|value| value.integer().ok()),
-            Some(scenario.batch as i64)
+        assert_present(
+            &rendered,
+            &[
+                "\"surface\"",
+                "\"shape\"",
+                "\"dtype\"",
+                "\"backend\"",
+                "\"metric\"",
+                "\"bytes_per_iter\"",
+                "\"observed_ns\"",
+                "\"gb_per_s\"",
+                "\"host\"",
+                "\"cpu\"",
+                "\"os\"",
+                "\"toolchain\"",
+                "\"arch\"",
+            ],
+            "装载",
         );
+        let parsed = parsed_report(&rendered);
+        assert_eq!(parsed_batch(&parsed), Some(scenario.batch as i64));
         assert_eq!(
             parsed
                 .get("bytes_per_iter")
@@ -1550,47 +1610,44 @@ fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
         let record = model_record(host, scenario, 1_500_000.0);
         // 记录身份 / 几何 / 后端必须与场景描述符逐字段对上，避免归档元数据串台。
         assert_eq!(record.kind(), EntryKind::Model);
-        assert_eq!(record.name(), scenario.scenario);
-        assert_eq!(record.backend(), "cpu-reference");
-        assert_eq!(record.geometry().shape(), &[MODEL_DIM, MODEL_OUT]);
-        assert_eq!(record.geometry().batch(), scenario.batch);
-        assert_eq!(record.geometry().dtype(), "f32");
-        assert_eq!(record.harness().host(), host.host);
-        assert_eq!(record.harness().cpu(), host.cpu);
-        assert_eq!(record.harness().os(), host.os);
-        assert_eq!(record.harness().toolchain(), host.toolchain);
-        assert_eq!(record.harness().driver(), "cpu-reference");
-        // 整机峰值 BW / GFLOPS 未测得：留 None，不预填标称值。
-        assert!(record.roofline().peak_bw_gb_s().is_none());
-        assert!(record.roofline().peak_gflops().is_none());
-        assert_eq!(record.observed(), Some(1_500_000.0));
+        assert_record_fields(
+            &record,
+            host,
+            &RecordExpectation::new(
+                scenario.scenario,
+                "cpu-reference",
+                &[MODEL_DIM, MODEL_OUT],
+                scenario.batch,
+                "f32",
+                1_500_000.0,
+            ),
+        );
 
         let report = DecodeReport { scenario, record };
         let rendered = report.render();
-        for field in [
-            "\"surface\"",
-            "\"shape\"",
-            "\"dtype\"",
-            "\"backend\"",
-            "\"metric\"",
-            "\"tokens_per_iter\"",
-            "\"pages_in_use\"",
-            "\"observed_ns\"",
-            "\"tokens_per_s\"",
-            "\"host\"",
-            "\"cpu\"",
-            "\"os\"",
-            "\"toolchain\"",
-            "\"arch\"",
-        ] {
-            assert!(
-                rendered.contains(field),
-                "模型报告缺少 {field}：读者无法自己判断结论"
-            );
-        }
-        let parsed = weights::json::parse(&rendered).expect("合法 JSON");
+        assert_present(
+            &rendered,
+            &[
+                "\"surface\"",
+                "\"shape\"",
+                "\"dtype\"",
+                "\"backend\"",
+                "\"metric\"",
+                "\"tokens_per_iter\"",
+                "\"pages_in_use\"",
+                "\"observed_ns\"",
+                "\"tokens_per_s\"",
+                "\"host\"",
+                "\"cpu\"",
+                "\"os\"",
+                "\"toolchain\"",
+                "\"arch\"",
+            ],
+            "模型",
+        );
+        let parsed = parsed_report(&rendered);
         assert_eq!(
-            parsed.get("batch").and_then(|value| value.integer().ok()),
+            parsed_batch(&parsed),
             Some(scenario.batch as i64),
             "批大小是口径的一部分：1 行 = decode 步，与 prefill 的多行批差三个数量级"
         );

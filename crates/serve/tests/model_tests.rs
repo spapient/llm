@@ -109,6 +109,112 @@ fn decode_batch(kv: usize, history: &[f32]) -> (Batch, Sequence) {
     (batch, sequence)
 }
 
+/// 参考链一层 gemv：`x · w` 写进新向量返回，输出宽度按权重行数推得。
+fn gemv_hidden(x: &[f32], w: &[f32]) -> Vec<f32> {
+    let out = w.len() / x.len();
+    let mut h = vec![0.0; out];
+    op::gemv_f32::forward(x, w, &mut h).expect("参考：投影");
+    h
+}
+
+/// 块四路投影小值矩阵：q/k/v 取种子 0/1/2，o 取种子 3。
+fn block_projections(hidden: usize, kv: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    (
+        projection_matrix(kv, hidden, 0.0),
+        projection_matrix(kv, hidden, 1.0),
+        projection_matrix(kv, hidden, 2.0),
+        projection_matrix(hidden, kv, 3.0),
+    )
+}
+
+/// 一行 decode 历史：k 路负偏移、v 路正偏移。
+fn history_kv(kv: usize) -> (Vec<f32>, Vec<f32>) {
+    let hist_k = (0..kv).map(|i| -0.3 + i as f32 * 0.05).collect();
+    let hist_v = (0..kv).map(|i| 0.2 - i as f32 * 0.04).collect();
+    (hist_k, hist_v)
+}
+
+/// 嵌入 + 注意力块层栈；`seq` 为序列容量。
+fn embed_block_stack(vocab: usize, hidden: usize, kv: usize, seq: usize) -> Stack {
+    Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new(
+                "blk.0",
+                hidden,
+                kv,
+                kv,
+                seq,
+                AttentionAlgo::Naive,
+                WeightFormat::F32,
+            )
+            .expect("层"),
+        ),
+    ])
+    .expect("栈")
+}
+
+/// 嵌入 + 线性投影层栈（投影出宽 2）。
+fn embed_projection_stack(vocab: usize, dim: usize) -> Stack {
+    Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, dim, 1).expect("层")),
+        Box::new(Linear::with_format("proj", WeightFormat::F32, dim, 2).expect("层")),
+    ])
+    .expect("栈")
+}
+
+/// 块四路驻留条目：词表 + q/k/v/o 投影权重。
+fn block_params(table: Vec<f32>, wq: Vec<f32>, wk: Vec<f32>, wv: Vec<f32>, wo: Vec<f32>) -> Params {
+    params_of(&[
+        ("tok_emb.weight", table),
+        ("blk.0.q.weight", wq),
+        ("blk.0.k.weight", wk),
+        ("blk.0.v.weight", wv),
+        ("blk.0.o.weight", wo),
+    ])
+}
+
+/// 块四路零权重参数表（几何/缺键负例共用）。
+fn block_zero_params() -> Params {
+    params_of(&[
+        ("blk.0.q.weight", vec![0.0; 64]),
+        ("blk.0.k.weight", vec![0.0; 64]),
+        ("blk.0.v.weight", vec![0.0; 64]),
+        ("blk.0.o.weight", vec![0.0; 64]),
+    ])
+}
+
+/// 参考注意力块：embed 行 → q/k/v gemv → RoPE → decode → o 投影 → 残差；
+/// 返回残差输出、旋转后 K 与明文 V（写回页行对拍用）。
+fn reference_block(
+    embedded: &[f32],
+    (wq, wk, wv, wo): (&[f32], &[f32], &[f32], &[f32]),
+    (hist_k, hist_v): (&[f32], &[f32]),
+    hist: usize,
+    kv: usize,
+    hidden: usize,
+    pos: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut q = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, wq, &mut q).expect("参考 q");
+    let mut k = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, wk, &mut k).expect("参考 k");
+    let mut v = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, wv, &mut v).expect("参考 v");
+    let mut q_rot = vec![0.0; kv];
+    op::rope_f32::forward(pos, &q, &mut q_rot).expect("参考 rope q");
+    let mut k_rot = vec![0.0; kv];
+    op::rope_f32::forward(pos, &k, &mut k_rot).expect("参考 rope k");
+    let mut attn = vec![0.0; kv];
+    op::attention::decode_forward(&q_rot, hist_k, hist_v, &mut attn, 1, hist, kv)
+        .expect("参考注意力");
+    let mut o = vec![0.0; hidden];
+    op::gemv_f32::forward(&attn, wo, &mut o).expect("参考 o");
+    let mut residual = vec![0.0; hidden];
+    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
+    (residual, k_rot, v)
+}
+
 /// 归档条目：名、形状 `[out, in]`、dtype 名与原始字节段。
 struct ArchiveEntry {
     name: &'static str,
@@ -449,11 +555,7 @@ fn a_two_layer_chain_forward_matches_the_reference() {
     // [2, 2] 行主序
     let w2 = [1.0, 1.0, 2.0, 0.0];
 
-    let hidden = {
-        let mut h = vec![0.0; 2];
-        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：第一层");
-        h
-    };
+    let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
     op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
 
@@ -462,10 +564,7 @@ fn a_two_layer_chain_forward_matches_the_reference() {
         Linear::with_format("blk.1", WeightFormat::F32, 2, 2).expect("层"),
     ])
     .expect("栈");
-    let params = params_of(&[
-        ("blk.0.weight", w1.to_vec()),
-        ("blk.1.weight", w2.to_vec()),
-    ]);
+    let params = params_of(&[("blk.0.weight", w1.to_vec()), ("blk.1.weight", w2.to_vec())]);
 
     forward_close(stack, params, &x, &reference);
 }
@@ -557,11 +656,7 @@ fn entries_from_an_in_memory_archive_load_into_params() {
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     let w2 = [1.0, 1.0, 2.0, 0.0];
 
-    let hidden = {
-        let mut h = vec![0.0; 2];
-        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：第一层");
-        h
-    };
+    let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
     op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
 
@@ -608,11 +703,7 @@ fn a_projection_then_unary_activation_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
 
-    let hidden = {
-        let mut h = vec![0.0; 2];
-        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：投影");
-        h
-    };
+    let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
     op::silu_f32::forward(&hidden, &mut reference).expect("参考：激活");
 
@@ -633,11 +724,7 @@ fn a_projection_then_rmsnorm_matches_the_reference() {
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     let gamma = [1.0, 1.0];
 
-    let hidden = {
-        let mut h = vec![0.0; 2];
-        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：投影");
-        h
-    };
+    let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
     op::rmsnorm_f32::forward(&hidden, &gamma, &mut reference).expect("参考：归一化");
 
@@ -686,11 +773,7 @@ fn a_binary_layer_takes_a_bypass_activation_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
 
-    let hidden = {
-        let mut h = vec![0.0; 2];
-        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：投影");
-        h
-    };
+    let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
     op::add_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相加");
 
@@ -710,11 +793,7 @@ fn a_binary_mul_layer_takes_a_bypass_activation_matches_the_reference() {
     let x = [1.0, 2.0, 3.0];
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
 
-    let hidden = {
-        let mut h = vec![0.0; 2];
-        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：投影");
-        h
-    };
+    let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
     op::mul_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相乘");
 
@@ -799,11 +878,7 @@ fn an_embedding_then_projection_matches_the_reference() {
     let mut reference = vec![0.0; 2];
     op::gemv_f32::forward(&embedded, &w, &mut reference).expect("参考：投影");
 
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", vocab, dim, 1).expect("层")),
-        Box::new(Linear::with_format("proj", WeightFormat::F32, dim, 2).expect("层")),
-    ])
-    .expect("栈");
+    let stack = embed_projection_stack(vocab, dim);
     let params = params_of(&[
         ("tok_emb.weight", table.clone()),
         ("proj.weight", w.to_vec()),
@@ -855,11 +930,7 @@ fn predict_logits_from_an_embedding_sequence_match_the_reference() {
     let w = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
 
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", vocab, dim, 1).expect("层")),
-        Box::new(Linear::with_format("proj", WeightFormat::F32, dim, 2).expect("层")),
-    ])
-    .expect("栈");
+    let stack = embed_projection_stack(vocab, dim);
     let params = params_of(&[
         ("tok_emb.weight", table.clone()),
         ("proj.weight", w.to_vec()),
@@ -961,69 +1032,34 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     let hist = 1;
 
     let table = embed_table(vocab, hidden);
-    let wq = projection_matrix(kv, hidden, 0.0);
-    let wk = projection_matrix(kv, hidden, 1.0);
-    let wv = projection_matrix(kv, hidden, 2.0);
-    let wo = projection_matrix(hidden, kv, 3.0);
+    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let (hist_k, hist_v) = history_kv(kv);
+    let history = history_row(&hist_k, &hist_v);
 
-    let hist_k: Vec<f32> = (0..kv).map(|i| -0.3 + i as f32 * 0.05).collect();
-    let hist_v: Vec<f32> = (0..kv).map(|i| 0.2 - i as f32 * 0.04).collect();
-    let mut history_row = Vec::with_capacity(2 * kv);
-    history_row.extend_from_slice(&hist_k);
-    history_row.extend_from_slice(&hist_v);
+    let stack = embed_block_stack(vocab, hidden, kv, 4);
+    let params = block_params(
+        table.clone(),
+        wq.clone(),
+        wk.clone(),
+        wv.clone(),
+        wo.clone(),
+    );
 
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
-        Box::new(
-            AttentionBlock::new(
-                "blk.0",
-                hidden,
-                kv,
-                kv,
-                4,
-                AttentionAlgo::Naive,
-                WeightFormat::F32,
-            )
-            .expect("层"),
-        ),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", table.clone());
-    params.insert("blk.0.q.weight", wq.clone());
-    params.insert("blk.0.k.weight", wk.clone());
-    params.insert("blk.0.v.weight", wv.clone());
-    params.insert("blk.0.o.weight", wo.clone());
-
-    let pager = Pager::new(Cache::new(4, 4).expect("页池"), 2 * kv).expect("行宽");
-    let mut batch = Batch::new(pager);
-    let sequence = Sequence::new(0, &[2u32], 2, 4, Stream::new(0)).expect("序列");
-    batch.admit(sequence.clone()).expect("准入");
-    batch.write_kv(0, 0, &history_row).expect("种子历史");
-
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let mut model = assemble(stack, params);
+    let (mut batch, sequence) = decode_batch(kv, &history);
     let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
 
     let embedded = &table[2 * hidden..3 * hidden];
-    let mut q = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, &wq, &mut q).expect("参考 q");
-    let mut k = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, &wk, &mut k).expect("参考 k");
-    let mut v = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, &wv, &mut v).expect("参考 v");
     // q/k 先按当前步位置过 RoPE 旋转，再进注意力；写回页行的 K 同样取旋转后一路。
-    let pos = sequence.len();
-    let mut q_rot = vec![0.0; kv];
-    op::rope_f32::forward(pos, &q, &mut q_rot).expect("参考 rope q");
-    let mut k_rot = vec![0.0; kv];
-    op::rope_f32::forward(pos, &k, &mut k_rot).expect("参考 rope k");
-    let mut attn = vec![0.0; kv];
-    op::attention::decode_forward(&q_rot, &hist_k, &hist_v, &mut attn, 1, hist, kv)
-        .expect("参考注意力");
-    let mut o = vec![0.0; hidden];
-    op::gemv_f32::forward(&attn, &wo, &mut o).expect("参考 o");
-    let mut reference = vec![0.0; hidden];
-    op::residual_add_f32::forward(&o, embedded, &mut reference).expect("参考残差");
+    let (reference, k_rot, v) = reference_block(
+        embedded,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k, &hist_v),
+        hist,
+        kv,
+        hidden,
+        sequence.len(),
+    );
 
     assert_close(&produced, &reference);
 
@@ -1041,35 +1077,23 @@ fn a_missing_block_projection_weight_is_reported_at_assembly() {
             .expect("层"),
     )])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.k.weight", vec![0.0; 64]);
-    params.insert("blk.0.v.weight", vec![0.0; 64]);
-    params.insert("blk.0.o.weight", vec![0.0; 64]);
+    let params = params_of(&[
+        ("blk.0.k.weight", vec![0.0; 64]),
+        ("blk.0.v.weight", vec![0.0; 64]),
+        ("blk.0.o.weight", vec![0.0; 64]),
+    ]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("缺 q 权重必须拒绝");
-    assert_eq!(error.code(), Code::Missing);
+    rejected_at_assembly(stack, params, Code::Missing);
 }
 
 /// 上一层输出宽度与块隐藏宽度不符：装配期报 `Invalid`。
 #[test]
 fn a_block_width_chain_break_is_rejected_at_assembly() {
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
-        Box::new(
-            AttentionBlock::new("blk.0", 8, 8, 8, 4, AttentionAlgo::Naive, WeightFormat::F32)
-                .expect("层"),
-        ),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
+    let stack = embed_block_stack(8, 4, 8, 4);
+    let mut params = block_zero_params();
     params.insert("tok_emb.weight", embed_table(8, 4));
-    params.insert("blk.0.q.weight", vec![0.0; 64]);
-    params.insert("blk.0.k.weight", vec![0.0; 64]);
-    params.insert("blk.0.v.weight", vec![0.0; 64]);
-    params.insert("blk.0.o.weight", vec![0.0; 64]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("宽度链断裂必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, params, Code::Invalid);
 }
 
 /// 块内权重元素数与 `in × out` 不符：装配期报 `Invalid`。
@@ -1080,14 +1104,14 @@ fn a_block_weight_length_mismatch_is_rejected_at_assembly() {
             .expect("层"),
     )])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.q.weight", vec![0.0; 63]);
-    params.insert("blk.0.k.weight", vec![0.0; 64]);
-    params.insert("blk.0.v.weight", vec![0.0; 64]);
-    params.insert("blk.0.o.weight", vec![0.0; 64]);
+    let params = params_of(&[
+        ("blk.0.q.weight", vec![0.0; 63]),
+        ("blk.0.k.weight", vec![0.0; 64]),
+        ("blk.0.v.weight", vec![0.0; 64]),
+        ("blk.0.o.weight", vec![0.0; 64]),
+    ]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("权重长度不符必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, params, Code::Invalid);
 }
 
 /// 多头展平（`kv_width ≠ head_dim`）：单头通路按 `Unsupported` 拒绝，多头切片留后续。
@@ -1106,14 +1130,14 @@ fn a_multi_head_block_is_not_assembled_yet() {
         .expect("层"),
     )])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("blk.0.q.weight", vec![0.0; 16 * 8]);
-    params.insert("blk.0.k.weight", vec![0.0; 16 * 8]);
-    params.insert("blk.0.v.weight", vec![0.0; 16 * 8]);
-    params.insert("blk.0.o.weight", vec![0.0; 8 * 16]);
+    let params = params_of(&[
+        ("blk.0.q.weight", vec![0.0; 16 * 8]),
+        ("blk.0.k.weight", vec![0.0; 16 * 8]),
+        ("blk.0.v.weight", vec![0.0; 16 * 8]),
+        ("blk.0.o.weight", vec![0.0; 8 * 16]),
+    ]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("多头通路留后续");
-    assert_eq!(error.code(), Code::Unsupported);
+    rejected_at_assembly(stack, params, Code::Unsupported);
 }
 
 /// 两层合成模型端到端：嵌入 → 注意力块（q/k/v + RoPE + decode 注意力 + 残差）→ 归一化 →
@@ -1124,18 +1148,11 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
     let hist = 1;
 
     let table = embed_table(vocab, hidden);
-    let wq = projection_matrix(kv, hidden, 0.0);
-    let wk = projection_matrix(kv, hidden, 1.0);
-    let wv = projection_matrix(kv, hidden, 2.0);
-    let wo = projection_matrix(hidden, kv, 3.0);
+    let (wq, wk, wv, wo) = block_projections(hidden, kv);
     let gamma = vec![1.0; hidden];
     let w2 = projection_matrix(out, hidden, 4.0);
-
-    let hist_k: Vec<f32> = (0..kv).map(|i| -0.3 + i as f32 * 0.05).collect();
-    let hist_v: Vec<f32> = (0..kv).map(|i| 0.2 - i as f32 * 0.04).collect();
-    let mut history_row = Vec::with_capacity(2 * kv);
-    history_row.extend_from_slice(&hist_k);
-    history_row.extend_from_slice(&hist_v);
+    let (hist_k, hist_v) = history_kv(kv);
+    let history = history_row(&hist_k, &hist_v);
 
     let stack = Stack::of(vec![
         Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
@@ -1155,44 +1172,31 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
         Box::new(Linear::with_format("head", WeightFormat::F32, hidden, out).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", table.clone());
-    params.insert("blk.0.q.weight", wq.clone());
-    params.insert("blk.0.k.weight", wk.clone());
-    params.insert("blk.0.v.weight", wv.clone());
-    params.insert("blk.0.o.weight", wo.clone());
+    let mut params = block_params(
+        table.clone(),
+        wq.clone(),
+        wk.clone(),
+        wv.clone(),
+        wo.clone(),
+    );
     params.insert("norm.0.weight", gamma.clone());
     params.insert("head.weight", w2.clone());
 
-    let pager = Pager::new(Cache::new(4, 4).expect("页池"), 2 * kv).expect("行宽");
-    let mut batch = Batch::new(pager);
-    let sequence = Sequence::new(0, &[2u32], 2, 4, Stream::new(0)).expect("序列");
-    batch.admit(sequence.clone()).expect("准入");
-    batch.write_kv(0, 0, &history_row).expect("种子历史");
-
-    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let mut model = assemble(stack, params);
+    let (mut batch, sequence) = decode_batch(kv, &history);
     let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
 
     // 参考数值链：embed → q/k/v → RoPE(当前步位置) → decode 注意力 → o → 残差 → rmsnorm → 输出投影。
     let embedded = &table[2 * hidden..3 * hidden];
-    let mut q = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, &wq, &mut q).expect("参考 q");
-    let mut k = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, &wk, &mut k).expect("参考 k");
-    let mut v = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, &wv, &mut v).expect("参考 v");
-    let pos = sequence.len();
-    let mut q_rot = vec![0.0; kv];
-    op::rope_f32::forward(pos, &q, &mut q_rot).expect("参考 rope q");
-    let mut k_rot = vec![0.0; kv];
-    op::rope_f32::forward(pos, &k, &mut k_rot).expect("参考 rope k");
-    let mut attn = vec![0.0; kv];
-    op::attention::decode_forward(&q_rot, &hist_k, &hist_v, &mut attn, 1, hist, kv)
-        .expect("参考注意力");
-    let mut o = vec![0.0; hidden];
-    op::gemv_f32::forward(&attn, &wo, &mut o).expect("参考 o");
-    let mut residual = vec![0.0; hidden];
-    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
+    let (residual, _, _) = reference_block(
+        embedded,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k, &hist_v),
+        hist,
+        kv,
+        hidden,
+        sequence.len(),
+    );
     let mut normed = vec![0.0; hidden];
     op::rmsnorm_f32::forward(&residual, &gamma, &mut normed).expect("参考归一化");
     let mut reference = vec![0.0; out];
@@ -1204,23 +1208,11 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
 /// 合成模型宽度断裂：嵌入维度与块隐藏宽度对不上，装配期报 `Invalid`，不带进执行期。
 #[test]
 fn a_composite_width_break_is_rejected_at_assembly() {
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
-        Box::new(
-            AttentionBlock::new("blk.0", 8, 8, 8, 2, AttentionAlgo::Naive, WeightFormat::F32)
-                .expect("层"),
-        ),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
+    let stack = embed_block_stack(8, 4, 8, 2);
+    let mut params = block_zero_params();
     params.insert("tok_emb.weight", embed_table(8, 4));
-    params.insert("blk.0.q.weight", vec![0.0; 64]);
-    params.insert("blk.0.k.weight", vec![0.0; 64]);
-    params.insert("blk.0.v.weight", vec![0.0; 64]);
-    params.insert("blk.0.o.weight", vec![0.0; 64]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("宽度链断裂必须拒绝");
-    assert_eq!(error.code(), Code::Invalid);
+    rejected_at_assembly(stack, params, Code::Invalid);
 }
 
 /// 合成模型缺输出投影条目：装配期按名报 `Missing`，不 panic、不静默跳过。
@@ -1232,13 +1224,13 @@ fn a_composite_missing_projection_weight_is_reported_at_assembly() {
         Box::new(Linear::with_format("head", WeightFormat::F32, 4, 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", embed_table(8, 4));
-    params.insert("norm.0.weight", vec![1.0; 4]);
-    // 故意不插 `head.weight`
+    let params = params_of(&[
+        ("tok_emb.weight", embed_table(8, 4)),
+        ("norm.0.weight", vec![1.0; 4]),
+        // 故意不插 `head.weight`
+    ]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("缺投影权重必须拒绝");
-    assert_eq!(error.code(), Code::Missing);
+    rejected_at_assembly(stack, params, Code::Missing);
 }
 
 /// 合成模型缺嵌入词表条目：装配期按名报 `Missing`，不 panic、不静默跳过。
@@ -1249,9 +1241,7 @@ fn a_composite_missing_embedding_table_is_reported_at_assembly() {
         Box::new(Linear::with_format("proj", WeightFormat::F32, 4, 2).expect("层")),
     ])
     .expect("栈");
-    let mut params = Params::new();
-    params.insert("proj.weight", vec![0.0; 8]);
+    let params = params_of(&[("proj.weight", vec![0.0; 8])]);
 
-    let error = CpuModel::new(&stack, &params).expect_err("缺词表必须拒绝");
-    assert_eq!(error.code(), Code::Missing);
+    rejected_at_assembly(stack, params, Code::Missing);
 }
