@@ -210,7 +210,15 @@ fn dtype_set_ops() {
 
 #[test]
 fn kernel_key_packs_the_seven_dimensions() {
-    let key = KernelKey::new(Prim::Dot, "scalar_f32", DType::F32, Space::Fast, 4, "cpu", 16);
+    let key = KernelKey::new(
+        Prim::Dot,
+        "scalar_f32",
+        DType::F32,
+        Space::Fast,
+        4,
+        "cpu",
+        16,
+    );
     assert_eq!(key.prim, Prim::Dot);
     assert_eq!(key.impl_name, "scalar_f32");
     assert_eq!(key.dtype, DType::F32);
@@ -229,7 +237,15 @@ fn kernel_key_normalizes_zero_lanes_and_block_to_scalar() {
 
 #[test]
 fn kernel_key_signature_keeps_the_adrd_order() {
-    let key = KernelKey::new(Prim::Dot, "scalar_f32", DType::F32, Space::Fast, 4, "cpu", 16);
+    let key = KernelKey::new(
+        Prim::Dot,
+        "scalar_f32",
+        DType::F32,
+        Space::Fast,
+        4,
+        "cpu",
+        16,
+    );
     assert_eq!(
         key.signature(),
         "dot{dt:f32, space:FAST, lanes:4, arch:cpu, block:16}/impl:scalar_f32"

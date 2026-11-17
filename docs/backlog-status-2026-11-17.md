@@ -12,19 +12,19 @@
 | `cargo check --workspace --all-targets` | 干净，0 error / 0 warning |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 零告警 |
 | `cargo fmt --all --check` | 0 diff |
-| `cargo nextest run --workspace --all-features --locked` | **1,474/1,474 passed，0 skipped**（nextest 口径，9 个 libfuzzer harness + gen_corpus 二进制被 `.config/nextest.toml` 排除） |
-| `cargo test --workspace --all-features --locked --exclude llm-fuzz`（libtest 口径；fuzz libFuzzer harness 由 CI fuzz job 单独引导，不进 libtest） | 收口实测 **1,497 passed / 0 failed / 1 ignored**；与 nextest 是两种口径，计数不可混用 |
-| architecture | **8/8**；contracts **6/6**；静态 gate **1/1**（testkit 合计 35/35） |
+| `cargo nextest run --workspace --all-features --locked` | **1,477/1,477 passed，0 skipped**（nextest 口径，9 个 libfuzzer harness + gen_corpus 二进制被 `.config/nextest.toml` 排除） |
+| `cargo test --workspace --all-features --locked --exclude llm-fuzz`（libtest 口径；fuzz libFuzzer harness 由 CI fuzz job 单独引导，不进 libtest） | 收口实测 **1,500 passed / 0 failed / 1 ignored**；与 nextest 是两种口径，计数不可混用 |
+| architecture | **8/8**；contracts **6/6**；cross_layer **4/4**；静态 gate **1/1**（testkit 合计 36/36） |
 | `cargo deny check` | advisories / bans / licenses / sources 四项 ok（许可白名单含 NCSA、Unicode-3.0） |
 | `cargo machete` | 无未用依赖 |
-| jscpd | 1.47% 行 / 1.75% token，132 clones，425 文件，83,960 行，1,231 重复行 / 9,593 重复 token，exit 0（行阈 1.5%；token 未设硬阈） |
+| jscpd | 1.46% 行 / 1.75% token，132 clones，425 文件，84,048 行，1,231 重复行 / 9,593 重复 token，exit 0（行阈 1.5%；token 未设硬阈） |
 | `cargo bench --workspace --all-features --locked --no-run` | exit 0，全部基准目标编译通过 |
 | `unsafe` | 生产唯一岛 `crates/storage/src/mmap.rs`；本轮新增 unsafe 为零；Metal/CUDA 后端未落地，设备侧零 unsafe |
 
 各成员 lib 测试数（`cargo test -p <pkg> --lib` 实测）：annotation 34、autograd 65、cli 25、
-cutile 167、data 16、diagnostic 12、dtype 18、engine 77、fuzz 17、nn 79、op 213、prim 19、prof 53、
+cutile 167、data 16、diagnostic 12、dtype 18、engine 77、fuzz 17、nn 79、op 213、prim 19、prof 56、
 serve 130、shard 29、storage 13、tensor 25、testkit 17、tokenizer 44、tool 57、train 82、weights 129、wire 13。
-集成 / 文档补充：fuzz parsers 2；tokenizer tokens 16；op 集成 2；prof atom 1；benches regress 8；
+集成 / 文档补充：fuzz parsers 2；tokenizer tokens 16 + doc 1；op 集成 2；prof atom 1；benches regress 8；
 serve protocol 8 + doc 3；engine schedule 9 + doc 3；nn 集成 2；train doc 3；cli cutile_bin 9 + 集成 23 + doc 2；tool doc 1；weights import_tests 3 + round_trip 12。
 
 ---
