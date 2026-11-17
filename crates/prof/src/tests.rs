@@ -35,18 +35,9 @@ fn embedded_reports_a_missing_archive() {
     assert!(crate::embedded("no-such-device").is_none());
 }
 
-/// 解析全部内置档案；构建期已过校验，测试内解析失败只可能是表结构漂移。
-fn builtin_profiles() -> Vec<crate::prof::Profile> {
-    crate::names()
-        .iter()
-        .filter_map(|name| crate::embedded(name))
-        .filter_map(|table| crate::prof::Profile::parse(table).ok())
-        .collect()
-}
-
 #[test]
 fn select_picks_the_profile_matching_local_arch() {
-    let profiles = builtin_profiles();
+    let profiles = crate::prof::builtin_profiles();
     let detected = crate::prof::Detected::new().with("arch", std::env::consts::ARCH);
     let chosen = crate::prof::select(&profiles, &detected).expect("本机架构应命中一份档案");
     assert_eq!(chosen.meta.vendor, "cpu");
@@ -54,7 +45,7 @@ fn select_picks_the_profile_matching_local_arch() {
 
 #[test]
 fn select_reports_unsupported_when_nothing_matches() {
-    let profiles = builtin_profiles();
+    let profiles = crate::prof::builtin_profiles();
     let detected = crate::prof::Detected::new().with("arch", "no-such-arch");
     let error = crate::prof::select(&profiles, &detected).expect_err("无命中必须报错");
     assert_eq!(error.code(), diagnostic::Code::Unsupported);

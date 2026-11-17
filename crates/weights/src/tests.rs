@@ -89,3 +89,42 @@ fn decode_entry_f32_passes_through_the_partial_tail_word_rejection() {
     let error = decode_entry_f32(&entry, &[0u8, 1, 2]).expect_err("余字节");
     assert_eq!(error.code(), Code::Invalid);
 }
+
+/// 测试用 Reader：持有整段字节，`read` 直接借用切片，不拷贝条目字节。
+struct StubReader(Vec<u8>);
+
+impl Reader for StubReader {
+    fn read(&self, entry: &Entry) -> Result<&[u8]> {
+        Ok(&self.0[..entry.len()])
+    }
+}
+
+#[test]
+fn read_f32_decodes_an_entry_from_a_borrowed_slice() {
+    let bytes: Vec<u8> = [1.0f32, 0.0, 2.5]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let entry = Entry::new("w", DType::F32, Shape::new([3])).at(64);
+    let values = read_f32(&entry, &StubReader(bytes)).expect("借用读取");
+    assert_eq!(values, [1.0, 0.0, 2.5]);
+}
+
+#[test]
+fn read_f32_rejects_a_non_f32_entry_like_the_loader_path() {
+    let entry = Entry::new("q", DType::F16, Shape::new([4])).at(64);
+    let error = read_f32(&entry, &StubReader(vec![0u8; 8])).expect_err("非 F32 必须拒绝");
+    assert_eq!(error.code(), Code::Unsupported);
+}
+
+#[test]
+fn reader_and_loader_paths_decoding_the_same_bytes_match_bit_for_bit() {
+    let bytes: Vec<u8> = [3.0f32, -1.5, 0.25]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let entry = Entry::new("w", DType::F32, Shape::new([3])).at(64);
+    let via_reader = read_f32(&entry, &StubReader(bytes.clone())).expect("借用路径");
+    let via_loader = load_f32(&entry, &StubLoader(bytes)).expect("拷贝路径");
+    assert_eq!(via_reader, via_loader);
+}

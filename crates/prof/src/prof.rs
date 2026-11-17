@@ -437,6 +437,18 @@ impl Profile {
     }
 }
 
+/// 解析全部内置档案；构建期已过校验，解析失败只可能是表结构漂移，在此过滤掉。
+///
+/// 编排层（组合根）探测本机后把这份列表交给 [`select`]；档案清单从这里取一份，
+/// 不在调用方重复 `names → embedded → parse` 三段遍历。
+pub fn builtin_profiles() -> Vec<Profile> {
+    crate::names()
+        .iter()
+        .filter_map(|name| crate::embedded(name))
+        .filter_map(|table| Profile::parse(table).ok())
+        .collect()
+}
+
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
 ///
 /// 命中规则条数（[`Profile::specificity`]）最多者胜出；与最优者同等具体的另一份也算

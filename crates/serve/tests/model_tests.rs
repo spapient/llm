@@ -683,6 +683,42 @@ fn entries_from_an_in_memory_archive_load_into_params() {
     assert_close(&produced, &reference);
 }
 
+/// 归档同时实现 [`Reader`]：借用路径不经字节拷贝装载，装配后前向与串行参考对拍，
+/// 与 Loader 拷贝路径同判据、同产物。
+#[test]
+fn entries_from_a_reader_source_load_into_params() {
+    let x = [1.0, 2.0, 3.0];
+    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let w2 = [1.0, 1.0, 2.0, 0.0];
+
+    let hidden = gemv_hidden(&x, &w1);
+    let mut reference = vec![0.0; 2];
+    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
+
+    let bytes = archive_of(&[
+        ArchiveEntry {
+            name: "blk.0.weight",
+            shape: [2, 3],
+            dtype: "F32",
+            bytes: f32_block(&w1),
+        },
+        ArchiveEntry {
+            name: "blk.1.weight",
+            shape: [2, 2],
+            dtype: "F32",
+            bytes: f32_block(&w2),
+        },
+    ]);
+    let archive = Archive::parse(&bytes).expect("归档合法");
+    let stack = Stack::from_header(archive.header()).expect("层栈");
+    let params =
+        Params::from_reader_stack(&stack, archive.header(), &archive).expect("借用装载");
+    let mut model = assemble(stack, params);
+    let produced = model.forward(&x).expect("前向");
+
+    assert_close(&produced, &reference);
+}
+
 /// 头部找不到对应条目：装载期按名报 `Missing`，不带进装配期。
 #[test]
 fn a_missing_header_entry_is_reported_at_load() {

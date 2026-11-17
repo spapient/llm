@@ -336,6 +336,14 @@ pub fn load_f32(entry: &Entry, loader: &impl Loader) -> Result<Vec<f32>> {
     decode_entry_f32(entry, &bytes)
 }
 
+/// 借用后端（内存归档、只读映射）的对称入口：条目字节从 [`Reader`] 借出来直接解包，
+/// 省掉 [`Loader::load`] 那一次 `Vec<u8>` 字节拷贝；f32 主机序解包仍是必须的，驻留缓冲
+/// 拥有形态不变。类型/边界判据与 [`load_f32`] 走同一个 [`decode_entry_f32`]，两条路径不各写一份。
+pub fn read_f32(entry: &Entry, reader: &impl Reader) -> Result<Vec<f32>> {
+    let bytes = reader.read(entry)?;
+    decode_entry_f32(entry, bytes)
+}
+
 /// 按条目类型把一段已读回的字节解包成 `f32` 驻留缓冲；`Reader` 借用路径与 `Loader` 拷贝
 /// 路径共用这一份类型/边界判据。
 pub fn decode_entry_f32(entry: &Entry, bytes: &[u8]) -> Result<Vec<f32>> {
