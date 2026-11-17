@@ -58,3 +58,29 @@ fn unclosed_group_is_an_invalid_error() {
     let err = parse("fn f() { ").expect_err("must fail");
     assert_eq!(err.code(), Code::Invalid);
 }
+
+#[test]
+fn boundary_inputs_reach_a_stable_verdict() {
+    let cases: &[(&str, bool)] = &[
+        ("", true),
+        ("   \n\t ", true),
+        ("fn f() { ", false),
+        ("let x = [1, 2", false),
+        ("/* 注释没完", false),
+        ("\"字符串没完", false),
+        ("a = 1; )", true),
+        ("'static", true),
+    ];
+    for (src, expect_ok) in cases {
+        let verdict = parse(src);
+        assert_eq!(verdict.is_ok(), *expect_ok, "输入：{src:?}");
+        if let Err(err) = &verdict {
+            assert_eq!(err.code(), Code::Invalid, "输入：{src:?}");
+            assert!(!err.message().is_empty(), "拒绝必须带理由");
+        }
+    }
+    // 饱和长标识符：单个 token，既不截断也不 panic。
+    let long = "x".repeat(256);
+    let tokens = parse(&long).expect("长标识符可解析");
+    assert_eq!(tokens.len(), 1);
+}

@@ -2,7 +2,7 @@
 //!
 //! **拥有**：词法分析（[`lex`]）、圈复杂度与函数长度（[`ccn`]）、文件行数（[`dup`]）、
 //! 禁止调用形态（[`call`]）、文档漂移（[`docs`]）、测试代码剔除（[`strip`]）、质量门阈值（[`gate`]）、
-//! 回退判定（[`regress`]）、人可读排版（[`Report`]）。
+//! 回退判定（[`regress`]）、统一基准记录（[`bench`]）、人可读排版（[`Report`]）。
 //! **不拥有**：任何运行时领域数据类型、退出码（由调用方映射）。
 //! **依赖**：`diagnostic`（错误契约与数据树）。
 //!
@@ -15,6 +15,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod bench;
 pub mod call;
 pub mod ccn;
 pub mod docs;
@@ -93,6 +94,33 @@ pub fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
         "—".to_string()
     } else {
         joined
+    }
+}
+
+/// 人读的字节数（工作集与容量对照用）：1024 进制，B / KiB / MiB / GiB。
+///
+/// 排版口径只此一份：入口与基准台账都从这里取，避免同一组字节被说成两种单位。
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// 单次耗时：亚微秒内核用 ns，否则用 ms（避免一串 `0.000`）。
+pub fn per_run(ns: f64) -> String {
+    if ns < 1e3 {
+        format!("{ns:.1} ns/次")
+    } else {
+        format!("{:.3} ms/次", ns / 1e6)
     }
 }
 
