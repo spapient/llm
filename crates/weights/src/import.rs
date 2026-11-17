@@ -26,23 +26,34 @@ use crate::{Loader, Reader, Segment, Wire};
 pub fn segments_from_path(path: &Path) -> Result<Vec<Segment>> {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("safetensors") => segments_from_safetensors_file(path),
-        Some("gguf") => {
-            let bytes = read_file(path)?;
-            segments_from_gguf(&Gguf::parse(&bytes)?)
-        }
-        Some("bin") | Some("pt") => {
-            let bytes = read_file(path)?;
-            segments_from_bin(&Bin::parse(&bytes)?)
-        }
-        other => Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "不认识的源格式 `{}`：支持 .safetensors / .gguf / .bin / .pt",
-                other.unwrap_or("无扩展名")
-            ),
-        )
-        .with("weights::import::segments_from_path")),
+        Some("gguf") => load_gguf(path),
+        Some("bin") | Some("pt") => load_bin(path),
+        other => Err(unsupported(other)),
     }
+}
+
+/// 后缀未登记：不猜格式，也不把块量化伪装成标量段。
+fn unsupported(other: Option<&str>) -> Error {
+    Error::new(
+        Code::Unsupported,
+        format!(
+            "不认识的源格式 `{}`：支持 .safetensors / .gguf / .bin / .pt",
+            other.unwrap_or("无扩展名")
+        ),
+    )
+    .with("weights::import::segments_from_path")
+}
+
+/// GGUF 通路：整份读入 → 解析 → 中性段流。
+fn load_gguf(path: &Path) -> Result<Vec<Segment>> {
+    let bytes = read_file(path)?;
+    segments_from_gguf(&Gguf::parse(&bytes)?)
+}
+
+/// bin/pickle 通路：整份读入 → 解析 → 中性段流。
+fn load_bin(path: &Path) -> Result<Vec<Segment>> {
+    let bytes = read_file(path)?;
+    segments_from_bin(&Bin::parse(&bytes)?)
 }
 
 /// 整份读入文件为自有字节；GGUF/bin 解析需要整份缓冲，safetensors 条目通路不走这里。

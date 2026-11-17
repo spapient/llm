@@ -44,26 +44,34 @@ pub(crate) fn import(input: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
+/// 读容器字节：IO 失败按 `Code::Io` 补命令站点诊断。
+fn read_container(input: &str, site: &str) -> Result<Vec<u8>> {
+    std::fs::read(input).map_err(|error| {
+        Error::new(Code::Io, format!("读取 {input} 失败：{error}")).with(site)
+    })
+}
+
 /// `inspect`：读字节 → 解析 → 现场现算度量，条目清单与度量排成报告。
 pub(crate) fn inspect(input: &str) -> Result<()> {
-    let bytes = std::fs::read(input).map_err(|error| {
-        Error::new(Code::Io, format!("读取 {input} 失败：{error}")).with("llm inspect")
-    })?;
+    let bytes = read_container(input, "llm inspect")?;
     let archive = Archive::parse(&bytes).map_err(|error| error.with("llm inspect"))?;
     let metrics = archive
         .metrics()
         .map_err(|error| error.with("llm inspect"))?;
+    let report = metrics_report(&archive, &metrics);
+    print!("{}", report.render());
+    Ok(())
+}
 
+/// 度量行 + 条目清单行；度量是打开后现场现算，不读文件内保存字段。
+fn metrics_report(archive: &Archive<'_>, metrics: &weights::Metrics) -> Report {
     let mut report = Report::new("llm —— `.u` 容器清单与度量")
         .row("条目数", format!("{}", metrics.entries()))
         .row("参数总数", format!("{}", metrics.params()))
         .row("V_artifact", tool::human_bytes(metrics.v_artifact() as u64))
         .row("V_FP16", tool::human_bytes(metrics.v_fp16()))
         .row("ratio", format!("{:.3}", metrics.ratio()))
-        .row(
-            "lossless",
-            if metrics.lossless() { "true" } else { "false" },
-        )
+        .row("lossless", lossless_label(metrics.lossless()))
         .row(
             "REF 命中",
             format!(
@@ -75,16 +83,29 @@ pub(crate) fn inspect(input: &str) -> Result<()> {
     for segment in archive.segments() {
         report = report.row("条目", entry_row(segment));
     }
-    print!("{}", report.render());
-    Ok(())
+    report
+}
+
+/// 无损标志的人可读取值。
+fn lossless_label(lossless: bool) -> &'static str {
+    if lossless {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 /// `check`：打开期 CRC 已校验；逐段 `load` 触发解码与逐位还原，按解码条目数汇报。
 pub(crate) fn check(input: &str) -> Result<()> {
-    let bytes = std::fs::read(input).map_err(|error| {
-        Error::new(Code::Io, format!("读取 {input} 失败：{error}")).with("llm check")
-    })?;
+    let bytes = read_container(input, "llm check")?;
     let archive = Archive::parse(&bytes).map_err(|error| error.with("llm check"))?;
+    let decoded = decode_all(&archive)?;
+    println!("{decoded} tensors decoded");
+    Ok(())
+}
+
+/// 逐段解码还原全表，返回解码条目数；任一段解码失败按命令站点补诊断。
+fn decode_all(archive: &Archive<'_>) -> Result<usize> {
     let mut decoded = 0usize;
     for segment in archive.segments() {
         archive
@@ -92,8 +113,7 @@ pub(crate) fn check(input: &str) -> Result<()> {
             .map_err(|error| error.with("llm check"))?;
         decoded += 1;
     }
-    println!("{decoded} tensors decoded");
-    Ok(())
+    Ok(decoded)
 }
 
 /// 一条条目的清单行：名字 / dtype / 形状 / codec；形状轴长用 `×` 连接，空形状记 `[]`。

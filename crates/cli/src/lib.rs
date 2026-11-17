@@ -222,6 +222,13 @@ fn command(name: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
         "help" | "-h" | "--help" => Ok(Command::Help),
         "run" => run(words),
         "train" => train(words),
+        other => archive_command(other, words),
+    }
+}
+
+/// 归档容器子命令（`import` / `inspect` / `check`）与单选项命令表的分派。
+fn archive_command(name: &str, words: &mut Words<'_>) -> Result<Command> {
+    match name {
         "import" => import(words),
         "inspect" => single_required(words, INSPECT, "inspect", |input| Command::Inspect {
             input,
@@ -248,13 +255,21 @@ fn single_required(
 /// `import`：`--in` / `--out` 顺序自由，两者都必需——缺源或缺输出都是写错了，不猜默认路径。
 fn import(words: &mut Words<'_>) -> Result<Command> {
     let slots = parse_slots(words, IMPORT, "import")?;
-    let input = slots[0]
-        .clone()
-        .ok_or_else(|| missing_required(IMPORT[0].0, "import"))?;
-    let output = slots[1]
-        .clone()
-        .ok_or_else(|| missing_required(IMPORT[1].0, "import"))?;
+    let input = required_slot(&slots, 0, IMPORT[0].0, "import")?;
+    let output = required_slot(&slots, 1, IMPORT[1].0, "import")?;
     Ok(Command::Import { input, output })
+}
+
+/// 取一个必需槽位；缺省点名对应开关，不替调用方补默认值。
+fn required_slot(
+    slots: &[Option<String>],
+    index: usize,
+    flag: &str,
+    command: &str,
+) -> Result<String> {
+    slots[index]
+        .clone()
+        .ok_or_else(|| missing_required(flag, command))
 }
 
 /// 单参数命令表命中；未知名命令报 [`Code::Invalid`]。
@@ -357,6 +372,13 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
             device,
         } => run::run(weights, input.as_deref(), device.as_deref()),
         Command::Verify { .. } | Command::Bench { .. } => audit_note(),
+        other => entry_archive_or_train(other),
+    }
+}
+
+/// 归档容器命令与训练闭环的分派；其余命令已在 [`entry`] 主匹配里收口。
+fn entry_archive_or_train(command: &Command) -> Result<()> {
+    match command {
         Command::Import { input, output } => archive::import(input, output),
         Command::Inspect { input } => archive::inspect(input),
         Command::Check { input } => archive::check(input),
@@ -375,6 +397,7 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
             accumulation.as_deref(),
             load.as_deref(),
         ),
+        other => Err(invalid(format!("命令 `{other:?}` 未接入编排"))),
     }
 }
 
