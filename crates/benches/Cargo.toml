@@ -17,13 +17,16 @@ cutile = { path = "../cutile" }
 prof = { path = "../prof", package = "llm-prof" }
 op = { path = "../op", package = "llm-op" }
 wire = { path = "../wire", package = "llm-wire" }
-weights = { path = "../weights", package = "llm-weights" }
+weights = { path = "../weights", package = "llm-weights", features = ["mmap"] }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
 train = { path = "../train", package = "llm-train" }
 autograd = { path = "../autograd", package = "llm-autograd" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 # roofline 的分子（每条基准至少搬多少、算多少）由算子语义推出，不在报告里手写第二份公式。
 nn = { path = "../nn", package = "llm-nn" }
+# 整模型一步基准：合成栈经 engine 页账与 serve 宿主跑 Predict 路线 B（测量容器，全部在 dev）。
+engine = { path = "../engine", package = "llm-engine" }
+serve = { path = "../serve", package = "llm-serve" }
 # 基线判定与报告归档：`tests/regress.rs` 用 `tool::regress` 判、用 `weights::json` 读
 # criterion 的 estimates.json（本成员没有生产依赖，全部在 dev）。
 tool = { path = "../tool", package = "llm-tool" }
@@ -97,6 +100,11 @@ path = "criterion/weights_container.rs"
 harness = false
 
 [[bench]]
+name = "weights_load"
+path = "criterion/weights_load.rs"
+harness = false
+
+[[bench]]
 name = "tokenizer"
 path = "criterion/tokenizer.rs"
 harness = false
@@ -104,6 +112,16 @@ harness = false
 [[bench]]
 name = "train"
 path = "criterion/train.rs"
+harness = false
+
+[[bench]]
+name = "decode_attention_f32"
+path = "criterion/decode_attention_f32.rs"
+harness = false
+
+[[bench]]
+name = "model_decode"
+path = "criterion/model_decode.rs"
 harness = false
 
 [lints]

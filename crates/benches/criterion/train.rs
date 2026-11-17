@@ -54,7 +54,7 @@ fn snapshot_header() -> Header {
 
 fn bench_snapshot(c: &mut Criterion) {
     let snapshot = Snapshot::new(
-        Facts::new(7, 1, SNAPSHOT_ENTRIES, 32).expect("事实"),
+        Facts::new(7, 1, SNAPSHOT_ENTRIES, 32, 32).expect("事实"),
         snapshot_header(),
     );
     let bytes = snapshot.encode().expect("编码");
