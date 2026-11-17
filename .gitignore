@@ -1,8 +1,8 @@
 # 构建产物
 target/
 
-# jscpd 重复检测报告
-/.config/report/
+# jscpd 重复检测报告（输出目录见 .config/.jscpd.json 的 output）
+/report/
 
 # 工具与编辑器的本地状态
 /.claude/

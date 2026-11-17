@@ -119,7 +119,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # 硬门：重复率超过 .jscpd.json 的 threshold（1.5%）即失败。
+      # 硬门：重复率超过 .config/.jscpd.json 的 threshold（1.5%）即失败；配置由 jscpd 自动发现。
       - name: jscpd hard gate
         run: npx --yes jscpd
       # 语义巡检：AST 归一化暴露近重复，只出报告不阻断（硬门已由 jscpd 负责）。

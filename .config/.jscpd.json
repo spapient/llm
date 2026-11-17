@@ -1,5 +1,6 @@
 {
   "path": ["crates"],
+  "output": "report",
   "reporters": ["console", "json"],
   "format": ["rust"],
   "minLines": 5,
