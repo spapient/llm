@@ -515,6 +515,124 @@ pub fn decode_flash_forward_heads(
     decode_heads(q, k, v, out, q_rows, hist, d, decode_flash_forward)
 }
 
+/// 批量校验：批内各序列等长历史（统一 `hist`）。`heads` 是显式几何参数，不按总长反推，
+/// 避免批数不足时把头数压成 1 而放过错长缓冲；段内宽度/行数守卫交给 [`decode_heads`]。
+#[allow(clippy::too_many_arguments)]
+fn headed_batch(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &[f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+    batch: usize,
+    heads: usize,
+) -> diagnostic::Result<()> {
+    if batch == 0 || heads == 0 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("批量序列数 {batch} 与头数 {heads} 都必须非零"),
+        ));
+    }
+    let q_seq = heads * q_rows * d;
+    let kv_seq = heads * hist * d;
+    check_batch_pairs(q, k, v, out, q_seq, kv_seq, batch)
+}
+
+/// 批块长度守卫：`q`/`out` 是 `batch·q_seq`，`k`/`v` 是 `batch·kv_seq`；宽度与查询/历史
+/// 行数守卫交给逐段调用的 [`decode_heads`]。
+#[allow(clippy::too_many_arguments)]
+fn check_batch_pairs(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &[f32],
+    q_seq: usize,
+    kv_seq: usize,
+    batch: usize,
+) -> diagnostic::Result<()> {
+    check_pair(q, out, batch * q_seq, "q/out")?;
+    check_pair(k, v, batch * kv_seq, "k/v")?;
+    Ok(())
+}
+
+/// 批量 decode：`q`/`out` 按批分段，第 `b` 段是 `heads·q_rows·d`，`k`/`v` 第 `b` 段是
+/// `heads·hist·d`；批内段间独立 softmax、互不串段。段内复用 [`decode_heads`] 头分段编排，
+/// 这里只做批切片。变长历史（各段独立 `hist_b`）不在本入口口径内。
+#[allow(clippy::too_many_arguments)]
+fn decode_batch(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+    heads: usize,
+    batch: usize,
+    single: SingleHead,
+) -> diagnostic::Result<()> {
+    headed_batch(q, k, v, out, q_rows, hist, d, batch, heads)?;
+    let q_seq = heads * q_rows * d;
+    let kv_seq = heads * hist * d;
+    for seq in 0..batch {
+        let q_start = seq * q_seq;
+        let kv_start = seq * kv_seq;
+        decode_heads(
+            &q[q_start..q_start + q_seq],
+            &k[kv_start..kv_start + kv_seq],
+            &v[kv_start..kv_start + kv_seq],
+            &mut out[q_start..q_start + q_seq],
+            q_rows,
+            hist,
+            d,
+            single,
+        )?;
+    }
+    Ok(())
+}
+
+/// 批量朴素 decode 内核：段内走 [`decode_forward`]，布局同 [`decode_batch`]。
+///
+/// # Errors
+///
+/// 同 [`decode_batch`]。
+#[allow(clippy::too_many_arguments)]
+pub fn decode_forward_batch(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+    heads: usize,
+    batch: usize,
+) -> diagnostic::Result<()> {
+    decode_batch(q, k, v, out, q_rows, hist, d, heads, batch, decode_forward)
+}
+
+/// 批量 flash decode 内核：段内走 [`decode_flash_forward`]，布局同 [`decode_batch`]。
+///
+/// # Errors
+///
+/// 同 [`decode_batch`]。
+#[allow(clippy::too_many_arguments)]
+pub fn decode_flash_forward_batch(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+    heads: usize,
+    batch: usize,
+) -> diagnostic::Result<()> {
+    decode_batch(q, k, v, out, q_rows, hist, d, heads, batch, decode_flash_forward)
+}
+
 /// 标记类型：承载 `#[model]` 语义。
 pub struct Attention;
 
