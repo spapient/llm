@@ -1,0 +1,51 @@
+# 0044：绑定编号元数据——描述表留装配侧，引擎不解释编号（D10）
+
+- 状态：草案（M1-B7 落地 serve 侧描述表与装配期校验；engine `Bindings` 保持纯编号 → 缓冲）
+- 日期：2026-11-17
+- 相关：[0032](0032-assembly-family-descriptor.md)（装配族别描述符）；设计取证见 [`../backend-runtime-design.md`](../backend-runtime-design.md) §5.2 D10、[`../llmu-parity-optimization-design.md`](../llmu-parity-optimization-design.md) §1.5 P6/§4.2 M1-B7
+
+## 背景
+
+engine [`Bindings`](../../crates/engine/src/exec.rs) 是纯 `BTreeMap<u32, Vec<f32>>`：编号到
+缓冲整块，引擎不持条名目，也不知道某块缓冲是权重还是激活、形状几轴。装配侧（serve）在接图时
+需要编号 ↔ 条目名 ↔ 声明形状的描述，用来做宽度链校验、权重长度核对与诊断读数。边界风险有二：
+
+1. 给 engine 加只读形状访问器——引擎开始解释编号含义，装配事实泄漏进执行层；
+2. 把描述表下沉到 `weights` 或 engine——装配期族别形状（投影 `[out, in]`、归一化 `[width]`、
+   查表 `[vocab, dim]`）依赖 `nn` 层视图，下沉后层级反向依赖。
+
+## 决策
+
+### 1. 描述表只留 serve 装配侧
+
+[`BindingDesc`](../../crates/serve/src/assembly.rs) 条目 = `id` + `entry: Option<String>` +
+`shape: Vec<usize>`，随装配结果收在 `Assembly.descriptors`：
+
+- 权重编号：条目名 + 族别形状（投影 `[out, in]`、归一化 gamma `[width]`、查表 `[vocab, dim]`）；
+- 激活编号：条目名 `None`，形状只记一条轴长度；历史 K/V 占位记 `[0]`。
+
+### 2. engine `Bindings` 不加形状访问器
+
+`Bindings` 保持纯 `BTreeMap<u32, Vec<f32>>`，不解释编号含义，不存条目名与形状。后端实现证明
+**必须**要形状访问之前不引入；届时再按后端边界单独提案，不在装配侧预埋只读视图。
+
+### 3. 形状断裂在装配期拒绝
+
+宽度链衔接（`check_chain`）与权重长度核对（`check_weight`）行为不变：形状、宽度、权重缺失都在
+装配期报出，不带进执行期。描述表只做装配校验的读数与诊断陈述，不参与热路径解析。
+
+## 备选方案
+
+- **engine 侧加形状只读访问器**：拒绝。引擎开始解释编号，违反"编号到缓冲的解析归执行边界"；
+  装配事实与执行事实耦合，后端切换时访问器口径难守。
+- **描述表进 `weights` crate**：拒绝。族别形状取自 `nn` 层类型化视图，`weights` 不认识层栈；
+  下沉会造成层级反向依赖。
+- **编号编码进名字段（如 `w10000` 反推权重段）**：拒绝。编号分区是装配侧分配事实，引擎按名
+  反推会把分区约定泄漏成运行期规则。
+
+## 后果
+
+- 新增绑定类别：在装配侧 `NodeSink` 推一条 `BindingDesc`；engine 一侧不动。
+- 描述表条目数与图操作数一一对应；测试锁定：权重编号可映射回条目名与族别形状，激活编号无条目名。
+- 既有负例（权重长度不符、宽度链断裂、缺条目、非 F32）保持装配期 `Invalid` / `Missing` /
+  `Unsupported`，不因描述表新增而放宽。

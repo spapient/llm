@@ -28,9 +28,9 @@ graph LR
 
 | 阶段 | 对标对象 | 超越判据（可证伪） | 当前状态（2026-11-15） | 下一批动作 |
 |---|---|---|---|---|
-| **P0** 架构/质量加固 | burn trait 塔的可扩展度；candle/ggml 的类型收口 | 结构密度、依赖数、`unsafe` 边界、每后端新增代码量、复用率领先；门禁全绿 | 闭集单一事实源、三表编译期生成、L0–L3 证据分级；ADR 0025/0026/0027；gemm 泛型骨架；签名解析单源化；本地 1059 测试、cutile 覆盖率 75.56% 行 / 77.98% 函数、jscpd 1.16% 行 / 1.38% token | 片段同构一致性校验；参数维度装载期校验；缓存身份字段填值（形状已定 ADR 0027 §3/§4/§6） |
+| **P0** 架构/质量加固 | burn trait 塔的可扩展度；candle/ggml 的类型收口 | 结构密度、依赖数、`unsafe` 边界、每后端新增代码量、复用率领先；门禁全绿 | 闭集单一事实源、三表编译期生成、L0–L3 证据分级；ADR 0025/0026/0027；gemm 泛型骨架；签名解析单源化；workspace 1,314 测试全绿、cutile 覆盖率 75.56% 行 / 77.98% 函数、jscpd 1.16% 行 / 1.38% token | 片段同构一致性校验；参数维度装载期校验；缓存身份字段填值（形状已定 ADR 0027 §3/§4/§6） |
 | **P1** CPU 最小闭环 | llama.cpp CPU 同档 decode | 单序列/单 token 时延 `tokens/s` 同硬件对照；对拍 `max_rel_err` 达标；首批对照数字入表 | 张量仍是只读 `&[u8]` 视图；`Executor` 仅 `submit(graph, stream)` 雏形，无设备/缓冲/事件；`gemv_f32`/`softmax_f32`/`rope_f32` 标量参考已在 `op` | 可写张量 + CPU 分配器；Executor 补设备/缓冲/同步；三条首批 CPU 内核；bench harness 统一记录硬件/形状/批次/后端 |
-| **P2** CPU 推理运行时 | llama.cpp 同档 decode 速度、内存占用 | 多序列批处理端到端；吞吐/时延对照曲线入表；KV 分配释放有对拍 | KV 仅页表/存活位图簿记，页内不持数据；调度为契约 | KV 缓冲落地；continuous batching 与准入；注意力内核；prefix cache；线程池分片；按 roofline 贡献度排序优化 |
+| **P2** CPU 推理运行时 | llama.cpp 同档 decode 速度、内存占用 | 多序列批处理端到端；吞吐/时延对照曲线入表；KV 分配释放有对拍 | KV 页池已持真实 `Vec<f32>`；`Cache` 引用计数与 `share/release` 原语在位；未接的是前缀匹配准入共享、模型内核级批量几何 | 多序列批量通路；continuous batching 与准入；注意力内核；prefix cache 接线；线程池分片；按 roofline 贡献度排序优化 |
 | **P3** Metal + CUDA 并行 | burn / candle 同后端；ggml 设备内核 | 同后端关键算子打平到领先；decode 吞吐/时延有对照；roofline 达成率可追；边界 crate 之外无新增 `unsafe` | 无设备内核；dp4a/dpas/mmad/wmma、量化反量化、通信原型均未落地 | 独立后端边界 crate，FFI/`unsafe` 局部 `allow` 收敛；双后端经同一 trait 挂载；量化块格式与内核；通信原型 |
 | **P4** 模型与服务化 | vLLM / TRT-LLM 服务化 | 同硬件同负载 TTFT/TPOT/吞吐/P99；端侧/内存受限细分场景争取领先 | 权重可读 safetensors 并对拍；无模型前向、无服务端点 | 主流权重端到端前向；HTTP/gRPC 端点；并发流式；服务基准 |
 

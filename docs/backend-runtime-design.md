@@ -1,7 +1,7 @@
 # 推理后端整仓分析与目标设计（P1 收尾 → P2 → P3）
 
-- 版本：v1.1（设计草稿，待评审；落点裁决：**复用现有成员，不新建 crate**）
-- 日期：2026-11-16
+- 版本：v1.2（落点裁决：**复用现有成员，不新建 crate**；trait 形状决策已定形，见 `implementation-task-plan.md` §4 D1–D13）
+- 日期：2026-11-17
 - 范围：全 workspace（24 个 `crates/*` 成员 + 根包 `llm`）。回答两个问题：**从整仓看，真实后端落在哪、按什么顺序落**；以及**现有契约面哪些可直接复用、哪些缺口必须先补 trait**。
 - 取证口径：静态只读。所有断言回链 `文件:行`；性能数字一律不预填，M1/M2/M3 实测后回填 [`engine-benchmark-roadmap.md`](engine-benchmark-roadmap.md) §1.1。工作树混有并行会话未提交改动，本文以磁盘现状为准，不 stage、不回退。
 - 立场：本文是**整体分析 + 目标设计**，不是实现代码。落地步骤见 §7；trait 形状的最终变更须在动工前以 ADR 回填（§9）。
@@ -14,7 +14,7 @@
 | 用途 | 命令（工作目录 `/Users/fei/code/llm`） |
 |---|---|
 | 成员清单 | `grep -A30 'members' Cargo.toml` → `crates/*` |
-| 算子注册表 | `grep -oE '"[a-z0-9_]+_(f32\|i4\|i8)"' crates/op/src/lib.rs \| sort -u` → 22 条 |
+| 算子注册表 | `grep -oE '"[a-z0-9_]+_(f32\|i4\|i8)"' crates/op/src/lib.rs \| sort -u` → 24 条 |
 | 谁依赖 `engine` | `grep -l 'llm-engine\|../engine' crates/*/Cargo.toml` → 仅 `engine` 自身与 `serve` |
 | engine 执行契约 | `sed -n '257,425p' crates/engine/src/exec.rs` |
 | engine KV 数据 | `sed -n '204,393p' crates/engine/src/kv.rs` |
@@ -78,10 +78,10 @@
 
 **算子声明与参考（`op`）**
 
-- `REGISTRY`：22 条编译期闭集，名/声明/模板/语义表同属一条（`op/src/lib.rs:122-164`）。
+- `REGISTRY`：24 条编译期闭集，名/声明/模板/语义表同属一条（`op/src/lib.rs:122-164`）。
 - `Model`：cost/sample/reference 三个 fn 指针、dtype、轴角色、形状粒度；`model::bind(model, m, n, x, w)` 是真实数据进样本的唯一入口，量化权重明确拒绝注入（`model.rs:181-200`）。
 - 签名形参闭集：`F32` / `U8` / `Int`（标量）；标量不占缓冲（`sig.rs:18-39`）。
-- f32 标量参考 `forward` 已是全函数签名：一元 `softmax/silu/gelu/scale/reduce_max/reduce_sum`；二元 `add/mul/residual_add/rmsnorm/gemv`；特殊 `rope_f32(pos, x, out)`、`embed_f32(idx, table, out)`（行向量 gather）、`attention_f32(q,k,v,out,heads,d)`；量化族 `gemv_i4/i8`、`gemm_i4/i8`、`dequant_i4/i8` 走 u8 lane。
+- f32 标量参考 `forward` 已是全函数签名：一元 `softmax/silu/gelu/scale/reduce_max/reduce_sum`；二元 `add/mul/residual_add/rmsnorm/gemv`；特殊 `rope_f32(pos, x, out)`、`embed_f32(idx, table, out)`（行向量 gather）、`attention_f32(q,k,v,out,heads,d)`；量化族 `gemv_i4/i8`、`gemm_i4/i8`、`dequant_i4/i8` 走 i4/i8 lane（旧称 u8 指字节通道形态，见 §5.3）。
 
 **权重（`weights`）**
 
@@ -93,14 +93,14 @@
 
 **服务端点（`serve`）**
 
-- `Predict::logits(&mut self, &engine::Sequence) -> Result<Vec<f32>>`；`Sampling::sample(&[f32]) -> Result<Option<u32>>`（`generate.rs:18-46`）。
-- `Completion<M: Predict, S: Sampling>` 注入式；推进循环 parse → 编词 → 准入 → 逐步前向+采样 → 归还页 → 帧；失败路径同样归还页（`completion.rs:121-156`、`:225-245`）。生产 `Predict` 实现**不存在**，只有测试替身 `Fixed(Vec<f32>)`（`tests/completion_tests.rs:5-12`）。
+- `Predict::logits(&mut self, &engine::Sequence, &mut engine::Batch) -> Result<Vec<f32>>`；`Sampling::sample(&[f32]) -> Result<Option<u32>>`（`generate.rs:21-32`）。
+- `Completion<M: Predict, S: Sampling>` 注入式；推进循环 parse → 编词 → 准入 → 逐步前向+采样 → 归还页 → 帧；失败路径同样归还页（`completion.rs:121-156`、`:225-245`）。生产 `Predict` 实现为 `CpuModel`（`model_host.rs:151`，输入折叠见 `predict_input` `:70`）：查表层首层可接 token id；投影/点wise/归一化/注意力块首层仍 `Unsupported`，向量主链随连续批落地。测试替身 `Fixed(Vec<f32>)` 只在 `tests/completion_tests.rs:5-12`。
 - 现状依赖：`diagnostic`、`engine`、`tokenizer`（`crates/serve/Cargo.toml`）；`generate.rs:3` 注释明示"服务层不实现模型"，这条边界随 §4 落点裁决修订。
 
 **训练侧可借鉴机制（`train`，模式先例，不作代码复用件）**
 
 - `Kernel` trait：`compute(op, inputs: &[View], output: &mut ViewMut)`；`Reference` 算术复用 `op` 参考实现（`kernel.rs:17-36`）。
-- `KERNELS` 表长度与顺序同 `REGISTRY`，编译期 `const` 断言锁死（`kernel.rs:168-197`）；unary/binary/gemm 宏按 lane 拆形参（`kernel.rs:60-100`）。全 22 算子覆盖，含 `attention_f32` / `flash_attention_f32` / `rope_f32` / 量化族（`kernel.rs:102-166`）。
+- `KERNELS` 表长度与顺序同 `REGISTRY`，编译期 `const` 断言锁死（`kernel.rs:168-197`）；unary/binary/gemm 宏按 lane 拆形参（`kernel.rs:60-100`）。全 24 算子覆盖，含 `attention_f32` / `flash_attention_f32` / 两条 decode 变体 / `rope_f32` / 量化族（`kernel.rs:102-166`）。
 - 形状推导在 `shape.rs`（`Kind` / `Lane` sealed / `Data` / `View` / `Inputs`）。`train` 不依赖 `engine`（`crates/train/Cargo.toml`），其 `View`/`Lane` 缓冲形态与 engine `Vec<f32>` 不同形。
 
 ### 1.3 当前唯一跑通的“前向”路径
@@ -148,9 +148,9 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 
 ### 2.3 P3（后端边界与量化/通信原型，M3）
 
-- 独立边界 crate 实现 `Executor` / `Allocator` / `Collective`；`unsafe` 与 FFI 只收在边界内，核心继续 `unsafe deny`（ADR 0025 §9；动工前出单独 ADR）。
+- 独立边界 crate 实现 `Executor` / `Allocator` / `Collective`；`unsafe` 与 FFI 只收在边界内，核心继续 `unsafe deny`（ADR 0025 §9；边界规则已落档 ADR 0035）。
 - 同一 `Executor` trait 下挂 Metal（macOS 本机验证）与 CUDA（Linux+NVIDIA；无 GPU 只出编译与契约对拍，不出吞吐数字）。
-- 量化 u8 lane 内核、反量化；集合通信原型经 `shard::Collective` 挂载。
+- 量化 i4/i8 lane 内核、反量化；集合通信原型经 `shard::Collective` 挂载。
 - 算子选择只走能力闭集（`prof` 档案见证过的供给），模型与调度代码不出现 `if Metal {} else if CUDA {}`（ADR 0025 §4）。
 
 ---
@@ -164,7 +164,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 | G1 | 生产路径无 `Program` 装配；`CpuExecutor::programs` 只被测试填（`exec.rs:457`） | 没有注册表驱动的 CPU 内核桥；算子名 → `Program` 的映射表未建 | `serve::model`（§4） |
 | G2 | `Predict` 只有测试替身（`generate.rs:18-24`、`completion_tests.rs:5-12`） | 没有驻留权重 + 图装配 + 执行的生产 `Predict` 实现 | `serve::model` |
 | G3 | `Program::run` 只有 f32 切片，无形状/标量上下文（`exec.rs:388`） | `rope_f32(pos, x, out)` 的位置标量、`attention` 的 heads/head_dim 没有通道；形状只能从切片长度猜。P1 只接纯切片算子，标量通道 P2 再议 | `serve::model`；engine trait 预留扩展（§5.1） |
-| G4 | `Bindings` 只有 `u32 → Vec<f32>`，无 dtype/形状元数据（`exec.rs:396-425`） | 装配侧需要一处记录编号 ↔ 形状/条目名；engine 侧是否扩元数据待定（§5.2） | `serve::model` 为主，engine 视需要补只读访问器 |
+| G4 | `Bindings` 只有 `u32 → Vec<f32>`，无 dtype/形状元数据（`exec.rs:396-425`） | 编号 ↔ 形状/条目名描述表留装配侧（D10）；engine 保持纯缓冲，只读访问器仅当后端实现证明需要时再补 | `serve` 装配侧为主 |
 | G5 | 形状/下界推导只在 `train::shape.rs`；训练 `View` lane 与 engine `Vec<f32>` 不是同一缓冲形态 | 装配侧的形状推导不能直接复用 train 缓冲视图；需要一份面向 `Vec<f32>` 的窄形状适配 | `serve::model` |
 | G6 | 对拍只在 `cutile::execution` 子进程回路；无进程内单层前向对拍 harness | M1 需要进程内：同一输入两份计算（Program 输出 vs 独立 `op::forward` 参考），`testkit::close` 判 `max_rel_err` | `serve::model` + dev testkit |
 
@@ -172,19 +172,19 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 
 | # | 现状证据 | 缺口 | 归属 |
 |---|---|---|---|
-| G7 | 两条 prefill 注意力（`attention_f32` / `flash_attention_f32`）已登记进 serve CPU 内核表（三路 `q/k/v`，头宽 `d` 取静态语义表、`s` 由切片长推）；decode 变长历史变体未登记；`Pager` 行仍只能经 `Batch::kv`/`write_kv` 按 id+token 访问（`batch.rs`） | 注意力尚未接 KV 页：装配侧要把序列已有 K/V 行映射成操作数；Q/K/V 投影后按层偏移写回 KV 行；残差旁路与图扇出通道待扩 | `serve::model` 装配 + attention Program |
-| G8 | `Table` 独占 `Page`，无共享引用（`kv.rs:59-183`） | prefix cache：前缀页共引用、引用计数、回收判定；页表结构要留共享句柄 | engine `kv` + `serve::model` |
-| G9 | `Batch::step` 逐序列推进页账；`CpuModel` 已接单序列 `Predict`，尚无模型侧批量前向 | 多序列端到端：批内每序列一步前向 → logits → 采样；当前主链只接单 token decode | `serve::model` `Predict` |
-| G10 | 基准只有 7 条算子 criterion benches；无 decode 整步/整模型 harness | M2 需要单序列与批次的 TPOT/吞吐/内存对照口径 | benches（工具成员）+ `serve::model` facade |
-| G11 | `Predict::logits(&mut self, &Sequence)` 单序列签名已由 `CpuModel` 实现；不带批/KV 视图（`generate.rs:24`） | 模型读写 KV 需要访问页池；trait 路线 B 只读视图传参随 G7 接注意力时定形（§5.4） | serve trait 评审 |
+| G7 | 注意力块已接 KV 页通路：装配侧拆 q/k/v/attn/o 子节点，当前步 K/V 拼成 `[k|v]` 行写回，历史 K/V 经 `Batch::kv` 整行读出拼进绑定缓冲；decode 两条变体（`decode_attention_f32` / `decode_flash_attention_f32`）已登记 CPU 内核表；残差旁路在 plan 层引用块输入隐藏向量接线，engine exec 未加标量槽 | 多层模型的层偏移行切片、多头展平头内切片、历史淘汰与前缀页共享未接；多序列批内循环随连续批刀落地 | `serve::model` 装配 + attention Program |
+| G8 | 共享页原语已落地：`Cache` 每页记引用计数（`alloc` 置 1、`share` +1、`release` −1），计数归 0 才回空闲池；`Pager::share` 是另一张表采纳同一前缀页的入口，与独占 `alloc` 路径分开；共享期前缀行只读，页数据在最后一次 release 前不清零 | 前缀匹配准入策略（哪条请求复用哪段前缀）、LRU/淘汰、跨序列向量复用未做；Scheduler 层的采纳路径未接，本刀只落共享句柄 + 计数 + 回收判定原语 | engine `kv` |
+| G9 | 批内多序列一步闭环已落地：`Batch::step` 遍历 `batch.sequences()`，每条未结束序列依次 logits → 采样 → `Batch::emit`；结束/停止/到上限的序列 `finish` 摘出并归还页；`Blocked` 留批、历史不变、不中断其余；一条失败先归还该序列页再上抛，本轮已记账序列不回滚 | 模型内核级批处理形状未做（executor 图仍是单序列几何，`Predict` trait 保持单序列路线 B）；并发/多请求传输入口留 M4 | `serve` State 批步进 + engine `Batch` |
+| G10 | 测量 harness 已落地：decode 注意力内核微基准（hist 128/512 × 朴素/Flash，head_dim 64，ns/iter + 每步 KV 元素吞吐）；整模型一步前向 harness（单序列 / 批 4 逐序列走一步，ns/iter + tokens/s，内存只记可观测占用页数）。hist 128 两条接 regress 基线表（bounds 由算子语义表推），512 两条与整模型 harness 只出测量、不进基线表 | 内核级批处理形状对照、多 token 预填充矩阵基准、设备绑定（GPU）数字与靶机基线登记未做；本机无 CUDA/GPU，不出设备数字；执行器内部绑定缓冲数无公开读数，峰值字节不虚构 | benches（工具成员）+ `serve::model` facade |
+| G11 | `Predict::logits(&mut self, &Sequence, &mut Batch)` 路线 B 已定形：模型经 Batch 读历史 K/V、写回当前步 K/V；completion 侧先取序列只读克隆副本、释放不可变借用后再以 `&mut Batch` 进模型，沿用 State 字段级拆借 | 调度侧批内每序列一步已随 #51 落地；trait 仍持单序列视图，内核级批量几何留后续 | serve trait 评审 |
 
 ### 3.3 P3 缺口
 
 | # | 现状证据 | 缺口 | 归属 |
 |---|---|---|---|
-| G12 | 设备后端无实现；`LocalExecutor` 只记账（`exec.rs:304-375`） | Metal/CUDA 边界 crate：`Executor` + `Allocator` 实现，事件同步、设备缓冲 | 新边界成员（P3） |
-| G13 | 无 unsafe/FFI 边界 ADR；核心 `unsafe_code = "deny"`（`Cargo.toml` workspace lints） | P3 动工前必须出 ADR：哪些函数/句柄可越安全边界，局部 `allow` 收敛到边界模块 | 文档 + 边界成员 |
-| G14 | 量化族走 u8 lane，`Program` 现签名不可表达 | u8 lane 的 Program 适配、反量化内核挂载 | 边界/`serve::model`，P3 |
+| G12 | 后端边界成员 `backend`（`llm-backend`）骨架已落地：trait 定义留在 `engine::exec` / `storage`，`UnsupportedBackend` 占位同时实现 `Executor` 与 `Allocator`，只回读 `Device` 登记标签；submit/sync/alloc/copy_into 统一 `Unsupported`，`free` 留空；无 FFI、无 `unsafe`、不暴露设备句柄，不写第二套运行时 trait | 真实 Metal/CUDA 实现随 #56/P3：事件同步、设备缓冲映射、命令队列与 kernel launch；逐厂商边界模块布局本刀只在文档预留，未写空模块；边界 crate 不反向依赖 serve/nn/op | `backend` 边界成员 |
+| G13 | 核心 `unsafe_code = "deny"`（`Cargo.toml` workspace lints）；规则已落档 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)：越界白名单四类、`allow(unsafe_code)` 收敛边界模块、依赖方向、unsafe 块最小化 | 边界 crate 的真实 FFI/unsafe 实现随 P3 填入；核心继续 deny | 文档 + 边界成员 |
+| G14 | 量化族注册表 lane 为 `i4`/`i8`（本节旧称 u8 指字节/量化通道形态，非独立 dtype），`Program` 现签名不可表达 | i4/i8 lane 的 Program 适配、反量化内核挂载 | 边界/`serve::model`，P3 |
 | G15 | `Collective` 只有 trait 与 `Local` 镜像（`collective.rs:11-14`） | 通信后端实现（NCCL/Metal 对等），拓扑簿记不改 | 边界成员 |
 | G16 | 本机 macOS/Apple Silicon；CUDA 链路在本机无环境 | CUDA 只保留编译与契约对拍；Metal 本机验证；Linux 云主机验 CUDA | 环境约束 |
 
@@ -206,7 +206,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 | 复用 `train` 承载运行时 Program | 排除 | ① `train` 不依赖 `engine`（`crates/train/Cargo.toml`），而 `train → engine` 是同层向右，方向非法；② 语义是训练循环，`Kernel`/`View`/`Lane` sealed 缓冲形态与 engine `Vec<f32>` 不同形；③ `serve → train` 同样是同层向右，非法 |
 | **`serve` 内新增模型模块** | **采纳** | 唯一同时满足：已依赖 `engine`；可合法向下补 `op`/`nn`/`weights`/`tensor` 边（L6→L2/L5/L4）；`Predict`/`Sampling`/`Completion` trait 本就归 `serve` |
 
-### 4.2 落点：`crates/serve/src/model.rs`（模块名待定，下称 `serve::model`）
+### 4.2 落点：`crates/serve/src/model_host.rs`（下称 `serve::model_host`）
 
 L6 顺序不变：`train` → `engine` → `serve` → `cli`；不新增成员、不调整层内位置。
 
@@ -251,32 +251,34 @@ L6 顺序不变：`train` → `engine` → `serve` → `cli`；不新增成员�
 
 ---
 
-## 5. trait 形状裁决与待定问题
+## 5. trait 形状裁决（决策定形见 plan §4；本节为依据与被否备选）
 
-### 5.1 Program 的标量/形状通道（G3，P2 接 rope/attention 前定）
+### 5.1 Program 的标量/形状通道（G3；决策已定，见 plan §4 D9 / ADR 0043）
 
 现状 `run(launch, inputs, outputs)` 只传 f32 切片。需要标量的算子：
 
 | 算子 | 额外形参 | 来源 |
 |---|---|---|
-| `rope_f32` | `pos: usize`（解码位置） | `Sequence::produced + prompt_len`，随步变化 |
+| `rope_f32` | `pos: usize`（解码位置） | `Sequence::produced + prompt_len`，随步变化；进定长类型化标量槽 |
 | `attention_f32` / `flash_attention_f32` | 序列长 `s`、头宽 `d` | 两条 prefill 已进 serve CPU 内核桥：`d` 取静态 `op::attention::MODEL.shape.1`，`s = q.len()/d`；decode 变体 `q_rows = q.len()/d`、`hist = k.len()/d` 同法切片长推，均不需运行时标量槽 |
 | `embed_f32` | 运行时无额外形参；行宽 `D` 由 `out.len()/idx.len()` 推导，表长锁 `V·D` | 切片几何自洽 |
-| 量化族 | u8 lane，P3 再议 | — |
+| 量化族 | i4/i8 lane（见 §5.3 术语），P3 再议 | — |
 
-**首选（零 trait 变更，复用现有签名）**：P1 只接纯切片算子——`gemv_f32`、`softmax_f32`、`rmsnorm_f32`、`silu/gelu`、`add/mul/residual/scale`、两条归约；`rope_f32` 与 `attention_*` 随 P2 KV 工作一起落地。现有 `Program::run(launch, inputs, outputs)` 不动，engine 单测不变。代价：roadmap P1 清单里的 `rope_f32` 后移到 P2，M1 对拍范围相应收窄。
+**已定方案（D9）**：`Node`/`Launch` 上扩**定长类型化闭集标量槽**（位置、头数、头宽等固定槽位），不引入字符串键查表；静态头宽仍取 `op::MODEL.shape`；`Program::run` 缓冲切片签名不变。槽位集合在 ADR 0043 落档后冻结，新增槽位走 ADR 修订，不在热路径加 `HashMap` 查找。
 
-**预留扩展（P2 接 rope/attention 时再定）**：若届时切片通道仍不够用，再扩 engine 侧节点携带标量槽——`Node` 增加 `params: Vec<ParamSlot>`，`ParamSlot { name: String, value: i64 }`，engine 不认识名字语义只透传；`Program::run` 改收 `node: &Node`。此扩展属 ADR 0025 §后果允许的情形："trait 形状在 P1 暴露不足时，先扩 trait 定义，不在上层加后端特判分支"；落地前回填 ADR 0025 修订节。
+**被否备选**：`Vec<ParamSlot>{ name: String, value: i64 }` 名值表——热路径字符串查表，违反零动态分发；把标量塞进 `Launch` 三轴——几何与语义参数混在一起，设备后端映射网格时会误读；把位置编进 1 元素 f32 缓冲——类型不安全，是隐藏约定。
 
-不推荐：把标量塞进 `Launch` 三轴——几何与语义参数混在一起，设备后端映射网格时会误读；或把位置编进 1 元素 f32 缓冲——类型不安全，是隐藏约定。
+P1 阶段仍先接纯切片算子；`rope_f32` 与 `attention_*` 随 P2 KV 工作落地，落地时走已定的标量槽形状，不再二次裁决。
 
 ### 5.2 Bindings 元数据（G4）
 
 P1 推荐：编号 ↔ 形状/权重条目名的对照留在 `serve::model` 装配侧的参数表；`Bindings` 维持纯 `u32 → Vec<f32>`。只有当设备后端需要在 engine 侧按编号查 dtype/形状时，再给 `Bindings` 补只读元数据访问器——不为假想需求提前扩面。
 
-### 5.3 u8 lane 延后（G14）
+### 5.3 量化 lane 延后（G14）
 
-P1/P2 的 `Program` 保持 f32 切片闭集。u8 适配随 P3 量化内核一起进；届时再把 `Program`/`Bindings` 泛型化到 lane，不在 P1 预埋会被第二套实现推翻的抽象。
+> 术语：本节旧称 "u8 lane" 指字节/量化通道形态；注册表与任务名对齐为 `i4`/`i8` lane，两者不是矛盾。
+
+P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一起进；届时再把 `Program`/`Bindings` 泛型化到 lane，不在 P1 预埋会被第二套实现推翻的抽象。
 
 ### 5.4 KV 与 Predict 签名（G11）
 
@@ -423,6 +425,52 @@ P1/P2 的 `Program` 保持 f32 切片闭集。u8 适配随 P3 量化内核一起
 - **未做（装配主体）**：把组合块拆成 q/k/v/attn/o 子节点接进图、三路扇出与 KV 页行读写、残差旁路编号接线；Predict 路线 B 视图形态与图扇出/旁路通道在 P2-4 主体刀定形（§5.1、§5.4）。
 - 本刀门禁：nn 全绿；workspace 0 失败；`clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增成员与依赖边。
 
+#### 落地记录（P2-4 主体：注意力接 KV 页通路 + Predict 路线 B）
+
+- Predict 路线 B：trait 签名改 `logits(&mut self, &Sequence, &mut Batch)`；completion 侧先取序列只读克隆副本、释放不可变借用后再持 `&mut Batch` 进模型，沿用 State 字段级拆借；页账归调度器，模型不另存 KV 账。
+- 装配器识别 `Contract::attention_block()`：块内拆 q/k/v 三路投影（共享隐藏输入扇出）、decode 注意力节点（q + 历史 K + 历史 V）、o 投影回 hidden；残差旁路在 plan 层引用块输入隐藏向量，`residual_add_f32` 节点接线；engine exec 不动、不加标量槽。激活/权重编号由 `Slots` 顺序分配，取代按层索引推导。装配计划/图接线留在 `assembly`，CpuModel 宿主段拆到同 crate 内部模块 `model_host`，无新 pub 类型与跨层边。
+- KV 通路：当前步 k/v 投影结果拼成 `[k|v]` 行经 `Batch::write_kv(id, token, …)` 写回；历史经 `Batch::kv(id, t)` 逐行读出，整块 `copy_from_slice` 拼进预分配缓冲（无逐元素手写循环）；decode 查询位置取 `Sequence::len()`；历史为空由算子 `check_rows` 报 `Invalid`。
+- decode 变体登记：`decode_attention_f32` / `decode_flash_attention_f32` 进 serve CPU 内核表（`q_rows`/`hist` 由切片长推，`d` 取静态语义表）；op 侧两条算子各配 `.toml` / `.k` / 语义模块 / `#[annotation::model]` 注解 / REGISTRY 一行，不写第二份语义表。
+- 测试：decode 两条内核与独立 `op` 参考对拍；embed→块栈一步 decode 全链与 gemv / `decode_forward` / residual_add 串行参考对拍；KV 写读往返按 `[k|v]` 切回对拍；缺权重 `Missing`、宽度链断裂 `Invalid`、权重长度不符 `Invalid`、多头展平 `Unsupported`、空历史 `Invalid` 五条错误用例。
+- **未做（切分）**：多序列端到端批量循环（#51）、前缀页共享引用计数（#52）、bench harness（#53）、多头展平与多层层偏移表、量化/后端/Collective（P3）；既有单序列 completion 路径保持跑通。
+- 本刀门禁：`cargo test --workspace` 0 失败（既有 1 个 ignored 保留）；`cargo test -p llm-engine` 62 + 9 + 3 全绿；serve lib 100、protocol 8、doctest 3，op 174、nn 72 全绿；`cargo clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`cargo fmt --all --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增成员与生产依赖边。
+
+#### 落地记录（P2-#51：连续批端到端一轮步进）
+
+- State 批步进：`Batch::step` 先一次性取走序列号 owned 副本（进入 `&mut Batch` 前不持不可变借用），遍历批内序列；每条复用既有 `step`（logits → 采样 → `emit`）/`done`/`stop`，不复制第二份采样与结局判定逻辑。
+- 结束摘出：`advance_one` 区分 Continue / Blocked / Stop / Limit；Stop/Limit 经 `finish_one` 装 `Generation`、`Batch::finish` 归还页并摘出批；Blocked 原样留批、历史与计数不变，不中断其余序列。
+- 失败隔离：一条模型/采样报错时先 `finish` 归还该序列页，再上抛错误；本轮已记账的其余序列状态不回滚。
+- 端点入口：`Completion::advance_batch` 锁状态跑一轮，返回本轮跑完的 `(id, Generation)`；`Predict` trait 与 executor 图仍是单序列几何，本刀未扩批量前向接口。
+- 测试：两序列同批步进各自记账、跑完一起归还；Blocked 序列留批且计数/历史不变；模型失败与采样失败两条隔离用例均不污染已记账序列、失败序列摘出批；KV 行按序列号归属、互不覆盖。
+- **未做（切分）**：内核级批处理形状与批量图前向、并发与多请求传输入口（M4）、bench harness（#53）；投影/点wise/归一化首层仍 `Unsupported`，批步进测试走桩/查表层首链。
+- 本刀门禁：`cargo test --workspace` 0 失败（既有 1 个 ignored 保留）；`cargo test -p llm-engine` 62 + 9 + 3；serve lib 105、protocol 8、doctest 3，op 174、nn 72；`cargo clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`cargo fmt --all --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增成员、pub 类型与生产依赖边。
+
+#### 落地记录（P2-#52：prefix cache 共享页 + 引用计数回收判定）
+
+- `Cache` 把每页存活位图换成引用计数 `refs: Vec<u32>`：`alloc` 置 1；新增 `share(page)` 在另一张页表采纳同一前缀页时 +1；`release` 减 1，归 0 才把页退回空闲池，返回 `true` 表示最后一个持有者。越界页、非存活页、重复归还/计数下溢仍按 `Invalid` 报错，O(1) 命中。
+- `Pager` 暴露共享入口 `share(page)`（只递增计数、不动数据），与独占 `alloc` 路径分开；`release` 只有在计数归零时才清零页数据——共享期前缀行保持可读，最后一次归还前不清零。
+- 不变量入模块/类型文档：共享期内前缀行只读（模型只写前缀之后的新页）；页数据在最后一次 `release` 前不清零；计数归零才回空闲池并清零。`is_live` 以 `refs > 0` 判定，新增 `reference_count` 只读访问器。
+- 测试：两表共引一页，第一张表归还后页仍存活、前缀行未清零，最后一个持有者归还才回池并清零；共享两次/释放两次的计数与 `in_use`/`free_pages` 口径；越界与非存活页 `share` 报 `Invalid` 且不动账目；独占路径回归（单序列 alloc→finish→release 数据清零、池占数回零）由既有用例覆盖。
+- **未做（切分）**：前缀匹配准入策略（哪条请求复用哪段前缀）、LRU/淘汰、跨序列向量复用；Scheduler 层的采纳路径未接，本刀只落共享句柄 + 计数 + 回收判定原语；内核级批形状、并发传输（M4）、bench harness（#53）仍在范围外。
+- 本刀门禁：`cargo test --workspace` 0 失败（既有 1 个 ignored 保留，1322 passed）；`cargo test -p llm-engine` 65 + 9 + 3；serve lib 105、protocol 8、doctest 3，op 174、nn 72；`cargo clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`cargo fmt --all --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增 crate、pub 类型与生产依赖边，算子注册表不动。
+
+#### 落地记录（P2-#53：decode 内核 + 整模型一步 bench harness）
+
+- decode 内核微基准 `criterion/decode_attention_f32.rs`：`q_rows = 1`、头宽 64，历史 128 / 512 两档分别跑 `decode_attention_f32` 朴素与 `decode_flash_attention_f32` Flash；口径 ns/iter + 每迭代扫到的 KV 元素数吞吐（`Throughput::Elements`），输入线性相位映射填满、构造期即为有限值，`black_box` 防 DCE。
+- 整模型一步 harness `criterion/model_decode.rs`：合成栈 = 查表层首层 + 投影（只用当前装配支持的层族），权重由 `testkit::Rng` 确定性生成有限值；装配 `CpuModel` 与 `Batch`，两个变体 `single_step`（1 token）与 `batch4_step`（4 条序列同批逐序列走一步），报 ns/iter 与 tokens/s；内存只记可观测占用页数（`cache().in_use()`），执行器内部绑定缓冲数无公开读数，不虚构峰值字节。沿用 `train.rs` 先例，不进 regress 基线表。
+- regress 接线：hist 128 朴素 / Flash 两行进 `SCENARIOS`（backend `cpu-reference`、batch 1、bounds `(1, 64)`，shape `[128, 64]`），下界由 `nn::Bounds` 经算子语义表推出；512 两条与整模型 harness 取不到基线登记时只出测量，不硬造 bounds。Cargo.toml 补 `engine`/`serve` dev-deps 并登记两条 `[[bench]]`；benches 仍零生产依赖。
+- **未做（切分）**：内核级批处理形状基准、多 token 预填充矩阵对照、设备绑定（GPU）数字与靶机基线登记；本机无 CUDA/GPU，不出设备数字；不写性能目标数字、不与外部框架比倍数。无新增 pub 类型、无生产依赖边（仅 benches → engine / serve 两条 `+dev` 工具边），算子注册表不动。
+- 本刀门禁：`cargo test --workspace` 0 失败（既有 1 个 ignored 保留，1322 passed）；`cargo test -p llm-engine` 65 + 9 + 3；`cargo test -p llm-benches` regress 4 passed；`cargo clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`cargo fmt --all --check` 干净；architecture 8、contracts 5、gate 1 全过。
+
+#### 落地记录（P3-#55：后端边界 crate 骨架 + Unsupported 占位适配）
+
+- 新成员 `crates/backend`（包名 `llm-backend`）：模块文档引用 ADR 0025 §1/§9 三件套与依赖方向、ADR 0035 越界白名单四类、`allow(unsafe_code)` 收敛点、unsafe 块最小化与失败走 diagnostic 闭集；逐后端模块布局只在文档预留，不写空模块凑数。
+- 占位适配 `UnsupportedBackend`（pub）：持一台登记用 `Device`，同时实现 `engine::exec::Executor` 与 `storage::Allocator`；`device()` 回读标签，`submit`/`sync`/`alloc`/`copy_into` 统一返回 `Code::Unsupported`（文案指明后端未挂载），`free` 按 trait 签名留空；不写厂商特判分支，不把设备指针/句柄类型泄到边界之外。
+- 方向与隔离：`backend → engine, storage, diagnostic`，只实现运行时一侧的 trait；不在本 crate 定义第二套运行时 trait，不反向依赖 `serve`/`nn`/`op`；本刀不引入任何 `unsafe`、不加 FFI 依赖（cuda/metal/libloading 等），全仓继续 `unsafe_code = "deny"`，无 dev 边。
+- 测试：设备标签 vendor/arch 回读一致；submit 与 sync 报 `Unsupported`；alloc 与 copy_into 报 `Unsupported`，free 留空实现、不归还真实句柄。
+- **未做（切分）**：真实 Metal/CUDA 实现随 #56/P3——事件同步、设备缓冲映射、命令队列与 kernel launch；逐厂商边界模块与 `allow(unsafe_code)` 收敛点随后续刀填入；`Collective` 通信后端（G15）另立；本骨架不接任何真实 FFI/设备内核。
+- 本刀门禁：`cargo test --workspace` 0 失败（既有 1 个 ignored 保留，1325 passed，其中 `llm-backend` 3 条）；`cargo test -p llm-engine` 65 + 9 + 3；`cargo clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`cargo fmt --all --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增生产依赖边到 serve/nn/op，算子注册表不动。
+
 ### P2（M2：多序列端到端、CPU 同档 decode、KV 对拍与边界测试）
 
 1. KV 行映射进注意力 Program；Q/K/V 写回 Pager；层偏移表归装配侧。
@@ -434,7 +482,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。u8 适配随 P3 量化内核一起
 
 1. 前置：unsafe/FFI 边界 ADR；边界 crate 骨架；`Executor`/`Allocator` 实现。
 2. Metal 本机跑通 P2 同一前向；CUDA 在 Linux+NVIDIA 验，无 GPU 环境只编译 + 契约对拍。
-3. 量化 u8 lane 与反量化内核；`Collective` 通信原型。
+3. 量化 i4/i8 lane 与反量化内核；`Collective` 通信原型。
 4. 出口门：同算子 CPU/加速后端对拍一致；同后端对比 burn/candle；边界 crate 之外零新增 `unsafe`；roofline 达成率可追。
 
 ---
@@ -442,7 +490,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。u8 适配随 P3 量化内核一起
 ## 8. 不做与暂缓
 
 - 不造通用 IR、不做算子融合重排（ADR 0017 无 IR 冻结）；图只是提交单元。
-- P1/P2 不接 GPU、不写量化内核、不做分布式；u8 lane 抽象不预埋。
+- P1/P2 不接 GPU、不写量化内核、不做分布式；i4/i8 lane 抽象不预埋。
 - 不新增 workspace 成员（P3 边界 crate 除外，届时按 ADR 0025 §1 单独裁决）。
 - 不引入模型动物园、vision、RL；产品面不在本路线。
 - 不在核心仓开第二套设备能力闭集；设备能力继续以 `prof` 档案与 L0–L3 证据分级为准。
@@ -452,8 +500,8 @@ P1/P2 的 `Program` 保持 f32 切片闭集。u8 适配随 P3 量化内核一起
 
 | 项 | 落点 | 触发时点 |
 |---|---|---|
-| Program 标量槽与签名扩展裁决（P1 纯切片先行；rope/attention 落地时再判是否扩 Node 参数槽） | 回填 ADR 0025 修订节 | P2 接 rope/attention 前 |
-| `serve::model` 模块名与最终向下边表（是否引 `tensor`） | ARCHITECTURE 边表 + 所有权表 | 已定模块名 `model`；已补 `op`、`nn`、`weights`；`tensor` 暂不引 |
-| Predict/KV 传参路线（A/B） | 新 ADR 或 ADR 0025 补充 | P2 动工前 |
+| Program 标量槽形状（已定 D9 / ADR 0043）：定长类型化闭集槽，不用名值表；`Program::run` 缓冲签名不变 | ADR 0043 正文动工前补齐 | P2 接 rope/attention 时按已定形状落地 |
+| `serve::model_host` 模块与最终向下边表（是否引 `tensor`） | ARCHITECTURE 边表 + 所有权表 | 已定模块 `model_host`；已补 `op`、`nn`、`weights`；`tensor` 暂不引 |
+| Predict/KV 传参路线（A/B） | 路线 B 已定形：`logits(&mut self, &Sequence, &mut Batch)`（#50 落地，见 §5.4 与 §7 P2-4 记录） | 已定 |
 | 嵌入算子形态：改造 `embed_f32` 为行向量 gather（表 `[V,D]`，按 idx 取整行到 `[n,D]`），不新增算子 | op `embed_f32.rs` + `.toml` + `.k` + 自测；复用 `embed` 骨架 | 已落地（#58）：三参 arity 不变，train 桥与注册表行未动；骨架闭集 12 个不扩 |
-| unsafe/FFI 边界规则（函数/句柄越界白名单、局部 allow 收敛点） | 新 ADR（ADR 0029） | P3 动工前 |
+| unsafe/FFI 边界规则（函数/句柄越界白名单、局部 allow 收敛点） | 已落档 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)；边界 crate 实现随 P3 填入 | 已定规则 |

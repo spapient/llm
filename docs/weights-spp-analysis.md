@@ -101,7 +101,7 @@
 - **成立**：clippy 干净、machete 干净、deny 四闸 ok；函数复杂度在工作区门禁内（confirmed）。
 - **差距**：
   - fmt 4 文件未达标（confirmed）。
-  - AST 重复 5.0% 精确克隆，高于 `.jscpd.json` 的 1.5% 阈值口径（工具不同，需在同一口径下复核，inferred）。
+  - AST 重复 5.0% 精确克隆，高于 `../.config/.jscpd.json` 的 1.5% 阈值口径（工具不同，需在同一口径下复核，inferred）。
   - annotation 有专门 `tests/audit.rs` 静态门；weights 没有等价的「依赖闭集 / 禁容器 / 禁正则 / 禁惰性初始化」本地门（confirmed 对照）。
   - 无 weights 专属 README 与元数据描述收口（confirmed）。
 
@@ -273,7 +273,7 @@ trait Compress {
 
 - fmt / clippy / deny / machete 全绿；补 weights README；建 `tests/audit.rs` 静态门（依赖闭集、禁关联容器/正则/惰性初始化、禁 `unsafe`）。
 - 覆盖率：整体行覆盖 ≥95%；`bin` ≥85%、`zip` ≥85%；`seg`/`json` ≥92%；格式解析器补负例，fuzz 从 `json` 扩到 gguf/zip/seg/容器写端。
-- 重复度：精确克隆降到门禁阈值内（`.jscpd.json` threshold 1.5），同一口径重测 jscpd / cargo-dupes。
+- 重复度：精确克隆降到门禁阈值内（`../.config/.jscpd.json` threshold 1.5），同一口径重测 jscpd / cargo-dupes。
 - 公开面：只保留下游在用类型 + 兼容 re-export；其余模块按 §2.3 状态以平级文件 + feature cfg 冻结或删除。
 
 ### 5.6 分阶段路线（单 crate 内推进，每步独立可回滚，过全套门禁）

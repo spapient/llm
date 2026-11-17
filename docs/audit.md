@@ -22,7 +22,7 @@
 
 | 旧路径（首轮） | 当前路径 | 证据 |
 | --- | --- | --- |
-| `crates/audit/src/*` | `crates/cutile/src/report/*` → `crates/cutile/src/*.rs` | 合并时先落 `report/`；`87ad7486` 又删掉 `report/` 与 `witness/` 两层目录，现为平铺文件（§12.3） |
+| `crates/audit/src/*` | `crates/cutile/src/report/*` → `crates/cutile/src/*.rs` | 合并时先落 `../.config/report`；`87ad7486` 又删掉 `../.config/report` 与 `witness/` 两层目录，现为平铺文件（§12.3） |
 | `crates/checkpoint/src/lib.rs` | `crates/train/src/snapshot/mod.rs` | 1 609 行 + 2 行文件头 = 1 611，其余原样 |
 | `crates/regress/src/lib.rs` | `crates/tool/src/regress.rs` | `Judgement` 与 `Gate` 现在同 crate |
 | `crates/exec/src/lib.rs` | `crates/engine/src/exec.rs` | `Stream` 的唯一生产者是 `engine` |
@@ -30,7 +30,7 @@
 | `crates/einsum/src/*` | `crates/op/src/einsum/*` | 5 条债务键已随路径改写 |
 | `crates/proto/src/*` | `crates/serve/src/proto/*` | 4 个文件 1 126 行随迁，`pub` 路径由 `proto::` 变为 `serve::proto::` |
 
-两条例外：`crates/audit/src/witness/` 先变成 `crates/cutile/src/report/witness/`，随后在 `87ad7486` 中拆平为 `cutile/src/{witness,device,probe,reference}.rs`——**`report/` 与 `witness/` 两层目录在 HEAD 已不存在**，本报告里凡以 `cutile/src/report/…` 开头的引用只保留"文件级"可回链（行号需重锚，§12.5）；`crates/checkpoint/src/lib.rs` 里的 `checkpoint::` 错误位标签改成了 `train::snapshot::` 前缀（`CONTEXT` 常量）。
+两条例外：`crates/audit/src/witness/` 先变成 `crates/cutile/src/report/witness/`，随后在 `87ad7486` 中拆平为 `cutile/src/{witness,device,probe,reference}.rs`——**`../.config/report` 与 `witness/` 两层目录在 HEAD 已不存在**，本报告里凡以 `cutile/src/report/…` 开头的引用只保留"文件级"可回链（行号需重锚，§12.5）；`crates/checkpoint/src/lib.rs` 里的 `checkpoint::` 错误位标签改成了 `train::snapshot::` 前缀（`CONTEXT` 常量）。
 
 ---
 
@@ -168,7 +168,7 @@
 | --- | --- | ---: | --- |
 | L1 基座 | `diagnostic` `dtype` `testkit` `tool` | 856（含 `toml` 585）/ 2 136 / 167 / 1 955（含 `regress` 341） | 高（`dtype` 已升为精度事实源，6 文件；`diagnostic` 现在同时拥有错误类型与全仓唯一 TOML 解析器） |
 | L2 数据层 | `prof` `op` `prim` | 3 116 / 8 278（含 `einsum` 1 378）/ 788 | 中高（`op` 膨胀） |
-| L3 内核 | `cutile` | 9 365（22 文件；报告层已拆平，`report/` 目录不存在） | 中（双渲染路径、报告与机制同 crate） |
+| L3 内核 | `cutile` | 9 365（22 文件；报告层已拆平，`../.config/report` 目录不存在） | 中（双渲染路径、报告与机制同 crate） |
 | L4 运行时 | `mem` `tensor` `storage` `tokenizer` | 205 / 590 / 414 / 125 | 高（`storage` 未被使用、`tokenizer` 仅契约） |
 | L5 模型与训练 | `weights` `autograd` `data` `nn` `shard` | 10 216 / 3 134 / 630 / 1 543 / 526 | `weights` 低（职责过载），其余中高 |
 | L6 调度与服务 | `train` `engine` `serve` `cli` | 3 462（含 `snapshot` 1 611）/ 1 333（含 `exec` 188、`kv` 334）/ 1 478（含 `proto` 1 126）/ 648 | 中（`serve`/`exec` 仅契约；`serve` 现已含线格式） |
@@ -280,7 +280,7 @@
 - 影响：新增一个"需要自己的 cost/sample/reference 模块"的算子，必须改宏；`op` 的"加算子不改机制"承诺在宏这一层失效。
 
 **P1-6 存在两套 `skeleton` 词汇表，且多数取值无人构造**
-- 事实：`op::decl::Skeleton` 是 5 个变体（`decl.rs:30-36`：Elementwise/Reduce/Gemm/Attention/Scan）；`annotation::syntax::SKELETONS` 是 11 个名字（`syntax.rs:385-405`），两者不是投影关系。`Skeleton::Attention` 与 `Skeleton::Scan` 在全仓**没有任何构造点**（唯一构造 `Skeleton::Gemm` 在 `cap.rs:561` 的测试里）；`op.skeleton` 只被 `emit.rs:53` 的注释头与 `cutile/src/doctor.rs:161` 的报告字段消费（`report/` 已拆平，§12.3）。
+- 事实：`op::decl::Skeleton` 是 5 个变体（`decl.rs:30-36`：Elementwise/Reduce/Gemm/Attention/Scan）；`annotation::syntax::SKELETONS` 是 11 个名字（`syntax.rs:385-405`），两者不是投影关系。`Skeleton::Attention` 与 `Skeleton::Scan` 在全仓**没有任何构造点**（唯一构造 `Skeleton::Gemm` 在 `cap.rs:561` 的测试里）；`op.skeleton` 只被 `emit.rs:53` 的注释头与 `cutile/src/doctor.rs:161` 的报告字段消费（`../.config/report` 已拆平，§12.3）。
 - 影响：一个"闭集"事实上是装饰性的，违反本仓自己"闭集必须有唯一声明处"的契约精神。
 
 **P1-7 静态门禁的扫描面小于"全仓"**
@@ -337,7 +337,7 @@
 
 **P2-9 可空转的测试（"绿但没测"）**
 - `weights/src/bin.rs:582-590`、`zip.rs:198-201`：`/tmp/pt/model.bin` 不存在时直接 `return`；而这是 ZIP+pickle 路径**唯一**的练习。`bin.rs:619` 的断言只检查 `bytes.len() == 16`（`:618` 注释却声称"与原始字节一致"）。
-- `cutile/src/witness.rs`（首轮 `report/witness/mod.rs:108-110`，路径已随 `87ad7486` 变化）：无后端时直接 `return`，与 `testkit::device_enabled` 的显式门控相比是两种风格。
+- `cutile/src/witness.rs`（首轮 `../.config/report`，路径已随 `87ad7486` 变化）：无后端时直接 `return`，与 `testkit::device_enabled` 的显式门控相比是两种风格。
 - `tool/tests/ccn.rs:19-22`：旧二进制不存在时打印 `skip` 并 `return`。
 - `reader.rs`、`seg.rs`、`codec.rs` 三个解析侧文件 **0 个本地测试**（截断/位翻转的覆盖全在 `tests/round_trip.rs`）。
 
@@ -409,7 +409,7 @@
 | 首轮成员 | 首轮 LOC | 现在的位置 | 首轮结论 | 今天的读法 |
 | --- | ---: | --- | --- | --- |
 | `checkpoint` | 1 609 | `train/src/snapshot/mod.rs` | 拆分 4 文件 | 已并入；拆文件转为 §11.4 待办 |
-| `audit` | 3 947 | `cutile/src/*.rs`（13 文件；`report/` 已在 `87ad7486` 拆平） | 拆分文件 | 已并入；拆文件的原始方案（`report/mod.rs` 700 行）**作废**，现按平铺文件拆分 |
+| `audit` | 3 947 | `cutile/src/*.rs`（13 文件；`../.config/report` 已在 `87ad7486` 拆平） | 拆分文件 | 已并入；拆文件的原始方案（`../.config/report` 700 行）**作废**，现按平铺文件拆分 |
 | `regress` | 337 | `tool/src/regress.rs` | 合并候选 | 已并入；`Judgement` 保留原名 |
 | `exec` | 188 | `engine/src/exec.rs` | 暂不合并 | 已并入；SPI 去留仍未决 |
 | `kv` | 334 | `engine/src/kv.rs` | 保持 | 已并入；页数公式 4 → 1 |
@@ -427,7 +427,7 @@
 | `dtype` ↔ `tensor` | `dtype` 是 L1，被 `prof`/`weights`/`train` 共用；并入 `tensor` 会让 `prof` 反向依赖 L4 | `Cargo.toml` 边 |
 | `diagnostic` ↔ 任意层 | 唯一错误类型；合并即制造第二事实源 | `tests/architecture.rs:151` |
 | `autograd` ↔ `train` | `autograd` 只读 tape/plan，不碰数值；`train` 才是缓冲与数值 | `autograd/src/replay.rs:38-50` |
-| `audit` ↔ `cutile` | 机制 vs 命令策略；合并后 `cutile` 会被迫拥有"形状矩阵/重复次数/达成率口径" | 现 `cutile/src/{doctor,verify,bench}.rs`（`report/` 已拆平；首轮 `audit/src/lib.rs:7-9`）；**§11.2 改判为合并**（未做的附带动作见 §11.4） |
+| `audit` ↔ `cutile` | 机制 vs 命令策略；合并后 `cutile` 会被迫拥有"形状矩阵/重复次数/达成率口径" | 现 `cutile/src/{doctor,verify,bench}.rs`（`../.config/report` 已拆平；首轮 `audit/src/lib.rs:7-9`）；**§11.2 改判为合并**（未做的附带动作见 §11.4） |
 | `einsum` ↔ `op` | "推导代价"与"声明算子"是两种语义；并入后 `op` 达 8.3k 行，且 `formula.rs` 的自有词表（`Expr`/`Extents`）会被算子目录淹没 | 现 `op/src/einsum/formula.rs` 694 行（首轮 `einsum/src/formula.rs`）；`op` 是唯一入边；**§11.2 改判为合并**（未做的附带动作见 §11.4） |
 | `annotation` ↔ 任意 crate | `proc-macro = true` 必须单独成 crate；且"零依赖"本身是契约（`ARCHITECTURE.md:197`） | `crates/annotation/Cargo.toml:12-13` |
 | `kv` ↔ `engine` | 页账（`Table::grow` 不悄悄扩界）vs 序列调度；`engine` 只借页号，不碰页内数据 | 现 `engine/src/kv.rs:277-288`、`engine/src/lib.rs:233-262`；**§11.2 改判为合并**（前提：页数公式收口为 1 处，已兑现） |
@@ -462,7 +462,7 @@
 | `kv` → `engine` | 页账有独立的双释放拒绝与 `in_use` 计数（现 `engine/src/kv.rs:228-245`）；**§11.2 改判为合并**（前提：页数公式收口，已兑现） | 出现第二种调度策略、各自持有页账时 |
 | `cli` → 根包 | `cli` 是纯语法（648 行、零领域知识），根包是组装；合并会把语法带进 L7 | 不建议 |
 | `testkit` → `fuzz` | 夹具（确定性、可重现）与模糊测试（"任何输入"）是两套契约 | 不建议 |
-| `audit` → `cutile`（或反向） | 机制 vs 命令策略；`audit` 拥有达成率口径与见证执行；**§11.2 改判为合并**（新增证据：工具链所有权分裂 + 两份"编译并运行"实现） | `audit` 变成纯排版时——但 §11.3 用"`report/` 子模块 + 机制模块零算子名"测试替代了这一物理边界 |
+| `audit` → `cutile`（或反向） | 机制 vs 命令策略；`audit` 拥有达成率口径与见证执行；**§11.2 改判为合并**（新增证据：工具链所有权分裂 + 两份"编译并运行"实现） | `audit` 变成纯排版时——但 §11.3 用"`../.config/report` 子模块 + 机制模块零算子名"测试替代了这一物理边界 |
 
 #### 6.2.3 不改 crate 形状、只改依赖边（真删除）
 
@@ -513,9 +513,9 @@
 | `annotation/src/syntax.rs` 1 144 | `model.rs`、`frontend.rs`、`layer.rs` + 共用 `cursor.rs` | 三个 `parse_*` 入口即边界（`:149`/`:325`/`:447`），`Cursor` `:733-787` |
 | `autograd/src/plan.rs` 866 | `footprint.rs`、`budget.rs`、`choice.rs` | 存活性 `:358-373`、释放点 `:247-258`、段数解算 `:404-439` |
 | `autograd/src/replay.rs` 683 | `table.rs`、`store.rs`、`drive.rs` | 两张区间表 `:57-64`、重算次数对拍 `:89-100`、`Store` `:38-50` |
-| ~~`cutile/src/report/mod.rs` 700~~ | **作废**：`87ad7486` 删掉 `report/` 层，该文件已不存在；报告层现在平铺为 `cutile/src/{doctor,verify,bench,witness}.rs` | 现状：`doctor.rs` 538、`verify.rs` 542、`bench.rs` 310、`witness.rs` 859 行 |
+| ~~`cutile/src/report/mod.rs` 700~~ | **作废**：`87ad7486` 删掉 `../.config/report` 层，该文件已不存在；报告层现在平铺为 `cutile/src/{doctor,verify,bench,witness}.rs` | 现状：`doctor.rs` 538、`verify.rs` 542、`bench.rs` 310、`witness.rs` 859 行 |
 | ~~`cutile/src/report/witness/device.rs` 622~~ | **已被 `4e363270` 部分兑现**：设备探测拆到 `cutile/src/probe.rs`，其余留在 `cutile/src/device.rs` | `std::env::consts::OS` 的分发仍在 `device.rs`（行号已变，需重锚） |
-| `cutile/src/verify.rs` 542 | 保留 `verify` 入口，拆 `accept.rs`（负例）、`cuda.rs` | 仍成立；路径由 `report/verify.rs` 变 `verify.rs`，行号需重锚 |
+| `cutile/src/verify.rs` 542 | 保留 `verify` 入口，拆 `accept.rs`（负例）、`cuda.rs` | 仍成立；路径由 `../.config/report` 变 `verify.rs`，行号需重锚 |
 | `weights/src/dsa.rs` 923 | 随 S1 移入 `llm-crypto`；内部切 `params`/`encode`/`decode`/`sign` | 参数 `:255-289`、`pk_decode` `:353`、`sig_decode` `:376`、`keygen` `:394`、`sign` `:435`、`verify` `:459` |
 | `op/src/decl.rs` 673 | `parse.rs`、`expand.rs`、`skeleton.rs` | `parse` `:177`、`expand` `:476`、`Skeleton` `:30-36`、`TileCombo` `:125` |
 | `op/src/lib.rs` 578 | `registry.rs`（`REGISTRY` 在 `:108`）+ 文档留在 `lib.rs` | 22 条注册与 22 对文件已一一对应 |
@@ -698,7 +698,7 @@
 | Windows/macOS 以外的可移植性 | **未知**（Windows 判定为推断） | 无交叉编译目标 |
 | 覆盖率百分比 | **未知** | CI 生成 lcov 但无阈值、无上传门禁；本次未跑 `cargo llvm-cov` |
 | `docs/lld.md` 与代码一致性 | **未知** | 2 410 行未逐条核对 |
-| `cargo deny` / `cargo machete` / `jscpd` 的当前结果 | **未知** | 需要联网安装 Node 工具链，本次只读了配置（`.jscpd.json` threshold 1.5%） |
+| `cargo deny` / `cargo machete` / `jscpd` 的当前结果 | **未知** | 需要联网安装 Node 工具链，本次只读了配置（`../.config/.jscpd.json` threshold 1.5%） |
 | 每个函数的实际运行时调用频次 | **未知** | 无 profiler 数据；本报告只给静态 fan-in（`Error/Code/Result` 各约 780-807 次引用，`DType` 339 次） |
 
 ---
@@ -854,14 +854,14 @@
 | 链 | 消失的目录 | 新位置 | 该 crate 里"拥有"声明的第一句话 |
 | --- | --- | --- | --- |
 | `checkpoint → train` | `crates/checkpoint/` | `crates/train/src/snapshot/mod.rs` | "检查点文件：`Snapshot` 把一次训练恢复所需的事实与权重条目表编成字节" |
-| `audit → cutile` | `crates/audit/` | `crates/cutile/src/report/{mod,doctor,verify,bench,cache,execution,common}.rs` + `report/witness/` | "`report`：把一次测量变成可复核的报告……本子模块不是机制" |
+| `audit → cutile` | `crates/audit/` | `crates/cutile/src/report/{mod,doctor,verify,bench,cache,execution,common}.rs` + `../.config/report` | "`report`：把一次测量变成可复核的报告……本子模块不是机制" |
 | `regress → tool` | `crates/regress/` | `crates/tool/src/regress.rs` | "回退判定：把'实测值 vs 基线'变成一条可执行的结论" |
 | `exec → engine` | `crates/exec/` | `crates/engine/src/exec.rs` | "提交与执行：`Stream`、`Graph`、`Node`、`Launch` 与 `Executor` 契约" |
 | `kv → engine` | `crates/kv/` | `crates/engine/src/kv.rs` | "分页 KV 缓存的簿记：`Page`、`Table`、`Cache`" |
 | `einsum → op` | `crates/einsum/` | `crates/op/src/einsum/{mod,expr,extents,formula}.rs` | "同一份求和形式只被解析、校验一次……" |
 | `proto → serve` | `crates/proto/` | `crates/serve/src/proto/{mod,frame,decoder,crc}.rs` | 线协议帧格式（`Envelope`/`Frame`/`Decoder`）现在是端点契约的 `proto` 子模块 |
 
-落点选的都是**存活方的子模块**，而不是把两个 crate 的 `lib.rs` 拼在一起：`engine` 的 `Sequence`/`Scheduler` 与 `exec`/`kv` 分成三个文件（`lib.rs` 769 → 三个文件），`cutile` 的机制与报告分成两片（`report/` 13 个文件），`op` 的算子目录与求和形式分成两个目录。这是"合并不等于糊在一起"的具体做法。
+落点选的都是**存活方的子模块**，而不是把两个 crate 的 `lib.rs` 拼在一起：`engine` 的 `Sequence`/`Scheduler` 与 `exec`/`kv` 分成三个文件（`lib.rs` 769 → 三个文件），`cutile` 的机制与报告分成两片（`../.config/report` 13 个文件），`op` 的算子目录与求和形式分成两个目录。这是"合并不等于糊在一起"的具体做法。
 
 ### 11.2 逐条裁决与执行结果
 
@@ -913,7 +913,7 @@
 | **B1 零成本两条** | `regress → tool`、`exec → engine` + `kv → engine`（两条并在一次里做，避免两次改 `engine/src/lib.rs`） | `cargo test -p llm-engine -p llm-serve -p llm-tool` | 26 + 9 + 9 全绿；`engine` 三个文件 1 303 行 |
 | **B2 `checkpoint → train`** | 目录搬家 + 8 条键改写 + `lines` 校正 | `cargo test -p llm-train` + `-p llm-tool --test gate` | 全绿；文件级键指向 `train/src/snapshot/mod.rs` |
 | **B3 `einsum → op`** | 目录搬家 + `Bits` 改用 `prof::atom::Closed` + 5 条键改写 | `cargo test -p llm-op` | 159 通过；`String` 报错当场暴露并修掉 |
-| **B4 `audit → cutile`** | 13 个文件搬进 `report/`、20 处 `crate::` 路径改写、20 条键改写 | `cargo test -p llm-cutile` + `cargo test --test contracts` | 全绿；`cutile` 9 469 行 / 26 文件 |
+| **B4 `audit → cutile`** | 13 个文件搬进 `../.config/report`、20 处 `crate::` 路径改写、20 条键改写 | `cargo test -p llm-cutile` + `cargo test --test contracts` | 全绿；`cutile` 9 469 行 / 26 文件 |
 | **B5 `proto → serve`** | 4 个文件搬进 `serve/src/proto/`、`crate::` 改成 `crate::proto::`、`pub use self::…`、层表/边表/所有权表/README/债务键同步 | `cargo test --test architecture --test contracts` + `cargo test -p llm-tool --test gate` + 全仓测试 | 6/6 + 6/6 + 1/1 全绿；**1 037 通过 / 0 失败 / 1 忽略**，与合并前逐项相同 |
 
 排序依据是**每次提交的爆炸半径**，不是重要性：B1 不碰债务键、不碰 ADR；B2 碰 1 条文件级键；B3 碰闭集词汇表；B4 同时改最大 crate 与 20 条键。B4 放最后，前面任一步失败都不会让最大的 crate 停在半合并状态。
@@ -963,7 +963,7 @@
 
 | 成因 | 位置 | 修法 |
 | --- | --- | --- |
-| 公开文档链到私有项（`pub(crate) mod` 或私有 `const`/`fn`；本列是修复当时的路径，`report/` 之后已拆平） | `cutile/src/report/mod.rs:15`（3 处）、`report/witness/mod.rs:37-38`（5 处）、`report/witness/evidence.rs:51`、`cutile/src/ast.rs:17,160`、`weights/src/bin.rs:4`、`weights/src/axes.rs:6`、`weights/src/ir.rs:159,213`、`tool/src/call.rs:3`、`tool/src/strip.rs:3` | 改成代码块（这些名字是内部实现，不该出现在公开 API 的链接图里） |
+| 公开文档链到私有项（`pub(crate) mod` 或私有 `const`/`fn`；本列是修复当时的路径，`../.config/report` 之后已拆平） | `cutile/src/report/mod.rs:15`（3 处）、`../.config/report`（5 处）、`../.config/report`、`cutile/src/ast.rs:17,160`、`weights/src/bin.rs:4`、`weights/src/axes.rs:6`、`weights/src/ir.rs:159,213`、`tool/src/call.rs:3`、`tool/src/strip.rs:3` | 改成代码块（这些名字是内部实现，不该出现在公开 API 的链接图里） |
 | 正文里的方括号被当成链接 | `weights/src/ntt.rs:3` 的 `Z_q[x]`、`weights/src/keccak.rs:1` 的 `Keccak-f[1600]`；`op/src/*.rs` 的 `[`elementwise`]`/`[`unary`]`/`[`reduce`]`/`[`einsum`]` 缺少 `crate::` 前缀（10 处） | 前者加反引号，后者补 `crate::` 前缀 |
 
 这条值得单独记的原因是：`tests/architecture.rs` 与 `tests/contracts.rs` 都只扫源码文本，`cargo test` 也不会碰文档，于是**"新增一个私有子模块 + 在公开文档里链它"可以一路绿到 `doc` job 才失败**（而 `doc` job 在 CI 里排在 `test` 之后）。
@@ -1064,7 +1064,7 @@
 
 1. **`dtype` 从"一个 313 行的标量闭集"变成 L1 精度事实源**（`de411432`、`05e2b824`、`06bb7c13`，另有 `a8d592b4` 的边界诊断补漏）：6 个文件 2 136 行，`DType` 24 变体 / `QType` 25 / `MxType` 7 / MX 元素子集；新增 `prof → dtype`、`tensor → dtype`、`weights → dtype`、`annotation → dtype` 四条边。影响：§3.2 的"22 个变体"已过时（§4.2 已改）；§6.1 的"`dtype` ↔ `tensor` 不合并"理由仍然成立（`prof` 会反向依赖 L4），但入边由 3 变 4。
 2. **`data` 重写**（`c8fd45da`、`ee0cedb9`）：233 → 630 行、4 文件，`Batch`/`Split`/`Dataset`/`Chunks` 重新对齐几何与游标语义。影响：§4.2 的"规模小"改为"中"；§6.0 的 LOC 已更新，处置（保持）不变。
-3. **`cutile` 删掉 `report/` 与 `witness/` 两层目录**（`87ad7486`），随后 `4e363270` 收口设备探测、Metal 驱动、MSVC 查找与模板渲染：原 `audit` 的 13 个文件现在平铺在 `cutile/src/*.rs`，`device.rs`/`gate.rs`/`pipeline.rs` 变私有。影响：本报告里 **12 处** `cutile/src/report/…` 形式的引用（§5 的 P2-9/P2-10、§6.1、§6.3 的文件拆分表、§11.7.1 的断链清单）**只剩文件级可回链**；§6.3 的"把 `report/mod.rs` 700 行拆成 `types.rs`"这条方案**作废**——该模块已不存在。
+3. **`cutile` 删掉 `../.config/report` 与 `witness/` 两层目录**（`87ad7486`），随后 `4e363270` 收口设备探测、Metal 驱动、MSVC 查找与模板渲染：原 `audit` 的 13 个文件现在平铺在 `cutile/src/*.rs`，`device.rs`/`gate.rs`/`pipeline.rs` 变私有。影响：本报告里 **12 处** `cutile/src/report/…` 形式的引用（§5 的 P2-9/P2-10、§6.1、§6.3 的文件拆分表、§11.7.1 的断链清单）**只剩文件级可回链**；§6.3 的"把 `../.config/report` 700 行拆成 `types.rs`"这条方案**作废**——该模块已不存在。
 4. **门禁与工具进入版本库**：§2.2 末行"该门禁是否在 HEAD 中存在 = 否"已改为"是"（HEAD 的 `lints/vocabulary.toml` 有 274 条债务）；§2.3 的"127 条 `??`"与"`weights` 29/33 未跟踪"已改为"工作树干净"。这意味着**"未发布/在途"这一限定语在全文失效**：这些代码现在就是发布内容。
 
 ### 12.4 复核后的评级
