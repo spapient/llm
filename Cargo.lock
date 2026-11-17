@@ -427,15 +427,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-backend"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-engine",
+ "llm-op",
+ "llm-storage",
+]
+
+[[package]]
 name = "llm-benches"
 version = "0.1.0"
 dependencies = [
  "criterion",
  "cutile",
  "llm-autograd",
+ "llm-engine",
  "llm-nn",
  "llm-op",
  "llm-prof",
+ "llm-serve",
  "llm-tensor",
  "llm-testkit",
  "llm-tokenizer",
@@ -496,6 +508,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-serve",
  "llm-tensor",
+ "llm-tool",
  "llm-train",
  "llm-weights",
  "llm-wire",
