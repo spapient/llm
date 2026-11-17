@@ -19,7 +19,7 @@ use tensor::{DType, Shape};
 use crate::optimizer::Optimizer;
 use crate::pool::Buffers;
 use crate::schedule::Schedule as LrSchedule;
-use crate::snapshot::{GradAccum, Moments, Snapshot, Ties};
+use crate::snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
 use crate::{Data, Kernel, Slot};
 
 /// 本模块诊断站点。
@@ -381,6 +381,17 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
     /// 矩状态回载：空表对应无矩优化器；非空表槽位数与每槽长度必须对齐会话参数槽。
     fn restore_moments(&mut self, moments: &Moments) -> Result<()> {
         let slots = moments.slots();
+        self.check_moment_slots(slots)?;
+        let momentum = slots.iter().map(|s| s.m().to_vec()).collect();
+        let variance = slots.iter().map(|s| s.v().to_vec()).collect();
+        self.optimizer
+            .restore(momentum, variance, moments.step())
+            .map_err(|error| error.with(SITE))?;
+        Ok(())
+    }
+
+    /// 矩表槽位数与每槽长度对账；空表（无矩优化器）跳过槽数校验。
+    fn check_moment_slots(&self, slots: &[SlotMoments]) -> Result<()> {
         if !slots.is_empty() && slots.len() != self.slots.len() {
             let message = format!(
                 "矩状态槽位数不符：快照 {} 槽，会话 {} 槽",
@@ -390,27 +401,38 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
             return Err(Error::new(Code::Invalid, message).with(SITE));
         }
         for (index, slot) in slots.iter().enumerate() {
-            let want = self.slots[index].params().len();
-            if slot.m().len() != want || slot.v().len() != want {
-                let message = format!(
-                    "第 {index} 槽矩长度不符：快照 {} 元素，会话 {} 元素",
-                    slot.m().len(),
-                    want
-                );
-                return Err(Error::new(Code::Invalid, message).with(SITE));
-            }
+            self.check_moment_slot_length(index, slot)?;
         }
-        let momentum = slots.iter().map(|s| s.m().to_vec()).collect();
-        let variance = slots.iter().map(|s| s.v().to_vec()).collect();
-        self.optimizer
-            .restore(momentum, variance, moments.step())
-            .map_err(|error| error.with(SITE))?;
+        Ok(())
+    }
+
+    /// 单槽矩长度对账：一阶/二阶矩元素数必须等于会话槽参数元素数。
+    fn check_moment_slot_length(&self, index: usize, slot: &SlotMoments) -> Result<()> {
+        let want = self.slots[index].params().len();
+        if slot.m().len() != want || slot.v().len() != want {
+            let message = format!(
+                "第 {index} 槽矩长度不符：快照 {} 元素，会话 {} 元素",
+                slot.m().len(),
+                want
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
         Ok(())
     }
 
     /// 累积窗口回载：槽位数对齐；空梯度表表示该槽窗口内未装入，跳过不覆盖。
     fn restore_accum(&mut self, accum: &GradAccum) -> Result<()> {
         let slots = accum.slots();
+        self.check_accum_slot_count(slots)?;
+        for (index, grads) in slots.iter().enumerate() {
+            self.load_accum_slot(index, grads)?;
+        }
+        self.accum = accum.count();
+        Ok(())
+    }
+
+    /// 累积表槽位数对账。
+    fn check_accum_slot_count(&self, slots: &[Vec<f32>]) -> Result<()> {
         if slots.len() != self.slots.len() {
             let message = format!(
                 "累积梯度槽位数不符：快照 {} 槽，会话 {} 槽",
@@ -419,24 +441,26 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
             );
             return Err(Error::new(Code::Invalid, message).with(SITE));
         }
-        for (index, grads) in slots.iter().enumerate() {
-            if grads.is_empty() {
-                continue;
-            }
-            let want = self.slots[index].params().len();
-            if grads.len() != want {
-                let message = format!(
-                    "第 {index} 槽累积梯度长度不符：快照 {} 元素，会话 {} 元素",
-                    grads.len(),
-                    want
-                );
-                return Err(Error::new(Code::Invalid, message).with(SITE));
-            }
-            self.buffers
-                .load_gradient(self.slots[index].var(), grads)
-                .map_err(|error| error.with(SITE))?;
+        Ok(())
+    }
+
+    /// 单槽累积梯度回载：空表跳过；非空长度必须等于槽参数元素数，再装入缓冲。
+    fn load_accum_slot(&mut self, index: usize, grads: &[f32]) -> Result<()> {
+        if grads.is_empty() {
+            return Ok(());
         }
-        self.accum = accum.count();
+        let want = self.slots[index].params().len();
+        if grads.len() != want {
+            let message = format!(
+                "第 {index} 槽累积梯度长度不符：快照 {} 元素，会话 {} 元素",
+                grads.len(),
+                want
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        self.buffers
+            .load_gradient(self.slots[index].var(), grads)
+            .map_err(|error| error.with(SITE))?;
         Ok(())
     }
 

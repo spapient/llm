@@ -216,7 +216,8 @@ fn json_rejects_non_finite_and_wrong_typed_values() {
                          "toolchain": "t", "driver": "d"},
              "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
              "observed": null}
-        "#.to_string(),
+        "#
+        .to_string(),
         r#"
             {"kind": "op", "name": "x", "backend": "b",
              "geometry": {"shape": [1], "batch": 1.5, "dtype": "f32"},
@@ -224,7 +225,8 @@ fn json_rejects_non_finite_and_wrong_typed_values() {
                          "toolchain": "t", "driver": "d"},
              "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
              "observed": null}
-        "#.to_string(),
+        "#
+        .to_string(),
         r#"
             {"kind": "op", "name": "x", "backend": "b",
              "geometry": {"shape": ["x"], "batch": 1, "dtype": "f32"},
@@ -232,7 +234,8 @@ fn json_rejects_non_finite_and_wrong_typed_values() {
                          "toolchain": "t", "driver": "d"},
              "roofline": {"peak_bw_gb_s": null, "peak_gflops": null},
              "observed": null}
-        "#.to_string(),
+        "#
+        .to_string(),
     ];
     for text in cases {
         let err = from_json(&text).expect_err("坏数值 / 类型不符必须拒绝");
