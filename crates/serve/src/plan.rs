@@ -22,15 +22,24 @@ pub(crate) enum LayerKind {
     Norm,
     /// 查表：索引序列 + 驻留权重表 `[vocab, dim]` → 行向量块。
     Embedding,
+    /// 逐元素二元：主链输入 + 旁路激活 → 等长输出，无驻留权重。
+    Binary,
+    /// 位置编码：单路输入 → 等长输出；位置走标量槽（D9 / ADR 0043），无驻留权重。
+    Rope,
 }
 
 impl LayerKind {
-    /// 链上本层与上一层输出对齐的宽度：投影/查表对齐输入宽，等长族（一元/归一化）对齐输出宽。
+    /// 链上本层与上一层输出对齐的宽度：投影/查表对齐输入宽，等长族（一元/归一化/二元/位置编码）对齐输出宽。
     fn chain_width(self, plan: &LayerPlan) -> usize {
         match self {
             Self::Projection | Self::Embedding => plan.in_features,
-            Self::Unary | Self::Norm => plan.out_features,
+            Self::Unary | Self::Norm | Self::Binary | Self::Rope => plan.out_features,
         }
+    }
+
+    /// 本族是否需要旁路第二输入（逐元素二元的残差/门控路）。
+    pub(crate) fn needs_bypass(self) -> bool {
+        matches!(self, Self::Binary)
     }
 }
 
@@ -52,6 +61,14 @@ const OPERATOR_FAMILIES: &[OperatorFamily] = &[
     OperatorFamily {
         kind: LayerKind::Norm,
         operators: &["rmsnorm_f32"],
+    },
+    OperatorFamily {
+        kind: LayerKind::Binary,
+        operators: &["add_f32", "mul_f32", "residual_add_f32"],
+    },
+    OperatorFamily {
+        kind: LayerKind::Rope,
+        operators: &["rope_f32"],
     },
 ];
 
@@ -224,7 +241,8 @@ fn projection_plan(
     Ok(plan)
 }
 
-/// 等长族计划（一元点wise / 归一化）：宽度取自输出形状；归一化带 gamma `[width]`，一元点wise无权重。
+/// 等长族计划（一元点wise / 归一化 / 逐元素二元 / 位置编码）：宽度取自输出形状；归一化带 gamma
+/// `[width]`，其余族无权重。
 fn width_plan(
     kind: LayerKind,
     layer: &dyn Contract,
@@ -233,7 +251,7 @@ fn width_plan(
     params: &Params,
 ) -> Result<LayerPlan> {
     let width = axis_width(layer.output(), layer.name())?;
-    // 等长族里只有归一化带 gamma `[width]`；一元点wise无权重。
+    // 等长族里只有归一化带 gamma `[width]`；一元点wise/二元/位置编码无权重。
     let weight_len = (kind == LayerKind::Norm).then_some(width);
     let weight_shape = (kind == LayerKind::Norm)
         .then_some(vec![width])
@@ -284,8 +302,8 @@ fn embedding_plan(
     Ok(plan)
 }
 
-/// 一层的装配分流：类型视图（投影/查表）优先；都不是再按算子族别归类。二元残差、归约、
-/// 位置编码、注意力在本通路不接线（残差旁路与 KV 通路随注意力刀落地）。
+/// 一层的装配分流：类型视图（投影/查表）优先；都不是再按算子族别归类。归约、注意力在本通路
+/// 不接线（KV 通路随注意力刀落地）。
 pub(crate) fn layer_plan(
     layer: &dyn Contract,
     prev_out: Option<usize>,
@@ -325,7 +343,7 @@ fn operator_plan(
         return Err(Error::new(
             Code::Unsupported,
             format!(
-                "层 `{}` 的算子 `{operator}` 不在当前装配族别（投影/查表/一元点wise/归一化）",
+                "层 `{}` 的算子 `{operator}` 不在当前装配族别（投影/查表/一元点wise/归一化/二元/位置编码）",
                 layer.name()
             ),
         )

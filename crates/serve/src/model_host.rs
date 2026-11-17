@@ -48,6 +48,8 @@ impl CpuModel {
             .with(SITE));
         }
         self.executor.bind(self.assembly.input, input.to_vec());
+        // 张量级前向没有序列位置：rope 位置取 0（角度为 0 的恒等旋转）。
+        self.assembly.set_rope_positions(0);
         submit_and_fetch(&mut self.executor, &self.assembly)
     }
 
@@ -75,7 +77,11 @@ impl CpuModel {
                 })?;
                 Ok(vec![token as f32])
             }
-            LayerKind::Projection | LayerKind::Unary | LayerKind::Norm => Err(Error::new(
+            LayerKind::Projection
+            | LayerKind::Unary
+            | LayerKind::Norm
+            | LayerKind::Binary
+            | LayerKind::Rope => Err(Error::new(
                 Code::Unsupported,
                 "首层不是查表层：序列只持有 token id，无法提供隐向量输入；向量主链通路随连续批落地",
             )
@@ -157,6 +163,7 @@ impl crate::Predict for CpuModel {
     fn logits(&mut self, sequence: &Sequence, batch: &mut Batch) -> Result<Vec<f32>> {
         let input = self.predict_input(sequence)?;
         self.executor.bind(self.assembly.input, input);
+        self.assembly.set_rope_positions(sequence.len() as u32);
         self.load_history(sequence, batch)?;
         let logits = submit_and_fetch(&mut self.executor, &self.assembly)?;
         self.write_current_kv(sequence, batch)?;

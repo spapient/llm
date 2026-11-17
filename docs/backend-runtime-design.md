@@ -149,7 +149,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 ### 2.3 P3（后端边界与量化/通信原型，M3）
 
 - 独立边界 crate 实现 `Executor` / `Allocator` / `Collective`；`unsafe` 与 FFI 只收在边界内，核心继续 `unsafe deny`（ADR 0025 §9；边界规则已落档 ADR 0035）。
-- 同一 `Executor` trait 下挂 Metal（macOS 本机验证）与 CUDA（Linux+NVIDIA；无 GPU 只出编译与契约对拍，不出吞吐数字）。
+- 同一 `Executor` trait 下挂 Metal（macOS 本机 M5 Pro / Metal 4 验证）与 CUDA（win 远端 T600 sm_75 / CUDA 13.3；设备内核管线未建前只出编译与契约对拍，不出吞吐数字）。
 - 量化 i4/i8 lane 内核、反量化；集合通信原型经 `shard::Collective` 挂载。
 - 算子选择只走能力闭集（`prof` 档案见证过的供给），模型与调度代码不出现 `if Metal {} else if CUDA {}`（ADR 0025 §4）。
 
@@ -175,7 +175,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 | G7 | 注意力块已接 KV 页通路：装配侧拆 q/k/v/attn/o 子节点，当前步 K/V 拼成 `[k|v]` 行写回，历史 K/V 经 `Batch::kv` 整行读出拼进绑定缓冲；decode 两条变体（`decode_attention_f32` / `decode_flash_attention_f32`）已登记 CPU 内核表；残差旁路在 plan 层引用块输入隐藏向量接线，engine exec 未加标量槽 | 多层模型的层偏移行切片、多头展平头内切片、历史淘汰与前缀页共享未接；多序列批内循环随连续批刀落地 | `serve::model` 装配 + attention Program |
 | G8 | 共享页原语已落地：`Cache` 每页记引用计数（`alloc` 置 1、`share` +1、`release` −1），计数归 0 才回空闲池；`Pager::share` 是另一张表采纳同一前缀页的入口，与独占 `alloc` 路径分开；共享期前缀行只读，页数据在最后一次 release 前不清零 | 前缀匹配准入策略（哪条请求复用哪段前缀）、LRU/淘汰、跨序列向量复用未做；Scheduler 层的采纳路径未接，本刀只落共享句柄 + 计数 + 回收判定原语 | engine `kv` |
 | G9 | 批内多序列一步闭环已落地：`Batch::step` 遍历 `batch.sequences()`，每条未结束序列依次 logits → 采样 → `Batch::emit`；结束/停止/到上限的序列 `finish` 摘出并归还页；`Blocked` 留批、历史不变、不中断其余；一条失败先归还该序列页再上抛，本轮已记账序列不回滚 | 模型内核级批处理形状未做（executor 图仍是单序列几何，`Predict` trait 保持单序列路线 B）；并发/多请求传输入口留 M4 | `serve` State 批步进 + engine `Batch` |
-| G10 | 测量 harness 已落地：decode 注意力内核微基准（hist 128/512 × 朴素/Flash，head_dim 64，ns/iter + 每步 KV 元素吞吐）；整模型一步前向 harness（单序列 / 批 4 逐序列走一步，ns/iter + tokens/s，内存只记可观测占用页数）。hist 128 两条接 regress 基线表（bounds 由算子语义表推），512 两条与整模型 harness 只出测量、不进基线表 | 内核级批处理形状对照、多 token 预填充矩阵基准、设备绑定（GPU）数字与靶机基线登记未做；本机无 CUDA/GPU，不出设备数字；执行器内部绑定缓冲数无公开读数，峰值字节不虚构 | benches（工具成员）+ `serve::model` facade |
+| G10 | 测量 harness 已落地：decode 注意力内核微基准（hist 128/512 × 朴素/Flash，head_dim 64，ns/iter + 每步 KV 元素吞吐）；整模型一步前向 harness（单序列 / 批 4 逐序列走一步，ns/iter + tokens/s，内存只记可观测占用页数）。hist 128 两条接 regress 基线表（bounds 由算子语义表推），512 两条与整模型 harness 只出测量、不进基线表 | 内核级批处理形状对照、多 token 预填充矩阵基准、设备绑定数字与靶机基线登记未做；设备内核管线未建前不出设备数字；执行器内部绑定缓冲数无公开读数，峰值字节不虚构 | benches（工具成员）+ `serve::model` facade |
 | G11 | `Predict::logits(&mut self, &Sequence, &mut Batch)` 路线 B 已定形：模型经 Batch 读历史 K/V、写回当前步 K/V；completion 侧先取序列只读克隆副本、释放不可变借用后再以 `&mut Batch` 进模型，沿用 State 字段级拆借 | 调度侧批内每序列一步已随 #51 落地；trait 仍持单序列视图，内核级批量几何留后续 | serve trait 评审 |
 
 ### 3.3 P3 缺口
@@ -186,7 +186,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 | G13 | 核心 `unsafe_code = "deny"`（`Cargo.toml` workspace lints）；规则已落档 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)：越界白名单四类、`allow(unsafe_code)` 收敛边界模块、依赖方向、unsafe 块最小化 | 边界 crate 的真实 FFI/unsafe 实现随 P3 填入；核心继续 deny | 文档 + 边界成员 |
 | G14 | 量化族注册表 lane 为 `i4`/`i8`（本节旧称 u8 指字节/量化通道形态，非独立 dtype），`Program` 现签名不可表达 | i4/i8 lane 的 Program 适配、反量化内核挂载 | 边界/`serve::model`，P3 |
 | G15 | `Collective` 只有 trait 与 `Local` 镜像（`collective.rs:11-14`） | 通信后端实现（NCCL/Metal 对等），拓扑簿记不改 | 边界成员 |
-| G16 | 本机 macOS/Apple Silicon；CUDA 链路在本机无环境 | CUDA 只保留编译与契约对拍；Metal 本机验证；Linux 云主机验 CUDA | 环境约束 |
+| G16 | 本机 macOS/Apple Silicon（M5 Pro，Metal 4）；CUDA 链路在 win 远端（T600 sm_75，CUDA 13.3） | 两侧设备均可用，内核管线未建前 CUDA/Metal 只保留编译与契约对拍；Metal 本机验证，CUDA 在 win 验 | 环境约束 |
 
 ---
 
@@ -459,7 +459,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 - decode 内核微基准 `criterion/decode_attention_f32.rs`：`q_rows = 1`、头宽 64，历史 128 / 512 两档分别跑 `decode_attention_f32` 朴素与 `decode_flash_attention_f32` Flash；口径 ns/iter + 每迭代扫到的 KV 元素数吞吐（`Throughput::Elements`），输入线性相位映射填满、构造期即为有限值，`black_box` 防 DCE。
 - 整模型一步 harness `criterion/model_decode.rs`：合成栈 = 查表层首层 + 投影（只用当前装配支持的层族），权重由 `testkit::Rng` 确定性生成有限值；装配 `CpuModel` 与 `Batch`，两个变体 `single_step`（1 token）与 `batch4_step`（4 条序列同批逐序列走一步），报 ns/iter 与 tokens/s；内存只记可观测占用页数（`cache().in_use()`），执行器内部绑定缓冲数无公开读数，不虚构峰值字节。沿用 `train.rs` 先例，不进 regress 基线表。
 - regress 接线：hist 128 朴素 / Flash 两行进 `SCENARIOS`（backend `cpu-reference`、batch 1、bounds `(1, 64)`，shape `[128, 64]`），下界由 `nn::Bounds` 经算子语义表推出；512 两条与整模型 harness 取不到基线登记时只出测量，不硬造 bounds。Cargo.toml 补 `engine`/`serve` dev-deps 并登记两条 `[[bench]]`；benches 仍零生产依赖。
-- **未做（切分）**：内核级批处理形状基准、多 token 预填充矩阵对照、设备绑定（GPU）数字与靶机基线登记；本机无 CUDA/GPU，不出设备数字；不写性能目标数字、不与外部框架比倍数。无新增 pub 类型、无生产依赖边（仅 benches → engine / serve 两条 `+dev` 工具边），算子注册表不动。
+- **未做（切分）**：内核级批处理形状基准、多 token 预填充矩阵对照、设备绑定数字与靶机基线登记；设备内核管线未建前不出设备数字；不写性能目标数字、不与外部框架比倍数。无新增 pub 类型、无生产依赖边（仅 benches → engine / serve 两条 `+dev` 工具边），算子注册表不动。
 - 本刀门禁：`cargo test --workspace` 0 失败（既有 1 个 ignored 保留，1322 passed）；`cargo test -p llm-engine` 65 + 9 + 3；`cargo test -p llm-benches` regress 4 passed；`cargo clippy --workspace --all-targets --all-features -- -D warnings` 零告警；`cargo fmt --all --check` 干净；architecture 8、contracts 5、gate 1 全过。
 
 #### 落地记录（P3-#55：后端边界 crate 骨架 + Unsupported 占位适配）
@@ -481,7 +481,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 ### P3（M3：双后端挂载 + 量化 + 通信原型）
 
 1. 前置：unsafe/FFI 边界 ADR；边界 crate 骨架；`Executor`/`Allocator` 实现。
-2. Metal 本机跑通 P2 同一前向；CUDA 在 Linux+NVIDIA 验，无 GPU 环境只编译 + 契约对拍。
+2. Metal 本机（M5 Pro / Metal 4）跑通 P2 同一前向；CUDA 在 win 远端（T600 sm_75 / CUDA 13.3）验，设备内核管线未建前只编译 + 契约对拍。
 3. 量化 i4/i8 lane 与反量化内核；`Collective` 通信原型。
 4. 出口门：同算子 CPU/加速后端对拍一致；同后端对比 burn/candle；边界 crate 之外零新增 `unsafe`；roofline 达成率可追。
 

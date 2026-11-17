@@ -50,6 +50,9 @@ fn softmax_saturating_and_repeated_inputs_stay_normalized() {
         let total: f32 = out.iter().sum();
         assert!(total.is_finite(), "用例 {index}：归一化结果必须有限");
         assert!((total - 1.0).abs() < 1e-5, "用例 {index}：每行和为 1");
-        assert!(out.iter().all(|v| v.is_finite()), "用例 {index}：无 NaN/Inf");
+        assert!(
+            out.iter().all(|v| v.is_finite()),
+            "用例 {index}：无 NaN/Inf"
+        );
     }
 }

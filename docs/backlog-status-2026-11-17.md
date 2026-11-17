@@ -93,13 +93,14 @@ serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool
 
 **总前置（未满足前 M3 不动工）**：
 1. **ADR-0035 仍为 Proposed（待评审）**：本稿只定 unsafe/FFI 边界规则，**不是 M3 实现放行**；不得标 Accepted，不得据此展开后端真实 FFI / 设备内核。评审通过后作为 M3-1 前置约束。
-2. **本机无 GPU**：MBP（macOS/aarch64）无 CUDA；云主机 linux 无 Rust 工具链、无 NVIDIA。无 GPU 环境只做编译 + 契约 / 形状对拍，不出设备吞吐数字。
-3. **D6 形状约束**：第二后端出现前不预埋设备泛型参数；四 trait（`Executor`/`Allocator`/`Collective`/`Program`）已定形。
+2. **硬件前提（两侧实测，不是硬件缺失）**：本机 MBP = Apple M5 Pro，20 核 / Metal 4 / arm64 / 24GB，rustc 1.100.0-nightly；Apple Silicon GPU 与 Metal 4 可用。远端 Windows（SSH `win`，192.168.0.65，user fei）实测 NVIDIA T600 4096MiB、compute capability 7.5（sm_75，Turing）、driver 596.71、CUDA 13.3（nvcc V13.3.33）；rustup 已装 stable 1.99 与 `nightly-2026-09-01-x86_64-pc-windows-msvc`（与本机同一快照：rustc/cargo/rustfmt/clippy/rust-std 均 1.100-nightly），全局默认已对齐 nightly，仓库内 `rust-toolchain.toml` pin 同一通道。两侧硬件都不缺：Metal 在本地，CUDA 在 win。
+3. **真正剩余门槛（M3 动工前置）**：① ADR-0035 仍 Proposed 待评审，workspace 全局 `unsafe_code=deny`，真实设备 FFI / 设备句柄 / kernel launch 必须等边界规则评审通过后落进边界 crate，不得自行标 Accepted；② D5 生产零外部依赖：不引 cuda-sys / metal-rs 之类 FFI crate，要么手写 FFI 绑定，要么走 ADR 评审放宽策略；③ 仓库尚未同步到 win（本地 main 领先 origin 2 提交，win 暂无 clone），CUDA kernel / 命令队列 / 缓冲映射 / launch 管线未建；④ T600 是 sm_75 / 4GB，后续内核与批量尺寸按此能力约束，占位测试标签不写死任何 SM 版本。
+4. **D6 形状约束**：第二后端出现前不预埋设备泛型参数；四 trait（`Executor`/`Allocator`/`Collective`/`Program`）已定形。
 
 | ID | 状态 | 现状（已落地骨架） | 阻塞边界 / 前置条件 |
 |---|---|---|---|
 | M3-1 | 阻塞 | `backend` 占位适配：`UnsupportedBackend` + `MetalBackend`/`CudaBackend` 能力候选表（`MOUNTED` 名字均在 op 注册表内、不重复）；五个运行入口统一 `Code::Unsupported`，`free` 留空；`vendor_labels_round_trip_per_backend`、`mounted_candidates_belong_to_the_registry`、`placeholders_share_the_same_unsupported_contract`；零 FFI crate、零 unsafe | 前置 0035 评审通过；新建边界成员的依赖方向守门；边界 crate 之外零新增 unsafe；第三加速链路暂缓 |
-| M3-2 | 阻塞 | 同一 `Executor`/`Allocator` 端口契约在位（占位三件套同入口行为对拍） | 前置 M3-1；Metal 本机跑通 M2 同一前向、CUDA 在 Linux+NVIDIA 验；同输入同形状对拍一致；无 GPU 不出吞吐数字；图 capture 特化暂缓 |
+| M3-2 | 阻塞 | 同一 `Executor`/`Allocator` 端口契约在位（占位三件套同入口行为对拍） | 前置 M3-1；Metal 本机跑通 M2 同一前向、CUDA 在 win（T600 sm_75 / CUDA 13.3）验；同输入同形状对拍一致；两侧未建设备内核前不出吞吐数字；图 capture 特化暂缓 |
 | M3-3 | 阻塞 | `gemv_i4`/`gemv_i8`/`gemm_i4`/`gemm_i8`/`dequant_i4`/`dequant_i8` 骨架在 `gemv.rs`/`gemm.rs` 泛型内；注册表 24 条含 6 条量化 lane | 前置 M3-1；i4/i8 lane Program 适配 + 反量化内核挂载；量化权重对拍、零点 / 分组负例；FP8 / AWQ / GPTQ 新格式在 M3-3 之后按格式 ADR 接入 |
 | M3-4 | 阻塞 | `shard::Remote` 占位后端与 `Local` 同一 `Collective` 端口；`all_reduce` 返回 `Unsupported` 且拒绝时不改调用方缓冲；`all_reduce_is_unsupported_and_leaves_the_buffer_untouched`、`local_and_remote_share_the_collective_port` | 前置 M3-1；真实 NCCL / MPI / Gloo / Metal 对等：组内握手、通信句柄池、拓扑绑定、心跳；集合对拍；拓扑簿记不改；大规模分布式暂缓 |
 | M3-5 | 阻塞 | mem_stream 三档（l1/l2/dram）读写实测速率作 roofline 分母；regress 达成率 / 瓶颈分类分析件在位 | 前置 M3-2；按 decode 瓶颈序逐算子优化；同后端对比 burn/candle 需同机对照数字；wmma/wgmma 手写张量核暂缓 |

@@ -5,6 +5,10 @@
 //! 不虚构峰值字节数，也不统计执行器内部绑定缓冲（那一侧没有公开读数）。本基准只出测量，
 //! 不进 `tool::regress` 基线表，沿用 `train.rs` 先例。
 //!
+//! 测量结果归档为 `tool::bench::BenchRecord`（`EntryKind::Model`）：台账与记录构造在
+//! `tests/regress.rs` 的 `DECODE_SCENARIOS`；记录只承载本机一次测量与身份，tokens/s 与页数
+//! 由 Report 侧按账目与实测 ns 换算 / 登记，不进记录。
+//!
 //! 权重由确定性 PRNG 生成有限值；预热、采样与测量时长由 criterion 自身配置决定。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};

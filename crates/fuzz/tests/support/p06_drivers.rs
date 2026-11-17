@@ -7,14 +7,16 @@
 
 use diagnostic::{Code, Error};
 use llm_fuzz::Target;
+use tokenizer::Tokenizer;
 
 /// 把一段字节按 LE f32 整块解码；尾部不足一块的字节直接丢弃，长度对不齐不猜。
 ///
 /// 解码器只在定长块上读，空输入产出空切片——空行本身就是一条边界用例。
 fn le_f32s(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    let (chunks, _) = bytes.as_chunks::<4>();
+    chunks
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect()
 }
 
@@ -37,12 +39,11 @@ impl Target for VocabLookup {
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
-        let pieces: Vec<Vec<u8>> = input
-            .chunks_exact(8)
+        let (chunks, remainder) = input.as_chunks::<8>();
+        let pieces: Vec<Vec<u8>> = chunks
+            .iter()
             .map(|chunk| chunk.to_vec())
-            .chain((!input.is_empty() && input.len() % 8 != 0).then(|| {
-                input[input.len() - (input.len() % 8)..].to_vec()
-            }))
+            .chain((!remainder.is_empty()).then(|| remainder.to_vec()))
             .collect();
         let source = tokenizer::VocabSource {
             family: tokenizer::VocabFamily::WordLevel,
@@ -59,12 +60,10 @@ impl Target for VocabLookup {
             let piece = vocab.piece(token.id()).ok_or_else(|| {
                 Error::new(Code::Internal, "命中编号反取不到词片").with("fuzz::VocabLookup")
             })?;
-            if piece.as_slice() != input {
-                return Err(Error::new(
-                    Code::Internal,
-                    "词片反查往返不一致",
-                )
-                .with("fuzz::VocabLookup"));
+            if piece != input {
+                return Err(
+                    Error::new(Code::Internal, "词片反查往返不一致").with("fuzz::VocabLookup")
+                );
             }
         }
         for id in [0u32, vocab.vocab_size() as u32, u32::MAX] {
@@ -94,11 +93,7 @@ impl Target for SpecialHandles {
         if handles.is_special(id) {
             Ok(())
         } else {
-            Err(Error::new(
-                Code::Internal,
-                "登记的句柄编号查不回",
-            )
-            .with("fuzz::SpecialHandles"))
+            Err(Error::new(Code::Internal, "登记的句柄编号查不回").with("fuzz::SpecialHandles"))
         }
     }
 }
@@ -112,25 +107,24 @@ impl Target for BytesDecode {
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
+        let bytes = tokenizer::Bytes;
         let tokens: Vec<tokenizer::Token> = input
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|chunk| {
-                let id = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                let id = u32::from_le_bytes(*chunk);
                 tokenizer::Token::new(id)
             })
             .collect();
-        let text = tokenizer::Bytes::decode(&tokens).map_err(|error| {
+        let text = bytes.decode(&tokens).map_err(|error| {
             Error::new(error.code(), error.message().to_string()).with("fuzz::BytesDecode")
         })?;
-        let reencoded = tokenizer::Bytes::encode(&text).map_err(|error| {
+        let reencoded = bytes.encode(&text).map_err(|error| {
             Error::new(error.code(), error.message().to_string()).with("fuzz::BytesDecode")
         })?;
         if reencoded != tokens {
-            return Err(Error::new(
-                Code::Internal,
-                "字节解码往返不一致",
-            )
-            .with("fuzz::BytesDecode"));
+            return Err(Error::new(Code::Internal, "字节解码往返不一致").with("fuzz::BytesDecode"));
         }
         Ok(())
     }
@@ -215,12 +209,12 @@ impl Target for ScheduleParse {
             Error::new(error.code(), error.message().to_string()).with("fuzz::ScheduleParse")
         })?;
         // 渲染回声明层写法，重解析必须得到同一个调度。
-        let again = op::sch::Schedule::parse(schedule.as_str()).map_err(|error| {
+        let again = op::sch::Schedule::parse(&schedule.as_str()).map_err(|error| {
             Error::new(error.code(), error.message().to_string()).with("fuzz::ScheduleParse")
         })?;
-        (schedule == again)
-            .then_some(())
-            .ok_or_else(|| Error::new(Code::Internal, "调度重解析不一致").with("fuzz::ScheduleParse"))
+        (schedule == again).then_some(()).ok_or_else(|| {
+            Error::new(Code::Internal, "调度重解析不一致").with("fuzz::ScheduleParse")
+        })
     }
 }
 
@@ -242,7 +236,7 @@ impl Target for SoftmaxF32 {
             Error::new(error.code(), error.message().to_string()).with("fuzz::SoftmaxF32")
         })?;
         let total: f32 = out.iter().sum();
-        if !total.is_finite() || !(total - 1.0).abs() < 1e-4 {
+        if !total.is_finite() || (total - 1.0).abs() >= 1e-4 {
             return Err(Error::new(Code::Internal, "softmax 行未归一化").with("fuzz::SoftmaxF32"));
         }
         Ok(())
@@ -347,12 +341,20 @@ impl Target for EmbedF32 {
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
         let values = le_f32s(input);
-        let split = values.len() / 2;
-        let (idx, table) = values.split_at(split);
+        if values.is_empty() {
+            return Err(Error::new(Code::Invalid, "embed 输入为空").with("fuzz::EmbedF32"));
+        }
+        // 末段为权重表，索引取前半段；行宽按样本档 4。
+        let dim = 4;
+        let table = &values[values.len() - values.len() / dim * dim..];
+        let idx = &values[..values.len() - table.len()];
         if idx.is_empty() {
             return Err(Error::new(Code::Invalid, "embed 索引为空").with("fuzz::EmbedF32"));
         }
-        let dim = (table.len() / idx.len()).max(1);
+        let rows = table.len() / dim;
+        if table.is_empty() || rows == 0 {
+            return Err(Error::new(Code::Invalid, "embed 权重表为空").with("fuzz::EmbedF32"));
+        }
         let mut out = vec![0.0; idx.len() * dim];
         op::embed_f32::forward(idx, table, &mut out).map_err(|error| {
             Error::new(error.code(), error.message().to_string()).with("fuzz::EmbedF32")
@@ -370,10 +372,14 @@ impl Target for RopeF32 {
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
-        let Some((head, rest)) = input.split_first() else {
+        if input.is_empty() {
             return Err(Error::new(Code::Invalid, "rope 缺位置参数").with("fuzz::RopeF32"));
-        };
+        }
+        let (head, rest) = input.split_first().unwrap();
         let x = le_f32s(rest);
+        if x.is_empty() {
+            return Err(Error::new(Code::Invalid, "rope 输入为空").with("fuzz::RopeF32"));
+        }
         let mut out = vec![0.0; x.len()];
         op::rope_f32::forward(usize::from(*head), &x, &mut out).map_err(|error| {
             Error::new(error.code(), error.message().to_string()).with("fuzz::RopeF32")
@@ -417,10 +423,10 @@ impl Target for PrimParse {
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
         let name = text(input)?;
-        if let Some(prim) = prof::atom::Prim::parse(name) {
-            if prim.as_str() != name {
-                return Err(Error::new(Code::Internal, "原语名字往返不一致").with("fuzz::PrimParse"));
-            }
+        if let Some(prim) = prof::atom::Prim::parse(name)
+            && prim.as_str() != name
+        {
+            return Err(Error::new(Code::Internal, "原语名字往返不一致").with("fuzz::PrimParse"));
         }
         Ok(())
     }
@@ -436,15 +442,16 @@ impl Target for SpaceParse {
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
         let name = text(input)?;
-        if let Some(space) = prof::atom::Space::parse(name) {
-            if space.as_str() != name {
-                return Err(Error::new(Code::Internal, "空间名字往返不一致").with("fuzz::SpaceParse"));
-            }
+        if let Some(space) = prof::atom::Space::parse(name)
+            && space.as_str() != name
+        {
+            return Err(Error::new(Code::Internal, "空间名字往返不一致").with("fuzz::SpaceParse"));
         }
         // 存储闭集名字是大写写法；小写漂移不应命中。
         if name == "gm" && prof::atom::Space::parse(name).is_some() {
             return Err(Error::new(Code::Internal, "小写不应命中存储闭集").with("fuzz::SpaceParse"));
-        }        Ok(())
+        }
+        Ok(())
     }
 }
 
@@ -458,10 +465,10 @@ impl Target for DTypeParse {
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
         let name = text(input)?;
-        if let Some(dtype) = prof::atom::DType::parse_name(name) {
-            if dtype.name() != name {
-                return Err(Error::new(Code::Internal, "类型名字往返不一致").with("fuzz::DTypeParse"));
-            }
+        if let Some(dtype) = prof::atom::DType::parse_name(name)
+            && dtype.name() != name
+        {
+            return Err(Error::new(Code::Internal, "类型名字往返不一致").with("fuzz::DTypeParse"));
         }
         Ok(())
     }
@@ -551,25 +558,6 @@ impl Target for DequantI4 {
 /// 8 位反量化：首 f32 当 scale，次 f32 当 zero，其余 f32 承载量化值；空行逐元素放行。
 pub struct DequantI8;
 
-impl Target for DequantI4 {
-    fn name(&self) -> &str {
-        "op::dequant_i4::forward"
-    }
-
-    fn run(&self, input: &[u8]) -> Result<(), Error> {
-        if input.len() < 2 {
-            return Err(Error::new(Code::Invalid, "dequant_i4 输入不足").with("fuzz::DequantI4"));
-        }
-        let scale = f32::from_le_bytes([input[0], input[1], 0, 0]);
-        let q = &input[2..];
-        let mut out = vec![0.0; q.len() * 2];
-        op::dequant_i4::forward(scale, op::dequant_i4::ZERO, q, &mut out).map_err(|error| {
-            Error::new(error.code(), error.message().to_string()).with("fuzz::DequantI4")
-        })?;
-        Ok(())
-    }
-}
-
 impl Target for DequantI8 {
     fn name(&self) -> &str {
         "op::dequant_i8::forward"
@@ -577,8 +565,8 @@ impl Target for DequantI8 {
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
         let values = le_f32s(input);
-        if input.is_empty() {
-            return Err(Error::new(Code::Invalid, "dequant_i8 量化行为空").with("fuzz::DequantI8"));
+        if values.is_empty() {
+            return Err(Error::new(Code::Invalid, "dequant_i8 输入为空").with("fuzz::DequantI8"));
         }
         let scale = values[0];
         let zero = *values.get(1).unwrap_or(&op::dequant_i8::ZERO);

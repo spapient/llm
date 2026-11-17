@@ -114,7 +114,10 @@ fn schedule_parse_handles_degenerate_and_boundary_inputs() {
     for (index, text) in cases.iter().enumerate() {
         let error = Schedule::parse(text).expect_err("用例 {index} 应当拒绝");
         assert_eq!(error.code(), Code::Invalid, "用例 {index}");
-        assert!(!error.message().trim().is_empty(), "用例 {index}：拒绝必须有话说");
+        assert!(
+            !error.message().trim().is_empty(),
+            "用例 {index}：拒绝必须有话说"
+        );
     }
 }
 
@@ -129,8 +132,14 @@ fn unmasked_share_clamps_saturated_inputs() {
     ];
     for (index, (share, stages, expected)) in cases.iter().enumerate() {
         let actual = unmasked_share(*share, *stages);
-        assert!((actual - expected).abs() < 1e-12, "用例 {index}：{actual} != {expected}");
-        assert!((0.0..=1.0).contains(&actual), "用例 {index}：占比必须在 [0,1]");
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "用例 {index}：{actual} != {expected}"
+        );
+        assert!(
+            (0.0..=1.0).contains(&actual),
+            "用例 {index}：占比必须在 [0,1]"
+        );
     }
     // 负占比按 (1 - share) 直接求值（骨架未做 clamp），结果仍是有限非负。
     let negative = unmasked_share(-0.5, 2);
@@ -147,4 +156,3 @@ fn monotonic_chain_allows_empty_single_and_equal_pairs() {
     let equal = [("a", 0.5), ("b", 0.5)];
     assert!(check_monotonic(&equal).is_ok());
 }
-

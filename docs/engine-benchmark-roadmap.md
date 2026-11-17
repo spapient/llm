@@ -146,7 +146,7 @@
 
 - **目标**：在隔离边界内同时接入 Metal 与 CUDA 两条加速链路，补量化与分布式原型，进入 roofline 优化；同后端对比 burn/candle 打平到领先，decode 速度为首要判定。
 - **前置约束**：新增**独立后端边界 crate**，把 `unsafe` 与 FFI 关在该边界内；Metal（`metal-rs`/系统框架）与 CUDA（driver/runtime）两套 FFI 都隔离在边界 crate 内，生产核心仍保持安全 Rust 与 `unsafe deny` 策略，靠局部 `allow` 收敛到边界模块（需一条新 ADR 明确边界规则）。
-- **环境前提**：Metal 链路在本机 macOS 验证；CUDA 链路在 Linux + NVIDIA 驱动/工具链环境验证（无 GPU 环境时该链路只保留编译与契约对拍，不产出吞吐数字）。
+- **环境前提**：Metal 链路在本机 macOS（M5 Pro / Metal 4）验证；CUDA 链路在 win 远端（T600 sm_75，CUDA 13.3）验证；设备内核管线未建前两条链路只保留编译与契约对拍，不产出吞吐数字。
 - **内容**：Metal 与 CUDA 并行落地，经同一后端 trait 挂载；量化反量化内核；roofline 达成率报告；集合通信原型。
 - **里程碑 M3**：Metal 与 CUDA 后端各自在目标硬件跑通 P2 同一前向；同算子 CPU/加速后端对拍一致；同后端关键算子对比 burn/candle 打平到领先；decode 吞吐/时延有对照数字；roofline 达成率可追；内存占用、代码密度、依赖数并行保持领先；边界 crate 之外无新增 `unsafe`。
 - **暂缓**：投机解码、大规模分布式、第三加速链路。
@@ -170,7 +170,7 @@
 |---|---|---|
 | unsafe 与 FFI 边界 | P3 前保持核心 `unsafe deny`；后端 unsafe 隔离到边界 crate 并出 ADR | 不隔离则破坏既有内存安全定位 |
 | 依赖策略 | 生产路径继续趋零外部依赖；或接受唯一解析/序列化依赖换掉数千行手写解析 | 破零依赖原则需显式拍板（`10k-analysis.md §八`） |
-| 后端策略（已定） | **Metal + CUDA 并行**：经同一后端 trait 挂两套实现，FFI/unsafe 同收边界 crate | 双后端要求 trait 先稳定，避免私有假设分叉；Metal 在 macOS 验，CUDA 在 Linux+NVIDIA 环境验；无 GPU 环境只出编译/契约对拍，不出吞吐 |
+| 后端策略（已定） | **Metal + CUDA 并行**：经同一后端 trait 挂两套实现，FFI/unsafe 同收边界 crate | 双后端要求 trait 先稳定，避免私有假设分叉；Metal 在 macOS 本机验，CUDA 在 win 远端验；设备内核管线未建前只出编译/契约对拍，不出吞吐 |
 | crate 合并 | 小 crate 降为模块文件以压仪式成本 | 失去编译期并行与强制边界，靠架构门补偿 |
 | 行数预算 | 新功能先给行数预算（棘轮），超预算红灯、功能排队 | 见 `10k-analysis.md §6.1` |
 | IR 取舍 | 维持无 IR；触发条件满足再以 ADR 重建 | 通用 IR 会推翻万行预算与「无 IR」论点 |

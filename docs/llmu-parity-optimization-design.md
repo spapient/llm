@@ -250,7 +250,7 @@ graph TD
 
 - **目标**：隔离边界内挂 Metal/CUDA，补量化反量化内核与通信原型，同后端对标 burn/candle。
 - **要点**：独立边界成员实现 `Executor`/`Allocator`；FFI/`unsafe` 按 ADR-0035 收敛到边界模块；`i4`/`i8` lane `Program` 适配（G14）；集合通信实现（G15）；roofline 达成率报告。
-- **环境约束**：Metal 本机 macOS 验；CUDA 在 Linux + NVIDIA 环境验；无 GPU 环境只出编译与契约对拍，不出吞吐数字（G16）。
+- **环境约束**：Metal 在本机 macOS（M5 Pro / Metal 4）验；CUDA 在 win 远端（T600 sm_75 / CUDA 13.3）验；设备内核管线未建前只出编译与契约对拍，不出吞吐数字（G16）。
 - **验收**：两条后端跑通 M2 同一前向；同算子对拍一致；同后端关键算子有对照数字；边界 crate 之外无新增 `unsafe`。
 
 ### 4.7 M4 模型与服务化
@@ -345,7 +345,7 @@ graph TD
 ### 8.4 不可回填为结论的内容
 
 - 静态 flops/带宽估算只作 roofline 上界，不当实测吞吐。
-- 无 GPU 环境的 CUDA/Metal 条目只算编译与契约对拍。
+- 设备内核管线未建前，CUDA/Metal 条目只算编译与契约对拍。
 - 未在可运行后端落地前，不对外引用吞吐领先结论。
 
 ## 9. 与既有文档的关系

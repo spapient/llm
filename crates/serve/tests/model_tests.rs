@@ -7,7 +7,7 @@ use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
 use engine::kv::{Cache, Pager};
 use engine::{Batch, Sequence};
 use nn::{
-    Add, AttentionAlgo, AttentionBlock, Embedding, Linear, RmsNorm, Silu, Stack, WeightFormat,
+    Add, AttentionAlgo, AttentionBlock, Embedding, Linear, Mul, RmsNorm, Silu, Stack, WeightFormat,
 };
 use testkit::{all_finite, close};
 use weights::safetensors::Archive;
@@ -386,12 +386,12 @@ fn a_graph_chains_through_the_same_bindings() {
 fn an_uncovered_operator_is_refused_by_name() {
     let mut executor = cpu();
     executor.bind(0, vec![1.0, 2.0]);
-    let mut node = Node::new("rope_f32", Launch::new([1, 1, 1], [2, 1, 1]));
+    let mut node = Node::new("gemm_f32", Launch::new([1, 1, 1], [2, 1, 1]));
     node.bind_input(0).bind_output(1);
 
     let error = executor.run(&node).expect_err("未覆盖算子必须拒绝");
     assert_eq!(error.code(), Code::Invalid);
-    assert!(error.to_string().contains("rope_f32"), "{error}");
+    assert!(error.to_string().contains("gemm_f32"), "{error}");
 }
 
 /// 两层 F32 线性链：装配出的图串行跑通，参考路径用同一批权重串行 gemv 重算。
@@ -653,19 +653,69 @@ fn a_missing_rmsnorm_gamma_is_reported_at_assembly() {
     assert_eq!(error.code(), Code::Missing);
 }
 
-/// 二元残差层需要旁路接线，本通路暂不装配：报 `Unsupported`，留注意力残差刀落地。
+/// 逐元素二元层：主链输入 + 旁路激活两路接线，参考路径对旁路持有张量逐元素相加。
 #[test]
-fn a_binary_residual_layer_is_not_assembled_yet() {
+fn a_binary_layer_takes_a_bypass_activation_matches_the_reference() {
+    let x = [1.0, 2.0, 3.0];
+    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+    let hidden = {
+        let mut h = vec![0.0; 2];
+        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：投影");
+        h
+    };
+    let mut reference = vec![0.0; 2];
+    op::add_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相加");
+
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
         Box::new(Add::new("res", 2).expect("层")),
     ])
     .expect("栈");
     let mut params = Params::new();
-    params.insert("blk.0.weight", vec![0.0; 6]);
+    params.insert("blk.0.weight", w1.to_vec());
 
-    let error = CpuModel::new(&stack, &params).expect_err("二元残差通路留后续");
-    assert_eq!(error.code(), Code::Unsupported);
+    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    assert_eq!(model.output_len(), 2);
+    let produced = model.forward(&x).expect("前向");
+
+    assert_close(&produced, &reference);
+}
+
+/// 逐元素乘法同族接线：参考路径对旁路持有张量逐元素相乘。
+#[test]
+fn a_binary_mul_layer_takes_a_bypass_activation_matches_the_reference() {
+    let x = [1.0, 2.0, 3.0];
+    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+    let hidden = {
+        let mut h = vec![0.0; 2];
+        op::gemv_f32::forward(&x, &w1, &mut h).expect("参考：投影");
+        h
+    };
+    let mut reference = vec![0.0; 2];
+    op::mul_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相乘");
+
+    let stack = Stack::of(vec![
+        Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
+        Box::new(Mul::new("gate", 2).expect("层")),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("blk.0.weight", w1.to_vec());
+
+    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let produced = model.forward(&x).expect("前向");
+
+    assert_close(&produced, &reference);
+}
+
+/// 二元层前面没有可借用的旁路激活（首层即二元）：装配期报 `Invalid`，不静默走单输入。
+#[test]
+fn a_binary_layer_without_a_bypass_activation_is_rejected_at_assembly() {
+    let stack = Stack::of(vec![Box::new(Add::new("res", 2).expect("层"))]).expect("栈");
+    let error = CpuModel::new(&stack, &Params::new()).expect_err("无旁路必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
 }
 
 /// 非 F32 条目不在装载期解包；参数表留空，装配期按格式报 `Unsupported`。
@@ -958,8 +1008,14 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     op::gemv_f32::forward(embedded, &wk, &mut k).expect("参考 k");
     let mut v = vec![0.0; kv];
     op::gemv_f32::forward(embedded, &wv, &mut v).expect("参考 v");
+    // q/k 先按当前步位置过 RoPE 旋转，再进注意力；写回页行的 K 同样取旋转后一路。
+    let pos = sequence.len();
+    let mut q_rot = vec![0.0; kv];
+    op::rope_f32::forward(pos, &q, &mut q_rot).expect("参考 rope q");
+    let mut k_rot = vec![0.0; kv];
+    op::rope_f32::forward(pos, &k, &mut k_rot).expect("参考 rope k");
     let mut attn = vec![0.0; kv];
-    op::attention::decode_forward(&q, &hist_k, &hist_v, &mut attn, 1, hist, kv)
+    op::attention::decode_forward(&q_rot, &hist_k, &hist_v, &mut attn, 1, hist, kv)
         .expect("参考注意力");
     let mut o = vec![0.0; hidden];
     op::gemv_f32::forward(&attn, &wo, &mut o).expect("参考 o");
@@ -970,7 +1026,7 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
 
     let row = batch.kv(0, sequence.len()).expect("当前步页行");
     let (written_k, written_v) = row.split_at(kv);
-    assert_close(written_k, &k);
+    assert_close(written_k, &k_rot);
     assert_close(written_v, &v);
 }
 

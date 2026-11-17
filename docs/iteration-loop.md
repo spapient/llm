@@ -59,7 +59,7 @@ graph LR
 ## 5. 当前外部约束（影响迭代节奏，非代码问题）
 
 - **CI 调度**：最新 run 在 runner 领取前被拒，annotation 为"账号支付失败或支出上限需提高"，job 未启动任何步骤；本地门禁已全绿。需在 GitHub Billing & plans 处理账号侧额度，代码侧无需改动。
-- **硬件环境**：Metal 链路可在本机 macOS 验证；CUDA 链路需 Linux + NVIDIA 驱动/工具链，无 GPU 环境只保留编译与契约对拍，不出吞吐数字（roadmap P3 前置约束）。
+- **硬件环境**：Metal 链路在本机 macOS（M5 Pro / Metal 4）可验证；CUDA 链路在 win 远端（T600 sm_75 / CUDA 13.3）验证；设备内核管线未建前两条链路只保留编译与契约对拍，不出吞吐数字（roadmap P3 前置约束）。
 - **并行工作树**：tokenizer / train / prof 等有并行演进改动；本轮提交只卷入 `prim` 与评审/ADR 文档，外部改动不并入。
 
 ## 6. 迭代顺序（防返工）

@@ -21,8 +21,14 @@ fn mismatched_lengths_are_rejected() {
 #[test]
 fn add_rejects_each_mismatched_pair_and_allows_empty() {
     let mut out = vec![0.0; 2];
-    assert!(forward(&[1.0], &[1.0, 2.0], &mut out).is_err(), "a 与 b 不等");
-    assert!(forward(&[1.0, 2.0], &[1.0], &mut out).is_err(), "b 与 out 不等");
+    assert!(
+        forward(&[1.0], &[1.0, 2.0], &mut out).is_err(),
+        "a 与 b 不等"
+    );
+    assert!(
+        forward(&[1.0, 2.0], &[1.0], &mut out).is_err(),
+        "b 与 out 不等"
+    );
     let mut empty = vec![];
     forward(&[], &[], &mut empty).expect("空输入逐元素放行");
 }

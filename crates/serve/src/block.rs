@@ -135,6 +135,30 @@ fn wire_qkv(
     Ok((q, k, v))
 }
 
+/// RoPE 子节点：对一路投影向量按位置做旋转；位置走标量槽，由宿主每步回填。返回旋转后编号。
+fn wire_rope(
+    sink: &mut NodeSink<'_>,
+    input: u32,
+    width: usize,
+) -> Result<u32> {
+    let output = sink.slots.activation()?;
+    let mut node = Node::new(
+        "rope_f32".to_string(),
+        Launch::new([1, 1, 1], [width as u32, 1, 1]),
+    );
+    node.bind_input(input);
+    node.bind_output(output);
+    sink.graph.push(node);
+    sink.activations.push((output, width));
+    sink.descriptors.push(crate::descriptors::BindingDesc {
+        id: output,
+        entry: None,
+        shape: vec![width],
+    });
+    sink.rope.push(output);
+    Ok(output)
+}
+
 /// decode 注意力节点：q + 历史 K + 历史 V → 注意力输出；返回 `(hist_k, hist_v, attn)` 编号。
 fn wire_attention(
     sink: &mut NodeSink<'_>,
@@ -208,6 +232,9 @@ fn push_block(
 ) -> Result<u32> {
     let ops = block_operators(block)?;
     let (q_slot, k_slot, v_slot) = wire_qkv(sink, block, prev, &ops)?;
+    // q/k 先过 RoPE 旋转再进注意力；写回页行的 K 同样取旋转后的一路（与注意力读到的一致）。
+    let q_slot = wire_rope(sink, q_slot, block.kv_width())?;
+    let k_slot = wire_rope(sink, k_slot, block.kv_width())?;
     let (hist_k, hist_v, attn_slot) = wire_attention(sink, block, q_slot)?;
     let out_slot = wire_output(sink, block, prev, attn_slot, &ops)?;
     blocks.push(BlockBinding {

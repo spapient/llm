@@ -592,7 +592,12 @@ fn encoding_rejects_each_misaligned_metadata_side() {
     let cases = [
         (ids.clone(), offsets.clone(), vec![false], "special 少一段"),
         (ids.clone(), vec![(0, 1)], special.clone(), "offsets 少一段"),
-        (vec![Token::new(1)], offsets.clone(), special.clone(), "ids 少一段"),
+        (
+            vec![Token::new(1)],
+            offsets.clone(),
+            special.clone(),
+            "ids 少一段",
+        ),
     ];
     for (i, (left, middle, right, label)) in cases.into_iter().enumerate() {
         let error = Encoding::new(left, middle, right).expect_err(label);
@@ -645,7 +650,9 @@ fn stream_handles_empty_chunks_and_repeated_tail_bytes() {
 
     let mut repeated = DecoderStream::new();
     repeated.push(&[0xE4, 0xB8]).expect("首块留尾");
-    repeated.push(&[0xAD, 0xE4, 0xB8]).expect("次块拼出首字并再留尾");
+    repeated
+        .push(&[0xAD, 0xE4, 0xB8])
+        .expect("次块拼出首字并再留尾");
     let error = repeated.finish().expect_err("残留半字符必须拒绝");
     assert_eq!(error.code(), Code::Invalid);
 }

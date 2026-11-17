@@ -28,7 +28,10 @@ fn rmsnorm_rejects_empty_input() {
 #[test]
 fn rmsnorm_rejects_each_mismatched_buffer_length() {
     let mut out = vec![0.0; 3];
-    assert!(forward(&[1.0, 2.0], &[1.0], &mut out).is_err(), "x 与 gamma 不等");
+    assert!(
+        forward(&[1.0, 2.0], &[1.0], &mut out).is_err(),
+        "x 与 gamma 不等"
+    );
     assert!(
         forward(&[1.0, 2.0], &[1.0, 2.0], &mut out).is_err(),
         "x 与 out 不等"

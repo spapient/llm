@@ -23,7 +23,7 @@
 //!
 //! 接纯切片签名的 f32 算子，以及 i4/i8 量化 lane（`gemv_i4`/`gemv_i8`/`dequant_i4`/
 //! `dequant_i8`）；量化权重文件侧的半精度与零点解码仍留后，本轮量化通路以内存夹具对拍
-//! 验证。`rope_f32` 的位置标量、decode 变长历史几何随后续 KV 工作一起落地（设计文档 §5.1）。
+//! 验证。`rope_f32` 的位置走标量槽回填；decode 变长历史几何仍随后续 KV 工作落地（设计文档 §5.1）。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{CpuExecutor, Launch, Program, View, ViewMut};
@@ -36,8 +36,8 @@ type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> R
 /// decode 注意力内核入口：`q/k/v → out`，查询行数 `q_rows`、历史行数 `hist` 与头宽 `d` 随几何传入。
 type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
 
-/// 适配入口：拆好视图后调用算子参考实现。
-type KernelFn = fn(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()>;
+/// 适配入口：拆好视图后调用算子参考实现；launch 承载逐步变化的标量槽（如 rope 位置）。
+type KernelFn = fn(Launch, &[View<'_>], &mut [ViewMut<'_>]) -> Result<()>;
 
 /// 取第 `slot` 路输入为 `f32` 切片；编号缺失或形态不符给 `Invalid`。
 fn input_f32<'a>(name: &str, inputs: &[View<'a>], slot: usize) -> Result<&'a [f32]> {
@@ -93,14 +93,14 @@ struct Entry {
 /// 适配函数名即算子名，注册名由 [`kernel_table!`] 从标识符派生，不再手抄第二份字符串。
 macro_rules! kernel {
     ($($run:ident),* ; unary) => {$(
-        fn $run(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
             let input = input_f32(stringify!($run), inputs, 0)?;
             let output = output_f32(stringify!($run), outputs, 0)?;
             op::$run::forward(input, output)
         }
     )*};
     ($($run:ident),* ; binary) => {$(
-        fn $run(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
             let left = input_f32(stringify!($run), inputs, 0)?;
             let right = input_f32(stringify!($run), inputs, 1)?;
             let output = output_f32(stringify!($run), outputs, 0)?;
@@ -142,11 +142,11 @@ fn attention_paths(
     run(q, k, v, out, s, d)
 }
 
-fn attention_f32(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     attention_paths(inputs, outputs, op::attention::forward)
 }
 
-fn flash_attention_f32(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn flash_attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     attention_paths(inputs, outputs, op::attention::flash_forward)
 }
 
@@ -163,16 +163,16 @@ fn decode_paths(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>], run: DecodeKer
     run(q, k, v, out, q_rows, hist, d)
 }
 
-fn decode_attention_f32(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn decode_attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     decode_paths(inputs, outputs, op::attention::decode_forward)
 }
 
-fn decode_flash_attention_f32(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn decode_flash_attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     decode_paths(inputs, outputs, op::attention::decode_flash_forward)
 }
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：4 位量化乘加，与 `op::gemv_i4::forward` 同一段算术。
-fn gemv_i4(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn gemv_i4(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let x = input_f32("gemv_i4", inputs, 0)?;
     let weights = input_u8("gemv_i4", inputs, 1)?;
     let scales = input_f32("gemv_i4", inputs, 2)?;
@@ -181,7 +181,7 @@ fn gemv_i4(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
 }
 
 /// 同上，8 位量化：`op::gemv_i8::forward`。
-fn gemv_i8(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn gemv_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let x = input_f32("gemv_i8", inputs, 0)?;
     let weights = input_u8("gemv_i8", inputs, 1)?;
     let scales = input_f32("gemv_i8", inputs, 2)?;
@@ -190,17 +190,27 @@ fn gemv_i8(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
 }
 
 /// `[q: u8] → y: f32`：打包字节每字节两个 nibble，scale/zero 取样本常量。
-fn dequant_i4(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn dequant_i4(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let q = input_u8("dequant_i4", inputs, 0)?;
     let out = output_f32("dequant_i4", outputs, 0)?;
     op::dequant_i4::forward(op::dequant_i4::SCALE, op::dequant_i4::ZERO, q, out)
 }
 
 /// `[q: f32] → y: f32`：scale/zero 取样本常量。
-fn dequant_i8(inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let q = input_f32("dequant_i8", inputs, 0)?;
     let out = output_f32("dequant_i8", outputs, 0)?;
     op::dequant_i8::forward(op::dequant_i8::SCALE, op::dequant_i8::ZERO, q, out)
+}
+
+/// RoPE 适配：位置走标量槽（D9 / ADR 0043），未填位置给 `Invalid`；旋转算术走 `op::rope_f32`。
+fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+    let x = input_f32("rope_f32", inputs, 0)?;
+    let out = output_f32("rope_f32", outputs, 0)?;
+    let pos = launch.scalars().rope_position().ok_or_else(|| {
+        Error::new(Code::Invalid, "rope_f32 位置标量未填").with(SITE)
+    })?;
+    op::rope_f32::forward(pos as usize, x, out)
 }
 
 /// 内核表展开：每条例子取适配函数标识符，算子名由 `stringify!` 派生，避免名字与函数名各写一份。
@@ -233,6 +243,7 @@ const KERNELS: &[Entry] = kernel_table![
     reduce_sum_f32,
     residual_add_f32,
     rmsnorm_f32,
+    rope_f32,
     scale_f32,
     silu_f32,
     softmax_f32,
@@ -263,8 +274,8 @@ impl Program for Kernel {
         self.entry.op
     }
 
-    fn run(&self, _launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-        (self.entry.run)(inputs, outputs)
+    fn run(&self, launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+        (self.entry.run)(launch, inputs, outputs)
     }
 }
 

@@ -15,32 +15,18 @@
 //! 扫描器自己也被守：文件数低于下限即失败。一条什么都没扫到却通过的门禁，比没有门禁更误导。
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+#[path = "support/paths.rs"]
+mod paths;
+
+use paths::{rust_files, workspace_root as root};
 
 /// 扫描下限：近 30 个 crate、80+ 个源文件；低于此数说明遍历逻辑坏了（而不是"没有违规"）。
 const MIN_SOURCES: usize = 70;
 
-fn root() -> PathBuf {
-    // 本测试住在 `crates/testkit/tests/`，仓根是清单目录上两级。
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
 /// 一份扫描结果：`(crate, 文件, 行号, 该行原文)`。
 type Hit = (String, PathBuf, usize, String);
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
 
 /// `crates/<crate>/src/**/*.rs` 下的全部源文件。
 fn sources() -> Vec<(String, PathBuf)> {
@@ -56,8 +42,7 @@ fn sources() -> Vec<(String, PathBuf)> {
         .collect();
     names.sort();
     for name in names {
-        let mut files = Vec::new();
-        walk(&crates.join(&name).join("src"), &mut files);
+        let mut files = rust_files(&crates.join(&name).join("src"));
         files.sort();
         for file in files {
             out.push((name.clone(), file));

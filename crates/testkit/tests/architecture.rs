@@ -9,13 +9,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
+#[path = "support/paths.rs"]
+mod paths;
+
+use paths::{rust_files, workspace_root};
+
 /// 契约文本编译期嵌入：测试不依赖当前工作目录，也不会读到另一份副本。
 const DOC: &str = include_str!("../../../docs/ARCHITECTURE.md");
-
-/// 仓根：本测试住在 `crates/testkit/tests/`，仓根是清单目录上两级。
-fn workspace_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 /// 层表：成员 → (层号, 层内位置)；同层位置决定“可以依赖谁”。
 struct Contract {
@@ -402,23 +402,6 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
         offences.is_empty(),
         "这些位置仍以 `String` 报错，应改为 `diagnostic::Error`：{offences:?}"
     );
-}
-
-/// 递归列出 `dir` 下的 `.rs` 文件（顺序无关，只用于扫描）。
-fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut found = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            found.extend(rust_files(&path));
-        } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
-            found.push(path);
-        }
-    }
-    found
 }
 
 /// `llm-op` 与文档里的 `op` 指同一个成员（包名带 `llm-` 前缀，层表用短名）。

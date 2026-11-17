@@ -252,17 +252,7 @@ fn formulas_are_four_operations_with_parentheses() {
 #[test]
 fn formulas_reject_saturated_and_degenerate_inputs_with_a_message() {
     let cases: &[&str] = &[
-        "",
-        "   ",
-        "+",
-        "(",
-        ")",
-        "**",
-        "1..2",
-        "abc",
-        "1+",
-        "((1+2))",
-        "2/3/4",
+        "", "   ", "+", "(", ")", "**", "1..2", "abc", "1+", "((1+2))", "2/3/4",
     ];
     let expect_ok = ["((1+2))", "2/3/4"];
     for (index, text) in cases.iter().enumerate() {
@@ -316,7 +306,10 @@ fn closed_set_parse_rejects_boundary_and_foreign_names() {
         assert!(Prim::parse(name).is_none(), "`{name}` 不应命中原语闭集");
         assert!(Space::parse(name).is_none(), "`{name}` 不应命中存储闭集");
         assert!(Grade::parse(name).is_none(), "`{name}` 不应命中等级闭集");
-        assert!(DType::parse_name(name).is_none(), "`{name}` 不应命中类型闭集");
+        assert!(
+            DType::parse_name(name).is_none(),
+            "`{name}` 不应命中类型闭集"
+        );
     }
     for prim in Prim::ALL.iter().copied() {
         assert_eq!(Prim::parse(prim.as_str()), Some(prim));

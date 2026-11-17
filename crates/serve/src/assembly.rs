@@ -46,6 +46,26 @@ pub(crate) struct Assembly {
     pub(crate) descriptors: Vec<BindingDesc>,
     /// 注意力块接线记录：运行时按它装载历史 K/V、取回当前步 K/V 写回页行。
     pub(crate) blocks: Vec<BlockBinding>,
+    /// rope 节点输出槽编号：宿主在每步提交前把当前位置写进这些节点的标量槽。
+    pub(crate) rope: Vec<u32>,
+}
+
+impl Assembly {
+    /// 把当前位置写进全部 rope 节点的标量槽；提交前由宿主按当前步回填，图结构不改。
+    pub(crate) fn set_rope_positions(&mut self, position: u32) {
+        for &id in &self.rope {
+            let node = self
+                .graph
+                .nodes_mut()
+                .iter_mut()
+                .find(|node| {
+                    node.outputs().first().map_or(false, |operand| operand.id() == id)
+                });
+            if let Some(node) = node {
+                node.scalars_mut().set_rope_position(position);
+            }
+        }
+    }
 }
 
 impl Assembly {
@@ -102,17 +122,28 @@ pub(crate) struct NodeSink<'a> {
     pub(crate) activations: &'a mut Vec<(u32, usize)>,
     pub(crate) descriptors: &'a mut Vec<BindingDesc>,
     pub(crate) slots: &'a mut Slots,
+    /// rope 节点输出槽编号清单：位置标量槽回填按它走。
+    pub(crate) rope: &'a mut Vec<u32>,
 }
 
 impl<'a> NodeSink<'a> {
-    /// 一层接进图：绑定上一层输出；投影/归一化再加驻留权重编号，一元点wise只有单路输入。
-    fn push_node(&mut self, prev: u32, plan: &LayerPlan) -> Result<u32> {
+    /// 一层接进图：输入 0 = 主链上一层输出；逐元素二元的旁路输入 1（若有）；投影/归一化/查表
+    /// 再加驻留权重编号，一元点wise/二元/位置编码只有各自的输入路数。
+    fn push_node(
+        &mut self,
+        prev: u32,
+        plan: &LayerPlan,
+        bypass: Option<u32>,
+    ) -> Result<u32> {
         let output_id = self.slots.activation()?;
         let mut node = Node::new(
             plan.operator.clone(),
             Launch::new([1, 1, 1], [plan.out_features as u32, 1, 1]),
         );
         node.bind_input(prev);
+        if let Some(bypass) = bypass {
+            node.bind_input(bypass);
+        }
         if let Some(entry) = &plan.entry {
             let weight_id = self.slots.weight()?;
             node.bind_input(weight_id);
@@ -131,6 +162,9 @@ impl<'a> NodeSink<'a> {
             entry: None,
             shape: vec![plan.out_features],
         });
+        if plan.kind == LayerKind::Rope {
+            self.rope.push(output_id);
+        }
         Ok(output_id)
     }
 
@@ -177,6 +211,7 @@ fn chain(
     activations: &mut Vec<(u32, usize)>,
     descriptors: &mut Vec<BindingDesc>,
     blocks: &mut Vec<BlockBinding>,
+    rope: &mut Vec<u32>,
 ) -> Result<(usize, usize, u32, LayerKind)> {
     let mut slots = Slots::new();
     let mut sink = NodeSink {
@@ -185,19 +220,25 @@ fn chain(
         activations,
         descriptors,
         slots: &mut slots,
+        rope,
     };
     let mut prev = INPUT_SLOT;
     let mut prev_out: Option<usize> = None;
     let mut input_len = 0;
     let mut last_out = 0;
     let mut input_kind = LayerKind::Projection;
+    // 旁路持有槽：逐元素二元可借用的残差/门控激活；非二元层输出刷新它，二元层不覆盖。
+    let mut held: Option<(u32, usize)> = None;
 
     for layer in layers.iter() {
         let (next, in_width, out_width, kind) =
-            chain_step(&mut sink, blocks, prev, prev_out, layer.as_ref(), params)?;
+            chain_step(&mut sink, blocks, prev, prev_out, held, layer.as_ref(), params)?;
         if prev_out.is_none() {
             input_len = in_width;
             input_kind = kind;
+        }
+        if kind != LayerKind::Binary {
+            held = Some((next, out_width));
         }
         prev = next;
         prev_out = Some(out_width);
@@ -212,12 +253,13 @@ fn chain_step(
     blocks: &mut Vec<BlockBinding>,
     prev: u32,
     prev_out: Option<usize>,
+    held: Option<(u32, usize)>,
     layer: &dyn Contract,
     params: &Params,
 ) -> Result<(u32, usize, usize, LayerKind)> {
     match layer.attention_block() {
         Some(block) => crate::block::advance_block(sink, blocks, prev, prev_out, block, params),
-        None => advance_layer(sink, prev, prev_out, layer, params),
+        None => advance_layer(sink, prev, prev_out, held, layer, params),
     }
 }
 
@@ -226,18 +268,48 @@ fn advance_layer(
     sink: &mut NodeSink<'_>,
     prev: u32,
     prev_out: Option<usize>,
+    held: Option<(u32, usize)>,
     layer: &dyn Contract,
     params: &Params,
 ) -> Result<(u32, usize, usize, LayerKind)> {
     let plan = crate::plan::layer_plan(layer, prev_out, params)?;
-    let next = sink.push_node(prev, &plan)?;
+    let bypass = plan
+        .kind
+        .needs_bypass()
+        .then(|| bypass_input(layer.name(), plan.out_features, held))
+        .transpose()?;
+    let next = sink.push_node(prev, &plan, bypass)?;
     Ok((next, plan.in_features, plan.out_features, plan.kind))
+}
+
+/// 取二元层的旁路第二输入槽；无持有激活或宽度不符时返回 [`Code::Invalid`]。
+fn bypass_input(
+    name: &str,
+    width: usize,
+    held: Option<(u32, usize)>,
+) -> Result<u32> {
+    let Some((slot, held_width)) = held else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("层 `{name}` 是逐元素二元层，但前面没有可借用的旁路激活"),
+        )
+        .with("serve::assembly::bypass_input"));
+    };
+    if held_width != width {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("层 `{name}` 旁路宽度 {held_width} 与主链宽度 {width} 不符"),
+        )
+        .with("serve::assembly::bypass_input"));
+    }
+    Ok(slot)
 }
 
 /// 把层栈装配成图：逐层接线，上一层输出即下一层输入。
 ///
-/// 族别（投影 / 查表 / 一元点wise / 归一化 / 注意力块）决定操作数路数与权重形态；形状、宽度、权重缺失都在装配期报出，
-/// 不带进执行期。量化族、standalone 二元残差、归约、位置编码按 [`Code::Unsupported`] 拒绝，不静默跳过。
+/// 族别（投影 / 查表 / 一元点wise / 归一化 / 逐元素二元 / 位置编码 / 注意力块）决定操作数路数与
+/// 权重形态；形状、宽度、权重缺失都在装配期报出，不带进执行期。量化族、归约按 [`Code::Unsupported`]
+/// 拒绝，不静默跳过。
 pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     let layers = stack.layers();
     if layers.is_empty() {
@@ -249,6 +321,7 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     let mut weights: Vec<(u32, String)> = Vec::new();
     let mut descriptors = Vec::new();
     let mut blocks = Vec::new();
+    let mut rope = Vec::new();
     let (input_len, output_len, output, input_kind) = chain(
         layers,
         params,
@@ -257,6 +330,7 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
         &mut activations,
         &mut descriptors,
         &mut blocks,
+        &mut rope,
     )?;
 
     let assembly = Assembly {
@@ -270,6 +344,7 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
         activations,
         descriptors,
         blocks,
+        rope,
     };
     assembly.check_descriptors(params)?;
     Ok(assembly)
