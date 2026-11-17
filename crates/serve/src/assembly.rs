@@ -206,22 +206,8 @@ impl<'a> NodeSink<'a> {
 fn chain(
     layers: &[Box<dyn Contract>],
     params: &Params,
-    graph: &mut Graph,
-    weights: &mut Vec<(u32, String)>,
-    activations: &mut Vec<(u32, usize)>,
-    descriptors: &mut Vec<BindingDesc>,
-    blocks: &mut Vec<BlockBinding>,
-    rope: &mut Vec<u32>,
+    sink: &mut NodeSink<'_>,
 ) -> Result<(usize, usize, u32, LayerKind)> {
-    let mut slots = Slots::new();
-    let mut sink = NodeSink {
-        graph,
-        weights,
-        activations,
-        descriptors,
-        slots: &mut slots,
-        rope,
-    };
     let mut prev = INPUT_SLOT;
     let mut prev_out: Option<usize> = None;
     let mut input_len = 0;
@@ -232,7 +218,7 @@ fn chain(
 
     for layer in layers.iter() {
         let (next, in_width, out_width, kind) =
-            chain_step(&mut sink, blocks, prev, prev_out, held, layer.as_ref(), params)?;
+            chain_step(sink, prev, prev_out, held, layer.as_ref(), params)?;
         if prev_out.is_none() {
             input_len = in_width;
             input_kind = kind;
@@ -250,7 +236,6 @@ fn chain(
 /// 接一层：注意力块拆子节点，其余层出单节点；返回输出编号、入宽、出宽与族别。
 fn chain_step(
     sink: &mut NodeSink<'_>,
-    blocks: &mut Vec<BlockBinding>,
     prev: u32,
     prev_out: Option<usize>,
     held: Option<(u32, usize)>,
@@ -258,7 +243,7 @@ fn chain_step(
     params: &Params,
 ) -> Result<(u32, usize, usize, LayerKind)> {
     match layer.attention_block() {
-        Some(block) => crate::block::advance_block(sink, blocks, prev, prev_out, block, params),
+        Some(block) => crate::block::advance_block(sink, prev, prev_out, block, params),
         None => advance_layer(sink, prev, prev_out, held, layer, params),
     }
 }
@@ -322,16 +307,17 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     let mut descriptors = Vec::new();
     let mut blocks = Vec::new();
     let mut rope = Vec::new();
-    let (input_len, output_len, output, input_kind) = chain(
-        layers,
-        params,
-        &mut graph,
-        &mut weights,
-        &mut activations,
-        &mut descriptors,
-        &mut blocks,
-        &mut rope,
-    )?;
+    let mut slots = Slots::new();
+    let mut sink = NodeSink {
+        graph: &mut graph,
+        weights: &mut weights,
+        activations: &mut activations,
+        descriptors: &mut descriptors,
+        blocks: &mut blocks,
+        rope: &mut rope,
+        slots: &mut slots,
+    };
+    let (input_len, output_len, output, input_kind) = chain(layers, params, &mut sink)?;
 
     let assembly = Assembly {
         graph,

@@ -226,7 +226,6 @@ fn wire_output(
 /// 把注意力块拆成子节点接进图；返回块输出激活编号。
 fn push_block(
     sink: &mut NodeSink<'_>,
-    blocks: &mut Vec<BlockBinding>,
     prev: u32,
     block: &AttentionBlock,
 ) -> Result<u32> {
@@ -237,7 +236,7 @@ fn push_block(
     let k_slot = wire_rope(sink, k_slot, block.kv_width())?;
     let (hist_k, hist_v, attn_slot) = wire_attention(sink, block, q_slot)?;
     let out_slot = wire_output(sink, block, prev, attn_slot, &ops)?;
-    blocks.push(BlockBinding {
+    sink.blocks.push(BlockBinding {
         k: k_slot,
         v: v_slot,
         hist_k,
@@ -250,14 +249,13 @@ fn push_block(
 /// 注意力块层：几何/权重校验后拆成 q/k/v/o + decode 注意力 + 残差子节点。
 pub(crate) fn advance_block(
     sink: &mut NodeSink<'_>,
-    blocks: &mut Vec<BlockBinding>,
     prev: u32,
     prev_out: Option<usize>,
     block: &AttentionBlock,
     params: &Params,
 ) -> Result<(u32, usize, usize, LayerKind)> {
     check_block(block, prev_out, params)?;
-    let next = push_block(sink, blocks, prev, block)?;
+    let next = push_block(sink, prev, block)?;
     let hidden = block.hidden();
     Ok((next, hidden, hidden, LayerKind::Projection))
 }

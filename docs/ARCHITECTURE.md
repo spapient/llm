@@ -16,7 +16,7 @@
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 LLPK 容器读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
-| L6 调度与服务 | `train`、`engine`、`serve`、`backend` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`）、设备后端边界实现（`backend`：`Executor`/`Allocator`/`Device` 的具体侧，trait 定义归 `engine`/`storage`） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L6 调度与服务 | `train`、`engine`、`serve` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法与配置解析归本层，把上面各层连起来装配、取值解析与人可读排版；编排入口（`cmd/` 与两个 bin）**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, execution}` → 排版 → 退出码（`Code::exit_code`） | 编排入口新增领域类型；在本层复制内核机制 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benches`（集中测量容器）与 `testkit`（测试夹具与工作区契约门禁）是**工具成员**：
@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 114 条，含 45 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 111 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -56,9 +56,8 @@ shard    → diagnostic
 train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit
 serve    → engine, nn, op, tokenizer, diagnostic, weights    +dev: testkit
-backend  → engine, storage, diagnostic（设备后端边界：只实现运行时 trait，不定义第二套 trait，不反向依赖 serve/nn/op；依赖方向只能从本 crate 指向 engine/storage 的 trait）    +dev: op
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型；运行时依赖覆盖被装配的各层）
-fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool, tokenizer, op, prof（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / LLPK 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 LLPK 夹具写形状、`tool` 词汇片段解析；`tokenizer`/`op`/`prof` 为夹具候选依赖，用途待对应种子接入后补记）
+fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / LLPK 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 LLPK 夹具写形状、`tool` 词汇片段解析）
 benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型，`nn` 出层下界与栈合计；`engine` 出页账与序列几何、`serve` 出宿主与 Predict 路线 B，供整模型一步夹具装配）
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）    +dev: testkit
 testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 工作区契约门禁；跨层对拍 `crates/testkit/tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段，`autograd` 出 `Tape`/`Sizes`，`tool` 出词汇片段解析；被测层只出现在 dev-dependencies，不进产品路径）
@@ -183,8 +182,6 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Slot` | `engine` | 一个 token 在 KV 缓存里的位置（页号 + 页内偏移）：`Table::slot` 用页宽除出偏移，`Scheduler::slot` 连"先准入"这一前提一起校验。写 kernel 的一侧因此不必自己拿页表再算一遍偏移 |
 | `Pager` | `engine` | 页池加上页里的数据：一页 = `page_size` 行、每行 `width` 个 `f32`，整池构造时一次分配，借出不再碰分配器。`row` / `row_mut` / `write` 只经 `Slot` 寻址，并且先验"页还活着"与"偏移在页内"——失效的 `Slot` 不是合法地址。`share` 是另一张表采纳同一前缀页的入口（只 +1 计数）；`release` 是唯一清零点：只有最后一个持有者归还时才清零，所以复用页读到的永远是零。行宽由装载模型的一侧给，页池不认识层与头；多层模型拿整行再按自己的层偏移切 |
 | `Batch` / `Admission` | `engine` | 连续批：`Batch` 把页账（`Scheduler`）与它正在跑的 `Sequence` 收在一处，准入、推进、结束与 KV 读写都只有这一个来源，`sequences` 与 `running` 顺序相同；`emit(id, token)` 是"记账 + 推进"的唯一入口，`Blocked` 时不多记一个 token；`Admission` 是准入结局——已进批，或页不够时把序列原样退回（服务层据此报可重试的 503）。与 `data::Batch`（一批 token 行）同名不同物：前者是调度单位，后者是数据单位 |
-| `UnsupportedBackend` | `backend` | 未挂载设备后端的占位适配：同时实现 `engine::exec::Executor` 与 `storage::Allocator`，只回读 `Device` 登记标签；`submit`/`sync`/`alloc`/`copy_into` 统一返回 `Unsupported`，`free` 按 trait 签名留空，不持设备句柄、不接 FFI。真实 Metal/CUDA 实现随后续后端刀填各自边界模块（ADR 0025 §1、ADR 0035） |
-| `MetalBackend` / `CudaBackend` | `backend` | 分厂商边界适配骨架：各持登记用 `Device` 标签（vendor 固定 `metal` / `cuda`）与候选挂载算子常量 `MOUNTED`（名字均在 `op::REGISTRY` 内，仅作能力登记占位）；`submit`/`sync`/`alloc`/`copy_into` 仍返回 `Unsupported`，`free` 留空；不引 FFI crate、不写 `unsafe`、不暴露设备句柄。真实命令队列、设备缓冲映射与 kernel launch 留后续（ADR 0025 §1、ADR 0035） |
 | `Sharding` / `Tiling` | `shard` | 张量并行的两种线性层切法（`Column` 切输出维、分片直接进下一层；`Row` 切输入维、每 rank 一份部分和）与一层权重的切分计划：每个 rank 的权重形状、被切维区间、以及"合并要不要 `all_reduce(Sum)`"。切分必须整除（各 rank 形状一致），不整除在构造期失败，而不是摊余数 |
 | `Local` | `shard` | 进程内的集合通信实现：每个 rank 一份镜像，`load` 写入输入、`all_reduce` 按 `Group` 的 rank 升序归约并写回每个成员。它让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
 | `Remote` | `shard` | 远端集合通信占位后端：与 `Local` 同一 `Collective` 端口，不持网络/通信句柄、不接 FFI、不写 `unsafe`；`all_reduce` 统一返回 `Unsupported`，拒绝时不改动调用方缓冲。真实跨进程实现（NCCL/MPI/Gloo，组内握手与句柄池）随后续后端刀填入，上层调用点不变 |

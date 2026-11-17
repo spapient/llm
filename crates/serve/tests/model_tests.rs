@@ -1112,3 +1112,181 @@ fn a_multi_head_block_is_not_assembled_yet() {
     let error = CpuModel::new(&stack, &params).expect_err("多头通路留后续");
     assert_eq!(error.code(), Code::Unsupported);
 }
+
+/// 两层合成模型端到端：嵌入 → 注意力块（q/k/v + RoPE + decode 注意力 + 残差）→ 归一化 →
+/// 线性输出；CPU 参考数值链串行重算并与 `logits` 对拍。
+#[test]
+fn a_two_layer_composite_model_logits_match_the_reference() {
+    let (vocab, hidden, kv, out) = (8, 4, 4, 2);
+    let hist = 1;
+
+    let table = embed_table(vocab, hidden);
+    let wq = projection_matrix(kv, hidden, 0.0);
+    let wk = projection_matrix(kv, hidden, 1.0);
+    let wv = projection_matrix(kv, hidden, 2.0);
+    let wo = projection_matrix(hidden, kv, 3.0);
+    let gamma = vec![1.0; hidden];
+    let w2 = projection_matrix(out, hidden, 4.0);
+
+    let hist_k: Vec<f32> = (0..kv).map(|i| -0.3 + i as f32 * 0.05).collect();
+    let hist_v: Vec<f32> = (0..kv).map(|i| 0.2 - i as f32 * 0.04).collect();
+    let mut history_row = Vec::with_capacity(2 * kv);
+    history_row.extend_from_slice(&hist_k);
+    history_row.extend_from_slice(&hist_v);
+
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new(
+                "blk.0",
+                hidden,
+                kv,
+                kv,
+                2,
+                AttentionAlgo::Naive,
+                WeightFormat::F32,
+            )
+            .expect("层"),
+        ),
+        Box::new(RmsNorm::new("norm.0", hidden).expect("层")),
+        Box::new(Linear::with_format("head", WeightFormat::F32, hidden, out).expect("层")),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", table.clone());
+    params.insert("blk.0.q.weight", wq.clone());
+    params.insert("blk.0.k.weight", wk.clone());
+    params.insert("blk.0.v.weight", wv.clone());
+    params.insert("blk.0.o.weight", wo.clone());
+    params.insert("norm.0.weight", gamma.clone());
+    params.insert("head.weight", w2.clone());
+
+    let pager = Pager::new(Cache::new(4, 4).expect("页池"), 2 * kv).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let sequence = Sequence::new(0, &[2u32], 2, 4, Stream::new(0)).expect("序列");
+    batch.admit(sequence.clone()).expect("准入");
+    batch.write_kv(0, 0, &history_row).expect("种子历史");
+
+    let mut model = CpuModel::new(&stack, &params).expect("装配");
+    let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
+
+    // 参考数值链：embed → q/k/v → RoPE(当前步位置) → decode 注意力 → o → 残差 → rmsnorm → 输出投影。
+    let embedded = &table[2 * hidden..3 * hidden];
+    let mut q = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, &wq, &mut q).expect("参考 q");
+    let mut k = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, &wk, &mut k).expect("参考 k");
+    let mut v = vec![0.0; kv];
+    op::gemv_f32::forward(embedded, &wv, &mut v).expect("参考 v");
+    let pos = sequence.len();
+    let mut q_rot = vec![0.0; kv];
+    op::rope_f32::forward(pos, &q, &mut q_rot).expect("参考 rope q");
+    let mut k_rot = vec![0.0; kv];
+    op::rope_f32::forward(pos, &k, &mut k_rot).expect("参考 rope k");
+    let mut attn = vec![0.0; kv];
+    op::attention::decode_forward(&q_rot, &hist_k, &hist_v, &mut attn, 1, hist, kv)
+        .expect("参考注意力");
+    let mut o = vec![0.0; hidden];
+    op::gemv_f32::forward(&attn, &wo, &mut o).expect("参考 o");
+    let mut residual = vec![0.0; hidden];
+    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
+    let mut normed = vec![0.0; hidden];
+    op::rmsnorm_f32::forward(&residual, &gamma, &mut normed).expect("参考归一化");
+    let mut reference = vec![0.0; out];
+    op::gemv_f32::forward(&normed, &w2, &mut reference).expect("参考输出投影");
+
+    assert_close(&produced, &reference);
+}
+
+/// 合成模型宽度断裂：嵌入维度与块隐藏宽度对不上，装配期报 `Invalid`，不带进执行期。
+#[test]
+fn a_composite_width_break_is_rejected_at_assembly() {
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new(
+                "blk.0",
+                8,
+                8,
+                8,
+                2,
+                AttentionAlgo::Naive,
+                WeightFormat::F32,
+            )
+            .expect("层"),
+        ),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", embed_table(8, 4));
+    params.insert("blk.0.q.weight", vec![0.0; 64]);
+    params.insert("blk.0.k.weight", vec![0.0; 64]);
+    params.insert("blk.0.v.weight", vec![0.0; 64]);
+    params.insert("blk.0.o.weight", vec![0.0; 64]);
+
+    let error = CpuModel::new(&stack, &params).expect_err("宽度链断裂必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+/// 合成模型缺输出投影条目：装配期按名报 `Missing`，不 panic、不静默跳过。
+#[test]
+fn a_composite_missing_projection_weight_is_reported_at_assembly() {
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
+        Box::new(RmsNorm::new("norm.0", 4).expect("层")),
+        Box::new(Linear::with_format("head", WeightFormat::F32, 4, 2).expect("层")),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", embed_table(8, 4));
+    params.insert("norm.0.weight", vec![1.0; 4]);
+    // 故意不插 `head.weight`
+
+    let error = CpuModel::new(&stack, &params).expect_err("缺投影权重必须拒绝");
+    assert_eq!(error.code(), Code::Missing);
+}
+
+/// 合成模型缺嵌入词表条目：装配期按名报 `Missing`，不 panic、不静默跳过。
+#[test]
+fn a_composite_missing_embedding_table_is_reported_at_assembly() {
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", 8, 4, 1).expect("层")),
+        Box::new(Linear::with_format("proj", WeightFormat::F32, 4, 2).expect("层")),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("proj.weight", vec![0.0; 8]);
+
+    let error = CpuModel::new(&stack, &params).expect_err("缺词表必须拒绝");
+    assert_eq!(error.code(), Code::Missing);
+}
+
+#[test]
+fn debug_composite_bindings() {
+    let (vocab, hidden, kv, out) = (8, 4, 4, 2);
+    let table = embed_table(vocab, hidden);
+    let wq = projection_matrix(kv, hidden, 0.0);
+    let wk = projection_matrix(kv, hidden, 1.0);
+    let wv = projection_matrix(kv, hidden, 2.0);
+    let wo = projection_matrix(hidden, kv, 3.0);
+    let gamma = vec![1.0; hidden];
+    let w2 = projection_matrix(out, hidden, 4.0);
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
+        Box::new(AttentionBlock::new("blk.0", hidden, kv, kv, 2, AttentionAlgo::Naive, WeightFormat::F32).expect("层")),
+        Box::new(RmsNorm::new("norm.0", hidden).expect("层")),
+        Box::new(Linear::with_format("head", WeightFormat::F32, hidden, out).expect("层")),
+    ]).expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", table.clone());
+    params.insert("blk.0.q.weight", wq.clone());
+    params.insert("blk.0.k.weight", wk.clone());
+    params.insert("blk.0.v.weight", wv.clone());
+    params.insert("blk.0.o.weight", wo.clone());
+    params.insert("norm.0.weight", gamma.clone());
+    params.insert("head.weight", w2.clone());
+    let assembly = crate::assembly::assemble(&stack, &params).expect("装配");
+    for (id, len) in &assembly.activations { println!("act {id} len {len}"); }
+    for block in &assembly.blocks { println!("block k={} v={} hist_k={} hist_v={} kv={}", block.k, block.v, block.hist_k, block.hist_v, block.kv_width); }
+    println!("rope {:?}", assembly.rope);
+}

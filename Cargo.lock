@@ -404,16 +404,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-backend"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-engine",
- "llm-op",
- "llm-storage",
-]
-
-[[package]]
 name = "llm-benches"
 version = "0.1.0"
 dependencies = [
@@ -496,11 +486,8 @@ dependencies = [
  "libfuzzer-sys",
  "llm-cli",
  "llm-diagnostic",
- "llm-op",
- "llm-prof",
  "llm-serve",
  "llm-tensor",
- "llm-tokenizer",
  "llm-tool",
  "llm-train",
  "llm-weights",
