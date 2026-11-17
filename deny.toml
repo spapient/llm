@@ -17,6 +17,10 @@ version = 2
 allow = [
   "MIT",
   "Apache-2.0",
+  # NCSA：libfuzzer-sys（仅 fuzz dev 依赖，UIUC 宽松许可证）。
+  "NCSA",
+  # Unicode-3.0：unicode-ident（proc-macro 传递依赖，Unicode 宽松许可证）。
+  "Unicode-3.0",
 ]
 # 白名单只保留依赖图里实际出现的许可证；新依赖带来其他许可证时由 `cargo deny check`
 # 拦下，评估后再逐条加入（不预填未 encountered 的条目，避免白名单无声膨胀）。

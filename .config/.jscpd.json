@@ -1,6 +1,6 @@
 {
   "path": ["crates"],
-  "output": "report",
+  "output": "target/jscpd-report",
   "reporters": ["console", "json"],
   "format": ["rust"],
   "minLines": 5,

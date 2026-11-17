@@ -209,7 +209,7 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
 闭集与解析不在本 crate：布局构造子、调度模板、模板词法、`OpDecl` 的解析都在 `crates/op`
 （`op::layout` / `op::sch` / `op::tpl` / `op::decl`）；`cutile::layout` 与 `cutile::sch` 是
 `pub use` 转发路径，模块路径不变，但闭集只有一份。命令行文法同样不在本 crate：它是
-`llm-cli::cutile` 的 `CutileCommand`，驱动方是根包的 `src/bin/cutile.rs`（L7 入口，只做
+`llm-cli::cutile` 的 `CutileCommand`，驱动方是 `llm-cli` 包的 `src/bin/cutile.rs`（L7 入口，只做
 解析 → `cutile` → 排版 → 退出码），因此 `cutile` 不再持有第二套命令语法或第二套输出排版。
 
 TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施。语料（`ops/*.toml`、`devices/*.toml`）
@@ -1081,7 +1081,7 @@ P3 合计随之约 11,060 行。差额不是「预算失效」，而是 D1（§1
 与 `docs/lld.md` 的 E7（带宽利用率 > 85%，Must）不是同一条：E7 要求校准后的持续带宽、瓶颈分类与
 置信区间下界，`bench` 的分母只是档案里写明推导式的规格峰值，两者不能互相顶替。
 
-执行命令（P0 交付物：语法在 `llm-cli::cutile`，计算在 `cutile`，排版在根包的
+执行命令（P0 交付物：语法在 `llm-cli::cutile`，计算在 `cutile`，排版在 `llm-cli` 包的
 `src/bin/cutile.rs`；`verify` 在缺设备时返回非零码）：
 
 ```bash
@@ -1114,7 +1114,7 @@ cargo run --bin cutile -- cache gc --limit 1073741824         # 缺省上限 2 G
 | D2 | 布局闭集取哪 4 个构造子（本文取 row/col/swz/pad） | 决定是否需要 `@repack` | P1 用 row + swz 两种跑通，P2 补 col/pad；片段能声明布局之后再补 `@repack` 计费 |
 | D3 | `cutile` 是否直接依赖 `syn`/`serde`/`toml` | 影响供应链治理与 `substitute`/`emit` 行数 | P0 用手写解析 + 手写序列化，证明可行性后再评估 |
 | D4 | 昇腾与可移植 GPU 的 `provides` 来源 | 只能 L0/L1 | 先标 `grade = L1`，协商自动降级；有真机再补见证 |
-| D5 | 与 `llm`（根包）的接口形态 | 决定内核是否需要跑在宿主进程里 | P1 前定：`llm` 通过子进程执行 `cc` 产物，还是引入真机驱动并对外暴露 launch |
+| D5 | 与 `llm` 入口二进制（`llm-cli` 包）的接口形态 | 决定内核是否需要跑在宿主进程里 | P1 前定：入口通过子进程执行 `cc` 产物，还是引入真机驱动并对外暴露 launch |
 | D6 | 是否保留 `tess` 代号 | 命名一致性 | 建议弃用；本文起统一为 `cutile DSL` |
 
 ---

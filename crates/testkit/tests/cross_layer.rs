@@ -9,9 +9,9 @@
 //! 「同尺度逐元素」档，而不是量化的余弦档。
 
 use autograd::{Sizes, Store, Tape};
+use llm_testkit::approx_eq;
 use nn::{Contract, Stack};
 use tensor::{DType, Shape};
-use llm_testkit::approx_eq;
 use train::{Buffers, Data, Reference};
 use weights::safetensors::Archive;
 

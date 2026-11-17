@@ -12,12 +12,12 @@
 | `cargo check --workspace --all-targets` | 干净，0 error / 0 warning |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 零告警 |
 | `cargo fmt --all --check` | 0 diff |
-| `cargo test --workspace` | **1,396 passed / 0 failed / 1 ignored** |
-| `cargo nextest run --workspace --all-features` | **1,360/1,360 passed** |
+| `cargo test --workspace`（libtest 口径；fuzz libFuzzer harness 由 CI fuzz job 单独引导，不进 libtest） | 收口实测 1,396 passed / 0 failed / 1 ignored |
+| `cargo nextest run --workspace --all-features` | **1,365/1,365 passed** |
 | architecture | **8/8**；contracts **6/6**；静态 gate **1/1** |
-| `cargo deny check` | advisories / bans / licenses / sources 四项 ok |
+| `cargo deny check` | advisories / bans / licenses / sources 四项 ok（许可白名单含 NCSA、Unicode-3.0） |
 | `cargo machete` | 无未用依赖 |
-| jscpd | 1.44% 行 / 1.73% token，111 clones，exit 0（行阈 1.5%） |
+| jscpd | 1.42% 行 / 1.71% token，117 clones，417 文件，exit 0（行阈 1.5%） |
 | `cargo bench --workspace --all-features --locked --no-run` | exit 0，全部基准目标编译通过 |
 | `unsafe` | 生产唯一岛 `crates/storage/src/mmap.rs`；本轮新增 unsafe 为零；backend/metal/cuda 零 unsafe |
 
@@ -33,7 +33,7 @@ serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool
 |---|---|---|---|
 | P0-1 | 已落地 | 文档计数与指针回填：design §1.2/§1.5、plan D-1…D-7、roadmap §3、code-audit；gate 1/1、architecture 8/8 守住文档链接门 | 历史快照刀次记录不回写：`backend-runtime-design.md:472` 仍记该刀 1325 / contracts 5，属当时快照 |
 | P0-2 | 已落地 | annotation：`OP_OVERRIDES` 一行三列 `(名, 参考覆盖, 模块覆盖)`；annotation lib 34 + audit 集成 2；无第二份按名查找循环 | — |
-| P0-3 | 已落地 | 大文件按职责轴拆分：weights `bin.rs` → `bin_zip.rs` / `bin_pickle.rs`；cutile `main.rs` → `report.rs`；train `snapshot.rs` → `cursor/entry/state`；根 `main.rs` 837 → 78，拆 `run.rs` / `status.rs` / `train.rs`；gate 行数 ≤899、ccn/nloc 过门 | 其余大文件随后续阶段内拆；根入口四条债务条目登记在 `.config/lints/vocabulary.toml`，待排版下沉 tool 后删除 |
+| P0-3 | 已落地 | 大文件按职责轴拆分：weights `bin.rs` → `bin_zip.rs` / `bin_pickle.rs`；cutile `main.rs` → `report.rs`；train `snapshot.rs` → `cursor/entry/state`；入口编排拆 `cmd/run.rs` / `cmd/status.rs` / `cmd/train.rs`；gate 行数 ≤899、ccn/nloc 过门 | 其余大文件随后续阶段内拆；入口七条债务条目登记在 `.config/lints/vocabulary.toml`（`crates/cli/src/cmd/` 与 `src/bin/cutile.rs`），待排版下沉 tool 后删除 |
 | P0-4 | 已落地 | 报告 / 排版收敛 `tool::Report` 单一报告器；tool lib 51（含 ccn 1、gate 1） | — |
 | P0-5 | 已落地 | 手写解析收敛 diagnostic 单源；ADR 0039 草案记依赖策略；diagnostic lib 12 + 集成 1，解析负例全绿 | toml+serde 唯一解析依赖未拍板前不接（D5） |
 | P0-6 | 进行中 | 切片内纯函数属性用例 + fuzz sweep 骨架在位：fuzz lib 17 + parsers 集成 2；`check/sweep/sweep_all` 契约在 | tokenizer / op / prof 的属性边界用例在切片外，尚未逐族补齐；libfuzzer harness 仅 feature 门控 |
@@ -147,6 +147,8 @@ serve 113、shard 27、storage 10、tensor 25、testkit 17、tokenizer 36、tool
 | wire | 445 → 445 | 35 → 35 | 2 → 2 | 未改 |
 
 > 生产路径未新增逐元素循环；函数 / 循环口径为仓库内正则扫描，测试件内循环计入上表。
+>
+> 快照口径：上表是优化轮收口当时的前后对比。其后入口编排迁移（根 bin 并入 `llm-cli`，`llm-bin` 的行分布归 cli 包）与 engine `View`/`ViewMut` 泛化适配使行 / 函数分布再次移动，未重起一轮同基线前后对比；生产路径循环数未因此增加。
 
 ### 保留循环及理由（均属串行依赖或长度 / 位布局数据相关，不可整块批处理）
 

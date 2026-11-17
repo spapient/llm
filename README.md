@@ -1,9 +1,8 @@
 # llm
 
-用 Rust 编写的配置驱动算子训练推理框架：kernel 由声明与档案驱动（`cutile`），上层按层组装成推理与训练链路（`llm`）。
+用 Rust 编写的配置驱动算子训练推理框架：kernel 由声明与档案驱动（`cutile`），上层按层组装成推理与训练链路，入口组合根是 `llm-cli`（bin：`llm` / `cutile`）。
 
-本仓库是一个 Cargo workspace，共 25 个成员（`crates/*` 下的 24 个 crate 与根包 `llm`（入口 bin））。
-元数据、依赖版本、lint 策略统一在根 `Cargo.toml` 声明；**模块的层级与依赖方向**写在
+本仓库是一个纯 Cargo workspace，共 25 个 crate，全部位于 `crates/*`；入口二进制归 `llm-cli` 包，根 `Cargo.toml` 只声明 workspace 元数据、依赖版本与 lint 策略。**模块的层级与依赖方向**写在
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，新增成员时按那里的三步登记。
 
 ## 快速开始
@@ -12,10 +11,10 @@
 只要本机装了 `rustup`，进入本目录即自动切换。1.100 正式版发布后，把该文件的 `channel` 改成 `"1.100"` 即可切回正式版。
 
 ```bash
-cargo run -p llm                              # 组装点：默认命令打印各层摘要
-cargo run -p llm -- help                      # 命令行用法（解析在 `cli`，执行在 `llm`）
-cargo run -p llm -- status --weights model.safetensors   # 读真实 safetensors：条目 → 层栈 → 模型下界
-cargo run -p llm -- run --weights model.safetensors      # 用真实权重算一次：每层一条内核、与标量参考对拍
+cargo run -p llm-cli --bin llm                              # 组合根：默认命令打印各层摘要
+cargo run -p llm-cli --bin llm -- help                      # 命令行用法（文法解析与编排都在 `llm-cli`）
+cargo run -p llm-cli --bin llm -- status --weights model.safetensors   # 读真实 safetensors：条目 → 层栈 → 模型下界
+cargo run -p llm-cli --bin llm -- run --weights model.safetensors      # 用真实权重算一次：每层一条内核、与标量参考对拍
 cargo build --workspace                       # 编译整个 workspace
 cargo test --workspace                        # 跑全部成员的测试与 doctest
 ```
@@ -36,8 +35,8 @@ cargo test --workspace                        # 跑全部成员的测试与 doct
 struct LmHead;   // 生成 impl nn::Contract + 一条“声明仍与 op 数据一致”的测试
 ```
 
-注意：因为根目录本身就是一个包，不带 `-p` / `--workspace` 的 `cargo build`、`cargo test`、`cargo clippy`、`cargo doc`
-只作用于 `llm`，不会覆盖 `crates/` 下的成员；只有 `cargo fmt --all` 天生遍历全部成员。
+注意：根目录是纯 workspace（没有自己的包），不带 `-p` 的 `cargo build`、`cargo test`、`cargo clippy`、`cargo doc`
+默认作用于整个 workspace；入口二进制需要用 `-p llm-cli --bin llm|cutile` 指定。
 
 ## 分层
 
@@ -45,26 +44,25 @@ struct LmHead;   // 生成 impl nn::Contract + 一条“声明仍与 op 数据�
 
 | 层 | 成员 | 职责 |
 |---|---|---|
-| L1 基础设施 | `diagnostic` `dtype` `testkit` `tool` | 统一错误类型与声明数据树（`data`：构建期语料在运行期的形状，没有解析器）、精度事实源（标量/块量化/微缩放三轴）、测试夹具、静态门与回退判定 |
+| L1 基础设施 | `diagnostic` `dtype` `tool` | 统一错误类型与声明数据树（`data`：构建期语料在运行期的形状，没有解析器）、精度事实源（标量/块量化/微缩放三轴）、静态门与回退判定 |
 | L2 数据层 | `prof` `op` `prim` | 设备档案与能力闭集、算子声明与模板（22 条，`op::REGISTRY` 是唯一清单）及其求和代价（`op/src/einsum/`）、原语片段与见证（纯数据） |
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行与见证执行；`doctor` / `verify` / `bench` / `execution` 四条命令共用一条流水线（`pipeline`），报告本身只是数据、排版在驱动方；设计契约见 [cutile README](crates/cutile/README.md) |
 | L4 运行时 | `tensor` `storage` `tokenizer` | 张量元数据、布局搬运、文本边界 |
 | L5 模型与训练 | `weights` `autograd` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、反向图、样本、层定义、切分拓扑 |
-| L6 调度与服务 | `train` `engine` `serve` `cli` | 训练循环状态与检查点格式（`train/src/snapshot/`）、连续批与序列及页账与提交契约（`engine/src/{kv,exec}.rs`）、端点契约与其线格式（`serve/src/proto/`）、命令行解析 |
-| L7 入口 | `llm`（bin） | 组装：把上面各层连起来，不定义新类型；`status` 算下界，`run` 用真实权重执行 |
+| L6 调度与服务 | `train` `engine` `serve` | 训练循环状态与检查点格式（`train/src/snapshot/`）、连续批与序列及页账与提交契约（`engine/src/{kv,exec}.rs`）、端点契约与其线格式（`serve/src/proto/`） |
+| L7 入口 | `cli`（bin：`llm` / `cutile`） | 组合根：命令行文法与配置解析，把上面各层连起来装配、取值解析与人可读排版；编排入口不定义新类型；`status` 算下界，`run` 用真实权重执行 |
 
 唯一一条依赖规则：**依赖只能指向更低的层（同层只能依赖更靠左的成员）**。因此向上依赖不可能通过、
 环不可能出现、数据层永远不会知道机制（`op` / `prof` / `prim` 不依赖 `cutile`）。
-这条规则由 `tests/architecture.rs` 在 `cargo test` 里对照 `cargo metadata` 自动核对。
+这条规则由 `crates/testkit/tests/architecture.rs` 在 `cargo test` 里对照 `cargo metadata` 自动核对。
 
-`annotation`（编译期注解）、`fuzz`（模糊测试契约）与 `benches`（集中测量容器）是**工具成员**：它们不计入运行时分层，
+`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benches`（集中测量容器）与 `testkit`（测试夹具与工作区契约门禁）是**工具成员**：它们不计入运行时分层，
 也不参与“至少一条依赖边”的统计。
 
 ```text
-llm ──▶ engine ──▶ tensor ──▶ diagnostic
+cli ──▶ engine ──▶ tensor ──▶ diagnostic
   │        └─────▶ diagnostic               ▲
   ├──▶ serve ──▶ tokenizer ────────────────┘
-  ├──▶ cli ──▶ diagnostic
   ├──▶ nn ──▶ weights / op / annotation
   ├──▶ train ──▶ nn ──▶ op
   │             ├▶ autograd ─┤
@@ -80,9 +78,7 @@ llm ──▶ engine ──▶ tensor ──▶ diagnostic
 
 ```
 .
-├── Cargo.toml            # workspace + 根包 llm（入口）、[workspace.package]/[lints]/[profile.*]
-├── src/main.rs           # 组装点：逐层构造最小实例
-├── src/bin/cutile.rs     # 内核层审计的驱动方：解析（llm-cli）→ audit → 排版 → 退出码
+├── Cargo.toml            # 纯 workspace 根：[workspace]/[workspace.package]/[lints]/[profile.*]，无 package/bin
 ├── docs/
 │   ├── ARCHITECTURE.md   # 分层、依赖规则、所有权表、新增成员三步
 │   └── adr/              # 0001 分层序 / 0002 单一主人 / 0003 kernel 与运行时类型
@@ -97,7 +93,8 @@ llm ──▶ engine ──▶ tensor ──▶ diagnostic
 │                         # 0014 真实权重执行：同一件内核，换一份样本
 └── crates/
     ├── annotation/       # #[spec] 属性宏：注解 → 校验过的 Contract 实现（零外部依赖）
-    ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行（bin 在根包 `src/bin/cutile.rs`）；report/ 是命令侧报告
+    ├── cli/              # 组合根（lib + 两个 bin）：文法解析、`cmd/` 编排入口；`llm` 入口在 `src/main.rs`，`cutile` bin 在 `src/bin/`
+    ├── cutile/           # 机制层（lib）：协商 → 拼接 → emit → 编译执行；命令侧报告在 `cli` 包
     ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义；einsum/ 是求和代价的来源
     ├── prof/             # 档案层：devices/<vendor>.toml + 能力词汇表
     ├── prim/             # 片段层：<vendor>/<prim>.<ext> + witness
@@ -108,12 +105,12 @@ llm ──▶ engine ──▶ tensor ──▶ diagnostic
 `cutile` 的 P0 纵切面已经落地（声明 → 协商 → tile 取值 → 片段拼接 → emit → 编译执行 → 对拍）：
 
 ```bash
-cargo run --bin cutile -- doctor --op gemv_i4 --device auto            # 协商链 + 布局声明 + 缓存指纹
-cargo run --bin cutile -- doctor --op gemv_i4 --device cpu --why 83a3ecdb31cd1225   # 该键为什么没命中
-cargo run --bin cutile -- verify --op gemv_i4 --devices cpu            # 编译执行并与标量参考对拍（L2）
-cargo run --bin cutile -- verify --op gemv_f32 --devices cpu           # 稠密算子同一套流水线（L2）
-cargo run --bin cutile -- bench  --op gemv_i4 --repeat 20              # 形状缺省取算子的生产形状
-cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU 回收到上限以内（缺省 2 GiB）
+cargo run -p llm-cli --bin cutile -- doctor --op gemv_i4 --device auto            # 协商链 + 布局声明 + 缓存指纹
+cargo run -p llm-cli --bin cutile -- doctor --op gemv_i4 --device cpu --why 83a3ecdb31cd1225   # 该键为什么没命中
+cargo run -p llm-cli --bin cutile -- verify --op gemv_i4 --devices cpu            # 编译执行并与标量参考对拍（L2）
+cargo run -p llm-cli --bin cutile -- verify --op gemv_f32 --devices cpu           # 稠密算子同一套流水线（L2）
+cargo run -p llm-cli --bin cutile -- bench  --op gemv_i4 --repeat 20              # 形状缺省取算子的生产形状
+cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                  # 按 LRU 回收到上限以内（缺省 2 GiB）
 ```
 
 | 设备 | 现状 | 说明 |
@@ -121,8 +118,8 @@ cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU
 | `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `crates/op` 的标量参考对拍 `max_rel_err = 0` |
 | `nvidia` / `intel` / `metal` | L1 | 仅有档案、片段与见证；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
 
-`metal` 的设备侧代码还能在构建期编成 `metallib` 并嵌进二进制：`cargo build -p llm --features device-image`
-（默认是源码调试，只带片段与见证）。哪台设备带了什么由 `prim::devices()` 回答，`cargo run -p llm`
+`metal` 的设备侧代码还能在构建期编成 `metallib` 并嵌进二进制：`cargo build -p llm-cli --features device-image`
+（默认是源码调试，只带片段与见证）。哪台设备带了什么由 `prim::devices()` 回答，`cargo run -p llm-cli --bin llm`
 的 `片段层 prim` 一行会逐台列出 `=源码` / `=metallib N B/M 个符号`；`CUTILE_REQUIRE_IMAGE=metal`
 把"缺镜像"升级成构建失败。细节见 [`crates/prim/README.md`](crates/prim/README.md)。
 
@@ -155,9 +152,9 @@ cargo run --bin cutile -- cache gc --limit 1073741824                  # 按 LRU
 `--set`；`--set` 里出现未登记的键会直接报错而不是被忽略。
 
 ```bash
-cargo run --bin cutile -- doctor --op gemv_i4 --device cpu    # [配置] 段逐键标注来源
-CUTILE_CACHE_DIR="$PWD/.cache" cargo run --bin cutile -- verify --devices cpu
-cargo run --bin cutile -- --set work.dir=/tmp/work verify --devices cpu
+cargo run -p llm-cli --bin cutile -- doctor --op gemv_i4 --device cpu    # [配置] 段逐键标注来源
+CUTILE_CACHE_DIR="$PWD/.cache" cargo run -p llm-cli --bin cutile -- verify --devices cpu
+cargo run -p llm-cli --bin cutile -- --set work.dir=/tmp/work verify --devices cpu
 ```
 
 ## 新增成员

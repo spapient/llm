@@ -34,60 +34,66 @@ fn device_images() -> String {
 ///
 /// `weights` 是 `--weights <文件>` 给的 safetensors 路径：给了就读真实条目，不给就只用声明层。
 pub(crate) fn status(weights: Option<&str>) -> Result<()> {
+    let report = build_report(weights)?;
+    print!("{}", report.render());
+    Ok(())
+}
+
+/// 算子清单一行：数量与名字。
+fn ops_row() -> String {
     let ops = op::builtin();
+    format!(
+        "{} 个算子（{}）",
+        ops.len(),
+        tool::join_names(ops.iter().map(op::Op::name))
+    )
+}
+
+/// 设备档案一行：数量与名字。
+fn prof_row() -> String {
     let profiles = prof::names();
-    let mut report = Report::new("llm —— 组装点（各层最小实例）")
-        .row(
-            "声明层  op",
-            format!(
-                "{} 个算子（{}）",
-                ops.len(),
-                tool::join_names(ops.iter().map(op::Op::name))
-            ),
-        )
-        .row(
-            "档案层  prof",
-            format!(
-                "{} 份设备档案（{}）",
-                profiles.len(),
-                tool::join_names(profiles.iter().copied())
-            ),
-        )
-        .row(
-            "片段层  prim",
-            format!(
-                "{} 台设备（{}）；设备侧代码：{}",
-                prim::devices().len(),
-                tool::join_names(prim::devices().iter().map(|device| device.vendor)),
-                device_images(),
-            ),
-        );
+    format!(
+        "{} 份设备档案（{}）",
+        profiles.len(),
+        tool::join_names(profiles.iter().copied())
+    )
+}
 
-    report = report.row(
-        "层定义  nn",
-        format!(
-            "{} → {:?}，算子 {}",
-            LmHead.name(),
-            LmHead.output().dims(),
-            LmHead.spca().ops().join("、")
-        ),
-    );
+/// 片段设备一行：数量、厂商与设备侧代码。
+fn prim_row() -> String {
+    format!(
+        "{} 台设备（{}）；设备侧代码：{}",
+        prim::devices().len(),
+        tool::join_names(prim::devices().iter().map(|device| device.vendor)),
+        device_images()
+    )
+}
 
-    // 层的性能下界：由算子语义推出（不是手写常数），与内核实测对账时才谈得上"优化了多少"。
+/// 层定义一行：LmHead 形状与算子。
+fn lmhead_row() -> String {
+    format!(
+        "{} → {:?}，算子 {}",
+        LmHead.name(),
+        LmHead.output().dims(),
+        LmHead.spca().ops().join("、")
+    )
+}
+
+/// 单层下界一行：构造一个 4096 投影并计价。
+fn projection_row() -> Result<String> {
     let projection = nn::Linear::new("blk.0.attn_q", 4096, 4096)?;
     let floor = projection.bounds()?.ok_or_else(|| {
         Error::new(Code::Internal, "Linear 有形状就应当能计价").with("llm status")
     })?;
-    report = report.row(
-        "下界    层",
-        format!("{} 4096 → ≥ {}", projection.name(), floor_row(&floor)),
-    );
+    Ok(format!(
+        "{} 4096 → ≥ {}",
+        projection.name(),
+        floor_row(&floor)
+    ))
+}
 
-    // 模型下界：层的清单来自真实权重文件（或声明层），总和由 `Bounds::plus` 相加——
-    // 与层下界是同一份语义，因此这里不会多出第二套流量公式。
-    let (model, weights_row) = load_model(weights)?;
-    report = report.row("权重    weights", weights_row);
-    // 无法计价的层不会被悄悄算成 0：它们与"未覆盖"分开列出来，读者才知道这个和覆盖了什么。
+/// 模型下界汇总：逐层求和，另把无法计价的层单独列一行。
+fn model_floor(model: &nn::Stack) -> (String, Option<String>) {
     let floor = model.floor();
     let mut summary = format!(
         "{} 层，每 token ≥ {}",
@@ -104,20 +110,37 @@ pub(crate) fn status(weights: Option<&str>) -> Result<()> {
             tool::join_names(model.uncovered().iter().map(String::as_str))
         ));
     }
-    report = report.row("下界    模型", summary);
-    if !floor.unpriced().is_empty() {
-        // 为什么算不出来，逐条写出来：只说"无法计价 2 层"读者无法判断是格式、形状还是别的。
-        let reasons = floor
-            .unpriced()
-            .iter()
-            .map(nn::Unpriced::to_string)
-            .collect::<Vec<_>>()
-            .join("；");
-        report = report.row("无法计价 nn", reasons);
-    }
+    let unpriced_row = if !floor.unpriced().is_empty() {
+        Some(
+            floor
+                .unpriced()
+                .iter()
+                .map(nn::Unpriced::to_string)
+                .collect::<Vec<_>>()
+                .join("；"),
+        )
+    } else {
+        None
+    };
+    (summary, unpriced_row)
+}
 
+/// 权重与模型下界两行：读文件（或声明层），再排汇总与未计价理由。
+fn model_rows(report: Report, weights: Option<&str>) -> Result<Report> {
+    let (model, weights_row) = load_model(weights)?;
+    let report = report.row("权重    weights", weights_row);
+    let (model_row, unpriced_row) = model_floor(&model);
+    let report = report.row("下界    模型", model_row);
+    Ok(match unpriced_row {
+        Some(reason) => report.row("无法计价 nn", reason),
+        None => report,
+    })
+}
+
+/// 张量与视图两行：最小实例布局。
+fn data_rows(report: Report) -> Result<Report> {
     let tensor = tensor::Tensor::new(tensor::DType::F32, tensor::Shape::new([2, 2]), &[0u8; 16])?;
-    report = report.row(
+    let report = report.row(
         "张量    tensor",
         format!(
             "{:?} {:?} = {} 元素，连续布局：{}",
@@ -127,10 +150,9 @@ pub(crate) fn status(weights: Option<&str>) -> Result<()> {
             tensor.is_contiguous()
         ),
     );
-
     let buffer = vec![0.5f32, 0.25, 0.125, 0.0625];
     let view = tensor::View::new(tensor::Shape::new([2, 2]), &buffer)?;
-    report = report.row(
+    Ok(report.row(
         "视图    tensor::View",
         format!(
             "{:?} {:?}，第 1 行和 = {:.3}（借用调用方 {} 个元素，不复制）",
@@ -141,10 +163,13 @@ pub(crate) fn status(weights: Option<&str>) -> Result<()> {
                 .unwrap_or(0.0),
             view.numel()
         ),
-    );
+    ))
+}
 
+/// 训练行：起一个最小训练计划实例。
+fn train_row(report: Report) -> Result<Report> {
     let schedule = train::Schedule::new(10, 100)?;
-    report = report.row(
+    Ok(report.row(
         "训练    train",
         format!(
             "warmup {}/{} 步，第 0 步 lr = {:.3}",
@@ -152,11 +177,14 @@ pub(crate) fn status(weights: Option<&str>) -> Result<()> {
             schedule.total(),
             schedule.lr(1.0, 0)
         ),
-    );
+    ))
+}
 
+/// 服务行：解析一条路由并编最小提示词。
+fn serve_row(report: Report) -> Result<Report> {
     let route = serve::Route::parse("POST /v1/completions")?;
     let tokens = tokenizer::Bytes.encode("hi")?;
-    report = report.row(
+    Ok(report.row(
         "服务    serve",
         format!(
             "{} {}，提示 \"hi\" → {} 个 token",
@@ -164,12 +192,15 @@ pub(crate) fn status(weights: Option<&str>) -> Result<()> {
             route.path(),
             tokens.len()
         ),
-    );
+    ))
+}
 
+/// 调度行：起页池与一条序列，走一次准入。
+fn engine_row(report: Report) -> Result<Report> {
     let mut scheduler = engine::Scheduler::new(status_pager()?);
     let sequence = engine::Sequence::new(0, &[0; 8], 4, 16, engine::exec::Stream::new(0))?;
     let response = serve::admit(&mut scheduler, &sequence)?;
-    report = report.row(
+    Ok(report.row(
         "调度    engine",
         format!(
             "准入 {} 个序列，占用 {} 页（页宽 {}），响应 {}",
@@ -178,10 +209,27 @@ pub(crate) fn status(weights: Option<&str>) -> Result<()> {
             scheduler.cache().page_size(),
             response.status().code()
         ),
-    );
+    ))
+}
 
-    print!("{}", report.render());
-    Ok(())
+/// 训练、服务、调度三行：各自起一个最小实例。
+fn runtime_rows(report: Report) -> Result<Report> {
+    let report = train_row(report)?;
+    let report = serve_row(report)?;
+    engine_row(report)
+}
+
+/// 组装整份状态报告：各领域一行一段，错误传播收敛到各自助手。
+fn build_report(weights: Option<&str>) -> Result<Report> {
+    let report = Report::new("llm —— 组装点（各层最小实例）")
+        .row("声明层  op", ops_row())
+        .row("档案层  prof", prof_row())
+        .row("片段层  prim", prim_row())
+        .row("层定义  nn", lmhead_row())
+        .row("下界    层", projection_row()?);
+    let report = model_rows(report, weights)?;
+    let report = data_rows(report)?;
+    runtime_rows(report)
 }
 
 /// `status` 用的 KV 页池：这里没有模型，行宽取 1——页里的数不参与账目。
@@ -204,32 +252,42 @@ fn floor_row(bounds: &nn::Bounds) -> String {
     )
 }
 
+/// 没给权重文件：用声明的一对投影搭栈，附一行说明。
+fn declared_stack() -> Result<(nn::Stack, String)> {
+    let model = nn::Stack::new(vec![
+        nn::Linear::new("blk.0.attn_q", 4096, 4096)?,
+        nn::Linear::new("blk.0.attn_o", 4096, 4096)?,
+    ])?;
+    Ok((
+        model,
+        "未提供权重文件：只用声明层（`--weights <file>` 读 safetensors）".to_string(),
+    ))
+}
+
+/// 真实档案一行：条目数、数据段与头部读取量，外加一条按需样例。
+fn archive_row(archive: &weights::safetensors::File, path: &str) -> Result<String> {
+    Ok(format!(
+        "safetensors：{} 条条目，数据段 {} 字节，只读头部 {} / {} 字节（{path}）；{}",
+        archive.header().entries().len(),
+        archive.header().data_bytes(),
+        archive.header_len(),
+        archive.file_len(),
+        read_sample(archive)?
+    ))
+}
+
 /// 模型：给了权重文件就读真实条目，没给就用声明的一对投影。
 ///
 /// 两条路都返回 [`nn::Stack`]，所以"层下界之和"只有一份算法；区别只在层的清单从哪来。返回的
 /// 第二项是权重那一行的文字——把"读到了什么"与"算出了什么"分开，读者才能判断下界覆盖了什么。
 fn load_model(weights: Option<&str>) -> Result<(nn::Stack, String)> {
     let Some(path) = weights else {
-        let model = nn::Stack::new(vec![
-            nn::Linear::new("blk.0.attn_q", 4096, 4096)?,
-            nn::Linear::new("blk.0.attn_o", 4096, 4096)?,
-        ])?;
-        return Ok((
-            model,
-            "未提供权重文件：只用声明层（`--weights <file>` 读 safetensors）".to_string(),
-        ));
+        return declared_stack();
     };
     let archive =
         weights::safetensors::File::open(path).map_err(|error| error.with("llm status"))?;
     let model = nn::Stack::from_header(archive.header())?;
-    let row = format!(
-        "safetensors：{} 条条目，数据段 {} 字节，只读头部 {} / {} 字节（{path}）；{}",
-        archive.header().entries().len(),
-        archive.header().data_bytes(),
-        archive.header_len(),
-        archive.file_len(),
-        read_sample(&archive)?
-    );
+    let row = archive_row(&archive, path)?;
     Ok((model, row))
 }
 

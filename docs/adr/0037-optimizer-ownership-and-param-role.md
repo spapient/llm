@@ -42,9 +42,9 @@ T1 之前 `train` 只有 `Schedule` / `Checkpoint` / `Buffers` / `Pool` / `Store
 
 会话闭环里：tape → 反传可达节点计划 → `Requirement::Grad` 终点分类 → 梯度缓冲（`train::Buffers` 扩展的梯度 lane）→ 优化器步。autograd 侧不出现梯度数组；累积窗口的汇总梯度同样由 train 自持，与矩状态平行入快照。
 
-### 6. CLI 只搬字符串，数值解析在组装点
+### 6. 文法层只搬字符串，数值解析在编排入口
 
-`cli::Command::Train` 只持有 `Option<String>`（lr / warmup / steps / clip / accumulation / load），不解析数值、不构造会话；会话配置与数值解析在根组装点完成。cli 不依赖 train，命令文法与领域类型分层不回退。
+`cli::Command::Train` 只持有 `Option<String>`（lr / warmup / steps / clip / accumulation / load），文法类型不解析数值、不构造会话；数值解析与会话装配在 cli 的编排入口（`cmd::train_run`）完成，由它调用 `train` 库。cli 作为组合根依赖 `train` 仅做装配，优化器与参数角色机制仍归 `train`，命令文法层不引入领域类型。
 
 ## 备选方案
 

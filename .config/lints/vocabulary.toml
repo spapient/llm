@@ -143,44 +143,12 @@ ccn_max = 5          # 圈复杂度上限：ccn = 1 + 条件计数
 nloc_max = 60        # 函数体有效行数上限
 file_max_lines = 899 # 单文件行数硬上限
 
-# `[[gate.debt]]` 存量棘轮：只登记本次扩展扫描面时新纳入的根入口既有超标（`src/`）。
+# `[[gate.debt]]` 存量棘轮：只登记入口编排层既有超标（cli 的 `cmd/` 分派与 `bin/cutile.rs`）。
 # 登记表是实测快照：登记值必须等于实测值，改善后必须删掉对应度量条目（`Gate::stale`），
-# 恶化必失败。根入口的排版/编排逻辑待下沉 `tool`（audit P3-3 / P3-4），下沉后这些条目删除。
-# 运行时生产代码（`crates/*/src`）没有债务条目：超限即新增，直接失败。
+# 恶化必失败。入口的排版/编排逻辑待下沉 `tool`（audit P3-3 / P3-4），下沉后这些条目删除。
+# 运行时生产代码（`crates/*/src` 除 cli 入口外）没有债务条目：超限即新增，直接失败。
 
 [[gate.debt]]
-key = "src/run.rs:run#0"
-ccn = 24
-nloc = 121
-reason = "根入口命令编排：分支按命令与设备分派；待把可复用规则下沉 cli/tool 后拆分"
-
-[[gate.debt]]
-key = "src/status.rs:status#0"
-ccn = 17
-nloc = 135
-reason = "根入口状态汇总：逐段拼装各层簿记输出；待排版逻辑下沉 tool"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:doctor#0"
-ccn = 8
-reason = "cutile 入口诊断编排：库调用错误传播 + 设备/产物/缓存可选分支；段级排版已聚簇到 report 模块，剩余复杂度随错误接缝收口"
-
-[[gate.debt]]
-key = "src/run.rs:parse_input#0"
-ccn = 6
-reason = "根入口输入解析分支；文法稳定后归 cli"
-
-[[gate.debt]]
-key = "src/status.rs:load_model#0"
-ccn = 8
-reason = "根入口装载分支：权重/设备/缓存多路径；待引擎装载接缝定型后收口"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:verify#0"
-ccn = 8
-reason = "cutile 入口校验编排：结果分级、台账落盘与退出码分支；段级排版已聚簇到 report 模块"
-
-[[gate.debt]]
-key = "src/bin/cutile/main.rs:write_ledger#0"
+key = "crates/cli/src/bin/cutile.rs:write_ledger#0"
 ccn = 7
 reason = "cutile 入口台账落盘分支：档案行渲染与文件写入；待归 tool"

@@ -1,12 +1,14 @@
 //! cutile 命令的人可读排版聚簇（bin 内）：判定与数据都在 `cutile` 库，本模块只选词、缩进与分行。
 //!
 //! 这里不定义新类型，也不持有第二份判定规则；需要拍板的结论（首档 / 降级 / 口径无效 / 未达上限）
-//! 一律读库给的枚举、计数与标志，本模块只把它们翻成一句话。
+//! 一律读库给的枚举、计数与标志，本模块只把它们翻成一句话。台账（`ledger`）矩阵排版也在本模块。
 
+use cutile::atom::Prim;
 use cutile::bench::{Bench, Peak, Performance, Verdict};
 use cutile::cap::VariantCheck;
 use cutile::doctor::{Built, CacheState, CacheWhy, Doctor};
 use cutile::emit::Fragment;
+use cutile::ledger::{BackendRow, LedgerCell, Status};
 use cutile::verify::{Negotiation, Verified, VerifyReport};
 
 /// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。

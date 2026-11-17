@@ -13,14 +13,14 @@
 //! cargo run --bin cutile -- cache gc --limit 1073741824
 //! ```
 
-use llm_cli::cutile::CutileCommand;
-use llm_cli::settings::Settings;
 use cutile::bench::{self, Bench};
 use cutile::builtin::Catalogue;
 use cutile::doctor::{self, Doctor};
 use cutile::ledger;
 use cutile::verify::{self, Verified, VerifyEntry};
 use diagnostic::{Code, Error};
+use llm_cli::cutile::CutileCommand;
+use llm_cli::settings::Settings;
 use std::process::ExitCode;
 use tool::Report;
 
@@ -145,6 +145,47 @@ fn ledger(settings: &Settings, out: Option<&str>) -> diagnostic::Result<String> 
     }
 }
 
+/// 报告头部：schema、设备、容量档、units 可选行与声明行。
+fn doctor_head(report: &Doctor) -> Report {
+    let mut head = Report::new(format!(
+        "cutile schema v{} | op={} | skeleton={} | {}",
+        cutile::SCHEMA_VER,
+        report.op.name,
+        report.op.skeleton,
+        report.op.summary
+    ))
+    .row("device", report::device_value(report))
+    .row(
+        "spaces",
+        format!(
+            "GM={} FAST={} REG={}",
+            report.device.spaces[0], report.device.spaces[1], report.device.spaces[2]
+        ),
+    );
+    if let Some(units) = report::units_value(report) {
+        head = head.row("units", units);
+    }
+    head.row("声明", report::declaration_value(report))
+}
+
+/// `--why` 缓存键解释段；没给键或没有可行变体时返回空串。
+fn doctor_why(
+    dirs: &cutile::dirs::Dirs,
+    report: &Doctor,
+    why: Option<&str>,
+) -> diagnostic::Result<String> {
+    let Some(hex) = why else {
+        return Ok(String::new());
+    };
+    let built = report.source.as_ref().ok_or_else(|| {
+        Error::new(
+            Code::Unsupported,
+            format!("没有可行变体，无法解释缓存键 `{hex}`"),
+        )
+    })?;
+    Ok(report::cache_why(&doctor::why(dirs, &built.key, hex)))
+}
+
 fn doctor(
     settings: &Settings,
     op: &str,
@@ -155,27 +196,7 @@ fn doctor(
     let catalogue = Catalogue::load(&dirs)?;
     let report: Doctor = doctor::doctor(&catalogue, &dirs, op, device)?;
 
-    let mut head = Report::new(format!(
-        "cutile schema v{} | op={} | skeleton={} | {}",
-        cutile::SCHEMA_VER,
-        report.op.name,
-        report.op.skeleton,
-        report.op.summary
-    ))
-    .row("device", report::device_value(&report))
-    .row(
-        "spaces",
-        format!(
-            "GM={} FAST={} REG={}",
-            report.device.spaces[0], report.device.spaces[1], report.device.spaces[2]
-        ),
-    );
-    if let Some(units) = report::units_value(&report) {
-        head = head.row("units", units);
-    }
-    let mut out = head
-        .row("声明", report::declaration_value(&report))
-        .render();
+    let mut out = doctor_head(&report).render();
     out.push('\n');
     out.push_str(&settings.describe());
 
@@ -189,17 +210,43 @@ fn doctor(
         return Ok(out);
     }
     out.push_str(&report::post_path_blocks(&report));
-
-    if let Some(hex) = why {
-        let built = report.source.as_ref().ok_or_else(|| {
-            Error::new(
-                Code::Unsupported,
-                format!("没有可行变体，无法解释缓存键 `{hex}`"),
-            )
-        })?;
-        out.push_str(&report::cache_why(&doctor::why(&dirs, &built.key, hex)));
-    }
+    out.push_str(&doctor_why(&dirs, &report, why)?);
     Ok(out)
+}
+
+/// 单条校验结果一行；通过且要求台账时顺带落盘。
+fn entry_line(
+    catalogue: &Catalogue,
+    dirs: &cutile::dirs::Dirs,
+    entry: &VerifyEntry,
+    ledger: bool,
+) -> diagnostic::Result<String> {
+    match entry {
+        VerifyEntry::Passed(verified) => {
+            let line = report::passed_line(verified);
+            let mut out = line.clone();
+            if ledger {
+                out.push_str(&write_ledger(catalogue, verified, &line, dirs)?);
+            }
+            Ok(out)
+        }
+        VerifyEntry::Failed { label, error } => Ok(format!("  {label}: ✗ {error}\n")),
+    }
+}
+
+/// 收尾：有未通过项按"能力不存在"报 unsupported；否则原样返回报告。
+fn finish_verify(out: String, failures: &[&diagnostic::Error]) -> diagnostic::Result<String> {
+    if failures.is_empty() {
+        return Ok(out);
+    }
+    // 缺设备（或设备不成立）是“能力不存在”：类别 `unsupported`，退出码 3。
+    Err(Error::new(
+        Code::Unsupported,
+        format!(
+            "{out}\n缺设备即失败（cutile README §11.2）：{} 项未通过",
+            failures.len()
+        ),
+    ))
 }
 
 fn verify(
@@ -214,56 +261,25 @@ fn verify(
     let mut out = format!("verify {} @ [{}]\n", report.op, report.devices.join(","));
 
     for entry in &report.entries {
-        match entry {
-            VerifyEntry::Passed(verified) => {
-                let line = report::passed_line(verified);
-                out.push_str(&line);
-                if ledger {
-                    out.push_str(&write_ledger(&catalogue, verified, &line, &dirs)?);
-                }
-            }
-            VerifyEntry::Failed { label, error } => {
-                out.push_str(&format!("  {label}: ✗ {error}\n"));
-            }
-        }
+        out.push_str(&entry_line(&catalogue, &dirs, entry, ledger)?);
     }
     out.push_str(&report::negotiation_summary(&report));
 
     let failures = report.failures();
-    if failures.is_empty() {
-        Ok(out)
-    } else {
-        // 缺设备（或设备不成立）是“能力不存在”：类别 `unsupported`，退出码 3。
-        Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "{out}\n缺设备即失败（cutile README §11.2）：{} 项未通过",
-                failures.len()
-            ),
-        ))
-    }
+    finish_verify(out, &failures)
 }
 
-/// 能力台账：人可读的 markdown，属于呈现场景，所以留在前端。
-fn write_ledger(
-    catalogue: &Catalogue,
+/// 台账头部：标题、档案出处、工具链实测/登记对照与结论行。
+fn ledger_header(
+    profile: &cutile::prof::Profile,
     verified: &Verified,
     conclusion: &str,
-    dirs: &cutile::dirs::Dirs,
-) -> diagnostic::Result<String> {
-    let profile = catalogue.resolve(&verified.device)?;
-    let dir = dirs.work().join("ledger");
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| Error::new(Code::Io, format!("建 {} 失败：{error}", dir.display())))?;
-    let path = dir.join(format!("{}.capability.md", profile.meta.vendor));
+) -> String {
     let mut text = format!(
         "# {} 能力台账（由 `cutile verify --emit-ledger` 生成）\n\n",
         profile.meta.vendor
     );
-    text.push_str(&format!(
-        "- 档案：`{}` ({})\n",
-        profile.meta.id, profile.meta.checked
-    ));
+    text.push_str(&format!("- 档案：`{}` ({})\n", profile.meta.id, profile.meta.checked));
     // 台账要能回答"这条证据是谁编出来的"：实测值来自 `--version`，登记值是人写的出处。
     let actual = verified
         .toolchain
@@ -279,7 +295,12 @@ fn write_ledger(
         verified.tool_ver
     ));
     text.push_str(&format!("- 结论：{}", conclusion.trim()));
-    text.push_str("\n\n| 原语 | 实现 | 等级 | 见证 |\n|---|---|---|---|\n");
+    text
+}
+
+/// 台账原语表：逐条列出实现、等级与见证出处。
+fn ledger_primitives(profile: &cutile::prof::Profile) -> String {
+    let mut text = String::from("\n\n| 原语 | 实现 | 等级 | 见证 |\n|---|---|---|---|\n");
     for have in &profile.provides {
         let witness = have
             .witness
@@ -291,6 +312,23 @@ fn write_ledger(
             have.prim, have.impl_name, have.grade, witness
         ));
     }
+    text
+}
+
+/// 能力台账：人可读的 markdown，属于呈现场景，所以留在前端。
+fn write_ledger(
+    catalogue: &Catalogue,
+    verified: &Verified,
+    conclusion: &str,
+    dirs: &cutile::dirs::Dirs,
+) -> diagnostic::Result<String> {
+    let profile = catalogue.resolve(&verified.device)?;
+    let dir = dirs.work().join("ledger");
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| Error::new(Code::Io, format!("建 {} 失败：{error}", dir.display())))?;
+    let path = dir.join(format!("{}.capability.md", profile.meta.vendor));
+    let mut text = ledger_header(&profile, verified, conclusion);
+    text.push_str(&ledger_primitives(&profile));
     std::fs::write(&path, text)
         .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", path.display())))?;
     Ok(format!("    ledger → {}\n", path.display()))

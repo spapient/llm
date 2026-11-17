@@ -1,15 +1,17 @@
-//! 命令行前端：把 `argv` 与环境变量解析成 [`Command`] 与 [`settings::Settings`]，**不执行任何业务**。
+//! 组合根（L7）与命令行文法层：把 `argv` 与环境变量解析成 [`Command`] 与 [`settings::Settings`]，
+//! 再由 [`entry`] 分派到 [`cmd`] 编排入口；两个二进制 `llm` 与 `cutile` 都在本包（见 `src/main.rs` 与 `src/bin/`）。
 //!
 //! **拥有**：`Command`、`Invocation`、`USAGE`、`parse`、内核层审计的子命令文法 [`cutile::CutileCommand`]，
-//! 以及三个目录开关的解析策略 [`settings`]（默认值、`CUTILE_*`、`--set`、来源追踪）。
-//! **不拥有**：业务实现（各层自己）、输出排版（`tool`）、退出码语义（`llm` 决定）。
-//! **依赖**：`diagnostic`。**被依赖**：`llm`（`llm` 与它的 `cutile` 二进制）。
+//! 三个目录开关的解析策略 [`settings`]（默认值、`CUTILE_*`、`--set`、来源追踪），以及 [`cmd`] 编排分派。
+//! **不拥有**：内核业务实现（各层库自己）、输出排版（`tool`）。编排入口只装配、取值解析与人可读排版，不定义新类型；
+//! `main` 把 [`entry`] 的 [`Result`] 转成退出码。
+//! **依赖**：各内核层与 `diagnostic`；本包即入口，不被更高层库依赖。
 //!
 //! 配置为什么在这一层：默认目录是**部署策略**（面向发布后的二进制），`--set` 是**命令行文法**；
 //! 两者都是"这次调用怎么来的"，而不是"内核怎么实现"。内核只收 `cutile::dirs::Dirs` 这份纯数据，
 //! 于是它可以被测试、服务或别的宿主按各自的约定接管（ADR 0023）。
 //!
-//! 解析与执行分开的理由：`llm` 是组装点，它的 `main` 只该做"解析 → 分派 → 退出码"三件事。
+//! 解析与执行分开的理由：本包是组装点，它的 `main` 只该做"解析 → 分派 → 退出码"三件事。
 //! 把参数文法写进组装点或写进被驱动的层（`cutile` 曾经自己认 `doctor` / `verify` / `bench`），
 //! 等于多出一套文法：两个入口对同一个选项的解释会慢慢分叉。
 //!
@@ -280,9 +282,11 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
             Ok(())
         }
         Command::Status { weights } => cmd::status(weights.as_deref()),
-        Command::Run { weights, input, device } => {
-            cmd::run(weights, input.as_deref(), device.as_deref())
-        }
+        Command::Run {
+            weights,
+            input,
+            device,
+        } => cmd::run(weights, input.as_deref(), device.as_deref()),
         Command::Verify { .. } | Command::Bench { .. } => audit_note(),
         Command::Train {
             lr,

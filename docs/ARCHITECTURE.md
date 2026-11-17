@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 111 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -48,7 +48,7 @@ dtype    → （叶：精度闭集，无运行期工作区依赖）    +dev: tes
 tensor   → diagnostic, dtype    +dev: testkit
 storage  → tensor, diagnostic
 tokenizer→ diagnostic
-weights  → tensor, diagnostic, dtype, wire, storage    +dev: storage, testkit
+weights  → tensor, diagnostic, dtype, wire, storage（`storage` 仅由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）    +dev: storage, testkit
 autograd → tensor, diagnostic    +dev: testkit
 data     → tensor, diagnostic
 nn       → tensor, op, weights, diagnostic, annotation
@@ -61,7 +61,7 @@ cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, toke
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / LLPK 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 LLPK 夹具写形状、`tool` 词汇片段解析；`prof` 的档案入口随 ADR 0022 离开运行期，这条边随之删除）
 benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型，`nn` 出层下界与栈合计；`engine` 出页账与序列几何、`serve` 出宿主与 Predict 路线 B，供整模型一步夹具装配）
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）    +dev: testkit
-testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 工作区契约门禁；跨层对拍 `tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段，`autograd` 出 `Tape`/`Sizes`，`tool` 出词汇片段解析；被测层只出现在 dev-dependencies，不进产品路径）
+testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 工作区契约门禁；跨层对拍 `crates/testkit/tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段，`autograd` 出 `Tape`/`Sizes`，`tool` 出词汇片段解析；被测层只出现在 dev-dependencies，不进产品路径）
 wire     → diagnostic（纯字节码闭集：CRC-32、LEB128、Sink；不认识张量或容器布局）    +dev: testkit
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自己的出边为零）
 ```
@@ -69,7 +69,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 七条吸收链（`checkpoint→train`、`audit→cutile`、`regress→tool`、`exec→engine`、`kv→engine`、`einsum→op`、`proto→serve`）
 **已落地**（ADR 0019）：成员从 33（含根包）降到 26，边从 106 条降到 82 条：消失的边是被吸收方的全部出边与全部入边，
 新增的边只有 `cutile → annotation`（工具边）与 `serve → +dev: testkit`（`proto` 的 CRC 对拍随迁）。
-方向合法性没有变化：七条链都是"同层向左"或"跨层向下"，因此 `tests/architecture.rs` 的方向断言一条都不需要放宽。
+方向合法性没有变化：七条链都是"同层向左"或"跨层向下"，因此 `crates/testkit/tests/architecture.rs` 的方向断言一条都不需要放宽。
 
 第八次是**拆分后删除**（ADR 0020 → 0021）：`llm-config` 没有单一消费者，不能像上面七条那样被某个 crate 整体吸收，
 所以按"谁真的用得上"分成两半——设置层（分层、来源、键闭集、平台目录）当时只有一个生产消费者，先进了
@@ -88,13 +88,13 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 `--set`"，而这三件事没有一件是内核机制该决定的——默认目录是**部署策略**，`--set` 是**命令行文法**。
 于是 924 行的分层机制缩成 `cutile::dirs::Dirs`（三个路径的纯数据，64 行），解析、来源追踪与
 `--set` 的 argv 扫描整体搬到 `cli::settings`（`cli` 本来就是"argv + 环境 → 强类型调用参数"的那一层）。
-成员数与边数**一条未增**：`cli` 仍只依赖 `diagnostic`（键表不再借 `prof::atom::Closed`，三个键不值得
+成员数与边数**一条未增**（ADR 0023 时点）：`cli` 当时只依赖 `diagnostic`（键表不再借 `prof::atom::Closed`，三个键不值得
 拉一套闭集机制），`cutile` 的五个出边原样；两个二进制各写一个 `kernel_dirs` 投影函数把 `Settings`
 变成 `Dirs`，因此"配置策略"与"内核输入"之间只剩一次显式转换。
 
 ## 三、所有权表（一个类型只能有一个主人）
 
-这张表由 `tests/architecture.rs` **双向**校验：表里写的必须在 `crates/<主人>/src` 里有 `pub` 定义；
+这张表由 `crates/testkit/tests/architecture.rs` **双向**校验：表里写的必须在 `crates/<主人>/src` 里有 `pub` 定义；
 反方向也成立——每个成员源码里的 `pub struct|enum|trait` 必须在表里，或登记在
 `lints/vocabulary.toml` 的 `[[ownership.unlisted]]` 存量基线，且基线不允许过期（某个名字进了表
 或不再是 `pub`，对应条目必须删除）。L7 组装点另有单独一条：`src/**/*.rs` 不得定义任何类型。
@@ -104,7 +104,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Error` / `Code` / `Result` | `diagnostic` | 全仓库唯一的错误类型；同一 crate 的 `data` 子模块（ADR 0022）还拥有 `Table` / `Value`——它们是**声明数据树**，由构建期生成代码构造，运行期没有解析器，因此也不存在"语法错误"这一类；`op` / `prof` / `prim` / `cutile`（含 `report`）用同一份它，类别由**产生错误的那一层**给（`ProfileError::code`、`prim` 的装载诊断），上层只补上下文。`Error::also` 把同一次校验里的第二条失败追加为同级诊断（各自带类别，不再被 join 成一行 `invalid`）；`Error::from_io` 是"路径不存在 `missing` / 存在但读不出 `io`"的唯一判定；`Code::exit_code` 是类别到 shell 退出码的唯一映射（2/3/4/5/70） |
 | `DType` / `QType` / `MxType` / `Element` | `dtype` | 全仓唯一的精度事实源，三个格式轴分文件（`Element` 是 MX 的子闭集）：`dtype.rs` 的 `DType` 是标量闭集（24 个变体，Bool、U1–U64、I1–I64、F8 两种、F4、F16、BF16、F32、F64、`F8E4M3FNUZ`/`F8E5M2FNUZ`），稳定数字 code 与 LLPK 容器逐位兼容（前 21 个与旧 Wire 同码，F4 追加 22、FNUZ 追加 23/24）；`qtype.rs` 的 `QType` 是 GGML 块量化（25 个格式，传统 Q、K-quant、IQ 查表、TQ 三元四族；`Scale` 记块内 scale 前缀形状 f16/双 f16/f32/sub-scale，`Family` 记编码族，二者正交，`q8_K` 的 f32 d 与 `iq4_nl` 的单 d 各按源码如实分类）；`mxtype.rs` 的 `MxType` 是微缩放（OCP MX 六个标准格式 + NVFP4 厂商扩展，块共享纯指数 scale），同文件的 `Element` 是 MX 块内元素格式（E2M1/E2M3/E3M2/E4M3/E5M2/INT8，6 个，只回答位宽与标量对应）。这些格式只放身份与布局元数据，反量化算法留在 `weights`；除 `parse_name`（转调 trait 默认实现）外 inherent 访问器全部 `const fn`，零运行时开销，同一批读法再由 `Format` / `BlockFormat` 提供一次泛型视角（stable 无 const trait：几何的唯一实现是 inherent `const fn`，trait 只转发；`parse_name` 反过来由 trait 默认实现唯一提供），`Layout<B>` 是「标量元素或块格式」的唯一几何（`weights` 的 GGUF 支持表用 `Layout<QType>`，接 MXFP4 时换 `Layout<MxType>`）。各层以再导出（`tensor`、`weights` 的 `Wire`）、trait 或子集表表达局部能力，不再手写跨层映射 |
 | `Dirs` | `cutile` | 内核要的三个目录（缓存根、工作目录、可选数据根）——**纯数据**：不带默认值、不读环境变量、不认识命令行。地址是调用方的策略，因此 `cutile` 只依赖 `std::path`，换一个嵌入方（测试给临时目录、服务给容器卷）不用改内核一行（ADR 0023） |
-| `Settings` / `Roots` | `cli` | 三个目录开关的**解析策略**（`crates/cli/src/settings.rs`，ADR 0023）：内置默认 < `CUTILE_*` < `--set`、来源追踪（`值 ← 来源`）、平台默认目录与相对路径基准。键表是一行一个的声明宏（`cache.dir` / `work.dir` / `data.root`，含 `CUTILE_CACHE` 兼容名），`describe` 与"键未登记"的清单都从同一张表派生；**没有配置文件**（ADR 0022）。它曾经是独立成员 `llm-config` 的设置层，并入 `cutile` 后又上移到本层：默认目录是部署策略、`--set` 是命令行文法，都不是内核的职责，上移后成员数与依赖边一条未增——`cli` 仍只依赖 `diagnostic`，`cutile` 仍只收纯数据 |
+| `Settings` / `Roots` | `cli` | 三个目录开关的**解析策略**（`crates/cli/src/settings.rs`，ADR 0023）：内置默认 < `CUTILE_*` < `--set`、来源追踪（`值 ← 来源`）、平台默认目录与相对路径基准。键表是一行一个的声明宏（`cache.dir` / `work.dir` / `data.root`，含 `CUTILE_CACHE` 兼容名），`describe` 与"键未登记"的清单都从同一张表派生；**没有配置文件**（ADR 0022）。它曾经是独立成员 `llm-config` 的设置层，并入 `cutile` 后又上移到本层：默认目录是部署策略、`--set` 是命令行文法，都不是内核的职责；`cutile` 仍只收纯数据 |
 | `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` / `Buffer` | `op` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；`Buffer` 是内核样本的具名缓冲（形参名 + 取值）；不认识设备、tile 或片段 |
 | `Op` / 模板文本 / `Signature` / `Sample` / `Model` | `op` | 算子声明、模板与算子语义（签名、样本、标量参考），`REGISTRY` 现有 24 条注册（GEMV 与 GEMM 各三个格式、逐元素与归约、形态算子、注意力两条及其 decode 变体两条、解量化两条），其中 GEMV 三条共用一份泛型骨架、只差格式契约；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生（`output_type` 与 `Model::dtype` 交叉核对，回读只认 `float`）；代价由 `op::einsum` 推出，`Cost` 只是再导出；`bind` 是真实数据进入样本的唯一入口（只换 `x` / `w`，量化缓冲明确拒绝） |
 | `Format` / `OperandSpec` / `Element` / `FormulaCache` | `op` | GEMV 骨架的格式契约：`Format` 把"随精度变化"的部分（权重元素、位宽、粒度、派生轴、标度、解包循环）收成关联常量与方法，`OperandSpec` 是表达式的操作数表（`const` 数组，装载时再转 `Operand`），`Element` 是样本缓冲的元素闭集（`f32` / `u8`，让 `reference` 不必按变体分发），`FormulaCache` 是四条骨架（GEMV / 逐元素 / 一元 / 归约）共用的唯一一份表达式缓存实现，单元格仍由每个具体格式用 `static` 持有（泛型作用域里的 `static` 只有一份，共用会让两种精度拿到错误的轴表），`Format::CHECK` 是格式对自身声明的自证（粒度 > 0、派生轴除数就是粒度——两处都拿同一个常数算分组，否则代价与样本是两种语义），由 `#[model]` 生成物在别名上求值；`Quantized<G>` / `Dense<B>` 的 const 参数分别承载声明粒度与累加块宽，`cost` / `sample` / `reference` 按格式单态化，`Model` 里仍是三个 `fn` 指针 |
@@ -146,7 +146,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Buffers` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地——按 `Sizes` 分配、按计划的释放点当场交还、按等长空闲表复用。`load` 要求变量已登记形状与元素类型（缺登记是 `internal`，不是"跳过校验"），分配走 `try_reserve_exact`（形状可能来自权重文件头，分配失败是一条错误而不是 `abort`）。算术交给 `Kernel`（默认 `Reference` 调 `op` 的标量语义），本层不定义算子、不决定显存计划、不碰 `unsafe`。两条存储 lane（`f32` 与按位打包 `u8`）由密封 trait `Lane` 承载，形态标签 `Kind` 只在"元素类型 → 形态"处出现一次；`Reference` 的算子表长度与顺序同 `op::REGISTRY` 在编译期锁死，`Inputs` 把每组输入的 lane 写成类型 |
 | `Sequence` / `Scheduler` / `Progress` | `engine` | 连续批与序列状态；准入只预留提示的页，之后每生成一个 token 由 `Scheduler::advance` 预留它要落的那页（池不够返回 `Blocked` 且不改任何状态），`Sequence::step` 因此不是公开 API；`blocked()` 给出批级阻塞集。`Sequence` 还是已生成 token 的唯一存放处（`tokens` 只读、`push_token` 仅同 crate 可见）：`Predict` 只看得到序列，历史存到别处就等于把"模型能读到自己的输出"降级成调用方约定。记账与推进成对走 `Batch::emit`——`Blocked` 时不多记一个 token，否则重试会看见一个并不存在的输出 |
 | `Route` / `Endpoint` / `Response` | `serve` | 端点契约。`Endpoint::call` 的 `Err` 只留给"服务端自己坏了"，请求侧的不合法必须落成 `Response::error(BadRequest, …)`——准入就是个例子：id 重复、序列已结束、页宽与调度器不一致都是客户端能改的错，`503` 只用于"现在满、可重试"，`400` 只用于"永远装不下或请求自相矛盾" |
-| `Command` / `Invocation` / `USAGE` | `cli` | 命令行解析；只分派，不执行任何业务 |
+| `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv/env → 强类型调用参数）与编排分派；编排入口只装配各层、取值解析与人可读排版，不定义新类型 |
 | `Report` / `join_names` | `tool` | 人可读输出；只接字符串，不接领域类型 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tool` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。语言身份不走注解：设备执行是 `cutile` 的 `const SPECS` 描述符表按 `Emit` 登记探测、程序生成、执行回读三个函数指针，新增设备 = 表里加一行；语法门 `const GATES` 表行只带工具名与语法检查参数，"见证必须在它自己声称的语言里编得过"做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
@@ -214,7 +214,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
   `prof` 之下，反向依赖会成环）允许把词汇表留在本地，但必须登记在
   `lints/vocabulary.toml` 并写明理由；`serve` 的豁免条目指的是它的 `protocol` 模块（帧类型 `Kind`）。
 
-这份契约由 `tests/contracts.rs` 执行：它扫描 `crates/*/src/**/*.rs`，禁止新增手写 `const ALL: [..]`
+这份契约由 `crates/testkit/tests/contracts.rs` 执行：它扫描 `crates/*/src/**/*.rs`，禁止新增手写 `const ALL: [..]`
 与手写位集（白名单在 `lints/vocabulary.toml`：dylint 规则已按 `ui-toml` 的格式设计、计划读同一份，
 但**那条规则目前还没有落地**，今天只有测试在消费它），并禁止白名单过期（某成员已经改用 `Closed`
 却还挂在白名单上，测试会要求删掉那条豁免）。
@@ -225,7 +225,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 `DType::variant` 把前者翻成后者。三处必须同时成立，否则改名会变成一处静默漂移：
 
 - `crates/annotation/src/syntax.rs` 的 `DTYPES` 与「`cutile::reference::tolerance` 给出非零阈值」的 `DType` 集合逐项相等
-  （`tests/contracts.rs` 的 `annotation_names_come_from_the_vocabulary`）。这是**等式**：
+  （`crates/testkit/tests/contracts.rs` 的 `annotation_names_come_from_the_vocabulary`）。这是**等式**：
   少一个名字就有一种输出永远无法被声明，多一个就拼出匹配不上的代码；
 - 每个注解调用点生成的 `#[cfg(test)]` 模块把字面量与变体对齐
   （`DType::parse_name(dtype) == Some(MODEL.dtype)`），
@@ -233,14 +233,14 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
   注解说"按什么解释"、模板说"写的什么"，两者分家就对拍不上；失败指向被标注的那一行，而不是另一张表；
 - 变体名取 `DType::variant`：`dtype` 名 → 变体名不再在注解里手写一份映射（缩写词全大写
   如 `bf16 → BF16` 的规则也住在 dtype 里），`annotation` 依赖 `dtype` 这个 L1 零依赖基座直接取
-  唯一事实源，`tests/contracts.rs` 再把 `Debug` 名与 `variant` 对齐。
+  唯一事实源，`crates/testkit/tests/contracts.rs` 再把 `Debug` 名与 `variant` 对齐。
 
 #### 语义表的唯一生产者
 
 `Model` 不能有第二份来源。`#[annotation::model(name = .., shape = [..], dtype = ..)]` 标在
 `type 名字 = <具体格式>;` 上，生成 `MODEL` 常量、`const _: () = <名字 as Format>::CHECK;`
 与一条校验测试；注册表里的 `model:` 只能写 `..::MODEL`。两侧互为镜像，由
-`tests/contracts.rs::the_registry_and_the_model_annotations_are_mirrors` 判：
+`crates/testkit/tests/contracts.rs::the_registry_and_the_model_annotations_are_mirrors` 判：
 
 - 标了 `#[model]` 却没在 `REGISTRY` 里加一行——生成物还在，发布出去的二进制里没有这条算子，
   `verify --op <名字>` 报"未知算子"，而作者以为已经接上；
@@ -288,11 +288,11 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `clippy -D warnings` | CI `clippy` job | 缺元数据（`cargo::cargo_common_metadata`）、缺文档、`unsafe` 风格 |
 | `RUSTDOCFLAGS=-D warnings cargo doc` | CI `doc` job | 文档里的坏链接、未文档化的公开项 |
 | `cargo test --workspace` | CI `test` job | 行为回归 |
-| `tests/architecture.rs` | CI `test` job | 成员集合、边集合与方向、所有权表的 `pub` 定义与 `cargo metadata` / 源码不一致；以及 `op` / `prof` / `prim` / `cutile`（含 `report`）是否又退回 `Result<_, String>` |
-| `tests/contracts.rs` + `lints/vocabulary.toml` | CI `test` job | 闭集表或位集被手写第二份；白名单过期；扫描器什么都没扫到（有源文件数下限，避免“空门禁假绿”）；注解与注册表不互为镜像（标了 `#[model]` 没注册、注册的语义表不是注解生成的常量） |
+| `crates/testkit/tests/architecture.rs` | CI `test` job | 成员集合、边集合与方向、所有权表的 `pub` 定义与 `cargo metadata` / 源码不一致；以及 `op` / `prof` / `prim` / `cutile`（含 `report`）是否又退回 `Result<_, String>` |
+| `crates/testkit/tests/contracts.rs` + `lints/vocabulary.toml` | CI `test` job | 闭集表或位集被手写第二份；白名单过期；扫描器什么都没扫到（有源文件数下限，避免“空门禁假绿”）；注解与注册表不互为镜像（标了 `#[model]` 没注册、注册的语义表不是注解生成的常量） |
 | `#[model]` 生成的两个 `const` + 一条测试 | 被标注 crate 的 `cargo test` | 格式自证不成立（粒度 ≤ 0、派生轴除数 ≠ 粒度，编译期即失败）；注解的 `dtype` 与 `.k` 的可写输出不是同一个类型 |
 
 `cargo metadata` 只能告诉你"谁依赖谁"，不能告诉你"这个依赖方向对不对"——后者由本文的层表定义，
-再由 `tests/architecture.rs` 执行：它读 `cargo metadata` 与源码，把第一节的成员表、第二节的边集
+再由 `crates/testkit/tests/architecture.rs` 执行：它读 `cargo metadata` 与源码，把第一节的成员表、第二节的边集
 （含总数与 `+dev` 数）、第三节的所有权表逐条比对。新增成员或调整依赖方向时，改完文档再跑
 `cargo test`——不一致会直接失败，不再依赖评审清单。

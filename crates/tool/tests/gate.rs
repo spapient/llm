@@ -8,7 +8,7 @@
 //!
 //! 扫描分四类，适用的度量不同：
 //!
-//! - **生产代码**（`crates/*/src` 非测试夹具）与**根入口**（根包 `src/`）：全套门——
+//! - **生产代码**（`crates/*/src` 非测试夹具；入口二进制 `cli` 的 `src/main.rs` 与 `src/bin/` 也在此列）：全套门——
 //!   裸 unwrap/expect/panic、ccn、nloc、单文件行数、词法。
 //! - **构建脚本**（`crates/*/build.rs`）：守门词法与单文件行数；脚本对 cargo 注入的环境变量
 //!   用 `expect`、用 `fail()` panic 是构建期惯例，不套运行时零 panic 门，复杂度指标随脚本
@@ -40,11 +40,10 @@ fn every_source_passes_the_static_gate() {
     let crates = root.join("crates");
 
     let production = rust_files(&crates);
-    let entries = entry_files(&root.join("src"));
     let build_scripts = build_script_files(&crates);
     let integration_tests = integration_test_files(&crates);
 
-    let scanned = production.len() + entries.len() + build_scripts.len();
+    let scanned = production.len() + build_scripts.len();
     assert!(
         scanned >= MIN_SOURCES,
         "扫描文件数 {scanned} 低于下限 {MIN_SOURCES}",
@@ -55,7 +54,7 @@ fn every_source_passes_the_static_gate() {
     // 身份 → 本次仍超限的度量；棘轮按（身份, 度量）结清，不按身份。
     let mut live = BTreeMap::new();
 
-    for path in production.iter().chain(entries.iter()) {
+    for path in &production {
         scan_production(&gate, root, path, &mut bad, &mut live);
     }
     for path in &build_scripts {
@@ -175,13 +174,6 @@ fn judge(
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk(dir, &mut out, "rs", true, &is_production);
-    out
-}
-
-/// 根包入口：`src/main.rs` 与 `src/bin/*.rs`，没有 `crates/*/src` 那层目录谓词。
-fn entry_files(src: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    walk(src, &mut out, "rs", true, &|_| true);
     out
 }
 

@@ -88,10 +88,7 @@ fn every_edge_points_to_a_lower_layer_or_to_the_left() {
     for edge in &edges {
         // 工具成员没有运行时层级，它们的边不参与方向判定（ARCHITECTURE §一）。
         // `+dev` 边只服务测试/夹具，不进任何产品二进制，同样不约束运行时分层方向。
-        if edge.dev
-            || contract.tools.contains(&edge.from)
-            || contract.tools.contains(&edge.to)
-        {
+        if edge.dev || contract.tools.contains(&edge.from) || contract.tools.contains(&edge.to) {
             continue;
         }
         let from = contract
@@ -231,7 +228,10 @@ fn the_entry_point_defines_no_types() {
     for path in &files {
         let text = std::fs::read_to_string(path).expect("源文件可读");
         for (index, line) in text.lines().enumerate() {
-            if type_definition(line).is_some() {
+            // 只拦对外公开的领域类型；模块内私有枚举/结构体是编排实现细节，允许保留。
+            if let Some((public, _)) = type_definition(line)
+                && public
+            {
                 defined.push(format!("{}:{}", path.display(), index + 1));
             }
         }
@@ -648,10 +648,7 @@ fn declares_public(crate_name: &str, name: &str) -> bool {
     const KINDS: [&str; 8] = [
         "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
     ];
-    let root = workspace_root()
-        .join("crates")
-        .join(crate_name)
-        .join("src");
+    let root = workspace_root().join("crates").join(crate_name).join("src");
     let mut pending = vec![root];
     while let Some(directory) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(directory) else {

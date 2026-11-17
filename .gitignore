@@ -1,7 +1,8 @@
 # 构建产物
 target/
 
-# jscpd 重复检测报告（输出目录见 .config/.jscpd.json 的 output）
+# jscpd 重复检测报告：输出在 target/jscpd-report（随 target/ 忽略）；
+# /report/ 作为遗留保险，源码树不允许出现 report 目录。
 /report/
 
 # 工具与编辑器的本地状态
