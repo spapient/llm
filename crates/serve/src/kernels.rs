@@ -123,9 +123,21 @@ kernel!(
     add_f32,
     mul_f32,
     residual_add_f32,
-    rmsnorm_f32,
     embed_f32; binary
 );
+
+/// rmsnorm 适配：行宽取 `gamma` 长度；整块 `[batch, row_dim]` 段连续，段内独立 RMS 归一化，
+/// `gamma` 按行宽复用；单序列 `batch=1` 退化为单行 `forward`。段内校验交 [`forward_batch`]。
+fn rmsnorm_f32(
+    _launch: Launch,
+    inputs: &[View<'_>],
+    outputs: &mut [ViewMut<'_>],
+) -> Result<()> {
+    let x = input_f32("rmsnorm_f32", inputs, 0)?;
+    let gamma = input_f32("rmsnorm_f32", inputs, 1)?;
+    let out = output_f32("rmsnorm_f32", outputs, 0)?;
+    op::rmsnorm_f32::forward_batch(x, gamma, out, gamma.len())
+}
 
 /// 注意力三路适配：`q/k/v → out`；头宽 `d` 取算子静态语义表，序列长 `s` 由 `q` 长推出，
 /// 形状不符交由算子参考校验。朴素与 Flash 同几何，只换内核算式。

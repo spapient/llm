@@ -511,6 +511,26 @@ fn rmsnorm_runs_through_the_registered_kernel() {
     assert_close(&produced, &reference);
 }
 
+/// 两行批整块归一化：`gamma` 按行宽复用，两段独立 RMS、互不串段；参考逐行 `forward` 重算。
+#[test]
+fn rmsnorm_groups_batch_rows_against_the_single_row_reference() {
+    let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let gamma = [1.0, 1.0, 1.0];
+    let mut reference = vec![0.0; 6];
+    for row in 0..2 {
+        let start = row * 3;
+        op::rmsnorm_f32::forward(&x[start..start + 3], &gamma, &mut reference[start..start + 3])
+            .expect("参考：逐行归一化");
+    }
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &x);
+    bind(&mut executor, 1, &gamma);
+    let produced = run_one(&mut executor, "rmsnorm_f32", &[0, 1], 2, 6);
+
+    assert_close(&produced, &reference);
+}
+
 #[test]
 fn binary_elementwise_runs_through_the_registered_kernel() {
     let a = [1.0, 2.0];
