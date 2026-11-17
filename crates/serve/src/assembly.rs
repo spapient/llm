@@ -54,11 +54,11 @@ impl Assembly {
     /// 把当前位置写进全部 rope 节点的标量槽；提交前由宿主按当前步回填，图结构不改。
     pub(crate) fn set_rope_positions(&mut self, position: u32) {
         for &id in &self.rope {
-            let node = self
-                .graph
-                .nodes_mut()
-                .iter_mut()
-                .find(|node| node.outputs().first().is_some_and(|operand| operand.id() == id));
+            let node = self.graph.nodes_mut().iter_mut().find(|node| {
+                node.outputs()
+                    .first()
+                    .is_some_and(|operand| operand.id() == id)
+            });
             if let Some(node) = node {
                 node.scalars_mut().set_rope_position(position);
             }
@@ -129,12 +129,7 @@ pub(crate) struct NodeSink<'a> {
 impl<'a> NodeSink<'a> {
     /// 一层接进图：输入 0 = 主链上一层输出；逐元素二元的旁路输入 1（若有）；投影/归一化/查表
     /// 再加驻留权重编号，一元点wise/二元/位置编码只有各自的输入路数。
-    fn push_node(
-        &mut self,
-        prev: u32,
-        plan: &LayerPlan,
-        bypass: Option<u32>,
-    ) -> Result<u32> {
+    fn push_node(&mut self, prev: u32, plan: &LayerPlan, bypass: Option<u32>) -> Result<u32> {
         let output_id = self.slots.activation()?;
         let mut node = Node::new(
             plan.operator.clone(),
@@ -268,11 +263,7 @@ fn advance_layer(
 }
 
 /// 取二元层的旁路第二输入槽；无持有激活或宽度不符时返回 [`Code::Invalid`]。
-fn bypass_input(
-    name: &str,
-    width: usize,
-    held: Option<(u32, usize)>,
-) -> Result<u32> {
+fn bypass_input(name: &str, width: usize, held: Option<(u32, usize)>) -> Result<u32> {
     let Some((slot, held_width)) = held else {
         return Err(Error::new(
             Code::Invalid,
@@ -371,5 +362,3 @@ pub(crate) fn submit_and_fetch(
         .ok_or_else(|| Error::new(Code::Internal, "输出缓冲已预绑，取回失败").with(SITE))?;
     Ok(output.to_vec())
 }
-
-

@@ -136,11 +136,7 @@ fn wire_qkv(
 }
 
 /// RoPE 子节点：对一路投影向量按位置做旋转；位置走标量槽，由宿主每步回填。返回旋转后编号。
-fn wire_rope(
-    sink: &mut NodeSink<'_>,
-    input: u32,
-    width: usize,
-) -> Result<u32> {
+fn wire_rope(sink: &mut NodeSink<'_>, input: u32, width: usize) -> Result<u32> {
     let output = sink.slots.activation()?;
     let mut node = Node::new(
         "rope_f32".to_string(),
@@ -224,11 +220,7 @@ fn wire_output(
 }
 
 /// 把注意力块拆成子节点接进图；返回块输出激活编号。
-fn push_block(
-    sink: &mut NodeSink<'_>,
-    prev: u32,
-    block: &AttentionBlock,
-) -> Result<u32> {
+fn push_block(sink: &mut NodeSink<'_>, prev: u32, block: &AttentionBlock) -> Result<u32> {
     let ops = block_operators(block)?;
     let (q_slot, k_slot, v_slot) = wire_qkv(sink, block, prev, &ops)?;
     // q/k 先过 RoPE 旋转再进注意力；写回页行的 K 同样取旋转后的一路（与注意力读到的一致）。

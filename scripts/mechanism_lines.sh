@@ -31,7 +31,7 @@ layer_index() {
         cutile) echo 2 ;;
         tensor|storage|tokenizer) echo 3 ;;
         weights|autograd|data|nn|shard) echo 4 ;;
-        train|engine|serve|backend|cli) echo 5 ;;
+        train|engine|serve|cli) echo 5 ;;
         *) echo -1 ;;
     esac
 }
