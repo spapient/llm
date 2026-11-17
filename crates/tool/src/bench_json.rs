@@ -424,8 +424,8 @@ impl<'a> Reader<'a> {
     fn assign_top_level(&mut self, key: &str, draft: &mut RecordDraft) -> Result<()> {
         match key {
             "kind" => self.fill_kind(draft),
-            "name" => self.fill_name(draft),
-            "backend" => self.fill_backend(draft),
+            "name" => self.fill_str(&mut draft.name),
+            "backend" => self.fill_str(&mut draft.backend),
             "observed" => self.fill_observed_slot(draft),
             other => self.assign_nested_top(other, draft),
         }
@@ -440,18 +440,14 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// 把读到的字符串填进一个字符串槽位。
+    fn fill_str(&mut self, slot: &mut Option<String>) -> Result<()> {
+        *slot = Some(self.read_string()?);
+        Ok(())
+    }
+
     fn fill_kind(&mut self, draft: &mut RecordDraft) -> Result<()> {
         draft.kind = Some(self.read_kind()?);
-        Ok(())
-    }
-
-    fn fill_name(&mut self, draft: &mut RecordDraft) -> Result<()> {
-        draft.name = Some(self.read_string()?);
-        Ok(())
-    }
-
-    fn fill_backend(&mut self, draft: &mut RecordDraft) -> Result<()> {
-        draft.backend = Some(self.read_string()?);
         Ok(())
     }
 
@@ -496,7 +492,7 @@ impl<'a> Reader<'a> {
         match key {
             "shape" => self.fill_shape(draft),
             "batch" => self.fill_batch(draft),
-            "dtype" => self.fill_dtype(draft),
+            "dtype" => self.fill_str(&mut draft.dtype),
             other => Err(invalid(format!("几何对象里未知字段 `{other}`"))),
         }
     }
@@ -508,11 +504,6 @@ impl<'a> Reader<'a> {
 
     fn fill_batch(&mut self, draft: &mut GeometryDraft) -> Result<()> {
         draft.batch = Some(self.read_usize("batch")?);
-        Ok(())
-    }
-
-    fn fill_dtype(&mut self, draft: &mut GeometryDraft) -> Result<()> {
-        draft.dtype = Some(self.read_string()?);
         Ok(())
     }
 
@@ -554,50 +545,20 @@ impl<'a> Reader<'a> {
 
     fn assign_harness(&mut self, key: &str, draft: &mut HarnessDraft) -> Result<()> {
         match key {
-            "host" => self.fill_host(draft),
-            "cpu" => self.fill_cpu(draft),
-            "os" => self.fill_os(draft),
+            "host" => self.fill_str(&mut draft.host),
+            "cpu" => self.fill_str(&mut draft.cpu),
+            "os" => self.fill_str(&mut draft.os),
             other => self.assign_harness_tail(other, draft),
         }
     }
 
     fn assign_harness_tail(&mut self, key: &str, draft: &mut HarnessDraft) -> Result<()> {
         match key {
-            "arch" => self.fill_arch(draft),
-            "toolchain" => self.fill_toolchain(draft),
-            "driver" => self.fill_driver(draft),
+            "arch" => self.fill_str(&mut draft.arch),
+            "toolchain" => self.fill_str(&mut draft.toolchain),
+            "driver" => self.fill_str(&mut draft.driver),
             other => Err(invalid(format!("档案对象里未知字段 `{other}`"))),
         }
-    }
-
-    fn fill_host(&mut self, draft: &mut HarnessDraft) -> Result<()> {
-        draft.host = Some(self.read_string()?);
-        Ok(())
-    }
-
-    fn fill_cpu(&mut self, draft: &mut HarnessDraft) -> Result<()> {
-        draft.cpu = Some(self.read_string()?);
-        Ok(())
-    }
-
-    fn fill_os(&mut self, draft: &mut HarnessDraft) -> Result<()> {
-        draft.os = Some(self.read_string()?);
-        Ok(())
-    }
-
-    fn fill_arch(&mut self, draft: &mut HarnessDraft) -> Result<()> {
-        draft.arch = Some(self.read_string()?);
-        Ok(())
-    }
-
-    fn fill_toolchain(&mut self, draft: &mut HarnessDraft) -> Result<()> {
-        draft.toolchain = Some(self.read_string()?);
-        Ok(())
-    }
-
-    fn fill_driver(&mut self, draft: &mut HarnessDraft) -> Result<()> {
-        draft.driver = Some(self.read_string()?);
-        Ok(())
     }
 
     fn read_roofline(&mut self) -> Result<Roofline> {
@@ -864,30 +825,40 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("tool::bench_json::from_json")
 }
 
-/// 简单转义表：`\X` 的第二个字节 → 字符，`'\0'` 表示不是简单转义。
-const SIMPLE: [char; 128] = {
-    let mut table = ['\0'; 128];
-    table[b'"' as usize] = '"';
-    table[b'\\' as usize] = '\\';
-    table[b'/' as usize] = '/';
-    table[b'b' as usize] = '\u{8}';
-    table[b'f' as usize] = '\u{c}';
-    table[b'n' as usize] = '\n';
-    table[b'r' as usize] = '\r';
-    table[b't' as usize] = '\t';
-    table
-};
-
+/// `\X` 的第二个字节 → 字符；表里没有就是未知转义。
 fn simple_escape(byte: u8) -> Option<char> {
-    SIMPLE.get(byte as usize).copied().filter(|&ch| ch != '\0')
+    match byte {
+        b'"' => Some('"'),
+        b'\\' => Some('\\'),
+        b'/' => Some('/'),
+        other => escape_padding(other),
+    }
 }
 
-fn sequence_width(byte: u8) -> Option<usize> {
+fn escape_padding(byte: u8) -> Option<char> {
     match byte {
-        0x00..=0x7f => Some(1),
-        0xc0..=0xdf => Some(2),
-        0xe0..=0xef => Some(3),
-        0xf0..=0xf7 => Some(4),
+        b'b' => Some('\u{8}'),
+        b'f' => Some('\u{c}'),
+        other => escape_line(other),
+    }
+}
+
+fn escape_line(byte: u8) -> Option<char> {
+    match byte {
+        b'n' => Some('\n'),
+        b'r' => Some('\r'),
+        b't' => Some('\t'),
+        _ => None,
+    }
+}
+
+/// UTF-8 起始字节 → 序列宽度；`None` 表示非法起始字节。
+fn sequence_width(byte: u8) -> Option<usize> {
+    match byte.leading_ones() {
+        0 => Some(1),
+        2 => Some(2),
+        3 => Some(3),
+        4 => Some(4),
         _ => None,
     }
 }

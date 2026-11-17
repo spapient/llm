@@ -1,4 +1,5 @@
 use super::*;
+use diagnostic::Code;
 use crate::builtin::Catalogue;
 use crate::prof::MatchRule;
 

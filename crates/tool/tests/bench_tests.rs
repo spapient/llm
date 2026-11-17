@@ -38,6 +38,19 @@ fn geometry_json(shape: &str, batch: &str, dtype: &str) -> String {
     format!(r#"{{"shape": {shape}, "batch": {batch}, "dtype": {dtype:?}}}"#)
 }
 
+/// 一条基准记录夹具：身份与档案片段固定，仅 kind / 几何 / 实测三档可覆盖。
+fn op_record(geometry: &str, observed: &str, kind: &str) -> String {
+    record_json(&[
+        ("kind", kind),
+        ("name", r#""x""#),
+        ("backend", r#""b""#),
+        ("geometry", geometry),
+        ("harness", HARNESS_JSON),
+        ("roofline", ROOFLINE_JSON),
+        ("observed", observed),
+    ])
+}
+
 /// 按 `(键, JSON 值片段)` 拼一条记录对象；缺字段的用例只省略对应条目。
 fn record_json(fields: &[(&str, &str)]) -> String {
     let inner = fields
@@ -209,44 +222,11 @@ fn json_rejects_duplicate_keys() {
 
 #[test]
 fn json_rejects_non_finite_and_wrong_typed_values() {
-    let base = |observed: &str| -> String {
-        record_json(&[
-            ("kind", r#""op""#),
-            ("name", r#""x""#),
-            ("backend", r#""b""#),
-            ("geometry", &geometry_json("[1]", "1", "f32")),
-            ("harness", HARNESS_JSON),
-            ("roofline", ROOFLINE_JSON),
-            ("observed", observed),
-        ])
-    };
-    let dense = record_json(&[
-        ("kind", r#""dense""#),
-        ("name", r#""x""#),
-        ("backend", r#""b""#),
-        ("geometry", &geometry_json("[1]", "1", "f32")),
-        ("harness", HARNESS_JSON),
-        ("roofline", ROOFLINE_JSON),
-        ("observed", "null"),
-    ]);
-    let batch_fraction = record_json(&[
-        ("kind", r#""op""#),
-        ("name", r#""x""#),
-        ("backend", r#""b""#),
-        ("geometry", &geometry_json("[1]", "1.5", "f32")),
-        ("harness", HARNESS_JSON),
-        ("roofline", ROOFLINE_JSON),
-        ("observed", "null"),
-    ]);
-    let shape_text = record_json(&[
-        ("kind", r#""op""#),
-        ("name", r#""x""#),
-        ("backend", r#""b""#),
-        ("geometry", &geometry_json(r#"["x"]"#, "1", "f32")),
-        ("harness", HARNESS_JSON),
-        ("roofline", ROOFLINE_JSON),
-        ("observed", "null"),
-    ]);
+    let op_geometry = geometry_json("[1]", "1", "f32");
+    let base = |observed: &str| -> String { op_record(&op_geometry, observed, r#""op""#) };
+    let dense = op_record(&op_geometry, "null", r#""dense""#);
+    let batch_fraction = op_record(&geometry_json("[1]", "1.5", "f32"), "null", r#""op""#);
+    let shape_text = op_record(&geometry_json(r#"["x"]"#, "1", "f32"), "null", r#""op""#);
     let cases = [
         base("NaN"),
         base("Infinity"),
@@ -289,10 +269,9 @@ fn record_without(omitted: &str) -> String {
     add("harness", HARNESS_JSON.to_string());
     add("roofline", ROOFLINE_JSON.to_string());
     add("observed", "null".to_string());
-    let inner = fields
+    let refs: Vec<(&str, &str)> = fields
         .iter()
-        .map(|(key, value)| format!(r#""{key}": {value}"#))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{{{inner}}}")
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    record_json(&refs)
 }

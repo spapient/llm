@@ -436,6 +436,56 @@ impl Profile {
         self.provides.iter().any(ok)
     }
 }
+
+/// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
+///
+/// 命中规则条数（[`Profile::specificity`]）最多者胜出；与最优者同等具体的另一份也算
+/// 配置错误——“选谁”没有唯一答案就不该静默挑一份。没有任何档案命中时返回
+/// [`Code::Unsupported`]。选择判定是档案层职责，机制层只传入解析好的档案列表。
+pub fn select<'a>(
+    profiles: &'a [Profile],
+    detected: &Detected,
+) -> diagnostic::Result<&'a Profile> {
+    let Some((index, profile)) = profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| profile.matches(detected))
+        .max_by_key(|(_, profile)| profile.specificity())
+    else {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!("没有档案匹配该指纹：{detected}"),
+        )
+        .with("prof::select"));
+    };
+    match rival(profiles, detected, index, profile.specificity()) {
+        Some(other) => Err(Error::new(
+            Code::Invalid,
+            format!(
+                "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
+                profile.meta.vendor, other.meta.vendor
+            ),
+        )
+        .with("prof::select")),
+        None => Ok(profile),
+    }
+}
+
+/// 与最优者同等具体、同样命中的另一份档案：选择没有唯一答案。
+fn rival<'a>(
+    profiles: &'a [Profile],
+    detected: &Detected,
+    best: usize,
+    top: usize,
+) -> Option<&'a Profile> {
+    profiles
+        .iter()
+        .enumerate()
+        .find(|(index, profile)| {
+            *index != best && profile.specificity() == top && profile.matches(detected)
+        })
+        .map(|(_, profile)| profile)
+}
 mod check;
 mod parse;
 #[cfg(test)]
