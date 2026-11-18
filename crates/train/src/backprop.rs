@@ -247,7 +247,7 @@ fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 /// y = 0.5·x·(1 + erf(x/√2))：y′ = Φ(x) + x·φ(x)，φ 为标准正态密度、Φ 为累积分布。
 fn gelu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     let x = &ctx.inputs[0];
-    eprintln!("DEBUG gelu inputs={x:?} incoming={:?}", ctx.incoming);
+    eprintln!("DEBUG gelu inputs={x:?} output={:?} incoming={:?}", ctx.output, ctx.incoming);
     let da = ctx
         .incoming
         .iter()
@@ -336,18 +336,18 @@ fn gemv_input(weight: &[f32], incoming: &[f32], rows: usize, cols: usize) -> Vec
 fn gemm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     let a = &ctx.inputs[0][..];
     let b = &ctx.inputs[1][..];
-    let out = ctx.output;
+    let grad = &ctx.incoming;
     let k = op::gemm::K;
     let m = a.len() / k;
-    let n = out.len() / m;
+    let n = grad.len() / m;
     let mut da = vec![0.0; a.len()];
     let mut db = vec![0.0; b.len()];
     for m_row in 0..m {
         for k_dim in 0..k {
             for n_col in 0..n {
-                let grad = out[m_row * n + n_col];
-                da[m_row * k + k_dim] += grad * b[k_dim * n + n_col];
-                db[k_dim * n + n_col] += a[m_row * k + k_dim] * grad;
+                let g = grad[m_row * n + n_col];
+                da[m_row * k + k_dim] += g * b[k_dim * n + n_col];
+                db[k_dim * n + n_col] += a[m_row * k + k_dim] * g;
             }
         }
     }
@@ -400,6 +400,7 @@ fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) -> Result<()>
 fn gelu_grad(x: f32) -> f32 {
     let normal = (-(x * x) / 2.0).exp() / (2.0 * std::f32::consts::PI).sqrt();
     let erf_term = 0.5 * (1.0 + erf_scalar(x / std::f32::consts::FRAC_1_SQRT_2));
+    eprintln!("  gelu_grad x={x} phi={normal} Phi={erf_term}");
     erf_term + x * normal
 }
 
