@@ -7,6 +7,7 @@ use diagnostic::{Code, Error, Result};
 use engine::exec::{CpuExecutor, Device};
 use engine::{Batch, Sequence};
 use nn::Stack;
+use std::path::Path;
 
 use crate::assembly::{
     Assembly, BlockBinding, LayerKind, Params, assemble, bind_activations, bind_weights,
@@ -31,6 +32,37 @@ impl CpuModel {
         bind_activations(&mut executor, &assembly);
 
         Ok(Self { executor, assembly })
+    }
+
+    /// 从权重文件就地装配：打开头部 → 推出层栈 → 装载驻留参数表 → 装配图与内核执行器。
+    ///
+    /// 字节来源按后端类别在类型上可见分流（ADR 0036 §1），不立平行 `Source` 聚合 trait：
+    /// - Unix + `mmap` feature：[`weights::MmapSource`] 实现 [`weights::Reader`]，条目字节从映射区
+    ///   借用、不经过 `Vec<u8>` 中转，走 [`Params::from_reader_stack`]；
+    /// - 其余平台或未开 feature：[`weights::safetensors::File`] 实现 [`weights::Loader`]，按条目
+    ///   seek+read 拷进缓冲，走 [`Params::from_stack`]。
+    ///
+    /// 两条路径的栈、参数与模型构造一致，差别只在字节来源；非 Unix 不提供假装映射的空实现。
+    ///
+    /// # Errors
+    ///
+    /// 文件打不开或头部校验失败、层栈推出失败、参数缺条目或类型/形状不符、装配期宽度链断裂，
+    /// 都沿既有诊断类别上抛。
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        #[cfg(all(feature = "mmap", unix))]
+        {
+            let source = weights::MmapSource::open(path.as_ref())?;
+            let stack = Stack::from_header(source.header())?;
+            let params = Params::from_reader_stack(&stack, source.header(), &source)?;
+            Self::new(&stack, &params)
+        }
+        #[cfg(not(all(feature = "mmap", unix)))]
+        {
+            let file = weights::safetensors::File::open(path)?;
+            let stack = Stack::from_header(file.header())?;
+            let params = Params::from_stack(&stack, file.header(), &file)?;
+            Self::new(&stack, &params)
+        }
     }
 
     /// 一步张量级前向；输入长度必须等于首层输入宽度，返回末层激活。

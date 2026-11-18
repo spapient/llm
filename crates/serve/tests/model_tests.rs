@@ -9,7 +9,7 @@ use engine::{Batch, Sequence};
 use nn::{
     Add, AttentionAlgo, AttentionBlock, Embedding, Linear, Mul, RmsNorm, Silu, Stack, WeightFormat,
 };
-use testkit::{all_finite, close};
+use testkit::{all_finite, close, scratch_dir};
 use weights::safetensors::Archive;
 
 /// 登记完表内内核的空 CPU 执行器。
@@ -437,6 +437,13 @@ fn two_layer_archive_fixture() -> ([f32; 3], Vec<u8>, Vec<f32>) {
         },
     ]);
     (x, bytes, reference)
+}
+
+/// 把归档字节写进进程隔离的临时文件，返回路径；装配根用真实文件路径走打开→装载→前向。
+fn write_archive_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let path = scratch_dir(tag).join("model.safetensors");
+    std::fs::write(&path, bytes).expect("写入临时权重文件");
+    path
 }
 
 /// 空头部归档：没有任何条目。
@@ -1002,6 +1009,18 @@ fn entries_from_a_reader_source_load_into_params() {
     let stack = Stack::from_header(archive.header()).expect("层栈");
     let params = Params::from_reader_stack(&stack, archive.header(), &archive).expect("借用装载");
     let mut model = assemble(stack, params);
+    let produced = model.forward(&x).expect("前向");
+
+    assert_close(&produced, &reference);
+}
+
+/// 真实权重文件走装配根 [`CpuModel::from_path`]：打开头部 → 层栈 → 驻留参数 → 图装配，
+/// 前向与串行参考对拍；当前构建按后端类别走映射借用（Unix + mmap）或文件拷贝，产物同判据。
+#[test]
+fn a_real_weight_file_assembles_through_from_path() {
+    let (x, bytes, reference) = two_layer_archive_fixture();
+    let path = write_archive_file("from-path", &bytes);
+    let mut model = CpuModel::from_path(&path).expect("文件装配");
     let produced = model.forward(&x).expect("前向");
 
     assert_close(&produced, &reference);

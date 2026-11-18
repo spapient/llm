@@ -10,6 +10,11 @@ description = "Endpoint contract: routes, responses and the request-to-scheduler
 publish = false
 autotests = false
 
+[features]
+default = []
+# 只读内存映射装载：透传 weights 的映射源；仅 Unix 编译映射借用路径，其它平台整块回退文件流式读取。
+mmap = ["weights/mmap"]
+
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 engine = { path = "../engine", package = "llm-engine" }

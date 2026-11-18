@@ -1,6 +1,6 @@
 # 0036：装载源沿用 Reader/Loader 双契约，MmapSource 实现 Reader（草案）
 
-- 状态：草案（结论以看板为准；实现随 M1-A 轨道填入，本轮不改 serve/engine 装配）
+- 状态：草案（读取契约与映射源已在位并过测；serve 装配根分流 2026-11-18 回填，最终接受以看板为准）
 - 日期：2026-11-17
 - 相关：[0010](0010-borrow-vs-load.md)（借出/载入双契约的既有裁决）、[0035](0035-unsafe-ffi-boundary.md)（unsafe/FFI 边界与唯一映射岛规则）；设计取证见 [`../llmu-parity-optimization-design.md`](../llmu-parity-optimization-design.md) §4.1 M1-A、[`../backend-runtime-design.md`](../backend-runtime-design.md) §1.2、§4.3
 
@@ -87,3 +87,4 @@ weights lib 保持 `#![deny(unsafe_code)]`。`MmapSource` 只持有 `Mmap` 与 `
 ## 修订
 
 - 2026-11-17：初稿，回应 M1-A2 装载源归属；双契约沿用、MmapSource 实现 Reader、File 保持 Loader、双门控与 unsafe 不越岛落档。
+- 2026-11-18：serve 装配根落地。`serve::CpuModel::from_path` 在装配点按后端类别做类型可见分流：`#[cfg(all(feature = "mmap", unix))]` 走 `MmapSource`（`Reader`）→ `Params::from_reader_stack`，回退 `File`（`Loader`）→ `Params::from_stack`；两条路径的栈、参数与模型构造一致，差别只在字节来源，未新增平行 `Source` 父 trait。`serve` 出 optional `mmap` feature 透传 `weights/mmap`；真实文件装配→前向对拍在默认与 `mmap` 两种构建下均通过。§1/§3/§4 口径在装配点兑现。

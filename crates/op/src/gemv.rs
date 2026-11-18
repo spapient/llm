@@ -324,6 +324,81 @@ pub(crate) fn scaled_groups(m: usize, n: usize, scales: usize) -> Result<(usize,
     Ok((groups, m / groups))
 }
 
+/// 打包权重（每字节 `cpb` 个码）的取样、分组校验与解包点积助手。
+///
+/// int2（4 码/字节）与 int4（2 码/字节）只在码宽、查表与粒度倍数上不同；打包位域的字节布局、
+/// 分组推导与按行点积收口到这里，避免两条打包格式各抄一遍。int8 不打包，不走本模块。
+pub mod packed {
+    use super::{required_weights, scaled_groups};
+    use diagnostic::{Code, Error};
+
+    /// 每字节 `cpb` 个码对应的位宽与码掩码。
+    const fn width(cpb: usize) -> usize {
+        8 / cpb
+    }
+
+    /// 确定性打包权重：`n` 行、每行 `m / cpb` 个字节，同一形状取值可复现。
+    pub fn weights(m: usize, n: usize, cpb: usize) -> Vec<u8> {
+        (0..n * (m / cpb))
+            .map(|index| ((index * 37) % 251) as u8)
+            .collect()
+    }
+
+    /// 分组推导 + "分组必须是 `cpb` 的倍数" + 打包权重长度下界。
+    ///
+    /// 返回 `(groups, group)`：每行多少组、每组多少元素。
+    pub fn groups(
+        m: usize,
+        n: usize,
+        scales: usize,
+        weights: usize,
+        cpb: usize,
+    ) -> Result<(usize, usize), Error> {
+        let (groups, group) = scaled_groups(m, n, scales)?;
+        if !group.is_multiple_of(cpb) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("分组 {group} 必须是 {cpb} 的倍数"),
+            ));
+        }
+        required_weights(weights, n, m / cpb)?;
+        Ok((groups, group))
+    }
+
+    /// 一行的点积：按分组推进，组内解包 `cpb` 个码查 `dequant` 表，整组共用同一个标度。
+    ///
+    /// 累加顺序与朴素写法逐位一致（同一字节的低位码在前）；每组 `group` 为 `cpb` 倍数，
+    /// 解包只读整组码，不触碰补齐位。
+    pub fn dot_row(
+        packed_row: &[u8],
+        x: &[f32],
+        s_row: &[f32],
+        per_group: usize,
+        group: usize,
+        cpb: usize,
+        dequant: &[f32],
+    ) -> f32 {
+        let width = width(cpb);
+        let mask = (1u8 << width) - 1;
+        let mut acc = 0.0f32;
+        for ((packed, scale), xs) in packed_row
+            .chunks_exact(per_group)
+            .zip(s_row)
+            .zip(x.chunks_exact(group))
+        {
+            let mut dot = 0.0f32;
+            for (byte, codes) in packed.iter().zip(xs.chunks(cpb)) {
+                for (slot, &code_slot) in codes.iter().enumerate() {
+                    let code = usize::from((byte >> (slot * width)) & mask);
+                    dot += dequant[code] * code_slot;
+                }
+            }
+            acc += dot * scale;
+        }
+        acc
+    }
+}
+
 /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
 ///
 /// 三条格式与参考实现的说明逐字相同，判据也相同（`>=` 而不是 `==`：调用方可以带多余尾部），

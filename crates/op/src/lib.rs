@@ -55,6 +55,7 @@ pub mod attention;
 pub mod decl;
 pub mod decode_attention;
 pub mod decode_flash_attention;
+pub mod dequant;
 pub mod dequant_i2;
 pub mod dequant_i4;
 pub mod dequant_i8;

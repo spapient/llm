@@ -130,6 +130,55 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
     }
 }
 
+/// 打包量化格式（每字节 `CPB` 个码）的公共解包、取样与点积助手。
+///
+/// int2（4 码/字节）与 int4（2 码/字节）只在码宽、掩码、零点与取样偏移上不同；这些事实作为
+/// 参数传入，打包位域的字节布局、码位拆解与整数累加只写一份。int8 不打包，不走这里。
+pub mod packed {
+    use super::K;
+
+    /// 每字节 `cpb` 个码对应的位宽。
+    const fn bits(cpb: usize) -> usize {
+        8 / cpb
+    }
+
+    /// 解包字节内第 `slot` 个码，按对称零点回退成有符号整数。
+    pub fn unpack(byte: u8, slot: usize, cpb: usize, zero: i32) -> i8 {
+        let width = bits(cpb);
+        let mask = (1u8 << width) - 1;
+        let value = (byte >> (slot * width)) & mask;
+        (value as i32 - zero) as i8
+    }
+
+    /// 确定性打包位模式：`len` 个码按 `cpb` 每字节装一行；码值取
+    /// `(字节下标 · seed + offsets[c]) mod 2^width`。
+    pub fn pack(len: usize, seed: usize, cpb: usize, offsets: &[u32]) -> Vec<u8> {
+        let width = bits(cpb);
+        let modulus = 1usize << width;
+        (0..len / cpb)
+            .map(|byte| {
+                (0..cpb).fold(0u8, |acc, code| {
+                    let value = ((byte * seed + offsets[code] as usize) % modulus) as u8;
+                    acc | (value << (code * width))
+                })
+            })
+            .collect()
+    }
+
+    /// 打包矩阵点积：A 第 `i` 行与 B 第 `j` 列，收缩轴固定 [`K`]，整数累加后转 f32。
+    pub fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize, cpb: usize, zero: i32) -> f32 {
+        let bytes_per_row = K / cpb;
+        let mut acc: i32 = 0;
+        for p in 0..K {
+            let x = unpack(a[i * bytes_per_row + p / cpb], p % cpb, cpb, zero) as i32;
+            let y_pos = p * n + j;
+            let y = unpack(b[y_pos / cpb], y_pos % cpb, cpb, zero) as i32;
+            acc += x * y;
+        }
+        acc as f32
+    }
+}
+
 /// 矩阵遍历：外层只写一份，内层点积落在 [`Gemm::dot`]。
 pub fn matmul<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize, out: &mut [f32]) {
     for i in 0..m {
@@ -167,4 +216,18 @@ pub fn forward<G: Gemm>(
     }
     matmul::<G>(a, b, m, n, out);
     Ok(())
+}
+
+/// 各打包 / 不打包格式共用的对拍：内核算出的结果必须与标量参考逐位一致。
+///
+/// 三条格式的测试体只有算子名不同，断言与尺寸口径收口到这里，避免三份平行用例各抄一遍。
+#[cfg(test)]
+pub(crate) fn matches_reference<G: Gemm>() {
+    let sample = sample::<G>(16, 12);
+    let expected = reference::<G>(&sample).expect("参考可计算");
+    let a = take::<G>(&sample, "a").expect("a");
+    let b = take::<G>(&sample, "b").expect("b");
+    let mut out = vec![0.0; 16 * 12];
+    forward::<G>(a, b, 16, 12, &mut out).expect("尺寸符");
+    assert_eq!(out, expected);
 }
