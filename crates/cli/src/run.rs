@@ -637,4 +637,77 @@ mod tests {
             "两趟对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
         );
     }
+
+    /// Gemm 行网格真机对拍：`gemv_f32` 走 `[grid]` 声明映射——grid `[n,1,1]`、输出 `+ n`、
+    /// 权重 `+ n * m`（行跨步）、输入共享，在 Metal 上算 `y = dot(w[n,:], x)` 并回读，与标量
+    /// 参考对拍。用小形状（m=64, n=4）避开生产形状 4096×4096 的 64MB 权重样本。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_gemv_op_runs_on_metal_and_matches_the_reference() {
+        use engine::exec::Executor as _;
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-gemv-check"));
+
+        let model = op::model("gemv_f32").expect("gemv_f32 语义表");
+        let (m, n) = (64usize, 4usize);
+        let sample = (model.sample)(m, n);
+        let x = sample.f32("x").expect("输入缓冲 x").to_vec();
+        let w = sample.f32("w").expect("权重缓冲 w").to_vec();
+        let expected = (model.reference)(&sample).expect("标量参考");
+        assert_eq!(expected.len(), n, "gemv 输出每行一个元素");
+
+        let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "gemv_f32", m, n)
+            .expect("gemv 网格内核应能生成");
+
+        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
+            return;
+        };
+        executor.register("gemv_f32", &msl).expect("注册内核");
+        executor.bind_bytes(0, x.len() * 4).expect("x 缓冲");
+        executor.bind_bytes(1, w.len() * 4).expect("w 缓冲");
+        executor.bind_bytes(2, n * 4).expect("y 缓冲");
+
+        {
+            let bytes = executor.buffer_mut(0).expect("x 可写").as_mut_bytes();
+            for (slot, value) in x.iter().enumerate() {
+                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            let bytes = executor.buffer_mut(1).expect("w 可写").as_mut_bytes();
+            for (slot, value) in w.iter().enumerate() {
+                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        let launch = engine::exec::Launch::new([n as u32, 1, 1], [1, 1, 1]);
+        let mut node = engine::exec::Node::new("gemv_f32", launch);
+        node.bind_input(0).bind_input(1).bind_output(2);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+
+        let stream = engine::exec::Stream::new(0);
+        executor.submit(&graph, stream).expect("提交");
+        executor.sync(stream).expect("同步派发");
+
+        let bytes = executor.buffer_mut(2).expect("输出可读").as_mut_bytes();
+        let output: Vec<f32> = (0..n)
+            .map(|index| {
+                let chunk: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                    .try_into()
+                    .expect("四个字节一个 f32");
+                f32::from_le_bytes(chunk)
+            })
+            .collect();
+
+        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "gemv 对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
+    }
 }

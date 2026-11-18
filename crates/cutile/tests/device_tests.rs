@@ -204,3 +204,29 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
     let _ = std::fs::remove_dir_all(&dir);
     compiled.expect("两趟 MSL 应能通过 xcrun metal 编译");
 }
+
+/// 生产态 gemv 行网格内核：`gemv_f32` 走 `[grid]` 声明映射——输出 `+ n`、权重 `+ n * m`
+/// （行跨步）、输入共享，输出轴长度标量压缩为 `1`；再通过 `xcrun metal` 编译证明合法。
+/// 用小形状（m=64, n=4）避免按生产形状 4096×4096 分配 64MB 权重样本。
+#[test]
+fn production_gemv_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-gemv"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，gemv 内核编译用例未运行");
+        return;
+    }
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "gemv_f32", 64, 4)
+        .expect("gemv 网格内核应能生成");
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(msl.contains("thread_position_in_grid"), "{msl}");
+    assert!(msl.contains("d_w + n * 64"), "权重应行跨步: {msl}");
+    assert!(msl.contains("d_x"), "输入应共享: {msl}");
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-gemv-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("gemv MSL 应能通过 xcrun metal 编译");
+}

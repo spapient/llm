@@ -75,6 +75,24 @@ pub struct Axis {
     pub values: Vec<u32>,
 }
 
+/// Gemm 骨架的网格映射：声明每个缓冲在输出轴上的偏移角色，以及哪个标量是输出轴长度。
+///
+/// 这是「配置化优先」的落点：串行模板的外层循环 `for n in 0..N` 按行拆成网格，但逐缓冲偏移
+/// （输出 `+ n`、权重 `+ n * m`、共享 `+ 0`）不在现有 `[layouts]`（只管内存布局 row/col）里，
+/// 也不能从「哪个标量等于输出维度」推出（方阵 gemv 的 M==N 会歧义）。因此由声明层显式给出，
+/// 机制层（cutile）只消费、不索引分析模板。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grid {
+    /// 输出缓冲名：偏移 `+ n`，线程下标即输出行。
+    pub out: String,
+    /// 行跨步缓冲名：偏移 `+ n * m`，`m` 是样本的归约维度。
+    pub row: String,
+    /// 共享缓冲名：偏移 `0`（不随输出轴走）。
+    pub share: Vec<String>,
+    /// 输出轴长度标量名：正文外层循环据此压缩为 `1`（每线程一行）。
+    pub axis: String,
+}
+
 /// 降级链上的一个变体。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variant {
@@ -112,6 +130,8 @@ pub struct OpDecl {
     pub needs: Vec<Need>,
     /// 布局契约：槽位 → 构造子。
     pub layouts: Vec<(String, LayoutSpec)>,
+    /// Gemm 骨架的网格映射（仅 Gemm 算子声明；其余骨架不需要）。
+    pub grid: Option<Grid>,
     /// 模板常量：`{{槽位}}` 的固定取值（非轴、非布局），按十进制渲染成字符串。
     pub consts: Vec<(String, String)>,
     /// 降级链，按 `order` 升序。
@@ -288,6 +308,38 @@ fn layout(key: &str, value: &Value) -> diagnostic::Result<(String, LayoutSpec)> 
     Ok((key.to_string(), spec))
 }
 
+/// `[grid]`：Gemm 骨架的网格映射（仅 Gemm 声明，其余骨架不需要）。缺省返回 `None`。
+///
+/// 四个键：`out`（输出缓冲）、`row`（行跨步缓冲）、`axis`（输出轴长度标量）各一个字符串，
+/// `share`（共享缓冲）是字符串数组（可省略，空数组语义相同）。
+fn grid(table: &Table) -> diagnostic::Result<Option<Grid>> {
+    let Some(section) = table.table("grid") else {
+        return Ok(None);
+    };
+    let out = section
+        .string("out")
+        .ok_or_else(|| field("grid.out", "缺失"))?
+        .to_string();
+    let row = section
+        .string("row")
+        .ok_or_else(|| field("grid.row", "缺失"))?
+        .to_string();
+    let axis = section
+        .string("axis")
+        .ok_or_else(|| field("grid.axis", "缺失"))?
+        .to_string();
+    let share = match section.get("share") {
+        Some(value) => string_list("grid.share", value)?,
+        None => Vec::new(),
+    };
+    Ok(Some(Grid {
+        out,
+        row,
+        share,
+        axis,
+    }))
+}
+
 /// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串，
 /// 供 [`OpDecl::const_value`] 在 `{{槽位}}` 解析时查用。
 fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
@@ -446,6 +498,7 @@ impl OpDecl {
         // 返回顺序：轴、需求、布局、变体链。
         let (axes, needs, layouts, variants) = sections(table)?;
         let consts = consts(table)?;
+        let grid = grid(table)?;
         let signature = crate::sig::Signature::parse(&name, template)?;
         Ok(Self {
             name,
@@ -454,6 +507,7 @@ impl OpDecl {
             axes,
             needs,
             layouts,
+            grid,
             consts,
             variants,
             template: template.to_string(),

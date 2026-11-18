@@ -172,21 +172,26 @@ impl SpecialTokens {
 
     /// 按 wire 序号回填一个特殊槽位；未知序号报 `Invalid`。
     pub(crate) fn set_slot(&mut self, kind: u8, id: u32) -> Result<()> {
-        match kind {
-            0 => self.unk = Some(id),
-            1 => self.pad = Some(id),
-            2 => self.bos = Some(id),
-            3 => self.eos = Some(id),
-            4 => self.sep = Some(id),
-            5 => self.cls = Some(id),
-            6 => self.mask = Some(id),
-            _ => {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("未知特殊槽位序号 {kind}"),
-                ));
-            }
-        }
+        let slot = self.slot_mut(kind).ok_or_else(|| invalid_slot(kind))?;
+        *slot = Some(id);
         Ok(())
     }
+
+    /// wire 序号 → 槽位可变引用（unk=0,pad=1,bos=2,eos=3,sep=4,cls=5,mask=6）。
+    fn slot_mut(&mut self, kind: u8) -> Option<&mut Option<u32>> {
+        [
+            &mut self.unk,
+            &mut self.pad,
+            &mut self.bos,
+            &mut self.eos,
+            &mut self.sep,
+            &mut self.cls,
+            &mut self.mask,
+        ]
+        .get_mut(kind as usize)
+    }
+}
+
+fn invalid_slot(kind: u8) -> Error {
+    Error::new(Code::Invalid, format!("未知特殊槽位序号 {kind}"))
 }

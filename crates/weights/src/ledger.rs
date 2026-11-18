@@ -36,6 +36,25 @@ impl Stable {
     }
 }
 
+/// 重构模式（§4.4 第 3 步：纯截断 / 显式残差补偿互斥，不同模式用不同误差项，不得混用）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// 纯截断：只保存低秩项 `L`，误差项 `E_decomp = ‖W−L‖₂`。
+    Trunc = 0,
+    /// 显式残差补偿：保存 `L + C`（`C = W−L`），误差项 `E_comp = ‖C−Ĉ‖₂`。
+    Residual = 1,
+}
+
+impl Mode {
+    fn from_code(code: u8) -> Result<Self> {
+        match code {
+            0 => Ok(Self::Trunc),
+            1 => Ok(Self::Residual),
+            other => Err(bad(&format!("未知 Mode 码 {other}"))),
+        }
+    }
+}
+
 /// SVD 谱隙分析：σ_r、σ_{r+1}、谱隙 γ_r 与后验残差 ε_alg。
 #[derive(Clone, Copy, Debug)]
 pub struct Spectral {
@@ -122,6 +141,8 @@ pub struct Note {
     pub rank: u32,
     /// 是否使用秩选择。
     pub used: bool,
+    /// 重构模式（纯截断 / 显式残差补偿）。
+    pub mode: Mode,
     /// 稳定性判定。
     pub stable: Stable,
     /// 谱隙 γ_r。
@@ -141,6 +162,7 @@ impl Note {
     pub(crate) fn encode(&self, out: &mut impl Sink) {
         leb::write(out, self.rank);
         out.put(&[u8::from(self.used)]);
+        out.put(&[self.mode as u8]);
         out.put(&[self.stable as u8]);
         out.put(&self.gap.to_le_bytes());
         out.put(&self.eps.to_le_bytes());
@@ -151,11 +173,12 @@ impl Note {
 
     /// 强类型解码；字段不符显式报错。逐段按 `Note::encode` 的顺序读，段内报错点与逐字段读一致。
     pub fn decode(cur: &mut Cursor<'_>) -> Result<Self> {
-        let (rank, used, stable) = head(cur)?;
+        let (rank, used, mode, stable) = head(cur)?;
         let ([gap, eps, decomp], [equal, lossless]) = tail(cur)?;
         Ok(Self {
             rank,
             used,
+            mode,
             stable,
             gap,
             eps,
@@ -174,12 +197,13 @@ impl Note {
     }
 }
 
-/// 标识段：秩、是否使用秩选择、稳定性判定码。
-fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Stable)> {
+/// 标识段：秩、是否使用秩选择、重构模式码、稳定性判定码。
+fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Mode, Stable)> {
     let rank = cur.read::<u32>()?;
     let used = cur.read_u8()? != 0;
+    let mode = Mode::from_code(cur.read_u8()?)?;
     let stable = Stable::from_code(cur.read_u8()?)?;
-    Ok((rank, used, stable))
+    Ok((rank, used, mode, stable))
 }
 
 /// 实数与标志段：三个 f64（谱隙、总扰动、截断误差）小端连排，其后是两条布尔（非 0 即真）。
@@ -203,8 +227,12 @@ pub fn check(n: &Note) -> Result<()> {
             "存在非有限值",
         ),
         (
-            n.lossless == (n.decomp == 0.0 && n.equal),
-            "无损判定与逐位/误差不一致",
+            n.lossless
+                == match n.mode {
+                    Mode::Trunc => n.decomp == 0.0,
+                    Mode::Residual => n.equal,
+                },
+            "无损判定与模式/逐位/误差不一致",
         ),
         (
             !(n.used && n.stable == Stable::Pass && n.gap <= 2.0 * n.eps),
@@ -218,9 +246,19 @@ pub fn check(n: &Note) -> Result<()> {
     }
 }
 
-/// 由谱隙分析与秩截断合成一张证书：`eps` 是总扰动（观测 + 算法），`used` 是否采用秩选择。
-/// `equal` 判据与五轴 rank 轴一致（`low + rest` 与原始逐位相等），随后过 [`check`] 自证。
-pub fn note(w: &[f32], m: usize, n: usize, r: usize, eps: f64, used: bool) -> Result<Note> {
+/// 由谱隙分析与秩截断合成一张证书：`eps` 是总扰动（观测 + 算法），`used` 是否采用秩选择，
+/// `mode` 冻结重构模式（§4.4 第 3 步）。`equal` 判据与五轴 rank 轴一致（`low + rest` 与原始
+/// 逐位相等），无损判据随模式取不同误差项：纯截断看 `E_decomp`，残差补偿看逐位往返，随后过
+/// [`check`] 自证。
+pub fn note(
+    w: &[f32],
+    m: usize,
+    n: usize,
+    r: usize,
+    eps: f64,
+    used: bool,
+    mode: Mode,
+) -> Result<Note> {
     let s = spectral(w, m, n, r)?;
     let t = truncate(w, m, n, r)?;
     let equal = w
@@ -231,12 +269,16 @@ pub fn note(w: &[f32], m: usize, n: usize, r: usize, eps: f64, used: bool) -> Re
     let note = Note {
         rank: r as u32,
         used,
+        mode,
         stable: stable(s.gap, eps),
         gap: s.gap,
         eps,
         decomp: t.decomp,
         equal,
-        lossless: t.decomp == 0.0 && equal,
+        lossless: match mode {
+            Mode::Trunc => t.decomp == 0.0,
+            Mode::Residual => equal,
+        },
     };
     check(&note)?;
     Ok(note)
@@ -312,6 +354,7 @@ mod tests {
         let note = Note {
             rank: 2,
             used: true,
+            mode: Mode::Residual,
             stable: Stable::Pass,
             gap: 1.0,
             eps: 0.1,
@@ -331,6 +374,7 @@ mod tests {
         let base = Note {
             rank: 2,
             used: true,
+            mode: Mode::Residual,
             stable: Stable::Pass,
             gap: 0.1, // Pass 但 gap 不 > 2eps
             eps: 0.1,
@@ -356,15 +400,30 @@ mod tests {
 
     #[test]
     fn note_synthesizes_and_self_checks() {
-        let n = note(&diag4(), 4, 4, 2, 0.1, true).expect("证书");
-        assert_eq!(n.rank, 2);
-        assert!(n.used);
-        assert_eq!(n.stable, Stable::Pass); // gap = 2 - 1 = 1 > 2 * 0.1
-        assert!((n.gap - 1.0).abs() < 1e-9);
-        assert!((n.decomp - 1.25f64.sqrt()).abs() < 1e-5);
-        // 精确低秩 + 残差逐位还原（diag(3,2,1,0.5) 的秩2截断残差为 diag(0,0,1,0.5)）。
-        assert!(n.equal);
-        // decomp > 0，故 lossless = false（截断本身有非零残差）。
-        assert!(!n.lossless);
+        let residual = note(&diag4(), 4, 4, 2, 0.1, true, Mode::Residual).expect("证书");
+        assert_eq!(residual.rank, 2);
+        assert!(residual.used);
+        assert_eq!(residual.mode, Mode::Residual);
+        assert_eq!(residual.stable, Stable::Pass); // gap = 2 - 1 = 1 > 2 * 0.1
+        assert!((residual.gap - 1.0).abs() < 1e-9);
+        assert!((residual.decomp - 1.25f64.sqrt()).abs() < 1e-5);
+        // 显式残差补偿：low + rest 逐位还原 diag(3,2,1,0.5)，E_comp=0 ⇒ 无损（不重复计 σ_{r+1}）。
+        assert!(residual.equal);
+        assert!(residual.lossless);
+
+        let trunc = note(&diag4(), 4, 4, 2, 0.1, true, Mode::Trunc).expect("证书");
+        assert_eq!(trunc.mode, Mode::Trunc);
+        // 纯截断：E_decomp = ‖diag(0,0,1,0.5)‖_F > 0 ⇒ 有损。
+        assert!(!trunc.lossless);
+    }
+
+    /// 矩阵本就秩 ≤ r 时，纯截断无残差，判无损。
+    #[test]
+    fn trunc_mode_is_lossless_when_rank_is_exact() {
+        let mut w = vec![0.0f32; 16];
+        w[0] = 3.0;
+        w[5] = 2.0;
+        let n = note(&w, 4, 4, 2, 0.1, true, Mode::Trunc).expect("证书");
+        assert!(n.lossless);
     }
 }

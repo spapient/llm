@@ -113,6 +113,122 @@ pub fn policy_loss(log_probs: &[f32], advantages: &[f32]) -> Result<f32> {
     Ok(-(sum / log_probs.len() as f64) as f32)
 }
 
+/// GRPO / PPO 训练损失配置：裁剪范围 `ε` 与参考 KL 惩罚系数 `β`。
+///
+/// 损失 = `−mean(min(ratio·A, clamp(ratio, 1−ε, 1+ε)·A)) + β·mean(KL_ref)`，其中
+/// `ratio = exp(new_logp − old_logp)`，`A` 是 advantage，`KL_ref` 是逐 token 的参考 KL。
+#[derive(Clone, Copy, Debug)]
+pub struct Grpo {
+    epsilon: f32,
+    beta: f32,
+}
+
+impl Grpo {
+    /// 构造 GRPO 配置；`epsilon`/`beta` 的合法性在损失入口校验（保持 `const`）。
+    pub const fn new(epsilon: f32, beta: f32) -> Self {
+        Self { epsilon, beta }
+    }
+
+    /// 裁剪范围 `ε`（非负）。
+    pub const fn epsilon(self) -> f32 {
+        self.epsilon
+    }
+
+    /// 参考 KL 惩罚系数 `β`（非负）。
+    pub const fn beta(self) -> f32 {
+        self.beta
+    }
+}
+
+/// 裁剪范围 ε 必须是非负有限数。
+fn check_epsilon(epsilon: f32) -> Result<()> {
+    if epsilon < 0.0 || !epsilon.is_finite() {
+        return Err(Error::new(Code::Invalid, format!("裁剪范围 ε={epsilon} 必须非负有限")).with(SITE));
+    }
+    Ok(())
+}
+
+/// KL 惩罚系数 β 必须是非负有限数。
+fn check_beta(beta: f32) -> Result<()> {
+    if beta < 0.0 || !beta.is_finite() {
+        return Err(Error::new(Code::Invalid, format!("KL 惩罚系数 β={beta} 必须非负有限")).with(SITE));
+    }
+    Ok(())
+}
+
+/// 校验四个逐元素数组等长且非空，返回元素数。
+fn check_quad_len(a: usize, b: usize, c: usize, d: usize) -> Result<usize> {
+    check_rows(a)?;
+    check_len(b, a, "old_logp")?;
+    check_len(c, a, "advantage")?;
+    check_len(d, a, "out")?;
+    Ok(a)
+}
+
+/// 单 token 裁剪代理：`min(ratio·a, clamp(ratio, low, high)·a)`，`ratio = exp(n − old)`。
+fn clipped_term(n: f32, old: f32, a: f32, low: f32, high: f32) -> f32 {
+    let ratio = (n - old).exp();
+    let clipped = ratio.clamp(low, high);
+    (ratio * a).min(clipped * a)
+}
+
+/// 逐 token 裁剪代理：`min(ratio·A, clamp(ratio, 1−ε, 1+ε)·A)`，写回 `out`。
+///
+/// `ratio = exp(new_logp − old_logp)`。逐元素独立，advantage 由调用方按 token 广播
+/// （GRPO 中同一 completion 的所有 token 共享同一 advantage）。
+///
+/// # Errors
+///
+/// `ε` 为负、四个数组任一为空或不等长时返回 [`Code::Invalid`]。
+pub fn clipped_surrogate(
+    new_logp: &[f32],
+    old_logp: &[f32],
+    advantages: &[f32],
+    epsilon: f32,
+    out: &mut [f32],
+) -> Result<()> {
+    check_epsilon(epsilon)?;
+    check_quad_len(new_logp.len(), old_logp.len(), advantages.len(), out.len())?;
+    let low = 1.0 - epsilon;
+    let high = 1.0 + epsilon;
+    for (((o, &n), &old), &a) in out.iter_mut().zip(new_logp).zip(old_logp).zip(advantages) {
+        *o = clipped_term(n, old, a, low, high);
+    }
+    Ok(())
+}
+
+/// GRPO 组合损失：`−mean(min(ratio·A, clamp(ratio)·A)) + β·mean(KL_ref)`。
+///
+/// `new_logp`/`old_logp`/`advantages`/`ref_kl` 四数组等长（逐 token 对齐），`ref_kl` 由
+/// [`crate::distill::kl_per_row`] 预计算（每 token 的 `KL(π ‖ π_ref)`）。`β=0` 退化为纯
+/// 裁剪策略梯度，`ε=0` 退化为无裁剪的 REINFORCE + KL 惩罚。
+///
+/// # Errors
+///
+/// `ε` 或 `β` 为负、四数组任一为空或不等长时返回 [`Code::Invalid`]。
+pub fn grpo_loss(
+    new_logp: &[f32],
+    old_logp: &[f32],
+    advantages: &[f32],
+    ref_kl: &[f32],
+    grpo: Grpo,
+) -> Result<f32> {
+    check_epsilon(grpo.epsilon)?;
+    check_beta(grpo.beta)?;
+    let rows = check_quad_len(new_logp.len(), old_logp.len(), advantages.len(), ref_kl.len())?;
+    let low = 1.0 - grpo.epsilon;
+    let high = 1.0 + grpo.epsilon;
+    let mut surrogate_sum = 0.0f64;
+    let mut kl_sum = 0.0f64;
+    for (((&n, &old), &a), &kl) in new_logp.iter().zip(old_logp).zip(advantages).zip(ref_kl) {
+        surrogate_sum += clipped_term(n, old, a, low, high) as f64;
+        kl_sum += kl as f64;
+    }
+    let surrogate_mean = surrogate_sum / rows as f64;
+    let kl_mean = kl_sum / rows as f64;
+    Ok((-surrogate_mean + grpo.beta as f64 * kl_mean) as f32)
+}
+
 #[cfg(test)]
 #[path = "../tests/rl_tests.rs"]
 mod tests;

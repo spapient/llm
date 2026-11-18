@@ -52,8 +52,10 @@ mod attention;
 mod attention_block;
 mod axis;
 mod bounds;
+mod csa;
 mod decision;
 mod embed;
+mod engram;
 mod format;
 mod lm_head;
 mod matmul;
@@ -75,10 +77,19 @@ pub use attention_block::AttentionBlock;
 pub use bounds::Bounds;
 
 #[doc(inline)]
+pub use csa::{
+    compress, dense_softmax, dsa_topk, effective_len, is_doubly_stochastic, sinkhorn, spectral_norm,
+    CSA_M, CSA_TOPK_FLASH, CSA_TOPK_PRO, HCA_M, WIN,
+};
+
+#[doc(inline)]
 pub use decision::{Calib, HEAD_LAYERS_TOKEN, brier};
 
 #[doc(inline)]
 pub use embed::Embedding;
+
+#[doc(inline)]
+pub use engram::{Table, allocate, next_prime, phi, slots};
 
 #[doc(inline)]
 pub use lm_head::LmHead;

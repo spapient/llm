@@ -1,4 +1,4 @@
-use crate::{advantage, entropy, log_prob, policy_loss};
+use crate::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
 use diagnostic::{Code, Result};
 
 /// 对齐类别顶到最高时，log-prob 应趋近 0。
@@ -102,6 +102,72 @@ fn policy_loss_negates_the_mean_of_advantage_times_log_prob() -> Result<()> {
 fn policy_loss_rejects_length_mismatch() {
     assert!(matches!(
         policy_loss(&[0.0], &[0.0, 0.0]),
+        Err(e) if e.code() == Code::Invalid
+    ));
+}
+
+/// ratio=1（新旧 log-prob 相等）时裁剪代理退化为 advantage 本身。
+#[test]
+fn clipped_surrogate_equals_advantage_when_ratio_is_one() -> Result<()> {
+    let mut out = [0.0; 2];
+    clipped_surrogate(&[0.0, 0.0], &[0.0, 0.0], &[2.0, 1.0], 0.2, &mut out)?;
+    assert!((out[0] - 2.0).abs() < 1e-6 && (out[1] - 1.0).abs() < 1e-6, "ratio=1 时应为 A，得到 {out:?}");
+    Ok(())
+}
+
+/// ratio 过高被裁剪到 1+ε：代理 = (1+ε)·A。
+#[test]
+fn clipped_surrogate_caps_high_ratio() -> Result<()> {
+    let mut out = [0.0];
+    clipped_surrogate(&[10.0], &[0.0], &[1.0], 0.2, &mut out)?;
+    assert!((out[0] - 1.2).abs() < 1e-6, "高 ratio 应裁剪到 1.2·A，得到 {}", out[0]);
+    Ok(())
+}
+
+/// β=0 时 GRPO 损失退化为 −mean(裁剪代理)。
+#[test]
+fn grpo_loss_with_zero_beta_is_negative_surrogate_mean() -> Result<()> {
+    let loss = grpo_loss(
+        &[0.0, 0.0],
+        &[0.0, 0.0],
+        &[2.0, 1.0],
+        &[0.5, 0.5],
+        Grpo::new(0.2, 0.0),
+    )?;
+    // ratio=1，代理 = [2,1]，均值 1.5，取负 = −1.5。
+    assert!((loss + 1.5).abs() < 1e-6, "β=0 损失应为 −1.5，得到 {loss}");
+    Ok(())
+}
+
+/// β>0 时 GRPO 损失额外加上 β·mean(KL_ref)。
+#[test]
+fn grpo_loss_adds_beta_times_mean_kl() -> Result<()> {
+    let loss = grpo_loss(
+        &[0.0, 0.0],
+        &[0.0, 0.0],
+        &[2.0, 1.0],
+        &[0.5, 0.5],
+        Grpo::new(0.2, 1.0),
+    )?;
+    // −1.5 + 1.0·0.5 = −1.0。
+    assert!((loss + 1.0).abs() < 1e-6, "β=1 损失应为 −1.0，得到 {loss}");
+    Ok(())
+}
+
+/// 负 ε 被拒绝。
+#[test]
+fn grpo_loss_rejects_negative_epsilon() {
+    assert!(matches!(
+        grpo_loss(&[0.0], &[0.0], &[0.0], &[0.0], Grpo::new(-0.1, 0.0)),
+        Err(e) if e.code() == Code::Invalid
+    ));
+}
+
+/// 负 β 被拒绝。
+#[test]
+fn grpo_loss_rejects_negative_beta() {
+    assert!(matches!(
+        grpo_loss(&[0.0], &[0.0], &[0.0], &[0.0], Grpo::new(0.2, -0.1)),
         Err(e) if e.code() == Code::Invalid
     ));
 }

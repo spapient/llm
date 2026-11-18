@@ -129,7 +129,19 @@ pub fn metal_grid_program(
             }
             crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
         }
-        Skeleton::Gemm | Skeleton::Attention | Skeleton::Scan => Err(Error::new(
+        Skeleton::Gemm => {
+            // gemv：一输出行一线程，逐缓冲偏移来自 `[grid]` 声明。
+            let grid = op.grid.as_ref().ok_or_else(|| {
+                Error::new(
+                    Code::Unsupported,
+                    format!("`{}` 的 Gemm 骨架缺 `[grid]` 网格映射", op.name),
+                )
+                .with("cutile::execution::metal_grid_program")
+            })?;
+            let sample = (run.model.sample)(m, n);
+            crate::harness::metal_gemv_kernel(&prepared.source.text, &op.signature, &sample, grid)
+        }
+        Skeleton::Attention | Skeleton::Scan => Err(Error::new(
             Code::Unsupported,
             format!(
                 "`{}` 的 `{:?}` 骨架 Metal lowering 尚未建立",

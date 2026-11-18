@@ -8,55 +8,49 @@ use crate::{Fingerprint, SpecialTokens, Token};
 use diagnostic::{Code, Error, Result};
 use std::collections::{HashMap, HashSet};
 
-/// 词表算法族。
+/// 词表算法族。判别值即稳定 wire 序号，勿重排、勿改号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum VocabFamily {
     /// BPE：按合并对迭代归并相邻片段。
-    Bpe,
+    Bpe = 0,
     /// Unigram：按片段分数做最优切分。
-    Unigram,
+    Unigram = 1,
     /// WordPiece：前缀标记 + 词内子词贪心。
-    WordPiece,
+    WordPiece = 2,
     /// 整词词表：不做子词切分。
-    WordLevel,
+    WordLevel = 3,
     /// 字节级基线：一字节一片。
-    Byte,
+    Byte = 4,
 }
+
+/// 族按 wire 序号的稳定表：`from_id` 的唯一事实源。
+const FAMILY_BY_ID: [VocabFamily; 5] = [
+    VocabFamily::Bpe,
+    VocabFamily::Unigram,
+    VocabFamily::WordPiece,
+    VocabFamily::WordLevel,
+    VocabFamily::Byte,
+];
+
+/// 族名按 wire 序号的稳定表：`as_str` 的唯一事实源。
+const FAMILY_STR: [&str; 5] = ["bpe", "unigram", "wordpiece", "wordlevel", "byte"];
 
 impl VocabFamily {
     /// 族名（实现标识，进词表指纹）。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            VocabFamily::Bpe => "bpe",
-            VocabFamily::Unigram => "unigram",
-            VocabFamily::WordPiece => "wordpiece",
-            VocabFamily::WordLevel => "wordlevel",
-            VocabFamily::Byte => "byte",
-        }
+        FAMILY_STR[self as usize]
     }
 
     /// 稳定 wire 序号（中性字节布局用，区别于族名字符串）。
     pub(crate) const fn id(self) -> u8 {
-        match self {
-            VocabFamily::Bpe => 0,
-            VocabFamily::Unigram => 1,
-            VocabFamily::WordPiece => 2,
-            VocabFamily::WordLevel => 3,
-            VocabFamily::Byte => 4,
-        }
+        self as u8
     }
 
     /// 由 wire 序号取族；未知序号返回 `None`。
     pub(crate) const fn from_id(id: u8) -> Option<Self> {
-        match id {
-            0 => Some(VocabFamily::Bpe),
-            1 => Some(VocabFamily::Unigram),
-            2 => Some(VocabFamily::WordPiece),
-            3 => Some(VocabFamily::WordLevel),
-            4 => Some(VocabFamily::Byte),
-            _ => None,
-        }
+        FAMILY_BY_ID.get(id as usize).copied()
     }
 
     /// 本族是否必须携带合并表。
@@ -191,16 +185,9 @@ impl Vocab {
     ///
     /// 这是"词表 → 算法"的唯一闭集扇出：上层只认 [`crate::Tokenizer`]，不关心具体实现名。
     pub fn into_tokenizer(self) -> Result<Box<dyn crate::Tokenizer>> {
-        match self.family {
-            VocabFamily::Bpe => Ok(Box::new(crate::Bpe::new(self)?)),
-            VocabFamily::Unigram => Ok(Box::new(crate::Unigram::new(self)?)),
-            VocabFamily::Byte => Ok(Box::new(crate::Bytes)),
-            other => Err(Error::new(
-                Code::Unsupported,
-                format!("词表族 {other:?} 尚无分词器实现"),
-            )
-            .with("tokenizer::Vocab::into_tokenizer")),
-        }
+        let family = self.family;
+        let ctor = FAMILY_CTOR[family as usize].ok_or_else(|| unsupported(family))?;
+        ctor(self)
     }
 
     /// 编号 → 词片字节；越界返回 [`None`]。
@@ -222,6 +209,38 @@ impl Vocab {
     pub fn is_special(&self, id: u32) -> bool {
         self.special.is_special(id)
     }
+}
+
+/// "词表 → 分词器" 构造器：`FAMILY_CTOR[family as usize]` 为 `None` 表示族尚无实现。
+type TokenizerCtor = fn(Vocab) -> Result<Box<dyn crate::Tokenizer>>;
+
+/// 族 → 构造器的闭集扇出表（下标即 [`VocabFamily::id`]）。
+const FAMILY_CTOR: [Option<TokenizerCtor>; 5] = [
+    Some(bpe_ctor),
+    Some(unigram_ctor),
+    None,
+    None,
+    Some(bytes_ctor),
+];
+
+fn bpe_ctor(vocab: Vocab) -> Result<Box<dyn crate::Tokenizer>> {
+    Ok(Box::new(crate::Bpe::new(vocab)?))
+}
+
+fn unigram_ctor(vocab: Vocab) -> Result<Box<dyn crate::Tokenizer>> {
+    Ok(Box::new(crate::Unigram::new(vocab)?))
+}
+
+fn bytes_ctor(_vocab: Vocab) -> Result<Box<dyn crate::Tokenizer>> {
+    Ok(Box::new(crate::Bytes))
+}
+
+fn unsupported(family: VocabFamily) -> Error {
+    Error::new(
+        Code::Unsupported,
+        format!("词表族 {family:?} 尚无分词器实现"),
+    )
+    .with("tokenizer::Vocab::into_tokenizer")
 }
 
 /// 把合并对按表内顺序（即秩序）折叠进指纹；两侧先长度前缀再字节，避免边界串扰。

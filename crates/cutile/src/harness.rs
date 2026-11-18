@@ -5,6 +5,7 @@
 //! 不认识任何算子。同模块内的 [`cuda_harness`] 是同口径的 CUDA 语义对拍方言。
 
 use diagnostic::{Code, Error};
+use op::decl::Grid;
 use op::model::{Sample, Values};
 use op::sig::{CType, Param, Signature};
 
@@ -519,6 +520,88 @@ fn serial_args(params: &[Param], sample: &Sample) -> diagnostic::Result<String> 
                     .with("cutile::harness::metal_serial_kernel")
                 })?;
                 Ok(value.to_string())
+            }
+        })
+        .collect::<diagnostic::Result<Vec<_>>>()
+        .map(|args| args.join(", "))
+}
+
+/// 生产态 gemv 内核：Gemm 骨架按输出行拆线程（grid = `[n, 1, 1]`，`n` 是样本输出维度）。
+///
+/// 逐缓冲偏移来自 `[grid]` 声明（[`Grid`]），不是对模板的索引分析：输出 `d_y + n`（线程下标
+/// 即行）、行跨步权重 `d_w + n * m`（`m` 是样本归约维度）、共享输入 `d_x` 原样透传；输出轴长度
+/// 标量（`grid.axis`）压缩为 `1`，让正文的外层循环只跑一次、`n` 由缓冲偏移注入。与
+/// [`metal_grid_kernel`]（逐点：缓冲全 `+ n`）的分工正是「权重是否按行跨步」。
+///
+/// # Errors：缓冲不在 `out`/`row`/`share` 里、标量缺样本取值时返回说明。
+pub fn metal_gemv_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: &Grid,
+) -> diagnostic::Result<String> {
+    let call = gemv_args(signature, sample, grid)?;
+    let buffers = signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+        .map(|(slot, param)| {
+            format!(
+                "    device {}* d_{} [[buffer({slot})]]",
+                param.ctype.c_name(),
+                param.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    Ok(format!(
+        "{}\n\nkernel void kernel_main(\n{buffers},\n    uint n [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
+        msl_address_space(kernel_source),
+        signature.kernel(),
+    ))
+}
+
+/// gemv 实参：缓冲按 `[grid]` 角色取偏移（输出 `+ n`、行跨步 `+ n * m`、共享原样），标量除
+/// `grid.axis`（压缩为 `1`）外取样本实际值。
+fn gemv_args(
+    signature: &Signature,
+    sample: &Sample,
+    grid: &Grid,
+) -> diagnostic::Result<String> {
+    let m = sample.m;
+    signature
+        .params()
+        .iter()
+        .map(|param| {
+            if param.ctype.is_buffer() {
+                let name = param.name.as_str();
+                if name == grid.out {
+                    Ok(format!("d_{name} + n"))
+                } else if name == grid.row {
+                    Ok(format!("d_{name} + n * {m}"))
+                } else if grid.share.iter().any(|shared| shared == name) {
+                    Ok(format!("d_{name}"))
+                } else {
+                    Err(Error::new(
+                        Code::Invalid,
+                        format!("缓冲 `{name}` 不在 `[grid]` 的 out/row/share 里"),
+                    )
+                    .with("cutile::harness::metal_gemv_kernel"))
+                }
+            } else {
+                let value = sample.scalar(&param.name).ok_or_else(|| {
+                    Error::new(
+                        Code::Invalid,
+                        format!("gemv 内核标量 `{}` 没有样本取值", param.name),
+                    )
+                    .with("cutile::harness::metal_gemv_kernel")
+                })?;
+                if param.name == grid.axis {
+                    Ok("1".to_owned())
+                } else {
+                    Ok(value.to_string())
+                }
             }
         })
         .collect::<diagnostic::Result<Vec<_>>>()

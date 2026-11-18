@@ -1,4 +1,4 @@
-use crate::{Distill, distillation_loss, kl_div, log_softmax};
+use crate::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
 use diagnostic::{Code, Result};
 
 /// log-softmax 的指数每行和为 1（数值稳定的 softmax 归一化）。
@@ -114,6 +114,38 @@ fn rejects_out_of_range_alpha() {
 fn rejects_length_mismatch() {
     assert!(matches!(
         kl_div(&[0.0, 0.0], &[0.0, 0.0, 0.0], 2, 1.0),
+        Err(e) if e.code() == Code::Invalid
+    ));
+}
+
+/// 每行 KL 与均值 KL 一致：同分布每行 KL 为 0。
+#[test]
+fn kl_per_row_is_zero_when_distributions_match() -> Result<()> {
+    let logits = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let mut out = [0.0; 2];
+    kl_per_row(&logits, &logits, 3, 1.0, &mut out)?;
+    assert!(out.iter().all(|v| v.abs() < 1e-6), "同分布每行 KL 应为 0，得到 {out:?}");
+    Ok(())
+}
+
+/// 每行 KL 的行均值等于 kl_div 的返回值。
+#[test]
+fn kl_per_row_averages_to_kl_div() -> Result<()> {
+    let student = [1.0, 2.0, 3.0, 3.0, 2.0, 1.0];
+    let teacher = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut out = [0.0; 2];
+    kl_per_row(&student, &teacher, 3, 1.0, &mut out)?;
+    let mean = out.iter().sum::<f32>() / out.len() as f32;
+    let kl = kl_div(&student, &teacher, 3, 1.0)?;
+    assert!((mean - kl).abs() < 1e-5, "每行 KL 均值应等于 kl_div，得到 {mean} vs {kl}");
+    Ok(())
+}
+
+/// 每行 KL 的 out 与行数不等长被拒绝。
+#[test]
+fn kl_per_row_rejects_out_length_mismatch() {
+    assert!(matches!(
+        kl_per_row(&[0.0, 0.0], &[0.0, 0.0], 2, 1.0, &mut [0.0; 3]),
         Err(e) if e.code() == Code::Invalid
     ));
 }
