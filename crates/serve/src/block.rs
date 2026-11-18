@@ -5,12 +5,14 @@
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{Launch, Node};
-use nn::{AttentionAlgo, AttentionBlock, Contract, WEIGHT_SUFFIX};
+use nn::{AttentionAlgo, AttentionBlock, Contract, Linear, WEIGHT_SUFFIX};
 
 use crate::assembly::NodeSink;
 use crate::kernels::SITE;
 use crate::params::Params;
-use crate::plan::{LayerKind, plan_operator};
+use crate::plan::{
+    LayerKind, check_weight_entry, plan_operator, projection_shapes, validate_quantized_shape,
+};
 
 /// 一个注意力块接线记录：当前步 K/V 取回拼页行；历史 K/V 缓冲每步重绑；旁路即块输入编号。
 #[derive(Debug, Clone, Copy)]
@@ -62,53 +64,63 @@ fn check_head(block: &AttentionBlock, prev_out: Option<usize>) -> Result<()> {
     Ok(())
 }
 
-/// 四个投影条目：条目齐备、元素数与 `in × out` 相符；算子格式校验统一在
-/// [`block_operators`] 内走一次 `plan_operator`，这里不再重复拆格式。
+/// 四个投影条目：条目齐备、长度与格式相符。量化投影按打包字节 + 标度条数核对，与普通
+/// [`crate::plan::check_weight_entry`] 同一份判据；`plan_operator` 的格式校验在 [`block_operators`] 一次走完。
 fn check_block_weights(block: &AttentionBlock, params: &Params) -> Result<()> {
-    let hidden = block.hidden();
-    let kv = block.kv_width();
-    let subs: [(&str, usize, usize); 4] = [
-        ("q", hidden, kv),
-        ("k", hidden, kv),
-        ("v", hidden, kv),
-        ("o", kv, hidden),
-    ];
-    for (level, in_width, out_width) in subs {
-        let entry = block_entry(block, level);
-        let Some(weight) = params.get(&entry) else {
-            return Err(
-                Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE),
-            );
-        };
-        let expected = in_width * out_width;
-        if weight.len() != expected {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "条目 `{entry}` 有 {} 个元素，而需要 {expected}",
-                    weight.len()
-                ),
-            )
-            .with(SITE));
-        }
+    for (level, linear) in [
+        ("q", block.q()),
+        ("k", block.k()),
+        ("v", block.v()),
+        ("o", block.out()),
+    ] {
+        check_projection(block, level, linear, params)?;
     }
     Ok(())
 }
 
-/// 块内四个投影的算子名：格式校验在 `plan_operator` 内一次完成。
+/// 一条块内投影：整除校验后，按格式取打包字节/标度条数，再用共享判据核对条目与可选标度。
+fn check_projection(
+    block: &AttentionBlock,
+    level: &str,
+    linear: &Linear,
+    params: &Params,
+) -> Result<()> {
+    let entry = block_entry(block, level);
+    validate_quantized_shape(linear.format(), linear.in_features())?;
+    let (weight_len, _, scales_len, _) =
+        projection_shapes(linear.format(), linear.in_features(), linear.out_features());
+    let scale_entry = params.scale_entry(&entry);
+    check_weight_entry(params, &entry, weight_len, scale_entry, scales_len)
+}
+
+/// 块内四个投影的算子名与可选标度条目名；格式校验在 `plan_operator` 内一次完成，
+/// 标度条目名从参数表取回（稠密投影为 `None`）。
 struct ProjectionOps {
     q: &'static str,
     k: &'static str,
     v: &'static str,
     o: &'static str,
+    q_scale: Option<String>,
+    k_scale: Option<String>,
+    v_scale: Option<String>,
+    o_scale: Option<String>,
 }
 
-fn block_operators(block: &AttentionBlock) -> Result<ProjectionOps> {
+/// 量化投影的标度条目名：稠密投影无标度，返回 `None`。
+fn scale_entry_of(block: &AttentionBlock, params: &Params, level: &str) -> Option<String> {
+    params.scale_entry(&block_entry(block, level)).map(str::to_owned)
+}
+
+fn block_operators(block: &AttentionBlock, params: &Params) -> Result<ProjectionOps> {
     Ok(ProjectionOps {
         q: plan_operator(&format!("{}.q", block.name()), block.q())?,
         k: plan_operator(&format!("{}.k", block.name()), block.k())?,
         v: plan_operator(&format!("{}.v", block.name()), block.v())?,
         o: plan_operator(&format!("{}.o", block.name()), block.out())?,
+        q_scale: scale_entry_of(block, params, "q"),
+        k_scale: scale_entry_of(block, params, "k"),
+        v_scale: scale_entry_of(block, params, "v"),
+        o_scale: scale_entry_of(block, params, "o"),
     })
 }
 
@@ -119,9 +131,9 @@ fn wire_qkv(
     prev: u32,
     ops: &ProjectionOps,
 ) -> Result<(u32, u32, u32)> {
-    let q = sink.push_projection(prev, block.q(), &block_entry(block, "q"), ops.q)?;
-    let k = sink.push_projection(prev, block.k(), &block_entry(block, "k"), ops.k)?;
-    let v = sink.push_projection(prev, block.v(), &block_entry(block, "v"), ops.v)?;
+    let q = sink.push_projection(prev, block.q(), &block_entry(block, "q"), ops.q, ops.q_scale.as_deref())?;
+    let k = sink.push_projection(prev, block.k(), &block_entry(block, "k"), ops.k, ops.k_scale.as_deref())?;
+    let v = sink.push_projection(prev, block.v(), &block_entry(block, "v"), ops.v, ops.v_scale.as_deref())?;
     Ok((q, k, v))
 }
 
@@ -207,8 +219,13 @@ fn wire_output(
     ops: &ProjectionOps,
 ) -> Result<u32> {
     let hidden = block.hidden();
-    let pre_residual =
-        sink.push_projection(attn_slot, block.out(), &block_entry(block, "o"), ops.o)?;
+    let pre_residual = sink.push_projection(
+        attn_slot,
+        block.out(),
+        &block_entry(block, "o"),
+        ops.o,
+        ops.o_scale.as_deref(),
+    )?;
     let out_slot = sink.slots.activation()?;
     let mut residual = Node::new(
         "residual_add_f32".to_string(),
@@ -223,8 +240,13 @@ fn wire_output(
 }
 
 /// 把注意力块拆成子节点接进图；返回块输出激活编号。
-fn push_block(sink: &mut NodeSink<'_>, prev: u32, block: &AttentionBlock) -> Result<u32> {
-    let ops = block_operators(block)?;
+fn push_block(
+    sink: &mut NodeSink<'_>,
+    prev: u32,
+    block: &AttentionBlock,
+    params: &Params,
+) -> Result<u32> {
+    let ops = block_operators(block, params)?;
     let (pos_table, len_table) = sink.ensure_tables()?;
     let (k_slot, v_slot, hist_k, hist_v, out_slot) =
         wire_block_graph(sink, block, prev, &ops, pos_table, len_table)?;
@@ -279,7 +301,7 @@ pub(crate) fn advance_block(
     params: &Params,
 ) -> Result<(u32, usize, usize, LayerKind)> {
     check_block(block, prev_out, params)?;
-    let next = push_block(sink, prev, block)?;
+    let next = push_block(sink, prev, block, params)?;
     let hidden = block.hidden();
     Ok((next, hidden, hidden, LayerKind::Projection))
 }

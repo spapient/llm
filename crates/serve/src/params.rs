@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use diagnostic::{Code, Error, Result};
 use nn::{AttentionBlock, Contract, Stack, WEIGHT_SUFFIX};
-use weights::{Entry as WeightEntry, Header, Loader, Reader, Wire, decode_f32};
+use weights::{Entry as WeightEntry, Header, Loader, Quantized, Reader, Wire, decode_f32};
 
 use crate::kernels::SITE;
 
@@ -120,9 +120,20 @@ impl Params {
         self
     }
 
-    /// 记录量化权重条目与标度条目的对应；标度本身已按标度条目名登记进 `entries`。
-    fn link_scale(&mut self, weight: String, scale: String) {
-        self.scales.insert(weight, scale);
+    /// 登记一条量化权重整块：打包字节 + 标度各占一条目，并记录两者对应。
+    pub fn insert_quantized(
+        &mut self,
+        entry: impl Into<String>,
+        packed: Vec<u8>,
+        scale_entry: impl Into<String>,
+        scales: Vec<f32>,
+    ) -> &mut Self {
+        let entry = entry.into();
+        let scale_entry = scale_entry.into();
+        self.insert_packed(entry.clone(), packed);
+        self.insert(scale_entry.clone(), scales);
+        self.scales.insert(entry, scale_entry);
+        self
     }
 
     /// 按条目名取权重块。
@@ -208,23 +219,38 @@ impl Params {
         name: &str,
         source: &S,
     ) -> Result<()> {
-        let Some(entry) = header.get(name) else {
-            return Err(Error::new(Code::Missing, format!("权重头部缺条目 `{name}`")).with(SITE));
-        };
-        if let Some(quantized) = header.quantization(name)? {
-            let packed = source.bytes(entry)?;
-            let scales = source
-                .f32(quantized.scales())?
-                .ok_or_else(|| {
-                    Error::new(Code::Invalid, format!("量化权重 `{name}` 的标度条目不是 F32"))
-                        .with(SITE)
-                })?;
-            let scale_name = quantized.scales_name().to_string();
-            params.insert_packed(name, packed);
-            params.insert(scale_name.clone(), scales);
-            params.link_scale(name.to_string(), scale_name);
-            return Ok(());
+        let entry = header.get(name).ok_or_else(|| {
+            Error::new(Code::Missing, format!("权重头部缺条目 `{name}`")).with(SITE)
+        })?;
+        match header.quantization(name)? {
+            Some(quantized) => Self::load_quantized(params, name, entry, quantized, source),
+            None => Self::load_dense(params, name, entry, source),
         }
+    }
+
+    /// 量化条目：打包字节取原始字节、标度解包成 f32，两条按对应关系入表。
+    fn load_quantized<S: WeightSource>(
+        params: &mut Self,
+        name: &str,
+        entry: &WeightEntry,
+        quantized: Quantized<'_>,
+        source: &S,
+    ) -> Result<()> {
+        let packed = source.bytes(entry)?;
+        let scales = source.f32(quantized.scales())?.ok_or_else(|| {
+            Error::new(Code::Invalid, format!("量化权重 `{name}` 的标度条目不是 F32")).with(SITE)
+        })?;
+        params.insert_quantized(name, packed, quantized.scales_name(), scales);
+        Ok(())
+    }
+
+    /// 稠密条目：F32 解包入表，非 F32 跳过不填（装配期按格式拒绝）。
+    fn load_dense<S: WeightSource>(
+        params: &mut Self,
+        name: &str,
+        entry: &WeightEntry,
+        source: &S,
+    ) -> Result<()> {
         let Some(weight) = source.f32(entry)? else {
             return Ok(());
         };

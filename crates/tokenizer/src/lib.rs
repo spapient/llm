@@ -21,6 +21,8 @@
 
 #![deny(unsafe_code)]
 
+#[macro_use]
+mod delegates;
 mod bpe;
 mod bytes;
 mod encoding;

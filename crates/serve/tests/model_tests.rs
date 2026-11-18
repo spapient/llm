@@ -1070,13 +1070,97 @@ fn a_missing_weight_is_rejected_at_assembly() {
     rejected_at_assembly(stack, Params::new(), Code::Missing);
 }
 
-/// 非 F32 编码（默认 int4）：P1 只接稠密浮点，装配期报 `Unsupported`。
+/// 量化（默认 int4）层配了稠密 f32 权重：装配期按 `Invalid` 拒绝，不把 f32 当打包字节解释。
 #[test]
-fn a_non_f32_layer_is_rejected_at_assembly() {
-    let stack = Stack::new(vec![Linear::new("blk.0", 3, 2).expect("层")]).expect("栈");
-    let params = params_of(&[("blk.0.weight", vec![0.0; 6])]);
+fn a_quantized_layer_with_dense_weights_is_rejected_at_assembly() {
+    let stack = Stack::new(vec![Linear::new("blk.0", 32, 2).expect("层")]).expect("栈");
+    let params = params_of(&[("blk.0.weight", vec![0.0; 64])]);
 
-    rejected_at_assembly(stack, params, Code::Unsupported);
+    rejected_at_assembly(stack, params, Code::Invalid);
+}
+
+/// 量化（默认 int4）层缺标度条目：装配期按 `Missing` 拒绝，不静默走单输入节点。
+#[test]
+fn a_quantized_layer_without_its_scale_is_rejected_at_assembly() {
+    let stack = Stack::new(vec![Linear::new("blk.0", 32, 1).expect("层")]).expect("栈");
+    let mut params = Params::new();
+    params.insert_packed("blk.0.weight", packed_i4(&[1i8; 32]));
+
+    rejected_at_assembly(stack, params, Code::Missing);
+}
+
+/// 量化 int4 投影装配端到端：打包字节 + 标度两条驻留条目，前向与 `gemv_i4` 参考对拍。
+#[test]
+fn a_quantized_int4_projection_assembles_and_matches_the_reference() {
+    let x: Vec<f32> = (0..32).map(|index| 1.0 + index as f32 * 0.1).collect();
+    let codes: Vec<i8> = (0..32).map(|index| (index as i8 % 5) - 2).collect();
+    let w = packed_i4(&codes);
+    let scales = [0.5f32];
+    let mut reference = vec![0.0; 1];
+    op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+
+    let stack = Stack::new(vec![
+        Linear::with_format("blk.0", WeightFormat::INT4, 32, 1).expect("层"),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert_quantized("blk.0.weight", w, "blk.0.weight_scale", scales.to_vec());
+
+    forward_close(stack, params, &x, &reference);
+}
+
+/// 量化 int8 投影装配端到端：逐元素字节 + 标度，前向与 `gemv_i8` 参考对拍。
+#[test]
+fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
+    let x: Vec<f32> = (0..32).map(|index| 1.0 + index as f32 * 0.1).collect();
+    let w: Vec<u8> = (0..32).map(|index| ((index as i8 % 5) - 2) as u8).collect();
+    let scales = [0.5f32];
+    let mut reference = vec![0.0; 1];
+    op::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
+
+    let stack = Stack::new(vec![
+        Linear::with_format("blk.0", WeightFormat::INT8, 32, 1).expect("层"),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert_quantized("blk.0.weight", w, "blk.0.weight_scale", scales.to_vec());
+
+    forward_close(stack, params, &x, &reference);
+}
+
+/// 量化 int4 归档经 `from_stack` 全链装载：打包字节 + 标度两条条目按头部自动成对，
+/// 装配后前向与 `gemv_i4` 参考对拍——覆盖 `insert_named` 的成对登记与标度回链。
+#[test]
+fn a_quantized_int4_archive_loads_and_matches_the_reference() {
+    let in_features = 32usize;
+    let x: Vec<f32> = (0..in_features)
+        .map(|index| 1.0 + index as f32 * 0.1)
+        .collect();
+    let codes: Vec<i8> = (0..in_features).map(|index| (index as i8 % 5) - 2).collect();
+    let w = packed_i4(&codes);
+    let scales = [0.25f32];
+    let mut reference = vec![0.0; 1];
+    op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+
+    let bytes = archive_of(&[
+        ArchiveEntry {
+            name: "blk.0.weight",
+            shape: [1, 16],
+            dtype: "U8",
+            bytes: w.clone(),
+        },
+        ArchiveEntry {
+            name: "blk.0.weight_scale",
+            shape: [1, 1],
+            dtype: "F32",
+            bytes: f32_block(&scales),
+        },
+    ]);
+    let archive = Archive::parse(&bytes).expect("归档合法");
+    let stack = Stack::from_header(archive.header()).expect("层栈");
+    let params = Params::from_stack(&stack, archive.header(), &archive).expect("装载");
+
+    forward_close(stack, params, &x, &reference);
 }
 
 /// 层间宽度链断裂：上一层输出宽度对不上本层输入宽度，装配期报 `Invalid`。
@@ -1732,6 +1816,118 @@ fn a_block_weight_length_mismatch_is_rejected_at_assembly() {
     ]);
 
     rejected_at_assembly(stack, params, Code::Invalid);
+}
+
+/// int4 投影的打包权重 + 标度：`out` 行、每行 `in` 元素按 32 一组共享一条标度，码取确定性小值。
+fn quant_projection(out: usize, in_width: usize, seed: i8) -> (Vec<u8>, Vec<f32>) {
+    let codes: Vec<i8> = (0..out * in_width)
+        .map(|index| (seed + (index as i8 % 16)).rem_euclid(16) - 8)
+        .collect();
+    let groups = in_width / 32;
+    let scales: Vec<f32> = (0..out * groups)
+        .map(|index| 0.25 + (index % 3) as f32 * 0.25)
+        .collect();
+    (packed_i4(&codes), scales)
+}
+
+/// 量化块参考链：q/k/v/o 走 `gemv_i4`，RoPE/注意力/残差与稠密参考同族；返回残差、旋转 K、明文 V。
+#[allow(clippy::too_many_arguments)]
+fn reference_block_quant(
+    embedded: &[f32],
+    (wq, sq): (&[u8], &[f32]),
+    (wk, sk): (&[u8], &[f32]),
+    (wv, sv): (&[u8], &[f32]),
+    (wo, so): (&[u8], &[f32]),
+    (hist_k, hist_v): (&[f32], &[f32]),
+    hist: usize,
+    kv: usize,
+    head_dim: usize,
+    hidden: usize,
+    pos: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut q = vec![0.0; kv];
+    op::gemv_i4::forward(embedded, wq, sq, &mut q).expect("参考 q");
+    let mut k = vec![0.0; kv];
+    op::gemv_i4::forward(embedded, wk, sk, &mut k).expect("参考 k");
+    let mut v = vec![0.0; kv];
+    op::gemv_i4::forward(embedded, wv, sv, &mut v).expect("参考 v");
+    let mut q_rot = vec![0.0; kv];
+    op::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
+    let mut k_rot = vec![0.0; kv];
+    op::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
+    let mut attn = vec![0.0; kv];
+    op::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
+        .expect("参考注意力");
+    let mut o = vec![0.0; hidden];
+    op::gemv_i4::forward(&attn, wo, so, &mut o).expect("参考 o");
+    let mut residual = vec![0.0; hidden];
+    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
+    (residual, k_rot, v)
+}
+
+/// 量化 int4 注意力块 decode：四路投影走打包字节 + 标度，q/k/v/o 输出仍是 f32（`gemv_i4` 输出
+/// 浮点），KV 页行写回不交叠；与独立 `gemv_i4`/RoPE/注意力/残差串行参考对拍。
+#[test]
+fn a_quantized_attention_block_decodes_against_the_reference() {
+    let (vocab, hidden, kv) = (8, 32, 32);
+    let head_dim = kv;
+    let hist = 1;
+
+    let table = embed_table(vocab, hidden);
+    let (wq, sq) = quant_projection(kv, hidden, 0);
+    let (wk, sk) = quant_projection(kv, hidden, 1);
+    let (wv, sv) = quant_projection(kv, hidden, 2);
+    let (wo, so) = quant_projection(hidden, kv, 3);
+
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new(
+                "blk.0",
+                hidden,
+                kv,
+                head_dim,
+                4,
+                AttentionAlgo::Naive,
+                WeightFormat::INT4,
+            )
+            .expect("层"),
+        ),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert("tok_emb.weight", table.clone());
+    params.insert_quantized("blk.0.q.weight", wq.clone(), "blk.0.q.weight_scale", sq.clone());
+    params.insert_quantized("blk.0.k.weight", wk.clone(), "blk.0.k.weight_scale", sk.clone());
+    params.insert_quantized("blk.0.v.weight", wv.clone(), "blk.0.v.weight_scale", sv.clone());
+    params.insert_quantized("blk.0.o.weight", wo.clone(), "blk.0.o.weight_scale", so.clone());
+
+    let mut model = assemble(stack, params);
+    let (hist_k, hist_v) = history_kv(kv);
+    let history = history_row(&hist_k, &hist_v);
+    let (mut batch, sequence) = decode_batch(kv, &history);
+    let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
+
+    let embedded = &table[2 * hidden..3 * hidden];
+    let (reference, k_rot, v) = reference_block_quant(
+        embedded,
+        (&wq, &sq),
+        (&wk, &sk),
+        (&wv, &sv),
+        (&wo, &so),
+        (&hist_k, &hist_v),
+        hist,
+        kv,
+        head_dim,
+        hidden,
+        sequence.len(),
+    );
+    assert_close(&produced, &reference);
+
+    let row = batch.kv(0, sequence.len()).expect("当前步页行");
+    let (written_k, written_v) = row.split_at(kv);
+    assert_close(written_k, &k_rot);
+    assert_close(written_v, &v);
 }
 
 /// 多头展平（`kv_width = heads · head_dim`）端到端：嵌入 → q/k/v + 分段 RoPE → 多头 decode 注意力 →

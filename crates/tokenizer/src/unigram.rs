@@ -9,7 +9,7 @@
 //! 空白映射尚未接入，当前把整段 UTF-8 字节当作一个序列做片匹配。未覆盖路径回退到
 //! 已登记的 unknown 编号；未配置 `unk` 时报 [`Code::Invalid`]。
 
-use crate::{SpecialTokens, Token, Tokenizer, Vocab, VocabFamily};
+use crate::{Token, Tokenizer, Vocab, VocabFamily};
 use diagnostic::{Code, Error, Result};
 
 /// 基于 Unigram 词表的分词器；构造后词表与分数不可变。
@@ -129,41 +129,5 @@ impl Tokenizer for Unigram {
         self.unknown_fallback(bytes)
     }
 
-    fn decode(&self, tokens: &[Token]) -> Result<String> {
-        let mut bytes = Vec::with_capacity(tokens.len());
-        for token in tokens {
-            let piece = self.vocab.piece(token.id()).ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!(
-                        "token {} 超出 Unigram 词表（0..{}）",
-                        token.id(),
-                        self.vocab_size()
-                    ),
-                )
-                .with("tokenizer::Unigram::decode")
-            })?;
-            bytes.extend_from_slice(piece);
-        }
-        String::from_utf8(bytes).map_err(|error| {
-            Error::new(Code::Invalid, format!("token 序列不是合法 UTF-8：{error}"))
-                .with("tokenizer::Unigram::decode")
-        })
-    }
-
-    fn fingerprint(&self) -> crate::Fingerprint {
-        *self.vocab.fingerprint()
-    }
-
-    fn special_tokens(&self) -> &SpecialTokens {
-        self.vocab.special()
-    }
-
-    fn lookup(&self, piece: &[u8]) -> Result<Option<Token>> {
-        Ok(self.vocab.lookup(piece))
-    }
-
-    fn piece(&self, token: Token) -> Result<Option<Vec<u8>>> {
-        Ok(self.vocab.piece(token.id()).map(<[u8]>::to_vec))
-    }
+    vocab_tokenizer_delegates!("Unigram", "tokenizer::Unigram::decode");
 }

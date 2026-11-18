@@ -9,6 +9,7 @@
 //! 不追求通用 C 解析器——遇到闭集之外的类型就报错，而不是猜。
 
 use crate::model::{DType, Sample, Values};
+use crate::parse::{line_error as at, matching_paren, split_top_level};
 use diagnostic::{Code, Error};
 
 /// 形参的类型。
@@ -60,11 +61,6 @@ pub struct Param {
     pub ctype: CType,
     /// 指针形参是否没有 `const`（可写）；标量恒为 `false`。
     pub mutable: bool,
-}
-
-/// 签名错误：`.k` 是输入，因此类别恒为 `invalid`；行号作为一层上下文，文件由调用方补。
-fn at(line: usize, detail: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, detail).with(format!("第 {line} 行"))
 }
 
 /// 一次解析得到的内核签名。
@@ -332,11 +328,7 @@ fn type_matches(ctype: CType, values: &Values) -> bool {
 }
 
 fn line_of(text: &str, offset: usize) -> usize {
-    text[..offset.min(text.len())]
-        .bytes()
-        .filter(|b| *b == b'\n')
-        .count()
-        + 1
+    crate::parse::count_newlines(&text[..offset.min(text.len())]) + 1
 }
 
 /// 入口函数的括号区间：`cutile_{op}_kernel(` 的 `(` 与配对的 `)`。
@@ -355,7 +347,7 @@ fn entry(op: &str, template: &str) -> diagnostic::Result<(usize, usize)> {
             )
         })?;
     let open = start + width - 1;
-    let close = matching(template, open).ok_or_else(|| {
+    let close = matching_paren(template, open).ok_or_else(|| {
         at(
             line_of(template, open),
             format!("算子 `{op}` 的内核签名括号不配对"),
@@ -380,44 +372,14 @@ fn params(op: &str, template: &str, open: usize, close: usize) -> diagnostic::Re
         .collect()
 }
 
-/// 从 `open` 处的 `(` 找配对的 `)`：深度归零的那一格就是答案。
-fn matching(text: &str, open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (index, ch) in text[open..].char_indices() {
-        depth = depth_step(depth, ch)?;
-        if depth == 0 {
-            return Some(open + index);
-        }
-    }
-    None
-}
-
-/// 括号深度的一步：`(` 加深、`)` 回退（退到 0 之前即不配对），其它字符不动。
-fn depth_step(depth: usize, ch: char) -> Option<usize> {
-    match ch {
-        '(' => Some(depth + 1),
-        ')' => depth.checked_sub(1),
-        _ => Some(depth),
-    }
-}
-
-/// 按顶层逗号切分形参，返回 `(相对起点, 文本)`。
+/// 按顶层逗号切分形参：切分原语是 [`split_top_level`]，这里只加「裁剪 + 丢空尾」的口径。
 fn split(inner: &str) -> Vec<(usize, &str)> {
-    let mut parts = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (index, ch) in inner.char_indices() {
-        let at_comma = ch == ',' && depth == 0;
-        // 括号不配对时按"没看见"处理：切分不做校验，配对留给 [`matching`]。
-        depth = depth_step(depth, ch).unwrap_or_default();
-        if at_comma {
-            parts.push((start, inner[start..index].trim()));
-            start = index + 1;
-        }
-    }
-    let tail = inner[start..].trim();
-    if !tail.is_empty() {
-        parts.push((start, tail));
+    let mut parts: Vec<(usize, &str)> = split_top_level(inner)
+        .into_iter()
+        .map(|(offset, text)| (offset, text.trim()))
+        .collect();
+    if parts.last().is_some_and(|(_, tail)| tail.is_empty()) {
+        parts.pop();
     }
     parts
 }

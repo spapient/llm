@@ -165,42 +165,62 @@ fn check_chain(prev_out: Option<usize>, plan: &LayerPlan, name: &str) -> Result<
 ///
 /// 期望长度由族别在出计划时填好：稠密投影 `in × out`（f32 元素）、量化投影打包字节
 /// `out · in/cpb` + 标度 `out · in/group`、归一化 gamma `width`、查表 `vocab × dim`。
-/// 权重块长度按块自身形态（稠密元素数 / 打包字节数）统一取 `Block::len`，量化再单查标度条目。
 fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
     let Some(entry) = &plan.entry else {
         return Ok(());
     };
+    let weight_len = plan.weight_len.ok_or_else(weight_len_missing)?;
+    check_weight_entry(
+        params,
+        entry,
+        weight_len,
+        plan.scale_entry.as_deref(),
+        plan.scales_len,
+    )
+}
+
+/// 核对一条驻留权重 + 可选标度：稠密按 f32 元素数、量化按打包字节数 + 标度条数。
+///
+/// 标度条目名与标度条数必须同空/同有；只有其一说明标度没成对装载，按 `Missing` 拒绝。
+/// 块内 q/k/v/o 投影与普通投影共用这一份判据，不各写一套长度核对。
+pub(crate) fn check_weight_entry(
+    params: &Params,
+    entry: &str,
+    weight_len: usize,
+    scale_entry: Option<&str>,
+    scales_len: Option<usize>,
+) -> Result<()> {
+    check_entry(params, "权重", entry, weight_len)?;
+    match (scale_entry, scales_len) {
+        (Some(scale_entry), Some(scales_len)) => {
+            check_entry(params, "标度", scale_entry, scales_len)
+        }
+        (None, None) => Ok(()),
+        _ => Err(Error::new(Code::Missing, format!("量化条目 `{entry}` 缺标度条目")).with(SITE)),
+    }
+}
+
+/// 条目存在且长度与期望一致：`Block::len` 按块自身形态取稠密元素数或打包字节数。
+pub(crate) fn check_entry(params: &Params, label: &str, entry: &str, expected: usize) -> Result<()> {
     let Some(block) = params.get(entry) else {
-        return Err(Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE));
+        return Err(Error::new(Code::Missing, format!("参数表缺{label}条目 `{entry}`")).with(SITE));
     };
-    let expected = plan.weight_len.expect("有条目必有权重长度");
     if block.len() != expected {
         return Err(Error::new(
             Code::Invalid,
-            format!("条目 `{entry}` 有 {} 个元素/字节，而需要 {expected}", block.len()),
+            format!(
+                "{label}条目 `{entry}` 有 {} 个元素/字节，而需要 {expected}",
+                block.len()
+            ),
         )
         .with(SITE));
     }
-    if let Some((scale_entry, scales_len)) = plan.scale_entry.as_ref().zip(plan.scales_len) {
-        let Some(scale_block) = params.get(scale_entry) else {
-            return Err(Error::new(
-                Code::Missing,
-                format!("参数表缺标度条目 `{scale_entry}`"),
-            )
-            .with(SITE));
-        };
-        if scale_block.len() != scales_len {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "标度条目 `{scale_entry}` 有 {} 个元素，而需要 {scales_len}",
-                    scale_block.len()
-                ),
-            )
-            .with(SITE));
-        }
-    }
     Ok(())
+}
+
+/// 有条目必有权重长度的不变式违约。
+pub(crate) fn weight_len_missing() -> Error {
+    Error::new(Code::Internal, "有条目必有权重长度").with(SITE)
 }
 
 /// 一层的装配校验：宽度链衔接 + 权重条目齐备且形状相符。
@@ -251,6 +271,7 @@ fn projection_plan(
     params: &Params,
 ) -> Result<LayerPlan> {
     let operator = plan_operator(layer.name(), linear)?;
+    validate_quantized_shape(linear.format(), linear.in_features())?;
     let (weight_len, weight_shape, scales_len, scales_shape) =
         projection_shapes(linear.format(), linear.in_features(), linear.out_features());
     let mut plan = build_plan(
@@ -259,7 +280,7 @@ fn projection_plan(
         Some(entry_name(layer)),
         linear.in_features(),
         linear.out_features(),
-        weight_len,
+        Some(weight_len),
         weight_shape,
     );
     plan.scales_len = scales_len;
@@ -273,29 +294,54 @@ fn projection_plan(
 
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节 `[out, in/cpb]`
 /// + 标度 `[out, in/group]`。位宽决定每字节码数（i4 为 2、i8 为 1），分组来自格式声明。
-fn projection_shapes(
+///
+/// 量化输入宽度必须已被 [`validate_quantized_shape`] 校验为分组的整数倍；这里按精确除法取值，
+/// 不再兜底 `ceil`——声明分组与实际分组漂移的坏形状进不到这一步。
+pub(crate) fn projection_shapes(
     format: WeightFormat,
     in_features: usize,
     out_features: usize,
-) -> (Option<usize>, Vec<usize>, Option<usize>, Vec<usize>) {
+) -> (usize, Vec<usize>, Option<usize>, Vec<usize>) {
+    match format {
+        WeightFormat::Int4 { group } => (
+            out_features * (in_features / 2),
+            vec![out_features, in_features / 2],
+            Some(out_features * (in_features / group)),
+            vec![out_features, in_features / group],
+        ),
+        WeightFormat::Int8 { group } => (
+            out_features * in_features,
+            vec![out_features, in_features],
+            Some(out_features * (in_features / group)),
+            vec![out_features, in_features / group],
+        ),
+        _ => (
+            out_features * in_features,
+            vec![out_features, in_features],
+            None,
+            Vec::new(),
+        ),
+    }
+}
+
+/// 量化投影的整除校验：输入宽度必须是分组宽度（与每字节码数）的整数倍。
+///
+/// 内核按标度条数反推实际分组（`m / (scales/n)`），输入不能被分组整除时，声明分组与实际
+/// 分组会漂移——在装配期直接拒绝，而不是用 `ceil` 凑一个标度条数。
+pub(crate) fn validate_quantized_shape(format: WeightFormat, in_features: usize) -> Result<()> {
     let (cpb, group) = match format {
         WeightFormat::Int4 { group } => (2, group),
         WeightFormat::Int8 { group } => (1, group),
-        _ => {
-            return (
-                Some(out_features * in_features),
-                vec![out_features, in_features],
-                None,
-                Vec::new(),
-            )
-        }
+        _ => return Ok(()),
     };
-    (
-        Some(out_features * in_features.div_ceil(cpb)),
-        vec![out_features, in_features.div_ceil(cpb)],
-        Some(out_features * in_features.div_ceil(group)),
-        vec![out_features, in_features.div_ceil(group)],
-    )
+    if !in_features.is_multiple_of(group) || !in_features.is_multiple_of(cpb) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("量化投影输入宽度 {in_features} 不是分组 {group} 的整数倍"),
+        )
+        .with(SITE));
+    }
+    Ok(())
 }
 
 /// 等长族计划（一元点wise / 归一化 / 逐元素二元 / 位置编码）：宽度取自输出形状；归一化带 gamma

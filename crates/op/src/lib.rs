@@ -77,6 +77,7 @@ pub mod gemv_i8;
 pub mod layout;
 pub mod model;
 pub mod mul_f32;
+pub(crate) mod parse;
 pub mod quant;
 pub mod reduce;
 pub mod reduce_max_f32;
@@ -188,8 +189,10 @@ pub const fn contains(name: &str) -> bool {
     false
 }
 
-/// const 上下文里逐字节比两个名字。
-const fn same_bytes(left: &str, right: &str) -> bool {
+/// `const` 上下文里逐字节比两个名字（没有可用的 `str` 比较）。
+///
+/// 全仓共用这一份：`train` 的内核表与 [`REGISTRY`] 名字对拍也调它，不再各写一遍。
+pub const fn same_bytes(left: &str, right: &str) -> bool {
     let (left, right) = (left.as_bytes(), right.as_bytes());
     if left.len() != right.len() {
         return false;

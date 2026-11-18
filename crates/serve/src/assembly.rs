@@ -10,8 +10,8 @@ use nn::{Contract, Linear, Stack};
 
 pub(crate) use crate::block::BlockBinding;
 pub(crate) use crate::descriptors::BindingDesc;
-pub(crate) use crate::params::Params;
-pub(crate) use crate::plan::{LayerKind, LayerPlan};
+pub(crate) use crate::params::{Block, Params};
+pub(crate) use crate::plan::{LayerKind, LayerPlan, projection_shapes};
 
 use crate::kernels::SITE;
 
@@ -168,31 +168,63 @@ impl<'a> NodeSink<'a> {
         Ok(output_id)
     }
 
-    /// 投影/归一化/查表层的驻留权重输入与台账；一元点wise/二元/位置编码没有条目分支。
-    fn bind_entry(&mut self, node: &mut Node, plan: &LayerPlan) -> Result<()> {
-        if let Some(entry) = &plan.entry {
-            let weight_id = self.slots.weight()?;
-            node.bind_input(weight_id);
-            self.weights.push((weight_id, entry.clone()));
+    /// 驻留权重 + 可选标度的输入与台账：打包字节 / 标度各占一个编号，都挂进节点输入
+    /// （`[x, packed, scales]`），台账按 `(编号, 条目名)` 登记、描述表按形状登记。投影与
+    /// 块内 q/k/v/o 共用这一份绑定，不各写一遍。
+    fn bind_weight(
+        &mut self,
+        node: &mut Node,
+        entry: &str,
+        weight_shape: &[usize],
+        scale_entry: Option<&str>,
+        scale_shape: &[usize],
+    ) -> Result<()> {
+        let weight_id = self.slots.weight()?;
+        node.bind_input(weight_id);
+        self.weights.push((weight_id, entry.to_string()));
+        self.descriptors.push(BindingDesc {
+            id: weight_id,
+            entry: Some(entry.to_string()),
+            shape: weight_shape.to_vec(),
+        });
+        if let Some(scale_entry) = scale_entry {
+            let scale_id = self.slots.weight()?;
+            node.bind_input(scale_id);
+            self.weights.push((scale_id, scale_entry.to_string()));
             self.descriptors.push(BindingDesc {
-                id: weight_id,
-                entry: Some(entry.clone()),
-                shape: plan.weight_shape.clone(),
+                id: scale_id,
+                entry: Some(scale_entry.to_string()),
+                shape: scale_shape.to_vec(),
             });
         }
         Ok(())
     }
 
-    /// 单个投影子节点：输入向量 + 驻留权重整块 `[out, in]` → 输出向量；块内 q/k/v/o 复用。
+    /// 投影/归一化/查表层的驻留权重输入与台账；一元点wise/二元/位置编码没有条目分支。
+    fn bind_entry(&mut self, node: &mut Node, plan: &LayerPlan) -> Result<()> {
+        let Some(entry) = &plan.entry else {
+            return Ok(());
+        };
+        self.bind_weight(
+            node,
+            entry,
+            &plan.weight_shape,
+            plan.scale_entry.as_deref(),
+            &plan.scales_shape,
+        )
+    }
+
+    /// 单个投影子节点：输入向量 + 驻留权重 → 输出向量；块内 q/k/v/o 复用。量化投影多一条
+    /// 标度输入（`[x, packed, scales]`），权重形状按格式取打包字节，标度取逐组分条数。
     pub(crate) fn push_projection(
         &mut self,
         input: u32,
         linear: &Linear,
         entry: &str,
         operator: &str,
+        scale_entry: Option<&str>,
     ) -> Result<u32> {
         let output_id = self.slots.activation()?;
-        let weight_id = self.slots.weight()?;
         let mut node = Node::new(
             operator.to_string(),
             Launch::new(
@@ -201,15 +233,11 @@ impl<'a> NodeSink<'a> {
             ),
         );
         node.bind_input(input);
-        node.bind_input(weight_id);
+        let (_, weight_shape, _, scale_shape) =
+            projection_shapes(linear.format(), linear.in_features(), linear.out_features());
+        self.bind_weight(&mut node, entry, &weight_shape, scale_entry, &scale_shape)?;
         node.bind_output(output_id);
         self.graph.push(node);
-        self.weights.push((weight_id, entry.to_string()));
-        self.descriptors.push(BindingDesc {
-            id: weight_id,
-            entry: Some(entry.to_string()),
-            shape: vec![linear.out_features(), linear.in_features()],
-        });
         self.activations.push((output_id, linear.out_features()));
         self.descriptors.push(BindingDesc {
             id: output_id,
@@ -399,7 +427,7 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     Ok(assembly)
 }
 
-/// 把驻留权重整块绑进执行器编号表。
+/// 把驻留权重整块绑进执行器编号表：稠密块绑 f32，量化打包块绑 u8。
 pub(crate) fn bind_weights(
     executor: &mut CpuExecutor,
     assembly: &Assembly,
@@ -409,7 +437,14 @@ pub(crate) fn bind_weights(
         let block = params.get(entry).ok_or_else(|| {
             Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE)
         })?;
-        executor.bind(*id, block.to_vec());
+        match block {
+            Block::Dense(values) => {
+                executor.bind(*id, values.to_vec());
+            }
+            Block::Packed(bytes) => {
+                executor.bind_u8(*id, bytes.to_vec());
+            }
+        }
     }
     Ok(())
 }

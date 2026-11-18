@@ -7,7 +7,7 @@
 //! 当前把整段 UTF-8 字节当作一个序列处理；字节级可见字符映射（ByteLevel charset）
 //! 同样随预切分层一起落地。合并算法本身不依赖正则。
 
-use crate::{SpecialTokens, Token, Tokenizer, Vocab, VocabFamily};
+use crate::{Token, Tokenizer, Vocab, VocabFamily};
 use diagnostic::{Code, Error, Result};
 use std::collections::HashMap;
 
@@ -101,41 +101,5 @@ impl Tokenizer for Bpe {
             .collect()
     }
 
-    fn decode(&self, tokens: &[Token]) -> Result<String> {
-        let mut bytes = Vec::with_capacity(tokens.len());
-        for token in tokens {
-            let piece = self.vocab.piece(token.id()).ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!(
-                        "token {} 超出 BPE 词表（0..{}）",
-                        token.id(),
-                        self.vocab_size()
-                    ),
-                )
-                .with("tokenizer::Bpe::decode")
-            })?;
-            bytes.extend_from_slice(piece);
-        }
-        String::from_utf8(bytes).map_err(|error| {
-            Error::new(Code::Invalid, format!("token 序列不是合法 UTF-8：{error}"))
-                .with("tokenizer::Bpe::decode")
-        })
-    }
-
-    fn fingerprint(&self) -> crate::Fingerprint {
-        *self.vocab.fingerprint()
-    }
-
-    fn special_tokens(&self) -> &SpecialTokens {
-        self.vocab.special()
-    }
-
-    fn lookup(&self, piece: &[u8]) -> Result<Option<Token>> {
-        Ok(self.vocab.lookup(piece))
-    }
-
-    fn piece(&self, token: Token) -> Result<Option<Vec<u8>>> {
-        Ok(self.vocab.piece(token.id()).map(<[u8]>::to_vec))
-    }
+    vocab_tokenizer_delegates!("BPE", "tokenizer::Bpe::decode");
 }

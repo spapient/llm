@@ -118,12 +118,15 @@ fn check_width(d: usize) -> diagnostic::Result<()> {
     Ok(())
 }
 
-/// 注意力的一行机器：三个操作数与行几何（`s`、`d`、`√d`），四个入口共用同一份算式。
+/// 注意力的一行机器：三个操作数与 K/V 列几何（`cols`、`d`、`√d`），十个入口共用同一份算式。
+///
+/// `cols` 是 K/V 的列数：自注意力时等于序列长 `s`，decode 时等于缓存历史 `hist`。查询行数
+/// 由各入口的循环上界单独给出，不落进这里。
 struct Rows<'a> {
     q: &'a [f32],
     k: &'a [f32],
     v: &'a [f32],
-    s: usize,
+    cols: usize,
     d: usize,
     scale: f32,
 }
@@ -137,7 +140,7 @@ impl<'a> Rows<'a> {
             q,
             k,
             v,
-            s: sample.m,
+            cols: sample.m,
             d: sample.n,
             scale: sqrt_d(sample),
         })
@@ -145,7 +148,7 @@ impl<'a> Rows<'a> {
 
     /// 朴素路径的一行：分数 p[j] = dot(q[row], k[j]) / √d → 数值稳定 softmax → 对 `V` 加权。
     fn naive(&self, row: usize, out: &mut [f32]) {
-        let scores: Vec<f32> = (0..self.s)
+        let scores: Vec<f32> = (0..self.cols)
             .map(|col| dot(self.q, self.k, row, col, self.d) / self.scale)
             .collect();
         let max = scores.iter().copied().fold(f32::MIN, f32::max);
@@ -153,7 +156,7 @@ impl<'a> Rows<'a> {
         let sum: f32 = exps.iter().sum();
         for h in 0..self.d {
             let mut acc = 0.0f32;
-            for j in 0..self.s {
+            for j in 0..self.cols {
                 acc += (exps[j] / sum) * self.v[j * self.d + h];
             }
             out[row * self.d + h] = acc;
@@ -165,7 +168,7 @@ impl<'a> Rows<'a> {
         let mut max = f32::MIN;
         let mut sum = 0.0f32;
         let mut acc = vec![0.0f32; self.d];
-        for col in 0..self.s {
+        for col in 0..self.cols {
             let score = dot(self.q, self.k, row, col, self.d) / self.scale;
             let new_max = max.max(score);
             let reweight = (max - new_max).exp();
@@ -180,26 +183,47 @@ impl<'a> Rows<'a> {
     }
 }
 
+/// 一行机器两种实现共用的执行开关：朴素直接写 `out`，online 先累加再除归一化和。
+#[derive(Clone, Copy)]
+enum Mode {
+    /// 三阶段朴素：落地全部分数再 softmax。
+    Naive,
+    /// online softmax：单遍 K/V，不落地分数矩阵。
+    Online,
+}
+
+/// 按执行模式跑 `rows_count` 行，结果写进 `out`。
+fn run_rows(rows: &Rows<'_>, rows_count: usize, out: &mut [f32], mode: Mode) {
+    match mode {
+        Mode::Naive => {
+            for row in 0..rows_count {
+                rows.naive(row, out);
+            }
+        }
+        Mode::Online => {
+            for row in 0..rows_count {
+                let (acc, sum) = rows.online(row);
+                for h in 0..rows.d {
+                    out[row * rows.d + h] = acc[h] / sum;
+                }
+            }
+        }
+    }
+}
+
 /// 朴素参考：落地完整分数矩阵，逐行 softmax，再乘 `V`。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let rows = Rows::of(sample)?;
-    let mut out = vec![0.0f32; rows.s * rows.d];
-    for row in 0..rows.s {
-        rows.naive(row, &mut out);
-    }
+    let mut out = vec![0.0f32; rows.cols * rows.d];
+    run_rows(&rows, rows.cols, &mut out, Mode::Naive);
     Ok(out)
 }
 
 /// Flash 参考：online softmax 分块（这里块取整条序列，语义与分块等价），单遍 K/V。
 pub fn flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let rows = Rows::of(sample)?;
-    let mut out = vec![0.0f32; rows.s * rows.d];
-    for row in 0..rows.s {
-        let (acc, sum) = rows.online(row);
-        for h in 0..rows.d {
-            out[row * rows.d + h] = acc[h] / sum;
-        }
-    }
+    let mut out = vec![0.0f32; rows.cols * rows.d];
+    run_rows(&rows, rows.cols, &mut out, Mode::Online);
     Ok(out)
 }
 
@@ -222,13 +246,11 @@ pub fn forward(
         q,
         k,
         v,
-        s,
+        cols: s,
         d,
         scale: (d as f32).sqrt(),
     };
-    for row in 0..s {
-        rows.naive(row, out);
-    }
+    run_rows(&rows, s, out, Mode::Naive);
     Ok(())
 }
 
@@ -251,67 +273,12 @@ pub fn flash_forward(
         q,
         k,
         v,
-        s,
+        cols: s,
         d,
         scale: (d as f32).sqrt(),
     };
-    for row in 0..s {
-        let (acc, sum) = rows.online(row);
-        for h in 0..d {
-            out[row * d + h] = acc[h] / sum;
-        }
-    }
+    run_rows(&rows, s, out, Mode::Online);
     Ok(())
-}
-
-/// decode 注意力的一行机器：query 行数与 K/V 历史行数解耦（典型 decode 步 `q_rows = 1`，
-/// `hist` 是这条序列已经缓存的 K/V 行数）。列循环扫 `hist`，与 [`Rows`] 的同长自注意力
-/// 共用同一个 [`dot`] 点积，只是不再假设两边行数相等。
-struct DecodeRows<'a> {
-    q: &'a [f32],
-    k: &'a [f32],
-    v: &'a [f32],
-    hist: usize,
-    d: usize,
-    scale: f32,
-}
-
-impl<'a> DecodeRows<'a> {
-    /// 朴素一行：对全部历史列算分数 → 数值稳定 softmax → 对 `V` 加权。
-    fn naive(&self, row: usize, out: &mut [f32]) {
-        let scores: Vec<f32> = (0..self.hist)
-            .map(|col| dot(self.q, self.k, row, col, self.d) / self.scale)
-            .collect();
-        let max = scores.iter().copied().fold(f32::MIN, f32::max);
-        let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
-        let sum: f32 = exps.iter().sum();
-        for h in 0..self.d {
-            let mut acc = 0.0f32;
-            for j in 0..self.hist {
-                acc += (exps[j] / sum) * self.v[j * self.d + h];
-            }
-            out[row * self.d + h] = acc;
-        }
-    }
-
-    /// online（flash）一行：单遍扫历史 K/V，维护 running max、归一化分母与累加向量。
-    fn online(&self, row: usize) -> (Vec<f32>, f32) {
-        let mut max = f32::MIN;
-        let mut sum = 0.0f32;
-        let mut acc = vec![0.0f32; self.d];
-        for col in 0..self.hist {
-            let score = dot(self.q, self.k, row, col, self.d) / self.scale;
-            let new_max = max.max(score);
-            let reweight = (max - new_max).exp();
-            let prob = (score - new_max).exp();
-            sum = sum * reweight + prob;
-            for h in 0..self.d {
-                acc[h] = acc[h] * reweight + prob * self.v[col * self.d + h];
-            }
-            max = new_max;
-        }
-        (acc, sum)
-    }
 }
 
 /// decode 缓冲长度校验：`q`/`out` 是 `q_rows·d`，`k`/`v` 是 `hist·d`；两边行数可以不同。
@@ -373,17 +340,15 @@ pub fn decode_forward(
     d: usize,
 ) -> diagnostic::Result<()> {
     check_decode_len(q, k, v, out, q_rows, hist, d)?;
-    let rows = DecodeRows {
+    let rows = Rows {
         q,
         k,
         v,
-        hist,
+        cols: hist,
         d,
         scale: (d as f32).sqrt(),
     };
-    for row in 0..q_rows {
-        rows.naive(row, out);
-    }
+    run_rows(&rows, q_rows, out, Mode::Naive);
     Ok(())
 }
 
@@ -402,20 +367,15 @@ pub fn decode_flash_forward(
     d: usize,
 ) -> diagnostic::Result<()> {
     check_decode_len(q, k, v, out, q_rows, hist, d)?;
-    let rows = DecodeRows {
+    let rows = Rows {
         q,
         k,
         v,
-        hist,
+        cols: hist,
         d,
         scale: (d as f32).sqrt(),
     };
-    for row in 0..q_rows {
-        let (acc, sum) = rows.online(row);
-        for h in 0..d {
-            out[row * d + h] = acc[h] / sum;
-        }
-    }
+    run_rows(&rows, q_rows, out, Mode::Online);
     Ok(())
 }
 

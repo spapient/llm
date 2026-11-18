@@ -243,18 +243,6 @@ const fn same_order(entries: &[Entry], registry: &[op::Registration]) {
     }
 }
 
-/// `const` 上下文里没有可用的 `str` 比较，逐字节比。
-pub(crate) const fn same_str(left: &str, right: &str) -> bool {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
+/// `const` 上下文逐字节比：唯一实现是 [`op::same_bytes`]，本层只重导出别名，
+/// 内核表与 [`op::REGISTRY`] 的名字对拍不再自带第二份比较逻辑。
+pub(crate) use op::same_bytes as same_str;

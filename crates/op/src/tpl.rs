@@ -12,7 +12,8 @@
 //! 正文——文本段与槽位名都是 `&str`，一个字符都不拷贝。只有 `@原语` 的参数表需要一次小分配
 //! （每处调用一次，与模板里写了几条 `@` 同阶）。
 
-use diagnostic::{Code, Error};
+use crate::parse::{matching_paren, split_top_level};
+use diagnostic::Error;
 use prof::atom::Prim;
 
 /// 模板片段。
@@ -134,8 +135,9 @@ impl<'a> Template<'a> {
 /// 模板拼接错误（只给行号，不给列）。
 ///
 /// 模板是输入，所以类别固定为 [`Code::Invalid`]；行号作为一层上下文，文件由调用方补。
+/// 报错构造只有 [`crate::parse::line_error`] 一份，这里是 `op::tpl::error` 的公开入口。
 pub fn error(line: usize, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(format!("第 {line} 行"))
+    crate::parse::line_error(line, message)
 }
 
 /// 词法：把模板切成 [`Segment`]。
@@ -149,10 +151,7 @@ pub fn lex(template: &str) -> Vec<Segment<'_>> {
 /// 指回上一次换行——诊断精度就没了。
 fn advance(template: &str, from: usize, consumed: usize, line: &mut usize) -> usize {
     let to = from + consumed;
-    *line += template[from..to]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count();
+    *line += crate::parse::count_newlines(&template[from..to]);
     to
 }
 
@@ -180,7 +179,7 @@ fn call<'a>(rest: &'a str) -> Option<(usize, Prim, Vec<Arg<'a>>)> {
     let after = rest.strip_prefix('@')?;
     let (name_len, prim) = named(after)?;
     let open = after.get(name_len..).filter(|tail| tail.starts_with('('))?;
-    let end = matching_paren(open)?;
+    let end = matching_paren(open, 0)?;
     Some((1 + name_len + end + 1, prim, parse_args(&open[1..end])))
 }
 
@@ -191,47 +190,12 @@ fn named(text: &str) -> Option<(usize, Prim)> {
     Some((len, Prim::parse(&text[..len])?))
 }
 
-/// 从 `(` 找配对的 `)`，返回它的下标（相对 `text` 起点）。
-///
-/// 准入条件是「`text` 从 `(` 开始」：这是调用点唯一会传进来的形状，写进判据就少一条
-/// "深度是否有效"的分支。
-fn matching_paren(text: &str) -> Option<usize> {
-    if !text.starts_with('(') {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (index, ch) in text.char_indices() {
-        depth = depth_step(depth, ch)?;
-        if depth == 0 {
-            return Some(index);
-        }
-    }
-    None
-}
-
-/// 括号深度的一步：`(` 加深、`)` 回退（退到 0 之前即不配对），其它字符不动。
-fn depth_step(depth: usize, ch: char) -> Option<usize> {
-    match ch {
-        '(' => Some(depth + 1),
-        ')' => depth.checked_sub(1),
-        _ => Some(depth),
-    }
-}
-
-/// 按顶层逗号切分参数；`key: value` 且键是标识符时是命名参数。
+/// 按顶层逗号切分参数；`key: value` 且键是标识符时是命名参数。切分原语是 [`split_top_level`]。
 fn parse_args(inner: &str) -> Vec<Arg<'_>> {
     let mut args = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (index, ch) in inner.char_indices() {
-        let at_comma = ch == ',' && depth == 0;
-        depth = depth_step(depth, ch).unwrap_or_default();
-        if at_comma {
-            push_arg(&mut args, &inner[start..index]);
-            start = index + 1;
-        }
+    for (_, piece) in split_top_level(inner) {
+        push_arg(&mut args, piece);
     }
-    push_arg(&mut args, &inner[start..]);
     args
 }
 
