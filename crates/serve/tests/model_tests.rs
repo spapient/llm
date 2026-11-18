@@ -1351,6 +1351,216 @@ fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
     assert_close(written_v_b, &v_b);
 }
 
+/// 多头（`heads = kv / head_dim = 2`）两条序列同批走块链整批前向：头优先段内重排与写回按
+/// 头宽分段，两行各自对拍参考块，KV 写回各归各的页行。
+#[test]
+fn logits_batch_runs_two_multi_head_sequences_with_their_own_kv() {
+    let (vocab, hidden, kv, head_dim) = (8, 8, 16, 8);
+    let hist = 1;
+
+    let table = embed_table(vocab, hidden);
+    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, hidden, 1).expect("层")),
+        Box::new(
+            AttentionBlock::new(
+                "blk.0",
+                hidden,
+                kv,
+                head_dim,
+                4,
+                AttentionAlgo::Naive,
+                WeightFormat::F32,
+            )
+            .expect("层"),
+        ),
+    ])
+    .expect("栈");
+    let params = block_params(
+        table.clone(),
+        wq.clone(),
+        wk.clone(),
+        wv.clone(),
+        wo.clone(),
+    );
+    let mut model = assemble(stack, params);
+
+    let (hist_k_a, hist_v_a) = history_kv(kv);
+    let hist_k_b: Vec<f32> = hist_k_a.iter().map(|value| value * 1.7).collect();
+    let hist_v_b: Vec<f32> = hist_v_a.iter().map(|value| value * 1.3).collect();
+    let history_a = history_row(&hist_k_a, &hist_v_a);
+    let history_b = history_row(&hist_k_b, &hist_v_b);
+
+    let (mut batch, a, b) = decode_batch_two(kv, &history_a, &history_b);
+    let rows = model
+        .logits_batch(&[a.clone(), b.clone()], &mut batch)
+        .expect("多头批量前向");
+    assert_eq!(rows.len(), 2, "两行 logits 与输入切片一一对应");
+
+    let embedded_a = &table[2 * hidden..3 * hidden];
+    let embedded_b = &table[5 * hidden..6 * hidden];
+    let (ref_a, k_a, v_a) = reference_block(
+        embedded_a,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k_a, &hist_v_a),
+        hist,
+        kv,
+        head_dim,
+        hidden,
+        a.len(),
+    );
+    let (ref_b, k_b, v_b) = reference_block(
+        embedded_b,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k_b, &hist_v_b),
+        hist,
+        kv,
+        head_dim,
+        hidden,
+        b.len(),
+    );
+    assert_close(&rows[0], &ref_a);
+    assert_close(&rows[1], &ref_b);
+
+    let row_a = batch.kv(0, a.len()).expect("A 当前步页行");
+    let row_b = batch.kv(1, b.len()).expect("B 当前步页行");
+    let (written_k_a, written_v_a) = row_a.split_at(kv);
+    let (written_k_b, written_v_b) = row_b.split_at(kv);
+    assert_close(written_k_a, &k_a);
+    assert_close(written_v_a, &v_a);
+    assert_close(written_k_b, &k_b);
+    assert_close(written_v_b, &v_b);
+}
+
+/// 不等长历史（ragged）两条序列同批：A 缓存 1 行、B 缓存 2 行，段紧排游标按各自 `hist_b` 累计；
+/// 两行 logits 与各自参考块对拍，KV 写回互不串段。
+#[test]
+fn logits_batch_runs_two_sequences_with_unequal_history_lengths() {
+    let (vocab, hidden, kv) = (8, 8, 8);
+
+    let table = embed_table(vocab, hidden);
+    let (wq, wk, wv, wo) = block_projections(hidden, kv);
+    let stack = embed_block_stack(vocab, hidden, kv, 4);
+    let params = block_params(
+        table.clone(),
+        wq.clone(),
+        wk.clone(),
+        wv.clone(),
+        wo.clone(),
+    );
+    let mut model = assemble(stack, params);
+
+    // A：一行种子历史。
+    let (hist_k_a, hist_v_a) = history_kv(kv);
+    let history_a = history_row(&hist_k_a, &hist_v_a);
+    // B：两行种子历史，两行取不同小值；段内按两行头优先排布。
+    let (k0, v0) = history_kv(kv);
+    let k1: Vec<f32> = k0.iter().map(|value| value * 1.7).collect();
+    let v1: Vec<f32> = v0.iter().map(|value| value * 1.3).collect();
+    let row_b0 = history_row(&k0, &v0);
+    let row_b1 = history_row(&k1, &v1);
+    let hist_k_b: Vec<f32> = k0.iter().chain(k1.iter()).copied().collect();
+    let hist_v_b: Vec<f32> = v0.iter().chain(v1.iter()).copied().collect();
+
+    let pager = Pager::new(Cache::new(4, 4).expect("页池"), 2 * kv).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let a = Sequence::new(0, &[2u32], 2, 4, Stream::new(0)).expect("序列 A");
+    let b = Sequence::new(1, &[5u32, 3u32], 2, 4, Stream::new(0)).expect("序列 B");
+    batch.admit(a.clone()).expect("准入 A");
+    batch.admit(b.clone()).expect("准入 B");
+    batch.write_kv(0, 0, &history_a).expect("种子历史 A");
+    batch.write_kv(1, 0, &row_b0).expect("种子历史 B 首行");
+    batch.write_kv(1, 1, &row_b1).expect("种子历史 B 次行");
+
+    let rows = model
+        .logits_batch(&[a.clone(), b.clone()], &mut batch)
+        .expect("ragged 批量前向");
+    assert_eq!(rows.len(), 2, "两行 logits 与输入切片一一对应");
+
+    let embedded_a = &table[2 * hidden..3 * hidden];
+    let embedded_b = &table[3 * hidden..4 * hidden];
+    let (ref_a, k_a, v_a) = reference_block(
+        embedded_a,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k_a, &hist_v_a),
+        1,
+        kv,
+        kv,
+        hidden,
+        a.len(),
+    );
+    let (ref_b, k_b, v_b) = reference_block(
+        embedded_b,
+        (&wq, &wk, &wv, &wo),
+        (&hist_k_b, &hist_v_b),
+        2,
+        kv,
+        kv,
+        hidden,
+        b.len(),
+    );
+    assert_close(&rows[0], &ref_a);
+    assert_close(&rows[1], &ref_b);
+
+    let row_a = batch.kv(0, a.len()).expect("A 当前步页行");
+    let row_b = batch.kv(1, b.len()).expect("B 当前步页行");
+    let (written_k_a, written_v_a) = row_a.split_at(kv);
+    let (written_k_b, written_v_b) = row_b.split_at(kv);
+    assert_close(written_k_a, &k_a);
+    assert_close(written_v_a, &v_a);
+    assert_close(written_k_b, &k_b);
+    assert_close(written_v_b, &v_b);
+}
+
+/// 四条序列同批走块链整批前向：行序对齐准入序，四段历史紧排、四行输出拆回、KV 各归各页行。
+#[test]
+fn logits_batch_runs_four_sequences_in_input_order() {
+    let (vocab, hidden, kv) = (8, 8, 8);
+    let hist = 1;
+    let tokens = [2u32, 5, 3, 6];
+
+    let (mut model, table, (wq, wk, wv, wo)) = block_fixture(vocab, hidden, kv);
+    let pager = Pager::new(Cache::new(8, 4).expect("页池"), 2 * kv).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let mut sequences = Vec::new();
+    let mut histories = Vec::new();
+    for (index, &token) in tokens.iter().enumerate() {
+        let sequence = Sequence::new(index as u64, &[token], 2, 4, Stream::new(0)).expect("序列");
+        let (hist_k, hist_v) = history_kv(kv);
+        let history = history_row(&hist_k, &hist_v);
+        batch.admit(sequence.clone()).expect("准入");
+        batch.write_kv(index as u64, 0, &history).expect("种子历史");
+        histories.push((hist_k, hist_v));
+        sequences.push(sequence);
+    }
+
+    let rows = model
+        .logits_batch(&sequences, &mut batch)
+        .expect("四条批量前向");
+    assert_eq!(rows.len(), 4, "四行 logits 与输入切片一一对应");
+
+    for (index, sequence) in sequences.iter().enumerate() {
+        let token = tokens[index] as usize;
+        let embedded = &table[token * hidden..(token + 1) * hidden];
+        let (hist_k, hist_v) = &histories[index];
+        let (reference, k_rot, v) = reference_block(
+            embedded,
+            (&wq, &wk, &wv, &wo),
+            (hist_k, hist_v),
+            hist,
+            kv,
+            kv,
+            hidden,
+            sequence.len(),
+        );
+        assert_close(&rows[index], &reference);
+        let row = batch.kv(index as u64, sequence.len()).expect("当前步页行");
+        let (written_k, written_v) = row.split_at(kv);
+        assert_close(written_k, &k_rot);
+        assert_close(written_v, &v);
+    }
+}
+
 /// 块内一个投影条目缺失：装配期按名报 `Missing`。
 #[test]
 fn a_missing_block_projection_weight_is_reported_at_assembly() {
