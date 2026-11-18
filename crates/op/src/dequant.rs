@@ -141,7 +141,9 @@ macro_rules! dequant_packed {
         pub use $crate::dequant::{AXES, project_shape};
 
         /// 标量代价：每元素一次减法一次乘法；读打包字节，写 `n` 个 f32。
-        pub fn cost(shape: &$crate::model::ShapeContext) -> diagnostic::Result<$crate::model::Cost> {
+        pub fn cost(
+            shape: &$crate::model::ShapeContext,
+        ) -> diagnostic::Result<$crate::model::Cost> {
             $crate::dequant::cost_packed(shape, $row.cpb)
         }
 
@@ -153,7 +155,11 @@ macro_rules! dequant_packed {
         /// 标量参考：逐字节解包，与内核同一公式。
         pub fn reference(sample: &$crate::model::Sample) -> diagnostic::Result<Vec<f32>> {
             let q = sample.u8("q")?;
-            Ok($crate::dequant::reference_packed(q, $row.cpb, $row.zero as f32))
+            Ok($crate::dequant::reference_packed(
+                q,
+                $row.cpb,
+                $row.zero as f32,
+            ))
         }
 
         /// 内核本体：结果写进调用方给的缓冲。
