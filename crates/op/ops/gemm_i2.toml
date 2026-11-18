@@ -1,30 +1,13 @@
-# 对称 int2 矩阵乘：打包 2 位码解包后整数点积 i32 累加（mma 整数路径），再 cvt 成 f32，K=8。
+# 对称 int2 矩阵乘：与 gemm_i4 同构，只差打包宽度与零点。
+base = "gemm_i4"
 
 [op]
 name     = "gemm_i2"
 skeleton = "gemm"
 summary  = "Y[m,n] = f32(sum_k i2(A[m,k]) i2(B[k,n]))"
 
-[axes]
-N = [32]
-
-[needs]
-load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
-store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
-cvt   = { dt = ["f32", "i32"], sat = ["off"] }
-
-[layouts]
-a = "row"
-b = "row"
-
-# 模板常量：gemm_packed 的打包宽度（i2=每字节 4 码、每码 2 位、零点 2）。
+# 打包宽度（i2=每字节 4 码、每码 2 位、零点 2）。
 [consts]
 cpb   = 4
 width = 2
 zero  = 2
-
-[[variants]]
-name      = "direct"
-order     = 1
-schedule  = "direct"
-mma_share = 0.0

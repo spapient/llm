@@ -404,17 +404,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-backend"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-engine",
- "llm-shard",
- "llm-storage",
- "llm-testkit",
-]
-
-[[package]]
 name = "llm-benches"
 version = "0.1.0"
 dependencies = [
@@ -524,6 +513,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-prof",
  "llm-testkit",
+ "toml",
 ]
 
 [[package]]

@@ -39,7 +39,7 @@ bw        = { value = 160.032e9, src = "128/8*2*5.001e9" }
 
 [compile]
 flags = ["-arch=sm_75", "-O3"]
-preamble = "#include <cuda_fp16.h>"
+preamble = "#include <cuda_fp16.h>\n__device__ float _cutile_exp_f32(float x) { return expf(x); }"
 
 [[provides]]
 prim    = "dot"

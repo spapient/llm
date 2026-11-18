@@ -1,23 +1,7 @@
-# 逐元素 SiLU：y[n] = a[n] * sigmoid(a[n])。
-# 一元骨架：没有规约轴，needs 只有 load/store；exp 走 preamble 软件标量接口。
+# 逐元素 SiLU：与 gelu_f32 同一副一元骨架，只差逐元素函数。
+base = "gelu_f32"
 
 [op]
 name     = "silu_f32"
 skeleton = "elementwise"
 summary  = "y[n] = a[n] / (1 + exp(-a[n]))"
-
-[axes]
-N = [32]
-
-[needs]
-load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
-store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
-
-[layouts]
-a = "row"
-
-[[variants]]
-name      = "direct"
-order     = 1
-schedule  = "direct"
-mma_share = 0.0

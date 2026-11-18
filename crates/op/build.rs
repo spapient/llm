@@ -6,7 +6,7 @@
 
 use core::fmt::Write as _;
 use diagnostic::buildgen;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     run().unwrap_or_else(|error| panic!("{error}"));
@@ -39,7 +39,7 @@ fn run() -> diagnostic::Result<()> {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or_else(|| panic!("`{}` 的文件名不是合法 UTF-8", path.display()));
-        let table = buildgen::read(path)?;
+        let table = resolve(&ops, buildgen::read(path)?)?;
         let _ = writeln!(
             code,
             "            (\"{name}\", {}),",
@@ -73,4 +73,32 @@ fn run() -> diagnostic::Result<()> {
     std::fs::write(&target, code)
         .unwrap_or_else(|error| panic!("写入 {} 失败：{error}", target.display()));
     Ok(())
+}
+
+/// 解析 `base = "<name>"`：当前表先继承 `<name>.toml`，再被自己的键覆盖。
+///
+/// 兄弟继承（如 `gemv_i2` → `gemv_i4`）只差 `[op]`/`[consts]`/个别 `[needs]` 叶子，`[needs]`/
+/// `[layouts]`/`[[variants]]` 一大段逐字相同，写在 base 里由继承共享；当前表只写真正不同的那几行。
+fn resolve(ops: &Path, mut table: toml::Table) -> diagnostic::Result<toml::Table> {
+    let Some(toml::Value::String(base)) = table.get("base").cloned() else {
+        return Ok(table);
+    };
+    table.remove("base");
+    let base = buildgen::read(&ops.join(format!("{base}.toml")))?;
+    Ok(merge(base, table))
+}
+
+/// 深度合并：`over` 覆盖 `base`，同名的子表递归合并（`[needs]` 只覆盖差的那一个叶子）。
+fn merge(mut base: toml::Table, over: toml::Table) -> toml::Table {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(inner)), toml::Value::Table(update)) => {
+                *inner = merge(std::mem::take(inner), update);
+            }
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
+    base
 }

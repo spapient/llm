@@ -50,7 +50,7 @@ bw        = { value = 307.2e9, src = "256/8*9.6e9" }
 
 [compile]
 flags = ["-std=metal3.1"]
-preamble = "#include <metal_stdlib>\nusing namespace metal;"
+preamble = "#include <metal_stdlib>\nusing namespace metal;\nstatic inline float _cutile_exp_f32(float x) { return exp(x); }"
 
 [[provides]]
 prim    = "dot"

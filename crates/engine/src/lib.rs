@@ -1,7 +1,8 @@
 //! 服务侧状态机：[`Sequence`]、[`State`]、[`Scheduler`] 与连续批 [`Batch`]。
 //!
 //! **拥有**：`Sequence`、`Scheduler`、`Batch`、`Admission`、`State`，以及页账（[`kv`]）、
-//! 提交与执行（[`exec`]）。**不拥有**：采样策略（它只决定 `advance` 取哪个 token，不改变状态机）、
+//! 提交与执行（[`exec`]）、设备后端 FFI（[`metal`]，macOS 越界岛，Metal `Executor` 落点，不单独成 crate）。
+//! **不拥有**：采样策略（它只决定 `advance` 取哪个 token，不改变状态机）、
 //! kernel 编译（`cutile`）、缓冲分配（`storage`）。**依赖**：`tensor`、`diagnostic`、`storage`。
 //! **被依赖**：`serve`、`llm`。
 //!
@@ -63,6 +64,8 @@
 pub mod batch;
 pub mod exec;
 pub mod kv;
+#[cfg(target_os = "macos")]
+pub mod metal;
 
 pub use batch::{Admission, Batch, SequenceOutcome};
 

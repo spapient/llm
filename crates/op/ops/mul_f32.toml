@@ -1,28 +1,10 @@
-# 逐元素乘法：y[n] = a[n] * b[n]。
-# 与 add_f32 同构：没有规约轴，needs 只有 load/store，复用既有 cpu 片段。
+# 逐元素乘法：与 add_f32 同构，只差运算符。
+base = "add_f32"
 
 [op]
 name     = "mul_f32"
 skeleton = "elementwise"
 summary  = "y[n] = a[n] * b[n]"
 
-[axes]
-N = [32]
-
-[needs]
-load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
-store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
-
-[layouts]
-a = "row"
-b = "row"
-
-# 模板常量：binary.k 的逐元素运算符。
 [consts]
 binop = "*"
-
-[[variants]]
-name      = "direct"
-order     = 1
-schedule  = "direct"
-mma_share = 0.0

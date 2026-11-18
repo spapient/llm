@@ -16,7 +16,7 @@
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略：执行类 doctor/verify/bench 与 `execution` 共用一条 `pipeline` 与 `witness`；`ledger` 跨档案聚合证据行、`cache` 按 LRU 回收，二者不走流水线；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 `.u` 容器 v2 读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
-| L6 调度与服务 | `train`、`engine`、`serve`、`backend` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`）、设备后端边界（`backend`：Metal/CUDA 手写 FFI 与四 trait 实现落点，ADR 0035） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L6 调度与服务 | `train`、`engine`、`serve` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、设备后端 FFI（`engine::metal`，Metal 越界岛，ADR 0035）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法与配置解析归本层，把上面各层连起来装配、取值解析与人可读排版；编排入口（`cmd/` 与两个 bin）**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, ledger, cache}` → 排版 → 退出码（`Code::exit_code`） | 编排入口新增领域类型；在本层复制内核机制 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benches`（集中测量容器）与 `testkit`（测试夹具与工作区契约门禁）是**工具成员**：
@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 115 条，含 43 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -56,7 +56,6 @@ shard    → diagnostic
 train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights    +dev: testkit
-backend  → diagnostic, engine, shard, storage    +dev: testkit
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型；运行时依赖覆盖被装配的各层）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / `.u` 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 `.u` 夹具写形状、`tool` 词汇片段解析）
 benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型，`nn` 出层下界与栈合计；`engine` 出页账与序列几何、`serve` 出宿主与 Predict 路线 B，供整模型一步夹具装配）
@@ -194,7 +193,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Completion` / `Router` | `serve` | `Completion` 是第一条真实端点：解析请求 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包成帧；客户端错误落 400、页不够落 503、只有模型或采样失败才 `Err`，失败路径同样归还页。`Router` 按 `方法 + 路径` 分派（方法大小写不敏感、重复路由拒绝、未命中 404）。二者合起来让"一条请求能不能跑完"在进程内可验证，传输层只需调用 `Router::call` |
 | `Httpd` | `serve` | std-only HTTP/1.1 薄适配器：单线程 `accept → 解析请求行 + Content-Length + 主体 → Router::call → Response::frame → 回写 → 关闭`；连接级错误回写 500 后返回、不向上抛。首刀只认请求行 + `Content-Length` + 主体，响应固定 `Connection: close`，排除 TLS / keep-alive / chunked / 多线程；gRPC 未来在同一 `Endpoint` / `Router` 上再挂一个适配器即可，不动端点模型 |
 | `CpuModel` / `Params` / `Block` | `serve` | CPU 模型宿主与驻留参数表：`Params` 是条目名 → 权重块的内存表，装载期一次性解码进来，生成循环内不再读文件；`Block` 是驻留块的两种形态——稠密 `f32` 或量化打包字节（i4 每字节两码、i8 每字节一码），量化标度作为独立 f32 条目登记、`Params` 记录权重条目到标度条目的对应。`CpuModel` 把 `nn::Stack` 的投影 / 一元 / 归一化 / 查表层与注意力块装配成 `engine::Graph`，权重整块在构造期驻留一次，`forward` 每步只覆写输入与逐层激活缓冲。形状、宽度链与权重缺失都在装配期报出，int4/int8 量化投影（含注意力块内 q/k/v/o 四路）走 `gemv_i4`/`gemv_i8`（打包字节 + 标度两条输入，量化输入宽度须为分组 32 的整数倍，否则装配期 `Invalid`）；`from_path` 是文件装配根：打开头部 → 层栈 → 驻留参数 → 图装配，字节来源按 `Reader`（Unix + `mmap` feature 的 `MmapSource` 映射借用）/ `Loader`（回退 `File` seek+read 拷贝）在装配点类型可见分流，不立平行 `Source` 父 trait；`Predict` 路线 B 经 `&Sequence` + `&mut Batch` 读历史 K/V、写回当前步 `[k|v]` 页行，页账归调度器，宿主不另存 KV 账 |
-| `MetalDevice` / `MetalCommandQueue` | `backend` | 设备后端边界（M3，ADR 0035 白名单第五类「进程级库句柄」）：`MetalDevice` 是本机 Metal 默认设备的进程内句柄（`MTLCreateSystemDefaultDevice` 按 Create 规则 +1 保留，`Drop` 时 `-release` 恰好一次）；`MetalCommandQueue` 是它经 `newCommandQueue` 派生的命令队列句柄（new 规则 +1 保留、`Drop` 释放）。两者指针私有、不暴露、不跨线程，本刀只打通「设备 → 命令队列」的对象模型与 `objc_msgSend`（`(id, SEL) -> id` / `-> void` 两种最安全签名）；`Allocator` / `Executor` 的 Metal 实现随后续刀在同一模块按 `storage`/`engine` 四 trait 契约落地，含结构体参数的方法按签名逐条登记、不预写 |
+| `MetalDevice` / `MetalCommandQueue` / `MetalBuffer` / `MetalPipeline` | `engine` | 设备后端边界（M3，ADR 0035 白名单第五类「进程级库句柄」，`engine::metal` 越界岛，不单独成 crate）：`MetalDevice` 是本机 Metal 默认设备的进程内句柄（`MTLCreateSystemDefaultDevice` 按 Create 规则 +1 保留，`Drop` 时 `-release` 恰好一次）；`MetalCommandQueue` 是它经 `newCommandQueue` 派生的命令队列句柄（new 规则 +1 保留、`Drop` 释放）；`MetalBuffer` 是经 `newBufferWithLength:options:`（`MTLResourceStorageModeShared`）分配的共享缓冲句柄，`contents` 指针缓存在内、`as_mut_bytes` 暴露 CPU 可读写字节视图（读写同一块内存），同样 +1 保留、`Drop` 释放；`MetalPipeline` 是经 `newLibraryWithSource:options:error:` → `newFunctionWithName:` → `newComputePipelineStateWithFunction:error:` 在进程内编译 MSL 得到的计算管线句柄（编译路径用 `objc_autoreleasePoolPush/Pop` 包住自动释放的 `NSString`，`library`/`function` 建管线后立即释放）。四者指针私有、不暴露、不跨线程，本刀打通「设备 → 命令队列 → 共享缓冲 → 计算管线 → 派发回读」完整闭环（`MetalCommandQueue::execute` 走 `commandBuffer → computeCommandEncoder → setComputePipelineState → setBuffer → dispatchThreads → endEncoding → commit → waitUntilCompleted`，`contents` 回读）与 `objc_msgSend`（`(id, SEL) -> id` / `-> void` / `usize` / 指针 / 结构体参数多种形状，`dispatchThreads:threadsPerThreadgroup:` 的 `MTLSize` 按间接指针 ABI 登记）；Metal `Executor` 随后续刀在同一模块按 `engine` trait 契约把这条闭环接入图提交 |
 
 ### 闭集与位集：一份声明，编译期核对
 
