@@ -33,6 +33,12 @@ bar         = {}
 w = "row"
 x = "row"
 
+# 模板常量：gemv_packed 的打包宽度（i4=每字节 2 码、每码 4 位、零点 8）。
+[consts]
+cpb   = 2
+width = 4
+zero  = 8
+
 # 降级链：order 小者优先。变体只能**加强**需求（`extra_needs`），
 # 不能凭空少申请模板里用到的原语——模板由所有变体共享（装载期校验）。
 [[variants]]
