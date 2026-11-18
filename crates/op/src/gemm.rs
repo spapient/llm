@@ -297,12 +297,14 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
     let mut values = Vec::with_capacity(m * K + K * n);
     match G::BITS {
         Bits::Two => {
-            let (a, b): (&[u8], &[u8]) = (a, b);
+            let a: &[u8] = Element::borrow_u8(a).expect("i2 打包为 u8");
+            let b: &[u8] = Element::borrow_u8(b).expect("i2 打包为 u8");
             values.extend(packed::unpack_stream(a, 4, 2));
             values.extend(packed::unpack_stream(b, 4, 2));
         }
         Bits::Four => {
-            let (a, b): (&[u8], &[u8]) = (a, b);
+            let a: &[u8] = Element::borrow_u8(a).expect("i4 打包为 u8");
+            let b: &[u8] = Element::borrow_u8(b).expect("i4 打包为 u8");
             values.extend(packed::unpack_stream(a, 2, 8));
             values.extend(packed::unpack_stream(b, 2, 8));
         }

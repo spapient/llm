@@ -31,6 +31,7 @@
 
 #![deny(unsafe_code)]
 
+mod backprop;
 mod checkpoint;
 mod kernel;
 mod learner;

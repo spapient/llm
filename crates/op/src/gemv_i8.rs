@@ -64,6 +64,7 @@ impl<const G: usize> Format for gemv::SymI8<G> {
         let m = x.len();
         let n = out.len();
         let (groups, group) = gemv::scaled_groups(m, n, scales.len())?;
+        gemv::finite_scales(scales, groups)?;
         gemv::required_weights(weights.len(), n, m)?;
 
         // 每行只看自己那一段；每组只乘一次 scale。u8 按 i8 解释（对称零点 0）。

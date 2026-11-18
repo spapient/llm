@@ -17,10 +17,14 @@ pub const AXES: &[AxisSpec] = &[AxisSpec {
 /// 逐元素二元算子随语义变化的那部分。
 pub trait Binary {
     /// 一条 einsum 表达式：箭头左三项（两个读、一个写），共享一条轴。
-    const EXPR: &'static str;
+    ///
+    /// 二元逐元素形状只有这一种，默认值即标准规格；需要别的表达式时在实现里覆盖。
+    const EXPR: &'static str = "n,n,n->n";
 
     /// 表达式各项的位宽与方向，顺序与 [`Binary::EXPR`] 一一对应。
-    const OPERANDS: &'static [OperandSpec];
+    ///
+    /// 默认 f32 两读一写；位宽不同的格式在实现里覆盖。
+    const OPERANDS: &'static [OperandSpec] = &f32_operands();
 
     /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
     fn cache() -> &'static FormulaCache;

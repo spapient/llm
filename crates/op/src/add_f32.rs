@@ -10,9 +10,6 @@ use crate::elementwise::Binary;
 pub struct Add;
 
 impl Binary for Add {
-    const EXPR: &'static str = "n,n,n->n";
-    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::elementwise::f32_operands();
-
     fn cache() -> &'static FormulaCache {
         static CACHE: FormulaCache = FormulaCache::new();
         &CACHE

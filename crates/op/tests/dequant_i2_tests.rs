@@ -26,3 +26,24 @@ fn dequant_i2_handles_empty_mismatched_and_saturated_bytes() {
     forward(SCALE, ZERO, &saturated, &mut out).expect("极值字节不越界");
     assert!(out.iter().all(|v| v.is_finite()), "结果有限");
 }
+
+/// 仿射参数负例：零标度、非有限标度、越出 2 位码域（0..3）的零点都在解包前拦下。
+#[test]
+fn dequant_i2_rejects_zero_scale_and_out_of_domain_zero() {
+    let q = [0x52u8];
+    let mut out = [0.0; 4];
+
+    assert!(forward(0.0, ZERO, &q, &mut out).is_err(), "零标度拒绝");
+    assert!(
+        forward(SCALE, f32::NAN, &q, &mut out).is_err(),
+        "非有限零点拒绝"
+    );
+    assert!(
+        forward(SCALE, 4.0, &q, &mut out).is_err(),
+        "零点越出 0..3 码域"
+    );
+    assert!(
+        forward(SCALE, -0.5, &q, &mut out).is_err(),
+        "负零点越出码域"
+    );
+}

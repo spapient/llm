@@ -10,7 +10,9 @@ use diagnostic::{Code, Error};
 /// 归约算子随语义变化的部分。
 pub trait Reduce {
     /// 表达式各项的位宽与方向（表达式固定为 `n,o->o`）。
-    const OPERANDS: &'static [OperandSpec];
+    ///
+    /// 默认 f32 一读一写；位宽不同的格式在实现里覆盖。
+    const OPERANDS: &'static [OperandSpec] = &f32_operands();
 
     /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
     fn cache() -> &'static FormulaCache;

@@ -54,6 +54,11 @@ pub trait Element: Copy + PartialEq + std::fmt::Debug + 'static {
     /// 从样本缓冲里借出同类元素；类型不符返回 `None`。
     fn borrow(values: &Values) -> Option<&[Self]>;
 
+    /// 直接从 `u8` 切片借出本元素；`u8` 元素返回原样，`f32` 返回 `None`。
+    ///
+    /// 测试侧闭式重算按位流解包时用：打包格式的元素就是 `u8`，不必再绕一遍 `Values` 变体。
+    fn borrow_u8(slice: &[Self]) -> Option<&[u8]>;
+
     /// 装成同名缓冲。
     fn buffer(name: &'static str, values: Vec<Self>) -> Buffer;
 }
@@ -66,6 +71,10 @@ impl Element for f32 {
             Values::F32(values) => Some(values),
             Values::U8(_) => None,
         }
+    }
+
+    fn borrow_u8(_slice: &[Self]) -> Option<&[u8]> {
+        None
     }
 
     fn buffer(name: &'static str, values: Vec<Self>) -> Buffer {
@@ -84,6 +93,10 @@ impl Element for u8 {
             Values::F32(_) => None,
             Values::U8(values) => Some(values),
         }
+    }
+
+    fn borrow_u8(slice: &[Self]) -> Option<&[u8]> {
+        Some(slice)
     }
 
     fn buffer(name: &'static str, values: Vec<Self>) -> Buffer {
@@ -324,12 +337,26 @@ pub(crate) fn scaled_groups(m: usize, n: usize, scales: usize) -> Result<(usize,
     Ok((groups, m / groups))
 }
 
+/// 标度值守卫：每组分标度必须是有限值；非有限标度会把整组乘积带进 NaN/Inf，且与格式无关。
+///
+/// 标度个数已由 [`scaled_groups`] 推过；这里只逐条判有限，不重复推分组。
+pub(crate) fn finite_scales(scales: &[f32], groups: usize) -> Result<(), Error> {
+    let bad = scales.iter().any(|scale| !scale.is_finite());
+    if bad {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("标度含非有限值（{groups} 组）"),
+        ));
+    }
+    Ok(())
+}
+
 /// 打包权重（每字节 `cpb` 个码）的取样、分组校验与解包点积助手。
 ///
 /// int2（4 码/字节）与 int4（2 码/字节）只在码宽、查表与粒度倍数上不同；打包位域的字节布局、
 /// 分组推导与按行点积收口到这里，避免两条打包格式各抄一遍。int8 不打包，不走本模块。
 pub mod packed {
-    use super::{required_weights, scaled_groups};
+    use super::{finite_scales, required_weights, scaled_groups};
     use diagnostic::{Code, Error};
 
     /// 每字节 `cpb` 个码对应的位宽与码掩码。
@@ -413,6 +440,7 @@ pub mod packed {
         let m = x.len();
         let n = out.len();
         let (groups, group) = groups(m, n, scales.len(), weights.len(), cpb)?;
+        finite_scales(scales, groups)?;
         let row_bytes = m / cpb;
         let per_group = group / cpb;
         for (row, value) in out.iter_mut().enumerate() {

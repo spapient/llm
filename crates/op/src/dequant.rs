@@ -27,19 +27,20 @@ fn check_len(q: &[u8], out: &[f32], cpb: usize) -> Result<(), Error> {
 /// 仿射参数校验：标度不能为零（否则整组塌成常数、失去量化口径），零点必须落在码域内。
 ///
 /// 码域是 `0..2^width`：零点是码点到有符号值的平移量，越出码域意味着存在无法表示的码点，
-/// 属于配置错误而不是数值极端。两条判据与位宽同源：`width = 8 / cpb`，打包格式各自传 cpb。
+/// 属于配置错误而不是数值极端。打包格式按每字节码数 [`cpb`] 推位宽（`width = 8 / cpb`）；
+/// 逐元素格式直接传码值个数（i8 码域 `0..=255`，当前样本取 i4 档 `0..=15`）。
 ///
 /// # Errors
 ///
 /// 标度为零、零点不是有限值，或零点不在 `0..2^width` 内时返回 [`Code::Invalid`]。
-pub fn check_affine(scale: f32, zero: f32, cpb: usize) -> Result<(), Error> {
+pub fn check_affine(scale: f32, zero: f32, codes: usize) -> Result<(), Error> {
     if scale == 0.0 || !scale.is_finite() {
         return Err(Error::new(Code::Invalid, "反量化标度必须是非零有限值"));
     }
     if !zero.is_finite() {
         return Err(Error::new(Code::Invalid, "反量化零点必须是有限值"));
     }
-    let width = 8 / cpb;
+    let width = codes.next_power_of_two().ilog2() as usize;
     let domain = 1u32 << width;
     if !(0.0..=domain as f32).contains(&zero) {
         return Err(Error::new(
@@ -117,8 +118,7 @@ pub fn forward_packed(
     cpb: usize,
 ) -> diagnostic::Result<()> {
     check_len(q, out, cpb)?;
-    check_affine(scale, zero, cpb)?;
-    for (byte, chunk) in q.iter().zip(out.chunks_mut(cpb)) {
+    check_affine(scale, zero, cpb)?;    for (byte, chunk) in q.iter().zip(out.chunks_mut(cpb)) {
         for (slot, place) in chunk.iter_mut().enumerate() {
             *place = scale * unpack(*byte, slot, cpb, zero);
         }
