@@ -1,7 +1,7 @@
 //! 反向数值对拍：自动回算的解析梯度与中心差分逐参数比对，并核对图外叶子不收梯度。
 
 use crate::{Data, Reference, Session, Sgd, TrainConfig};
-use autograd::{Sizes, Store, Tape};
+use autograd::{Sizes, Store, Tape, Var};
 use diagnostic::{Code, Result};
 use nn::ParamRole;
 use tensor::{DType, Shape};
@@ -17,6 +17,13 @@ const RELATIVE: f32 = 0.05;
 
 fn config() -> TrainConfig {
     TrainConfig::default()
+}
+
+/// 把最终输出 `y` 归约成标量 `loss` 后 plan + backward：链式损失测试的公共收尾。
+fn sum_backward(session: &mut Session<Reference, Sgd>, y: Var, loss: Var) -> Result<()> {
+    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+    session.plan(loss)?;
+    session.backward()
 }
 
 fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -54,22 +61,14 @@ fn mul_then_reduce_matches_central_differences() -> Result<()> {
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
     session.buffers().load(w, Data::F32(w0.clone()))?;
     session.buffers().compute("mul_f32", &[p, w], z)?;
-    session.buffers().compute("reduce_sum_f32", &[z], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, z, loss)?;
 
-    let grad = session.buffers().gradient(p).expect("参数梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let mut plus = p0.clone();
-        plus[index] += STEP;
-        let mut minus = p0.clone();
-        minus[index] -= STEP;
-        let numeric = (dot(&plus, &w0) - dot(&minus, &w0)) / (2.0 * STEP);
-        assert!(
-            close(*actual, numeric),
-            "p[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        &p0,
+        "p",
+        |x| dot(x, &w0),
+    );
     Ok(())
 }
 
@@ -95,22 +94,14 @@ fn scale_silu_chain_matches_central_differences() -> Result<()> {
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
     session.buffers().compute("scale_f32", &[p], h)?;
     session.buffers().compute("silu_f32", &[h], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let grad = session.buffers().gradient(p).expect("参数梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let mut plus = p0.clone();
-        plus[index] += STEP;
-        let mut minus = p0.clone();
-        minus[index] -= STEP;
-        let numeric = (chain_loss(&plus) - chain_loss(&minus)) / (2.0 * STEP);
-        assert!(
-            close(*actual, numeric),
-            "p[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        &p0,
+        "p",
+        chain_loss,
+    );
     Ok(())
 }
 
@@ -170,22 +161,14 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
     session.buffers().compute("gelu_f32", &[p], h)?;
-    session.buffers().compute("reduce_sum_f32", &[h], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, h, loss)?;
 
-    let grad = session.buffers().gradient(p).expect("参数梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let mut plus = p0.clone();
-        plus[index] += STEP;
-        let mut minus = p0.clone();
-        minus[index] -= STEP;
-        let numeric = (chain_loss(&plus) - chain_loss(&minus)) / (2.0 * STEP);
-        assert!(
-            close(*actual, numeric),
-            "p[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        &p0,
+        "p",
+        chain_loss,
+    );
     Ok(())
 }
 
@@ -208,22 +191,14 @@ fn reduce_max_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
     session.buffers().compute("reduce_max_f32", &[p], h)?;
-    session.buffers().compute("reduce_sum_f32", &[h], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, h, loss)?;
 
-    let grad = session.buffers().gradient(p).expect("参数梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let mut plus = p0.clone();
-        plus[index] += STEP;
-        let mut minus = p0.clone();
-        minus[index] -= STEP;
-        let numeric = (chain_loss(&plus) - chain_loss(&minus)) / (2.0 * STEP);
-        assert!(
-            close(*actual, numeric),
-            "p[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        &p0,
+        "p",
+        chain_loss,
+    );
     Ok(())
 }
 
@@ -257,22 +232,14 @@ fn gemv_matches_central_differences() -> Result<()> {
     session.register_parameter(w, ParamRole::Trainable, w0.clone())?;
     session.buffers().load(x, Data::F32(x0.clone()))?;
     session.buffers().compute("gemv_f32", &[w, x], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let grad = session.buffers().gradient(w).expect("权重梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let mut plus = w0.clone();
-        plus[index] += STEP;
-        let mut minus = w0.clone();
-        minus[index] -= STEP;
-        let numeric = (chain_loss(&plus, &x0) - chain_loss(&minus, &x0)) / (2.0 * STEP);
-        assert!(
-            close(*actual, numeric),
-            "w[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(w).expect("权重梯度应在场"),
+        &w0,
+        "w",
+        |w| chain_loss(w, &x0),
+    );
     Ok(())
 }
 
@@ -308,22 +275,14 @@ fn gemm_matches_central_differences() -> Result<()> {
     session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
     session.buffers().load(b, Data::F32(b0.clone()))?;
     session.buffers().compute("gemm_f32", &[a, b], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let grad = session.buffers().gradient(a).expect("A 梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let mut plus = a0.clone();
-        plus[index] += STEP;
-        let mut minus = a0.clone();
-        minus[index] -= STEP;
-        let numeric = (chain_loss(&plus, &b0) - chain_loss(&minus, &b0)) / (2.0 * STEP);
-        assert!(
-            close(*actual, numeric),
-            "a[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(a).expect("A 梯度应在场"),
+        &a0,
+        "a",
+        |a| chain_loss(a, &b0),
+    );
     Ok(())
 }
 
@@ -360,22 +319,14 @@ fn embed_table_gradient_matches_central_differences() -> Result<()> {
     session.register_parameter(table, ParamRole::Trainable, table0.clone())?;
     session.buffers().load(idx, Data::F32(idx0.clone()))?;
     session.buffers().compute("embed_f32", &[idx, table], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let grad = session.buffers().gradient(table).expect("表梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let mut plus = table0.clone();
-        plus[index] += STEP;
-        let mut minus = table0.clone();
-        minus[index] -= STEP;
-        let numeric = (chain_loss(&plus) - chain_loss(&minus)) / (2.0 * STEP);
-        assert!(
-            close(*actual, numeric),
-            "table[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(table).expect("表梯度应在场"),
+        &table0,
+        "table",
+        chain_loss,
+    );
     Ok(())
 }
 
@@ -408,6 +359,17 @@ fn central(f: impl Fn(&[f32]) -> f32, base: &[f32], index: usize) -> f32 {
     let mut minus = base.to_vec();
     minus[index] -= STEP;
     (f(&plus) - f(&minus)) / (2.0 * STEP)
+}
+
+/// 逐元素对拍解析梯度与中心差分：`f` 是参数向量的闭式损失，`name` 只进断言文案。
+fn check_grad(grad: &[f32], base: &[f32], name: &str, f: impl Fn(&[f32]) -> f32) {
+    for (index, actual) in grad.iter().enumerate() {
+        let numeric = central(&f, base, index);
+        assert!(
+            close(*actual, numeric),
+            "{name}[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
 }
 
 /// RMSNorm 闭式：`y = γ·x / sqrt(mean(x²)+eps)`，返回逐元素和。
@@ -482,26 +444,20 @@ fn rmsnorm_matches_central_differences() -> Result<()> {
     session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
     session.register_parameter(gamma, ParamRole::Trainable, gamma0.clone())?;
     session.buffers().compute("rmsnorm_f32", &[x, gamma], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let dx = session.buffers().gradient(x).expect("x 梯度应在场");
-    for (index, actual) in dx.iter().enumerate() {
-        let numeric = central(|x| rmsnorm_loss(x, &gamma0), &x0, index);
-        assert!(
-            close(*actual, numeric),
-            "x[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
-    let dgamma = session.buffers().gradient(gamma).expect("gamma 梯度应在场");
-    for (index, actual) in dgamma.iter().enumerate() {
-        let numeric = central(|gamma| rmsnorm_loss(&x0, gamma), &gamma0, index);
-        assert!(
-            close(*actual, numeric),
-            "gamma[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(x).expect("x 梯度应在场"),
+        &x0,
+        "x",
+        |x| rmsnorm_loss(x, &gamma0),
+    );
+    check_grad(
+        session.buffers().gradient(gamma).expect("gamma 梯度应在场"),
+        &gamma0,
+        "gamma",
+        |gamma| rmsnorm_loss(&x0, gamma),
+    );
     Ok(())
 }
 
@@ -523,18 +479,14 @@ fn rope_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
     session.buffers().compute("rope_f32", &[x], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let grad = session.buffers().gradient(x).expect("x 梯度应在场");
-    for (index, actual) in grad.iter().enumerate() {
-        let numeric = central(rope_loss, &x0, index);
-        assert!(
-            close(*actual, numeric),
-            "x[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(x).expect("x 梯度应在场"),
+        &x0,
+        "x",
+        rope_loss,
+    );
     Ok(())
 }
 
@@ -567,34 +519,26 @@ fn attention_matches_central_differences() -> Result<()> {
     session.register_parameter(k, ParamRole::Trainable, k0.clone())?;
     session.register_parameter(v, ParamRole::Trainable, v0.clone())?;
     session.buffers().compute("attention_f32", &[q, k, v], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let dq = session.buffers().gradient(q).expect("q 梯度应在场");
-    for (index, actual) in dq.iter().enumerate() {
-        let numeric = central(|q| attention_loss(q, &k0, &v0, s, s, d), &q0, index);
-        assert!(
-            close(*actual, numeric),
-            "q[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
-    let dk = session.buffers().gradient(k).expect("k 梯度应在场");
-    for (index, actual) in dk.iter().enumerate() {
-        let numeric = central(|k| attention_loss(&q0, k, &v0, s, s, d), &k0, index);
-        assert!(
-            close(*actual, numeric),
-            "k[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
-    let dv = session.buffers().gradient(v).expect("v 梯度应在场");
-    for (index, actual) in dv.iter().enumerate() {
-        let numeric = central(|v| attention_loss(&q0, &k0, v, s, s, d), &v0, index);
-        assert!(
-            close(*actual, numeric),
-            "v[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(q).expect("q 梯度应在场"),
+        &q0,
+        "q",
+        |q| attention_loss(q, &k0, &v0, s, s, d),
+    );
+    check_grad(
+        session.buffers().gradient(k).expect("k 梯度应在场"),
+        &k0,
+        "k",
+        |k| attention_loss(&q0, k, &v0, s, s, d),
+    );
+    check_grad(
+        session.buffers().gradient(v).expect("v 梯度应在场"),
+        &v0,
+        "v",
+        |v| attention_loss(&q0, &k0, v, s, s, d),
+    );
     Ok(())
 }
 
@@ -633,33 +577,25 @@ fn decode_attention_matches_central_differences() -> Result<()> {
     session
         .buffers()
         .compute("decode_attention_f32", &[q, k, v], y)?;
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-    session.plan(loss)?;
-    session.backward()?;
+    sum_backward(&mut session, y, loss)?;
 
-    let dq = session.buffers().gradient(q).expect("q 梯度应在场");
-    for (index, actual) in dq.iter().enumerate() {
-        let numeric = central(|q| attention_loss(q, &k0, &v0, q_rows, hist, d), &q0, index);
-        assert!(
-            close(*actual, numeric),
-            "q[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
-    let dk = session.buffers().gradient(k).expect("k 梯度应在场");
-    for (index, actual) in dk.iter().enumerate() {
-        let numeric = central(|k| attention_loss(&q0, k, &v0, q_rows, hist, d), &k0, index);
-        assert!(
-            close(*actual, numeric),
-            "k[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
-    let dv = session.buffers().gradient(v).expect("v 梯度应在场");
-    for (index, actual) in dv.iter().enumerate() {
-        let numeric = central(|v| attention_loss(&q0, &k0, v, q_rows, hist, d), &v0, index);
-        assert!(
-            close(*actual, numeric),
-            "v[{index}] 解析 {actual} 与差分 {numeric} 超差"
-        );
-    }
+    check_grad(
+        session.buffers().gradient(q).expect("q 梯度应在场"),
+        &q0,
+        "q",
+        |q| attention_loss(q, &k0, &v0, q_rows, hist, d),
+    );
+    check_grad(
+        session.buffers().gradient(k).expect("k 梯度应在场"),
+        &k0,
+        "k",
+        |k| attention_loss(&q0, k, &v0, q_rows, hist, d),
+    );
+    check_grad(
+        session.buffers().gradient(v).expect("v 梯度应在场"),
+        &v0,
+        "v",
+        |v| attention_loss(&q0, &k0, v, q_rows, hist, d),
+    );
     Ok(())
 }
