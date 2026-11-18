@@ -6,7 +6,7 @@
 
 use crate::einsum::Bits;
 use crate::gemm::{self, Gemm};
-use crate::model::Sample;
+use crate::quant::I8;
 
 // 收缩轴、三轴契约、形状投影复用 gemm 家族共享模块（dp4a 一次 4 个，K=8 即两次）。
 pub use crate::gemm::{AXES, K, project_shape};
@@ -19,7 +19,7 @@ impl Gemm for GemmI8 {
 
     const OP: &'static str = "gemm_i8";
 
-    const BITS: Bits = Bits::Eight;
+    const BITS: Bits = I8.bits;
 
     fn sample_a(m: usize) -> Vec<u8> {
         (0..m * K)
@@ -54,16 +54,6 @@ impl Gemm for GemmI8 {
     fn codes(values: &[u8]) -> Vec<i32> {
         values.iter().map(|&byte| byte as i8 as i32).collect()
     }
-}
-
-/// 确定性样本：A、B 为逐元素字节（确定性位模式），Y 为 f32。
-pub fn sample(m: usize, n: usize) -> Sample {
-    gemm::sample::<GemmI8>(m, n)
-}
-
-/// 标量参考：解包后整数点积，转 f32。
-pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    gemm::reference::<GemmI8>(sample)
 }
 
 /// 内核本体：结果写进调用方给的缓冲。

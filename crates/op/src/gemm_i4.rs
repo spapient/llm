@@ -7,13 +7,13 @@
 
 use crate::einsum::Bits;
 use crate::gemm::{self, Gemm, packed};
-use crate::model::Sample;
+use crate::quant::I4;
 
 // 收缩轴、三轴契约、形状投影复用 gemm 家族共享模块。
 pub use crate::gemm::{AXES, K, project_shape};
 
-/// 对称零点：nibble 0..15 减去 8 得到 -8..7。
-pub const ZERO: i32 = 8;
+/// 对称零点：nibble 0..15 减去 8 得到 -8..7（取自配置表 [`I4`]）。
+pub const ZERO: i32 = I4.zero;
 
 /// 标记类型：承载 `#[model]` 语义。
 pub struct GemmI4;
@@ -23,37 +23,27 @@ impl Gemm for GemmI4 {
 
     const OP: &'static str = "gemm_i4";
 
-    const BITS: Bits = Bits::Four;
+    const BITS: Bits = I4.bits;
 
     fn sample_a(m: usize) -> Vec<u8> {
-        packed::pack(m * K, 37, 2, &[1, 9])
+        packed::pack(m * K, 37, I4.cpb, I4.offsets)
     }
 
     fn sample_b(n: usize) -> Vec<u8> {
-        packed::pack(K * n, 53, 2, &[1, 9])
+        packed::pack(K * n, 53, I4.cpb, I4.offsets)
     }
 
     fn a_len(m: usize) -> usize {
-        m * K / 2
+        m * K / I4.cpb
     }
 
     fn b_len(n: usize) -> usize {
-        K * n / 2
+        K * n / I4.cpb
     }
 
     fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize) -> f32 {
-        packed::dot(a, b, n, i, j, 2, ZERO)
+        packed::dot(a, b, n, i, j, I4.cpb, ZERO)
     }
-}
-
-/// 确定性样本：A、B 为打包 nibble（确定性位模式），Y 为 f32。
-pub fn sample(m: usize, n: usize) -> Sample {
-    gemm::sample::<GemmI4>(m, n)
-}
-
-/// 标量参考：解包后整数点积，转 f32。
-pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    gemm::reference::<GemmI4>(sample)
 }
 
 /// 内核本体：结果写进调用方给的缓冲。

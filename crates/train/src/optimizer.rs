@@ -70,6 +70,27 @@ pub struct Slot<'a> {
     pub role: ParamRole,
 }
 
+/// 视图与梯度向量的配对：梯度向量在会话侧取走后随视图一起存活，步进结束整块归还缓冲。
+pub struct OwnedSlot {
+    /// 参数值就地写回（指向会话槽参数）。
+    pub params: Vec<f32>,
+    /// 从缓冲取走的梯度向量，同步/步进结束归还。
+    pub grads: Vec<f32>,
+    /// 参数角色。
+    pub role: ParamRole,
+}
+
+impl OwnedSlot {
+    /// 借成优化器/同步用的可变视图。
+    pub fn view(&mut self) -> Slot<'_> {
+        Slot {
+            params: &mut self.params,
+            grads: &mut self.grads,
+            role: self.role,
+        }
+    }
+}
+
 impl Slot<'_> {
     /// 参数与梯度长度必须一致；不一致是调用方接线错误（[`Code::Invalid`]）。
     fn check_len(&self) -> Result<()> {

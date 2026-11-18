@@ -8,18 +8,18 @@
 
 ### 现状（回链当前 revision）
 
-- 注册表 24 条算子，其中 6 条量化 lane：`gemv_i4` / `gemv_i8` / `gemm_i4` / `gemm_i8` / `dequant_i4` / `dequant_i8`（`crates/op/ops/*.toml`，24 条；量化名见各 toml）。
+- 注册表 27 条算子，其中 9 条量化 lane：`gemv_i2` / `gemv_i4` / `gemv_i8`、`gemm_i2` / `gemm_i4` / `gemm_i8`、`dequant_i2` / `dequant_i4` / `dequant_i8`（`crates/op/ops/*.toml`；量化名见各 toml）。
 - GEMV 骨架收口在 `crates/op/src/gemv.rs` 的 `Format` trait（`:113`）：随精度变化的关联项是 `Elem` / `EXPR` / `OPERANDS` / `GRAIN` / `DERIVED` / `SCALES` / `STEP` / `cache` / `row` / `weights` / `forward`；格式类型有稠密 `Dense<BLOCK>`（`:199`）、量化 `Quantized<GRAIN>`（`:193`）、对称 8 位 `SymI8<GRAIN>`（`:205`）。
 - GEMM 骨架收口在 `crates/op/src/gemm.rs` 的 `Gemm` trait（`:57`），位宽走 `const BITS: Bits`（`:65`），打包长度走 `a_len` / `b_len`，点积落 `dot`。
 - i4 实现是新格式的镜像参照（`crates/op/src/gemv_i4.rs`）：4 位打包每字节两个 nibble；`DEQUANT` 16 项对称表 `nibble − 8`；分组必须为偶数；`row = m / 2`；点积按分组推进、整组共用一条标度，低 nibble 在前。
 - 反量化 `dequant_i4` / `dequant_i8` 复用 `unary` 单轴骨架（`AXES` / `project_shape`），自带代价、样本、参考与遍历（`crates/op/src/dequant_i4.rs`）。
-- 位宽闭集 `Bits`（`crates/op/src/einsum/mod.rs:103`）当前取值 `Four / Eight / Sixteen / ThirtyTwo / SixtyFour`，**没有 Two**；加变体必须同步 `ALL` / `as_str` / `index`（`Closed` 合同）。
+- 位宽闭集 `Bits`（`crates/op/src/einsum/mod.rs:103`）当前取值 `Two / Four / Eight / Sixteen / ThirtyTwo / SixtyFour`，`Two` 已入闭集；`ALL` / `as_str` / `index`（`Closed` 合同）三处同步。
 - weights 推断（`crates/weights/src/quant.rs`）：`bits()`（`:204`）只区分 `I8 = 8` 与其余打包 `4`；`width()`（`:346`）`U4` / `I8` 第二维即元素数，`U8` 一字节两 nibble 乘 2；**不认识 U2 / I2 打包条目**。
 - `dtype` 已定义 `U2` / `I2` 枚举（`crates/dtype/src/dtype.rs:73,87`）；`qtype` 的 `Q2_0` / `Q2_K` / `IQ2_XXS` / `IQ2_XS` / `IQ2_S`（`crates/dtype/src/qtype.rs:108,122,138-142`）是 GGML 块量化族，带块内 scale/min 或查表，**不是**当前 lane 的打包方案。
 
 ### 缺口
 
-- op 侧无 2-bit 算子 lane，无 `Bits::Two`，weights 侧无 2-bit 打包推断；`dtype` / `qtype` 的 2-bit 定义目前没有被任何算子或装载路径消费。
+- op 侧 2-bit 参考算术 lane 已落地（`gemv_i2` / `gemm_i2` / `dequant_i2` 注册并对拍），`Bits::Two` 已入闭集；weights 侧仍无 2-bit 打包推断，`dtype` / `qtype` 的 2-bit 定义尚未被装载路径消费。
 - [0012](0012-quantized-weights.md)「未决」已注明：只有 4 位打包，2 / 3 位打包的字节数口径不同，需要各自的可测量事实，不能靠「除以 2」外推。
 
 ## 要裁决的问题
@@ -103,3 +103,4 @@
 
 - 2026-11-18：初稿 Proposed；仅定方案契约与接入切片，未落地代码。
 - 2026-11-18：方案 A 的 op 侧参考算术 lane 落地（`gemv_i2` / `gemm_i2` / `dequant_i2` 三算子注册、对拍与架构/静态门禁通过）；回填原型定值——整数码 `code − 2`（零点 2.0）、每字节四码低 2 位在前、`GRAIN=32`、组须 4 倍数、非 4 倍数尾码前置报 `Invalid`。weights/nn 装载与设备片段未接，保持 Proposed。
+- 2026-11-18（M3-3 刀）：三条 i2 lane 接入 serve 注册 Program（泛型桥接 + 配置化宏展开），gemm 形状矩阵对拍与测试侧独立闭式点积重算、零点/分组负例收口骨架；回填注册表 27 条 / 9 条量化 lane 口径。weights/nn 装载映射与设备解包片段仍未接。

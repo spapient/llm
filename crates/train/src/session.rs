@@ -22,7 +22,7 @@ use crate::optimizer::Optimizer;
 use crate::pool::Buffers;
 use crate::schedule::Schedule as LrSchedule;
 use crate::snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
-use crate::{Data, Kernel, Slot};
+use crate::{Data, Kernel, OwnedSlot, Slot};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::Session";
@@ -604,20 +604,47 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             return Ok(());
         }
         self.accum = 0;
+        self.step_once()
+    }
+
+    /// 窗口已满：汇总梯度 → 组内同步 → 优化器步进 → 镜像参数 → 归还视图，步号 +1。
+    fn step_once(&mut self) -> Result<()> {
         let lr = self.lr_schedule.lr(self.config.learning_rate, self.step);
         let mut views = Self::collect_views(&mut self.slots, &mut self.buffers)?;
-        let mut grads: Vec<&mut [f32]> = views.iter_mut().map(|slot| slot.grads).collect();
+        let mut grads: Vec<&mut [f32]> = views.iter_mut().map(|slot| slot.grads.as_mut()).collect();
         self.distributed
             .sync_grads(&mut grads)
             .map_err(|error| error.with(SITE))?;
+        let mut slots: Vec<Slot<'_>> = views.iter_mut().map(OwnedSlot::view).collect();
         self.optimizer
-            .step(&mut views, lr)
+            .step(&mut slots, lr)
             .map_err(|error| error.with(SITE))?;
         Self::mirror_params(&self.slots, &mut self.buffers)?;
-        // 窗口已步进：清空梯度，下一个窗口从空缓冲重新累加。
-        self.zero_gradients();
+        // 归还步进前取走的梯度向量：窗口已步进，下一个窗口从空缓冲重新累加。
+        Self::return_views(&self.slots, &mut self.buffers, views);
         self.step = self.step.saturating_add(1);
         Ok(())
+    }
+
+    /// 把 [`Self::collect_views`] 取走的梯度向量按槽号归还；步进后梯度一律清空。
+    fn return_views(
+        slots: &[ParamSlot],
+        buffers: &mut Buffers<K>,
+        views: Vec<OwnedSlot>,
+    ) {
+        for (slot, view) in slots.iter().zip(views) {
+            buffers.put_back_gradient(slot.var(), view.grads);
+        }
+        buffers.clear_gradients();
+    }
+
+    /// 收集视图失败时的局部归还：已装配的前 `views.len()` 个槽对应 `slots` 前缀。
+    fn return_views_prefix(
+        slots: &mut [ParamSlot],
+        buffers: &mut Buffers<K>,
+        views: Vec<OwnedSlot>,
+    ) {
+        Self::return_views(&slots[..views.len()], buffers, views);
     }
 
     /// 登记权重绑定：回填时 `tied` 槽整块复制 `source` 槽的当前参数值（嵌入表与输出头共享权重的接缝）。
@@ -660,28 +687,29 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     }
 
     /// 汇总各槽的参数/梯度可变视图；任一槽梯度未装入即报错。
-    fn collect_views<'a>(
-        slots: &'a mut [ParamSlot],
-        buffers: &'a mut Buffers<K>,
-    ) -> Result<Vec<Slot<'a>>> {
-        slots
-            .iter_mut()
-            .map(|slot| {
-                let role = slot.role();
-                let grads = buffers.gradient(slot.var()).ok_or_else(|| {
-                    Error::new(
-                        Code::Missing,
-                        format!("参数 {} 的梯度还没装入缓冲", slot.var().id()),
-                    )
-                    .with(SITE)
-                })?;
-                Ok(Slot {
-                    params: slot.params_mut(),
-                    grads,
-                    role,
-                })
-            })
-            .collect::<Result<Vec<_>>>()
+    ///
+    /// 梯度向量按槽整块取走（[`Buffers::take_gradient`]），步进结束后在
+    /// [`Self::return_views`] 归还；参数槽与梯度表因此各只建立一条可变借用。
+    fn collect_views(
+        slots: &mut [ParamSlot],
+        buffers: &mut Buffers<K>,
+    ) -> Result<Vec<OwnedSlot>> {
+        let meta: Vec<(Var, ParamRole)> = slots.iter().map(|s| (s.var(), s.role())).collect();
+        let mut views = Vec::with_capacity(meta.len());
+        for (index, (var, role)) in meta.into_iter().enumerate() {
+            let Some(grads) = buffers.take_gradient(var) else {
+                // 中途归还已取走的梯度：失败路径不留悬空向量。
+                Self::return_views_prefix(slots, buffers, views);
+                return Err(Error::new(
+                    Code::Missing,
+                    format!("参数 {} 的梯度还没装入缓冲", var.id()),
+                )
+                .with(SITE));
+            };
+            let params = slots[index].params().to_vec();
+            views.push(OwnedSlot { params, grads, role });
+        }
+        Ok(views)
     }
 
     /// 把优化器写回后的参数值镜像回激活缓冲，供下一轮前向复用。

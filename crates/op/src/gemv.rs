@@ -450,6 +450,30 @@ pub mod packed {
         }
         Ok(())
     }
+
+    /// 逐元素（不打包）格式的行遍历：守卫与行切片收口到骨架，每行点积算术由闭包给出。
+    ///
+    /// 与 [`forward_rows`] 对称，差别只是权重不按字节打包、一行即 `m` 个元素；格式只给
+    /// 逐行点积函数，不在自己的 `forward` 里再抄一遍分组/标度/权重长度守卫。
+    pub fn forward_plain(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+        row_dot: impl Fn(&[u8], &[f32], &[f32], usize) -> f32,
+    ) -> diagnostic::Result<()> {
+        let m = x.len();
+        let n = out.len();
+        let (groups, group) = scaled_groups(m, n, scales.len())?;
+        finite_scales(scales, groups)?;
+        required_weights(weights.len(), n, m)?;
+        for (row, value) in out.iter_mut().enumerate() {
+            let w_row = &weights[row * m..][..m];
+            let s_row = &scales[row * groups..][..groups];
+            *value = row_dot(w_row, x, s_row, group);
+        }
+        Ok(())
+    }
 }
 
 /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。

@@ -29,7 +29,7 @@ impl Distributed<Remote> {
     /// 单进程恒等编排：无拓扑、无后端，梯度不同步。后续装配多进程时用 [`Self::new`]。
     pub fn none() -> Self {
         Self {
-            topology: Topology::new(1, 1, 1).expect("1×1×1 拓扑恒合法"),
+            topology: Topology::single(),
             rank: 0,
             collective: None,
             average: true,
@@ -107,27 +107,43 @@ impl<E: Collective> Distributed<E> {
     ///
     /// 组派生越界、后端归约失败，或平均除数为 0 时返回对应 [`Code`]。
     pub fn sync_grads(&mut self, slots: &mut [&mut [f32]]) -> Result<()> {
+        let group = self.data_group()?;
         let Some(collective) = self.collective.as_mut() else {
             return Ok(());
         };
-        let group = self.data_group()?;
-        let reduce = self.reduce;
-        for grads in slots.iter_mut() {
-            collective.all_reduce(&group, reduce, grads)?;
-        }
+        reduce_slots(collective, &group, self.reduce, slots)?;
         if self.average {
-            let divisor = group.size() as f32;
-            if divisor == 0.0 {
-                return Err(Error::new(Code::Internal, "数据并行组大小为 0").with(SITE));
-            }
-            for grads in slots.iter_mut() {
-                for slot in grads.iter_mut() {
-                    *slot /= divisor;
-                }
-            }
+            average_slots(slots, &group)?;
         }
         Ok(())
     }
+}
+
+/// 组内对每个槽位梯度按 [`Reduce`] 归约；后端错误原样透传。
+fn reduce_slots<E: Collective>(
+    collective: &mut E,
+    group: &Group,
+    reduce: Reduce,
+    slots: &mut [&mut [f32]],
+) -> Result<()> {
+    for grads in slots.iter_mut() {
+        collective.all_reduce(group, reduce, grads)?;
+    }
+    Ok(())
+}
+
+/// 归约后按数据并行组数取平均；组大小为 0 是装配口径错误。
+fn average_slots(slots: &mut [&mut [f32]], group: &Group) -> Result<()> {
+    let divisor = group.size() as f32;
+    if divisor == 0.0 {
+        return Err(Error::new(Code::Internal, "数据并行组大小为 0").with(SITE));
+    }
+    for grads in slots.iter_mut() {
+        for slot in grads.iter_mut() {
+            *slot /= divisor;
+        }
+    }
+    Ok(())
 }
 
 /// 远端占位后端别名：单进程 [`Distributed::none`] 用它占位，不挂真实通信栈。

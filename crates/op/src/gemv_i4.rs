@@ -22,6 +22,7 @@
 
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
 use crate::gemv::{self, Format, packed};
+use crate::quant::I4;
 
 /// 量化分组。
 ///
@@ -30,13 +31,11 @@ use crate::gemv::{self, Format, packed};
 /// 不漂移，`#[model]` 生成的编译期断言保证生产形状是它的整数倍。
 pub const GROUP: usize = 32;
 
-/// 四位无符号码的解包结果：`nibble − 8`。
+/// 四位无符号码的解包结果：`nibble − 8`（表取自配置表 [`I4`]）。
 ///
 /// 查表而不是每次做 `i32 → f32` 转换：解包是这条内核最内层的循环，每元素省一次转换就是
 /// 整个 GEMV 的省；16 个取值都是精确的小整数，表里没有舍入。
-const DEQUANT: [f32; 16] = [
-    -8.0, -7.0, -6.0, -5.0, -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0,
-];
+const DEQUANT: &[f32] = I4.table;
 
 /// 4 位打包格式的语义类型：声明粒度 [`GROUP`]、每行 `m / 2` 个字节。
 ///
@@ -54,7 +53,7 @@ impl<const G: usize> Format for gemv::Quantized<G> {
 
     /// 三个输入都是读，只有输出是写；位宽就是解包前后各占多少。
     const OPERANDS: &'static [OperandSpec] = &[
-        OperandSpec::read("w", Bits::Four),
+        OperandSpec::read("w", I4.bits),
         OperandSpec::read("x", Bits::ThirtyTwo),
         OperandSpec::read("scales", Bits::ThirtyTwo),
         OperandSpec::write("y", Bits::ThirtyTwo),
@@ -79,15 +78,15 @@ impl<const G: usize> Format for gemv::Quantized<G> {
         // 单态化时求值，运行期一条指令都不留。
         const {
             assert!(
-                G > 0 && G.is_multiple_of(2),
+                G > 0 && G.is_multiple_of(I4.cpb),
                 "4 位打包的粒度必须是正偶数：两个元素共用一个字节"
             )
         };
-        m / 2
+        m / I4.cpb
     }
 
     fn weights(m: usize, n: usize) -> Vec<u8> {
-        packed::weights(m, n, 2)
+        packed::weights(m, n, I4.cpb)
     }
 
     fn forward(
@@ -96,7 +95,7 @@ impl<const G: usize> Format for gemv::Quantized<G> {
         scales: &[f32],
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        packed::forward_rows(x, weights, scales, out, 2, &DEQUANT)
+        packed::forward_rows(x, weights, scales, out, I4.cpb, DEQUANT)
     }
 }
 

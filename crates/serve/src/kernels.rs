@@ -307,19 +307,20 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
     Ok(())
 }
 
+/// 量化 GEMV 算术入口：`x`、打包权重、按组标度 → 浮点输出。
+type GemvQuantFn = fn(x: &[f32], w: &[u8], s: &[f32], out: &mut [f32]) -> Result<()>;
+
 /// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接。
 ///
 /// 三条位宽 lane（i2/i4/i8）签名同形：输入浮点向量 + 打包字节权重 + 按组标度，输出浮点。
 /// 算术入口按 lane 注入，拆视图与错误口径只写一份；位宽差异留在 `op` 格式契约里。
 fn gemv_quant(
-    name: &str,
     x: &[f32],
     weights: &[u8],
     scales: &[f32],
     out: &mut [f32],
-    run: fn(x: &[f32], w: &[u8], s: &[f32], out: &mut [f32]) -> Result<()>,
+    run: GemvQuantFn,
 ) -> Result<()> {
-    let _ = name;
     run(x, weights, scales, out)
 }
 
@@ -332,7 +333,7 @@ macro_rules! gemv_quant_kernel {
             let weights = input_u8(name, inputs, 1)?;
             let scales = input_f32(name, inputs, 2)?;
             let out = output_f32(name, outputs, 0)?;
-            gemv_quant(name, x, weights, scales, out, op::$run::forward)
+            gemv_quant(x, weights, scales, out, op::$run::forward)
         }
     )*};
 }
@@ -362,6 +363,9 @@ fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>])
     op::dequant_i8::forward(op::dequant_i8::SCALE, op::dequant_i8::ZERO, q, out)
 }
 
+/// 量化 GEMM 算术入口：两路打包字节 + 静态几何 `(m, n)` → 浮点输出。
+type GemmQuantFn = fn(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> Result<()>;
+
 /// 量化 GEMM 通用桥接：`A: u8, B: u8 → Y: f32`，几何从静态收缩轴 `K` 与缓冲长度反推。
 ///
 /// 每字节码数由位宽推出（`cpb = 8 / BITS.bits()`）：A 长度 `m·K/cpb`、B 长度 `K·n/cpb`，
@@ -371,7 +375,7 @@ fn gemm_quant<G: op::gemm::Gemm<Elem = u8>>(
     a: &[u8],
     b: &[u8],
     out: &mut [f32],
-    run: fn(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> Result<()>,
+    run: GemmQuantFn,
 ) -> Result<()> {
     let cpb = op::gemm::codes_per_byte(G::BITS);
     let row = op::gemm::K / cpb;

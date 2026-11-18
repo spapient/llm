@@ -6,6 +6,7 @@
 
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
 use crate::gemv::{self, Format};
+use crate::quant::I8;
 
 /// 量化分组（声明粒度，与 `gemv_i4` 同档）。
 pub const GROUP: usize = 32;
@@ -22,7 +23,7 @@ impl<const G: usize> Format for gemv::SymI8<G> {
 
     /// 权重是 8 位（每元素 1 字节），其余同 4 位格式。
     const OPERANDS: &'static [OperandSpec] = &[
-        OperandSpec::read("w", Bits::Eight),
+        OperandSpec::read("w", I8.bits),
         OperandSpec::read("x", Bits::ThirtyTwo),
         OperandSpec::read("scales", Bits::ThirtyTwo),
         OperandSpec::write("y", Bits::ThirtyTwo),
@@ -61,19 +62,10 @@ impl<const G: usize> Format for gemv::SymI8<G> {
         scales: &[f32],
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        let m = x.len();
-        let n = out.len();
-        let (groups, group) = gemv::scaled_groups(m, n, scales.len())?;
-        gemv::finite_scales(scales, groups)?;
-        gemv::required_weights(weights.len(), n, m)?;
-
-        // 每行只看自己那一段；每组只乘一次 scale。u8 按 i8 解释（对称零点 0）。
-        for (row, value) in out.iter_mut().enumerate() {
-            let w_row = &weights[row * m..][..m];
-            let s_row = &scales[row * groups..][..groups];
+        // 守卫、行切片与分组推进收口到骨架；逐行点积算术只留这一个闭包。
+        gemv::packed::forward_plain(x, weights, scales, out, |w_row, x, s_row, group| {
             let mut acc = 0.0f32;
             for ((w_chunk, scale), x_chunk) in w_row.chunks(group).zip(s_row).zip(x.chunks(group)) {
-                // u8 按 i8 解释（对称零点 0）：先点积，整组只乘一次标度。
                 let dot: f32 = w_chunk
                     .iter()
                     .zip(x_chunk)
@@ -81,9 +73,8 @@ impl<const G: usize> Format for gemv::SymI8<G> {
                     .sum();
                 acc += dot * scale;
             }
-            *value = acc;
-        }
-        Ok(())
+            acc
+        })
     }
 }
 

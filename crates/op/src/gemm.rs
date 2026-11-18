@@ -307,14 +307,14 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
         Bits::Two => {
             let a: &[u8] = Element::borrow_u8(a).expect("i2 打包为 u8");
             let b: &[u8] = Element::borrow_u8(b).expect("i2 打包为 u8");
-            values.extend(packed::unpack_stream(a, 4, 2));
-            values.extend(packed::unpack_stream(b, 4, 2));
+            values.extend(packed::unpack_stream(a, crate::quant::I2.cpb, crate::quant::I2.zero));
+            values.extend(packed::unpack_stream(b, crate::quant::I2.cpb, crate::quant::I2.zero));
         }
         Bits::Four => {
             let a: &[u8] = Element::borrow_u8(a).expect("i4 打包为 u8");
             let b: &[u8] = Element::borrow_u8(b).expect("i4 打包为 u8");
-            values.extend(packed::unpack_stream(a, 2, 8));
-            values.extend(packed::unpack_stream(b, 2, 8));
+            values.extend(packed::unpack_stream(a, crate::quant::I4.cpb, crate::quant::I4.zero));
+            values.extend(packed::unpack_stream(b, crate::quant::I4.cpb, crate::quant::I4.zero));
         }
         _ => {
             values.extend(G::codes(a));

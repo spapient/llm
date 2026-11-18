@@ -6,12 +6,13 @@
 
 use crate::dequant;
 use crate::model::{Cost, Sample, ShapeContext};
+use crate::quant::I2;
 use diagnostic::Error;
 
 /// 反量化标度（2 的负幂网格，f32 精确）。
 pub const SCALE: f32 = dequant::SCALE;
-/// 2 位对称零点：码 0..3 减去 2 得到 -2..=1。
-pub const ZERO: f32 = 2.0;
+/// 2 位对称零点：码 0..3 减去 2 得到 -2..=1（取自配置表 [`I2`]）。
+pub const ZERO: f32 = I2.zero as f32;
 
 // 单轴定义与形状投影复用打包骨架。
 pub use crate::dequant::{AXES, project_shape};
@@ -22,18 +23,18 @@ pub use crate::dequant::{AXES, project_shape};
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    dequant::cost_packed(shape, 4)
+    dequant::cost_packed(shape, I2.cpb)
 }
 
 /// 确定性样本：`q`（打包字节，n/4 个）、`y`（n 个 f32）。
 pub fn sample(len: usize, _: usize) -> Sample {
-    dequant::sample_packed(len, 4)
+    dequant::sample_packed(len, I2.cpb)
 }
 
 /// 标量参考：逐字节解四个码，与内核同一公式。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let q = sample.u8("q")?;
-    Ok(dequant::reference_packed(q, 4, ZERO))
+    Ok(dequant::reference_packed(q, I2.cpb, ZERO))
 }
 
 /// 内核本体：结果写进调用方给的缓冲。
@@ -42,7 +43,7 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 ///
 /// 输出长度不是输入字节数的 4 倍时返回说明。
 pub fn forward(scale: f32, zero: f32, q: &[u8], out: &mut [f32]) -> diagnostic::Result<()> {
-    dequant::forward_packed(scale, zero, q, out, 4)
+    dequant::forward_packed(scale, zero, q, out, I2.cpb)
 }
 
 /// 标记类型：承载 `#[model]` 语义。

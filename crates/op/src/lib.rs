@@ -77,6 +77,7 @@ pub mod gemv_i8;
 pub mod layout;
 pub mod model;
 pub mod mul_f32;
+pub mod quant;
 pub mod reduce;
 pub mod reduce_max_f32;
 pub mod reduce_sum_f32;

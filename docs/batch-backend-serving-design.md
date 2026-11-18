@@ -214,8 +214,8 @@ backlog §7 总前置，未满足前 M3 不动工：
 
 ### 3.5 量化 lane 挂载
 
-- 现状：`gemv_i4` / `gemv_i8` / `gemm_i4` / `gemm_i8` / `dequant_i4` / `dequant_i8` 骨架在 op 泛型内；注册表 24 条含 6 条量化 lane。
-- 接缝：边界适配把 i4 / i8 lane 挂成 `Program`；反量化内核随 lane 挂载；量化权重零点 / 分组负例与对拍在 M3-3 刀内。
+- 现状：`gemv_i2` / `gemv_i4` / `gemv_i8`、`gemm_i2` / `gemm_i4` / `gemm_i8`、`dequant_i2` / `dequant_i4` / `dequant_i8` 骨架在 op 泛型内；注册表 27 条含 9 条量化 lane。
+- 接缝：CPU 侧 lane 已按 `Gemm` trait 泛型挂成 `Program`（serve 桥接宏展开，位宽 / 收缩轴取标记类型常量）；权重对拍矩阵、零点 / 分组负例在 M3-3 刀内收口；设备后端 `Program` 挂载仍随 M3-1/M3-2 边界 crate 落地。
 - 暂缓：FP8 / AWQ / GPTQ 新格式在 M3-3 之后按格式 ADR 接入；KV 量化不在本阶段。
 
 ### 3.6 集合通信

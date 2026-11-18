@@ -53,7 +53,7 @@ pub use learner::{ForwardOut, Learner};
 pub use loss::{argmax_hits, cross_entropy};
 pub use metrics::{MetricPoint, MetricsBoard};
 pub use offload::{DeferredOffload, WeightOffload};
-pub use optimizer::{Adam, Group, Optimizer, Sgd, Slot};
+pub use optimizer::{Adam, Group, Optimizer, OwnedSlot, Sgd, Slot};
 pub use schedule::{Anneal, Schedule};
 pub use session::{ParamSlot, Session, TrainConfig};
 pub use store::{Buffers, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};

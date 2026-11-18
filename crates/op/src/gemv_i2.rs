@@ -22,6 +22,7 @@
 
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
 use crate::gemv::{self, Format, packed};
+use crate::quant::I2;
 
 /// 量化分组。
 ///
@@ -30,12 +31,12 @@ use crate::gemv::{self, Format, packed};
 /// 不漂移，`#[model]` 生成的编译期断言保证生产形状是它的整数倍。
 pub const GROUP: usize = 32;
 
-/// 二位无符号码的解包结果：`code − 2`，落在 `-2..=1`。
+/// 二位无符号码的解包结果：`code − 2`，落在 `-2..=1`（表取自配置表 [`I2`]）。
 ///
 /// 查表而不是每次做 `i32 → f32` 转换：解包是这条内核最内层的循环，每元素省一次转换就是
 /// 整个 GEMV 的省；四个取值都是精确小整数，表里没有舍入。取整数码而非半整数，是为了让
 /// 矩阵乘侧的 `i32` 精确累加路径（对应设备 mma 整数路径）可以复用同一份码值口径。
-const DEQUANT: [f32; 4] = [-2.0, -1.0, 0.0, 1.0];
+const DEQUANT: &[f32] = I2.table;
 
 /// 2 位打包格式的语义类型：声明粒度 [`GROUP`]、每行 `m / 4` 个字节。
 ///
@@ -53,7 +54,7 @@ impl<const G: usize> Format for gemv::SymI2<G> {
 
     /// 三个输入都是读，只有输出是写；位宽就是解包前后各占多少。
     const OPERANDS: &'static [OperandSpec] = &[
-        OperandSpec::read("w", Bits::Two),
+        OperandSpec::read("w", I2.bits),
         OperandSpec::read("x", Bits::ThirtyTwo),
         OperandSpec::read("scales", Bits::ThirtyTwo),
         OperandSpec::write("y", Bits::ThirtyTwo),
@@ -78,15 +79,15 @@ impl<const G: usize> Format for gemv::SymI2<G> {
         // 单态化时求值，运行期一条指令都不留。
         const {
             assert!(
-                G > 0 && G.is_multiple_of(4),
+                G > 0 && G.is_multiple_of(I2.cpb),
                 "2 位打包的粒度必须是正 4 倍数：四个元素共用一个字节"
             )
         };
-        m / 4
+        m / I2.cpb
     }
 
     fn weights(m: usize, n: usize) -> Vec<u8> {
-        packed::weights(m, n, 4)
+        packed::weights(m, n, I2.cpb)
     }
 
     fn forward(
@@ -95,7 +96,7 @@ impl<const G: usize> Format for gemv::SymI2<G> {
         scales: &[f32],
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        packed::forward_rows(x, weights, scales, out, 4, &DEQUANT)
+        packed::forward_rows(x, weights, scales, out, I2.cpb, DEQUANT)
     }
 }
 

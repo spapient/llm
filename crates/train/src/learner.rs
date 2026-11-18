@@ -130,18 +130,26 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         Ok(())
     }
 
-    /// 入账评估量、自动回传梯度、跑闭包覆盖口并走优化步。
+    /// 入账评估量、回传梯度、跑闭包覆盖口并走优化步。
     ///
-    /// 先由 [`Session::backward`] 按计划自动回算参数梯度；`backward` 闭包保留为覆盖/追加口，
-    /// 其后再走优化步。
+    /// 回传段见 [`Self::backward_with`]；`backward` 闭包在自动回算之后保留为覆盖/追加口。
     fn finish<G>(&mut self, prepared: Prepared, backward: &mut G) -> Result<()>
     where
         G: FnMut(&mut Session<K, O>) -> Result<()>,
     {
         self.record(&prepared.logits, &prepared.labels)?;
+        self.backward_with(backward)?;
+        self.session.optimize()?;
+        Ok(())
+    }
+
+    /// 自动回算参数梯度，再跑调用方闭包覆盖/追加口。
+    fn backward_with<G>(&mut self, backward: &mut G) -> Result<()>
+    where
+        G: FnMut(&mut Session<K, O>) -> Result<()>,
+    {
         self.session.backward()?;
         backward(&mut self.session)?;
-        self.session.optimize()?;
         Ok(())
     }
 
