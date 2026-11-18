@@ -306,6 +306,18 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
         self.backward.endpoints()
     }
 
+    /// 按已规划的反向计划回传梯度：从 loss 上游 `1` 出发，逐节点分配到图上输入。
+    ///
+    /// 自动回算把参数槽梯度填好；调用方仍可在其后用 [`Self::load_gradient`] /
+    /// [`Self::accumulate_gradient`] 覆盖或追加，闭包接缝保留为覆盖口。
+    ///
+    /// # Errors
+    ///
+    /// 前向值或上游梯度不在场、账本顺序不符，或遇到尚未接反向公式的算子时透传对应错误。
+    pub fn backward(&mut self) -> Result<()> {
+        crate::backprop::backprop(&mut self.buffers, &self.tape, &self.backward)
+    }
+
     /// 已登记的参数槽。
     pub fn slots(&self) -> &[ParamSlot] {
         &self.slots

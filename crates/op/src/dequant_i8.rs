@@ -71,8 +71,7 @@ pub fn forward(scale: f32, zero: f32, q: &[f32], out: &mut [f32]) -> diagnostic:
             format!("缓冲长度不一致：q {}、out {}", q.len(), out.len()),
         ));
     }
-    dequant::check_affine(scale, zero, 16)?;
-    for (out, q) in out.iter_mut().zip(q) {
+    dequant::check_affine(scale, zero, 16)?;    for (out, q) in out.iter_mut().zip(q) {
         *out = scale * (q - zero);
     }
     Ok(())
