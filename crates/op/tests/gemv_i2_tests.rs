@@ -150,7 +150,7 @@ fn a_small_shape_pins_every_term_so_a_factor_cannot_hide() {
 
 #[test]
 fn call_arguments_follow_the_template_signature() {
-    let signature = crate::sig::Signature::parse("gemv_i2", include_str!("../ops/gemv_i2.k"))
+    let signature = crate::sig::Signature::parse("gemv_i2", include_str!("../ops/gemv_packed.k"))
         .expect("签名可解析");
     assert_eq!(
         signature
