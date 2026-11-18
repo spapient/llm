@@ -1,4 +1,4 @@
-use crate::{Data, ForwardOut, Learner, Reference, Session, Sgd, TrainConfig};
+use crate::{Data, Distill, ForwardOut, Grpo, Learner, Metric, Reference, Session, Sgd, TrainConfig};
 use autograd::{Sizes, Store, Tape, Var};
 use data::Chunks;
 use diagnostic::{Code, Error, Result};
@@ -52,7 +52,11 @@ fn forward(
         .load(logits, Data::F32(logits_values.to_vec()))?;
     session.buffers().compute("add_f32", &[p, x], loss)?;
     session.plan(loss)?;
-    Ok(ForwardOut { logits, loss })
+    Ok(ForwardOut {
+        logits,
+        loss,
+        metric: None,
+    })
 }
 
 /// 夹具回传：给参数 `p` 塞一份全 1 梯度。
@@ -214,5 +218,115 @@ fn forwards_forward_closure_error_without_recording() -> Result<()> {
         .expect_err("前向错误透传");
     assert_eq!(error.code(), Code::Internal);
     assert!(learner.board().is_empty(), "前向失败前不写指标");
+    Ok(())
+}
+
+/// 蒸馏度量：`ForwardOut.metric` 带 teacher 时看板记蒸馏损失（含 KL），命中仍按硬标签。
+#[test]
+fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let x = tape.leaf();
+    let logits = tape.leaf();
+    let teacher = tape.leaf();
+    let loss = tape.record("add_f32", &[p, x]).expect("记录");
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(p, Shape::new([N]), DType::F32);
+    sizes.set(x, Shape::new([N]), DType::F32);
+    sizes.set(logits, Shape::new([VOCAB]), DType::F32);
+    sizes.set(teacher, Shape::new([VOCAB]), DType::F32);
+    sizes.set(loss, Shape::new([N]), DType::F32);
+
+    let config = TrainConfig::new(1e-2, 0, 3, None, 1)?;
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    let mut learner = Learner::new(session, VOCAB)?;
+    let tokens = [0u32, 1];
+    let mut chunks = Chunks::new(&tokens, 1, 2)?;
+
+    learner.run(
+        &mut chunks,
+        1,
+        |session, _tokens| {
+            session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+            session.buffers().load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+            session.buffers().load(teacher, Data::F32(vec![1.0; VOCAB]))?;
+            session.buffers().compute("add_f32", &[p, x], loss)?;
+            session.plan(loss)?;
+            Ok(ForwardOut {
+                logits,
+                loss,
+                metric: Some(Metric::Distill {
+                    teacher,
+                    config: Distill::new(2.0, 0.5),
+                }),
+            })
+        },
+        |session| load_one_gradient(session, p),
+    )?;
+
+    let point = learner.board().latest().expect("已有指标");
+    assert!(point.loss > 0.0, "教师均匀分布引入 KL>0，蒸馏损失应为正");
+    assert_eq!(point.accuracy(), 1.0, "argmax 仍命中硬标签");
+    Ok(())
+}
+
+/// RL 度量：GRPO 组合损失入账，命中恒 0（RL 无分类命中）。
+#[test]
+fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let x = tape.leaf();
+    let logits = tape.leaf();
+    let (new_logp, old_logp, advantages, ref_kl) =
+        (tape.leaf(), tape.leaf(), tape.leaf(), tape.leaf());
+    let loss = tape.record("add_f32", &[p, x]).expect("记录");
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(p, Shape::new([N]), DType::F32);
+    sizes.set(x, Shape::new([N]), DType::F32);
+    sizes.set(logits, Shape::new([VOCAB]), DType::F32);
+    sizes.set(new_logp, Shape::new([1]), DType::F32);
+    sizes.set(old_logp, Shape::new([1]), DType::F32);
+    sizes.set(advantages, Shape::new([1]), DType::F32);
+    sizes.set(ref_kl, Shape::new([1]), DType::F32);
+    sizes.set(loss, Shape::new([N]), DType::F32);
+
+    let config = TrainConfig::new(1e-2, 0, 3, None, 1)?;
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    let mut learner = Learner::new(session, VOCAB)?;
+    let tokens = [0u32, 1];
+    let mut chunks = Chunks::new(&tokens, 1, 2)?;
+
+    learner.run(
+        &mut chunks,
+        1,
+        |session, _tokens| {
+            session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+            session.buffers().load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+            session.buffers().load(new_logp, Data::F32(vec![-0.1]))?;
+            session.buffers().load(old_logp, Data::F32(vec![-0.2]))?;
+            session.buffers().load(advantages, Data::F32(vec![1.0]))?;
+            session.buffers().load(ref_kl, Data::F32(vec![0.05]))?;
+            session.buffers().compute("add_f32", &[p, x], loss)?;
+            session.plan(loss)?;
+            Ok(ForwardOut {
+                logits,
+                loss,
+                metric: Some(Metric::Grpo {
+                    new_logp,
+                    old_logp,
+                    advantages,
+                    ref_kl,
+                    config: Grpo::new(0.2, 0.1),
+                }),
+            })
+        },
+        |session| load_one_gradient(session, p),
+    )?;
+
+    let point = learner.board().latest().expect("已有指标");
+    assert!(point.loss < 0.0, "正 advantage 改善策略，GRPO 损失为负");
+    assert_eq!(point.correct, 0, "RL 度量无分类命中");
     Ok(())
 }

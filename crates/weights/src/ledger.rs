@@ -200,10 +200,10 @@ impl Note {
 /// 标识段：秩、是否使用秩选择、重构模式码、稳定性判定码。
 fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Mode, Stable)> {
     let rank = cur.read::<u32>()?;
-    let used = cur.read_u8()? != 0;
-    let mode = Mode::from_code(cur.read_u8()?)?;
-    let stable = Stable::from_code(cur.read_u8()?)?;
-    Ok((rank, used, mode, stable))
+    let flags = cur.take(3)?;
+    let mode = Mode::from_code(flags[1])?;
+    let stable = Stable::from_code(flags[2])?;
+    Ok((rank, flags[0] != 0, mode, stable))
 }
 
 /// 实数与标志段：三个 f64（谱隙、总扰动、截断误差）小端连排，其后是两条布尔（非 0 即真）。

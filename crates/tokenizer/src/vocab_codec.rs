@@ -30,89 +30,148 @@ pub fn encode_vocab(source: &VocabSource, digest: u64) -> Vec<u8> {
     w.u8(source.family.id());
     w.u32(source.pieces.len() as u32);
     let slots = source.special.slots();
-    let special_count = slots.iter().filter(|(_, id)| id.is_some()).count();
-    w.u32(special_count as u32);
-    for piece in &source.pieces {
+    w.u32(slots.iter().filter(|(_, id)| id.is_some()).count() as u32);
+    write_pieces(&mut w, &source.pieces);
+    write_special(&mut w, slots);
+    write_merges(&mut w, source);
+    write_scores(&mut w, source);
+    w.u64(digest);
+    w.0
+}
+
+fn write_pieces(w: &mut Writer, pieces: &[Vec<u8>]) {
+    for piece in pieces {
         w.bytes(piece);
     }
+}
+
+fn write_special(w: &mut Writer, slots: [(u8, Option<u32>); 7]) {
     for (kind, id) in slots {
         if let Some(id) = id {
             w.u8(kind);
             w.u32(id);
         }
     }
-    if source.family.requires_merges() {
-        w.u32(source.merges.len() as u32);
-        for merge in &source.merges {
-            w.bytes(&merge.left);
-            w.bytes(&merge.right);
-        }
+}
+
+fn write_merges(w: &mut Writer, source: &VocabSource) {
+    if !source.family.requires_merges() {
+        return;
     }
-    if source.family.requires_scores() {
-        w.u32(source.scores.len() as u32);
-        for score in &source.scores {
-            w.f32(*score);
-        }
+    w.u32(source.merges.len() as u32);
+    for merge in &source.merges {
+        w.bytes(&merge.left);
+        w.bytes(&merge.right);
     }
-    w.u64(digest);
-    w.0
+}
+
+fn write_scores(w: &mut Writer, source: &VocabSource) {
+    if !source.family.requires_scores() {
+        return;
+    }
+    w.u32(source.scores.len() as u32);
+    for score in &source.scores {
+        w.f32(*score);
+    }
 }
 
 /// 把自描述字节解码回中性词表值对象与期望指纹摘要。
 pub fn decode_vocab(bytes: &[u8]) -> Result<(VocabSource, u64)> {
     let mut c = Cursor { bytes, pos: 0 };
-    if c.take(4)? != MAGIC {
+    let prologue = prologue(&mut c)?;
+    let source = source(&mut c, prologue)?;
+    let digest = c.u64()?;
+    c.finish()?;
+    Ok((source, digest))
+}
+
+/// 前导固定 14 字节：magic(4)+version(1)+family(1)+pieces(4)+specials(4)。
+const PROLOGUE: usize = 14;
+
+struct Prologue {
+    family: VocabFamily,
+    pieces: usize,
+    specials: usize,
+}
+
+fn prologue(c: &mut Cursor<'_>) -> Result<Prologue> {
+    let raw = c.take(PROLOGUE)?;
+    check_prologue(raw)?;
+    let family = VocabFamily::from_id(raw[5]).ok_or_else(|| invalid("未知词表族序号"))?;
+    Ok(Prologue {
+        family,
+        pieces: read_u32(raw, 6) as usize,
+        specials: read_u32(raw, 10) as usize,
+    })
+}
+
+fn check_prologue(raw: &[u8]) -> Result<()> {
+    if raw[..4] != MAGIC {
         return Err(invalid("词表段魔数不符"));
     }
-    if c.u8()? != VERSION {
+    if raw[4] != VERSION {
         return Err(invalid("词表段版本不支持"));
     }
-    let family = VocabFamily::from_id(c.u8()?).ok_or_else(|| invalid("未知词表族序号"))?;
-    let vocab_size = c.u32()? as usize;
-    let special_count = c.u32()? as usize;
-    let mut pieces = Vec::with_capacity(vocab_size);
-    for _ in 0..vocab_size {
-        pieces.push(c.bytes()?);
-    }
+    Ok(())
+}
+
+fn source(c: &mut Cursor<'_>, p: Prologue) -> Result<VocabSource> {
+    let pieces = read_n(c, p.pieces, |cur| cur.bytes())?;
+    let special = specials(c, p.specials)?;
+    let merges = read_merges(c, p.family)?;
+    let scores = read_scores(c, p.family)?;
+    Ok(VocabSource {
+        family: p.family,
+        pieces,
+        special,
+        scores,
+        merges,
+    })
+}
+
+fn specials(c: &mut Cursor<'_>, count: usize) -> Result<SpecialTokens> {
     let mut special = SpecialTokens::EMPTY;
-    for _ in 0..special_count {
-        let kind = c.u8()?;
-        let id = c.u32()?;
-        special.set_slot(kind, id)?;
+    read_n(c, count, |cur| {
+        let kind = cur.u8()?;
+        let id = cur.u32()?;
+        special.set_slot(kind, id)
+    })?;
+    Ok(special)
+}
+
+fn read_merges(c: &mut Cursor<'_>, family: VocabFamily) -> Result<Vec<Merge>> {
+    if !family.requires_merges() {
+        return Ok(Vec::new());
     }
-    let mut merges = Vec::new();
-    if family.requires_merges() {
-        let count = c.u32()? as usize;
-        merges.reserve(count);
-        for _ in 0..count {
-            merges.push(Merge {
-                left: c.bytes()?,
-                right: c.bytes()?,
-            });
-        }
+    let count = c.u32()? as usize;
+    read_n(c, count, |cur| {
+        Ok(Merge {
+            left: cur.bytes()?,
+            right: cur.bytes()?,
+        })
+    })
+}
+
+fn read_scores(c: &mut Cursor<'_>, family: VocabFamily) -> Result<Vec<f32>> {
+    if !family.requires_scores() {
+        return Ok(Vec::new());
     }
-    let mut scores = Vec::new();
-    if family.requires_scores() {
-        let count = c.u32()? as usize;
-        scores.reserve(count);
-        for _ in 0..count {
-            scores.push(c.f32()?);
-        }
-    }
-    let digest = c.u64()?;
-    if !c.is_done() {
-        return Err(invalid("词表段尾部有残留字节"));
-    }
-    Ok((
-        VocabSource {
-            family,
-            pieces,
-            special,
-            scores,
-            merges,
-        },
-        digest,
-    ))
+    let count = c.u32()? as usize;
+    read_n(c, count, |cur| cur.f32())
+}
+
+/// 读 `n` 个同类元素；元素解码器由闭包提供，`n` 个 `Result` 短路收束为一个 `Result`。
+fn read_n<T>(
+    c: &mut Cursor<'_>,
+    n: usize,
+    mut read: impl FnMut(&mut Cursor<'_>) -> Result<T>,
+) -> Result<Vec<T>> {
+    (0..n).map(|_| read(c)).collect()
+}
+
+/// 固定偏移读小端 `u32`；偏移由前导布局常量保证，不越界。
+fn read_u32(raw: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([raw[at], raw[at + 1], raw[at + 2], raw[at + 3]])
 }
 
 /// 累积写入器：按小端顺序追加固定宽度与长度前缀字段。
@@ -193,6 +252,15 @@ impl<'a> Cursor<'a> {
 
     fn is_done(&self) -> bool {
         self.pos == self.bytes.len()
+    }
+
+    /// 读毕后核对游标恰好耗尽；有残留字节即报 `Invalid`。
+    fn finish(&self) -> Result<()> {
+        if self.is_done() {
+            Ok(())
+        } else {
+            Err(invalid("词表段尾部有残留字节"))
+        }
     }
 }
 

@@ -9,9 +9,9 @@
 
 use diagnostic::Result;
 
-use crate::distill::{distillation_loss, Distill};
+use crate::distill::{Distill, distillation_loss};
 use crate::loss::evaluate;
-use crate::rl::{grpo_loss, Grpo};
+use crate::rl::{Grpo, grpo_loss};
 
 /// 一次损失计算的结果：平均 loss 与命中条数（RL 恒 0）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,7 +71,7 @@ impl<'a> Loss<'a> {
 }
 
 /// 分类：CE loss + argmax 命中。
-fn classify(logits: &[f32], labels: &[f32], vocab: usize) -> Result<Outcome> {
+pub(crate) fn classify(logits: &[f32], labels: &[f32], vocab: usize) -> Result<Outcome> {
     let (nll_sum, correct, total) = evaluate(logits, labels, vocab)?;
     Ok(Outcome {
         loss: (nll_sum / total as f64) as f32,
@@ -80,7 +80,7 @@ fn classify(logits: &[f32], labels: &[f32], vocab: usize) -> Result<Outcome> {
 }
 
 /// 蒸馏：软 KL + 硬 CE loss + argmax 命中。
-fn distill(
+pub(crate) fn distill(
     logits: &[f32],
     teacher: &[f32],
     labels: &[f32],
@@ -96,7 +96,7 @@ fn distill(
 }
 
 /// RL：GRPO 组合 loss，命中恒 0。
-fn grpo(
+pub(crate) fn grpo(
     new_logp: &[f32],
     old_logp: &[f32],
     advantages: &[f32],

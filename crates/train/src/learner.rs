@@ -16,27 +16,62 @@ use autograd::Var;
 use data::Dataset;
 use shard::Collective;
 
-use crate::loss::evaluate;
+use crate::distill::Distill;
 use crate::metrics::{MetricPoint, MetricsBoard};
+use crate::objective::{Outcome, classify, distill, grpo};
 use crate::optimizer::Optimizer;
+use crate::rl::Grpo;
 use crate::{Kernel, Session};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::Learner";
 
 /// 一次前向的两个评估终点：`logits` 用于算 NLL 与命中率，`loss` 用于反传计划对账。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 默认度量是分类 NLL；`metric` 为 `Some` 时按蒸馏/RL 度量入账（见 [`Metric`]）。
+#[derive(Debug, Clone, Copy)]
 pub struct ForwardOut {
     /// 每个有效位置的词表分布，展平成 `[positions, vocab]`。
     pub logits: Var,
     /// 标量/向量 loss 终点，供会话规划梯度可达性。
     pub loss: Var,
+    /// 可选的非分类度量来源：`None` 走分类 NLL + 命中率。
+    pub metric: Option<Metric>,
+}
+
+/// 非分类度量来源：蒸馏/RL 度量所需的额外变量与配置。
+///
+/// 蒸馏只多一个教师 logits 变量；RL 额外带当前/行为策略 log-prob、advantage 与参考 KL 四个变量
+/// （逐 token 对齐），配置随度量一起由前向闭包给出。
+#[derive(Debug, Clone, Copy)]
+pub enum Metric {
+    /// Hinton 蒸馏：软 KL + 硬 CE。
+    Distill {
+        /// 教师 logits（软标签来源），与 `logits` 同形状。
+        teacher: Var,
+        /// 蒸馏配置（温度 `T` 与软损失权重 `α`）。
+        config: Distill,
+    },
+    /// GRPO：裁剪策略梯度 + 参考 KL 惩罚。
+    Grpo {
+        /// 当前策略逐 token log-prob。
+        new_logp: Var,
+        /// 行为策略逐 token log-prob（冻结）。
+        old_logp: Var,
+        /// 逐 token advantage（同 completion 共享）。
+        advantages: Var,
+        /// 逐 token 参考 KL。
+        ref_kl: Var,
+        /// GRPO 配置（裁剪 `ε` 与 KL 惩罚 `β`）。
+        config: Grpo,
+    },
 }
 
 /// 前向一步取出的评估数据：标签与同序位置的 logits；反传终点不在此处留存。
 struct Prepared {
     labels: Vec<f32>,
     logits: Vec<f32>,
+    metric: Option<Metric>,
 }
 
 /// 训练编排器：包住一个会话与一块指标看板，按 epoch 遍历数据集推进。
@@ -131,7 +166,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         while let Some(batch) = dataset.next_batch() {
             let prepared =
                 self.forward_pass(batch.rows(), batch.cols(), batch.tokens(), &mut forward)?;
-            self.record_eval(&prepared.logits, &prepared.labels)?;
+            self.record_eval(&prepared)?;
         }
         // 验证批不回传：清空可能残留的激活梯度，下一个训练窗口从空缓冲重新累加。
         self.session.zero_gradients();
@@ -163,7 +198,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     where
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
-        self.record(&prepared.logits, &prepared.labels)?;
+        self.record(&prepared)?;
         self.backward_with(backward)?;
         self.session.optimize()?;
         Ok(())
@@ -193,42 +228,84 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         self.session.accept_batch(rows, cols, tokens.len())?;
         let out = forward(&mut self.session, tokens)?;
         let labels = next_token_labels(tokens, rows, cols);
-        let logits = self.read_logits(out.logits)?;
-        Ok(Prepared { labels, logits })
+        let logits = self.read_var(out.logits)?;
+        Ok(Prepared {
+            labels,
+            logits,
+            metric: out.metric,
+        })
     }
 
-    /// 读出 logits 终点的 f32 切片；不在场是 [`Code::Missing`]，lane 不符是 [`Code::Invalid`]。
-    fn read_logits(&mut self, logits: Var) -> Result<Vec<f32>> {
-        let view = self.session.buffers().value(logits).ok_or_else(|| {
-            Error::new(Code::Missing, format!("logits 变量 {} 不在场", logits.id())).with(SITE)
+    /// 读出变量终点的 f32 切片；不在场是 [`Code::Missing`]，lane 不符是 [`Code::Invalid`]。
+    fn read_var(&mut self, var: Var) -> Result<Vec<f32>> {
+        let view = self.session.buffers().value(var).ok_or_else(|| {
+            Error::new(Code::Missing, format!("变量 {} 不在场", var.id())).with(SITE)
         })?;
         view.f32()
             .map(<[f32]>::to_vec)
-            .ok_or_else(|| Error::new(Code::Invalid, "logits 不是 f32 lane").with(SITE))
+            .ok_or_else(|| Error::new(Code::Invalid, "变量不是 f32 lane").with(SITE))
     }
 
-    /// 算 NLL 与命中率并记进训练看板；几何自洽性由 [`evaluate`] 统一校验。
-    fn record(&mut self, logits: &[f32], labels: &[f32]) -> Result<()> {
-        let (nll_sum, correct, total) = evaluate(logits, labels, self.vocab)?;
-        let loss = (nll_sum / total as f64) as f32;
+    /// 按度量来源计算本步 (loss, 命中)；`None` 走分类，`Some` 走蒸馏/RL。
+    fn compute_metric(&mut self, prepared: &Prepared) -> Result<Outcome> {
+        match &prepared.metric {
+            None => classify(&prepared.logits, &prepared.labels, self.vocab),
+            Some(Metric::Distill { teacher, config }) => {
+                let teacher = self.read_var(*teacher)?;
+                distill(
+                    &prepared.logits,
+                    &teacher,
+                    &prepared.labels,
+                    self.vocab,
+                    *config,
+                )
+            }
+            Some(Metric::Grpo {
+                new_logp,
+                old_logp,
+                advantages,
+                ref_kl,
+                config,
+            }) => self.compute_grpo(*new_logp, *old_logp, *advantages, *ref_kl, *config),
+        }
+    }
+
+    /// RL 度量：读出四个逐 token 变量后算 GRPO 组合损失。
+    fn compute_grpo(
+        &mut self,
+        new_logp: Var,
+        old_logp: Var,
+        advantages: Var,
+        ref_kl: Var,
+        config: Grpo,
+    ) -> Result<Outcome> {
+        let new_logp = self.read_var(new_logp)?;
+        let old_logp = self.read_var(old_logp)?;
+        let advantages = self.read_var(advantages)?;
+        let ref_kl = self.read_var(ref_kl)?;
+        grpo(&new_logp, &old_logp, &advantages, &ref_kl, config)
+    }
+
+    /// 按度量计算 loss 与命中并记进训练看板。
+    fn record(&mut self, prepared: &Prepared) -> Result<()> {
+        let outcome = self.compute_metric(prepared)?;
         let point = MetricPoint {
             step: self.session.step(),
-            samples: total,
-            loss,
-            correct: correct as u64,
+            samples: prepared.labels.len(),
+            loss: outcome.loss,
+            correct: outcome.correct,
         };
         self.board.record(point).map_err(|error| error.with(SITE))
     }
 
-    /// 算 NLL 与命中率并记进评估独立账表；步号沿用当前训练步，仅作对账标记。
-    fn record_eval(&mut self, logits: &[f32], labels: &[f32]) -> Result<()> {
-        let (nll_sum, correct, total) = evaluate(logits, labels, self.vocab)?;
-        let loss = (nll_sum / total as f64) as f32;
+    /// 按度量计算 loss 与命中并记进评估独立账表；步号沿用当前训练步，仅作对账标记。
+    fn record_eval(&mut self, prepared: &Prepared) -> Result<()> {
+        let outcome = self.compute_metric(prepared)?;
         let point = MetricPoint {
             step: self.session.step(),
-            samples: total,
-            loss,
-            correct: correct as u64,
+            samples: prepared.labels.len(),
+            loss: outcome.loss,
+            correct: outcome.correct,
         };
         self.board
             .record_eval(point)

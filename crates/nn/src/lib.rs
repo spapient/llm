@@ -78,8 +78,8 @@ pub use bounds::Bounds;
 
 #[doc(inline)]
 pub use csa::{
-    compress, dense_softmax, dsa_topk, effective_len, is_doubly_stochastic, sinkhorn, spectral_norm,
-    CSA_M, CSA_TOPK_FLASH, CSA_TOPK_PRO, HCA_M, WIN,
+    CSA_M, CSA_TOPK_FLASH, CSA_TOPK_PRO, HCA_M, WIN, compress, dense_softmax, dsa_topk,
+    effective_len, is_doubly_stochastic, sinkhorn, spectral_norm,
 };
 
 #[doc(inline)]

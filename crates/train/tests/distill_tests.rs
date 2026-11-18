@@ -124,7 +124,10 @@ fn kl_per_row_is_zero_when_distributions_match() -> Result<()> {
     let logits = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let mut out = [0.0; 2];
     kl_per_row(&logits, &logits, 3, 1.0, &mut out)?;
-    assert!(out.iter().all(|v| v.abs() < 1e-6), "同分布每行 KL 应为 0，得到 {out:?}");
+    assert!(
+        out.iter().all(|v| v.abs() < 1e-6),
+        "同分布每行 KL 应为 0，得到 {out:?}"
+    );
     Ok(())
 }
 
@@ -137,7 +140,10 @@ fn kl_per_row_averages_to_kl_div() -> Result<()> {
     kl_per_row(&student, &teacher, 3, 1.0, &mut out)?;
     let mean = out.iter().sum::<f32>() / out.len() as f32;
     let kl = kl_div(&student, &teacher, 3, 1.0)?;
-    assert!((mean - kl).abs() < 1e-5, "每行 KL 均值应等于 kl_div，得到 {mean} vs {kl}");
+    assert!(
+        (mean - kl).abs() < 1e-5,
+        "每行 KL 均值应等于 kl_div，得到 {mean} vs {kl}"
+    );
     Ok(())
 }
 

@@ -143,7 +143,9 @@ impl Grpo {
 /// 裁剪范围 ε 必须是非负有限数。
 fn check_epsilon(epsilon: f32) -> Result<()> {
     if epsilon < 0.0 || !epsilon.is_finite() {
-        return Err(Error::new(Code::Invalid, format!("裁剪范围 ε={epsilon} 必须非负有限")).with(SITE));
+        return Err(
+            Error::new(Code::Invalid, format!("裁剪范围 ε={epsilon} 必须非负有限")).with(SITE),
+        );
     }
     Ok(())
 }
@@ -151,7 +153,9 @@ fn check_epsilon(epsilon: f32) -> Result<()> {
 /// KL 惩罚系数 β 必须是非负有限数。
 fn check_beta(beta: f32) -> Result<()> {
     if beta < 0.0 || !beta.is_finite() {
-        return Err(Error::new(Code::Invalid, format!("KL 惩罚系数 β={beta} 必须非负有限")).with(SITE));
+        return Err(
+            Error::new(Code::Invalid, format!("KL 惩罚系数 β={beta} 必须非负有限")).with(SITE),
+        );
     }
     Ok(())
 }
@@ -215,7 +219,12 @@ pub fn grpo_loss(
 ) -> Result<f32> {
     check_epsilon(grpo.epsilon)?;
     check_beta(grpo.beta)?;
-    let rows = check_quad_len(new_logp.len(), old_logp.len(), advantages.len(), ref_kl.len())?;
+    let rows = check_quad_len(
+        new_logp.len(),
+        old_logp.len(),
+        advantages.len(),
+        ref_kl.len(),
+    )?;
     let low = 1.0 - grpo.epsilon;
     let high = 1.0 + grpo.epsilon;
     let mut surrogate_sum = 0.0f64;

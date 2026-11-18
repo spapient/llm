@@ -564,11 +564,7 @@ pub fn metal_gemv_kernel(
 
 /// gemv 实参：缓冲按 `[grid]` 角色取偏移（输出 `+ n`、行跨步 `+ n * m`、共享原样），标量除
 /// `grid.axis`（压缩为 `1`）外取样本实际值。
-fn gemv_args(
-    signature: &Signature,
-    sample: &Sample,
-    grid: &Grid,
-) -> diagnostic::Result<String> {
+fn gemv_args(signature: &Signature, sample: &Sample, grid: &Grid) -> diagnostic::Result<String> {
     let m = sample.m;
     signature
         .params()

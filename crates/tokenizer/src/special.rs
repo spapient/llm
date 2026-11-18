@@ -3,18 +3,22 @@
 use crate::Token;
 use diagnostic::{Code, Error, Result};
 
+/// 七个特殊槽位的稳定 wire 序号（unk=0 … mask=6），勿重排。
+const UNK: usize = 0;
+const PAD: usize = 1;
+const BOS: usize = 2;
+const EOS: usize = 3;
+const SEP: usize = 4;
+const CLS: usize = 5;
+const MASK: usize = 6;
+
 /// 一组特殊 token 的编号占位；未配置的位置为 [`None`]。
 ///
 /// 编号是否落在词表内由装配期校验；本结构只持有句柄，不做词表反查。
+/// 槽位按 wire 序号存放（下标即序号），读写都走同一张下标表，无按名扇出。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpecialTokens {
-    bos: Option<u32>,
-    eos: Option<u32>,
-    unk: Option<u32>,
-    pad: Option<u32>,
-    sep: Option<u32>,
-    cls: Option<u32>,
-    mask: Option<u32>,
+    slots: [Option<u32>; 7],
 }
 
 impl Default for SpecialTokens {
@@ -29,126 +33,110 @@ impl SpecialTokens {
 
     /// 空句柄：没有任何特殊 token。
     pub const fn empty() -> Self {
-        Self {
-            bos: None,
-            eos: None,
-            unk: None,
-            pad: None,
-            sep: None,
-            cls: None,
-            mask: None,
-        }
+        Self { slots: [None; 7] }
     }
 
     /// 登记序列起始编号。
     #[must_use]
     pub const fn with_bos(mut self, id: u32) -> Self {
-        self.bos = Some(id);
+        self.slots[BOS] = Some(id);
         self
     }
 
     /// 登记序列结束编号。
     #[must_use]
     pub const fn with_eos(mut self, id: u32) -> Self {
-        self.eos = Some(id);
+        self.slots[EOS] = Some(id);
         self
     }
 
     /// 登记词表外编号。
     #[must_use]
     pub const fn with_unk(mut self, id: u32) -> Self {
-        self.unk = Some(id);
+        self.slots[UNK] = Some(id);
         self
     }
 
     /// 登记填充编号。
     #[must_use]
     pub const fn with_pad(mut self, id: u32) -> Self {
-        self.pad = Some(id);
+        self.slots[PAD] = Some(id);
         self
     }
 
     /// 登记分隔编号。
     #[must_use]
     pub const fn with_sep(mut self, id: u32) -> Self {
-        self.sep = Some(id);
+        self.slots[SEP] = Some(id);
         self
     }
 
     /// 登记分类编号。
     #[must_use]
     pub const fn with_cls(mut self, id: u32) -> Self {
-        self.cls = Some(id);
+        self.slots[CLS] = Some(id);
         self
     }
 
     /// 登记掩码编号。
     #[must_use]
     pub const fn with_mask(mut self, id: u32) -> Self {
-        self.mask = Some(id);
+        self.slots[MASK] = Some(id);
         self
     }
 
     /// 序列起始编号。
     #[must_use]
     pub fn bos(&self) -> Option<Token> {
-        self.bos.map(Token::new)
+        self.slots[BOS].map(Token::new)
     }
 
     /// 序列结束编号。
     #[must_use]
     pub fn eos(&self) -> Option<Token> {
-        self.eos.map(Token::new)
+        self.slots[EOS].map(Token::new)
     }
 
     /// 词表外编号。
     #[must_use]
     pub fn unk(&self) -> Option<Token> {
-        self.unk.map(Token::new)
+        self.slots[UNK].map(Token::new)
     }
 
     /// 填充编号。
     #[must_use]
     pub fn pad(&self) -> Option<Token> {
-        self.pad.map(Token::new)
+        self.slots[PAD].map(Token::new)
     }
 
     /// 分隔编号。
     #[must_use]
     pub fn sep(&self) -> Option<Token> {
-        self.sep.map(Token::new)
+        self.slots[SEP].map(Token::new)
     }
 
     /// 分类编号。
     #[must_use]
     pub fn cls(&self) -> Option<Token> {
-        self.cls.map(Token::new)
+        self.slots[CLS].map(Token::new)
     }
 
     /// 掩码编号。
     #[must_use]
     pub fn mask(&self) -> Option<Token> {
-        self.mask.map(Token::new)
+        self.slots[MASK].map(Token::new)
     }
 
     /// 编号是否命中已登记的特殊 token。
     #[must_use]
     pub fn is_special(&self, id: u32) -> bool {
-        [
-            self.bos, self.eos, self.unk, self.pad, self.sep, self.cls, self.mask,
-        ]
-        .contains(&Some(id))
+        self.slots.contains(&Some(id))
     }
 
     /// 已登记特殊 token 个数。
     #[must_use]
     pub fn len(&self) -> usize {
-        [
-            self.bos, self.eos, self.unk, self.pad, self.sep, self.cls, self.mask,
-        ]
-        .iter()
-        .flatten()
-        .count()
+        self.slots.iter().flatten().count()
     }
 
     /// 是否一个特殊 token 都没登记。
@@ -157,38 +145,27 @@ impl SpecialTokens {
         self.len() == 0
     }
 
-    /// 七个特殊槽位按稳定 wire 序展开（unk=0,pad=1,bos=2,eos=3,sep=4,cls=5,mask=6），供中性序列化读取。
+    /// 七个特殊槽位按稳定 wire 序展开，供中性序列化读取。
     pub(crate) const fn slots(&self) -> [(u8, Option<u32>); 7] {
         [
-            (0, self.unk),
-            (1, self.pad),
-            (2, self.bos),
-            (3, self.eos),
-            (4, self.sep),
-            (5, self.cls),
-            (6, self.mask),
+            (UNK as u8, self.slots[UNK]),
+            (PAD as u8, self.slots[PAD]),
+            (BOS as u8, self.slots[BOS]),
+            (EOS as u8, self.slots[EOS]),
+            (SEP as u8, self.slots[SEP]),
+            (CLS as u8, self.slots[CLS]),
+            (MASK as u8, self.slots[MASK]),
         ]
     }
 
     /// 按 wire 序号回填一个特殊槽位；未知序号报 `Invalid`。
     pub(crate) fn set_slot(&mut self, kind: u8, id: u32) -> Result<()> {
-        let slot = self.slot_mut(kind).ok_or_else(|| invalid_slot(kind))?;
+        let slot = self
+            .slots
+            .get_mut(kind as usize)
+            .ok_or_else(|| invalid_slot(kind))?;
         *slot = Some(id);
         Ok(())
-    }
-
-    /// wire 序号 → 槽位可变引用（unk=0,pad=1,bos=2,eos=3,sep=4,cls=5,mask=6）。
-    fn slot_mut(&mut self, kind: u8) -> Option<&mut Option<u32>> {
-        [
-            &mut self.unk,
-            &mut self.pad,
-            &mut self.bos,
-            &mut self.eos,
-            &mut self.sep,
-            &mut self.cls,
-            &mut self.mask,
-        ]
-        .get_mut(kind as usize)
     }
 }
 

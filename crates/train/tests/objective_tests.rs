@@ -7,7 +7,10 @@ fn classify_matches_cross_entropy_and_hits() -> Result<()> {
     let logits = [0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
     let labels = [1.0, 0.0];
     let out = Loss::Classify.compute(&logits, &labels, 3)?;
-    assert!((out.loss - cross_entropy(&logits, &labels, 3)?).abs() < 1e-6, "loss 应与 CE 一致");
+    assert!(
+        (out.loss - cross_entropy(&logits, &labels, 3)?).abs() < 1e-6,
+        "loss 应与 CE 一致"
+    );
     assert_eq!(out.correct, 2, "两行都命中");
     Ok(())
 }
@@ -19,7 +22,11 @@ fn distill_matches_distillation_loss_and_hits() -> Result<()> {
     let teacher = [0.0, 0.0, 0.0];
     let labels = [1.0];
     let config = Distill::new(2.0, 0.5);
-    let out = Loss::Distill { teacher: &teacher, config }.compute(&student, &labels, 3)?;
+    let out = Loss::Distill {
+        teacher: &teacher,
+        config,
+    }
+    .compute(&student, &labels, 3)?;
     assert!(
         (out.loss - distillation_loss(&student, &teacher, &labels, 3, config)?).abs() < 1e-5,
         "loss 应与蒸馏损失一致"
@@ -45,7 +52,11 @@ fn grpo_matches_grpo_loss_and_zero_hits() -> Result<()> {
     }
     .compute(&[0.0], &[0.0], 1)?;
     let expected = grpo_loss(&new_logp, &old_logp, &advantages, &ref_kl, config)?;
-    assert!((out.loss - expected).abs() < 1e-6, "loss 应与 GRPO 损失一致，得到 {} vs {expected}", out.loss);
+    assert!(
+        (out.loss - expected).abs() < 1e-6,
+        "loss 应与 GRPO 损失一致，得到 {} vs {expected}",
+        out.loss
+    );
     assert_eq!(out.correct, 0, "RL 无分类命中");
     Ok(())
 }
@@ -72,8 +83,14 @@ fn grpo_ignores_logits_and_labels() -> Result<()> {
 /// Outcome 是可比较的值类型。
 #[test]
 fn outcome_is_a_comparable_value() {
-    let a = Outcome { loss: 1.0, correct: 2 };
-    let b = Outcome { loss: 1.0, correct: 2 };
+    let a = Outcome {
+        loss: 1.0,
+        correct: 2,
+    };
+    let b = Outcome {
+        loss: 1.0,
+        correct: 2,
+    };
     assert_eq!(a, b);
 }
 

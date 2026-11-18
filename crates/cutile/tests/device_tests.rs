@@ -219,6 +219,7 @@ fn production_gemv_kernel_compiles_for_a_real_op() {
     }
     let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "gemv_f32", 64, 4)
         .expect("gemv 网格内核应能生成");
+
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(msl.contains("thread_position_in_grid"), "{msl}");
     assert!(msl.contains("d_w + n * 64"), "权重应行跨步: {msl}");

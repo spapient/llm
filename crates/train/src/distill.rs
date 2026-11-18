@@ -163,7 +163,10 @@ pub fn kl_per_row(
     check_temperature(temperature)?;
     let rows = check_pair_shape(student.len(), teacher.len(), vocab)?;
     check_len(out.len(), rows, "out")?;
-    for (o, (s, t)) in out.iter_mut().zip(student.chunks_exact(vocab).zip(teacher.chunks_exact(vocab))) {
+    for (o, (s, t)) in out
+        .iter_mut()
+        .zip(student.chunks_exact(vocab).zip(teacher.chunks_exact(vocab)))
+    {
         *o = row_kl(s, t, temperature);
     }
     Ok(())

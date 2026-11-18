@@ -149,7 +149,7 @@ mod tests {
     fn frozen_compress_factors() {
         assert_eq!(CSA_M, 4);
         assert_eq!(HCA_M, 128);
-        assert!(HCA_M > CSA_M);
+        const { assert!(HCA_M > CSA_M) };
     }
 
     /// 有效长 = ⌈n/m⌉。

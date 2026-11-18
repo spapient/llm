@@ -111,7 +111,10 @@ fn policy_loss_rejects_length_mismatch() {
 fn clipped_surrogate_equals_advantage_when_ratio_is_one() -> Result<()> {
     let mut out = [0.0; 2];
     clipped_surrogate(&[0.0, 0.0], &[0.0, 0.0], &[2.0, 1.0], 0.2, &mut out)?;
-    assert!((out[0] - 2.0).abs() < 1e-6 && (out[1] - 1.0).abs() < 1e-6, "ratio=1 时应为 A，得到 {out:?}");
+    assert!(
+        (out[0] - 2.0).abs() < 1e-6 && (out[1] - 1.0).abs() < 1e-6,
+        "ratio=1 时应为 A，得到 {out:?}"
+    );
     Ok(())
 }
 
@@ -120,7 +123,11 @@ fn clipped_surrogate_equals_advantage_when_ratio_is_one() -> Result<()> {
 fn clipped_surrogate_caps_high_ratio() -> Result<()> {
     let mut out = [0.0];
     clipped_surrogate(&[10.0], &[0.0], &[1.0], 0.2, &mut out)?;
-    assert!((out[0] - 1.2).abs() < 1e-6, "高 ratio 应裁剪到 1.2·A，得到 {}", out[0]);
+    assert!(
+        (out[0] - 1.2).abs() < 1e-6,
+        "高 ratio 应裁剪到 1.2·A，得到 {}",
+        out[0]
+    );
     Ok(())
 }
 

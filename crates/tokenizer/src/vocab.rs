@@ -50,7 +50,11 @@ impl VocabFamily {
 
     /// 由 wire 序号取族；未知序号返回 `None`。
     pub(crate) const fn from_id(id: u8) -> Option<Self> {
-        FAMILY_BY_ID.get(id as usize).copied()
+        if (id as usize) < FAMILY_BY_ID.len() {
+            Some(FAMILY_BY_ID[id as usize])
+        } else {
+            None
+        }
     }
 
     /// 本族是否必须携带合并表。
