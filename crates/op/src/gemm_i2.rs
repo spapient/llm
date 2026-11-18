@@ -7,8 +7,7 @@
 
 use crate::einsum::Bits;
 use crate::gemm::{self, Gemm, packed};
-use crate::model::{Cost, Sample, ShapeContext};
-use diagnostic::Error;
+use crate::model::Sample;
 
 // 收缩轴、三轴契约、形状投影复用 gemm 家族共享模块。
 pub use crate::gemm::{AXES, K, project_shape};
@@ -45,15 +44,6 @@ impl Gemm for GemmI2 {
     fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize) -> f32 {
         packed::dot(a, b, n, i, j, 4, ZERO)
     }
-}
-
-/// 标量代价：整数乘加按 `2·m·k·n` 计；A/B 为打包 2 位码（每 4 元素 1 字节），Y 每元素 4 字节。
-///
-/// # Errors
-///
-/// 形状缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    gemm::cost::<GemmI2>(shape)
 }
 
 /// 确定性样本：A、B 为打包 2 位码（确定性位模式），Y 为 f32。

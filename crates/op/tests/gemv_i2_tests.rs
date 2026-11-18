@@ -144,6 +144,18 @@ fn shape_mismatch_is_an_error() {
     );
 }
 
+/// 标度负例：非有限标度在分组守卫后、解包前拦下，不允许把整组乘积带进 NaN/Inf。
+#[test]
+fn gemv_i2_rejects_non_finite_scales() {
+    let m = 4;
+    let w = vec![0u8; m / 4];
+    let x = vec![1.0; m];
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let error = forward(&x, &w, &[bad], &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
+        assert_eq!(error.code(), diagnostic::Code::Invalid);
+    }
+}
+
 #[test]
 fn the_production_shape_is_a_legal_input() {
     let (m, n) = MODEL.shape;

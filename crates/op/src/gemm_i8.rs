@@ -6,8 +6,7 @@
 
 use crate::einsum::Bits;
 use crate::gemm::{self, Gemm};
-use crate::model::{Cost, Sample, ShapeContext};
-use diagnostic::Error;
+use crate::model::Sample;
 
 // 收缩轴、三轴契约、形状投影复用 gemm 家族共享模块（dp4a 一次 4 个，K=8 即两次）。
 pub use crate::gemm::{AXES, K, project_shape};
@@ -57,21 +56,12 @@ impl Gemm for GemmI8 {
     }
 }
 
-/// 标量代价：整数乘加按 `2·m·k·n` 计；权重每元素 1 字节，输出每元素 4 字节。
-///
-/// # Errors
-///
-/// 形状缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    gemm::cost::<GemmI8>(shape)
-}
-
-/// 确定性样本：A、B 取对称小整数（-8..7）的 int8 位模式，Y 为 f32。
+/// 确定性样本：A、B 为逐元素字节（确定性位模式），Y 为 f32。
 pub fn sample(m: usize, n: usize) -> Sample {
     gemm::sample::<GemmI8>(m, n)
 }
 
-/// 标量参考：整数点积后转 f32。
+/// 标量参考：解包后整数点积，转 f32。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     gemm::reference::<GemmI8>(sample)
 }

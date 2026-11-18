@@ -14,6 +14,14 @@ use diagnostic::{Code, Error};
 /// 收缩轴长度（固定档）。
 pub const K: usize = 8;
 
+/// 每字节打包码数：位宽 ≤ 8 时按 `8 / bits` 算；8 位逐元素为 1。
+///
+/// 打包布局与 [`packed`] 同一口径：i2=4、i4=2、i8=1。桥接层几何反推用，避免各 lane 各抄
+/// 一遍除法。
+pub const fn codes_per_byte(bits: Bits) -> usize {
+    8 / bits.bits() as usize
+}
+
 /// 三轴：`m`/`k` 输入，`n` 输出。
 pub const AXES: &[AxisSpec] = &[
     AxisSpec {

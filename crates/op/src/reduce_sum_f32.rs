@@ -9,8 +9,6 @@ use crate::reduce::Reduce;
 pub struct Sum;
 
 impl Reduce for Sum {
-    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::reduce::f32_operands();
-
     fn cache() -> &'static FormulaCache {
         static CACHE: FormulaCache = FormulaCache::new();
         &CACHE

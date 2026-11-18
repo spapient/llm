@@ -169,7 +169,7 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
 struct Skeleton {
     /// 注解里 `skeleton = ".."` 的可选值（[`crate::syntax::SKELETONS`] 的成员）。
     name: &'static str,
-    /// `op` 里承载这套语义的模块名；`None` 表示"用注册名"——`gemm` 的三种格式各有一个模块。
+    /// `op` 里承载这套语义的模块名；`None` 表示"用注册名"（按算子名各自的模块寻址）。
     module: Option<&'static str>,
     /// `MODEL.group` 的写法，`{ty}` 在渲染时替换成类型参数。
     group: &'static str,
@@ -209,7 +209,7 @@ const SKELETON_TABLE: [Skeleton; 13] = [
         true,
         true,
     ),
-    row("gemm", None, "1u32", false, false),
+    row("gemm", Some("gemm"), "1u32", true, false),
     row("elementwise", Some("elementwise"), "1u32", true, false),
     row("unary", Some("unary"), "1u32", true, false),
     row("reduce", Some("reduce"), "1u32", true, false),

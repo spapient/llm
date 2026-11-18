@@ -99,22 +99,23 @@ impl Slots {
         }
     }
 
+    /// 取走一段编号的下一号；溢出归内部错误。`what` 用于诊断区分激活/权重段。
+    fn next(slot: &mut u32, what: &str) -> Result<u32> {
+        let id = *slot;
+        *slot = id.checked_add(1).ok_or_else(|| {
+            Error::new(Code::Internal, format!("{what}编号超出 u32 编号空间")).with(SITE)
+        })?;
+        Ok(id)
+    }
+
     /// 取下一个激活编号；溢出归内部错误。
     pub(crate) fn activation(&mut self) -> Result<u32> {
-        let id = self.activation;
-        self.activation = id
-            .checked_add(1)
-            .ok_or_else(|| Error::new(Code::Internal, "激活编号超出 u32 编号空间").with(SITE))?;
-        Ok(id)
+        Self::next(&mut self.activation, "激活")
     }
 
     /// 取下一个权重编号；溢出归内部错误。
     pub(crate) fn weight(&mut self) -> Result<u32> {
-        let id = self.weight;
-        self.weight = id
-            .checked_add(1)
-            .ok_or_else(|| Error::new(Code::Internal, "权重编号超出 u32 编号空间").with(SITE))?;
-        Ok(id)
+        Self::next(&mut self.weight, "权重")
     }
 }
 

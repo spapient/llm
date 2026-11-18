@@ -13,9 +13,6 @@ pub const ALPHA: f32 = 0.5;
 pub struct Scale;
 
 impl Unary for Scale {
-    const EXPR: &'static str = "n,n->n";
-    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::unary::f32_operands();
-
     fn cache() -> &'static FormulaCache {
         static CACHE: FormulaCache = FormulaCache::new();
         &CACHE

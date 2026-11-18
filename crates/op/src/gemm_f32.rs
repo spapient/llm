@@ -6,8 +6,6 @@
 
 use crate::einsum::Bits;
 use crate::gemm::{self, Gemm};
-use crate::model::{Cost, Sample, ShapeContext};
-use diagnostic::Error;
 
 // 收缩轴、三轴契约、形状投影复用 gemm 家族共享模块。
 pub use crate::gemm::{AXES, K, project_shape};
@@ -42,25 +40,6 @@ impl Gemm for Dense {
         let row = &a[i * K..][..K];
         row.iter().enumerate().map(|(p, x)| x * b[p * n + j]).sum()
     }
-}
-
-/// 标量代价：由骨架按 f32 位宽推导。
-///
-/// # Errors
-///
-/// 形状缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    gemm::cost::<Dense>(shape)
-}
-
-/// 确定性样本：A（`m×K`）、B（`K×n`）、Y（`m×n`）。
-pub fn sample(m: usize, n: usize) -> Sample {
-    gemm::sample::<Dense>(m, n)
-}
-
-/// 标量参考：三重循环，与内核同一公式。
-pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    gemm::reference::<Dense>(sample)
 }
 
 /// 内核本体：结果写进调用方给的缓冲。

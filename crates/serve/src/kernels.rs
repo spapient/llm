@@ -307,37 +307,97 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
     Ok(())
 }
 
-/// `[x: f32, w: u8, scales: f32] → y: f32`：4 位量化乘加，与 `op::gemv_i4::forward` 同一段算术。
-fn gemv_i4(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    let x = input_f32("gemv_i4", inputs, 0)?;
-    let weights = input_u8("gemv_i4", inputs, 1)?;
-    let scales = input_f32("gemv_i4", inputs, 2)?;
-    let out = output_f32("gemv_i4", outputs, 0)?;
-    op::gemv_i4::forward(x, weights, scales, out)
+/// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接。
+///
+/// 三条位宽 lane（i2/i4/i8）签名同形：输入浮点向量 + 打包字节权重 + 按组标度，输出浮点。
+/// 算术入口按 lane 注入，拆视图与错误口径只写一份；位宽差异留在 `op` 格式契约里。
+fn gemv_quant(
+    name: &str,
+    x: &[f32],
+    weights: &[u8],
+    scales: &[f32],
+    out: &mut [f32],
+    run: fn(x: &[f32], w: &[u8], s: &[f32], out: &mut [f32]) -> Result<()>,
+) -> Result<()> {
+    let _ = name;
+    run(x, weights, scales, out)
 }
 
-/// 同上，8 位量化：`op::gemv_i8::forward`。
-fn gemv_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    let x = input_f32("gemv_i8", inputs, 0)?;
-    let weights = input_u8("gemv_i8", inputs, 1)?;
-    let scales = input_f32("gemv_i8", inputs, 2)?;
-    let out = output_f32("gemv_i8", outputs, 0)?;
-    op::gemv_i8::forward(x, weights, scales, out)
+/// 量化 GEMV 桥接适配：第 0 路 x、第 1 路打包权重、第 2 路标度、第 0 路输出。
+macro_rules! gemv_quant_kernel {
+    ($($run:ident),*) => {$(
+        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+            let name = stringify!($run);
+            let x = input_f32(name, inputs, 0)?;
+            let weights = input_u8(name, inputs, 1)?;
+            let scales = input_f32(name, inputs, 2)?;
+            let out = output_f32(name, outputs, 0)?;
+            gemv_quant(name, x, weights, scales, out, op::$run::forward)
+        }
+    )*};
 }
 
-/// `[q: u8] → y: f32`：打包字节每字节两个 nibble，scale/zero 取样本常量。
-fn dequant_i4(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    let q = input_u8("dequant_i4", inputs, 0)?;
-    let out = output_f32("dequant_i4", outputs, 0)?;
-    op::dequant_i4::forward(op::dequant_i4::SCALE, op::dequant_i4::ZERO, q, out)
+gemv_quant_kernel!(gemv_i2, gemv_i4, gemv_i8);
+
+/// 反量化桥接：打包字节 lane（i2/i4）输入 u8；i8 逐元素 lane 输入 f32。
+///
+/// scale/zero 取 `op::<lane>::SCALE` / `ZERO` 样本常量，与骨架同一份配置，不在桥接层抄数。
+macro_rules! dequant_packed {
+    ($($run:ident),*) => {$(
+        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+            let name = stringify!($run);
+            let q = input_u8(name, inputs, 0)?;
+            let out = output_f32(name, outputs, 0)?;
+            op::$run::forward(op::$run::SCALE, op::$run::ZERO, q, out)
+        }
+    )*};
 }
 
-/// `[q: f32] → y: f32`：scale/zero 取样本常量。
+dequant_packed!(dequant_i2, dequant_i4);
+
+/// `[q: f32] → y: f32`：i8 逐元素反量化，scale/zero 取样本常量。
 fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let q = input_f32("dequant_i8", inputs, 0)?;
     let out = output_f32("dequant_i8", outputs, 0)?;
     op::dequant_i8::forward(op::dequant_i8::SCALE, op::dequant_i8::ZERO, q, out)
 }
+
+/// 量化 GEMM 通用桥接：`A: u8, B: u8 → Y: f32`，几何从静态收缩轴 `K` 与缓冲长度反推。
+///
+/// 每字节码数由位宽推出（`cpb = 8 / BITS.bits()`）：A 长度 `m·K/cpb`、B 长度 `K·n/cpb`，
+/// `m = a.len() / (K/cpb)`、`n = b.len() / (K/cpb)`，输出长度由 `forward` 复核。
+/// 三条位宽 lane 同形，标记类型承载位宽与收缩轴常量，算术入口注入。
+fn gemm_quant<G: op::gemm::Gemm<Elem = u8>>(
+    a: &[u8],
+    b: &[u8],
+    out: &mut [f32],
+    run: fn(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> Result<()>,
+) -> Result<()> {
+    let cpb = op::gemm::codes_per_byte(G::BITS);
+    let row = op::gemm::K / cpb;
+    let m = a.len() / row;
+    let n = b.len() / row;
+    run(a, b, m, n, out)
+}
+
+/// 量化 GEMM 桥接适配：两路打包字节输入、一路浮点输出。
+macro_rules! gemm_quant_kernel {
+    ($(($run:ident, $marker:ty)),*) => {$(
+        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+            let name = stringify!($run);
+            let a = input_u8(name, inputs, 0)?;
+            let b = input_u8(name, inputs, 1)?;
+            let out = output_f32(name, outputs, 0)?;
+            gemm_quant::<$marker>(a, b, out, op::$run::forward)
+        }
+    )*};
+}
+
+gemm_quant_kernel!(
+    (gemm_i2, op::gemm_i2::GemmI2),
+    (gemm_i4, op::gemm_i4::GemmI4),
+    (gemm_i8, op::gemm_i8::GemmI8)
+);
 
 /// 按头宽选 RoPE 入口：头宽 0 或等于整段（单头）走单头旋转，否则按头分段重计频率。
 fn run_rope(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
@@ -397,12 +457,17 @@ const KERNELS: &[Entry] = kernel_table![
     attention_f32,
     decode_attention_f32,
     decode_flash_attention_f32,
+    dequant_i2,
     dequant_i4,
     dequant_i8,
     embed_f32,
     flash_attention_f32,
     gelu_f32,
+    gemm_i2,
+    gemm_i4,
+    gemm_i8,
     gemv_f32,
+    gemv_i2,
     gemv_i4,
     gemv_i8,
     mul_f32,

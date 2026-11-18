@@ -222,9 +222,12 @@ impl Classical {
 
 impl Sampling for Classical {
     fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
-        pipeline(&self.params, logits, "serve::Classical", |scaled, retained| {
-            argmax_index(scaled, retained, "serve::Classical")
-        })
+        pipeline(
+            &self.params,
+            logits,
+            "serve::Classical",
+            |scaled, retained| argmax_index(scaled, retained, "serve::Classical"),
+        )
     }
 }
 
@@ -259,9 +262,12 @@ impl Multinomial {
 
 impl Sampling for Multinomial {
     fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
-        pipeline(&self.params, logits, "serve::Multinomial", |scaled, retained| {
-            sample_categorical(scaled, retained, &mut self.rng)
-        })
+        pipeline(
+            &self.params,
+            logits,
+            "serve::Multinomial",
+            |scaled, retained| sample_categorical(scaled, retained, &mut self.rng),
+        )
     }
 }
 
@@ -307,9 +313,8 @@ fn pipeline(
 
 /// 候选下标映射到 token 编号；越出 u32 报 `Invalid`，`scope` 标记产生错误的采样器。
 fn token(index: usize, scope: &str) -> Result<u32> {
-    u32::try_from(index).map_err(|_| {
-        Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32")).with(scope)
-    })
+    u32::try_from(index)
+        .map_err(|_| Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32")).with(scope))
 }
 
 /// 温度之后的 top-k → top-p 截断：从全候选集裁到概率保留集；argmax 与逆变换两种选择器共用这一份序列。

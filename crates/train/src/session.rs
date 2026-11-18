@@ -14,8 +14,10 @@
 use autograd::{Requirement, Sizes, Tape, Var};
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
+use shard::Collective;
 use tensor::{DType, Shape};
 
+use crate::dist::Distributed;
 use crate::optimizer::Optimizer;
 use crate::pool::Buffers;
 use crate::schedule::Schedule as LrSchedule;
@@ -149,11 +151,14 @@ impl ParamSlot {
 }
 
 /// 一次训练会话：复用同一张图、同一批缓冲与同一个优化器，逐 micro-batch 推进。
-pub struct Session<K: Kernel, O: Optimizer> {
+///
+/// `C` 是分布式通信后端（[`Collective`]）；单进程恒等回路用 [`Distributed::none`] 占位。
+pub struct Session<K: Kernel, O: Optimizer, C: Collective = shard::Remote> {
     tape: Tape,
     sizes: Sizes,
     buffers: Buffers<K>,
     optimizer: O,
+    distributed: Distributed<C>,
     backward: autograd::Schedule,
     slots: Vec<ParamSlot>,
     lr_schedule: LrSchedule,
@@ -169,13 +174,29 @@ pub struct Session<K: Kernel, O: Optimizer> {
 }
 
 impl<K: Kernel, O: Optimizer> Session<K, O> {
-    /// 由图、形状表、内核、优化器与配置构造；学习率调度按 warmup 与总步数建立。
+    /// 由图、形状表、内核、优化器与配置构造；默认单进程恒等编排，学习率调度按 warmup 与
+    /// 总步数建立。
     pub fn new(
         tape: Tape,
         sizes: Sizes,
         kernel: K,
         optimizer: O,
         config: TrainConfig,
+    ) -> Result<Self> {
+        Self::with_distributed(tape, sizes, kernel, optimizer, config, Distributed::none())
+    }
+}
+
+impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
+    /// 显式装配分布式编排：拓扑、本 rank 与通信后端一起登记；单进程场景用
+    /// [`Distributed::none`]。
+    pub fn with_distributed(
+        tape: Tape,
+        sizes: Sizes,
+        kernel: K,
+        optimizer: O,
+        config: TrainConfig,
+        distributed: Distributed<C>,
     ) -> Result<Self> {
         let lr_schedule = LrSchedule::with(
             config.warmup_steps,
@@ -189,6 +210,7 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
             sizes,
             buffers,
             optimizer,
+            distributed,
             backward: autograd::Schedule::default(),
             slots: Vec::new(),
             lr_schedule,
@@ -200,6 +222,16 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
             batch_rows: 0,
             batch_cols: 0,
         })
+    }
+
+    /// 分布式编排（只读）。
+    pub fn distributed(&self) -> &Distributed<C> {
+        &self.distributed
+    }
+
+    /// 分布式编排（可变：替换后端、调整归约口径走这里）。
+    pub fn distributed_mut(&mut self) -> &mut Distributed<C> {
+        &mut self.distributed
     }
 
     /// 登记一个可训练参数槽：变量必须是 [`Requirement::Grad`] 终点，初始值长度与登记形状一致。
@@ -558,11 +590,13 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
         self.batch_cols
     }
 
-    /// 走一步优化器：按当前学习率更新全部参数槽，更新后镜像回激活缓冲。
+    /// 走一步优化器：累积窗口满后先做数据并行梯度同步，再按当前学习率更新全部参数槽，
+    /// 更新后镜像回激活缓冲。窗口未满只累加、不同步、不步进。
     ///
     /// # Errors
     ///
-    /// 某槽梯度未装入、或优化器步进校验失败（[`Code::Invalid`] / [`Code::Missing`]）。
+    /// 某槽梯度未装入、后端归约失败，或优化器步进校验失败（[`Code::Invalid`] /
+    /// [`Code::Missing`]）。
     pub fn optimize(&mut self) -> Result<()> {
         self.accum = self.accum.saturating_add(1);
         if self.accum < self.config.accumulation {
@@ -572,6 +606,10 @@ impl<K: Kernel, O: Optimizer> Session<K, O> {
         self.accum = 0;
         let lr = self.lr_schedule.lr(self.config.learning_rate, self.step);
         let mut views = Self::collect_views(&mut self.slots, &mut self.buffers)?;
+        let mut grads: Vec<&mut [f32]> = views.iter_mut().map(|slot| slot.grads).collect();
+        self.distributed
+            .sync_grads(&mut grads)
+            .map_err(|error| error.with(SITE))?;
         self.optimizer
             .step(&mut views, lr)
             .map_err(|error| error.with(SITE))?;

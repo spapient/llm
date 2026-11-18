@@ -33,6 +33,7 @@
 
 mod backprop;
 mod checkpoint;
+mod dist;
 mod kernel;
 mod learner;
 mod loss;
@@ -47,6 +48,7 @@ pub mod snapshot;
 mod store;
 
 pub use checkpoint::{Checkpoint, Step, operators, resume};
+pub use dist::{Distributed, Local, Remote};
 pub use learner::{ForwardOut, Learner};
 pub use loss::{argmax_hits, cross_entropy};
 pub use metrics::{MetricPoint, MetricsBoard};

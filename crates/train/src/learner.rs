@@ -1,11 +1,11 @@
 //! 独立训练编排器：把数据集遍历、前向评估、指标入账与优化步收拢到一个驱动对象。
 //!
 //! [`Session`](crate::Session) 只持有会话状态与单步接缝，不关心数据集如何分批；本模块补上
-//! 「遍历一批 → 前向 → 记 loss/accuracy → 装梯度 → 优化步」的循环编排。模型拓扑不在这里硬编码：
-//! 前向装配与梯度来源由两个闭包注入——
+//! 「遍历一批 → 前向 → 记 loss/accuracy → 回传梯度 → 优化步」的循环编排。模型拓扑不在这里硬编码：
+//! 前向装配由闭包注入，梯度先由 [`Session::backward`] 按反向计划自动回算——
 //!
 //! - `forward`：装载本批输入并算出 `logits` 与 `loss` 两个终点变量；
-//! - `backward`：把本批梯度装入/累加进会话缓冲（反传数值属 P1 未接入范围，当前由调用方提供）。
+//! - `backward`：自动回算之后的覆盖/追加口，把额外梯度装入或累加进会话缓冲。
 //!
 //! 标签按标准 next-token 设定由序列右移派生：位置 `(r, c)` 的标签是 `tokens[r, c+1]`；每行末列
 //! 没有后继，剔除出评估集。logits 必须按同一行主序位置展开成 `[positions, vocab]`。
@@ -130,12 +130,16 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         Ok(())
     }
 
-    /// 入账评估量、装入本批梯度并走优化步。
+    /// 入账评估量、自动回传梯度、跑闭包覆盖口并走优化步。
+    ///
+    /// 先由 [`Session::backward`] 按计划自动回算参数梯度；`backward` 闭包保留为覆盖/追加口，
+    /// 其后再走优化步。
     fn finish<G>(&mut self, prepared: Prepared, backward: &mut G) -> Result<()>
     where
         G: FnMut(&mut Session<K, O>) -> Result<()>,
     {
         self.record(&prepared.logits, &prepared.labels)?;
+        self.session.backward()?;
         backward(&mut self.session)?;
         self.session.optimize()?;
         Ok(())

@@ -112,12 +112,8 @@ impl Params {
         if let Some(block) = layer.attention_block() {
             return Self::load_block(block, header, source, params);
         }
-        let entry = Self::entry_for(layer, header)?;
-        let Some(weight) = source.f32(entry)? else {
-            return Ok(());
-        };
-        params.insert(entry.name().to_string(), weight);
-        Ok(())
+        let name = format!("{}{WEIGHT_SUFFIX}", layer.name());
+        Self::insert_named(params, header, &name, source)
     }
 
     /// 解码注意力块的 q/k/v/o 四个投影条目；非 F32 条目跳过，装配期按格式拒绝。
@@ -129,24 +125,25 @@ impl Params {
     ) -> Result<()> {
         for level in ["q", "k", "v", "o"] {
             let name = format!("{}.{level}{WEIGHT_SUFFIX}", block.name());
-            let Some(entry) = header.get(&name) else {
-                return Err(
-                    Error::new(Code::Missing, format!("权重头部缺条目 `{name}`")).with(SITE),
-                );
-            };
-            let Some(weight) = source.f32(entry)? else {
-                continue;
-            };
-            params.insert(name, weight);
+            Self::insert_named(params, header, &name, source)?;
         }
         Ok(())
     }
 
-    /// 取层名对应的权重条目；头部缺条目报 [`Code::Missing`]。
-    fn entry_for<'a>(layer: &dyn Contract, header: &'a Header) -> Result<&'a WeightEntry> {
-        let name = format!("{}{WEIGHT_SUFFIX}", layer.name());
-        header
-            .get(&name)
-            .ok_or_else(|| Error::new(Code::Missing, format!("权重头部缺条目 `{name}`")).with(SITE))
+    /// 按条目名取条目解码进驻留表；头部缺条目报 [`Code::Missing`]，非 F32 条目跳过不填。
+    fn insert_named<S: WeightSource>(
+        params: &mut Self,
+        header: &Header,
+        name: &str,
+        source: &S,
+    ) -> Result<()> {
+        let Some(entry) = header.get(name) else {
+            return Err(Error::new(Code::Missing, format!("权重头部缺条目 `{name}`")).with(SITE));
+        };
+        let Some(weight) = source.f32(entry)? else {
+            return Ok(());
+        };
+        params.insert(name.to_string(), weight);
+        Ok(())
     }
 }

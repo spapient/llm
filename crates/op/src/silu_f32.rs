@@ -9,9 +9,6 @@ use crate::unary::Unary;
 pub struct Silu;
 
 impl Unary for Silu {
-    const EXPR: &'static str = "n,n->n";
-    const OPERANDS: &'static [crate::einsum::OperandSpec] = &crate::unary::f32_operands();
-
     fn cache() -> &'static FormulaCache {
         static CACHE: FormulaCache = FormulaCache::new();
         &CACHE

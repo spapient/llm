@@ -601,6 +601,114 @@ fn dequant_i8_runs_through_the_registered_kernel() {
     assert_close(&produced, &reference);
 }
 
+/// 2 位反量化：每字节四个码，scale/zero 取样本常量，与独立 `op` 参考对拍。
+#[test]
+fn dequant_i2_runs_through_the_registered_kernel() {
+    let q = [0x52u8];
+    let mut reference = vec![0.0; 4];
+    op::dequant_i2::forward(
+        op::dequant_i2::SCALE,
+        op::dequant_i2::ZERO,
+        &q,
+        &mut reference,
+    )
+    .expect("参考");
+
+    let mut executor = cpu();
+    bind_u8(&mut executor, 0, &q);
+    let produced = run_one(&mut executor, "dequant_i2", &[0], 1, 4);
+
+    assert_close(&produced, &reference);
+}
+
+/// 把 [-2, 1] 的 int2 码按低 2 位在前打成字节，口径与 `op::gemv_i2` 参考一致。
+fn packed_i2(codes: &[i8]) -> Vec<u8> {
+    codes
+        .chunks(4)
+        .map(|quad| {
+            let slot = |i: usize| (quad.get(i).copied().unwrap_or(0) + 2) as u8 & 0x03;
+            slot(0) | slot(1) << 2 | slot(2) << 4 | slot(3) << 6
+        })
+        .collect()
+}
+
+/// 2 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
+#[test]
+fn gemv_i2_runs_through_the_registered_kernel() {
+    let x = [1.0, 2.0, 3.0, 4.0];
+    let w = packed_i2(&[1, -1, 0, 1]);
+    let scales = [0.5f32];
+    let mut reference = vec![0.0; 1];
+    op::gemv_i2::forward(&x, &w, &scales, &mut reference).expect("参考");
+
+    let mut executor = cpu();
+    bind(&mut executor, 0, &x);
+    bind_u8(&mut executor, 1, &w);
+    bind(&mut executor, 2, &scales);
+    let produced = run_one(&mut executor, "gemv_i2", &[0, 1, 2], 3, 1);
+
+    assert_close(&produced, &reference);
+}
+
+/// 量化 GEMM 经注册 Program 对拍：A/B 打包字节、Y 浮点；几何由样本静态轴与缓冲长度反推。
+///
+/// 三条位宽 lane 共用同一套夹具：样本缓冲取 `op::<lane>::sample`，参考走同一 `forward`，
+/// 执行器拆两路 u8 输入、一路 f32 输出；打包规则完全来自 `op`，夹具不重写。
+fn gemm_quant_matches_reference(
+    lane: &str,
+    a: &[u8],
+    b: &[u8],
+    m: usize,
+    n: usize,
+    reference: &[f32],
+) {
+    let mut executor = cpu();
+    bind_u8(&mut executor, 0, a);
+    bind_u8(&mut executor, 1, b);
+    let produced = run_one(&mut executor, lane, &[0, 1], 2, reference.len());
+    assert_eq!(produced.len(), m * n);
+    assert_close(&produced, reference);
+}
+
+/// int4 矩阵乘：样本 A/B 为打包 nibble，与独立 `op` 参考对拍。
+#[test]
+fn gemm_i4_runs_through_the_registered_kernel() {
+    let (m, n) = (2, 3);
+    let sample = op::gemm::sample::<op::gemm_i4::GemmI4>(m, n);
+    let a = sample.u8("a").expect("a");
+    let b = sample.u8("b").expect("b");
+    let mut reference = vec![0.0; m * n];
+    op::gemm_i4::forward(a, b, m, n, &mut reference).expect("参考");
+
+    gemm_quant_matches_reference("gemm_i4", a, b, m, n, &reference);
+}
+
+/// int8 矩阵乘：样本 A/B 为逐元素字节，与独立 `op` 参考对拍。
+#[test]
+fn gemm_i8_runs_through_the_registered_kernel() {
+    let (m, n) = (2, 3);
+    let sample = op::gemm::sample::<op::gemm_i8::GemmI8>(m, n);
+    let a = sample.u8("a").expect("a");
+    let b = sample.u8("b").expect("b");
+    let mut reference = vec![0.0; m * n];
+    op::gemm_i8::forward(a, b, m, n, &mut reference).expect("参考");
+
+    gemm_quant_matches_reference("gemm_i8", a, b, m, n, &reference);
+}
+
+/// int2 矩阵乘：样本 A/B 为打包 2 位码，与独立 `op` 参考对拍。
+#[test]
+fn gemm_i2_runs_through_the_registered_kernel() {
+    let (m, n) = (2, 3);
+    let sample = op::gemm::sample::<op::gemm_i2::GemmI2>(m, n);
+    let a = sample.u8("a").expect("a");
+    let b = sample.u8("b").expect("b");
+    let mut reference = vec![0.0; m * n];
+    op::gemm_i2::forward(a, b, m, n, &mut reference).expect("参考");
+
+    gemm_quant_matches_reference("gemm_i2", a, b, m, n, &reference);
+}
+
 /// 量化权重槽误绑成浮点缓冲：执行期形态核对给 `Invalid`，不静默按字节解释。
 #[test]
 fn a_quantized_weight_bound_as_f32_is_rejected_by_the_kernel() {
