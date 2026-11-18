@@ -634,5 +634,91 @@ fn run<F: Format>(
 }
 
 #[cfg(test)]
+pub(crate) mod packed_test_support {
+    use super::{Format, cost};
+    use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+    use diagnostic::Error;
+
+    /// 三缓冲打包样本：`x`、打包权重 `w` 与每组分标度 `scales`。
+    pub fn with(m: usize, n: usize, x: Vec<f32>, w: Vec<u8>, scales: Vec<f32>) -> Sample {
+        Sample {
+            m,
+            n,
+            scalars: Vec::new(),
+            buffers: vec![
+                Buffer {
+                    name: "x",
+                    values: Values::F32(x),
+                },
+                Buffer {
+                    name: "w",
+                    values: Values::U8(w),
+                },
+                Buffer {
+                    name: "scales",
+                    values: Values::F32(scales),
+                },
+            ],
+        }
+    }
+
+    /// 只关心 `(m, n)` 的代价：宽度填进算子声明的具名轴。
+    pub fn at<T: Format>(m: usize, n: usize) -> Result<Cost, Error> {
+        cost::<T>(&ShapeContext::new([('m', m), ('n', n)])?)
+    }
+
+    /// 生成 i2/i4 打包 GEMV 共有的四则测试：负例拒绝、生产形状合法、非整组报错、样本确定性。
+    macro_rules! packed_gemv_tests {
+        ($ty:ty, $model:ident, $group:ident, $forward:ident, $w_bytes:expr, $sample_w:expr) => {
+            #[test]
+            fn forward_rejects_a_buffer_that_does_not_fit_the_shapes() {
+                let error = $forward(&[1.0; 4], &[], &[1.0], &mut [0.0; 1]).expect_err("权重太短");
+                assert_eq!(error.code(), ::diagnostic::Code::Invalid);
+                assert!(
+                    $forward(&[1.0; 4], &[0u8; $w_bytes], &[1.0], &mut []).is_err(),
+                    "空输出"
+                );
+            }
+
+            #[test]
+            fn the_production_shape_is_a_legal_input() {
+                let (m, n) = $model.shape;
+                assert!(
+                    m.is_multiple_of($group),
+                    "生产形状的 M 必须是组大小的整数倍"
+                );
+                assert!(at::<$ty>(m, n).is_ok(), "生产形状必须能算出代价");
+                assert_eq!(
+                    $model.dtype,
+                    ::prof::atom::DType::F32,
+                    "样本的输出缓冲是 f32"
+                );
+                assert_eq!($model.group as usize, $group, "注册的粒度就是注解的粒度");
+            }
+
+            #[test]
+            fn a_shape_that_does_not_fit_the_grouping_is_an_error() {
+                let error = at::<$ty>(33, 4).expect_err("33 不是 32 的整数倍");
+                assert!(error.to_string().contains("整数倍"), "{error}");
+                assert_eq!(error.code(), ::diagnostic::Code::Invalid);
+            }
+
+            #[test]
+            fn sample_is_deterministic_and_sized_to_the_group() {
+                let first = crate::gemv::sample::<$ty>(64, 4);
+                assert_eq!(first, crate::gemv::sample::<$ty>(64, 4));
+                assert_eq!(first.u8("w").expect("w").len(), 4 * $sample_w);
+                assert_eq!(
+                    first.f32("scales").expect("scales").len(),
+                    4 * (64 / $group)
+                );
+                assert_eq!(first.f32("y").expect("y").len(), 4);
+            }
+        };
+    }
+    pub(crate) use packed_gemv_tests;
+}
+
+#[cfg(test)]
 #[path = "../tests/gemv_tests.rs"]
 mod tests;

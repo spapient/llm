@@ -1,7 +1,7 @@
 use super::*;
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
-use diagnostic::Error;
-use prof::atom::DType;
+use crate::gemv::packed_test_support::{at, with};
+
+crate::gemv::packed_test_support::packed_gemv_tests!(I2, MODEL, GROUP, forward, 1, 16);
 
 /// 把 `-2..=1` 的整数码按四个一组打包成字节：低 2 位在前。
 fn packed(values: &[i8]) -> Vec<u8> {
@@ -12,33 +12,6 @@ fn packed(values: &[i8]) -> Vec<u8> {
             code(0) | (code(1) << 2) | (code(2) << 4) | (code(3) << 6)
         })
         .collect()
-}
-
-fn with(m: usize, n: usize, x: Vec<f32>, w: Vec<u8>, scales: Vec<f32>) -> Sample {
-    Sample {
-        m,
-        n,
-        scalars: Vec::new(),
-        buffers: vec![
-            Buffer {
-                name: "x",
-                values: Values::F32(x),
-            },
-            Buffer {
-                name: "w",
-                values: Values::U8(w),
-            },
-            Buffer {
-                name: "scales",
-                values: Values::F32(scales),
-            },
-        ],
-    }
-}
-
-/// 测试里只关心 `(m, n)`：它们走的是层那条路径——把宽度填进算子声明的具名轴。
-fn at(m: usize, n: usize) -> Result<Cost, Error> {
-    gemv::cost::<I2>(&ShapeContext::new([('m', m), ('n', n)])?)
 }
 
 #[test]
@@ -114,16 +87,6 @@ fn the_kernel_agrees_with_a_hand_written_sum() {
 }
 
 #[test]
-fn forward_rejects_a_buffer_that_does_not_fit_the_shapes() {
-    let error = forward(&[1.0; 4], &[], &[1.0], &mut [0.0; 1]).expect_err("权重太短");
-    assert_eq!(error.code(), diagnostic::Code::Invalid);
-    assert!(
-        forward(&[1.0; 4], &[0u8; 1], &[1.0], &mut []).is_err(),
-        "空输出"
-    );
-}
-
-#[test]
 fn shape_mismatch_is_an_error() {
     // 输入太短。
     assert!(gemv::reference::<I2>(&with(4, 1, vec![1.0], vec![0u8; 1], vec![1.0])).is_err());
@@ -157,17 +120,8 @@ fn gemv_i2_rejects_non_finite_scales() {
 }
 
 #[test]
-fn the_production_shape_is_a_legal_input() {
-    let (m, n) = MODEL.shape;
-    assert!(m.is_multiple_of(GROUP), "生产形状的 M 必须是组大小的整数倍");
-    assert!(at(m, n).is_ok(), "生产形状必须能算出代价");
-    assert_eq!(MODEL.dtype, DType::F32, "样本的输出缓冲是 f32");
-    assert_eq!(MODEL.group as usize, GROUP, "注册的粒度就是注解的粒度");
-}
-
-#[test]
 fn cost_comes_from_the_declared_expression_without_hand_written_constants() {
-    let cost = at(4096, 4096).expect("可估");
+    let cost = at::<I2>(4096, 4096).expect("可估");
     assert_eq!(cost.flops, 2.0 * 4096.0 * 4096.0);
     // 三个输入都是读：int2 权重、输入、缩放因子；只有输出是写。
     assert_eq!(
@@ -187,27 +141,11 @@ fn cost_comes_from_the_declared_expression_without_hand_written_constants() {
 fn a_small_shape_pins_every_term_so_a_factor_cannot_hide() {
     // 大形状里 `m/32` 之类的因子很容易互相抵消，小形状才能逐项钉住：
     // w = 4·64 个 int2（64 B）、x = 64·4、scales = 4·2·4、y = 4·4。
-    let cost = at(64, 4).expect("可估");
+    let cost = at::<I2>(64, 4).expect("可估");
     assert_eq!(cost.flops, 2.0 * 64.0 * 4.0);
     assert_eq!(cost.read, 64 + 256 + 32);
     assert_eq!(cost.write, 16);
     assert_eq!(cost.bytes(), 64 + 256 + 32 + 16);
-}
-
-#[test]
-fn a_shape_that_does_not_fit_the_grouping_is_an_error() {
-    let error = at(33, 4).expect_err("33 不是 32 的整数倍");
-    assert!(error.to_string().contains("整数倍"), "{error}");
-    assert_eq!(error.code(), diagnostic::Code::Invalid);
-}
-
-#[test]
-fn sample_is_deterministic_and_sized_to_the_group() {
-    let first = gemv::sample::<I2>(64, 4);
-    assert_eq!(first, gemv::sample::<I2>(64, 4));
-    assert_eq!(first.u8("w").expect("w").len(), 4 * 16);
-    assert_eq!(first.f32("scales").expect("scales").len(), 4 * (64 / GROUP));
-    assert_eq!(first.f32("y").expect("y").len(), 4);
 }
 
 #[test]

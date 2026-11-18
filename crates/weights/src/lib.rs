@@ -61,6 +61,9 @@ mod writer;
 // —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
 
+// —— 2/4/8-bit 对称 PTQ：f32 → 打包码的正向量化与其反解（离线换算，ADR 0018） ——
+pub mod ptq;
+
 // —— 完整性证明：Merkle + SHA-256 ——
 mod proof;
 
@@ -108,6 +111,7 @@ pub use crate::archive::VOCAB_NAME;
 pub use archive::{Archive, Metrics, Stored};
 pub use dtype::DType as Wire;
 pub use proof::Proof;
+pub use ptq::{I2, I4, I8, Scheme, dequantize, quantize};
 pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;
