@@ -160,7 +160,6 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
     sizes.set(loss, Shape::new([1]), DType::F32);
 
     let p0 = vec![-1.2_f32, 0.4, 1.1];
-    eprintln!("DEBUG gelu p0={p0:?}");
     let chain_loss = |params: &[f32]| {
         params
             .iter()
@@ -328,16 +327,7 @@ fn gemm_matches_central_differences() -> Result<()> {
     session.plan(loss)?;
     session.backward()?;
 
-    let out_before = session
-        .buffers()
-        .value(y)
-        .expect("y 在场")
-        .f32()
-        .expect("f32")
-        .to_vec();
-    eprintln!("DEBUG gemm out={out_before:?}");
     let grad = session.buffers().gradient(a).expect("A 梯度应在场");
-    eprintln!("DEBUG gemm grad={grad:?}");
     for (index, actual) in grad.iter().enumerate() {
         let mut plus = a0.clone();
         plus[index] += STEP;

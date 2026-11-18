@@ -21,10 +21,6 @@ impl Reduce for Sum {
     fn fold(acc: f32, x: f32) -> f32 {
         acc + x
     }
-
-    fn input(len: usize) -> Vec<f32> {
-        (0..len).map(|i| ((i as f32) * 0.5) - 1.0).collect()
-    }
 }
 
 /// 求和归约的具体语义别名。

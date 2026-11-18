@@ -35,8 +35,16 @@ pub trait Unary {
     /// 逐元素函数：一个输入值，一个输出值。
     fn apply(x: f32) -> f32;
 
-    /// 输入的确定性取值。
-    fn input(len: usize) -> Vec<f32>;
+    /// 输入的确定性取值：默认线性夹具 `−4.0 + 0.25·i`；需要不同取值时在实现里覆盖。
+    fn input(len: usize) -> Vec<f32> {
+        linear(len, 0.25, -4.0)
+    }
+}
+
+/// 线性确定性夹具：`base + step·i`，同一长度取值可复现。
+#[must_use]
+fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
+    (0..len).map(|i| base + i as f32 * step).collect()
 }
 
 /// 一元骨架只有一条轴：既是输入轴也是输出轴。

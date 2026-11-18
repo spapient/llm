@@ -21,10 +21,6 @@ impl Reduce for Max {
     fn fold(acc: f32, x: f32) -> f32 {
         if x > acc { x } else { acc }
     }
-
-    fn input(len: usize) -> Vec<f32> {
-        (0..len).map(|i| ((i as f32) * 0.5) - 1.0).collect()
-    }
 }
 
 /// 最大值归约的具体语义别名。

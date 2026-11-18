@@ -247,14 +247,12 @@ fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 /// y = 0.5·x·(1 + erf(x/√2))：y′ = Φ(x) + x·φ(x)，φ 为标准正态密度、Φ 为累积分布。
 fn gelu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     let x = &ctx.inputs[0];
-    eprintln!("DEBUG gelu inputs={x:?} output={:?} incoming={:?}", ctx.output, ctx.incoming);
     let da = ctx
         .incoming
         .iter()
         .zip(x)
         .map(|(&g, &v)| g * gelu_grad(v))
         .collect();
-    eprintln!("DEBUG gelu da={da:?}");
     Ok(vec![da])
 }
 
@@ -396,11 +394,10 @@ fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) -> Result<()>
     Ok(())
 }
 
-/// GELU 导数：`y = 0.5·x·(1+erf(x/√2))`，`y′ = φ(x) + x·Φ(x)`。
+/// GELU 导数：`y = 0.5·x·(1+erf(x/√2))`，`y′ = Φ(x) + x·φ(x)`。
 fn gelu_grad(x: f32) -> f32 {
     let normal = (-(x * x) / 2.0).exp() / (2.0 * std::f32::consts::PI).sqrt();
-    let erf_term = 0.5 * (1.0 + erf_scalar(x / std::f32::consts::FRAC_1_SQRT_2));
-    eprintln!("  gelu_grad x={x} phi={normal} Phi={erf_term}");
+    let erf_term = 0.5 * (1.0 + erf_scalar(x * std::f32::consts::FRAC_1_SQRT_2));
     erf_term + x * normal
 }
 

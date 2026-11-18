@@ -17,14 +17,6 @@ impl Binary for Mul {
     fn apply(x: f32, y: f32) -> f32 {
         x * y
     }
-
-    fn input_a(len: usize) -> Vec<f32> {
-        (0..len).map(|i| ((i as f32) * 0.5) - 1.0).collect()
-    }
-
-    fn input_b(len: usize) -> Vec<f32> {
-        (0..len).map(|i| ((i as f32) * 0.25) + 0.5).collect()
-    }
 }
 
 /// 乘法的具体语义别名：`#[model]` 在它上面生成 `MODEL`。

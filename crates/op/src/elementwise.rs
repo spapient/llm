@@ -41,11 +41,21 @@ pub trait Binary {
     /// 逐元素运算：两个输入值，一个输出值。
     fn apply(x: f32, y: f32) -> f32;
 
-    /// 第一路输入的确定性取值。
-    fn input_a(len: usize) -> Vec<f32>;
+    /// 第一路输入的确定性取值：默认线性夹具 `−1.0 + 0.5·i`；需要不同取值时覆盖。
+    fn input_a(len: usize) -> Vec<f32> {
+        linear(len, 0.5, -1.0)
+    }
 
-    /// 第二路输入的确定性取值。
-    fn input_b(len: usize) -> Vec<f32>;
+    /// 第二路输入的确定性取值：默认线性夹具 `0.5 + 0.25·i`；需要不同取值时覆盖。
+    fn input_b(len: usize) -> Vec<f32> {
+        linear(len, 0.25, 0.5)
+    }
+}
+
+/// 线性确定性夹具：`base + step·i`，同一长度取值可复现。
+#[must_use]
+fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
+    (0..len).map(|i| base + i as f32 * step).collect()
 }
 
 /// 逐元素单轴形状：轴 `n` 取第一个参数（元素数），第二个参数不用。

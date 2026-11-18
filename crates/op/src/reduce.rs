@@ -35,8 +35,16 @@ pub trait Reduce {
     /// 一次折叠：把当前累加值与下一个元素合并。
     fn fold(acc: f32, x: f32) -> f32;
 
-    /// 确定性输入。
-    fn input(len: usize) -> Vec<f32>;
+    /// 确定性输入：默认线性夹具 `−1.0 + 0.5·i`；需要不同取值时在实现里覆盖。
+    fn input(len: usize) -> Vec<f32> {
+        linear(len, 0.5, -1.0)
+    }
+}
+
+/// 线性确定性夹具：`base + step·i`，同一长度取值可复现。
+#[must_use]
+fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
+    (0..len).map(|i| base + i as f32 * step).collect()
 }
 
 /// 两条轴：输入轴 `n`（被规约），输出轴 `o`。
