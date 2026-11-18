@@ -226,11 +226,6 @@ impl<K: Kernel> Buffers<K> {
             .and_then(Option::as_deref)
     }
 
-    /// 全部梯度槽的可变表：批量取视图用一条借用，避免逐槽重复可变借用。
-    pub fn gradients_mut(&mut self) -> &mut [Option<Vec<f32>>] {
-        &mut self.gradients
-    }
-
     /// 取走一个变量的梯度向量：整块移交所有权，避免同一缓冲重复可变借用。
     ///
     /// 调用方在优化器/同步结束后把结果放回 [`Self::put_back_gradient`]；中途失败也必须归还，
