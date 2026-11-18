@@ -21,7 +21,7 @@
 //!
 //! let mut tape = Tape::new();
 //! let (x, w) = (tape.leaf(), tape.leaf());
-//! let y = tape.record("gemv_f32", &[x, w]).expect("记录");
+//! let y = tape.record("gemv_f32", &[w, x]).expect("记录");
 //! let mut sizes = Sizes::new(tape.vars());
 //! sizes.set(x, Shape::new([2]), DType::F32);
 //! sizes.set(w, Shape::new([2, 2]), DType::F32);
@@ -30,7 +30,7 @@
 //! let mut store = Buffers::new(sizes, Reference);
 //! store.load(x, Data::F32(vec![1.0, 2.0])).expect("输入");
 //! store.load(w, Data::F32(vec![1.0, 0.0, 0.0, 1.0])).expect("权重");
-//! store.compute("gemv_f32", &[x, w], y).expect("可算");
+//! store.compute("gemv_f32", &[w, x], y).expect("可算");
 //! assert!(store.value(y).and_then(|view| view.f32()).is_some());
 //! ```
 

@@ -9,6 +9,7 @@
 use crate::einsum::Bits;
 use crate::gemv::Element;
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::quant::Row;
 use diagnostic::{Code, Error};
 
 /// 收缩轴长度（固定档）。
@@ -72,20 +73,60 @@ pub trait Gemm {
     /// A / B 输入元素位宽；输出恒为 f32。
     const BITS: Bits;
 
-    /// A（`m×K`）确定性取值：同一形状永远得到同一组元素。
-    fn sample_a(m: usize) -> Vec<Self::Elem>;
+    /// 打包格式的静态配置（[`Row`]）：每字节码数、零点、样本偏移、对称码表单点收敛。
+    ///
+    /// 打包 lane（i2/i4）返回自身那一行；逐元素 lane（i8）返回 `None`，走 [`codes`] 按位模式
+    /// 解释。新增一档打包精度只在 `quant` 配置表加一行并把这里指过去，不在三条 lane 各抄除法、
+    /// 零点与偏移表。
+    fn config() -> Option<Row> {
+        None
+    }
 
-    /// B（`K×n`）确定性取值。
-    fn sample_b(n: usize) -> Vec<Self::Elem>;
+    /// A（`m×K`）确定性取值：打包格式走 [`packed::sample_a`]；逐元素格式自行实现本函数。
+    fn sample_a(m: usize) -> Vec<Self::Elem> {
+        let Some(row) = Self::config() else {
+            return Vec::new();
+        };
+        let conf = packed::Conf::from(&row);
+        Self::Elem::from_bytes(packed::packed_sample_a(m, &conf))
+    }
+
+    /// B（`K×n`）确定性取值（口径同 [`sample_a`](Self::sample_a)）。
+    fn sample_b(n: usize) -> Vec<Self::Elem> {
+        let Some(row) = Self::config() else {
+            return Vec::new();
+        };
+        let conf = packed::Conf::from(&row);
+        Self::Elem::from_bytes(packed::packed_sample_b(n, &conf))
+    }
 
     /// A 缓冲应有的元素个数（打包后按 [`Elem`](Self::Elem) 计）。
-    fn a_len(m: usize) -> usize;
+    fn a_len(m: usize) -> usize {
+        let Some(row) = Self::config() else { return 0 };
+        packed::packed_a_len(m, &packed::Conf::from(&row))
+    }
 
     /// B 缓冲应有的元素个数。
-    fn b_len(n: usize) -> usize;
+    fn b_len(n: usize) -> usize {
+        let Some(row) = Self::config() else { return 0 };
+        packed::packed_b_len(n, &packed::Conf::from(&row))
+    }
 
     /// 输出位置 `(i, j)` 的点积：A 第 `i` 行（连续 `K` 个元素）与 B 第 `j` 列（跨步 `n`）。
-    fn dot(a: &[Self::Elem], b: &[Self::Elem], n: usize, i: usize, j: usize) -> f32;
+    ///
+    /// 打包格式走 [`packed::dot`]；逐元素格式自行实现本函数。
+    fn dot(a: &[Self::Elem], b: &[Self::Elem], n: usize, i: usize, j: usize) -> f32 {
+        let Some(row) = Self::config() else {
+            return 0.0;
+        };
+        let Some(a) = Element::borrow_u8(a) else {
+            return 0.0;
+        };
+        let Some(b) = Element::borrow_u8(b) else {
+            return 0.0;
+        };
+        packed::dot(a, b, n, i, j, &packed::Conf::from(&row))
+    }
 
     /// 逐元素格式（不打包）的码值：测试侧闭式重算用；打包格式由骨架按位流解包，返回空切片。
     ///
@@ -153,14 +194,29 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
 pub mod packed {
     use super::K;
 
-    /// 每字节 `cpb` 个码对应的位宽。
-    const fn bits(cpb: usize) -> usize {
-        8 / cpb
+    /// 打包配置：取样/长度/点积共用一行 [`Row`](crate::quant::Row) 的位宽事实。
+    pub struct Conf {
+        /// 每字节码数。
+        pub cpb: usize,
+        /// 对称零点（无符号码点回退有符号整数的平移量）。
+        pub zero: i32,
+        /// 样本码值偏移，长度等于 `cpb`。
+        pub offsets: &'static [u32],
+    }
+
+    impl From<&crate::quant::Row> for Conf {
+        fn from(row: &crate::quant::Row) -> Self {
+            Self {
+                cpb: row.cpb,
+                zero: row.zero,
+                offsets: row.offsets,
+            }
+        }
     }
 
     /// 解包字节内第 `slot` 个码，按对称零点回退成有符号整数。
     pub fn unpack(byte: u8, slot: usize, cpb: usize, zero: i32) -> i8 {
-        let width = bits(cpb);
+        let width = crate::quant::width_cpb(cpb);
         let mask = (1u8 << width) - 1;
         let value = (byte >> (slot * width)) & mask;
         (value as i32 - zero) as i8
@@ -169,7 +225,7 @@ pub mod packed {
     /// 确定性打包位模式：`len` 个码按 `cpb` 每字节装一行；码值取
     /// `(字节下标 · seed + offsets[c]) mod 2^width`。
     pub fn pack(len: usize, seed: usize, cpb: usize, offsets: &[u32]) -> Vec<u8> {
-        let width = bits(cpb);
+        let width = crate::quant::width_cpb(cpb);
         let modulus = 1usize << width;
         (0..len / cpb)
             .map(|byte| {
@@ -182,16 +238,41 @@ pub mod packed {
     }
 
     /// 打包矩阵点积：A 第 `i` 行与 B 第 `j` 列，收缩轴固定 [`K`]，整数累加后转 f32。
-    pub fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize, cpb: usize, zero: i32) -> f32 {
-        let bytes_per_row = K / cpb;
+    pub fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize, conf: &Conf) -> f32 {
+        let bytes_per_row = K / conf.cpb;
         let mut acc: i32 = 0;
         for p in 0..K {
-            let x = unpack(a[i * bytes_per_row + p / cpb], p % cpb, cpb, zero) as i32;
+            let x = unpack(
+                a[i * bytes_per_row + p / conf.cpb],
+                p % conf.cpb,
+                conf.cpb,
+                conf.zero,
+            ) as i32;
             let y_pos = p * n + j;
-            let y = unpack(b[y_pos / cpb], y_pos % cpb, cpb, zero) as i32;
+            let y = unpack(b[y_pos / conf.cpb], y_pos % conf.cpb, conf.cpb, conf.zero) as i32;
             acc += x * y;
         }
         acc as f32
+    }
+
+    /// A（`m×K`）确定性打包取样；seed 固定，同一形状取值可复现。
+    pub fn packed_sample_a(m: usize, conf: &Conf) -> Vec<u8> {
+        pack(m * K, 37, conf.cpb, conf.offsets)
+    }
+
+    /// B（`K×n`）确定性打包取样。
+    pub fn packed_sample_b(n: usize, conf: &Conf) -> Vec<u8> {
+        pack(K * n, 53, conf.cpb, conf.offsets)
+    }
+
+    /// A 打包后字节数：`m·K/cpb`。
+    pub fn packed_a_len(m: usize, conf: &Conf) -> usize {
+        m * K / conf.cpb
+    }
+
+    /// B 打包后字节数：`K·n/cpb`。
+    pub fn packed_b_len(n: usize, conf: &Conf) -> usize {
+        K * n / conf.cpb
     }
 
     /// 按元素位流解包一串打包字节：每字节 `cpb` 个码，低槽在前，码值减 `zero`。
@@ -300,23 +381,20 @@ pub(crate) fn hand_closed<G: Gemm>() {
 }
 
 /// 把 A、B 解包成有符号整数码；测试侧独立读数，供 [`hand_closed`] 闭式重算。
+///
+/// 打包格式按 [`Gemm::config`] 一行配置解包（码数、零点随配置表），逐元素格式走 [`Gemm::codes`]；
+/// 不再按位宽 `match` 硬编码两套字节布局。
 #[cfg(test)]
 fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) -> Vec<i32> {
     let mut values = Vec::with_capacity(m * K + K * n);
-    match G::BITS {
-        Bits::Two => {
-            let a: &[u8] = Element::borrow_u8(a).expect("i2 打包为 u8");
-            let b: &[u8] = Element::borrow_u8(b).expect("i2 打包为 u8");
-            values.extend(packed::unpack_stream(a, crate::quant::I2.cpb, crate::quant::I2.zero));
-            values.extend(packed::unpack_stream(b, crate::quant::I2.cpb, crate::quant::I2.zero));
+    match G::config() {
+        Some(row) => {
+            let a: &[u8] = Element::borrow_u8(a).expect("打包格式元素为 u8");
+            let b: &[u8] = Element::borrow_u8(b).expect("打包格式元素为 u8");
+            values.extend(packed::unpack_stream(a, row.cpb, row.zero));
+            values.extend(packed::unpack_stream(b, row.cpb, row.zero));
         }
-        Bits::Four => {
-            let a: &[u8] = Element::borrow_u8(a).expect("i4 打包为 u8");
-            let b: &[u8] = Element::borrow_u8(b).expect("i4 打包为 u8");
-            values.extend(packed::unpack_stream(a, crate::quant::I4.cpb, crate::quant::I4.zero));
-            values.extend(packed::unpack_stream(b, crate::quant::I4.cpb, crate::quant::I4.zero));
-        }
-        _ => {
+        None => {
             values.extend(G::codes(a));
             values.extend(G::codes(b));
         }

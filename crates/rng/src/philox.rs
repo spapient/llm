@@ -106,8 +106,11 @@ impl Rng {
     }
 
     /// 下一个 `[0, 1)` 内的 f32；均匀量在 f32 表示，逆变换由分布层完成。
+    ///
+    /// 取高 24 位对齐 f32 尾数：每个输出档位等权对应 256 个 u32，避免把 32 位整数就近
+    /// 舍入到 f32 时相邻桶权重不均。中间不升 f64，口径与分布层一致。
     pub fn next_f32(&mut self) -> f32 {
-        self.next_u32() as f32 / 4_294_967_296.0
+        (self.next_u32() >> 8) as f32 / (1 << 24) as f32
     }
 }
 
@@ -142,10 +145,16 @@ mod tests {
     #[test]
     fn next_f32_stays_in_the_half_open_unit_interval() {
         let mut rng = Rng::new(7);
-        for _ in 0..32 {
+        let mut seen_nonzero = false;
+        for _ in 0..64 {
             let value = rng.next_f32();
-            assert!((0.0..1.0).contains(&value), "均匀量必须落在 [0,1)");
+            assert!(
+                (0.0..1.0).contains(&value),
+                "均匀量必须落在 [0,1)，得到 {value}"
+            );
+            seen_nonzero |= value > 0.0;
         }
+        assert!(seen_nonzero, "高 24 位映射不能塌缩成全零");
     }
 
     /// 已知答案向量：与独立参考实现逐词核对的 Philox4x32-10 输出。

@@ -70,9 +70,25 @@ pub struct Slot<'a> {
     pub role: ParamRole,
 }
 
+impl Slot<'_> {
+    /// 参数与梯度长度必须一致；不一致是调用方接线错误（[`Code::Invalid`]）。
+    fn check_len(&self) -> Result<()> {
+        if self.params.len() != self.grads.len() {
+            let message = format!(
+                "参数槽长度 {} 与梯度长度 {} 不一致：角色 {} 的参数表与梯度表必须逐项对齐",
+                self.params.len(),
+                self.grads.len(),
+                self.role.as_str()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        Ok(())
+    }
+}
+
 /// 视图与梯度向量的配对：梯度向量在会话侧取走后随视图一起存活，步进结束整块归还缓冲。
 pub struct OwnedSlot {
-    /// 参数值就地写回（指向会话槽参数）。
+    /// 参数值就地写回（会话槽参数的快照副本，步进后镜像回缓冲）。
     pub params: Vec<f32>,
     /// 从缓冲取走的梯度向量，同步/步进结束归还。
     pub grads: Vec<f32>,
@@ -88,22 +104,6 @@ impl OwnedSlot {
             grads: &mut self.grads,
             role: self.role,
         }
-    }
-}
-
-impl Slot<'_> {
-    /// 参数与梯度长度必须一致；不一致是调用方接线错误（[`Code::Invalid`]）。
-    fn check_len(&self) -> Result<()> {
-        if self.params.len() != self.grads.len() {
-            let message = format!(
-                "参数槽长度 {} 与梯度长度 {} 不一致：角色 {} 的参数表与梯度表必须逐项对齐",
-                self.params.len(),
-                self.grads.len(),
-                self.role.as_str()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        Ok(())
     }
 }
 

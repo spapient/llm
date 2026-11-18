@@ -379,7 +379,7 @@ fn the_second_registered_operator_replays_like_the_first() {
     const N: usize = WIDTH;
     let mut tape = Tape::new();
     let (x, w) = (tape.parameter(), tape.leaf());
-    let y = tape.record("gemv_f32", &[x, w]).expect("记录");
+    let y = tape.record("gemv_f32", &[w, x]).expect("记录");
     let mut sizes = Sizes::new(tape.vars());
     sizes.set(x, Shape::new([N]), DType::F32);
     sizes.set(w, Shape::new([N, N]), DType::F32);
@@ -392,7 +392,7 @@ fn the_second_registered_operator_replays_like_the_first() {
         .collect();
     store.load(x, Data::F32(input.clone())).expect("输入");
     store.load(w, Data::F32(weights.clone())).expect("权重");
-    store.compute("gemv_f32", &[x, w], y).expect("可算");
+    store.compute("gemv_f32", &[w, x], y).expect("可算");
 
     let mut expected = vec![0.0f32; N];
     op::gemv_f32::forward(&input, &weights, &mut expected).expect("参考可算");
@@ -430,7 +430,7 @@ fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
     const N: usize = 4;
     let mut tape = Tape::new();
     let (x, w) = (tape.parameter(), tape.leaf());
-    let h = tape.record("gemv_f32", &[x, w]).expect("记录 gemv");
+    let h = tape.record("gemv_f32", &[w, x]).expect("记录 gemv");
     let r = tape.record("rope_f32", &[h]).expect("记录 rope");
     let p = tape.record("softmax_f32", &[r]).expect("记录 softmax");
 

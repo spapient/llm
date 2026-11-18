@@ -92,7 +92,7 @@ reason = "模糊测试的目标、种子、行为描述与复现样本；工具�
 
 [[ownership.unlisted]]
 crate = "op"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI2", "DequantI4", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "GemmI2", "GemmI4", "GemmI8", "Max", "Param", "Residual", "ShapeContext", "Skeleton", "Sum", "SymI2", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
+names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI2", "DequantI4", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "GemmI2", "GemmI4", "GemmI8", "I2Conf", "I4Conf", "Max", "Packed", "PackedRow", "Param", "QuantI4", "Residual", "ShapeContext", "Skeleton", "Sum", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
 reason = "算子声明与语义的内部类型（每个算子一个模块、一张行表）；公开面是 `REGISTRY`"
 
 [[ownership.unlisted]]

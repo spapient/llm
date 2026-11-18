@@ -252,15 +252,17 @@ fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     Ok(vec![da])
 }
 
-/// y = 0.5·x·(1 + erf(x/√2))：y′ = φ(x) + x·Φ(x)，φ 为标准正态密度。
+/// y = 0.5·x·(1 + erf(x/√2))：y′ = Φ(x) + x·φ(x)，φ 为标准正态密度、Φ 为累积分布。
 fn gelu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     let x = &ctx.inputs[0];
+    eprintln!("DEBUG gelu inputs={x:?} incoming={:?}", ctx.incoming);
     let da = ctx
         .incoming
         .iter()
         .zip(x)
         .map(|(&g, &v)| g * gelu_grad(v))
         .collect();
+    eprintln!("DEBUG gelu da={da:?}");
     Ok(vec![da])
 }
 
@@ -371,7 +373,8 @@ fn embed(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
         let grad_row = &ctx.incoming[token * dim..][..dim];
         accumulate_into(&mut dtable, row, grad_row)?;
     }
-    Ok(vec![dtable])
+    // 索引输入无雅可比：贡献置空，只回传表梯度。
+    Ok(vec![vec![0.0; index.len()], dtable])
 }
 
 /// `W[n,k]` 的行主序形状：`k` 由输入宽度给定，`n` 由权重长度整除推出；不整除是装配口径问题。
@@ -405,7 +408,7 @@ fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) -> Result<()>
 fn gelu_grad(x: f32) -> f32 {
     let normal = (-(x * x) / 2.0).exp() / (2.0 * std::f32::consts::PI).sqrt();
     let erf_term = 0.5 * (1.0 + erf_scalar(x / std::f32::consts::FRAC_1_SQRT_2));
-    normal + x * erf_term
+    erf_term + x * normal
 }
 
 /// 标量误差函数：Abramowitz-Stegun 7.1.26，与 `op::gelu_f32` 同一份系数（|误差| < 1.5e-7）。

@@ -15,11 +15,7 @@ fn bad(message: &str) -> Error {
 
 /// 校验谓词不成立时返回 [`bad`]；成立为 `Ok`。分布参数校验共用这一条出口。
 fn check(ok: bool, message: &str) -> Result<()> {
-    if ok {
-        Ok(())
-    } else {
-        Err(bad(message))
-    }
+    if ok { Ok(()) } else { Err(bad(message)) }
 }
 
 /// 均匀分布 `[lo, hi)`。

@@ -18,11 +18,11 @@ use shard::Collective;
 use tensor::{DType, Shape};
 
 use crate::dist::Distributed;
-use crate::optimizer::Optimizer;
+use crate::optimizer::{Optimizer, OwnedSlot, Slot};
 use crate::pool::Buffers;
 use crate::schedule::Schedule as LrSchedule;
 use crate::snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
-use crate::{Data, Kernel, OwnedSlot, Slot};
+use crate::{Data, Kernel};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::Session";
@@ -607,7 +607,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         self.step_once()
     }
 
-    /// 窗口已满：汇总梯度 → 组内同步 → 优化器步进 → 镜像参数 → 归还视图，步号 +1。
+    /// 窗口已满：汇总梯度 → 组内同步 → 优化器步进 → 镜像参数 → 清空梯度，步号 +1。
     fn step_once(&mut self) -> Result<()> {
         let lr = self.lr_schedule.lr(self.config.learning_rate, self.step);
         let mut views = Self::collect_views(&mut self.slots, &mut self.buffers)?;
@@ -615,36 +615,19 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         self.distributed
             .sync_grads(&mut grads)
             .map_err(|error| error.with(SITE))?;
-        let mut slots: Vec<Slot<'_>> = views.iter_mut().map(OwnedSlot::view).collect();
+        let mut slots: Vec<Slot<'_>> = views
+            .iter_mut()
+            .map(|slot| slot.view())
+            .collect();
         self.optimizer
             .step(&mut slots, lr)
             .map_err(|error| error.with(SITE))?;
+        // 视图参数是取走时的拷贝：步进结果整块写回槽位、梯度向量归还缓冲，再镜像参数。
+        Self::return_views(&mut self.slots, &mut self.buffers, views);
         Self::mirror_params(&self.slots, &mut self.buffers)?;
-        // 归还步进前取走的梯度向量：窗口已步进，下一个窗口从空缓冲重新累加。
-        Self::return_views(&self.slots, &mut self.buffers, views);
+        self.zero_gradients();
         self.step = self.step.saturating_add(1);
         Ok(())
-    }
-
-    /// 把 [`Self::collect_views`] 取走的梯度向量按槽号归还；步进后梯度一律清空。
-    fn return_views(
-        slots: &[ParamSlot],
-        buffers: &mut Buffers<K>,
-        views: Vec<OwnedSlot>,
-    ) {
-        for (slot, view) in slots.iter().zip(views) {
-            buffers.put_back_gradient(slot.var(), view.grads);
-        }
-        buffers.clear_gradients();
-    }
-
-    /// 收集视图失败时的局部归还：已装配的前 `views.len()` 个槽对应 `slots` 前缀。
-    fn return_views_prefix(
-        slots: &mut [ParamSlot],
-        buffers: &mut Buffers<K>,
-        views: Vec<OwnedSlot>,
-    ) {
-        Self::return_views(&slots[..views.len()], buffers, views);
     }
 
     /// 登记权重绑定：回填时 `tied` 槽整块复制 `source` 槽的当前参数值（嵌入表与输出头共享权重的接缝）。
@@ -710,6 +693,24 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             views.push(OwnedSlot { params, grads, role });
         }
         Ok(views)
+    }
+
+    /// 把 [`Self::collect_views`] 取走的视图按槽号归位：更新后的参数真值回填进槽，梯度向量
+    /// 归还缓冲；是否清空梯度由步进收尾决定。
+    fn return_views(slots: &mut [ParamSlot], buffers: &mut Buffers<K>, views: Vec<OwnedSlot>) {
+        for (slot, view) in slots.iter_mut().zip(views) {
+            slot.params.copy_from_slice(&view.params);
+            buffers.put_back_gradient(slot.var(), view.grads);
+        }
+    }
+
+    /// 收集视图失败时的局部归还：已装配的前 `views.len()` 个槽对应 `slots` 前缀。
+    fn return_views_prefix(
+        slots: &mut [ParamSlot],
+        buffers: &mut Buffers<K>,
+        views: Vec<OwnedSlot>,
+    ) {
+        Self::return_views(&mut slots[..views.len()], buffers, views);
     }
 
     /// 把优化器写回后的参数值镜像回激活缓冲，供下一轮前向复用。

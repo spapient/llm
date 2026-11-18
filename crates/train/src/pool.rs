@@ -226,14 +226,12 @@ impl<K: Kernel> Buffers<K> {
             .and_then(Option::as_deref)
     }
 
-    /// 读一个变量当前梯度的可变视图；未装入时为 `None`。
-    pub fn gradient_mut(&mut self, var: Var) -> Option<&mut [f32]> {
-        self.gradients
-            .get_mut(var.id() as usize)
-            .and_then(Option::as_deref_mut)
+    /// 全部梯度槽的可变表：批量取视图用一条借用，避免逐槽重复可变借用。
+    pub fn gradients_mut(&mut self) -> &mut [Option<Vec<f32>>] {
+        &mut self.gradients
     }
 
-    /// 取走一个变量的梯度向量：整块移交可变视图的所有权，避免同一缓冲重复可变借用。
+    /// 取走一个变量的梯度向量：整块移交所有权，避免同一缓冲重复可变借用。
     ///
     /// 调用方在优化器/同步结束后把结果放回 [`Self::put_back_gradient`]；中途失败也必须归还，
     /// 否则该槽梯度会丢失。
@@ -246,11 +244,6 @@ impl<K: Kernel> Buffers<K> {
         if let Some(slot) = self.gradients.get_mut(var.id() as usize) {
             *slot = (!grads.is_empty()).then_some(grads);
         }
-    }
-
-    /// 全部梯度槽的可变表：批量取视图用一条借用，避免逐槽重复可变借用。
-    pub fn gradients_mut(&mut self) -> &mut [Option<Vec<f32>>] {
-        &mut self.gradients
     }
 
     /// 清空全部梯度缓冲：参数/激活槽不动，只归还梯度 lane 的向量。

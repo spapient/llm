@@ -66,7 +66,7 @@ fn a_weight_buffer_of_the_wrong_element_type_names_the_expected_one() {
     assert!(error.to_string().contains("f32"), "{error}");
 }
 
-/// 测试用的小粒度实例：`Quantized<4>` 与生产实例共用同一份实现。
+/// 测试用的小粒度实例：`Quantized<4>` 与生产实例共用同一份 [`Packed`] 实现，只换声明粒度 const。
 #[test]
 fn a_smaller_grain_is_the_same_implementation() {
     let sample = sample::<Quantized<4>>(16, 2);

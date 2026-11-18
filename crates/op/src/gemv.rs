@@ -23,8 +23,9 @@
 //! 最后一行是刻意的：把"内核已经做成运行时参数"的东西改成类型参数，换来的是每次不同分组都要
 //! 一份单态化副本与一次调用点上的匹配，而不是省下一条分支。
 
-use crate::einsum::{Formula, FormulaCache, OperandSpec};
+use crate::einsum::{Bits, Formula, FormulaCache, OperandSpec};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::quant::Row;
 use diagnostic::{Code, Error};
 
 /// 本骨架的基本轴：`m` 是规约轴（输入宽度），`n` 是输出轴。
@@ -59,6 +60,9 @@ pub trait Element: Copy + PartialEq + std::fmt::Debug + 'static {
     /// 测试侧闭式重算按位流解包时用：打包格式的元素就是 `u8`，不必再绕一遍 `Values` 变体。
     fn borrow_u8(slice: &[Self]) -> Option<&[u8]>;
 
+    /// 从打包字节构造本元素向量；`u8` 元素原样回收，`f32` 不可用。
+    fn from_bytes(bytes: Vec<u8>) -> Vec<Self>;
+
     /// 装成同名缓冲。
     fn buffer(name: &'static str, values: Vec<Self>) -> Buffer;
 }
@@ -75,6 +79,11 @@ impl Element for f32 {
 
     fn borrow_u8(_slice: &[Self]) -> Option<&[u8]> {
         None
+    }
+
+    fn from_bytes(_bytes: Vec<u8>) -> Vec<Self> {
+        // f32 逐元素格式不参与打包取样：此路径在单态化时不可达，留空切片作安全占位。
+        Vec::new()
     }
 
     fn buffer(name: &'static str, values: Vec<Self>) -> Buffer {
@@ -97,6 +106,10 @@ impl Element for u8 {
 
     fn borrow_u8(slice: &[Self]) -> Option<&[u8]> {
         Some(slice)
+    }
+
+    fn from_bytes(bytes: Vec<u8>) -> Vec<Self> {
+        bytes
     }
 
     fn buffer(name: &'static str, values: Vec<Self>) -> Buffer {
@@ -198,12 +211,24 @@ pub trait Format {
     ) -> diagnostic::Result<()>;
 }
 
+/// 4 位打包配置标记：骨架测试按不同粒度复用这一份配置；生产 i4 lane 用同名 [`I4`](crate::gemv_i4::I4) 别名。
+pub struct QuantI4;
+
+impl PackedRow for QuantI4 {
+    const ROW: Row = crate::quant::I4;
+
+    fn cell() -> &'static FormulaCache {
+        static CACHE: FormulaCache = FormulaCache::new();
+        &CACHE
+    }
+}
+
 /// 量化格式：`GRAIN` 个元素共用一条标度，每两个元素占一个字节（4 位一元素）。
 ///
-/// `GRAIN` 是**声明粒度**（代价的派生轴除数、样本里每行的标度数），不是运行期分组：
-/// 内核模板把分组当 `gsz` 实参收，所以 `forward` 仍按 `scales` 的长度推分组——把实际分组
-/// 也钉进类型会让"同一份权重换一种分组"变成另一份单态化副本，而模板根本没有这个自由度。
-pub struct Quantized<const GRAIN: usize>;
+/// 底层复用 [`Packed`] 的 4 位配置；`GRAIN` 是**声明粒度**（代价的派生轴除数、样本里每行的
+/// 标度数），不是运行期分组：内核模板把分组当 `gsz` 实参收，所以 `forward` 仍按 `scales` 的
+/// 长度推分组——把实际分组也钉进类型会让"同一份权重换一种分组"变成另一份单态化副本。
+pub type Quantized<const GRAIN: usize> = Packed<QuantI4, GRAIN>;
 
 /// 稠密格式：每 `BLOCK` 个元素一块累加（最后一块可以短），无打包、无标度。
 ///
@@ -211,17 +236,89 @@ pub struct Quantized<const GRAIN: usize>;
 /// `chunks(32)` 而不是 `chunks(gsz)`，块内可以整体展开与向量化。
 pub struct Dense<const BLOCK: usize>;
 
-/// 对称 8 位量化格式：`GRAIN` 个元素共用一条标度，每元素占一个字节（不打包、零点 0）。
-///
 /// 与 [`Quantized`] 的差别是不打包（每元素 1 字节、无 nibble 解包），与 [`Dense`] 的差别是
 /// 有 per-group 标度。`u8` 承载 int8 的位模式，算术时按 `i8` 解释。
 pub struct SymI8<const GRAIN: usize>;
 
-/// 对称 2 位量化格式：`GRAIN` 个元素共用一条标度，每字节四个 2-bit 码（低 2 位在前）。
+/// 打包格式的静态配置提供者：把一档精度的 [`Row`] 挂到一个标记类型上。
 ///
-/// 与 [`Quantized`] 同属打包格式，但打包密度是 4 码/字节；码值为有符号整数 `code − 2`
-/// （`-2..=1`），与 4 位格式一样走整数乘加，不在打包侧引入半整数。粒度必须是 4 的倍数。
-pub struct SymI2<const GRAIN: usize>;
+/// i2 / i4 两条打包格式只在配置表 [`Row`] 的位宽、码数、零点、码表、偏移上不同；这些事实
+/// 收敛到 [`Packed`] 的一份泛型 [`Format`] impl，新增一档打包精度只需写一条 `impl PackedRow`
+/// （或直接复用配置表），不再平行抄表达式、操作数表、派生轴、缓存与行守卫。
+pub trait PackedRow {
+    /// 这档精度的静态配置（位宽 / 码数 / 零点 / 码表 / 偏移）。
+    const ROW: Row;
+
+    /// 这档精度自己的表达式缓存单元格。
+    ///
+    /// 缓存必须按**配置**分开：实现者写成函数体里的 `static CACHE: FormulaCache =
+    /// FormulaCache::new(); &CACHE`；泛型 [`Packed`] 内的 `static` 不保证按配置单态化成独立
+    /// 单元格，两种精度会共用同一个 OnceLock，先解析的那份 operands 被后跑的格式复用（流量
+    /// 位宽串档）。与 [`FormulaCache`](crate::einsum::FormulaCache) 文档里"缓存留在各骨架
+    /// 类型上"的口径一致。
+    fn cell() -> &'static FormulaCache;
+}
+
+/// 配置驱动的打包权重格式：`GRAIN` 个元素共用一条标度，打包密度由 [`PackedRow::ROW`] 给出。
+///
+/// 类型参数 `P` 承载配置（编译期单态化），`G` 承载声明粒度；表达式、操作数表、派生轴除数、
+/// 分组倍数守卫与行切片全部读配置，格式侧只决定"用哪一行配置"。`P` 只在关联常量上被读出，
+/// 不占运行期字段，故用 [`PhantomData`] 标记这个编译期绑定。
+pub struct Packed<P: PackedRow, const G: usize> {
+    _config: core::marker::PhantomData<P>,
+}
+
+impl<P: PackedRow, const G: usize> Format for Packed<P, G> {
+    type Elem = u8;
+
+    /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 [`G`] 个元素切出来的派生轴。
+    const EXPR: &'static str = "nm,m,ng,n->n";
+
+    /// 三个输入都是读，只有输出是写；权重位宽取配置表，其余为 32 位浮点。
+    const OPERANDS: &'static [OperandSpec] = &[
+        OperandSpec::read("w", P::ROW.bits),
+        OperandSpec::read("x", Bits::ThirtyTwo),
+        OperandSpec::read("scales", Bits::ThirtyTwo),
+        OperandSpec::write("y", Bits::ThirtyTwo),
+    ];
+
+    const GRAIN: usize = G;
+
+    const DERIVED: Option<(char, char, usize)> = Some(('g', 'm', G));
+
+    const SCALES: Option<fn(usize) -> f32> = Some(scale_of);
+
+    const STEP: usize = G;
+
+    fn cache() -> &'static FormulaCache {
+        // 缓存单元格由标记类型各自持有，避免泛型 static 被合并成跨配置共享的一份。
+        P::cell()
+    }
+
+    fn row(m: usize) -> usize {
+        // 粒度必须是打包码数的倍数，否则"每行 m/cpb 字节"没有意义；单态化时求值。
+        const {
+            assert!(
+                G > 0 && G.is_multiple_of(P::ROW.cpb),
+                "打包粒度必须是正的每字节码数倍数"
+            )
+        };
+        m / P::ROW.cpb
+    }
+
+    fn weights(m: usize, n: usize) -> Vec<u8> {
+        packed::weights(m, n, P::ROW.cpb)
+    }
+
+    fn forward(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        packed::forward_rows(x, weights, scales, out, P::ROW.cpb, P::ROW.table)
+    }
+}
 
 /// 与权重格式无关的输入向量：两条算子共用同一份取值。
 fn input(m: usize) -> Vec<f32> {
@@ -359,11 +456,6 @@ pub mod packed {
     use super::{finite_scales, required_weights, scaled_groups};
     use diagnostic::{Code, Error};
 
-    /// 每字节 `cpb` 个码对应的位宽与码掩码。
-    const fn width(cpb: usize) -> usize {
-        8 / cpb
-    }
-
     /// 确定性打包权重：`n` 行、每行 `m / cpb` 个字节，同一形状取值可复现。
     pub fn weights(m: usize, n: usize, cpb: usize) -> Vec<u8> {
         (0..n * (m / cpb))
@@ -405,7 +497,8 @@ pub mod packed {
         cpb: usize,
         dequant: &[f32],
     ) -> f32 {
-        let width = width(cpb);
+        // 位宽走配置表派生：`width = 8 / cpb`，与 [`crate::quant::width_cpb`] 同一公式，不在这里第二份除法。
+        let width = crate::quant::width_cpb(cpb);
         let mask = (1u8 << width) - 1;
         let mut acc = 0.0f32;
         for ((packed, scale), xs) in packed_row

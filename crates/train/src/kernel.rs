@@ -104,11 +104,16 @@ unary!(
 binary!(
     add_f32,
     embed_f32,
-    gemv_f32,
     mul_f32,
     rmsnorm_f32,
     residual_add_f32
 );
+
+/// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
+fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (weights, x) = <(f32, f32) as Inputs>::unpack(inputs, "gemv_f32")?;
+    op::gemv_f32::forward(x, weights, output_slice::<f32>("gemv_f32", output)?)
+}
 gemm!(
     (gemm_f32, f32, op::gemm_f32::K),
     (gemm_i2, u8, op::gemm_i2::K / 4),

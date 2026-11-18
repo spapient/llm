@@ -171,6 +171,61 @@ fn rejects_single_column_with_no_successor() -> Result<()> {
     Ok(())
 }
 
+/// 验证集独立循环：只前向评估入账，不回传梯度、不步进优化器，也不污染训练指标序列。
+#[test]
+fn evaluate_runs_a_validation_pass_without_gradients_or_steps() -> Result<()> {
+    let (tape, sizes, p, x, logits, loss) = fixture();
+    let train_tokens = [0u32, 1];
+    let valid_tokens = [1u32, 0];
+    let config = TrainConfig::new(1e-2, 0, 3, None, 1)?;
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    let mut learner = Learner::new(session, VOCAB)?;
+
+    let mut train = Chunks::new(&train_tokens, 1, 2)?;
+    let mut valid = Chunks::new(&valid_tokens, 1, 2)?;
+
+    learner.run(
+        &mut train,
+        1,
+        |session, _tokens| {
+            session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+            session
+                .buffers()
+                .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+            session.buffers().compute("add_f32", &[p, x], loss)?;
+            session.plan(loss)?;
+            Ok(ForwardOut { logits, loss })
+        },
+        |session| {
+            session.load_gradient(p, &[1.0; N])?;
+            Ok(())
+        },
+    )?;
+
+    // 验证批：标签是 0，而 logits 顶在类别 1；独立账表记一条，训练账表不追加。
+    learner.evaluate(&mut valid, |session, _tokens| {
+        session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+        session
+            .buffers()
+            .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+        session.buffers().compute("add_f32", &[p, x], loss)?;
+        session.plan(loss)?;
+        Ok(ForwardOut { logits, loss })
+    })?;
+
+    let board = learner.board();
+    assert_eq!(board.len(), 1, "训练序列仍是一条，验证不追加");
+    assert_eq!(board.eval_points().len(), 1, "验证独立账表一条");
+    assert_eq!(learner.session().step(), 1, "验证批不步进优化器");
+    assert!(learner.session().accumulated_microbatches() == 0, "验证后梯度缓冲已清空");
+
+    let eval = board.eval_points().first().expect("已有评估点");
+    assert_eq!(eval.samples, 1, "一行一列后继位置 = 1 个样本");
+    assert_eq!(eval.accuracy(), 0.0, "验证标签 0 未命中类别 1");
+    Ok(())
+}
+
 /// 前向闭包失败时错误原样透传，未入账任何指标。
 #[test]
 fn forwards_forward_closure_error_without_recording() -> Result<()> {

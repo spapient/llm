@@ -34,7 +34,7 @@ pub fn sample(len: usize, _: usize) -> Sample {
 /// 标量参考：逐字节解两个 nibble，与内核同一公式。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let q = sample.u8("q")?;
-    Ok(dequant::reference_packed(q, I4.cpb, ZERO))
+    Ok(dequant::reference_packed(q, I4.cpb, I4.zero as f32))
 }
 
 /// 内核本体：结果写进调用方给的缓冲。

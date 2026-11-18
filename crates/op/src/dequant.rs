@@ -87,7 +87,7 @@ pub fn sample_packed(len: usize, cpb: usize) -> Sample {
 
 /// 解包字节内第 `slot` 个码，按对称零点回退成有符号值。
 pub fn unpack(byte: u8, slot: usize, cpb: usize, zero: f32) -> f32 {
-    let width = 8 / cpb;
+    let width = crate::quant::width_cpb(cpb);
     let mask = (1u8 << width) - 1;
     ((byte >> (slot * width)) & mask) as f32 - zero
 }
@@ -116,7 +116,7 @@ pub fn forward_packed(
     cpb: usize,
 ) -> diagnostic::Result<()> {
     check_len(q, out, cpb)?;
-    check_affine(scale, zero, 8 / cpb)?;
+    check_affine(scale, zero, crate::quant::width_cpb(cpb))?;
     for (byte, chunk) in q.iter().zip(out.chunks_mut(cpb)) {
         for (slot, place) in chunk.iter_mut().enumerate() {
             *place = scale * unpack(*byte, slot, cpb, zero);

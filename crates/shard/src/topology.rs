@@ -82,7 +82,12 @@ impl Topology {
     /// 单进程恒合法拓扑（1×1×1）：维度非零、乘积 1 在 `u32` 内，是 [`Self::new`] 的合法特例，
     /// 无需再包一层 `Result`。供进程内恒等编排直接取常量，避免在已知合法的输入上 `expect`。
     pub const fn single() -> Self {
-        Self { tp: 1, pp: 1, dp: 1, world: 1 }
+        Self {
+            tp: 1,
+            pp: 1,
+            dp: 1,
+            world: 1,
+        }
     }
 
     /// 张量并行度。

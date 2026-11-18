@@ -112,6 +112,36 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         Ok(())
     }
 
+    /// 在独立验证集上跑一轮：只做前向与评估入账，不回传梯度、不步进优化器、不并入训练序列。
+    ///
+    /// 评估指标进看板的独立账表（[`MetricsBoard::eval_points`]），训练样本数/加权均值/最优
+    /// loss 都不受验证批影响；跑完清空梯度缓冲，避免残留验证梯度混进下一个训练窗口。
+    ///
+    /// # Errors
+    ///
+    /// 批几何、前向或评估入账任一步失败都会透传；评估几何不自洽是 [`Code::Invalid`]。
+    pub fn evaluate<'a, F>(
+        &mut self,
+        dataset: &mut dyn Dataset<'a>,
+        mut forward: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&mut Session<K, O>, &[u32]) -> Result<ForwardOut>,
+    {
+        while let Some(batch) = dataset.next_batch() {
+            let prepared = self.forward_pass(
+                batch.rows(),
+                batch.cols(),
+                batch.tokens(),
+                &mut forward,
+            )?;
+            self.record_eval(&prepared.logits, &prepared.labels)?;
+        }
+        // 验证批不回传：清空可能残留的激活梯度，下一个训练窗口从空缓冲重新累加。
+        self.session.zero_gradients();
+        Ok(())
+    }
+
     /// 单个 micro-batch 的编排闭环：前向装配 → 评估入账 → 装梯度 → 优化步。
     fn train_batch<F, G>(
         &mut self,
@@ -181,7 +211,7 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
             .ok_or_else(|| Error::new(Code::Invalid, "logits 不是 f32 lane").with(SITE))
     }
 
-    /// 算 NLL 与命中率并记进看板；几何自洽性由 [`evaluate`] 统一校验。
+    /// 算 NLL 与命中率并记进训练看板；几何自洽性由 [`evaluate`] 统一校验。
     fn record(&mut self, logits: &[f32], labels: &[f32]) -> Result<()> {
         let (nll_sum, correct, total) = evaluate(logits, labels, self.vocab)?;
         let loss = (nll_sum / total as f64) as f32;
@@ -192,6 +222,19 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
             correct: correct as u64,
         };
         self.board.record(point).map_err(|error| error.with(SITE))
+    }
+
+    /// 算 NLL 与命中率并记进评估独立账表；步号沿用当前训练步，仅作对账标记。
+    fn record_eval(&mut self, logits: &[f32], labels: &[f32]) -> Result<()> {
+        let (nll_sum, correct, total) = evaluate(logits, labels, self.vocab)?;
+        let loss = (nll_sum / total as f64) as f32;
+        let point = MetricPoint {
+            step: self.session.step(),
+            samples: total,
+            loss,
+            correct: correct as u64,
+        };
+        self.board.record_eval(point).map_err(|error| error.with(SITE))
     }
 }
 

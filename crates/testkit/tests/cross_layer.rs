@@ -123,7 +123,7 @@ fn the_training_buffer_computes_the_scalar_reference_of_the_same_weights() {
     let layer = stack.layers()[0].linear().expect("线性层");
     let mut tape = Tape::new();
     let (x, w) = (tape.leaf(), tape.leaf());
-    let y = tape.record("gemv_f32", &[x, w]).expect("记录");
+    let y = tape.record("gemv_f32", &[w, x]).expect("记录");
     let mut sizes = Sizes::new(tape.vars());
     sizes.set(x, Shape::new([layer.in_features()]), DType::F32);
     sizes.set(
@@ -136,7 +136,7 @@ fn the_training_buffer_computes_the_scalar_reference_of_the_same_weights() {
     let mut store = Buffers::new(sizes, Reference);
     store.load(x, Data::F32(INPUT.to_vec())).expect("输入");
     store.load(w, Data::F32(weight.clone())).expect("权重");
-    store.compute("gemv_f32", &[x, w], y).expect("算");
+    store.compute("gemv_f32", &[w, x], y).expect("算");
     let observed = store.value(y).expect("有值");
     let observed = observed.f32().expect("f32 视图");
 

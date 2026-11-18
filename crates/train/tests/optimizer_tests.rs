@@ -5,12 +5,12 @@ use nn::ParamRole;
 
 fn slots<'a>(
     params: &'a mut [Vec<f32>],
-    grads: &'a [Vec<f32>],
+    grads: &'a mut [Vec<f32>],
     roles: &[ParamRole],
 ) -> Vec<Slot<'a>> {
     params
         .iter_mut()
-        .zip(grads.iter())
+        .zip(grads.iter_mut())
         .zip(roles.iter())
         .map(|((params, grads), role)| Slot {
             params,
@@ -39,12 +39,12 @@ fn group_mapping_follows_the_role() {
 #[test]
 fn sgd_takes_one_direct_step() {
     let mut params = [vec![1.0_f32, 2.0], vec![0.5]];
-    let grads = [vec![0.5_f32, -1.0], vec![0.25]];
+    let mut grads = [vec![0.5_f32, -1.0], vec![0.25]];
     let roles = [ParamRole::Trainable, ParamRole::Trainable];
     let mut optimizer = Sgd::new();
 
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect("长度一致");
 
     assert_eq!(params[0], [0.95_f32, 2.1]);
@@ -55,12 +55,12 @@ fn sgd_takes_one_direct_step() {
 #[test]
 fn weight_decay_applies_only_outside_exempt_groups() {
     let mut params = [vec![1.0_f32], vec![1.0]];
-    let grads = [vec![0.2_f32], vec![0.2]];
+    let mut grads = [vec![0.2_f32], vec![0.2]];
     let roles = [ParamRole::Norm, ParamRole::Trainable];
     let mut optimizer = Sgd::new().with_weight_decay(0.1);
 
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect("长度一致");
 
     // 豁免组：只减梯度项 0.1·0.2 = 0.02。
@@ -73,12 +73,12 @@ fn weight_decay_applies_only_outside_exempt_groups() {
 #[test]
 fn global_norm_clipping_scales_every_slot() {
     let mut params = [vec![1.0_f32]];
-    let grads = [vec![100.0_f32]];
+    let mut grads = [vec![100.0_f32]];
     let roles = [ParamRole::Trainable];
     let mut optimizer = Sgd::new().with_clip_norm(1.0);
 
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 1.0)
+        .step(&mut slots(&mut params, &mut grads, &roles), 1.0)
         .expect("长度一致");
 
     // 缩比 0.01：有效梯度 1.0，参数减 1.0。
@@ -89,12 +89,12 @@ fn global_norm_clipping_scales_every_slot() {
 #[test]
 fn a_length_mismatch_is_rejected_before_update() {
     let mut params = [vec![1.0_f32, 2.0]];
-    let grads = [vec![0.5_f32]];
+    let mut grads = [vec![0.5_f32]];
     let roles = [ParamRole::Trainable];
     let mut optimizer = Sgd::new();
 
     let error = optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect_err("长度不一致");
     assert_eq!(error.code(), Code::Invalid);
     assert_eq!(params[0], [1.0, 2.0], "拒绝前不改写参数");
@@ -104,19 +104,19 @@ fn a_length_mismatch_is_rejected_before_update() {
 #[test]
 fn adam_moves_the_param_with_momentum() {
     let mut params = [vec![1.0_f32]];
-    let grads = [vec![0.2_f32]];
+    let mut grads = [vec![0.2_f32]];
     let roles = [ParamRole::Trainable];
     let mut optimizer = Adam::new();
 
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect("长度一致");
     assert!(params[0][0] < 1.0, "第一步沿梯度方向下降");
     assert!(params[0][0] > 0.85, "偏差修正后步幅小于裸 SGD");
 
     let first = params[0][0];
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect("第二步");
     assert!(params[0][0] < first, "矩状态跨步保留，继续下降");
 }
@@ -125,14 +125,14 @@ fn adam_moves_the_param_with_momentum() {
 #[test]
 fn adam_moments_round_trip_through_restore() {
     let mut params = [vec![1.0_f32, 2.0]];
-    let grads = [vec![0.2_f32, -0.1]];
+    let mut grads = [vec![0.2_f32, -0.1]];
     let roles = [ParamRole::Trainable];
     let mut optimizer = Adam::new();
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect("第一步");
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect("第二步");
 
     let momentum = optimizer.momentum().iter().map(Vec::clone).collect();
@@ -163,10 +163,10 @@ fn adam_moments_round_trip_through_restore() {
     let mut params_restored = [params[0].clone()];
     let mut params_source = [params[0].clone()];
     restored
-        .step(&mut slots(&mut params_restored, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params_restored, &mut grads, &roles), 0.1)
         .expect("回载后第一步");
     optimizer
-        .step(&mut slots(&mut params_source, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params_source, &mut grads, &roles), 0.1)
         .expect("源优化器同一步");
     assert_eq!(params_restored[0], params_source[0], "回载后轨迹逐位对齐");
 }
@@ -189,12 +189,12 @@ fn restore_rejects_mismatched_moment_tables() {
 #[test]
 fn optimizer_is_object_safe() {
     let mut params = [vec![1.0_f32]];
-    let grads = [vec![0.5_f32]];
+    let mut grads = [vec![0.5_f32]];
     let roles = [ParamRole::Trainable];
     let mut optimizer: Box<dyn Optimizer> = Box::new(Sgd::new());
 
     optimizer
-        .step(&mut slots(&mut params, &grads, &roles), 0.1)
+        .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
         .expect("长度一致");
     assert!((params[0][0] - 0.95).abs() < 1e-7);
 }

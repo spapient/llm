@@ -33,10 +33,15 @@ impl MetricPoint {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MetricsBoard {
     points: Vec<MetricPoint>,
+    eval_points: Vec<MetricPoint>,
     samples: u64,
     loss_sum: f64,
     correct: u64,
     best_loss: Option<f32>,
+    eval_samples: u64,
+    eval_loss_sum: f64,
+    eval_correct: u64,
+    best_eval_loss: Option<f32>,
 }
 
 impl MetricsBoard {
@@ -45,7 +50,7 @@ impl MetricsBoard {
         Self::default()
     }
 
-    /// 记一条步指标；累计样本、加权 loss 与命中条数，并刷新最优 loss。
+    /// 记一条训练步指标；累计样本、加权 loss 与命中条数，并刷新最优 loss。
     ///
     /// # Errors
     ///
@@ -64,9 +69,33 @@ impl MetricsBoard {
         Ok(())
     }
 
-    /// 已记账的指标点（按入账顺序）。
+    /// 记一条评估步指标：独立账表，不并入训练序列的样本数、加权均值与最优 loss。
+    ///
+    /// # Errors
+    ///
+    /// 样本数为 0、loss 非有限数，或命中条数超过样本数时返回 [`Code::Invalid`]。
+    pub fn record_eval(&mut self, point: MetricPoint) -> Result<()> {
+        validate(&point)?;
+        let samples = point.samples as u64;
+        self.eval_samples += samples;
+        self.eval_loss_sum += point.loss as f64 * samples as f64;
+        self.eval_correct += point.correct;
+        self.best_eval_loss = Some(match self.best_eval_loss {
+            Some(best) => best.min(point.loss),
+            None => point.loss,
+        });
+        self.eval_points.push(point);
+        Ok(())
+    }
+
+    /// 已记账的训练指标点（按入账顺序）。
     pub fn points(&self) -> &[MetricPoint] {
         &self.points
+    }
+
+    /// 已记账的评估指标点（与训练序列分开）。
+    pub fn eval_points(&self) -> &[MetricPoint] {
+        &self.eval_points
     }
 
     /// 已记账的点数。
@@ -96,9 +125,25 @@ impl MetricsBoard {
             .map(|samples| self.correct as f32 / samples as f32)
     }
 
-    /// 各步最低 loss；空看板为 `None`。
+    /// 各步最低训练 loss；空看板为 `None`。
     pub fn best_loss(&self) -> Option<f32> {
         self.best_loss
+    }
+
+    /// 评估账表样本加权平均 loss；无评估样本为 `None`。
+    pub fn mean_eval_loss(&self) -> Option<f32> {
+        (self.eval_samples > 0).then_some((self.eval_loss_sum / self.eval_samples as f64) as f32)
+    }
+
+    /// 评估账表样本加权命中率；无评估样本为 `None`。
+    pub fn mean_eval_accuracy(&self) -> Option<f32> {
+        (self.eval_samples > 0)
+            .then_some(self.eval_correct as f32 / self.eval_samples as f32)
+    }
+
+    /// 各步最低评估 loss；空看板为 `None`。
+    pub fn best_eval_loss(&self) -> Option<f32> {
+        self.best_eval_loss
     }
 
     /// 累计样本数（大于 0 时才参与加权均值）。

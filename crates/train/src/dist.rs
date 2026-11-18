@@ -16,6 +16,7 @@ pub(crate) const SITE: &str = "train::Distributed";
 /// 分布式编排配置：拓扑、本进程 rank 与通信后端；梯度同步口径随配置走。
 ///
 /// `E` 是通信后端实现；单进程场景用 [`Distributed::none`]，不必套 `Option` 分支穿透会话。
+#[derive(Debug, Clone, PartialEq)]
 pub struct Distributed<E: Collective> {
     topology: Topology,
     rank: u32,
@@ -111,12 +112,24 @@ impl<E: Collective> Distributed<E> {
         let Some(collective) = self.collective.as_mut() else {
             return Ok(());
         };
-        reduce_slots(collective, &group, self.reduce, slots)?;
-        if self.average {
-            average_slots(slots, &group)?;
-        }
+        synchronize(collective, &group, self.reduce, self.average, slots)?;
         Ok(())
     }
+}
+
+/// 组内归约各槽梯度；配置开启平均时再按数据并行组数取均值。
+fn synchronize<E: Collective>(
+    collective: &mut E,
+    group: &Group,
+    reduce: Reduce,
+    average: bool,
+    slots: &mut [&mut [f32]],
+) -> Result<()> {
+    reduce_slots(collective, group, reduce, slots)?;
+    if average {
+        average_slots(slots, group)?;
+    }
+    Ok(())
 }
 
 /// 组内对每个槽位梯度按 [`Reduce`] 归约；后端错误原样透传。
@@ -148,3 +161,7 @@ fn average_slots(slots: &mut [&mut [f32]], group: &Group) -> Result<()> {
 
 /// 远端占位后端别名：单进程 [`Distributed::none`] 用它占位，不挂真实通信栈。
 pub use shard::{Local, Remote};
+
+#[cfg(test)]
+#[path = "../tests/dist_tests.rs"]
+mod tests;
