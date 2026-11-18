@@ -529,9 +529,6 @@ int main(int argc, const char **argv) {{
     )
 }
 
-/// 缓冲形参的 MSL 元素类型复用 [`CType::c_name`]：F32→`float`、U8→`unsigned char`（与 `.k` 的
-/// `u8` typedef 同义）。标量不传到这里——调用方已按 `is_buffer` 过滤。
-
 #[cfg(test)]
 #[path = "../tests/harness_tests.rs"]
 mod tests;

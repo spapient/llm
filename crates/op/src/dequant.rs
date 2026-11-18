@@ -125,6 +125,55 @@ pub fn forward_packed(
     Ok(())
 }
 
+/// 生成一份「打包反量化」精度变体的完整公开面：`SCALE`/`ZERO` 常量、代价/样本/参考/
+/// `forward` 入口、[`annotation::model`] 别名与测试挂载。`dequant_i2`/`dequant_i4` 只差一行
+/// [`Row`]；新增一档打包反量化加一次调用即可。
+#[macro_export]
+macro_rules! dequant_packed {
+    ($name:ident, $alias:ident, $op:tt, $test:tt, $row:ident) => {
+        /// 反量化标度（2 的负幂网格，f32 精确）。
+        pub const SCALE: f32 = $crate::dequant::SCALE;
+
+        /// 打包对称零点（取自配置表 [`$row`]）。
+        pub const ZERO: f32 = $row.zero as f32;
+
+        // 单轴定义与形状投影复用打包骨架。
+        pub use $crate::dequant::{AXES, project_shape};
+
+        /// 标量代价：每元素一次减法一次乘法；读打包字节，写 `n` 个 f32。
+        pub fn cost(shape: &$crate::model::ShapeContext) -> diagnostic::Result<$crate::model::Cost> {
+            $crate::dequant::cost_packed(shape, $row.cpb)
+        }
+
+        /// 确定性样本：`q`（打包字节）、`y`（`n` 个 f32）。
+        pub fn sample(len: usize, _: usize) -> $crate::model::Sample {
+            $crate::dequant::sample_packed(len, $row.cpb)
+        }
+
+        /// 标量参考：逐字节解包，与内核同一公式。
+        pub fn reference(sample: &$crate::model::Sample) -> diagnostic::Result<Vec<f32>> {
+            let q = sample.u8("q")?;
+            Ok($crate::dequant::reference_packed(q, $row.cpb, $row.zero as f32))
+        }
+
+        /// 内核本体：结果写进调用方给的缓冲。
+        pub fn forward(scale: f32, zero: f32, q: &[u8], out: &mut [f32]) -> diagnostic::Result<()> {
+            $crate::dequant::forward_packed(scale, zero, q, out, $row.cpb)
+        }
+
+        #[doc = concat!("`", $op, "` 的标记类型：位宽与零点见配置表，骨架见 `crate::dequant`。")]
+        pub struct $name;
+
+        #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = $op)]
+        #[doc = concat!("`", $op, "` 的语义别名。")]
+        pub type $alias = $name;
+
+        #[cfg(test)]
+        #[path = $test]
+        mod tests;
+    };
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     /// 生成 dequant_i2/i4 共有的三则测试：参考对拍、退化边界、仿射参数负例。
