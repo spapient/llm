@@ -14,6 +14,7 @@ use diagnostic::{Code, Error, Result};
 
 use autograd::Var;
 use data::Dataset;
+use shard::Collective;
 
 use crate::loss::evaluate;
 use crate::metrics::{MetricPoint, MetricsBoard};
@@ -39,15 +40,18 @@ struct Prepared {
 }
 
 /// 训练编排器：包住一个会话与一块指标看板，按 epoch 遍历数据集推进。
-pub struct Learner<K: Kernel, O: Optimizer> {
-    session: Session<K, O>,
+///
+/// `C` 是通信后端，默认 [`Remote`](crate::Remote) 走单进程恒等回路；接分布式后端时显式传入，
+/// 编排器本体对后端透明——梯度同步发生在 [`Session::optimize`] 内部，本层不感知。
+pub struct Learner<K: Kernel, O: Optimizer, C: Collective = shard::Remote> {
+    session: Session<K, O, C>,
     board: MetricsBoard,
     vocab: usize,
 }
 
-impl<K: Kernel, O: Optimizer> Learner<K, O> {
+impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     /// 由已装配会话与词表宽度构造；词表为 0 是 [`Code::Invalid`]。
-    pub fn new(session: Session<K, O>, vocab: usize) -> Result<Self> {
+    pub fn new(session: Session<K, O, C>, vocab: usize) -> Result<Self> {
         if vocab == 0 {
             return Err(Error::new(Code::Invalid, "词表宽度不能为 0").with(SITE));
         }
@@ -59,12 +63,12 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
     }
 
     /// 会话状态（只读）。
-    pub fn session(&self) -> &Session<K, O> {
+    pub fn session(&self) -> &Session<K, O, C> {
         &self.session
     }
 
     /// 会话状态（可变：登记参数、装权重、回载快照等装配动作走这里）。
-    pub fn session_mut(&mut self) -> &mut Session<K, O> {
+    pub fn session_mut(&mut self) -> &mut Session<K, O, C> {
         &mut self.session
     }
 
@@ -74,7 +78,7 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
     }
 
     /// 拆解回收会话：快照导出/回载等需要裸会话的场景取走会话本体。
-    pub fn into_session(self) -> Session<K, O> {
+    pub fn into_session(self) -> Session<K, O, C> {
         self.session
     }
 
@@ -95,8 +99,8 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         mut backward: G,
     ) -> Result<()>
     where
-        F: FnMut(&mut Session<K, O>, &[u32]) -> Result<ForwardOut>,
-        G: FnMut(&mut Session<K, O>) -> Result<()>,
+        F: FnMut(&mut Session<K, O, C>, &[u32]) -> Result<ForwardOut>,
+        G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         for _epoch in 0..epochs {
             while let Some(batch) = dataset.next_batch() {
@@ -122,7 +126,7 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
     /// 批几何、前向或评估入账任一步失败都会透传；评估几何不自洽是 [`Code::Invalid`]。
     pub fn evaluate<'a, F>(&mut self, dataset: &mut dyn Dataset<'a>, mut forward: F) -> Result<()>
     where
-        F: FnMut(&mut Session<K, O>, &[u32]) -> Result<ForwardOut>,
+        F: FnMut(&mut Session<K, O, C>, &[u32]) -> Result<ForwardOut>,
     {
         while let Some(batch) = dataset.next_batch() {
             let prepared =
@@ -144,8 +148,8 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         backward: &mut G,
     ) -> Result<()>
     where
-        F: FnMut(&mut Session<K, O>, &[u32]) -> Result<ForwardOut>,
-        G: FnMut(&mut Session<K, O>) -> Result<()>,
+        F: FnMut(&mut Session<K, O, C>, &[u32]) -> Result<ForwardOut>,
+        G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         let prepared = self.forward_pass(rows, cols, tokens, forward)?;
         self.finish(prepared, backward)?;
@@ -157,7 +161,7 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
     /// 回传段见 [`Self::backward_with`]；`backward` 闭包在自动回算之后保留为覆盖/追加口。
     fn finish<G>(&mut self, prepared: Prepared, backward: &mut G) -> Result<()>
     where
-        G: FnMut(&mut Session<K, O>) -> Result<()>,
+        G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         self.record(&prepared.logits, &prepared.labels)?;
         self.backward_with(backward)?;
@@ -168,7 +172,7 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
     /// 自动回算参数梯度，再跑调用方闭包覆盖/追加口。
     fn backward_with<G>(&mut self, backward: &mut G) -> Result<()>
     where
-        G: FnMut(&mut Session<K, O>) -> Result<()>,
+        G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         self.session.backward()?;
         backward(&mut self.session)?;
@@ -184,7 +188,7 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         forward: &mut F,
     ) -> Result<Prepared>
     where
-        F: FnMut(&mut Session<K, O>, &[u32]) -> Result<ForwardOut>,
+        F: FnMut(&mut Session<K, O, C>, &[u32]) -> Result<ForwardOut>,
     {
         self.session.accept_batch(rows, cols, tokens.len())?;
         let out = forward(&mut self.session, tokens)?;

@@ -341,9 +341,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
     let lib = fs::read_to_string(root().join("crates/op/src/lib.rs"))
         .expect("`crates/op/src/lib.rs` 必须存在");
-    // 注册表是一张表：`registry! { "名字" => 语义模块, .. }`，一行一对。字段由宏展开成
-    // `Registration { name, template, model: <模块>::MODEL }`，所以表里剩下的就是"哪条算子用
-    // 哪个模块的 `MODEL`"——这正是本测试要核对的那件事，逐字抄 22 份结构不携带任何额外信息。
+    // 注册表是一张表：`registry! { "名字" => 语义模块, 是否可微, .. }`，一行三列。字段由宏
+    // 展开成 `Registration { name, template, model: <模块>::MODEL, differentiable }`，其中
+    // "哪条算子用哪个模块的 `MODEL`"正是本测试要核对的那件事；`differentiable` 是可微标记，
+    // 由 `train::backprop` 的编译期断言消费，不参与本镜像核对。
     let start = lib
         .find("registry! {")
         .expect("`REGISTRY` 不见了：它是语义表的唯一入口");
@@ -360,7 +361,8 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
             .trim_end_matches(',')
             .trim_matches('"')
             .to_string();
-        let module = module.trim().trim_end_matches(',');
+        // 模块标识是第一列，后面跟着 `是否可微` 标记列：只取 `=>` 之后到第一个逗号为止。
+        let module = module.trim().split(',').next().unwrap_or_default().trim();
         models.push(format!("{module}::MODEL"));
         names.push(name);
     }

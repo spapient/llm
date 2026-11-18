@@ -394,12 +394,13 @@ fn embed_table_gradient_matches_central_differences() -> Result<()> {
     Ok(())
 }
 
-/// 尚未接反向公式的算子在回传时显式报 [`Code::Unsupported`]，不静默忽略。
+/// 不可微算子在回传时显式报 [`Code::Unsupported`]，不静默忽略。反量化是推理期解码，
+/// 权重/码值无训练梯度，因此不登记反向公式。
 #[test]
 fn unsupported_operator_backward_is_rejected() -> Result<()> {
     let mut tape = Tape::new();
     let p = tape.parameter();
-    let y = tape.record("rope_f32", &[p]).expect("记录 y");
+    let y = tape.record("dequant_i8", &[p]).expect("记录 y");
 
     let mut sizes = Sizes::new(tape.vars());
     sizes.set(p, Shape::new([N]), DType::F32);
@@ -407,10 +408,273 @@ fn unsupported_operator_backward_is_rejected() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
-    session.buffers().compute("rope_f32", &[p], y)?;
+    session.buffers().compute("dequant_i8", &[p], y)?;
     session.plan(y)?;
 
-    let error = session.backward().expect_err("rope 还没有解析反向");
+    let error = session.backward().expect_err("反量化没有解析反向");
     assert_eq!(error.code(), Code::Unsupported);
+    Ok(())
+}
+
+/// 中心差分：把 `base[index]` 扰动 ±STEP，用闭式 `f` 重算损失。
+fn central(f: impl Fn(&[f32]) -> f32, base: &[f32], index: usize) -> f32 {
+    let mut plus = base.to_vec();
+    plus[index] += STEP;
+    let mut minus = base.to_vec();
+    minus[index] -= STEP;
+    (f(&plus) - f(&minus)) / (2.0 * STEP)
+}
+
+/// RMSNorm 闭式：`y = γ·x / sqrt(mean(x²)+eps)`，返回逐元素和。
+fn rmsnorm_loss(x: &[f32], gamma: &[f32]) -> f32 {
+    let mean_sq = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
+    let rms = (mean_sq + op::rmsnorm_f32::EPS).sqrt();
+    x.iter().zip(gamma).map(|(x, g)| g * x / rms).sum()
+}
+
+/// RoPE 闭式：位置固定 7，偶数下标与奇数下标成对旋转，奇数长度末尾透传；返回逐元素和。
+fn rope_loss(x: &[f32]) -> f32 {
+    let d = x.len();
+    let pairs = d / 2;
+    let mut out = vec![0.0; d];
+    for i in 0..pairs {
+        let freq = op::rope_f32::BASE.powf(-(2.0 * i as f32) / d as f32);
+        let angle = 7.0 * freq;
+        let (sin, cos) = angle.sin_cos();
+        out[2 * i] = x[2 * i] * cos - x[2 * i + 1] * sin;
+        out[2 * i + 1] = x[2 * i] * sin + x[2 * i + 1] * cos;
+    }
+    if d % 2 == 1 {
+        out[d - 1] = x[d - 1];
+    }
+    out.iter().sum()
+}
+
+/// 两行向量的点积：`a[i]·b[j]`，行主序、行宽 `d`。
+fn row_dot(a: &[f32], b: &[f32], i: usize, j: usize, d: usize) -> f32 {
+    (0..d).map(|h| a[i * d + h] * b[j * d + h]).sum()
+}
+
+/// 注意力闭式：`O = softmax(QKᵀ/√d)·V`，查询行数与历史行数解耦，返回全部输出的和。
+fn attention_loss(q: &[f32], k: &[f32], v: &[f32], q_rows: usize, hist: usize, d: usize) -> f32 {
+    let scale = 1.0 / (d as f32).sqrt();
+    let mut total = 0.0;
+    for i in 0..q_rows {
+        let scores: Vec<f32> = (0..hist).map(|j| row_dot(q, k, i, j, d) * scale).collect();
+        let max = scores.iter().copied().fold(f32::MIN, f32::max);
+        let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        total += (0..d)
+            .map(|h| {
+                (0..hist)
+                    .map(|j| (exps[j] / sum) * v[j * d + h])
+                    .sum::<f32>()
+            })
+            .sum::<f32>();
+    }
+    total
+}
+
+/// `loss = reduce_sum(rmsnorm(x, gamma))`：`dx` 与 `dgamma` 都闭式对拍。
+#[test]
+fn rmsnorm_matches_central_differences() -> Result<()> {
+    let mut tape = Tape::new();
+    let x = tape.parameter();
+    let gamma = tape.parameter();
+    let y = tape.record("rmsnorm_f32", &[x, gamma]).expect("记录 y");
+    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(x, Shape::new([N]), DType::F32);
+    sizes.set(gamma, Shape::new([N]), DType::F32);
+    sizes.set(y, Shape::new([N]), DType::F32);
+    sizes.set(loss, Shape::new([1]), DType::F32);
+
+    let x0 = vec![0.4_f32, -0.9, 1.3];
+    let gamma0 = vec![0.7_f32, 1.1, 0.5];
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
+    session.register_parameter(gamma, ParamRole::Trainable, gamma0.clone())?;
+    session.buffers().compute("rmsnorm_f32", &[x, gamma], y)?;
+    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+    session.plan(loss)?;
+    session.backward()?;
+
+    let dx = session.buffers().gradient(x).expect("x 梯度应在场");
+    for (index, actual) in dx.iter().enumerate() {
+        let numeric = central(|x| rmsnorm_loss(x, &gamma0), &x0, index);
+        assert!(
+            close(*actual, numeric),
+            "x[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    let dgamma = session.buffers().gradient(gamma).expect("gamma 梯度应在场");
+    for (index, actual) in dgamma.iter().enumerate() {
+        let numeric = central(|gamma| rmsnorm_loss(&x0, gamma), &gamma0, index);
+        assert!(
+            close(*actual, numeric),
+            "gamma[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    Ok(())
+}
+
+/// `loss = reduce_sum(rope(x))`：旋转正交，反向即转置；奇数长度末尾透传。
+#[test]
+fn rope_matches_central_differences() -> Result<()> {
+    let mut tape = Tape::new();
+    let x = tape.parameter();
+    let y = tape.record("rope_f32", &[x]).expect("记录 y");
+    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(x, Shape::new([N]), DType::F32);
+    sizes.set(y, Shape::new([N]), DType::F32);
+    sizes.set(loss, Shape::new([1]), DType::F32);
+
+    let x0 = vec![0.5_f32, -0.7, 1.1];
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
+    session.buffers().compute("rope_f32", &[x], y)?;
+    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+    session.plan(loss)?;
+    session.backward()?;
+
+    let grad = session.buffers().gradient(x).expect("x 梯度应在场");
+    for (index, actual) in grad.iter().enumerate() {
+        let numeric = central(rope_loss, &x0, index);
+        assert!(
+            close(*actual, numeric),
+            "x[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    Ok(())
+}
+
+/// `loss = reduce_sum(attention(q,k,v))`：`dq` / `dk` / `dv` 三路闭式对拍（头宽固定 8）。
+#[test]
+fn attention_matches_central_differences() -> Result<()> {
+    let d = op::attention::MODEL.shape.1;
+    let s = 2usize;
+    let len = s * d;
+    let mut tape = Tape::new();
+    let q = tape.parameter();
+    let k = tape.parameter();
+    let v = tape.parameter();
+    let y = tape.record("attention_f32", &[q, k, v]).expect("记录 y");
+    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(q, Shape::new([len]), DType::F32);
+    sizes.set(k, Shape::new([len]), DType::F32);
+    sizes.set(v, Shape::new([len]), DType::F32);
+    sizes.set(y, Shape::new([len]), DType::F32);
+    sizes.set(loss, Shape::new([1]), DType::F32);
+
+    let q0: Vec<f32> = (0..len).map(|i| 0.07 * i as f32 - 0.5).collect();
+    let k0: Vec<f32> = (0..len).map(|i| -0.05 * i as f32 + 0.4).collect();
+    let v0: Vec<f32> = (0..len).map(|i| 0.09 * i as f32 - 0.3).collect();
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(q, ParamRole::Trainable, q0.clone())?;
+    session.register_parameter(k, ParamRole::Trainable, k0.clone())?;
+    session.register_parameter(v, ParamRole::Trainable, v0.clone())?;
+    session.buffers().compute("attention_f32", &[q, k, v], y)?;
+    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+    session.plan(loss)?;
+    session.backward()?;
+
+    let dq = session.buffers().gradient(q).expect("q 梯度应在场");
+    for (index, actual) in dq.iter().enumerate() {
+        let numeric = central(|q| attention_loss(q, &k0, &v0, s, s, d), &q0, index);
+        assert!(
+            close(*actual, numeric),
+            "q[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    let dk = session.buffers().gradient(k).expect("k 梯度应在场");
+    for (index, actual) in dk.iter().enumerate() {
+        let numeric = central(|k| attention_loss(&q0, k, &v0, s, s, d), &k0, index);
+        assert!(
+            close(*actual, numeric),
+            "k[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    let dv = session.buffers().gradient(v).expect("v 梯度应在场");
+    for (index, actual) in dv.iter().enumerate() {
+        let numeric = central(|v| attention_loss(&q0, &k0, v, s, s, d), &v0, index);
+        assert!(
+            close(*actual, numeric),
+            "v[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    Ok(())
+}
+
+/// `loss = reduce_sum(decode_attention(q,k,v))`：查询一行、历史两行，三路梯度闭式对拍。
+#[test]
+fn decode_attention_matches_central_differences() -> Result<()> {
+    let d = op::decode_attention::MODEL.shape.1;
+    let q_rows = 1usize;
+    let hist = 2usize;
+    let q_len = q_rows * d;
+    let kv_len = hist * d;
+    let mut tape = Tape::new();
+    let q = tape.parameter();
+    let k = tape.parameter();
+    let v = tape.parameter();
+    let y = tape
+        .record("decode_attention_f32", &[q, k, v])
+        .expect("记录 y");
+    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(q, Shape::new([q_len]), DType::F32);
+    sizes.set(k, Shape::new([kv_len]), DType::F32);
+    sizes.set(v, Shape::new([kv_len]), DType::F32);
+    sizes.set(y, Shape::new([q_len]), DType::F32);
+    sizes.set(loss, Shape::new([1]), DType::F32);
+
+    let q0: Vec<f32> = (0..q_len).map(|i| 0.11 * i as f32 - 0.4).collect();
+    let k0: Vec<f32> = (0..kv_len).map(|i| -0.08 * i as f32 + 0.5).collect();
+    let v0: Vec<f32> = (0..kv_len).map(|i| 0.12 * i as f32 - 0.2).collect();
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(q, ParamRole::Trainable, q0.clone())?;
+    session.register_parameter(k, ParamRole::Trainable, k0.clone())?;
+    session.register_parameter(v, ParamRole::Trainable, v0.clone())?;
+    session
+        .buffers()
+        .compute("decode_attention_f32", &[q, k, v], y)?;
+    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+    session.plan(loss)?;
+    session.backward()?;
+
+    let dq = session.buffers().gradient(q).expect("q 梯度应在场");
+    for (index, actual) in dq.iter().enumerate() {
+        let numeric = central(|q| attention_loss(q, &k0, &v0, q_rows, hist, d), &q0, index);
+        assert!(
+            close(*actual, numeric),
+            "q[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    let dk = session.buffers().gradient(k).expect("k 梯度应在场");
+    for (index, actual) in dk.iter().enumerate() {
+        let numeric = central(|k| attention_loss(&q0, k, &v0, q_rows, hist, d), &k0, index);
+        assert!(
+            close(*actual, numeric),
+            "k[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
+    let dv = session.buffers().gradient(v).expect("v 梯度应在场");
+    for (index, actual) in dv.iter().enumerate() {
+        let numeric = central(|v| attention_loss(&q0, &k0, v, q_rows, hist, d), &v0, index);
+        assert!(
+            close(*actual, numeric),
+            "v[{index}] 解析 {actual} 与差分 {numeric} 超差"
+        );
+    }
     Ok(())
 }

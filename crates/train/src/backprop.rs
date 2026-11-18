@@ -5,13 +5,15 @@
 //! 分给各输入并累加，每收满一份贡献就结算一步。
 //!
 //! 反向公式表与前向内核表同构：算子名、元数与派生几何都在 [`FORMULAS`] 闭集里登记，未接
-//! 公式的算子遇到即返回 [`Code::Unsupported`]，执行循环不逐名字 `match` 散落分支。归一化、
-//! 位置编码、注意力、反量化与量化权重通路本轮未接，公式目录后续按算子逐个补。
+//! 公式的算子遇到即返回 [`Code::Unsupported`]，执行循环不逐名字 `match` 散落分支。[`FORMULAS`]
+//! 与 [`op::REGISTRY`] 的 `differentiable` 标记在编译期互锁：可微算子缺公式、公式指向不可微
+//! 算子、或公式重复登记都是编译错误。量化权重 / 反量化算子（`gemv_i*` / `gemm_i*` /
+//! `dequant_i*`）的权重输入是 u8 码，属推理期解码，不参与训练反向，保持 [`Code::Unsupported`]。
 
 use autograd::{Node, Schedule, Tape, Var};
 use diagnostic::{Code, Error, Result};
 
-use crate::kernel::Kernel;
+use crate::kernel::{Kernel, same_str};
 use crate::pool::Buffers;
 
 /// 本模块诊断站点。
@@ -147,8 +149,10 @@ struct Entry {
     formula: Formula,
 }
 
-/// 已接反向公式的算子目录；其余算子在 [`apply_formula`] 处回 [`Code::Unsupported`]。
-const FORMULAS: [Entry; 12] = [
+/// 已接反向公式的可微算子目录；其余算子（量化权重 / 反量化）在 [`apply_formula`] 处回
+/// [`Code::Unsupported`]。与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应，由下方 `const`
+/// 断言在编译期守住。
+const FORMULAS: [Entry; 18] = [
     Entry {
         op: "add_f32",
         formula: passthrough,
@@ -197,7 +201,95 @@ const FORMULAS: [Entry; 12] = [
         op: "embed_f32",
         formula: embed,
     },
+    Entry {
+        op: "rmsnorm_f32",
+        formula: rmsnorm,
+    },
+    Entry {
+        op: "rope_f32",
+        formula: rope,
+    },
+    Entry {
+        op: "attention_f32",
+        formula: attention,
+    },
+    Entry {
+        op: "flash_attention_f32",
+        formula: attention,
+    },
+    Entry {
+        op: "decode_attention_f32",
+        formula: decode_attention,
+    },
+    Entry {
+        op: "decode_flash_attention_f32",
+        formula: decode_attention,
+    },
 ];
+
+/// 编译期闭合：公式目录与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应。
+///
+/// - 每个标记为可微的算子都有一条公式；
+/// - 每条公式都指向一个可微且已注册的算子；
+/// - 公式目录里没有重复算子名。
+const _: () = formulas_cover(&FORMULAS, &op::REGISTRY);
+
+/// 双向互锁：可微算子缺公式、公式指向不可微/未注册算子、或公式重复，都是编译错误。
+const fn formulas_cover(formulas: &[Entry], registry: &[op::Registration]) {
+    let mut i = 0;
+    while i < registry.len() {
+        assert!(
+            !registry[i].differentiable || has_formula(formulas, registry[i].name),
+            "存在标记为可微却缺少反向公式的算子"
+        );
+        i += 1;
+    }
+    let mut j = 0;
+    while j < formulas.len() {
+        assert!(
+            differentiable(registry, formulas[j].op),
+            "存在反向公式指向不可微或未注册的算子"
+        );
+        assert!(!duplicate(formulas, j), "存在重复登记的反向公式");
+        j += 1;
+    }
+}
+
+/// 公式目录里是否已有某算子名。
+const fn has_formula(formulas: &[Entry], name: &str) -> bool {
+    let mut i = 0;
+    while i < formulas.len() {
+        if same_str(formulas[i].op, name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 算子名是否登记为可微；未注册返回 `false`（不存在"可微但未注册"的算子）。
+const fn differentiable(registry: &[op::Registration], name: &str) -> bool {
+    let mut i = 0;
+    while i < registry.len() {
+        if same_str(registry[i].name, name) {
+            return registry[i].differentiable;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 公式目录第 `at` 条之前是否已登记同名算子。
+const fn duplicate(formulas: &[Entry], at: usize) -> bool {
+    let mut i = 0;
+    while i < at {
+        if same_str(formulas[i].op, formulas[at].op) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 /// 按算子名查公式；目录未登记即回 [`Code::Unsupported`]。
 fn lookup(op: &str) -> Result<Formula> {
@@ -365,6 +457,222 @@ fn embed(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     }
     // 索引输入无雅可比：贡献置空，只回传表梯度。
     Ok(vec![vec![0.0; index.len()], dtable])
+}
+
+/// 训练内核 `rope_f32` 的固定位置：与 `kernel.rs` 的 `rope_f32` 同口径（标量槽尚未接进训练内核）。
+const ROPE_POS: f32 = 7.0;
+
+/// `y = γ·x / rms(x)`：`dx[j] = g[j]·γ[j]/r − x[j]·Σ_i g[i]·γ[i]·x[i] / (n·r³)`，
+/// `dγ[i] = g[i]·x[i]/r`。
+fn rmsnorm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let (dx, dgamma) = rmsnorm_grad(&ctx.inputs[0], &ctx.inputs[1], ctx.incoming)?;
+    Ok(vec![dx, dgamma])
+}
+
+/// RMSNorm 反向本体：均方根与加权和先各算一遍，逐元素公式用迭代器表达，不展开第二套循环。
+fn rmsnorm_grad(x: &[f32], gamma: &[f32], grad: &[f32]) -> Result<(Vec<f32>, Vec<f32>)> {
+    let n = x.len();
+    if n == 0 {
+        return Err(Error::new(Code::Invalid, "rmsnorm 反向输入不能为空").with(SITE));
+    }
+    let mean_sq = x.iter().map(|v| v * v).sum::<f32>() / n as f32;
+    let rms = (mean_sq + op::rmsnorm_f32::EPS).sqrt();
+    let weighted = grad
+        .iter()
+        .zip(gamma)
+        .zip(x)
+        .map(|((&g, &w), &v)| g * w * v)
+        .sum::<f32>();
+    let dx = grad
+        .iter()
+        .zip(gamma)
+        .zip(x)
+        .map(|((&g, &w), &v)| g * w / rms - v * weighted / (n as f32 * rms * rms * rms))
+        .collect();
+    let dgamma = grad.iter().zip(x).map(|(&g, &v)| g * v / rms).collect();
+    Ok((dx, dgamma))
+}
+
+/// `y = R(θ)·x`：旋转矩阵正交，反向即转置 `R(−θ)`。
+fn rope(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    Ok(vec![rope_grad(&ctx.inputs[0], ctx.incoming)])
+}
+
+/// RoPE 反向本体：逐对把上游梯度按同一角度旋转回去；末尾不成对的元素原样透传。
+fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
+    let d = x.len();
+    let pairs = d / 2;
+    let mut dx = vec![0.0; d];
+    for i in 0..pairs {
+        let angle = ROPE_POS * op::rope_f32::BASE.powf(-(2.0 * i as f32) / d as f32);
+        let (sin, cos) = angle.sin_cos();
+        dx[2 * i] = grad[2 * i] * cos + grad[2 * i + 1] * sin;
+        dx[2 * i + 1] = -grad[2 * i] * sin + grad[2 * i + 1] * cos;
+    }
+    if d % 2 == 1 {
+        dx[d - 1] = grad[d - 1];
+    }
+    dx
+}
+
+/// 自注意力（`attention_f32` / `flash_attention_f32` 共用）：返回 `[dq, dk, dv]`。
+fn attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let d = op::attention::MODEL.shape.1;
+    let s = divide(ctx.inputs[0].len(), d, "attention_f32")?;
+    let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), s, s);
+    Ok(vec![dq, dk, dv])
+}
+
+/// decode 注意力（`decode_attention_f32` / `decode_flash_attention_f32` 共用）：查询行数与历史
+/// 行数解耦，返回 `[dq, dk, dv]`。
+fn decode_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let d = op::decode_attention::MODEL.shape.1;
+    let q_rows = divide(ctx.inputs[0].len(), d, "decode_attention_f32")?;
+    let hist = divide(ctx.inputs[1].len(), d, "decode_attention_f32")?;
+    let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), q_rows, hist);
+    Ok(vec![dq, dk, dv])
+}
+
+/// 由公式上下文拼出注意力反向的只读视野。
+fn attention_ctx<'a>(ctx: &Context<'a>, d: usize) -> AttentionCtx<'a> {
+    AttentionCtx {
+        q: &ctx.inputs[0],
+        k: &ctx.inputs[1],
+        v: &ctx.inputs[2],
+        dout: ctx.incoming,
+        d,
+        scale: 1.0 / (d as f32).sqrt(),
+    }
+}
+
+/// 注意力反向的只读视野：三个输入的前向值与输出上游梯度。
+struct AttentionCtx<'a> {
+    q: &'a [f32],
+    k: &'a [f32],
+    v: &'a [f32],
+    dout: &'a [f32],
+    d: usize,
+    scale: f32,
+}
+
+/// 一条查询行的反向中间量：softmax 概率与分数梯度（`√d` 缩放前的口径）。
+struct AttentionRow {
+    probs: Vec<f32>,
+    ds: Vec<f32>,
+}
+
+/// 注意力反向本体：逐查询行算概率与分数梯度，再散射回 `dq` / `dk` / `dv`。
+fn attention_grad(
+    ctx: AttentionCtx<'_>,
+    q_rows: usize,
+    hist: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut dq = vec![0.0; q_rows * ctx.d];
+    let mut dk = vec![0.0; hist * ctx.d];
+    let mut dv = vec![0.0; hist * ctx.d];
+    for i in 0..q_rows {
+        let row = attention_row(&ctx, i, hist);
+        scatter(&row, &ctx, i, hist, &mut dq, &mut dk, &mut dv);
+    }
+    (dq, dk, dv)
+}
+
+/// 一条查询行：`p = softmax(QKᵀ/√d)`、`dP = dO·V`、`dS = p·(dP − Σ p·dP)`。
+fn attention_row(ctx: &AttentionCtx<'_>, i: usize, hist: usize) -> AttentionRow {
+    let probs = probabilities(ctx.q, ctx.k, i, hist, ctx.d, ctx.scale);
+    let dp = output_grad_row(ctx.dout, ctx.v, i, hist, ctx.d);
+    let ds = score_grad_row(&probs, &dp);
+    AttentionRow { probs, ds }
+}
+
+/// 数值稳定的 softmax 概率：先减行内最大分数再取指数，与前向同口径。
+fn probabilities(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
+    let scores = score_row(q, k, i, hist, d, scale);
+    let max = scores.iter().copied().fold(f32::MIN, f32::max);
+    let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
+    let sum: f32 = exps.iter().sum();
+    exps.iter().map(|e| e / sum).collect()
+}
+
+/// 一行分数 `S[i,j] = q[i]·k[j]/√d`。
+fn score_row(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
+    let mut scores = vec![0.0; hist];
+    for (j, slot) in scores.iter_mut().enumerate() {
+        *slot = dot_rows(q, k, i, j, d) * scale;
+    }
+    scores
+}
+
+/// 两行向量的点积：`a[i]·b[j]`，均按行宽 `d` 的行主序展开。
+fn dot_rows(a: &[f32], b: &[f32], i: usize, j: usize, d: usize) -> f32 {
+    let mut sum = 0.0;
+    for h in 0..d {
+        sum += a[i * d + h] * b[j * d + h];
+    }
+    sum
+}
+
+/// `dP[i,j] = Σ_h dO[i,h]·v[j,h]`。
+fn output_grad_row(dout: &[f32], v: &[f32], i: usize, hist: usize, d: usize) -> Vec<f32> {
+    let mut dp = vec![0.0; hist];
+    for (j, slot) in dp.iter_mut().enumerate() {
+        *slot = dot_rows(dout, v, i, j, d);
+    }
+    dp
+}
+
+/// softmax 反向：`dS[i,j] = p[i,j]·(dP[i,j] − Σ_j p[i,j]·dP[i,j])`。
+fn score_grad_row(probs: &[f32], dp: &[f32]) -> Vec<f32> {
+    let weighted = dp.iter().zip(probs).map(|(d, p)| d * p).sum::<f32>();
+    dp.iter()
+        .zip(probs)
+        .map(|(d, p)| p * (d - weighted))
+        .collect()
+}
+
+/// 把一条查询行的贡献散射进 `dq` / `dk` / `dv`。
+fn scatter(
+    row: &AttentionRow,
+    ctx: &AttentionCtx<'_>,
+    i: usize,
+    hist: usize,
+    dq: &mut [f32],
+    dk: &mut [f32],
+    dv: &mut [f32],
+) {
+    for j in 0..hist {
+        accumulate_row(row, ctx, i, j, dq, dk, dv);
+    }
+}
+
+/// 单点散射：`dV += p·dO`，`dQ += dS·k/√d`，`dK += dS·q/√d`。
+fn accumulate_row(
+    row: &AttentionRow,
+    ctx: &AttentionCtx<'_>,
+    i: usize,
+    j: usize,
+    dq: &mut [f32],
+    dk: &mut [f32],
+    dv: &mut [f32],
+) {
+    let s = row.ds[j] * ctx.scale;
+    for h in 0..ctx.d {
+        dv[j * ctx.d + h] += row.probs[j] * ctx.dout[i * ctx.d + h];
+        dq[i * ctx.d + h] += s * ctx.k[j * ctx.d + h];
+        dk[j * ctx.d + h] += s * ctx.q[i * ctx.d + h];
+    }
+}
+
+/// 行数派生：长度必须能被头宽整除，否则是装配口径问题。
+fn divide(len: usize, d: usize, op: &str) -> Result<usize> {
+    if d == 0 || !len.is_multiple_of(d) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("`{op}` 长度 {len} 不能按头宽 {d} 整除"),
+        )
+        .with(SITE));
+    }
+    Ok(len / d)
 }
 
 /// `W[n,k]` 的行主序形状：`k` 由输入宽度给定，`n` 由权重长度整除推出；不整除是装配口径问题。

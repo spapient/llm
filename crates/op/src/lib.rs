@@ -96,7 +96,7 @@ use diagnostic::data::Table;
 
 use model::Model;
 
-/// 一次注册：一个算子的三件事——名字、模板、语义表。
+/// 一次注册：一个算子的四件事——名字、模板、语义表、是否可微。
 ///
 /// **这是唯一一处注册表**：加一个算子只改这里。声明正文由 [`build.rs`](../build.rs) 在编译期
 /// 从 `ops/<name>.toml` 生成，[`builtin()`] 与 [`model()`] 都从 [`REGISTRY`] 投影出来，不存在
@@ -109,6 +109,9 @@ pub struct Registration {
     pub template: &'static str,
     /// 代价、样本与标量参考。
     pub model: Model,
+    /// 训练反向图里是否可微：`true` 的算子必须配套一条反向公式（`train::backprop` 在编译期
+    /// 据此断言公式目录与可微算子集一一对应，缺一条或指向不可微算子都是编译错误）。
+    pub differentiable: bool,
 }
 
 /// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => 语义模块`。
@@ -117,10 +120,10 @@ pub struct Registration {
 /// `MODEL` 所在的 `src/<模块>.rs`。两列多数同名，只有 `attention_f32` 与 `flash_attention_f32`
 /// 不同名——它们共用 [`attention`] 的全部语义，只换标量参考（见 [`flash_attention`]）。
 ///
-/// 一条注册原本要写五句、把同一份结构逐字抄 22 遍（110 行），而能变的只有这两列。加一个算子
+/// 一条注册原本要写五句、把同一份结构逐字抄 22 遍（110 行），而能变的只有这三列。加一个算子
 /// 仍然只改本调用里的一行 + `ops/` 两个文件 + 一个模块。
 macro_rules! registry {
-    ($($name:literal => $module:ident),* $(,)?) => {
+    ($($name:literal => $module:ident, $differentiable:literal),* $(,)?) => {
         /// 编译期内嵌的算子注册表。
         ///
         /// 新增算子在这里补一行，否则发布出去的二进制里没有它；
@@ -132,6 +135,7 @@ macro_rules! registry {
                     name: $name,
                     template: include_str!(concat!("../ops/", $name, ".k")),
                     model: $module::MODEL,
+                    differentiable: $differentiable,
                 }
             ),*
         ];
@@ -140,33 +144,33 @@ macro_rules! registry {
 }
 
 registry! {
-    "add_f32" => add_f32,
-    "attention_f32" => attention,
-    "decode_attention_f32" => decode_attention,
-    "decode_flash_attention_f32" => decode_flash_attention,
-    "dequant_i2" => dequant_i2,
-    "dequant_i4" => dequant_i4,
-    "dequant_i8" => dequant_i8,
-    "embed_f32" => embed_f32,
-    "flash_attention_f32" => flash_attention,
-    "gelu_f32" => gelu_f32,
-    "gemm_f32" => gemm_f32,
-    "gemm_i2" => gemm_i2,
-    "gemm_i4" => gemm_i4,
-    "gemm_i8" => gemm_i8,
-    "gemv_f32" => gemv_f32,
-    "gemv_i2" => gemv_i2,
-    "gemv_i4" => gemv_i4,
-    "gemv_i8" => gemv_i8,
-    "mul_f32" => mul_f32,
-    "reduce_max_f32" => reduce_max_f32,
-    "reduce_sum_f32" => reduce_sum_f32,
-    "residual_add_f32" => residual_add_f32,
-    "rmsnorm_f32" => rmsnorm_f32,
-    "rope_f32" => rope_f32,
-    "scale_f32" => scale_f32,
-    "silu_f32" => silu_f32,
-    "softmax_f32" => softmax_f32,
+    "add_f32" => add_f32, true,
+    "attention_f32" => attention, true,
+    "decode_attention_f32" => decode_attention, true,
+    "decode_flash_attention_f32" => decode_flash_attention, true,
+    "dequant_i2" => dequant_i2, false,
+    "dequant_i4" => dequant_i4, false,
+    "dequant_i8" => dequant_i8, false,
+    "embed_f32" => embed_f32, true,
+    "flash_attention_f32" => flash_attention, true,
+    "gelu_f32" => gelu_f32, true,
+    "gemm_f32" => gemm_f32, true,
+    "gemm_i2" => gemm_i2, false,
+    "gemm_i4" => gemm_i4, false,
+    "gemm_i8" => gemm_i8, false,
+    "gemv_f32" => gemv_f32, true,
+    "gemv_i2" => gemv_i2, false,
+    "gemv_i4" => gemv_i4, false,
+    "gemv_i8" => gemv_i8, false,
+    "mul_f32" => mul_f32, true,
+    "reduce_max_f32" => reduce_max_f32, true,
+    "reduce_sum_f32" => reduce_sum_f32, true,
+    "residual_add_f32" => residual_add_f32, true,
+    "rmsnorm_f32" => rmsnorm_f32, true,
+    "rope_f32" => rope_f32, true,
+    "scale_f32" => scale_f32, true,
+    "silu_f32" => silu_f32, true,
+    "softmax_f32" => softmax_f32, true,
 }
 
 /// 名字是否在注册表里；const 上下文可用。

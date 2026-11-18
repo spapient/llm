@@ -75,3 +75,55 @@ fn a_rank_outside_the_topology_is_rejected_at_construction() -> Result<()> {
     assert_eq!(error.code(), Code::Invalid);
     Ok(())
 }
+
+/// 会话级端到端：`Session::with_distributed` 接 2-rank 进程内后端，`optimize` 在步进前先把
+/// 参数槽梯度组内平均，再按平均梯度（而非本 rank 的原始梯度）更新参数。
+#[test]
+fn distributed_session_averages_gradients_before_the_step() -> Result<()> {
+    use crate::{Reference, Session, Sgd, TrainConfig};
+    use autograd::{Sizes, Tape};
+    use nn::ParamRole;
+    use tensor::{DType, Shape};
+
+    let width = 3usize;
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(p, Shape::new([width]), DType::F32);
+
+    let grad0 = [0.1_f32, 0.2, 0.3];
+    let grad1 = [0.3_f32, 0.6, 0.9];
+    let topology = topology();
+    let mut local = Local::new(topology, width)?;
+    local.load(0, &grad0)?;
+    local.load(1, &grad1)?;
+    let distributed = Distributed::new(topology, 0, local)?;
+
+    let mut session = Session::<Reference, Sgd, Local>::with_distributed(
+        tape,
+        sizes,
+        Reference,
+        Sgd::new(),
+        TrainConfig::default(),
+        distributed,
+    )?;
+    assert!(
+        session.distributed().is_distributed(),
+        "会话应挂上真实通信后端"
+    );
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0_f32, 2.0, 3.0])?;
+    session.load_gradient(p, &grad0)?;
+
+    session.optimize()?;
+
+    // 平均梯度 = (grad0 + grad1) / 2 = [0.2, 0.4, 0.6]，默认 lr = 1e-3。
+    let expected = [0.9998_f32, 1.9996, 2.9994];
+    let actual = session.slots()[0].params();
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "参数[{index}] 应按平均梯度更新为 {expected}，实际 {actual}"
+        );
+    }
+    Ok(())
+}

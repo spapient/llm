@@ -244,7 +244,7 @@ const fn same_order(entries: &[Entry], registry: &[op::Registration]) {
 }
 
 /// `const` 上下文里没有可用的 `str` 比较，逐字节比。
-const fn same_str(left: &str, right: &str) -> bool {
+pub(crate) const fn same_str(left: &str, right: &str) -> bool {
     let (left, right) = (left.as_bytes(), right.as_bytes());
     if left.len() != right.len() {
         return false;
