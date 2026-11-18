@@ -615,10 +615,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         self.distributed
             .sync_grads(&mut grads)
             .map_err(|error| error.with(SITE))?;
-        let mut slots: Vec<Slot<'_>> = views
-            .iter_mut()
-            .map(|slot| slot.view())
-            .collect();
+        let mut slots: Vec<Slot<'_>> = views.iter_mut().map(|slot| slot.view()).collect();
         self.optimizer
             .step(&mut slots, lr)
             .map_err(|error| error.with(SITE))?;
@@ -673,10 +670,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     ///
     /// 梯度向量按槽整块取走（[`Buffers::take_gradient`]），步进结束后在
     /// [`Self::return_views`] 归还；参数槽与梯度表因此各只建立一条可变借用。
-    fn collect_views(
-        slots: &mut [ParamSlot],
-        buffers: &mut Buffers<K>,
-    ) -> Result<Vec<OwnedSlot>> {
+    fn collect_views(slots: &mut [ParamSlot], buffers: &mut Buffers<K>) -> Result<Vec<OwnedSlot>> {
         let meta: Vec<(Var, ParamRole)> = slots.iter().map(|s| (s.var(), s.role())).collect();
         let mut views = Vec::with_capacity(meta.len());
         for (index, (var, role)) in meta.into_iter().enumerate() {
@@ -690,7 +684,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
                 .with(SITE));
             };
             let params = slots[index].params().to_vec();
-            views.push(OwnedSlot { params, grads, role });
+            views.push(OwnedSlot {
+                params,
+                grads,
+                role,
+            });
         }
         Ok(views)
     }

@@ -101,13 +101,7 @@ unary!(
     reduce_sum_f32,
     scale_f32
 );
-binary!(
-    add_f32,
-    embed_f32,
-    mul_f32,
-    rmsnorm_f32,
-    residual_add_f32
-);
+binary!(add_f32, embed_f32, mul_f32, rmsnorm_f32, residual_add_f32);
 
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
 fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {

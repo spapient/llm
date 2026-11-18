@@ -314,9 +314,9 @@ fn gemm_matches_central_differences() -> Result<()> {
     let b0: Vec<f32> = (0..k * n).map(|i| 0.08 * i as f32 - 0.4).collect();
     let chain_loss = |a: &[f32], b: &[f32]| {
         (0..m)
-            .flat_map(|i| (0..n).map(move |j| {
-                (0..k).map(|p| a[i * k + p] * b[p * n + j]).sum::<f32>()
-            }))
+            .flat_map(|i| {
+                (0..n).map(move |j| (0..k).map(|p| a[i * k + p] * b[p * n + j]).sum::<f32>())
+            })
             .sum::<f32>()
     };
 
@@ -328,7 +328,13 @@ fn gemm_matches_central_differences() -> Result<()> {
     session.plan(loss)?;
     session.backward()?;
 
-    let out_before = session.buffers().value(y).expect("y 在场").f32().expect("f32").to_vec();
+    let out_before = session
+        .buffers()
+        .value(y)
+        .expect("y 在场")
+        .f32()
+        .expect("f32")
+        .to_vec();
     eprintln!("DEBUG gemm out={out_before:?}");
     let grad = session.buffers().gradient(a).expect("A 梯度应在场");
     eprintln!("DEBUG gemm grad={grad:?}");

@@ -39,11 +39,7 @@ pub(crate) fn backprop<K: Kernel>(
 }
 
 /// 单节点反向：取上游梯度、装配公式上下文，查表执行并把逐输入贡献喂回梯度槽。
-fn reverse_step<K: Kernel>(
-    buffers: &mut Buffers<K>,
-    tape: &Tape,
-    step: &Node,
-) -> Result<()> {
+fn reverse_step<K: Kernel>(buffers: &mut Buffers<K>, tape: &Tape, step: &Node) -> Result<()> {
     let incoming = incoming(buffers, step)?.to_vec();
     let input_values = collect_inputs(buffers, step)?;
     let output = values(buffers, step.output())?.to_vec();
@@ -132,11 +128,7 @@ fn incoming<'a, K: Kernel>(buffers: &'a Buffers<K>, step: &Node) -> Result<&'a [
 }
 
 fn unsupported(op: &str) -> Error {
-    Error::new(
-        Code::Unsupported,
-        format!("算子 `{op}` 还没有解析反向公式"),
-    )
-    .with(SITE)
+    Error::new(Code::Unsupported, format!("算子 `{op}` 还没有解析反向公式")).with(SITE)
 }
 
 /// 公式只读上下文：上游梯度、各输入前向值、输出前向值（均为本节点前向快照）。

@@ -218,7 +218,10 @@ fn evaluate_runs_a_validation_pass_without_gradients_or_steps() -> Result<()> {
     assert_eq!(board.len(), 1, "训练序列仍是一条，验证不追加");
     assert_eq!(board.eval_points().len(), 1, "验证独立账表一条");
     assert_eq!(learner.session().step(), 1, "验证批不步进优化器");
-    assert!(learner.session().accumulated_microbatches() == 0, "验证后梯度缓冲已清空");
+    assert!(
+        learner.session().accumulated_microbatches() == 0,
+        "验证后梯度缓冲已清空"
+    );
 
     let eval = board.eval_points().first().expect("已有评估点");
     assert_eq!(eval.samples, 1, "一行一列后继位置 = 1 个样本");

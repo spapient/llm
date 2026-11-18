@@ -120,21 +120,13 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
     /// # Errors
     ///
     /// 批几何、前向或评估入账任一步失败都会透传；评估几何不自洽是 [`Code::Invalid`]。
-    pub fn evaluate<'a, F>(
-        &mut self,
-        dataset: &mut dyn Dataset<'a>,
-        mut forward: F,
-    ) -> Result<()>
+    pub fn evaluate<'a, F>(&mut self, dataset: &mut dyn Dataset<'a>, mut forward: F) -> Result<()>
     where
         F: FnMut(&mut Session<K, O>, &[u32]) -> Result<ForwardOut>,
     {
         while let Some(batch) = dataset.next_batch() {
-            let prepared = self.forward_pass(
-                batch.rows(),
-                batch.cols(),
-                batch.tokens(),
-                &mut forward,
-            )?;
+            let prepared =
+                self.forward_pass(batch.rows(), batch.cols(), batch.tokens(), &mut forward)?;
             self.record_eval(&prepared.logits, &prepared.labels)?;
         }
         // 验证批不回传：清空可能残留的激活梯度，下一个训练窗口从空缓冲重新累加。
@@ -234,7 +226,9 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
             loss,
             correct: correct as u64,
         };
-        self.board.record_eval(point).map_err(|error| error.with(SITE))
+        self.board
+            .record_eval(point)
+            .map_err(|error| error.with(SITE))
     }
 }
 

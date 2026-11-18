@@ -56,7 +56,10 @@ fn summation_mode_keeps_the_group_sum_without_dividing_by_size() -> Result<()> {
 
     let mut distributed = Distributed::new(topology, 0, local)?.with_average(false);
     let mut grads = [vec![2.0, 4.0, 6.0]];
-    let mut views: Vec<&mut [f32]> = grads.iter_mut().map(|gradient| gradient.as_mut_slice()).collect();
+    let mut views: Vec<&mut [f32]> = grads
+        .iter_mut()
+        .map(|gradient| gradient.as_mut_slice())
+        .collect();
 
     distributed.sync_grads(&mut views)?;
 
