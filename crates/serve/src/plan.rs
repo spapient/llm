@@ -89,27 +89,31 @@ pub(crate) struct LayerPlan {
     pub(crate) entry: Option<String>,
     pub(crate) in_features: usize,
     pub(crate) out_features: usize,
-    /// 驻留权重元素数；一元点wise无权重，为 `None`。
+    /// 驻留权重元素数；一元点wise无权重，为 `None`。量化投影这里是**打包字节数**。
     pub(crate) weight_len: Option<usize>,
-    /// 驻留权重声明形状；无权重为空表。
+    /// 驻留权重声明形状；无权重为空表。量化投影这里是打包字节形状 `[out, in/cpb]`。
     pub(crate) weight_shape: Vec<usize>,
+    /// 量化标度条数；非量化投影为 `None`。
+    pub(crate) scales_len: Option<usize>,
+    /// 量化标度声明形状 `[out, in/group]`；非量化投影为空表。
+    pub(crate) scales_shape: Vec<usize>,
+    /// 量化标度条目名；非量化投影为 `None`。
+    pub(crate) scale_entry: Option<String>,
 }
 
-/// 投影层必须是 F32 稠密格式，且能推出已注册算子名；其余在此拒绝。块内投影复用同一份判据。
+/// 投影层必须能推出已注册算子名（F32 稠密或分组匹配内核的 int4/int8）；其余在此拒绝。
+/// 块内投影复用同一份判据，格式到算子名的映射统一走 [`WeightFormat::operator`]，不另立一份表。
 pub(crate) fn plan_operator(name: &str, linear: &Linear) -> Result<&'static str> {
-    if linear.format() != WeightFormat::F32 {
-        return Err(Error::new(
+    linear.format().operator().ok_or_else(|| {
+        Error::new(
             Code::Unsupported,
             format!(
-                "层 `{name}` 是 {}，P1 只接 F32 稠密投影：{}",
+                "层 `{name}` 是 {}，没有可装配的内核：{}",
                 linear.format(),
                 linear.format().unpriced_reason()
             ),
         )
-        .with(SITE));
-    }
-    linear.format().operator().ok_or_else(|| {
-        Error::new(Code::Unsupported, format!("层 `{name}` 没有可装配的内核")).with(SITE)
+        .with(SITE)
     })
 }
 
@@ -159,26 +163,42 @@ fn check_chain(prev_out: Option<usize>, plan: &LayerPlan, name: &str) -> Result<
 
 /// 核对驻留权重条目存在且长度符合族别；一元点wise无权重，直接通过。
 ///
-/// 期望长度由族别在出计划时填好（投影 `in × out`、归一化 gamma `width`、查表 `vocab × dim`）。
+/// 期望长度由族别在出计划时填好：稠密投影 `in × out`（f32 元素）、量化投影打包字节
+/// `out · in/cpb` + 标度 `out · in/group`、归一化 gamma `width`、查表 `vocab × dim`。
+/// 权重块长度按块自身形态（稠密元素数 / 打包字节数）统一取 `Block::len`，量化再单查标度条目。
 fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
-    let Some(expected) = plan.weight_len else {
-        return Ok(());
-    };
     let Some(entry) = &plan.entry else {
         return Ok(());
     };
     let Some(block) = params.get(entry) else {
         return Err(Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE));
     };
+    let expected = plan.weight_len.expect("有条目必有权重长度");
     if block.len() != expected {
         return Err(Error::new(
             Code::Invalid,
-            format!(
-                "条目 `{entry}` 有 {} 个元素，而需要 {expected}",
-                block.len()
-            ),
+            format!("条目 `{entry}` 有 {} 个元素/字节，而需要 {expected}", block.len()),
         )
         .with(SITE));
+    }
+    if let Some((scale_entry, scales_len)) = plan.scale_entry.as_ref().zip(plan.scales_len) {
+        let Some(scale_block) = params.get(scale_entry) else {
+            return Err(Error::new(
+                Code::Missing,
+                format!("参数表缺标度条目 `{scale_entry}`"),
+            )
+            .with(SITE));
+        };
+        if scale_block.len() != scales_len {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "标度条目 `{scale_entry}` 有 {} 个元素，而需要 {scales_len}",
+                    scale_block.len()
+                ),
+            )
+            .with(SITE));
+        }
     }
     Ok(())
 }
@@ -212,6 +232,9 @@ fn build_plan(
         out_features,
         weight_len,
         weight_shape,
+        scales_len: None,
+        scales_shape: Vec::new(),
+        scale_entry: None,
     }
 }
 
@@ -220,7 +243,7 @@ fn entry_name(layer: &dyn Contract) -> String {
     format!("{}{WEIGHT_SUFFIX}", layer.name())
 }
 
-/// 投影层装配计划：身份、F32 格式、算子名与 `[out, in]` 权重整块。
+/// 投影层装配计划：身份、格式、算子名与权重整块。量化格式给打包字节形状 + 标度形状。
 fn projection_plan(
     layer: &dyn Contract,
     linear: &Linear,
@@ -228,17 +251,51 @@ fn projection_plan(
     params: &Params,
 ) -> Result<LayerPlan> {
     let operator = plan_operator(layer.name(), linear)?;
-    let plan = build_plan(
+    let (weight_len, weight_shape, scales_len, scales_shape) =
+        projection_shapes(linear.format(), linear.in_features(), linear.out_features());
+    let mut plan = build_plan(
         LayerKind::Projection,
         operator.to_string(),
         Some(entry_name(layer)),
         linear.in_features(),
         linear.out_features(),
-        Some(linear.in_features() * linear.out_features()),
-        vec![linear.out_features(), linear.in_features()],
+        weight_len,
+        weight_shape,
     );
+    plan.scales_len = scales_len;
+    plan.scales_shape = scales_shape;
+    plan.scale_entry = params
+        .scale_entry(&entry_name(layer))
+        .map(str::to_owned);
     check_plan(prev_out, &plan, layer.name(), params)?;
     Ok(plan)
+}
+
+/// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节 `[out, in/cpb]`
+/// + 标度 `[out, in/group]`。位宽决定每字节码数（i4 为 2、i8 为 1），分组来自格式声明。
+fn projection_shapes(
+    format: WeightFormat,
+    in_features: usize,
+    out_features: usize,
+) -> (Option<usize>, Vec<usize>, Option<usize>, Vec<usize>) {
+    let (cpb, group) = match format {
+        WeightFormat::Int4 { group } => (2, group),
+        WeightFormat::Int8 { group } => (1, group),
+        _ => {
+            return (
+                Some(out_features * in_features),
+                vec![out_features, in_features],
+                None,
+                Vec::new(),
+            )
+        }
+    };
+    (
+        Some(out_features * in_features.div_ceil(cpb)),
+        vec![out_features, in_features.div_ceil(cpb)],
+        Some(out_features * in_features.div_ceil(group)),
+        vec![out_features, in_features.div_ceil(group)],
+    )
 }
 
 /// 等长族计划（一元点wise / 归一化 / 逐元素二元 / 位置编码）：宽度取自输出形状；归一化带 gamma
