@@ -266,7 +266,10 @@ fn a_batch_forward_fault_releases_all_pages_without_accounting_tokens() {
 
         let error = state.step_batch().expect_err("坏序列上抛服务端错误");
         assert_eq!(error.code(), diagnostic::Code::Internal);
-        assert!(state.batch.is_empty(), "前向失败时两条都还没记账，页全部归还、序列摘出");
+        assert!(
+            state.batch.is_empty(),
+            "前向失败时两条都还没记账，页全部归还、序列摘出"
+        );
     }
     // 锁先放掉再查页账：`in_use_pages` 也要取同一把互斥锁，不能重入。
     assert_eq!(endpoint.in_use_pages(), Some(0), "失败路径也必须归还页");

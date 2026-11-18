@@ -42,6 +42,7 @@ cargo run --bin cutile -- doctor --op gemv_i4 --device cpu   # 整条链逐行�
 cargo run --bin cutile -- verify --op gemv_i4 --devices cpu  # 见证 + 对拍 + 协商首档
 cargo run --bin cutile -- bench  --op gemv_i4 --repeat 5     # 达成率（未测量时明说，不省略）
 cargo run --bin cutile -- cache gc --limit 1073741824        # 容量回收
+cargo run --bin cutile -- ledger --out ledger.md            # 跨档案能力台账
 ```
 
 CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err 0.000e0`；GPU 档案的片段与见证
@@ -197,11 +198,12 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
     ├── device.rs              # 统一设备：按 Emit 查描述符表；共享装载/起进程/回读 + C/CUDA/Metal 三段编排（无 unsafe）
     ├── gate.rs / witness.rs    # 语言门与见证执行器
     ├── pipeline.rs             # 四条命令共用的流水线（Run / Prepared / …）
+    ├── ledger.rs                # 跨档案能力台账：证据行聚合与原语×后端矩阵格（不走 pipeline）
     └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
 ```
 
 命令策略与机制同处 `crates/cutile`，但**分层不混**：`build` / `runner` / `toolchain` / `harness` / `cap` / `cache` / `emit`
-是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` 是命令策略
+是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` 是命令策略；`ledger` 跨档案聚合证据行与矩阵格，不经 `pipeline`
 （决定"跑哪些形状、跑几次、工作目录怎么命名、达成率按什么口径算"），后者只经由 `pipeline`
 调用前者。这条接缝是可检验的：改"怎么审"不需要动任何一行生成逻辑，`pipeline.rs` 是唯一的
 共同入口——四条命令各写一遍流水线曾让同一台设备在两个命令里得出不同结论。

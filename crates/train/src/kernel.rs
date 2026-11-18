@@ -111,9 +111,16 @@ binary!(
 );
 gemm!(
     (gemm_f32, f32, op::gemm_f32::K),
+    (gemm_i2, u8, op::gemm_i2::K / 4),
     (gemm_i4, u8, op::gemm_i4::K / 2),
     (gemm_i8, u8, op::gemm_i8::K),
 );
+
+/// `[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i2::forward` 同一段算术。
+fn gemv_i2(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, "gemv_i2")?;
+    op::gemv_i2::forward(x, w, scales, output_slice::<f32>("gemv_i2", output)?)
+}
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i4::forward` 同一段算术。
 fn gemv_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
@@ -197,9 +204,11 @@ const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     flash_attention_f32,
     gelu_f32,
     gemm_f32,
+    gemm_i2,
     gemm_i4,
     gemm_i8,
     gemv_f32,
+    gemv_i2,
     gemv_i4,
     gemv_i8,
     mul_f32,

@@ -11,13 +11,13 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`dtype`、`wire`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、与领域无关的字节码闭集（`wire`：CRC-32、LEB128 变长整数、计数/切片/文件 Sink 与 CRC 密封）、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
+| L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`tool` | 错误类型与声明数据树（`diagnostic::data`：构建期语料在运行期的形状，**没有解析器**）、确定性计数器随机基础件（`rng`：Philox4x32-10 显式种子/流号/下标派生，均匀/正态/伯努利分布）、精度闭集、与领域无关的字节码闭集（`wire`：CRC-32、LEB128 变长整数、计数/切片/文件 Sink 与 CRC 密封）、静态质量门与人可读输出、回退判定（`tool::regress`） | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集（`devices/*.toml` 在构建期解析成表）、算子声明与词汇表闭集（`ops/*.toml` 同上）（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
-| L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略（doctor/verify/bench 的结构化报告与见证执行，按命令分成 `cutile::{bench, doctor, verify, execution}`，共用一条 `pipeline` 与 `witness`）；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
+| L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略：执行类 doctor/verify/bench 与 `execution` 共用一条 `pipeline` 与 `witness`；`ledger` 跨档案聚合证据行、`cache` 按 LRU 回收，二者不走流水线；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 `.u` 容器 v2 读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
 | L6 调度与服务 | `train`、`engine`、`serve` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
-| L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法与配置解析归本层，把上面各层连起来装配、取值解析与人可读排版；编排入口（`cmd/` 与两个 bin）**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, execution}` → 排版 → 退出码（`Code::exit_code`） | 编排入口新增领域类型；在本层复制内核机制 |
+| L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法与配置解析归本层，把上面各层连起来装配、取值解析与人可读排版；编排入口（`cmd/` 与两个 bin）**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, ledger, cache}` → 排版 → 退出码（`Code::exit_code`） | 编排入口新增领域类型；在本层复制内核机制 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benches`（集中测量容器）与 `testkit`（测试夹具与工作区契约门禁）是**工具成员**：
 它们不属于运行时分层，也不参与“至少一条依赖边”的统计。它们的**依赖边不参与方向判定**——
@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 107 条，含 41 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 108 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -62,6 +62,7 @@ benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, tr
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）    +dev: testkit
 testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 工作区契约门禁；跨层对拍 `crates/testkit/tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段，`autograd` 出 `Tape`/`Sizes`，`tool` 出词汇片段解析；被测层只出现在 dev-dependencies，不进产品路径）
 wire     → diagnostic（纯字节码闭集：CRC-32、LEB128、Sink；不认识张量或容器布局）    +dev: testkit
+rng      → diagnostic（计数器型 Philox4x32-10 引擎与均匀/正态/伯努利分布；显式种子/流号/下标派生，不持全局状态、不引 `rand`）    +dev: testkit
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自己的出边为零）
 ```
 
@@ -101,6 +102,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | 概念 | 唯一主人 | 说明 |
 |---|---|---|
 | `Error` / `Code` / `Result` | `diagnostic` | 全仓库唯一的错误类型；同一 crate 的 `data` 子模块（ADR 0022）还拥有 `Table` / `Value`——它们是**声明数据树**，由构建期生成代码构造，运行期没有解析器，因此也不存在"语法错误"这一类；`op` / `prof` / `prim` / `cutile`（含 `report`）用同一份它，类别由**产生错误的那一层**给（`ProfileError::code`、`prim` 的装载诊断），上层只补上下文。`Error::also` 把同一次校验里的第二条失败追加为同级诊断（各自带类别，不再被 join 成一行 `invalid`）；`Error::from_io` 是"路径不存在 `missing` / 存在但读不出 `io`"的唯一判定；`Code::exit_code` 是类别到 shell 退出码的唯一映射（2/3/4/5/70） |
+| `Rng` / `Uniform` / `Normal` / `Bernoulli` | `rng` | 计数器型确定性随机：`Rng` 持有种子 / 流号 / 下标与四词缓冲，`block` 是不推进状态的纯计数器派生；三个分布在构造期校验参数，采样是 `u ∈ [0,1) → 元素` 的纯映射，中间计算在 f32，半精度输出舍入归 `dtype` 转换，本层不持有全局状态也不引 `rand` |
 | `DType` / `QType` / `MxType` / `Element` | `dtype` | 全仓唯一的精度事实源，三个格式轴分文件（`Element` 是 MX 的子闭集）：`dtype.rs` 的 `DType` 是标量闭集（24 个变体，Bool、U1–U64、I1–I64、F8 两种、F4、F16、BF16、F32、F64、`F8E4M3FNUZ`/`F8E5M2FNUZ`），稳定数字 code 与 `.u` 容器逐位兼容（前 21 个与旧 Wire 同码，F4 追加 22、FNUZ 追加 23/24）；`qtype.rs` 的 `QType` 是 GGML 块量化（25 个格式，传统 Q、K-quant、IQ 查表、TQ 三元四族；`Scale` 记块内 scale 前缀形状 f16/双 f16/f32/sub-scale，`Family` 记编码族，二者正交，`q8_K` 的 f32 d 与 `iq4_nl` 的单 d 各按源码如实分类）；`mxtype.rs` 的 `MxType` 是微缩放（OCP MX 六个标准格式 + NVFP4 厂商扩展，块共享纯指数 scale），同文件的 `Element` 是 MX 块内元素格式（E2M1/E2M3/E3M2/E4M3/E5M2/INT8，6 个，只回答位宽与标量对应）。这些格式只放身份与布局元数据，反量化算法留在 `weights`；除 `parse_name`（转调 trait 默认实现）外 inherent 访问器全部 `const fn`，零运行时开销，同一批读法再由 `Format` / `BlockFormat` 提供一次泛型视角（stable 无 const trait：几何的唯一实现是 inherent `const fn`，trait 只转发；`parse_name` 反过来由 trait 默认实现唯一提供），`Layout<B>` 是「标量元素或块格式」的唯一几何（`weights` 的 GGUF 支持表用 `Layout<QType>`，接 MXFP4 时换 `Layout<MxType>`）。各层以再导出（`tensor`、`weights` 的 `Wire`）、trait 或子集表表达局部能力，不再手写跨层映射 |
 | `Dirs` | `cutile` | 内核要的三个目录（缓存根、工作目录、可选数据根）——**纯数据**：不带默认值、不读环境变量、不认识命令行。地址是调用方的策略，因此 `cutile` 只依赖 `std::path`，换一个嵌入方（测试给临时目录、服务给容器卷）不用改内核一行（ADR 0023） |
 | `Settings` / `Roots` | `cli` | 三个目录开关的**解析策略**（`crates/cli/src/settings.rs`，ADR 0023）：内置默认 < `CUTILE_*` < `--set`、来源追踪（`值 ← 来源`）、平台默认目录与相对路径基准。键表是一行一个的声明宏（`cache.dir` / `work.dir` / `data.root`，含 `CUTILE_CACHE` 兼容名），`describe` 与"键未登记"的清单都从同一张表派生；**没有配置文件**（ADR 0022）。它曾经是独立成员 `llm-config` 的设置层，并入 `cutile` 后又上移到本层：默认目录是部署策略、`--set` 是命令行文法，都不是内核的职责；`cutile` 仍只收纯数据 |
@@ -143,6 +145,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `ParamSlot` / `Checkpoint` | `train` | 训练循环状态：`Schedule` 是纯函数学习率调度，`Anneal` 是 warmup 之后的衰减曲线闭集（线性 / 余弦 / 恒定）与最小学习率下限；`Session` 是一次训练会话（复用同一张图、同一批缓冲与同一个优化器，逐 micro-batch 推进），`TrainConfig` 收学习率峰值 / warmup / 总步数 / 裁剪上限 / 梯度累积窗口，`ParamSlot` 是已登记的参数槽（变量编号、角色与常驻参数值，梯度不在槽内、由缓冲自持） |
 | `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `Moments` / `SlotMoments` / `GradAccum` | `train` | 优化器：对象安全 trait，矩状态由实现按槽位编号自持；`Group` 是角色派生的参数组闭集（`Group::from_role` 唯一映射，不按字段名猜组）；`Slot` 是一次步进的参数/梯度/角色视图；`Moments` 是矩状态表（按槽位编号排列 + 优化器全局步数，快照只搬运这一份表，无矩优化器写 `empty`），`SlotMoments` 是单槽的一阶矩 `m` 与二阶矩 `v`（两张表长度一致）；`GradAccum` 是累积窗口内尚未步进的梯度汇总（各槽 f32 表 + 已汇总 micro-batch 数），与矩状态平行入快照。autograd 只出 tape / plan / Replay，不持梯度存储 |
 | `Buffers` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地——按 `Sizes` 分配、按计划的释放点当场交还、按等长空闲表复用。`load` 要求变量已登记形状与元素类型（缺登记是 `internal`，不是"跳过校验"），分配走 `try_reserve_exact`（形状可能来自权重文件头，分配失败是一条错误而不是 `abort`）。算术交给 `Kernel`（默认 `Reference` 调 `op` 的标量语义），本层不定义算子、不决定显存计划、不碰 `unsafe`。两条存储 lane（`f32` 与按位打包 `u8`）由密封 trait `Lane` 承载，形态标签 `Kind` 只在"元素类型 → 形态"处出现一次；`Reference` 的算子表长度与顺序同 `op::REGISTRY` 在编译期锁死，`Inputs` 把每组输入的 lane 写成类型 |
+| `MetricPoint` / `MetricsBoard` / `Learner` / `ForwardOut` | `train` | 评估与编排：`MetricPoint` 是一条步指标（步号、样本数、平均 loss、命中率），`MetricsBoard` 在内存按样本数加权聚合 loss / accuracy、记最优 loss 并渲染可读行，不做持久化；`Learner` 是独立训练编排器，遍历数据集驱动「前向 → 评估入账 → 装梯度 → 优化步」闭环，模型拓扑与梯度来源由前向 / 梯度闭包注入；`ForwardOut` 是一次前向产出的 logits 与 loss 两个终点变量。交叉熵与命中统计是 train 侧纯函数，不进 op 设备核注册表 |
 | `Sequence` / `Scheduler` / `Progress` | `engine` | 连续批与序列状态；准入只预留提示的页，之后每生成一个 token 由 `Scheduler::advance` 预留它要落的那页（池不够返回 `Blocked` 且不改任何状态），`Sequence::step` 因此不是公开 API；`blocked()` 给出批级阻塞集。`Sequence` 还是已生成 token 的唯一存放处（`tokens` 只读、`push_token` 仅同 crate 可见）：`Predict` 只看得到序列，历史存到别处就等于把"模型能读到自己的输出"降级成调用方约定。记账与推进成对走 `Batch::emit`——`Blocked` 时不多记一个 token，否则重试会看见一个并不存在的输出 |
 | `Route` / `Endpoint` / `Response` | `serve` | 端点契约。`Endpoint::call` 的 `Err` 只留给"服务端自己坏了"，请求侧的不合法必须落成 `Response::error(BadRequest, …)`——准入就是个例子：id 重复、序列已结束、页宽与调度器不一致都是客户端能改的错，`503` 只用于"现在满、可重试"，`400` 只用于"永远装不下或请求自相矛盾" |
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv/env → 强类型调用参数）与编排分派；编排入口只装配各层、取值解析与人可读排版，不定义新类型 |

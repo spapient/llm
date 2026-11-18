@@ -162,19 +162,17 @@ impl CpuModel {
             hist_k.resize(len, 0.0);
             hist_v.resize(len, 0.0);
             for token in 0..hist {
-                let row = batch.kv(id, token)?;
-                let expected = 2 * kv;
-                if row.len() != expected {
-                    return Err(Error::new(
-                        Code::Invalid,
-                        format!(
-                            "KV 行宽 {} 与块 KV 宽度 {kv} 推出的行宽 {expected}",
-                            row.len()
-                        ),
-                    )
-                    .with(SITE));
-                }
-                reorder_history_row(&mut hist_k, &mut hist_v, row, kv, head_dim, hist, token, 0);
+                place_history_row(
+                    &mut hist_k,
+                    &mut hist_v,
+                    batch,
+                    id,
+                    token,
+                    kv,
+                    head_dim,
+                    hist,
+                    0,
+                )?;
             }
             self.executor.bind(block.hist_k, hist_k);
             self.executor.bind(block.hist_v, hist_v);
@@ -234,28 +232,17 @@ impl CpuModel {
             let hist = sequence.len();
             let id = sequence.id();
             for token in 0..hist {
-                let row = batch.kv(id, token)?;
-                let expected = 2 * kv;
-                if row.len() != expected {
-                    return Err(Error::new(
-                        Code::Invalid,
-                        format!(
-                            "KV 行宽 {} 与块 KV 宽度 {kv} 推出的行宽 {expected}",
-                            row.len()
-                        ),
-                    )
-                    .with(SITE));
-                }
-                reorder_history_row(
+                place_history_row(
                     &mut hist_k,
                     &mut hist_v,
-                    row,
+                    batch,
+                    id,
+                    token,
                     kv,
                     head_dim,
                     hist,
-                    token,
                     cursor,
-                );
+                )?;
             }
             cursor += hist * kv;
         }
@@ -277,11 +264,7 @@ impl CpuModel {
     }
 
     /// 批当前步写回：逐块把各段第 `seq` 行 K/V 拼成页行，写回各自序列当前位置。
-    fn write_current_kv_batch(
-        &mut self,
-        sequences: &[Sequence],
-        batch: &mut Batch,
-    ) -> Result<()> {
+    fn write_current_kv_batch(&mut self, sequences: &[Sequence], batch: &mut Batch) -> Result<()> {
         let blocks = self.assembly.blocks.clone();
         for block in blocks {
             self.write_block_kv(block, sequences, batch)?;
@@ -341,6 +324,32 @@ impl CpuModel {
         }
         Ok(flat.chunks(width).map(|row| row.to_vec()).collect())
     }
+}
+
+/// 读出一页历史行，校验行宽后按头优先块写进段缓冲；`cursor` 为批段基址（单序列为 0）。
+#[allow(clippy::too_many_arguments)]
+fn place_history_row(
+    hist_k: &mut [f32],
+    hist_v: &mut [f32],
+    batch: &Batch,
+    id: u64,
+    token: usize,
+    kv: usize,
+    head_dim: usize,
+    hist: usize,
+    cursor: usize,
+) -> Result<()> {
+    let row = batch.kv(id, token)?;
+    let expected = 2 * kv;
+    if row.len() != expected {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("KV 行宽 {} 与块 KV 宽度 {kv} 推出的行宽 {expected}", row.len()),
+        )
+        .with(SITE));
+    }
+    reorder_history_row(hist_k, hist_v, row, kv, head_dim, hist, token, cursor);
+    Ok(())
 }
 
 /// 把一行页行 `[k(head,d) | v(head,d)]` 按头优先块 `[head, token, d]` 写进历史缓冲；

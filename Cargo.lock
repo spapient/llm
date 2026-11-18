@@ -532,6 +532,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-rng"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-testkit",
+]
+
+[[package]]
 name = "llm-serve"
 version = "0.1.0"
 dependencies = [

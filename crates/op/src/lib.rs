@@ -55,6 +55,7 @@ pub mod attention;
 pub mod decl;
 pub mod decode_attention;
 pub mod decode_flash_attention;
+pub mod dequant_i2;
 pub mod dequant_i4;
 pub mod dequant_i8;
 pub mod einsum;
@@ -64,10 +65,12 @@ pub mod flash_attention;
 pub mod gelu_f32;
 pub mod gemm;
 pub mod gemm_f32;
+pub mod gemm_i2;
 pub mod gemm_i4;
 pub mod gemm_i8;
 pub mod gemv;
 pub mod gemv_f32;
+pub mod gemv_i2;
 pub mod gemv_i4;
 pub mod gemv_i8;
 pub mod layout;
@@ -139,15 +142,18 @@ registry! {
     "attention_f32" => attention,
     "decode_attention_f32" => decode_attention,
     "decode_flash_attention_f32" => decode_flash_attention,
+    "dequant_i2" => dequant_i2,
     "dequant_i4" => dequant_i4,
     "dequant_i8" => dequant_i8,
     "embed_f32" => embed_f32,
     "flash_attention_f32" => flash_attention,
     "gelu_f32" => gelu_f32,
     "gemm_f32" => gemm_f32,
+    "gemm_i2" => gemm_i2,
     "gemm_i4" => gemm_i4,
     "gemm_i8" => gemm_i8,
     "gemv_f32" => gemv_f32,
+    "gemv_i2" => gemv_i2,
     "gemv_i4" => gemv_i4,
     "gemv_i8" => gemv_i8,
     "mul_f32" => mul_f32,

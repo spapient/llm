@@ -235,9 +235,9 @@ fn every_skeleton_has_a_branch() {
     );
 }
 
-/// 表里三行不显然的事实各钉一条：具体骨架**不带** turbofish、`dequant_i4` 的粒度是 2、
-/// flash attention 走另一条参考实现。三条都是"改一个字符就静默换掉生成代码"的点——它们
-/// 原本散在三段 `else if` 里，现在集中在表里，所以判据也集中在这里。
+/// 表里四行不显然的事实各钉一条：具体骨架**不带** turbofish、`dequant_i4` 的粒度是 2、
+/// `dequant_i2` 的粒度是 4、flash attention 走另一条参考实现。四条都是"改一个字符就静默
+/// 换掉生成代码"的点——它们原本散在三段 `else if` 里，现在集中在表里，所以判据也集中在这里。
 #[test]
 fn the_table_keeps_the_rows_that_are_easy_to_get_wrong() {
     let concrete = render_model(
@@ -256,6 +256,14 @@ fn the_table_keeps_the_rows_that_are_easy_to_get_wrong() {
     assert!(
         packed.contains("    group: 2u32,\n"),
         "int4 每 2 个输出元素占一个字节，粒度写 1 会让 `verify` 从奇数形状起步：{packed}"
+    );
+    let packed_i2 = render_model(
+        &model(r#"name = "dequant_i2", shape = [8, 4], dtype = "f32", skeleton = "dequant_i2""#),
+        "M",
+    );
+    assert!(
+        packed_i2.contains("    group: 4u32,\n"),
+        "int2 每 4 个输出元素占一个字节，粒度写错会让 `verify` 形状起步错位：{packed_i2}"
     );
     let flash = render_model(
         &model(

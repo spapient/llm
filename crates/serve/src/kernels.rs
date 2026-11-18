@@ -39,16 +39,8 @@ type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> R
 type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
 
 /// decode 批段内核入口：`q/k/v → out`，`hist` 为逐序列段长表（ragged 紧排），头数/头宽静态传入。
-type BatchDecodeKernel = fn(
-    &[f32],
-    &[f32],
-    &[f32],
-    &mut [f32],
-    usize,
-    &[usize],
-    usize,
-    usize,
-) -> Result<()>;
+type BatchDecodeKernel =
+    fn(&[f32], &[f32], &[f32], &mut [f32], usize, &[usize], usize, usize) -> Result<()>;
 
 /// decode 拆出的三路读入与一路写出视图。
 type DecodeViews<'a, 'b> = (&'a [f32], &'a [f32], &'a [f32], &'b mut [f32]);
@@ -143,11 +135,7 @@ kernel!(
 
 /// rmsnorm 适配：行宽取 `gamma` 长度；整块 `[batch, row_dim]` 段连续，段内独立 RMS 归一化，
 /// `gamma` 按行宽复用；单序列 `batch=1` 退化为单行 `forward`。段内校验交 [`forward_batch`]。
-fn rmsnorm_f32(
-    _launch: Launch,
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-) -> Result<()> {
+fn rmsnorm_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let x = input_f32("rmsnorm_f32", inputs, 0)?;
     let gamma = input_f32("rmsnorm_f32", inputs, 1)?;
     let out = output_f32("rmsnorm_f32", outputs, 0)?;
@@ -192,7 +180,11 @@ fn decode_paths(
     batch: BatchDecodeKernel,
 ) -> Result<()> {
     let (q, k, v, out) = decode_views(inputs, outputs)?;
-    match inputs.get(3).and_then(View::f32).filter(|table| !table.is_empty()) {
+    match inputs
+        .get(3)
+        .and_then(View::f32)
+        .filter(|table| !table.is_empty())
+    {
         Some(hist_table) => decode_batch(launch, q, k, v, out, hist_table, batch),
         None => decode_single(q, k, v, out, single),
     }
@@ -363,7 +355,11 @@ fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) ->
     let x = input_f32("rope_f32", inputs, 0)?;
     let out = output_f32("rope_f32", outputs, 0)?;
     let head_dim = launch.block[1] as usize;
-    match inputs.get(1).and_then(View::f32).filter(|table| !table.is_empty()) {
+    match inputs
+        .get(1)
+        .and_then(View::f32)
+        .filter(|table| !table.is_empty())
+    {
         Some(table) => rope_batch(table, x, out, head_dim),
         None => rope_single(&launch, x, out, head_dim),
     }
@@ -376,12 +372,7 @@ fn rope_batch(table: &[f32], x: &[f32], out: &mut [f32], head_dim: usize) -> Res
 }
 
 /// 单序列标量槽通道：未填位置给 `Invalid`；头宽 0 或等于整段走单头旋转。
-fn rope_single(
-    launch: &Launch,
-    x: &[f32],
-    out: &mut [f32],
-    head_dim: usize,
-) -> Result<()> {
+fn rope_single(launch: &Launch, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
     let pos = launch
         .scalars()
         .rope_position()

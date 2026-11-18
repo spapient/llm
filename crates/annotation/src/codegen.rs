@@ -196,12 +196,12 @@ const fn row(
     }
 }
 
-/// 十二条骨架的差异表，顺序与 [`crate::syntax::SKELETONS`] 一致。
+/// 十三条骨架的差异表，顺序与 [`crate::syntax::SKELETONS`] 一致。
 ///
-/// `dequant_i4` 的 `group` 是 2 而不是 1：每 2 个输出元素占一个字节，`verify` 从偶数形状
-/// 起步并对齐这个约束。`gemv` 的 `group` 指向类型参数上的 `Format::GRAIN`——粒度是格式的
-/// 编译期事实，注解里不该再写一个数。
-const SKELETON_TABLE: [Skeleton; 12] = [
+/// `dequant_i4` 的 `group` 是 2、`dequant_i2` 的 `group` 是 4：每 2（或 4）个输出元素占一个
+/// 字节，`verify` 从对齐这个约束的形状起步。`gemv` 的 `group` 指向类型参数上的
+/// `Format::GRAIN`——粒度是格式的编译期事实，注解里不该再写一个数。
+const SKELETON_TABLE: [Skeleton; 13] = [
     row(
         "gemv",
         Some("gemv"),
@@ -219,6 +219,7 @@ const SKELETON_TABLE: [Skeleton; 12] = [
     row("embed", Some("embed_f32"), "1u32", false, false),
     row("dequant", Some("dequant_i8"), "1u32", false, false),
     row("dequant_i4", Some("dequant_i4"), "2u32", false, false),
+    row("dequant_i2", Some("dequant_i2"), "4u32", false, false),
     row("attention", Some("attention"), "1u32", false, false),
 ];
 

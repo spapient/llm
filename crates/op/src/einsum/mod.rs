@@ -111,6 +111,8 @@ pub enum Bits {
     ThirtyTwo,
     /// 64 位（f64 / i64）。
     SixtyFour,
+    /// 2 位（打包的 int2 权重，每字节四个码）。
+    Two,
 }
 
 /// `Bits` 的词汇表由 [`prof::atom::Closed`] 单点声明，`ALL` / `as_str` / `parse` 由
@@ -125,6 +127,7 @@ impl prof::atom::Closed for Bits {
         Self::Sixteen,
         Self::ThirtyTwo,
         Self::SixtyFour,
+        Self::Two,
     ];
 
     fn as_str(self) -> &'static str {
@@ -134,6 +137,7 @@ impl prof::atom::Closed for Bits {
             Self::Sixteen => "16",
             Self::ThirtyTwo => "32",
             Self::SixtyFour => "64",
+            Self::Two => "2",
         }
     }
 
@@ -153,6 +157,7 @@ impl Bits {
             Self::Sixteen => 16,
             Self::ThirtyTwo => 32,
             Self::SixtyFour => 64,
+            Self::Two => 2,
         }
     }
 

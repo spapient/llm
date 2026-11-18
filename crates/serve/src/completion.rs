@@ -147,8 +147,8 @@ where
 
     /// 推进批内所有准入序列一轮；返回本轮跑完的 `(id, 生成结果)`。
     ///
-    /// 模型仍是单序列几何：一步一条序列，调度侧把多条排在同一批里依次走；内核级批处理形状
-    /// 不在本刀范围。被挡的序列留在批里、历史不变，下一轮原样重试；并发传输入口留 M4。
+    /// 一轮整批前向（`logits_batch` 一次提交）取整块 logits，再逐条采样记账；被挡的序列留在
+    /// 批里、历史不变，下一轮原样重试；并发传输入口留 M4。
     pub fn advance_batch(&self) -> diagnostic::Result<Vec<(u64, Generation)>> {
         let mut state = self.lock()?;
         state.step_batch()

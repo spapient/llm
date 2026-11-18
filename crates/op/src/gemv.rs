@@ -204,6 +204,12 @@ pub struct Dense<const BLOCK: usize>;
 /// 有 per-group 标度。`u8` 承载 int8 的位模式，算术时按 `i8` 解释。
 pub struct SymI8<const GRAIN: usize>;
 
+/// 对称 2 位量化格式：`GRAIN` 个元素共用一条标度，每字节四个 2-bit 码（低 2 位在前）。
+///
+/// 与 [`Quantized`] 同属打包格式，但打包密度是 4 码/字节；码值为有符号整数 `code − 2`
+/// （`-2..=1`），与 4 位格式一样走整数乘加，不在打包侧引入半整数。粒度必须是 4 的倍数。
+pub struct SymI2<const GRAIN: usize>;
+
 /// 与权重格式无关的输入向量：两条算子共用同一份取值。
 fn input(m: usize) -> Vec<f32> {
     (0..m)
