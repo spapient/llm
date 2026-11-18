@@ -394,6 +394,28 @@ impl Model {
     }
 }
 
+/// 单轴 `n` 的 f32 标量代价：`bytes = n·4`，`flops = n·flops_per`，`read = bytes·reads`，`write = bytes`。
+/// rmsnorm / rope / softmax / dequant 这类「一条轴、f32 元素」的算子共用这一份口径，不各写一份。
+pub fn cost_n(shape: &ShapeContext, op: &str, flops_per: f64, reads: u64) -> Result<Cost, Error> {
+    let n = shape
+        .get('n')
+        .ok_or_else(|| Error::new(Code::Invalid, format!("{op} 形状缺轴 `n`")))?;
+    let bytes = (n as u64) * 4;
+    Ok(Cost {
+        flops: (n as f64) * flops_per,
+        read: bytes * reads,
+        write: bytes,
+    })
+}
+
+/// 确定性 `x` 样本缓冲：`x[i] = 0.25i − 2`，有正有负、可复现，供 softmax / rmsnorm / rope 共用。
+pub fn x_buffer(len: usize) -> Buffer {
+    Buffer {
+        name: "x",
+        values: Values::F32((0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()),
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/model_tests.rs"]
 mod tests;

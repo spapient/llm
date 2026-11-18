@@ -3,7 +3,7 @@
 //! 两趟遍历同一行：先累加平方和求均方根，再归一化并乘权重。常量 `eps = 1e-6`。本模块自带
 //! 形状、代价、样本、标量参考与遍历，`#[annotation::model]` 把这几个 fn 装配成 `MODEL`。
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 
 /// 数值稳定项：均方根里加的小常数。
@@ -19,15 +19,7 @@ pub use crate::unary::{AXES, project_shape};
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let n = shape
-        .get('n')
-        .ok_or_else(|| Error::new(Code::Invalid, "rmsnorm 形状缺轴 `n`"))?;
-    let bytes = (n as u64) * 4;
-    Ok(Cost {
-        flops: (n as f64) * 4.0,
-        read: bytes * 3,
-        write: bytes,
-    })
+    cost_n(shape, "rmsnorm", 4.0, 3)
 }
 
 /// 确定性样本：`x`、`gamma`、`y` 三个等长缓冲。
@@ -37,10 +29,7 @@ pub fn sample(len: usize, _: usize) -> Sample {
         n: len,
         scalars: vec![("N", len as i64)],
         buffers: vec![
-            Buffer {
-                name: "x",
-                values: Values::F32((0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()),
-            },
+            x_buffer(len),
             Buffer {
                 name: "gamma",
                 values: Values::F32((0..len).map(|i| 0.5 + (i as f32) * 0.01).collect()),

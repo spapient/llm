@@ -9,7 +9,7 @@
 //!
 //! 常量 `base = 10000`。本模块自带形状、代价、样本、标量参考与遍历，`#[annotation::model]` 装配。
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 
 /// 频率底数。
@@ -24,15 +24,7 @@ pub use crate::unary::{AXES, project_shape};
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let n = shape
-        .get('n')
-        .ok_or_else(|| Error::new(Code::Invalid, "rope 形状缺轴 `n`"))?;
-    let bytes = (n as u64) * 4;
-    Ok(Cost {
-        flops: (n as f64) * 4.0,
-        read: bytes,
-        write: bytes,
-    })
+    cost_n(shape, "rope", 4.0, 1)
 }
 
 /// 确定性样本：`x`、`y` 两个等长（偶数）缓冲，位置固定为 7。
@@ -42,10 +34,7 @@ pub fn sample(len: usize, _: usize) -> Sample {
         n: len,
         scalars: vec![("N", len as i64), ("pos", 7)],
         buffers: vec![
-            Buffer {
-                name: "x",
-                values: Values::F32((0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()),
-            },
+            x_buffer(len),
             Buffer {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),

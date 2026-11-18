@@ -17,7 +17,7 @@ use diagnostic::{Code, Error};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use crate::device::compile_run_cuda;
+pub use crate::device::{compile_run_cuda, compile_run_metal};
 pub use crate::gate::{LanguageGate, language_gate};
 
 /// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。

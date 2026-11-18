@@ -355,6 +355,177 @@ fn cuda_host_buffers(sample: &Sample, params: &[Param]) -> diagnostic::Result<St
     Ok(text)
 }
 
+// ---------------------------------------------------------------------------
+// Metal 内核对拍：MSL 需要显式地址空间，`.k` 的 C 签名在 `xcrun metal` 下是语法错误。
+// 与 CUDA 同口径：单线程语义门，`device` 缓冲 ↔ `thread` 局部数组，host 驱动发射与回读。
+// ---------------------------------------------------------------------------
+
+/// MSL 没有默认地址空间，`.k` 的裸指针（签名 + 函数体局部）都要补 `thread`（单线程语义门）。
+/// `\u{1}` 先占住 `*`、最后统一回填，避免「先替换 const 版后，结果里的 `TYPE *` 又被非 const
+/// 规则二次命中」。
+fn msl_address_space(text: &str) -> String {
+    text.replace("const float *", "thread const float\u{1}")
+        .replace("const unsigned char *", "thread const unsigned char\u{1}")
+        .replace("const u8 *", "thread const u8\u{1}")
+        .replace("float *", "thread float\u{1}")
+        .replace("unsigned char *", "thread unsigned char\u{1}")
+        .replace("u8 *", "thread u8\u{1}")
+        .replace("\u{1}", " *")
+}
+
+/// 拼出可在本机 GPU 上真实执行的 Metal 程序：`.k` 内核补 `thread` 地址空间后，`cutile_launch`
+/// 把它包成 compute kernel（`device` 缓冲 ↔ `thread` 局部数组），host 驱动负责把样本发射到 GPU、
+/// 回读输出。返回 `(msl, driver)` 两段文本：`msl` 交给 `xcrun metal`，`driver` 交给 clang。
+///
+/// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲，或签名与样本不一致。
+pub fn metal_harness(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> diagnostic::Result<(String, String)> {
+    let (output, _) = output_of(signature, sample)?;
+    let msl = format!(
+        "{}\n{}",
+        msl_address_space(kernel_source),
+        metal_launch(&signature.kernel(), signature, sample)?
+    );
+    Ok((msl, metal_driver(signature, sample, output)))
+}
+
+/// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲，`thread` 局部数组逐元素拷入只读
+/// 缓冲、拷回可写输出；标量直接取样本值。槽位序号与驱动侧 `setBuffer:atIndex:` 同源（都按签名顺序）。
+fn metal_launch(kernel: &str, signature: &Signature, sample: &Sample) -> diagnostic::Result<String> {
+    let mut buffers = Vec::new();
+    let mut locals = String::new();
+    let mut copy_in = String::new();
+    let mut copy_out = String::new();
+    let mut args = Vec::new();
+    let mut slot = 0usize;
+    for param in signature.params() {
+        if param.ctype.is_buffer() {
+            let base = metal_type(param.ctype);
+            let buffer = sample
+                .buffer(&param.name)
+                .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+            let len = buffer.values.len();
+            buffers.push(format!(
+                "device {base} *d_{name} [[buffer({slot})]]",
+                name = param.name
+            ));
+            locals.push_str(&format!("    thread {base} {name}[{len}];\n", name = param.name));
+            if param.mutable {
+                copy_out.push_str(&format!(
+                    "    for (int i = 0; i < {len}; ++i) d_{name}[i] = {name}[i];\n",
+                    name = param.name
+                ));
+            } else {
+                copy_in.push_str(&format!(
+                    "    for (int i = 0; i < {len}; ++i) {name}[i] = d_{name}[i];\n",
+                    name = param.name
+                ));
+            }
+            args.push(param.name.clone());
+            slot += 1;
+        } else {
+            let value = sample
+                .scalar(&param.name)
+                .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+            args.push(value.to_string());
+        }
+    }
+    Ok(format!(
+        "kernel void cutile_launch({buffers},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n{locals}{copy_in}    {kernel}({call});\n{copy_out}}}",
+        buffers = buffers.join(",\n                          "),
+        call = args.join(", ")
+    ))
+}
+
+/// host 驱动：把样本数据作为只读缓冲的初值，发射 `cutile_launch`，回读唯一可写输出的位模式。
+/// 输出长度在生成期已知，直接嵌进回读循环；值与 stderr/stdout 口径与 C/CUDA harness 一致。
+fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> String {
+    let mut data = String::new();
+    let mut allocs = String::new();
+    let mut sets = String::new();
+    let mut out_len = 0usize;
+    let mut slot = 0usize;
+    for param in signature.params().iter().filter(|p| p.ctype.is_buffer()) {
+        let buffer = &sample.buffer(&param.name).expect("签名与样本已对齐（漂移）");
+        let base = metal_type(param.ctype);
+        let len = buffer.values.len();
+        if param.mutable {
+            out_len = len;
+            allocs.push_str(&format!(
+                "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n",
+                name = param.name
+            ));
+        } else {
+            data.push_str(&format!(
+                "static const {base} init_{name}[] = {{{}}};\n",
+                param.name,
+                c_literal(&buffer.values)
+            ));
+            allocs.push_str(&format!(
+                "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n",
+                name = param.name
+            ));
+        }
+        sets.push_str(&format!(
+            "        [encoder setBuffer:b_{name} offset:0 atIndex:{slot}];\n",
+            name = param.name
+        ));
+        slot += 1;
+    }
+    format!(
+        "#import <Foundation/Foundation.h>\n\
+         #import <Metal/Metal.h>\n\
+         #include <stdio.h>\n\
+         #include <stdlib.h>\n\n\
+         {data}\n\
+         int main(int argc, const char **argv) {{\n\
+             @autoreleasepool {{\n\
+                 if (argc < 2) {{ fprintf(stderr, \"usage: driver <metallib>\\n\"); return 2; }}\n\
+                 id<MTLDevice> device = MTLCreateSystemDefaultDevice();\n\
+                 if (!device) {{ fprintf(stderr, \"本机没有 Metal 设备\\n\"); return 3; }}\n\
+                 NSError *error = nil;\n\
+                 NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];\n\
+                 id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];\n\
+                 if (!library) {{ fprintf(stderr, \"metallib 装载失败：%s\\n\", error.localizedDescription.UTF8String); return 4; }}\n\
+                 id<MTLFunction> function = [library newFunctionWithName:@\"cutile_launch\"];\n\
+                 if (!function) {{ fprintf(stderr, \"metallib 里没有 cutile_launch\\n\"); return 5; }}\n\
+                 id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];\n\
+                 if (!pipeline) {{ fprintf(stderr, \"管线创建失败：%s\\n\", error.localizedDescription.UTF8String); return 6; }}\n\
+         {allocs}\
+                 id<MTLCommandQueue> queue = [device newCommandQueue];\n\
+                 id<MTLCommandBuffer> buffer = [queue commandBuffer];\n\
+                 id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];\n\
+                 [encoder setComputePipelineState:pipeline];\n\
+         {sets}\
+                 [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];\n\
+                 [encoder endEncoding];\n\
+                 [buffer commit];\n\
+                 [buffer waitUntilCompleted];\n\
+                 if (buffer.error) {{ fprintf(stderr, \"内核执行失败：%s\\n\", buffer.error.localizedDescription.UTF8String); return 7; }}\n\
+                 const float *out = (const float *)b_{output}.contents;\n\
+                 for (int i = 0; i < {out_len}; ++i) {{\n\
+                     union {{ float f; unsigned int u; }} v;\n\
+                     v.f = out[i];\n\
+                     printf(\"%u\\n\", v.u);\n\
+                 }}\n\
+             }}\n\
+             return 0;\n\
+         }}\n"
+    )
+}
+
+/// 缓冲形参的 MSL 元素类型（`unsigned char` 与 `.k` 的 `u8` typedef 同义，包装层用真名）。
+fn metal_type(ctype: CType) -> &'static str {
+    match ctype {
+        CType::F32 => "float",
+        CType::U8 => "unsigned char",
+        CType::Int => unreachable!("标量不进缓冲声明"),
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/harness_tests.rs"]
 mod tests;

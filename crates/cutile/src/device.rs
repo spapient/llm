@@ -585,6 +585,52 @@ fn metal_kernel(dir: &Path, program: &str, flags: &[String]) -> Result<PathBuf> 
     Ok(metalib)
 }
 
+/// 内核对拍的一条 Metal 程序：MSL + 驱动两段文本，写 → `xcrun metal`+`metallib` → clang 编驱动 →
+/// 跑，返回 `(stdout, stderr)`。与 [`compile_run_cuda`] 同口径：一次性目录，用完即删。
+pub fn compile_run_metal(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &(String, String),
+    label: &str,
+) -> Result<(String, String)> {
+    let dir = scratch(dirs, &format!("{label}-metal"));
+    let outcome = metal_kernel_in_dir(&dir, &program.0, &program.1, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
+/// 一次性目录里的一条内核程序：`metal_kernel` 编 MSL，`metal_driver_exe_from` 编自定义驱动，跑一遍。
+fn metal_kernel_in_dir(
+    dir: &Path,
+    msl: &str,
+    driver: &str,
+    flags: &[String],
+) -> Result<(String, String)> {
+    let metalib = metal_kernel(dir, msl, flags)?;
+    let exe = metal_driver_exe_from(dir, driver)?;
+    let mut command = Command::new(&exe);
+    command.arg(&metalib);
+    run_exe(&mut command, &exe, "Metal 内核执行失败")
+}
+
+/// 编一份自定义 host 驱动：内核对拍发射 `cutile_launch`，与见证驱动（发射 `cutile_witness`）不同。
+fn metal_driver_exe_from(dir: &Path, driver_source: &str) -> Result<PathBuf> {
+    let Some(compiler) = toolchain::detect() else {
+        return Err(Error::new(
+            Code::Unsupported,
+            "缺少 host C 编译器：Metal 内核对拍需要一个 host 驱动把内核发射到 GPU".to_string(),
+        ));
+    };
+    let driver = dir.join("kernel_driver.m");
+    let exe = dir.join("kernel_driver");
+    write_text(&driver, driver_source)?;
+    let mut clang = Command::new(&compiler.command);
+    clang.args(["-fobjc-arc", "-O2", "-o"]).arg(&exe).arg(&driver);
+    clang.args(["-framework", "Foundation", "-framework", "Metal"]);
+    run_tool(&compiler.command, &mut clang, &driver)?;
+    Ok(exe)
+}
+
 /// 一条 `xcrun -sdk macosx <tool> <flags>` 命令：Metal 的编译与链接都从这里起。
 fn xcrun(tool: &str, flags: &[String]) -> Command {
     let mut command = Command::new("xcrun");

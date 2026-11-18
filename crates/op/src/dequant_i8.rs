@@ -4,7 +4,7 @@
 //! 本模块自带形状、代价、样本、参考与遍历，`#[annotation::model]` 装配。
 
 use crate::dequant;
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n};
 use diagnostic::{Code, Error};
 
 // 单轴定义复用 unary 骨架。
@@ -24,14 +24,7 @@ pub use crate::unary::project_shape;
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let n = shape
-        .get('n')
-        .ok_or_else(|| Error::new(Code::Invalid, "dequant 形状缺轴 `n`"))?;
-    Ok(Cost {
-        flops: (n as f64) * 2.0,
-        read: (n as u64) * 4,
-        write: (n as u64) * 4,
-    })
+    cost_n(shape, "dequant", 2.0, 1)
 }
 
 /// 确定性样本：`q`（f32 承载的量化整数）、`y`，标量 `scale`/`zero`。

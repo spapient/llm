@@ -3,7 +3,7 @@
 //! 三趟遍历同一行：先求最大值（数值稳定，减去它再取指数不会溢出），再求指数和，最后归一化。
 //! 本模块自带形状、代价、样本、标量参考与遍历，`#[annotation::model]` 装配成 `MODEL`。
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 
 // 单轴定义与形状投影复用 unary 骨架：本文件只声明 softmax 特有的代价、样本与遍历。
@@ -15,15 +15,7 @@ pub use crate::unary::{AXES, project_shape};
 ///
 /// 形状缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let n = shape
-        .get('n')
-        .ok_or_else(|| Error::new(Code::Invalid, "softmax 形状缺轴 `n`"))?;
-    let bytes = (n as u64) * 4;
-    Ok(Cost {
-        flops: (n as f64) * 3.0,
-        read: bytes * 3,
-        write: bytes,
-    })
+    cost_n(shape, "softmax", 3.0, 3)
 }
 
 /// 确定性样本：`x`、`y` 两个等长缓冲。
@@ -33,10 +25,7 @@ pub fn sample(len: usize, _: usize) -> Sample {
         n: len,
         scalars: vec![("N", len as i64)],
         buffers: vec![
-            Buffer {
-                name: "x",
-                values: Values::F32((0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()),
-            },
+            x_buffer(len),
             Buffer {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),

@@ -162,6 +162,25 @@ fn check_slots(slots: &[Slot<'_>]) -> Result<()> {
 
 /// 普通 SGD（可选解耦权重衰减 + 全局范数裁剪）。
 ///
+/// Sgd 与 Adam 共用的解耦衰减 / 范数裁剪构造器：同一份口径，不各写一遍。
+macro_rules! decay_clip {
+    ($T:ty) => {
+        impl $T {
+            /// 设置解耦权重衰减系数；角色豁免组不受此值影响。
+            pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
+                self.weight_decay = weight_decay;
+                self
+            }
+
+            /// 设置全局梯度范数上限；`None` 表示不裁剪。
+            pub fn with_clip_norm(mut self, clip_norm: f32) -> Self {
+                self.clip_norm = (clip_norm > 0.0).then_some(clip_norm);
+                self
+            }
+        }
+    };
+}
+
 /// 无矩状态；衰减按 AdamW 同款解耦口径：`param -= lr · (grad + wd · param)`，角色豁免组
 /// 不加衰减项。
 #[derive(Debug, Clone, PartialEq)]
@@ -175,19 +194,9 @@ impl Sgd {
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// 设置解耦权重衰减系数；角色豁免组不受此值影响。
-    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
-        self.weight_decay = weight_decay;
-        self
-    }
-
-    /// 设置全局梯度范数上限；`None` 表示不裁剪。
-    pub fn with_clip_norm(mut self, clip_norm: f32) -> Self {
-        self.clip_norm = (clip_norm > 0.0).then_some(clip_norm);
-        self
-    }
 }
+
+decay_clip!(Sgd);
 
 impl Default for Sgd {
     fn default() -> Self {
@@ -271,18 +280,6 @@ impl Adam {
         self
     }
 
-    /// 设置解耦权重衰减系数；角色豁免组不受此值影响。
-    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
-        self.weight_decay = weight_decay;
-        self
-    }
-
-    /// 设置全局梯度范数上限；`None` 表示不裁剪。
-    pub fn with_clip_norm(mut self, clip_norm: f32) -> Self {
-        self.clip_norm = (clip_norm > 0.0).then_some(clip_norm);
-        self
-    }
-
     /// 确保槽位 `index` 的矩向量长度等于参数长度；首次见到的槽位分配零向量。
     fn moments(&mut self, index: usize, len: usize) -> (&mut Vec<f32>, &mut Vec<f32>) {
         if index >= self.momentum.len() {
@@ -315,6 +312,8 @@ impl Adam {
         self.step
     }
 }
+
+decay_clip!(Adam);
 
 impl Default for Adam {
     fn default() -> Self {

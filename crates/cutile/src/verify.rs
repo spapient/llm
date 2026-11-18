@@ -347,6 +347,8 @@ enum Lane {
     Host,
     /// nvcc 临时编译、GPU 执行、回读；不进产物缓存，产物因此为空。
     Cuda,
+    /// xcrun metal + metallib 临时编译、Apple GPU 执行、回读；不进产物缓存。
+    Metal,
 }
 
 impl Lane {
@@ -358,6 +360,9 @@ impl Lane {
                 Ok((Self::Cuda, toolchain::detect_nvcc()))
             }
             Emit::Cuda => Err(Error::new(Code::Unsupported, NO_DEVICE.to_string())),
+            Emit::Metal if witness::device_available(profile) => {
+                Ok((Self::Metal, toolchain::detect_metal()))
+            }
             _ => Err(Error::new(Code::Unsupported, unsupported_emit(profile))),
         }
     }
@@ -409,15 +414,15 @@ impl Sweep<'_> {
         Ok((sample, prepared))
     }
 
-    /// 输出个数该是多少：C 通道看样本声明的 `y`，CUDA 通道看参考输出的长度。
+    /// 输出个数该是多少：C 通道看样本声明的 `y`，CUDA/Metal 通道看参考输出的长度。
     fn expected(&self, sample: &Sample, want: &[f32]) -> usize {
         match self.lane {
             Lane::Host => sample.buffer("y").map_or(sample.n, |y| y.values.len()),
-            Lane::Cuda => want.len(),
+            Lane::Cuda | Lane::Metal => want.len(),
         }
     }
 
-    /// 一格怎么跑：返回回读的输出与产物记录（CUDA 通道每次临时编译，没有产物）。
+    /// 一格怎么跑：返回回读的输出与产物记录（CUDA/Metal 通道每次临时编译，没有产物）。
     fn kernel(
         &self,
         sample: &Sample,
@@ -426,6 +431,7 @@ impl Sweep<'_> {
         match self.lane {
             Lane::Host => self.host(sample, prepared),
             Lane::Cuda => self.cuda(sample, prepared),
+            Lane::Metal => self.metal(sample, prepared),
         }
     }
 
@@ -456,6 +462,19 @@ impl Sweep<'_> {
         let program = harness::cuda_harness(&prepared.source.text, &self.run.op.signature, sample)?;
         let (stdout, _stderr) =
             witness::compile_run_cuda(self.run.profile, self.dirs, &program, "verify")?;
+        Ok((runner::parse_bits(&stdout), None))
+    }
+
+    /// Metal 通道：xcrun metal + metallib 临时编译、Apple GPU 执行、回读；签名与样本先对齐。
+    fn metal(
+        &self,
+        sample: &Sample,
+        prepared: &Prepared,
+    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
+        self.run.op.signature.check(sample)?;
+        let program = harness::metal_harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let (stdout, _stderr) =
+            witness::compile_run_metal(self.run.profile, self.dirs, &program, "verify")?;
         Ok((runner::parse_bits(&stdout), None))
     }
 }
