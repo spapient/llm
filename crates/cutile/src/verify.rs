@@ -472,7 +472,8 @@ impl Sweep<'_> {
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
-        let program = harness::metal_harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let program =
+            harness::metal_harness(&prepared.source.text, &self.run.op.signature, sample)?;
         let (stdout, _stderr) =
             witness::compile_run_metal(self.run.profile, self.dirs, &program, "verify")?;
         Ok((runner::parse_bits(&stdout), None))

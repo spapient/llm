@@ -139,7 +139,12 @@ pub(crate) struct NodeSink<'a> {
 impl<'a> NodeSink<'a> {
     /// 一层接进图：输入 0 = 主链上一层输出；逐元素二元的旁路输入 1（若有）；投影/归一化/查表
     /// 再加驻留权重编号，一元点wise/二元/位置编码只有各自的输入路数。
-    pub(crate) fn push_node(&mut self, prev: u32, plan: &LayerPlan, bypass: Option<u32>) -> Result<u32> {
+    pub(crate) fn push_node(
+        &mut self,
+        prev: u32,
+        plan: &LayerPlan,
+        bypass: Option<u32>,
+    ) -> Result<u32> {
         let output_id = self.slots.activation()?;
         // 投影/查表第二维登记输入宽（行批切段用）；等长族第二维占位 0。
         let width_in = matches!(plan.kind, LayerKind::Projection | LayerKind::Embedding)

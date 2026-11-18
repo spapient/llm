@@ -11,7 +11,7 @@ use diagnostic::{Code, Error, Result};
 use crate::bin::Bin;
 use crate::gguf::{Gguf, Kind};
 use crate::safetensors::{Archive as StArchive, File as StFile};
-use crate::{Loader, Reader, Segment, Wire};
+use crate::{Entry, Loader, Reader, Segment, Wire};
 
 /// 按扩展名把源文件分派到对应适配通路；不认识的后缀显式 [`Code::Unsupported`]，不猜格式、
 /// 不把块量化伪装成标量段。
@@ -64,6 +64,18 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
     })
 }
 
+/// safetensors 条目 → 中性段：字段与长度判据同源，文件与内存归档共用。
+fn push_entry_segment(out: &mut Vec<Segment>, entry: &Entry, bytes: Vec<u8>) -> Result<()> {
+    let dims: Vec<u64> = entry.shape().dims().iter().map(|&d| d as u64).collect();
+    out.push(segment_from_entry(
+        entry.name(),
+        entry.dtype(),
+        &dims,
+        bytes,
+    )?);
+    Ok(())
+}
+
 /// safetensors 文件 → 中性段流：`File` 后端按条目按需 seek+read，不把整份文件读进内存。
 ///
 /// # Errors
@@ -74,14 +86,7 @@ pub fn segments_from_safetensors_file(path: &Path) -> Result<Vec<Segment>> {
     let entries = file.header().entries();
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
-        let bytes = file.load(entry)?;
-        let dims: Vec<u64> = entry.shape().dims().iter().map(|&d| d as u64).collect();
-        out.push(segment_from_entry(
-            entry.name(),
-            entry.dtype(),
-            &dims,
-            bytes,
-        )?);
+        push_entry_segment(&mut out, entry, file.load(entry)?)?;
     }
     Ok(out)
 }
@@ -95,14 +100,7 @@ pub fn segments_from_safetensors_archive(arch: &StArchive<'_>) -> Result<Vec<Seg
     let entries = arch.header().entries();
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
-        let bytes = arch.read(entry)?.to_vec();
-        let dims: Vec<u64> = entry.shape().dims().iter().map(|&d| d as u64).collect();
-        out.push(segment_from_entry(
-            entry.name(),
-            entry.dtype(),
-            &dims,
-            bytes,
-        )?);
+        push_entry_segment(&mut out, entry, arch.read(entry)?.to_vec())?;
     }
     Ok(out)
 }

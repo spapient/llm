@@ -238,7 +238,11 @@ impl Params {
     ) -> Result<()> {
         let packed = source.bytes(entry)?;
         let scales = source.f32(quantized.scales())?.ok_or_else(|| {
-            Error::new(Code::Invalid, format!("量化权重 `{name}` 的标度条目不是 F32")).with(SITE)
+            Error::new(
+                Code::Invalid,
+                format!("量化权重 `{name}` 的标度条目不是 F32"),
+            )
+            .with(SITE)
         })?;
         params.insert_quantized(name, packed, quantized.scales_name(), scales);
         Ok(())

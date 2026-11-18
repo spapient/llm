@@ -171,7 +171,13 @@ pub(crate) fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
     }
     let weight_len = plan.weight_shape.iter().product();
     let scales_len = (!plan.scales_shape.is_empty()).then(|| plan.scales_shape.iter().product());
-    check_weight_entry(params, entry, weight_len, plan.scale_entry.as_deref(), scales_len)
+    check_weight_entry(
+        params,
+        entry,
+        weight_len,
+        plan.scale_entry.as_deref(),
+        scales_len,
+    )
 }
 
 /// 核对一条驻留权重 + 可选标度：稠密按 f32 元素数、量化按打包字节数 + 标度条数。
@@ -196,7 +202,12 @@ pub(crate) fn check_weight_entry(
 }
 
 /// 条目存在且长度与期望一致：`Block::len` 按块自身形态取稠密元素数或打包字节数。
-pub(crate) fn check_entry(params: &Params, label: &str, entry: &str, expected: usize) -> Result<()> {
+pub(crate) fn check_entry(
+    params: &Params,
+    label: &str,
+    entry: &str,
+    expected: usize,
+) -> Result<()> {
     let Some(block) = params.get(entry) else {
         return Err(Error::new(Code::Missing, format!("参数表缺{label}条目 `{entry}`")).with(SITE));
     };

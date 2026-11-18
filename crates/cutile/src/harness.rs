@@ -360,16 +360,16 @@ fn cuda_host_buffers(sample: &Sample, params: &[Param]) -> diagnostic::Result<St
 // 与 CUDA 同口径：单线程语义门，`device` 缓冲 ↔ `thread` 局部数组，host 驱动发射与回读。
 // ---------------------------------------------------------------------------
 
-/// MSL 没有默认地址空间，`.k` 的裸指针（签名 + 函数体局部）都要补 `thread`（单线程语义门）。
-/// `\u{1}` 先占住 `*`、最后统一回填，避免「先替换 const 版后，结果里的 `TYPE *` 又被非 const
-/// 规则二次命中」。
+/// MSL 没有默认地址空间，`.k` 的裸指针（签名 + 函数体局部）都要补 `device`——这些指针指向全局
+/// 缓冲，`thread` 栈放不下生产形状（`REG` 上限 64 KiB）。`\u{1}` 先占住 `*`、最后统一回填，避免
+/// 「先替换 const 版后，结果里的 `TYPE *` 又被非 const 规则二次命中」。
 fn msl_address_space(text: &str) -> String {
-    text.replace("const float *", "thread const float\u{1}")
-        .replace("const unsigned char *", "thread const unsigned char\u{1}")
-        .replace("const u8 *", "thread const u8\u{1}")
-        .replace("float *", "thread float\u{1}")
-        .replace("unsigned char *", "thread unsigned char\u{1}")
-        .replace("u8 *", "thread u8\u{1}")
+    text.replace("const float *", "device const float\u{1}")
+        .replace("const unsigned char *", "device const unsigned char\u{1}")
+        .replace("const u8 *", "device const u8\u{1}")
+        .replace("float *", "device float\u{1}")
+        .replace("unsigned char *", "device unsigned char\u{1}")
+        .replace("u8 *", "device u8\u{1}")
         .replace("\u{1}", " *")
 }
 
@@ -392,39 +392,24 @@ pub fn metal_harness(
     Ok((msl, metal_driver(signature, sample, output)))
 }
 
-/// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲，`thread` 局部数组逐元素拷入只读
-/// 缓冲、拷回可写输出；标量直接取样本值。槽位序号与驱动侧 `setBuffer:atIndex:` 同源（都按签名顺序）。
-fn metal_launch(kernel: &str, signature: &Signature, sample: &Sample) -> diagnostic::Result<String> {
+/// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲并原样透传给内核（内核指针已是
+/// `device`，无需 thread 局部拷贝）；标量直接取样本值。槽位序号与驱动侧 `setBuffer:atIndex:` 同源。
+fn metal_launch(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> diagnostic::Result<String> {
     let mut buffers = Vec::new();
-    let mut locals = String::new();
-    let mut copy_in = String::new();
-    let mut copy_out = String::new();
     let mut args = Vec::new();
     let mut slot = 0usize;
     for param in signature.params() {
         if param.ctype.is_buffer() {
             let base = metal_type(param.ctype);
-            let buffer = sample
-                .buffer(&param.name)
-                .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-            let len = buffer.values.len();
             buffers.push(format!(
                 "device {base} *d_{name} [[buffer({slot})]]",
                 name = param.name
             ));
-            locals.push_str(&format!("    thread {base} {name}[{len}];\n", name = param.name));
-            if param.mutable {
-                copy_out.push_str(&format!(
-                    "    for (int i = 0; i < {len}; ++i) d_{name}[i] = {name}[i];\n",
-                    name = param.name
-                ));
-            } else {
-                copy_in.push_str(&format!(
-                    "    for (int i = 0; i < {len}; ++i) {name}[i] = d_{name}[i];\n",
-                    name = param.name
-                ));
-            }
-            args.push(param.name.clone());
+            args.push(format!("d_{}", param.name));
             slot += 1;
         } else {
             let value = sample
@@ -434,7 +419,7 @@ fn metal_launch(kernel: &str, signature: &Signature, sample: &Sample) -> diagnos
         }
     }
     Ok(format!(
-        "kernel void cutile_launch({buffers},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n{locals}{copy_in}    {kernel}({call});\n{copy_out}}}",
+        "kernel void cutile_launch({buffers},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n    {kernel}({call});\n}}",
         buffers = buffers.join(",\n                          "),
         call = args.join(", ")
     ))
@@ -449,20 +434,25 @@ fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> String 
     let mut out_len = 0usize;
     let mut slot = 0usize;
     for param in signature.params().iter().filter(|p| p.ctype.is_buffer()) {
-        let buffer = &sample.buffer(&param.name).expect("签名与样本已对齐（漂移）");
+        let buffer = &sample
+            .buffer(&param.name)
+            .expect("签名与样本已对齐（漂移）");
         let base = metal_type(param.ctype);
         let len = buffer.values.len();
         if param.mutable {
             out_len = len;
             allocs.push_str(&format!(
                 "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n",
-                name = param.name
+                name = param.name,
+                len = len,
+                base = base
             ));
         } else {
             data.push_str(&format!(
-                "static const {base} init_{name}[] = {{{}}};\n",
-                param.name,
-                c_literal(&buffer.values)
+                "static const {base} init_{name}[] = {{{lit}}};\n",
+                base = base,
+                name = param.name,
+                lit = c_literal(&buffer.values)
             ));
             allocs.push_str(&format!(
                 "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n",
@@ -471,49 +461,55 @@ fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> String 
         }
         sets.push_str(&format!(
             "        [encoder setBuffer:b_{name} offset:0 atIndex:{slot}];\n",
-            name = param.name
+            name = param.name,
+            slot = slot
         ));
         slot += 1;
     }
     format!(
-        "#import <Foundation/Foundation.h>\n\
-         #import <Metal/Metal.h>\n\
-         #include <stdio.h>\n\
-         #include <stdlib.h>\n\n\
-         {data}\n\
-         int main(int argc, const char **argv) {{\n\
-             @autoreleasepool {{\n\
-                 if (argc < 2) {{ fprintf(stderr, \"usage: driver <metallib>\\n\"); return 2; }}\n\
-                 id<MTLDevice> device = MTLCreateSystemDefaultDevice();\n\
-                 if (!device) {{ fprintf(stderr, \"本机没有 Metal 设备\\n\"); return 3; }}\n\
-                 NSError *error = nil;\n\
-                 NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];\n\
-                 id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];\n\
-                 if (!library) {{ fprintf(stderr, \"metallib 装载失败：%s\\n\", error.localizedDescription.UTF8String); return 4; }}\n\
-                 id<MTLFunction> function = [library newFunctionWithName:@\"cutile_launch\"];\n\
-                 if (!function) {{ fprintf(stderr, \"metallib 里没有 cutile_launch\\n\"); return 5; }}\n\
-                 id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];\n\
-                 if (!pipeline) {{ fprintf(stderr, \"管线创建失败：%s\\n\", error.localizedDescription.UTF8String); return 6; }}\n\
-         {allocs}\
-                 id<MTLCommandQueue> queue = [device newCommandQueue];\n\
-                 id<MTLCommandBuffer> buffer = [queue commandBuffer];\n\
-                 id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];\n\
-                 [encoder setComputePipelineState:pipeline];\n\
-         {sets}\
-                 [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];\n\
-                 [encoder endEncoding];\n\
-                 [buffer commit];\n\
-                 [buffer waitUntilCompleted];\n\
-                 if (buffer.error) {{ fprintf(stderr, \"内核执行失败：%s\\n\", buffer.error.localizedDescription.UTF8String); return 7; }}\n\
-                 const float *out = (const float *)b_{output}.contents;\n\
-                 for (int i = 0; i < {out_len}; ++i) {{\n\
-                     union {{ float f; unsigned int u; }} v;\n\
-                     v.f = out[i];\n\
-                     printf(\"%u\\n\", v.u);\n\
-                 }}\n\
-             }}\n\
-             return 0;\n\
-         }}\n"
+        r#"#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+{data}
+int main(int argc, const char **argv) {{
+    @autoreleasepool {{
+        if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device) {{ fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }}
+        NSError *error = nil;
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        if (!library) {{ fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }}
+        id<MTLFunction> function = [library newFunctionWithName:@"cutile_launch"];
+        if (!function) {{ fprintf(stderr, "metallib 里没有 cutile_launch\n"); return 5; }}
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
+{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLCommandBuffer> buffer = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+{sets}        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        [buffer commit];
+        [buffer waitUntilCompleted];
+        if (buffer.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 7; }}
+        const float *out = (const float *)b_{output}.contents;
+        for (int i = 0; i < {out_len}; ++i) {{
+            union {{ float f; unsigned int u; }} v;
+            v.f = out[i];
+            printf("%u\n", v.u);
+        }}
+    }}
+    return 0;
+}}
+"#,
+        data = data,
+        allocs = allocs,
+        sets = sets,
+        output = output,
+        out_len = out_len
     )
 }
 

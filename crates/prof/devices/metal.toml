@@ -1,11 +1,10 @@
-# Apple Metal 档案（P0 仍是 L1：见证已经在本机 GPU 上执行过，`L2` 要的是内核跑通）。
-# 保留它是为了让"同一份模板、多台设备"在数据上成立，而不是靠口号：档案、片段与见证三份都是
-# 可装载的真实内容，`doctor` 能协商出变体，`verify` 会因为"内核执行只接了 C 后端"而明确失败。
+# Apple Metal 档案（P0 内核对拍已落地：gemv_i4/i8/f32 的 L2 对拍在本机 GPU 跑通，max_rel_err=0）。
+# 见证走 `xcrun metal` → `metallib` → GPU（`Scope::Device`）；内核对拍由 cutile 的 `Lane::Metal`
+# （`metal_harness` + `compile_run_metal`）走同一条编译链，逐形状与标量参考对拍。
 #
-# 等级为什么还是 L1：`audit::witness` 已按 `emit` 选前端，`m5` 的 17 条见证走
-# `xcrun metal` → `metallib` → GPU，拿到的是 `Scope::Device` 的执行结论；但 cutile README §11.3 的
-# `L2` 指"内核在本机跑通并与标量参考对拍"，而 P0 的 emit/编译/回读只实现了 C。见证执行证明
-# 签名写的是什么、算得对，不证明内核可用——两者不能互相顶替。
+# 等级：被 P0 算子（gemv_i4/i8/f32）实际调用的原语标 L2（内核对拍已验）；`simd_dp4a`（i8 点积）
+# 与 `atomic` 没有 P0 算子调用，仍是 L1。`quant` 目前只有 `unpack_i4`，`gemv_i2` 的 `dt=i2` 待补
+# `unpack_i2`（新片段 + 见证 + 档案条目），故 i2 暂不协商。
 #
 # 指纹按 cutile README §5.3 的 Apple 行：机器名含 `Apple M`，GPU 核数落在 M 系列的量级（10..80）。
 # 设计表原写的 `os >= 26` 没有进指纹：`cutile::probe` 目前只采集 CPU 的 `arch`/`features`，
@@ -69,7 +68,7 @@ impl    = "simd_fma"
 dt      = ["f32"]
 space   = ["REG"]
 lanes   = ["1"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_dot", expect = [70.0] }
 
 [[provides]]
@@ -78,7 +77,7 @@ impl    = "unpack_i4"
 dt      = ["i4", "f32"]
 space   = ["REG", "GM"]
 group   = ["32"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_quant", expect = [-4.0, 3.5] }
 
 [[provides]]
@@ -89,7 +88,7 @@ dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_load", expect = [1.0] }
 
 [[provides]]
@@ -101,13 +100,13 @@ space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
 stages  = ["2", "3"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_load_async", expect = [1.0] }
 
 [[provides]]
 prim    = "commit_wait"
 impl    = "async_copy_commit"
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_commit_wait", expect = [0.0] }
 
 [[provides]]
@@ -116,13 +115,13 @@ impl    = "device_store"
 m       = "<=32768"
 dt      = ["f32"]
 space   = ["GM"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_store", expect = [3.25] }
 
 [[provides]]
 prim    = "bar"
 impl    = "simdgroup_barrier"
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_bar", expect = [0.0] }
 
 [[provides]]
@@ -130,7 +129,7 @@ prim    = "cvt"
 impl    = "saturate_convert"
 dt      = ["f32", "i32", "i8"]
 sat     = ["on", "off"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_cvt", expect = [3.0] }
 
 [[provides]]
@@ -139,7 +138,7 @@ impl    = "simd_bfly"
 axis    = ["GMAX"]
 op      = ["sum", "max"]
 dt      = ["f32"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_reduce", expect = [7.5] }
 
 [[provides]]

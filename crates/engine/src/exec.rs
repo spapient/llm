@@ -426,30 +426,26 @@ impl LocalExecutor {
     }
 }
 
-/// 单一设备 + 入队提交的实现：Local 与 Cpu 同一份口径，`sync` 语义各自扩展。
-macro_rules! queue_exec {
-    ($T:ty) => {
-        impl Executor for $T {
-            fn device(&self) -> &Device {
-                &self.device
-            }
-
-            fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()> {
-                for node in graph.nodes() {
-                    self.queue.push(Queued {
-                        stream,
-                        node: node.clone(),
-                    });
-                }
-                Ok(())
-            }
-        }
-    };
+/// 入队提交：把图里每个节点按流入队。Local 与 Cpu 共用同一份口径。
+fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
+    for node in graph.nodes() {
+        queue.push(Queued {
+            stream,
+            node: node.clone(),
+        });
+    }
 }
 
-queue_exec!(LocalExecutor);
-
 impl Executor for LocalExecutor {
+    fn device(&self) -> &Device {
+        &self.device
+    }
+
+    fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()> {
+        enqueue(&mut self.queue, graph, stream);
+        Ok(())
+    }
+
     fn sync(&mut self, stream: Stream) -> Result<()> {
         self.queue.retain(|queued| queued.stream != stream);
         Ok(())
@@ -849,9 +845,16 @@ impl CpuExecutor {
     }
 }
 
-queue_exec!(CpuExecutor);
-
 impl Executor for CpuExecutor {
+    fn device(&self) -> &Device {
+        &self.device
+    }
+
+    fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()> {
+        enqueue(&mut self.queue, graph, stream);
+        Ok(())
+    }
+
     /// 排这一条流上已提交的节点：按入队顺序执行，成功一条才出队一条。
     ///
     /// 别的流不动：跨流先后不属于本层（[`Executor::sync`] 只承诺"这条流上已提交的工作完成"）。

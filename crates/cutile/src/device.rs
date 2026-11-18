@@ -625,7 +625,10 @@ fn metal_driver_exe_from(dir: &Path, driver_source: &str) -> Result<PathBuf> {
     let exe = dir.join("kernel_driver");
     write_text(&driver, driver_source)?;
     let mut clang = Command::new(&compiler.command);
-    clang.args(["-fobjc-arc", "-O2", "-o"]).arg(&exe).arg(&driver);
+    clang
+        .args(["-fobjc-arc", "-O2", "-o"])
+        .arg(&exe)
+        .arg(&driver);
     clang.args(["-framework", "Foundation", "-framework", "Metal"]);
     run_tool(&compiler.command, &mut clang, &driver)?;
     Ok(exe)

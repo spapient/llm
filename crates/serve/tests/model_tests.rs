@@ -1136,7 +1136,9 @@ fn a_quantized_int4_archive_loads_and_matches_the_reference() {
     let x: Vec<f32> = (0..in_features)
         .map(|index| 1.0 + index as f32 * 0.1)
         .collect();
-    let codes: Vec<i8> = (0..in_features).map(|index| (index as i8 % 5) - 2).collect();
+    let codes: Vec<i8> = (0..in_features)
+        .map(|index| (index as i8 % 5) - 2)
+        .collect();
     let w = packed_i4(&codes);
     let scales = [0.25f32];
     let mut reference = vec![0.0; 1];
@@ -1897,10 +1899,30 @@ fn a_quantized_attention_block_decodes_against_the_reference() {
     .expect("栈");
     let mut params = Params::new();
     params.insert("tok_emb.weight", table.clone());
-    params.insert_quantized("blk.0.q.weight", wq.clone(), "blk.0.q.weight_scale", sq.clone());
-    params.insert_quantized("blk.0.k.weight", wk.clone(), "blk.0.k.weight_scale", sk.clone());
-    params.insert_quantized("blk.0.v.weight", wv.clone(), "blk.0.v.weight_scale", sv.clone());
-    params.insert_quantized("blk.0.o.weight", wo.clone(), "blk.0.o.weight_scale", so.clone());
+    params.insert_quantized(
+        "blk.0.q.weight",
+        wq.clone(),
+        "blk.0.q.weight_scale",
+        sq.clone(),
+    );
+    params.insert_quantized(
+        "blk.0.k.weight",
+        wk.clone(),
+        "blk.0.k.weight_scale",
+        sk.clone(),
+    );
+    params.insert_quantized(
+        "blk.0.v.weight",
+        wv.clone(),
+        "blk.0.v.weight_scale",
+        sv.clone(),
+    );
+    params.insert_quantized(
+        "blk.0.o.weight",
+        wo.clone(),
+        "blk.0.o.weight_scale",
+        so.clone(),
+    );
 
     let mut model = assemble(stack, params);
     let (hist_k, hist_v) = history_kv(kv);
