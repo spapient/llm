@@ -254,7 +254,7 @@ pub trait PackedRow {
     /// 缓存必须按**配置**分开：实现者写成函数体里的 `static CACHE: FormulaCache =
     /// FormulaCache::new(); &CACHE`；泛型 [`Packed`] 内的 `static` 不保证按配置单态化成独立
     /// 单元格，两种精度会共用同一个 OnceLock，先解析的那份 operands 被后跑的格式复用（流量
-    /// 位宽串档）。与 [`FormulaCache`](crate::einsum::FormulaCache) 文档里"缓存留在各骨架
+    /// 位宽串档）。与 [`FormulaCache`] 文档里"缓存留在各骨架
     /// 类型上"的口径一致。
     fn cell() -> &'static FormulaCache;
 }
@@ -263,7 +263,7 @@ pub trait PackedRow {
 ///
 /// 类型参数 `P` 承载配置（编译期单态化），`G` 承载声明粒度；表达式、操作数表、派生轴除数、
 /// 分组倍数守卫与行切片全部读配置，格式侧只决定"用哪一行配置"。`P` 只在关联常量上被读出，
-/// 不占运行期字段，故用 [`PhantomData`] 标记这个编译期绑定。
+/// 不占运行期字段，故用 [`core::marker::PhantomData`] 标记这个编译期绑定。
 pub struct Packed<P: PackedRow, const G: usize> {
     _config: core::marker::PhantomData<P>,
 }
@@ -271,7 +271,7 @@ pub struct Packed<P: PackedRow, const G: usize> {
 impl<P: PackedRow, const G: usize> Format for Packed<P, G> {
     type Elem = u8;
 
-    /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 [`G`] 个元素切出来的派生轴。
+    /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 `G` 个元素切出来的派生轴。
     const EXPR: &'static str = "nm,m,ng,n->n";
 
     /// 三个输入都是读，只有输出是写；权重位宽取配置表，其余为 32 位浮点。
@@ -520,7 +520,7 @@ pub mod packed {
 
     /// 打包格式的行遍历：分组与长度守卫通过后，每行解包点积一次写回调用方缓冲。
     ///
-    /// 行切片、分组推进与格式无关；格式只给每字节码数 [`cpb`] 与反量化表 [`dequant`]。
+    /// 行切片、分组推进与格式无关；格式只给每字节码数 `cpb` 与反量化表 `dequant`。
     /// 解包位域与累加顺序和 [`dot_row`] 同一套算术，参考与内核对拍逐位一致。
     pub fn forward_rows(
         x: &[f32],

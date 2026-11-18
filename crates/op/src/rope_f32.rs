@@ -119,7 +119,7 @@ fn rope_heads(x: &[f32], out: &[f32], head_dim: usize) -> diagnostic::Result<usi
 }
 
 /// 多头旋转：头优先块布局 `[heads, head_dim]`，每段独立按头宽重计频率（段内下标从 0 起），
-/// 不把整段长度当一个头宽；段内旋转算术复用 [`rotate_into`]，这里只做头分段编排。
+/// 不把整段长度当一个头宽；段内旋转算术复用 `rotate_into`，这里只做头分段编排。
 ///
 /// # Errors
 ///

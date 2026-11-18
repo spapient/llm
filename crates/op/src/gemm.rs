@@ -75,14 +75,14 @@ pub trait Gemm {
 
     /// 打包格式的静态配置（[`Row`]）：每字节码数、零点、样本偏移、对称码表单点收敛。
     ///
-    /// 打包 lane（i2/i4）返回自身那一行；逐元素 lane（i8）返回 `None`，走 [`codes`] 按位模式
+    /// 打包 lane（i2/i4）返回自身那一行；逐元素 lane（i8）返回 `None`，走 `codes` 按位模式
     /// 解释。新增一档打包精度只在 `quant` 配置表加一行并把这里指过去，不在三条 lane 各抄除法、
     /// 零点与偏移表。
     fn config() -> Option<Row> {
         None
     }
 
-    /// A（`m×K`）确定性取值：打包格式走 [`packed::sample_a`]；逐元素格式自行实现本函数。
+    /// A（`m×K`）确定性取值：打包格式走 `packed_sample_a`；逐元素格式自行实现本函数。
     fn sample_a(m: usize) -> Vec<Self::Elem> {
         let Some(row) = Self::config() else {
             return Vec::new();

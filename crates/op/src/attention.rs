@@ -481,11 +481,11 @@ fn decode_heads(
     Ok(())
 }
 
-/// 多头朴素 decode 内核：头数由 `q` 长度派生，布局同 [`decode_heads`]，头内走 [`decode_forward`]。
+/// 多头朴素 decode 内核：头数由 `q` 长度派生，布局同 `decode_heads`，头内走 [`decode_forward`]。
 ///
 /// # Errors
 ///
-/// 同 [`decode_heads`]。
+/// 同 `decode_heads`。
 pub fn decode_forward_heads(
     q: &[f32],
     k: &[f32],
@@ -498,11 +498,11 @@ pub fn decode_forward_heads(
     decode_heads(q, k, v, out, q_rows, hist, d, decode_forward)
 }
 
-/// 多头 flash decode 内核：头数由 `q` 长度派生，布局同 [`decode_heads`]，头内走 [`decode_flash_forward`]。
+/// 多头 flash decode 内核：头数由 `q` 长度派生，布局同 `decode_heads`，头内走 [`decode_flash_forward`]。
 ///
 /// # Errors
 ///
-/// 同 [`decode_heads`]。
+/// 同 `decode_heads`。
 pub fn decode_flash_forward_heads(
     q: &[f32],
     k: &[f32],
@@ -516,7 +516,7 @@ pub fn decode_flash_forward_heads(
 }
 
 /// 批量校验：批内各序列等长历史（统一 `hist`）。`heads` 是显式几何参数，不按总长反推，
-/// 避免批数不足时把头数压成 1 而放过错长缓冲；段内宽度/行数守卫交给 [`decode_heads`]。
+/// 避免批数不足时把头数压成 1 而放过错长缓冲；段内宽度/行数守卫交给 `decode_heads`。
 #[allow(clippy::too_many_arguments)]
 fn headed_batch(
     q: &[f32],
@@ -541,7 +541,7 @@ fn headed_batch(
 }
 
 /// 批块长度守卫：`q`/`out` 是 `batch·q_seq`，`k`/`v` 是 `batch·kv_seq`；宽度与查询/历史
-/// 行数守卫交给逐段调用的 [`decode_heads`]。
+/// 行数守卫交给逐段调用的 `decode_heads`。
 #[allow(clippy::too_many_arguments)]
 fn check_batch_pairs(
     q: &[f32],
@@ -558,7 +558,7 @@ fn check_batch_pairs(
 }
 
 /// 批量 decode：`q`/`out` 按批分段，第 `b` 段是 `heads·q_rows·d`，`k`/`v` 第 `b` 段是
-/// `heads·hist·d`；批内段间独立 softmax、互不串段。段内复用 [`decode_heads`] 头分段编排，
+/// `heads·hist·d`；批内段间独立 softmax、互不串段。段内复用 `decode_heads` 头分段编排，
 /// 这里只做批切片。变长历史（各段独立 `hist_b`）不在本入口口径内。
 #[allow(clippy::too_many_arguments)]
 fn decode_batch(
@@ -593,11 +593,11 @@ fn decode_batch(
     Ok(())
 }
 
-/// 批量朴素 decode 内核：段内走 [`decode_forward`]，布局同 [`decode_batch`]。
+/// 批量朴素 decode 内核：段内走 [`decode_forward`]，布局同 `decode_batch`。
 ///
 /// # Errors
 ///
-/// 同 [`decode_batch`]。
+/// 同 `decode_batch`。
 #[allow(clippy::too_many_arguments)]
 pub fn decode_forward_batch(
     q: &[f32],
@@ -613,11 +613,11 @@ pub fn decode_forward_batch(
     decode_batch(q, k, v, out, q_rows, hist, d, heads, batch, decode_forward)
 }
 
-/// 批量 flash decode 内核：段内走 [`decode_flash_forward`]，布局同 [`decode_batch`]。
+/// 批量 flash decode 内核：段内走 [`decode_flash_forward`]，布局同 `decode_batch`。
 ///
 /// # Errors
 ///
-/// 同 [`decode_batch`]。
+/// 同 `decode_batch`。
 #[allow(clippy::too_many_arguments)]
 pub fn decode_flash_forward_batch(
     q: &[f32],
@@ -683,8 +683,8 @@ fn headed_batch_var(
 }
 
 /// 变长批量 decode：`q`/`out` 等长段 `heads·q_rows·d`；`k`/`v` 第 `b` 段是
-/// `heads·hist_b·d`，段间紧排、长度随 `hist[b]` 不同。段内复用 [`decode_heads`] 头分段编排，
-/// 这里只按累计历史游标切批段；各段独立 softmax、互不串段。段内行数 / 宽度守卫交给 [`decode_heads`]。
+/// `heads·hist_b·d`，段间紧排、长度随 `hist[b]` 不同。段内复用 `decode_heads` 头分段编排，
+/// 这里只按累计历史游标切批段；各段独立 softmax、互不串段。段内行数 / 宽度守卫交给 `decode_heads`。
 #[allow(clippy::too_many_arguments)]
 fn decode_batch_var(
     q: &[f32],
@@ -718,11 +718,11 @@ fn decode_batch_var(
     Ok(())
 }
 
-/// 变长批量朴素 decode：段内走 [`decode_forward`]，布局同 [`decode_batch_var`]。
+/// 变长批量朴素 decode：段内走 [`decode_forward`]，布局同 `decode_batch_var`。
 ///
 /// # Errors
 ///
-/// 同 [`decode_batch_var`]。
+/// 同 `decode_batch_var`。
 #[allow(clippy::too_many_arguments)]
 pub fn decode_forward_batch_var(
     q: &[f32],
@@ -737,11 +737,11 @@ pub fn decode_forward_batch_var(
     decode_batch_var(q, k, v, out, q_rows, hist, d, heads, decode_forward)
 }
 
-/// 变长批量 flash decode：段内走 [`decode_flash_forward`]，布局同 [`decode_batch_var`]。
+/// 变长批量 flash decode：段内走 [`decode_flash_forward`]，布局同 `decode_batch_var`。
 ///
 /// # Errors
 ///
-/// 同 [`decode_batch_var`]。
+/// 同 `decode_batch_var`。
 #[allow(clippy::too_many_arguments)]
 pub fn decode_flash_forward_batch_var(
     q: &[f32],
