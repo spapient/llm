@@ -201,11 +201,14 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
 fn next_token_labels(tokens: &[u32], rows: usize, cols: usize) -> Vec<f32> {
     let positions = rows.saturating_mul(cols.saturating_sub(1));
     let mut labels = Vec::with_capacity(positions);
+    // 行边界切断右移：外层按行推进；行内后继是一段连续 slice，整块映射进标签表。
     for row in 0..rows {
         let base = row * cols;
-        for col in 0..cols.saturating_sub(1) {
-            labels.push(tokens[base + col + 1] as f32);
-        }
+        labels.extend(
+            tokens[base + 1..base + cols]
+                .iter()
+                .map(|&token| token as f32),
+        );
     }
     labels
 }

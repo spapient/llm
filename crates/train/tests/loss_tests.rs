@@ -65,3 +65,41 @@ fn rejects_invalid_geometry_and_labels() {
     let fractional = cross_entropy(&logits, &[1.5], 3);
     assert_eq!(fractional.expect_err("非整数索引").code(), Code::Invalid);
 }
+
+/// 极端大 logit 不应让 exp 上溢：减行内最大值后指数都 ≤ 1，NLL 仍有限且对齐类别趋近 0。
+#[test]
+fn cross_entropy_stays_finite_on_extreme_logits() -> Result<()> {
+    let logits = [1e30, 0.0, -1e30];
+    let labels = [0.0];
+    let loss = cross_entropy(&logits, &labels, 3)?;
+    assert!(loss.is_finite(), "极端 logit 下 NLL 必须有限，得到 {loss}");
+    assert!(
+        loss < 1e-3,
+        "对齐最大 logit 的类别 NLL 应趋近 0，得到 {loss}"
+    );
+    Ok(())
+}
+
+/// argmax 平局取首个命中的下标：相等时按下标最小一侧计数。
+#[test]
+fn argmax_breaks_ties_to_the_first_index() -> Result<()> {
+    let logits = [5.0, 5.0, 0.0];
+    let first_hit = argmax_hits(&logits, &[0.0], 3)?;
+    assert_eq!(first_hit, (1, 1), "平局取下标 0");
+    let second_miss = argmax_hits(&logits, &[1.0], 3)?;
+    assert_eq!(second_miss, (0, 1), "下标 1 不是平局首命中");
+    Ok(())
+}
+
+/// 一行对齐、一行错配时，均值落在两者 NLL 的中间区间。
+#[test]
+fn cross_entropy_averages_mixed_alignment() -> Result<()> {
+    let logits = [0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
+    let labels = [1.0, 1.0];
+    let loss = cross_entropy(&logits, &labels, 3)?;
+    assert!(
+        loss > 4.0 && loss < 6.0,
+        "对齐行近 0、错配行近 10，均值应约 5，得到 {loss}"
+    );
+    Ok(())
+}

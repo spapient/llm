@@ -103,9 +103,8 @@ pub fn cross_entropy(logits: &[f32], labels: &[f32], vocab: usize) -> Result<f32
     let total = (0..rows)
         .map(|row| {
             let start = row * vocab;
-            row_nll(&logits[start..start + vocab], labels[row] as usize)
+            row_nll(&logits[start..start + vocab], labels[row] as usize) as f64
         })
-        .map(|nll| nll as f64)
         .sum::<f64>();
     Ok((total / rows as f64) as f32)
 }

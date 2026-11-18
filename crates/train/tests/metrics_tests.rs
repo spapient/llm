@@ -110,3 +110,56 @@ fn render_shows_latest_metrics() -> Result<()> {
     assert!(line.contains("n=4"), "行内带样本数");
     Ok(())
 }
+
+/// 样本数不等时，大批次对均值的贡献更大：micro 加权而非步均值。
+#[test]
+fn weights_by_larger_batch_not_by_step_count() -> Result<()> {
+    let mut board = MetricsBoard::new();
+    // 小批 2 样本：loss 1.0、全对；大批 4 样本：loss 3.0、全错。
+    board.record(MetricPoint {
+        step: 0,
+        samples: 2,
+        loss: 1.0,
+        accuracy: 1.0,
+    })?;
+    board.record(MetricPoint {
+        step: 1,
+        samples: 4,
+        loss: 3.0,
+        accuracy: 0.0,
+    })?;
+
+    let mean_loss = board.mean_loss().expect("有样本");
+    let expect_loss = (2.0 + 4.0 * 3.0) / 6.0;
+    assert!(
+        (mean_loss - expect_loss).abs() < 1e-6,
+        "样本加权 loss 应为 {expect_loss}，得到 {mean_loss}"
+    );
+    let mean_acc = board.mean_accuracy().expect("有样本");
+    assert!(
+        (mean_acc - 2.0 / 6.0).abs() < 1e-6,
+        "样本加权命中率应为 1/3，得到 {mean_acc}"
+    );
+    Ok(())
+}
+
+/// 指标点按入账顺序留存，`points` 不重排。
+#[test]
+fn points_preserve_record_order() -> Result<()> {
+    let mut board = MetricsBoard::new();
+    board.record(MetricPoint {
+        step: 5,
+        samples: 1,
+        loss: 0.5,
+        accuracy: 1.0,
+    })?;
+    board.record(MetricPoint {
+        step: 2,
+        samples: 1,
+        loss: 0.8,
+        accuracy: 0.0,
+    })?;
+    let steps: Vec<u64> = board.points().iter().map(|point| point.step).collect();
+    assert_eq!(steps, [5, 2], "按入账顺序保留，不按步号重排");
+    Ok(())
+}

@@ -1,7 +1,7 @@
 use crate::{Data, ForwardOut, Learner, Reference, Session, Sgd, TrainConfig};
 use autograd::{Sizes, Store, Tape, Var};
 use data::Chunks;
-use diagnostic::{Code, Result};
+use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
 use tensor::{DType, Shape};
 
@@ -99,5 +99,98 @@ fn rejects_mismatched_logits_geometry() -> Result<()> {
         .expect_err("logits 长度不符");
     assert_eq!(error.code(), Code::Invalid);
     assert!(learner.board().is_empty(), "拒绝前不写指标");
+    Ok(())
+}
+
+/// 一批一条指标：两个 micro-batch 各入账一条，窗口 1 下各步进一次。
+#[test]
+fn records_one_metric_per_batch_across_epochs() -> Result<()> {
+    let (tape, sizes, p, x, logits, loss) = fixture();
+    let tokens = [0u32, 1, 0, 1];
+    let config = TrainConfig::new(1e-2, 0, 4, None, 1)?;
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    let mut learner = Learner::new(session, VOCAB)?;
+    let mut chunks = Chunks::new(&tokens, 1, 2)?;
+
+    learner.run(
+        &mut chunks,
+        1,
+        |session, _tokens| {
+            session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+            session
+                .buffers()
+                .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+            session.buffers().compute("add_f32", &[p, x], loss)?;
+            session.plan(loss)?;
+            Ok(ForwardOut { logits, loss })
+        },
+        |session| {
+            session.load_gradient(p, &[1.0; N])?;
+            Ok(())
+        },
+    )?;
+
+    assert_eq!(learner.board().len(), 2, "两个 micro-batch 各记一条");
+    assert_eq!(learner.session().step(), 2, "窗口 1，两批各步进一次");
+    Ok(())
+}
+
+/// 单列批没有后继可预测位置：入账前拒绝，看板不写入。
+#[test]
+fn rejects_single_column_with_no_successor() -> Result<()> {
+    let (tape, sizes, p, x, logits, loss) = fixture();
+    let tokens = [5u32];
+    let config = TrainConfig::default();
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    let mut learner = Learner::new(session, VOCAB)?;
+    let mut chunks = Chunks::new(&tokens, 1, 1)?;
+
+    let error = learner
+        .run(
+            &mut chunks,
+            1,
+            |session, _tokens| {
+                session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+                session
+                    .buffers()
+                    .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+                session.buffers().compute("add_f32", &[p, x], loss)?;
+                session.plan(loss)?;
+                Ok(ForwardOut { logits, loss })
+            },
+            |session| {
+                session.load_gradient(p, &[1.0; N])?;
+                Ok(())
+            },
+        )
+        .expect_err("单列无可预测位置");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(learner.board().is_empty(), "拒绝前不写指标");
+    Ok(())
+}
+
+/// 前向闭包失败时错误原样透传，未入账任何指标。
+#[test]
+fn forwards_forward_closure_error_without_recording() -> Result<()> {
+    let (tape, sizes, p, _x, _logits, _loss) = fixture();
+    let tokens = [0u32, 1];
+    let config = TrainConfig::default();
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    let mut learner = Learner::new(session, VOCAB)?;
+    let mut chunks = Chunks::new(&tokens, 1, 2)?;
+
+    let error = learner
+        .run(
+            &mut chunks,
+            1,
+            |_session, _tokens| Err(Error::new(Code::Internal, "夹具前向故意失败").with("test")),
+            |_session| Ok(()),
+        )
+        .expect_err("前向错误透传");
+    assert_eq!(error.code(), Code::Internal);
+    assert!(learner.board().is_empty(), "前向失败前不写指标");
     Ok(())
 }
