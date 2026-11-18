@@ -102,14 +102,6 @@ fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
     sum
 }
 
-/// 四个缓冲长度都等于 `s*d` 才放行：朴素与 flash 内核共用这条校验。
-fn check_len(q: &[f32], k: &[f32], v: &[f32], out: &[f32], len: usize) -> diagnostic::Result<()> {
-    if q.len() != len || k.len() != len || v.len() != len || out.len() != len {
-        return Err(Error::new(Code::Invalid, "缓冲长度与 s*d 不一致"));
-    }
-    Ok(())
-}
-
 /// 头宽不能为 0：`√d` 作分数除数，`d=0` 会让每条分数除零成 NaN。
 fn check_width(d: usize) -> diagnostic::Result<()> {
     if d == 0 {
@@ -227,11 +219,11 @@ pub fn flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     Ok(out)
 }
 
-/// 朴素内核本体：结果写进 `out`。
+/// 朴素内核本体：prefill 自注意力是 [`decode`] 的 `q_rows = hist = s` 特例，结果写进 `out`。
 ///
 /// # Errors
 ///
-/// 长度不符或头宽为 0 时返回说明。
+/// 长度不符、头宽为 0，或序列长为 0 时返回说明。
 pub fn forward(
     q: &[f32],
     k: &[f32],
@@ -240,25 +232,14 @@ pub fn forward(
     s: usize,
     d: usize,
 ) -> diagnostic::Result<()> {
-    check_len(q, k, v, out, s * d)?;
-    check_width(d)?;
-    let rows = Rows {
-        q,
-        k,
-        v,
-        cols: s,
-        d,
-        scale: (d as f32).sqrt(),
-    };
-    run_rows(&rows, s, out, Mode::Naive);
-    Ok(())
+    decode(q, k, v, out, s, s, d, Mode::Naive)
 }
 
-/// Flash 内核本体：online softmax，单遍 K/V，写进 `out`。
+/// Flash 内核本体：online softmax，单遍 K/V，写进 `out`。prefill 口径同 [`forward`]。
 ///
 /// # Errors
 ///
-/// 长度不符或头宽为 0 时返回说明。
+/// 长度不符、头宽为 0，或序列长为 0 时返回说明。
 pub fn flash_forward(
     q: &[f32],
     k: &[f32],
@@ -267,18 +248,7 @@ pub fn flash_forward(
     s: usize,
     d: usize,
 ) -> diagnostic::Result<()> {
-    check_len(q, k, v, out, s * d)?;
-    check_width(d)?;
-    let rows = Rows {
-        q,
-        k,
-        v,
-        cols: s,
-        d,
-        scale: (d as f32).sqrt(),
-    };
-    run_rows(&rows, s, out, Mode::Online);
-    Ok(())
+    decode(q, k, v, out, s, s, d, Mode::Online)
 }
 
 /// decode 缓冲长度校验：`q`/`out` 是 `q_rows·d`，`k`/`v` 是 `hist·d`；两边行数可以不同。
@@ -322,6 +292,31 @@ fn check_decode_len(
     Ok(())
 }
 
+/// decode 内核共享：`decode_forward` 与 `decode_flash_forward` 只差 softmax 策略（[`Mode`]）。
+#[allow(clippy::too_many_arguments)]
+fn decode(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+    mode: Mode,
+) -> diagnostic::Result<()> {
+    check_decode_len(q, k, v, out, q_rows, hist, d)?;
+    let rows = Rows {
+        q,
+        k,
+        v,
+        cols: hist,
+        d,
+        scale: (d as f32).sqrt(),
+    };
+    run_rows(&rows, q_rows, out, mode);
+    Ok(())
+}
+
 /// decode 朴素内核：`q`（`q_rows·d`）对历史 K/V（`hist·d`）做注意力，结果写进 `out`（`q_rows·d`）。
 ///
 /// 与 [`forward`] 的 prefill 同长自注意力不同，本入口不要求 `q_rows == hist`；典型 decode
@@ -339,17 +334,7 @@ pub fn decode_forward(
     hist: usize,
     d: usize,
 ) -> diagnostic::Result<()> {
-    check_decode_len(q, k, v, out, q_rows, hist, d)?;
-    let rows = Rows {
-        q,
-        k,
-        v,
-        cols: hist,
-        d,
-        scale: (d as f32).sqrt(),
-    };
-    run_rows(&rows, q_rows, out, Mode::Naive);
-    Ok(())
+    decode(q, k, v, out, q_rows, hist, d, Mode::Naive)
 }
 
 /// decode flash 内核：online softmax 单遍扫历史 K/V，写进 `out`。形状口径同 [`decode_forward`]。
@@ -366,17 +351,7 @@ pub fn decode_flash_forward(
     hist: usize,
     d: usize,
 ) -> diagnostic::Result<()> {
-    check_decode_len(q, k, v, out, q_rows, hist, d)?;
-    let rows = Rows {
-        q,
-        k,
-        v,
-        cols: hist,
-        d,
-        scale: (d as f32).sqrt(),
-    };
-    run_rows(&rows, q_rows, out, Mode::Online);
-    Ok(())
+    decode(q, k, v, out, q_rows, hist, d, Mode::Online)
 }
 
 /// 单头 decode 内核的函数指针：朴素与 flash 包装共用同一段头分段编排。
