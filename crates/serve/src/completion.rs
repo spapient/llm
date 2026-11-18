@@ -297,32 +297,28 @@ where
         generation.ok_or_else(|| missing(id))
     }
 
-    /// 批内推进一条序列一步；跑完返回它的结局，被挡或还在跑返回 `None`。
+    /// 批内一轮：一次整批前向取整块 logits，再逐条采样记账；结束的摘出批归还页，被挡原样保留。
     ///
-    /// 模型/采样报错时由 [`step_batch`](Self::step_batch) 统一归还页，这里只把错误上抛。
-    fn advance_one(&mut self, id: u64) -> diagnostic::Result<Option<(u64, Generation)>> {
-        let step = self.step(id)?;
-        if step.blocks() {
-            return Ok(None);
-        }
-        let Some(ending) = step.ending() else {
-            return Ok(None);
-        };
-        let generation = self.finish_one(id, ending)?;
-        Ok(Some((id, generation)))
-    }
-
-    /// 批内一轮：每条在跑序列各走一步；结束的摘出批并归还页，被挡的原样保留、不中断其余序列。
-    ///
-    /// 本轮已记账的序列不会因后面一条报错而回滚；报错那条先归还页，再把错误上抛。序列号在
-    /// 进入可变借用前一次性取走（owned `u64`），不持有 `batch` 的不可变借用。
+    /// 前向失败发生在任何记账之前：归还批内全部序列页再上抛。采样失败只归还报错那条，
+    /// 此前已采样记账的条目不回滚。序列快照在进入可变借用前一次性克隆取走，不持有 `batch`
+    /// 的不可变借用。
     fn step_batch(&mut self) -> diagnostic::Result<Vec<(u64, Generation)>> {
-        let ids: Vec<u64> = self.batch.ids().collect();
+        let sequences = self.batch.sequences().to_vec();
+        if sequences.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = match self.model.logits_batch(&sequences, &mut self.batch) {
+            Ok(rows) => rows,
+            Err(mut error) => {
+                self.release_all(&sequences, &mut error);
+                return Err(error);
+            }
+        };
         let mut finished = Vec::new();
-        for id in ids {
-            match self.advance_one(id) {
-                Ok(Some(pair)) => finished.push(pair),
-                Ok(None) => {}
+        for (sequence, logits) in sequences.iter().zip(rows) {
+            let id = sequence.id();
+            match self.sample(id, logits) {
+                Ok(step) => self.account(id, step, &mut finished)?,
                 Err(mut error) => {
                     // 归还页优先于报错上抛；归还本身失败时作为同级诊断附注保留，
                     // 不能用它覆盖原始故障——否则客户端看不到模型/采样那一类服务端错误。
@@ -334,6 +330,33 @@ where
             }
         }
         Ok(finished)
+    }
+
+    /// 一条采样结局入账：被挡留在批里；收尾的装出生成结果、归还页摘出批。
+    fn account(
+        &mut self,
+        id: u64,
+        step: Step,
+        finished: &mut Vec<(u64, Generation)>,
+    ) -> diagnostic::Result<()> {
+        if step.blocks() {
+            return Ok(());
+        }
+        if let Some(ending) = step.ending() {
+            finished.push((id, self.finish_one(id, ending)?));
+        }
+        Ok(())
+    }
+
+    /// 整批前向失败：批内序列都还没记账，全部归还页；归还失败作为同级诊断附注保留。
+    fn release_all(&mut self, sequences: &[Sequence], error: &mut diagnostic::Error) {
+        for sequence in sequences {
+            if let Err(cleanup) = self.batch.finish(sequence.id()) {
+                // `also` 按值取走主错误；先换出清理错误再挂附注，不就地移动借用背后的值。
+                let base = std::mem::replace(error, cleanup);
+                *error = base.also(error);
+            }
+        }
     }
 }
 

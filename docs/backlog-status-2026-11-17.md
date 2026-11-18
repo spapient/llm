@@ -3,7 +3,8 @@
 > 口径：状态分 **已落地 / 进行中 / 阻塞**；测试证据按 `crate + 测试数或用例名` 给出，计数为
 > `cargo test --workspace` 收口实测。门禁不削弱、负例不回写；历史快照刀次记录不回填。
 > 计划编号与验收门见 [`implementation-task-plan.md`](implementation-task-plan.md) §3；
-> 不退化清单见 [`llmu-parity-optimization-design.md`](llmu-parity-optimization-design.md) §1.5。
+> 不退化清单见 [`llmu-parity-optimization-design.md`](llmu-parity-optimization-design.md) §1.5；
+> M2 整批几何 / M3 设备后端 / M4 生成服务化设计见 [`batch-backend-serving-design.md`](batch-backend-serving-design.md)。
 
 ## 0. 收口门禁实测（合并门，全仓口径）
 
