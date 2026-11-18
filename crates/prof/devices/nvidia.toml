@@ -54,6 +54,14 @@ __device__ float _cutile_max_f32(const float *a, int n, int stride) {
     for (int i = 0; i < n; ++i) { float x = a[i * stride]; if (x > acc) acc = x; }
     return acc;
 }
+__device__ float _cutile_exp_sum_f32(const float *x, int n, int stride, float max) {
+    float acc = 0.0f;
+    for (int i = 0; i < n; ++i) acc += _cutile_exp_f32(x[i * stride] - max);
+    return acc;
+}
+__device__ void _cutile_exp_norm_f32(float *y, const float *x, int n, int stride, float max, float sum) {
+    for (int i = 0; i < n; ++i) y[i * stride] = _cutile_exp_f32(x[i * stride] - max) / sum;
+}
 """
 
 [[provides]]
