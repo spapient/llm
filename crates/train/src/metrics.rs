@@ -49,7 +49,7 @@ impl MetricsBoard {
     ///
     /// # Errors
     ///
-    /// 样本数为 0、loss 非有限数，或命中率不在 `[0, 1]` 时返回 [`Code::Invalid`]。
+    /// 样本数为 0、loss 非有限数，或命中条数超过样本数时返回 [`Code::Invalid`]。
     pub fn record(&mut self, point: MetricPoint) -> Result<()> {
         validate(&point)?;
         let samples = point.samples as u64;

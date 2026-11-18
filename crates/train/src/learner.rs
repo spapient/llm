@@ -101,9 +101,9 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         for _epoch in 0..epochs {
             while let Some(batch) = dataset.next_batch() {
                 self.train_batch(
-                    batch.tokens(),
                     batch.rows(),
                     batch.cols(),
+                    batch.tokens(),
                     &mut forward,
                     &mut backward,
                 )?;
@@ -112,12 +112,12 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
         Ok(())
     }
 
-    /// 单个 micro-batch 的编排闭环：接批 → 前向 → 评估入账 → 装梯度 → 优化步。
+    /// 单个 micro-batch 的编排闭环：前向装配 → 评估入账 → 装梯度 → 优化步。
     fn train_batch<F, G>(
         &mut self,
-        tokens: &[u32],
         rows: usize,
         cols: usize,
+        tokens: &[u32],
         forward: &mut F,
         backward: &mut G,
     ) -> Result<()>
@@ -169,18 +169,8 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
             .ok_or_else(|| Error::new(Code::Invalid, "logits 不是 f32 lane").with(SITE))
     }
 
-    /// 算 NLL 与命中率并记进看板；logits 长度必须等于有效位置数 × 词表宽度。
+    /// 算 NLL 与命中率并记进看板；几何自洽性由 [`evaluate`] 统一校验。
     fn record(&mut self, logits: &[f32], labels: &[f32]) -> Result<()> {
-        let positions = labels.len();
-        let expected = positions * self.vocab;
-        if logits.len() != expected {
-            let message = format!(
-                "logits 元素数 {} 与 {positions} 个有效位置 × {} 词表 = {expected} 不符",
-                logits.len(),
-                self.vocab
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
         let (nll_sum, correct, total) = evaluate(logits, labels, self.vocab)?;
         let loss = (nll_sum / total as f64) as f32;
         let point = MetricPoint {

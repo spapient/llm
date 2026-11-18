@@ -125,14 +125,8 @@ pub(crate) fn evaluate(
 ///
 /// 几何不自洽或标签越界时返回 [`Code::Invalid`]。
 pub fn cross_entropy(logits: &[f32], labels: &[f32], vocab: usize) -> Result<f32> {
-    let rows = check_geometry(logits, labels, vocab)?;
-    let total = (0..rows)
-        .map(|row| {
-            let start = row * vocab;
-            row_nll(&logits[start..start + vocab], labels[row] as usize) as f64
-        })
-        .sum::<f64>();
-    Ok((total / rows as f64) as f32)
+    let (nll_sum, _, rows) = evaluate(logits, labels, vocab)?;
+    Ok((nll_sum / rows as f64) as f32)
 }
 
 /// 分类命中率：`(正确条数, 总条数)`。
@@ -141,13 +135,7 @@ pub fn cross_entropy(logits: &[f32], labels: &[f32], vocab: usize) -> Result<f32
 ///
 /// 几何不自洽或标签越界时返回 [`Code::Invalid`]。
 pub fn argmax_hits(logits: &[f32], labels: &[f32], vocab: usize) -> Result<(usize, usize)> {
-    let rows = check_geometry(logits, labels, vocab)?;
-    let correct = (0..rows)
-        .filter(|&row| {
-            let start = row * vocab;
-            row_argmax(&logits[start..start + vocab]) == labels[row] as usize
-        })
-        .count();
+    let (_, correct, rows) = evaluate(logits, labels, vocab)?;
     Ok((correct, rows))
 }
 
