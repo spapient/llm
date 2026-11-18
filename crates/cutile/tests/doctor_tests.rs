@@ -45,7 +45,8 @@ fn doctor_reports_each_variant_as_data() {
 
 #[test]
 fn doctor_explains_why_a_gpu_is_rejected() {
-    let report = doctor(&catalogue(), &dirs(), "gemv_i4", "nvidia").expect("仍应返回报告");
+    // `intel`（gen12/OpenCL）的 P0 原语仍是 L1：作为"未验证 GPU"样本（`nvidia` 已升 L2）。
+    let report = doctor(&catalogue(), &dirs(), "gemv_i4", "intel").expect("仍应返回报告");
     assert!(report.path.is_none(), "{report:?}");
     let no_path = report.no_path.as_ref().expect("失败要带回诊断");
     assert!(no_path.to_string().contains("L2"), "{no_path}");

@@ -1,45 +1,17 @@
-//! 对称 int2 矩阵乘：`Y[m,n] = Σ_k i2(A[m,k]) · i2(B[k,n])`。
-//!
-//! 骨架在 [`crate::gemm`]，本文件只有"对称 int2"这一份格式契约：A、B 是打包 2 位码（每字节
-//! 四个，低 2 位在前），对称零点取配置表 [`I2`]。取样、打包长度与整数点积由骨架打包默认实现
-//! 按 [`I2`] 一行配置读出；点积在 `i32` 上精确累加（对应设备侧 `mma` 的整数路径），最后转
-//! f32。CPU 没有 mma，退化为标量整数点积；整数累加逐位精确，与设备指令无舍入分歧。
+//! `gemm_i2`：对称 int2 矩阵乘。骨架在 [`crate::gemm`]，本文件只有"对称 int2"这一份格式
+//! 契约：A、B 是打包 2 位码（每字节 4 个，低 2 位在前），对称零点取配置表 [`I2`]；取样、
+//! 打包长度与整数点积由骨架按 [`I2`] 一行配置读出，点积在 `i32` 上精确累加后转 f32。
 
-use crate::einsum::Bits;
-use crate::gemm::{self, Gemm};
-use crate::quant::I2;
-
-// 收缩轴、三轴契约、形状投影复用 gemm 家族共享模块。
 pub use crate::gemm::{AXES, K, project_shape};
 
-/// 标记类型：承载 `#[model]` 语义。
-pub struct GemmI2;
+use crate::quant::I2;
 
-impl Gemm for GemmI2 {
-    type Elem = u8;
-
-    const OP: &'static str = "gemm_i2";
-
-    const BITS: Bits = I2.bits;
-
-    fn config() -> Option<crate::quant::Row> {
-        Some(I2)
-    }
-}
-
-/// 内核本体：结果写进调用方给的缓冲。
-///
-/// # Errors
-///
-/// 缓冲尺寸不符时返回说明。
-pub fn forward(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> diagnostic::Result<()> {
-    gemm::forward::<GemmI2>(a, b, m, n, out)
-}
-
-/// 对称 int2 矩阵乘的语义别名。
-#[annotation::model(name = "gemm_i2", shape = [16, 16], dtype = "f32", skeleton = "gemm")]
-pub type GemmI2Model = GemmI2;
-
-#[cfg(test)]
-#[path = "../tests/gemm_i2_tests.rs"]
-mod tests;
+crate::gemm_variant!(
+    GemmI2,
+    GemmI2Model,
+    "gemm_i2",
+    "../tests/gemm_i2_tests.rs",
+    u8,
+    I2.bits,
+    fn config() -> Option<crate::quant::Row> { Some(I2) }
+);

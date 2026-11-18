@@ -263,11 +263,13 @@ pub fn cuda_harness(
     Ok(text)
 }
 
-/// `__global__` 包装的形参声明（与 `__device__` 同签名）。
+/// `__global__` 包装的形参声明：缓冲是设备指针，用 `d_` 前缀与 host 侧 `cuda_host_buffers` 的
+/// `cudaMalloc(&d_<name>)` 同源；标量直接传值。`cutile_launch<<<1,1>>>(d_<name>...)` 与包装内
+/// `kernel(d_<name>...)` 用同一份 `launch_args`，名字必须一致。
 fn cuda_params(params: &[Param]) -> String {
     let declared = params.iter().map(|param| match param.ctype {
-        CType::F32 => format!("float *{}", param.name),
-        CType::U8 => format!("unsigned char *{}", param.name),
+        CType::F32 => format!("float *d{}", param.name),
+        CType::U8 => format!("unsigned char *d{}", param.name),
         CType::Int => format!("int {}", param.name),
     });
     declared.collect::<Vec<_>>().join(", ")

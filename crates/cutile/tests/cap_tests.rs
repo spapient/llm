@@ -22,6 +22,12 @@ fn nvidia() -> Profile {
     profile_for("nvidia")
 }
 
+/// `intel`（gen12/OpenCL）的 P0 原语仍是 L1：作为"未验证 GPU"样本，验证证据不足会拦下整条链。
+/// （`nvidia` 已升 L2，不再是 L1 样本。）
+fn intel() -> Profile {
+    profile_for("intel")
+}
+
 /// cpu 档案去掉这些原语：用来演示"设备缺一条能力就降级"。
 fn cpu_without(prims: &[Prim]) -> Profile {
     let mut profile = cpu();
@@ -75,7 +81,7 @@ fn cpu_hits_the_first_variant() {
 
 #[test]
 fn missing_evidence_blocks_every_variant() {
-    let error = negotiate(&op(), &nvidia()).unwrap_err();
+    let error = negotiate(&op(), &intel()).unwrap_err();
     assert!(error.to_string().contains("没有可行变体"));
     assert!(error.chain.iter().all(|step| !step.ok));
     assert!(error.to_string().contains("L2"), "证据不足：{error}");

@@ -401,3 +401,48 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
     }
     values
 }
+
+/// 生成一份 GEMM 精度变体的完整公开面：标记类型、[`Gemm`] 实现、`forward` 入口、
+/// [`annotation::model`] 注解与测试挂载。差异只随后面的关联项（取样 / 打包 / 点积契约）变化；
+/// 新增一档精度只需加一行调用，不另写样板。
+#[macro_export]
+macro_rules! gemm_variant {
+    (
+        $name:ident, $alias:ident,
+        $op:tt, $test:tt,
+        $elem:ty, $bits:expr,
+        $( $methods:item )*
+    ) => {
+        #[doc = concat!("`", $op, "` 的标记类型：格式契约（取样 / 打包 / 点积）见 `crate::gemm` 的 `Gemm` 骨架。")]
+        pub struct $name;
+
+        impl crate::gemm::Gemm for $name {
+            type Elem = $elem;
+
+            const OP: &'static str = $op;
+
+            const BITS: crate::einsum::Bits = $bits;
+
+            $( $methods )*
+        }
+
+        #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
+        pub fn forward(
+            a: &[$elem],
+            b: &[$elem],
+            m: usize,
+            n: usize,
+            out: &mut [f32],
+        ) -> diagnostic::Result<()> {
+            crate::gemm::forward::<$name>(a, b, m, n, out)
+        }
+
+        #[annotation::model(name = $op, shape = [16, 16], dtype = "f32", skeleton = "gemm")]
+        #[doc = concat!("`", $op, "` 矩阵乘的语义别名。")]
+        pub type $alias = $name;
+
+        #[cfg(test)]
+        #[path = $test]
+        mod tests;
+    };
+}

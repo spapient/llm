@@ -57,7 +57,7 @@ impl    = "fma"
 dt      = ["f32"]
 space   = ["REG"]
 lanes   = ["1"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_dot", expect = [70.0] }
 
 [[provides]]
@@ -66,7 +66,7 @@ impl    = "lop3_i4"
 dt      = ["i4", "f32"]
 space   = ["REG", "GM"]
 group   = ["32"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_quant", expect = [-4.0, 3.5] }
 
 [[provides]]
@@ -77,7 +77,7 @@ dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_load", expect = [1.0] }
 
 [[provides]]
@@ -89,13 +89,13 @@ space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
 stages  = ["2", "3"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_load_async", expect = [1.0] }
 
 [[provides]]
 prim    = "commit_wait"
 impl    = "cp.async.commit_group"
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_commit_wait", expect = [0.0] }
 
 [[provides]]
@@ -104,13 +104,13 @@ impl    = "st.global"
 m       = "<=4096"
 dt      = ["f32"]
 space   = ["GM"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_store", expect = [3.25] }
 
 [[provides]]
 prim    = "bar"
 impl    = "bar.sync"
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_bar", expect = [0.0] }
 
 [[provides]]
@@ -118,7 +118,7 @@ prim    = "cvt"
 impl    = "cvt.rn"
 dt      = ["f32", "i32", "i8"]
 sat     = ["on", "off"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_cvt", expect = [3.0] }
 
 [[provides]]
@@ -127,7 +127,7 @@ impl    = "shfl.bfly"
 axis    = ["GMAX"]
 op      = ["sum", "max"]
 dt      = ["f32"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "nvidia/witness.cu", func = "witness_reduce", expect = [7.5] }
 
 [[provides]]

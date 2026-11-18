@@ -50,9 +50,9 @@
 //! let path = cutile::cap::negotiate(op, cpu).expect("CPU 应命中首档");
 //! assert_eq!(path.variant, "pipe2");
 //!
-//! // NVIDIA 档案在 P0 只有 L0/L1 证据：未验证的能力视为不具备（README §11.3）。
-//! let nvidia = cat.profile("nvidia").expect("内置档案");
-//! assert!(cutile::cap::negotiate(op, nvidia).is_err());
+//! // Intel 档案（gen12/OpenCL）在 P0 仍是 L1 证据：未验证的能力视为不具备（README §11.3）。
+//! let intel = cat.profile("intel").expect("内置档案");
+//! assert!(cutile::cap::negotiate(op, intel).is_err());
 //! # Ok(())
 //! # }
 //! ```
