@@ -268,8 +268,8 @@ pub fn cuda_harness(
 /// `kernel(d_<name>...)` 用同一份 `launch_args`，名字必须一致。
 fn cuda_params(params: &[Param]) -> String {
     let declared = params.iter().map(|param| match param.ctype {
-        CType::F32 => format!("float *d{}", param.name),
-        CType::U8 => format!("unsigned char *d{}", param.name),
+        CType::F32 => format!("float *d_{}", param.name),
+        CType::U8 => format!("unsigned char *d_{}", param.name),
         CType::Int => format!("int {}", param.name),
     });
     declared.collect::<Vec<_>>().join(", ")

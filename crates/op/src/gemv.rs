@@ -722,3 +722,44 @@ pub(crate) mod packed_test_support {
 #[cfg(test)]
 #[path = "../tests/gemv_tests.rs"]
 mod tests;
+
+/// 生成一份「打包量化」GEMV 精度变体的完整公开面：`GROUP` 常量、`PackedRow` 标记、
+/// [`annotation::model`] 别名、`forward` 入口与测试挂载。`i2`/`i4` 只差一行 [`Row`]；
+/// 新增一档打包精度加一次调用即可。
+#[macro_export]
+macro_rules! gemv_packed {
+    ($conf:ident, $alias:ident, $op:tt, $test:tt, $row:ident) => {
+        /// 量化分组（声明粒度）。
+        pub const GROUP: usize = 32;
+
+        /// 打包配置标记：把一行 [`Row`](crate::quant::Row) 挂进 [`Packed`](crate::gemv::Packed)。
+        pub struct $conf;
+
+        impl $crate::gemv::PackedRow for $conf {
+            const ROW: $crate::quant::Row = $row;
+
+            fn cell() -> &'static $crate::einsum::FormulaCache {
+                static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
+                &CACHE
+            }
+        }
+
+        #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32")]
+        #[doc = concat!("`", $op, "` 的语义类型：声明粒度 [`GROUP`]、每行按位宽打包。")]
+        pub type $alias = $crate::gemv::Packed<$conf, GROUP>;
+
+        /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
+        pub fn forward(
+            x: &[f32],
+            weights: &[u8],
+            scales: &[f32],
+            out: &mut [f32],
+        ) -> diagnostic::Result<()> {
+            <$alias as $crate::gemv::Format>::forward(x, weights, scales, out)
+        }
+
+        #[cfg(test)]
+        #[path = $test]
+        mod tests;
+    };
+}

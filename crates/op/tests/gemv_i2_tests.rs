@@ -19,7 +19,7 @@ fn reference_dequantizes_and_dots() {
     // 1 行、1 组、4 个权重：[1, -1, 0, 1]，scale = 0.5，x = [1, 1, 1, 1]
     let w = packed(&[1, -1, 0, 1]);
     let sample = with(4, 1, vec![1.0; 4], w, vec![0.5]);
-    let y = gemv::reference::<I2>(&sample).expect("参考可算");
+    let y = crate::gemv::reference::<I2>(&sample).expect("参考可算");
     assert_eq!(y.len(), 1);
     assert!(
         (y[0] - 0.5).abs() < 1e-6,
@@ -35,7 +35,7 @@ fn reference_handles_multiple_groups_and_rows() {
     let w = packed(&[1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1]);
     let x: Vec<f32> = (0..m).map(|index| index as f32 + 1.0).collect();
     let sample = with(m, n, x, w, vec![0.25, 0.5, 1.0, -1.0]);
-    let y = gemv::reference::<I2>(&sample).expect("参考可算");
+    let y = crate::gemv::reference::<I2>(&sample).expect("参考可算");
     assert_eq!(y.len(), n);
     assert!(y[0].is_finite());
     assert!(y[1].is_finite());
@@ -49,7 +49,7 @@ fn forward_writes_into_the_caller_buffer_and_matches_the_reference() {
     let x: Vec<f32> = (0..m).map(|index| index as f32 + 1.0).collect();
     let scales = vec![0.25, 0.5, 1.0, -1.0];
     let expected =
-        gemv::reference::<I2>(&with(m, n, x.clone(), w.clone(), scales.clone())).expect("参考可算");
+        crate::gemv::reference::<I2>(&with(m, n, x.clone(), w.clone(), scales.clone())).expect("参考可算");
 
     // 复用一块脏缓冲：结果必须是覆盖写，读到的不能是上一次的残留。
     let mut out = vec![f32::NAN; n];
@@ -89,21 +89,21 @@ fn the_kernel_agrees_with_a_hand_written_sum() {
 #[test]
 fn shape_mismatch_is_an_error() {
     // 输入太短。
-    assert!(gemv::reference::<I2>(&with(4, 1, vec![1.0], vec![0u8; 1], vec![1.0])).is_err());
+    assert!(crate::gemv::reference::<I2>(&with(4, 1, vec![1.0], vec![0u8; 1], vec![1.0])).is_err());
     // 权重太短。
-    assert!(gemv::reference::<I2>(&with(4, 1, vec![1.0; 4], vec![0u8; 0], vec![1.0])).is_err());
+    assert!(crate::gemv::reference::<I2>(&with(4, 1, vec![1.0; 4], vec![0u8; 0], vec![1.0])).is_err());
     // 没有分组。
-    assert!(gemv::reference::<I2>(&with(4, 1, vec![1.0; 4], vec![0u8; 1], vec![])).is_err());
+    assert!(crate::gemv::reference::<I2>(&with(4, 1, vec![1.0; 4], vec![0u8; 1], vec![])).is_err());
     // 分组不是 4 的倍数：m=6、1 组 → 组大小 6。
-    assert!(gemv::reference::<I2>(&with(6, 1, vec![1.0; 6], vec![0u8; 2], vec![1.0])).is_err());
+    assert!(crate::gemv::reference::<I2>(&with(6, 1, vec![1.0; 6], vec![0u8; 2], vec![1.0])).is_err());
     // m 不是 4 的倍数、分组为 4 倍数但不整除：先被"不能整除"拦下，解包循环从不碰到残缺尾码。
     assert!(
-        gemv::reference::<I2>(&with(5, 1, vec![1.0; 5], vec![0u8; 2], vec![1.0, 1.0])).is_err()
+        crate::gemv::reference::<I2>(&with(5, 1, vec![1.0; 5], vec![0u8; 2], vec![1.0, 1.0])).is_err()
     );
     // 非 4 倍数宽度无论分组奇偶都进不到解包：非四倍数组被四倍数校验拦，其余被整除校验拦。
-    assert!(gemv::reference::<I2>(&with(7, 1, vec![1.0; 7], vec![0u8; 2], vec![1.0])).is_err());
+    assert!(crate::gemv::reference::<I2>(&with(7, 1, vec![1.0; 7], vec![0u8; 2], vec![1.0])).is_err());
     assert!(
-        gemv::reference::<I2>(&with(7, 1, vec![1.0; 7], vec![0u8; 2], vec![1.0, 1.0])).is_err()
+        crate::gemv::reference::<I2>(&with(7, 1, vec![1.0; 7], vec![0u8; 2], vec![1.0, 1.0])).is_err()
     );
 }
 
@@ -154,7 +154,7 @@ fn call_arguments_follow_the_template_signature() {
         .expect("签名可解析");
     assert_eq!(
         signature
-            .call_args(&gemv::sample::<I2>(64, 4))
+            .call_args(&crate::gemv::sample::<I2>(64, 4))
             .expect("实参"),
         "x, w, scales, y, 64, 4, 32"
     );

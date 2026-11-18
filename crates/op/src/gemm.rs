@@ -416,12 +416,12 @@ macro_rules! gemm_variant {
         #[doc = concat!("`", $op, "` 的标记类型：格式契约（取样 / 打包 / 点积）见 `crate::gemm` 的 `Gemm` 骨架。")]
         pub struct $name;
 
-        impl crate::gemm::Gemm for $name {
+        impl $crate::gemm::Gemm for $name {
             type Elem = $elem;
 
             const OP: &'static str = $op;
 
-            const BITS: crate::einsum::Bits = $bits;
+            const BITS: $crate::einsum::Bits = $bits;
 
             $( $methods )*
         }
@@ -434,7 +434,7 @@ macro_rules! gemm_variant {
             n: usize,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            crate::gemm::forward::<$name>(a, b, m, n, out)
+            $crate::gemm::forward::<$name>(a, b, m, n, out)
         }
 
         #[annotation::model(name = $op, shape = [16, 16], dtype = "f32", skeleton = "gemm")]
