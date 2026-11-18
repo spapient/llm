@@ -1,6 +1,7 @@
 //! 特殊 token 句柄：模型约定的控制编号，不进词片查表路径。
 
 use crate::Token;
+use diagnostic::{Code, Error, Result};
 
 /// 一组特殊 token 的编号占位；未配置的位置为 [`None`]。
 ///
@@ -154,5 +155,38 @@ impl SpecialTokens {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// 七个特殊槽位按稳定 wire 序展开（unk=0,pad=1,bos=2,eos=3,sep=4,cls=5,mask=6），供中性序列化读取。
+    pub(crate) const fn slots(&self) -> [(u8, Option<u32>); 7] {
+        [
+            (0, self.unk),
+            (1, self.pad),
+            (2, self.bos),
+            (3, self.eos),
+            (4, self.sep),
+            (5, self.cls),
+            (6, self.mask),
+        ]
+    }
+
+    /// 按 wire 序号回填一个特殊槽位；未知序号报 `Invalid`。
+    pub(crate) fn set_slot(&mut self, kind: u8, id: u32) -> Result<()> {
+        match kind {
+            0 => self.unk = Some(id),
+            1 => self.pad = Some(id),
+            2 => self.bos = Some(id),
+            3 => self.eos = Some(id),
+            4 => self.sep = Some(id),
+            5 => self.cls = Some(id),
+            6 => self.mask = Some(id),
+            _ => {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!("未知特殊槽位序号 {kind}"),
+                ));
+            }
+        }
+        Ok(())
     }
 }

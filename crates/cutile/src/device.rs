@@ -607,22 +607,29 @@ fn metal_kernel_in_dir(
     flags: &[String],
 ) -> Result<(String, String)> {
     let metalib = metal_kernel(dir, msl, flags)?;
-    let exe = metal_driver_exe_from(dir, driver)?;
+    let exe = metal_driver_exe_from(dir, driver, "kernel_driver", "内核对拍")?;
     let mut command = Command::new(&exe);
     command.arg(&metalib);
     run_exe(&mut command, &exe, "Metal 内核执行失败")
 }
 
-/// 编一份自定义 host 驱动：内核对拍发射 `cutile_launch`，与见证驱动（发射 `cutile_witness`）不同。
-fn metal_driver_exe_from(dir: &Path, driver_source: &str) -> Result<PathBuf> {
+/// 编一份 host 驱动：写 `{stem}.m`，用本机 clang 编成可执行文件（链接 Foundation 与 Metal）。
+/// `stem` 区分见证驱动（发射 `cutile_witness`）与内核对拍驱动（发射 `cutile_launch`）；`role` 只进
+/// "缺编译器"报错，定位是哪条链路缺工具。产物名由 `stem` 决定，两条链路因此共用这一段编排。
+fn metal_driver_exe_from(
+    dir: &Path,
+    driver_source: &str,
+    stem: &str,
+    role: &str,
+) -> Result<PathBuf> {
     let Some(compiler) = toolchain::detect() else {
         return Err(Error::new(
             Code::Unsupported,
-            "缺少 host C 编译器：Metal 内核对拍需要一个 host 驱动把内核发射到 GPU".to_string(),
+            format!("缺少 host C 编译器：Metal {role}需要一个 host 驱动把内核发射到 GPU"),
         ));
     };
-    let driver = dir.join("kernel_driver.m");
-    let exe = dir.join("kernel_driver");
+    let driver = dir.join(format!("{stem}.m"));
+    let exe = dir.join(stem);
     write_text(&driver, driver_source)?;
     let mut clang = Command::new(&compiler.command);
     clang
@@ -644,23 +651,7 @@ fn xcrun(tool: &str, flags: &[String]) -> Command {
 /// host 驱动：写 `driver.m`，用本机 clang 编成可执行文件（链接 Foundation 与 Metal）。驱动只负责
 /// 把 `metallib` 发射出去并回读，不判断"算得对不对"；模板逐字不变是设备证据的前提。
 fn metal_driver_exe(dir: &Path) -> Result<PathBuf> {
-    let Some(compiler) = toolchain::detect() else {
-        return Err(Error::new(
-            Code::Unsupported,
-            "缺少 host C 编译器：Metal 见证需要一个 host 驱动把内核发射到 GPU".to_string(),
-        ));
-    };
-    let driver = dir.join("driver.m");
-    let exe = dir.join("driver");
-    write_text(&driver, &metal_driver(MAX_OUT))?;
-    let mut clang = Command::new(&compiler.command);
-    clang
-        .args(["-fobjc-arc", "-O2", "-o"])
-        .arg(&exe)
-        .arg(&driver);
-    clang.args(["-framework", "Foundation", "-framework", "Metal"]);
-    run_tool(&compiler.command, &mut clang, &driver)?;
-    Ok(exe)
+    metal_driver_exe_from(dir, &metal_driver(MAX_OUT), "driver", "见证")
 }
 
 /// 起驱动子进程并回读：`metallib` 与条数是它的两个参数。

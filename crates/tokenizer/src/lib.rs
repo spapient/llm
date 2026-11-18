@@ -32,6 +32,7 @@ mod strategy;
 mod stream;
 mod unigram;
 mod vocab;
+mod vocab_codec;
 
 pub use bpe::Bpe;
 pub use bytes::Bytes;
@@ -42,6 +43,7 @@ pub use strategy::{PadDirection, Padding, Strategy, Truncation};
 pub use stream::DecoderStream;
 pub use unigram::Unigram;
 pub use vocab::{Merge, Vocab, VocabFamily, VocabSource};
+pub use vocab_codec::{decode_vocab, encode_vocab};
 
 use diagnostic::Result;
 

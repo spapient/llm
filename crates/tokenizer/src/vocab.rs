@@ -36,13 +36,36 @@ impl VocabFamily {
         }
     }
 
+    /// 稳定 wire 序号（中性字节布局用，区别于族名字符串）。
+    pub(crate) const fn id(self) -> u8 {
+        match self {
+            VocabFamily::Bpe => 0,
+            VocabFamily::Unigram => 1,
+            VocabFamily::WordPiece => 2,
+            VocabFamily::WordLevel => 3,
+            VocabFamily::Byte => 4,
+        }
+    }
+
+    /// 由 wire 序号取族；未知序号返回 `None`。
+    pub(crate) const fn from_id(id: u8) -> Option<Self> {
+        match id {
+            0 => Some(VocabFamily::Bpe),
+            1 => Some(VocabFamily::Unigram),
+            2 => Some(VocabFamily::WordPiece),
+            3 => Some(VocabFamily::WordLevel),
+            4 => Some(VocabFamily::Byte),
+            _ => None,
+        }
+    }
+
     /// 本族是否必须携带合并表。
-    const fn requires_merges(self) -> bool {
+    pub(crate) const fn requires_merges(self) -> bool {
         matches!(self, VocabFamily::Bpe)
     }
 
     /// 本族是否必须携带逐片分数。
-    const fn requires_scores(self) -> bool {
+    pub(crate) const fn requires_scores(self) -> bool {
         matches!(self, VocabFamily::Unigram)
     }
 }
@@ -162,6 +185,22 @@ impl Vocab {
     #[must_use]
     pub fn fingerprint(&self) -> &Fingerprint {
         &self.fingerprint
+    }
+
+    /// 把闭合词表折成对应算法的分词器；族无实现时报 [`Code::Unsupported`]。
+    ///
+    /// 这是"词表 → 算法"的唯一闭集扇出：上层只认 [`crate::Tokenizer`]，不关心具体实现名。
+    pub fn into_tokenizer(self) -> Result<Box<dyn crate::Tokenizer>> {
+        match self.family {
+            VocabFamily::Bpe => Ok(Box::new(crate::Bpe::new(self)?)),
+            VocabFamily::Unigram => Ok(Box::new(crate::Unigram::new(self)?)),
+            VocabFamily::Byte => Ok(Box::new(crate::Bytes)),
+            other => Err(Error::new(
+                Code::Unsupported,
+                format!("词表族 {other:?} 尚无分词器实现"),
+            )
+            .with("tokenizer::Vocab::into_tokenizer")),
+        }
     }
 
     /// 编号 → 词片字节；越界返回 [`None`]。

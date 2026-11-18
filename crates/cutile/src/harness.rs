@@ -267,12 +267,18 @@ pub fn cuda_harness(
 /// `cudaMalloc(&d_<name>)` 同源；标量直接传值。`cutile_launch<<<1,1>>>(d_<name>...)` 与包装内
 /// `kernel(d_<name>...)` 用同一份 `launch_args`，名字必须一致。
 fn cuda_params(params: &[Param]) -> String {
-    let declared = params.iter().map(|param| match param.ctype {
-        CType::F32 => format!("float *d_{}", param.name),
-        CType::U8 => format!("unsigned char *d_{}", param.name),
-        CType::Int => format!("int {}", param.name),
-    });
-    declared.collect::<Vec<_>>().join(", ")
+    params
+        .iter()
+        .map(|param| {
+            let base = param.ctype.c_name();
+            if param.ctype.is_buffer() {
+                format!("{base} *d_{}", param.name)
+            } else {
+                format!("{base} {}", param.name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// 文件头：CUDA 头、身份注释，以及整体转成 `__device__` 的内核源码。
@@ -401,29 +407,23 @@ fn metal_launch(
     signature: &Signature,
     sample: &Sample,
 ) -> diagnostic::Result<String> {
-    let mut buffers = Vec::new();
-    let mut args = Vec::new();
-    let mut slot = 0usize;
-    for param in signature.params() {
-        if param.ctype.is_buffer() {
-            let base = param.ctype.c_name();
-            buffers.push(format!(
-                "device {base} *d_{name} [[buffer({slot})]]",
-                name = param.name
-            ));
-            args.push(format!("d_{}", param.name));
-            slot += 1;
-        } else {
-            let value = sample
-                .scalar(&param.name)
-                .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-            args.push(value.to_string());
-        }
-    }
+    let call = launch_args(sample, signature.params())?;
+    let buffers = signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+        .map(|(slot, param)| {
+            format!(
+                "device {} *d_{} [[buffer({slot})]]",
+                param.ctype.c_name(),
+                param.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n                          ");
     Ok(format!(
-        "kernel void cutile_launch({buffers},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n    {kernel}({call});\n}}",
-        buffers = buffers.join(",\n                          "),
-        call = args.join(", ")
+        "kernel void cutile_launch({buffers},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n    {kernel}({call});\n}}"
     ))
 }
 
