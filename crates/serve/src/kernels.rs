@@ -192,7 +192,7 @@ fn decode_paths(
     batch: BatchDecodeKernel,
 ) -> Result<()> {
     let (q, k, v, out) = decode_views(inputs, outputs)?;
-    match inputs.get(3).and_then(View::f32) {
+    match inputs.get(3).and_then(View::f32).filter(|table| !table.is_empty()) {
         Some(hist_table) => decode_batch(launch, q, k, v, out, hist_table, batch),
         None => decode_single(q, k, v, out, single),
     }
@@ -363,7 +363,7 @@ fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) ->
     let x = input_f32("rope_f32", inputs, 0)?;
     let out = output_f32("rope_f32", outputs, 0)?;
     let head_dim = launch.block[1] as usize;
-    match inputs.get(1).and_then(View::f32) {
+    match inputs.get(1).and_then(View::f32).filter(|table| !table.is_empty()) {
         Some(table) => rope_batch(table, x, out, head_dim),
         None => rope_single(&launch, x, out, head_dim),
     }

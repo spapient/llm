@@ -110,7 +110,7 @@ fn decode_batch(kv: usize, history: &[f32]) -> (Batch, Sequence) {
 }
 
 /// 两条各带一行种子历史的 decode 批：A 取 token 2、B 取 token 5，页行按序列号归属；
-/// 批量前向回归基线夹具——当前走 `logits_batch` 默认逐条回退，整批几何接线后仍跑同一份对拍。
+/// 批量前向回归基线夹具——块链整批一次提交，历史段紧排装填、当前步按段写回各自页行。
 fn decode_batch_two(
     kv: usize,
     history_a: &[f32],
@@ -1297,8 +1297,7 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     assert_close(written_v, &v);
 }
 
-/// 两条序列同批走 `logits_batch`：行序对齐准入序，各自对拍参考块，KV 写回各归各的页行。
-/// 当前默认逐条回退；整批几何接线后本用例作为回归基线，不改变对拍口径。
+/// 两条序列同批走块链整批前向（`logits_batch`）：行序对齐准入序，各自对拍参考块，KV 写回各归各的页行。
 #[test]
 fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
     let (vocab, hidden, kv) = (8, 8, 8);

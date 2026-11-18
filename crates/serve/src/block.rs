@@ -128,13 +128,21 @@ fn wire_qkv(
 /// RoPE 子节点：对一路投影向量按位置做旋转；单序列位置走标量槽，由宿主每步回填；
 /// 批形态逐序列位置走独立输入位置表（ADR 0043 §5），两通道不在同节点并存。
 /// 头宽走 Launch 几何第二维（ADR 0043 §3：静态几何不进标量槽），单头时等于整段宽度。返回旋转后编号。
-fn wire_rope(sink: &mut NodeSink<'_>, input: u32, width: usize, head_dim: usize) -> Result<u32> {
+fn wire_rope(
+    sink: &mut NodeSink<'_>,
+    input: u32,
+    width: usize,
+    head_dim: usize,
+    pos_table: u32,
+) -> Result<u32> {
     let output = sink.slots.activation()?;
     let mut node = Node::new(
         "rope_f32".to_string(),
         Launch::new([1, 1, 1], [width as u32, head_dim as u32, 1]),
     );
     node.bind_input(input);
+    // 第二路为批位置表（ADR 0043 §5）；单序列走标量槽时该表编号仍登记，宿主按形态回填。
+    node.bind_input(pos_table);
     node.bind_output(output);
     sink.graph.push(node);
     sink.activations.push((output, width));
@@ -152,6 +160,7 @@ fn wire_attention(
     sink: &mut NodeSink<'_>,
     block: &AttentionBlock,
     q_slot: u32,
+    hist_len_table: u32,
 ) -> Result<(u32, u32, u32)> {
     let kv = block.kv_width();
     let hist_k = sink.slots.activation()?;
@@ -176,6 +185,8 @@ fn wire_attention(
     attention.bind_input(q_slot);
     attention.bind_input(hist_k);
     attention.bind_input(hist_v);
+    // 第四路为 ragged 段长表（ADR 0046 §8）；单序列缺省回退单序列 heads 入口。
+    attention.bind_input(hist_len_table);
     attention.bind_output(attn_slot);
     sink.graph.push(attention);
     sink.activations.push((attn_slot, kv));
@@ -214,9 +225,9 @@ fn wire_output(
 /// 把注意力块拆成子节点接进图；返回块输出激活编号。
 fn push_block(sink: &mut NodeSink<'_>, prev: u32, block: &AttentionBlock) -> Result<u32> {
     let ops = block_operators(block)?;
-    let (q_slot, k_slot, v_slot) = wire_qkv_rope(sink, block, prev, &ops)?;
-    let (hist_k, hist_v, attn_slot) = wire_attention(sink, block, q_slot)?;
-    let out_slot = wire_output(sink, block, prev, attn_slot, &ops)?;
+    let (pos_table, len_table) = sink.ensure_tables()?;
+    let (k_slot, v_slot, hist_k, hist_v, out_slot) =
+        wire_block_graph(sink, block, prev, &ops, pos_table, len_table)?;
     sink.blocks.push(BlockBinding {
         k: k_slot,
         v: v_slot,
@@ -228,17 +239,34 @@ fn push_block(sink: &mut NodeSink<'_>, prev: u32, block: &AttentionBlock) -> Res
     Ok(out_slot)
 }
 
+/// 块内子节点接线：q/k/v 投影 + 双 RoPE + decode 注意力 + o 投影残差；返回 `(k, v, hist_k, hist_v, out)`。
+#[allow(clippy::too_many_arguments)]
+fn wire_block_graph(
+    sink: &mut NodeSink<'_>,
+    block: &AttentionBlock,
+    prev: u32,
+    ops: &ProjectionOps,
+    pos_table: u32,
+    len_table: u32,
+) -> Result<(u32, u32, u32, u32, u32)> {
+    let (q_slot, k_slot, v_slot) = wire_qkv_rope(sink, block, prev, ops, pos_table)?;
+    let (hist_k, hist_v, attn_slot) = wire_attention(sink, block, q_slot, len_table)?;
+    let out_slot = wire_output(sink, block, prev, attn_slot, ops)?;
+    Ok((k_slot, v_slot, hist_k, hist_v, out_slot))
+}
+
 /// q/k/v 投影后，q/k 各插一路 RoPE 旋转再进注意力；写回页行的 K 取旋转后的一路。
 fn wire_qkv_rope(
     sink: &mut NodeSink<'_>,
     block: &AttentionBlock,
     prev: u32,
     ops: &ProjectionOps,
+    pos_table: u32,
 ) -> Result<(u32, u32, u32)> {
     let (q_slot, k_slot, v_slot) = wire_qkv(sink, block, prev, ops)?;
     let head_dim = block.head_dim();
-    let q_slot = wire_rope(sink, q_slot, block.kv_width(), head_dim)?;
-    let k_slot = wire_rope(sink, k_slot, block.kv_width(), head_dim)?;
+    let q_slot = wire_rope(sink, q_slot, block.kv_width(), head_dim, pos_table)?;
+    let k_slot = wire_rope(sink, k_slot, block.kv_width(), head_dim, pos_table)?;
     Ok((q_slot, k_slot, v_slot))
 }
 

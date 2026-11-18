@@ -9,7 +9,8 @@ use engine::{Batch, Sequence};
 use nn::Stack;
 
 use crate::assembly::{
-    Assembly, LayerKind, Params, assemble, bind_activations, bind_weights, submit_and_fetch,
+    Assembly, BlockBinding, LayerKind, Params, assemble, bind_activations, bind_weights,
+    submit_and_fetch,
 };
 use crate::kernels::SITE;
 
@@ -173,7 +174,7 @@ impl CpuModel {
                     )
                     .with(SITE));
                 }
-                reorder_history_row(&mut hist_k, &mut hist_v, row, kv, head_dim, hist, token);
+                reorder_history_row(&mut hist_k, &mut hist_v, row, kv, head_dim, hist, token, 0);
             }
             self.executor.bind(block.hist_k, hist_k);
             self.executor.bind(block.hist_v, hist_v);
@@ -196,10 +197,156 @@ impl CpuModel {
         }
         Ok(())
     }
+
+    /// 批历史装填：逐块把各段历史 K/V 按 §7 段紧排拼进一块缓冲；段间游标累加。
+    /// 历史位置顺序即页行顺序，是串行依赖，保留逐段逐行循环；行内头段整块 `copy_from_slice`。
+    fn load_history_batch(&mut self, sequences: &[Sequence], batch: &Batch) -> Result<()> {
+        // 块清单是纯数据，先快照成自有副本再进入可变借用；块绑定不含缓冲所有权。
+        let blocks = self.assembly.blocks.clone();
+        for block in blocks {
+            self.load_block_history(block, sequences, batch)?;
+        }
+        Ok(())
+    }
+
+    /// 单块批历史装填：段紧排拼进该块历史缓冲；段内复用头优先块重排。
+    fn load_block_history(
+        &mut self,
+        block: BlockBinding,
+        sequences: &[Sequence],
+        batch: &Batch,
+    ) -> Result<()> {
+        let kv = block.kv_width;
+        let head_dim = block.head_dim;
+        let hist_total = sequences.iter().map(|sequence| sequence.len() * kv).sum();
+        let mut hist_k = self
+            .executor
+            .bind(block.hist_k, Vec::new())
+            .unwrap_or_default();
+        let mut hist_v = self
+            .executor
+            .bind(block.hist_v, Vec::new())
+            .unwrap_or_default();
+        hist_k.resize(hist_total, 0.0);
+        hist_v.resize(hist_total, 0.0);
+        let mut cursor = 0;
+        for sequence in sequences {
+            let hist = sequence.len();
+            let id = sequence.id();
+            for token in 0..hist {
+                let row = batch.kv(id, token)?;
+                let expected = 2 * kv;
+                if row.len() != expected {
+                    return Err(Error::new(
+                        Code::Invalid,
+                        format!(
+                            "KV 行宽 {} 与块 KV 宽度 {kv} 推出的行宽 {expected}",
+                            row.len()
+                        ),
+                    )
+                    .with(SITE));
+                }
+                reorder_history_row(
+                    &mut hist_k,
+                    &mut hist_v,
+                    row,
+                    kv,
+                    head_dim,
+                    hist,
+                    token,
+                    cursor,
+                );
+            }
+            cursor += hist * kv;
+        }
+        self.executor.bind(block.hist_k, hist_k);
+        self.executor.bind(block.hist_v, hist_v);
+        Ok(())
+    }
+
+    /// 回填批形态两张共享表：逐序列当前位置写进 rope 位置表，历史行数写进 attention 段长表。
+    /// 两表元素同为序列当前长度，语义分属位置通道与段长通道，分别绑各自编号。
+    fn fill_batch_tables(&mut self, sequences: &[Sequence]) {
+        let lengths: Vec<f32> = sequences.iter().map(|s| s.len() as f32).collect();
+        if let Some(id) = self.assembly.rope_pos_table {
+            self.executor.bind(id, lengths.clone());
+        }
+        if let Some(id) = self.assembly.hist_len_table {
+            self.executor.bind(id, lengths);
+        }
+    }
+
+    /// 批当前步写回：逐块把各段第 `seq` 行 K/V 拼成页行，写回各自序列当前位置。
+    fn write_current_kv_batch(
+        &mut self,
+        sequences: &[Sequence],
+        batch: &mut Batch,
+    ) -> Result<()> {
+        let blocks = self.assembly.blocks.clone();
+        for block in blocks {
+            self.write_block_kv(block, sequences, batch)?;
+        }
+        Ok(())
+    }
+
+    /// 单块批写回：取该块激活缓冲各段 K/V 行，拼 `[k|v]` 页行写回页账。
+    fn write_block_kv(
+        &mut self,
+        block: BlockBinding,
+        sequences: &[Sequence],
+        batch: &mut Batch,
+    ) -> Result<()> {
+        let kv = block.kv_width;
+        let k = bound_slice(&self.executor, block.k, "K")?;
+        let v = bound_slice(&self.executor, block.v, "V")?;
+        for (seq, sequence) in sequences.iter().enumerate() {
+            let start = seq * kv;
+            let mut row = Vec::with_capacity(2 * kv);
+            row.extend_from_slice(&k[start..start + kv]);
+            row.extend_from_slice(&v[start..start + kv]);
+            batch.write_kv(sequence.id(), sequence.len(), &row)?;
+        }
+        Ok(())
+    }
+
+    /// 含块链整批前向：批表回填、历史段紧排装填、一次提交、按段写回页行，输出按宽拆行。
+    fn forward_block_batch(
+        &mut self,
+        sequences: &[Sequence],
+        batch: &mut Batch,
+    ) -> Result<Vec<Vec<f32>>> {
+        let batch_n = sequences.len();
+        let input = self.predict_input_batch(sequences)?;
+        self.resize_for_batch(batch_n);
+        self.executor.bind(self.assembly.input, input);
+        self.fill_batch_tables(sequences);
+        self.load_history_batch(sequences, batch)?;
+        let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
+        self.write_current_kv_batch(sequences, batch)?;
+        self.split_batch_output(flat, batch_n)
+    }
+
+    /// 整批输出按单序列输出宽拆回各行；总长与 `batch×width` 不符归内部错误。
+    fn split_batch_output(&self, flat: Vec<f32>, batch_n: usize) -> Result<Vec<Vec<f32>>> {
+        let width = self.assembly.output_len;
+        if flat.len() != batch_n * width {
+            return Err(Error::new(
+                Code::Internal,
+                format!(
+                    "整批输出长度 {len} 与 {batch_n}×{width} 不符",
+                    len = flat.len()
+                ),
+            )
+            .with(SITE));
+        }
+        Ok(flat.chunks(width).map(|row| row.to_vec()).collect())
+    }
 }
 
 /// 把一行页行 `[k(head,d) | v(head,d)]` 按头优先块 `[head, token, d]` 写进历史缓冲；
-/// heads=1 时排列与行优先一致。页行到块的重排是布局搬运，头段整块 `copy_from_slice`。
+/// `cursor` 为批段基址（单序列为 0），段内布局按本段行数 `hist` 排。heads=1 时排列与行优先
+/// 一致。页行到块的重排是布局搬运，头段整块 `copy_from_slice`。
+#[allow(clippy::too_many_arguments)]
 fn reorder_history_row(
     hist_k: &mut [f32],
     hist_v: &mut [f32],
@@ -208,12 +355,13 @@ fn reorder_history_row(
     head_dim: usize,
     hist: usize,
     token: usize,
+    cursor: usize,
 ) {
     let heads = kv / head_dim;
     let (k, v) = row.split_at(kv);
     for head in 0..heads {
         let seg = head * head_dim;
-        let start = head * hist * head_dim + token * head_dim;
+        let start = cursor + head * hist * head_dim + token * head_dim;
         hist_k[start..start + head_dim].copy_from_slice(&k[seg..seg + head_dim]);
         hist_v[start..start + head_dim].copy_from_slice(&v[seg..seg + head_dim]);
     }
@@ -243,14 +391,13 @@ impl crate::Predict for CpuModel {
         sequences: &[engine::Sequence],
         batch: &mut Batch,
     ) -> Result<Vec<Vec<f32>>> {
-        // 含注意力块的链整批 K/V 搬运尚未接线：回退逐条前向，保持与单条路径等价。
-        if self.assembly.blocks.is_empty() {
-            self.batch_forward(sequences)
-        } else {
-            sequences
-                .iter()
-                .map(|sequence| self.logits(sequence, batch))
-                .collect()
+        if sequences.is_empty() {
+            return Ok(Vec::new());
         }
+        // 无块链走无 K/V 整批前向；含块链整批一次提交，块链前向细节在 [`forward_block_batch`]。
+        if self.assembly.blocks.is_empty() {
+            return self.batch_forward(sequences);
+        }
+        self.forward_block_batch(sequences, batch)
     }
 }

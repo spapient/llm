@@ -48,6 +48,10 @@ pub(crate) struct Assembly {
     pub(crate) blocks: Vec<BlockBinding>,
     /// rope 节点输出槽编号：宿主在每步提交前把当前位置写进这些节点的标量槽。
     pub(crate) rope: Vec<u32>,
+    /// 批位置表缓冲编号（ADR 0043 §5）：全模型共享，批形态每步覆写；无 rope 块时 `None`。
+    pub(crate) rope_pos_table: Option<u32>,
+    /// attention ragged 段长表缓冲编号（ADR 0046 §8）：全模型共享，批形态每步覆写；无块时 `None`。
+    pub(crate) hist_len_table: Option<u32>,
 }
 
 impl Assembly {
@@ -125,6 +129,10 @@ pub(crate) struct NodeSink<'a> {
     pub(crate) slots: &'a mut Slots,
     /// rope 节点输出槽编号清单：位置标量槽回填按它走。
     pub(crate) rope: &'a mut Vec<u32>,
+    /// 批位置表编号：遇到 rope 块时懒分配，全模型共享一张。
+    pub(crate) rope_pos_table: &'a mut Option<u32>,
+    /// attention 段长表编号：遇到块时懒分配，全模型共享一张。
+    pub(crate) hist_len_table: &'a mut Option<u32>,
 }
 
 impl<'a> NodeSink<'a> {
@@ -208,6 +216,49 @@ impl<'a> NodeSink<'a> {
             shape: vec![linear.out_features()],
         });
         Ok(output_id)
+    }
+
+    /// 取号登记一张运行时覆写的批表缓冲：长度 0 占位，台账与描述表对齐历史块同口径。
+    fn alloc_table(&mut self) -> Result<u32> {
+        let id = self.slots.activation()?;
+        self.activations.push((id, 0));
+        self.descriptors.push(BindingDesc {
+            id,
+            entry: None,
+            shape: vec![0],
+        });
+        Ok(id)
+    }
+
+    /// 懒分配全模型共享的 rope 批位置表编号：已取号复用，否则登记新号。
+    pub(crate) fn ensure_rope_pos_table(&mut self) -> Result<u32> {
+        match *self.rope_pos_table {
+            Some(id) => Ok(id),
+            None => {
+                let id = self.alloc_table()?;
+                *self.rope_pos_table = Some(id);
+                Ok(id)
+            }
+        }
+    }
+
+    /// 懒分配全模型共享的 attention 段长表编号：已取号复用，否则登记新号。
+    pub(crate) fn ensure_hist_len_table(&mut self) -> Result<u32> {
+        match *self.hist_len_table {
+            Some(id) => Ok(id),
+            None => {
+                let id = self.alloc_table()?;
+                *self.hist_len_table = Some(id);
+                Ok(id)
+            }
+        }
+    }
+
+    /// 一次取齐两张共享批表编号：rope 位置表与 attention 段长表。
+    pub(crate) fn ensure_tables(&mut self) -> Result<(u32, u32)> {
+        let pos = self.ensure_rope_pos_table()?;
+        let len = self.ensure_hist_len_table()?;
+        Ok((pos, len))
     }
 }
 
@@ -312,6 +363,8 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     let mut descriptors = Vec::new();
     let mut blocks = Vec::new();
     let mut rope = Vec::new();
+    let mut rope_pos_table = None;
+    let mut hist_len_table = None;
     let mut slots = Slots::new();
     let mut sink = NodeSink {
         graph: &mut graph,
@@ -321,6 +374,8 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
         blocks: &mut blocks,
         rope: &mut rope,
         slots: &mut slots,
+        rope_pos_table: &mut rope_pos_table,
+        hist_len_table: &mut hist_len_table,
     };
     let (input_len, output_len, output, input_kind) = chain(layers, params, &mut sink)?;
 
@@ -336,6 +391,8 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
         descriptors,
         blocks,
         rope,
+        rope_pos_table,
+        hist_len_table,
     };
     assembly.check_descriptors(params)?;
     Ok(assembly)
