@@ -1,0 +1,20 @@
+[package]
+name = "llm-rng"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "L1 deterministic randomness: Philox4x32-10 counter engine with explicit seed/stream/index and self-contained uniform/normal/bernoulli distributions."
+publish = false
+autotests = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+
+[lints]
+workspace = true

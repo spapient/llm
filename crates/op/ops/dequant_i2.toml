@@ -1,0 +1,23 @@
+# 2 位反量化：打包字节 q（每字节四个 2 位码），y = scale*(code-2)。
+# OpDecl 闭集归到 elementwise；needs 只有 load/store，scale/zero 是标量常量。
+
+[op]
+name     = "dequant_i2"
+skeleton = "elementwise"
+summary  = "y[n] = scale*(code-2)，输入为打包字节"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+q = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0
