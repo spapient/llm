@@ -195,8 +195,8 @@ static inline void _cutile_exp_norm_f32(float *y, const float *x, int n, int str
 
 [[provides]]
 prim    = "quant"
-impl    = "scalar_i4"
-dt      = ["i4", "f32"]
+impl    = "unpack"
+dt      = ["i2", "i4", "f32"]
 space   = ["REG", "GM"]
 group   = ["32"]
 grade   = "L2"

@@ -1,5 +1,7 @@
 use super::*;
+use crate::gemv::Format;
 use crate::model::{ShapeContext, Values};
+use diagnostic::Code;
 use prof::atom::DType;
 
 fn shape(m: usize, n: usize) -> ShapeContext {

@@ -394,7 +394,7 @@ fn a_witness_is_file_plus_function_plus_expectation() {
 
 #[test]
 fn a_witness_path_without_a_function_is_rejected() {
-    let quant = position(cpu(), "quant", "scalar_i4");
+    let quant = position(cpu(), "quant", "unpack");
     let witness = Value::text("cpu/witness.c");
     let table = edited(cpu(), &format!("provides[{quant}].witness"), witness);
     let error = Profile::parse(&table).expect_err("只有路径的见证必须是错误");

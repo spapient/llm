@@ -1,21 +1,18 @@
 //! `gemv_i8` 的算子语义：对称 8 位权重（不打包、零点 0）+ 每 [`GROUP`] 个元素一条标度。
 //!
-//! 骨架在 [`crate::gemv`]，本文件只有"对称 int8"这一份格式契约：表达式、操作数位宽、声明粒度、
-//! 标度取值与内核本体。模板在 `ops/gemv_i8.k`，片段只与这里对拍。`u8` 承载 int8 位模式，
+//! 骨架在 [`crate::gemv`]，本文件只有"对称 int8"这一份逐元素配置：表达式、操作数位宽、声明粒度、
+//! 标度取值与元素反量化。模板在 `ops/gemv_i8.k`，片段只与这里对拍。`u8` 承载 int8 位模式，
 //! 算术时按 `i8` 解释。
 
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
-use crate::gemv::{self, Format};
+use crate::gemv::{self, Plain, PlainFmt};
 use crate::quant::I8;
 
-/// 量化分组（声明粒度，与 `gemv_i4` 同档）。
+/// 量化分组（声明粒度）。
 pub const GROUP: usize = 32;
 
-/// 对称 int8 格式的语义类型：声明粒度 [`GROUP`]、每行 `m` 个字节。
-#[annotation::model(name = "gemv_i8", shape = [4096, 4096], dtype = "f32")]
-pub type I8 = gemv::SymI8<GROUP>;
-
-impl<const G: usize> Format for gemv::SymI8<G> {
+/// 逐元素对称 int8 的配置：`u8` 承载位模式、按 `i8` 反量化、每 [`GROUP`] 个元素一条标度。
+impl<const G: usize> Plain for gemv::SymI8<G> {
     type Elem = u8;
 
     /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 [`GROUP`] 个元素切出的派生轴。
@@ -37,15 +34,9 @@ impl<const G: usize> Format for gemv::SymI8<G> {
 
     const STEP: usize = G;
 
-    fn cache() -> &'static FormulaCache {
-        // 一份缓存覆盖所有 SymI8<G> 实例：表达式与粒度无关。
+    fn cell() -> &'static FormulaCache {
         static CACHE: FormulaCache = FormulaCache::new();
         &CACHE
-    }
-
-    fn row(m: usize) -> usize {
-        // 不打包：每元素一个字节。
-        m
     }
 
     fn weights(m: usize, n: usize) -> Vec<u8> {
@@ -56,40 +47,30 @@ impl<const G: usize> Format for gemv::SymI8<G> {
             .collect()
     }
 
-    fn forward(
-        x: &[f32],
-        weights: &[u8],
-        scales: &[f32],
-        out: &mut [f32],
-    ) -> diagnostic::Result<()> {
-        // 守卫、行切片与分组推进收口到骨架；逐行点积算术只留这一个闭包。
-        gemv::packed::forward_plain(x, weights, scales, out, |w_row, x, s_row, group| {
-            let mut acc = 0.0f32;
-            for ((w_chunk, scale), x_chunk) in w_row.chunks(group).zip(s_row).zip(x.chunks(group)) {
-                let dot: f32 = w_chunk
-                    .iter()
-                    .zip(x_chunk)
-                    .map(|(packed, xv)| ((*packed as i8) as f32) * xv)
-                    .sum();
-                acc += dot * scale;
-            }
-            acc
-        })
+    fn to_f32(elem: u8) -> f32 {
+        (elem as i8) as f32
     }
 }
+
+/// 对称 int8 格式的语义类型：声明粒度 [`GROUP`]、每行 `m` 个字节。
+///
+/// `#[model]` 由这份注解生成 [`MODEL`]；别名不实现 [`Format`](crate::gemv::Format) 就编译不过，
+/// 所以"注解说的格式"与"实际实现的格式"不可能分家。
+#[annotation::model(name = "gemv_i8", shape = [4096, 4096], dtype = "f32")]
+pub type I8 = PlainFmt<gemv::SymI8<GROUP>>;
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
 ///
 /// # Errors
 ///
-/// 与 [`Format::forward`] 返回的说明一致。
+/// 与 [`Format::forward`](crate::gemv::Format::forward) 返回的说明一致。
 pub fn forward(
     x: &[f32],
     weights: &[u8],
     scales: &[f32],
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
-    <I8 as Format>::forward(x, weights, scales, out)
+    <I8 as gemv::Format>::forward(x, weights, scales, out)
 }
 
 #[cfg(test)]

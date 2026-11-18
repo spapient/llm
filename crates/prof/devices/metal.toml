@@ -3,8 +3,8 @@
 # （`metal_harness` + `compile_run_metal`）走同一条编译链，逐形状与标量参考对拍。
 #
 # 等级：被 P0 算子（gemv_i4/i8/f32）实际调用的原语标 L2（内核对拍已验）；`simd_dp4a`（i8 点积）
-# 与 `atomic` 没有 P0 算子调用，仍是 L1。`quant` 目前只有 `unpack_i4`，`gemv_i2` 的 `dt=i2` 待补
-# `unpack_i2`（新片段 + 见证 + 档案条目），故 i2 暂不协商。
+# 与 `atomic` 没有 P0 算子调用，仍是 L1。`quant` 是泛型低位宽解包（`unpack`），`dt` 覆盖 i2/i4，
+# 位宽参数（cpb/width/zero）由模板注入。
 #
 # 指纹按 cutile README §5.3 的 Apple 行：机器名含 `Apple M`，GPU 核数落在 M 系列的量级（10..80）。
 # 设计表原写的 `os >= 26` 没有进指纹：`cutile::probe` 目前只采集 CPU 的 `arch`/`features`，
@@ -73,8 +73,8 @@ witness = { file = "metal/witness.metal", func = "witness_dot", expect = [70.0] 
 
 [[provides]]
 prim    = "quant"
-impl    = "unpack_i4"
-dt      = ["i4", "f32"]
+impl    = "unpack"
+dt      = ["i2", "i4", "f32"]
 space   = ["REG", "GM"]
 group   = ["32"]
 grade   = "L2"

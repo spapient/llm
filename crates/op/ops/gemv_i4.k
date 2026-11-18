@@ -22,7 +22,7 @@ void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,
 
             @load_async(xs, x + g * gsz, tok);
             @commit_wait(tok);
-            @quant(deq, row + g * (gsz / 2), sc, gsz);
+            @quant(deq, row + g * (gsz / 2), sc, gsz, cpb: 2, width: 4, zero: 8);
             @dot(acc, deq, xs, gsz);
             @bar(tok);
         }

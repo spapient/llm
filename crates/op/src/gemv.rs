@@ -230,14 +230,14 @@ impl PackedRow for QuantI4 {
 /// 长度推分组——把实际分组也钉进类型会让"同一份权重换一种分组"变成另一份单态化副本。
 pub type Quantized<const GRAIN: usize> = Packed<QuantI4, GRAIN>;
 
-/// 稠密格式：每 `BLOCK` 个元素一块累加（最后一块可以短），无打包、无标度。
+/// 稠密逐元素格式的配置标记：每 `BLOCK` 个元素一块累加（最后一块可以短），无打包、无标度。
 ///
 /// `BLOCK` 出现在最内层循环的 `chunks` 上，是真正进热路径的常数：单态化之后编译器看到的是
-/// `chunks(32)` 而不是 `chunks(gsz)`，块内可以整体展开与向量化。
+/// `chunks(32)` 而不是 `chunks(gsz)`，块内可以整体展开与向量化。`impl Plain` 在 `gemv_f32`。
 pub struct Dense<const BLOCK: usize>;
 
-/// 与 [`Quantized`] 的差别是不打包（每元素 1 字节、无 nibble 解包），与 [`Dense`] 的差别是
-/// 有 per-group 标度。`u8` 承载 int8 的位模式，算术时按 `i8` 解释。
+/// 逐元素对称 int8 格式的配置标记：不打包（每元素 1 字节、无 nibble 解包），有 per-group
+/// 标度。`u8` 承载 int8 的位模式，算术时按 `i8` 解释。`impl Plain` 在 `gemv_i8`。
 pub struct SymI8<const GRAIN: usize>;
 
 /// 打包格式的静态配置提供者：把一档精度的 [`Row`] 挂到一个标记类型上。
@@ -318,6 +318,135 @@ impl<P: PackedRow, const G: usize> Format for Packed<P, G> {
     ) -> diagnostic::Result<()> {
         packed::forward_rows(x, weights, scales, out, P::ROW.cpb, P::ROW.table)
     }
+}
+
+/// 逐元素（不打包）GEMV 的静态配置：元素类型、表达式、粒度/标度事实、样本与元素反量化。
+///
+/// `i8`（`u8` 承载 int8、带分组标度）与 `f32`（稠密、无标度）只在元素类型、标度有无与
+/// 反量化上不同；这些事实收敛到这里，[`PlainFmt`] 的一份泛型 [`Format`] impl 负责缓存、行
+/// 切片、守卫与逐行点积遍历。新增一档逐元素精度加一条 `impl Plain` 即可。
+pub trait Plain {
+    /// 权重元素类型。
+    type Elem: Element;
+
+    /// einsum 表达式（带 / 不带派生轴）。
+    const EXPR: &'static str;
+
+    /// 表达式各项位宽与方向。
+    const OPERANDS: &'static [OperandSpec];
+
+    /// 形状粒度：`m` 必须是它的正整数倍；`1` 表示任意宽度。
+    const GRAIN: usize;
+
+    /// 派生轴 `(派生轴, 基准轴, 除数)`；无派生轴为 `None`。
+    const DERIVED: Option<(char, char, usize)>;
+
+    /// 标度取值；`None` 表示没有标度缓冲。
+    const SCALES: Option<fn(usize) -> f32>;
+
+    /// 模板每轮推进元素数（样本 `gsz`；稠密同时是累加分块）。
+    const STEP: usize;
+
+    /// 本配置自己的表达式缓存单元格。
+    fn cell() -> &'static FormulaCache;
+
+    /// 确定性权重。
+    fn weights(m: usize, n: usize) -> Vec<Self::Elem>;
+
+    /// 元素反量化到 f32：int8 按 `i8` 解释，f32 恒等。
+    fn to_f32(elem: Self::Elem) -> f32;
+}
+
+/// 配置驱动的逐元素权重格式：把一条 [`Plain`] 配置挂进 [`Format`] 骨架。
+///
+/// 与 [`Packed`] 对称：打包格式按 [`PackedRow`] 收敛，逐元素格式按 [`Plain`] 收敛，两边
+/// 都只写"格式事实"，缓存 / 行切片 / 守卫 / 逐行点积遍历各有一份。
+pub struct PlainFmt<C: Plain> {
+    _config: core::marker::PhantomData<C>,
+}
+
+impl<C: Plain> Format for PlainFmt<C> {
+    type Elem = C::Elem;
+
+    const EXPR: &'static str = C::EXPR;
+
+    const OPERANDS: &'static [OperandSpec] = C::OPERANDS;
+
+    const GRAIN: usize = C::GRAIN;
+
+    const DERIVED: Option<(char, char, usize)> = C::DERIVED;
+
+    const SCALES: Option<fn(usize) -> f32> = C::SCALES;
+
+    const STEP: usize = C::STEP;
+
+    fn cache() -> &'static FormulaCache {
+        // 缓存单元格由配置各自持有，避免泛型 static 被合并成跨配置共享的一份。
+        C::cell()
+    }
+
+    fn row(m: usize) -> usize {
+        // 逐元素不打包：一行权重就是 m 个元素。
+        m
+    }
+
+    fn weights(m: usize, n: usize) -> Vec<Self::Elem> {
+        C::weights(m, n)
+    }
+
+    fn forward(
+        x: &[f32],
+        weights: &[Self::Elem],
+        scales: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        let m = x.len();
+        let n = out.len();
+        non_empty(n)?;
+        if C::SCALES.is_some() {
+            // 带标度：分组由 scales 长度推出，逐组点积乘一次标度（与打包格式同一条守卫）。
+            let (groups, group) = scaled_groups(m, n, scales.len())?;
+            finite_scales(scales, groups)?;
+            required_weights(weights.len(), n, m)?;
+            for (row, value) in out.iter_mut().enumerate() {
+                let w_row = &weights[row * m..][..m];
+                let s_row = &scales[row * groups..][..groups];
+                let mut acc = 0.0f32;
+                for ((w_chunk, scale), x_chunk) in
+                    w_row.chunks(group).zip(s_row).zip(x.chunks(group))
+                {
+                    acc += dot::<C>(w_chunk, x_chunk) * scale;
+                }
+                *value = acc;
+            }
+        } else {
+            // 无标度：换错算子必须报错，而不是静默忽略标度算出一个看起来对的数。
+            if !scales.is_empty() {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!("稠密格式没有标度，收到 {} 个", scales.len()),
+                ));
+            }
+            required_weights(weights.len(), n, m)?;
+            for (row, value) in out.iter_mut().enumerate() {
+                let w_row = &weights[row * m..][..m];
+                let mut acc = 0.0f32;
+                for (w_chunk, x_chunk) in w_row.chunks(C::STEP).zip(x.chunks(C::STEP)) {
+                    acc += dot::<C>(w_chunk, x_chunk);
+                }
+                *value = acc;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 一段逐元素点积：`sum(to_f32(w) · x)`，按配置的单元素反量化。
+fn dot<C: Plain>(w: &[C::Elem], x: &[f32]) -> f32 {
+    w.iter()
+        .zip(x)
+        .map(|(elem, xv)| C::to_f32(*elem) * xv)
+        .sum()
 }
 
 /// 与权重格式无关的输入向量：两条算子共用同一份取值。

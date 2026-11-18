@@ -121,9 +121,6 @@ fn the_shared_checks_apply_to_every_format() {
             "{error}"
         );
     }
-    assert!(
-        <Dense<16> as Format>::EXPR.contains('m'),
-        "常量在类型上可取"
-    );
+    assert!(<F32 as Format>::EXPR.contains('m'), "常量在类型上可取");
     assert_eq!(<Quantized<8> as Format>::GRAIN, 8);
 }

@@ -62,8 +62,8 @@ witness = { file = "nvidia/witness.cu", func = "witness_dot", expect = [70.0] }
 
 [[provides]]
 prim    = "quant"
-impl    = "lop3_i4"
-dt      = ["i4", "f32"]
+impl    = "unpack"
+dt      = ["i2", "i4", "f32"]
 space   = ["REG", "GM"]
 group   = ["32"]
 grade   = "L2"
