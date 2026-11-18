@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use diagnostic::Error;
 use prof::atom::DType;
 
 fn packed(values: &[i8]) -> Vec<u8> {

@@ -15,14 +15,13 @@
 //! # 打包边界：非 4 倍数的尾码在解包之前就被拦下
 //!
 //! 四个 2 位码共用一个字节，因此输入宽度 `m` 必须为 4 的倍数、且整除分组：分组不是 4 的倍数、
-//! 或 `m` 不能被分组整除时，[`forward`] 在进入解包循环前返回错误，`as_chunks::<4>()` 永远拿不到
+//! 或 `m` 不能被分组整除时，[`forward`] 在进入解包循环前返回错误，解包端永远拿不到
 //! 非空余数。这里不做运行期补齐：weights 层把 2 位当作一整块紧贴的位数组（按行不补齐），
 //! 按行补零码是另一种打包格式，会与那份字节自证口径冲突。病态的非整宽度在边界处报错，
 //! 而不是让残缺码参与点积。
 
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
-use crate::gemv::{self, Format};
-use diagnostic::{Code, Error};
+use crate::gemv::{self, Format, packed};
 
 /// 量化分组。
 ///
@@ -87,9 +86,7 @@ impl<const G: usize> Format for gemv::SymI2<G> {
     }
 
     fn weights(m: usize, n: usize) -> Vec<u8> {
-        (0..n * (m / 4))
-            .map(|index| ((index * 37) % 251) as u8)
-            .collect()
+        packed::weights(m, n, 4)
     }
 
     fn forward(
@@ -98,70 +95,8 @@ impl<const G: usize> Format for gemv::SymI2<G> {
         scales: &[f32],
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        let m = x.len();
-        let n = out.len();
-
-        let (groups, group) = quantized_groups(m, n, scales.len(), weights.len())?;
-
-        // 每行只看自己那一段：切片一次算好，内层就不再做 `row × 列数 + g` 的乘加与边界检查。
-        let quarter = m / 4;
-        let per_group = group / 4;
-        for (row, value) in out.iter_mut().enumerate() {
-            let w_row = &weights[row * quarter..][..quarter];
-            let s_row = &scales[row * groups..][..groups];
-            *value = dot_row(w_row, x, s_row, per_group, group);
-        }
-        Ok(())
+        packed::forward_rows(x, weights, scales, out, 4, &DEQUANT)
     }
-}
-
-/// 量化格式的前置约束：骨架的分组推导 + 本节格式自己的"分组必须是 4 的倍数"。
-///
-/// 四个 2 位码共用一个字节，所以分组不是 4 的倍数时"每行 m / 4 字节"没有意义；分组为 4 倍数
-/// 且整除 `m` 时 `m` 必为 4 倍数，每组元素成四元，解包的余数由此被排除在循环之外。
-fn quantized_groups(
-    m: usize,
-    n: usize,
-    scales: usize,
-    weights: usize,
-) -> diagnostic::Result<(usize, usize)> {
-    let (groups, group) = gemv::scaled_groups(m, n, scales)?;
-    if !group.is_multiple_of(4) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("分组 {group} 必须是 4 的倍数"),
-        ));
-    }
-    gemv::required_weights(weights, n, m / 4)?;
-    Ok((groups, group))
-}
-
-/// 一行的点积：按分组推进，组内解包四个 2 位码，整组共用同一个标度。
-///
-/// 累加顺序与朴素写法逐位一致（同一个字节的低 2 位在前），否则舍入顺序一变，
-/// 对拍就不再是同一个算术。每组 `group` 为 4 倍数（前置约束），`as_chunks::<4>()` 余数为空，
-/// 解包只取成组的码，不触碰补齐位。
-fn dot_row(packed_row: &[u8], x: &[f32], s_row: &[f32], per_group: usize, group: usize) -> f32 {
-    let mut acc = 0.0f32;
-    for ((packed, scale), xs) in packed_row
-        .chunks_exact(per_group)
-        .zip(s_row)
-        .zip(x.chunks_exact(group))
-    {
-        let mut dot = 0.0f32;
-        for (byte, quad) in packed.iter().zip(xs.as_chunks::<4>().0) {
-            let c0 = usize::from(*byte & 0x03);
-            let c1 = usize::from((*byte >> 2) & 0x03);
-            let c2 = usize::from((*byte >> 4) & 0x03);
-            let c3 = usize::from(*byte >> 6);
-            dot += DEQUANT[c0] * quad[0];
-            dot += DEQUANT[c1] * quad[1];
-            dot += DEQUANT[c2] * quad[2];
-            dot += DEQUANT[c3] * quad[3];
-        }
-        acc += dot * scale;
-    }
-    acc
 }
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果**写进调用方给的缓冲**。

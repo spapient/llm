@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use diagnostic::Error;
 use prof::atom::DType;
 
 /// 把 `-2..=1` 的整数码按四个一组打包成字节：低 2 位在前。

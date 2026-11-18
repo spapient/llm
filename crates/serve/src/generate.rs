@@ -222,27 +222,9 @@ impl Classical {
 
 impl Sampling for Classical {
     fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
-        usable(logits)?;
-        self.params.validate(logits.len())?;
-        let temperature = self.params.temperature().unwrap_or(DEFAULT_TEMPERATURE);
-        // 温度缩放是逐元素映射，整块切片一次算完，不保留逐元素手写循环以外的遍历。
-        let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
-
-        let retained: Vec<usize> = (0..logits.len()).collect();
-        let best_index = self.select(&scaled, retained)?;
-        u32::try_from(best_index)
-            .map_err(|_| {
-                Error::new(Code::Invalid, format!("token 编号 {best_index} 超出 u32"))
-                    .with("serve::Classical")
-            })
-            .map(Some)
-    }
-}
-
-impl Classical {
-    /// 截断与选优：top-k → top-p 核采样 → 保留集 argmax；返回最优候选编号。
-    fn select(&self, scaled: &[f32], retained: Vec<usize>) -> Result<usize> {
-        argmax_index(scaled, retain(&self.params, scaled, retained))
+        pipeline(&self.params, logits, "serve::Classical", |scaled, retained| {
+            argmax_index(scaled, retained, "serve::Classical")
+        })
     }
 }
 
@@ -277,20 +259,9 @@ impl Multinomial {
 
 impl Sampling for Multinomial {
     fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
-        usable(logits)?;
-        self.params.validate(logits.len())?;
-        let temperature = self.params.temperature().unwrap_or(DEFAULT_TEMPERATURE);
-        // 温度缩放是逐元素映射，整块切片一次算完。
-        let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
-
-        let retained = retain(&self.params, &scaled, (0..logits.len()).collect());
-        let index = sample_categorical(&scaled, retained, &mut self.rng)?;
-        u32::try_from(index)
-            .map_err(|_| {
-                Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32"))
-                    .with("serve::Multinomial")
-            })
-            .map(Some)
+        pipeline(&self.params, logits, "serve::Multinomial", |scaled, retained| {
+            sample_categorical(scaled, retained, &mut self.rng)
+        })
     }
 }
 
@@ -300,28 +271,45 @@ impl Sampling for Multinomial {
 /// 浮点兜底：阈值被累积误差推到末尾时取最后一个候选。
 fn sample_categorical(scaled: &[f32], candidates: Vec<usize>, rng: &mut Rng) -> Result<usize> {
     if candidates.is_empty() {
-        return Err(
-            Error::new(Code::Invalid, "截断后候选为空：无 token 可选").with("serve::Multinomial")
-        );
+        return Err(empty("serve::Multinomial"));
     }
-    let max = candidates
-        .iter()
-        .map(|&index| scaled[index])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let exponentials: Vec<f32> = candidates
-        .iter()
-        .map(|&index| (scaled[index] - max).exp())
-        .collect();
-    let total: f32 = exponentials.iter().sum();
+    let (weights, total) = exp_weights(scaled, &candidates);
     let threshold = rng.next_f32() * total;
     let mut cumulative = 0.0;
     for (position, &index) in candidates.iter().enumerate() {
-        cumulative += exponentials[position];
+        cumulative += weights[position];
         if cumulative >= threshold {
             return Ok(index);
         }
     }
     Ok(candidates[candidates.len() - 1])
+}
+
+/// 采样公共管线：预检 → 参数校验 → 温度缩放 → 截断 → 选择器；返回选中 token 编号。
+///
+/// 两种选择器（确定性 argmax、概率逆变换）只在保留集上的取法不同，预检、校验、缩放与
+/// 截断序列共用这一份；选择器以编译期闭包注入，单态化无 dyn 开销。
+fn pipeline(
+    params: &SamplingParams,
+    logits: &[f32],
+    scope: &str,
+    choose: impl FnOnce(&[f32], Vec<usize>) -> Result<usize>,
+) -> Result<Option<u32>> {
+    usable(logits)?;
+    params.validate(logits.len())?;
+    let temperature = params.temperature().unwrap_or(DEFAULT_TEMPERATURE);
+    // 温度缩放是逐元素映射，整块切片一次算完。
+    let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
+    let retained = retain(params, &scaled, (0..logits.len()).collect());
+    let index = choose(&scaled, retained)?;
+    token(index, scope).map(Some)
+}
+
+/// 候选下标映射到 token 编号；越出 u32 报 `Invalid`，`scope` 标记产生错误的采样器。
+fn token(index: usize, scope: &str) -> Result<u32> {
+    u32::try_from(index).map_err(|_| {
+        Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32")).with(scope)
+    })
 }
 
 /// 温度之后的 top-k → top-p 截断：从全候选集裁到概率保留集；argmax 与逆变换两种选择器共用这一份序列。
@@ -335,20 +323,23 @@ fn retain(params: &SamplingParams, scaled: &[f32], mut retained: Vec<usize>) -> 
     retained
 }
 
+/// 分数降序排序键：分数大者在前，等值时编号小者在前（确定性平局口径）。
+fn descending(a_score: f32, b_score: f32, a: usize, b: usize) -> Ordering {
+    b_score
+        .partial_cmp(&a_score)
+        .unwrap_or(Ordering::Equal)
+        .then(a.cmp(&b))
+}
+
 /// top-k 截断：按缩放分数降序（等值取最小编号）排序后保留前 `k` 个候选。
 fn top_k(scaled: &[f32], mut candidates: Vec<usize>, k: usize) -> Vec<usize> {
-    candidates.sort_by(|&a, &b| {
-        scaled[b]
-            .partial_cmp(&scaled[a])
-            .unwrap_or(Ordering::Equal)
-            .then(a.cmp(&b))
-    });
+    candidates.sort_by(|&a, &b| descending(scaled[a], scaled[b], a, b));
     candidates.truncate(k);
     candidates
 }
 
 /// 保留集上确定性 argmax：严格大于才更新，等值时编号更小者胜出；候选为空报错。
-fn argmax_index(scaled: &[f32], candidates: Vec<usize>) -> Result<usize> {
+fn argmax_index(scaled: &[f32], candidates: Vec<usize>, scope: &str) -> Result<usize> {
     let best = candidates.into_iter().fold(None, |best, index| match best {
         None => Some(index),
         Some(best_index) => {
@@ -359,30 +350,37 @@ fn argmax_index(scaled: &[f32], candidates: Vec<usize>) -> Result<usize> {
             }
         }
     });
-    best.ok_or_else(|| {
-        Error::new(Code::Invalid, "截断后候选为空：无 token 可选").with("serve::Classical")
-    })
+    best.ok_or_else(|| empty(scope))
+}
+
+/// 截断后候选为空：无 token 可选；`scope` 标记产生错误的采样器。
+fn empty(scope: &str) -> Error {
+    Error::new(Code::Invalid, "截断后候选为空：无 token 可选").with(scope)
+}
+
+/// 保留集减最大值的指数权重与未归一化总和；top-p 排序与多项式逆变换共用同一份 softmax 权重。
+///
+/// 减最大值只为数值稳定，不改变相对权重；返回未归一化指数，归一化由消费方按用途决定。
+fn exp_weights(scaled: &[f32], candidates: &[usize]) -> (Vec<f32>, f32) {
+    let max = candidates
+        .iter()
+        .map(|&index| scaled[index])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let weights: Vec<f32> = candidates
+        .iter()
+        .map(|&index| (scaled[index] - max).exp())
+        .collect();
+    let total = weights.iter().sum();
+    (weights, total)
 }
 
 /// top-p 核采样：按 softmax 概率降序累计，保留累计概率不超过 `p` 的最小前缀（含越出阈值的第一项）。
 ///
 /// 归约与排序有串行依赖，保留遍历；`scaled` 整块读入，指数与累计不写回调用方缓冲。
 fn nucleus(scaled: &[f32], mut candidates: Vec<usize>, p: f32) -> Vec<usize> {
-    let max = candidates
-        .iter()
-        .map(|&index| scaled[index])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let exponentials: Vec<f32> = candidates
-        .iter()
-        .map(|&index| (scaled[index] - max).exp())
-        .collect();
-    let total: f32 = exponentials.iter().sum();
-    let mut ranked: Vec<(usize, f32)> = candidates.drain(..).zip(exponentials).collect();
-    ranked.sort_by(|&(a, ea), &(b, eb)| {
-        eb.partial_cmp(&ea)
-            .unwrap_or(Ordering::Equal)
-            .then(a.cmp(&b))
-    });
+    let (weights, total) = exp_weights(scaled, &candidates);
+    let mut ranked: Vec<(usize, f32)> = candidates.drain(..).zip(weights).collect();
+    ranked.sort_by(|&(a, ea), &(b, eb)| descending(ea, eb, a, b));
     let mut kept = Vec::with_capacity(ranked.len());
     let mut cumulative = 0.0;
     for (index, exponential) in ranked {
@@ -469,20 +467,8 @@ fn usable(logits: &[f32]) -> Result<()> {
 /// 最大 logit 的最小下标；空输入与非有限值都报错。
 fn best(logits: &[f32]) -> Result<u32> {
     usable(logits)?;
-    // 一趟 argmax：比较链有串行依赖，保留折叠；严格大于才更新，等值时先出现（编号更小）的下标胜出。
-    let (index, _) = logits.iter().copied().enumerate().fold(
-        (0usize, f32::NEG_INFINITY),
-        |(best_index, best_value), (index, value)| {
-            if value > best_value {
-                (index, value)
-            } else {
-                (best_index, best_value)
-            }
-        },
-    );
-    u32::try_from(index).map_err(|_| {
-        Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32")).with("serve::Greedy")
-    })
+    let index = argmax_index(logits, (0..logits.len()).collect(), "serve::Greedy")?;
+    token(index, "serve::Greedy")
 }
 
 #[cfg(test)]

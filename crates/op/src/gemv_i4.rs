@@ -15,14 +15,13 @@
 //! # 打包边界：奇数尾在解包之前就被拦下
 //!
 //! 两个 4 位码共用一个字节，因此输入宽度 `m` 必须为偶数、且整除分组：分组为奇数、或 `m`
-//! 不能被分组整除时，[`forward`] 在进入解包循环前返回错误，`as_chunks::<2>()` 永远拿不到
+//! 不能被分组整除时，[`forward`] 在进入解包循环前返回错误，解包端永远拿不到
 //! 非空余数。这里不做运行期补齐：weights 层把 4 位当作一整块紧贴的位数组（按行不补齐），
 //! 按行补零 nibble 是另一种打包格式，会与那份字节自证口径冲突。病态的奇数宽度在边界处报错，
 //! 而不是让半个 nibble 参与点积。
 
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
-use crate::gemv::{self, Format};
-use diagnostic::{Code, Error};
+use crate::gemv::{self, Format, packed};
 
 /// 量化分组。
 ///
@@ -88,9 +87,7 @@ impl<const G: usize> Format for gemv::Quantized<G> {
     }
 
     fn weights(m: usize, n: usize) -> Vec<u8> {
-        (0..n * (m / 2))
-            .map(|index| ((index * 37) % 251) as u8)
-            .collect()
+        packed::weights(m, n, 2)
     }
 
     fn forward(
@@ -99,64 +96,8 @@ impl<const G: usize> Format for gemv::Quantized<G> {
         scales: &[f32],
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        let m = x.len();
-        let n = out.len();
-
-        let (groups, group) = quantized_groups(m, n, scales.len(), weights.len())?;
-
-        // 每行只看自己那一段：切片一次算好，内层就不再做 `row × 列数 + g` 的乘加与边界检查。
-        let half = m / 2;
-        let per_group = group / 2;
-        for (row, value) in out.iter_mut().enumerate() {
-            let w_row = &weights[row * half..][..half];
-            let s_row = &scales[row * groups..][..groups];
-            *value = dot_row(w_row, x, s_row, per_group, group);
-        }
-        Ok(())
+        packed::forward_rows(x, weights, scales, out, 2, &DEQUANT)
     }
-}
-
-/// 量化格式的前置约束：骨架的分组推导 + 本节格式自己的"分组必须是偶数"。
-///
-/// 两个 4 位码共用一个字节，所以分组为奇数时"每行 m / 2 字节"没有意义；分组为偶且整除 `m`
-/// 时 `m` 必为偶，每组元素成对，解包的余数由此被排除在循环之外。
-fn quantized_groups(
-    m: usize,
-    n: usize,
-    scales: usize,
-    weights: usize,
-) -> diagnostic::Result<(usize, usize)> {
-    let (groups, group) = gemv::scaled_groups(m, n, scales)?;
-    if !group.is_multiple_of(2) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("分组 {group} 必须是偶数"),
-        ));
-    }
-    gemv::required_weights(weights, n, m / 2)?;
-    Ok((groups, group))
-}
-
-/// 一行的点积：按分组推进，组内解包两个 4 位码，整组共用同一个标度。
-///
-/// 累加顺序与朴素写法逐位一致（同一个字节的低半字节在前），否则舍入顺序一变，
-/// 对拍就不再是同一个算术。每组 `group` 为偶（前置约束），`as_chunks::<2>()` 余数为空，
-/// 解包只读成对的 nibble，不触碰补齐位。
-fn dot_row(packed_row: &[u8], x: &[f32], s_row: &[f32], per_group: usize, group: usize) -> f32 {
-    let mut acc = 0.0f32;
-    for ((packed, scale), xs) in packed_row
-        .chunks_exact(per_group)
-        .zip(s_row)
-        .zip(x.chunks_exact(group))
-    {
-        let mut dot = 0.0f32;
-        for (byte, pair) in packed.iter().zip(xs.as_chunks::<2>().0) {
-            dot += DEQUANT[usize::from(*byte & 0x0F)] * pair[0];
-            dot += DEQUANT[usize::from(*byte >> 4)] * pair[1];
-        }
-        acc += dot * scale;
-    }
-    acc
 }
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果**写进调用方给的缓冲**。

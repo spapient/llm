@@ -51,18 +51,30 @@ impl CpuModel {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         #[cfg(all(feature = "mmap", unix))]
         {
-            let source = weights::MmapSource::open(path.as_ref())?;
-            let stack = Stack::from_header(source.header())?;
-            let params = Params::from_reader_stack(&stack, source.header(), &source)?;
-            Self::new(&stack, &params)
+            Self::from_mmap(path.as_ref())
         }
         #[cfg(not(all(feature = "mmap", unix)))]
         {
-            let file = weights::safetensors::File::open(path)?;
-            let stack = Stack::from_header(file.header())?;
-            let params = Params::from_stack(&stack, file.header(), &file)?;
-            Self::new(&stack, &params)
+            Self::from_file(path.as_ref())
         }
+    }
+
+    /// 映射借用路径：条目字节从只读映射区借出，不经过 `Vec<u8>` 中转。
+    #[cfg(all(feature = "mmap", unix))]
+    fn from_mmap(path: &Path) -> Result<Self> {
+        let source = weights::MmapSource::open(path)?;
+        let stack = Stack::from_header(source.header())?;
+        let params = Params::from_reader_stack(&stack, source.header(), &source)?;
+        Self::new(&stack, &params)
+    }
+
+    /// 文件拷贝路径：按条目 seek+read 拷进驻留缓冲；非 Unix 或未开 mmap feature 走此路。
+    #[cfg(not(all(feature = "mmap", unix)))]
+    fn from_file(path: &Path) -> Result<Self> {
+        let file = weights::safetensors::File::open(path)?;
+        let stack = Stack::from_header(file.header())?;
+        let params = Params::from_stack(&stack, file.header(), &file)?;
+        Self::new(&stack, &params)
     }
 
     /// 一步张量级前向；输入长度必须等于首层输入宽度，返回末层激活。
@@ -156,76 +168,17 @@ impl CpuModel {
         // 无块链没有 rope 节点：位置取 0（角度为 0 的恒等旋转）。
         self.assembly.set_rope_positions(0);
         let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
-        let width = self.assembly.output_len;
-        if flat.len() != batch * width {
-            return Err(Error::new(
-                Code::Internal,
-                format!(
-                    "整批输出长度 {len} 与 {batch}×{width} 不符",
-                    len = flat.len()
-                ),
-            )
-            .with(SITE));
-        }
-        Ok(flat.chunks(width).map(|row| row.to_vec()).collect())
+        self.split_batch_output(flat, batch)
     }
 
-    /// 从页账把各块已缓存的历史 K/V 整行读出，按块拼接进历史缓冲；每步重绑，不另存模型侧 KV 账。
-    ///
-    /// 历史位置顺序即页行顺序，是串行依赖，保留逐行循环；每行 `[k|v]` 整段切片切分后整块
-    /// `copy_from_slice` 拼进缓冲，不写逐元素拷贝。上一轮同编号缓冲经 `bind` 返回后接住复用容量，
-    /// 历史单调变长，多数步次不再堆分配；首次没有旧缓冲时新建。
+    /// 单序列历史装填：批历史装填的单段特例（段游标 0、一段历史），复用同一段紧排布局。
     fn load_history(&mut self, sequence: &Sequence, batch: &Batch) -> Result<()> {
-        let id = sequence.id();
-        let hist = sequence.len();
-        for block in &self.assembly.blocks {
-            let kv = block.kv_width;
-            let head_dim = block.head_dim;
-            let len = hist * kv;
-            // 用占位空 Vec 换出旧历史块，填好后再绑回执行器。
-            let mut hist_k = self
-                .executor
-                .bind(block.hist_k, Vec::new())
-                .unwrap_or_default();
-            let mut hist_v = self
-                .executor
-                .bind(block.hist_v, Vec::new())
-                .unwrap_or_default();
-            hist_k.resize(len, 0.0);
-            hist_v.resize(len, 0.0);
-            for token in 0..hist {
-                place_history_row(
-                    &mut hist_k,
-                    &mut hist_v,
-                    batch,
-                    id,
-                    token,
-                    kv,
-                    head_dim,
-                    hist,
-                    0,
-                )?;
-            }
-            self.executor.bind(block.hist_k, hist_k);
-            self.executor.bind(block.hist_v, hist_v);
-        }
-        Ok(())
+        self.load_history_batch(std::slice::from_ref(sequence), batch)
     }
 
-    /// 前向后取回各块当前步 K/V 投影结果，拼成 `[k|v]` 页行写回当前位置；页账归调度器，模型不另存。
+    /// 单序列当前步 K/V 写回：批写回路径的单段特例，行写回各自页行。
     fn write_current_kv(&mut self, sequence: &Sequence, batch: &mut Batch) -> Result<()> {
-        let id = sequence.id();
-        let position = sequence.len();
-        for block in &self.assembly.blocks {
-            let kv = block.kv_width;
-            let k = bound_slice(&self.executor, block.k, "K")?;
-            let v = bound_slice(&self.executor, block.v, "V")?;
-            let mut row = Vec::with_capacity(2 * kv);
-            row.extend_from_slice(k);
-            row.extend_from_slice(v);
-            batch.write_kv(id, position, &row)?;
-        }
-        Ok(())
+        self.write_current_kv_batch(std::slice::from_ref(sequence), batch)
     }
 
     /// 批历史装填：逐块把各段历史 K/V 按 §7 段紧排拼进一块缓冲；段间游标累加。

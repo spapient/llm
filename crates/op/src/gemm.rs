@@ -78,6 +78,14 @@ pub trait Gemm {
 
     /// 输出位置 `(i, j)` 的点积：A 第 `i` 行（连续 `K` 个元素）与 B 第 `j` 列（跨步 `n`）。
     fn dot(a: &[Self::Elem], b: &[Self::Elem], n: usize, i: usize, j: usize) -> f32;
+
+    /// 逐元素格式（不打包）的码值：测试侧闭式重算用；打包格式由骨架按位流解包，返回空切片。
+    ///
+    /// 与 [`dot`](Self::dot) 同一组码值口径，只是按元素铺开，不做点积。
+    fn codes(values: &[Self::Elem]) -> Vec<i32> {
+        let _ = values;
+        Vec::new()
+    }
 }
 
 /// 从样本里取输入缓冲：名字固定 `a` / `b`，元素类型由格式给出。
@@ -177,6 +185,14 @@ pub mod packed {
         }
         acc as f32
     }
+
+    /// 按元素位流解包一串打包字节：每字节 `cpb` 个码，低槽在前，码值减 `zero`。
+    pub fn unpack_stream(bytes: &[u8], cpb: usize, zero: i32) -> Vec<i32> {
+        bytes
+            .iter()
+            .flat_map(|&byte| (0..cpb).map(move |slot| unpack(byte, slot, cpb, zero) as i32))
+            .collect()
+    }
 }
 
 /// 矩阵遍历：外层只写一份，内层点积落在 [`Gemm::dot`]。
@@ -230,4 +246,70 @@ pub(crate) fn matches_reference<G: Gemm>() {
     let mut out = vec![0.0; 16 * 12];
     forward::<G>(a, b, 16, 12, &mut out).expect("尺寸符");
     assert_eq!(out, expected);
+}
+
+/// 多形状对拍矩阵：每条格式在一档 `(m, n)` 配置上重放参考与内核，结果逐位一致。
+///
+/// 形状由配置表给出（单行单列、多行单列、单行多列、常规矩阵），覆盖收缩轴 `K` 之外的两类
+/// 边界；内核与参考是同一段算术，逐位相等是最低限度的口径，真正的独立闭式校验见
+/// [`hand_closed<G>`]。
+#[cfg(test)]
+pub(crate) fn matches_reference_over_shapes<G: Gemm>(shapes: &[(usize, usize)]) {
+    for &(m, n) in shapes {
+        let sample = sample::<G>(m, n);
+        let expected = reference::<G>(&sample).expect("参考可计算");
+        let a = take::<G>(&sample, "a").expect("a");
+        let b = take::<G>(&sample, "b").expect("b");
+        let mut out = vec![0.0; m * n];
+        forward::<G>(a, b, m, n, &mut out).expect("尺寸符");
+        assert_eq!(out, expected, "m={m}、n={n} 必须与参考逐位一致");
+    }
+}
+
+/// 整数点积的独立闭式校验：不经过 `G::dot` 与 `matmul`，测试侧自己按收缩轴重算。
+///
+/// 参考与生产同一份代码时，对它俩对拍等于自己跟自己对；这条用例把每个输出元素的 `K` 项
+/// 乘积和在测试里重算一遍（`i32` 精确累加，与内核整数路径同口径），逐元素钉住算术。
+#[cfg(test)]
+pub(crate) fn hand_closed<G: Gemm>() {
+    const M: usize = 5;
+    const N: usize = 7;
+    let sample = sample::<G>(M, N);
+    let a = take::<G>(&sample, "a").expect("a");
+    let b = take::<G>(&sample, "b").expect("b");
+    let mut out = vec![0.0; M * N];
+    forward::<G>(a, b, M, N, &mut out).expect("尺寸符");
+
+    let unpacked: Vec<i32> = sample_unpacked::<G>(a, b, M, N);
+    for i in 0..M {
+        for j in 0..N {
+            let dot: i32 = (0..K)
+                .map(|p| unpacked[i * K + p] * unpacked[M * K + p * N + j])
+                .sum();
+            assert_eq!(out[i * N + j], dot as f32, "({i}, {j}) 闭式点积不符");
+        }
+    }
+}
+
+/// 把 A、B 解包成有符号整数码；测试侧独立读数，供 [`hand_closed`] 闭式重算。
+#[cfg(test)]
+fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) -> Vec<i32> {
+    let mut values = Vec::with_capacity(m * K + K * n);
+    match G::BITS {
+        Bits::Two => {
+            let (a, b): (&[u8], &[u8]) = (a, b);
+            values.extend(packed::unpack_stream(a, 4, 2));
+            values.extend(packed::unpack_stream(b, 4, 2));
+        }
+        Bits::Four => {
+            let (a, b): (&[u8], &[u8]) = (a, b);
+            values.extend(packed::unpack_stream(a, 2, 8));
+            values.extend(packed::unpack_stream(b, 2, 8));
+        }
+        _ => {
+            values.extend(G::codes(a));
+            values.extend(G::codes(b));
+        }
+    }
+    values
 }

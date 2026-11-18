@@ -397,6 +397,31 @@ pub mod packed {
         }
         acc
     }
+
+    /// 打包格式的行遍历：分组与长度守卫通过后，每行解包点积一次写回调用方缓冲。
+    ///
+    /// 行切片、分组推进与格式无关；格式只给每字节码数 [`cpb`] 与反量化表 [`dequant`]。
+    /// 解包位域与累加顺序和 [`dot_row`] 同一套算术，参考与内核对拍逐位一致。
+    pub fn forward_rows(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+        cpb: usize,
+        dequant: &[f32],
+    ) -> diagnostic::Result<()> {
+        let m = x.len();
+        let n = out.len();
+        let (groups, group) = groups(m, n, scales.len(), weights.len(), cpb)?;
+        let row_bytes = m / cpb;
+        let per_group = group / cpb;
+        for (row, value) in out.iter_mut().enumerate() {
+            let w_row = &weights[row * row_bytes..][..row_bytes];
+            let s_row = &scales[row * groups..][..groups];
+            *value = dot_row(w_row, x, s_row, per_group, group, cpb, dequant);
+        }
+        Ok(())
+    }
 }
 
 /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。

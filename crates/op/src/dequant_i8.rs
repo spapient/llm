@@ -3,6 +3,7 @@
 //! 量化值以 f32 承载（当前 `Values` 只有 f32 变体），`scale` 与 `zero` 由样本标量给出。
 //! 本模块自带形状、代价、样本、参考与遍历，`#[annotation::model]` 装配。
 
+use crate::dequant;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
@@ -62,7 +63,7 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 ///
 /// # Errors
 ///
-/// 输入与输出等长，否则返回说明。
+/// 输入与输出等长、标度非零有限、零点在 `0..=15` 码域内，否则返回说明。
 pub fn forward(scale: f32, zero: f32, q: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
     if q.len() != out.len() {
         return Err(Error::new(
@@ -70,6 +71,7 @@ pub fn forward(scale: f32, zero: f32, q: &[f32], out: &mut [f32]) -> diagnostic:
             format!("缓冲长度不一致：q {}、out {}", q.len(), out.len()),
         ));
     }
+    dequant::check_affine(scale, zero, 16)?;
     for (out, q) in out.iter_mut().zip(q) {
         *out = scale * (q - zero);
     }

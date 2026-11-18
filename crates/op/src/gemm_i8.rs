@@ -51,6 +51,10 @@ impl Gemm for GemmI8 {
             .sum();
         acc as f32
     }
+
+    fn codes(values: &[u8]) -> Vec<i32> {
+        values.iter().map(|&byte| byte as i8 as i32).collect()
+    }
 }
 
 /// 标量代价：整数乘加按 `2·m·k·n` 计；权重每元素 1 字节，输出每元素 4 字节。
