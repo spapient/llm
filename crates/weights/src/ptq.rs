@@ -78,15 +78,7 @@ pub const I8: Scheme = Scheme {
 ///
 /// `group` 为 0、输入含非有限值，或 `max_code` 非法（0）时返回说明。
 pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec<f32>)> {
-    if group == 0 {
-        return Err(invalid("量化分组必须大于 0"));
-    }
-    if scheme.max_code <= 0.0 {
-        return Err(invalid("正码上限必须大于 0"));
-    }
-    if !x.iter().all(|v| v.is_finite()) {
-        return Err(invalid("输入必须是有限 f32"));
-    }
+    validate_quantize(scheme, group, x)?;
 
     let groups = x.len().div_ceil(group);
     let mut packed = vec![0u8; x.len().div_ceil(scheme.cpb)];
@@ -96,14 +88,7 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
         let lo = g * group;
         let hi = (lo + group).min(x.len());
         let slice = &x[lo..hi];
-
-        let max_abs = slice.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        // 全零组 scale 取 1：码全为零，`scale * (code - zero)` 仍为 0，逐位可逆。
-        let scale = if max_abs == 0.0 {
-            1.0
-        } else {
-            max_abs / scheme.max_code
-        };
+        let scale = group_scale(scheme, slice);
         scales.push(scale);
 
         for (i, &v) in slice.iter().enumerate() {
@@ -114,6 +99,30 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
     }
 
     Ok((packed, scales))
+}
+
+/// 量化参数校验：分组、正码上限、输入有限性。
+fn validate_quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<()> {
+    if group == 0 {
+        return Err(invalid("量化分组必须大于 0"));
+    }
+    if scheme.max_code <= 0.0 {
+        return Err(invalid("正码上限必须大于 0"));
+    }
+    if !x.iter().all(|v| v.is_finite()) {
+        return Err(invalid("输入必须是有限 f32"));
+    }
+    Ok(())
+}
+
+/// 一组元素的对称标度：全零组取 1（码全为对称零点，反解仍精确归零），否则 `max_abs / max_code`。
+fn group_scale(scheme: Scheme, slice: &[f32]) -> f32 {
+    let max_abs = slice.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    if max_abs == 0.0 {
+        1.0
+    } else {
+        max_abs / scheme.max_code
+    }
 }
 
 /// 按组反解：`y = scale * (code - zero)`，与反量化公式一致，供 round-trip 对拍。
@@ -131,16 +140,7 @@ pub fn dequantize(
     group: usize,
     out: &mut [f32],
 ) -> Result<()> {
-    if group == 0 {
-        return Err(invalid("反解分组必须大于 0"));
-    }
-    let groups = out.len().div_ceil(group);
-    if packed.len() != out.len().div_ceil(scheme.cpb) {
-        return Err(invalid("打包字节数与输出长度不一致"));
-    }
-    if scales.len() != groups {
-        return Err(invalid("标度条数与分组数不一致"));
-    }
+    validate_dequantize(scheme, packed, scales, group, out)?;
 
     // width == 8 时 `1u8 << 8` 会溢出：用 u16 求掩码再截断，`255` 对 i8 是整字节。
     let mask = ((1u16 << scheme.width()) - 1) as u8;
@@ -148,16 +148,38 @@ pub fn dequantize(
         let byte = packed[i / scheme.cpb];
         let shift = (i % scheme.cpb) * scheme.width();
         let field = (byte >> shift) & mask;
-
-        // i8（zero == 0）按二补码解释；i2/i4 是无符号码减零点。
-        let signed = if scheme.zero == 0 {
-            field as i8 as f32
-        } else {
-            field as f32 - scheme.zero as f32
-        };
-        *slot = scales[i / group] * signed;
+        *slot = scales[i / group] * decode_code(scheme, field);
     }
     Ok(())
+}
+
+/// 反解参数校验：分组、打包字节数与输出长度、标度条数与分组数。
+fn validate_dequantize(
+    scheme: Scheme,
+    packed: &[u8],
+    scales: &[f32],
+    group: usize,
+    out: &[f32],
+) -> Result<()> {
+    if group == 0 {
+        return Err(invalid("反解分组必须大于 0"));
+    }
+    if packed.len() != out.len().div_ceil(scheme.cpb) {
+        return Err(invalid("打包字节数与输出长度不一致"));
+    }
+    if scales.len() != out.len().div_ceil(group) {
+        return Err(invalid("标度条数与分组数不一致"));
+    }
+    Ok(())
+}
+
+/// 码 → 符号值：i8（`zero == 0`）按二补码解释，i2/i4 是无符号码减零点。
+fn decode_code(scheme: Scheme, field: u8) -> f32 {
+    if scheme.zero == 0 {
+        field as i8 as f32
+    } else {
+        field as f32 - scheme.zero as f32
+    }
 }
 
 /// 把第 `index` 个码写入对应字节的对应位段（低码在前）；字节已按 `vec![0]` 初始化，按位或累加。
