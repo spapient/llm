@@ -107,7 +107,7 @@ fn seed_loss<K: Kernel>(buffers: &mut Buffers<K>, loss: Var) -> Result<()> {
 }
 
 /// 读变量在场的前向 f32 值；缺失是重放/装配口径问题。
-fn values<'a, K: Kernel>(buffers: &'a Buffers<K>, var: Var) -> Result<&'a [f32]> {
+fn values<K: Kernel>(buffers: &Buffers<K>, var: Var) -> Result<&[f32]> {
     buffers
         .value(var)
         .and_then(|view| view.f32())
