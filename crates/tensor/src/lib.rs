@@ -26,6 +26,48 @@
 
 #![deny(unsafe_code)]
 
+/// 三个张量形态（[`OwnedTensor`] / [`Tensor`] / [`View`]）共用的元数据访问器。
+///
+/// `shape` / `strides` / `numel` 三者完全一致，收敛在 [`tensor_meta_shape!`]；只有 `dtype`
+/// 的来源不同——拥有/借用形态读 `self.dtype` 字段，元素视图读泛型 [`Element::DTYPE`]。用
+/// `field` / `elem` 两臂区分，避免把 `self` 传进宏（`self` 无法作为宏参数穿透）。
+macro_rules! tensor_meta {
+    (field) => {
+        /// 元素类型（`self.dtype` 字段）。
+        pub fn dtype(&self) -> DType {
+            self.dtype
+        }
+        tensor_meta_shape!();
+    };
+    (elem) => {
+        /// 元素类型（泛型 `E::DTYPE`）。
+        pub fn dtype(&self) -> DType {
+            E::DTYPE
+        }
+        tensor_meta_shape!();
+    };
+}
+
+/// [`tensor_meta!`] 里三种形态完全一致的部分：形状 / 步长 / 元素个数。
+macro_rules! tensor_meta_shape {
+    () => {
+        /// 形状。
+        pub fn shape(&self) -> &Shape {
+            &self.shape
+        }
+
+        /// 步长。
+        pub fn strides(&self) -> &Strides {
+            &self.strides
+        }
+
+        /// 元素个数。
+        pub fn numel(&self) -> usize {
+            self.shape.numel()
+        }
+    };
+}
+
 mod element;
 mod order;
 mod owned;

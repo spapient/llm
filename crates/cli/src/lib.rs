@@ -332,7 +332,8 @@ fn parse_value(words: &mut Words<'_>, flag: &str, what: &str) -> Result<Option<S
 }
 
 /// 选项的取值：不能缺失、不能为空、不能看起来像另一个选项。
-fn value(given: Option<&str>, flag: &str) -> Result<String> {
+/// 命令行两处解析（`cli::Invocation` 与 `cli::cutile_command`）共用这一份口径。
+pub(crate) fn value(given: Option<&str>, flag: &str) -> Result<String> {
     let Some(value) = given else {
         return Err(invalid(format!("`{flag}` 缺少取值")));
     };

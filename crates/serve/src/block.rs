@@ -4,15 +4,13 @@
 //! `kv_width` 记进 [`BlockBinding`]，运行时由模型宿主按它装载历史、取回当前步写回页行。
 
 use diagnostic::{Code, Error, Result};
-use engine::exec::{Launch, Node};
+use engine::exec::Launch;
 use nn::{AttentionAlgo, AttentionBlock, Contract, Linear, WEIGHT_SUFFIX};
 
 use crate::assembly::NodeSink;
 use crate::kernels::SITE;
 use crate::params::Params;
-use crate::plan::{
-    LayerKind, check_weight_entry, plan_operator, projection_shapes, validate_quantized_shape,
-};
+use crate::plan::{LayerKind, LayerPlan, check_weight, linear_plan};
 
 /// 一个注意力块接线记录：当前步 K/V 取回拼页行；历史 K/V 缓冲每步重绑；旁路即块输入编号。
 #[derive(Debug, Clone, Copy)]
@@ -40,12 +38,6 @@ fn decode_operator(algo: AttentionAlgo) -> &'static str {
     }
 }
 
-/// 注意力块装配校验：单头几何、宽度链衔接、四个投影条目齐备且长度相符。
-fn check_block(block: &AttentionBlock, prev_out: Option<usize>, params: &Params) -> Result<()> {
-    check_head(block, prev_out)?;
-    check_block_weights(block, params)
-}
-
 /// 几何与宽度链衔接：`kv_width` 是 `heads · head_dim`（整除由 nn 构造校验）；块输入对齐上一层输出宽度。
 fn check_head(block: &AttentionBlock, prev_out: Option<usize>) -> Result<()> {
     let hidden = block.hidden();
@@ -64,76 +56,44 @@ fn check_head(block: &AttentionBlock, prev_out: Option<usize>) -> Result<()> {
     Ok(())
 }
 
-/// 四个投影条目：条目齐备、长度与格式相符。量化投影按打包字节 + 标度条数核对，与普通
-/// [`crate::plan::check_weight_entry`] 同一份判据；`plan_operator` 的格式校验在 [`block_operators`] 一次走完。
-fn check_block_weights(block: &AttentionBlock, params: &Params) -> Result<()> {
-    for (level, linear) in [
-        ("q", block.q()),
-        ("k", block.k()),
-        ("v", block.v()),
-        ("o", block.out()),
-    ] {
-        check_projection(block, level, linear, params)?;
-    }
-    Ok(())
+/// 块内四个投影的装配计划：q/k/v/o 各一份，身份/算子名/权重/标度形状齐全；权重校验在
+/// [`block_plans`] 内一次走完。宽度链不在这里逐条核——q/k/v 取 hidden、o 取 kv 由块几何构造期保证。
+struct BlockPlans {
+    q: LayerPlan,
+    k: LayerPlan,
+    v: LayerPlan,
+    o: LayerPlan,
 }
 
-/// 一条块内投影：整除校验后，按格式取打包字节/标度条数，再用共享判据核对条目与可选标度。
-fn check_projection(
+/// 块内一条投影计划：名字取 `{块}.{level}`、条目取 `{块}.{level}.weight`，计划与权重校验走
+/// 共享 [`crate::plan::linear_plan`] / [`crate::plan::check_weight`]，不各写一套。
+fn projection_plan_for(
     block: &AttentionBlock,
     level: &str,
     linear: &Linear,
     params: &Params,
-) -> Result<()> {
+) -> Result<LayerPlan> {
     let entry = block_entry(block, level);
-    validate_quantized_shape(linear.format(), linear.in_features())?;
-    let (weight_len, _, scales_len, _) =
-        projection_shapes(linear.format(), linear.in_features(), linear.out_features());
-    let scale_entry = params.scale_entry(&entry);
-    check_weight_entry(params, &entry, weight_len, scale_entry, scales_len)
+    let plan = linear_plan(&format!("{}.{level}", block.name()), &entry, linear, params)?;
+    check_weight(&plan, params)?;
+    Ok(plan)
 }
 
-/// 块内四个投影的算子名与可选标度条目名；格式校验在 `plan_operator` 内一次完成，
-/// 标度条目名从参数表取回（稠密投影为 `None`）。
-struct ProjectionOps {
-    q: &'static str,
-    k: &'static str,
-    v: &'static str,
-    o: &'static str,
-    q_scale: Option<String>,
-    k_scale: Option<String>,
-    v_scale: Option<String>,
-    o_scale: Option<String>,
-}
-
-/// 量化投影的标度条目名：稠密投影无标度，返回 `None`。
-fn scale_entry_of(block: &AttentionBlock, params: &Params, level: &str) -> Option<String> {
-    params.scale_entry(&block_entry(block, level)).map(str::to_owned)
-}
-
-fn block_operators(block: &AttentionBlock, params: &Params) -> Result<ProjectionOps> {
-    Ok(ProjectionOps {
-        q: plan_operator(&format!("{}.q", block.name()), block.q())?,
-        k: plan_operator(&format!("{}.k", block.name()), block.k())?,
-        v: plan_operator(&format!("{}.v", block.name()), block.v())?,
-        o: plan_operator(&format!("{}.o", block.name()), block.out())?,
-        q_scale: scale_entry_of(block, params, "q"),
-        k_scale: scale_entry_of(block, params, "k"),
-        v_scale: scale_entry_of(block, params, "v"),
-        o_scale: scale_entry_of(block, params, "o"),
+/// 四路投影计划：逐条构造并校验条目与可选标度。
+fn block_plans(block: &AttentionBlock, params: &Params) -> Result<BlockPlans> {
+    Ok(BlockPlans {
+        q: projection_plan_for(block, "q", block.q(), params)?,
+        k: projection_plan_for(block, "k", block.k(), params)?,
+        v: projection_plan_for(block, "v", block.v(), params)?,
+        o: projection_plan_for(block, "o", block.out(), params)?,
     })
 }
 
 /// q/k/v 三路投影共享块输入扇出；返回三个投影输出编号。
-fn wire_qkv(
-    sink: &mut NodeSink<'_>,
-    block: &AttentionBlock,
-    prev: u32,
-    ops: &ProjectionOps,
-) -> Result<(u32, u32, u32)> {
-    let q = sink.push_projection(prev, block.q(), &block_entry(block, "q"), ops.q, ops.q_scale.as_deref())?;
-    let k = sink.push_projection(prev, block.k(), &block_entry(block, "k"), ops.k, ops.k_scale.as_deref())?;
-    let v = sink.push_projection(prev, block.v(), &block_entry(block, "v"), ops.v, ops.v_scale.as_deref())?;
+fn wire_qkv(sink: &mut NodeSink<'_>, prev: u32, plans: &BlockPlans) -> Result<(u32, u32, u32)> {
+    let q = sink.push_node(prev, &plans.q, None)?;
+    let k = sink.push_node(prev, &plans.k, None)?;
+    let v = sink.push_node(prev, &plans.v, None)?;
     Ok((q, k, v))
 }
 
@@ -147,17 +107,13 @@ fn wire_rope(
     head_dim: usize,
     pos_table: u32,
 ) -> Result<u32> {
-    let output = sink.slots.activation()?;
-    let mut node = Node::new(
-        "rope_f32".to_string(),
-        Launch::new([1, 1, 1], [width as u32, head_dim as u32, 1]),
-    );
-    node.bind_input(input);
     // 第二路为批位置表（ADR 0043 §5）；单序列走标量槽时该表编号仍登记，宿主按形态回填。
-    node.bind_input(pos_table);
-    node.bind_output(output);
-    sink.graph.push(node);
-    sink.activations.push((output, width));
+    let output = sink.emit(
+        "rope_f32",
+        Launch::new([1, 1, 1], [width as u32, head_dim as u32, 1]),
+        &[input, pos_table],
+        width,
+    )?;
     sink.descriptors.push(crate::descriptors::BindingDesc {
         id: output,
         entry: None,
@@ -175,33 +131,15 @@ fn wire_attention(
     hist_len_table: u32,
 ) -> Result<(u32, u32, u32)> {
     let kv = block.kv_width();
-    let hist_k = sink.slots.activation()?;
-    let hist_v = sink.slots.activation()?;
-    sink.activations.push((hist_k, 0));
-    sink.activations.push((hist_v, 0));
-    sink.descriptors.push(crate::descriptors::BindingDesc {
-        id: hist_k,
-        entry: None,
-        shape: vec![0],
-    });
-    sink.descriptors.push(crate::descriptors::BindingDesc {
-        id: hist_v,
-        entry: None,
-        shape: vec![0],
-    });
-    let attn_slot = sink.slots.activation()?;
-    let mut attention = Node::new(
-        decode_operator(block.algo()).to_string(),
+    let hist_k = sink.alloc_table()?;
+    let hist_v = sink.alloc_table()?;
+    let attn_slot = sink.emit(
+        decode_operator(block.algo()),
         Launch::new([1, 1, 1], [kv as u32, block.head_dim() as u32, 1]),
-    );
-    attention.bind_input(q_slot);
-    attention.bind_input(hist_k);
-    attention.bind_input(hist_v);
-    // 第四路为 ragged 段长表（ADR 0046 §8）；单序列缺省回退单序列 heads 入口。
-    attention.bind_input(hist_len_table);
-    attention.bind_output(attn_slot);
-    sink.graph.push(attention);
-    sink.activations.push((attn_slot, kv));
+        // 第四路为 ragged 段长表（ADR 0046 §8）；单序列缺省回退单序列 heads 入口。
+        &[q_slot, hist_k, hist_v, hist_len_table],
+        kv,
+    )?;
     sink.descriptors.push(crate::descriptors::BindingDesc {
         id: attn_slot,
         entry: None,
@@ -216,27 +154,16 @@ fn wire_output(
     block: &AttentionBlock,
     prev: u32,
     attn_slot: u32,
-    ops: &ProjectionOps,
+    plans: &BlockPlans,
 ) -> Result<u32> {
     let hidden = block.hidden();
-    let pre_residual = sink.push_projection(
-        attn_slot,
-        block.out(),
-        &block_entry(block, "o"),
-        ops.o,
-        ops.o_scale.as_deref(),
-    )?;
-    let out_slot = sink.slots.activation()?;
-    let mut residual = Node::new(
-        "residual_add_f32".to_string(),
+    let pre_residual = sink.push_node(attn_slot, &plans.o, None)?;
+    sink.emit(
+        "residual_add_f32",
         Launch::new([1, 1, 1], [hidden as u32, 1, 1]),
-    );
-    residual.bind_input(pre_residual);
-    residual.bind_input(prev);
-    residual.bind_output(out_slot);
-    sink.graph.push(residual);
-    sink.activations.push((out_slot, hidden));
-    Ok(out_slot)
+        &[pre_residual, prev],
+        hidden,
+    )
 }
 
 /// 把注意力块拆成子节点接进图；返回块输出激活编号。
@@ -244,12 +171,11 @@ fn push_block(
     sink: &mut NodeSink<'_>,
     prev: u32,
     block: &AttentionBlock,
-    params: &Params,
+    plans: &BlockPlans,
 ) -> Result<u32> {
-    let ops = block_operators(block, params)?;
     let (pos_table, len_table) = sink.ensure_tables()?;
     let (k_slot, v_slot, hist_k, hist_v, out_slot) =
-        wire_block_graph(sink, block, prev, &ops, pos_table, len_table)?;
+        wire_block_graph(sink, block, prev, plans, pos_table, len_table)?;
     sink.blocks.push(BlockBinding {
         k: k_slot,
         v: v_slot,
@@ -267,13 +193,13 @@ fn wire_block_graph(
     sink: &mut NodeSink<'_>,
     block: &AttentionBlock,
     prev: u32,
-    ops: &ProjectionOps,
+    plans: &BlockPlans,
     pos_table: u32,
     len_table: u32,
 ) -> Result<(u32, u32, u32, u32, u32)> {
-    let (q_slot, k_slot, v_slot) = wire_qkv_rope(sink, block, prev, ops, pos_table)?;
+    let (q_slot, k_slot, v_slot) = wire_qkv_rope(sink, block, prev, plans, pos_table)?;
     let (hist_k, hist_v, attn_slot) = wire_attention(sink, block, q_slot, len_table)?;
-    let out_slot = wire_output(sink, block, prev, attn_slot, ops)?;
+    let out_slot = wire_output(sink, block, prev, attn_slot, plans)?;
     Ok((k_slot, v_slot, hist_k, hist_v, out_slot))
 }
 
@@ -282,10 +208,10 @@ fn wire_qkv_rope(
     sink: &mut NodeSink<'_>,
     block: &AttentionBlock,
     prev: u32,
-    ops: &ProjectionOps,
+    plans: &BlockPlans,
     pos_table: u32,
 ) -> Result<(u32, u32, u32)> {
-    let (q_slot, k_slot, v_slot) = wire_qkv(sink, block, prev, ops)?;
+    let (q_slot, k_slot, v_slot) = wire_qkv(sink, prev, plans)?;
     let head_dim = block.head_dim();
     let q_slot = wire_rope(sink, q_slot, block.kv_width(), head_dim, pos_table)?;
     let k_slot = wire_rope(sink, k_slot, block.kv_width(), head_dim, pos_table)?;
@@ -300,8 +226,9 @@ pub(crate) fn advance_block(
     block: &AttentionBlock,
     params: &Params,
 ) -> Result<(u32, usize, usize, LayerKind)> {
-    check_block(block, prev_out, params)?;
-    let next = push_block(sink, prev, block, params)?;
+    check_head(block, prev_out)?;
+    let plans = block_plans(block, params)?;
+    let next = push_block(sink, prev, block, &plans)?;
     let hidden = block.hidden();
     Ok((next, hidden, hidden, LayerKind::Projection))
 }

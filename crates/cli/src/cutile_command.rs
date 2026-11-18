@@ -225,7 +225,7 @@ impl Flags {
         let mut words = rest.iter();
         while let Some(word) = words.next() {
             let value = match kind_of(grammar, word)? {
-                Kind::Value => Some(value(words.next(), word)?),
+                Kind::Value => Some(crate::value(words.next().map(String::as_str), word)?),
                 Kind::Switch => None,
             };
             out.push((word.clone(), value));
@@ -263,18 +263,6 @@ fn kind_of(grammar: Grammar, word: &str) -> Result<Kind> {
         .map(|(_, kind)| *kind)
         .ok_or_else(|| invalid(format!("未知参数 `{word}`")))
 }
-
-/// 选项取值：不能缺失，不能为空，也不能看起来像另一个选项。
-fn value(given: Option<&String>, flag: &str) -> Result<String> {
-    let Some(value) = given else {
-        return Err(invalid(format!("`{flag}` 缺少取值")));
-    };
-    if value.is_empty() || value.starts_with('-') {
-        return Err(invalid(format!("`{flag}` 的取值不合法：`{value}`")));
-    }
-    Ok(value.clone())
-}
-
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, format!("{}\n{USAGE}", message.into()))
         .with("cli::cutile_command::parse")

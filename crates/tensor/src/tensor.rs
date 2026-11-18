@@ -29,25 +29,7 @@ impl<'a> Tensor<'a> {
         })
     }
 
-    /// 元素类型。
-    pub fn dtype(&self) -> DType {
-        self.dtype
-    }
-
-    /// 形状。
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    /// 步长。
-    pub fn strides(&self) -> &Strides {
-        &self.strides
-    }
-
-    /// 元素个数。
-    pub fn numel(&self) -> usize {
-        self.shape.numel()
-    }
+    tensor_meta!(field);
 
     /// 只读字节视图。
     pub fn data(&self) -> &'a [u8] {

@@ -6,12 +6,12 @@
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{CpuExecutor, Executor, Graph, Launch, Node, Stream};
-use nn::{Contract, Linear, Stack};
+use nn::{Contract, Stack};
 
 pub(crate) use crate::block::BlockBinding;
 pub(crate) use crate::descriptors::BindingDesc;
 pub(crate) use crate::params::{Block, Params};
-pub(crate) use crate::plan::{LayerKind, LayerPlan, projection_shapes};
+pub(crate) use crate::plan::{LayerKind, LayerPlan};
 
 use crate::kernels::SITE;
 
@@ -139,7 +139,7 @@ pub(crate) struct NodeSink<'a> {
 impl<'a> NodeSink<'a> {
     /// 一层接进图：输入 0 = 主链上一层输出；逐元素二元的旁路输入 1（若有）；投影/归一化/查表
     /// 再加驻留权重编号，一元点wise/二元/位置编码只有各自的输入路数。
-    fn push_node(&mut self, prev: u32, plan: &LayerPlan, bypass: Option<u32>) -> Result<u32> {
+    pub(crate) fn push_node(&mut self, prev: u32, plan: &LayerPlan, bypass: Option<u32>) -> Result<u32> {
         let output_id = self.slots.activation()?;
         // 投影/查表第二维登记输入宽（行批切段用）；等长族第二维占位 0。
         let width_in = matches!(plan.kind, LayerKind::Projection | LayerKind::Embedding)
@@ -166,6 +166,27 @@ impl<'a> NodeSink<'a> {
             self.rope.push(output_id);
         }
         Ok(output_id)
+    }
+
+    /// 发一个定输入节点：分配输出编号、建节点、按序绑输入、绑输出、入图、登记激活长度。
+    /// 描述表 / rope 槽由调用方在返回后按需补登记；块内 rope / 注意力 / 残差共用这一份，
+    /// 带权重绑定的层走 [`Self::push_node`] + [`Self::bind_weight`]。
+    pub(crate) fn emit(
+        &mut self,
+        operator: &str,
+        launch: Launch,
+        inputs: &[u32],
+        out_len: usize,
+    ) -> Result<u32> {
+        let output = self.slots.activation()?;
+        let mut node = Node::new(operator.to_string(), launch);
+        for &input in inputs {
+            node.bind_input(input);
+        }
+        node.bind_output(output);
+        self.graph.push(node);
+        self.activations.push((output, out_len));
+        Ok(output)
     }
 
     /// 驻留权重 + 可选标度的输入与台账：打包字节 / 标度各占一个编号，都挂进节点输入
@@ -214,41 +235,8 @@ impl<'a> NodeSink<'a> {
         )
     }
 
-    /// 单个投影子节点：输入向量 + 驻留权重 → 输出向量；块内 q/k/v/o 复用。量化投影多一条
-    /// 标度输入（`[x, packed, scales]`），权重形状按格式取打包字节，标度取逐组分条数。
-    pub(crate) fn push_projection(
-        &mut self,
-        input: u32,
-        linear: &Linear,
-        entry: &str,
-        operator: &str,
-        scale_entry: Option<&str>,
-    ) -> Result<u32> {
-        let output_id = self.slots.activation()?;
-        let mut node = Node::new(
-            operator.to_string(),
-            Launch::new(
-                [1, 1, 1],
-                [linear.out_features() as u32, linear.in_features() as u32, 1],
-            ),
-        );
-        node.bind_input(input);
-        let (_, weight_shape, _, scale_shape) =
-            projection_shapes(linear.format(), linear.in_features(), linear.out_features());
-        self.bind_weight(&mut node, entry, &weight_shape, scale_entry, &scale_shape)?;
-        node.bind_output(output_id);
-        self.graph.push(node);
-        self.activations.push((output_id, linear.out_features()));
-        self.descriptors.push(BindingDesc {
-            id: output_id,
-            entry: None,
-            shape: vec![linear.out_features()],
-        });
-        Ok(output_id)
-    }
-
     /// 取号登记一张运行时覆写的批表缓冲：长度 0 占位，台账与描述表对齐历史块同口径。
-    fn alloc_table(&mut self) -> Result<u32> {
+    pub(crate) fn alloc_table(&mut self) -> Result<u32> {
         let id = self.slots.activation()?;
         self.activations.push((id, 0));
         self.descriptors.push(BindingDesc {

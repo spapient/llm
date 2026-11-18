@@ -89,13 +89,10 @@ pub(crate) struct LayerPlan {
     pub(crate) entry: Option<String>,
     pub(crate) in_features: usize,
     pub(crate) out_features: usize,
-    /// 驻留权重元素数；一元点wise无权重，为 `None`。量化投影这里是**打包字节数**。
-    pub(crate) weight_len: Option<usize>,
-    /// 驻留权重声明形状；无权重为空表。量化投影这里是打包字节形状 `[out, in/cpb]`。
+    /// 驻留权重声明形状；无权重为空表。量化投影这里是打包字节形状 `[out, in/cpb]`；
+    /// 元素数由形状元素积派生，不另存一份长度。
     pub(crate) weight_shape: Vec<usize>,
-    /// 量化标度条数；非量化投影为 `None`。
-    pub(crate) scales_len: Option<usize>,
-    /// 量化标度声明形状 `[out, in/group]`；非量化投影为空表。
+    /// 量化标度声明形状 `[out, in/group]`；非量化投影为空表，条数由形状元素积派生。
     pub(crate) scales_shape: Vec<usize>,
     /// 量化标度条目名；非量化投影为 `None`。
     pub(crate) scale_entry: Option<String>,
@@ -163,20 +160,18 @@ fn check_chain(prev_out: Option<usize>, plan: &LayerPlan, name: &str) -> Result<
 
 /// 核对驻留权重条目存在且长度符合族别；一元点wise无权重，直接通过。
 ///
-/// 期望长度由族别在出计划时填好：稠密投影 `in × out`（f32 元素）、量化投影打包字节
-/// `out · in/cpb` + 标度 `out · in/group`、归一化 gamma `width`、查表 `vocab × dim`。
-fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
+/// 期望长度由权重/标度形状元素积派生（形状是唯一事实源）：稠密投影 `in × out`（f32 元素）、
+/// 量化投影打包字节 `out · in/cpb` + 标度 `out · in/group`、归一化 gamma `width`、查表 `vocab × dim`。
+pub(crate) fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
     let Some(entry) = &plan.entry else {
         return Ok(());
     };
-    let weight_len = plan.weight_len.ok_or_else(weight_len_missing)?;
-    check_weight_entry(
-        params,
-        entry,
-        weight_len,
-        plan.scale_entry.as_deref(),
-        plan.scales_len,
-    )
+    if plan.weight_shape.is_empty() {
+        return Err(weight_shape_missing());
+    }
+    let weight_len = plan.weight_shape.iter().product();
+    let scales_len = (!plan.scales_shape.is_empty()).then(|| plan.scales_shape.iter().product());
+    check_weight_entry(params, entry, weight_len, plan.scale_entry.as_deref(), scales_len)
 }
 
 /// 核对一条驻留权重 + 可选标度：稠密按 f32 元素数、量化按打包字节数 + 标度条数。
@@ -218,9 +213,9 @@ pub(crate) fn check_entry(params: &Params, label: &str, entry: &str, expected: u
     Ok(())
 }
 
-/// 有条目必有权重长度的不变式违约。
-pub(crate) fn weight_len_missing() -> Error {
-    Error::new(Code::Internal, "有条目必有权重长度").with(SITE)
+/// 有条目必有权重形状的不变式违约。
+pub(crate) fn weight_shape_missing() -> Error {
+    Error::new(Code::Internal, "有条目必有权重形状").with(SITE)
 }
 
 /// 一层的装配校验：宽度链衔接 + 权重条目齐备且形状相符。
@@ -234,14 +229,13 @@ fn check_plan(
     check_weight(plan, params)
 }
 
-/// 填一份层计划：族别几何由调用方给出，条目名、权重长度与声明形状随权重形态保持一致。
+/// 填一份层计划：族别几何由调用方给出，条目名、权重形状随权重形态保持一致。
 fn build_plan(
     kind: LayerKind,
     operator: String,
     entry: Option<String>,
     in_features: usize,
     out_features: usize,
-    weight_len: Option<usize>,
     weight_shape: Vec<usize>,
 ) -> LayerPlan {
     LayerPlan {
@@ -250,9 +244,7 @@ fn build_plan(
         entry,
         in_features,
         out_features,
-        weight_len,
         weight_shape,
-        scales_len: None,
         scales_shape: Vec::new(),
         scale_entry: None,
     }
@@ -263,6 +255,31 @@ fn entry_name(layer: &dyn Contract) -> String {
     format!("{}{WEIGHT_SUFFIX}", layer.name())
 }
 
+/// 线性投影计划核心：身份、格式、算子名与权重/标度形状，不做宽度链校验。普通投影与块内
+/// q/k/v/o 共用——块投影的宽度链由块几何单独校验，不走逐层链。
+pub(crate) fn linear_plan(
+    name: &str,
+    entry: &str,
+    linear: &Linear,
+    params: &Params,
+) -> Result<LayerPlan> {
+    let operator = plan_operator(name, linear)?;
+    validate_quantized_shape(linear.format(), linear.in_features())?;
+    let (weight_shape, scales_shape) =
+        projection_shapes(linear.format(), linear.in_features(), linear.out_features());
+    let mut plan = build_plan(
+        LayerKind::Projection,
+        operator.to_string(),
+        Some(entry.to_string()),
+        linear.in_features(),
+        linear.out_features(),
+        weight_shape,
+    );
+    plan.scales_shape = scales_shape;
+    plan.scale_entry = params.scale_entry(entry).map(str::to_owned);
+    Ok(plan)
+}
+
 /// 投影层装配计划：身份、格式、算子名与权重整块。量化格式给打包字节形状 + 标度形状。
 fn projection_plan(
     layer: &dyn Contract,
@@ -270,24 +287,8 @@ fn projection_plan(
     prev_out: Option<usize>,
     params: &Params,
 ) -> Result<LayerPlan> {
-    let operator = plan_operator(layer.name(), linear)?;
-    validate_quantized_shape(linear.format(), linear.in_features())?;
-    let (weight_len, weight_shape, scales_len, scales_shape) =
-        projection_shapes(linear.format(), linear.in_features(), linear.out_features());
-    let mut plan = build_plan(
-        LayerKind::Projection,
-        operator.to_string(),
-        Some(entry_name(layer)),
-        linear.in_features(),
-        linear.out_features(),
-        Some(weight_len),
-        weight_shape,
-    );
-    plan.scales_len = scales_len;
-    plan.scales_shape = scales_shape;
-    plan.scale_entry = params
-        .scale_entry(&entry_name(layer))
-        .map(str::to_owned);
+    let entry = entry_name(layer);
+    let plan = linear_plan(layer.name(), &entry, linear, params)?;
     check_plan(prev_out, &plan, layer.name(), params)?;
     Ok(plan)
 }
@@ -301,26 +302,17 @@ pub(crate) fn projection_shapes(
     format: WeightFormat,
     in_features: usize,
     out_features: usize,
-) -> (usize, Vec<usize>, Option<usize>, Vec<usize>) {
+) -> (Vec<usize>, Vec<usize>) {
     match format {
         WeightFormat::Int4 { group } => (
-            out_features * (in_features / 2),
             vec![out_features, in_features / 2],
-            Some(out_features * (in_features / group)),
             vec![out_features, in_features / group],
         ),
         WeightFormat::Int8 { group } => (
-            out_features * in_features,
             vec![out_features, in_features],
-            Some(out_features * (in_features / group)),
             vec![out_features, in_features / group],
         ),
-        _ => (
-            out_features * in_features,
-            vec![out_features, in_features],
-            None,
-            Vec::new(),
-        ),
+        _ => (vec![out_features, in_features], Vec::new()),
     }
 }
 
@@ -355,17 +347,14 @@ fn width_plan(
 ) -> Result<LayerPlan> {
     let width = axis_width(layer.output(), layer.name())?;
     // 等长族里只有归一化带 gamma `[width]`；一元点wise/二元/位置编码无权重。
-    let weight_len = (kind == LayerKind::Norm).then_some(width);
-    let weight_shape = (kind == LayerKind::Norm)
-        .then_some(vec![width])
-        .unwrap_or_default();
+    let weighted = kind == LayerKind::Norm;
+    let weight_shape = weighted.then_some(vec![width]).unwrap_or_default();
     let plan = build_plan(
         kind,
         operator.to_string(),
-        weight_len.map(|_| entry_name(layer)),
+        weighted.then(|| entry_name(layer)),
         width,
         width,
-        weight_len,
         weight_shape,
     );
     check_plan(prev_out, &plan, layer.name(), params)?;
@@ -398,7 +387,6 @@ fn embedding_plan(
         Some(entry_name(layer)),
         tokens,
         dim,
-        Some(vocab * dim),
         vec![vocab, dim],
     );
     check_plan(prev_out, &plan, layer.name(), params)?;

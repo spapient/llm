@@ -129,25 +129,7 @@ impl<'a, E: Element> View<'a, E> {
         Error::new(Code::Invalid, message).with("tensor::View::strided")
     }
 
-    /// 元素类型（来自 [`Element::DTYPE`]，与 `DType` 闭集对齐）。
-    pub fn dtype(&self) -> DType {
-        E::DTYPE
-    }
-
-    /// 形状。
-    pub fn shape(&self) -> &Shape {
-        &self.shape
-    }
-
-    /// 步长。
-    pub fn strides(&self) -> &Strides {
-        &self.strides
-    }
-
-    /// 元素个数。
-    pub fn numel(&self) -> usize {
-        self.shape.numel()
-    }
+    tensor_meta!(elem);
 
     /// 调用方的缓冲本身（同一个指针，不是副本）。
     pub fn as_slice(&self) -> &'a [E] {
