@@ -61,7 +61,7 @@ fn learner_runs_a_batch_and_records_metrics() -> Result<()> {
     assert_eq!(board.len(), 1, "一个 micro-batch 记一条指标");
     let point = board.latest().expect("已有指标");
     assert_eq!(point.samples, 1, "一行一列后继位置 = 1 个样本");
-    assert_eq!(point.accuracy, 1.0, "argmax 命中标签");
+    assert_eq!(point.accuracy(), 1.0, "argmax 命中标签");
     assert!(point.loss < 1e-3, "对齐类别 NLL 趋近 0");
     assert_eq!(learner.session().step(), 1, "窗口 1，每批步进一次");
     Ok(())

@@ -9,13 +9,13 @@ fn aggregates_weighted_by_sample_count() -> Result<()> {
         step: 0,
         samples: 2,
         loss: 1.0,
-        accuracy: 1.0,
+        correct: 2,
     })?;
     board.record(MetricPoint {
         step: 1,
         samples: 2,
         loss: 3.0,
-        accuracy: 0.0,
+        correct: 0,
     })?;
 
     assert_eq!(board.len(), 2);
@@ -42,7 +42,7 @@ fn empty_board_reports_nothing() {
     assert!(board.render().contains("n=0"));
 }
 
-/// 非法点入账前拒绝：样本为 0、loss 非有限、命中率越界。
+/// 非法点入账前拒绝：样本为 0、loss 非有限、命中条数超过样本数。
 #[test]
 fn rejects_invalid_points() {
     let mut board = MetricsBoard::new();
@@ -51,7 +51,7 @@ fn rejects_invalid_points() {
         step: 0,
         samples: 0,
         loss: 1.0,
-        accuracy: 0.5,
+        correct: 0,
     };
     assert_eq!(
         board.record(zero_samples).expect_err("样本为 0").code(),
@@ -62,32 +62,24 @@ fn rejects_invalid_points() {
         step: 0,
         samples: 1,
         loss: f32::NAN,
-        accuracy: 0.5,
+        correct: 0,
     };
     assert_eq!(
         board.record(nan_loss).expect_err("NaN loss").code(),
         Code::Invalid
     );
 
-    let too_high = MetricPoint {
+    let too_many_correct = MetricPoint {
         step: 0,
         samples: 1,
         loss: 1.0,
-        accuracy: 1.5,
+        correct: 2,
     };
     assert_eq!(
-        board.record(too_high).expect_err("命中率 > 1").code(),
-        Code::Invalid
-    );
-
-    let too_low = MetricPoint {
-        step: 0,
-        samples: 1,
-        loss: 1.0,
-        accuracy: -0.2,
-    };
-    assert_eq!(
-        board.record(too_low).expect_err("命中率 < 0").code(),
+        board
+            .record(too_many_correct)
+            .expect_err("命中条数超过样本数")
+            .code(),
         Code::Invalid
     );
     assert!(board.is_empty(), "拒绝前不写入任何点");
@@ -101,7 +93,7 @@ fn render_shows_latest_metrics() -> Result<()> {
         step: 3,
         samples: 4,
         loss: 0.75,
-        accuracy: 0.25,
+        correct: 1,
     })?;
     let line = board.render();
     assert!(line.contains("3"), "行内带步号");
@@ -120,13 +112,13 @@ fn weights_by_larger_batch_not_by_step_count() -> Result<()> {
         step: 0,
         samples: 2,
         loss: 1.0,
-        accuracy: 1.0,
+        correct: 2,
     })?;
     board.record(MetricPoint {
         step: 1,
         samples: 4,
         loss: 3.0,
-        accuracy: 0.0,
+        correct: 0,
     })?;
 
     let mean_loss = board.mean_loss().expect("有样本");
@@ -151,13 +143,13 @@ fn points_preserve_record_order() -> Result<()> {
         step: 5,
         samples: 1,
         loss: 0.5,
-        accuracy: 1.0,
+        correct: 1,
     })?;
     board.record(MetricPoint {
         step: 2,
         samples: 1,
         loss: 0.8,
-        accuracy: 0.0,
+        correct: 0,
     })?;
     let steps: Vec<u64> = board.points().iter().map(|point| point.step).collect();
     assert_eq!(steps, [5, 2], "按入账顺序保留，不按步号重排");

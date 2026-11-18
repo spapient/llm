@@ -9,7 +9,7 @@ use diagnostic::{Code, Error, Result};
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::metrics";
 
-/// 一条步指标：步号、本步样本数、平均 loss、命中率（`0..=1`）。
+/// 一条步指标：步号、本步样本数、平均 loss、命中条数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MetricPoint {
     /// 优化器步数（未步进的累积批不计步号）。
@@ -18,8 +18,15 @@ pub struct MetricPoint {
     pub samples: usize,
     /// 本步平均交叉熵。
     pub loss: f32,
-    /// 本步命中率 `correct / total`，闭区间 `[0, 1]`。
-    pub accuracy: f32,
+    /// 本步命中条数，闭区间 `0..=samples`。
+    pub correct: u64,
+}
+
+impl MetricPoint {
+    /// 命中率 `correct / samples`，闭区间 `[0, 1]`。
+    pub fn accuracy(&self) -> f32 {
+        self.correct as f32 / self.samples as f32
+    }
 }
 
 /// 指标累积表：逐点入账 + 加权聚合计数。
@@ -48,7 +55,7 @@ impl MetricsBoard {
         let samples = point.samples as u64;
         self.samples += samples;
         self.loss_sum += point.loss as f64 * samples as f64;
-        self.correct += (point.accuracy * point.samples as f32).round() as u64;
+        self.correct += point.correct;
         self.best_loss = Some(match self.best_loss {
             Some(best) => best.min(point.loss),
             None => point.loss,
@@ -106,7 +113,7 @@ impl MetricsBoard {
                 "step {:>4} | loss {:.4} | acc {:5.1}% | n={}",
                 point.step,
                 point.loss,
-                point.accuracy * 100.0,
+                point.accuracy() * 100.0,
                 point.samples
             ),
             None => "step    - | loss     - | acc     -% | n=0".to_string(),
@@ -114,7 +121,7 @@ impl MetricsBoard {
     }
 }
 
-/// 一条指标的入参校验：样本非零、loss 有限、命中率在闭区间内。
+/// 一条指标的入参校验：样本非零、loss 有限、命中条数不超过样本数。
 fn validate(point: &MetricPoint) -> Result<()> {
     if point.samples == 0 {
         return Err(Error::new(Code::Invalid, "指标样本数不能为 0").with(SITE));
@@ -123,8 +130,8 @@ fn validate(point: &MetricPoint) -> Result<()> {
         let message = format!("loss {} 不是有限数（NaN / Infinity 不进看板）", point.loss);
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
-    if !(0.0..=1.0).contains(&point.accuracy) {
-        let message = format!("命中率 {} 不在 [0, 1] 区间", point.accuracy);
+    if point.correct > point.samples as u64 {
+        let message = format!("命中条数 {} 超过样本数 {}", point.correct, point.samples);
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
     Ok(())

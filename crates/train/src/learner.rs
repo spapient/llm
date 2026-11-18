@@ -15,7 +15,7 @@ use diagnostic::{Code, Error, Result};
 use autograd::Var;
 use data::Dataset;
 
-use crate::loss::{argmax_hits, cross_entropy};
+use crate::loss::evaluate;
 use crate::metrics::{MetricPoint, MetricsBoard};
 use crate::optimizer::Optimizer;
 use crate::{Kernel, Session};
@@ -181,14 +181,13 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
             );
             return Err(Error::new(Code::Invalid, message).with(SITE));
         }
-        let loss = cross_entropy(logits, labels, self.vocab)?;
-        let (correct, total) = argmax_hits(logits, labels, self.vocab)?;
-        let accuracy = correct as f32 / total as f32;
+        let (nll_sum, correct, total) = evaluate(logits, labels, self.vocab)?;
+        let loss = (nll_sum / total as f64) as f32;
         let point = MetricPoint {
             step: self.session.step(),
             samples: total,
             loss,
-            accuracy,
+            correct: correct as u64,
         };
         self.board.record(point).map_err(|error| error.with(SITE))
     }

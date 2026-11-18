@@ -93,6 +93,32 @@ fn row_argmax(row: &[f32]) -> usize {
     best
 }
 
+/// 单次行扫描同时算出 NLL 总和（f64）、命中条数与总行数；编排器一次遍历取两个评估量，
+/// 不必把 logits 行扫两遍。
+///
+/// # Errors
+///
+/// 几何不自洽或标签越界时返回 [`Code::Invalid`]。
+pub(crate) fn evaluate(
+    logits: &[f32],
+    labels: &[f32],
+    vocab: usize,
+) -> Result<(f64, usize, usize)> {
+    let rows = check_geometry(logits, labels, vocab)?;
+    let mut nll_sum = 0.0f64;
+    let mut correct = 0usize;
+    for (row, &label) in labels.iter().enumerate() {
+        let start = row * vocab;
+        let slice = &logits[start..start + vocab];
+        let label = label as usize;
+        nll_sum += row_nll(slice, label) as f64;
+        if row_argmax(slice) == label {
+            correct += 1;
+        }
+    }
+    Ok((nll_sum, correct, rows))
+}
+
 /// 交叉熵均值：所有行 NLL 的算术平均。
 ///
 /// # Errors
