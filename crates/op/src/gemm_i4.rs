@@ -13,5 +13,7 @@ crate::gemm_variant!(
     "../tests/gemm_i4_tests.rs",
     u8,
     I4.bits,
-    fn config() -> Option<crate::quant::Row> { Some(I4) }
+    fn config() -> Option<crate::quant::Row> {
+        Some(I4)
+    },
 );

@@ -14,17 +14,21 @@ crate::gemm_variant!(
     u8,
     I8.bits,
     fn sample_a(m: usize) -> Vec<u8> {
-        (0..m * K).map(|i| (((i * 37) % 16) as i8 - 8) as u8).collect()
-    }
+        (0..m * K)
+            .map(|i| (((i * 37) % 16) as i8 - 8) as u8)
+            .collect()
+    },
     fn sample_b(n: usize) -> Vec<u8> {
-        (0..K * n).map(|i| (((i * 53) % 16) as i8 - 8) as u8).collect()
-    }
+        (0..K * n)
+            .map(|i| (((i * 53) % 16) as i8 - 8) as u8)
+            .collect()
+    },
     fn a_len(m: usize) -> usize {
         m * K
-    }
+    },
     fn b_len(n: usize) -> usize {
         K * n
-    }
+    },
     fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize) -> f32 {
         let row = &a[i * K..][..K];
         let acc: i32 = row
@@ -33,8 +37,8 @@ crate::gemm_variant!(
             .map(|(p, packed)| (*packed as i8) as i32 * (b[p * n + j] as i8) as i32)
             .sum();
         acc as f32
-    }
+    },
     fn codes(values: &[u8]) -> Vec<i32> {
         values.iter().map(|&byte| byte as i8 as i32).collect()
-    }
+    },
 );

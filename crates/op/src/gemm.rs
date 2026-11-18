@@ -411,7 +411,7 @@ macro_rules! gemm_variant {
         $name:ident, $alias:ident,
         $op:tt, $test:tt,
         $elem:ty, $bits:expr,
-        $( $methods:item )*
+        $( $methods:item ),* $(,)?
     ) => {
         #[doc = concat!("`", $op, "` 的标记类型：格式契约（取样 / 打包 / 点积）见 `crate::gemm` 的 `Gemm` 骨架。")]
         pub struct $name;

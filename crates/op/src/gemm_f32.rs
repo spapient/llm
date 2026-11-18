@@ -12,18 +12,18 @@ crate::gemm_variant!(
     crate::einsum::Bits::ThirtyTwo,
     fn sample_a(m: usize) -> Vec<f32> {
         (0..m * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect()
-    }
+    },
     fn sample_b(n: usize) -> Vec<f32> {
         (0..K * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect()
-    }
+    },
     fn a_len(m: usize) -> usize {
         m * K
-    }
+    },
     fn b_len(n: usize) -> usize {
         K * n
-    }
+    },
     fn dot(a: &[f32], b: &[f32], n: usize, i: usize, j: usize) -> f32 {
         let row = &a[i * K..][..K];
         row.iter().enumerate().map(|(p, x)| x * b[p * n + j]).sum()
-    }
+    },
 );
