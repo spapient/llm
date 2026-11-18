@@ -2,16 +2,17 @@
 //! 请求文法 [`Request`]、生成协作者 [`Predict`] / [`Sampling`] / [`Greedy`]、
 //! 补全端点 [`Completion`] 与路由分派 [`Router`]。
 //!
-//! **拥有**：`Route`、`Endpoint`、`Response`、`Status`、`Request`，以及线格式
+//! **拥有**：`Route`、`Endpoint`、`Response`、`Status`、`Request`、std-only HTTP/1.1
+//! 薄适配器（`http`），以及线格式
 //! （`protocol`：`Envelope`/`Frame`/`Decoder`/`Kind`/`Version`；`proto` 是兼容重导出路径）；
 //! 注入 [`Predict`] 的 CPU 模型提供者收在 `kernels` / `assembly`（`model` 是兼容重导出路径）。
 //! **不拥有**：序列状态与页账（`engine`）、分词（`tokenizer`）、算子算术
-//! （`op`）、层定义（`nn`）、权重条目字节与读取契约（`weights`）、HTTP/gRPC 服务器（P1：它是 [`Router`] 的调用方）；
+//! （`op`）、层定义（`nn`）、权重条目字节与读取契约（`weights`）、gRPC 服务器；
 //! Metal/CUDA 真设备后端收在独立边界 crate，不回流本层。**依赖**：`engine`、`nn`、`op`、`tokenizer`、`diagnostic`、`weights`。**被依赖**：`llm`。
 //!
-//! 这里仍然没有 socket：传输层把 `方法 + 路径 + 请求体` 交给 [`Router::call`]，后者分派到
-//! [`Completion`]，后者完成"解析 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包成帧"。
-//! 因此"一条请求能不能跑完"今天就可以在进程内验证，而不必等 HTTP 服务器落地。
+//! 传输层收在 `http`：单线程把 socket 字节解成 `方法 + 路径 + 请求体` 交给 [`Router::call`]，
+//! 后者分派到 [`Completion`]，后者完成"解析 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包成帧"。
+//! 因此"一条请求能不能跑完"既可以在进程内验证，也可以经真实 HTTP/1.1 socket 验证。
 //!
 //! # 例子
 //!
@@ -31,6 +32,7 @@
 mod macros;
 mod completion;
 mod generate;
+mod http;
 mod request;
 mod router;
 
@@ -54,6 +56,7 @@ pub use completion::Completion;
 pub use generate::{
     Classical, Ending, Generation, Greedy, Multinomial, Predict, Sampling, SamplingParams,
 };
+pub use http::Httpd;
 pub use request::Request;
 pub use router::Router;
 pub use vocab::tokenizer_from_segment;

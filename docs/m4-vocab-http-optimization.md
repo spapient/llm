@@ -26,17 +26,17 @@
 段内布局（镜像 `protocol.rs` 固定头 + 载荷 + CRC 风格，小端）：
 
 ```text
-magic(u32) | version(u16) | family(u8) | vocab_size(u32) | special_count(u32)
+magic(4)="LVOC" | version(u8)=1 | family(u8) | vocab_size(u32) | special_count(u32)
 | pieces:  vocab_size × (len(u32) + bytes)
-| special: special_count × (len(u32) + bytes)
+| special: special_count × (kind(u8) + id(u32))   ← 稀疏：只写非 None 槽
 | [Bpe] merges:   count(u32) + count × (len_l(u32)+l | len_r(u32)+r)
 | [Unigram] scores: count(u32) + count × f32
 | digest(u64)          ← 期望 Fingerprint.digest（FNV-1a，语义对拍用）
-| crc32(u32)           ← 段字节完整性（沿用 seg_crc 口径）
 ```
+（落地偏差：段内省略 crc32——字节完整性由 `.u` 容器段级 `seg_crc` 承担，codec 层不重复；version 用 u8。special wire 序 unk=0,pad=1,bos=2,eos=3,sep=4,cls=5,mask=6；族 wire 序 Bpe=0,Unigram=1,WordPiece=2,WordLevel=3,Byte=4。）
 
-- **单份解析器**：`parse_vocab(bytes) -> VocabSource`。头部读 `family/vocab_size/special_count`；词片/特殊共用同一个 `len` 前缀字节序列读取助手；附件块只在 `family.requires_merges()` / `family.requires_scores()` 为真时读，各读一个块。**没有按族名 `match` 的扇出**。
-- **指纹对拍（构造期，不静默降级）**：适配器产出 `VocabSource` → `Vocab::try_new` 得 `Vocab::fingerprint()`；与段尾 `digest` 比对，不符 `Code::Invalid`。`digest` 与段 CRC 是两层：CRC 守字节、digest 守「词表与模型预期」语义一致。
+- **单份解析器**：`vocab_codec.rs` 的 `encode_vocab(source, digest)` / `decode_vocab(bytes) -> (VocabSource, digest)`。头部读 `family/vocab_size/special_count`；词片共用 `len` 前缀字节助手，特殊按稀疏 `kind+id` 读写；附件块只在 `family.requires_merges()` / `family.requires_scores()` 为真时读，各读一个块。**没有按族名 `match` 的扇出**。
+- **指纹对拍（构造期，不静默降级）**：适配器 `serve::vocab::tokenizer_from_segment` 产出 `VocabSource` → `Vocab::try_new` 得 `Vocab::fingerprint()`；与段尾 `digest` 比对，不符 `Code::Invalid`。`digest` 与段 CRC 是两层：容器 `seg_crc` 守字节、`digest` 守「词表与模型预期」语义一致。
 - **归属裁决（沿用 design §4.2 已定）**：解析适配器放装配点；`weights` 不依赖 `tokenizer` 类型，只按名给段字节；`Completion` 持 `Box<dyn Tokenizer>`，不持词表字节副本。
 
 ## 3. M4-2 HTTP：深度分析 + D8 裁决
@@ -65,6 +65,8 @@ magic(u32) | version(u16) | family(u8) | vocab_size(u32) | special_count(u32)
 3. 响应 `Response::frame()` 字节包进最小响应 `HTTP/1.1 {status}\r\nContent-Length: N\r\nConnection: close\r\n\r\n` + body。
 
 关键点：**HTTP 层不重写路由、请求文法、帧格式、CRC、上限**——它只是「socket 字节 → `Router::call` → `Response::frame` → socket 字节」的薄胶水。gRPC 未来在同一条 `Endpoint`/`Router` 上再挂一个适配器即可，不动端点模型。
+
+**落地位置**：适配器并入 `serve` crate 的 `http` 模块（`Httpd::bind/serve_once/serve`），不立单独 crate；`serve` 公共 API 经 `pub use http::Httpd` 导出。
 
 **明确排除（首刀）**：TLS（前置代理终结）、keep-alive/chunked（`Connection: close` + 只认 `Content-Length`）、多线程调度（沿用 `State` 的 `Mutex` 现状，单 accept 循环先保证正确）。
 
