@@ -10,9 +10,9 @@
 //! 一条序列跑完一定 `finish`：成功、被挡或出错都归还页，因此"页泄漏"不会只在某一条分支上
 //! 发生——那正是这类端点最常见的残留问题。
 //!
-//! 单条请求端点仍一次答一条；批步进在 [`State::step_batch`] 落地：批内多条准入序列一轮依次
-//! 走 logits → 采样 → 记账，结束的归还页摘出，被挡的原样保留。模型一步仍是单序列几何，真正的
-//! 并发传输入口属于传输层（M4，尚未落地）。
+//! 单条请求端点仍一次答一条；批步进在 [`State::step_batch`] 落地：一轮整批前向
+//! （`Predict::logits_batch` 一次提交），再逐行采样 → 记账，结束的归还页摘出，被挡的原样保留。
+//! 真正的并发传输入口属于传输层（M4，尚未落地）。
 
 use crate::generate::{Ending, Generation, Predict, Sampling};
 use crate::{Request, Response, Route, Status};
@@ -316,20 +316,29 @@ where
         };
         let mut finished = Vec::new();
         for (sequence, logits) in sequences.iter().zip(rows) {
-            let id = sequence.id();
-            match self.sample(id, logits) {
-                Ok(step) => self.account(id, step, &mut finished)?,
-                Err(mut error) => {
-                    // 归还页优先于报错上抛；归还本身失败时作为同级诊断附注保留，
-                    // 不能用它覆盖原始故障——否则客户端看不到模型/采样那一类服务端错误。
-                    if let Err(cleanup) = self.batch.finish(id) {
-                        error = error.also(&cleanup);
-                    }
-                    return Err(error);
-                }
-            }
+            self.sample_or_release(sequence.id(), logits, &mut finished)?;
         }
         Ok(finished)
+    }
+
+    /// 一条采样结果入账；采样失败先归还坏序列页再上抛，已记账条目不回滚。
+    fn sample_or_release(
+        &mut self,
+        id: u64,
+        logits: Vec<f32>,
+        finished: &mut Vec<(u64, Generation)>,
+    ) -> diagnostic::Result<()> {
+        match self.sample(id, logits) {
+            Ok(step) => self.account(id, step, finished),
+            Err(mut error) => {
+                // 归还页优先于报错上抛；归还本身失败时作为同级诊断附注保留，
+                // 不能用它覆盖原始故障——否则客户端看不到模型/采样那一类服务端错误。
+                if let Err(cleanup) = self.batch.finish(id) {
+                    error = error.also(&cleanup);
+                }
+                Err(error)
+            }
+        }
     }
 
     /// 一条采样结局入账：被挡留在批里；收尾的装出生成结果、归还页摘出批。

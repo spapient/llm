@@ -152,7 +152,7 @@ fn the_model_sees_the_generated_history() {
     );
 }
 
-/// 一条按 id 失败的模型桩：命中 `fail` 上抛内部错误，其余序列照常给 logits。
+/// 一条按 id 失败的模型桩：命中 `fail` 上抛内部错误；批量前向在模型层整体失败，行内不归属。
 struct Split {
     fail: u64,
 }
@@ -254,20 +254,22 @@ fn a_blocked_sequence_stays_in_the_batch_with_unchanged_history() {
     assert_eq!(state.batch.blocked(), [2]);
 }
 
-/// 批内一条模型失败：已记账的另一条状态不回滚；失败序列归还页并摘出，错误上抛。
+/// 整批前向在模型层失败：失败发生在任何记账之前，批内序列页全部归还、序列摘出，不留已记账
+/// token；错误上抛成服务端故障。采样层的逐行隔离由 `a_failed_sampling_step...` 用例覆盖。
 #[test]
-fn one_failed_sequence_does_not_pollute_the_accounted_other() {
+fn a_batch_forward_fault_releases_all_pages_without_accounting_tokens() {
     let endpoint = endpoint(Split { fail: 1 }, Greedy, 8);
-    let mut state = endpoint.lock().expect("锁");
-    admit_sequence(&mut state, 2, 1, 2);
-    admit_sequence(&mut state, 1, 1, 1);
+    {
+        let mut state = endpoint.lock().expect("锁");
+        admit_sequence(&mut state, 2, 1, 2);
+        admit_sequence(&mut state, 1, 1, 1);
 
-    let error = state.step_batch().expect_err("坏序列上抛服务端错误");
-    assert_eq!(error.code(), diagnostic::Code::Internal);
-
-    let good = state.batch.sequence(2).expect("好序列仍在批里");
-    assert_eq!(good.tokens(), [1], "已记账的 token 不回滚");
-    assert!(state.batch.sequence(1).is_none(), "失败序列已摘出批");
+        let error = state.step_batch().expect_err("坏序列上抛服务端错误");
+        assert_eq!(error.code(), diagnostic::Code::Internal);
+        assert!(state.batch.is_empty(), "前向失败时两条都还没记账，页全部归还、序列摘出");
+    }
+    // 锁先放掉再查页账：`in_use_pages` 也要取同一把互斥锁，不能重入。
+    assert_eq!(endpoint.in_use_pages(), Some(0), "失败路径也必须归还页");
 }
 
 /// 采样失败与模型失败同一条隔离路径：先记账的序列不回滚，坏序列归还页摘出。
