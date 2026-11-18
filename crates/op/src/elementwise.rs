@@ -198,3 +198,57 @@ pub(crate) mod test_support {
     }
     pub(crate) use elementwise_binary_tests;
 }
+
+/// 生成一份 f32 二元逐元素算子的公开面：标记类型、[`Binary`] 实现、[`annotation::model`] 别名、
+/// `forward` 入口与测试挂载。`add` / `mul` / `residual_add` 只差一行 `apply`（可选样本夹具）；
+/// 新增一种二元运算加一次调用即可。
+#[macro_export]
+macro_rules! binary_f32 {
+    (
+        $name:ident, $alias:ident, $op:tt, $test:tt,
+        $apply:expr
+        $(, $input_a:expr, $input_b:expr)?
+    ) => {
+        #[doc = concat!("`", $op, "` 的标记类型：逐元素二元运算见 `apply`，骨架见 `crate::elementwise`。")]
+        pub struct $name;
+
+        impl $crate::elementwise::Binary for $name {
+            fn cache() -> &'static $crate::einsum::FormulaCache {
+                static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
+                &CACHE
+            }
+
+            fn apply(x: f32, y: f32) -> f32 {
+                const APPLY: fn(f32, f32) -> f32 = $apply;
+                APPLY(x, y)
+            }
+
+            $( fn input_a(len: usize) -> Vec<f32> {
+                const INPUT: fn(usize) -> Vec<f32> = $input_a;
+                INPUT(len)
+            }
+
+            fn input_b(len: usize) -> Vec<f32> {
+                const INPUT: fn(usize) -> Vec<f32> = $input_b;
+                INPUT(len)
+            } )?
+        }
+
+        #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = "elementwise")]
+        #[doc = concat!("`", $op, "` 的语义别名。")]
+        pub type $alias = $name;
+
+        /// 内核入口：结果写进调用方给的缓冲。
+        ///
+        /// # Errors
+        ///
+        /// 三个缓冲等长，否则返回说明。
+        pub fn forward(a: &[f32], b: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+            $crate::elementwise::forward::<$name>(a, b, out)
+        }
+
+        #[cfg(test)]
+        #[path = $test]
+        mod tests;
+    };
+}

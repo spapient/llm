@@ -391,7 +391,7 @@ pub fn metal_harness(
         msl_address_space(kernel_source),
         metal_launch(&signature.kernel(), signature, sample)?
     );
-    Ok((msl, metal_driver(signature, sample, output)))
+    Ok((msl, metal_driver(signature, sample, output)?))
 }
 
 /// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲并原样透传给内核（内核指针已是
@@ -406,7 +406,7 @@ fn metal_launch(
     let mut slot = 0usize;
     for param in signature.params() {
         if param.ctype.is_buffer() {
-            let base = metal_type(param.ctype);
+            let base = metal_type(param.ctype)?;
             buffers.push(format!(
                 "device {base} *d_{name} [[buffer({slot})]]",
                 name = param.name
@@ -429,17 +429,21 @@ fn metal_launch(
 
 /// host 驱动：把样本数据作为只读缓冲的初值，发射 `cutile_launch`，回读唯一可写输出的位模式。
 /// 输出长度在生成期已知，直接嵌进回读循环；值与 stderr/stdout 口径与 C/CUDA harness 一致。
-fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> String {
+fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> diagnostic::Result<String> {
     let mut data = String::new();
     let mut allocs = String::new();
     let mut sets = String::new();
     let mut out_len = 0usize;
-    let mut slot = 0usize;
-    for param in signature.params().iter().filter(|p| p.ctype.is_buffer()) {
-        let buffer = &sample
+    for (slot, param) in signature
+        .params()
+        .iter()
+        .filter(|p| p.ctype.is_buffer())
+        .enumerate()
+    {
+        let buffer = sample
             .buffer(&param.name)
-            .expect("签名与样本已对齐（漂移）");
-        let base = metal_type(param.ctype);
+            .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+        let base = metal_type(param.ctype)?;
         let len = buffer.values.len();
         if param.mutable {
             out_len = len;
@@ -466,8 +470,18 @@ fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> String 
             name = param.name,
             slot = slot
         ));
-        slot += 1;
     }
+    Ok(metal_driver_template(&data, &allocs, &sets, output, out_len))
+}
+
+/// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 [`metal_driver`]）。
+fn metal_driver_template(
+    data: &str,
+    allocs: &str,
+    sets: &str,
+    output: &str,
+    out_len: usize,
+) -> String {
     format!(
         r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -516,11 +530,12 @@ int main(int argc, const char **argv) {{
 }
 
 /// 缓冲形参的 MSL 元素类型（`unsigned char` 与 `.k` 的 `u8` typedef 同义，包装层用真名）。
-fn metal_type(ctype: CType) -> &'static str {
+/// 标量没有缓冲元素类型：调用方已按 `is_buffer` 过滤，但闭集外的类型仍显式报错，不猜。
+fn metal_type(ctype: CType) -> diagnostic::Result<&'static str> {
     match ctype {
-        CType::F32 => "float",
-        CType::U8 => "unsigned char",
-        CType::Int => unreachable!("标量不进缓冲声明"),
+        CType::F32 => Ok("float"),
+        CType::U8 => Ok("unsigned char"),
+        CType::Int => Err(Error::new(Code::Internal, "标量没有缓冲元素类型")),
     }
 }
 
