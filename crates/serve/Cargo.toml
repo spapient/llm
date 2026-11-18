@@ -15,6 +15,7 @@ diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 engine = { path = "../engine", package = "llm-engine" }
 nn = { path = "../nn", package = "llm-nn" }
 op = { path = "../op", package = "llm-op" }
+rng = { path = "../rng", package = "llm-rng" }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
 weights = { path = "../weights", package = "llm-weights" }
 

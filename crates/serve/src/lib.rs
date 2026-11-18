@@ -50,7 +50,7 @@ mod frame;
 mod protocol;
 
 pub use completion::Completion;
-pub use generate::{Classical, Ending, Generation, Greedy, Predict, Sampling, SamplingParams};
+pub use generate::{Classical, Ending, Generation, Greedy, Multinomial, Predict, Sampling, SamplingParams};
 pub use request::Request;
 pub use router::Router;
 

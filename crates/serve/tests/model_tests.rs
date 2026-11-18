@@ -128,7 +128,7 @@ fn decode_batch_two(
 }
 
 /// 两条一行种子历史的块链夹具：装配模型 + 两条序列批 + 两行历史引用；`head_dim` 与 `seq` 显式。
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn two_seq_fixture(
     kv: usize,
     head_dim: usize,
@@ -141,13 +141,13 @@ fn two_seq_fixture(
     Vec<f32>,
     Projections,
 ) {
-    let (mut model, table, projections) = block_fixture_dim(8, 8, kv, head_dim, seq);
+    let (model, table, projections) = block_fixture_dim(8, 8, kv, head_dim, seq);
     let (hist_k_a, hist_v_a) = history_kv(kv);
     let hist_k_b: Vec<f32> = hist_k_a.iter().map(|value| value * 1.7).collect();
     let hist_v_b: Vec<f32> = hist_v_a.iter().map(|value| value * 1.3).collect();
     let history_a = history_row(&hist_k_a, &hist_v_a);
     let history_b = history_row(&hist_k_b, &hist_v_b);
-    let (mut batch, a, b) = decode_batch_two(kv, &history_a, &history_b);
+    let (batch, a, b) = decode_batch_two(kv, &history_a, &history_b);
     let histories = vec![(hist_k_a, hist_v_a), (hist_k_b, hist_v_b)];
     (model, batch, [a, b], histories, table, projections)
 }
@@ -1446,7 +1446,8 @@ fn logits_batch_runs_two_sequences_in_input_order_and_keeps_their_own_kv() {
 /// 头宽分段，两行各自对拍参考块，KV 写回各归各的页行。
 #[test]
 fn logits_batch_runs_two_multi_head_sequences_with_their_own_kv() {
-    let (mut model, mut batch, sequences, histories, table, projections) = two_seq_fixture(16, 8, 4);
+    let (mut model, mut batch, sequences, histories, table, projections) =
+        two_seq_fixture(16, 8, 4);
     let history_refs: Vec<(&[f32], &[f32])> = histories
         .iter()
         .map(|(k, v)| (k.as_slice(), v.as_slice()))
@@ -1498,7 +1499,10 @@ fn logits_batch_runs_two_sequences_with_unequal_history_lengths() {
     batch.write_kv(1, 1, &row_b1).expect("种子历史 B 次行");
 
     let sequences = [a.clone(), b.clone()];
-    let histories = [(hist_k_a.as_slice(), hist_v_a.as_slice()), (hist_k_b.as_slice(), hist_v_b.as_slice())];
+    let histories = [
+        (hist_k_a.as_slice(), hist_v_a.as_slice()),
+        (hist_k_b.as_slice(), hist_v_b.as_slice()),
+    ];
     run_block_pair(
         &mut model,
         &mut batch,

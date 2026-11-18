@@ -172,6 +172,13 @@ fn decode_flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> 
     op::attention::decode_flash_forward(q, k, v, out, q_rows, hist, d)
 }
 
+/// `[q: u8] → y: f32`：打包字节每字节四个 2 位码，参数取样本常量。
+fn dequant_i2(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q,) = <(u8,) as Inputs>::unpack(inputs, "dequant_i2")?;
+    let out = output_slice::<f32>("dequant_i2", output)?;
+    op::dequant_i2::forward(op::dequant_i2::SCALE, op::dequant_i2::ZERO, q, out)
+}
+
 /// `[q: u8] → y: f32`：打包字节每字节两个 nibble，参数取样本常量。
 fn dequant_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q,) = <(u8,) as Inputs>::unpack(inputs, "dequant_i4")?;
@@ -198,6 +205,7 @@ const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     attention_f32,
     decode_attention_f32,
     decode_flash_attention_f32,
+    dequant_i2,
     dequant_i4,
     dequant_i8,
     embed_f32,

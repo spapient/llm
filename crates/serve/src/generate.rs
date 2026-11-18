@@ -10,6 +10,7 @@
 //! 惩罚都会改变"什么时候停"。端点因此不需要知道策略，策略也不需要知道页账。
 
 use diagnostic::{Code, Error, Result};
+use rng::Rng;
 use std::cmp::Ordering;
 
 /// 一步前向：给定序列与批页账视图，给出下一个位置的 logits。
@@ -250,6 +251,96 @@ impl Classical {
         }
         argmax_index(scaled, retained)
     }
+}
+
+/// 多项式采样：截断保留集上按 softmax 概率逆变换抽一个 token。
+///
+/// 与 [`Classical`] 共用温度 / top-k / top-p 截断；差别在保留集的选择：经典采样是
+/// 确定性 argmax，本刀按归一化概率抽样。随机流由构造时给定的种子经显式 [`Rng`]
+/// 派生，不读全局熵源；同种子、同 logits 序列逐位可复现。
+///
+/// 并行后端的等价口径是 Gumbel-max（逐候选 `logit/T + gumbel` 后 argmax，不建累积表）；
+/// 本轮 CPU 路径用累积概率逆变换，二者概率分布等价。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Multinomial {
+    params: SamplingParams,
+    rng: Rng,
+}
+
+impl Multinomial {
+    /// 由参数档案与种子构造；种子派生独立流，不持有全局 RNG。
+    pub fn new(params: SamplingParams, seed: u64) -> Self {
+        Self {
+            params,
+            rng: Rng::new(seed),
+        }
+    }
+
+    /// 参数档案（只读）。
+    pub fn params(&self) -> &SamplingParams {
+        &self.params
+    }
+}
+
+impl Sampling for Multinomial {
+    fn sample(&mut self, logits: &[f32]) -> Result<Option<u32>> {
+        usable(logits)?;
+        self.params.validate(logits.len())?;
+        let temperature = self.params.temperature().unwrap_or(DEFAULT_TEMPERATURE);
+        // 温度缩放是逐元素映射，整块切片一次算完。
+        let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
+
+        let mut retained: Vec<usize> = (0..logits.len()).collect();
+        if let Some(k) = self.params.top_k() {
+            retained = top_k(&scaled, retained, k);
+        }
+        if let Some(p) = self.params.top_p() {
+            retained = nucleus(&scaled, retained, p);
+        }
+        let index = sample_categorical(&scaled, retained, &mut self.rng)?;
+        u32::try_from(index)
+            .map_err(|_| {
+                Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32"))
+                    .with("serve::Multinomial")
+            })
+            .map(Some)
+    }
+}
+
+/// 保留集上按 softmax 概率逆变换抽样：减 max 求指数并累计，抽一个均匀量落进对应段。
+///
+/// 指数与累计有串行依赖，保留折叠与遍历；`scaled` 整块读入，不写回调用方缓冲。
+/// 浮点兜底：阈值被累积误差推到末尾时取最后一个候选。
+fn sample_categorical(
+    scaled: &[f32],
+    candidates: Vec<usize>,
+    rng: &mut Rng,
+) -> Result<usize> {
+    if candidates.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            "截断后候选为空：无 token 可选",
+        )
+        .with("serve::Multinomial"));
+    }
+    let max = candidates
+        .iter()
+        .map(|&index| scaled[index])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let exponentials: Vec<f32> = candidates
+        .iter()
+        .map(|&index| (scaled[index] - max).exp())
+        .collect();
+    let total: f32 = exponentials.iter().sum();
+    let threshold = rng.next_f32() * total;
+    let mut cumulative = 0.0;
+    for (position, &index) in candidates.iter().enumerate() {
+        cumulative += exponentials[position];
+        if cumulative >= threshold {
+            return Ok(index);
+        }
+    }
+    Ok(candidates[candidates.len() - 1])
 }
 
 /// top-k 截断：按缩放分数降序（等值取最小编号）排序后保留前 `k` 个候选。

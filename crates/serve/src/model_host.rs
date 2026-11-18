@@ -344,7 +344,10 @@ fn place_history_row(
     if row.len() != expected {
         return Err(Error::new(
             Code::Invalid,
-            format!("KV 行宽 {} 与块 KV 宽度 {kv} 推出的行宽 {expected}", row.len()),
+            format!(
+                "KV 行宽 {} 与块 KV 宽度 {kv} 推出的行宽 {expected}",
+                row.len()
+            ),
         )
         .with(SITE));
     }

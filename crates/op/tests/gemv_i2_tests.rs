@@ -47,7 +47,11 @@ fn reference_dequantizes_and_dots() {
     let sample = with(4, 1, vec![1.0; 4], w, vec![0.5]);
     let y = gemv::reference::<I2>(&sample).expect("参考可算");
     assert_eq!(y.len(), 1);
-    assert!((y[0] - 0.5).abs() < 1e-6, "0.5*(1-1+0+1)=0.5，实际 {}", y[0]);
+    assert!(
+        (y[0] - 0.5).abs() < 1e-6,
+        "0.5*(1-1+0+1)=0.5，实际 {}",
+        y[0]
+    );
 }
 
 #[test]

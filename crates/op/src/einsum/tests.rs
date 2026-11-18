@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_closed_set_reports_every_width() {
     let widths: Vec<u32> = Bits::ALL.iter().map(|bits| bits.bits()).collect();
-    assert_eq!(widths, [4, 8, 16, 32, 64]);
+    assert_eq!(widths, [4, 8, 16, 32, 64, 2]);
 }
 
 #[test]

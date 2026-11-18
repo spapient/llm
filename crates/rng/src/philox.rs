@@ -65,6 +65,7 @@ pub fn block(key: u64, stream: u32, index: u64) -> [u32; 4] {
 /// 顺序推进的确定性流：持有种子、流号与当前下标，缓冲一个 4 词块。
 ///
 /// 序列随实例走；拷贝两个同种子实例会得到相同序列，但它们之间不共享可变状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rng {
     key: u64,
     stream: u32,
