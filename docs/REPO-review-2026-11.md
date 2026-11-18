@@ -176,6 +176,7 @@ CI 目前只对 `cutile`（行 75% / 函数 70%）与 `weights`（行 70% / 函�
 | 性能测量 | criterion 结构/编解码基准 + 3 条 decode 行宽基准（gemv/softmax/rope 已入回归基线） | 统一 harness：记录硬件/形状/批次/后端；真实 kernel 吞吐采样；同硬件对照 llama.cpp/burn/candle | P1 骨架，P2/P3 接内核 |
 | 模型端到端 | 能读 safetensors，层栈与性能下界可推；无模型前向 | 给定真实权重跑通生成；一层模型前向与标量参考对拍达标 | P4（P1 先一层） |
 | 服务化 | `Route`/`Endpoint`/`Response` + `proto` 线格式契约；无 socket | 真实 HTTP/gRPC `Endpoint` 实现；并发、流式输出；P50/P99 服务基准 | P4 |
+| 随机数与采样 | 实现（CPU）：`rng` Philox4x32-10 计数器引擎 + `Uniform`/`Normal`/`Bernoulli`，显式种子 / 流号 / 下标派生，不引 `rand`、不持全局状态，CPU 顺序填充与 GPU 按索引寻址走同一块纯函数可逐位对拍；`serve::Multinomial` 与经典采样共用一份 top-k / top-p 截断，保留集上 softmax 逆变换抽样，同种子同 logits 逐位可复现 | 并行后端 Gumbel-max（逐候选 `logit/T + gumbel` 后 argmax，不建累积表）等价口径；随机张量初始化（半精度输出舍入归 `dtype` 转换，中间计算留 f32）；`Normal` 第二值缓存评估；token 侧 Categorical 分布 | P1 CPU / P3 加速 |
 | kernel 侧操作数视图 | ADR 0003：DSL 宿主 API（`&mut` 分片即 grid）P0 尚未实现；`cutile` 只收裸指针与标量 | 真要直接调 kernel 时按 cutile README §4.4 重建；不得依赖 `tensor` | P0/P3 衔接 |
 | 分词 | `Bytes`/`Bpe`/`Unigram` 主体在；预切分（空白/标点/Unicode 脚本边界）是 D2 待办（`tokenizer/src/bpe.rs:6`） | 预切分层接入；Unigram 前向 Viterbi 已在，边界用例补齐 | P1 后 |
 | 训练侧 | 反传图/调度/计划/重放簿记齐（`autograd`）；真实缓冲在 `train` `Buffers`；算术走 `Kernel`（默认 `Reference` 调标量语义） | 激活显存计划落地；重放序列驱动真实缓冲；训练循环端到端 | P1/P2 |

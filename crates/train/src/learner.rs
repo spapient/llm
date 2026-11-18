@@ -100,7 +100,13 @@ impl<K: Kernel, O: Optimizer> Learner<K, O> {
     {
         for _epoch in 0..epochs {
             while let Some(batch) = dataset.next_batch() {
-                self.train_batch(batch.tokens(), batch.rows(), batch.cols(), &mut forward, &mut backward)?;
+                self.train_batch(
+                    batch.tokens(),
+                    batch.rows(),
+                    batch.cols(),
+                    &mut forward,
+                    &mut backward,
+                )?;
             }
         }
         Ok(())

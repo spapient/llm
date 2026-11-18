@@ -115,6 +115,12 @@ pub enum Bits {
     Two,
 }
 
+/// 与 [`Bits::ALL`] 同序的名字表；下标即判别值，加变体时与 `ALL`、[`WIDTHS`] 三处对齐。
+const NAMES: [&str; Bits::ALL.len()] = ["4", "8", "16", "32", "64", "2"];
+
+/// 与 [`Bits::ALL`] 同序的位宽表；下标即判别值。
+const WIDTHS: [u32; Bits::ALL.len()] = [4, 8, 16, 32, 64, 2];
+
 /// `Bits` 的词汇表由 [`prof::atom::Closed`] 单点声明，`ALL` / `as_str` / `parse` 由
 /// [`prof::inherent_names!`] 以同名固有项转发。
 ///
@@ -131,14 +137,7 @@ impl prof::atom::Closed for Bits {
     ];
 
     fn as_str(self) -> &'static str {
-        match self {
-            Self::Four => "4",
-            Self::Eight => "8",
-            Self::Sixteen => "16",
-            Self::ThirtyTwo => "32",
-            Self::SixtyFour => "64",
-            Self::Two => "2",
-        }
+        NAMES[self as usize]
     }
 
     fn index(self) -> usize {
@@ -151,14 +150,7 @@ prof::inherent_names!(Bits);
 impl Bits {
     /// 每元素占多少位。
     pub const fn bits(self) -> u32 {
-        match self {
-            Self::Four => 4,
-            Self::Eight => 8,
-            Self::Sixteen => 16,
-            Self::ThirtyTwo => 32,
-            Self::SixtyFour => 64,
-            Self::Two => 2,
-        }
+        WIDTHS[self as usize]
     }
 
     /// 给定元素个数需要多少字节，**向上取整**。

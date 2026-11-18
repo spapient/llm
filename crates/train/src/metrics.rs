@@ -79,7 +79,8 @@ impl MetricsBoard {
 
     /// 样本加权平均 loss；无样本为 `None`。
     pub fn mean_loss(&self) -> Option<f32> {
-        self.nonzero_samples().map(|samples| (self.loss_sum / samples as f64) as f32)
+        self.nonzero_samples()
+            .map(|samples| (self.loss_sum / samples as f64) as f32)
     }
 
     /// 样本加权命中率；无样本为 `None`。

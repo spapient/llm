@@ -16,4 +16,4 @@ pub mod dist;
 pub mod philox;
 
 pub use dist::{Bernoulli, Normal, Uniform};
-pub use philox::{block, Rng};
+pub use philox::{Rng, block};

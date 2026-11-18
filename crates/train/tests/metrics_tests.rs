@@ -53,7 +53,10 @@ fn rejects_invalid_points() {
         loss: 1.0,
         accuracy: 0.5,
     };
-    assert_eq!(board.record(zero_samples).expect_err("样本为 0").code(), Code::Invalid);
+    assert_eq!(
+        board.record(zero_samples).expect_err("样本为 0").code(),
+        Code::Invalid
+    );
 
     let nan_loss = MetricPoint {
         step: 0,
@@ -61,7 +64,10 @@ fn rejects_invalid_points() {
         loss: f32::NAN,
         accuracy: 0.5,
     };
-    assert_eq!(board.record(nan_loss).expect_err("NaN loss").code(), Code::Invalid);
+    assert_eq!(
+        board.record(nan_loss).expect_err("NaN loss").code(),
+        Code::Invalid
+    );
 
     let too_high = MetricPoint {
         step: 0,
@@ -69,7 +75,10 @@ fn rejects_invalid_points() {
         loss: 1.0,
         accuracy: 1.5,
     };
-    assert_eq!(board.record(too_high).expect_err("命中率 > 1").code(), Code::Invalid);
+    assert_eq!(
+        board.record(too_high).expect_err("命中率 > 1").code(),
+        Code::Invalid
+    );
 
     let too_low = MetricPoint {
         step: 0,
@@ -77,7 +86,10 @@ fn rejects_invalid_points() {
         loss: 1.0,
         accuracy: -0.2,
     };
-    assert_eq!(board.record(too_low).expect_err("命中率 < 0").code(), Code::Invalid);
+    assert_eq!(
+        board.record(too_low).expect_err("命中率 < 0").code(),
+        Code::Invalid
+    );
     assert!(board.is_empty(), "拒绝前不写入任何点");
 }
 

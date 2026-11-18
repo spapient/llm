@@ -242,14 +242,7 @@ impl Sampling for Classical {
 impl Classical {
     /// 截断与选优：top-k → top-p 核采样 → 保留集 argmax；返回最优候选编号。
     fn select(&self, scaled: &[f32], retained: Vec<usize>) -> Result<usize> {
-        let mut retained = retained;
-        if let Some(k) = self.params.top_k() {
-            retained = top_k(scaled, retained, k);
-        }
-        if let Some(p) = self.params.top_p() {
-            retained = nucleus(scaled, retained, p);
-        }
-        argmax_index(scaled, retained)
+        argmax_index(scaled, retain(&self.params, scaled, retained))
     }
 }
 
@@ -290,13 +283,7 @@ impl Sampling for Multinomial {
         // 温度缩放是逐元素映射，整块切片一次算完。
         let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
 
-        let mut retained: Vec<usize> = (0..logits.len()).collect();
-        if let Some(k) = self.params.top_k() {
-            retained = top_k(&scaled, retained, k);
-        }
-        if let Some(p) = self.params.top_p() {
-            retained = nucleus(&scaled, retained, p);
-        }
+        let retained = retain(&self.params, &scaled, (0..logits.len()).collect());
         let index = sample_categorical(&scaled, retained, &mut self.rng)?;
         u32::try_from(index)
             .map_err(|_| {
@@ -311,17 +298,11 @@ impl Sampling for Multinomial {
 ///
 /// 指数与累计有串行依赖，保留折叠与遍历；`scaled` 整块读入，不写回调用方缓冲。
 /// 浮点兜底：阈值被累积误差推到末尾时取最后一个候选。
-fn sample_categorical(
-    scaled: &[f32],
-    candidates: Vec<usize>,
-    rng: &mut Rng,
-) -> Result<usize> {
+fn sample_categorical(scaled: &[f32], candidates: Vec<usize>, rng: &mut Rng) -> Result<usize> {
     if candidates.is_empty() {
-        return Err(Error::new(
-            Code::Invalid,
-            "截断后候选为空：无 token 可选",
-        )
-        .with("serve::Multinomial"));
+        return Err(
+            Error::new(Code::Invalid, "截断后候选为空：无 token 可选").with("serve::Multinomial")
+        );
     }
     let max = candidates
         .iter()
@@ -341,6 +322,17 @@ fn sample_categorical(
         }
     }
     Ok(candidates[candidates.len() - 1])
+}
+
+/// 温度之后的 top-k → top-p 截断：从全候选集裁到概率保留集；argmax 与逆变换两种选择器共用这一份序列。
+fn retain(params: &SamplingParams, scaled: &[f32], mut retained: Vec<usize>) -> Vec<usize> {
+    if let Some(k) = params.top_k() {
+        retained = top_k(scaled, retained, k);
+    }
+    if let Some(p) = params.top_p() {
+        retained = nucleus(scaled, retained, p);
+    }
+    retained
 }
 
 /// top-k 截断：按缩放分数降序（等值取最小编号）排序后保留前 `k` 个候选。

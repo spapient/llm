@@ -116,11 +116,6 @@ names = ["Ties", "WeightOffload", "DeferredOffload"]
 reason = "`Ties` 是快照内的权重绑定表（`(源槽, 回填槽)` 下标对），只随快照写读搬运；`WeightOffload`/`DeferredOffload` 是参数换入换出的暂缓接缝与占位实现（通路未落地，闭环不调用）。公开训练面是 `Session`/`TrainConfig`"
 
 [[ownership.unlisted]]
-crate = "testkit"
-names = ["Rng"]
-reason = "测试用的确定性随机源；只在 dev 依赖里出现"
-
-[[ownership.unlisted]]
 crate = "tool"
 names = ["Call", "Direction", "Link", "Metric", "Over"]
 reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Report`"

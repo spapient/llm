@@ -52,9 +52,8 @@ fn check_rows(rows: usize) -> Result<()> {
 fn check_logits_len(logits_len: usize, rows: usize, vocab: usize) -> Result<()> {
     let expected = rows * vocab;
     if logits_len != expected {
-        let message = format!(
-            "logits 元素数 {logits_len} 与 {rows} 行 × {vocab} 词表 = {expected} 不符"
-        );
+        let message =
+            format!("logits 元素数 {logits_len} 与 {rows} 行 × {vocab} 词表 = {expected} 不符");
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
     Ok(())
