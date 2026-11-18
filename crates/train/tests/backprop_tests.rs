@@ -163,7 +163,7 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
     let chain_loss = |params: &[f32]| {
         params
             .iter()
-            .map(|&x| 0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2)))
+            .map(|&x| 0.5 * x * (1.0 + op::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2)))
             .sum::<f32>()
     };
 
@@ -187,21 +187,6 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// 标量 erf：与 `op::gelu_f32` 同口径（Abramowitz-Stegun 7.1.26），测试闭式重算用。
-fn erf(x: f32) -> f32 {
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x = x.abs();
-    let p = 0.327_591_1;
-    let a1 = 0.254_829_6;
-    let a2 = -0.284_496_72;
-    let a3 = 1.421_413_8;
-    let a4 = -1.453_152_1;
-    let a5 = 1.061_405_4;
-    let t = 1.0 / (1.0 + p * x);
-    let series = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
-    sign * (1.0 - series * (-x * x).exp())
 }
 
 /// `loss = reduce_max(p)`：最大值元素收到上游 1，其余为 0；中心差分核对梯度口径。

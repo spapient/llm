@@ -11,7 +11,9 @@ use crate::unary::Unary;
 pub struct Gelu;
 
 /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`）。
-fn erf(x: f32) -> f32 {
+///
+/// 反向公式（`train::backprop` 的 GELU 梯度）与测试闭式重算共用这一份，避免三处各自抄系数。
+pub fn erf(x: f32) -> f32 {
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let x = x.abs();
     let p = 0.327_591_1;

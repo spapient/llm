@@ -705,24 +705,8 @@ fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) -> Result<()>
 /// GELU 导数：`y = 0.5·x·(1+erf(x/√2))`，`y′ = Φ(x) + x·φ(x)`。
 fn gelu_grad(x: f32) -> f32 {
     let normal = (-(x * x) / 2.0).exp() / (2.0 * std::f32::consts::PI).sqrt();
-    let erf_term = 0.5 * (1.0 + erf_scalar(x * std::f32::consts::FRAC_1_SQRT_2));
+    let erf_term = 0.5 * (1.0 + op::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2));
     erf_term + x * normal
-}
-
-/// 标量误差函数：Abramowitz-Stegun 7.1.26，与 `op::gelu_f32` 同一份系数（|误差| < 1.5e-7）。
-fn erf_scalar(x: f32) -> f32 {
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x = x.abs();
-    let p = 0.327_591_1;
-    let a1 = 0.254_829_6;
-    let a2 = -0.284_496_72;
-    let a3 = 1.421_413_8;
-    let a4 = -1.453_152_1;
-    let a5 = 1.061_405_4;
-    let t = 1.0 / (1.0 + p * x);
-    let series = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
-    let y = 1.0 - series * (-x * x).exp();
-    sign * y
 }
 
 #[cfg(test)]
