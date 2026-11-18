@@ -122,6 +122,55 @@ pub const fn f32_operands() -> [OperandSpec; 2] {
     ]
 }
 
+/// 生成一份 f32 一元逐元素算子的公开面：标记类型、[`Unary`] 实现、[`annotation::model`] 别名、
+/// `forward` 入口与测试挂载。`scale` / `gelu` / `silu` 只差一行 `apply`（可选样本夹具）；
+/// 新增一种一元运算加一次调用即可。
+#[macro_export]
+macro_rules! unary_f32 {
+    (
+        $name:ident, $alias:ident, $op:tt, $test:tt,
+        $apply:expr
+        $(, $input:expr)?
+    ) => {
+        #[doc = concat!("`", $op, "` 的标记类型：逐元素一元运算见 `apply`，骨架见 `crate::unary`。")]
+        pub struct $name;
+
+        impl $crate::unary::Unary for $name {
+            fn cache() -> &'static $crate::einsum::FormulaCache {
+                static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
+                &CACHE
+            }
+
+            fn apply(x: f32) -> f32 {
+                const APPLY: fn(f32) -> f32 = $apply;
+                APPLY(x)
+            }
+
+            $( fn input(len: usize) -> Vec<f32> {
+                const INPUT: fn(usize) -> Vec<f32> = $input;
+                INPUT(len)
+            } )?
+        }
+
+        #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = "unary")]
+        #[doc = concat!("`", $op, "` 的语义别名。")]
+        pub type $alias = $name;
+
+        /// 内核入口：结果写进调用方给的缓冲。
+        ///
+        /// # Errors
+        ///
+        /// 输入与输出等长，否则返回说明。
+        pub fn forward(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+            $crate::unary::forward::<$name>(a, out)
+        }
+
+        #[cfg(test)]
+        #[path = $test]
+        mod tests;
+    };
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     /// 生成 scale/silu 等一元算子共有的三则测试：参考对拍、长度负例、饱和与重复边界。

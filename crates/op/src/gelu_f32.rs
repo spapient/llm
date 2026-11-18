@@ -4,12 +4,6 @@
 //! C 侧与 Rust 侧用同一份 Abramowitz-Stegun 7.1.26 系数（绝对误差上界 1.5e-7），两侧只剩
 //! f32 舍入级差异，对拍 max_rel_err 在 1e-10 量级。
 
-use crate::einsum::FormulaCache;
-use crate::unary::Unary;
-
-/// GELU 实现。
-pub struct Gelu;
-
 /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`）。
 ///
 /// 反向公式（`train::backprop` 的 GELU 梯度）与测试闭式重算共用这一份，避免三处各自抄系数。
@@ -29,30 +23,10 @@ pub fn erf(x: f32) -> f32 {
     sign * y
 }
 
-impl Unary for Gelu {
-    fn cache() -> &'static FormulaCache {
-        static CACHE: FormulaCache = FormulaCache::new();
-        &CACHE
-    }
-
-    fn apply(x: f32) -> f32 {
-        0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
-    }
-}
-
-/// GELU 的具体语义别名：`#[model]` 在它上面生成 `MODEL`。
-#[annotation::model(name = "gelu_f32", shape = [4096, 4096], dtype = "f32", skeleton = "unary")]
-pub type GeluF32 = Gelu;
-
-/// 内核入口：结果写进调用方给的缓冲。
-///
-/// # Errors
-///
-/// 输入与输出等长，否则返回说明。
-pub fn forward(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-    crate::unary::forward::<Gelu>(a, out)
-}
-
-#[cfg(test)]
-#[path = "../tests/gelu_f32_tests.rs"]
-mod tests;
+crate::unary_f32!(
+    Gelu,
+    GeluF32,
+    "gelu_f32",
+    "../tests/gelu_f32_tests.rs",
+    |x| 0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
+);

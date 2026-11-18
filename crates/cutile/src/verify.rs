@@ -356,14 +356,22 @@ impl Lane {
     fn ready(profile: &Profile) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
         match profile.meta.emit {
             Emit::C => Ok((Self::Host, toolchain::detect())),
-            Emit::Cuda if witness::device_available(profile) => {
-                Ok((Self::Cuda, toolchain::detect_nvcc()))
-            }
-            Emit::Cuda => Err(Error::new(Code::Unsupported, NO_DEVICE.to_string())),
-            Emit::Metal if witness::device_available(profile) => {
-                Ok((Self::Metal, toolchain::detect_metal()))
-            }
+            Emit::Cuda => Self::ready_device(profile, Self::Cuda, toolchain::detect_nvcc),
+            Emit::Metal => Self::ready_device(profile, Self::Metal, toolchain::detect_metal),
             _ => Err(Error::new(Code::Unsupported, unsupported_emit(profile))),
+        }
+    }
+
+    /// 加速器通道共用的「设备在不在」判断：在则带编译器探测返回，不在则 fail-fast（`NO_DEVICE`）。
+    fn ready_device(
+        profile: &Profile,
+        lane: Self,
+        detect: fn() -> Option<toolchain::Toolchain>,
+    ) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
+        if witness::device_available(profile) {
+            Ok((lane, detect()))
+        } else {
+            Err(Error::new(Code::Unsupported, NO_DEVICE.to_string()))
         }
     }
 }

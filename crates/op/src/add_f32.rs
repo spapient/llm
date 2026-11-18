@@ -3,36 +3,10 @@
 //! 语义表由 `#[annotation::model]` 生成（`tests/contracts.rs` 要求语义表只有这一个生产者），
 //! 算术与遍历由 [`crate::elementwise`] 骨架按 [`Add`] 类型单态化。
 
-use crate::einsum::FormulaCache;
-use crate::elementwise::Binary;
-
-/// 加法实现：给 [`Binary`] 提供表达式、操作数与逐元素运算。
-pub struct Add;
-
-impl Binary for Add {
-    fn cache() -> &'static FormulaCache {
-        static CACHE: FormulaCache = FormulaCache::new();
-        &CACHE
-    }
-
-    fn apply(x: f32, y: f32) -> f32 {
-        x + y
-    }
-}
-
-/// 加法的具体语义别名：`#[model]` 在它上面生成 `MODEL`。
-#[annotation::model(name = "add_f32", shape = [4096, 4096], dtype = "f32", skeleton = "elementwise")]
-pub type AddF32 = Add;
-
-/// 内核入口：结果写进调用方给的缓冲。
-///
-/// # Errors
-///
-/// 三个缓冲等长，否则返回说明。
-pub fn forward(a: &[f32], b: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-    crate::elementwise::forward::<Add>(a, b, out)
-}
-
-#[cfg(test)]
-#[path = "../tests/add_f32_tests.rs"]
-mod tests;
+crate::binary_f32!(
+    Add,
+    AddF32,
+    "add_f32",
+    "../tests/add_f32_tests.rs",
+    |x, y| x + y
+);

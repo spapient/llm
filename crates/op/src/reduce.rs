@@ -133,6 +133,50 @@ pub const fn f32_operands() -> [OperandSpec; 2] {
     ]
 }
 
+/// 生成一份 f32 归约算子的公开面：标记类型、[`Reduce`] 实现、[`annotation::model`] 别名、
+/// `forward` 入口与测试挂载。`reduce_max` / `reduce_sum` 只差初值与折叠闭包；
+/// 新增一种归约加一次调用即可。
+#[macro_export]
+macro_rules! reduce_f32 {
+    ($name:ident, $alias:ident, $op:tt, $test:tt, $start:expr, $fold:expr) => {
+        #[doc = concat!("`", $op, "` 的标记类型：初值与折叠见 `start`/`fold`，骨架见 `crate::reduce`。")]
+        pub struct $name;
+
+        impl $crate::reduce::Reduce for $name {
+            fn cache() -> &'static $crate::einsum::FormulaCache {
+                static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
+                &CACHE
+            }
+
+            fn start() -> f32 {
+                $start
+            }
+
+            fn fold(acc: f32, x: f32) -> f32 {
+                const FOLD: fn(f32, f32) -> f32 = $fold;
+                FOLD(acc, x)
+            }
+        }
+
+        #[annotation::model(name = $op, shape = [4096, 1], dtype = "f32", skeleton = "reduce")]
+        #[doc = concat!("`", $op, "` 的语义别名。")]
+        pub type $alias = $name;
+
+        /// 内核入口：结果写进调用方给的单元素缓冲。
+        ///
+        /// # Errors
+        ///
+        /// 输出不是单元素时返回说明。
+        pub fn forward(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+            $crate::reduce::forward::<$name>(a, out)
+        }
+
+        #[cfg(test)]
+        #[path = $test]
+        mod tests;
+    };
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     /// 生成 reduce_max/reduce_sum 共有的两则测试：参考对拍、非单元素输出与空输入折叠。

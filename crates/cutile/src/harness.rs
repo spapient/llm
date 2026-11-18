@@ -406,7 +406,7 @@ fn metal_launch(
     let mut slot = 0usize;
     for param in signature.params() {
         if param.ctype.is_buffer() {
-            let base = metal_type(param.ctype)?;
+            let base = param.ctype.c_name();
             buffers.push(format!(
                 "device {base} *d_{name} [[buffer({slot})]]",
                 name = param.name
@@ -443,7 +443,7 @@ fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> diagnos
         let buffer = sample
             .buffer(&param.name)
             .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-        let base = metal_type(param.ctype)?;
+        let base = param.ctype.c_name();
         let len = buffer.values.len();
         if param.mutable {
             out_len = len;
@@ -529,15 +529,8 @@ int main(int argc, const char **argv) {{
     )
 }
 
-/// 缓冲形参的 MSL 元素类型（`unsigned char` 与 `.k` 的 `u8` typedef 同义，包装层用真名）。
-/// 标量没有缓冲元素类型：调用方已按 `is_buffer` 过滤，但闭集外的类型仍显式报错，不猜。
-fn metal_type(ctype: CType) -> diagnostic::Result<&'static str> {
-    match ctype {
-        CType::F32 => Ok("float"),
-        CType::U8 => Ok("unsigned char"),
-        CType::Int => Err(Error::new(Code::Internal, "标量没有缓冲元素类型")),
-    }
-}
+/// 缓冲形参的 MSL 元素类型复用 [`CType::c_name`]：F32→`float`、U8→`unsigned char`（与 `.k` 的
+/// `u8` typedef 同义）。标量不传到这里——调用方已按 `is_buffer` 过滤。
 
 #[cfg(test)]
 #[path = "../tests/harness_tests.rs"]
