@@ -47,7 +47,8 @@ pub enum CallArg {
 }
 
 impl CallArg {
-    /// 从借用的词法参数构造 owned 参数。
+    /// 从借用的词法参数构造 owned 参数（不做槽位替换，仅测试核对用）。
+    #[cfg(test)]
     fn from_ref(arg: &Arg<'_>) -> Self {
         match arg {
             Arg::Expr(text) => Self::Expr((*text).to_string()),
@@ -58,8 +59,7 @@ impl CallArg {
         }
     }
 
-    /// 借用视图：测试里核对 owned 参数与词法参数一致，不需要第二套占位符规则。
-    #[cfg(test)]
+    /// 借用视图：owned 参数转回词法参数，供 [`substitute::splice`] 直接消费，不需要第二套占位符规则。
     fn as_ref(&self) -> Arg<'_> {
         match self {
             Self::Expr(text) => Arg::Expr(text),
@@ -96,11 +96,11 @@ fn node(
     match segment {
         Segment::Text(part) => Ok(Node::Text((*part).to_string())),
         Segment::Slot { name, line } => Ok(Node::Slot(slot_value(op, combo, name, *line)?)),
-        Segment::Call { prim, args, line } => prim_node(fragments, *prim, args, *line),
+        Segment::Call { prim, args, line } => prim_node(op, combo, fragments, *prim, args, *line),
     }
 }
 
-/// 槽位取值：算子名 / 轴取值 / 布局构造子，三者之外的槽位是声明错误。
+/// 槽位取值：算子名 / 轴取值 / 布局构造子 / 模板常量，四者之外的槽位是声明错误。
 fn slot_value(
     op: &OpDecl,
     combo: &TileCombo,
@@ -114,16 +114,19 @@ fn slot_value(
         .get(name)
         .map(|value| value.to_string())
         .or_else(|| op.layout(name).map(|spec| spec.as_str().to_string()))
+        .or_else(|| op.const_value(name).map(str::to_string))
         .ok_or_else(|| {
             error(
                 line,
-                format!("槽位 `{{{{{name}}}}}` 既不是轴也不是布局槽位"),
+                format!("槽位 `{{{{{name}}}}}` 既不是轴、布局槽位，也不是模板常量"),
             )
         })
 }
 
-/// 原语调用节点：片段必须存在，占位符必须能全部解析。
+/// 原语调用节点：片段必须存在，占位符必须能全部解析；实参里的 `{{槽位}}` 先解析再拼接。
 fn prim_node(
+    op: &OpDecl,
+    combo: &TileCombo,
     fragments: &FragmentSet,
     prim: Prim,
     args: &[Arg<'_>],
@@ -132,9 +135,59 @@ fn prim_node(
     let Some(fragment) = fragments.get(prim) else {
         return Err(substitute::missing_fragment(line, prim, fragments));
     };
-    let body = substitute::splice(fragment, args, line)?;
-    let args = args.iter().map(CallArg::from_ref).collect();
-    Ok(Node::Prim(PrimCall { prim, args, body }))
+    let resolved: Vec<CallArg> = args
+        .iter()
+        .map(|arg| resolve_arg(op, combo, arg, line))
+        .collect::<diagnostic::Result<_>>()?;
+    let borrowed: Vec<Arg<'_>> = resolved.iter().map(CallArg::as_ref).collect();
+    let body = substitute::splice(fragment, &borrowed, line)?;
+    Ok(Node::Prim(PrimCall {
+        prim,
+        args: resolved,
+        body,
+    }))
+}
+
+/// 一个实参的 `{{槽位}}` 替换：位置参数与命名参数的值都过一遍 [`resolve_slots`]。
+fn resolve_arg(
+    op: &OpDecl,
+    combo: &TileCombo,
+    arg: &Arg<'_>,
+    line: usize,
+) -> diagnostic::Result<CallArg> {
+    match arg {
+        Arg::Expr(text) => Ok(CallArg::Expr(resolve_slots(op, combo, text, line)?)),
+        Arg::Named { key, value } => Ok(CallArg::Named {
+            key: (*key).to_string(),
+            value: resolve_slots(op, combo, value, line)?,
+        }),
+    }
+}
+
+/// 把一段文本里的 `{{槽位}}` 逐个换成取值；多数实参不含槽位，无 `{{` 时原样返回免分配。
+fn resolve_slots(
+    op: &OpDecl,
+    combo: &TileCombo,
+    text: &str,
+    line: usize,
+) -> diagnostic::Result<String> {
+    if !text.contains("{{") {
+        return Ok(text.to_string());
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let inner = &rest[start + 2..];
+        let Some(end) = inner.find("}}") else {
+            out.push_str(&rest[start..]);
+            break;
+        };
+        out.push_str(&slot_value(op, combo, inner[..end].trim(), line)?);
+        rest = &inner[end + 2..];
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 /// 把节点序列打印回源文本：[`substitute::render`] 就是 [`build`] + 本函数的薄包装。

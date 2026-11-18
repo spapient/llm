@@ -115,16 +115,16 @@ pub struct Registration {
     pub differentiable: bool,
 }
 
-/// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => 语义模块`。
+/// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => 语义模块, 可微, 模板`。
 ///
-/// 名字同时是 `ops/<name>.toml` 与 `ops/<name>.k` 的文件名（`include_str!` 由它拼出路径），模块是
-/// `MODEL` 所在的 `src/<模块>.rs`。两列多数同名，只有 `attention_f32` 与 `flash_attention_f32`
-/// 不同名——它们共用 [`attention`] 的全部语义，只换标量参考（见 [`flash_attention`]）。
+/// 名字是 `ops/<name>.toml` 的文件名，模块是 `MODEL` 所在的 `src/<模块>.rs`；模板是
+/// `ops/<模板>.k` 的文件 stem（`include_str!` 由它拼出路径），多数与名字同名，多算子共用
+/// 一份泛型模板时填共享 stem（如 `gemv_i2`/`gemv_i4` 共用 `gemv_packed`）。
 ///
-/// 一条注册原本要写五句、把同一份结构逐字抄 22 遍（110 行），而能变的只有这三列。加一个算子
-/// 仍然只改本调用里的一行 + `ops/` 两个文件 + 一个模块。
+/// 一条注册原本要写五句、把同一份结构逐字抄 22 遍，而能变的只有这四列。加一个算子仍然只改
+/// 本调用里的一行 + `ops/` 两个文件 + 一个模块。
 macro_rules! registry {
-    ($($name:literal => $module:ident, $differentiable:literal),* $(,)?) => {
+    ($($name:literal => $module:ident, $differentiable:literal, $template:literal),* $(,)?) => {
         /// 编译期内嵌的算子注册表。
         ///
         /// 新增算子在这里补一行，否则发布出去的二进制里没有它；
@@ -134,7 +134,7 @@ macro_rules! registry {
             $(
                 Registration {
                     name: $name,
-                    template: include_str!(concat!("../ops/", $name, ".k")),
+                    template: include_str!(concat!("../ops/", $template, ".k")),
                     model: $module::MODEL,
                     differentiable: $differentiable,
                 }

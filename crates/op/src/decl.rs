@@ -112,6 +112,8 @@ pub struct OpDecl {
     pub needs: Vec<Need>,
     /// 布局契约：槽位 → 构造子。
     pub layouts: Vec<(String, LayoutSpec)>,
+    /// 模板常量：`{{槽位}}` 的固定取值（非轴、非布局），按十进制渲染成字符串。
+    pub consts: Vec<(String, String)>,
     /// 降级链，按 `order` 升序。
     pub variants: Vec<Variant>,
     /// 模板文本。
@@ -192,11 +194,12 @@ fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
     Ok((skeleton, op.string("summary").unwrap_or("-").to_string()))
 }
 
-/// 四个段（轴、需求、布局、变体链）：`declared` 按同一顺序解构。
+/// 四个段（轴、需求、布局、常量、变体链）：`declared` 按同一顺序解构。
 type Sections = (
     Vec<Axis>,
     Vec<Need>,
     Vec<(String, LayoutSpec)>,
+    Vec<(String, String)>,
     Vec<Variant>,
 );
 
@@ -205,6 +208,7 @@ fn sections(table: &Table) -> diagnostic::Result<Sections> {
         axes(table)?,
         needs(table)?,
         layouts(table)?,
+        consts(table)?,
         variants(table)?,
     ))
 }
@@ -284,6 +288,31 @@ fn layout(key: &str, value: &Value) -> diagnostic::Result<(String, LayoutSpec)> 
     };
     let spec = LayoutSpec::parse(text).map_err(|detail| field(&path, detail.message()))?;
     Ok((key.to_string(), spec))
+}
+
+/// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串，
+/// 供 [`OpDecl::const_value`] 在 `{{槽位}}` 解析时查用。
+fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
+    let Some(section) = table.table("consts") else {
+        return Ok(Vec::new());
+    };
+    section
+        .entries()
+        .iter()
+        .map(|(key, value)| const_value(key, value))
+        .collect()
+}
+
+/// 一个模板常量：整数/浮点/布尔按十进制渲染，字符串原样；表或数组不能当常量。
+fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)> {
+    let text = match value {
+        Value::Str(text) => text.clone(),
+        Value::Int(number) => number.to_string(),
+        Value::Float(number) => number.to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        _ => return Err(field(&format!("consts.{key}"), "不能是表或数组")),
+    };
+    Ok((key.to_string(), text))
 }
 
 /// 变体链：逐个解析、按 `order` 排序，再判数量与链路。
@@ -416,8 +445,8 @@ impl OpDecl {
     /// 声明本体：头、四个段与签名。模板侧校验不在这里（见 [`Self::verified`]）。
     fn declared(table: &Table, template: &str) -> diagnostic::Result<Self> {
         let (name, skeleton, summary) = head(table)?;
-        // 返回顺序：轴、需求、布局、变体链。
-        let (axes, needs, layouts, variants) = sections(table)?;
+        // 返回顺序：轴、需求、布局、常量、变体链。
+        let (axes, needs, layouts, consts, variants) = sections(table)?;
         let signature = crate::sig::Signature::parse(&name, template)?;
         Ok(Self {
             name,
@@ -426,6 +455,7 @@ impl OpDecl {
             axes,
             needs,
             layouts,
+            consts,
             variants,
             template: template.to_string(),
             signature,
@@ -456,21 +486,32 @@ impl OpDecl {
             .map(|(_, spec)| *spec)
     }
 
+    /// 按名字取模板常量。
+    pub fn const_value(&self, name: &str) -> Option<&str> {
+        self.consts
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
     /// 按名字取轴。
     pub fn axis(&self, name: &str) -> Option<&Axis> {
         self.axes.iter().find(|axis| axis.name == name)
     }
 
-    /// 模板里的每个 `{{槽位}}` 必须能被轴、布局或 `op` 解析（提前拦住 `{{GMAXX}}` 这类笔误）。
+    /// 模板里的每个 `{{槽位}}` 必须能被轴、布局、常量或 `op` 解析（提前拦住 `{{GMAXX}}` 这类笔误）。
     fn check_slots(&self, template: &Template<'_>) -> diagnostic::Result<()> {
         for (line, slot) in template.slots() {
             if slot == "op" {
                 continue;
             }
-            if self.axis(slot).is_none() && self.layout(slot).is_none() {
+            let known = self.axis(slot).is_some()
+                || self.layout(slot).is_some()
+                || self.const_value(slot).is_some();
+            if !known {
                 return Err(field(
                     &format!("{}.k:{line}", self.name),
-                    format!("槽位 `{{{{{slot}}}}}` 在 [axes] 和 [layouts] 里都没有定义"),
+                    format!("槽位 `{{{{{slot}}}}}` 在 [axes]、[layouts] 和 [consts] 里都没有定义"),
                 ));
             }
         }
