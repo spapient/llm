@@ -99,7 +99,8 @@ unary!(
     softmax_f32,
     reduce_max_f32,
     reduce_sum_f32,
-    scale_f32
+    scale_f32,
+    scan_f32
 );
 binary!(add_f32, embed_f32, mul_f32, rmsnorm_f32, residual_add_f32);
 
@@ -225,6 +226,7 @@ const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     rmsnorm_f32,
     rope_f32,
     scale_f32,
+    scan_f32,
     silu_f32,
     softmax_f32,
 ];

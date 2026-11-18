@@ -87,6 +87,7 @@ pub mod rmsnorm_f32;
 pub mod rope_f32;
 pub mod scale_f32;
 pub mod scan;
+pub mod scan_f32;
 pub mod sch;
 pub mod sig;
 pub mod silu_f32;
@@ -171,6 +172,7 @@ registry! {
     "rmsnorm_f32" => rmsnorm_f32, true, "rmsnorm_f32",
     "rope_f32" => rope_f32, true, "rope_f32",
     "scale_f32" => scale_f32, true, "scale_f32",
+    "scan_f32" => scan_f32, false, "scan_f32",
     "silu_f32" => silu_f32, true, "silu_f32",
     "softmax_f32" => softmax_f32, true, "softmax_f32",
 }

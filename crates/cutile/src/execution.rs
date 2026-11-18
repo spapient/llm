@@ -71,19 +71,20 @@ pub fn execute(
     one(&run, profile, dirs, sample)
 }
 
-/// 生产态 Metal 网格内核源：把一条逐点算子走完整条流水线（见证建立证据 → 协商 → prepare → 网格
-/// 包装），返回可交给 `engine::metal::MetalExecutor::register` 进程内编译的 MSL。
+/// 生产态 Metal 内核源：把一条算子走完整条流水线（见证建立证据 → 协商 → prepare → 骨架 lowering），
+/// 返回可交给 `engine::metal::MetalExecutor::register` 进程内编译的 MSL。
 ///
 /// 与 [`execute`] 的分工：`execute` 在 C 宿主车道编译执行并当场对拍；本函数只产出生产态的 Metal
-/// 网格内核源，执行与对拍发生在调用方（L7 组合根把这段 MSL 注入设备后端）。因此本函数不做对拍，
+/// 内核源，执行与对拍发生在调用方（L7 组合根把这段 MSL 注入设备后端）。因此本函数不做对拍，
 /// 只保证「证据存在 → 协商成立 → 拼接出合法 MSL」。
 ///
-/// 只对逐点族成立（add/mul/scale/silu/gelu/residual_add）：缓冲步长 1、唯一标量是长度 N。
-/// gemv/gemm/reduce/embed/rmsnorm 需各自的 lowering，不属于本函数的成立范围。
+/// 骨架分派是「串行兜底 + 网格快路径」：归约、带归约/多标量逐元素、未声明 `[grid]` 的 Gemm、
+/// 注意力与扫描统一走单线程串行（正确性兜底）；纯逐点单标量走逐元素网格、声明 `[grid]` 的 Gemm
+/// 走行网格（并行快路径，属 M3-5 逐步铺开的性能面）。因此本函数对**全部骨架**都有定义。
 ///
 /// # Errors
 ///
-/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败、形状非法或签名不是逐点形时返回说明。
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
 pub fn metal_grid_program(
     catalogue: &Catalogue,
     dirs: &Dirs,
@@ -113,13 +114,20 @@ pub fn metal_grid_program(
             crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
         }
         Skeleton::Elementwise => {
-            // 带归约/两趟的 elementwise（如 rmsnorm 的 `@dot`）走串行内核：正文里的归约已沿轴
-            // 遍历，网格按元素拆只会让每线程各算一整遍；纯逐点才走「一元素一线程」的网格。
+            // 带归约/两趟（rmsnorm/softmax）或非纯逐点签名（embed/rope 多标量、dequant）走串行兜底：
+            // 正文里的归约已沿轴遍历、或下标依赖行 gather/成对步长，网格按元素拆只会算错；纯逐点
+            // 单标量才走「一元素一线程」的快路径。
             let reduces = op
                 .needs
                 .iter()
                 .any(|need| matches!(need.prim, Prim::Reduce | Prim::Dot));
-            if reduces {
+            let scalars = op
+                .signature
+                .params()
+                .iter()
+                .filter(|param| !param.ctype.is_buffer())
+                .count();
+            if reduces || scalars != 1 {
                 let sample = (run.model.sample)(m, n);
                 return crate::harness::metal_serial_kernel(
                     &prepared.source.text,
@@ -129,26 +137,28 @@ pub fn metal_grid_program(
             }
             crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
         }
-        Skeleton::Gemm => {
-            // gemv：一输出行一线程，逐缓冲偏移来自 `[grid]` 声明。
-            let grid = op.grid.as_ref().ok_or_else(|| {
-                Error::new(
-                    Code::Unsupported,
-                    format!("`{}` 的 Gemm 骨架缺 `[grid]` 网格映射", op.name),
-                )
-                .with("cutile::execution::metal_grid_program")
-            })?;
+        Skeleton::Gemm => match op.grid.as_ref() {
+            // 声明了 `[grid]` 的（gemv_f32）走行网格快路径；gemm 等未声明的走串行兜底。
+            Some(grid) => {
+                let sample = (run.model.sample)(m, n);
+                crate::harness::metal_gemv_kernel(&prepared.source.text, &op.signature, &sample, grid)
+            }
+            None => {
+                let sample = (run.model.sample)(m, n);
+                crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
+            }
+        },
+        Skeleton::Attention => {
+            // 串行是通用正确性兜底：单线程走完整条正文，缓冲原样、标量取样本值。并行化属 M3-5。
             let sample = (run.model.sample)(m, n);
-            crate::harness::metal_gemv_kernel(&prepared.source.text, &op.signature, &sample, grid)
+            crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
         }
-        Skeleton::Attention | Skeleton::Scan => Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "`{}` 的 `{:?}` 骨架 Metal lowering 尚未建立",
-                op.name, op.skeleton
-            ),
-        )
-        .with("cutile::execution::metal_grid_program")),
+        Skeleton::Scan => {
+            // 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
+            // 收敛到单线程串行（grid = [1,1,1]），与 Reduce 共用同一条 lowering。
+            let sample = (run.model.sample)(m, n);
+            crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
+        }
     }
 }
 

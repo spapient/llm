@@ -138,8 +138,14 @@ pub fn scan_blelloch<M: Monoid>(items: &[M]) -> Vec<M> {
     let m = n.next_power_of_two();
     let mut buf = vec![M::IDENT; m];
     buf[..n].clone_from_slice(items);
+    let d = up_sweep(&mut buf, m);
+    down_sweep(&mut buf, m, d);
+    buf.truncate(n);
+    buf
+}
 
-    // up-sweep：归并成二叉树，`buf[right] = buf[left] ⊕ buf[right]`（左在前，保持时序）。
+/// up-sweep：归并成二叉树，`buf[right] = buf[left] ⊕ buf[right]`（左在前，保持时序），返回层数。
+fn up_sweep<M: Monoid>(buf: &mut [M], m: usize) -> usize {
     let mut d = 0usize;
     while (1usize << d) < m {
         let stride = 1usize << (d + 1);
@@ -152,8 +158,11 @@ pub fn scan_blelloch<M: Monoid>(items: &[M]) -> Vec<M> {
         }
         d += 1;
     }
+    d
+}
 
-    // down-sweep：把「本段之前的合成」从根向下传播。
+/// down-sweep：把「本段之前的合成」从根向下传播。
+fn down_sweep<M: Monoid>(buf: &mut [M], m: usize, mut d: usize) {
     buf[m - 1] = M::IDENT;
     while d > 0 {
         d -= 1;
@@ -169,9 +178,6 @@ pub fn scan_blelloch<M: Monoid>(items: &[M]) -> Vec<M> {
             k += stride;
         }
     }
-
-    buf.truncate(n);
-    buf
 }
 
 /// 对角 SSM 半群步：状态推进 `s' = a·s + b`（逐元素），是 [`Monoid`] 的实例。

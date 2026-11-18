@@ -196,12 +196,12 @@ const fn row(
     }
 }
 
-/// 十三条骨架的差异表，顺序与 [`crate::syntax::SKELETONS`] 一致。
+/// 十四条骨架的差异表，顺序与 [`crate::syntax::SKELETONS`] 一致。
 ///
 /// `dequant_i4` 的 `group` 是 2、`dequant_i2` 的 `group` 是 4：每 2（或 4）个输出元素占一个
 /// 字节，`verify` 从对齐这个约束的形状起步。`gemv` 的 `group` 指向类型参数上的
 /// `Format::GRAIN`——粒度是格式的编译期事实，注解里不该再写一个数。
-const SKELETON_TABLE: [Skeleton; 13] = [
+const SKELETON_TABLE: [Skeleton; 14] = [
     row(
         "gemv",
         Some("gemv"),
@@ -221,6 +221,7 @@ const SKELETON_TABLE: [Skeleton; 13] = [
     row("dequant_i4", Some("dequant_i4"), "2u32", false, false),
     row("dequant_i2", Some("dequant_i2"), "4u32", false, false),
     row("attention", Some("attention"), "1u32", false, false),
+    row("scan", Some("scan_f32"), "1u32", false, false),
 ];
 
 /// 按注册名覆盖 `reference` 入口与语义模块的例外表：一行三列 `(注册名, 参考覆盖, 模块覆盖)`。

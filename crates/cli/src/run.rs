@@ -710,4 +710,111 @@ mod tests {
             "gemv 对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
         );
     }
+
+    /// 串行兜底的真机对拍：任一条走单线程串行 lowering 的算子，按签名序绑缓冲、`[1,1,1]` 派发、
+    /// 回读唯一可写输出，与标量参考对拍。缓冲全按 f32 解释（softmax/gemm/embed 都是 f32 输入）。
+    #[cfg(target_os = "macos")]
+    fn serial_op_matches_reference(op_name: &str) {
+        use engine::exec::Executor as _;
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs =
+            cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-serial-check"));
+
+        let model = op::model(op_name).expect("语义表");
+        let (m, n) = model.shape;
+        let sample = (model.sample)(m, n);
+        let expected = (model.reference)(&sample).expect("标量参考");
+        let decl = catalogue.op(op_name).expect("算子声明");
+
+        let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
+            .expect("串行内核应能生成");
+
+        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
+            return;
+        };
+        executor.register(op_name, &msl).expect("注册内核");
+
+        // 按签名序绑缓冲：输入长度取样本、输出长度取参考；同时登记 node 的输入/输出槽位。
+        let launch = engine::exec::Launch::new([1, 1, 1], [1, 1, 1]);
+        let mut node = engine::exec::Node::new(op_name, launch);
+        for (slot, param) in decl
+            .signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buffer())
+            .enumerate()
+        {
+            let slot = slot as u32;
+            if param.mutable {
+                executor.bind_bytes(slot, expected.len() * 4).expect("输出缓冲");
+                node.bind_output(slot);
+            } else {
+                let values = sample.f32(&param.name).expect("f32 输入");
+                executor.bind_bytes(slot, values.len() * 4).expect("输入缓冲");
+                node.bind_input(slot);
+                let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
+                for (index, value) in values.iter().enumerate() {
+                    bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        let stream = engine::exec::Stream::new(0);
+        executor.submit(&graph, stream).expect("提交");
+        executor.sync(stream).expect("同步派发");
+
+        let output_slot = decl
+            .signature
+            .params()
+            .iter()
+            .position(|param| param.mutable)
+            .expect("唯一可写输出") as u32;
+        let bytes = executor
+            .buffer_mut(output_slot)
+            .expect("输出可读")
+            .as_mut_bytes();
+        let output: Vec<f32> = (0..expected.len())
+            .map(|index| {
+                let chunk: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                    .try_into()
+                    .expect("四个字节一个 f32");
+                f32::from_le_bytes(chunk)
+            })
+            .collect();
+
+        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "{op_name} 串行对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
+    }
+
+    /// 三趟 softmax（max 归约 + exp 求和 + 归一化）走串行兜底，真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_softmax_op_runs_on_metal_and_matches_the_reference() {
+        serial_op_matches_reference("softmax_f32");
+    }
+
+    /// 矩阵乘（三重循环）走串行兜底，真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_gemm_op_runs_on_metal_and_matches_the_reference() {
+        serial_op_matches_reference("gemm_f32");
+    }
+
+    /// 行 gather（`table[idx[n],:]`，数据依赖下标）走串行兜底，真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_embed_op_runs_on_metal_and_matches_the_reference() {
+        serial_op_matches_reference("embed_f32");
+    }
 }

@@ -80,41 +80,65 @@ fn handle(stream: &mut TcpStream, router: &Router) -> Result<()> {
 
 /// 读一条请求：请求行 + 头（只取 `Content-Length`）+ 主体。EOF 且零字节时返回 `Ok(None)`。
 fn read_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>> {
+    let Some((buf, head_end)) = read_head(stream)? else {
+        return Ok(None);
+    };
+    let (method, path, content_len) = parse_head(&buf[..head_end])?;
+    let body = read_body(stream, &buf, head_end, content_len)?;
+    Ok(Some(HttpRequest { method, path, body }))
+}
+
+/// 读头块直到出现 `\r\n\r\n`，返回（缓冲、头结束下标）；干净 EOF 返回 `Ok(None)`。
+fn read_head(stream: &mut TcpStream) -> Result<Option<(Vec<u8>, usize)>> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 1024];
-    let head_end = loop {
+    loop {
         if let Some(pos) = find_head(&buf) {
-            break pos;
+            return Ok(Some((buf, pos)));
         }
         let n = stream.read(&mut tmp).map_err(io)?;
         if n == 0 {
-            return if buf.is_empty() {
-                Ok(None)
-            } else {
-                Err(Error::new(Code::Invalid, "连接在读请求头时截断").with(SITE))
-            };
+            return eof_head(&buf);
         }
         buf.extend_from_slice(&tmp[..n]);
         if buf.len() > MAX_HEAD {
-            return Err(Error::new(Code::Invalid, "请求头过长").with(SITE));
+            return Err(bad("请求头过长"));
         }
-    };
-    let (method, path, content_len) = parse_head(&buf[..head_end])?;
+    }
+}
+
+/// 头读到 EOF：缓冲为空是干净关闭，否则是截断。
+fn eof_head(buf: &[u8]) -> Result<Option<(Vec<u8>, usize)>> {
+    if buf.is_empty() {
+        Ok(None)
+    } else {
+        Err(bad("连接在读请求头时截断"))
+    }
+}
+
+/// 读主体到 `Content-Length` 字节：先吃头块之后已缓冲的尾字节，不足再继续读 socket。
+fn read_body(
+    stream: &mut TcpStream,
+    buf: &[u8],
+    head_end: usize,
+    content_len: usize,
+) -> Result<Vec<u8>> {
     if content_len > MAX_BODY {
-        return Err(Error::new(Code::Invalid, "请求体超过上限").with(SITE));
+        return Err(bad("请求体超过上限"));
     }
     let mut body = Vec::with_capacity(content_len);
     body.extend_from_slice(&buf[head_end + 4..]);
     body.truncate(content_len);
     while body.len() < content_len {
+        let mut tmp = [0u8; 1024];
         let n = stream.read(&mut tmp).map_err(io)?;
         if n == 0 {
-            return Err(Error::new(Code::Invalid, "连接在读请求体时截断").with(SITE));
+            return Err(bad("连接在读请求体时截断"));
         }
         body.extend_from_slice(&tmp[..n]);
         body.truncate(content_len);
     }
-    Ok(Some(HttpRequest { method, path, body }))
+    Ok(body)
 }
 
 /// 在缓冲区里找 `\r\n\r\n`（头结束），返回其起始下标。
@@ -124,20 +148,29 @@ fn find_head(buf: &[u8]) -> Option<usize> {
 
 /// 解析头块：请求行取方法、路径、版本，头里只取 `Content-Length`。
 fn parse_head(head: &[u8]) -> Result<(String, String, usize)> {
-    let text = std::str::from_utf8(head)
-        .map_err(|_| Error::new(Code::Invalid, "请求头不是 UTF-8").with(SITE))?;
+    let text = std::str::from_utf8(head).map_err(|_| bad("请求头不是 UTF-8"))?;
     let mut lines = text.split("\r\n");
-    let request_line = lines
-        .next()
-        .ok_or_else(|| Error::new(Code::Invalid, "缺请求行").with(SITE))?;
-    let mut parts = request_line.split_whitespace();
+    let (method, path) = request_line(lines.next())?;
+    let content_len = content_length(lines)?;
+    Ok((method, path, content_len))
+}
+
+/// 请求行：`方法 路径 HTTP/版本`，只支持 HTTP/1.1。
+fn request_line(line: Option<&str>) -> Result<(String, String)> {
+    let line = line.ok_or_else(|| bad("缺请求行"))?;
+    let mut parts = line.split_whitespace();
     let (Some(method), Some(path), Some(version)) = (parts.next(), parts.next(), parts.next())
     else {
-        return Err(Error::new(Code::Invalid, "请求行必须是 `方法 路径 HTTP/版本`").with(SITE));
+        return Err(bad("请求行必须是 `方法 路径 HTTP/版本`"));
     };
     if version != "HTTP/1.1" {
-        return Err(Error::new(Code::Invalid, "只支持 HTTP/1.1").with(SITE));
+        return Err(bad("只支持 HTTP/1.1"));
     }
+    Ok((method.to_owned(), path.to_owned()))
+}
+
+/// 头行里找 `Content-Length`；缺失时按 0 处理（无主体）。
+fn content_length<'a>(lines: impl Iterator<Item = &'a str>) -> Result<usize> {
     let mut content_len = 0usize;
     for line in lines {
         if let Some((name, value)) = line.split_once(':')
@@ -146,10 +179,10 @@ fn parse_head(head: &[u8]) -> Result<(String, String, usize)> {
             content_len = value
                 .trim()
                 .parse()
-                .map_err(|_| Error::new(Code::Invalid, "Content-Length 不是整数").with(SITE))?;
+                .map_err(|_| bad("Content-Length 不是整数"))?;
         }
     }
-    Ok((method.to_owned(), path.to_owned(), content_len))
+    Ok(content_len)
 }
 
 /// 写最小响应：状态行 + `Content-Length` + `Connection: close` + 主体字节。
@@ -164,16 +197,25 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) -> Result<()
     Ok(())
 }
 
-/// 状态码 → 原因短语（最小闭集）。
+/// 状态码 → 原因短语（闭集查表）。
+const REASONS: [(u16, &str); 5] = [
+    (200, "OK"),
+    (400, "Bad Request"),
+    (404, "Not Found"),
+    (503, "Service Unavailable"),
+    (500, "Internal Server Error"),
+];
+
 fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        503 => "Service Unavailable",
-        500 => "Internal Server Error",
-        _ => "Unknown",
-    }
+    REASONS
+        .iter()
+        .find(|(code, _)| *code == status)
+        .map(|(_, why)| *why)
+        .unwrap_or("Unknown")
+}
+
+fn bad(message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with(SITE)
 }
 
 fn io(error: std::io::Error) -> Error {

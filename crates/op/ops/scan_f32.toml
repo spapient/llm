@@ -1,0 +1,20 @@
+# β 指数梯形扫描：s_t = a·s_{t-1} + b·x_t。
+# scan 骨架：沿时间轴串行递推，正文就是一条跨元素循环；衰减 a 与输入系数 b 是模板常量。
+
+[op]
+name     = "scan_f32"
+skeleton = "scan"
+summary  = "s_t = a·s_{t-1} + b·x_t"
+
+[axes]
+N = [32]
+
+[consts]
+a = 0.5
+b = 1.0
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0
