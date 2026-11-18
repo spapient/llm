@@ -16,6 +16,12 @@ store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 [layouts]
 q = "row"
 
+# 模板常量：dequant_packed 的打包宽度（i2=每字节 4 码、每码 2 位、零点 2）。
+[consts]
+cpb   = 4
+width = 2
+zero  = 2
+
 [[variants]]
 name      = "direct"
 order     = 1

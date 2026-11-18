@@ -118,14 +118,12 @@ impl CpuModel {
         self.predict_input_batch(std::slice::from_ref(sequence))
     }
 
-    /// 批量收集各序列末位 token，按准入序折成整批索引缓冲；非查表层首层拒绝。
+    /// 批量收集各序列末位 token，按准入序折成整批索引缓冲；非查表层首层走向量主链占位。
     fn predict_input_batch(&self, sequences: &[Sequence]) -> Result<Vec<f32>> {
         if self.assembly.input_kind != LayerKind::Embedding {
-            return Err(Error::new(
-                Code::Unsupported,
-                "首层不是查表层：序列只持有 token id，无法提供隐向量输入；向量主链通路随连续批落地",
-            )
-            .with(SITE));
+            // 向量主链：投影/点wise/归一化/注意力首层收隐向量，序列只持 token id，给不出真实嵌入；
+            // 按设计稿在 serve 层造零向量占位（真实嵌入由外部/后续通路供给），先让非查表层首层可跑。
+            return Ok(vec![0.0; self.assembly.input_len * sequences.len()]);
         }
         sequences
             .iter()

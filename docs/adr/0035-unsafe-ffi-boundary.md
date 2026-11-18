@@ -1,6 +1,6 @@
 # 0035：unsafe/FFI 安全边界规则（P3 动工前置裁决，缺口 G13）
 
-- 状态：Proposed（待评审；本稿只定 unsafe/FFI 边界规则，不是 M3 实现放行。评审通过后作为 M3-1 前置约束，未评审前 M3 不动工；边界 crate 实现随 P3 填入，本轮不改任何 `src` 代码）
+- 状态：Accepted（2026-11-18 评审通过，G1/G2/G3 三处订正已并入；作为 M3-1 前置约束，边界 crate 实现随 M3 填入）
 - 日期：2026-11-17
 - 相关：[0025](0025-runtime-backend-abstraction.md)（后端三件套、trait 归属与依赖方向、§9 unsafe/FFI 预告）、[0028](0028-device-data-vs-mechanism-boundary.md)（运行时后端落点与触发条件）、[0001](0001-layered-dependency-order.md)（依赖方向）；设计取证见 [`../backend-runtime-design.md`](../backend-runtime-design.md) §3.3 G13、§5、§7 P3 前置步骤
 
@@ -20,8 +20,9 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 - **设备缓冲句柄**：Metal/CUDA 设备侧缓冲、命令队列、事件等跨调用存活的设备私有句柄，藏在边界 crate 内部类型里；
 - **FFI 调用**：平台库（Metal/CUDA 驱动或绑定层）的 `extern` 声明与调用，只在边界模块；
 - **mmap 映射**：沿用现有 storage mmap 岛形态，新增映射类越界同样以独立模块隔离。
+- **通信/进程级库句柄**：NCCL communicator、MPI comm、Metal 对等组等跨调用存活的进程级库句柄，与设备缓冲句柄同等对待——藏在边界 crate 内部类型里，经 `Collective` trait 向上只暴露不透明标识；M3-4 动工前若出现新句柄形态，回本 ADR 扩白名单。
 
-核心运行时 trait（`Device` / `Allocator` / `Executor`，ADR 0025 §1）只持**不透明标识**：trait 方法签名不出现裸指针与设备句柄类型；缓冲句柄以边界内不透明类型向上传递，模型、调度、算子代码拿不到指针与厂商句柄（ADR 0025 §2、§7）。
+边界 crate 实现运行时一侧已定形的四个 trait：`engine::Executor`、`engine::Program`、`storage::Allocator`、`shard::Collective`；`engine::Device` 是数据 struct（厂商标签），不是 trait。这些 trait 只持**不透明标识**：trait 方法签名不出现裸指针与设备句柄类型；缓冲句柄以边界内不透明类型向上传递，模型、调度、算子代码拿不到指针与厂商句柄（ADR 0025 §2、§7）。
 
 ### 2. `#[allow(unsafe_code)]` 的收敛点
 
@@ -31,7 +32,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 ### 3. 依赖方向
 
-边界 crate 只能指向运行时 trait；trait 定义归运行时一侧（ADR 0025 §1），实现归边界 crate，不允许反向引用：边界 crate 不定义新的运行时 trait，运行时一侧不持有边界类型。方向冲突时先扩 trait 定义，不在上层加厂商特判（ADR 0025 §4、§7）。
+边界 crate 只能指向运行时 trait；trait 定义归运行时一侧（ADR 0025 §1），实现归边界 crate，不允许反向引用：边界 crate 不定义新的运行时 trait，运行时一侧不持有边界类型。依赖方向对 `engine`/`storage`/`shard` 三个运行时 crate 同时成立：边界 crate 只指向三者的 trait，三者均不得反向持有边界类型。方向冲突时先扩 trait 定义，不在上层加厂商特判（ADR 0025 §4、§7）。
 
 ### 4. 不安全块最小化
 
@@ -74,8 +75,10 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 - 本轮不实现 Metal/CUDA 后端，不引入 GPU 依赖、FFI crate 或边界 crate 骨架（P3）。
 - 不改 ADR 0025 的 trait 形状与 ADR 0028 的落点裁决；trait 暴露不足时先扩运行时 trait 定义。
-- 不定义后端内部模块组织与 FFI 绑定选型（系统绑定 vs 生成绑定）。
+- 不定义后端内部模块组织（系统绑定 vs 生成绑定的具体绑定层形态除外，见下）。
+- **FFI 绑定默认策略（M3-1 前置）**：在独立 ADR 批准引入 FFI 绑定依赖（如 metal-rs / cuda-sys）之前，边界 crate 一律**手写 `extern "C"` 声明**，不引入任何 FFI crate；Metal 走 objc/Metal 运行时符号，CUDA 走 Driver API（`cuInit`/`cuMemAlloc`/`cuLaunchKernel` 等）手写绑定。若某后端证明手写绑定成本不可接受，需另立 ADR 申请 D5 例外，通过前维持零依赖。
 
 ## 修订
 
 - 2026-11-17：初稿，回应 G13；白名单四类、allow 收敛点、依赖方向、unsafe 块最小化规则落档，实现随 P3 边界 crate。
+- 2026-11-18：评审通过（0035-review，G1/G2/G3）并置 Accepted：① trait 清单订正为四 trait（`Executor`/`Program`/`Allocator`/`Collective`）且 `Device` 为 struct；② 白名单增第 5 类「通信/进程级库句柄」；③ 补 FFI 绑定默认策略（手写 `extern "C"`、零依赖）。

@@ -17,6 +17,10 @@ store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 a = "row"
 b = "row"
 
+# 模板常量：binary.k 的逐元素运算符。
+[consts]
+binop = "+"
+
 [[variants]]
 name      = "direct"
 order     = 1

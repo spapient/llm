@@ -50,6 +50,7 @@ fn downgrade_op() -> OpDecl {
         }],
         needs: vec![Need::of(Prim::Dot)],
         layouts: Vec::new(),
+        consts: Vec::new(),
         variants: vec![
             Variant {
                 name: "pipe2".to_string(),

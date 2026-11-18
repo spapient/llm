@@ -194,12 +194,11 @@ fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
     Ok((skeleton, op.string("summary").unwrap_or("-").to_string()))
 }
 
-/// 四个段（轴、需求、布局、常量、变体链）：`declared` 按同一顺序解构。
+/// 四个段（轴、需求、布局、变体链）：`declared` 按同一顺序解构。
 type Sections = (
     Vec<Axis>,
     Vec<Need>,
     Vec<(String, LayoutSpec)>,
-    Vec<(String, String)>,
     Vec<Variant>,
 );
 
@@ -208,7 +207,6 @@ fn sections(table: &Table) -> diagnostic::Result<Sections> {
         axes(table)?,
         needs(table)?,
         layouts(table)?,
-        consts(table)?,
         variants(table)?,
     ))
 }
@@ -445,8 +443,9 @@ impl OpDecl {
     /// 声明本体：头、四个段与签名。模板侧校验不在这里（见 [`Self::verified`]）。
     fn declared(table: &Table, template: &str) -> diagnostic::Result<Self> {
         let (name, skeleton, summary) = head(table)?;
-        // 返回顺序：轴、需求、布局、常量、变体链。
-        let (axes, needs, layouts, consts, variants) = sections(table)?;
+        // 返回顺序：轴、需求、布局、变体链。
+        let (axes, needs, layouts, variants) = sections(table)?;
+        let consts = consts(table)?;
         let signature = crate::sig::Signature::parse(&name, template)?;
         Ok(Self {
             name,
@@ -502,20 +501,20 @@ impl OpDecl {
     /// 模板里的每个 `{{槽位}}` 必须能被轴、布局、常量或 `op` 解析（提前拦住 `{{GMAXX}}` 这类笔误）。
     fn check_slots(&self, template: &Template<'_>) -> diagnostic::Result<()> {
         for (line, slot) in template.slots() {
-            if slot == "op" {
+            if slot == "op" || self.slot_known(slot) {
                 continue;
             }
-            let known = self.axis(slot).is_some()
-                || self.layout(slot).is_some()
-                || self.const_value(slot).is_some();
-            if !known {
-                return Err(field(
-                    &format!("{}.k:{line}", self.name),
-                    format!("槽位 `{{{{{slot}}}}}` 在 [axes]、[layouts] 和 [consts] 里都没有定义"),
-                ));
-            }
+            return Err(field(
+                &format!("{}.k:{line}", self.name),
+                format!("槽位 `{{{{{slot}}}}}` 在 [axes]、[layouts] 和 [consts] 里都没有定义"),
+            ));
         }
         Ok(())
+    }
+
+    /// 槽位是否可解析：轴、布局或模板常量任一命中。
+    fn slot_known(&self, slot: &str) -> bool {
+        self.axis(slot).is_some() || self.layout(slot).is_some() || self.const_value(slot).is_some()
     }
 
     /// 每个变体的需求必须覆盖模板里出现的全部 `@原语`：模板是各变体共享的，所以按变体判，

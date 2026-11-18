@@ -372,7 +372,10 @@ fn width_plan(
     Ok(plan)
 }
 
-/// 查表计划：索引序列 + 驻留权重表 `[vocab, dim]`；当前向量主链只接单 token decode 步。
+/// 查表计划：索引序列 + 驻留权重表 `[vocab, dim]` → 行向量块 `[tokens, dim]` 展平。
+///
+/// 输出宽是 `tokens × dim`（`tokens` 个索引各查一行 `dim`）；查表内核由 `out.len() / idx.len()`
+/// 反推行宽，多 token 复用同一行 gather，装配层不按 token 数扇出第二套接线。
 fn embedding_plan(
     layer: &dyn Contract,
     emb: &Embedding,
@@ -380,24 +383,13 @@ fn embedding_plan(
     params: &Params,
 ) -> Result<LayerPlan> {
     let operator = first_operator(layer)?;
-    let tokens = emb.tokens();
-    if tokens != 1 {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "层 `{}` 是 {tokens}-token 查表层；当前向量主链只接单 token decode 步，多 token 矩阵通路随连续批刀落地",
-                layer.name()
-            ),
-        )
-        .with(SITE));
-    }
-    let (vocab, dim) = (emb.vocab(), emb.dim());
+    let (vocab, dim, tokens) = (emb.vocab(), emb.dim(), emb.tokens());
     let plan = build_plan(
         LayerKind::Embedding,
         operator.to_string(),
         Some(entry_name(layer)),
         tokens,
-        dim,
+        tokens * dim,
         vec![vocab, dim],
     );
     check_plan(prev_out, &plan, layer.name(), params)?;

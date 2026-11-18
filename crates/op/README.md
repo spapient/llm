@@ -12,8 +12,8 @@ crates/op/
 ├── ops/
 │   ├── gemv_f32.toml    # 声明：稠密 f32 投影（骨架 / 轴 / 需求 / 布局 / 降级链）
 │   ├── gemv_f32.k       # 模板：分块点积，未量化
-│   ├── gemv_i4.toml     # 声明：weight-only int4 解码 GEMV
-│   └── gemv_i4.k        # 模板：C 风格文本 + {{插值}} + @原语 槽位
+│   ├── gemv_i4.toml     # 声明：weight-only int4 解码 GEMV（[consts] 给共享模板喂打包常量）
+│   └── gemv_packed.k    # 共享模板：gemv_i2/i4 二合一，C 文本 + {{插值}} + @原语 槽位
 └── src/
     ├── lib.rs           # 注册表（REGISTRY）与它的两张投影（builtin / model）；声明表取自构建期生成物
     ├── decl.rs          # `<name>.toml` 的解析与轴展开：OpDecl / Variant / Axis / TileCombo

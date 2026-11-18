@@ -1447,16 +1447,23 @@ fn an_embedding_table_length_mismatch_is_rejected_at_assembly() {
     rejected_at_assembly(stack, params, Code::Invalid);
 }
 
-/// 多 token 查表需要矩阵主链通路，当前向量主链按 `Unsupported` 拒绝，留连续批刀落地。
+/// 多 token 查表：`tokens` 个索引各查一行，输出 `[tokens, dim]` 展平，与串行 gather 参考对拍。
 #[test]
-fn a_multi_token_embedding_is_not_assembled_yet() {
+fn a_multi_token_embedding_gathers_multiple_rows() {
+    let (vocab, dim, tokens) = (8, 4, 3);
+    let table = embed_table(vocab, dim);
+    let idx = [2.0f32, 5.0, 1.0];
+
+    let mut reference = vec![0.0; tokens * dim];
+    op::embed_f32::forward(&idx, &table, &mut reference).expect("参考：多 token 查表");
+
     let stack = Stack::of(vec![Box::new(
-        Embedding::new("tok_emb", 8, 4, 3).expect("层"),
+        Embedding::new("tok_emb", vocab, dim, tokens).expect("层"),
     )])
     .expect("栈");
-    let params = params_of(&[("tok_emb.weight", embed_table(8, 4))]);
+    let params = params_of(&[("tok_emb.weight", table)]);
 
-    rejected_at_assembly(stack, params, Code::Unsupported);
+    forward_close(stack, params, &idx, &reference);
 }
 
 /// Predict 一步前向：序列末位 token 折成索引，查表→投影主链对拍张量级 forward。
@@ -1516,22 +1523,24 @@ fn logits_batch_runs_two_sequences_through_the_flat_projection_chain() {
     assert_close(&rows[1], &reference_row(&table, &w, 5, dim));
 }
 
-/// 投影首层拿不到隐向量：序列只持有 token id，Predict 通路按 `Unsupported` 拒绝。
+/// 投影首层走向量主链占位：Predict 用零向量作隐向量输入，与显式零向量张量级 forward 一致。
 #[test]
-fn predict_with_a_projection_first_layer_is_not_assembled_yet() {
+fn predict_with_a_projection_first_layer_uses_a_zero_vector_placeholder() {
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
     ])
     .expect("栈");
-    let params = params_of(&[("blk.0.weight", vec![0.0; 6])]);
+    let params = params_of(&[("blk.0.weight", projection_matrix(2, 3, 1.0))]);
 
     let mut model = assemble(stack, params);
     let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
     let mut batch = plain_batch();
-    let error = model
+    let produced = model
         .logits(&sequence, &mut batch)
-        .expect_err("投影首层不给向量输入");
-    assert_eq!(error.code(), Code::Unsupported);
+        .expect("投影首层占位向量输入");
+    let reference = model.forward(&[0.0; 3]).expect("张量级参考：零向量");
+
+    assert_close(&produced, &reference);
 }
 
 /// 投影权重 `[out, in]`：确定性小值矩阵，便于参考路径串行重算。

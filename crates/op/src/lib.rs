@@ -145,12 +145,12 @@ macro_rules! registry {
 }
 
 registry! {
-    "add_f32" => add_f32, true, "add_f32",
+    "add_f32" => add_f32, true, "binary",
     "attention_f32" => attention, true, "attention_f32",
     "decode_attention_f32" => decode_attention, true, "decode_attention_f32",
     "decode_flash_attention_f32" => decode_flash_attention, true, "decode_flash_attention_f32",
-    "dequant_i2" => dequant_i2, false, "dequant_i2",
-    "dequant_i4" => dequant_i4, false, "dequant_i4",
+    "dequant_i2" => dequant_i2, false, "dequant_packed",
+    "dequant_i4" => dequant_i4, false, "dequant_packed",
     "dequant_i8" => dequant_i8, false, "dequant_i8",
     "embed_f32" => embed_f32, true, "embed_f32",
     "flash_attention_f32" => flash_attention, true, "flash_attention_f32",
@@ -163,10 +163,10 @@ registry! {
     "gemv_i2" => gemv_i2, false, "gemv_packed",
     "gemv_i4" => gemv_i4, false, "gemv_packed",
     "gemv_i8" => gemv_i8, false, "gemv_i8",
-    "mul_f32" => mul_f32, true, "mul_f32",
+    "mul_f32" => mul_f32, true, "binary",
     "reduce_max_f32" => reduce_max_f32, true, "reduce_max_f32",
     "reduce_sum_f32" => reduce_sum_f32, true, "reduce_sum_f32",
-    "residual_add_f32" => residual_add_f32, true, "residual_add_f32",
+    "residual_add_f32" => residual_add_f32, true, "binary",
     "rmsnorm_f32" => rmsnorm_f32, true, "rmsnorm_f32",
     "rope_f32" => rope_f32, true, "rope_f32",
     "scale_f32" => scale_f32, true, "scale_f32",

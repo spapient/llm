@@ -1,0 +1,23 @@
+[package]
+name = "llm-backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Device backend boundary: hand-written Metal/CUDA FFI and the Executor/Program/Allocator/Collective implementations (the only new unsafe island besides storage::mmap)."
+publish = false
+autotests = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+engine = { path = "../engine", package = "llm-engine" }
+shard = { path = "../shard", package = "llm-shard" }
+storage = { path = "../storage", package = "llm-storage" }
+
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+
+[lints]
+workspace = true

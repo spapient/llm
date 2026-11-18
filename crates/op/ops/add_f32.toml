@@ -22,6 +22,10 @@ store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 a = "row"
 b = "row"
 
+# 模板常量：binary.k 的逐元素运算符。
+[consts]
+binop = "+"
+
 # 逐元素算子没有搬运/计算分工，一条 direct 变体即可。
 [[variants]]
 name      = "direct"
