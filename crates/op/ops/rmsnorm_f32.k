@@ -3,7 +3,7 @@
 // 布局契约（由声明层校验）：x={{x}} gamma={{gamma}}
 //
 // 两趟：先求平方和（x·x 即 Σx²，交 @dot 原语）得均方根，再归一化乘权重。
-// 复用 load/store，sqrtf 来自数学库。
+// 复用 load/store，sqrt 走 preamble 软件标量接口。
 
 void cutile_{{op}}_kernel(const float *x, const float *gamma, float *y, int N) {
     float sum_sq = 0.0f;

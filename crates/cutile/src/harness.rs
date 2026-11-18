@@ -470,6 +470,61 @@ fn grid_args(params: &[Param]) -> String {
         .join(", ")
 }
 
+/// 生产态串行内核：单线程走完整条串行正文，缓冲不加 `+ n` 偏移、标量取样本的实际值。
+///
+/// 与 [`metal_grid_kernel`]（逐点：一元素一线程）的分工是「规约轴交给谁」：归约骨架的
+/// `@reduce`、或带归约/两趟的逐元素骨架（如 rmsnorm 的 `@dot`）已在正文里沿轴遍历，
+/// 网格再按元素拆只会让每线程各算一整遍。因此网格收敛到 1 线程（`grid = [1,1,1]`），
+/// 缓冲原样透传，长度标量由样本给出。
+pub fn metal_serial_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> diagnostic::Result<String> {
+    let call = serial_args(signature.params(), sample)?;
+    let buffers = signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+        .map(|(slot, param)| {
+            format!(
+                "    device {}* d_{} [[buffer({slot})]]",
+                param.ctype.c_name(),
+                param.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    Ok(format!(
+        "{}\n\nkernel void kernel_main(\n{buffers}) {{\n    {}({call});\n}}",
+        msl_address_space(kernel_source),
+        signature.kernel(),
+    ))
+}
+
+/// 串行实参：缓冲取 `d_{name}`（原样透传，单线程处理全部），标量取样本里的实际值。
+fn serial_args(params: &[Param], sample: &Sample) -> diagnostic::Result<String> {
+    params
+        .iter()
+        .map(|param| {
+            if param.ctype.is_buffer() {
+                Ok(format!("d_{}", param.name))
+            } else {
+                let value = sample.scalar(&param.name).ok_or_else(|| {
+                    Error::new(
+                        Code::Invalid,
+                        format!("串行内核标量 `{}` 没有样本取值", param.name),
+                    )
+                    .with("cutile::harness::metal_serial_kernel")
+                })?;
+                Ok(value.to_string())
+            }
+        })
+        .collect::<diagnostic::Result<Vec<_>>>()
+        .map(|args| args.join(", "))
+}
+
 /// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲并原样透传给内核（内核指针已是
 /// `device`，无需 thread 局部拷贝）；标量直接取样本值。槽位序号与驱动侧 `setBuffer:atIndex:` 同源。
 fn metal_launch(

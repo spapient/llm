@@ -3,7 +3,7 @@
 // 布局契约（由声明层校验）：q={{q}} k={{k}} v={{v}} y={{y}}
 //
 // 先算完整分数 QK^T/sqrt(d)，行内最大值交 @reduce 数组归约，再走数值稳定 softmax；
-// D 维内积交 @dot 原语；softmax 的 exp 走 preamble 软件向量接口，sqrtf 来自数学库。
+// D 维内积交 @dot 原语；softmax 的 exp 走 preamble 软件向量接口，sqrt 走 preamble 软件标量接口。
 
 void cutile_{{op}}_kernel(const float *q, const float *k, const float *v, float *y, int S, int D) {
     const float scale = _cutile_sqrt_f32((float)D);

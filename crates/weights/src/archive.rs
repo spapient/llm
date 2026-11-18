@@ -240,13 +240,10 @@ impl<'a> Archive<'a> {
         &self.bytes[seg.start()..seg.start() + seg.len()]
     }
 
-    /// 加载段的逻辑字节：`store` 段零拷贝借用，`rans` 段解压为新缓冲。引用段解引用到代表段。
+    /// 加载段的逻辑字节：`store` 段零拷贝借用，`rans`/`axes` 段解压为新缓冲。引用段解引用到代表段。
     pub fn load(&self, seg: &Stored) -> Result<Cow<'a, [u8]>> {
         let raw = self.read(seg);
-        match seg.codec() {
-            Codec::Store => Ok(Cow::Borrowed(raw)),
-            Codec::Rans => Ok(Cow::Owned(rans::decode(raw, seg.logical_len()?)?)),
-        }
+        decode_frame(raw, seg.codec(), seg.logical_len()?)
     }
 
     /// 收集每段逻辑字节的叶子哈希；用解压后字节，证明独立于压缩选择。
@@ -350,9 +347,9 @@ impl MetricsAcc {
         Ok(())
     }
 
-    /// 单段是否无损：不带量化方案，且 codec 属于无损的 `Store`/`Rans`。
+    /// 单段是否无损：不带量化方案，且 codec 属于无损的 `Store`/`Rans`/`Axes`。
     fn is_lossless(&self, seg: &Stored) -> bool {
-        seg.quant().is_none() && matches!(seg.codec(), Codec::Store | Codec::Rans)
+        seg.quant().is_none() && matches!(seg.codec(), Codec::Store | Codec::Rans | Codec::Axes)
     }
 }
 
@@ -398,7 +395,7 @@ impl Metrics {
         self.ratio
     }
 
-    /// 无损标志：所有条目都不带量化方案，且 codec 属于无损的 `Store`/`Rans`。
+    /// 无损标志：所有条目都不带量化方案，且 codec 属于无损的 `Store`/`Rans`/`Axes`。
     pub fn lossless(&self) -> bool {
         self.lossless
     }
@@ -744,6 +741,24 @@ fn place_inline(
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("weights::Archive")
+}
+
+/// 按段 codec 把原始存储帧解为逻辑字节：`store` 零拷贝借用，`rans`/`axes` 解压为新缓冲。
+fn decode_frame<'a>(raw: &'a [u8], codec: Codec, want: usize) -> Result<Cow<'a, [u8]>> {
+    match codec {
+        Codec::Store => Ok(Cow::Borrowed(raw)),
+        Codec::Rans => Ok(Cow::Owned(rans::decode(raw, want)?)),
+        Codec::Axes => Ok(Cow::Owned(decode_axes(raw, want)?)),
+    }
+}
+
+/// 解五轴无损帧为逻辑字节，并核对长度与描述符推出的一致。
+fn decode_axes(raw: &[u8], want: usize) -> Result<Vec<u8>> {
+    let bytes = crate::axes::expand(raw)?;
+    if bytes.len() != want {
+        return Err(invalid("axes 帧解出的字节数与形状不符"));
+    }
+    Ok(bytes)
 }
 
 /// 词表段保留名：字节容器占位；字节 → `VocabSource` 解析留给后续刀，本层不接 tokenizer。

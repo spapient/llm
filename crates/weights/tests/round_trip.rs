@@ -317,3 +317,30 @@ fn quantized_grouping_survives_a_safetensors_round_trip() {
         "标度伙伴被同一规则排除"
     );
 }
+
+#[test]
+fn axes_codec_round_trips_low_cardinality_f32() {
+    let vals = [0.25f32, -0.5, 0.75, 1.5];
+    let w: Vec<f32> = (0..64 * 64).map(|i| vals[i % vals.len()]).collect();
+    let data: Vec<u8> = w.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let segment = Segment::new(
+        "blk.0.w.weight",
+        Wire::F32,
+        vec![64, 64],
+        None,
+        data.clone(),
+    )
+    .expect("自洽");
+    let mut writer = Writer::new();
+    writer.push(segment).expect("追加");
+    let bytes = writer.finish(6).expect("64 B 对齐");
+    let archive = Archive::parse(&bytes).expect("解析");
+    let stored = archive.get("blk.0.w.weight").expect("段存在");
+    // 低基数 f32 矩阵应命中五轴 dict 轴，且帧严格小于原始字节。
+    assert_eq!(stored.codec(), llm_weights::Codec::Axes);
+    assert!(stored.len() < data.len());
+    assert_eq!(
+        archive.load(stored).expect("解压").as_ref(),
+        data.as_slice()
+    );
+}

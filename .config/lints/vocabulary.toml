@@ -122,8 +122,8 @@ reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Re
 
 [[ownership.unlisted]]
 crate = "weights"
-names = ["Bin", "Gguf", "Mode", "Sha256", "Value"]
-reason = "格式适配器与容器模式的暂住类型：bin/gguf 解析件、发布模式与哈希内部件；公开生产面是所有权表里的读写契约与容器类型"
+names = ["Axis", "Bin", "Gguf", "Mode", "Note", "Pick", "Sha256", "Spectral", "Stable", "Svd", "Trunc", "Value"]
+reason = "格式适配器、容器模式与五轴谱隙证书链的类型：bin/gguf 解析件、发布模式与哈希内部件，五轴选码与谱隙证书（svd/ledger/axes）内部件；公开生产面是所有权表里的读写契约与容器类型"
 
 [[ownership.unlisted]]
 crate = "wire"

@@ -13,13 +13,16 @@ use crate::sink::Sink;
 /// 段级编解码闭集：码位稳定，未知码在打开期拒绝。
 ///
 /// - [`Codec::Store`]：原样存储，读端零拷贝；
-/// - [`Codec::Rans`]：`rans` 熵编码帧，仅在严格变小时才会被写端选用。
+/// - [`Codec::Rans`]：`rans` 熵编码帧，仅在严格变小时才会被写端选用；
+/// - [`Codec::Axes`]：五轴无损选码帧（仅 f32 二维稠密权重），逐位还原且严格变小才选用。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Codec {
     /// 原样字节（code 0）。
     Store = 0,
     /// rANS 熵编码帧（code 1）。
     Rans = 1,
+    /// 五轴无损选码帧（code 2）。
+    Axes = 2,
 }
 
 impl Codec {
@@ -33,6 +36,7 @@ impl Codec {
         match code {
             0 => Ok(Self::Store),
             1 => Ok(Self::Rans),
+            2 => Ok(Self::Axes),
             other => Err(
                 Error::new(Code::Unsupported, format!("未知段 codec {other}")).with("weights::seg"),
             ),
@@ -377,16 +381,18 @@ fn decode_quant(cur: &mut Cursor<'_>, rank: u32) -> Result<Option<Quant>> {
     }
 }
 
-/// 存储帧长度必须与 codec 的口径一致：store 恰好相等，rans 严格更小。
+/// 存储帧长度必须与 codec 的口径一致：store 恰好相等，rans/axes 严格更小。
 fn check_frame(name: &str, codec: Codec, data_len: u64, expected: u64) -> Result<()> {
-    match codec {
-        Codec::Store if data_len != expected => Err(bad(&format!(
-            "段 `{name}` 声明 {data_len} 字节，store 段应为 {expected} 字节"
-        ))),
-        Codec::Rans if data_len >= expected => Err(bad(&format!(
-            "段 `{name}` 的 rans 帧 {data_len} 字节未小于原始 {expected} 字节"
-        ))),
-        _ => Ok(()),
+    let valid = match codec {
+        Codec::Store => data_len == expected,
+        Codec::Rans | Codec::Axes => data_len < expected,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(bad(&format!(
+            "段 `{name}` 声明 {data_len} 字节，{codec:?} 段不符合 {expected} 字节口径"
+        )))
     }
 }
 

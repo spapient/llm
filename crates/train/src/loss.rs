@@ -18,7 +18,7 @@ pub(crate) const SITE: &str = "train::loss";
 ///
 /// 词表为 0、标签为空、logits 长度不是 `rows · vocab`、或标签越界/非整数/为负时返回
 /// [`Code::Invalid`]。
-fn check_geometry(logits: &[f32], labels: &[f32], vocab: usize) -> Result<usize> {
+pub(crate) fn check_geometry(logits: &[f32], labels: &[f32], vocab: usize) -> Result<usize> {
     let rows = labels.len();
     check_vocab(vocab)?;
     check_rows(rows)?;
@@ -35,25 +35,34 @@ fn check_labels(labels: &[f32], vocab: usize) -> Result<()> {
     Ok(())
 }
 
-fn check_vocab(vocab: usize) -> Result<()> {
+pub(crate) fn check_vocab(vocab: usize) -> Result<()> {
     if vocab == 0 {
         return Err(Error::new(Code::Invalid, "词表宽度不能为 0").with(SITE));
     }
     Ok(())
 }
 
-fn check_rows(rows: usize) -> Result<()> {
+pub(crate) fn check_rows(rows: usize) -> Result<()> {
     if rows == 0 {
         return Err(Error::new(Code::Invalid, "标签为空：没有可评估的样本行").with(SITE));
     }
     Ok(())
 }
 
-fn check_logits_len(logits_len: usize, rows: usize, vocab: usize) -> Result<()> {
+pub(crate) fn check_logits_len(logits_len: usize, rows: usize, vocab: usize) -> Result<()> {
     let expected = rows * vocab;
     if logits_len != expected {
         let message =
             format!("logits 元素数 {logits_len} 与 {rows} 行 × {vocab} 词表 = {expected} 不符");
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    }
+    Ok(())
+}
+
+/// 校验两个长度相等；不等返回 [`Code::Invalid`]。`what` 标识被校验的一侧。
+pub(crate) fn check_len(actual: usize, expected: usize, what: &str) -> Result<()> {
+    if actual != expected {
+        let message = format!("{what} 长度 {actual} 与期望 {expected} 不符");
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
     Ok(())

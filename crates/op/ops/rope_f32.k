@@ -2,7 +2,7 @@
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：x={{x}}
 //
-// 每对分量按位置旋转。复用 load/store，sinf/cosf/powf 来自数学库。
+// 每对分量按位置旋转。复用 load/store，sin/cos/pow 走 preamble 软件标量接口。
 
 void cutile_{{op}}_kernel(const float *x, float *y, int N, int pos) {
     for (int i = 0; i < N / 2; ++i) {

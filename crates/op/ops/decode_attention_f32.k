@@ -4,7 +4,7 @@
 //
 // query 行数 Q_ROWS 与历史行数 HIST 解耦；先算历史分数 QK^T/sqrt(d)，行内最大值交 @reduce
 // 数组归约，再走数值稳定 softmax；D 维内积交 @dot 原语；softmax 的 exp 走 preamble 软件
-// 向量接口，sqrtf 来自数学库。
+// 向量接口，sqrt 走 preamble 软件标量接口。
 
 void cutile_{{op}}_kernel(const float *q, const float *k, const float *v, float *y, int Q_ROWS, int HIST, int D) {
     const float scale = _cutile_sqrt_f32((float)D);

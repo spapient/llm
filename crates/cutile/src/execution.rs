@@ -4,9 +4,11 @@
 //! 算子"；本模块用调用方给的真实数据，回答"这份数据算出来的数对不对"。两者共用同一条
 //! `pipeline`，因此不存在第二套执行路径。
 
+use crate::atom::Prim;
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::cap::Path;
+use crate::decl::Skeleton;
 use crate::dirs::Dirs;
 use crate::emit::Fragment;
 use crate::pipeline::{Prepared, Run};
@@ -67,6 +69,75 @@ pub fn execute(
     let profile = catalogue.resolve(device)?;
     let run = established(op, profile, dirs)?;
     one(&run, profile, dirs, sample)
+}
+
+/// 生产态 Metal 网格内核源：把一条逐点算子走完整条流水线（见证建立证据 → 协商 → prepare → 网格
+/// 包装），返回可交给 `engine::metal::MetalExecutor::register` 进程内编译的 MSL。
+///
+/// 与 [`execute`] 的分工：`execute` 在 C 宿主车道编译执行并当场对拍；本函数只产出生产态的 Metal
+/// 网格内核源，执行与对拍发生在调用方（L7 组合根把这段 MSL 注入设备后端）。因此本函数不做对拍，
+/// 只保证「证据存在 → 协商成立 → 拼接出合法 MSL」。
+///
+/// 只对逐点族成立（add/mul/scale/silu/gelu/residual_add）：缓冲步长 1、唯一标量是长度 N。
+/// gemv/gemm/reduce/embed/rmsnorm 需各自的 lowering，不属于本函数的成立范围。
+///
+/// # Errors
+///
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败、形状非法或签名不是逐点形时返回说明。
+pub fn metal_grid_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let op = catalogue
+        .op(op_name)
+        .ok_or_else(|| Error::new(Code::Missing, format!("没有算子 `{op_name}`")))?;
+    let profile = catalogue
+        .profile("metal")
+        .ok_or_else(|| Error::new(Code::Missing, "没有 `metal` 档案"))?;
+    let evidence = witness::establish(profile, dirs);
+    let proof = evidence.proof(profile);
+    if let Some(error) = evidence.failure {
+        return Err(error.with("Metal 设备缺执行证据，不在未验证的后端上生成生产内核"));
+    }
+    let run = Run::new(op, profile, proof)?;
+    let path = run
+        .negotiate()
+        .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
+    let prepared = run.prepare(&path, dirs, m, n)?;
+    match op.skeleton {
+        Skeleton::Reduce => {
+            let sample = (run.model.sample)(m, n);
+            crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
+        }
+        Skeleton::Elementwise => {
+            // 带归约/两趟的 elementwise（如 rmsnorm 的 `@dot`）走串行内核：正文里的归约已沿轴
+            // 遍历，网格按元素拆只会让每线程各算一整遍；纯逐点才走「一元素一线程」的网格。
+            let reduces = op
+                .needs
+                .iter()
+                .any(|need| matches!(need.prim, Prim::Reduce | Prim::Dot));
+            if reduces {
+                let sample = (run.model.sample)(m, n);
+                return crate::harness::metal_serial_kernel(
+                    &prepared.source.text,
+                    &op.signature,
+                    &sample,
+                );
+            }
+            crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
+        }
+        Skeleton::Gemm | Skeleton::Attention | Skeleton::Scan => Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "`{}` 的 `{:?}` 骨架 Metal lowering 尚未建立",
+                op.name, op.skeleton
+            ),
+        )
+        .with("cutile::execution::metal_grid_program")),
+    }
 }
 
 /// 本机只编译 C，且证据先于执行：没有执行证据的后端算出来的数不是结果，只是现象。

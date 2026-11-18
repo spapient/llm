@@ -123,3 +123,84 @@ fn generated_device_program_braces_are_balanced() {
         );
     }
 }
+
+/// 生产态 Metal 网格内核：把一条真实逐点算子（silu_f32）走完整条流水线（见证 → 协商 → prepare →
+/// 网格包装），产出 `kernel_main`，再通过 `xcrun metal` 编译，证明「模板 → 拼接正文 → 网格包装」
+/// 产出的是合法 Metal（不是只有空体占位的结构断言）。走公开入口 [`execution::metal_grid_program`]，
+/// 即 L7 组合根注入设备后端时用的那条链路。
+#[test]
+fn production_grid_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-grid"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，生产态内核编译用例未运行");
+        return;
+    }
+    let (m, n) = op::model("silu_f32").expect("silu_f32 语义表").shape;
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "silu_f32", m, n)
+        .expect("生产态网格内核应能生成");
+    assert!(msl.contains("kernel_main"), "{msl}");
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-grid-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("生产态 MSL 应能通过 xcrun metal 编译");
+}
+
+/// 生产态归约网格内核：`reduce_sum_f32` 走整条流水线后收敛成单线程 `kernel_main`（无
+/// `thread_position_in_grid`，缓冲原样透传、标量取样本实际值），再通过 `xcrun metal` 编译。
+#[test]
+fn production_reduce_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-reduce"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，归约内核编译用例未运行");
+        return;
+    }
+    let (m, n) = op::model("reduce_sum_f32")
+        .expect("reduce_sum_f32 语义表")
+        .shape;
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "reduce_sum_f32", m, n)
+        .expect("归约网格内核应能生成");
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(
+        !msl.contains("thread_position_in_grid"),
+        "单线程归约不应有线程下标: {msl}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-reduce-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("归约 MSL 应能通过 xcrun metal 编译");
+}
+
+/// 生产态两趟内核：`rmsnorm_f32`（带 `@dot` 归约的逐元素骨架）走串行 lowering——单线程
+/// `kernel_main`、无 `thread_position_in_grid`，再通过 `xcrun metal` 编译证明合法。
+#[test]
+fn production_rmsnorm_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-rmsnorm"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，两趟内核编译用例未运行");
+        return;
+    }
+    let (m, n) = op::model("rmsnorm_f32").expect("rmsnorm_f32 语义表").shape;
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "rmsnorm_f32", m, n)
+        .expect("两趟内核应能生成");
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(
+        !msl.contains("thread_position_in_grid"),
+        "单线程两趟不应有线程下标: {msl}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-rmsnorm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("两趟 MSL 应能通过 xcrun metal 编译");
+}

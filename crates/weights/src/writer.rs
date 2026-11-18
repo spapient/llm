@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use diagnostic::{Code, Error, Result};
 
 use crate::Codec;
+use crate::Wire;
 use crate::crc;
 use crate::leb;
 use crate::proof::Digest;
@@ -137,9 +138,15 @@ impl Writer {
             .find(|&rep| self.segs[rep].same_value(segment) && self.segs[rep].data == segment.data)
     }
 
-    /// 内联段存储表示：压缩开启且 rans 帧严格变小时选 `Rans`，否则原样 `Store`。
+    /// 内联段存储表示：压缩开启时先试五轴无损选码，再退 rans 帧，都不更小则原样 `Store`。
     fn pack_inline<'a>(&self, segment: &'a Segment) -> Plan<'a> {
         if self.compress {
+            if let Some(artifact) = axes_frame(segment) {
+                return Plan::Inline {
+                    codec: Codec::Axes,
+                    stored: Cow::Owned(artifact),
+                };
+            }
             let frame = rans::encode(&segment.data);
             if frame.len() < segment.data.len() {
                 return Plan::Inline {
@@ -302,6 +309,27 @@ impl Writer {
         }
         Ok(())
     }
+}
+
+/// 五轴无损选码：仅 f32 二维稠密权重（无量化方案）且 artifact 严格更小时才返回。
+fn axes_frame(segment: &Segment) -> Option<Vec<u8>> {
+    let (m, n) = axes_dims(segment)?;
+    crate::axes::compress(&segment.data, m, n).ok().flatten()
+}
+
+/// 可做五轴选码的形状：f32 二维稠密权重矩阵的 `m×n`，任一维为 0 即不适用。
+fn axes_dims(segment: &Segment) -> Option<(usize, usize)> {
+    if !axes_matrix(segment) {
+        return None;
+    }
+    let m = usize::try_from(segment.shape()[0]).ok()?;
+    let n = usize::try_from(segment.shape()[1]).ok()?;
+    (m != 0 && n != 0).then_some((m, n))
+}
+
+/// 段是否是可做五轴选码的 f32 二维稠密权重。
+fn axes_matrix(segment: &Segment) -> bool {
+    segment.dtype() == Wire::F32 && segment.quant().is_none() && segment.shape().len() == 2
 }
 
 /// 写端布局：内联段带自己的存储帧与段级 CRC；引用段只记代表段下标，存储帧与校验都归代表段。

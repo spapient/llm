@@ -86,6 +86,7 @@ pub mod residual_add_f32;
 pub mod rmsnorm_f32;
 pub mod rope_f32;
 pub mod scale_f32;
+pub mod scan;
 pub mod sch;
 pub mod sig;
 pub mod silu_f32;

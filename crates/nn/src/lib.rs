@@ -52,12 +52,16 @@ mod attention;
 mod attention_block;
 mod axis;
 mod bounds;
+mod decision;
 mod embed;
 mod format;
 mod lm_head;
 mod matmul;
+mod mix;
 mod param_role;
 mod pointwise;
+mod policy;
+mod pulse;
 mod reduce;
 mod stack;
 
@@ -71,6 +75,9 @@ pub use attention_block::AttentionBlock;
 pub use bounds::Bounds;
 
 #[doc(inline)]
+pub use decision::{Calib, HEAD_LAYERS_TOKEN, brier};
+
+#[doc(inline)]
 pub use embed::Embedding;
 
 #[doc(inline)]
@@ -80,6 +87,9 @@ pub use lm_head::LmHead;
 pub use matmul::MatMul;
 
 #[doc(inline)]
+pub use mix::{cont, gate, synthesize};
+
+#[doc(inline)]
 pub use format::WeightFormat;
 
 #[doc(inline)]
@@ -87,6 +97,12 @@ pub use param_role::ParamRole;
 
 #[doc(inline)]
 pub use pointwise::{Add, Gelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax};
+
+#[doc(inline)]
+pub use policy::{N_REF, TAU_SCALE, W, gamma, nu, pi, rms, sparsity, tau};
+
+#[doc(inline)]
+pub use pulse::{Lif, encode_id};
 
 #[doc(inline)]
 pub use reduce::{ReduceMax, ReduceSum};

@@ -68,12 +68,14 @@ static inline float _cutile_max_f32(P a, int n, int stride) {
     for (int i = 0; i < n; ++i) { float x = a[i * stride]; if (x > acc) acc = x; }
     return acc;
 }
-static inline float _cutile_exp_sum_f32(device const float *x, int n, int stride, float max) {
+template <typename X>
+static inline float _cutile_exp_sum_f32(X x, int n, int stride, float max) {
     float acc = 0.0f;
     for (int i = 0; i < n; ++i) acc += _cutile_exp_f32(x[i * stride] - max);
     return acc;
 }
-static inline void _cutile_exp_norm_f32(device float *y, device const float *x, int n, int stride, float max, float sum) {
+template <typename Y, typename X>
+static inline void _cutile_exp_norm_f32(Y y, X x, int n, int stride, float max, float sum) {
     for (int i = 0; i < n; ++i) y[i * stride] = _cutile_exp_f32(x[i * stride] - max) / sum;
 }
 static inline float _cutile_sqrt_f32(float x) { return sqrt(x); }

@@ -101,6 +101,11 @@ pub mod toolchain;
 pub mod verify;
 pub mod witness;
 
+// 生产态 Metal 内核发射（M3-2）：把逐点内核包成网格 `kernel_main`、把归约/两趟内核收敛为单线程
+// `kernel_main`，供 L7 组合根装配进设备后端（`engine::metal::MetalExecutor::register` 编译注入的
+// MSL 就来自这里，不是 cutile 的见证 harness）。
+pub use harness::{metal_grid_kernel, metal_serial_kernel};
+
 mod device;
 mod gate;
 mod harness;
