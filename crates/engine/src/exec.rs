@@ -426,8 +426,8 @@ impl LocalExecutor {
     }
 }
 
-/// 入队提交：把图里每个节点按流入队。Local 与 Cpu 共用同一份口径。
-fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
+/// 入队提交：把图里每个节点按流入队。Local、Cpu 与 Metal 共用同一份口径。
+pub(crate) fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
     for node in graph.nodes() {
         queue.push(Queued {
             stream,
