@@ -4,12 +4,11 @@
 //
 // 两趟：先求平方和（x·x 即 Σx²，交 @dot 原语）得均方根，再归一化乘权重。
 // 复用 load/store，sqrtf 来自数学库。
-#include <math.h>
 
 void cutile_{{op}}_kernel(const float *x, const float *gamma, float *y, int N) {
     float sum_sq = 0.0f;
     @dot(sum_sq, x, x, N);
-    const float rms = sqrtf(sum_sq / (float)N + 1e-6f);
+    const float rms = _cutile_sqrt_f32(sum_sq / (float)N + 1e-6f);
     for (int n = 0; n < N; ++n) {
         const float *xp = 0;
         const float *gp = 0;

@@ -238,3 +238,35 @@ fn cuda_missing_buffer_is_an_internal_error() {
         .expect_err("缺 w 缓冲");
     assert!(error.to_string().contains("漂移"), "{error}");
 }
+
+#[test]
+fn metal_grid_kernel_emits_a_grid_dispatched_main() {
+    let sig = Signature::parse(
+        "scale_f32",
+        "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n",
+    )
+    .expect("签名");
+    let source = "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n";
+    let msl = metal_grid_kernel(source, &sig).expect("逐点签名应可生成");
+    assert!(msl.contains("kernel void kernel_main("), "{msl}");
+    assert!(msl.contains("device float* d_a [[buffer(0)]]"), "{msl}");
+    assert!(msl.contains("device float* d_y [[buffer(1)]]"), "{msl}");
+    assert!(msl.contains("uint n [[thread_position_in_grid]]"), "{msl}");
+    assert!(
+        msl.contains("cutile_scale_f32_kernel(d_a + n, d_y + n, 1)"),
+        "{msl}"
+    );
+    assert!(
+        !msl.contains("cutile_launch"),
+        "生产态入口应是 kernel_main，不是单线程见证：{msl}"
+    );
+}
+
+#[test]
+fn metal_grid_kernel_rejects_a_non_pointwise_signature() {
+    // 三标量签名（gemv 形）：行跨步与分组标量不能套「每线程一个元素」的逐点 lowering。
+    let source = "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
+         float *y, int M, int N, int gsz) {}\n";
+    let error = metal_grid_kernel(source, &signature()).expect_err("三标量签名应被拒绝");
+    assert!(error.to_string().contains("不是逐点"), "{error}");
+}

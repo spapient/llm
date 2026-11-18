@@ -3,10 +3,9 @@
 // 布局契约（由声明层校验）：q={{q}} k={{k}} v={{v}} y={{y}}
 //
 // 维护 running max、归一化和与累加向量；新最大值出现时把旧账按比例缩回。不落地历史分数矩阵。
-#include <math.h>
 
 void cutile_{{op}}_kernel(const float *q, const float *k, const float *v, float *y, int Q_ROWS, int HIST, int D) {
-    const float scale = sqrtf((float)D);
+    const float scale = _cutile_sqrt_f32((float)D);
     for (int i = 0; i < Q_ROWS; ++i) {
         float row_max = -3.402823466e38f;
         float prob_sum = 0.0f;

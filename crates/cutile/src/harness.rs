@@ -404,6 +404,72 @@ pub fn metal_harness(
     Ok((msl, metal_driver(signature, sample, output)?))
 }
 
+/// 生产态 Metal 计算内核：把逐点（pointwise）串行内核包成按网格派发的 `kernel_main`。
+///
+/// 与 [`metal_harness`] 的单线程见证（入口 `cutile_launch`、`if (tid != 0) return`）不同，这里每个
+/// 线程处理一个元素：网格索引 `n` 落到每个缓冲的 `+ n` 偏移、唯一的长度标量传 `1`。因此**只对
+/// 逐点族成立**——所有缓冲按元素步长 1 索引、唯一标量是长度 `N`（`add` / `mul` / `scale` / `silu` /
+/// `gelu` / `residual_add`）。gemv/gemm 的行跨步与分组标量、reduce 的跨元素归约、embed 的行 gather、
+/// rmsnorm 的两趟归一化都要各自的 lowering，不能套这条。
+///
+/// 本函数以「标量恰好一项」为可查的边界：多标量签名（gemv/gemm）在此被拒，而不是静默生成错的内核；
+/// 逐点之外的 `reduce` / `embed` / `rmsnorm` 由装配层按算子骨架路由到各自的 lowering。
+///
+/// # Errors：签名不是逐点形（标量不止长度一项）。
+pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> diagnostic::Result<String> {
+    let scalars = signature
+        .params()
+        .iter()
+        .filter(|param| !param.ctype.is_buffer())
+        .count();
+    if scalars != 1 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "`{}` 不是逐点签名（标量 {} 项）：行跨步/归约 lowering 不在此列",
+                signature.op(),
+                scalars
+            ),
+        )
+        .with("cutile::harness::metal_grid_kernel"));
+    }
+    let call = grid_args(signature.params());
+    let buffers = signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+        .map(|(slot, param)| {
+            format!(
+                "    device {}* d_{} [[buffer({slot})]]",
+                param.ctype.c_name(),
+                param.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    Ok(format!(
+        "{}\n\nkernel void kernel_main(\n{buffers},\n    uint n [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
+        msl_address_space(kernel_source),
+        signature.kernel(),
+    ))
+}
+
+/// 生产态实参：缓冲取 `d_{name} + n`（线程处理的元素）、标量取 `1`（每线程一个元素）。
+fn grid_args(params: &[Param]) -> String {
+    params
+        .iter()
+        .map(|param| {
+            if param.ctype.is_buffer() {
+                format!("d_{} + n", param.name)
+            } else {
+                "1".to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲并原样透传给内核（内核指针已是
 /// `device`，无需 thread 局部拷贝）；标量直接取样本值。槽位序号与驱动侧 `setBuffer:atIndex:` 同源。
 fn metal_launch(

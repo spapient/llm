@@ -76,6 +76,10 @@ static inline float _cutile_exp_sum_f32(device const float *x, int n, int stride
 static inline void _cutile_exp_norm_f32(device float *y, device const float *x, int n, int stride, float max, float sum) {
     for (int i = 0; i < n; ++i) y[i * stride] = _cutile_exp_f32(x[i * stride] - max) / sum;
 }
+static inline float _cutile_sqrt_f32(float x) { return sqrt(x); }
+static inline float _cutile_sin_f32(float x) { return sin(x); }
+static inline float _cutile_cos_f32(float x) { return cos(x); }
+static inline float _cutile_pow_f32(float x, float y) { return pow(x, y); }
 """
 
 [[provides]]
