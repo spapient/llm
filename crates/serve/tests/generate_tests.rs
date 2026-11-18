@@ -155,3 +155,69 @@ fn nucleus_keeps_the_probability_prefix() {
     let wide = super::nucleus(&scaled, candidates, 0.9);
     assert_eq!(wide, [0, 1]);
 }
+
+/// 同种子、同 logits 序列逐位可复现：两个独立实例跑相同步数得到相同 token 序列。
+#[test]
+fn same_seed_reproduces_the_same_sequence() {
+    let logits = [1.0f32, 0.0, -2.0, 0.5];
+    let mut left = Multinomial::new(SamplingParams::new(), 42);
+    let mut right = Multinomial::new(SamplingParams::new(), 42);
+    for _ in 0..16 {
+        assert_eq!(
+            left.sample(&logits).expect("可采"),
+            right.sample(&logits).expect("可采")
+        );
+    }
+}
+
+/// 头号 logit 远高于其余候选时，采样几乎总是落到它身上（softmax 概率压倒性）。
+#[test]
+fn a_dominant_logit_is_picked_nearly_always() {
+    let logits = [12.0f32, 0.0, -12.0];
+    let mut sampler = Multinomial::new(SamplingParams::new(), 7);
+    for _ in 0..10 {
+        assert_eq!(sampler.sample(&logits).expect("可采"), Some(0));
+    }
+}
+
+/// top-k=1 只保留头名候选，随机抽取不再改选中对象：与确定性 argmax 同结果。
+#[test]
+fn top_k_one_keeps_only_the_argmax() {
+    let logits = [1.0f32, 3.0, 2.0];
+    let mut sampler = Multinomial::new(SamplingParams::new().with_top_k(1), 1);
+    for _ in 0..5 {
+        assert_eq!(sampler.sample(&logits).expect("可采"), Some(1));
+    }
+}
+
+/// 空 logits 与非有限值在多项式采样下同样预检拦截，不猜 token。
+#[test]
+fn multinomial_rejects_unusable_logits() {
+    let mut sampler = Multinomial::new(SamplingParams::new(), 1);
+    assert_eq!(sampler.sample(&[]).unwrap_err().code(), Code::Invalid);
+    assert_eq!(
+        sampler.sample(&[1.0, f32::NAN]).unwrap_err().code(),
+        Code::Invalid
+    );
+}
+
+/// 温度档位的参数校验与经典采样共用同一份档案：坏温度在采样时拦截。
+#[test]
+fn multinomial_rejects_bad_temperature() {
+    let mut sampler = Multinomial::new(SamplingParams::new().with_temperature(0.0), 1);
+    assert_eq!(
+        sampler.sample(&[1.0, 2.0]).unwrap_err().code(),
+        Code::Invalid
+    );
+}
+
+/// 每一步抽到的 token 编号都落在词表范围内，不会越界返回。
+#[test]
+fn every_picked_token_is_within_the_vocabulary() {
+    let logits = [0.2f32, -1.1, 0.9, -0.4, 0.0];
+    let mut sampler = Multinomial::new(SamplingParams::new(), 99);
+    for _ in 0..20 {
+        let token = sampler.sample(&logits).expect("可采").expect("有候选");
+        assert!(token < logits.len() as u32);
+    }
+}
