@@ -33,18 +33,21 @@ pub fn project_shape(s: usize, d: usize) -> Result<ShapeContext, Error> {
     ShapeContext::new([('s', s), ('d', d)])
 }
 
+/// 取形状轴；缺失时按模块前缀与轴名报错，避免各调用点各写一遍分支。
+fn axis(shape: &ShapeContext, what: &str, label: char) -> Result<usize, Error> {
+    shape
+        .get(label)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("{what} 形状缺轴 `{label}`")))
+}
+
 /// 标量代价：分数矩阵 `s²` 个点（每个 d 维内积）+ softmax + 对 `V` 的加权。
 ///
 /// # Errors
 ///
 /// 缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let s = shape
-        .get('s')
-        .ok_or_else(|| Error::new(Code::Invalid, "attention 形状缺轴 `s`"))?;
-    let d = shape
-        .get('d')
-        .ok_or_else(|| Error::new(Code::Invalid, "attention 形状缺轴 `d`"))?;
+    let s = axis(shape, "attention", 's')?;
+    let d = axis(shape, "attention", 'd')?;
     Ok(Cost {
         flops: (s as f64) * (s as f64) * ((d as f64) * 2.0 + 3.0),
         read: (s as u64) * (d as u64) * 4 * 3,
@@ -52,40 +55,32 @@ pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
     })
 }
 
+/// 确定性 q/k/v/y 缓冲：`q` 与 `y` 取 `q_len`，`k`/`v` 取 `kv_len`。
+fn sample_buffers(q_len: usize, kv_len: usize) -> Vec<Buffer> {
+    let det = |base: f32, step: f32, len: usize| -> Vec<f32> {
+        (0..len).map(|index| base + index as f32 * step).collect()
+    };
+    let buffer = |name: &'static str, values: Vec<f32>| Buffer {
+        name,
+        values: Values::F32(values),
+    };
+    vec![
+        buffer("q", det(-0.5, 0.13, q_len)),
+        buffer("k", det(0.4, -0.09, kv_len)),
+        buffer("v", det(-0.2, 0.11, kv_len)),
+        buffer("y", vec![0.0; q_len]),
+    ]
+}
+
 /// 确定性样本：`q`/`k`/`v` 三个输入与输出 `o`，均为 `s*d`。
 pub fn sample(s: usize, d: usize) -> Sample {
-    let det = |base: f32, step: f32| move |index: usize| base + (index as f32) * step;
-    let q = det(-0.5, 0.13);
-    let k = det(0.4, -0.09);
-    let v = det(-0.2, 0.11);
     let len = s * d;
     Sample {
         m: s,
         n: d,
         scalars: vec![("S", s as i64), ("D", d as i64)],
-        buffers: vec![
-            Buffer {
-                name: "q",
-                values: Values::F32((0..len).map(q).collect()),
-            },
-            Buffer {
-                name: "k",
-                values: Values::F32((0..len).map(k).collect()),
-            },
-            Buffer {
-                name: "v",
-                values: Values::F32((0..len).map(v).collect()),
-            },
-            Buffer {
-                name: "y",
-                values: Values::F32(vec![0.0; len]),
-            },
-        ],
+        buffers: sample_buffers(len, len),
     }
-}
-
-fn sqrt_d(sample: &Sample) -> f32 {
-    (sample.n as f32).sqrt()
 }
 
 /// 三个输入缓冲：朴素与 flash 路径读同一份 `q/k/v`，缺失时的文案因此只写一次。
@@ -124,18 +119,23 @@ struct Rows<'a> {
 }
 
 impl<'a> Rows<'a> {
+    /// 以操作数与 K/V 列几何建行机器：`scale = √d`。
+    fn new(q: &'a [f32], k: &'a [f32], v: &'a [f32], cols: usize, d: usize) -> Self {
+        Self {
+            q,
+            k,
+            v,
+            cols,
+            d,
+            scale: (d as f32).sqrt(),
+        }
+    }
+
     /// 从样本取三个操作数。
     fn of(sample: &'a Sample) -> diagnostic::Result<Self> {
         let (q, k, v) = qkv(sample)?;
         check_width(sample.n)?;
-        Ok(Self {
-            q,
-            k,
-            v,
-            cols: sample.m,
-            d: sample.n,
-            scale: sqrt_d(sample),
-        })
+        Ok(Self::new(q, k, v, sample.m, sample.n))
     }
 
     /// 朴素路径的一行：分数 p[j] = dot(q[row], k[j]) / √d → 数值稳定 softmax → 对 `V` 加权。
@@ -305,14 +305,7 @@ fn decode(
     mode: Mode,
 ) -> diagnostic::Result<()> {
     check_decode_len(q, k, v, out, q_rows, hist, d)?;
-    let rows = Rows {
-        q,
-        k,
-        v,
-        cols: hist,
-        d,
-        scale: (d as f32).sqrt(),
-    };
+    let rows = Rows::new(q, k, v, hist, d);
     run_rows(&rows, q_rows, out, mode);
     Ok(())
 }
@@ -475,21 +468,6 @@ fn headed_batch(
     }
     let q_seq = heads * q_rows * d;
     let kv_seq = heads * hist * d;
-    check_batch_pairs(q, k, v, out, q_seq, kv_seq, batch)
-}
-
-/// 批块长度守卫：`q`/`out` 是 `batch·q_seq`，`k`/`v` 是 `batch·kv_seq`；宽度与查询/历史
-/// 行数守卫交给逐段调用的 `decode_heads`。
-#[allow(clippy::too_many_arguments)]
-fn check_batch_pairs(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    out: &[f32],
-    q_seq: usize,
-    kv_seq: usize,
-    batch: usize,
-) -> diagnostic::Result<()> {
     check_pair(q, out, batch * q_seq, "q/out")?;
     check_pair(k, v, batch * kv_seq, "k/v")?;
     Ok(())
@@ -773,20 +751,9 @@ mod tests {
         );
     }
 
-    /// 头优先块布局：第 `h` 头的 `q`/`out` 是一段连续 `rows·d`，`k`/`v` 是一段连续 `hist·d`。
-    fn det_headed(heads: usize, rows: usize, d: usize, base: f32, step: f32) -> Vec<f32> {
-        (0..heads * rows * d)
-            .map(|index| base + index as f32 * step)
-            .collect()
-    }
-
     /// 无头 decode 的确定性 q/k/v：`q` 取 `q_rows` 行、`k`/`v` 各取 `hist` 行，同一条线性序列。
     fn decode_qkv(q_rows: usize, hist: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-        (
-            det_rows(q_rows, d, -0.5, 0.13),
-            det_rows(hist, d, 0.4, -0.09),
-            det_rows(hist, d, -0.2, 0.11),
-        )
+        headed_qkv(1, q_rows, hist, d)
     }
 
     /// 多头 decode 的确定性 q/k/v：头优先块布局。
@@ -797,9 +764,9 @@ mod tests {
         d: usize,
     ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         (
-            det_headed(heads, q_rows, d, -0.5, 0.13),
-            det_headed(heads, hist, d, 0.4, -0.09),
-            det_headed(heads, hist, d, -0.2, 0.11),
+            det_rows(heads * q_rows, d, -0.5, 0.13),
+            det_rows(heads * hist, d, 0.4, -0.09),
+            det_rows(heads * hist, d, -0.2, 0.11),
         )
     }
 
@@ -821,20 +788,22 @@ mod tests {
         }
     }
 
+    /// 常数 V 段构造：第 `seq` 段全取 `1 + seq`，供段间隔离与常数输出核对。
+    fn constant_v(spans: impl Iterator<Item = usize>) -> Vec<f32> {
+        spans
+            .enumerate()
+            .flat_map(|(seq, len)| std::iter::repeat_n(1.0 + seq as f32, len))
+            .collect()
+    }
+
     #[test]
     fn multi_head_decode_keeps_each_head_independent_and_plain_matches_flash() {
         let (q_rows, hist, heads, d) = (1, 4, 2, 3);
-        let q = det_headed(heads, q_rows, d, -0.5, 0.13);
-        let k = det_headed(heads, hist, d, 0.4, -0.09);
+        let q = det_rows(heads * q_rows, d, -0.5, 0.13);
+        let k = det_rows(heads * hist, d, 0.4, -0.09);
         // V 按头取常数：头 0 全 1、头 1 全 2。softmax 权重和为 1，常数 V 下头内输出恒等于该常数，
         // 借此核对两头结果互不串段——头 0 段不应出现 2，头 1 段不应出现 1。
-        let mut v = vec![0.0; heads * hist * d];
-        for head in 0..heads {
-            let constant = 1.0 + head as f32;
-            for value in v[head * hist * d..(head + 1) * hist * d].iter_mut() {
-                *value = constant;
-            }
-        }
+        let v = constant_v(std::iter::repeat_n(hist * d, heads));
 
         let mut plain = vec![0.0; heads * q_rows * d];
         decode_forward_heads(&q, &k, &v, &mut plain, q_rows, hist, d).expect("朴素多头 decode");
@@ -887,18 +856,12 @@ mod tests {
         let mut q = Vec::new();
         let mut k = Vec::new();
         for seq in 0..batch {
-            q.extend(det_headed(heads, q_rows, d, -0.5 + seq as f32, 0.13));
-            k.extend(det_headed(heads, hist, d, 0.4 + seq as f32, -0.09));
+            q.extend(det_rows(heads * q_rows, d, -0.5 + seq as f32, 0.13));
+            k.extend(det_rows(heads * hist, d, 0.4 + seq as f32, -0.09));
         }
         // V 按序列段取常数：段 0 全 1、段 1 全 2。softmax 权重和为 1，常数 V 下段输出恒等于
         // 该段常数，借此核对两条序列结果互不串段。
-        let mut v = vec![0.0; batch * kv_seq];
-        for seq in 0..batch {
-            let constant = 1.0 + seq as f32;
-            for value in v[seq * kv_seq..(seq + 1) * kv_seq].iter_mut() {
-                *value = constant;
-            }
-        }
+        let v = constant_v(std::iter::repeat_n(kv_seq, batch));
 
         let mut plain = vec![0.0; batch * q_seq];
         decode_forward_batch(&q, &k, &v, &mut plain, q_rows, hist, d, heads, batch)
@@ -960,16 +923,12 @@ mod tests {
         let mut q = Vec::new();
         let mut k = Vec::new();
         for (seq, &h) in hist.iter().enumerate() {
-            q.extend(det_headed(heads, q_rows, d, -0.5 + seq as f32, 0.13));
-            k.extend(det_headed(heads, h, d, 0.4 + seq as f32, -0.09));
+            q.extend(det_rows(heads * q_rows, d, -0.5 + seq as f32, 0.13));
+            k.extend(det_rows(heads * h, d, 0.4 + seq as f32, -0.09));
         }
         // V 按序列段取常数：段 0 全 1、段 1 全 2。softmax 权重和为 1，常数 V 下段输出恒等于
         // 该段常数，借此核对两条不同历史长度的序列结果互不串段。
-        let mut v = Vec::new();
-        for (seq, &h) in hist.iter().enumerate() {
-            let constant = 1.0 + seq as f32;
-            v.extend(std::iter::repeat_n(constant, heads * h * d));
-        }
+        let v = constant_v(hist.iter().map(|&h| heads * h * d));
 
         let mut plain = vec![0.0; batch * q_seq];
         decode_forward_batch_var(&q, &k, &v, &mut plain, q_rows, &hist, d, heads)
@@ -1026,7 +985,7 @@ pub mod decode_attention {
     //! `hist·d`，标量为 `Q_ROWS` / `HIST` / `D`。两套参考都复用 [`crate::attention`] 里已经
     //! 校验过的 decode 算术，本模块只补形状上下文、确定性样本与代价。
 
-    use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+    use crate::model::{AxisRole, AxisSpec, Cost, Sample, ShapeContext};
     use diagnostic::{Code, Error};
 
     /// 样本固定历史长度：真实 `hist` 由执行侧按已缓存页数推出，语义表样本用一份确定长度。
@@ -1053,25 +1012,15 @@ pub mod decode_attention {
         ShapeContext::new([('q', q_rows), ('d', d), ('h', HIST)])
     }
 
-    /// 取形状轴；缺失时按轴名报错，避免三个调用点各写一遍分支。
-    fn axis(shape: &ShapeContext, label: char) -> Result<usize, Error> {
-        shape.get(label).ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("decode attention 形状缺轴 `{label}`"),
-            )
-        })
-    }
-
     /// 标量代价：每行 query 扫 `hist` 条历史（每个 d 维内积）+ softmax + 对 `V` 加权。
     ///
     /// # Errors
     ///
     /// 缺轴时返回说明。
     pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        let q = axis(shape, 'q')?;
-        let d = axis(shape, 'd')?;
-        let h = axis(shape, 'h')?;
+        let q = super::axis(shape, "decode attention", 'q')?;
+        let d = super::axis(shape, "decode attention", 'd')?;
+        let h = super::axis(shape, "decode attention", 'h')?;
         Ok(Cost {
             flops: (q as f64) * (h as f64) * ((d as f64) * 2.0 + 3.0),
             read: (q as u64) * (d as u64) * 4 + (h as u64) * (d as u64) * 4 * 2,
@@ -1082,12 +1031,6 @@ pub mod decode_attention {
     /// 确定性样本：`q` 与输出 `y` 为 `q_rows·d`，`k`/`v` 为 `hist·d`。
     pub fn sample(q_rows: usize, d: usize) -> Sample {
         let hist = HIST;
-        let det = |base: f32, step: f32| move |index: usize| base + (index as f32) * step;
-        let q = det(-0.5, 0.13);
-        let k = det(0.4, -0.09);
-        let v = det(-0.2, 0.11);
-        let q_len = q_rows * d;
-        let kv_len = hist * d;
         Sample {
             m: q_rows,
             n: d,
@@ -1096,24 +1039,7 @@ pub mod decode_attention {
                 ("HIST", hist as i64),
                 ("D", d as i64),
             ],
-            buffers: vec![
-                Buffer {
-                    name: "q",
-                    values: Values::F32((0..q_len).map(q).collect()),
-                },
-                Buffer {
-                    name: "k",
-                    values: Values::F32((0..kv_len).map(k).collect()),
-                },
-                Buffer {
-                    name: "v",
-                    values: Values::F32((0..kv_len).map(v).collect()),
-                },
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; q_len]),
-                },
-            ],
+            buffers: super::sample_buffers(q_rows * d, hist * d),
         }
     }
 
@@ -1133,15 +1059,10 @@ pub mod decode_attention {
         Ok((q_rows, hist, d))
     }
 
-    /// 样本三元 `q/k/v` 切片；两条参考实现共用。
-    fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
-        Ok((sample.f32("q")?, sample.f32("k")?, sample.f32("v")?))
-    }
-
     /// 朴素参考：query 对历史 K/V 做一遍数值稳定 softmax，再对 `V` 加权。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let (q_rows, hist, d) = geometry(sample)?;
-        let (q, k, v) = qkv(sample)?;
+        let (q, k, v) = super::qkv(sample)?;
         let mut out = vec![0.0; q_rows * d];
         crate::attention::decode_forward(q, k, v, &mut out, q_rows, hist, d)?;
         Ok(out)
@@ -1150,7 +1071,7 @@ pub mod decode_attention {
     /// Flash 参考：online softmax 单遍扫历史 K/V；flash 别名模块的参考入口指向这里。
     pub fn decode_flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let (q_rows, hist, d) = geometry(sample)?;
-        let (q, k, v) = qkv(sample)?;
+        let (q, k, v) = super::qkv(sample)?;
         let mut out = vec![0.0; q_rows * d];
         crate::attention::decode_flash_forward(q, k, v, &mut out, q_rows, hist, d)?;
         Ok(out)
