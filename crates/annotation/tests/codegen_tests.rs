@@ -185,7 +185,7 @@ fn the_model_renderer_binds_the_constant_to_the_annotated_alias() {
             && code.contains("Some(super::MODEL.dtype)"),
         "注解的 dtype 必须与 `.k` 的可写输出交叉核对：{code}"
     );
-    assert!(code.contains("mod __model_check {"), "{code}");
+    assert!(code.contains("mod __model_check_model {"), "{code}");
     assert!(
         code.contains(r#"::llm_op::model::DType::parse_name("f32")"#),
         "注解里的 `dtype` 必须解析成 `MODEL` 用的那个变体：{code}"

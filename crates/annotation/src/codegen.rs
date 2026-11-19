@@ -329,12 +329,15 @@ fn render_grain_asserts(code: &mut String, ty: &str, m: usize) {
     code.push_str("};\n\n");
 }
 
-/// `#[cfg(test)] mod __model_check`：把注解、注册表与 `.k` 签名三份事实对齐。
+/// `#[cfg(test)] mod __model_check_*`：把注解、注册表与 `.k` 签名三份事实对齐。模块名带
+/// `const` 名，多算子同模块时两个检查各占一个测试模块，不撞名。
 fn render_model_check(code: &mut String, declaration: &ModelDecl) {
     let name = literal(&declaration.name);
     let dtype_name = literal(&declaration.dtype);
     let model = &declaration.const_name;
-    code.push_str("#[cfg(test)]\nmod __model_check {\n");
+    let check = format!("__model_check_{}", declaration.const_name.to_ascii_lowercase());
+    code.push_str("#[cfg(test)]\n");
+    code.push_str(&format!("mod {check} {{\n"));
     code.push_str("    #[test]\n");
     code.push_str("    fn the_annotation_agrees_with_the_registered_kernel() {\n");
     code.push_str(&format!(
