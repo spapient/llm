@@ -7,6 +7,17 @@
 
 ### Added
 
+- **`#[model]` 支持 `const = "NAME"` 命名语义常量，flash 两条注意力算子不再各占一个包装模块**。
+  `annotation` 的 `#[model]` 此前每个模块硬编码生成一个 `pub const MODEL`，逼得
+  `flash_attention_f32` / `decode_flash_attention_f32` 各起一个只装"标记类型 + 别名"的包装模块
+  （`flash_attention.rs` / `decode_flash_attention.rs`），只为各放一个 `MODEL`。现在 `MODEL` 键表加
+  第 5 个可选键 `const = "NAME"`（缺省仍 `MODEL`），生成器按名出 `pub const NAME` 与同名独立的
+  `__model_check_<name>` 测试模块；flash 两个 `#[model]` 于是并入 `attention.rs` / `decode_attention.rs`
+  （`FLASH_MODEL` / `DECODE_FLASH_MODEL`），删掉两个包装模块。`op` 的 `registry!` 第四列从"语义模块"
+  改成"`MODEL` 常量完整路径"，32 条注册仍是一行一算子，flash 两条写 `attention::FLASH_MODEL` /
+  `decode_attention::DECODE_FLASH_MODEL`。净删 2 个文件；`cargo test -p llm-op`（287 + 2 doctest）与
+  `llm-annotation`（35 + 2）全绿，clippy `-D warnings` 与 `fmt --check` 通过。
+
 - **`engine` 从"页号簿记 + 记账执行器"推进到"页里真的有 KV、提交真的只入队"**。
   `kv` 新增 `Pager`：页池加上它背后的 `f32` 缓冲（一页 = `page_size` 行 × `width` 个元素，整池构造时一次分配，
   借出与归还都不再碰分配器），`row` / `row_mut` / `write` 只经 `Slot` 寻址并先验"页还活着、偏移在页内"，
