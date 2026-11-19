@@ -82,6 +82,7 @@ pub use ::op::decl;
 pub use ::op::{layout, sch};
 
 pub mod ast;
+pub mod backend;
 pub mod bench;
 pub mod build;
 pub mod builtin;

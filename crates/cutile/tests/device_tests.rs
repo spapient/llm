@@ -24,7 +24,7 @@ fn golden_capture() {
         if selected.is_empty() {
             continue;
         }
-        let text = (front.program)(&profile, &dirs, &selected, Scope::Device).expect("可生成");
+        let text = front.program(&profile, &dirs, &selected, Scope::Device).expect("可生成");
         assert!(!text.is_empty(), "{vendor} 生成文本不能为空");
         if capture {
             std::fs::create_dir_all(&dir).expect("目录");
@@ -34,7 +34,7 @@ fn golden_capture() {
     let metal = catalogue.profile("metal").cloned().expect("档案");
     let selected = crate::witness::declared_witnesses(&metal).expect("见证");
     let c_front = spec(Emit::C).expect("c 前端");
-    let text = (c_front.program)(&metal, &dirs, &selected, Scope::Host).expect("可生成");
+    let text = c_front.program(&metal, &dirs, &selected, Scope::Host).expect("可生成");
     assert!(!text.is_empty(), "metal 档案的 host 自检文本不能为空");
     if capture {
         std::fs::create_dir_all(&dir).expect("目录");
@@ -53,23 +53,22 @@ fn scratch_directories_do_not_collide() {
 
 /// 执行前端登记表：每个 `emit` 恰好一行，且表不许被清空。
 ///
-/// 旧的「trait 实现 + 语言注解 + 装配表」三位一体契约已由描述符表取代：语言身份就是
-/// [`Spec::emit`]（`Emit` 闭集保证取值合法），三指针的接线由类型系统保证。这里只守两类
-/// 文本/表结构事故：同一语言重复登记（`spec(..)` 命中第一行，后一行静默失效），以及表被
-/// 清空/拆坏后测试误判为"没有违规"。
+/// 语言身份由 [`Backend::emit`]（`Emit` 闭集保证取值合法）给出，程序生成 / 执行回读的接线由
+/// trait 实现保证。这里只守两类文本/表结构事故：同一语言重复登记（`spec(..)` 命中第一行，后一行
+/// 静默失效），以及表被清空/拆坏后测试误判为"没有违规"。
 #[test]
 fn specs_register_each_execution_frontend_once() {
     let mut seen = std::collections::BTreeSet::new();
     for entry in SPECS {
         assert!(
-            seen.insert(entry.emit),
+            seen.insert(entry.emit()),
             "执行前端 `{}` 在 SPECS 里重复登记：后一行会被 `spec(..)` 静默忽略",
-            entry.emit.as_str()
+            entry.emit().as_str()
         );
         assert!(
-            spec(entry.emit).is_some(),
+            spec(entry.emit()).is_some(),
             "表内 `{}` 的查找行与登记表分家",
-            entry.emit.as_str()
+            entry.emit().as_str()
         );
     }
     assert!(
@@ -114,7 +113,7 @@ fn generated_device_program_braces_are_balanced() {
             continue;
         };
         let selected = crate::witness::declared_witnesses(&profile).expect("见证");
-        let text = (front.program)(&profile, &dirs, &selected, Scope::Device).expect("可生成");
+        let text = front.program(&profile, &dirs, &selected, Scope::Device).expect("可生成");
         let open = text.chars().filter(|c| *c == '{').count();
         let close = text.chars().filter(|c| *c == '}').count();
         assert_eq!(

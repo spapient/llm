@@ -301,16 +301,16 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// 一台设备的共享执行流程：生成程序 → 跑 → 逐条对拍；差异全在 [`crate::device::Spec`] 的两行指针里。
+/// 一台设备的共享执行流程：生成程序 → 跑 → 逐条对拍；差异全在 [`crate::backend::Backend`] 的实现里。
 pub(crate) fn execute(
-    spec: &crate::device::Spec,
+    backend: &dyn crate::backend::Backend,
     profile: &Profile,
     dirs: &Dirs,
     selected: &[Selected<'_>],
     scope: Scope,
 ) -> diagnostic::Result<Vec<WitnessRun>> {
-    let program = (spec.program)(profile, dirs, selected, scope)?;
-    let (counts, bits) = (spec.run)(profile, dirs, &program, selected.len(), scope)?;
+    let program = backend.program(profile, dirs, selected, scope)?;
+    let (counts, bits) = backend.run(profile, dirs, &program, selected.len(), scope)?;
     compare(selected, scope, &counts, &bits)
 }
 
@@ -329,7 +329,7 @@ pub fn run_all(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<Witness
     let spec = device::spec(profile.meta.emit).ok_or_else(|| {
         let known: Vec<String> = device::specs()
             .iter()
-            .map(|entry| entry.emit.to_string())
+            .map(|entry| entry.emit().to_string())
             .collect();
         Error::new(
             Code::Unsupported,
@@ -348,7 +348,7 @@ pub fn run_all(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<Witness
 /// 这台设备是否就在本机：`c` 的设备是 CPU 永远在，`metal` 看工具链；不在表里的 `emit` 没有执行前端，一律当作不在。
 #[must_use]
 pub fn device_available(profile: &Profile) -> bool {
-    device::spec(profile.meta.emit).is_some_and(|spec| (spec.available)(profile))
+    device::spec(profile.meta.emit).is_some_and(|backend| backend.available(profile))
 }
 
 /// 对**设备执行跑不到**的见证做本机自检，范围与 [`run_all`] 互补（设备在本机时由更强的那个范围给结论）。
@@ -364,9 +364,9 @@ pub fn self_check(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<Witn
     if selected.is_empty() {
         return Ok(Vec::new());
     }
-    let c_spec = device::spec(Emit::C)
+    let c_backend = device::spec(Emit::C)
         .ok_or_else(|| Error::new(Code::Internal, "C 自检前端没有登记到设备描述表"))?;
-    execute(c_spec, profile, dirs, &selected, Scope::Host).map_err(|error| {
+    execute(c_backend, profile, dirs, &selected, Scope::Host).map_err(|error| {
         error.with(format!(
             "`{}({})` 的见证自检不成立",
             profile.meta.vendor, profile.meta.id

@@ -9,6 +9,7 @@
 //! [`Emit`] 选表行，不在调用侧再写一套后端代码。
 
 use crate::atom::{Prim, Witness};
+use crate::backend::{Backend, Readback};
 use crate::build;
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
@@ -25,52 +26,110 @@ pub(crate) const C_PARAMS: &str = "float *";
 /// 本次要拼进程序的见证源码：文件名 → 文本。
 pub(crate) type Sources = BTreeMap<String, String>;
 
-/// 一次执行回读出来的东西：每条见证写出的个数 + 按顺序回读的 f32 值。
-pub(crate) type Readback = (Vec<i64>, Vec<f32>);
+/// C / Metal / CUDA 三段编排的后端闭集：加设备就加一个实现，不改任何 `match`。
+/// 具体编排函数仍在本文件各节；对外只经 [`Backend`] trait 分派（`docs/ARCHITECTURE.md` L3 不允许
+/// 厂商特判，这条 trait 缝是 cutile 认识后端的唯一入口）。
+struct CBackend;
+struct MetalBackend;
+struct CudaBackend;
 
-/// 一台设备的执行描述：差异全是表内的函数指针，运行期只多一次“按 emit 找行”，没有枚举匹配、没有虚表。
-pub(crate) struct Spec {
-    /// 这门语言。
-    pub(crate) emit: Emit,
-    /// 设备是否在本机。
-    pub(crate) available: fn(&Profile) -> bool,
-    /// 生成“跑一次全部见证”的程序文本；写出上限定在 ABI 常量 [`MAX_OUT`]。
-    pub(crate) program: fn(&Profile, &Dirs, &[Selected<'_>], Scope) -> Result<String>,
-    /// 让程序跑起来，返回 `(每条写入个数, 按顺序回读的值)`。
-    pub(crate) run: fn(&Profile, &Dirs, &str, usize, Scope) -> Result<Readback>,
+impl Backend for CBackend {
+    fn emit(&self) -> Emit {
+        Emit::C
+    }
+    fn available(&self, profile: &Profile) -> bool {
+        c_available(profile)
+    }
+    fn program(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        selected: &[Selected<'_>],
+        scope: Scope,
+    ) -> Result<String> {
+        c_program(profile, dirs, selected, scope)
+    }
+    fn run(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        program: &str,
+        max: usize,
+        scope: Scope,
+    ) -> Result<Readback> {
+        c_run(profile, dirs, program, max, scope)
+    }
 }
 
-/// 全部设备：**加设备就加一行**，不需要改任何 `match`。
-const SPECS: &[Spec] = &[
-    Spec {
-        emit: Emit::C,
-        available: c_available,
-        program: c_program,
-        run: c_run,
-    },
-    Spec {
-        emit: Emit::Metal,
-        available: metal_available,
-        program: metal_program,
-        run: metal_run,
-    },
-    Spec {
-        emit: Emit::Cuda,
-        available: cuda_available,
-        program: cuda_program,
-        run: cuda_run,
-    },
-];
+impl Backend for MetalBackend {
+    fn emit(&self) -> Emit {
+        Emit::Metal
+    }
+    fn available(&self, profile: &Profile) -> bool {
+        metal_available(profile)
+    }
+    fn program(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        selected: &[Selected<'_>],
+        scope: Scope,
+    ) -> Result<String> {
+        metal_program(profile, dirs, selected, scope)
+    }
+    fn run(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        program: &str,
+        max: usize,
+        scope: Scope,
+    ) -> Result<Readback> {
+        metal_run(profile, dirs, program, max, scope)
+    }
+}
 
-/// 按 `emit` 找设备描述；找不到就是“本机没有这门语言的执行前端”。
-pub(crate) fn spec(emit: Emit) -> Option<&'static Spec> {
-    SPECS.iter().find(|entry| entry.emit == emit)
+impl Backend for CudaBackend {
+    fn emit(&self) -> Emit {
+        Emit::Cuda
+    }
+    fn available(&self, profile: &Profile) -> bool {
+        cuda_available(profile)
+    }
+    fn program(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        selected: &[Selected<'_>],
+        scope: Scope,
+    ) -> Result<String> {
+        cuda_program(profile, dirs, selected, scope)
+    }
+    fn run(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        program: &str,
+        max: usize,
+        scope: Scope,
+    ) -> Result<Readback> {
+        cuda_run(profile, dirs, program, max, scope)
+    }
+}
+
+/// 全部设备：**加设备就加一个实现**，不需要改任何 `match`。
+const SPECS: &[&dyn Backend] = &[&CBackend, &MetalBackend, &CudaBackend];
+
+/// 按 `emit` 找设备后端；找不到就是“本机没有这门语言的执行前端”。
+pub(crate) fn spec(emit: Emit) -> Option<&'static dyn Backend> {
+    SPECS.iter().find(|entry| entry.emit() == emit).copied()
 }
 
 /// 已登记的全部执行语言：错误报告里列出“本机接了哪些”。
-pub(crate) fn specs() -> &'static [Spec] {
+pub(crate) fn specs() -> &'static [&'static dyn Backend] {
     SPECS
 }
+
 
 // ---------------------------------------------------------------------------
 // 共享装载、命名、起进程与回读

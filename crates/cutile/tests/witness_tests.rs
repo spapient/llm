@@ -167,7 +167,7 @@ fn a_plain_c_signature_does_not_survive_the_metal_front_end() {
                    int witness_bad(float *out) { out[0] = 1.0f; return 1; }\n";
     let profile = device("metal");
     let metal = device::spec(Emit::Metal).expect("metal 前端");
-    let error = (metal.run)(&profile, &dirs(), program, 1, Scope::Device)
+    let error = metal.run(&profile, &dirs(), program, 1, Scope::Device)
         .expect_err("MSL 必须要求显式地址空间");
     let text = error.to_string();
     assert!(text.contains("xcrun metal"), "{text}");
