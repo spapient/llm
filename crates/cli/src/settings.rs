@@ -629,12 +629,12 @@ impl Settings {
 /// 配置文件发现顺序里的候选路径（不含显式 `--config` / `CUTILE_CONFIG`）。
 fn discover_files() -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from("cutile.toml")];
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+        candidates.push(PathBuf::from(appdata).join("cutile").join("config.toml"));
+    }
+    #[cfg(not(windows))]
     if let Some(home) = home() {
-        #[cfg(windows)]
-        if let Some(appdata) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
-            candidates.push(PathBuf::from(appdata).join("cutile").join("config.toml"));
-        }
-        #[cfg(not(windows))]
         candidates.push(home.join(".config").join("cutile").join("config.toml"));
     }
     candidates
