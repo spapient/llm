@@ -306,8 +306,8 @@ fn projection_plan(
 }
 
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节 `[out, in/cpb]`
-/// + 标度 `[out, in/group]`。每字节码数读 [`op::quant::Row`] 配置表（`I4.cpb=2`、`I8.cpb=1`），
-/// 与 `op` 的 GEMV/GEMM/反量化同一事实源；分组来自格式声明。
+/// + 标度 `[out, in/group]`。每字节码数读 [`op::quant::Row`] 配置表，与 `op` 的
+/// GEMV/GEMM/反量化同一事实源（`I4.cpb=2`、`I8.cpb=1`）；分组来自格式声明。
 ///
 /// 量化输入宽度必须已被 [`validate_quantized_shape`] 校验为分组的整数倍；这里按精确除法取值，
 /// 不再兜底 `ceil`——声明分组与实际分组漂移的坏形状进不到这一步。
