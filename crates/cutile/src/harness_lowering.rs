@@ -761,7 +761,3 @@ int main(int argc, const char **argv) {{
         out_len = out_len
     )
 }
-
-#[cfg(test)]
-#[path = "../tests/harness_tests.rs"]
-mod tests;

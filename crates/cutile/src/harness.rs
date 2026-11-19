@@ -482,3 +482,7 @@ pub use lowering::{
     metal_chunk_scan, metal_chunk_softmax, metal_grid_kernel, metal_harness,
     metal_loop_kernel,
 };
+
+#[cfg(test)]
+#[path = "../tests/harness_tests.rs"]
+mod tests;
