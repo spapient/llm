@@ -88,6 +88,31 @@ fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
         .collect()
 }
 
+/// 把 f32 切片按 LE 字节序写进执行器缓冲（绑槽 + 落位）。
+fn bind_f32(executor: &mut engine::metal::MetalExecutor, slot: u32, values: &[f32]) {
+    executor
+        .bind_bytes(slot, values.len() * 4)
+        .expect("f32 缓冲");
+    let bytes = executor.buffer_mut(slot).expect("f32 可写").as_mut_bytes();
+    for (index, value) in values.iter().enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
+/// 把 u8 切片写进执行器缓冲（绑槽 + 拷贝）。
+fn bind_u8(executor: &mut engine::metal::MetalExecutor, slot: u32, values: &[u8]) {
+    executor.bind_bytes(slot, values.len()).expect("u8 缓冲");
+    let bytes = executor.buffer_mut(slot).expect("u8 可写").as_mut_bytes();
+    bytes.copy_from_slice(values);
+}
+
+/// 把单个 f32 标量写进执行器缓冲（4 字节）。
+fn bind_scalar(executor: &mut engine::metal::MetalExecutor, slot: u32, value: f32) {
+    executor.bind_bytes(slot, 4).expect("标量缓冲");
+    let bytes = executor.buffer_mut(slot).expect("标量可写").as_mut_bytes();
+    bytes.copy_from_slice(&value.to_le_bytes());
+}
+
 /// 按声明签名把样本缓冲绑进执行器：可写参数绑 `output_len` 字节输出槽，只读参数按 C 类型
 /// （f32/u8）逐元素写输入字节。逐点与分块对拍共用这一份绑缓冲样板。
 fn bind_decl_buffers(
@@ -115,19 +140,11 @@ fn bind_decl_buffers(
             match param.ctype {
                 CType::F32 => {
                     let values = sample.f32(&param.name).expect("f32 输入");
-                    executor.bind_bytes(slot, values.len() * 4).expect("输入缓冲");
-                    let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
-                    for (index, value) in values.iter().enumerate() {
-                        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-                    }
+                    bind_f32(executor, slot, values);
                 }
                 CType::U8 => {
                     let values = sample.u8(&param.name).expect("u8 输入");
-                    executor.bind_bytes(slot, values.len()).expect("输入缓冲");
-                    let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
-                    for (index, value) in values.iter().enumerate() {
-                        bytes[index] = *value;
-                    }
+                    bind_u8(executor, slot, values);
                 }
                 CType::Int => unreachable!("标量不是缓冲"),
             }
@@ -174,6 +191,51 @@ fn metal_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs:
     let dirs =
         cutile::dirs::Dirs::under(std::env::temp_dir().join(format!("llm-metal-{tag}-check")));
     Some((catalogue, dirs))
+}
+
+/// 分块内核对拍的公共装备：语义表 + 样本 + 参考 + 声明 + 分块网格。`len_of` 给出分块轴长度
+/// （scan 从签名里找非缓冲标量，rmsnorm / softmax 直接取 `N`），三种分块对拍共用同一份装配。
+struct ChunkSetup {
+    catalogue: cutile::builtin::Catalogue,
+    dirs: cutile::dirs::Dirs,
+    model: op::model::Model,
+    sample: op::model::Sample,
+    expected: Vec<f32>,
+    decl: op::decl::OpDecl,
+    m: usize,
+    n: usize,
+    len: u32,
+    chunk: u32,
+    grid_size: u32,
+}
+
+fn chunk_setup(
+    op_name: &str,
+    tag: &str,
+    len_of: impl FnOnce(&op::decl::OpDecl, &op::model::Sample) -> u32,
+) -> Option<ChunkSetup> {
+    let (catalogue, dirs) = metal_harness(tag)?;
+    let model = op::model(op_name).expect("语义表");
+    let (m, n) = model.shape;
+    let sample = (model.sample)(m, n);
+    let expected = (model.reference)(&sample).expect("标量参考");
+    let decl = catalogue.op(op_name).expect("算子声明").clone();
+    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
+    let len = len_of(&decl, &sample);
+    let grid_size = len.div_ceil(chunk);
+    Some(ChunkSetup {
+        catalogue,
+        dirs,
+        model,
+        sample,
+        expected,
+        decl,
+        m,
+        n,
+        len,
+        chunk,
+        grid_size,
+    })
 }
 
 #[test]
@@ -473,24 +535,29 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
 fn op_chunked_scan_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    let Some((catalogue, dirs)) = metal_harness("scan") else {
+    let Some(setup) = chunk_setup(op_name, "scan", |decl, sample| {
+        decl.signature
+            .params()
+            .iter()
+            .find(|param| !param.ctype.is_buffer())
+            .and_then(|param| sample.scalar(&param.name))
+            .expect("扫描长度标量") as u32
+    }) else {
         return;
     };
-
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = model.shape;
-    let sample = (model.sample)(m, n);
-    let expected = (model.reference)(&sample).expect("标量参考");
-    let decl = catalogue.op(op_name).expect("算子声明");
-    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
-    let len = decl
-        .signature
-        .params()
-        .iter()
-        .find(|param| !param.ctype.is_buffer())
-        .and_then(|param| sample.scalar(&param.name))
-        .expect("扫描长度标量") as u32;
-    let grid_size = len.div_ceil(chunk);
+    let ChunkSetup {
+        catalogue,
+        dirs,
+        model,
+        sample,
+        expected,
+        decl,
+        m,
+        n,
+        len,
+        chunk,
+        grid_size,
+    } = setup;
     let decay = decl
         .consts
         .iter()
@@ -514,16 +581,10 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
 
     // 槽位约定（同 buffer_decls 的签名序）：0 = 只读输入 x，1 = 可写输出 y。
     let input = sample.f32("x").expect("扫描输入");
-    executor.bind_bytes(0, input.len() * 4).expect("输入缓冲");
+    bind_f32(&mut executor, 0, &input);
     executor
         .bind_bytes(1, expected.len() * 4)
         .expect("输出缓冲");
-    {
-        let bytes = executor.buffer_mut(0).expect("输入可写").as_mut_bytes();
-        for (index, value) in input.iter().enumerate() {
-            bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-        }
-    }
 
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
@@ -551,15 +612,11 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
     }
 
     // 阶段 3：校正（c → y 就地累加）。槽 0 复用为携带态缓冲。
-    executor
-        .bind_bytes(0, grid_size as usize * 4)
-        .expect("携带态缓冲");
-    {
-        let bytes = executor.buffer_mut(0).expect("携带态可写").as_mut_bytes();
-        for (index, value) in carry.iter().enumerate() {
-            bytes[index * 4..index * 4 + 4].copy_from_slice(&(*value as f32).to_le_bytes());
-        }
-    }
+    bind_f32(
+        &mut executor,
+        0,
+        &carry.iter().map(|&value| value as f32).collect::<Vec<_>>(),
+    );
     let mut node = engine::exec::Node::new(&correct_name, launch);
     node.bind_input(0);
     node.bind_output(1);
@@ -582,18 +639,23 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
 fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    let Some((catalogue, dirs)) = metal_harness("rmsnorm") else {
+    let Some(setup) = chunk_setup(op_name, "rmsnorm", |_, sample| {
+        sample.scalar("N").expect("长度标量") as u32
+    }) else {
         return;
     };
-
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = model.shape;
-    let sample = (model.sample)(m, n);
-    let expected = (model.reference)(&sample).expect("标量参考");
-    let decl = catalogue.op(op_name).expect("算子声明");
-    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
-    let len = sample.scalar("N").expect("长度标量") as u32;
-    let grid_size = len.div_ceil(chunk);
+    let ChunkSetup {
+        catalogue,
+        dirs,
+        model,
+        sample,
+        expected,
+        m,
+        n,
+        len,
+        grid_size,
+        ..
+    } = setup;
 
     let (partial_msl, map_msl) =
         cutile::execution::metal_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
@@ -612,15 +674,9 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     // 槽位（同 buffer_decls 签名序）：0 = x、1 = gamma、2 = y（部分和临时占 y 前 G 个槽）。
     let x = sample.f32("x").expect("rmsnorm 输入 x");
     let gamma = sample.f32("gamma").expect("rmsnorm 权重 gamma");
-    executor.bind_bytes(0, x.len() * 4).expect("x 缓冲");
-    executor.bind_bytes(1, gamma.len() * 4).expect("gamma 缓冲");
+    bind_f32(&mut executor, 0, &x);
+    bind_f32(&mut executor, 1, &gamma);
     executor.bind_bytes(2, expected.len() * 4).expect("y 缓冲");
-    for (slot, values) in [(0, &x), (1, &gamma)] {
-        let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
-        for (index, value) in values.iter().enumerate() {
-            bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-        }
-    }
 
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
@@ -642,11 +698,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     let rms = ((sum_sq / f64::from(len)) + f64::from(1e-6f32)).sqrt() as f32;
 
     // 槽 3 = rms（主机注入的 1 元素标量缓冲）。
-    executor.bind_bytes(3, 4).expect("rms 缓冲");
-    {
-        let bytes = executor.buffer_mut(3).expect("rms 可写").as_mut_bytes();
-        bytes.copy_from_slice(&rms.to_le_bytes());
-    }
+    bind_scalar(&mut executor, 3, rms);
 
     let mut node = engine::exec::Node::new(&map_name, launch);
     node.bind_input(3)
@@ -671,18 +723,22 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
 fn op_chunked_softmax_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    let Some((catalogue, dirs)) = metal_harness("softmax") else {
+    let Some(setup) = chunk_setup(op_name, "softmax", |_, sample| {
+        sample.scalar("N").expect("长度标量") as u32
+    }) else {
         return;
     };
-
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = model.shape;
-    let sample = (model.sample)(m, n);
-    let expected = (model.reference)(&sample).expect("标量参考");
-    let decl = catalogue.op(op_name).expect("算子声明");
-    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
-    let len = sample.scalar("N").expect("长度标量") as u32;
-    let grid_size = len.div_ceil(chunk);
+    let ChunkSetup {
+        catalogue,
+        dirs,
+        model,
+        sample,
+        expected,
+        m,
+        n,
+        grid_size,
+        ..
+    } = setup;
 
     let (max_msl, expsum_msl, map_msl) =
         cutile::execution::metal_softmax_program(&catalogue, &dirs, op_name, m, n)
@@ -704,14 +760,8 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
 
     // 槽位：0 = x、1 = y（部分结果临时占 y 前 G 个槽）、2 = max、3 = sum。
     let x = sample.f32("x").expect("softmax 输入");
-    executor.bind_bytes(0, x.len() * 4).expect("x 缓冲");
+    bind_f32(&mut executor, 0, &x);
     executor.bind_bytes(1, expected.len() * 4).expect("y 缓冲");
-    {
-        let bytes = executor.buffer_mut(0).expect("输入可写").as_mut_bytes();
-        for (index, value) in x.iter().enumerate() {
-            bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-        }
-    }
 
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
@@ -732,11 +782,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
         .fold(f32::MIN, f32::max);
 
     // 阶段 2：部分指数和（max 注入槽 2）。
-    executor.bind_bytes(2, 4).expect("max 缓冲");
-    {
-        let bytes = executor.buffer_mut(2).expect("max 可写").as_mut_bytes();
-        bytes.copy_from_slice(&max.to_le_bytes());
-    }
+    bind_scalar(&mut executor, 2, max);
     let mut node = engine::exec::Node::new(&expsum_name, launch);
     node.bind_input(2).bind_input(0).bind_output(1);
     let mut graph = engine::exec::Graph::new();
@@ -748,11 +794,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
         .fold(0.0f64, |acc, value| acc + f64::from(value));
 
     // 阶段 3：归一化（sum 注入槽 3）。
-    executor.bind_bytes(3, 4).expect("sum 缓冲");
-    {
-        let bytes = executor.buffer_mut(3).expect("sum 可写").as_mut_bytes();
-        bytes.copy_from_slice(&(sum as f32).to_le_bytes());
-    }
+    bind_scalar(&mut executor, 3, sum as f32);
     let mut node = engine::exec::Node::new(&map_name, launch);
     node.bind_input(2)
         .bind_input(3)

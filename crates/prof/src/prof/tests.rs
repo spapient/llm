@@ -42,6 +42,21 @@ fn position(table: &Table, prim: &str, implementation: &str) -> usize {
     provides.iter().position(matches).expect("供给存在")
 }
 
+/// 见证校验的临时目录：落地即建，`TempDir` 离开作用域时自动清理。
+struct TempDir(std::path::PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+fn temp_dir(tag: &str) -> TempDir {
+    let dir = std::env::temp_dir().join(format!("prof-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("建临时目录");
+    TempDir(dir)
+}
+
 #[test]
 fn parses_builtin_cpu_profile() {
     let profile = Profile::parse(cpu()).expect("内置 CPU 档案必须可解析");
@@ -421,9 +436,9 @@ fn an_empty_expectation_is_rejected() {
 
 #[test]
 fn the_witness_function_must_exist_in_the_file() {
-    let dir = std::env::temp_dir().join(format!("prof-witness-{}", std::process::id()));
-    let vendor = dir.join("cpu");
-    std::fs::create_dir_all(&vendor).expect("建临时目录");
+    let dir = temp_dir("witness");
+    let vendor = dir.0.join("cpu");
+    std::fs::create_dir_all(&vendor).expect("建 vendor 目录");
     std::fs::write(
         vendor.join("witness.c"),
         "int witness_dot(float *out) { out[0] = 70.0f; return 1; }\n",
@@ -431,37 +446,34 @@ fn the_witness_function_must_exist_in_the_file() {
     .expect("写见证");
     let mut profile = Profile::parse(cpu()).expect("可解析");
     profile.provides[0].witness.as_mut().expect("见证").func = "witness_absent".to_string();
-    let errors = profile.validate(Some(&dir)).unwrap_err();
+    let errors = profile.validate(Some(&dir.0)).unwrap_err();
     assert!(
         errors
             .iter()
             .any(|error| error.to_string().contains("witness_absent")),
         "{errors:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// 见证文件不在是 `missing`，不是"档案写错"：两者在脚本里该分开处理。
 #[test]
 fn a_missing_witness_file_is_missing() {
-    let dir = std::env::temp_dir().join(format!("prof-witness-missing-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("建临时目录");
+    let dir = temp_dir("witness-missing");
     let profile = Profile::parse(cpu()).expect("可解析");
-    let errors = profile.validate(Some(&dir)).unwrap_err();
+    let errors = profile.validate(Some(&dir.0)).unwrap_err();
     assert!(
         errors.iter().any(|error| error.code() == Code::Missing),
         "见证文件不在应是 `missing`：{errors:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// 见证可以先落成数据：等级还是 L0/L1 时，声明过的文件与函数名同样要校验，
 /// 否则命名写错会一直潜伏到升 L2 才暴露。
 #[test]
 fn a_declared_witness_is_validated_below_l2() {
-    let dir = std::env::temp_dir().join(format!("prof-witness-l1-{}", std::process::id()));
-    let vendor = dir.join("nvidia");
-    std::fs::create_dir_all(&vendor).expect("建临时目录");
+    let dir = temp_dir("witness-l1");
+    let vendor = dir.0.join("nvidia");
+    std::fs::create_dir_all(&vendor).expect("建 vendor 目录");
     std::fs::write(
         vendor.join("witness.cu"),
         "int witness_dot(float *out) { out[0] = 70.0f; return 1; }\n",
@@ -482,14 +494,13 @@ fn a_declared_witness_is_validated_below_l2() {
         .expect("dot 供给");
     assert_eq!(dot.grade, Grade::L1, "前提：这条签名还没到 L2");
     dot.witness.as_mut().expect("见证").func = "witness_absent".to_string();
-    let errors = profile.validate(Some(&dir)).unwrap_err();
+    let errors = profile.validate(Some(&dir.0)).unwrap_err();
     assert!(
         errors
             .iter()
             .any(|error| error.to_string().contains("witness_absent")),
         "{errors:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// 两条签名不能共用一份见证：执行通过的结论必须能归属到具体的那一条。

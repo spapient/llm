@@ -263,18 +263,9 @@ fn forwards_forward_closure_error_without_recording() -> Result<()> {
 /// 蒸馏度量：`ForwardOut.metric` 带 teacher 时看板记蒸馏损失（含 KL），命中仍按硬标签。
 #[test]
 fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let x = tape.leaf();
-    let logits = tape.leaf();
+    let (mut tape, mut sizes, p, x, logits, loss) = fixture();
     let teacher = tape.leaf();
-    let loss = tape.record("add_f32", &[p, x]).expect("记录");
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(x, Shape::new([N]), DType::F32);
-    sizes.set(logits, Shape::new([VOCAB]), DType::F32);
     sizes.set(teacher, Shape::new([VOCAB]), DType::F32);
-    sizes.set(loss, Shape::new([N]), DType::F32);
 
     let learner = run_metric_batch(tape, sizes, p, x, logits, loss, |session| {
         session
@@ -295,22 +286,13 @@ fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
 /// RL 度量：GRPO 组合损失入账，命中恒 0（RL 无分类命中）。
 #[test]
 fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let x = tape.leaf();
-    let logits = tape.leaf();
+    let (mut tape, mut sizes, p, x, logits, loss) = fixture();
     let (new_logp, old_logp, advantages, ref_kl) =
         (tape.leaf(), tape.leaf(), tape.leaf(), tape.leaf());
-    let loss = tape.record("add_f32", &[p, x]).expect("记录");
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(x, Shape::new([N]), DType::F32);
-    sizes.set(logits, Shape::new([VOCAB]), DType::F32);
     sizes.set(new_logp, Shape::new([1]), DType::F32);
     sizes.set(old_logp, Shape::new([1]), DType::F32);
     sizes.set(advantages, Shape::new([1]), DType::F32);
     sizes.set(ref_kl, Shape::new([1]), DType::F32);
-    sizes.set(loss, Shape::new([N]), DType::F32);
 
     let learner = run_metric_batch(tape, sizes, p, x, logits, loss, |session| {
         session.buffers().load(new_logp, Data::F32(vec![-0.1]))?;
