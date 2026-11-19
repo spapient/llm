@@ -645,6 +645,14 @@ pub struct Attention;
 #[annotation::model(name = "attention_f32", shape = [8, 8], dtype = "f32", skeleton = "attention")]
 pub type AttentionF32 = Attention;
 
+/// Flash 注意力标记类型：形状、样本、代价与朴素 [`Attention`] 完全共用，只把标量参考换成
+/// online softmax 版本（[`flash_reference`]）。`const = "FLASH_MODEL"` 让两个算子同模块各持一份语义表。
+pub struct FlashAttention;
+
+/// Flash 注意力语义别名；codegen 按注册名选 [`flash_reference`]。
+#[annotation::model(name = "flash_attention_f32", shape = [8, 8], dtype = "f32", skeleton = "attention", const = "FLASH_MODEL")]
+pub type FlashAttentionF32 = FlashAttention;
+
 #[cfg(test)]
 #[path = "../tests/attention_tests.rs"]
 mod tests;

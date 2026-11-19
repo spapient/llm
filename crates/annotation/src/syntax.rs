@@ -444,7 +444,7 @@ pub(crate) const GEMM_SKELETON_NAMES: [&str; 4] = ["gemm_f32", "gemm_i8", "gemm_
 /// 写不出它"，而不是它悄悄地无法被声明。
 pub(crate) const DTYPES: [&str; 3] = ["f16", "bf16", "f32"];
 
-/// `#[model(..)]` 解析后的四件事：注册名、生产形状、输出类型、骨架，都是编译期常量。
+/// `#[model(..)]` 解析后的五件事：注册名、生产形状、输出类型、骨架、生成常量名，都是编译期常量。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModelDecl {
     /// 注册表的键（与 `ops/<name>.toml` 同名）。
@@ -455,10 +455,12 @@ pub(crate) struct ModelDecl {
     pub(crate) dtype: String,
     /// 骨架名（[`SKELETONS`] 里的一个），缺省为 `gemv`。
     pub(crate) skeleton: String,
+    /// 生成的 `Model` 常量名，缺省 `MODEL`（多算子同模块时用 `const = ".."` 分名）。
+    pub(crate) const_name: String,
 }
 
-/// `#[model(..)]` 的键表：注册名、生产形状、输出类型、骨架。
-const MODEL: [KeySpec<'static>; 4] = [
+/// `#[model(..)]` 的键表：注册名、生产形状、输出类型、骨架、生成的常量名。
+const MODEL: [KeySpec<'static>; 5] = [
     row(
         "name",
         name_value,
@@ -478,9 +480,11 @@ const MODEL: [KeySpec<'static>; 4] = [
         Some(" = \"..\""),
     ),
     row("skeleton", skeleton_value, "一条语义只有一个骨架", None),
+    row("const", name_value, "生成的常量名只能声明一次", None),
 ];
 
-/// 解析 `#[model(name = "..", shape = [..], dtype = "..")]`。三个键都必填，`shape` 恰好两个轴。
+/// 解析 `#[model(name = "..", shape = [..], dtype = "..", skeleton = "..", const = "..")]`。
+/// `name` / `shape` / `dtype` 必填，`shape` 恰好两个轴，`skeleton` 缺省 `gemv`，`const` 缺省 `MODEL`。
 pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
     let values = collect(tokens, &MODEL)?;
     require(&values, &MODEL)?;
@@ -492,6 +496,7 @@ pub(crate) fn parse_model(tokens: &[Token]) -> Result<ModelDecl, Error> {
         shape: two_axes(&values[1])?,
         dtype: values[2].text().to_string(),
         skeleton: skeleton.to_string(),
+        const_name: chosen_const(&values[4]),
     })
 }
 
@@ -500,6 +505,14 @@ fn chosen_skeleton(value: &Value) -> &str {
     match value.text() {
         "" => "gemv",
         name => name,
+    }
+}
+
+/// `const` 键的缺省值：没写就生成 `MODEL`（沿用历史名字；多算子同模块时才需要分名）。
+fn chosen_const(value: &Value) -> String {
+    match value.text() {
+        "" => "MODEL".to_string(),
+        name => name.to_string(),
     }
 }
 

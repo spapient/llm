@@ -154,7 +154,10 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     code.push_str(&format!(
         "#[doc = \"`{ty}` 的语义表（`#[model]` 生成）：生产形状、输出类型与三条单态化入口。\"]\n"
     ));
-    code.push_str("pub const MODEL: ::llm_op::model::Model = ::llm_op::model::Model {\n");
+    code.push_str(&format!(
+        "pub const {}: ::llm_op::model::Model = ::llm_op::model::Model {{\n",
+        declaration.const_name
+    ));
     render_fields(&mut code, shape, &declaration.name, ty, (m, n), &dtype);
     render_model_check(&mut code, declaration);
     code
@@ -240,7 +243,7 @@ const OP_OVERRIDES: [(&str, Option<&str>, Option<&str>); 3] = [
     (
         "decode_flash_attention_f32",
         Some("::llm_op::decode_attention::decode_flash_reference"),
-        Some("decode_flash_attention"),
+        Some("decode_attention"),
     ),
 ];
 
@@ -330,6 +333,7 @@ fn render_grain_asserts(code: &mut String, ty: &str, m: usize) {
 fn render_model_check(code: &mut String, declaration: &ModelDecl) {
     let name = literal(&declaration.name);
     let dtype_name = literal(&declaration.dtype);
+    let model = &declaration.const_name;
     code.push_str("#[cfg(test)]\nmod __model_check {\n");
     code.push_str("    #[test]\n");
     code.push_str("    fn the_annotation_agrees_with_the_registered_kernel() {\n");
@@ -342,15 +346,15 @@ fn render_model_check(code: &mut String, declaration: &ModelDecl) {
     code.push_str(&format!(
         "        let registered = ::llm_op::model({name}).expect(\"语义已注册\");\n"
     ));
-    code.push_str(
-        "        assert_eq!(registered.group, super::MODEL.group, \"注册表必须指向这份语义\");\n",
-    );
-    code.push_str(
-        "        assert_eq!(registered.shape, super::MODEL.shape, \"注册表必须指向这份语义\");\n",
-    );
-    code.push_str(
-        "        assert_eq!(registered.dtype, super::MODEL.dtype, \"注册表必须指向这份语义\");\n",
-    );
+    code.push_str(&format!(
+        "        assert_eq!(registered.group, super::{model}.group, \"注册表必须指向这份语义\");\n",
+    ));
+    code.push_str(&format!(
+        "        assert_eq!(registered.shape, super::{model}.shape, \"注册表必须指向这份语义\");\n",
+    ));
+    code.push_str(&format!(
+        "        assert_eq!(registered.dtype, super::{model}.dtype, \"注册表必须指向这份语义\");\n",
+    ));
     code.push_str(
         "        let sample = (registered.sample)(registered.shape.0, registered.shape.1);\n",
     );
@@ -369,7 +373,9 @@ fn render_model_check(code: &mut String, declaration: &ModelDecl) {
     code.push_str(&format!(
         "            ::llm_op::model::DType::parse_name({dtype_name}),\n"
     ));
-    code.push_str("            Some(super::MODEL.dtype),\n");
+    code.push_str(&format!(
+        "            Some(super::{model}.dtype),\n",
+    ));
     code.push_str(
         "            \"注解里的 `dtype` 必须解析成 `MODEL` 用的那个变体（词汇表是唯一名字源）\",\n",
     );
@@ -379,9 +385,9 @@ fn render_model_check(code: &mut String, declaration: &ModelDecl) {
     // 对拍会按另一种宽度解读缓冲，所以两者必须是同一个类型。`Model::dtype` 的阈值与
     // `harness` 的回读都取自它，这是它们在装载期唯一的交叉点。
     code.push_str("        assert!(\n");
-    code.push_str(
-        "            signature.output_type().and_then(|ctype| ctype.dtype()) == Some(super::MODEL.dtype),\n",
-    );
+    code.push_str(&format!(
+        "            signature.output_type().and_then(|ctype| ctype.dtype()) == Some(super::{model}.dtype),\n",
+    ));
     code.push_str(&format!(
         "            \"注解写 `dtype = {}`，但 `.k` 的可写输出是 `{{}}`：回读按 `MODEL.dtype` 解释，两者必须是同一个类型\",\n",
         declaration.dtype,

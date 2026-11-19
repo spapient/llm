@@ -141,3 +141,12 @@ pub struct DecodeAttention;
 /// 朴素 decode 注意力语义别名。
 #[annotation::model(name = "decode_attention_f32", shape = [1, 8], dtype = "f32", skeleton = "attention")]
 pub type DecodeAttentionF32 = DecodeAttention;
+
+/// Flash decode 注意力标记类型：形状、样本、代价与朴素 [`DecodeAttention`] 共用，只把标量参考
+/// 换成 online softmax 版本（[`decode_flash_reference`]）。`const = "DECODE_FLASH_MODEL"` 让
+/// 两个算子同模块各持一份语义表。
+pub struct DecodeFlashAttention;
+
+/// Flash decode 注意力语义别名；codegen 按注册名选 [`decode_flash_reference`]。
+#[annotation::model(name = "decode_flash_attention_f32", shape = [1, 8], dtype = "f32", skeleton = "attention", const = "DECODE_FLASH_MODEL")]
+pub type DecodeFlashAttentionF32 = DecodeFlashAttention;
