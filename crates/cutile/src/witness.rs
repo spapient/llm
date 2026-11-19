@@ -20,6 +20,19 @@ use std::path::{Path, PathBuf};
 pub use crate::device::{compile_run_cuda, compile_run_metal};
 pub use crate::gate::{LanguageGate, language_gate};
 
+/// 编译并真机运行一段 CUDA 程序，回读打印的 `(计数, f32 位模式)`。供 cli 真机对拍复用：
+/// 生成生产态网格内核 → [`compile_run_cuda`] → 解析 stdout 的 `printf("%u\n")` 输出。计数来自
+/// stderr 里 `ns` 计时行（无则空），值来自 stdout 的 u32 位模式。
+pub fn run_cuda(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    label: &str,
+) -> diagnostic::Result<(Vec<i64>, Vec<f32>)> {
+    let (stdout, stderr) = compile_run_cuda(profile, dirs, program, label)?;
+    Ok(device::readback(&stdout, &stderr))
+}
+
 /// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。
 pub type Selected<'a> = (Prim, String, &'a Witness);
 

@@ -730,6 +730,98 @@ mod tests {
         );
     }
 
+    /// CUDA 逐点网格真机对拍：纯逐点算子走 [`cutile::execution::cuda_grid_program`]
+    /// （`kernel_main<<<N,1>>>` 逐点网格），nvcc 编译 + GPU 派发 + 回读，与标量参考对拍。
+    /// 与 Metal 侧的 [`op_matches_reference`] 同口径，只是发射/回读经 `compile_run_cuda`。
+    #[cfg(target_os = "windows")]
+    fn op_matches_reference_cuda(op_name: &str) {
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-cuda-grid-check"));
+
+        let model = op::model(op_name).expect("语义表");
+        let (m, n) = model.shape;
+        let sample = (model.sample)(m, n);
+        let decl = catalogue.op(op_name).expect("算子声明");
+        let output = decl.signature.output().expect("可写输出");
+        let output_len = sample.f32(output).expect("f32 输出").len();
+        let grid = output_len;
+
+        let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, op_name, m, n)
+            .expect("内核应能生成");
+        let program =
+            cutile::cuda_grid_driver(&device, &decl.signature, &sample, grid, output_len)
+                .expect("host 驱动应能生成");
+        let (_counts, bits) =
+            cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
+
+        let expected = (model.reference)(&sample).expect("参考值");
+        let max_rel_err = cutile::reference::max_rel_err(&bits, &expected);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "{op_name} CUDA 逐点对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
+    }
+
+    /// CUDA 分块归约真机对拍：`reduce` 骨架声明 `[chunk]` 后按 `ceil(N/chunk)` 网格每线程归约一块、
+    /// 写部分结果 `y[g]`，主机折叠部分结果再与参考对拍。折叠用 f64 输入做对照（与 Metal 侧
+    /// [`op_chunked_reduce_matches_reference`] 同一口径：f32 串行参考对 4096 递增值误差已 ~1e-4）。
+    #[cfg(target_os = "windows")]
+    fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-cuda-reduce-check"));
+
+        let model = op::model(op_name).expect("语义表");
+        let (m, n) = model.shape;
+        let sample = (model.sample)(m, n);
+        let decl = catalogue.op(op_name).expect("算子声明");
+        let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
+        let len = decl
+            .signature
+            .params()
+            .iter()
+            .find(|param| !param.ctype.is_buffer())
+            .and_then(|param| sample.scalar(&param.name))
+            .expect("归约长度标量") as usize;
+        let grid = len.div_ceil(chunk);
+
+        let device = cutile::execution::cuda_reduce_program(&catalogue, &dirs, op_name, m, n)
+            .expect("内核应能生成");
+        let program =
+            cutile::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
+                .expect("host 驱动应能生成");
+        let (_counts, bits) =
+            cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
+
+        let input = sample.f32("a").expect("归约输入");
+        let (output, want) = if op_name.contains("_max_") {
+            let out = bits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let want = input
+                .iter()
+                .fold(f64::NEG_INFINITY, |acc, &x| acc.max(f64::from(x)));
+            (vec![out], vec![want as f32])
+        } else {
+            let out = bits.iter().sum::<f32>();
+            let want = input.iter().fold(0.0f64, |acc, &x| acc + f64::from(x));
+            (vec![out], vec![want as f32])
+        };
+
+        let max_rel_err = cutile::reference::max_rel_err(&output, &want);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "{op_name} CUDA 分块归约对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
+    }
+
     /// 分块扫描真机对拍：`scan_f32` 声明 `[chunk]` 后走「局部扫描 + 主机携带前缀 + 校正」三阶段。
     ///
     /// 1. 局部扫描：网格 `ceil(N/256)`，每线程 g 对块做基 0 扫描写 `y`，块末态即 `y[start+len-1]`；
@@ -1157,5 +1249,20 @@ mod tests {
     #[test]
     fn an_embed_op_runs_on_metal_and_matches_the_reference() {
         op_matches_reference("embed_f32");
+    }
+
+    /// silu 逐点激活走 CUDA 逐点网格（`kernel_main<<<N,1>>>`），nvcc 编译 + T600 派发 + 回读，
+    /// 与标量参考对拍。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_silu_op_runs_on_cuda_and_matches_the_reference() {
+        op_matches_reference_cuda("silu_f32");
+    }
+
+    /// 求和归约声明 `[chunk]` 后走 CUDA 分块归约（每线程归约一块写部分和 `y[g]`，主机折叠），真机对拍。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_reduce_sum_op_runs_on_cuda_and_matches_the_reference() {
+        op_chunked_reduce_matches_reference_cuda("reduce_sum_f32");
     }
 }

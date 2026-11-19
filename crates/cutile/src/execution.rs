@@ -92,7 +92,7 @@ pub fn metal_grid_program(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<String> {
-    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
     lower(&run, &prepared, m, n)
 }
 
@@ -110,7 +110,7 @@ pub fn metal_scan_program(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<(String, String)> {
-    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
     scan_chunked(&run, &prepared, m, n)
 }
 
@@ -128,7 +128,7 @@ pub fn metal_rmsnorm_program(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<(String, String)> {
-    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
     let op = run.op;
     let chunk = op.chunk.as_ref().ok_or_else(|| {
         Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
@@ -152,7 +152,7 @@ pub fn metal_softmax_program(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<(String, String, String)> {
-    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
     let op = run.op;
     let chunk = op.chunk.as_ref().ok_or_else(|| {
         Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
@@ -162,34 +162,96 @@ pub fn metal_softmax_program(
     crate::harness::metal_chunk_softmax(&prepared.source.text, &op.signature, &sample, chunk.size)
 }
 
+/// 生产态 CUDA 逐点网格内核源：走完整条流水线后把逐点内核包成按网格派发的 `kernel_main`。
+/// 本入口只覆盖「纯逐点」签名（[`OpDecl::pointwise`]）；gemm/attention 的循环注入与串行兜底的
+/// CUDA 镜像后续单独落地，不在此入口静默生成错的内核。
+///
+/// # Errors
+///
+/// `nvidia` 档案缺失、设备缺执行证据、协商失败、形状非法或算子非逐点形时返回说明。
+pub fn cuda_grid_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
+    let op = run.op;
+    if !op.pointwise() {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "`{}` 不是纯逐点形，CUDA 逐点网格未覆盖（循环注入/串行兜底后续落地）",
+                op.name
+            ),
+        )
+        .with("cutile::execution::cuda_grid_program"));
+    }
+    crate::harness::cuda_grid_kernel(&prepared.source.text, &op.signature)
+}
+
+/// 生产态 CUDA 分块归约内核源：走完整条流水线后把长轴切成块，每线程归约一块写部分结果 `y[g]`，
+/// 主机折叠部分结果得最终标量。与 [`metal_grid_program`] 的归约骨架同语义，仅后端方言差异。
+///
+/// # Errors
+///
+/// 算子没声明 `[chunk]`、`nvidia` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn cuda_reduce_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
+    let op = run.op;
+    let chunk = op.chunk.as_ref().ok_or_else(|| {
+        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
+            .with("cutile::execution::cuda_reduce_program")
+    })?;
+    let sample = (run.model.sample)(m, n);
+    crate::harness::cuda_chunk_reduce(
+        &prepared.source.text,
+        &op.signature,
+        &sample,
+        chunk.size,
+        &reduce_func(op)?,
+    )
+}
+
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(
     catalogue: &'a Catalogue,
     dirs: &Dirs,
     op_name: &str,
+    vendor: &str,
     m: usize,
     n: usize,
 ) -> diagnostic::Result<(Run<'a>, Prepared)> {
-    let (op, profile, proof) = lookup(catalogue, dirs, op_name)?;
+    let (op, profile, proof) = lookup(catalogue, dirs, op_name, vendor)?;
     prepare(op, profile, proof, dirs, m, n)
 }
 
-/// 找算子与 `metal` 档案，验证据后给出证明。
+/// 找算子与 `vendor` 档案，验证据后给出证明。
 fn lookup<'a>(
     catalogue: &'a Catalogue,
     dirs: &Dirs,
     op_name: &str,
+    vendor: &str,
 ) -> diagnostic::Result<(&'a OpDecl, &'a Profile, Proof)> {
     let Some(op) = catalogue.op(op_name) else {
         return Err(Error::new(Code::Missing, format!("没有算子 `{op_name}`")));
     };
-    let Some(profile) = catalogue.profile("metal") else {
-        return Err(Error::new(Code::Missing, "没有 `metal` 档案"));
+    let Some(profile) = catalogue.profile(vendor) else {
+        return Err(Error::new(Code::Missing, format!("没有 `{vendor}` 档案")));
     };
     let evidence = witness::establish(profile, dirs);
     let proof = evidence.proof(profile);
     if let Some(error) = evidence.failure {
-        return Err(error.with("Metal 设备缺执行证据，不在未验证的后端上生成生产内核"));
+        return Err(error.with(format!(
+            "`{vendor}` 设备缺执行证据，不在未验证的后端上生成生产内核"
+        )));
     }
     Ok((op, profile, proof))
 }

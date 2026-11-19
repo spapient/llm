@@ -284,14 +284,7 @@ fn cuda_params(params: &[Param]) -> String {
 
 /// 文件头：CUDA 头、身份注释，以及整体转成 `__device__` 的内核源码。
 fn cuda_prelude(kernel_source: &str, kernel: &str, sample: &Sample) -> String {
-    let device = kernel_source
-        .replace(
-            &format!("void {kernel}("),
-            &format!("__device__ void {kernel}("),
-        )
-        // 模板里的 `static` 辅助函数（如 gemm 的 cutile_code、gelu 的 gelu_erf）也是设备端代码，
-        // 默认会按 `__host__` 编译而被内核调用报错，统一补 `__device__`。
-        .replace("static ", "__device__ static ");
+    let device = cuda_device(kernel_source, kernel);
     let mut text = format!(
         "#include <cuda_runtime.h>\n#include <cstdio>\n/* cutile cuda harness | kernel={kernel} m={} n={} | 单线程设备执行（语义门，非并行性能门） */\n{device}",
         sample.m, sample.n
@@ -368,6 +361,87 @@ fn cuda_host_buffers(sample: &Sample, params: &[Param]) -> diagnostic::Result<St
     Ok(text)
 }
 
+/// 拼出可在 GPU 上真实执行的 CUDA 网格程序：`kernel_main<<<grid,1>>>` 发射 + host 分配/拷贝/回读。
+/// 与 [`cuda_harness`] 同口径，但发射是生产态网格（并行），输出缓冲长度由 `output_len` 显式给出——
+/// 分块归约的输出是 `ceil(N/chunk)` 个部分结果，大于签名的单元素 `y`。
+///
+/// # Errors：缺输出缓冲、样本缺缓冲，或签名与样本不一致。
+pub fn cuda_grid_driver(
+    device_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: usize,
+    output_len: usize,
+) -> diagnostic::Result<String> {
+    let output = signature.output().ok_or_else(|| {
+        Error::new(Code::Internal, "内核没有可写输出缓冲").with("cutile::harness::cuda_grid_driver")
+    })?;
+    let params = signature.params();
+    let launch = params
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .map(|param| format!("d_{}", param.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut text = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
+    text.push_str(device_source);
+    if !device_source.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("\nint main(void) {\n");
+    text.push_str(&cuda_host_buffers_grid(sample, params, output, output_len)?);
+    text.push_str(&format!(
+        "    kernel_main<<<{grid}, 1>>>({launch});\n\
+         \x20   cudaError_t error = cudaDeviceSynchronize();\n\
+         \x20   if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
+    ));
+    text.push_str(&cuda_readback(output, output_len));
+    for param in params.iter().filter(|param| param.ctype.is_buffer()) {
+        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
+    }
+    text.push_str("    return 0;\n}\n");
+    Ok(text)
+}
+
+/// host 侧缓冲声明、设备分配与只读入向拷贝；输出缓冲长度用显式 `output_len`（分块归约的部分
+/// 结果数），而非样本里的单元素。
+fn cuda_host_buffers_grid(
+    sample: &Sample,
+    params: &[Param],
+    output: &str,
+    output_len: usize,
+) -> diagnostic::Result<String> {
+    let mut text = String::new();
+    for param in params.iter().filter(|param| param.ctype.is_buffer()) {
+        let Some(buffer) = sample.buffer(&param.name) else {
+            return Err(Error::new(Code::Internal, "签名与样本已对齐（漂移）"));
+        };
+        let (name, ctype) = (&param.name, c_type(&buffer.values));
+        let size = if param.name == output {
+            output_len
+        } else {
+            buffer.values.len()
+        };
+        if param.mutable {
+            text.push_str(&format!("    {ctype} h_{name}[{size}];\n"));
+        } else {
+            text.push_str(&format!(
+                "    static const {ctype} h_{name}[{size}] = {{{}}};\n",
+                c_literal(&buffer.values)
+            ));
+        }
+        text.push_str(&format!(
+            "    {ctype} *d_{name} = 0;\n    cudaMalloc((void **)&d_{name}, {size} * sizeof({ctype}));\n"
+        ));
+        if !param.mutable {
+            text.push_str(&format!(
+                "    cudaMemcpy(d_{name}, h_{name}, {size} * sizeof({ctype}), cudaMemcpyHostToDevice);\n"
+            ));
+        }
+    }
+    Ok(text)
+}
+
 // ---------------------------------------------------------------------------
 // Metal 内核对拍：MSL 需要显式地址空间，`.k` 的 C 签名在 `xcrun metal` 下是语法错误。
 // 与 CUDA 同口径：单线程语义门，`device` 缓冲 ↔ `thread` 局部数组，host 驱动发射与回读。
@@ -424,7 +498,99 @@ fn buffer_decls(signature: &Signature) -> String {
         .join(",\n")
 }
 
-/// 生产态 Metal 计算内核：把逐点（pointwise）串行内核包成按网格派发的 `kernel_main`。
+/// 后端包装差异表：同一条 kernel body 拼成不同后端的 `kernel_main`。差异全是语法，机制层只按表插值、
+/// 不按后端写 `match`、不单态化。加后端 = 加一行常量，与 `device::SPECS` 同一套登记方式。
+struct Wrap {
+    /// 把 `.k` 内核 body 转成该后端可编译的翻译单元（Metal 补 `device` 地址空间，CUDA 补 `__device__`）。
+    prelude: fn(&str, &str) -> String,
+    /// 缓冲声明段（按签名序；Metal 带 `[[buffer(slot)]]`，CUDA 不带）。
+    buffers: fn(&Signature) -> String,
+    /// `kernel_main` 声明关键字：`kernel` / `__global__`。
+    decl: &'static str,
+    /// 逐点网格线程形参（Metal `uint n [[thread_position_in_grid]]`；CUDA 空，用 `point_stmt` 语句）。
+    point_param: &'static str,
+    /// 逐点网格线程下标语句（CUDA `int n = blockIdx.x * blockDim.x + threadIdx.x;`；Metal 空）。
+    point_stmt: &'static str,
+    /// 分块/循环网格线程形参（Metal `uint3 tid [[thread_position_in_grid]]`；CUDA 空）。
+    grid_param: &'static str,
+    /// 分块/循环网格线程下标语句（CUDA `int g = blockIdx.x * blockDim.x + threadIdx.x;`；Metal 空）。
+    grid_stmt: &'static str,
+}
+
+/// 把翻译单元拼成 `kernel_main`：prelude 变换后的 body 接后端声明、缓冲段、线程形参与线程下标语句。
+fn kernel_main(
+    wrap: &Wrap,
+    source: &str,
+    kernel: &str,
+    buffers: &str,
+    tid_param: &str,
+    tid_stmt: &str,
+    body: &str,
+) -> String {
+    let param = if tid_param.is_empty() {
+        String::new()
+    } else {
+        format!(",\n    {tid_param}")
+    };
+    let stmt = if tid_stmt.is_empty() {
+        String::new()
+    } else {
+        format!("    {tid_stmt}\n")
+    };
+    format!(
+        "{}\n\n{} void kernel_main(\n{buffers}{param}) {{\n{stmt}{body}\n}}",
+        (wrap.prelude)(source, kernel),
+        wrap.decl,
+    )
+}
+
+/// Metal 前置：`.k` 的 C 指针补 `device` 地址空间（MSL 无默认地址空间）。
+fn metal_prelude(text: &str, _kernel: &str) -> String {
+    msl_address_space(text)
+}
+
+/// CUDA 前置：`.k` 的内核函数与 `static` 辅助函数统一补 `__device__`（否则默认 `__host__`）。
+fn cuda_device(text: &str, kernel: &str) -> String {
+    text.replace(
+        &format!("void {kernel}("),
+        &format!("__device__ void {kernel}("),
+    )
+    .replace("static ", "__device__ static ")
+}
+
+/// CUDA 缓冲声明：`{ctype}* d_{name}`（无地址空间、无槽位标签，指针即全局内存）。
+fn cuda_buffers(signature: &Signature) -> String {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .map(|param| format!("    {}* d_{}", param.ctype.c_name(), param.name))
+        .collect::<Vec<_>>()
+        .join(",\n")
+}
+
+const METAL: Wrap = Wrap {
+    prelude: metal_prelude,
+    buffers: buffer_decls,
+    decl: "kernel",
+    point_param: "uint n [[thread_position_in_grid]]",
+    point_stmt: "",
+    grid_param: "uint3 tid [[thread_position_in_grid]]",
+    grid_stmt: "int g = (int)tid.x;",
+};
+
+const CUDA: Wrap = Wrap {
+    prelude: cuda_device,
+    buffers: cuda_buffers,
+    decl: "__global__",
+    point_param: "",
+    point_stmt: "int n = blockIdx.x * blockDim.x + threadIdx.x;",
+    grid_param: "",
+    grid_stmt: "int g = blockIdx.x * blockDim.x + threadIdx.x;",
+};
+
+/// 生产态逐点网格内核：把逐点（pointwise）串行内核包成按网格派发的 `kernel_main`，后端差异收进
+/// [`Wrap`]，同一条 body 只拼一次。
 ///
 /// 与 [`metal_harness`] 的单线程见证（入口 `cutile_launch`、`if (tid != 0) return`）不同，这里每个
 /// 线程处理一个元素：网格索引 `n` 落到每个缓冲的 `+ n` 偏移、唯一的长度标量传 `1`。因此**只对
@@ -432,11 +598,12 @@ fn buffer_decls(signature: &Signature) -> String {
 /// `gelu` / `residual_add`）。gemv/gemm 的行跨步与分组标量、reduce 的跨元素归约、embed 的行 gather、
 /// rmsnorm 的两趟归一化都要各自的 lowering，不能套这条。
 ///
-/// 本函数以「标量恰好一项」为可查的边界：多标量签名（gemv/gemm）在此被拒，而不是静默生成错的内核；
-/// 逐点之外的 `reduce` / `embed` / `rmsnorm` 由装配层按算子骨架路由到各自的 lowering。
-///
 /// # Errors：签名不是逐点形（标量不止长度一项）。
-pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> diagnostic::Result<String> {
+fn grid_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    wrap: &Wrap,
+) -> diagnostic::Result<String> {
     let scalars = signature
         .params()
         .iter()
@@ -451,15 +618,30 @@ pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> diagnost
                 scalars
             ),
         )
-        .with("cutile::harness::metal_grid_kernel"));
+        .with("cutile::harness::grid_kernel"));
     }
     let call = grid_args(signature.params());
-    let buffers = buffer_decls(signature);
-    Ok(format!(
-        "{}\n\nkernel void kernel_main(\n{buffers},\n    uint n [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
-        msl_address_space(kernel_source),
-        signature.kernel(),
+    let buffers = (wrap.buffers)(signature);
+    let body = format!("    {}({call});", signature.kernel());
+    Ok(kernel_main(
+        wrap,
+        kernel_source,
+        &signature.kernel(),
+        &buffers,
+        wrap.point_param,
+        wrap.point_stmt,
+        &body,
     ))
+}
+
+/// 生产态 Metal 逐点网格内核（[`grid_kernel`] 的 Metal 方言）。
+pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> diagnostic::Result<String> {
+    grid_kernel(kernel_source, signature, &METAL)
+}
+
+/// 生产态 CUDA 逐点网格内核（[`grid_kernel`] 的 CUDA 方言）。
+pub fn cuda_grid_kernel(kernel_source: &str, signature: &Signature) -> diagnostic::Result<String> {
+    grid_kernel(kernel_source, signature, &CUDA)
 }
 
 /// 生产态实参：缓冲取 `d_{name} + n`（线程处理的元素）、标量取 `1`（每线程一个元素）。
@@ -563,6 +745,36 @@ pub fn metal_chunk_reduce(
     chunk: usize,
     reduce_func: &str,
 ) -> diagnostic::Result<String> {
+    chunk_reduce(kernel_source, signature, sample, chunk, reduce_func, &METAL)
+}
+
+/// 生产态 CUDA 分块归约内核（[`chunk_reduce`] 的 CUDA 方言）。
+pub fn cuda_chunk_reduce(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+) -> diagnostic::Result<String> {
+    chunk_reduce(kernel_source, signature, sample, chunk, reduce_func, &CUDA)
+}
+
+/// 生产态分块归约内核（后端无关）：把长轴切成 `chunk` 元素一块，网格 = `ceil(N / chunk)`，每线程用
+/// 设备 preamble 里的软件归约原语（`_cutile_sum_f32` / `_cutile_max_f32`）串行归约自己那一块，把
+/// **块级部分结果**写到输出缓冲的第 `g` 个槽（`y[g]`）。主机折叠这些部分结果得到最终标量——
+/// 归约的跨元素依赖不能靠逐元素拆线程（每线程会各算一整遍），只能「切块 + 主机折叠」。后端差异收进
+/// [`Wrap`]（缓冲声明、线程下标、`kernel_main` 声明关键字），与 [`metal_chunk_reduce`] / [`cuda_chunk_reduce`]
+/// 共用同一条 body。
+///
+/// # Errors：签名不是归约形（缺唯一输入缓冲 / 可写输出 / 长度标量）或标量缺样本取值时返回说明。
+fn chunk_reduce(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+    wrap: &Wrap,
+) -> diagnostic::Result<String> {
     let input = signature
         .params()
         .iter()
@@ -570,11 +782,11 @@ pub fn metal_chunk_reduce(
         .map(|param| param.name.as_str())
         .ok_or_else(|| {
             Error::new(Code::Internal, "归约内核没有只读输入缓冲")
-                .with("cutile::harness::metal_chunk_reduce")
+                .with("cutile::harness::chunk_reduce")
         })?;
     let output = signature.output().ok_or_else(|| {
         Error::new(Code::Internal, "归约内核没有可写输出缓冲")
-            .with("cutile::harness::metal_chunk_reduce")
+            .with("cutile::harness::chunk_reduce")
     })?;
     let scalar = signature
         .params()
@@ -583,16 +795,24 @@ pub fn metal_chunk_reduce(
         .map(|param| param.name.as_str())
         .ok_or_else(|| {
             Error::new(Code::Internal, "归约内核没有长度标量")
-                .with("cutile::harness::metal_chunk_reduce")
+                .with("cutile::harness::chunk_reduce")
         })?;
     let len = sample.scalar(scalar).ok_or_else(|| {
         Error::new(Code::Invalid, format!("归约长度标量 `{scalar}` 没有样本取值"))
-            .with("cutile::harness::metal_chunk_reduce")
+            .with("cutile::harness::chunk_reduce")
     })?;
-    let buffers = buffer_decls(signature);
-    Ok(format!(
-        "{}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    d_{output}[g] = {reduce_func}(d_{input} + start, len, 1);\n}}",
-        msl_address_space(kernel_source),
+    let buffers = (wrap.buffers)(signature);
+    let body = format!(
+        "    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    d_{output}[g] = {reduce_func}(d_{input} + start, len, 1);"
+    );
+    Ok(kernel_main(
+        wrap,
+        kernel_source,
+        &signature.kernel(),
+        &buffers,
+        wrap.grid_param,
+        wrap.grid_stmt,
+        &body,
     ))
 }
 
