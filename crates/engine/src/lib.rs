@@ -324,6 +324,8 @@ struct Running {
 pub struct Scheduler {
     pager: crate::kv::Pager,
     running: Vec<Running>,
+    /// 满块前缀索引：跨请求复用 KV 的唯一来源（见 [`kv::Radix`]）。
+    radix: crate::kv::Radix,
 }
 
 impl Scheduler {
@@ -335,6 +337,7 @@ impl Scheduler {
         Self {
             pager,
             running: Vec::new(),
+            radix: crate::kv::Radix::new(),
         }
     }
 
@@ -343,39 +346,43 @@ impl Scheduler {
     /// 预留的是**当前**（提示）长度的页：按 `max_new` 全量预留会把池子提前锁死，而请求可能
     /// 很早就结束；之后每一页由 [`Scheduler::advance`] 在真的需要时才占。
     ///
+    /// 前缀页来自 [`kv::Radix`] 的满块命中：那是**跨请求**的复用，源序列结束、页归还之后仍
+    /// 命中得到（树自己持一份引用）。整页共享因此一定按页边界对齐，不满一页的尾巴落在新页里。
+    ///
     /// 但"能开始"不等于"能收尾"：若 [`Sequence::pages_required`]（跑满 `max_new` 的上界）已经
     /// 超过整个页池，这条序列独占页池也跑不完，放进来只会让批卡在 [`Progress::Blocked`] 上、
     /// 而没有任何序列能结束，页也永远回不来。这种请求同样返回 `false`。
-    pub fn admit(&mut self, sequence: &Sequence) -> Result<bool> {
-        self.admit_shared(sequence, None)
-    }
-
-    /// 准入并可选采纳一条在批序列的前缀页（D12 / prefix cache）。
     ///
-    /// `share = Some((源序列 id, 共享页数))`：前缀按页边界对齐后，整页经 [`kv::Pager::share`]
-    /// 采纳进新页表，引用计数 +1；其余页仍从池里新取。共享判定与源序列由 [`Batch`] 给出，
-    /// 调度器只负责页表与计数，不比较 token。源序列不在批里是调用方状态错误。
+    /// 空闲页不够时先按 LRU 摘掉前缀树的叶再试一次：缓存是自愿的，让它挡住一次本来能跑的
+    /// 准入是本末倒置。摘完仍不够才拒。
     ///
     /// # Errors
     ///
-    /// 同 [`admit`](Self::admit)；共享页越界或不在借出状态由 [`kv::Pager::share`] 报 `invalid`。
-    pub fn admit_shared(
-        &mut self,
-        sequence: &Sequence,
-        share: Option<(u64, usize)>,
-    ) -> Result<bool> {
+    /// 序列自身不合法（重名、已结束、页宽不符）时返回 `invalid`——那是调用方的状态错误，
+    /// 与"页不够"不是一回事。
+    pub fn admit(&mut self, sequence: &Sequence) -> Result<bool> {
         self.check_admissible(sequence)?;
-        let needed = sequence.pages_needed();
         if !self.fits(sequence) {
             return Ok(false);
         }
-        let (source_id, shared_requested) = share.unwrap_or((0, 0));
-        let shared_pages = shared_requested.min(needed);
-        let fresh = needed - shared_pages;
+        let needed = sequence.pages_needed();
+        let width = self.pager.page_size();
+        let prefix = self.radix.longest(sequence.context(), width);
+        let shared = prefix.len().min(needed);
+        let fresh = needed - shared;
+        if self.pager.free_pages() < fresh {
+            let short = fresh - self.pager.free_pages();
+            self.radix.evict(&mut self.pager, short)?;
+        }
         if self.pager.free_pages() < fresh {
             return Ok(false);
         }
-        let table = self.admit_table(needed, source_id, shared_pages, fresh)?;
+        let mut table = crate::kv::Table::new(needed)?;
+        for page in prefix.iter().take(shared) {
+            self.pager.share(*page)?;
+            table.push(*page)?;
+        }
+        Self::fill(&mut self.pager, &mut table, fresh, "engine::Scheduler::admit")?;
         let needs_page = self.needs_page(sequence, &table);
         self.running.push(Running {
             id: sequence.id(),
@@ -385,62 +392,17 @@ impl Scheduler {
         Ok(true)
     }
 
-    /// 建新页表：先采纳共享前缀页，再从池里补足剩余新页。
-    fn admit_table(
-        &mut self,
-        needed: usize,
-        source_id: u64,
-        shared_pages: usize,
-        fresh: usize,
-    ) -> Result<crate::kv::Table> {
-        let mut table = crate::kv::Table::new(needed)?;
-        self.adopt_shared(&mut table, source_id, shared_pages)?;
-        Self::fill(
-            &mut self.pager,
-            &mut table,
-            fresh,
-            "engine::Scheduler::admit_shared",
-        )?;
-        Ok(table)
-    }
-
-    /// 把源序列前缀的 `shared_pages` 页采纳进新页表：逐页 `share` 递增引用计数后入表。
-    fn adopt_shared(
-        &mut self,
-        table: &mut crate::kv::Table,
-        source_id: u64,
-        shared_pages: usize,
-    ) -> Result<()> {
-        let source_pages = self.source_pages(source_id, shared_pages)?;
-        for page in source_pages {
-            self.pager.share(page)?;
-            table.push(page)?;
-        }
-        Ok(())
-    }
-
-    /// 取源序列前缀页号；先整块复制出来，避免不可变借源表与可变借页池同时存续。
+    /// 把一个写满的块登记进前缀树，返回是否新登记（重复登记返回 `false`）。
     ///
-    /// 源序列不在批里是调用方状态错误，报 `Invalid`；共享页数为 0 时返回空表。
-    fn source_pages(&self, source_id: u64, shared_pages: usize) -> Result<Vec<crate::kv::Page>> {
-        if shared_pages == 0 {
-            return Ok(Vec::new());
-        }
-        let source = self.pages_of(source_id).ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("前缀源序列 {source_id} 不在批里：共享页无页表可取"),
-            )
-            .with("engine::Scheduler::admit_shared")
-        })?;
-        if shared_pages > source.len() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("前缀源序列 {source_id} 共享页数 {shared_pages} 超出页表"),
-            )
-            .with("engine::Scheduler::admit_shared"));
-        }
-        Ok(source.pages()[..shared_pages].to_vec())
+    /// 由调用方在**写完**这一块的那一刻调用：前缀复用的单位是"算好的块"，只有写的那一刻
+    /// 才知道它算完了。[`kv::Radix::publish`] 自己校验块边界与页的存活状态。
+    ///
+    /// # Errors
+    ///
+    /// 页宽为 0、`block` 超出现有 token 时返回 `invalid`；页不在借出状态由页池报错。
+    pub fn publish(&mut self, tokens: &[u32], block: usize, page: crate::kv::Page) -> Result<bool> {
+        let width = self.pager.page_size();
+        self.radix.publish(&mut self.pager, tokens, width, block, page)
     }
 
     /// 准入的状态判据：重名、已结束、页宽不符都是调用方的状态错误；页够不够由调用点判。

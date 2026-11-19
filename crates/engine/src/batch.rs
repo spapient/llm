@@ -99,44 +99,19 @@ impl Batch {
 
     /// 尝试准入：页够就把序列交进批里，不够就原样退回。
     ///
+    /// 前缀页由调度器向满块前缀树要（跨请求）：批不再自己扫活序列找公共前缀——那样源序列一
+    /// 结束、页一归还，前缀就跟着没了，而"同样的系统提示词再来一个请求"恰恰是最常见的复用。
+    ///
     /// # Errors
     ///
     /// 序列自身不合法（重名、已结束、`max_new` 为零）时返回 `invalid`——那是调用方的状态
     /// 错误，与"页不够"不是一回事。
     pub fn admit(&mut self, sequence: Sequence) -> Result<Admission> {
-        let share = self.prefix_share(sequence.context());
-        if !self.scheduler.admit_shared(&sequence, share)? {
+        if !self.scheduler.admit(&sequence)? {
             return Ok(Admission::Full(sequence));
         }
         self.sequences.push(sequence);
         Ok(Admission::Admitted)
-    }
-
-    /// 前缀匹配（D12）：在批内找公共前缀最长的序列，返回 `(源序列 id, 可整页共享的页数)`。
-    ///
-    /// 只按页边界整页共享：不满一页的前缀不拆页（那一页混着非前缀 token），落在新页里；
-    /// 共享页数不超过源序列当前页表长度。比较 token 在这里做（序列上下文归批持有），页采纳与
-    /// 引用计数归调度器。
-    fn prefix_share(&self, context: &[u32]) -> Option<(u64, usize)> {
-        let page_size = self.scheduler.page_size();
-        let mut best: Option<(usize, u64, usize)> = None;
-        for existing in &self.sequences {
-            let prefix = common_prefix(context, existing.context());
-            let shared_pages = (prefix / page_size).min(
-                self.scheduler
-                    .pages_of(existing.id())
-                    .map(|table| table.len())
-                    .unwrap_or(0),
-            );
-            if shared_pages == 0 {
-                continue;
-            }
-            let better = best.is_none_or(|(best_prefix, _, _)| prefix > best_prefix);
-            if better {
-                best = Some((prefix, existing.id(), shared_pages));
-            }
-        }
-        best.map(|(_, id, pages)| (id, pages))
     }
 
     /// 这条序列在这个页池里有没有可能跑完（与 [`Scheduler::fits`] 同源）。
@@ -202,11 +177,16 @@ impl Batch {
     /// 批是"序列 + 页账"的唯一来源，KV 也经它写：调用方只需要 id 与位置，不必自己拿页表
     /// 再算一次偏移，也不会写到一条已经 `finish` 的序列上。
     ///
+    /// 写满一页时顺手把这一块登记进前缀树：前缀复用的单位是"算好的块"，而只有写完那一刻才
+    /// 知道它算完了。登记只加一份页引用，不动这条序列的页表——之后这条序列结束归还自己那份，
+    /// 页仍由树持着，下一个同前缀请求照样命中。
+    ///
     /// # Errors
     ///
     /// `id` 不在批里、位置还没有页、行宽不符，或那页已归还。
     pub fn write_kv(&mut self, id: u64, token: usize, values: &[f32]) -> Result<()> {
-        self.scheduler.write_kv(id, token, values)
+        self.scheduler.write_kv(id, token, values)?;
+        self.publish_block(id, token)
     }
 
     /// 读回批里某条序列第 `token` 个位置的 KV 行。
@@ -328,21 +308,47 @@ impl Batch {
             .iter()
             .position(|sequence| sequence.id() == id)
     }
-}
 
-/// 两段上下文的公共前缀长度；逐位比较有串行依赖，保留 zip 折叠。
-fn common_prefix(a: &[u32], b: &[u32]) -> usize {
-    a.iter()
-        .zip(b)
-        .take_while(|(left, right)| left == right)
-        .count()
+    /// 刚写完的位置是否凑满一个块；凑满就登记进前缀树。
+    ///
+    /// 块内 token 从序列上下文切（前缀树比对的就是这些数），页号从页表取：两者都只在
+    /// "这一块已经写进页里"之后才有意义，所以调用点必须是写之后。
+    fn publish_block(&mut self, id: u64, token: usize) -> Result<()> {
+        let Self {
+            scheduler,
+            sequences,
+        } = self;
+        let width = scheduler.page_size();
+        if width == 0 || (token + 1) % width != 0 {
+            return Ok(());
+        }
+        let block = token / width;
+        let Some(sequence) = sequences.iter().find(|sequence| sequence.id() == id) else {
+            return Ok(());
+        };
+        let Some(span) = sequence
+            .context()
+            .get(block * width..(block + 1) * width)
+        else {
+            return Ok(());
+        };
+        let Some(page) = scheduler
+            .pages_of(id)
+            .and_then(|table| table.pages().get(block))
+            .copied()
+        else {
+            return Ok(());
+        };
+        scheduler.publish(span, block, page)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::exec::Stream;
-    use crate::kv::Cache;
+    use crate::kv::{Cache, Page};
 
     fn pool(total: usize, page_size: usize) -> Pager {
         Pager::new(Cache::new(total, page_size).expect("页池"), 2).expect("行宽")
@@ -501,43 +507,121 @@ mod tests {
         assert_eq!(batch.sequence(1).expect("在批里").tokens(), [5]);
     }
 
-    /// 整页相同前缀被采纳为共享页：同一页号进新表，引用计数 2，池里只占一个页位。
-    #[test]
-    fn identical_prefix_is_adopted_as_shared_pages() {
-        let mut batch = Batch::new(pool(4, 2));
-        batch.admit(sequence_with(1, &[0, 0], 1, 2)).expect("准入");
-        batch.admit(sequence_with(2, &[0, 0], 1, 2)).expect("准入");
-
-        let first = batch.scheduler().pages_of(1).expect("源表");
-        let second = batch.scheduler().pages_of(2).expect("新表");
-        let shared = first.pages()[0];
-        assert_eq!(second.pages()[0], shared, "前缀整页被采纳进新表");
-        assert_eq!(
-            batch.scheduler().cache().reference_count(shared),
-            2,
-            "共享页有两个持有者"
-        );
-        assert_eq!(batch.scheduler().cache().in_use(), 1, "共享页只占一个池页");
+    /// 把一条序列的前若干满块算完：逐位置写 KV，写满一页就登记进前缀树。
+    fn prefill(batch: &mut Batch, id: u64, blocks: usize, width: usize) -> Vec<Page> {
+        let row = vec![0.0f32; width];
+        for token in 0..blocks * width {
+            batch.write_kv(id, token, &row).expect("写 KV");
+        }
+        batch
+            .scheduler()
+            .pages_of(id)
+            .expect("页表")
+            .pages()
+            .to_vec()
     }
 
-    /// 源序列结束后共享前缀行仍可读；最后一个持有者归还后页才回池清零。
+    /// 已算好的块被下一个同前缀请求采纳：同一页号进新表，池里只占一个页位。
     #[test]
-    fn shared_prefix_row_survives_source_finish_until_last_holder_releases() {
+    fn a_written_block_is_adopted_by_the_next_identical_request() {
+        let mut batch = Batch::new(pool(4, 2));
+        batch.admit(sequence_with(1, &[0, 0], 1, 2)).expect("准入");
+        let shared = prefill(&mut batch, 1, 1, 2)[0];
+
+        batch.admit(sequence_with(2, &[0, 0], 1, 2)).expect("准入");
+        assert_eq!(
+            batch.scheduler().pages_of(2).expect("新表").pages()[0],
+            shared,
+            "已算好的块被采纳进新表"
+        );
+        assert_eq!(
+            batch.scheduler().cache().reference_count(shared),
+            3,
+            "源表、树、新表各持一份"
+        );
+        assert_eq!(batch.scheduler().cache().in_use(), 1, "三份引用只占一个池页");
+    }
+
+    /// 源序列结束后前缀仍命中：树持着那一页，新请求照样接手，页不会回池清零。
+    #[test]
+    fn a_written_block_outlives_the_sequence_that_computed_it() {
         let mut batch = Batch::new(pool(4, 2));
         batch.admit(sequence_with(1, &[3, 3], 1, 2)).expect("准入");
-        batch.admit(sequence_with(2, &[3, 3], 1, 2)).expect("准入");
-        batch.write_kv(1, 0, &[9.0, 9.0]).expect("写前缀行");
+        let shared = prefill(&mut batch, 1, 1, 2)[0];
+        batch.write_kv(1, 0, &[9.0, 9.0]).expect("改写前缀行");
 
         assert!(batch.finish(1).expect("源序列结束"));
-        let shared = batch.scheduler().pages_of(2).expect("新表").pages()[0];
-        assert!(
-            batch.scheduler().cache().is_live(shared),
-            "仍被新序列引用，页不能清零"
+        assert_eq!(
+            batch.scheduler().cache().reference_count(shared),
+            1,
+            "只剩树这一份"
+        );
+        assert!(batch.scheduler().cache().is_live(shared), "页不在池里");
+
+        batch.admit(sequence_with(2, &[3, 3], 1, 2)).expect("准入");
+        assert_eq!(
+            batch.scheduler().pages_of(2).expect("新表").pages()[0],
+            shared,
+            "跨请求命中：源序列已经不在了"
         );
         assert_eq!(batch.kv(2, 0).expect("读共享前缀行"), [9.0, 9.0]);
 
-        assert!(batch.finish(2).expect("最后持有者结束"));
-        assert_eq!(batch.scheduler().cache().in_use(), 0, "最后归还后页回池");
+        assert!(batch.finish(2).expect("共享方结束"));
+        assert!(batch.scheduler().cache().is_live(shared), "树仍持着前缀页");
+    }
+
+    /// 引用计数跨结束顺序正确：每张表一份、树一份，谁先结束都不提前回池。
+    #[test]
+    fn a_shared_block_is_released_only_when_the_last_holder_goes() {
+        let mut batch = Batch::new(pool(4, 2));
+        batch.admit(sequence_with(1, &[5, 5], 1, 2)).expect("准入源序列");
+        let shared = prefill(&mut batch, 1, 1, 2)[0];
+        batch.admit(sequence_with(2, &[5, 5], 1, 2)).expect("准入共享序列");
+
+        assert_eq!(
+            batch.scheduler().cache().reference_count(shared),
+            3,
+            "源表、树、共享表各一份"
+        );
+        assert!(batch.finish(1).expect("源序列先结束"));
+        assert_eq!(batch.scheduler().cache().reference_count(shared), 2);
+        assert!(batch.scheduler().cache().is_live(shared));
+        assert_eq!(batch.scheduler().cache().in_use(), 1, "共享页只占一个池页");
+
+        assert!(batch.finish(2).expect("共享方结束"));
+        assert_eq!(
+            batch.scheduler().cache().reference_count(shared),
+            1,
+            "只剩树这一份"
+        );
+        assert!(
+            !batch.finish(2).expect("重复结束恒等"),
+            "重复结束不再次归还"
+        );
+    }
+
+    /// 三方可共享同一前缀，谁先结束都只减自己那一份。
+    #[test]
+    fn three_requests_share_one_block() {
+        let mut batch = Batch::new(pool(6, 2));
+        batch.admit(sequence_with(1, &[4, 4], 1, 2)).expect("第一条");
+        let shared = prefill(&mut batch, 1, 1, 2)[0];
+        batch.admit(sequence_with(2, &[4, 4], 1, 2)).expect("第二条");
+        batch.admit(sequence_with(3, &[4, 4], 1, 2)).expect("第三条");
+
+        assert_eq!(batch.scheduler().cache().reference_count(shared), 4);
+        assert_eq!(batch.scheduler().cache().in_use(), 1, "四方共享一个池页");
+
+        assert!(batch.finish(2).expect("第二条先结束"));
+        assert_eq!(batch.scheduler().cache().reference_count(shared), 3);
+        assert!(batch.finish(1).expect("第一条结束"));
+        assert_eq!(batch.scheduler().cache().reference_count(shared), 2);
+        assert!(batch.finish(3).expect("第三条结束"));
+        assert_eq!(
+            batch.scheduler().cache().reference_count(shared),
+            1,
+            "只剩树这一份"
+        );
     }
 
     /// 首页内发散的前缀不共享：新序列另取新页，两条各占一个池页位。
@@ -740,65 +824,4 @@ mod tests {
         );
     }
 
-    /// 共享前缀引用计数正确：先结束共享方不释放前缀页，后结束最后持有者才回池；不重复释放。
-    #[test]
-    fn shared_prefix_reference_counting_is_correct_across_finish_order() {
-        let mut batch = Batch::new(pool(4, 2));
-        batch
-            .admit(sequence_with(1, &[5, 5], 1, 2))
-            .expect("准入源序列");
-        batch
-            .admit(sequence_with(2, &[5, 5], 1, 2))
-            .expect("准入共享序列");
-
-        let shared = batch.scheduler().pages_of(1).expect("源表").pages()[0];
-        assert_eq!(
-            batch.scheduler().cache().reference_count(shared),
-            2,
-            "前缀页被两张表引用"
-        );
-
-        // 源序列先结束：前缀页计数降为 1，仍存活、不回池、不清零。
-        assert!(batch.finish(1).expect("源序列先结束"));
-        assert_eq!(batch.scheduler().cache().reference_count(shared), 1);
-        assert!(batch.scheduler().cache().is_live(shared));
-        assert_eq!(batch.scheduler().cache().in_use(), 1, "共享页只占一个池页");
-
-        // 最后持有者结束：计数归 0，页回池；重复 finish 是恒等、不会二次归还。
-        assert!(batch.finish(2).expect("最后持有者结束"));
-        assert_eq!(batch.scheduler().cache().reference_count(shared), 0);
-        assert_eq!(batch.scheduler().cache().in_use(), 0);
-        assert!(
-            !batch.finish(2).expect("重复结束恒等"),
-            "重复结束不再次归还"
-        );
-    }
-
-    /// 三方可共享同一前缀：计数随每张表 +1，逐张结束逐张 -1，最后一张结束才回池。
-    #[test]
-    fn shared_prefix_refcount_supports_three_holders() {
-        let mut batch = Batch::new(pool(6, 2));
-        batch
-            .admit(sequence_with(1, &[4, 4], 1, 2))
-            .expect("第一条");
-        batch
-            .admit(sequence_with(2, &[4, 4], 1, 2))
-            .expect("第二条");
-        batch
-            .admit(sequence_with(3, &[4, 4], 1, 2))
-            .expect("第三条");
-
-        let shared = batch.scheduler().pages_of(1).expect("源表").pages()[0];
-        assert_eq!(batch.scheduler().cache().reference_count(shared), 3);
-        assert_eq!(batch.scheduler().cache().in_use(), 1, "三方共享一个池页");
-
-        assert!(batch.finish(2).expect("第二条先结束"));
-        assert_eq!(batch.scheduler().cache().reference_count(shared), 2);
-        assert!(batch.scheduler().cache().is_live(shared));
-        assert!(batch.finish(1).expect("第一条结束"));
-        assert_eq!(batch.scheduler().cache().reference_count(shared), 1);
-        assert!(batch.finish(3).expect("第三条结束"));
-        assert_eq!(batch.scheduler().cache().reference_count(shared), 0);
-        assert_eq!(batch.scheduler().cache().in_use(), 0);
-    }
 }
