@@ -200,63 +200,53 @@ fn closed_vocabularies_are_declared_once() {
     );
 }
 
-/// 执行前端必须登记进 `cutile::device` 的描述符表，且四个槽位齐全：语言身份 `emit`、探测
-/// `available`、程序生成 `program`、执行回读 `run`。
-///
-/// 表驱动之后，执行前端不再有 `Device` trait 或单独的前端类型：差异全是表内的函数指针行，
-/// "写了实现却忘了进表"这一事故在结构上消失——要执行就必须出现在表的一行里。文本契约守另一类
-/// 事故：表行漏了某个槽位（缺探测 / 缺程序 / 缺回读），或 `emit` 没绑到 `Emit` 闭集。
-/// 加设备只在表内加一行，不改任何 `match`。
+/// 执行后端必须落进 `cutile::backend` 的 trait 缝（`Backend = Codegen + Driver`），四个能力槽
+/// 由 trait 方法**结构性**保证：`emit`/`program` 在 `Codegen`，`available`/`run`/`toolchain` 在
+/// `Driver`。宿主 C 参考后端在 `device` 的注册表里种子就位，Metal / CUDA 经 `register` 由 L7
+/// 注入。文本契约守的是：缝在、C 后端种子在、注入点在——"写了实现却忘了接线"只剩"没调 `register`"
+/// 这一种，且只发生在装配层（L7），不在机制层。
 #[test]
 fn every_device_front_end_is_entered() {
-    let path = root().join("crates/cutile/src/device.rs");
-    let text = fs::read_to_string(&path).expect("`crates/cutile/src/device.rs` 必须存在");
+    let device = root().join("crates/cutile/src/device.rs");
+    let text = fs::read_to_string(&device).expect("`crates/cutile/src/device.rs` 必须存在");
     assert!(
-        text.contains("const SPECS"),
-        "执行前端描述符表 `const SPECS` 必须存在"
+        text.contains("static REGISTRY"),
+        "后端注册表 `static REGISTRY` 必须存在"
+    );
+    assert!(
+        text.contains("&CBackend"),
+        "注册表必须种子内置 host C 参考后端"
+    );
+    assert!(
+        text.contains("pub(crate) fn register"),
+        "注册表必须有注入点 `register`（L7 装配 Metal/CUDA）"
     );
 
-    let mut checked = 0;
-    let mut failures: Vec<String> = Vec::new();
-    let mut slots: Vec<&str> = Vec::new();
-    let mut in_spec = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("Spec {") {
-            in_spec = true;
-            slots.clear();
-            continue;
-        }
-        if !in_spec {
-            continue;
-        }
-        if trimmed == "}," || trimmed == "}" {
-            checked += 1;
-            if !slots
-                .iter()
-                .any(|line| line.starts_with("emit:") && line.contains("Emit::"))
-            {
-                failures.push("执行前端表行缺少 `emit: Emit::<..>` 语言身份槽位".to_string());
-            }
-            for slot in ["available", "program", "run"] {
-                if !slots
-                    .iter()
-                    .any(|line| line.starts_with(&format!("{slot}:")))
-                {
-                    failures.push(format!("执行前端表行缺少 `{slot}` 函数指针槽位"));
-                }
-            }
-            in_spec = false;
-            slots.clear();
-        } else {
-            slots.push(trimmed);
-        }
-    }
+    let backend = root().join("crates/cutile/src/backend.rs");
+    let text = fs::read_to_string(&backend).expect("`crates/cutile/src/backend.rs` 必须存在");
+    assert!(text.contains("pub trait Codegen"), "Codegen 缝必须存在");
     assert!(
-        checked >= 2,
-        "扫描器只看到 {checked} 个执行前端：扫描逻辑或文件布局坏了，而不是\"没有违规\""
+        text.contains("fn emit"),
+        "Codegen 必须要求语言身份 `emit`"
     );
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(
+        text.contains("fn program"),
+        "Codegen 必须要求程序生成 `program`"
+    );
+    assert!(text.contains("pub trait Driver"), "Driver 缝必须存在");
+    assert!(
+        text.contains("fn available"),
+        "Driver 必须要求探测 `available`"
+    );
+    assert!(text.contains("fn run"), "Driver 必须要求执行回读 `run`");
+    assert!(
+        text.contains("fn toolchain"),
+        "Driver 必须要求工具链身份 `toolchain`"
+    );
+    assert!(
+        text.contains("pub trait Backend: Codegen + Driver"),
+        "Backend 必须是 Codegen + Driver 的并集"
+    );
 }
 
 #[test]
