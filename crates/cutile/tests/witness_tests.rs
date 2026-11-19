@@ -212,6 +212,8 @@ fn every_accelerator_witness_parses_in_its_own_language() {
                 assert!(front.contains(selector), "{vendor}: {front}");
                 assert_eq!(witnesses, declared, "{vendor}: 门要盖住每一条声明");
             }
+            // 设备执行已覆盖（nvidia 真机在场时比“只解析”更强）：能真跑的就不只解析。
+            LanguageGate::Covered => {}
             LanguageGate::Absent { reason } if reason.contains("不在本机") => {}
             other => panic!("{vendor} 的见证没有在 `{selector}` 里过一遍：{other}"),
         }
