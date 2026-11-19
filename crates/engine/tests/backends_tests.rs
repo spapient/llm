@@ -357,7 +357,7 @@ fn production_quantized_gemv_compiles(op_name: &str) {
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
     if !cutile::witness::device_available(&profile) {
-        testkit::skip(&format!("engine: Metal 工具链不在本机，{op_name} 内核编译用例未运行"));
+        testkit::skip(format!("engine: Metal 工具链不在本机，{op_name} 内核编译用例未运行"));
         return;
     }
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, 64, 4)

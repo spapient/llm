@@ -65,9 +65,12 @@ fn registry() -> &'static Mutex<Vec<&'static dyn Backend>> {
     REGISTRY.get_or_init(|| Mutex::new(vec![&CBackend]))
 }
 
-/// 注册一台后端；同一条后端重复注册只留一份（幂等）。
+/// 注册一台后端；同一条后端重复注册只留一份（幂等）。注册表锁若已中毒，本次注册静默放弃——
+/// 后端注入发生在启动期，宁可少一台也不 panic。
 pub(crate) fn register(backend: &'static dyn Backend) {
-    let mut table = registry().lock().expect("后端注册表锁中毒");
+    let Ok(mut table) = registry().lock() else {
+        return;
+    };
     if !table.iter().any(|entry| entry.emit() == backend.emit()) {
         table.push(backend);
     }
@@ -75,17 +78,18 @@ pub(crate) fn register(backend: &'static dyn Backend) {
 
 /// 按 `emit` 找设备后端；找不到就是「本机没有这门语言的执行前端」。
 pub(crate) fn spec(emit: Emit) -> Option<&'static dyn Backend> {
-    registry()
-        .lock()
-        .expect("后端注册表锁中毒")
-        .iter()
-        .find(|entry| entry.emit() == emit)
-        .copied()
+    let Ok(table) = registry().lock() else {
+        return None;
+    };
+    table.iter().find(|entry| entry.emit() == emit).copied()
 }
 
 /// 已登记的全部执行语言：错误报告里列出「本机接了哪些」。
 pub(crate) fn specs() -> Vec<&'static dyn Backend> {
-    registry().lock().expect("后端注册表锁中毒").clone()
+    let Ok(table) = registry().lock() else {
+        return Vec::new();
+    };
+    table.clone()
 }
 
 // ---------------------------------------------------------------------------

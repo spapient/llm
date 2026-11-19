@@ -22,6 +22,13 @@ use op::model::Sample;
 /// 设备不在本机时唯一的说法：通道、协商与报告都用它。
 const NO_DEVICE: &str = "本机没有该设备，只能真机验证";
 
+/// 按 `emit` 取设备后端，取不到就是「本机没有这门语言的执行前端」。把 `.ok_or_else` 收在一处，
+/// 让 CUDA / Metal 两条通道只写 `backend(emit)?`，不各自重复拼错误。
+fn backend(emit: Emit) -> diagnostic::Result<&'static dyn crate::backend::Backend> {
+    crate::device::spec(emit)
+        .ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))
+}
+
 /// 一台设备通过 `L2` 的证据：这次执行真的产生了什么。档案登记值（`tool_ver`）与实测值（`toolchain`）
 /// 分开列：两者不一致不改等级，但报告必须把差异说出来。
 #[derive(Debug, Clone, PartialEq)]
@@ -468,14 +475,12 @@ impl Sweep<'_> {
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
         let program = harness::cuda_harness(&prepared.source.text, &self.run.op.signature, sample)?;
-        let (stdout, _stderr) = crate::device::spec(Emit::Cuda)
-            .ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))?
-            .compile_run(
-                self.run.profile,
-                self.dirs,
-                &crate::backend::Source::Single(program),
-                "verify",
-            )?;
+        let (stdout, _stderr) = backend(Emit::Cuda)?.compile_run(
+            self.run.profile,
+            self.dirs,
+            &crate::backend::Source::Single(program),
+            "verify",
+        )?;
         Ok((runner::parse_bits(&stdout), None))
     }
 
@@ -488,17 +493,15 @@ impl Sweep<'_> {
         self.run.op.signature.check(sample)?;
         let program =
             harness::metal_harness(&prepared.source.text, &self.run.op.signature, sample)?;
-        let (stdout, _stderr) = crate::device::spec(Emit::Metal)
-            .ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))?
-            .compile_run(
-                self.run.profile,
-                self.dirs,
-                &crate::backend::Source::Pair {
-                    device: program.0,
-                    host: program.1,
-                },
-                "verify",
-            )?;
+        let (stdout, _stderr) = backend(Emit::Metal)?.compile_run(
+            self.run.profile,
+            self.dirs,
+            &crate::backend::Source::Pair {
+                device: program.0,
+                host: program.1,
+            },
+            "verify",
+        )?;
         Ok((runner::parse_bits(&stdout), None))
     }
 }
