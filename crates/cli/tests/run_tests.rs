@@ -108,9 +108,7 @@ fn bind_u8(executor: &mut engine::metal::MetalExecutor, slot: u32, values: &[u8]
 
 /// 把单个 f32 标量写进执行器缓冲（4 字节）。
 fn bind_scalar(executor: &mut engine::metal::MetalExecutor, slot: u32, value: f32) {
-    executor.bind_bytes(slot, 4).expect("标量缓冲");
-    let bytes = executor.buffer_mut(slot).expect("标量可写").as_mut_bytes();
-    bytes.copy_from_slice(&value.to_le_bytes());
+    bind_f32(executor, slot, &[value]);
 }
 
 /// 按声明签名把样本缓冲绑进执行器：可写参数绑 `output_len` 字节输出槽，只读参数按 C 类型

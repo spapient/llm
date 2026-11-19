@@ -30,7 +30,3 @@ testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true
-
-[[test]]
-name = "protocol"
-path = "tests/protocol.rs"

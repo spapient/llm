@@ -3,7 +3,8 @@
 //! **拥有**：`approx_eq`、`close`、`all_finite`、`cosine_similarity`、`COSINE_GUARD`
 //! （[`compare`]）；`device_enabled`、`device_or_skip`、`skip`、`skip_none`、`skip_count`、
 //! `skipped_reasons`（[`gating`]）；`scratch_dir`、`scratch_clean`（[`scratch`]）；
-//! [`Rng`]（[`rng`]）；`crc32_bitwise`（[`hash`]）。**不拥有**：任何生产逻辑——它是测试
+//! [`Rng`]（[`rng`]）；`crc32_bitwise`（[`hash`]）；`safetensors_bytes` 与 `pack_codes`
+//! （本文件，格式夹具）。**不拥有**：任何生产逻辑——它是测试
 //! 夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
@@ -192,6 +193,43 @@ pub mod scratch {
             let _ = std::fs::remove_dir_all(&again);
         }
     }
+}
+
+/// 按 safetensors 布局拼一份完整文件：8 字节小端头长 + 头部 JSON + 依序拼接的数据段。
+///
+/// `data` 的顺序必须与 `json` 里 `data_offsets` 的偏移一致；条目名用于在调试构建里核对头部
+/// 确实声明了这段数据（不引入 JSON 解析器，守住本 crate 的零依赖）。
+#[must_use]
+pub fn safetensors_bytes(json: &str, data: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    for (name, _) in data {
+        debug_assert!(json.contains(name), "头部 JSON 必须声明数据段 `{name}`");
+    }
+    let mut bytes = (json.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(json.as_bytes());
+    for (_, chunk) in data {
+        bytes.extend_from_slice(chunk);
+    }
+    bytes
+}
+
+/// 把 `bits` 位有符号码按低 `bits` 位打包：`zero = 2^(bits-1)` 平移，低 `bits` 位落在字节内。
+///
+/// 一个字节按 `8 / bits` 个槽从低到高排；尾组不足一槽时补零码。位宽取 1..=8（整除 8 的
+/// 2/4/8 是常规用法），与 `op` 的量化 GEMV 参考共用同一口径。
+#[must_use]
+pub fn pack_codes(bits: usize, values: &[i8]) -> Vec<u8> {
+    let per_byte = 8 / bits;
+    let zero = 1i16 << (bits - 1);
+    let mask = u8::MAX >> (8 - bits);
+    values
+        .chunks(per_byte)
+        .map(|group| {
+            (0..per_byte).fold(0u8, |byte, slot| {
+                let code = (i16::from(group.get(slot).copied().unwrap_or(0)) + zero) as u8 & mask;
+                byte | (code << (slot * bits))
+            })
+        })
+        .collect()
 }
 
 pub use compare::{COSINE_GUARD, all_finite, approx_eq, close, cosine_similarity};

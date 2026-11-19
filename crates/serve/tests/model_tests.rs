@@ -2,14 +2,17 @@ use super::*;
 use crate::Predict;
 use crate::assembly::Params;
 use crate::model_host::CpuModel;
+use crate::proto::{Decoder, Envelope, HEADER_LEN, Kind, MAX_PAYLOAD, TRAILER_LEN, Version};
+use crate::{Response, Route, Status};
 use diagnostic::Code;
 use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
 use engine::kv::{Cache, Pager};
-use engine::{Batch, Sequence};
+use engine::{Batch, Scheduler, Sequence};
 use nn::{
     Add, AttentionAlgo, AttentionBlock, Embedding, Linear, Mul, RmsNorm, Silu, Stack, WeightFormat,
 };
-use testkit::{all_finite, close, scratch_dir};
+use testkit::{all_finite, close, pack_codes, safetensors_bytes, scratch_dir};
+use tokenizer::{Bytes, Tokenizer};
 use weights::safetensors::Archive;
 
 /// 登记完表内内核的空 CPU 执行器。
@@ -449,10 +452,11 @@ fn archive_of(entries: &[ArchiveEntry]) -> Vec<u8> {
         ));
     }
     json.push('}');
-    let mut file = (json.len() as u64).to_le_bytes().to_vec();
-    file.extend_from_slice(json.as_bytes());
-    file.extend(data);
-    file
+    let chunks: Vec<(&str, Vec<u8>)> = entries
+        .iter()
+        .map(|entry| (entry.name, entry.bytes.clone()))
+        .collect();
+    safetensors_bytes(&json, &chunks)
 }
 
 /// 两层 3→2→2 合成模型夹具：输入、归档字节与串行参考输出；装载路线由各用例自选。
@@ -489,26 +493,41 @@ fn write_archive_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
 
 /// 空头部归档：没有任何条目。
 fn empty_archive() -> Vec<u8> {
-    let json = b"{}";
-    let mut file = (json.len() as u64).to_le_bytes().to_vec();
-    file.extend_from_slice(json);
-    file
+    safetensors_bytes("{}", &[])
 }
 
-#[test]
-fn gemv_runs_through_the_registered_kernel() {
-    let x = [1.0, 2.0, 3.0];
-    let weights = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-    let mut reference = vec![0.0; 2];
-    op::gemv_f32::forward(&x, &weights, &mut reference).expect("参考");
-
-    let mut executor = cpu();
-    bind(&mut executor, 0, &x);
-    bind(&mut executor, 1, &weights);
-    let produced = run_one(&mut executor, "gemv_f32", &[0, 1], 2, 2);
-
-    assert_close(&produced, &reference);
+/// 注册内核冒烟测试的公共模板：建空执行器 → 参考实现算一遍 → bind → `run_one` → 对拍。
+///
+/// 调用形状 `kernel_smoke!(测试名, "内核名", |executor| { ... })`：闭包拿到执行器，绑好输入并
+/// 返回 `(输入编号, 输出编号, 参考输出)`，输出长度取参考长度。宏只收拢样板，各用例的参考调用
+/// 与断言原样保留。
+macro_rules! kernel_smoke {
+    ($(#[$meta:meta])* $name:ident, $op:literal, |$executor:ident| $body:block) => {
+        $(#[$meta])*
+        #[test]
+        fn $name() {
+            let mut executor = cpu();
+            let (inputs, output, reference) =
+                (|$executor: &mut CpuExecutor| $body)(&mut executor);
+            let produced = run_one(&mut executor, $op, &inputs, output, reference.len());
+            assert_close(&produced, &reference);
+        }
+    };
 }
+
+kernel_smoke!(
+    gemv_runs_through_the_registered_kernel,
+    "gemv_f32",
+    |executor| {
+        let x = [1.0, 2.0, 3.0];
+        let weights = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut reference = vec![0.0; 2];
+        op::gemv_f32::forward(&x, &weights, &mut reference).expect("参考");
+        bind(executor, 0, &x);
+        bind(executor, 1, &weights);
+        (vec![0, 1], 2, reference)
+    }
+);
 
 /// 行批投影：整块两行共享同一份权重，逐行 gemv 与串行参考逐行重算对拍。
 #[test]
@@ -554,142 +573,113 @@ fn gemv_row_batch_rejects_inconsistent_geometry() {
     assert!(executor.run(&node).is_err());
 }
 
-/// 把 [-8, 7] 的 int4 码按低 nibble 在前打成字节，口径与 `op::gemv_i4` 参考一致。
-fn packed_i4(codes: &[i8]) -> Vec<u8> {
-    codes
-        .chunks(2)
-        .map(|pair| {
-            let low = (pair[0] + 8) as u8 & 0x0F;
-            let high = pair.get(1).copied().unwrap_or(0) + 8;
-            low | ((high as u8) & 0x0F) << 4
-        })
-        .collect()
-}
+// 4 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
+kernel_smoke!(
+    gemv_i4_runs_through_the_registered_kernel,
+    "gemv_i4",
+    |executor| {
+        let x = [1.0, 2.0, 3.0, 4.0];
+        let w = pack_codes(4, &[1, 2, 3, 4]);
+        let scales = [0.5f32];
+        let mut reference = vec![0.0; 1];
+        op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+        bind(executor, 0, &x);
+        bind_u8(executor, 1, &w);
+        bind(executor, 2, &scales);
+        (vec![0, 1, 2], 3, reference)
+    }
+);
 
-/// 4 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
-#[test]
-fn gemv_i4_runs_through_the_registered_kernel() {
-    let x = [1.0, 2.0, 3.0, 4.0];
-    let w = packed_i4(&[1, 2, 3, 4]);
-    let scales = [0.5f32];
-    let mut reference = vec![0.0; 1];
-    op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+// 8 位量化乘加：权重逐元素 int8 位模式打包进 `u8`，与独立 `op` 参考对拍。
+kernel_smoke!(
+    gemv_i8_runs_through_the_registered_kernel,
+    "gemv_i8",
+    |executor| {
+        let x = [1.0, 2.0, 3.0, 4.0];
+        let w: Vec<u8> = [1i8, 2, 3, 4].iter().map(|value| *value as u8).collect();
+        let scales = [0.5f32];
+        let mut reference = vec![0.0; 1];
+        op::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
+        bind(executor, 0, &x);
+        bind_u8(executor, 1, &w);
+        bind(executor, 2, &scales);
+        (vec![0, 1, 2], 3, reference)
+    }
+);
 
-    let mut executor = cpu();
-    bind(&mut executor, 0, &x);
-    bind_u8(&mut executor, 1, &w);
-    bind(&mut executor, 2, &scales);
-    let produced = run_one(&mut executor, "gemv_i4", &[0, 1, 2], 3, 1);
+// 4 位反量化：打包字节每字节两个 nibble，scale/zero 取样本常量，与独立 `op` 参考对拍。
+kernel_smoke!(
+    dequant_i4_runs_through_the_registered_kernel,
+    "dequant_i4",
+    |executor| {
+        let q = [0x52u8];
+        let mut reference = vec![0.0; 2];
+        op::dequant_i4::forward(
+            op::dequant_i4::SCALE,
+            op::dequant_i4::ZERO,
+            &q,
+            &mut reference,
+        )
+        .expect("参考");
+        bind_u8(executor, 0, &q);
+        (vec![0], 1, reference)
+    }
+);
 
-    assert_close(&produced, &reference);
-}
+// 8 位反量化：码点本身是 `f32`，scale/zero 取样本常量，与独立 `op` 参考对拍。
+kernel_smoke!(
+    dequant_i8_runs_through_the_registered_kernel,
+    "dequant_i8",
+    |executor| {
+        let q = [8.0f32, 12.0];
+        let mut reference = vec![0.0; 2];
+        op::dequant_i8::forward(
+            op::dequant_i8::SCALE,
+            op::dequant_i8::ZERO,
+            &q,
+            &mut reference,
+        )
+        .expect("参考");
+        bind(executor, 0, &q);
+        (vec![0], 1, reference)
+    }
+);
 
-/// 8 位量化乘加：权重逐元素 int8 位模式打包进 `u8`，与独立 `op` 参考对拍。
-#[test]
-fn gemv_i8_runs_through_the_registered_kernel() {
-    let x = [1.0, 2.0, 3.0, 4.0];
-    let w: Vec<u8> = [1i8, 2, 3, 4].iter().map(|value| *value as u8).collect();
-    let scales = [0.5f32];
-    let mut reference = vec![0.0; 1];
-    op::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
+// 2 位反量化：每字节四个码，scale/zero 取样本常量，与独立 `op` 参考对拍。
+kernel_smoke!(
+    dequant_i2_runs_through_the_registered_kernel,
+    "dequant_i2",
+    |executor| {
+        let q = [0x52u8];
+        let mut reference = vec![0.0; 4];
+        op::dequant_i2::forward(
+            op::dequant_i2::SCALE,
+            op::dequant_i2::ZERO,
+            &q,
+            &mut reference,
+        )
+        .expect("参考");
+        bind_u8(executor, 0, &q);
+        (vec![0], 1, reference)
+    }
+);
 
-    let mut executor = cpu();
-    bind(&mut executor, 0, &x);
-    bind_u8(&mut executor, 1, &w);
-    bind(&mut executor, 2, &scales);
-    let produced = run_one(&mut executor, "gemv_i8", &[0, 1, 2], 3, 1);
-
-    assert_close(&produced, &reference);
-}
-
-/// 4 位反量化：打包字节每字节两个 nibble，scale/zero 取样本常量，与独立 `op` 参考对拍。
-#[test]
-fn dequant_i4_runs_through_the_registered_kernel() {
-    let q = [0x52u8];
-    let mut reference = vec![0.0; 2];
-    op::dequant_i4::forward(
-        op::dequant_i4::SCALE,
-        op::dequant_i4::ZERO,
-        &q,
-        &mut reference,
-    )
-    .expect("参考");
-
-    let mut executor = cpu();
-    bind_u8(&mut executor, 0, &q);
-    let produced = run_one(&mut executor, "dequant_i4", &[0], 1, 2);
-
-    assert_close(&produced, &reference);
-}
-
-/// 8 位反量化：码点本身是 `f32`，scale/zero 取样本常量，与独立 `op` 参考对拍。
-#[test]
-fn dequant_i8_runs_through_the_registered_kernel() {
-    let q = [8.0f32, 12.0];
-    let mut reference = vec![0.0; 2];
-    op::dequant_i8::forward(
-        op::dequant_i8::SCALE,
-        op::dequant_i8::ZERO,
-        &q,
-        &mut reference,
-    )
-    .expect("参考");
-
-    let mut executor = cpu();
-    bind(&mut executor, 0, &q);
-    let produced = run_one(&mut executor, "dequant_i8", &[0], 1, 2);
-
-    assert_close(&produced, &reference);
-}
-
-/// 2 位反量化：每字节四个码，scale/zero 取样本常量，与独立 `op` 参考对拍。
-#[test]
-fn dequant_i2_runs_through_the_registered_kernel() {
-    let q = [0x52u8];
-    let mut reference = vec![0.0; 4];
-    op::dequant_i2::forward(
-        op::dequant_i2::SCALE,
-        op::dequant_i2::ZERO,
-        &q,
-        &mut reference,
-    )
-    .expect("参考");
-
-    let mut executor = cpu();
-    bind_u8(&mut executor, 0, &q);
-    let produced = run_one(&mut executor, "dequant_i2", &[0], 1, 4);
-
-    assert_close(&produced, &reference);
-}
-
-/// 把 [-2, 1] 的 int2 码按低 2 位在前打成字节，口径与 `op::gemv_i2` 参考一致。
-fn packed_i2(codes: &[i8]) -> Vec<u8> {
-    codes
-        .chunks(4)
-        .map(|quad| {
-            let slot = |i: usize| (quad.get(i).copied().unwrap_or(0) + 2) as u8 & 0x03;
-            slot(0) | slot(1) << 2 | slot(2) << 4 | slot(3) << 6
-        })
-        .collect()
-}
-
-/// 2 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
-#[test]
-fn gemv_i2_runs_through_the_registered_kernel() {
-    let x = [1.0, 2.0, 3.0, 4.0];
-    let w = packed_i2(&[1, -1, 0, 1]);
-    let scales = [0.5f32];
-    let mut reference = vec![0.0; 1];
-    op::gemv_i2::forward(&x, &w, &scales, &mut reference).expect("参考");
-
-    let mut executor = cpu();
-    bind(&mut executor, 0, &x);
-    bind_u8(&mut executor, 1, &w);
-    bind(&mut executor, 2, &scales);
-    let produced = run_one(&mut executor, "gemv_i2", &[0, 1, 2], 3, 1);
-
-    assert_close(&produced, &reference);
-}
+// 2 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
+kernel_smoke!(
+    gemv_i2_runs_through_the_registered_kernel,
+    "gemv_i2",
+    |executor| {
+        let x = [1.0, 2.0, 3.0, 4.0];
+        let w = pack_codes(2, &[1, -1, 0, 1]);
+        let scales = [0.5f32];
+        let mut reference = vec![0.0; 1];
+        op::gemv_i2::forward(&x, &w, &scales, &mut reference).expect("参考");
+        bind(executor, 0, &x);
+        bind_u8(executor, 1, &w);
+        bind(executor, 2, &scales);
+        (vec![0, 1, 2], 3, reference)
+    }
+);
 
 /// 量化 GEMM 经注册 Program 对拍：A/B 打包字节、Y 浮点；几何由样本静态轴与缓冲长度反推。
 ///
@@ -769,20 +759,19 @@ fn a_quantized_weight_bound_as_f32_is_rejected_by_the_kernel() {
     assert_eq!(error.code(), Code::Invalid);
 }
 
-#[test]
-fn rmsnorm_runs_through_the_registered_kernel() {
-    let x = [1.0, 2.0, 3.0];
-    let gamma = [1.0, 1.0, 1.0];
-    let mut reference = vec![0.0; 3];
-    op::rmsnorm_f32::forward(&x, &gamma, &mut reference).expect("参考");
-
-    let mut executor = cpu();
-    bind(&mut executor, 0, &x);
-    bind(&mut executor, 1, &gamma);
-    let produced = run_one(&mut executor, "rmsnorm_f32", &[0, 1], 2, 3);
-
-    assert_close(&produced, &reference);
-}
+kernel_smoke!(
+    rmsnorm_runs_through_the_registered_kernel,
+    "rmsnorm_f32",
+    |executor| {
+        let x = [1.0, 2.0, 3.0];
+        let gamma = [1.0, 1.0, 1.0];
+        let mut reference = vec![0.0; 3];
+        op::rmsnorm_f32::forward(&x, &gamma, &mut reference).expect("参考");
+        bind(executor, 0, &x);
+        bind(executor, 1, &gamma);
+        (vec![0, 1], 2, reference)
+    }
+);
 
 /// 两行批整块归一化：`gamma` 按行宽复用，两段独立 RMS、互不串段；参考逐行 `forward` 重算。
 #[test]
@@ -1125,7 +1114,7 @@ fn a_quantized_layer_with_dense_weights_is_rejected_at_assembly() {
 fn a_quantized_layer_without_its_scale_is_rejected_at_assembly() {
     let stack = Stack::new(vec![Linear::new("blk.0", 32, 1).expect("层")]).expect("栈");
     let mut params = Params::new();
-    params.insert_packed("blk.0.weight", packed_i4(&[1i8; 32]));
+    params.insert_packed("blk.0.weight", pack_codes(4, &[1i8; 32]));
 
     rejected_at_assembly(stack, params, Code::Missing);
 }
@@ -1135,7 +1124,7 @@ fn a_quantized_layer_without_its_scale_is_rejected_at_assembly() {
 fn a_quantized_int4_projection_assembles_and_matches_the_reference() {
     let x: Vec<f32> = (0..32).map(|index| 1.0 + index as f32 * 0.1).collect();
     let codes: Vec<i8> = (0..32).map(|index| (index as i8 % 5) - 2).collect();
-    let w = packed_i4(&codes);
+    let w = pack_codes(4, &codes);
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
     op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
@@ -1180,7 +1169,7 @@ fn a_quantized_int4_archive_loads_and_matches_the_reference() {
     let codes: Vec<i8> = (0..in_features)
         .map(|index| (index as i8 % 5) - 2)
         .collect();
-    let w = packed_i4(&codes);
+    let w = pack_codes(4, &codes);
     let scales = [0.25f32];
     let mut reference = vec![0.0; 1];
     op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
@@ -1876,7 +1865,7 @@ fn quant_projection(out: usize, in_width: usize, seed: i8) -> (Vec<u8>, Vec<f32>
     let scales: Vec<f32> = (0..out * groups)
         .map(|index| 0.25 + (index % 3) as f32 * 0.25)
         .collect();
-    (packed_i4(&codes), scales)
+    (pack_codes(4, &codes), scales)
 }
 
 /// 量化块参考链：q/k/v/o 走 `gemv_i4`，RoPE/注意力/残差与稠密参考同族；返回残差、旋转 K、明文 V。
@@ -2194,4 +2183,148 @@ fn logits_batch_default_runs_each_sequence_in_input_order() {
             .is_empty(),
         "空序列批量返回空行"
     );
+}
+
+// ===== 黑盒协议契约（原 `tests/protocol.rs`，随本模块走 libtest） =====
+//
+// 端点与线格式从外部看只有"字节进、响应出"。内联测试直接驱动 `frame::scan` 与内部辅助；
+// 这一段只走公开面：`Envelope` 编解码往返、`Decoder` 的分批到达语义、`Route` 与 `Response`
+// 的对外承诺，以及错误流的方向（服务端自身故障才上抛，请求不成立必须落成响应）。
+
+/// 三个类型各造一帧，载荷长度互不相同：短、空、边界。
+fn envelopes() -> Vec<Envelope> {
+    vec![
+        Envelope::new(
+            Version::current(),
+            Kind::Request,
+            b"POST /v1/completions".to_vec(),
+        ),
+        Envelope::new(Version::current(), Kind::Chunk, Vec::new()),
+        Envelope::new(Version::current(), Kind::Done, b"ok".to_vec()),
+    ]
+}
+
+#[test]
+fn every_envelope_round_trips_through_wire_bytes() {
+    for envelope in envelopes() {
+        let frame = envelope.frame().expect("帧合法");
+        assert_eq!(
+            frame.len(),
+            HEADER_LEN + envelope.payload().len() + TRAILER_LEN,
+            "帧长由布局决定，不是实现自由"
+        );
+        let parsed = Envelope::parse(&frame).expect("自产帧必须能解析");
+        assert_eq!(parsed, envelope, "版本、类型、载荷三者都要原样回来");
+    }
+}
+
+#[test]
+fn a_stream_split_across_pushes_yields_the_same_frames() {
+    let wire: Vec<u8> = envelopes()
+        .iter()
+        .flat_map(|envelope| envelope.frame().expect("编码"))
+        .collect();
+
+    // 每 3 个字节一段：一帧会被切成很多段，覆盖"半帧到达"。
+    let mut decoder = Decoder::new();
+    let mut kinds = Vec::new();
+    for chunk in wire.chunks(3) {
+        decoder.push(chunk).expect("半帧不是错误");
+        while let Some(frame) = decoder.next_frame().expect("扫描") {
+            kinds.push(frame.kind());
+            assert_eq!(frame.version(), Version::current());
+        }
+    }
+    assert_eq!(kinds, [Kind::Request, Kind::Chunk, Kind::Done]);
+    assert_eq!(decoder.buffered(), 0, "取尽之后缓冲必须清空");
+    decoder.finish().expect("停在帧边界是正常关闭");
+}
+
+#[test]
+fn a_connection_closed_mid_frame_is_an_error() {
+    let frame = envelopes()[0].frame().expect("编码");
+    let mut decoder = Decoder::new();
+    decoder.push(&frame[..frame.len() - 2]).expect("半帧可暂存");
+    let error = decoder.finish().expect_err("半帧断开不能算正常结束");
+    assert_eq!(error.code().as_str(), "invalid");
+    assert!(
+        !error.message().trim().is_empty(),
+        "拒绝必须说清还剩多少字节"
+    );
+}
+
+#[test]
+fn a_declared_length_over_the_limit_is_rejected_before_allocating() {
+    // 只给头部：魔数、版本、类型、超限长度。接收方必须用这 10 个字节就拒绝。
+    let mut header = Vec::new();
+    header.extend_from_slice(&crate::proto::MAGIC.to_le_bytes());
+    header.extend_from_slice(&Version::current().get().to_le_bytes());
+    header.extend_from_slice(&1u16.to_le_bytes());
+    header.extend_from_slice(&(MAX_PAYLOAD + 1).to_le_bytes());
+    let mut decoder = Decoder::new();
+    let error = decoder.push(&header).expect_err("超限长度必须立刻拒绝");
+    assert_eq!(error.code().as_str(), "invalid");
+    assert!(
+        decoder.next_frame().is_err(),
+        "同一条流一旦判坏，后续每次取帧都要继续报同一个错误"
+    );
+}
+
+#[test]
+fn a_route_rejects_specs_it_cannot_honor() {
+    assert!(Route::parse("POST /v1/completions").is_ok());
+    for spec in ["", "POST", "GET v1/completions", " /x"] {
+        let error = Route::parse(spec).expect_err("不成立的路由必须拒绝");
+        assert_eq!(
+            error.code().as_str(),
+            "invalid",
+            "错误类别是对外契约：{spec:?}"
+        );
+    }
+}
+
+#[test]
+fn a_response_carries_its_status_into_the_frame() {
+    let response = Response::error(Status::BadRequest, "缺 prompt");
+    assert_eq!(response.status().code(), 400);
+    let frame = response.frame().expect("错误响应也要能编码");
+    let envelope = Envelope::parse(&frame).expect("解析");
+    assert_eq!(envelope.kind(), Kind::Error, "错误响应的帧类型不能是 Chunk");
+    assert_eq!(
+        envelope.payload(),
+        "缺 prompt".as_bytes(),
+        "载荷就是给人看的那句话，不额外包一层"
+    );
+    assert_eq!(Response::ok(b"ok".to_vec()).status().code(), 200);
+}
+
+#[test]
+fn admission_answers_with_a_retryable_or_terminal_status() {
+    let pager = Pager::new(Cache::new(2, 8).expect("页池"), 2).expect("行宽");
+    let mut scheduler = Scheduler::new(pager);
+    // 提示 8 + 生成 8 = 16 个 token，需要 2 页，池正好 2 页：进去。
+    let fits = Sequence::new(1, &[0; 8], 8, 8, Stream::new(1)).expect("序列");
+    let response = crate::admit(&mut scheduler, &fits).expect("准入不崩");
+    assert_eq!(response.status().code(), 200);
+    assert_eq!(
+        response.envelope().payload(),
+        fits.id().to_le_bytes(),
+        "载荷是序列号，客户端据此后续查询"
+    );
+
+    // 同样的 id 再来一次：请求自己不成立，必须落成 400，而不是 `Err`。
+    let duplicate = crate::admit(&mut scheduler, &fits).expect("请求错误不是服务端错误");
+    assert_eq!(duplicate.status().code(), 400);
+
+    // 池里只剩两条序列的余量：再要一条 3 页的，永远装不下，也是 400。
+    let too_big = Sequence::new(2, &[0; 8], 8, 4, Stream::new(2)).expect("序列");
+    let response = crate::admit(&mut scheduler, &too_big).expect("准入不崩");
+    assert_eq!(response.status().code(), 400);
+}
+
+#[test]
+fn the_prompt_is_encoded_by_the_tokenizer_not_by_the_endpoint() {
+    let tokens = crate::encode_prompt(&Bytes, "hé").expect("编码");
+    assert_eq!(tokens.len(), 3, "字节级参考实现每个字节一个 token");
+    assert_eq!(Bytes.decode(&tokens).expect("解码"), "hé");
 }

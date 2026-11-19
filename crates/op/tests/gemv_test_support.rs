@@ -93,21 +93,8 @@ pub fn multi_group(
     (packed, x, scales, m, n)
 }
 
-/// 把 `bits` 位有符号码按低 `bits` 位落在字节内：`zero = 2^(bits-1)` 平移、低 `bits` 位落字节。
-pub fn pack(bits: usize, values: &[i8]) -> Vec<u8> {
-    let cpb = 8 / bits;
-    let zero = 1 << (bits - 1);
-    let mask = (1u8 << bits) - 1;
-    values
-        .chunks(cpb)
-        .map(|group| {
-            (0..cpb).fold(0u8, |byte, slot| {
-                let code = (group.get(slot).copied().unwrap_or(0) + zero) as u8 & mask;
-                byte | (code << (slot * bits))
-            })
-        })
-        .collect()
-}
+/// 把 `bits` 位有符号码按低 `bits` 位落在字节内（实现与跨 crate 夹具共用 [`testkit::pack_codes`]）。
+pub use testkit::pack_codes as pack;
 
 /// 生成 i2/i4 打包 GEMV 共有、数值可由位宽推导的五则测试：
 /// 解包点积、非有限标度、大/小形状代价、模板签名。
