@@ -415,6 +415,76 @@ fn check_grad(grad: &[f32], base: &[f32], name: &str, f: impl Fn(&[f32]) -> f32)
     }
 }
 
+/// `loss = reduce_sum(op(a, b))` 的公共夹具：两路参数各做一次中心差分，`loss(a, b)` 给整标量。
+/// `sub`/`div`/`min`/`max`/`rmsnorm` 这类"两参数、单算子、reduce_sum 收尾"的反向对拍共用。
+fn check_binary_grad(
+    op: &str,
+    a0: &[f32],
+    b0: &[f32],
+    loss: impl Fn(&[f32], &[f32]) -> f32,
+) -> Result<()> {
+    let mut tape = Tape::new();
+    let a = tape.parameter();
+    let b = tape.parameter();
+    let y = tape.record(op, &[a, b]).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(a, Shape::new([N]), DType::F32);
+    sizes.set(b, Shape::new([N]), DType::F32);
+    sizes.set(y, Shape::new([N]), DType::F32);
+    sizes.set(out, Shape::new([1]), DType::F32);
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(a, ParamRole::Trainable, a0.to_vec())?;
+    session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
+    session.buffers().compute(op, &[a, b], y)?;
+    sum_backward(&mut session, y, out)?;
+
+    // `loss` 借给两个闭包（按引用捕获，避免一次 move 后第二次取不到）。
+    let f = &loss;
+    check_grad(
+        session.buffers().gradient(a).expect("a 梯度应在场"),
+        a0,
+        "a",
+        |pa| f(pa, b0),
+    );
+    check_grad(
+        session.buffers().gradient(b).expect("b 梯度应在场"),
+        b0,
+        "b",
+        |pb| f(a0, pb),
+    );
+    Ok(())
+}
+
+/// `loss = reduce_sum(op(p))` 的公共夹具：单路参数中心差分，`loss(p)` 给整标量。
+/// `exp`/`log`/`rope` 这类"单参数、单算子、reduce_sum 收尾"的反向对拍共用。
+fn check_unary_grad(op: &str, p0: &[f32], loss: impl Fn(&[f32]) -> f32) -> Result<()> {
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let y = tape.record(op, &[p]).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+
+    let mut sizes = Sizes::new(tape.vars());
+    sizes.set(p, Shape::new([N]), DType::F32);
+    sizes.set(y, Shape::new([N]), DType::F32);
+    sizes.set(out, Shape::new([1]), DType::F32);
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
+    session.buffers().compute(op, &[p], y)?;
+    sum_backward(&mut session, y, out)?;
+
+    check_grad(
+        session.buffers().gradient(p).expect("p 梯度应在场"),
+        p0,
+        "p",
+        loss,
+    );
+    Ok(())
+}
+
 /// RMSNorm 闭式：`y = γ·x / sqrt(mean(x²)+eps)`，返回逐元素和。
 fn rmsnorm_loss(x: &[f32], gamma: &[f32]) -> f32 {
     let mean_sq = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
@@ -646,215 +716,49 @@ fn decode_attention_matches_central_differences() -> Result<()> {
 /// `loss = reduce_sum(sub(a, b))`：dA = +1、dB = −1，两路逐元素对拍。
 #[test]
 fn sub_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let a = tape.parameter();
-    let b = tape.parameter();
-    let y = tape.record("sub_f32", &[a, b]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(a, Shape::new([N]), DType::F32);
-    sizes.set(b, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
-
-    let a0 = vec![0.3_f32, -0.5, 0.8];
-    let b0 = vec![1.0_f32, -0.2, 0.6];
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
-    session.register_parameter(b, ParamRole::Trainable, b0.clone())?;
-    session.buffers().compute("sub_f32", &[a, b], y)?;
-    sum_backward(&mut session, y, loss)?;
-
-    check_grad(
-        session.buffers().gradient(a).expect("a 梯度应在场"),
-        &a0,
-        "a",
-        |a| a.iter().zip(&b0).map(|(x, y)| x - y).sum(),
-    );
-    check_grad(
-        session.buffers().gradient(b).expect("b 梯度应在场"),
-        &b0,
-        "b",
-        |b| a0.iter().zip(b).map(|(x, y)| x - y).sum(),
-    );
-    Ok(())
+    check_binary_grad("sub_f32", &[0.3, -0.5, 0.8], &[1.0, -0.2, 0.6], |a, b| {
+        a.iter().zip(b).map(|(x, y)| x - y).sum()
+    })
 }
 
 /// `loss = reduce_sum(div(a, b))`：dA = 1/b、dB = −a/b²，两路逐元素对拍（`b` 恒正避除零）。
 #[test]
 fn div_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let a = tape.parameter();
-    let b = tape.parameter();
-    let y = tape.record("div_f32", &[a, b]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(a, Shape::new([N]), DType::F32);
-    sizes.set(b, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
-
-    let a0 = vec![0.6_f32, -0.3, 0.9];
-    let b0 = vec![1.0_f32, 2.0, 0.5];
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
-    session.register_parameter(b, ParamRole::Trainable, b0.clone())?;
-    session.buffers().compute("div_f32", &[a, b], y)?;
-    sum_backward(&mut session, y, loss)?;
-
-    check_grad(
-        session.buffers().gradient(a).expect("a 梯度应在场"),
-        &a0,
-        "a",
-        |a| a.iter().zip(&b0).map(|(x, y)| x / y).sum(),
-    );
-    check_grad(
-        session.buffers().gradient(b).expect("b 梯度应在场"),
-        &b0,
-        "b",
-        |b| a0.iter().zip(b).map(|(x, y)| x / y).sum(),
-    );
-    Ok(())
+    check_binary_grad("div_f32", &[0.6, -0.3, 0.9], &[1.0, 2.0, 0.5], |a, b| {
+        a.iter().zip(b).map(|(x, y)| x / y).sum()
+    })
 }
 
 /// `loss = reduce_sum(exp(p))`：dP = exp(p)（即输出 y）。
 #[test]
 fn exp_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let y = tape.record("exp_f32", &[p]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
-
-    let p0 = vec![0.4_f32, -0.6, 1.1];
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().compute("exp_f32", &[p], y)?;
-    sum_backward(&mut session, y, loss)?;
-
-    check_grad(
-        session.buffers().gradient(p).expect("p 梯度应在场"),
-        &p0,
-        "p",
-        |p| p.iter().map(|&x| x.exp()).sum(),
-    );
-    Ok(())
+    check_unary_grad("exp_f32", &[0.4, -0.6, 1.1], |p| {
+        p.iter().map(|&x| x.exp()).sum()
+    })
 }
 
 /// `loss = reduce_sum(log(p))`：dP = 1/p（夹具恒正）。
 #[test]
 fn log_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let y = tape.record("log_f32", &[p]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
-
-    let p0 = vec![0.6_f32, 1.3, 2.1];
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().compute("log_f32", &[p], y)?;
-    sum_backward(&mut session, y, loss)?;
-
-    check_grad(
-        session.buffers().gradient(p).expect("p 梯度应在场"),
-        &p0,
-        "p",
-        |p| p.iter().map(|&x| x.ln()).sum(),
-    );
-    Ok(())
+    check_unary_grad("log_f32", &[0.6, 1.3, 2.1], |p| {
+        p.iter().map(|&x| x.ln()).sum()
+    })
 }
 
 /// `loss = reduce_sum(min(a, b))`：梯度给较小者，两路逐元素对拍（夹具无相等项，避开折点）。
 #[test]
 fn min_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let a = tape.parameter();
-    let b = tape.parameter();
-    let y = tape.record("min_f32", &[a, b]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(a, Shape::new([N]), DType::F32);
-    sizes.set(b, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
-
-    let a0 = vec![0.3_f32, -0.5, 0.8];
-    let b0 = vec![1.0_f32, -0.2, 0.6];
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
-    session.register_parameter(b, ParamRole::Trainable, b0.clone())?;
-    session.buffers().compute("min_f32", &[a, b], y)?;
-    sum_backward(&mut session, y, loss)?;
-
-    check_grad(
-        session.buffers().gradient(a).expect("a 梯度应在场"),
-        &a0,
-        "a",
-        |a| a.iter().zip(&b0).map(|(x, y)| x.min(*y)).sum(),
-    );
-    check_grad(
-        session.buffers().gradient(b).expect("b 梯度应在场"),
-        &b0,
-        "b",
-        |b| a0.iter().zip(b).map(|(x, y)| x.min(*y)).sum(),
-    );
-    Ok(())
+    check_binary_grad("min_f32", &[0.3, -0.5, 0.8], &[1.0, -0.2, 0.6], |a, b| {
+        a.iter().zip(b).map(|(x, y)| x.min(*y)).sum()
+    })
 }
 
 /// `loss = reduce_sum(max(a, b))`：梯度给较大者，两路逐元素对拍（夹具无相等项）。
 #[test]
 fn max_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let a = tape.parameter();
-    let b = tape.parameter();
-    let y = tape.record("max_f32", &[a, b]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(a, Shape::new([N]), DType::F32);
-    sizes.set(b, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
-
-    let a0 = vec![0.3_f32, -0.5, 0.8];
-    let b0 = vec![1.0_f32, -0.2, 0.6];
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
-    session.register_parameter(b, ParamRole::Trainable, b0.clone())?;
-    session.buffers().compute("max_f32", &[a, b], y)?;
-    sum_backward(&mut session, y, loss)?;
-
-    check_grad(
-        session.buffers().gradient(a).expect("a 梯度应在场"),
-        &a0,
-        "a",
-        |a| a.iter().zip(&b0).map(|(x, y)| x.max(*y)).sum(),
-    );
-    check_grad(
-        session.buffers().gradient(b).expect("b 梯度应在场"),
-        &b0,
-        "b",
-        |b| a0.iter().zip(b).map(|(x, y)| x.max(*y)).sum(),
-    );
-    Ok(())
+    check_binary_grad("max_f32", &[0.3, -0.5, 0.8], &[1.0, -0.2, 0.6], |a, b| {
+        a.iter().zip(b).map(|(x, y)| x.max(*y)).sum()
+    })
 }
 
 /// 端到端蒸馏 KL：`kl = sum(p_s · (ln p_s - ln p_t))` 用图上原语搭出来
@@ -871,8 +775,12 @@ fn distillation_kl_graph_matches_central_differences() -> Result<()> {
     let pt = tape.record("softmax_f32", &[t]).expect("p_t");
     let lps = tape.record("log_f32", &[ps]).expect("ln p_s");
     let lpt = tape.record("log_f32", &[pt]).expect("ln p_t");
-    let diff = tape.record("sub_f32", &[lps, lpt]).expect("ln p_s - ln p_t");
-    let prod = tape.record("mul_f32", &[ps, diff]).expect("p_s·(ln p_s - ln p_t)");
+    let diff = tape
+        .record("sub_f32", &[lps, lpt])
+        .expect("ln p_s - ln p_t");
+    let prod = tape
+        .record("mul_f32", &[ps, diff])
+        .expect("p_s·(ln p_s - ln p_t)");
     let kl = tape.record("reduce_sum_f32", &[prod]).expect("kl");
 
     let mut sizes = Sizes::new(tape.vars());
@@ -925,15 +833,23 @@ fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
     let hi_leaf = tape.leaf();
     let diff = tape.record("sub_f32", &[new, old]).expect("new - old");
     let ratio = tape.record("exp_f32", &[diff]).expect("ratio");
-    let r_lo = tape.record("max_f32", &[ratio, lo_leaf]).expect("max(ratio, 1-ε)");
-    let r_clamp = tape.record("min_f32", &[r_lo, hi_leaf]).expect("clamp(ratio)");
+    let r_lo = tape
+        .record("max_f32", &[ratio, lo_leaf])
+        .expect("max(ratio, 1-ε)");
+    let r_clamp = tape
+        .record("min_f32", &[r_lo, hi_leaf])
+        .expect("clamp(ratio)");
     let term1 = tape.record("mul_f32", &[ratio, adv]).expect("ratio·A");
-    let term2 = tape.record("mul_f32", &[r_clamp, adv]).expect("clamp(ratio)·A");
+    let term2 = tape
+        .record("mul_f32", &[r_clamp, adv])
+        .expect("clamp(ratio)·A");
     let surr = tape.record("min_f32", &[term1, term2]).expect("min 裁剪");
     let loss = tape.record("reduce_sum_f32", &[surr]).expect("loss");
 
     let mut sizes = Sizes::new(tape.vars());
-    for v in [new, old, adv, lo_leaf, hi_leaf, diff, ratio, r_lo, r_clamp, term1, term2, surr] {
+    for v in [
+        new, old, adv, lo_leaf, hi_leaf, diff, ratio, r_lo, r_clamp, term1, term2, surr,
+    ] {
         sizes.set(v, Shape::new([N]), DType::F32);
     }
     sizes.set(loss, Shape::new([1]), DType::F32);
@@ -950,11 +866,19 @@ fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
     session.buffers().load(hi_leaf, Data::F32(vec![hi; N]))?;
     session.buffers().compute("sub_f32", &[new, old], diff)?;
     session.buffers().compute("exp_f32", &[diff], ratio)?;
-    session.buffers().compute("max_f32", &[ratio, lo_leaf], r_lo)?;
-    session.buffers().compute("min_f32", &[r_lo, hi_leaf], r_clamp)?;
+    session
+        .buffers()
+        .compute("max_f32", &[ratio, lo_leaf], r_lo)?;
+    session
+        .buffers()
+        .compute("min_f32", &[r_lo, hi_leaf], r_clamp)?;
     session.buffers().compute("mul_f32", &[ratio, adv], term1)?;
-    session.buffers().compute("mul_f32", &[r_clamp, adv], term2)?;
-    session.buffers().compute("min_f32", &[term1, term2], surr)?;
+    session
+        .buffers()
+        .compute("mul_f32", &[r_clamp, adv], term2)?;
+    session
+        .buffers()
+        .compute("min_f32", &[term1, term2], surr)?;
     session.buffers().compute("reduce_sum_f32", &[surr], loss)?;
     session.plan(loss)?;
     session.backward()?;

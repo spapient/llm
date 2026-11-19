@@ -168,7 +168,12 @@ fn serial(
     n: usize,
 ) -> diagnostic::Result<String> {
     let sample = (run.model.sample)(m, n);
-    crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
+    crate::harness::metal_loop_kernel(
+        &prepared.source.text,
+        &op.signature,
+        &sample,
+        &Grid { dims: Vec::new() },
+    )
 }
 
 /// 循环注入网格快路径（带归约逐元素、声明了 `[grid]` 的 Gemm）。

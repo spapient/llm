@@ -2,8 +2,8 @@ use super::*;
 use diagnostic::Code;
 use tensor::Shape;
 
-#[test]
-fn a_checkpoint_records_the_minimum_state_needed_to_resume() {
+/// 造一个可恢复的最小检查点：`gemv_i4` 单节点图 + 2×2 批 + 2 副本拓扑，返回检查点、头部与拓扑。
+fn fixture() -> (Checkpoint, weights::Header, shard::Topology) {
     let mut tape = autograd::Tape::new();
     let x = tape.leaf();
     tape.record("gemv_i4", &[x]).expect("记录");
@@ -16,6 +16,12 @@ fn a_checkpoint_records_the_minimum_state_needed_to_resume() {
     .expect("头部");
     let topology = shard::Topology::new(1, 1, 2).expect("拓扑");
     let checkpoint = Checkpoint::new(7, &tape, &batch, 2, &header, topology).expect("检查点");
+    (checkpoint, header, topology)
+}
+
+#[test]
+fn a_checkpoint_records_the_minimum_state_needed_to_resume() {
+    let (checkpoint, _header, topology) = fixture();
     assert_eq!(checkpoint.step(), 7);
     assert_eq!(checkpoint.tape_nodes(), 1);
     assert_eq!(checkpoint.batch_rows(), 2);
@@ -47,19 +53,7 @@ fn a_checkpoint_records_the_minimum_state_needed_to_resume() {
 
 #[test]
 fn a_checkpoint_becomes_a_snapshot_that_round_trips() {
-    let mut tape = autograd::Tape::new();
-    let x = tape.leaf();
-    tape.record("gemv_i4", &[x]).expect("记录");
-    let tokens = [1, 2, 3, 4];
-    let batch = data::Batch::new(&tokens, 2, 2).expect("批");
-    let header = weights::Header::new(
-        vec![weights::Entry::new("w", tensor::DType::F32, Shape::new([2])).at(64)],
-        64,
-    )
-    .expect("头部");
-    let topology = shard::Topology::new(1, 1, 2).expect("拓扑");
-    let checkpoint = Checkpoint::new(7, &tape, &batch, 2, &header, topology).expect("检查点");
-
+    let (checkpoint, header, _topology) = fixture();
     let snapshot = checkpoint.snapshot(&header).expect("快照");
     let bytes = snapshot.encode().expect("编码");
     let restored = crate::snapshot::Snapshot::decode(&bytes).expect("解码");
