@@ -65,6 +65,7 @@ const APP: &str = "cutile";
 const PREFIX: &str = "CUTILE";
 
 /// 配置值闭集：值类型由每个键在 [`Key`] 闭集里声明，`describe` 与消费投影按类型收窄。
+/// 变体只保留键表实际使用的类型；新键需要 Bool/Text 时再加（值解析处一行分支）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     /// 路径：相对路径按启动目录解析（与 `--set` 口径一致）。
@@ -75,10 +76,6 @@ pub enum Value {
     Int(i64),
     /// 浮点数。
     Float(f64),
-    /// 布尔。
-    Bool(bool),
-    /// 任意文本。
-    Text(String),
 }
 
 impl Value {
@@ -106,8 +103,6 @@ impl fmt::Display for Value {
             Self::Bytes(bytes) => write!(formatter, "{bytes}"),
             Self::Int(value) => write!(formatter, "{value}"),
             Self::Float(value) => write!(formatter, "{value}"),
-            Self::Bool(value) => write!(formatter, "{value}"),
-            Self::Text(value) => write!(formatter, "{value}"),
         }
     }
 }
@@ -119,8 +114,6 @@ enum ValueKind {
     Bytes,
     Int,
     Float,
-    Bool,
-    Text,
 }
 
 /// 全部键与它们的类型、环境变量、说明一次写完：新增一个键只加一行。
@@ -358,22 +351,32 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// 生产入口：配置文件 → 环境变量 → 默认值；命令行覆盖由 [`Settings::apply_arguments`] 注入。
+    /// 生产入口：配置文件（`CUTILE_CONFIG` 或默认发现）→ 环境变量 → 默认值；
+    /// 命令行覆盖由 [`Settings::apply_arguments`] 注入。
     ///
     /// 非 UTF-8 的环境变量视为未设置（`std::env::var` 的语义）。
     pub fn load() -> Result<Self> {
-        Self::load_with(&Roots::discover(), |name| std::env::var(name).ok())
+        let mut settings = Self::defaults(&Roots::discover());
+        settings.read_config(|name| std::env::var(name).ok())?;
+        settings.read_env(|name| std::env::var(name).ok())?;
+        Ok(settings)
     }
 
-    /// 可注入入口：`lookup` 决定环境变量从哪读，`roots` 决定默认目录在哪。
-    ///
-    /// 配置文件发现顺序（ADR 0048）：`CUTILE_CONFIG`（经 `lookup`）→ `./cutile.toml` →
-    /// 平台用户目录；只读第一份命中，文件不存在不是错误。
+    /// 可注入入口：`lookup` 决定环境变量从哪读，`roots` 决定默认目录在哪；**不读配置文件**
+    /// （文件层只在生产入口 [`Settings::load`]、`--config` 或 [`Settings::load_config`] 触发）。
     pub fn load_with(roots: &Roots, lookup: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let mut settings = Self::defaults(roots);
-        settings.read_file(lookup)?;
         settings.read_env(lookup)?;
         Ok(settings)
+    }
+
+    /// 读一份配置文件写入文件层（优先级低于环境变量与 `--set`）；`--config` 与测试用这个入口。
+    ///
+    /// # Errors
+    ///
+    /// 文件不存在 `missing`；键未登记 / 类型不符 / 坏 TOML 都是 `invalid`。
+    pub fn load_config(&mut self, path: &Path) -> Result<()> {
+        self.read_config_at(path)
     }
 
     /// 只用默认值（不读配置文件与环境变量）。
@@ -426,7 +429,7 @@ impl Settings {
         let path = args
             .get(index + 1)
             .ok_or_else(|| invalid("`--config` 缺少文件路径"))?;
-        self.read_file_at(Path::new(path))
+        self.read_config_at(Path::new(path))
             .map_err(|error| error.with("--config"))?;
         Ok(index + 2)
     }
@@ -471,10 +474,11 @@ impl Settings {
 
     /// 缓存容量上限；未设置回落到 [`cutile::cache::CACHE_LIMIT`]（P5 接线前两处默认值并存）。
     pub fn cache_limit_bytes(&self) -> Option<u64> {
-        self.resolved(Key::CacheLimit).and_then(|(value, _)| match value {
-            Value::Bytes(bytes) => Some(bytes),
-            _ => None,
-        })
+        self.resolved(Key::CacheLimit)
+            .and_then(|(value, _)| match value {
+                Value::Bytes(bytes) => Some(bytes),
+                _ => None,
+            })
     }
 
     /// 投影成内核只认的三目录纯数据：缓存 / 工作 / 数据根；`cutile` 不读环境变量（ADR 0023）。
@@ -530,23 +534,28 @@ impl Settings {
         Ok(())
     }
 
-    /// 配置文件层：发现顺序见 [`Settings::load_with`]，只读第一份命中。
-    fn read_file(&mut self, lookup: impl Fn(&str) -> Option<String>) -> Result<()> {
+    /// 配置文件层发现（ADR 0048）：`CUTILE_CONFIG` → `./cutile.toml` → 平台用户目录；
+    /// 只读第一份命中，文件不存在不是错误。
+    fn read_config(&mut self, lookup: impl Fn(&str) -> Option<String>) -> Result<()> {
         if let Some(path) = lookup("CUTILE_CONFIG") {
-            return self.read_file_at(Path::new(&path));
+            return self.read_config_at(Path::new(&path));
         }
         for path in discover_files() {
             if path.is_file() {
-                return self.read_file_at(&path);
+                return self.read_config_at(&path);
             }
         }
         Ok(())
     }
 
     /// 读一份配置文件：键未登记 / 类型不符 / 坏 TOML 都是 `invalid`，文件不存在是 `missing`。
-    fn read_file_at(&mut self, path: &Path) -> Result<()> {
+    fn read_config_at(&mut self, path: &Path) -> Result<()> {
         let text = std::fs::read_to_string(path).map_err(|error| {
-            let code = if path.is_file() { Code::Io } else { Code::Missing };
+            let code = if path.is_file() {
+                Code::Io
+            } else {
+                Code::Missing
+            };
             Error::new(code, format!("读配置文件 {} 失败：{error}", path.display()))
                 .with("cli::settings")
         })?;
@@ -556,8 +565,34 @@ impl Settings {
                 path.display()
             ))
         })?;
+        self.apply_table(path, table, "", 0)
+    }
+
+    /// 递归展平嵌套表：`[cache] dir = "x"` 与 `cache.dir = "x"` 都归到点号键 `cache.dir`。
+    fn apply_table(
+        &mut self,
+        path: &Path,
+        table: toml::Table,
+        prefix: &str,
+        depth: u32,
+    ) -> Result<()> {
+        if depth > 8 {
+            return Err(invalid(format!(
+                "配置文件 {} 嵌套超过 8 层",
+                path.display()
+            )));
+        }
         for (name, raw) in table {
-            let key = dotted_key(&name)
+            let dotted = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}.{name}")
+            };
+            if let toml::Value::Table(inner) = raw {
+                self.apply_table(path, inner, &dotted, depth + 1)?;
+                continue;
+            }
+            let key = dotted_key(&dotted)
                 .map_err(|error| error.with(format!("配置文件 {}", path.display())))?;
             let origin = Origin::File(path.to_path_buf());
             let text = raw
@@ -565,10 +600,9 @@ impl Settings {
                 .map(str::to_string)
                 .or_else(|| raw.as_integer().map(|value| value.to_string()))
                 .or_else(|| raw.as_float().map(|value| value.to_string()))
-                .or_else(|| raw.as_bool().map(|value| value.to_string()))
                 .ok_or_else(|| {
                     invalid(format!(
-                        "{origin}提供的 `{name}`（{}）非法：不支持表或数组值",
+                        "{origin}提供的 `{dotted}`（{}）非法：不支持数组值",
                         key.doc()
                     ))
                 })?;
@@ -628,35 +662,67 @@ fn default_of(key: Key, roots: &Roots) -> Option<Value> {
 fn dotted_key(name: &str) -> Result<Key> {
     Key::parse(name).ok_or_else(|| {
         invalid(format!(
-            "`--set` 里的键 `{name}` 未登记（登记的是：{}）",
+            "键 `{name}` 未登记（登记的是：{}）",
             Key::dotted_names().join("、")
         ))
     })
 }
 
-/// 非空路径；空串与纯空白视为没写。
-fn path_of_text(key: Key, origin: &Origin, text: &str) -> Result<PathBuf> {
+/// 按键声明的值类型解析文本；空串与纯空白视为没写。
+fn value_of_text(key: Key, origin: &Origin, text: &str) -> Result<Value> {
     let text = text.trim();
     if text.is_empty() {
         return Err(Error::new(
             Code::Invalid,
             format!(
-                "{origin}提供的 `{}`（{}）非法：路径为空",
+                "{origin}提供的 `{}`（{}）非法：值为空",
                 key.dotted(),
                 key.doc()
             ),
         )
         .with("cli::settings"));
     }
-    Ok(PathBuf::from(text))
+    let bad = |what: &str| {
+        Error::new(
+            Code::Invalid,
+            format!(
+                "{origin}提供的 `{}`（{}）非法：{what}",
+                key.dotted(),
+                key.doc()
+            ),
+        )
+        .with("cli::settings")
+    };
+    match key.kind() {
+        ValueKind::Path => Ok(Value::Path(PathBuf::from(text))),
+        ValueKind::Bytes => text
+            .parse::<u64>()
+            .map(Value::Bytes)
+            .map_err(|_| bad("应为非负整数")),
+        ValueKind::Int => text
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| bad("应为整数")),
+        ValueKind::Float => {
+            let value: f64 = text.parse().map_err(|_| bad("应为浮点数"))?;
+            if value.is_finite() {
+                Ok(Value::Float(value))
+            } else {
+                Err(bad("应为有限浮点数"))
+            }
+        }
+    }
 }
 
-/// 相对路径按 `base` 解析；绝对路径原样返回。
-fn rebase(path: PathBuf, base: &Path) -> PathBuf {
-    if path.is_relative() {
-        base.join(path)
-    } else {
-        path
+/// 相对路径按 `base` 解析；非路径值原样返回。
+fn rebase_value(value: Value, base: &Path) -> Value {
+    match value {
+        Value::Path(path) => Value::Path(if path.is_relative() {
+            base.join(path)
+        } else {
+            path
+        }),
+        other => other,
     }
 }
 
@@ -801,7 +867,7 @@ mod tests {
             "报错要列出登记过的键：{unknown}"
         );
         let empty = settings.apply_override("cache.dir=  ").expect_err("空值");
-        assert!(format!("{empty}").contains("路径为空"), "{empty}");
+        assert!(format!("{empty}").contains("值为空"), "{empty}");
     }
 
     #[test]
@@ -809,7 +875,7 @@ mod tests {
         let roots = Roots::new("/home/u");
         let text = Settings::defaults(&roots).describe();
         assert!(
-            text.starts_with("[配置] 默认 < 环境变量 < 命令行"),
+            text.starts_with("[配置] 默认 < 配置文件 < 环境变量 < 命令行"),
             "{text}"
         );
         for key in Key::KEYS {
@@ -817,7 +883,6 @@ mod tests {
         }
         assert!(text.contains("内置默认值"), "{text}");
         assert!(text.contains("未设置"), "没有默认值的键要如实写出：{text}");
-        assert!(!text.contains("文件"), "不再有配置文件这一层：{text}");
     }
 
     #[test]
@@ -833,6 +898,128 @@ mod tests {
         let text = settings.describe();
         assert!(text.contains("CUTILE_WORK_DIR（env）"), "{text}");
         assert!(text.contains("--set cache.dir=/cli/cache（cli）"), "{text}");
+    }
+
+    /// 临时配置文件路径：pid + 原子序号保证并行测试不撞名。
+    fn temp_config() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "cutile-settings-{}-{}.toml",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn a_config_file_sets_values_and_reports_its_origin() {
+        let path = temp_config();
+        std::fs::write(
+            &path,
+            "cache.dir = \"/file/cache\"\ncache.limit_bytes = 1073741824\n",
+        )
+        .expect("写临时配置");
+        let roots = Roots::new("/home/u");
+        let mut settings = Settings::load_with(&roots, nothing).expect("配置可加载");
+        settings.load_config(&path).expect("合法配置文件");
+        assert_eq!(settings.cache_dir(), PathBuf::from("/file/cache"));
+        assert_eq!(settings.cache_limit_bytes(), Some(1024 * 1024 * 1024));
+        let text = settings.describe();
+        assert!(
+            text.contains("（file）") && text.contains(&path.display().to_string()),
+            "来源要写出文件路径：{text}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_missing_config_file_is_a_missing_error() {
+        let roots = Roots::new("/home/u");
+        let mut settings = Settings::load_with(&roots, nothing).expect("配置可加载");
+        let error = settings
+            .load_config(Path::new("/no/such/cutile-config.toml"))
+            .expect_err("显式指定但不存在");
+        assert_eq!(error.code(), Code::Missing);
+    }
+
+    #[test]
+    fn a_malformed_config_file_is_rejected() {
+        let path = temp_config();
+        std::fs::write(&path, "cache.dir = ").expect("写坏配置");
+        let roots = Roots::new("/home/u");
+        let mut settings = Settings::load_with(&roots, nothing).expect("配置可加载");
+        let error = settings.load_config(&path).expect_err("坏 TOML 必须报错");
+        assert_eq!(error.code(), Code::Invalid);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unknown_keys_and_wrong_types_in_a_config_file_are_rejected() {
+        let roots = Roots::new("/home/u");
+        let unknown = temp_config();
+        std::fs::write(&unknown, "no.such.key = 1").expect("写未知键配置");
+        let mut settings = Settings::load_with(&roots, nothing).expect("配置可加载");
+        let error = settings.load_config(&unknown).expect_err("未知键必须报错");
+        assert!(format!("{error}").contains("cache.dir"), "{error}");
+        std::fs::remove_file(&unknown).ok();
+
+        let mistyped = temp_config();
+        std::fs::write(&mistyped, "cache.limit_bytes = \"abc\"").expect("写类型错配置");
+        let error = settings.load_config(&mistyped).expect_err("类型错必须报错");
+        assert!(format!("{error}").contains("非负整数"), "{error}");
+        std::fs::remove_file(&mistyped).ok();
+    }
+
+    #[test]
+    fn env_beats_file_and_cli_beats_env() {
+        let path = temp_config();
+        std::fs::write(&path, "cache.dir = \"/file/cache\"").expect("写临时配置");
+        let roots = Roots::new("/home/u");
+        let mut settings = Settings::load_with(&roots, |name| {
+            (name == "CUTILE_CACHE_DIR").then(|| "/env/cache".to_string())
+        })
+        .expect("配置可加载");
+        settings.load_config(&path).expect("合法配置文件");
+        assert_eq!(settings.cache_dir(), PathBuf::from("/env/cache"));
+        settings
+            .apply_override("cache.dir=/cli/cache")
+            .expect("覆盖");
+        assert_eq!(settings.cache_dir(), PathBuf::from("/cli/cache"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn arguments_are_split_into_config_overrides_and_payload() {
+        let path = temp_config();
+        std::fs::write(&path, "cache.dir = \"/file/cache\"").expect("写临时配置");
+        let roots = Roots::new("/home/u");
+        let mut settings = Settings::load_with(&roots, nothing).expect("配置可加载");
+        let rest = settings
+            .apply_arguments(&[
+                "--config".to_string(),
+                path.display().to_string(),
+                "doctor".to_string(),
+            ])
+            .expect("合法覆盖");
+        assert_eq!(rest, ["doctor"]);
+        assert_eq!(settings.cache_dir(), PathBuf::from("/file/cache"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn numeric_keys_have_their_current_defaults() {
+        let roots = Roots::new("/home/u");
+        let settings = Settings::load_with(&roots, nothing).expect("配置可加载");
+        assert_eq!(settings.cache_limit_bytes(), Some(2 * 1024 * 1024 * 1024));
+        let text = settings.describe();
+        for name in [
+            "cache.limit_bytes",
+            "cache.stale_lock_secs",
+            "http.max_body_bytes",
+            "generate.default_temperature",
+            "policy.tau_scale",
+        ] {
+            assert!(text.contains(name), "缺 {name}：{text}");
+        }
     }
 
     #[test]

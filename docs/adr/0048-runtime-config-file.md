@@ -48,8 +48,9 @@ ADR 0023 的精神完整保留：`cutile` 仍只收纯数据（`Dirs` 与同构�
 ### 3. schema 与值类型闭集
 
 - 根为表；键 = `keys!` 宏里的点号名（单一事实源不变：新增键仍只加一行）。
-- 值类型闭集 `enum Value { Path(PathBuf), Bytes(u64), Int(i64), Float(f64), Bool(bool), Text(String) }`，
-  TOML 映射：String→Path/Text、Integer→Bytes(非负)/Int、Float→Float、Boolean→Bool；类型不符 = `invalid`。
+- 值类型闭集 `enum Value { Path(PathBuf), Bytes(u64), Int(i64), Float(f64) }`（只保留键表实际
+  使用的类型，新键需要布尔/文本时再加）；TOML 映射：String→Path、Integer→Bytes(非负)/Int、
+  Float→Float；类型不符 = `invalid`。
 - 键的类型在 `keys!` 宏行内声明；`describe` 逐键打印"值 ← 来源（配置文件路径）"。
 
 ### 4. 依赖路线:toml 成为 L7 唯一外部依赖例外（D5 修订）

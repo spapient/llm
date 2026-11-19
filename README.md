@@ -129,12 +129,16 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 不依赖仓库布局，也不依赖启动目录。它以前是独立成员 `llm-config` 的一半（
 [ADR 0020](docs/adr/0020-settings-layer-absorption.md)），后来并入 `cutile`；第四层（用户级配置文件）
 在 [ADR 0022](docs/adr/0022-build-time-corpora.md) 随运行期 TOML 解析器一起删除，剩下的策略再上移到
-命令行层（[ADR 0023](docs/adr/0023-settings-to-cli.md)）：默认目录是部署策略、`--set` 是命令行文法，
-都不是内核的职责。内核只收 `cutile::dirs::Dirs` 这份纯数据。**没有配置文件**：只有下面三层。
+命令行层（[ADR 0023](docs/adr/0023-settings-to-cli.md)）；[ADR 0048](docs/adr/0048-runtime-config-file.md)
+恢复了配置文件层（语料仍在构建期解析，`toml` 是 L7 组合根的唯一外部依赖例外）。默认目录是部署策略、
+`--set` 是命令行文法、配置文件是部署形态，都不是内核的职责。内核只收 `cutile::dirs::Dirs` 这份纯数据。
 
 ```text
-内置默认 < CUTILE_* 环境变量 < --set key=value
+内置默认 < 配置文件 cutile.toml < CUTILE_* 环境变量 < --set key=value
 ```
+
+配置文件发现顺序：`--config <path>` 或 `CUTILE_CONFIG` → 当前目录 `./cutile.toml` → 平台用户目录
+（macOS/Linux `~/.config/cutile/config.toml`、Windows `%APPDATA%\cutile\config.toml`）；只读第一份命中。
 
 | 平台 | 缓存根 |
 |---|---|
@@ -147,14 +151,22 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 | `cache.dir` | `CUTILE_CACHE_DIR`（兼容 `CUTILE_CACHE`） | `<缓存根>/cache` |
 | `work.dir` | `CUTILE_WORK_DIR` | `<缓存根>/work` |
 | `data.root` | `CUTILE_DATA_DIR` | 未设置（用编译期内嵌的 `crates/op/ops/`、`crates/prof/devices/` 与 `crates/prim/<vendor>/`） |
+| `cache.limit_bytes` | — | 2 GiB |
+| `cache.stale_lock_secs` | — | 60 |
+| `cache.touch_window_secs` | — | 5 |
+| `http.max_head_bytes` | — | 8192 |
+| `http.max_body_bytes` | — | 65536 |
+| `generate.default_temperature` | — | 1.0 |
+| `policy.w` / `policy.n_ref` / `policy.tau_scale` | — | 64 / 4096.0 / 0.05 |
 
-**没有配置文件**：默认值的唯一来源是 `crates/cli/src/settings.rs`，要偏离默认只能用上面的环境变量或
-`--set`；`--set` 里出现未登记的键会直接报错而不是被忽略。
+默认值的唯一来源是 `crates/cli/src/settings.rs`，要偏离默认用配置文件、环境变量或
+`--set`；配置文件与 `--set` 里出现未登记的键会直接报错而不是被忽略。
 
 ```bash
 cargo run -p llm-cli --bin cutile -- doctor --op gemv_i4 --device cpu    # [配置] 段逐键标注来源
 CUTILE_CACHE_DIR="$PWD/.cache" cargo run -p llm-cli --bin cutile -- verify --devices cpu
 cargo run -p llm-cli --bin cutile -- --set work.dir=/tmp/work verify --devices cpu
+cargo run -p llm-cli --bin cutile -- --config ./cutile.toml verify --devices cpu
 ```
 
 ## 新增成员

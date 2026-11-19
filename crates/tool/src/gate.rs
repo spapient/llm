@@ -1,7 +1,8 @@
 //! 质量门配置：从编译期生成的 `lints/vocabulary.toml` 表读取强类型阈值与存量棘轮。
 //!
 //! `build.rs` 在编译期把 `lints/vocabulary.toml` 展开成 `diagnostic::data::Table`，运行期只遍历
-//! 这棵树：不读配置文件，也没有 TOML 解析器（ADR 0022）。与 burn 的 Config 同思想：标准是数据，
+//! 这棵树：本 crate 不读配置文件（配置解析只发生在 `cli::settings`，ADR 0048），语料仍在构建期
+//! 解析（ADR 0022）。与 burn 的 Config 同思想：标准是数据，
 //! 行为是纯函数。
 //!
 //! 三条边界缺一条，这套门禁就退化成「数字散落在调用方」：
