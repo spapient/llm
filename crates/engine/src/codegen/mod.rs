@@ -227,9 +227,10 @@ pub(crate) fn chunk_reduce(
 /// 长度标量：签名里唯一非缓冲参数（扫描/归约/归一化的 `N`），取样本值。
 pub(crate) fn length_scalar(signature: &Signature, sample: &Sample) -> Result<i64> {
     let scalar = scalar_name(signature)?;
-    sample
-        .scalar(scalar)
-        .ok_or(Error::new(Code::Invalid, format!("长度标量 `{scalar}` 没有样本取值")))
+    sample.scalar(scalar).ok_or(Error::new(
+        Code::Invalid,
+        format!("长度标量 `{scalar}` 没有样本取值"),
+    ))
 }
 
 /// 唯一长度标量名（非缓冲参数）：归约/扫描/循环注入共用。
@@ -250,7 +251,9 @@ pub(crate) fn read_input(signature: &Signature) -> Result<&str> {
         .filter(|param| param.ctype.is_buffer())
         .find(|param| !param.mutable)
         .map(|param| param.name.as_str())
-        .ok_or(Error::new(Code::Internal, "内核没有只读输入缓冲").with("engine::codegen::read_input"))
+        .ok_or(
+            Error::new(Code::Internal, "内核没有只读输入缓冲").with("engine::codegen::read_input"),
+        )
 }
 
 /// launch 实参：缓冲传设备指针 `d_<name>`，标量取样本值。
@@ -261,7 +264,10 @@ pub(crate) fn launch_args(sample: &Sample, params: &[Param]) -> Result<String> {
             args.push(format!("d_{}", param.name));
         } else {
             let value = sample.scalar(&param.name).ok_or_else(|| {
-                Error::new(Code::Internal, format!("标量实参 `{}` 没有取值", param.name))
+                Error::new(
+                    Code::Internal,
+                    format!("标量实参 `{}` 没有取值", param.name),
+                )
             })?;
             args.push(value.to_string());
         }

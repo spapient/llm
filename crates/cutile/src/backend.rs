@@ -46,13 +46,29 @@ pub enum Lower {
     /// 循环注入 / 串行：`dims` 为空即串行兜底（零维网格）。
     Loop(Grid),
     /// 分块归约：每线程归约一块、主机折叠部分结果。
-    ChunkReduce { chunk: usize, func: String },
+    ChunkReduce {
+        /// 每块元素数。
+        chunk: usize,
+        /// 软件归约原语名（如 `_cutile_sum_f32`）。
+        func: String,
+    },
     /// 分块扫描：两段内核（局部扫描 + 校正）。
-    ChunkScan { chunk: usize, decay: f32 },
+    ChunkScan {
+        /// 每块元素数。
+        chunk: usize,
+        /// 扫描衰减 `a`（几何级数步长）。
+        decay: f32,
+    },
     /// 分块 RMSNorm：两段内核（部分平方和 + 归一化）。
-    ChunkRmsnorm { chunk: usize },
+    ChunkRmsnorm {
+        /// 每块元素数。
+        chunk: usize,
+    },
     /// 分块 Softmax：三段内核（最大 + 指数和 + 归一化）。
-    ChunkSoftmax { chunk: usize },
+    ChunkSoftmax {
+        /// 每块元素数。
+        chunk: usize,
+    },
 }
 
 /// 生成程序文本：纯函数，见证清单（结构化中性输入）→ 一门语言的源文本，可离线对拍。
@@ -83,12 +99,7 @@ pub trait Codegen {
     }
     /// 基准封装：把一份 `.k` 内核 + 签名 + 样本降成「跑一次并回读」的完整程序源（verify 的
     /// 加速器车道）。host C 后端不实现（C 基准走产物缓存，不经 [`Driver::compile_run`]）。
-    fn harness(
-        &self,
-        _kernel: &str,
-        _signature: &Signature,
-        _sample: &Sample,
-    ) -> Result<Source> {
+    fn harness(&self, _kernel: &str, _signature: &Signature, _sample: &Sample) -> Result<Source> {
         Err(Error::new(
             Code::Unsupported,
             "该后端没有基准封装".to_string(),

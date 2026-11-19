@@ -225,10 +225,7 @@ fn every_device_front_end_is_entered() {
     let backend = root().join("crates/cutile/src/backend.rs");
     let text = fs::read_to_string(&backend).expect("`crates/cutile/src/backend.rs` 必须存在");
     assert!(text.contains("pub trait Codegen"), "Codegen 缝必须存在");
-    assert!(
-        text.contains("fn emit"),
-        "Codegen 必须要求语言身份 `emit`"
-    );
+    assert!(text.contains("fn emit"), "Codegen 必须要求语言身份 `emit`");
     assert!(
         text.contains("fn program"),
         "Codegen 必须要求程序生成 `program`"

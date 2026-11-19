@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 112 条，含 43 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 112 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -54,7 +54,7 @@ data     → tensor, diagnostic
 nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
 train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
-engine   → tensor, diagnostic, storage, cutile    +dev: testkit, op
+engine   → tensor, diagnostic, storage, cutile, op    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights    +dev: testkit
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型；运行时依赖覆盖被装配的各层）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / `.u` 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 `.u` 夹具写形状、`tool` 词汇片段解析）
@@ -115,7 +115,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Closed` / `Set` / `KernelKey` | `prof` | 词汇表契约：`Closed` 要求每个闭集只声明 `ALL`（顺序即 `index`）、`as_str` 与 `index`，`parse` 由契约派生；`Set<E, WORDS>` 是全仓唯一的位集（`WORDS` 是 const 参数，容量在单态化时由 `const FITS` 断言，写宽或写窄是编译错误），`DTypeSet` / `SpaceSet` 只是它的别名；`inherent_names!` 把 `ALL` / `as_str` / `parse` 以**同名固有项**转发，于是调用方不必 `use` 一个 trait，而名字表仍然只有一份；`KernelKey` 是一条内核实现的登记键（ADR 0027 七元组：原语 / 实现名 / 精度 / 层级 / 宽度 / 架构标签 / 块宽），只承载身份，不持有可执行句柄 |
 | `FragmentSet` / `Device` / `Image` / `Status` | `prim` | 原语片段与见证源码；`Device` 是每台设备这次构建带上的设备侧代码（原语枚举 + 入口映射表 + 可选镜像），`Image` 是编译产物、`Status` 是它的结局。三张内嵌表（`BUILTIN` / `WITNESS` / `DEVICES`）由 `build.rs` 扫描 `<vendor>/` 生成，`src/` 里只有类型 |
 | `Catalogue` | `cutile` | 已装载的三层数据（声明 + 档案 + 片段）与它们的交叉校验；装载要随数据格式演进，所以不属于任何纯数据成员 |
-| `Backend` / `Codegen` / `Driver` / `Readback` / `Source` | `cutile` | 设备后端契约（Triton 缝 `Backend = Codegen + Driver`）：cutile 只依赖这条缝，不认识 Metal/CUDA/C 的具体实现；`Codegen` 是纯函数（见证清单 → 一门语言的源，可离线对拍），`Driver` 是唯一碰工具链/FFI/子进程的一半，`Backend` 是两者的并集，运行期只经 `dyn` 分派。cutile 保留 `Codegen` 与 C 宿主参考后端；Metal/CUDA 的 `Driver` 由 `engine`（L6）实现、`cli`（L7）装配注入，本层不硬编码后端清单。`Readback` 是回读结果的元组别名（每条写入个数 + f32 值）。`Source` 是 `Driver::compile_run` 的生产态源枚举（`Single` 单源 C/CUDA、`Pair` 双源 Metal），与 `emit::Source`（片段文本）同名不同义，路径隔离 |
+| `Backend` / `Codegen` / `Driver` / `Readback` / `Source` / `Lower` | `cutile` | 设备后端契约（Triton 缝 `Backend = Codegen + Driver`）：cutile 只依赖这条缝，不认识 Metal/CUDA/C 的具体实现；`Codegen` 是纯函数（见证清单 → 一门语言的源，可离线对拍），`Driver` 是唯一碰工具链/FFI/子进程的一半，`Backend` 是两者的并集，运行期只经 `dyn` 分派。cutile 保留 `Codegen` 与 C 宿主参考后端；Metal/CUDA 的 `Driver` 由 `engine`（L6）实现、`cli`（L7）装配注入，本层不硬编码后端清单。`Readback` 是回读结果的元组别名（每条写入个数 + f32 值）。`Source` 是 `Driver::compile_run` 的生产态源枚举（`Single` 单源 C/CUDA、`Pair` 双源 Metal），与 `emit::Source`（片段文本）同名不同义，路径隔离。`Lower` 是生产态内核 lowering 的中性请求描述（逐点 / 循环 / 分块归约 / 扫描 / RMSNorm / Softmax），骨架分派后经 `Codegen::lower` 缝交给 `engine` 落地成 MSL/CUDA，机制层不出现厂商字面量 |
 | `Plan` / `Path` / `NoPath` / `VariantCheck` / `Proof` / `Source` / `Usage` | `cutile` | kernel 层的中间产物，全部可见、无 IR；只有 `NoPath` 自带文本（`Display`，错误契约）。`Usage` 是构建期存储契约比较过的一条声明用量。`Proof` 是这次真正执行过的供给（`(原语, 实现名)` 集合）：协商只有在"档案写了 `L2`"与"这次跑通了见证"同时成立时才认一条能力，`Proof::declared` 只给解释性报告用 |
 | `Toolchain` / `CacheKey` / `Cache` / `Entry` / `State` / `Changed` / `Residue` / `Gc` / `ArtifactKey` / `Artifact` | `cutile` | 缓存指纹、编译产物与存量：`Toolchain` 是实测工具链（`命令@版本`，来自 `--version`；档案里的 `[meta].tool_ver` 只是登记值），`CacheKey::fields` 是哈希、`meta.txt` 与差异比较的唯一来源且**不含工具链**（源文本与编译器无关）；`ArtifactKey` 是产物身份（源文本 + 实测工具链身份 + 编译参数指纹 + 主函数；参数一变就换一份产物，见证因此不会拿旧参数的二进制替新参数作证），`Artifact` 是命中结果（路径、字节、是否复用）；`Entry`/`State` 让"有 `source`"与"只写了一半"都成为可扫描的记录，`Residue`/`Gc` 是回收的结构化结果；每份产物旁的 `bin/<hex>.key` 记着它的身份（谁编的、拼了哪个主函数），`Cache::artifacts_in` 靠它在没有编译器时复用产物 |
 | `Doctor` / `OpInfo` / `DeviceInfo` / `LayoutRow` / `Storage` / `Declared` / `Built` / `CacheWhy` / `CacheState` | `cutile` | `doctor` 的结构化结论：每步产物都是数据，排版由前端拼；`Storage` 逐层给出档案容量与 `Declared` 用量，`CacheWhy` 答“这个键与本次构建差在哪”，`CacheState` 把"从未落盘 / 半截落盘 / 一致 / 不同"分成四类（文本在前端） |

@@ -342,7 +342,6 @@ fn parse_input(text: &str) -> Result<Vec<f32>> {
     Ok(values)
 }
 
-
 #[cfg(test)]
 #[path = "run_tests.rs"]
 mod tests;

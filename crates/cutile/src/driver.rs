@@ -35,11 +35,7 @@ fn witness_source(prim: &Prim, witness: &Witness, dirs: &Dirs, params: &str) -> 
 }
 
 /// 本次执行的见证源码：按文件去重，同一文件里的多条见证只出现一次。
-pub fn witness_files(
-    selected: &[Selected<'_>],
-    dirs: &Dirs,
-    params: &str,
-) -> Result<Sources> {
+pub fn witness_files(selected: &[Selected<'_>], dirs: &Dirs, params: &str) -> Result<Sources> {
     let mut files = Sources::new();
     for (prim, _, witness) in selected {
         if files.contains_key(&witness.file) {
@@ -102,11 +98,7 @@ pub fn run_tool(name: &str, command: &mut Command, source: &Path) -> Result<()> 
 }
 
 /// 跑一个已经编好的可执行文件，返回 `(stdout, stderr)` 原文。非零退出码报 [`Code::Unsupported`]：编得过却跑不起来说明这台机器现在跑不了，不是见证写错了。
-pub fn run_exe(
-    command: &mut Command,
-    path: &Path,
-    failure: &str,
-) -> Result<(String, String)> {
+pub fn run_exe(command: &mut Command, path: &Path, failure: &str) -> Result<(String, String)> {
     let output = command
         .output()
         .map_err(|error| Error::new(Code::Io, format!("运行 {} 失败：{error}", path.display())))?;
@@ -152,12 +144,7 @@ pub fn scratch(dirs: &Dirs, tag: &str) -> PathBuf {
 
 /// 两个后端 kernel 共享的分派段：按 `tid` 的 `switch`、cap 截断与回写循环。`close` 是 kernel
 /// 收尾文本（Metal 与 CUDA 的换行数不同）：`local` 声明留在各自函数里，这里只拼逐字相同的部分。
-pub fn push_dispatch(
-    program: &mut String,
-    max: usize,
-    selected: &[Selected<'_>],
-    close: &str,
-) {
+pub fn push_dispatch(program: &mut String, max: usize, selected: &[Selected<'_>], close: &str) {
     for (index, (_, _, witness)) in selected.iter().enumerate() {
         program.push_str(&format!(
             "        case {index}: n = {}(local); break;\n",

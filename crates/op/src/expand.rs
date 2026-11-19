@@ -4,7 +4,7 @@
 
 use diagnostic::Error;
 
-use super::{field, Axis, OpDecl, TileCombo, MAX_TILES};
+use super::{Axis, MAX_TILES, OpDecl, TileCombo, field};
 
 /// tile 候选数：轴取值的乘积，与 [`expand`] 同一口径但不物化组合。
 ///

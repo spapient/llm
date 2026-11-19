@@ -25,8 +25,7 @@ const NO_DEVICE: &str = "本机没有该设备，只能真机验证";
 /// 按 `emit` 取设备后端，取不到就是「本机没有这门语言的执行前端」。把 `.ok_or_else` 收在一处，
 /// 让 CUDA / Metal 两条通道只写 `backend(emit)?`，不各自重复拼错误。
 fn backend(emit: Emit) -> diagnostic::Result<&'static dyn crate::backend::Backend> {
-    crate::device::spec(emit)
-        .ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))
+    crate::device::spec(emit).ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))
 }
 
 /// 一台设备通过 `L2` 的证据：这次执行真的产生了什么。档案登记值（`tool_ver`）与实测值（`toolchain`）
@@ -474,14 +473,10 @@ impl Sweep<'_> {
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
-        let program =
-            backend(Emit::Cuda)?.harness(&prepared.source.text, &self.run.op.signature, sample)?;
-        let (stdout, _stderr) = backend(Emit::Cuda)?.compile_run(
-            self.run.profile,
-            self.dirs,
-            &program,
-            "verify",
-        )?;
+        let cuda = backend(Emit::Cuda)?;
+        let program = cuda.harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let (stdout, _stderr) =
+            cuda.compile_run(self.run.profile, self.dirs, &program, "verify")?;
         Ok((runner::parse_bits(&stdout), None))
     }
 
@@ -492,14 +487,10 @@ impl Sweep<'_> {
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
-        let program =
-            backend(Emit::Metal)?.harness(&prepared.source.text, &self.run.op.signature, sample)?;
-        let (stdout, _stderr) = backend(Emit::Metal)?.compile_run(
-            self.run.profile,
-            self.dirs,
-            &program,
-            "verify",
-        )?;
+        let metal = backend(Emit::Metal)?;
+        let program = metal.harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let (stdout, _stderr) =
+            metal.compile_run(self.run.profile, self.dirs, &program, "verify")?;
         Ok((runner::parse_bits(&stdout), None))
     }
 }

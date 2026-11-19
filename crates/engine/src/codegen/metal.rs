@@ -7,7 +7,10 @@ use op::decl::Grid;
 use op::model::Sample;
 use op::sig::{Param, Signature};
 
-use super::{buffer_decls, chunk_reduce, grid_kernel, launch_args, length_scalar, msl_address_space, scalar_name, METAL};
+use super::{
+    METAL, buffer_decls, chunk_reduce, grid_kernel, launch_args, length_scalar, msl_address_space,
+    scalar_name,
+};
 use cutile::harness::{c_literal, output_name, output_of};
 
 /// 拼出可在本机 GPU 上真实执行的 Metal 程序：`.k` 内核补 `device` 地址空间后，`cutile_launch`
@@ -170,26 +173,19 @@ fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> Strin
 }
 
 /// 给内部内核函数体注入块头：`g`/`start`/`len` 三个局部量，供循环头改写与分块寻址引用。
-fn inject_chunk_preamble(
-    body: &str,
-    kernel: &str,
-    chunk: usize,
-    scalar: &str,
-) -> Result<String> {
+fn inject_chunk_preamble(body: &str, kernel: &str, chunk: usize, scalar: &str) -> Result<String> {
     let marker = format!("void {kernel}(");
     let Some(signature_start) = body.find(&marker) else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("找不到内核函数 `void {kernel}(`"),
-        )
-        .with("engine::codegen::metal::metal_chunk_scan"));
+        return Err(
+            Error::new(Code::Invalid, format!("找不到内核函数 `void {kernel}(`"))
+                .with("engine::codegen::metal::metal_chunk_scan"),
+        );
     };
     let Some(close) = body[signature_start..].find(") {") else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("内核函数 `{kernel}` 签名不完整"),
-        )
-        .with("engine::codegen::metal::metal_chunk_scan"));
+        return Err(
+            Error::new(Code::Invalid, format!("内核函数 `{kernel}` 签名不完整"))
+                .with("engine::codegen::metal::metal_chunk_scan"),
+        );
     };
     let brace = signature_start + close + 2;
     let preamble = format!(
@@ -215,11 +211,8 @@ fn bind_chunk_loop(body: &str, scalar: &str) -> Result<String> {
     };
     let prefix = &body[..bound_at];
     let Some(open) = prefix.rfind("for (int ") else {
-        return Err(Error::new(
-            Code::Invalid,
-            "循环上界不在 `for (int …)` 头里",
-        )
-        .with("engine::codegen::metal::metal_chunk_scan"));
+        return Err(Error::new(Code::Invalid, "循环上界不在 `for (int …)` 头里")
+            .with("engine::codegen::metal::metal_chunk_scan"));
     };
     let var = prefix[open + "for (int ".len()..]
         .split('=')
@@ -229,11 +222,10 @@ fn bind_chunk_loop(body: &str, scalar: &str) -> Result<String> {
     let old_head = format!("for (int {var} = 0; {var} < {scalar}; ++{var})");
     let new_head = format!("for (int {var} = start; {var} < start + len; ++{var})");
     if !body.contains(&old_head) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("模板里找不到串行循环 `{old_head}`"),
-        )
-        .with("engine::codegen::metal::metal_chunk_scan"));
+        return Err(
+            Error::new(Code::Invalid, format!("模板里找不到串行循环 `{old_head}`"))
+                .with("engine::codegen::metal::metal_chunk_scan"),
+        );
     }
     Ok(body.replace(&old_head, &new_head))
 }
@@ -298,18 +290,16 @@ fn bind_grid_loops(body: String, grid: &Grid) -> Result<String> {
 fn thread_param(body: &str, kernel: &str) -> Result<String> {
     let marker = format!("void {kernel}(");
     let Some(signature_start) = body.find(&marker) else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("找不到内核函数 `void {kernel}(`"),
-        )
-        .with("engine::codegen::metal::metal_loop_kernel"));
+        return Err(
+            Error::new(Code::Invalid, format!("找不到内核函数 `void {kernel}(`"))
+                .with("engine::codegen::metal::metal_loop_kernel"),
+        );
     };
     let Some(close) = body[signature_start..].find(") {") else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("内核函数 `{kernel}` 签名不完整"),
-        )
-        .with("engine::codegen::metal::metal_loop_kernel"));
+        return Err(
+            Error::new(Code::Invalid, format!("内核函数 `{kernel}` 签名不完整"))
+                .with("engine::codegen::metal::metal_loop_kernel"),
+        );
     };
     let insert_at = signature_start + close;
     let mut out = String::with_capacity(body.len() + 12);
@@ -323,15 +313,13 @@ fn thread_param(body: &str, kernel: &str) -> Result<String> {
 /// → `for (int {thread} = (int)tid.{axis}; {thread} < (int)tid.{axis} + 1; ++{thread})`。
 fn bind_grid_loop(body: &str, thread: &str, scalar: &str, axis: &str) -> Result<String> {
     let head = format!("for (int {thread} = 0; {thread} < {scalar}; ++{thread})");
-    let bound = format!(
-        "for (int {thread} = (int)tid.{axis}; {thread} < (int)tid.{axis} + 1; ++{thread})"
-    );
+    let bound =
+        format!("for (int {thread} = (int)tid.{axis}; {thread} < (int)tid.{axis} + 1; ++{thread})");
     if !body.contains(&head) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("模板里找不到网格循环 `{head}`"),
-        )
-        .with("engine::codegen::metal::metal_loop_kernel"));
+        return Err(
+            Error::new(Code::Invalid, format!("模板里找不到网格循环 `{head}`"))
+                .with("engine::codegen::metal::metal_loop_kernel"),
+        );
     }
     Ok(body.replace(&head, &bound))
 }
@@ -401,7 +389,9 @@ fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> Result<
             slot = slot
         ));
     }
-    Ok(metal_driver_template(&data, &allocs, &sets, output, out_len))
+    Ok(metal_driver_template(
+        &data, &allocs, &sets, output, out_len,
+    ))
 }
 
 /// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 [`metal_driver`]）。

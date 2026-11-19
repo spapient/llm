@@ -61,8 +61,8 @@
 
 #![deny(unsafe_code)]
 
-pub mod batch;
 pub mod backends;
+pub mod batch;
 pub mod codegen;
 pub mod exec;
 pub mod kv;

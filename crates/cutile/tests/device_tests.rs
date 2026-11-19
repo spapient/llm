@@ -107,8 +107,5 @@ fn specs_register_each_execution_frontend_once() {
             entry.emit().as_str()
         );
     }
-    assert!(
-        !seen.is_empty(),
-        "执行前端注册表不得被清空"
-    );
+    assert!(!seen.is_empty(), "执行前端注册表不得被清空");
 }

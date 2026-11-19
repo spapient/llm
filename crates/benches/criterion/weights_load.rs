@@ -20,12 +20,12 @@
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::path::PathBuf;
-#[cfg(unix)]
-use weights::MmapSource;
-use weights::safetensors::File;
 use weights::Loader;
 #[cfg(unix)]
+use weights::MmapSource;
+#[cfg(unix)]
 use weights::Reader;
+use weights::safetensors::File;
 
 /// 条目数。
 const N_ENTRIES: usize = 8;

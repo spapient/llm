@@ -132,16 +132,20 @@ pub fn metal_rmsnorm_program(
     let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
     let op = run.op;
     let chunk = op.chunk.as_ref().ok_or_else(|| {
-        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
-            .with("cutile::execution::metal_rmsnorm_program")
+        Error::new(
+            Code::Unsupported,
+            format!("`{}` 没有声明 `[chunk]`", op.name),
+        )
+        .with("cutile::execution::metal_rmsnorm_program")
     })?;
-    let sample = (run.model.sample)(m, n);
     pair(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
+        lower_sources(
+            Emit::Metal,
             &Lower::ChunkRmsnorm { chunk: chunk.size },
+            &run,
+            &prepared,
+            m,
+            n,
         )?,
         "rmsnorm",
     )
@@ -164,16 +168,20 @@ pub fn metal_softmax_program(
     let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
     let op = run.op;
     let chunk = op.chunk.as_ref().ok_or_else(|| {
-        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
-            .with("cutile::execution::metal_softmax_program")
+        Error::new(
+            Code::Unsupported,
+            format!("`{}` 没有声明 `[chunk]`", op.name),
+        )
+        .with("cutile::execution::metal_softmax_program")
     })?;
-    let sample = (run.model.sample)(m, n);
     triple(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
+        lower_sources(
+            Emit::Metal,
             &Lower::ChunkSoftmax { chunk: chunk.size },
+            &run,
+            &prepared,
+            m,
+            n,
         )?,
         "softmax",
     )
@@ -231,22 +239,8 @@ pub fn cuda_reduce_program(
     n: usize,
 ) -> diagnostic::Result<String> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
-    let op = run.op;
-    let chunk = op.chunk.as_ref().ok_or_else(|| {
-        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
-            .with("cutile::execution::cuda_reduce_program")
-    })?;
-    let sample = (run.model.sample)(m, n);
     single(
-        backend(Emit::Cuda)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
-            &Lower::ChunkReduce {
-                chunk: chunk.size,
-                func: reduce_func(op)?,
-            },
-        )?,
+        lower_sources(Emit::Cuda, &reduce_kind(run.op)?, &run, &prepared, m, n)?,
         "cuda 归约",
     )
 }
@@ -371,22 +365,8 @@ fn scan_chunked(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<(String, String)> {
-    let op = run.op;
-    let chunk = op.chunk.as_ref().ok_or_else(|| {
-        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
-            .with("cutile::execution::metal_scan_program")
-    })?;
-    let sample = (run.model.sample)(m, n);
     pair(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
-            &Lower::ChunkScan {
-                chunk: chunk.size,
-                decay: scan_decay(op)?,
-            },
-        )?,
+        lower_sources(Emit::Metal, &scan_kind(run.op)?, run, prepared, m, n)?,
         "扫描",
     )
 }
@@ -400,7 +380,10 @@ fn scan_decay(op: &OpDecl) -> diagnostic::Result<f32> {
         .find(|(key, _)| key == "a")
         .map(|(_, value)| value.as_str())
         .ok_or_else(|| {
-            Error::new(Code::Invalid, format!("`{}` 的 `[consts]` 缺扫描衰减 `a`", op.name))
+            Error::new(
+                Code::Invalid,
+                format!("`{}` 的 `[consts]` 缺扫描衰减 `a`", op.name),
+            )
         })?;
     raw.parse::<f32>().map_err(|_| {
         Error::new(
@@ -605,35 +588,76 @@ fn backend(emit: Emit) -> diagnostic::Result<&'static dyn crate::backend::Backen
     })
 }
 
-/// lowering 结果应恰好一段设备源：取最后一段，段数不符是后端违约，机制层不猜。
-fn single(mut sources: Vec<String>, role: &str) -> diagnostic::Result<String> {
+/// 样本 + 后端查表 + 生产态 lowering 收在一处：调用方只写一个 `?`，不逐处重复「取样本、查后端、
+/// 降源」三段样板，也压低各入口的 Ccn。
+fn lower_sources(
+    emit: Emit,
+    kind: &Lower,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<Vec<String>> {
+    let sample = (run.model.sample)(m, n);
+    backend(emit)?.lower(&prepared.source.text, &run.op.signature, &sample, kind)
+}
+
+/// 分块归约的 [`Lower`] 描述：块大小来自 `[chunk]`、软件归约原语名来自 `[needs] reduce`。
+fn reduce_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
+    let chunk = op.chunk.as_ref().ok_or_else(|| {
+        Error::new(
+            Code::Unsupported,
+            format!("`{}` 没有声明 `[chunk]`", op.name),
+        )
+        .with("cutile::execution::cuda_reduce_program")
+    })?;
+    let func = reduce_func(op)?;
+    Ok(Lower::ChunkReduce {
+        chunk: chunk.size,
+        func,
+    })
+}
+
+/// 分块扫描的 [`Lower`] 描述：块大小来自 `[chunk]`、衰减 `a` 来自 `[consts]`。
+fn scan_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
+    let chunk = op.chunk.as_ref().ok_or_else(|| {
+        Error::new(
+            Code::Unsupported,
+            format!("`{}` 没有声明 `[chunk]`", op.name),
+        )
+        .with("cutile::execution::metal_scan_program")
+    })?;
+    let decay = scan_decay(op)?;
+    Ok(Lower::ChunkScan {
+        chunk: chunk.size,
+        decay,
+    })
+}
+
+/// 从 lowering 结果取一段设备源；缺段是后端违约，机制层不猜。
+fn pop_one(sources: &mut Vec<String>, role: &str) -> diagnostic::Result<String> {
     sources
         .pop()
         .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))
 }
 
+/// lowering 结果应恰好一段设备源。
+fn single(mut sources: Vec<String>, role: &str) -> diagnostic::Result<String> {
+    pop_one(&mut sources, role)
+}
+
 /// lowering 结果应恰好两段，按弹出顺序还原 `(第一段, 第二段)`。
 fn pair(mut sources: Vec<String>, role: &str) -> diagnostic::Result<(String, String)> {
-    let b = sources
-        .pop()
-        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
-    let a = sources
-        .pop()
-        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
+    let b = pop_one(&mut sources, role)?;
+    let a = pop_one(&mut sources, role)?;
     Ok((a, b))
 }
 
 /// lowering 结果应恰好三段，按弹出顺序还原。
 fn triple(mut sources: Vec<String>, role: &str) -> diagnostic::Result<(String, String, String)> {
-    let c = sources
-        .pop()
-        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
-    let b = sources
-        .pop()
-        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
-    let a = sources
-        .pop()
-        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
+    let c = pop_one(&mut sources, role)?;
+    let b = pop_one(&mut sources, role)?;
+    let a = pop_one(&mut sources, role)?;
     Ok((a, b, c))
 }
 

@@ -109,7 +109,7 @@ pub mod witness;
 
 mod device;
 mod gate;
-mod harness;
+pub mod harness;
 mod pipeline;
 mod runner;
 

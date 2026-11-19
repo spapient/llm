@@ -159,6 +159,19 @@ impl Codegen for MetalBackend {
         let _ = scope; // Metal 只走设备执行，host 自检由 C 后端承担
         metal_program(profile, dirs, selected)
     }
+    fn lower(
+        &self,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        kind: &Lower,
+    ) -> Result<Vec<String>> {
+        metal_lower(kernel, signature, sample, kind)
+    }
+    fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
+        let (device, host) = crate::codegen::metal::metal_harness(kernel, signature, sample)?;
+        Ok(Source::Pair { device, host })
+    }
 }
 
 impl Driver for MetalBackend {
@@ -186,9 +199,7 @@ impl Driver for MetalBackend {
         label: &str,
     ) -> Result<(String, String)> {
         match source {
-            Source::Pair { device, host } => {
-                compile_run_metal(profile, dirs, device, host, label)
-            }
+            Source::Pair { device, host } => compile_run_metal(profile, dirs, device, host, label),
             Source::Single(_) => Err(Error::new(
                 Code::Unsupported,
                 "Metal 后端需要双源（MSL + host 驱动）".to_string(),
@@ -198,6 +209,54 @@ impl Driver for MetalBackend {
 }
 
 impl Backend for MetalBackend {}
+
+/// 把中性的 [`Lower`] 描述降成 MSL：逐点/循环走网格或串行，分块族（归约/扫描/归一化）走分块内核。
+fn metal_lower(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<Vec<String>> {
+    use cutile::backend::Lower::*;
+    match kind {
+        Pointwise => crate::codegen::metal::metal_grid_kernel(kernel, signature).map(|s| vec![s]),
+        Loop(grid) => crate::codegen::metal::metal_loop_kernel(kernel, signature, sample, grid)
+            .map(|s| vec![s]),
+        ChunkReduce { .. } | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => {
+            metal_chunk_lower(kernel, signature, sample, kind)
+        }
+    }
+}
+
+/// 分块族 lowering：归约单段、扫描/归一化两段、softmax 三段，段序与 [`cutile::execution`] 的
+/// `pair`/`triple` 解包一致（按弹出顺序还原）。
+fn metal_chunk_lower(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<Vec<String>> {
+    use cutile::backend::Lower::*;
+    match kind {
+        ChunkReduce { chunk, func } => {
+            crate::codegen::metal::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
+                .map(|s| vec![s])
+        }
+        ChunkScan { chunk, decay } => {
+            crate::codegen::metal::metal_chunk_scan(kernel, signature, sample, *chunk, *decay)
+                .map(|(local, correct)| vec![local, correct])
+        }
+        ChunkRmsnorm { chunk } => {
+            crate::codegen::metal::metal_chunk_rmsnorm(kernel, signature, sample, *chunk)
+                .map(|(partial, map)| vec![partial, map])
+        }
+        ChunkSoftmax { chunk } => {
+            crate::codegen::metal::metal_chunk_softmax(kernel, signature, sample, *chunk)
+                .map(|(max, expsum, map)| vec![max, expsum, map])
+        }
+        Pointwise | Loop(_) => Err(Error::new(Code::Internal, "非分块 lowering 走错入口")),
+    }
+}
 
 fn metal_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
     let mut program = metal_head(profile);
@@ -427,12 +486,25 @@ impl Codegen for CudaBackend {
         let _ = scope; // CUDA 只走设备执行
         cuda_program(profile, dirs, selected)
     }
+    fn lower(
+        &self,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        kind: &Lower,
+    ) -> Result<Vec<String>> {
+        cuda_lower(kernel, signature, sample, kind)
+    }
+    fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
+        Ok(Source::Single(crate::codegen::cuda::cuda_harness(
+            kernel, signature, sample,
+        )?))
+    }
 }
 
 impl Driver for CudaBackend {
     fn available(&self, _: &Profile) -> bool {
-        detect_nvcc().is_some()
-            && (std::env::consts::OS != "windows" || find_cl().is_some())
+        detect_nvcc().is_some() && (std::env::consts::OS != "windows" || find_cl().is_some())
     }
     fn run(
         &self,
@@ -466,6 +538,27 @@ impl Driver for CudaBackend {
 }
 
 impl Backend for CudaBackend {}
+
+/// 把中性的 [`Lower`] 描述降成 CUDA：逐点网格与分块归约已落地，其余骨架尚未覆盖。
+fn cuda_lower(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<Vec<String>> {
+    use cutile::backend::Lower::*;
+    match kind {
+        Pointwise => crate::codegen::cuda::cuda_grid_kernel(kernel, signature).map(|s| vec![s]),
+        ChunkReduce { chunk, func } => {
+            crate::codegen::cuda::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
+                .map(|s| vec![s])
+        }
+        Loop(_) | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => Err(Error::new(
+            Code::Unsupported,
+            "CUDA 生产态 lowering 尚未覆盖该骨架".to_string(),
+        )),
+    }
+}
 
 fn cuda_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
     let mut program = cuda_head(profile);
@@ -549,7 +642,12 @@ pub fn compile_run_cuda(
     outcome
 }
 
-fn cuda_in_dir(dir: &Path, profile: &Profile, program: &str, label: &str) -> Result<(String, String)> {
+fn cuda_in_dir(
+    dir: &Path,
+    profile: &Profile,
+    program: &str,
+    label: &str,
+) -> Result<(String, String)> {
     let src = dir.join(format!("{label}.cu"));
     let exe = dir.join(format!("{label}.exe"));
     driver::write_text(&src, program)?;

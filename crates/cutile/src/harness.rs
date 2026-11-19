@@ -7,7 +7,7 @@
 
 use diagnostic::{Code, Error};
 use op::model::{Sample, Values};
-use op::sig::{CType, Param, Signature};
+use op::sig::{CType, Signature};
 
 /// 把样本与内核源码拼成一个可执行的 `main()`：warmup 若干次后逐次计时、打印输出位模式。
 ///
@@ -75,17 +75,6 @@ pub fn output_name(signature: &Signature) -> diagnostic::Result<&str> {
         ));
     }
     Ok(output)
-}
-
-/// 只读输入缓冲名（唯一非可写缓冲）：归约/扫描/循环注入三族 lowering 共用这一条查表。
-pub fn read_input(signature: &Signature) -> diagnostic::Result<&str> {
-    signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .find(|param| !param.mutable)
-        .map(|param| param.name.as_str())
-        .ok_or(Error::new(Code::Internal, "内核没有只读输入缓冲").with("cutile::harness::read_input"))
 }
 
 /// 文件头：POSIX 声明、身份注释、内核源码与计时运行时。
@@ -242,25 +231,6 @@ pub fn c_literal(values: &Values) -> String {
             .collect::<Vec<_>>()
             .join(", "),
     }
-}
-
-/// launch 实参：缓冲传设备指针 `d_<name>`，标量取样本值。
-pub fn launch_args(sample: &Sample, params: &[Param]) -> diagnostic::Result<String> {
-    let mut args = Vec::with_capacity(params.len());
-    for param in params {
-        if param.ctype.is_buffer() {
-            args.push(format!("d_{}", param.name));
-        } else {
-            let value = sample.scalar(&param.name).ok_or_else(|| {
-                Error::new(
-                    Code::Internal,
-                    format!("标量实参 `{}` 没有取值", param.name),
-                )
-            })?;
-            args.push(value.to_string());
-        }
-    }
-    Ok(args.join(", "))
 }
 
 #[cfg(test)]

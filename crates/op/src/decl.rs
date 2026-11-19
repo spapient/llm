@@ -727,7 +727,6 @@ impl OpDecl {
     }
 }
 
-
 #[path = "expand.rs"]
 mod expand;
 

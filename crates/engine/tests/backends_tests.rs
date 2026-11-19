@@ -182,7 +182,9 @@ fn production_reduce_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，归约内核编译用例未运行");
         return;
     }
-    let (m, n) = op::model("reduce_sum_f32").expect("reduce_sum_f32 语义表").shape;
+    let (m, n) = op::model("reduce_sum_f32")
+        .expect("reduce_sum_f32 语义表")
+        .shape;
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "reduce_sum_f32", m, n)
         .expect("归约网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
@@ -233,7 +235,10 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
         cutile::execution::metal_rmsnorm_program(&catalogue, &dirs, "rmsnorm_f32", m, n)
             .expect("分块 rmsnorm 内核应能生成");
     assert!(partial.contains("_cutile_sumsq_f32"), "{partial}");
-    assert!(map.contains("d_rms") && map.contains("thread_position_in_grid"), "{map}");
+    assert!(
+        map.contains("d_rms") && map.contains("thread_position_in_grid"),
+        "{map}"
+    );
     assert_metal_compiles("engine-metal-rmsnorm", &msl, &profile.flags);
     assert_metal_compiles("engine-metal-rmsnorm", &partial, &profile.flags);
     assert_metal_compiles("engine-metal-rmsnorm", &map, &profile.flags);
@@ -254,8 +259,14 @@ fn production_softmax_kernel_compiles_for_a_real_op() {
         cutile::execution::metal_softmax_program(&catalogue, &dirs, "softmax_f32", m, n)
             .expect("分块 softmax 内核应能生成");
     assert!(max.contains("_cutile_max_f32"), "{max}");
-    assert!(expsum.contains("_cutile_exp_sum_f32") && expsum.contains("d_max"), "{expsum}");
-    assert!(map.contains("_cutile_exp_norm_f32") && map.contains("d_sum"), "{map}");
+    assert!(
+        expsum.contains("_cutile_exp_sum_f32") && expsum.contains("d_max"),
+        "{expsum}"
+    );
+    assert!(
+        map.contains("_cutile_exp_norm_f32") && map.contains("d_sum"),
+        "{map}"
+    );
     assert_metal_compiles("engine-metal-softmax", &max, &profile.flags);
     assert_metal_compiles("engine-metal-softmax", &expsum, &profile.flags);
     assert_metal_compiles("engine-metal-softmax", &map, &profile.flags);
@@ -295,9 +306,18 @@ fn production_gemm_kernel_compiles_for_a_real_op() {
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "gemm_f32", 16, 16)
         .expect("gemm 网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
-    assert!(msl.contains("uint3 tid [[thread_position_in_grid]]"), "{msl}");
-    assert!(msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"), "{msl}");
-    assert!(msl.contains("for (int j = (int)tid.y; j < (int)tid.y + 1; ++j)"), "{msl}");
+    assert!(
+        msl.contains("uint3 tid [[thread_position_in_grid]]"),
+        "{msl}"
+    );
+    assert!(
+        msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"),
+        "{msl}"
+    );
+    assert!(
+        msl.contains("for (int j = (int)tid.y; j < (int)tid.y + 1; ++j)"),
+        "{msl}"
+    );
     assert_metal_compiles("engine-metal-gemm", &msl, &profile.flags);
 }
 
@@ -329,7 +349,10 @@ fn production_attention_kernel_compiles_for_a_real_op() {
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "attention_f32", 8, 8)
         .expect("attention 网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
-    assert!(msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"), "{msl}");
+    assert!(
+        msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"),
+        "{msl}"
+    );
     assert_metal_compiles("engine-metal-attention", &msl, &profile.flags);
 }
 
@@ -343,11 +366,13 @@ fn production_flash_attention_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，flash_attention 内核编译用例未运行");
         return;
     }
-    let msl =
-        cutile::execution::metal_grid_program(&catalogue, &dirs, "flash_attention_f32", 8, 8)
-            .expect("flash_attention 网格内核应能生成");
+    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "flash_attention_f32", 8, 8)
+        .expect("flash_attention 网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
-    assert!(msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"), "{msl}");
+    assert!(
+        msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"),
+        "{msl}"
+    );
     assert_metal_compiles("engine-metal-flash-attention", &msl, &profile.flags);
 }
 
@@ -357,7 +382,9 @@ fn production_quantized_gemv_compiles(op_name: &str) {
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
     if !cutile::witness::device_available(&profile) {
-        testkit::skip(format!("engine: Metal 工具链不在本机，{op_name} 内核编译用例未运行"));
+        testkit::skip(format!(
+            "engine: Metal 工具链不在本机，{op_name} 内核编译用例未运行"
+        ));
         return;
     }
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, 64, 4)

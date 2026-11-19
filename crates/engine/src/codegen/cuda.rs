@@ -6,7 +6,7 @@ use diagnostic::{Code, Error, Result};
 use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
-use super::{chunk_reduce, cuda_device, grid_kernel, launch_args, CUDA};
+use super::{CUDA, chunk_reduce, cuda_device, grid_kernel, launch_args};
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 
 /// 拼出可在 GPU 上真实执行的 CUDA 程序：`.k` 内核转 `__device__`，单线程 `__global__` 包装在
