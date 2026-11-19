@@ -102,14 +102,19 @@ impl Batch {
     /// 前缀页由调度器向满块前缀树要（跨请求）：批不再自己扫活序列找公共前缀——那样源序列一
     /// 结束、页一归还，前缀就跟着没了，而"同样的系统提示词再来一个请求"恰恰是最常见的复用。
     ///
+    /// 接走的共享前缀同时把「已算位置」推上去：那些 token 的 K/V 就在接走的那几页里，重算一遍
+    /// 只会写出同样的行。位置账与页账因此永远是同一份——只共享页不改位置，端点会把整段提示再算
+    /// 一遍，而它要写的正好是它刚打算去读的那些行。
+    ///
     /// # Errors
     ///
     /// 序列自身不合法（重名、已结束、`max_new` 为零）时返回 `invalid`——那是调用方的状态
     /// 错误，与"页不够"不是一回事。
-    pub fn admit(&mut self, sequence: Sequence) -> Result<Admission> {
-        if !self.scheduler.admit(&sequence)? {
+    pub fn admit(&mut self, mut sequence: Sequence) -> Result<Admission> {
+        let Some(prefilled) = self.scheduler.admit(&sequence)? else {
             return Ok(Admission::Full(sequence));
-        }
+        };
+        sequence.prefill_to(prefilled)?;
         self.sequences.push(sequence);
         Ok(Admission::Admitted)
     }
@@ -181,12 +186,53 @@ impl Batch {
     /// 知道它算完了。登记只加一份页引用，不动这条序列的页表——之后这条序列结束归还自己那份，
     /// 页仍由树持着，下一个同前缀请求照样命中。
     ///
+    /// 预填充走同一条路：每个提示位置写回它自己那一行，写满一页就登记那一块，于是提示段的前缀
+    /// 在预填充过程中就已经可复用，不必等解码。
+    ///
     /// # Errors
     ///
     /// `id` 不在批里、位置还没有页、行宽不符，或那页已归还。
     pub fn write_kv(&mut self, id: u64, token: usize, values: &[f32]) -> Result<()> {
         self.scheduler.write_kv(id, token, values)?;
-        self.publish_block(id, token)
+        // 写了第 `token` 行 ⇒ 行 0..=token 落定，共 `token + 1` 行。
+        self.settle_through(id, token + 1)
+    }
+
+    /// 把这条序列的页表扩到盖住前 `rows` 行：预填充写多行之前先向页池要页。
+    ///
+    /// 与 [`Batch::write_kv`] 分开的理由是错误要说真话：一次写多行时缺的不是「位置无页」，而是
+    /// 「页没预留」，两件事报同一句话就把调用点指错了。
+    ///
+    /// # Errors
+    ///
+    /// `id` 不在批里、页宽为零或页池不够。
+    pub fn reserve(&mut self, id: u64, rows: usize) -> Result<()> {
+        self.scheduler.reserve(id, rows)
+    }
+
+    /// 把提示段已算位置推进到 `to`，并把沿途新写满的块登记进前缀树。
+    ///
+    /// 为什么推进与登记必须成对：块只有"行已经落定"之后才可复用。预填充写的是提示段的行，
+    /// 登记却按 [`Sequence::prefilled`] 而不是按写到的行——写提前一格（第 `at` 步写第
+    /// `at + 1` 行），登记若跟着写走就会把还没算的块当成算好的。
+    ///
+    /// `to` 不超过提示长度、也不倒退，由 [`Sequence::prefill_to`] 校验。
+    ///
+    /// # Errors
+    ///
+    /// `id` 不在批里、`to` 越界或倒退、或登记时页池拒绝加引用。
+    pub fn mark_prefilled(&mut self, id: u64, to: usize) -> Result<()> {
+        self.sequence_mut(id)
+            .ok_or_else(|| {
+                Error::new(
+                    Code::Invalid,
+                    format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),
+                )
+                .with("engine::Batch::mark_prefilled")
+            })?
+            .prefill_to(to)?;
+        // 已算 `to` 个位置 ⇒ 行 0..to 落定，与写路径同一口径。
+        self.settle_through(id, to)
     }
 
     /// 读回批里某条序列第 `token` 个位置的 KV 行。
@@ -309,37 +355,44 @@ impl Batch {
             .position(|sequence| sequence.id() == id)
     }
 
-    /// 刚写完的位置是否凑满一个块；凑满就登记进前缀树。
+    /// 写到第 `token` 行之后登记：已落定的行数就是这一行之后的行数。
+    /// 把已落定 `rows` 行里凑满的块登记进前缀树。
     ///
-    /// 块内 token 从序列上下文切（前缀树比对的就是这些数），页号从页表取：两者都只在
-    /// "这一块已经写进页里"之后才有意义，所以调用点必须是写之后。
-    fn publish_block(&mut self, id: u64, token: usize) -> Result<()> {
+    /// 只登记**整块且整块落在已落定行数之内**的前缀：块内 token 从序列上下文切（前缀树比对的
+    /// 就是这些数），页号从页表取——两者都只在"这一块已经算进页里"之后才有意义。哪些块算数只由
+    /// `rows` 决定，调用方负责让它等于已落定的行数，因此这里不再自己推偏移。
+    ///
+    /// 扫描从第 0 块开始而不是从"新落定的第一块"开始：登记对已登记的块返回 `false`、不加第二份
+    /// 引用，重扫只花一次比对；代价远小于"从哪开始"这个参数写错一次就漏掉一块。
+    ///
+    /// 不登记的部分不是错误：不足一块的尾巴、或已被别人登记过的块，都只是"这次没有新前缀"。
+    fn settle_through(&mut self, id: u64, rows: usize) -> Result<()> {
         let Self {
             scheduler,
             sequences,
         } = self;
         let width = scheduler.page_size();
-        if width == 0 || (token + 1) % width != 0 {
+        if width == 0 {
             return Ok(());
         }
-        let block = token / width;
         let Some(sequence) = sequences.iter().find(|sequence| sequence.id() == id) else {
             return Ok(());
         };
-        let Some(span) = sequence
-            .context()
-            .get(block * width..(block + 1) * width)
-        else {
+        let Some(table) = scheduler.pages_of(id) else {
             return Ok(());
         };
-        let Some(page) = scheduler
-            .pages_of(id)
-            .and_then(|table| table.pages().get(block))
-            .copied()
-        else {
-            return Ok(());
-        };
-        scheduler.publish(span, block, page)?;
+        // 先只读地把要登记的块收齐：`publish` 要独占页池，而上下文与页号还得从只读的序列与页表
+        // 里取，两个借用不能同时活着。整段上下文只克隆一次，逐块登记时复用。
+        let context = sequence.context().to_vec();
+        let pages = table.pages().to_vec();
+        let blocks: Vec<usize> = (0..rows / width)
+            .filter(|block| {
+                (block + 1) * width <= context.len() && *block < pages.len()
+            })
+            .collect();
+        for block in blocks {
+            scheduler.publish(&context, block, pages[block])?;
+        }
         Ok(())
     }
 }
@@ -824,4 +877,114 @@ mod tests {
         );
     }
 
+    /// 预填充只登记"行已落定"的整块：推进到 3 个位置只登记第 0 块，满 4 个位置才有第 1 块。
+    #[test]
+    fn marking_a_prompt_prefilled_publishes_only_whole_blocks() {
+        let mut batch = Batch::new(pool(8, 2));
+        assert_eq!(
+            batch.admit(sequence_with(1, &[1, 2, 3, 4, 5], 2, 2)).expect("准入"),
+            Admission::Admitted
+        );
+        assert!(!batch.sequence(1).expect("在批里").prefilled_ready());
+        batch.mark_prefilled(1, 3).expect("算完三个位置");
+        assert_eq!(batch.scheduler().cached_blocks(), 1, "只有第 0 块写满了");
+        assert!(!batch.sequence(1).expect("在批里").prefilled_ready());
+        batch.mark_prefilled(1, 5).expect("算完提示段");
+        assert!(batch.sequence(1).expect("在批里").prefilled_ready());
+        assert_eq!(
+            batch.scheduler().cached_blocks(),
+            2,
+            "第 2 块只有一行，不够一块，不许登记"
+        );
+    }
+
+    /// 预填充位置只许往前：倒退会把已登记的块当成没算过，越过提示段则索引不存在的行。
+    #[test]
+    fn a_prefill_position_cannot_go_backwards_or_past_the_prompt() {
+        let mut batch = Batch::new(pool(4, 2));
+        batch.admit(sequence_with(1, &[1, 2, 3, 4], 2, 2)).expect("准入");
+        batch.mark_prefilled(1, 3).expect("算完三个位置");
+        assert_eq!(
+            batch.mark_prefilled(1, 2).unwrap_err().code(),
+            Code::Invalid,
+            "倒退不许"
+        );
+        assert_eq!(
+            batch.mark_prefilled(1, 5).unwrap_err().code(),
+            Code::Invalid,
+            "越过提示段不许"
+        );
+        assert_eq!(
+            batch.mark_prefilled(9, 1).unwrap_err().code(),
+            Code::Invalid,
+            "不在批里的序列不许"
+        );
+    }
+
+    /// 解码写满一块也登记：两条路径（预填充、解码）走的是同一份"落定即登记"。
+    #[test]
+    fn writing_the_last_row_of_a_block_publishes_it() {
+        let mut batch = Batch::new(pool(8, 2));
+        batch.admit(sequence_with(1, &[1, 2], 4, 2)).expect("准入");
+        assert_eq!(batch.scheduler().cached_blocks(), 0);
+        batch.step().expect("推进一步：页表随长度长到两页");
+        batch.write_kv(1, 2, &[0.5; 2]).expect("写第 2 行");
+        assert_eq!(
+            batch.scheduler().cached_blocks(),
+            1,
+            "第 2 行落定即第 0 块写完"
+        );
+    }
+
+    /// 预填充过的一次提示，下一个同前缀请求只补差额页：共享的页就是同一批页号。
+    #[test]
+    fn a_prefilled_prompt_is_shared_with_the_next_request() {
+        let mut batch = Batch::new(pool(8, 2));
+        let prompt = [1, 2, 3, 4];
+        batch.admit(sequence_with(1, &prompt, 1, 2)).expect("准入");
+        let first: Vec<Page> = batch
+            .scheduler()
+            .pages_of(1)
+            .expect("页表")
+            .pages()
+            .to_vec();
+        assert_eq!(first.len(), 2, "提示 4 个 token、页宽 2：正好两页");
+        batch.mark_prefilled(1, prompt.len()).expect("算完提示段");
+        assert_eq!(batch.scheduler().cached_blocks(), 2);
+        batch.finish(1).expect("结束");
+        assert_eq!(
+            batch.scheduler().cache().in_use(),
+            2,
+            "块由前缀树持有，请求结束不还"
+        );
+
+        batch.admit(sequence_with(2, &prompt, 1, 2)).expect("准入");
+        let second: Vec<Page> = batch
+            .scheduler()
+            .pages_of(2)
+            .expect("页表")
+            .pages()
+            .to_vec();
+        assert_eq!(
+            &second[..2],
+            &first[..2],
+            "前两页整块接走，页号必须同源"
+        );
+        assert_eq!(second.len(), 2, "整段提示都接走，一页也不用新开");
+    }
+
+    /// 召回按整块走：块登记进去后，页已被别的请求共享也不会被当作空闲页摘走。
+    #[test]
+    fn a_published_block_keeps_its_page_out_of_the_free_list() {
+        let mut batch = Batch::new(pool(2, 2));
+        batch.admit(sequence_with(1, &[1, 2], 1, 2)).expect("准入");
+        batch.mark_prefilled(1, 2).expect("算完提示段");
+        let page = batch.scheduler().pages_of(1).expect("页表").pages()[0];
+        batch.finish(1).expect("结束");
+        assert!(
+            batch.scheduler().cache().is_live(page),
+            "块还在树上，页不能回池"
+        );
+        assert_eq!(batch.scheduler().cache().free_pages(), 1, "两页池只空闲一页");
+    }
 }

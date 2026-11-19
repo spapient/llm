@@ -49,7 +49,11 @@
 //!
 //! let mut scheduler = Scheduler::new(Pager::new(Cache::new(4, 16).expect("页池"), 4).expect("行宽"));
 //! let mut sequence = Sequence::new(0, &[0; 8], 4, 16, Stream::new(0)).expect("序列");
-//! assert!(scheduler.admit(&sequence).expect("准入"));
+//! assert_eq!(
+//!     scheduler.admit(&sequence).expect("准入"),
+//!     Some(0),
+//!     "页池空着，没有可接走的前缀：提示段一个位置都没算过",
+//! );
 //! assert_eq!(
 //!     scheduler.advance(&mut sequence).expect("生成一个 token"),
 //!     Progress::Running,
@@ -110,6 +114,8 @@ pub enum State {
 pub struct Sequence {
     id: u64,
     prompt_len: usize,
+    /// 提示段已经算进页账的位置数（`0..=prompt_len`）；到了 `prompt_len` 才是「可以解码」。
+    prefilled: usize,
     produced: usize,
     max_new: usize,
     page_size: usize,
@@ -151,6 +157,7 @@ impl Sequence {
         Ok(Self {
             id,
             prompt_len,
+            prefilled: 0,
             produced: 0,
             max_new,
             page_size,
@@ -173,6 +180,19 @@ impl Sequence {
     /// 已生成 token 数。
     pub fn produced(&self) -> usize {
         self.produced
+    }
+
+    /// 提示段已经算进页账的位置数。
+    ///
+    /// 提示段的 K/V 必须由预填充逐位写进页：解码只算当前位置、历史从页里读，从不回补提示段。
+    /// 所以「能解码了没」看的是这个数，不是 `len()`——`len()` 从准入起就等于 `prompt_len`。
+    pub fn prefilled(&self) -> usize {
+        self.prefilled
+    }
+
+    /// 提示段是否已算完（可以直接解码）。
+    pub fn prefilled_ready(&self) -> bool {
+        self.prefilled >= self.prompt_len
     }
 
     /// 最多生成多少 token。
@@ -263,6 +283,29 @@ impl Sequence {
         Ok(())
     }
 
+    /// 把提示段已算位置推进到 `to`；**不碰页**。
+    ///
+    /// 只对同 crate 可见：[`Batch::mark_prefilled`] 是"推进 + 登记块"成对的唯一入口，绕过它
+    /// 单独推进会让前缀树少登记一个本可复用的块。
+    ///
+    /// # Errors
+    ///
+    /// `to` 超出 `0..=prompt_len` 或比当前已算位置更浅时返回 `invalid`。
+    pub(crate) fn prefill_to(&mut self, to: usize) -> Result<()> {
+        if to > self.prompt_len || to < self.prefilled {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "预填充位置 {to} 不在 {}..={} 之内（不许倒退、不许越过提示段）",
+                    self.prefilled, self.prompt_len
+                ),
+            )
+            .with("engine::Sequence::prefill_to"));
+        }
+        self.prefilled = to;
+        Ok(())
+    }
+
     /// 页宽（与页池一致；准入与增长都按它算页数）。
     pub fn page_size(&self) -> usize {
         self.page_size
@@ -297,6 +340,9 @@ impl Sequence {
     }
 
     /// 走到当前长度需要多少页：向上取整，至少一页（否则 [`crate::kv::Table`] 无处可放）。
+    ///
+    /// 这是**准入**的紧凑预算（`pages_for(len)`）：行 0 的空槽在用之前不占页，写入时由
+    /// [`Scheduler::write_kv`](crate::Scheduler) 按需补齐；上界看 [`Sequence::pages_required`]。
     pub fn pages_needed(&self) -> usize {
         pages_for(self.len(), self.page_size)
     }
@@ -356,14 +402,19 @@ impl Scheduler {
     /// 空闲页不够时先按 LRU 摘掉前缀树的叶再试一次：缓存是自愿的，让它挡住一次本来能跑的
     /// 准入是本末倒置。摘完仍不够才拒。
     ///
+    /// 返回值是**已被接走的 token 数**（共享页 × 页宽，只会小于 `prompt_len`，因为前缀树只
+    /// 记整块）：调用方据此把「已算位置」推上去，这些位置的 K/V 在本页池里已经算好且就绪，
+    /// 不必再算一遍。`None` 是「现在装不下」。页与位置的账必须是同一份：只共享页不改位置，
+    /// 下一个请求会把同一段提示重算一遍，而重算的结果正好是它要去读的那些行。
+    ///
     /// # Errors
     ///
     /// 序列自身不合法（重名、已结束、页宽不符）时返回 `invalid`——那是调用方的状态错误，
     /// 与"页不够"不是一回事。
-    pub fn admit(&mut self, sequence: &Sequence) -> Result<bool> {
+    pub fn admit(&mut self, sequence: &Sequence) -> Result<Option<usize>> {
         self.check_admissible(sequence)?;
         if !self.fits(sequence) {
-            return Ok(false);
+            return Ok(None);
         }
         let needed = sequence.pages_needed();
         let width = self.pager.page_size();
@@ -375,7 +426,7 @@ impl Scheduler {
             self.radix.evict(&mut self.pager, short)?;
         }
         if self.pager.free_pages() < fresh {
-            return Ok(false);
+            return Ok(None);
         }
         let mut table = crate::kv::Table::new(needed)?;
         for page in prefix.iter().take(shared) {
@@ -389,7 +440,7 @@ impl Scheduler {
             table,
             needs_page,
         });
-        Ok(true)
+        Ok(Some(shared * width))
     }
 
     /// 把一个写满的块登记进前缀树，返回是否新登记（重复登记返回 `false`）。
@@ -403,6 +454,11 @@ impl Scheduler {
     pub fn publish(&mut self, tokens: &[u32], block: usize, page: crate::kv::Page) -> Result<bool> {
         let width = self.pager.page_size();
         self.radix.publish(&mut self.pager, tokens, width, block, page)
+    }
+
+    /// 前缀树里的块数（只读诊断）：服务侧报"共享缓存有多深"时用，不暴露树本身。
+    pub fn cached_blocks(&self) -> usize {
+        self.radix.len()
     }
 
     /// 准入的状态判据：重名、已结束、页宽不符都是调用方的状态错误；页够不够由调用点判。
@@ -614,6 +670,42 @@ impl Scheduler {
     pub fn write_kv(&mut self, id: u64, token: usize, values: &[f32]) -> Result<()> {
         let slot = self.slot(id, token)?;
         self.pager.write(slot, values)
+    }
+
+    /// 把页表扩到盖住前 `rows` 行（1-based 行账：第 `n` 个 token 落在行 `n`）。
+    ///
+    /// 预填充一次写多行、不走 [`Scheduler::advance`] 的逐步预留，所以在写第一批行之前要先把页
+    /// 一次要到；池不够时报错，而不是让随后的 [`Scheduler::write_kv`] 报「还没有页」——
+    /// 真正的原因（预算）与表现（位置无页）不该分开藏在两个地方。
+    ///
+    /// # Errors
+    ///
+    /// 序列不在批里、页宽为零时无从算页；页池不够时返回 `invalid`。
+    pub fn reserve(&mut self, id: u64, rows: usize) -> Result<()> {
+        let Some(index) = self.position(id) else {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),
+            )
+            .with("engine::Scheduler::reserve"));
+        };
+        let width = self.pager.page_size();
+        if width == 0 {
+            return Err(Error::new(Code::Invalid, "页宽为零：算不出要几页")
+                .with("engine::Scheduler::reserve"));
+        }
+        let needed = pages_for(rows, width);
+        if !self.extend(index, needed, "engine::Scheduler::reserve")? {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "序列 {id} 要 {needed} 页盖住前 {rows} 行，页池只剩 {} 页",
+                    self.pager.free_pages()
+                ),
+            )
+            .with("engine::Scheduler::reserve"));
+        }
+        Ok(())
     }
 
     /// 读回第 `token` 个位置的 KV 行（只读）。

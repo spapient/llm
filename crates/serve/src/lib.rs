@@ -250,11 +250,11 @@ impl Admitter for engine::Scheduler {
     }
 
     fn admit(&mut self, sequence: engine::Sequence) -> Result<AdmissionOutcome> {
-        let admitted = engine::Scheduler::admit(self, &sequence)?;
-        Ok(if admitted {
-            AdmissionOutcome::Admitted(sequence.id())
-        } else {
-            AdmissionOutcome::Full
+        // 调度器回的是「已算好的前缀 token 数」：`None` 才是装不下。服务层不需要这个数——
+        // 页与位置都由批层自己记账，这里只关心进没进。
+        Ok(match engine::Scheduler::admit(self, &sequence)? {
+            Some(_) => AdmissionOutcome::Admitted(sequence.id()),
+            None => AdmissionOutcome::Full,
         })
     }
 }

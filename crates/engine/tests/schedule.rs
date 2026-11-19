@@ -27,12 +27,17 @@ fn sequence(id: u64, prompt: usize, max_new: usize, page_size: usize) -> Sequenc
     Sequence::new(id, &prompt, max_new, page_size, Stream::new(id as u32)).expect("序列参数合法")
 }
 
+/// 准入判定：`None` 是"现在装不下"，`Some` 是能开始。
+fn admitted(scheduler: &mut Scheduler, sequence: &Sequence, why: &str) -> bool {
+    scheduler.admit(sequence).unwrap_or_else(|_| panic!("{why}")).is_some()
+}
+
 #[test]
 fn a_sequence_generates_one_token_per_step_until_done() {
     let mut scheduler = scheduler(4, 16);
     let mut sequence = sequence(1, 4, 2, 16);
     assert!(
-        scheduler.admit(&sequence).expect("准入"),
+        admitted(&mut scheduler, &sequence, "准入"),
         "空页池必须能放下短序列"
     );
     assert_eq!(sequence.produced(), 0);
@@ -61,7 +66,7 @@ fn a_sequence_that_cannot_run_to_completion_is_never_admitted() {
         "独占页池也跑不完的请求不算放得下"
     );
     assert!(
-        !scheduler.admit(&sequence).expect("准入"),
+        !admitted(&mut scheduler, &sequence, "准入"),
         "放不下就不能进批"
     );
     assert_eq!(scheduler.running(), 0);
@@ -71,7 +76,7 @@ fn a_sequence_that_cannot_run_to_completion_is_never_admitted() {
 fn a_sequence_occupies_only_the_pages_its_current_length_needs() {
     let mut scheduler = scheduler(4, 4);
     let mut sequence = sequence(1, 4, 8, 4);
-    assert!(scheduler.admit(&sequence).expect("准入"));
+    assert!(admitted(&mut scheduler, &sequence, "准入"));
     assert_eq!(
         scheduler.cache().in_use(),
         1,
@@ -93,8 +98,8 @@ fn a_blocked_step_neither_generates_nor_moves_pages() {
     let mut scheduler = scheduler(2, 2);
     let mut first = sequence(1, 2, 2, 2);
     let second = sequence(2, 2, 2, 2);
-    assert!(scheduler.admit(&first).expect("准入"));
-    assert!(scheduler.admit(&second).expect("准入"));
+    assert!(admitted(&mut scheduler, &first, "准入"));
+    assert!(admitted(&mut scheduler, &second, "准入"));
 
     // 推进到某一条进入 Done 或 Blocked 为止：两条都占满页池时，任意一条继续都要新页。
     let before = scheduler.cache().in_use();
@@ -139,7 +144,7 @@ fn finishing_an_unknown_sequence_reports_absence_without_moving_pages() {
     // 会让幂等收尾（两条路径都调一次 finish）变成必须先查再删。
     let mut scheduler = scheduler(2, 4);
     let sequence = sequence(1, 2, 1, 4);
-    assert!(scheduler.admit(&sequence).expect("准入"));
+    assert!(admitted(&mut scheduler, &sequence, "准入"));
     assert!(scheduler.finish(sequence.id()).expect("在批里"));
     let after_first = scheduler.cache().in_use();
     assert_eq!(after_first, 0, "结束即归还，页数回到零");
@@ -160,7 +165,7 @@ fn finishing_an_unknown_sequence_reports_absence_without_moving_pages() {
 fn admitting_the_same_id_twice_is_rejected_with_a_category() {
     let mut scheduler = scheduler(4, 4);
     let sequence = sequence(7, 2, 2, 4);
-    assert!(scheduler.admit(&sequence).expect("首次准入"));
+    assert!(admitted(&mut scheduler, &sequence, "首次准入"));
     let error = scheduler
         .admit(&sequence)
         .expect_err("重复 id 必须拒绝，而不是覆盖前一条");
@@ -178,7 +183,7 @@ fn admitting_the_same_id_twice_is_rejected_with_a_category() {
 fn kv_rows_are_addressed_through_the_page_table() {
     let mut scheduler = scheduler(4, 4);
     let sequence = sequence(1, 5, 2, 4);
-    assert!(scheduler.admit(&sequence).expect("准入"));
+    assert!(admitted(&mut scheduler, &sequence, "准入"));
     // 提示 5 个 token 占 2 页（8 个位置），所以第 0..8 个位置都已经有页。
     scheduler.write_kv(1, 0, &[1.5, 2.5]).expect("写第一行");
     scheduler
@@ -223,7 +228,7 @@ fn kv_rows_are_addressed_through_the_page_table() {
 fn a_reused_page_does_not_leak_the_previous_sequences_kv() {
     let mut scheduler = scheduler(1, 4);
     let first = sequence(1, 3, 1, 4);
-    assert!(scheduler.admit(&first).expect("准入"));
+    assert!(admitted(&mut scheduler, &first, "准入"));
     scheduler.write_kv(1, 0, &[9.0, 9.0]).expect("写第一行");
     assert!(scheduler.finish(1).expect("结束"));
     assert_eq!(
@@ -233,7 +238,7 @@ fn a_reused_page_does_not_leak_the_previous_sequences_kv() {
     );
 
     let second = sequence(2, 3, 1, 4);
-    assert!(scheduler.admit(&second).expect("同一页再借出来"));
+    assert!(admitted(&mut scheduler, &second, "同一页再借出来"));
     assert_eq!(
         scheduler.kv(2, 0).expect("读"),
         [0.0, 0.0],

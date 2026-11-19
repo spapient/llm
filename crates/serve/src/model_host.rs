@@ -110,40 +110,20 @@ impl CpuModel {
         self.assembly.descriptors()
     }
 
-    /// 按首层族别把序列当前位置 token 折成一步前向的输入缓冲。
-    ///
-    /// 查表层首层收一个索引（decode 一步取上下文末位 token）；投影/点wise/归一化/注意力块首层需要的是
-    /// 隐向量，而序列只持有 token id，给不出向量，当前通路拒绝，向量主链随连续批刀落地。
-    fn predict_input(&self, sequence: &Sequence) -> Result<Vec<f32>> {
-        self.predict_input_batch(std::slice::from_ref(sequence))
-    }
-
-    /// 批量收集各序列末位 token，按准入序折成整批索引缓冲；非查表层首层走向量主链占位。
-    fn predict_input_batch(&self, sequences: &[Sequence]) -> Result<Vec<f32>> {
+    /// 按准入序把各行的 `context[at]` 折成整批索引缓冲；非查表层首层走向量主链占位。
+    fn predict_input_batch(&self, rows: &[Row<'_>]) -> Result<Vec<f32>> {
         if self.assembly.input_kind != LayerKind::Embedding {
             // 向量主链：投影/点wise/归一化/注意力首层收隐向量，序列只持 token id，给不出真实嵌入；
             // 按设计稿在 serve 层造零向量占位（真实嵌入由外部/后续通路供给），先让非查表层首层可跑。
-            return Ok(vec![0.0; self.assembly.input_len * sequences.len()]);
+            return Ok(vec![0.0; self.assembly.input_len * rows.len()]);
         }
-        sequences
-            .iter()
-            .map(|sequence| {
-                sequence
-                    .context()
-                    .last()
-                    .copied()
-                    .ok_or_else(|| {
-                        Error::new(Code::Invalid, "序列为空：没有可前向的 token").with(SITE)
-                    })
-                    .map(|token| token as f32)
-            })
-            .collect()
+        rows.iter().map(Row::token).collect()
     }
 
     /// 把输入与各逐层激活缓冲重绑到 `batch` 份单序列段长；驻留权重不乘批。
     ///
-    /// 前向每步覆写输入、op 逐层覆写激活，无跨步残留；历史 K/V 块缓冲由 [`load_history`](Self::load_history)
-    /// 单独重绑，不在本台账内。
+    /// 前向每步覆写输入、op 逐层覆写激活，无跨步残留；历史 K/V 块缓冲由
+    /// [`load_history`](Self::load_history) 单独重绑，不在本台账内。
     fn resize_for_batch(&mut self, batch: usize) {
         self.executor.bind(
             self.assembly.input,
@@ -155,12 +135,12 @@ impl CpuModel {
     }
 
     /// 无 K/V 块的整批前向：一次图提交，输出整块按单序列输出宽拆回各行；行序对齐准入序。
-    fn batch_forward(&mut self, sequences: &[Sequence]) -> Result<Vec<Vec<f32>>> {
-        if sequences.is_empty() {
+    fn batch_forward(&mut self, rows: &[Row<'_>]) -> Result<Vec<Vec<f32>>> {
+        if rows.is_empty() {
             return Ok(Vec::new());
         }
-        let batch = sequences.len();
-        let input = self.predict_input_batch(sequences)?;
+        let batch = rows.len();
+        let input = self.predict_input_batch(rows)?;
         self.resize_for_batch(batch);
         self.executor.bind(self.assembly.input, input);
         // 无块链没有 rope 节点：位置取 0（角度为 0 的恒等旋转）。
@@ -169,23 +149,13 @@ impl CpuModel {
         self.split_batch_output(flat, batch)
     }
 
-    /// 单序列历史装填：批历史装填的单段特例（段游标 0、一段历史），复用同一段紧排布局。
-    fn load_history(&mut self, sequence: &Sequence, batch: &Batch) -> Result<()> {
-        self.load_history_batch(std::slice::from_ref(sequence), batch)
-    }
-
-    /// 单序列当前步 K/V 写回：批写回路径的单段特例，行写回各自页行。
-    fn write_current_kv(&mut self, sequence: &Sequence, batch: &mut Batch) -> Result<()> {
-        self.write_current_kv_batch(std::slice::from_ref(sequence), batch)
-    }
-
     /// 批历史装填：逐块把各段历史 K/V 按 §7 段紧排拼进一块缓冲；段间游标累加。
     /// 历史位置顺序即页行顺序，是串行依赖，保留逐段逐行循环；行内头段整块 `copy_from_slice`。
-    fn load_history_batch(&mut self, sequences: &[Sequence], batch: &Batch) -> Result<()> {
+    fn load_history_batch(&mut self, rows: &[Row<'_>], batch: &Batch) -> Result<()> {
         // 块清单是纯数据，先快照成自有副本再进入可变借用；块绑定不含缓冲所有权。
         let blocks = self.assembly.blocks.clone();
         for block in blocks {
-            self.load_block_history(block, sequences, batch)?;
+            self.load_block_history(block, rows, batch)?;
         }
         Ok(())
     }
@@ -194,12 +164,13 @@ impl CpuModel {
     fn load_block_history(
         &mut self,
         block: BlockBinding,
-        sequences: &[Sequence],
+        rows: &[Row<'_>],
         batch: &Batch,
     ) -> Result<()> {
         let kv = block.kv_width;
         let head_dim = block.head_dim;
-        let hist_total = sequences.iter().map(|sequence| sequence.len() * kv).sum();
+        // 每个位置读 `settled` 行：写回行与历史行数是同一个数，只有一处推导。
+        let hist_total = rows.iter().map(|row| row.settled() * kv).sum();
         let mut hist_k = self
             .executor
             .bind(block.hist_k, Vec::new())
@@ -211,9 +182,9 @@ impl CpuModel {
         hist_k.resize(hist_total, 0.0);
         hist_v.resize(hist_total, 0.0);
         let mut cursor = 0;
-        for sequence in sequences {
-            let hist = sequence.len();
-            let id = sequence.id();
+        for row in rows {
+            let hist = row.settled();
+            let id = row.sequence.id();
             for token in 0..hist {
                 place_history_row(
                     &mut hist_k,
@@ -234,23 +205,26 @@ impl CpuModel {
         Ok(())
     }
 
-    /// 回填批形态两张共享表：逐序列当前位置写进 rope 位置表，历史行数写进 attention 段长表。
-    /// 两表元素同为序列当前长度，语义分属位置通道与段长通道，分别绑各自编号。
-    fn fill_batch_tables(&mut self, sequences: &[Sequence]) {
-        let lengths: Vec<f32> = sequences.iter().map(|s| s.len() as f32).collect();
+    /// 回填批形态两张共享表：各行的位置写进 rope 位置表，历史行数写进 attention 段长表。
+    /// 两表元素同为 `at + 1`，语义分属位置通道与段长通道，分别绑各自编号；单行装配没有位置表，
+    /// 位置直接写进图常量。
+    fn fill_batch_tables(&mut self, rows: &[Row<'_>]) {
+        let lengths: Vec<f32> = rows.iter().map(|row| row.settled() as f32).collect();
         if let Some(id) = self.assembly.rope_pos_table {
             self.executor.bind(id, lengths.clone());
+        } else if let Some(first) = lengths.first() {
+            self.assembly.set_rope_positions(*first as u32);
         }
         if let Some(id) = self.assembly.hist_len_table {
             self.executor.bind(id, lengths);
         }
     }
 
-    /// 批当前步写回：逐块把各段第 `seq` 行 K/V 拼成页行，写回各自序列当前位置。
-    fn write_current_kv_batch(&mut self, sequences: &[Sequence], batch: &mut Batch) -> Result<()> {
+    /// 批当前步写回：逐块把各段 K/V 行拼成页行，写回各自的写回行。
+    fn write_current_kv_batch(&mut self, rows: &[Row<'_>], batch: &mut Batch) -> Result<()> {
         let blocks = self.assembly.blocks.clone();
         for block in blocks {
-            self.write_block_kv(block, sequences, batch)?;
+            self.write_block_kv(block, rows, batch)?;
         }
         Ok(())
     }
@@ -259,37 +233,55 @@ impl CpuModel {
     fn write_block_kv(
         &mut self,
         block: BlockBinding,
-        sequences: &[Sequence],
+        rows: &[Row<'_>],
         batch: &mut Batch,
     ) -> Result<()> {
         let kv = block.kv_width;
         let k = bound_slice(&self.executor, block.k, "K")?;
         let v = bound_slice(&self.executor, block.v, "V")?;
-        for (seq, sequence) in sequences.iter().enumerate() {
+        for (seq, row) in rows.iter().enumerate() {
             let start = seq * kv;
-            let mut row = Vec::with_capacity(2 * kv);
-            row.extend_from_slice(&k[start..start + kv]);
-            row.extend_from_slice(&v[start..start + kv]);
-            batch.write_kv(sequence.id(), sequence.len(), &row)?;
+            let mut line = Vec::with_capacity(2 * kv);
+            line.extend_from_slice(&k[start..start + kv]);
+            line.extend_from_slice(&v[start..start + kv]);
+            batch.write_kv(row.sequence.id(), row.settled(), &line)?;
         }
         Ok(())
     }
 
     /// 含块链整批前向：批表回填、历史段紧排装填、一次提交、按段写回页行，输出按宽拆行。
-    fn forward_block_batch(
-        &mut self,
-        sequences: &[Sequence],
-        batch: &mut Batch,
-    ) -> Result<Vec<Vec<f32>>> {
-        let batch_n = sequences.len();
-        let input = self.predict_input_batch(sequences)?;
+    fn forward_block_batch(&mut self, rows: &[Row<'_>], batch: &mut Batch) -> Result<Vec<Vec<f32>>> {
+        let batch_n = rows.len();
+        let input = self.predict_input_batch(rows)?;
         self.resize_for_batch(batch_n);
         self.executor.bind(self.assembly.input, input);
-        self.fill_batch_tables(sequences);
-        self.load_history_batch(sequences, batch)?;
+        self.fill_batch_tables(rows);
+        self.load_history_batch(rows, batch)?;
         let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
-        self.write_current_kv_batch(sequences, batch)?;
+        self.write_current_kv_batch(rows, batch)?;
         self.split_batch_output(flat, batch_n)
+    }
+
+    /// 在序列第 `at` 个位置做一次前向：解码与分块预填充共用这一条。
+    ///
+    /// 分工只有一处：没有块链时无处可读、也无可写；有块链时先按前 `at + 1` 行装填历史，提交后把
+    /// 这一行的 K/V 写回第 `at + 1` 行——下一步读历史时才看得到它。于是「算提示段」与「算下一个
+    /// token」不是两套几何，只是 `at` 不同。
+    fn forward_at(&mut self, sequence: &Sequence, batch: &mut Batch, at: usize) -> Result<Vec<f32>> {
+        let row = Row { sequence, at };
+        let rows = std::slice::from_ref(&row);
+        if self.assembly.blocks.is_empty() {
+            return self.batch_forward(rows).map(|mut out| out.swap_remove(0));
+        }
+        let input = self.predict_input_batch(rows)?;
+        self.resize_for_batch(1);
+        self.executor.bind(self.assembly.input, input);
+        self.fill_batch_tables(rows);
+        self.load_history_batch(rows, batch)?;
+        let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
+        self.write_current_kv_batch(rows, batch)?;
+        self.split_batch_output(flat, 1)
+            .map(|mut out| out.swap_remove(0))
     }
 
     /// 整批输出按单序列输出宽拆回各行；总长与 `batch×width` 不符归内部错误。
@@ -306,6 +298,56 @@ impl CpuModel {
             .with(SITE));
         }
         Ok(flat.chunks(width).map(|row| row.to_vec()).collect())
+    }
+}
+
+/// 前向一行：一条序列 + 这次要算的位置 `at`（上下文下标）。
+///
+/// 历史行数、rope 位置与 K/V 写回行都由 `at` 推出，且都是 `at + 1`：解码是 `at = len − 1` 的
+/// 特例（算最后一个 token，历史含它自己那格，下一步才读得到），分块预填充逐位取
+/// `0..prompt_len`。位置跟着行走，不与序列列表另开一份并行下标——两套下标一旦错位，读到的历史
+/// 就属于别的序列。
+#[derive(Clone, Copy)]
+struct Row<'a> {
+    sequence: &'a Sequence,
+    at: usize,
+}
+
+impl<'a> Row<'a> {
+    /// 解码行：算上下文里的最后一个 token。空上下文没有可算的位置。
+    fn decode(sequence: &'a Sequence) -> Result<Self> {
+        let Some(at) = sequence.len().checked_sub(1) else {
+            return Err(Error::new(Code::Invalid, "序列没有上下文：没有可前向的位置").with(SITE));
+        };
+        Ok(Self { sequence, at })
+    }
+
+    /// 本步写入的页行，也是本步的历史行数。
+    ///
+    /// 页行账是 1-based 位置：行 0 是准入前的空槽，第 `n` 个 token 落在行 `n`；`at` 是 0-based
+    /// 上下文索引，两者差一格，换算只在这里做一次。
+    fn settled(&self) -> usize {
+        self.at + 1
+    }
+
+    /// 输入 token：`context[at]`；位置越界归无效输入而不是内部错误。
+    fn token(&self) -> Result<f32> {
+        self.sequence
+            .context()
+            .get(self.at)
+            .copied()
+            .map(|token| token as f32)
+            .ok_or_else(|| {
+                Error::new(
+                    Code::Invalid,
+                    format!(
+                        "位置 {} 超出现有 {} 个 token",
+                        self.at,
+                        self.sequence.context().len()
+                    ),
+                )
+                .with(SITE)
+            })
     }
 }
 
@@ -371,14 +413,12 @@ fn bound_slice<'a>(executor: &'a CpuExecutor, id: u32, what: &str) -> Result<&'a
 
 impl crate::Predict for CpuModel {
     fn logits(&mut self, sequence: &Sequence, batch: &mut Batch) -> Result<Vec<f32>> {
-        let input = self.predict_input(sequence)?;
-        self.resize_for_batch(1);
-        self.executor.bind(self.assembly.input, input);
-        self.assembly.set_rope_positions(sequence.len() as u32);
-        self.load_history(sequence, batch)?;
-        let logits = submit_and_fetch(&mut self.executor, &self.assembly)?;
-        self.write_current_kv(sequence, batch)?;
-        Ok(logits)
+        let row = Row::decode(sequence)?;
+        self.forward_at(sequence, batch, row.at)
+    }
+
+    fn prefill(&mut self, sequence: &Sequence, batch: &mut Batch, at: usize) -> Result<Vec<f32>> {
+        self.forward_at(sequence, batch, at)
     }
 
     fn logits_batch(
@@ -389,10 +429,11 @@ impl crate::Predict for CpuModel {
         if sequences.is_empty() {
             return Ok(Vec::new());
         }
+        let rows: Vec<Row<'_>> = sequences.iter().map(Row::decode).collect::<Result<_>>()?;
         // 无块链走无 K/V 整批前向；含块链整批一次提交，块链前向细节在 [`forward_block_batch`]。
         if self.assembly.blocks.is_empty() {
-            return self.batch_forward(sequences);
+            return self.batch_forward(&rows);
         }
-        self.forward_block_batch(sequences, batch)
+        self.forward_block_batch(&rows, batch)
     }
 }

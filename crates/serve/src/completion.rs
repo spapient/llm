@@ -13,12 +13,23 @@
 //! 单条请求端点仍一次答一条；批步进在 [`State::step_batch`] 落地：一轮整批前向
 //! （`Predict::logits_batch` 一次提交），再逐行采样 → 记账，结束的归还页摘出，被挡的原样保留。
 //! 真正的并发传输入口属于传输层（M4，尚未落地）。
+//!
+//! 准入与解码之间还隔着**分块预填充**：提示段的 K/V 必须逐位算进页账，否则解码读到的是零填充
+//! 历史（长提示与短提示看到的"过去"一样多）。分块是"一次提交算 [`PREFILL_CHUNK`] 个位置"，
+//! 块边界同时是前缀复用点——块算完就可以被下一个同前缀请求整块接走。
 
 use crate::generate::{Ending, Generation, Predict, Sampling};
 use crate::{Request, Response, Route, Status};
 use engine::exec::Stream;
 use engine::{Batch, Progress, Sequence};
 use std::sync::{Mutex, MutexGuard};
+
+/// 一块预填充算多少个提示位置：一次图提交的粒度，也是前缀复用的对齐粒度。
+///
+/// 取 64 而不是"整段"：整段会让一个长提示在准入后的那一次提交里独占一次前向，短请求只能等；
+/// 取 1 又会把"一个块一次提交"摊成逐位提交，块边界上登记的页引用也随之多一轮。64 与常见页宽
+/// 同量级，块算完的那一页下一轮就能被别的请求接走。
+const PREFILL_CHUNK: usize = 64;
 
 /// 一条补全端点：请求进、token 出。
 ///
@@ -35,6 +46,9 @@ struct State<M, S> {
     model: M,
     sampling: S,
     batch: Batch,
+    /// 模型是否会分块预填充。首次遇到 `Unsupported` 就置 `false`：此后不再逐轮重试，
+    /// 也不把提示段登记成可复用前缀——零填充的页不是"算好的提示"，不能冒充缓存命中。
+    prefill: bool,
 }
 
 /// 一步生成的结局。
@@ -89,6 +103,7 @@ where
                 model,
                 sampling,
                 batch: Batch::new(pager),
+                prefill: true,
             }),
         }
     }
@@ -101,6 +116,16 @@ where
             .lock()
             .ok()
             .map(|state| state.batch.scheduler().cache().in_use())
+    }
+
+    /// 前缀树里可复用的块数（只读诊断）：报告"共享缓存有多深"时用。
+    ///
+    /// 锁中毒时返回 `None`，口径同 [`Completion::in_use_pages`]。
+    pub fn cached_blocks(&self) -> Option<usize> {
+        self.state
+            .lock()
+            .ok()
+            .map(|state| state.batch.scheduler().cached_blocks())
     }
 
     /// 解析请求并编词；两步都是"客户端能改的错"。
@@ -191,7 +216,15 @@ where
         if admitted.status() != Status::Ok {
             return Ok(admitted);
         }
-        self.complete(&mut state, request.id())
+        let id = request.id();
+        if let Err(mut error) = state.prefill(id) {
+            // 预填充失败与解码失败同口径：先把页还回去再上抛，否则这条请求的页永远占着。
+            if let Err(cleanup) = state.batch.finish(id) {
+                error = error.also(&cleanup);
+            }
+            return Err(error);
+        }
+        self.complete(&mut state, id)
     }
 }
 
@@ -297,6 +330,47 @@ where
         generation.ok_or_else(|| missing(id))
     }
 
+    /// 把一条已准入序列的提示段按块算进页账。
+    ///
+    /// 每块一次前向、每块之后才登记块：登记按"已算位置"而不是"写到哪一行"推进，因为写是提前
+    /// 一格的（第 `at` 步写第 `at + 1` 行）。顺序反过来会把还没算的块当成可复用的前缀。
+    ///
+    /// 模型没有分块预填充（[`Predict::prefill`] 的默认实现报 `Unsupported`）时把整段记为已算：
+    /// 端点退化回"提示段不进页"的旧行为，而不是拒绝服务——桩模型与只跑解码的通路照旧能跑。
+    fn prefill(&mut self, id: u64) -> diagnostic::Result<()> {
+        if !self.prefill {
+            return Ok(());
+        }
+        let Self {
+            model, batch, prefill, ..
+        } = self;
+        let Some(sequence) = batch.sequence(id).cloned() else {
+            return Err(missing(id));
+        };
+        let prompt_len = sequence.prompt_len();
+        let mut at = sequence.prefilled();
+        while at < prompt_len {
+            let end = (at + PREFILL_CHUNK).min(prompt_len);
+            // 一块要写到行 `end`（1-based），先按块尾把页要到：预填充一次推进多行，不走调度器
+            // 逐步预留那条路，缺这一步就会写到页表还没盖住的行上。
+            batch.reserve(id, end + 1)?;
+            for position in at..end {
+                match model.prefill(&sequence, batch, position) {
+                    Ok(_) => {}
+                    Err(error) if error.code() == diagnostic::Code::Unsupported => {
+                        // 退化：提示段不进页，也不登记（零页不是算好的块）。端点照旧能解码。
+                        *prefill = false;
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            batch.mark_prefilled(id, end)?;
+            at = end;
+        }
+        Ok(())
+    }
+
     /// 批内一轮：一次整批前向取整块 logits，再逐条采样记账；结束的摘出批归还页，被挡原样保留。
     ///
     /// 前向失败发生在任何记账之前：归还批内全部序列页再上抛。采样失败只归还报错那条，
@@ -306,6 +380,11 @@ where
         let sequences = self.batch.sequences().to_vec();
         if sequences.is_empty() {
             return Ok(Vec::new());
+        }
+        for sequence in &sequences {
+            if self.prefill && !sequence.prefilled_ready() {
+                self.prefill(sequence.id())?;
+            }
         }
         let rows = match self.model.logits_batch(&sequences, &mut self.batch) {
             Ok(rows) => rows,
@@ -589,6 +668,33 @@ mod tests {
         }
     }
 
+    /// 记录预填充位置的模型桩：每个位置写一行 KV，回固定 logits。
+    struct Prefilling {
+        seen: std::rc::Rc<std::cell::RefCell<Vec<usize>>>,
+    }
+
+    impl Predict for Prefilling {
+        fn logits(
+            &mut self,
+            _sequence: &Sequence,
+            _batch: &mut Batch,
+        ) -> diagnostic::Result<Vec<f32>> {
+            Ok(vec![0.0, 1.0])
+        }
+
+        fn prefill(
+            &mut self,
+            sequence: &Sequence,
+            batch: &mut Batch,
+            at: usize,
+        ) -> diagnostic::Result<Vec<f32>> {
+            self.seen.borrow_mut().push(at);
+            // 页行账是 1-based：行 0 是空槽，第 `at` 个 token 落在行 `at + 1`。
+            batch.write_kv(sequence.id(), at + 1, &[0.0, 0.0])?;
+            Ok(vec![0.0, 1.0])
+        }
+    }
+
     /// 把当前步 KV 行按序列号写成标记：核对每条序列的页行归属不串行。
     struct Recorder;
 
@@ -641,6 +747,54 @@ mod tests {
         assert_eq!(finished[0].1.tokens(), [1, 1]);
         assert_eq!(finished[1].1.tokens(), [1, 1]);
         assert_eq!(endpoint.in_use_pages(), Some(0), "跑完必须归还页");
+    }
+
+    /// 分块预填充把提示段算进页账，满块随之登记成跨请求可复用前缀；第二个同提示请求接走那一块，
+    /// 提示段一个位置都不重算，生成的 token 与首跑逐位相同。
+    ///
+    /// 这条用例守的是「页账与位置账是同一份」：只共享页不改已算位置，第二个请求会把同一段提示
+    /// 重算一遍，而它写的正是它刚打算去读的页。
+    #[test]
+    fn a_second_request_with_the_same_prompt_skips_the_prefilled_prefix() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let endpoint = endpoint(
+            Prefilling {
+                seen: std::rc::Rc::clone(&seen),
+            },
+            Greedy,
+            16,
+        );
+        let first = endpoint
+            .call(b"id=1\nprompt=abcd\nmax_new=2")
+            .expect("首跑");
+        assert_eq!(
+            first.status(),
+            Status::Ok,
+            "首跑被拒：{}",
+            String::from_utf8_lossy(first.envelope().payload())
+        );
+        assert_eq!(seen.borrow().as_slice(), [0, 1, 2, 3], "提示段逐位算进页账");
+        assert_eq!(
+            endpoint.in_use_pages(),
+            Some(1),
+            "只留前缀树持有的那一块，请求自己的页已归还"
+        );
+
+        seen.borrow_mut().clear();
+        let second = endpoint
+            .call(b"id=2\nprompt=abcd\nmax_new=2")
+            .expect("复用");
+        assert_eq!(second.status(), Status::Ok);
+        assert!(
+            seen.borrow().is_empty(),
+            "整个提示段都在接走的块里，一个位置都不重算"
+        );
+        assert_eq!(
+            second.envelope().payload(),
+            first.envelope().payload(),
+            "复用前缀不能改变结果"
+        );
+        assert_eq!(endpoint.in_use_pages(), Some(1), "没有多留页");
     }
 
     /// 页不足的序列留在批里、历史不变；其余序列照常推进，批不整体停摆。

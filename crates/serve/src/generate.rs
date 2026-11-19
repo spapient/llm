@@ -50,6 +50,33 @@ pub trait Predict {
             .map(|sequence| self.logits(sequence, batch))
             .collect()
     }
+
+    /// 分块预填充的一步：把第 `at` 个提示位置的 K/V 算进页账，返回该位置的 logits。
+    ///
+    /// 为什么必须有这条：解码只算当前位置、历史从页里读，从不回补提示段。于是提示段的
+    /// K/V 永远停在零填充，长提示与短提示的解码看到的历史其实一样多。分块预填充逐位把提示
+    /// 段算进它该在的行，解码才真正看到提示。
+    ///
+    /// 实现必须满足一条契约：`at == len − 1` 时结果与 [`logits`](Self::logits) 逐位一致——
+    /// 两条路走的是同一套几何，区别只在位置。
+    ///
+    /// 默认实现报「不支持」：类型系统里已有的模型桩不必为此编一份假实现，端点据这个错误把提示段
+    /// 当作已算好，退化回没有预填充的旧行为，而不是让服务启动失败。
+    ///
+    /// # Errors
+    ///
+    /// `at` 越出提示段、页账写不出这一行、模型自己失败时返回错误。
+    fn prefill(
+        &mut self,
+        _sequence: &engine::Sequence,
+        _batch: &mut engine::Batch,
+        _at: usize,
+    ) -> Result<Vec<f32>> {
+        Err(Error::new(
+            Code::Unsupported,
+            "该模型没有分块预填充：提示段 K/V 不会进页账",
+        ))
+    }
 }
 
 /// 采样策略：从一步 logits 里选一个 token；`None` 表示遇到停止符、序列到此结束。
