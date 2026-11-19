@@ -71,8 +71,7 @@ fn decode_supports_multiple_query_rows_against_history() {
     let mut flash = vec![0.0f32; q_rows * d];
     decode_flash_forward(&q, &k, &v, &mut flash, q_rows, hist, d).expect("flash decode");
 
-    assert!(testkit::all_finite(&plain));
-    assert!(testkit::approx_eq(&flash, &plain, 1e-5));
+    assert_plain_flash(&plain, &flash);
 }
 
 #[test]
@@ -180,8 +179,7 @@ fn multi_head_decode_keeps_each_head_independent_and_plain_matches_flash() {
     let mut flash = vec![0.0; heads * q_rows * d];
     decode_flash_forward_heads(&q, &k, &v, &mut flash, q_rows, hist, d).expect("flash 多头 decode");
 
-    assert!(testkit::all_finite(&plain));
-    assert!(testkit::approx_eq(&flash, &plain, 1e-5));
+    assert_plain_flash(&plain, &flash);
     for head in 0..heads {
         let constant = 1.0 + head as f32;
         let span = &plain[head * q_rows * d..(head + 1) * q_rows * d];
@@ -244,16 +242,8 @@ fn batch_decode_keeps_each_sequence_independent_and_plain_matches_flash() {
     decode_flash_forward_batch(&q, &k, &v, &mut flash, q_rows, hist, d, heads, batch)
         .expect("flash 批量 decode");
 
-    assert!(testkit::all_finite(&plain));
-    assert!(testkit::approx_eq(&flash, &plain, 1e-5));
-    for seq in 0..batch {
-        let constant = 1.0 + seq as f32;
-        let span = &plain[seq * q_seq..(seq + 1) * q_seq];
-        assert!(
-            span.iter().all(|value| (value - constant).abs() < 1e-5),
-            "序列 {seq} 输出应恒等于本段 V 常数 {constant}，得到 {span:?}"
-        );
-    }
+    assert_plain_flash(&plain, &flash);
+    assert_constant_v(&plain, q_seq, batch);
 }
 
 #[test]
@@ -323,16 +313,8 @@ fn batch_var_keeps_mixed_history_lengths_independent_and_plain_matches_flash() {
     decode_flash_forward_batch_var(&q, &k, &v, &mut flash, q_rows, &hist, d, heads)
         .expect("flash 变长批量 decode");
 
-    assert!(testkit::all_finite(&plain));
-    assert!(testkit::approx_eq(&flash, &plain, 1e-5));
-    for seq in 0..batch {
-        let constant = 1.0 + seq as f32;
-        let span = &plain[seq * q_seq..(seq + 1) * q_seq];
-        assert!(
-            span.iter().all(|value| (value - constant).abs() < 1e-5),
-            "序列 {seq}（历史 {hist:?}）输出应恒等于本段 V 常数 {constant}，得到 {span:?}"
-        );
-    }
+    assert_plain_flash(&plain, &flash);
+    assert_constant_v(&plain, q_seq, batch);
 }
 
 #[test]
