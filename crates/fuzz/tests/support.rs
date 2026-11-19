@@ -305,6 +305,10 @@ pub mod seeds {
 // libFuzzer 运行时只在 Unix 提供可链接入口；Windows/MSVC 下 harness 目标编一个空 `main`
 // 桩，契约 sweep（`tests/parsers.rs`）仍在 Windows 上跑，只是没有覆盖引导运行时。
 
+// 本文件被 9 个 harness 与 parsers/gen_corpus 共享 include：这两个 import 只在 harness
+// 目标里被使用，非 harness 目标（gen_corpus/parsers）在 --all-features 下同样满足 cfg，
+// 因此按 include 语义定向放开未用导入告警。
+#[allow(unused_imports)]
 #[cfg(all(unix, feature = "engine"))]
 use libfuzzer_sys::fuzz_target;
 #[cfg(all(unix, feature = "engine"))]
