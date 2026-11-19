@@ -169,7 +169,7 @@ pub use bounds::Bounds;
 
 #[doc(inline)]
 pub use csa::{
-    CSA_M, CSA_TOPK_FLASH, CSA_TOPK_PRO, HCA_M, WIN, compress, dense_softmax, dsa_topk,
+    BlockTable, CSA_M, CSA_TOPK_FLASH, CSA_TOPK_PRO, HCA_M, WIN, compress, dense_softmax, dsa_topk,
     effective_len, is_doubly_stochastic, sinkhorn, spectral_norm,
 };
 
@@ -180,7 +180,7 @@ pub use policy::{Calib, HEAD_LAYERS_TOKEN, brier};
 pub use embed::Embedding;
 
 #[doc(inline)]
-pub use engram::{Table, allocate, next_prime, phi, slots};
+pub use engram::{Bypass, Table, allocate, next_prime, phi, slots};
 
 #[doc(inline)]
 pub use lm_head::LmHead;
@@ -201,7 +201,9 @@ pub use param_role::ParamRole;
 pub use pointwise::{Add, Gelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax};
 
 #[doc(inline)]
-pub use policy::{N_REF, TAU_SCALE, W, gamma, nu, pi, rms, sparsity, tau};
+pub use policy::{
+    Channel, Gating, MissRate, N_REF, TAU_SCALE, W, gamma, nu, pi, rms, sparsity, tau,
+};
 
 #[doc(inline)]
 pub use mix::{Lif, encode_id};

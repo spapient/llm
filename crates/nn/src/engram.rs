@@ -2,7 +2,11 @@
 //!
 //! 静态 N-gram 模式查表，不是第四前向、不替代块表（E12 KV）、不替代 CSA/HCA、不是有证书上界
 //! 压缩（§5.8.2 禁止越界）。每 token 取槽 `K(N−1)`，与表长 `M` 无关 ⇒ 查找 `O(1)`（数学验证 40）。
+//!
+//! [`Bypass`] 是这套公式的执行侧：它是 `LmHead` 之前的那条旁路——取尾部 N-gram、查一个槽、
+//! 按门控强度加进隐藏向量。表本身只读，写侧（训练/蒸馏）不在本模块。
 
+use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
 
 /// 乘-XOR 终混（64 位全雪崩，splitmix64 finalizer）。
@@ -124,6 +128,86 @@ impl<S: Scalar> Table<S> {
     }
 }
 
+/// `LmHead` 前的条件记忆旁路：尾部 N-gram → 表槽 → 门控残差。
+///
+/// 表只读（写侧归训练/蒸馏），旁路只回答一个问题：这一步该给主干的末尾隐藏向量加多少记忆。
+/// 历史不足 `order` 时**不加**，而不是拿零向量补位——补位会把"没有证据"伪装成"证据是零"，
+/// 而零向量在残差里就是一个真实的偏移。
+#[derive(Debug, Clone)]
+pub struct Bypass<S: Scalar = f32> {
+    table: Table<S>,
+    seed: u64,
+    order: usize,
+    gate: S,
+}
+
+/// 旁路报错的出处。
+const SITE: &str = "nn::engram::Bypass";
+
+impl<S: Scalar> Bypass<S> {
+    /// 构造：`order ≥ 2`（1-gram 没有上下文，只是词表拷贝），`gate` 是残差强度。
+    pub fn new(table: Table<S>, seed: u64, order: usize, gate: S) -> Result<Self> {
+        if order < 2 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("N-gram 阶必须 ≥ 2（order = {order}）"),
+            )
+            .with(SITE));
+        }
+        Ok(Self {
+            table,
+            seed,
+            order,
+            gate,
+        })
+    }
+
+    /// N-gram 阶 `N`。
+    pub fn order(&self) -> usize {
+        self.order
+    }
+
+    /// 残差强度。
+    pub fn gate(&self) -> S {
+        self.gate
+    }
+
+    /// 只读的表。
+    pub fn table(&self) -> &Table<S> {
+        &self.table
+    }
+
+    /// 尾部 N-gram 的槽嵌入；历史不足 `order` 时 `None`（不猜记忆）。
+    pub fn recall(&self, tokens: &[u32]) -> Option<&[S]> {
+        let tail = tokens.len().checked_sub(self.order)?;
+        Some(self.table.get(&tokens[tail..], self.seed))
+    }
+
+    /// 把记忆加进隐藏向量：`hidden += gate · recall`。
+    ///
+    /// 返回是否**有记忆可加**（历史足够）；`gate = 0` 时命中也算加过，只是加的是零。
+    pub fn apply(&self, hidden: &mut [S], tokens: &[u32]) -> Result<bool> {
+        if hidden.len() != self.table.dim() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "隐藏向量长度 {} 与嵌入维 {} 不符",
+                    hidden.len(),
+                    self.table.dim()
+                ),
+            )
+            .with(SITE));
+        }
+        let Some(memory) = self.recall(tokens) else {
+            return Ok(false);
+        };
+        for (slot, &value) in hidden.iter_mut().zip(memory) {
+            *slot = slot.add(value.mul(self.gate));
+        }
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +277,46 @@ mod tests {
         let g = [5u32, 9];
         assert!(small.slot(&g, 0) < small.len());
         assert!(large.slot(&g, 0) < large.len());
+    }
+
+    /// 历史不足 `order` 时不加记忆（不是加零向量）。
+    #[test]
+    fn a_short_history_adds_nothing() {
+        let bypass = Bypass::new(Table::<f32>::new(11, 2), 7, 3, 1.0).expect("合法旁路");
+        let mut hidden = [1.0f32, 2.0];
+        assert!(!bypass.apply(&mut hidden, &[1, 2]).expect("合法宽度"));
+        assert_eq!(hidden, [1.0, 2.0]);
+        assert!(bypass.recall(&[1, 2]).is_none());
+        assert!(bypass.recall(&[]).is_none());
+    }
+
+    /// 记忆按 `gate` 缩放进残差；查的是**尾部** N-gram，历史里更早的 token 不算。
+    #[test]
+    fn gate_scales_the_memory_residual() {
+        let mut table = Table::<f32>::new(11, 2);
+        table.set(&[1, 2, 3], 7, &[2.0, -4.0]);
+        let half = Bypass::new(table.clone(), 7, 3, 0.5).expect("合法旁路");
+        let mut hidden = [1.0f32, 2.0];
+        assert!(half.apply(&mut hidden, &[9, 1, 2, 3]).expect("合法宽度"));
+        assert_eq!(hidden, [2.0, 0.0], "9 不在尾部三元组里");
+        let off = Bypass::new(table, 7, 3, 0.0).expect("合法旁路");
+        let mut untouched = [1.0f32, 2.0];
+        assert!(off.apply(&mut untouched, &[1, 2, 3]).expect("合法宽度"));
+        assert_eq!(untouched, [1.0, 2.0], "gate = 0 时残差为零");
+    }
+
+    /// 阶 < 2 与嵌入宽度不符都在入口失败。
+    #[test]
+    fn a_bypass_rejects_bad_order_and_width() {
+        let bad = Bypass::new(Table::<f32>::new(11, 2), 7, 1, 1.0);
+        assert_eq!(bad.unwrap_err().code(), Code::Invalid, "1-gram 没有上下文");
+        let bypass = Bypass::new(Table::<f32>::new(11, 2), 7, 2, 0.25).expect("合法旁路");
+        assert_eq!(bypass.order(), 2);
+        assert_eq!(bypass.gate(), 0.25);
+        assert_eq!(bypass.table().dim(), 2);
+        assert_eq!(
+            bypass.apply(&mut [0.0f32; 3], &[1, 2]).unwrap_err().code(),
+            Code::Invalid
+        );
     }
 }
