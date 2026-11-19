@@ -10,7 +10,7 @@
 //! 生成的名字一律带 `__layer_` 前缀：宏展开不该占用一个用户可能想用的普通名字
 //! （`declaration` 这类名字太容易撞车，撞了之后报错会指向用户自己的方法）。
 
-use crate::syntax::{Declaration, ModelDecl};
+use crate::syntax::{Declaration, ModelDecl, RuntimeDecl};
 
 /// 渲染实现；`ty` 必须是 [`crate::syntax::target_name`] 给出的类型名。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
@@ -99,6 +99,78 @@ fn render_layer_check(code: &mut String, declaration: &Declaration, ty: &str) {
         declaration.ops
     ));
     code.push_str("    }\n}\n");
+}
+
+/// 运行时形态只生成一个构造宏：`spec` 字段由适配层注入，`impl ::nn::Contract` 的三件访问器
+/// 仍由 `spec_accessors!` 从 `self.spec` 读取，展开与静态形态逐字相同。
+///
+/// 生成宏而不是函数，是因为错误类型 `diagnostic::Error` 不在注解的依赖面里：宏展开到调用点，
+/// `?` 直接对着被标注 crate 自己的构造函数签名推断，生成的代码只指向 `::nn` 与 `::std`。
+pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
+    let constructor = if declaration.role.is_some() {
+        "new_with_role"
+    } else {
+        "new"
+    };
+    let mut code = format!(
+        "#[doc(hidden)]\n#[allow(non_snake_case, unused_macros)]\nmacro_rules! __layer_spec_{ty} {{\n    ({}) => {{\n        ::nn::ContractSpec::{constructor}(\n            ${},\n            {},\n            {},\n",
+        runtime_params(declaration),
+        declaration.name,
+        runtime_shape(&declaration.out),
+        runtime_ops(&declaration.ops),
+    );
+    if let Some(role) = &declaration.role {
+        code.push_str(&format!("            ${role},\n"));
+    }
+    code.push_str("        )\n    };\n}\n");
+    code
+}
+
+/// 构造宏的参数表：名字、轴宽、算子、角色，按首次出现去重；同一个轴宽可以出现在多根轴上。
+fn runtime_params(declaration: &RuntimeDecl) -> String {
+    let holes = std::iter::once(&declaration.name)
+        .chain(declaration.out.iter())
+        .chain(declaration.ops.iter())
+        .chain(declaration.role.iter());
+    unique(holes)
+        .into_iter()
+        .map(|hole| format!("${hole}:expr"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 去重且保持首次出现顺序：`out = [$dim, $dim]` 只占一个宏参数，但在形状里写两次。
+fn unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
+    let mut seen: Vec<&str> = Vec::new();
+    for name in names {
+        if !seen.contains(&name.as_str()) {
+            seen.push(name);
+        }
+    }
+    seen
+}
+
+/// 输出形状：空形状与静态形态同一条写法（`[]` 推不出元素类型，显式给 `Vec<usize>`）。
+fn runtime_shape(axes: &[String]) -> String {
+    if axes.is_empty() {
+        return "::nn::Shape::new(::std::vec::Vec::<usize>::new())".to_string();
+    }
+    let axes = axes
+        .iter()
+        .map(|axis| format!("${axis}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("::nn::Shape::new([{axes}])")
+}
+
+/// 算子列表：每个洞在调用点求值一次，再转成 `ContractSpec` 要求的 `Vec<String>`。
+fn runtime_ops(ops: &[String]) -> String {
+    let ops = ops
+        .iter()
+        .map(|op| format!("${op}.to_string()"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("::std::vec![{ops}]")
 }
 
 /// `dtype` 名 → 变体名。
