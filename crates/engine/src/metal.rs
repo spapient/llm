@@ -31,7 +31,7 @@ use std::ptr::null_mut;
 
 use diagnostic::{Code, Error, Result};
 
-use super::exec::{Device, Executor, Graph, Node, Queued, Stream, enqueue};
+use super::exec::{Device, Executor, Graph, Node, Queued, Stream, check_operands, enqueue};
 
 // Objective-C runtime：消息发送、selector 注册、类查找与自动释放池（`libobjc`）。
 #[link(name = "objc", kind = "dylib")]
@@ -483,27 +483,11 @@ impl MetalExecutor {
 
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。
     fn check_operands(&self, node: &Node) -> Result<()> {
-        for operand in node.inputs().iter().chain(node.outputs()) {
-            if !self.buffers.contains_key(&operand.id()) {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),
-                )
-                .with("engine::MetalExecutor::run"));
-            }
-        }
-        let clash = node
-            .outputs()
-            .iter()
-            .any(|output| node.inputs().iter().any(|input| input.id() == output.id()));
-        if clash {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),
-            )
-            .with("engine::MetalExecutor::run"));
-        }
-        Ok(())
+        check_operands(
+            node,
+            |id| !self.buffers.contains_key(&id),
+            "engine::MetalExecutor::run",
+        )
     }
 }
 

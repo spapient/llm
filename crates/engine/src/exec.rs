@@ -436,6 +436,36 @@ pub(crate) fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
     }
 }
 
+/// 节点操作数约束：每个编号都要已绑定，且输入与输出不能同号。`unbound` 判定"未绑定"，
+/// `context` 是执行器名（CPU / Metal 各自报自己的入口）。
+pub(crate) fn check_operands(
+    node: &Node,
+    unbound: impl Fn(u32) -> bool,
+    context: &'static str,
+) -> Result<()> {
+    for operand in node.inputs().iter().chain(node.outputs()) {
+        if unbound(operand.id()) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),
+            )
+            .with(context));
+        }
+    }
+    let clash = node
+        .outputs()
+        .iter()
+        .any(|output| node.inputs().iter().any(|input| input.id() == output.id()));
+    if clash {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),
+        )
+        .with(context));
+    }
+    Ok(())
+}
+
 impl Executor for LocalExecutor {
     fn device(&self) -> &Device {
         &self.device
@@ -786,27 +816,11 @@ impl CpuExecutor {
 
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。
     fn check_operands(&self, node: &Node) -> Result<()> {
-        for operand in node.inputs().iter().chain(node.outputs()) {
-            if self.bindings.buffer(operand.id()).is_none() {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),
-                )
-                .with("engine::CpuExecutor::run"));
-            }
-        }
-        let clash = node
-            .outputs()
-            .iter()
-            .any(|output| node.inputs().iter().any(|input| input.id() == output.id()));
-        if clash {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),
-            )
-            .with("engine::CpuExecutor::run"));
-        }
-        Ok(())
+        check_operands(
+            node,
+            |id| self.bindings.buffer(id).is_none(),
+            "engine::CpuExecutor::run",
+        )
     }
 
     /// 把一组缓冲从操作数表里借出来；缺一个就整体放回（不留半个状态）。

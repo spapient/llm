@@ -167,6 +167,19 @@ fn describe(hits: &[Hit]) -> String {
         .collect()
 }
 
+/// 命中里除去 `vocabulary.toml` 该节豁免的名字，剩下的就是要报的违规项；白名单一并返回，
+/// 供"豁免不能过期"那一半契约复用。
+fn offenders_of(section: &str, hits: &[Hit]) -> (Vec<(String, String)>, Vec<Hit>) {
+    let allowed = exempt(section);
+    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
+    let offenders = hits
+        .iter()
+        .filter(|(name, ..)| !names.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    (allowed, offenders)
+}
+
 #[test]
 fn closed_vocabularies_are_declared_once() {
     // 手写的闭集表：数组形式 `pub const ALL: [Self; N]`。切片形式 `&'static [Self]` 是
@@ -180,19 +193,11 @@ fn closed_vocabularies_are_declared_once() {
         sources().len()
     );
 
-    let allowed = exempt("closed");
-    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
-    let offenders: Vec<&Hit> = hits
-        .iter()
-        .filter(|(name, ..)| !names.contains(&name.as_str()))
-        .collect();
+    let (allowed, offenders) = offenders_of("closed", &hits);
     assert!(
         offenders.is_empty(),
         "这些闭集表该用 `impl prof::atom::Closed for ..` + `prof::inherent_names!`：{}",
-        offenders
-            .iter()
-            .map(|(name, file, line, text)| format!("\n  {name} {}:{line}: {text}", file.display()))
-            .collect::<String>()
+        describe(&offenders)
     );
 
     // 白名单不能过期：每条豁免都必须在今天仍然真的手写着闭集表。
@@ -270,16 +275,11 @@ fn every_device_front_end_is_entered() {
 fn bitsets_have_exactly_one_implementation() {
     // 手写位集：`struct FooSet(u32)` 一类。
     let hits = hits(|line| line.contains("struct ") && line.contains("Set(u32)"));
-    let allowed = exempt("bitset");
-    let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
-    let offenders: Vec<&Hit> = hits
-        .iter()
-        .filter(|(name, ..)| !names.contains(&name.as_str()))
-        .collect();
+    let (_, offenders) = offenders_of("bitset", &hits);
     assert!(
         offenders.is_empty(),
         "位集只允许 `prof::atom::Set<E, WORDS>` 一份实现：{}",
-        describe(&offenders.into_iter().cloned().collect::<Vec<Hit>>())
+        describe(&offenders)
     );
 
     let atom = fs::read_to_string(root().join("crates/prof/src/atom.rs"))

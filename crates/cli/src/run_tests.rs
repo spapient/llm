@@ -193,8 +193,22 @@ fn metal_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs:
     Some((catalogue, dirs))
 }
 
+/// CUDA 真机对拍装备：内置数据 + nvidia 档案可用性检查 + 隔离临时目录。
+#[cfg(target_os = "windows")]
+fn cuda_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::Dirs)> {
+    ensure_backends();
+    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
+    if !cutile::witness::device_available(&profile) {
+        return None;
+    }
+    let dirs =
+        cutile::dirs::Dirs::under(std::env::temp_dir().join(format!("llm-cuda-{tag}-check")));
+    Some((catalogue, dirs))
+}
+
 /// 分块内核对拍的公共装备：语义表 + 样本 + 参考 + 声明 + 分块网格。`len_of` 给出分块轴长度
-/// （scan 从签名里找非缓冲标量，rmsnorm / softmax 直接取 `N`），三种分块对拍共用同一份装配。
+/// （scan / reduce 从签名里找非缓冲标量，rmsnorm / softmax 直接取 `N`），分块对拍共用这份装配。
 struct ChunkSetup {
     catalogue: cutile::builtin::Catalogue,
     dirs: cutile::dirs::Dirs,
@@ -207,6 +221,16 @@ struct ChunkSetup {
     len: u32,
     chunk: u32,
     grid_size: u32,
+}
+
+/// 从签名里取唯一非缓冲标量作为分块轴长度（scan / 归约共用）。
+fn scalar_len(decl: &op::decl::OpDecl, sample: &op::model::Sample) -> u32 {
+    decl.signature
+        .params()
+        .iter()
+        .find(|param| !param.ctype.is_buffer())
+        .and_then(|param| sample.scalar(&param.name))
+        .expect("长度标量") as u32
 }
 
 fn chunk_setup(
@@ -414,23 +438,22 @@ fn op_matches_reference(op_name: &str) {
 /// 逐位一致。
 #[cfg(target_os = "macos")]
 fn op_chunked_reduce_matches_reference(op_name: &str) {
-    let Some((catalogue, dirs)) = metal_harness("chunk") else {
+    let Some(setup) = chunk_setup(op_name, "chunk", scalar_len) else {
         return;
     };
-
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = model.shape;
-    let sample = (model.sample)(m, n);
-    let decl = catalogue.op(op_name).expect("算子声明");
-    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
-    let len = decl
-        .signature
-        .params()
-        .iter()
-        .find(|param| !param.ctype.is_buffer())
-        .and_then(|param| sample.scalar(&param.name))
-        .expect("归约长度标量") as u32;
-    let grid_size = len.div_ceil(chunk);
+    let ChunkSetup {
+        catalogue,
+        dirs,
+        model,
+        sample,
+        expected: _,
+        decl,
+        m,
+        n,
+        len: _,
+        chunk: _,
+        grid_size,
+    } = setup;
 
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
@@ -441,9 +464,9 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
     let mut node = engine::exec::Node::new(op_name, launch);
-    bind_decl_buffers(&mut executor, &mut node, decl, &sample, grid_size as usize);
+    bind_decl_buffers(&mut executor, &mut node, &decl, &sample, grid_size as usize);
 
-    let partials = submit_read(&mut executor, node, decl, grid_size as usize);
+    let partials = submit_read(&mut executor, node, &decl, grid_size as usize);
 
     // 主机折叠部分结果（sum / max）；参考用 f64 折叠输入，理由见函数注释。
     let input = sample.f32("a").expect("归约输入");
@@ -456,13 +479,9 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 /// 与 Metal 侧的 [`op_matches_reference`] 同口径，只是发射/回读经 `compile_run_cuda`。
 #[cfg(target_os = "windows")]
 fn op_matches_reference_cuda(op_name: &str) {
-    ensure_backends();
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
-    if !cutile::witness::device_available(&profile) {
+    let Some((catalogue, dirs)) = cuda_harness("grid") else {
         return;
-    }
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-cuda-grid-check"));
+    };
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
@@ -489,13 +508,9 @@ fn op_matches_reference_cuda(op_name: &str) {
 /// [`op_chunked_reduce_matches_reference`] 同一口径：f32 串行参考对 4096 递增值误差已 ~1e-4）。
 #[cfg(target_os = "windows")]
 fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
-    ensure_backends();
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
-    if !cutile::witness::device_available(&profile) {
+    let Some((catalogue, dirs)) = cuda_harness("reduce") else {
         return;
-    }
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-cuda-reduce-check"));
+    };
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
@@ -535,14 +550,7 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
 fn op_chunked_scan_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    let Some(setup) = chunk_setup(op_name, "scan", |decl, sample| {
-        decl.signature
-            .params()
-            .iter()
-            .find(|param| !param.ctype.is_buffer())
-            .and_then(|param| sample.scalar(&param.name))
-            .expect("扫描长度标量") as u32
-    }) else {
+    let Some(setup) = chunk_setup(op_name, "scan", scalar_len) else {
         return;
     };
     let ChunkSetup {
