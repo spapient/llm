@@ -67,7 +67,7 @@ const PREFIX: &str = "CUTILE";
 /// 配置值闭集：值类型由每个键在 [`Key`] 闭集里声明，`describe` 与消费投影按类型收窄。
 /// 变体只保留键表实际使用的类型；新键需要 Bool/Text 时再加（值解析处一行分支）。
 #[derive(Debug, Clone, PartialEq)]
-pub enum Value {
+pub enum SettingValue {
     /// 路径：相对路径按启动目录解析（与 `--set` 口径一致）。
     Path(PathBuf),
     /// 非负字节数（`u64`）。
@@ -78,7 +78,7 @@ pub enum Value {
     Float(f64),
 }
 
-impl Value {
+impl SettingValue {
     /// 投影为路径；类型不符（键表声明下不可达，防御分支）给 `None`。
     fn into_path(self) -> Option<PathBuf> {
         match self {
@@ -96,7 +96,7 @@ impl Value {
     }
 }
 
-impl fmt::Display for Value {
+impl fmt::Display for SettingValue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Path(path) => write!(formatter, "{}", path.display()),
@@ -107,21 +107,14 @@ impl fmt::Display for Value {
     }
 }
 
-/// 值类型标记：键表里一行一列，[`value_of_text`] 按它分派解析。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ValueKind {
-    Path,
-    Bytes,
-    Int,
-    Float,
-}
-
-/// 全部键与它们的类型、环境变量、说明一次写完：新增一个键只加一行。
+/// 全部键与它们的值类型、环境变量、默认值、说明一次写完：新增一个键只加一行。
 ///
-/// 名字表只有这一份：点号名、环境变量后缀、值类型、说明、槽位下标全部由它派生，`describe` 与
-/// "键未登记"报错里列出的清单也是同一张表，因此不会出现"加了一处、忘了另一处"。
+/// 名字表只有这一份：点号名、环境变量后缀、值解析器、默认值、说明、槽位下标全部由它派生，
+/// `describe` 与"键未登记"报错里列出的清单也是同一张表，因此不会出现"加了一处、忘了另一处"。
+/// `parse_value` / `default_value` 的分派 match 在宏体内（宏体不参与圈复杂度门），
+/// 每种类型的解析逻辑在宏外的小函数里（`parse_path` 等）。
 macro_rules! keys {
-    ($($variant:ident => $dotted:literal, [$($env:literal),*], $kind:ident, $doc:literal;)*) => {
+    ($roots:ident; $($variant:ident => $dotted:literal, [$($env:literal),*], $parser:path, $default:expr, $doc:literal;)*) => {
         /// 配置键闭集。
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Key {
@@ -146,10 +139,17 @@ macro_rules! keys {
                 }
             }
 
-            /// 值类型标记。
-            const fn kind(self) -> ValueKind {
+            /// 值解析分派：每种类型的解析器是独立小函数（`parse_path` 等）。
+            fn parse_value(self, text: &str, origin: &Origin) -> Result<SettingValue> {
                 match self {
-                    $(Self::$variant => ValueKind::$kind,)*
+                    $(Self::$variant => $parser(self, text, origin),)*
+                }
+            }
+
+            /// 默认值：路径键由 `$roots` 计算，数值键是字面量；没有默认值的键写 `None`。
+            fn default_value(self, $roots: &Roots) -> Option<SettingValue> {
+                match self {
+                    $(Self::$variant => $default,)*
                 }
             }
 
@@ -169,19 +169,19 @@ macro_rules! keys {
     (@one $variant:ident) => { () };
 }
 
-keys! {
-    CacheDir => "cache.dir", ["CACHE_DIR", "CACHE"], Path, "编译产物缓存的根目录";
-    WorkDir => "work.dir", ["WORK_DIR"], Path, "编译与执行时的临时工作目录";
-    DataRoot => "data.root", ["DATA_DIR"], Path, "声明层 / 档案层 / 片段层的替代根；未设置表示用内嵌数据";
-    CacheLimit => "cache.limit_bytes", [], Bytes, "缓存容量上限（字节）";
-    StaleLock => "cache.stale_lock_secs", [], Int, "陈旧锁判据（秒）：超过即视为崩溃遗留";
-    TouchWindow => "cache.touch_window_secs", [], Int, "LRU 时间戳刷新窗口（秒）";
-    HttpMaxHead => "http.max_head_bytes", [], Int, "HTTP 请求头长度上限（字节）";
-    HttpMaxBody => "http.max_body_bytes", [], Int, "HTTP 请求体长度上限（字节）";
-    GenerateTemp => "generate.default_temperature", [], Float, "采样默认温度";
-    PolicyW => "policy.w", [], Int, "脉冲通道窗口常数";
-    PolicyNRef => "policy.n_ref", [], Float, "脉冲通道参考常数";
-    PolicyTau => "policy.tau_scale", [], Float, "脉冲通道时间常数";
+keys! { roots;
+    CacheDir => "cache.dir", ["CACHE_DIR", "CACHE"], parse_path, Some(SettingValue::Path(roots.default_cache_dir(APP))), "编译产物缓存的根目录";
+    WorkDir => "work.dir", ["WORK_DIR"], parse_path, Some(SettingValue::Path(roots.default_work_dir(APP))), "编译与执行时的临时工作目录";
+    DataRoot => "data.root", ["DATA_DIR"], parse_path, None, "声明层 / 档案层 / 片段层的替代根；未设置表示用内嵌数据";
+    CacheLimit => "cache.limit_bytes", [], parse_bytes, Some(SettingValue::Bytes(2 * 1024 * 1024 * 1024)), "缓存容量上限（字节）";
+    StaleLock => "cache.stale_lock_secs", [], parse_int, Some(SettingValue::Int(60)), "陈旧锁判据（秒）：超过即视为崩溃遗留";
+    TouchWindow => "cache.touch_window_secs", [], parse_int, Some(SettingValue::Int(5)), "LRU 时间戳刷新窗口（秒）";
+    HttpMaxHead => "http.max_head_bytes", [], parse_int, Some(SettingValue::Int(8 * 1024)), "HTTP 请求头长度上限（字节）";
+    HttpMaxBody => "http.max_body_bytes", [], parse_int, Some(SettingValue::Int(64 * 1024)), "HTTP 请求体长度上限（字节）";
+    GenerateTemp => "generate.default_temperature", [], parse_float, Some(SettingValue::Float(1.0)), "采样默认温度";
+    PolicyW => "policy.w", [], parse_int, Some(SettingValue::Int(64)), "脉冲通道窗口常数";
+    PolicyNRef => "policy.n_ref", [], parse_float, Some(SettingValue::Float(4096.0)), "脉冲通道参考常数";
+    PolicyTau => "policy.tau_scale", [], parse_float, Some(SettingValue::Float(0.05)), "脉冲通道时间常数";
 }
 
 /// 槽位数量；[`Key::KEYS`] 是唯一事实源。
@@ -246,7 +246,7 @@ impl fmt::Display for Origin {
 /// 一个已确定的值与它的来源。
 #[derive(Debug, Clone, PartialEq)]
 struct Resolved {
-    value: Value,
+    value: SettingValue,
     origin: Origin,
 }
 
@@ -402,16 +402,26 @@ impl Settings {
         let mut rest = Vec::with_capacity(args.len());
         let mut index = 0;
         while index < args.len() {
-            index = if args[index] == "--set" {
-                self.apply_at(args, index)?
-            } else if args[index] == "--config" {
-                self.apply_config_at(args, index)?
-            } else {
-                rest.push(args[index].clone());
-                index + 1
-            };
+            index = self.next_index(args, index, &mut rest)?;
         }
         Ok(rest)
+    }
+
+    /// 一条参数的下标推进：`--set` / `--config` 消费两条，其余原样留下。
+    fn next_index(
+        &mut self,
+        args: &[String],
+        index: usize,
+        rest: &mut Vec<String>,
+    ) -> Result<usize> {
+        if args[index] == "--set" {
+            self.apply_at(args, index)
+        } else if args[index] == "--config" {
+            self.apply_config_at(args, index)
+        } else {
+            rest.push(args[index].clone());
+            Ok(index + 1)
+        }
     }
 
     /// 处理 `args[index] == "--set"`，返回下一条要看的参数下标。
@@ -476,7 +486,7 @@ impl Settings {
     pub fn cache_limit_bytes(&self) -> Option<u64> {
         self.resolved(Key::CacheLimit)
             .and_then(|(value, _)| match value {
-                Value::Bytes(bytes) => Some(bytes),
+                SettingValue::Bytes(bytes) => Some(bytes),
                 _ => None,
             })
     }
@@ -508,12 +518,13 @@ impl Settings {
         format!("  {:<26} = {:<28} ← {origin}\n", key.dotted(), value)
     }
 
-    /// 某个键的最终取值与来源：设置过的用它，没设置的看 [`default_of`]。
-    fn resolved(&self, key: Key) -> Option<(Value, Origin)> {
+    /// 某个键的最终取值与来源：设置过的用它，没设置的看 [`Key::default_value`]。
+    fn resolved(&self, key: Key) -> Option<(SettingValue, Origin)> {
         if let Some(slot) = &self.slots[key.index()] {
             return Some((slot.value.clone(), slot.origin.clone()));
         }
-        default_of(key, &self.roots).map(|value| (value, Origin::Default))
+        key.default_value(&self.roots)
+            .map(|value| (value, Origin::Default))
     }
 
     /// 从环境变量层收集：正式名优先，兼容名次之；相对路径按启动目录解析。
@@ -583,38 +594,41 @@ impl Settings {
             )));
         }
         for (name, raw) in table {
-            let dotted = if prefix.is_empty() {
-                name
-            } else {
-                format!("{prefix}.{name}")
-            };
-            if let toml::Value::Table(inner) = raw {
-                self.apply_table(path, inner, &dotted, depth + 1)?;
-                continue;
-            }
-            let key = dotted_key(&dotted)
-                .map_err(|error| error.with(format!("配置文件 {}", path.display())))?;
-            let origin = Origin::File(path.to_path_buf());
-            let text = raw
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| raw.as_integer().map(|value| value.to_string()))
-                .or_else(|| raw.as_float().map(|value| value.to_string()))
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "{origin}提供的 `{dotted}`（{}）非法：不支持数组值",
-                        key.doc()
-                    ))
-                })?;
-            let value = value_of_text(key, &origin, &text)?;
-            let value = rebase_value(value, self.roots.base());
-            self.store(key, value, origin);
+            let dotted = dotted_name(prefix, &name);
+            self.apply_entry(path, dotted, raw, depth)?;
         }
         Ok(())
     }
 
+    /// 一条配置项：表继续递归，标量入槽。
+    fn apply_entry(
+        &mut self,
+        path: &Path,
+        dotted: String,
+        raw: toml::Value,
+        depth: u32,
+    ) -> Result<()> {
+        if let toml::Value::Table(inner) = raw {
+            self.apply_table(path, inner, &dotted, depth + 1)
+        } else {
+            self.apply_value(path, &dotted, raw)
+        }
+    }
+
+    /// 一条标量配置：键解析、标量提取、类型解析与入槽。
+    fn apply_value(&mut self, path: &Path, dotted: &str, raw: toml::Value) -> Result<()> {
+        let key = dotted_key(dotted)
+            .map_err(|error| error.with(format!("配置文件 {}", path.display())))?;
+        let origin = Origin::File(path.to_path_buf());
+        let text = scalar_text(&origin, dotted, key, &raw)?;
+        let value = value_of_text(key, &origin, &text)?;
+        let value = rebase_value(value, self.roots.base());
+        self.store(key, value, origin);
+        Ok(())
+    }
+
     /// 写入一个值；只有优先级不低于已有来源时才生效。
-    fn store(&mut self, key: Key, value: Value, origin: Origin) {
+    fn store(&mut self, key: Key, value: SettingValue, origin: Origin) {
         let slot = &mut self.slots[key.index()];
         if slot
             .as_ref()
@@ -639,23 +653,27 @@ fn discover_files() -> Vec<PathBuf> {
     candidates
 }
 
-/// 键的默认值：路径键只有 `cache.dir` / `work.dir` 有；数值键的默认值 = 各消费方现值
-/// （P5 接线后消费方常量删除，本表成为唯一事实源）。
-fn default_of(key: Key, roots: &Roots) -> Option<Value> {
-    match key {
-        Key::CacheDir => Some(Value::Path(roots.default_cache_dir(APP))),
-        Key::WorkDir => Some(Value::Path(roots.default_work_dir(APP))),
-        Key::DataRoot => None,
-        Key::CacheLimit => Some(Value::Bytes(2 * 1024 * 1024 * 1024)),
-        Key::StaleLock => Some(Value::Int(60)),
-        Key::TouchWindow => Some(Value::Int(5)),
-        Key::HttpMaxHead => Some(Value::Int(8 * 1024)),
-        Key::HttpMaxBody => Some(Value::Int(64 * 1024)),
-        Key::GenerateTemp => Some(Value::Float(1.0)),
-        Key::PolicyW => Some(Value::Int(64)),
-        Key::PolicyNRef => Some(Value::Float(4096.0)),
-        Key::PolicyTau => Some(Value::Float(0.05)),
+/// 嵌套表键名拼接：顶层键没有前缀。
+fn dotted_name(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}.{name}")
     }
+}
+
+/// 标量值转文本：字符串 / 整数 / 浮点；数组与嵌套表不在这里出现（表已在上层递归）。
+fn scalar_text(origin: &Origin, dotted: &str, key: Key, raw: &toml::Value) -> Result<String> {
+    raw.as_str()
+        .map(str::to_string)
+        .or_else(|| raw.as_integer().map(|value| value.to_string()))
+        .or_else(|| raw.as_float().map(|value| value.to_string()))
+        .ok_or_else(|| {
+            invalid(format!(
+                "{origin}提供的 `{dotted}`（{}）非法：不支持数组值",
+                key.doc()
+            ))
+        })
 }
 
 /// 点号名 → 键；未登记的名字带清单报错。
@@ -669,7 +687,7 @@ fn dotted_key(name: &str) -> Result<Key> {
 }
 
 /// 按键声明的值类型解析文本；空串与纯空白视为没写。
-fn value_of_text(key: Key, origin: &Origin, text: &str) -> Result<Value> {
+fn value_of_text(key: Key, origin: &Origin, text: &str) -> Result<SettingValue> {
     let text = text.trim();
     if text.is_empty() {
         return Err(Error::new(
@@ -682,42 +700,57 @@ fn value_of_text(key: Key, origin: &Origin, text: &str) -> Result<Value> {
         )
         .with("cli::settings"));
     }
-    let bad = |what: &str| {
-        Error::new(
-            Code::Invalid,
-            format!(
-                "{origin}提供的 `{}`（{}）非法：{what}",
-                key.dotted(),
-                key.doc()
-            ),
-        )
-        .with("cli::settings")
-    };
-    match key.kind() {
-        ValueKind::Path => Ok(Value::Path(PathBuf::from(text))),
-        ValueKind::Bytes => text
-            .parse::<u64>()
-            .map(Value::Bytes)
-            .map_err(|_| bad("应为非负整数")),
-        ValueKind::Int => text
-            .parse::<i64>()
-            .map(Value::Int)
-            .map_err(|_| bad("应为整数")),
-        ValueKind::Float => {
-            let value: f64 = text.parse().map_err(|_| bad("应为浮点数"))?;
-            if value.is_finite() {
-                Ok(Value::Float(value))
-            } else {
-                Err(bad("应为有限浮点数"))
-            }
-        }
+    key.parse_value(text, origin)
+}
+
+/// 一条坏值的诊断：键名与来源都在消息里。
+fn bad_value(key: Key, origin: &Origin, what: &str) -> Error {
+    Error::new(
+        Code::Invalid,
+        format!(
+            "{origin}提供的 `{}`（{}）非法：{what}",
+            key.dotted(),
+            key.doc()
+        ),
+    )
+    .with("cli::settings")
+}
+
+/// 路径：原文原样收下（相对路径由调用方按启动目录 rebase）。
+fn parse_path(_key: Key, text: &str, _origin: &Origin) -> Result<SettingValue> {
+    Ok(SettingValue::Path(PathBuf::from(text)))
+}
+
+/// 非负字节数。
+fn parse_bytes(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
+    text.parse::<u64>()
+        .map(SettingValue::Bytes)
+        .map_err(|_| bad_value(key, origin, "应为非负整数"))
+}
+
+/// 有符号整数。
+fn parse_int(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
+    text.parse::<i64>()
+        .map(SettingValue::Int)
+        .map_err(|_| bad_value(key, origin, "应为整数"))
+}
+
+/// 有限浮点数。
+fn parse_float(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
+    let value: f64 = text
+        .parse()
+        .map_err(|_| bad_value(key, origin, "应为浮点数"))?;
+    if value.is_finite() {
+        Ok(SettingValue::Float(value))
+    } else {
+        Err(bad_value(key, origin, "应为有限浮点数"))
     }
 }
 
 /// 相对路径按 `base` 解析；非路径值原样返回。
-fn rebase_value(value: Value, base: &Path) -> Value {
+fn rebase_value(value: SettingValue, base: &Path) -> SettingValue {
     match value {
-        Value::Path(path) => Value::Path(if path.is_relative() {
+        SettingValue::Path(path) => SettingValue::Path(if path.is_relative() {
             base.join(path)
         } else {
             path
