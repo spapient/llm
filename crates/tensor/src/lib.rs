@@ -83,7 +83,7 @@ pub use dtype::DType;
 pub use element::Element;
 pub use order::Order;
 pub use owned::OwnedTensor;
-pub use shape::{Axis, Shape, product};
+pub use shape::{AxisLen, Shape, product};
 pub use strides::Strides;
 pub use tensor::Tensor;
 pub use view::View;

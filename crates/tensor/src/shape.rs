@@ -7,7 +7,7 @@ use dtype::DType;
 /// 只有 `usize` 与 `u64` 两臂：前者是本层 [`Shape`] 的轴宽，后者是权重文件头的轴宽（线上格式
 /// 就是 `u64`）。两臂共用同一条饱和乘积，既不在小位宽目标上因「先换算再乘」提前饱和，也不给
 /// 第二份 `fold(saturating_mul)` 留下自己漂移的机会。
-pub trait Axis: Copy {
+pub trait AxisLen: Copy {
     /// 乘法单位元：空轴序列（标量）的元素个数。
     const ONE: Self;
 
@@ -15,7 +15,7 @@ pub trait Axis: Copy {
     fn mul_saturated(self, rhs: Self) -> Self;
 }
 
-impl Axis for usize {
+impl AxisLen for usize {
     const ONE: Self = 1;
 
     fn mul_saturated(self, rhs: Self) -> Self {
@@ -23,7 +23,7 @@ impl Axis for usize {
     }
 }
 
-impl Axis for u64 {
+impl AxisLen for u64 {
     const ONE: Self = 1;
 
     fn mul_saturated(self, rhs: Self) -> Self {
@@ -37,7 +37,7 @@ impl Axis for u64 {
 /// 回绕——形状可以来自权重文件头这类不受信任的输入，回绕会让一个巨大形状报出很小的元素数
 /// （例如 `[2^32, 2^32]` 得到 0），于是「缓冲够长」的校验被绕过。
 #[must_use]
-pub fn product<A: Axis>(dims: &[A]) -> A {
+pub fn product<A: AxisLen>(dims: &[A]) -> A {
     dims.iter().fold(A::ONE, |acc, dim| acc.mul_saturated(*dim))
 }
 
