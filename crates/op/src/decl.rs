@@ -10,7 +10,7 @@ use crate::tpl::{Arg, Template};
 use core::fmt;
 use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
-use prof::atom::{Attr, AttrKey, DType, DTypeSet, Need, Prim, Space, SpaceSet, Span};
+use prof::atom::{Attr, AttrKey, Closed, DTypeSet, Need, Prim, Set, SpaceSet, Span};
 
 /// 变体数上限（cutile README §4.1）。
 pub const MAX_VARIANTS: usize = 8;
@@ -822,34 +822,34 @@ fn parse_span(path: &str, value: &Value) -> Result<Span, Error> {
     Span::parse(text).map_err(|error| field(path, error.message()))
 }
 
-fn parse_dt(path: &str, value: &Value) -> Result<DTypeSet, Error> {
-    let mut set = DTypeSet::empty();
+/// 从字符串列表解析一个闭集位集：`["f32", "f16"]` 或单个标量都行；闭集外的名字报错并列出全量。
+///
+/// `DType` / `Space` 都是 [`Closed`] 闭集，位集都是 [`Set`]，因此解析循环只有这一份；新增一种闭集
+/// 只需加一行薄包装，不重写"逐名解析 + 闭集外诊断"的结构。
+fn parse_closed_set<E: Closed, const WORDS: usize>(
+    path: &str,
+    value: &Value,
+) -> Result<Set<E, WORDS>, Error> {
+    let mut set = Set::<E, WORDS>::empty();
     for name in string_list(path, value)? {
-        let dt = DType::parse_name(&name).ok_or_else(|| {
-            let allowed: Vec<&str> = DType::ALL.iter().map(|dt| dt.name()).collect();
+        let item = E::parse(&name).ok_or_else(|| {
+            let allowed: Vec<&str> = E::ALL.iter().map(|item| item.as_str()).collect();
             field(
                 path,
                 format!("`{name}` 不在闭集内（{}）", allowed.join(" | ")),
             )
         })?;
-        set.insert(dt);
+        set.insert(item);
     }
     Ok(set)
 }
 
+fn parse_dt(path: &str, value: &Value) -> Result<DTypeSet, Error> {
+    parse_closed_set(path, value)
+}
+
 fn parse_space(path: &str, value: &Value) -> Result<SpaceSet, Error> {
-    let mut set = SpaceSet::empty();
-    for name in string_list(path, value)? {
-        let space = Space::parse(&name).ok_or_else(|| {
-            let allowed: Vec<&str> = Space::ALL.iter().map(|space| space.as_str()).collect();
-            field(
-                path,
-                format!("`{name}` 不在闭集内（{}）", allowed.join(" | ")),
-            )
-        })?;
-        set.insert(space);
-    }
-    Ok(set)
+    parse_closed_set(path, value)
 }
 
 /// 一个键的字符串列表：允许 `["a", "b"]`、`"a"` 与标量写法（标量按十进制渲染）。
