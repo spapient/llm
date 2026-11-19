@@ -581,7 +581,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
 
     // 槽位约定（同 buffer_decls 的签名序）：0 = 只读输入 x，1 = 可写输出 y。
     let input = sample.f32("x").expect("扫描输入");
-    bind_f32(&mut executor, 0, &input);
+    bind_f32(&mut executor, 0, input);
     executor
         .bind_bytes(1, expected.len() * 4)
         .expect("输出缓冲");
@@ -674,8 +674,8 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     // 槽位（同 buffer_decls 签名序）：0 = x、1 = gamma、2 = y（部分和临时占 y 前 G 个槽）。
     let x = sample.f32("x").expect("rmsnorm 输入 x");
     let gamma = sample.f32("gamma").expect("rmsnorm 权重 gamma");
-    bind_f32(&mut executor, 0, &x);
-    bind_f32(&mut executor, 1, &gamma);
+    bind_f32(&mut executor, 0, x);
+    bind_f32(&mut executor, 1, gamma);
     executor.bind_bytes(2, expected.len() * 4).expect("y 缓冲");
 
     let stream = engine::exec::Stream::new(0);
@@ -760,7 +760,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
 
     // 槽位：0 = x、1 = y（部分结果临时占 y 前 G 个槽）、2 = max、3 = sum。
     let x = sample.f32("x").expect("softmax 输入");
-    bind_f32(&mut executor, 0, &x);
+    bind_f32(&mut executor, 0, x);
     executor.bind_bytes(1, expected.len() * 4).expect("y 缓冲");
 
     let stream = engine::exec::Stream::new(0);
