@@ -352,8 +352,6 @@ fn op_matches_reference(op_name: &str) {
 /// 逐位一致。
 #[cfg(target_os = "macos")]
 fn op_chunked_reduce_matches_reference(op_name: &str) {
-    use engine::exec::Executor as _;
-
     let Some((catalogue, dirs)) = metal_harness("chunk") else {
         return;
     };
