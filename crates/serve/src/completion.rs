@@ -31,6 +31,20 @@ use std::sync::{Mutex, MutexGuard};
 /// 同量级，块算完的那一页下一轮就能被别的请求接走。
 const PREFILL_CHUNK: usize = 64;
 
+/// 一块提示的推进结果。
+///
+/// 三种结局必须分开：`Done` 才能把已算位置推进到块尾；`Deferred` 是页紧（下一轮会好），
+/// `Unsupported` 是模型没这条路径（已经退化，不再重试）。合成一个 `bool` 会把"等一等"说成"没有"。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Block {
+    /// 这块算完并已登记。
+    Done,
+    /// 页不够，这一轮先不算。
+    Deferred,
+    /// 模型没有分块预填充，整段已记为退化。
+    Unsupported,
+}
+
 /// 一条补全端点：请求进、token 出。
 ///
 /// 三个协作者都是注入的：分词器（词表边界）、[`Predict`]（一步前向）、[`Sampling`]（选哪个
@@ -212,19 +226,34 @@ where
     fn answer(&self, body: &[u8]) -> diagnostic::Result<Response> {
         let (request, prompt) = self.parse(body)?;
         let mut state = self.lock()?;
-        let admitted = self.admit(&mut state, &request, &prompt)?;
+        self.serve(&mut state, &request, &prompt)
+    }
+
+    /// 准入通过才往下走：被拒的请求把响应原样带回，它不是错误。
+    fn serve(
+        &self,
+        state: &mut State<M, S>,
+        request: &Request,
+        prompt: &[u32],
+    ) -> diagnostic::Result<Response> {
+        let admitted = self.admit(state, request, prompt)?;
         if admitted.status() != Status::Ok {
             return Ok(admitted);
         }
         let id = request.id();
-        if let Err(mut error) = state.prefill(id) {
-            // 预填充失败与解码失败同口径：先把页还回去再上抛，否则这条请求的页永远占着。
-            if let Err(cleanup) = state.batch.finish(id) {
-                error = error.also(&cleanup);
-            }
-            return Err(error);
+        self.prefill_request(state, id)?;
+        self.complete(state, id)
+    }
+
+    /// 预填充失败与解码失败同口径：先把页还回去再上抛，否则这条请求的页永远占着。
+    fn prefill_request(&self, state: &mut State<M, S>, id: u64) -> diagnostic::Result<()> {
+        let Err(mut error) = state.prefill(id) else {
+            return Ok(());
+        };
+        if let Err(cleanup) = state.batch.finish(id) {
+            error = error.also(&cleanup);
         }
-        self.complete(&mut state, id)
+        Err(error)
     }
 }
 
@@ -341,46 +370,68 @@ where
         if !self.prefill {
             return Ok(());
         }
-        let Self {
-            model,
-            batch,
-            prefill,
-            ..
-        } = self;
         // 能力先问、页后要：不支持的模型不该先花掉一笔页预算才发现自己没有这条路径。
-        if !model.prefills() {
-            *prefill = false;
+        if !self.model.prefills() {
+            self.prefill = false;
             return Ok(());
         }
-        let Some(sequence) = batch.sequence(id).cloned() else {
-            return Err(missing(id));
-        };
+        let sequence = self
+            .batch
+            .sequence(id)
+            .cloned()
+            .ok_or_else(|| missing(id))?;
+        self.advance_prompt(sequence, id)
+    }
+
+    /// 逐块推进提示段，直到整个提示段落定、或这一轮推不动（页不够）。
+    fn advance_prompt(&mut self, sequence: Sequence, id: u64) -> diagnostic::Result<()> {
         let prompt_len = sequence.prompt_len();
         let mut at = sequence.prefilled();
         while at < prompt_len {
             let end = (at + PREFILL_CHUNK).min(prompt_len);
-            // 一块要写到行 `end`（1-based），先按块尾把页要到：预填充一次推进多行，不走调度器
-            // 逐步预留那条路，缺这一步就会写到页表还没盖住的行上。
-            if !batch.reserve(id, end + 1)? {
-                // 页不够：这一轮先不算，块位置一个都不推进。已算的前缀仍然有效，下一轮接着算——
-                // 把请求判错会把"页紧"说成"请求非法"，而前者会自己好。
-                return Ok(());
+            match self.prefill_block(&sequence, id, at, end)? {
+                Block::Done => at = end,
+                // 页紧与模型不支持都不该判这条请求非法：一个下一轮会好，一个已经退化。
+                Block::Deferred | Block::Unsupported => return Ok(()),
             }
-            for position in at..end {
-                match model.prefill(&sequence, batch, position) {
-                    Ok(_) => {}
-                    Err(error) if error.code() == diagnostic::Code::Unsupported => {
-                        // 退化：提示段不进页，也不登记（零页不是算好的块）。端点照旧能解码。
-                        *prefill = false;
-                        return Ok(());
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            batch.mark_prefilled(id, end)?;
-            at = end;
         }
         Ok(())
+    }
+
+    /// 算一块提示位置并登记它：一块只做一次前向、一次登记。
+    fn prefill_block(
+        &mut self,
+        sequence: &Sequence,
+        id: u64,
+        at: usize,
+        end: usize,
+    ) -> diagnostic::Result<Block> {
+        // 一块要写到行 `end`（1-based），先按块尾把页要到：预填充一次推进多行，不走调度器
+        // 逐步预留那条路，缺这一步就会写到页表还没盖住的行上。
+        if !self.batch.reserve(id, end + 1)? {
+            // 页不够：这一轮先不算，块位置一个都不推进。已算的前缀仍然有效，下一轮接着算。
+            return Ok(Block::Deferred);
+        }
+        for position in at..end {
+            if !self.step_prompt(sequence, position)? {
+                return Ok(Block::Unsupported);
+            }
+        }
+        self.batch.mark_prefilled(id, end)?;
+        Ok(Block::Done)
+    }
+
+    /// 把一个提示位置算进页账：`false` 表示模型没有分块预填充，已把整段记为退化。
+    fn step_prompt(&mut self, sequence: &Sequence, position: usize) -> diagnostic::Result<bool> {
+        match self.model.prefill(sequence, &mut self.batch, position) {
+            Ok(_) => Ok(true),
+            Err(error) if error.code() == diagnostic::Code::Unsupported => {
+                // 退化：提示段不进页，也不登记（零页不是算好的块）。端点照旧能解码。
+                self.prefill = false;
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// 批内一轮：一次整批前向取整块 logits，再逐条采样记账；结束的摘出批归还页，被挡原样保留。
@@ -393,18 +444,38 @@ where
         if sequences.is_empty() {
             return Ok(Vec::new());
         }
-        for sequence in &sequences {
+        self.prefill_pending(&sequences)?;
+        let rows = self.batch_rows(&sequences)?;
+        self.account_rows(&sequences, rows)
+    }
+
+    /// 先把批内还没算完的提示段推一轮：块算完才能在下一步读它当历史。
+    fn prefill_pending(&mut self, sequences: &[Sequence]) -> diagnostic::Result<()> {
+        for sequence in sequences {
             if self.prefill && !sequence.prefilled_ready() {
                 self.prefill(sequence.id())?;
             }
         }
-        let rows = match self.model.logits_batch(&sequences, &mut self.batch) {
-            Ok(rows) => rows,
+        Ok(())
+    }
+
+    /// 一次整批前向取回整块 logits；失败时把批内全部序列页归还再上抛。
+    fn batch_rows(&mut self, sequences: &[Sequence]) -> diagnostic::Result<Vec<Vec<f32>>> {
+        match self.model.logits_batch(sequences, &mut self.batch) {
+            Ok(rows) => Ok(rows),
             Err(mut error) => {
-                self.release_all(&sequences, &mut error);
-                return Err(error);
+                self.release_all(sequences, &mut error);
+                Err(error)
             }
-        };
+        }
+    }
+
+    /// 逐条采样入账：结束的装出生成结果并摘出批，被挡的原样留在批里。
+    fn account_rows(
+        &mut self,
+        sequences: &[Sequence],
+        rows: Vec<Vec<f32>>,
+    ) -> diagnostic::Result<Vec<(u64, Generation)>> {
         let mut finished = Vec::new();
         for (sequence, logits) in sequences.iter().zip(rows) {
             self.sample_or_release(sequence.id(), logits, &mut finished)?;

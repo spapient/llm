@@ -392,7 +392,7 @@ fn settleable(
     sequences: &[Sequence],
     scheduler: &Scheduler,
     id: u64,
-) -> Option<(Vec<u32>, Vec<Page>)> {
+) -> Option<(Vec<u32>, Vec<crate::kv::Page>)> {
     let sequence = sequences.iter().find(|sequence| sequence.id() == id)?;
     if scheduler.page_size() == 0 {
         return None;
