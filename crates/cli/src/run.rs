@@ -711,10 +711,10 @@ mod tests {
         );
     }
 
-    /// 串行兜底的真机对拍：任一条走单线程串行 lowering 的算子，按签名序绑缓冲、`[1,1,1]` 派发、
-    /// 回读唯一可写输出，与标量参考对拍。缓冲全按 f32 解释（softmax/gemm/embed 都是 f32 输入）。
+    /// 真机对拍通用辅助：任一条走串行兜底或矩阵乘网格的算子，按签名序绑缓冲，派发网格由 `[grid]`
+    /// 声明推导（缺省 `[1,1,1]` 单线程串行），回读唯一可写输出，与标量参考对拍。缓冲全按 f32 解释。
     #[cfg(target_os = "macos")]
-    fn serial_op_matches_reference(op_name: &str) {
+    fn op_matches_reference(op_name: &str) {
         use engine::exec::Executor as _;
 
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
@@ -722,8 +722,7 @@ mod tests {
         if !cutile::witness::device_available(&profile) {
             return;
         }
-        let dirs =
-            cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-serial-check"));
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-serial-check"));
 
         let model = op::model(op_name).expect("语义表");
         let (m, n) = model.shape;
@@ -732,15 +731,25 @@ mod tests {
         let decl = catalogue.op(op_name).expect("算子声明");
 
         let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
-            .expect("串行内核应能生成");
+            .expect("内核应能生成");
 
         let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
             return;
         };
         executor.register(op_name, &msl).expect("注册内核");
 
-        // 按签名序绑缓冲：输入长度取样本、输出长度取参考；同时登记 node 的输入/输出槽位。
-        let launch = engine::exec::Launch::new([1, 1, 1], [1, 1, 1]);
+        // 派发网格：`[grid]` 声明的各维标量取样本值；缺省单线程串行。
+        let mut grid = [1u32, 1, 1];
+        if let Some(decl_grid) = decl.grid.as_ref() {
+            for (dim, (_, scalar)) in decl_grid.dims.iter().enumerate() {
+                grid[dim] = sample
+                    .scalar(scalar)
+                    .expect("网格维标量")
+                    .try_into()
+                    .expect("网格维落 u32");
+            }
+        }
+        let launch = engine::exec::Launch::new(grid, [1, 1, 1]);
         let mut node = engine::exec::Node::new(op_name, launch);
         for (slot, param) in decl
             .signature
@@ -751,11 +760,15 @@ mod tests {
         {
             let slot = slot as u32;
             if param.mutable {
-                executor.bind_bytes(slot, expected.len() * 4).expect("输出缓冲");
+                executor
+                    .bind_bytes(slot, expected.len() * 4)
+                    .expect("输出缓冲");
                 node.bind_output(slot);
             } else {
                 let values = sample.f32(&param.name).expect("f32 输入");
-                executor.bind_bytes(slot, values.len() * 4).expect("输入缓冲");
+                executor
+                    .bind_bytes(slot, values.len() * 4)
+                    .expect("输入缓冲");
                 node.bind_input(slot);
                 let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
                 for (index, value) in values.iter().enumerate() {
@@ -801,20 +814,20 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_softmax_op_runs_on_metal_and_matches_the_reference() {
-        serial_op_matches_reference("softmax_f32");
+        op_matches_reference("softmax_f32");
     }
 
-    /// 矩阵乘（三重循环）走串行兜底，真机对拍。
+    /// 矩阵乘（三重循环）走 2D 网格快路径，真机对拍。
     #[cfg(target_os = "macos")]
     #[test]
     fn a_gemm_op_runs_on_metal_and_matches_the_reference() {
-        serial_op_matches_reference("gemm_f32");
+        op_matches_reference("gemm_f32");
     }
 
     /// 行 gather（`table[idx[n],:]`，数据依赖下标）走串行兜底，真机对拍。
     #[cfg(target_os = "macos")]
     #[test]
     fn an_embed_op_runs_on_metal_and_matches_the_reference() {
-        serial_op_matches_reference("embed_f32");
+        op_matches_reference("embed_f32");
     }
 }

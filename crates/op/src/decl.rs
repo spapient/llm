@@ -75,22 +75,17 @@ pub struct Axis {
     pub values: Vec<u32>,
 }
 
-/// Gemm 骨架的网格映射：声明每个缓冲在输出轴上的偏移角色，以及哪个标量是输出轴长度。
+/// Gemm 骨架的网格映射：声明哪些串行外层循环按网格维拆线程（N 维、每维一个 `线程:标量` 对）。
 ///
-/// 这是「配置化优先」的落点：串行模板的外层循环 `for n in 0..N` 按行拆成网格，但逐缓冲偏移
-/// （输出 `+ n`、权重 `+ n * m`、共享 `+ 0`）不在现有 `[layouts]`（只管内存布局 row/col）里，
-/// 也不能从「哪个标量等于输出维度」推出（方阵 gemv 的 M==N 会歧义）。因此由声明层显式给出，
-/// 机制层（cutile）只消费、不索引分析模板。
+/// 这是「配置化优先」的落点：串行模板的外层循环 `for (int t = 0; t < S; ++t)` 由机制层把循环头
+/// 绑定到线程下标（`t = tid.x`、循环只跑一次），正文里的跨步（`i*K`、`p*N`）原样保留——因此既能
+/// 覆盖 gemv 的一维行网格，也能覆盖 gemm 的二维网格（右操作数的规约维跨步 `p*N` 不被误压缩）。
+/// 线程名必须与模板里的循环变量同名，标量名是该循环的边界；两者都由声明层显式给出，机制层
+/// （cutile）只做循环头替换、不索引分析模板。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grid {
-    /// 输出缓冲名：偏移 `+ n`，线程下标即输出行。
-    pub out: String,
-    /// 行跨步缓冲名：偏移 `+ n * m`，`m` 是样本的归约维度。
-    pub row: String,
-    /// 共享缓冲名：偏移 `0`（不随输出轴走）。
-    pub share: Vec<String>,
-    /// 输出轴长度标量名：正文外层循环据此压缩为 `1`（每线程一行）。
-    pub axis: String,
+    /// 网格维（按序）：每项 `(线程名, 边界标量名)`。线程名 = 模板循环变量名，网格大小 = 标量样本值。
+    pub dims: Vec<(String, String)>,
 }
 
 /// 降级链上的一个变体。
@@ -310,34 +305,46 @@ fn layout(key: &str, value: &Value) -> diagnostic::Result<(String, LayoutSpec)> 
 
 /// `[grid]`：Gemm 骨架的网格映射（仅 Gemm 声明，其余骨架不需要）。缺省返回 `None`。
 ///
-/// 四个键：`out`（输出缓冲）、`row`（行跨步缓冲）、`axis`（输出轴长度标量）各一个字符串，
-/// `share`（共享缓冲）是字符串数组（可省略，空数组语义相同）。
+/// 一个键族：`dims` 是 `"线程:标量"` 数组（网格维，按序）。线程名 = 模板里的循环变量名，标量名 =
+/// 该循环的边界。
 fn grid(table: &Table) -> diagnostic::Result<Option<Grid>> {
     let Some(section) = table.table("grid") else {
         return Ok(None);
     };
-    let out = section
-        .string("out")
-        .ok_or_else(|| field("grid.out", "缺失"))?
-        .to_string();
-    let row = section
-        .string("row")
-        .ok_or_else(|| field("grid.row", "缺失"))?
-        .to_string();
-    let axis = section
-        .string("axis")
-        .ok_or_else(|| field("grid.axis", "缺失"))?
-        .to_string();
-    let share = match section.get("share") {
-        Some(value) => string_list("grid.share", value)?,
-        None => Vec::new(),
-    };
     Ok(Some(Grid {
-        out,
-        row,
-        share,
-        axis,
+        dims: grid_dims(section)?,
     }))
+}
+
+/// `grid.dims`：`"线程:标量"` 数组，至少一维、至多三维（Metal 网格上限）。
+fn grid_dims(section: &Table) -> diagnostic::Result<Vec<(String, String)>> {
+    let Some(value) = section.get("dims") else {
+        return Err(field("grid.dims", "缺失"));
+    };
+    let Value::Array(items) = value else {
+        return Err(field("grid.dims", "必须是数组"));
+    };
+    let mut dims = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let path = format!("grid.dims[{index}]");
+        let Value::Str(text) = item else {
+            return Err(field(&path, "必须是 `线程:标量` 字符串"));
+        };
+        let Some((thread, scalar)) = text.split_once(':') else {
+            return Err(field(&path, "必须是 `线程:标量` 字符串"));
+        };
+        if thread.is_empty() || scalar.is_empty() {
+            return Err(field(&path, "线程名与标量名都不能为空"));
+        }
+        dims.push((thread.to_string(), scalar.to_string()));
+    }
+    if dims.is_empty() {
+        return Err(field("grid.dims", "至少一维"));
+    }
+    if dims.len() > 3 {
+        return Err(field("grid.dims", "至多三维（Metal 网格上限）"));
+    }
+    Ok(dims)
 }
 
 /// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串，

@@ -59,9 +59,11 @@ pub mod dequant;
 pub mod dequant_i2;
 pub mod dequant_i4;
 pub mod dequant_i8;
+pub mod div_f32;
 pub mod einsum;
 pub mod elementwise;
 pub mod embed_f32;
+pub mod exp_f32;
 pub mod flash_attention;
 pub mod gelu_f32;
 pub mod gemm;
@@ -75,6 +77,9 @@ pub mod gemv_i2;
 pub mod gemv_i4;
 pub mod gemv_i8;
 pub mod layout;
+pub mod log_f32;
+pub mod max_f32;
+pub mod min_f32;
 pub mod model;
 pub mod mul_f32;
 pub(crate) mod parse;
@@ -92,6 +97,7 @@ pub mod sch;
 pub mod sig;
 pub mod silu_f32;
 pub mod softmax_f32;
+pub mod sub_f32;
 pub mod tpl;
 pub mod unary;
 
@@ -154,7 +160,9 @@ registry! {
     "dequant_i2" => dequant_i2, false, "dequant_packed",
     "dequant_i4" => dequant_i4, false, "dequant_packed",
     "dequant_i8" => dequant_i8, false, "dequant_i8",
+    "div_f32" => div_f32, true, "binary",
     "embed_f32" => embed_f32, true, "embed_f32",
+    "exp_f32" => exp_f32, true, "exp_f32",
     "flash_attention_f32" => flash_attention, true, "flash_attention_f32",
     "gelu_f32" => gelu_f32, true, "gelu_f32",
     "gemm_f32" => gemm_f32, true, "gemm_f32",
@@ -165,6 +173,9 @@ registry! {
     "gemv_i2" => gemv_i2, false, "gemv_packed",
     "gemv_i4" => gemv_i4, false, "gemv_packed",
     "gemv_i8" => gemv_i8, false, "gemv_i8",
+    "log_f32" => log_f32, true, "log_f32",
+    "max_f32" => max_f32, true, "max_f32",
+    "min_f32" => min_f32, true, "min_f32",
     "mul_f32" => mul_f32, true, "binary",
     "reduce_max_f32" => reduce_max_f32, true, "reduce_max_f32",
     "reduce_sum_f32" => reduce_sum_f32, true, "reduce_sum_f32",
@@ -175,6 +186,7 @@ registry! {
     "scan_f32" => scan_f32, false, "scan_f32",
     "silu_f32" => silu_f32, true, "silu_f32",
     "softmax_f32" => softmax_f32, true, "softmax_f32",
+    "sub_f32" => sub_f32, true, "binary",
 }
 
 /// 名字是否在注册表里；const 上下文可用。

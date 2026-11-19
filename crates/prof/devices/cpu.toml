@@ -42,6 +42,7 @@ flags = ["-O3", "-std=c99"]
 preamble = """
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
@@ -132,6 +133,9 @@ static inline float _cutile_exp_f32(float t) {
     twop.u = (uint32_t)(127 + k) << 23;
     return p * twop.f;
 }
+/* log 与 exp 不同：定义域 (0,+∞)，域内 libm logf 相对误差 <1 ulp，远小于阈值 1e-5，
+   无需位精确软件实现；与 Rust 参考 `f32::ln` 同走 libm，主机侧逐位一致。 */
+static inline float _cutile_log_f32(float x) { return logf(x); }
 #if defined(__aarch64__)
 static inline float32x4_t _cutile_exp4_f32(float32x4_t x) {
     float32x4_t kv = vrndaq_f32(vmulq_f32(x, vdupq_n_f32(_cutile_exp_log2e)));

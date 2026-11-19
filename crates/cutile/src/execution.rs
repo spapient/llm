@@ -138,10 +138,16 @@ pub fn metal_grid_program(
             crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
         }
         Skeleton::Gemm => match op.grid.as_ref() {
-            // 声明了 `[grid]` 的（gemv_f32）走行网格快路径；gemm 等未声明的走串行兜底。
+            // 声明了 `[grid]` 的走矩阵乘网格快路径（gemv 一维、gemm 二维共用一条 lowering）；未声明的
+            // 走串行兜底。
             Some(grid) => {
                 let sample = (run.model.sample)(m, n);
-                crate::harness::metal_gemv_kernel(&prepared.source.text, &op.signature, &sample, grid)
+                crate::harness::metal_matmul_kernel(
+                    &prepared.source.text,
+                    &op.signature,
+                    &sample,
+                    grid,
+                )
             }
             None => {
                 let sample = (run.model.sample)(m, n);

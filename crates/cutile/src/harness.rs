@@ -526,21 +526,36 @@ fn serial_args(params: &[Param], sample: &Sample) -> diagnostic::Result<String> 
         .map(|args| args.join(", "))
 }
 
-/// 生产态 gemv 内核：Gemm 骨架按输出行拆线程（grid = `[n, 1, 1]`，`n` 是样本输出维度）。
+/// 生产态矩阵乘网格内核：Gemm 骨架按输出元素拆线程（N 维网格，线程下标 `tid.x` / `tid.y` …）。
 ///
-/// 逐缓冲偏移来自 `[grid]` 声明（[`Grid`]），不是对模板的索引分析：输出 `d_y + n`（线程下标
-/// 即行）、行跨步权重 `d_w + n * m`（`m` 是样本归约维度）、共享输入 `d_x` 原样透传；输出轴长度
-/// 标量（`grid.axis`）压缩为 `1`，让正文的外层循环只跑一次、`n` 由缓冲偏移注入。与
-/// [`metal_grid_kernel`]（逐点：缓冲全 `+ n`）的分工正是「权重是否按行跨步」。
+/// 网格绑定来自 `[grid]` 声明（[`Grid`]），不是对模板的索引分析：每个网格维把模板里的串行循环
+/// `for (int t = 0; t < S; ++t)` 的头绑定到线程下标（`t = tid.x`、循环只跑一次），正文里的跨步
+/// （`i*K`、`p*N`）原样保留、标量取样本原值。这比「压缩标量 + 缓冲偏移」更泛：gemm 右操作数的
+/// 规约维跨步 `p*N` 不会因压缩 `N` 而错位。`tid` 声明在 `kernel_main`，而循环在内部函数里，故先给
+/// 内部函数追加 `uint3 tid` 形参、调用点透传。一维（gemv）与二维（gemm）共用这一条 lowering，
+/// 差异全在声明里。
 ///
-/// # Errors：缓冲不在 `out`/`row`/`share` 里、标量缺样本取值时返回说明。
-pub fn metal_gemv_kernel(
+/// # Errors：网格维超过 3、模板里找不到声明的循环、标量缺样本取值时返回说明。
+pub fn metal_matmul_kernel(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
     grid: &Grid,
 ) -> diagnostic::Result<String> {
-    let call = gemv_args(signature, sample, grid)?;
+    if grid.dims.len() > 3 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("网格维 {} 超过 Metal 上限 3", grid.dims.len()),
+        )
+        .with("cutile::harness::metal_matmul_kernel"));
+    }
+    const AXES: [&str; 3] = ["x", "y", "z"];
+    let mut body = msl_address_space(kernel_source);
+    body = thread_param(&body, &signature.kernel())?;
+    for (dim, (thread, scalar)) in grid.dims.iter().enumerate() {
+        body = bind_grid_loop(&body, thread, scalar, AXES[dim])?;
+    }
+    let call = format!("{}, tid", serial_args(signature.params(), sample)?);
     let buffers = signature
         .params()
         .iter()
@@ -556,52 +571,58 @@ pub fn metal_gemv_kernel(
         .collect::<Vec<_>>()
         .join(",\n");
     Ok(format!(
-        "{}\n\nkernel void kernel_main(\n{buffers},\n    uint n [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
-        msl_address_space(kernel_source),
+        "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
         signature.kernel(),
     ))
 }
 
-/// gemv 实参：缓冲按 `[grid]` 角色取偏移（输出 `+ n`、行跨步 `+ n * m`、共享原样），标量除
-/// `grid.axis`（压缩为 `1`）外取样本实际值。
-fn gemv_args(signature: &Signature, sample: &Sample, grid: &Grid) -> diagnostic::Result<String> {
-    let m = sample.m;
-    signature
-        .params()
-        .iter()
-        .map(|param| {
-            if param.ctype.is_buffer() {
-                let name = param.name.as_str();
-                if name == grid.out {
-                    Ok(format!("d_{name} + n"))
-                } else if name == grid.row {
-                    Ok(format!("d_{name} + n * {m}"))
-                } else if grid.share.iter().any(|shared| shared == name) {
-                    Ok(format!("d_{name}"))
-                } else {
-                    Err(Error::new(
-                        Code::Invalid,
-                        format!("缓冲 `{name}` 不在 `[grid]` 的 out/row/share 里"),
-                    )
-                    .with("cutile::harness::metal_gemv_kernel"))
-                }
-            } else {
-                let value = sample.scalar(&param.name).ok_or_else(|| {
-                    Error::new(
-                        Code::Invalid,
-                        format!("gemv 内核标量 `{}` 没有样本取值", param.name),
-                    )
-                    .with("cutile::harness::metal_gemv_kernel")
-                })?;
-                if param.name == grid.axis {
-                    Ok("1".to_owned())
-                } else {
-                    Ok(value.to_string())
-                }
-            }
-        })
-        .collect::<diagnostic::Result<Vec<_>>>()
-        .map(|args| args.join(", "))
+/// 给内部内核函数追加 `uint3 tid` 形参：`void {kernel}(...) {` → `void {kernel}(..., uint3 tid) {`，
+/// 让循环头绑定能引用线程下标（`tid` 声明在 `kernel_main`，而循环在内部函数里，二者作用域不通）。
+fn thread_param(body: &str, kernel: &str) -> diagnostic::Result<String> {
+    let marker = format!("void {kernel}(");
+    let Some(signature_start) = body.find(&marker) else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("找不到内核函数 `void {kernel}(`"),
+        )
+        .with("cutile::harness::metal_matmul_kernel"));
+    };
+    let Some(close) = body[signature_start..].find(") {") else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("内核函数 `{kernel}` 签名不完整"),
+        )
+        .with("cutile::harness::metal_matmul_kernel"));
+    };
+    let insert_at = signature_start + close;
+    let mut out = String::with_capacity(body.len() + 12);
+    out.push_str(&body[..insert_at]);
+    out.push_str(", uint3 tid");
+    out.push_str(&body[insert_at..]);
+    Ok(out)
+}
+
+/// 把一个网格维的串行循环头绑定到线程下标：`for (int {thread} = 0; {thread} < {scalar}; ++{thread})`
+/// → `for (int {thread} = (int)tid.{axis}; {thread} < (int)tid.{axis} + 1; ++{thread})`。循环只跑一次，
+/// 循环变量即线程下标。找不到声明的循环时报错，避免静默生成串行语义的错误内核。
+fn bind_grid_loop(
+    body: &str,
+    thread: &str,
+    scalar: &str,
+    axis: &str,
+) -> diagnostic::Result<String> {
+    let head = format!("for (int {thread} = 0; {thread} < {scalar}; ++{thread})");
+    let bound = format!(
+        "for (int {thread} = (int)tid.{axis}; {thread} < (int)tid.{axis} + 1; ++{thread})"
+    );
+    if !body.contains(&head) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("模板里找不到网格循环 `{head}`"),
+        )
+        .with("cutile::harness::metal_matmul_kernel"));
+    }
+    Ok(body.replace(&head, &bound))
 }
 
 /// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲并原样透传给内核（内核指针已是

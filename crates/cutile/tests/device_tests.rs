@@ -205,8 +205,8 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
     compiled.expect("两趟 MSL 应能通过 xcrun metal 编译");
 }
 
-/// 生产态 gemv 行网格内核：`gemv_f32` 走 `[grid]` 声明映射——输出 `+ n`、权重 `+ n * m`
-/// （行跨步）、输入共享，输出轴长度标量压缩为 `1`；再通过 `xcrun metal` 编译证明合法。
+/// 生产态 gemv 行网格内核：`gemv_f32` 走 `[grid]` 声明——模板循环 `for (int n = 0; n < N; ++n)`
+/// 的头绑定到 `tid.x`（每线程一行），再通过 `xcrun metal` 编译证明合法。
 /// 用小形状（m=64, n=4）避免按生产形状 4096×4096 分配 64MB 权重样本。
 #[test]
 fn production_gemv_kernel_compiles_for_a_real_op() {
@@ -222,12 +222,47 @@ fn production_gemv_kernel_compiles_for_a_real_op() {
 
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(msl.contains("thread_position_in_grid"), "{msl}");
-    assert!(msl.contains("d_w + n * 64"), "权重应行跨步: {msl}");
-    assert!(msl.contains("d_x"), "输入应共享: {msl}");
+    assert!(
+        msl.contains("for (int n = (int)tid.x; n < (int)tid.x + 1; ++n)"),
+        "行循环应绑定到 tid.x: {msl}"
+    );
 
     let dir = std::env::temp_dir().join(format!("cutile-metal-gemv-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("目录");
     let compiled = metal_kernel(&dir, &msl, &profile.flags);
     let _ = std::fs::remove_dir_all(&dir);
     compiled.expect("gemv MSL 应能通过 xcrun metal 编译");
+}
+
+/// 生产态 gemm 二维网格内核：`gemm_f32` 走 `[grid]` 声明——模板循环 `for (int i = 0; i < M; ++i)`、
+/// `for (int j = 0; j < N; ++j)` 的头分别绑定到 `tid.x` / `tid.y`（每线程一个输出元素），规约维 `p`
+/// 循环保留；再通过 `xcrun metal` 编译证明合法。形状 [16,16]、K=8。
+#[test]
+fn production_gemm_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-gemm"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，gemm 内核编译用例未运行");
+        return;
+    }
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "gemm_f32", 16, 16)
+        .expect("gemm 网格内核应能生成");
+
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(msl.contains("uint3 tid [[thread_position_in_grid]]"), "{msl}");
+    assert!(
+        msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"),
+        "行循环应绑定到 tid.x: {msl}"
+    );
+    assert!(
+        msl.contains("for (int j = (int)tid.y; j < (int)tid.y + 1; ++j)"),
+        "列循环应绑定到 tid.y: {msl}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-gemm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("gemm MSL 应能通过 xcrun metal 编译");
 }

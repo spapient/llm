@@ -1,4 +1,6 @@
-use crate::{Data, Distill, ForwardOut, Grpo, Learner, Metric, Reference, Session, Sgd, TrainConfig};
+use crate::{
+    Data, Distill, ForwardOut, Grpo, Learner, Metric, Reference, Session, Sgd, TrainConfig,
+};
 use autograd::{Sizes, Store, Tape, Var};
 use data::Chunks;
 use diagnostic::{Code, Error, Result};
@@ -249,8 +251,12 @@ fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
         1,
         |session, _tokens| {
             session.buffers().load(x, Data::F32(vec![0.1; N]))?;
-            session.buffers().load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
-            session.buffers().load(teacher, Data::F32(vec![1.0; VOCAB]))?;
+            session
+                .buffers()
+                .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+            session
+                .buffers()
+                .load(teacher, Data::F32(vec![1.0; VOCAB]))?;
             session.buffers().compute("add_f32", &[p, x], loss)?;
             session.plan(loss)?;
             Ok(ForwardOut {
@@ -303,7 +309,9 @@ fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
         1,
         |session, _tokens| {
             session.buffers().load(x, Data::F32(vec![0.1; N]))?;
-            session.buffers().load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
+            session
+                .buffers()
+                .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
             session.buffers().load(new_logp, Data::F32(vec![-0.1]))?;
             session.buffers().load(old_logp, Data::F32(vec![-0.2]))?;
             session.buffers().load(advantages, Data::F32(vec![1.0]))?;

@@ -42,6 +42,7 @@ flags = ["-arch=sm_75", "-O3"]
 preamble = """
 #include <cuda_fp16.h>
 __device__ float _cutile_exp_f32(float x) { return expf(x); }
+__device__ float _cutile_log_f32(float x) { return logf(x); }
 __device__ float _cutile_sum_f32(const float *a, int n, int stride) {
     if (n == 1) return a[0];
     float acc = 0.0f;

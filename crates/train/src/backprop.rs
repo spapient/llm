@@ -152,7 +152,7 @@ struct Entry {
 /// 已接反向公式的可微算子目录；其余算子（量化权重 / 反量化）在 [`apply_formula`] 处回
 /// [`Code::Unsupported`]。与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应，由下方 `const`
 /// 断言在编译期守住。
-const FORMULAS: [Entry; 18] = [
+const FORMULAS: [Entry; 24] = [
     Entry {
         op: "add_f32",
         formula: passthrough,
@@ -168,6 +168,30 @@ const FORMULAS: [Entry; 18] = [
     Entry {
         op: "scale_f32",
         formula: scale,
+    },
+    Entry {
+        op: "sub_f32",
+        formula: sub,
+    },
+    Entry {
+        op: "div_f32",
+        formula: div,
+    },
+    Entry {
+        op: "exp_f32",
+        formula: exp,
+    },
+    Entry {
+        op: "log_f32",
+        formula: log,
+    },
+    Entry {
+        op: "min_f32",
+        formula: min,
+    },
+    Entry {
+        op: "max_f32",
+        formula: max,
     },
     Entry {
         op: "silu_f32",
@@ -319,6 +343,92 @@ fn scale(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     let alpha = op::scale_f32::ALPHA;
     let da = ctx.incoming.iter().map(|&g| g * alpha).collect();
     Ok(vec![da])
+}
+
+/// y = a−b：dA = in，dB = −in。
+fn sub(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let da = ctx.incoming.to_vec();
+    let db = ctx.incoming.iter().map(|&g| -g).collect();
+    Ok(vec![da, db])
+}
+
+/// y = a/b：dA = in/b，dB = −in·a/b²。
+fn div(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let a = &ctx.inputs[0];
+    let b = &ctx.inputs[1];
+    let da = ctx.incoming.iter().zip(b).map(|(&g, &w)| g / w).collect();
+    let db = ctx
+        .incoming
+        .iter()
+        .zip(a)
+        .zip(b)
+        .map(|((&g, &x), &w)| -g * x / (w * w))
+        .collect();
+    Ok(vec![da, db])
+}
+
+/// y = exp(a)：dA = in·y（输出 y 即 exp(a)，避免重算）。
+fn exp(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(ctx.output)
+        .map(|(&g, &y)| g * y)
+        .collect();
+    Ok(vec![da])
+}
+
+/// y = ln(a)：dA = in/a。
+fn log(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(&ctx.inputs[0])
+        .map(|(&g, &x)| g / x)
+        .collect();
+    Ok(vec![da])
+}
+
+/// y = min(a,b)：梯度给较小者；相等给 `a`（避免双计）。
+fn min(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let a = &ctx.inputs[0];
+    let b = &ctx.inputs[1];
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(a)
+        .zip(b)
+        .map(|((&g, &x), &y)| if x <= y { g } else { 0.0 })
+        .collect();
+    let db = ctx
+        .incoming
+        .iter()
+        .zip(a)
+        .zip(b)
+        .map(|((&g, &x), &y)| if y < x { g } else { 0.0 })
+        .collect();
+    Ok(vec![da, db])
+}
+
+/// y = max(a,b)：梯度给较大者；相等给 `a`（避免双计）。
+fn max(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let a = &ctx.inputs[0];
+    let b = &ctx.inputs[1];
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(a)
+        .zip(b)
+        .map(|((&g, &x), &y)| if x >= y { g } else { 0.0 })
+        .collect();
+    let db = ctx
+        .incoming
+        .iter()
+        .zip(a)
+        .zip(b)
+        .map(|((&g, &x), &y)| if y > x { g } else { 0.0 })
+        .collect();
+    Ok(vec![da, db])
 }
 
 /// y = x·σ(x)：y′ = σ + x·σ(1−σ)，dA = in·y′。

@@ -94,7 +94,9 @@ macro_rules! gemm {
 }
 
 unary!(
+    exp_f32,
     gelu_f32,
+    log_f32,
     silu_f32,
     softmax_f32,
     reduce_max_f32,
@@ -102,7 +104,17 @@ unary!(
     scale_f32,
     scan_f32
 );
-binary!(add_f32, embed_f32, mul_f32, rmsnorm_f32, residual_add_f32);
+binary!(
+    add_f32,
+    div_f32,
+    embed_f32,
+    max_f32,
+    min_f32,
+    mul_f32,
+    rmsnorm_f32,
+    residual_add_f32,
+    sub_f32
+);
 
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
 fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
@@ -208,7 +220,9 @@ const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     dequant_i2,
     dequant_i4,
     dequant_i8,
+    div_f32,
     embed_f32,
+    exp_f32,
     flash_attention_f32,
     gelu_f32,
     gemm_f32,
@@ -219,6 +233,9 @@ const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     gemv_i2,
     gemv_i4,
     gemv_i8,
+    log_f32,
+    max_f32,
+    min_f32,
     mul_f32,
     reduce_max_f32,
     reduce_sum_f32,
@@ -229,6 +246,7 @@ const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     scan_f32,
     silu_f32,
     softmax_f32,
+    sub_f32,
 ];
 
 const _: () = same_order(&KERNELS, &op::REGISTRY);

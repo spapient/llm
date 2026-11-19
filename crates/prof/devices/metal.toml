@@ -54,6 +54,7 @@ preamble = """
 #include <metal_stdlib>
 using namespace metal;
 static inline float _cutile_exp_f32(float x) { return exp(x); }
+static inline float _cutile_log_f32(float x) { return log(x); }
 template <typename P>
 static inline float _cutile_sum_f32(P a, int n, int stride) {
     if (n == 1) return a[0];
