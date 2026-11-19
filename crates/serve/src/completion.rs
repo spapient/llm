@@ -344,6 +344,11 @@ where
         let Self {
             model, batch, prefill, ..
         } = self;
+        // 能力先问、页后要：不支持的模型不该先花掉一笔页预算才发现自己没有这条路径。
+        if !model.prefills() {
+            *prefill = false;
+            return Ok(());
+        }
         let Some(sequence) = batch.sequence(id).cloned() else {
             return Err(missing(id));
         };
@@ -353,7 +358,11 @@ where
             let end = (at + PREFILL_CHUNK).min(prompt_len);
             // 一块要写到行 `end`（1-based），先按块尾把页要到：预填充一次推进多行，不走调度器
             // 逐步预留那条路，缺这一步就会写到页表还没盖住的行上。
-            batch.reserve(id, end + 1)?;
+            if !batch.reserve(id, end + 1)? {
+                // 页不够：这一轮先不算，块位置一个都不推进。已算的前缀仍然有效，下一轮接着算——
+                // 把请求判错会把"页紧"说成"请求非法"，而前者会自己好。
+                return Ok(());
+            }
             for position in at..end {
                 match model.prefill(&sequence, batch, position) {
                     Ok(_) => {}
@@ -680,6 +689,10 @@ mod tests {
             _batch: &mut Batch,
         ) -> diagnostic::Result<Vec<f32>> {
             Ok(vec![0.0, 1.0])
+        }
+
+        fn prefills(&self) -> bool {
+            true
         }
 
         fn prefill(

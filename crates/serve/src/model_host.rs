@@ -421,6 +421,11 @@ impl crate::Predict for CpuModel {
         self.forward_at(sequence, batch, at)
     }
 
+    /// 本宿主会把提示段的每个位置都算进页账，端点因此可以按块向页池要页。
+    fn prefills(&self) -> bool {
+        true
+    }
+
     fn logits_batch(
         &mut self,
         sequences: &[engine::Sequence],

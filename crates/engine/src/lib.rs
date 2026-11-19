@@ -675,13 +675,15 @@ impl Scheduler {
     /// 把页表扩到盖住前 `rows` 行（1-based 行账：第 `n` 个 token 落在行 `n`）。
     ///
     /// 预填充一次写多行、不走 [`Scheduler::advance`] 的逐步预留，所以在写第一批行之前要先把页
-    /// 一次要到；池不够时报错，而不是让随后的 [`Scheduler::write_kv`] 报「还没有页」——
-    /// 真正的原因（预算）与表现（位置无页）不该分开藏在两个地方。
+    /// 一次要到。
+    ///
+    /// 返回「要到了没有」：`false` 是现在没页——调用方这一轮先不算，页紧是常态，不是别人的状态
+    /// 错；只有序列不在批里、页宽为零这类调用方状态错误才是 `Err`。
     ///
     /// # Errors
     ///
-    /// 序列不在批里、页宽为零时无从算页；页池不够时返回 `invalid`。
-    pub fn reserve(&mut self, id: u64, rows: usize) -> Result<()> {
+    /// 序列不在批里或页宽为零（都算不出要几页）。
+    pub fn reserve(&mut self, id: u64, rows: usize) -> Result<bool> {
         let Some(index) = self.position(id) else {
             return Err(Error::new(
                 Code::Invalid,
@@ -696,16 +698,9 @@ impl Scheduler {
         }
         let needed = pages_for(rows, width);
         if !self.extend(index, needed, "engine::Scheduler::reserve")? {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "序列 {id} 要 {needed} 页盖住前 {rows} 行，页池只剩 {} 页",
-                    self.pager.free_pages()
-                ),
-            )
-            .with("engine::Scheduler::reserve"));
+            return Ok(false);
         }
-        Ok(())
+        Ok(true)
     }
 
     /// 读回第 `token` 个位置的 KV 行（只读）。

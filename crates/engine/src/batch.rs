@@ -203,10 +203,12 @@ impl Batch {
     /// 与 [`Batch::write_kv`] 分开的理由是错误要说真话：一次写多行时缺的不是「位置无页」，而是
     /// 「页没预留」，两件事报同一句话就把调用点指错了。
     ///
+    /// 返回「要到了没有」：`false` 是这一轮页不够——调用方把这块留到下一轮，而不是把请求判错。
+    ///
     /// # Errors
     ///
-    /// `id` 不在批里、页宽为零或页池不够。
-    pub fn reserve(&mut self, id: u64, rows: usize) -> Result<()> {
+    /// `id` 不在批里、页宽为零。
+    pub fn reserve(&mut self, id: u64, rows: usize) -> Result<bool> {
         self.scheduler.reserve(id, rows)
     }
 
