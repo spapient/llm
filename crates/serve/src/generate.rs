@@ -507,7 +507,10 @@ fn usable(logits: &[f32]) -> Result<()> {
 }
 
 /// 最大 logit 的最小下标；空输入与非有限值都报错。
-fn best(logits: &[f32]) -> Result<u32> {
+///
+/// 与 [`speculate`](crate::speculate) 共用：投机校验要看"目标模型会选哪个"，那个判据必须与
+/// 生成时用的是同一处，否则草稿与校验各按一套 argmax 判，接受数就没有意义了。
+pub(crate) fn best(logits: &[f32]) -> Result<u32> {
     usable(logits)?;
     let index = argmax_index(logits, (0..logits.len()).collect(), "serve::Greedy")?;
     token(index, "serve::Greedy")

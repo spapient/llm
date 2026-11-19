@@ -34,7 +34,11 @@ impl Verdict {
     /// 本次投机真正前进了几格：接受的草稿 token，加上被拒位置补的那一个。
     #[must_use]
     pub const fn advanced(&self) -> usize {
-        self.accepted + usize::from(self.fallback.is_some())
+        if self.fallback.is_some() {
+            self.accepted + 1
+        } else {
+            self.accepted
+        }
     }
 }
 
