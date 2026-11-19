@@ -258,17 +258,13 @@ pub mod log_f32 {
         Log,
         LogF32,
         "log_f32",
+        unary_pair_tests,
         {
-            crate::unary::test_support::unary_pair_tests!(Log, forward);
-
-            /// 边界：ln(1)=0、ln(e)=1。
-            #[test]
-            fn log_edges_match_ieee() {
-                let mut out = vec![0.0; 2];
-                forward(&[1.0, std::f32::consts::E], &mut out).expect("等长");
-                assert_eq!(out[0], 0.0, "ln(1)=0");
-                assert!((out[1] - 1.0).abs() < 1e-6, "ln(e)=1");
-            }
+            // 边界：ln(1)=0、ln(e)=1。
+            let mut out = vec![0.0; 2];
+            forward(&[1.0, std::f32::consts::E], &mut out).expect("等长");
+            assert_eq!(out[0], 0.0, "ln(1)=0");
+            assert!((out[1] - 1.0).abs() < 1e-6, "ln(e)=1");
         },
         |x| x.ln(),
         |len| (0..len).map(|i| 0.5 + i as f32 * 0.25).collect()
@@ -304,16 +300,12 @@ pub mod gelu_f32 {
         Gelu,
         GeluF32,
         "gelu_f32",
+        unary_pair_tests,
         {
-            crate::unary::test_support::unary_pair_tests!(Gelu, forward);
-
-            /// 精确 erf 的已知值钉住：Abramowitz-Stegun 7.1.26 闭式，两侧绝对误差 < 1.5e-7。
-            #[test]
-            fn erf_matches_known_values() {
-                assert!((erf(0.0) - 0.0).abs() < 1e-6);
-                assert!((erf(1.0) - 0.842_700_8).abs() < 1.5e-6);
-                assert!((erf(-1.0) + 0.842_700_8).abs() < 1.5e-6);
-            }
+            // 精确 erf 的已知值钉住：Abramowitz-Stegun 7.1.26 闭式，两侧绝对误差 < 1.5e-7。
+            assert!((erf(0.0) - 0.0).abs() < 1e-6);
+            assert!((erf(1.0) - 0.842_700_8).abs() < 1.5e-6);
+            assert!((erf(-1.0) + 0.842_700_8).abs() < 1.5e-6);
         },
         |x| 0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
     );
@@ -328,7 +320,8 @@ pub mod silu_f32 {
         Silu,
         SiluF32,
         "silu_f32",
-        { crate::unary::test_support::unary_op_tests!(Silu, forward); },
+        unary_op_tests,
+        {},
         |x| x / (1.0 + (-x).exp())
     );
 }
@@ -346,7 +339,8 @@ pub mod scale_f32 {
         Scale,
         ScaleF32,
         "scale_f32",
-        { crate::unary::test_support::unary_op_tests!(Scale, forward); },
+        unary_op_tests,
+        {},
         |x| ALPHA * x,
         |len| (0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()
     );
