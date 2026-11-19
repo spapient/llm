@@ -2,6 +2,45 @@
 
 use dtype::DType;
 
+/// 轴长度的整数类型：元素数乘积 [`product`] 需要的最小接口。
+///
+/// 只有 `usize` 与 `u64` 两臂：前者是本层 [`Shape`] 的轴宽，后者是权重文件头的轴宽（线上格式
+/// 就是 `u64`）。两臂共用同一条饱和乘积，既不在小位宽目标上因「先换算再乘」提前饱和，也不给
+/// 第二份 `fold(saturating_mul)` 留下自己漂移的机会。
+pub trait Axis: Copy {
+    /// 乘法单位元：空轴序列（标量）的元素个数。
+    const ONE: Self;
+
+    /// 饱和乘法。
+    fn mul_saturated(self, rhs: Self) -> Self;
+}
+
+impl Axis for usize {
+    const ONE: Self = 1;
+
+    fn mul_saturated(self, rhs: Self) -> Self {
+        usize::saturating_mul(self, rhs)
+    }
+}
+
+impl Axis for u64 {
+    const ONE: Self = 1;
+
+    fn mul_saturated(self, rhs: Self) -> Self {
+        u64::saturating_mul(self, rhs)
+    }
+}
+
+/// 各轴长度的饱和乘积；空切片为 1（标量）。
+///
+/// 全仓元素个数的唯一实现：`Shape::numel` 与权重段的 `numel` 都走这里。溢出时**饱和**而不
+/// 回绕——形状可以来自权重文件头这类不受信任的输入，回绕会让一个巨大形状报出很小的元素数
+/// （例如 `[2^32, 2^32]` 得到 0），于是「缓冲够长」的校验被绕过。
+#[must_use]
+pub fn product<A: Axis>(dims: &[A]) -> A {
+    dims.iter().fold(A::ONE, |acc, dim| acc.mul_saturated(*dim))
+}
+
 /// 形状：每个轴的长度。空形状表示标量，`numel()` 为 1。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Shape(Vec<usize>);
@@ -29,14 +68,12 @@ impl Shape {
 
     /// 元素个数：各轴长度之积，空形状为 1。
     ///
-    /// 溢出时**饱和**到 `usize::MAX`，不回绕：形状可以来自权重文件头这类不受信任的输入，
-    /// 回绕会让一个巨大形状报出很小的 `numel`（例如 `[2^32, 2^32]` 得到 0），于是
-    /// [`crate::Tensor::new`] / [`crate::View::new`] 的"缓冲够长"判定被绕过，得到一个形状与缓冲不符的
-    /// 张量。饱和之后下游只会按"缓冲不够"拒绝，而 `checked_mul` 的调用点照旧能看见溢出。
+    /// 溢出的饱和口径由 [`product`] 唯一给出：回绕会让一个巨大形状报出很小的 `numel`（例如
+    /// `[2^32, 2^32]` 得到 0），于是 [`crate::Tensor::new`] / [`crate::View::new`] 的"缓冲够长"判定
+    /// 被绕过，得到一个形状与缓冲不符的张量。饱和之后下游只会按"缓冲不够"拒绝，而
+    /// `checked_mul` 的调用点照旧能看见溢出。
     pub fn numel(&self) -> usize {
-        self.0
-            .iter()
-            .fold(1usize, |acc, dim| acc.saturating_mul(*dim))
+        product(&self.0)
     }
 
     /// 该元素类型下需要的字节数（按位向上取整，`U4` 会小于 `numel`）。
