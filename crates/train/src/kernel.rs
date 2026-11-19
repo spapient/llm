@@ -168,7 +168,7 @@ fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<
 fn decode_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_attention_f32")?;
     let out = output_slice::<f32>("decode_attention_f32", output)?;
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = op::decode::MODEL.shape.1;
     let q_rows = batches("decode_attention_f32", q.len(), d)?;
     let hist = batches("decode_attention_f32", k.len(), d)?;
     op::attention::decode_forward(q, k, v, out, q_rows, hist, d)
@@ -178,7 +178,7 @@ fn decode_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result
 fn decode_flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_flash_attention_f32")?;
     let out = output_slice::<f32>("decode_flash_attention_f32", output)?;
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = op::decode::MODEL.shape.1;
     let q_rows = batches("decode_flash_attention_f32", q.len(), d)?;
     let hist = batches("decode_flash_attention_f32", k.len(), d)?;
     op::attention::decode_flash_forward(q, k, v, out, q_rows, hist, d)

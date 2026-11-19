@@ -636,7 +636,7 @@ fn attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 /// decode 注意力（`decode_attention_f32` / `decode_flash_attention_f32` 共用）：查询行数与历史
 /// 行数解耦，返回 `[dq, dk, dv]`。
 fn decode_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = op::decode::MODEL.shape.1;
     let q_rows = divide(ctx.inputs[0].len(), d, "decode_attention_f32")?;
     let hist = divide(ctx.inputs[1].len(), d, "decode_attention_f32")?;
     let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), q_rows, hist);

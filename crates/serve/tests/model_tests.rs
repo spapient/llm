@@ -1594,7 +1594,7 @@ fn projection_matrix(out: usize, width_in: usize, seed: f32) -> Vec<f32> {
 /// decode 两条注意力内核经登记表跑通：与独立 `op` decode 参考对拍。
 #[test]
 fn decode_attention_kernels_match_the_reference() {
-    let sample = op::decode_attention::sample(1, 8);
+    let sample = op::decode::sample(1, 8);
     let q = sample.f32("q").expect("q").to_vec();
     let k = sample.f32("k").expect("k").to_vec();
     let v = sample.f32("v").expect("v").to_vec();

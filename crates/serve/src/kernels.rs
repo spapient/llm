@@ -210,7 +210,7 @@ fn decode_single(
     out: &mut [f32],
     single: DecodeKernel,
 ) -> Result<()> {
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = op::decode::MODEL.shape.1;
     let heads = q.len() / d;
     let q_rows = q.len() / (heads * d);
     let hist = k.len() / (heads * d);

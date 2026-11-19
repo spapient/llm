@@ -409,12 +409,16 @@ impl<C: Plain> Format for PlainFmt<C> {
     }
 }
 
-/// 带标度逐元素格式的行遍历：分组由 `scales` 长度推出，逐组点积乘一次标度。
-fn forward_scaled<C: Plain>(
+/// 带标度行遍历骨架：分组、标度、权重守卫与行切片统一收口，逐行点积由 `row_dot` 给出。
+///
+/// `E` 是权重元素类型：逐元素稠密格式传 `C::Elem`，不打包的量化格式传 `u8`；两者只差
+/// 逐行点积算术，守卫与遍历只有这一份。
+fn forward_scaled_rows<E>(
     x: &[f32],
-    weights: &[C::Elem],
+    weights: &[E],
     scales: &[f32],
     out: &mut [f32],
+    row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
     let (m, n) = (x.len(), out.len());
     let (groups, group) = scaled_groups(m, n, scales.len())?;
@@ -423,9 +427,19 @@ fn forward_scaled<C: Plain>(
     for (row, value) in out.iter_mut().enumerate() {
         let w_row = &weights[row * m..][..m];
         let s_row = &scales[row * groups..][..groups];
-        *value = scaled_dot::<C>(w_row, x, s_row, group);
+        *value = row_dot(w_row, x, s_row, group);
     }
     Ok(())
+}
+
+/// 带标度逐元素格式的行遍历：点积固定为 [`scaled_dot`]，守卫与切片走 [`forward_scaled_rows`]。
+fn forward_scaled<C: Plain>(
+    x: &[f32],
+    weights: &[C::Elem],
+    scales: &[f32],
+    out: &mut [f32],
+) -> diagnostic::Result<()> {
+    forward_scaled_rows(x, weights, scales, out, scaled_dot::<C>)
 }
 
 /// 无标度逐元素格式的行遍历：换错算子（给了标度）必须报错，而不是静默忽略。
@@ -712,17 +726,7 @@ pub mod packed {
         out: &mut [f32],
         row_dot: impl Fn(&[u8], &[f32], &[f32], usize) -> f32,
     ) -> diagnostic::Result<()> {
-        let m = x.len();
-        let n = out.len();
-        let (groups, group) = scaled_groups(m, n, scales.len())?;
-        finite_scales(scales, groups)?;
-        required_weights(weights.len(), n, m)?;
-        for (row, value) in out.iter_mut().enumerate() {
-            let w_row = &weights[row * m..][..m];
-            let s_row = &scales[row * groups..][..groups];
-            *value = row_dot(w_row, x, s_row, group);
-        }
-        Ok(())
+        super::forward_scaled_rows(x, weights, scales, out, row_dot)
     }
 }
 
