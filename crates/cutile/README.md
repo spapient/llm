@@ -272,7 +272,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 ```toml
 [op]
 name     = "attn_decode"
-skeleton = "attention"        # 骨架闭集：elementwise | reduce | gemm | attention | scan
+skeleton = "elementwise"       # 骨架闭集：elementwise | reduce | gemm | scan
 summary  = "分页 KV 的单 token 解码注意力（GQA）"
 
 [axes]                        # 有限枚举，编译期展开；乘积 ≤ 8 个变体，超出即拒绝
@@ -328,7 +328,7 @@ mma_share = 0.40
 - **调用点是签名的第二半**：模板里 `@原语(key: value)` 的命名参数会原样拼进片段文本，说的就是"这次生成用的是哪条签名"。若 `key` 属于能力属性闭集（`sat` / `op` / `axis` / `kind` / `accuracy` / `group` / `lanes` / `src` / `dst` / `stages` / `exec`），它必须在该变体的 `needs` / `extra_needs` 里声明且取值被允许，否则设备会按声明的值被验证、代码却按模板的值生成；闭集之外的命名参数（如 `along:`）是片段级提示，协商不检查它们，留给片段。判据在装载期（`op::decl::OpDecl::check_call_arguments`），错误带变体名、模板行号与原语名。
 - `axes` 的笛卡尔积是**tile 候选**（≤ 8），`[[variants]]` 是**降级链**（≤ 8），两者不是同一维度：前者决定一次编译内的分块，后者决定用哪套调度。P0 只取笛卡尔积的**第一个**组合（轴取值的顺序即优先级，与降级链同一口径）；在候选之间比较需要占用率/分块收益这类可推导常数，P0 的档案里没有，所以不做（§9）。
 - 变体数上限 8；`axes` 乘积超过 8 直接拒绝，报错时给出建议剪掉的轴。
-- 为什么是 TOML 而不是 `#[op]` 过程宏：声明要可 diff、可被 `verify` 单独校验、不引入 `syn`/`quote` 依赖（见 §18 D3）。Rust 只在**新增骨架**时才写——骨架闭集只有 5 个，写满即止。
+- 为什么是 TOML 而不是 `#[op]` 过程宏：声明要可 diff、可被 `verify` 单独校验、不引入 `syn`/`quote` 依赖（见 §18 D3）。Rust 只在**新增骨架**时才写——骨架闭集只有 4 个，写满即止。
 
 ### 4.2 模板（`crates/op/ops/attn_decode.k`）
 
@@ -1155,7 +1155,7 @@ wc -l crates/device/c/*                                                         
 |---|---|
 | 算子（op） | 声明层的最小单位，对应 `crates/op/ops/<name>.toml` |
 | 档案（archive） | 档案层的最小单位，对应 `crates/prof/devices/<name>.toml`：一台设备的能力与证据 |
-| 骨架（skeleton） | 算子的结构类别，闭集 5 个；决定用哪个模板基座 |
+| 骨架（skeleton） | 算子的结构类别，闭集 4 个；决定用哪个模板基座 |
 | 原语（prim） | 模板唯一可调用的指令级操作，闭集 16 个 |
 | 片段（fragment） | 某原语在某设备上的实现，`crates/prim/<vendor>/<prim>.<ext>` |
 | 变体（variant） | 轴取值 + 调度 + 布局的组合，每算子 ≤ 8 |

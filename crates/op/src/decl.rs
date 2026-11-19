@@ -26,8 +26,6 @@ pub enum Skeleton {
     Reduce,
     /// 矩阵乘。
     Gemm,
-    /// 注意力。
-    Attention,
     /// 扫描。
     Scan,
 }
@@ -38,7 +36,6 @@ impl prof::atom::Closed for Skeleton {
         Self::Elementwise,
         Self::Reduce,
         Self::Gemm,
-        Self::Attention,
         Self::Scan,
     ];
 
@@ -48,7 +45,6 @@ impl prof::atom::Closed for Skeleton {
             Self::Elementwise => "elementwise",
             Self::Reduce => "reduce",
             Self::Gemm => "gemm",
-            Self::Attention => "attention",
             Self::Scan => "scan",
         }
     }

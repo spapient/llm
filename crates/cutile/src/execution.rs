@@ -291,7 +291,6 @@ fn lower(run: &Run<'_>, prepared: &Prepared, m: usize, n: usize) -> diagnostic::
         Skeleton::Reduce => reduce(op, run, prepared, m, n),
         Skeleton::Elementwise => elementwise(op, run, prepared, m, n),
         Skeleton::Gemm => gemm(op, run, prepared, m, n),
-        Skeleton::Attention => serial(op, run, prepared, m, n),
         // 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
         // 收敛到单线程串行（grid = [1,1,1]），与 Reduce 共用同一条 lowering。
         Skeleton::Scan => serial(op, run, prepared, m, n),
