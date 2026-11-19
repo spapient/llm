@@ -450,7 +450,6 @@ name = "llm-data"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
- "llm-tensor",
 ]
 
 [[package]]

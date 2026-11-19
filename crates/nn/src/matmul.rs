@@ -6,14 +6,13 @@
 //! 第二份流量常数；收缩轴宽度属于算子，不由层猜。
 
 use diagnostic::{Code, Error, Result};
-use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};
+use crate::{Bounds, BoundsResult, Contract, spec_accessors};
 
 /// 矩阵乘层：结果形状 `[rows, cols]`，收缩轴由算子固定。
+#[crate::spec(name = $name, out = [$rows, $cols], ops = [$op])]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatMul {
-    spec: ContractSpec,
     rows: usize,
     cols: usize,
 }
@@ -27,7 +26,7 @@ impl MatMul {
     /// # Errors
     ///
     /// `rows` / `cols` 任一为零（[`Code::Invalid`]）；算子未在 `op` 注册或没有语义表
-    /// （[`ContractSpec::new`] 上报）。
+    /// （[`crate::ContractSpec::new`] 上报）。
     pub fn new(name: impl Into<String>, rows: usize, cols: usize) -> Result<Self> {
         if rows == 0 || cols == 0 {
             return Err(Error::new(
@@ -36,12 +35,7 @@ impl MatMul {
             )
             .with("nn::MatMul::new"));
         }
-        let spec = ContractSpec::new_with_role(
-            name,
-            Shape::new([rows, cols]),
-            vec![Self::OP.to_string()],
-            ParamRole::Trainable,
-        )?;
+        let spec = __layer_spec_MatMul!(name, rows, cols, Self::OP)?;
         Ok(Self { spec, rows, cols })
     }
 

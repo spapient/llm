@@ -65,9 +65,10 @@ mod lm_head {
 
     /// 固定形状的输出头：`[4096]` 输出、输入宽度 4096，权重编码由 `gemv_i4` 承担。
     ///
-    /// 与 [`crate::Linear`] 的分工：宽度在编译期就定下来的层用注解（声明即契约），宽度要按模型
-    /// 配置计算出来的层用构造函数（`Linear::new` 里做校验）。两者走同一条 `ContractSpec` 校验路径，
-    /// 也走同一条下界路径：`in` 给了输入宽度，生成的 `bounds` 就把 `(in, out)` 交给算子语义表。
+    /// 与 [`crate::Linear`] 的分工：宽度在编译期就定下来的层用字面量注解（声明即契约），宽度要按
+    /// 模型配置计算出来的层用运行时形态（`$参数`，`spec` 字段与构造样板由注解生成）；两者都走同一
+    /// 条 `ContractSpec` 校验路径，也走同一条下界路径：`in` 给了输入宽度，生成的 `bounds` 就把
+    /// `(in, out)` 交给算子语义表。
     #[crate::spec(name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"])]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct LmHead;

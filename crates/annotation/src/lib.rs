@@ -68,6 +68,22 @@
 //! 生成的东西是确定的三块：原样保留的被标注项、一份 `impl nn::Contract`、一个
 //! `#[cfg(test)]` 校验模块。没有隐藏状态，也没有运行期注册表——注册表会是第二个事实源。
 //!
+//! # 运行时形态
+//!
+//! 名字或宽度要由构造参数算出的层，把每个值写成 `$构造参数`：
+//!
+//! ```ignore
+//! #[nn::spec(name = $name, out = [$tokens, $dim], ops = [$op], role = $role)]
+//! pub struct Embedding {
+//!     // `spec: ::nn::ContractSpec` 由注解注入（字段体第一个字段）
+//! }
+//! ```
+//!
+//! 注解注入私有的 `spec` 字段，并生成构造宏 `__layer_spec_Embedding!(name, tokens, dim, op, role)`；
+//! 构造函数写 `spec: __layer_spec_Embedding!(...)?`，访问器仍由 `spec_accessors!` 读取 `self.spec`。
+//! 构造宏与类型同模块（`macro_rules!` 的文本作用域），构造函数必须写在注解所在的模块里。
+//! 运行期值无法在编译期核对，因此这种形态不生成校验测试；`in` 也不属于它——下界由层自己实现。
+//!
 //! # 错误
 //!
 //! 未知键、重复键、缺少必填键、非字面量、带转义序列的字符串、零宽轴、空算子集、泛型参数、

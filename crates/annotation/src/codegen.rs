@@ -501,6 +501,53 @@ mod tests {
         syntax::parse(&lex(text)).expect("合法注解")
     }
 
+    fn runtime_declaration(text: &str) -> RuntimeDecl {
+        syntax::parse_runtime(&lex(text)).expect("合法运行时注解")
+    }
+
+    #[test]
+    fn a_runtime_declaration_generates_a_constructor_macro() {
+        let code = render_runtime(
+            &runtime_declaration(
+                r#"name = $name, out = [$tokens, $dim], ops = [$op], role = $role"#,
+            ),
+            "Embedding",
+        );
+        assert!(
+            code.contains("macro_rules! __layer_spec_Embedding"),
+            "{code}"
+        );
+        assert!(
+            code.contains("($name:expr, $tokens:expr, $dim:expr, $op:expr, $role:expr)"),
+            "{code}"
+        );
+        assert!(
+            code.contains("::nn::ContractSpec::new_with_role("),
+            "{code}"
+        );
+        assert!(code.contains("::nn::Shape::new([$tokens, $dim])"), "{code}");
+        assert!(code.contains("::std::vec![$op.to_string()]"), "{code}");
+        assert!(code.contains("$role,"), "{code}");
+    }
+
+    #[test]
+    fn a_runtime_declaration_dedupes_axes_and_defaults_the_role() {
+        let code = render_runtime(
+            &runtime_declaration(r#"name = $name, out = [$dim, $dim], ops = [$op]"#),
+            "Square",
+        );
+        assert!(
+            code.contains("($name:expr, $dim:expr, $op:expr)"),
+            "同一轴宽只占一个宏参数：{code}"
+        );
+        assert!(code.contains("::nn::Shape::new([$dim, $dim])"), "{code}");
+        assert!(
+            code.contains("::nn::ContractSpec::new("),
+            "没有角色时走 `new`，与手写构造同一路径：{code}"
+        );
+        assert!(!code.contains("$role"), "{code}");
+    }
+
     #[test]
     fn the_generated_code_implements_the_contract_of_the_annotated_type() {
         let code = render(

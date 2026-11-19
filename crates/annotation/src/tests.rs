@@ -35,8 +35,8 @@ impl Streams for Text {
     }
 
     fn insert_field(self, field: &str) -> Self {
-        match self.0.rfind('}') {
-            Some(at) => Self(format!("{} {field} {}", &self.0[..at], &self.0[at..])),
+        match self.0.find('{') {
+            Some(at) => Self(format!("{} {field}{}", &self.0[..=at], &self.0[at + 1..])),
             None => self,
         }
     }

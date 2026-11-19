@@ -5,14 +5,13 @@
 //! 整张读一遍——常驻表的流量口径属于算子代价模型，这里不写第二份公式。
 
 use diagnostic::{Code, Error, Result};
-use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};
+use crate::{Bounds, BoundsResult, Contract, ParamRole, spec_accessors};
 
 /// 嵌入查表层。
+#[crate::spec(name = $name, out = [$tokens, $dim], ops = [$op], role = $role)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Embedding {
-    spec: ContractSpec,
     vocab: usize,
     dim: usize,
     tokens: usize,
@@ -27,7 +26,7 @@ impl Embedding {
     /// # Errors
     ///
     /// `vocab` / `dim` / `tokens` 任一为零（[`Code::Invalid`]）；算子未在 `op` 注册或没有
-    /// 语义表（[`ContractSpec::new`] 上报）。
+    /// 语义表（[`crate::ContractSpec::new`] 上报）。
     pub fn new(name: impl Into<String>, vocab: usize, dim: usize, tokens: usize) -> Result<Self> {
         for (label, value) in [("vocab", vocab), ("dim", dim), ("tokens", tokens)] {
             if value == 0 {
@@ -38,14 +37,8 @@ impl Embedding {
                 .with("nn::Embedding::new"));
             }
         }
-        let spec = ContractSpec::new_with_role(
-            name,
-            Shape::new([tokens, dim]),
-            vec![Self::OP.to_string()],
-            ParamRole::Embedding,
-        )?;
         Ok(Self {
-            spec,
+            spec: __layer_spec_Embedding!(name, tokens, dim, Self::OP, ParamRole::Embedding)?,
             vocab,
             dim,
             tokens,

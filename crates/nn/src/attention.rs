@@ -5,9 +5,8 @@
 //! 布局不同，下界都按投影口径交给算子语义表推出。
 
 use diagnostic::{Code, Error, Result};
-use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, spec_accessors};
+use crate::{Bounds, BoundsResult, Contract, spec_accessors};
 
 /// 注意力实现算法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,9 +28,9 @@ impl AttentionAlgo {
 }
 
 /// 注意力层。
+#[crate::spec(name = $name, out = [$seq, $head_dim], ops = [$op])]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attention {
-    spec: ContractSpec,
     seq: usize,
     head_dim: usize,
     algo: AttentionAlgo,
@@ -48,7 +47,7 @@ impl Attention {
     /// # Errors
     ///
     /// `seq` / `head_dim` 任一为零（[`Code::Invalid`]）；算子未在 `op` 注册或没有语义表
-    /// （[`ContractSpec::new`] 上报）。
+    /// （[`crate::ContractSpec::new`] 上报）。
     pub fn new(
         name: impl Into<String>,
         seq: usize,
@@ -64,13 +63,8 @@ impl Attention {
                 .with("nn::Attention::new"));
             }
         }
-        let spec = ContractSpec::new(
-            name,
-            Shape::new([seq, head_dim]),
-            vec![algo.operator().to_string()],
-        )?;
         Ok(Self {
-            spec,
+            spec: __layer_spec_Attention!(name, seq, head_dim, algo.operator())?,
             seq,
             head_dim,
             algo,

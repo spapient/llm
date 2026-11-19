@@ -91,6 +91,14 @@
 
 ### Changed
 
+- **`data` 做减法：删掉零消费者的训练/验证集切分与批形状访问器，`data → tensor` 这条依赖边整条消失**。
+  `Split` 除自身的四条单测与两条 doctest 外全仓无人使用（`train` 只用 `Dataset`/`Chunks`/`Batch`），
+  `Batch::shape()` 同样只有测试与 doctest 调用，而它是 `tensor` 依赖的唯一用途，删它就同时把这条边删了。
+  现在 `crates/data` 只剩 `Batch` / `Dataset` / `Chunks` 三件套：652 → 485 行、依赖从 2 条降到 1 条，
+  切分改由调用方按行区间自行选择（`Chunks` 只认 `(rows, cols)` 几何，不替调用方决定切多少行）。
+  `docs/ARCHITECTURE.md` 的边总数 113 → 112，`data` 行与所有权表同步。**实测**：`cargo test -p llm-data`
+  12 条 + 3 条 doctest、`llm-train` 163 条、架构门 8 条全绿，`fmt --check` 与 `clippy -D warnings` 通过。
+
 - **L7 入口内聚拆分与文档链接收口（对外接口契约不变）**。`llm` 根包 `main.rs` 837 → 78 行：
   `status` / `run` / `train` 命令的装配、输入解析与汇报分别归位到根包内同层子模块
   （`status.rs` / `run.rs` / `train.rs`），`main.rs` 只留入口、分派与退出码；公共命令行行为与

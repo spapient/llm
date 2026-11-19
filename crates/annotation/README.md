@@ -9,7 +9,11 @@
 | 注解 | 键 | 生成的东西 | 绑定的契约 |
 |---|---|---|---|
 | `#[spec(..)]` | `name`、`out`、可选 `in`、`ops` | 一份 `impl ::nn::Contract`（含懒构造的 `ContractSpec`）+ 一条校验测试 | `nn::Contract` / `nn::ContractSpec` |
+| `#[spec(..)]`（运行时形态） | 每个值写成 `$构造参数`；可选 `role` | 注入私有 `spec` 字段 + 构造宏 `__layer_spec_<类型>!(...)`；不生成校验测试 | 同上 |
 | `#[model(..)]` | `name`、`shape`、`dtype`、可选 `skeleton` | `MODEL` 常量、粒度/形状编译期断言 + 一条注册表对拍测试 | `op::model::Model` / `gemv::Format` |
+
+运行时形态用于名字或宽度由构造参数算出的层：注解只能标命名字段 `struct`，`in` 不在它的键表里
+（运行期宽度无法交给静态的 `in`，下界由层自己实现）。
 
 ## 结构
 
@@ -18,7 +22,7 @@
 
 | 层 | 文件 | 职责 | 可测性 |
 |---|---|---|---|
-| 文法 | `src/syntax.rs` | token 模型、键表驱动的解析、全部错误路径 | 纯函数，不接触 `proc_macro` |
+| 文法 | `src/syntax.rs`（共享键机器）、`src/syntax/runtime.rs`（运行时形态） | token 模型、键表驱动的解析、全部错误路径 | 纯函数，不接触 `proc_macro` |
 | 渲染 | `src/codegen.rs` | 声明 → `impl` / 常量 / 校验测试的文本拼接 | 纯字符串拼接 |
 | 适配 | `src/lib.rs` | `TokenStream` ↔ token 模型、错误映射回 span；`Streams` 依赖倒置 | 字符串替身实现同一 trait |
 | 夹具 | `src/fixture.rs`（`cfg(test)`） | 注解文本 → token 模型的最小词法器 | 仅供单元测试 |
