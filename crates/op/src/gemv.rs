@@ -755,6 +755,86 @@ pub(crate) mod packed_test_support {
         };
     }
     pub(crate) use packed_gemv_tests;
+
+    /// 把 `bits` 位有符号码按低 `bits` 位落在字节内：`zero = 2^(bits-1)` 平移、低 `bits` 位落字节。
+    pub fn pack(bits: usize, values: &[i8]) -> Vec<u8> {
+        let cpb = 8 / bits;
+        let zero = 1 << (bits - 1);
+        let mask = (1u8 << bits) - 1;
+        values
+            .chunks(cpb)
+            .map(|group| {
+                (0..cpb).fold(0u8, |byte, slot| {
+                    let code = (group.get(slot).copied().unwrap_or(0) + zero) as u8 & mask;
+                    byte | (code << (slot * bits))
+                })
+            })
+            .collect()
+    }
+
+    /// 生成 i2/i4 打包 GEMV 共有、数值可由位宽推导的五则测试：
+    /// 解包点积、非有限标度、大/小形状代价、模板签名。
+    macro_rules! packed_gemv_config_tests {
+        ($ty:ty, $op:literal, $bits:expr, $w_note:literal, $dequant_vals:expr, $dequant_expect:expr) => {
+            #[test]
+            fn reference_dequantizes_and_dots() {
+                let w = pack($bits, &$dequant_vals);
+                let sample = with(4, 1, vec![1.0; 4], w, vec![0.5]);
+                let y = crate::gemv::reference::<$ty>(&sample).expect("参考可算");
+                assert_eq!(y.len(), 1);
+                assert!((y[0] - $dequant_expect).abs() < 1e-6, "解包点积 = {}", y[0]);
+            }
+
+            #[test]
+            fn gemv_rejects_non_finite_scales() {
+                let m = 4;
+                let w = vec![0u8; m / (8 / $bits)];
+                let x = vec![1.0; m];
+                for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                    let error = forward(&x, &w, &[bad], &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
+                    assert_eq!(error.code(), diagnostic::Code::Invalid);
+                }
+            }
+
+            #[test]
+            fn cost_comes_from_the_declared_expression_without_hand_written_constants() {
+                let cost = at::<$ty>(4096, 4096).expect("可估");
+                assert_eq!(cost.flops, 2.0 * 4096.0 * 4096.0);
+                assert_eq!(
+                    cost.read,
+                    4096 * 4096 / (8 / $bits) + 4096 * 4 + 4096 * 128 * 4,
+                    $w_note
+                );
+                assert_eq!(cost.write, 4096 * 4, "写方向只有输出那一份");
+                assert_eq!(
+                    cost.bytes(),
+                    4096 * 4096 / (8 / $bits) + 4096 * 4 + 4096 * 128 * 4 + 4096 * 4,
+                    "合计与改造前逐字节相同"
+                );
+            }
+
+            #[test]
+            fn a_small_shape_pins_every_term_so_a_factor_cannot_hide() {
+                let cost = at::<$ty>(64, 4).expect("可估");
+                assert_eq!(cost.flops, 2.0 * 64.0 * 4.0);
+                assert_eq!(cost.read, 256 / (8 / $bits) + 256 + 32);
+                assert_eq!(cost.write, 16);
+                assert_eq!(cost.bytes(), 256 / (8 / $bits) + 256 + 32 + 16);
+            }
+
+            #[test]
+            fn call_arguments_follow_the_template_signature() {
+                let signature = crate::sig::Signature::parse($op, include_str!("../ops/gemv_packed.k"))
+                    .expect("签名可解析");
+                assert_eq!(
+                    signature.call_args(&crate::gemv::sample::<$ty>(64, 4)).expect("实参"),
+                    "x, w, scales, y, 64, 4, 32"
+                );
+                assert_eq!(signature.output(), Some("y"));
+            }
+        };
+    }
+    pub(crate) use packed_gemv_config_tests;
 }
 
 #[cfg(test)]
