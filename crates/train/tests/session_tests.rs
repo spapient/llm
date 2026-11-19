@@ -1,9 +1,8 @@
 use super::*;
 
 use crate::snapshot::{Facts, GradAccum, Moments, SlotMoments, Snapshot, Ties};
-use crate::{Data, Reference, Sgd};
+use crate::{Chunks, Data, Dataset, Reference, Sgd};
 use autograd::{Sizes, Store, Tape, Var};
-use data::{Chunks, Dataset};
 use diagnostic::{Code, Result};
 use nn::ParamRole;
 use tensor::{DType, Shape};

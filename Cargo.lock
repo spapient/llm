@@ -446,13 +446,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-data"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
-]
-
-[[package]]
 name = "llm-diagnostic"
 version = "0.1.0"
 dependencies = [
@@ -615,7 +608,6 @@ name = "llm-train"
 version = "0.1.0"
 dependencies = [
  "llm-autograd",
- "llm-data",
  "llm-diagnostic",
  "llm-nn",
  "llm-op",

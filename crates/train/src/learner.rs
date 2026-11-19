@@ -13,9 +13,9 @@
 use diagnostic::{Code, Error, Result};
 
 use autograd::Var;
-use data::Dataset;
 use shard::Collective;
 
+use crate::Dataset;
 use crate::distill::Distill;
 use crate::metrics::{MetricPoint, MetricsBoard};
 use crate::objective::{Outcome, classify, distill, grpo};
@@ -335,10 +335,9 @@ fn next_token_labels(tokens: &[u32], rows: usize, cols: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Data, Distill, ForwardOut, Grpo, Learner, Metric, Reference, Session, Sgd, TrainConfig,
+        Chunks, Data, Distill, ForwardOut, Grpo, Learner, Metric, Reference, Session, Sgd, TrainConfig,
     };
     use autograd::{Sizes, Store, Tape, Var};
-    use data::Chunks;
     use diagnostic::{Code, Error, Result};
     use nn::ParamRole;
     use tensor::{DType, Shape};

@@ -91,6 +91,15 @@
 
 ### Changed
 
+- **`data` 第三轮减法：删掉 `Chunks` 上与 `Dataset` 一一对应的三个固有访问器，计数只在 trait 上定义一次**。
+  `Chunks::{cols, batches, remaining_batches}` 三个固有方法此前只是 `Dataset` 实现的转发目标：trait 方法
+  调固有方法、固有方法读字段，同一语义两份定义，而全仓没有任何调用方走固有那一层（`train` 经
+  `&mut dyn Dataset` 取批，其余调用点都在本文件的测试里）。现在 trait 实现直接读字段，固有方法区只剩
+  `Chunks::new`，`Iterator::size_hint` 经 `Dataset::remaining_batches` 取值，「还剩几批」仍只有一个来源。
+  473 → 457 行。**实测**：`cargo test -p llm-data` 12 条 + 3 条 doctest、`llm-train` 163 条、
+  `clippy -D warnings`、`fmt --check` 与架构门 8 条通过。路线 C 到此收口：`data` 只剩 `Batch` / `Dataset` /
+  `Chunks` 三件套、单依赖、单消费者，成员边界按 ADR 0038 继续不动。
+
 - **`data` 第二轮减法：两个构造函数共用一份几何校验，删掉三个零消费者的同义访问器**。
   `Batch::new` 与 `Chunks::new` 此前各写一套「行列非零、乘积不溢出」校验，同一对非法行列在两条路径上
   措辞不同；现在共用文件级 `stride(rows, cols, site)`，三种失败（行数为 0 / 列宽为 0 / 乘积溢出）
