@@ -196,6 +196,33 @@ fn the_model_renderer_binds_the_constant_to_the_annotated_alias() {
     );
 }
 
+/// `const = ".."` 让同模块里的第二个算子拿一个不撞名的语义常量与测试模块。
+#[test]
+fn a_named_const_gives_two_models_distinct_names_in_one_module() {
+    let code = render_model(
+        &model(
+            r#"name = "flash_attention_f32", shape = [8, 8], dtype = "f32", skeleton = "attention", const = "FLASH_MODEL""#,
+        ),
+        "FlashAttention",
+    );
+    assert!(
+        code.contains("pub const FLASH_MODEL: ::llm_op::model::Model"),
+        "{code}"
+    );
+    assert!(
+        !code.contains("pub const MODEL:"),
+        "写了 const 键就不该再生成默认名：{code}"
+    );
+    assert!(
+        code.contains("mod __model_check_flash_model {"),
+        "检查模块要用 const 名派生，避免同模块两算子撞名：{code}"
+    );
+    assert!(
+        code.contains("super::FLASH_MODEL"),
+        "检查体引用的语义常量要与声明名一致：{code}"
+    );
+}
+
 /// 闭集里的每个骨架都必须有生成分支：加一个骨架名却忘了加分支，会在用户 crate 里变成
 /// 一条 `compile_error!`，而这条测试让它先在注解层自己红掉。
 #[test]

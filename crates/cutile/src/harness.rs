@@ -549,12 +549,9 @@ pub fn metal_loop_kernel(
         )
         .with("cutile::harness::metal_loop_kernel"));
     }
-    const AXES: [&str; 3] = ["x", "y", "z"];
     let mut body = msl_address_space(kernel_source);
     body = thread_param(&body, &signature.kernel())?;
-    for (dim, (thread, scalar)) in grid.dims.iter().enumerate() {
-        body = bind_grid_loop(&body, thread, scalar, AXES[dim])?;
-    }
+    body = bind_grid_loops(body, grid)?;
     let call = format!("{}, tid", serial_args(signature.params(), sample)?);
     let buffers = signature
         .params()
@@ -574,6 +571,16 @@ pub fn metal_loop_kernel(
         "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
         signature.kernel(),
     ))
+}
+
+/// 按 `[grid].dims` 依次给内部内核函数绑定 `tid.x/y/z` 的循环头。
+fn bind_grid_loops(body: String, grid: &Grid) -> diagnostic::Result<String> {
+    const AXES: [&str; 3] = ["x", "y", "z"];
+    let mut out = body;
+    for (dim, (thread, scalar)) in grid.dims.iter().enumerate() {
+        out = bind_grid_loop(&out, thread, scalar, AXES[dim])?;
+    }
+    Ok(out)
 }
 
 /// 给内部内核函数追加 `uint3 tid` 形参：`void {kernel}(...) {` → `void {kernel}(..., uint3 tid) {`，

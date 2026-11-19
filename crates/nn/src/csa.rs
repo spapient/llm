@@ -65,20 +65,24 @@ pub fn dsa_topk<S: Scalar>(scores: &mut [S], rows: usize, cols: usize, k: usize)
 pub fn dense_softmax<S: Scalar>(scores: &mut [S], rows: usize, cols: usize) {
     debug_assert_eq!(scores.len(), rows * cols);
     for r in 0..rows {
-        let row = &mut scores[r * cols..(r + 1) * cols];
-        let max = row
-            .iter()
-            .copied()
-            .fold(S::NEG_INFINITY, |a, b| if b > a { b } else { a });
-        let mut sum = S::ZERO;
+        softmax_row(&mut scores[r * cols..(r + 1) * cols]);
+    }
+}
+
+/// 单行 softmax：先减最大值再指数，和为零时保持原值（全 `-inf` 的退化行）。
+fn softmax_row<S: Scalar>(row: &mut [S]) {
+    let max = row
+        .iter()
+        .copied()
+        .fold(S::NEG_INFINITY, |a, b| if b > a { b } else { a });
+    let mut sum = S::ZERO;
+    for v in row.iter_mut() {
+        *v = v.sub(max).exp();
+        sum = sum.add(*v);
+    }
+    if sum > S::ZERO {
         for v in row.iter_mut() {
-            *v = v.sub(max).exp();
-            sum = sum.add(*v);
-        }
-        if sum > S::ZERO {
-            for v in row.iter_mut() {
-                *v = v.div(sum);
-            }
+            *v = v.div(sum);
         }
     }
 }
@@ -88,29 +92,37 @@ pub fn dense_softmax<S: Scalar>(scores: &mut [S], rows: usize, cols: usize) {
 pub fn sinkhorn<S: Scalar>(mat: &mut [S], n: usize, iters: usize, tol: S) -> bool {
     debug_assert_eq!(mat.len(), n * n);
     for _ in 0..iters {
-        // 行归一。
-        for r in 0..n {
-            let sum = mat[r * n..(r + 1) * n]
-                .iter()
-                .copied()
-                .fold(S::ZERO, |acc, v| acc.add(v));
-            if sum > S::ZERO {
-                for v in &mut mat[r * n..(r + 1) * n] {
-                    *v = v.div(sum);
-                }
-            }
-        }
-        // 列归一。
-        for c in 0..n {
-            let sum = (0..n).fold(S::ZERO, |acc, r| acc.add(mat[r * n + c]));
-            if sum > S::ZERO {
-                for r in 0..n {
-                    mat[r * n + c] = mat[r * n + c].div(sum);
-                }
+        normalize_rows(mat, n);
+        normalize_cols(mat, n);
+    }
+    is_doubly_stochastic(mat, n, tol)
+}
+
+/// 行归一：每行除以行和（行和为零时保持原值）。
+fn normalize_rows<S: Scalar>(mat: &mut [S], n: usize) {
+    for r in 0..n {
+        let sum = mat[r * n..(r + 1) * n]
+            .iter()
+            .copied()
+            .fold(S::ZERO, |acc, v| acc.add(v));
+        if sum > S::ZERO {
+            for v in &mut mat[r * n..(r + 1) * n] {
+                *v = v.div(sum);
             }
         }
     }
-    is_doubly_stochastic(mat, n, tol)
+}
+
+/// 列归一：每列除以列和（列和为零时保持原值）。
+fn normalize_cols<S: Scalar>(mat: &mut [S], n: usize) {
+    for c in 0..n {
+        let sum = (0..n).fold(S::ZERO, |acc, r| acc.add(mat[r * n + c]));
+        if sum > S::ZERO {
+            for r in 0..n {
+                mat[r * n + c] = mat[r * n + c].div(sum);
+            }
+        }
+    }
 }
 
 /// 是否（近似）双随机：行和、列和都 ≈ 1。

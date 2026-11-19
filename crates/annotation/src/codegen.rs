@@ -335,7 +335,10 @@ fn render_model_check(code: &mut String, declaration: &ModelDecl) {
     let name = literal(&declaration.name);
     let dtype_name = literal(&declaration.dtype);
     let model = &declaration.const_name;
-    let check = format!("__model_check_{}", declaration.const_name.to_ascii_lowercase());
+    let check = format!(
+        "__model_check_{}",
+        declaration.const_name.to_ascii_lowercase()
+    );
     code.push_str("#[cfg(test)]\n");
     code.push_str(&format!("mod {check} {{\n"));
     code.push_str("    #[test]\n");
@@ -376,9 +379,7 @@ fn render_model_check(code: &mut String, declaration: &ModelDecl) {
     code.push_str(&format!(
         "            ::llm_op::model::DType::parse_name({dtype_name}),\n"
     ));
-    code.push_str(&format!(
-        "            Some(super::{model}.dtype),\n",
-    ));
+    code.push_str(&format!("            Some(super::{model}.dtype),\n",));
     code.push_str(
         "            \"注解里的 `dtype` 必须解析成 `MODEL` 用的那个变体（词汇表是唯一名字源）\",\n",
     );

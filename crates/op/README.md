@@ -119,7 +119,7 @@ crates/op/
 | 逐元素 | `add_f32` / `mul_f32` / `scale_f32` / `residual_add_f32` | `Binary` / `Unary` trait，轴集合是 `AXES` |
 | 归约 | `reduce_sum_f32` / `reduce_max_f32` | `Reduce` trait |
 | 形态 | `rmsnorm_f32` / `softmax_f32` / `rope_f32` / `silu_f32` / `gelu_f32` / `embed_f32` | 各自 `<name>.rs` 的 `#[model]` 语义 |
-| 注意力 | `attention_f32` / `flash_attention_f32` | 后者单独成模块，只因 `#[model]` 每个模块固定生成一个 `MODEL` |
+| 注意力 | `attention_f32` / `flash_attention_f32` | 同模块两算子，`#[model(const = "FLASH_MODEL")]` 分名；decode 两条同理 |
 | 解量化 | `dequant_i4` / `dequant_i8` | 打包粒度 2 / 1，各占一个模块 |
 
 GEMV 那三条**只差数据**：同一副骨架、同一批 CPU 原语（9 条 L2 见证）、同一条 lowering 流水线；

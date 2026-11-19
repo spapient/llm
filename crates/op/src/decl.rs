@@ -324,27 +324,39 @@ fn grid_dims(section: &Table) -> diagnostic::Result<Vec<(String, String)>> {
     let Value::Array(items) = value else {
         return Err(field("grid.dims", "必须是数组"));
     };
-    let mut dims = Vec::with_capacity(items.len());
-    for (index, item) in items.iter().enumerate() {
-        let path = format!("grid.dims[{index}]");
-        let Value::Str(text) = item else {
-            return Err(field(&path, "必须是 `线程:标量` 字符串"));
-        };
-        let Some((thread, scalar)) = text.split_once(':') else {
-            return Err(field(&path, "必须是 `线程:标量` 字符串"));
-        };
-        if thread.is_empty() || scalar.is_empty() {
-            return Err(field(&path, "线程名与标量名都不能为空"));
-        }
-        dims.push((thread.to_string(), scalar.to_string()));
+    let dims = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| grid_item(index, item))
+        .collect::<diagnostic::Result<Vec<_>>>()?;
+    check_grid_dims(&dims)?;
+    Ok(dims)
+}
+
+/// 解析一维：`"线程:标量"`，两个名字都不能为空。
+fn grid_item(index: usize, item: &Value) -> diagnostic::Result<(String, String)> {
+    let path = format!("grid.dims[{index}]");
+    let Value::Str(text) = item else {
+        return Err(field(&path, "必须是 `线程:标量` 字符串"));
+    };
+    let Some((thread, scalar)) = text.split_once(':') else {
+        return Err(field(&path, "必须是 `线程:标量` 字符串"));
+    };
+    if thread.is_empty() || scalar.is_empty() {
+        return Err(field(&path, "线程名与标量名都不能为空"));
     }
+    Ok((thread.to_string(), scalar.to_string()))
+}
+
+/// 网格维数约束：至少一维、至多三维（Metal 网格上限）。
+fn check_grid_dims(dims: &[(String, String)]) -> diagnostic::Result<()> {
     if dims.is_empty() {
         return Err(field("grid.dims", "至少一维"));
     }
     if dims.len() > 3 {
         return Err(field("grid.dims", "至多三维（Metal 网格上限）"));
     }
-    Ok(dims)
+    Ok(())
 }
 
 /// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串，
@@ -504,8 +516,7 @@ impl OpDecl {
         let (name, skeleton, summary) = head(table)?;
         // 返回顺序：轴、需求、布局、变体链。
         let (axes, needs, layouts, variants) = sections(table)?;
-        let consts = consts(table)?;
-        let grid = grid(table)?;
+        let (consts, grid) = extras(table)?;
         let signature = crate::sig::Signature::parse(&name, template)?;
         Ok(Self {
             name,
@@ -520,6 +531,11 @@ impl OpDecl {
             template: template.to_string(),
             signature,
         })
+    }
+
+    /// `[consts]` 与 `[grid]`：声明表里两块可选的补丁，一起解析成 `(常量, 网格)`。
+    fn extras(table: &Table) -> diagnostic::Result<(Vec<(String, String)>, Option<Grid>)> {
+        Ok((consts(table)?, grid(table)?))
     }
 
     /// 模板侧的三条判据：槽位有定义、每条原语都被申请、调用点参数落在签名内。
