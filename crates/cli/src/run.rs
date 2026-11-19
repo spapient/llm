@@ -712,10 +712,12 @@ mod tests {
     }
 
     /// 真机对拍通用辅助：任一条走串行兜底或矩阵乘网格的算子，按签名序绑缓冲，派发网格由 `[grid]`
-    /// 声明推导（缺省 `[1,1,1]` 单线程串行），回读唯一可写输出，与标量参考对拍。缓冲全按 f32 解释。
+    /// 声明推导（缺省 `[1,1,1]` 单线程串行），回读唯一可写输出，与标量参考对拍。缓冲按签名类型解释
+    /// （f32 四字节、u8 一字节）。
     #[cfg(target_os = "macos")]
     fn op_matches_reference(op_name: &str) {
         use engine::exec::Executor as _;
+        use op::sig::CType;
 
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("metal").cloned().expect("metal 档案");
@@ -765,14 +767,28 @@ mod tests {
                     .expect("输出缓冲");
                 node.bind_output(slot);
             } else {
-                let values = sample.f32(&param.name).expect("f32 输入");
-                executor
-                    .bind_bytes(slot, values.len() * 4)
-                    .expect("输入缓冲");
                 node.bind_input(slot);
-                let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
-                for (index, value) in values.iter().enumerate() {
-                    bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                match param.ctype {
+                    CType::F32 => {
+                        let values = sample.f32(&param.name).expect("f32 输入");
+                        executor
+                            .bind_bytes(slot, values.len() * 4)
+                            .expect("输入缓冲");
+                        let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
+                        for (index, value) in values.iter().enumerate() {
+                            bytes[index * 4..index * 4 + 4]
+                                .copy_from_slice(&value.to_le_bytes());
+                        }
+                    }
+                    CType::U8 => {
+                        let values = sample.u8(&param.name).expect("u8 输入");
+                        executor.bind_bytes(slot, values.len()).expect("输入缓冲");
+                        let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
+                        for (index, value) in values.iter().enumerate() {
+                            bytes[index] = *value;
+                        }
+                    }
+                    CType::Int => unreachable!("标量不是缓冲"),
                 }
             }
         }
@@ -822,6 +838,27 @@ mod tests {
     #[test]
     fn a_gemm_op_runs_on_metal_and_matches_the_reference() {
         op_matches_reference("gemm_f32");
+    }
+
+    /// 打包 int2 解码 GEMV 走行网格快路径（经 `base = "gemv_i4"` 继承同一 `[grid]` 映射），真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_gemv_i2_op_runs_on_metal_and_matches_the_reference() {
+        op_matches_reference("gemv_i2");
+    }
+
+    /// 打包 int4 解码 GEMV 走行网格快路径（`@quant` 解包 + 按组缩放留在正文），真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_gemv_i4_op_runs_on_metal_and_matches_the_reference() {
+        op_matches_reference("gemv_i4");
+    }
+
+    /// 对称 int8 解码 GEMV 走行网格快路径（内联 `(signed char)`、不占 `quant` 原语），真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_gemv_i8_op_runs_on_metal_and_matches_the_reference() {
+        op_matches_reference("gemv_i8");
     }
 
     /// 行 gather（`table[idx[n],:]`，数据依赖下标）走串行兜底，真机对拍。

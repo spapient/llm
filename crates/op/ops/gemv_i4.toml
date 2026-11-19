@@ -33,6 +33,11 @@ bar         = {}
 w = "row"
 x = "row"
 
+# 网格映射：Gemm 骨架按输出行拆线程（一维网格）。`n:N` 表示把模板里的循环
+# `for (int n = 0; n < N; ++n)` 绑定到线程下标（每线程一行）；gemv_i2 经 `base` 继承同一映射。
+[grid]
+dims = ["n:N"]
+
 # 模板常量：gemv_packed 的打包宽度（i4=每字节 2 码、每码 4 位、零点 8）。
 [consts]
 cpb   = 2

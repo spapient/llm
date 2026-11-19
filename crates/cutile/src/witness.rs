@@ -404,13 +404,13 @@ pub struct Evidence {
 }
 
 impl Evidence {
-    /// 协商该用的证据：`Executed` 时是执行结论，`Declared` 时退回档案自述——本机执行不了
-    /// 这台设备，没有第二条路，所以依据必须由 [`Evidence::basis`] 说出来。
+    /// 协商该用的证据：`Executed` 时是执行结论；`Declared` 时本机执行不了这台设备，没有任何
+    /// 见证，协商必须按「未验证视为不具备」拒绝，不能用档案自述去假装这台设备能跑。
     #[must_use]
-    pub fn proof(&self, profile: &Profile) -> Proof {
+    pub fn proof(&self, _profile: &Profile) -> Proof {
         match self.basis {
             Basis::Executed => self.proof.clone(),
-            Basis::Declared => Proof::declared(profile),
+            Basis::Declared => Proof::none(),
         }
     }
 }

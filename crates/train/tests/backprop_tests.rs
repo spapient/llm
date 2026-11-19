@@ -34,6 +34,49 @@ fn silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
 }
 
+/// 单行 softmax（与 `op::softmax_f32` 同口径：整缓冲当作一行，先减 max 再 exp）。
+fn softmax_row(x: &[f32]) -> Vec<f32> {
+    let max = x.iter().copied().fold(f32::MIN, f32::max);
+    let mut sum = 0.0;
+    let exps: Vec<f32> = x
+        .iter()
+        .map(|&v| {
+            let e = (v - max).exp();
+            sum += e;
+            e
+        })
+        .collect();
+    exps.into_iter().map(|e| e / sum).collect()
+}
+
+/// 单行 KL：`sum_i p_s[i] · (ln p_s[i] - ln p_t[i])`（温度 T=1，教师冻结）。
+fn kl_single_row(s: &[f32], t: &[f32]) -> f32 {
+    let ps = softmax_row(s);
+    let pt = softmax_row(t);
+    ps.iter().zip(&pt).map(|(p, q)| p * (p.ln() - q.ln())).sum()
+}
+
+/// 数值裁剪：`x` 夹到 `[lo, hi]`。
+fn clampf(x: f32, lo: f32, hi: f32) -> f32 {
+    x.max(lo).min(hi)
+}
+
+/// 裁剪代理和（未取负号，负号只是常数因子）：`Σ min(ratio·A, clamp(ratio,1±ε)·A)`。
+fn clipped_surrogate_sum(new_logp: &[f32], old_logp: &[f32], adv: &[f32], eps: f32) -> f32 {
+    let lo = 1.0 - eps;
+    let hi = 1.0 + eps;
+    new_logp
+        .iter()
+        .zip(old_logp)
+        .zip(adv)
+        .map(|((&n, &o), &a)| {
+            let ratio = (n - o).exp();
+            let clipped = clampf(ratio, lo, hi);
+            (ratio * a).min(clipped * a)
+        })
+        .sum()
+}
+
 fn close(actual: f32, numeric: f32) -> bool {
     let slack = ABSOLUTE + RELATIVE * numeric.abs().max(1.0);
     (actual - numeric).abs() <= slack
@@ -810,6 +853,117 @@ fn max_matches_central_differences() -> Result<()> {
         &b0,
         "b",
         |b| a0.iter().zip(b).map(|(x, y)| x.max(*y)).sum(),
+    );
+    Ok(())
+}
+
+/// 端到端蒸馏 KL：`kl = sum(p_s · (ln p_s - ln p_t))` 用图上原语搭出来
+/// （softmax→log→sub→mul→reduce_sum），反传后与解析单行 KL 中心差分对拍。
+///
+/// 这是「损失层从纯函数升级为图上可训练」的闭环证据：五个算子串成一条链，
+/// 整链梯度等于解析梯度，而不只是各算子单独可微。
+#[test]
+fn distillation_kl_graph_matches_central_differences() -> Result<()> {
+    let mut tape = Tape::new();
+    let s = tape.parameter();
+    let t = tape.leaf();
+    let ps = tape.record("softmax_f32", &[s]).expect("p_s");
+    let pt = tape.record("softmax_f32", &[t]).expect("p_t");
+    let lps = tape.record("log_f32", &[ps]).expect("ln p_s");
+    let lpt = tape.record("log_f32", &[pt]).expect("ln p_t");
+    let diff = tape.record("sub_f32", &[lps, lpt]).expect("ln p_s - ln p_t");
+    let prod = tape.record("mul_f32", &[ps, diff]).expect("p_s·(ln p_s - ln p_t)");
+    let kl = tape.record("reduce_sum_f32", &[prod]).expect("kl");
+
+    let mut sizes = Sizes::new(tape.vars());
+    for v in [s, t, ps, pt, lps, lpt, diff, prod] {
+        sizes.set(v, Shape::new([N]), DType::F32);
+    }
+    sizes.set(kl, Shape::new([1]), DType::F32);
+
+    let s0 = vec![0.5_f32, -0.3, 0.2];
+    let t0 = vec![1.0_f32, 0.1, -0.5];
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(s, ParamRole::Trainable, s0.clone())?;
+    session.buffers().load(t, Data::F32(t0.clone()))?;
+    session.buffers().compute("softmax_f32", &[s], ps)?;
+    session.buffers().compute("softmax_f32", &[t], pt)?;
+    session.buffers().compute("log_f32", &[ps], lps)?;
+    session.buffers().compute("log_f32", &[pt], lpt)?;
+    session.buffers().compute("sub_f32", &[lps, lpt], diff)?;
+    session.buffers().compute("mul_f32", &[ps, diff], prod)?;
+    session.buffers().compute("reduce_sum_f32", &[prod], kl)?;
+    session.plan(kl)?;
+    session.backward()?;
+
+    check_grad(
+        session.buffers().gradient(s).expect("s 梯度应在场"),
+        &s0,
+        "s",
+        |s| kl_single_row(s, &t0),
+    );
+    Ok(())
+}
+
+/// 端到端 GRPO 裁剪：`Σ min(ratio·A, clamp(ratio,1±ε)·A)` 用图上原语搭出来
+/// （sub→exp→max→min→mul→mul→min→reduce_sum），反传后与解析裁剪代理中心差分对拍。
+///
+/// 夹具三个元素各走一路：裁上界（ratio>1+ε, A>0）、裁下界（ratio<1−ε, A<0）、不裁
+/// （ratio 在界内）。裁断处梯度为 0（clamp 平坦），不裁处梯度沿 ratio 回传。
+#[test]
+fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
+    let eps: f32 = 0.2;
+    let lo: f32 = 1.0 - eps;
+    let hi: f32 = 1.0 + eps;
+
+    let mut tape = Tape::new();
+    let new = tape.parameter();
+    let old = tape.leaf();
+    let adv = tape.leaf();
+    let lo_leaf = tape.leaf();
+    let hi_leaf = tape.leaf();
+    let diff = tape.record("sub_f32", &[new, old]).expect("new - old");
+    let ratio = tape.record("exp_f32", &[diff]).expect("ratio");
+    let r_lo = tape.record("max_f32", &[ratio, lo_leaf]).expect("max(ratio, 1-ε)");
+    let r_clamp = tape.record("min_f32", &[r_lo, hi_leaf]).expect("clamp(ratio)");
+    let term1 = tape.record("mul_f32", &[ratio, adv]).expect("ratio·A");
+    let term2 = tape.record("mul_f32", &[r_clamp, adv]).expect("clamp(ratio)·A");
+    let surr = tape.record("min_f32", &[term1, term2]).expect("min 裁剪");
+    let loss = tape.record("reduce_sum_f32", &[surr]).expect("loss");
+
+    let mut sizes = Sizes::new(tape.vars());
+    for v in [new, old, adv, lo_leaf, hi_leaf, diff, ratio, r_lo, r_clamp, term1, term2, surr] {
+        sizes.set(v, Shape::new([N]), DType::F32);
+    }
+    sizes.set(loss, Shape::new([1]), DType::F32);
+
+    let new0 = vec![0.4_f32, -0.5, 0.0];
+    let old0 = vec![0.0_f32; N];
+    let adv0 = vec![1.0_f32, -0.5, 0.7];
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(new, ParamRole::Trainable, new0.clone())?;
+    session.buffers().load(old, Data::F32(old0.clone()))?;
+    session.buffers().load(adv, Data::F32(adv0.clone()))?;
+    session.buffers().load(lo_leaf, Data::F32(vec![lo; N]))?;
+    session.buffers().load(hi_leaf, Data::F32(vec![hi; N]))?;
+    session.buffers().compute("sub_f32", &[new, old], diff)?;
+    session.buffers().compute("exp_f32", &[diff], ratio)?;
+    session.buffers().compute("max_f32", &[ratio, lo_leaf], r_lo)?;
+    session.buffers().compute("min_f32", &[r_lo, hi_leaf], r_clamp)?;
+    session.buffers().compute("mul_f32", &[ratio, adv], term1)?;
+    session.buffers().compute("mul_f32", &[r_clamp, adv], term2)?;
+    session.buffers().compute("min_f32", &[term1, term2], surr)?;
+    session.buffers().compute("reduce_sum_f32", &[surr], loss)?;
+    session.plan(loss)?;
+    session.backward()?;
+
+    check_grad(
+        session.buffers().gradient(new).expect("new 梯度应在场"),
+        &new0,
+        "new",
+        |new| clipped_surrogate_sum(new, &old0, &adv0, eps),
     );
     Ok(())
 }

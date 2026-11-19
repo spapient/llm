@@ -266,3 +266,85 @@ fn production_gemm_kernel_compiles_for_a_real_op() {
     let _ = std::fs::remove_dir_all(&dir);
     compiled.expect("gemm MSL 应能通过 xcrun metal 编译");
 }
+
+/// 生产态 gemv_i2 行网格内核：int2 经 `base = "gemv_i4"` 继承同一 `[grid]` 映射，只差打包宽度
+/// （cpb=4、width=2、zero=2），再通过 `xcrun metal` 编译证明合法。小形状（m=64, n=4）。
+#[test]
+fn production_gemv_i2_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-gemv-i2"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，gemv_i2 内核编译用例未运行");
+        return;
+    }
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "gemv_i2", 64, 4)
+        .expect("gemv_i2 网格内核应能生成");
+
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(
+        msl.contains("for (int n = (int)tid.x; n < (int)tid.x + 1; ++n)"),
+        "行循环应绑定到 tid.x: {msl}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-gemv-i2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("gemv_i2 MSL 应能通过 xcrun metal 编译");
+}
+
+/// 生产态 gemv_i4 行网格内核：量化 lane 复用同一条循环注入 lowering——`[grid] dims=["n:N"]` 把
+/// 打包解码 GEMV 的行循环绑定到 `tid.x`（`@quant` 解包 + 按组缩放留在正文），再通过 `xcrun metal`
+/// 编译证明合法。小形状（m=64, n=4）满足 M 整除 gsz=32、cpb=2。
+#[test]
+fn production_gemv_i4_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-gemv-i4"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，gemv_i4 内核编译用例未运行");
+        return;
+    }
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "gemv_i4", 64, 4)
+        .expect("gemv_i4 网格内核应能生成");
+
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(
+        msl.contains("for (int n = (int)tid.x; n < (int)tid.x + 1; ++n)"),
+        "行循环应绑定到 tid.x: {msl}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-gemv-i4-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("gemv_i4 MSL 应能通过 xcrun metal 编译");
+}
+
+/// 生产态 gemv_i8 行网格内核：对称 int8 解码（内联 `(signed char)`、不占 `quant` 原语）同样走
+/// 循环注入 lowering。小形状（m=64, n=4）。
+#[test]
+fn production_gemv_i8_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-gemv-i8"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，gemv_i8 内核编译用例未运行");
+        return;
+    }
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "gemv_i8", 64, 4)
+        .expect("gemv_i8 网格内核应能生成");
+
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(
+        msl.contains("for (int n = (int)tid.x; n < (int)tid.x + 1; ++n)"),
+        "行循环应绑定到 tid.x: {msl}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-gemv-i8-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("gemv_i8 MSL 应能通过 xcrun metal 编译");
+}
