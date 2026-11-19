@@ -49,73 +49,6 @@ unsafe extern "C" {
     fn MTLCreateSystemDefaultDevice() -> *mut c_void;
 }
 
-/// `objc_msgSend` 按 `(id, SEL) -> id` 强转：0 参、返回对象/指针的 ObjC 方法。
-unsafe fn msg_id(receiver: *mut c_void, selector: *mut c_void) -> *mut c_void {
-    let send: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector) }
-}
-
-/// `objc_msgSend` 按 `(id, SEL) -> void` 强转：`-release` 这类无返回值方法。
-unsafe fn msg_void(receiver: *mut c_void, selector: *mut c_void) {
-    let send: unsafe extern "C" fn(*mut c_void, *mut c_void) =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector) };
-}
-
-/// `objc_msgSend` 按 `(id, SEL, usize, usize) -> id` 强转：两个 `NSUInteger` 参数的方法。
-unsafe fn msg_id_2u(
-    receiver: *mut c_void,
-    selector: *mut c_void,
-    a: usize,
-    b: usize,
-) -> *mut c_void {
-    let send: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize) -> *mut c_void =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector, a, b) }
-}
-
-/// `objc_msgSend` 按 `(id, SEL, p) -> id` 强转：一个指针参数的方法。
-unsafe fn msg_id_1p(receiver: *mut c_void, selector: *mut c_void, p: *mut c_void) -> *mut c_void {
-    let send: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector, p) }
-}
-
-/// `objc_msgSend` 按 `(id, SEL, p1, p2) -> id` 强转：两个指针参数的方法。
-unsafe fn msg_id_2p(
-    receiver: *mut c_void,
-    selector: *mut c_void,
-    p1: *mut c_void,
-    p2: *mut c_void,
-) -> *mut c_void {
-    let send: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        *mut c_void,
-        *mut c_void,
-    ) -> *mut c_void = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector, p1, p2) }
-}
-
-/// `objc_msgSend` 按 `(id, SEL, p1, p2, p3) -> id` 强转：三个指针参数的方法。
-unsafe fn msg_id_3p(
-    receiver: *mut c_void,
-    selector: *mut c_void,
-    p1: *mut c_void,
-    p2: *mut c_void,
-    p3: *mut c_void,
-) -> *mut c_void {
-    let send: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        *mut c_void,
-        *mut c_void,
-        *mut c_void,
-    ) -> *mut c_void = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector, p1, p2, p3) }
-}
-
 /// Metal 三维尺寸：`dispatchThreads:threadsPerThreadgroup:` 的两个按值参数（`MTLSize`）。
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -125,35 +58,49 @@ struct MTLSize {
     depth: usize,
 }
 
-/// `objc_msgSend` 按 `(id, SEL, p) -> void` 强转：一个指针参数的无返回值方法。
-unsafe fn msg_void_1p(receiver: *mut c_void, selector: *mut c_void, p: *mut c_void) {
-    let send: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector, p) };
+/// 生成 `objc_msgSend` 的按形状强转包装：把裸 `objc_msgSend` 转成一个具体签名的
+/// `extern "C" fn` 再调用。所有形状共享同一份 ABI 纪律——`(id, SEL)` 打头，余下参数按值或
+/// 按指针，返回 `id`（对象/指针）或 `void`。每个形状对应的 ObjC 方法在调用点标注。
+macro_rules! msg {
+    ($name:ident, [$($arg:ident: $ty:ty),*]) => {
+        unsafe fn $name(
+            receiver: *mut c_void,
+            selector: *mut c_void,
+            $($arg: $ty,)*
+        ) -> *mut c_void {
+            let send: unsafe extern "C" fn(*mut c_void, *mut c_void $(, $ty)*) -> *mut c_void =
+                unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+            unsafe { send(receiver, selector $(, $arg)*) }
+        }
+    };
+    (void $name:ident, [$($arg:ident: $ty:ty),*]) => {
+        unsafe fn $name(receiver: *mut c_void, selector: *mut c_void, $($arg: $ty,)*) {
+            let send: unsafe extern "C" fn(*mut c_void, *mut c_void $(, $ty)*) =
+                unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+            unsafe { send(receiver, selector $(, $arg)*) };
+        }
+    };
 }
 
-/// `objc_msgSend` 按 `(id, SEL, p, usize, usize) -> void` 强转：`setBuffer:offset:atIndex:` 的形状。
-unsafe fn msg_void_p2u(
-    receiver: *mut c_void,
-    selector: *mut c_void,
-    p: *mut c_void,
-    a: usize,
-    b: usize,
-) {
-    let send: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, usize, usize) =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector, p, a, b) };
-}
-
-/// `objc_msgSend` 按 `(id, SEL, MTLSize, MTLSize) -> void` 强转：`dispatchThreads:threadsPerThreadgroup:` 的形状。
-///
-/// `MTLSize` 24 字节（>16），arm64 / x86_64 下 `extern "C"` 按间接指针传参，与 clang 生成的
-/// `objc_msgSend` 调用 ABI 一致，无需 `objc_msgSend_stret`。
-unsafe fn msg_void_2size(receiver: *mut c_void, selector: *mut c_void, a: MTLSize, b: MTLSize) {
-    let send: unsafe extern "C" fn(*mut c_void, *mut c_void, MTLSize, MTLSize) =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { send(receiver, selector, a, b) };
-}
+// `(id, SEL) -> id`：0 参返回对象/指针（如 newCommandQueue）。
+msg!(msg_id, []);
+// `(id, SEL) -> void`：无返回值（如 -release）。
+msg!(void msg_void, []);
+// `(id, SEL, usize, usize) -> id`：两个 NSUInteger 参数（如 newBufferWithLength:options:）。
+msg!(msg_id_2u, [a: usize, b: usize]);
+// `(id, SEL, p) -> id`：一个指针参数（如 stringWithUTF8String:）。
+msg!(msg_id_1p, [p: *mut c_void]);
+// `(id, SEL, p1, p2) -> id`：两个指针参数（如 newComputePipelineStateWithFunction:error:）。
+msg!(msg_id_2p, [p1: *mut c_void, p2: *mut c_void]);
+// `(id, SEL, p1, p2, p3) -> id`：三个指针参数。
+msg!(msg_id_3p, [p1: *mut c_void, p2: *mut c_void, p3: *mut c_void]);
+// `(id, SEL, p) -> void`：一个指针参数的无返回值方法。
+msg!(void msg_void_1p, [p: *mut c_void]);
+// `(id, SEL, p, usize, usize) -> void`：setBuffer:offset:atIndex:。
+msg!(void msg_void_p2u, [p: *mut c_void, a: usize, b: usize]);
+// `(id, SEL, MTLSize, MTLSize) -> void`：dispatchThreads:threadsPerThreadgroup:。
+// MTLSize 24 字节（>16），arm64/x86_64 下 extern "C" 按间接指针传参，无需 objc_msgSend_stret。
+msg!(void msg_void_2size, [a: MTLSize, b: MTLSize]);
 
 /// 注册一个 selector；`name` 是带结尾 `\0` 的 C 字符串。
 fn selector(name: &[u8]) -> *mut c_void {

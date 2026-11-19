@@ -5,8 +5,8 @@
 //! harness 内部夹具——两者测的是不同层的产物：cutile 测 C 宿主基准，这里测 vendor 生产态源。
 
 use diagnostic::Code;
-use llm_engine::codegen::cuda::cuda_harness;
-use llm_engine::codegen::metal::metal_grid_kernel;
+use llm_engine::codegen::cuda_harness;
+use llm_engine::codegen::metal_grid_kernel;
 use op::model::{Buffer, Sample, Values};
 use op::sig::Signature;
 

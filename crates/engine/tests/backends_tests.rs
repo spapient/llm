@@ -394,7 +394,7 @@ fn production_quantized_gemv_compiles(op_name: &str) {
         msl.contains("for (int n = (int)tid.x; n < (int)tid.x + 1; ++n)"),
         "{msl}"
     );
-    assert_metal_compiles("engine-metal-gemv-quant", &msl, &profile.flags);
+    assert_metal_compiles(&format!("engine-metal-{op_name}"), &msl, &profile.flags);
 }
 
 /// 写 MSL 进一次性目录、经 [`metal_kernel`] 编成 metallib、删目录；编译失败即 panic。

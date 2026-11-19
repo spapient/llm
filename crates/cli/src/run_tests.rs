@@ -416,14 +416,9 @@ fn op_matches_reference_cuda(op_name: &str) {
 
     let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
-    let program = engine::codegen::cuda::cuda_grid_driver(
-        &device,
-        &decl.signature,
-        &sample,
-        grid,
-        output_len,
-    )
-    .expect("host 驱动应能生成");
+    let program =
+        engine::codegen::cuda_grid_driver(&device, &decl.signature, &sample, grid, output_len)
+            .expect("host 驱动应能生成");
     let (_counts, bits) =
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
 
@@ -465,9 +460,8 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
 
     let device = cutile::execution::cuda_reduce_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
-    let program =
-        engine::codegen::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
-            .expect("host 驱动应能生成");
+    let program = engine::codegen::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
+        .expect("host 驱动应能生成");
     let (_counts, bits) =
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
 

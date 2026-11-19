@@ -169,7 +169,7 @@ impl Codegen for MetalBackend {
         metal_lower(kernel, signature, sample, kind)
     }
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        let (device, host) = crate::codegen::metal::metal_harness(kernel, signature, sample)?;
+        let (device, host) = crate::codegen::metal_harness(kernel, signature, sample)?;
         Ok(Source::Pair { device, host })
     }
 }
@@ -219,17 +219,18 @@ fn metal_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::codegen::metal::metal_grid_kernel(kernel, signature).map(|s| vec![s]),
-        Loop(grid) => crate::codegen::metal::metal_loop_kernel(kernel, signature, sample, grid)
-            .map(|s| vec![s]),
+        Pointwise => crate::codegen::metal_grid_kernel(kernel, signature).map(|s| vec![s]),
+        Loop(grid) => {
+            crate::codegen::metal_loop_kernel(kernel, signature, sample, grid).map(|s| vec![s])
+        }
         ChunkReduce { .. } | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => {
             metal_chunk_lower(kernel, signature, sample, kind)
         }
     }
 }
 
-/// 分块族 lowering：归约单段、扫描/归一化两段、softmax 三段，段序与 [`cutile::execution`] 的
-/// `pair`/`triple` 解包一致（按弹出顺序还原）。
+/// 分块归约/扫描/逐行规约的 Metal lowering：4 种分块骨架各自降成 1–3 段设备源。
+/// 只应由 [`metal_lower`] 在已确认分块后调用；非分块算子返回内部错误而非 panic。
 fn metal_chunk_lower(
     kernel: &str,
     signature: &Signature,
@@ -239,22 +240,25 @@ fn metal_chunk_lower(
     use cutile::backend::Lower::*;
     match kind {
         ChunkReduce { chunk, func } => {
-            crate::codegen::metal::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
+            crate::codegen::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
                 .map(|s| vec![s])
         }
         ChunkScan { chunk, decay } => {
-            crate::codegen::metal::metal_chunk_scan(kernel, signature, sample, *chunk, *decay)
+            crate::codegen::metal_chunk_scan(kernel, signature, sample, *chunk, *decay)
                 .map(|(local, correct)| vec![local, correct])
         }
         ChunkRmsnorm { chunk } => {
-            crate::codegen::metal::metal_chunk_rmsnorm(kernel, signature, sample, *chunk)
+            crate::codegen::metal_chunk_rmsnorm(kernel, signature, sample, *chunk)
                 .map(|(partial, map)| vec![partial, map])
         }
         ChunkSoftmax { chunk } => {
-            crate::codegen::metal::metal_chunk_softmax(kernel, signature, sample, *chunk)
+            crate::codegen::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
-        Pointwise | Loop(_) => Err(Error::new(Code::Internal, "非分块 lowering 走错入口")),
+        Pointwise | Loop(_) => Err(Error::new(
+            Code::Internal,
+            "非分块算子不应进入 Metal 分块 lowering",
+        )),
     }
 }
 
@@ -496,7 +500,7 @@ impl Codegen for CudaBackend {
         cuda_lower(kernel, signature, sample, kind)
     }
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        Ok(Source::Single(crate::codegen::cuda::cuda_harness(
+        Ok(Source::Single(crate::codegen::cuda_harness(
             kernel, signature, sample,
         )?))
     }
@@ -548,9 +552,9 @@ fn cuda_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::codegen::cuda::cuda_grid_kernel(kernel, signature).map(|s| vec![s]),
+        Pointwise => crate::codegen::cuda_grid_kernel(kernel, signature).map(|s| vec![s]),
         ChunkReduce { chunk, func } => {
-            crate::codegen::cuda::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
+            crate::codegen::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
                 .map(|s| vec![s])
         }
         Loop(_) | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => Err(Error::new(
