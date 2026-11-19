@@ -353,7 +353,7 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
     let mut names: Vec<String> = Vec::new();
     let mut models: Vec<String> = Vec::new();
     for line in lib[open..close].lines() {
-        let Some((name, module)) = line.trim().split_once("=>") else {
+        let Some((name, rest)) = line.trim().split_once("=>") else {
             continue;
         };
         let name = name
@@ -361,9 +361,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
             .trim_end_matches(',')
             .trim_matches('"')
             .to_string();
-        // 模块标识是第一列，后面跟着 `是否可微` 标记列：只取 `=>` 之后到第一个逗号为止。
-        let module = module.trim().split(',').next().unwrap_or_default().trim();
-        models.push(format!("{module}::MODEL"));
+        // 模型路径是第一列（`模块::常量`，如 `add_f32::MODEL`、`attention::FLASH_MODEL`），
+        // 后面跟着 `是否可微` 标记列：只取 `=>` 之后到第一个逗号为止，原样保留。
+        let model = rest.trim().split(',').next().unwrap_or_default().trim();
+        models.push(model.to_string());
         names.push(name);
     }
     assert_eq!(
@@ -428,20 +429,19 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
     // 只是隔着宏一层。这里补认这一路，避免把宏算子误判成"手写 Model"。
     let model_macros = model_macros();
     for (name, model) in names.iter().zip(&models) {
-        let Some(module) = model.strip_suffix("::MODEL") else {
+        // `模块::常量` 拆出模块文件；常量名可以是 `MODEL` 或注解里 `const = ".."` 的自定义名
+        // （如 `FLASH_MODEL` / `DECODE_FLASH_MODEL`），其正确性由编译期路径检查兜底，这里只认模块。
+        let Some((module, _)) = model.rsplit_once("::") else {
             failures.push(format!(
-                "`{name}` 的语义表是 `{model}`，不是 `::MODEL` 常量：\
+                "`{name}` 的语义表是 `{model}`，不是 `模块::常量` 形式：\
                  语义表必须有唯一生产者（注解生成），不能是手写的 `Model {{ .. }}`"
             ));
             continue;
         };
-        let file = root().join("crates/op/src").join(format!(
-            "{}.rs",
-            module.rsplit("::").next().unwrap_or(module)
-        ));
+        let file = root().join("crates/op/src").join(format!("{module}.rs"));
         let text = fs::read_to_string(&file).unwrap_or_else(|_| {
             panic!(
-                "`{name}` 的语义表指向 `{module}`，但 {} 读不到",
+                "`{name}` 的语义表指向 `{model}`，但 {} 读不到",
                 file.display()
             )
         });
@@ -485,10 +485,11 @@ fn model_macros() -> std::collections::BTreeSet<String> {
                         .to_string(),
                 );
             }
-            if line.contains("#[annotation::model(") && line.contains("name = $") {
-                if let Some(name) = &current {
-                    macros.insert(name.clone());
-                }
+            if line.contains("#[annotation::model(")
+                && line.contains("name = $")
+                && let Some(name) = &current
+            {
+                macros.insert(name.clone());
             }
         }
     }
