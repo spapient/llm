@@ -741,6 +741,76 @@ fn bind_chunk_loop(body: &str, scalar: &str) -> diagnostic::Result<String> {
     Ok(body.replace(&old_head, &new_head))
 }
 
+/// 生产态分块 RMSNorm：两段内核 + 主机折叠。
+///
+/// 1. **部分平方和**：复用 [`metal_chunk_reduce`]，把 `x` 切成块、每线程用 `_cutile_sumsq_f32`
+///    归约一块、部分和写 `y[g]`（临时占 `y` 前 `G` 个槽）；
+/// 2. **归一化**：每线程 `g` 用主机折叠出的 `rms`（`sqrt(Σx²/N + eps)`，由调用方算）归一化一块
+///    （`y = gamma·x/rms`），覆盖 `y` 全行。
+///
+/// 归一化内核的缓冲序是「输入先、输出后」：`[rms, x, gamma, y]`，与 [`buffer_decls`] 同源约定
+/// 一致；`rms` 是主机注入的 1 元素标量缓冲，`gamma`/`x` 是只读输入、`y` 是就地输出。
+///
+/// # Errors：签名缺长度标量或标量缺样本取值时返回说明。
+pub fn metal_chunk_rmsnorm(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+) -> diagnostic::Result<(String, String)> {
+    let partial = metal_chunk_reduce(kernel_source, signature, sample, chunk, "_cutile_sumsq_f32")?;
+    let len = length_scalar(signature, sample)?;
+    let map = format!(
+        "{}\n\nkernel void kernel_main(\n    device float* d_rms [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_gamma [[buffer(2)]],\n    device float* d_y [[buffer(3)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    float rms = d_rms[0];\n    for (int j = 0; j < len; ++j) {{\n        d_y[start + j] = d_gamma[start + j] * d_x[start + j] / rms;\n    }}\n}}",
+        msl_address_space(kernel_source),
+    );
+    Ok((partial, map))
+}
+
+/// 生产态分块 Softmax：三段内核 + 两次主机折叠。
+///
+/// 1. **部分最大值**：复用 [`metal_chunk_reduce`]，`_cutile_max_f32` 归约一块、部分最大写 `y[g]`；
+/// 2. **部分指数和**：每线程 `g` 用主机折叠出的 `max` 做 `_cutile_exp_sum_f32(x, …, max)`，写 `y[g]`；
+/// 3. **归一化**：每线程 `g` 用 `max`/`sum` 做 `_cutile_exp_norm_f32`，写 `y` 全行。
+///
+/// 后两段内核的缓冲序「输入先、输出后」：指数和 `[max, x, y]`、归一化 `[max, sum, x, y]`；
+/// `max`/`sum` 是主机注入的 1 元素标量缓冲。
+///
+/// # Errors：签名缺长度标量或标量缺样本取值时返回说明。
+pub fn metal_chunk_softmax(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+) -> diagnostic::Result<(String, String, String)> {
+    let max = metal_chunk_reduce(kernel_source, signature, sample, chunk, "_cutile_max_f32")?;
+    let len = length_scalar(signature, sample)?;
+    let preamble = msl_address_space(kernel_source);
+    let expsum = format!(
+        "{preamble}\n\nkernel void kernel_main(\n    device float* d_max [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_y [[buffer(2)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    d_y[g] = _cutile_exp_sum_f32(d_x + start, len, 1, d_max[0]);\n}}"
+    );
+    let map = format!(
+        "{preamble}\n\nkernel void kernel_main(\n    device float* d_max [[buffer(0)]],\n    device float* d_sum [[buffer(1)]],\n    device float* d_x [[buffer(2)]],\n    device float* d_y [[buffer(3)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    _cutile_exp_norm_f32(d_y + start, d_x + start, len, 1, d_max[0], d_sum[0]);\n}}"
+    );
+    Ok((max, expsum, map))
+}
+
+/// 长度标量：签名里唯一非缓冲参数（扫描/归约/归一化的 `N`），取样本值。
+fn length_scalar(signature: &Signature, sample: &Sample) -> diagnostic::Result<i64> {
+    let scalar = signature
+        .params()
+        .iter()
+        .find(|param| !param.ctype.is_buffer())
+        .map(|param| param.name.as_str())
+        .ok_or_else(|| {
+            Error::new(Code::Internal, "内核没有长度标量").with("cutile::harness::length_scalar")
+        })?;
+    sample.scalar(scalar).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("长度标量 `{scalar}` 没有样本取值"))
+            .with("cutile::harness::length_scalar")
+    })
+}
+
 fn bind_grid_loops(body: String, grid: &Grid) -> diagnostic::Result<String> {
     const AXES: [&str; 3] = ["x", "y", "z"];
     let mut out = body;

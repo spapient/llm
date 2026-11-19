@@ -114,6 +114,54 @@ pub fn metal_scan_program(
     scan_chunked(&run, &prepared, m, n)
 }
 
+/// 生产态分块 RMSNorm 内核源：走完整条流水线后把「平方和归约 + 归一化」切成两段，返回
+/// `(部分平方和, 归一化)`，主机在两次派发间折叠部分和算出 `rms`。串行（未声明 `[chunk]`）仍走
+/// [`metal_grid_program`]。
+///
+/// # Errors
+///
+/// 算子没有声明 `[chunk]`、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_rmsnorm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, String)> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    let op = run.op;
+    let chunk = op.chunk.as_ref().ok_or_else(|| {
+        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
+            .with("cutile::execution::metal_rmsnorm_program")
+    })?;
+    let sample = (run.model.sample)(m, n);
+    crate::harness::metal_chunk_rmsnorm(&prepared.source.text, &op.signature, &sample, chunk.size)
+}
+
+/// 生产态分块 Softmax 内核源：走完整条流水线后把「最大归约 + 指数和归约 + 归一化」切成三段，返回
+/// `(部分最大, 部分指数和, 归一化)`，主机在派发间折叠出 `max` 与 `sum`。串行（未声明 `[chunk]`）
+/// 仍走 [`metal_grid_program`]。
+///
+/// # Errors
+///
+/// 算子没有声明 `[chunk]`、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_softmax_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, String, String)> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    let op = run.op;
+    let chunk = op.chunk.as_ref().ok_or_else(|| {
+        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
+            .with("cutile::execution::metal_softmax_program")
+    })?;
+    let sample = (run.model.sample)(m, n);
+    crate::harness::metal_chunk_softmax(&prepared.source.text, &op.signature, &sample, chunk.size)
+}
+
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(
     catalogue: &'a Catalogue,

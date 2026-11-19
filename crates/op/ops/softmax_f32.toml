@@ -15,6 +15,9 @@ reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
 [layouts]
 x = "row"
 
+[chunk]
+size = 256
+
 [[variants]]
 name      = "direct"
 order     = 1

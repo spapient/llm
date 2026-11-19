@@ -18,6 +18,9 @@ store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 x     = "row"
 gamma = "row"
 
+[chunk]
+size = 256
+
 [[variants]]
 name      = "direct"
 order     = 1
