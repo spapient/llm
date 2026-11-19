@@ -37,28 +37,6 @@ pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> Result<S
     grid_kernel(kernel_source, signature, &METAL)
 }
 
-/// 串行实参：缓冲取 `d_{name}`（原样透传，单线程处理全部），标量取样本里的实际值。
-fn serial_args(params: &[Param], sample: &Sample) -> Result<String> {
-    params
-        .iter()
-        .map(|param| {
-            if param.ctype.is_buffer() {
-                Ok(format!("d_{}", param.name))
-            } else {
-                let value = sample.scalar(&param.name).ok_or_else(|| {
-                    Error::new(
-                        Code::Invalid,
-                        format!("串行内核标量 `{}` 没有样本取值", param.name),
-                    )
-                    .with("engine::codegen::metal::metal_loop_kernel")
-                })?;
-                Ok(value.to_string())
-            }
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|args| args.join(", "))
-}
-
 /// 生产态循环注入网格内核：把模板里的串行循环头绑定到线程下标（N 维网格，`tid.x` / `tid.y` …）。
 ///
 /// 网格绑定来自 `[grid]` 声明（[`Grid`]），不是对模板的索引分析：每个网格维把模板里的串行循环
@@ -86,11 +64,22 @@ pub fn metal_loop_kernel(
 
 /// 串行（零维网格）特例：不追加 `tid`、不绑循环，缓冲原样透传、标量取样本值。
 fn serial_kernel(kernel_source: &str, signature: &Signature, sample: &Sample) -> Result<String> {
-    let call = serial_args(signature.params(), sample)?;
+    let call = launch_args(sample, signature.params())?;
     let buffers = buffer_decls(signature);
     Ok(format!(
         "{}\n\nkernel void kernel_main(\n{buffers}) {{\n    {}({call});\n}}",
         msl_address_space(kernel_source),
+        signature.kernel(),
+    ))
+}
+
+/// 带线程下标的内核包裹：给内部内核透传 `tid`、声明 `uint3 tid [[thread_position_in_grid]]`，
+/// 循环注入与分块扫描两条 lowering 共用（串行零维用 [`serial_kernel`]，不追加 `tid`）。
+fn tid_kernel_main(body: &str, signature: &Signature, sample: &Sample) -> Result<String> {
+    let call = format!("{}, tid", launch_args(sample, signature.params())?);
+    let buffers = buffer_decls(signature);
+    Ok(format!(
+        "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
         signature.kernel(),
     ))
 }
@@ -105,12 +94,7 @@ fn injected_kernel(
     let mut body = msl_address_space(kernel_source);
     body = thread_param(&body, &signature.kernel())?;
     body = bind_grid_loops(body, grid)?;
-    let call = format!("{}, tid", serial_args(signature.params(), sample)?);
-    let buffers = buffer_decls(signature);
-    Ok(format!(
-        "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
-        signature.kernel(),
-    ))
+    tid_kernel_main(&body, signature, sample)
 }
 
 /// 生产态 Metal 分块归约内核（[`chunk_reduce`] 的 Metal 方言）。
@@ -157,44 +141,61 @@ fn chunk_scan_local(
     body = thread_param(&body, &kernel)?;
     body = inject_chunk_preamble(&body, &kernel, chunk, scalar)?;
     body = bind_chunk_loop(&body, scalar)?;
-    let call = format!("{}, tid", serial_args(signature.params(), sample)?);
-    let buffers = buffer_decls(signature);
-    Ok(format!(
-        "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {kernel}({call});\n}}"
-    ))
+    tid_kernel_main(&body, signature, sample)
+}
+
+/// 分块 map 内核：每线程 `g` 处理一块 `[start, start+len)`，块头（`g`/`start`/`rest`/`len`）与
+/// `kernel_main` 包裹只写这一份；扫描校正、RMSNorm 归一化、Softmax 指数和/归一化四段共用，
+/// 差异只在缓冲声明与块内正文。
+fn chunk_map_kernel(preamble: &str, buffers: &str, chunk: usize, len: i64, body: &str) -> String {
+    let head = if preamble.is_empty() {
+        String::new()
+    } else {
+        format!("{preamble}\n\n")
+    };
+    format!(
+        "{head}kernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n{body}\n}}"
+    )
 }
 
 /// 校正内核：每线程 `g` 把携带态 `d_c[g]` 的衰减几何级数 `C·a^(j+1)` 加回 `y`（就地累加）。
 /// 槽位按「输入后输出」：`d_c` 是输入在 `buffer(0)`、`d_y` 是输出在 `buffer(1)`。
 fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
-    format!(
-        "kernel void kernel_main(\n    device float* d_c [[buffer(0)]],\n    device float* d_{output} [[buffer(1)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    float c = d_c[g];\n    float pow = {decay}f;\n    for (int j = 0; j < len; ++j) {{\n        d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}\n}}"
-    )
+    let buffers = format!(
+        "    device float* d_c [[buffer(0)]],\n    device float* d_{output} [[buffer(1)]]"
+    );
+    let body = format!(
+        "    float c = d_c[g];\n    float pow = {decay}f;\n    for (int j = 0; j < len; ++j) {{\n        d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}"
+    );
+    chunk_map_kernel("", &buffers, chunk, len, &body)
+}
+
+/// 定位内核签名：返回 `(右括号位置, 函数体起始位置)`，供追加形参（[`thread_param`]）与
+/// 注入块头（[`inject_chunk_preamble`]）共用，避免两处各写一遍 `void {kernel}(` 查找。
+/// 体起始是 `) {` 之后的第一个字符——注入时把 `{` 一并留在前缀里。
+fn kernel_span(body: &str, kernel: &str) -> Result<(usize, usize)> {
+    let marker = format!("void {kernel}(");
+    let Some(start) = body.find(&marker) else {
+        return Err(Error::new(Code::Invalid, format!("找不到内核函数 `void {kernel}(`"))
+            .with("engine::codegen::metal::kernel_span"));
+    };
+    let Some(close) = body[start..].find(") {") else {
+        return Err(Error::new(Code::Invalid, format!("内核函数 `{kernel}` 签名不完整"))
+            .with("engine::codegen::metal::kernel_span"));
+    };
+    Ok((start + close, start + close + 3))
 }
 
 /// 给内部内核函数体注入块头：`g`/`start`/`len` 三个局部量，供循环头改写与分块寻址引用。
 fn inject_chunk_preamble(body: &str, kernel: &str, chunk: usize, scalar: &str) -> Result<String> {
-    let marker = format!("void {kernel}(");
-    let Some(signature_start) = body.find(&marker) else {
-        return Err(
-            Error::new(Code::Invalid, format!("找不到内核函数 `void {kernel}(`"))
-                .with("engine::codegen::metal::metal_chunk_scan"),
-        );
-    };
-    let Some(close) = body[signature_start..].find(") {") else {
-        return Err(
-            Error::new(Code::Invalid, format!("内核函数 `{kernel}` 签名不完整"))
-                .with("engine::codegen::metal::metal_chunk_scan"),
-        );
-    };
-    let brace = signature_start + close + 2;
+    let (_, body_at) = kernel_span(body, kernel)?;
     let preamble = format!(
         "    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {scalar} - start);\n"
     );
     let mut out = String::with_capacity(body.len() + preamble.len());
-    out.push_str(&body[..=brace]);
+    out.push_str(&body[..body_at]);
     out.push_str(&preamble);
-    out.push_str(&body[brace + 1..]);
+    out.push_str(&body[body_at..]);
     Ok(out)
 }
 
@@ -243,9 +244,12 @@ pub fn metal_chunk_rmsnorm(
 ) -> Result<(String, String)> {
     let partial = metal_chunk_reduce(kernel_source, signature, sample, chunk, "_cutile_sumsq_f32")?;
     let len = length_scalar(signature, sample)?;
-    let map = format!(
-        "{}\n\nkernel void kernel_main(\n    device float* d_rms [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_gamma [[buffer(2)]],\n    device float* d_y [[buffer(3)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    float rms = d_rms[0];\n    for (int j = 0; j < len; ++j) {{\n        d_y[start + j] = d_gamma[start + j] * d_x[start + j] / rms;\n    }}\n}}",
-        msl_address_space(kernel_source),
+    let map = chunk_map_kernel(
+        &msl_address_space(kernel_source),
+        "    device float* d_rms [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_gamma [[buffer(2)]],\n    device float* d_y [[buffer(3)]]",
+        chunk,
+        len,
+        "    float rms = d_rms[0];\n    for (int j = 0; j < len; ++j) {{\n        d_y[start + j] = d_gamma[start + j] * d_x[start + j] / rms;\n    }}",
     );
     Ok((partial, map))
 }
@@ -264,11 +268,19 @@ pub fn metal_chunk_softmax(
     let max = metal_chunk_reduce(kernel_source, signature, sample, chunk, "_cutile_max_f32")?;
     let len = length_scalar(signature, sample)?;
     let preamble = msl_address_space(kernel_source);
-    let expsum = format!(
-        "{preamble}\n\nkernel void kernel_main(\n    device float* d_max [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_y [[buffer(2)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    d_y[g] = _cutile_exp_sum_f32(d_x + start, len, 1, d_max[0]);\n}}"
+    let expsum = chunk_map_kernel(
+        &preamble,
+        "    device float* d_max [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_y [[buffer(2)]]",
+        chunk,
+        len,
+        "    d_y[g] = _cutile_exp_sum_f32(d_x + start, len, 1, d_max[0]);",
     );
-    let map = format!(
-        "{preamble}\n\nkernel void kernel_main(\n    device float* d_max [[buffer(0)]],\n    device float* d_sum [[buffer(1)]],\n    device float* d_x [[buffer(2)]],\n    device float* d_y [[buffer(3)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    _cutile_exp_norm_f32(d_y + start, d_x + start, len, 1, d_max[0], d_sum[0]);\n}}"
+    let map = chunk_map_kernel(
+        &preamble,
+        "    device float* d_max [[buffer(0)]],\n    device float* d_sum [[buffer(1)]],\n    device float* d_x [[buffer(2)]],\n    device float* d_y [[buffer(3)]]",
+        chunk,
+        len,
+        "    _cutile_exp_norm_f32(d_y + start, d_x + start, len, 1, d_max[0], d_sum[0]);",
     );
     Ok((max, expsum, map))
 }
@@ -288,24 +300,11 @@ fn bind_grid_loops(body: String, grid: &Grid) -> Result<String> {
 
 /// 给内部内核函数追加 `uint3 tid` 形参：`void {kernel}(...) {` → `void {kernel}(..., uint3 tid) {`。
 fn thread_param(body: &str, kernel: &str) -> Result<String> {
-    let marker = format!("void {kernel}(");
-    let Some(signature_start) = body.find(&marker) else {
-        return Err(
-            Error::new(Code::Invalid, format!("找不到内核函数 `void {kernel}(`"))
-                .with("engine::codegen::metal::metal_loop_kernel"),
-        );
-    };
-    let Some(close) = body[signature_start..].find(") {") else {
-        return Err(
-            Error::new(Code::Invalid, format!("内核函数 `{kernel}` 签名不完整"))
-                .with("engine::codegen::metal::metal_loop_kernel"),
-        );
-    };
-    let insert_at = signature_start + close;
+    let (paren_at, _) = kernel_span(body, kernel)?;
     let mut out = String::with_capacity(body.len() + 12);
-    out.push_str(&body[..insert_at]);
+    out.push_str(&body[..paren_at]);
     out.push_str(", uint3 tid");
-    out.push_str(&body[insert_at..]);
+    out.push_str(&body[paren_at..]);
     Ok(out)
 }
 
