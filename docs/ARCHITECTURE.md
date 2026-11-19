@@ -15,8 +15,8 @@
 | L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集（`devices/*.toml` 在构建期解析成表）、算子声明与词汇表闭集（`ops/*.toml` 同上）（布局/调度/模板词法）与求和表达式的语义代价（flops/流量，`op::einsum`）、原语片段 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 机制（协商 → 拼接 → emit → 编译执行）与其上的命令策略：执行类 doctor/verify/bench 与 `execution` 共用一条 `pipeline` 与 `witness`；`ledger` 跨档案聚合证据行、`cache` 按 LRU 回收，二者不走流水线；只消费 L2 的数据 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运（含 feature-gated 只读内存映射，全仓唯一 unsafe 岛）、文本边界 | 模型语义、调度策略 |
-| L5 模型与训练 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重结构（含自有 `.u` 容器 v2 读写与外部格式只读适配）、反向图、样本、层定义、切分拓扑与集合通信 | 进程/服务语义 |
-| L6 调度与服务 | `train`、`engine`、`serve` | 训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、设备后端 FFI（`engine::metal`，Metal 越界岛，ADR 0035）、Metal/CUDA 设备后端实现（`engine::backends`，实现 `cutile` 的 `Backend` 缝，经 `cutile::backend::register` 注入）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L5 模型与训练 | `weights`、`autograd`、`nn`、`shard` | 权重结构（含自有 `.u` 容器 v2 读写与外部格式只读适配）、反向图、层定义、切分拓扑与集合通信 | 进程/服务语义 |
+| L6 调度与服务 | `train`、`engine`、`serve` | 训练样本（`train::samples`：借用调用方 token 缓冲的 `Batch` / `Dataset` / `Chunks`，批几何在构造期校验，ADR 0038 §修订）、训练循环状态与激活缓冲、检查点格式（`train::snapshot`）、连续批与序列、KV 页（`engine::kv`）、提交（`engine::exec`）、设备后端 FFI（`engine::metal`，Metal 越界岛，ADR 0035）、Metal/CUDA 设备后端实现（`engine::backends`，实现 `cutile` 的 `Backend` 缝，经 `cutile::backend::register` 注入）、端点契约与其线格式（`serve::proto`）、CPU 模型内核桥（`serve::model`） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法与配置解析归本层，把上面各层连起来装配、取值解析与人可读排版；编排入口（`cmd/` 与两个 bin）**不定义新类型**；`cutile` 二进制只做解析 → `cutile::{doctor, verify, bench, ledger, cache}` → 排版 → 退出码（`Code::exit_code`） | 编排入口新增领域类型；在本层复制内核机制 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benches`（集中测量容器）与 `testkit`（测试夹具与工作区契约门禁）是**工具成员**：
@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 112 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -50,10 +50,9 @@ storage  → tensor, diagnostic
 tokenizer→ diagnostic
 weights  → tensor, diagnostic, dtype, wire, storage（`storage` 仅由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）    +dev: storage, testkit
 autograd → tensor, diagnostic    +dev: testkit
-data     → diagnostic
 nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
-train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
+train    → nn, autograd, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
 engine   → tensor, diagnostic, storage, cutile, op    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型；运行时依赖覆盖被装配的各层）
@@ -91,6 +90,14 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 成员数与边数**一条未增**（ADR 0023 时点）：`cli` 当时只依赖 `diagnostic`（键表不再借 `prof::atom::Closed`，三个键不值得
 拉一套闭集机制），`cutile` 的五个出边原样；两个二进制各写一个 `kernel_dirs` 投影函数把 `Settings`
 变成 `Dirs`，因此"配置策略"与"内核输入"之间只剩一次显式转换。
+
+第十一次是**样本吸收**（ADR 0038 §修订）：`llm-data` 的三件套（`Batch` / `Dataset` / `Chunks`）只有一个
+消费者——`train` 的 `Learner` 经 `&mut dyn Dataset` 取批、`Checkpoint` 记批形状。于是它整块搬进
+`crates/train/src/samples.rs`，成员 25 → **24**、边 112 → **110**：消失的是 `train → data` 与
+`data → diagnostic`（后者随迁，`train` 本来就依赖 `diagnostic`），不新增任何边。与上面十条不同，这是
+**跨层向下**的消费者吸收而非同层合并：`data` 没有第二个需求方，独立成成员只买到一层 `train → data`
+的间接；先前提出的 `data` + `shard` 同层合并随之作废（`data` 已不存在）。层表里"样本"这一档改由 L6
+承担，`train` 因此同时拥有"样本怎么切"与"训练到哪了"。
 
 ## 三、所有权表（一个类型只能有一个主人）
 
@@ -137,7 +144,6 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Replay` / `Store` | `autograd` | 重放执行：把计划编成"第 `k` 步之前重算哪几步、之后交还哪些激活"的扁平序列表，并驱动整次反向。`Store` 是唯一的口子（`compute` / `free`），真实缓冲归 `train`，这一层不碰数值 |
 | `Summary` | `autograd` | 图规模与可达性的只读计数快照：角色分布、边数、最大深度、可达变量与死分支；不存变量列表，供诊断、缓存键与容量预估 |
 | `Envelope` / `Frame` / `Decoder` / `Kind` / `Version` | `serve`（`protocol` 模块；`proto` 为兼容重导出路径） | 端点契约的线格式（ADR 0019 第七次吸收）：版本化信封、零拷贝帧视图与增量解码；帧布局、版本规则、载荷上限与校验尾见 ADR 0016。它不再独立成成员——唯一消费者就是同一个 crate 的 [`Response::frame`] 与 `Endpoint`，独立成员只会让"改协议"与"改端点"跨两次提交 |
-| `Batch` / `Dataset` / `Chunks` | `data` | 样本。`Batch` 与 `Chunks` 都借用调用方的 token 缓冲（取批零分配、零拷贝），两个构造函数都按 `(rows, cols)` 收几何、行主序，并共用同一份几何校验（行列非零、乘积不溢出），同一对非法行列不会因为走哪个构造函数而得到不同判定——此前 `Chunks::new` 收 `(cols, rows)`，同一对数字换个构造函数就是一次静默转置。批几何与批总数都在 `Chunks::new` 构造期算好，所以 `Dataset::next_batch` 的 `None` 只有一个含义：剩余不足一整批。三个计数各说一件事：`cols` 是列宽、`batches` 是完整批总数、`remaining_batches` 是还没取走的批数；每批行数与每批 token 数分别由 `Batch::rows` 与 `rows * cols` 给出；计数只在 `Dataset` 上定义一次，`Chunks` 的固有方法区只剩 `new`，不写一层往字段转发的同名方法；`Chunks` 还是 `ExactSizeIterator`，`len()` 与 `size_hint` 都取自 `remaining_batches`，「还剩几条」因此只有一个来源。`Dataset<'a>` 是对象安全的（`&mut dyn Dataset<'a>` 可用）。它只依赖 `diagnostic`：训练/验证集的行区间划分是调用方的选择（乘上列宽由调用方做），零消费者，按「无消费者不预埋」（ADR 0004；键表同一判据见 ADR 0048 §5）不入本 crate |
 | `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` / `ParamRole` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`ParamRole` 是参数角色闭集（Trainable/Bias/Norm/Embedding，ADR 0037）：权重衰减豁免与可训练判定从角色派生，优化器按角色取组，不按字段名猜 |`LmHead` 是注解声明的固定形状层（形状、输入宽度与算子写在 `#[spec]` 上，`impl Contract` 与校验测试由宏生成）——它曾经住在 L7 组装点，而组装点不定义类型。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、int8 → `gemv_i8`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / 裸 i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Contract::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
 | `RmsNorm` / `Softmax` / `Gelu` / `Silu` / `Rope` / `Scale` / `Add` / `Mul` / `ResidualAdd` / `ReduceSum` / `ReduceMax` / `Embedding` / `Attention` / `AttentionAlgo` / `MatMul` | `nn` | 单算子层：归一化、激活、位置编码、逐元素二元、标量缩放、归约、查表、注意力与矩阵乘。各层只固定自己绑定的已注册算子名与形状口径，规格校验、访问器委托与下界路径共享内核；下界仍由算子语义表推出，层里不写第二份流量常数。`AttentionAlgo` 在朴素与 Flash 两条已注册注意力算子之间选型；`MatMul` 是矩阵 × 矩阵的三轴骨架，收缩轴由 `gemm` 算子固定，层只声明输出行/列宽 |
 | `AttentionBlock` | `nn` | 注意力组合块：Q/K/V 三个投影 + 注意力 + 输出投影内聚成一个 `Contract`，子层按 `{块名}.q` / `.k` / `.v` / `.attn` / `.o` 前缀对齐权重条目；下界逐子层求和。残差旁路与层归一化引用块外主干隐藏向量，归装配侧接线，不内聚；子层经 `Contract::attention_block` 类型化视图取回，外层不按层名前缀分组扇出 |
@@ -146,6 +152,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Calib` / `Lif` | `nn` | 决策与脉冲的参考语义：`Calib` 是 DecisionHead 的校准闭集（spherical/softmax/temperature/brier，`brier` 是严格适当评分，`HEAD_LAYERS_TOKEN=0`）；`Lif` 是 γ 脉冲的漏积分-发放神经元（积分 + 泄漏 + 阈值 + 重置），`encode_id` 给 IEEE-754 恒等编码 |
 | `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` / `Partition` | `shard` | 集合通信契约（进程组、归约、后端 trait）与 TP/PP/DP 拓扑；`world` 是构造期算好的精确值（`tp · pp · dp` 必须能用 `u32` 表示，因为 rank 就是 `u32`），因此 `check` 不会接受一个不可能的进程数、`group` 也不会用回绕的乘积发出"看起来合法"的 rank |
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `ParamSlot` / `Checkpoint` / `Distributed` | `train` | `Distributed` 是分布式编排装配：拓扑、本 rank 与通信后端（泛型 `E: Collective`，单进程恒等回路不持通信句柄），梯度按数据并行组归约、是否取平均与归约种类随配置走；后端契约在 `shard`，训练侧只挂装配与同步口径。训练循环状态：`Schedule` 是纯函数学习率调度，`Anneal` 是 warmup 之后的衰减曲线闭集（线性 / 余弦 / 恒定）与最小学习率下限；`Session` 是一次训练会话（复用同一张图、同一批缓冲与同一个优化器，逐 micro-batch 推进），`TrainConfig` 收学习率峰值 / warmup / 总步数 / 裁剪上限 / 梯度累积窗口，`ParamSlot` 是已登记的参数槽（变量编号、角色与常驻参数值，梯度不在槽内、由缓冲自持） |
+| `Batch` / `Dataset` / `Chunks` | `train`（`samples` 模块） | 训练样本：`Batch` 与 `Chunks` 都借用调用方的 token 缓冲（取批零分配、零拷贝），两个构造函数都按 `(rows, cols)` 收几何、行主序，并共用同一份几何校验（行列非零、乘积不溢出），同一对非法行列不会因为走哪个构造函数而得到不同判定——此前 `Chunks::new` 收 `(cols, rows)`，同一对数字换个构造函数就是一次静默转置。批几何与批总数都在 `Chunks::new` 构造期算好，所以 `Dataset::next_batch` 的 `None` 只有一个含义：剩余不足一整批。三个计数各说一件事：`cols` 是列宽、`batches` 是完整批总数、`remaining_batches` 是还没取走的批数；每批行数与每批 token 数分别由 `Batch::rows` 与 `rows * cols` 给出；计数只在 `Dataset` 上定义一次，`Chunks` 的固有方法区只剩 `new`，不写一层往字段转发的同名方法；`Chunks` 还是 `ExactSizeIterator`，`len()` 与 `size_hint` 都取自 `remaining_batches`，「还剩几条」因此只有一个来源。`Dataset<'a>` 是对象安全的（`&mut dyn Dataset<'a>` 可用）。它原是一个独立成员 `data`，唯一消费者就是本 crate（`Learner` 经 `&mut dyn Dataset` 取批、`Checkpoint` 记批形状），按 ADR 0038 §修订并入：`train → data` 与 `data → diagnostic` 两条边随之消失，也不再多一个只为 `train` 存在的成员。训练/验证集的行区间划分仍是调用方的选择（乘上列宽由调用方做），零消费者，按「无消费者不预埋」（ADR 0004；键表同一判据见 ADR 0048 §5）不入本 crate |
 | `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `OwnedSlot` / `Moments` / `SlotMoments` / `GradAccum` | `train` | 优化器：对象安全 trait，矩状态由实现按槽位编号自持；`Group` 是角色派生的参数组闭集（`Group::from_role` 唯一映射，不按字段名猜组）；`OwnedSlot` 是一次步进取走的参数/梯度向量配对（owned 副本），`view()` 借出可变视图；`Slot` 是 `OwnedSlot` 内部向量借出的参数/梯度/角色视图；`Moments` 是矩状态表（按槽位编号排列 + 优化器全局步数，快照只搬运这一份表，无矩优化器写 `empty`），`SlotMoments` 是单槽的一阶矩 `m` 与二阶矩 `v`（两张表长度一致）；`GradAccum` 是累积窗口内尚未步进的梯度汇总（各槽 f32 表 + 已汇总 micro-batch 数），与矩状态平行入快照。autograd 只出 tape / plan / Replay，不持梯度存储 |
 | `Buffers` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地——按 `Sizes` 分配、按计划的释放点当场交还、按等长空闲表复用。`load` 要求变量已登记形状与元素类型（缺登记是 `internal`，不是"跳过校验"），分配走 `try_reserve_exact`（形状可能来自权重文件头，分配失败是一条错误而不是 `abort`）。算术交给 `Kernel`（默认 `Reference` 调 `op` 的标量语义），本层不定义算子、不决定显存计划、不碰 `unsafe`。两条存储 lane（`f32` 与按位打包 `u8`）由密封 trait `Lane` 承载，形态标签 `Kind` 只在"元素类型 → 形态"处出现一次；`Reference` 的算子表长度与顺序同 `op::REGISTRY` 在编译期锁死，`Inputs` 把每组输入的 lane 写成类型 |
 | `MetricPoint` / `MetricsBoard` / `Learner` / `ForwardOut` | `train` | 评估与编排：`MetricPoint` 是一条步指标（步号、样本数、平均 loss、命中率），`MetricsBoard` 在内存按样本数加权聚合 loss / accuracy、记最优 loss 并渲染可读行，不做持久化；`Learner` 是独立训练编排器，遍历数据集驱动「前向 → 评估入账 → 装梯度 → 优化步」闭环，模型拓扑与梯度来源由前向 / 梯度闭包注入；`ForwardOut` 是一次前向产出的 logits 与 loss 两个终点变量。交叉熵与命中统计是 train 侧纯函数，不进 op 设备核注册表 |
@@ -188,7 +195,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Program` / `Bindings` / `Buffer` / `View` / `ViewMut` / `CpuExecutor` | `engine` | CPU 执行体：`Program` 是一段可执行内核体（名字 + 在只读输入与可写输出上就地计算），按名字登记、重名拒绝；`Buffer` 是已绑定缓冲的存储形态，`F32(Vec<f32>)` 或按位打包的 `U8(Vec<u8>)`（i4/i8 lane），只承载元素宽度，形状与条目名留装配侧；`View`/`ViewMut` 是一次 `Program::run` 的只读/可写窄视图，分别给 f32 切片或打包字节切片，形态不符取槽给 `Invalid`；`Bindings` 是编号 ↔ `Buffer` 的操作数表（f32 与打包字节两路 lane），按编号排序，因此诊断输出与插入顺序无关；`CpuExecutor` 把图**入队**、在 `sync` 时按图序真的执行——查内核、借出操作数、调用、放回，失败路径也放回，而没跑完的条目留在队列里（`pending` 查得到）。`sync` 只排指定流：跨流先后不属于本层，`submit` 返回只表示"已入队"，这与 `Executor` 契约里"提交不等于完成"一致。它与只记账的 `LocalExecutor` 共用 `Executor` trait，"换后端不改上层"不因多了实现而改变。借出/放回是安全的：编号到缓冲的映射是运行期值，借用检查器无法证明两组编号不重叠，所以执行器把缓冲从表里取出来、用完放回，不装 `unsafe` |
 | `Slot` | `engine` | 一个 token 在 KV 缓存里的位置（页号 + 页内偏移）：`Table::slot` 用页宽除出偏移，`Scheduler::slot` 连"先准入"这一前提一起校验。写 kernel 的一侧因此不必自己拿页表再算一遍偏移 |
 | `Pager` | `engine` | 页池加上页里的数据：一页 = `page_size` 行、每行 `width` 个 `f32`，整池构造时一次分配，借出不再碰分配器。`row` / `row_mut` / `write` 只经 `Slot` 寻址，并且先验"页还活着"与"偏移在页内"——失效的 `Slot` 不是合法地址。`share` 是另一张表采纳同一前缀页的入口（只 +1 计数）；`release` 是唯一清零点：只有最后一个持有者归还时才清零，所以复用页读到的永远是零。行宽由装载模型的一侧给，页池不认识层与头；多层模型拿整行再按自己的层偏移切 |
-| `Batch` / `Admission` | `engine` | 连续批：`Batch` 把页账（`Scheduler`）与它正在跑的 `Sequence` 收在一处，准入、推进、结束与 KV 读写都只有这一个来源，`sequences` 与 `running` 顺序相同；`emit(id, token)` 是"记账 + 推进"的唯一入口，`Blocked` 时不多记一个 token；`Admission` 是准入结局——已进批，或页不够时把序列原样退回（服务层据此报可重试的 503）。与 `data::Batch`（一批 token 行）同名不同物：前者是调度单位，后者是数据单位 |
+| `Batch` / `Admission` | `engine` | 连续批：`Batch` 把页账（`Scheduler`）与它正在跑的 `Sequence` 收在一处，准入、推进、结束与 KV 读写都只有这一个来源，`sequences` 与 `running` 顺序相同；`emit(id, token)` 是"记账 + 推进"的唯一入口，`Blocked` 时不多记一个 token；`Admission` 是准入结局——已进批，或页不够时把序列原样退回（服务层据此报可重试的 503）。与 `train::Batch`（一批 token 行）同名不同物：前者是调度单位，后者是数据单位 |
 | `Sharding` / `Tiling` | `shard` | 张量并行的两种线性层切法（`Column` 切输出维、分片直接进下一层；`Row` 切输入维、每 rank 一份部分和）与一层权重的切分计划：每个 rank 的权重形状、被切维区间、以及"合并要不要 `all_reduce(Sum)`"。切分必须整除（各 rank 形状一致），不整除在构造期失败，而不是摊余数 |
 | `Local` | `shard` | 进程内的集合通信实现：每个 rank 一份镜像，`load` 写入输入、`all_reduce` 按 `Group` 的 rank 升序归约并写回每个成员。它让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
 | `Remote` | `shard` | 远端集合通信占位后端：与 `Local` 同一 `Collective` 端口，不持网络/通信句柄、不接 FFI、不写 `unsafe`；`all_reduce` 统一返回 `Unsupported`，拒绝时不改动调用方缓冲。真实跨进程实现（NCCL/MPI/Gloo，组内握手与句柄池）随后续后端刀填入，上层调用点不变 |

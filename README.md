@@ -48,8 +48,8 @@ struct LmHead;   // 生成 impl nn::Contract + 一条“声明仍与 op 数据�
 | L2 数据层 | `prof` `op` `prim` | 设备档案与能力闭集、算子声明与模板（22 条，`op::REGISTRY` 是唯一清单）及其求和代价（`op/src/einsum/`）、原语片段与见证（纯数据） |
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行与见证执行；`doctor` / `verify` / `bench` / `execution` 四条命令共用一条流水线（`pipeline`），报告本身只是数据、排版在驱动方；设计契约见 [cutile README](crates/cutile/README.md) |
 | L4 运行时 | `tensor` `storage` `tokenizer` | 张量元数据、布局搬运、文本边界 |
-| L5 模型与训练 | `weights` `autograd` `data` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、反向图、样本、层定义、切分拓扑 |
-| L6 调度与服务 | `train` `engine` `serve` | 训练循环状态与检查点格式（`train/src/snapshot/`）、连续批与序列及页账与提交契约（`engine/src/{kv,exec}.rs`）、端点契约与其线格式（`serve/src/proto/`） |
+| L5 模型与训练 | `weights` `autograd` `nn` `shard` | 权重结构、safetensors 读取与量化分组推断、反向图、层定义、切分拓扑 |
+| L6 调度与服务 | `train` `engine` `serve` | 训练样本（`train/src/samples.rs`）、训练循环状态与检查点格式（`train/src/snapshot/`）、连续批与序列及页账与提交契约（`engine/src/{kv,exec}.rs`）、端点契约与其线格式（`serve/src/proto/`） |
 | L7 入口 | `cli`（bin：`llm` / `cutile`） | 组合根：命令行文法与配置解析，把上面各层连起来装配、取值解析与人可读排版；编排入口不定义新类型；`status` 算下界，`run` 用真实权重执行 |
 
 唯一一条依赖规则：**依赖只能指向更低的层（同层只能依赖更靠左的成员）**。因此向上依赖不可能通过、
@@ -66,7 +66,6 @@ cli ──▶ engine ──▶ tensor ──▶ diagnostic
   ├──▶ nn ──▶ weights / op / annotation
   ├──▶ train ──▶ nn ──▶ op
   │             ├▶ autograd ─┤
-  │             ├▶ data ─────┤
   │             └▶ shard ────┘
   ├──▶ weights ──▶ storage ──┘
   ├──▶ op / prof / tool

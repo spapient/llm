@@ -30,7 +30,7 @@
 | R-10 | Program 标量/形状通道（rope 位置标量、attention heads/head_dim） | backend G3、§5.1；D9 已定：定长类型化闭集槽，不用查表 | M1-B6 按 D9 落地 |
 | R-11 | Bindings 元数据（编号 ↔ 形状/条目名） | backend G4、§5.2；D10 已定：描述表留装配侧，engine 纯缓冲 | M1-B7 按 D10 落地 |
 | R-12 | 词表（vocab）从权重容器装载 | `Tokenizer` 现由 `Completion` 外部注入（`completion.rs:29`）；weights 无 vocab 读取通路 | M4-1 补条目 |
-| R-13 | 训练 data 层夹具装配 | `data` 有 `Dataset` trait/`Chunks`/`Batch`（`data/src/lib.rs`），T1-3 未列装配交付物 | T1-3 补条目 |
+| R-13 | 训练样本夹具装配 | 样本三件套 `Dataset` trait/`Chunks`/`Batch` 在 `train::samples`（原 `data` 成员，ADR 0038 §修订并入），T1-3 未列装配交付物 | T1-3 补条目 |
 | R-14 | 机制代码分账规则落档 | design §5.3 排除规则与 L1–L7 分账口径，M1-C1 只说"出基线" | M1-C1 补"规则可复跑、分账表入档" |
 
 ### 0.3 规范薄弱，已补强（§2）
@@ -214,7 +214,7 @@
 |---|---|---|---|---|---|---|
 | T1-1 | `Optimizer` trait + SGD/Adam（矩估计、偏差修正、AdamW 解耦衰减、梯度裁剪） | `train` | D2 | 两实现；矩状态按参数组自持 | 小模型一步更新权重变化可断言；gradcheck 阈值内 | 分布式优化器 |
 | T1-2 | 扩展 `ContractSpec` 新增 `ParamRole` 闭集（Trainable/Bias/Norm/Embedding，D11），由层构造器填值；wd 豁免、可训练判定从角色派生；优化器按角色取组，不猜字段名 | `nn`/`train` | T1-1 | 角色字段 + 层默认角色；参数组视图由角色派生 | 组归属对拍；错组/缺角色负例 | — |
-| T1-3 | 接 autograd：tape → 反传计划 → 梯度需求分类（`Requirement::Grad` 终点）→ 裁剪 → 优化器步；梯度缓冲由 train `Buffers` 扩展自持（autograd 只出 tape/plan/Replay，不持有梯度存储）；`data::Dataset/Chunks/Batch` 夹具装配进训练循环 | `train`/`autograd`/`data` | T1-1 | 前向缓存→反向→更新闭环；梯度缓冲复用；夹具批次通路 | 夹具语料跑通指定步数；loss 趋势可记录；批次形状往返一致 | 真实大语料通路 |
+| T1-3 | 接 autograd：tape → 反传计划 → 梯度需求分类（`Requirement::Grad` 终点）→ 裁剪 → 优化器步；梯度缓冲由 train `Buffers` 扩展自持（autograd 只出 tape/plan/Replay，不持有梯度存储）；`train::samples` 的 `Dataset`/`Chunks`/`Batch` 夹具装配进训练循环 | `train`/`autograd` | T1-1 | 前向缓存→反向→更新闭环；梯度缓冲复用；夹具批次通路 | 夹具语料跑通指定步数；loss 趋势可记录；批次形状往返一致 | 真实大语料通路 |
 | T1-4 | CLI `train` 命令：配置 → 会话 → 周期 checkpoint → `--load` 恢复；快照格式扩优化器矩状态（当前 `Checkpoint` 仅元数据、`resume` 只对账拓扑/层数/批行，R-23） | `cli`/`train` | T1-3 | 训练命令 + 装载恢复 + 矩状态落盘 | 权重与矩状态存载往返逐位一致；步数/图规模/批形状可恢复；旧快照版本拒绝负例 | offload/tie 回填 |
 | T1-5 | 梯度累积落地；累积窗口梯度汇总入快照（与 T1-4 同格式）；offload/tie 权重回填留接口 | `train` | T1-3 | 累积窗口梯度汇总；acc 状态可往返 | 累积汇总对拍；tie 回填有对拍 | ZeRO/分布式并行 |
 
@@ -269,7 +269,7 @@
 |---|---|---|---|---|---|
 | D1 | 权重源抽象形状 | 沿用既有 `Reader`（借用）/`Loader`（拷贝），**不新增平行 `Source` 父 trait**；`MmapSource` 实现 `Reader`（Unix feature 门控），`File` 保持 `Loader` | 另立 `Source` 父 trait 统一两入口；全文件强制 mmap；只留文件流 | `weights::Reader/Loader` 已定形（`lib.rs:268/277`），`Archive` 双实现、`File` Loader 已在跑（`safetensors.rs:103/127/191`）；父 trait 无第二消费者 | 0036 |
 | D2 | 优化器 trait 归属与形状 | 归 `train`；`Optimizer` 对象安全 trait，`step(params, grads, meta: &ParamRole, lr)`；矩状态按参数编号由优化器自持；参数角色元数据来自 `nn` 声明，优化器不按字段名猜测 | 优化器下沉 `autograd`；按参数类型泛型特化；优化器直接改私有字段 | `autograd` 只出 tape/plan/Replay/Store，无更新策略（`autograd/src/lib.rs` 导出清单）；`train` 现无任何优化/梯度更新代码；`Role::is_parameter` 已可派生 | 0037 |
-| D3 | 训练闭环排期 | 单列 T1，并行推进，**不阻塞 M1 推理出口**；资源紧张时先 M1-B | 训练与推理同阶段串行；训练优先 | 设计 §4.4；T1 依赖的 data/autograd/nn 接口均已存在 | 记录在设计 §4.4，不单列 ADR |
+| D3 | 训练闭环排期 | 单列 T1，并行推进，**不阻塞 M1 推理出口**；资源紧张时先 M1-B | 训练与推理同阶段串行；训练优先 | 设计 §4.4；T1 依赖的 `train::samples`/autograd/nn 接口均已存在 | 记录在设计 §4.4，不单列 ADR |
 | D4 | crate 合并节奏 | 维持 24 个成员到 M2；M2 后只合并"单一消费者 + 同层"的叶子成员，合并以边数/行数/编译时间实证为据 | 立即 31→8 模块；按目录猜合并 | 当前 24 成员；编译期并行与架构门边界是既有长板。**2026-11-19 文件级合并实证（ADR 0049）**：crate 边界不动，src 255→195、测试文件 49→38，测试数 1,779 不跌、门禁全绿——文件级内联+re-export 即可达成 ~25% 文件削减，无需动 crate 边界 | 0038（已落档）+ 0049 |
 | D5 | 解析器依赖策略 | 维持生产零外部依赖；手写解析按格式收敛到模块内单源；`diagnostic` 的 optional `toml` 保持 build feature 门控。**2026-11-19 修订（ADR 0048）**：L1–L6 生产路径零外部依赖不变；L7 组合根（`cli`）允许唯一例外 `toml`（配置文件层解析），版本由 workspace 锁定 | 引入 toml+serde 单依赖换数千行手写解析 | 生产路径仅 optional `toml`/`bytemuck`（R-21）；解析分散在 weights 的 json/gguf/safetensors/rans | 0039（已落档）+ 0048（L7 例外修订） |
 | D6 | 后端 trait 形状 | 沿用 ADR-0025 的 `Executor`/`Allocator`/`Collective`/`Program`；CPU 首实现验证形状后再挂 Metal/CUDA；第二后端出现前不预埋多余泛型参数 | 为双后端现在预埋设备泛型；后端私有假设上浮到模型/调度代码 | 四 trait 已定形（`exec.rs:261/383`、`storage.rs:171`、`shard/collective.rs:11`）；`LocalExecutor` 契约后端 + `CpuExecutor` 注册表在位 | 修订 0025 或 0040（M3-1 前） |
@@ -289,7 +289,7 @@
 |---|---|---|---|
 | P0 | P0 加固 + M1-C1 | 文档回填、结构减量、属性/fuzz 加固、片段签名校验、已具备能力守回归、基准口径分账 | 门禁全绿；机制基线可复跑；守护测试常驻 |
 | P1 | M1-A + M1-B + M1-C2 | 装载驻留、CPU 单序列前向、首批对照 harness | CPU 前向对拍达标；首批同硬件对照数字入表 |
-| —（并行） | T1 | 训练最小闭环（含 data 夹具装配） | 反传可更新参数；checkpoint 往返一致；批次形状往返一致 |
+| —（并行） | T1 | 训练最小闭环（含样本夹具装配） | 反传可更新参数；checkpoint 往返一致；批次形状往返一致 |
 | P2 | M2 | KV 真实数据、连续批（调度层已落地）、模型内核批形状、prefix cache、decode 基准 | 多序列端到端；KV 边界测试；对照曲线入表 |
 | P3 | M3 | 双后端边界、量化 lane、通信原型、roofline | 同后端对拍一致；边界外零 unsafe |
 | P4 | M4 | 真实权重端到端、HTTP 服务、服务基准 | 真实权重生成；端点被真实服务器替换 |

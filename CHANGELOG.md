@@ -91,6 +91,19 @@
 
 ### Changed
 
+- **`data` 成员并入 `train`：成员 25 → 24、边 112 → 110，样本与训练循环回到同一个 crate（ADR 0038 §修订）**。
+  `Batch` / `Dataset` / `Chunks` 的语义就是训练循环的输入端口——`Learner` 收 `&mut dyn Dataset` 取批、
+  `Checkpoint` 记 `Batch` 几何——而 `data` 唯一的出边 `data → diagnostic` 正是 `train` 已有的依赖，
+  并入后依赖面增量为 0；消失的是 `train → data` 与 `data → diagnostic` 两条边，不新增任何边。
+  代码整块搬进 `crates/train/src/samples.rs`（原 `mod batch` / `mod dataset` 两个内联模块合成一个文件、
+  一套测试），对外路径改为 `llm_train::{Batch, Chunks, Dataset}`；`crates/data` 目录与它的 `Cargo.lock`
+  条目一起删除，`docs/ARCHITECTURE.md` 的层表把"样本"从 L5 移到 L6 的 `train`，所有权表、边清单与
+  吸收史（第十一次）同步。这也是 ADR 0038 §4「剩余单生产消费者叶子全部跨层，不合并」的逐条取证修订：
+  跨层叶子改为按"语义归属 + 依赖面增量"取证，`rng` / `tokenizer`（L1/L4 通用基础件，语义不属于 `serve`）、
+  `autograd`（消费者还有 `benches`）、`shard`（独立集合通信契约）的结论不变。**实测**：`llm-train`
+  175 条 + 6 条 doctest 全绿，架构门 8 条（110 边、所有权表 `train` 持三件套）通过，`clippy -D warnings`
+  与 `fmt --check` 通过。
+
 - **`data` 第三轮减法：删掉 `Chunks` 上与 `Dataset` 一一对应的三个固有访问器，计数只在 trait 上定义一次**。
   `Chunks::{cols, batches, remaining_batches}` 三个固有方法此前只是 `Dataset` 实现的转发目标：trait 方法
   调固有方法、固有方法读字段，同一语义两份定义，而全仓没有任何调用方走固有那一层（`train` 经

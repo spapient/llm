@@ -335,7 +335,8 @@ fn next_token_labels(tokens: &[u32], rows: usize, cols: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Chunks, Data, Distill, ForwardOut, Grpo, Learner, Metric, Reference, Session, Sgd, TrainConfig,
+        Chunks, Data, Distill, ForwardOut, Grpo, Learner, Metric, Reference, Session, Sgd,
+        TrainConfig,
     };
     use autograd::{Sizes, Store, Tape, Var};
     use diagnostic::{Code, Error, Result};
