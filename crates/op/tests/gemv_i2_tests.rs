@@ -1,5 +1,5 @@
 use super::*;
-use crate::gemv::packed_test_support::{at, pack, with};
+use crate::gemv::packed_test_support::{at, multi_group, pack, with};
 
 crate::gemv::packed_test_support::packed_gemv_tests!(I2, MODEL, GROUP, forward, 1, 16);
 crate::gemv::packed_test_support::packed_gemv_config_tests!(
@@ -13,11 +13,12 @@ crate::gemv::packed_test_support::packed_gemv_config_tests!(
 
 #[test]
 fn reference_handles_multiple_groups_and_rows() {
-    let m = 8;
-    let n = 2;
-    let w = pack(2, &[1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1]);
-    let x: Vec<f32> = (0..m).map(|index| index as f32 + 1.0).collect();
-    let sample = with(m, n, x, w, vec![0.25, 0.5, 1.0, -1.0]);
+    let (w, x, scales, m, n) = multi_group(
+        2,
+        &[1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1],
+        vec![0.25, 0.5, 1.0, -1.0],
+    );
+    let sample = with(m, n, x, w, scales);
     let y = crate::gemv::reference::<I2>(&sample).expect("参考可算");
     assert_eq!(y.len(), n);
     assert!(y[0].is_finite());
@@ -26,11 +27,11 @@ fn reference_handles_multiple_groups_and_rows() {
 
 #[test]
 fn forward_writes_into_the_caller_buffer_and_matches_the_reference() {
-    let m = 8;
-    let n = 2;
-    let w = pack(2, &[1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1]);
-    let x: Vec<f32> = (0..m).map(|index| index as f32 + 1.0).collect();
-    let scales = vec![0.25, 0.5, 1.0, -1.0];
+    let (w, x, scales, m, n) = multi_group(
+        2,
+        &[1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1],
+        vec![0.25, 0.5, 1.0, -1.0],
+    );
     let expected =
         crate::gemv::reference::<I2>(&with(m, n, x.clone(), w.clone(), scales.clone())).expect("参考可算");
 

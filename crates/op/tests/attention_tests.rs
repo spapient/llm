@@ -133,7 +133,12 @@ fn decode_qkv(q_rows: usize, hist: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<
 }
 
 /// 多头 decode 的确定性 q/k/v：头优先块布局。
-fn headed_qkv(heads: usize, q_rows: usize, hist: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+fn headed_qkv(
+    heads: usize,
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     (
         det_headed(heads, q_rows, d, -0.5, 0.13),
         det_headed(heads, hist, d, 0.4, -0.09),

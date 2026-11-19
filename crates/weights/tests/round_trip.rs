@@ -30,8 +30,7 @@ fn write_pair(prefix: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("时间")
         .as_nanos();
-    let target =
-        std::env::temp_dir().join(format!("{prefix}_{}_{}.u", std::process::id(), nanos));
+    let target = std::env::temp_dir().join(format!("{prefix}_{}_{}.u", std::process::id(), nanos));
     writer.write_to_path(6, &target).expect("原子写");
     target
 }

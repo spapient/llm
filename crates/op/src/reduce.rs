@@ -157,8 +157,9 @@ macro_rules! reduce_f32 {
         }
 
         #[cfg(test)]
-        #[path = $test]
-        mod tests;
+        mod tests {
+            include!($test);
+        }
     };
 }
 
@@ -190,4 +191,38 @@ pub(crate) mod test_support {
         };
     }
     pub(crate) use reduce_op_tests;
+}
+
+// 声明式算子表：同一副归约骨架的两种算子（最大值 / 求和），每个算子一个 `pub mod` 保持
+// `op::<name>::MODEL` / `op::<name>::forward` 路径不变（`forward` 同名，必须隔在各自的模块里）。
+// 新增一种归约在此补一段。
+
+pub mod reduce_max_f32 {
+    //! 最大值归约：`y[0] = max(a[0..n])`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::reduce`] 骨架按 [`Max`] 单态化。
+
+    crate::reduce_f32!(
+        Max,
+        ReduceMaxF32,
+        "reduce_max_f32",
+        "../tests/reduce_max_f32_tests.rs",
+        f32::MIN,
+        |acc, x| if x > acc { x } else { acc }
+    );
+}
+
+pub mod reduce_sum_f32 {
+    //! 求和归约：`y[0] = sum(a[0..n])`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::reduce`] 骨架按 [`Sum`] 单态化。
+
+    crate::reduce_f32!(
+        Sum,
+        ReduceSumF32,
+        "reduce_sum_f32",
+        "../tests/reduce_sum_f32_tests.rs",
+        0.0,
+        |acc, x| acc + x
+    );
 }

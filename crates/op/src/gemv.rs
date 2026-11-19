@@ -756,6 +756,18 @@ pub(crate) mod packed_test_support {
     }
     pub(crate) use packed_gemv_tests;
 
+    /// 8×2 多组样本：打包 `bits` 位权重、逐行递增输入 `x`，返回 `(w, x, scales, m, n)`。
+    pub fn multi_group(
+        bits: usize,
+        w: &[i8],
+        scales: Vec<f32>,
+    ) -> (Vec<u8>, Vec<f32>, Vec<f32>, usize, usize) {
+        let (m, n) = (8, 2);
+        let packed = pack(bits, w);
+        let x: Vec<f32> = (0..m).map(|index| index as f32 + 1.0).collect();
+        (packed, x, scales, m, n)
+    }
+
     /// 把 `bits` 位有符号码按低 `bits` 位落在字节内：`zero = 2^(bits-1)` 平移、低 `bits` 位落字节。
     pub fn pack(bits: usize, values: &[i8]) -> Vec<u8> {
         let cpb = 8 / bits;
@@ -791,7 +803,8 @@ pub(crate) mod packed_test_support {
                 let w = vec![0u8; m / (8 / $bits)];
                 let x = vec![1.0; m];
                 for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-                    let error = forward(&x, &w, &[bad], &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
+                    let error =
+                        forward(&x, &w, &[bad], &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
                     assert_eq!(error.code(), diagnostic::Code::Invalid);
                 }
             }
@@ -824,10 +837,13 @@ pub(crate) mod packed_test_support {
 
             #[test]
             fn call_arguments_follow_the_template_signature() {
-                let signature = crate::sig::Signature::parse($op, include_str!("../ops/gemv_packed.k"))
-                    .expect("签名可解析");
+                let signature =
+                    crate::sig::Signature::parse($op, include_str!("../ops/gemv_packed.k"))
+                        .expect("签名可解析");
                 assert_eq!(
-                    signature.call_args(&crate::gemv::sample::<$ty>(64, 4)).expect("实参"),
+                    signature
+                        .call_args(&crate::gemv::sample::<$ty>(64, 4))
+                        .expect("实参"),
                     "x, w, scales, y, 64, 4, 32"
                 );
                 assert_eq!(signature.output(), Some("y"));
