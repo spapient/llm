@@ -23,7 +23,9 @@ use std::path::PathBuf;
 #[cfg(unix)]
 use weights::MmapSource;
 use weights::safetensors::File;
-use weights::{Loader, Reader};
+use weights::Loader;
+#[cfg(unix)]
+use weights::Reader;
 
 /// 条目数。
 const N_ENTRIES: usize = 8;
