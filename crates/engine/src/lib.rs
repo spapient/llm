@@ -474,12 +474,22 @@ impl Scheduler {
         needed: usize,
     ) -> Result<crate::kv::Table> {
         let mut table = crate::kv::Table::new(needed)?;
+        self.link_prefix(&mut table, prefix)?;
+        Self::fill(&mut self.pager, &mut table, fresh, "engine::Scheduler::admit")?;
+        Ok(table)
+    }
+
+    /// 按块序把命中页接进页表：共享一份引用，不新建页。
+    fn link_prefix(
+        &mut self,
+        table: &mut crate::kv::Table,
+        prefix: &[crate::kv::Page],
+    ) -> Result<()> {
         for page in prefix {
             self.pager.share(*page)?;
             table.push(*page)?;
         }
-        Self::fill(&mut self.pager, &mut table, fresh, "engine::Scheduler::admit")?;
-        Ok(table)
+        Ok(())
     }
 
     /// 把一个写满的块登记进前缀树，返回是否新登记（重复登记返回 `false`）。

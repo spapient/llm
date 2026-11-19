@@ -412,13 +412,31 @@ where
             // 页不够：这一轮先不算，块位置一个都不推进。已算的前缀仍然有效，下一轮接着算。
             return Ok(Block::Deferred);
         }
+        let block = self.step_span(sequence, at, end)?;
+        self.settle_block(id, end, block)
+    }
+
+    /// 逐位算一块：任一位报不支持就停在原地，返回 `Unsupported` 而不是半块。
+    fn step_span(
+        &mut self,
+        sequence: &Sequence,
+        at: usize,
+        end: usize,
+    ) -> diagnostic::Result<Block> {
         for position in at..end {
             if !self.step_prompt(sequence, position)? {
                 return Ok(Block::Unsupported);
             }
         }
-        self.batch.mark_prefilled(id, end)?;
         Ok(Block::Done)
+    }
+
+    /// 一块算完之后登记它：只有算完整块才登记，页紧与退化都不留半块账。
+    fn settle_block(&mut self, id: u64, end: usize, block: Block) -> diagnostic::Result<Block> {
+        if block == Block::Done {
+            self.batch.mark_prefilled(id, end)?;
+        }
+        Ok(block)
     }
 
     /// 把一个提示位置算进页账：`false` 表示模型没有分块预填充，已把整段记为退化。
