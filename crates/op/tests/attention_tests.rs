@@ -47,9 +47,7 @@ fn det_rows(rows: usize, d: usize, base: f32, step: f32) -> Vec<f32> {
 #[test]
 fn decode_flash_and_plain_agree_with_single_query_row() {
     let (q_rows, hist, d) = (1, 5, 4);
-    let q = det_rows(q_rows, d, -0.5, 0.13);
-    let k = det_rows(hist, d, 0.4, -0.09);
-    let v = det_rows(hist, d, -0.2, 0.11);
+    let (q, k, v) = decode_qkv(q_rows, hist, d);
 
     let mut plain = vec![0.0f32; q_rows * d];
     decode_forward(&q, &k, &v, &mut plain, q_rows, hist, d).expect("朴素 decode");
@@ -66,9 +64,7 @@ fn decode_flash_and_plain_agree_with_single_query_row() {
 #[test]
 fn decode_supports_multiple_query_rows_against_history() {
     let (q_rows, hist, d) = (2, 4, 4);
-    let q = det_rows(q_rows, d, -0.5, 0.13);
-    let k = det_rows(hist, d, 0.4, -0.09);
-    let v = det_rows(hist, d, -0.2, 0.11);
+    let (q, k, v) = decode_qkv(q_rows, hist, d);
 
     let mut plain = vec![0.0f32; q_rows * d];
     decode_forward(&q, &k, &v, &mut plain, q_rows, hist, d).expect("朴素 decode");
@@ -82,9 +78,7 @@ fn decode_supports_multiple_query_rows_against_history() {
 #[test]
 fn decode_rejects_buffer_length_mismatch() {
     let (q_rows, hist, d) = (1, 5, 4);
-    let q = det_rows(q_rows, d, -0.5, 0.13);
-    let k = det_rows(hist, d, 0.4, -0.09);
-    let v = det_rows(hist, d, -0.2, 0.11);
+    let (q, k, v) = decode_qkv(q_rows, hist, d);
 
     // k 少一行：历史长度对不上。
     let mut out = vec![0.0f32; q_rows * d];
@@ -130,6 +124,42 @@ fn det_headed(heads: usize, rows: usize, d: usize, base: f32, step: f32) -> Vec<
         .collect()
 }
 
+/// 无头 decode 的确定性 q/k/v：`q` 取 `q_rows` 行、`k`/`v` 各取 `hist` 行，同一条线性序列。
+fn decode_qkv(q_rows: usize, hist: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    (
+        det_rows(q_rows, d, -0.5, 0.13),
+        det_rows(hist, d, 0.4, -0.09),
+        det_rows(hist, d, -0.2, 0.11),
+    )
+}
+
+/// 多头 decode 的确定性 q/k/v：头优先块布局。
+fn headed_qkv(heads: usize, q_rows: usize, hist: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    (
+        det_headed(heads, q_rows, d, -0.5, 0.13),
+        det_headed(heads, hist, d, 0.4, -0.09),
+        det_headed(heads, hist, d, -0.2, 0.11),
+    )
+}
+
+/// plain/flash 两套 decode 的公共对拍：全有限 + 逐元素绝对容差 1e-5。
+fn assert_plain_flash(plain: &[f32], flash: &[f32]) {
+    assert!(testkit::all_finite(plain));
+    assert!(testkit::approx_eq(flash, plain, 1e-5));
+}
+
+/// 常数 V 段校验：段 `seq` 全取 `1 + seq`，softmax 权重和为 1，输出应恒等于该段常数。
+fn assert_constant_v(plain: &[f32], q_seq: usize, batch: usize) {
+    for seq in 0..batch {
+        let constant = 1.0 + seq as f32;
+        let span = &plain[seq * q_seq..(seq + 1) * q_seq];
+        assert!(
+            span.iter().all(|value| (value - constant).abs() < 1e-5),
+            "序列 {seq} 输出应恒等于本段 V 常数 {constant}，得到 {span:?}"
+        );
+    }
+}
+
 #[test]
 fn multi_head_decode_keeps_each_head_independent_and_plain_matches_flash() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
@@ -165,9 +195,7 @@ fn multi_head_decode_keeps_each_head_independent_and_plain_matches_flash() {
 #[test]
 fn one_head_entry_matches_the_single_head_kernel() {
     let (q_rows, hist, d) = (2, 4, 4);
-    let q = det_rows(q_rows, d, -0.5, 0.13);
-    let k = det_rows(hist, d, 0.4, -0.09);
-    let v = det_rows(hist, d, -0.2, 0.11);
+    let (q, k, v) = decode_qkv(q_rows, hist, d);
 
     let mut single = vec![0.0; q_rows * d];
     decode_forward(&q, &k, &v, &mut single, q_rows, hist, d).expect("单头朴素");
@@ -179,9 +207,7 @@ fn one_head_entry_matches_the_single_head_kernel() {
 #[test]
 fn multi_head_rejects_non_multiple_buffer_length() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
-    let q = det_headed(heads, q_rows, d, -0.5, 0.13);
-    let k = det_headed(heads, hist, d, 0.4, -0.09);
-    let v = det_headed(heads, hist, d, -0.2, 0.11);
+    let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
     let mut out = vec![0.0; heads * q_rows * d];
     // q 只给一个头的长度，而 k/v 是两头：头块倍数校验应拦下。
     assert!(decode_forward_heads(&q[..q_rows * d], &k, &v, &mut out, q_rows, hist, d).is_err());
@@ -233,9 +259,7 @@ fn batch_decode_keeps_each_sequence_independent_and_plain_matches_flash() {
 #[test]
 fn batch_one_entry_matches_the_multi_head_kernel() {
     let (q_rows, hist, heads, d) = (2, 4, 2, 3);
-    let q = det_headed(heads, q_rows, d, -0.5, 0.13);
-    let k = det_headed(heads, hist, d, 0.4, -0.09);
-    let v = det_headed(heads, hist, d, -0.2, 0.11);
+    let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
 
     let mut multi = vec![0.0; heads * q_rows * d];
     decode_forward_heads(&q, &k, &v, &mut multi, q_rows, hist, d).expect("多头朴素");
@@ -248,9 +272,7 @@ fn batch_one_entry_matches_the_multi_head_kernel() {
 #[test]
 fn batch_rejects_non_multiple_length_and_zero_batch() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
-    let q = det_headed(heads, q_rows, d, -0.5, 0.13);
-    let k = det_headed(heads, hist, d, 0.4, -0.09);
-    let v = det_headed(heads, hist, d, -0.2, 0.11);
+    let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
     let mut out = vec![0.0; heads * q_rows * d];
     // batch=2 但 q/k/v 只给一段：批块倍数校验应拦下。
     assert!(decode_forward_batch(&q, &k, &v, &mut out, q_rows, hist, d, heads, 2).is_err());
@@ -316,9 +338,7 @@ fn batch_var_keeps_mixed_history_lengths_independent_and_plain_matches_flash() {
 #[test]
 fn batch_var_one_entry_matches_the_multi_head_kernel() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
-    let q = det_headed(heads, q_rows, d, -0.5, 0.13);
-    let k = det_headed(heads, hist, d, 0.4, -0.09);
-    let v = det_headed(heads, hist, d, -0.2, 0.11);
+    let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
 
     let mut multi = vec![0.0; heads * q_rows * d];
     decode_forward_heads(&q, &k, &v, &mut multi, q_rows, hist, d).expect("多头朴素");
