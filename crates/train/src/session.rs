@@ -508,6 +508,19 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Ok(())
     }
 
+    /// 校验绑定两端参数槽长度一致；不符是 [`Code::Invalid`]。
+    fn check_tie_length(&self, source: usize, tied: usize) -> Result<()> {
+        if self.slots[source].params().len() == self.slots[tied].params().len() {
+            return Ok(());
+        }
+        let message = format!(
+            "绑定两端长度不一致：源槽 {} 元素，回填槽 {} 元素",
+            self.slots[source].params().len(),
+            self.slots[tied].params().len()
+        );
+        Err(Error::new(Code::Invalid, message).with(SITE))
+    }
+
     /// 绑定表回载：编号必须落在会话槽位内，两端长度一致；回载替换既有绑定表。
     fn restore_ties(&mut self, ties: &Ties) -> Result<()> {
         let slot_count = self.slots.len();
@@ -517,14 +530,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
                     format!("绑定对 ({source}, {tied}) 编号越界：会话只有 {slot_count} 个参数槽");
                 return Err(Error::new(Code::Invalid, message).with(SITE));
             }
-            if self.slots[source].params().len() != self.slots[tied].params().len() {
-                let message = format!(
-                    "绑定两端长度不一致：源槽 {} 元素，回填槽 {} 元素",
-                    self.slots[source].params().len(),
-                    self.slots[tied].params().len()
-                );
-                return Err(Error::new(Code::Invalid, message).with(SITE));
-            }
+            self.check_tie_length(source, tied)?;
         }
         self.ties = ties.pairs().to_vec();
         Ok(())
@@ -633,14 +639,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     pub fn register_tie(&mut self, source: Var, tied: Var) -> Result<()> {
         let source = self.slot_index(source)?;
         let tied = self.slot_index(tied)?;
-        if self.slots[source].params().len() != self.slots[tied].params().len() {
-            let message = format!(
-                "绑定两端长度不一致：源槽 {} 元素，回填槽 {} 元素",
-                self.slots[source].params().len(),
-                self.slots[tied].params().len()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
+        self.check_tie_length(source, tied)?;
         self.ties.push((source, tied));
         Ok(())
     }
