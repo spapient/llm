@@ -388,9 +388,7 @@ impl Batch {
         let context = sequence.context().to_vec();
         let pages = table.pages().to_vec();
         let blocks: Vec<usize> = (0..rows / width)
-            .filter(|block| {
-                (block + 1) * width <= context.len() && *block < pages.len()
-            })
+            .filter(|block| (block + 1) * width <= context.len() && *block < pages.len())
             .collect();
         for block in blocks {
             scheduler.publish(&context, block, pages[block])?;
@@ -594,7 +592,11 @@ mod tests {
             3,
             "源表、树、新表各持一份"
         );
-        assert_eq!(batch.scheduler().cache().in_use(), 1, "三份引用只占一个池页");
+        assert_eq!(
+            batch.scheduler().cache().in_use(),
+            1,
+            "三份引用只占一个池页"
+        );
     }
 
     /// 源序列结束后前缀仍命中：树持着那一页，新请求照样接手，页不会回池清零。
@@ -629,9 +631,13 @@ mod tests {
     #[test]
     fn a_shared_block_is_released_only_when_the_last_holder_goes() {
         let mut batch = Batch::new(pool(4, 2));
-        batch.admit(sequence_with(1, &[5, 5], 1, 2)).expect("准入源序列");
+        batch
+            .admit(sequence_with(1, &[5, 5], 1, 2))
+            .expect("准入源序列");
         let shared = prefill(&mut batch, 1, 1, 2)[0];
-        batch.admit(sequence_with(2, &[5, 5], 1, 2)).expect("准入共享序列");
+        batch
+            .admit(sequence_with(2, &[5, 5], 1, 2))
+            .expect("准入共享序列");
 
         assert_eq!(
             batch.scheduler().cache().reference_count(shared),
@@ -659,10 +665,16 @@ mod tests {
     #[test]
     fn three_requests_share_one_block() {
         let mut batch = Batch::new(pool(6, 2));
-        batch.admit(sequence_with(1, &[4, 4], 1, 2)).expect("第一条");
+        batch
+            .admit(sequence_with(1, &[4, 4], 1, 2))
+            .expect("第一条");
         let shared = prefill(&mut batch, 1, 1, 2)[0];
-        batch.admit(sequence_with(2, &[4, 4], 1, 2)).expect("第二条");
-        batch.admit(sequence_with(3, &[4, 4], 1, 2)).expect("第三条");
+        batch
+            .admit(sequence_with(2, &[4, 4], 1, 2))
+            .expect("第二条");
+        batch
+            .admit(sequence_with(3, &[4, 4], 1, 2))
+            .expect("第三条");
 
         assert_eq!(batch.scheduler().cache().reference_count(shared), 4);
         assert_eq!(batch.scheduler().cache().in_use(), 1, "四方共享一个池页");
@@ -884,7 +896,9 @@ mod tests {
     fn marking_a_prompt_prefilled_publishes_only_whole_blocks() {
         let mut batch = Batch::new(pool(8, 2));
         assert_eq!(
-            batch.admit(sequence_with(1, &[1, 2, 3, 4, 5], 2, 2)).expect("准入"),
+            batch
+                .admit(sequence_with(1, &[1, 2, 3, 4, 5], 2, 2))
+                .expect("准入"),
             Admission::Admitted
         );
         assert!(!batch.sequence(1).expect("在批里").prefilled_ready());
@@ -904,7 +918,9 @@ mod tests {
     #[test]
     fn a_prefill_position_cannot_go_backwards_or_past_the_prompt() {
         let mut batch = Batch::new(pool(4, 2));
-        batch.admit(sequence_with(1, &[1, 2, 3, 4], 2, 2)).expect("准入");
+        batch
+            .admit(sequence_with(1, &[1, 2, 3, 4], 2, 2))
+            .expect("准入");
         batch.mark_prefilled(1, 3).expect("算完三个位置");
         assert_eq!(
             batch.mark_prefilled(1, 2).unwrap_err().code(),
@@ -967,11 +983,7 @@ mod tests {
             .expect("页表")
             .pages()
             .to_vec();
-        assert_eq!(
-            &second[..2],
-            &first[..2],
-            "前两页整块接走，页号必须同源"
-        );
+        assert_eq!(&second[..2], &first[..2], "前两页整块接走，页号必须同源");
         assert_eq!(second.len(), 2, "整段提示都接走，一页也不用新开");
     }
 
@@ -987,6 +999,10 @@ mod tests {
             batch.scheduler().cache().is_live(page),
             "块还在树上，页不能回池"
         );
-        assert_eq!(batch.scheduler().cache().free_pages(), 1, "两页池只空闲一页");
+        assert_eq!(
+            batch.scheduler().cache().free_pages(),
+            1,
+            "两页池只空闲一页"
+        );
     }
 }

@@ -14,7 +14,10 @@ fn pool(total: usize, page_size: usize) -> Pager {
 
 /// 准入判定：`None` 是"现在装不下"，`Some` 是能开始（共享前缀长度不影响这些用例）。
 fn admitted(scheduler: &mut Scheduler, sequence: &Sequence, why: &str) -> bool {
-    scheduler.admit(sequence).unwrap_or_else(|_| panic!("{why}")).is_some()
+    scheduler
+        .admit(sequence)
+        .unwrap_or_else(|_| panic!("{why}"))
+        .is_some()
 }
 
 #[test]

@@ -433,7 +433,12 @@ impl Scheduler {
             self.pager.share(*page)?;
             table.push(*page)?;
         }
-        Self::fill(&mut self.pager, &mut table, fresh, "engine::Scheduler::admit")?;
+        Self::fill(
+            &mut self.pager,
+            &mut table,
+            fresh,
+            "engine::Scheduler::admit",
+        )?;
         let needs_page = self.needs_page(sequence, &table);
         self.running.push(Running {
             id: sequence.id(),
@@ -453,7 +458,8 @@ impl Scheduler {
     /// 页宽为 0、`block` 超出现有 token 时返回 `invalid`；页不在借出状态由页池报错。
     pub fn publish(&mut self, tokens: &[u32], block: usize, page: crate::kv::Page) -> Result<bool> {
         let width = self.pager.page_size();
-        self.radix.publish(&mut self.pager, tokens, width, block, page)
+        self.radix
+            .publish(&mut self.pager, tokens, width, block, page)
     }
 
     /// 前缀树里的块数（只读诊断）：服务侧报"共享缓存有多深"时用，不暴露树本身。
@@ -697,10 +703,7 @@ impl Scheduler {
                 .with("engine::Scheduler::reserve"));
         }
         let needed = pages_for(rows, width);
-        if !self.extend(index, needed, "engine::Scheduler::reserve")? {
-            return Ok(false);
-        }
-        Ok(true)
+        self.extend(index, needed, "engine::Scheduler::reserve")
     }
 
     /// 读回第 `token` 个位置的 KV 行（只读）。

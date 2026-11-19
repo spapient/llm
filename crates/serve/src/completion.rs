@@ -342,7 +342,10 @@ where
             return Ok(());
         }
         let Self {
-            model, batch, prefill, ..
+            model,
+            batch,
+            prefill,
+            ..
         } = self;
         // 能力先问、页后要：不支持的模型不该先花掉一笔页预算才发现自己没有这条路径。
         if !model.prefills() {

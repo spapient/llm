@@ -250,7 +250,11 @@ impl CpuModel {
     }
 
     /// 含块链整批前向：批表回填、历史段紧排装填、一次提交、按段写回页行，输出按宽拆行。
-    fn forward_block_batch(&mut self, rows: &[Row<'_>], batch: &mut Batch) -> Result<Vec<Vec<f32>>> {
+    fn forward_block_batch(
+        &mut self,
+        rows: &[Row<'_>],
+        batch: &mut Batch,
+    ) -> Result<Vec<Vec<f32>>> {
         let batch_n = rows.len();
         let input = self.predict_input_batch(rows)?;
         self.resize_for_batch(batch_n);
@@ -267,7 +271,12 @@ impl CpuModel {
     /// 分工只有一处：没有块链时无处可读、也无可写；有块链时先按前 `at + 1` 行装填历史，提交后把
     /// 这一行的 K/V 写回第 `at + 1` 行——下一步读历史时才看得到它。于是「算提示段」与「算下一个
     /// token」不是两套几何，只是 `at` 不同。
-    fn forward_at(&mut self, sequence: &Sequence, batch: &mut Batch, at: usize) -> Result<Vec<f32>> {
+    fn forward_at(
+        &mut self,
+        sequence: &Sequence,
+        batch: &mut Batch,
+        at: usize,
+    ) -> Result<Vec<f32>> {
         let row = Row { sequence, at };
         let rows = std::slice::from_ref(&row);
         if self.assembly.blocks.is_empty() {

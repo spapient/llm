@@ -29,7 +29,10 @@ fn sequence(id: u64, prompt: usize, max_new: usize, page_size: usize) -> Sequenc
 
 /// 准入判定：`None` 是"现在装不下"，`Some` 是能开始。
 fn admitted(scheduler: &mut Scheduler, sequence: &Sequence, why: &str) -> bool {
-    scheduler.admit(sequence).unwrap_or_else(|_| panic!("{why}")).is_some()
+    scheduler
+        .admit(sequence)
+        .unwrap_or_else(|_| panic!("{why}"))
+        .is_some()
 }
 
 #[test]

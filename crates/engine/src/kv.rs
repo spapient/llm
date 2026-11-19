@@ -654,7 +654,8 @@ impl Radix {
             Path::Linked(at) => at,
             Path::Broken => return Ok(false),
         };
-        let span = block_tokens(tokens, page_size, block).ok_or_else(|| beyond(block, tokens.len()))?;
+        let span =
+            block_tokens(tokens, page_size, block).ok_or_else(|| beyond(block, tokens.len()))?;
         if self.child(at, span).is_some() {
             return Ok(false);
         }
@@ -690,8 +691,8 @@ impl Radix {
         }
         let mut at: Option<usize> = None;
         for level in 0..block {
-            let span =
-                block_tokens(tokens, page_size, level).ok_or_else(|| beyond(level, tokens.len()))?;
+            let span = block_tokens(tokens, page_size, level)
+                .ok_or_else(|| beyond(level, tokens.len()))?;
             match self.child(at, span) {
                 Some(index) => at = Some(index),
                 None => return Ok(Path::Broken),
@@ -1163,12 +1164,7 @@ mod tests {
     }
 
     /// 登记一块并交出该页；返回那一页与登记是否新发生。
-    fn publish(
-        pager: &mut Pager,
-        radix: &mut Radix,
-        tokens: &[u32],
-        block: usize,
-    ) -> (Page, bool) {
+    fn publish(pager: &mut Pager, radix: &mut Radix, tokens: &[u32], block: usize) -> (Page, bool) {
         let page = pager.alloc().expect("还有空闲页");
         let width = pager.page_size();
         let fresh = radix
@@ -1185,15 +1181,21 @@ mod tests {
         let tokens = [7, 8, 9];
         let mut radix = Radix::new();
         let page = pager.alloc().expect("页");
-        assert!(radix
-            .publish(&mut pager, &tokens, 2, 0, page)
-            .expect("登记"));
+        assert!(
+            radix
+                .publish(&mut pager, &tokens, 2, 0, page)
+                .expect("登记")
+        );
         assert_eq!(pager.cache().reference_count(page), 2, "树多持一份");
         pager.release(page).expect("请求结束");
         assert!(pager.cache().is_live(page), "树还持有，页不能回池");
 
         assert_eq!(radix.longest(&tokens, 2), vec![page]);
-        assert_eq!(radix.longest(&[7, 8, 1], 2), vec![page], "第 0 块相同就命中");
+        assert_eq!(
+            radix.longest(&[7, 8, 1], 2),
+            vec![page],
+            "第 0 块相同就命中"
+        );
         assert!(radix.longest(&[7, 1, 9], 2).is_empty(), "块内不同不命中");
     }
 
@@ -1211,7 +1213,11 @@ mod tests {
         }
         assert_eq!(radix.len(), 2);
         assert_eq!(radix.longest(&tokens, 2), pages);
-        assert_eq!(radix.longest(&tokens[..5], 2), pages, "尾巴不满一页照命中前两块");
+        assert_eq!(
+            radix.longest(&tokens[..5], 2),
+            pages,
+            "尾巴不满一页照命中前两块"
+        );
         assert_eq!(radix.longest(&[1, 2, 3, 4, 7, 8], 2), pages, "第 2 块不同");
         assert!(radix.longest(&[1], 2).is_empty(), "不足一块不共享");
         assert!(radix.longest(&tokens, 0).is_empty(), "页宽为 0 无从切块");
@@ -1280,5 +1286,4 @@ mod tests {
         );
         assert_eq!(radix.longest(&first, 2).len(), 2, "常用路径没被摘");
     }
-
 }

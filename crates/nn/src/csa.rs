@@ -174,6 +174,36 @@ pub struct BlockTable<S: Scalar = f32> {
 /// 块表报错的出处：几何与查询越界都在构造/寻址期失败，不留到数值阶段。
 const SITE: &str = "nn::csa::BlockTable";
 
+/// 可寻址宽度 `seq × dim`：任一几何为零时算不出宽度，乘法溢出同样拒绝。
+///
+/// 单独一函数是因为它是「表能不能建」的第一道判据：宽度是后面长度校验与压缩切块的共同依据，
+/// 与「K/V 给对没有」是两件事。
+fn geometry(seq: usize, dim: usize, m: usize, win: usize) -> Result<usize> {
+    let width = seq.checked_mul(dim).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("seq × dim 溢出（{seq} × {dim}）")).with(SITE)
+    })?;
+    if dim.min(m).min(win) == 0 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("块表几何必须非零（dim = {dim}，m = {m}，win = {win}）"),
+        )
+        .with(SITE));
+    }
+    Ok(width)
+}
+
+/// K/V 两段都必须正好是 `width` 个元素：长度不符时压缩会按错几何切块。
+fn lengths<S>(keys: &[S], values: &[S], width: usize) -> Result<()> {
+    if [keys.len(), values.len()] == [width; 2] {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!("K/V 长度必须都是 seq × dim = {width}"),
+    )
+    .with(SITE))
+}
+
 impl<S: Scalar> BlockTable<S> {
     /// 由 `seq` 行 K/V 建表：`keys` / `values` 都是行主序 `[seq, dim]`，压缩按 [`compress`]。
     ///
@@ -187,23 +217,8 @@ impl<S: Scalar> BlockTable<S> {
         m: usize,
         win: usize,
     ) -> Result<Self> {
-        let width = seq.checked_mul(dim).ok_or_else(|| {
-            Error::new(Code::Invalid, format!("seq × dim 溢出（{seq} × {dim}）")).with(SITE)
-        })?;
-        if dim == 0 || m == 0 || win == 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("块表几何必须非零（dim = {dim}，m = {m}，win = {win}）"),
-            )
-            .with(SITE));
-        }
-        if keys.len() != width || values.len() != width {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("K/V 长度必须都是 seq × dim = {width}"),
-            )
-            .with(SITE));
-        }
+        let width = geometry(seq, dim, m, win)?;
+        lengths(keys, values, width)?;
         Ok(Self {
             dim,
             m,

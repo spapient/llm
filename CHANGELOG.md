@@ -7,6 +7,27 @@
 
 ### Added
 
+- **分块预填充把提示段算进页账，前缀页跨请求复用（`lld.md` 第三步：服务侧 radix + chunked prefill）**。
+  此前解码只算当前位置、历史从页里读，提示段的 K/V 永远停在零填充——长提示与短提示的解码看到的历史
+  其实一样多。现在 `Predict::prefill` 逐位把提示段算进它该在的行，`Serve` 端点在准入后按
+  `PREFILL_CHUNK` 分块推进，每块之后 `Batch::mark_prefilled` 只把**已算到的位置**记账（写是提前一格的：
+  第 `at` 步写第 `at + 1` 行，登记若跟着写走就会把还没算的块当成算好的）。
+  `engine::kv::Radix` 是满块前缀树，它自己就是页的一个持有者：块写满时 `publish` 对它那页多持一个引用，
+  请求结束只归还自己那份，页仍活着，下一个同前缀请求经 `longest` 直接采纳——「源序列一结束、页一归还，
+  就再没有第二个请求能命中」这条旧限制因此消失。树的每条边恰是一个块，`evict` 只摘 LRU 叶，不会让仍被
+  引用的深层块失联；`publish` 要求父块先在树上，不为一辆已被驱逐的父块补一个没有页的中间节点。
+  页复用与位置账是同一份：`Scheduler::admit` 现在返回**接走的前缀 token 数**，采纳的页写进新页表的同时
+  `Sequence::prefilled` 推进到该前缀长度，`Batch` 让 `prefilled_ready()` 未满足的序列不参与解码——只共享页
+  不改位置账，第二个请求会把同一段提示重算一遍，而它写的正是它刚打算去读的页。
+  页紧不再等于请求非法：`Predict::prefills()` 让端点**先问能力再要页**（不支持的桩模型不该先花一笔页预算
+  才发现自己没有这条路径），`Scheduler::reserve` / `Batch::reserve` 返回「要到了没有」，`false` 时这一轮
+  先不算、块位置一个都不推进（已算的前缀仍然有效，下一轮接着算）。
+  **实测**：`cargo test -p llm-engine -p llm-serve` **112 + 14 + 167 条测试与 3 + 3 条文档测试全绿**；新增用例
+  `a_second_request_with_the_same_prompt_skips_the_prefilled_prefix`（4 token 提示、页宽 4）记录预填充位置：
+  首跑 `[0, 1, 2, 3]`，第二个同提示请求**一个位置都不重算**且生成字节与首跑逐位相同；前缀树自身的
+  「满块才共享、命中刷新时序戳、只摘 LRU 叶、父块不在就不登记」各有单测。架构门 `llm-testkit --test
+  architecture` 8/8（所有权表新增 `Radix` 一行）。
+
 - **谱隙证书接进压缩链：秩轴现在先过 L0 门，秩由证书给出而不是调用方拍（`lld.md` 第二步）**。
   `weights::ledger` 从「三个函数各算一遍 SVD」收成唯一入口 `certify(w, m, n) -> Result<Option<Certified>>`：
   一次 f64 分解同时给出受认证的秩 `r`、低秩项 `L`、显式残差 `C = W − L` 与自证的 `Note`（`llm.cert.v1`），
