@@ -1,7 +1,6 @@
 use super::*;
 use crate::builtin::Catalogue;
 use crate::toolchain;
-use testkit;
 
 fn dirs() -> Dirs {
     Dirs::under(std::env::temp_dir().join("cutile-witness-tests"))
@@ -142,39 +141,6 @@ fn a_cpu_l0_witness_is_executed_on_the_device_too() {
 }
 
 #[test]
-fn every_metal_witness_runs_on_the_gpu() {
-    let profile = device("metal");
-    if !device_available(&profile) {
-        testkit::skip("cutile: Metal 设备不在本机，GPU 见证用例未运行");
-        return;
-    }
-    let runs = run_all(&profile, &dirs()).expect("Metal 见证必须全部通过");
-    assert_eq!(runs.len(), profile.provides.len(), "每条声明都要有结果");
-    assert!(
-        runs.iter().all(|run| run.scope == Scope::Device),
-        "GPU 上跑出来的结论不能被降级成自检"
-    );
-    assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
-}
-
-#[test]
-fn a_plain_c_signature_does_not_survive_the_metal_front_end() {
-    if !device_available(&device("metal")) {
-        testkit::skip("cutile: Metal 设备不在本机，MSL 前端用例未运行");
-        return;
-    }
-    let program = "#include <metal_stdlib>\nusing namespace metal;\n\
-                   int witness_bad(float *out) { out[0] = 1.0f; return 1; }\n";
-    let profile = device("metal");
-    let metal = device::spec(Emit::Metal).expect("metal 前端");
-    let error = metal.run(&profile, &dirs(), program, 1, Scope::Device)
-        .expect_err("MSL 必须要求显式地址空间");
-    let text = error.to_string();
-    assert!(text.contains("xcrun metal"), "{text}");
-    assert!(text.contains("address space"), "{text}");
-}
-
-#[test]
 fn the_self_check_ignores_the_device_preamble_and_flags() {
     if toolchain::skip_without_host_compiler() {
         return;
@@ -242,8 +208,8 @@ fn a_witness_that_runs_on_the_device_needs_no_language_gate() {
 #[test]
 fn counts_are_read_from_stderr_in_order() {
     assert_eq!(
-        crate::device::parse_counts("witness 1\nwitness 2\n"),
+        crate::driver::parse_counts("witness 1\nwitness 2\n"),
         vec![1, 2]
     );
-    assert_eq!(crate::device::parse_counts("noise\n"), Vec::<i64>::new());
+    assert_eq!(crate::driver::parse_counts("noise\n"), Vec::<i64>::new());
 }

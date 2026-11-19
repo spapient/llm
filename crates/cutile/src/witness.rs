@@ -144,7 +144,8 @@ fn provide_selected(provide: &Provide) -> Option<Selected<'_>> {
 }
 
 /// 档案里的全部已声明见证；缺见证的 `grade ≥ L2` 是错误而不是跳过（README §11.3）。
-pub(crate) fn declared_witnesses(profile: &Profile) -> diagnostic::Result<Vec<Selected<'_>>> {
+/// `pub`：后端实现者（engine 的 Metal/CUDA Codegen）离线测自己的 `program()` 时要用它取见证集。
+pub fn declared_witnesses(profile: &Profile) -> diagnostic::Result<Vec<Selected<'_>>> {
     let mut selected = Vec::new();
     for provide in &profile.provides {
         if provide.witness.is_none() && provide.grade.is_verified() {

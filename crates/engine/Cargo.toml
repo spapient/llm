@@ -14,9 +14,11 @@ autotests = false
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 storage = { path = "../storage", package = "llm-storage" }
+cutile = { path = "../cutile", package = "cutile" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
+op = { path = "../op", package = "llm-op" }
 
 [lints]
 workspace = true

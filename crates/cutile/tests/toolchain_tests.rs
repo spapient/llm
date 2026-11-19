@@ -85,39 +85,3 @@ fn parse_version_only_returns_dotted_tokens_and_never_panics() {
         }
     }
 }
-
-#[test]
-fn paths_without_an_msvc_segment_parse_as_empty() {
-    let mut rng = testkit::Rng::new(0xC12);
-    for _ in 0..32 {
-        let path = format!(r"C:\Tools\{}\bin\cl.exe", rng.below(9999));
-        assert!(msvc_version(Path::new(&path)).is_empty());
-    }
-}
-
-#[test]
-fn the_newest_msvc_wins_by_version_not_by_string_order() {
-    let candidates = [
-        r"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\9.29.30133\bin\Hostx64\x64\cl.exe",
-        r"D:\BuildTools\VC\Tools\MSVC\17.10.0\bin\Hostx64\x64\cl.exe",
-    ];
-    let newest = candidates
-        .into_iter()
-        .max_by_key(|cl| msvc_version(Path::new(cl)))
-        .expect("候选非空");
-    assert!(
-        newest.contains("17.10.0"),
-        "字符串序会把 9.29 排到 17.10 之后：{newest}"
-    );
-}
-
-#[test]
-fn a_path_without_a_version_loses_to_one_with_it() {
-    assert!(msvc_version(Path::new(r"C:\msvc\cl.exe")).is_empty());
-    assert_eq!(
-        msvc_version(Path::new(
-            r"C:\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\cl.exe"
-        )),
-        vec![14, 29, 30133]
-    );
-}

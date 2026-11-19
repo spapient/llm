@@ -28,6 +28,9 @@ use tool::Report;
 mod report;
 
 fn main() -> ExitCode {
+    // 装配设备后端：Metal / CUDA 由 engine 实现，cutile 只认 Backend 缝；在跑任何 verify / bench /
+    // 真机对拍之前注入，机制层按 emit 从进程级表取后端。
+    engine::backends::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut settings = match Settings::load() {
         Ok(settings) => settings,

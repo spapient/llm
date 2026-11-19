@@ -1,5 +1,13 @@
     use super::*;
 
+    /// 装配 Metal / CUDA 后端（幂等，进程级只装一次）：cutile 的机制层按 `emit` 从注册表取后端，
+    /// 不注入的话 `device_available` 会恒为假，真机对拍就静默跳过。
+    fn ensure_backends() {
+        use std::sync::OnceLock;
+        static INSTALLED: OnceLock<()> = OnceLock::new();
+        INSTALLED.get_or_init(engine::backends::install);
+    }
+
     /// 写一份两层稠密权重（`[out, in]` 行主序），取值落在 2 的负幂网格上：乘积与累加在 f32
     /// 里都是精确的，因此手算的结果可以被逐位钉住。
     fn write_dense_model(name: &str, layers: &[(&str, usize, usize)]) -> std::path::PathBuf {
@@ -143,6 +151,7 @@
         use engine::exec::Executor as _;
         use op::sig::CType;
 
+        ensure_backends();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("metal").cloned().expect("metal 档案");
         if !cutile::witness::device_available(&profile) {
@@ -281,6 +290,7 @@
     fn op_chunked_reduce_matches_reference(op_name: &str) {
         use engine::exec::Executor as _;
 
+        ensure_backends();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("metal").cloned().expect("metal 档案");
         if !cutile::witness::device_available(&profile) {
@@ -389,6 +399,7 @@
     /// 与 Metal 侧的 [`op_matches_reference`] 同口径，只是发射/回读经 `compile_run_cuda`。
     #[cfg(target_os = "windows")]
     fn op_matches_reference_cuda(op_name: &str) {
+        ensure_backends();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
         if !cutile::witness::device_available(&profile) {
@@ -426,6 +437,7 @@
     /// [`op_chunked_reduce_matches_reference`] 同一口径：f32 串行参考对 4096 递增值误差已 ~1e-4）。
     #[cfg(target_os = "windows")]
     fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
+        ensure_backends();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
         if !cutile::witness::device_available(&profile) {
@@ -488,6 +500,7 @@
     fn op_chunked_scan_matches_reference(op_name: &str) {
         use engine::exec::Executor as _;
 
+        ensure_backends();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("metal").cloned().expect("metal 档案");
         if !cutile::witness::device_available(&profile) {
@@ -616,6 +629,7 @@
     fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
         use engine::exec::Executor as _;
 
+        ensure_backends();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("metal").cloned().expect("metal 档案");
         if !cutile::witness::device_available(&profile) {
@@ -721,6 +735,7 @@
     fn op_chunked_softmax_matches_reference(op_name: &str) {
         use engine::exec::Executor as _;
 
+        ensure_backends();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let profile = catalogue.profile("metal").cloned().expect("metal 档案");
         if !cutile::witness::device_available(&profile) {

@@ -62,6 +62,7 @@
 #![deny(unsafe_code)]
 
 pub mod batch;
+pub mod backends;
 pub mod exec;
 pub mod kv;
 #[cfg(target_os = "macos")]
