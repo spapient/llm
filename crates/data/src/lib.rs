@@ -248,21 +248,6 @@ mod dataset {
                 taken: 0,
             })
         }
-
-        /// 列宽（每行多少 token）。
-        pub fn cols(&self) -> usize {
-            self.cols
-        }
-
-        /// 完整批的**总数**——构造期算好，不随消费推进。
-        pub fn batches(&self) -> usize {
-            self.batches
-        }
-
-        /// **还没取走**的完整批数。
-        pub fn remaining_batches(&self) -> usize {
-            self.batches - self.taken
-        }
     }
 
     /// 迭代器：`next` 就是 [`Dataset::next_batch`]，所以「还剩几条」只有一个来源。
@@ -288,15 +273,15 @@ mod dataset {
 
     impl<'a> Dataset<'a> for Chunks<'a> {
         fn cols(&self) -> usize {
-            Chunks::cols(self)
+            self.cols
         }
 
         fn batches(&self) -> usize {
-            Chunks::batches(self)
+            self.batches
         }
 
         fn remaining_batches(&self) -> usize {
-            Chunks::remaining_batches(self)
+            self.batches - self.taken
         }
 
         fn next_batch(&mut self) -> Option<Batch<'a>> {
@@ -454,8 +439,7 @@ mod dataset {
         fn the_trait_object_reports_and_yields_the_same_stream() {
             let tokens: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
             let mut chunks = Chunks::new(&tokens, 1, 3).expect("数据");
-            // 走 trait 对象路径：具体类型上的同名调用会解析到 inherent 方法，只有 `dyn Dataset`
-            // 才真正执行 trait 实现里的三个转发，从而验证对象安全契约与转发正确性。
+            // 走 trait 对象路径：三个计数与取批都由 trait 分发，验证对象安全契约。
             let ds: &mut dyn Dataset<'_> = &mut chunks;
             assert_eq!(ds.cols(), 3);
             assert_eq!(ds.batches(), 3);
