@@ -130,18 +130,11 @@ pub fn metal_rmsnorm_program(
     n: usize,
 ) -> diagnostic::Result<(String, String)> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
-    let op = run.op;
-    let chunk = op.chunk.as_ref().ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            format!("`{}` 没有声明 `[chunk]`", op.name),
-        )
-        .with("cutile::execution::metal_rmsnorm_program")
-    })?;
+    let chunk = chunk_size(run.op, "cutile::execution::metal_rmsnorm_program")?;
     pair(
         lower_sources(
             Emit::Metal,
-            &Lower::ChunkRmsnorm { chunk: chunk.size },
+            &Lower::ChunkRmsnorm { chunk },
             &run,
             &prepared,
             m,
@@ -166,18 +159,11 @@ pub fn metal_softmax_program(
     n: usize,
 ) -> diagnostic::Result<(String, String, String)> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
-    let op = run.op;
-    let chunk = op.chunk.as_ref().ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            format!("`{}` 没有声明 `[chunk]`", op.name),
-        )
-        .with("cutile::execution::metal_softmax_program")
-    })?;
+    let chunk = chunk_size(run.op, "cutile::execution::metal_softmax_program")?;
     triple(
         lower_sources(
             Emit::Metal,
-            &Lower::ChunkSoftmax { chunk: chunk.size },
+            &Lower::ChunkSoftmax { chunk },
             &run,
             &prepared,
             m,
@@ -602,36 +588,30 @@ fn lower_sources(
     backend(emit)?.lower(&prepared.source.text, &run.op.signature, &sample, kind)
 }
 
-/// 分块归约的 [`Lower`] 描述：块大小来自 `[chunk]`、软件归约原语名来自 `[needs] reduce`。
-fn reduce_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
+/// 声明里必带的 `[chunk]` 块大小；缺声明时报 [`Code::Unsupported`]（串行兜底另有路径，这里只做分块）。
+fn chunk_size(op: &OpDecl, location: &str) -> diagnostic::Result<usize> {
     let chunk = op.chunk.as_ref().ok_or_else(|| {
         Error::new(
             Code::Unsupported,
             format!("`{}` 没有声明 `[chunk]`", op.name),
         )
-        .with("cutile::execution::cuda_reduce_program")
+        .with(location)
     })?;
+    Ok(chunk.size)
+}
+
+/// 分块归约的 [`Lower`] 描述：块大小来自 `[chunk]`、软件归约原语名来自 `[needs] reduce`。
+fn reduce_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
+    let chunk = chunk_size(op, "cutile::execution::cuda_reduce_program")?;
     let func = reduce_func(op)?;
-    Ok(Lower::ChunkReduce {
-        chunk: chunk.size,
-        func,
-    })
+    Ok(Lower::ChunkReduce { chunk, func })
 }
 
 /// 分块扫描的 [`Lower`] 描述：块大小来自 `[chunk]`、衰减 `a` 来自 `[consts]`。
 fn scan_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
-    let chunk = op.chunk.as_ref().ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            format!("`{}` 没有声明 `[chunk]`", op.name),
-        )
-        .with("cutile::execution::metal_scan_program")
-    })?;
+    let chunk = chunk_size(op, "cutile::execution::metal_scan_program")?;
     let decay = scan_decay(op)?;
-    Ok(Lower::ChunkScan {
-        chunk: chunk.size,
-        decay,
-    })
+    Ok(Lower::ChunkScan { chunk, decay })
 }
 
 /// 从 lowering 结果取一段设备源；缺段是后端违约，机制层不猜。

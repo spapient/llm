@@ -283,10 +283,7 @@ fn push_metal_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]
         "kernel void cutile_witness(device float *out [[buffer(0)]],\n\
          \x20                          device int *counts [[buffer(1)]],\n\
          \x20                          uint tid [[thread_position_in_grid]]) {{\n\
-         \x20   thread float local[{max}];\n\
-         \x20   for (int i = 0; i < {max}; ++i) local[i] = 0.0f;\n\
-         \x20   int n = 0;\n\
-         \x20   switch (tid) {{\n"
+         \x20   thread float local[{max}];\n"
     ));
     driver::push_dispatch(program, max, selected, "}\n");
 }
@@ -594,10 +591,7 @@ fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>])
         "__global__ void cutile_witness(float *out, int *counts, int total) {{\n\
          \x20   int tid = blockIdx.x;\n\
          \x20   if (tid >= total) return;\n\
-         \x20   float local[{max}];\n\
-         \x20   for (int i = 0; i < {max}; ++i) local[i] = 0.0f;\n\
-         \x20   int n = 0;\n\
-         \x20   switch (tid) {{\n"
+         \x20   float local[{max}];\n"
     ));
     driver::push_dispatch(program, max, selected, "}\n\n");
 }

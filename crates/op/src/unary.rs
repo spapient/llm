@@ -151,8 +151,9 @@ macro_rules! unary_f32 {
         }
 
         #[cfg(test)]
-        #[path = $test]
-        mod tests;
+        mod tests {
+            include!($test);
+        }
     };
 }
 
@@ -201,4 +202,109 @@ pub(crate) mod test_support {
         };
     }
     pub(crate) use unary_op_tests;
+}
+
+// 声明式算子表：同一副一元骨架的五个算子，每个算子一个 `pub mod` 保持 `op::<name>::MODEL` /
+// `op::<name>::forward` 路径不变（`forward` 同名，必须隔在各自的模块里）。新增一元运算在此补一段。
+
+pub mod exp_f32 {
+    //! 逐元素指数：`y[n] = exp(a[n])`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Exp`] 单态化。
+    //! 上溢/下溢按 IEEE-754 语义（`+inf` / `0`），不在算子层额外判错。
+    //! 样本夹具覆盖到 `[-8, 8]`：默认线性夹具在 4096x4096 形状下会 `exp(4.19e6)` 溢出成 `inf`，
+    //! 让真机对拍报 `max_rel_err inf`；有界周期夹具避开上溢，同时仍遍历正负两侧。
+
+    crate::unary_f32!(
+        Exp,
+        ExpF32,
+        "exp_f32",
+        "../tests/exp_f32_tests.rs",
+        |x| x.exp(),
+        |len| (0..len).map(|i| ((i % 65) as f32) * 0.25 - 8.0).collect()
+    );
+}
+
+pub mod log_f32 {
+    //! 逐元素自然对数：`y[n] = ln(a[n])`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Log`] 单态化。
+    //! 定义域为 `(0, +∞)`；`x <= 0` 按 IEEE-754 语义（`-inf` / `NaN`），不在算子层额外判错。
+    //! 样本夹具覆盖为正数，避免参考对拍里 `log(负数)` 产生 `NaN`。
+
+    crate::unary_f32!(
+        Log,
+        LogF32,
+        "log_f32",
+        "../tests/log_f32_tests.rs",
+        |x| x.ln(),
+        |len| (0..len).map(|i| 0.5 + i as f32 * 0.25).collect()
+    );
+}
+
+pub mod gelu_f32 {
+    //! 逐元素 GELU 激活（精确 erf 版）：`y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Gelu`] 单态化。
+    //! C 侧与 Rust 侧用同一份 Abramowitz-Stegun 7.1.26 系数（绝对误差上界 1.5e-7），两侧只剩
+    //! f32 舍入级差异，对拍 max_rel_err 在 1e-10 量级。
+
+    /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`）。
+    ///
+    /// 反向公式（`train::backprop` 的 GELU 梯度）与测试闭式重算共用这一份，避免三处各自抄系数。
+    pub fn erf(x: f32) -> f32 {
+        let sign = if x < 0.0 { -1.0 } else { 1.0 };
+        let x = x.abs();
+        let p = 0.327_591_1;
+        let a1 = 0.254_829_6;
+        let a2 = -0.284_496_72;
+        let a3 = 1.421_413_8;
+        let a4 = -1.453_152_1;
+        let a5 = 1.061_405_4;
+        let t = 1.0 / (1.0 + p * x);
+        let series = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
+        let y = 1.0 - series * (-x * x).exp();
+        sign * y
+    }
+
+    crate::unary_f32!(
+        Gelu,
+        GeluF32,
+        "gelu_f32",
+        "../tests/gelu_f32_tests.rs",
+        |x| 0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
+    );
+}
+
+pub mod silu_f32 {
+    //! 逐元素 SiLU 激活：`y[n] = a[n] * sigmoid(a[n])`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Silu`] 单态化。
+
+    crate::unary_f32!(
+        Silu,
+        SiluF32,
+        "silu_f32",
+        "../tests/silu_f32_tests.rs",
+        |x| x / (1.0 + (-x).exp())
+    );
+}
+
+pub mod scale_f32 {
+    //! 标量缩放：`y[n] = alpha * a[n]`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Scale`] 单态化。
+    //! 标量参数框架只支持整数，故 `alpha` 写成与内核模板一致的常量。
+
+    /// 样本固定的缩放系数（内核模板里写同一常量）。
+    pub const ALPHA: f32 = 0.5;
+
+    crate::unary_f32!(
+        Scale,
+        ScaleF32,
+        "scale_f32",
+        "../tests/scale_f32_tests.rs",
+        |x| ALPHA * x,
+        |len| (0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()
+    );
 }

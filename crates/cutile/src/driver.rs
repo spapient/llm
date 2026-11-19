@@ -142,9 +142,12 @@ pub fn scratch(dirs: &Dirs, tag: &str) -> PathBuf {
     ))
 }
 
-/// 两个后端 kernel 共享的分派段：按 `tid` 的 `switch`、cap 截断与回写循环。`close` 是 kernel
-/// 收尾文本（Metal 与 CUDA 的换行数不同）：`local` 声明留在各自函数里，这里只拼逐字相同的部分。
+/// 两个后端 kernel 共享的 witness 正文：`local` 清零、`switch` 分派、cap 截断与回写循环。
+/// `close` 是收尾文本（换行数 Metal/CUDA 不同）；`local` 声明留在各自函数里（Metal 加 `thread`）。
 pub fn push_dispatch(program: &mut String, max: usize, selected: &[Selected<'_>], close: &str) {
+    program.push_str(&format!(
+        "    for (int i = 0; i < {max}; ++i) local[i] = 0.0f;\n    int n = 0;\n    switch (tid) {{\n"
+    ));
     for (index, (_, _, witness)) in selected.iter().enumerate() {
         program.push_str(&format!(
             "        case {index}: n = {}(local); break;\n",

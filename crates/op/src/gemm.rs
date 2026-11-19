@@ -442,7 +442,131 @@ macro_rules! gemm_variant {
         pub type $alias = $name;
 
         #[cfg(test)]
-        #[path = $test]
-        mod tests;
+        mod tests {
+            include!($test);
+        }
     };
+}
+
+pub mod gemm_i2 {
+    //! `gemm_i2`：对称 int2 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int2"这一份格式
+    //! 契约：A、B 是打包 2 位码（每字节 4 个，低 2 位在前），对称零点取配置表 [`I2`]；取样、
+    //! 打包长度与整数点积由骨架按 [`I2`] 一行配置读出，点积在 `i32` 上精确累加后转 f32。
+
+    pub use crate::gemm::{AXES, K, project_shape};
+
+    use crate::quant::I2;
+
+    crate::gemm_variant!(
+        GemmI2,
+        GemmI2Model,
+        "gemm_i2",
+        "../tests/gemm_i2_tests.rs",
+        u8,
+        I2.bits,
+        fn config() -> Option<crate::quant::Row> {
+            Some(I2)
+        },
+    );
+}
+
+pub mod gemm_i4 {
+    //! `gemm_i4`：对称 int4 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int4"这一份格式
+    //! 契约：A、B 是打包 nibble（每字节 2 个，低 4 位在前、高 4 位在后），对称零点取配置表
+    //! [`I4`]；取样、打包长度与整数点积由骨架按 [`I4`] 一行配置读出，点积在 `i32` 上精确累加。
+
+    pub use crate::gemm::{AXES, K, project_shape};
+
+    use crate::quant::I4;
+
+    crate::gemm_variant!(
+        GemmI4,
+        GemmI4Model,
+        "gemm_i4",
+        "../tests/gemm_i4_tests.rs",
+        u8,
+        I4.bits,
+        fn config() -> Option<crate::quant::Row> {
+            Some(I4)
+        },
+    );
+}
+
+pub mod gemm_i8 {
+    //! `gemm_i8`：对称 int8 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int8"这一份格式
+    //! 契约：`u8` 承载 int8 位模式，点积先在 `i32` 上精确累加（对应 CUDA `dp4a`：每 4 对 int8
+    //! 乘积累加进一个 int32），再收敛成 f32。CPU 没有 dp4a，退化为标量整数点积。
+
+    pub use crate::gemm::{AXES, K, project_shape};
+
+    use crate::quant::I8;
+
+    crate::gemm_variant!(
+        GemmI8,
+        GemmI8Model,
+        "gemm_i8",
+        "../tests/gemm_i8_tests.rs",
+        u8,
+        I8.bits,
+        fn sample_a(m: usize) -> Vec<u8> {
+            (0..m * K)
+                .map(|i| (((i * 37) % 16) as i8 - 8) as u8)
+                .collect()
+        },
+        fn sample_b(n: usize) -> Vec<u8> {
+            (0..K * n)
+                .map(|i| (((i * 53) % 16) as i8 - 8) as u8)
+                .collect()
+        },
+        fn a_len(m: usize) -> usize {
+            m * K
+        },
+        fn b_len(n: usize) -> usize {
+            K * n
+        },
+        fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize) -> f32 {
+            let row = &a[i * K..][..K];
+            let acc: i32 = row
+                .iter()
+                .enumerate()
+                .map(|(p, packed)| (*packed as i8) as i32 * (b[p * n + j] as i8) as i32)
+                .sum();
+            acc as f32
+        },
+        fn codes(values: &[u8]) -> Vec<i32> {
+            values.iter().map(|&byte| byte as i8 as i32).collect()
+        },
+    );
+}
+
+pub mod gemm_f32 {
+    //! `gemm_f32`：稠密 f32 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"稠密 f32"这一份格式
+    //! 契约：元素类型、位宽、样本取值与点积算术。CPU 片段没有 MMA 原语，遍历退化成标量双重循环。
+
+    pub use crate::gemm::{AXES, K, project_shape};
+
+    crate::gemm_variant!(
+        Dense,
+        GemmF32,
+        "gemm_f32",
+        "../tests/gemm_f32_tests.rs",
+        f32,
+        crate::einsum::Bits::ThirtyTwo,
+        fn sample_a(m: usize) -> Vec<f32> {
+            (0..m * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect()
+        },
+        fn sample_b(n: usize) -> Vec<f32> {
+            (0..K * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect()
+        },
+        fn a_len(m: usize) -> usize {
+            m * K
+        },
+        fn b_len(n: usize) -> usize {
+            K * n
+        },
+        fn dot(a: &[f32], b: &[f32], n: usize, i: usize, j: usize) -> f32 {
+            let row = &a[i * K..][..K];
+            row.iter().enumerate().map(|(p, x)| x * b[p * n + j]).sum()
+        },
+    );
 }

@@ -797,7 +797,174 @@ macro_rules! gemv_packed {
         }
 
         #[cfg(test)]
-        #[path = $test]
-        mod tests;
+        mod tests {
+            include!($test);
+        }
     };
+}
+
+pub mod gemv_i2 {
+    //! `gemv_i2` 的算子语义：2 位打包权重 + 每 [`GROUP`] 个元素一条标度。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"2 位打包"这一份配置：位宽、别名与测试挂载。
+    //! 四个 2 位码共用一个字节（低 2 位在前），因此输入宽度 `m` 必须是 4 的倍数且整除分组，
+    //! 非 4 倍数尾码在解包前拦下；解包与分组推进的算术都在 [`crate::gemv::Packed`]。
+
+    use crate::quant::I2;
+
+    crate::gemv_packed!(I2Conf, I2, "gemv_i2", "../tests/gemv_i2_tests.rs", I2);
+}
+
+pub mod gemv_i4 {
+    //! `gemv_i4` 的算子语义：4 位打包权重 + 每 [`GROUP`] 个元素一条标度。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"4 位打包"这一份配置：位宽、别名与测试挂载。
+    //! 两个 4 位码共用一个字节（低 4 位在前），因此输入宽度 `m` 必须是 2 的倍数且整除分组，
+    //! 奇数尾码在解包前拦下；解包与分组推进的算术都在 [`crate::gemv::Packed`]。
+
+    use crate::quant::I4;
+
+    crate::gemv_packed!(I4Conf, I4, "gemv_i4", "../tests/gemv_i4_tests.rs", I4);
+}
+
+pub mod gemv_i8 {
+    //! `gemv_i8` 的算子语义：对称 8 位权重（不打包、零点 0）+ 每 [`GROUP`] 个元素一条标度。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"对称 int8"这一份逐元素配置：表达式、操作数位宽、声明粒度、
+    //! 标度取值与元素反量化。模板在 `ops/gemv_i8.k`，片段只与这里对拍。`u8` 承载 int8 位模式，
+    //! 算术时按 `i8` 解释。
+
+    use crate::einsum::{Bits, FormulaCache, OperandSpec};
+    use crate::gemv::{self, Plain, PlainFmt};
+    use crate::quant::I8;
+
+    /// 量化分组（声明粒度）。
+    pub const GROUP: usize = 32;
+
+    /// 逐元素对称 int8 的配置：`u8` 承载位模式、按 `i8` 反量化、每 [`GROUP`] 个元素一条标度。
+    impl<const G: usize> Plain for gemv::SymI8<G> {
+        type Elem = u8;
+
+        /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 [`GROUP`] 个元素切出的派生轴。
+        const EXPR: &'static str = "nm,m,ng,n->n";
+
+        /// 权重是 8 位（每元素 1 字节），其余同 4 位格式。
+        const OPERANDS: &'static [OperandSpec] = &[
+            OperandSpec::read("w", I8.bits),
+            OperandSpec::read("x", Bits::ThirtyTwo),
+            OperandSpec::read("scales", Bits::ThirtyTwo),
+            OperandSpec::write("y", Bits::ThirtyTwo),
+        ];
+
+        const GRAIN: usize = G;
+
+        const DERIVED: Option<(char, char, usize)> = Some(('g', 'm', G));
+
+        const SCALES: Option<fn(usize) -> f32> = Some(gemv::scale_of);
+
+        const STEP: usize = G;
+
+        fn cell() -> &'static FormulaCache {
+            static CACHE: FormulaCache = FormulaCache::new();
+            &CACHE
+        }
+
+        fn weights(m: usize, n: usize) -> Vec<u8> {
+            // 取对称小整数（-8..7）的 int8 位模式，避免大整数在 f32 网格外引入舍入。
+            (0..n * m)
+                .map(|index| ((index * 37) % 16) as i8 - 8)
+                .map(|value| value as u8)
+                .collect()
+        }
+
+        fn to_f32(elem: u8) -> f32 {
+            (elem as i8) as f32
+        }
+    }
+
+    /// 对称 int8 格式的语义类型：声明粒度 [`GROUP`]、每行 `m` 个字节。
+    #[annotation::model(name = "gemv_i8", shape = [4096, 4096], dtype = "f32")]
+    pub type I8 = PlainFmt<gemv::SymI8<GROUP>>;
+
+    /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
+    pub fn forward(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        <I8 as gemv::Format>::forward(x, weights, scales, out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        include!("../tests/gemv_i8_tests.rs");
+    }
+}
+
+pub mod gemv_f32 {
+    //! `gemv_f32` 的算子语义：稠密 f32 权重投影。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"稠密权重"这一份逐元素配置：表达式、操作数位宽、分块宽度
+    //! 与元素反量化。模板在 `ops/gemv_f32.k`，本模块是它的第二份实现：片段只与这里对拍。
+    //! 内核实参不在这里手写：它由 `.k` 的签名与样本派生（[`crate::sig`]）。
+
+    use crate::einsum::{Bits, FormulaCache, OperandSpec};
+    use crate::gemv::{self, Plain, PlainFmt};
+
+    /// 分块宽度：模板每轮处理这么多元素，标量参考按同一个宽度分块累加。
+    pub const BLOCK: usize = 32;
+
+    /// 稠密逐元素的配置：`f32` 权重、无标度、任意输入宽度，按 [`BLOCK`] 分块累加。
+    impl<const B: usize> Plain for gemv::Dense<B> {
+        type Elem = f32;
+
+        /// `w[nm] · x[m] → y[n]`：无派生轴，宽度不参与分组。
+        const EXPR: &'static str = "nm,m,n->n";
+
+        /// 三个操作数都是 f32：`w` 是 `m·n` 个元素、`x` 是 `m` 个、`y` 是 `n` 个。
+        const OPERANDS: &'static [OperandSpec] = &[
+            OperandSpec::read("w", Bits::ThirtyTwo),
+            OperandSpec::read("x", Bits::ThirtyTwo),
+            OperandSpec::write("y", Bits::ThirtyTwo),
+        ];
+
+        /// 稠密算子的形状粒度是 1：一条只为对齐 nibble 的约束不该溢出到 f32 权重上。
+        const GRAIN: usize = 1;
+
+        const DERIVED: Option<(char, char, usize)> = None;
+
+        const SCALES: Option<fn(usize) -> f32> = None;
+
+        const STEP: usize = B;
+
+        fn cell() -> &'static FormulaCache {
+            static CACHE: FormulaCache = FormulaCache::new();
+            &CACHE
+        }
+
+        fn weights(m: usize, n: usize) -> Vec<f32> {
+            (0..n * m)
+                .map(|index| ((index * 37) % 251) as f32 * 0.125 - 8.0)
+                .collect()
+        }
+
+        fn to_f32(elem: f32) -> f32 {
+            elem
+        }
+    }
+
+    /// 稠密格式的语义类型：分块宽度 [`BLOCK`]、任意输入宽度都合法。
+    #[annotation::model(name = "gemv_f32", shape = [4096, 4096], dtype = "f32")]
+    pub type F32 = PlainFmt<gemv::Dense<BLOCK>>;
+
+    /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
+    pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        <F32 as gemv::Format>::forward(x, weights, &[], out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        include!("../tests/gemv_f32_tests.rs");
+    }
 }

@@ -39,73 +39,48 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
     fn from_f64(v: f64) -> Self;
 }
 
-impl Scalar for f32 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    const NEG_INFINITY: Self = f32::NEG_INFINITY;
+/// 一份算术骨架为 `f32` / `f64` 两个标量实现，能变的部分只有类型、负无穷与 `f64` 降级式；
+/// 逐字写两份会把 9 个方法的加/减/乘/除复制成孪生（jscpd 的 15 行克隆源）。
+macro_rules! impl_scalar {
+    ($ty:ty, $neg_inf:expr, $from_f64:expr) => {
+        impl Scalar for $ty {
+            const ZERO: Self = 0.0;
+            const ONE: Self = 1.0;
+            const NEG_INFINITY: Self = $neg_inf;
 
-    fn add(self, rhs: Self) -> Self {
-        self + rhs
-    }
-    fn sub(self, rhs: Self) -> Self {
-        self - rhs
-    }
-    fn mul(self, rhs: Self) -> Self {
-        self * rhs
-    }
-    fn div(self, rhs: Self) -> Self {
-        self / rhs
-    }
-    fn exp(self) -> Self {
-        f32::exp(self)
-    }
-    fn exp_m1(self) -> Self {
-        f32::exp_m1(self)
-    }
-    fn sqrt(self) -> Self {
-        f32::sqrt(self)
-    }
-    fn abs(self) -> Self {
-        f32::abs(self)
-    }
-    fn from_f64(v: f64) -> Self {
-        v as f32
-    }
+            fn add(self, rhs: Self) -> Self {
+                self + rhs
+            }
+            fn sub(self, rhs: Self) -> Self {
+                self - rhs
+            }
+            fn mul(self, rhs: Self) -> Self {
+                self * rhs
+            }
+            fn div(self, rhs: Self) -> Self {
+                self / rhs
+            }
+            fn exp(self) -> Self {
+                <$ty>::exp(self)
+            }
+            fn exp_m1(self) -> Self {
+                <$ty>::exp_m1(self)
+            }
+            fn sqrt(self) -> Self {
+                <$ty>::sqrt(self)
+            }
+            fn abs(self) -> Self {
+                <$ty>::abs(self)
+            }
+            fn from_f64(v: f64) -> Self {
+                ($from_f64)(v)
+            }
+        }
+    };
 }
 
-impl Scalar for f64 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    const NEG_INFINITY: Self = f64::NEG_INFINITY;
-
-    fn add(self, rhs: Self) -> Self {
-        self + rhs
-    }
-    fn sub(self, rhs: Self) -> Self {
-        self - rhs
-    }
-    fn mul(self, rhs: Self) -> Self {
-        self * rhs
-    }
-    fn div(self, rhs: Self) -> Self {
-        self / rhs
-    }
-    fn exp(self) -> Self {
-        f64::exp(self)
-    }
-    fn exp_m1(self) -> Self {
-        f64::exp_m1(self)
-    }
-    fn sqrt(self) -> Self {
-        f64::sqrt(self)
-    }
-    fn abs(self) -> Self {
-        f64::abs(self)
-    }
-    fn from_f64(v: f64) -> Self {
-        v
-    }
-}
+impl_scalar!(f32, f32::NEG_INFINITY, |v| v as f32);
+impl_scalar!(f64, f64::NEG_INFINITY, |v| v);
 
 /// 幺半群：`combine` 满足结合律，[`Monoid::IDENT`] 是幺元。
 ///

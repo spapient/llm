@@ -50,54 +50,38 @@
 // `extern crate self as nn` 同一条约定：注解绑定它所属契约的路径，而不是硬编码调用方的名字）。
 extern crate self as llm_op;
 
-pub mod add_f32;
 pub mod attention;
 pub mod decl;
 pub mod decode_attention;
 pub mod dequant;
-pub mod dequant_i2;
-pub mod dequant_i4;
-pub mod dequant_i8;
-pub mod div_f32;
 pub mod einsum;
 pub mod elementwise;
 pub mod embed_f32;
-pub mod exp_f32;
-pub mod gelu_f32;
 pub mod gemm;
-pub mod gemm_f32;
-pub mod gemm_i2;
-pub mod gemm_i4;
-pub mod gemm_i8;
 pub mod gemv;
-pub mod gemv_f32;
-pub mod gemv_i2;
-pub mod gemv_i4;
-pub mod gemv_i8;
 pub mod layout;
-pub mod log_f32;
-pub mod max_f32;
-pub mod min_f32;
 pub mod model;
-pub mod mul_f32;
 pub(crate) mod parse;
 pub mod quant;
 pub mod reduce;
 pub mod reduce_max_f32;
 pub mod reduce_sum_f32;
-pub mod residual_add_f32;
 pub mod rmsnorm_f32;
 pub mod rope_f32;
-pub mod scale_f32;
 pub mod scan;
 pub mod scan_f32;
 pub mod sch;
 pub mod sig;
-pub mod silu_f32;
 pub mod softmax_f32;
-pub mod sub_f32;
 pub mod tpl;
 pub mod unary;
+
+// 一元 / 二元 / 反量化 / GEMV / GEMM 骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
+pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
+pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
+pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};
+pub use gemv::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
+pub use unary::{exp_f32, gelu_f32, log_f32, scale_f32, silu_f32};
 
 use diagnostic::data::Table;
 
@@ -302,4 +286,5 @@ pub fn builtin() -> Vec<Op> {
 }
 
 #[cfg(test)]
+#[path = "../tests/tests.rs"]
 mod tests;
