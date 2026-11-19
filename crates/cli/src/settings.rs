@@ -1,9 +1,9 @@
-//! 调用参数：三个目录开关的**解析策略**——默认值、`CUTILE_*` 环境变量、`--set key=value`。
+//! 调用参数：配置键的**解析策略**——默认值、配置文件、`CUTILE_*` 环境变量、`--set key=value`。
 //!
-//! 这是全仓**唯一**读 `CUTILE_*` 与 `--set` 的地方。优先级从低到高：
+//! 这是全仓**唯一**读配置文件、`CUTILE_*` 与 `--set` 的地方。优先级从低到高（ADR 0048）：
 //!
 //! ```text
-//! 内置默认  <  环境变量 CUTILE_*  <  命令行 --set key=value
+//! 内置默认  <  配置文件 cutile.toml  <  环境变量 CUTILE_*  <  命令行 --set key=value
 //! ```
 //!
 //! 每个值都带来源，[`Settings::describe`] 逐键打印"值 ← 来源"，因此"为什么这次用的是这个
@@ -11,12 +11,14 @@
 //!
 //! 为什么策略住在这里而不是内核里：`cutile` 只知道"我要一个缓存目录、一个工作目录、一个可选的
 //! 数据根"（`cutile::dirs::Dirs`），**不该决定它们在哪个盘上**。默认值面向发布后的二进制
-//! （`~/Library/Caches/cutile/…`），是**部署策略**；`--set` 是**命令行文法**；两者都属于本层。
-//! 内核因此只依赖 `std::path`，可以被任何嵌入方接管（测试给临时目录，服务给容器卷）。
+//! （`~/Library/Caches/cutile/…`），是**部署策略**；`--set` 是**命令行文法**；配置文件是
+//! **部署形态**；三者都属于本层。内核因此只依赖 `std::path`，可以被任何嵌入方接管
+//! （测试给临时目录，服务给容器卷）。
 //!
 //! 它曾经是独立成员 `llm-config` 的一半（ADR 0006 → 0020），先并进 `cutile`，随后第四层
 //! （用户级配置文件）在 ADR 0022 被删除；ADR 0023 再把剩下的策略整块上移到本层——`cutile`
-//! 从此只收纯数据，配置不再与内核互相牵连。
+//! 从此只收纯数据。ADR 0048 恢复了配置文件层：语料仍在构建期解析，配置文件的 schema 只覆盖
+//! [`Key`] 闭集登记的运行时策略键；`toml` 是 L7 组合根的唯一外部依赖例外（D5 修订）。
 //!
 //! # 部署
 //!
@@ -28,7 +30,7 @@
 //! | Linux/BSD | `${XDG_CACHE_HOME:-~/.cache}/cutile/cache` |
 //! | Windows | `%LOCALAPPDATA%\cutile\cache` |
 //!
-//! 同一个二进制在任何目录运行都命中同一份缓存；需要偏离默认时用 `CUTILE_*` 或 `--set`。
+//! 同一个二进制在任何目录运行都命中同一份缓存；需要偏离默认时用配置文件、`CUTILE_*` 或 `--set`。
 //!
 //! # 例子
 //!
@@ -62,12 +64,71 @@ const APP: &str = "cutile";
 /// 环境变量前缀；完整变量名是 `<前缀>_<后缀>`。
 const PREFIX: &str = "CUTILE";
 
-/// 三个键的全部投影一次写完：新增一个键只加一行。
+/// 配置值闭集：值类型由每个键在 [`Key`] 闭集里声明，`describe` 与消费投影按类型收窄。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    /// 路径：相对路径按启动目录解析（与 `--set` 口径一致）。
+    Path(PathBuf),
+    /// 非负字节数（`u64`）。
+    Bytes(u64),
+    /// 有符号整数。
+    Int(i64),
+    /// 浮点数。
+    Float(f64),
+    /// 布尔。
+    Bool(bool),
+    /// 任意文本。
+    Text(String),
+}
+
+impl Value {
+    /// 投影为路径；类型不符（键表声明下不可达，防御分支）给 `None`。
+    fn into_path(self) -> Option<PathBuf> {
+        match self {
+            Self::Path(path) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// 借出路径视图。
+    fn as_path(&self) -> Option<&Path> {
+        match self {
+            Self::Path(path) => Some(path),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(path) => write!(formatter, "{}", path.display()),
+            Self::Bytes(bytes) => write!(formatter, "{bytes}"),
+            Self::Int(value) => write!(formatter, "{value}"),
+            Self::Float(value) => write!(formatter, "{value}"),
+            Self::Bool(value) => write!(formatter, "{value}"),
+            Self::Text(value) => write!(formatter, "{value}"),
+        }
+    }
+}
+
+/// 值类型标记：键表里一行一列，[`value_of_text`] 按它分派解析。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueKind {
+    Path,
+    Bytes,
+    Int,
+    Float,
+    Bool,
+    Text,
+}
+
+/// 全部键与它们的类型、环境变量、说明一次写完：新增一个键只加一行。
 ///
-/// 名字表只有这一份：点号名、环境变量后缀、说明、槽位下标全部由它派生，`describe` 与
+/// 名字表只有这一份：点号名、环境变量后缀、值类型、说明、槽位下标全部由它派生，`describe` 与
 /// "键未登记"报错里列出的清单也是同一张表，因此不会出现"加了一处、忘了另一处"。
 macro_rules! keys {
-    ($($variant:ident => $dotted:literal, [$($env:literal),*], $doc:literal;)*) => {
+    ($($variant:ident => $dotted:literal, [$($env:literal),*], $kind:ident, $doc:literal;)*) => {
         /// 配置键闭集。
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Key {
@@ -78,7 +139,7 @@ macro_rules! keys {
             /// 全部键，顺序即 `describe` 与报错清单的顺序。
             const KEYS: [Self; <[()]>::len(&[$(keys!(@one $variant)),*])] = [$(Self::$variant,)*];
 
-            /// `--set` 里的点号名。
+            /// `--set` 与配置文件里的点号名。
             const fn dotted(self) -> &'static str {
                 match self {
                     $(Self::$variant => $dotted,)*
@@ -89,6 +150,13 @@ macro_rules! keys {
             const fn suffixes(self) -> &'static [&'static str] {
                 match self {
                     $(Self::$variant => &[$($env),*],)*
+                }
+            }
+
+            /// 值类型标记。
+            const fn kind(self) -> ValueKind {
+                match self {
+                    $(Self::$variant => ValueKind::$kind,)*
                 }
             }
 
@@ -109,9 +177,18 @@ macro_rules! keys {
 }
 
 keys! {
-    CacheDir => "cache.dir", ["CACHE_DIR", "CACHE"], "编译产物缓存的根目录";
-    WorkDir => "work.dir", ["WORK_DIR"], "编译与执行时的临时工作目录";
-    DataRoot => "data.root", ["DATA_DIR"], "声明层 / 档案层 / 片段层的替代根；未设置表示用内嵌数据";
+    CacheDir => "cache.dir", ["CACHE_DIR", "CACHE"], Path, "编译产物缓存的根目录";
+    WorkDir => "work.dir", ["WORK_DIR"], Path, "编译与执行时的临时工作目录";
+    DataRoot => "data.root", ["DATA_DIR"], Path, "声明层 / 档案层 / 片段层的替代根；未设置表示用内嵌数据";
+    CacheLimit => "cache.limit_bytes", [], Bytes, "缓存容量上限（字节）";
+    StaleLock => "cache.stale_lock_secs", [], Int, "陈旧锁判据（秒）：超过即视为崩溃遗留";
+    TouchWindow => "cache.touch_window_secs", [], Int, "LRU 时间戳刷新窗口（秒）";
+    HttpMaxHead => "http.max_head_bytes", [], Int, "HTTP 请求头长度上限（字节）";
+    HttpMaxBody => "http.max_body_bytes", [], Int, "HTTP 请求体长度上限（字节）";
+    GenerateTemp => "generate.default_temperature", [], Float, "采样默认温度";
+    PolicyW => "policy.w", [], Int, "脉冲通道窗口常数";
+    PolicyNRef => "policy.n_ref", [], Float, "脉冲通道参考常数";
+    PolicyTau => "policy.tau_scale", [], Float, "脉冲通道时间常数";
 }
 
 /// 槽位数量；[`Key::KEYS`] 是唯一事实源。
@@ -142,6 +219,8 @@ impl Key {
 enum Origin {
     /// 内置默认值。
     Default,
+    /// 配置文件，带路径。
+    File(PathBuf),
     /// 环境变量，带变量名。
     Env(String),
     /// 命令行覆盖，带 `--set key=value` 原文。
@@ -153,8 +232,9 @@ impl Origin {
     const fn rank(&self) -> u8 {
         match self {
             Self::Default => 0,
-            Self::Env(_) => 1,
-            Self::Cli(_) => 2,
+            Self::File(_) => 1,
+            Self::Env(_) => 2,
+            Self::Cli(_) => 3,
         }
     }
 }
@@ -163,6 +243,7 @@ impl fmt::Display for Origin {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Default => formatter.write_str("内置默认值"),
+            Self::File(path) => write!(formatter, "{}（file）", path.display()),
             Self::Env(name) => write!(formatter, "{name}（env）"),
             Self::Cli(text) => write!(formatter, "{text}（cli）"),
         }
@@ -170,9 +251,9 @@ impl fmt::Display for Origin {
 }
 
 /// 一个已确定的值与它的来源。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Resolved {
-    value: PathBuf,
+    value: Value,
     origin: Origin,
 }
 
@@ -270,14 +351,14 @@ fn cache_home() -> PathBuf {
 }
 
 /// 解析后的设置：值 + 来源 + 路径根。每个进程加载一次，之后按引用传递。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     roots: Roots,
     slots: [Option<Resolved>; KEY_COUNT],
 }
 
 impl Settings {
-    /// 生产入口：环境变量 → 默认值；命令行覆盖由 [`Settings::apply_arguments`] 注入。
+    /// 生产入口：配置文件 → 环境变量 → 默认值；命令行覆盖由 [`Settings::apply_arguments`] 注入。
     ///
     /// 非 UTF-8 的环境变量视为未设置（`std::env::var` 的语义）。
     pub fn load() -> Result<Self> {
@@ -285,13 +366,17 @@ impl Settings {
     }
 
     /// 可注入入口：`lookup` 决定环境变量从哪读，`roots` 决定默认目录在哪。
+    ///
+    /// 配置文件发现顺序（ADR 0048）：`CUTILE_CONFIG`（经 `lookup`）→ `./cutile.toml` →
+    /// 平台用户目录；只读第一份命中，文件不存在不是错误。
     pub fn load_with(roots: &Roots, lookup: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let mut settings = Self::defaults(roots);
+        settings.read_file(lookup)?;
         settings.read_env(lookup)?;
         Ok(settings)
     }
 
-    /// 只用默认值（不读环境变量）。
+    /// 只用默认值（不读配置文件与环境变量）。
     pub fn defaults(roots: &Roots) -> Self {
         Self {
             roots: roots.clone(),
@@ -304,17 +389,20 @@ impl Settings {
         &self.roots
     }
 
-    /// 摘出全部 `--set key=value` 并写入设置，返回其余参数。
+    /// 摘出全部 `--set key=value` 与 `--config <path>` 并写入设置，返回其余参数。
     ///
     /// # Errors
     ///
-    /// `--set` 后面没有值、键未登记、缺 `=`、或值为空时返回 `invalid`。
+    /// `--set` 后面没有值、键未登记、缺 `=`、或值为空时返回 `invalid`；
+    /// `--config` 后面的路径不存在时返回 `missing`。
     pub fn apply_arguments(&mut self, args: &[String]) -> Result<Vec<String>> {
         let mut rest = Vec::with_capacity(args.len());
         let mut index = 0;
         while index < args.len() {
             index = if args[index] == "--set" {
                 self.apply_at(args, index)?
+            } else if args[index] == "--config" {
+                self.apply_config_at(args, index)?
             } else {
                 rest.push(args[index].clone());
                 index + 1
@@ -333,6 +421,16 @@ impl Settings {
         Ok(index + 2)
     }
 
+    /// 处理 `args[index] == "--config"`，返回下一条要看的参数下标。
+    fn apply_config_at(&mut self, args: &[String], index: usize) -> Result<usize> {
+        let path = args
+            .get(index + 1)
+            .ok_or_else(|| invalid("`--config` 缺少文件路径"))?;
+        self.read_file_at(Path::new(path))
+            .map_err(|error| error.with("--config"))?;
+        Ok(index + 2)
+    }
+
     /// 写入一条命令行覆盖（`key=value`）。命令行层优先级最高，相对路径按启动目录解析。
     ///
     /// # Errors
@@ -344,8 +442,8 @@ impl Settings {
             .ok_or_else(|| invalid(format!("`--set {text}` 缺少 `=`：应写成 `key=value`")))?;
         let key = dotted_key(name.trim())?;
         let origin = Origin::Cli(format!("--set {text}"));
-        let value = path_of_text(key, &origin, raw)?;
-        let value = rebase(value, self.roots.base());
+        let value = value_of_text(key, &origin, raw)?;
+        let value = rebase_value(value, self.roots.base());
         self.store(key, value, origin);
         Ok(())
     }
@@ -353,14 +451,14 @@ impl Settings {
     /// 缓存根目录。
     pub fn cache_dir(&self) -> PathBuf {
         self.resolved(Key::CacheDir)
-            .map(|(value, _)| value)
+            .and_then(|(value, _)| value.into_path())
             .unwrap_or_else(|| self.roots.default_cache_dir(APP))
     }
 
     /// 临时工作目录。
     pub fn work_dir(&self) -> PathBuf {
         self.resolved(Key::WorkDir)
-            .map(|(value, _)| value)
+            .and_then(|(value, _)| value.into_path())
             .unwrap_or_else(|| self.roots.default_work_dir(APP))
     }
 
@@ -368,7 +466,15 @@ impl Settings {
     pub fn data_root(&self) -> Option<&Path> {
         self.slots[Key::DataRoot.index()]
             .as_ref()
-            .map(|slot| slot.value.as_path())
+            .and_then(|slot| slot.value.as_path())
+    }
+
+    /// 缓存容量上限；未设置回落到 [`cutile::cache::CACHE_LIMIT`]（P5 接线前两处默认值并存）。
+    pub fn cache_limit_bytes(&self) -> Option<u64> {
+        self.resolved(Key::CacheLimit).and_then(|(value, _)| match value {
+            Value::Bytes(bytes) => Some(bytes),
+            _ => None,
+        })
     }
 
     /// 投影成内核只认的三目录纯数据：缓存 / 工作 / 数据根；`cutile` 不读环境变量（ADR 0023）。
@@ -382,7 +488,7 @@ impl Settings {
 
     /// 逐键打印"值 ← 来源"，供 `doctor` 与故障排查使用。
     pub fn describe(&self) -> String {
-        let mut out = String::from("[配置] 默认 < 环境变量 < 命令行\n");
+        let mut out = String::from("[配置] 默认 < 配置文件 < 环境变量 < 命令行\n");
         for key in Key::KEYS {
             out.push_str(&self.row(key));
         }
@@ -392,14 +498,14 @@ impl Settings {
     /// 一个键的一行；没有默认值又没设置时写"未设置"。
     fn row(&self, key: Key) -> String {
         let (value, origin) = match self.resolved(key) {
-            Some((value, origin)) => (value.display().to_string(), origin.to_string()),
+            Some((value, origin)) => (value.to_string(), origin.to_string()),
             None => ("-".to_string(), "未设置".to_string()),
         };
-        format!("  {:<10} = {:<28} ← {origin}\n", key.dotted(), value)
+        format!("  {:<26} = {:<28} ← {origin}\n", key.dotted(), value)
     }
 
-    /// 某个键的最终取值与来源：设置过的用它，没设置的只有 `cache.dir` / `work.dir` 有默认值。
-    fn resolved(&self, key: Key) -> Option<(PathBuf, Origin)> {
+    /// 某个键的最终取值与来源：设置过的用它，没设置的看 [`default_of`]。
+    fn resolved(&self, key: Key) -> Option<(Value, Origin)> {
         if let Some(slot) = &self.slots[key.index()] {
             return Some((slot.value.clone(), slot.origin.clone()));
         }
@@ -417,15 +523,64 @@ impl Settings {
                 continue;
             };
             let origin = Origin::Env(name);
-            let value = path_of_text(key, &origin, &text)?;
-            let value = rebase(value, self.roots.base());
+            let value = value_of_text(key, &origin, &text)?;
+            let value = rebase_value(value, self.roots.base());
+            self.store(key, value, origin);
+        }
+        Ok(())
+    }
+
+    /// 配置文件层：发现顺序见 [`Settings::load_with`]，只读第一份命中。
+    fn read_file(&mut self, lookup: impl Fn(&str) -> Option<String>) -> Result<()> {
+        if let Some(path) = lookup("CUTILE_CONFIG") {
+            return self.read_file_at(Path::new(&path));
+        }
+        for path in discover_files() {
+            if path.is_file() {
+                return self.read_file_at(&path);
+            }
+        }
+        Ok(())
+    }
+
+    /// 读一份配置文件：键未登记 / 类型不符 / 坏 TOML 都是 `invalid`，文件不存在是 `missing`。
+    fn read_file_at(&mut self, path: &Path) -> Result<()> {
+        let text = std::fs::read_to_string(path).map_err(|error| {
+            let code = if path.is_file() { Code::Io } else { Code::Missing };
+            Error::new(code, format!("读配置文件 {} 失败：{error}", path.display()))
+                .with("cli::settings")
+        })?;
+        let table: toml::Table = toml::from_str(&text).map_err(|error| {
+            invalid(format!(
+                "配置文件 {} 不是合法 TOML：{error}",
+                path.display()
+            ))
+        })?;
+        for (name, raw) in table {
+            let key = dotted_key(&name)
+                .map_err(|error| error.with(format!("配置文件 {}", path.display())))?;
+            let origin = Origin::File(path.to_path_buf());
+            let text = raw
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| raw.as_integer().map(|value| value.to_string()))
+                .or_else(|| raw.as_float().map(|value| value.to_string()))
+                .or_else(|| raw.as_bool().map(|value| value.to_string()))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "{origin}提供的 `{name}`（{}）非法：不支持表或数组值",
+                        key.doc()
+                    ))
+                })?;
+            let value = value_of_text(key, &origin, &text)?;
+            let value = rebase_value(value, self.roots.base());
             self.store(key, value, origin);
         }
         Ok(())
     }
 
     /// 写入一个值；只有优先级不低于已有来源时才生效。
-    fn store(&mut self, key: Key, value: PathBuf, origin: Origin) {
+    fn store(&mut self, key: Key, value: Value, origin: Origin) {
         let slot = &mut self.slots[key.index()];
         if slot
             .as_ref()
@@ -436,12 +591,36 @@ impl Settings {
     }
 }
 
-/// 键的默认值：只有 `cache.dir` 与 `work.dir` 有，`data.root` 没有。
-fn default_of(key: Key, roots: &Roots) -> Option<PathBuf> {
+/// 配置文件发现顺序里的候选路径（不含显式 `--config` / `CUTILE_CONFIG`）。
+fn discover_files() -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("cutile.toml")];
+    if let Some(home) = home() {
+        #[cfg(windows)]
+        if let Some(appdata) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+            candidates.push(PathBuf::from(appdata).join("cutile").join("config.toml"));
+        }
+        #[cfg(not(windows))]
+        candidates.push(home.join(".config").join("cutile").join("config.toml"));
+    }
+    candidates
+}
+
+/// 键的默认值：路径键只有 `cache.dir` / `work.dir` 有；数值键的默认值 = 各消费方现值
+/// （P5 接线后消费方常量删除，本表成为唯一事实源）。
+fn default_of(key: Key, roots: &Roots) -> Option<Value> {
     match key {
-        Key::CacheDir => Some(roots.default_cache_dir(APP)),
-        Key::WorkDir => Some(roots.default_work_dir(APP)),
+        Key::CacheDir => Some(Value::Path(roots.default_cache_dir(APP))),
+        Key::WorkDir => Some(Value::Path(roots.default_work_dir(APP))),
         Key::DataRoot => None,
+        Key::CacheLimit => Some(Value::Bytes(2 * 1024 * 1024 * 1024)),
+        Key::StaleLock => Some(Value::Int(60)),
+        Key::TouchWindow => Some(Value::Int(5)),
+        Key::HttpMaxHead => Some(Value::Int(8 * 1024)),
+        Key::HttpMaxBody => Some(Value::Int(64 * 1024)),
+        Key::GenerateTemp => Some(Value::Float(1.0)),
+        Key::PolicyW => Some(Value::Int(64)),
+        Key::PolicyNRef => Some(Value::Float(4096.0)),
+        Key::PolicyTau => Some(Value::Float(0.05)),
     }
 }
 

@@ -43,6 +43,8 @@ tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
 tool = { path = "../tool", package = "llm-tool" }
 train = { path = "../train", package = "llm-train" }
 weights = { path = "../weights", package = "llm-weights" }
+# L7 唯一外部依赖例外（ADR 0048）：配置文件层解析；L1–L6 生产路径仍零外部依赖（D5 修订）。
+toml = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

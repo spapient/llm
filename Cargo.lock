@@ -442,6 +442,7 @@ dependencies = [
  "llm-tool",
  "llm-train",
  "llm-weights",
+ "toml",
 ]
 
 [[package]]
