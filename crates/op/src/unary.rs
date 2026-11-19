@@ -238,7 +238,7 @@ pub mod exp_f32 {
         {
             // 边界：exp(0)=1、大负数下溢为 0、exp(1)=e。
             let mut out = vec![0.0; 3];
-            forward(&[0.0, -1000.0, 1.0], &mut out).expect("等长");
+            assert!(forward(&[0.0, -1000.0, 1.0], &mut out).is_ok(), "等长");
             assert_eq!(out[0], 1.0, "exp(0)=1");
             assert_eq!(out[1], 0.0, "exp(-1000) 下溢为 0");
             assert!((out[2] - std::f32::consts::E).abs() < 1e-6, "exp(1)=e");
@@ -263,7 +263,10 @@ pub mod log_f32 {
         {
             // 边界：ln(1)=0、ln(e)=1。
             let mut out = vec![0.0; 2];
-            forward(&[1.0, std::f32::consts::E], &mut out).expect("等长");
+            assert!(
+                forward(&[1.0, std::f32::consts::E], &mut out).is_ok(),
+                "等长"
+            );
             assert_eq!(out[0], 0.0, "ln(1)=0");
             assert!((out[1] - 1.0).abs() < 1e-6, "ln(e)=1");
         },
@@ -325,7 +328,7 @@ pub mod silu_f32 {
         {
             // silu(1) = sigmoid(1)：1/(1+e^-1) 的已知值钉住。
             let mut out = [0.0; 1];
-            forward(&[1.0], &mut out).expect("等长");
+            assert!(forward(&[1.0], &mut out).is_ok(), "等长");
             assert!(
                 (out[0] - 0.731_058_6).abs() < 1e-6,
                 "silu(1) = {out}",
@@ -353,7 +356,7 @@ pub mod scale_f32 {
         {
             // scale(1) = ALPHA：把样本常量与内核模板常量钉在同一处。
             let mut out = [0.0; 1];
-            forward(&[1.0], &mut out).expect("等长");
+            assert!(forward(&[1.0], &mut out).is_ok(), "等长");
             assert_eq!(out[0], ALPHA, "scale(1) = ALPHA");
         },
         |x| ALPHA * x,
