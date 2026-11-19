@@ -72,7 +72,7 @@ reason = "声明数据树的值（ADR 0022：语料在构建期被解析成 `dia
 
 [[ownership.unlisted]]
 crate = "cutile"
-names = ["CallArg", "ChainStep", "FragmentGap", "LanguageGate", "Lock", "NeedReport", "Outcome", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
+names = ["CallArg", "ChainStep", "FragmentGap", "LanguageGate", "Lock", "NeedReport", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
 reason = "内核 DSL 的协商、执行前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表"
 
 [[ownership.unlisted]]
@@ -117,7 +117,7 @@ reason = "`Ties` 是快照内的权重绑定表（`(源槽, 回填槽)` 下标�
 
 [[ownership.unlisted]]
 crate = "tool"
-names = ["Call", "Direction", "Link", "Metric", "Over"]
+names = ["Call", "Direction", "Link", "Over"]
 reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Report`"
 
 [[ownership.unlisted]]

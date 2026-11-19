@@ -16,6 +16,8 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
     const ZERO: Self;
     /// 乘法幺元。
     const ONE: Self;
+    /// 负无穷（DSA top-k 掩码：`softmax(−∞)=0`，实现真稀疏注意力）。
+    const NEG_INFINITY: Self;
 
     /// 加法。
     fn add(self, rhs: Self) -> Self;
@@ -40,6 +42,7 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
 impl Scalar for f32 {
     const ZERO: Self = 0.0;
     const ONE: Self = 1.0;
+    const NEG_INFINITY: Self = f32::NEG_INFINITY;
 
     fn add(self, rhs: Self) -> Self {
         self + rhs
@@ -73,6 +76,7 @@ impl Scalar for f32 {
 impl Scalar for f64 {
     const ZERO: Self = 0.0;
     const ONE: Self = 1.0;
+    const NEG_INFINITY: Self = f64::NEG_INFINITY;
 
     fn add(self, rhs: Self) -> Self {
         self + rhs
