@@ -7,16 +7,30 @@
 //!
 //! cutile 保留 [`Codegen`] 与 C 宿主参考后端（本机 CPU，不是设备厂商）；Metal / CUDA 的 [`Driver`]
 //! 由 L6（`engine`）实现、L7（`cli`）装配注入（`docs/ARCHITECTURE.md` 的 L3 契约：机制层不出现
-//! 厂商特判与运行时依赖）。
+//! 厂商特判与运行时依赖）。装配走 [`register`]，cutile 的机制层只从这张表取后端，不硬编码后端清单。
 
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
 use crate::toolchain::Toolchain;
 use crate::witness::{Scope, Selected};
-use diagnostic::Result;
+use diagnostic::{Code, Error, Result};
 
 /// 一次执行回读出来的东西：每条见证写出的个数 + 按顺序回读的 f32 值。
 pub type Readback = (Vec<i64>, Vec<f32>);
+
+/// 一段要编译并执行的生产态程序源（verify / bench 的加速器车道）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// 单源文本（C / CUDA）：编译成可执行文件直接跑。
+    Single(String),
+    /// 双源文本（Metal）：设备源（.metal）编成 metallib，host 驱动（.m）编成可执行文件并发射。
+    Pair {
+        /// 设备源（MSL）。
+        device: String,
+        /// host 驱动（ObjC）。
+        host: String,
+    },
+}
 
 /// 生成程序文本：纯函数，见证清单（结构化中性输入）→ 一门语言的源文本，可离线对拍。
 pub trait Codegen {
@@ -50,7 +64,33 @@ pub trait Driver {
     /// 把「探针」暴露成方法而不是让机制层直接调 `detect_nvcc` / `detect_metal`：这样后端实现
     /// 搬去 `engine` 后，[`crate::verify`] 仍只经这条缝取工具链身份，不依赖任何厂商检测函数。
     fn toolchain(&self) -> Option<Toolchain>;
+    /// 生产态内核的「编译 + 执行 + 回读」，返回 `(stdout, stderr)` 原文。与见证 [`run`](Self::run)
+    /// 分开：这条是原始子进程路径，`verify` 的加速器车道（CUDA / Metal）从这取回读并解析位模式。
+    ///
+    /// 宿主 C 的 `verify` 走产物缓存（`build::execute`），不经这条路径，故默认不支持；Metal / CUDA
+    /// 覆盖它。
+    fn compile_run(
+        &self,
+        _profile: &Profile,
+        _dirs: &Dirs,
+        _source: &Source,
+        _label: &str,
+    ) -> Result<(String, String)> {
+        Err(Error::new(
+            Code::Unsupported,
+            "该后端没有生产态编译车道".to_string(),
+        ))
+    }
 }
 
 /// 一台设备的执行后端：`Codegen` 出源 + `Driver` 跑源。不加新方法，只做「能分派」的并集约束。
-pub trait Backend: Codegen + Driver {}
+/// `Sync` 让后端能被写进进程级注册表（[`register`]）后从任意线程取用。
+pub trait Backend: Codegen + Driver + Sync {}
+
+/// 装配一台后端：L7（`cli`）在启动时注入 Metal / CUDA；cutile 已内置 host C 参考后端。
+///
+/// 后端注册进 cutile 的进程级表后，机制层（`witness` / `verify`）按 `emit` 从表里取，不硬编码
+/// 后端清单。注册是幂等的（同一条后端重复注册只留一份，见 [`crate::device::register`]）。
+pub fn register(backend: &'static dyn Backend) {
+    crate::device::register(backend);
+}

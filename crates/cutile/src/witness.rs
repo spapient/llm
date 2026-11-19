@@ -17,20 +17,29 @@ use diagnostic::{Code, Error};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use crate::device::{compile_run_cuda, compile_run_metal};
 pub use crate::gate::{LanguageGate, language_gate};
 
-/// 编译并真机运行一段 CUDA 程序，回读打印的 `(计数, f32 位模式)`。供 cli 真机对拍复用：
-/// 生成生产态网格内核 → [`compile_run_cuda`] → 解析 stdout 的 `printf("%u\n")` 输出。计数来自
-/// stderr 里 `ns` 计时行（无则空），值来自 stdout 的 u32 位模式。
+/// 编译并真机运行一段 CUDA 程序，回读 `(计数, f32 位模式)`。供 cli 真机对拍复用：生成生产态网格
+/// 内核 → 经 `Backend` 缝（[`crate::backend::Driver::compile_run`]）编译执行 → 解析 stdout 的
+/// `printf("%u\n")` 输出。计数来自 stderr 的 `witness N` 行，值来自 stdout 的 u32 位模式。
+///
+/// 这是「机制层」的薄适配器：它只按 `emit` 取后端、调 [`crate::backend::Driver::compile_run`]，
+/// 不认识 CUDA 的任何编译细节——CUDA 后端由 L7 注入（`engine` 实现 `Backend`）。
 pub fn run_cuda(
     profile: &Profile,
     dirs: &Dirs,
     program: &str,
     label: &str,
 ) -> diagnostic::Result<(Vec<i64>, Vec<f32>)> {
-    let (stdout, stderr) = compile_run_cuda(profile, dirs, program, label)?;
-    Ok(device::readback(&stdout, &stderr))
+    let backend = device::spec(Emit::Cuda).ok_or_else(|| {
+        Error::new(
+            Code::Unsupported,
+            "CUDA 后端未装配：先由 L7 注入 `engine` 的 CUDA 后端".to_string(),
+        )
+    })?;
+    let source = crate::backend::Source::Single(program.to_string());
+    let (stdout, stderr) = backend.compile_run(profile, dirs, &source, label)?;
+    Ok(crate::driver::readback(&stdout, &stderr))
 }
 
 /// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。

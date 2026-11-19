@@ -90,6 +90,7 @@ pub mod cache;
 pub mod cap;
 pub mod dirs;
 pub mod doctor;
+pub mod driver;
 pub mod emit;
 pub mod execution;
 pub mod ledger;

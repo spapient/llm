@@ -4,7 +4,6 @@
 //! 产物身份与报告一律用实测值。探测结果按进程级快照缓存：进程启动后新装的编译器要重启才看得见。
 
 use std::fmt;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -78,28 +77,12 @@ pub fn parse_version(text: &str) -> Option<String> {
 
 /// 进程内缓存的探测结果：同一台机器的工具链不会变，反复 `--version` 起子进程是纯浪费。
 static C_TOOLCHAIN: OnceLock<Option<Toolchain>> = OnceLock::new();
-static NVCC_TOOLCHAIN: OnceLock<Option<Toolchain>> = OnceLock::new();
-static METAL_TOOLCHAIN: OnceLock<Option<Toolchain>> = OnceLock::new();
 
 /// 探测可用的 C 编译器（`cc` → `clang` → `gcc`）并读出它自报的版本；结果当作进程级快照缓存。
 pub fn detect() -> Option<Toolchain> {
     C_TOOLCHAIN
         .get_or_init(|| ["cc", "clang", "gcc"].into_iter().find_map(probe))
         .clone()
-}
-
-/// 探测 nvcc（CUDA 编译器）：`nvcc --version` 只打印版本、不调用宿主 cl，故可独立成功；宿主编译器由
-/// 调用方用 `-ccbin` 另行指定。
-#[must_use]
-pub fn detect_nvcc() -> Option<Toolchain> {
-    NVCC_TOOLCHAIN.get_or_init(|| probe("nvcc")).clone()
-}
-
-/// 探测 Metal 编译器（`xcrun metal --version`）：命令可用、能自报版本时才算数。不用 `[meta].tool`
-/// 判断——那是人写的登记值，这里要回答的是"这台机器现在能不能把 `.metal` 编成 `metallib`"。
-#[must_use]
-pub fn detect_metal() -> Option<Toolchain> {
-    METAL_TOOLCHAIN.get_or_init(probe_metal).clone()
 }
 
 /// 本机的 clang：先问 `clang`，再退到 `cc`（macOS 与多数发行版的 `cc` 就是 clang）。判据是
@@ -142,111 +125,6 @@ pub(crate) fn skip_without_host_compiler() -> bool {
     } else {
         false
     }
-}
-
-fn probe_metal() -> Option<Toolchain> {
-    let output = Command::new("xcrun")
-        .args(["-sdk", "macosx", "metal", "--version"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).to_string()
-        + &String::from_utf8_lossy(&output.stderr);
-    Some(Toolchain {
-        command: "xcrun metal".to_string(),
-        version: parse_version(&text),
-        banner: text
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())?
-            .to_string(),
-    })
-}
-
-/// 定位 MSVC cl.exe（Windows 上 nvcc 的宿主编译器）：先问 `vswhere`，再退回环境变量登记的两个
-/// 安装根，多版本共存时按**数值**取最新。
-#[must_use]
-pub(crate) fn find_cl() -> Option<PathBuf> {
-    if std::env::consts::OS != "windows" {
-        return None;
-    }
-    candidates().into_iter().max_by_key(|cl| msvc_version(cl))
-}
-
-/// 全部候选 cl.exe：`vswhere`（微软官方的安装发现器）枚举的，加环境变量里两个安装根下的。
-fn candidates() -> Vec<PathBuf> {
-    let mut found = vswhere_cls();
-    for key in ["VCINSTALLDIR", "VSINSTALLDIR"] {
-        if let Some(root) = std::env::var_os(key) {
-            found.extend(msvc_cls(Path::new(&root)));
-        }
-    }
-    found
-}
-
-/// `vswhere -find` 枚举的全部 cl.exe：它知道安装在哪，不需要本文件猜盘符。
-fn vswhere_cls() -> Vec<PathBuf> {
-    let Some(program_files) = std::env::var_os("ProgramFiles(x86)") else {
-        return Vec::new();
-    };
-    let vswhere = Path::new(&program_files).join("Microsoft Visual Studio/Installer/vswhere.exe");
-    let Ok(output) = Command::new(vswhere)
-        .args([
-            "-latest",
-            "-products",
-            "*",
-            "-find",
-            r"VC\Tools\MSVC\**\bin\Hostx64\x64\cl.exe",
-        ])
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| PathBuf::from(line.trim()))
-        .filter(|cl| cl.is_file())
-        .collect()
-}
-
-/// 一个安装根下的全部 cl.exe（`<root>/Tools/MSVC/<版本>/bin/Hostx64/x64/cl.exe`）。两个根形状都
-/// 看：`VCINSTALLDIR` 直接指到 `…\VC`，`VSINSTALLDIR` 指到安装根（下面还有 `VC`）。
-fn msvc_cls(root: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    for base in [root.join("Tools/MSVC"), root.join("VC/Tools/MSVC")] {
-        let Ok(entries) = std::fs::read_dir(base) else {
-            continue;
-        };
-        found.extend(
-            entries
-                .flatten()
-                .map(|entry| entry.path().join("bin/Hostx64/x64/cl.exe")),
-        );
-    }
-    found.into_iter().filter(|cl| cl.is_file()).collect()
-}
-
-/// cl.exe 路径里 `MSVC\<版本>\` 的那一段，按**数值**比较。按字符串找标记而不是 `Path::components`：
-/// `\` 只在 Windows 上是分隔符，而单元测试跑在别的平台。
-fn msvc_version(cl: &Path) -> Vec<u32> {
-    let text = cl.to_string_lossy().replace('/', "\\");
-    let Some((_, rest)) = text.rsplit_once("MSVC\\") else {
-        return Vec::new();
-    };
-    rest.split('\\')
-        .next()
-        .map(|version| {
-            version
-                .split('.')
-                .map(|part| part.parse::<u32>().unwrap_or(0))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

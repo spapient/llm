@@ -468,8 +468,14 @@ impl Sweep<'_> {
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
         let program = harness::cuda_harness(&prepared.source.text, &self.run.op.signature, sample)?;
-        let (stdout, _stderr) =
-            witness::compile_run_cuda(self.run.profile, self.dirs, &program, "verify")?;
+        let (stdout, _stderr) = crate::device::spec(Emit::Cuda)
+            .ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))?
+            .compile_run(
+                self.run.profile,
+                self.dirs,
+                &crate::backend::Source::Single(program),
+                "verify",
+            )?;
         Ok((runner::parse_bits(&stdout), None))
     }
 
@@ -482,8 +488,17 @@ impl Sweep<'_> {
         self.run.op.signature.check(sample)?;
         let program =
             harness::metal_harness(&prepared.source.text, &self.run.op.signature, sample)?;
-        let (stdout, _stderr) =
-            witness::compile_run_metal(self.run.profile, self.dirs, &program, "verify")?;
+        let (stdout, _stderr) = crate::device::spec(Emit::Metal)
+            .ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))?
+            .compile_run(
+                self.run.profile,
+                self.dirs,
+                &crate::backend::Source::Pair {
+                    device: program.0,
+                    host: program.1,
+                },
+                "verify",
+            )?;
         Ok((runner::parse_bits(&stdout), None))
     }
 }
