@@ -1,9 +1,13 @@
 //! 五轴自适应选码（配置化）：`raw / dict / sparse / quant / rank` 五个候选，每个候选只有在解码后
 //! 与原始位模式逐元素一致（`to_bits` 相等）时才被采纳，最终在通过验证的候选里取字节最小者。
 //!
-//! 五轴各自实现 [`AxisCfg`]，搜索与逐位验证是泛型闭集：新增一轴只加一个 `impl AxisCfg` 与
-//! [`AXES`] 常量表一行，不碰分派、验码与形状判据。`raw` 是恒可用的基线（f32 字节走 rANS），
+//! 五轴各自实现 `AxisCfg`，搜索与逐位验证是泛型闭集：新增一轴只加一个 `impl AxisCfg` 与
+//! `AXES` 常量表一行，不碰分派、验码与形状判据。`raw` 是恒可用的基线（f32 字节走 rANS），
 //! 因此非空输入总有返回；其余轴不满足逐位精确即判不适用，绝不谎称无损。
+//!
+//! `rank` 轴比其余四轴多一道门：[`ledger::certify`] 先判谱隙，判定不过（无谱隙、形状退化）就
+//! 整轴不参与，秩与证书出自同一次分解——于是「证书不过就拒压回退」不是文档里的口号，而是
+//! [`search`] 里 `encode` 返回 `None` 的那条分支。
 
 use diagnostic::{Code, Error, Result};
 
@@ -27,7 +31,7 @@ pub enum Axis {
     Sparse = 2,
     /// 精确 2^e 网格量化。
     Quant = 3,
-    /// 精确低秩 + 残差。
+    /// 精确低秩 + 残差，秩由 L0 谱隙证书给出。
     Rank = 4,
 }
 
@@ -432,17 +436,17 @@ fn decode_quant(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
     Ok(codes.iter().map(|&c| min + c as f32 * step).collect())
 }
 
+/// 低秩载荷：秩由证书给出，证书不通过就不压。
+///
+/// 这里不再自己挑秩（旧版取 `min(m,n)/2`，与谱隙无关）：[`ledger::certify`] 用一次分解同时给出
+/// 受认证的秩与 `L`、`C`，`None` 就是「拒压」——秩轴对这张矩阵不适用，让给别的轴。
 fn rank_payload(w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {
-    let r = m.min(n) / 2;
-    if r == 0 {
-        return None;
-    }
-    let t = ledger::truncate(w, m, n, r).ok()?;
-    let low = pack_bytes(&f32_bytes(&t.low));
-    let mut p = (r as u32).to_le_bytes().to_vec();
+    let cert = ledger::certify(w, m, n).ok().flatten()?;
+    let low = pack_bytes(&f32_bytes(&cert.low));
+    let mut p = (cert.rank as u32).to_le_bytes().to_vec();
     p.extend_from_slice(&(low.len() as u32).to_le_bytes());
     p.extend(low);
-    p.extend(pack_bytes(&f32_bytes(&t.rest)));
+    p.extend(pack_bytes(&f32_bytes(&cert.rest)));
     Some(p)
 }
 
@@ -614,6 +618,38 @@ mod tests {
         let pick = search(&w, 8, 8).expect("搜索");
         // 不逐位精确的低秩不得胜出；raw 兜底。
         assert_ne!(pick.axis, Axis::Rank);
+    }
+
+    /// 有谱隙的矩阵：秩轴产出载荷，载荷自带秩与残差、能逐位还原。
+    ///
+    /// 这里不假设"秩轴一定在五轴里胜出"——显式残差是每个元素 4 字节，只有在矩阵**精确**低秩
+    /// （残差全零）时才比原字节便宜，那是结构性质而不是门控性质。门控性质只保证一件事：证书
+    /// 不过就没有这个候选。
+    #[test]
+    fn a_certified_matrix_yields_a_rank_payload_that_roundtrips() {
+        // `w[i][j] = 64·i + j`：秩 2、值两两不同，且 f32 精确。
+        let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
+        let payload = rank_payload(&w, 64, 64).expect("谱隙存在，秩轴必须给出候选");
+        let pick = frame(Axis::Rank, 64, 64, payload);
+        let got = decode(&pick.artifact).expect("解码");
+        assert!(got.iter().zip(&w).all(|(a, b)| a.to_bits() == b.to_bits()));
+    }
+
+    /// 没有谱隙的矩阵不存在可信的秩：证书拒压，秩轴整轴不参与（不是压出一个近似值）。
+    #[test]
+    fn a_matrix_without_a_spectral_gap_skips_the_rank_axis() {
+        let zeros = vec![0.0f32; 4096];
+        assert!(
+            rank_payload(&zeros, 64, 64).is_none(),
+            "σ 全相等就没有可判秩"
+        );
+        assert_ne!(search(&zeros, 64, 64).expect("搜索").axis, Axis::Rank);
+        // 单行/单列同理：`1 <= r < min(m,n)` 无解。
+        let row: Vec<f32> = (0..64).map(|i| i as f32 * 0.5).collect();
+        assert!(rank_payload(&row, 1, 64).is_none());
+        assert_ne!(search(&row, 1, 64).expect("搜索").axis, Axis::Rank);
+        let got = decode(&search(&zeros, 64, 64).expect("搜索").artifact).expect("解码");
+        assert!(got.iter().all(|x| x.to_bits() == 0.0f32.to_bits()));
     }
 
     #[test]

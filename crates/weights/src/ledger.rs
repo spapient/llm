@@ -1,9 +1,16 @@
-//! 谱隙证书账本：基于自研 [`svd`] 的秩选择稳定性判定与 Eckart-Young 截断。
+//! 谱隙证书账本：L0 判定、秩选择与证书同源，只有一个入口 [`certify`]。
 //!
-//! 旧版用 serde 承载 60+ 个字段，其中大量是 `Option` 占位、无真实消费方。这里收敛为数学上
-//! 必要的闭集字段，用 LEB128 强类型二进制编解码（替代 serde，零第三方依赖），并保留六项
-//! 不变量校验。谱隙判定严格：`γ_r > 2ε` 才 Pass，等号一律 Fail；ε_alg 用实际重构残差作证，
-//! 不用 `ε_mach·σ_1` 冒充。
+//! LLD §4.6 的压缩链第一格是「L0 谱隙证书门控（拒压回退）」，§4.7 又要求无损 PASS 必须
+//! `ε_synth = 0` 且 artifact 往返逐位一致。这里把两条落成一次分解：同一次 f64 SVD 同时给出受认证
+//! 的秩、该秩下的低秩项 `L`、显式残差 `C = W − L`，以及一张自证的 [`Note`]。
+//!
+//! 关键取舍是 `ε_alg` 的取法：用**实测后验残差** `‖A − UΣVᵀ‖_F`（§4.7 A 的 `verified_residual`），
+//! 不拿 `ε_mach·σ_1` 冒充严格界；`ε_obs` 记 0——被分解的矩阵就是落盘的那一份，观测侧没有第二份
+//! 数据。判定严格：`γ_r > 2ε` 才 Pass，等号一律 Fail。
+//!
+//! 旧版把它拆成 `spectral` / `truncate` / `note` 三个函数，每个都重算一遍 SVD，而秩由调用方拍给
+//! （`axes` 里取 `min(m,n)/2`）：证书因此只能事后记录、从不参与决策。现在秩由证书给出，判定与产出
+//! 同源，[`certify`] 返回 `None` 就是「拒压」本身。
 
 use diagnostic::{Code, Error, Result};
 
@@ -55,44 +62,6 @@ impl Mode {
     }
 }
 
-/// SVD 谱隙分析：σ_r、σ_{r+1}、谱隙 γ_r 与后验残差 ε_alg。
-#[derive(Clone, Copy, Debug)]
-pub struct Spectral {
-    /// σ_r：目标秩 r 处的奇异值。
-    pub sigr: f64,
-    /// σ_{r+1}：下一个奇异值。
-    pub sig1: f64,
-    /// 谱隙 γ_r = σ_r − σ_{r+1}。
-    pub gap: f64,
-    /// 后验残差 ε_alg = ‖A − UΣVᵀ‖_F。
-    pub alg: f64,
-}
-
-/// 对行主序权重 `w[m*n]` 做 f64 SVD，返回谱隙与后验残差。
-///
-/// `r` 为 1-based 目标秩，要求 `1 <= r < min(m,n)` 以保证 σ_{r+1} 存在。
-pub fn spectral(w: &[f32], m: usize, n: usize, r: usize) -> Result<Spectral> {
-    check_rank(w.len(), m, n, r)?;
-    let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
-    let decomposed = svd::compute(&a, m, n)?;
-    let k = m.min(n);
-    let sigr = decomposed.sigma[r - 1];
-    let sig1 = decomposed.sigma[r];
-    let full = decomposed.reconstruct(k);
-    let alg = a
-        .iter()
-        .zip(&full)
-        .map(|(x, y)| (x - y).powi(2))
-        .sum::<f64>()
-        .sqrt();
-    Ok(Spectral {
-        sigr,
-        sig1,
-        gap: sigr - sig1,
-        alg,
-    })
-}
-
 /// 谱隙稳定性判定：`γ_r > 2ε` 才 Pass，等号/小于号 Fail。
 #[must_use]
 pub fn stable(gap: f64, eps: f64) -> Stable {
@@ -103,35 +72,96 @@ pub fn stable(gap: f64, eps: f64) -> Stable {
     }
 }
 
-/// Eckart-Young 秩-r 截断结果。
-pub struct Trunc {
-    /// 低秩项 L（行主序 `m*n` f32）。
+/// 受认证的秩选择：秩、低秩项 `L`、显式残差 `C`，以及该选择的证书。
+#[derive(Clone, Debug)]
+pub struct Certified {
+    /// 受认证的秩 `r`（1-based，`1 <= r < min(m,n)`）。
+    pub rank: usize,
+    /// 低秩项 `L = U[:, :r] Σ[:r] V[:, :r]ᵀ`（行主序 `m*n` f32）。
     pub low: Vec<f32>,
-    /// 残差 C = W − L（行主序 `m*n` f32）。
+    /// 显式残差 `C = W − L`（行主序 `m*n` f32）。
     pub rest: Vec<f32>,
-    /// 截断误差 E_decomp = ‖W − L‖_F。
-    pub decomp: f64,
+    /// 这次选择的证书。
+    pub note: Note,
 }
 
-/// 秩-r 截断：`L = U[:, :r] Σ[:r] V[:, :r]ᵀ`，残差 `C = W − L`。
-pub fn truncate(w: &[f32], m: usize, n: usize, r: usize) -> Result<Trunc> {
-    check_rank(w.len(), m, n, r)?;
+/// L0 门：压前判定，通过则一次给出受认证的秩与两项产物。
+///
+/// 返回 `Ok(None)` 表示**拒压**：形状退化（`min(m,n) < 2`）或没有满足 `γ_r > 2ε` 的秩（无谱隙，
+/// 谱选择不稳定）。调用方据此回退到别的轴——这正是 §4.6「证书不过就拒压回退」的判据。
+/// `Err` 只留给实现层失败（形状与长度不符、分解不收敛）。
+pub fn certify(w: &[f32], m: usize, n: usize) -> Result<Option<Certified>> {
+    let k = shape(w.len(), m, n)?;
+    if k < 2 {
+        // `1 <= r < min(m,n)` 无解：秩选择不适用，不颁发证书（拒压），也不是「无损」。
+        return Ok(None);
+    }
     let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
     let decomposed = svd::compute(&a, m, n)?;
-    let low64 = decomposed.reconstruct(r);
+    // ε 只有算法项：后验残差是本次分解的实测值，不是机器精度的估计。
+    let eps = residual(&a, &decomposed.reconstruct(k));
+    let Some(rank) = certified_rank(&decomposed.sigma, eps) else {
+        return Ok(None);
+    };
+    let low64 = decomposed.reconstruct(rank);
     let low: Vec<f32> = low64.iter().map(|&l| l as f32).collect();
     let rest: Vec<f32> = a
         .iter()
         .zip(&low64)
         .map(|(orig, l)| (orig - l) as f32)
         .collect();
-    let decomp = a
+    // 无损判据与 rank 轴同源：`low + rest` 必须逐位返回原矩阵，然后才谈得上证书。
+    let equal = w
         .iter()
-        .zip(&low64)
-        .map(|(orig, low)| (orig - low) * (orig - low))
+        .zip(&low)
+        .zip(&rest)
+        .all(|((x, low), rest)| (low + rest).to_bits() == x.to_bits());
+    let note = Note {
+        rank: rank as u32,
+        used: true,
+        mode: Mode::Residual,
+        stable: stable(decomposed.sigma[rank - 1] - decomposed.sigma[rank], eps),
+        gap: decomposed.sigma[rank - 1] - decomposed.sigma[rank],
+        eps,
+        decomp: residual(&a, &low64),
+        equal,
+        lossless: equal,
+    };
+    check(&note)?;
+    Ok(Some(Certified {
+        rank,
+        low,
+        rest,
+        note,
+    }))
+}
+
+/// 可判秩域内的最大秩：`σ_r − σ_{r+1} > 2ε` 的最后一点。
+///
+/// 取最大值而不是第一个通过的点，因为信号尾部的谱隙最大、噪声底上方的相邻奇异值差会缩到 `ε`
+/// 量级，[`stable`] 自然把它们排除。返回的就是**噪声底之前的那个秩**，而不是拍脑袋的
+/// `min(m,n)/2`；一处谱隙都不满足时返回 `None`（拒压）。
+fn certified_rank(sigma: &[f64], eps: f64) -> Option<usize> {
+    (1..sigma.len())
+        .rev()
+        .find(|&r| stable(sigma[r - 1] - sigma[r], eps) == Stable::Pass)
+}
+
+/// 后验残差 `‖A − B‖_F`：`ε_alg` 的实测值。
+fn residual(a: &[f64], b: &[f64]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y) * (x - y))
         .sum::<f64>()
-        .sqrt();
-    Ok(Trunc { low, rest, decomp })
+        .sqrt()
+}
+
+/// 形状判据：`m`、`n` 非零且元素数与乘积一致；返回奇异值个数 `min(m,n)`。
+fn shape(len: usize, m: usize, n: usize) -> Result<usize> {
+    if m == 0 || n == 0 || m.checked_mul(n) != Some(len) {
+        return Err(bad(&format!("形状不合法 m={m} n={n} len={len}")));
+    }
+    Ok(m.min(n))
 }
 
 /// 一张张量的谱隙证书账目（闭集强类型字段）。
@@ -219,7 +249,7 @@ fn tail(cur: &mut Cursor<'_>) -> Result<([f64; 3], [bool; 2])> {
     Ok((reals, flags))
 }
 
-/// 六项不变量校验（收敛为可执行的四条核心约束，逐条对应旧版 F1–F4/A2/D2）。
+/// 不变量校验（可执行的四条核心约束，逐条对应旧版 F1–F4/A2/D2）。
 pub fn check(n: &Note) -> Result<()> {
     let rules = [
         (
@@ -246,59 +276,6 @@ pub fn check(n: &Note) -> Result<()> {
     }
 }
 
-/// 由谱隙分析与秩截断合成一张证书：`eps` 是总扰动（观测 + 算法），`used` 是否采用秩选择，
-/// `mode` 冻结重构模式（§4.4 第 3 步）。`equal` 判据与五轴 rank 轴一致（`low + rest` 与原始
-/// 逐位相等），无损判据随模式取不同误差项：纯截断看 `E_decomp`，残差补偿看逐位往返，随后过
-/// [`check`] 自证。
-pub fn note(
-    w: &[f32],
-    m: usize,
-    n: usize,
-    r: usize,
-    eps: f64,
-    used: bool,
-    mode: Mode,
-) -> Result<Note> {
-    let s = spectral(w, m, n, r)?;
-    let t = truncate(w, m, n, r)?;
-    let equal = w
-        .iter()
-        .zip(&t.low)
-        .zip(&t.rest)
-        .all(|((x, low), rest)| (low + rest).to_bits() == x.to_bits());
-    let note = Note {
-        rank: r as u32,
-        used,
-        mode,
-        stable: stable(s.gap, eps),
-        gap: s.gap,
-        eps,
-        decomp: t.decomp,
-        equal,
-        lossless: match mode {
-            Mode::Trunc => t.decomp == 0.0,
-            Mode::Residual => equal,
-        },
-    };
-    check(&note)?;
-    Ok(note)
-}
-
-fn check_rank(len: usize, m: usize, n: usize, r: usize) -> Result<()> {
-    let fits = [
-        m != 0,
-        n != 0,
-        m.checked_mul(n) == Some(len),
-        (1..m.min(n)).contains(&r),
-    ];
-    if fits.iter().all(|ok| *ok) {
-        return Ok(());
-    }
-    Err(bad(&format!(
-        "要求 1 <= r < min(m,n)，实际 m={m} n={n} r={r}"
-    )))
-}
-
 fn read_f64(cur: &mut Cursor<'_>) -> Result<f64> {
     let mut bytes = [0u8; 8];
     for slot in &mut bytes {
@@ -315,6 +292,7 @@ fn bad(message: &str) -> Error {
 mod tests {
     use super::*;
 
+    /// diag(3, 2, 1, 0.5)：谱隙 1、1、0.5 都远离机器精度，判定结果可逐点预算。
     fn diag4() -> Vec<f32> {
         let mut w = vec![0.0f32; 16];
         for (i, d) in [3.0f32, 2.0, 1.0, 0.5].iter().enumerate() {
@@ -323,13 +301,14 @@ mod tests {
         w
     }
 
-    #[test]
-    fn spectral_matches_singular_values() {
-        let s = spectral(&diag4(), 4, 4, 2).expect("谱分析");
-        assert!((s.sigr - 2.0).abs() < 1e-9);
-        assert!((s.sig1 - 1.0).abs() < 1e-9);
-        assert!((s.gap - 1.0).abs() < 1e-9);
-        assert!(s.alg < 1e-6, "后验残差应接近 0，实际 {}", s.alg);
+    /// 6×6 精确秩 2：两行线性无关，其余行全零，因此 σ3 = … = σ6 = 0。
+    ///
+    /// 行取整数是为了让 f64 → f32 的重构精确：夹具自己不能引入误差，否则测的就不是证书。
+    fn rank_two() -> Vec<f32> {
+        let mut w = vec![0.0f32; 36];
+        w[..6].copy_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        w[6..12].copy_from_slice(&[1.0, 0.0, 1.0, 0.0, 1.0, 0.0]);
+        w
     }
 
     #[test]
@@ -337,16 +316,87 @@ mod tests {
         assert_eq!(stable(1.0, 0.1), Stable::Pass);
         assert_eq!(stable(0.2, 0.1), Stable::Fail);
         assert_eq!(stable(0.2, 0.099), Stable::Pass);
+        assert_eq!(stable(0.2, 0.1), Stable::Fail, "等号不算严格大于");
     }
 
     #[test]
-    fn truncate_r2_tail() {
-        let t = truncate(&diag4(), 4, 4, 2).expect("截断");
-        assert!((t.low[0] - 3.0).abs() < 1e-6);
-        assert!((t.low[5] - 2.0).abs() < 1e-6);
-        assert!(t.low[10].abs() < 1e-6);
-        assert!((t.rest[10] - 1.0).abs() < 1e-6);
-        assert!((t.decomp - 1.25f64.sqrt()).abs() < 1e-5);
+    fn certified_rank_stops_at_the_spectral_gap() {
+        let sigma = [10.0, 5.0, 1.0, 0.0];
+        assert_eq!(certified_rank(&sigma, 0.1), Some(3), "三处谱隙都过 2ε");
+        assert_eq!(
+            certified_rank(&sigma, 0.6),
+            Some(2),
+            "1 − 0 = 1 不大于 2·0.6，只好退回 r = 2"
+        );
+        assert_eq!(
+            certified_rank(&[1.0, 1.0], 0.1),
+            None,
+            "没有谱隙就没有可判秩，不许瞎选一个"
+        );
+    }
+
+    #[test]
+    fn certify_reports_the_gated_rank_and_a_lossless_note() {
+        let cert = certify(&diag4(), 4, 4).expect("可认证").expect("有谱隙");
+        assert_eq!(cert.rank, 3, "diag(3,2,1,0.5) 的谱隙在这里断开");
+        assert_eq!(cert.note.rank, 3);
+        assert_eq!(cert.note.stable, Stable::Pass);
+        assert_eq!(cert.note.mode, Mode::Residual);
+        assert!(
+            cert.note.equal && cert.note.lossless,
+            "low + rest 必须逐位还原"
+        );
+        assert!((cert.note.gap - 0.5).abs() < 1e-9);
+        // 显式残差补偿不计 σ_{r+1}：E_decomp 只是诊断，无损由逐位往返判定。
+        assert!((cert.note.decomp - 0.5).abs() < 1e-9);
+        assert!(
+            cert.note.eps < 1e-12,
+            "后验残差应在机器精度量级：{}",
+            cert.note.eps
+        );
+        assert_eq!(cert.low.len(), 16);
+        assert_eq!(cert.rest.len(), 16);
+    }
+
+    /// 精确秩 2 的矩阵：认证出的秩就是 2，残差到机器精度、往返逐位。
+    #[test]
+    fn a_low_rank_matrix_certifies_at_its_exact_rank() {
+        let cert = certify(&rank_two(), 6, 6).expect("可认证").expect("有谱隙");
+        assert_eq!(
+            cert.rank, 2,
+            "σ3 = σ4 = 0 没有谱隙，秩必须停在 2，而不是溜进噪声底"
+        );
+        assert!(cert.note.lossless && cert.note.equal);
+        assert!(
+            cert.note.decomp < 1e-10,
+            "秩 2 处残差应到机器精度：{}",
+            cert.note.decomp
+        );
+        assert!(
+            cert.rest.iter().all(|x| x.abs() < 1e-5),
+            "残差全是数值噪声，不该有可见量"
+        );
+    }
+
+    #[test]
+    fn a_matrix_without_a_gap_is_rejected() {
+        // 全零：所有奇异值为 0，谱隙 0 不大于 2ε = 0 → 拒压，而不是假装无损。
+        assert!(certify(&[0.0f32; 16], 4, 4).expect("形状合法").is_none());
+        // min(m,n) = 1：`1 <= r < 1` 无解，秩选择不适用。
+        assert!(certify(&[1.0, 2.0, 3.0], 1, 3).expect("形状合法").is_none());
+    }
+
+    #[test]
+    fn a_bad_shape_is_an_error() {
+        assert_eq!(
+            certify(&[1.0, 2.0, 3.0], 2, 2).unwrap_err().code(),
+            Code::Invalid
+        );
+        assert_eq!(certify(&[], 0, 4).unwrap_err().code(), Code::Invalid);
+        assert_eq!(
+            certify(&[1.0], usize::MAX, 2).unwrap_err().code(),
+            Code::Invalid
+        );
     }
 
     #[test]
@@ -367,6 +417,7 @@ mod tests {
         let mut cur = Cursor::new(&bytes);
         let back = Note::decode(&mut cur).expect("解码");
         assert_eq!(back, note);
+        assert!(cur.remaining().is_empty(), "编码不许留尾巴");
     }
 
     #[test]
@@ -390,40 +441,5 @@ mod tests {
             ..base
         };
         assert!(check(&contradictory).is_err());
-    }
-
-    #[test]
-    fn bad_rank_is_an_error() {
-        assert!(spectral(&diag4(), 4, 4, 4).is_err());
-        assert!(truncate(&diag4(), 4, 4, 0).is_err());
-    }
-
-    #[test]
-    fn note_synthesizes_and_self_checks() {
-        let residual = note(&diag4(), 4, 4, 2, 0.1, true, Mode::Residual).expect("证书");
-        assert_eq!(residual.rank, 2);
-        assert!(residual.used);
-        assert_eq!(residual.mode, Mode::Residual);
-        assert_eq!(residual.stable, Stable::Pass); // gap = 2 - 1 = 1 > 2 * 0.1
-        assert!((residual.gap - 1.0).abs() < 1e-9);
-        assert!((residual.decomp - 1.25f64.sqrt()).abs() < 1e-5);
-        // 显式残差补偿：low + rest 逐位还原 diag(3,2,1,0.5)，E_comp=0 ⇒ 无损（不重复计 σ_{r+1}）。
-        assert!(residual.equal);
-        assert!(residual.lossless);
-
-        let trunc = note(&diag4(), 4, 4, 2, 0.1, true, Mode::Trunc).expect("证书");
-        assert_eq!(trunc.mode, Mode::Trunc);
-        // 纯截断：E_decomp = ‖diag(0,0,1,0.5)‖_F > 0 ⇒ 有损。
-        assert!(!trunc.lossless);
-    }
-
-    /// 矩阵本就秩 ≤ r 时，纯截断无残差，判无损。
-    #[test]
-    fn trunc_mode_is_lossless_when_rank_is_exact() {
-        let mut w = vec![0.0f32; 16];
-        w[0] = 3.0;
-        w[5] = 2.0;
-        let n = note(&w, 4, 4, 2, 0.1, true, Mode::Trunc).expect("证书");
-        assert!(n.lossless);
     }
 }
