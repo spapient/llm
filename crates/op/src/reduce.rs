@@ -123,7 +123,7 @@ pub fn forward<R: Reduce>(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> 
 /// 新增一种归约加一次调用即可。
 #[macro_export]
 macro_rules! reduce_f32 {
-    ($name:ident, $alias:ident, $op:tt, $test:tt, $start:expr, $fold:expr) => {
+    ($name:ident, $alias:ident, $op:tt, $cases:expr, $start:expr, $fold:expr) => {
         #[doc = concat!("`", $op, "` 的标记类型：初值与折叠见 `start`/`fold`，骨架见 `crate::reduce`。")]
         pub struct $name;
 
@@ -158,7 +158,9 @@ macro_rules! reduce_f32 {
 
         #[cfg(test)]
         mod tests {
-            include!($test);
+            use super::*;
+            $crate::reduce::test_support::reduce_op_tests!($name, forward, $start);
+            $crate::reduce::test_support::reduce_saturating_tests!($name, forward, $cases);
         }
     };
 }
@@ -190,7 +192,25 @@ pub(crate) mod test_support {
             }
         };
     }
+    /// 饱和与退化输入：极值、全零、重复元素与负数组，结果与标量参考一致且不越界。
+    macro_rules! reduce_saturating_tests {
+        ($ty:ty, $forward:ident, $cases:expr) => {
+            #[test]
+            fn saturating_and_repeated_inputs_match_reference() {
+                let cases: &[&[f32]] = $cases;
+                for (index, input) in cases.iter().enumerate() {
+                    let mut sample = crate::reduce::sample::<$ty>(input.len(), 1);
+                    sample.buffers[0].values = crate::model::Values::F32(input.to_vec());
+                    let expected = crate::reduce::reference::<$ty>(&sample).expect("参考可计算");
+                    let mut out = vec![0.0];
+                    $forward(input, &mut out).expect("单元素输出");
+                    assert_eq!(out, expected, "用例 {index}");
+                }
+            }
+        };
+    }
     pub(crate) use reduce_op_tests;
+    pub(crate) use reduce_saturating_tests;
 }
 
 // 声明式算子表：同一副归约骨架的两种算子（最大值 / 求和），每个算子一个 `pub mod` 保持
@@ -206,7 +226,13 @@ pub mod reduce_max_f32 {
         Max,
         ReduceMaxF32,
         "reduce_max_f32",
-        "../tests/reduce_max_f32_tests.rs",
+        &[
+            &[0.0, 0.0, 0.0],
+            &[f32::MIN, f32::MAX, -1.0],
+            &[f32::MIN, f32::MIN],
+            &[2.0, 2.0, 2.0],
+            &[-3.0, -1.0, -2.0],
+        ],
         f32::MIN,
         |acc, x| if x > acc { x } else { acc }
     );
@@ -221,7 +247,13 @@ pub mod reduce_sum_f32 {
         Sum,
         ReduceSumF32,
         "reduce_sum_f32",
-        "../tests/reduce_sum_f32_tests.rs",
+        &[
+            &[0.0, 0.0, 0.0],
+            &[f32::MAX, f32::MAX],
+            &[f32::MIN, f32::MIN],
+            &[1.0, 1.0, 1.0, 1.0],
+            &[-3.0, 0.0, 3.0],
+        ],
         0.0,
         |acc, x| acc + x
     );

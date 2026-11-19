@@ -130,7 +130,7 @@ pub fn forward_packed(
 /// [`Row`]；新增一档打包反量化加一次调用即可。
 #[macro_export]
 macro_rules! dequant_packed {
-    ($name:ident, $alias:ident, $op:tt, $test:tt, $row:ident) => {
+    ($name:ident, $alias:ident, $op:tt, $neg:expr, $nonfinite:expr, $row:ident) => {
         /// 反量化标度（2 的负幂网格，f32 精确）。
         pub const SCALE: f32 = $crate::dequant::SCALE;
 
@@ -176,7 +176,18 @@ macro_rules! dequant_packed {
 
         #[cfg(test)]
         mod tests {
-            include!($test);
+            use super::*;
+            $crate::dequant::test_support::dequant_packed_tests!(
+                sample,
+                reference,
+                forward,
+                SCALE,
+                ZERO,
+                $row.cpb,
+                (1u32 << $crate::quant::width_cpb($row.cpb)) as f32,
+                $neg,
+                $nonfinite
+            );
         }
     };
 }
@@ -245,13 +256,7 @@ pub mod dequant_i2 {
 
     use crate::quant::I2;
 
-    crate::dequant_packed!(
-        DequantI2,
-        DequantI2F32,
-        "dequant_i2",
-        "../tests/dequant_i2_tests.rs",
-        I2
-    );
+    crate::dequant_packed!(DequantI2, DequantI2F32, "dequant_i2", -0.5, f32::NAN, I2);
 }
 
 pub mod dequant_i4 {
@@ -266,7 +271,8 @@ pub mod dequant_i4 {
         DequantI4,
         DequantI4F32,
         "dequant_i4",
-        "../tests/dequant_i4_tests.rs",
+        -1.0,
+        f32::INFINITY,
         I4
     );
 }
@@ -354,6 +360,54 @@ pub mod dequant_i8 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/dequant_i8_tests.rs");
+        use super::*;
+
+        #[test]
+        fn dequant_matches_the_scalar_reference() {
+            let sample = sample(128, 1);
+            let expected = reference(&sample).expect("参考可计算");
+            let mut out = vec![0.0; 128];
+            forward(SCALE, ZERO, sample.f32("q").expect("q"), &mut out).expect("等长");
+            assert_eq!(out, expected);
+        }
+
+        /// 退化与边界：空行放行；长度不齐拒绝；饱和量化值与零档不产生 NaN。
+        #[test]
+        fn dequant_i8_handles_empty_mismatched_and_saturated_values() {
+            let mut empty = vec![];
+            forward(SCALE, ZERO, &[], &mut empty).expect("空行放行");
+
+            let mut out = vec![0.0; 2];
+            assert!(
+                forward(SCALE, ZERO, &[1.0, 2.0, 3.0], &mut out).is_err(),
+                "q 与 out 不等长拒绝"
+            );
+
+            let saturated = [0.0f32, 15.0, f32::MIN, f32::MAX];
+            let mut out = vec![0.0; saturated.len()];
+            forward(SCALE, ZERO, &saturated, &mut out).expect("饱和值不越界");
+            assert!(out.iter().all(|v| v.is_finite()), "结果有限");
+        }
+
+        /// 仿射参数负例：零标度、非有限标度、越出 i4 码域（0..15）的零点都在解包前拦下。
+        #[test]
+        fn dequant_i8_rejects_zero_scale_and_out_of_domain_zero() {
+            let q = [8.0f32, 12.0];
+            let mut out = [0.0; 2];
+
+            assert!(forward(0.0, ZERO, &q, &mut out).is_err(), "零标度拒绝");
+            assert!(
+                forward(f32::INFINITY, ZERO, &q, &mut out).is_err(),
+                "非有限标度拒绝"
+            );
+            assert!(
+                forward(SCALE, 16.0, &q, &mut out).is_err(),
+                "零点越出 0..15 码域"
+            );
+            assert!(
+                forward(SCALE, -1.0, &q, &mut out).is_err(),
+                "负零点越出码域"
+            );
+        }
     }
 }
