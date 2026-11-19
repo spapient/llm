@@ -73,8 +73,8 @@ fn is_prime(n: usize) -> bool {
 
 /// 一张 N-gram 嵌入表：素数长、`d` 维嵌入，哈希槽 `O(1)` 读写。
 ///
-/// 值类型泛型化到 [`Scalar`]（默认 `f32` 前向、`f64` 验证对拍），与 [`crate::csa`] / [`crate::mix`]
-/// 同一精度闭集，不因精度复制两份表实现。
+/// 值类型泛型化到 [`Scalar`]（默认 `f32` 前向、`f64` 验证对拍），与 `csa` / `mix` 同一精度闭集，
+/// 不因精度复制两份表实现。
 #[derive(Debug, Clone)]
 pub struct Table<S: Scalar = f32> {
     len: usize,
