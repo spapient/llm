@@ -374,27 +374,41 @@ impl Batch {
             sequences,
         } = self;
         let width = scheduler.page_size();
-        if width == 0 {
-            return Ok(());
-        }
-        let Some(sequence) = sequences.iter().find(|sequence| sequence.id() == id) else {
+        let Some((context, pages)) = settleable(sequences, scheduler, id) else {
             return Ok(());
         };
-        let Some(table) = scheduler.pages_of(id) else {
-            return Ok(());
-        };
-        // 先只读地把要登记的块收齐：`publish` 要独占页池，而上下文与页号还得从只读的序列与页表
-        // 里取，两个借用不能同时活着。整段上下文只克隆一次，逐块登记时复用。
-        let context = sequence.context().to_vec();
-        let pages = table.pages().to_vec();
-        let blocks: Vec<usize> = (0..rows / width)
-            .filter(|block| (block + 1) * width <= context.len() && *block < pages.len())
-            .collect();
-        for block in blocks {
+        for block in settled_blocks(rows, width, context.len(), pages.len()) {
             scheduler.publish(&context, block, pages[block])?;
         }
         Ok(())
     }
+}
+
+/// 登记块要先只读地把上下文与页号收齐：`publish` 要独占页池，而这两样还得从只读的序列与页表里
+/// 取，两个借用不能同时活着。整段上下文只克隆一次，逐块登记时复用。
+///
+/// `None` 是「现在没有可登记的块」——序列已不在批里、页表没了、或页宽为零（零页不是算好的块）。
+fn settleable(
+    sequences: &[Sequence],
+    scheduler: &Scheduler,
+    id: u64,
+) -> Option<(Vec<u32>, Vec<Page>)> {
+    let sequence = sequences.iter().find(|sequence| sequence.id() == id)?;
+    if scheduler.page_size() == 0 {
+        return None;
+    }
+    let table = scheduler.pages_of(id)?;
+    Some((sequence.context().to_vec(), table.pages().to_vec()))
+}
+
+/// 前 `rows` 行覆盖到的满块：块尾已落定（`(block + 1) · width <= 上下文长`）且页表里真有这一页。
+fn settled_blocks(rows: usize, width: usize, context_len: usize, pages: usize) -> Vec<usize> {
+    if width == 0 {
+        return Vec::new();
+    }
+    (0..rows / width)
+        .filter(|block| (block + 1) * width <= context_len && *block < pages)
+        .collect()
 }
 
 #[cfg(test)]
