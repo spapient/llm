@@ -435,67 +435,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_pointwise_op_runs_on_metal_and_matches_the_reference() {
-        use engine::exec::Executor as _;
-
-        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-        if !cutile::witness::device_available(&profile) {
-            return; // 无 Metal 工具链：跳过（同 run 命令在无 C 编译器时的口径）。
-        }
-        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-cross-check"));
-
-        let model = op::model("silu_f32").expect("silu_f32 语义表");
-        let (m, n) = model.shape;
-        let sample = (model.sample)(m, n);
-        let input = sample.f32("a").expect("输入缓冲 a").to_vec();
-        let expected = (model.reference)(&sample).expect("标量参考");
-        assert_eq!(expected.len(), input.len(), "逐点算子输出与输入等长");
-        let count = input.len();
-
-        let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "silu_f32", m, n)
-            .expect("生产态网格内核应能生成");
-
-        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
-            return; // 工具链在但本机无 Metal 设备的边界：跳过而非失败。
-        };
-        executor.register("silu_f32", &msl).expect("注册内核");
-        executor.bind_bytes(0, count * 4).expect("输入缓冲");
-        executor.bind_bytes(1, count * 4).expect("输出缓冲");
-
-        // 写输入：共享缓冲，CPU 与 GPU 是同一块内存，按字节写 f32。
-        {
-            let bytes = executor.buffer_mut(0).expect("输入可写").as_mut_bytes();
-            for (slot, value) in input.iter().enumerate() {
-                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-        }
-
-        let launch = engine::exec::Launch::new([count as u32, 1, 1], [1, 1, 1]);
-        let mut node = engine::exec::Node::new("silu_f32", launch);
-        node.bind_input(0).bind_output(1);
-        let mut graph = engine::exec::Graph::new();
-        graph.push(node);
-
-        let stream = engine::exec::Stream::new(0);
-        executor.submit(&graph, stream).expect("提交");
-        executor.sync(stream).expect("同步派发");
-
-        let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
-        let output: Vec<f32> = (0..count)
-            .map(|index| {
-                let chunk: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(chunk)
-            })
-            .collect();
-
-        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
-        let tolerance = cutile::reference::tolerance(model.dtype);
-        assert!(
-            max_rel_err <= tolerance,
-            "Metal 输出与标量参考不符：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-        );
+        op_matches_reference("silu_f32");
     }
 
     /// 首个非逐点真机对拍：`reduce_sum_f32` 走归约 lowering（单线程网格、缓冲原样透传、标量取
@@ -503,66 +443,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_reduction_op_runs_on_metal_and_matches_the_reference() {
-        use engine::exec::Executor as _;
-
-        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-        if !cutile::witness::device_available(&profile) {
-            return;
-        }
-        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-reduce-check"));
-
-        let model = op::model("reduce_sum_f32").expect("reduce_sum_f32 语义表");
-        let (m, n) = model.shape;
-        let sample = (model.sample)(m, n);
-        let input = sample.f32("a").expect("输入缓冲 a").to_vec();
-        let expected = (model.reference)(&sample).expect("标量参考");
-        assert_eq!(expected.len(), 1, "归约输出单元素");
-        let count = input.len();
-
-        let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "reduce_sum_f32", m, n)
-            .expect("归约网格内核应能生成");
-
-        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
-            return;
-        };
-        executor.register("reduce_sum_f32", &msl).expect("注册内核");
-        executor.bind_bytes(0, count * 4).expect("输入缓冲");
-        executor.bind_bytes(1, 4).expect("输出缓冲");
-
-        {
-            let bytes = executor.buffer_mut(0).expect("输入可写").as_mut_bytes();
-            for (slot, value) in input.iter().enumerate() {
-                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-        }
-
-        let launch = engine::exec::Launch::new([1, 1, 1], [1, 1, 1]);
-        let mut node = engine::exec::Node::new("reduce_sum_f32", launch);
-        node.bind_input(0).bind_output(1);
-        let mut graph = engine::exec::Graph::new();
-        graph.push(node);
-
-        let stream = engine::exec::Stream::new(0);
-        executor.submit(&graph, stream).expect("提交");
-        executor.sync(stream).expect("同步派发");
-
-        let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
-        let output: Vec<f32> = (0..1)
-            .map(|index| {
-                let chunk: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(chunk)
-            })
-            .collect();
-
-        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
-        let tolerance = cutile::reference::tolerance(model.dtype);
-        assert!(
-            max_rel_err <= tolerance,
-            "归约对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-        );
+        op_matches_reference("reduce_sum_f32");
     }
 
     /// 两趟（带归约）真机对拍：`rmsnorm_f32` 走串行 lowering（单线程网格、`x`/`gamma`/`y` 三缓冲
@@ -570,72 +451,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_two_pass_op_runs_on_metal_and_matches_the_reference() {
-        use engine::exec::Executor as _;
-
-        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-        if !cutile::witness::device_available(&profile) {
-            return;
-        }
-        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-rmsnorm-check"));
-
-        let model = op::model("rmsnorm_f32").expect("rmsnorm_f32 语义表");
-        let (m, n) = model.shape;
-        let sample = (model.sample)(m, n);
-        let x = sample.f32("x").expect("输入缓冲 x").to_vec();
-        let gamma = sample.f32("gamma").expect("输入缓冲 gamma").to_vec();
-        let expected = (model.reference)(&sample).expect("标量参考");
-        assert_eq!(expected.len(), x.len(), "两趟输出与输入等长");
-        let count = x.len();
-
-        let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "rmsnorm_f32", m, n)
-            .expect("两趟内核应能生成");
-
-        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
-            return;
-        };
-        executor.register("rmsnorm_f32", &msl).expect("注册内核");
-        executor.bind_bytes(0, count * 4).expect("x 缓冲");
-        executor.bind_bytes(1, count * 4).expect("gamma 缓冲");
-        executor.bind_bytes(2, count * 4).expect("y 缓冲");
-
-        {
-            let bytes = executor.buffer_mut(0).expect("x 可写").as_mut_bytes();
-            for (slot, value) in x.iter().enumerate() {
-                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-            let bytes = executor.buffer_mut(1).expect("gamma 可写").as_mut_bytes();
-            for (slot, value) in gamma.iter().enumerate() {
-                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-        }
-
-        let launch = engine::exec::Launch::new([1, 1, 1], [1, 1, 1]);
-        let mut node = engine::exec::Node::new("rmsnorm_f32", launch);
-        node.bind_input(0).bind_input(1).bind_output(2);
-        let mut graph = engine::exec::Graph::new();
-        graph.push(node);
-
-        let stream = engine::exec::Stream::new(0);
-        executor.submit(&graph, stream).expect("提交");
-        executor.sync(stream).expect("同步派发");
-
-        let bytes = executor.buffer_mut(2).expect("输出可读").as_mut_bytes();
-        let output: Vec<f32> = (0..count)
-            .map(|index| {
-                let chunk: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(chunk)
-            })
-            .collect();
-
-        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
-        let tolerance = cutile::reference::tolerance(model.dtype);
-        assert!(
-            max_rel_err <= tolerance,
-            "两趟对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-        );
+        op_matches_reference("rmsnorm_f32");
     }
 
     /// Gemm 行网格真机对拍：`gemv_f32` 走 `[grid]` 声明映射——grid `[n,1,1]`、输出 `+ n`、
@@ -644,78 +460,15 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_gemv_op_runs_on_metal_and_matches_the_reference() {
-        use engine::exec::Executor as _;
-
-        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-        if !cutile::witness::device_available(&profile) {
-            return;
-        }
-        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-gemv-check"));
-
-        let model = op::model("gemv_f32").expect("gemv_f32 语义表");
-        let (m, n) = (64usize, 4usize);
-        let sample = (model.sample)(m, n);
-        let x = sample.f32("x").expect("输入缓冲 x").to_vec();
-        let w = sample.f32("w").expect("权重缓冲 w").to_vec();
-        let expected = (model.reference)(&sample).expect("标量参考");
-        assert_eq!(expected.len(), n, "gemv 输出每行一个元素");
-
-        let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "gemv_f32", m, n)
-            .expect("gemv 网格内核应能生成");
-
-        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
-            return;
-        };
-        executor.register("gemv_f32", &msl).expect("注册内核");
-        executor.bind_bytes(0, x.len() * 4).expect("x 缓冲");
-        executor.bind_bytes(1, w.len() * 4).expect("w 缓冲");
-        executor.bind_bytes(2, n * 4).expect("y 缓冲");
-
-        {
-            let bytes = executor.buffer_mut(0).expect("x 可写").as_mut_bytes();
-            for (slot, value) in x.iter().enumerate() {
-                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-            let bytes = executor.buffer_mut(1).expect("w 可写").as_mut_bytes();
-            for (slot, value) in w.iter().enumerate() {
-                bytes[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-        }
-
-        let launch = engine::exec::Launch::new([n as u32, 1, 1], [1, 1, 1]);
-        let mut node = engine::exec::Node::new("gemv_f32", launch);
-        node.bind_input(0).bind_input(1).bind_output(2);
-        let mut graph = engine::exec::Graph::new();
-        graph.push(node);
-
-        let stream = engine::exec::Stream::new(0);
-        executor.submit(&graph, stream).expect("提交");
-        executor.sync(stream).expect("同步派发");
-
-        let bytes = executor.buffer_mut(2).expect("输出可读").as_mut_bytes();
-        let output: Vec<f32> = (0..n)
-            .map(|index| {
-                let chunk: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(chunk)
-            })
-            .collect();
-
-        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
-        let tolerance = cutile::reference::tolerance(model.dtype);
-        assert!(
-            max_rel_err <= tolerance,
-            "gemv 对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-        );
+        op_matches_reference_at("gemv_f32", Some((64, 4)));
     }
 
     /// 真机对拍通用辅助：任一条走串行兜底或矩阵乘网格的算子，按签名序绑缓冲，派发网格由 `[grid]`
     /// 声明推导（缺省 `[1,1,1]` 单线程串行），回读唯一可写输出，与标量参考对拍。缓冲按签名类型解释
-    /// （f32 四字节、u8 一字节）。
+    /// （f32 四字节、u8 一字节）。`shape` 为 `None` 用算子声明形状；`gemv` 生产形状 4096×4096
+    /// 过大，传 `Some((64, 4))` 避开 64MB 样本。
     #[cfg(target_os = "macos")]
-    fn op_matches_reference(op_name: &str) {
+    fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
         use engine::exec::Executor as _;
         use op::sig::CType;
 
@@ -727,7 +480,7 @@ mod tests {
         let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-serial-check"));
 
         let model = op::model(op_name).expect("语义表");
-        let (m, n) = model.shape;
+        let (m, n) = shape.unwrap_or(model.shape);
         let sample = (model.sample)(m, n);
         let expected = (model.reference)(&sample).expect("标量参考");
         let decl = catalogue.op(op_name).expect("算子声明");
@@ -776,8 +529,7 @@ mod tests {
                             .expect("输入缓冲");
                         let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
                         for (index, value) in values.iter().enumerate() {
-                            bytes[index * 4..index * 4 + 4]
-                                .copy_from_slice(&value.to_le_bytes());
+                            bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
                         }
                     }
                     CType::U8 => {
@@ -824,6 +576,12 @@ mod tests {
             max_rel_err <= tolerance,
             "{op_name} 串行对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
         );
+    }
+
+    /// 用算子声明形状真机对拍（缺省入口）。
+    #[cfg(target_os = "macos")]
+    fn op_matches_reference(op_name: &str) {
+        op_matches_reference_at(op_name, None);
     }
 
     /// 三趟 softmax（max 归约 + exp 求和 + 归一化）走串行兜底，真机对拍。

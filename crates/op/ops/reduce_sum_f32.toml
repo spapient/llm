@@ -16,6 +16,10 @@ store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 [layouts]
 a = "row"
 
+# 分块归约：长轴 N 切成 256 元素一块，网格 = ceil(N/256)，每线程归约一块写部分和 y[g]，主机折叠。
+[chunk]
+size = 256
+
 [[variants]]
 name      = "direct"
 order     = 1

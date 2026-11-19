@@ -88,6 +88,18 @@ pub struct Grid {
     pub dims: Vec<(String, String)>,
 }
 
+/// 分块并行声明：把长轴切成 `size` 元素一块，网格 = `ceil(N / size)`，每线程处理一块。
+///
+/// 与 [`Grid`]（循环头绑定到线程下标、正文跨步原样保留）的分工是「规约轴交给谁」：归约/扫描
+/// 的跨元素依赖不能靠逐元素拆线程（每线程会各算一整遍），只能切成连续块、每线程串行处理自己
+/// 那一块，再把块级部分结果交给主机折叠（归约）或做 carry 前缀（扫描）。块长由声明层显式给出，
+/// 机制层只做 `start = g*size` / `len = min(size, N-start)` 的切块，不索引分析模板。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chunk {
+    /// 块长（元素/线程）。
+    pub size: usize,
+}
+
 /// 降级链上的一个变体。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variant {
@@ -127,6 +139,8 @@ pub struct OpDecl {
     pub layouts: Vec<(String, LayoutSpec)>,
     /// Gemm 骨架的网格映射（仅 Gemm 算子声明；其余骨架不需要）。
     pub grid: Option<Grid>,
+    /// 分块并行的块长（reduce/scan 骨架；`None` 表示串行兜底）。
+    pub chunk: Option<Chunk>,
     /// 模板常量：`{{槽位}}` 的固定取值（非轴、非布局），按十进制渲染成字符串。
     pub consts: Vec<(String, String)>,
     /// 降级链，按 `order` 升序。
@@ -359,6 +373,22 @@ fn check_grid_dims(dims: &[(String, String)]) -> diagnostic::Result<()> {
     Ok(())
 }
 
+/// `[chunk]`：分块并行的块长（reduce/scan 骨架）。缺省返回 `None`（串行兜底）。
+fn chunk(table: &Table) -> diagnostic::Result<Option<Chunk>> {
+    let Some(section) = table.table("chunk") else {
+        return Ok(None);
+    };
+    let size = section
+        .int("size")
+        .ok_or_else(|| field("chunk.size", "缺失"))?;
+    if size < 1 {
+        return Err(field("chunk.size", "至少 1"));
+    }
+    Ok(Some(Chunk {
+        size: size as usize,
+    }))
+}
+
 /// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串，
 /// 供 [`OpDecl::const_value`] 在 `{{槽位}}` 解析时查用。
 fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
@@ -384,12 +414,12 @@ fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)>
     Ok((key.to_string(), text))
 }
 
-/// `[consts]` 与 `[grid]` 两块可选的补丁：`declared` 按同一顺序解构。
-type Extras = (Vec<(String, String)>, Option<Grid>);
+/// `[consts]` 与 `[grid]`、`[chunk]` 三块可选的补丁：`declared` 按同一顺序解构。
+type Extras = (Vec<(String, String)>, Option<Grid>, Option<Chunk>);
 
-/// `[consts]` 与 `[grid]`：声明表里两块可选的补丁，一起解析成 `(常量, 网格)`。
+/// `[consts]` 与 `[grid]`、`[chunk]`：声明表里三块可选的补丁，一起解析成 `(常量, 网格, 分块)`。
 fn extras(table: &Table) -> diagnostic::Result<Extras> {
-    Ok((consts(table)?, grid(table)?))
+    Ok((consts(table)?, grid(table)?, chunk(table)?))
 }
 
 /// 变体链：逐个解析、按 `order` 排序，再判数量与链路。
@@ -524,7 +554,7 @@ impl OpDecl {
         let (name, skeleton, summary) = head(table)?;
         // 返回顺序：轴、需求、布局、变体链。
         let (axes, needs, layouts, variants) = sections(table)?;
-        let (consts, grid) = extras(table)?;
+        let (consts, grid, chunk) = extras(table)?;
         let signature = crate::sig::Signature::parse(&name, template)?;
         Ok(Self {
             name,
@@ -534,6 +564,7 @@ impl OpDecl {
             needs,
             layouts,
             grid,
+            chunk,
             consts,
             variants,
             template: template.to_string(),

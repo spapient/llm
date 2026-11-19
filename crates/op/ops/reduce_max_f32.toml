@@ -16,6 +16,10 @@ store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 [layouts]
 a = "row"
 
+# 分块归约：与 reduce_sum 同构，只改折叠运算；每线程归约一块写部分值 y[g]，主机取最大。
+[chunk]
+size = 256
+
 [[variants]]
 name      = "direct"
 order     = 1
