@@ -77,6 +77,17 @@ fn output_name(signature: &Signature) -> diagnostic::Result<&str> {
     Ok(output)
 }
 
+/// 只读输入缓冲名（唯一非可写缓冲）：归约/扫描/循环注入三族 lowering 共用这一条查表。
+fn read_input(signature: &Signature) -> diagnostic::Result<&str> {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .find(|param| !param.mutable)
+        .map(|param| param.name.as_str())
+        .ok_or(Error::new(Code::Internal, "内核没有只读输入缓冲").with("cutile::harness::read_input"))
+}
+
 /// 文件头：POSIX 声明、身份注释、内核源码与计时运行时。
 fn prelude(
     kernel_source: &str,
@@ -373,9 +384,7 @@ pub fn cuda_grid_driver(
     grid: usize,
     output_len: usize,
 ) -> diagnostic::Result<String> {
-    let output = signature.output().ok_or_else(|| {
-        Error::new(Code::Internal, "内核没有可写输出缓冲").with("cutile::harness::cuda_grid_driver")
-    })?;
+    let output = output_name(signature)?;
     let params = signature.params();
     let launch = params
         .iter()
@@ -416,30 +425,40 @@ fn cuda_host_buffers_grid(
         let Some(buffer) = sample.buffer(&param.name) else {
             return Err(Error::new(Code::Internal, "签名与样本已对齐（漂移）"));
         };
-        let (name, ctype) = (&param.name, c_type(&buffer.values));
-        let size = if param.name == output {
-            output_len
-        } else {
-            buffer.values.len()
-        };
-        if param.mutable {
-            text.push_str(&format!("    {ctype} h_{name}[{size}];\n"));
-        } else {
-            text.push_str(&format!(
-                "    static const {ctype} h_{name}[{size}] = {{{}}};\n",
-                c_literal(&buffer.values)
-            ));
-        }
-        text.push_str(&format!(
-            "    {ctype} *d_{name} = 0;\n    cudaMalloc((void **)&d_{name}, {size} * sizeof({ctype}));\n"
-        ));
-        if !param.mutable {
-            text.push_str(&format!(
-                "    cudaMemcpy(d_{name}, h_{name}, {size} * sizeof({ctype}), cudaMemcpyHostToDevice);\n"
-            ));
-        }
+        text.push_str(&cuda_buffer_host(param, &buffer.values, output, output_len));
     }
     Ok(text)
+}
+
+/// 单个缓冲的 host 声明 + 设备分配 + （只读时）入向拷贝；`output` 与 `output_len` 只用于把输出
+/// 缓冲的尺寸换成部分结果数，其余缓冲尺寸取样本原值。
+fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: usize) -> String {
+    let ctype = c_type(values);
+    let size = if param.name == output {
+        output_len
+    } else {
+        values.len()
+    };
+    let mut text = if param.mutable {
+        format!("    {ctype} h_{}[{size}];\n", param.name)
+    } else {
+        format!(
+            "    static const {ctype} h_{}[{size}] = {{{}}};\n",
+            param.name,
+            c_literal(values)
+        )
+    };
+    text.push_str(&format!(
+        "    {ctype} *d_{} = 0;\n    cudaMalloc((void **)&d_{}, {size} * sizeof({ctype}));\n",
+        param.name, param.name
+    ));
+    if !param.mutable {
+        text.push_str(&format!(
+            "    cudaMemcpy(d_{}, h_{}, {size} * sizeof({ctype}), cudaMemcpyHostToDevice);\n",
+            param.name, param.name
+        ));
+    }
+    text
 }
 
 // ---------------------------------------------------------------------------
@@ -700,22 +719,34 @@ pub fn metal_loop_kernel(
     sample: &Sample,
     grid: &Grid,
 ) -> diagnostic::Result<String> {
-    if grid.dims.len() > 3 {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("网格维 {} 超过 Metal 上限 3", grid.dims.len()),
-        )
-        .with("cutile::harness::metal_loop_kernel"));
-    }
     if grid.dims.is_empty() {
-        let call = serial_args(signature.params(), sample)?;
-        let buffers = buffer_decls(signature);
-        return Ok(format!(
-            "{}\n\nkernel void kernel_main(\n{buffers}) {{\n    {}({call});\n}}",
-            msl_address_space(kernel_source),
-            signature.kernel(),
-        ));
+        return serial_kernel(kernel_source, signature, sample);
     }
+    injected_kernel(kernel_source, signature, sample, grid)
+}
+
+/// 串行（零维网格）特例：不追加 `tid`、不绑循环，缓冲原样透传、标量取样本值。
+fn serial_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> diagnostic::Result<String> {
+    let call = serial_args(signature.params(), sample)?;
+    let buffers = buffer_decls(signature);
+    Ok(format!(
+        "{}\n\nkernel void kernel_main(\n{buffers}) {{\n    {}({call});\n}}",
+        msl_address_space(kernel_source),
+        signature.kernel(),
+    ))
+}
+
+/// 循环注入（非零网格）：给内部内核追加 `uint3 tid`、绑循环头到线程下标、调用点透传 `tid`。
+fn injected_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: &Grid,
+) -> diagnostic::Result<String> {
     let mut body = msl_address_space(kernel_source);
     body = thread_param(&body, &signature.kernel())?;
     body = bind_grid_loops(body, grid)?;
@@ -775,32 +806,9 @@ fn chunk_reduce(
     reduce_func: &str,
     wrap: &Wrap,
 ) -> diagnostic::Result<String> {
-    let input = signature
-        .params()
-        .iter()
-        .find(|param| param.ctype.is_buffer() && !param.mutable)
-        .map(|param| param.name.as_str())
-        .ok_or_else(|| {
-            Error::new(Code::Internal, "归约内核没有只读输入缓冲")
-                .with("cutile::harness::chunk_reduce")
-        })?;
-    let output = signature.output().ok_or_else(|| {
-        Error::new(Code::Internal, "归约内核没有可写输出缓冲")
-            .with("cutile::harness::chunk_reduce")
-    })?;
-    let scalar = signature
-        .params()
-        .iter()
-        .find(|param| !param.ctype.is_buffer())
-        .map(|param| param.name.as_str())
-        .ok_or_else(|| {
-            Error::new(Code::Internal, "归约内核没有长度标量")
-                .with("cutile::harness::chunk_reduce")
-        })?;
-    let len = sample.scalar(scalar).ok_or_else(|| {
-        Error::new(Code::Invalid, format!("归约长度标量 `{scalar}` 没有样本取值"))
-            .with("cutile::harness::chunk_reduce")
-    })?;
+    let input = read_input(signature)?;
+    let output = output_name(signature)?;
+    let len = length_scalar(signature, sample)?;
     let buffers = (wrap.buffers)(signature);
     let body = format!(
         "    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    d_{output}[g] = {reduce_func}(d_{input} + start, len, 1);"
@@ -839,24 +847,9 @@ pub fn metal_chunk_scan(
     chunk: usize,
     decay: f32,
 ) -> diagnostic::Result<(String, String)> {
-    let output = signature.output().ok_or_else(|| {
-        Error::new(Code::Internal, "扫描内核没有可写输出缓冲")
-            .with("cutile::harness::metal_chunk_scan")
-    })?;
-    let scalar = signature
-        .params()
-        .iter()
-        .find(|param| !param.ctype.is_buffer())
-        .map(|param| param.name.as_str())
-        .ok_or_else(|| {
-            Error::new(Code::Internal, "扫描内核没有长度标量")
-                .with("cutile::harness::metal_chunk_scan")
-        })?;
-    let len = sample.scalar(scalar).ok_or_else(|| {
-        Error::new(Code::Invalid, format!("扫描长度标量 `{scalar}` 没有样本取值"))
-            .with("cutile::harness::metal_chunk_scan")
-    })?;
-
+    let output = output_name(signature)?;
+    let scalar = scalar_name(signature)?;
+    let len = length_scalar(signature, sample)?;
     let local = chunk_scan_local(kernel_source, signature, sample, chunk, scalar)?;
     let correct = chunk_scan_correct(output, chunk, len, decay);
     Ok((local, correct))
@@ -1017,25 +1010,32 @@ pub fn metal_chunk_softmax(
 
 /// 长度标量：签名里唯一非缓冲参数（扫描/归约/归一化的 `N`），取样本值。
 fn length_scalar(signature: &Signature, sample: &Sample) -> diagnostic::Result<i64> {
-    let scalar = signature
+    let scalar = scalar_name(signature)?;
+    sample.scalar(scalar).ok_or(Error::new(
+        Code::Invalid,
+        format!("长度标量 `{scalar}` 没有样本取值"),
+    ))
+}
+
+/// 唯一长度标量名（非缓冲参数）：归约/扫描/循环注入共用。
+fn scalar_name(signature: &Signature) -> diagnostic::Result<&str> {
+    signature
         .params()
         .iter()
         .find(|param| !param.ctype.is_buffer())
         .map(|param| param.name.as_str())
-        .ok_or_else(|| {
-            Error::new(Code::Internal, "内核没有长度标量").with("cutile::harness::length_scalar")
-        })?;
-    sample.scalar(scalar).ok_or_else(|| {
-        Error::new(Code::Invalid, format!("长度标量 `{scalar}` 没有样本取值"))
-            .with("cutile::harness::length_scalar")
-    })
+        .ok_or(Error::new(Code::Internal, "内核没有长度标量").with("cutile::harness::scalar_name"))
 }
 
 fn bind_grid_loops(body: String, grid: &Grid) -> diagnostic::Result<String> {
     const AXES: [&str; 3] = ["x", "y", "z"];
     let mut out = body;
     for (dim, (thread, scalar)) in grid.dims.iter().enumerate() {
-        out = bind_grid_loop(&out, thread, scalar, AXES[dim])?;
+        let axis = AXES.get(dim).ok_or(Error::new(
+            Code::Invalid,
+            format!("网格维 {} 超过 Metal 上限 3", grid.dims.len()),
+        ))?;
+        out = bind_grid_loop(&out, thread, scalar, axis)?;
     }
     Ok(out)
 }
