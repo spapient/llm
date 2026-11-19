@@ -15,6 +15,25 @@ fn sound() -> Table {
     Table::from_pairs(vec![("gate", Value::table(gate))])
 }
 
+/// 造一张只含一条 ccn 债务的 gate 与一份实测超限：登记值 `ccn`、实测 `measured`。
+fn debt_gate(ccn: i64, measured: usize) -> (Gate, Over) {
+    let mut config = sound();
+    config.push(
+        "gate.debt",
+        Value::table(vec![
+            ("key", Value::text("crates/x/src/y.rs:run#0")),
+            ("ccn", Value::int(ccn)),
+        ]),
+    );
+    let gate = Gate::from_table(&config).expect("表合法");
+    let over = Over {
+        key: "crates/x/src/y.rs:run#0".into(),
+        metric: Metric::Ccn,
+        value: measured,
+    };
+    (gate, over)
+}
+
 /// 项目配置：三个阈值来自构建期生成的 `lints/vocabulary.toml`；存量债务只允许挂在入口编排层
 ///（`crates/cli/src/` 下的编排与二进制入口），运行时生产代码 `crates/*/src` 一条都不能有。
 #[test]
@@ -92,20 +111,7 @@ fn a_debt_row_without_a_metric_is_rejected() {
 
 #[test]
 fn a_debt_row_registers_only_the_metrics_it_names() {
-    let mut config = sound();
-    config.push(
-        "gate.debt",
-        Value::table(vec![
-            ("key", Value::text("crates/x/src/y.rs:run#0")),
-            ("ccn", Value::int(9)),
-        ]),
-    );
-    let gate = Gate::from_table(&config).expect("表合法");
-    let over = Over {
-        key: "crates/x/src/y.rs:run#0".into(),
-        metric: Metric::Ccn,
-        value: 9,
-    };
+    let (gate, over) = debt_gate(9, 9);
     assert!(gate.check(&over).is_none(), "登记范围内应通过");
     assert!(
         gate.check(&Over { value: 10, ..over }).is_some(),
@@ -121,20 +127,7 @@ fn a_debt_row_registers_only_the_metrics_it_names() {
 /// 登记值高于实测即失败：基线是快照，不是预算，改善必须在同一提交里记账。
 #[test]
 fn a_register_above_the_measurement_must_be_lowered() {
-    let mut config = sound();
-    config.push(
-        "gate.debt",
-        Value::table(vec![
-            ("key", Value::text("crates/x/src/y.rs:run#0")),
-            ("ccn", Value::int(47)),
-        ]),
-    );
-    let gate = Gate::from_table(&config).expect("表合法");
-    let over = Over {
-        key: "crates/x/src/y.rs:run#0".into(),
-        metric: Metric::Ccn,
-        value: 6,
-    };
+    let (gate, over) = debt_gate(47, 6);
     assert_eq!(
         gate.check(&over).unwrap(),
         "crates/x/src/y.rs:run#0: Ccn 实测 6 < 登记 47：把基线条目改成 6",
@@ -179,20 +172,7 @@ fn a_satisfied_metric_must_drop_even_when_the_identity_is_still_live() {
 /// 登记值由本地表给出：项目基线清零后，仓库里没有可以借用的登记值。
 #[test]
 fn ratchet_blocks_new_and_worse_allows_within_budget() {
-    let mut config = sound();
-    config.push(
-        "gate.debt",
-        Value::table(vec![
-            ("key", Value::text("crates/x/src/y.rs:run#0")),
-            ("ccn", Value::int(9)),
-        ]),
-    );
-    let gate = Gate::from_table(&config).expect("表合法");
-    let over = Over {
-        key: "crates/x/src/y.rs:run#0".into(),
-        metric: Metric::Ccn,
-        value: 10,
-    };
+    let (gate, over) = debt_gate(9, 10);
     assert!(gate.check(&over).is_some(), "恶化必须失败");
     assert!(
         gate.check(&Over { value: 9, ..over }).is_none(),

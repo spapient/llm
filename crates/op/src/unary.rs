@@ -159,8 +159,8 @@ macro_rules! unary_f32 {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    /// 生成 scale/silu 等一元算子共有的三则测试：参考对拍、长度负例、饱和与重复边界。
-    macro_rules! unary_op_tests {
+    /// 生成「参考对拍 + 长度负例」两则共有测试：不依赖算子的数值语义。
+    macro_rules! unary_pair_tests {
         ($ty:ty, $forward:ident) => {
             #[test]
             fn matches_the_scalar_reference() {
@@ -179,6 +179,13 @@ pub(crate) mod test_support {
                 let mut empty = vec![];
                 $forward(&[], &mut empty).expect("空行逐元素放行");
             }
+        };
+    }
+
+    /// 生成 scale/silu 等一元算子共有的三则测试：参考对拍、长度负例、饱和与重复边界。
+    macro_rules! unary_op_tests {
+        ($ty:ty, $forward:ident) => {
+            $crate::unary::test_support::unary_pair_tests!($ty, $forward);
 
             #[test]
             fn saturating_and_repeated_inputs_match_reference() {
@@ -202,6 +209,7 @@ pub(crate) mod test_support {
         };
     }
     pub(crate) use unary_op_tests;
+    pub(crate) use unary_pair_tests;
 }
 
 // 声明式算子表：同一副一元骨架的五个算子，每个算子一个 `pub mod` 保持 `op::<name>::MODEL` /

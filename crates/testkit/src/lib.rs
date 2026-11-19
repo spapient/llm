@@ -29,6 +29,6 @@ pub mod scratch;
 
 pub use compare::{COSINE_GUARD, all_finite, approx_eq, close, cosine_similarity};
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
-pub use hash::crc32_bitwise;
+pub use hash::{assert_table_matches_bitwise, crc32_bitwise};
 pub use rng::Rng;
 pub use scratch::{scratch_clean, scratch_dir};

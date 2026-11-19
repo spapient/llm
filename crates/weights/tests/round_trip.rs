@@ -21,6 +21,21 @@ fn segment_of(wire: Wire, index: usize) -> Segment {
     Segment::new(format!("seg_{index}"), wire, vec![numel], None, data).expect("段自洽")
 }
 
+/// 写一个 F32 + F16 两段归档到带 `prefix` 的唯一临时路径，返回该路径。
+fn write_pair(prefix: &str) -> std::path::PathBuf {
+    let mut writer = Writer::new();
+    writer.push(segment_of(Wire::F32, 0)).expect("追加");
+    writer.push(segment_of(Wire::F16, 1)).expect("追加");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("时间")
+        .as_nanos();
+    let target =
+        std::env::temp_dir().join(format!("{prefix}_{}_{}.u", std::process::id(), nanos));
+    writer.write_to_path(6, &target).expect("原子写");
+    target
+}
+
 #[test]
 fn every_wire_type_round_trips_byte_for_byte() {
     let mut writer = Writer::new();
@@ -139,24 +154,13 @@ fn merkle_proofs_round_trip_and_bind_names() {
 
 #[test]
 fn atomic_write_produces_a_valid_file_without_temp_residue() {
-    let mut writer = Writer::new();
-    writer.push(segment_of(Wire::F32, 0)).expect("追加");
-    writer.push(segment_of(Wire::F16, 1)).expect("追加");
-
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("时间")
-        .as_nanos();
-    let target =
-        std::env::temp_dir().join(format!("llm_atomic_{}_{}.u", std::process::id(), nanos));
-
-    writer.write_to_path(6, &target).expect("原子写");
+    let target = write_pair("llm_atomic");
     let on_disk = std::fs::read(&target).expect("读回");
     let archive = Archive::parse(&on_disk).expect("落盘文件合法");
     assert_eq!(archive.segments().len(), 2);
 
     // 同目录不应留下本次的 .tmp 临时文件。
-    let prefix = format!(".llm_atomic_{}_{}.u", std::process::id(), nanos);
+    let prefix = format!(".{}", target.file_name().expect("文件名").to_string_lossy());
     let mut residue = std::fs::read_dir(std::env::temp_dir())
         .expect("读目录")
         .filter_map(Result::ok)
@@ -171,17 +175,7 @@ fn atomic_write_produces_a_valid_file_without_temp_residue() {
 #[cfg(unix)]
 #[test]
 fn a_mapped_file_opens_without_copying_into_memory() {
-    let mut writer = Writer::new();
-    writer.push(segment_of(Wire::F32, 0)).expect("追加");
-    writer.push(segment_of(Wire::F16, 1)).expect("追加");
-
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("时间")
-        .as_nanos();
-    let target =
-        std::env::temp_dir().join(format!("llm_mmap_open_{}_{}.u", std::process::id(), nanos));
-    writer.write_to_path(6, &target).expect("原子写");
+    let target = write_pair("llm_mmap_open");
 
     // 映射文件，直接在映射字节上解析，数据段不复制进内存。
     let map = storage::Mmap::open(&target).expect("映射");
