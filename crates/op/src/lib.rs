@@ -54,7 +54,6 @@ pub mod add_f32;
 pub mod attention;
 pub mod decl;
 pub mod decode_attention;
-pub mod decode_flash_attention;
 pub mod dequant;
 pub mod dequant_i2;
 pub mod dequant_i4;
@@ -64,7 +63,6 @@ pub mod einsum;
 pub mod elementwise;
 pub mod embed_f32;
 pub mod exp_f32;
-pub mod flash_attention;
 pub mod gelu_f32;
 pub mod gemm;
 pub mod gemm_f32;
@@ -123,16 +121,17 @@ pub struct Registration {
     pub differentiable: bool,
 }
 
-/// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => 语义模块, 可微, 模板`。
+/// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => MODEL 常量路径, 可微, 模板`。
 ///
-/// 名字是 `ops/<name>.toml` 的文件名，模块是 `MODEL` 所在的 `src/<模块>.rs`；模板是
-/// `ops/<模板>.k` 的文件 stem（`include_str!` 由它拼出路径），多数与名字同名，多算子共用
-/// 一份泛型模板时填共享 stem（如 `gemv_i2`/`gemv_i4` 共用 `gemv_packed`）。
+/// 名字是 `ops/<name>.toml` 的文件名，`MODEL` 路径是语义常量的完整路径（多数是
+/// `<模块>::MODEL`，多算子同模块时用 `#[model(const = "..")]` 分名后写 `<模块>::<常量名>`）；
+/// 模板是 `ops/<模板>.k` 的文件 stem（`include_str!` 由它拼出路径），多数与名字同名，多算子
+/// 共用一份泛型模板时填共享 stem（如 `gemv_i2`/`gemv_i4` 共用 `gemv_packed`）。
 ///
 /// 一条注册原本要写五句、把同一份结构逐字抄 22 遍，而能变的只有这四列。加一个算子仍然只改
 /// 本调用里的一行 + `ops/` 两个文件 + 一个模块。
 macro_rules! registry {
-    ($($name:literal => $module:ident, $differentiable:literal, $template:literal),* $(,)?) => {
+    ($($name:literal => $model:path, $differentiable:literal, $template:literal),* $(,)?) => {
         /// 编译期内嵌的算子注册表。
         ///
         /// 新增算子在这里补一行，否则发布出去的二进制里没有它；
@@ -143,7 +142,7 @@ macro_rules! registry {
                 Registration {
                     name: $name,
                     template: include_str!(concat!("../ops/", $template, ".k")),
-                    model: $module::MODEL,
+                    model: $model,
                     differentiable: $differentiable,
                 }
             ),*
@@ -153,40 +152,40 @@ macro_rules! registry {
 }
 
 registry! {
-    "add_f32" => add_f32, true, "binary",
-    "attention_f32" => attention, true, "attention_f32",
-    "decode_attention_f32" => decode_attention, true, "decode_attention_f32",
-    "decode_flash_attention_f32" => decode_flash_attention, true, "decode_flash_attention_f32",
-    "dequant_i2" => dequant_i2, false, "dequant_packed",
-    "dequant_i4" => dequant_i4, false, "dequant_packed",
-    "dequant_i8" => dequant_i8, false, "dequant_i8",
-    "div_f32" => div_f32, true, "binary",
-    "embed_f32" => embed_f32, true, "embed_f32",
-    "exp_f32" => exp_f32, true, "exp_f32",
-    "flash_attention_f32" => flash_attention, true, "flash_attention_f32",
-    "gelu_f32" => gelu_f32, true, "gelu_f32",
-    "gemm_f32" => gemm_f32, true, "gemm_f32",
-    "gemm_i2" => gemm_i2, false, "gemm_packed",
-    "gemm_i4" => gemm_i4, false, "gemm_packed",
-    "gemm_i8" => gemm_i8, false, "gemm_i8",
-    "gemv_f32" => gemv_f32, true, "gemv_f32",
-    "gemv_i2" => gemv_i2, false, "gemv_packed",
-    "gemv_i4" => gemv_i4, false, "gemv_packed",
-    "gemv_i8" => gemv_i8, false, "gemv_i8",
-    "log_f32" => log_f32, true, "log_f32",
-    "max_f32" => max_f32, true, "max_f32",
-    "min_f32" => min_f32, true, "min_f32",
-    "mul_f32" => mul_f32, true, "binary",
-    "reduce_max_f32" => reduce_max_f32, true, "reduce_max_f32",
-    "reduce_sum_f32" => reduce_sum_f32, true, "reduce_sum_f32",
-    "residual_add_f32" => residual_add_f32, true, "binary",
-    "rmsnorm_f32" => rmsnorm_f32, true, "rmsnorm_f32",
-    "rope_f32" => rope_f32, true, "rope_f32",
-    "scale_f32" => scale_f32, true, "scale_f32",
-    "scan_f32" => scan_f32, false, "scan_f32",
-    "silu_f32" => silu_f32, true, "silu_f32",
-    "softmax_f32" => softmax_f32, true, "softmax_f32",
-    "sub_f32" => sub_f32, true, "binary",
+    "add_f32" => add_f32::MODEL, true, "binary",
+    "attention_f32" => attention::MODEL, true, "attention_f32",
+    "decode_attention_f32" => decode_attention::MODEL, true, "decode_attention_f32",
+    "decode_flash_attention_f32" => decode_attention::DECODE_FLASH_MODEL, true, "decode_flash_attention_f32",
+    "dequant_i2" => dequant_i2::MODEL, false, "dequant_packed",
+    "dequant_i4" => dequant_i4::MODEL, false, "dequant_packed",
+    "dequant_i8" => dequant_i8::MODEL, false, "dequant_i8",
+    "div_f32" => div_f32::MODEL, true, "binary",
+    "embed_f32" => embed_f32::MODEL, true, "embed_f32",
+    "exp_f32" => exp_f32::MODEL, true, "exp_f32",
+    "flash_attention_f32" => attention::FLASH_MODEL, true, "flash_attention_f32",
+    "gelu_f32" => gelu_f32::MODEL, true, "gelu_f32",
+    "gemm_f32" => gemm_f32::MODEL, true, "gemm_f32",
+    "gemm_i2" => gemm_i2::MODEL, false, "gemm_packed",
+    "gemm_i4" => gemm_i4::MODEL, false, "gemm_packed",
+    "gemm_i8" => gemm_i8::MODEL, false, "gemm_i8",
+    "gemv_f32" => gemv_f32::MODEL, true, "gemv_f32",
+    "gemv_i2" => gemv_i2::MODEL, false, "gemv_packed",
+    "gemv_i4" => gemv_i4::MODEL, false, "gemv_packed",
+    "gemv_i8" => gemv_i8::MODEL, false, "gemv_i8",
+    "log_f32" => log_f32::MODEL, true, "log_f32",
+    "max_f32" => max_f32::MODEL, true, "max_f32",
+    "min_f32" => min_f32::MODEL, true, "min_f32",
+    "mul_f32" => mul_f32::MODEL, true, "binary",
+    "reduce_max_f32" => reduce_max_f32::MODEL, true, "reduce_max_f32",
+    "reduce_sum_f32" => reduce_sum_f32::MODEL, true, "reduce_sum_f32",
+    "residual_add_f32" => residual_add_f32::MODEL, true, "binary",
+    "rmsnorm_f32" => rmsnorm_f32::MODEL, true, "rmsnorm_f32",
+    "rope_f32" => rope_f32::MODEL, true, "rope_f32",
+    "scale_f32" => scale_f32::MODEL, true, "scale_f32",
+    "scan_f32" => scan_f32::MODEL, false, "scan_f32",
+    "silu_f32" => silu_f32::MODEL, true, "silu_f32",
+    "softmax_f32" => softmax_f32::MODEL, true, "softmax_f32",
+    "sub_f32" => sub_f32::MODEL, true, "binary",
 }
 
 /// 名字是否在注册表里；const 上下文可用。
