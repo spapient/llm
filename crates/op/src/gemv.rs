@@ -798,10 +798,6 @@ fn run<F: Format>(
 #[path = "../tests/gemv_test_support.rs"]
 pub(crate) mod packed_test_support;
 
-#[cfg(test)]
-#[path = "../tests/gemv_tests.rs"]
-mod tests;
-
 /// 生成一份「打包量化」GEMV 精度变体的完整公开面：`GROUP` 常量、`PackedRow` 标记、
 /// [`annotation::model`] 别名、`forward` 入口与测试挂载。`i2`/`i4` 只差一行 [`Row`]；
 /// 新增一档打包精度加一次调用即可。

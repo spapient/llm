@@ -91,20 +91,3 @@ pub(crate) mod testutil {
         tape.backward(loss).ok()
     }
 }
-
-#[cfg(test)]
-pub(crate) mod fixture {
-    use crate::{Schedule, Tape};
-
-    /// 经典菱形图：一个参数两路 relu，汇聚 add 后 reduce_sum 作 loss，并 backward 出执行序。
-    pub(crate) fn diamond() -> (Tape, Schedule) {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let left = tape.record("relu", &[x]).expect("记录");
-        let right = tape.record("relu", &[x]).expect("记录");
-        let joined = tape.record("add", &[left, right]).expect("记录");
-        let loss = tape.record("reduce_sum", &[joined]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
-        (tape, schedule)
-    }
-}

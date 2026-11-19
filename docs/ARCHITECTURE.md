@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 112 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 113 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -55,7 +55,7 @@ nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
 train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
 engine   → tensor, diagnostic, storage, cutile, op    +dev: testkit
-serve    → engine, nn, op, rng, tokenizer, diagnostic, weights    +dev: testkit
+serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型；运行时依赖覆盖被装配的各层）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / `.u` 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 `.u` 夹具写形状、`tool` 词汇片段解析）
 benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型，`nn` 出层下界与栈合计；`engine` 出页账与序列几何、`serve` 出宿主与 Predict 路线 B，供整模型一步夹具装配）
@@ -124,7 +124,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Negotiation` | `cutile` | 一台设备的协商结论（首档 / 降级 / 无路径 / 无档案）：只读声明与档案，与执行成败分开记；文本在前端 |
 | `Fragment` | `cutile` | 一份生成片段的行数与 §16 口径（`FRAGMENT_LIMIT` / `FRAGMENT_GOAL`）：上限管成败、目标只是余量，`within_limit` 就是判据本身 |
 | `Bench` / `Throughput` / `Peak` / `Verdict` / `Performance` | `cutile` | `bench` 的实测口径与达成率判定；门槛常数（`L3_THRESHOLD`）也在这里。`Performance` 把达成率与它的尺子绑在一起：口径无效（超过 100%、工作集装得进 `FAST`）或没有峰值时 `is_measured` 为假，`needs_specialisation` 就是 §16 的“某设备 < 70%” |
-| `Tensor` / `View` / `Element` / `Shape` / `Strides` / `Order` / `OwnedTensor` | `tensor` | `Tensor` 是**字节**视图，`View<E>` 是**元素**零拷贝视图（不分配、不装 `unsafe`）；`SUPPORTED` 子集表声明本层可构造的五种精度；`Order` 是排列顺序元数据，两种顺序的步幅累积是 `Strides` 的唯一实现；`OwnedTensor` 是分配出来、可写入的拥有形态（元数据 + 持有字节向量），与只读 `Tensor` 视图互补，设备地址不泄漏到本层 |
+| `Tensor` / `View` / `Element` / `Shape` / `Strides` / `Order` / `Axis` / `OwnedTensor` | `tensor` | `Tensor` 是**字节**视图，`View<E>` 是**元素**零拷贝视图（不分配、不装 `unsafe`）；`SUPPORTED` 子集表声明本层可构造的五种精度；`Order` 是排列顺序元数据，两种顺序的步幅累积是 `Strides` 的唯一实现；`OwnedTensor` 是分配出来、可写入的拥有形态（元数据 + 持有字节向量），与只读 `Tensor` 视图互补，设备地址不泄漏到本层 |
 | `Layout` / `remap` / `Buffer` / `Allocator` / `CpuAllocator` | `storage` | 物理布局与搬运；`Order` 由 `tensor` 再导出、本层不另持枚举；`Buffer` 是拥有的扁平字节缓冲（设备句柄不泄漏到本层），`Allocator` 是分配/释放/显式拷贝的边界 trait，`CpuAllocator` 是安全 `Vec<u8>` 实现，设备后端在边界 crate 实现同一 trait；本层不做隐式跨设备拷贝 |
 | `Stream` / `Graph` / `Launch` / `Device` / `Operand` / `OperandRole` / `ScalarSlots` | `engine` | 提交与执行；不编译 kernel。`Device` 是运行时设备标识标签（厂商 / 架构字符串），不持私有句柄；与 `prim::Device`（编译期设备侧代码镜像）是两个类型，路径隔离。`Operand`/`OperandRole` 是节点操作数的不透明引用（编号 + 只读输入/可写输出角色）；编号到实际缓冲的解析、生命周期与设备句柄都在后端边界侧，本层不持缓冲字节、不引用算子闭集。`ScalarSlots` 是定长类型化闭集标量槽（首批仅 rope 解码位置）：槽位集合冻结在 ADR 0043，不用字符串键名表或 `HashMap`，位置这类语义参数不编进 1 元素 f32 缓冲；变长批的逐序列位置表不进槽，走独立输入缓冲切片通道（ADR 0043 §5，整数按既有先例折 f32 承载） |
 | `Tokenizer` / `Token` / `Bytes` / `Bpe` / `Unigram` / `SpecialTokens` / `Encoding` / `Strategy` / `Truncation` / `Padding` / `PadDirection` / `Fingerprint` / `DecoderStream` / `Vocab` / `VocabSource` / `VocabFamily` / `Merge` | `tokenizer` | 文本 ↔ token 的唯一边界：编号、编码对齐记录（编号/字节区间/特殊标记等长）、序列策略配置、词表身份指纹与 UTF-8 边界安全的流式解码；`Vocab` 是格式无关的中性词表值对象（双向查表、特殊编号范围与族附属表在构造期闭合），`VocabSource` 是装配点传入的纯数据，`Merge` 为 BPE 合并对；`Bytes` 是字节级基线实现，`Bpe` 是在 `Vocab` 上按合并秩迭代归并的 BPE 具体实现，`Unigram` 是按逐片分数做前向 Viterbi 最优切分的 Unigram 具体实现（预切分层待 D2） |

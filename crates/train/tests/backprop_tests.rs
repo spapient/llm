@@ -658,7 +658,7 @@ fn attention_matches_central_differences() -> Result<()> {
 /// `loss = reduce_sum(decode_attention(q,k,v))`：查询一行、历史两行，三路梯度闭式对拍。
 #[test]
 fn decode_attention_matches_central_differences() -> Result<()> {
-    let d = op::decode::MODEL.shape.1;
+    let d = op::decode_attention::MODEL.shape.1;
     let q_rows = 1usize;
     let hist = 2usize;
     let q_len = q_rows * d;

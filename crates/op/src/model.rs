@@ -540,8 +540,8 @@ mod tests {
     #[test]
     fn bind_refuses_packed_weights_instead_of_reading_them_as_f32() {
         let model = crate::model("gemv_i4").expect("量化语义");
-        let error = bind(&model, 64, 2, &[0.0; 64], &[0.0; 128])
-            .expect_err("量化算子的权重缓冲是打包字节");
+        let error =
+            bind(&model, 64, 2, &[0.0; 64], &[0.0; 128]).expect_err("量化算子的权重缓冲是打包字节");
         assert_eq!(error.code(), Code::Unsupported);
         assert!(error.to_string().contains("打包字节"), "{error}");
     }
