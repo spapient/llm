@@ -63,6 +63,14 @@ fn assert_close(produced: &[f32], reference: &[f32]) {
     );
 }
 
+/// 当前步 K/V 页行回环：拆半行核对写回的 K 与 V 各自与参考链一致。
+fn assert_kv_row(batch: &Batch, position: usize, kv: usize, k_rot: &[f32], v: &[f32]) {
+    let row = batch.kv(0, position).expect("当前步页行");
+    let (written_k, written_v) = row.split_at(kv);
+    assert_close(written_k, k_rot);
+    assert_close(written_v, v);
+}
+
 /// 参数表：按名驻留整块 f32 条目；无条目时传空切片。
 fn params_of(entries: &[(&str, Vec<f32>)]) -> Params {
     let mut params = Params::new();
@@ -1667,10 +1675,7 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
 
     assert_close(&produced, &reference);
 
-    let row = batch.kv(0, sequence.len()).expect("当前步页行");
-    let (written_k, written_v) = row.split_at(kv);
-    assert_close(written_k, &k_rot);
-    assert_close(written_v, &v);
+    assert_kv_row(&batch, sequence.len(), kv, &k_rot, &v);
 }
 
 /// 两条序列同批走块链整批前向（`logits_batch`）：行序对齐准入序，各自对拍参考块，KV 写回各归各的页行。
@@ -1984,10 +1989,7 @@ fn a_quantized_attention_block_decodes_against_the_reference() {
     );
     assert_close(&produced, &reference);
 
-    let row = batch.kv(0, sequence.len()).expect("当前步页行");
-    let (written_k, written_v) = row.split_at(kv);
-    assert_close(written_k, &k_rot);
-    assert_close(written_v, &v);
+    assert_kv_row(&batch, sequence.len(), kv, &k_rot, &v);
 }
 
 /// 多头展平（`kv_width = heads · head_dim`）端到端：嵌入 → q/k/v + 分段 RoPE → 多头 decode 注意力 →
@@ -2043,10 +2045,7 @@ fn a_multi_head_block_decodes_against_the_reference() {
     );
     assert_close(&produced, &reference);
 
-    let row = batch.kv(0, sequence.len()).expect("当前步页行");
-    let (written_k, written_v) = row.split_at(kv);
-    assert_close(written_k, &k_rot);
-    assert_close(written_v, &v);
+    assert_kv_row(&batch, sequence.len(), kv, &k_rot, &v);
 }
 
 /// 两层合成模型端到端：嵌入 → 注意力块（q/k/v + RoPE + decode 注意力 + 残差）→ 归一化 →
