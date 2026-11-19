@@ -96,6 +96,24 @@ pub fn metal_grid_program(
     lower(&run, &prepared, m, n)
 }
 
+/// 生产态分块扫描内核源：走完整条流水线后把时间轴递推切成块，返回两段 MSL `(局部扫描, 校正)`，
+/// 主机在两次派发间做块级携带前缀。扫描是线性递推，分块天然需要两段内核，故不并入单内核的
+/// [`metal_grid_program`]；串行（未声明 `[chunk]`）仍走 [`metal_grid_program`]。
+///
+/// # Errors
+///
+/// 算子没有声明 `[chunk]`、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_scan_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, String)> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    scan_chunked(&run, &prepared, m, n)
+}
+
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(
     catalogue: &'a Catalogue,
@@ -197,6 +215,48 @@ fn reduce_func(op: &OpDecl) -> diagnostic::Result<String> {
         .ok_or_else(|| Error::new(Code::Invalid, format!("`{}` 的归约需求缺 `op`", op.name)))?;
     let dt = need.dt.names().first().copied().unwrap_or("f32");
     Ok(format!("_cutile_{op_name}_{dt}"))
+}
+
+/// 扫描分块：声明了 `[chunk]` 的走「局部扫描 + 校正」两段内核，返回 `(局部扫描, 校正)`；未声明
+/// 时报错（串行由 [`metal_grid_program`] 的骨架兜底覆盖，此处只做分块）。
+fn scan_chunked(
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, String)> {
+    let op = run.op;
+    let chunk = op.chunk.as_ref().ok_or_else(|| {
+        Error::new(Code::Unsupported, format!("`{}` 没有声明 `[chunk]`", op.name))
+            .with("cutile::execution::metal_scan_program")
+    })?;
+    let sample = (run.model.sample)(m, n);
+    crate::harness::metal_chunk_scan(
+        &prepared.source.text,
+        &op.signature,
+        &sample,
+        chunk.size,
+        scan_decay(op)?,
+    )
+}
+
+/// 扫描衰减 `a`：从 `[consts]` 的 `a` 槽读出（扫描的离散对角半群步），解析成 f32 供校正内核拼
+/// 几何级数。找不到或非数值时报错，不静默用默认值。
+fn scan_decay(op: &OpDecl) -> diagnostic::Result<f32> {
+    let raw = op
+        .consts
+        .iter()
+        .find(|(key, _)| key == "a")
+        .map(|(_, value)| value.as_str())
+        .ok_or_else(|| {
+            Error::new(Code::Invalid, format!("`{}` 的 `[consts]` 缺扫描衰减 `a`", op.name))
+        })?;
+    raw.parse::<f32>().map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!("`{}` 的扫描衰减 `a` 不是数值：`{raw}`", op.name),
+        )
+    })
 }
 
 /// 串行兜底：单线程走完整条正文，缓冲原样、标量取样本值。

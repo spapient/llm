@@ -596,6 +596,151 @@ pub fn metal_chunk_reduce(
     ))
 }
 
+/// 生产态分块扫描内核：把时间轴串行递推切成 `chunk` 元素一块，返回两段内核源 `(局部扫描, 校正)`。
+///
+/// 扫描 `s_t = a·s_{t-1} + b·x_t` 的跨元素依赖不能靠逐元素拆线程（每线程会各算一整遍），但它
+/// 是**线性递推**，可以「切块 + 块级携带前缀」并行，与 [`metal_chunk_reduce`] 同属「切块 + 主机
+/// 折叠」族，差异只在主机折叠从「求和/求最大」换成「携带前缀」且多一段校正内核：
+///
+/// 1. 局部扫描：每线程 `g` 对块 `[g·chunk, min(chunk, N-g·chunk))` 做基 0 扫描，写 `y`（块末态
+///    即 `y[start+len-1]`，主机直接从这里读出，不另占缓冲）；
+/// 2. 主机携带前缀：`C_0 = 0`、`C_{g+1} = a^len·C_g + y[start+len-1]`（只有 `ceil(N/chunk)` 项）；
+/// 3. 校正：每线程 `g` 把携带态的衰减贡献 `C_g·a^(j+1)` 加回 `y[start+j]`（就地累加，`C` 是主机
+///    注入的携带态缓冲）。
+///
+/// 衰减 `a` 由分派层从算子 `[consts]` 读出，机制层只按它拼校正内核的几何级数，不猜算子语义。
+///
+/// # Errors：签名不是扫描形（缺唯一只读输入 / 可写输出 / 长度标量）或标量缺样本取值、模板里
+/// 找不到时间轴循环时返回说明。
+pub fn metal_chunk_scan(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    decay: f32,
+) -> diagnostic::Result<(String, String)> {
+    let output = signature.output().ok_or_else(|| {
+        Error::new(Code::Internal, "扫描内核没有可写输出缓冲")
+            .with("cutile::harness::metal_chunk_scan")
+    })?;
+    let scalar = signature
+        .params()
+        .iter()
+        .find(|param| !param.ctype.is_buffer())
+        .map(|param| param.name.as_str())
+        .ok_or_else(|| {
+            Error::new(Code::Internal, "扫描内核没有长度标量")
+                .with("cutile::harness::metal_chunk_scan")
+        })?;
+    let len = sample.scalar(scalar).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("扫描长度标量 `{scalar}` 没有样本取值"))
+            .with("cutile::harness::metal_chunk_scan")
+    })?;
+
+    let local = chunk_scan_local(kernel_source, signature, sample, chunk, scalar)?;
+    let correct = chunk_scan_correct(output, chunk, len, decay);
+    Ok((local, correct))
+}
+
+/// 局部扫描内核：把模板里的时间轴循环头改写到块内 `[start, start+len)`，`tid` 透传进内部内核。
+fn chunk_scan_local(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    scalar: &str,
+) -> diagnostic::Result<String> {
+    let kernel = signature.kernel();
+    let mut body = msl_address_space(kernel_source);
+    body = thread_param(&body, &kernel)?;
+    body = inject_chunk_preamble(&body, &kernel, chunk, scalar)?;
+    body = bind_chunk_loop(&body, scalar)?;
+    let call = format!("{}, tid", serial_args(signature.params(), sample)?);
+    let buffers = buffer_decls(signature);
+    Ok(format!(
+        "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {kernel}({call});\n}}"
+    ))
+}
+
+/// 校正内核：每线程 `g` 把携带态 `d_c[g]` 的衰减几何级数 `C·a^(j+1)` 加回 `y`（就地累加）。
+/// `chunk`/`len`/`decay` 都是生成期常量，只有 `d_c`（只读）、`d_y`（就地读写）两块缓冲 + 线程下标。
+/// 槽位按「输入后输出」：`d_c` 是输入在 `buffer(0)`、`d_y` 是输出在 `buffer(1)`，与 [`buffer_decls`]
+/// 的同源约定一致。
+fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
+    format!(
+        "kernel void kernel_main(\n    device float* d_c [[buffer(0)]],\n    device float* d_{output} [[buffer(1)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    float c = d_c[g];\n    float pow = {decay}f;\n    for (int j = 0; j < len; ++j) {{\n        d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}\n}}"
+    )
+}
+
+/// 给内部内核函数体注入块头：`g`/`start`/`len` 三个局部量，供循环头改写与分块寻址引用。
+fn inject_chunk_preamble(
+    body: &str,
+    kernel: &str,
+    chunk: usize,
+    scalar: &str,
+) -> diagnostic::Result<String> {
+    let marker = format!("void {kernel}(");
+    let Some(signature_start) = body.find(&marker) else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("找不到内核函数 `void {kernel}(`"),
+        )
+        .with("cutile::harness::metal_chunk_scan"));
+    };
+    let Some(close) = body[signature_start..].find(") {") else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("内核函数 `{kernel}` 签名不完整"),
+        )
+        .with("cutile::harness::metal_chunk_scan"));
+    };
+    let brace = signature_start + close + 2;
+    let preamble = format!(
+        "    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {scalar} - start);\n"
+    );
+    let mut out = String::with_capacity(body.len() + preamble.len());
+    out.push_str(&body[..=brace]);
+    out.push_str(&preamble);
+    out.push_str(&body[brace + 1..]);
+    Ok(out)
+}
+
+/// 把以 `scalar` 为上界的串行循环头改写到块内边界：`for (int v = 0; v < {scalar}; ++v)` →
+/// `for (int v = start; v < start + len; ++v)`。循环变量从模板读出，不对名字硬编码。
+fn bind_chunk_loop(body: &str, scalar: &str) -> diagnostic::Result<String> {
+    let bound = format!(" < {scalar}; ");
+    let Some(bound_at) = body.find(&bound) else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("模板里找不到以 `{scalar}` 为上界的串行循环"),
+        )
+        .with("cutile::harness::metal_chunk_scan"));
+    };
+    let prefix = &body[..bound_at];
+    let Some(open) = prefix.rfind("for (int ") else {
+        return Err(Error::new(
+            Code::Invalid,
+            "循环上界不在 `for (int …)` 头里",
+        )
+        .with("cutile::harness::metal_chunk_scan"));
+    };
+    let var = prefix[open + "for (int ".len()..]
+        .split('=')
+        .next()
+        .unwrap_or("")
+        .trim();
+    let old_head = format!("for (int {var} = 0; {var} < {scalar}; ++{var})");
+    let new_head = format!("for (int {var} = start; {var} < start + len; ++{var})");
+    if !body.contains(&old_head) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("模板里找不到串行循环 `{old_head}`"),
+        )
+        .with("cutile::harness::metal_chunk_scan"));
+    }
+    Ok(body.replace(&old_head, &new_head))
+}
+
 fn bind_grid_loops(body: String, grid: &Grid) -> diagnostic::Result<String> {
     const AXES: [&str; 3] = ["x", "y", "z"];
     let mut out = body;

@@ -455,6 +455,14 @@ mod tests {
         op_chunked_reduce_matches_reference("reduce_max_f32");
     }
 
+    /// 分块扫描真机对拍：`scan_f32` 走「局部扫描 + 主机携带前缀 + 校正」三阶段，衰减 `a` 来自
+    /// `[consts]`，主机折叠携带前缀后回注校正，与标量参考对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_scan_op_runs_on_metal_and_matches_the_reference() {
+        op_chunked_scan_matches_reference("scan_f32");
+    }
+
     /// 两趟（带归约）真机对拍：`rmsnorm_f32` 走串行 lowering（单线程网格、`x`/`gamma`/`y` 三缓冲
     /// 原样透传），在 Metal 上算出均方根归一化并回读，与标量参考对拍。
     #[cfg(target_os = "macos")]
@@ -704,6 +712,139 @@ mod tests {
         assert!(
             max_rel_err <= tolerance,
             "{op_name} 分块归约对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
+    }
+
+    /// 分块扫描真机对拍：`scan_f32` 声明 `[chunk]` 后走「局部扫描 + 主机携带前缀 + 校正」三阶段。
+    ///
+    /// 1. 局部扫描：网格 `ceil(N/256)`，每线程 g 对块做基 0 扫描写 `y`，块末态即 `y[start+len-1]`；
+    /// 2. 主机携带前缀：`C_0=0`、`C_{g+1}=a^len·C_g + y[start+len-1]`（f64 折叠，衰减 `a` 来自 `[consts]`）；
+    /// 3. 校正：每线程 g 把 `C_g·a^(j+1)` 加回 `y`（就地累加）。
+    ///
+    /// 对拍用 f64 折叠的携带前缀 + 校正结果，与 f32 标量参考比较；分块扫描的误差来自两段内核的
+    /// 浮点舍入，仍落在 f32 阈值（1e-5）内。
+    #[cfg(target_os = "macos")]
+    fn op_chunked_scan_matches_reference(op_name: &str) {
+        use engine::exec::Executor as _;
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-scan-check"));
+
+        let model = op::model(op_name).expect("语义表");
+        let (m, n) = model.shape;
+        let sample = (model.sample)(m, n);
+        let expected = (model.reference)(&sample).expect("标量参考");
+        let decl = catalogue.op(op_name).expect("算子声明");
+        let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
+        let len = decl
+            .signature
+            .params()
+            .iter()
+            .find(|param| !param.ctype.is_buffer())
+            .and_then(|param| sample.scalar(&param.name))
+            .expect("扫描长度标量") as u32;
+        let grid_size = len.div_ceil(chunk);
+        let decay = decl
+            .consts
+            .iter()
+            .find(|(key, _)| key == "a")
+            .and_then(|(_, value)| value.parse::<f64>().ok())
+            .expect("扫描衰减 a");
+
+        let (local_msl, correct_msl) =
+            cutile::execution::metal_scan_program(&catalogue, &dirs, op_name, m, n)
+                .expect("分块扫描内核应能生成");
+        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
+            return;
+        };
+        executor.register(op_name, &local_msl).expect("注册局部扫描内核");
+        let correct_name = format!("{op_name}_correct");
+        executor
+            .register(&correct_name, &correct_msl)
+            .expect("注册校正内核");
+
+        // 槽位约定（同 buffer_decls 的签名序）：0 = 只读输入 x，1 = 可写输出 y。
+        let input = sample.f32("x").expect("扫描输入");
+        executor.bind_bytes(0, input.len() * 4).expect("输入缓冲");
+        executor.bind_bytes(1, expected.len() * 4).expect("输出缓冲");
+        {
+            let bytes = executor.buffer_mut(0).expect("输入可写").as_mut_bytes();
+            for (index, value) in input.iter().enumerate() {
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        let stream = engine::exec::Stream::new(0);
+        let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
+
+        // 阶段 1：局部扫描（x → y）。
+        let mut node = engine::exec::Node::new(op_name, launch);
+        node.bind_input(0);
+        node.bind_output(1);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        executor.submit(&graph, stream).expect("提交局部扫描");
+        executor.sync(stream).expect("同步局部扫描");
+
+        // 阶段 2（主机）：从局部扫描输出读块末态，做块级携带前缀。
+        let local = {
+            let bytes = executor.buffer_mut(1).expect("局部扫描可读").as_mut_bytes();
+            (0..expected.len())
+                .map(|index| {
+                    let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                        .try_into()
+                        .expect("四个字节一个 f32");
+                    f32::from_le_bytes(bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut carry = vec![0.0f64; grid_size as usize];
+        for g in 1..grid_size as usize {
+            let prev_start = (g as u32 - 1) * chunk;
+            let prev_len = chunk.min(len - prev_start);
+            let tail = local[(prev_start + prev_len - 1) as usize] as f64;
+            carry[g] = decay.powf(prev_len as f64) * carry[g - 1] + tail;
+        }
+
+        // 阶段 3：校正（c → y 就地累加）。槽 0 复用为携带态缓冲。
+        executor
+            .bind_bytes(0, grid_size as usize * 4)
+            .expect("携带态缓冲");
+        {
+            let bytes = executor.buffer_mut(0).expect("携带态可写").as_mut_bytes();
+            for (index, value) in carry.iter().enumerate() {
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&(*value as f32).to_le_bytes());
+            }
+        }
+        let mut node = engine::exec::Node::new(&correct_name, launch);
+        node.bind_input(0);
+        node.bind_output(1);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        executor.submit(&graph, stream).expect("提交校正");
+        executor.sync(stream).expect("同步校正");
+
+        let output = {
+            let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
+            (0..expected.len())
+                .map(|index| {
+                    let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                        .try_into()
+                        .expect("四个字节一个 f32");
+                    f32::from_le_bytes(bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "{op_name} 分块扫描对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
         );
     }
 
