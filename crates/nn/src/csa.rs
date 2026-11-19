@@ -3,6 +3,12 @@
 //! CSA：每 `m=4` token 压成 1 条，再 DSA top-k（Flash 512 / Pro 1024）；HCA：每 `m'=128` token 压成
 //! 1 条，稠密注意。有效长 `n/m`、`n/m'`（数学验证 41）。这是 α 通道的**序列压缩注意力**，与 MLA
 //! 潜在维压缩分列，禁止写成 `O(n)` 扫描（Mamba-3 轴）。
+//!
+//! 纯数学函数统一走 [`op::scan::Scalar`] 泛型（与 [`crate::mix`] / [`crate::policy`] / [`crate::pulse`]
+//! 同一闭集）：`f32` 供前向、`f64` 供验证对拍，不因精度复制两份实现。
+
+use core::cmp::Ordering;
+use op::scan::Scalar;
 
 /// CSA 分块因子。
 pub const CSA_M: usize = 4;
@@ -21,25 +27,25 @@ pub const fn effective_len(n: usize, m: usize) -> usize {
 }
 
 /// 分块压缩：每 `m` 行均值池化成 1 行（行主序 `[n, d] → [⌈n/m⌉, d]`）。
-pub fn compress(seq: &[f32], n: usize, d: usize, m: usize) -> Vec<f32> {
+pub fn compress<S: Scalar>(seq: &[S], n: usize, d: usize, m: usize) -> Vec<S> {
     assert_eq!(seq.len(), n * d, "seq 长度与形状不符");
     assert!(m > 0, "分块因子必须非零");
     let blocks = n.div_ceil(m);
-    let mut out = vec![0.0f32; blocks * d];
+    let mut out = vec![S::ZERO; blocks * d];
     for b in 0..blocks {
         let start = b * m;
         let end = (start + m).min(n);
-        let count = (end - start) as f32;
+        let count = S::from_f64((end - start) as f64);
         for j in 0..d {
-            let sum: f32 = (start..end).map(|i| seq[i * d + j]).sum();
-            out[b * d + j] = sum / count;
+            let sum = (start..end).fold(S::ZERO, |acc, i| acc.add(seq[i * d + j]));
+            out[b * d + j] = sum.div(count);
         }
     }
     out
 }
 
 /// DSA top-k：每行只保留最大的 `k` 个分数，其余置 `−∞`（softmax 后为 0，实现稀疏注意力）。
-pub fn dsa_topk(scores: &mut [f32], rows: usize, cols: usize, k: usize) {
+pub fn dsa_topk<S: Scalar>(scores: &mut [S], rows: usize, cols: usize, k: usize) {
     debug_assert_eq!(scores.len(), rows * cols);
     debug_assert!(k <= cols);
     for r in 0..rows {
@@ -48,27 +54,30 @@ pub fn dsa_topk(scores: &mut [f32], rows: usize, cols: usize, k: usize) {
             continue;
         }
         // 降序选择：index k−1 是第 k 大，`[0..k]` 为 top-k，`[k..]` 为弃项。
-        row.select_nth_unstable_by(k - 1, |a, b| b.total_cmp(a));
+        row.select_nth_unstable_by(k - 1, |a, b| b.partial_cmp(a).unwrap_or(Ordering::Equal));
         for v in &mut row[k..] {
-            *v = f32::NEG_INFINITY;
+            *v = S::NEG_INFINITY;
         }
     }
 }
 
 /// 稠密注意力：每行 softmax 归一化（HCA 的稠密路径，作为 DSA 的对照）。
-pub fn dense_softmax(scores: &mut [f32], rows: usize, cols: usize) {
+pub fn dense_softmax<S: Scalar>(scores: &mut [S], rows: usize, cols: usize) {
     debug_assert_eq!(scores.len(), rows * cols);
     for r in 0..rows {
         let row = &mut scores[r * cols..(r + 1) * cols];
-        let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let mut sum = 0.0f32;
+        let max = row
+            .iter()
+            .copied()
+            .fold(S::NEG_INFINITY, |a, b| if b > a { b } else { a });
+        let mut sum = S::ZERO;
         for v in row.iter_mut() {
-            *v = (*v - max).exp();
-            sum += *v;
+            *v = v.sub(max).exp();
+            sum = sum.add(*v);
         }
-        if sum > 0.0 {
+        if sum > S::ZERO {
             for v in row.iter_mut() {
-                *v /= sum;
+                *v = v.div(sum);
             }
         }
     }
@@ -76,24 +85,27 @@ pub fn dense_softmax(scores: &mut [f32], rows: usize, cols: usize) {
 
 /// Sinkhorn 双随机归一化（方阵）：行/列交替缩放，收敛后行和、列和均 ≈ 1，且 `‖B‖₂ ≤ 1`
 /// （数学验证 41）。返回是否在 `iters` 轮内收敛到 `tol`。
-pub fn sinkhorn(mat: &mut [f32], n: usize, iters: usize, tol: f32) -> bool {
+pub fn sinkhorn<S: Scalar>(mat: &mut [S], n: usize, iters: usize, tol: S) -> bool {
     debug_assert_eq!(mat.len(), n * n);
     for _ in 0..iters {
         // 行归一。
         for r in 0..n {
-            let sum: f32 = mat[r * n..(r + 1) * n].iter().sum();
-            if sum > 0.0 {
+            let sum = mat[r * n..(r + 1) * n]
+                .iter()
+                .copied()
+                .fold(S::ZERO, |acc, v| acc.add(v));
+            if sum > S::ZERO {
                 for v in &mut mat[r * n..(r + 1) * n] {
-                    *v /= sum;
+                    *v = v.div(sum);
                 }
             }
         }
         // 列归一。
         for c in 0..n {
-            let sum: f32 = (0..n).map(|r| mat[r * n + c]).sum();
-            if sum > 0.0 {
+            let sum = (0..n).fold(S::ZERO, |acc, r| acc.add(mat[r * n + c]));
+            if sum > S::ZERO {
                 for r in 0..n {
-                    mat[r * n + c] /= sum;
+                    mat[r * n + c] = mat[r * n + c].div(sum);
                 }
             }
         }
@@ -102,39 +114,50 @@ pub fn sinkhorn(mat: &mut [f32], n: usize, iters: usize, tol: f32) -> bool {
 }
 
 /// 是否（近似）双随机：行和、列和都 ≈ 1。
-pub fn is_doubly_stochastic(mat: &[f32], n: usize, tol: f32) -> bool {
+pub fn is_doubly_stochastic<S: Scalar>(mat: &[S], n: usize, tol: S) -> bool {
     debug_assert_eq!(mat.len(), n * n);
     (0..n).all(|r| {
-        let row: f32 = mat[r * n..(r + 1) * n].iter().sum();
-        let col: f32 = (0..n).map(|i| mat[i * n + r]).sum();
-        (row - 1.0).abs() <= tol && (col - 1.0).abs() <= tol
+        let row = mat[r * n..(r + 1) * n]
+            .iter()
+            .copied()
+            .fold(S::ZERO, |acc, v| acc.add(v));
+        let col = (0..n).fold(S::ZERO, |acc, i| acc.add(mat[i * n + r]));
+        row.sub(S::ONE).abs() <= tol && col.sub(S::ONE).abs() <= tol
     })
 }
 
 /// 幂迭代估计谱范数 `‖B‖₂`（最大奇异值）。
-pub fn spectral_norm(mat: &[f32], n: usize, iters: usize) -> f32 {
+pub fn spectral_norm<S: Scalar>(mat: &[S], n: usize, iters: usize) -> S {
     debug_assert_eq!(mat.len(), n * n);
-    let mut v = vec![1.0f32 / (n as f32).sqrt(); n];
-    let mut sigma = 0.0f32;
+    let mut v = vec![S::ONE.div(S::from_f64(n as f64).sqrt()); n];
+    let mut sigma = S::ZERO;
     for _ in 0..iters {
         // u = B v。
-        let u: Vec<f32> = (0..n)
-            .map(|i| (0..n).map(|j| mat[i * n + j] * v[j]).sum())
+        let u: Vec<S> = (0..n)
+            .map(|i| (0..n).fold(S::ZERO, |acc, j| acc.add(mat[i * n + j].mul(v[j]))))
             .collect();
-        sigma = u.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if sigma <= 0.0 {
-            return 0.0;
+        sigma = u
+            .iter()
+            .copied()
+            .fold(S::ZERO, |acc, x| acc.add(x.mul(x)))
+            .sqrt();
+        if sigma <= S::ZERO {
+            return S::ZERO;
         }
         // v = Bᵀ u / ‖Bᵀ u‖。
-        let w: Vec<f32> = (0..n)
-            .map(|j| (0..n).map(|i| mat[i * n + j] * u[i]).sum())
+        let w: Vec<S> = (0..n)
+            .map(|j| (0..n).fold(S::ZERO, |acc, i| acc.add(mat[i * n + j].mul(u[i]))))
             .collect();
-        let norm = w.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm <= 0.0 {
-            return 0.0;
+        let norm = w
+            .iter()
+            .copied()
+            .fold(S::ZERO, |acc, x| acc.add(x.mul(x)))
+            .sqrt();
+        if norm <= S::ZERO {
+            return S::ZERO;
         }
         for (x, &y) in v.iter_mut().zip(&w) {
-            *x = y / norm;
+            *x = y.div(norm);
         }
     }
     sigma
@@ -170,6 +193,13 @@ mod tests {
         // 末块不足：n=3, m=2 → 2 块，末块单行。
         let tail = compress(&[1.0, 10.0, 3.0, 30.0, 5.0, 50.0], 3, 2, 2);
         assert_eq!(tail, vec![2.0, 20.0, 5.0, 50.0]);
+    }
+
+    /// 分块压缩 f64 同式（泛型复用：与 f32 不复制实现）。
+    #[test]
+    fn compress_f64_agrees() {
+        let seq = vec![1.0f64, 2.0, 3.0, 4.0];
+        assert_eq!(compress(&seq, 4, 1, 2), vec![1.5, 3.5]);
     }
 
     /// DSA 每行只保留 top-k。

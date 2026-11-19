@@ -3,6 +3,8 @@
 //! 静态 N-gram 模式查表，不是第四前向、不替代块表（E12 KV）、不替代 CSA/HCA、不是有证书上界
 //! 压缩（§5.8.2 禁止越界）。每 token 取槽 `K(N−1)`，与表长 `M` 无关 ⇒ 查找 `O(1)`（数学验证 40）。
 
+use op::scan::Scalar;
+
 /// 乘-XOR 终混（64 位全雪崩，splitmix64 finalizer）。
 fn mix(mut x: u64) -> u64 {
     x ^= x >> 30;
@@ -30,9 +32,10 @@ pub const fn slots(n: usize, k: usize) -> usize {
 /// 稀疏参数分配：`P_MoE = ρ·P_sparse`，`P_Engram = (1−ρ)·P_sparse`（`ρ∈[0,1]`）。
 ///
 /// `ρ=1` 纯 MoE；公开最优 `ρ*≈75%–80%`，Engram-27B 取 `ρ=74.3%`（§5.8.2）。
-pub fn allocate(rho: f32, p_sparse: f32) -> (f32, f32) {
-    debug_assert!((0.0..=1.0).contains(&rho));
-    (rho * p_sparse, (1.0 - rho) * p_sparse)
+pub fn allocate<S: Scalar>(rho: S, p_sparse: S) -> (S, S) {
+    debug_assert!(rho >= S::ZERO && rho <= S::ONE);
+    let om = S::ONE.sub(rho);
+    (rho.mul(p_sparse), om.mul(p_sparse))
 }
 
 /// 下一个 ≥ `lower` 的素数（表长取素数，避免合数槽聚集）。
