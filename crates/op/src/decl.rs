@@ -32,12 +32,7 @@ pub enum Skeleton {
 
 impl prof::atom::Closed for Skeleton {
     /// 闭集全量。
-    const ALL: &'static [Self] = &[
-        Self::Elementwise,
-        Self::Reduce,
-        Self::Gemm,
-        Self::Scan,
-    ];
+    const ALL: &'static [Self] = &[Self::Elementwise, Self::Reduce, Self::Gemm, Self::Scan];
 
     /// 声明层写法。
     fn as_str(self) -> &'static str {
