@@ -88,6 +88,19 @@ fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
         .collect()
 }
 
+/// 装配 Metal 后端 + 内置目录 + 临时工作目录；设备不可用时返回 `None` 静默跳过（真机对拍
+/// 在无 Metal 的环境里不失败）。
+fn metal_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::Dirs)> {
+    ensure_backends();
+    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+    if !cutile::witness::device_available(catalogue.profile("metal").expect("metal 档案")) {
+        return None;
+    }
+    let dirs =
+        cutile::dirs::Dirs::under(std::env::temp_dir().join(format!("llm-metal-{tag}-check")));
+    Some((catalogue, dirs))
+}
+
 #[test]
 fn a_real_weight_file_runs_through_generated_kernels() {
     if cutile::toolchain::detect().is_none() {
@@ -194,13 +207,9 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     use engine::exec::Executor as _;
     use op::sig::CType;
 
-    ensure_backends();
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-    if !cutile::witness::device_available(&profile) {
+    let Some((catalogue, dirs)) = metal_harness("serial") else {
         return;
-    }
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-serial-check"));
+    };
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = shape.unwrap_or(model.shape);
@@ -333,13 +342,9 @@ fn op_matches_reference(op_name: &str) {
 fn op_chunked_reduce_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    ensure_backends();
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-    if !cutile::witness::device_available(&profile) {
+    let Some((catalogue, dirs)) = metal_harness("chunk") else {
         return;
-    }
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-chunk-check"));
+    };
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
@@ -498,13 +503,9 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
 fn op_chunked_scan_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    ensure_backends();
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-    if !cutile::witness::device_available(&profile) {
+    let Some((catalogue, dirs)) = metal_harness("scan") else {
         return;
-    }
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-scan-check"));
+    };
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
@@ -611,13 +612,9 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
 fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    ensure_backends();
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-    if !cutile::witness::device_available(&profile) {
+    let Some((catalogue, dirs)) = metal_harness("rmsnorm") else {
         return;
-    }
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-rmsnorm-check"));
+    };
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
@@ -704,13 +701,9 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
 fn op_chunked_softmax_matches_reference(op_name: &str) {
     use engine::exec::Executor as _;
 
-    ensure_backends();
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
-    if !cutile::witness::device_available(&profile) {
+    let Some((catalogue, dirs)) = metal_harness("softmax") else {
         return;
-    }
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-softmax-check"));
+    };
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
