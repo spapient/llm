@@ -482,7 +482,8 @@ impl Settings {
             .and_then(|slot| slot.value.as_path())
     }
 
-    /// 缓存容量上限；未设置回落到 [`cutile::cache::CACHE_LIMIT`]（P5 接线前两处默认值并存）。
+    /// 缓存容量上限；默认值与 [`cutile::cache::CACHE_LIMIT`] 相同（2 GiB）。`cache gc` 没给
+    /// `--limit` 时消费这个投影，内核常量只在投影缺失时兜底。
     pub fn cache_limit_bytes(&self) -> Option<u64> {
         self.resolved(Key::CacheLimit)
             .and_then(|(value, _)| match value {

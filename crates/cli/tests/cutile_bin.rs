@@ -85,8 +85,12 @@ fn run(command: &CutileCommand, settings: &Settings) -> diagnostic::Result<Strin
 ///
 /// 残留与 LRU 删除分两行：残留不是"空间不够"的产物，它本来就不会命中，报在同一行里
 /// 会让人以为上限调大就能少删几条。
+///
+/// 上限来源：`--limit`（命令行层）最高，其次是配置键 `cache.limit_bytes`（策略层投影），
+/// 两者都没有时由内核 [`cutile::cache::CACHE_LIMIT`] 兜底。
 fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<String> {
     let dirs = settings.dirs();
+    let limit = limit.or_else(|| settings.cache_limit_bytes());
     let report = cutile::cache::cache_gc(&dirs, limit)?;
     let mut out = Report::new(format!(
         "cache gc | 上限 {}",
@@ -474,5 +478,39 @@ mod tests {
         let text = std::fs::read_to_string(path).expect("台账可读");
         assert!(text.contains("| 原语 | 实现 | 等级 | 见证 |"), "{text}");
         assert!(text.contains("pipe2"), "{text}");
+    }
+
+    /// `cache gc` 的上限来源：`--limit` 最高，其次是配置键 `cache.limit_bytes`，内核常量
+    /// 只在两者都缺时兜底；默认值与内核缺省同值（行为不变）。
+    #[test]
+    fn cache_gc_prefers_the_flag_then_the_settings_key() {
+        let roots = llm_cli::settings::Roots::new(
+            std::env::temp_dir().join(format!("cutile-gc-settings-{}", std::process::id())),
+        );
+        let mut settings = Settings::defaults(&roots);
+        settings
+            .apply_override("cache.limit_bytes=1024")
+            .expect("合法覆盖");
+
+        let text = cache_gc(&settings, None).expect("空缓存可回收");
+        assert!(
+            text.starts_with(&format!("cache gc | 上限 {}", tool::human_bytes(1024))),
+            "{text}"
+        );
+
+        let text = cache_gc(&settings, Some(2048)).expect("命令行覆盖");
+        assert!(
+            text.starts_with(&format!("cache gc | 上限 {}", tool::human_bytes(2048))),
+            "{text}"
+        );
+
+        let text = cache_gc(&Settings::defaults(&roots), None).expect("空缓存可回收");
+        assert!(
+            text.starts_with(&format!(
+                "cache gc | 上限 {}",
+                tool::human_bytes(cutile::cache::CACHE_LIMIT)
+            )),
+            "{text}"
+        );
     }
 }

@@ -194,7 +194,10 @@ impl ArtifactKey {
 /// 陈旧判据：一次 emit 是毫秒级、等锁上限 5 s，一分钟没被动过的锁与半截目录只可能是崩溃遗留。
 pub const STALE_LOCK: Duration = Duration::from_secs(60);
 
-/// 缓存容量上限的缺省值（README §10.3）：2 GiB。
+/// 缓存容量上限的兜底缺省值（README §10.3）：2 GiB。
+///
+/// 策略层（`cli::settings` 的 `cache.limit_bytes`，默认值与此相同）负责把配置投影成显式
+/// 上限；内核不读配置，只在调用方没有接线时用这个常量兜底。
 pub const CACHE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 
 /// 一份缓存目录的状态。
