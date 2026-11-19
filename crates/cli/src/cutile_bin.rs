@@ -299,6 +299,16 @@ mod tests {
         ))
     }
 
+    /// nvidia 在本机是否可执行（nvcc 在场）。T600 上为真，此时「缺设备即失败」的场景不成立，
+    /// 用例主动让位——设备在场时跑的是真机对拍（更强的证据），不是「缺设备」文案。
+    fn nvidia_present() -> bool {
+        let catalogue = Catalogue::load(&settings().dirs()).expect("内置数据");
+        catalogue
+            .profile("nvidia")
+            .map(cutile::witness::device_available)
+            .unwrap_or(false)
+    }
+
     /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。
     #[test]
     fn the_performance_line_is_printed_even_when_nothing_was_measured() {
@@ -359,6 +369,9 @@ mod tests {
 
     #[test]
     fn doctor_explains_a_rejected_device_without_failing() {
+        if nvidia_present() {
+            return; // nvidia 可执行时，缺设备被拒场景不成立
+        }
         let text = doctor(&settings(), "gemv_i4", "nvidia", None).expect("仍应打印诊断");
         assert!(text.contains("没有可行变体"), "{text}");
         assert!(text.contains("L2"), "{text}");
@@ -416,6 +429,9 @@ mod tests {
 
     #[test]
     fn verify_reports_a_missing_device_as_a_failure() {
+        if nvidia_present() {
+            return; // nvidia 可执行时，缺设备即失败场景不成立
+        }
         let devices = vec!["nvidia".to_string()];
         let error = verify(&settings(), "gemv_i4", &devices, false).unwrap_err();
         assert_eq!(error.code(), Code::Unsupported);
