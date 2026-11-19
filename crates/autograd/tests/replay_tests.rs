@@ -374,15 +374,7 @@ fn random_graphs_replay_without_reading_a_released_value() {
                 vars.push(var);
             }
         }
-        let Some(loss) = vars
-            .iter()
-            .rev()
-            .find(|var| tape.requirement(**var).is_some_and(Requirement::requires))
-            .copied()
-        else {
-            continue;
-        };
-        let Ok(schedule) = tape.backward(loss) else {
+        let Some(schedule) = crate::testutil::schedule_of(&tape, &vars) else {
             continue;
         };
         let seeds: Vec<f32> = (0..leaves).map(|_| 1.0 + rng.below(4) as f32).collect();

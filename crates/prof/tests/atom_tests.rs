@@ -2,6 +2,14 @@ use super::*;
 fn f16_bf16() -> DTypeSet {
     DTypeSet::of([DType::F16, DType::BF16])
 }
+fn mma_need() -> Need {
+    Need::of(Prim::Mma)
+        .with_extent(Span::range(16, 64).unwrap())
+        .with_n(Span::range(8, 128).unwrap())
+        .with_k(Span::exact(16))
+        .with_dt(f16_bf16())
+        .with_space(SpaceSet::of([Space::Fast]))
+}
 #[test]
 fn closed_sets_round_trip() {
     assert_eq!(Prim::ALL.len(), 16);
@@ -75,13 +83,7 @@ fn covers_requires_range_containment() {
 }
 #[test]
 fn diff_reports_every_missing_field() {
-    let need = Need::of(Prim::Mma)
-        .with_extent(Span::range(16, 64).unwrap())
-        .with_n(Span::range(8, 128).unwrap())
-        .with_k(Span::exact(16))
-        .with_dt(f16_bf16())
-        .with_space(SpaceSet::of([Space::Fast]))
-        .with_attr(Attr::new(AttrKey::Op, ["sum"]));
+    let need = mma_need().with_attr(Attr::new(AttrKey::Op, ["sum"]));
     let have = Provide::of(Prim::Mma, "cube")
         .with_extent(Span::exact(16))
         .with_n(Span::exact(16))
@@ -155,12 +157,7 @@ fn missing_prim_is_reported_first() {
 }
 #[test]
 fn signatures_render_like_design_diagnostic() {
-    let need = Need::of(Prim::Mma)
-        .with_extent(Span::range(16, 64).unwrap())
-        .with_n(Span::range(8, 128).unwrap())
-        .with_k(Span::exact(16))
-        .with_dt(f16_bf16())
-        .with_space(SpaceSet::of([Space::Fast]));
+    let need = mma_need();
     assert_eq!(
         need.signature(),
         "mma{m:16..64, n:8..128, k:16, dt:[f16,bf16], space:[FAST]}"

@@ -277,15 +277,7 @@ fn random_graphs_never_exceed_their_budget() {
                 vars.push(var);
             }
         }
-        let Some(loss) = vars
-            .iter()
-            .rev()
-            .find(|var| tape.requirement(**var).is_some_and(Requirement::requires))
-            .copied()
-        else {
-            continue;
-        };
-        let Ok(schedule) = tape.backward(loss) else {
+        let Some(schedule) = crate::testutil::schedule_of(&tape, &vars) else {
             continue;
         };
         let bytes: Vec<u64> = (0..tape.vars()).map(|_| u64::from(rng.below(64))).collect();

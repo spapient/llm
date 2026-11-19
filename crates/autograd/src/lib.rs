@@ -75,3 +75,36 @@ pub use replay::{Replay, Store};
 pub use schedule::{Ordering, Schedule};
 pub use summary::Summary;
 pub use tape::Tape;
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    use crate::{Requirement, Schedule, Tape, Var};
+
+    /// 从变量栈反向找第一个要求梯度的叶子作 loss，并 backward 出执行序；无 loss 或 backward
+    /// 失败返回 `None`（随机图测试据此跳过本轮）。
+    pub(crate) fn schedule_of(tape: &Tape, vars: &[Var]) -> Option<Schedule> {
+        let loss = vars
+            .iter()
+            .rev()
+            .find(|var| tape.requirement(**var).is_some_and(Requirement::requires))
+            .copied()?;
+        tape.backward(loss).ok()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod fixture {
+    use crate::{Schedule, Tape};
+
+    /// 经典菱形图：一个参数两路 relu，汇聚 add 后 reduce_sum 作 loss，并 backward 出执行序。
+    pub(crate) fn diamond() -> (Tape, Schedule) {
+        let mut tape = Tape::new();
+        let x = tape.parameter();
+        let left = tape.record("relu", &[x]).expect("记录");
+        let right = tape.record("relu", &[x]).expect("记录");
+        let joined = tape.record("add", &[left, right]).expect("记录");
+        let loss = tape.record("reduce_sum", &[joined]).expect("记录");
+        let schedule = tape.backward(loss).expect("在图上");
+        (tape, schedule)
+    }
+}
