@@ -384,8 +384,11 @@ fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)>
     Ok((key.to_string(), text))
 }
 
+/// `[consts]` 与 `[grid]` 两块可选的补丁：`declared` 按同一顺序解构。
+type Extras = (Vec<(String, String)>, Option<Grid>);
+
 /// `[consts]` 与 `[grid]`：声明表里两块可选的补丁，一起解析成 `(常量, 网格)`。
-fn extras(table: &Table) -> diagnostic::Result<(Vec<(String, String)>, Option<Grid>)> {
+fn extras(table: &Table) -> diagnostic::Result<Extras> {
     Ok((consts(table)?, grid(table)?))
 }
 
