@@ -68,14 +68,17 @@ fn is_prime(n: usize) -> bool {
 }
 
 /// 一张 N-gram 嵌入表：素数长、`d` 维嵌入，哈希槽 `O(1)` 读写。
+///
+/// 值类型泛型化到 [`Scalar`]（默认 `f32` 前向、`f64` 验证对拍），与 [`crate::csa`] / [`crate::mix`]
+/// 同一精度闭集，不因精度复制两份表实现。
 #[derive(Debug, Clone)]
-pub struct Table {
+pub struct Table<S: Scalar = f32> {
     len: usize,
     dim: usize,
-    data: Vec<f32>,
+    data: Vec<S>,
 }
 
-impl Table {
+impl<S: Scalar> Table<S> {
     /// 构造：`len` 自动提升到素数，`dim` 为嵌入维。
     pub fn new(len: usize, dim: usize) -> Self {
         assert!(dim > 0, "嵌入维必须非零");
@@ -83,7 +86,7 @@ impl Table {
         Self {
             len,
             dim,
-            data: vec![0.0; len * dim],
+            data: vec![S::ZERO; len * dim],
         }
     }
 
@@ -108,13 +111,13 @@ impl Table {
     }
 
     /// `O(1)` 查表：返回该槽的嵌入切片（长度 = [`Table::dim`]）。
-    pub fn get(&self, ngram: &[u32], seed: u64) -> &[f32] {
+    pub fn get(&self, ngram: &[u32], seed: u64) -> &[S] {
         let z = self.slot(ngram, seed);
         &self.data[z * self.dim..(z + 1) * self.dim]
     }
 
     /// `O(1)` 写表：把 `value` 写入该槽（覆盖）。
-    pub fn set(&mut self, ngram: &[u32], seed: u64, value: &[f32]) {
+    pub fn set(&mut self, ngram: &[u32], seed: u64, value: &[S]) {
         assert_eq!(value.len(), self.dim, "嵌入长度必须等于 dim");
         let z = self.slot(ngram, seed);
         self.data[z * self.dim..(z + 1) * self.dim].copy_from_slice(value);
@@ -169,6 +172,15 @@ mod tests {
         let g = [3u32, 1, 4];
         t.set(&g, 7, &[0.1, 0.2, 0.3, 0.4]);
         assert_eq!(t.get(&g, 7), &[0.1, 0.2, 0.3, 0.4]);
+    }
+
+    /// f64 表复用同一份实现（泛型不复制）。
+    #[test]
+    fn table_f64_reuses_impl() {
+        let mut t: Table<f64> = Table::new(10, 2);
+        let g = [1u32, 1, 2];
+        t.set(&g, 3, &[0.5, 1.5]);
+        assert_eq!(t.get(&g, 3), &[0.5, 1.5]);
     }
 
     /// 槽数与表长无关（O(1) 查找，§5.8.2）。

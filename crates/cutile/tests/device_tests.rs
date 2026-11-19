@@ -348,3 +348,59 @@ fn production_gemv_i8_kernel_compiles_for_a_real_op() {
     let _ = std::fs::remove_dir_all(&dir);
     compiled.expect("gemv_i8 MSL 应能通过 xcrun metal 编译");
 }
+
+/// 生产态 attention 行网格内核：朴素三阶段注意力按查询行拆线程——`[grid] dims=["i:S"]` 把
+/// 行循环绑定到 `tid.x`，行内分数 / 软归一化（`@dot` + `@reduce`）留在每线程串行，再通过
+/// `xcrun metal` 编译证明合法。生产形状（s=8, d=8）。
+#[test]
+fn production_attention_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-attention"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，attention 内核编译用例未运行");
+        return;
+    }
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "attention_f32", 8, 8)
+        .expect("attention 网格内核应能生成");
+
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(
+        msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"),
+        "查询行循环应绑定到 tid.x: {msl}"
+    );
+
+    let dir = std::env::temp_dir().join(format!("cutile-metal-attention-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("attention MSL 应能通过 xcrun metal 编译");
+}
+
+/// 生产态 flash_attention 行网格内核：online softmax 单遍扫 K/V，同样按查询行拆线程。生产形状
+/// （s=8, d=8）。
+#[test]
+fn production_flash_attention_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-flash-attention"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，flash_attention 内核编译用例未运行");
+        return;
+    }
+    let msl = crate::execution::metal_grid_program(&catalogue, &dirs, "flash_attention_f32", 8, 8)
+        .expect("flash_attention 网格内核应能生成");
+
+    assert!(msl.contains("kernel_main"), "{msl}");
+    assert!(
+        msl.contains("for (int i = (int)tid.x; i < (int)tid.x + 1; ++i)"),
+        "查询行循环应绑定到 tid.x: {msl}"
+    );
+
+    let dir =
+        std::env::temp_dir().join(format!("cutile-metal-flash-attention-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("目录");
+    let compiled = metal_kernel(&dir, &msl, &profile.flags);
+    let _ = std::fs::remove_dir_all(&dir);
+    compiled.expect("flash_attention MSL 应能通过 xcrun metal 编译");
+}

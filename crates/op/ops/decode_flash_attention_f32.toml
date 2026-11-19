@@ -19,6 +19,11 @@ k = "row"
 v = "row"
 y = "row"
 
+# 网格映射：按查询行拆线程（一维网格）。`i:Q_ROWS` 把模板里的循环
+# `for (int i = 0; i < Q_ROWS; ++i)` 绑定到线程下标（每线程一行）；单条 decode Q_ROWS=1 时退化为单线程。
+[grid]
+dims = ["i:Q_ROWS"]
+
 [[variants]]
 name      = "direct"
 order     = 1

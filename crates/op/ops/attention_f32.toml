@@ -20,6 +20,11 @@ k = "row"
 v = "row"
 y = "row"
 
+# 网格映射：按查询行拆线程（一维网格）。`i:S` 把模板里的循环
+# `for (int i = 0; i < S; ++i)` 绑定到线程下标（每线程一行）；行内分数/软归一化留在每线程串行。
+[grid]
+dims = ["i:S"]
+
 [[variants]]
 name      = "direct"
 order     = 1

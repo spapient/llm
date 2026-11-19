@@ -526,17 +526,17 @@ fn serial_args(params: &[Param], sample: &Sample) -> diagnostic::Result<String> 
         .map(|args| args.join(", "))
 }
 
-/// 生产态矩阵乘网格内核：Gemm 骨架按输出元素拆线程（N 维网格，线程下标 `tid.x` / `tid.y` …）。
+/// 生产态循环注入网格内核：把模板里的串行循环头绑定到线程下标（N 维网格，`tid.x` / `tid.y` …）。
 ///
 /// 网格绑定来自 `[grid]` 声明（[`Grid`]），不是对模板的索引分析：每个网格维把模板里的串行循环
 /// `for (int t = 0; t < S; ++t)` 的头绑定到线程下标（`t = tid.x`、循环只跑一次），正文里的跨步
-/// （`i*K`、`p*N`）原样保留、标量取样本原值。这比「压缩标量 + 缓冲偏移」更泛：gemm 右操作数的
-/// 规约维跨步 `p*N` 不会因压缩 `N` 而错位。`tid` 声明在 `kernel_main`，而循环在内部函数里，故先给
-/// 内部函数追加 `uint3 tid` 形参、调用点透传。一维（gemv）与二维（gemm）共用这一条 lowering，
-/// 差异全在声明里。
+/// （`i*K`、`p*N`、`i*D`）原样保留、标量取样本原值。这比「压缩标量 + 缓冲偏移」更泛：gemm 右
+/// 操作数的规约维跨步 `p*N` 不会因压缩 `N` 而错位，注意力里 `i*D` 的行跨步同样保留。`tid` 声明在
+/// `kernel_main`，而循环在内部函数里，故先给内部函数追加 `uint3 tid` 形参、调用点透传。gemv 一维、
+/// gemm 二维、attention 按查询行一维共用这一条 lowering，差异全在声明里。
 ///
 /// # Errors：网格维超过 3、模板里找不到声明的循环、标量缺样本取值时返回说明。
-pub fn metal_matmul_kernel(
+pub fn metal_loop_kernel(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
@@ -547,7 +547,7 @@ pub fn metal_matmul_kernel(
             Code::Invalid,
             format!("网格维 {} 超过 Metal 上限 3", grid.dims.len()),
         )
-        .with("cutile::harness::metal_matmul_kernel"));
+        .with("cutile::harness::metal_loop_kernel"));
     }
     const AXES: [&str; 3] = ["x", "y", "z"];
     let mut body = msl_address_space(kernel_source);
@@ -585,14 +585,14 @@ fn thread_param(body: &str, kernel: &str) -> diagnostic::Result<String> {
             Code::Invalid,
             format!("找不到内核函数 `void {kernel}(`"),
         )
-        .with("cutile::harness::metal_matmul_kernel"));
+        .with("cutile::harness::metal_loop_kernel"));
     };
     let Some(close) = body[signature_start..].find(") {") else {
         return Err(Error::new(
             Code::Invalid,
             format!("内核函数 `{kernel}` 签名不完整"),
         )
-        .with("cutile::harness::metal_matmul_kernel"));
+        .with("cutile::harness::metal_loop_kernel"));
     };
     let insert_at = signature_start + close;
     let mut out = String::with_capacity(body.len() + 12);
@@ -620,7 +620,7 @@ fn bind_grid_loop(
             Code::Invalid,
             format!("模板里找不到网格循环 `{head}`"),
         )
-        .with("cutile::harness::metal_matmul_kernel"));
+        .with("cutile::harness::metal_loop_kernel"));
     }
     Ok(body.replace(&head, &bound))
 }

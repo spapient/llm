@@ -861,6 +861,34 @@ mod tests {
         op_matches_reference("gemv_i8");
     }
 
+    /// 朴素三阶段注意力按查询行拆线程（`[grid] dims=["i:S"]`），行内软归一化留在每线程串行，真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_attention_op_runs_on_metal_and_matches_the_reference() {
+        op_matches_reference("attention_f32");
+    }
+
+    /// online softmax 分块注意力按查询行拆线程，真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_flash_attention_op_runs_on_metal_and_matches_the_reference() {
+        op_matches_reference("flash_attention_f32");
+    }
+
+    /// 单条 query 解码注意力（Q_ROWS=1 退化为单线程网格），真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_decode_attention_op_runs_on_metal_and_matches_the_reference() {
+        op_matches_reference("decode_attention_f32");
+    }
+
+    /// online softmax 单条 query 解码注意力（Q_ROWS=1 退化为单线程网格），真机对拍。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_decode_flash_attention_op_runs_on_metal_and_matches_the_reference() {
+        op_matches_reference("decode_flash_attention_f32");
+    }
+
     /// 行 gather（`table[idx[n],:]`，数据依赖下标）走串行兜底，真机对拍。
     #[cfg(target_os = "macos")]
     #[test]

@@ -391,8 +391,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
                 continue;
             };
             let rest = &line[position..];
+            // 宏体里的 `name = $op` 不是字面量注解（名字由宏参数展开），扫描器只认字面量；
+            // 宏算子由 Direction 2 的 `invokes_model_macro` 补认。
             let Some(offset) = rest.find("name = \"") else {
-                panic!("注解必须写成 `name = \"..\"`：{line}");
+                continue;
             };
             let value = &rest[offset + "name = \"".len()..];
             let end = value
@@ -421,7 +423,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         }
     }
 
-    // 方向二：注册表 → 注解生成的常量。
+    // 方向二：注册表 → 注解生成的常量。宏算子（`binary_f32!` / `unary_f32!` / …）在模块文件里
+    // 没有字面量注解，而是调用一个会展开出 `#[annotation::model]` 的宏：注解仍是唯一生产者，
+    // 只是隔着宏一层。这里补认这一路，避免把宏算子误判成"手写 Model"。
+    let model_macros = model_macros();
     for (name, model) in names.iter().zip(&models) {
         let Some(module) = model.strip_suffix("::MODEL") else {
             failures.push(format!(
@@ -440,14 +445,15 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
                 file.display()
             )
         });
-        if !PRODUCERS.iter().any(|producer| text.contains(producer)) {
+        let via_macro = invokes_model_macro(&text, &model_macros);
+        if !PRODUCERS.iter().any(|producer| text.contains(producer)) && !via_macro {
             failures.push(format!(
                 "`{name}` 的 `MODEL` 在 {} 里不是注解生成的：\
                  `#[annotation::model]` 是它与注册表之间唯一的绑定点",
                 file.display()
             ));
         }
-        if !annotated.iter().any(|(annotated, _)| annotated == name) {
+        if !annotated.iter().any(|(annotated, _)| annotated == name) && !via_macro {
             failures.push(format!(
                 "`{name}` 在 `REGISTRY` 里，但它指向的 `MODEL` 没有同名注解：\
                  注解是语义表的唯一生产者"
@@ -455,6 +461,43 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// `op/src` 里会展开出 `#[annotation::model]` 的宏名：宏体里的 `name = $op` 不是字面量，
+/// 扫描器不认，但调用这些宏的算子模块同样满足"注解是唯一生产者"。判据是宏体里出现了
+/// `#[annotation::model(name = $..)`——逐文件追踪最近的 `macro_rules!` 名，不展开宏。
+fn model_macros() -> std::collections::BTreeSet<String> {
+    let mut macros = std::collections::BTreeSet::new();
+    for (crate_name, file) in sources() {
+        if crate_name != "op" {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
+        let mut current: Option<String> = None;
+        for line in text.lines() {
+            if let Some(rest) = line.trim().strip_prefix("macro_rules! ") {
+                current = Some(
+                    rest.split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
+                );
+            }
+            if line.contains("#[annotation::model(") && line.contains("name = $") {
+                if let Some(name) = &current {
+                    macros.insert(name.clone());
+                }
+            }
+        }
+    }
+    macros
+}
+
+/// 模块文件是否调用了某个会展开出 `#[annotation::model]` 的宏（`crate::binary_f32!` 这类）。
+fn invokes_model_macro(text: &str, macros: &std::collections::BTreeSet<String>) -> bool {
+    macros.iter().any(|name| text.contains(&format!("{name}!")))
 }
 
 /// 模板签名 / 注册表语义表 / 注解声明三者的参数类型必须逐项对齐。

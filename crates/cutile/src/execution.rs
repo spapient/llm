@@ -114,9 +114,9 @@ pub fn metal_grid_program(
             crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
         }
         Skeleton::Elementwise => {
-            // 带归约/两趟（rmsnorm/softmax）或非纯逐点签名（embed/rope 多标量、dequant）走串行兜底：
-            // 正文里的归约已沿轴遍历、或下标依赖行 gather/成对步长，网格按元素拆只会算错；纯逐点
-            // 单标量才走「一元素一线程」的快路径。
+            // 带归约/两趟（rmsnorm/softmax/attention）或非纯逐点签名（embed/rope 多标量、dequant）
+            // 走串行兜底：正文里的归约已沿轴遍历、或下标依赖行 gather/成对步长，网格按元素拆只会算错。
+            // 声明了 `[grid]` 的则走循环注入——attention 按查询行拆线程、行内软归一化留在每线程串行。
             let reduces = op
                 .needs
                 .iter()
@@ -128,6 +128,15 @@ pub fn metal_grid_program(
                 .filter(|param| !param.ctype.is_buffer())
                 .count();
             if reduces || scalars != 1 {
+                if let Some(grid) = op.grid.as_ref() {
+                    let sample = (run.model.sample)(m, n);
+                    return crate::harness::metal_loop_kernel(
+                        &prepared.source.text,
+                        &op.signature,
+                        &sample,
+                        grid,
+                    );
+                }
                 let sample = (run.model.sample)(m, n);
                 return crate::harness::metal_serial_kernel(
                     &prepared.source.text,
@@ -138,11 +147,11 @@ pub fn metal_grid_program(
             crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
         }
         Skeleton::Gemm => match op.grid.as_ref() {
-            // 声明了 `[grid]` 的走矩阵乘网格快路径（gemv 一维、gemm 二维共用一条 lowering）；未声明的
+            // 声明了 `[grid]` 的走循环注入网格快路径（gemv 一维、gemm 二维共用一条 lowering）；未声明的
             // 走串行兜底。
             Some(grid) => {
                 let sample = (run.model.sample)(m, n);
-                crate::harness::metal_matmul_kernel(
+                crate::harness::metal_loop_kernel(
                     &prepared.source.text,
                     &op.signature,
                     &sample,
