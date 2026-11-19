@@ -6,13 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Training samples: borrowed token batches (zero-copy, borrowed geometry), train/valid splits and the Dataset trait."
+description = "Training samples: borrowed token batches (zero-copy, borrowed geometry) and the Dataset trait."
 publish = false
 autotests = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-tensor = { path = "../tensor", package = "llm-tensor" }
 
 [lints]
 workspace = true

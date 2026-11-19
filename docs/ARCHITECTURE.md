@@ -36,7 +36,7 @@
 - 语义先于设备：`op` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op::einsum` 推出；
   `cutile` 的 roofline 只消费这个数对，不认识任何算子名。
 
-允许的边（当前全量，共 113 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 112 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -50,7 +50,7 @@ storage  → tensor, diagnostic
 tokenizer→ diagnostic
 weights  → tensor, diagnostic, dtype, wire, storage（`storage` 仅由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）    +dev: storage, testkit
 autograd → tensor, diagnostic    +dev: testkit
-data     → tensor, diagnostic
+data     → diagnostic
 nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
 train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
@@ -137,7 +137,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Replay` / `Store` | `autograd` | 重放执行：把计划编成"第 `k` 步之前重算哪几步、之后交还哪些激活"的扁平序列表，并驱动整次反向。`Store` 是唯一的口子（`compute` / `free`），真实缓冲归 `train`，这一层不碰数值 |
 | `Summary` | `autograd` | 图规模与可达性的只读计数快照：角色分布、边数、最大深度、可达变量与死分支；不存变量列表，供诊断、缓存键与容量预估 |
 | `Envelope` / `Frame` / `Decoder` / `Kind` / `Version` | `serve`（`protocol` 模块；`proto` 为兼容重导出路径） | 端点契约的线格式（ADR 0019 第七次吸收）：版本化信封、零拷贝帧视图与增量解码；帧布局、版本规则、载荷上限与校验尾见 ADR 0016。它不再独立成成员——唯一消费者就是同一个 crate 的 [`Response::frame`] 与 `Endpoint`，独立成员只会让"改协议"与"改端点"跨两次提交 |
-| `Batch` / `Split` / `Dataset` / `Chunks` | `data` | 样本与切分。`Batch` 与 `Chunks` 都借用调用方的 token 缓冲（取批零分配、零拷贝），两个构造函数都按 `(rows, cols)` 收几何、与 `Shape::new([rows, cols])` 同序——此前 `Chunks::new` 收 `(cols, rows)`，同一对数字换个构造函数就是一次静默转置。批几何与批总数都在 `Chunks::new` 构造期算好，所以 `Dataset::next_batch` 的 `None` 只有一个含义：剩余不足一整批。三个计数各说一件事：`cols` 是列宽、`batches` 是完整批总数、`remaining_batches` 是还没取走的批数，`Chunks::rows` 只表示每批行数；`Chunks` 还是 `ExactSizeIterator`，`len()` 与 `size_hint` 都取自 `remaining_batches`，「还剩几条」因此只有一个来源。`Dataset<'a>` 是对象安全的（`&mut dyn Dataset<'a>` 可用），而 `Split` 的单位是样本行、`Chunks` 的单位是批，两者不互相换算 |
+| `Batch` / `Dataset` / `Chunks` | `data` | 样本。`Batch` 与 `Chunks` 都借用调用方的 token 缓冲（取批零分配、零拷贝），两个构造函数都按 `(rows, cols)` 收几何、行主序，并共用同一份几何校验（行列非零、乘积不溢出），同一对非法行列不会因为走哪个构造函数而得到不同判定——此前 `Chunks::new` 收 `(cols, rows)`，同一对数字换个构造函数就是一次静默转置。批几何与批总数都在 `Chunks::new` 构造期算好，所以 `Dataset::next_batch` 的 `None` 只有一个含义：剩余不足一整批。三个计数各说一件事：`cols` 是列宽、`batches` 是完整批总数、`remaining_batches` 是还没取走的批数；每批行数与每批 token 数分别由 `Batch::rows` 与 `rows * cols` 给出，`Chunks` 不另开只被测试读的同义访问器；`Chunks` 还是 `ExactSizeIterator`，`len()` 与 `size_hint` 都取自 `remaining_batches`，「还剩几条」因此只有一个来源。`Dataset<'a>` 是对象安全的（`&mut dyn Dataset<'a>` 可用）。它只依赖 `diagnostic`：训练/验证集的行区间划分是调用方的选择（乘上列宽由调用方做），零消费者，按「无消费者不预埋」（ADR 0004；键表同一判据见 ADR 0048 §5）不入本 crate |
 | `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` / `ParamRole` | `nn` | 层定义；产出的算子名必须存在于 `op` 且有语义表。`ParamRole` 是参数角色闭集（Trainable/Bias/Norm/Embedding，ADR 0037）：权重衰减豁免与可训练判定从角色派生，优化器按角色取组，不按字段名猜 |`LmHead` 是注解声明的固定形状层（形状、输入宽度与算子写在 `#[spec]` 上，`impl Contract` 与校验测试由宏生成）——它曾经住在 L7 组装点，而组装点不定义类型。`WeightFormat` 是权重编码的唯一事实源：格式 → 算子名（int4 → `gemv_i4`、int8 → `gemv_i8`、f32 → `gemv_f32`），没有算子的格式（f16 / bf16 / 裸 i8 / 未声明分组的 4 位打包）仍是合法声明，只是推不出下界，并在理由里点名缺什么；`Contract::linear` 决定"这一层能不能被真实数据执行"——注解层没有参数表，返回 `None` |
 | `RmsNorm` / `Softmax` / `Gelu` / `Silu` / `Rope` / `Scale` / `Add` / `Mul` / `ResidualAdd` / `ReduceSum` / `ReduceMax` / `Embedding` / `Attention` / `AttentionAlgo` / `MatMul` | `nn` | 单算子层：归一化、激活、位置编码、逐元素二元、标量缩放、归约、查表、注意力与矩阵乘。各层只固定自己绑定的已注册算子名与形状口径，规格校验、访问器委托与下界路径共享内核；下界仍由算子语义表推出，层里不写第二份流量常数。`AttentionAlgo` 在朴素与 Flash 两条已注册注意力算子之间选型；`MatMul` 是矩阵 × 矩阵的三轴骨架，收缩轴由 `gemm` 算子固定，层只声明输出行/列宽 |
 | `AttentionBlock` | `nn` | 注意力组合块：Q/K/V 三个投影 + 注意力 + 输出投影内聚成一个 `Contract`，子层按 `{块名}.q` / `.k` / `.v` / `.attn` / `.o` 前缀对齐权重条目；下界逐子层求和。残差旁路与层归一化引用块外主干隐藏向量，归装配侧接线，不内聚；子层经 `Contract::attention_block` 类型化视图取回，外层不按层名前缀分组扇出 |

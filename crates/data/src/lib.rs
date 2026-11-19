@@ -1,11 +1,12 @@
-//! 训练样本：[`Batch`]、[`Split`]、[`Dataset`] 与最简实现 [`Chunks`]。
+//! 训练样本：[`Batch`]、[`Dataset`] 与最简实现 [`Chunks`]。
 //!
-//! **拥有**：`Batch`、`Split`、`Dataset`、`Chunks`。**不拥有**：分词（`tokenizer`）、打乱与打包策略
-//! （P2：它们只改变 `Chunks` 里游标的推进方式，不改变这些类型）。
-//! **依赖**：`tensor`、`diagnostic`。**被依赖**：`train`。
+//! **拥有**：`Batch`、`Dataset`、`Chunks`。**不拥有**：分词（`tokenizer`）、打乱、打包与训练/验证集
+//! 切分（P2：它们只改变 `Chunks` 里游标的推进方式或调用方的行区间选择，不改变这些类型）。
+//! **依赖**：`diagnostic`。**被依赖**：`train`。
 //!
 //! 契约的重点是"形状即校验"：`rows * cols` 必须等于 token 数，否则训练循环会在第 N 步才发现
-//! 偏移错位——那时已经烧掉了几个小时。
+//! 偏移错位——那时已经烧掉了几个小时。两个构造函数共用同一份几何校验（行列非零、乘积不溢出），
+//! 所以同一对非法行列不管走哪条路径，拿到的是同一个 `Code::Invalid`。
 //!
 //! # 拥有与借用
 //!
@@ -46,48 +47,49 @@
 //! assert_eq!(drain(&mut chunks), 2);
 //! ```
 //!
-//! # 两个单位
-//!
-//! [`Split`] 的单位是**样本行**，[`Chunks`] 的单位是**批**（一批 `rows` 行、每行 `cols` 个 token）。
-//! 两者刻意不互相换算：切分不知道列宽，取批也不需要知道切分。要从切分走到「验证集的 token 段」，
-//! 由调用方把行区间乘上列宽——`Split::ranges` 给的就是行区间。
-//!
-//! ```
-//! use llm_data::{Chunks, Split};
-//!
-//! let tokens: Vec<u32> = (0..12).collect(); // 6 行，每行 2 个 token
-//! let cols = 2;
-//! let (train, valid) = Split::new(tokens.len() / cols, 25).expect("25% 验证集").ranges();
-//! assert_eq!((train.len(), valid.len()), (5, 1));
-//! let mut chunks = Chunks::new(&tokens[valid.start * cols..valid.end * cols], 1, cols)
-//!     .expect("每批 1 行、每行 2 个 token");
-//! assert_eq!(chunks.remaining_batches(), 1);
-//! ```
-//!
 //! # 模块划分
 //!
-//! `batch` 管形状即校验，`split` 管行数划分，`dataset` 管按批取样本的游标。
-//! P2 起三者内联在本文件里（不再一个类型一个文件），模块名与再导出路径不变。
+//! `batch` 管形状即校验，`dataset` 管按批取样本的游标。P2 起两者内联在本文件里
+//! （不再一个类型一个文件），模块名与再导出路径不变。
 //!
 //! # 例子
 //!
 //! ```
-//! use llm_data::{Batch, Split};
+//! use llm_data::Batch;
 //!
 //! let tokens = [1, 2, 3, 4, 5, 6];
 //! let batch = Batch::new(&tokens, 2, 3).expect("2 x 3");
-//! assert_eq!(batch.shape().dims(), [2, 3]);
-//! let split = Split::new(100, 10).expect("10% 验证集");
-//! assert_eq!((split.train(), split.valid()), (90, 10));
+//! assert_eq!((batch.rows(), batch.cols()), (2, 3));
 //! ```
 
 #![deny(unsafe_code)]
+
+use diagnostic::{Code, Error, Result};
+
+/// 批几何：`rows`、`cols` 非零且乘积不溢出，返回每批 token 数（`rows * cols`）。
+///
+/// 两个构造函数共用这一份校验——此前 `Batch::new` 与 `Chunks::new` 各写一套，同一对非法行列在
+/// 两条路径上给出不同措辞。`site` 只用于错误出处，不改判定。
+fn stride(rows: usize, cols: usize, site: &str) -> Result<usize> {
+    if rows == 0 {
+        return Err(Error::new(Code::Invalid, "批行数不能为 0").with(site));
+    }
+    if cols == 0 {
+        return Err(Error::new(Code::Invalid, "列宽不能为 0").with(site));
+    }
+    rows.checked_mul(cols).ok_or_else(|| {
+        Error::new(
+            Code::Invalid,
+            format!("rows * cols 溢出（rows = {rows}，cols = {cols}）"),
+        )
+        .with(site)
+    })
+}
 
 mod batch {
     //! 一个批：`rows x cols` 个 token，行主序；借用调用方的缓冲，不拥有。
 
     use diagnostic::{Code, Error, Result};
-    use tensor::Shape;
 
     /// 一个批：`rows x cols` 个 token，行主序；借用调用方的缓冲，不拥有。
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,17 +102,8 @@ mod batch {
     impl<'a> Batch<'a> {
         /// 构造：`rows` 与 `cols` 都非零，且 `tokens.len() == rows * cols`。
         pub fn new(tokens: &'a [u32], rows: usize, cols: usize) -> Result<Self> {
-            // 行列非零与乘积不溢出是同一件事：只要乘积是 `None` 或 `0`，批的形状就不成立。
-            let expected = rows
-                .checked_mul(cols)
-                .filter(|expected| *expected != 0)
-                .ok_or_else(|| {
-                    Error::new(
-                        Code::Invalid,
-                        format!("批的行列必须非零且乘积不溢出（rows = {rows}，cols = {cols}）"),
-                    )
-                    .with("data::Batch::new")
-                })?;
+            // 行列非零与乘积不溢出都由同一份几何校验给出，`Chunks::new` 走的是同一条。
+            let expected = crate::stride(rows, cols, "data::Batch::new")?;
             if tokens.len() != expected {
                 return Err(Error::new(
                     Code::Invalid,
@@ -147,11 +140,6 @@ mod batch {
         pub fn cols(&self) -> usize {
             self.cols
         }
-
-        /// 逻辑形状：`[rows, cols]`。
-        pub fn shape(&self) -> Shape {
-            Shape::new([self.rows, self.cols])
-        }
     }
 
     #[cfg(test)]
@@ -163,7 +151,7 @@ mod batch {
             let tokens = [1, 2, 3, 4];
             let batch = Batch::new(&tokens, 2, 2).expect("2 x 2");
             assert_eq!(batch.tokens(), tokens);
-            assert_eq!(batch.shape().dims(), [2, 2]);
+            assert_eq!((batch.rows(), batch.cols()), (2, 2));
             assert_eq!(
                 Batch::new(&[1, 2, 3], 2, 2).unwrap_err().code(),
                 Code::Invalid
@@ -205,7 +193,7 @@ mod batch {
 mod dataset {
     //! 数据集契约与最简实现：[`Dataset`] 按批取样本，[`Chunks`] 把一段连续 token 流切成固定几何的批。
 
-    use diagnostic::{Code, Error, Result};
+    use diagnostic::Result;
 
     use crate::Batch;
 
@@ -246,23 +234,11 @@ mod dataset {
     impl<'a> Chunks<'a> {
         /// 由 token 流、每批行数与列宽构造：三者任一不合法都报 `Code::Invalid`。
         ///
-        /// 参数顺序是 `(rows, cols)`，与 [`Batch::new`] 和 `Shape::new([rows, cols])` 一致。两个构造函数
+        /// 参数顺序是 `(rows, cols)`，与 [`Batch::new`] 一致。两个构造函数
         /// 曾经一个收 `(rows, cols)`、另一个收 `(cols, rows)`，而两种顺序都通得过校验——同一对数字换个
         /// 构造函数就是一次静默转置，正是这个 crate 要挡住的那类错值。
         pub fn new(tokens: &'a [u32], rows: usize, cols: usize) -> Result<Self> {
-            if rows == 0 {
-                return Err(Error::new(Code::Invalid, "批行数不能为 0").with("data::Chunks::new"));
-            }
-            if cols == 0 {
-                return Err(Error::new(Code::Invalid, "列宽不能为 0").with("data::Chunks::new"));
-            }
-            let stride = rows.checked_mul(cols).ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!("rows * cols 溢出（rows = {rows}，cols = {cols}）"),
-                )
-                .with("data::Chunks::new")
-            })?;
+            let stride = crate::stride(rows, cols, "data::Chunks::new")?;
             Ok(Self {
                 tokens,
                 rows,
@@ -273,19 +249,9 @@ mod dataset {
             })
         }
 
-        /// 每批的行数（构造时给的批大小）。
-        pub fn rows(&self) -> usize {
-            self.rows
-        }
-
         /// 列宽（每行多少 token）。
         pub fn cols(&self) -> usize {
             self.cols
-        }
-
-        /// 每批的 token 数（`rows * cols`，构造期算好）。
-        pub fn stride(&self) -> usize {
-            self.stride
         }
 
         /// 完整批的**总数**——构造期算好，不随消费推进。
@@ -296,12 +262,6 @@ mod dataset {
         /// **还没取走**的完整批数。
         pub fn remaining_batches(&self) -> usize {
             self.batches - self.taken
-        }
-
-        /// 还没被取走的 token 数（含凑不满一批的尾巴）。
-        pub fn remaining(&self) -> usize {
-            // `taken <= batches = len / stride`，所以 `taken * stride <= len`：既不下溢也不上溢。
-            self.tokens.len() - self.taken * self.stride
         }
     }
 
@@ -356,6 +316,8 @@ mod dataset {
     mod tests {
         use super::*;
 
+        use diagnostic::Code;
+
         #[test]
         fn a_chunks_stream_rejects_bad_geometry() {
             let tokens = [1, 2, 3, 4];
@@ -376,7 +338,11 @@ mod dataset {
             let batch = Batch::new(&tokens, 2, 3).expect("2 x 3");
             let mut dataset = Chunks::new(&tokens, 2, 3).expect("2 x 3");
             let first = dataset.next_batch().expect("6 个 token 恰好是一批");
-            assert_eq!(first.shape(), batch.shape(), "两个构造函数必须读出同一形状");
+            assert_eq!(
+                (first.rows(), first.cols()),
+                (batch.rows(), batch.cols()),
+                "两个构造函数必须读出同一形状"
+            );
             assert_eq!(first.tokens(), batch.tokens());
             assert_eq!(
                 (first.rows(), first.cols()),
@@ -392,7 +358,6 @@ mod dataset {
             assert_eq!(dataset.cols(), 2);
             assert_eq!(dataset.batches(), 0);
             assert_eq!(dataset.remaining_batches(), 0);
-            assert_eq!(dataset.remaining(), 0);
             assert!(dataset.next_batch().is_none());
         }
 
@@ -409,7 +374,6 @@ mod dataset {
                 dataset.next_batch().is_none(),
                 "只剩 1 个 token，凑不满一行"
             );
-            assert_eq!(dataset.remaining(), 1);
             assert_eq!(dataset.remaining_batches(), 0);
         }
 
@@ -428,13 +392,16 @@ mod dataset {
             let batch = dataset.next_batch().expect("第一批");
             assert_eq!(batch.tokens(), [0, 1]);
             assert_eq!(dataset.remaining_batches(), 2);
-            assert_eq!(dataset.remaining(), 4);
             assert_eq!(
-                (dataset.rows(), dataset.batches(), dataset.cols()),
-                (1, 3, 2),
-                "每批行数、批总数、列宽都不随消费推进"
+                (
+                    batch.rows(),
+                    batch.cols(),
+                    dataset.batches(),
+                    dataset.cols()
+                ),
+                (1, 2, 3, 2),
+                "每批几何、批总数、列宽都不随消费推进"
             );
-            assert_eq!(dataset.stride(), 2, "每批 token 数在构造期算好");
         }
 
         #[test]
@@ -502,151 +469,5 @@ mod dataset {
     }
 }
 
-mod split {
-    //! 训练集 / 验证集的行数划分。
-
-    use diagnostic::{Code, Error, Result};
-
-    /// 训练集 / 验证集的行数划分。
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Split {
-        train: usize,
-        valid: usize,
-    }
-
-    impl Split {
-        /// 按验证集百分比切分：`0..=99`，且总行数非零。
-        ///
-        /// 100% 验证集直接报错而不是夹成 0%：训练集至少要留一行，否则"训练"会在第一次取批时
-        /// 就失败，而调用方看到的却是一个合法的 `(total, 0)`。
-        pub fn new(total: usize, valid_percent: u8) -> Result<Self> {
-            if total == 0 {
-                return Err(Error::new(Code::Invalid, "总行数不能为 0").with("data::Split::new"));
-            }
-            if valid_percent >= 100 {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("验证集百分比 {valid_percent} 必须在 0..=99：训练集至少要留一行"),
-                )
-                .with("data::Split::new"));
-            }
-            let valid = valid_rows(total, valid_percent);
-            // 兜底：`valid_percent <= 99` 时它恒等；留着是为了将来放宽百分比时不再产生 0 训练行。
-            let valid = valid.min(total - 1);
-            Ok(Self {
-                train: total - valid,
-                valid,
-            })
-        }
-
-        /// 训练集行数。
-        pub fn train(&self) -> usize {
-            self.train
-        }
-
-        /// 验证集行数。
-        pub fn valid(&self) -> usize {
-            self.valid
-        }
-
-        /// 行区间：`(0..train, train..train+valid)`。
-        pub fn ranges(&self) -> (core::ops::Range<usize>, core::ops::Range<usize>) {
-            (0..self.train, self.train..self.train + self.valid)
-        }
-    }
-
-    /// `total` 行的 `percent`%：拆成「整百部分」与「余数部分」两次乘法，两项都装得进 `usize`。
-    ///
-    /// 记 `total = 100q + r`（`r < 100`），则 `total * p / 100 == q * p + r * p / 100`：前者因
-    /// `p <= 99` 而 `q * p <= total * p / 100 <= total`，后者 `r * p / 100 < 100`，所以既不会溢出，
-    /// 也不需要「中间宽度」或饱和。饱和正是上一轮要修掉的那件事——`saturating_mul` 在 `total` 接近
-    /// `usize::MAX` 时先把乘积钉在 `usize::MAX` 再除以 100，会把比例放大近一倍。
-    fn valid_rows(total: usize, percent: u8) -> usize {
-        let percent = usize::from(percent);
-        let (hundreds, rest) = (total / 100, total % 100);
-        hundreds * percent + rest * percent / 100
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn a_split_always_leaves_a_training_row() {
-            let split = Split::new(10, 30).expect("切分");
-            assert_eq!((split.train(), split.valid()), (7, 3));
-            assert_eq!(split.ranges(), (0..7, 7..10));
-            let almost_all_valid = Split::new(100, 99).expect("切分");
-            assert_eq!(
-                (almost_all_valid.train(), almost_all_valid.valid()),
-                (1, 99)
-            );
-            let half = Split::new(2, 50).expect("切分");
-            assert_eq!((half.train(), half.valid()), (1, 1));
-            // 2 行的 99% 是 1.98 行：向下取整得 1，于是训练集恰好留下 1 行（夹值在这里恒等）。
-            let almost_half = Split::new(2, 99).expect("切分");
-            assert_eq!((almost_half.train(), almost_half.valid()), (1, 1));
-            let all_training = Split::new(100, 0).expect("切分");
-            assert_eq!((all_training.train(), all_training.valid()), (100, 0));
-            // 总行数只有一行时，任何非零比例都只能得到 0 验证行。
-            for percent in [0, 1, 99] {
-                let split = Split::new(1, percent).expect("切分");
-                assert_eq!((split.train(), split.valid()), (1, 0), "百分比 {percent}");
-            }
-            assert_eq!(Split::new(0, 10).unwrap_err().code(), Code::Invalid);
-            assert_eq!(Split::new(10, 101).unwrap_err().code(), Code::Invalid);
-        }
-
-        #[test]
-        fn a_split_may_not_hand_over_every_row() {
-            for total in [1, 100] {
-                assert_eq!(
-                    Split::new(total, 100).unwrap_err().code(),
-                    Code::Invalid,
-                    "total = {total} 时不该接受 100% 验证集"
-                );
-            }
-        }
-
-        #[test]
-        fn a_split_rounds_the_same_way_as_an_exact_proportion() {
-            // 字面表，重点是余数：`100q + r` 的拆分只要漏掉 `r * p / 100` 这一项，
-            // 下面的 `(99, 99)`、`(199, 50)`、`(12345, 37)` 就会各差一行或更多。
-            for (total, percent, valid) in [
-                (99, 99, 98),
-                (101, 99, 99),
-                (199, 50, 99),
-                (999, 99, 989),
-                (1000, 1, 10),
-                (12345, 37, 4567),
-            ] {
-                assert_eq!(
-                    Split::new(total, percent).expect("切分").valid(),
-                    valid,
-                    "{total} 行的 {percent}% 向下取整应为 {valid}"
-                );
-            }
-        }
-
-        #[test]
-        fn a_split_at_usize_max_keeps_the_proportion() {
-            let total = usize::MAX;
-            let split = Split::new(total, 50).expect("一半");
-            // 只断言性质，不重算实现里的同一公式。
-            assert_eq!(
-                split.train() + split.valid(),
-                total,
-                "两半必须恰好占满全部行"
-            );
-            assert!(split.train() >= 1, "训练集至少要留一行");
-            assert!(
-                split.valid() * 2 <= total,
-                "验证集不能超过一半，饱和乘法会让它接近两倍"
-            );
-        }
-    }
-}
-
 pub use batch::Batch;
 pub use dataset::{Chunks, Dataset};
-pub use split::Split;

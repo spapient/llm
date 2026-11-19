@@ -91,6 +91,16 @@
 
 ### Changed
 
+- **`data` 第二轮减法：两个构造函数共用一份几何校验，删掉三个零消费者的同义访问器**。
+  `Batch::new` 与 `Chunks::new` 此前各写一套「行列非零、乘积不溢出」校验，同一对非法行列在两条路径上
+  措辞不同；现在共用文件级 `stride(rows, cols, site)`，三种失败（行数为 0 / 列宽为 0 / 乘积溢出）
+  只有一份来源。`Chunks::{rows, stride, remaining}` 除自身单测外全仓零调用——`Dataset` 只暴露
+  `cols` / `batches` / `remaining_batches` 三个计数，每批行数与每批 token 数分别由 `Batch::rows` 与
+  `rows * cols` 给出——按「无消费者不预埋」（ADR 0004；键表同一判据见 ADR 0048 §5）删除。
+  484 → 473 行（生产 144 行）。**实测**：`cargo test -p llm-data` 12 条 + 3 条 doctest、
+  `clippy -D warnings`、`fmt --check` 通过。路线 C 的第三步（减法后回看 D4）落进 ADR 0038 §修订：
+  `data` + `shard` 同层合并只值 -1 成员 / -2 边 / 0 编译时间，按 §2 的实证要求与内聚性理由否决。
+
 - **`data` 做减法：删掉零消费者的训练/验证集切分与批形状访问器，`data → tensor` 这条依赖边整条消失**。
   `Split` 除自身的四条单测与两条 doctest 外全仓无人使用（`train` 只用 `Dataset`/`Chunks`/`Batch`），
   `Batch::shape()` 同样只有测试与 doctest 调用，而它是 `tensor` 依赖的唯一用途，删它就同时把这条边删了。
