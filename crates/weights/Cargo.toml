@@ -8,8 +8,8 @@ repository.workspace = true
 readme.workspace = true
 description = "Weight files: entries, header validation, plus safetensors archives (whole-buffer or header-only file backend)."
 publish = false
-# `bin.rs` 的 `pickle`/`zip` 子模块以 `#[path]` 挂到扁平文件（`bin_pickle.rs`/`bin_zip.rs`），
-# 不是二进制目标；禁用 bin 自动发现，避免 Cargo 误把它们当可执行 crate 编译。
+# `bin.rs` 的 `pickle`/`zip` 子模块已内联进同一文件（不再有 `bin_*.rs` 平铺文件）；
+# 本 crate 没有可执行目标，禁用 bin 自动发现。
 autobins = false
 autotests = false
 

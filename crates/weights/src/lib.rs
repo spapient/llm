@@ -70,12 +70,12 @@ mod proof;
 // —— 谱隙证书链：f64 单边 Jacobi SVD、谱隙判定账本、五轴无损选码（.u v2 张量级压缩侧车）——
 pub mod axes;
 pub mod ledger;
-pub mod svd;
+pub use ptq::svd;
 
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
-pub mod import;
+pub use lifecycle::import;
 pub mod json;
 pub mod safetensors;
 
