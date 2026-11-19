@@ -182,6 +182,46 @@ fn production_reduce_kernel_compiles_for_a_real_op() {
     compiled.expect("归约 MSL 应能通过 xcrun metal 编译");
 }
 
+/// 生产态分块扫描内核：`scan_f32` 声明 `[chunk]` 后走「局部扫描 + 校正」两段内核——局部扫描把
+/// 时间轴循环头改写到块内边界（含 `thread_position_in_grid`）、校正把携带态几何级数就地累加回
+/// `y`（自包含、不依赖 preamble 的 `min`），两段都通过 `xcrun metal` 编译证明合法。
+#[test]
+fn production_scan_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-scan"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，扫描内核编译用例未运行");
+        return;
+    }
+    let (m, n) = op::model("scan_f32").expect("scan_f32 语义表").shape;
+    let (local, correct) =
+        crate::execution::metal_scan_program(&catalogue, &dirs, "scan_f32", m, n)
+            .expect("分块扫描内核应能生成");
+    assert!(local.contains("kernel_main"), "{local}");
+    assert!(
+        local.contains("thread_position_in_grid"),
+        "局部扫描应有线程下标: {local}"
+    );
+    assert!(
+        local.contains("start + len"),
+        "局部扫描应把循环头改写到块内边界: {local}"
+    );
+    assert!(correct.contains("kernel_main"), "{correct}");
+    assert!(
+        correct.contains("d_c"),
+        "校正内核应读携带态缓冲: {correct}"
+    );
+
+    for (label, msl) in [("局部扫描", &local), ("校正", &correct)] {
+        let dir = std::env::temp_dir().join(format!("cutile-metal-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("目录");
+        let compiled = metal_kernel(&dir, msl, &profile.flags);
+        let _ = std::fs::remove_dir_all(&dir);
+        compiled.unwrap_or_else(|error| panic!("{label} MSL 应能通过 xcrun metal 编译：{error}"));
+    }
+}
+
 /// 生产态两趟内核：`rmsnorm_f32`（带 `@dot` 归约的逐元素骨架）走串行 lowering——单线程
 /// `kernel_main`、无 `thread_position_in_grid`，再通过 `xcrun metal` 编译证明合法。
 #[test]

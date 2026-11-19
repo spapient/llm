@@ -665,10 +665,10 @@ fn chunk_scan_local(
 /// 校正内核：每线程 `g` 把携带态 `d_c[g]` 的衰减几何级数 `C·a^(j+1)` 加回 `y`（就地累加）。
 /// `chunk`/`len`/`decay` 都是生成期常量，只有 `d_c`（只读）、`d_y`（就地读写）两块缓冲 + 线程下标。
 /// 槽位按「输入后输出」：`d_c` 是输入在 `buffer(0)`、`d_y` 是输出在 `buffer(1)`，与 [`buffer_decls`]
-/// 的同源约定一致。
+/// 的同源约定一致。块尾用三元（不依赖 `min`），内核自包含、不引档案 preamble。
 fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
     format!(
-        "kernel void kernel_main(\n    device float* d_c [[buffer(0)]],\n    device float* d_{output} [[buffer(1)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    float c = d_c[g];\n    float pow = {decay}f;\n    for (int j = 0; j < len; ++j) {{\n        d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}\n}}"
+        "kernel void kernel_main(\n    device float* d_c [[buffer(0)]],\n    device float* d_{output} [[buffer(1)]],\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n    float c = d_c[g];\n    float pow = {decay}f;\n    for (int j = 0; j < len; ++j) {{\n        d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}\n}}"
     )
 }
 
