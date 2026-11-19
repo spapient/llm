@@ -105,12 +105,23 @@ impl Radix {
         block: usize,
         page: Page,
     ) -> Result<bool> {
-        let at = match self.path(tokens, page_size, block)? {
-            Path::Linked(at) => at,
-            Path::Broken => return Ok(false),
-        };
-        let span =
-            block_tokens(tokens, page_size, block).ok_or_else(|| beyond(block, tokens.len()))?;
+        match self.path(tokens, page_size, block)? {
+            Path::Linked(at) => self.link(pager, tokens, page_size, block, at, page),
+            Path::Broken => Ok(false),
+        }
+    }
+
+    /// 把第 `block` 块挂到 `at` 之下：同一块已经在树上就不重复登记、也不多加引用。
+    fn link(
+        &mut self,
+        pager: &mut Pager,
+        tokens: &[u32],
+        page_size: usize,
+        block: usize,
+        at: Option<usize>,
+        page: Page,
+    ) -> Result<bool> {
+        let span = span_of(tokens, page_size, block)?;
         if self.child(at, span).is_some() {
             return Ok(false);
         }
@@ -141,17 +152,13 @@ impl Radix {
     /// 第 `block` 块的父节点：`Linked(Some(i))` 是树里的父块，`Linked(None)` 是根（第 0 块）；
     /// `Broken` 表示路径中间有块不在树上，这一块不登记。
     fn path(&self, tokens: &[u32], page_size: usize, block: usize) -> Result<Path> {
-        if page_size == 0 {
-            return Err(zero_page());
-        }
         let mut at: Option<usize> = None;
         for level in 0..block {
-            let span = block_tokens(tokens, page_size, level)
-                .ok_or_else(|| beyond(level, tokens.len()))?;
-            match self.child(at, span) {
-                Some(index) => at = Some(index),
-                None => return Ok(Path::Broken),
-            }
+            let span = span_of(tokens, page_size, level)?;
+            let Some(index) = self.child(at, span) else {
+                return Ok(Path::Broken);
+            };
+            at = Some(index);
         }
         Ok(Path::Linked(at))
     }
@@ -271,6 +278,16 @@ fn block_tokens(tokens: &[u32], page_size: usize, block: usize) -> Option<&[u32]
         return None;
     }
     Some(&tokens[start..end])
+}
+
+/// 第 `level` 块的 token 段：页宽为零与块越界是两种调用方错误，各有各的话。
+///
+/// 寻径与登记共用这一处，于是「哪一块」只有一种算法，报错也只有一种口径。
+fn span_of(tokens: &[u32], page_size: usize, level: usize) -> Result<&[u32]> {
+    if page_size == 0 {
+        return Err(zero_page());
+    }
+    block_tokens(tokens, page_size, level).ok_or_else(|| beyond(level, tokens.len()))
 }
 
 fn zero_page() -> Error {
