@@ -7,13 +7,15 @@
 //! 双源说明：Metal 是「设备源（.metal）+ host 驱动（.m）」两段文本，CUDA 是单段 `.cu`；这个差异
 //! 收在 [`cutile::backend::Source`] 里，由各自的 [`Driver::compile_run`] 解包，不外泄到机制层。
 
-use cutile::backend::{Backend, Codegen, Driver, Readback, Source};
+use cutile::backend::{Backend, Codegen, Driver, Lower, Readback, Source};
 use cutile::dirs::Dirs;
 use cutile::driver;
 use cutile::prof::{Emit, Profile};
 use cutile::toolchain::{Toolchain, parse_version, probe};
 use cutile::witness::{MAX_OUT, Scope, Selected};
 use diagnostic::{Code, Error, Result};
+use op::model::Sample;
+use op::sig::Signature;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;

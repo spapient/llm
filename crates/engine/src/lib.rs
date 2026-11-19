@@ -63,6 +63,7 @@
 
 pub mod batch;
 pub mod backends;
+pub mod codegen;
 pub mod exec;
 pub mod kv;
 #[cfg(target_os = "macos")]

@@ -79,7 +79,7 @@ pub use ::prof::prof;
 // 声明层的词汇表（布局构造子、调度模板、模板词法）与解析结果的事实源在 `op`：
 // `cutile` 只消费它们，因此原地转发路径，机制里没有第二份闭集。
 pub use ::op::decl;
-pub use ::op::{layout, sch};
+pub use ::op::{layout, model, sch, sig};
 
 pub mod ast;
 pub mod backend;
@@ -103,21 +103,13 @@ pub mod toolchain;
 pub mod verify;
 pub mod witness;
 
-// 生产态内核发射（M3-2 / M3-10）：把逐点内核包成网格 `kernel_main`、把归约/两趟内核收敛为单线程
-// `kernel_main`、把 Gemm 骨架按行拆成网格（逐缓冲偏移来自 `[grid]` 声明）。后端差异收进 `dialect::Wrap`
-// 差异表——Metal / CUDA 共用同一条 body，只换方言（`metal_grid_kernel` / `cuda_grid_kernel`、分块归约
-// `metal_chunk_reduce` / `cuda_chunk_reduce`）。供 L7 组合根装配进设备后端（`engine::metal::MetalExecutor`
-// 编译注入的 MSL 就来自这里，不是 cutile 的见证 harness）。
-pub use harness::{
-    cuda_chunk_reduce, cuda_grid_driver, cuda_grid_kernel, metal_chunk_reduce, metal_chunk_rmsnorm,
-    metal_chunk_scan, metal_chunk_softmax, metal_grid_kernel, metal_loop_kernel,
-};
+// 生产态内核发射与基准封装（M3-2 / M3-10）已搬到 `engine`（L6）：Metal / CUDA 的 vendor 语法
+// 不进 cutile，机制层只经 [`backend::Codegen::lower`] / [`backend::Codegen::harness`] 缝分派
+// （`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。
 
 mod device;
-mod dialect;
 mod gate;
 mod harness;
-mod metal;
 mod pipeline;
 mod runner;
 

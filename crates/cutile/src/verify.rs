@@ -14,7 +14,7 @@ use crate::gate::LanguageGate;
 use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
 use crate::prof::{Emit, Profile};
 use crate::witness;
-use crate::{harness, runner, toolchain};
+use crate::{runner, toolchain};
 use diagnostic::{Code, Error};
 use op::decl::OpDecl;
 use op::model::Sample;
@@ -474,11 +474,12 @@ impl Sweep<'_> {
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
-        let program = harness::cuda_harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let program =
+            backend(Emit::Cuda)?.harness(&prepared.source.text, &self.run.op.signature, sample)?;
         let (stdout, _stderr) = backend(Emit::Cuda)?.compile_run(
             self.run.profile,
             self.dirs,
-            &crate::backend::Source::Single(program),
+            &program,
             "verify",
         )?;
         Ok((runner::parse_bits(&stdout), None))
@@ -492,14 +493,11 @@ impl Sweep<'_> {
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         self.run.op.signature.check(sample)?;
         let program =
-            harness::metal_harness(&prepared.source.text, &self.run.op.signature, sample)?;
+            backend(Emit::Metal)?.harness(&prepared.source.text, &self.run.op.signature, sample)?;
         let (stdout, _stderr) = backend(Emit::Metal)?.compile_run(
             self.run.profile,
             self.dirs,
-            &crate::backend::Source::Pair {
-                device: program.0,
-                host: program.1,
-            },
+            &program,
             "verify",
         )?;
         Ok((runner::parse_bits(&stdout), None))

@@ -5,6 +5,7 @@
 //! `pipeline`，因此不存在第二套执行路径。
 
 use crate::atom::{AttrKey, Prim};
+use crate::backend::Lower;
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::cap::{Path, Proof};
@@ -135,7 +136,15 @@ pub fn metal_rmsnorm_program(
             .with("cutile::execution::metal_rmsnorm_program")
     })?;
     let sample = (run.model.sample)(m, n);
-    crate::harness::metal_chunk_rmsnorm(&prepared.source.text, &op.signature, &sample, chunk.size)
+    pair(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::ChunkRmsnorm { chunk: chunk.size },
+        )?,
+        "rmsnorm",
+    )
 }
 
 /// 生产态分块 Softmax 内核源：走完整条流水线后把「最大归约 + 指数和归约 + 归一化」切成三段，返回
@@ -159,7 +168,15 @@ pub fn metal_softmax_program(
             .with("cutile::execution::metal_softmax_program")
     })?;
     let sample = (run.model.sample)(m, n);
-    crate::harness::metal_chunk_softmax(&prepared.source.text, &op.signature, &sample, chunk.size)
+    triple(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::ChunkSoftmax { chunk: chunk.size },
+        )?,
+        "softmax",
+    )
 }
 
 /// 生产态 CUDA 逐点网格内核源：走完整条流水线后把逐点内核包成按网格派发的 `kernel_main`。
@@ -188,7 +205,16 @@ pub fn cuda_grid_program(
         )
         .with("cutile::execution::cuda_grid_program"));
     }
-    crate::harness::cuda_grid_kernel(&prepared.source.text, &op.signature)
+    let sample = (run.model.sample)(m, n);
+    single(
+        backend(Emit::Cuda)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::Pointwise,
+        )?,
+        "cuda 逐点",
+    )
 }
 
 /// 生产态 CUDA 分块归约内核源：走完整条流水线后把长轴切成块，每线程归约一块写部分结果 `y[g]`，
@@ -211,12 +237,17 @@ pub fn cuda_reduce_program(
             .with("cutile::execution::cuda_reduce_program")
     })?;
     let sample = (run.model.sample)(m, n);
-    crate::harness::cuda_chunk_reduce(
-        &prepared.source.text,
-        &op.signature,
-        &sample,
-        chunk.size,
-        &reduce_func(op)?,
+    single(
+        backend(Emit::Cuda)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::ChunkReduce {
+                chunk: chunk.size,
+                func: reduce_func(op)?,
+            },
+        )?,
+        "cuda 归约",
     )
 }
 
@@ -299,12 +330,17 @@ fn reduce(
         return serial(op, run, prepared, m, n);
     };
     let sample = (run.model.sample)(m, n);
-    crate::harness::metal_chunk_reduce(
-        &prepared.source.text,
-        &op.signature,
-        &sample,
-        chunk.size,
-        &reduce_func(op)?,
+    single(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::ChunkReduce {
+                chunk: chunk.size,
+                func: reduce_func(op)?,
+            },
+        )?,
+        "归约",
     )
 }
 
@@ -341,12 +377,17 @@ fn scan_chunked(
             .with("cutile::execution::metal_scan_program")
     })?;
     let sample = (run.model.sample)(m, n);
-    crate::harness::metal_chunk_scan(
-        &prepared.source.text,
-        &op.signature,
-        &sample,
-        chunk.size,
-        scan_decay(op)?,
+    pair(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::ChunkScan {
+                chunk: chunk.size,
+                decay: scan_decay(op)?,
+            },
+        )?,
+        "扫描",
     )
 }
 
@@ -378,11 +419,14 @@ fn serial(
     n: usize,
 ) -> diagnostic::Result<String> {
     let sample = (run.model.sample)(m, n);
-    crate::harness::metal_loop_kernel(
-        &prepared.source.text,
-        &op.signature,
-        &sample,
-        &Grid { dims: Vec::new() },
+    single(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::Loop(Grid { dims: Vec::new() }),
+        )?,
+        "串行",
     )
 }
 
@@ -396,7 +440,15 @@ fn looped(
     n: usize,
 ) -> diagnostic::Result<String> {
     let sample = (run.model.sample)(m, n);
-    crate::harness::metal_loop_kernel(&prepared.source.text, &op.signature, &sample, grid)
+    single(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::Loop(grid.clone()),
+        )?,
+        "循环",
+    )
 }
 
 /// 逐元素骨架：纯逐点单标量走网格；带归约/两趟（rmsnorm/softmax/attention）或非纯逐点签名
@@ -416,7 +468,16 @@ fn elementwise(
         }
         return serial(op, run, prepared, m, n);
     }
-    crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
+    let sample = (run.model.sample)(m, n);
+    single(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &op.signature,
+            &sample,
+            &Lower::Pointwise,
+        )?,
+        "逐点",
+    )
 }
 
 /// Gemm 骨架：声明了 `[grid]` 的走循环注入网格快路径（gemv 一维、gemm 二维共用一条 lowering）；
@@ -531,6 +592,49 @@ fn check_parity(bits: &[f32], expected: &[f32], tolerance: f64) -> diagnostic::R
         ));
     }
     Ok(max_rel_err)
+}
+
+/// 经 [`crate::backend::Codegen::lower`] 缝取 vendor 后端的生产态设备源。机制层不认厂商，只认
+/// `emit` 与 [`Lower`] 描述；cutile 内不出现 Metal / CUDA 字面量（L3 契约）。
+fn backend(emit: Emit) -> diagnostic::Result<&'static dyn crate::backend::Backend> {
+    crate::device::spec(emit).ok_or_else(|| {
+        Error::new(
+            Code::Unsupported,
+            format!("本机没有 `{emit}` 语言的生产态后端"),
+        )
+    })
+}
+
+/// lowering 结果应恰好一段设备源：取最后一段，段数不符是后端违约，机制层不猜。
+fn single(mut sources: Vec<String>, role: &str) -> diagnostic::Result<String> {
+    sources
+        .pop()
+        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))
+}
+
+/// lowering 结果应恰好两段，按弹出顺序还原 `(第一段, 第二段)`。
+fn pair(mut sources: Vec<String>, role: &str) -> diagnostic::Result<(String, String)> {
+    let b = sources
+        .pop()
+        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
+    let a = sources
+        .pop()
+        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
+    Ok((a, b))
+}
+
+/// lowering 结果应恰好三段，按弹出顺序还原。
+fn triple(mut sources: Vec<String>, role: &str) -> diagnostic::Result<(String, String, String)> {
+    let c = sources
+        .pop()
+        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
+    let b = sources
+        .pop()
+        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
+    let a = sources
+        .pop()
+        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))?;
+    Ok((a, b, c))
 }
 
 #[cfg(test)]

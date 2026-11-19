@@ -9,11 +9,14 @@
 //! 由 L6（`engine`）实现、L7（`cli`）装配注入（`docs/ARCHITECTURE.md` 的 L3 契约：机制层不出现
 //! 厂商特判与运行时依赖）。装配走 [`register`]，cutile 的机制层只从这张表取后端，不硬编码后端清单。
 
+use crate::decl::Grid;
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
 use crate::toolchain::Toolchain;
 use crate::witness::{Scope, Selected};
 use diagnostic::{Code, Error, Result};
+use op::model::Sample;
+use op::sig::Signature;
 
 /// 一次执行回读出来的东西：每条见证写出的个数 + 按顺序回读的 f32 值。
 pub type Readback = (Vec<i64>, Vec<f32>);
@@ -32,6 +35,26 @@ pub enum Source {
     },
 }
 
+/// 生产态内核 lowering 请求：骨架分派后的中性描述，vendor 后端据此生成设备源。
+///
+/// 它只描述「怎么降」（网格 / 分块 / 串行），不含任何厂商语法；Metal / CUDA 的语法差异收在
+/// 各自后端的实现里（`engine`），cutile 的机制层不出现厂商字面量（L3 契约）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Lower {
+    /// 逐点网格：每线程一个元素，唯一标量传 `1`。
+    Pointwise,
+    /// 循环注入 / 串行：`dims` 为空即串行兜底（零维网格）。
+    Loop(Grid),
+    /// 分块归约：每线程归约一块、主机折叠部分结果。
+    ChunkReduce { chunk: usize, func: String },
+    /// 分块扫描：两段内核（局部扫描 + 校正）。
+    ChunkScan { chunk: usize, decay: f32 },
+    /// 分块 RMSNorm：两段内核（部分平方和 + 归一化）。
+    ChunkRmsnorm { chunk: usize },
+    /// 分块 Softmax：三段内核（最大 + 指数和 + 归一化）。
+    ChunkSoftmax { chunk: usize },
+}
+
 /// 生成程序文本：纯函数，见证清单（结构化中性输入）→ 一门语言的源文本，可离线对拍。
 pub trait Codegen {
     /// 这门语言（[`Emit`] 闭集）。
@@ -44,6 +67,33 @@ pub trait Codegen {
         selected: &[Selected<'_>],
         scope: Scope,
     ) -> Result<String>;
+    /// 生产态内核 lowering：把一份 `.k` 内核按 [`Lower`] 降成一份或多份设备源（扫描两段、
+    /// softmax 三段，其余一段）。host C 后端不实现（生产态设备内核只有 Metal / CUDA 有）。
+    fn lower(
+        &self,
+        _kernel: &str,
+        _signature: &Signature,
+        _sample: &Sample,
+        _kind: &Lower,
+    ) -> Result<Vec<String>> {
+        Err(Error::new(
+            Code::Unsupported,
+            "该后端没有生产态 lowering".to_string(),
+        ))
+    }
+    /// 基准封装：把一份 `.k` 内核 + 签名 + 样本降成「跑一次并回读」的完整程序源（verify 的
+    /// 加速器车道）。host C 后端不实现（C 基准走产物缓存，不经 [`Driver::compile_run`]）。
+    fn harness(
+        &self,
+        _kernel: &str,
+        _signature: &Signature,
+        _sample: &Sample,
+    ) -> Result<Source> {
+        Err(Error::new(
+            Code::Unsupported,
+            "该后端没有基准封装".to_string(),
+        ))
+    }
 }
 
 /// 编译 / 发射 / 回读：唯一碰工具链、设备 FFI 与子进程的一半，由设备后端实现。
