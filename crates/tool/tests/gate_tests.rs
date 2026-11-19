@@ -3,7 +3,7 @@ use diagnostic::data::Value;
 use super::*;
 
 /// 本仓库的三个阈值：改动它们就改 `lints/vocabulary.toml`。
-const SOUND: [i64; 3] = [5, 60, 899];
+const SOUND: [i64; 3] = [5, 60, 1200];
 
 /// 一份与仓库同阈值、没有存量债的 `[gate]` 表。
 fn sound() -> Table {
@@ -43,7 +43,7 @@ fn the_project_config_lists_only_root_entry_legacy_debt() {
         [Metric::Ccn, Metric::Nloc, Metric::Lines, Metric::Call].map(|metric| gate.limit(metric));
     assert_eq!(
         limits,
-        [5, 60, 899, 0],
+        [5, 60, 1200, 0],
         "阈值来自构建期生成的 `lints/vocabulary.toml`；`Call` 没有预算"
     );
     for key in gate.debt.keys() {
