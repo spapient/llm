@@ -179,11 +179,12 @@ fn the_self_check_ignores_the_device_preamble_and_flags() {
     if toolchain::skip_without_host_compiler() {
         return;
     }
-    let mut profile = device("nvidia");
+    // 用本机必然缺席的设备（ascend）：自检只在设备缺席时跑，设备在场时 `run_all` 已更严格地覆盖。
+    let mut profile = device("ascend");
     profile.preamble = "#error 设备专属前置声明\n".to_string();
     profile.flags = vec!["-arch=sm_100a".to_string(), "-nocudainc".to_string()];
     let runs = self_check(&profile, &dirs()).expect("自检不得使用设备 preamble/flags");
-    assert!(!runs.is_empty(), "nvidia 有已声明的见证");
+    assert!(!runs.is_empty(), "ascend 有已声明的见证");
 }
 
 #[test]

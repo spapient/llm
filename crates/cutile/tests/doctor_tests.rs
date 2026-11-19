@@ -80,9 +80,10 @@ fn doctor_reports_the_evidence_it_ran() {
 }
 
 /// 本机执行不了的设备：依据必须写成"档案自述"，不能假装执行过。
+/// 用 ascend（两台机都缺席）而非 nvidia：后者在 CUDA 真机上设备执行，依据是 Executed。
 #[test]
 fn a_device_that_cannot_run_here_is_negotiated_on_declarations() {
-    let report = doctor(&catalogue(), &dirs(), "gemv_i4", "nvidia").expect("仍应返回报告");
+    let report = doctor(&catalogue(), &dirs(), "gemv_i4", "ascend").expect("仍应返回报告");
     assert_eq!(report.evidence.basis, Basis::Declared);
     assert_eq!(report.evidence.device, 0, "本机没有设备执行");
     assert!(
