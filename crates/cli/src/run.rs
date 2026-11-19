@@ -463,12 +463,12 @@ mod tests {
         op_chunked_scan_matches_reference("scan_f32");
     }
 
-    /// 两趟（带归约）真机对拍：`rmsnorm_f32` 走串行 lowering（单线程网格、`x`/`gamma`/`y` 三缓冲
-    /// 原样透传），在 Metal 上算出均方根归一化并回读，与标量参考对拍。
+    /// 两趟（带归约）真机对拍：`rmsnorm_f32` 声明 `[chunk]` 后走「部分平方和 + 主机折叠 +
+    /// 归一化」三段（两段内核 + 一次折叠），在 Metal 上算出均方根归一化并回读，与标量参考对拍。
     #[cfg(target_os = "macos")]
     #[test]
     fn a_two_pass_op_runs_on_metal_and_matches_the_reference() {
-        op_matches_reference("rmsnorm_f32");
+        op_chunked_rmsnorm_matches_reference("rmsnorm_f32");
     }
 
     /// Gemm 行网格真机对拍：`gemv_f32` 走 `[grid]` 声明映射——grid `[n,1,1]`、输出 `+ n`、
@@ -510,7 +510,8 @@ mod tests {
         };
         executor.register(op_name, &msl).expect("注册内核");
 
-        // 派发网格：`[grid]` 声明的各维标量取样本值；缺省单线程串行。
+        // 派发网格：`[grid]` 声明的各维标量取样本值；逐点算子（无归约/点积、单标量）走逐点网格
+        // 快路径，线程下标即元素下标、网格覆盖整行（`N`）；其余缺省单线程串行。
         let mut grid = [1u32, 1, 1];
         if let Some(decl_grid) = decl.grid.as_ref() {
             for (dim, (_, scalar)) in decl_grid.dims.iter().enumerate() {
@@ -520,6 +521,20 @@ mod tests {
                     .try_into()
                     .expect("网格维落 u32");
             }
+        } else if decl.pointwise() {
+            let scalar = decl
+                .signature
+                .params()
+                .iter()
+                .find(|param| !param.ctype.is_buffer())
+                .expect("逐点单标量")
+                .name
+                .clone();
+            grid[0] = sample
+                .scalar(&scalar)
+                .expect("逐点长度标量")
+                .try_into()
+                .expect("逐点长度落 u32");
         }
         let launch = engine::exec::Launch::new(grid, [1, 1, 1]);
         let mut node = engine::exec::Node::new(op_name, launch);
@@ -848,11 +863,237 @@ mod tests {
         );
     }
 
-    /// 三趟 softmax（max 归约 + exp 求和 + 归一化）走串行兜底，真机对拍。
+    /// 分块 RMSNorm 真机对拍：`rmsnorm_f32` 声明 `[chunk]` 后走「部分平方和 + 主机折叠 + 归一化」。
+    /// 1. 部分平方和：每线程 g 归约 x² 一块写 `y[g]`；2. 主机折叠成 `rms = sqrt(Σx²/N + eps)`；
+    /// 3. 归一化：每线程 g 算 `y = gamma·x/rms`。折叠用 f64，分块误差仍在 f32 阈值内。
+    #[cfg(target_os = "macos")]
+    fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
+        use engine::exec::Executor as _;
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-rmsnorm-check"));
+
+        let model = op::model(op_name).expect("语义表");
+        let (m, n) = model.shape;
+        let sample = (model.sample)(m, n);
+        let expected = (model.reference)(&sample).expect("标量参考");
+        let decl = catalogue.op(op_name).expect("算子声明");
+        let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
+        let len = sample.scalar("N").expect("长度标量") as u32;
+        let grid_size = len.div_ceil(chunk);
+
+        let (partial_msl, map_msl) =
+            cutile::execution::metal_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
+                .expect("分块 rmsnorm 内核应能生成");
+        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
+            return;
+        };
+        executor.register(op_name, &partial_msl).expect("注册部分平方和内核");
+        let map_name = format!("{op_name}_map");
+        executor.register(&map_name, &map_msl).expect("注册归一化内核");
+
+        // 槽位（同 buffer_decls 签名序）：0 = x、1 = gamma、2 = y（部分和临时占 y 前 G 个槽）。
+        let x = sample.f32("x").expect("rmsnorm 输入 x");
+        let gamma = sample.f32("gamma").expect("rmsnorm 权重 gamma");
+        executor.bind_bytes(0, x.len() * 4).expect("x 缓冲");
+        executor.bind_bytes(1, gamma.len() * 4).expect("gamma 缓冲");
+        executor.bind_bytes(2, expected.len() * 4).expect("y 缓冲");
+        for (slot, values) in [(0, &x), (1, &gamma)] {
+            let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
+            for (index, value) in values.iter().enumerate() {
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        let stream = engine::exec::Stream::new(0);
+        let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
+
+        let mut node = engine::exec::Node::new(op_name, launch);
+        node.bind_input(0).bind_input(1).bind_output(2);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        executor.submit(&graph, stream).expect("提交部分平方和");
+        executor.sync(stream).expect("同步部分平方和");
+
+        let partials = {
+            let bytes = executor.buffer_mut(2).expect("部分和可读").as_mut_bytes();
+            (0..grid_size as usize)
+                .map(|index| {
+                    let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                        .try_into()
+                        .expect("四个字节一个 f32");
+                    f32::from_le_bytes(bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+        let sum_sq = partials
+            .iter()
+            .fold(0.0f64, |acc, &value| acc + f64::from(value));
+        let rms = ((sum_sq / f64::from(len)) + f64::from(1e-6f32)).sqrt() as f32;
+
+        // 槽 3 = rms（主机注入的 1 元素标量缓冲）。
+        executor.bind_bytes(3, 4).expect("rms 缓冲");
+        {
+            let bytes = executor.buffer_mut(3).expect("rms 可写").as_mut_bytes();
+            bytes.copy_from_slice(&rms.to_le_bytes());
+        }
+
+        let mut node = engine::exec::Node::new(&map_name, launch);
+        node.bind_input(3).bind_input(0).bind_input(1).bind_output(2);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        executor.submit(&graph, stream).expect("提交归一化");
+        executor.sync(stream).expect("同步归一化");
+
+        let output = {
+            let bytes = executor.buffer_mut(2).expect("输出可读").as_mut_bytes();
+            (0..expected.len())
+                .map(|index| {
+                    let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                        .try_into()
+                        .expect("四个字节一个 f32");
+                    f32::from_le_bytes(bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "{op_name} 分块归一化对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
+    }
+
+    /// 分块 Softmax 真机对拍：`softmax_f32` 声明 `[chunk]` 后走「部分最大 + 折叠 + 部分指数和 +
+    /// 折叠 + 归一化」五阶段（三段内核 + 两次主机折叠），与标量参考对拍。
+    #[cfg(target_os = "macos")]
+    fn op_chunked_softmax_matches_reference(op_name: &str) {
+        use engine::exec::Executor as _;
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-softmax-check"));
+
+        let model = op::model(op_name).expect("语义表");
+        let (m, n) = model.shape;
+        let sample = (model.sample)(m, n);
+        let expected = (model.reference)(&sample).expect("标量参考");
+        let decl = catalogue.op(op_name).expect("算子声明");
+        let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
+        let len = sample.scalar("N").expect("长度标量") as u32;
+        let grid_size = len.div_ceil(chunk);
+
+        let (max_msl, expsum_msl, map_msl) =
+            cutile::execution::metal_softmax_program(&catalogue, &dirs, op_name, m, n)
+                .expect("分块 softmax 内核应能生成");
+        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
+            return;
+        };
+        executor.register(op_name, &max_msl).expect("注册部分最大内核");
+        let expsum_name = format!("{op_name}_expsum");
+        let map_name = format!("{op_name}_map");
+        executor.register(&expsum_name, &expsum_msl).expect("注册指数和内核");
+        executor.register(&map_name, &map_msl).expect("注册归一化内核");
+
+        // 槽位：0 = x、1 = y（部分结果临时占 y 前 G 个槽）、2 = max、3 = sum。
+        let x = sample.f32("x").expect("softmax 输入");
+        executor.bind_bytes(0, x.len() * 4).expect("x 缓冲");
+        executor.bind_bytes(1, expected.len() * 4).expect("y 缓冲");
+        {
+            let bytes = executor.buffer_mut(0).expect("输入可写").as_mut_bytes();
+            for (index, value) in x.iter().enumerate() {
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+
+        let stream = engine::exec::Stream::new(0);
+        let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
+        let read_partials = |executor: &mut engine::metal::MetalExecutor| {
+            let bytes = executor.buffer_mut(1).expect("部分结果可读").as_mut_bytes();
+            (0..grid_size as usize)
+                .map(|index| {
+                    let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                        .try_into()
+                        .expect("四个字节一个 f32");
+                    f32::from_le_bytes(bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // 阶段 1：部分最大。
+        let mut node = engine::exec::Node::new(op_name, launch);
+        node.bind_input(0).bind_output(1);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        executor.submit(&graph, stream).expect("提交部分最大");
+        executor.sync(stream).expect("同步部分最大");
+        let max = read_partials(&mut executor)
+            .into_iter()
+            .fold(f32::MIN, f32::max);
+
+        // 阶段 2：部分指数和（max 注入槽 2）。
+        executor.bind_bytes(2, 4).expect("max 缓冲");
+        {
+            let bytes = executor.buffer_mut(2).expect("max 可写").as_mut_bytes();
+            bytes.copy_from_slice(&max.to_le_bytes());
+        }
+        let mut node = engine::exec::Node::new(&expsum_name, launch);
+        node.bind_input(2).bind_input(0).bind_output(1);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        executor.submit(&graph, stream).expect("提交部分指数和");
+        executor.sync(stream).expect("同步部分指数和");
+        let sum = read_partials(&mut executor)
+            .into_iter()
+            .fold(0.0f64, |acc, value| acc + f64::from(value));
+
+        // 阶段 3：归一化（sum 注入槽 3）。
+        executor.bind_bytes(3, 4).expect("sum 缓冲");
+        {
+            let bytes = executor.buffer_mut(3).expect("sum 可写").as_mut_bytes();
+            bytes.copy_from_slice(&(sum as f32).to_le_bytes());
+        }
+        let mut node = engine::exec::Node::new(&map_name, launch);
+        node.bind_input(2).bind_input(3).bind_input(0).bind_output(1);
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        executor.submit(&graph, stream).expect("提交归一化");
+        executor.sync(stream).expect("同步归一化");
+
+        let output = {
+            let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
+            (0..expected.len())
+                .map(|index| {
+                    let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                        .try_into()
+                        .expect("四个字节一个 f32");
+                    f32::from_le_bytes(bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "{op_name} 分块 softmax 对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
+    }
+
+    /// 三趟 softmax（max 归约 + exp 求和 + 归一化）声明 `[chunk]` 后走「部分最大 + 折叠 +
+    /// 部分指数和 + 折叠 + 归一化」五阶段，真机对拍。
     #[cfg(target_os = "macos")]
     #[test]
     fn a_softmax_op_runs_on_metal_and_matches_the_reference() {
-        op_matches_reference("softmax_f32");
+        op_chunked_softmax_matches_reference("softmax_f32");
     }
 
     /// 矩阵乘（三重循环）走 2D 网格快路径，真机对拍。

@@ -223,7 +223,8 @@ fn production_scan_kernel_compiles_for_a_real_op() {
 }
 
 /// 生产态两趟内核：`rmsnorm_f32`（带 `@dot` 归约的逐元素骨架）走串行 lowering——单线程
-/// `kernel_main`、无 `thread_position_in_grid`，再通过 `xcrun metal` 编译证明合法。
+/// `kernel_main`、无 `thread_position_in_grid`，再通过 `xcrun metal` 编译证明合法；
+/// 声明 `[chunk]` 后还应能生成「部分平方和 + 归一化」两段分块内核并各自编译。
 #[test]
 fn production_rmsnorm_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-rmsnorm"));
@@ -241,12 +242,57 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
         !msl.contains("thread_position_in_grid"),
         "单线程两趟不应有线程下标: {msl}"
     );
+    let (partial, map) = crate::execution::metal_rmsnorm_program(&catalogue, &dirs, "rmsnorm_f32", m, n)
+        .expect("分块 rmsnorm 内核应能生成");
+    assert!(
+        partial.contains("_cutile_sumsq_f32"),
+        "部分平方和内核应归约平方和: {partial}"
+    );
+    assert!(
+        map.contains("d_rms") && map.contains("thread_position_in_grid"),
+        "归一化内核应读 rms 并按线程分块: {map}"
+    );
 
-    let dir = std::env::temp_dir().join(format!("cutile-metal-rmsnorm-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("目录");
-    let compiled = metal_kernel(&dir, &msl, &profile.flags);
-    let _ = std::fs::remove_dir_all(&dir);
-    compiled.expect("两趟 MSL 应能通过 xcrun metal 编译");
+    for (label, source) in [("串行", &msl), ("部分平方和", &partial), ("归一化", &map)] {
+        let dir = std::env::temp_dir().join(format!("cutile-metal-rmsnorm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("目录");
+        let compiled = metal_kernel(&dir, source, &profile.flags);
+        let _ = std::fs::remove_dir_all(&dir);
+        compiled.unwrap_or_else(|error| panic!("{label} MSL 应能通过 xcrun metal 编译：{error}"));
+    }
+}
+
+/// 生产态三趟内核：`softmax_f32` 声明 `[chunk]` 后应能生成「部分最大 + 部分指数和 + 归一化」
+/// 三段分块内核，各自通过 `xcrun metal` 编译。
+#[test]
+fn production_softmax_kernel_compiles_for_a_real_op() {
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-softmax"));
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+    if !crate::witness::device_available(&profile) {
+        testkit::skip("cutile: Metal 工具链不在本机，softmax 内核编译用例未运行");
+        return;
+    }
+    let (m, n) = op::model("softmax_f32").expect("softmax_f32 语义表").shape;
+    let (max, expsum, map) = crate::execution::metal_softmax_program(&catalogue, &dirs, "softmax_f32", m, n)
+        .expect("分块 softmax 内核应能生成");
+    assert!(max.contains("_cutile_max_f32"), "{max}");
+    assert!(
+        expsum.contains("_cutile_exp_sum_f32") && expsum.contains("d_max"),
+        "指数和内核应读 max: {expsum}"
+    );
+    assert!(
+        map.contains("_cutile_exp_norm_f32") && map.contains("d_sum"),
+        "归一化内核应读 sum: {map}"
+    );
+
+    for (label, source) in [("部分最大", &max), ("部分指数和", &expsum), ("归一化", &map)] {
+        let dir = std::env::temp_dir().join(format!("cutile-metal-softmax-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("目录");
+        let compiled = metal_kernel(&dir, source, &profile.flags);
+        let _ = std::fs::remove_dir_all(&dir);
+        compiled.unwrap_or_else(|error| panic!("{label} MSL 应能通过 xcrun metal 编译：{error}"));
+    }
 }
 
 /// 生产态 gemv 行网格内核：`gemv_f32` 走 `[grid]` 声明——模板循环 `for (int n = 0; n < N; ++n)`

@@ -348,17 +348,7 @@ fn elementwise(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<String> {
-    let reduces = op
-        .needs
-        .iter()
-        .any(|need| matches!(need.prim, Prim::Reduce | Prim::Dot));
-    let scalars = op
-        .signature
-        .params()
-        .iter()
-        .filter(|param| !param.ctype.is_buffer())
-        .count();
-    if reduces || scalars != 1 {
+    if !op.pointwise() {
         if let Some(grid) = op.grid.as_ref() {
             return looped(op, run, prepared, grid, m, n);
         }

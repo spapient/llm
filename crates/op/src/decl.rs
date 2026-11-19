@@ -549,6 +549,24 @@ impl OpDecl {
         Ok(op_decl)
     }
 
+    /// 逐点网格判定：无归约/点积、单标量的 Elementwise 算子走 [`crate::harness`] 的逐点网格快路径——
+    /// 线程下标就是元素下标、标量槽透传 `1`，网格必须覆盖整行。该判定是 lowering 分派的单一事实源，
+    /// 机制层（cutile）与 cli 编排共用，避免两处各写一遍分派条件。
+    pub fn pointwise(&self) -> bool {
+        self.skeleton == Skeleton::Elementwise
+            && !self
+                .needs
+                .iter()
+                .any(|need| matches!(need.prim, Prim::Reduce | Prim::Dot))
+            && self
+                .signature
+                .params()
+                .iter()
+                .filter(|param| !param.ctype.is_buffer())
+                .count()
+                == 1
+    }
+
     /// 声明本体：头、四个段与签名。模板侧校验不在这里（见 [`Self::verified`]）。
     fn declared(table: &Table, template: &str) -> diagnostic::Result<Self> {
         let (name, skeleton, summary) = head(table)?;
