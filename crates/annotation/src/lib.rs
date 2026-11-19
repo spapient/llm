@@ -90,23 +90,32 @@ mod syntax;
 #[cfg(test)]
 mod fixture;
 
-use proc_macro::{Delimiter, Span, TokenStream, TokenTree};
+use proc_macro::{Delimiter, Group, Span, TokenStream, TokenTree};
 use syntax::{Bracket, Error as SyntaxError, Token};
 
 /// 把 `#[spec(name = "..", out = [..], ops = [".."])]` 展开成 `nn::Contract` 的实现。
 ///
 /// 被标注的类型必须是无泛型参数的 `struct` 或 `enum`：形状与算子列表在编译期固定，
 /// 带泛型的类型无法用一份注解覆盖所有实例化。
+///
+/// 运行时形态把每个值写成 `$构造参数`（例如 `name = $name, out = [$tokens, $dim]`）：适配层给
+/// 命名字段 `struct` 注入一个私有 `spec: ::nn::ContractSpec` 字段，并生成构造宏
+/// `__layer_spec_<类型>!(...)`；构造函数用它建规格，`impl Contract` 的访问器仍由
+/// `spec_accessors!` 从 `self.spec` 读取。`in` 不属于运行时形态——下界由层自己实现。
 #[proc_macro_attribute]
 pub fn spec(attribute: TokenStream, item: TokenStream) -> TokenStream {
-    expand_with(
-        attribute,
-        item,
-        "spec",
-        syntax::parse,
-        codegen::render,
-        syntax::target_name,
-    )
+    if syntax::is_runtime(&convert(&attribute.tokenize())) {
+        expand_runtime(attribute, item)
+    } else {
+        expand_with(
+            attribute,
+            item,
+            "spec",
+            syntax::parse,
+            codegen::render,
+            syntax::target_name,
+        )
+    }
 }
 
 /// 展开所需的四个动作：读 token、由源码产出、拼接、重新定位 span。
@@ -125,6 +134,11 @@ trait Streams: Sized {
 
     /// 把整段流的 span 换成 `span`（`None` 表示保持原样）。
     fn respan(self, span: Option<Span>) -> Self;
+
+    /// 在命名字段 `struct` 的字段体最前面插入一段字段（运行时 `#[spec]` 的 `spec` 字段）。
+    ///
+    /// 没有字段体时原样返回：调用前 [`syntax::runtime_target`] 已把这种情况拒绝掉。
+    fn insert_field(self, field: &str) -> Self;
 
     /// 报错文案拼不成 token 流时的退路：一条固定文案的 `compile_error!`。
     fn fallback() -> Self;
@@ -153,6 +167,24 @@ impl Streams for TokenStream {
             .map(|mut token| {
                 token.set_span(span);
                 token
+            })
+            .collect()
+    }
+
+    fn insert_field(self, field: &str) -> Self {
+        let Ok(body) = field.parse::<TokenStream>() else {
+            return self;
+        };
+        self.into_iter()
+            .map(|token| match token {
+                TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+                    let mut stream = body.clone();
+                    stream.extend(group.stream());
+                    let mut inserted = Group::new(Delimiter::Brace, stream);
+                    inserted.set_span(group.span());
+                    TokenTree::Group(inserted)
+                }
+                other => other,
             })
             .collect()
     }
