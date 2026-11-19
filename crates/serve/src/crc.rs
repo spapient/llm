@@ -45,5 +45,12 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 }
 
 #[cfg(test)]
-#[path = "../tests/crc_tests.rs"]
-mod tests;
+mod tests {
+use super::*;
+
+#[test]
+fn the_table_agrees_with_the_bitwise_definition() {
+    testkit::assert_table_matches_bitwise(crc32);
+}
+}
+
