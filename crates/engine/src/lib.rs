@@ -417,36 +417,62 @@ impl Scheduler {
         if !self.fits(sequence) {
             return Ok(None);
         }
+        let Some(plan) = self.plan(sequence)? else {
+            return Ok(None);
+        };
+        let needs_page = self.needs_page(sequence, &plan.table);
+        self.running.push(Running {
+            id: sequence.id(),
+            table: plan.table,
+            needs_page,
+        });
+        Ok(Some(plan.shared * self.pager.page_size()))
+    }
+
+    /// 一次准入要占的页：共享的前缀页与新建页，以及被接走的 token 数。
+    ///
+    /// 这一步只产出计划、不改外面可见的状态（页池与页表在 [`Scheduler::plan`] 内部已经落定），
+    /// 于是「装不下」永远是一条 `None`，而不是调用方要回的半截状态。
+    fn plan(&mut self, sequence: &Sequence) -> Result<Option<Plan>> {
         let needed = sequence.pages_needed();
         let width = self.pager.page_size();
         let prefix = self.radix.longest(sequence.context(), width);
         let shared = prefix.len().min(needed);
         let fresh = needed - shared;
-        if self.pager.free_pages() < fresh {
-            let short = fresh - self.pager.free_pages();
-            self.radix.evict(&mut self.pager, short)?;
-        }
-        if self.pager.free_pages() < fresh {
+        if !self.make_room(fresh)? {
             return Ok(None);
         }
+        let table = self.take_pages(&prefix[..shared], fresh, needed)?;
+        Ok(Some(Plan { table, shared }))
+    }
+
+    /// 空闲页不够时先按 LRU 摘掉前缀树的叶再试一次：缓存是自愿的，让它挡住一次本来能跑的
+    /// 准入是本末倒置。摘完仍不够返回 `false`。
+    fn make_room(&mut self, fresh: usize) -> Result<bool> {
+        let Some(short) = fresh.checked_sub(self.pager.free_pages()) else {
+            return Ok(true);
+        };
+        if short > 0 {
+            self.radix.evict(&mut self.pager, short)?;
+        }
+        Ok(self.pager.free_pages() >= fresh)
+    }
+
+    /// 建页表：先按块序共享命中页，再补 `fresh` 个新页。共享与新建的账必须同一份——
+    /// 只共享页不改位置，下一个请求会把同一段提示重算一遍，而重算的结果正好是它要去读的行。
+    fn take_pages(
+        &mut self,
+        prefix: &[crate::kv::Page],
+        fresh: usize,
+        needed: usize,
+    ) -> Result<crate::kv::Table> {
         let mut table = crate::kv::Table::new(needed)?;
-        for page in prefix.iter().take(shared) {
+        for page in prefix {
             self.pager.share(*page)?;
             table.push(*page)?;
         }
-        Self::fill(
-            &mut self.pager,
-            &mut table,
-            fresh,
-            "engine::Scheduler::admit",
-        )?;
-        let needs_page = self.needs_page(sequence, &table);
-        self.running.push(Running {
-            id: sequence.id(),
-            table,
-            needs_page,
-        });
-        Ok(Some(shared * width))
+        Self::fill(&mut self.pager, &mut table, fresh, "engine::Scheduler::admit")?;
+        Ok(table)
     }
 
     /// 把一个写满的块登记进前缀树，返回是否新登记（重复登记返回 `false`）。
