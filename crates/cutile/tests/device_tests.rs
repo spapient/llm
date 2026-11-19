@@ -149,8 +149,8 @@ fn production_grid_kernel_compiles_for_a_real_op() {
     compiled.expect("生产态 MSL 应能通过 xcrun metal 编译");
 }
 
-/// 生产态归约网格内核：`reduce_sum_f32` 走整条流水线后收敛成单线程 `kernel_main`（无
-/// `thread_position_in_grid`，缓冲原样透传、标量取样本实际值），再通过 `xcrun metal` 编译。
+/// 生产态分块归约内核：`reduce_sum_f32` 声明 `[chunk]` 后走分块 lowering——网格 `ceil(N/256)`、
+/// 每线程用 preamble 的 `_cutile_sum_f32` 归约一块、写部分和 `y[g]`，再通过 `xcrun metal` 编译。
 #[test]
 fn production_reduce_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-metal-reduce"));
@@ -167,8 +167,12 @@ fn production_reduce_kernel_compiles_for_a_real_op() {
         .expect("归约网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(
-        !msl.contains("thread_position_in_grid"),
-        "单线程归约不应有线程下标: {msl}"
+        msl.contains("thread_position_in_grid"),
+        "分块归约应有线程下标: {msl}"
+    );
+    assert!(
+        msl.contains("_cutile_sum_f32"),
+        "分块归约应调用软件归约原语: {msl}"
     );
 
     let dir = std::env::temp_dir().join(format!("cutile-metal-reduce-{}", std::process::id()));

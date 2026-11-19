@@ -51,6 +51,7 @@ fn downgrade_op() -> OpDecl {
         needs: vec![Need::of(Prim::Dot)],
         layouts: Vec::new(),
         grid: None,
+        chunk: None,
         consts: Vec::new(),
         variants: vec![
             Variant {

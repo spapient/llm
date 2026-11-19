@@ -438,12 +438,21 @@ mod tests {
         op_matches_reference("silu_f32");
     }
 
-    /// 首个非逐点真机对拍：`reduce_sum_f32` 走归约 lowering（单线程网格、缓冲原样透传、标量取
-    /// 实际值），在 Metal 上算出整段和并回读，与标量参考对拍。
+    /// 分块归约真机对拍：`reduce_sum_f32` 声明 `[chunk]` 后走分块 lowering——网格 `ceil(N/256)`、
+    /// 每线程归约一块写部分和 `y[g]`，主机折叠部分和与 f64 参考对拍（f32 串行参考对 4096 个递增
+    /// 值的误差已到 ~1e-4，会淹没分块本身的正确性）。
     #[cfg(target_os = "macos")]
     #[test]
     fn a_reduction_op_runs_on_metal_and_matches_the_reference() {
-        op_matches_reference("reduce_sum_f32");
+        op_chunked_reduce_matches_reference("reduce_sum_f32");
+    }
+
+    /// 分块归约真机对拍：`reduce_max_f32` 与 sum 同一条分块 lowering，只换折叠运算（max 是结合且
+    /// 顺序无关的，主机取最大与标量参考逐位一致）。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_max_reduction_op_runs_on_metal_and_matches_the_reference() {
+        op_chunked_reduce_matches_reference("reduce_max_f32");
     }
 
     /// 两趟（带归约）真机对拍：`rmsnorm_f32` 走串行 lowering（单线程网格、`x`/`gamma`/`y` 三缓冲
@@ -582,6 +591,120 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn op_matches_reference(op_name: &str) {
         op_matches_reference_at(op_name, None);
+    }
+
+    /// 分块归约真机对拍：`reduce` 骨架声明 `[chunk]` 后，内核按 `ceil(N/chunk)` 网格每线程归约
+    /// 一块、写部分结果 `y[g]`，主机折叠这些部分结果再与参考对拍（sum 求和、max 取最大）。
+    ///
+    /// 对拍口径与串行辅助不同：分块求和是 pairwise（对数精度），f32 串行参考对 4096 个递增值
+    /// 的误差已到 ~1e-4，会淹没分块本身的正确性——所以用 f64 折叠输入做对照，分块结果的误差应
+    /// 落在 ~log2(N)·eps 量级，仍在 f32 阈值（1e-5）内。max 结合且顺序无关，主机取最大与参考
+    /// 逐位一致。
+    #[cfg(target_os = "macos")]
+    fn op_chunked_reduce_matches_reference(op_name: &str) {
+        use engine::exec::Executor as _;
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("metal").cloned().expect("metal 档案");
+        if !cutile::witness::device_available(&profile) {
+            return;
+        }
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("llm-metal-chunk-check"));
+
+        let model = op::model(op_name).expect("语义表");
+        let (m, n) = model.shape;
+        let sample = (model.sample)(m, n);
+        let decl = catalogue.op(op_name).expect("算子声明");
+        let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
+        let len = decl
+            .signature
+            .params()
+            .iter()
+            .find(|param| !param.ctype.is_buffer())
+            .and_then(|param| sample.scalar(&param.name))
+            .expect("归约长度标量") as u32;
+        let grid_size = len.div_ceil(chunk);
+
+        let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
+            .expect("内核应能生成");
+        let Some(mut executor) = engine::metal::MetalExecutor::new("metal", "arm64") else {
+            return;
+        };
+        executor.register(op_name, &msl).expect("注册内核");
+
+        let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
+        let mut node = engine::exec::Node::new(op_name, launch);
+        for (slot, param) in decl
+            .signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buffer())
+            .enumerate()
+        {
+            let slot = slot as u32;
+            if param.mutable {
+                executor
+                    .bind_bytes(slot, grid_size as usize * 4)
+                    .expect("输出缓冲");
+                node.bind_output(slot);
+            } else {
+                node.bind_input(slot);
+                let values = sample.f32(&param.name).expect("f32 输入");
+                executor
+                    .bind_bytes(slot, values.len() * 4)
+                    .expect("输入缓冲");
+                let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
+                for (index, value) in values.iter().enumerate() {
+                    bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+
+        let mut graph = engine::exec::Graph::new();
+        graph.push(node);
+        let stream = engine::exec::Stream::new(0);
+        executor.submit(&graph, stream).expect("提交");
+        executor.sync(stream).expect("同步派发");
+
+        let output_slot = decl
+            .signature
+            .params()
+            .iter()
+            .position(|param| param.mutable)
+            .expect("唯一可写输出") as u32;
+        let bytes = executor
+            .buffer_mut(output_slot)
+            .expect("输出可读")
+            .as_mut_bytes();
+        let partials: Vec<f32> = (0..grid_size as usize)
+            .map(|index| {
+                let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                    .try_into()
+                    .expect("四个字节一个 f32");
+                f32::from_le_bytes(bytes)
+            })
+            .collect();
+
+        // 主机折叠部分结果（sum / max）；参考用 f64 折叠输入，理由见函数注释。
+        let input = sample.f32("a").expect("归约输入");
+        let (output, want) = if op_name.contains("_max_") {
+            let out = partials.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let want = input
+                .iter()
+                .fold(f64::NEG_INFINITY, |acc, &x| acc.max(f64::from(x)));
+            (vec![out], vec![want as f32])
+        } else {
+            let out = partials.iter().sum::<f32>();
+            let want = input.iter().fold(0.0f64, |acc, &x| acc + f64::from(x));
+            (vec![out], vec![want as f32])
+        };
+
+        let max_rel_err = cutile::reference::max_rel_err(&output, &want);
+        let tolerance = cutile::reference::tolerance(model.dtype);
+        assert!(
+            max_rel_err <= tolerance,
+            "{op_name} 分块归约对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+        );
     }
 
     /// 三趟 softmax（max 归约 + exp 求和 + 归一化）走串行兜底，真机对拍。
