@@ -23,8 +23,8 @@ train = { path = "../train", package = "llm-train" }
 weights = { path = "../weights", package = "llm-weights" }
 
 [[test]]
-name = "cross_layer"
-path = "tests/cross_layer.rs"
+name = "e2e"
+path = "tests/e2e.rs"
 
 [[test]]
 name = "contracts"
@@ -33,10 +33,6 @@ path = "tests/contracts.rs"
 [[test]]
 name = "architecture"
 path = "tests/architecture.rs"
-
-[[test]]
-name = "ptq_gemv"
-path = "tests/ptq_gemv.rs"
 
 [lints]
 workspace = true

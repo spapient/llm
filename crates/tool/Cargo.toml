@@ -24,9 +24,5 @@ workspace = true
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["build"] }
 
 [[test]]
-name = "ccn"
-path = "tests/ccn.rs"
-
-[[test]]
 name = "gate"
 path = "tests/gate.rs"

@@ -26,7 +26,3 @@ workspace = true
 [[test]]
 name = "schedule"
 path = "tests/schedule.rs"
-
-[[test]]
-name = "codegen"
-path = "tests/codegen.rs"

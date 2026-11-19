@@ -18,10 +18,10 @@
 //! `op` 自己的单测逐条覆盖。GGUF 与 pickle 容器在仓内没有编码器，种子只能手抄字节，格式
 //! 一演进就会悄悄变成"合法种子其实不合法"，因此不进遍历。
 
-#[path = "support/drivers.rs"]
-mod drivers;
-#[path = "support/seeds.rs"]
-mod seeds;
+#[path = "support.rs"]
+mod support;
+
+use support::{drivers, seeds};
 
 use drivers::{Frames, Invocation, Json, Leb, Lex, Safetensors, Sealed, Snapshot, UContainer};
 use llm_fuzz::{Seed, Target, sweep};

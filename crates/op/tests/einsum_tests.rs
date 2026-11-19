@@ -1,4 +1,194 @@
+// einsum 三层的测试：表达式解析、轴长度表与代价推导。
+//
+// 三个测试段原先分别被 `einsum.rs` 的 `expr` / `extents` / `formula` 模块用 `include!`
+// 挂载；合并为一份后统一挂在 `expr` 的测试模块里。三段的引用面各自保留：表达式段沿用
+// `use super::*`（`expr` 模块），轴表与代价段通过 `crate::einsum` 的再导出取同一批类型。
+
 use super::*;
+
+use crate::einsum::{Access, AxisRole, Bits, Extents, Formula, Operand};
+
+// ===== 表达式解析（expr） =====
+
+fn error(text: &str) -> String {
+    Expr::parse(text).expect_err("应当被拒绝").to_string()
+}
+
+#[test]
+fn an_explicit_expression_keeps_terms_and_output_order() {
+    let expr = Expr::parse("nm,m,ng,n->n").expect("合法");
+    assert_eq!(expr.arity(), 4);
+    assert_eq!(expr.output(), ['n']);
+    let terms: Vec<&[char]> = expr.terms().collect();
+    assert_eq!(terms, [['n', 'm'].as_slice(), &['m'], &['n', 'g'], &['n']]);
+    assert_eq!(expr.text(), "nm,m,ng,n->n");
+    assert_eq!(expr.to_string(), "nm,m,ng,n->n");
+}
+
+#[test]
+fn whitespace_is_trimmed_but_not_interpreted() {
+    let expr = Expr::parse("  i,j->ij \n").expect("合法");
+    assert_eq!(expr.text(), "i,j->ij");
+    assert_eq!(expr.arity(), 2);
+}
+
+#[test]
+fn a_scalar_output_and_scalar_terms_are_allowed() {
+    let expr = Expr::parse("m,->").expect("标量输出合法");
+    assert_eq!(expr.arity(), 2);
+    assert!(expr.output().is_empty());
+    let terms: Vec<&[char]> = expr.terms().collect();
+    assert_eq!(terms, [['m'].as_slice(), &[]]);
+}
+
+#[test]
+fn an_empty_expression_is_rejected() {
+    assert!(error("").contains("为空"));
+    assert!(error("   ").contains("为空"));
+}
+
+#[test]
+fn a_missing_arrow_is_rejected_with_an_example() {
+    let message = error("nm,m");
+    assert!(message.contains("缺少 `->`"), "{message}");
+    assert!(message.contains("nm,m->n"), "{message}");
+}
+
+#[test]
+fn a_second_arrow_is_rejected() {
+    assert!(error("nm,m->n->n").contains("只能出现一次"));
+}
+
+#[test]
+fn a_non_letter_is_rejected_with_its_position() {
+    let message = error("n1,m->n");
+    assert!(message.contains("第 0 项"), "{message}");
+    assert!(message.contains("`1`"), "{message}");
+}
+
+#[test]
+fn a_repeated_letter_inside_one_term_is_rejected() {
+    let message = error("nn,m->n");
+    assert!(message.contains("重复"), "{message}");
+    assert!(
+        message.contains("对角线") || message.contains("对角"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_repeated_output_letter_is_rejected() {
+    assert!(error("nm->nn").contains("输出轴必须唯一"));
+}
+
+#[test]
+fn an_output_axis_that_no_input_mentions_is_rejected() {
+    let message = error("nm->nk");
+    assert!(message.contains("输出轴 `k`"), "{message}");
+}
+
+#[test]
+fn parsing_through_from_str_is_the_same_path() {
+    let parsed: Expr = "ij,jk->ik".parse().expect("合法");
+    assert_eq!(parsed, Expr::parse("ij,jk->ik").expect("合法"));
+}
+
+// ===== 轴长度表（extents） =====
+
+#[test]
+fn lengths_are_looked_up_by_letter() {
+    let extents = Extents::new([('n', 8), ('m', 64), ('g', 2)]).expect("合法");
+    assert_eq!(extents.get('n'), Some(8));
+    assert_eq!(extents.get('m'), Some(64));
+    assert_eq!(extents.get('z'), None);
+    assert_eq!(extents.len(), 3);
+    assert!(!extents.is_empty());
+}
+
+#[test]
+fn the_display_is_stable_and_sorted() {
+    let extents = Extents::new([('n', 8), ('g', 2), ('m', 64)]).expect("合法");
+    assert_eq!(extents.to_string(), "g=2 m=64 n=8");
+}
+
+#[test]
+fn an_empty_table_is_allowed_because_a_scalar_has_no_axes() {
+    let extents = Extents::new([]).expect("合法");
+    assert!(extents.is_empty());
+    assert_eq!(extents.to_string(), "");
+}
+
+#[test]
+fn a_zero_length_axis_is_rejected() {
+    let error = Extents::new([('n', 0)]).expect_err("空轴应当被拒绝");
+    assert!(error.to_string().contains("长度为 0"), "{error}");
+}
+
+#[test]
+fn a_duplicate_axis_is_rejected_instead_of_overwritten() {
+    let error = Extents::new([('n', 8), ('n', 16)]).expect_err("重复轴应当被拒绝");
+    assert!(error.to_string().contains("两次"), "{error}");
+}
+
+#[test]
+fn a_non_letter_axis_is_rejected() {
+    let error = Extents::new([('1', 8)]).expect_err("非字母应当被拒绝");
+    assert!(error.to_string().contains("不是字母"), "{error}");
+}
+
+#[test]
+fn a_grouped_axis_derives_its_length_and_remembers_its_base() {
+    let extents = Extents::new([('m', 64)])
+        .expect("合法")
+        .group('g', 'm', 32)
+        .expect("64 能被 32 整除");
+    assert_eq!(extents.get('g'), Some(2));
+    assert_eq!(extents.grouped('g'), Some(('m', 32)));
+    assert_eq!(extents.grouped('m'), None);
+    assert_eq!(extents.len(), 2);
+    assert_eq!(extents.to_string(), "g=2 m=64");
+}
+
+#[test]
+fn grouping_rejects_a_base_that_cannot_be_divided_evenly() {
+    let error = Extents::new([('m', 33)])
+        .expect("合法")
+        .group('g', 'm', 32)
+        .expect_err("33 不能被 32 整除");
+    assert!(error.to_string().contains("整数倍"), "{error}");
+}
+
+#[test]
+fn grouping_rejects_a_missing_base_and_a_zero_divisor() {
+    let missing = Extents::new([('n', 8)])
+        .expect("合法")
+        .group('g', 'm', 32)
+        .expect_err("没有 m");
+    assert!(missing.to_string().contains("没有长度"), "{missing}");
+
+    let zero = Extents::new([('m', 64)])
+        .expect("合法")
+        .group('g', 'm', 0)
+        .expect_err("因子不能为 0");
+    assert!(zero.to_string().contains("不能为 0"), "{zero}");
+}
+
+#[test]
+fn grouping_rejects_a_taken_label_and_a_self_base() {
+    let taken = Extents::new([('m', 64), ('g', 3)])
+        .expect("合法")
+        .group('g', 'm', 32)
+        .expect_err("g 已经存在");
+    assert!(taken.to_string().contains("两次"), "{taken}");
+
+    let itself = Extents::new([('m', 64)])
+        .expect("合法")
+        .group('m', 'm', 32)
+        .expect_err("不能以自己为基准");
+    assert!(itself.to_string().contains("自己"), "{itself}");
+}
+
+// ===== 代价推导（formula） =====
 
 fn extents(pairs: [(char, usize); 3]) -> Extents {
     Extents::new(pairs).expect("轴长度合法")

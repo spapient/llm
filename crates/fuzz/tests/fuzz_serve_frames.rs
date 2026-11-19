@@ -1,8 +1,6 @@
 //! libfuzzer harness：服务端帧解码（半帧、超限长度、坏尾部）。
 #![cfg_attr(unix, no_main)]
 
-#[path = "support/drivers.rs"]
-mod drivers;
-include!("support/harness.rs");
+include!("support.rs");
 
 fuzz_harness!(drivers::Frames);

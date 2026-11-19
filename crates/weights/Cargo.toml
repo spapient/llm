@@ -35,7 +35,3 @@ workspace = true
 [[test]]
 name = "round_trip"
 path = "tests/round_trip.rs"
-
-[[test]]
-name = "import_tests"
-path = "tests/import_tests.rs"

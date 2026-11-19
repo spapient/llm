@@ -311,7 +311,7 @@ mod expr {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/expr_tests.rs");
+        include!("../tests/einsum_tests.rs");
     }
 }
 mod extents {
@@ -469,11 +469,6 @@ mod extents {
             }
             Ok(())
         }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        include!("../tests/extents_tests.rs");
     }
 }
 mod formula {
@@ -1003,11 +998,6 @@ mod formula {
     fn overflow() -> Error {
         Error::new(Code::Invalid, "维度乘积或流量超出 u128：形状不可能是真的")
             .with("einsum::Formula")
-    }
-
-    #[cfg(test)]
-    mod tests {
-        include!("../tests/formula_tests.rs");
     }
 }
 
