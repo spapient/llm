@@ -18,7 +18,7 @@ use crate::leb::Cursor;
 use crate::proof::{Digest, Proof};
 use crate::quant::Quant;
 use crate::rans;
-use crate::seg::{Desc, DescBody, Descriptor, numel};
+use crate::seg::{Desc, DescBody, Descriptor};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 
 /// 固定头长度：magic 4 + version 2 + flags 4 + align 1（count 是 LEB，不计入）。
@@ -113,7 +113,7 @@ impl Stored {
 
     /// 逻辑字节数：元素类型 × 元素个数，也是 `rans::decode` 的分配上限（来自描述符而非帧）。
     pub fn logical_len(&self) -> Result<usize> {
-        usize::try_from(self.desc.dtype.bytes_for(numel(&self.desc.shape)))
+        usize::try_from(self.desc.dtype.bytes_for(tensor::product(&self.desc.shape)))
             .map_err(|_| invalid("段的逻辑长度超 usize"))
     }
 
@@ -335,7 +335,7 @@ impl Default for MetricsAcc {
 impl MetricsAcc {
     /// 累加单段；引用段计入命中数与逻辑字节节省。
     fn add(&mut self, seg: &Stored) -> Result<()> {
-        let numel = numel(seg.shape());
+        let numel = tensor::product(seg.shape());
         self.params = self.params.saturating_add(numel);
         self.v_fp16 = self.v_fp16.saturating_add(numel.saturating_mul(2));
         self.lossless = self.lossless && self.is_lossless(seg);

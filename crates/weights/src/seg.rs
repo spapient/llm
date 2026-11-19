@@ -62,7 +62,7 @@ pub(crate) struct Descriptor {
 impl Descriptor {
     /// 元素个数（乘积，溢出饱和）。
     fn numel(&self) -> u64 {
-        numel(&self.shape)
+        tensor::product(&self.shape)
     }
 
     /// 形状推出的字节数。
@@ -272,7 +272,7 @@ impl Desc {
             &desc.name,
             codec,
             data_len,
-            desc.dtype.bytes_for(numel(&desc.shape)),
+            desc.dtype.bytes_for(tensor::product(&desc.shape)),
         )?;
         desc.quant = quant;
         Ok(Self {
@@ -404,11 +404,6 @@ fn check_quant(quant: Option<&Quant>, rank: u32) -> Result<()> {
         return Err(bad("量化轴超出 rank"));
     }
     Ok(())
-}
-
-/// 形状的元素乘积，溢出饱和。
-pub(crate) fn numel(shape: &[u64]) -> u64 {
-    shape.iter().fold(1u64, |acc, dim| acc.saturating_mul(*dim))
 }
 
 fn bad(message: &str) -> Error {

@@ -117,6 +117,14 @@ fn a_scalar_has_one_element_and_no_strides() {
 }
 
 #[test]
+fn a_product_saturates_instead_of_wrapping() {
+    assert_eq!(crate::product(&[] as &[u64]), 1, "空轴序列是标量");
+    assert_eq!(crate::product(&[2u64, 3]), 6);
+    assert_eq!(crate::product(&[u64::MAX, 2]), u64::MAX, "溢出饱和，不回绕成 0");
+    assert_eq!(crate::product(&[usize::MAX, 2]), usize::MAX);
+}
+
+#[test]
 fn row_major_order_matches_the_continuous_strides() {
     for dims in [&[] as &[usize], &[5], &[2, 3], &[2, 3, 4]] {
         let shape = Shape::new(dims.to_vec());
