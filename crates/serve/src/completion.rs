@@ -60,6 +60,8 @@ struct State<M, S> {
     model: M,
     sampling: S,
     batch: Batch,
+    /// 一次迭代的可行域（`B_max` / `T_max`）：它和批一起被锁，准入与步进读到的是同一份数。
+    budget: engine::ifb::Budget,
     /// 模型是否会分块预填充。首次遇到 `Unsupported` 就置 `false`：此后不再逐轮重试，
     /// 也不把提示段登记成可复用前缀——零填充的页不是"算好的提示"，不能冒充缓存命中。
     prefill: bool,
@@ -117,9 +119,23 @@ where
                 model,
                 sampling,
                 batch: Batch::new(pager),
+                budget: engine::ifb::Budget::unlimited(),
                 prefill: true,
             }),
         }
+    }
+
+    /// 给端点装上一次迭代的两条预算（`B_max` / `T_max`）。
+    ///
+    /// 容器式构造：默认不限，容量只在真的部署时才是一个确定的数，`new` 里猜一个默认值只会
+    /// 让"为什么这里卡住"多一个隐藏来源。
+    #[must_use]
+    pub fn with_budget(mut self, budget: engine::ifb::Budget) -> Self {
+        // 此刻还没有别的持有者，`get_mut` 既不用加锁也不会中毒。
+        if let Ok(state) = self.state.get_mut() {
+            state.budget = budget;
+        }
+        self
     }
 
     /// 页账（只读）：服务侧报告"占了多少页"时用。
@@ -180,6 +196,10 @@ where
         request: &Request,
         prompt: &[u32],
     ) -> diagnostic::Result<Response> {
+        // `B_max` 撞上与"页不够"同口径：现在满、可重试，不是请求不成立。
+        if state.batch.len() >= state.budget.seqs() {
+            return Ok(Response::error(Status::Unavailable, crate::FULL));
+        }
         let sequence = self.sequence(state, request, prompt)?;
         crate::admit_batch(&mut state.batch, sequence)
     }
@@ -387,8 +407,7 @@ where
     fn advance_prompt(&mut self, sequence: Sequence, id: u64) -> diagnostic::Result<()> {
         let prompt_len = sequence.prompt_len();
         let mut at = sequence.prefilled();
-        while at < prompt_len {
-            let end = (at + PREFILL_CHUNK).min(prompt_len);
+        while let Some(end) = self.next_end(at, prompt_len) {
             match self.prefill_block(&sequence, id, at, end)? {
                 Block::Done => at = end,
                 // 页紧与模型不支持都不该判这条请求非法：一个下一轮会好，一个已经退化。
@@ -396,6 +415,19 @@ where
             }
         }
         Ok(())
+    }
+
+    /// 下一块的块尾：`None` 是已算完，或这一轮没有可推进的整页预算。
+    ///
+    /// 块大小不在这里 `min` 一次就完事：[`engine::ifb::chunk`] 是唯一的算式，调用方只管用
+    /// 它给的数——对齐口径只能有一处，否则总有一处会把「整页」漏成「随便切」。
+    fn next_end(&self, at: usize, prompt_len: usize) -> Option<usize> {
+        let chunk = engine::ifb::chunk(
+            prompt_len - at,
+            self.batch.scheduler().page_size(),
+            self.budget.tokens().min(PREFILL_CHUNK),
+        );
+        (chunk > 0).then_some(at + chunk)
     }
 
     /// 算一块提示位置并登记它：一块只做一次前向、一次登记。
@@ -674,6 +706,32 @@ mod tests {
             .expect("请求侧错误落成响应");
         assert_eq!(response.status(), Status::BadRequest);
         assert!(!response.envelope().payload().is_empty());
+    }
+
+    /// 批满时新请求回 503 而不是 400：这是"现在挤不下"，等一条结束就会好。
+    ///
+    /// 与"页不够"同口径。把满批判成请求非法，会让客户端在容量压力下永久放弃本可成功的请求。
+    #[test]
+    fn a_full_batch_turns_new_requests_away_until_one_finishes() {
+        let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 8).with_budget(engine::ifb::Budget::new(1, 32));
+        // 占住唯一的位置：手工准入一条，让批恒满（`call` 自己会跑完并归还，留不下驻留序列）。
+        let sequence = Sequence::new(9, &[1, 2], 2, 4, Stream::new(0)).expect("序列");
+        endpoint
+            .state
+            .lock()
+            .expect("锁")
+            .batch
+            .admit(sequence)
+            .expect("准入");
+        let response = endpoint
+            .call(b"id=1\nprompt=hi\nmax_new=2")
+            .expect("满批落成响应");
+        assert_eq!(response.status(), Status::Unavailable);
+        assert_eq!(
+            endpoint.state.lock().expect("锁").batch.len(),
+            1,
+            "被挡的请求不该进批"
+        );
     }
 
     /// 最坏长度超过整个页池：重试多少次都一样，属于 400 而不是"稍后重试"。
