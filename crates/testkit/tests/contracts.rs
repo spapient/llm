@@ -51,6 +51,26 @@ fn sources() -> Vec<(String, PathBuf)> {
     out
 }
 
+/// 找到声明 `pub mod {module}` 的文件：优先同名文件；聚合后的算子声明在骨架文件里。
+fn locate_module(module: &str) -> Option<PathBuf> {
+    let direct = root().join("crates/op/src").join(format!("{module}.rs"));
+    if direct.exists() {
+        return Some(direct);
+    }
+    for (crate_name, file) in sources() {
+        if crate_name != "op" {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
+        if text.contains(&format!("pub mod {module}")) {
+            return Some(file);
+        }
+    }
+    None
+}
+
 /// 命中 `predicate` 的行。
 fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
     let mut out = Vec::new();
@@ -425,13 +445,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
             ));
             continue;
         };
-        let file = root().join("crates/op/src").join(format!("{module}.rs"));
-        let text = fs::read_to_string(&file).unwrap_or_else(|_| {
-            panic!(
-                "`{name}` 的语义表指向 `{model}`，但 {} 读不到",
-                file.display()
-            )
+        let file = locate_module(module).unwrap_or_else(|| {
+            panic!("`{name}` 的语义表指向 `{model}`，但 `pub mod {module}` 读不到")
         });
+        let text = fs::read_to_string(&file).expect("读模块文件");
         let via_macro = invokes_model_macro(&text, &model_macros);
         if !PRODUCERS.iter().any(|producer| text.contains(producer)) && !via_macro {
             failures.push(format!(
