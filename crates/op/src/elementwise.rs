@@ -125,7 +125,7 @@ pub fn forward<B: Binary>(a: &[f32], b: &[f32], out: &mut [f32]) -> diagnostic::
 #[macro_export]
 macro_rules! binary_f32 {
     (
-        $name:ident, $alias:ident, $op:tt, $test:tt,
+        $name:ident, $alias:ident, $op:tt, $kind:ident,
         $apply:expr
         $(, $input_a:expr, $input_b:expr)?
     ) => {
@@ -169,7 +169,8 @@ macro_rules! binary_f32 {
 
         #[cfg(test)]
         mod tests {
-            include!($test);
+            use super::*;
+            $crate::elementwise::test_support::$kind!($name, forward);
         }
     };
 }
@@ -234,7 +235,23 @@ pub(crate) mod test_support {
             }
         };
     }
+    /// 除法专属：参考对拍加 IEEE-754 除零语义（符号决定 ±inf）。
+    macro_rules! elementwise_div_tests {
+        ($ty:ty, $forward:ident) => {
+            $crate::elementwise::test_support::elementwise_pair_tests!($ty, $forward);
+
+            #[test]
+            fn division_by_zero_matches_ieee() {
+                let mut out = vec![0.0; 2];
+                $forward(&[1.0, -1.0], &[0.0, 0.0], &mut out).expect("等长");
+                assert!(out[0].is_sign_positive(), "1/0 = +inf");
+                assert!(out[1].is_sign_negative(), "-1/0 = -inf");
+                assert!(out.iter().all(|x| x.is_infinite()), "除零得无穷");
+            }
+        };
+    }
     pub(crate) use elementwise_binary_tests;
+    pub(crate) use elementwise_div_tests;
     pub(crate) use elementwise_pair_tests;
 }
 
@@ -247,13 +264,8 @@ pub mod add_f32 {
     //! 语义表由 `#[annotation::model]` 生成（`tests/contracts.rs` 要求语义表只有这一个生产者），
     //! 算术与遍历由 [`crate::elementwise`] 骨架按 [`Add`] 类型单态化。
 
-    crate::binary_f32!(
-        Add,
-        AddF32,
-        "add_f32",
-        "../tests/add_f32_tests.rs",
-        |x, y| x + y
-    );
+    crate::binary_f32!(Add, AddF32, "add_f32", elementwise_binary_tests, |x, y| x
+        + y);
 }
 
 pub mod sub_f32 {
@@ -262,13 +274,8 @@ pub mod sub_f32 {
     //! 语义表由 `#[annotation::model]` 生成（`tests/contracts.rs` 要求语义表只有这一个生产者），
     //! 算术与遍历由 [`crate::elementwise`] 骨架按 [`Sub`] 类型单态化。
 
-    crate::binary_f32!(
-        Sub,
-        SubF32,
-        "sub_f32",
-        "../tests/sub_f32_tests.rs",
-        |x, y| x - y
-    );
+    crate::binary_f32!(Sub, SubF32, "sub_f32", elementwise_binary_tests, |x, y| x
+        - y);
 }
 
 pub mod mul_f32 {
@@ -276,13 +283,8 @@ pub mod mul_f32 {
     //!
     //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Mul`] 单态化。
 
-    crate::binary_f32!(
-        Mul,
-        MulF32,
-        "mul_f32",
-        "../tests/mul_f32_tests.rs",
-        |x, y| x * y
-    );
+    crate::binary_f32!(Mul, MulF32, "mul_f32", elementwise_binary_tests, |x, y| x
+        * y);
 }
 
 pub mod div_f32 {
@@ -291,13 +293,7 @@ pub mod div_f32 {
     //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Div`] 单态化。
     //! 除零按 IEEE-754 语义（`±inf` / `NaN`），不在算子层额外判错。
 
-    crate::binary_f32!(
-        Div,
-        DivF32,
-        "div_f32",
-        "../tests/div_f32_tests.rs",
-        |x, y| x / y
-    );
+    crate::binary_f32!(Div, DivF32, "div_f32", elementwise_div_tests, |x, y| x / y);
 }
 
 pub mod max_f32 {
@@ -305,13 +301,8 @@ pub mod max_f32 {
     //!
     //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Max`] 单态化。
 
-    crate::binary_f32!(
-        Max,
-        MaxF32,
-        "max_f32",
-        "../tests/max_f32_tests.rs",
-        |x, y| x.max(y)
-    );
+    crate::binary_f32!(Max, MaxF32, "max_f32", elementwise_binary_tests, |x, y| x
+        .max(y));
 }
 
 pub mod min_f32 {
@@ -319,13 +310,8 @@ pub mod min_f32 {
     //!
     //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Min`] 单态化。
 
-    crate::binary_f32!(
-        Min,
-        MinF32,
-        "min_f32",
-        "../tests/min_f32_tests.rs",
-        |x, y| x.min(y)
-    );
+    crate::binary_f32!(Min, MinF32, "min_f32", elementwise_binary_tests, |x, y| x
+        .min(y));
 }
 
 pub mod residual_add_f32 {
@@ -338,7 +324,7 @@ pub mod residual_add_f32 {
         Residual,
         ResidualAddF32,
         "residual_add_f32",
-        "../tests/residual_add_f32_tests.rs",
+        elementwise_binary_tests,
         |x, y| x + y,
         |len| (0..len).map(|i| (i as f32) * 0.5).collect(),
         |len| (0..len).map(|i| (i as f32) * 0.25).collect()
