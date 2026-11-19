@@ -848,11 +848,22 @@ macro_rules! gemv_packed {
                 $alias, MODEL, GROUP, forward, $w_bytes, $sample_w
             );
             $crate::gemv::packed_test_support::packed_gemv_config_tests!(
-                $alias, $op, $bits, $w_note, $dequant_vals, $dequant_expect
+                $alias,
+                $op,
+                $bits,
+                $w_note,
+                $dequant_vals,
+                $dequant_expect
             );
             $crate::gemv::packed_test_support::packed_gemv_value_tests!(
-                $alias, $bits, $w_group, $scales_group, $ref_assert,
-                $w_sum, $row0, $row1
+                $alias,
+                $bits,
+                $w_group,
+                $scales_group,
+                $ref_assert,
+                $w_sum,
+                $row0,
+                $row1
             );
         }
     };
@@ -868,12 +879,19 @@ pub mod gemv_i2 {
     use crate::quant::I2;
 
     crate::gemv_packed!(
-        I2Conf, I2, "gemv_i2", I2, 2,
-        1, 16, "权重 4 MiB + 输入 16 KiB + 缩放 2 MiB",
-        [1, -1, 0, 1], 0.5,
+        I2Conf,
+        I2,
+        "gemv_i2",
+        I2,
+        2,
+        1,
+        16,
+        "权重 4 MiB + 输入 16 KiB + 缩放 2 MiB",
+        [1, -1, 0, 1],
+        0.5,
         [1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1],
         [0.25, 0.5, 1.0, -1.0],
-        |y| {
+        |y: &[f32]| {
             assert!(y[0].is_finite());
             assert!(y[1].is_finite());
         },
@@ -893,12 +911,19 @@ pub mod gemv_i4 {
     use crate::quant::I4;
 
     crate::gemv_packed!(
-        I4Conf, I4, "gemv_i4", I4, 4,
-        2, 32, "权重 8 MiB + 输入 16 KiB + 缩放 2 MiB",
-        [1, 2, 3, 4], 5.0,
+        I4Conf,
+        I4,
+        "gemv_i4",
+        I4,
+        4,
+        2,
+        32,
+        "权重 8 MiB + 输入 16 KiB + 缩放 2 MiB",
+        [1, 2, 3, 4],
+        5.0,
         [1, 2, 3, 4, 5, 6, 7, 8, 1, 1, 1, 1, 2, 2, 2, 2],
         [0.25, 0.5, 1.0, 1.0],
-        |y| {
+        |y: &[f32]| {
             assert!(y[0] > 0.0);
             assert!(y[1] > y[0], "第二行权重更大");
         },

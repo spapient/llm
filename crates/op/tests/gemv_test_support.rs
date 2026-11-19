@@ -197,7 +197,8 @@ macro_rules! packed_gemv_value_tests {
         fn forward_writes_into_the_caller_buffer_and_matches_the_reference() {
             let (w, x, scales, m, n) = multi_group($bits, &$w_group, $scales_group.to_vec());
             let expected =
-                crate::gemv::reference::<$ty>(&with(m, n, x.clone(), w.clone(), scales.clone())).expect("参考可算");
+                crate::gemv::reference::<$ty>(&with(m, n, x.clone(), w.clone(), scales.clone()))
+                    .expect("参考可算");
             // 复用一块脏缓冲：结果必须是覆盖写，读到的不能是上一次的残留。
             let mut out = vec![f32::NAN; n];
             forward(&x, &w, &scales, &mut out).expect("内核可算");
@@ -233,29 +234,74 @@ macro_rules! packed_gemv_value_tests {
         fn shape_mismatch_is_an_error() {
             let cpb = 8 / $bits;
             // 输入太短。
-            assert!(crate::gemv::reference::<$ty>(&with(4, 1, vec![1.0], vec![0u8; 4 / cpb], vec![1.0])).is_err());
+            assert!(
+                crate::gemv::reference::<$ty>(&with(
+                    4,
+                    1,
+                    vec![1.0],
+                    vec![0u8; 4 / cpb],
+                    vec![1.0]
+                ))
+                .is_err()
+            );
             // 权重太短。
-            assert!(crate::gemv::reference::<$ty>(&with(4, 1, vec![1.0; 4], vec![0u8; 0], vec![1.0])).is_err());
+            assert!(
+                crate::gemv::reference::<$ty>(&with(4, 1, vec![1.0; 4], vec![0u8; 0], vec![1.0]))
+                    .is_err()
+            );
             // 没有分组。
-            assert!(crate::gemv::reference::<$ty>(&with(4, 1, vec![1.0; 4], vec![0u8; 4 / cpb], vec![])).is_err());
+            assert!(
+                crate::gemv::reference::<$ty>(&with(
+                    4,
+                    1,
+                    vec![1.0; 4],
+                    vec![0u8; 4 / cpb],
+                    vec![]
+                ))
+                .is_err()
+            );
             // 分组不是 cpb 的倍数：m=5、1 组 → 组大小 5，对 2 位与 4 位都不是整组。
             assert!(
-                crate::gemv::reference::<$ty>(&with(5, 1, vec![1.0; 5], vec![0u8; (5 + cpb - 1) / cpb], vec![1.0]))
-                    .is_err()
+                crate::gemv::reference::<$ty>(&with(
+                    5,
+                    1,
+                    vec![1.0; 5],
+                    vec![0u8; 5usize.div_ceil(cpb)],
+                    vec![1.0]
+                ))
+                .is_err()
             );
             // m 不是 cpb 的倍数、分组为 2 组但不整除：先被"不能整除"拦下，解包循环从不碰到残缺尾码。
             assert!(
-                crate::gemv::reference::<$ty>(&with(5, 1, vec![1.0; 5], vec![0u8; (5 + cpb - 1) / cpb], vec![1.0, 1.0]))
-                    .is_err()
+                crate::gemv::reference::<$ty>(&with(
+                    5,
+                    1,
+                    vec![1.0; 5],
+                    vec![0u8; 5usize.div_ceil(cpb)],
+                    vec![1.0, 1.0]
+                ))
+                .is_err()
             );
             // 非整组宽度无论分组奇偶都进不到解包：非整组被倍数校验拦，其余被整除校验拦。
             assert!(
-                crate::gemv::reference::<$ty>(&with(7, 1, vec![1.0; 7], vec![0u8; (7 + cpb - 1) / cpb], vec![1.0]))
-                    .is_err()
+                crate::gemv::reference::<$ty>(&with(
+                    7,
+                    1,
+                    vec![1.0; 7],
+                    vec![0u8; 7usize.div_ceil(cpb)],
+                    vec![1.0]
+                ))
+                .is_err()
             );
             assert!(
-                crate::gemv::reference::<$ty>(&with(7, 1, vec![1.0; 7], vec![0u8; (7 + cpb - 1) / cpb], vec![1.0, 1.0]))
-                    .is_err()
+                crate::gemv::reference::<$ty>(&with(
+                    7,
+                    1,
+                    vec![1.0; 7],
+                    vec![0u8; 7usize.div_ceil(cpb)],
+                    vec![1.0, 1.0]
+                ))
+                .is_err()
             );
         }
     };
