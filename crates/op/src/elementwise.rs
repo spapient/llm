@@ -176,8 +176,8 @@ macro_rules! binary_f32 {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    /// 生成 add/mul 等二元算子共有的三则测试：参考对拍、长度负例、饱和与重复边界。
-    macro_rules! elementwise_binary_tests {
+    /// 生成「参考对拍 + 长度负例」两则共有测试：不依赖算子的数值语义。
+    macro_rules! elementwise_pair_tests {
         ($ty:ty, $forward:ident) => {
             #[test]
             fn matches_the_scalar_reference() {
@@ -204,6 +204,13 @@ pub(crate) mod test_support {
                 let mut empty = vec![];
                 $forward(&[], &[], &mut empty).expect("空输入逐元素放行");
             }
+        };
+    }
+
+    /// 生成 add/mul 等二元算子共有的三则测试：参考对拍、长度负例、饱和与重复边界。
+    macro_rules! elementwise_binary_tests {
+        ($ty:ty, $forward:ident) => {
+            $crate::elementwise::test_support::elementwise_pair_tests!($ty, $forward);
 
             #[test]
             fn saturating_and_repeated_inputs_match_reference() {
@@ -228,6 +235,7 @@ pub(crate) mod test_support {
         };
     }
     pub(crate) use elementwise_binary_tests;
+    pub(crate) use elementwise_pair_tests;
 }
 
 // 声明式算子表：同一副二元骨架的七个算子，每个算子一个 `pub mod` 保持 `op::<name>::forward`

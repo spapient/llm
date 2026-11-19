@@ -1,15 +1,8 @@
 use super::*;
 
-#[test]
-fn gelu_matches_the_scalar_reference() {
-    let sample = crate::unary::sample::<Gelu>(128, 1);
-    let expected = crate::unary::reference::<Gelu>(&sample).expect("参考可计算");
-    let mut out = vec![0.0; 128];
-    let a = sample.f32("a").expect("a 存在");
-    forward(a, &mut out).expect("缓冲等长");
-    assert_eq!(out, expected);
-}
+crate::unary::test_support::unary_pair_tests!(Gelu, forward);
 
+/// 精确 erf 的已知值钉住：Abramowitz-Stegun 7.1.26 闭式，两侧绝对误差 < 1.5e-7。
 #[test]
 fn erf_matches_known_values() {
     assert!((erf(0.0) - 0.0).abs() < 1e-6);
