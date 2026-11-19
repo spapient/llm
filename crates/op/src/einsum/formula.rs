@@ -49,6 +49,29 @@ impl OperandSpec {
     }
 }
 
+/// f32 一读一写的标准操作数：`a` 读、`y` 写（一元与归约共用同一份）。
+///
+/// 过去 `unary` 与 `reduce` 各写一份同名的 `f32_operands`，而 `elementwise` 同名却返回
+/// 三元素——同一个函数名、两种元数，改错一处只会在运行时才暴露。收口到这里之后，操作数表
+/// 与 `OperandSpec` 同层（表达式层），四条骨架按元数各取所需。
+#[must_use]
+pub const fn f32_io_operands() -> [OperandSpec; 2] {
+    [
+        OperandSpec::read("a", Bits::ThirtyTwo),
+        OperandSpec::write("y", Bits::ThirtyTwo),
+    ]
+}
+
+/// f32 两读一写的标准操作数：`a`、`b` 读、`y` 写（二元逐元素）。
+#[must_use]
+pub const fn f32_binary_operands() -> [OperandSpec; 3] {
+    [
+        OperandSpec::read("a", Bits::ThirtyTwo),
+        OperandSpec::read("b", Bits::ThirtyTwo),
+        OperandSpec::write("y", Bits::ThirtyTwo),
+    ]
+}
+
 /// 一个操作数：名字、元素位宽与读/写方向。
 ///
 /// 名字只是诊断用的标签（与内核模板的形参名一致），但必须唯一：同名缓冲出现在两个位置会被

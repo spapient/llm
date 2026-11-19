@@ -3,7 +3,7 @@
 //! 输入轴 `n` 被规约消掉，输出轴 `o` 长度恒为 1。`reduce_sum_f32` / `reduce_max_f32` 是同一副
 //! 骨架的两种 [`Reduce`] 实现，骨架（表达式缓存、代价、样本、校验、遍历）只有一份，按类型单态化。
 
-use crate::einsum::{Bits, Formula, FormulaCache, OperandSpec};
+use crate::einsum::{Formula, FormulaCache, OperandSpec};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
@@ -12,7 +12,7 @@ pub trait Reduce {
     /// 表达式各项的位宽与方向（表达式固定为 `n,o->o`）。
     ///
     /// 默认 f32 一读一写；位宽不同的格式在实现里覆盖。
-    const OPERANDS: &'static [OperandSpec] = &f32_operands();
+    const OPERANDS: &'static [OperandSpec] = &crate::einsum::f32_io_operands();
 
     /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
     fn cache() -> &'static FormulaCache;
@@ -37,14 +37,8 @@ pub trait Reduce {
 
     /// 确定性输入：默认线性夹具 `−1.0 + 0.5·i`；需要不同取值时在实现里覆盖。
     fn input(len: usize) -> Vec<f32> {
-        linear(len, 0.5, -1.0)
+        crate::model::linear(len, 0.5, -1.0)
     }
-}
-
-/// 线性确定性夹具：`base + step·i`，同一长度取值可复现。
-#[must_use]
-fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
-    (0..len).map(|i| base + i as f32 * step).collect()
 }
 
 /// 两条轴：输入轴 `n`（被规约），输出轴 `o`。
@@ -122,15 +116,6 @@ pub fn forward<R: Reduce>(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> 
     }
     out[0] = acc;
     Ok(())
-}
-
-/// f32 归约操作数：输入读（轴 n），输出写（轴 o）。
-#[must_use]
-pub const fn f32_operands() -> [OperandSpec; 2] {
-    [
-        OperandSpec::read("a", Bits::ThirtyTwo),
-        OperandSpec::write("y", Bits::ThirtyTwo),
-    ]
 }
 
 /// 生成一份 f32 归约算子的公开面：标记类型、[`Reduce`] 实现、[`annotation::model`] 别名、

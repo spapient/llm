@@ -93,8 +93,10 @@ mod formula;
 pub use cache::FormulaCache;
 pub use expr::Expr;
 pub use extents::Extents;
-pub use formula::{Access, Axes, Axis, AxisRole, Formula, Operand, OperandSpec};
-
+pub use formula::{
+    Access, Axes, Axis, AxisRole, Formula, Operand, OperandSpec, f32_binary_operands,
+    f32_io_operands,
+};
 /// 元素位宽闭集（bit）。
 ///
 /// 闭集而不是 `u32`：位宽决定流量怎么算（`i4` 是半个字节），随手写一个 `7` 不该通过。

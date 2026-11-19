@@ -416,6 +416,15 @@ pub fn x_buffer(len: usize) -> Buffer {
     }
 }
 
+/// 线性确定性夹具：`base + step·i`，同一长度取值可复现。
+///
+/// 逐元素与归约骨架的默认输入都从这里出：样本必须确定性（cutile README §12.3），因此不接
+/// 随机源。骨架各写一份 `base/step` 不同的 `input`，但算术只有这一份。
+#[must_use]
+pub fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
+    (0..len).map(|i| base + i as f32 * step).collect()
+}
+
 #[cfg(test)]
 #[path = "../tests/model_tests.rs"]
 mod tests;

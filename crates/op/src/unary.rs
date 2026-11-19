@@ -4,7 +4,7 @@
 //! 写一个数。`silu_f32` / `gelu_f32` 是同一副骨架的两种 [`Unary`] 实现，骨架（表达式缓存、
 //! 代价、样本、校验、遍历）只有一份，按实现类型单态化。
 
-use crate::einsum::{Bits, Formula, FormulaCache, OperandSpec};
+use crate::einsum::{Formula, FormulaCache, OperandSpec};
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
@@ -18,7 +18,7 @@ pub trait Unary {
     /// 表达式各项的位宽与方向，顺序与 [`Unary::EXPR`] 一一对应。
     ///
     /// 默认 f32 一读一写；位宽不同的格式在实现里覆盖。
-    const OPERANDS: &'static [OperandSpec] = &f32_operands();
+    const OPERANDS: &'static [OperandSpec] = &crate::einsum::f32_io_operands();
 
     /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
     fn cache() -> &'static FormulaCache;
@@ -37,14 +37,8 @@ pub trait Unary {
 
     /// 输入的确定性取值：默认线性夹具 `−4.0 + 0.25·i`；需要不同取值时在实现里覆盖。
     fn input(len: usize) -> Vec<f32> {
-        linear(len, 0.25, -4.0)
+        crate::model::linear(len, 0.25, -4.0)
     }
-}
-
-/// 线性确定性夹具：`base + step·i`，同一长度取值可复现。
-#[must_use]
-fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
-    (0..len).map(|i| base + i as f32 * step).collect()
 }
 
 /// 一元骨架只有一条轴：既是输入轴也是输出轴。
@@ -111,15 +105,6 @@ pub fn forward<U: Unary>(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
         *out = U::apply(*x);
     }
     Ok(())
-}
-
-/// f32 一元操作数的标准规格：一个读、一个写。
-#[must_use]
-pub const fn f32_operands() -> [OperandSpec; 2] {
-    [
-        OperandSpec::read("a", Bits::ThirtyTwo),
-        OperandSpec::write("y", Bits::ThirtyTwo),
-    ]
 }
 
 /// 生成一份 f32 一元逐元素算子的公开面：标记类型、[`Unary`] 实现、[`annotation::model`] 别名、
