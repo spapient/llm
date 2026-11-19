@@ -167,7 +167,7 @@ mod tests {
     /// 同 N-gram 落到同槽，读写往返一致。
     #[test]
     fn table_get_set_roundtrip() {
-        let mut t = Table::new(10, 4);
+        let mut t = Table::<f32>::new(10, 4);
         assert!(t.len() >= 10 && is_prime(t.len()));
         let g = [3u32, 1, 4];
         t.set(&g, 7, &[0.1, 0.2, 0.3, 0.4]);
@@ -177,7 +177,7 @@ mod tests {
     /// f64 表复用同一份实现（泛型不复制）。
     #[test]
     fn table_f64_reuses_impl() {
-        let mut t: Table<f64> = Table::new(10, 2);
+        let mut t = Table::<f64>::new(10, 2);
         let g = [1u32, 1, 2];
         t.set(&g, 3, &[0.5, 1.5]);
         assert_eq!(t.get(&g, 3), &[0.5, 1.5]);
@@ -188,8 +188,8 @@ mod tests {
     fn slot_is_independent_of_table_length() {
         // `slots` 只依赖 N、K，不接收表长 M；不同表长对同 N-gram 的槽下标由 φ mod M 决定，
         // 单次查找复杂度 O(N)（哈希 N-gram），与 M 无关。
-        let small = Table::new(16, 1);
-        let large = Table::new(16_384, 1);
+        let small = Table::<f32>::new(16, 1);
+        let large = Table::<f32>::new(16_384, 1);
         let g = [5u32, 9];
         assert!(small.slot(&g, 0) < small.len());
         assert!(large.slot(&g, 0) < large.len());
