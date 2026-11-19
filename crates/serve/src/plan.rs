@@ -5,6 +5,7 @@
 
 use diagnostic::{Code, Error, Result};
 use nn::{Contract, Embedding, Linear, Shape, WEIGHT_SUFFIX, WeightFormat};
+use op::quant::{I4, I8};
 
 use crate::kernels::SITE;
 use crate::params::Params;
@@ -305,7 +306,8 @@ fn projection_plan(
 }
 
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节 `[out, in/cpb]`
-/// + 标度 `[out, in/group]`。位宽决定每字节码数（i4 为 2、i8 为 1），分组来自格式声明。
+/// + 标度 `[out, in/group]`。每字节码数读 [`op::quant::Row`] 配置表（`I4.cpb=2`、`I8.cpb=1`，
+/// 与 `op` 的 GEMV/GEMM/反量化同一事实源），分组来自格式声明。
 ///
 /// 量化输入宽度必须已被 [`validate_quantized_shape`] 校验为分组的整数倍；这里按精确除法取值，
 /// 不再兜底 `ceil`——声明分组与实际分组漂移的坏形状进不到这一步。
@@ -316,11 +318,11 @@ pub(crate) fn projection_shapes(
 ) -> (Vec<usize>, Vec<usize>) {
     match format {
         WeightFormat::Int4 { group } => (
-            vec![out_features, in_features / 2],
+            vec![out_features, in_features / I4.cpb],
             vec![out_features, in_features / group],
         ),
         WeightFormat::Int8 { group } => (
-            vec![out_features, in_features],
+            vec![out_features, in_features / I8.cpb],
             vec![out_features, in_features / group],
         ),
         _ => (vec![out_features, in_features], Vec::new()),
@@ -333,8 +335,8 @@ pub(crate) fn projection_shapes(
 /// 分组会漂移——在装配期直接拒绝，而不是用 `ceil` 凑一个标度条数。
 pub(crate) fn validate_quantized_shape(format: WeightFormat, in_features: usize) -> Result<()> {
     let (cpb, group) = match format {
-        WeightFormat::Int4 { group } => (2, group),
-        WeightFormat::Int8 { group } => (1, group),
+        WeightFormat::Int4 { group } => (I4.cpb, group),
+        WeightFormat::Int8 { group } => (I8.cpb, group),
         _ => return Ok(()),
     };
     if !in_features.is_multiple_of(group) || !in_features.is_multiple_of(cpb) {
