@@ -308,6 +308,7 @@ fn an_unmapped_dtype_falls_back_to_a_compile_error() {
         shape: [8, 4],
         dtype: "f96".to_string(),
         skeleton: "gemv".to_string(),
+        const_name: "MODEL".to_string(),
     };
     let code = render_model(&decl, "M");
     assert!(code.contains("compile_error!"), "{code}");
@@ -322,6 +323,7 @@ fn an_unlisted_skeleton_falls_back_to_a_compile_error() {
         shape: [8, 4],
         dtype: "f32".to_string(),
         skeleton: "ghost".to_string(),
+        const_name: "MODEL".to_string(),
     };
     let code = render_model(&decl, "M");
     assert!(code.contains("compile_error!"), "{code}");
