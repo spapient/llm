@@ -52,7 +52,6 @@ extern crate self as llm_op;
 
 pub mod attention;
 pub mod decl;
-pub mod decode_attention;
 pub mod dequant;
 pub mod einsum;
 pub mod elementwise;
@@ -73,7 +72,8 @@ pub mod softmax_f32;
 pub mod tpl;
 pub mod unary;
 
-// 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM 骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
+// 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM / 注意力骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
+pub use attention::decode_attention;
 pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};
