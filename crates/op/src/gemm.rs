@@ -402,6 +402,48 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
     values
 }
 
+/// 各格式共用的测试生成：打包格式（i2/i4/i8）跑参考、形状矩阵与独立闭式点积三则；
+/// 稠密 f32 只跑参考对拍（整数闭式点积不适用）。形状矩阵只定义一次。
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// 对拍形状矩阵：单行单列、多行单列、单行多列、常规矩阵。
+    pub(crate) const SHAPES: &[(usize, usize)] = &[(1, 1), (5, 1), (1, 7), (16, 12)];
+
+    /// 打包量化格式共有的三则对拍。
+    macro_rules! gemm_packed_tests {
+        ($ty:ty) => {
+            #[test]
+            fn matches_the_scalar_reference() {
+                crate::gemm::matches_reference::<$ty>();
+            }
+
+            #[test]
+            fn matches_over_the_shape_matrix() {
+                crate::gemm::matches_reference_over_shapes::<$ty>(
+                    $crate::gemm::test_support::SHAPES,
+                );
+            }
+
+            #[test]
+            fn matches_the_hand_closed_dot() {
+                crate::gemm::hand_closed::<$ty>();
+            }
+        };
+    }
+
+    /// 稠密 f32 格式：整数闭式点积不适用，只做标量参考对拍。
+    macro_rules! gemm_dense_tests {
+        ($ty:ty) => {
+            #[test]
+            fn matches_the_scalar_reference() {
+                crate::gemm::matches_reference::<$ty>();
+            }
+        };
+    }
+    pub(crate) use gemm_dense_tests;
+    pub(crate) use gemm_packed_tests;
+}
+
 /// 生成一份 GEMM 精度变体的完整公开面：标记类型、[`Gemm`] 实现、`forward` 入口、
 /// [`annotation::model`] 注解与测试挂载。差异只随后面的关联项（取样 / 打包 / 点积契约）变化；
 /// 新增一档精度只需加一行调用，不另写样板。
@@ -409,7 +451,7 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
 macro_rules! gemm_variant {
     (
         $name:ident, $alias:ident,
-        $op:tt, $test:tt,
+        $op:tt, $kind:ident,
         $elem:ty, $bits:expr,
         $( $methods:item ),* $(,)?
     ) => {
@@ -443,7 +485,8 @@ macro_rules! gemm_variant {
 
         #[cfg(test)]
         mod tests {
-            include!($test);
+            use super::*;
+            $crate::gemm::test_support::$kind!($name);
         }
     };
 }
@@ -461,7 +504,7 @@ pub mod gemm_i2 {
         GemmI2,
         GemmI2Model,
         "gemm_i2",
-        "../tests/gemm_i2_tests.rs",
+        gemm_packed_tests,
         u8,
         I2.bits,
         fn config() -> Option<crate::quant::Row> {
@@ -483,7 +526,7 @@ pub mod gemm_i4 {
         GemmI4,
         GemmI4Model,
         "gemm_i4",
-        "../tests/gemm_i4_tests.rs",
+        gemm_packed_tests,
         u8,
         I4.bits,
         fn config() -> Option<crate::quant::Row> {
@@ -505,7 +548,7 @@ pub mod gemm_i8 {
         GemmI8,
         GemmI8Model,
         "gemm_i8",
-        "../tests/gemm_i8_tests.rs",
+        gemm_packed_tests,
         u8,
         I8.bits,
         fn sample_a(m: usize) -> Vec<u8> {
@@ -549,7 +592,7 @@ pub mod gemm_f32 {
         Dense,
         GemmF32,
         "gemm_f32",
-        "../tests/gemm_f32_tests.rs",
+        gemm_dense_tests,
         f32,
         crate::einsum::Bits::ThirtyTwo,
         fn sample_a(m: usize) -> Vec<f32> {
