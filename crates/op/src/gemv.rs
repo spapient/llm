@@ -604,8 +604,127 @@ pub(crate) fn finite_scales(scales: &[f32], groups: usize) -> Result<(), Error> 
     Ok(())
 }
 
-#[path = "gemv_packed.rs"]
-pub mod packed;
+pub mod packed {
+    //! 打包权重（每字节 `cpb` 个码）的取样、分组校验与解包点积助手。
+    //!
+    //! int2（4 码/字节）与 int4（2 码/字节）只在码宽、查表与粒度倍数上不同；打包位域的字节布局、
+    //! 分组推导与按行点积收口到这里，避免两条打包格式各抄一遍。int8 不打包，不走本模块。
+
+    use super::{finite_scales, required_weights, scaled_groups};
+    use diagnostic::{Code, Error};
+
+    /// 确定性打包权重：`n` 行、每行 `m / cpb` 个字节，同一形状取值可复现。
+    pub fn weights(m: usize, n: usize, cpb: usize) -> Vec<u8> {
+        (0..n * (m / cpb))
+            .map(|index| ((index * 37) % 251) as u8)
+            .collect()
+    }
+
+    /// 分组推导 + "分组必须是 `cpb` 的倍数" + 打包权重长度下界。
+    ///
+    /// 返回 `(groups, group)`：每行多少组、每组多少元素。
+    pub fn groups(
+        m: usize,
+        n: usize,
+        scales: usize,
+        weights: usize,
+        cpb: usize,
+    ) -> Result<(usize, usize), Error> {
+        let (groups, group) = scaled_groups(m, n, scales)?;
+        if !group.is_multiple_of(cpb) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("分组 {group} 必须是 {cpb} 的倍数"),
+            ));
+        }
+        required_weights(weights, n, m / cpb)?;
+        Ok((groups, group))
+    }
+
+    /// 一行的点积：按分组推进，组内解包 `cpb` 个码查 `dequant` 表，整组共用同一个标度。
+    ///
+    /// 累加顺序与朴素写法逐位一致（同一字节的低位码在前）；每组 `group` 为 `cpb` 倍数，
+    /// 解包只读整组码，不触碰补齐位。
+    pub fn dot_row(
+        packed_row: &[u8],
+        x: &[f32],
+        s_row: &[f32],
+        per_group: usize,
+        group: usize,
+        cpb: usize,
+        dequant: &[f32],
+    ) -> f32 {
+        // 位宽走配置表派生：`width = 8 / cpb`，与 [`crate::quant::width_cpb`] 同一公式，不在这里第二份除法。
+        let width = crate::quant::width_cpb(cpb);
+        let mask = (1u8 << width) - 1;
+        let mut acc = 0.0f32;
+        for ((packed, scale), xs) in packed_row
+            .chunks_exact(per_group)
+            .zip(s_row)
+            .zip(x.chunks_exact(group))
+        {
+            let mut dot = 0.0f32;
+            for (byte, codes) in packed.iter().zip(xs.chunks(cpb)) {
+                for (slot, &code_slot) in codes.iter().enumerate() {
+                    let code = usize::from((byte >> (slot * width)) & mask);
+                    dot += dequant[code] * code_slot;
+                }
+            }
+            acc += dot * scale;
+        }
+        acc
+    }
+
+    /// 打包格式的行遍历：分组与长度守卫通过后，每行解包点积一次写回调用方缓冲。
+    ///
+    /// 行切片、分组推进与格式无关；格式只给每字节码数 `cpb` 与反量化表 `dequant`。
+    /// 解包位域与累加顺序和 [`dot_row`] 同一套算术，参考与内核对拍逐位一致。
+    pub fn forward_rows(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+        cpb: usize,
+        dequant: &[f32],
+    ) -> diagnostic::Result<()> {
+        let m = x.len();
+        let n = out.len();
+        let (groups, group) = groups(m, n, scales.len(), weights.len(), cpb)?;
+        finite_scales(scales, groups)?;
+        let row_bytes = m / cpb;
+        let per_group = group / cpb;
+        for (row, value) in out.iter_mut().enumerate() {
+            let w_row = &weights[row * row_bytes..][..row_bytes];
+            let s_row = &scales[row * groups..][..groups];
+            *value = dot_row(w_row, x, s_row, per_group, group, cpb, dequant);
+        }
+        Ok(())
+    }
+
+    /// 逐元素（不打包）格式的行遍历：守卫与行切片收口到骨架，每行点积算术由闭包给出。
+    ///
+    /// 与 [`forward_rows`] 对称，差别只是权重不按字节打包、一行即 `m` 个元素；格式只给
+    /// 逐行点积函数，不在自己的 `forward` 里再抄一遍分组/标度/权重长度守卫。
+    pub fn forward_plain(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+        row_dot: impl Fn(&[u8], &[f32], &[f32], usize) -> f32,
+    ) -> diagnostic::Result<()> {
+        let m = x.len();
+        let n = out.len();
+        let (groups, group) = scaled_groups(m, n, scales.len())?;
+        finite_scales(scales, groups)?;
+        required_weights(weights.len(), n, m)?;
+        for (row, value) in out.iter_mut().enumerate() {
+            let w_row = &weights[row * m..][..m];
+            let s_row = &scales[row * groups..][..groups];
+            *value = row_dot(w_row, x, s_row, group);
+        }
+        Ok(())
+    }
+}
 
 /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
 ///
@@ -684,7 +803,13 @@ mod tests;
 /// 新增一档打包精度加一次调用即可。
 #[macro_export]
 macro_rules! gemv_packed {
-    ($conf:ident, $alias:ident, $op:tt, $test:tt, $row:ident) => {
+    (
+        $conf:ident, $alias:ident, $op:tt, $row:ident, $bits:expr,
+        $w_bytes:expr, $sample_w:expr, $w_note:literal,
+        $dequant_vals:expr, $dequant_expect:expr,
+        $w_group:expr, $scales_group:expr, $ref_assert:expr,
+        $w_sum:expr, $row0:expr, $row1:expr
+    ) => {
         /// 量化分组（声明粒度）。
         pub const GROUP: usize = 32;
 
@@ -716,7 +841,19 @@ macro_rules! gemv_packed {
 
         #[cfg(test)]
         mod tests {
-            include!($test);
+            use super::*;
+            use $crate::gemv::packed_test_support::{at, multi_group, pack, with};
+
+            $crate::gemv::packed_test_support::packed_gemv_tests!(
+                $alias, MODEL, GROUP, forward, $w_bytes, $sample_w
+            );
+            $crate::gemv::packed_test_support::packed_gemv_config_tests!(
+                $alias, $op, $bits, $w_note, $dequant_vals, $dequant_expect
+            );
+            $crate::gemv::packed_test_support::packed_gemv_value_tests!(
+                $alias, $bits, $w_group, $scales_group, $ref_assert,
+                $w_sum, $row0, $row1
+            );
         }
     };
 }
@@ -730,7 +867,20 @@ pub mod gemv_i2 {
 
     use crate::quant::I2;
 
-    crate::gemv_packed!(I2Conf, I2, "gemv_i2", "../tests/gemv_i2_tests.rs", I2);
+    crate::gemv_packed!(
+        I2Conf, I2, "gemv_i2", I2, 2,
+        1, 16, "权重 4 MiB + 输入 16 KiB + 缩放 2 MiB",
+        [1, -1, 0, 1], 0.5,
+        [1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1],
+        [0.25, 0.5, 1.0, -1.0],
+        |y| {
+            assert!(y[0].is_finite());
+            assert!(y[1].is_finite());
+        },
+        [1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1],
+        [1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 0.0, 1.0],
+        [-2.0, -1.0, 0.0, 1.0, -2.0, -1.0, 0.0, 1.0]
+    );
 }
 
 pub mod gemv_i4 {
@@ -742,7 +892,20 @@ pub mod gemv_i4 {
 
     use crate::quant::I4;
 
-    crate::gemv_packed!(I4Conf, I4, "gemv_i4", "../tests/gemv_i4_tests.rs", I4);
+    crate::gemv_packed!(
+        I4Conf, I4, "gemv_i4", I4, 4,
+        2, 32, "权重 8 MiB + 输入 16 KiB + 缩放 2 MiB",
+        [1, 2, 3, 4], 5.0,
+        [1, 2, 3, 4, 5, 6, 7, 8, 1, 1, 1, 1, 2, 2, 2, 2],
+        [0.25, 0.5, 1.0, 1.0],
+        |y| {
+            assert!(y[0] > 0.0);
+            assert!(y[1] > y[0], "第二行权重更大");
+        },
+        [1, 2, 3, 4, 5, 6, 7, -8, -1, 0, 1, 2, 3, -4, 5, -6],
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, -8.0],
+        [-1.0, 0.0, 1.0, 2.0, 3.0, -4.0, 5.0, -6.0]
+    );
 }
 
 pub mod gemv_i8 {

@@ -88,6 +88,81 @@ fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
         .collect()
 }
 
+/// 按声明签名把样本缓冲绑进执行器：可写参数绑 `output_len` 字节输出槽，只读参数按 C 类型
+/// （f32/u8）逐元素写输入字节。逐点与分块对拍共用这一份绑缓冲样板。
+fn bind_decl_buffers(
+    executor: &mut engine::metal::MetalExecutor,
+    node: &mut engine::exec::Node,
+    decl: &op::decl::OpDecl,
+    sample: &op::model::Sample,
+    output_len: usize,
+) {
+    use op::sig::CType;
+
+    for (slot, param) in decl
+        .signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+    {
+        let slot = slot as u32;
+        if param.mutable {
+            executor.bind_bytes(slot, output_len * 4).expect("输出缓冲");
+            node.bind_output(slot);
+        } else {
+            node.bind_input(slot);
+            match param.ctype {
+                CType::F32 => {
+                    let values = sample.f32(&param.name).expect("f32 输入");
+                    executor.bind_bytes(slot, values.len() * 4).expect("输入缓冲");
+                    let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
+                    for (index, value) in values.iter().enumerate() {
+                        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+                CType::U8 => {
+                    let values = sample.u8(&param.name).expect("u8 输入");
+                    executor.bind_bytes(slot, values.len()).expect("输入缓冲");
+                    let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
+                    for (index, value) in values.iter().enumerate() {
+                        bytes[index] = *value;
+                    }
+                }
+                CType::Int => unreachable!("标量不是缓冲"),
+            }
+        }
+    }
+}
+
+/// 提交单个节点并同步，回读 `len` 个 f32 输出。逐点与分块归约对拍的发射/回读样板。
+fn submit_read(
+    executor: &mut engine::metal::MetalExecutor,
+    node: engine::exec::Node,
+    decl: &op::decl::OpDecl,
+    len: usize,
+) -> Vec<f32> {
+    use engine::exec::Executor as _;
+
+    let mut graph = engine::exec::Graph::new();
+    graph.push(node);
+    let stream = engine::exec::Stream::new(0);
+    executor.submit(&graph, stream).expect("提交");
+    executor.sync(stream).expect("同步派发");
+
+    let output_slot = decl
+        .signature
+        .params()
+        .iter()
+        .position(|param| param.mutable)
+        .expect("唯一可写输出") as u32;
+    let bytes = executor
+        .buffer_mut(output_slot)
+        .expect("输出可读")
+        .as_mut_bytes();
+    read_f32(bytes, len)
+}
+
 /// 装配 Metal 后端 + 内置目录 + 临时工作目录；设备不可用时返回 `None` 静默跳过（真机对拍
 /// 在无 Metal 的环境里不失败）。
 fn metal_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::Dirs)> {
@@ -204,9 +279,6 @@ fn a_gemv_op_runs_on_metal_and_matches_the_reference() {
 /// 过大，传 `Some((64, 4))` 避开 64MB 样本。
 #[cfg(target_os = "macos")]
 fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
-    use engine::exec::Executor as _;
-    use op::sig::CType;
-
     let Some((catalogue, dirs)) = metal_harness("serial") else {
         return;
     };
@@ -253,69 +325,9 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     }
     let launch = engine::exec::Launch::new(grid, [1, 1, 1]);
     let mut node = engine::exec::Node::new(op_name, launch);
-    for (slot, param) in decl
-        .signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .enumerate()
-    {
-        let slot = slot as u32;
-        if param.mutable {
-            executor
-                .bind_bytes(slot, expected.len() * 4)
-                .expect("输出缓冲");
-            node.bind_output(slot);
-        } else {
-            node.bind_input(slot);
-            match param.ctype {
-                CType::F32 => {
-                    let values = sample.f32(&param.name).expect("f32 输入");
-                    executor
-                        .bind_bytes(slot, values.len() * 4)
-                        .expect("输入缓冲");
-                    let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
-                    for (index, value) in values.iter().enumerate() {
-                        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-                    }
-                }
-                CType::U8 => {
-                    let values = sample.u8(&param.name).expect("u8 输入");
-                    executor.bind_bytes(slot, values.len()).expect("输入缓冲");
-                    let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
-                    for (index, value) in values.iter().enumerate() {
-                        bytes[index] = *value;
-                    }
-                }
-                CType::Int => unreachable!("标量不是缓冲"),
-            }
-        }
-    }
+    bind_decl_buffers(&mut executor, &mut node, decl, &sample, expected.len());
 
-    let mut graph = engine::exec::Graph::new();
-    graph.push(node);
-    let stream = engine::exec::Stream::new(0);
-    executor.submit(&graph, stream).expect("提交");
-    executor.sync(stream).expect("同步派发");
-
-    let output_slot = decl
-        .signature
-        .params()
-        .iter()
-        .position(|param| param.mutable)
-        .expect("唯一可写输出") as u32;
-    let bytes = executor
-        .buffer_mut(output_slot)
-        .expect("输出可读")
-        .as_mut_bytes();
-    let output: Vec<f32> = (0..expected.len())
-        .map(|index| {
-            let chunk: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                .try_into()
-                .expect("四个字节一个 f32");
-            f32::from_le_bytes(chunk)
-        })
-        .collect();
+    let output = submit_read(&mut executor, node, decl, expected.len());
 
     let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
     let tolerance = cutile::reference::tolerance(model.dtype);
@@ -369,49 +381,9 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
     let mut node = engine::exec::Node::new(op_name, launch);
-    for (slot, param) in decl
-        .signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .enumerate()
-    {
-        let slot = slot as u32;
-        if param.mutable {
-            executor
-                .bind_bytes(slot, grid_size as usize * 4)
-                .expect("输出缓冲");
-            node.bind_output(slot);
-        } else {
-            node.bind_input(slot);
-            let values = sample.f32(&param.name).expect("f32 输入");
-            executor
-                .bind_bytes(slot, values.len() * 4)
-                .expect("输入缓冲");
-            let bytes = executor.buffer_mut(slot).expect("输入可写").as_mut_bytes();
-            for (index, value) in values.iter().enumerate() {
-                bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-        }
-    }
+    bind_decl_buffers(&mut executor, &mut node, decl, &sample, grid_size as usize);
 
-    let mut graph = engine::exec::Graph::new();
-    graph.push(node);
-    let stream = engine::exec::Stream::new(0);
-    executor.submit(&graph, stream).expect("提交");
-    executor.sync(stream).expect("同步派发");
-
-    let output_slot = decl
-        .signature
-        .params()
-        .iter()
-        .position(|param| param.mutable)
-        .expect("唯一可写输出") as u32;
-    let bytes = executor
-        .buffer_mut(output_slot)
-        .expect("输出可读")
-        .as_mut_bytes();
-    let partials = read_f32(bytes, grid_size as usize);
+    let partials = submit_read(&mut executor, node, decl, grid_size as usize);
 
     // 主机折叠部分结果（sum / max）；参考用 f64 折叠输入，理由见函数注释。
     let input = sample.f32("a").expect("归约输入");

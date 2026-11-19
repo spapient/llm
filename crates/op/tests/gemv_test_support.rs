@@ -174,3 +174,90 @@ macro_rules! packed_gemv_config_tests {
     };
 }
 pub(crate) use packed_gemv_config_tests;
+
+/// 生成 i2/i4 打包 GEMV 共有、数值随位宽变化的四则测试：
+/// 多组参考、覆盖写对拍、手写求和、形状负例。位宽只决定查表与粒度倍数，
+/// 这里的取样、点积、守卫共用同一套骨架。
+macro_rules! packed_gemv_value_tests {
+    (
+        $ty:ty, $bits:expr,
+        $w_group:expr, $scales_group:expr, $ref_assert:expr,
+        $w_sum:expr, $row0:expr, $row1:expr
+    ) => {
+        #[test]
+        fn reference_handles_multiple_groups_and_rows() {
+            let (w, x, scales, m, n) = multi_group($bits, &$w_group, $scales_group.to_vec());
+            let sample = with(m, n, x, w, scales);
+            let y = crate::gemv::reference::<$ty>(&sample).expect("参考可算");
+            assert_eq!(y.len(), n);
+            $ref_assert(&y);
+        }
+
+        #[test]
+        fn forward_writes_into_the_caller_buffer_and_matches_the_reference() {
+            let (w, x, scales, m, n) = multi_group($bits, &$w_group, $scales_group.to_vec());
+            let expected =
+                crate::gemv::reference::<$ty>(&with(m, n, x.clone(), w.clone(), scales.clone())).expect("参考可算");
+            // 复用一块脏缓冲：结果必须是覆盖写，读到的不能是上一次的残留。
+            let mut out = vec![f32::NAN; n];
+            forward(&x, &w, &scales, &mut out).expect("内核可算");
+            assert_eq!(out, expected, "内核与参考必须是同一段算术");
+        }
+
+        /// 手写一遍求和，不经过本文件的任何循环：分组边界、`scale` 落在哪、行偏移都由测试自己算。
+        ///
+        /// 这是替换内层循环（查表 + 按组切片 + 每组一次乘法）之后仍然钉住算术的判据——
+        /// `reference` 与 `forward` 是同一段代码，只对它俩对拍等于自己跟自己对。
+        #[test]
+        fn the_kernel_agrees_with_a_hand_written_sum() {
+            let m = 8;
+            let n = 2;
+            let w = pack($bits, &$w_sum);
+            let x: Vec<f32> = (0..m).map(|index| index as f32 * 0.5 - 1.0).collect();
+            // 行 0：组 0 = 0.25、组 1 = 0.5；行 1：组 0 = 1.0、组 1 = -1.0。
+            let scales = vec![0.25, 0.5, 1.0, -1.0];
+
+            let mut out = vec![f32::NAN; n];
+            forward(&x, &w, &scales, &mut out).expect("内核可算");
+
+            let row = |weights: [f32; 8], scale: [f32; 2]| {
+                scale[0] * (0..4).map(|k| weights[k] * x[k]).sum::<f32>()
+                    + scale[1] * (0..4).map(|k| weights[4 + k] * x[4 + k]).sum::<f32>()
+            };
+            let expected = [row($row0, [0.25, 0.5]), row($row1, [1.0, -1.0])];
+            assert!((out[0] - expected[0]).abs() < 1e-5, "{:?}", out);
+            assert!((out[1] - expected[1]).abs() < 1e-5, "{:?}", out);
+        }
+
+        #[test]
+        fn shape_mismatch_is_an_error() {
+            let cpb = 8 / $bits;
+            // 输入太短。
+            assert!(crate::gemv::reference::<$ty>(&with(4, 1, vec![1.0], vec![0u8; 4 / cpb], vec![1.0])).is_err());
+            // 权重太短。
+            assert!(crate::gemv::reference::<$ty>(&with(4, 1, vec![1.0; 4], vec![0u8; 0], vec![1.0])).is_err());
+            // 没有分组。
+            assert!(crate::gemv::reference::<$ty>(&with(4, 1, vec![1.0; 4], vec![0u8; 4 / cpb], vec![])).is_err());
+            // 分组不是 cpb 的倍数：m=5、1 组 → 组大小 5，对 2 位与 4 位都不是整组。
+            assert!(
+                crate::gemv::reference::<$ty>(&with(5, 1, vec![1.0; 5], vec![0u8; (5 + cpb - 1) / cpb], vec![1.0]))
+                    .is_err()
+            );
+            // m 不是 cpb 的倍数、分组为 2 组但不整除：先被"不能整除"拦下，解包循环从不碰到残缺尾码。
+            assert!(
+                crate::gemv::reference::<$ty>(&with(5, 1, vec![1.0; 5], vec![0u8; (5 + cpb - 1) / cpb], vec![1.0, 1.0]))
+                    .is_err()
+            );
+            // 非整组宽度无论分组奇偶都进不到解包：非整组被倍数校验拦，其余被整除校验拦。
+            assert!(
+                crate::gemv::reference::<$ty>(&with(7, 1, vec![1.0; 7], vec![0u8; (7 + cpb - 1) / cpb], vec![1.0]))
+                    .is_err()
+            );
+            assert!(
+                crate::gemv::reference::<$ty>(&with(7, 1, vec![1.0; 7], vec![0u8; (7 + cpb - 1) / cpb], vec![1.0, 1.0]))
+                    .is_err()
+            );
+        }
+    };
+}
+pub(crate) use packed_gemv_value_tests;
