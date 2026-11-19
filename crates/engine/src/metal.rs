@@ -494,19 +494,8 @@ impl MetalExecutor {
     /// 派发一个节点：校验操作数、查内核、按「输入后输出」顺序绑定缓冲、派发、`waitUntilCompleted`。
     fn run(&mut self, node: &Node) -> Result<()> {
         self.check_operands(node)?;
-        let pipeline = self.kernels.get(node.name()).ok_or_else(|| {
-            Error::new(Code::Invalid, format!("内核 `{}` 未登记", node.name()))
-                .with("engine::MetalExecutor::run")
-        })?;
-        let mut buffers: Vec<&MetalBuffer> =
-            Vec::with_capacity(node.inputs().len() + node.outputs().len());
-        for operand in node.inputs().iter().chain(node.outputs()) {
-            buffers.push(
-                self.buffers
-                    .get(&operand.id())
-                    .expect("check_operands 已保证操作数已绑定"),
-            );
-        }
+        let pipeline = self.resolve_pipeline(node)?;
+        let buffers = self.bind_buffers(node)?;
         if !self
             .queue
             .execute(pipeline, &buffers, node.launch().grid, node.launch().block)
@@ -517,6 +506,32 @@ impl MetalExecutor {
             );
         }
         Ok(())
+    }
+
+    /// 按名字取已登记的内核管线。
+    fn resolve_pipeline(&self, node: &Node) -> Result<&MetalPipeline> {
+        let Some(pipeline) = self.kernels.get(node.name()) else {
+            return Err(
+                Error::new(Code::Invalid, format!("内核 `{}` 未登记", node.name()))
+                    .with("engine::MetalExecutor::run"),
+            );
+        };
+        Ok(pipeline)
+    }
+
+    /// 按「输入后输出」顺序绑定缓冲；`check_operands` 已保证编号都在表里，这里兜底防御。
+    fn bind_buffers(&self, node: &Node) -> Result<Vec<&MetalBuffer>> {
+        let mut buffers = Vec::with_capacity(node.inputs().len() + node.outputs().len());
+        for operand in node.inputs().iter().chain(node.outputs()) {
+            let Some(buffer) = self.buffers.get(&operand.id()) else {
+                return Err(
+                    Error::new(Code::Internal, format!("操作数 {} 未绑定", operand.id()))
+                        .with("engine::MetalExecutor::run"),
+                );
+            };
+            buffers.push(buffer);
+        }
+        Ok(buffers)
     }
 
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。

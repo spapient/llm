@@ -7,7 +7,7 @@
 use crate::atom::Prim;
 use crate::build;
 use crate::builtin::Catalogue;
-use crate::cap::Path;
+use crate::cap::{Path, Proof};
 use crate::decl::Skeleton;
 use crate::dirs::Dirs;
 use crate::emit::Fragment;
@@ -15,7 +15,7 @@ use crate::pipeline::{Prepared, Run};
 use crate::prof::{Emit, Profile};
 use crate::witness;
 use diagnostic::{Code, Error};
-use op::decl::OpDecl;
+use op::decl::{Grid, OpDecl};
 use op::model::Sample;
 
 /// 一次真机执行：调用方给的样本 → 编译 → 跑一次 → 与标量参考对拍。
@@ -92,89 +92,141 @@ pub fn metal_grid_program(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<String> {
-    let op = catalogue
-        .op(op_name)
-        .ok_or_else(|| Error::new(Code::Missing, format!("没有算子 `{op_name}`")))?;
-    let profile = catalogue
-        .profile("metal")
-        .ok_or_else(|| Error::new(Code::Missing, "没有 `metal` 档案"))?;
+    let (run, prepared) = resolve(catalogue, dirs, op_name, m, n)?;
+    lower(&run, &prepared, m, n)
+}
+
+/// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
+fn resolve<'a>(
+    catalogue: &'a Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(Run<'a>, Prepared)> {
+    let (op, profile, proof) = lookup(catalogue, dirs, op_name)?;
+    prepare(op, profile, proof, dirs, m, n)
+}
+
+/// 找算子与 `metal` 档案，验证据后给出证明。
+fn lookup<'a>(
+    catalogue: &'a Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+) -> diagnostic::Result<(&'a OpDecl, &'a Profile, Proof)> {
+    let Some(op) = catalogue.op(op_name) else {
+        return Err(Error::new(Code::Missing, format!("没有算子 `{op_name}`")));
+    };
+    let Some(profile) = catalogue.profile("metal") else {
+        return Err(Error::new(Code::Missing, "没有 `metal` 档案"));
+    };
     let evidence = witness::establish(profile, dirs);
     let proof = evidence.proof(profile);
     if let Some(error) = evidence.failure {
         return Err(error.with("Metal 设备缺执行证据，不在未验证的后端上生成生产内核"));
     }
+    Ok((op, profile, proof))
+}
+
+/// 建流水线、协商、编译出源文本。
+fn prepare<'a>(
+    op: &'a OpDecl,
+    profile: &'a Profile,
+    proof: Proof,
+    dirs: &Dirs,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(Run<'a>, Prepared)> {
     let run = Run::new(op, profile, proof)?;
     let path = run
         .negotiate()
         .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
     let prepared = run.prepare(&path, dirs, m, n)?;
+    Ok((run, prepared))
+}
+
+/// 骨架分派：串行兜底 + 网格快路径。
+fn lower(run: &Run<'_>, prepared: &Prepared, m: usize, n: usize) -> diagnostic::Result<String> {
+    let op = run.op;
     match op.skeleton {
-        Skeleton::Reduce => {
-            let sample = (run.model.sample)(m, n);
-            crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
-        }
-        Skeleton::Elementwise => {
-            // 带归约/两趟（rmsnorm/softmax/attention）或非纯逐点签名（embed/rope 多标量、dequant）
-            // 走串行兜底：正文里的归约已沿轴遍历、或下标依赖行 gather/成对步长，网格按元素拆只会算错。
-            // 声明了 `[grid]` 的则走循环注入——attention 按查询行拆线程、行内软归一化留在每线程串行。
-            let reduces = op
-                .needs
-                .iter()
-                .any(|need| matches!(need.prim, Prim::Reduce | Prim::Dot));
-            let scalars = op
-                .signature
-                .params()
-                .iter()
-                .filter(|param| !param.ctype.is_buffer())
-                .count();
-            if reduces || scalars != 1 {
-                if let Some(grid) = op.grid.as_ref() {
-                    let sample = (run.model.sample)(m, n);
-                    return crate::harness::metal_loop_kernel(
-                        &prepared.source.text,
-                        &op.signature,
-                        &sample,
-                        grid,
-                    );
-                }
-                let sample = (run.model.sample)(m, n);
-                return crate::harness::metal_serial_kernel(
-                    &prepared.source.text,
-                    &op.signature,
-                    &sample,
-                );
-            }
-            crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
-        }
-        Skeleton::Gemm => match op.grid.as_ref() {
-            // 声明了 `[grid]` 的走循环注入网格快路径（gemv 一维、gemm 二维共用一条 lowering）；未声明的
-            // 走串行兜底。
-            Some(grid) => {
-                let sample = (run.model.sample)(m, n);
-                crate::harness::metal_loop_kernel(
-                    &prepared.source.text,
-                    &op.signature,
-                    &sample,
-                    grid,
-                )
-            }
-            None => {
-                let sample = (run.model.sample)(m, n);
-                crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
-            }
-        },
-        Skeleton::Attention => {
-            // 串行是通用正确性兜底：单线程走完整条正文，缓冲原样、标量取样本值。并行化属 M3-5。
-            let sample = (run.model.sample)(m, n);
-            crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
-        }
-        Skeleton::Scan => {
-            // 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
-            // 收敛到单线程串行（grid = [1,1,1]），与 Reduce 共用同一条 lowering。
-            let sample = (run.model.sample)(m, n);
-            crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
-        }
+        Skeleton::Reduce => serial(op, run, prepared, m, n),
+        Skeleton::Elementwise => elementwise(op, run, prepared, m, n),
+        Skeleton::Gemm => gemm(op, run, prepared, m, n),
+        Skeleton::Attention => serial(op, run, prepared, m, n),
+        // 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
+        // 收敛到单线程串行（grid = [1,1,1]），与 Reduce 共用同一条 lowering。
+        Skeleton::Scan => serial(op, run, prepared, m, n),
     }
+}
+
+/// 串行兜底：单线程走完整条正文，缓冲原样、标量取样本值。
+fn serial(
+    op: &OpDecl,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let sample = (run.model.sample)(m, n);
+    crate::harness::metal_serial_kernel(&prepared.source.text, &op.signature, &sample)
+}
+
+/// 循环注入网格快路径（带归约逐元素、声明了 `[grid]` 的 Gemm）。
+fn looped(
+    op: &OpDecl,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    grid: &Grid,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let sample = (run.model.sample)(m, n);
+    crate::harness::metal_loop_kernel(&prepared.source.text, &op.signature, &sample, grid)
+}
+
+/// 逐元素骨架：纯逐点单标量走网格；带归约/两趟（rmsnorm/softmax/attention）或非纯逐点签名
+/// （embed/rope 多标量、dequant）走串行兜底——正文里的归约已沿轴遍历、或下标依赖行 gather/成对步长，
+/// 网格按元素拆只会算错。声明了 `[grid]` 的走循环注入——attention 按查询行拆线程、行内软归一化留在
+/// 每线程串行。
+fn elementwise(
+    op: &OpDecl,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let reduces = op
+        .needs
+        .iter()
+        .any(|need| matches!(need.prim, Prim::Reduce | Prim::Dot));
+    let scalars = op
+        .signature
+        .params()
+        .iter()
+        .filter(|param| !param.ctype.is_buffer())
+        .count();
+    if reduces || scalars != 1 {
+        if let Some(grid) = op.grid.as_ref() {
+            return looped(op, run, prepared, grid, m, n);
+        }
+        return serial(op, run, prepared, m, n);
+    }
+    crate::harness::metal_grid_kernel(&prepared.source.text, &op.signature)
+}
+
+/// Gemm 骨架：声明了 `[grid]` 的走循环注入网格快路径（gemv 一维、gemm 二维共用一条 lowering）；
+/// 未声明的走串行兜底。
+fn gemm(
+    op: &OpDecl,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    if let Some(grid) = op.grid.as_ref() {
+        return looped(op, run, prepared, grid, m, n);
+    }
+    serial(op, run, prepared, m, n)
 }
 
 /// 本机只编译 C，且证据先于执行：没有执行证据的后端算出来的数不是结果，只是现象。

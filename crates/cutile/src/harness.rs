@@ -405,6 +405,25 @@ pub fn metal_harness(
     Ok((msl, metal_driver(signature, sample, output)?))
 }
 
+/// 生产态设备缓冲声明：按签名序 `device {ctype}* d_{name} [[buffer({slot})]]`，槽位序号与驱动侧
+/// `setBuffer:atIndex:` 同源。逐点 / 串行 / 循环注入三条 lowering 共用，只写这一份。
+fn buffer_decls(signature: &Signature) -> String {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+        .map(|(slot, param)| {
+            format!(
+                "    device {}* d_{} [[buffer({slot})]]",
+                param.ctype.c_name(),
+                param.name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n")
+}
+
 /// 生产态 Metal 计算内核：把逐点（pointwise）串行内核包成按网格派发的 `kernel_main`。
 ///
 /// 与 [`metal_harness`] 的单线程见证（入口 `cutile_launch`、`if (tid != 0) return`）不同，这里每个
@@ -435,20 +454,7 @@ pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> diagnost
         .with("cutile::harness::metal_grid_kernel"));
     }
     let call = grid_args(signature.params());
-    let buffers = signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .enumerate()
-        .map(|(slot, param)| {
-            format!(
-                "    device {}* d_{} [[buffer({slot})]]",
-                param.ctype.c_name(),
-                param.name
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",\n");
+    let buffers = buffer_decls(signature);
     Ok(format!(
         "{}\n\nkernel void kernel_main(\n{buffers},\n    uint n [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
         msl_address_space(kernel_source),
@@ -483,20 +489,7 @@ pub fn metal_serial_kernel(
     sample: &Sample,
 ) -> diagnostic::Result<String> {
     let call = serial_args(signature.params(), sample)?;
-    let buffers = signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .enumerate()
-        .map(|(slot, param)| {
-            format!(
-                "    device {}* d_{} [[buffer({slot})]]",
-                param.ctype.c_name(),
-                param.name
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",\n");
+    let buffers = buffer_decls(signature);
     Ok(format!(
         "{}\n\nkernel void kernel_main(\n{buffers}) {{\n    {}({call});\n}}",
         msl_address_space(kernel_source),
@@ -553,20 +546,7 @@ pub fn metal_loop_kernel(
     body = thread_param(&body, &signature.kernel())?;
     body = bind_grid_loops(body, grid)?;
     let call = format!("{}, tid", serial_args(signature.params(), sample)?);
-    let buffers = signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .enumerate()
-        .map(|(slot, param)| {
-            format!(
-                "    device {}* d_{} [[buffer({slot})]]",
-                param.ctype.c_name(),
-                param.name
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",\n");
+    let buffers = buffer_decls(signature);
     Ok(format!(
         "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
         signature.kernel(),

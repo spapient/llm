@@ -384,6 +384,11 @@ fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)>
     Ok((key.to_string(), text))
 }
 
+/// `[consts]` 与 `[grid]`：声明表里两块可选的补丁，一起解析成 `(常量, 网格)`。
+fn extras(table: &Table) -> diagnostic::Result<(Vec<(String, String)>, Option<Grid>)> {
+    Ok((consts(table)?, grid(table)?))
+}
+
 /// 变体链：逐个解析、按 `order` 排序，再判数量与链路。
 fn variants(table: &Table) -> diagnostic::Result<Vec<Variant>> {
     let mut variants: Vec<Variant> = table
@@ -531,11 +536,6 @@ impl OpDecl {
             template: template.to_string(),
             signature,
         })
-    }
-
-    /// `[consts]` 与 `[grid]`：声明表里两块可选的补丁，一起解析成 `(常量, 网格)`。
-    fn extras(table: &Table) -> diagnostic::Result<(Vec<(String, String)>, Option<Grid>)> {
-        Ok((consts(table)?, grid(table)?))
     }
 
     /// 模板侧的三条判据：槽位有定义、每条原语都被申请、调用点参数落在签名内。
