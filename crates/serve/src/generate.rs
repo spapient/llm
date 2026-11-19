@@ -9,6 +9,7 @@
 //! 把采样放成 trait 而不是一个 `argmax` 调用，是因为"贪心"只是其中一种：温度、top-k、重复
 //! 惩罚都会改变"什么时候停"。端点因此不需要知道策略，策略也不需要知道页账。
 
+use crate::macros::name_set;
 use diagnostic::{Code, Error, Result};
 use rng::Rng;
 use std::cmp::Ordering;

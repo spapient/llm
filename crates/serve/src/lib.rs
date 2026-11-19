@@ -28,29 +28,31 @@
 
 #![deny(unsafe_code)]
 
-#[macro_use]
-mod macros;
+use crate::macros::code_set;
+
 mod completion;
 mod generate;
 mod http;
 mod request;
-mod router;
 
 // CPU 内核桥与装配宿主（平铺；`model` 兼容路径见下）。
 mod assembly;
 mod block;
-mod descriptors;
 mod kernels;
 mod model_host;
 mod params;
 mod plan;
-mod vocab;
 
-// 线协议：常量/闭集在 `protocol`，帧与增量解码各一文件（`proto` 兼容路径见下）。
+pub(crate) use params::{descriptors, vocab};
+
+// 线协议：常量/闭集与宏在 `protocol`，帧与增量解码在 `frame`（`proto` 兼容路径见下）。
 // CRC-32 的唯一实现在 L1 `wire`：帧尾校验直接复用它，协议层不再自带第二张表。
-mod decoder;
 mod frame;
 mod protocol;
+
+pub(crate) use frame::decoder;
+pub(crate) use protocol::macros;
+pub(crate) use request::router;
 
 /// CRC-32：与 `weights`/`train` 共用 L1 `wire` 的唯一实现。
 pub(crate) use wire::crc::crc32;

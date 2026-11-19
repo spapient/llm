@@ -4,7 +4,7 @@
 //! 1 条，稠密注意。有效长 `n/m`、`n/m'`（数学验证 41）。这是 α 通道的**序列压缩注意力**，与 MLA
 //! 潜在维压缩分列，禁止写成 `O(n)` 扫描（Mamba-3 轴）。
 //!
-//! 纯数学函数统一走 [`op::scan::Scalar`] 泛型（与 [`crate::mix`] / [`crate::policy`] / [`crate::pulse`]
+//! 纯数学函数统一走 [`op::scan::Scalar`] 泛型（与 [`crate::mix`] / [`crate::policy`] / [`crate::mix::pulse`]
 //! 同一闭集）：`f32` 供前向、`f64` 供验证对拍，不因精度复制两份实现。
 
 use core::cmp::Ordering;

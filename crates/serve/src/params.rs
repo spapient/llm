@@ -262,3 +262,157 @@ impl Params {
         Ok(())
     }
 }
+
+pub mod descriptors {
+    //! 编号 ↔ 形状/条目名描述表（D10 / ADR 0044）：只留 serve 装配侧。
+    //!
+    //! engine [`Bindings`](engine::exec::Bindings) 仍是纯 `u32 → Vec<f32>`，不解释编号含义，
+    //! 也不加只读形状访问器；形状与条目名只在装配期由层声明推出，写进这张表供装配校验与诊断。
+
+    use diagnostic::{Code, Error, Result};
+
+    use crate::kernels::SITE;
+    use crate::params::Params;
+
+    /// 编号 ↔ 形状/条目名描述表条目。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct BindingDesc {
+        /// 不透明绑定编号（与 engine `Bindings` 的键一致）。
+        pub(crate) id: u32,
+        /// 驻留权重条目名；激活缓冲为 `None`。
+        pub(crate) entry: Option<String>,
+        /// 声明形状（轴顺序与层视图一致）；激活只记一条轴长度，历史占位记 `[0]`。
+        pub(crate) shape: Vec<usize>,
+    }
+
+    /// 装配期自洽：描述表编号与权重/激活台账一一对应，形状积（权重）或单轴长度（激活）相符。
+    ///
+    /// 描述表是装配侧事实；引擎不读这张表，也不解释编号含义。
+    pub(crate) fn check_all(
+        descriptors: &[BindingDesc],
+        params: &Params,
+        activations: &[(u32, usize)],
+    ) -> Result<()> {
+        for desc in descriptors {
+            check_one(desc, params, activations)?;
+        }
+        Ok(())
+    }
+
+    fn check_one(desc: &BindingDesc, params: &Params, activations: &[(u32, usize)]) -> Result<()> {
+        match &desc.entry {
+            Some(entry) => check_weight(desc, entry, params),
+            None => check_activation(desc, activations),
+        }
+    }
+
+    /// 权重条目：参数表须有条目，形状积与权重整块长度相符。
+    fn check_weight(desc: &BindingDesc, entry: &str, params: &Params) -> Result<()> {
+        let Some(block) = params.get(entry) else {
+            return Err(
+                Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE),
+            );
+        };
+        let product: usize = desc.shape.iter().product();
+        if product != block.len() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "描述表条目 `{entry}` 形状积 {product} 与权重长度 {} 不符",
+                    block.len()
+                ),
+            )
+            .with(SITE));
+        }
+        Ok(())
+    }
+
+    /// 激活条目：编号须在激活台账内，单轴长度与台账相符；历史占位 `[0]` 由台账长度 0 对上。
+    fn check_activation(desc: &BindingDesc, activations: &[(u32, usize)]) -> Result<()> {
+        let Some(&len) = activations
+            .iter()
+            .find_map(|(id, activation_len)| (*id == desc.id).then_some(activation_len))
+        else {
+            return Err(
+                Error::new(Code::Internal, format!("激活编号 {} 没有台账记录", desc.id)).with(SITE),
+            );
+        };
+        if desc.shape.first().copied() != Some(len) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "激活编号 {} 形状 {:?} 与台账长度 {len} 不符",
+                    desc.id, desc.shape
+                ),
+            )
+            .with(SITE));
+        }
+        Ok(())
+    }
+}
+
+pub mod vocab {
+    //! 词表装配适配器：`llm.vocab` 段字节 → 注入用 [`tokenizer::Tokenizer`]。
+    //!
+    //! 只吃已经由容器按段级 CRC 校验过、按名取出的词表段字节；本模块不接触容器字节、
+    //! 不复制指纹算法。装配顺序是：中性解码 → 闭合词表不变量 → 指纹对拍（段尾摘要 vs
+    //! 重算指纹）→ 按族折成具体分词器。指纹不符在构造期报 [`Code::Invalid`]，不静默降级。
+
+    use diagnostic::{Code, Error, Result};
+
+    const SITE: &str = "serve::vocab";
+
+    /// 把词表段字节装配成可注入的分词器。
+    ///
+    /// 返回 [`Box<dyn tokenizer::Tokenizer>`]，上层只认 trait；族无实现时照常上抛
+    /// [`Code::Unsupported`]，不在此处补平行分支。
+    pub fn tokenizer_from_segment(bytes: &[u8]) -> Result<Box<dyn tokenizer::Tokenizer>> {
+        let (source, digest) = tokenizer::decode_vocab(bytes)?;
+        let vocab = tokenizer::Vocab::try_new(source)?;
+        if vocab.fingerprint().digest() != digest {
+            return Err(Error::new(Code::Invalid, "词表指纹与段尾摘要不符").with(SITE));
+        }
+        vocab.into_tokenizer()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tokenizer::{Merge, SpecialTokens, VocabFamily, VocabSource};
+
+        fn bpe_source() -> VocabSource {
+            VocabSource {
+                family: VocabFamily::Bpe,
+                pieces: vec![b"a".to_vec(), b"b".to_vec(), b"ab".to_vec()],
+                special: SpecialTokens::EMPTY.with_bos(0).with_eos(2),
+                scores: Vec::new(),
+                merges: vec![Merge {
+                    left: b"a".to_vec(),
+                    right: b"b".to_vec(),
+                }],
+            }
+        }
+
+        /// 按真实装配路径造段：词表重算指纹作为段尾摘要，再中性编码。
+        fn segment(source: &VocabSource) -> Vec<u8> {
+            let vocab = tokenizer::Vocab::try_new(source.clone()).expect("词表");
+            tokenizer::encode_vocab(source, vocab.fingerprint().digest())
+        }
+
+        #[test]
+        fn bpe_segment_assembles_and_round_trips() {
+            let tokenizer = tokenizer_from_segment(&segment(&bpe_source())).expect("装配");
+            let tokens = tokenizer.encode("ab").expect("编码");
+            assert_eq!(tokenizer.decode(&tokens).expect("解码"), "ab");
+        }
+
+        #[test]
+        fn tampered_digest_is_rejected() {
+            let source = bpe_source();
+            let vocab = tokenizer::Vocab::try_new(source.clone()).expect("词表");
+            let bytes = tokenizer::encode_vocab(&source, vocab.fingerprint().digest() ^ 1);
+            let error = tokenizer_from_segment(&bytes).err().expect("应报错");
+            assert_eq!(error.code(), Code::Invalid);
+        }
+    }
+}
