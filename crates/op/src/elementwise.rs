@@ -5,14 +5,11 @@
 //! 样本、校验、遍历）只有一份，按实现类型单态化，`Model` 里仍是三个 `fn` 指针而不是热路径分发。
 
 use crate::einsum::{Formula, FormulaCache, OperandSpec};
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
-/// 逐元素骨架只有一条轴：它既是输入轴也是输出轴，按输入角色声明。
-pub const AXES: &[AxisSpec] = &[AxisSpec {
-    role: AxisRole::Input,
-    label: 'n',
-}];
+// 单轴定义与形状投影复用一元骨架（与 dequant / softmax / rmsnorm / rope / scan 同一模式）。
+pub use crate::unary::{AXES, project_shape};
 
 /// 逐元素二元算子随语义变化的那部分。
 pub trait Binary {
@@ -50,11 +47,6 @@ pub trait Binary {
     fn input_b(len: usize) -> Vec<f32> {
         crate::model::linear(len, 0.25, 0.5)
     }
-}
-
-/// 逐元素单轴形状：轴 `n` 取第一个参数（元素数），第二个参数不用。
-pub fn project_shape(len: usize, _: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('n', len)])
 }
 
 /// 标量代价：完全由表达式与操作数位宽推出，本函数不含流量常数。
