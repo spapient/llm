@@ -113,7 +113,8 @@ pub fn forward<U: Unary>(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
 #[macro_export]
 macro_rules! unary_f32 {
     (
-        $name:ident, $alias:ident, $op:tt, $kind:ident, $edge:block,
+        $name:ident, $alias:ident, $op:tt,
+        $kind:ident, $edge:tt,
         $apply:expr
         $(, $input:expr)?
     ) => {
@@ -321,7 +322,16 @@ pub mod silu_f32 {
         SiluF32,
         "silu_f32",
         unary_op_tests,
-        {},
+        {
+            // silu(1) = sigmoid(1)：1/(1+e^-1) 的已知值钉住。
+            let mut out = [0.0; 1];
+            forward(&[1.0], &mut out).expect("等长");
+            assert!(
+                (out[0] - 0.731_058_6).abs() < 1e-6,
+                "silu(1) = {out}",
+                out = out[0]
+            );
+        },
         |x| x / (1.0 + (-x).exp())
     );
 }
@@ -340,7 +350,12 @@ pub mod scale_f32 {
         ScaleF32,
         "scale_f32",
         unary_op_tests,
-        {},
+        {
+            // scale(1) = ALPHA：把样本常量与内核模板常量钉在同一处。
+            let mut out = [0.0; 1];
+            forward(&[1.0], &mut out).expect("等长");
+            assert_eq!(out[0], ALPHA, "scale(1) = ALPHA");
+        },
         |x| ALPHA * x,
         |len| (0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()
     );
