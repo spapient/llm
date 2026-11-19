@@ -67,7 +67,6 @@ pub mod reduce;
 pub mod rmsnorm_f32;
 pub mod rope_f32;
 pub mod scan;
-pub mod scan_f32;
 pub mod sch;
 pub mod sig;
 pub mod softmax_f32;
@@ -80,6 +79,7 @@ pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_
 pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};
 pub use gemv::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
+pub use scan::scan_f32;
 pub use unary::{exp_f32, gelu_f32, log_f32, scale_f32, silu_f32};
 
 use diagnostic::data::Table;

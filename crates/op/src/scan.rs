@@ -365,3 +365,141 @@ mod tests {
         assert!((s.b - expected_b).abs() < 1e-12);
     }
 }
+
+pub mod scan_f32 {
+    //! `scan_f32`：β 指数梯形扫描（§5.6）的离散递推 `s_t = a·s_{t-1} + b·x_t`。
+    //!
+    //! 连续动力学 `h' = λ h + b x` 经 [`crate::scan::exp_trapezoid`] 离散成对角半群步 `(a, b)`；
+    //! 本算子把这两个离散系数固定为模板常量，内核沿时间轴串行递推。扫描的**第二份实现**（幺半群
+    //! 前缀、Blelloch 并行扫描、结合律与金标验证）住在 [`crate::scan`]，本模块只声明这份算子的
+    //! 形状、代价、样本与标量参考，`#[annotation::model]` 装配成 `MODEL`。
+
+    use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
+    use diagnostic::{Code, Error};
+
+    // 单轴定义与形状投影复用 unary 骨架：时间轴 `n` 既是输入轴也是输出轴。
+    pub use crate::unary::{AXES, project_shape};
+
+    /// 对角衰减系数 `ā = exp(λ·dt)`（模板常量 `{{a}}`）。
+    const DECAY: f32 = 0.5;
+    /// 输入系数 `b̄ = expm1(λ·dt)/λ · b`（模板常量 `{{b}}`）。
+    const INPUT: f32 = 1.0;
+
+    /// 标量代价：每步一次乘加（2 flop）、读一次 `x`、写一次 `y`。
+    ///
+    /// # Errors
+    ///
+    /// 形状缺轴 `n` 时返回说明。
+    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+        cost_n(shape, "scan", 2.0, 1)
+    }
+
+    /// 确定性样本：`x`、`y` 两个等长缓冲，标量 `N` 是时间步数。
+    pub fn sample(len: usize, _: usize) -> Sample {
+        Sample {
+            m: len,
+            n: len,
+            scalars: vec![("N", len as i64)],
+            buffers: vec![
+                x_buffer(len),
+                Buffer {
+                    name: "y",
+                    values: Values::F32(vec![0.0; len]),
+                },
+            ],
+        }
+    }
+
+    /// 标量参考：`s = ā·s + b̄·x[t]`，初态 `s = 0`，与内核同一公式。
+    ///
+    /// # Errors
+    ///
+    /// 样本缺 `x` 缓冲时返回说明。
+    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+        let x = sample.f32("x")?;
+        let mut state = 0.0f32;
+        Ok(x.iter()
+            .map(|value| {
+                state = DECAY * state + INPUT * value;
+                state
+            })
+            .collect())
+    }
+
+    /// 内核本体：结果写进调用方给的缓冲。
+    ///
+    /// # Errors
+    ///
+    /// 输入与输出不等长时返回说明。
+    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        if x.len() != out.len() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("缓冲长度不一致：x {}、out {}", x.len(), out.len()),
+            ));
+        }
+        let mut state = 0.0f32;
+        for (out, value) in out.iter_mut().zip(x) {
+            state = DECAY * state + INPUT * value;
+            *out = state;
+        }
+        Ok(())
+    }
+
+    /// 标记类型：承载 `#[model]` 语义。
+    pub struct Scan;
+
+    /// β 指数梯形扫描的具体语义别名。
+    #[annotation::model(name = "scan_f32", shape = [4096, 4096], dtype = "f32", skeleton = "scan")]
+    pub type ScanF32 = Scan;
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn scan_matches_the_scalar_reference() {
+            let sample = sample(128, 1);
+            let expected = reference(&sample).expect("参考可计算");
+            let mut out = vec![0.0; 128];
+            forward(sample.f32("x").expect("x"), &mut out).expect("等长");
+            assert_eq!(out, expected);
+        }
+
+        /// 输入与输出长度不一致时拒绝；非对齐长度不静默截断。
+        #[test]
+        fn scan_rejects_mismatched_output_length() {
+            let mut out = vec![0.0; 3];
+            assert!(
+                forward(&[1.0, 2.0], &mut out).is_err(),
+                "输出比输入长必须拒绝"
+            );
+            let mut short = vec![0.0; 1];
+            assert!(
+                forward(&[1.0, 2.0, 3.0], &mut short).is_err(),
+                "输出比输入短必须拒绝"
+            );
+        }
+
+        /// 递推初态为零：`y[t] = Σ_{k≤t} ā^(t-k)·b̄·x[k]`。取 `x = [1, 0, 0, …]` 得几何衰减
+        /// `1, ā, ā², …`，逐位验证半群语义与内核公式一致。
+        #[test]
+        fn scan_is_geometric_decay_for_impulse() {
+            let x = [1.0f32, 0.0, 0.0, 0.0, 0.0];
+            let expected = [1.0f32, 0.5, 0.25, 0.125, 0.0625];
+            let mut out = vec![0.0; x.len()];
+            forward(&x, &mut out).expect("等长");
+            for (index, (got, want)) in out.iter().zip(expected).enumerate() {
+                assert!((got - want).abs() < 1e-6, "第 {index} 步：{got} vs {want}");
+            }
+        }
+
+        /// 空序列放行：空输入得空输出，扫描没有无定义的中间态。
+        #[test]
+        fn scan_allows_empty_sequence() {
+            let mut out = vec![];
+            forward(&[], &mut out).expect("空序列放行");
+            assert_eq!(reference(&sample(0, 1)).expect("空参考"), Vec::<f32>::new());
+        }
+    }
+}
