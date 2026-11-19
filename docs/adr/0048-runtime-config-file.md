@@ -68,14 +68,12 @@ ADR 0023 的精神完整保留：`cutile` 仍只收纯数据（`Dirs` 与同构�
 | 键 | 类型 | 默认值 | 现值所在 |
 |---|---|---|---|
 | `cache.limit_bytes` | Bytes | 2 GiB | `cutile::cache::CACHE_LIMIT` |
-| `cache.stale_lock_secs` | Int | 60 | `cutile::cache::STALE_LOCK` |
-| `cache.touch_window_secs` | Int | 5 | `cutile::cache::TOUCH_WINDOW`（私有,经新投影消费） |
-| `http.max_head_bytes` | Int | 8192 | `serve::http` |
-| `http.max_body_bytes` | Int | 65536 | `serve::http` |
-| `generate.default_temperature` | Float | 1.0 | `serve::generate` |
-| `policy.w` | Int | 64 | `nn::policy` |
-| `policy.n_ref` | Float | 4096.0 | `nn::policy` |
-| `policy.tau_scale` | Float | 0.05 | `nn::policy` |
+
+P1 曾一次注册 9 个数值键（缓存时间窗、HTTP 上限、采样温度、policy 常数）；P5 接线时
+实测这些键**没有真实消费路径**——接线需要给 `Cache`/`Httpd` 构造或纯函数签名加参数，
+属 API 扩张，且 serve 的 HTTP/采样装配点尚不存在。按"无消费者不预埋"（ADR 0004 同一
+判据）裁决：8 个键从键表删除，键表回到"3 路径 + 1 数值"最小集。新增键仍是一行：
+真实消费者出现时按本 ADR 的 schema 直接注册即可。
 
 格式上限（`wire::leb`、`weights::writer` 的 MAX_*）不进配置——它们是线格式契约而非部署策略。
 消费端模式沿用 `Dirs`：`cli` 把 Settings 投影成纯数据值对象传给内核/装配点，内核不改一行。

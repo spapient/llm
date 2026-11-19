@@ -65,17 +65,13 @@ const APP: &str = "cutile";
 const PREFIX: &str = "CUTILE";
 
 /// 配置值闭集：值类型由每个键在 [`Key`] 闭集里声明，`describe` 与消费投影按类型收窄。
-/// 变体只保留键表实际使用的类型；新键需要 Bool/Text 时再加（值解析处一行分支）。
+/// 变体只保留键表实际使用的类型；新键需要 Int/Float 时再加（值解析处一行分支）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingValue {
     /// 路径：相对路径按启动目录解析（与 `--set` 口径一致）。
     Path(PathBuf),
     /// 非负字节数（`u64`）。
     Bytes(u64),
-    /// 有符号整数。
-    Int(i64),
-    /// 浮点数。
-    Float(f64),
 }
 
 impl SettingValue {
@@ -101,8 +97,6 @@ impl fmt::Display for SettingValue {
         match self {
             Self::Path(path) => write!(formatter, "{}", path.display()),
             Self::Bytes(bytes) => write!(formatter, "{bytes}"),
-            Self::Int(value) => write!(formatter, "{value}"),
-            Self::Float(value) => write!(formatter, "{value}"),
         }
     }
 }
@@ -174,14 +168,6 @@ keys! { roots;
     WorkDir => "work.dir", ["WORK_DIR"], parse_path, Some(SettingValue::Path(roots.default_work_dir(APP))), "编译与执行时的临时工作目录";
     DataRoot => "data.root", ["DATA_DIR"], parse_path, None, "声明层 / 档案层 / 片段层的替代根；未设置表示用内嵌数据";
     CacheLimit => "cache.limit_bytes", [], parse_bytes, Some(SettingValue::Bytes(2 * 1024 * 1024 * 1024)), "缓存容量上限（字节）";
-    StaleLock => "cache.stale_lock_secs", [], parse_int, Some(SettingValue::Int(60)), "陈旧锁判据（秒）：超过即视为崩溃遗留";
-    TouchWindow => "cache.touch_window_secs", [], parse_int, Some(SettingValue::Int(5)), "LRU 时间戳刷新窗口（秒）";
-    HttpMaxHead => "http.max_head_bytes", [], parse_int, Some(SettingValue::Int(8 * 1024)), "HTTP 请求头长度上限（字节）";
-    HttpMaxBody => "http.max_body_bytes", [], parse_int, Some(SettingValue::Int(64 * 1024)), "HTTP 请求体长度上限（字节）";
-    GenerateTemp => "generate.default_temperature", [], parse_float, Some(SettingValue::Float(1.0)), "采样默认温度";
-    PolicyW => "policy.w", [], parse_int, Some(SettingValue::Int(64)), "脉冲通道窗口常数";
-    PolicyNRef => "policy.n_ref", [], parse_float, Some(SettingValue::Float(4096.0)), "脉冲通道参考常数";
-    PolicyTau => "policy.tau_scale", [], parse_float, Some(SettingValue::Float(0.05)), "脉冲通道时间常数";
 }
 
 /// 槽位数量；[`Key::KEYS`] 是唯一事实源。
@@ -729,25 +715,6 @@ fn parse_bytes(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
         .map_err(|_| bad_value(key, origin, "应为非负整数"))
 }
 
-/// 有符号整数。
-fn parse_int(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
-    text.parse::<i64>()
-        .map(SettingValue::Int)
-        .map_err(|_| bad_value(key, origin, "应为整数"))
-}
-
-/// 有限浮点数。
-fn parse_float(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
-    let value: f64 = text
-        .parse()
-        .map_err(|_| bad_value(key, origin, "应为浮点数"))?;
-    if value.is_finite() {
-        Ok(SettingValue::Float(value))
-    } else {
-        Err(bad_value(key, origin, "应为有限浮点数"))
-    }
-}
-
 /// 相对路径按 `base` 解析；非路径值原样返回。
 fn rebase_value(value: SettingValue, base: &Path) -> SettingValue {
     match value {
@@ -1040,20 +1007,11 @@ mod tests {
     }
 
     #[test]
-    fn numeric_keys_have_their_current_defaults() {
+    fn the_numeric_key_has_its_current_default() {
         let roots = Roots::new("/home/u");
         let settings = Settings::load_with(&roots, nothing).expect("配置可加载");
         assert_eq!(settings.cache_limit_bytes(), Some(2 * 1024 * 1024 * 1024));
-        let text = settings.describe();
-        for name in [
-            "cache.limit_bytes",
-            "cache.stale_lock_secs",
-            "http.max_body_bytes",
-            "generate.default_temperature",
-            "policy.tau_scale",
-        ] {
-            assert!(text.contains(name), "缺 {name}：{text}");
-        }
+        assert!(settings.describe().contains("cache.limit_bytes"));
     }
 
     #[test]

@@ -152,12 +152,6 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 | `work.dir` | `CUTILE_WORK_DIR` | `<缓存根>/work` |
 | `data.root` | `CUTILE_DATA_DIR` | 未设置（用编译期内嵌的 `crates/op/ops/`、`crates/prof/devices/` 与 `crates/prim/<vendor>/`） |
 | `cache.limit_bytes` | — | 2 GiB |
-| `cache.stale_lock_secs` | — | 60 |
-| `cache.touch_window_secs` | — | 5 |
-| `http.max_head_bytes` | — | 8192 |
-| `http.max_body_bytes` | — | 65536 |
-| `generate.default_temperature` | — | 1.0 |
-| `policy.w` / `policy.n_ref` / `policy.tau_scale` | — | 64 / 4096.0 / 0.05 |
 
 默认值的唯一来源是 `crates/cli/src/settings.rs`，要偏离默认用配置文件、环境变量或
 `--set`；配置文件与 `--set` 里出现未登记的键会直接报错而不是被忽略。
