@@ -77,6 +77,7 @@ fn assert_close(
 }
 
 /// 从设备缓冲读回 `len` 个 f32（小端位模式）。
+#[cfg(target_os = "macos")]
 fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
     (0..len)
         .map(|index| {
@@ -89,6 +90,7 @@ fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
 }
 
 /// 把 f32 切片按 LE 字节序写进执行器缓冲（绑槽 + 落位）。
+#[cfg(target_os = "macos")]
 fn bind_f32(executor: &mut engine::metal::MetalExecutor, slot: u32, values: &[f32]) {
     executor
         .bind_bytes(slot, values.len() * 4)
@@ -100,6 +102,7 @@ fn bind_f32(executor: &mut engine::metal::MetalExecutor, slot: u32, values: &[f3
 }
 
 /// 把 u8 切片写进执行器缓冲（绑槽 + 拷贝）。
+#[cfg(target_os = "macos")]
 fn bind_u8(executor: &mut engine::metal::MetalExecutor, slot: u32, values: &[u8]) {
     executor.bind_bytes(slot, values.len()).expect("u8 缓冲");
     let bytes = executor.buffer_mut(slot).expect("u8 可写").as_mut_bytes();
@@ -107,12 +110,14 @@ fn bind_u8(executor: &mut engine::metal::MetalExecutor, slot: u32, values: &[u8]
 }
 
 /// 把单个 f32 标量写进执行器缓冲（4 字节）。
+#[cfg(target_os = "macos")]
 fn bind_scalar(executor: &mut engine::metal::MetalExecutor, slot: u32, value: f32) {
     bind_f32(executor, slot, &[value]);
 }
 
 /// 按声明签名把样本缓冲绑进执行器：可写参数绑 `output_len` 字节输出槽，只读参数按 C 类型
 /// （f32/u8）逐元素写输入字节。逐点与分块对拍共用这一份绑缓冲样板。
+#[cfg(target_os = "macos")]
 fn bind_decl_buffers(
     executor: &mut engine::metal::MetalExecutor,
     node: &mut engine::exec::Node,
@@ -151,6 +156,7 @@ fn bind_decl_buffers(
 }
 
 /// 提交单个节点并同步，回读 `len` 个 f32 输出。逐点与分块归约对拍的发射/回读样板。
+#[cfg(target_os = "macos")]
 fn submit_read(
     executor: &mut engine::metal::MetalExecutor,
     node: engine::exec::Node,
@@ -180,6 +186,7 @@ fn submit_read(
 
 /// 装配 Metal 后端 + 内置目录 + 临时工作目录；设备不可用时返回 `None` 静默跳过（真机对拍
 /// 在无 Metal 的环境里不失败）。
+#[cfg(target_os = "macos")]
 fn metal_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::Dirs)> {
     ensure_backends();
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
@@ -207,6 +214,7 @@ fn cuda_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::
 
 /// 分块内核对拍的公共装备：语义表 + 样本 + 参考 + 声明 + 分块网格。`len_of` 给出分块轴长度
 /// （scan / reduce 从签名里找非缓冲标量，rmsnorm / softmax 直接取 `N`），分块对拍共用这份装配。
+#[cfg(target_os = "macos")]
 struct ChunkSetup {
     catalogue: cutile::builtin::Catalogue,
     dirs: cutile::dirs::Dirs,
@@ -222,6 +230,7 @@ struct ChunkSetup {
 }
 
 /// 从签名里取唯一非缓冲标量作为分块轴长度（scan / 归约共用）。
+#[cfg(target_os = "macos")]
 fn scalar_len(decl: &op::decl::OpDecl, sample: &op::model::Sample) -> u32 {
     decl.signature
         .params()
@@ -231,6 +240,7 @@ fn scalar_len(decl: &op::decl::OpDecl, sample: &op::model::Sample) -> u32 {
         .expect("长度标量") as u32
 }
 
+#[cfg(target_os = "macos")]
 fn chunk_setup(
     op_name: &str,
     tag: &str,
@@ -480,6 +490,7 @@ fn op_matches_reference_cuda(op_name: &str) {
     let Some((catalogue, dirs)) = cuda_harness("grid") else {
         return;
     };
+    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
@@ -509,6 +520,7 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
     let Some((catalogue, dirs)) = cuda_harness("reduce") else {
         return;
     };
+    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
 
     let model = op::model(op_name).expect("语义表");
     let (m, n) = model.shape;
