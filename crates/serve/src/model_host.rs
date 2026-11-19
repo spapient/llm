@@ -268,9 +268,10 @@ impl CpuModel {
 
     /// 在序列第 `at` 个位置做一次前向：解码与分块预填充共用这一条。
     ///
-    /// 分工只有一处：没有块链时无处可读、也无可写；有块链时先按前 `at + 1` 行装填历史，提交后把
-    /// 这一行的 K/V 写回第 `at + 1` 行——下一步读历史时才看得到它。于是「算提示段」与「算下一个
-    /// token」不是两套几何，只是 `at` 不同。
+    /// 单行不自带几何：[`forward_batch`](Self::forward_batch) 按装配形态选路——没有块链时
+    /// 无处可读、也无可写；有块链时先按前 `at + 1` 行装填历史，提交后把这一行的 K/V 写回第
+    /// `at + 1` 行——下一步读历史时才看得到它。于是「算提示段」与「算下一个 token」不是两套
+    /// 几何，只是 `at` 不同，也不是两份实现。
     fn forward_at(
         &mut self,
         sequence: &Sequence,
@@ -278,19 +279,21 @@ impl CpuModel {
         at: usize,
     ) -> Result<Vec<f32>> {
         let row = Row { sequence, at };
-        let rows = std::slice::from_ref(&row);
+        let out = self.forward_batch(std::slice::from_ref(&row), batch)?;
+        out.into_iter().next().ok_or_else(|| {
+            // 一行进、一行出：拿不到就是内部账错了，不是调用方的输入问题。
+            Error::new(Code::Internal, "单行前向没有输出：输出按行拆分丢了一行").with(SITE)
+        })
+    }
+
+    /// 按装配形态选前向路径：有块链才谈得上历史装填与页行写回，无块链走纯张量整批。
+    ///
+    /// 这条分派只做一次选择，行数不进判据——单行与整批走的是同一套几何，区别只在 `rows` 的长度。
+    fn forward_batch(&mut self, rows: &[Row<'_>], batch: &mut Batch) -> Result<Vec<Vec<f32>>> {
         if self.assembly.blocks.is_empty() {
-            return self.batch_forward(rows).map(|mut out| out.swap_remove(0));
+            return self.batch_forward(rows);
         }
-        let input = self.predict_input_batch(rows)?;
-        self.resize_for_batch(1);
-        self.executor.bind(self.assembly.input, input);
-        self.fill_batch_tables(rows);
-        self.load_history_batch(rows, batch)?;
-        let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
-        self.write_current_kv_batch(rows, batch)?;
-        self.split_batch_output(flat, 1)
-            .map(|mut out| out.swap_remove(0))
+        self.forward_block_batch(rows, batch)
     }
 
     /// 整批输出按单序列输出宽拆回各行；总长与 `batch×width` 不符归内部错误。
