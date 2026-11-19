@@ -67,7 +67,7 @@
 **内存与张量（L4）**
 
 - `storage::Allocator`：`alloc(bytes) -> Result<Buffer>`、`free(Buffer)`、`copy_into(src, dst)`；跨设备拷贝显式，框架层不发生隐式拷贝（`storage/src/lib.rs:171-190`）。`CpuAllocator` 是无状态安全 `Vec<u8>`，零 `unsafe`。
-- `tensor::OwnedTensor`：元数据 + 持有字节向量；`zeros` / `from_bytes` / `dtype` / `shape` / `strides` / `numel` / `data` / `data_mut` / `view` / `is_contiguous`（`owned.rs:17-96`）。`View<'a, E>` 元素级零拷贝（`view.rs:17-201`）。`SUPPORTED = F32/F16/BF16/I8/U4`。
+- `tensor::OwnedTensor`：元数据 + 持有字节向量；`zeros` / `from_bytes` / `dtype` / `shape` / `strides` / `numel` / `data` / `data_mut` / `view` / `is_contiguous`（`tensor.rs` 的 `owned` 模块）。`View<'a, E>` 元素级零拷贝（`view.rs:17-201`）。`SUPPORTED = F32/F16/BF16/I8/U4`。
 
 **层定义（`nn`）**
 
@@ -102,7 +102,7 @@
 
 - `Kernel` trait：`compute(op, inputs: &[View], output: &mut ViewMut)`；`Reference` 算术复用 `op` 参考实现（`kernel.rs:17-36`）。
 - `KERNELS` 表长度与顺序同 `REGISTRY`，编译期 `const` 断言锁死（`kernel.rs:168-197`）；unary/binary/gemm 宏按 lane 拆形参（`kernel.rs:60-100`）。全 24 算子覆盖，含 `attention_f32` / `flash_attention_f32` / 两条 decode 变体 / `rope_f32` / 量化族（`kernel.rs:102-166`）。
-- 形状推导在 `shape.rs`（`Kind` / `Lane` sealed / `Data` / `View` / `Inputs`）。`train` 不依赖 `engine`（`crates/train/Cargo.toml`），其 `View`/`Lane` 缓冲形态与 engine `Vec<f32>` 不同形。
+- 形状推导在 `kernel.rs` 的 `shape` 模块（`Kind` / `Lane` sealed / `Data` / `View` / `Inputs`）。`train` 不依赖 `engine`（`crates/train/Cargo.toml`），其 `View`/`Lane` 缓冲形态与 engine `Vec<f32>` 不同形。
 
 ### 1.3 当前唯一跑通的“前向”路径
 
@@ -166,7 +166,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 | G2 | `Predict` 只有测试替身（`generate.rs:18-24`、`completion_tests.rs:5-12`） | 没有驻留权重 + 图装配 + 执行的生产 `Predict` 实现 | `serve::model` |
 | G3 | `Program::run` 只有 f32 切片，无形状/标量上下文（`exec.rs:388`） | `rope_f32(pos, x, out)` 的位置标量、`attention` 的 heads/head_dim 没有通道；形状只能从切片长度猜。P1 只接纯切片算子，标量通道 P2 再议 | `serve::model`；engine trait 预留扩展（§5.1） |
 | G4 | `Bindings` 只有 `u32 → Vec<f32>`，无 dtype/形状元数据（`exec.rs:396-425`） | 编号 ↔ 形状/条目名描述表留装配侧（D10）；engine 保持纯缓冲，只读访问器仅当后端实现证明需要时再补 | `serve` 装配侧为主 |
-| G5 | 形状/下界推导只在 `train::shape.rs`；训练 `View` lane 与 engine `Vec<f32>` 不是同一缓冲形态 | 装配侧的形状推导不能直接复用 train 缓冲视图；需要一份面向 `Vec<f32>` 的窄形状适配 | `serve::model` |
+| G5 | 形状/下界推导只在 `train` 的 `kernel.rs` 的 `shape` 模块；训练 `View` lane 与 engine `Vec<f32>` 不是同一缓冲形态 | 装配侧的形状推导不能直接复用 train 缓冲视图；需要一份面向 `Vec<f32>` 的窄形状适配 | `serve::model` |
 | G6 | 对拍只在 `cutile::execution` 子进程回路；无进程内单层前向对拍 harness | M1 需要进程内：同一输入两份计算（Program 输出 vs 独立 `op::forward` 参考），`testkit::close` 判 `max_rel_err` | `serve::model` + dev testkit |
 
 ### 3.2 P2 缺口
@@ -377,7 +377,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 #### 落地记录（P2-2a：`embed_f32` 改造为行向量 gather）
 
 - 不新增算子：现有 `embed_f32` 从标量 gather（`y[n]=table[idx[n]]`）改为行向量 gather（`y[n,:]=table[idx[n],:]`）。表 `[V,D]`、索引 `[n]`、输出 `[n,D]` 均按行展平；`V=64` 仅为样本档，运行时行数由表长/行宽推出，行宽 `D` 由 `out.len()/idx.len()` 推导，表长须为 `D` 的整数倍。
-- 三件套同步改写：`embed_f32.rs`（两轴 `n/d`、`project_shape`、`cost` 按访问行 `n·D` 计价、`sample(tokens,dim)`、行拷贝参考与内核；空索引、不可整除、表长不符、下标越界报 `Invalid`）；`.toml` 布局补 `y=row`、summary 改行公式；`.k` 模板内层按 `D` 逐元素 `@store(y, n*D+d, row[d])`，标量 `N/V/D`。
+- 三件套同步改写：`f32_small.rs` 的 `embed_f32` 模块（两轴 `n/d`、`project_shape`、`cost` 按访问行 `n·D` 计价、`sample(tokens,dim)`、行拷贝参考与内核；空索引、不可整除、表长不符、下标越界报 `Invalid`）；`.toml` 布局补 `y=row`、summary 改行公式；`.k` 模板内层按 `D` 逐元素 `@store(y, n*D+d, row[d])`，标量 `N/V/D`。
 - arity 不变：`forward(idx, table, out)` 三参，train `binary!` 桥与注册表行不动；复用 `embed` 骨架（闭集 12 个不扩），注解 shape `[8,64]`。
 - 测试：行 gather 参考对拍；下标越界、表长不符两条拒绝用例。
 - 本刀门禁：op 167、nn 65 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5、gate 1 全过；无新增 pub 类型与依赖边。
@@ -506,5 +506,5 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 | Program 标量槽形状（已定 D9 / ADR 0043）：定长类型化闭集槽，不用名值表；`Program::run` 缓冲签名不变 | ADR 0043 正文动工前补齐 | P2 接 rope/attention 时按已定形状落地 |
 | `serve::model_host` 模块与最终向下边表（是否引 `tensor`） | ARCHITECTURE 边表 + 所有权表 | 已定模块 `model_host`；已补 `op`、`nn`、`weights`；`tensor` 暂不引 |
 | Predict/KV 传参路线（A/B） | 路线 B 已定形：`logits(&mut self, &Sequence, &mut Batch)`（#50 落地，见 §5.4 与 §7 P2-4 记录） | 已定 |
-| 嵌入算子形态：改造 `embed_f32` 为行向量 gather（表 `[V,D]`，按 idx 取整行到 `[n,D]`），不新增算子 | op `embed_f32.rs` + `.toml` + `.k` + 自测；复用 `embed` 骨架 | 已落地（#58）：三参 arity 不变，train 桥与注册表行未动；骨架闭集 12 个不扩 |
+| 嵌入算子形态：改造 `embed_f32` 为行向量 gather（表 `[V,D]`，按 idx 取整行到 `[n,D]`），不新增算子 | op `f32_small.rs` 的 `embed_f32` 模块 + `.toml` + `.k` + 自测；复用 `embed` 骨架 | 已落地（#58）：三参 arity 不变，train 桥与注册表行未动；骨架闭集 12 个不扩 |
 | unsafe/FFI 边界规则（函数/句柄越界白名单、局部 allow 收敛点） | 已落档 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)；边界 crate 实现随 P3 填入 | 已定规则 |

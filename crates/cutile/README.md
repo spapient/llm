@@ -147,10 +147,10 @@ crates/op/                      # 声明层：纯数据 + 解析，不含机制
     ├── decl.rs                 # OpDecl：轴展开、变体链、调用点参数校验
     ├── tpl.rs                  # 模板词法：文本 / {{槽位}} / @原语(...)
     ├── sig.rs                  # 能力签名的声明侧（与档案层同一张属性键表）
-    ├── layout.rs / sch.rs      # 布局与调度的闭集（4 + 4）
+    ├── sch.rs                  # 布局与调度的闭集（`layout` / `sch` 两个模块，4 + 4）
     ├── model.rs                # 一条求和表达式 + 确定性样本 + 标量参考
-    ├── einsum/                 # flops / bytes 由表达式与操作数位宽推出
-    └── <op>.rs                 # 每个算子的语义（代价、样本、参考），与 ops/<op>.k 一一对应
+    ├── einsum.rs               # flops / bytes 由表达式与操作数位宽推出
+    └── <族>.rs                 # 算子族语义（f32_small / unary / elementwise / reduce / attention / gemv / gemm / dequant / scan），与 ops/<op>.k 对应
 
 crates/prof/                    # 档案层：纯数据，不含机制
 ├── Cargo.toml
@@ -183,19 +183,18 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
     ├── lib.rs                  # 公开面、re-export、SCHEMA_VER
     ├── builtin.rs              # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
     ├── cap.rs                  # ② negotiate：需求 ∩ 供给、降级链、诊断构造
-    ├── space.rs                # GM/FAST/REG 三级存储与寻址
     ├── ast.rs                  # 模板渲染的可见中间产物（ADR 0017 的 L1）
     ├── substitute.rs           # ④ 槽位与 `@原语` 替换
     ├── emit.rs                 # ⑤ 加头、加前导、拼正文；片段行数判据
     ├── build.rs                # ⑤ 指纹 → 查缓存 → 取锁 → 拼接 → 落盘
     ├── cache.rs                # 缓存存储：身份键（源文本指纹、产物键、逐项差异）、条目、锁、原子落盘与 LRU 回收
-    ├── probe.rs / plan.rs      # 设备探测、tile 取值与 roofline
+    ├── plan.rs                 # tile 取值与 roofline（设备探测在 `device.rs` 的 `probe` 模块）
     ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
     ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
     ├── runner.rs              # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
     ├── dirs.rs                # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
-    ├── device.rs              # 统一设备：按 Emit 查描述符表；共享装载/起进程/回读 + C/CUDA/Metal 三段编排（无 unsafe）
+    ├── device.rs              # 统一设备：按 Emit 查描述符表；共享装载/起进程/回读 + C/CUDA/Metal 三段编排（无 unsafe）；内联 `probe` / `space` 模块
     ├── gate.rs / witness.rs    # 语言门与见证执行器
     ├── pipeline.rs             # 四条命令共用的流水线（Run / Prepared / …）
     ├── ledger.rs                # 跨档案能力台账：证据行聚合与原语×后端矩阵格（不走 pipeline）
@@ -585,7 +584,7 @@ witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 
 `GM / FAST / REG` 是**语义名**，每个档案映射到本设备的物理名（NVIDIA `shared`、Intel `slm`、昇腾 `L1`、Metal `threadgroup`、CPU `L2/栈`）。模板只写语义名，因此同一份模板在昇腾上的 `GM -> FAST` 会自动变成 `GM -> L1` 的 MTE 搬运。
 
-`space.rs` 只做四件事：名字映射、容量取值（`capacity`，档案缺项即"不限"）、容量校验（`FAST`/`REG` 声明用量 ≤ 档案字节数）、对齐校验（`swz` 的粒度与 bank 数兼容），共 130 行。后两件事不再是"留着等人的工具"：`build::contract` 对协商出的变体算一遍声明用量，逐层调容量校验，并对每个 `swz` 槽位调一次对齐校验，不合就在构建期失败。
+`device.rs` 的 `space` 模块只做四件事：名字映射、容量取值（`capacity`，档案缺项即"不限"）、容量校验（`FAST`/`REG` 声明用量 ≤ 档案字节数）、对齐校验（`swz` 的粒度与 bank 数兼容）。后两件事不再是"留着等人的工具"：`build::contract` 对协商出的变体算一遍声明用量，逐层调容量校验，并对每个 `swz` 槽位调一次对齐校验，不合就在构建期失败。
 
 这个契约**在查缓存之前**执行：声明里的 `bytes` 上界不改变源文本，因此不在缓存键里；若把判定放到命中之后，一份已经落盘的旧文本就成了"声明越界也免检"的通行证。`contract` 返回的就是判定时真正比较过的那些数（原语、层、字节），`doctor` 的 `[存储]` 段直接打印它们与同一份档案容量——"它为什么通过"与"它到底算了什么"因此是同一组值。
 

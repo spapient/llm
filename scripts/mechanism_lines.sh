@@ -26,7 +26,7 @@ LAYER_FILES=(0 0 0 0 0 0 0)
 # 分层归属（docs/ARCHITECTURE.md §一、design §3.1）。
 layer_index() {
     case "$1" in
-        diagnostic|testkit|dtype|wire|tool) echo 0 ;;
+        diagnostic|testkit|rng|dtype|wire|tool) echo 0 ;;
         prof|op|prim) echo 1 ;;
         cutile) echo 2 ;;
         tensor|storage|tokenizer) echo 3 ;;

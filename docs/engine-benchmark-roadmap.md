@@ -67,11 +67,11 @@
 | 服务端点 | 路由/响应/线格式契约，无 socket；HTTP/gRPC 是待实现的 `Endpoint` 后端 | `crates/serve/src/lib.rs` |
 | 训练侧 | 循环状态、检查点、激活缓冲簿记；反传公式在 `autograd`，激活显存计划未定 | `crates/train/src/lib.rs:1-15` |
 | 分布式 | 切分拓扑与集合簿记，无通信后端 | `crates/shard/src/*` |
-| 外部 FFI | 全仓唯一生产 FFI 是 `storage` 的 mmap 内存映射 | `crates/storage/src/mmap.rs:28` |
+| 外部 FFI | 全仓唯一生产 FFI 是 `storage` 的 mmap 内存映射 | `crates/storage/src/lib.rs:252`（内联 `mmap` 模块） |
 | unsafe 策略 | `unsafe_code = "deny"`，生产核心无 `unsafe` | `Cargo.toml:56` |
 | 生产依赖 | 生产路径仅 `dtype` 可选 feature 引入 `serde`/`bytemuck`，`fuzz` 可选 `libfuzzer-sys`；`criterion`/`clap` 等属 dev/build 依赖 | 各 `Cargo.toml` |
 | 基准 | criterion 结构/编解码基准 + 七条真实算子基准（`gemv_f32` / `softmax_f32` / `rope_f32` / `rmsnorm_f32` / `attention_f32` / `gemm_f32` / `silu_f32`）全部入 `tool::regress` 基线判定；macos-aarch64 首跑 mean 已登记（gemv 2186061 ns、softmax 15492 ns、rope 9487 ns、rmsnorm 2374 ns、attention 517442 ns、gemm 16599 ns、silu 3287 ns，跨机绝对值不可比）；另有 `mem_stream` 三档读写搬往上界作 roofline 分母，定位结果见 [`bench-roofline-analysis.md`](bench-roofline-analysis.md) | `crates/benches/Cargo.toml`、`crates/benches/tests/regress.rs` |
-| 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.44% / token 1.73%，阈 1.5%）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`../.config/.jscpd.json`、`.github/workflows/ci.yml` |
+| 现有门禁 | fmt、clippy `-D warnings`、nextest、doc-test、cargo-deny、cargo-machete、jscpd（行 1.44% / token 1.73%，阈 0.48）、bench `--no-run`、cutile 覆盖率下限（行 75% / 函数 70%；上次 `--coverage` 采集行 76.84% / 函数 77.98%） | `scripts/ci.sh`、`../.config/.jscpd.json`、`.github/workflows/ci.yml` |
 
 ## 4. 能力维度对标矩阵
 
@@ -121,7 +121,7 @@
   - 固化后端/分配器/缓冲/算子挂载/KV/通信/基准的 trait 形状（可先只有编译期类型，不出实现）；
   - 按 `10k-analysis.md §6` 压平台侧脂肪（解析器收敛、审计/报告器合一、孤儿成员处置）；
   - 文档与契约对齐，消除文档漂移。
-- **出口指标**：nextest 全绿且用例数不跌；clippy `-D warnings` 零告警；生产依赖面不扩大；覆盖率不下限；jscpd 不破 1.5%；§5 接口形状有 ADR 落档；不新增运行时后端或可写缓冲。
+- **出口指标**：nextest 全绿且用例数不跌；clippy `-D warnings` 零告警；生产依赖面不扩大；覆盖率不下限；jscpd 不破 0.48；§5 接口形状有 ADR 落档；不新增运行时后端或可写缓冲。
 - **暂缓**：算子真实实现、调度器落地、FFI。
 
 ### P1 最小可运行闭环（从契约到能跑，建立对照基线）

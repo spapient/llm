@@ -57,10 +57,10 @@ train    → nn, autograd, data, weights, shard, op, tensor, diagnostic, wire   
 engine   → tensor, diagnostic, storage, cutile, op    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型；运行时依赖覆盖被装配的各层）
-fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support/drivers.rs` 里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / `.u` 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 `.u` 夹具写形状、`tool` 词汇片段解析）
+fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员，不参与方向判定；`+dev` 的是 `tests/support.rs` 的 `drivers` 模块里的驱动对象：`cli` 参数文法、`weights` JSON / safetensors / `.u` 容器、`train` 检查点、`serve` 帧解码、`wire` LEB128 游标与接收器不变量、`tensor` 为检查点与 `.u` 夹具写形状、`tool` 词汇片段解析）
 benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：集中测量容器，不参与方向判定；预热、采样与测量时长由 criterion 配置，本成员只声明被测对象；`tool::regress` 判回退、`testkit` 登记"本机无基线"的跳过；train 基准覆盖调度求值、快照编解码与缓冲池复用，`autograd` 出 `Tape`/`Sizes`，`tensor` 出形状与元素类型，`nn` 出层下界与栈合计；`engine` 出页账与序列几何、`serve` 出宿主与 Predict 路线 B，供整模型一步夹具装配）
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定；阈值文件在 `tool` 的 `build.rs` 里解析成 `diagnostic::data` 的表）    +dev: testkit
-testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 工作区契约门禁；跨层对拍 `crates/testkit/tests/cross_layer.rs` 打通权重、层声明与训练缓冲三段，`autograd` 出 `Tape`/`Sizes`，`tool` 出词汇片段解析；被测层只出现在 dev-dependencies，不进产品路径）
+testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 工作区契约门禁；跨层对拍 `crates/testkit/tests/e2e.rs` 打通权重、层声明与训练缓冲三段，`autograd` 出 `Tape`/`Sizes`，`tool` 出词汇片段解析；被测层只出现在 dev-dependencies，不进产品路径）
 wire     → diagnostic（纯字节码闭集：CRC-32、LEB128、Sink；不认识张量或容器布局）    +dev: testkit
 rng      → diagnostic（计数器型 Philox4x32-10 引擎与均匀/正态/伯努利分布；显式种子/流号/下标派生，不持全局状态、不引 `rand`）    +dev: testkit
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自己的出边为零）

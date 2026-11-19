@@ -12,7 +12,7 @@
 
 ## 决策
 
-第一阶段在 serve 内写等价的本地表驱动宏（`src/macros.rs`），按映射轴分三个臂：
+第一阶段在 serve 内写等价的本地表驱动宏（现为 `crates/serve/src/protocol.rs` 的 `macros` 模块），按映射轴分三个臂：
 
 - `code_set!`：只映射 `u16` 编号（`Status`）；
 - `name_set!`：只映射稳定短名 + `Display`（`Ending`）；

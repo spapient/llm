@@ -30,7 +30,7 @@
 | R-10 | Program 标量/形状通道（rope 位置标量、attention heads/head_dim） | backend G3、§5.1；D9 已定：定长类型化闭集槽，不用查表 | M1-B6 按 D9 落地 |
 | R-11 | Bindings 元数据（编号 ↔ 形状/条目名） | backend G4、§5.2；D10 已定：描述表留装配侧，engine 纯缓冲 | M1-B7 按 D10 落地 |
 | R-12 | 词表（vocab）从权重容器装载 | `Tokenizer` 现由 `Completion` 外部注入（`completion.rs:29`）；weights 无 vocab 读取通路 | M4-1 补条目 |
-| R-13 | 训练 data 层夹具装配 | `data` 有 `Dataset` trait/`Chunks`/`Batch`（dataset.rs/batch.rs），T1-3 未列装配交付物 | T1-3 补条目 |
+| R-13 | 训练 data 层夹具装配 | `data` 有 `Dataset` trait/`Chunks`/`Batch`（`data/src/lib.rs`），T1-3 未列装配交付物 | T1-3 补条目 |
 | R-14 | 机制代码分账规则落档 | design §5.3 排除规则与 L1–L7 分账口径，M1-C1 只说"出基线" | M1-C1 补"规则可复跑、分账表入档" |
 
 ### 0.3 规范薄弱，已补强（§2）
@@ -270,7 +270,7 @@
 | D1 | 权重源抽象形状 | 沿用既有 `Reader`（借用）/`Loader`（拷贝），**不新增平行 `Source` 父 trait**；`MmapSource` 实现 `Reader`（Unix feature 门控），`File` 保持 `Loader` | 另立 `Source` 父 trait 统一两入口；全文件强制 mmap；只留文件流 | `weights::Reader/Loader` 已定形（`lib.rs:268/277`），`Archive` 双实现、`File` Loader 已在跑（`safetensors.rs:103/127/191`）；父 trait 无第二消费者 | 0036 |
 | D2 | 优化器 trait 归属与形状 | 归 `train`；`Optimizer` 对象安全 trait，`step(params, grads, meta: &ParamRole, lr)`；矩状态按参数编号由优化器自持；参数角色元数据来自 `nn` 声明，优化器不按字段名猜测 | 优化器下沉 `autograd`；按参数类型泛型特化；优化器直接改私有字段 | `autograd` 只出 tape/plan/Replay/Store，无更新策略（`autograd/src/lib.rs` 导出清单）；`train` 现无任何优化/梯度更新代码；`Role::is_parameter` 已可派生 | 0037 |
 | D3 | 训练闭环排期 | 单列 T1，并行推进，**不阻塞 M1 推理出口**；资源紧张时先 M1-B | 训练与推理同阶段串行；训练优先 | 设计 §4.4；T1 依赖的 data/autograd/nn 接口均已存在 | 记录在设计 §4.4，不单列 ADR |
-| D4 | crate 合并节奏 | 维持 24 个成员到 M2；M2 后只合并"单一消费者 + 同层"的叶子成员，合并以边数/行数/编译时间实证为据 | 立即 31→8 模块；按目录猜合并 | 当前 24 成员；编译期并行与架构门边界是既有长板 | 0038（已落档） |
+| D4 | crate 合并节奏 | 维持 24 个成员到 M2；M2 后只合并"单一消费者 + 同层"的叶子成员，合并以边数/行数/编译时间实证为据 | 立即 31→8 模块；按目录猜合并 | 当前 24 成员；编译期并行与架构门边界是既有长板。**2026-11-19 文件级合并实证（ADR 0049）**：crate 边界不动，src 255→195、测试文件 49→38，测试数 1,779 不跌、门禁全绿——文件级内联+re-export 即可达成 ~25% 文件削减，无需动 crate 边界 | 0038（已落档）+ 0049 |
 | D5 | 解析器依赖策略 | 维持生产零外部依赖；手写解析按格式收敛到模块内单源；`diagnostic` 的 optional `toml` 保持 build feature 门控。**2026-11-19 修订（ADR 0048）**：L1–L6 生产路径零外部依赖不变；L7 组合根（`cli`）允许唯一例外 `toml`（配置文件层解析），版本由 workspace 锁定 | 引入 toml+serde 单依赖换数千行手写解析 | 生产路径仅 optional `toml`/`bytemuck`（R-21）；解析分散在 weights 的 json/gguf/safetensors/rans | 0039（已落档）+ 0048（L7 例外修订） |
 | D6 | 后端 trait 形状 | 沿用 ADR-0025 的 `Executor`/`Allocator`/`Collective`/`Program`；CPU 首实现验证形状后再挂 Metal/CUDA；第二后端出现前不预埋多余泛型参数 | 为双后端现在预埋设备泛型；后端私有假设上浮到模型/调度代码 | 四 trait 已定形（`exec.rs:261/383`、`storage.rs:171`、`shard/collective.rs:11`）；`LocalExecutor` 契约后端 + `CpuExecutor` 注册表在位 | 修订 0025 或 0040（M3-1 前） |
 | D7 | 注解宏去留 | 保留两个既有注解宏：`#[annotation::model]`（算子侧产出 `Model` 条目）、`#[annotation::spec]`（`nn` 内重导出为 `#[spec]`，产出 `ContractSpec`）；宏只做声明展开，不持运行期注册表 | 普通构造函数替代宏 | 27 个算子模块挂 `model`（R-20）；`spec` 覆盖 nn 层；去掉宏会把声明负担抬回每个模块 | 0041（已落档） |
