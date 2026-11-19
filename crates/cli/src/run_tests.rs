@@ -44,6 +44,50 @@ fn write_dense_model(name: &str, layers: &[(&str, usize, usize)]) -> std::path::
     path
 }
 
+/// 主机折叠分块归约的部分结果（sum / max）：max 结合且顺序无关，sum 用 f64 折叠输入做对照
+/// （f32 串行求和对 4096 递增值的误差已 ~1e-4，会淹没分块本身的正确性）。
+fn fold_reduce(op_name: &str, partials: &[f32], input: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    if op_name.contains("_max_") {
+        let out = partials.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let want = input
+            .iter()
+            .fold(f64::NEG_INFINITY, |acc, &x| acc.max(f64::from(x)));
+        (vec![out], vec![want as f32])
+    } else {
+        let out = partials.iter().sum::<f32>();
+        let want = input.iter().fold(0.0f64, |acc, &x| acc + f64::from(x));
+        (vec![out], vec![want as f32])
+    }
+}
+
+/// 对拍断言：相对误差须落在 dtype 容差内。
+fn assert_close(
+    backend: &str,
+    op_name: &str,
+    output: &[f32],
+    want: &[f32],
+    dtype: op::model::DType,
+) {
+    let max_rel_err = cutile::reference::max_rel_err(output, want);
+    let tolerance = cutile::reference::tolerance(dtype);
+    assert!(
+        max_rel_err <= tolerance,
+        "{op_name} {backend} 对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
+    );
+}
+
+/// 从设备缓冲读回 `len` 个 f32（小端位模式）。
+fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|index| {
+            let word: [u8; 4] = bytes[index * 4..index * 4 + 4]
+                .try_into()
+                .expect("四个字节一个 f32");
+            f32::from_le_bytes(word)
+        })
+        .collect()
+}
+
 #[test]
 fn a_real_weight_file_runs_through_generated_kernels() {
     if cutile::toolchain::detect().is_none() {
@@ -362,35 +406,12 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
         .buffer_mut(output_slot)
         .expect("输出可读")
         .as_mut_bytes();
-    let partials: Vec<f32> = (0..grid_size as usize)
-        .map(|index| {
-            let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                .try_into()
-                .expect("四个字节一个 f32");
-            f32::from_le_bytes(bytes)
-        })
-        .collect();
+    let partials = read_f32(bytes, grid_size as usize);
 
     // 主机折叠部分结果（sum / max）；参考用 f64 折叠输入，理由见函数注释。
     let input = sample.f32("a").expect("归约输入");
-    let (output, want) = if op_name.contains("_max_") {
-        let out = partials.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let want = input
-            .iter()
-            .fold(f64::NEG_INFINITY, |acc, &x| acc.max(f64::from(x)));
-        (vec![out], vec![want as f32])
-    } else {
-        let out = partials.iter().sum::<f32>();
-        let want = input.iter().fold(0.0f64, |acc, &x| acc + f64::from(x));
-        (vec![out], vec![want as f32])
-    };
-
-    let max_rel_err = cutile::reference::max_rel_err(&output, &want);
-    let tolerance = cutile::reference::tolerance(model.dtype);
-    assert!(
-        max_rel_err <= tolerance,
-        "{op_name} 分块归约对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-    );
+    let (output, want) = fold_reduce(op_name, &partials, input);
+    assert_close("分块归约", op_name, &output, &want, model.dtype);
 }
 
 /// CUDA 逐点网格真机对拍：纯逐点算子走 [`cutile::execution::cuda_grid_program`]
@@ -423,12 +444,7 @@ fn op_matches_reference_cuda(op_name: &str) {
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
 
     let expected = (model.reference)(&sample).expect("参考值");
-    let max_rel_err = cutile::reference::max_rel_err(&bits, &expected);
-    let tolerance = cutile::reference::tolerance(model.dtype);
-    assert!(
-        max_rel_err <= tolerance,
-        "{op_name} CUDA 逐点对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-    );
+    assert_close("CUDA 逐点", op_name, &bits, &expected, model.dtype);
 }
 
 /// CUDA 分块归约真机对拍：`reduce` 骨架声明 `[chunk]` 后按 `ceil(N/chunk)` 网格每线程归约一块、
@@ -466,24 +482,8 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
 
     let input = sample.f32("a").expect("归约输入");
-    let (output, want) = if op_name.contains("_max_") {
-        let out = bits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let want = input
-            .iter()
-            .fold(f64::NEG_INFINITY, |acc, &x| acc.max(f64::from(x)));
-        (vec![out], vec![want as f32])
-    } else {
-        let out = bits.iter().sum::<f32>();
-        let want = input.iter().fold(0.0f64, |acc, &x| acc + f64::from(x));
-        (vec![out], vec![want as f32])
-    };
-
-    let max_rel_err = cutile::reference::max_rel_err(&output, &want);
-    let tolerance = cutile::reference::tolerance(model.dtype);
-    assert!(
-        max_rel_err <= tolerance,
-        "{op_name} CUDA 分块归约对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-    );
+    let (output, want) = fold_reduce(op_name, &bits, input);
+    assert_close("CUDA 分块归约", op_name, &output, &want, model.dtype);
 }
 
 /// 分块扫描真机对拍：`scan_f32` 声明 `[chunk]` 后走「局部扫描 + 主机携带前缀 + 校正」三阶段。
@@ -569,14 +569,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
     // 阶段 2（主机）：从局部扫描输出读块末态，做块级携带前缀。
     let local = {
         let bytes = executor.buffer_mut(1).expect("局部扫描可读").as_mut_bytes();
-        (0..expected.len())
-            .map(|index| {
-                let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(bytes)
-            })
-            .collect::<Vec<_>>()
+        read_f32(bytes, expected.len())
     };
     let mut carry = vec![0.0f64; grid_size as usize];
     for g in 1..grid_size as usize {
@@ -606,22 +599,9 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
 
     let output = {
         let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
-        (0..expected.len())
-            .map(|index| {
-                let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(bytes)
-            })
-            .collect::<Vec<_>>()
+        read_f32(bytes, expected.len())
     };
-
-    let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
-    let tolerance = cutile::reference::tolerance(model.dtype);
-    assert!(
-        max_rel_err <= tolerance,
-        "{op_name} 分块扫描对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-    );
+    assert_close("分块扫描", op_name, &output, &expected, model.dtype);
 }
 
 /// 分块 RMSNorm 真机对拍：`rmsnorm_f32` 声明 `[chunk]` 后走「部分平方和 + 主机折叠 + 归一化」。
@@ -687,14 +667,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
 
     let partials = {
         let bytes = executor.buffer_mut(2).expect("部分和可读").as_mut_bytes();
-        (0..grid_size as usize)
-            .map(|index| {
-                let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(bytes)
-            })
-            .collect::<Vec<_>>()
+        read_f32(bytes, grid_size as usize)
     };
     let sum_sq = partials
         .iter()
@@ -720,22 +693,9 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
 
     let output = {
         let bytes = executor.buffer_mut(2).expect("输出可读").as_mut_bytes();
-        (0..expected.len())
-            .map(|index| {
-                let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(bytes)
-            })
-            .collect::<Vec<_>>()
+        read_f32(bytes, expected.len())
     };
-
-    let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
-    let tolerance = cutile::reference::tolerance(model.dtype);
-    assert!(
-        max_rel_err <= tolerance,
-        "{op_name} 分块归一化对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-    );
+    assert_close("分块归一化", op_name, &output, &expected, model.dtype);
 }
 
 /// 分块 Softmax 真机对拍：`softmax_f32` 声明 `[chunk]` 后走「部分最大 + 折叠 + 部分指数和 +
@@ -794,14 +754,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
     let read_partials = |executor: &mut engine::metal::MetalExecutor| {
         let bytes = executor.buffer_mut(1).expect("部分结果可读").as_mut_bytes();
-        (0..grid_size as usize)
-            .map(|index| {
-                let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(bytes)
-            })
-            .collect::<Vec<_>>()
+        read_f32(bytes, grid_size as usize)
     };
 
     // 阶段 1：部分最大。
@@ -849,22 +802,9 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
 
     let output = {
         let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
-        (0..expected.len())
-            .map(|index| {
-                let bytes: [u8; 4] = bytes[index * 4..index * 4 + 4]
-                    .try_into()
-                    .expect("四个字节一个 f32");
-                f32::from_le_bytes(bytes)
-            })
-            .collect::<Vec<_>>()
+        read_f32(bytes, expected.len())
     };
-
-    let max_rel_err = cutile::reference::max_rel_err(&output, &expected);
-    let tolerance = cutile::reference::tolerance(model.dtype);
-    assert!(
-        max_rel_err <= tolerance,
-        "{op_name} 分块 softmax 对拍失败：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"
-    );
+    assert_close("分块 softmax", op_name, &output, &expected, model.dtype);
 }
 
 /// 三趟 softmax（max 归约 + exp 求和 + 归一化）声明 `[chunk]` 后走「部分最大 + 折叠 +
