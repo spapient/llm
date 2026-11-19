@@ -34,6 +34,13 @@ impl Streams for Text {
         self
     }
 
+    fn insert_field(self, field: &str) -> Self {
+        match self.0.rfind('}') {
+            Some(at) => Self(format!("{} {field} {}", &self.0[..at], &self.0[at..])),
+            None => self,
+        }
+    }
+
     fn fallback() -> Self {
         Self("compile_error!(\"注解层无法构造错误消息\");".to_string())
     }
@@ -93,4 +100,27 @@ fn the_error_message_survives_the_round_trip() {
 fn a_transparent_group_is_not_mistaken_for_a_bracket_group() {
     assert_eq!(bracket(Delimiter::None), Bracket::Invisible);
     assert_ne!(bracket(Delimiter::None), Bracket::Square);
+}
+
+#[test]
+fn a_runtime_annotation_rejection_keeps_the_annotated_item() {
+    let expanded = expand_runtime(
+        text(r#"name = $name, out = [$tokens], ops = [$op]"#),
+        text("pub struct Head { len: usize }"),
+    );
+    assert!(expanded.0.contains("compile_error!"), "{}", expanded.0);
+    assert!(
+        expanded.0.contains("pub struct Head { len: usize }"),
+        "被标注项必须原样保留：{}",
+        expanded.0
+    );
+}
+
+#[test]
+fn a_field_is_inserted_at_the_front_of_the_struct_body() {
+    let item = text("pub struct Head { len: usize }").insert_field("spec: ::nn::ContractSpec,");
+    assert_eq!(
+        item.0,
+        "pub struct Head { spec: ::nn::ContractSpec, len: usize }"
+    );
 }

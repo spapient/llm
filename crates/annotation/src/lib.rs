@@ -232,15 +232,51 @@ fn expand_with<S, D>(
 where
     S: Streams,
 {
+    match resolve(attribute, item, name, parse, target) {
+        Err(output) => output,
+        Ok((declaration, ty, item)) => attach(item, &render(&declaration, &ty)),
+    }
+}
+
+/// 两道注解共用的前半趟：解析注解、取被标注类型名；失败时返回「原被标注项 + 编译错误」。
+///
+/// 成功时把未改动的被标注项交回调用方——静态形态直接拼接，运行时形态先注入 `spec` 字段。
+fn resolve<S, D>(
+    attribute: S,
+    item: S,
+    name: &str,
+    parse: fn(&[Token]) -> Result<D, SyntaxError>,
+    target: fn(&[Token], &str) -> Result<String, SyntaxError>,
+) -> Result<(D, String, S), S>
+where
+    S: Streams,
+{
     let arguments = attribute.tokenize();
     let body = item.tokenize();
 
     match parse(&convert(&arguments)) {
-        Err(error) => reject(item, &error, &arguments),
+        Err(error) => Err(reject(item, &error, &arguments)),
         Ok(declaration) => match target(&convert(&body), name) {
-            Err(error) => reject(item, &error, &body),
-            Ok(ty) => attach(item, &render(&declaration, &ty)),
+            Err(error) => Err(reject(item, &error, &body)),
+            Ok(ty) => Ok((declaration, ty, item)),
         },
+    }
+}
+
+/// 运行时形态的一趟展开：注入 `spec` 字段，再生成由构造参数取值的构造宏。
+fn expand_runtime<S: Streams>(attribute: S, item: S) -> S {
+    match resolve(
+        attribute,
+        item,
+        "spec",
+        syntax::parse_runtime,
+        syntax::runtime_target,
+    ) {
+        Err(output) => output,
+        Ok((declaration, ty, item)) => {
+            let item = item.insert_field("spec: ::nn::ContractSpec,");
+            attach(item, &codegen::render_runtime(&declaration, &ty))
+        }
     }
 }
 
