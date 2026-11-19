@@ -44,19 +44,11 @@
 #![deny(unsafe_code)]
 
 mod collective;
-mod group;
 mod local;
-mod partition;
-mod reduce;
-mod remote;
 mod tiling;
 mod topology;
 
-pub use collective::Collective;
-pub use group::Group;
+pub use collective::{Collective, Group, Reduce, Remote};
 pub use local::Local;
-pub use partition::Partition;
-pub use reduce::Reduce;
-pub use remote::Remote;
-pub use tiling::{Sharding, Tiling};
+pub use tiling::{Partition, Sharding, Tiling};
 pub use topology::{Parallel, Topology};

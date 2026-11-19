@@ -5,9 +5,9 @@
 //! 正反两个方向都从这一条规则派生：[`Topology::rank`] 由三个下标算 rank，
 //! [`Topology::indices`] 由 rank 反解三个下标，[`Topology::group`] 则把「某一维的第 `index` 组」
 //! 还原成三个下标再逐 rank 求值。于是"某个并行维的进程组"就是一串等差数列，
-//! [`crate::group::Group`] 的升序要求也自然满足——不需要第二套 stride/span 公式。
+//! [`crate::Group`] 的升序要求也自然满足——不需要第二套 stride/span 公式。
 
-use crate::group::Group;
+use crate::collective::Group;
 use diagnostic::{Code, Error, Result};
 
 /// 三种并行维度。

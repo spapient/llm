@@ -7,7 +7,7 @@
 
 use crate::cap;
 use crate::decl::OpDecl;
-use crate::probe::select;
+use crate::device::probe::select;
 use crate::prof::Detected;
 use crate::prof::Profile;
 use diagnostic::{Code, Error};
@@ -77,7 +77,7 @@ impl Catalogue {
     /// 名字不存在或探测不出可用档案时返回说明。
     pub fn resolve(&self, device: &str) -> diagnostic::Result<&Profile> {
         if device == AUTO_DEVICE {
-            return self.select(&crate::probe::detect_cpu());
+            return self.select(&crate::device::probe::detect_cpu());
         }
         self.profile(device)
             .ok_or_else(|| Error::new(Code::Missing, format!("没有设备档案 `{device}`")))
@@ -254,7 +254,7 @@ fn fragments_for(profile: &Profile, root: Option<&Path>) -> diagnostic::Result<p
 mod tests {
     use super::*;
     use crate::decl::expand;
-    use crate::probe;
+    use crate::device::probe;
     use crate::substitute;
 
     #[test]

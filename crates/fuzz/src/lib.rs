@@ -62,9 +62,499 @@
 
 use diagnostic::Error;
 
-pub mod contract;
-pub mod finding;
-pub mod seed;
+pub mod contract {
+    //! 三条契约的核对入口：确定性遍历 [`sweep`] 与 libfuzzer harness 从这里取同一份判据，
+    //! 拒绝判据不会在两处悄悄漂移。
+
+    use crate::Target;
+    use crate::finding::{Behaviour, Finding};
+    use crate::seed::Seed;
+
+    /// 契约一：任何输入都必须被解析成结论，而不是打死宿主。
+    const PANIC: &str = "不 panic：任何输入都必须被解析成结论，而不是打死宿主";
+    /// 契约三：拒绝时必须给出非空消息。
+    const EMPTY_MESSAGE: &str = "拒绝时必须给出非空消息";
+    /// 契约二：同一输入跑两次必须给出同一个结论。
+    const STABILITY: &str = "同一输入必须给出同一个结论";
+
+    /// 跑一次并把 `Result` 归一成 [`Behaviour`]，让"接受/拒绝"的比较不依赖 `Error` 的内部结构。
+    ///
+    /// panic 也在这里归一：入口是不受信任输入的边界，`catch_unwind` 是唯一能让"第 7 条输入打死
+    /// 进程"变成"第 7 条输入是一条证据"的手段。`AssertUnwindSafe` 的前提是 [`Target::run`] 在
+    /// panic 之后不会被观察到半截状态——它是 `&self` 的纯判定，没有跨用例的状态需要恢复。
+    pub fn judge(target: &dyn Target, input: &[u8]) -> Behaviour {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| target.run(input))) {
+            Ok(Ok(())) => Behaviour::Accepted,
+            Ok(Err(error)) => Behaviour::Rejected {
+                code: error.code(),
+                message: error.message().to_string(),
+            },
+            Err(payload) => Behaviour::Panicked {
+                message: panic_message(&payload),
+            },
+        }
+    }
+
+    /// 核对单条用例的三条契约；违约返回第一条证据。
+    ///
+    /// 顺序就是报告的优先级：先 panic（进程已死，其余判据没有意义），再空消息（拒绝了却说不清
+    /// 为什么），最后稳定性（同输入两次结论不一致）。harness 与 [`sweep`] 都走这一条，判据只有
+    /// 一处实现。
+    pub fn check(target: &dyn Target, case: u64, input: Vec<u8>) -> Result<(), Finding> {
+        let name = target.name().to_string();
+        let first = judge(target, &input);
+        if let Behaviour::Panicked { .. } = first {
+            return Err(Finding::new(&name, case, input, first, PANIC));
+        }
+        if let Behaviour::Rejected { message, .. } = &first
+            && message.trim().is_empty()
+        {
+            return Err(Finding::new(&name, case, input, first, EMPTY_MESSAGE));
+        }
+        let second = judge(target, &input);
+        if first != second {
+            return Err(Finding::new(&name, case, input, second, STABILITY));
+        }
+        Ok(())
+    }
+
+    /// 跑 `cases` 个确定性用例；全部符合契约返回 `Ok(())`，否则返回第一条证据。
+    ///
+    /// `cases` 为 0 时不做任何事：遍历范围由调用方决定，本函数不猜"默认跑多少个"。
+    pub fn sweep(target: &dyn Target, seed: &Seed, cases: u64) -> Result<(), Finding> {
+        (0..cases).try_for_each(|case| check(target, case, seed.derive(case)))
+    }
+
+    /// 跑 `cases` 个确定性用例，收齐**全部**违约证据。
+    ///
+    /// [`sweep`] 只带第一条证据便于快速定位；需要一份完整回归清单（CI 汇总、按契约分组统计）
+    /// 时用这条，遍历成本与 [`sweep`] 相同，只是不提前退出。
+    pub fn sweep_all(target: &dyn Target, seed: &Seed, cases: u64) -> Vec<Finding> {
+        (0..cases)
+            .filter_map(|case| check(target, case, seed.derive(case)).err())
+            .collect()
+    }
+
+    /// 从 panic payload 取回说明：`panic!("…")` 给 `&str`，`panic!("{x}")` 给 `String`，
+    /// `panic_any` 可能给任意值。常见数值/字节载荷按 `Debug` 渲染；都取不到时留占位说明，
+    /// 不留空白。
+    fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            return (*message).to_string();
+        }
+        if let Some(message) = payload.downcast_ref::<String>() {
+            return message.clone();
+        }
+        if let Some(bytes) = payload.downcast_ref::<&[u8]>() {
+            return format!("{bytes:?}");
+        }
+        if let Some(value) = [
+            debug_payload::<u8>(payload),
+            debug_payload::<u32>(payload),
+            debug_payload::<u64>(payload),
+            debug_payload::<usize>(payload),
+            debug_payload::<bool>(payload),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        {
+            return value;
+        }
+        "panic payload 没有携带字符串说明".to_string()
+    }
+
+    /// 常见数值载荷按 `Debug` 取回；类型不符返回 `None`。
+    fn debug_payload<T: std::fmt::Debug + 'static>(
+        payload: &Box<dyn std::any::Any + Send>,
+    ) -> Option<String> {
+        payload
+            .downcast_ref::<T>()
+            .map(|value| format!("{value:?}"))
+    }
+}
+
+pub mod finding {
+    //! 一次运行的结论与失败证据：判据违约定型成可复现、可贴进 issue 的值。
+
+    use core::fmt;
+
+    use diagnostic::Code;
+
+    /// 一次运行的结论。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Behaviour {
+        /// 输入被接受。
+        Accepted,
+        /// 输入被拒绝，附错误类别与消息。
+        Rejected {
+            /// 错误类别（日志与退出码的对外契约）。
+            code: Code,
+            /// 一句话说明；空消息属于违约。
+            message: String,
+        },
+        /// 入口用 panic 结束——违约，附从 payload 取回的消息。
+        ///
+        /// `panic!` 不带字符串（如 `panic!()` 或断言失败的非字符串 payload）时是占位说明，
+        /// 同样是违约：能打死宿主的输入本身就该修。
+        Panicked {
+            /// payload 里的说明；取不到时是占位文本。
+            message: String,
+        },
+    }
+
+    impl fmt::Display for Behaviour {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::Accepted => formatter.write_str("accepted"),
+                Self::Rejected { code, message } => write!(formatter, "rejected {code}: {message}"),
+                Self::Panicked { message } => write!(formatter, "panicked: {message}"),
+            }
+        }
+    }
+
+    /// 失败证据：目标名、用例序号、输入是什么、违反了哪条契约。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Finding {
+        target: String,
+        case: u64,
+        input: Vec<u8>,
+        behaviour: Behaviour,
+        contract: &'static str,
+    }
+
+    impl Finding {
+        /// 一条证据：哪条用例、什么输入、什么结论、违反了哪条契约。
+        pub(crate) fn new(
+            target: &str,
+            case: u64,
+            input: Vec<u8>,
+            behaviour: Behaviour,
+            contract: &'static str,
+        ) -> Self {
+            Self {
+                target: target.to_string(),
+                case,
+                input,
+                behaviour,
+                contract,
+            }
+        }
+
+        /// 被测目标名：把问题定位到具体解析器。
+        pub fn target(&self) -> &str {
+            &self.target
+        }
+
+        /// 用例序号（与 [`crate::Seed::derive`] 的参数一致；libfuzzer 喂来的输入记 0）。
+        pub fn case(&self) -> u64 {
+            self.case
+        }
+
+        /// 触发问题的输入。
+        pub fn input(&self) -> &[u8] {
+            &self.input
+        }
+
+        /// 这条输入得到的结论。
+        pub fn behaviour(&self) -> &Behaviour {
+            &self.behaviour
+        }
+
+        /// 被违反的契约，直接写进报告。
+        pub fn contract(&self) -> &'static str {
+            self.contract
+        }
+    }
+
+    impl fmt::Display for Finding {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            writeln!(
+                formatter,
+                "fuzz::{} case #{}: {}",
+                self.target, self.case, self.contract
+            )?;
+            writeln!(formatter, "  verdict: {}", self.behaviour)?;
+            write!(formatter, "  input: {}", repro(&self.input))
+        }
+    }
+
+    /// 输入的可读复现形式：能当 UTF-8 读就给 Rust 字符串字面量（带转义），否则给紧凑十六进制。
+    ///
+    /// 两种形态都能直接贴进 issue 或 harness 复现命令：字符串字面量保留可读字符，十六进制覆盖
+    /// 任意字节，不依赖终端能不能显示。
+    #[derive(Debug, Clone, Copy)]
+    pub struct Repro<'a>(&'a [u8]);
+
+    /// 输入的可读复现形式（见 [`Repro`]）。
+    pub fn repro(input: &[u8]) -> Repro<'_> {
+        Repro(input)
+    }
+
+    impl fmt::Display for Repro<'_> {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match std::str::from_utf8(self.0) {
+                Ok(text) => write!(formatter, "{text:?}"),
+                Err(_) => {
+                    const NIBBLE: [u8; 16] = *b"0123456789abcdef";
+                    let mut hex = String::with_capacity(self.0.len() * 2);
+                    for &byte in self.0 {
+                        hex.push(NIBBLE[(byte >> 4) as usize] as char);
+                        hex.push(NIBBLE[(byte & 0x0F) as usize] as char);
+                    }
+                    write!(formatter, "0x{hex}")
+                }
+            }
+        }
+    }
+}
+
+pub mod seed {
+    //! 确定性用例生成：一份合法范例 + 用例序号 → 跨平台可复现的扰动字节串。
+    //!
+    //! 生成器只做整数混合，不接随机源、不读时钟、不碰全局状态：同一个 `(seed, case)` 在任何
+    //! 机器、任何工具链版本下都得到同一串字节，失败输入才能原样复现。变异调度覆盖三类边角：
+    //! 位/字节翻转、边界字节替换与整数 ±1 扰动、长度增减（插入、删除、截断、追加、区段复制）
+    //! ——真实缺陷几乎总长在这些位置，而不是与范例毫无关系的纯噪声。
+
+    /// 确定性种子：同一个种子永远派生同一批用例，失败才能复现。
+    ///
+    /// 持有一份**合法范例**字节：遍历从它的边角上长出错误路径，而不是与真实输入毫无关系的噪声。
+    /// 种子本身是否被目标接受，由集成测试单独核对（见 `tests/parsers.rs`）。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Seed(Vec<u8>);
+
+    impl Seed {
+        /// 由初始字节构造；空种子是合法输入（"空输入"本身就是一道用例）。
+        pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+            Self(bytes.into())
+        }
+
+        /// 初始字节。
+        pub fn bytes(&self) -> &[u8] {
+            &self.0
+        }
+
+        /// 初始字节数。
+        pub fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        /// 是否为空种子。
+        pub fn is_empty(&self) -> bool {
+            self.0.is_empty()
+        }
+    }
+
+    /// 64 位确定性流（SplitMix64）：状态回卷后做两次乘加终混，低 32 位与高 32 位都有充分
+    /// 雪崩。类型不对外公开：外部只通过 [`Seed::derive`] 取字节，不暴露流的形状。
+    #[derive(Debug, Clone)]
+    struct Rng {
+        state: u64,
+    }
+
+    impl Rng {
+        /// 由初始状态构造；状态为 0 也合法（常量增量会把它推离零点）。
+        fn new(state: u64) -> Self {
+            Self { state }
+        }
+
+        /// 取下一个 64 位值。
+        fn next_u64(&mut self) -> u64 {
+            self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ z >> 31
+        }
+
+        /// 取 `[0, bound)` 内的确定性下标；`bound` 为 0 时返回 0（调用方据此判空）。
+        ///
+        /// 用乘移（`u64 × bound` 取高 64 位）而不是取模：小边界下取模会让余数偏小的下标
+        /// 概率略高，乘移在整个区间上均匀，且不需要拒绝采样回退流。
+        fn below(&mut self, bound: usize) -> usize {
+            match bound {
+                0 => 0,
+                bound => ((self.next_u64() as u128 * bound as u128) >> 64) as usize,
+            }
+        }
+
+        /// 取一个随机字节。
+        fn byte(&mut self) -> u8 {
+            self.next_u64() as u8
+        }
+    }
+
+    /// 范例字节的 64 位指纹：FNV-1a 逐字节折叠，再过 SplitMix 终混。
+    ///
+    /// 旧实现把范例字节留在状态之外，改一个字节只影响该字节自身的异或掩码；这里让每一位输入都
+    /// 参与状态混合，范例的一位翻转会扩散到整条派生流。
+    fn fingerprint(bytes: &[u8]) -> u64 {
+        let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01B3);
+        }
+        let mut z = hash;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ z >> 31
+    }
+
+    /// 格式边角上反复出现的危险字节：零、上界、符号位边界、ASCII 空白与 UTF-8 续节/首节。
+    const BOUNDARY: [u8; 12] = [
+        0x00, 0x7F, 0x80, 0xFF, 0x01, 0x7E, 0xFE, 0x20, 0x0A, 0x0D, 0xBF, 0xC0,
+    ];
+
+    /// 单步变异数量；用例内每一步都从 [`MUTATIONS`] 表里抽。新增一步只改表与这个计数。
+    const STEPS: usize = 9;
+
+    /// 变异步表：下标即 [`Rng::below`] 抽中的编号；表分派把调度分支移出 [`mutate`]，
+    /// 每一步仍是独立小函数，空/单字节边界各自退化安全。
+    const MUTATIONS: [fn(&mut Vec<u8>, &mut Rng); STEPS] = [
+        flip_bit,
+        substitute_boundary,
+        replace_byte,
+        nudge_byte,
+        insert_byte,
+        delete_byte,
+        truncate,
+        append_bytes,
+        duplicate_region,
+    ];
+
+    impl Seed {
+        /// 派生第 `index` 个用例：范例的一份确定性扰动。
+        ///
+        /// 输出长度不再钉死在范例长度上：删除/截断能收出空串与前缀片段，插入/追加/复制能长出
+        /// 更长的串。长度上限由变异步本身约束（追加 ≤ 4 字节、区段复制不超过范例长度），遍历成本
+        /// 可预期。
+        pub fn derive(&self, index: u64) -> Vec<u8> {
+            let mut rng =
+                Rng::new(fingerprint(&self.0) ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut out = self.0.clone();
+            if out.is_empty() {
+                // 空范例没有可删可改的位置：从流里造 0..=2 个边界字节，仍然覆盖空串、单字节与
+                // 双字节这三个最短边界。
+                let len = rng.below(3);
+                return (0..len)
+                    .map(|_| BOUNDARY[rng.below(BOUNDARY.len())])
+                    .collect();
+            }
+            mutate(&mut out, &mut rng);
+            out
+        }
+    }
+
+    /// 对 `out` 做 1..=3 步复合变异；约一成用例原样保留，保住合法路径覆盖。
+    ///
+    /// 每一步都在空/单字节边界上退化安全，不会 panic；截断收出空串后，后续位置类步骤直接跳过。
+    fn mutate(out: &mut Vec<u8>, rng: &mut Rng) {
+        if rng.below(10) == 0 {
+            return;
+        }
+        let steps = 1 + rng.below(3);
+        for _ in 0..steps {
+            MUTATIONS[rng.below(STEPS)](out, rng);
+        }
+    }
+
+    /// 翻转一个随机位；空串无可选位置，跳过。
+    // 分派表要求统一成 `&mut Vec<u8>`；这几步只按下标改写，不改长度。
+    #[allow(clippy::ptr_arg)]
+    fn flip_bit(out: &mut Vec<u8>, rng: &mut Rng) {
+        if out.is_empty() {
+            return;
+        }
+        let pos = rng.below(out.len());
+        out[pos] ^= 1 << rng.below(8);
+    }
+
+    /// 把一个位置换成流里的随机字节；空串跳过。
+    #[allow(clippy::ptr_arg)]
+    fn replace_byte(out: &mut Vec<u8>, rng: &mut Rng) {
+        if out.is_empty() {
+            return;
+        }
+        let pos = rng.below(out.len());
+        out[pos] = rng.byte();
+    }
+
+    /// 把一个位置换成表格里的边界字节；空串跳过。
+    #[allow(clippy::ptr_arg)]
+    fn substitute_boundary(out: &mut Vec<u8>, rng: &mut Rng) {
+        if out.is_empty() {
+            return;
+        }
+        let pos = rng.below(out.len());
+        out[pos] = BOUNDARY[rng.below(BOUNDARY.len())];
+    }
+
+    /// 一个字节做环绕 +1 / -1：长度、偏移、计数值这类整数字段的差一错误走这一步；空串跳过。
+    #[allow(clippy::ptr_arg)]
+    fn nudge_byte(out: &mut Vec<u8>, rng: &mut Rng) {
+        if out.is_empty() {
+            return;
+        }
+        let pos = rng.below(out.len());
+        // -1 用环绕加 255 表达，保持单字节运算。
+        let delta = if rng.below(2) == 0 { 1u8 } else { u8::MAX };
+        out[pos] = out[pos].wrapping_add(delta);
+    }
+
+    /// 在随机位置插入一个字节（边界字节与随机字节各半）。
+    fn insert_byte(out: &mut Vec<u8>, rng: &mut Rng) {
+        let pos = rng.below(out.len() + 1);
+        let byte = pick(rng);
+        out.insert(pos, byte);
+    }
+
+    /// 删除一个位置；长度 ≤ 1 时保留，不做没有意义的删除。
+    fn delete_byte(out: &mut Vec<u8>, rng: &mut Rng) {
+        if out.len() <= 1 {
+            return;
+        }
+        let pos = rng.below(out.len());
+        out.remove(pos);
+    }
+
+    /// 截断到随机前缀长度（含 0：整条变空输入）。
+    fn truncate(out: &mut Vec<u8>, rng: &mut Rng) {
+        let keep = rng.below(out.len() + 1);
+        out.truncate(keep);
+    }
+
+    /// 尾部追加 1..=4 个字节；先在小数组里填好，再整块 `extend_from_slice`，不逐个 push。
+    fn append_bytes(out: &mut Vec<u8>, rng: &mut Rng) {
+        let count = 1 + rng.below(4);
+        let mut bytes = [0u8; 4];
+        for slot in &mut bytes[..count] {
+            *slot = pick(rng);
+        }
+        out.extend_from_slice(&bytes[..count]);
+    }
+
+    /// 复制一段既有字节插到随机位置：长串重复与跨区拼接走这一步；空串跳过。
+    fn duplicate_region(out: &mut Vec<u8>, rng: &mut Rng) {
+        if out.is_empty() {
+            return;
+        }
+        let start = rng.below(out.len());
+        let rest = out.len() - start;
+        let end = start + 1 + rng.below(rest);
+        let region = out[start..end].to_vec();
+        let pos = rng.below(out.len() + 1);
+        out.splice(pos..pos, region);
+    }
+
+    /// 一半取边界字节，一半取流随机字节。
+    fn pick(rng: &mut Rng) -> u8 {
+        match rng.below(2) {
+            0 => BOUNDARY[rng.below(BOUNDARY.len())],
+            _ => rng.byte(),
+        }
+    }
+}
 
 pub use contract::{check, sweep, sweep_all};
 pub use finding::{Behaviour, Finding, Repro, repro};

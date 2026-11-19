@@ -10,7 +10,7 @@ use diagnostic::{Code, Error, Result};
 use crate::DType;
 use crate::element::Element;
 use crate::shape::Shape;
-use crate::strides::Strides;
+use crate::shape::Strides;
 
 /// 泛型只读视图：形状 + 步长 + 调用方的 `&[E]`。
 #[derive(Debug, Clone)]

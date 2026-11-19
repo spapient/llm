@@ -23,9 +23,176 @@
 
 pub mod compare;
 pub mod gating;
-pub mod hash;
-pub mod rng;
-pub mod scratch;
+pub mod hash {
+    //! 位级 CRC-32 参考定义：与各 crate 的查表实现独立，供对拍共享，免得每份测试重写一遍。
+
+    /// CRC-32 反射多项式（IEEE 802.3 的 `0x04C1_1DB7` 反射形式）。
+    const CRC_POLY: u32 = 0xEDB8_8320;
+
+    /// CRC-32 的逐字节参考定义。
+    ///
+    /// 逐位循环是 CRC 移位寄存器的固有串行依赖：每一位的余数由上一位移出的比特决定，
+    /// 无法整块查表；这一份刻意保留位级写法，作为查表实现的独立对拍基准。
+    #[must_use]
+    pub fn crc32_bitwise(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ CRC_POLY
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// 把某个 crate 的查表 CRC-32 实现与位级参考对拍：`0..=200` 递增序列、空串与标准 check 值。
+    pub fn assert_table_matches_bitwise(crc32: impl Fn(&[u8]) -> u32) {
+        let data: Vec<u8> = (0u8..=200).collect();
+        assert_eq!(crc32(&data), crc32_bitwise(&data));
+        assert_eq!(crc32(b""), crc32_bitwise(b""));
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926, "标准 check 值");
+    }
+}
+
+pub mod rng {
+    //! 确定性伪随机数：测试共享一个不带 `rand` 依赖的 xorshift32，让失败可复现。
+
+    /// 确定性 PRNG（xorshift32）：测试共享，不给依赖表加 `rand`，同时让失败可复现。
+    pub struct Rng {
+        state: u32,
+    }
+
+    impl Rng {
+        /// 固定种子。
+        #[must_use]
+        pub fn new(seed: u32) -> Self {
+            Self { state: seed }
+        }
+
+        /// 取 `[0, bound)` 内的确定性值。
+        pub fn below(&mut self, bound: u32) -> u32 {
+            self.state ^= self.state << 13;
+            self.state ^= self.state >> 17;
+            self.state ^= self.state << 5;
+            self.state % bound.max(1)
+        }
+
+        /// `±[0.5, 2]` 的确定性值：远离 0，避免平方类算子的差分为 0 造成无谓抵消。
+        pub fn value(&mut self) -> f64 {
+            let magnitude = 0.5 + 1.5 * f64::from(self.below(1_000)) / 1_000.0;
+            match self.below(2) {
+                0 => magnitude,
+                _ => -magnitude,
+            }
+        }
+
+        /// `[0, 1)` 内的确定性 f32。
+        pub fn next_f32(&mut self) -> f32 {
+            self.below(1_000_000) as f32 / 1_000_000.0
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn rng_is_deterministic_and_bounded() {
+            let mut left = Rng::new(1234);
+            let mut right = Rng::new(1234);
+            for _ in 0..16 {
+                let value = left.below(10);
+                assert_eq!(value, right.below(10), "同种子序列一致");
+                assert!(value < 10, "结果落在界内");
+            }
+            assert_eq!(Rng::new(7).below(1), 0, "bound=1 恒为 0");
+        }
+
+        #[test]
+        fn rng_value_stays_away_from_zero_and_is_signable() {
+            let mut rng = Rng::new(42);
+            for _ in 0..16 {
+                let value = rng.value();
+                assert!(value.abs() >= 0.5 && value.abs() <= 2.0);
+            }
+        }
+
+        #[test]
+        fn rng_next_f32_is_in_unit_interval() {
+            let mut rng = Rng::new(7);
+            for _ in 0..16 {
+                let value = rng.next_f32();
+                assert!((0.0..1.0).contains(&value));
+            }
+        }
+    }
+}
+
+pub mod scratch {
+    //! 测试临时目录：按标签取一个进程隔离的空目录。
+
+    use std::path::PathBuf;
+
+    /// 一个已创建的空临时目录，标签用于区分用例。
+    ///
+    /// 目录名带进程号，避免并行测试互相踩。建不出来不在这里终止测试进程：返回的路径照样交给
+    /// 调用方，它紧接着的写入会带出带路径与 io 类别的错误，比一句「创建失败」更有用。
+    pub fn scratch_dir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("llm-testkit-{}-{tag}", std::process::id()));
+        if let Err(error) = std::fs::create_dir_all(&path) {
+            eprintln!("testkit: 无法创建临时目录 `{}`：{error}", path.display());
+        }
+        path
+    }
+
+    /// 先删掉旧目录再建一个空目录：进入用例时目录里不该带上一次运行的残留。
+    ///
+    /// 与 [`scratch_dir`] 的复用语义不同，这里每次都清空；适用于要逐条枚举目录内容
+    /// （如"写回后目录里只有这一个产物"）的对拍。目录名带进程号，并行测试互不踩。
+    pub fn scratch_clean(tag: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("llm-testkit-clean-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        if let Err(error) = std::fs::create_dir_all(&path) {
+            eprintln!("testkit: 无法创建临时目录 `{}`：{error}", path.display());
+        }
+        path
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_same_tag_reuses_one_directory() {
+            let first = scratch_dir("a");
+            let second = scratch_dir("a");
+            assert!(first.is_dir());
+            assert_eq!(first, second, "同标签同进程应复用同一目录");
+            assert_ne!(first, scratch_dir("b"), "不同标签必须各自一个目录");
+            let _ = std::fs::remove_dir_all(&first);
+            let _ = std::fs::remove_dir_all(scratch_dir("b"));
+        }
+
+        #[test]
+        fn scratch_clean_wipes_prior_content() {
+            let dir = scratch_clean("clean");
+            std::fs::write(dir.join("leftover.txt"), "x").expect("写入残留");
+            assert!(dir.join("leftover.txt").exists());
+            let again = scratch_clean("clean");
+            assert!(again.is_dir());
+            assert!(
+                !again.join("leftover.txt").exists(),
+                "第二次取同标签必须先清空残留"
+            );
+            let _ = std::fs::remove_dir_all(&again);
+        }
+    }
+}
 
 pub use compare::{COSINE_GUARD, all_finite, approx_eq, close, cosine_similarity};
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};

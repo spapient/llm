@@ -39,7 +39,7 @@ pub fn run_cuda(
     })?;
     let source = crate::backend::Source::Single(program.to_string());
     let (stdout, stderr) = backend.compile_run(profile, dirs, &source, label)?;
-    Ok(crate::driver::readback(&stdout, &stderr))
+    Ok(crate::runner::driver::readback(&stdout, &stderr))
 }
 
 /// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。
@@ -650,9 +650,12 @@ mod tests {
     #[test]
     fn counts_are_read_from_stderr_in_order() {
         assert_eq!(
-            crate::driver::parse_counts("witness 1\nwitness 2\n"),
+            crate::runner::driver::parse_counts("witness 1\nwitness 2\n"),
             vec![1, 2]
         );
-        assert_eq!(crate::driver::parse_counts("noise\n"), Vec::<i64>::new());
+        assert_eq!(
+            crate::runner::driver::parse_counts("noise\n"),
+            Vec::<i64>::new()
+        );
     }
 }

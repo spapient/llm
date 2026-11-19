@@ -90,14 +90,11 @@ pub mod cache;
 pub mod cap;
 pub mod dirs;
 pub mod doctor;
-pub mod driver;
 pub mod emit;
 pub mod execution;
 pub mod ledger;
 pub mod plan;
-pub mod probe;
 pub mod reference;
-pub mod space;
 pub mod substitute;
 pub mod toolchain;
 pub mod verify;
@@ -112,6 +109,12 @@ mod gate;
 pub mod harness;
 mod pipeline;
 mod runner;
+
+// 合并后的模块仍保留 crate 级公开路径：`engine`（L6）按 `cutile::driver` 取这套机制原语，
+// `probe` / `space` 的公开面也不因搬进 `device` 而消失。
+pub use device::probe;
+pub use device::space;
+pub use runner::driver;
 
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
 ///

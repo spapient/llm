@@ -201,7 +201,7 @@ graph TD
   2. `Archive` 借用路径保持 `Cow<'a, [u8]>`：raw 段 `Borrowed`，rANS 段 `Owned`；`File` 流后端在有映射后备时对 raw 条目返回借用切片。
   3. 驻留缓冲：装配期按描述符一次性解码权重进驻留 `Buffer`；生成循环只覆写输入与逐层激活，不重新分配元素缓冲（`CpuModel::forward` 现有形态保留，补投影/归一化首层通路）。
   4. 基准：mmap vs read 的首条/全量装载、冷/热缓存、RSS 与时延入 `benches`；数字回填 roadmap §1.1。
-- **复用既有**：`Reader`/`Loader` 双 trait（`weights/src/lib.rs:264-292`）、`Mmap`（`storage/src/mmap.rs`）、`Entry`/`Descriptor`/段 CRC 校验。
+- **复用既有**：`Reader`/`Loader` 双 trait（`weights/src/lib.rs:264-292`）、`Mmap`（`storage/src/lib.rs` 的内联 `mmap` 模块）、`Entry`/`Descriptor`/段 CRC 校验。
 - **验收**：raw 条目零拷贝有测试证据（借用生命周期断言）；压缩段解压边界与余数失败有负例；装载基准可重复；架构门通过；新增 unsafe 为零。
 - **暂缓**：远端分块源、权重热更新、设备权重驻留。
 
@@ -366,7 +366,7 @@ graph TD
 | 生产 Predict 首层限制 | `crates/serve/src/model_host.rs:70` |
 | Reader/Loader 双后端 | `crates/weights/src/lib.rs:264-292` |
 | safetensors 流式 File | `crates/weights/src/safetensors.rs:136-210` |
-| mmap 隔离实现 | `crates/storage/src/mmap.rs`；feature 门控 `crates/storage/Cargo.toml:15-17` |
+| mmap 隔离实现 | `crates/storage/src/lib.rs` 的内联 `mmap` 模块；feature 门控 `crates/storage/Cargo.toml:15-17` |
 | Archive Cow 二分 | `crates/weights/src/archive.rs:182-186` |
 | 训练侧状态与不拥有项 | `crates/train/src/lib.rs:1-18` |
 | 反图与计划 | `crates/autograd/src/{tape,plan,schedule,account,replay}.rs` |

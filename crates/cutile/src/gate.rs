@@ -6,8 +6,8 @@
 
 use crate::atom::Witness;
 use crate::dirs::Dirs;
-use crate::driver::{scratch, write_text};
 use crate::prof::{Emit, Profile};
+use crate::runner::driver::{scratch, write_text};
 use crate::toolchain::clang;
 use crate::witness::{Selected, declared_witnesses, device_available, source};
 use diagnostic::{Code, Error};

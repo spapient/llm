@@ -11,9 +11,7 @@
 //! 一次 `all_reduce` 之后，组内每个 rank 的镜像与调用方缓冲都一样——这正是 all-reduce 与
 //! reduce-scatter 的分界；只写调用方那一份会让"第二个 rank 再读一次"读到未被归约的旧值。
 
-use crate::collective::Collective;
-use crate::group::Group;
-use crate::reduce::Reduce;
+use crate::collective::{Collective, Group, Reduce};
 use crate::topology::Topology;
 use diagnostic::{Code, Error, Result};
 

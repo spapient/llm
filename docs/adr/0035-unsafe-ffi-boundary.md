@@ -6,7 +6,7 @@
 
 ## 背景
 
-workspace lints 在根 [`../../Cargo.toml`](../../Cargo.toml) 全局 `unsafe_code = "deny"`；全仓生产核心不出现裸指针与 FFI。唯一生产 unsafe/FFI 岛是 storage 的只读内存映射 [`../../crates/storage/src/mmap.rs`](../../crates/storage/src/mmap.rs)：模块级 `#![allow(unsafe_code)]`，对外只暴露拥有型、只读的 `&[u8]` 视图，不变量（只读、私有映射、`Drop` 归还、线程归属）写在模块头注释里。
+workspace lints 在根 [`../../Cargo.toml`](../../Cargo.toml) 全局 `unsafe_code = "deny"`；全仓生产核心不出现裸指针与 FFI。唯一生产 unsafe/FFI 岛是 storage 的只读内存映射 [`../../crates/storage/src/lib.rs`](../../crates/storage/src/lib.rs) 的内联 `mmap` 模块：模块级 `#![allow(unsafe_code)]`，对外只暴露拥有型、只读的 `&[u8]` 视图，不变量（只读、私有映射、`Drop` 归还、线程归属）写在模块头注释里。
 
 P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 触发条件）：设备句柄、命令队列、缓冲映射、kernel launch 与事件同步必然触及裸指针、设备句柄与平台 FFI。ADR 0025 §9 只预告「unsafe/FFI 只允许出现在后端边界 crate」，没有给出白名单式的边界规则：哪些函数/句柄可以越过安全边界、`allow` 收敛在哪一层、不变量由谁写、校验放哪一侧。规则不定，后端代码里就会到处散落 `#[allow(unsafe_code)]`，审计面无法枚举，也与既有 mmap 岛的收敛形态不一致。
 

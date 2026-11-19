@@ -17,10 +17,7 @@
 
 pub mod bench;
 pub mod bench_json;
-pub mod call;
 pub mod ccn;
-pub mod docs;
-pub mod dup;
 pub mod gate;
 pub mod lex;
 pub mod regress;
@@ -33,7 +30,7 @@ mod generated {
 }
 
 pub use ccn::{Finding, analyze};
-pub use gate::Gate;
+pub use gate::{Gate, call, docs, dup};
 pub use generated::vocabulary;
 pub use lex::{Delim, Pos, Token, parse};
 pub use strip::strip_tests;
