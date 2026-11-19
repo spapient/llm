@@ -356,22 +356,22 @@ impl Lane {
     fn ready(profile: &Profile) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
         match profile.meta.emit {
             Emit::C => Ok((Self::Host, toolchain::detect())),
-            Emit::Cuda => Self::ready_device(profile, Self::Cuda, toolchain::detect_nvcc),
-            Emit::Metal => Self::ready_device(profile, Self::Metal, toolchain::detect_metal),
+            Emit::Cuda => Self::ready_device(profile, Self::Cuda),
+            Emit::Metal => Self::ready_device(profile, Self::Metal),
             _ => Err(Error::new(Code::Unsupported, unsupported_emit(profile))),
         }
     }
 
-    /// 加速器通道共用的「设备在不在」判断：在则带编译器探测返回，不在则 fail-fast（`NO_DEVICE`）。
+    /// 加速器通道共用的「设备在不在」判断：在则经 [`crate::backend::Driver::toolchain`] 取实测
+    /// 工具链返回，不在则 fail-fast（`NO_DEVICE`）。工具链身份只经 `Backend` 缝取，机制层不直接
+    /// 调 `detect_nvcc` / `detect_metal`——后端实现搬去 `engine` 后这里一行不改。
     fn ready_device(
         profile: &Profile,
         lane: Self,
-        detect: fn() -> Option<toolchain::Toolchain>,
     ) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
-        if witness::device_available(profile) {
-            Ok((lane, detect()))
-        } else {
-            Err(Error::new(Code::Unsupported, NO_DEVICE.to_string()))
+        match crate::device::spec(profile.meta.emit) {
+            Some(backend) if backend.available(profile) => Ok((lane, backend.toolchain())),
+            _ => Err(Error::new(Code::Unsupported, NO_DEVICE.to_string())),
         }
     }
 }

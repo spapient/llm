@@ -9,7 +9,7 @@
 //! [`Emit`] 选表行，不在调用侧再写一套后端代码。
 
 use crate::atom::{Prim, Witness};
-use crate::backend::{Backend, Readback};
+use crate::backend::{Backend, Codegen, Driver, Readback};
 use crate::build;
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
@@ -27,18 +27,15 @@ pub(crate) const C_PARAMS: &str = "float *";
 pub(crate) type Sources = BTreeMap<String, String>;
 
 /// C / Metal / CUDA 三段编排的后端闭集：加设备就加一个实现，不改任何 `match`。
-/// 具体编排函数仍在本文件各节；对外只经 [`Backend`] trait 分派（`docs/ARCHITECTURE.md` L3 不允许
-/// 厂商特判，这条 trait 缝是 cutile 认识后端的唯一入口）。
+/// 每台设备是 `Codegen`（出源）与 `Driver`（跑源）两个 impl 的并集；对外只经 [`Backend`] trait
+/// 分派（`docs/ARCHITECTURE.md` L3 不允许厂商特判，这条 trait 缝是 cutile 认识后端的唯一入口）。
 struct CBackend;
 struct MetalBackend;
 struct CudaBackend;
 
-impl Backend for CBackend {
+impl Codegen for CBackend {
     fn emit(&self) -> Emit {
         Emit::C
-    }
-    fn available(&self, profile: &Profile) -> bool {
-        c_available(profile)
     }
     fn program(
         &self,
@@ -48,6 +45,12 @@ impl Backend for CBackend {
         scope: Scope,
     ) -> Result<String> {
         c_program(profile, dirs, selected, scope)
+    }
+}
+
+impl Driver for CBackend {
+    fn available(&self, profile: &Profile) -> bool {
+        c_available(profile)
     }
     fn run(
         &self,
@@ -59,14 +62,14 @@ impl Backend for CBackend {
     ) -> Result<Readback> {
         c_run(profile, dirs, program, max, scope)
     }
+    fn toolchain(&self) -> Option<toolchain::Toolchain> {
+        toolchain::detect()
+    }
 }
 
-impl Backend for MetalBackend {
+impl Codegen for MetalBackend {
     fn emit(&self) -> Emit {
         Emit::Metal
-    }
-    fn available(&self, profile: &Profile) -> bool {
-        metal_available(profile)
     }
     fn program(
         &self,
@@ -76,6 +79,12 @@ impl Backend for MetalBackend {
         scope: Scope,
     ) -> Result<String> {
         metal_program(profile, dirs, selected, scope)
+    }
+}
+
+impl Driver for MetalBackend {
+    fn available(&self, profile: &Profile) -> bool {
+        metal_available(profile)
     }
     fn run(
         &self,
@@ -87,14 +96,14 @@ impl Backend for MetalBackend {
     ) -> Result<Readback> {
         metal_run(profile, dirs, program, max, scope)
     }
+    fn toolchain(&self) -> Option<toolchain::Toolchain> {
+        toolchain::detect_metal()
+    }
 }
 
-impl Backend for CudaBackend {
+impl Codegen for CudaBackend {
     fn emit(&self) -> Emit {
         Emit::Cuda
-    }
-    fn available(&self, profile: &Profile) -> bool {
-        cuda_available(profile)
     }
     fn program(
         &self,
@@ -104,6 +113,12 @@ impl Backend for CudaBackend {
         scope: Scope,
     ) -> Result<String> {
         cuda_program(profile, dirs, selected, scope)
+    }
+}
+
+impl Driver for CudaBackend {
+    fn available(&self, profile: &Profile) -> bool {
+        cuda_available(profile)
     }
     fn run(
         &self,
@@ -115,7 +130,14 @@ impl Backend for CudaBackend {
     ) -> Result<Readback> {
         cuda_run(profile, dirs, program, max, scope)
     }
+    fn toolchain(&self) -> Option<toolchain::Toolchain> {
+        toolchain::detect_nvcc()
+    }
 }
+
+impl Backend for CBackend {}
+impl Backend for MetalBackend {}
+impl Backend for CudaBackend {}
 
 /// 全部设备：**加设备就加一个实现**，不需要改任何 `match`。
 const SPECS: &[&dyn Backend] = &[&CBackend, &MetalBackend, &CudaBackend];

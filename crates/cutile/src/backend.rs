@@ -1,23 +1,27 @@
 //! 设备后端契约：cutile 只依赖这条缝，不认识 Metal / CUDA / C 的具体实现。
 //!
-//! 见证执行（[`crate::witness`]）按 `emit` 选后端，经 `&dyn Backend` 生成程序、编译、运行、回读。
-//! 具体后端实现这条 trait；本模块不出现任何厂商名字面量（`docs/ARCHITECTURE.md` 的 L3 契约）。
-//! 后端差异是 **trait 实现**而非表内函数指针：装配点（`cli`）可以注入任意实现，本层不硬编码后端清单。
+//! 对标 Triton 的 `Backend = Codegen + Driver`：把「生成程序文本」与「编译 / 发射 / 回读」拆成两条
+//! trait，各自可独立实现、独立测试。[`Codegen`] 是纯函数（见证清单 → 一门语言的源），可离线对拍；
+//! [`Driver`] 是唯一碰工具链与设备 FFI / 子进程的一半。[`Backend`] 只是两者的并集，cutile 只经
+//! `&dyn Backend` 分派，不枚举后端。
+//!
+//! cutile 保留 [`Codegen`] 与 C 宿主参考后端（本机 CPU，不是设备厂商）；Metal / CUDA 的 [`Driver`]
+//! 由 L6（`engine`）实现、L7（`cli`）装配注入（`docs/ARCHITECTURE.md` 的 L3 契约：机制层不出现
+//! 厂商特判与运行时依赖）。
 
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
+use crate::toolchain::Toolchain;
 use crate::witness::{Scope, Selected};
 use diagnostic::Result;
 
 /// 一次执行回读出来的东西：每条见证写出的个数 + 按顺序回读的 f32 值。
 pub type Readback = (Vec<i64>, Vec<f32>);
 
-/// 一台设备的执行后端：差异落在实现里，运行期只经 `dyn` 分派一次，没有枚举匹配。
-pub trait Backend {
+/// 生成程序文本：纯函数，见证清单（结构化中性输入）→ 一门语言的源文本，可离线对拍。
+pub trait Codegen {
     /// 这门语言（[`Emit`] 闭集）。
     fn emit(&self) -> Emit;
-    /// 设备是否在本机（工具链 / 驱动就位）。
-    fn available(&self, profile: &Profile) -> bool;
     /// 生成「跑一次全部见证」的程序文本；写出上限定在 ABI 常量 [`crate::witness::MAX_OUT`]。
     fn program(
         &self,
@@ -26,6 +30,12 @@ pub trait Backend {
         selected: &[Selected<'_>],
         scope: Scope,
     ) -> Result<String>;
+}
+
+/// 编译 / 发射 / 回读：唯一碰工具链、设备 FFI 与子进程的一半，由设备后端实现。
+pub trait Driver {
+    /// 设备是否在本机（工具链 / 驱动就位）。
+    fn available(&self, profile: &Profile) -> bool;
     /// 让程序跑起来，返回 `(每条写入个数, 按顺序回读的值)`。
     fn run(
         &self,
@@ -35,4 +45,12 @@ pub trait Backend {
         max: usize,
         scope: Scope,
     ) -> Result<Readback>;
+    /// 这条通道实测的工具链（进产物身份 / 报告）；拿不到（缺编译器）时为 `None`。
+    ///
+    /// 把「探针」暴露成方法而不是让机制层直接调 `detect_nvcc` / `detect_metal`：这样后端实现
+    /// 搬去 `engine` 后，[`crate::verify`] 仍只经这条缝取工具链身份，不依赖任何厂商检测函数。
+    fn toolchain(&self) -> Option<Toolchain>;
 }
+
+/// 一台设备的执行后端：`Codegen` 出源 + `Driver` 跑源。不加新方法，只做「能分派」的并集约束。
+pub trait Backend: Codegen + Driver {}
