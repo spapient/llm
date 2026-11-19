@@ -366,6 +366,13 @@ struct Running {
     needs_page: bool,
 }
 
+/// 一次准入落定的页：建好的页表与被前缀树接走的 token 数（共享页 × 页宽）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Plan {
+    table: crate::kv::Table,
+    shared: usize,
+}
+
 /// 连续批调度器：准入、占用页、结束后归还。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scheduler {
