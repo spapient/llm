@@ -69,12 +69,14 @@ pub mod backends;
 pub mod batch;
 pub mod codegen;
 pub mod exec;
+pub mod ifb;
 pub mod kv;
 pub mod radix;
 #[cfg(target_os = "macos")]
 pub mod metal;
 
 pub use batch::{Admission, Batch, SequenceOutcome};
+pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;

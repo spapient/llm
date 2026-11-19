@@ -194,18 +194,6 @@ pub fn chunk(remaining: usize, page_size: usize, budget: usize) -> usize {
     (budget / page_size) * page_size
 }
 
-/// IFB 的调用方错误都归到 `Invalid`：预算与行数是本层自己算错的，不是客户端的输入问题。
-#[allow(dead_code)]
-fn invalid(message: String) -> Error {
-    Error::new(Code::Invalid, message).with("engine::ifb")
-}
-
-/// IFB 的调用方错误都归到 `Invalid`：预算与行数是本层自己算错的，不是客户端的输入问题。
-#[allow(dead_code)]
-fn invalid(message: String) -> Error {
-    Error::new(Code::Invalid, message).with("engine::ifb")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
