@@ -268,8 +268,45 @@ fn block_zero_params() -> Params {
     ])
 }
 
-/// 参考注意力块：embed 行 → q/k/v gemv → RoPE（按头宽分段）→ decode 多头 → o 投影 → 残差；
+/// 参考注意力块核心链：q/k/v 投影 → RoPE（按头宽分段）→ decode 多头 → o 投影 → 残差。
+/// 稠密（`gemv_f32`）与量化（`gemv_i4`）只差投影闭包，其余链同族，故此收敛。
 /// 返回残差输出、旋转后 K 与明文 V（写回页行对拍用）。`head_dim` 为单头头宽，头数 = `kv/head_dim`。
+#[allow(clippy::too_many_arguments)]
+fn reference_block_core(
+    embedded: &[f32],
+    hist_k: &[f32],
+    hist_v: &[f32],
+    hist: usize,
+    kv: usize,
+    head_dim: usize,
+    hidden: usize,
+    pos: usize,
+    project_q: impl Fn(&mut [f32]),
+    project_k: impl Fn(&mut [f32]),
+    project_v: impl Fn(&mut [f32]),
+    project_o: impl Fn(&[f32], &mut [f32]),
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut q = vec![0.0; kv];
+    project_q(&mut q);
+    let mut k = vec![0.0; kv];
+    project_k(&mut k);
+    let mut v = vec![0.0; kv];
+    project_v(&mut v);
+    let mut q_rot = vec![0.0; kv];
+    op::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
+    let mut k_rot = vec![0.0; kv];
+    op::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
+    let mut attn = vec![0.0; kv];
+    op::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
+        .expect("参考注意力");
+    let mut o = vec![0.0; hidden];
+    project_o(&attn, &mut o);
+    let mut residual = vec![0.0; hidden];
+    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
+    (residual, k_rot, v)
+}
+
+/// 稠密 f32 参考块：四路投影走 `gemv_f32`。
 #[allow(clippy::too_many_arguments)]
 fn reference_block(
     embedded: &[f32],
@@ -281,24 +318,20 @@ fn reference_block(
     hidden: usize,
     pos: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let mut q = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, wq, &mut q).expect("参考 q");
-    let mut k = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, wk, &mut k).expect("参考 k");
-    let mut v = vec![0.0; kv];
-    op::gemv_f32::forward(embedded, wv, &mut v).expect("参考 v");
-    let mut q_rot = vec![0.0; kv];
-    op::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
-    let mut k_rot = vec![0.0; kv];
-    op::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
-    let mut attn = vec![0.0; kv];
-    op::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
-        .expect("参考注意力");
-    let mut o = vec![0.0; hidden];
-    op::gemv_f32::forward(&attn, wo, &mut o).expect("参考 o");
-    let mut residual = vec![0.0; hidden];
-    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
-    (residual, k_rot, v)
+    reference_block_core(
+        embedded,
+        hist_k,
+        hist_v,
+        hist,
+        kv,
+        head_dim,
+        hidden,
+        pos,
+        |q| op::gemv_f32::forward(embedded, wq, q).expect("参考 q"),
+        |k| op::gemv_f32::forward(embedded, wk, k).expect("参考 k"),
+        |v| op::gemv_f32::forward(embedded, wv, v).expect("参考 v"),
+        |attn, o| op::gemv_f32::forward(attn, wo, o).expect("参考 o"),
+    )
 }
 
 /// 对拍一条批内序列：参考块残差与生产 logits 对齐，当前步 K/V 页行拆半行核对写回归属。
@@ -1856,24 +1889,20 @@ fn reference_block_quant(
     hidden: usize,
     pos: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let mut q = vec![0.0; kv];
-    op::gemv_i4::forward(embedded, wq, sq, &mut q).expect("参考 q");
-    let mut k = vec![0.0; kv];
-    op::gemv_i4::forward(embedded, wk, sk, &mut k).expect("参考 k");
-    let mut v = vec![0.0; kv];
-    op::gemv_i4::forward(embedded, wv, sv, &mut v).expect("参考 v");
-    let mut q_rot = vec![0.0; kv];
-    op::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
-    let mut k_rot = vec![0.0; kv];
-    op::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
-    let mut attn = vec![0.0; kv];
-    op::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
-        .expect("参考注意力");
-    let mut o = vec![0.0; hidden];
-    op::gemv_i4::forward(&attn, wo, so, &mut o).expect("参考 o");
-    let mut residual = vec![0.0; hidden];
-    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
-    (residual, k_rot, v)
+    reference_block_core(
+        embedded,
+        hist_k,
+        hist_v,
+        hist,
+        kv,
+        head_dim,
+        hidden,
+        pos,
+        |q| op::gemv_i4::forward(embedded, wq, sq, q).expect("参考 q"),
+        |k| op::gemv_i4::forward(embedded, wk, sk, k).expect("参考 k"),
+        |v| op::gemv_i4::forward(embedded, wv, sv, v).expect("参考 v"),
+        |attn, o| op::gemv_i4::forward(attn, wo, so, o).expect("参考 o"),
+    )
 }
 
 /// 量化 int4 注意力块 decode：四路投影走打包字节 + 标度，q/k/v/o 输出仍是 f32（`gemv_i4` 输出

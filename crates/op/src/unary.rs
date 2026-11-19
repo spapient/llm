@@ -113,7 +113,7 @@ pub fn forward<U: Unary>(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
 #[macro_export]
 macro_rules! unary_f32 {
     (
-        $name:ident, $alias:ident, $op:tt, $test:tt,
+        $name:ident, $alias:ident, $op:tt, $kind:ident, $edge:block,
         $apply:expr
         $(, $input:expr)?
     ) => {
@@ -152,7 +152,13 @@ macro_rules! unary_f32 {
 
         #[cfg(test)]
         mod tests {
-            include!($test);
+            use super::*;
+            $crate::unary::test_support::$kind!($name, forward);
+
+            #[test]
+            fn edge_cases_match_reference() {
+                $edge
+            }
         }
     };
 }
@@ -227,7 +233,19 @@ pub mod exp_f32 {
         Exp,
         ExpF32,
         "exp_f32",
-        "../tests/exp_f32_tests.rs",
+        {
+            crate::unary::test_support::unary_pair_tests!(Exp, forward);
+
+            /// 边界：exp(0)=1、大负数下溢为 0、exp(1)=e。
+            #[test]
+            fn exp_edges_match_ieee() {
+                let mut out = vec![0.0; 3];
+                forward(&[0.0, -1000.0, 1.0], &mut out).expect("等长");
+                assert_eq!(out[0], 1.0, "exp(0)=1");
+                assert_eq!(out[1], 0.0, "exp(-1000) 下溢为 0");
+                assert!((out[2] - std::f32::consts::E).abs() < 1e-6, "exp(1)=e");
+            }
+        },
         |x| x.exp(),
         |len| (0..len).map(|i| ((i % 65) as f32) * 0.25 - 8.0).collect()
     );
@@ -244,7 +262,18 @@ pub mod log_f32 {
         Log,
         LogF32,
         "log_f32",
-        "../tests/log_f32_tests.rs",
+        {
+            crate::unary::test_support::unary_pair_tests!(Log, forward);
+
+            /// 边界：ln(1)=0、ln(e)=1。
+            #[test]
+            fn log_edges_match_ieee() {
+                let mut out = vec![0.0; 2];
+                forward(&[1.0, std::f32::consts::E], &mut out).expect("等长");
+                assert_eq!(out[0], 0.0, "ln(1)=0");
+                assert!((out[1] - 1.0).abs() < 1e-6, "ln(e)=1");
+            }
+        },
         |x| x.ln(),
         |len| (0..len).map(|i| 0.5 + i as f32 * 0.25).collect()
     );
@@ -279,7 +308,17 @@ pub mod gelu_f32 {
         Gelu,
         GeluF32,
         "gelu_f32",
-        "../tests/gelu_f32_tests.rs",
+        {
+            crate::unary::test_support::unary_pair_tests!(Gelu, forward);
+
+            /// 精确 erf 的已知值钉住：Abramowitz-Stegun 7.1.26 闭式，两侧绝对误差 < 1.5e-7。
+            #[test]
+            fn erf_matches_known_values() {
+                assert!((erf(0.0) - 0.0).abs() < 1e-6);
+                assert!((erf(1.0) - 0.842_700_8).abs() < 1.5e-6);
+                assert!((erf(-1.0) + 0.842_700_8).abs() < 1.5e-6);
+            }
+        },
         |x| 0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
     );
 }
@@ -293,7 +332,7 @@ pub mod silu_f32 {
         Silu,
         SiluF32,
         "silu_f32",
-        "../tests/silu_f32_tests.rs",
+        { crate::unary::test_support::unary_op_tests!(Silu, forward); },
         |x| x / (1.0 + (-x).exp())
     );
 }
@@ -311,7 +350,7 @@ pub mod scale_f32 {
         Scale,
         ScaleF32,
         "scale_f32",
-        "../tests/scale_f32_tests.rs",
+        { crate::unary::test_support::unary_op_tests!(Scale, forward); },
         |x| ALPHA * x,
         |len| (0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()
     );
