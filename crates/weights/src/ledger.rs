@@ -96,14 +96,30 @@ pub fn certify(w: &[f32], m: usize, n: usize) -> Result<Option<Certified>> {
         // `1 <= r < min(m,n)` 无解：秩选择不适用，不颁发证书（拒压），也不是「无损」。
         return Ok(None);
     }
+    decompose(w, m, n, k)
+}
+
+/// 一次 f64 分解加秩判定：`k = min(m,n) >= 2` 由 [`certify`] 保证。
+fn decompose(w: &[f32], m: usize, n: usize, k: usize) -> Result<Option<Certified>> {
     let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
-    let decomposed = svd::compute(&a, m, n)?;
+    let d = svd::compute(&a, m, n)?;
     // ε 只有算法项：后验残差是本次分解的实测值，不是机器精度的估计。
-    let eps = residual(&a, &decomposed.reconstruct(k));
-    let Some(rank) = certified_rank(&decomposed.sigma, eps) else {
+    let eps = residual(&a, &d.reconstruct(k));
+    let Some(rank) = certified_rank(&d.sigma, eps) else {
         return Ok(None);
     };
-    let low64 = decomposed.reconstruct(rank);
+    assemble(w, &a, &d, rank, eps).map(Some)
+}
+
+/// 受认证秩处的产物与自证证书：低秩项、显式残差、逐位往返与 [`Note`] 都出自同一次分解。
+fn assemble(
+    w: &[f32],
+    a: &[f64],
+    d: &svd::Svd,
+    rank: usize,
+    eps: f64,
+) -> Result<Certified> {
+    let low64 = d.reconstruct(rank);
     let low: Vec<f32> = low64.iter().map(|&l| l as f32).collect();
     let rest: Vec<f32> = a
         .iter()
@@ -116,24 +132,25 @@ pub fn certify(w: &[f32], m: usize, n: usize) -> Result<Option<Certified>> {
         .zip(&low)
         .zip(&rest)
         .all(|((x, low), rest)| (low + rest).to_bits() == x.to_bits());
+    let gap = d.sigma[rank - 1] - d.sigma[rank];
     let note = Note {
         rank: rank as u32,
         used: true,
         mode: Mode::Residual,
-        stable: stable(decomposed.sigma[rank - 1] - decomposed.sigma[rank], eps),
-        gap: decomposed.sigma[rank - 1] - decomposed.sigma[rank],
+        stable: stable(gap, eps),
+        gap,
         eps,
-        decomp: residual(&a, &low64),
+        decomp: residual(a, &low64),
         equal,
         lossless: equal,
     };
     check(&note)?;
-    Ok(Some(Certified {
+    Ok(Certified {
         rank,
         low,
         rest,
         note,
-    }))
+    })
 }
 
 /// 可判秩域内的最大秩：`σ_r − σ_{r+1} > 2ε` 的最后一点。
