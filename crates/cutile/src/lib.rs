@@ -104,7 +104,7 @@ pub mod verify;
 pub mod witness;
 
 // 生产态内核发射（M3-2 / M3-10）：把逐点内核包成网格 `kernel_main`、把归约/两趟内核收敛为单线程
-// `kernel_main`、把 Gemm 骨架按行拆成网格（逐缓冲偏移来自 `[grid]` 声明）。后端差异收进 `harness::Wrap`
+// `kernel_main`、把 Gemm 骨架按行拆成网格（逐缓冲偏移来自 `[grid]` 声明）。后端差异收进 `dialect::Wrap`
 // 差异表——Metal / CUDA 共用同一条 body，只换方言（`metal_grid_kernel` / `cuda_grid_kernel`、分块归约
 // `metal_chunk_reduce` / `cuda_chunk_reduce`）。供 L7 组合根装配进设备后端（`engine::metal::MetalExecutor`
 // 编译注入的 MSL 就来自这里，不是 cutile 的见证 harness）。
@@ -114,8 +114,10 @@ pub use harness::{
 };
 
 mod device;
+mod dialect;
 mod gate;
 mod harness;
+mod metal;
 mod pipeline;
 mod runner;
 
