@@ -23,6 +23,7 @@ op = { path = "../op", package = "llm-op" }
 rng = { path = "../rng", package = "llm-rng" }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
 weights = { path = "../weights", package = "llm-weights" }
+wire = { path = "../wire", package = "llm-wire" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }

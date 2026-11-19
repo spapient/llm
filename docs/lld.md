@@ -762,7 +762,7 @@ $$T_{\mathrm{search}}=T_{\mathrm{fingerprint}}+T_{\mathrm{group}}+\sum_{(i,c)\in
 
 **验收对象**：E8 的 24× 无损验收只认**自有模型格式**的权重；Mamba-3 1.5B 权重仅作历史对照（§E8.0）、不参与验收。E8 不以 Mamba-3 独立权重为压到 24× 的对象（§E8.0 已证其 16-bit 联合熵约 10.5 bit/元素、无损下界约 1.22 GB，实测 1.645×，离 1/24 差一个数量级）。24× 无损走**自有模型格式**：权重在模型侧即采用共享（tie）与原生低位宽码本，部署包按 §4.8 第 4 步对严格相等层只存一次；权重格式本身（低位宽、共享）的优化不影响逐位无损约束。
 
-**已落地机制（`.u` 唯一格式，`crates/storage/src/store.rs` + `crates/storage/src/cert.rs`）**：
+**已落地机制（`.u` 唯一格式，`crates/storage/src/lib.rs`——store/cert/axes/artifact 已合入同一模块）**：
 - **全局去重**：`Writer::add` 以 `(dtype, shape, data)` 的 64 位哈希查代表表；命中且逐位相等（`bytes == data`）时复用代表张量的块区间（同一 `chunk_start/chunk_count`，不改 v4 二进制布局），并签发 `Reason::Shared`（序列化为 `ref`）共享账目；未命中则压缩落盘，并在 `dedup_budget` 内登记为代表。`dedup_key` 碰撞只错过复用、不会错配（复用前逐位比对）。同一层可含多个张量，共享身份是**块区间**而非层号，因此层号不唯一不影响正确性。
 - **`V_FP16` 分母**：`Store::deploy()` 以 $\sum(\prod \text{shape}\times 2)$ 计量，与存储 dtype 无关，符合 F4 的 FP16 基线口径。
 - **共享不改变 `is_lossless`**：每条记录（含共享引用）都在写入时逐位校验（`cert::shared` 复用前比对，`cert::issue` 编码后比对）。
@@ -2155,7 +2155,7 @@ $W{=}64$，$n_{\mathrm{ref}}{=}4096$，$\tau{=}0.05\cdot\mathrm{RMS}(x)$。与 �
 
 | 目标 | 已检查的现有证据 | 缺口与当前状态 |
 |---|---|---|
-| E8：24× 严格无损 | `.u` 唯一格式：`crates/storage/src/store.rs`（`Writer` 写入时全局去重——`(dtype, shape, data)` 哈希 + 逐位比对复用块区间，签发 `Reason::Shared`；`Store::deploy()` 以 `.u` 文件长度出 `V_artifact`/`V_FP16`/`ratio`/`ratio_param`/`bpw`/`codec_lossless`/`e8_pass`）与 `crates/storage/src/cert.rs`（位级无损账本）。**真实训练自有格式 checkpoint**（`scripts/train_own.py` + `config/train/e8_own.json`；WikiText-2；24 层共享块；2,030,720 唯一参数 / 44,018,048 dense-equivalent；逐行 16 级码本）实测 `V_artifact=980,223`、`V_FP16=88,036,096`、`ratio=0.011134`、`lossless=true`、`e8_pass=true`；`llm verify` 输出 `245 tensors decoded, all chunk CRCs ok`。对照负样本：真实 `llm.u-3b` `V_artifact=1,787,211,586`、`ratio=0.429410`、`e8_pass=false` | **历史 PASS**（2026-11-02，真实训练 checkpoint；满足 E8 卡：`.u` 文件字节比 ≤1/24 且逐记录逐位一致）。v3.0.21（2026-11-09）：生产者已退役（77d81e6）/配置已删（296a78a），当前树不可复跑，数字为历史实测；复跑须恢复生产者或用 `tool train` 重训后重新出数。Mamba-3 仍仅历史对照、不参与验收。1.5B 级自有格式真实训练 checkpoint 的 24× 未测，属规模遗留，不改变本卡结论 |
+| E8：24× 严格无损 | `.u` 唯一格式：`crates/storage/src/lib.rs`（`Writer` 写入时全局去重——`(dtype, shape, data)` 哈希 + 逐位比对复用块区间，签发 `Reason::Shared`；`Store::deploy()` 以 `.u` 文件长度出 `V_artifact`/`V_FP16`/`ratio`/`ratio_param`/`bpw`/`codec_lossless`/`e8_pass`）与同文件 `cert` 模块（位级无损账本）。**真实训练自有格式 checkpoint**（`scripts/train_own.py` + `config/train/e8_own.json`；WikiText-2；24 层共享块；2,030,720 唯一参数 / 44,018,048 dense-equivalent；逐行 16 级码本）实测 `V_artifact=980,223`、`V_FP16=88,036,096`、`ratio=0.011134`、`lossless=true`、`e8_pass=true`；`llm verify` 输出 `245 tensors decoded, all chunk CRCs ok`。对照负样本：真实 `llm.u-3b` `V_artifact=1,787,211,586`、`ratio=0.429410`、`e8_pass=false` | **历史 PASS**（2026-11-02，真实训练 checkpoint；满足 E8 卡：`.u` 文件字节比 ≤1/24 且逐记录逐位一致）。v3.0.21（2026-11-09）：生产者已退役（77d81e6）/配置已删（296a78a），当前树不可复跑，数字为历史实测；复跑须恢复生产者或用 `tool train` 重训后重新出数。Mamba-3 仍仅历史对照、不参与验收。1.5B 级自有格式真实训练 checkpoint 的 24× 未测，属规模遗留，不改变本卡结论 |
 | E1：100K / 7B 单请求延迟 ≤0.25× | `tests/infer/perf_gate.rs` 中可见的是 tiny 配置、短序列与最多 8 token 的生成性能门禁；`ops/perf.rs` 的通用计时器提供中位数与 P95 | **OPEN**。现有小模型/短序列测试不能证明 100K 上下文的 7B FP16 对照 TTFT 与 TPOT 达标；尚缺该规格下候选与基线的成对请求原始样本及置信区间 |
 | E3：端到端服务输出 token goodput ≥12× | 当前可见 `tools/gates/src/bin/bench.rs` 调用的是算子和 `infer` 性能测试；`tools/gates/src/bin/stats.rs` 的 E1–E8 是统计方法合成自检，不是本 LLD 的产品性能门禁 | **OPEN**。尚无可见的所选服务主路径 60s 稳态负载、同口径 FP16 dense 基线和输出 token goodput 成对实测。算子 micro-benchmark 或 stats selftest 均不能代替 E3 |
 

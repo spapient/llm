@@ -5,7 +5,7 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::crc::crc32;
+use crate::crc32;
 use crate::protocol::{HEADER_LEN, Kind, MAGIC, MAX_PAYLOAD, TRAILER_LEN, Version};
 
 /// 解析出来的帧头。
