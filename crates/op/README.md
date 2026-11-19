@@ -128,7 +128,7 @@ GEMV 那三条**只差数据**：同一副骨架、同一批 CPU 原语（9 条 
 ## 新增一个算子
 
 1. 在 `ops/` 下写 `<name>.toml` 与 `<name>.k`；
-2. 在对应的语义族文件（如形态族 `src/f32_small.rs`、一元 `src/unary.rs`）写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`，
+2. 在对应的语义族文件（如形态族 `src/softmax.rs`、一元 `src/unary.rs`）写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`，
    并以 `#[annotation::model(..)]` 标注生成 `MODEL`（不要手写 `Model { .. }`）；样本里的缓冲名与
    标量名必须和 `.k` 签名一致，实参列表不在这里写；
 3. 在 `src/lib.rs` 的 `REGISTRY` 里补一条 `Registration`（名字 + `include_str!` 模板 + `MODEL`）：
