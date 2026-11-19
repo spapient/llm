@@ -545,7 +545,57 @@ pub fn metal_loop_kernel(
     ))
 }
 
-/// 按 `[grid].dims` 依次给内部内核函数绑定 `tid.x/y/z` 的循环头。
+/// 生产态分块归约内核：把长轴切成 `chunk` 元素一块，网格 = `ceil(N / chunk)`，每线程用设备
+/// preamble 里的软件归约原语（`_cutile_sum_f32` / `_cutile_max_f32`）串行归约自己那一块，把
+/// **块级部分结果**写到输出缓冲的第 `g` 个槽（`y[g]`）。主机折叠这些部分结果得到最终标量——
+/// 归约的跨元素依赖不能靠逐元素拆线程（每线程会各算一整遍），只能「切块 + 主机折叠」，这是与
+/// [`metal_loop_kernel`]（循环头绑定）不同的另一条 lowering，差异只在「规约轴交给谁」。
+///
+/// 输出语义因此从「单元素 `y[0]`」变成「`ceil(N/chunk)` 个部分结果」，折叠由调用方在主机侧做；
+/// 归约函数名由分派层从算子声明推导（`reduce_sum_f32` → `_cutile_sum_f32`），不是对模板的字符串
+/// 猜测。块长来自 `[chunk]` 声明，机制层只做 `start = g*size` / `len = min(size, N-start)` 的切块。
+///
+/// # Errors：签名不是归约形（缺唯一输入缓冲 / 可写输出 / 长度标量）或标量缺样本取值时返回说明。
+pub fn metal_chunk_reduce(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+) -> diagnostic::Result<String> {
+    let input = signature
+        .params()
+        .iter()
+        .find(|param| param.ctype.is_buffer() && !param.mutable)
+        .map(|param| param.name.as_str())
+        .ok_or_else(|| {
+            Error::new(Code::Internal, "归约内核没有只读输入缓冲")
+                .with("cutile::harness::metal_chunk_reduce")
+        })?;
+    let output = signature.output().ok_or_else(|| {
+        Error::new(Code::Internal, "归约内核没有可写输出缓冲")
+            .with("cutile::harness::metal_chunk_reduce")
+    })?;
+    let scalar = signature
+        .params()
+        .iter()
+        .find(|param| !param.ctype.is_buffer())
+        .map(|param| param.name.as_str())
+        .ok_or_else(|| {
+            Error::new(Code::Internal, "归约内核没有长度标量")
+                .with("cutile::harness::metal_chunk_reduce")
+        })?;
+    let len = sample.scalar(scalar).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("归约长度标量 `{scalar}` 没有样本取值"))
+            .with("cutile::harness::metal_chunk_reduce")
+    })?;
+    let buffers = buffer_decls(signature);
+    Ok(format!(
+        "{}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    d_{output}[g] = {reduce_func}(d_{input} + start, len, 1);\n}}",
+        msl_address_space(kernel_source),
+    ))
+}
+
 fn bind_grid_loops(body: String, grid: &Grid) -> diagnostic::Result<String> {
     const AXES: [&str; 3] = ["x", "y", "z"];
     let mut out = body;

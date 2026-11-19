@@ -4,7 +4,7 @@
 //! 算子"；本模块用调用方给的真实数据，回答"这份数据算出来的数对不对"。两者共用同一条
 //! `pipeline`，因此不存在第二套执行路径。
 
-use crate::atom::Prim;
+use crate::atom::{AttrKey, Prim};
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::cap::{Path, Proof};
@@ -149,7 +149,7 @@ fn prepare<'a>(
 fn lower(run: &Run<'_>, prepared: &Prepared, m: usize, n: usize) -> diagnostic::Result<String> {
     let op = run.op;
     match op.skeleton {
-        Skeleton::Reduce => serial(op, run, prepared, m, n),
+        Skeleton::Reduce => reduce(op, run, prepared, m, n),
         Skeleton::Elementwise => elementwise(op, run, prepared, m, n),
         Skeleton::Gemm => gemm(op, run, prepared, m, n),
         Skeleton::Attention => serial(op, run, prepared, m, n),
@@ -157,6 +157,46 @@ fn lower(run: &Run<'_>, prepared: &Prepared, m: usize, n: usize) -> diagnostic::
         // 收敛到单线程串行（grid = [1,1,1]），与 Reduce 共用同一条 lowering。
         Skeleton::Scan => serial(op, run, prepared, m, n),
     }
+}
+
+/// 归约骨架：声明了 `[chunk]` 的走分块归约（每线程归约一块、主机折叠部分和），否则串行兜底。
+fn reduce(
+    op: &OpDecl,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let Some(chunk) = op.chunk.as_ref() else {
+        return serial(op, run, prepared, m, n);
+    };
+    let sample = (run.model.sample)(m, n);
+    crate::harness::metal_chunk_reduce(
+        &prepared.source.text,
+        &op.signature,
+        &sample,
+        chunk.size,
+        &reduce_func(op)?,
+    )
+}
+
+/// 归约原语名：从声明的 `[needs] reduce`（`op` + `dt`）推出 preamble 里的软件归约函数
+/// （`_cutile_sum_f32` / `_cutile_max_f32`），与模板 `@reduce(..., func: _cutile_*)` 同一约定，
+/// 不对模板文本做字符串猜测。
+fn reduce_func(op: &OpDecl) -> diagnostic::Result<String> {
+    let need = op
+        .needs
+        .iter()
+        .find(|need| need.prim == Prim::Reduce)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("`{}` 没有归约需求", op.name)))?;
+    let op_name = need
+        .attrs
+        .iter()
+        .find(|attr| attr.key() == AttrKey::Op)
+        .and_then(|attr| attr.values().first())
+        .ok_or_else(|| Error::new(Code::Invalid, format!("`{}` 的归约需求缺 `op`", op.name)))?;
+    let dt = need.dt.names().first().copied().unwrap_or("f32");
+    Ok(format!("_cutile_{op_name}_{dt}"))
 }
 
 /// 串行兜底：单线程走完整条正文，缓冲原样、标量取样本值。
