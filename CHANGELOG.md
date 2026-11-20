@@ -18,6 +18,33 @@
 
 ### Added
 
+- **逐字节自回归生成循环与 CUDA 驱动骨架合并（`lld.md` 第十步）**。第 11 款标杆的三段此前只到
+  「切分 + 两端」，缺的是把它们串成**一次生成**的那一层；本步补上，并把三处「同一件事写两遍」的
+  CUDA 驱动样板收成一份。
+  **生成侧**（`nn::emit` 的 `Emitter` / `Emission` / `Halt`）：边生成边判边界（分数就是该字节的编码代价
+  `−ln p`，`p` 出自 `ByteDecoder` 的同一份分布，不另立熵模型）、已收口 patch 的表示不重算、一步只走一个
+  字节。条件只取**已收口** patch 的表示加上上一个字节的 N-gram 向量：仍在长的 patch 表示会随字节变化
+  （池化以边界字节为查询，而「断在哪」是收口那一刻才定的），拿它当条件等于让同一个字节的分布在切分定下来
+  之前与之后不一样，也就把「边界只看过去」丢在了生成侧；历史为空时条件是全零，与 `Bypass` 同一条判据的
+  两个方向。`Halt` 是闭集（`Ceiling` 预算用完 / `Stop` 产出停止字节）而不用 `Option`——`None` 说不清
+  「截断」与「空结果」，而两者上游处置不同；预算为零就不生成并记 `Ceiling`，没有上限的循环不叫生成。
+  `Emission` 只装这一次新产出的字节，停止字节留在里面（它是模型真的产出的那一个）；两侧宽度不等、预算与
+  种子非法在入口报 `Code::Invalid`。
+  **同一语义只留一份**：`engine::codegen` 收出逐点 / 循环 / WMMA 三个驱动共用的骨架
+  （`cuda_head` / `cuda_launch` / `cuda_release` / `buffer_args` / `Driver`），`norm` 与 `scan` 各自那份
+  「遍历缓冲拼 `cudaFree`」的清单和启动实参随之删除，`wmma` 的 host 驱动改成同一骨架的参数化调用；
+  `backends::cuda_lower` 拆成「多段族一层 + 单段族一层」，不再用一条兜底臂回答两种问题；`cutile` 的
+  扫描程序抽出 `scan_pair`，「块大小 + 衰减 → `Lower` → 降源 → 两段」只剩一处。
+  **实测**：`cargo test -p llm-nn --all-features` **228 条 + 2 doctest**（`emit` 16 条：预算为零不生成、
+  停止字节在产出它的那一步收口、已收口 patch 只编码一次、前缀永不重写、增量切分等于整段切分、空历史以零为
+  条件、更紧的阈值切得不比更松的少、分数就是被选中字节的自信息、`f64` 跑同一循环、装配期宽度不符与非法种子
+  被拒）；工作区 **1,986 条 / 0 失败**、doctest **43 条 / 0 失败**；
+  架构门 `llm-testkit --test architecture` 8/8（所有权表新增 `Emission` / `Emitter` / `Halt` 一行）、
+  静态质量门 `llm-tool --test gate` 2/2、`clippy --workspace --all-targets --all-features -D warnings`、
+  `fmt --check`、`cargo machete`、`cargo deny check` 四类全部通过；`jscpd` 重复率 0.04%（2 处克隆）。
+  仍未接线的部分：全局 transformer（`reprs` 那一列上的 `Attention`，每 patch 一次）与 local decoder 的其余层
+  属装配侧，六平台执行合同仍未开始，E1–E15 依旧没有新增实测数。
+
 - **混合 delta 记忆、跨块选择性读取与矩阵级正交更新（`lld.md` 第九步）**。三处都落在「已有公式但没有执行侧」
   的那一栏，且都是为了**替代**既有做法而不是叠加：`nn::kda` 顶掉指数衰减的线性注意力，`nn::attnres` 给残差一条
   「读」的路，`train::Muon` 换掉对角预条件的二阶矩。

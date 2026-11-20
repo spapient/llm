@@ -35,12 +35,14 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
     fn sqrt(self) -> Self;
     /// 绝对值。
     fn abs(self) -> Self;
+    /// 自然对数（自信息 `−ln p` 与交叉熵的唯一来源，不另写近似）。
+    fn ln(self) -> Self;
     /// 由 `f64` 字面量构造（仅用于常量，`f32` 下可能有损）。
     fn from_f64(v: f64) -> Self;
 }
 
 /// 一份算术骨架为 `f32` / `f64` 两个标量实现，能变的部分只有类型、负无穷与 `f64` 降级式；
-/// 逐字写两份会把 9 个方法的加/减/乘/除复制成孪生（jscpd 的 15 行克隆源）。
+/// 逐字写两份会把 10 个方法的加/减/乘/除复制成孪生（jscpd 的 15 行克隆源）。
 macro_rules! impl_scalar {
     ($ty:ty, $neg_inf:expr, $from_f64:expr) => {
         impl Scalar for $ty {
@@ -71,6 +73,9 @@ macro_rules! impl_scalar {
             }
             fn abs(self) -> Self {
                 <$ty>::abs(self)
+            }
+            fn ln(self) -> Self {
+                <$ty>::ln(self)
             }
             fn from_f64(v: f64) -> Self {
                 ($from_f64)(v)

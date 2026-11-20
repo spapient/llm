@@ -74,9 +74,9 @@ pub mod kv;
 #[cfg(target_os = "macos")]
 pub mod metal;
 pub mod norm;
+pub mod radix;
 pub mod scan;
 pub mod wmma;
-pub mod radix;
 
 pub use batch::{Admission, Batch, SequenceOutcome};
 pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};

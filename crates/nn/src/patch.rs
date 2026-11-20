@@ -67,25 +67,66 @@ impl<S: Scalar> Boundary<S> {
     ///
     /// 首字节永远是一个 patch 的起点：patch 是区间，不从 0 起步就会有一段字节无处安放。
     ///
+    /// 逐字节的判定只有一处（[`Boundary::opens`]），所以「事后一次性切」与「边生成边切」
+    /// （[`crate::Emitter`]）不可能给出两种切法。
+    ///
     /// # Errors
     ///
     /// 阈值非有限或为负、`window` / `top` 越界、分数里有 `NaN` / `±inf`——都返回
     /// `Code::Invalid`。非有限分数不当"不产生边界"处理：任何比较对它都是 `false`，那会把一整段
     /// 字节静默并进同一个 patch，出错的地方离原因很远。
     pub fn split(self, scores: &[S]) -> Result<Patches> {
-        self.check()?;
-        (0..scores.len()).try_for_each(|i| audit(i, scores[i]))?;
+        let mut starts = Vec::new();
+        for index in 0..scores.len() {
+            if self.opens(scores, index)? {
+                starts.push(index);
+            }
+        }
         Ok(Patches {
-            starts: (0..scores.len())
-                .filter(|&i| self.starts_at(scores, i))
-                .collect(),
+            starts,
             bytes: scores.len(),
         })
     }
 
-    /// 第 `i` 个字节是否开一个新的 patch：首字节恒开，其余问规则。
-    fn starts_at(self, scores: &[S], i: usize) -> bool {
-        i == 0 || self.breaks(scores, i)
+    /// 第 `index` 个字节是否开一个新的 patch——**只看 `0..=index`**，与 `index` 之后的字节无关。
+    ///
+    /// 这是切分的唯一判定处：[`Boundary::split`] 就是把它对每个下标跑一遍，逐字节生成时也只问它。
+    /// 于是前缀稳定性由同一条算式给出：后面的字节再多，也不能把已经定下的起点撤销。
+    ///
+    /// # Errors
+    ///
+    /// 参数越界、`index` 不在 `0..scores.len()` 内（流式调用时最常见的错位），或 `index` 与
+    /// `index - 1` 的分数非有限——都返回 `Code::Invalid`。
+    pub fn opens(self, scores: &[S], index: usize) -> Result<bool> {
+        self.probe(scores, index)?;
+        Ok(index == 0 || self.breaks(scores, index))
+    }
+
+    /// 入口校验：参数、下标与**本字节及前一个字节**的分数都在定义域内。
+    ///
+    /// 首字节只看自己：它恒为起点，没有「前一个」可问。
+    fn probe(self, scores: &[S], index: usize) -> Result<()> {
+        self.check()?;
+        if index >= scores.len() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "下标 {index} 越出 {len} 个字节：边界只问已有的字节",
+                    len = scores.len()
+                ),
+            )
+            .with(SITE));
+        }
+        self.window(scores, index)
+    }
+
+    /// 判定所需的两个字都必须在定义域内：放行 `NaN` 会让比较全部为假，一整段字节静默并成一个 patch。
+    fn window(self, scores: &[S], index: usize) -> Result<()> {
+        audit(index, scores[index])?;
+        if index == 0 {
+            return Ok(());
+        }
+        audit(index - 1, scores[index - 1])
     }
 
     /// 参数自检：越界的参数不切分，也不被夹到边界值上。

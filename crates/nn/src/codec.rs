@@ -18,9 +18,10 @@
 //! 1. N-gram 窗口取**已有后缀**，不补零也不补 BOS 符号：补零会让首字节的表示与"前面真有一个 0 字节"
 //!    混为一谈（与 [`crate::Bypass`]"历史不足就不加、不拿零向量补位"同一条判据）。窗口是回看的，所以
 //!    一个字节的影响是前向的：它进的是自己与之后至多 `WIDEST − 1` 个字节的窗口。
-//! 2. 逐字节的自回归循环、以及 local decoder 的其余层（逆向 cross-attention、6–9 层）在装配侧。
-//!    这一层只做"一个 patch 表示 → 一条 256-way 分布"；权重由调用方给，与 [`crate::Mla`] 同一种分工：
-//!    本模块不持训练状态，也不给写侧（训练 / 蒸馏）留接口。
+//! 2. local decoder 的其余层（逆向 cross-attention、6–9 层）及全局 transformer 的装配属于装配侧；
+//!    逐字节的自回归循环由 [`crate::Emitter`] 串起，它们共用这里的两层。这一层只做"一个 patch 表示
+//!    → 一条 256-way 分布"；权重由调用方给，与 [`crate::Mla`] 同一种分工：本模块不持训练状态，也不给
+//!    写侧（训练 / 蒸馏）留接口。
 //!
 //! 纯算术统一走 [`op::scan::Scalar`] 泛型：`f32` 供前向、`f64` 供对拍，不因精度复制两份实现。
 
@@ -109,23 +110,65 @@ impl<S: Scalar> ByteEncoder<S> {
             )
             .with(SITE));
         }
-        let dim = self.dim();
-        let vectors = self.vectors(bytes);
-        let mut out = vec![S::ZERO; patches.len() * dim];
-        for (range, row) in patches.ranges().zip(out.chunks_exact_mut(dim)) {
-            self.pool(&vectors, range, row);
+        let mut out = Vec::with_capacity(patches.len() * self.dim());
+        for range in patches.ranges() {
+            out.extend_from_slice(&self.patch(bytes, range)?);
         }
         Ok(out)
     }
 
-    /// 逐字节的 N-gram 向量，`[bytes, dim]`：每个字节取六阶窗口各自的桶向量再平均。
-    fn vectors(&self, bytes: &[u8]) -> Vec<S> {
-        let dim = self.dim();
-        let mut out = vec![S::ZERO; bytes.len() * dim];
-        for (i, row) in out.chunks_exact_mut(dim).enumerate() {
-            self.vector(bytes, i, row);
+    /// 单个 patch 的表示：`dim` 个元素，`range` 是它的字节区间（半开）。
+    ///
+    /// [`ByteEncoder::encode`] 对整条切分就是逐 patch 调这个函数再接起来，于是"一个 patch 一行"只有
+    /// 一处实现；逐字节生成时也只算**刚收口的那一个**（[`crate::Emitter`]），收口过的不重算。
+    ///
+    /// # Errors
+    ///
+    /// 区间为空或越出 `bytes` 时返回 `Code::Invalid`：空 patch 没有边界字节，寻址无从取；越界的区间
+    /// 会在切片处炸，报错离原因很远。
+    pub fn patch(&self, bytes: &[u8], range: Range<usize>) -> Result<Vec<S>> {
+        if range.start >= range.end || range.end > bytes.len() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "patch 区间 {range:?} 不在 {} 个字节内：patch 是非空字节区间",
+                    bytes.len()
+                ),
+            )
+            .with(SITE));
         }
-        out
+        let dim = self.dim();
+        let mut rows = vec![S::ZERO; range.len() * dim];
+        for (offset, row) in rows.chunks_exact_mut(dim).enumerate() {
+            self.vector(bytes, range.start + offset, row);
+        }
+        let mut out = vec![S::ZERO; dim];
+        self.pool(&rows, &mut out);
+        Ok(out)
+    }
+
+    /// 第 `index` 个字节的 N-gram 向量：逐字节生成时的**本地上下文**。
+    ///
+    /// 取的是池化用的同一份逐字节向量（同一套哈希、同一组阶、同一张表），不因为"要走的是残差"
+    /// 再算一套；宽度与 patch 表示相同，于是两者可以直接相加。
+    ///
+    /// # Errors
+    ///
+    /// `index` 越出 `bytes` 时返回 `Code::Invalid`：越界下标取窗口会在切片处炸。
+    pub fn glyph(&self, bytes: &[u8], index: usize) -> Result<Vec<S>> {
+        if index >= bytes.len() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "第 {index} 个字节不在 {} 个字节内：本地上下文只取已有字节",
+                    bytes.len()
+                ),
+            )
+            .with(SITE));
+        }
+        let mut out = vec![S::ZERO; self.dim()];
+        self.vector(bytes, index, &mut out);
+        Ok(out)
     }
 
     /// 第 `i` 个字节的 N-gram 向量：六阶窗口的桶向量之和除以阶数。
@@ -156,19 +199,21 @@ impl<S: Scalar> ByteEncoder<S> {
     /// 查询取最后一个字节，而不是外部的可学习查询向量：边界字节就是这条切分的决策点
     /// （[`crate::Boundary`] 在它上面判出"断"），于是表示仍然只用过去，并且不需要再引入一份权重。
     /// 键值只取本 patch 内的字节，所以"一个 patch 一行"不是约定而是寻址本身。
-    fn pool(&self, vectors: &[S], range: Range<usize>, out: &mut [S]) {
+    ///
+    /// `vectors` 是本 patch 的逐字节向量（下标相对区间起点，行数即 patch 长度）：区间本身不再作为
+    /// 参数，也就不存在"向量与区间指向不同一段字节"这种错位。
+    fn pool(&self, vectors: &[S], out: &mut [S]) {
         let dim = self.dim();
         let scale = S::ONE.div(S::from_f64((dim as f64).sqrt()));
-        let boundary = range.end - 1;
-        let query = &vectors[boundary * dim..(boundary + 1) * dim];
-        let mut weights: Vec<S> = range
-            .clone()
-            .map(|i| dot(query, &vectors[i * dim..(i + 1) * dim]).mul(scale))
+        let boundary = &vectors[(vectors.len() / dim - 1) * dim..];
+        let mut weights: Vec<S> = vectors
+            .chunks_exact(dim)
+            .map(|row| dot(boundary, row).mul(scale))
             .collect();
         softmax_row(&mut weights);
         out.fill(S::ZERO);
-        for (i, &weight) in range.zip(&weights) {
-            accumulate(out, &vectors[i * dim..(i + 1) * dim], weight);
+        for (row, &weight) in vectors.chunks_exact(dim).zip(&weights) {
+            accumulate(out, row, weight);
         }
     }
 }
@@ -260,12 +305,25 @@ impl<S: Scalar> ByteDecoder<S> {
     ///
     /// 同 [`ByteDecoder::logits`]。
     pub fn byte(&self, state: &[S]) -> Result<u8> {
-        let logits = self.logits(state)?;
-        let best = logits.iter().enumerate().fold(
-            0,
-            |best, (b, &score)| if score > logits[best] { b } else { best },
-        );
-        Ok(best as u8)
+        self.pick(state).map(|(byte, _)| byte)
+    }
+
+    /// 贪心字节与该字节的**概率**：逐字节生成时一步要走的东西。
+    ///
+    /// 一次内积同时给出两样：[`ByteDecoder::byte`] 取的就是这里的第一项（argmax 在 softmax 之前
+    /// 算，所以两个入口逐位同一），第二项是该字节的 `p`——它的自信息 `−ln p` 就是切分规则的分数
+    /// （[`crate::Emitter`]）。于是"生成用哪条分布"与"边界用哪个数"只有一份来源。
+    ///
+    /// 贪心保证 `p ≥ 1/256`：选中的恒是最大通道，所以 `−ln p ≤ ln 256`，自信息不会溢出成无穷。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`ByteDecoder::logits`]。
+    pub fn pick(&self, state: &[S]) -> Result<(u8, S)> {
+        let mut probs = self.logits(state)?;
+        let best = argmax(&probs);
+        softmax_row(&mut probs);
+        Ok((best, probs[usize::from(best)]))
     }
 
     /// 入口校验：表示的宽度。
@@ -279,6 +337,20 @@ impl<S: Scalar> ByteDecoder<S> {
         )
         .with(SITE))
     }
+}
+
+/// 通道下标里的最大值：并列时取最小字节值，所以严格大于才算新最优。
+///
+/// 分数与分数过 softmax 后的分布共用这一份：softmax 单调，两个序列上的 argmax 因此是同一个字节，
+/// 不因换算式而变。
+fn argmax<S: Scalar>(scores: &[S]) -> u8 {
+    let best = scores.iter().enumerate().fold(
+        0,
+        |best, (b, &score)| {
+            if score > scores[best] { b } else { best }
+        },
+    );
+    best as u8
 }
 
 #[cfg(test)]
@@ -413,7 +485,7 @@ mod tests {
         let encoder = encoder(5, 2, 1);
         let vectors = [1.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0];
         let mut out = vec![0.0_f32; 2];
-        encoder.pool(&vectors, 0..3, &mut out);
+        encoder.pool(&vectors, &mut out);
         assert_ne!(out, vec![1.0, 1.0], "池化不是取边界字节");
         assert!(
             out.iter().all(|&v| (0.0..=1.0).contains(&v)),
@@ -437,7 +509,7 @@ mod tests {
             .copied()
             .collect();
         let mut out = vec![0.0_f32; 3];
-        encoder.pool(&vectors, 0..3, &mut out);
+        encoder.pool(&vectors, &mut out);
         for (got, want) in out.iter().zip(common) {
             assert!((got - want).abs() < 1e-6, "{got} vs {want}");
         }

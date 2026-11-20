@@ -398,11 +398,23 @@ pub fn cuda_scan_program(
 ) -> diagnostic::Result<(String, String, f32)> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
     let decay = scan_decay(run.op)?;
-    let (local, correct) = pair(
-        lower_sources(Emit::Cuda, &scan_kind(run.op)?, &run, &prepared, m, n)?,
-        "cuda scan",
-    )?;
+    let (local, correct) = scan_pair(Emit::Cuda, &run, &prepared, m, n, "cuda scan")?;
     Ok((local, correct, decay))
+}
+
+/// 扫描的两段源码：块大小与衰减 → `Lower` → 降源 → `(局部扫描, 校正)`。
+///
+/// 衰减读两遍是有意的：它既要进 `Lower`（分块几何），又要单独回给主机折叠携带前缀。
+fn scan_pair(
+    emit: Emit,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+    role: &str,
+) -> diagnostic::Result<(String, String)> {
+    let kind = scan_kind(run.op)?;
+    pair(lower_sources(emit, &kind, run, prepared, m, n)?, role)
 }
 
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。

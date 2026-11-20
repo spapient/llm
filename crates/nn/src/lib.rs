@@ -160,6 +160,7 @@ mod param_role {
     }
 }
 mod codec;
+mod emit;
 mod patch;
 mod pointwise;
 mod policy;
@@ -179,6 +180,9 @@ pub use bounds::Bounds;
 
 #[doc(inline)]
 pub use codec::{BYTES, ByteDecoder, ByteEncoder, ORDERS};
+
+#[doc(inline)]
+pub use emit::{Emission, Emitter, Halt};
 
 #[doc(inline)]
 pub use csa::{

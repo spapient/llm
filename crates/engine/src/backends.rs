@@ -553,51 +553,49 @@ fn cuda_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        // 逐块归一化两族自己就产出单源，不经过下面的单文件包装。
+        // 逐块归一化两族与扫描自己就产出多段源码，不经过下面的单文件包装。
         ChunkRmsnorm { chunk } => {
             crate::norm::cuda_chunk_rmsnorm(kernel, signature, sample, *chunk)
         }
         ChunkSoftmax { chunk } => {
             crate::norm::cuda_chunk_softmax(kernel, signature, sample, *chunk)
         }
+        ChunkScan { chunk, decay } => {
+            crate::scan::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
+        }
         // 其余骨架都只吐一段源码；分派单独一层，是为了让这一层只回答「哪一族」。
-        _ => cuda_source(kind, kernel, signature, sample),
+        _ => cuda_single_source(kind, kernel, signature, sample).map(single_file),
     }
 }
 
-/// 单源骨架的分派：pointwise / chunk-reduce / loop 各产出一段源码，其余骨架尚未覆盖。
+/// 单段源码骨架的分派：pointwise / chunk-reduce / loop / wmma 各产出一段源码。
 ///
-/// `ChunkRmsnorm` / `ChunkSoftmax` 已在 [`cuda_lower`] 里分派，落到这里的只会是 scan——所以
-/// 兜底臂不是「偷偷吞掉」，它专门回答「没有 CUDA 生产态 lowering」。
-fn cuda_source(
+/// 两段族的骨架已在 [`cuda_lower`] 里分派，落到这里的只会有这四族之一；兜底臂不是「偷偷吞掉」，
+/// 它回答的是「这个骨架没有单段 CUDA 生产态 lowering」。
+fn cuda_single_source(
     kind: &Lower,
     kernel: &str,
     signature: &Signature,
     sample: &Sample,
-) -> Result<Vec<String>> {
+) -> Result<String> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => single(crate::codegen::cuda_grid_kernel(kernel, signature, sample)),
-        ChunkReduce { chunk, func } => single(crate::codegen::cuda_chunk_reduce(
-            kernel, signature, sample, *chunk, func,
-        )),
-        Loop(grid) => single(crate::codegen::cuda_loop_kernel(
-            kernel, signature, sample, grid,
-        )),
-        ChunkScan { chunk, decay } => {
-            crate::scan::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
+        Pointwise => crate::codegen::cuda_grid_kernel(kernel, signature, sample),
+        ChunkReduce { chunk, func } => {
+            crate::codegen::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
         }
-        WmmaGemm => single(crate::wmma::gemm_kernel(signature, sample)),
-        ChunkRmsnorm { .. } | ChunkSoftmax { .. } => Err(Error::new(
+        Loop(grid) => crate::codegen::cuda_loop_kernel(kernel, signature, sample, grid),
+        WmmaGemm => crate::wmma::gemm_kernel(signature, sample),
+        _ => Err(Error::new(
             Code::Internal,
-            "归一化两族应在 cuda_lower 分派，不应落到单源兜底".to_string(),
+            "该骨架产出多段源码，应在 cuda_lower 分派，不应落到单段兜底".to_string(),
         )),
     }
 }
 
-/// 单段源码 → 单元素文件表（CUDA 生产态每个骨架只产出一个翻译单元）。
-fn single(source: Result<String>) -> Result<Vec<String>> {
-    source.map(|text| vec![text])
+/// 单段源码 → 单元素文件表（CUDA 生产态单段骨架只产出一个翻译单元）。
+fn single_file(source: String) -> Vec<String> {
+    vec![source]
 }
 
 fn cuda_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
