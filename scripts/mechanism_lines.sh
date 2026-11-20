@@ -7,7 +7,7 @@
 #   3. 构建脚本 `build.rs` 位于 crate 根、不在 `src/` 内，扫描目录天然排除（编译期产物，
 #      不进运行时机制分母）。
 #   4. 工具成员整体不计机制口径：`annotation`（编译期注解）、`fuzz`（模糊测试契约）、
-#      `benches`（集中测量容器）——见 `docs/ARCHITECTURE.md` 分层表注。
+#      `benchmarks`（集中测量容器）——见 `docs/ARCHITECTURE.md` 分层表注。
 #   5. 内联 `#[cfg(test)] mod tests` 体内行不在本脚本目录级扣除；严格口径由
 #      `tool::strip_tests`（基于词法树剔除测试条目、保留行号）在审计/门禁侧再扣一次。
 #
@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # 工具成员：整体排除机制分母。
-TOOL_MEMBERS="annotation fuzz benches"
+TOOL_MEMBERS="annotation fuzz benchmarks"
 
 LAYERS=(L1 L2 L3 L4 L5 L6 L7)
 LAYER_LINES=(0 0 0 0 0 0 0)
@@ -105,5 +105,5 @@ else
     printf "%-6s %8d %8d\n" "合计" "$TOTAL_FILES" "$TOTAL_LINES"
     echo
     echo "注：目录级口径，未扣内联 #[cfg(test)] 体；严格口径经 tool::strip_tests 再扣。"
-    echo "注：工具成员 annotation / fuzz / benches 与根 tests/、build.rs、target/ 已排除。"
+    echo "注：工具成员 annotation / fuzz / benchmarks 与根 tests/、build.rs、target/ 已排除。"
 fi

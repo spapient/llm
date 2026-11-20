@@ -11,8 +11,8 @@ use assert_cmd::Command;
 use std::path::PathBuf;
 
 /// 用法文本里必须出现的那几行：命令表是 `llm help` 的唯一职责。
-const USAGE_COMMANDS: [&str; 8] = [
-    "status", "run", "verify", "bench", "train", "import", "inspect", "check",
+const USAGE_COMMANDS: [&str; 10] = [
+    "status", "run", "verify", "bench", "train", "import", "inspect", "check", "settle", "audit",
 ];
 
 fn llm() -> Command {
@@ -220,6 +220,14 @@ fn imported_container(tag: &str) -> PathBuf {
         "合法 safetensors 下 `import` 必须成功：{:?}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // 导入要自证：报告里的体积比与无损是**落盘后重新读出来**的账，而不是"我写成功了"。
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for field in ["体积比", "lossless"] {
+        assert!(
+            stdout.contains(field),
+            "`import` 必须报出 `{field}`：{stdout}"
+        );
+    }
     container
 }
 
@@ -277,6 +285,107 @@ fn check_decodes_every_tensor_of_a_valid_container() {
     assert!(
         stdout.contains("2 tensors decoded"),
         "解码口径要报出条目数：{stdout}"
+    );
+}
+
+#[test]
+fn settle_writes_the_same_ledger_to_stdout_and_to_a_file() {
+    let container = imported_container("settle");
+    let output = llm()
+        .args(["settle", "--in"])
+        .arg(&container)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "合法容器下 `settle` 必须成功：{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    for field in [
+        "\"schema\"",
+        "\"file_len\"",
+        "blk.0.attn_q.weight",
+        "\"is_lossless\"",
+        "\"codec_reason\"",
+        "\"decision\"",
+    ] {
+        assert!(stdout.contains(field), "账本必须报出 `{field}`：{stdout}");
+    }
+
+    // `--out` 只换落点，不换文本：写出来的字节要与 stdout 上一模一样。
+    let ledger = container.with_extension("u.json");
+    let output = llm()
+        .args(["settle", "--in"])
+        .arg(&container)
+        .args(["--out"])
+        .arg(&ledger)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(output.status.code(), Some(0));
+    let written = std::fs::read_to_string(&ledger).expect("账本可回读");
+    assert_eq!(written, stdout, "写盘与 stdout 必须同一份文本");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for field in ["条目数", "体积比", "lossless"] {
+        assert!(stdout.contains(field), "落盘后要报 `{field}`：{stdout}");
+    }
+}
+
+#[test]
+fn audit_accepts_the_ledger_it_wrote_and_rejects_a_tampered_cell() {
+    let container = imported_container("audit");
+    let ledger = container.with_extension("u.json");
+    let output = llm()
+        .args(["settle", "--in"])
+        .arg(&container)
+        .args(["--out"])
+        .arg(&ledger)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "先得有一份账本：{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // 同一份字节 + 同一份账：逐格复核通过，报告说出结论而不只是不报错。
+    let output = llm()
+        .args(["audit", "--in"])
+        .arg(&container)
+        .args(["--ledger"])
+        .arg(&ledger)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "自己的账本必须复核通过：{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for field in ["条目数", "体积比", "lossless", "一致"] {
+        assert!(stdout.contains(field), "复核要报 `{field}`：{stdout}");
+    }
+
+    // 改一格体积比：账本与字节不再同源，必须以 invalid=2 失败并点名那一格。
+    let text = std::fs::read_to_string(&ledger).expect("账本可回读");
+    let forged = text.replacen("\"volume_ratio\": ", "\"volume_ratio\": 9", 1);
+    assert_ne!(forged, text, "篡改必须真的改到一格：{text}");
+    std::fs::write(&ledger, forged).expect("写入篡改版");
+    let output = llm()
+        .args(["audit", "--in"])
+        .arg(&container)
+        .args(["--ledger"])
+        .arg(&ledger)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(output.status.code(), Some(2), "账本不符是 invalid=2");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("volume_ratio"),
+        "要能定位到那一格：{stderr}"
     );
 }
 

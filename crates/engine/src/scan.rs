@@ -82,6 +82,22 @@ fn scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
     )
 }
 
+/// 分块扫描的完整 CUDA 程序（段 + 驱动一次给全）：调用方不必知道这里是两段。
+///
+/// # Errors
+///
+/// 段生成的几何判定与驱动折叠同口径，任一步不符即返回。
+pub fn cuda_scan(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    decay: f32,
+) -> Result<String> {
+    let segments = cuda_chunk_scan(kernel_source, signature, sample, chunk, decay)?;
+    cuda_scan_driver(&segments, signature, sample, chunk, decay)
+}
+
 /// 分块扫描的完整 CUDA 程序：局部扫描 → 回读整段 → 主机折叠携带前缀 → 校正 → 回读输出。
 ///
 /// 折叠序与 `.k` 模板同口径：`C_0 = 0`、`C_{g+1} = a^len · C_g + y[start+len-1]`（f64 计算，

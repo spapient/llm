@@ -8,6 +8,11 @@
 //! 不拿 `ε_mach·σ_1` 冒充严格界；`ε_obs` 记 0——被分解的矩阵就是落盘的那一份，观测侧没有第二份
 //! 数据。判定严格：`γ_r > 2ε` 才 Pass，等号一律 Fail。
 //!
+//! §4.2.1 要求证书声明**用了哪种** `ε_alg`，§4.3.1 要求声明这张界是 L0 诊断还是 L0' 候选，
+//! §4.8 要求 `E_decomp` 与 `E_comp` 分开记、不得重复计入。三条都不是注释而是可执行约束，因此它们
+//! 在 [`Note`] 里是闭集字段（[`EpsMethod`]、[`Bound`]、`comp`），由 [`check`] 逐条把关：候选筛查
+//! 口径签不出 `Pass`，L0' 候选界签不出无损，逐位往返的补偿项不得再记一遍误差。
+//!
 //! 旧版把它拆成 `spectral` / `truncate` / `note` 三个函数，每个都重算一遍 SVD，而秩由调用方拍给
 //! （`axes` 里取 `min(m,n)/2`）：证书因此只能事后记录、从不参与决策。现在秩由证书给出，判定与产出
 //! 同源，[`certify`] 返回 `None` 就是「拒压」本身。
@@ -39,6 +44,74 @@ impl Stable {
             1 => Ok(Self::Fail),
             2 => Ok(Self::Open),
             other => Err(bad(&format!("未知 Stable 码 {other}"))),
+        }
+    }
+}
+
+/// `ε_alg` 的取法（§4.2.1：证书必须声明方法；缺方法即无效，`ε_mach·σ_1` 不算无条件界）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EpsMethod {
+    /// 已验证的反向误差界。本仓不产出此值——`ε_mach·σ_1` 不是无条件界，而真正可证的向后误差
+    /// 界还没有落地，留码位是为了读端能认出别人签的那种证书。
+    Backward = 0,
+    /// 已验证残差：本次分解的后验 `‖A − UΣVᵀ‖_F`，[`certify`] 用的就是这条。
+    Residual = 1,
+    /// 只够做候选筛查（幂迭代等）：**不能**支撑证书，见 [`check`]。
+    Candidate = 2,
+}
+
+impl EpsMethod {
+    fn from_code(code: u8) -> Result<Self> {
+        match code {
+            0 => Ok(Self::Backward),
+            1 => Ok(Self::Residual),
+            2 => Ok(Self::Candidate),
+            other => Err(bad(&format!("未知 EpsMethod 码 {other}"))),
+        }
+    }
+
+    /// 账本里的字符串写法（闭集，码位稳定）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Backward => "verified_backward_error",
+            Self::Residual => "verified_residual",
+            Self::Candidate => "candidate_only",
+        }
+    }
+}
+
+/// 这张证书用的是哪种界（§4.3.1 / §4.7 的 `bound_type`）。
+///
+/// L0 是**保守诊断界**，L0' 是**研究候选界**——后者从证书链撤下过，所以它永远签不出无损证书：
+/// 把候选界当证书用，是把「还没证完」读成「已经证完」。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bound {
+    /// L0 诊断界：只回答「秩可不可判」，[`certify`] 产出的就是这个。
+    Diagnostic = 0,
+    /// L0' 候选界：研究口径，只能当候选，不当证书。
+    Candidate = 1,
+    /// 未声明界：只在没有使用秩选择时允许。
+    None = 2,
+}
+
+impl Bound {
+    fn from_code(code: u8) -> Result<Self> {
+        match code {
+            0 => Ok(Self::Diagnostic),
+            1 => Ok(Self::Candidate),
+            2 => Ok(Self::None),
+            other => Err(bad(&format!("未知 Bound 码 {other}"))),
+        }
+    }
+
+    /// 账本里的字符串写法（闭集，码位稳定）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Diagnostic => "l0_diagnostic",
+            Self::Candidate => "l0prime_candidate_open",
+            Self::None => "none",
         }
     }
 }
@@ -132,9 +205,13 @@ fn assemble(w: &[f32], a: &[f64], d: &svd::Svd, rank: usize, eps: f64) -> Result
         used: true,
         mode: Mode::Residual,
         stable: stable(gap, eps),
+        method: EpsMethod::Residual,
+        bound: Bound::Diagnostic,
         gap,
         eps,
         decomp: residual(a, &low64),
+        // 残差 `C` 以 `f32` 原样落盘，补偿侧没有再编码一次，所以它这里的误差精确为零。
+        comp: 0.0,
         equal,
         lossless: equal,
     };
@@ -192,12 +269,18 @@ pub struct Note {
     pub mode: Mode,
     /// 稳定性判定。
     pub stable: Stable,
+    /// `ε_alg` 的取法（缺方法即无效）。
+    pub method: EpsMethod,
+    /// 界类型（L0 诊断 / L0' 候选 / 未声明）。
+    pub bound: Bound,
     /// 谱隙 γ_r。
     pub gap: f64,
     /// 总扰动 ε = ε_obs + ε_alg。
     pub eps: f64,
     /// 截断误差 E_decomp。
     pub decomp: f64,
+    /// 补偿误差 E_comp：只在残差补偿模式存在，逐位往返时精确为零。
+    pub comp: f64,
     /// 逐位往返是否一致（无损判定）。
     pub equal: bool,
     /// 是否无损。
@@ -211,28 +294,44 @@ impl Note {
         out.put(&[u8::from(self.used)]);
         out.put(&[self.mode as u8]);
         out.put(&[self.stable as u8]);
+        out.put(&[self.method as u8]);
+        out.put(&[self.bound as u8]);
         out.put(&self.gap.to_le_bytes());
         out.put(&self.eps.to_le_bytes());
         out.put(&self.decomp.to_le_bytes());
+        out.put(&self.comp.to_le_bytes());
         out.put(&[u8::from(self.equal)]);
         out.put(&[u8::from(self.lossless)]);
     }
 
     /// 强类型解码；字段不符显式报错。逐段按 `Note::encode` 的顺序读，段内报错点与逐字段读一致。
     pub fn decode(cur: &mut Cursor<'_>) -> Result<Self> {
-        let (rank, used, mode, stable) = head(cur)?;
-        let ([gap, eps, decomp], [equal, lossless]) = tail(cur)?;
+        let (rank, used, mode, stable, method, bound) = head(cur)?;
+        let ([gap, eps, decomp, comp], [equal, lossless]) = tail(cur)?;
         Ok(Self {
             rank,
             used,
             mode,
             stable,
+            method,
+            bound,
             gap,
             eps,
             decomp,
+            comp,
             equal,
             lossless,
         })
+    }
+
+    /// `ε_synth = E_decomp + E_comp`：合成误差的唯一算式。
+    ///
+    /// 两项来自**不同产物**（低秩项的截断 vs 补偿项自己的编码），所以相加不是重复计入；
+    /// 反过来，把同一份误差同时填进两个字段才是——[`check`] 用「逐位往返则 `comp = 0`」
+    /// 把这种填法挡住。
+    #[must_use]
+    pub fn synth(&self) -> f64 {
+        self.decomp + self.comp
     }
 
     /// 序列化为字节。
@@ -244,18 +343,32 @@ impl Note {
     }
 }
 
-/// 标识段：秩、是否使用秩选择、重构模式码、稳定性判定码。
-fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Mode, Stable)> {
+/// 标识段的原始字：秩与五个字节（`used` | 模式 | 稳定 | 方法 | 界）。
+fn words(cur: &mut Cursor<'_>) -> Result<(u32, [u8; 5])> {
     let rank = cur.read::<u32>()?;
-    let flags = cur.take(3)?;
-    let mode = Mode::from_code(flags[1])?;
-    let stable = Stable::from_code(flags[2])?;
-    Ok((rank, flags[0] != 0, mode, stable))
+    let flags = cur.take(5)?;
+    Ok((rank, [flags[0], flags[1], flags[2], flags[3], flags[4]]))
 }
 
-/// 实数与标志段：三个 f64（谱隙、总扰动、截断误差）小端连排，其后是两条布尔（非 0 即真）。
-fn tail(cur: &mut Cursor<'_>) -> Result<([f64; 3], [bool; 2])> {
-    let mut reals = [0.0f64; 3];
+/// 把四个码位解成闭集值；码位不认识就是坏载荷，不猜近似项。
+fn signs(flags: &[u8; 5]) -> Result<(Mode, Stable, EpsMethod, Bound)> {
+    let mode = Mode::from_code(flags[1])?;
+    let stable = Stable::from_code(flags[2])?;
+    let method = EpsMethod::from_code(flags[3])?;
+    let bound = Bound::from_code(flags[4])?;
+    Ok((mode, stable, method, bound))
+}
+
+/// 标识段：秩、是否使用秩选择、重构模式码、稳定性码、`ε_alg` 方法码、界类型码。
+fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Mode, Stable, EpsMethod, Bound)> {
+    let (rank, flags) = words(cur)?;
+    let (mode, stable, method, bound) = signs(&flags)?;
+    Ok((rank, flags[0] != 0, mode, stable, method, bound))
+}
+
+/// 实数与标志段：四个 f64（谱隙、总扰动、截断误差、补偿误差）小端连排，其后是两条布尔（非 0 即真）。
+fn tail(cur: &mut Cursor<'_>) -> Result<([f64; 4], [bool; 2])> {
+    let mut reals = [0.0f64; 4];
     for value in &mut reals {
         *value = read_f64(cur)?;
     }
@@ -266,13 +379,66 @@ fn tail(cur: &mut Cursor<'_>) -> Result<([f64; 3], [bool; 2])> {
     Ok((reals, flags))
 }
 
-/// 不变量校验（可执行的四条核心约束，逐条对应旧版 F1–F4/A2/D2）。
+/// 不变量校验：证书自己能查的矛盾，全部在这里挡住。
+///
+/// 五组规则各答一个问题——载荷写法、`ε` 的口径、补偿项的归属、无损判定的自洽、谱隙阈值——
+/// 于是读一段报错就知道该找哪一类，不必把整张表从头读到尾。
 pub fn check(n: &Note) -> Result<()> {
-    let rules = [
+    encoded(n)?;
+    measured(n)?;
+    compensated(n)?;
+    consistent(n)
+}
+
+/// 载荷写法：三个误差与谱隙必须是有限非负实数。
+fn encoded(n: &Note) -> Result<()> {
+    rules(&[
         (
-            [n.gap, n.eps, n.decomp].iter().all(|v| v.is_finite()),
+            [n.gap, n.eps, n.decomp, n.comp]
+                .iter()
+                .all(|v| v.is_finite()),
             "存在非有限值",
         ),
+        (n.comp >= 0.0, "补偿误差不能为负"),
+        (n.gap >= 0.0, "谱隙不能为负"),
+    ])
+}
+
+/// `ε` 的口径：候选筛查方法签不出 Pass，L0' 候选界签不出无损，用了秩选择就得说明这张界是谁。
+fn measured(n: &Note) -> Result<()> {
+    rules(&[
+        (
+            n.method != EpsMethod::Candidate || n.stable != Stable::Pass,
+            "候选筛查方法（幂迭代等）不能支撑 Pass 证书",
+        ),
+        (
+            n.bound != Bound::Candidate || !n.lossless,
+            "L0' 候选界是研究口径，不能签发无损证书",
+        ),
+        (
+            !n.used || n.bound != Bound::None,
+            "用了秩选择就必须声明这张界是 L0 诊断还是 L0' 候选",
+        ),
+    ])
+}
+
+/// 补偿项的归属：它只属于残差模式，且逐位往返时必为零（否则就是同一份误差记了两遍）。
+fn compensated(n: &Note) -> Result<()> {
+    rules(&[
+        (
+            n.comp == 0.0 || n.mode == Mode::Residual,
+            "补偿误差只存在于残差补偿模式",
+        ),
+        (
+            !n.equal || n.comp == 0.0,
+            "逐位往返说明补偿项没有引入误差，不得再计一遍",
+        ),
+    ])
+}
+
+/// 无损判定与谱隙阈值的自洽：`Pass` 要求 `γ_r > 2ε` 严格成立。
+fn consistent(n: &Note) -> Result<()> {
+    rules(&[
         (
             n.lossless
                 == match n.mode {
@@ -285,9 +451,12 @@ pub fn check(n: &Note) -> Result<()> {
             !(n.used && n.stable == Stable::Pass && n.gap <= 2.0 * n.eps),
             "Pass 但谱隙不满足严格阈值",
         ),
-        (n.gap >= 0.0, "谱隙不能为负"),
-    ];
-    match rules.iter().find(|(holds, _)| !*holds) {
+    ])
+}
+
+/// 规则表的唯一消费点：第一条不成立的就是答案。
+fn rules(table: &[(bool, &str)]) -> Result<()> {
+    match table.iter().find(|(holds, _)| !*holds) {
         Some((_, why)) => Err(bad(why)),
         None => Ok(()),
     }
@@ -320,6 +489,18 @@ pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Resu
         (
             note.stable == Stable::Pass,
             "证书没过 L0 门，却被当作载荷落盘",
+        ),
+        (
+            note.method == EpsMethod::Residual,
+            "落盘证书的 ε 必须来自实测残差，不能是候选筛查或别人的反向界",
+        ),
+        (
+            note.bound == Bound::Diagnostic,
+            "落盘证书的界必须是 L0 诊断：L0' 候选或未声明都签不出可证压缩",
+        ),
+        (
+            note.comp == 0.0,
+            "显式残差以 f32 原样落盘，补偿项误差应当为零",
         ),
         (
             (1..m.min(n)).contains(&rank),
@@ -405,6 +586,39 @@ mod tests {
     }
 
     #[test]
+    fn the_payload_audit_rejects_a_certificate_that_names_another_measurement() {
+        let cert = certify(&diag4(), 4, 4).expect("可认证").expect("有谱隙");
+        audit(&cert.note, 4, 4, &cert.low, &cert.rest).expect("真实载荷必须自洽");
+
+        // 三条读端复核各自独立：改一条就得被这条载荷自己拒掉。
+        for tampered in [
+            Note {
+                method: EpsMethod::Candidate,
+                ..cert.note.clone()
+            },
+            Note {
+                bound: Bound::Candidate,
+                stable: Stable::Open,
+                equal: false,
+                lossless: false,
+                ..cert.note.clone()
+            },
+            Note {
+                comp: 1e-9,
+                ..cert.note.clone()
+            },
+        ] {
+            assert_eq!(
+                audit(&tampered, 4, 4, &cert.low, &cert.rest)
+                    .unwrap_err()
+                    .code(),
+                Code::Invalid,
+                "{tampered:?}"
+            );
+        }
+    }
+
+    #[test]
     fn certify_reports_the_gated_rank_and_a_lossless_note() {
         let cert = certify(&diag4(), 4, 4).expect("可认证").expect("有谱隙");
         assert_eq!(cert.rank, 3, "diag(3,2,1,0.5) 的谱隙在这里断开");
@@ -468,19 +682,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn note_roundtrips_through_bytes() {
-        let note = Note {
+    /// 一张自洽的证书：L0 诊断界、残差方法、无补偿误差。
+    fn valid() -> Note {
+        Note {
             rank: 2,
             used: true,
             mode: Mode::Residual,
             stable: Stable::Pass,
+            method: EpsMethod::Residual,
+            bound: Bound::Diagnostic,
             gap: 1.0,
             eps: 0.1,
             decomp: 0.0,
+            comp: 0.0,
             equal: true,
             lossless: true,
-        };
+        }
+    }
+
+    #[test]
+    fn note_roundtrips_through_bytes() {
+        let note = valid();
         assert!(check(&note).is_ok());
         let bytes = note.to_bytes();
         let mut cur = Cursor::new(&bytes);
@@ -490,17 +712,133 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_method_or_bound_code_is_rejected() {
+        // 秩 2 只占 1 字节，于是布局是 rank|used|mode|stable|method|bound|…：方法码在 4、界码在 5。
+        let bytes = valid().to_bytes();
+        assert_eq!((bytes[4], bytes[5]), (1, 0), "残差方法 + L0 诊断界");
+        for (offset, code) in [(4, 3u8), (5, 3u8)] {
+            let mut broken = bytes.clone();
+            broken[offset] = code;
+            let mut cur = Cursor::new(&broken);
+            assert!(Note::decode(&mut cur).is_err(), "offset {offset}");
+        }
+    }
+
+    #[test]
+    fn the_synthesis_error_adds_the_two_disjoint_terms() {
+        // §4.8：`E_decomp` 与 `E_comp` 来自不同产物，相加就是 `ε_synth`，不重复计入。
+        let note = Note {
+            mode: Mode::Residual,
+            decomp: 1e-3,
+            comp: 2e-3,
+            // 补偿项非零就不可能逐位往返。
+            equal: false,
+            lossless: false,
+            ..valid()
+        };
+        assert!(check(&note).is_ok());
+        assert!((note.synth() - 3e-3).abs() < 1e-18);
+    }
+
+    #[test]
+    fn a_candidate_only_measurement_cannot_sign_a_pass() {
+        // §4.2.1：幂迭代这类只够排序的 `ε` 不能当证书。
+        let note = Note {
+            method: EpsMethod::Candidate,
+            ..valid()
+        };
+        assert!(check(&note).is_err());
+        // 退到 Open 就不矛盾：它本来就没说“稳定”。
+        let open = Note {
+            stable: Stable::Open,
+            ..note
+        };
+        assert!(check(&open).is_ok());
+    }
+
+    #[test]
+    fn an_l0_prime_candidate_bound_cannot_sign_lossless() {
+        let note = Note {
+            bound: Bound::Candidate,
+            ..valid()
+        };
+        assert!(check(&note).is_err());
+        let open = Note {
+            stable: Stable::Open,
+            equal: false,
+            lossless: false,
+            ..note
+        };
+        assert!(check(&open).is_ok());
+    }
+
+    #[test]
+    fn a_rank_choice_must_name_its_bound() {
+        let note = Note {
+            bound: Bound::None,
+            ..valid()
+        };
+        assert!(check(&note).is_err());
+        // 没用秩选择时，“未声明界”只是如实记录。
+        let unused = Note {
+            used: false,
+            decomp: 0.0,
+            ..note
+        };
+        assert!(check(&unused).is_ok());
+    }
+
+    #[test]
+    fn a_compensation_error_only_belongs_to_the_residual_mode() {
+        // 纯截断只丢低秩项，没有补偿产物，就没有补偿误差。
+        let trunc = Note {
+            mode: Mode::Trunc,
+            decomp: 0.0,
+            comp: 1e-9,
+            ..valid()
+        };
+        assert!(check(&trunc).is_err());
+    }
+
+    #[test]
+    fn a_bitwise_roundtrip_forbids_counting_the_compensation_twice() {
+        let note = Note {
+            comp: 1e-9,
+            ..valid()
+        };
+        assert!(check(&note).is_err());
+    }
+
+    #[test]
+    fn every_name_is_stable_and_distinct() {
+        let methods: Vec<&str> = [
+            EpsMethod::Backward,
+            EpsMethod::Residual,
+            EpsMethod::Candidate,
+        ]
+        .into_iter()
+        .map(EpsMethod::as_str)
+        .collect();
+        assert_eq!(
+            methods,
+            [
+                "verified_backward_error",
+                "verified_residual",
+                "candidate_only"
+            ]
+        );
+        let bounds: Vec<&str> = [Bound::Diagnostic, Bound::Candidate, Bound::None]
+            .into_iter()
+            .map(Bound::as_str)
+            .collect();
+        assert_eq!(bounds, ["l0_diagnostic", "l0prime_candidate_open", "none"]);
+    }
+
+    #[test]
     fn invariant_violations_are_rejected() {
         let base = Note {
-            rank: 2,
-            used: true,
-            mode: Mode::Residual,
-            stable: Stable::Pass,
             gap: 0.1, // Pass 但 gap 不 > 2eps
-            eps: 0.1,
-            decomp: 0.0,
-            equal: true,
-            lossless: true,
+            ..valid()
         };
         assert!(check(&base).is_err());
         let contradictory = Note {

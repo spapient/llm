@@ -38,7 +38,7 @@ workspace；入口二进制要用 `-p llm-cli --bin llm|cutile` 指定。
 七层从下到上：L1 基础设施（`diagnostic` `rng` `dtype` `wire` `tool`）→ L2 数据（`prof` `op` `prim`）
 → L3 内核（`cutile`）→ L4 运行时（`tensor` `storage` `tokenizer`）→ L5 模型与训练（`weights`
 `autograd` `nn` `shard`）→ L6 调度与服务（`train` `engine` `serve`）→ L7 入口（`cli`）。
-`annotation` / `fuzz` / `benches` / `testkit` 是工具成员，不计入运行时分层。
+`annotation` / `fuzz` / `benchmarks` / `testkit` 是工具成员，不计入运行时分层。
 
 唯一一条依赖规则：**依赖只能指向更低的层（同层只能依赖更靠左的成员）**。因此向上依赖不可能通过、
 环不可能出现、数据层永远不会知道机制（`op` / `prof` / `prim` 不依赖 `cutile`）。各层职责、边清单、
@@ -113,9 +113,9 @@ cargo run -p llm-cli --bin cutile -- --config ./cutile.toml verify --devices cpu
 .
 ├── Cargo.toml            # 纯 workspace 根：[workspace]/[workspace.package]/[lints]/[profile.*]，无 package/bin
 ├── docs/                 # 见 docs/README.md（架构契约 / 规格 / ADR）
-├── benchmarks/           # 对照夹具（独立 workspace）：Burn 运行时探针，不进主依赖图
 └── crates/
     ├── annotation/       # #[spec] 属性宏：注解 → 校验过的 Contract 实现（零外部依赖）
+    ├── benchmarks/      # 集中 criterion 微基准与回退判定，不进主依赖图
     ├── cli/              # 组合根（lib + 两个 bin）：文法解析、`cmd/` 编排入口
     ├── cutile/           # 机制层：协商 → 拼接 → emit → 编译执行；命令侧报告在 `cli` 包
     ├── op/               # 声明层：ops/<name>.{toml,k} + 算子语义；einsum/ 是求和代价的来源

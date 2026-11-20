@@ -35,6 +35,23 @@ pub enum Source {
     },
 }
 
+/// 并行网格程序的请求：降低形态 + 派发几何。
+///
+/// 两个字段都由声明与样本推出（[`crate::execution::launch`]），后端只照做——不再判断「该并行还是
+/// 串行」，也不得按算子名挑驱动：那是第二份分派，必然与 `[chunk]` / `[grid]` 声明漂移。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Launch {
+    /// 降低形态。
+    pub kind: Lower,
+    /// 每个维度的工作项数：逐点是元素数、分块族是块数、循环注入是 `[grid]` 各维的样本取值。
+    ///
+    /// 它**不**等于 CUDA 的网格维（那是块数）：块数由后端用自己的线程组大小折算，两种方言的
+    /// 「网格」含义不同，混用会让末块越界或只跑一部分元素。
+    pub items: [usize; 3],
+    /// 一个线程组里放几个工作项：逐点取 [`crate::execution::POINT_THREADS`]，其余族一工作项一线程。
+    pub group: usize,
+}
+
 /// 生产态内核 lowering 请求：骨架分派后的中性描述，vendor 后端据此生成设备源。
 ///
 /// 它只描述「怎么降」（网格 / 分块 / 串行），不含任何厂商语法；Metal / CUDA 的语法差异收在
@@ -142,6 +159,8 @@ pub trait Codegen {
     }
     /// 基准封装：把一份 `.k` 内核 + 签名 + 样本降成「跑一次并回读」的完整程序源（verify 的
     /// 加速器车道）。host C 后端不实现（C 基准走产物缓存，不经 [`Driver::compile_run`]）。
+    ///
+    /// 它是**语义门**：单线程、`grid = 1`，回答「这个算子算得对不对」，不回答「跑得多快」。
     fn harness(&self, _kernel: &str, _signature: &Signature, _sample: &Sample) -> Result<Source> {
         Err(Error::new(
             Code::Unsupported,
@@ -164,6 +183,23 @@ pub trait Codegen {
         Err(Error::new(
             Code::Unsupported,
             "该后端没有生产态设备计时封装".to_string(),
+        ))
+    }
+    /// 并行网格程序：按 [`Launch`] 降源并拼上**按网格发射**的 host 驱动——加速器车道跑的是生产态
+    /// 形态（每线程一元素 / 每线程一块 / `[grid]` 各维一线程），不是单线程语义门。
+    ///
+    /// 不支持的形态（tile / flash / 波内特化）报 [`Code::Unsupported`]，调用方按「已声明但没有
+    /// 并行实现」回落到 [`Self::harness`]——这条回落必须显式，不能把缺实现说成已验证。
+    fn parallel(
+        &self,
+        _kernel: &str,
+        _signature: &Signature,
+        _sample: &Sample,
+        _launch: &Launch,
+    ) -> Result<Source> {
+        Err(Error::new(
+            Code::Unsupported,
+            "该后端没有并行网格程序".to_string(),
         ))
     }
 }

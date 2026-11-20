@@ -338,7 +338,7 @@ impl MetricsAcc {
         let numel = tensor::product(seg.shape());
         self.params = self.params.saturating_add(numel);
         self.v_fp16 = self.v_fp16.saturating_add(numel.saturating_mul(2));
-        self.lossless = self.lossless && self.is_lossless(seg);
+        self.lossless = self.lossless && lossless_entry(seg);
         if seg.is_ref() {
             self.ref_hits += 1;
             let logical = u64::try_from(seg.logical_len()?).unwrap_or(u64::MAX);
@@ -346,11 +346,14 @@ impl MetricsAcc {
         }
         Ok(())
     }
+}
 
-    /// 单段是否无损：不带量化方案，且 codec 属于无损的 `Store`/`Rans`/`Axes`。
-    fn is_lossless(&self, seg: &Stored) -> bool {
-        seg.quant().is_none() && matches!(seg.codec(), Codec::Store | Codec::Rans | Codec::Axes)
-    }
+/// 单段是否无损：不带量化方案，且 codec 属于无损的 `Store`/`Rans`/`Axes`。
+///
+/// 只按描述符判定，不看字节：度量与沉降账本（[`crate::settle`]）都读这一份，于是"这一条算不算
+/// 无损"不会在容器的两个视图里给出两种结论；"解出来的字节对不对"是另一件事，由解码往返回答。
+pub(crate) fn lossless_entry(seg: &Stored) -> bool {
+    seg.quant().is_none() && matches!(seg.codec(), Codec::Store | Codec::Rans | Codec::Axes)
 }
 
 /// 容器度量：条目数、参数总数、体积对比与无损口径；全部在打开容器后现算。

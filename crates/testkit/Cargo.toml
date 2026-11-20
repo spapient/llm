@@ -34,5 +34,9 @@ path = "tests/contracts.rs"
 name = "architecture"
 path = "tests/architecture.rs"
 
+[[test]]
+name = "l3"
+path = "tests/l3.rs"
+
 [lints]
 workspace = true

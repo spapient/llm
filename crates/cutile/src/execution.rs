@@ -5,7 +5,7 @@
 //! `pipeline`，因此不存在第二套执行路径。
 
 use crate::atom::{AttrKey, Prim};
-use crate::backend::Lower;
+use crate::backend::{Launch, Lower};
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::cap::{Path, Proof};
@@ -713,43 +713,151 @@ fn prepare<'a>(
     Ok((run, prepared))
 }
 
-/// 骨架分派：串行兜底 + 网格快路径。
-fn lower(run: &Run<'_>, prepared: &Prepared, m: usize, n: usize) -> diagnostic::Result<String> {
-    let op = run.op;
+/// 逐点网格的块大小。派发几何归 cutile 定（几何由声明与样本推出），`engine` 的驱动只按它发射。
+pub const POINT_THREADS: usize = 256;
+
+/// 声明 → 并行形态：`kind` 说怎么降、`grid` 说派多少次。**唯一分派点**。
+///
+/// verify / bench 的设备通道与各生产态入口都从这里取，`engine` 只照 [`Launch`] 装配、不第二次判断
+/// 该并行还是串行，也不按算子名挑驱动（按名字挑是第二份分派，必然与 `[chunk]` / `[grid]` 漂移）。
+///
+/// # Errors
+///
+/// 网格维或长度标量在样本里取不到合法值，或分块族缺 `[chunk]` / 扫描衰减。
+pub fn launch(op: &OpDecl, sample: &Sample) -> diagnostic::Result<Launch> {
+    let kind = kind(op)?;
+    let items = items_of(&kind, op, sample)?;
+    // 逐点才成组（一元素一线程、块内 `POINT_THREADS` 线程）；分块与循环注入是「一块/一维一线程」，
+    // 组内再塞线程只会让同一块被多算几遍。
+    let group = match kind {
+        Lower::Pointwise => POINT_THREADS,
+        _ => 1,
+    };
+    Ok(Launch { kind, items, group })
+}
+
+/// 骨架分派：串行兜底 + 网格快路径 + 分块族。不回答派发几何（那是 [`grid_of_kind`]）。
+fn kind(op: &OpDecl) -> diagnostic::Result<Lower> {
     match op.skeleton {
-        Skeleton::Reduce => reduce(op, run, prepared, m, n),
-        Skeleton::Elementwise => elementwise(op, run, prepared, m, n),
-        Skeleton::Gemm => gemm(op, run, prepared, m, n),
-        // 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
-        // 收敛到单线程串行（grid = [1,1,1]），与 Reduce 共用同一条 lowering。
-        Skeleton::Scan => serial(op, run, prepared, m, n),
+        Skeleton::Gemm => Ok(grid_kind(op)),
+        Skeleton::Elementwise => Ok(chunked_elementwise(op)),
+        _ => chunked_kind(op),
     }
 }
 
-/// 归约骨架：声明了 `[chunk]` 的走分块归约（每线程归约一块、主机折叠部分和），否则串行兜底。
-fn reduce(
-    op: &OpDecl,
-    run: &Run<'_>,
-    prepared: &Prepared,
-    m: usize,
-    n: usize,
-) -> diagnostic::Result<String> {
+/// 非逐元素、非 gemm 的两族：声明了 `[chunk]` 就分块降级，否则串行。
+///
+/// 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
+/// 归约未声明 `[chunk]` 时同理：串行（`grid = [1,1,1]`）。
+fn chunked_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
+    match (op.skeleton, op.chunk.is_some()) {
+        (Skeleton::Reduce, true) => reduce_kind(op),
+        (Skeleton::Scan, true) => scan_kind(op),
+        _ => Ok(serial_kind()),
+    }
+}
+
+/// 串行兜底：零维网格，正文原样跑一遍。
+fn serial_kind() -> Lower {
+    Lower::Loop(Grid { dims: Vec::new() })
+}
+
+/// 声明了 `[grid]` 的骨架：按 `[grid]` 各维拆线程（gemv 一维、gemm 二维共用一条）。
+fn grid_kind(op: &OpDecl) -> Lower {
+    op.grid
+        .as_ref()
+        .map_or_else(serial_kind, |grid| Lower::Loop(grid.clone()))
+}
+
+/// 逐元素族：纯逐点直接开线程，其余按 `[chunk]` 分块降级（[`chunked_elementwise`]）。
+///
+/// 分块逐元素：`[chunk]` 遇上 `[needs] reduce` 的 `max` 是三趟 softmax（最大 → 指数和 → 归一化），
+/// 遇上 `[needs] dot` 是两趟 rmsnorm（平方和 → 归一化）；其余正文已沿轴走完或下标依赖行 gather，
+/// 并行按元素拆会算错，退串行。
+fn chunked_elementwise(op: &OpDecl) -> Lower {
+    if op.pointwise() {
+        return Lower::Pointwise;
+    }
     let Some(chunk) = op.chunk.as_ref() else {
-        return serial(op, run, prepared, m, n);
+        return grid_kind(op);
     };
-    let sample = (run.model.sample)(m, n);
-    single(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
-            &Lower::ChunkReduce {
-                chunk: chunk.size,
-                func: reduce_func(op)?,
-            },
-        )?,
-        "归约",
-    )
+    if reduce_op(op) == Some("max") {
+        return Lower::ChunkSoftmax { chunk: chunk.size };
+    }
+    if op.needs.iter().any(|need| need.prim == Prim::Dot) {
+        return Lower::ChunkRmsnorm { chunk: chunk.size };
+    }
+    serial_kind()
+}
+
+/// 派发几何（工作项数）：逐点是元素数、循环注入按 `[grid]` 各维取值、分块族按块数。
+fn items_of(kind: &Lower, op: &OpDecl, sample: &Sample) -> diagnostic::Result<[usize; 3]> {
+    if let Lower::Loop(grid) = kind {
+        return Ok(pad(&grid_dims(grid, sample)?));
+    }
+    match slab(kind) {
+        Some(chunk) => Ok(along(length_of(op, sample)?.div_ceil(chunk))),
+        None => Ok([1, 1, 1]),
+    }
+}
+
+/// 沿长度轴展开的块大小：逐点一族格即元素、分块族按 `[chunk]` 声明。
+///
+/// `None` 是「这一形态不沿长度轴」——gather 一类的下标依赖行不能按元素拆，几何固定为一格。
+fn slab(kind: &Lower) -> Option<usize> {
+    match kind {
+        Lower::Pointwise => Some(1),
+        Lower::ChunkReduce { chunk, .. }
+        | Lower::ChunkRmsnorm { chunk }
+        | Lower::ChunkSoftmax { chunk }
+        | Lower::ChunkScan { chunk, .. } => Some(*chunk),
+        _ => None,
+    }
+}
+
+/// 沿长度轴的一维几何：空长仍给一格，否则网格为零既不执行也不报错。
+fn along(len: usize) -> [usize; 3] {
+    [len.max(1), 1, 1]
+}
+
+/// 三维补一：`[d0, d1]` → `[d0, d1, 1]`；空网格是 `[1, 1, 1]`。`[grid]` 声明层已限三维修。
+fn pad(dims: &[usize]) -> [usize; 3] {
+    let mut grid = [1usize; 3];
+    for (slot, dim) in dims.iter().take(3).enumerate() {
+        grid[slot] = *dim;
+    }
+    grid
+}
+
+/// 长度标量：签名里唯一的标量（`N` / `n` / `len`），网格按它算。
+fn length_of(op: &OpDecl, sample: &Sample) -> diagnostic::Result<usize> {
+    let name = op
+        .signature
+        .params()
+        .iter()
+        .find(|param| !param.ctype.is_buffer())
+        .map(|param| param.name.clone())
+        .ok_or_else(|| {
+            Error::new(
+                Code::Invalid,
+                format!("`{}` 没有长度标量，网格无从派生", op.name),
+            )
+            .with("cutile::execution::launch")
+        })?;
+    dim_size(&name, sample)
+}
+
+/// 归约需求的 `op` 取值（`sum` / `max` / …）：从声明的 `[needs] reduce` 读，不看算子名。
+fn reduce_op(op: &OpDecl) -> Option<&str> {
+    op.needs
+        .iter()
+        .find(|need| need.prim == Prim::Reduce)?
+        .attrs
+        .iter()
+        .find(|attr| attr.key() == AttrKey::Op)?
+        .values()
+        .first()
+        .map(String::as_str)
 }
 
 /// 归约原语名：从声明的 `[needs] reduce`（`op` + `dt`）推出 preamble 里的软件归约函数
@@ -761,14 +869,35 @@ fn reduce_func(op: &OpDecl) -> diagnostic::Result<String> {
         .iter()
         .find(|need| need.prim == Prim::Reduce)
         .ok_or_else(|| Error::new(Code::Invalid, format!("`{}` 没有归约需求", op.name)))?;
-    let op_name = need
-        .attrs
-        .iter()
-        .find(|attr| attr.key() == AttrKey::Op)
-        .and_then(|attr| attr.values().first())
+    let op_name = reduce_op(op)
         .ok_or_else(|| Error::new(Code::Invalid, format!("`{}` 的归约需求缺 `op`", op.name)))?;
     let dt = need.dt.names().first().copied().unwrap_or("f32");
     Ok(format!("_cutile_{op_name}_{dt}"))
+}
+
+/// 单份 MSL 的形态：分块归一化 / 分块扫描是多段源，单源入口没有主机折叠的位置，退串行（多段由
+/// `metal_rmsnorm_program` / `metal_softmax_program` / `metal_scan_program` 各自主张）。
+fn single_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
+    match kind(op)? {
+        Lower::ChunkRmsnorm { .. } | Lower::ChunkSoftmax { .. } | Lower::ChunkScan { .. } => {
+            Ok(serial_kind())
+        }
+        kind => Ok(kind),
+    }
+}
+
+/// 生产态 MSL：声明 → 单份形态 → 降源。
+fn lower(run: &Run<'_>, prepared: &Prepared, m: usize, n: usize) -> diagnostic::Result<String> {
+    let sample = (run.model.sample)(m, n);
+    single(
+        backend(Emit::Metal)?.lower(
+            &prepared.source.text,
+            &run.op.signature,
+            &sample,
+            &single_kind(run.op)?,
+        )?,
+        "降源",
+    )
 }
 
 /// 扫描分块：声明了 `[chunk]` 的走「局部扫描 + 校正」两段内核，返回 `(局部扫描, 校正)`；未声明
@@ -805,91 +934,6 @@ fn scan_decay(op: &OpDecl) -> diagnostic::Result<f32> {
             format!("`{}` 的扫描衰减 `a` 不是数值：`{raw}`", op.name),
         )
     })
-}
-
-/// 串行兜底：单线程走完整条正文，缓冲原样、标量取样本值。
-fn serial(
-    op: &OpDecl,
-    run: &Run<'_>,
-    prepared: &Prepared,
-    m: usize,
-    n: usize,
-) -> diagnostic::Result<String> {
-    let sample = (run.model.sample)(m, n);
-    single(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
-            &Lower::Loop(Grid { dims: Vec::new() }),
-        )?,
-        "串行",
-    )
-}
-
-/// 循环注入网格快路径（带归约逐元素、声明了 `[grid]` 的 Gemm）。
-fn looped(
-    op: &OpDecl,
-    run: &Run<'_>,
-    prepared: &Prepared,
-    grid: &Grid,
-    m: usize,
-    n: usize,
-) -> diagnostic::Result<String> {
-    let sample = (run.model.sample)(m, n);
-    single(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
-            &Lower::Loop(grid.clone()),
-        )?,
-        "循环",
-    )
-}
-
-/// 逐元素骨架：纯逐点单标量走网格；带归约/两趟（rmsnorm/softmax/attention）或非纯逐点签名
-/// （embed/rope 多标量、dequant）走串行兜底——正文里的归约已沿轴遍历、或下标依赖行 gather/成对步长，
-/// 网格按元素拆只会算错。声明了 `[grid]` 的走循环注入——attention 按查询行拆线程、行内软归一化留在
-/// 每线程串行。
-fn elementwise(
-    op: &OpDecl,
-    run: &Run<'_>,
-    prepared: &Prepared,
-    m: usize,
-    n: usize,
-) -> diagnostic::Result<String> {
-    if !op.pointwise() {
-        if let Some(grid) = op.grid.as_ref() {
-            return looped(op, run, prepared, grid, m, n);
-        }
-        return serial(op, run, prepared, m, n);
-    }
-    let sample = (run.model.sample)(m, n);
-    single(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &op.signature,
-            &sample,
-            &Lower::Pointwise,
-        )?,
-        "逐点",
-    )
-}
-
-/// Gemm 骨架：声明了 `[grid]` 的走循环注入网格快路径（gemv 一维、gemm 二维共用一条 lowering）；
-/// 未声明的走串行兜底。
-fn gemm(
-    op: &OpDecl,
-    run: &Run<'_>,
-    prepared: &Prepared,
-    m: usize,
-    n: usize,
-) -> diagnostic::Result<String> {
-    if let Some(grid) = op.grid.as_ref() {
-        return looped(op, run, prepared, grid, m, n);
-    }
-    serial(op, run, prepared, m, n)
 }
 
 /// 本机只编译 C，且证据先于执行：没有执行证据的后端算出来的数不是结果，只是现象。

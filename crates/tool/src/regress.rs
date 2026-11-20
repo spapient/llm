@@ -1,7 +1,7 @@
 //! 回退判定：把"实测值 vs 基线"变成一条可执行的结论。
 //!
 //! **拥有**：`Case`、`Direction`、`Baseline`、`Judgement`。**不拥有**：测量本身（谁跑、
-//! 跑多久、取中位数由 `llm-benches` 的 bench target 与 CI 的 bench job 决定）、性能目标的
+//! 跑多久、取中位数由 `llm-benchmarks` 的 bench target 与 CI 的 bench job 决定）、性能目标的
 //! 数值（写在 `Case` 里）。
 //!
 //! 为什么把它做成类型而不是脚本里的几个 `if`：性能判据有三个容易搞错的地方——**方向**

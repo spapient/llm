@@ -273,63 +273,22 @@ fn run_sample(
     let prepared = prepare(run, dirs, m, n)?;
     let sample = (run.model.sample)(m, n);
     run.op.signature.check(&sample)?;
-    let (outcome, artifact, cache_dir, compiler) = if run.profile.meta.emit == Emit::C {
-        // 重复次数也是产物身份的一部分：换 `--repeat` 就换一份产物。
-        let harness = prepared.harness(run.op, &sample, repeat)?;
-        // host C 可以复用缓存；设备基准下方每次都实际编译并执行生产态 kernel。
-        let tool = toolchain::for_profile(run.profile);
-        let (outcome, artifact) =
-            build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
-        let compiler = Some(artifact.key.tool.clone());
-        (
-            outcome,
-            Some(artifact),
-            build::dir(&prepared.key, dirs),
-            compiler,
-        )
-    } else {
-        let backend = device::spec(run.profile.meta.emit)
-            .ok_or_else(|| Error::new(Code::Unsupported, "设备计时后端未注册"))?;
-        let kind = production_lower(run.op, run.profile.meta.emit)?;
-        let harness = backend.benchmark_harness(
-            run.profile,
-            &prepared.source.text,
-            &run.op.signature,
-            &sample,
-            &kind,
-            repeat,
-        )?;
-        let (stdout, stderr) = backend.compile_run(run.profile, dirs, &harness, "bench")?;
-        let outcome = runner::Outcome {
-            bits: runner::parse_bits(&stdout),
-            timing: runner::parse_timing(&stderr),
-            stderr,
-        };
-        let compiler = match run.profile.meta.emit {
-            Emit::Cuda => toolchain::for_profile(run.profile).map(|tool| tool.id()),
-            _ => backend.toolchain().map(|tool| tool.id()),
-        };
-        (outcome, None, None, compiler)
-    };
+    assemble_timed(run, dirs, (m, n), repeat, prepared, sample)
+}
+
+fn assemble_timed(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    (m, n): (usize, usize),
+    repeat: usize,
+    prepared: pipeline::Prepared,
+    sample: Sample,
+) -> diagnostic::Result<Timed> {
+    let (outcome, artifact, cache_dir, compiler) =
+        execute_sample(run, dirs, &prepared, &sample, repeat)?;
     let (per_run_ns, p50_ns, p95_ns) = timings(&outcome)?;
-    if outcome.timing.samples_ns.len() != repeat {
-        return Err(Error::new(
-            Code::Internal,
-            format!(
-                "计时样本数不匹配：期望 {repeat}，得到 {}",
-                outcome.timing.samples_ns.len()
-            ),
-        ));
-    }
-    let expected = (run.model.reference)(&sample)?;
-    let max_rel_err = crate::reference::max_rel_err(&outcome.bits, &expected);
-    let tolerance = crate::reference::tolerance(run.model.dtype);
-    if max_rel_err > tolerance {
-        return Err(Error::new(
-            Code::Internal,
-            format!("基准结果与标量参考不一致：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"),
-        ));
-    }
+    validate_sample_count(&outcome, repeat)?;
+    let max_rel_err = compare_reference(run, &sample, &outcome)?;
     Ok(Timed {
         shape: (m as u64, n as u64),
         repeat,
@@ -345,10 +304,142 @@ fn run_sample(
     })
 }
 
-fn production_lower(op: &OpDecl, emit: Emit) -> diagnostic::Result<Lower> {
-    if op.name == "gemv_i4" && emit == Emit::Cuda {
-        return Ok(Lower::QuantizedGemvI4 { threads: 32 });
+type SampleExecution = (
+    runner::Outcome,
+    Option<crate::cache::Artifact>,
+    Option<PathBuf>,
+    Option<String>,
+);
+
+fn execute_sample(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    prepared: &pipeline::Prepared,
+    sample: &Sample,
+    repeat: usize,
+) -> diagnostic::Result<SampleExecution> {
+    if run.profile.meta.emit == Emit::C {
+        run_host_sample(run, dirs, prepared, sample, repeat)
+    } else {
+        run_device_sample(run, dirs, prepared, sample, repeat)
     }
+}
+
+fn run_host_sample(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    prepared: &pipeline::Prepared,
+    sample: &Sample,
+    repeat: usize,
+) -> diagnostic::Result<SampleExecution> {
+    let harness = prepared.harness(run.op, sample, repeat)?;
+    let tool = toolchain::for_profile(run.profile);
+    let (outcome, artifact) =
+        build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
+    let compiler = Some(artifact.key.tool.clone());
+    Ok((
+        outcome,
+        Some(artifact),
+        build::dir(&prepared.key, dirs),
+        compiler,
+    ))
+}
+
+fn run_device_sample(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    prepared: &pipeline::Prepared,
+    sample: &Sample,
+    repeat: usize,
+) -> diagnostic::Result<SampleExecution> {
+    let (backend, source) = device_benchmark_source(run, prepared, sample, repeat)?;
+    let (stdout, stderr) = backend.compile_run(run.profile, dirs, &source, "bench")?;
+    let outcome = device_outcome(stdout, stderr);
+    let compiler = device_compiler(run, backend);
+    Ok((outcome, None, None, compiler))
+}
+
+fn device_benchmark_source<'a>(
+    run: &Run<'a>,
+    prepared: &pipeline::Prepared,
+    sample: &Sample,
+    repeat: usize,
+) -> diagnostic::Result<(&'a dyn crate::backend::Backend, crate::backend::Source)> {
+    let backend = device::spec(run.profile.meta.emit)
+        .ok_or_else(|| Error::new(Code::Unsupported, "设备计时后端未注册"))?;
+    let kind = production_lower(run.op, run.profile.meta.emit)?;
+    let source = backend.benchmark_harness(
+        run.profile,
+        &prepared.source.text,
+        &run.op.signature,
+        sample,
+        &kind,
+        repeat,
+    )?;
+    Ok((backend, source))
+}
+
+fn device_outcome(stdout: String, stderr: String) -> runner::Outcome {
+    runner::Outcome {
+        bits: runner::parse_bits(&stdout),
+        timing: runner::parse_timing(&stderr),
+        stderr,
+    }
+}
+
+fn device_compiler(run: &Run<'_>, backend: &dyn crate::backend::Backend) -> Option<String> {
+    match run.profile.meta.emit {
+        Emit::Cuda => toolchain::for_profile(run.profile).map(|tool| tool.id()),
+        _ => backend.toolchain().map(|tool| tool.id()),
+    }
+}
+
+fn validate_sample_count(outcome: &runner::Outcome, repeat: usize) -> diagnostic::Result<()> {
+    if outcome.timing.samples_ns.len() == repeat {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Internal,
+        format!(
+            "计时样本数不匹配：期望 {repeat}，得到 {}",
+            outcome.timing.samples_ns.len()
+        ),
+    ))
+}
+
+fn compare_reference(
+    run: &Run<'_>,
+    sample: &Sample,
+    outcome: &runner::Outcome,
+) -> diagnostic::Result<f64> {
+    let expected = (run.model.reference)(sample)?;
+    let error = crate::reference::max_rel_err(&outcome.bits, &expected);
+    let tolerance = crate::reference::tolerance(run.model.dtype);
+    if error > tolerance {
+        return Err(Error::new(
+            Code::Internal,
+            format!("基准结果与标量参考不一致：max_rel_err {error:.3e} > {tolerance:.0e}"),
+        ));
+    }
+    Ok(error)
+}
+
+fn production_lower(op: &OpDecl, emit: Emit) -> diagnostic::Result<Lower> {
+    if is_cooperative_gemv_i4(op, emit) {
+        return cooperative_gemv_i4();
+    }
+    production_skeleton_lower(op)
+}
+
+fn is_cooperative_gemv_i4(op: &OpDecl, emit: Emit) -> bool {
+    op.name == "gemv_i4" && emit == Emit::Cuda
+}
+
+fn cooperative_gemv_i4() -> diagnostic::Result<Lower> {
+    Ok(Lower::QuantizedGemvI4 { threads: 32 })
+}
+
+fn production_skeleton_lower(op: &OpDecl) -> diagnostic::Result<Lower> {
     match op.skeleton {
         op::decl::Skeleton::Elementwise if op.pointwise() => Ok(Lower::Pointwise),
         op::decl::Skeleton::Elementwise | op::decl::Skeleton::Gemm => op

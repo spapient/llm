@@ -339,7 +339,7 @@ fn metal_grid_kernel_emits_a_grid_dispatched_main() {
     )
     .expect("签名");
     let source = "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n";
-    let msl = metal_grid_kernel(source, &sig).expect("逐点签名应可生成");
+    let msl = metal_grid_kernel(source, &sig, &sample()).expect("逐点签名应可生成");
     assert!(msl.contains("kernel void kernel_main("), "{msl}");
     assert!(msl.contains("device float* d_a [[buffer(0)]]"), "{msl}");
     assert!(msl.contains("device float* d_y [[buffer(1)]]"), "{msl}");
@@ -359,7 +359,7 @@ fn metal_grid_kernel_rejects_a_non_pointwise_signature() {
     // 三标量签名（gemv 形）：行跨步与分组标量不能套「每线程一个元素」的逐点 lowering。
     let source = "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
          float *y, int M, int N, int gsz) {}\n";
-    let error = metal_grid_kernel(source, &signature()).expect_err("三标量签名应被拒绝");
+    let error = metal_grid_kernel(source, &signature(), &sample()).expect_err("三标量签名应被拒绝");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("不是逐点"), "{error}");
 }

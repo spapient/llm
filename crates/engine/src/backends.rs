@@ -7,7 +7,7 @@
 //! 双源说明：Metal 是「设备源（.metal）+ host 驱动（.m）」两段文本，CUDA 是单段 `.cu`；这个差异
 //! 收在 [`cutile::backend::Source`] 里，由各自的 [`Driver::compile_run`] 解包，不外泄到机制层。
 
-use cutile::backend::{Backend, Codegen, Driver, Lower, Readback, Source};
+use cutile::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use cutile::dirs::Dirs;
 use cutile::driver;
 use cutile::prof::{Emit, Profile};
@@ -179,27 +179,37 @@ fn benchmark_output_len(signature: &Signature, sample: &Sample) -> Result<usize>
 }
 
 fn benchmark_grid(grid: &op::decl::Grid, sample: &Sample) -> Result<[usize; 3]> {
+    validate_benchmark_grid(grid)?;
+    let mut dims = [1usize; 3];
+    for (index, (_, scalar)) in grid.dims.iter().enumerate() {
+        dims[index] = benchmark_dimension(sample, scalar)?;
+    }
+    Ok(dims)
+}
+
+fn validate_benchmark_grid(grid: &op::decl::Grid) -> Result<()> {
     if grid.dims.is_empty() || grid.dims.len() > 3 {
         return Err(Error::new(
             Code::Unsupported,
             "设备基准要求一到三个明确的网格维度",
         ));
     }
-    let mut dims = [1usize; 3];
-    for (index, (_, scalar)) in grid.dims.iter().enumerate() {
-        let value = sample.scalar(scalar).ok_or_else(|| {
-            Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值"))
-        })?;
-        dims[index] = usize::try_from(value)
-            .map_err(|_| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 必须为正数")))?;
-        if dims[index] == 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("网格标量 `{scalar}` 必须为正数"),
-            ));
-        }
+    Ok(())
+}
+
+fn benchmark_dimension(sample: &Sample, scalar: &str) -> Result<usize> {
+    let value = sample
+        .scalar(scalar)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值")))?;
+    let dimension = usize::try_from(value)
+        .map_err(|_| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 必须为正数")))?;
+    if dimension == 0 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("网格标量 `{scalar}` 必须为正数"),
+        ));
     }
-    Ok(dims)
+    Ok(dimension)
 }
 
 fn metal_bench_geometry(
@@ -226,42 +236,56 @@ fn cuda_bench_geometry(
     kind: &Lower,
 ) -> Result<([usize; 3], [usize; 3], String)> {
     match kind {
-        Lower::Pointwise => {
-            let len = benchmark_output_len(signature, sample)?;
-            Ok((
-                [len.div_ceil(256), 1, 1],
-                [256, 1, 1],
-                crate::codegen::buffer_args(signature),
-            ))
-        }
-        Lower::Loop(grid) => Ok((
-            benchmark_grid(grid, sample)?,
-            [1, 1, 1],
-            crate::codegen::launch_args(sample, signature.params())?,
-        )),
+        Lower::Pointwise => cuda_pointwise_bench_geometry(signature, sample),
+        Lower::Loop(grid) => cuda_loop_bench_geometry(signature, sample, grid),
         Lower::QuantizedGemvI4 { threads } => {
-            if *threads != 32 {
-                return Err(Error::new(Code::Unsupported, "CUDA GEMV 要求 32-lane warp"));
-            }
-            let rows = sample
-                .scalar("N")
-                .ok_or_else(|| Error::new(Code::Invalid, "gemv_i4 样本缺少输出宽度 N"))?;
-            let rows = usize::try_from(rows)
-                .map_err(|_| Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"))?;
-            if rows == 0 {
-                return Err(Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"));
-            }
-            Ok((
-                [rows, 1, 1],
-                [*threads, 1, 1],
-                crate::codegen::launch_args(sample, signature.params())?,
-            ))
+            cuda_gemv_i4_bench_geometry(signature, sample, *threads)
         }
         _ => Err(Error::new(
             Code::Unsupported,
             "该 lowering 尚无单 kernel 设备计时封装",
         )),
     }
+}
+
+fn cuda_pointwise_bench_geometry(
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<([usize; 3], [usize; 3], String)> {
+    let len = benchmark_output_len(signature, sample)?;
+    Ok((
+        [len.div_ceil(256), 1, 1],
+        [256, 1, 1],
+        crate::codegen::buffer_args(signature),
+    ))
+}
+
+fn cuda_loop_bench_geometry(
+    signature: &Signature,
+    sample: &Sample,
+    grid: &op::decl::Grid,
+) -> Result<([usize; 3], [usize; 3], String)> {
+    Ok((
+        benchmark_grid(grid, sample)?,
+        [1, 1, 1],
+        crate::codegen::launch_args(sample, signature.params())?,
+    ))
+}
+
+fn cuda_gemv_i4_bench_geometry(
+    signature: &Signature,
+    sample: &Sample,
+    threads: usize,
+) -> Result<([usize; 3], [usize; 3], String)> {
+    if threads != 32 {
+        return Err(Error::new(Code::Unsupported, "CUDA GEMV 要求 32-lane warp"));
+    }
+    let rows = benchmark_dimension(sample, "N")?;
+    Ok((
+        [rows, 1, 1],
+        [threads, 1, 1],
+        crate::codegen::launch_args(sample, signature.params())?,
+    ))
 }
 
 struct MetalBackend;
@@ -317,6 +341,15 @@ impl Codegen for MetalBackend {
             host,
         })
     }
+    fn parallel(
+        &self,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        launch: &Launch,
+    ) -> Result<Source> {
+        crate::program::metal(kernel, signature, sample, launch)
+    }
 }
 
 impl Driver for MetalBackend {
@@ -364,7 +397,7 @@ fn metal_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::codegen::metal_grid_kernel(kernel, signature).map(|s| vec![s]),
+        Pointwise => crate::codegen::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
         QuantizedGemvI4 { .. } => Err(Error::new(
             Code::Unsupported,
             "合作式 int4 GEMV 当前仅落地在 CUDA/MUSA",
@@ -766,6 +799,15 @@ impl Codegen for CudaBackend {
             profile.meta.tool == "mcc",
         )?;
         Ok(Source::Single(source))
+    }
+    fn parallel(
+        &self,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        launch: &Launch,
+    ) -> Result<Source> {
+        crate::program::cuda(kernel, signature, sample, launch).map(Source::Single)
     }
 }
 

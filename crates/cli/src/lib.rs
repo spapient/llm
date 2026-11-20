@@ -452,13 +452,16 @@ pub const USAGE: &str = "\
   import --in <源> --out <文件> 把 safetensors / gguf / bin 条目流写成自有 `.u` 容器
   inspect --in <文件>     读 `.u` 容器：条目清单与现场现算的度量
   check --in <文件>       逐段解码还原 `.u` 容器，校验完整性
+  settle --in <文件> [--out <文件>]  逐张量沉降账本（体积 / 原因 / 无损）；`--out` 落成 JSON
+  audit  --in <文件> --ledger <账本> 把落盘账本读回，与同一份字节现算的账逐格核对
   help                   打印本说明
 
 选项：
   --op <算子>             算子名（`verify` / `bench` 用，缺省为 `gemv_i4`）
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
-  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` 的 `.u` 容器；三者都必需）
-  --out <文件>            输出路径（`import` 的 `.u` 容器，必需）
+  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `settle` / `audit` 的 `.u` 容器；五者都必需）
+  --out <文件>            输出路径（`import` 的 `.u` 容器，必需）；`settle` 的账本文件（可选）
+  --ledger <文件>         `audit` 待复核的账本（必需）：`settle --out` 写下的那一份
   --input <a,b,c>         `run` 的输入向量（逗号分隔 f32；不给则用确定性图案）
   --device <设备>         `run` 的设备名（缺省 `auto`，按指纹选）
   --lr <数值>             训练峰值学习率（`train` 用；缺省由调度表定）
@@ -529,6 +532,20 @@ pub enum Command {
         /// 待校验 `.u` 容器路径。
         input: String,
     },
+    /// 逐张量沉降账本（LLD §4.7）：体积、原因与无损判定，全部由落盘字节现算。
+    Settle {
+        /// 待记账 `.u` 容器路径。
+        input: String,
+        /// 账本 JSON 的输出路径；`None` 表示打到 stdout（不猜产物目录旁的默认文件名）。
+        output: Option<String>,
+    },
+    /// 账本复核：落盘账本与同一份字节现算的账逐格比对，不符即错。
+    Audit {
+        /// 待复核 `.u` 容器路径。
+        input: String,
+        /// 待复核的账本路径（`settle --out` 写下的那一份）。
+        ledger: String,
+    },
     /// 打印六平台执行合同的六行裁决；零选项。
     Platform,
     /// 打印用法。
@@ -582,10 +599,25 @@ const TRAIN: &[(&str, &str)] = &[
 ];
 
 /// `inspect` / `check` 的选项：只有 `--in`，必需。
-const INSPECT: &[(&str, &str)] = &[("--in", "文件")];
+///
+/// 表即文法：这两条都只说一个文件，与 `SINGLE` 的差别只在“必填”——构造器因此吃 `String`
+/// 而不是 `Option<String>`，类型上就区分了“可以有默认”与“必须点名文件”。
+const PATHS: &[(&str, &str, &str, fn(String) -> Command)] = &[
+    ("inspect", "--in", "文件", |input| Command::Inspect {
+        input,
+    }),
+    ("check", "--in", "文件", |input| Command::Check { input }),
+];
 
 /// `import` 的选项：`--in`（safetensors 源）与 `--out`（`.u` 容器），两者都必需。
 const IMPORT: &[(&str, &str)] = &[("--in", "源"), ("--out", "文件")];
+
+/// `settle` 的选项：`--in` 必需，`--out` 可选——不给就把账本打到 stdout。
+const SETTLE: &[(&str, &str)] = &[("--in", "文件"), ("--out", "文件")];
+
+/// `audit` 的选项：`--in`（容器）与 `--ledger`（账本）都必需——缺要么是漏了账本，要么是漏了被
+/// 复核的那份字节，两种都算不出来。
+const AUDIT: &[(&str, &str)] = &[("--in", "文件"), ("--ledger", "账本")];
 
 impl Invocation {
     /// 解析参数（不含 `argv[0]`）。
@@ -629,26 +661,22 @@ fn command(name: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
 fn archive_command(name: &str, words: &mut Words<'_>) -> Result<Command> {
     match name {
         "import" => import(words),
-        "inspect" => single_required(words, INSPECT, "inspect", |input| Command::Inspect {
-            input,
-        }),
-        "check" => single_required(words, INSPECT, "check", |input| Command::Check { input }),
-        known => single(known, words),
+        "settle" => settle(words),
+        "audit" => audit(words),
+        known => path_command(known, words),
     }
 }
 
-/// 单选项必需命令：表内唯一槽位，缺省即 [`missing_required`]；`--in` 不允许悬空。
-fn single_required(
-    words: &mut Words<'_>,
-    table: &[(&str, &str)],
-    command: &str,
-    build: fn(String) -> Command,
-) -> Result<Command> {
-    let slots = parse_slots(words, table, command)?;
-    let input = slots[0]
-        .clone()
-        .ok_or_else(|| missing_required(table[0].0, command))?;
-    Ok(build(input))
+/// 表内单路径命令；表外名字再交给 `SINGLE`。
+///
+/// “表外”不是错：`SINGLE` 里的名字各有默认，两者合起来才是全部归档命令。
+fn path_command(name: &str, words: &mut Words<'_>) -> Result<Command> {
+    let Some((.., flag, what, build)) = PATHS.iter().find(|(candidate, ..)| *candidate == name)
+    else {
+        return single(name, words);
+    };
+    let slots = parse_slots(words, &[(flag, what)], name)?;
+    Ok(build(required_slot(&slots, 0, flag, name)?))
 }
 
 /// `platform`：零选项命令，多给一个词就是写错了（不静默忽略）。
@@ -665,6 +693,24 @@ fn import(words: &mut Words<'_>) -> Result<Command> {
     let input = required_slot(&slots, 0, IMPORT[0].0, "import")?;
     let output = required_slot(&slots, 1, IMPORT[1].0, "import")?;
     Ok(Command::Import { input, output })
+}
+
+/// `settle`：`--in` 顺序自由但必需，`--out` 可选——缺输入是写错了，缺输出只是换个落点。
+fn settle(words: &mut Words<'_>) -> Result<Command> {
+    let slots = parse_slots(words, SETTLE, "settle")?;
+    let input = required_slot(&slots, 0, SETTLE[0].0, "settle")?;
+    Ok(Command::Settle {
+        input,
+        output: slots[1].clone(),
+    })
+}
+
+/// `audit`：`--in` / `--ledger` 顺序自由，两者都必需。
+fn audit(words: &mut Words<'_>) -> Result<Command> {
+    let slots = parse_slots(words, AUDIT, "audit")?;
+    let input = required_slot(&slots, 0, AUDIT[0].0, "audit")?;
+    let ledger = required_slot(&slots, 1, AUDIT[1].0, "audit")?;
+    Ok(Command::Audit { input, ledger })
 }
 
 /// 取一个必需槽位；缺省点名对应开关，不替调用方补默认值。
@@ -797,25 +843,43 @@ fn entry_compute(command: &Command) -> Result<()> {
 fn entry_archive_or_train(command: &Command) -> Result<()> {
     match command {
         Command::Import { input, output } => archive::import(input, output),
-        Command::Inspect { input } => archive::inspect(input),
-        Command::Check { input } => archive::check(input),
-        Command::Train {
-            lr,
-            warmup,
-            steps,
-            clip,
-            accumulation,
-            load,
-        } => train::train_run(
-            lr.as_deref(),
-            warmup.as_deref(),
-            steps.as_deref(),
-            clip.as_deref(),
-            accumulation.as_deref(),
-            load.as_deref(),
-        ),
-        other => Err(invalid(format!("命令 `{other:?}` 未接入编排"))),
+        Command::Inspect { input } | Command::Check { input } => container(input, command),
+        Command::Settle { input, output } => archive::settle(input, output.as_deref()),
+        Command::Audit { input, ledger } => archive::audit(input, ledger),
+        other => entry_train(other),
     }
+}
+
+/// `inspect` 与 `check` 都只说一个文件：差别只在 `check` 多跑一遍验码，入口因此只问一次
+/// “是不是验码”，而不是各写一臂。
+fn container(input: &str, command: &Command) -> Result<()> {
+    if matches!(command, Command::Check { .. }) {
+        return archive::check(input);
+    }
+    archive::inspect(input)
+}
+
+/// 训练闭环只有 `train` 一个命令：走到这里还不是它，就是"没接入编排"而不是配置错误。
+fn entry_train(command: &Command) -> Result<()> {
+    let Command::Train {
+        lr,
+        warmup,
+        steps,
+        clip,
+        accumulation,
+        load,
+    } = command
+    else {
+        return Err(invalid(format!("命令 `{command:?}` 未接入编排")));
+    };
+    train::train_run(
+        lr.as_deref(),
+        warmup.as_deref(),
+        steps.as_deref(),
+        clip.as_deref(),
+        accumulation.as_deref(),
+        load.as_deref(),
+    )
 }
 
 /// 组装点不复制审计实现：这两个命令由 `cutile` 二进制提供。
@@ -1025,6 +1089,65 @@ mod tests {
             }
         );
 
+        assert_eq!(
+            Invocation::parse(&args(&["settle", "--in", "model.u"]))
+                .expect("合法")
+                .command(),
+            &Command::Settle {
+                input: "model.u".to_string(),
+                output: None,
+            },
+            "不给 --out 就是打到 stdout，不猜默认路径"
+        );
+        assert_eq!(
+            Invocation::parse(&args(&[
+                "settle",
+                "--out",
+                "config.json",
+                "--in",
+                "model.u"
+            ]))
+            .expect("顺序自由")
+            .command(),
+            &Command::Settle {
+                input: "model.u".to_string(),
+                output: Some("config.json".to_string()),
+            }
+        );
+        assert_eq!(
+            Invocation::parse(&args(&[
+                "audit",
+                "--in",
+                "model.u",
+                "--ledger",
+                "ledger.json"
+            ]))
+            .expect("合法")
+            .command(),
+            &Command::Audit {
+                input: "model.u".to_string(),
+                ledger: "ledger.json".to_string(),
+            }
+        );
+        assert_eq!(
+            Invocation::parse(&args(&[
+                "audit",
+                "--ledger",
+                "ledger.json",
+                "--in",
+                "model.u"
+            ]))
+            .expect("顺序自由")
+            .command(),
+            &Command::Audit {
+                input: "model.u".to_string(),
+                ledger: "ledger.json".to_string(),
+            }
+        );
+
+        let no_ledger =
+            Invocation::parse(&args(&["audit", "--in", "model.u"])).expect_err("缺 --ledger");
+        assert!(no_ledger.to_string().contains("--ledger"), "{no_ledger}");
         let missing_out = Invocation::parse(&args(&["import", "--in", "model.safetensors"]))
             .expect_err("缺 --out");
         assert!(missing_out.to_string().contains("--out"), "{missing_out}");
@@ -1051,7 +1174,8 @@ mod tests {
     #[test]
     fn the_usage_text_lists_every_command() {
         for command in [
-            "status", "verify", "bench", "train", "import", "inspect", "check", "help",
+            "status", "platform", "run", "verify", "bench", "train", "import", "inspect", "check",
+            "settle", "audit", "help",
         ] {
             assert!(USAGE.contains(command), "{command}");
         }

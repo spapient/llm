@@ -1,8 +1,10 @@
-//! 受限 JSON 读取器：只服务权重文件的头部（safetensors）。
+//! 受限 JSON 读取器：服务权重文件的头部（safetensors）与沉降账本（`llm.cert.v1`）。
 //!
 //! 全仓零外部依赖，所以这里手写一个只认结构、不追求通用的读取器：它接受完整 JSON 文法，但只
-//! 产出头部需要的几种值（`null` / 布尔 / 整数 / 字符串 / 数组 / 对象），并把小数与指数直接判错
-//! ——头部里的形状与偏移都是整数，容忍 `1.0` 只会把一次输入错误推迟到下游。
+//! 产出这几处需要的几种值（`null` / 布尔 / 数字 / 字符串 / 数组 / 对象）。两个入口的唯一差别是
+//! **数字的接受集**：[`parse`] 只认整数——头部里的形状与偏移都是整数，容忍 `1.0` 只会把一次输入
+//! 错误推迟到下游；[`parse_ledger`] 另认小数与指数，且把它们按**原文**保留（不折算成 `f64`），
+//! 于是账本的规范文本可以逐字比对。
 //!
 //! 报错一律带字节位置：头部是一个巨大的单行 JSON，没有位置就等于没有诊断。重复键也在这里被
 //! 拒绝（与 [`crate::Header`] 拒绝重名条目同一原则）：否则"取第一个还是最后一个"会变成隐式约定。
@@ -32,8 +34,11 @@ pub enum Value {
     Null,
     /// `true` / `false`。
     Bool(bool),
-    /// 整数；小数与指数在解析期即被拒绝。
+    /// 整数（[`parse`] 与 [`parse_ledger`] 都可能产出）。
     Integer(i64),
+    /// 小数或指数（只有 [`parse_ledger`] 产出）：保留**原始写法**，不折算成 `f64`——
+    /// 折算会把 `0.500000` 与 `0.5` 变成同一个值，而账本的规范文本正是要比对这两者。
+    Decimal(String),
     /// 字符串；`\uXXXX` 与代理对都已解码。
     String(String),
     /// 数组。
@@ -59,6 +64,7 @@ impl Value {
             Self::Null => "null",
             Self::Bool(_) => "布尔",
             Self::Integer(_) => "整数",
+            Self::Decimal(_) => "小数",
             _ => "字符串",
         }
     }
@@ -111,6 +117,19 @@ impl Value {
         }
     }
 
+    /// 取数字的原文写法：整数转成十进制文本，小数原样返回。
+    ///
+    /// # Errors
+    ///
+    /// 值不是数字时返回 [`Code::Invalid`]。
+    pub fn number_text(&self) -> Result<String> {
+        match self {
+            Self::Integer(number) => Ok(number.to_string()),
+            Self::Decimal(text) => Ok(text.clone()),
+            other => Err(self.mismatch("数字", other)),
+        }
+    }
+
     /// 对象里按名字取字段；不是对象或没有该键时返回 `None`。
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
@@ -138,7 +157,24 @@ impl Value {
 /// 词法/文法错误、非整数数字、重复键、嵌套过深、值之后还有多余内容，一律 [`Code::Invalid`]，
 /// 消息里带出错位置的字节下标。
 pub fn parse(text: &str) -> Result<Value> {
-    let mut reader = Reader::new(text);
+    parse_with(text, false)
+}
+
+/// 解析一段账本文本：与 [`parse`] 同一套文法，唯一差别是数字允许小数与指数。
+///
+/// 小数的**原文**保留在 [`Value::Decimal`] 里而不折算成 `f64`：账本的规范文本把比值与熵
+/// 写成六位小数，逐字比对才能区分「同一份账原样读回」与「重算出一份近似的账」。
+///
+/// # Errors
+///
+/// 与 [`parse`] 同一套判据（含重复键与嵌套上限），只多接受「数字带小数/指数」这一种输入。
+pub fn parse_ledger(text: &str) -> Result<Value> {
+    parse_with(text, true)
+}
+
+/// 两个入口的唯一差别：[`Reader`] 是否接受小数与指数。
+fn parse_with(text: &str, fractional: bool) -> Result<Value> {
+    let mut reader = Reader::new(text, fractional);
     let value = reader.value(0)?;
     reader.cursor.skip_space();
     if reader.cursor.pos() != reader.cursor.bytes().len() {
@@ -150,12 +186,15 @@ pub fn parse(text: &str) -> Result<Value> {
 /// 逐字节推进的读取器：[`Cursor`] 负责字节与位置（位置同时是报错坐标），这里只有文法。
 struct Reader<'a> {
     cursor: Cursor<'a>,
+    /// 数字里是否允许小数与指数：头部不允许（形状与偏移都是整数），账本允许。
+    fractional: bool,
 }
 
 impl<'a> Reader<'a> {
-    fn new(text: &'a str) -> Self {
+    fn new(text: &'a str, fractional: bool) -> Self {
         Self {
             cursor: Cursor::new(text, "weights::json::parse"),
+            fractional,
         }
     }
 
@@ -189,7 +228,7 @@ impl<'a> Reader<'a> {
     fn dispatch(&mut self, opened: u8, depth: usize) -> Result<Value> {
         match opened {
             b'"' => self.string().map(Value::String),
-            b'-' | b'0'..=b'9' => self.integer().map(Value::Integer),
+            b'-' | b'0'..=b'9' => self.number(),
             opened => self.structural(opened, depth),
         }
     }
@@ -408,27 +447,87 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| self.cursor.fail_at(at, "`\\u` 需要 4 位十六进制"))
     }
 
-    fn integer(&mut self) -> Result<i64> {
+    /// 一个数字：整数走 `i64`，小数与指数（只有账本模式接受）按原文保留。
+    fn number(&mut self) -> Result<Value> {
         let start = self.cursor.pos();
-        self.cursor
-            .advance(usize::from(self.cursor.peek() == Some(b'-')));
-        let digits = self.cursor.pos();
-        while matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
-            self.cursor.advance(1);
+        let digits = self.integer(start)?;
+        if !matches!(self.cursor.peek(), Some(b'.' | b'e' | b'E')) {
+            let text = &self.cursor.bytes()[start..self.cursor.pos()];
+            return integer_value(&self.cursor, start, text).map(Value::Integer);
         }
-        if self.cursor.pos() == digits {
-            return Err(self.cursor.fail_at(start, "整数缺少数字"));
-        }
-        if matches!(self.cursor.peek(), Some(b'.' | b'e' | b'E')) {
+        if !self.fractional {
             return Err(self
                 .cursor
                 .fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
         }
-        integer_value(
-            &self.cursor,
-            start,
-            &self.cursor.bytes()[start..self.cursor.pos()],
-        )
+        let whole = self.cursor.pos();
+        self.fraction(start)?;
+        self.decimal(start, digits, whole).map(Value::Decimal)
+    }
+
+    /// 整数部分：可选负号 + 至少一位数字，返回数字起点。
+    fn integer(&mut self, start: usize) -> Result<usize> {
+        self.cursor
+            .advance(usize::from(self.cursor.peek() == Some(b'-')));
+        let digits = self.cursor.pos();
+        if self.mantissa() {
+            return Ok(digits);
+        }
+        Err(self.cursor.fail_at(start, "数字缺少整数部分"))
+    }
+
+    /// 小数与指数部分：`.` 后至少一位数字，`e`/`E` 后可带符号、同样至少一位数字。
+    fn fraction(&mut self, start: usize) -> Result<()> {
+        self.dot(start)?;
+        self.exponent(start)
+    }
+
+    /// 小数部分（可缺）：`.` 之后必须至少一位数字。
+    fn dot(&mut self, start: usize) -> Result<()> {
+        if self.cursor.peek() != Some(b'.') {
+            return Ok(());
+        }
+        self.cursor.advance(1);
+        if self.mantissa() {
+            return Ok(());
+        }
+        Err(self.cursor.fail_at(start, "小数点后缺少数字"))
+    }
+
+    /// 指数部分（可缺）：`e`/`E` 后可带符号，同样必须至少一位数字。
+    fn exponent(&mut self, start: usize) -> Result<()> {
+        if !matches!(self.cursor.peek(), Some(b'e' | b'E')) {
+            return Ok(());
+        }
+        self.cursor.advance(1);
+        self.cursor
+            .advance(usize::from(matches!(self.cursor.peek(), Some(b'+' | b'-'))));
+        if self.mantissa() {
+            return Ok(());
+        }
+        Err(self.cursor.fail_at(start, "指数缺少数字"))
+    }
+
+    /// 数字原文，顺带挡掉前导零（`0.5` 合法，`01.5` 不合法）。
+    fn decimal(&self, start: usize, digits: usize, whole: usize) -> Result<String> {
+        let text = &self.cursor.bytes()[start..self.cursor.pos()];
+        let head = &text[digits - start..whole - start];
+        if head.len() > 1 && head.starts_with(b"0") {
+            let shown = String::from_utf8_lossy(text);
+            return Err(self
+                .cursor
+                .fail_at(start, format!("数字 `{shown}` 不能有前导零")));
+        }
+        Ok(String::from_utf8_lossy(text).into_owned())
+    }
+
+    /// 连续数字段；至少吃到一个才返回 `true`。
+    fn mantissa(&mut self) -> bool {
+        let start = self.cursor.pos();
+        while matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
+            self.cursor.advance(1);
+        }
+        self.cursor.pos() > start
     }
 }
 
@@ -567,5 +666,39 @@ mod tests {
         assert!(error.to_string().contains("字符串"), "{error}");
         assert_eq!(value.kind(), "字符串");
         assert!(value.get("missing").is_none());
+    }
+
+    #[test]
+    fn the_ledger_reader_keeps_a_decimal_as_written() {
+        let value = parse_ledger(r#"{"volume_ratio": 0.500000, "n": 3}"#).expect("合法");
+        let ratio = value.get("volume_ratio").expect("有比值");
+        assert_eq!(ratio.number_text().expect("数字"), "0.500000");
+        assert_eq!(ratio.kind(), "小数");
+        // 整数在账本模式下仍是整数：`3` 与 `3.0` 读回来不是同一个值。
+        let count = value.get("n").expect("有计数");
+        assert_eq!(count.integer().expect("整数"), 3);
+        assert_eq!(count.kind(), "整数");
+    }
+
+    #[test]
+    fn the_ledger_reader_still_rejects_malformed_numbers() {
+        for text in [
+            r#"{"a": 00.5}"#,
+            r#"{"a": 1.}"#,
+            r#"{"a": 1e}"#,
+            r#"{"a": 1e+}"#,
+        ] {
+            let error = parse_ledger(text).expect_err(text);
+            assert_eq!(error.code(), Code::Invalid, "{text}");
+        }
+        // 指数写法保留原文，不折算成 `1000`。
+        let value = parse_ledger(r#"{"a": 1e3}"#).expect("合法");
+        assert_eq!(
+            value.get("a").expect("有值").number_text().expect("数字"),
+            "1e3"
+        );
+        // 头部入口一个数字都不放宽。
+        assert!(parse(r#"{"a": 0.5}"#).is_err());
+        assert!(parse(r#"{"a": 1e3}"#).is_err());
     }
 }

@@ -10,8 +10,10 @@
 //! 一条序列跑完一定 `finish`：成功、被挡或出错都归还页，因此"页泄漏"不会只在某一条分支上
 //! 发生——那正是这类端点最常见的残留问题。
 //!
-//! 单条请求端点仍一次答一条；批步进在 [`State::step_batch`] 落地：一轮整批前向
-//! （`Predict::logits_batch` 一次提交），再逐行采样 → 记账，结束的归还页摘出，被挡的原样保留。
+//! 单条请求端点仍一次答一条；批步进在 [`State::step_batch`] 落地：一轮先问
+//! [`Batch::round`] 这一轮**跑哪些行**（`engine::ifb::pack` 在预算下拍板），再按拍板结果推进——
+//! 上下文候选各算自己分到的那一块，生成行一次整批前向（`Predict::logits_batch` 提交一次），
+//! 最后逐行采样 → 记账，结束的归还页摘出。没排进本的序列原样留批、历史不动，下一轮重新排队。
 //! 真正的并发传输入口属于传输层（M4，尚未落地）。
 //!
 //! 准入与解码之间还隔着**分块预填充**：提示段的 K/V 必须逐位算进页账，否则解码读到的是零填充
@@ -21,6 +23,7 @@
 use crate::generate::{Ending, Generation, Predict, Sampling};
 use crate::{Request, Response, Route, Status};
 use engine::exec::Stream;
+use engine::ifb::{Candidate, Phase, Verdict};
 use engine::{Batch, Progress, Sequence};
 use std::sync::{Mutex, MutexGuard};
 
@@ -197,17 +200,20 @@ where
         prompt: &[u32],
     ) -> diagnostic::Result<Response> {
         // `B_max` 撞上与"页不够"同口径：现在满、可重试，不是请求不成立。
-        if state.batch.len() >= state.budget.seqs() {
+        //
+        // 上限取 `min(B_max, T_max)`：解码一轮每条序列占一行，于是 `T_max < B_max` 时后者才是
+        // 真正的容量。只判 `B_max` 会放进"进得来、却永远排不进一轮"的序列（`pack` 报 `OverTokens`）。
+        if state.batch.len() >= state.budget.seqs().min(state.budget.tokens()) {
             return Ok(Response::error(Status::Unavailable, crate::FULL));
         }
         let sequence = self.sequence(state, request, prompt)?;
         crate::admit_batch(&mut state.batch, sequence)
     }
 
-    /// 推进批内所有准入序列一轮；返回本轮跑完的 `(id, 生成结果)`。
+    /// 推进准入序列一轮；返回本轮跑完的 `(id, 生成结果)`。
     ///
-    /// 一轮整批前向（`logits_batch` 一次提交）取整块 logits，再逐条采样记账；被挡的序列留在
-    /// 批里、历史不变，下一轮原样重试；并发传输入口留 M4。
+    /// 一轮只跑打包结果里的行（`State::round`）：上下文候选各算自己那一块，生成行一次整批
+    /// 前向取整块 logits；没排进本的序列留在批里、历史不变，下一轮原样重试。并发传输入口留 M4。
     pub fn advance_batch(&self) -> diagnostic::Result<Vec<(u64, Generation)>> {
         let mut state = self.lock()?;
         state.step_batch()
@@ -266,8 +272,10 @@ where
     }
 
     /// 预填充失败与解码失败同口径：先把页还回去再上抛，否则这条请求的页永远占着。
+    ///
+    /// 单选路径没有批内预算可挤，于是把上限交给块算式本身（[`PREFILL_CHUNK`]）。
     fn prefill_request(&self, state: &mut State<M, S>, id: u64) -> diagnostic::Result<()> {
-        let Err(mut error) = state.prefill(id) else {
+        let Err(mut error) = state.prefill(id, usize::MAX) else {
             return Ok(());
         };
         if let Err(cleanup) = state.batch.finish(id) {
@@ -379,14 +387,18 @@ where
         generation.ok_or_else(|| missing(id))
     }
 
-    /// 把一条已准入序列的提示段按块算进页账。
+    /// 把一条已准入序列的提示段按块算进页账：这一轮最多推进 `quota` 行。
     ///
     /// 每块一次前向、每块之后才登记块：登记按"已算位置"而不是"写到哪一行"推进，因为写是提前
     /// 一格的（第 `at` 步写第 `at + 1` 行）。顺序反过来会把还没算的块当成可复用的前缀。
     ///
+    /// `quota` 是本轮打包给这条序列的行数（`engine::ifb::pack` 的拍板结果），它只**收紧**块大小、
+    /// 不放大：[`State::next_end`] 用同一份预算算式给块尾，两处取小的那个，于是"这一轮算多少行"
+    /// 只有一个来源。
+    ///
     /// 模型没有分块预填充（[`Predict::prefill`] 的默认实现报 `Unsupported`）时把整段记为已算：
     /// 端点退化回"提示段不进页"的旧行为，而不是拒绝服务——桩模型与只跑解码的通路照旧能跑。
-    fn prefill(&mut self, id: u64) -> diagnostic::Result<()> {
+    fn prefill(&mut self, id: u64, quota: usize) -> diagnostic::Result<()> {
         if !self.prefill {
             return Ok(());
         }
@@ -400,21 +412,43 @@ where
             .sequence(id)
             .cloned()
             .ok_or_else(|| missing(id))?;
-        self.advance_prompt(sequence, id)
+        self.advance_prompt(sequence, id, quota)
     }
 
-    /// 逐块推进提示段，直到整个提示段落定、或这一轮推不动（页不够）。
-    fn advance_prompt(&mut self, sequence: Sequence, id: u64) -> diagnostic::Result<()> {
-        let prompt_len = sequence.prompt_len();
+    /// 推进提示段，最多推进 `quota` 行；已算完或这一轮没有整页预算就是一个字都不写。
+    ///
+    /// 循环留在这一层而不是提到一批：单选路径要一次把整段算完（`quota` 不定上限），批内路径
+    /// 则只给它分到的那几行——同一个入口、同一个块算式，差别只在预算。
+    fn advance_prompt(
+        &mut self,
+        sequence: Sequence,
+        id: u64,
+        quota: usize,
+    ) -> diagnostic::Result<()> {
         let mut at = sequence.prefilled();
-        while let Some(end) = self.next_end(at, prompt_len) {
-            match self.prefill_block(&sequence, id, at, end)? {
-                Block::Done => at = end,
-                // 页紧与模型不支持都不该判这条请求非法：一个下一轮会好，一个已经退化。
+        let mut left = quota;
+        while let Some((from, end)) = self.next_block(&sequence, at, left) {
+            // 页紧与模型不支持都不该判这条请求非法：一个下一轮会好，一个已经退化。
+            match self.prefill_block(&sequence, id, from, end)? {
+                Block::Done => {
+                    left -= end - from;
+                    at = end;
+                }
                 Block::Deferred | Block::Unsupported => return Ok(()),
             }
         }
         Ok(())
+    }
+
+    /// 这一轮从 `at` 起要算的那一块：配额耗尽或已算完就是 `None`。
+    ///
+    /// 「块尾」与「配额」在这里只取一次小的：[`State::next_end`] 给预算内的块尾，`left` 是本轮
+    /// 打包分给这条序列的行数，两者相等时循环自然收尾，不需要额外的计数判断。
+    fn next_block(&self, sequence: &Sequence, at: usize, left: usize) -> Option<(usize, usize)> {
+        let end = self
+            .next_end(at, sequence.prompt_len())?
+            .min(at.saturating_add(left));
+        (end > at).then_some((at, end))
     }
 
     /// 下一块的块尾：`None` 是已算完，或这一轮没有可推进的整页预算。
@@ -484,29 +518,74 @@ where
         }
     }
 
-    /// 批内一轮：一次整批前向取整块 logits，再逐条采样记账；结束的摘出批归还页，被挡原样保留。
+    /// 批内一轮：按 [`Batch::round`] 的打包结果推进，再把生成行一次整批前向 + 逐行记账。
     ///
-    /// 前向失败发生在任何记账之前：归还批内全部序列页再上抛。采样失败只归还报错那条，
-    /// 此前已采样记账的条目不回滚。序列快照在进入可变借用前一次性克隆取走，不持有 `batch`
-    /// 的不可变借用。
+    /// 一轮只碰打包结果里的行：上下文候选各算自己分到的那一块，生成行一次提交。被挤掉的上下文
+    /// 候选这一轮一行不算、也不解码（历史不完整时解码读到的是零填充的"过去"），下一轮重新排队。
+    /// 前向失败发生在任何记账之前：归还本轮全部序列页再上抛。采样失败只归还报错那条，此前已
+    /// 采样记账的条目不回滚。序列快照在进入可变借用前一次性克隆取走，不持有 `batch` 的不可变借用。
     fn step_batch(&mut self) -> diagnostic::Result<Vec<(u64, Generation)>> {
-        let sequences = self.batch.sequences().to_vec();
+        let plan = self.round()?;
+        self.prefill_context(&plan)?;
+        let sequences = self.ready(&plan)?;
+        self.decode_rows(&sequences)
+    }
+
+    /// 生成行一次整批前向再逐行记账：一条都没有就是这个也没什么可提交的。
+    fn decode_rows(
+        &mut self,
+        sequences: &[Sequence],
+    ) -> diagnostic::Result<Vec<(u64, Generation)>> {
         if sequences.is_empty() {
             return Ok(Vec::new());
         }
-        self.prefill_pending(&sequences)?;
-        let rows = self.batch_rows(&sequences)?;
-        self.account_rows(&sequences, rows)
+        let rows = self.batch_rows(sequences)?;
+        self.account_rows(sequences, rows)
     }
 
-    /// 先把批内还没算完的提示段推一轮：块算完才能在下一步读它当历史。
-    fn prefill_pending(&mut self, sequences: &[Sequence]) -> diagnostic::Result<()> {
-        for sequence in sequences {
-            if self.prefill && !sequence.prefilled_ready() {
-                self.prefill(sequence.id())?;
+    /// 先把拍板给上下文候选的那几块算掉：一行也没分到时它什么都不做。
+    ///
+    /// 上下文与生成分两步而不是一次过滤：提示段没算完的序列不进解码，因此两者不是一个集合。
+    fn prefill_context(&mut self, plan: &[Candidate]) -> diagnostic::Result<()> {
+        plan.iter()
+            .filter(|candidate| candidate.phase() == Phase::Context)
+            .try_for_each(|candidate| self.prefill(candidate.id(), candidate.rows()))
+    }
+
+    /// 本轮的行与序：`Packed` 就是拍板结果，`Idle` 是空转。
+    ///
+    /// 预算先按本层一次提交的粒度收紧（[`PREFILL_CHUNK`]）：打包说这轮给 128 行，本层也只会
+    /// 一次提交 64 行，两边算出的块尾就会打架。收紧后两边算式同源，配额即块尾。
+    ///
+    /// `OverSeqs`/`OverTokens` 走到这里是内部矛盾而不是"这一轮很挤"：准入按 `min(B_max, T_max)`
+    /// 挡人，`pack` 只在"生成行自己就超过 `T_max`"时报这两条。静默空转会把一种配置错误伪装成
+    /// "没有请求"，因此上抛。
+    fn round(&self) -> diagnostic::Result<Vec<Candidate>> {
+        let budget =
+            engine::ifb::Budget::new(self.budget.seqs(), self.budget.tokens().min(PREFILL_CHUNK));
+        match self.batch.round(budget) {
+            Verdict::Packed { rows, .. } => Ok(rows),
+            Verdict::Idle => Ok(Vec::new()),
+            Verdict::OverSeqs { seqs, max } => {
+                Err(misfit(format!("批内 {seqs} 条序列超过 B_max = {max}")))
+            }
+            Verdict::OverTokens { tokens, max } => {
+                Err(misfit(format!("生成行 {tokens} 行超过 T_max = {max}")))
             }
         }
-        Ok(())
+    }
+
+    /// 本轮要解码的序列：生成候选；预填充退化时上下文候选也算（没有块要算，剩下的只有解码）。
+    fn ready(&self, plan: &[Candidate]) -> diagnostic::Result<Vec<Sequence>> {
+        plan.iter()
+            .filter(|candidate| !self.prefill || candidate.phase() == Phase::Generation)
+            .map(|candidate| {
+                self.batch
+                    .sequence(candidate.id())
+                    .cloned()
+                    .ok_or_else(|| missing(candidate.id()))
+            })
+            .collect()
     }
 
     /// 一次整批前向取回整块 logits；失败时把批内全部序列页归还再上抛。
@@ -598,450 +677,15 @@ fn missing(id: u64) -> diagnostic::Error {
     .with("serve::Completion")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Endpoint, Greedy};
-
-    /// 固定 logits 的模型桩：端点只关心"下一步算什么"，不关心怎么算出来。
-    struct Fixed(Vec<f32>);
-
-    impl Predict for Fixed {
-        fn logits(
-            &mut self,
-            _sequence: &Sequence,
-            _batch: &mut Batch,
-        ) -> diagnostic::Result<Vec<f32>> {
-            Ok(self.0.clone())
-        }
-    }
-
-    /// 采样桩：先给 `remaining` 个 token，然后说"到此为止"。
-    struct StopAfter {
-        remaining: usize,
-    }
-
-    impl Sampling for StopAfter {
-        fn sample(&mut self, _logits: &[f32]) -> diagnostic::Result<Option<u32>> {
-            if self.remaining == 0 {
-                return Ok(None);
-            }
-            self.remaining -= 1;
-            Ok(Some(7))
-        }
-    }
-
-    /// 模型桩：一步都算不出来。
-    struct Broken;
-
-    impl Predict for Broken {
-        fn logits(
-            &mut self,
-            _sequence: &Sequence,
-            _batch: &mut Batch,
-        ) -> diagnostic::Result<Vec<f32>> {
-            Err(diagnostic::Error::new(diagnostic::Code::Internal, "权重缺失").with("test::Broken"))
-        }
-    }
-
-    fn route() -> Route {
-        Route::parse("POST /v1/completions").expect("路由")
-    }
-
-    fn endpoint<M: Predict, S: Sampling>(model: M, sampling: S, pages: usize) -> Completion<M, S> {
-        // 行宽 2 只是桩：端点与页池都不读行里的数，读的是页宽。
-        let pager = engine::kv::Pager::new(engine::kv::Cache::new(pages, 4).expect("页池"), 2)
-            .expect("行宽");
-        Completion::new(route(), Box::new(tokenizer::Bytes), model, sampling, pager)
-    }
-
-    fn tokens(payload: &[u8]) -> Vec<u32> {
-        payload
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|chunk| u32::from_le_bytes(*chunk))
-            .collect()
-    }
-
-    #[test]
-    fn a_request_runs_to_its_limit_and_returns_its_tokens() {
-        let endpoint = endpoint(Fixed(vec![0.0, 5.0, 3.0]), Greedy, 8);
-        let response = endpoint
-            .call(b"id=1\nprompt=hi\nmax_new=3")
-            .expect("一次请求");
-        assert_eq!(response.status(), Status::Ok);
-        assert_eq!(tokens(response.envelope().payload()), [1, 1, 1]);
-        assert_eq!(endpoint.in_use_pages(), Some(0), "跑完必须归还页");
-    }
-
-    /// 采到停止符时序列提前结束：页照样归还，载荷只含已经采到的 token。
-    #[test]
-    fn a_stop_token_ends_the_generation_early() {
-        let endpoint = endpoint(Fixed(vec![0.0, 1.0]), StopAfter { remaining: 2 }, 8);
-        let response = endpoint
-            .call(b"id=2\nprompt=hi\nmax_new=8")
-            .expect("一次请求");
-        assert_eq!(response.status(), Status::Ok);
-        assert_eq!(tokens(response.envelope().payload()), [7, 7]);
-        assert_eq!(endpoint.in_use_pages(), Some(0));
-    }
-
-    #[test]
-    fn a_malformed_request_never_reaches_the_scheduler() {
-        let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 8);
-        let response = endpoint
-            .call(b"id=1\nprompt=hi\nmax_new=2\nbogus=1")
-            .expect("请求侧错误落成响应");
-        assert_eq!(response.status(), Status::BadRequest);
-        assert_eq!(endpoint.in_use_pages(), Some(0), "解析失败不该占页");
-    }
-
-    /// 引擎侧的"参数不可能"也要报成 400：`max_new = 0` 是客户端能改的错。
-    #[test]
-    fn a_request_the_engine_cannot_serve_is_a_bad_request() {
-        let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 8);
-        let response = endpoint
-            .call(b"id=1\nprompt=hi\nmax_new=0")
-            .expect("请求侧错误落成响应");
-        assert_eq!(response.status(), Status::BadRequest);
-        assert!(!response.envelope().payload().is_empty());
-    }
-
-    /// 批满时新请求回 503 而不是 400：这是"现在挤不下"，等一条结束就会好。
-    ///
-    /// 与"页不够"同口径。把满批判成请求非法，会让客户端在容量压力下永久放弃本可成功的请求。
-    #[test]
-    fn a_full_batch_turns_new_requests_away_until_one_finishes() {
-        let endpoint =
-            endpoint(Fixed(vec![1.0]), Greedy, 8).with_budget(engine::ifb::Budget::new(1, 32));
-        // 占住唯一的位置：手工准入一条，让批恒满（`call` 自己会跑完并归还，留不下驻留序列）。
-        let sequence = Sequence::new(9, &[1, 2], 2, 4, Stream::new(0)).expect("序列");
-        endpoint
-            .state
-            .lock()
-            .expect("锁")
-            .batch
-            .admit(sequence)
-            .expect("准入");
-        let response = endpoint
-            .call(b"id=1\nprompt=hi\nmax_new=2")
-            .expect("满批落成响应");
-        assert_eq!(response.status(), Status::Unavailable);
-        assert_eq!(
-            endpoint.state.lock().expect("锁").batch.len(),
-            1,
-            "被挡的请求不该进批"
-        );
-    }
-
-    /// 最坏长度超过整个页池：重试多少次都一样，属于 400 而不是"稍后重试"。
-    #[test]
-    fn a_request_that_can_never_fit_is_refused_with_400() {
-        let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 1);
-        let response = endpoint
-            .call(b"id=1\nprompt=hi\nmax_new=4")
-            .expect("请求侧错误落成响应");
-        assert_eq!(response.status(), Status::BadRequest);
-        assert_eq!(endpoint.in_use_pages(), Some(0));
-    }
-
-    /// 模型自己失败是服务端故障：必须上抛成 `Err`，同时页仍然归还。
-    #[test]
-    fn a_model_failure_is_a_server_error_that_still_returns_pages() {
-        let endpoint = endpoint(Broken, Greedy, 8);
-        let error = endpoint
-            .call(b"id=1\nprompt=hi\nmax_new=3")
-            .expect_err("模型失败不能伪装成 4xx");
-        assert_eq!(error.code(), diagnostic::Code::Internal);
-        assert_eq!(endpoint.in_use_pages(), Some(0), "失败路径也必须归还页");
-    }
-
-    /// 模型每一步都看得到"到目前为止的生成历史"：历史只存在序列里，端点不再维护平行列表。
-    #[test]
-    fn the_model_sees_the_generated_history() {
-        use std::cell::RefCell;
-        use std::rc::Rc;
-
-        struct Watching(Rc<RefCell<Vec<Vec<u32>>>>);
-
-        impl Predict for Watching {
-            fn logits(
-                &mut self,
-                sequence: &Sequence,
-                _batch: &mut Batch,
-            ) -> diagnostic::Result<Vec<f32>> {
-                self.0.borrow_mut().push(sequence.tokens().to_vec());
-                Ok(vec![0.0, 1.0])
-            }
-        }
-
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let endpoint = endpoint(Watching(Rc::clone(&seen)), Greedy, 8);
-        let response = endpoint
-            .call(b"id=1\nprompt=hi\nmax_new=3")
-            .expect("一次请求");
-        assert_eq!(response.status(), Status::Ok);
-        assert_eq!(
-            *seen.borrow(),
-            [Vec::new(), vec![1], vec![1, 1]],
-            "第一步看到空历史，之后每一步看到上一步的输出"
-        );
-    }
-
-    /// 一条按 id 失败的模型桩：命中 `fail` 上抛内部错误；批量前向在模型层整体失败，行内不归属。
-    struct Split {
-        fail: u64,
-    }
-
-    impl Predict for Split {
-        fn logits(
-            &mut self,
-            sequence: &Sequence,
-            _batch: &mut Batch,
-        ) -> diagnostic::Result<Vec<f32>> {
-            if sequence.id() == self.fail {
-                return Err(
-                    diagnostic::Error::new(diagnostic::Code::Internal, "权重缺失")
-                        .with("test::Split"),
-                );
-            }
-            Ok(vec![0.0, 1.0])
-        }
-    }
-
-    /// 采样桩：第一次正常给 token，第二次报不可用——核对采样失败同样不污染已记账序列。
-    struct FlakySampler {
-        calls: u32,
-    }
-
-    impl Sampling for FlakySampler {
-        fn sample(&mut self, _logits: &[f32]) -> diagnostic::Result<Option<u32>> {
-            self.calls += 1;
-            if self.calls == 2 {
-                return Err(
-                    diagnostic::Error::new(diagnostic::Code::Invalid, "logits 不可用")
-                        .with("test::FlakySampler"),
-                );
-            }
-            Ok(Some(1))
-        }
-    }
-
-    /// 记录预填充位置的模型桩：每个位置写一行 KV，回固定 logits。
-    struct Prefilling {
-        seen: std::rc::Rc<std::cell::RefCell<Vec<usize>>>,
-    }
-
-    impl Predict for Prefilling {
-        fn logits(
-            &mut self,
-            _sequence: &Sequence,
-            _batch: &mut Batch,
-        ) -> diagnostic::Result<Vec<f32>> {
-            Ok(vec![0.0, 1.0])
-        }
-
-        fn prefills(&self) -> bool {
-            true
-        }
-
-        fn prefill(
-            &mut self,
-            sequence: &Sequence,
-            batch: &mut Batch,
-            at: usize,
-        ) -> diagnostic::Result<Vec<f32>> {
-            self.seen.borrow_mut().push(at);
-            // 页行账是 1-based：行 0 是空槽，第 `at` 个 token 落在行 `at + 1`。
-            batch.write_kv(sequence.id(), at + 1, &[0.0, 0.0])?;
-            Ok(vec![0.0, 1.0])
-        }
-    }
-
-    /// 把当前步 KV 行按序列号写成标记：核对每条序列的页行归属不串行。
-    struct Recorder;
-
-    impl Predict for Recorder {
-        fn logits(
-            &mut self,
-            sequence: &Sequence,
-            batch: &mut Batch,
-        ) -> diagnostic::Result<Vec<f32>> {
-            let marker = sequence.id() as f32;
-            batch.write_kv(sequence.id(), sequence.len(), &[marker, 0.0])?;
-            Ok(vec![0.0, 1.0])
-        }
-    }
-
-    fn admit_sequence(
-        state: &mut State<impl Predict, impl Sampling>,
-        id: u64,
-        prompt_len: usize,
-        max_new: usize,
-    ) {
-        let page_size = state.batch.scheduler().page_size();
-        let prompt = vec![0u32; prompt_len];
-        let sequence = Sequence::new(
-            id,
-            &prompt,
-            max_new,
-            page_size,
-            engine::exec::Stream::new(0),
-        )
-        .expect("序列");
-        state.batch.admit(sequence).expect("准入");
-    }
-
-    /// 两条序列同批准入、同批步进：各自记账，跑完一起摘出，页全部归还。
-    #[test]
-    fn two_admitted_sequences_step_together_and_keep_their_own_history() {
-        let endpoint = endpoint(Fixed(vec![0.0, 5.0]), Greedy, 8);
-        let mut finished = Vec::new();
-        {
-            let mut state = endpoint.lock().expect("锁");
-            admit_sequence(&mut state, 1, 2, 2);
-            admit_sequence(&mut state, 2, 2, 2);
-            while !state.batch.is_empty() {
-                finished.extend(state.step_batch().expect("一轮步进"));
-            }
-        }
-        finished.sort_by_key(|(id, _)| *id);
-        assert_eq!(finished.len(), 2);
-        assert_eq!(finished[0].1.tokens(), [1, 1]);
-        assert_eq!(finished[1].1.tokens(), [1, 1]);
-        assert_eq!(endpoint.in_use_pages(), Some(0), "跑完必须归还页");
-    }
-
-    /// 分块预填充把提示段算进页账，满块随之登记成跨请求可复用前缀；第二个同提示请求接走那一块，
-    /// 提示段一个位置都不重算，生成的 token 与首跑逐位相同。
-    ///
-    /// 这条用例守的是「页账与位置账是同一份」：只共享页不改已算位置，第二个请求会把同一段提示
-    /// 重算一遍，而它写的正是它刚打算去读的页。
-    #[test]
-    fn a_second_request_with_the_same_prompt_skips_the_prefilled_prefix() {
-        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let endpoint = endpoint(
-            Prefilling {
-                seen: std::rc::Rc::clone(&seen),
-            },
-            Greedy,
-            16,
-        );
-        let first = endpoint
-            .call(b"id=1\nprompt=abcd\nmax_new=2")
-            .expect("首跑");
-        assert_eq!(
-            first.status(),
-            Status::Ok,
-            "首跑被拒：{}",
-            String::from_utf8_lossy(first.envelope().payload())
-        );
-        assert_eq!(seen.borrow().as_slice(), [0, 1, 2, 3], "提示段逐位算进页账");
-        assert_eq!(
-            endpoint.in_use_pages(),
-            Some(1),
-            "只留前缀树持有的那一块，请求自己的页已归还"
-        );
-
-        seen.borrow_mut().clear();
-        let second = endpoint
-            .call(b"id=2\nprompt=abcd\nmax_new=2")
-            .expect("复用");
-        assert_eq!(second.status(), Status::Ok);
-        assert!(
-            seen.borrow().is_empty(),
-            "整个提示段都在接走的块里，一个位置都不重算"
-        );
-        assert_eq!(
-            second.envelope().payload(),
-            first.envelope().payload(),
-            "复用前缀不能改变结果"
-        );
-        assert_eq!(endpoint.in_use_pages(), Some(1), "没有多留页");
-    }
-
-    /// 页不足的序列留在批里、历史不变；其余序列照常推进，批不整体停摆。
-    #[test]
-    fn a_blocked_sequence_stays_in_the_batch_with_unchanged_history() {
-        let endpoint = endpoint(Fixed(vec![0.0, 1.0]), Greedy, 2);
-        let mut state = endpoint.lock().expect("锁");
-        admit_sequence(&mut state, 1, 0, 8);
-        admit_sequence(&mut state, 2, 4, 4);
-
-        let round = state.step_batch().expect("一轮步进");
-        assert!(round.is_empty(), "这一轮谁都没跑完");
-        let running = state.batch.sequence(1).expect("在批里");
-        let blocked = state.batch.sequence(2).expect("在批里");
-        assert_eq!(running.produced(), 1, "有页的那条照常推进");
-        assert_eq!(blocked.produced(), 0, "被挡的那条计数不动");
-        assert!(blocked.tokens().is_empty(), "被挡不记 token");
-        assert_eq!(state.batch.blocked(), [2]);
-    }
-
-    /// 整批前向在模型层失败：失败发生在任何记账之前，批内序列页全部归还、序列摘出，不留已记账
-    /// token；错误上抛成服务端故障。采样层的逐行隔离由 `a_failed_sampling_step...` 用例覆盖。
-    #[test]
-    fn a_batch_forward_fault_releases_all_pages_without_accounting_tokens() {
-        let endpoint = endpoint(Split { fail: 1 }, Greedy, 8);
-        {
-            let mut state = endpoint.lock().expect("锁");
-            admit_sequence(&mut state, 2, 1, 2);
-            admit_sequence(&mut state, 1, 1, 1);
-
-            let error = state.step_batch().expect_err("坏序列上抛服务端错误");
-            assert_eq!(error.code(), diagnostic::Code::Internal);
-            assert!(
-                state.batch.is_empty(),
-                "前向失败时两条都还没记账，页全部归还、序列摘出"
-            );
-        }
-        // 锁先放掉再查页账：`in_use_pages` 也要取同一把互斥锁，不能重入。
-        assert_eq!(endpoint.in_use_pages(), Some(0), "失败路径也必须归还页");
-    }
-
-    /// 采样失败与模型失败同一条隔离路径：先记账的序列不回滚，坏序列归还页摘出。
-    #[test]
-    fn a_failed_sampling_step_does_not_pollute_the_accounted_other() {
-        let endpoint = endpoint(Fixed(vec![0.0, 1.0]), FlakySampler { calls: 0 }, 8);
-        let mut state = endpoint.lock().expect("锁");
-        admit_sequence(&mut state, 2, 1, 2);
-        admit_sequence(&mut state, 1, 1, 1);
-
-        let error = state.step_batch().expect_err("采样坏序列上抛");
-        assert_eq!(error.code(), diagnostic::Code::Invalid);
-
-        let good = state.batch.sequence(2).expect("好序列仍在批里");
-        assert_eq!(good.tokens(), [1], "已记账的 token 不回滚");
-        assert!(state.batch.sequence(1).is_none(), "采样失败序列已摘出批");
-    }
-
-    /// 当前步 KV 行按序列号写进各自页行：两条同批互不覆盖。
-    #[test]
-    fn kv_rows_are_attributed_to_their_own_sequence() {
-        let endpoint = endpoint(Recorder, Greedy, 8);
-        let mut state = endpoint.lock().expect("锁");
-        admit_sequence(&mut state, 3, 1, 2);
-        admit_sequence(&mut state, 4, 1, 2);
-
-        state.step_batch().expect("一轮步进");
-        for id in [3u64, 4] {
-            let row = state.batch.kv(id, 1).expect("读到本序列的页行");
-            assert_eq!(row[0], id as f32, "页行标记归属序列号 {id}");
-            assert_eq!(row[1], 0.0);
-        }
-    }
-
-    /// 同一端点连续两次调用不能互相干扰：页账与序列都在每次调用结束时回到空。
-    #[test]
-    fn two_requests_in_a_row_leave_no_residue() {
-        let endpoint = endpoint(Fixed(vec![0.0, 1.0]), Greedy, 8);
-        for id in [1, 2] {
-            let body = format!("id={id}\nprompt=hi\nmax_new=2");
-            let response = endpoint.call(body.as_bytes()).expect("一次请求");
-            assert_eq!(response.status(), Status::Ok);
-            assert_eq!(tokens(response.envelope().payload()), [1, 1]);
-        }
-        assert_eq!(endpoint.in_use_pages(), Some(0));
-    }
+/// 打包结论与准入判据打架：不是"这一轮很挤"，而是预算与准入用了两套上限。
+fn misfit(why: String) -> diagnostic::Error {
+    diagnostic::Error::new(
+        diagnostic::Code::Internal,
+        format!("IFB 打包拒绝本轮（{why}）：准入按 min(B_max, T_max) 挡人，走到这里说明两者不一致"),
+    )
+    .with("serve::Completion")
 }
+
+#[cfg(test)]
+#[path = "completion_tests.rs"]
+mod tests;

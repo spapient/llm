@@ -118,7 +118,7 @@ reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Re
 [[ownership.unlisted]]
 crate = "weights"
 names = ["Axis", "Bin", "Gguf", "Pick", "Sha256", "Svd"]
-reason = "格式适配器与选码内部件：bin/gguf 解析件、五轴选码的候选与结果（`axes` 的 `Axis`/`Pick`）、`svd` 分解件与哈希内部件；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型"
+reason = "格式适配器与选码内部件：bin/gguf 解析件、五轴选码的候选与结果（`axes` 的 `Axis`/`Pick`）、`svd` 分解件与哈希内部件；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode`/`EpsMethod`/`Bound` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型"
 
 [[ownership.unlisted]]
 crate = "wire"

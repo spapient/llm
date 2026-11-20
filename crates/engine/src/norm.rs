@@ -249,6 +249,36 @@ fn normalized_pass(text: &mut String, stage: &Stage<'_>, extra: &str) {
     ));
 }
 
+/// 分块 RMSNorm 的完整 CUDA 程序：段与驱动是同一形态的两半，调用方只调这一个入口。
+///
+/// # Errors
+///
+/// 段的生成与驱动的折叠按同一组几何判定，任一步不符即返回（不会先签段再报驱动）。
+pub fn cuda_rmsnorm(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+) -> Result<String> {
+    let segments = cuda_chunk_rmsnorm(kernel_source, signature, sample, chunk)?;
+    cuda_rmsnorm_driver(&segments, signature, sample, chunk)
+}
+
+/// 分块 Softmax 的完整 CUDA 程序：三趟段与主机折叠同批给出，不在这里另拼一份段数。
+///
+/// # Errors
+///
+/// 同 [`cuda_rmsnorm`]：哪一步不合几何就在那一步返回。
+pub fn cuda_softmax(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+) -> Result<String> {
+    let segments = cuda_chunk_softmax(kernel_source, signature, sample, chunk)?;
+    cuda_softmax_driver(&segments, signature, sample, chunk)
+}
+
 /// 分块归一化的完整 CUDA 程序：多段设备源（仅首段带 preamble）+ host 串联驱动。
 ///
 /// RMSNorm：部分平方和 → 主机折叠 `sqrt(sum/N + 1e-6)` → 归一化。

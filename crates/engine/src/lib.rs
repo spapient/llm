@@ -68,6 +68,7 @@
 pub mod backends;
 pub mod batch;
 pub mod codegen;
+mod cuda_codegen;
 pub mod exec;
 pub mod ifb;
 pub mod kv;
@@ -75,6 +76,7 @@ pub mod kv;
 pub mod metal;
 pub mod norm;
 pub mod platform;
+pub mod program;
 pub mod radix;
 pub mod scan;
 pub mod tiled;

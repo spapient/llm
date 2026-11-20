@@ -4,7 +4,66 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Removed
+
+- **一次性的 Burn 运行时对照探针（仓库根 `benchmarks/`）在结论并入 ADR 后删除**。`benchmarks/burn-runtime`
+  是为 ADR 0053「与 Burn 的对比口径」临时立的对照夹具：本仓 `llm-side`（路径依赖 `train` / `autograd` /
+  `tensor` / `op`）、Burn Flex `burn-side` 与 Burn Metal `burn-side-metal`（crates.io `0.23.0-pre.2`），
+  三个包各自带 `[workspace]`，因此 Burn 从不进入本仓依赖图、CI 与 `cargo test --workspace`。四张表
+  （CPU 前向、Metal matmul、注意力、量化 GEMM）连同读表所需的环境与方法口径（机器与工具链、Burn 的
+  feature 组合、预热 2 轮 + 11 次采样取中位、每轮内层重复次数、两侧各 3 次取中位、输入生成式与
+  `head_sum` / `full_sum` 校验口径）已落进 ADR 0053 正文；逐轮原始输出与 2.4 GB 的 `target/` 产物不再
+  随代码存放——按 `docs/README.md` 写作规则 3（"删除也是维护"），一次性报告的寿命是当轮评审，结论
+  要么进代码与测试、要么进 ADR。ADR 里三处指向该目录的证据指针同步改写（原写作
+  `crates/benchmarks/burn-runtime/`，路径本就不对），改成"三套一次性探针"的口径并写明重跑所需的
+  输入式与 `llm-engine` 的 `#[ignore]` 设备用例。**验证**：`cargo machete` 此前对
+  `benchmarks/burn-runtime/llm-side` 报的未使用依赖随目录消失（现已零告警）；`cargo fmt --all --check`、
+  `nextest -p llm-tool -p llm-testkit` 110 条（含静态门与所有权表）全绿。工作区源码一行未动；该目录本就不在
+  `jscpd` 的扫描路径（`crates` + `tools`）内，重复率不受影响。
+
 ### Added
+
+- **谱隙证书自报口径：`ε` 用哪种方法算的、这张界是 L0 诊断还是 L0' 候选、补偿项误差有没有重复计入**。
+  三件事此前只写在 `lld.md` §4.2.1 / §4.3.1 / §4.8 的正文里，证书本身不记，于是「幂迭代只够排序」与
+  「候选界不当证书」都只是注释级别的约定。`ledger::Note` 因此新增三个字段：`method`（`EpsMethod`
+  闭集 `verified_backward_error` / `verified_residual` / `candidate_only`，`certify` 产出的是中间那条）、
+  `bound`（`Bound` 闭集 `l0_diagnostic` / `l0prime_candidate_open` / `none`）、`comp`（只在残差补偿
+  模式存在的 `E_comp`，`certify` 的残差以 `f32` 原样落盘故为 0）；合成误差只剩一处算式
+  `Note::synth() = E_decomp + E_comp`。`check` 新增四条可执行约束——候选方法签不出 `Pass`、L0' 候选界
+  签不出无损、用了秩选择就必须声明界类型、逐位往返则补偿项必须为零（同一份误差记两遍即被拒）；
+  `l3::Rung::from_note` 同步拒绝候选口径的证书，它的 `ε` 只够排序、不够当上界；读端 `ledger::audit`
+  同样要求落盘证书的方法必须是实测残差、界必须是 L0 诊断、补偿误差必须为零——伪造或手写一个别的
+  口径，载会被这条载荷自己拒掉（`the_payload_audit_rejects_a_certificate_that_names_another_measurement`）。`rank` 载荷魔数
+  `AX02` → `AX03`（多两码与一个 f64），旧布局不再被当作合法载荷。**验证**：`llm-weights` 199 条
+  （`ledger` 16、`l3` 14）全绿，两个新枚举的短名与码位各有用例钉住。
+
+- **L3 合成律落地：`weights::l3` 把 LLD §4.5 的逐段误差合成从「每个算子各自声明」收成网络级可签发
+  的上界与适用域**。`Chain::bracket` 一次走两套递归（`a_i = L_i·ρ̂_i·a_{i-1} + b_i`、
+  `e_i ≤ L_i·(ρ_i·e_{i-1} + ε_i·a_{i-1})`，后者把 `ε_i` 摊到**未扰动激活**上）给出 `Bracket`；`Ruling`
+  的判定次序是「有非零 `ε` 就 `Refuse` → 缺产物逐位证据就 `Unverified` → 有段在定理外就 `Partial` →
+  三条都过才 `Lossless`」，于是「压缩有损」与「能否签发整网无损证书」永远是两个问题。`ε` 不再由调用方
+  拍：`Rung::from_note` 直接吃谱隙证书的 `Note::eps`（同一次分解的后验残差）；`L` **没有默认值**（1 不是
+  "差不多"的默认，没有 Lipschitz 证据的段必须显式登记，否则静默把误差算小）；`ρ̂ ≠ ρ` 分开记，压缩把
+  范数放大的那一段不会因为只乘左边而漏掉；闭式只在各级「放大或平移为正」时给出，否则只报递归界。
+  **跨层对拍**在 `crates/testkit/tests/l3.rs`（4 条）：4bit 量化后的真实误差（走
+  `op::matmul::forward_tn_tiled`，与 `serve`/`train` 同一条内核）确实落在上界内且非零、整批界按
+  `√rows` 而非 `rows` 放大、真实容器的逐位往返是 `Lossless` 的第二项先决条件（同样 `ε = 0`，往返不
+  逐位即 `Unverified`）、`ε > 0` 时覆盖率再高也只到 `Refuse`。`llm-weights` 199 条（`l3` 14 条）、
+  `llm-testkit` 新增 4 条跨层用例。
+
+- **模型存储有了逐张量沉降账本：`weights::settle` 把 LLD §4.7 的"每个张量落在哪个体积、为什么、
+  是否无损"从散落的度量字段收成一份由**落盘字节**现算的账，`llm settle --in <容器> [--out <账本>]`
+  是它的唯一出口**。`Settlement::settle` 只走已落盘的描述符与解码往返：解码一次取熵与值域、按描述符
+  给出实际位宽与原因（引用去重 / 小段 / 轴字典 / 不可压），量化条目按既有 `Quant` 语义判为有损，
+  未识别 codec 不计无损——这就是 `Archive::metrics` 里那条 `lossless` 判定的同一份实现
+  （`archive::lossless_entry`），容器的两个视图因此不可能给出两种"无损"。账本 JSON 只有一个文本来源
+  （`Settlement::render`）：`--out` 写盘与 stdout 是同一份字节（进程级用例钉住逐字节相等），不给
+  `--out` 就把 JSON 打到 stdout，本层不猜产物目录旁的默认文件名。12 条 `settle` 用例覆盖体积算式、
+  原因闭集、无损口径与坏字节拒绝；`llm settle` 补两条解析用例与一条端到端用例。**同一份口径也接到导入
+  侧**：`llm import` 落盘后把刚写出的字节重新读一遍现算账本（`archive::ledger_of` 是两处唯一入口），
+  报告里的体积比与 `lossless` 因此是"读出来的"而不是"自以为写进去的"——进程级用例从 `import` 的输出就
+  开始核对这两项，`settle` 与 `import` 不可能对同一份字节给出两种结论。**实测**（`.u` 容器
+  含两条权重段）：全量体积比与逐张量体积可复核，账本与 `inspect` 报告的无损结论一致。
 
 - **装配层从"一层"走到"一栈"：`nn::hybrid` 新增 `Tower` / `State` / `Kind` / `MemoryStep`，把 K3 的
   3:1 配比（每三个通道记忆层配一个混合层）落成构造条件而不是注释**。`Tower::order` 逐格给出
@@ -33,6 +92,17 @@
 
 ### Changed
 
+- **批调度改由 IFB 打包拍板：`serve::Completion` 一轮跑哪些行、跑几行，现在是 `engine::ifb::pack`
+  的结论而不是"按准入次序全跑"**。`State::round` 先把本层一次提交的粒度（`PREFILL_CHUNK`）收进
+  `Budget`，再把 `Verdict::Packed` 的行原样交给下面两层：上下文候选各算自己分到的那一块、生成行一次
+  整批提交。于是"这一轮算几行"只有一个来源——`chunk` 给块尾、`pack` 给配额，推进时取小的那个，不会
+  出现"打包说 8 行、推进算 12 行"。三处配套硬约束：**准入按 `min(B_max, T_max)` 挡人**（只判 `B_max`
+  会放进"进得来、却永远排不进一轮"的序列）；**提示段没算完就不解码**（历史不完整时解码读到的是零
+  填充的"过去"）；**打包拒绝本轮不静默空转**（`OverSeqs`/`OverTokens` 上抛 `Internal`——准入已经挡过
+  一遍，走到那里说明预算与准入用了两套上限）。3 条新用例钉住：`T_max = 8` 时 20 行提示按 8+8+4 分
+  三轮算完、每个位置只算一次且按序、之后才解码；`B_max` 还空着而 `T_max` 已满时新请求同样 503；
+  预算只够一行时一轮只推进一条、另一条留在批里历史不变。
+
 - **可复制片段清零：重复率 0.34% → 0.00%（40 处克隆 → 0），`jscpd` 硬门从 0.48 收到 0**。此前剩下的
   40 处集中在两类：**同文件的测试脚手架**（`engine/src/metal_tests.rs` 5 处、`train/tests/backprop_tests.rs`
   4 处、`autograd/src/replay.rs` 3 处、`cli/tests/run_tests.rs` 3 处、`op/src/attention.rs` 2 处、
@@ -45,7 +115,7 @@
     `diagnostic`，方向单一、无环）；标量渲染落 `prof::prof::scalar_texts`（`op` 依赖 `prof`）；词表样例落
     `tokenizer::fixtures`（`serve` 依赖 `tokenizer`）；`op::same_bytes` 成为逐字节比对的唯一出处，
     `operator::same_str` 那份同体副本删除。
-  - **测试夹具只留一份源文件**：`crates/benches/support/{attention,model}.rs` 由四个 target 以 `#[path]`
+  - **测试夹具只留一份源文件**：`crates/benchmarks` 由四个 target 以 `#[path]`
     取用（这两份此前不在版本控制里，干净检出会因取不到而编不过，现已一并入库）；`crates/train/tests/support.rs`
     由 `src/lib.rs` 以 `#[cfg(test)]` 挂载，测试、`learner` 与 bench 共用同一份建图；
     `crates/testkit/tests/support/cutile_x_kernel.rs` 同时喂 `cutile` 单测与 `engine` 的签名快照用例
@@ -374,7 +444,7 @@
   **实测**（macOS aarch64，criterion，256×256、k=4096，3s 测量）：线性层逐行 `gemv` 33.25ms →
   **分块 19.15ms（1.74×）**；`[m,k]×[k,n]` 通用 tile 18.49ms（标量参考 304.55ms，16.5×）；注意力
   prefill tiled 11.70ms 对 online 17.94ms（1.53×）；int8 tile 19.98ms（标量参考 143.35ms，7.2×）。
-  基准见 `crates/benches/criterion/{matmul_f32,attention_prefill_f32,matmul_i8}.rs`
+  基准见 `crates/benchmarks`
   （线性层新增"逐行 vs tile"对照组）。
 - **量化内核行批入口**：`op::{gemv_i2,gemv_i4,gemv_i8}::forward_batch` 让一次调用算 `rows` 行，
   权重按行块只解包一遍（此前 prefill 里逐行调用会把同一份打包权重解包 `rows` 次）。服务侧
@@ -599,7 +669,7 @@
   统计量定义 → 区间与门槛的关系（闭集外机器上的数样本再多也不是这份协议的证据）。重采样种子固定，
   同一列样本只得到一份卡，复核可逐位对拍；样本里混进非有限数报 `Invalid` 而不是静默跳过——那是采集坏了，
   不是「这一格没测出来」。
-  `crates/benches/tests/cards.rs` 用合成栈真跑 32 步 decode（4 步热身不计入）取每步墙钟，按 `lld` E10
+  `crates/benchmarks` 用合成栈真跑 32 步 decode（4 步热身不计入）取每步墙钟，按 `lld` E10
   判「变异系数 95% 区间上界 < 5%」并归档到 `target/bench-report/<host>/card-E10.json`。
   **实测**（归档 `target/bench-report/macos-aarch64/card-E10.json`）：`macos-aarch64` 上这条合成栈
   （2 层、`d = 8`）一步 decode 的 32 个窗口是均值 **9410 ns**、`σ = 1781 ns`、**变异系数 0.189**，
@@ -750,7 +820,7 @@
   `Slot`、`Batch`/`Admission`、`Sharding`/`Tiling`、`Local`、`Status`/`Request`、生成协作者、`Completion`/`Router`），
   并把在途新增的 `benches → nn` dev 边补进边集（边 95/31 → **96/32**）。
 
-- **基准归档补上 roofline 定位：上界、达成率与瓶颈侧，进报告也进门禁**。`crates/benches` 新增
+- **基准归档补上 roofline 定位：上界、达成率与瓶颈侧，进报告也进门禁**。`crates/benchmarks` 新增
   `criterion/mem_stream.rs`：16 KiB / 1 MiB / 64 MiB 三档工作集、读 / 写分开测的搬往上界——读侧用
   无符号整数异或归约（浮点求和不可重排，会把循环串行化成加法延迟），写侧用 `fill`。**不用厂商峰值**：
   `docs/lld.md` E6 把「仅有未验证的峰值规格」判为不可计算。`tests/regress.rs` 因此多三样东西：
@@ -915,7 +985,7 @@
 
 - **`data` 的可执行代码覆盖率收敛到 100%**。逐行覆盖报告暴露 `Dataset` 的三个 trait 方法（`cols`/`batches`/`remaining_batches`）在具体类型上的同名调用全部解析到 inherent 方法，trait 转发路径从未被执行（区域覆盖 96.3%）。新增一个通过 `&mut dyn Dataset` 取数的测试，走完整对象安全路径，验证三个转发与 `next_batch` 流；`batch`/`dataset`/`split` 三个含逻辑文件的行与区域覆盖均为 100%（`lib.rs` 仅含 `mod`/`pub use` 与文档，无可执行体，其 0% 是工具对纯声明模块的已知现象）。Miri 复测零 UB，全 workspace clippy（`-D warnings`）、测试零失败。
 
-- **elementwise 的计时不再手写在测试里，改为 criterion 基准**。`crates/benches/tests/elementwise_regress.rs` 原先用 `WARMUP = 8` / `TIMED = 64` 加 `Instant` 自己实现了一遍预热与计时——而预热多久、采样多少次、测多久正是 criterion 的配置项（`--warm-up-time` / `--measurement-time` / `--sample-size`），手写这套既不可配置也没有统计口径。现在该文件删除，`crates/benches/criterion/elementwise.rs` 只声明"一次迭代是什么"（`bench_function`）与"一次迭代处理多少元素"（`Throughput::Elements`，报告直接给 elems/s），测量细节交给 criterion；`llm-benches` 因此不再需要 `tool` 这个 dev 依赖（回退判定仍由 `tool::regress` 的单元测试锁住，固定硬件上的 bench job 再接线）。同步：`docs/ARCHITECTURE.md` 的边表 75 → 74、`+dev` 11 → 10，`span_parse` 文档里已不存在的 `llm-regress` 改为 `tool::regress`。
+- **elementwise 的计时不再手写在测试里，改为 criterion 基准**。`crates/benchmarks` 原先用 `WARMUP = 8` / `TIMED = 64` 加 `Instant` 自己实现了一遍预热与计时——而预热多久、采样多少次、测多久正是 criterion 的配置项（`--warm-up-time` / `--measurement-time` / `--sample-size`），手写这套既不可配置也没有统计口径。现在该文件删除，`crates/benchmarks` 只声明"一次迭代是什么"（`bench_function`）与"一次迭代处理多少元素"（`Throughput::Elements`，报告直接给 elems/s），测量细节交给 criterion；`llm-benches` 因此不再需要 `tool` 这个 dev 依赖（回退判定仍由 `tool::regress` 的单元测试锁住，固定硬件上的 bench job 再接线）。同步：`docs/ARCHITECTURE.md` 的边表 75 → 74、`+dev` 11 → 10，`span_parse` 文档里已不存在的 `llm-regress` 改为 `tool::regress`。
 
 - **算子层的四份表达式缓存收敛为一份，`gemv` 的三份输入校验上提**（§8.2 第二梯队第 5、6 项）。四条骨架原先各写一份 `OnceLock<Result<Formula, Error>>`——`gemv::Cache`、`elementwise::BinCache`、`unary::UnaryCache`、`reduce::ReduceCache` 逐字同构（139 行），差别只有表达式文本、操作数表与错误帧；现在只剩 `einsum::FormulaCache`（`crates/op/src/einsum/cache.rs`，61 行），三件事都成了 `get` 的参数，`site` 由**骨架**给出（同一条骨架的所有精度共享一个位置，重复写在每个实现里只会多出几份可以写歪的事实）。**没有做"泛型 `static`"**：`static` 仍留在各实现的 `cache()` 里——写在泛型作用域里的 `static` 在 Rust 里只有一份，`Dense<B>` 与 `Quantized<G>` 会共用同一个单元格，先跑的那一份会让另一份拿到错误的轴表（`gemv.rs` 原注释记录过这次实测）。资产是"一份逻辑"，不是"一份单元格"。同一轮里 `OperandSpec` 从 `gemv` 搬回 `einsum::formula`：它描述的是表达式，而 `elementwise`/`unary`/`reduce` 三条兄弟骨架原先都在反向依赖 `gemv`。校验侧：骨架的 `reference()` 一直声称"输出非空、输入够长、权重够长由骨架负责"，但三条 `forward` 各抄了一遍，`gemv_i8` 还为此专门写了一个 `layout()`（32 行、ccn 6）；现在收成 `non_empty` / `scaled_groups` / `required_weights` 三个 helper（错误文案逐字保留，上界改成饱和乘，溢出即判"长度不足"而不是回绕成轻松满足的小数），`gemv_i8::layout` 整段删除，格式只保留真正的差异（int4 的偶分组、稠密格式不该收到标度）。**实测**：`crates/*/src` 55 221 → **55 137** 行（−84），文件 172 → **173**（+1 为 `cache.rs`），`[[gate.debt]]` 252 → **251**（`layout` 消失；`gemv_i8::forward` 一度因 "3 个 `for` + 2 个 `?`" 被门禁判 ccn 6，把内层点积改成一次 `map().sum()`（与原循环同为从左到右折叠，逐位相同）后回到 5），**没有新增或抬高任何基线**；用例 **60 目标 / 1 066 通过** 与改动前逐项相同；`docs/ARCHITECTURE.md` 的所有权条目 `Cache` → `FormulaCache`，`[[ownership.unlisted]]` 里三个已不存在的类型名一并删除。
 
@@ -1018,7 +1088,7 @@
 - **架构契约**：`docs/ARCHITECTURE.md`（七层表 + 依赖规则 + 所有权表 + 新增成员三步）；每成员至少一条边、全部 `publish = false`、仓库只有一个 `target/`；P0-3 起由 `tests/architecture.rs` 在 `cargo test` 里执行。
 - **16 个占位成员改成接口形状**（占位口径现见 `docs/ARCHITECTURE.md` 第五节）：`diagnostic`（`Error`/`Code`/`Result`）、`testkit`（`approx_eq`/`device_enabled`/`scratch_dir`）、`mem`（`Arena`/`Region`）、`tensor`（`Tensor`/`DType`/`Shape`/`Strides`）、`storage`（`Layout`/`Order`/`remap`）、`exec`（`Stream`/`Graph`/`Launch`/`Executor`）、`tokenizer`（`Tokenizer`/`Token`/`Bytes`）、`weights`（`Header`/`Entry`/`Reader`）、`kv`（`Page`/`Table`/`Cache`）、`autograd`（`Tape`/`Var`）、`comm`（`Group`/`Reduce`/`Collective`）、`proto`（`Envelope`/`Kind`/`Version`）、`data`（`Batch`/`Split`/`Dataset`）、`nn`（`Layer`/`LayerSpec`/`Linear`，层定义必须引用 `op` 已声明的算子）、`shard`（`Topology`/`Partition`，rank 布局与并行组）、`train`（`Schedule`/`Step`/`Checkpoint` + 恢复拓扑校验）、`engine`（`Sequence`/`Scheduler`，准入即占页）、`serve`（`Route`/`Endpoint`/`Response`）。
 - `tool` 成员（目录 `crates/tool`）：`Report` / `join_names`，把人可读输出从组装点里抽出来，避免三处各写一套排版。
-- `benches` 成员（目录 `crates/benches`）：`Case` / `Baseline` / `Judgement` / `Direction`，把“方向 / 相对预算 / 回退与改进”写进类型，供后续 bench job 直接判定。
+- `benches` 成员（目录 `crates/benchmarks`）：`Case` / `Baseline` / `Judgement` / `Direction`，把“方向 / 相对预算 / 回退与改进”写进类型，供后续 bench job 直接判定。
 - 根包 `llm` 变成真正的组装点：逐层构造最小实例并打印一份摘要（`op` / `prof` / `tensor` / `weights` / `train` / `serve` / `tokenizer` / `kv` / `engine` / `exec` / `tool` / `diagnostic`），这也是“依赖图能编译且公共 API 可用”的端到端证据。
 
 - `op` 成员（目录 `crates/op`）：声明层独立成 crate——`gemv_i4.toml` + `gemv_i4.k` 从 `crates/cutile/ops` 迁入，`src/lib.rs` 提供 `BUILTIN`（内嵌）、`builtin()`、`dir()`、`load()`；`cutile` 单向依赖它，新增算子不必动机制代码。
