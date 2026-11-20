@@ -95,7 +95,11 @@ mod pulse {
             } else {
                 S::ZERO
             };
-            self.mem = if spike == S::ONE { self.reset } else { potential };
+            self.mem = if spike == S::ONE {
+                self.reset
+            } else {
+                potential
+            };
             spike
         }
 

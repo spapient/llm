@@ -687,7 +687,7 @@ fn push_cuda_main(program: &mut String, max: usize, total: usize) {
     program.push_str(
         "\x20   cudaFree(d_out); cudaFree(d_counts);\n\
          \x20   return 0;\n\
-         \x20   }}\n",
+         \x20   }\n",
     );
 }
 
@@ -926,7 +926,7 @@ fn push_ascend_main(program: &mut String, max: usize, total: usize) {
          \x20   CUTILE_ACL(aclrtResetDevice(0));\n\
          \x20   CUTILE_ACL(aclFinalize());\n\
          \x20   return 0;\n\
-         }}\n",
+         }\n",
     );
 }
 

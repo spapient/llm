@@ -235,16 +235,17 @@ fn edge(a: &[f32], b: &[f32], out: &mut [f32], span: Span) {
 }
 
 // ---------------------------------------------------------------------------
-// i8 sdot 通道：MR=2 × NR=8，B 转置打包成「每列 k 连续」。
-// 每个 k16 一次 `vld1q_s8` A 两行 + 8 次 B 加载 + 16 次 `vdotq_s32`。
+// i8 sdot 通道：MR=4 × NR=4，B 转置打包成「每列 k 连续」。
+// 每个 k16 一次 4 行 A 加载 + 4 次 B 加载 + 16 次 `vdotq_s32`（256 MAC/24 指令），
+// 且每块 B 瓦片被 4 行复用——B 访存比 MR=2/NR=8 再降一半。
 // dotprod 运行时探测，缺失走标量回退；`unsafe` 仅限 aarch64 微内核。
 // ---------------------------------------------------------------------------
 
-/// i8 微内核行数（两行共享同一 B 向量，摊薄 B 加载）。
-const I8_MR: usize = 2;
+/// i8 微内核行数（四行共享同一 B 向量，摊薄 B 加载）。
+const I8_MR: usize = 4;
 
-/// i8 微内核列数（8 个 int32x4 累加器）。
-const I8_NR: usize = 8;
+/// i8 微内核列数（4 个 int32x4 累加器 × 4 行 = 16 寄存器，避开溢出）。
+const I8_NR: usize = 4;
 
 /// 线程数：`LLM_THREADS` 环境变量优先，否则全核。
 fn threads_override() -> usize {
@@ -405,10 +406,12 @@ fn pair_one(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) {
         }
     }
     scalar_row_group(a, bpack, out, g.r, g.blk, g.n, g.k);
-    scalar_row_group(a, bpack, out, g.r + 1, g.blk, g.n, g.k);
+    for mr in 1..I8_MR {
+        scalar_row_group(a, bpack, out, g.r + mr, g.blk, g.n, g.k);
+    }
 }
 
-/// aarch64 dotprod：一个 8 列块的两行（`unsafe` 岛）。
+/// aarch64 dotprod：一个 4 列块的 4 行（`unsafe` 岛）。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
 #[allow(unsafe_code)]
@@ -421,9 +424,9 @@ unsafe fn dot_one(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) {
     }
 }
 
-/// 一个 8 列块的两行累加：`(两行共 16 条 lane 的整数累加和)`。
+/// 一个 4 列块的 4 行累加：`(4 行 × 4 列的整数累加和)`。
 ///
-/// `blk` 是列块起点、`p` 沿 `kvec` 走 16 字节一拍；两条 `ave` 分别是第 `r` 行与第 `r+1` 行。
+/// `blk` 是列块起点、`p` 沿 `kvec` 走 16 字节一拍；`ave[mr]` 是第 `r+mr` 行。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
 #[allow(unsafe_code)]
@@ -433,19 +436,24 @@ unsafe fn dot_block(
     blk: usize,
     k: usize,
     kvec: usize,
-) -> [[std::arch::aarch64::int32x4_t; 8]; 2] {
+) -> [[std::arch::aarch64::int32x4_t; I8_NR]; I8_MR] {
     use std::arch::aarch64::*;
     unsafe {
         let zero = vdupq_n_s32(0);
-        let mut accs = [[zero; 8]; 2];
+        let mut accs = [[zero; I8_NR]; I8_MR];
         let mut p = 0;
         while p < kvec {
-            let av0 = vld1q_s8(ap.add(p));
-            let av1 = vld1q_s8(ap.add(k + p));
-            for nb in 0..8 {
+            let av: [int8x16_t; I8_MR] = [
+                vld1q_s8(ap.add(p)),
+                vld1q_s8(ap.add(k + p)),
+                vld1q_s8(ap.add(2 * k + p)),
+                vld1q_s8(ap.add(3 * k + p)),
+            ];
+            for nb in 0..I8_NR {
                 let bv = vld1q_s8(bp.add((blk + nb) * k + p));
-                accs[0][nb] = vdotq_s32(accs[0][nb], av0, bv);
-                accs[1][nb] = vdotq_s32(accs[1][nb], av1, bv);
+                for mr in 0..I8_MR {
+                    accs[mr][nb] = vdotq_s32(accs[mr][nb], av[mr], bv);
+                }
             }
             p += 16;
         }
@@ -453,7 +461,7 @@ unsafe fn dot_block(
     }
 }
 
-/// 一个 8 列块的收口：水平求和 + 标量补 `kvec..k` 的余数，写回两行。
+/// 一个 4 列块的收口：水平求和 + 标量补 `kvec..k` 的余数，写回 4 行。
 ///
 /// `jj >= n` 的列落在打包填充区，只算不写——填充列的乘积不参与任何输出元素。
 #[cfg(target_arch = "aarch64")]
@@ -465,30 +473,28 @@ unsafe fn harvest(
     out: &mut [i32],
     (r, n, k, kvec): (usize, usize, usize, usize),
     blk: usize,
-    accs: [[std::arch::aarch64::int32x4_t; 8]; 2],
+    accs: [[std::arch::aarch64::int32x4_t; I8_NR]; I8_MR],
 ) {
     use std::arch::aarch64::*;
     unsafe {
-        for nb in 0..8 {
+        for nb in 0..I8_NR {
             let jj = blk + nb;
             if jj < n {
-                let mut s0 = vaddvq_s32(accs[0][nb]);
-                let mut s1 = vaddvq_s32(accs[1][nb]);
-                let mut q = kvec;
-                while q < k {
-                    let w = *bp.add(jj * k + q) as i32;
-                    s0 += *ap.add(q) as i32 * w;
-                    s1 += *ap.add(k + q) as i32 * w;
-                    q += 1;
+                for mr in 0..I8_MR {
+                    let mut s = vaddvq_s32(accs[mr][nb]);
+                    let mut q = kvec;
+                    while q < k {
+                        s += *ap.add(mr * k + q) as i32 * *bp.add(jj * k + q) as i32;
+                        q += 1;
+                    }
+                    out[(r + mr) * n + jj] = s;
                 }
-                out[r * n + jj] = s0;
-                out[(r + 1) * n + jj] = s1;
             }
         }
     }
 }
 
-/// 标量单行、单 8 列块（打包 B 取数，任意 n/k）。
+/// 标量单行、单 4 列块（打包 B 取数，任意 n/k）。
 fn scalar_row_group(
     a: &[i8],
     bpack: &[i8],
@@ -499,7 +505,7 @@ fn scalar_row_group(
     k: usize,
 ) {
     let ar = &a[row * k..(row + 1) * k];
-    for nb in 0..8 {
+    for nb in 0..I8_NR {
         let jj = blk + nb;
         if jj < n {
             let bp = &bpack[jj * k..jj * k + k];

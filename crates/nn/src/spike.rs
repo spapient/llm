@@ -346,22 +346,47 @@ impl Spiking {
         d_out: &[f32],
         grad: &mut Gradients,
     ) -> Result<()> {
+        self.check_backward_inputs(spikes, state, surrogate, d_out, grad)?;
+        for row in 0..self.outputs {
+            self.fill_row(row, state, spikes, surrogate, d_out, grad);
+        }
+        Ok(())
+    }
+
+    /// 反传入口判据：状态、窗、脉冲、输出梯度与缓冲，各自只答一个问题，全部在写入之前。
+    fn check_backward_inputs(
+        &self,
+        spikes: &[i8],
+        state: &Membrane,
+        surrogate: Surrogate,
+        d_out: &[f32],
+        grad: &Gradients,
+    ) -> Result<()> {
         self.check_state(state)?;
         surrogate.check()?;
         self.check_spikes(spikes)?;
-        check_gradient(d_out, self.outputs)?;
-        grad.check(self)?;
-        for row in 0..self.outputs {
-            // 发放对电位的敏感度：窗外的通道拿零，等于「这一拍它没参与决策」。
-            let sensitivity = d_out[row] * surrogate.derivative(state.pre[row], self.threshold);
-            grad.current[row] = sensitivity;
-            grad.scale[row] = sensitivity * state.acc[row] as f32;
-            let upstream = sensitivity * self.scale[row];
-            for (column, spike) in spikes.iter().enumerate() {
-                grad.weights[row * self.inputs + column] = upstream * f32::from(*spike);
-            }
+        grad.check_for(self, d_out)
+    }
+
+    /// 一行的三条梯度：电流交给上一层，尺度与权重只由该行自己这一拍的发放决定。
+    fn fill_row(
+        &self,
+        row: usize,
+        state: &Membrane,
+        spikes: &[i8],
+        surrogate: Surrogate,
+        d_out: &[f32],
+        grad: &mut Gradients,
+    ) {
+        // 发放对电位的敏感度：窗外的通道拿零，等于「这一拍它没参与决策」。
+        let sensitivity = d_out[row] * surrogate.derivative(state.pre[row], self.threshold);
+        grad.current[row] = sensitivity;
+        grad.scale[row] = sensitivity * state.acc[row] as f32;
+        let upstream = sensitivity * self.scale[row];
+        let codes = &mut grad.weights[row * self.inputs..(row + 1) * self.inputs];
+        for (slot, spike) in codes.iter_mut().zip(spikes) {
+            *slot = upstream * f32::from(*spike);
         }
-        Ok(())
     }
 
     /// 脉冲判据：长度与输入宽度一致、取值三元——与 [`Spiking::pulse`] 用的是同一个 [`ternary`]。
@@ -490,15 +515,205 @@ impl Gradients {
 
     /// 缓冲判据：三条梯度必须与本层参数同形，长了短了都会静默写错行。
     fn check(&self, layer: &Spiking) -> Result<()> {
+        self.layout(layer.weights.len(), layer.outputs)
+    }
+
+    /// 反传入口判据：缓冲与本层同形，且输出梯度与通道数同长。
+    fn check_for(&self, layer: &Spiking, d_out: &[f32]) -> Result<()> {
+        self.check(layer)?;
+        check_gradient(d_out, layer.outputs)
+    }
+
+    /// 判据本体：只按「权重格数 + 输出通道数」核对，好让量化前的 [`Master`] 与量化后的
+    /// [`Spiking`] 共用同一份判据。
+    fn layout(&self, weights: usize, outputs: usize) -> Result<()> {
         let shape = [self.weights.len(), self.scale.len(), self.current.len()];
-        let want = [layer.weights.len(), layer.outputs, layer.outputs];
+        let want = [weights, outputs, outputs];
         if shape != want {
+            return Err(bad(format!("梯度缓冲 {shape:?} 与本层 {want:?} 不符")));
+        }
+        Ok(())
+    }
+}
+
+/// 浮点主权重（QAT 口径）：训练留浮点，前向只看到它的 `i8` 量化视图。
+///
+/// 反传给的是浮点梯度，而前向层只认 `i8`——`Master` 就是两者中间那一层：[`Master::view`] 把
+/// 主权重量化成可执行层，[`Master::descend`] 在浮点侧走一步 SGD。尺度与动力学原样带走，不在
+/// 这一步改写。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Master {
+    weights: Vec<f32>,
+    scale: Vec<f32>,
+    inputs: usize,
+    outputs: usize,
+    threshold: f32,
+    leak: f32,
+    reset: f32,
+}
+
+impl Master {
+    /// 从浮点权重构造：几何与动力学都按 [`Spiking::new`] 同一份判据在入口挡住。
+    ///
+    /// 权重必须是有限值——`NaN` 在量化时会被夹成一个「看起来正常」的 `i8`，事后从视图上完全
+    /// 看不出它原本是坏的。
+    ///
+    /// # Errors
+    ///
+    /// 长度与 `inputs·outputs` / `outputs` 不符、权重或尺度非有限、尺度非正、动力学越界，
+    /// 一律 [`Code::Invalid`]。
+    pub fn new(
+        weights: Vec<f32>,
+        scale: Vec<f32>,
+        inputs: usize,
+        outputs: usize,
+        threshold: f32,
+        leak: f32,
+        reset: f32,
+    ) -> Result<Self> {
+        let master = Self {
+            weights,
+            scale,
+            inputs,
+            outputs,
+            threshold,
+            leak,
+            reset,
+        };
+        master.check()?;
+        Ok(master)
+    }
+
+    /// 浮点主权重，行主序 `[outputs, inputs]`。
+    #[must_use]
+    pub fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+
+    /// 逐行反量化尺度，一条对一行。
+    #[must_use]
+    pub fn scale(&self) -> &[f32] {
+        &self.scale
+    }
+
+    /// 量化成前向层：四舍五入后夹到 `[−127, 127]`。
+    ///
+    /// 对称量化、零点不入码——与 [`Spiking::new`] 的 `|w| ≤ 127` 前提一致，所以「夹到 127」只会
+    /// 发生在训练把某个权重推出量化范围的时候，而不是正常路径。
+    ///
+    /// # Errors
+    ///
+    /// 量化后的几何或动力学不合（[`Master`] 字段私有，正常不会发生）时透传 [`Spiking::new`]
+    /// 的错误。
+    pub fn view(&self) -> Result<Spiking> {
+        let weights = self
+            .weights
+            .iter()
+            .map(|weight| weight.round().clamp(-127.0, 127.0) as i8)
+            .collect();
+        Spiking::new(
+            weights,
+            self.scale.clone(),
+            self.inputs,
+            self.outputs,
+            self.threshold,
+            self.leak,
+            self.reset,
+        )
+    }
+
+    /// 一步 SGD：`w ← w − lr·g_w`、`scale ← scale − lr·g_scale`。
+    ///
+    /// 只吃权重与尺度两条梯度：电流梯度是**给上一层**的，不落在本层参数上。
+    ///
+    /// # Errors
+    ///
+    /// 梯度布局与本层不符、学习率非有限或非正、更新把某条尺度推成非正（说明步长把量化区间
+    /// 走穿了）——都返回 [`Code::Invalid`]，且失败时一格参数都不写。
+    pub fn descend(&mut self, grad: &Gradients, lr: f32) -> Result<()> {
+        grad.layout(self.weights.len(), self.outputs)?;
+        check_learning_rate(lr)?;
+        // 尺度必须在写权重之前全部验完：留下「权重已降、尺度是负的」这种半截状态，要等到下一次
+        // `view` 才报错，而那时离出错点已经很远了。
+        let scale = self.next_scale(grad, lr)?;
+        for (weight, slope) in self.weights.iter_mut().zip(grad.weights.iter()) {
+            *weight -= lr * slope;
+        }
+        self.scale = scale;
+        Ok(())
+    }
+
+    /// 走一步之后的尺度：先算齐、再验「有限为正」，都不合就一格参数也不写。
+    fn next_scale(&self, grad: &Gradients, lr: f32) -> Result<Vec<f32>> {
+        let scale: Vec<f32> = self
+            .scale
+            .iter()
+            .zip(grad.scale.iter())
+            .map(|(value, slope)| value - lr * slope)
+            .collect();
+        match scale
+            .iter()
+            .find(|value| !finite(**value) || **value <= 0.0)
+        {
+            Some(value) => Err(bad(format!(
+                "更新后的反量化尺度必须有限为正，得到 {value:?}（学习率 {lr} 把量化区间走穿了）"
+            ))),
+            None => Ok(scale),
+        }
+    }
+
+    /// 构造判据：两条长度、权重的有限性、尺度的有限正性、动力学范围。
+    fn check(&self) -> Result<()> {
+        self.check_shape()?;
+        self.check_values()
+    }
+
+    /// 形状判据：相乘不溢出，两条长度都对。
+    fn check_shape(&self) -> Result<()> {
+        let want = self
+            .inputs
+            .checked_mul(self.outputs)
+            .ok_or_else(|| bad("输入宽度与输出通道相乘溢出"))?;
+        if self.weights.len() != want {
             return Err(bad(format!(
-                "梯度缓冲 {shape:?} 与本层 {want:?} 不符"
+                "权重 {} 格与 {inputs}×{outputs} 不符",
+                self.weights.len(),
+                inputs = self.inputs,
+                outputs = self.outputs
+            )));
+        }
+        if self.scale.len() != self.outputs {
+            return Err(bad(format!(
+                "反量化尺度 {} 条与输出通道 {} 不符",
+                self.scale.len(),
+                self.outputs
             )));
         }
         Ok(())
     }
+
+    /// 取值判据：权重有限、尺度有限为正、动力学在范围内。
+    fn check_values(&self) -> Result<()> {
+        check_weights(&self.weights)?;
+        check_scale(&self.scale)?;
+        check_dynamics(self.threshold, self.leak, self.reset)
+    }
+}
+
+/// 学习率判据：有限为正（零学习率等于「什么都不学」，负学习率等于「朝梯度方向上升」）。
+/// 浮点权重判据：`NaN` 经 `round().clamp()` 会落成某个看着正常的 `i8`，只能在量化之前挡住。
+fn check_weights(weights: &[f32]) -> Result<()> {
+    match weights.iter().find(|weight| !finite(**weight)) {
+        Some(weight) => Err(bad(format!("浮点主权重必须是有限值，得到 {weight:?}"))),
+        None => Ok(()),
+    }
+}
+
+fn check_learning_rate(lr: f32) -> Result<()> {
+    if !finite(lr) || lr <= 0.0 {
+        return Err(bad(format!("学习率必须有限为正，得到 {lr:?}")));
+    }
+    Ok(())
 }
 
 /// 一层的状态：每通道一条 [`Lif`]、一段复用的整数累加缓冲，以及本步发放前的膜电位。
@@ -583,244 +798,5 @@ fn bad(why: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mix::Encoder;
-
-    /// 门槛调到不可能达到、无泄漏：此时膜电位就是这一步的整数累加。
-    fn quiet(weights: Vec<i8>, scale: Vec<f32>, inputs: usize, outputs: usize) -> Spiking {
-        Spiking::new(weights, scale, inputs, outputs, 1.0e6, 0.0, 0.0).expect("几何合法")
-    }
-
-    #[test]
-    fn integer_accumulation_is_exact_against_the_f32_dot() {
-        let layer = quiet(vec![1, -2, 3, 4], vec![1.0, 1.0], 2, 2);
-        let mut state = layer.membrane();
-        let mut out = [0i8; 2];
-        let fired = layer
-            .step(&[1, -1], &mut state, &mut out)
-            .expect("合法脉冲");
-        assert_eq!(fired, 0);
-        // 第 0 行：1·1 + (−2)·(−1) = 3；第 1 行：3·1 + 4·(−1) = −1。
-        assert_eq!(state.potential()[0].to_bits(), 3.0f32.to_bits());
-        assert_eq!(state.potential()[1].to_bits(), (-1.0f32).to_bits());
-        assert_eq!(out, [0, 0]);
-    }
-
-    #[test]
-    fn no_pulses_leave_every_membrane_untouched() {
-        let layer = quiet(vec![5, 5], vec![2.0], 2, 1);
-        let mut state = layer.membrane();
-        let mut out = [9i8; 1];
-        for _ in 0..3 {
-            let fired = layer
-                .step(&[0, 0], &mut state, &mut out)
-                .expect("零脉冲合法");
-            assert_eq!(fired, 0);
-            assert_eq!(out, [0]);
-        }
-        assert_eq!(state.potential()[0].to_bits(), 0.0f32.to_bits());
-    }
-
-    #[test]
-    fn a_potential_over_the_threshold_fires_and_resets() {
-        let layer = Spiking::new(vec![1], vec![1.0], 1, 1, 1.0, 0.0, -0.5).expect("几何合法");
-        let mut state = layer.membrane();
-        let mut out = [0i8; 1];
-        assert_eq!(layer.step(&[1], &mut state, &mut out).expect("合法"), 1);
-        assert_eq!(out, [1]);
-        assert_eq!(state.potential()[0].to_bits(), (-0.5f32).to_bits());
-    }
-
-    #[test]
-    fn leak_shapes_the_membrane_between_steps() {
-        let layer = Spiking::new(vec![1], vec![1.0], 1, 1, 4.0, 0.5, 0.0).expect("几何合法");
-        let mut state = layer.membrane();
-        let mut out = [0i8; 1];
-        layer.step(&[1], &mut state, &mut out).expect("合法");
-        // 第二步：1·0.5 + 1 = 1.5（无泄漏时会是 2）。
-        layer.step(&[1], &mut state, &mut out).expect("合法");
-        assert_eq!(state.potential()[0].to_bits(), 1.5f32.to_bits());
-    }
-
-    #[test]
-    fn the_event_path_and_the_dense_path_agree_bitwise() {
-        let layer = quiet(vec![2, -1, 4, 3, -5, 1], vec![0.5, 2.0], 3, 2);
-        let events = Encoder::new(0.5f32, 1)
-            .expect("参数合法")
-            .encode(&[0.0, 0.9, -1.4])
-            .expect("合法输入");
-        assert_eq!(events.indices(), &[1, 2]);
-        // 事件码的符号：0.9/0.5 → +1，−1.4/0.5 → −2 → 符号 −1。
-        let mut driven = layer.membrane();
-        let mut sparse = [0i8; 2];
-        let sparse_fired = layer
-            .drive(&events, &mut driven, &mut sparse)
-            .expect("宽度一致");
-
-        let mut dense_state = layer.membrane();
-        let mut dense = [0i8; 2];
-        let dense_fired = layer
-            .step(&[0, 1, -1], &mut dense_state, &mut dense)
-            .expect("合法脉冲");
-
-        assert_eq!(sparse_fired, dense_fired);
-        assert_eq!(sparse, dense);
-        assert_eq!(driven.potential(), dense_state.potential());
-    }
-
-    #[test]
-    fn the_count_matches_the_emitted_spikes() {
-        let layer = Spiking::new(vec![1, 1, -1], vec![1.0, 1.0, 1.0], 1, 3, 1.0, 0.0, 0.0)
-            .expect("几何合法");
-        let mut state = layer.membrane();
-        let mut out = [0i8; 3];
-        let fired = layer.step(&[-1], &mut state, &mut out).expect("合法脉冲");
-        assert_eq!(out, [0, 0, 1]);
-        assert_eq!(fired, 1);
-        assert_eq!(fired, out.iter().filter(|&&s| s == 1).count());
-    }
-
-    #[test]
-    fn events_of_another_width_are_rejected() {
-        let layer = quiet(vec![1, 1], vec![1.0], 2, 1);
-        let events = Encoder::new(1.0f32, 1)
-            .expect("参数合法")
-            .encode(&[1.0, 1.0, 1.0])
-            .expect("合法输入");
-        let mut state = layer.membrane();
-        let mut out = [0i8; 1];
-        assert!(layer.drive(&events, &mut state, &mut out).is_err());
-        assert_eq!(state.potential()[0].to_bits(), 0.0f32.to_bits());
-    }
-
-    #[test]
-    fn geometry_failures_are_rejected_before_any_object_exists() {
-        assert!(Spiking::new(vec![1], vec![1.0], 0, 1, 1.0, 0.0, 0.0).is_err());
-        assert!(Spiking::new(vec![1], vec![1.0], 1, 0, 1.0, 0.0, 0.0).is_err());
-        assert!(Spiking::new(vec![1], vec![1.0], 2, 1, 1.0, 0.0, 0.0).is_err());
-        assert!(Spiking::new(vec![1, 1], vec![1.0, 2.0], 1, 1, 1.0, 0.0, 0.0).is_err());
-    }
-
-    #[test]
-    fn an_input_width_that_would_overflow_the_accumulator_is_rejected() {
-        let wide = i32::MAX as usize / WEIGHT_MAGNITUDE + 1;
-        assert!(Spiking::new(Vec::new(), vec![1.0], wide, 1, 1.0, 0.0, 0.0).is_err());
-    }
-
-    #[test]
-    fn dynamics_outside_the_lif_range_are_rejected() {
-        let base = (vec![1i8], vec![1.0f32], 1usize, 1usize);
-        let build = |threshold, leak, reset| {
-            Spiking::new(base.0.clone(), base.1.clone(), 1, 1, threshold, leak, reset)
-        };
-        assert!(build(0.0, 0.0, 0.0).is_err());
-        assert!(build(f32::NAN, 0.0, 0.0).is_err());
-        assert!(build(1.0, 1.5, 0.0).is_err());
-        assert!(build(1.0, 0.0, 1.0).is_err());
-        assert!(build(1.0, 0.0, f32::INFINITY).is_err());
-        assert!(Spiking::new(vec![1], vec![0.0], 1, 1, 1.0, 0.0, 0.0).is_err());
-        assert!(Spiking::new(vec![1], vec![f32::NAN], 1, 1, 1.0, 0.0, 0.0).is_err());
-        assert!(build(1.0, 0.0, -0.5).is_ok());
-    }
-
-    #[test]
-    fn dense_pulses_outside_the_ternary_set_are_rejected() {
-        let layer = quiet(vec![1, 1], vec![1.0], 2, 1);
-        let mut state = layer.membrane();
-        let mut out = [0i8; 1];
-        assert!(layer.step(&[2, 0], &mut state, &mut out).is_err());
-        assert!(layer.step(&[0, -3], &mut state, &mut out).is_err());
-        assert!(layer.step(&[1], &mut state, &mut out).is_err());
-        assert!(layer.step(&[1, 0], &mut state, &mut [0i8; 2]).is_err());
-        assert_eq!(state.potential()[0].to_bits(), 0.0f32.to_bits());
-    }
-
-    /// E14 稀疏度与「事件臂 vs 稠密臂」的等效乘加对照（`#[ignore]` 实测：
-    /// `cargo test -p llm-nn --lib -- spike_arm_costs --release --ignored --nocapture`）。
-    ///
-    /// 几何冻结在 1024 → 1024，权重与激活都由固定种子的 xorshift 生成，`Encoder` 的码位门槛决定
-    /// 发放比例——于是「事件臂做了多少次整数累加」与「稠密臂做了多少次」可由 `active` 直接比出来，
-    /// 不必假设稀疏度。两条臂在同一份权重上用同一段脉冲，墙钟差才是「少做多少个乘加」的实测。
-    ///
-    /// 注意两份耗时里都含相同的一份固定开销（`outputs` 次反量化 + LIF 推进），因此加速比**低于**
-    /// 乘加比；这条只报数，判决仍归 `tool::card` 的协议卡。
-    #[test]
-    #[ignore = "E14 事件臂实测：cargo test -p llm-nn --lib -- spike_arm_costs --release --ignored --nocapture"]
-    fn spike_arm_costs() {
-        use std::hint::black_box;
-        use std::time::Instant;
-
-        let width = 1024usize;
-        let mut seed = 0x5eed_f00d_1234_5678u64;
-        let mut next = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed
-        };
-        let weights: Vec<i8> = (0..width * width)
-            .map(|_| ((next() % 255) as i16 - 128) as i8)
-            .collect();
-        let values: Vec<f32> = (0..width)
-            .map(|_| ((next() % 2001) as f32 - 1000.0) / 1000.0)
-            .collect();
-        let events = Encoder::new(0.25f32, 3)
-            .expect("参数合法")
-            .encode(&values)
-            .expect("合法输入");
-        let dense: Vec<i8> = events
-            .decode()
-            .iter()
-            .map(|value| value.signum() as i8)
-            .collect();
-
-        let layer = quiet(weights, vec![1.0; width], width, width);
-        let mut state = layer.membrane();
-        let mut out = vec![0i8; width];
-        let reps = 100usize;
-
-        let start = Instant::now();
-        for _ in 0..reps {
-            black_box(layer.step(&dense, &mut state, &mut out).expect("合法脉冲"));
-        }
-        let dense_ns = start.elapsed().as_secs_f64() / reps as f64;
-
-        let start = Instant::now();
-        for _ in 0..reps {
-            black_box(
-                layer
-                    .drive(&events, &mut state, &mut out)
-                    .expect("宽度一致"),
-            );
-        }
-        let event_ns = start.elapsed().as_secs_f64() / reps as f64;
-
-        // 乘加按「一个输出行要对多少个输入位置累加」计：密集实现是 `inputs`，事件实现是
-        // `active`，两者都再乘 `outputs`——比因此等于 `1 − S`，这正是 E14 的定义。
-        let active = events.active();
-        let dense_macs = width * width;
-        let event_macs = active * width;
-        println!(
-            "E14 稀疏度 S={:.4}（active={active}/{width}） 乘加 dense={dense_macs} event={event_macs} 比={:.4}",
-            events.sparsity(),
-            event_macs as f64 / dense_macs as f64
-        );
-        println!(
-            "E13 索引开销对照（同一份整数算术）dense={:.1} ms  event={:.1} ms  墙钟比={:.2}×",
-            dense_ns * 1e3,
-            event_ns * 1e3,
-            dense_ns / event_ns
-        );
-    }
-
-    #[test]
-    fn a_membrane_from_another_layer_is_rejected() {
-        let wide = quiet(vec![1, 1, 1, 1], vec![1.0, 1.0], 2, 2);
-        let narrow = quiet(vec![1, 1], vec![1.0], 2, 1);
-        let mut state = wide.membrane();
-        let mut out = [0i8; 1];
-        assert!(narrow.step(&[1, 1], &mut state, &mut out).is_err());
-        assert_eq!(state.potential()[0].to_bits(), 0.0f32.to_bits());
-    }
-}
+#[path = "spike_tests.rs"]
+mod spike_tests;

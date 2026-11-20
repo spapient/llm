@@ -577,7 +577,13 @@ fn metal_int8_gemm_k4096() {
         let block = [tile as u32, tile as u32, 1];
         queue.execute(&pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
         assert_matmul_matches("int8", &bench.reference, bench.y.as_mut_bytes());
-        let ns = measure(&queue, &pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
+        let ns = measure(
+            &queue,
+            &pipe,
+            &[&bench.a, &bench.b, &bench.y],
+            bench.grid,
+            block,
+        );
         eprintln!(
             "Metal int8 GEMM 64×256×4096 tile={tile}：{ns:.1} ns（{:.2} G int-op/s）",
             (m * n * k) as f64 / ns
@@ -632,7 +638,13 @@ fn metal_int8_gemm_cutile_k4096() {
         let block = [tile as u32, tile as u32, 1];
         queue.execute(&pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
         assert_matmul_matches("int8-cutile", &bench.reference, bench.y.as_mut_bytes());
-        let ns = measure(&queue, &pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
+        let ns = measure(
+            &queue,
+            &pipe,
+            &[&bench.a, &bench.b, &bench.y],
+            bench.grid,
+            block,
+        );
         eprintln!(
             "cutile→Metal int8 GEMM 64×256×4096 tile={tile}：{ns:.1} ns（{:.2} G int-op/s）",
             (m * n * k) as f64 / ns
