@@ -143,6 +143,37 @@ macro_rules! reduce_f32 {
             }
         }
 
+        // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。迁移期与 `#[model]` 生成的
+        // `MODEL` 并存，两者一致性由 `operator_tests.rs` 逐字段锁住。
+        impl $crate::operator::Operator for $name {
+            const NAME: &'static str = $op;
+            const SHAPE: (usize, usize) = (4096, 1);
+            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const AXES: &'static [$crate::model::AxisSpec] = $crate::reduce::AXES;
+            const DIFFERENTIABLE: bool = true;
+
+            fn shape_ctx(
+                m: usize,
+                n: usize,
+            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+                $crate::reduce::project_shape(m, n)
+            }
+
+            fn cost(
+                shape: &$crate::model::ShapeContext,
+            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
+                $crate::reduce::cost::<Self>(shape)
+            }
+
+            fn sample(m: usize, n: usize) -> $crate::model::Sample {
+                $crate::reduce::sample::<Self>(m, n)
+            }
+
+            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+                $crate::reduce::reference::<Self>(sample)
+            }
+        }
+
         #[annotation::model(name = $op, shape = [4096, 1], dtype = "f32", skeleton = "reduce")]
         #[doc = concat!("`", $op, "` 的语义别名。")]
         pub type $alias = $name;

@@ -1,0 +1,60 @@
+//! 算子基座：语义变化点的唯一契约（ADR 0050）。
+//!
+//! 六族骨架（[`Reduce`](crate::reduce::Reduce)、`Unary`、`Binary`、`Format`、`Gemm`）仍各自声明
+//! 族内装配配置；[`Operator`] 是它们之上的统一语义契约，也是 [`Model`] 的行为侧投影。每个具体
+//! 算子同时实现族 trait 与本 trait，方法体只转发，不写第二份算术。
+//!
+//! `#[annotation::model]` 生成的 `MODEL` 是这一契约的一份实例。迁移期两份并存，由
+//! `operator_tests.rs` 的投影一致性测试锁住漂移；每族迁移完成后 `MODEL` 改由 [`model_of`] 生成。
+
+use crate::model::{AxisSpec, Cost, DType, Model, Sample, ShapeContext};
+
+/// 一个算子的全部语义：名字、生产形状、精度、轴、可微性，以及代价/样本/参考三条行为。
+///
+/// 后端不进入本契约：执行变化点归 `cutile::backend`，跨层即破坏分层（ADR 0050）。
+pub trait Operator {
+    /// 注册名：与 `ops/<name>.toml` 的文件名、`REGISTRY` 的一行一致。
+    const NAME: &'static str;
+    /// 生产形状 `(m, n)`：必须是本算子的合法输入。
+    const SHAPE: (usize, usize);
+    /// 输出元素类型。
+    const DTYPE: DType;
+    /// 基本轴（角色 + 表达式字母）。
+    const AXES: &'static [AxisSpec];
+    /// 训练反向图里是否可微（`REGISTRY` 的同名列）。
+    const DIFFERENTIABLE: bool;
+    /// 形状粒度：`m` 必须是它的整数倍；稠密算子为 1。
+    const GROUP: u32 = 1;
+
+    /// 把形状对 `(m, n)` 翻译成算子自己的具名轴上下文。
+    fn shape_ctx(m: usize, n: usize) -> Result<ShapeContext, diagnostic::Error>;
+    /// 给定形状上下文的标量代价；不自洽时报错，不静默截断因子。
+    fn cost(shape: &ShapeContext) -> Result<Cost, diagnostic::Error>;
+    /// 给定 `(m, n)` 的确定性样本。
+    fn sample(m: usize, n: usize) -> Sample;
+    /// 标量参考：不依赖设备，也不依赖片段。
+    fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>>;
+}
+
+/// 把 [`Operator`] 投影成语义表 [`Model`]。
+///
+/// 这是注解与基座之间唯一的翻译点：`#[annotation::model]` 生成
+/// `const MODEL: Model = model_of::<T>();` 之后，`MODEL` 不再是第二份事实。
+/// `const` 使表仍是编译期常量（ADR 0005），不引入运行期注册。
+pub const fn model_of<T: Operator>() -> Model {
+    Model {
+        group: T::GROUP,
+        shape: T::SHAPE,
+        dtype: T::DTYPE,
+        axes: T::AXES,
+        shape_ctx: T::shape_ctx,
+        cost: T::cost,
+        sample: T::sample,
+        reference: T::reference,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    include!("operator_tests.rs");
+}

@@ -61,6 +61,7 @@ pub mod gemv;
 pub mod matmul;
 pub mod matmul_i8;
 pub mod model;
+pub mod operator;
 pub mod softmax;
 pub(crate) use tpl::parse;
 pub mod reduce;
