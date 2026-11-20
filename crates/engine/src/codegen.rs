@@ -13,6 +13,7 @@ use op::decl::Grid;
 use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
+use crate::dialect::Dialect;
 use cutile::harness::{c_literal, output_name, output_of};
 
 /// 后端包装差异表：同一条 kernel body 拼成不同后端的 `kernel_main`，差异全是语法。
@@ -102,7 +103,8 @@ pub(crate) fn kernel_entry(
     )
 }
 
-/// Metal 前置：`.k` 的 C 指针补 `device` 地址空间（MSL 无默认地址空间）。
+/// Metal 前置：`.k` 的 C 指针补 `device` 地址空间（MSL 无默认地址空间）。旧 `Wrap` 路径，只作 oracle。
+#[cfg(test)]
 fn metal_prelude(text: &str, _kernel: &str) -> String {
     msl_address_space(text)
 }
@@ -140,6 +142,7 @@ pub(crate) fn cuda_device(text: &str, kernel: &str) -> String {
     .replace("static ", "__device__ static ")
 }
 
+#[cfg(test)]
 pub(crate) const METAL: Wrap = Wrap {
     prelude: metal_prelude,
     buffers: buffer_decls,
@@ -159,6 +162,134 @@ pub(crate) const CUDA: Wrap = Wrap {
     grid_param: "",
     grid_stmt: "int g = blockIdx.x * blockDim.x + threadIdx.x;",
 };
+
+// ---------------------------------------------------------------------------
+// 方言抽象：`#[annotation::dialect(..)]` 把声明式 spec 展开成 `impl Dialect`，取代上面的
+// `Wrap` 手写表。`Wrap` / `METAL` / `CUDA` 与 `metal_prelude` / `cuda_device` / `buffer_decls`
+// 仍保留——CUDA 侧本次不动（P1 = 另一行 `#[dialect]`），且旧字符串路径要当 oracle 做逐字节对拍。
+// ---------------------------------------------------------------------------
+
+/// Metal 方言：`#[annotation::dialect]` 展开 `impl Dialect for Metal`（见 `crate::dialect`）。
+#[annotation::dialect(
+    entry = "kernel",
+    address_space = "device",
+    device_fn = "",
+    buffer = "    device {ctype}* d_{name} [[buffer({slot})]]",
+    point_param = "uint n [[thread_position_in_grid]]",
+    point_stmt = "",
+    grid_param = "uint3 tid [[thread_position_in_grid]]",
+    grid_stmt = "int g = (int)tid.x;",
+)]
+pub(crate) struct Metal;
+
+/// CUDA 方言：与 `Metal` 同一张表的另一行。当前 CUDA lowering 仍走旧 `Wrap` 路径，这个
+/// `impl` 只是让抽象层从一开始就有一张可对照的第二行，P1 把 CUDA 切过来时直接复用。
+#[allow(dead_code)]
+#[annotation::dialect(
+    entry = "__global__",
+    address_space = "",
+    device_fn = "__device__",
+    buffer = "    {ctype}* d_{name}",
+    point_param = "",
+    point_stmt = "int n = blockIdx.x * blockDim.x + threadIdx.x;",
+    grid_param = "",
+    grid_stmt = "int g = blockIdx.x * blockDim.x + threadIdx.x;",
+)]
+pub(crate) struct Cuda;
+
+/// 方言化的缓冲声明段：按签名序逐条问 `D::buffer_decl`。Metal 带 `[[buffer(slot)]]`，CUDA 不带；
+/// 槽位序与驱动侧 `setBuffer:atIndex:` 同源。
+fn dialect_buffers<D: Dialect>(signature: &Signature) -> String {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+        .map(|(slot, param)| D::buffer_decl(param, slot))
+        .collect::<Vec<_>>()
+        .join(",\n")
+}
+
+/// 方言化的地址空间改写：把六种裸指针拼法逐条交给 `D::address_space`，命中就替换。限定词为空的
+/// 方言（CUDA）每条都是恒等、整体无操作；Metal 的六型规则与旧 `msl_address_space` 逐字节一致。
+fn dialect_address_space<D: Dialect>(text: &str) -> String {
+    const SPELLINGS: [&str; 6] = [
+        "const float *",
+        "const unsigned char *",
+        "const u8 *",
+        "float *",
+        "unsigned char *",
+        "u8 *",
+    ];
+    let mut out = text.to_owned();
+    for spelling in SPELLINGS {
+        let qualified = D::address_space(spelling);
+        if qualified != spelling {
+            out = out.replace(spelling, &qualified);
+        }
+    }
+    out.replace("\u{1}", " *")
+}
+
+/// 方言化前置：地址空间改写之后，再按 `D::device_fn` 补设备函数限定词。Metal 的限定词为空 →
+/// 只剩地址空间；CUDA 的地址空间为空 → 只剩 `__device__` 注入。两者各自与旧路径逐字节一致。
+fn dialect_prelude<D: Dialect>(text: &str, kernel: &str) -> String {
+    let text = dialect_address_space::<D>(text);
+    let qual = D::device_fn(kernel);
+    if qual.is_empty() {
+        text
+    } else {
+        text.replace(&format!("void {kernel}("), &format!("{qual} void {kernel}("))
+            .replace("static ", &format!("{qual} static "))
+    }
+}
+
+/// [`kernel_main`] 的方言版：拼装规则与旧 `Wrap` 版完全一致，只把 `wrap.prelude` 换成
+/// [`dialect_prelude`]、`wrap.decl` 换成 [`Dialect::ENTRY`]。
+fn kernel_main_dialect<D: Dialect>(
+    source: &str,
+    kernel: &str,
+    buffers: &str,
+    tid_param: &str,
+    tid_stmt: &str,
+    body: &str,
+) -> String {
+    kernel_entry_dialect::<D>(
+        source,
+        kernel,
+        buffers,
+        (tid_param, tid_stmt),
+        body,
+        "kernel_main",
+    )
+}
+
+/// [`kernel_entry`] 的方言版：多段设备源同处一个文件时入口名不同，其余拼装规则一致。
+fn kernel_entry_dialect<D: Dialect>(
+    source: &str,
+    kernel: &str,
+    buffers: &str,
+    tid: (&str, &str),
+    body: &str,
+    entry: &str,
+) -> String {
+    let (tid_param, tid_stmt) = tid;
+    let param = if tid_param.is_empty() {
+        String::new()
+    } else {
+        format!(",\n    {tid_param}")
+    };
+    let stmt = if tid_stmt.is_empty() {
+        String::new()
+    } else {
+        format!("    {tid_stmt}\n")
+    };
+    format!(
+        "{}\n\n{} void {entry}(\n{buffers}{param}) {{\n{stmt}{body}\n}}",
+        dialect_prelude::<D>(source, kernel),
+        D::ENTRY,
+    )
+}
 
 // ---------------------------------------------------------------------------
 // 后端无关的 lowering 原语：Metal / CUDA 共用同一条 body，只换方言表。
@@ -205,6 +336,46 @@ pub(crate) fn grid_kernel(
         &buffers,
         wrap.point_param,
         wrap.point_stmt,
+        &body,
+    ))
+}
+
+/// [`grid_kernel`] 的方言版：逐点网格内核，后端差异由 `D: Dialect` 提供。与旧 `Wrap` 版逐字节一致。
+fn grid_kernel_dialect<D: Dialect>(
+    kernel_source: &str,
+    signature: &Signature,
+    guard_len: Option<i64>,
+) -> Result<String> {
+    let scalars = signature
+        .params()
+        .iter()
+        .filter(|param| !param.ctype.is_buffer())
+        .count();
+    if scalars != 1 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "`{}` 不是逐点签名（标量 {scalars} 项）：行跨步/归约 lowering 不在此列",
+                signature.op(),
+            ),
+        )
+        .with("engine::codegen::grid_kernel_dialect"));
+    }
+    let call = grid_args(signature.params());
+    let buffers = dialect_buffers::<D>(signature);
+    let body = match guard_len {
+        Some(len) => format!(
+            "    if (n < {len}) {{\n        {}({call});\n    }}",
+            signature.kernel()
+        ),
+        None => format!("    {}({call});", signature.kernel()),
+    };
+    Ok(kernel_main_dialect::<D>(
+        kernel_source,
+        &signature.kernel(),
+        &buffers,
+        D::POINT_PARAM,
+        D::POINT_STMT,
         &body,
     ))
 }
@@ -269,6 +440,50 @@ pub(crate) fn chunk_reduce_entry(
         &signature.kernel(),
         &buffers,
         (wrap.grid_param, wrap.grid_stmt),
+        &body,
+        entry,
+    ))
+}
+
+/// [`chunk_reduce`] 的方言版：分块归约内核，后端差异由 `D: Dialect` 提供。
+fn chunk_reduce_dialect<D: Dialect>(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+) -> Result<String> {
+    chunk_reduce_entry_dialect::<D>(
+        kernel_source,
+        signature,
+        sample,
+        chunk,
+        reduce_func,
+        "kernel_main",
+    )
+}
+
+/// [`chunk_reduce_entry`] 的方言版：多段归一化 lowering 里部分归约段的入口名与其他段区分。
+fn chunk_reduce_entry_dialect<D: Dialect>(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+    entry: &str,
+) -> Result<String> {
+    let input = read_input(signature)?;
+    let output = output_name(signature)?;
+    let len = length_scalar(signature, sample)?;
+    let buffers = dialect_buffers::<D>(signature);
+    let body = format!(
+        "    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    d_{output}[g] = {reduce_func}(d_{input} + start, len, 1);"
+    );
+    Ok(kernel_entry_dialect::<D>(
+        kernel_source,
+        &signature.kernel(),
+        &buffers,
+        (D::GRID_PARAM, D::GRID_STMT),
         &body,
         entry,
     ))
@@ -348,13 +563,27 @@ pub fn metal_harness(
     Ok((msl, metal_driver(signature, sample, output)?))
 }
 
-/// 生产态 Metal 逐点网格内核（`grid_kernel` 的 Metal 方言）。
+/// 生产态 Metal 逐点网格内核（[`grid_kernel_dialect`] 的 Metal 方言）。
 ///
 /// 带长度守卫：`dispatchThreads` 会把总线程数向上取整到线程组的整数倍，末组多出来的线程必须
 /// 自己跳过——否则越界线程会往缓冲尾部之外写，把别的缓冲改掉而结果看起来「只是有点错」。
 ///
 /// # Errors：不是逐点签名（标量数 ≠ 1）、模板缺内核函数，或样本缺长度标量。
 pub fn metal_grid_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<String> {
+    grid_kernel_dialect::<Metal>(
+        kernel_source,
+        signature,
+        Some(length_scalar(signature, sample)?),
+    )
+}
+
+/// 旧 `Wrap` 字符串路径的逐点内核：只作 oracle，与 [`metal_grid_kernel`] 逐字节对拍。
+#[cfg(test)]
+fn metal_grid_kernel_legacy(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
@@ -387,12 +616,28 @@ pub fn metal_loop_kernel(
     grid: &Grid,
 ) -> Result<String> {
     if grid.dims.is_empty() {
+        return serial_kernel_dialect::<Metal>(kernel_source, signature, sample);
+    }
+    injected_kernel_dialect::<Metal>(kernel_source, signature, sample, grid)
+}
+
+/// 旧 `Wrap` 字符串路径的循环注入内核：只作 oracle，与 [`metal_loop_kernel`] 逐字节对拍。
+#[cfg(test)]
+fn metal_loop_kernel_legacy(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: &Grid,
+) -> Result<String> {
+    if grid.dims.is_empty() {
         return serial_kernel(kernel_source, signature, sample);
     }
     injected_kernel(kernel_source, signature, sample, grid)
 }
 
-/// 串行（零维网格）特例：不追加 `tid`、不绑循环，缓冲原样透传、标量取样本值。
+/// 串行（零维网格）特例：不追加 `tid`、不绑循环，缓冲原样透传、标量取样本值。旧 `Wrap` 路径，
+/// 只作 oracle。
+#[cfg(test)]
 fn serial_kernel(kernel_source: &str, signature: &Signature, sample: &Sample) -> Result<String> {
     let call = launch_args(sample, signature.params())?;
     let buffers = buffer_decls(signature);
@@ -403,8 +648,27 @@ fn serial_kernel(kernel_source: &str, signature: &Signature, sample: &Sample) ->
     ))
 }
 
+/// [`serial_kernel`] 的方言版：零维网格的串行特例，后端差异由 `D: Dialect` 提供。
+fn serial_kernel_dialect<D: Dialect>(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<String> {
+    let call = launch_args(sample, signature.params())?;
+    let buffers = dialect_buffers::<D>(signature);
+    let body = format!("    {}({call});", signature.kernel());
+    Ok(kernel_entry_dialect::<D>(
+        kernel_source,
+        &signature.kernel(),
+        &buffers,
+        ("", ""),
+        &body,
+        "kernel_main",
+    ))
+}
+
 /// 带线程下标的内核包裹：给内部内核透传 `tid`、声明 `uint3 tid [[thread_position_in_grid]]`，
-/// 循环注入与分块扫描两条 lowering 共用（串行零维用 [`serial_kernel`]，不追加 `tid`）。
+/// 循环注入与分块扫描两条 lowering 共用（串行零维用 [`serial_kernel`]，不追加 `tid`）。旧路径。
 fn tid_kernel_main(
     body: &str,
     signature: &Signature,
@@ -419,7 +683,26 @@ fn tid_kernel_main(
     ))
 }
 
-/// 循环注入（非零网格）：给内部内核追加 `uint3 tid`、绑循环头到线程下标、调用点透传 `tid`。
+/// [`tid_kernel_main`] 的方言版：线程下标形参取 [`Dialect::GRID_PARAM`]、入口关键字取
+/// [`Dialect::ENTRY`]，其余拼装规则一致。
+fn tid_kernel_main_dialect<D: Dialect>(
+    body: &str,
+    signature: &Signature,
+    sample: &Sample,
+    entry: &str,
+) -> Result<String> {
+    let call = format!("{}, tid", launch_args(sample, signature.params())?);
+    let buffers = dialect_buffers::<D>(signature);
+    Ok(format!(
+        "{body}\n\n{} void {entry}(\n{buffers},\n    {}) {{\n    {}({call});\n}}",
+        D::ENTRY,
+        D::GRID_PARAM,
+        signature.kernel(),
+    ))
+}
+
+/// 循环注入（非零网格）：给内部内核追加 `uint3 tid`、绑循环头到线程下标、调用点透传 `tid`。旧路径。
+#[cfg(test)]
 fn injected_kernel(
     kernel_source: &str,
     signature: &Signature,
@@ -432,8 +715,33 @@ fn injected_kernel(
     tid_kernel_main(&body, signature, sample, "kernel_main")
 }
 
-/// 生产态 Metal 分块归约内核（`chunk_reduce` 的 Metal 方言）。
+/// [`injected_kernel`] 的方言版：地址空间由 [`dialect_address_space`] 提供，其余步骤复用共享原语。
+fn injected_kernel_dialect<D: Dialect>(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: &Grid,
+) -> Result<String> {
+    let mut body = dialect_address_space::<D>(kernel_source);
+    body = thread_param(&body, &signature.kernel())?;
+    body = bind_grid_loops(body, grid)?;
+    tid_kernel_main_dialect::<D>(&body, signature, sample, "kernel_main")
+}
+
+/// 生产态 Metal 分块归约内核（[`chunk_reduce_dialect`] 的 Metal 方言）。
 pub fn metal_chunk_reduce(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+) -> Result<String> {
+    chunk_reduce_dialect::<Metal>(kernel_source, signature, sample, chunk, reduce_func)
+}
+
+/// 旧 `Wrap` 字符串路径的分块归约内核：只作 oracle，与 [`metal_chunk_reduce`] 逐字节对拍。
+#[cfg(test)]
+fn metal_chunk_reduce_legacy(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
@@ -445,6 +753,26 @@ pub fn metal_chunk_reduce(
 
 /// [`metal_chunk_reduce`] 的具名版本：多段程序里部分归约段要与其他段区分入口名。
 pub fn metal_chunk_reduce_entry(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+    entry: &str,
+) -> Result<String> {
+    chunk_reduce_entry_dialect::<Metal>(
+        kernel_source,
+        signature,
+        sample,
+        chunk,
+        reduce_func,
+        entry,
+    )
+}
+
+/// 旧 `Wrap` 字符串路径的具名分块归约：只作 oracle，与 [`metal_chunk_reduce_entry`] 逐字节对拍。
+#[cfg(test)]
+fn metal_chunk_reduce_entry_legacy(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
@@ -1194,3 +1522,168 @@ int main(int argc, const char **argv) {{
 // CUDA 侧（设备源 + 主机驱动）整体住在 `cuda_codegen`，这里只把路径接续上：
 // 调用点仍写 `crate::codegen::cuda_*` / `crate::codegen::Driver`，不必知道文件怎么分家。
 pub use crate::cuda_codegen::*;
+
+// ---------------------------------------------------------------------------
+// 方言 oracle：`#[dialect]` 生成的 Metal 路径必须与旧 `Wrap` 字符串路径逐字节一致。
+// 旧路径（`*_legacy` / `serial_kernel` / `injected_kernel` / `METAL`）只在 `#[cfg(test)]`
+// 下编译，这里的对拍就是「重构无损」的锁：任何一字节偏差都让 `assert_eq!` 失败。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod dialect_oracle {
+    use super::*;
+
+    /// 逐点签名：一个只读输入、一个可写输出、唯一长度标量 `N`。
+    fn pointwise_signature() -> Signature {
+        Signature::parse(
+            "scale_f32",
+            "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n",
+        )
+        .expect("逐点签名")
+    }
+
+    /// 逐点内核体：六种裸指针拼法各现一次，让地址空间改写有可区分的输入。
+    fn pointwise_source() -> String {
+        r#"void cutile_scale_f32_kernel(const float *a, float *y, int N) {
+    const float *src = a;
+    float *dst = y;
+    const unsigned char *m = (const unsigned char *)a;
+    unsigned char *f = (unsigned char *)y;
+    for (int i = 0; i < N; ++i) { dst[i] = src[i]; }
+}
+"#
+        .to_string()
+    }
+
+    fn pointwise_sample() -> Sample {
+        Sample {
+            m: 4,
+            n: 1,
+            scalars: vec![("N", 4)],
+            buffers: vec![],
+        }
+    }
+
+    #[test]
+    fn metal_pointwise_dialect_matches_legacy_byte_for_byte() {
+        let signature = pointwise_signature();
+        let sample = pointwise_sample();
+        let source = pointwise_source();
+        let new = metal_grid_kernel(&source, &signature, &sample).expect("方言逐点");
+        let old = metal_grid_kernel_legacy(&source, &signature, &sample).expect("旧逐点");
+        assert_eq!(new, old);
+    }
+
+    /// 循环注入签名：两个只读输入、一个可写输出、唯一长度标量 `N`。
+    fn loop_signature() -> Signature {
+        Signature::parse(
+            "gemv",
+            "void cutile_gemv_kernel(const float *x, const unsigned char *w, float *y, int N) {}\n",
+        )
+        .expect("循环签名")
+    }
+
+    /// 循环内核体：带一个可被网格绑定的串行循环 `for (int i = 0; i < N; ++i)`。
+    fn loop_source() -> String {
+        r#"void cutile_gemv_kernel(const float *x, const unsigned char *w, float *y, int N) {
+    float acc = 0.0f;
+    for (int i = 0; i < N; ++i) { acc += x[i] * (float)w[i]; }
+    y[0] = acc;
+}
+"#
+        .to_string()
+    }
+
+    fn loop_sample() -> Sample {
+        Sample {
+            m: 4,
+            n: 1,
+            scalars: vec![("N", 4)],
+            buffers: vec![],
+        }
+    }
+
+    #[test]
+    fn metal_loop_serial_dialect_matches_legacy_byte_for_byte() {
+        let signature = loop_signature();
+        let sample = loop_sample();
+        let source = loop_source();
+        let grid = Grid { dims: vec![] };
+        let new = metal_loop_kernel(&source, &signature, &sample, &grid).expect("方言串行");
+        let old = metal_loop_kernel_legacy(&source, &signature, &sample, &grid).expect("旧串行");
+        assert_eq!(new, old);
+    }
+
+    #[test]
+    fn metal_loop_injected_dialect_matches_legacy_byte_for_byte() {
+        let signature = loop_signature();
+        let sample = loop_sample();
+        let source = loop_source();
+        let grid = Grid {
+            dims: vec![("i".to_string(), "N".to_string())],
+        };
+        let new = metal_loop_kernel(&source, &signature, &sample, &grid).expect("方言循环注入");
+        let old =
+            metal_loop_kernel_legacy(&source, &signature, &sample, &grid).expect("旧循环注入");
+        assert_eq!(new, old);
+    }
+
+    /// 分块归约签名：一个只读输入、一个可写输出、唯一长度标量 `N`。
+    fn reduce_signature() -> Signature {
+        Signature::parse(
+            "red",
+            "void cutile_red_kernel(const float *a, float *y, int N) {}\n",
+        )
+        .expect("归约签名")
+    }
+
+    fn reduce_source() -> String {
+        "void cutile_red_kernel(const float *a, float *y, int N) {}\n".to_string()
+    }
+
+    fn reduce_sample() -> Sample {
+        Sample {
+            m: 16,
+            n: 1,
+            scalars: vec![("N", 16)],
+            buffers: vec![],
+        }
+    }
+
+    #[test]
+    fn metal_chunk_reduce_dialect_matches_legacy_byte_for_byte() {
+        let signature = reduce_signature();
+        let sample = reduce_sample();
+        let source = reduce_source();
+        let new = metal_chunk_reduce(&source, &signature, &sample, 4, "block_reduce")
+            .expect("方言分块归约");
+        let old = metal_chunk_reduce_legacy(&source, &signature, &sample, 4, "block_reduce")
+            .expect("旧分块归约");
+        assert_eq!(new, old);
+    }
+
+    #[test]
+    fn metal_chunk_reduce_entry_dialect_matches_legacy_byte_for_byte() {
+        let signature = reduce_signature();
+        let sample = reduce_sample();
+        let source = reduce_source();
+        let new = metal_chunk_reduce_entry(
+            &source,
+            &signature,
+            &sample,
+            4,
+            "block_reduce",
+            "partial_reduce",
+        )
+        .expect("方言具名分块归约");
+        let old = metal_chunk_reduce_entry_legacy(
+            &source,
+            &signature,
+            &sample,
+            4,
+            "block_reduce",
+            "partial_reduce",
+        )
+        .expect("旧具名分块归约");
+        assert_eq!(new, old);
+    }
+}

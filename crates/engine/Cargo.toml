@@ -11,6 +11,7 @@ publish = false
 autotests = false
 
 [dependencies]
+annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 storage = { path = "../storage", package = "llm-storage" }

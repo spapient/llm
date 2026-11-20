@@ -464,6 +464,7 @@ name = "llm-engine"
 version = "0.1.0"
 dependencies = [
  "cutile",
+ "llm-annotation",
  "llm-diagnostic",
  "llm-op",
  "llm-prof",

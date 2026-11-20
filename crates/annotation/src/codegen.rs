@@ -11,7 +11,7 @@
 //! （`declaration` 这类名字太容易撞车，撞了之后报错会指向用户自己的方法）。
 
 use crate::syntax;
-use crate::syntax::{Declaration, ModelDecl, RuntimeDecl};
+use crate::syntax::{Declaration, DialectDecl, ModelDecl, RuntimeDecl};
 
 /// 渲染实现；`ty` 必须是 [`crate::syntax::target_name`] 给出的类型名。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
@@ -345,6 +345,65 @@ fn shape(dims: &[usize]) -> String {
 /// Rust 字符串字面量。解析层已拒绝转义序列，因此 `{:?}` 的输出与输入逐字相同。
 fn literal(text: &str) -> String {
     format!("{text:?}")
+}
+
+/// 把 `#[dialect(..)]` 渲染成 `impl ::llm_engine::dialect::Dialect for <Vendor>`。
+///
+/// 四个常量直接取注解里的字符串字面量；三个方法按「限定词 / 模板」渲染成确定性的一小段代码：
+/// `address_space` 在限定词非空时把它拼到声明前、并用 `\u{1}` 哨兵占住 `*`（限定词为空即恒等）；
+/// `device_fn` 返回限定词自身；`buffer_decl` 把 `{ctype}` / `{name}` / `{slot}` 三个命名占位符
+/// 填进模板。生成的实现用绝对路径 `::llm_engine::dialect::Dialect` 指回契约所在 crate（engine 里
+/// 有 `extern crate self as llm_engine;`），用 `::op::sig::Param` 指回 `buffer_decl` 形参类型（与
+/// 契约 `dialect.rs` 自己的 `use op::sig::Param;` 同一口径）——注解 crate 因此对 engine / op 没有
+/// 依赖（同一约定见 [`render_model`]）。
+pub(crate) fn render_dialect(declaration: &DialectDecl, ty: &str) -> String {
+    let entry = literal(&declaration.entry);
+    let address_space = literal(&declaration.address_space);
+    let device_fn = literal(&declaration.device_fn);
+    let buffer = literal(&declaration.buffer);
+    let point_param = literal(&declaration.point_param);
+    let point_stmt = literal(&declaration.point_stmt);
+    let grid_param = literal(&declaration.grid_param);
+    let grid_stmt = literal(&declaration.grid_stmt);
+
+    let mut code = String::new();
+    code.push_str("#[automatically_derived]\n");
+    code.push_str(&format!("impl ::llm_engine::dialect::Dialect for {ty} {{\n"));
+    code.push_str("    fn address_space(decl: &str) -> ::std::string::String {\n");
+    code.push_str(&format!("        if {address_space}.is_empty() {{\n"));
+    code.push_str("            decl.to_owned()\n");
+    code.push_str("        } else {\n");
+    code.push_str(&format!(
+        "            ::std::format!(\"{{}} {{}}\", {address_space}, decl).replace(\" *\", \"\\u{{1}}\")\n"
+    ));
+    code.push_str("        }\n");
+    code.push_str("    }\n");
+    code.push_str("    fn device_fn(_name: &str) -> ::std::string::String {\n");
+    code.push_str(&format!("        {device_fn}.to_owned()\n"));
+    code.push_str("    }\n");
+    code.push_str(
+        "    fn buffer_decl(param: &::op::sig::Param, slot: usize) -> ::std::string::String {\n",
+    );
+    code.push_str("        let ctype = param.ctype.c_name();\n");
+    code.push_str("        let name = param.name.as_str();\n");
+    code.push_str("        let slot = slot.to_string();\n");
+    // 用 `.replace` 串而不是 `format!` 命名参数：CUDA 模板不含 `{slot}`，`format!` 会把未用到的
+    // 命名参数当编译错误；`.replace` 对模板里不存在的占位符是自然无操作。
+    code.push_str(&format!(
+        "        {buffer}.replace(\"{{ctype}}\", ctype).replace(\"{{name}}\", name).replace(\"{{slot}}\", &slot)\n"
+    ));
+    code.push_str("    }\n");
+    code.push_str(&format!("    const ENTRY: &'static str = {entry};\n"));
+    code.push_str(&format!(
+        "    const POINT_PARAM: &'static str = {point_param};\n"
+    ));
+    code.push_str(&format!(
+        "    const POINT_STMT: &'static str = {point_stmt};\n"
+    ));
+    code.push_str(&format!("    const GRID_PARAM: &'static str = {grid_param};\n"));
+    code.push_str(&format!("    const GRID_STMT: &'static str = {grid_stmt};\n"));
+    code.push_str("}\n");
+    code
 }
 
 #[cfg(test)]
