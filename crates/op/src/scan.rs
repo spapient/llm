@@ -5,8 +5,13 @@
 //! 结合律、串行金标、Blelloch 并行扫描与指数梯形离散化——作为未来 `scan_f32` 算子的标量参考。
 //!
 //! 分层：[`Monoid`] 只约定「结合律 + 幺元」，[`scan_serial`] / [`scan_blelloch`] 不认识任何 SSM
-//! 语义；[`SsmStep`] 是那个幺半群的具体实例（对角 `A`，每步 `N` 次乘加）；[`exp_trapezoid`]
-//! 把连续 `h'=λh+bx` 离散成 [`SsmStep`] 序列。复值 2×2 块旋转（Mamba-3 实值扩展）在后续阶段接入。
+//! 语义；[`SsmStep`] 是那个幺半群的具体实例（对角 `A`，每步 `N` 次乘加）；[`exp_zero_order`]
+//! 把连续 `h'=λh+bx` 按步内输入取常数离散成 [`SsmStep`] 序列。
+//!
+//! [`PlaneStep`] 是同一套算术的复值形态：`λ` 带虚部时状态不再是实标量，而是一对实值分量
+//! （旋转 + 衰减的 2×2 块），离散化由 [`exp_trapezoid`] 按双抽头梯形给出——它和
+//! [`exp_zero_order`] 是两条**不同**的式子（后者步内输入取常数，前者用 `x_{t−1}` 与 `x_t` 的平均），
+//! 名字按各自的实际算式取，不互相借用。
 
 use core::fmt::Debug;
 
@@ -37,12 +42,16 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
     fn abs(self) -> Self;
     /// 自然对数（自信息 `−ln p` 与交叉熵的唯一来源，不另写近似）。
     fn ln(self) -> Self;
+    /// 正弦（复值状态的相位，单位弧度）。
+    fn sin(self) -> Self;
+    /// 余弦（复值状态的相位，单位弧度）。
+    fn cos(self) -> Self;
     /// 由 `f64` 字面量构造（仅用于常量，`f32` 下可能有损）。
     fn from_f64(v: f64) -> Self;
 }
 
 /// 一份算术骨架为 `f32` / `f64` 两个标量实现，能变的部分只有类型、负无穷与 `f64` 降级式；
-/// 逐字写两份会把 10 个方法的加/减/乘/除复制成孪生（jscpd 的 15 行克隆源）。
+/// 逐字写两份会把 12 个方法的加/减/乘/除与超越函数复制成孪生（jscpd 的 15 行克隆源）。
 macro_rules! impl_scalar {
     ($ty:ty, $neg_inf:expr, $from_f64:expr) => {
         impl Scalar for $ty {
@@ -76,6 +85,12 @@ macro_rules! impl_scalar {
             }
             fn ln(self) -> Self {
                 <$ty>::ln(self)
+            }
+            fn sin(self) -> Self {
+                <$ty>::sin(self)
+            }
+            fn cos(self) -> Self {
+                <$ty>::cos(self)
             }
             fn from_f64(v: f64) -> Self {
                 ($from_f64)(v)
@@ -205,11 +220,14 @@ impl<S: Scalar> Monoid for SsmStep<S> {
     }
 }
 
-/// 指数梯形离散化（对角 `A`，§5.6）：连续 `h' = λ h + b x`，步长 `dt`，步内输入取常数（ZOH）。
+/// 零阶保持离散化（对角 `A`，§5.6）：连续 `h' = λ h + b x`，步长 `dt`，步内输入取常数。
 ///
 /// 输出 [`SsmStep`]：`ā = exp(λ·dt)`，`b̄ = expm1(λ·dt)/λ · b`；`λ = 0` 时取极限 `b̄ = dt·b`。
+/// `expm1` 的写法只为消 `λ·dt ≈ 0` 的灾难性消去，公式本身仍是零阶保持；`h'` 的**双抽头**梯形是
+/// 另一条式子，住 [`exp_trapezoid`]——两条离散化的名字按各自算式取，不互相借用。
+///
 /// 对 `d×N` 状态逐维调用即可得到整层一步的 `d·N` 个半群步。
-pub fn exp_trapezoid<S: Scalar>(lam: S, b: S, dt: S) -> SsmStep<S> {
+pub fn exp_zero_order<S: Scalar>(lam: S, b: S, dt: S) -> SsmStep<S> {
     let a = lam.mul(dt).exp();
     let b = if lam == S::ZERO {
         dt.mul(b)
@@ -217,6 +235,66 @@ pub fn exp_trapezoid<S: Scalar>(lam: S, b: S, dt: S) -> SsmStep<S> {
         lam.mul(dt).exp_m1().div(lam).mul(b)
     };
     SsmStep { a, b }
+}
+
+/// 复值状态的 2×2 实值块：`s' = ā·s + b̄·(B·x)`，`s` 是相邻两个实值分量（实部、虚部）。
+///
+/// `a` 是复乘子 `ā = |ā|·(cos φ + i·sin φ)`，`b` 是复输入系数；`select` 是实值选择量 `B·x`。
+/// 复值状态不必引入复数类型：任何带虚部 `λ` 的 SSM 都能写成一族这样的 2×2 块，这也是 Mamba-3
+/// 「状态宽减半、同 PPL」那条实证红利的实值实现形态（§5.6）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaneStep<S> {
+    /// 复乘子 `ā`：`[实部, 虚部]`。
+    pub a: [S; 2],
+    /// 复输入系数 `b̄`：`[实部, 虚部]`。
+    pub b: [S; 2],
+}
+
+impl<S: Scalar> PlaneStep<S> {
+    /// 幺元步：`ā = 1`、`b̄ = 0`（状态不变）。
+    pub const fn identity() -> Self {
+        Self {
+            a: [S::ONE, S::ZERO],
+            b: [S::ZERO, S::ZERO],
+        }
+    }
+
+    /// 施加一步：`(re', im') = ā·(re, im) + b̄·select`。
+    pub fn apply(&self, state: [S; 2], select: S) -> [S; 2] {
+        let [a_re, a_im] = self.a;
+        let [b_re, b_im] = self.b;
+        let [re, im] = state;
+        [
+            a_re.mul(re).sub(a_im.mul(im)).add(b_re.mul(select)),
+            a_im.mul(re).add(a_re.mul(im)).add(b_im.mul(select)),
+        ]
+    }
+}
+
+/// 双抽头指数梯形离散化（§5.6，Mamba-3）：`λ = λ_re + i·ω`，输入取 `x_{t−1}` 与 `x_t` 的平均。
+///
+/// 连续方程 `h' = λ h + B x` 在 `[t−1, t]` 上按梯形求积：`h_t = ā·h_{t−1} + (dt/2)(ā·B x_{t−1} + B x_t)`，
+/// 其中 `ā = exp(λ·dt)`，于是输入系数是复值 `b̄ = (dt/2)·(ā·x_{t−1} + x_t)`——`B` 留在调用方
+/// （它是逐状态维的实值选择量，不是这一层的时间离散化）。
+///
+/// `ω = 0` 时 `ā` 退化为实衰减、`b̄` 的虚部为零，`PlaneStep` 与 [`exp_zero_order`] 的实值口径同形；
+/// 但两条式子**数值不同**（梯形用两端平均，零阶保持用左端常数），别把其中一个当成另一个的等价物。
+pub fn exp_trapezoid<S: Scalar>(lam_re: S, omega: S, dt: S, prev: S, cur: S) -> PlaneStep<S> {
+    let decay = lam_re.mul(dt);
+    let phase = omega.mul(dt);
+    let magnitude = decay.exp();
+    let [sin, cos] = [phase.sin(), phase.cos()];
+    let [a_re, a_im] = [magnitude.mul(cos), magnitude.mul(sin)];
+    // (dt/2)·(ā·x_{t−1} + x_t)：`ā·x_{t−1}` 是复值，`x_t` 只进实部。
+    let half = dt.div(S::ONE.add(S::ONE));
+    let b = [
+        half.mul(a_re.mul(prev).add(cur)),
+        half.mul(a_im.mul(prev)),
+    ];
+    PlaneStep {
+        a: [a_re, a_im],
+        b,
+    }
 }
 
 /// 沿半群步序列推进状态，返回各步状态（`out[t]` = 施加前 `t` 步后的状态，`out[0] = init`）。
@@ -353,28 +431,88 @@ mod tests {
 
     /// `λ = 0` 时退化为 `ā = 1`、`b̄ = dt·b`。
     #[test]
-    fn exp_trapezoid_zero_lambda() {
-        let s = exp_trapezoid(0.0f64, 2.0, 0.5);
+    fn exp_zero_order_zero_lambda() {
+        let s = exp_zero_order(0.0f64, 2.0, 0.5);
         assert_eq!(s.a, 1.0);
         assert_eq!(s.b, 1.0);
     }
 
-    /// 离散化与直接 `exp` / `exp_m1` 公式一致。
+    /// 零阶保持与直接 `exp` / `exp_m1` 公式一致。
     #[test]
-    fn exp_trapezoid_matches_direct() {
+    fn exp_zero_order_matches_direct() {
         let (lam, b, dt) = (-0.5f64, 3.0, 0.25);
-        let s = exp_trapezoid(lam, b, dt);
+        let s = exp_zero_order(lam, b, dt);
         let expected_a = (lam * dt).exp();
         let expected_b = (lam * dt).exp_m1() / lam * b;
         assert!((s.a - expected_a).abs() < 1e-12);
         assert!((s.b - expected_b).abs() < 1e-12);
+    }
+
+    /// 幺元块不改状态。
+    #[test]
+    fn plane_identity_leaves_state() {
+        assert_eq!(PlaneStep::identity().apply([0.3, -0.8], 2.5), [0.3, -0.8]);
+    }
+
+    /// `apply` 就是复数乘加：`ā·s + b̄·select`。
+    #[test]
+    fn plane_apply_is_complex_arithmetic() {
+        let (a_re, a_im, b_re, b_im) = (0.6f64, 0.8, -0.2, 0.5);
+        let s = PlaneStep {
+            a: [a_re, a_im],
+            b: [b_re, b_im],
+        };
+        let (re, im) = (0.7f64, -1.1);
+        let select = 2.0f64;
+        let [got_re, got_im] = s.apply([re, im], select);
+        assert!((got_re - (a_re * re - a_im * im + b_re * select)).abs() < 1e-12);
+        assert!((got_im - (a_im * re + a_re * im + b_im * select)).abs() < 1e-12);
+    }
+
+    /// 旋转只改相位、不改模长：任意 `ω` 下 `|ā| = exp(λ_re·dt)`。
+    #[test]
+    fn rotation_preserves_magnitude() {
+        let dt = 0.125f64;
+        let expected = (-0.5 * dt).exp();
+        for omega in [0.0, 0.3, 1.7, -2.9] {
+            let [re, im] = exp_trapezoid(-0.5f64, omega, dt, 1.0, 1.0).a;
+            assert!((re.hypot(im) - expected).abs() < 1e-12, "ω={omega}");
+        }
+    }
+
+    /// `ω = 0` 时块退化为实衰减，输入系数的虚部为零。
+    #[test]
+    fn zero_frequency_is_real() {
+        let s = exp_trapezoid(-0.4f64, 0.0, 0.25, 0.5, 1.0);
+        assert_eq!(s.a[1], 0.0);
+        assert_eq!(s.b[1], 0.0);
+        let expected_b = 0.25 / 2.0 * ((-0.4 * 0.25f64).exp() * 0.5 + 1.0);
+        assert!((s.b[0] - expected_b).abs() < 1e-12);
+    }
+
+    /// 双抽头梯形与零阶保持是两条式子：同样的输入在本步给出不同的状态。
+    #[test]
+    fn trapezoid_and_zero_order_differ() {
+        let (lam, dt) = (-0.6f64, 0.3);
+        let plane = exp_trapezoid(lam, 0.0, dt, 1.0, 1.0).apply([0.0, 0.0], 1.0)[0];
+        let order = exp_zero_order(lam, 1.0, dt).apply(0.0);
+        assert!((plane - order).abs() > 1e-3, "{plane} vs {order}");
+    }
+
+    /// 梯形真的用了上一个抽头：`x_{t−1}` 不同，本步状态就不同。
+    #[test]
+    fn trapezoid_uses_the_previous_tap() {
+        let (lam, omega, dt) = (-0.5f64, 0.9, 0.2);
+        let a = exp_trapezoid(lam, omega, dt, 0.0, 1.0).apply([0.0, 0.0], 1.0);
+        let b = exp_trapezoid(lam, omega, dt, 1.0, 1.0).apply([0.0, 0.0], 1.0);
+        assert!(a[0] != b[0] || a[1] != b[1]);
     }
 }
 
 pub mod scan_f32 {
     //! `scan_f32`：β 指数梯形扫描（§5.6）的离散递推 `s_t = a·s_{t-1} + b·x_t`。
     //!
-    //! 连续动力学 `h' = λ h + b x` 经 [`crate::scan::exp_trapezoid`] 离散成对角半群步 `(a, b)`；
+    //! 连续动力学 `h' = λ h + b x` 经 [`crate::scan::exp_zero_order`] 离散成对角半群步 `(a, b)`；
     //! 本算子把这两个离散系数固定为模板常量，内核沿时间轴串行递推。扫描的**第二份实现**（幺半群
     //! 前缀、Blelloch 并行扫描、结合律与金标验证）住在 [`crate::scan`]，本模块只声明这份算子的
     //! 形状、代价、样本与标量参考，`#[annotation::model]` 装配成 `MODEL`。

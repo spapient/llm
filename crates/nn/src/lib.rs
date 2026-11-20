@@ -75,6 +75,7 @@ mod lm_head {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct LmHead;
 }
+mod mamba;
 mod matmul;
 mod mhc;
 mod mix;
@@ -208,6 +209,9 @@ pub use latent::{Backread, Global, LOCAL_MAX, LOCAL_MIN, Layer};
 
 #[doc(inline)]
 pub use lm_head::LmHead;
+
+#[doc(inline)]
+pub use mamba::{Carry, Mamba};
 
 #[doc(inline)]
 pub use matmul::MatMul;

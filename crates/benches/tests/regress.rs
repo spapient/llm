@@ -162,6 +162,40 @@ const SCENARIOS: &[Scenario] = &[
         batch: 1,
         bounds: (256, 256),
     },
+    // 量化 GEMM 的分块执行路径：位流解一遍、再按列块整数累加（旧遍历逐元素重解位流）。
+    Scenario {
+        group: "gemm_quant",
+        benchmark: "tiled_i2_256x256_k8",
+        scenario: "gemm_i2/prefill_256x256_k8",
+        backend: "cpu-reference",
+        op: "gemm_i2",
+        shape: &[256, 256],
+        dtype: "u8",
+        batch: 1,
+        bounds: (256, 256),
+    },
+    Scenario {
+        group: "gemm_quant",
+        benchmark: "tiled_i4_256x256_k8",
+        scenario: "gemm_i4/prefill_256x256_k8",
+        backend: "cpu-reference",
+        op: "gemm_i4",
+        shape: &[256, 256],
+        dtype: "u8",
+        batch: 1,
+        bounds: (256, 256),
+    },
+    Scenario {
+        group: "gemm_quant",
+        benchmark: "tiled_i8_256x256_k8",
+        scenario: "gemm_i8/prefill_256x256_k8",
+        backend: "cpu-reference",
+        op: "gemm_i8",
+        shape: &[256, 256],
+        dtype: "u8",
+        batch: 1,
+        bounds: (256, 256),
+    },
     Scenario {
         group: "matmul_f32_256x256_k4096",
         benchmark: "tiled",
@@ -270,6 +304,30 @@ const BASELINES: &[Baseline] = &[
         backend: "cpu-reference",
         scenario: "gemm_f32/prefill_256x256_k8",
         ns: 16_599.0,
+        budget_percent: 10.0,
+    },
+    // Apple M5 Pro（2026-11-20，三位流解一遍 + 列块整数累加，20 次采样）：逐元素重解 494.6 µs → tile 50.7 µs（9.8×）。
+    Baseline {
+        host: "macos-aarch64",
+        backend: "cpu-reference",
+        scenario: "gemm_i2/prefill_256x256_k8",
+        ns: 50_670.0,
+        budget_percent: 10.0,
+    },
+    // Apple M5 Pro（2026-11-20，同一次采样）：逐元素重解 483.1 µs → tile 50.4 µs（9.6×）。
+    Baseline {
+        host: "macos-aarch64",
+        backend: "cpu-reference",
+        scenario: "gemm_i4/prefill_256x256_k8",
+        ns: 50_420.0,
+        budget_percent: 10.0,
+    },
+    // Apple M5 Pro（2026-11-20，同一次采样）：逐元素重解 133.1 µs → tile 48.3 µs（2.8×）；8 位每字节只有一个码，解包本来就便宜。
+    Baseline {
+        host: "macos-aarch64",
+        backend: "cpu-reference",
+        scenario: "gemm_i8/prefill_256x256_k8",
+        ns: 48_330.0,
         budget_percent: 10.0,
     },
     // Apple M5 Pro（2026-11-20，tile 内核 256×256×4096，100 次采样）：scalar 307.33 ms → tiled 18.87 ms（16.3×）。

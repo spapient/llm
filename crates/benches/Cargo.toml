@@ -90,6 +90,11 @@ path = "criterion/gemm_f32.rs"
 harness = false
 
 [[bench]]
+name = "gemm_quant"
+path = "criterion/gemm_quant.rs"
+harness = false
+
+[[bench]]
 name = "matmul_f32"
 path = "criterion/matmul_f32.rs"
 harness = false

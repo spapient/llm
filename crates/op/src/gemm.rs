@@ -5,6 +5,11 @@
 //! 相同，差异只在元素类型、位宽、样本取值、打包长度与点积算术。本模块通过 [`Gemm`] trait
 //! 收口这部分共享事实；各格式只写一份格式契约，并按格式单态化，不在热路径上引入运行时分发。
 //! 与 [`crate::gemv`] 的两轴骨架对称，只是这里多一条收缩轴。
+//!
+//! 算术有两条：执行路径 [`forward`] 按格式调 [`Gemm::mul`]——打包格式走 [`packed_tiled`]（位流
+//! 解一遍、再按 [`TILE_N`] 列块做整数累加，解包次数从 `m·n·K` 降到 `m·K + K·n`），稠密 f32 则
+//! 保持 [`matmul`] 的顺序遍历（`K = 8` 时分块实测更慢，见该处注释）；标量 [`matmul`] 同时保留为
+//! 与内核**相互独立**的对拍真值，四条路径逐位相等。
 
 use crate::einsum::Bits;
 use crate::gemv::Element;
@@ -333,20 +338,36 @@ pub fn accumulate_tiled(codes_a: &[i32], codes_b: &[i32], m: usize, n: usize, ou
     while start < n {
         let width = TILE_N.min(n - start);
         let acc = &mut acc[..width];
-        for (row, arow) in codes_a.chunks_exact(K).take(m).enumerate() {
+        let (rows, _) = codes_a.as_chunks::<K>();
+        for (row, arow) in rows.iter().take(m).enumerate() {
             acc.fill(0);
             for (p, &x) in arow.iter().enumerate() {
                 let segment = &codes_b[p * n + start..][..width];
-                for (slot, &y) in acc.iter_mut().zip(segment) {
-                    *slot += x * y;
-                }
+                rank1_update(acc, x, segment);
             }
-            let target = &mut out[row * n + start..][..width];
-            for (slot, &value) in target.iter_mut().zip(acc.iter()) {
-                *slot = value as f32;
-            }
+            write_back(out, row, n, start, width, acc);
         }
         start += width;
+    }
+}
+
+/// 块内 rank-1 更新：`acc[j] += x · segment[j]`。
+///
+/// 独立成函数是为把 [`accumulate_tiled`] 的圈复杂度压在门禁阈值内：内层乘加是纯算术，
+/// 没有分支，抽出来不损失任何语义。
+fn rank1_update(acc: &mut [i32], x: i32, segment: &[i32]) {
+    for (slot, &y) in acc.iter_mut().zip(segment) {
+        *slot += x * y;
+    }
+}
+
+/// 把 `acc` 写回输出行：`out[row, start..start+width] = acc as f32`。
+///
+/// 与 [`rank1_update`] 同理：写回循环没有分支，抽出来只为压低调用方的圈复杂度。
+fn write_back(out: &mut [f32], row: usize, n: usize, start: usize, width: usize, acc: &[i32]) {
+    let target = &mut out[row * n + start..][..width];
+    for (slot, &value) in target.iter_mut().zip(acc.iter()) {
+        *slot = value as f32;
     }
 }
 
@@ -360,14 +381,7 @@ pub fn signed_codes(values: &[u8]) -> Vec<i32> {
 /// 打包格式的本体：两条位流各解一遍，再走 [`accumulate_tiled`]。
 ///
 /// A 是 `m × K` 个码、B 是 `K × n` 个码，解包结果只在这一个调用里存活；块内不再碰位流。
-pub fn packed_tiled(
-    a: &[u8],
-    b: &[u8],
-    m: usize,
-    n: usize,
-    conf: &packed::Conf,
-    out: &mut [f32],
-) {
+pub fn packed_tiled(a: &[u8], b: &[u8], m: usize, n: usize, conf: &packed::Conf, out: &mut [f32]) {
     let mut codes_a = vec![0i32; m * K];
     let mut codes_b = vec![0i32; K * n];
     decode_stream(&mut codes_a, a, conf);
@@ -488,8 +502,19 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
 /// 稠密 f32 只跑参考对拍（整数闭式点积不适用）。形状矩阵只定义一次。
 #[cfg(test)]
 pub(crate) mod test_support {
-    /// 对拍形状矩阵：单行单列、多行单列、单行多列、常规矩阵。
-    pub(crate) const SHAPES: &[(usize, usize)] = &[(1, 1), (5, 1), (1, 7), (16, 12)];
+    /// 对拍形状矩阵：单行单列、多行单列、单行多列、常规矩阵，以及跨列块的三档。
+    ///
+    /// 后三档是 tile 的接缝：`n` 恰为一整块、多一列、两块多两列，用来钉住
+    /// [`super::TILE_N`] 的边界收口（块宽不是序列长的倍数时最容易被漏写或重复写）。
+    pub(crate) const SHAPES: &[(usize, usize)] = &[
+        (1, 1),
+        (5, 1),
+        (1, 7),
+        (16, 12),
+        (16, super::TILE_N),
+        (16, super::TILE_N + 1),
+        (3, 2 * super::TILE_N + 2),
+    ];
 
     /// 打包量化格式共有的三则对拍。
     macro_rules! gemm_packed_tests {
@@ -706,7 +731,10 @@ pub mod gemm_f32 {
             row.iter().enumerate().map(|(p, x)| x * b[p * n + j]).sum()
         },
         fn mul(a: &[f32], b: &[f32], m: usize, n: usize, out: &mut [f32]) {
-            crate::matmul::matmul_tiled(a, b, m, n, K, out)
+            // 稠密 f32 不分块：`K = 8` 时一行 A 的 8 个权重就在寄存器里，分块（64 列块或
+            // `matmul_tiled` 的三级块）只会多出累加器驻留与写回，实测反而慢 2~3 倍
+            // （`gemm_f32` 基准的三档对照）。顺序累加同时保证与标量参考逐位相等。
+            crate::gemm::matmul::<Self>(a, b, m, n, out)
         },
     );
 }
