@@ -166,22 +166,10 @@ impl<K: Kernel> Buffers<K> {
         output: Var,
         geometry: Option<Geometry>,
     ) -> Result<()> {
-        if let Some(geometry) = geometry
-            && let Some(slot) = self.instances.get_mut(output.id() as usize)
-        {
-            *slot = Some(geometry);
-        }
+        register_geometry(&mut self.instances, output, geometry);
         let (slot, shape, dtype) = self.target(output)?;
         // 滚动统计先取出来（裸值），内核算完再写回：内核调用期间不与 `running` 槽位交叠借用。
-        let mut stats = match geometry {
-            Some(Geometry::Norm { channels, .. }) => Some(
-                self.running
-                    .get_mut(output.id() as usize)
-                    .and_then(Option::take)
-                    .unwrap_or_else(|| Running::fresh(channels)),
-            ),
-            _ => None,
-        };
+        let mut stats = take_stats(&mut self.running, output, geometry);
         let views = views(&self.slots, output, inputs)?;
         let mut block = self.pool.block(dtype, &shape)?;
         let result = self.kernel.compute_shaped(
@@ -191,11 +179,7 @@ impl<K: Kernel> Buffers<K> {
             geometry.as_ref(),
             stats.as_mut(),
         );
-        if let Some(stats) = stats
-            && let Some(held) = self.running.get_mut(output.id() as usize)
-        {
-            *held = Some(stats);
-        }
+        restore_stats(&mut self.running, output, stats);
         if let Err(error) = result {
             self.pool.recycle(block);
             return Err(error);
@@ -427,6 +411,41 @@ impl<K: Kernel> Store for Buffers<K> {
         if slot < self.slots.len() {
             self.release(slot);
         }
+    }
+}
+
+/// 把带实例几何的一步前向里的几何登记在输出变量上；未带几何（声明档）即跳过。
+fn register_geometry(instances: &mut [Option<Geometry>], output: Var, geometry: Option<Geometry>) {
+    if let Some(geometry) = geometry
+        && let Some(slot) = instances.get_mut(output.id() as usize)
+    {
+        *slot = Some(geometry);
+    }
+}
+
+/// 取出归一化输出的滚动统计（裸值）：内核调用期间不与 `running` 槽位交叠借用。
+fn take_stats(
+    running: &mut [Option<Running>],
+    output: Var,
+    geometry: Option<Geometry>,
+) -> Option<Running> {
+    match geometry {
+        Some(Geometry::Norm { channels, .. }) => Some(
+            running
+                .get_mut(output.id() as usize)
+                .and_then(Option::take)
+                .unwrap_or_else(|| Running::fresh(channels)),
+        ),
+        _ => None,
+    }
+}
+
+/// 把内核算完后的滚动统计写回原槽位。
+fn restore_stats(running: &mut [Option<Running>], output: Var, stats: Option<Running>) {
+    if let Some(stats) = stats
+        && let Some(held) = running.get_mut(output.id() as usize)
+    {
+        *held = Some(stats);
     }
 }
 

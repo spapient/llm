@@ -873,6 +873,13 @@ const TENSOR_SITE: &str = "engine::tiled::metal_tensor_gemm";
 /// `M % tile_m == 0` 是硬约束：`matmul2d` 按整块读 A，尾块会把设备缓冲读越界（N 维不必对齐，
 /// 装载阶段零填、写回按 `min` 裁边）。
 fn check_tensor_geometry(m: usize, n: usize, k: usize, geometry: TensorGeometry) -> Result<()> {
+    check_geometry(geometry)?;
+    check_tensor_shape(m, n, k, geometry)?;
+    Ok(())
+}
+
+/// 张量核几何自身的三档前置：跨度档位、规约块/simdgroup、线程组内存占用。
+fn check_geometry(geometry: TensorGeometry) -> Result<()> {
     let bad = |why: &str| Err(Error::new(Code::Invalid, why).with(TENSOR_SITE));
     if !geometry.spans_ok() {
         return bad("张量核输出块的行/列跨度都必须是 32、64 或 128");
@@ -883,8 +890,17 @@ fn check_tensor_geometry(m: usize, n: usize, k: usize, geometry: TensorGeometry)
     if !geometry.fits_threadgroup_memory() {
         return bad("张量核 B 片超出 32 KiB 线程组内存");
     }
+    Ok(())
+}
+
+/// 张量核形状前提：M 是输出块行跨度的正整数倍，且 N/K 非零。
+fn check_tensor_shape(m: usize, n: usize, k: usize, geometry: TensorGeometry) -> Result<()> {
     if m == 0 || n == 0 || k == 0 || !m.is_multiple_of(geometry.tile_m) {
-        return bad("张量核要求 M 是输出块行跨度的正整数倍，且 N/K 非零");
+        return Err(Error::new(
+            Code::Invalid,
+            "张量核要求 M 是输出块行跨度的正整数倍，且 N/K 非零",
+        )
+        .with(TENSOR_SITE));
     }
     Ok(())
 }
@@ -911,34 +927,8 @@ fn tensor_gemm_msl(
     // 规约轴被 `k_tile` 整除时没有尾块可走：直接生成单描述符、无分支的主循环，
     // 省掉逐轮的边界判断与动态 extent 版本（小形状上这段开销不可忽略）。
     let exact = geometry.exact(k);
-    let tail_decl = if exact {
-        String::new()
-    } else {
-        "    mpp::tensor_ops::matmul2d<D(TSM, NRN, static_cast<int>(dynamic_extent), false, true, true, MA),\n        execution_simdgroups<SG>> mm_tail;\n".to_string()
-    };
-    let mma = if exact {
-        format!(
-            "        auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-             \x20                          dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
-             \x20        auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
-             \x20        mm_full.run(av, bv, cT);\n"
-        )
-    } else {
-        format!(
-            "        if (k0 + TK <= K) {{\n\
-             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-             \x20                              dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
-             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
-             \x20            mm_full.run(av, bv, cT);\n\
-             \x20        }} else {{\n\
-             \x20            const int ke = K - k0;\n\
-             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-             \x20                              dextents<int32_t, 2>(ke, TSM), array<int, 2>{{1, K}});\n\
-             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});\n\
-             \x20            mm_tail.run(av, bv, cT);\n\
-             \x20        }}\n"
-        )
-    };
+    let tail_decl = tensor_tail_decl(exact);
+    let mma = tensor_mma(a, exact);
     format!(
         "#include <metal_stdlib>\n\
          #include <metal_tensor>\n\
@@ -990,6 +980,42 @@ fn tensor_gemm_msl(
          \x20    cT.store(tD);\n\
          }}"
     )
+}
+
+/// 尾块声明：规约轴不被 `k_tile` 整除时，额外声明一个 `dynamic_extent` 的 matmul2d 描述符。
+fn tensor_tail_decl(exact: bool) -> String {
+    if exact {
+        String::new()
+    } else {
+        "    mpp::tensor_ops::matmul2d<D(TSM, NRN, static_cast<int>(dynamic_extent), false, true, true, MA),\n        execution_simdgroups<SG>> mm_tail;\n".to_string()
+    }
+}
+
+/// 主循环体里的矩阵乘语句：整除时走满块描述符，否则按 `k0 + TK <= K` 分流尾块。
+fn tensor_mma(a: &str, exact: bool) -> String {
+    if exact {
+        format!(
+            "        auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+             \x20                          dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
+             \x20        auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
+             \x20        mm_full.run(av, bv, cT);\n"
+        )
+    } else {
+        format!(
+            "        if (k0 + TK <= K) {{\n\
+             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+             \x20                              dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
+             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
+             \x20            mm_full.run(av, bv, cT);\n\
+             \x20        }} else {{\n\
+             \x20            const int ke = K - k0;\n\
+             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+             \x20                              dextents<int32_t, 2>(ke, TSM), array<int, 2>{{1, K}});\n\
+             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});\n\
+             \x20            mm_tail.run(av, bv, cT);\n\
+             \x20        }}\n"
+        )
+    }
 }
 
 /// 张量核 GEMM 的 B 布局前置：把行主序 `rows × cols` 的 f32 转成 `cols × rows` 的 half。

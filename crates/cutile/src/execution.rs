@@ -307,9 +307,12 @@ fn tensor_ready(run: &Run<'_>, m: usize, n: usize, geometry: TensorGeometry) -> 
     run.op.skeleton == Skeleton::Gemm
         && n > 0
         && divides(m, geometry.tile_m)
-        && geometry.spans_ok()
-        && geometry.block_ok()
-        && geometry.fits_threadgroup_memory()
+        && geometry_ready(geometry)
+}
+
+/// 张量核几何的三档前置都满足：跨度档位、规约块/simdgroup、线程组内存占用。
+fn geometry_ready(geometry: TensorGeometry) -> bool {
+    geometry.spans_ok() && geometry.block_ok() && geometry.fits_threadgroup_memory()
 }
 
 /// 生产态 Metal int8 分块 GEMM 内核源：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 精确累加、`f32` 输出。
