@@ -32,13 +32,13 @@ ADR 只说**为什么这样而不是那样**。
 ## 三、ADR 索引
 
 只留**仍被产品代码按编号引用、且承载代码读不出的取舍**的决策：已被 `architecture.rs` /
-`contracts.rs` 或 crate 文档守住的口径不再单独成文（本轮由 49 个文件、48 个编号收敛到 15 条）。正文里出现的旧编号
+`contracts.rs` 或 crate 文档守住的口径不再单独成文（本轮由 49 个文件、48 个编号收敛到 15 条、随后追加 0052/0053，现存 17 条）。正文里出现的旧编号
 （0021、0028、0049 之类）是被取代的历史前提，文件已删除、结论已落在代码与 `ARCHITECTURE.md` 里。
 
 | 主题 | 决策 |
 |---|---|
-| 边界与所有权 | [0025](adr/0025-runtime-backend-abstraction.md) 运行时后端三件套 · [0027](adr/0027-kernel-registry-and-fragment-contract.md) 注册表与片段契约 · [0035](adr/0035-unsafe-ffi-boundary.md) unsafe / FFI 白名单 · [0050](adr/0050-operator-base.md) 算子基座 · [0051](adr/0051-execution-backend-base.md) 执行基座 |
-| 机制与数据 | [0005](adr/0005-annotations-as-contracts.md) 注解即契约（无运行期注册表） · [0017](adr/0017-kernel-ast-and-ir-freeze.md) AST 冻结、无 IR · [0018](adr/0018-dtype-single-source.md) 精度单一事实源 · [0043](adr/0043-program-scalar-slots.md) 标量槽 · [0044](adr/0044-bindings-metadata.md) 绑定编号 · [0045](adr/0045-u-weight-container-v2.md) `.u` 容器 v2 · [0046](adr/0046-batch-flat-buffer-geometry.md) 扁平批缓冲几何 |
+| 边界与所有权 | [0025](adr/0025-runtime-backend-abstraction.md) 运行时后端三件套 · [0027](adr/0027-kernel-registry-and-fragment-contract.md) 注册表与片段契约 · [0035](adr/0035-unsafe-ffi-boundary.md) unsafe / FFI 白名单 · [0050](adr/0050-operator-base.md) 算子基座 · [0051](adr/0051-execution-backend-base.md) 执行基座 · [0052](adr/0052-execution-platform-contract.md) 六平台执行合同 |
+| 机制与数据 | [0005](adr/0005-annotations-as-contracts.md) 注解即契约（无运行期注册表） · [0017](adr/0017-kernel-ast-and-ir-freeze.md) AST 冻结、无 IR · [0018](adr/0018-dtype-single-source.md) 精度单一事实源 · [0043](adr/0043-program-scalar-slots.md) 标量槽 · [0044](adr/0044-bindings-metadata.md) 绑定编号 · [0045](adr/0045-u-weight-container-v2.md) `.u` 容器 v2 · [0046](adr/0046-batch-flat-buffer-geometry.md) 扁平批缓冲几何 · [0053](adr/0053-typed-operators.md) 类型化算子入口 |
 | 配置 | [0022](adr/0022-build-time-corpora.md) 语料构建期解析 · [0023](adr/0023-settings-to-cli.md) 设置策略上移 `cli` · [0048](adr/0048-runtime-config-file.md) 运行时配置文件 |
 
 新决策按下一个四位编号追加，文件名 `<编号>-<kebab-标题>.md`，首行是 `# <编号>：<一句话结论>`，

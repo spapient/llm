@@ -9,7 +9,7 @@ and where a decode step actually computes.
 | `request`, `router` | which route handles this, and with what limits? |
 | `plan`, `params` | which layers does this model have? (`LayerKind` closed set, `MemorySpec`) |
 | `assembly`, `model_host` | how does the plan become a graph, and who feeds batch tables each step? |
-| `completion`, `generate` | how does one completion advance? (prefill chunk, decode step) |
+| `completion`, `generate` | how does one completion advance? (IFB packs the round, prefill chunk, decode step) |
 | `kernels` | which execution path does this geometry take? (`gemv_quant` row split, `attention_f32`) |
 | `speculate` | how many drafted tokens does the target accept? (`Verdict`, `Drafter`) |
 | `block` | which token does the head pick? (shared `best` argmax) |
