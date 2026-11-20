@@ -876,7 +876,8 @@ fn tensor_gemm_msl(
     m: usize,
     n: usize,
     k: usize,
-    tile: usize,
+    tile_m: usize,
+    tile_n: usize,
     k_tile: usize,
     simdgroups: usize,
 ) -> String {
