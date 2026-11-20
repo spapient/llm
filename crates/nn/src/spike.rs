@@ -100,6 +100,7 @@ impl Spiking {
                 .map(|_| Lif::new(self.threshold, self.leak, self.reset))
                 .collect(),
             acc: vec![0; self.outputs],
+            pre: vec![0.0; self.outputs],
         }
     }
 
@@ -197,11 +198,11 @@ impl Spiking {
                 self.inputs
             )));
         }
+        if !ternary(spike) {
+            return Err(bad(format!("脉冲取值必须是 −1/0/+1，得到 {spike}")));
+        }
         if spike == 0 {
             return Ok(());
-        }
-        if spike != 1 && spike != -1 {
-            return Err(bad(format!("脉冲取值必须是 −1/0/+1，得到 {spike}")));
         }
         self.accumulate(column, spike, state);
         Ok(())
@@ -228,11 +229,16 @@ impl Spiking {
     }
 
     /// 反量化 + 推进 LIF + 统计发放：发放判据只由 [`Lif`] 定义。
+    ///
+    /// 膜电位分两步走（先 `peek` 再 `commit`）是为了把发放前的值留在 `state.pre` 上：那正是反传
+    /// 判窗要的那个数，而 `commit` 一提交就给发放过的通道写了 `reset`。
     fn settle(&self, state: &mut Membrane, out: &mut [i8]) -> usize {
         let mut fired = 0;
         for (row, spike) in out.iter_mut().enumerate() {
-            let potential = state.acc[row] as f32 * self.scale[row];
-            let value = if state.lifs[row].step(potential) == 1.0 {
+            let current = state.acc[row] as f32 * self.scale[row];
+            let potential = state.lifs[row].peek(current);
+            state.pre[row] = potential;
+            let value = if state.lifs[row].commit(potential) == 1.0 {
                 fired += 1;
                 1
             } else {
@@ -306,14 +312,16 @@ impl Spiking {
     }
 }
 
-/// 一层的状态：每通道一条 [`Lif`] 与一段复用的整数累加缓冲。
+/// 一层的状态：每通道一条 [`Lif`]、一段复用的整数累加缓冲，以及本步发放前的膜电位。
 ///
 /// 缓冲在状态里而不是每步新分配：`drive` 的稀疏性体现在「少做乘加」，不该被一次 `vec!` 抹平。
+/// `pre` 是反传的唯一入口：发放一提交，膜电位就被改写成 `reset`，那一刻的值只能靠前向顺手记下。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Membrane {
     outputs: usize,
     lifs: Vec<Lif<f32>>,
     acc: Vec<i32>,
+    pre: Vec<f32>,
 }
 
 impl Membrane {
@@ -327,6 +335,12 @@ impl Membrane {
     #[must_use]
     pub fn potential(&self) -> Vec<f32> {
         self.lifs.iter().map(Lif::mem).collect()
+    }
+
+    /// 各通道**本步发放前**的膜电位（反传判窗用；一次前向都还没走过时全零）。
+    #[must_use]
+    pub fn pre(&self) -> &[f32] {
+        &self.pre
     }
 }
 
