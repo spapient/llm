@@ -35,8 +35,9 @@
 //! # 与全局 transformer 的分工
 //!
 //! [`Emitter::reprs`] 是已收口 patch 的表示（紧凑，行宽 `dim`），全局 transformer 就是在这一列上跑的
-//! [`crate::Attention`]：**每 patch 一次**，遍数是行数而不是字节数。它把表示变成更好的条件，却不改变
-//! 本层的循环结构——本层因此可以在没有它的情况下逐字节走完，装上它就是换条件。
+//! [`crate::Global`]：**每 patch 一次**，遍数是行数而不是字节数。它把表示变成更好的条件，却不改变
+//! 本层的循环结构——本层因此可以在没有它的情况下逐字节走完，装上它就是换条件。解码侧与之对称：
+//! [`crate::Backread`] 让每个字节回读自己及更早的表示，可见集正好是本层已经收口的那些。
 
 use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;

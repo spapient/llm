@@ -161,6 +161,7 @@ mod param_role {
 }
 mod codec;
 mod emit;
+mod latent;
 mod patch;
 mod pointwise;
 mod policy;
@@ -203,6 +204,9 @@ pub use engram::{Bypass, Table, allocate, next_prime, phi, slots};
 pub use kda::{Kda, Memory};
 
 #[doc(inline)]
+pub use latent::{Backread, Global, LOCAL_MAX, LOCAL_MIN, Layer};
+
+#[doc(inline)]
 pub use lm_head::LmHead;
 
 #[doc(inline)]
@@ -210,9 +214,6 @@ pub use matmul::MatMul;
 
 #[doc(inline)]
 pub use mhc::{MHC_STREAMS, Mhc};
-
-#[doc(inline)]
-pub use mix::{cont, gate, synthesize};
 
 #[doc(inline)]
 pub use mla::{
