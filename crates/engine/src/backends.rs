@@ -182,7 +182,7 @@ impl Codegen for MetalBackend {
         metal_lower(kernel, signature, sample, kind)
     }
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        let (device, host) = crate::msl::metal_harness(kernel, signature, sample)?;
+        let (device, host) = crate::metal::metal_harness(kernel, signature, sample)?;
         Ok(Source::Pair { device, host })
     }
     fn parallel(
@@ -212,7 +212,7 @@ impl Codegen for MetalBackend {
         };
         let (grid, threads) = metal_bench_geometry(signature, sample, kind)?;
         let host =
-            crate::msl::metal_benchmark_driver(signature, sample, grid, threads, repeat)?;
+            crate::metal::metal_benchmark_driver(signature, sample, grid, threads, repeat)?;
         Ok(Source::Pair {
             device: device.clone(),
             host,
@@ -265,13 +265,13 @@ fn metal_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::msl::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
+        Pointwise => crate::metal::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
         QuantizedGemvI4 { .. } => Err(Error::new(
             Code::Unsupported,
             "合作式 int4 GEMV 当前仅落地在 CUDA/MUSA",
         )),
         Loop(grid) => {
-            crate::msl::metal_loop_kernel(kernel, signature, sample, grid).map(|s| vec![s])
+            crate::metal::metal_loop_kernel(kernel, signature, sample, grid).map(|s| vec![s])
         }
         ChunkReduce { .. } | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => {
             metal_chunk_lower(kernel, signature, sample, kind)
@@ -375,19 +375,19 @@ fn metal_chunk_lower(
     use cutile::backend::Lower::*;
     match kind {
         ChunkReduce { chunk, func } => {
-            crate::msl::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
+            crate::metal::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
                 .map(|s| vec![s])
         }
         ChunkScan { chunk, decay } => {
-            crate::msl::metal_chunk_scan(kernel, signature, sample, *chunk, *decay)
+            crate::metal::metal_chunk_scan(kernel, signature, sample, *chunk, *decay)
                 .map(|(local, correct)| vec![local, correct])
         }
         ChunkRmsnorm { chunk } => {
-            crate::msl::metal_chunk_rmsnorm(kernel, signature, sample, *chunk)
+            crate::metal::metal_chunk_rmsnorm(kernel, signature, sample, *chunk)
                 .map(|(partial, map)| vec![partial, map])
         }
         ChunkSoftmax { chunk } => {
-            crate::msl::metal_chunk_softmax(kernel, signature, sample, *chunk)
+            crate::metal::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
         Pointwise

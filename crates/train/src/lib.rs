@@ -52,6 +52,7 @@ mod samples;
 mod schedule;
 mod session;
 pub(crate) use kernel::shape;
+pub mod geometry;
 pub mod snapshot;
 mod store;
 
@@ -64,6 +65,7 @@ mod support;
 pub use checkpoint::{Checkpoint, Step, operators, resume};
 pub use dist::{Distributed, Local, Remote};
 pub use distill::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
+pub use geometry::Geometry;
 pub use learner::{ForwardOut, Learner, Metric};
 pub use loss::{argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
 pub use metrics::{MetricPoint, MetricsBoard};

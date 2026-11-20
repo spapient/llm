@@ -134,7 +134,7 @@ fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
     assert!(musa.contains("#define cudaEventRecord musaEventRecord"));
 
     let metal =
-        crate::msl::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
+        crate::metal::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
             .expect("Metal 驱动");
     assert!(metal.contains("GPUStartTime"));
     assert!(metal.contains("GPUEndTime"));

@@ -13,6 +13,7 @@
 use autograd::{Node, Schedule, Tape, Var};
 use diagnostic::{Code, Error, Result};
 
+use crate::geometry::Geometry;
 use crate::kernel::{Kernel, same_str};
 use crate::pool::Buffers;
 
@@ -49,6 +50,7 @@ fn reverse_step<K: Kernel>(buffers: &mut Buffers<K>, tape: &Tape, step: &Node) -
         incoming: &incoming,
         inputs: &input_values,
         output: &output,
+        geometry: buffers.geometry(step.output()),
     };
     apply_formula(buffers, tape, step, context)?;
     Ok(())
@@ -138,6 +140,20 @@ struct Context<'a> {
     incoming: &'a [f32],
     inputs: &'a [Vec<f32>],
     output: &'a [f32],
+    /// 本节点的实例几何；`None` 即该节点按声明档实例执行。
+    geometry: Option<Geometry>,
+}
+
+impl Context<'_> {
+    /// 本节点的实例几何：显式登记过就用它，否则取该算子的声明档实例（对拍基准）。
+    ///
+    /// 前向与反向都经 [`Geometry`] 的同一份算术，声明档只是它的一个取值。
+    fn instance(&self, op: &str) -> Result<Geometry> {
+        match self.geometry {
+            Some(geometry) => Ok(geometry),
+            None => Geometry::declared(op),
+        }
+    }
 }
 
 /// 反向公式：按上下文算出与输入等长的逐元素贡献，顺序与节点输入对齐。
@@ -368,293 +384,44 @@ fn lookup(op: &str) -> Result<Formula> {
         .ok_or_else(|| unsupported(op))
 }
 
-/// 声明档几何核对：这些公式只对算子的声明档成立（层侧真实几何在别的路径上），
-/// 形状不符时显式拒绝，避免把别的几何静默算成错梯度。
-fn expect(what: &str, actual: usize, want: usize) -> Result<()> {
-    if actual == want {
-        Ok(())
-    } else {
-        Err(Error::new(
-            Code::Invalid,
-            format!("{what}: 声明档 {want} 个元素，实际 {actual}"),
-        )
-        .with(SITE))
-    }
-}
-
-/// 一维最大池化反向：梯度只落在窗口最大者的位置（与前向同一比较规则，平手取窗口首元素）。
+/// 经典算子的九条反向公式：几何交给 [`Geometry`]，公式本身只剩"取实例、回传"。
+///
+/// 这样声明档与实例化共用同一份算术——声明档就是 `Geometry::declared` 的取值，不存在
+/// "前向一套、反向另一套"的可能。
 fn max_pool1d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::max_pool1d_f32 as decl;
-    let x = &ctx.inputs[0];
-    expect("max_pool1d 输入", x.len(), decl::L)?;
-    expect("max_pool1d 上游梯度", ctx.incoming.len(), decl::OL)?;
-    let mut dx = vec![0.0f32; x.len()];
-    for (o, &g) in ctx.incoming.iter().enumerate() {
-        let pick = if x[2 * o] >= x[2 * o + 1] { 2 * o } else { 2 * o + 1 };
-        dx[pick] += g;
-    }
-    Ok(vec![dx])
+    ctx.instance("max_pool1d_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 二维最大池化反向：逐输出位重放窗口最大值位置（补零位不参与）。
 fn max_pool2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::max_pool2d_f32 as decl;
-    let x = &ctx.inputs[0];
-    let side = decl::H;
-    expect("max_pool2d 输入", x.len(), side * side)?;
-    expect("max_pool2d 上游梯度", ctx.incoming.len(), side * side)?;
-    let mut dx = vec![0.0f32; x.len()];
-    for i in 0..side {
-        for j in 0..side {
-            let mut best = f32::MIN;
-            let mut pick = (i, j);
-            for di in -1i32..=1 {
-                for dj in -1i32..=1 {
-                    let ii = i as i32 + di;
-                    let jj = j as i32 + dj;
-                    if ii < 0 || jj < 0 || ii as usize >= side || jj as usize >= side {
-                        continue;
-                    }
-                    let at = (ii as usize, jj as usize);
-                    let v = x[at.0 * side + at.1];
-                    if v > best {
-                        best = v;
-                        pick = at;
-                    }
-                }
-            }
-            dx[pick.0 * side + pick.1] += ctx.incoming[i * side + j];
-        }
-    }
-    Ok(vec![dx])
+    ctx.instance("max_pool2d_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 二维平均池化反向：窗口内每个有效元素均分（补零不计入分母，角落窗口按真统计）。
 fn avg_pool2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::avg_pool2d_f32 as decl;
-    let x = &ctx.inputs[0];
-    let side = decl::H;
-    expect("avg_pool2d 输入", x.len(), side * side)?;
-    expect("avg_pool2d 上游梯度", ctx.incoming.len(), side * side)?;
-    let mut dx = vec![0.0f32; x.len()];
-    for i in 0..side {
-        for j in 0..side {
-            let lo = (i.saturating_sub(1), j.saturating_sub(1));
-            let hi = ((i + 1).min(side - 1), (j + 1).min(side - 1));
-            let count = ((hi.0 - lo.0 + 1) * (hi.1 - lo.1 + 1)) as f32;
-            let share = ctx.incoming[i * side + j] / count;
-            for ii in lo.0..=hi.0 {
-                for jj in lo.1..=hi.1 {
-                    dx[ii * side + jj] += share;
-                }
-            }
-        }
-    }
-    Ok(vec![dx])
+    ctx.instance("avg_pool2d_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 自适应平均池化反向（声明档 `4×4 → 2×2`，每格固定 2×2、均分）。
 fn adaptive_pool(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::adaptive_pool_f32 as decl;
-    let x = &ctx.inputs[0];
-    let (side, out) = (decl::H, decl::OH);
-    let span = side / out;
-    expect("adaptive_pool 输入", x.len(), side * side)?;
-    expect("adaptive_pool 上游梯度", ctx.incoming.len(), out * out)?;
-    let mut dx = vec![0.0f32; x.len()];
-    for i in 0..out {
-        for j in 0..out {
-            let share = ctx.incoming[i * out + j] / (span * span) as f32;
-            for di in 0..span {
-                for dj in 0..span {
-                    dx[(i * span + di) * side + j * span + dj] += share;
-                }
-            }
-        }
-    }
-    Ok(vec![dx])
+    ctx.instance("adaptive_pool_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 双线性插值反向（声明档 `2×2 → 4×4`，`align_corners = false`）：权重与前向同一套坐标夹取。
 fn interpolate(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::interpolate_f32 as decl;
-    let x = &ctx.inputs[0];
-    let (h, w, out) = (decl::H, decl::W, decl::OH);
-    expect("interpolate 输入", x.len(), h * w)?;
-    expect("interpolate 上游梯度", ctx.incoming.len(), out * out)?;
-    let mut dx = vec![0.0f32; x.len()];
-    for oi in 0..out {
-        let fy = ((oi as f32 + 0.5) * h as f32 / out as f32 - 0.5).max(0.0);
-        let y0 = fy.floor().min((h - 1) as f32) as usize;
-        let y1 = (y0 + 1).min(h - 1);
-        let ly = if y0 == y1 { 0.0 } else { fy - y0 as f32 };
-        for oj in 0..out {
-            let fx = ((oj as f32 + 0.5) * w as f32 / out as f32 - 0.5).max(0.0);
-            let x0 = fx.floor().min((w - 1) as f32) as usize;
-            let x1 = (x0 + 1).min(w - 1);
-            let lx = if x0 == x1 { 0.0 } else { fx - x0 as f32 };
-            let g = ctx.incoming[oi * out + oj];
-            dx[y0 * w + x0] += g * (1.0 - lx) * (1.0 - ly);
-            dx[y0 * w + x1] += g * lx * (1.0 - ly);
-            dx[y1 * w + x0] += g * (1.0 - lx) * ly;
-            dx[y1 * w + x1] += g * lx * ly;
-        }
-    }
-    Ok(vec![dx])
+    ctx.instance("interpolate_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 归一化反向的公共骨架：对一组元素按 `(均值, 方差)` 求 `dx`，同时把 `dgamma`/`dbeta` 累加进
-/// 按通道的输出。`members` 给出该组元素下标与其通道号。
-fn norm_group(
-    x: &[f32],
-    gamma: &[f32],
-    incoming: &[f32],
-    members: &[(usize, usize)],
-    eps: f32,
-    dx: &mut [f32],
-    dgamma: &mut [f32],
-    dbeta: &mut [f32],
-) {
-    let count = members.len() as f32;
-    let (mut sum, mut sq) = (0.0f32, 0.0f32);
-    for &(idx, _) in members {
-        sum += x[idx];
-        sq += x[idx] * x[idx];
-    }
-    let mean = sum / count;
-    let var = (sq / count - mean * mean).max(0.0);
-    let inv = 1.0 / (var + eps).sqrt();
-
-    let (mut sum_dxhat, mut sum_dxhat_xhat) = (0.0f32, 0.0f32);
-    for &(idx, c) in members {
-        let xhat = (x[idx] - mean) * inv;
-        let dxhat = incoming[idx] * gamma[c];
-        sum_dxhat += dxhat;
-        sum_dxhat_xhat += dxhat * xhat;
-        // 对 gamma 的偏导只经 xhat 一条路：dxhat 已乘过 gamma，不能再乘第二次。
-        dgamma[c] += incoming[idx] * xhat;
-        dbeta[c] += incoming[idx];
-    }
-    for &(idx, c) in members {
-        let xhat = (x[idx] - mean) * inv;
-        let dxhat = incoming[idx] * gamma[c];
-        dx[idx] = inv * (dxhat - sum_dxhat / count - xhat * sum_dxhat_xhat / count);
-    }
-}
-
-/// 批归一化反向（NHWC，统计域是同通道跨批：`N·S` 个元素）。
 fn batch_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::batch_norm_f32 as decl;
-    let (x, gamma, beta) = (&ctx.inputs[0], &ctx.inputs[1], &ctx.inputs[2]);
-    let total = decl::C * decl::S * decl::N;
-    expect("batch_norm 输入", x.len(), total)?;
-    expect("batch_norm gamma", gamma.len(), decl::C)?;
-    expect("batch_norm beta", beta.len(), decl::C)?;
-    expect("batch_norm 上游梯度", ctx.incoming.len(), total)?;
-    let mut dx = vec![0.0f32; total];
-    let mut dgamma = vec![0.0f32; decl::C];
-    let mut dbeta = vec![0.0f32; decl::C];
-    let per = decl::N * decl::S;
-    for c in 0..decl::C {
-        let members: Vec<(usize, usize)> = (0..per).map(|i| (i * decl::C + c, c)).collect();
-        norm_group(x, gamma, ctx.incoming, &members, decl::EPS, &mut dx, &mut dgamma, &mut dbeta);
-    }
-    Ok(vec![dx, dgamma, dbeta])
+    ctx.instance("batch_norm_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 组归一化反向：统计域是 `(样本, 组)` 的 `C/G·S` 个元素。
 fn group_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::group_norm_f32 as decl;
-    let (x, gamma, beta) = (&ctx.inputs[0], &ctx.inputs[1], &ctx.inputs[2]);
-    let total = decl::C * decl::S * decl::N;
-    expect("group_norm 输入", x.len(), total)?;
-    expect("group_norm gamma", gamma.len(), decl::C)?;
-    expect("group_norm beta", beta.len(), decl::C)?;
-    expect("group_norm 上游梯度", ctx.incoming.len(), total)?;
-    let per = decl::C / decl::G;
-    let mut dx = vec![0.0f32; total];
-    let mut dgamma = vec![0.0f32; decl::C];
-    let mut dbeta = vec![0.0f32; decl::C];
-    for bi in 0..decl::N {
-        for g in 0..decl::G {
-            let c0 = g * per;
-            let members: Vec<(usize, usize)> = (0..decl::S)
-                .flat_map(|s| (c0..c0 + per).map(move |c| ((bi * decl::S + s) * decl::C + c, c)))
-                .collect();
-            norm_group(
-                x,
-                gamma,
-                ctx.incoming,
-                &members,
-                decl::EPS,
-                &mut dx,
-                &mut dgamma,
-                &mut dbeta,
-            );
-        }
-    }
-    Ok(vec![dx, dgamma, dbeta])
+    ctx.instance("group_norm_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 实例归一化反向：等价于 `GroupNorm(groups = channels)`，统计域是每个 `(样本, 通道)` 的 `S` 个元素。
 fn instance_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::instance_norm_f32 as decl;
-    let (x, gamma, beta) = (&ctx.inputs[0], &ctx.inputs[1], &ctx.inputs[2]);
-    let total = decl::C * decl::S * decl::N;
-    expect("instance_norm 输入", x.len(), total)?;
-    expect("instance_norm gamma", gamma.len(), decl::C)?;
-    expect("instance_norm beta", beta.len(), decl::C)?;
-    expect("instance_norm 上游梯度", ctx.incoming.len(), total)?;
-    let mut dx = vec![0.0f32; total];
-    let mut dgamma = vec![0.0f32; decl::C];
-    let mut dbeta = vec![0.0f32; decl::C];
-    for bi in 0..decl::N {
-        for c in 0..decl::C {
-            let members: Vec<(usize, usize)> = (0..decl::S)
-                .map(|s| ((bi * decl::S + s) * decl::C + c, c))
-                .collect();
-            norm_group(
-                x,
-                gamma,
-                ctx.incoming,
-                &members,
-                decl::EPS,
-                &mut dx,
-                &mut dgamma,
-                &mut dbeta,
-            );
-        }
-    }
-    Ok(vec![dx, dgamma, dbeta])
+    ctx.instance("instance_norm_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
-/// 层归一化反向：逐行在最后一维统计，`gamma`/`beta` 按列广播，梯度跨行累加。
 fn layer_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    use op::layer_norm_f32 as decl;
-    let (x, gamma, beta) = (&ctx.inputs[0], &ctx.inputs[1], &ctx.inputs[2]);
-    let total = decl::R * decl::W;
-    expect("layer_norm 输入", x.len(), total)?;
-    expect("layer_norm gamma", gamma.len(), decl::W)?;
-    expect("layer_norm beta", beta.len(), decl::W)?;
-    expect("layer_norm 上游梯度", ctx.incoming.len(), total)?;
-    let mut dx = vec![0.0f32; total];
-    let mut dgamma = vec![0.0f32; decl::W];
-    let mut dbeta = vec![0.0f32; decl::W];
-    for r in 0..decl::R {
-        let base = r * decl::W;
-        let members: Vec<(usize, usize)> = (0..decl::W).map(|j| (base + j, j)).collect();
-        norm_group(
-            x,
-            gamma,
-            ctx.incoming,
-            &members,
-            decl::EPS,
-            &mut dx,
-            &mut dgamma,
-            &mut dbeta,
-        );
-    }
-    Ok(vec![dx, dgamma, dbeta])
+    ctx.instance("layer_norm_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
 /// y = a + b：两条路径都原样回传上游梯度。

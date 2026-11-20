@@ -122,11 +122,11 @@ fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<Readback> 
 pub fn metal_driver(max: usize) -> String {
     format!(
         "#define WITNESS_MAX_OUT {max}\n{METAL_HEAD}{prologue}{METAL_TAIL}",
-        prologue = crate::msl::host_prologue("cutile_witness")
+        prologue = crate::metal::host_prologue("cutile_witness")
     )
 }
 
-/// 见证驱动的 head：入口、参数与见证宽度用法；与 [`crate::msl`] 的基准驱动共用同一段前导。
+/// 见证驱动的 head：入口、参数与见证宽度用法；与 [`crate::metal`] 的基准驱动共用同一段前导。
 const METAL_HEAD: &str = r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <stdio.h>

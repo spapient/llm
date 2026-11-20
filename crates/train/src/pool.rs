@@ -3,6 +3,7 @@
 //! 块本身来自内部空闲表，稳定态不再向系统要内存；分配走 `try_reserve_exact`，形状可能来自
 //! 不受信任的权重文件头，分配失败是一条错误而不是 abort。
 
+use crate::geometry::Geometry;
 use crate::kernel::Kernel;
 use crate::shape::{Data, Kind, View, no_storage, zeroed};
 use crate::store::SITE;
@@ -107,6 +108,8 @@ pub struct Buffers<K: Kernel> {
     /// 梯度缓冲：autograd 只出 tape / plan / Replay，梯度存储由训练侧自持，与激活槽平行按变量编号。
     gradients: Vec<Option<Vec<f32>>>,
     pool: Pool,
+    /// 每个输出变量登记的算子实例几何：反向按同一个实例回传，前向/反向不各持一套几何。
+    instances: Vec<Option<Geometry>>,
     live: u64,
     peak: u64,
 }
@@ -118,12 +121,61 @@ impl<K: Kernel> Buffers<K> {
         Self {
             slots: vec![None; slots],
             gradients: vec![None; slots],
+            instances: vec![None; slots],
             sizes,
             kernel,
             pool: Pool::default(),
             live: 0,
             peak: 0,
         }
+    }
+
+    /// 带实例几何的一步前向：几何登记在输出变量上，反向按同一个实例回传。
+    ///
+    /// # Errors
+    ///
+    /// 形状不符、或内核执行失败时返回对应诊断。
+    pub fn compute_shaped(
+        &mut self,
+        op: &str,
+        inputs: &[Var],
+        output: Var,
+        geometry: Geometry,
+    ) -> Result<()> {
+        self.run(op, inputs, output, Some(geometry))
+    }
+
+    /// 读某个输出变量的实例几何；未登记即该节点按声明档语义执行。
+    pub fn geometry(&self, var: Var) -> Option<Geometry> {
+        self.instances.get(var.id() as usize).copied().flatten()
+    }
+
+    /// 前向的单一实现：登记几何、取目标槽、算、装回。声明档与实例化只差 `geometry`。
+    fn run(
+        &mut self,
+        op: &str,
+        inputs: &[Var],
+        output: Var,
+        geometry: Option<Geometry>,
+    ) -> Result<()> {
+        if let Some(geometry) = geometry
+            && let Some(slot) = self.instances.get_mut(output.id() as usize)
+        {
+            *slot = Some(geometry);
+        }
+        let (slot, shape, dtype) = self.target(output)?;
+        let views = views(&self.slots, output, inputs)?;
+        let mut block = self.pool.block(dtype, &shape)?;
+        if let Err(error) = self
+            .kernel
+            .compute_shaped(op, &views, &mut block.view_mut(), geometry.as_ref())
+        {
+            self.pool.recycle(block);
+            return Err(error);
+        }
+        drop(views);
+        self.install(slot, block);
+        Ok(())
     }
 
     /// 装入一个常驻值（参数、输入、或外部算好的结果）。
@@ -332,16 +384,7 @@ impl<K: Kernel> Buffers<K> {
 
 impl<K: Kernel> Store for Buffers<K> {
     fn compute(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()> {
-        let (slot, shape, dtype) = self.target(output)?;
-        let views = views(&self.slots, output, inputs)?;
-        let mut block = self.pool.block(dtype, &shape)?;
-        if let Err(error) = self.kernel.compute(op, &views, &mut block.view_mut()) {
-            self.pool.recycle(block);
-            return Err(error);
-        }
-        drop(views);
-        self.install(slot, block);
-        Ok(())
+        self.run(op, inputs, output, None)
     }
 
     fn free(&mut self, var: Var) {

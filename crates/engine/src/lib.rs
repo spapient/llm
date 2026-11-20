@@ -74,10 +74,10 @@ pub mod exec;
 pub mod ifb;
 pub mod kv;
 #[cfg(target_os = "macos")]
+pub mod metal_executor;
 pub mod metal;
+pub mod metal_fold;
 pub mod metal_host;
-pub mod metal_pipeline;
-pub mod msl;
 pub mod norm;
 pub mod platform;
 pub mod program;

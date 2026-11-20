@@ -101,7 +101,7 @@ fn cuda_segments(
 
 /// Metal 并行程序：单源族（逐点 / 循环注入）各有一份 `kernel_main`，分块族是多段源 + 主机折叠。
 ///
-/// 分块族的段数与折叠是一体的，因此每臂只调 [`crate::metal_pipeline`] 里各自的合成入口，
+/// 分块族的段数与折叠是一体的，因此每臂只调 [`crate::metal_fold`] 里各自的合成入口，
 /// 与 CUDA 侧的 `cuda_segments` 分法一致：这层只管「什么形态配哪份程序」。
 ///
 /// # Errors
@@ -128,22 +128,22 @@ fn metal_segments(
 ) -> Option<Result<Source>> {
     let kind = &launch.kind;
     if let Lower::ChunkReduce { chunk, func } = kind {
-        return Some(crate::metal_pipeline::reduce(
+        return Some(crate::metal_fold::reduce(
             kernel, signature, sample, *chunk, func,
         ));
     }
     if let Lower::ChunkRmsnorm { chunk } = kind {
-        return Some(crate::metal_pipeline::rmsnorm(
+        return Some(crate::metal_fold::rmsnorm(
             kernel, signature, sample, *chunk,
         ));
     }
     if let Lower::ChunkSoftmax { chunk } = kind {
-        return Some(crate::metal_pipeline::softmax(
+        return Some(crate::metal_fold::softmax(
             kernel, signature, sample, *chunk,
         ));
     }
     if let Lower::ChunkScan { chunk, decay } = kind {
-        return Some(crate::metal_pipeline::scan(
+        return Some(crate::metal_fold::scan(
             kernel, signature, sample, *chunk, *decay,
         ));
     }
@@ -158,7 +158,7 @@ fn metal_dispatch(
     launch: &Launch,
 ) -> Result<Source> {
     let (device, block) = metal_device(kernel, signature, sample, launch)?;
-    let host = crate::msl::metal_dispatch_driver(
+    let host = crate::metal::metal_dispatch_driver(
         signature,
         sample,
         "kernel_main",
@@ -193,7 +193,7 @@ fn metal_pointwise(
     sample: &Sample,
     group: usize,
 ) -> Result<(String, [usize; 3])> {
-    let device = crate::msl::metal_grid_kernel(kernel, signature, sample)?;
+    let device = crate::metal::metal_grid_kernel(kernel, signature, sample)?;
     Ok((device, [group, 1, 1]))
 }
 
@@ -214,7 +214,7 @@ fn metal_loop(
         )
         .with("engine::program"));
     }
-    let device = crate::msl::metal_loop_kernel(kernel, signature, sample, grid)?;
+    let device = crate::metal::metal_loop_kernel(kernel, signature, sample, grid)?;
     Ok((device, [1, 1, 1]))
 }
 
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn a_block_family_on_metal_is_stages_plus_a_host_fold() {
-        // 分块族在 Metal 侧的落点是 [`crate::metal_pipeline`]：段与折叠一体，不是「不支持」。
+        // 分块族在 Metal 侧的落点是 [`crate::metal_fold`]：段与折叠一体，不是「不支持」。
         let Source::Pair { device, host } = metal(
             cutile_x_kernel::SOURCE,
             &gemv().0,

@@ -74,7 +74,7 @@ pub fn execute(
 }
 
 /// 生产态 Metal 内核源：把一条算子走完整条流水线（见证建立证据 → 协商 → prepare → 骨架 lowering），
-/// 返回可交给 `engine::metal::MetalExecutor::register` 进程内编译的 MSL。
+/// 返回可交给 `engine::metal_executor::MetalExecutor::register` 进程内编译的 MSL。
 ///
 /// 与 [`execute`] 的分工：`execute` 在 C 宿主车道编译执行并当场对拍；本函数只产出生产态的 Metal
 /// 内核源，执行与对拍发生在调用方（L7 组合根把这段 MSL 注入设备后端）。因此本函数不做对拍，
