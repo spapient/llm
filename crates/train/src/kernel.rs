@@ -128,6 +128,52 @@ gemm!(
     (gemm_i8, u8, op::gemm_i8::K),
 );
 
+/// 大 K 稠密 GEMM：收缩轴取生产档 [`op::matmul::K`]，行数由输入长度推出。
+///
+/// 与上面的 `gemm!` 区别只在收缩轴不再固定为 `K = 8`：这里给的是 prefill 主链路的形状，
+/// 尺寸校验交给算子自己的入口（三条缓冲长度必须同时自洽）。
+fn matmul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "matmul_f32")?;
+    let out = output_slice::<f32>("matmul_f32", output)?;
+    let (m, n) = matrix_geometry("matmul_f32", a.len(), out.len(), op::matmul::K)?;
+    op::matmul::forward_tiled(a, b, m, n, op::matmul::K, out)
+}
+
+/// 大 K 对称 int8 GEMM：输入是承载有符号码的 `u8`，`i32` 精确累加后转 `f32`。
+///
+/// 与 [`op::matmul_i8::reference`] 同一段算术（后者从样本读，这里从视图读）；累加器是 i32，
+/// 所以对拍逐位相等，不像 `f32` 两版要留容差。
+fn matmul_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, "matmul_i8")?;
+    let out = output_slice::<f32>("matmul_i8", output)?;
+    let (m, n) = matrix_geometry("matmul_i8", a.len(), out.len(), op::matmul_i8::K)?;
+    let mut acc = vec![0i32; m * n];
+    let (a, b) = (signed(a), signed(b));
+    op::matmul_i8::forward_tiled(&a, &b, m, n, op::matmul_i8::K, &mut acc)?;
+    widen(acc, out);
+    Ok(())
+}
+
+/// `i32` 精确累加结果 → `f32` 输出：算子的输出类型在声明里，累加精度在这里。
+fn widen(acc: Vec<i32>, out: &mut [f32]) {
+    for (slot, value) in out.iter_mut().zip(acc) {
+        *slot = value as f32;
+    }
+}
+
+/// 行主序 GEMM 的行列数：`m = 左操作数长度 / k`，`n = 输出长度 / m`。
+///
+/// 稠密与 int8 两条参考内核共用同一处推导——收缩轴 `k` 是两者唯一的差别，算式不该抄两遍。
+fn matrix_geometry(site: &str, lhs: usize, out: usize, k: usize) -> Result<(usize, usize)> {
+    let m = lhs / k;
+    Ok((m, batches(site, out, m.max(1))?))
+}
+
+/// `u8` 承载的有符号码 → `i8`：字节相同、解释不同，i2/i4/i8 三档共用这一处转换。
+fn signed(bytes: &[u8]) -> Vec<i8> {
+    bytes.iter().map(|&x| x as i8).collect()
+}
+
 /// `[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i2::forward` 同一段算术。
 fn gemv_i2(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, "gemv_i2")?;
@@ -146,22 +192,22 @@ fn gemv_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     op::gemv_i8::forward(x, w, scales, output_slice::<f32>("gemv_i8", output)?)
 }
 
-/// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导。
+/// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
 fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = op::attention::MODEL.shape.1;
     let heads = batches("attention_f32", q.len(), d)?;
-    op::attention::forward(q, k, v, out, heads, d)
+    op::attention_tiled::forward(q, k, v, out, heads, d)
 }
 
-/// 同形参，走 online softmax 版 `op::attention::flash_forward`。
+/// 同形参，走 online softmax 的分块 tile 版（`op::attention_tiled::flash_tiled_forward`）。
 fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "flash_attention_f32")?;
     let out = output_slice::<f32>("flash_attention_f32", output)?;
     let d = op::attention::MODEL.shape.1;
     let heads = batches("flash_attention_f32", q.len(), d)?;
-    op::attention::flash_forward(q, k, v, out, heads, d)
+    op::attention_tiled::flash_tiled_forward(q, k, v, out, heads, d)
 }
 
 /// decode 注意力：`q/k/v → out`；`q_rows` 由 q 长、`hist` 由 k 长按头宽 `d` 推出。
@@ -234,6 +280,8 @@ const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
     gemv_i4,
     gemv_i8,
     log_f32,
+    matmul_f32,
+    matmul_i8,
     max_f32,
     min_f32,
     mul_f32,

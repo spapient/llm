@@ -271,12 +271,12 @@ const fn row(
     }
 }
 
-/// 十四条骨架的差异表，顺序与 [`crate::syntax::SKELETONS`] 一致。
+/// 十五条骨架的差异表，顺序与 [`crate::syntax::SKELETONS`] 一致。
 ///
 /// `dequant_i4` 的 `group` 是 2、`dequant_i2` 的 `group` 是 4：每 2（或 4）个输出元素占一个
 /// 字节，`verify` 从对齐这个约束的形状起步。`gemv` 的 `group` 指向类型参数上的
 /// `Format::GRAIN`——粒度是格式的编译期事实，注解里不该再写一个数。
-const SKELETON_TABLE: [Skeleton; 14] = [
+const SKELETON_TABLE: [Skeleton; 15] = [
     row(
         "gemv",
         Some("gemv"),
@@ -296,6 +296,7 @@ const SKELETON_TABLE: [Skeleton; 14] = [
     row("dequant_i4", Some("dequant_i4"), "2u32", false, false),
     row("dequant_i2", Some("dequant_i2"), "4u32", false, false),
     row("attention", Some("attention"), "1u32", false, false),
+    row("matmul", Some("matmul"), "1u32", false, false),
     row("scan", Some("scan_f32"), "1u32", false, false),
 ];
 
@@ -305,13 +306,14 @@ const SKELETON_TABLE: [Skeleton; 14] = [
 /// 再回注册名本身。两条差异都按**注册名**描述，不属于骨架表那一行的属性：flash 版与朴素版共用
 /// 骨架、只有参考实现分叉；decode 两条算子样本几何不同，各自独立模块。闭集只有这一张表，查找
 /// 走 [`override_for`]，不再有第二份按名循环。
-const OP_OVERRIDES: [(&str, Option<&str>, Option<&str>); 3] = [
+const OP_OVERRIDES: [(&str, Option<&str>, Option<&str>); 4] = [
     (
         "flash_attention_f32",
         Some("::llm_op::attention::flash_reference"),
         None,
     ),
     ("decode_attention_f32", None, Some("decode_attention")),
+    ("matmul_i8", None, Some("matmul_i8")),
     (
         "decode_flash_attention_f32",
         Some("::llm_op::decode_attention::decode_flash_reference"),

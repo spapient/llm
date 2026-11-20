@@ -103,24 +103,22 @@ pub fn forward_batch(
     x: &[f32],
     weights: &[u8],
     scales: &[f32],
-    rows: usize,
-    m: usize,
-    n: usize,
+    geo: super::Geometry,
     out: &mut [f32],
     cpb: usize,
     dequant: &[f32],
 ) -> diagnostic::Result<()> {
     let (groups, group) =
-        batch_packed_context(x.len(), out.len(), scales, weights.len(), rows, m, n, cpb)?;
-    let row_bytes = m / cpb;
+        batch_packed_context(x.len(), out.len(), scales, weights.len(), geo, cpb)?;
+    let row_bytes = geo.m / cpb;
     let per_group = group / cpb;
-    for j in 0..n {
+    for j in 0..geo.n {
         let w_row = &weights[j * row_bytes..][..row_bytes];
         let s_row = &scales[j * groups..][..groups];
-        for r in 0..rows {
-            out[r * n + j] = dot_row(
+        for r in 0..geo.rows {
+            out[r * geo.n + j] = dot_row(
                 w_row,
-                &x[r * m..][..m],
+                &x[r * geo.m..][..geo.m],
                 s_row,
                 per_group,
                 group,
@@ -138,13 +136,11 @@ fn batch_packed_context(
     out: usize,
     scales: &[f32],
     weights: usize,
-    rows: usize,
-    m: usize,
-    n: usize,
+    geo: super::Geometry,
     cpb: usize,
 ) -> diagnostic::Result<(usize, usize)> {
-    super::batch_geometry(x, out, rows, m, n)?;
-    let (groups, group) = groups(m, n, scales.len(), weights, cpb)?;
+    super::batch_geometry(x, out, geo)?;
+    let (groups, group) = groups(geo.m, geo.n, scales.len(), weights, cpb)?;
     finite_scales(scales, groups)?;
     Ok((groups, group))
 }

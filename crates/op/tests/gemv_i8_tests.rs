@@ -1,4 +1,5 @@
 use super::*;
+use crate::gemv::Geometry;
 use testkit::{COSINE_GUARD, Rng, cosine_similarity};
 
 #[test]
@@ -95,7 +96,14 @@ fn a_row_batch_equals_row_by_row_calls() {
     let x: Vec<f32> = (0..rows * m).map(|i| (i as f32 * 0.125).sin()).collect();
 
     let mut batched = vec![0.0f32; rows * n];
-    forward_batch(&x, &weights, &scales, rows, m, n, &mut batched).expect("行批可算");
+    forward_batch(
+        &x,
+        &weights,
+        &scales,
+        Geometry::new(rows, m, n),
+        &mut batched,
+    )
+    .expect("行批可算");
     let mut stepwise = vec![0.0f32; rows * n];
     for row in 0..rows {
         forward(
@@ -115,8 +123,14 @@ fn a_row_batch_with_mismatched_buffers_is_an_error() {
     let weights = vec![0u8; 2 * 64];
     let scales = vec![1.0f32; 2 * (64 / GROUP)];
     let mut out = vec![0.0f32; 4];
-    let error = forward_batch(&[1.0f32; 3 * 64], &weights, &scales, 4, 64, 2, &mut out)
-        .expect_err("行数与缓冲不符必须拒绝");
+    let error = forward_batch(
+        &[1.0f32; 3 * 64],
+        &weights,
+        &scales,
+        Geometry::new(4, 64, 2),
+        &mut out,
+    )
+    .expect_err("行数与缓冲不符必须拒绝");
     assert_eq!(error.code(), diagnostic::Code::Invalid);
 }
 

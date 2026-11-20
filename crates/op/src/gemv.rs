@@ -451,19 +451,16 @@ fn forward_batch_rows<E>(
     x: &[f32],
     weights: &[E],
     scales: &[f32],
-    rows: usize,
-    m: usize,
-    n: usize,
+    geo: Geometry,
     out: &mut [f32],
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
-    let (groups, group) =
-        batch_rows_context(x.len(), out.len(), scales, weights.len(), rows, m, n)?;
-    for j in 0..n {
-        let w_row = &weights[j * m..][..m];
+    let (groups, group) = batch_rows_context(x.len(), out.len(), scales, weights.len(), geo)?;
+    for j in 0..geo.n {
+        let w_row = &weights[j * geo.m..][..geo.m];
         let s_row = &scales[j * groups..][..groups];
-        for r in 0..rows {
-            out[r * n + j] = row_dot(w_row, &x[r * m..][..m], s_row, group);
+        for r in 0..geo.rows {
+            out[r * geo.n + j] = row_dot(w_row, &x[r * geo.m..][..geo.m], s_row, group);
         }
     }
     Ok(())
@@ -475,14 +472,12 @@ fn batch_rows_context(
     out: usize,
     scales: &[f32],
     weights: usize,
-    rows: usize,
-    m: usize,
-    n: usize,
+    geo: Geometry,
 ) -> diagnostic::Result<(usize, usize)> {
-    batch_geometry(x, out, rows, m, n)?;
-    let (groups, group) = scaled_groups(m, n, scales.len())?;
+    batch_geometry(x, out, geo)?;
+    let (groups, group) = scaled_groups(geo.m, geo.n, scales.len())?;
     finite_scales(scales, groups)?;
-    required_weights(weights, n, m)?;
+    required_weights(weights, geo.n, geo.m)?;
     Ok((groups, group))
 }
 
@@ -491,13 +486,11 @@ pub fn forward_plain_batch<C: Plain>(
     x: &[f32],
     weights: &[C::Elem],
     scales: &[f32],
-    rows: usize,
-    m: usize,
-    n: usize,
+    geo: Geometry,
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
     if C::SCALES.is_some() {
-        forward_batch_rows(x, weights, scales, rows, m, n, out, scaled_dot::<C>)
+        forward_batch_rows(x, weights, scales, geo, out, scaled_dot::<C>)
     } else {
         if !scales.is_empty() {
             return Err(Error::new(
@@ -505,25 +498,51 @@ pub fn forward_plain_batch<C: Plain>(
                 format!("稠密格式没有标度，收到 {} 个", scales.len()),
             ));
         }
-        forward_batch_rows(x, weights, scales, rows, m, n, out, |w, x, _, _| {
+        forward_batch_rows(x, weights, scales, geo, out, |w, x, _, _| {
             dense_dot::<C>(w, x)
         })
+    }
+}
+
+/// 行批几何：`rows` 行输入、输入行宽 `m`、输出行宽 `n`。
+///
+/// 三个数必须同时自洽（`x.len() == rows·m`、`out.len() == rows·n`），且都只对行批有意义；
+/// 分开传三个同型 `usize` 既容易在调用点换位，也让每个入口都多出两个参数。收成一个值后，
+/// 几何的校只在入口守卫一处，量化与逐元素两条骨架传同一个类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    /// 输入行数。
+    pub rows: usize,
+    /// 输入行宽（权重行宽）。
+    pub m: usize,
+    /// 输出行宽。
+    pub n: usize,
+}
+
+impl Geometry {
+    /// 由三个数直接构造；合法性留给入口守卫，构造本身不报错。
+    pub const fn new(rows: usize, m: usize, n: usize) -> Self {
+        Self { rows, m, n }
     }
 }
 
 /// 行批几何：行数非零，输入与输出的长度分别对上 `rows × m` 与 `rows × n`。
 ///
 /// 三处一起判而不分判：批次调用时三个数必须同时自洽，单独对上一个没有意义。
-fn batch_geometry(x: usize, out: usize, rows: usize, m: usize, n: usize) -> diagnostic::Result<()> {
-    if rows == 0 {
+fn batch_geometry(x: usize, out: usize, geo: Geometry) -> diagnostic::Result<()> {
+    if geo.rows == 0 {
         return Err(Error::new(Code::Invalid, "行批至少一行"));
     }
-    let (want_x, want_out) = (rows.saturating_mul(m), rows.saturating_mul(n));
+    let (want_x, want_out) = (
+        geo.rows.saturating_mul(geo.m),
+        geo.rows.saturating_mul(geo.n),
+    );
     if x != want_x || out != want_out {
         return Err(Error::new(
             Code::Invalid,
             format!(
-                "行批尺寸不符：x={x}，out={out}，期望 {rows}×{m}={want_x}、{rows}×{n}={want_out}"
+                "行批尺寸不符：x={x}，out={out}，期望 {}×{}={want_x}、{}×{}={want_out}",
+                geo.rows, geo.m, geo.rows, geo.n
             ),
         ));
     }
@@ -828,14 +847,10 @@ macro_rules! gemv_packed {
             x: &[f32],
             weights: &[u8],
             scales: &[f32],
-            rows: usize,
-            m: usize,
-            n: usize,
+            geo: $crate::gemv::Geometry,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            $crate::gemv::packed::forward_batch(
-                x, weights, scales, rows, m, n, out, $row.cpb, $row.table,
-            )
+            $crate::gemv::packed::forward_batch(x, weights, scales, geo, out, $row.cpb, $row.table)
         }
 
         #[cfg(test)]
@@ -1014,12 +1029,10 @@ pub mod gemv_i8 {
         x: &[f32],
         weights: &[u8],
         scales: &[f32],
-        rows: usize,
-        m: usize,
-        n: usize,
+        geo: gemv::Geometry,
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        gemv::forward_plain_batch::<gemv::SymI8<GROUP>>(x, weights, scales, rows, m, n, out)
+        gemv::forward_plain_batch::<gemv::SymI8<GROUP>>(x, weights, scales, geo, out)
     }
 
     #[cfg(test)]

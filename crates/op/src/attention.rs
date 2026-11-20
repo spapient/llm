@@ -5,7 +5,9 @@
 //! - `reference` / `forward`：朴素三阶段——先算全部分数 `QKᵀ/√d`，再对每行 softmax，最后乘 `V`。
 //!   它要一块 `s×s` 的完整分数矩阵，是数值参考；
 //! - [`flash_reference`] / [`flash_forward`]：online softmax 分块，维护 running max 与归一化和，
-//!   单遍扫描 `K/V`，不落地完整分数矩阵。两套结果必须逐元素相等（误差内）。
+//!   单遍扫描 `K/V`，不落地完整分数矩阵。两套结果必须逐元素相等（误差内）；
+//! - [`crate::attention_tiled`]：上面两条的分块 tile 版本，**执行侧走的那条**（`serve` / `train` 的适配
+//!   都指向它），与 `forward` / `flash_forward` 分别逐位一致，只是 K/V 块在行块内被复用。
 //!
 //! 样本、形状与代价两算子共用；`#[annotation::model]` 按注册名挑对应的参考函数。
 
@@ -675,6 +677,37 @@ mod tests {
         )
         .expect("flash 内核");
         assert!(testkit::approx_eq(&flash_out, &flash, 1e-5));
+    }
+
+    /// 稠密分块 tile 与朴素路径：K/V 列块 + 查询行块，两个方向都切，结果必须逐位相同。
+    ///
+    /// 覆盖 tile 整数倍、非整数倍（`s = 17` 同时不是行块与列块的倍数）与大序列；行块按预算收窄的
+    /// 分支（`s > SCORE_BUDGET / TILE_ROWS`）由最后一组 `s = 512` 之外的小 `d` 组合天然走过。
+    #[test]
+    fn tiled_dense_matches_naive_bitwise() {
+        for &(s, d) in &[(8, 8), (17, 5), (64, 16), (100, 64), (256, 32), (512, 32)] {
+            let sample = sample(s, d);
+            let q = sample.f32("q").unwrap();
+            let k = sample.f32("k").unwrap();
+            let v = sample.f32("v").unwrap();
+            let mut naive = vec![0.0f32; s * d];
+            forward(q, k, v, &mut naive, s, d).expect("朴素内核");
+            let mut tiled = vec![0.0f32; s * d];
+            crate::attention_tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
+            assert_eq!(tiled, naive, "s={s},d={d} 稠密 tile 必须与朴素路径逐位一致");
+        }
+    }
+
+    /// 稠密 tile 的几何拒绝：头宽 0、序列长 0、缓冲长度不符都在入口拦下。
+    #[test]
+    fn tiled_dense_rejects_bad_geometry() {
+        let mut out = vec![0.0f32; 16];
+        assert!(crate::attention_tiled::forward(&[], &[], &[], &mut out, 4, 0).is_err());
+        assert!(crate::attention_tiled::forward(&[], &[], &[], &mut out, 0, 4).is_err());
+        assert!(
+            crate::attention_tiled::forward(&[1.0; 12], &[1.0; 16], &[1.0; 16], &mut out, 4, 4)
+                .is_err()
+        );
     }
 
     #[test]

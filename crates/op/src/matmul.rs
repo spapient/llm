@@ -22,6 +22,8 @@ use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
 
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
 
@@ -364,6 +366,116 @@ pub fn close_enough(actual: &[f32], expected: &[f32], rtol: f32, atol: f32) -> R
         }
     }
     Ok(())
+}
+
+/// 收缩轴长度（生产档）：prefill 主链路 GEMM 的 K。
+///
+/// 与 [`crate::gemm`] 的 `K=8` 固定档同构：把大 K 作为算子语义的生产形状写入 [`MODEL`]，
+/// 使 `nn::Bounds` / roofline 对 256×256×4096 的代价分子取 2·m·K·n 而不是 gemm 的 2·m·8·n。
+pub const K: usize = 4096;
+
+/// 三轴：`m`/`k` 输入，`n` 输出（角色与 [`crate::gemm::AXES`] 一致，收缩轴长度由 [`K`] 给定）。
+pub const AXES: &[AxisSpec] = &[
+    AxisSpec {
+        role: AxisRole::Input,
+        label: 'm',
+    },
+    AxisSpec {
+        role: AxisRole::Input,
+        label: 'k',
+    },
+    AxisSpec {
+        role: AxisRole::Output,
+        label: 'n',
+    },
+];
+
+/// 形状投影：输出 `m×n`，收缩轴 `k = K`（生产档）。
+///
+/// # Errors
+///
+/// 轴表不合法时由 [`ShapeContext::new`] 报出。
+pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext> {
+    ShapeContext::new([('m', m), ('k', K), ('n', n)])
+}
+
+/// 标量代价：`2·m·K·n` FLOP，读 `(m·K + K·n)·4` 字节，写 `m·n·4` 字节。
+///
+/// # Errors
+///
+/// 形状上下文缺轴时返回带算子名的说明。
+pub fn cost(shape: &ShapeContext) -> Result<Cost> {
+    let axis = |label: char| {
+        shape
+            .get(label)
+            .ok_or_else(|| Error::new(Code::Invalid, format!("matmul_f32 形状缺轴 `{label}`")))
+    };
+    let m = axis('m')?;
+    let k = axis('k')?;
+    let n = axis('n')?;
+    Ok(Cost {
+        flops: (2 * m * k * n) as f64,
+        read: ((m * k + k * n) * 4) as u64,
+        write: (m * n * 4) as u64,
+    })
+}
+
+/// 确定性样本：`a` / `b` 由同一份采样序列给出，`y` 为零缓冲，标量 `M`/`K`/`N` 与 `.k` 签名一致。
+pub fn sample(m: usize, n: usize) -> Sample {
+    Sample {
+        m,
+        n,
+        scalars: vec![("M", m as i64), ("K", K as i64), ("N", n as i64)],
+        buffers: vec![
+            Buffer {
+                name: "a",
+                values: Values::F32(deterministic(m * K, 1)),
+            },
+            Buffer {
+                name: "b",
+                values: Values::F32(deterministic(K * n, 2)),
+            },
+            Buffer {
+                name: "y",
+                values: Values::F32(vec![0.0; m * n]),
+            },
+        ],
+    }
+}
+
+/// 标量参考：读 `a` / `b`，按 [`matmul_scalar`] 计算输出。
+///
+/// # Errors
+///
+/// 样本缺 `a` / `b` 时返回说明。
+pub fn reference(sample: &Sample) -> Result<Vec<f32>> {
+    let a = sample.f32("a")?;
+    let b = sample.f32("b")?;
+    let mut out = vec![0.0f32; sample.m * sample.n];
+    matmul_scalar(a, b, sample.m, sample.n, K, &mut out);
+    Ok(out)
+}
+
+/// 稠密矩阵乘标记类型：只用来承载语义表，没有实例。
+pub struct Matmul;
+
+/// 语义表由注解生成：生产形状 `256×256`，收缩轴 [`K`]，输出 f32。
+///
+/// 手写常量的版本已删：`#[annotation::model]` 是它与注册表之间唯一的绑定点，两处各写一份
+/// 就会出现「注册名改了、语义表没改」这种编译得过却绑错算子的状态。
+#[annotation::model(name = "matmul_f32", shape = [256, 256], dtype = "f32", skeleton = "matmul")]
+pub type MatmulF32 = Matmul;
+
+/// 确定性采样（与测试同源）：`(len, salt)` 决定序列，不引入外部依赖。
+fn deterministic(len: usize, salt: u32) -> Vec<f32> {
+    (0..len)
+        .map(|i| {
+            let x = (i as u32)
+                .wrapping_mul(2654435761)
+                .wrapping_add(salt.wrapping_mul(40503));
+            ((x >> 8) as f32) / 256.0 - 32.0
+        })
+        .collect()
 }
 
 #[cfg(test)]

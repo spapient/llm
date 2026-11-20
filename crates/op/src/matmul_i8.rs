@@ -1,10 +1,12 @@
-//! 大 K 对称 int8 GEMM（可变收缩轴）：Y[m,n] = sum_k A[m,k] * B[k,n]。
+//! 大 K 对称 int8 GEMM（可变收缩轴）：`Y[m, n] = sum_k A[m, k] * B[k, n]`。
 //!
 //! 与 crate::gemm 的 K=8 量化骨架互补：收缩轴 k 由调用方给定。累加器用 i32 精确累加
 //! （对应 CUDA dp4a），tile 化只改遍历次序、不改数值结果（整数加法交换律），因此
 //! matmul_tiled 与 matmul_scalar 对拍逐位相等，不做容差。
 
 use diagnostic::{Code, Error, Result};
+
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
@@ -15,7 +17,7 @@ pub const TILE_N: usize = 64;
 /// 收缩轴 tile 宽度。
 pub const TILE_K: usize = 32;
 
-/// 标量参考：out[i,j] = sum_p a[i,p]*b[p,j]，每个元素按 p 顺序独立累加。
+/// 标量参考：`out[i, j] = Σ_p a[i, p]·b[p, j]`，每个元素按 `p` 顺序独立累加。
 ///
 /// 不读 out 的初值（直接赋值），是 tile 实现的对拍真值。
 pub fn matmul_scalar(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
@@ -67,9 +69,9 @@ struct Tile {
     cols: std::ops::Range<usize>,
 }
 
-/// 块内 rank-1 更新：out[i,j] += sum_p a[i,p]*b[p,j]，下标都取 tile 给的区间。
+/// 块内 rank-1 更新：`out[i, j] += Σ_p a[i, p]·b[p, j]`，下标都取 tile 给的区间。
 ///
-/// n / k 是整块的行宽与收缩轴长度；行主序下 [i,j] 仍是 i * n + j。
+/// `n` / `k` 是整块的行宽与收缩轴长度；行主序下 `[i, j]` 仍是 `i * n + j`。
 fn accumulate_tile(a: &[i8], b: &[i8], out: &mut [i32], tile: &Tile, n: usize, k: usize) {
     for i in tile.rows.clone() {
         let start = i * k + tile.contraction.start;
@@ -138,6 +140,113 @@ pub fn forward_tiled(
     check_dims(a, b, m, n, k, out)?;
     matmul_tiled(a, b, m, n, k, out);
     Ok(())
+}
+
+/// 收缩轴长度（生产档）：prefill 主链路 int8 GEMM 的 K，与 [`crate::matmul::K`] 同档。
+pub const K: usize = 4096;
+
+/// 三轴：`m`/`k` 输入，`n` 输出；收缩轴长度由 [`K`] 给定。
+pub const AXES: &[AxisSpec] = &[
+    AxisSpec {
+        role: AxisRole::Input,
+        label: 'm',
+    },
+    AxisSpec {
+        role: AxisRole::Input,
+        label: 'k',
+    },
+    AxisSpec {
+        role: AxisRole::Output,
+        label: 'n',
+    },
+];
+
+/// 形状投影：输出 `m×n`，收缩轴 `k = K`（生产档）。
+///
+/// # Errors
+///
+/// 轴表不合法时由 [`ShapeContext::new`] 报出。
+pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext> {
+    ShapeContext::new([('m', m), ('k', K), ('n', n)])
+}
+
+/// 标量代价：`2·m·K·n` FLOP；输入为 i8（每元素 1 字节），输出 f32（每元素 4 字节）。
+///
+/// # Errors
+///
+/// 形状上下文缺轴时返回带算子名的说明。
+pub fn cost(shape: &ShapeContext) -> Result<Cost> {
+    let axis = |label: char| {
+        shape
+            .get(label)
+            .ok_or_else(|| Error::new(Code::Invalid, format!("matmul_i8 形状缺轴 `{label}`")))
+    };
+    let m = axis('m')?;
+    let k = axis('k')?;
+    let n = axis('n')?;
+    Ok(Cost {
+        flops: (2 * m * k * n) as f64,
+        read: (m * k + k * n) as u64,
+        write: (m * n * 4) as u64,
+    })
+}
+
+/// 确定性样本：`a` / `b` 为对称 i8（u8 字节承载有符号码），`y` 为 f32 零缓冲。
+pub fn sample(m: usize, n: usize) -> Sample {
+    Sample {
+        m,
+        n,
+        scalars: vec![("M", m as i64), ("K", K as i64), ("N", n as i64)],
+        buffers: vec![
+            Buffer {
+                name: "a",
+                values: Values::U8(deterministic_i8(m * K, 1)),
+            },
+            Buffer {
+                name: "b",
+                values: Values::U8(deterministic_i8(K * n, 2)),
+            },
+            Buffer {
+                name: "y",
+                values: Values::F32(vec![0.0; m * n]),
+            },
+        ],
+    }
+}
+
+/// 标量参考：读 `a` / `b`（u8 承载的有符号码），i32 精确累加后转 f32 输出。
+///
+/// # Errors
+///
+/// 样本缺 `a` / `b` 时返回说明。
+pub fn reference(sample: &Sample) -> Result<Vec<f32>> {
+    let a: Vec<i8> = sample.u8("a")?.iter().map(|&x| x as i8).collect();
+    let b: Vec<i8> = sample.u8("b")?.iter().map(|&x| x as i8).collect();
+    let mut acc = vec![0i32; sample.m * sample.n];
+    matmul_scalar(&a, &b, sample.m, sample.n, K, &mut acc);
+    Ok(acc.into_iter().map(|x| x as f32).collect())
+}
+
+/// 对称 int8 矩阵乘标记类型：只用来承载语义表，没有实例。
+pub struct MatmulI8Op;
+
+/// 语义表由注解生成：生产形状 `256×256`，收缩轴 [`K`]，`i32` 精确累加后输出 f32。
+///
+/// 与稠密版共用 `matmul` 骨架，但模块必须是自己那一份（注解层为注册名 `matmul_i8`
+/// 登记了模块覆盖），否则参考实现会去找稠密版而把有符号码当浮点算。
+#[annotation::model(name = "matmul_i8", shape = [256, 256], dtype = "f32", skeleton = "matmul")]
+pub type MatmulI8 = MatmulI8Op;
+
+/// 确定性 i8 采样：覆盖正负与零，`(len, salt)` 固定即序列固定。
+fn deterministic_i8(len: usize, salt: u32) -> Vec<u8> {
+    (0..len)
+        .map(|i| {
+            let x = (i as u32)
+                .wrapping_mul(2654435761)
+                .wrapping_add(salt.wrapping_mul(40503));
+            ((x % 251) as i32 - 125) as i8 as u8
+        })
+        .collect()
 }
 
 #[cfg(test)]

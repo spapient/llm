@@ -6,6 +6,28 @@
 ## [Unreleased]
 ### Changed
 
+- **注意力两条内核都真正走分块 tile（实测 1.80× / 4.69×）**。上一轮把 tile 的*点积*收成多链归约，
+  但执行面只到一半：`attention_tiled` 只有 Flash 一条，执行侧仍有一处走朴素路径；且两条 tile 内核的
+  加权段按「定头扫列」取 `V`，每读一个元素跨 `d` 个位置，向量化不了——稠密 tile 实测只比朴素快 1.57×。
+  **稠密分块 tile**：`attention_tiled::forward` 补上「K/V 列块 + 查询行块 + 按缓存预算收窄分数轨」的
+  实现，行块分数只驻留 `rows × s`，不落地 `s×s`；与 `attention::forward` 逐位一致，由
+  `tiled_dense_matches_naive_bitwise` 在六组 `(s, d)` 上钉住（含非整数倍与大序列）。
+  **加权段改为 AXPY**：列在外、头在内——`V` 的每一列连续读、`out` 连续写，而每头沿列仍升序累加，
+  于是逐位不变、内层可向量化；同时省掉每头一次重复除法（`prob / sum` 每列只除一次）。
+  **Flash 跳过恒等乘**：块内 `reweight` 只在最大值被本列抬高时偏离 1，乘 `1.0` 是精确恒等，走
+  `l += prob` / `acc += prob·v` 的支路不改变任何一位，只省掉每列 `d` 次乘法。
+  **执行侧接线**：`serve::kernels::attention_f32`、`train::kernel::{attention_f32, flash_attention_f32}`
+  都指向 `attention_tiled`（decode 仍走单行的 `decode_flash_attention_f32`，那里没有可复用的行块）。
+  **实测**（macOS aarch64，criterion，`s=1024, d=64`）：稠密朴素 43.89ms → 稠密 tile
+  **9.35ms（4.69×）**；online 17.83ms → Flash tile **9.89ms（1.80×）**（此前 11.70/17.94 = 1.53×）。
+  基准新增 `attention_dense_f32` 对照组（`naive_1024x64` / `tiled_1024x64`）。
+- **训练闭环补齐通用矩阵乘参考内核（编译期断言修复）**：`op::REGISTRY` 已是 36 项，而 `train::kernel`
+  的参考表停在 34 项，长度断言 `TRAINED == REGISTRY` 直接让整仓编译失败。本轮补上 `matmul_f32` /
+  `matmul_i8` 两条参考路径——收缩轴取生产档 `K`、行数由操作数长度推出、几何推导与 `u8`→`i8` 码转换各
+  收成一处（稠密版共用），训练侧因此能直接拿 prefill 主链路的形状做对拍，int8 一侧因累加器是 `i32`
+  而对拍逐位相等。同时 `op::matmul` 与 `op::matmul_i8` 的语义表改由 `#[annotation::model]` 生成：
+  注册名、形状、输出类型与参考函数只声明一次，`matmul` 骨架与 `matmul_i8` 的模块覆盖登记在注解层的
+  两张闭集表里，不再有「注册名改了、语义表没改」这种能编译却绑错算子的状态。
 - **性能：矩阵乘与注意力全部走分块内核，实测各提速 1.8× / 1.7×**。此前"走 tile"只到调用点——
   线性层 `matmul_tn_tiled` 的收缩块仅 32 宽、内层是单链标量归约，实测（256×256、k=4096）**比逐行 `gemv`
   慢 8.9%**（36.8ms vs 33.8ms）；注意力两条内核也各自写着单链点积。
@@ -15,9 +37,11 @@
   **单一来源**：多链点积只有 `matmul::dot_lanes` 一份（`LANES = 8` 条独立累加链，尾数并入标量尾部），
   矩阵乘 tile 与两条注意力内核共用——同一个归约循环不再被写成四份、向量化程度也不再四份不一样。
   恒等变换类的改动保持输出语义：线性层 tile 与逐行 `gemv` 逐位一致、注意力两条内核的逐位对拍用例不变。
-  **实测**（macOS aarch64，criterion，100 样本）：线性层 35.6ms → **19.4ms（1.83×，27.4 GFLOP/s）**；
-  注意力 online 31.1ms → **18.4ms（1.69×）**、tiled 22.4ms → **12.0ms（1.87×）**。基准见
-  `crates/benches/criterion/{matmul_f32,attention_prefill_f32}.rs`（线性层新增"逐行 vs tile"对照组）。
+  **实测**（macOS aarch64，criterion，256×256、k=4096，3s 测量）：线性层逐行 `gemv` 33.25ms →
+  **分块 19.15ms（1.74×）**；`[m,k]×[k,n]` 通用 tile 18.49ms（标量参考 304.55ms，16.5×）；注意力
+  prefill tiled 11.70ms 对 online 17.94ms（1.53×）；int8 tile 19.98ms（标量参考 143.35ms，7.2×）。
+  基准见 `crates/benches/criterion/{matmul_f32,attention_prefill_f32,matmul_i8}.rs`
+  （线性层新增"逐行 vs tile"对照组）。
 - **量化内核行批入口**：`op::{gemv_i2,gemv_i4,gemv_i8}::forward_batch` 让一次调用算 `rows` 行，
   权重按行块只解包一遍（此前 prefill 里逐行调用会把同一份打包权重解包 `rows` 次）。服务侧
   `gemv_quant` 跳板按批行数分流——一行仍走单行入口（`m` 即权重行宽），多行才走行批；两条路径累加

@@ -44,7 +44,14 @@ macro_rules! packed_gemv_batch_tests {
             let x: Vec<f32> = (0..rows * m).map(|i| (i as f32 * 0.125).sin()).collect();
 
             let mut batched = vec![0.0f32; rows * n];
-            $forward_batch(&x, &weights, &scales, rows, m, n, &mut batched).expect("行批可算");
+            $forward_batch(
+                &x,
+                &weights,
+                &scales,
+                $crate::gemv::Geometry::new(rows, m, n),
+                &mut batched,
+            )
+            .expect("行批可算");
             let mut stepwise = vec![0.0f32; rows * n];
             for row in 0..rows {
                 $forward(
@@ -67,9 +74,7 @@ macro_rules! packed_gemv_batch_tests {
                 &[1.0f32; 3 * 4 * $group],
                 &weights,
                 &scales,
-                4,
-                4 * $group,
-                2,
+                $crate::gemv::Geometry::new(4, 4 * $group, 2),
                 &mut out,
             )
             .expect_err("行数与缓冲不符必须拒绝");

@@ -158,8 +158,13 @@ fn attention_paths(
     run(q, k, v, out, s, d)
 }
 
+/// 朴素自注意力适配：走稠密分块 tile 路径。
+///
+/// 与 `op::attention::forward` 逐位一致（对拍见 `op::attention::tests::tiled_dense_matches_naive_bitwise`），
+/// 差别只在 K/V 的读取次数：非 tile 路径每行都要把整段 K/V 重走一遍，tile 让一个行块的查询共用
+/// 同一段 K/V 分块。
 fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    attention_paths(inputs, outputs, op::attention::forward)
+    attention_paths(inputs, outputs, op::attention_tiled::forward)
 }
 
 /// prefill 自注意力适配：走分块 tile 路径。
@@ -316,15 +321,8 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
 type GemvQuantFn = fn(x: &[f32], w: &[u8], s: &[f32], out: &mut [f32]) -> Result<()>;
 
 /// 量化 GEMV 行批算术入口：`rows × m` 的输入 → `rows × n` 的输出。
-type GemvQuantBatchFn = fn(
-    x: &[f32],
-    w: &[u8],
-    s: &[f32],
-    rows: usize,
-    m: usize,
-    n: usize,
-    out: &mut [f32],
-) -> Result<()>;
+type GemvQuantBatchFn =
+    fn(x: &[f32], w: &[u8], s: &[f32], geo: op::gemv::Geometry, out: &mut [f32]) -> Result<()>;
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接，按批行数分流。
 ///
@@ -348,9 +346,7 @@ fn gemv_quant(
         x,
         weights,
         scales,
-        x.len() / m,
-        m,
-        launch.block[0] as usize,
+        op::gemv::Geometry::new(x.len() / m, m, launch.block[0] as usize),
         out,
     )
 }

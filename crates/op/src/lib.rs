@@ -157,6 +157,8 @@ registry! {
     "gemv_i4" => gemv_i4::MODEL, false, "gemv_packed",
     "gemv_i8" => gemv_i8::MODEL, false, "gemv_i8",
     "log_f32" => log_f32::MODEL, true, "log_f32",
+    "matmul_f32" => matmul::MODEL, false, "matmul_f32",
+    "matmul_i8" => matmul_i8::MODEL, false, "matmul_i8",
     "max_f32" => max_f32::MODEL, true, "max_f32",
     "min_f32" => min_f32::MODEL, true, "min_f32",
     "mul_f32" => mul_f32::MODEL, true, "binary",
