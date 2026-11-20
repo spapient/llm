@@ -16,22 +16,27 @@ use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
 use crate::conv::ConvGeom;
 use diagnostic::Error;
 
-/// 一次算子装配：标记类型、语义别名与 [`crate::operator_here`] 的基座实现。
+/// 一次算子装配：标记类型、语义别名与 [`crate::operator_here`] 的基座实现，外加 `#[annotation::model]`
+/// 自检常量。`$m`/`$n` 同时喂给 `operator_here!`（元组形状）与注解（数组形状），两处从同一对字面量派生。
 ///
 /// 模块内必须提供同名 `cost` / `sample` / `reference` 与 `project_shape` / `AXES`：基座宏按路径取，
 /// 不在这里再抄一份。
 macro_rules! classic_op {
-    ($ty:ident, $op:literal, $arity:literal, $shape:expr) => {
+    ($ty:ident, $alias:ident, $op:literal, $arity:literal, $m:literal, $n:literal) => {
         #[doc = concat!("`", $op, "` 的标记类型。")]
         #[derive(Debug, Clone, Copy)]
         pub struct $ty;
 
-        crate::operator_here!($ty, $op, $arity, $shape, true, reference);
+        crate::operator_here!($ty, $op, $arity, ($m, $n), true, reference);
+
+        #[annotation::model(name = $op, shape = [$m, $n], dtype = "f32", skeleton = "elementwise")]
+        /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
+        pub type $alias = $ty;
     };
 }
 
 /// 二维卷积（声明档 `4×4, cin 2, cout 3, k=3, s=1, p=1`，same 输出）。
-pub mod conv2d_f32 {
+pub mod conv2d {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -123,18 +128,11 @@ pub mod conv2d_f32 {
         crate::model::cost_n(shape, "conv2d_f32", 2.0 * PATCH as f64, 3)
     }
 
-    /// `conv2d_f32` 的标记类型。
-    #[derive(Debug, Clone, Copy)]
-    pub struct Conv2dModel;
-
-    crate::operator_here!(Conv2dModel, "conv2d_f32", 3, (OH * OW, COUT), true, reference);
-    #[annotation::model(name = "conv2d_f32", shape = [16, 3], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type Conv2dF32 = Conv2dModel;
+    classic_op!(Conv2dModel, Conv2d, "conv2d_f32", 3, 16, 3);
 }
 
 /// 一维最大池化（声明档几何 `k=2, s=2, p=0`，单通道）。
-pub mod max_pool1d_f32 {
+pub mod max_pool1d {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -178,14 +176,11 @@ pub mod max_pool1d_f32 {
         crate::model::cost_n(shape, "max_pool1d_f32", 2.0, 2)
     }
 
-    classic_op!(MaxPool1dModel, "max_pool1d_f32", 1, (64, 64));
-    #[annotation::model(name = "max_pool1d_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type MaxPool1dF32 = MaxPool1dModel;
+    classic_op!(MaxPool1dModel, MaxPool1d, "max_pool1d_f32", 1, 64, 64);
 }
 
 /// 二维最大池化（声明档几何 `3×3, s=1, p=1`，4×4 输入、same 输出）。
-pub mod max_pool2d_f32 {
+pub mod max_pool2d {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -240,14 +235,11 @@ pub mod max_pool2d_f32 {
         crate::model::cost_n(shape, "max_pool2d_f32", 8.0, 4)
     }
 
-    classic_op!(MaxPool2dModel, "max_pool2d_f32", 1, (64, 64));
-    #[annotation::model(name = "max_pool2d_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type MaxPool2dF32 = MaxPool2dModel;
+    classic_op!(MaxPool2dModel, MaxPool2d, "max_pool2d_f32", 1, 64, 64);
 }
 
 /// 二维平均池化（声明档几何 `3×3, s=1, p=1`，补零不计入分母）。
-pub mod avg_pool2d_f32 {
+pub mod avg_pool2d {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -305,14 +297,11 @@ pub mod avg_pool2d_f32 {
         crate::model::cost_n(shape, "avg_pool2d_f32", 10.0, 4)
     }
 
-    classic_op!(AvgPool2dModel, "avg_pool2d_f32", 1, (64, 64));
-    #[annotation::model(name = "avg_pool2d_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type AvgPool2dF32 = AvgPool2dModel;
+    classic_op!(AvgPool2dModel, AvgPool2d, "avg_pool2d_f32", 1, 64, 64);
 }
 
 /// 自适应平均池化（声明档 4×4 → 2×2）。
-pub mod adaptive_pool_f32 {
+pub mod adaptive_pool {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -360,14 +349,11 @@ pub mod adaptive_pool_f32 {
         crate::model::cost_n(shape, "adaptive_pool_f32", 5.0, 2)
     }
 
-    classic_op!(AdaptivePoolModel, "adaptive_pool_f32", 1, (64, 64));
-    #[annotation::model(name = "adaptive_pool_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type AdaptivePoolF32 = AdaptivePoolModel;
+    classic_op!(AdaptivePoolModel, AdaptivePool, "adaptive_pool_f32", 1, 64, 64);
 }
 
 /// 双线性插值（声明档 2×2 → 4×4，`align_corners = false`）。
-pub mod interpolate_f32 {
+pub mod interpolate {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -429,14 +415,11 @@ pub mod interpolate_f32 {
         crate::model::cost_n(shape, "interpolate_f32", 8.0, 4)
     }
 
-    classic_op!(InterpolateModel, "interpolate_f32", 1, (64, 64));
-    #[annotation::model(name = "interpolate_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type InterpolateF32 = InterpolateModel;
+    classic_op!(InterpolateModel, Interpolate, "interpolate_f32", 1, 64, 64);
 }
 
 /// 批归一化（声明档 `C=4, spatial=2, n=2`，训练口径：批统计自上而下、滑动统计按动量混入）。
-pub mod batch_norm_f32 {
+pub mod batch_norm {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -450,7 +433,7 @@ pub mod batch_norm_f32 {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::BatchNorm2d {
+    fn norm() -> crate::norm::BatchNorm2d<f32> {
         crate::norm::BatchNorm2d {
             channels: C,
             eps: EPS,
@@ -507,14 +490,11 @@ pub mod batch_norm_f32 {
         crate::model::cost_n(shape, "batch_norm_f32", 4.0, 3)
     }
 
-    classic_op!(BatchNormModel, "batch_norm_f32", 3, (64, 64));
-    #[annotation::model(name = "batch_norm_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type BatchNormF32 = BatchNormModel;
+    classic_op!(BatchNormModel, BatchNorm, "batch_norm_f32", 3, 64, 64);
 }
 
 /// 组归一化（声明档 `G=2, C=4, spatial=2, n=2`）。
-pub mod group_norm_f32 {
+pub mod group_norm {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -530,7 +510,7 @@ pub mod group_norm_f32 {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::GroupNorm {
+    fn norm() -> crate::norm::GroupNorm<f32> {
         crate::norm::GroupNorm {
             groups: G,
             channels: C,
@@ -587,14 +567,11 @@ pub mod group_norm_f32 {
         crate::model::cost_n(shape, "group_norm_f32", 4.0, 3)
     }
 
-    classic_op!(GroupNormModel, "group_norm_f32", 3, (64, 64));
-    #[annotation::model(name = "group_norm_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type GroupNormF32 = GroupNormModel;
+    classic_op!(GroupNormModel, GroupNorm, "group_norm_f32", 3, 64, 64);
 }
 
 /// 实例归一化（声明档 `C=4, spatial=2, n=2`）：等价于 `GroupNorm(G = C)`。
-pub mod instance_norm_f32 {
+pub mod instance_norm {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -608,7 +585,7 @@ pub mod instance_norm_f32 {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::InstanceNorm {
+    fn norm() -> crate::norm::InstanceNorm<f32> {
         crate::norm::InstanceNorm {
             channels: C,
             eps: EPS,
@@ -659,14 +636,11 @@ pub mod instance_norm_f32 {
         crate::model::cost_n(shape, "instance_norm_f32", 4.0, 3)
     }
 
-    classic_op!(InstanceNormModel, "instance_norm_f32", 3, (64, 64));
-    #[annotation::model(name = "instance_norm_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type InstanceNormF32 = InstanceNormModel;
+    classic_op!(InstanceNormModel, InstanceNorm, "instance_norm_f32", 3, 64, 64);
 }
 
 /// 层归一化（声明档 `3 行 × 4 宽`）：逐行在最后一维统计。
-pub mod layer_norm_f32 {
+pub mod layer_norm {
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -678,7 +652,7 @@ pub mod layer_norm_f32 {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::LayerNorm {
+    fn norm() -> crate::norm::LayerNorm<f32> {
         crate::norm::LayerNorm {
             width: W,
             eps: EPS,
@@ -729,15 +703,12 @@ pub mod layer_norm_f32 {
         crate::model::cost_n(shape, "layer_norm_f32", 4.0, 3)
     }
 
-    classic_op!(LayerNormModel, "layer_norm_f32", 3, (64, 64));
-    #[annotation::model(name = "layer_norm_f32", shape = [64, 64], dtype = "f32", skeleton = "elementwise")]
-    /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
-    pub type LayerNormF32 = LayerNormModel;
+    classic_op!(LayerNormModel, LayerNorm, "layer_norm_f32", 3, 64, 64);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_norm_f32, layer_norm_f32, max_pool1d_f32};
+    use super::{batch_norm, layer_norm, max_pool1d};
 
     /// 每个算子的样本 -> 参考必须自洽（参考不能报错，长度与 `y` 缓冲一致）。
     fn check(name: &str) {
@@ -768,8 +739,8 @@ mod tests {
     #[test]
     fn norm_references_are_statistically_sane() {
         // LayerNorm 参考：每行均值 0、方差 ≈ 1（eps 让方差略小于 1）。
-        let sample = layer_norm_f32::sample(1, 1);
-        let y = layer_norm_f32::reference(&sample).expect("参考可计算");
+        let sample = layer_norm::sample(1, 1);
+        let y = layer_norm::reference(&sample).expect("参考可计算");
         for row in 0..3 {
             let part = &y[row * 4..(row + 1) * 4];
             let mean: f32 = part.iter().sum::<f32>() / 4.0;
@@ -778,17 +749,17 @@ mod tests {
             assert!((var - 1.0).abs() < 1e-3, "行 {row} 方差 {var}");
         }
         // BatchNorm 参考：批内两样本 × 空间 2 × 通道 4，输出必须全部有限。
-        let sample = batch_norm_f32::sample(1, 1);
-        let y = batch_norm_f32::reference(&sample).expect("参考可计算");
+        let sample = batch_norm::sample(1, 1);
+        let y = batch_norm::reference(&sample).expect("参考可计算");
         assert_eq!(y.len(), 16);
         assert!(y.iter().all(|v| v.is_finite()));
     }
 
     #[test]
     fn pool_references_pick_exact_window_extremes() {
-        let sample = max_pool1d_f32::sample(1, 1);
+        let sample = max_pool1d::sample(1, 1);
         let x = sample.f32("x").expect("x");
-        let y = max_pool1d_f32::reference(&sample).expect("参考可计算");
+        let y = max_pool1d::reference(&sample).expect("参考可计算");
         for (o, value) in y.iter().enumerate() {
             let want = x[2 * o].max(x[2 * o + 1]);
             assert_eq!(*value, want, "位置 {o}");

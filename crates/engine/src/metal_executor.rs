@@ -98,6 +98,8 @@ msg!(msg_id_3p, [p1: *mut c_void, p2: *mut c_void, p3: *mut c_void]);
 msg!(void msg_void_1p, [p: *mut c_void]);
 // `(id, SEL, p, usize, usize) -> void`：setBuffer:offset:atIndex:。
 msg!(void msg_void_p2u, [p: *mut c_void, a: usize, b: usize]);
+// `(id, SEL, usize) -> void`：一个 NSUInteger 参数（如 setLanguageVersion:）。
+msg!(void msg_void_1u, [a: usize]);
 // `(id, SEL, MTLSize, MTLSize) -> void`：dispatchThreads:threadsPerThreadgroup:。
 // MTLSize 24 字节（>16），arm64/x86_64 下 extern "C" 按间接指针传参，无需 objc_msgSend_stret。
 msg!(void msg_void_2size, [a: MTLSize, b: MTLSize]);
@@ -176,23 +178,38 @@ impl MetalDevice {
         let fname = CString::new(entry).ok()?;
         // `stringWithUTF8String:` 返回自动释放对象，编译路径包一层池，池弹栈时统一释放。
         let pool = unsafe { objc_autoreleasePoolPush() };
-        let result = self.compile_with_pool(src.as_ptr(), fname.as_ptr());
+        let result = self.compile_with_pool(src.as_ptr(), fname.as_ptr(), metal4(source));
         unsafe { objc_autoreleasePoolPop(pool) };
         result
     }
 
     /// 池内的编译主体：`newLibraryWithSource → newFunctionWithName → newComputePipelineState`。
-    fn compile_with_pool(&self, src: *const c_char, fname: *const c_char) -> Option<MetalPipeline> {
+    ///
+    /// `metal4` 为真时挂一个 `MTLCompileOptions` 并把 `languageVersion` 抬到 4.0——张量核心内建
+    /// （`metal_tensor` 的 `mpp::tensor_ops`）只在 4.0 起可见，其余程序留在设备默认版本，避免
+    /// 无谓的语义迁移。失败时把 `NSError` 的描述打到 stderr：生成侧写错 MSL 时，这是唯一线索。
+    fn compile_with_pool(
+        &self,
+        src: *const c_char,
+        fname: *const c_char,
+        metal4: bool,
+    ) -> Option<MetalPipeline> {
         unsafe {
             let source = nsstring(src);
+            let options = if metal4 { metal4_options() } else { null_mut() };
+            let mut error: *mut c_void = null_mut();
             let library = msg_id_3p(
                 self.raw,
                 selector(b"newLibraryWithSource:options:error:\0"),
                 source,
-                null_mut(),
-                null_mut(),
+                options,
+                (&raw mut error).cast(),
             );
+            if !options.is_null() {
+                release(options);
+            }
             if library.is_null() {
+                report(&error);
                 return None;
             }
             let function_name = nsstring(fname);
@@ -205,13 +222,63 @@ impl MetalDevice {
                 self.raw,
                 selector(b"newComputePipelineStateWithFunction:error:\0"),
                 function,
-                null_mut(),
+                (&raw mut error).cast(),
             );
             // 管线建立后 library / function 即自包含，立即释放，只持有 pipeline。
             release(library);
             release(function);
+            if pipeline.is_null() {
+                report(&error);
+            }
             (!pipeline.is_null()).then_some(MetalPipeline { raw: pipeline })
         }
+    }
+}
+
+/// 源码要求 Metal 4.0 语言版本：张量核心内建（`metal_tensor` / `mpp::tensor_ops`）的门槛。
+fn metal4(source: &str) -> bool {
+    source.contains("<metal_tensor>") || source.contains("mpp::tensor_ops")
+}
+
+/// Metal 4.0 对应的 `MTLLanguageVersion` 数值（`MTLLanguageVersion4_0`）。
+const METAL4_VERSION: usize = 0x0004_0000;
+
+/// 构造抬到 4.0 的 `MTLCompileOptions`（+1 保留，调用方负责 `release`）。
+///
+/// `metal` crate 的枚举只到 3.1，这里自己发 `setLanguageVersion:`，避免用越界的枚举值。
+unsafe fn metal4_options() -> *mut c_void {
+    let class = unsafe { objc_getClass(c"MTLCompileOptions".as_ptr()) };
+    if class.is_null() {
+        return null_mut();
+    }
+    let options = unsafe { msg_id(class, selector(b"new\0")) };
+    if options.is_null() {
+        return null_mut();
+    }
+    unsafe {
+        msg_void_1u(
+            options,
+            selector(b"setLanguageVersion:\0"),
+            METAL4_VERSION,
+        )
+    };
+    options
+}
+
+/// 把 `NSError` 的 `localizedDescription` 打到 stderr；拿不到就只说一句失败。
+unsafe fn report(error: &*mut c_void) {
+    let text = unsafe {
+        let message = msg_id(*error, selector(b"localizedDescription\0"));
+        if message.is_null() {
+            None
+        } else {
+            let bytes = msg_id(message, selector(b"UTF8String\0"));
+            (!bytes.is_null()).then(|| std::ffi::CStr::from_ptr(bytes.cast()).to_string_lossy())
+        }
+    };
+    match text {
+        Some(text) => eprintln!("metal 编译失败: {text}"),
+        None => eprintln!("metal 编译失败: 无 NSError 描述"),
     }
 }
 

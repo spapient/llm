@@ -84,8 +84,8 @@ pub mod unary;
 pub use attention::decode_attention;
 pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use classic::{
-    adaptive_pool_f32, avg_pool2d_f32, batch_norm_f32, conv2d_f32, group_norm_f32,
-    instance_norm_f32, interpolate_f32, layer_norm_f32, max_pool1d_f32, max_pool2d_f32,
+    adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
+    layer_norm, max_pool1d, max_pool2d,
 };
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};
@@ -144,12 +144,12 @@ macro_rules! kernel_table {
 macro_rules! for_each_operator {
     ($m:ident) => {
         $m! {
-            adaptive_pool_f32: $crate::adaptive_pool_f32::AdaptivePoolModel => "adaptive_pool_f32",
+            adaptive_pool_f32: $crate::adaptive_pool::AdaptivePoolModel => "adaptive_pool_f32",
             add_f32: $crate::add_f32::AddF32 => "binary",
             attention_f32: $crate::attention::AttentionF32 => "attention_f32",
-            avg_pool2d_f32: $crate::avg_pool2d_f32::AvgPool2dModel => "avg_pool2d_f32",
-            batch_norm_f32: $crate::batch_norm_f32::BatchNormModel => "batch_norm_f32",
-            conv2d_f32: $crate::conv2d_f32::Conv2dModel => "conv2d_f32",
+            avg_pool2d_f32: $crate::avg_pool2d::AvgPool2dModel => "avg_pool2d_f32",
+            batch_norm_f32: $crate::batch_norm::BatchNormModel => "batch_norm_f32",
+            conv2d_f32: $crate::conv2d::Conv2dModel => "conv2d_f32",
             decode_attention_f32: $crate::attention::decode_attention::DecodeAttentionF32 => "decode_attention_f32",
             decode_flash_attention_f32: $crate::attention::decode_attention::DecodeFlashAttentionF32 => "decode_flash_attention_f32",
             dequant_i2: $crate::dequant_i2::DequantI2F32 => "dequant_packed",
@@ -168,18 +168,18 @@ macro_rules! for_each_operator {
             gemv_i2: $crate::gemv_i2::I2 => "gemv_packed",
             gemv_i4: $crate::gemv_i4::I4 => "gemv_packed",
             gemv_i8: $crate::gemv_i8::I8 => "gemv_i8",
-            group_norm_f32: $crate::group_norm_f32::GroupNormModel => "group_norm_f32",
+            group_norm_f32: $crate::group_norm::GroupNormModel => "group_norm_f32",
             hard_sigmoid_f32: $crate::hard_sigmoid_f32::HardSigmoidF32 => "hard_sigmoid_f32",
-            instance_norm_f32: $crate::instance_norm_f32::InstanceNormModel => "instance_norm_f32",
-            interpolate_f32: $crate::interpolate_f32::InterpolateModel => "interpolate_f32",
-            layer_norm_f32: $crate::layer_norm_f32::LayerNormModel => "layer_norm_f32",
+            instance_norm_f32: $crate::instance_norm::InstanceNormModel => "instance_norm_f32",
+            interpolate_f32: $crate::interpolate::InterpolateModel => "interpolate_f32",
+            layer_norm_f32: $crate::layer_norm::LayerNormModel => "layer_norm_f32",
             leaky_relu_f32: $crate::leaky_relu_f32::LeakyReluF32 => "leaky_relu_f32",
             log_f32: $crate::log_f32::LogF32 => "log_f32",
             matmul_f32: $crate::matmul::MatmulF32 => "matmul_f32",
             matmul_i8: $crate::matmul_i8::MatmulI8 => "matmul_i8",
             max_f32: $crate::max_f32::MaxF32 => "max_f32",
-            max_pool1d_f32: $crate::max_pool1d_f32::MaxPool1dModel => "max_pool1d_f32",
-            max_pool2d_f32: $crate::max_pool2d_f32::MaxPool2dModel => "max_pool2d_f32",
+            max_pool1d_f32: $crate::max_pool1d::MaxPool1dModel => "max_pool1d_f32",
+            max_pool2d_f32: $crate::max_pool2d::MaxPool2dModel => "max_pool2d_f32",
             min_f32: $crate::min_f32::MinF32 => "min_f32",
             mul_f32: $crate::mul_f32::MulF32 => "binary",
             reduce_max_f32: $crate::reduce_max_f32::ReduceMaxF32 => "reduce_max_f32",
