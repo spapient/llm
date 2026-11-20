@@ -14,7 +14,8 @@ use op::sig::{Param, Signature};
 use cutile::harness::{c_literal, output_name, output_of};
 
 use crate::dialect::{
-    Dialect, Metal, EXPSUM, NORM, PARTIAL, SCAN_CORRECT, launch_args, length_scalar, scalar_name,
+    Dialect, Metal, EXPSUM, NORM, PARTIAL, SCAN_CORRECT, f32_output_shape, launch_args,
+    length_scalar, readback_bits, scalar_name,
 };
 
 // ---------------------------------------------------------------------------
@@ -330,7 +331,7 @@ pub fn metal_benchmark_driver(
     threads: [usize; 3],
     repeat: usize,
 ) -> Result<String> {
-    let (output, out_len) = bench_output(signature, sample)?;
+    let (output, out_len) = f32_output_shape(signature, sample)?;
     let (data, allocs, sets) = bench_wiring(signature, sample)?;
     let source = r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -352,11 +353,7 @@ int main(int argc, const char **argv) {
             fprintf(stderr, "ns %.3f\n", elapsed / 16.0);
         }
         const float *out = (const float *)b_@OUTPUT@.contents;
-        for (int i = 0; i < @OUT_LEN@; ++i) {
-            union { float f; unsigned int u; } value;
-            value.f = out[i];
-            printf("%u\n", value.u);
-        }
+@READBACK@
     }
     return 0;
 }
@@ -374,29 +371,8 @@ int main(int argc, const char **argv) {
     .replace("@THREAD_Z@", &threads[2].to_string())
     .replace("@REPEAT@", &repeat.to_string())
     .replace("@OUTPUT@", &output)
-    .replace("@OUT_LEN@", &out_len.to_string());
+    .replace("@READBACK@", &readback_bits("out", out_len, "        "));
     Ok(source)
-}
-
-/// 基准回读的形状：输出名与输出元素数（只接受非空 `f32`，别的类型回读不出数）。
-fn bench_output(signature: &Signature, sample: &Sample) -> Result<(String, usize)> {
-    let output = output_name(signature)?;
-    let len = bench_values(output, sample)?;
-    Ok((output.to_owned(), len))
-}
-
-/// 回读路径按 `float` 解释字节，因此只认非空 `f32` 输出：别的类型或空缓冲没有可打印的元素。
-fn bench_values(output: &str, sample: &Sample) -> Result<usize> {
-    let buffer = sample
-        .buffer(output)
-        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
-    if !matches!(&buffer.values, Values::F32(_)) || buffer.values.is_empty() {
-        return Err(Error::new(
-            Code::Unsupported,
-            "设备基准回读当前要求非空 f32 输出",
-        ));
-    }
-    Ok(buffer.values.len())
 }
 
 /// 按签名顺序给每条缓冲写「声明 / 分配 / 绑定」三份文本：可变的是输出，不可变的先落成静态初值。

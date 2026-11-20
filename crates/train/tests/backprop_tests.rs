@@ -1342,3 +1342,52 @@ fn gain6() -> Vec<f32> {
 fn shift6() -> Vec<f32> {
     (0..6).map(|i| 0.4 - i as f32 * 0.12).collect()
 }
+
+/// 任意几何 + 真优化器闭环：`loss = reduce_sum(batch_norm(x, gamma, beta))`。
+///
+/// 标准化后每通道均值恰为 0，于是 `loss = Σ_c beta_c * n * spatial`，
+/// `d loss / d beta_c = n * spatial` —— 这是个可解析判据，不靠拟合：
+/// 第 `t` 步后 `beta_c = -t * lr * n * spatial`，`loss = -channels * t * lr * (n * spatial)^2`。
+/// 同时覆盖 `Buffers::compute_shaped` 的几何登记通道在真实训练循环里能被反向取到。
+#[test]
+fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
+    let (n, spatial, channels) = (2usize, 3usize, 4usize);
+    let len = n * spatial * channels;
+    let feed: Vec<f32> = (0..len).map(|i| 0.25 + (i as f32 * 0.37).sin()).collect();
+    let geom = Geometry::Norm { n, spatial, channels };
+
+    let mut tape = Tape::new();
+    let x = tape.leaf();
+    let gamma = tape.parameter();
+    let beta = tape.parameter();
+    let y = tape.record("batch_norm_f32", &[x, gamma, beta]).expect("记录归一化");
+    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录损失");
+    let sizes = support::sizes_of(
+        &tape,
+        &[(x, len), (gamma, channels), (beta, channels), (y, len), (loss, 1)],
+    );
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(gamma, ParamRole::Trainable, vec![1.0; channels])?;
+    session.register_parameter(beta, ParamRole::Trainable, vec![0.0; channels])?;
+    session.plan(loss)?;
+
+    let lr = config().learning_rate;
+    let positions = (n * spatial) as f32;
+    let mut last = 0.0f32;
+    for t in 1..=100u32 {
+        session.buffers().load(x, Data::F32(feed.clone()))?;
+        session.buffers().compute_shaped("batch_norm_f32", &[x, gamma, beta], y, geom)?;
+        session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+        session.backward()?;
+        session.optimize()?;
+        let now = session.record_loss(loss)?;
+        assert!(now < last, "第 {t} 步损失没有下降：{last} → {now}");
+        last = now;
+    }
+    let expected = -(channels as f32) * 100.0 * lr * positions * positions;
+    assert!((last - expected).abs() <= 5e-3, "100 步损失 {last}，解析式 {expected}");
+    let mut shift = session.slots()[1].params().to_vec();
+    shift.iter_mut().for_each(|b| *b += 100.0 * lr * positions);
+    assert!(shift.iter().all(|b| b.abs() <= 5e-4), "偏置偏离解析式：{shift:?}");
+    Ok(())
+}
