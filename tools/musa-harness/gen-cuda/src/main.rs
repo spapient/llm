@@ -6,6 +6,7 @@ fn main() -> diagnostic::Result<()> {
     let name = args.next().expect("用法: <op> [m] [n]");
     let m: usize = args.next().map_or(64, |v| v.parse().expect("m"));
     let n: usize = args.next().map_or(1, |v| v.parse().expect("n"));
+    let mode = args.next().unwrap_or_default();
 
     engine::backends::install();
     let catalogue = cutile::builtin::Catalogue::try_builtin()?;
@@ -28,6 +29,22 @@ fn main() -> diagnostic::Result<()> {
                 cutile::execution::cuda_softmax_program(&catalogue, &dirs, &name, m, n)?;
             let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
             engine::norm::cuda_softmax_driver(&[max, expsum, norm], &decl.signature, &sample, chunk)?
+        }
+        "gemm_f32" if mode == "wmma" => {
+            let device =
+                cutile::execution::cuda_wmma_gemm_program(&catalogue, &dirs, &name, m, n)?;
+            engine::wmma::gemm_driver(&device, &decl.signature, &sample)?
+        }
+        "scan_f32" => {
+            let (local, correct, decay) =
+                cutile::execution::cuda_scan_program(&catalogue, &dirs, &name, m, n)?;
+            let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
+            engine::scan::cuda_scan_driver(&[local, correct], &decl.signature, &sample, chunk, decay)?
+        }
+        _ if name.starts_with("gemv_") || name.starts_with("gemm_") => {
+            let (device, dims) =
+                cutile::execution::cuda_gemm_program(&catalogue, &dirs, &name, m, n)?;
+            engine::codegen::cuda_loop_driver(&device, &decl.signature, &sample, &dims)?
         }
         _ => {
             let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, &name, m, n)?;

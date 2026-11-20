@@ -87,12 +87,22 @@ fmaf、多 tile。硬件边界:S4000(mp_22)**无 cp.async**(SINCE_MP_43);5.2 工
 | `softmax_f32` | 三段分块(4 块折叠) | OK(1024 元素) | 1.19e-07 |
 | `gemv_f32` | 一维循环注入(`[grid] dims=["n:N"]`) | OK(64×64) | **0(逐位)** |
 | `gemm_f32` | 二维循环注入(`[grid] dims=["i:M","j:N"]`) | OK(16×16) | 2.79e-10 |
+| `scan_f32` | 分块扫描(局部 + 折叠 + 校正,4 块) | OK(64 元素) | 2.9e-10 |
+| `gemm_f32`(WMMA) | 张量核特化(64×64 块、BK8、4 片段) | OK(64×64×8) | tf32: max_abs 3.18e-4 / norm 3.02e-4 |
+| `gemm_f32`(WMMA,非整除) | 守卫路径(100×70×8) | OK | tf32: norm 4.88e-4 |
 
 归一化由 `engine::norm::cuda_rmsnorm_driver` / `cuda_softmax_driver` 把多段设备源与 host
 串联驱动拼成单文件(部分和/最大值回读到 CPU 折叠后再派发);`gen-cuda` 已内置这条分支。
-循环注入(`Loop`)已落地:设备源由 `cutile::execution::cuda_gemm_program` 返回(含各维网格大小),
-host 驱动用 `engine::codegen::cuda_loop_driver` 按 `dim3` 发射——gemv 一维、gemm 二维共用同一条
-lowering。仍报 `Unsupported` 的形态只剩分块扫描(`ChunkScan`)。
+**框架侧已无 `Unsupported` 骨架**:逐点、分块归约、分块归一化(两段/三段)、循环注入(gemv/gemm)、
+分块扫描、WMMA gemm 特化全部落地。
+
+- 循环注入:设备源 `cuda_gemm_program`(含各维网格)+ `engine::codegen::cuda_loop_driver`。
+- 分块扫描:设备源 `cuda_scan_program`(两段 + decay)+ `engine::scan::cuda_scan_driver`。
+- WMMA 特化:`cuda_wmma_gemm_program` + `engine::wmma::gemm_driver`;形状在生成期写死,`M/N` 整除
+  64 时无守卫,否则载入按行列守卫、写出经共享内存 staging 拷回。编译需
+  `-D__MUSA_QY2_MMA__`(设备源内已定义)与 `--cuda-gpu-arch=mp_22 -I/usr/local/musa-5.2.0/include`。
+- **精度口径**:WMMA 是 tf32 级(与裸 v8 的 2.79e-4 一致),不满足 `gemm_f32` 的 f32 契约;
+  按 tf32 预算 norm<1e-3 验收。要 f32 契约需 3xTF32(长 K 亦不达标,见研究线)。
 
 ### 意义
 
