@@ -23,7 +23,9 @@ mod support;
 
 use support::{drivers, seeds};
 
-use drivers::{Frames, Invocation, Json, Leb, Lex, Safetensors, Sealed, Snapshot, UContainer};
+use drivers::{
+    Frames, HttpHead, Invocation, Json, Leb, Lex, Safetensors, Sealed, Snapshot, UContainer,
+};
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
@@ -34,16 +36,17 @@ const CASES: u64 = 512;
 
 /// 全部被测入口及其合法种子；适配器顺序与 [`seeds::exemplars`] 一一对应，种子字节只在
 /// 范例清单里构造一次，遍历与种子校验两条测试共用这份配对。
-fn targets() -> [(&'static dyn Target, Seed); 9] {
-    let adapters: [&'static dyn Target; 9] = [
+fn targets() -> [(&'static dyn Target, Seed); 10] {
+    let adapters: [&'static dyn Target; 10] = [
         &Invocation,
         &Json,
         &Safetensors,
         &UContainer,
         &Snapshot,
         &Frames,
-        &Leb,
+        &HttpHead,
         &Sealed,
+        &Leb,
         &Lex,
     ];
     let exemplars = seeds::exemplars();
