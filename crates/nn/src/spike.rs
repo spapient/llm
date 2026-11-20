@@ -407,7 +407,7 @@ impl Spiking {
 
 /// 三元脉冲判据：`−1` / `0` / `+1`。稠密与事件两条路径、以及反传，都只认这三个值。
 fn ternary(spike: i8) -> bool {
-    matches!(spike, -1 | 0 | 1)
+    matches!(spike, -1..=1)
 }
 
 /// 输出侧梯度判据：长度与输出通道一致，取值有限。
@@ -465,9 +465,9 @@ impl Surrogate {
     #[must_use]
     pub fn derivative(&self, potential: f32, threshold: f32) -> f32 {
         let offset = (potential - threshold).abs();
-        // `!(offset < width)` 连 `NaN` 一起挡在窗外：任何与 `NaN` 的大小于比较都为假，写成
-        // `offset >= width` 会让 `NaN` 走进窗内拿到一个假的导数。
-        if !(offset < self.width()) {
+        // 非有限偏移连 `NaN` 一起挡在窗外：窗宽由构造期校验为有限正数，而 `NaN` 与任何值的
+        // `>=` 都为假，单写比较会让它走进窗内拿到一个假的导数。
+        if !offset.is_finite() || offset >= self.width() {
             return 0.0;
         }
         match self {

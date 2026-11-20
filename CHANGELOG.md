@@ -17,9 +17,14 @@
   不是巧合。失败一律在首次写入前拒绝：脉冲长度/非三元、输出梯度长度/非有限、缓冲与参数不同形、
   浮点权重非有限（`NaN` 经 `round().clamp()` 会变成一个看着正常的 `i8`）、学习率非正、更新把某条
   尺度推成非正——最后一条在写权重之前验完，避免留下「权重已降、尺度是负的」的半截状态。
-  **验证**：`spike::` 25 条单测（新增 13 条：发放前电位、第二步换成第二步的值、两种窗的单位面积与
-  窗外为零、解析链梯度 2/2/2、静默输入只让电流有值而尺度与权重为零、窗外整层零梯度、六类入口
-  拒绝、取整夹码、−0.1/0.6 只换过半个码位的那个码、走穿量化区间整步回滚、非有限权重与非法学习率）。
+  **验证**：`spike::spike_tests` **27 条**（含 2 条 `#[ignore]` 实测探针：既有的 `spike_arm_costs`
+  与本轮的 `qat_costs`），覆盖发放前电位、第二步
+  换成第二步的值、两种窗的单位面积与窗外为零、解析链梯度、静默输入只让电流有值而尺度与权重为零、
+  窗外整层零梯度、六类入口拒绝、取整夹码、训练一步只动浮点权重而码位下一拍才变、走穿量化区间整步
+  回滚且一格未写、非有限主权重与零尺度在量化前被拒、非正/非有限学习率被拒。**实测**（`qat_costs`，
+  `#[ignore]` 探针：8 维目标行、尺度冻结 1、梯度 `2·(w − target)`、步长 0.25）：量化重建的 MSE 从
+  初值 **2.0225** 降到 **0.0725**，16 步即停在这个值上不再下降——那不是没学，是已经贴到 `round()`
+  的半格底噪（对称 `i8` 一格为 1，理论底噪约 1/12 ≈ 0.083）。
 
 ### Removed
 
@@ -39,6 +44,38 @@
   `jscpd` 的扫描路径（`crates` + `tools`）内，重复率不受影响。
 
 ### Fixed
+
+- **`op::fast` 的 i8 常驻线程池在落地同轮要过三处门禁，就地收口**。三处改动都不改一条计算：字段
+  `gen` 与 2024 edition 的保留字冲突（整仓 `cargo check` 直接解析失败），改名 `generation`；`part` 原本一位参与者兼做「打包自己那批列组」与「算自己那段行」，拆成 `pack_part` +
+  `compute_part`（Barrier 仍夹在中间，两个阶段看到的仍是同一份 `bpack`）；`gemm_i8` 的「单线程」
+  与「池不可用时退回 scope」两条路径各自成函数（`single_i8` / `scoped_i8`），于是它的圈复杂度由 7
+  降到 3，而 `gemm_i8_single` 与 `single_i8` 不再各写一遍「打包一次、算一整块」。**验证**：静态门
+  `every_source_passes_the_static_gate` 2/2 通过、对 `fast.rs` 零条目；`clippy -D warnings` 零告警
+  （`spin` 的嵌套 `if` 折成 let-chain、`run_pooled` 的九个散参数收成 `Shape` + 参与数）；`llm-op`
+  **336 条**全过（含 i8 分块与多线程的对拍）。
+
+- **七个函数的圈复杂度回到上限之内：一个函数只答一个问题，静态门不再报它们，也没有一条走基线登记**。
+  这些函数在合入的分支里就已超标（上一轮如实记为「登记缺口」）：`engine::codegen::metal_benchmark_driver`、
+  `engine::cuda_codegen::cuda_benchmark_driver`、`engine::backends::benchmark_grid` / `cuda_bench_geometry`、
+  `cutile::bench::run_sample` / `production_lower`、`serve::http::content_length`，病根同型——一个函数里
+  同时做「取几何、拼模板、摊读数」。落点：`cuda_bench_geometry` 只按 lowering 分派，三种形态各由
+  `pointwise_wrap` / `loop_wrap` / `warp_wrap` 拼自己的参数与网格；`benchmark_grid` 把「网格标量 → 正整数
+  维长」交给 `grid_extent`；`metal_benchmark_driver` 的缓冲绑定与回读取自 `bench_output` / `bench_wiring`；
+  `cuda_benchmark_driver` 退成「缓冲 → 计时 → 回读 → 释放」四段拼装；`run_sample` 拆成 `prepare_sample` /
+  `measure` / `readings`；`production_lower` 先认生产态特例再落 `skeleton_lower`（逐点走 `pointwise_or_grid`、
+  其余走 `grid_lower`）；`content_length` 的头行折叠与收尾交给 `apply_header` 与 `finish`。**边界**：生成的
+  MSL / CUDA 文本、报错文案与判定次序一行未改。**验证**：静态门 `every_source_passes_the_static_gate` 通过、
+  对这七个函数零条目；`cargo nextest run -p llm-engine -p cutile -p llm-serve --all-features` **528 通过 /
+  9 跳过**（跳过的是 `#[ignore]` 设备基准）。
+
+- **合入后重新抬头的重复收成唯一出处，全仓复制粘贴回到 0**：`engine::backends` 的 CUDA 与昇腾 host 驱动
+  各抄了一遍「逐见证打印位模式 + `witness N`」的回读段，现由 `witness_readback(max)` 生成一份（两段的
+  拼接次序、缩进与字面逐字不变）；`engine::metal_tests` 的两个 int8 GEMM 基准（本地生成 / cutile 生产入口）
+  共用 `Int8GemmBench`（码表、笔数、A/B 上传、Y 缓冲与 CPU 参考一次给齐），形状常量、标签与断言仍留在
+  各自用例里。`backends_tests` 的花括号配平用例顺手守住了这类拆分：收尾段不再经过 `format!`，转义写法
+  `}}` 必须还原成单个 `}`。**验证**：`npx jscpd`（`crates` + `tools`，`minLines=5` / `minTokens=80`，阈值 0）
+  **0 克隆 / 0.00%**；`cargo fmt -p llm-engine --check`、`cargo clippy -p llm-engine --all-targets
+  --all-features -D warnings` 干净，上面那条 528 条用例同时覆盖这两处收口。
 
 - **合入分支后回归的三处入口配置补齐，`cargo nextest run --workspace` 与静态门恢复可跑**。
   `crates/fuzz/tests/fuzz_http_head.rs`（HTTP 头解析 harness）未登记进 `.config/nextest.toml` 的

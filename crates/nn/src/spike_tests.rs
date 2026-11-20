@@ -491,3 +491,49 @@ fn a_gradient_buffer_of_another_shape_is_rejected() {
             .is_err()
     );
 }
+
+/// QAT 一步不是摆设：梯度落在浮点侧，几十步之后量化重建误差真的落进量化底噪。
+///
+/// 目标是一条 8 维线性行，初值全零、尺度固定 1（对称 `i8` 一格就是 1，所以底噪是「每格 ±0.5」）。
+/// 梯度取 `2·(w − target)`——这是这条残差自己的导数，不是从别处搬来的近似；`descend` 只动浮点
+/// 权重，码位在下一拍 `view` 时才重新取。于是「训练在改变什么」在这条用例里是可直接读出来的：
+/// 训练前的量化误差由初值占据，训练后的残差只剩 `round()` 那半格。
+///
+/// 跑：`cargo test -p llm-nn --lib --release -- qat_costs --ignored --nocapture`
+#[test]
+#[ignore = "训练闭环实测：cargo test -p llm-nn --lib -- qat_costs --ignored --nocapture"]
+fn qat_costs() {
+    const TARGET: [f32; 8] = [0.8, -1.2, 2.4, -0.6, 1.0, -2.0, 0.3, 1.7];
+    let mut master = Master::new(vec![0.0; 8], vec![1.0], 8, 1, 1.0, 0.0, 0.0).expect("几何合法");
+    let mse = |m: &Master| {
+        let view = m.view().expect("可量化");
+        let sum: f32 = view
+            .weights
+            .iter()
+            .zip(TARGET)
+            .map(|(code, want)| (f32::from(*code) - want).powi(2))
+            .sum();
+        sum / TARGET.len() as f32
+    };
+
+    println!("step  0: mse = {:.4}", mse(&master));
+    for step in 1..=64 {
+        let view = master.view().expect("可量化");
+        let mut grad = view.gradients();
+        for (slot, (weight, want)) in grad
+            .weights
+            .iter_mut()
+            .zip(master.weights().iter().zip(TARGET))
+        {
+            *slot = 2.0 * (weight - want);
+        }
+        master.descend(&grad, 0.25).expect("步长合法");
+        if step % 16 == 0 {
+            println!("step {step:>2}: mse = {:.4}", mse(&master));
+        }
+    }
+
+    // 64 步之后每条权重都应贴在目标的那一格上：剩下的误差只可能来自 `round()` 的半格。
+    let settled = mse(&master);
+    assert!(settled < 0.25, "训练后应进到量化底噪内，得到 {settled}");
+}
