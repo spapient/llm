@@ -155,24 +155,27 @@ where
 }
 
 pub mod archive {
-    //! `import` / `inspect` / `check` 三条 `.u` 容器命令的组装与汇报（L7 bin 内模块）。
+    //! `import` / `inspect` / `check` / `settle` 四条 `.u` 容器命令的组装与汇报（L7 bin 内模块）。
     //!
     //! 分工与既有编排模块一致：本模块只装配库层调用、取值解析与人可读排版，不定义新领域类型；
     //! 条目流、编码、解码与度量口径都在 `weights` 层，这里不复制第二份规则。
     //!
     //! - `import`：源文件（`.safetensors` / `.gguf` / `.bin` / `.pt`）→ 中性段流 → [`Writer`]
     //!   逐段装入 → 流式落盘 `write_to_path(6, out)`；不支持的 wire / 块量化由 weights 层显式
-    //!   `Unsupported`，本层不静默转换。
+    //!   `Unsupported`，本层不静默转换。落盘后再把字节读一遍现算账本，报告里的体积比与无损
+    //!   因此是「读出来的」而不是「自以为写进去的」。
     //! - `inspect`：整份读进内存 → [`Archive::parse`] → `metrics()`；度量是打开后现场现算，
     //!   不读文件内保存的度量字段，也不出 Roofline / 设备数字。
     //! - `check`：`parse` 已在打开期校验段级 / 全局 CRC；逐段 `load` 触发解码与逐位还原，
     //!   输出解码条目数。坏文件按既有 [`diagnostic::Code`] 口径落成非零退出码。
+    //! - `settle`：同一份字节 → 逐张量体积 / 熵 / 量化档位 / 无损与原因（`weights::settle`
+    //!   现算）。账本 JSON 的文本只有一个来源，写盘与 stdout 用的是同一份。
 
     use std::path::Path;
 
     use diagnostic::{Code, Error, Result};
     use tool::Report;
-    use weights::Archive;
+    use weights::{Archive, Settlement};
 
     /// 容器对齐指数：6 = 64 B，与既有落盘口径一致。
     const ALIGN_LOG: u8 = 6;
@@ -193,12 +196,23 @@ pub mod archive {
         writer
             .write_to_path(ALIGN_LOG, Path::new(output))
             .map_err(|error| error.with("llm import"))?;
+        // 导入自证：把刚写下的字节重新读一遍现算账本，“写成功”之外还有一句“写进去的是这个
+        // 体积、有损与否”。口径与 `settle` 同源（`ledger_of`），两处不会各说一套。
+        let ledger = ledger_of(output, "llm import")?;
         let report = Report::new("llm —— safetensors 导入 `.u` 容器")
             .row("源", input)
             .row("输出", output)
-            .row("条目", format!("{} 段", writer.len()));
+            .row("条目", format!("{} 段", writer.len()))
+            .row("体积比", format!("{:.3}", ledger.total_ratio()))
+            .row("lossless", lossless_label(ledger.lossless()));
         print!("{}", report.render());
         Ok(())
+    }
+
+    /// 落盘字节 → 账本：`import` 的自证与 `settle` 都走这一入口，口径不可能分家。
+    fn ledger_of(path: &str, site: &str) -> Result<Settlement> {
+        let bytes = read_container(path, site)?;
+        Settlement::settle(&bytes).map_err(|error| error.with(site))
     }
 
     /// 读容器字节：IO 失败按 `Code::Io` 补命令站点诊断。
@@ -245,6 +259,36 @@ pub mod archive {
     /// 无损标志的人可读取值。
     fn lossless_label(lossless: bool) -> &'static str {
         if lossless { "true" } else { "false" }
+    }
+
+    /// `settle`：读字节 → 逐张量账本；`out` 给出就落成 JSON，否则把同一份文本打到 stdout。
+    ///
+    /// 账本从落盘字节现算（往返 + 描述符），不读文件里存的度量字段，也不向调用方猜一个产物
+    /// 目录旁的默认文件名：没给 `--out` 就是“打到 stdout”，重定向的活留给 shell。
+    pub(crate) fn settle(input: &str, output: Option<&str>) -> Result<()> {
+        let ledger = ledger_of(input, "llm settle")?;
+        let text = ledger.render();
+        let Some(path) = output else {
+            print!("{text}");
+            return Ok(());
+        };
+        write_ledger(Path::new(path), &text)?;
+        let report = Report::new("llm —— 沉降账本")
+            .row("容器", input)
+            .row("账本", path)
+            .row("条目数", format!("{}", ledger.tensors().len()))
+            .row("体积比", format!("{:.3}", ledger.total_ratio()))
+            .row("lossless", lossless_label(ledger.lossless()));
+        print!("{}", report.render());
+        Ok(())
+    }
+
+    /// 账本落盘：失败按 `Code::Io` 补命令站点诊断，不静默地当成“已写出”。
+    fn write_ledger(path: &Path, text: &str) -> Result<()> {
+        std::fs::write(path, text).map_err(|error| {
+            Error::new(Code::Io, format!("写出 {} 失败：{error}", path.display()))
+                .with("llm settle")
+        })
     }
 
     /// `check`：打开期 CRC 已校验；逐段 `load` 触发解码与逐位还原，按解码条目数汇报。

@@ -11,8 +11,8 @@ use assert_cmd::Command;
 use std::path::PathBuf;
 
 /// 用法文本里必须出现的那几行：命令表是 `llm help` 的唯一职责。
-const USAGE_COMMANDS: [&str; 8] = [
-    "status", "run", "verify", "bench", "train", "import", "inspect", "check",
+const USAGE_COMMANDS: [&str; 9] = [
+    "status", "run", "verify", "bench", "train", "import", "inspect", "check", "settle",
 ];
 
 fn llm() -> Command {
@@ -278,6 +278,50 @@ fn check_decodes_every_tensor_of_a_valid_container() {
         stdout.contains("2 tensors decoded"),
         "解码口径要报出条目数：{stdout}"
     );
+}
+
+#[test]
+fn settle_writes_the_same_ledger_to_stdout_and_to_a_file() {
+    let container = imported_container("settle");
+    let output = llm()
+        .args(["settle", "--in"])
+        .arg(&container)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "合法容器下 `settle` 必须成功：{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    for field in [
+        "\"schema\"",
+        "\"file_len\"",
+        "blk.0.attn_q.weight",
+        "\"is_lossless\"",
+        "\"codec_reason\"",
+        "\"decision\"",
+    ] {
+        assert!(stdout.contains(field), "账本必须报出 `{field}`：{stdout}");
+    }
+
+    // `--out` 只换落点，不换文本：写出来的字节要与 stdout 上一模一样。
+    let ledger = container.with_extension("u.json");
+    let output = llm()
+        .args(["settle", "--in"])
+        .arg(&container)
+        .args(["--out"])
+        .arg(&ledger)
+        .output()
+        .expect("进程可派生");
+    assert_eq!(output.status.code(), Some(0));
+    let written = std::fs::read_to_string(&ledger).expect("账本可回读");
+    assert_eq!(written, stdout, "写盘与 stdout 必须同一份文本");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for field in ["条目数", "体积比", "lossless"] {
+        assert!(stdout.contains(field), "落盘后要报 `{field}`：{stdout}");
+    }
 }
 
 #[test]

@@ -69,7 +69,10 @@ gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
 ### 运行时对照（CPU 实测）
 
 同机、同形状、同输入，本仓 `Buffers<Reference>` 与 Burn `0.23.0-pre.2` Flex CPU 后端逐条对照
-（独立探针与原始输出：`crates/benchmarks/burn-runtime/`；Apple M5 Pro，release，各跑 3 次取中位数）：
+（Apple M5 Pro / 24 GiB / macOS 27.0.1，rustc 1.100.0-nightly，release + `lto = "thin"` +
+`codegen-units = 1`；Burn 取 `default-features = false, features = ["std", "flex"]`；每个进程预热
+2 轮后采样 11 轮取中位，`add` 每轮内层重复 500 次、`softmax` / `rmsnorm` 100 次、`matmul` 1 次，
+两侧各跑 3 次取中位）：
 
 | 用例 | 形状 | 本仓 ns/次 | Burn ns/次 | 比值（本仓/Burn） |
 |---|---|---:|---:|---:|
@@ -130,13 +133,18 @@ API；Metal 上注意力持平、int8 GEMM 领先 3.51×，来源是融合整数
 - 漂移演练（E1）：把清单里的方法名改成与 `Operator::NAME` 不同的拼写 → 编译期 `const` 断言失败；
   把某个算子的 `ARITY` 改错 → `arity_matches_the_samples` 失败。
 - `cargo test -p llm-tool --test gate`：静态门禁通过。
-- Burn 运行时对照（E1/E3）：`crates/benchmarks/burn-runtime/` 三套探针各 3 轮，原始输出见
-  `crates/benchmarks/burn-runtime/results/2026-11-20-m5pro.txt`；两侧输出校验和一致（matmul 相对差 < 1e-5）。
+- Burn 运行时对照（E1/E3）：三套探针（本仓 `llm-side`、Burn Flex `burn-side`、Burn Metal
+  `burn-side-metal`）各 3 轮，两侧 `head_sum` / `full_sum` 逐条一致（`matmul` 相对差 < 1e-5）。
 - Metal 同设备对照（E1/E3）：`metal_simdgroup_gemm_512` 与 `burn-side-metal` 交替 3 轮，
   Burn 输出与 Flex CPU 参考 `max_abs = 7e-6`；区间与中位见上。
 - 注意力 / 量化 GEMM（E1/E3）：`metal_flash_attention_long`、`metal_int8_gemm_k4096` 各 3 轮；
-  Burn 侧 `burn-side` / `burn-side-metal` 各 3–6 轮；原始输出见
-  `crates/benchmarks/burn-runtime/results/2026-11-20-m5pro.txt`。
+  Burn 侧 `burn-side` / `burn-side-metal` 各 3–6 轮。
+- **探针是一次性夹具，已删除**：三个包各自带 `[workspace]`，`llm-side` 以路径依赖吃本仓，
+  `burn-side` / `burn-side-metal` 依赖 crates.io 的 `0.23.0-pre.2`——Burn 只出现在对照里，不进本仓
+  依赖图、CI 与 `cargo test --workspace`。结论即上面四张表，按 `docs/README.md` 写作规则 3
+  （"删除也是维护"）在评审结束后不再随代码存放；重跑只需按同一形状、同一输入式
+  （`a[i] = (i % 5)·0.25 − 0.5`、`b[i] = (i % 7)·0.2 − 0.4`）与同版本 Burn 重建两个包，本仓一侧用
+  `llm-engine` 的 `#[ignore]` 设备用例。
 
 ## 后果
 

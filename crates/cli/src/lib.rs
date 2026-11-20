@@ -452,13 +452,14 @@ pub const USAGE: &str = "\
   import --in <源> --out <文件> 把 safetensors / gguf / bin 条目流写成自有 `.u` 容器
   inspect --in <文件>     读 `.u` 容器：条目清单与现场现算的度量
   check --in <文件>       逐段解码还原 `.u` 容器，校验完整性
+  settle --in <文件> [--out <文件>]  逐张量沉降账本（体积 / 原因 / 无损）；`--out` 落成 JSON
   help                   打印本说明
 
 选项：
   --op <算子>             算子名（`verify` / `bench` 用，缺省为 `gemv_i4`）
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
-  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` 的 `.u` 容器；三者都必需）
-  --out <文件>            输出路径（`import` 的 `.u` 容器，必需）
+  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `settle` 的 `.u` 容器；四者都必需）
+  --out <文件>            输出路径（`import` 的 `.u` 容器，必需）；`settle` 的账本文件（可选）
   --input <a,b,c>         `run` 的输入向量（逗号分隔 f32；不给则用确定性图案）
   --device <设备>         `run` 的设备名（缺省 `auto`，按指纹选）
   --lr <数值>             训练峰值学习率（`train` 用；缺省由调度表定）
@@ -529,6 +530,13 @@ pub enum Command {
         /// 待校验 `.u` 容器路径。
         input: String,
     },
+    /// 逐张量沉降账本（LLD §4.7）：体积、原因与无损判定，全部由落盘字节现算。
+    Settle {
+        /// 待记账 `.u` 容器路径。
+        input: String,
+        /// 账本 JSON 的输出路径；`None` 表示打到 stdout（不猜产物目录旁的默认文件名）。
+        output: Option<String>,
+    },
     /// 打印六平台执行合同的六行裁决；零选项。
     Platform,
     /// 打印用法。
@@ -587,6 +595,9 @@ const INSPECT: &[(&str, &str)] = &[("--in", "文件")];
 /// `import` 的选项：`--in`（safetensors 源）与 `--out`（`.u` 容器），两者都必需。
 const IMPORT: &[(&str, &str)] = &[("--in", "源"), ("--out", "文件")];
 
+/// `settle` 的选项：`--in` 必需，`--out` 可选——不给就把账本打到 stdout。
+const SETTLE: &[(&str, &str)] = &[("--in", "文件"), ("--out", "文件")];
+
 impl Invocation {
     /// 解析参数（不含 `argv[0]`）。
     ///
@@ -633,6 +644,7 @@ fn archive_command(name: &str, words: &mut Words<'_>) -> Result<Command> {
             input,
         }),
         "check" => single_required(words, INSPECT, "check", |input| Command::Check { input }),
+        "settle" => settle(words),
         known => single(known, words),
     }
 }
@@ -665,6 +677,16 @@ fn import(words: &mut Words<'_>) -> Result<Command> {
     let input = required_slot(&slots, 0, IMPORT[0].0, "import")?;
     let output = required_slot(&slots, 1, IMPORT[1].0, "import")?;
     Ok(Command::Import { input, output })
+}
+
+/// `settle`：`--in` 顺序自由但必需，`--out` 可选——缺输入是写错了，缺输出只是换个落点。
+fn settle(words: &mut Words<'_>) -> Result<Command> {
+    let slots = parse_slots(words, SETTLE, "settle")?;
+    let input = required_slot(&slots, 0, SETTLE[0].0, "settle")?;
+    Ok(Command::Settle {
+        input,
+        output: slots[1].clone(),
+    })
 }
 
 /// 取一个必需槽位；缺省点名对应开关，不替调用方补默认值。
@@ -799,23 +821,32 @@ fn entry_archive_or_train(command: &Command) -> Result<()> {
         Command::Import { input, output } => archive::import(input, output),
         Command::Inspect { input } => archive::inspect(input),
         Command::Check { input } => archive::check(input),
-        Command::Train {
-            lr,
-            warmup,
-            steps,
-            clip,
-            accumulation,
-            load,
-        } => train::train_run(
-            lr.as_deref(),
-            warmup.as_deref(),
-            steps.as_deref(),
-            clip.as_deref(),
-            accumulation.as_deref(),
-            load.as_deref(),
-        ),
-        other => Err(invalid(format!("命令 `{other:?}` 未接入编排"))),
+        Command::Settle { input, output } => archive::settle(input, output.as_deref()),
+        other => entry_train(other),
     }
+}
+
+/// 训练闭环只有 `train` 一个命令：走到这里还不是它，就是"没接入编排"而不是配置错误。
+fn entry_train(command: &Command) -> Result<()> {
+    let Command::Train {
+        lr,
+        warmup,
+        steps,
+        clip,
+        accumulation,
+        load,
+    } = command
+    else {
+        return Err(invalid(format!("命令 `{command:?}` 未接入编排")));
+    };
+    train::train_run(
+        lr.as_deref(),
+        warmup.as_deref(),
+        steps.as_deref(),
+        clip.as_deref(),
+        accumulation.as_deref(),
+        load.as_deref(),
+    )
 }
 
 /// 组装点不复制审计实现：这两个命令由 `cutile` 二进制提供。
@@ -1025,6 +1056,32 @@ mod tests {
             }
         );
 
+        assert_eq!(
+            Invocation::parse(&args(&["settle", "--in", "model.u"]))
+                .expect("合法")
+                .command(),
+            &Command::Settle {
+                input: "model.u".to_string(),
+                output: None,
+            },
+            "不给 --out 就是打到 stdout，不猜默认路径"
+        );
+        assert_eq!(
+            Invocation::parse(&args(&[
+                "settle",
+                "--out",
+                "config.json",
+                "--in",
+                "model.u"
+            ]))
+            .expect("顺序自由")
+            .command(),
+            &Command::Settle {
+                input: "model.u".to_string(),
+                output: Some("config.json".to_string()),
+            }
+        );
+
         let missing_out = Invocation::parse(&args(&["import", "--in", "model.safetensors"]))
             .expect_err("缺 --out");
         assert!(missing_out.to_string().contains("--out"), "{missing_out}");
@@ -1051,7 +1108,8 @@ mod tests {
     #[test]
     fn the_usage_text_lists_every_command() {
         for command in [
-            "status", "verify", "bench", "train", "import", "inspect", "check", "help",
+            "status", "platform", "run", "verify", "bench", "train", "import", "inspect", "check",
+            "settle", "help",
         ] {
             assert!(USAGE.contains(command), "{command}");
         }

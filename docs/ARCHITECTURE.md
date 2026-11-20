@@ -115,6 +115,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Tokenizer` / `Token` / `Bytes` / `Bpe` / `Unigram` / `SpecialTokens` / `Encoding` / `Strategy` / `Truncation` / `Padding` / `PadDirection` / `Fingerprint` / `DecoderStream` / `Vocab` / `VocabSource` / `VocabFamily` / `Merge` | `tokenizer` | 文本 ↔ token 的唯一边界：编号、编码对齐记录、序列策略、词表身份指纹与 UTF-8 边界安全的流式解码 |
 | `Adaptive` / `AdaptiveCompensated` / `Header` / `Entry` / `Reader` / `Loader` / `Archive` / `File` / `MmapSource` / `Quantized` / `Scheme` / `Compensated` / `Writer` / `Stored` / `Segment` / `Quant` / `Codec` / `Proof` / `Metrics` | `weights` | 权重文件：外部 safetensors 只读适配（`Reader` 借出 / `Loader` 拷贝两条契约）+ 自有 `.u` 容器 v2 读写（rANS、Merkle 证明、两级 CRC、原子写、现场度量）；`Quantized` 的分组、输入宽度与输出宽度出自同一次推断 |
 | `Certified` / `Note` / `Stable` / `Mode` | `weights` | `ledger` 的谱隙证书与它门控的秩选择：判定与产出出自同一次分解，证书写在 `AX02` 的 `rank` 段并由 `audit` 重算，对不上就拒读 |
+| `Settled` / `Settlement` / `Reason` | `weights`（`settle` 模块） | 逐张量沉降账本（LLD §4.7）：体积、熵、实际位宽、无损与原因全部由**落盘字节**现算，不读文件里存的度量字段；`lossless` 与 `Metrics` 共用同一份 `lossless_entry`，于是容器的两个视图不会对同一条给出两种“无损”。“原因”只答“为什么是这个体积”（引用去重 / 小段 / 轴字典 / 不可压），不答“够不够 Must”——后者归协议卡；本层只读产物，不重写产物 |
 | `Tape` / `Var` / `Node` / `Requirement` / `Role` | `autograd` | 反向图的记录：变量需求、出身、边与深度 |
 | `Schedule` / `Account` / `Ordering` / `Config` | `autograd` | 反向调度（可达剪枝 + 可配置排序 + 同深度分层）与扇出账本；都在原对象上重填，训练循环不必每步新建 |
 | `Plan` / `Budget` / `Choice` / `Footprint` / `Sizes` / `MemoryPolicy` | `autograd` | 显存计划：只读 `Tape`、`Schedule` 与形状表，不分配、不执行。与 `cutile::Plan`（单条 kernel 选哪个 tile）不是同一件事 |

@@ -72,6 +72,9 @@ pub mod axes;
 pub mod ledger;
 pub use ptq::svd;
 
+// —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——
+pub mod settle;
+
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
@@ -151,6 +154,7 @@ pub use ptq::{
 pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;
+pub use settle::{Reason, Settled, Settlement};
 pub use writer::Writer;
 
 #[cfg(all(feature = "mmap", unix))]

@@ -4,7 +4,34 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Removed
+
+- **一次性的 Burn 运行时对照探针（仓库根 `benchmarks/`）在结论并入 ADR 后删除**。`benchmarks/burn-runtime`
+  是为 ADR 0053「与 Burn 的对比口径」临时立的对照夹具：本仓 `llm-side`（路径依赖 `train` / `autograd` /
+  `tensor` / `op`）、Burn Flex `burn-side` 与 Burn Metal `burn-side-metal`（crates.io `0.23.0-pre.2`），
+  三个包各自带 `[workspace]`，因此 Burn 从不进入本仓依赖图、CI 与 `cargo test --workspace`。四张表
+  （CPU 前向、Metal matmul、注意力、量化 GEMM）连同读表所需的环境与方法口径（机器与工具链、Burn 的
+  feature 组合、预热 2 轮 + 11 次采样取中位、每轮内层重复次数、两侧各 3 次取中位、输入生成式与
+  `head_sum` / `full_sum` 校验口径）已落进 ADR 0053 正文；逐轮原始输出与 2.4 GB 的 `target/` 产物不再
+  随代码存放——按 `docs/README.md` 写作规则 3（"删除也是维护"），一次性报告的寿命是当轮评审，结论
+  要么进代码与测试、要么进 ADR。ADR 里三处指向该目录的证据指针同步改写（原写作
+  `crates/benchmarks/burn-runtime/`，路径本就不对），改成"三套一次性探针"的口径并写明重跑所需的
+  输入式与 `llm-engine` 的 `#[ignore]` 设备用例。**验证**：`cargo machete` 此前对
+  `benchmarks/burn-runtime/llm-side` 报的未使用依赖随目录消失；`nextest`、`fmt --check`、
+  `RUSTDOCFLAGS="-D warnings" cargo doc`、`jscpd` 全绿。
+
 ### Added
+
+- **模型存储有了逐张量沉降账本：`weights::settle` 把 LLD §4.7 的"每个张量落在哪个体积、为什么、
+  是否无损"从散落的度量字段收成一份由**落盘字节**现算的账，`llm settle --in <容器> [--out <账本>]`
+  是它的唯一出口**。`Settlement::settle` 只走已落盘的描述符与解码往返：解码一次取熵与值域、按描述符
+  给出实际位宽与原因（引用去重 / 小段 / 轴字典 / 不可压），量化条目按既有 `Quant` 语义判为有损，
+  未识别 codec 不计无损——这就是 `Archive::metrics` 里那条 `lossless` 判定的同一份实现
+  （`archive::lossless_entry`），容器的两个视图因此不可能给出两种"无损"。账本 JSON 只有一个文本来源
+  （`Settlement::render`）：`--out` 写盘与 stdout 是同一份字节（进程级用例钉住逐字节相等），不给
+  `--out` 就把 JSON 打到 stdout，本层不猜产物目录旁的默认文件名。12 条 `settle` 用例覆盖体积算式、
+  原因闭集、无损口径与坏字节拒绝；`llm settle` 补两条解析用例与一条端到端用例。**实测**（`.u` 容器
+  含两条权重段）：全量体积比与逐张量体积可复核，账本与 `inspect` 报告的无损结论一致。
 
 - **装配层从"一层"走到"一栈"：`nn::hybrid` 新增 `Tower` / `State` / `Kind` / `MemoryStep`，把 K3 的
   3:1 配比（每三个通道记忆层配一个混合层）落成构造条件而不是注释**。`Tower::order` 逐格给出
