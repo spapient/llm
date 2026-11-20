@@ -162,38 +162,63 @@ impl AttnRes {
 ///
 /// 主路与混合值宽度不等、任一含非有限值、或系数不在 `[0, 1]`——返回 `Code::Invalid`。
 pub fn splice<S: Scalar>(main: &[S], mixed: &[S], alpha: S) -> Result<Vec<S>> {
-    if main.len() != mixed.len() {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "主路宽 {} 与混合值宽 {} 不等：并回是把同一维度的两段合起来",
-                main.len(),
-                mixed.len()
-            ),
-        )
-        .with(SITE));
-    }
-    if !finite(alpha) || alpha < S::ZERO || alpha > S::ONE {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("系数是 {alpha:?}：必须在 [0, 1] 内（0 保留主路，1 换成混合值）"),
-        )
-        .with(SITE));
-    }
-    for (index, (a, b)) in main.iter().zip(mixed).enumerate() {
-        if !finite(*a) || !finite(*b) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("第 {index} 项非有限：并回会把 NaN 带进主路"),
-            )
-            .with(SITE));
-        }
-    }
+    check_splice(main, mixed, alpha)?;
     Ok(main
         .iter()
         .zip(mixed)
         .map(|(&keep, &mixed)| keep.add(alpha.mul(mixed.sub(keep))))
         .collect())
+}
+
+/// 并回的三处入口校验，按从便宜到贵的次序：宽度、系数、逐项有限性。
+fn check_splice<S: Scalar>(main: &[S], mixed: &[S], alpha: S) -> Result<()> {
+    check_width(main, mixed)?;
+    check_alpha(alpha)?;
+    check_pairs(main, mixed)
+}
+
+/// 主路与混合值等宽：并回是把同一维度的两段合起来。
+fn check_width<S: Scalar>(main: &[S], mixed: &[S]) -> Result<()> {
+    if main.len() == mixed.len() {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!(
+            "主路宽 {} 与混合值宽 {} 不等：并回是把同一维度的两段合起来",
+            main.len(),
+            mixed.len()
+        ),
+    )
+    .with(SITE))
+}
+
+/// 系数 `α ∈ [0, 1]`：出界就不再是凸组合，主路会被拉长而不是内插。
+fn check_alpha<S: Scalar>(alpha: S) -> Result<()> {
+    if finite(alpha) && alpha >= S::ZERO && alpha <= S::ONE {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!("系数是 {alpha:?}：必须在 [0, 1] 内（0 保留主路，1 换成混合值）"),
+    )
+    .with(SITE))
+}
+
+/// 两段逐项有限：任一项是 `NaN`，并回都会把它带进主路。
+fn check_pairs<S: Scalar>(main: &[S], mixed: &[S]) -> Result<()> {
+    match main
+        .iter()
+        .zip(mixed)
+        .position(|(&a, &b)| !finite(a) || !finite(b))
+    {
+        Some(index) => Err(Error::new(
+            Code::Invalid,
+            format!("第 {index} 项非有限：并回会把 NaN 带进主路"),
+        )
+        .with(SITE)),
+        None => Ok(()),
+    }
 }
 
 /// 一层的来源簿记：喂本层的前几层层号 + 主路取自哪一层。
@@ -215,11 +240,7 @@ impl Sources {
     /// 来源为空、来源不是严格递增、或任一来源等于主路——返回 `Code::Invalid`。
     pub fn new(layers: Vec<usize>, main: usize) -> Result<Self> {
         if layers.is_empty() {
-            return Err(Error::new(
-                Code::Invalid,
-                "来源为空：这一层没有可取的前层输出",
-            )
-            .with(SITE));
+            return Err(Error::new(Code::Invalid, "来源为空：这一层没有可取的前层输出").with(SITE));
         }
         if let Some(gap) = layers.windows(2).position(|pair| pair[0] >= pair[1]) {
             return Err(Error::new(
@@ -340,9 +361,7 @@ mod tests {
     fn the_query_direction_decides_the_pick() {
         let rows = rows();
         let refs: Vec<&[f64]> = rows.iter().map(Vec::as_slice).collect();
-        let near_second = layer()
-            .mix(&[0.0, 2.0, 0.0, 0.0], &refs)
-            .expect("几何合法");
+        let near_second = layer().mix(&[0.0, 2.0, 0.0, 0.0], &refs).expect("几何合法");
         let far = (near_second[1] - refs[0][1]).abs();
         let close = (near_second[1] - refs[2][1]).abs();
         assert!(close < far, "指向第 2 项时结果该更靠近它：{near_second:?}");
@@ -390,7 +409,10 @@ mod tests {
         let main = [1.0, 2.0, 3.0];
         let mixed = [-1.0, 0.0, 5.0];
         assert_eq!(splice(&main, &mixed, 0.0).expect("系数合法"), main.to_vec());
-        assert_eq!(splice(&main, &mixed, 1.0).expect("系数合法"), mixed.to_vec());
+        assert_eq!(
+            splice(&main, &mixed, 1.0).expect("系数合法"),
+            mixed.to_vec()
+        );
         let half = splice(&main, &mixed, 0.5).expect("系数合法");
         assert_eq!(half, vec![0.0, 1.0, 4.0]);
     }
@@ -471,10 +493,7 @@ mod tests {
     /// 构造期与入口的名义几何：零宽度、空坐标集、宽度不符、非有限值一律拒绝。
     #[test]
     fn geometry_is_checked_at_the_door() {
-        assert_eq!(
-            AttnRes::new(0).expect_err("宽度为零").code(),
-            Code::Invalid
-        );
+        assert_eq!(AttnRes::new(0).expect_err("宽度为零").code(), Code::Invalid);
         let layer = layer();
         let row = [1.0, 0.0, 0.0, 0.0];
         assert_eq!(

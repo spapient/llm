@@ -117,6 +117,12 @@ impl TrainConfig {
     }
 }
 
+/// 取视图时按槽号记下的元数据：变量、角色、矩阵形状。
+///
+/// 单独起名的理由是可读性而不是洁癖：`Vec<(Var, ParamRole, Option<(usize, usize)>)>` 写出来
+/// 读者要数三层括号才知道自己在看什么。
+type SlotMeta = (Var, ParamRole, Option<(usize, usize)>);
+
 /// 一个已登记的参数槽：变量编号、角色与常驻参数值。
 ///
 /// 梯度不在这里，梯度缓冲由 [`Buffers`](crate::Buffers) 自持；参数值是优化器就地写回的对象，
@@ -681,7 +687,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 梯度向量按槽整块取走（[`Buffers::take_gradient`]），步进结束后在
     /// [`Self::return_views`] 归还；参数槽与梯度表因此各只建立一条可变借用。
     fn collect_views(slots: &mut [ParamSlot], buffers: &mut Buffers<K>) -> Result<Vec<OwnedSlot>> {
-        let meta: Vec<(Var, ParamRole, Option<(usize, usize)>)> = slots
+        let meta: Vec<SlotMeta> = slots
             .iter()
             .map(|slot| (slot.var(), slot.role(), slot.matrix()))
             .collect();
@@ -733,6 +739,17 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
                 .map_err(|error| error.with(SITE))?;
         }
         Ok(())
+    }
+}
+
+/// 登记形状 → 矩阵形状：只有二阶张量是矩阵，其余（标量/向量/更高阶）一律 `None`。
+///
+/// 不从元素数反推：`4` 既可以是 `2 × 2`，也可以是 `4 × 1`，反推出来的行列会让 [`crate::Muon`]
+/// 对一个其实不是矩阵的参数做正交化，却不会有任何一处报错。
+fn matrix_of(shape: &Shape) -> Option<(usize, usize)> {
+    match shape.dims() {
+        &[rows, cols] => Some((rows, cols)),
+        _ => None,
     }
 }
 

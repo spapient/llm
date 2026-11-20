@@ -142,20 +142,21 @@ impl Kda {
         value: &[S],
     ) -> Result<()> {
         self.check(memory)?;
-        self.check_gates(gate)?;
-        let write = self.write_strength(write)?;
-        let key = self.unit_key(key)?;
         self.check_values("值", value, self.value_dim)?;
+        let (write, key) = self.gated_write(gate, write, key)?;
         for (value_index, row) in memory.cells.chunks_exact_mut(self.key_dim).enumerate() {
-            // 先遗忘：逐通道乘门（`α = 0` 是「这一列清空」的合法极端）。
-            for (cell, &alpha) in row.iter_mut().zip(gate) {
-                *cell = cell.mul(alpha);
-            }
-            // 再纠错：只写记忆还没预测出来的那部分。
-            let predicted = dot(row, &key);
-            accumulate(row, &key, write.mul(value[value_index].sub(predicted)));
+            write_row(row, gate, write, &key, value[value_index]);
         }
         Ok(())
+    }
+
+    /// 门、写强度与单位键：三处都是「写入之前的形状与取值契约」，合成一次调用。
+    ///
+    /// 门在写强度之前判：门是逐 token 由投影给出的，写强度是标量；先查门才能让报错定位到通道。
+    fn gated_write<S: Scalar>(&self, gate: &[S], write: S, key: &[S]) -> Result<(S, Vec<S>)> {
+        self.check_gates(gate)?;
+        let write = self.write_strength(write)?;
+        Ok((write, self.unit_key(key)?))
     }
 
     /// 读：`o = S q`，即 `o[i] = Σ_j S[i][j] q[j]`。
@@ -194,23 +195,7 @@ impl Kda {
     fn check_gates<S: Scalar>(&self, gate: &[S]) -> Result<()> {
         self.check_len("门", gate.len(), self.key_dim)?;
         for (channel, &alpha) in gate.iter().enumerate() {
-            if !finite(alpha) {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("门第 {channel} 个通道非有限：遗忘系数必须是 [0, 1] 里的实数"),
-                )
-                .with(SITE));
-            }
-            if alpha < S::ZERO || alpha > S::ONE {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "门第 {channel} 个通道是 {alpha:?}：遗忘系数必须在 [0, 1] 内\
-                         （0 清空该通道，1 一点不忘）"
-                    ),
-                )
-                .with(SITE));
-            }
+            check_channel(channel, alpha)?;
         }
         Ok(())
     }
@@ -269,6 +254,39 @@ impl Kda {
         )
         .with(SITE))
     }
+}
+
+/// 一行的更新：先逐通道遗忘，再把残差 `v − S k̂` 按写强度写回。
+///
+/// 两步的顺序不能换：先写后忘会把刚写进去的纠错一起衰减掉，门就变成了写强度的双计。
+fn write_row<S: Scalar>(row: &mut [S], gate: &[S], write: S, key: &[S], value: S) {
+    for (cell, &alpha) in row.iter_mut().zip(gate) {
+        *cell = cell.mul(alpha);
+    }
+    let predicted = dot(row, key);
+    accumulate(row, key, write.mul(value.sub(predicted)));
+}
+
+/// 单个通道的门：有限且落在 `[0, 1]`（`0` 清空该通道，`1` 一点不忘）。
+fn check_channel<S: Scalar>(channel: usize, alpha: S) -> Result<()> {
+    if !finite(alpha) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("门第 {channel} 个通道非有限：遗忘系数必须是 [0, 1] 里的实数"),
+        )
+        .with(SITE));
+    }
+    if alpha < S::ZERO || alpha > S::ONE {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "门第 {channel} 个通道是 {alpha:?}：遗忘系数必须在 [0, 1] 内\
+                 （0 清空该通道，1 一点不忘）"
+            ),
+        )
+        .with(SITE));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -430,7 +448,10 @@ mod tests {
             .step(&mut memory, &[0.5; 3], 0.0, &key, &[0.0, 0.0])
             .expect("几何合法");
         let got = layer.read(&memory, &key).expect("几何合法");
-        assert!((got[0] - 1.0).abs() < 1e-12 && (got[1] + 1.0).abs() < 1e-12, "{got:?}");
+        assert!(
+            (got[0] - 1.0).abs() < 1e-12 && (got[1] + 1.0).abs() < 1e-12,
+            "{got:?}"
+        );
     }
 
     /// 键的范数不影响写入强度：归一化在入口做，缩放键不会改变记忆。
@@ -480,7 +501,9 @@ mod tests {
                 .step(&mut memory, &keep(), 1.0, &[1.0, 0.0, 0.0], &[bad, 2.0])
                 .expect_err("值非有限");
             assert_eq!(value.code(), Code::Invalid);
-            let query = layer.read(&memory, &[bad, 0.0, 0.0]).expect_err("查询非有限");
+            let query = layer
+                .read(&memory, &[bad, 0.0, 0.0])
+                .expect_err("查询非有限");
             assert_eq!(query.code(), Code::Invalid);
             assert_eq!(memory.cells(), &[0.0; 6]);
         }

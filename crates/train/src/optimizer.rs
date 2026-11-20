@@ -494,6 +494,37 @@ impl Muon {
         buffer
     }
 
+    /// 一个槽的推进：动量累加 →（可选 Nesterov）→ 正交化 → 写回。
+    ///
+    /// 标量先复制出来再取动量缓冲：`velocity` 借了整个 `self`，之后再读 `self.nesterov`
+    /// 就是同一块可变借用的第二份访问。
+    fn advance(
+        &mut self,
+        index: usize,
+        slot: &mut Slot<'_>,
+        (rows, cols): (usize, usize),
+        scale: f32,
+        lr: f32,
+    ) {
+        let (beta, nesterov, eps) = (self.momentum, self.nesterov, self.eps);
+        let decay = decay_rate(slot.role, self.weight_decay);
+        let velocity = self.velocity(index, rows * cols);
+        for (tracked, &grad) in velocity.iter_mut().zip(slot.grads.iter()) {
+            *tracked = beta * *tracked + scale * grad;
+        }
+        let direction = if nesterov {
+            nesterov_direction(velocity, slot.grads, beta, scale)
+        } else {
+            velocity.clone()
+        };
+        let orthogonal = orthogonalize(&direction, rows, cols, eps);
+        let factor = lr * scale_factor(rows, cols);
+        for (param, &step) in slot.params.iter_mut().zip(&orthogonal) {
+            *param -= factor * step;
+            *param -= lr * decay * *param;
+        }
+    }
+
     /// 动量表（按槽位编号）：快照导出走这里，优化器之外不另存一份状态。
     pub fn momentum_table(&self) -> &[Vec<f32>] {
         &self.velocity
@@ -524,36 +555,11 @@ impl Default for Muon {
 impl Optimizer for Muon {
     fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
         check_slots(slots)?;
-        // 形状与取值先全部查完再动手：查到第 7 个槽才发现它不是矩阵时，前 6 个已经写回去了。
-        let mut shapes = Vec::with_capacity(slots.len());
-        for (index, slot) in slots.iter().enumerate() {
-            shapes.push(matrix_of(index, slot)?);
-        }
+        let shapes = shapes_of(slots)?;
         let scale = clip_scale(global_norm(slots), self.clip_norm);
         self.step = self.step.saturating_add(1);
-        let (beta, nesterov, eps, weight_decay) =
-            (self.momentum, self.nesterov, self.eps, self.weight_decay);
-        for (index, (slot, (rows, cols))) in slots.iter_mut().zip(shapes).enumerate() {
-            let velocity = self.velocity(index, rows * cols);
-            for (tracked, &grad) in velocity.iter_mut().zip(slot.grads.iter()) {
-                *tracked = beta * *tracked + scale * grad;
-            }
-            let direction: Vec<f32> = if nesterov {
-                velocity
-                    .iter()
-                    .zip(slot.grads.iter())
-                    .map(|(&tracked, &grad)| scale * grad + beta * tracked)
-                    .collect()
-            } else {
-                velocity.clone()
-            };
-            let orthogonal = orthogonalize(&direction, rows, cols, eps);
-            let factor = lr * scale_factor(rows, cols);
-            let decay = decay_rate(slot.role, weight_decay);
-            for (param, &step) in slot.params.iter_mut().zip(&orthogonal) {
-                *param -= factor * step;
-                *param -= lr * decay * *param;
-            }
+        for (index, (slot, &shape)) in slots.iter_mut().zip(&shapes).enumerate() {
+            self.advance(index, slot, shape, scale, lr);
         }
         Ok(())
     }
@@ -575,6 +581,27 @@ impl Optimizer for Muon {
         self.step = step;
         Ok(())
     }
+}
+
+/// 每个槽的矩阵形状，**全部**先查完再返回。
+///
+/// 不能边查边写：查到第 7 个槽才发现它不是矩阵时，前 6 个参数已经写回去了，调用方拿到错误却
+/// 留下半步更新。
+fn shapes_of(slots: &[Slot<'_>]) -> Result<Vec<(usize, usize)>> {
+    let mut shapes = Vec::with_capacity(slots.len());
+    for (index, slot) in slots.iter().enumerate() {
+        shapes.push(matrix_of(index, slot)?);
+    }
+    Ok(shapes)
+}
+
+/// Nesterov 前瞻方向 `g + μ·u`：动量缓冲 `u` 已经含了本步的梯度，前瞻取的是「再多走一点」。
+fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) -> Vec<f32> {
+    velocity
+        .iter()
+        .zip(grads)
+        .map(|(&tracked, &grad)| scale * grad + beta * tracked)
+        .collect()
 }
 
 /// 一个槽的矩阵形状：非矩阵、零维或梯度非有限都在这里拒绝。
@@ -938,22 +965,28 @@ mod tests {
         assert!((params[0][0] - 0.95).abs() < 1e-7);
     }
 
-    /// 正交化后的方向满足 `O·Oᵀ ≈ I`：奇异值被压到 1，方向不再被少数谱分量独占。
+    /// 正交化把谱压窄：`3 : 2 : 1` 的传播被拉到窄带里，方向不再被几个分量独占。
+    ///
+    /// 五次迭代给的是**近似**极分解（收敛比约 0.72，值在 `[0.65, 1.15]` 一带振荡），所以断言的是
+    /// “压缩比”而不是“精确等于 1”：后者要几十次迭代，而优化器只需要方向不失衡。
     #[test]
-    fn the_orthogonalized_direction_is_an_isometry() {
+    fn the_orthogonalization_compresses_the_spectrum() {
         // 对角谱 1 / 2 / 3：不处理的话，更新量会按 3 : 2 : 1 分配。
         let grad = vec![1.0_f32, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
         let out = orthogonalize(&grad, 3, 3, 1e-7);
-        for row in 0..3 {
-            for col in 0..3 {
-                let dot: f32 = (0..3).map(|i| out[row * 3 + i] * out[col * 3 + i]).sum();
-                let want = if row == col { 1.0 } else { 0.0 };
-                assert!(
-                    (dot - want).abs() < 0.05,
-                    "第 ({row}, {col}) 项是 {dot}，正交阵该是 {want}"
-                );
-            }
+        for (index, value) in out.iter().enumerate() {
+            assert!(value.is_finite(), "第 {index} 项不是有限值");
         }
+        let spread = out[0] / out[8];
+        assert!(
+            (0.5..=1.8).contains(&spread),
+            "谱比从 3.0 被压到 {spread}，该落进 0.5..=1.8 的窄带"
+        );
+        // 对角输入只受多项式作用，非对角项仍是零：正交化不动特征基。
+        assert!(
+            out[1].abs() < 1e-6 && out[3].abs() < 1e-6,
+            "非对角项该保持为零"
+        );
     }
 
     /// 更新量与梯度尺度无关：整体乘 1000，一步走多远不变。
@@ -968,11 +1001,17 @@ mod tests {
 
         Muon::new()
             .without_nesterov()
-            .step(&mut matrix_slots(&mut params_small, &mut grads_small, &roles, (2, 3)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params_small, &mut grads_small, &roles, (2, 3)),
+                0.1,
+            )
             .expect("几何合法");
         Muon::new()
             .without_nesterov()
-            .step(&mut matrix_slots(&mut params_large, &mut grads_large, &roles, (2, 3)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params_large, &mut grads_large, &roles, (2, 3)),
+                0.1,
+            )
             .expect("几何合法");
 
         for (index, (small, large)) in params_small[0].iter().zip(&params_large[0]).enumerate() {
@@ -1004,7 +1043,10 @@ mod tests {
         let mut grads = [vec![0.5_f32; 4]];
         let roles = [ParamRole::Trainable];
         let error = Muon::new()
-            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (3, 3)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params, &mut grads, &roles, (3, 3)),
+                0.1,
+            )
             .expect_err("3 × 3 不是 4 个元素");
         assert_eq!(error.code(), Code::Invalid);
     }
@@ -1016,7 +1058,10 @@ mod tests {
         let mut grads = [vec![1.0_f32, f32::NAN, 0.0, 0.0]];
         let roles = [ParamRole::Trainable];
         let error = Muon::new()
-            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)),
+                0.1,
+            )
             .expect_err("梯度含 NaN");
         assert_eq!(error.code(), Code::Invalid);
         assert_eq!(params[0], [1.0, 1.0, 1.0, 1.0]);
@@ -1029,7 +1074,10 @@ mod tests {
         let mut grads = [vec![0.0_f32; 4]];
         let roles = [ParamRole::Trainable];
         Muon::new()
-            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)),
+                0.1,
+            )
             .expect("几何合法");
         assert_eq!(params[0], [1.0, -2.0, 3.0, 0.5], "零方向不该动参数");
     }
@@ -1047,7 +1095,10 @@ mod tests {
                 0.5,
             )
             .expect("几何合法");
-        assert!((params[0][0] - (1.0 - 0.5 * 0.1)).abs() < 1e-7, "可训练权重按衰减缩");
+        assert!(
+            (params[0][0] - (1.0 - 0.5 * 0.1)).abs() < 1e-7,
+            "可训练权重按衰减缩"
+        );
         assert_eq!(params[1][0], 1.0, "偏置豁免权重衰减");
     }
 
@@ -1060,12 +1111,18 @@ mod tests {
         let mut optimizer = Muon::new().with_momentum(0.5);
         for _ in 0..2 {
             optimizer
-                .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+                .step(
+                    &mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)),
+                    0.1,
+                )
                 .expect("几何合法");
         }
         let velocity = &optimizer.momentum_table()[0][1];
-        let want = 0.5 * (0.5 * 1.0 + 1.0) + 1.0;
-        assert!((velocity - want).abs() < 1e-6, "缓冲是 {velocity}，手算是 {want}");
+        let want = (1.0 - 0.5_f32.powi(2)) / (1.0 - 0.5);
+        assert!(
+            (velocity - want).abs() < 1e-6,
+            "缓冲是 {velocity}，手算是 {want}"
+        );
         assert_eq!(optimizer.step_count(), 2);
     }
 
@@ -1077,7 +1134,10 @@ mod tests {
         let roles = [ParamRole::Trainable];
         let mut source = Muon::new();
         source
-            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)),
+                0.1,
+            )
             .expect("第一步");
         let table = source.momentum_table().to_vec();
 
@@ -1086,10 +1146,16 @@ mod tests {
         let mut params_restored = [params[0].clone()];
         let mut params_source = [params[0].clone()];
         restored
-            .step(&mut matrix_slots(&mut params_restored, &mut grads, &roles, (2, 2)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params_restored, &mut grads, &roles, (2, 2)),
+                0.1,
+            )
             .expect("回载后第一步");
         source
-            .step(&mut matrix_slots(&mut params_source, &mut grads, &roles, (2, 2)), 0.1)
+            .step(
+                &mut matrix_slots(&mut params_source, &mut grads, &roles, (2, 2)),
+                0.1,
+            )
             .expect("源优化器同一步");
         assert_eq!(params_restored[0], params_source[0], "回载后轨迹逐位对齐");
 

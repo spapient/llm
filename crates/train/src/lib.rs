@@ -62,7 +62,7 @@ pub use loss::{argmax_hits, cross_entropy};
 pub use metrics::{MetricPoint, MetricsBoard};
 pub use objective::{Loss, Outcome};
 pub use offload::{DeferredOffload, WeightOffload};
-pub use optimizer::{Adam, Group, Optimizer, OwnedSlot, Sgd, Slot};
+pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
 pub use samples::{Batch, Chunks, Dataset};
 pub use schedule::{Anneal, Schedule};
