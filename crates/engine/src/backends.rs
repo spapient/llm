@@ -651,7 +651,7 @@ fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>])
 
 /// 回读口径：逐见证打印位模式，再打一行 `witness N`。
 ///
-/// CUDA 与昪腾的 host 驱动共用这一段字面：同一个 `driver::readback` 在两种产物上必须读出同一种
+/// CUDA 与昇腾的 host 驱动共用这一段字面：同一个 `driver::readback` 在两种产物上必须读出同一种
 /// 文本，各写一份时改一处就会漂。
 fn witness_readback(max: usize) -> String {
     format!(
