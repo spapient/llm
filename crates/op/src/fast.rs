@@ -5,6 +5,8 @@
 //! 先把每个 8 行块转置成 `[p][8]` 面板，微内核每条 `p` 只做两次**连续**向量加载，再用 `lane` 广播
 //! 到 8 个累加器；`unsafe` 只在 aarch64 的 NEON 微内核这一小段（`#[allow(unsafe_code)]`）。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Condvar, Mutex, OnceLock};
 use std::thread;
 
 /// 微内核行数。
@@ -260,6 +262,207 @@ fn threads_override() -> usize {
         })
 }
 
+// --- 常驻线程池 -------------------------------------------------------------
+// 每次调用都 `thread::scope` 会产生「打包一次 + 计算一次」两拨线程创建；小形状
+// （如 512×512×512，0.27 GFLOP）里这个固定开销能占到近半。这里改成：进程内
+// 常驻 worker，任务只发布指针 + 一次 Barrier，spawn 成本归零。
+// `unsafe` 仅用于把本次调用的裸指针交给 worker（主线程自旋等全部完成才返回）。
+
+struct Job {
+    a: *const i8,
+    b: *const i8,
+    bpack: *mut i8,
+    out: *mut i32,
+    m: usize,
+    n: usize,
+    k: usize,
+    npad: usize,
+    rows_per: usize,
+    p: usize,
+    barrier: Barrier,
+    done: AtomicUsize,
+}
+
+// 安全性：裸指针指向主线程栈上的输入与堆上的输出；主线程在 `done` 齐之前不返回，
+// 期间 worker 只读写互不重叠的分片。
+#[allow(unsafe_code)]
+unsafe impl Send for Job {}
+#[allow(unsafe_code)]
+unsafe impl Sync for Job {}
+
+struct Pool {
+    /// 任务串行锁：并发调用（如测试并行）会争同一槽位，必须一次只放一个 job。
+    busy: Mutex<()>,
+    slot: Mutex<Option<Arc<Job>>>,
+    start: Condvar,
+    epoch: AtomicUsize,
+    live: AtomicUsize,
+}
+
+static POOL: OnceLock<&'static Pool> = OnceLock::new();
+
+/// 常驻池（首次调用时创建 `cpu-1` 个常驻 worker，之后只唤醒不复建）。
+fn pool() -> &'static Pool {
+    POOL.get_or_init(|| {
+        let want = thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1)
+            .saturating_sub(1);
+        let p: &'static Pool = Box::leak(Box::new(Pool {
+            busy: Mutex::new(()),
+            slot: Mutex::new(None),
+            start: Condvar::new(),
+            epoch: AtomicUsize::new(0),
+            live: AtomicUsize::new(0),
+        }));
+        let mut live = 0;
+        for id in 0..want {
+            if thread::Builder::new()
+                .name(format!("llm-gemm-{id}"))
+                .spawn(move || spin(id, p))
+                .is_ok()
+            {
+                live += 1;
+            }
+        }
+        p.live.store(live, Ordering::Release);
+        p
+    })
+}
+
+/// worker 主循环：等代号变化、取走任务、按 `id+1` 算自己那一份。
+fn spin(id: usize, pool: &'static Pool) {
+    let mut seen = 0usize;
+    loop {
+        let job = {
+            let mut g = pool.slot.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if pool.epoch.load(Ordering::Acquire) != seen {
+                    break;
+                }
+                g = pool.start.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            g.clone()
+        };
+        seen += 1;
+        if let Some(j) = job
+            && id + 1 < j.p
+        {
+            part(&j, id + 1);
+            j.done.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+/// 一次任务里单个参与者的全部工作：打包自己那份 B 组 → Barrier → 算自己那段行。
+fn part(j: &Job, slot: usize) {
+    pack_part(j, slot);
+    j.barrier.wait();
+    compute_part(j, slot);
+}
+
+/// 打包阶段：本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包。
+fn pack_part(j: &Job, slot: usize) {
+    let p = j.p;
+    let groups = j.npad / I8_NR;
+    #[allow(unsafe_code)]
+    unsafe {
+        let b = j.b;
+        let bp = j.bpack;
+        let n = j.n;
+        let k = j.k;
+        let mut g = slot;
+        while g < groups {
+            for nb in 0..I8_NR {
+                let jj = g * I8_NR + nb;
+                if jj < n {
+                    let dst = bp.add((g * I8_NR + nb) * k);
+                    let mut q = 0;
+                    while q < k {
+                        *dst.add(q) = *b.add(q * n + jj);
+                        q += 1;
+                    }
+                }
+            }
+            g += p;
+        }
+    }
+}
+
+/// 计算阶段：只算本槽的行段，`bpack` 由 Barrier 保证整块就绪。
+fn compute_part(j: &Job, slot: usize) {
+    let r0 = slot * j.rows_per;
+    if r0 >= j.m {
+        return;
+    }
+    let rows = (j.m - r0).min(j.rows_per);
+    #[allow(unsafe_code)]
+    unsafe {
+        let a_l = std::slice::from_raw_parts(j.a.add(r0 * j.k), rows * j.k);
+        let b_l = std::slice::from_raw_parts(j.bpack as *const i8, j.npad * j.k);
+        let out_l = std::slice::from_raw_parts_mut(j.out.add(r0 * j.n), rows * j.n);
+        compute_i8_packed(a_l, b_l, j.npad, rows, j.n, j.k, out_l);
+    }
+}
+
+/// 一次 i8 调用的几何：`npad` 是 `n` 对齐到微内核列数后的补零宽。
+#[derive(Clone, Copy)]
+struct Shape {
+    m: usize,
+    n: usize,
+    k: usize,
+    npad: usize,
+}
+
+/// 池化执行；参与数不足 2 时返回 `false`，由调用方走 scope 兜底。
+#[allow(unsafe_code)]
+fn run_pooled(
+    pool: &'static Pool,
+    a: &[i8],
+    b: &[i8],
+    out: &mut [i32],
+    shape: Shape,
+    t: usize,
+) -> bool {
+    let Shape { m, n, k, npad } = shape;
+    let p = t.min(pool.live.load(Ordering::Acquire) + 1);
+    if p < 2 {
+        return false;
+    }
+    let _busy = pool.busy.lock().unwrap_or_else(|e| e.into_inner());
+    let mut bpack = vec![0i8; npad * k];
+    let rows_per = m.div_ceil(p).div_ceil(I8_MR) * I8_MR;
+    let job = Arc::new(Job {
+        a: a.as_ptr(),
+        b: b.as_ptr(),
+        bpack: bpack.as_mut_ptr(),
+        out: out.as_mut_ptr(),
+        m,
+        n,
+        k,
+        npad,
+        rows_per,
+        p,
+        barrier: Barrier::new(p),
+        done: AtomicUsize::new(0),
+    });
+    {
+        let mut g = pool.slot.lock().unwrap_or_else(|e| e.into_inner());
+        *g = Some(job.clone());
+        pool.epoch.fetch_add(1, Ordering::Release);
+    }
+    pool.start.notify_all();
+    part(&job, 0);
+    while job.done.load(Ordering::Acquire) < p - 1 {
+        std::hint::spin_loop();
+    }
+    {
+        let mut g = pool.slot.lock().unwrap_or_else(|e| e.into_inner());
+        *g = None;
+    }
+    true
+}
+
 /// 多线程 i8 GEMM：`out[m,n] = a[m,k] · b[k,n]`，i8 入 i32 累加。
 ///
 /// # Panics
@@ -271,9 +474,30 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
         "gemm_i8 尺寸不符"
     );
     let cpu = threads_override();
-    let t = cpu.min(m.div_ceil(I8_MR)).max(1);
+    let npad = n.div_ceil(I8_NR) * I8_NR;
+    let groups = npad / I8_NR;
+    let t = cpu.min(m.div_ceil(I8_MR)).min(groups).max(1);
+    if t <= 1 {
+        single_i8(a, b, m, n, k, out);
+        return;
+    }
+    // 常驻池：一次发布 + 一次 Barrier，无 spawn 成本。
+    if run_pooled(pool(), a, b, out, Shape { m, n, k, npad }, t) {
+        return;
+    }
+    scoped_i8(a, b, out, m, n, k, t);
+}
+
+/// 单线程路径：B 打包一次，直接算完整块。
+fn single_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
+    let (bpack, npad) = pack_b(b, n, k);
+    compute_i8_packed(a, &bpack, npad, m, n, k, out);
+}
+
+/// 兜底路径：池不可用（worker 起不来）时退回 scope 线程。
+fn scoped_i8(a: &[i8], b: &[i8], out: &mut [i32], m: usize, n: usize, k: usize, t: usize) {
     let mut rows_per = m.div_ceil(t);
-    // 每线程偶数行，保证两行一对不被切碎（缺则末线程落单走标量行）。
+    // 每线程成组行，保证微内核分块不被切碎（缺则末线程走标量尾块）。
     rows_per = rows_per.div_ceil(I8_MR) * I8_MR;
     // B 只打包一次、全部线程共享：N 线程各打包一遍会让冗余带宽吞掉扩展性。
     let (bpack, npad) = pack_b_par(b, n, k);
@@ -290,8 +514,7 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
 
 /// 单线程 i8 GEMM（基准确认内核质量用）。
 pub fn gemm_i8_single(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
-    let (bpack, npad) = pack_b(b, n, k);
-    compute_i8_packed(a, &bpack, npad, m, n, k, out);
+    single_i8(a, b, m, n, k, out);
 }
 
 /// B 转置打包成 `[nblk][nb][k]`（同列 k 连续），返回 `(面板, n 补齐到 8)`。
@@ -440,7 +663,8 @@ unsafe fn dot_block(
     use std::arch::aarch64::*;
     unsafe {
         let zero = vdupq_n_s32(0);
-        let mut accs = [[zero; I8_NR]; I8_MR];
+        // 列优先：一列一个内层迭代，块内推进不必同时索引四行。
+        let mut accs = [[zero; I8_MR]; I8_NR];
         let mut p = 0;
         while p < kvec {
             let av: [int8x16_t; I8_MR] = [
@@ -449,10 +673,10 @@ unsafe fn dot_block(
                 vld1q_s8(ap.add(2 * k + p)),
                 vld1q_s8(ap.add(3 * k + p)),
             ];
-            for nb in 0..I8_NR {
+            for (nb, column) in accs.iter_mut().enumerate() {
                 let bv = vld1q_s8(bp.add((blk + nb) * k + p));
-                for mr in 0..I8_MR {
-                    accs[mr][nb] = vdotq_s32(accs[mr][nb], av[mr], bv);
+                for (cell, a) in column.iter_mut().zip(av) {
+                    *cell = vdotq_s32(*cell, a, bv);
                 }
             }
             p += 16;
@@ -473,15 +697,15 @@ unsafe fn harvest(
     out: &mut [i32],
     (r, n, k, kvec): (usize, usize, usize, usize),
     blk: usize,
-    accs: [[std::arch::aarch64::int32x4_t; I8_NR]; I8_MR],
+    accs: [[std::arch::aarch64::int32x4_t; I8_MR]; I8_NR],
 ) {
     use std::arch::aarch64::*;
     unsafe {
-        for nb in 0..I8_NR {
+        for (nb, column) in accs.iter().enumerate() {
             let jj = blk + nb;
             if jj < n {
-                for mr in 0..I8_MR {
-                    let mut s = vaddvq_s32(accs[mr][nb]);
+                for (mr, cell) in column.iter().enumerate() {
+                    let mut s = vaddvq_s32(*cell);
                     let mut q = kvec;
                     while q < k {
                         s += *ap.add(mr * k + q) as i32 * *bp.add(jj * k + q) as i32;
