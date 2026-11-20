@@ -747,18 +747,11 @@ kernel void kernel_main(device float* in [[buffer(0)]],
             cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-matmul-k4096"));
         let grid_msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "matmul_f32", M, N)
             .expect("标量网格 MSL 应能生成");
-        let tiled_msl =
-            cutile::execution::metal_tiled_gemm_program(&catalogue, &dirs, "matmul_f32", M, N, 16)
-                .expect("分块 MSL 应能生成");
-
         let grid_pipe = device.compile(&grid_msl).expect("标量网格 MSL 应能编译");
-        let tiled_pipe = device.compile(&tiled_msl).expect("分块 MSL 应能编译");
 
         let grid = [M as u32, N as u32, 1];
         queue.execute(&grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
         assert_matmul_matches("grid", &reference, y_buf.as_mut_bytes());
-        queue.execute(&tiled_pipe, &[&a_buf, &b_buf, &y_buf], grid, [16, 16, 1]);
-        assert_matmul_matches("tiled", &reference, y_buf.as_mut_bytes());
 
         let flop = 2.0 * (M * N * K) as f64;
         let grid_ns = measure(
@@ -768,19 +761,31 @@ kernel void kernel_main(device float* in [[buffer(0)]],
             grid,
             [1, 1, 1],
         );
-        let tiled_ns = measure(
-            &queue,
-            &tiled_pipe,
-            &[&a_buf, &b_buf, &y_buf],
-            grid,
-            [16, 16, 1],
-        );
         eprintln!(
-            "Metal 生产态 GEMM 256×256×4096：网格标量={grid_ns:.1} ns（{:.2} GFLOP/s） 分块={tiled_ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
+            "Metal 生产态 GEMM 256×256×4096：网格标量={grid_ns:.1} ns（{:.2} GFLOP/s）",
             flop / grid_ns,
-            flop / tiled_ns,
-            grid_ns / tiled_ns,
         );
+        for tile in [8usize, 16, 32] {
+            let msl = cutile::execution::metal_tiled_gemm_program(
+                &catalogue,
+                &dirs,
+                "matmul_f32",
+                M,
+                N,
+                tile,
+            )
+            .expect("分块 MSL 应能生成");
+            let pipe = device.compile(&msl).expect("分块 MSL 应能编译");
+            let block = [tile as u32, tile as u32, 1];
+            queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+            assert_matmul_matches("tiled", &reference, y_buf.as_mut_bytes());
+            let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+            eprintln!(
+                "  分块 tile={tile}：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
+                flop / ns,
+                grid_ns / ns,
+            );
+        }
     }
 
     /// 生产态分块注意力对照：同一份 `attention_f32`（S=512、D=64）分别经
