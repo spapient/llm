@@ -4,6 +4,33 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Changed
+
+- **对拍工具（`testkit::compare`）收成一条判据：读数只算一次，分母变成显式策略**。此前同一件事实有三处
+  各自实现：`max_rel_err` 与 `assert_within_rel` 各算一遍分母，`engine::metal_tests` 里还带着一份
+  per-element 判定——而它们要的其实只是**分母选哪条**。现在唯一实现是
+  `rel_err_with(got, want, Scale) -> RelErr { err, scale, worst }`：`RelErr` 只答「整批最大绝对误差 / 分母」
+  与这个分母自己的值，`Worst { index, got, want }` 只答「读数落在哪个元素」，`Scale` 只答
+  「分母按整批最大幅度（`Batch`）还是每元素留 1 的绝对地板（`Unit`）取」；`max_rel_err` / `within_ratio` /
+  `within_rel` / `assert_rel_with` 全部退成它的转发，比较仍只靠 `ratio()`。**阈值没有新增第二张表**：
+  `Scale::Batch` 仍与 `cutile::reference::max_rel_err` 同口径、由 `crates/testkit/tests/oracle.rs` 逐位钉住
+  （含全零参考、空批、次正规、三类非有限值），引擎真机基准仍用自己的 `1e-3`。**为什么需要两档**：
+  `engine::metal_tests` 的输出量级差四个数量级——GEMM 元素是上千项乘积之和（`1e1`–`1e4`），注意力输出是
+  softmax 权重乘 V 的和（`1e-4`）；整批分母会把注意力输出上 `1e-5` 的绝对差放大成 `1e0` 的相对误差，
+  那不是内核算错而是分母选错（本机真机复现过：两个注意力基准因此变红）。`Unit` 的每元素地板正是原来
+  引擎侧一直在用的口径，切回后 `metal_tiled_attention_s512` 与 `metal_flash_attention_long` 恢复绿。
+  **顺带两处收口**：`testkit` 里那份与 `cutile::reference` 逐字相同的 `nonfinite_match` 删除——非有限值
+  配对改走本文件已有的零容差相等判定（`close_scalar`），全仓复制粘贴复核时它正是唯一的克隆；
+  `rel_err_with` 与失败消息按「长度 → 分母 → 单元素读数 → 累加」拆成六个各答一问的短函数，静态质量门里
+  本文件零条目（原先 11 的圈复杂度与三处「直接 panic / 取空值」写法一并消失，失败文案逐字未变）。
+  **验证**：`llm-testkit` 56 条中 55 条通过（含 `the_two_denominators_differ_only_in_the_floor`：同一绝对差在
+  `Batch` 下放大两个数量级、在幅度大于 1 处反过来更严，钉住「两条是不同的问题而不是松紧两档」），唯一红灯
+  `every_public_type_is_listed_or_baselined` 指向并行会话新加的 `op` 类型（`Conv1d` / `Conv2d` / `Gru` /
+  `Lstm` / `Rnn` / 两族池化 / `SplitMix64`），不在本文件；对拍相关的 21 条单独复跑全绿。
+  `llm-engine` 的 `#[ignore]` 设备基准**真机 9/9**（含两个 int8 GEMM 与两个注意力基准）；全仓 `jscpd` 在本文件
+  收口后为 **0 克隆**（复跑时新出现的 8 处全在并行会话的 `op/src/{conv,rnn}.rs`，不属本轮）；
+  `docs/ARCHITECTURE.md` 的类型表同步为 `RelErr` / `Worst` / `Scale` 三行合一的说法。
+
 ### Added
 
 - **脉冲臂补上反传与量化感知训练（`lld.md` 第二十二步之后的执行侧收口）**。此前 `nn::spike` 只有

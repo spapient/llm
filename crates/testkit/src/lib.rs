@@ -1,6 +1,8 @@
 //! 测试约定：浮点对拍、真机门控、临时目录、随机数、位级 CRC 参考。**只作 dev-dependency**。
 //!
-//! **拥有**：`approx_eq`、`close`、`max_rel_err`、`within_rel`、`all_finite`、
+//! **拥有**：`approx_eq`、`close`、`max_rel_err`、`within_ratio`、`within_rel`、`rel_err`、
+//! `rel_err_with`、`RelErr`、`Worst`、`Scale`、`assert_within_rel`、`assert_rel_with`、
+//! `all_finite`、
 //! `cosine_similarity`、`COSINE_GUARD`（[`compare`]）；`device_enabled`、`device_or_skip`、
 //! `skip`、`skip_none`、`skip_count`、`skipped_reasons`（[`gating`]）；`scratch_dir`、
 //! `scratch_clean`（[`scratch`]）；
@@ -248,7 +250,8 @@ pub fn pack_codes(bits: usize, values: &[i8]) -> Vec<u8> {
 }
 
 pub use compare::{
-    COSINE_GUARD, all_finite, approx_eq, close, cosine_similarity, max_rel_err, within_rel,
+    COSINE_GUARD, RelErr, Scale, Worst, all_finite, approx_eq, assert_rel_with, assert_within_rel,
+    close, cosine_similarity, max_rel_err, rel_err, rel_err_with, within_ratio, within_rel,
 };
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
 pub use hash::{assert_table_matches_bitwise, crc32_bitwise};

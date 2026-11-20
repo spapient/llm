@@ -38,5 +38,9 @@ path = "tests/architecture.rs"
 name = "l3"
 path = "tests/l3.rs"
 
+[[test]]
+name = "oracle"
+path = "tests/oracle.rs"
+
 [lints]
 workspace = true

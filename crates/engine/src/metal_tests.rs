@@ -959,20 +959,24 @@ fn as_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|f| f.to_ne_bytes()).collect()
 }
 
+/// 设备输出与 CPU 参考对拍：阈值 1e-3，分母按每元素 `max(|want|, 1)`（[`testkit::Scale::Unit`]）。
+///
+/// 这里选 `Unit` 而非夹具层默认的整批口径，是因为本文件的输出量级差得远：GEMM 的元素是上百上千项
+/// 乘积之和，量级在 1 以上；注意力输出是 softmax 权重乘 V 的和，整批最大幅度只有 1e-4 量级。
+/// 整批口径会把注意力输出上 1e-5 的绝对差放大成 1e0 的相对误差，那不是「算错了」而是「分母选错了」。
+/// `Unit` 给每元素留 1 的绝对地板，正对这两类输出的共同下限；最差元素的下标与两侧取值仍由夹具层报出。
 fn assert_matmul_matches(label: &str, reference: &[f32], output: &[u8]) {
     let (chunks, _) = output.as_chunks::<4>();
-    let mut max_rel = 0.0f32;
-    for (got, want) in chunks
+    let got: Vec<f32> = chunks
         .iter()
-        .map(|c| f32::from_ne_bytes(*c))
-        .zip(reference.iter())
-    {
-        let denom = want.abs().max(1.0f32);
-        max_rel = max_rel.max((got - want).abs() / denom);
-    }
-    assert!(
-        max_rel < 1e-3,
-        "{label} GPU 输出与 CPU 参考偏差过大：max_rel_err={max_rel}"
+        .map(|chunk| f32::from_ne_bytes(*chunk))
+        .collect();
+    testkit::assert_rel_with(
+        testkit::Scale::Unit,
+        &got,
+        reference,
+        1e-3,
+        &format!("{label} 的 GPU 输出与 CPU 参考"),
     );
 }
 
