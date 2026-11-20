@@ -9,7 +9,8 @@ use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
 use engine::kv::{Cache, Pager};
 use engine::{Batch, Scheduler, Sequence};
 use nn::{
-    Add, AttentionAlgo, AttentionBlock, Embedding, Linear, Mul, RmsNorm, Silu, Stack, WeightFormat,
+    Add, AttentionAlgo, AttentionBlock, Embedding, Linear, MemoryBlock, Mul, RmsNorm, Silu, Stack,
+    WeightFormat,
 };
 use testkit::{all_finite, close, pack_codes, safetensors_bytes, scratch_dir};
 use tokenizer::{Bytes, Tokenizer};
@@ -1551,6 +1552,131 @@ fn logits_batch_runs_two_sequences_through_the_flat_projection_chain() {
 
     assert_close(&rows[0], &reference_row(&table, &w, 2, dim));
     assert_close(&rows[1], &reference_row(&table, &w, 5, dim));
+}
+
+/// 查表 → 条件记忆：主链宽度 `dim`，表槽数 `buckets`，尾部 `order`-gram 按 `gate` 加回。
+fn memory_stack(
+    vocab: usize,
+    dim: usize,
+    order: usize,
+    seed: u64,
+    buckets: usize,
+    gate: f32,
+) -> Stack {
+    Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", vocab, dim, 1).expect("身份嵌入")),
+        Box::new(MemoryBlock::new("mem", dim, order, seed, buckets, gate).expect("条件记忆")),
+    ])
+    .expect("两层栈")
+}
+
+/// 串行参考：主链查表一行；历史够阶时再按槽加回门控后的表行，与装配侧三节点同序。
+///
+/// 累加次序固定为「先主链、后记忆」：装配图里记忆节点读的是主链的**输出**，两者不可交换。
+// 测试参考实现：几何与数据同为入参，拆结构体只会让调用点更长。
+#[allow(clippy::too_many_arguments)]
+fn memory_reference(
+    token: u32,
+    history: &[u32],
+    table: &[f32],
+    memory_table: &[f32],
+    order: usize,
+    seed: u64,
+    buckets: usize,
+    gate: f32,
+    dim: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0; dim];
+    op::embed_f32::forward(&[token as f32], table, &mut out).expect("参考查表");
+    let Some(slot) = nn::slot_of(history, order, seed, buckets) else {
+        return out;
+    };
+    for (at, value) in out.iter_mut().enumerate() {
+        *value += gate * memory_table[slot * dim + at];
+    }
+    out
+}
+
+/// 条件记忆层不能作首层：要加回的是主链已有的隐向量，没有主链就没有可加的东西。
+#[test]
+fn a_memory_layer_cannot_open_the_stack() {
+    let stack = Stack::of(vec![Box::new(
+        MemoryBlock::new("mem", 2, 2, 7, 11, 1.0).expect("层"),
+    )])
+    .expect("栈");
+
+    rejected_at_assembly(stack, Params::new(), Code::Invalid);
+}
+
+/// 记忆行宽与主链宽度不符：装配期报 `Invalid`，不靠运行期逐元素对不上才发现。
+#[test]
+fn a_memory_width_mismatch_is_rejected_at_assembly() {
+    let stack = Stack::of(vec![
+        Box::new(Embedding::new("tok_emb", 8, 2, 1).expect("层")),
+        Box::new(MemoryBlock::new("mem", 4, 2, 7, 11, 1.0).expect("层")),
+    ])
+    .expect("栈");
+    let params = params_of(&[
+        ("tok_emb.weight", embed_table(8, 2)),
+        ("mem.weight", vec![0.0; 11 * 4]),
+    ]);
+
+    rejected_at_assembly(stack, params, Code::Invalid);
+}
+
+/// 条件记忆旁路：历史达到阶才按槽加回门控行，历史不足时门控压成零、主链逐位不变。
+#[test]
+fn memory_bypass_adds_the_gated_row_only_once_history_reaches_the_order() {
+    let (vocab, dim, order, seed, buckets, gate) = (8usize, 2usize, 2usize, 7u64, 11usize, 1.0f32);
+    let table = embed_table(vocab, dim);
+    let slot = nn::slot_of(&[3, 5], order, seed, buckets).expect("历史够阶");
+    let mut memory_table = vec![0.0f32; buckets * dim];
+    memory_table[slot * dim] = 1.5;
+    memory_table[slot * dim + 1] = -2.0;
+
+    let params = params_of(&[
+        ("tok_emb.weight", table.clone()),
+        ("mem.weight", memory_table.clone()),
+    ]);
+    let mut model = assemble(memory_stack(vocab, dim, order, seed, buckets, gate), params);
+
+    let long = Sequence::new(0, &[3u32, 5], 2, 16, Stream::new(0)).expect("两 token 序列");
+    let produced = model
+        .logits(&long, &mut plain_batch())
+        .expect("历史够阶：记忆加回");
+    assert_close(
+        &produced,
+        &memory_reference(
+            5,
+            &[3, 5],
+            &table,
+            &memory_table,
+            order,
+            seed,
+            buckets,
+            gate,
+            dim,
+        ),
+    );
+
+    let short = Sequence::new(1, &[5u32], 2, 16, Stream::new(0)).expect("单 token 序列");
+    let produced = model
+        .logits(&short, &mut plain_batch())
+        .expect("历史不足：不加记忆");
+    assert_close(
+        &produced,
+        &memory_reference(
+            5,
+            &[5],
+            &table,
+            &memory_table,
+            order,
+            seed,
+            buckets,
+            gate,
+            dim,
+        ),
+    );
 }
 
 /// 投影首层走向量主链占位：Predict 用零向量作隐向量输入，与显式零向量张量级 forward 一致。

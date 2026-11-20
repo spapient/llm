@@ -52,6 +52,23 @@ pub(crate) struct Assembly {
     pub(crate) rope_pos_table: Option<u32>,
     /// attention ragged 段长表缓冲编号（ADR 0046 §8）：全模型共享，批形态每步覆写；无块时 `None`。
     pub(crate) hist_len_table: Option<u32>,
+    /// 条件记忆层接线记录：宿主每步按它覆写槽表与门控缓冲，再加回主链。
+    pub(crate) memories: Vec<MemoryBinding>,
+}
+
+/// 一条条件记忆层的运行时绑定：该层专有的槽表与门控缓冲编号，加装配期定下的四元几何。
+///
+/// 表本身走 [`Assembly::weights`] 同一份台账；这里只留“每步要覆写哪两块缓冲”与“按什么算槽”。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MemoryBinding {
+    /// 槽表缓冲编号：每行一个槽号，每步覆写。
+    pub(crate) slots: u32,
+    /// 门控缓冲编号：逐元素 `γ`，不入表的行为 0，每步覆写。
+    pub(crate) gate: u32,
+    /// 装配期定下的阶 / 种子 / 槽数 / 门控。
+    pub(crate) spec: crate::plan::MemorySpec,
+    /// 每行宽度（门控缓冲长度 `= 行数 × width`）。
+    pub(crate) width: usize,
 }
 
 impl Assembly {
@@ -134,6 +151,8 @@ pub(crate) struct NodeSink<'a> {
     pub(crate) rope_pos_table: &'a mut Option<u32>,
     /// attention 段长表编号：遇到块时懒分配，全模型共享一张。
     pub(crate) hist_len_table: &'a mut Option<u32>,
+    /// 条件记忆层接线记录：逐层追加，宿主每步按它回填槽表与门控。
+    pub(crate) memories: &'a mut Vec<MemoryBinding>,
 }
 
 impl<'a> NodeSink<'a> {
@@ -161,12 +180,7 @@ impl<'a> NodeSink<'a> {
         self.bind_entry(&mut node, plan)?;
         node.bind_output(output_id);
         self.graph.push(node);
-        self.activations.push((output_id, plan.out_features));
-        self.descriptors.push(BindingDesc {
-            id: output_id,
-            entry: None,
-            shape: vec![plan.out_features],
-        });
+        self.register_activation(output_id, plan.out_features);
         if plan.kind == LayerKind::Rope {
             self.rope.push(output_id);
         }
@@ -192,6 +206,98 @@ impl<'a> NodeSink<'a> {
         self.graph.push(node);
         self.activations.push((output, out_len));
         Ok(output)
+    }
+
+    /// 登记一个等长激活：台账长度 + 描述表单轴形状，一处定义。
+    fn register_activation(&mut self, id: u32, width: usize) {
+        self.activations.push((id, width));
+        self.descriptors.push(BindingDesc {
+            id,
+            entry: None,
+            shape: vec![width],
+        });
+    }
+
+    /// 发一个逐元素双输入节点（两路等长），返回输出编号；描述表按单轴宽度登记。
+    fn emit_pair(&mut self, operator: &str, lhs: u32, rhs: u32, width: usize) -> Result<u32> {
+        let output = self.emit(
+            operator,
+            Launch::new([1, 1, 1], [width as u32, 0, 1]),
+            &[lhs, rhs],
+            width,
+        )?;
+        self.descriptors.push(BindingDesc {
+            id: output,
+            entry: None,
+            shape: vec![width],
+        });
+        Ok(output)
+    }
+
+    /// 条件记忆层接三节点：查表 `[槽表, 表] → [width]`、逐元素门控缩放、加回主链。
+    ///
+    /// 表是驻留权重，走 [`Self::bind_weight`] 同一份台账；槽表与门控缓冲是该层专有的批表，
+    /// 宿主每步覆写（图结构不变）。门是**乘**而不是选路：γ = 0 时加回的是零向量，主链逐位不变，
+    /// 与 `nn::engram::Bypass` 返回“这一行没有记忆”同一结果。
+    pub(crate) fn push_memory(
+        &mut self,
+        prev: u32,
+        plan: &LayerPlan,
+        spec: crate::plan::MemorySpec,
+    ) -> Result<u32> {
+        let entry = Self::memory_entry(plan)?;
+        let tables = self.alloc_memory_tables()?;
+        let output = self.memory_chain(prev, plan, entry, tables)?;
+        self.memories.push(MemoryBinding {
+            slots: tables.0,
+            gate: tables.1,
+            spec,
+            width: plan.out_features,
+        });
+        Ok(output)
+    }
+
+    /// 条件记忆层的驻留表条目名：装配期已校验必有。
+    fn memory_entry(plan: &LayerPlan) -> Result<&str> {
+        plan.entry
+            .as_deref()
+            .ok_or_else(|| Error::new(Code::Internal, "条件记忆层必有驻留表条目").with(SITE))
+    }
+
+    /// 该层专有的两张批表：槽表与门控缓冲，宿主每步覆写。
+    fn alloc_memory_tables(&mut self) -> Result<(u32, u32)> {
+        Ok((self.alloc_table()?, self.alloc_table()?))
+    }
+
+    /// 三节点接线：查表 → 门控缩放 → 加回主链，返回末节点编号。
+    fn memory_chain(
+        &mut self,
+        prev: u32,
+        plan: &LayerPlan,
+        entry: &str,
+        tables: (u32, u32),
+    ) -> Result<u32> {
+        let (table_slots, gate) = tables;
+        let width = plan.out_features;
+        let gathered = self.emit_gather(plan, entry, table_slots)?;
+        let scaled = self.emit_pair(nn::MemoryBlock::SCALE, gathered, gate, width)?;
+        self.emit_pair(nn::MemoryBlock::RESIDUAL, prev, scaled, width)
+    }
+
+    /// 查表节点：槽表 + 驻留表 → `[width]`，建节点、绑权重、登记激活一处完成。
+    fn emit_gather(&mut self, plan: &LayerPlan, entry: &str, slots: u32) -> Result<u32> {
+        let width = plan.out_features;
+        let gathered = self.slots.activation()?;
+        let mut node = Node::new(
+            nn::MemoryBlock::EMBED.to_string(),
+            Launch::new([1, 1, 1], [width as u32, 1, 1]),
+        );
+        node.bind_input(slots);
+        self.bind_weight(&mut node, entry, &plan.weight_shape, None, &[])?;
+        node.bind_output(gathered);
+        self.graph.push(node);
+        self.register_activation(gathered, width);
+        Ok(gathered)
     }
 
     /// 驻留权重 + 可选标度的输入与台账：打包字节 / 标度各占一个编号，都挂进节点输入
@@ -340,13 +446,39 @@ fn advance_layer(
     params: &Params,
 ) -> Result<(u32, usize, usize, LayerKind)> {
     let plan = crate::plan::layer_plan(layer, prev_out, params)?;
+    let next = attach(sink, prev, &plan, held, layer.name())?;
+    Ok((next, plan.in_features, plan.out_features, plan.kind))
+}
+
+/// 按计划接线：记忆层走三节点旁路，其余层出单节点。
+fn attach(
+    sink: &mut NodeSink<'_>,
+    prev: u32,
+    plan: &LayerPlan,
+    held: Option<(u32, usize)>,
+    name: &str,
+) -> Result<u32> {
+    let Some(spec) = plan.memory else {
+        return push_single(sink, prev, plan, held, name);
+    };
+    // 记忆层是三节点旁路：不走单节点通路，也不占用与二元层共享的 held 衔接。
+    sink.push_memory(prev, plan, spec)
+}
+
+/// 单节点通路：二元层先取旁路第二输入槽，再出节点。
+fn push_single(
+    sink: &mut NodeSink<'_>,
+    prev: u32,
+    plan: &LayerPlan,
+    held: Option<(u32, usize)>,
+    name: &str,
+) -> Result<u32> {
     let bypass = plan
         .kind
         .needs_bypass()
-        .then(|| bypass_input(layer.name(), plan.out_features, held))
+        .then(|| bypass_input(name, plan.out_features, held))
         .transpose()?;
-    let next = sink.push_node(prev, &plan, bypass)?;
-    Ok((next, plan.in_features, plan.out_features, plan.kind))
+    sink.push_node(prev, plan, bypass)
 }
 
 /// 取二元层的旁路第二输入槽；无持有激活或宽度不符时返回 [`Code::Invalid`]。
@@ -387,6 +519,7 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     let mut rope = Vec::new();
     let mut rope_pos_table = None;
     let mut hist_len_table = None;
+    let mut memories = Vec::new();
     let mut slots = Slots::new();
     let mut sink = NodeSink {
         graph: &mut graph,
@@ -398,6 +531,7 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
         slots: &mut slots,
         rope_pos_table: &mut rope_pos_table,
         hist_len_table: &mut hist_len_table,
+        memories: &mut memories,
     };
     let (input_len, output_len, output, input_kind) = chain(layers, params, &mut sink)?;
 
@@ -415,6 +549,7 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
         rope,
         rope_pos_table,
         hist_len_table,
+        memories,
     };
     assembly.check_descriptors(params)?;
     Ok(assembly)

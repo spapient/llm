@@ -4,7 +4,7 @@
 //! 图节点收口在 [`crate::assembly`](crate::assembly)，注意力块子节点在 [`crate::block`](crate::block)。
 
 use diagnostic::{Code, Error, Result};
-use nn::{Contract, Embedding, Linear, Shape, WEIGHT_SUFFIX, WeightFormat};
+use nn::{Contract, Embedding, Linear, MemoryBlock, Shape, WEIGHT_SUFFIX, WeightFormat};
 use op::quant::{I4, I8};
 
 use crate::kernels::SITE;
@@ -27,6 +27,11 @@ pub(crate) enum LayerKind {
     Binary,
     /// 位置编码：单路输入 → 等长输出；位置走标量槽（D9 / ADR 0043），无驻留权重。
     Rope,
+    /// 条件记忆：主链输入 + 驻留表 `[buckets, width]` + 逐行槽号 → 等长输出（旁路加回）。
+    ///
+    /// 与其他族不同，它**不是单节点**：查表 → 门控缩放 → 加回主链三个节点在
+    /// [`crate::assembly`](crate::assembly) 接线，槽号与门控是宿主每步回填的批表。
+    Memory,
 }
 
 impl LayerKind {
@@ -34,7 +39,9 @@ impl LayerKind {
     fn chain_width(self, plan: &LayerPlan) -> usize {
         match self {
             Self::Projection | Self::Embedding => plan.in_features,
-            Self::Unary | Self::Norm | Self::Binary | Self::Rope => plan.out_features,
+            Self::Unary | Self::Norm | Self::Binary | Self::Rope | Self::Memory => {
+                plan.out_features
+            }
         }
     }
 
@@ -97,6 +104,24 @@ pub(crate) struct LayerPlan {
     pub(crate) scales_shape: Vec<usize>,
     /// 量化标度条目名；非量化投影为 `None`。
     pub(crate) scale_entry: Option<String>,
+    /// 条件记忆的旁路几何；只有记忆族有，其余族为 `None`。
+    pub(crate) memory: Option<MemorySpec>,
+}
+
+/// 条件记忆的旁路几何：行宽已进 [`LayerPlan`]，这里只留“查哪一行、加多少”的四个数。
+///
+/// 阶与种子是槽函数的参数，与表槽数一起交给宿主回填槽表——只要有一个不是装配期定的，
+/// 旁路算出的槽就与写表时的槽不是同一个。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MemorySpec {
+    /// N-gram 阶 `N`。
+    pub(crate) order: usize,
+    /// 槽哈希种子。
+    pub(crate) seed: u64,
+    /// 表槽数 `M`（也是驻留表行数）。
+    pub(crate) buckets: usize,
+    /// 门控强度 `γ`：历史不足 `order` 时宿主写 0，加回零向量。
+    pub(crate) gate: f32,
 }
 
 /// 投影层必须能推出已注册算子名（F32 稠密或分组匹配内核的 int4/int8）；其余在此拒绝。
@@ -259,6 +284,7 @@ fn build_plan(
         weight_shape,
         scales_shape: Vec::new(),
         scale_entry: None,
+        memory: None,
     }
 }
 
@@ -398,34 +424,84 @@ fn embedding_plan(
     Ok(plan)
 }
 
-/// 一层的装配分流：类型视图（投影/查表）优先；都不是再按算子族别归类。归约、注意力在本通路
+/// 条件记忆计划：主链宽度不变，驻留条目是表 `[buckets, width]`，输出与输入等宽。
+///
+/// 首层直接拒绝：旁路要加回的是**主链上已有的隐向量**，没有主链就没有可加的东西；把它当
+/// “恒等 + 记忆”跑起来会让整段容量投在零向量上而不报错。
+fn memory_plan(
+    layer: &dyn Contract,
+    memory: &MemoryBlock,
+    prev_out: Option<usize>,
+    params: &Params,
+) -> Result<LayerPlan> {
+    if prev_out.is_none() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "层 `{}` 是条件记忆层，不能作首层：没有主链隐向量可加回",
+                layer.name()
+            ),
+        )
+        .with(SITE));
+    }
+    let width = memory.width();
+    let mut plan = build_plan(
+        LayerKind::Memory,
+        first_operator(layer)?.to_string(),
+        Some(entry_name(layer)),
+        width,
+        width,
+        vec![memory.buckets(), width],
+    );
+    plan.memory = Some(MemorySpec {
+        order: memory.order(),
+        seed: memory.seed(),
+        buckets: memory.buckets(),
+        gate: memory.gate(),
+    });
+    check_plan(prev_out, &plan, layer.name(), params)?;
+    Ok(plan)
+}
+
+/// 一层的装配分流：类型视图（投影/查表/条件记忆）优先；都不是再按算子族别归类。归约、注意力在本通路
 /// 不接线（KV 通路随注意力刀落地）。
 pub(crate) fn layer_plan(
     layer: &dyn Contract,
     prev_out: Option<usize>,
     params: &Params,
 ) -> Result<LayerPlan> {
-    if let Some(plan) = view_plan(layer, prev_out, params)? {
-        return Ok(plan);
-    }
-    operator_plan(layer, prev_out, params)
+    let Some(plan) = view_plan(layer, prev_out, params)? else {
+        return operator_plan(layer, prev_out, params);
+    };
+    Ok(plan)
 }
 
-/// 类型视图层：能取到 `Linear` / `Embedding` 类型化视图的层出计划；都不是返回 `Ok(None)`。
+/// 类型视图层：能取到 `Linear` / `Embedding` / `MemoryBlock` 类型化视图的层出计划；都不是返回 `Ok(None)`。
 fn view_plan(
     layer: &dyn Contract,
     prev_out: Option<usize>,
     params: &Params,
 ) -> Result<Option<LayerPlan>> {
-    if let Some(linear) = layer.linear() {
-        let plan = projection_plan(layer, linear, prev_out, params)?;
-        return Ok(Some(plan));
+    match layer.linear() {
+        Some(linear) => projection_plan(layer, linear, prev_out, params).map(Some),
+        None => lookup_plan(layer, prev_out, params),
     }
+}
+
+/// 查表与条件记忆：两者都只挂一个驻留条目，按「查表优先」次序回答（同一层不会同时声明两视图）。
+fn lookup_plan(
+    layer: &dyn Contract,
+    prev_out: Option<usize>,
+    params: &Params,
+) -> Result<Option<LayerPlan>> {
     if let Some(emb) = layer.embedding() {
         let plan = embedding_plan(layer, emb, prev_out, params)?;
         return Ok(Some(plan));
     }
-    Ok(None)
+    let Some(memory) = layer.memory() else {
+        return Ok(None);
+    };
+    memory_plan(layer, memory, prev_out, params).map(Some)
 }
 
 /// 算子族别层：按 [`OPERATOR_FAMILIES`] 归类等长族；其余族别报 [`Code::Unsupported`]。
@@ -439,7 +515,7 @@ fn operator_plan(
         return Err(Error::new(
             Code::Unsupported,
             format!(
-                "层 `{}` 的算子 `{operator}` 不在当前装配族别（投影/查表/一元点wise/归一化/二元/位置编码）",
+                "层 `{}` 的算子 `{operator}` 不在当前装配族别（投影/查表/条件记忆/一元点wise/归一化/二元/位置编码）",
                 layer.name()
             ),
         )
