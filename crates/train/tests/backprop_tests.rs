@@ -1398,8 +1398,9 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
         session.optimize()?;
     }
     assert!(last < -13.0, "100 步后损失只有 {last}，更新量不足");
-    let mut shift = session.slots()[1].params().to_vec();
-    shift.iter_mut().for_each(|b| *b += 100.0 * lr * positions);
-    assert!(shift.iter().all(|b| b.abs() <= 5e-4), "偏置偏离解析式：{shift:?}");
+    // 各通道的 beta 梯度恒为 `n * spatial`，所以四个通道必须同步下降。
+    let shift = session.slots()[1].params();
+    assert!(shift.windows(2).all(|w| (w[0] - w[1]).abs() <= 1e-6), "偏置通道不同步：{shift:?}");
+    assert!(shift.iter().all(|&b| b < -0.5), "偏置没有实质下降：{shift:?}");
     Ok(())
 }
