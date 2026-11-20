@@ -96,4 +96,5 @@ pub use scheduler::Scheduler;
 pub use sequence::{Progress, Sequence, State};
 
 #[cfg(test)]
+#[path = "../tests/engine.rs"]
 mod tests;

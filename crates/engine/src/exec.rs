@@ -1020,5 +1020,5 @@ impl Executor for CpuExecutor {
 }
 
 #[cfg(test)]
-#[path = "exec_tests.rs"]
+#[path = "../tests/exec.rs"]
 mod tests;

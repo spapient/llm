@@ -795,15 +795,19 @@ fn int8_gemm_msl(n: usize, k: usize, tile: usize) -> String {
     )
 }
 
-/// 生产态张量核心 GEMM（Metal 4 的 `mpp::tensor_ops::matmul2d`）：一个 `tile × tile` 输出块由
-/// `32·simdgroups` 个线程协同算完，规约轴按 `k_tile` 切片。
+/// 生产态张量核心 GEMM（Metal 4 的 `mpp::tensor_ops::matmul2d`）：一个 `tile_m × tile_n`
+/// 输出块由 `32·simdgroups` 个线程协同算完，规约轴按 `k_tile` 切片。
 ///
 /// 语义与模板逐元素相同（`Y[i][j] = Σ_p A[i][p]·B[p][j]`），但乘加走 GPU 的矩阵乘单元而不是
-/// 标量 FMA。前置条件由调用方保证：`M % tile == 0`；B 必须是**布局前置过的** `N×K` half
+/// 标量 FMA。前置条件由调用方保证：`M % tile_m == 0`；B 必须是**布局前置过的** `N×K` half
 /// （见 [`metal_transpose_half`]），A 仍是 `M×K` 的 f32 行主序。
 ///
-/// 派发几何：线程组 `(tile/NRN, ·)` 按 `[N/tile, M/tile]` 铺开，组内 `32·SG` 个线程；
-/// `tgp.x` 是输出列块、`tgp.y` 是输出行块。
+/// 输出块取矩形而非方阵：线程组内存只被 N 方向跨度占用（B 片是 `tile_n × k_tile`），把 M 方向
+/// 压小就换来同尺寸共享内存下两倍的线程组数，尾部波次更满、延迟隐藏更好——这也是线程组资源
+/// 不变还能提高占用率的关键。
+///
+/// 派发几何：线程组按 `[N/tile_n, M/tile_m]` 铺开，组内 `32·SG` 个线程；`tgp.x` 是输出列块、
+/// `tgp.y` 是输出行块。
 ///
 /// # Errors
 ///
@@ -812,34 +816,38 @@ pub fn metal_tensor_gemm(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,
-    tile: usize,
+    tile_m: usize,
+    tile_n: usize,
     k_tile: usize,
     simdgroups: usize,
 ) -> Result<String> {
     let (a, b, y) = gemm_buffers(signature)?;
     let (m, n, k) = gemm_dims(signature, sample)?;
-    check_tensor_geometry(m, n, k, tile, k_tile, simdgroups)?;
-    Ok(tensor_gemm_msl(a, b, y, m, n, k, tile, k_tile, simdgroups))
+    check_tensor_geometry(m, n, k, tile_m, tile_n, k_tile, simdgroups)?;
+    Ok(tensor_gemm_msl(
+        a, b, y, m, n, k, tile_m, tile_n, k_tile, simdgroups,
+    ))
 }
 
 /// 张量核路径的报错出处。
 const TENSOR_SITE: &str = "engine::tiled::metal_tensor_gemm";
 
-/// 张量核 GEMM 的几何前提：输出块尺寸、规约块尺寸、simdgroup 数，以及 R 维必须整块对齐。
+/// 张量核 GEMM 的几何前提：输出块的行/列跨度、规约块尺寸、simdgroup 数，以及 M 维必须整块对齐。
 ///
-/// `M % tile == 0` 是硬约束：`matmul2d` 按整块读 A，尾块会把设备缓冲读越界（N 维不必对齐，
+/// `M % tile_m == 0` 是硬约束：`matmul2d` 按整块读 A，尾块会把设备缓冲读越界（N 维不必对齐，
 /// 装载阶段零填、写回按 `min` 裁边）。
 fn check_tensor_geometry(
     m: usize,
     n: usize,
     k: usize,
-    tile: usize,
+    tile_m: usize,
+    tile_n: usize,
     k_tile: usize,
     simdgroups: usize,
 ) -> Result<()> {
     let bad = |why: &str| Err(Error::new(Code::Invalid, why).with(TENSOR_SITE));
-    if !matches!(tile, 64 | 128) {
-        return bad("张量核输出块必须是 64 或 128");
+    if !matches!(tile_m, 64 | 128) || !matches!(tile_n, 64 | 128) {
+        return bad("张量核输出块的行/列跨度都必须是 64 或 128");
     }
     if k_tile < 32 || !k_tile.is_multiple_of(16) {
         return bad("张量核规约块必须是 ≥32 的 16 的倍数（装载按 16 元素一组）");
@@ -847,12 +855,12 @@ fn check_tensor_geometry(
     if !matches!(simdgroups, 4 | 8) {
         return bad("张量核 simdgroup 数必须是 4 或 8");
     }
-    // 共享内存按 half 存 B 片，超过 32 KiB 的线程组内存设备直接拒绝编译。
-    if tile * (k_tile + 4) * 2 > 32 * 1024 {
+    // 共享内存按 half 存 B 片，只被 N 方向跨度占用；超过 32 KiB 的设备线程组内存直接拒绝编译。
+    if tile_n * (k_tile + 4) * 2 > 32 * 1024 {
         return bad("张量核 B 片超出 32 KiB 线程组内存");
     }
-    if m == 0 || n == 0 || k == 0 || !m.is_multiple_of(tile) {
-        return bad("张量核要求 M 是输出块的正整数倍，且 N/K 非零");
+    if m == 0 || n == 0 || k == 0 || !m.is_multiple_of(tile_m) {
+        return bad("张量核要求 M 是输出块行跨度的正整数倍，且 N/K 非零");
     }
     Ok(())
 }

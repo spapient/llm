@@ -3,6 +3,7 @@
 //! 调用点（都以 `#[path]` 取用本文件）：
 //!
 //! - `crates/cutile/src/harness.rs`：只测 C 宿主基准封装把样本渲染成数组、把签名拼成调用；
+//! - `crates/engine/src/program.rs`：测「声明 → 并行程序」装配，拿同一份签名/样本覆盖可拒绝族；
 //! - `crates/engine/tests/schedule.rs`：测 vendor 生产态 lowering 的源文本（`__device__` /
 //!   `kernel_main` / `<<<1, 1>>>` 一类判据）。
 //!

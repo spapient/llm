@@ -1000,5 +1000,5 @@ pub fn install() {
 }
 
 #[cfg(test)]
-#[path = "backends_tests.rs"]
+#[path = "../tests/backends.rs"]
 mod tests;

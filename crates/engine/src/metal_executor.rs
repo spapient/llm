@@ -621,5 +621,5 @@ impl Executor for MetalExecutor {
 }
 
 #[cfg(test)]
-#[path = "metal_tests.rs"]
+#[path = "../tests/metal_executor.rs"]
 mod tests;

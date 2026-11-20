@@ -1074,8 +1074,8 @@ fn metal_tensor_gemm() {
 
     // 形状只放开 M/N：`matmul_f32` 的规约轴由算子语义固定为 4096。
     let shapes = [(512, 512, 4096), (1024, 1024, 4096), (2048, 2048, 4096), (4096, 4096, 4096)];
-    // 候选几何：输出块 / 规约块 / simdgroup 数。
-    let geometries = [(64, 64, 4), (64, 64, 8), (128, 64, 8), (128, 96, 8)];
+    // 候选几何：输出块 / 规约块 / simdgroup 数。小形状取 64 块，大形状取 128 块。
+    let geometries = [(64, 64, 4), (128, 96, 8), (128, 64, 8)];
 
     for (m, n, k) in shapes {
         let (a, b) = matmul_values(m, n, k);
@@ -1152,6 +1152,103 @@ fn metal_tensor_gemm() {
             println!(
                 "张量核 {m}×{n}×{k} {label}: {:.3} ms → {gflops:.0} GF/s（最差 {:.0}）",
                 ns / 1e6,
+                2.0 * (m * n * k) as f64 / slot[slot.len() - 1]
+            );
+        }
+    }
+}
+
+/// 张量核 GEMM **内核**微基准：立方形状（K=N=M），与 llm.u `docs/perf.md` 的 8409 GF/s 同口径。
+///
+/// 生产算子 `matmul_f32` 把规约轴固定为 4096，立方形状无法由算子样本表达；这里自建签名与样本直接
+/// 调内核生成器——测的是内核本身，不是算子装配。运行：
+/// `cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture`
+#[test]
+#[ignore = "Metal 张量核立方 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture"]
+fn metal_tensor_kernel_gemm() {
+    use op::model::Sample;
+    use op::sig::Signature;
+
+    let Some((device, queue)) = bench_device("张量核立方 GEMM") else {
+        return;
+    };
+    let declaration =
+        "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
+    let signature = Signature::parse("bench", declaration).expect("自建签名应能解析");
+    // 128·96·8 是 llm.u 的生产档；64·64·4 在小形状上并行度更好。
+    let geometries = [(128, 96, 8), (64, 64, 4), (128, 64, 8)];
+
+    for (m, n, k) in [(1024, 1024, 1024), (2048, 2048, 2048), (4096, 4096, 4096)] {
+        let sample = Sample {
+            m,
+            n,
+            scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
+            buffers: Vec::new(),
+        };
+        let (a, b) = matmul_values(m, n, k);
+        let a_buf = upload(&device, &a, "A");
+        let b_buf = upload(&device, &b, "B");
+        let bt_buf = device.new_buffer(n * k * 2).expect("Bt 缓冲");
+        let mut y_buf = output_buffer(&device, m * n, "Y");
+        let transpose = crate::tiled::metal_transpose_half(k, n).expect("转置 MSL 应能生成");
+        let transpose = device.compile(&transpose).expect("转置 MSL 应能编译");
+        assert!(
+            queue.execute(
+                &transpose,
+                &[&b_buf, &bt_buf],
+                [(n as u32).div_ceil(32) * 32, (k as u32).div_ceil(32) * 8, 1],
+                [32, 8, 1],
+            ),
+            "转置派发应成功"
+        );
+
+        let reference = (m <= 1024).then(|| {
+            cpu_matmul(
+                &a.iter().copied().map(half_precision).collect::<Vec<f32>>(),
+                &b.iter().copied().map(half_precision).collect::<Vec<f32>>(),
+                m,
+                n,
+                k,
+            )
+        });
+
+        let mut pipes = Vec::new();
+        for (tile, k_tile, simdgroups) in geometries {
+            let msl =
+                crate::tiled::metal_tensor_gemm("bench", &signature, &sample, tile, k_tile, simdgroups)
+                    .expect("张量核 MSL 应能生成");
+            let pipe = device.compile(&msl).expect("张量核 MSL 应能编译");
+            let grid = [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1];
+            let block = [32, simdgroups as u32, 1];
+            assert!(
+                queue.execute(&pipe, &[&a_buf, &bt_buf, &y_buf], grid, block),
+                "GEMM 派发应成功"
+            );
+            let label = format!("{tile}·{k_tile}·{simdgroups}");
+            let error = reference.as_ref().map_or(f64::NAN, |want| {
+                assert_relaxed_matches(
+                    &format!("张量核立方 {m}³ {label}"),
+                    want,
+                    y_buf.as_mut_bytes(),
+                )
+            });
+            println!("张量核立方 {m}³ {label} 误差 {error:.2e}");
+            pipes.push((label, pipe, grid, block));
+        }
+
+        let mut passes = vec![Vec::new(); pipes.len()];
+        for _ in 0..3 {
+            for (slot, (_, pipe, grid, block)) in passes.iter_mut().zip(&pipes) {
+                slot.push(measure(&queue, pipe, &[&a_buf, &bt_buf, &y_buf], *grid, *block));
+            }
+        }
+        for (slot, (label, _, _, _)) in passes.iter_mut().zip(&pipes) {
+            slot.sort_by(f64::total_cmp);
+            let ns = slot[slot.len() / 2];
+            println!(
+                "张量核立方 {m}³ {label}: {:.3} ms → {:.0} GF/s（最差 {:.0}）",
+                ns / 1e6,
+                2.0 * (m * n * k) as f64 / ns,
                 2.0 * (m * n * k) as f64 / slot[slot.len() - 1]
             );
         }
