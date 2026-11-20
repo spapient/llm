@@ -1366,27 +1366,38 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
         &tape,
         &[(x, len), (gamma, channels), (beta, channels), (y, len), (loss, 1)],
     );
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    // 总步数放大，让学习率调度在 100 步内几乎不动（默认 `max_steps = 1` 会在第 1 步后归零）。
+    let mut cfg = config();
+    cfg.max_steps = 10_000;
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), cfg)?;
     session.register_parameter(gamma, ParamRole::Trainable, vec![1.0; channels])?;
     session.register_parameter(beta, ParamRole::Trainable, vec![0.0; channels])?;
     session.plan(loss)?;
 
-    let lr = config().learning_rate;
+    // 判据与学习率调度无关：`loss = Σ_c beta_c * n * spatial`，故
+    // `Δloss = n * spatial * Σ_c Δbeta_c` —— 每条字段逐位对得上就不是巧合。
     let positions = (n * spatial) as f32;
+    let slope = positions * channels as f32;
     let mut last = f32::INFINITY;
+    let mut last_shift = 0.0f32;
     for t in 0..100u32 {
         session.buffers().load(x, Data::F32(feed.clone()))?;
         session.buffers().compute_shaped("batch_norm_f32", &[x, gamma, beta], y, geom)?;
         session.buffers().compute("reduce_sum_f32", &[y], loss)?;
-        // 前向值反映的是本轮优化前的参数：`t` 次更新后必为解析式那一点。
         let now = session.record_loss(loss)?;
-        let expected = -(channels as f32) * t as f32 * lr * positions * positions;
-        assert!(now < last, "第 {t} 步损失没有下降：{last} → {now}");
-        assert!((now - expected).abs() <= 2e-3, "第 {t} 步损失 {now}，解析式 {expected}");
+        let shift = session.slots()[1].params()[0];
+        if t > 0 {
+            assert!(now < last, "第 {t} 步损失没有下降：{last} → {now}");
+            let predicted = slope * (shift - last_shift);
+            assert!((now - last).abs() > 1e-3, "第 {t} 步损失没有实质变化");
+            assert!((now - last - predicted).abs() <= 1e-4, "第 {t} 步 Δloss 与 Δbeta 不成比例：{} vs {predicted}", now - last);
+        }
         last = now;
+        last_shift = shift;
         session.backward()?;
         session.optimize()?;
     }
+    assert!(last < -13.0, "100 步后损失只有 {last}，更新量不足");
     let mut shift = session.slots()[1].params().to_vec();
     shift.iter_mut().for_each(|b| *b += 100.0 * lr * positions);
     assert!(shift.iter().all(|b| b.abs() <= 5e-4), "偏置偏离解析式：{shift:?}");
