@@ -116,17 +116,22 @@ pub enum Lower {
         /// 每个 simdgroup 沿 N 的输出片段数（每片段 8 列）。
         col_frags: usize,
     },
-    /// 张量核矩阵乘 GEMM：一个 `tile × tile` 输出块由 `32·simdgroups` 个线程协同算完，
+    /// 张量核矩阵乘 GEMM：一个 `tile_m × tile_n` 输出块由 `32·simdgroups` 个线程协同算完，
     /// 规约轴按 `k_tile` 切片，B 片经线程组内存中转。乘加走硬件的矩阵乘单元而非标量 FMA，
     /// 因此要求 B 预先转成 `N×K` 的低精度布局（布局前置不属于 lowering 本身）。
-    /// 要求 `M` 被 `tile` 整除、`tile ∈ {64, 128}`、`k_tile` 是 16 的倍数、`simdgroups ∈ {4, 8}`；
-    /// 不满足时由调用方回落。
+    /// 要求 `M` 被 `tile_m` 整除、两个块跨度 ∈ {64, 128}、`k_tile` 是 16 的倍数、
+    /// `simdgroups ∈ {4, 8}`；不满足时由调用方回落。
+    ///
+    /// 行/列跨度分开给：线程组内存只随 `tile_n` 增长，压小 `tile_m` 在同一份共享内存下换来
+    /// 更多线程组，尾部波次更满。
     TensorGemm {
-        /// 输出块边长（同时也是线程组负责的 N 方向跨度）。
-        tile: usize,
+        /// 输出块在 M 方向的跨度（占用线程组更多与否只由它决定）。
+        tile_m: usize,
+        /// 输出块在 N 方向的跨度（同时是线程组负责的 B 片行数，决定共享内存占用）。
+        tile_n: usize,
         /// 规约轴每次前进的长度（装载按 16 元素一组）。
         k_tile: usize,
-        /// 参与协同的 simdgroup 数（`8` 用于 `128` 块，`4` 用于 `64` 块）。
+        /// 参与协同的 simdgroup 数（`8` 用于 `128` 的列跨度，`4` 用于 `64`）。
         simdgroups: usize,
     },
     /// flash attention 分块：一个线程组负责一个查询行，K/V 按 `block` 个键分块流式扫描，
