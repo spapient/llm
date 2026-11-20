@@ -500,11 +500,7 @@ int main(int argc, const char **argv) {{
         if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
 {library}{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
 {body}        const float *out = (const float *)b_{output}.contents;
-        for (int i = 0; i < {read}; ++i) {{
-            union {{ float f; unsigned int u; }} v;
-            v.f = out[i];
-            printf("%u\n", v.u);
-        }}
+{readback}
     }}
     return 0;
 }}
@@ -514,7 +510,7 @@ int main(int argc, const char **argv) {{
         allocs = allocs,
         body = body,
         output = output,
-        read = read,
+        readback = readback_bits("out", read, "        "),
     ))
 }
 
@@ -647,11 +643,7 @@ int main(int argc, const char **argv) {{
         [buffer waitUntilCompleted];
         if (buffer.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 7; }}
         const float *out = (const float *)b_{output}.contents;
-        for (int i = 0; i < {out_len}; ++i) {{
-            union {{ float f; unsigned int u; }} v;
-            v.f = out[i];
-            printf("%u\n", v.u);
-        }}
+{readback}
     }}
     return 0;
 }}
@@ -661,7 +653,7 @@ int main(int argc, const char **argv) {{
         prologue = host_prologue(entry),
         sets = sets,
         output = output,
-        out_len = out_len,
+        readback = readback_bits("out", out_len, "        "),
         gx = grid[0],
         gy = grid[1],
         gz = grid[2],
