@@ -173,9 +173,8 @@ fn a_bitwise_artifact_round_trip_completes_the_lossless_ruling() {
         .iter()
         .map(|seg| {
             let raw = archive.load(seg).expect("解码");
-            raw.chunks_exact(4)
-                .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
-                .collect()
+            let (words, _) = raw.as_chunks::<4>();
+            words.iter().map(|word| f32::from_le_bytes(*word)).collect()
         })
         .collect();
     let bitwise = decoded.len() == 2 && decoded[0] == w1 && decoded[1] == w2;

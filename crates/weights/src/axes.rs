@@ -18,8 +18,8 @@ use diagnostic::{Code, Error, Result};
 use crate::leb::Cursor;
 use crate::{ledger, rans};
 
-/// artifact 魔数（v2：`rank` 载荷自带证书，v1 的纯秩数字不再可读）。
-const MAGIC: [u8; 4] = *b"AX02";
+/// artifact 魔数（v3：`rank` 载荷的证书多了 `ε_alg` 方法与界类型两码与补偿误差，v1/v2 不再可读）。
+const MAGIC: [u8; 4] = *b"AX03";
 
 /// 固定头长度：magic(4) + axis(1) + m(4) + n(4)。
 const HEAD: usize = 13;

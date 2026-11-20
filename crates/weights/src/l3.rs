@@ -22,7 +22,7 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::ledger::{Note, Stable};
+use crate::ledger::{Bound, EpsMethod, Note, Stable};
 
 /// 一段网络的 L3 事实：一个可适用段的五个量。
 ///
@@ -41,11 +41,16 @@ pub struct Rung {
 impl Rung {
     /// 由五个量构造；任一为负或非有限都在这里拒绝（负的范数不是"更紧的界"，是记账错误）。
     pub fn new(rho: f64, rho_hat: f64, eps: f64, lipschitz: f64, offset: f64) -> Result<Self> {
-        check("ρ", rho)?;
-        check("ρ̂", rho_hat)?;
-        check("ε", eps)?;
-        check("L", lipschitz)?;
-        check("b", offset)?;
+        let facts = [
+            ("ρ", rho),
+            ("ρ̂", rho_hat),
+            ("ε", eps),
+            ("L", lipschitz),
+            ("b", offset),
+        ];
+        for (name, value) in facts {
+            check(name, value)?;
+        }
         Ok(Self {
             rho,
             rho_hat,
@@ -60,9 +65,10 @@ impl Rung {
     /// `Note::eps` 是那次分解的**后验 Frobenius 残差**，而 `‖·‖₂ ≤ ‖·‖_F`，所以拿它当谱 `ε`
     /// 是一个保守上界——可能偏松，但不会偏紧，这条方向性正是它可以进链的原因。
     ///
-    /// 证书本身有两处先决条件：L0 门必须 Pass（谱隙不足以支撑秩选择时 `certify` 会 `Ok(None)`，
-    /// 拿到 `Note` 就说明有秩，但这里仍复核一遍，避免手工构造的 `Note` 绕过门），以及那次写入
-    /// 必须逐位往返（`equal`）——`equal = false` 说明 `ε` 的载体本身没还原，`ε` 无从谈起。
+    /// 证书本身有三处先决条件：L0 门必须 Pass（谱隙不足以支撑秩选择时 `certify` 会 `Ok(None)`，
+    /// 拿到 `Note` 就说明有秩，但这里仍复核一遍，避免手工构造的 `Note` 绕过门）；那次写入必须
+    /// 逐位往返（`equal = false` 说明 `ε` 的载体本身没还原，`ε` 无从谈起）；且 `ε` 的方法与界
+    /// 类型都得是能当上界的那两种——候选筛查口径与 L0' 候选界只够排序，不能进这条链。
     pub fn from_note(
         note: &Note,
         rho: f64,
@@ -75,6 +81,11 @@ impl Rung {
         }
         if !note.equal {
             return Err(bad("证书报告往返不一致：ε 没有可用的载体"));
+        }
+        if note.method == EpsMethod::Candidate || note.bound == Bound::Candidate {
+            return Err(bad(
+                "证书用的是候选口径（幂迭代 / L0'）：它的 ε 只够排序，不够当上界",
+            ));
         }
         Self::new(rho, rho_hat, note.eps, lipschitz, offset)
     }
@@ -469,7 +480,7 @@ mod tests {
         assert_eq!(from_note.eps(), certified.note.eps);
         assert_eq!(from_note.rho(), 4.0);
 
-        // 两处先决条件各自挡住手工构造的证书。
+        // 四处先决条件各自挡住手工构造的证书。
         let failed = Note {
             stable: Stable::Fail,
             ..certified.note.clone()
@@ -480,6 +491,18 @@ mod tests {
             ..certified.note.clone()
         };
         assert!(Rung::from_note(&unequal, 4.0, 4.0, 1.0, 0.0).is_err());
+        // 候选口径：`certify` 从不签这条路，但读端可能拿到别人签的。
+        let scratch = Note {
+            method: EpsMethod::Candidate,
+            ..certified.note.clone()
+        };
+        assert!(Rung::from_note(&scratch, 4.0, 4.0, 1.0, 0.0).is_err());
+        let candidate_bound = Note {
+            bound: Bound::Candidate,
+            stable: Stable::Open,
+            ..certified.note.clone()
+        };
+        assert!(Rung::from_note(&candidate_bound, 4.0, 4.0, 1.0, 0.0).is_err());
     }
 
     #[test]

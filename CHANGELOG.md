@@ -23,6 +23,20 @@
 
 ### Added
 
+- **谱隙证书自报口径：`ε` 用哪种方法算的、这张界是 L0 诊断还是 L0' 候选、补偿项误差有没有重复计入**。
+  三件事此前只写在 `lld.md` §4.2.1 / §4.3.1 / §4.8 的正文里，证书本身不记，于是「幂迭代只够排序」与
+  「候选界不当证书」都只是注释级别的约定。`ledger::Note` 因此新增三个字段：`method`（`EpsMethod`
+  闭集 `verified_backward_error` / `verified_residual` / `candidate_only`，`certify` 产出的是中间那条）、
+  `bound`（`Bound` 闭集 `l0_diagnostic` / `l0prime_candidate_open` / `none`）、`comp`（只在残差补偿
+  模式存在的 `E_comp`，`certify` 的残差以 `f32` 原样落盘故为 0）；合成误差只剩一处算式
+  `Note::synth() = E_decomp + E_comp`。`check` 新增四条可执行约束——候选方法签不出 `Pass`、L0' 候选界
+  签不出无损、用了秩选择就必须声明界类型、逐位往返则补偿项必须为零（同一份误差记两遍即被拒）；
+  `l3::Rung::from_note` 同步拒绝候选口径的证书，它的 `ε` 只够排序、不够当上界；读端 `ledger::audit`
+  同样要求落盘证书的方法必须是实测残差、界必须是 L0 诊断、补偿误差必须为零——伪造或手写一个别的
+  口径，载会被这条载荷自己拒掉（`the_payload_audit_rejects_a_certificate_that_names_another_measurement`）。`rank` 载荷魔数
+  `AX02` → `AX03`（多两码与一个 f64），旧布局不再被当作合法载荷。**验证**：`llm-weights` 199 条
+  （`ledger` 16、`l3` 14）全绿，两个新枚举的短名与码位各有用例钉住。
+
 - **L3 合成律落地：`weights::l3` 把 LLD §4.5 的逐段误差合成从「每个算子各自声明」收成网络级可签发
   的上界与适用域**。`Chain::bracket` 一次走两套递归（`a_i = L_i·ρ̂_i·a_{i-1} + b_i`、
   `e_i ≤ L_i·(ρ_i·e_{i-1} + ε_i·a_{i-1})`，后者把 `ε_i` 摊到**未扰动激活**上）给出 `Bracket`；`Ruling`
