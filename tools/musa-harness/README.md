@@ -75,17 +75,20 @@ fmaf、多 tile。硬件边界:S4000(mp_22)**无 cp.async**(SINCE_MP_43);5.2 工
    `cuda_fp16.h`(→ `musa_fp16.h`)。**仅需这两个垫片**。
 3. **对拍**:程序打印 f32 位模式,`check_bits.py` 与参考逐项比较。
 
-### 覆盖与结果(64 元素,64×1)
+### 覆盖与结果
 
-| 算子 | 结果 | max_rel |
-|---|---|---|
-| `silu_f32` | OK | 1.15e-07 |
-| `gelu_f32` | OK | 3.86e-07 |
-| `add_f32` | OK | 0 |
-| `mul_f32` | OK | 0 |
+| 算子 | 形态 | 结果 | max_rel |
+|---|---|---|---|
+| `silu_f32` | 逐点 | OK | 1.15e-07 |
+| `gelu_f32` | 逐点 | OK | 3.86e-07 |
+| `add_f32` | 逐点 | OK | 0 |
+| `mul_f32` | 逐点 | OK | 0 |
+| `rmsnorm_f32` | 两段分块(4 块折叠) | OK(1024 元素) | 1.17e-07 |
+| `softmax_f32` | 三段分块(4 块折叠) | OK(1024 元素) | 1.19e-07 |
 
-`softmax_f32` / `rmsnorm_f32` 报 `Unsupported`:CUDA 逐点网格只覆盖纯逐点形,归约/归一化的
-CUDA 镜像(循环注入/串行兜底)尚未落地(源码注释已载明)。
+归一化由 `engine::norm::cuda_rmsnorm_driver` / `cuda_softmax_driver` 把多段设备源与 host
+串联驱动拼成单文件(部分和/最大值回读到 CPU 折叠后再派发);`gen-cuda` 已内置这条分支。
+仍报 `Unsupported` 的形态:循环注入(`Loop`)与分块扫描(`ChunkScan`)的 CUDA 镜像未落地。
 
 ### 意义
 

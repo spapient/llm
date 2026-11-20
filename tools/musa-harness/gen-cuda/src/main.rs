@@ -1,5 +1,5 @@
-//! 走本仓公开流水线生成 MUSA 可编译的 CUDA 程序 + 标量参考:
-//! cuda_grid_program(设备源) + cuda_grid_driver(host 驱动) → 单文件。
+//! 走本仓公开流水线生成 MUSA 可编译的 CUDA 程序 + 标量参考。
+//! 逐点: cuda_grid_program + cuda_grid_driver;归一化: cuda_rmsnorm/softmax_program + engine::norm 驱动。
 //! 用法: gen-cuda-win <op> [m] [n]
 fn main() -> diagnostic::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -16,10 +16,26 @@ fn main() -> diagnostic::Result<()> {
     let output = decl.signature.output().expect("可写输出");
     let out_len = sample.f32(output).expect("f32 输出").len();
 
-    let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, &name, m, n)?;
-    let program = engine::codegen::cuda_grid_driver(
-        &device, &decl.signature, &sample, out_len, out_len,
-    )?;
+    let program = match name.as_str() {
+        "rmsnorm_f32" => {
+            let (partial, norm) =
+                cutile::execution::cuda_rmsnorm_program(&catalogue, &dirs, &name, m, n)?;
+            let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
+            engine::norm::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)?
+        }
+        "softmax_f32" => {
+            let (max, expsum, norm) =
+                cutile::execution::cuda_softmax_program(&catalogue, &dirs, &name, m, n)?;
+            let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
+            engine::norm::cuda_softmax_driver(&[max, expsum, norm], &decl.signature, &sample, chunk)?
+        }
+        _ => {
+            let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, &name, m, n)?;
+            engine::codegen::cuda_grid_driver(
+                &device, &decl.signature, &sample, out_len, out_len,
+            )?
+        }
+    };
     std::fs::write("C:/Users/fei/fw.cu", &program)
         .map_err(|e| diagnostic::Error::new(diagnostic::Code::Io, format!("{e}")))?;
 
