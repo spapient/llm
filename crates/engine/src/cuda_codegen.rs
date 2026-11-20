@@ -1,9 +1,10 @@
 //! CUDA 侧的设备源与主机驱动拼装：`__device__` 翻译单元、`<<<grid, block>>>` 发射、
 //! `cudaMalloc` / `cudaMemcpy` / `cudaFree` 骨架与回读。
 //!
-//! 与 [`crate::codegen`] 的分家：那里只放「方言表 [`crate::codegen::Wrap`] + 两端共用的 lowering
-//! 原语」，这里只写 CUDA 一侧的字面量与驱动骨架。两条 lowering 从同一份方言派生，同一条 kernel
-//! body 只拼一次；`codegen` 把本模块再导出，所以 `crate::codegen::cuda_*` 这条路径与拆分前一致。
+//! 与 [`crate::codegen`] 的分家：那里只放「[`crate::dialect::Dialect`] 方言 + 两端共用的 lowering
+//! 原语」，这里只写 CUDA 一侧的驱动骨架（发射 / 分配 / 回读 / 释放）。两条 lowering 从同一份方言
+//! 派生，同一条 kernel body 只拼一次；`codegen` 把本模块再导出，所以 `crate::codegen::cuda_*` 这条
+//! 路径与拆分前一致。
 //!
 //! # 为什么驱动只有一个 `Driver`
 //!
@@ -19,9 +20,10 @@ use op::sig::{Param, Signature};
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 
 use crate::codegen::{
-    CUDA, bind_grid_loops, chunk_reduce, cuda_buffers, cuda_device, grid_kernel, launch_args,
-    length_scalar, thread_param_typed,
+    chunk_reduce_dialect, dialect_buffers, dialect_prelude, grid_kernel_dialect,
+    injected_kernel_dialect, launch_args, length_scalar, serial_kernel_dialect,
 };
+use crate::dialect::Cuda;
 // ---------------------------------------------------------------------------
 // CUDA lowering：声明式骨架 → CUDA 源（逐点网格 / 分块归约）+ verify 单线程 harness。
 // ---------------------------------------------------------------------------

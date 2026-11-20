@@ -244,6 +244,10 @@ pub use param_role::ParamRole;
 pub use patch::{Boundary, Patches};
 
 #[doc(inline)]
+pub use classic::{
+    AdaptiveAvgPool2d, AvgPool2d, BatchNorm2d, Conv1d, Conv2d, ConvTranspose1d, ConvTranspose2d,
+    GroupNorm, InstanceNorm, Interpolate, LayerNorm, MaxPool1d, MaxPool2d,
+};
 pub use pointwise::{
     Add, Gelu, HardSigmoid, LeakyRelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax,
 };
