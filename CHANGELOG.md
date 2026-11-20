@@ -17,8 +17,9 @@
   要么进代码与测试、要么进 ADR。ADR 里三处指向该目录的证据指针同步改写（原写作
   `crates/benchmarks/burn-runtime/`，路径本就不对），改成"三套一次性探针"的口径并写明重跑所需的
   输入式与 `llm-engine` 的 `#[ignore]` 设备用例。**验证**：`cargo machete` 此前对
-  `benchmarks/burn-runtime/llm-side` 报的未使用依赖随目录消失；`nextest`、`fmt --check`、
-  `RUSTDOCFLAGS="-D warnings" cargo doc`、`jscpd` 全绿。
+  `benchmarks/burn-runtime/llm-side` 报的未使用依赖随目录消失（现已零告警）；`cargo fmt --all --check`、
+  `nextest -p llm-tool -p llm-testkit` 110 条（含静态门与所有权表）全绿。工作区源码一行未动；该目录本就不在
+  `jscpd` 的扫描路径（`crates` + `tools`）内，重复率不受影响。
 
 ### Added
 
@@ -30,7 +31,10 @@
   （`archive::lossless_entry`），容器的两个视图因此不可能给出两种"无损"。账本 JSON 只有一个文本来源
   （`Settlement::render`）：`--out` 写盘与 stdout 是同一份字节（进程级用例钉住逐字节相等），不给
   `--out` 就把 JSON 打到 stdout，本层不猜产物目录旁的默认文件名。12 条 `settle` 用例覆盖体积算式、
-  原因闭集、无损口径与坏字节拒绝；`llm settle` 补两条解析用例与一条端到端用例。**实测**（`.u` 容器
+  原因闭集、无损口径与坏字节拒绝；`llm settle` 补两条解析用例与一条端到端用例。**同一份口径也接到导入
+  侧**：`llm import` 落盘后把刚写出的字节重新读一遍现算账本（`archive::ledger_of` 是两处唯一入口），
+  报告里的体积比与 `lossless` 因此是"读出来的"而不是"自以为写进去的"——进程级用例从 `import` 的输出就
+  开始核对这两项，`settle` 与 `import` 不可能对同一份字节给出两种结论。**实测**（`.u` 容器
   含两条权重段）：全量体积比与逐张量体积可复核，账本与 `inspect` 报告的无损结论一致。
 
 - **装配层从"一层"走到"一栈"：`nn::hybrid` 新增 `Tower` / `State` / `Kind` / `MemoryStep`，把 K3 的

@@ -220,6 +220,14 @@ fn imported_container(tag: &str) -> PathBuf {
         "合法 safetensors 下 `import` 必须成功：{:?}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // 导入要自证：报告里的体积比与无损是**落盘后重新读出来**的账，而不是"我写成功了"。
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for field in ["体积比", "lossless"] {
+        assert!(
+            stdout.contains(field),
+            "`import` 必须报出 `{field}`：{stdout}"
+        );
+    }
     container
 }
 

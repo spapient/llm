@@ -185,6 +185,17 @@ pub mod archive {
     /// 条目字段不自洽、wire 不在映射闭集内或源是未映射块量化时，weights 层显式报错，
     /// 本命令只把命令帧补到错误链上，不把未映射类型转成别的存储表示。
     pub(crate) fn import(input: &str, output: &str) -> Result<()> {
+        let writer = write_container(input, output)?;
+        // 导入自证：把刚写下的字节重新读一遍现算账本，“写成功”之外还有一句“写进去的是这个
+        // 体积、有损与否”。口径与 `settle` 同源（`ledger_of`），两处不会各说一套。
+        let ledger = ledger_of(output, "llm import")?;
+        let report = import_report(input, output, writer.len(), &ledger);
+        print!("{}", report.render());
+        Ok(())
+    }
+
+    /// 源文件 → 中性段流 → 流式写出 `.u` 容器；返回写者本身（报告要用它的条目数）。
+    fn write_container(input: &str, output: &str) -> Result<weights::Writer> {
         let segments = weights::import::segments_from_path(Path::new(input))
             .map_err(|error| error.with("llm import"))?;
         let mut writer = weights::Writer::new();
@@ -196,17 +207,17 @@ pub mod archive {
         writer
             .write_to_path(ALIGN_LOG, Path::new(output))
             .map_err(|error| error.with("llm import"))?;
-        // 导入自证：把刚写下的字节重新读一遍现算账本，“写成功”之外还有一句“写进去的是这个
-        // 体积、有损与否”。口径与 `settle` 同源（`ledger_of`），两处不会各说一套。
-        let ledger = ledger_of(output, "llm import")?;
-        let report = Report::new("llm —— safetensors 导入 `.u` 容器")
+        Ok(writer)
+    }
+
+    /// 导入报告：条目数出自写者，体积比与无损出自**重读一遍**的账本。
+    fn import_report(input: &str, output: &str, entries: usize, ledger: &Settlement) -> Report {
+        Report::new("llm —— safetensors 导入 `.u` 容器")
             .row("源", input)
             .row("输出", output)
-            .row("条目", format!("{} 段", writer.len()))
+            .row("条目", format!("{entries} 段"))
             .row("体积比", format!("{:.3}", ledger.total_ratio()))
-            .row("lossless", lossless_label(ledger.lossless()));
-        print!("{}", report.render());
-        Ok(())
+            .row("lossless", lossless_label(ledger.lossless()))
     }
 
     /// 落盘字节 → 账本：`import` 的自证与 `settle` 都走这一入口，口径不可能分家。
