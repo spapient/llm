@@ -15,6 +15,13 @@ use diagnostic::{Code, Error};
 /// 收缩轴长度（固定档）。
 pub const K: usize = 8;
 
+/// 输出列块宽度：B 的一个列块（`K × TILE_N` 个码）解包一次后被整段行复用。
+///
+/// 与 [`crate::matmul::TILE_N`] 不是同一个块：那条路径要切 `m`/`n`/`k` 三级、收缩轴由调用方
+/// 给定；这里收缩轴恒为 [`K`]，块只决定「B 的哪一段列驻留」，块宽取 64 使 `K` 段码与一行
+/// 累加器合起来仍在一级缓存里。
+pub const TILE_N: usize = 64;
+
 /// 每字节打包码数：位宽 ≤ 8 时按 `8 / bits` 算；8 位逐元素为 1。
 ///
 /// 打包布局与 [`packed`] 同一口径：i2=4、i4=2、i8=1。桥接层几何反推用，避免各 lane 各抄
@@ -127,6 +134,15 @@ pub trait Gemm {
         };
         packed::dot(a, b, n, i, j, &packed::Conf::from(&row))
     }
+
+    /// 内核本体：这份格式的 tile 矩阵乘，结果写满 `out`（`m × n`）。
+    ///
+    /// 打包格式把 A、B 的位流各解包一次再累加（[`packed_tiled`]），逐元素整数格式直接取码
+    /// （[`accumulate_tiled`]），稠密 f32 走 [`crate::matmul::matmul_tiled`]。三种形态都保持
+    /// 「每个输出元素按 `p` 升序累加」，于是与 [`matmul`] 的标量口径逐位相等。
+    ///
+    /// 没有默认实现：默认返回值会让「忘了覆盖」变成静默全零，而调用方拿不到任何信号。
+    fn mul(a: &[Self::Elem], b: &[Self::Elem], m: usize, n: usize, out: &mut [f32]);
 
     /// 逐元素格式（不打包）的码值：测试侧闭式重算用；打包格式由骨架按位流解包，返回空切片。
     ///
@@ -293,7 +309,73 @@ pub fn matmul<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize, out: &m
     }
 }
 
-/// 标量参考：与内核算术同源，区别只在输出自带分配。
+/// 位流 → 整数码：每个码一个 `i32`，按行主序连续铺开（A 行宽 [`K`]、B 行宽 `n`）。
+///
+/// 解包次数从此只与 `m·K + K·n` 有关，而不是与 `m·n·K` 有关——移位、掩码与零点平移正是量化
+/// 格式的主要成本，旧做法在每个输出元素上把它们重做一遍。
+pub fn decode_stream(codes: &mut [i32], bytes: &[u8], conf: &packed::Conf) {
+    for (index, code) in codes.iter_mut().enumerate() {
+        let byte = bytes[index / conf.cpb];
+        *code = packed::unpack(byte, index % conf.cpb, conf.cpb, conf.zero) as i32;
+    }
+}
+
+/// 整数码的 tile 累加：外层按 [`TILE_N`] 走列块，块内 `p` 在外、列在内。
+///
+/// 每个输出元素仍按 `p` 升序做 `i32` 加法，于是与 [`matmul`] / [`packed::dot`] 逐位相等；
+/// 列在内让 B 的列块段与累加器都是连续读写，内层是一次可向量化的 AXPY。
+///
+/// `codes_a` 至少 `m·K` 个码、`codes_b` 至少 `K·n` 个，`out` 恰为 `m·n`；长度由
+/// [`forward`] 在入口校验，这里不再重复判——tile 内层每多一次分支就多一次整块的成本。
+pub fn accumulate_tiled(codes_a: &[i32], codes_b: &[i32], m: usize, n: usize, out: &mut [f32]) {
+    let mut acc = vec![0i32; TILE_N.min(n)];
+    let mut start = 0;
+    while start < n {
+        let width = TILE_N.min(n - start);
+        let acc = &mut acc[..width];
+        for (row, arow) in codes_a.chunks_exact(K).take(m).enumerate() {
+            acc.fill(0);
+            for (p, &x) in arow.iter().enumerate() {
+                let segment = &codes_b[p * n + start..][..width];
+                for (slot, &y) in acc.iter_mut().zip(segment) {
+                    *slot += x * y;
+                }
+            }
+            let target = &mut out[row * n + start..][..width];
+            for (slot, &value) in target.iter_mut().zip(acc.iter()) {
+                *slot = value as f32;
+            }
+        }
+        start += width;
+    }
+}
+
+/// 逐元素格式的整数码：`u8` 位模式按 `i8` 解释，与 [`Gemm::dot`] 的取码口径同一份。
+///
+/// 打包格式不用它——位流解包还带零点平移（[`decode_stream`]）。
+pub fn signed_codes(values: &[u8]) -> Vec<i32> {
+    values.iter().map(|&byte| byte as i8 as i32).collect()
+}
+
+/// 打包格式的本体：两条位流各解一遍，再走 [`accumulate_tiled`]。
+///
+/// A 是 `m × K` 个码、B 是 `K × n` 个码，解包结果只在这一个调用里存活；块内不再碰位流。
+pub fn packed_tiled(
+    a: &[u8],
+    b: &[u8],
+    m: usize,
+    n: usize,
+    conf: &packed::Conf,
+    out: &mut [f32],
+) {
+    let mut codes_a = vec![0i32; m * K];
+    let mut codes_b = vec![0i32; K * n];
+    decode_stream(&mut codes_a, a, conf);
+    decode_stream(&mut codes_b, b, conf);
+    accumulate_tiled(&codes_a, &codes_b, m, n, out);
+}
+
+/// 标量参考：逐 `(i, j)` 走 [`Gemm::dot`]，是与 tile 内核**相互独立**的对拍真值。
 pub fn reference<G: Gemm>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let m = sample.m;
     let n = sample.n;
@@ -319,7 +401,7 @@ pub fn forward<G: Gemm>(
     if a.len() != G::a_len(m) || b.len() != G::b_len(n) || out.len() != m * n {
         return Err(Error::new(Code::Invalid, format!("{} 缓冲尺寸不符", G::OP)));
     }
-    matmul::<G>(a, b, m, n, out);
+    G::mul(a, b, m, n, out);
     Ok(())
 }
 
@@ -510,6 +592,9 @@ pub mod gemm_i2 {
         fn config() -> Option<crate::quant::Row> {
             Some(I2)
         },
+        fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
+            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::packed::Conf::from(&I2), out)
+        },
     );
 }
 
@@ -531,6 +616,9 @@ pub mod gemm_i4 {
         I4.bits,
         fn config() -> Option<crate::quant::Row> {
             Some(I4)
+        },
+        fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
+            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::packed::Conf::from(&I4), out)
         },
     );
 }
@@ -577,14 +665,20 @@ pub mod gemm_i8 {
             acc as f32
         },
         fn codes(values: &[u8]) -> Vec<i32> {
-            values.iter().map(|&byte| byte as i8 as i32).collect()
+            crate::gemm::signed_codes(values)
+        },
+        fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
+            let codes_a = crate::gemm::signed_codes(a);
+            let codes_b = crate::gemm::signed_codes(b);
+            crate::gemm::accumulate_tiled(&codes_a, &codes_b, m, n, out)
         },
     );
 }
 
 pub mod gemm_f32 {
     //! `gemm_f32`：稠密 f32 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"稠密 f32"这一份格式
-    //! 契约：元素类型、位宽、样本取值与点积算术。CPU 片段没有 MMA 原语，遍历退化成标量双重循环。
+    //! 契约：元素类型、位宽、样本取值与点积算术。CPU 片段没有 MMA 原语，算术走通用稠密 tile
+    //! （[`crate::matmul::matmul_tiled`]），与标量双重循环逐位一致。
 
     pub use crate::gemm::{AXES, K, project_shape};
 
@@ -610,6 +704,9 @@ pub mod gemm_f32 {
         fn dot(a: &[f32], b: &[f32], n: usize, i: usize, j: usize) -> f32 {
             let row = &a[i * K..][..K];
             row.iter().enumerate().map(|(p, x)| x * b[p * n + j]).sum()
+        },
+        fn mul(a: &[f32], b: &[f32], m: usize, n: usize, out: &mut [f32]) {
+            crate::matmul::matmul_tiled(a, b, m, n, K, out)
         },
     );
 }
