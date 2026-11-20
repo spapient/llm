@@ -233,6 +233,38 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
     )
 }
 
+/// 把一段声明式方言 spec 展开成 `impl ::llm_engine::dialect::Dialect`。
+///
+/// 用法（Metal 示例，CUDA 是同一张表的另一行）：
+///
+/// ```ignore
+/// #[dialect(
+///     entry = "kernel",
+///     address_space = "device",
+///     device_fn = "",
+///     buffer = "    device {ctype}* d_{name} [[buffer({slot})]]",
+///     point_param = "uint n [[thread_position_in_grid]]",
+///     point_stmt = "",
+///     grid_param = "uint3 tid [[thread_position_in_grid]]",
+///     grid_stmt = "int g = (int)tid.x;",
+/// )]
+/// struct Metal;
+/// ```
+///
+/// 八键全必填（缺省值是危险品：拼错就是一份错后端），值一律是普通字符串字面量，允许空串表示
+/// 「这一维没有 vendor 差异」。见 [`syntax::parse_dialect`] 与 [`codegen::render_dialect`]。
+#[proc_macro_attribute]
+pub fn dialect(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    expand_with(
+        attribute,
+        item,
+        "dialect",
+        syntax::parse_dialect,
+        codegen::render_dialect,
+        syntax::dialect_target,
+    )
+}
+
 /// 两道注解共用的一趟展开：解析 → 取类型名 → 渲染 → 拼接。
 ///
 /// 文法与渲染以**具体函数**（不是 `dyn`）传进来：每一步都单态化，公共步骤——错误定位、
