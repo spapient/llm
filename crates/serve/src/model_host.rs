@@ -186,11 +186,11 @@ impl<E: Executor> CpuModel<E> {
         let hist_total = rows.iter().map(|row| row.settled() * kv).sum();
         let mut hist_k = self
             .executor
-            .bind(block.hist_k, Vec::new())
+            .bind_f32(block.hist_k, Vec::new())
             .unwrap_or_default();
         let mut hist_v = self
             .executor
-            .bind(block.hist_v, Vec::new())
+            .bind_f32(block.hist_v, Vec::new())
             .unwrap_or_default();
         hist_k.resize(hist_total, 0.0);
         hist_v.resize(hist_total, 0.0);
