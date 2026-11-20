@@ -11,9 +11,14 @@
 //!
 //! 这些算子当前标 `differentiable = false`：`train` 的反向公式目录里还没有池化/插值的梯度，
 //! 标 true 会立刻撞上"可微算子必须有反向公式"的编译期断言。
+//!
+//! 精度轴：每个窗口/归一化模块的 `run` 是 `<S: Scalar>` 泛型，四种精度（f32/f64/f16/bf16）
+//! 共用同一条算术；公开的 `forward`/`reference` 仍以 f32 挂在算子注册表上（`DTYPE` 与参考缓冲
+//! 都是 f32）。二维卷积暂不泛型：它下沉到 im2col + GEMM 的 f32/i8 路径，f16/bf16 无对应 GEMM。
 
 use crate::conv::ConvGeom;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
+use crate::Scalar;
 use crate::unary::{AXES, project_shape};
 use diagnostic::Error;
 
@@ -47,14 +52,14 @@ macro_rules! window_op {
             window_sample($in_len, $out_len)
         }
 
-        /// 标量参考：读 `x`、跑模块的 `run`、返回 `y`（真窗口）。
+        /// 标量参考：读 `x`、跑模块的 `run::<f32>`、返回 `y`（真窗口）。
         pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-            window_reference(sample, $out_len, run)
+            window_reference(sample, $out_len, run::<f32>)
         }
 
         /// 声明档前向：与参考共用同一条 `run`，几何与样本一致。
         pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-            run(x, out)
+            run::<f32>(x, out)
         }
 
         /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
@@ -77,9 +82,9 @@ macro_rules! norm_op {
             norm_sample($total, $channels, $scalars, $gamma, $beta)
         }
 
-        /// 标量参考：读 `x`/`gamma`/`beta`、跑模块的 `run`、返回 `y`（真统计）。
+        /// 标量参考：读 `x`/`gamma`/`beta`、跑模块的 `run::<f32>`、返回 `y`（真统计）。
         pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-            norm_reference(sample, $total, run)
+            norm_reference(sample, $total, run::<f32>)
         }
 
         /// 声明档前向：与参考共用同一条 `run`，几何与样本一致。
@@ -89,7 +94,7 @@ macro_rules! norm_op {
             beta: &[f32],
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            run(x, gamma, beta, out)
+            run::<f32>(x, gamma, beta, out)
         }
 
         /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
@@ -284,7 +289,8 @@ pub mod max_pool1d {
     /// 声明档输入长度：`(OL − 1)·S + K = 16`。
     pub const L: usize = 16;
 
-    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条取窗口最大的路径。
+    pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
         crate::conv::MaxPool1d { k: 2, s: 2, p: 0 }.forward(x, 1, L, 1, out)
     }
 
@@ -323,7 +329,8 @@ pub mod max_pool2d {
         }
     }
 
-    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条取窗口最大的路径。
+    pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
         crate::conv::MaxPool2d { geom: geom() }.forward(x, 1, H, W, 1, out)
     }
 
@@ -365,7 +372,8 @@ pub mod avg_pool2d {
         }
     }
 
-    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条窗口求平均的路径。
+    pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
         pool().forward(x, 1, H, W, 1, out)
     }
 
@@ -397,7 +405,8 @@ pub mod adaptive_pool {
     /// 声明档输出宽。
     pub const OW: usize = 2;
 
-    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条自适应求平均的路径。
+    pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
         crate::conv::AdaptiveAvgPool2d { oh: OH, ow: OW }.forward(x, 1, H, W, 1, out)
     }
 
@@ -429,7 +438,8 @@ pub mod interpolate {
     /// 声明档输出宽。
     pub const OW: usize = 4;
 
-    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条双线性插值的路径。
+    pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
         crate::conv::Interpolate {
             sampler: crate::conv::Sampler::Linear,
             oh: OH,
@@ -466,19 +476,22 @@ pub mod batch_norm {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::BatchNorm2d<f32> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条批归一化训练路径。
+    pub(crate) fn run<S: Scalar>(
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
+        out: &mut [S],
+    ) -> diagnostic::Result<()> {
+        let mut mean = vec![S::ZERO; C];
+        let mut var = vec![S::ONE; C];
+        // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
         crate::norm::BatchNorm2d {
             channels: C,
-            eps: EPS,
-            momentum: 0.1,
+            eps: S::from_f64(EPS as f64),
+            momentum: S::from_f64(0.1),
         }
-    }
-
-    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        let mut mean = vec![0.0f32; C];
-        let mut var = vec![1.0f32; C];
-        // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
-        norm().forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, out)
+        .forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, out)
     }
 
     // 两趟读 x（均值、方差）+ 读 gamma/beta + 写 y，每元素约 4 次运算。
@@ -514,16 +527,19 @@ pub mod group_norm {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::GroupNorm<f32> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条组归一化路径。
+    pub(crate) fn run<S: Scalar>(
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
+        out: &mut [S],
+    ) -> diagnostic::Result<()> {
         crate::norm::GroupNorm {
             groups: G,
             channels: C,
-            eps: EPS,
+            eps: S::from_f64(EPS as f64),
         }
-    }
-
-    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        norm().forward(x, gamma, beta, N, S, out)
+        .forward(x, gamma, beta, N, S, out)
     }
 
     // 两趟统计 + 一趟归一化，读 3 遍、写一遍。
@@ -562,15 +578,18 @@ pub mod instance_norm {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::InstanceNorm<f32> {
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条实例归一化路径。
+    pub(crate) fn run<S: Scalar>(
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
+        out: &mut [S],
+    ) -> diagnostic::Result<()> {
         crate::norm::InstanceNorm {
             channels: C,
-            eps: EPS,
+            eps: S::from_f64(EPS as f64),
         }
-    }
-
-    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        norm().forward(x, gamma, beta, N, S, out)
+        .forward(x, gamma, beta, N, S, out)
     }
 
     // 与组归一化同构（统计域更小、次数不变）。
@@ -602,12 +621,18 @@ pub mod layer_norm {
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
 
-    fn norm() -> crate::norm::LayerNorm<f32> {
-        crate::norm::LayerNorm { width: W, eps: EPS }
-    }
-
-    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        norm().forward(x, gamma, beta, out)
+    /// 声明档算术：`<S: Scalar>` 泛型，四种精度共用一条层归一化路径。
+    pub(crate) fn run<S: Scalar>(
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
+        out: &mut [S],
+    ) -> diagnostic::Result<()> {
+        crate::norm::LayerNorm {
+            width: W,
+            eps: S::from_f64(EPS as f64),
+        }
+        .forward(x, gamma, beta, out)
     }
 
     // 两趟行内统计 + 一趟归一化，读 3 遍、写一遍。
@@ -629,7 +654,8 @@ pub mod layer_norm {
 
 #[cfg(test)]
 mod tests {
-    use super::{batch_norm, layer_norm, max_pool1d};
+    use super::*;
+    use half::{bf16, f16};
 
     /// 每个算子的样本 -> 参考必须自洽（参考不能报错，长度与 `y` 缓冲一致）。
     fn check(name: &str) {
@@ -685,5 +711,139 @@ mod tests {
             let want = x[2 * o].max(x[2 * o + 1]);
             assert_eq!(*value, want, "位置 {o}");
         }
+    }
+
+    /// 把 `f32` 切片转成标量 `S` 的切片（精度对拍前的搬运用，不参与算术）。
+    fn cast<S: Scalar>(x: &[f32]) -> Vec<S> {
+        x.iter().map(|&v| S::from_f64(v as f64)).collect()
+    }
+
+    /// 把标量 `S` 的切片转回 `f32`（对拍读数，只做展示级转换）。
+    fn back<S: Scalar>(x: &[S]) -> Vec<f32> {
+        x.iter().map(|&v| v.to_f64() as f32).collect()
+    }
+
+    /// 逐位对拍：`a` 与 `b` 同长，逐元素差不超过 `tol`。
+    fn close(a: &[f32], b: &[f32], tol: f32, what: &str) {
+        assert_eq!(a.len(), b.len(), "{what}: 长度不一致");
+        for (i, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (x - y).abs() <= tol,
+                "{what}[{i}]: {x} != {y}（容差 {tol}）"
+            );
+        }
+    }
+
+    /// 窗口族精度对拍：给定 `f32` 参考，跑 `run::<S>` 并与参考逐位比较。
+    fn window_parity<S: Scalar>(
+        sample: &Sample,
+        want: &[f32],
+        out_len: usize,
+        run: impl Fn(&[S], &mut [S]) -> diagnostic::Result<()>,
+        tol: f32,
+        what: &str,
+    ) {
+        let x = cast::<S>(sample.f32("x").expect("x 缓冲"));
+        let mut out = vec![S::ZERO; out_len];
+        run(&x, &mut out).expect("run 应成功");
+        close(want, &back(&out), tol, what);
+    }
+
+    /// 归一化族精度对拍：给定 `f32` 参考，跑 `run::<S>`（多带 gamma/beta）并逐位比较。
+    fn norm_parity<S: Scalar>(
+        sample: &Sample,
+        want: &[f32],
+        out_len: usize,
+        run: impl Fn(&[S], &[S], &[S], &mut [S]) -> diagnostic::Result<()>,
+        tol: f32,
+        what: &str,
+    ) {
+        let x = cast::<S>(sample.f32("x").expect("x 缓冲"));
+        let gamma = cast::<S>(sample.f32("gamma").expect("gamma 缓冲"));
+        let beta = cast::<S>(sample.f32("beta").expect("beta 缓冲"));
+        let mut out = vec![S::ZERO; out_len];
+        run(&x, &gamma, &beta, &mut out).expect("run 应成功");
+        close(want, &back(&out), tol, what);
+    }
+
+    /// 窗口算子 `run` 在 f16 / bf16 / f64 下与 f32 参考一致：同一份泛型算术，四种精度一条路径。
+    macro_rules! window_precisions {
+        ($mod:ident, $out_len:expr) => {
+            let sample = $mod::sample(1, 1);
+            let want = $mod::reference(&sample).expect("f32 参考");
+            window_parity::<f16>(
+                &sample,
+                &want,
+                $out_len,
+                $mod::run::<f16>,
+                1e-2,
+                concat!(stringify!($mod), " f16"),
+            );
+            window_parity::<bf16>(
+                &sample,
+                &want,
+                $out_len,
+                $mod::run::<bf16>,
+                5e-2,
+                concat!(stringify!($mod), " bf16"),
+            );
+            window_parity::<f64>(
+                &sample,
+                &want,
+                $out_len,
+                $mod::run::<f64>,
+                1e-5,
+                concat!(stringify!($mod), " f64"),
+            );
+        };
+    }
+
+    #[test]
+    fn window_run_is_precision_consistent() {
+        window_precisions!(max_pool1d, max_pool1d::OL);
+        window_precisions!(max_pool2d, max_pool2d::H * max_pool2d::W);
+        window_precisions!(avg_pool2d, avg_pool2d::H * avg_pool2d::W);
+        window_precisions!(adaptive_pool, adaptive_pool::OH * adaptive_pool::OW);
+        window_precisions!(interpolate, interpolate::OH * interpolate::OW);
+    }
+
+    /// 归一化算子 `run` 在 f16 / bf16 / f64 下与 f32 参考一致。
+    macro_rules! norm_precisions {
+        ($mod:ident, $out_len:expr) => {
+            let sample = $mod::sample(1, 1);
+            let want = $mod::reference(&sample).expect("f32 参考");
+            norm_parity::<f16>(
+                &sample,
+                &want,
+                $out_len,
+                $mod::run::<f16>,
+                2e-2,
+                concat!(stringify!($mod), " f16"),
+            );
+            norm_parity::<bf16>(
+                &sample,
+                &want,
+                $out_len,
+                $mod::run::<bf16>,
+                1e-1,
+                concat!(stringify!($mod), " bf16"),
+            );
+            norm_parity::<f64>(
+                &sample,
+                &want,
+                $out_len,
+                $mod::run::<f64>,
+                1e-5,
+                concat!(stringify!($mod), " f64"),
+            );
+        };
+    }
+
+    #[test]
+    fn norm_run_is_precision_consistent() {
+        norm_precisions!(batch_norm, batch_norm::N * batch_norm::S * batch_norm::C);
+        norm_precisions!(group_norm, group_norm::N * group_norm::S * group_norm::C);
+        norm_precisions!(instance_norm, instance_norm::N * instance_norm::S * instance_norm::C);
+        norm_precisions!(layer_norm, layer_norm::R * layer_norm::W);
     }
 }
