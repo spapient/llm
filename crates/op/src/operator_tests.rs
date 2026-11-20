@@ -82,3 +82,28 @@ fn gemm_projection_matches_the_registered_model() {
     assert_projection_matches_registry::<crate::gemm::gemm_i8::GemmI8>();
     assert_projection_matches_registry::<crate::gemm::gemm_f32::Dense>();
 }
+
+#[test]
+fn normalization_and_shape_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::softmax::softmax_f32::Softmax>();
+    assert_projection_matches_registry::<crate::softmax::rmsnorm_f32::RmsNorm>();
+    assert_projection_matches_registry::<crate::softmax::rope_f32::Rope>();
+    assert_projection_matches_registry::<crate::softmax::embed_f32::Embed>();
+    assert_projection_matches_registry::<crate::scan::scan_f32::Scan>();
+}
+
+#[test]
+fn attention_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::attention::Attention>();
+    assert_projection_matches_registry::<crate::attention::FlashAttention>();
+    assert_projection_matches_registry::<crate::attention::decode_attention::DecodeAttention>();
+    assert_projection_matches_registry::<
+        crate::attention::decode_attention::DecodeFlashAttention,
+    >();
+}
+
+#[test]
+fn matmul_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::matmul::Matmul>();
+    assert_projection_matches_registry::<crate::matmul_i8::MatmulI8Op>();
+}
