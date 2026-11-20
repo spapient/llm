@@ -699,6 +699,34 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
         eprintln!("simdgroup 探测通过：8×8×8 矩阵乘 32 线程单线程组，输出与 CPU 参考一致");
     }
 
+    #[test]
+    #[ignore]
+    fn dump_attention_msl() {
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("dump-attn"));
+        let flash = cutile::execution::metal_flash_attention_program(
+            &catalogue,
+            &dirs,
+            "attention_f32",
+            512,
+            64,
+            64,
+            512,
+        )
+        .expect("flash");
+        std::fs::write("/tmp/flash.msl", flash).expect("写 flash");
+        let tiled = cutile::execution::metal_tiled_attention_program(
+            &catalogue,
+            &dirs,
+            "attention_f32",
+            512,
+            64,
+            64,
+        )
+        .expect("tiled");
+        std::fs::write("/tmp/tiled.msl", tiled).expect("写 tiled");
+    }
+
     /// Metal 真机 matmul 前向基准：同一份 `M×N×K` 稠密 f32 在两条路径上跑同一算术，
     /// 对拍 GPU 与 CPU 参考、并报 naive（每线程一输出）与 tiled（threadgroup 共享内存分块）
     /// 的真实端到端延迟与 GFLOP/s。
@@ -863,13 +891,7 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
             let block = [32, 1, 1];
             queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
             assert_matmul_matches("simdgroup", &reference, y_buf.as_mut_bytes());
-            let ns = measure(
-                &queue,
-                &pipe,
-                &[&a_buf, &b_buf, &y_buf],
-                simd_grid,
-                block,
-            );
+            let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
             eprintln!(
                 "  simdgroup {row_frags}×{col_frags} 片段：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
                 flop / ns,
@@ -1069,14 +1091,15 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
             )
             .expect("flash attention MSL 应能生成");
             let pipe = device.compile(&msl).expect("flash attention MSL 应能编译");
-            queue.execute(
+            queue.execute(&pipe, &[&q_buf, &k_buf, &v_buf, &y_buf], launch, block);
+            assert_matmul_matches("attn-long-flash", &reference, y_buf.as_mut_bytes());
+            let ns = measure(
+                &queue,
                 &pipe,
                 &[&q_buf, &k_buf, &v_buf, &y_buf],
                 launch,
                 block,
             );
-            assert_matmul_matches("attn-long-flash", &reference, y_buf.as_mut_bytes());
-            let ns = measure(&queue, &pipe, &[&q_buf, &k_buf, &v_buf, &y_buf], launch, block);
             eprintln!(
                 "  flash block={key_block}：{ns:.1} ns 对网格={:.2}×",
                 grid_ns / ns,

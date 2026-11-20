@@ -126,11 +126,8 @@ pub fn metal_simdgroup_gemm(
     col_frags: usize,
 ) -> Result<String> {
     if !(1..=4).contains(&row_frags) || !(1..=4).contains(&col_frags) {
-        return Err(
-            Error::new(Code::Invalid, "simdgroup 片段数必须在 1..=4").with(
-                "engine::tiled::metal_simdgroup_gemm",
-            ),
-        );
+        return Err(Error::new(Code::Invalid, "simdgroup 片段数必须在 1..=4")
+            .with("engine::tiled::metal_simdgroup_gemm"));
     }
     let (a, b, y) = gemm_buffers(signature)?;
     let (_, n, k) = gemm_dims(signature, sample)?;
@@ -447,10 +444,11 @@ pub fn metal_flash_attention(
     block: usize,
 ) -> Result<String> {
     if !flash_geometry_ok(threads, block) {
-        return Err(
-            Error::new(Code::Invalid, "flash attention 线程数须为 2 的幂、块为线程数倍数")
-                .with("engine::tiled::metal_flash_attention"),
-        );
+        return Err(Error::new(
+            Code::Invalid,
+            "flash attention 线程数须为 2 的幂、块为线程数倍数",
+        )
+        .with("engine::tiled::metal_flash_attention"));
     }
     let (q, k, v, y) = attention_buffers(signature)?;
     let (s, d) = attention_dims(signature, sample)?;
@@ -490,7 +488,12 @@ fn flash_attention_msl(
         .map(|n| flash_acc_update(v, n, threads, d, block, tail))
         .collect();
     let writes: String = (0..nd)
-        .map(|n| format!("    {{ const uint h = t + {}; if (h < D) d_{y}[i * D + h] = acc_{n} / l; }}\n", n * threads))
+        .map(|n| {
+            format!(
+                "    {{ const uint h = t + {}; if (h < D) d_{y}[i * D + h] = acc_{n} / l; }}\n",
+                n * threads
+            )
+        })
         .collect();
     format!(
         "#include <metal_stdlib>\n\

@@ -230,9 +230,7 @@ fn metal_lower(
         | SimdGroupGemm { .. }
         | TiledAttention { .. }
         | FlashAttention { .. }
-        | WmmaGemm => {
-            metal_special(kernel, signature, sample, kind)
-        }
+        | WmmaGemm => metal_special(kernel, signature, sample, kind),
     }
 }
 
@@ -275,14 +273,8 @@ fn metal_gemm_lower(
         SimdGroupGemm {
             row_frags,
             col_frags,
-        } => crate::tiled::metal_simdgroup_gemm(
-            kernel,
-            signature,
-            sample,
-            *row_frags,
-            *col_frags,
-        )
-        .map(|s| vec![s]),
+        } => crate::tiled::metal_simdgroup_gemm(kernel, signature, sample, *row_frags, *col_frags)
+            .map(|s| vec![s]),
         WmmaGemm => Err(Error::new(
             Code::Unsupported,
             "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),

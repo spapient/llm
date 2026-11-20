@@ -325,10 +325,7 @@ mod tests {
         let history = [0, 1, 2, 0, 1];
 
         assert_eq!(
-            drafter
-                .walk(&history, &[row(2, 4)])
-                .unwrap_err()
-                .code(),
+            drafter.walk(&history, &[row(2, 4)]).unwrap_err().code(),
             Code::Invalid,
             "草稿两位、只给了 1 行"
         );

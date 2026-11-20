@@ -1096,7 +1096,9 @@ mod tests {
             panic!("1 生成 + 4 上下文正好 5 行");
         };
         assert_eq!(
-            rows.iter().map(|row| (row.id(), row.rows())).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|row| (row.id(), row.rows()))
+                .collect::<Vec<_>>(),
             [(2, 1), (1, 4)],
             "预算够了就按整页推进一块"
         );
@@ -1114,17 +1116,11 @@ mod tests {
 
         assert_eq!(
             batch.round(Budget::new(1, 4)),
-            Verdict::OverSeqs {
-                seqs: 2,
-                max: 1
-            }
+            Verdict::OverSeqs { seqs: 2, max: 1 }
         );
         assert_eq!(
             batch.round(Budget::new(2, 1)),
-            Verdict::OverTokens {
-                tokens: 2,
-                max: 1
-            }
+            Verdict::OverTokens { tokens: 2, max: 1 }
         );
     }
 
