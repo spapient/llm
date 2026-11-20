@@ -1755,9 +1755,9 @@ fn memory_bypass_adds_the_gated_row_only_once_history_reaches_the_order() {
     );
 }
 
-/// 投影首层走向量主链占位：Predict 用零向量作隐向量输入，与显式零向量张量级 forward 一致。
+/// Token-only Predict 无法提供非 Embedding 首层所需的真实隐向量，必须明确拒绝。
 #[test]
-fn predict_with_a_projection_first_layer_uses_a_zero_vector_placeholder() {
+fn predict_rejects_a_projection_first_layer_without_vector_input() {
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
     ])
@@ -1767,12 +1767,11 @@ fn predict_with_a_projection_first_layer_uses_a_zero_vector_placeholder() {
     let mut model = assemble(stack, params);
     let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
     let mut batch = plain_batch();
-    let produced = model
+    let error = model
         .logits(&sequence, &mut batch)
-        .expect("投影首层占位向量输入");
-    let reference = model.forward(&[0.0; 3]).expect("张量级参考：零向量");
-
-    assert_close(&produced, &reference);
+        .expect_err("缺少向量输入必须拒绝");
+    assert_eq!(error.code(), Code::Unsupported);
+    assert!(error.to_string().contains("真实向量输入"));
 }
 
 /// 投影权重 `[out, in]`：确定性小值矩阵，便于参考路径串行重算。

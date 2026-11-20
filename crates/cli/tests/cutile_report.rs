@@ -461,17 +461,26 @@ pub(super) fn working_set_line(measured: &Bench) -> String {
 
 /// 产物行：复用还是新编译，以及落盘路径。
 pub(super) fn artifact_line(measured: &Bench) -> String {
-    let origin = if measured.artifact.reused {
-        format!("复用，未调用编译器 | {}", measured.artifact.path.display())
-    } else {
-        format!("新编译并落盘 | {}", measured.artifact.path.display())
-    };
-    format!(
-        "  产物  {}（{} / {}：{origin}）\n",
-        measured.artifact.key.hex(),
-        measured.artifact.key.tool,
-        params_note(&measured.flags)
-    )
+    match &measured.artifact {
+        Some(artifact) => {
+            let origin = if artifact.reused {
+                format!("复用，未调用编译器 | {}", artifact.path.display())
+            } else {
+                format!("新编译并落盘 | {}", artifact.path.display())
+            };
+            format!(
+                "  产物  {}（{} / {}：{origin}）\n",
+                artifact.key.hex(),
+                artifact.key.tool,
+                params_note(&measured.flags)
+            )
+        }
+        None => format!(
+            "  产物  生产态设备源，临时编译、不缓存（工具链 {} / 参数 {}）\n",
+            measured.toolchain.as_deref().unwrap_or("未知"),
+            params_note(&measured.flags)
+        ),
+    }
 }
 
 /// 缓存目录行：未落盘时给一个占位符，不留空字段。

@@ -206,6 +206,13 @@ pub fn parse_bits(stdout: &str) -> Vec<f32> {
         .collect()
 }
 
+/// 解析设备/host 驱动在 stderr 上输出的纳秒样本。
+pub fn parse_timing(stderr: &str) -> Timing {
+    Timing {
+        samples_ns: parse_samples(stderr),
+    }
+}
+
 /// 每行 `ns <value>` 是一个计时样本；缺行就是没有样本（由调用方决定是否算失败）。
 fn parse_samples(stderr: &str) -> Vec<f64> {
     stderr

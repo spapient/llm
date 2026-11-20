@@ -170,6 +170,100 @@ fn msvc_version(cl: &Path) -> Vec<u32> {
 /// MSL 的形参必须带地址空间：MSL 没有默认地址空间，裸 `float *` 在那里是语法错误。
 const MSL_PARAMS: &str = "thread float *";
 
+fn benchmark_output_len(signature: &Signature, sample: &Sample) -> Result<usize> {
+    let output = cutile::harness::output_name(signature)?;
+    sample
+        .buffer(output)
+        .map(|buffer| buffer.values.len())
+        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))
+}
+
+fn benchmark_grid(grid: &op::decl::Grid, sample: &Sample) -> Result<[usize; 3]> {
+    if grid.dims.is_empty() || grid.dims.len() > 3 {
+        return Err(Error::new(
+            Code::Unsupported,
+            "设备基准要求一到三个明确的网格维度",
+        ));
+    }
+    let mut dims = [1usize; 3];
+    for (index, (_, scalar)) in grid.dims.iter().enumerate() {
+        let value = sample.scalar(scalar).ok_or_else(|| {
+            Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值"))
+        })?;
+        dims[index] = usize::try_from(value)
+            .map_err(|_| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 必须为正数")))?;
+        if dims[index] == 0 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("网格标量 `{scalar}` 必须为正数"),
+            ));
+        }
+    }
+    Ok(dims)
+}
+
+fn metal_bench_geometry(
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<([usize; 3], [usize; 3])> {
+    match kind {
+        Lower::Pointwise => Ok((
+            [benchmark_output_len(signature, sample)?, 1, 1],
+            [256, 1, 1],
+        )),
+        Lower::Loop(grid) => Ok((benchmark_grid(grid, sample)?, [1, 1, 1])),
+        _ => Err(Error::new(
+            Code::Unsupported,
+            "该 lowering 尚无单 kernel 设备计时封装",
+        )),
+    }
+}
+
+fn cuda_bench_geometry(
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<([usize; 3], [usize; 3], String)> {
+    match kind {
+        Lower::Pointwise => {
+            let len = benchmark_output_len(signature, sample)?;
+            Ok((
+                [len.div_ceil(256), 1, 1],
+                [256, 1, 1],
+                crate::codegen::buffer_args(signature),
+            ))
+        }
+        Lower::Loop(grid) => Ok((
+            benchmark_grid(grid, sample)?,
+            [1, 1, 1],
+            crate::codegen::launch_args(sample, signature.params())?,
+        )),
+        Lower::QuantizedGemvI4 { threads } => {
+            if *threads != 32 {
+                return Err(Error::new(Code::Unsupported, "CUDA GEMV 要求 32-lane warp"));
+            }
+            let rows = sample
+                .scalar("N")
+                .ok_or_else(|| Error::new(Code::Invalid, "gemv_i4 样本缺少输出宽度 N"))?;
+            let rows = usize::try_from(rows)
+                .map_err(|_| Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"))?;
+            if rows == 0 {
+                return Err(Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"));
+            }
+            Ok((
+                [rows, 1, 1],
+                [*threads, 1, 1],
+                crate::codegen::launch_args(sample, signature.params())?,
+            ))
+        }
+        _ => Err(Error::new(
+            Code::Unsupported,
+            "该 lowering 尚无单 kernel 设备计时封装",
+        )),
+    }
+}
+
 struct MetalBackend;
 
 impl Codegen for MetalBackend {
@@ -198,6 +292,30 @@ impl Codegen for MetalBackend {
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
         let (device, host) = crate::codegen::metal_harness(kernel, signature, sample)?;
         Ok(Source::Pair { device, host })
+    }
+    fn benchmark_harness(
+        &self,
+        _profile: &Profile,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        kind: &Lower,
+        repeat: usize,
+    ) -> Result<Source> {
+        let lowered = metal_lower(kernel, signature, sample, kind)?;
+        let [device] = lowered.as_slice() else {
+            return Err(Error::new(
+                Code::Unsupported,
+                "Metal 基准当前只支持单段生产态 kernel",
+            ));
+        };
+        let (grid, threads) = metal_bench_geometry(signature, sample, kind)?;
+        let host =
+            crate::codegen::metal_benchmark_driver(signature, sample, grid, threads, repeat)?;
+        Ok(Source::Pair {
+            device: device.clone(),
+            host,
+        })
     }
 }
 
@@ -247,6 +365,10 @@ fn metal_lower(
     use cutile::backend::Lower::*;
     match kind {
         Pointwise => crate::codegen::metal_grid_kernel(kernel, signature).map(|s| vec![s]),
+        QuantizedGemvI4 { .. } => Err(Error::new(
+            Code::Unsupported,
+            "合作式 int4 GEMV 当前仅落地在 CUDA/MUSA",
+        )),
         Loop(grid) => {
             crate::codegen::metal_loop_kernel(kernel, signature, sample, grid).map(|s| vec![s])
         }
@@ -365,6 +487,7 @@ fn metal_chunk_lower(
         }
         Pointwise
         | Loop(_)
+        | QuantizedGemvI4 { .. }
         | TiledGemm { .. }
         | SimdGroupGemm { .. }
         | TiledAttention { .. }
@@ -615,6 +738,35 @@ impl Codegen for CudaBackend {
             kernel, signature, sample,
         )?))
     }
+    fn benchmark_harness(
+        &self,
+        profile: &Profile,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        kind: &Lower,
+        repeat: usize,
+    ) -> Result<Source> {
+        let lowered = cuda_lower(kernel, signature, sample, kind)?;
+        let [device] = lowered.as_slice() else {
+            return Err(Error::new(
+                Code::Unsupported,
+                "CUDA 基准当前只支持单段生产态 kernel",
+            ));
+        };
+        let (grid, threads, args) = cuda_bench_geometry(signature, sample, kind)?;
+        let source = crate::codegen::cuda_benchmark_driver(
+            device,
+            signature,
+            sample,
+            grid,
+            threads,
+            &args,
+            repeat,
+            profile.meta.tool == "mcc",
+        )?;
+        Ok(Source::Single(source))
+    }
 }
 
 impl Driver for CudaBackend {
@@ -680,6 +832,9 @@ fn cuda_lower(
         }
         ChunkScan { chunk, decay } => {
             crate::scan::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
+        }
+        QuantizedGemvI4 { threads } => {
+            crate::codegen::cuda_quantized_gemv_i4(signature, *threads).map(single_file)
         }
         // 其余骨架都只吐一段源码；分派单独一层，是为了让这一层只回答「哪一族」。
         _ => cuda_single_source(kind, kernel, signature, sample).map(single_file),

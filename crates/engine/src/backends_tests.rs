@@ -81,6 +81,58 @@ fn metal_driver_wrapper_is_nonempty() {
     assert!(!driver.is_empty());
 }
 
+#[test]
+fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
+    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置算子");
+    let op = catalogue.op("gemv_f32").expect("gemv_f32 声明");
+    let model = op::model("gemv_f32").expect("gemv_f32 模型");
+    let sample = (model.sample)(2, 4);
+    op.signature.check(&sample).expect("样本与签名一致");
+
+    let i4 = catalogue.op("gemv_i4").expect("gemv_i4 声明");
+    let cuda_kernel = crate::codegen::cuda_quantized_gemv_i4(&i4.signature, 32).expect("CUDA 内核");
+    assert!(cuda_kernel.contains("__shfl_down_sync"));
+
+    let cuda_args =
+        crate::codegen::launch_args(&sample, op.signature.params()).expect("CUDA 启动实参");
+    let cuda = crate::codegen::cuda_benchmark_driver(
+        "__global__ void kernel_main() {}",
+        &op.signature,
+        &sample,
+        [2, 1, 1],
+        [1, 1, 1],
+        &cuda_args,
+        3,
+        false,
+    )
+    .expect("CUDA 驱动");
+    assert!(cuda.contains("cudaEventRecord(start)"));
+    assert!(cuda.contains("cudaEventElapsedTime"));
+    assert!(cuda.contains("for (int sample = 0; sample < 3; ++sample)"));
+    assert!(cuda.contains("ns %.3f"));
+    let musa = crate::codegen::cuda_benchmark_driver(
+        "__global__ void kernel_main() {}",
+        &op.signature,
+        &sample,
+        [2, 1, 1],
+        [1, 1, 1],
+        &cuda_args,
+        3,
+        true,
+    )
+    .expect("MUSA 驱动");
+    assert!(musa.contains("#define cudaEvent_t musaEvent_t"));
+    assert!(musa.contains("#define cudaEventRecord musaEventRecord"));
+
+    let metal =
+        crate::codegen::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
+            .expect("Metal 驱动");
+    assert!(metal.contains("GPUStartTime"));
+    assert!(metal.contains("GPUEndTime"));
+    assert!(metal.contains("dispatchThreads:"));
+    assert!(metal.contains("ns %.3f"));
+}
+
 // ---------------------------------------------------------------------------
 // Metal 见证真机 + 前端签名（从 cutile/witness 搬来）。
 // ---------------------------------------------------------------------------
