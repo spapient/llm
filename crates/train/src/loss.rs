@@ -210,7 +210,7 @@ pub fn huber(pred: &[f32], target: &[f32], delta: f32) -> Result<f32> {
             format!("huber: 形状不一致 {} vs {}", pred.len(), target.len()),
         ));
     }
-    if !(delta > 0.0) {
+    if delta <= 0.0 {
         return Err(Error::new(Code::Invalid, "huber: delta 必须为正"));
     }
     let d = delta as f64;
@@ -219,7 +219,11 @@ pub fn huber(pred: &[f32], target: &[f32], delta: f32) -> Result<f32> {
         .zip(target.iter())
         .map(|(p, t)| {
             let e = (*p as f64 - *t as f64).abs();
-            if e <= d { 0.5 * e * e } else { d * (e - 0.5 * d) }
+            if e <= d {
+                0.5 * e * e
+            } else {
+                d * (e - 0.5 * d)
+            }
         })
         .sum();
     Ok((sum / pred.len() as f64) as f32)
@@ -266,7 +270,10 @@ mod tests {
         // 误差 0 / 2 / 0.5 / 10，δ=1：0 + 1×(2−0.5) + 0.5×0.25 + 1×(10−0.5)，再除以 4。
         let want = (0.0f64 + 1.5 + 0.125 + 9.5) / 4.0;
         let got = huber(&pred, &target, 1.0)?;
-        assert!((f64::from(got) - want).abs() < 1e-6, "huber {got} vs {want}");
+        assert!(
+            (f64::from(got) - want).abs() < 1e-6,
+            "huber {got} vs {want}"
+        );
         // δ 大到盖住全部误差时退化为 0.5×MSE。
         let got = huber(&[0.5f32, -0.25], &[0.0f32, 0.0], 100.0)?;
         assert!((f64::from(got) - (0.25f64 + 0.0625) / 4.0).abs() < 1e-6);
@@ -291,7 +298,7 @@ mod tests {
         assert!(bce_with_logits(&logits, &[1.0])? < 1e-6);
         assert!((bce_with_logits(&logits, &[0.0])? - 100.0).abs() < 1e-3);
         // 对称点：logit 0 与任意标签都应得到 ln2。
-        assert!((bce_with_logits(&[0.0], &[1.0])? - 0.693_147_2).abs() < 1e-5);
+        assert!((bce_with_logits(&[0.0], &[1.0])? - std::f32::consts::LN_2).abs() < 1e-5);
         Ok(())
     }
 
@@ -619,5 +626,4 @@ pub mod objective {
             ));
         }
     }
-
 }
