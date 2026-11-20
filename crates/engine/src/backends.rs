@@ -649,6 +649,23 @@ fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>])
     driver::push_dispatch(program, max, selected, "}\n\n");
 }
 
+/// 回读口径：逐见证打印位模式，再打一行 `witness N`。
+///
+/// CUDA 与昪腾的 host 驱动共用这一段字面：同一个 `driver::readback` 在两种产物上必须读出同一种
+/// 文本，各写一份时改一处就会漂。
+fn witness_readback(max: usize) -> String {
+    format!(
+        "\x20   for (int t = 0; t < total; ++t) {{\n\
+         \x20       for (int i = 0; i < h_counts[t]; ++i) {{\n\
+         \x20           union {{ float f; unsigned int u; }} v;\n\
+         \x20           v.f = h_out[t * {max} + i];\n\
+         \x20           printf(\"%u\\n\", v.u);\n\
+         \x20       }}\n\
+         \x20       fprintf(stderr, \"witness %d\\n\", h_counts[t]);\n\
+         \x20   }}\n"
+    )
+}
+
 fn push_cuda_main(program: &mut String, max: usize, total: usize) {
     program.push_str(&format!(
         "int main() {{\n\
@@ -664,19 +681,14 @@ fn push_cuda_main(program: &mut String, max: usize, total: usize) {
          \x20   }}\n\
          \x20   float h_out[total * {max}]; int h_counts[total];\n\
          \x20   cudaMemcpy(h_out, d_out, total * {max} * sizeof(float), cudaMemcpyDeviceToHost);\n\
-         \x20   cudaMemcpy(h_counts, d_counts, total * sizeof(int), cudaMemcpyDeviceToHost);\n\
-         \x20   for (int t = 0; t < total; ++t) {{\n\
-         \x20       for (int i = 0; i < h_counts[t]; ++i) {{\n\
-         \x20           union {{ float f; unsigned int u; }} v;\n\
-         \x20           v.f = h_out[t * {max} + i];\n\
-         \x20           printf(\"%u\\n\", v.u);\n\
-         \x20       }}\n\
-         \x20       fprintf(stderr, \"witness %d\\n\", h_counts[t]);\n\
-         \x20   }}\n\
-         \x20   cudaFree(d_out); cudaFree(d_counts);\n\
-         \x20   return 0;\n\
-         \x20   }}\n"
+         \x20   cudaMemcpy(h_counts, d_counts, total * sizeof(int), cudaMemcpyDeviceToHost);\n"
     ));
+    program.push_str(&witness_readback(max));
+    program.push_str(
+        "\x20   cudaFree(d_out); cudaFree(d_counts);\n\
+         \x20   return 0;\n\
+         \x20   }}\n",
+    );
 }
 
 /// 编译并运行任意 CUDA 程序，返回 `(stdout, stderr)` 原文：临时目录、nvcc（Windows 用 `-ccbin`
@@ -903,16 +915,11 @@ fn push_ascend_main(program: &mut String, max: usize, total: usize) {
          \x20       return 1;\n\
          \x20   }}\n\
          \x20   CUTILE_ACL(aclrtMemcpy(h_out, out_bytes, d_out, out_bytes, ACL_MEMCPY_DEVICE_TO_HOST));\n\
-         \x20   CUTILE_ACL(aclrtMemcpy(h_counts, cnt_bytes, d_counts, cnt_bytes, ACL_MEMCPY_DEVICE_TO_HOST));\n\
-         \x20   for (int t = 0; t < total; ++t) {{\n\
-         \x20       for (int i = 0; i < h_counts[t]; ++i) {{\n\
-         \x20           union {{ float f; unsigned int u; }} v;\n\
-         \x20           v.f = h_out[t * {max} + i];\n\
-         \x20           printf(\"%u\\n\", v.u);\n\
-         \x20       }}\n\
-         \x20       fprintf(stderr, \"witness %d\\n\", h_counts[t]);\n\
-         \x20   }}\n\
-         \x20   free(h_out); free(h_counts);\n\
+         \x20   CUTILE_ACL(aclrtMemcpy(h_counts, cnt_bytes, d_counts, cnt_bytes, ACL_MEMCPY_DEVICE_TO_HOST));\n"
+    ));
+    program.push_str(&witness_readback(max));
+    program.push_str(
+        "\x20   free(h_out); free(h_counts);\n\
          \x20   CUTILE_ACL(aclrtFree(d_out));\n\
          \x20   CUTILE_ACL(aclrtFree(d_counts));\n\
          \x20   CUTILE_ACL(aclrtDestroyStream(stream));\n\

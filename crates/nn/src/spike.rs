@@ -310,6 +310,195 @@ impl Spiking {
         }
         Ok(())
     }
+
+    /// 一份与本层同布局的零化梯度缓冲（反传每次写满每一格，所以只需在这里分配一次）。
+    #[must_use]
+    pub fn gradients(&self) -> Gradients {
+        Gradients {
+            weights: vec![0.0; self.weights.len()],
+            scale: vec![0.0; self.outputs],
+            current: vec![0.0; self.outputs],
+        }
+    }
+
+    /// 反向一步：吃本步的输入脉冲、当前状态与输出侧梯度，写满 `grad` 的三条梯度。
+    ///
+    /// `state` 必须是**同一步** [`Spiking::step`] / [`Spiking::drive`] 之后的那份状态：整数累加与
+    /// 发放前膜电位都只在那里留有记录，跨步调用会把上一拍的累加当成这一拍。
+    ///
+    /// 链式三项：`∂L/∂v = ∂L/∂s · surrogate(v, θ)`；膜电位在发放前只由本层电流加进来一次，所以
+    /// `∂L/∂current` 就是 `∂L/∂v`；再往前是两条线性路径——`∂L/∂scale[i] = ∂L/∂v · acc[i]`、
+    /// `∂L/∂w[i][j] = ∂L/∂v · scale[i] · spike[j]`。发放本身是阶跃，它的导数只由 surrogate 给，
+    /// 前向不因此改变。
+    ///
+    /// 权重梯度落在 `f32` 上而不是 `i8`：训练留一份浮点主权重，`i8` 只是它的量化视图（QAT 口径），
+    /// 所以「对权重的梯度」本来就该由浮点侧接。
+    ///
+    /// # Errors
+    ///
+    /// 状态来自别的输出维度、脉冲长度/取值不合、输出梯度长度不符或非有限、梯度缓冲布局不符、
+    /// 代理梯度窗宽非正——都返回 [`Code::Invalid`]，且失败时 `grad` 一格都不写。
+    pub fn backward(
+        &self,
+        spikes: &[i8],
+        state: &Membrane,
+        surrogate: Surrogate,
+        d_out: &[f32],
+        grad: &mut Gradients,
+    ) -> Result<()> {
+        self.check_state(state)?;
+        surrogate.check()?;
+        self.check_spikes(spikes)?;
+        check_gradient(d_out, self.outputs)?;
+        grad.check(self)?;
+        for row in 0..self.outputs {
+            // 发放对电位的敏感度：窗外的通道拿零，等于「这一拍它没参与决策」。
+            let sensitivity = d_out[row] * surrogate.derivative(state.pre[row], self.threshold);
+            grad.current[row] = sensitivity;
+            grad.scale[row] = sensitivity * state.acc[row] as f32;
+            let upstream = sensitivity * self.scale[row];
+            for (column, spike) in spikes.iter().enumerate() {
+                grad.weights[row * self.inputs + column] = upstream * f32::from(*spike);
+            }
+        }
+        Ok(())
+    }
+
+    /// 脉冲判据：长度与输入宽度一致、取值三元——与 [`Spiking::pulse`] 用的是同一个 [`ternary`]。
+    fn check_spikes(&self, spikes: &[i8]) -> Result<()> {
+        if spikes.len() != self.inputs {
+            return Err(bad(format!(
+                "脉冲长度 {} 与输入宽度 {} 不符",
+                spikes.len(),
+                self.inputs
+            )));
+        }
+        match spikes.iter().find(|spike| !ternary(**spike)) {
+            Some(spike) => Err(bad(format!("脉冲取值必须是 −1/0/+1，得到 {spike}"))),
+            None => Ok(()),
+        }
+    }
+}
+
+/// 三元脉冲判据：`−1` / `0` / `+1`。稠密与事件两条路径、以及反传，都只认这三个值。
+fn ternary(spike: i8) -> bool {
+    matches!(spike, -1 | 0 | 1)
+}
+
+/// 输出侧梯度判据：长度与输出通道一致，取值有限。
+///
+/// `NaN` 必须挡在入口：它进了乘法就一路污染到每条权重，事后从结果里看不出是哪一格带进来的。
+fn check_gradient(d_out: &[f32], outputs: usize) -> Result<()> {
+    if d_out.len() != outputs {
+        return Err(bad(format!(
+            "输出梯度 {} 格与输出通道 {} 不符",
+            d_out.len(),
+            outputs
+        )));
+    }
+    match d_out.iter().find(|value| !finite(**value)) {
+        Some(value) => Err(bad(format!("输出梯度必须是有限值，得到 {value:?}"))),
+        None => Ok(()),
+    }
+}
+
+/// 代理梯度（surrogate）：只定义「发放对膜电位」的导数，不参与前向。
+///
+/// 前向的发放是阶跃——导数在阈值处没有定义、别处为零，照它反传什么也学不到。surrogate 用一个
+/// 面积为 1 的窗把这段导数抹平：窗内按形状给值，窗外为零。它**不是**「软化的前向」：前向仍走
+/// [`Lif`] 的硬判据，只有反传这一侧看窗，所以同一个 `step` 还是给出同一个脉冲。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Surrogate {
+    /// 矩形窗：`|v − θ| < width` 内恒为 `1/(2·width)`。
+    ///
+    /// 窗内一律同值，所以「离阈值多远」不影响梯度——简单，且对电位抖动不敏感。
+    Rect {
+        /// 窗的半宽。
+        width: f32,
+    },
+    /// 三角形：窗内从阈值处的 `1/width` 线性衰减到边界上的零。
+    ///
+    /// 峰落在阈值上，于是「刚好压线」的通道拿到的梯度最大——与阶跃真正被跨越的位置一致。
+    Triangle {
+        /// 窗的半宽。
+        width: f32,
+    },
+}
+
+impl Surrogate {
+    /// 窗的半宽。
+    #[must_use]
+    pub fn width(&self) -> f32 {
+        match self {
+            Self::Rect { width } | Self::Triangle { width } => *width,
+        }
+    }
+
+    /// 发放对膜电位的导数：`potential` 与 `threshold` 的距离落在窗内才有值。
+    ///
+    /// 两种形状的面积都是 1，所以换形状不换「总敏感度」，只换它怎么摊在窗内。
+    #[must_use]
+    pub fn derivative(&self, potential: f32, threshold: f32) -> f32 {
+        let offset = (potential - threshold).abs();
+        // `!(offset < width)` 连 `NaN` 一起挡在窗外：任何与 `NaN` 的大小于比较都为假，写成
+        // `offset >= width` 会让 `NaN` 走进窗内拿到一个假的导数。
+        if !(offset < self.width()) {
+            return 0.0;
+        }
+        match self {
+            Self::Rect { width } => 1.0 / (2.0 * width),
+            Self::Triangle { width } => (width - offset) / (width * width),
+        }
+    }
+
+    /// 参数判据：半宽必须有限为正（零宽等于没有梯度，负宽会让窗内外颠倒）。
+    fn check(&self) -> Result<()> {
+        let width = self.width();
+        if !finite(width) || width <= 0.0 {
+            return Err(bad(format!("代理梯度的窗宽必须有限为正，得到 {width:?}")));
+        }
+        Ok(())
+    }
+}
+
+/// 一层脉冲线性的梯度，布局与本层参数逐项对齐。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gradients {
+    weights: Vec<f32>,
+    scale: Vec<f32>,
+    current: Vec<f32>,
+}
+
+impl Gradients {
+    /// 对权重的梯度，行主序 `[outputs, inputs]`（与本层的权重同一布局）。
+    #[must_use]
+    pub fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+
+    /// 对逐行反量化尺度的梯度，一条对一行。
+    #[must_use]
+    pub fn scale(&self) -> &[f32] {
+        &self.scale
+    }
+
+    /// 对本层输出**电流**的梯度，可直接交给上一层的反传。
+    #[must_use]
+    pub fn current(&self) -> &[f32] {
+        &self.current
+    }
+
+    /// 缓冲判据：三条梯度必须与本层参数同形，长了短了都会静默写错行。
+    fn check(&self, layer: &Spiking) -> Result<()> {
+        let shape = [self.weights.len(), self.scale.len(), self.current.len()];
+        let want = [layer.weights.len(), layer.outputs, layer.outputs];
+        if shape != want {
+            return Err(bad(format!(
+                "梯度缓冲 {shape:?} 与本层 {want:?} 不符"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// 一层的状态：每通道一条 [`Lif`]、一段复用的整数累加缓冲，以及本步发放前的膜电位。
