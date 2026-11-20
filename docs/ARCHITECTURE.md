@@ -20,7 +20,7 @@
 | L6 调度与服务 | `train`、`engine`、`serve` | 训练样本与循环、检查点、连续批与 KV 页账、提交与执行体、设备后端实现（`engine::metal` / `backends`，实现 `cutile` 的 `Backend` 缝）、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
-`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benches`（集中测量容器）与 `testkit`（测试夹具与门禁）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
+`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）与 `testkit`（测试夹具与门禁）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
 
 `testkit` 的库体只出浮点口径、随机数与暂存目录等夹具，跨层对拍与门禁在它的 `tests/` 下运行，
 被测内核只出现在 dev-dependencies 里，不进任何产品路径。
@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -59,7 +59,7 @@ engine   → tensor, diagnostic, storage, cutile, op, prof    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tool（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
-benches  → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：只声明被测对象，测量配置归 criterion）
+benchmarks → +dev: prof, op, cutile, wire, weights, tokenizer, tool, testkit, train, autograd, tensor, nn, engine, serve（工具成员：只声明被测对象，测量配置归 criterion）
 tool     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定）    +dev: testkit
 testkit  → +dev: autograd, cutile, nn, op, tensor, tool, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 wire     → diagnostic（纯字节码闭集，不认识张量或容器布局）    +dev: testkit
@@ -165,7 +165,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tool` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
 | `Case` / `Baseline` / `Judgement` | `tool` | 回退判定（与基线相比有没有退）；不做测量 |
 | `EntryKind` / `Harness` / `Roofline` / `Geometry` / `BenchRecord` | `tool` | 统一基准记录结构：只持有记录，不测量、不下性能结论，未测得的峰值留 `None` |
-| `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tool` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benches` |
+| `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tool` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 
 几个**同名不同物**的邻居，评审时容易混淆：

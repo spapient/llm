@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # 工具成员：整体排除机制分母。
-TOOL_MEMBERS="annotation fuzz benches"
+TOOL_MEMBERS="annotation fuzz benchmarks"
 
 LAYERS=(L1 L2 L3 L4 L5 L6 L7)
 LAYER_LINES=(0 0 0 0 0 0 0)
@@ -105,5 +105,5 @@ else
     printf "%-6s %8d %8d\n" "合计" "$TOTAL_FILES" "$TOTAL_LINES"
     echo
     echo "注：目录级口径，未扣内联 #[cfg(test)] 体；严格口径经 tool::strip_tests 再扣。"
-    echo "注：工具成员 annotation / fuzz / benches 与根 tests/、build.rs、target/ 已排除。"
+    echo "注：工具成员 annotation / fuzz / benchmarks 与根 tests/、build.rs、target/ 已排除。"
 fi
