@@ -287,6 +287,79 @@ pub fn cuda_softmax_program(
     )
 }
 
+/// 生产态 CUDA 循环注入网格内核（`Gemm` 骨架：gemv 一维 / gemm 二维共用一条 lowering）。
+///
+/// 返回 `(设备源, 各维网格大小)`：网格大小按 `[grid]` 声明的标量从样本取值（`dims[i]` 对应
+/// `kernel_main<<<dim3(dims[0], dims[1], dims[2]), 1>>>` 的 x/y/z）；host 驱动由调用方用
+/// `engine::codegen::cuda_loop_driver` 拼——设备段与驱动分属两层，机制层不生成 host C 文本。
+///
+/// # Errors
+///
+/// 算子没声明 `[grid]`、`nvidia` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn cuda_gemm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, Vec<usize>)> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
+    let grid = grid_of(run.op, op_name)?;
+    let dims = grid_dims(grid, &(run.model.sample)(m, n))?;
+    Ok((cuda_loop_source(grid, &run, &prepared, m, n)?, dims))
+}
+
+/// 算子的 `[grid]` 声明：没有声明就没有网格，循环注入无从谈起。
+fn grid_of<'a>(op: &'a OpDecl, op_name: &str) -> diagnostic::Result<&'a Grid> {
+    op.grid.as_ref().ok_or_else(|| {
+        Error::new(
+            Code::Unsupported,
+            format!("`{op_name}` 没有声明 `[grid]`，CUDA 循环注入不适用"),
+        )
+        .with("cutile::execution::cuda_gemm_program")
+    })
+}
+
+/// CUDA 循环注入的设备源：`Loop` 降级后只取那一段源码（单文件即单翻译单元）。
+fn cuda_loop_source(
+    grid: &Grid,
+    run: &Run<'_>,
+    prepared: &Prepared,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    single(
+        lower_sources(Emit::Cuda, &Lower::Loop(grid.clone()), run, prepared, m, n)?,
+        "cuda gemm",
+    )
+}
+
+/// 网格每一维的大小：把 `[grid]` 里的标量名按样本求值成 `usize`。
+///
+/// 抽出来的理由是可测性：`cuda_gemm_program` 本来就是编排（解析 → 求维 → 降级 → 取单源），
+/// 让它在循环里再摊三层错误分支，读的人得同时跟两条线。
+fn grid_dims(grid: &Grid, sample: &Sample) -> diagnostic::Result<Vec<usize>> {
+    grid.dims
+        .iter()
+        .map(|(_, scalar)| dim_size(scalar, sample))
+        .collect()
+}
+
+/// 一个网格标量的大小：样本没有取值、或取值不是非负 `usize`，都算声明与样本对不上。
+fn dim_size(scalar: &str, sample: &Sample) -> diagnostic::Result<usize> {
+    let size = sample.scalar(scalar).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值"))
+            .with("cutile::execution::cuda_gemm_program")
+    })?;
+    usize::try_from(size).map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!("网格标量 `{scalar}` = {size} 不是非负 usize"),
+        )
+        .with("cutile::execution::cuda_gemm_program")
+    })
+}
+
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(
     catalogue: &'a Catalogue,

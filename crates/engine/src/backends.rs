@@ -549,22 +549,47 @@ fn cuda_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::codegen::cuda_grid_kernel(kernel, signature).map(|s| vec![s]),
-        ChunkReduce { chunk, func } => {
-            crate::codegen::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
-                .map(|s| vec![s])
-        }
+        // 逐块归一化两族自己就产出单源，不经过下面的单文件包装。
         ChunkRmsnorm { chunk } => {
             crate::norm::cuda_chunk_rmsnorm(kernel, signature, sample, *chunk)
         }
         ChunkSoftmax { chunk } => {
             crate::norm::cuda_chunk_softmax(kernel, signature, sample, *chunk)
         }
-        Loop(_) | ChunkScan { .. } => Err(Error::new(
+        // 其余骨架都只吐一段源码；分派单独一层，是为了让这一层只回答「哪一族」。
+        _ => cuda_source(kind, kernel, signature, sample),
+    }
+}
+
+/// 单源骨架的分派：pointwise / chunk-reduce / loop 各产出一段源码，其余骨架尚未覆盖。
+///
+/// `ChunkRmsnorm` / `ChunkSoftmax` 已在 [`cuda_lower`] 里分派，落到这里的只会是 scan——所以
+/// 兜底臂不是「偷偷吞掉」，它专门回答「没有 CUDA 生产态 lowering」。
+fn cuda_source(
+    kind: &Lower,
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<Vec<String>> {
+    use cutile::backend::Lower::*;
+    match kind {
+        Pointwise => single(crate::codegen::cuda_grid_kernel(kernel, signature)),
+        ChunkReduce { chunk, func } => single(crate::codegen::cuda_chunk_reduce(
+            kernel, signature, sample, *chunk, func,
+        )),
+        Loop(grid) => single(crate::codegen::cuda_loop_kernel(
+            kernel, signature, sample, grid,
+        )),
+        _ => Err(Error::new(
             Code::Unsupported,
             "CUDA 生产态 lowering 尚未覆盖该骨架".to_string(),
         )),
     }
+}
+
+/// 单段源码 → 单元素文件表（CUDA 生产态每个骨架只产出一个翻译单元）。
+fn single(source: Result<String>) -> Result<Vec<String>> {
+    source.map(|text| vec![text])
 }
 
 fn cuda_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {

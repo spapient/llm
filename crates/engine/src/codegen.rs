@@ -611,10 +611,17 @@ fn bind_grid_loops(body: String, grid: &Grid) -> Result<String> {
 
 /// 给内部内核函数追加 `uint3 tid` 形参：`void {kernel}(...) {` → `void {kernel}(..., uint3 tid) {`。
 fn thread_param(body: &str, kernel: &str) -> Result<String> {
+    thread_param_typed(body, kernel, "uint3 tid")
+}
+
+/// [`thread_param`] 的方言版：Metal 的线程下标是 `uint3`，CUDA 侧用 `int3`（由 kernel_main 从
+/// `blockIdx` 装配，见 [`cuda_injected_kernel`]），其余改写规则一致。
+fn thread_param_typed(body: &str, kernel: &str, param: &str) -> Result<String> {
     let (paren_at, _) = kernel_span(body, kernel)?;
-    let mut out = String::with_capacity(body.len() + 12);
+    let mut out = String::with_capacity(body.len() + param.len() + 2);
     out.push_str(&body[..paren_at]);
-    out.push_str(", uint3 tid");
+    out.push_str(", ");
+    out.push_str(param);
     out.push_str(&body[paren_at..]);
     Ok(out)
 }
@@ -921,6 +928,146 @@ fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: us
 /// 生产态 CUDA 逐点网格内核（`grid_kernel` 的 CUDA 方言）。
 pub fn cuda_grid_kernel(kernel_source: &str, signature: &Signature) -> Result<String> {
     grid_kernel(kernel_source, signature, &CUDA)
+}
+
+/// `kernel_main` 的完整形参表：缓冲 + 标量（模板里的 `M` / `N` / `K` 是运行时值，循环注入与
+/// 串行都要把它们透传给内部内核）。
+fn cuda_launch_params(signature: &Signature) -> String {
+    let scalars = signature
+        .params()
+        .iter()
+        .filter(|param| !param.ctype.is_buffer())
+        .map(|param| format!("{} {}", param.ctype.c_name(), param.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let buffers = cuda_buffers(signature);
+    if scalars.is_empty() {
+        buffers
+    } else {
+        format!("{buffers},\n    {scalars}")
+    }
+}
+
+/// 生产态 CUDA 循环注入网格内核（`[grid]` 骨架的 CUDA 方言）：gemv 一维、gemm 二维共用。
+///
+/// 与 Metal 版同一条文本改写（循环头绑到线程下标、正文跨步原样保留），差异只有三处语法：
+/// - 内部内核追加的是 `int3 tid`；
+/// - `kernel_main` 里用 `blockIdx` 装配 `tid`；
+/// - 设备函数用 `__device__` 而非 `device` 地址空间。
+///
+/// 空网格（`dims` 为空）退化为串行：不追加 `tid`、不绑循环、缓冲与标量原样透传。
+///
+/// # Errors：模板里找不到声明的循环、签名与样本不一致时返回说明。
+pub fn cuda_loop_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: &Grid,
+) -> Result<String> {
+    if grid.dims.is_empty() {
+        return cuda_serial_kernel(kernel_source, signature, sample);
+    }
+    cuda_injected_kernel(kernel_source, signature, sample, grid)
+}
+
+/// CUDA 串行（零维网格）：不追加 `tid`，一次调用跑完整条循环。
+fn cuda_serial_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<String> {
+    let call = launch_args(sample, signature.params())?;
+    let buffers = cuda_launch_params(signature);
+    Ok(format!(
+        "{}\n\n__global__ void kernel_main(\n{buffers}) {{\n    {}({call});\n}}",
+        cuda_device(kernel_source, &signature.kernel()),
+        signature.kernel(),
+    ))
+}
+
+/// CUDA 循环注入：内部内核追加 `int3 tid`、绑循环头，`kernel_main` 用 `blockIdx` 装配 `tid` 并透传。
+fn cuda_injected_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: &Grid,
+) -> Result<String> {
+    let mut body = cuda_device(kernel_source, &signature.kernel());
+    body = thread_param_typed(&body, &signature.kernel(), "int3 tid")?;
+    body = bind_grid_loops(body, grid)?;
+    let call = format!("{}, tid", launch_args(sample, signature.params())?);
+    let buffers = cuda_launch_params(signature);
+    let init = "    int3 tid; tid.x = blockIdx.x; tid.y = blockIdx.y; tid.z = blockIdx.z;\n";
+    Ok(format!(
+        "{body}\n\n__global__ void kernel_main(\n{buffers}) {{\n{init}    {}({call});\n}}",
+        signature.kernel(),
+    ))
+}
+
+/// 生产态 CUDA 循环注入的 host 驱动：按 `dims` 组成 `dim3` 网格发射 `kernel_main`，
+/// 分配/拷贝/回读与 [`cuda_grid_driver`] 同一口径（输出长度取样本值）。
+///
+/// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲时返回说明。
+pub fn cuda_loop_driver(
+    device_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    dims: &[usize],
+) -> Result<String> {
+    let (output, values) = output_of(signature, sample)?;
+    let len = values.len();
+    let grid = cuda_grid(dims);
+    let mut text = cuda_prologue(device_source);
+    text.push_str("\nint main(void) {\n");
+    text.push_str(&cuda_host_buffers_grid(
+        sample,
+        signature.params(),
+        output,
+        len,
+    )?);
+    text.push_str(&format!(
+        "    kernel_main<<<dim3({}, {}, {}), 1>>>({});\n    cudaError_t error = cudaDeviceSynchronize();\n    if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n",
+        grid[0],
+        grid[1],
+        grid[2],
+        launch_args(sample, signature.params())?,
+    ));
+    text.push_str(&cuda_readback(output, len));
+    text.push_str(&cuda_release(signature));
+    text.push_str("    return 0;\n}\n");
+    Ok(text)
+}
+
+/// 前导两行 include + 设备源码；设备源码缺尾换行时补一个，免得 `main` 粘在最后一行上。
+fn cuda_prologue(device_source: &str) -> String {
+    let mut text = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
+    text.push_str(device_source);
+    if !device_source.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// `[grid]` 求出的各维大小 → `dim3` 的三维；缺的维保持 1（`dim3` 的缺省就是 1）。
+fn cuda_grid(dims: &[usize]) -> [usize; 3] {
+    let mut grid = [1usize; 3];
+    for (slot, size) in grid.iter_mut().zip(dims) {
+        *slot = *size;
+    }
+    grid
+}
+
+/// 收尾：释放每个缓冲参数对应的设备端指针（只释放真分配过的，标量是值传递）。
+fn cuda_release(signature: &Signature) -> String {
+    let mut text = String::new();
+    for param in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+    {
+        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
+    }
+    text
 }
 
 /// 生产态 CUDA 分块归约内核（`chunk_reduce` 的 CUDA 方言）。

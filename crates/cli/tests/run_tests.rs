@@ -944,13 +944,8 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
             let (max, expsum, norm) =
                 cutile::execution::cuda_softmax_program(&catalogue, &dirs, op_name, m, n)
                     .expect("分块 softmax 三段应能生成");
-            engine::norm::cuda_softmax_driver(
-                &[max, expsum, norm],
-                &decl.signature,
-                &sample,
-                chunk,
-            )
-            .expect("host 串联驱动应能生成")
+            engine::norm::cuda_softmax_driver(&[max, expsum, norm], &decl.signature, &sample, chunk)
+                .expect("host 串联驱动应能生成")
         }
         other => panic!("`{other}` 不是归一化算子"),
     };
@@ -959,6 +954,46 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
     let expected = (model.reference)(&sample).expect("参考值");
     assert_close("CUDA 分块归一化", op_name, &bits, &expected, model.dtype);
+}
+
+/// CUDA 循环注入网格（`Gemm` 骨架：gemv 一维 / gemm 二维）真机对拍：设备段来自公开流水线
+/// （`cuda_gemm_program` 返回设备源 + 各维网格），host 驱动用 `cuda_loop_driver` 按 `dim3` 发射，
+/// 输出与标量参考逐元素对拍。小形状（64×64）避免样本内嵌体积膨胀。
+#[cfg(target_os = "windows")]
+fn op_looped_matches_reference_cuda(op_name: &str) {
+    let Some((catalogue, dirs)) = cuda_harness("looped") else {
+        return;
+    };
+    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
+
+    let model = op::model(op_name).expect("语义表");
+    let (m, n) = (64usize, 64usize);
+    let sample = (model.sample)(m, n);
+    let decl = catalogue.op(op_name).expect("算子声明");
+
+    let (device, dims) = cutile::execution::cuda_gemm_program(&catalogue, &dirs, op_name, m, n)
+        .expect("循环注入内核应能生成");
+    let program = engine::codegen::cuda_loop_driver(&device, &decl.signature, &sample, &dims)
+        .expect("host 驱动应能生成");
+    let (_counts, bits) =
+        cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
+
+    let expected = (model.reference)(&sample).expect("参考值");
+    assert_close("CUDA 循环注入", op_name, &bits, &expected, model.dtype);
+}
+
+/// gemv 走 CUDA 一维循环注入网格，真机对拍。
+#[cfg(target_os = "windows")]
+#[test]
+fn a_gemv_op_runs_on_cuda_and_matches_the_reference() {
+    op_looped_matches_reference_cuda("gemv_f32");
+}
+
+/// gemm 走 CUDA 二维循环注入网格，真机对拍。
+#[cfg(target_os = "windows")]
+#[test]
+fn a_gemm_op_runs_on_cuda_and_matches_the_reference() {
+    op_looped_matches_reference_cuda("gemm_f32");
 }
 
 /// RMSNorm 走 CUDA 两段（部分平方和 → 主机折叠 rms → 归一化），真机对拍。
