@@ -8,9 +8,9 @@
 
 use diagnostic::Code;
 use llm_engine::cuda::cuda_harness;
-use llm_engine::metal::metal_grid_kernel;
 use llm_engine::exec::Stream;
 use llm_engine::kv::{Cache, Pager};
+use llm_engine::metal::metal_grid_kernel;
 use llm_engine::{Progress, Scheduler, Sequence};
 use op::model::{Buffer, Sample, Values};
 use op::sig::Signature;

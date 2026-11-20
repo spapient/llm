@@ -140,5 +140,13 @@ pub fn cuda_scan_driver(
 
 /// 主机折叠（f64）：`C_{g+1} = a^len · C_g + y[start+len-1]`；`a^len` 用逐次乘法。
 fn fold_carry(output: &str, chunk: usize, len: i64, decay: f32) -> String {
-    carry_fold(&format!("h_{output}"), "h_c", "G", chunk, len, decay, "    ")
+    carry_fold(
+        &format!("h_{output}"),
+        "h_c",
+        "G",
+        chunk,
+        len,
+        decay,
+        "    ",
+    )
 }

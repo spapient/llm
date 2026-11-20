@@ -4,7 +4,7 @@
 //! [`crate::sequence::Sequence`] 在这里收成一条不变量：生成必经页账，页不够返回
 //! [`crate::Progress::Blocked`] 且页池、页表、序列三者都不动。
 
-use crate::sequence::{pages_for, Progress, Sequence};
+use crate::sequence::{Progress, Sequence, pages_for};
 use diagnostic::{Code, Error, Result};
 
 /// 批里一个正在跑的序列：它的页表就是它占的页。

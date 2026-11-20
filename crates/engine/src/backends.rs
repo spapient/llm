@@ -211,8 +211,7 @@ impl Codegen for MetalBackend {
             ));
         };
         let (grid, threads) = metal_bench_geometry(signature, sample, kind)?;
-        let host =
-            crate::metal::metal_benchmark_driver(signature, sample, grid, threads, repeat)?;
+        let host = crate::metal::metal_benchmark_driver(signature, sample, grid, threads, repeat)?;
         Ok(Source::Pair {
             device: device.clone(),
             host,

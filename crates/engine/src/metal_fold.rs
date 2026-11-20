@@ -378,6 +378,14 @@ fn fold_carry(output: &str, chunk: usize, len: usize, decay: f32) -> String {
     let blocks = len.div_ceil(chunk.max(1));
     format!(
         "        {{\n            const float *y = (const float *)b_{output}.contents;\n            float *c = (float *)b_c.contents;\n{fold}        }}\n",
-        fold = carry_fold("y", "c", &blocks.to_string(), chunk, len as i64, decay, "            "),
+        fold = carry_fold(
+            "y",
+            "c",
+            &blocks.to_string(),
+            chunk,
+            len as i64,
+            decay,
+            "            "
+        ),
     )
 }

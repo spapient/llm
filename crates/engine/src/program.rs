@@ -158,13 +158,8 @@ fn metal_dispatch(
     launch: &Launch,
 ) -> Result<Source> {
     let (device, block) = metal_device(kernel, signature, sample, launch)?;
-    let host = crate::metal::metal_dispatch_driver(
-        signature,
-        sample,
-        "kernel_main",
-        launch.items,
-        block,
-    )?;
+    let host =
+        crate::metal::metal_dispatch_driver(signature, sample, "kernel_main", launch.items, block)?;
     Ok(Source::Pair { device, host })
 }
 

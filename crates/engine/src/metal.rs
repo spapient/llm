@@ -14,7 +14,7 @@ use op::sig::{Param, Signature};
 use cutile::harness::{c_literal, output_name, output_of};
 
 use crate::dialect::{
-    Dialect, Metal, EXPSUM, NORM, PARTIAL, SCAN_CORRECT, chunk_head, f32_output_shape, launch_args,
+    Dialect, EXPSUM, Metal, NORM, PARTIAL, SCAN_CORRECT, chunk_head, f32_output_shape, launch_args,
     length_scalar, readback_bits, scalar_name, scan_correct_body,
 };
 

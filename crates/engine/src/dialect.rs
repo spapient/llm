@@ -373,8 +373,11 @@ pub(crate) trait Dialect {
         if qual.is_empty() {
             text
         } else {
-            text.replace(&format!("void {kernel}("), &format!("{qual} void {kernel}("))
-                .replace("static ", &format!("{qual} static "))
+            text.replace(
+                &format!("void {kernel}("),
+                &format!("{qual} void {kernel}("),
+            )
+            .replace("static ", &format!("{qual} static "))
         }
     }
 

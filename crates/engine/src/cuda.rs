@@ -18,9 +18,7 @@ use op::sig::{Param, Signature};
 
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 
-use crate::dialect::{
-    Cuda, Dialect, f32_output_shape, launch_args, length_scalar, readback_bits,
-};
+use crate::dialect::{Cuda, Dialect, f32_output_shape, launch_args, length_scalar, readback_bits};
 // ---------------------------------------------------------------------------
 // CUDA lowering：声明式骨架 → CUDA 源（逐点网格 / 分块归约）+ verify 单线程 harness。
 // ---------------------------------------------------------------------------
@@ -238,12 +236,7 @@ pub(crate) fn cuda_host_buffers_grid(
 
 /// C 系 host 侧缓冲声明：只读落静态初值、可写开数组。CUDA 与昇腾逐字同源（`h_` 主机数组 +
 /// 设备侧 `d_` 指针），Metal 的 ObjC host 不用这套（见 [`crate::metal`]）。
-pub(crate) fn host_buffer_decl(
-    param: &Param,
-    values: &Values,
-    ctype: &str,
-    size: usize,
-) -> String {
+pub(crate) fn host_buffer_decl(param: &Param, values: &Values, ctype: &str, size: usize) -> String {
     if param.mutable {
         format!("    {ctype} h_{}[{size}];\n", param.name)
     } else {
