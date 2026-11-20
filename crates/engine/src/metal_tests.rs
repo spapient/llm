@@ -1110,6 +1110,33 @@ fn metal_tensor_gemm() {
             "转置派发应成功"
         );
 
+        if m == 512 {
+            // 决定性判据：A、B 全 1 时正确输出必须恒等于 K。
+            let ones_a = upload(&device, &vec![1.0f32; m * k], "ones A");
+            let mut ones_bt = device.new_buffer(n * k * 2).expect("ones Bt");
+            let half_ones: Vec<u8> = vec![0x00, 0x3c].repeat(n * k);
+            ones_bt.as_mut_bytes().copy_from_slice(&half_ones);
+            let mut probe_y = output_buffer(&device, m * n, "ones Y");
+            let probe_msl = cutile::execution::metal_tensor_gemm_program(
+                &catalogue, &dirs, "matmul_f32", m, n, tile, k_tile, simdgroups,
+            )
+            .expect("探针 MSL");
+            let probe = device.compile(&probe_msl).expect("探针编译");
+            assert!(
+                queue.execute(
+                    &probe,
+                    &[&ones_a, &ones_bt, &probe_y],
+                    [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1],
+                    [32, simdgroups as u32, 1],
+                ),
+                "探针派发"
+            );
+            let pv = read_back(probe_y.as_mut_bytes());
+            let lo = pv.iter().copied().fold(f32::INFINITY, f32::min);
+            let hi = pv.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!("全 1 判据：Y 取值范围 [{lo}, {hi}]，应为 {k}；样本 {:?}", &pv[..8]);
+        }
+
         let msl = cutile::execution::metal_tensor_gemm_program(
             &catalogue,
             &dirs,
