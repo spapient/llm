@@ -67,8 +67,8 @@ reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command
 
 [[ownership.unlisted]]
 crate = "cutile"
-names = ["CallArg", "ChainStep", "FragmentGap", "LanguageGate", "Lock", "NeedReport", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
-reason = "内核 DSL 的协商、执行前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表"
+names = ["CallArg", "ChainStep", "FragmentGap", "LanguageGate", "Lock", "NeedReport", "PrimCall", "Scope", "SpaceUse", "TensorGeometry", "Timing", "Unlock"]
+reason = "内核 DSL 的协商、执行前端（含张量核几何 `TensorGeometry`）与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表"
 
 [[ownership.unlisted]]
 crate = "dtype"
@@ -87,8 +87,8 @@ reason = "模糊测试的目标、种子、行为描述与复现样本；工具�
 
 [[ownership.unlisted]]
 crate = "op"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "Chunk", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "Grid", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Param", "Plain", "PlainFmt", "QuantI4", "ShapeContext", "Skeleton", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
-reason = "算子声明与语义的内部类型（每个算子一个模块、一张行表）；公开面是 `REGISTRY`"
+names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "Chunk", "ConvGeom", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "Grid", "Gru", "Lstm", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Param", "Plain", "PlainFmt", "QuantI4", "Rnn", "Sampler", "ShapeContext", "Skeleton", "SplitMix64", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
+reason = "算子声明、语义与经典层采样辅助的内部类型（每个算子一个模块、一张行表）；公开面是 `REGISTRY`。经典 CNN 算子与 `nn` 同名层共享名字（`Conv1d`/`Conv2d`/`BatchNorm2d` 等）——所有权门按名字全局判重，故这些名字由 `nn` 的所有权行覆盖，`op` 侧不重复登记（与 `tool::Geometry`/`train::Geometry` 同一处置）。消歧义命名是 X2 的 P2 待办"
 
 [[ownership.unlisted]]
 crate = "prim"
@@ -107,8 +107,8 @@ reason = "内存映射视图；唯一 unsafe 岛，公开面等第一个真实�
 
 [[ownership.unlisted]]
 crate = "train"
-names = ["Ties", "WeightOffload", "DeferredOffload"]
-reason = "`Ties` 是快照内的权重绑定表（`(源槽, 回填槽)` 下标对），只随快照写读搬运；`WeightOffload`/`DeferredOffload` 是参数换入换出的暂缓接缝与占位实现（通路未落地，闭环不调用）。公开训练面是 `Session`/`TrainConfig`"
+names = ["DeferredOffload", "Running", "Ties", "WeightOffload"]
+reason = "`Running` 是 BatchNorm 滚动统计值类型（每通道均值/方差），随 `Geometry::Norm` 前向读写搬运；`Ties` 是快照内的权重绑定表（`(源槽, 回填槽)` 下标对），只随快照写读搬运；`WeightOffload`/`DeferredOffload` 是参数换入换出的暂缓接缝与占位实现（通路未落地，闭环不调用）。公开训练面是 `Session`/`TrainConfig`"
 
 [[ownership.unlisted]]
 crate = "tool"
