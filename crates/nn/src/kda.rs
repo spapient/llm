@@ -319,6 +319,21 @@ mod tests {
         ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
     }
 
+    /// 两个正交键各记一条关联：键 `first` 记 `[1, 0]`、键 `second` 记 `[0, 4]`；
+    /// 返回层、写完的记忆与两个键。
+    fn two_records() -> (Kda, Memory<f64>, [f64; 3], [f64; 3]) {
+        let layer = kda();
+        let mut memory = zeroed();
+        let (first, second) = axes();
+        layer
+            .step(&mut memory, &keep(), 1.0, &first, &[1.0, 0.0])
+            .expect("几何合法");
+        layer
+            .step(&mut memory, &keep(), 1.0, &second, &[0.0, 4.0])
+            .expect("几何合法");
+        (layer, memory, first, second)
+    }
+
     /// 写一次、读一次：读出就是写进去的值（`q = k̂` 时的精确性）。
     #[test]
     fn a_write_is_exactly_recalled() {
@@ -366,15 +381,7 @@ mod tests {
     /// 正交的两个键各记各的：写第二个不扰动第一个。
     #[test]
     fn two_orthogonal_keys_keep_their_own_values() {
-        let layer = kda();
-        let mut memory = zeroed();
-        let (first, second) = axes();
-        layer
-            .step(&mut memory, &keep(), 1.0, &first, &[1.0, 0.0])
-            .expect("几何合法");
-        layer
-            .step(&mut memory, &keep(), 1.0, &second, &[0.0, 4.0])
-            .expect("几何合法");
+        let (layer, memory, first, second) = two_records();
         let a = layer.read(&memory, &first).expect("几何合法");
         let b = layer.read(&memory, &second).expect("几何合法");
         assert!((a[0] - 1.0).abs() < 1e-12 && a[1].abs() < 1e-12, "{a:?}");
@@ -384,15 +391,7 @@ mod tests {
     /// 门是逐通道的：关掉通道 0 只让键 0 的关联失效，通道 1 的照旧。
     #[test]
     fn the_gate_forgets_one_channel_at_a_time() {
-        let layer = kda();
-        let mut memory = zeroed();
-        let (first, second) = axes();
-        layer
-            .step(&mut memory, &keep(), 1.0, &first, &[1.0, 0.0])
-            .expect("几何合法");
-        layer
-            .step(&mut memory, &keep(), 1.0, &second, &[0.0, 4.0])
-            .expect("几何合法");
+        let (layer, mut memory, first, second) = two_records();
         // 只在通道 0 上遗忘，这一次不写（β = 0）。
         layer
             .step(&mut memory, &[0.0, 1.0, 1.0], 0.0, &first, &[0.0, 0.0])
