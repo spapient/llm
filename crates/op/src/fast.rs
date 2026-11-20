@@ -1021,5 +1021,30 @@ mod tests {
                 g(best1, m, n, k) / mt
             );
         }
+        for (m, n, k) in shapes {
+            let a: Vec<f32> = (0..m * k).map(|i| ((i as f32) * 0.013).sin()).collect();
+            let b: Vec<f32> = (0..k * n).map(|i| ((i as f32) * 0.007).cos()).collect();
+            let mut out = vec![0.0f32; m * n];
+            gemm_f32(&a, &b, m, n, k, &mut out);
+            let mut best = f64::INFINITY;
+            for _ in 0..20 {
+                let t = Instant::now();
+                gemm_f32(&a, &b, m, n, k, &mut out);
+                best = best.min(t.elapsed().as_nanos() as f64);
+            }
+            let mt = g(best, m, n, k);
+            gemm_f32_single(&a, &b, m, n, k, &mut out);
+            let mut best1 = f64::INFINITY;
+            for _ in 0..5 {
+                let t = Instant::now();
+                gemm_f32_single(&a, &b, m, n, k, &mut out);
+                best1 = best1.min(t.elapsed().as_nanos() as f64);
+            }
+            println!(
+                "  f32 {m}x{n}x{k}: fast {mt:.1} GF/s | fast单 {:.1} GF/s | 单/多 {:.2}",
+                g(best1, m, n, k),
+                g(best1, m, n, k) / mt
+            );
+        }
     }
 }
