@@ -1,8 +1,9 @@
 //! 测试约定：浮点对拍、真机门控、临时目录、随机数、位级 CRC 参考。**只作 dev-dependency**。
 //!
-//! **拥有**：`approx_eq`、`close`、`all_finite`、`cosine_similarity`、`COSINE_GUARD`
-//! （[`compare`]）；`device_enabled`、`device_or_skip`、`skip`、`skip_none`、`skip_count`、
-//! `skipped_reasons`（[`gating`]）；`scratch_dir`、`scratch_clean`（[`scratch`]）；
+//! **拥有**：`approx_eq`、`close`、`max_rel_err`、`within_rel`、`all_finite`、
+//! `cosine_similarity`、`COSINE_GUARD`（[`compare`]）；`device_enabled`、`device_or_skip`、
+//! `skip`、`skip_none`、`skip_count`、`skipped_reasons`（[`gating`]）；`scratch_dir`、
+//! `scratch_clean`（[`scratch`]）；
 //! [`Rng`]（[`rng`]）；`crc32_bitwise`（[`hash`]）；`safetensors_bytes` 与 `pack_codes`
 //! （本文件，格式夹具）。**不拥有**：任何生产逻辑——它是测试
 //! 夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
@@ -246,7 +247,9 @@ pub fn pack_codes(bits: usize, values: &[i8]) -> Vec<u8> {
         .collect()
 }
 
-pub use compare::{COSINE_GUARD, all_finite, approx_eq, close, cosine_similarity};
+pub use compare::{
+    COSINE_GUARD, all_finite, approx_eq, close, cosine_similarity, max_rel_err, within_rel,
+};
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
 pub use hash::{assert_table_matches_bitwise, crc32_bitwise};
 pub use rng::Rng;
