@@ -162,12 +162,18 @@ fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_
     attention_paths(inputs, outputs, op::attention::forward)
 }
 
+/// prefill 自注意力适配：走分块 tile 路径。
+///
+/// 分块与 online 的结果逐位一致（同一条 column 累加次序，对拍见
+/// `op::attention::tests::tiled_flash_matches_online_bitwise`），差别只在块内复用：online 每处理
+/// 一行都要把整段 K/V 重走一遍，tile 让一块内的查询行共用同一段 K/V 分块。decode 仍走
+/// `decode_flash_attention_f32`（那里每步只有一行，没有可复用的行块）。
 fn flash_attention_f32(
     _launch: Launch,
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    attention_paths(inputs, outputs, op::attention::flash_forward)
+    attention_paths(inputs, outputs, op::attention_tiled::flash_tiled_forward)
 }
 
 /// decode 三路适配：`q/hist_k/hist_v → out`；第四路输入为 ragged 段长表（ADR 0046 §8）走批段
@@ -290,55 +296,86 @@ fn gemv_inputs<'a, 'b>(
     Ok((x, weights, out))
 }
 
-/// 行批投影：整块 `x` 按 `m` 切段、`out` 按 `n` 切段，逐行点积；权重 `n·m` 整块复用。
+/// 行批投影：整块 `x` 按 `m` 切段、`out` 按 `n` 切段。
+///
+/// 一行（decode 口径）走 `gemv`：此时 `m` 就是权重行宽，没有可复用的行块。多行（prefill 口径）
+/// 走线性层布局的分块核 [`op::matmul::forward_tn_tiled`]——权重按输出列块驻留、行块在块内累加，
+/// 于是整份权重在一次外循环里只读一遍；逐行调 `gemv` 会把它按行数重复读，那个倍数正是本函数省掉的量。
 fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
-    if !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
+    if m == 0 || !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
         return Err(Error::new(Code::Invalid, "gemv 行批几何不自洽").with(SITE));
     }
-    for row in 0..x.len() / m {
-        let start = row * m;
-        let out_start = row * n;
-        op::gemv_f32::forward(
-            &x[start..start + m],
-            weights,
-            &mut out[out_start..out_start + n],
-        )?;
+    let rows = x.len() / m;
+    if rows == 1 {
+        return op::gemv_f32::forward(x, weights, out);
     }
-    Ok(())
+    op::matmul::forward_tn_tiled(x, weights, rows, n, m, out)
 }
 
-/// 量化 GEMV 算术入口：`x`、打包权重、按组标度 → 浮点输出。
+/// 量化 GEMV 单行算术入口：一个输入向量 → 一个输出向量。
 type GemvQuantFn = fn(x: &[f32], w: &[u8], s: &[f32], out: &mut [f32]) -> Result<()>;
 
-/// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接。
+/// 量化 GEMV 行批算术入口：`rows × m` 的输入 → `rows × n` 的输出。
+type GemvQuantBatchFn = fn(
+    x: &[f32],
+    w: &[u8],
+    s: &[f32],
+    rows: usize,
+    m: usize,
+    n: usize,
+    out: &mut [f32],
+) -> Result<()>;
+
+/// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接，按批行数分流。
 ///
-/// 三条位宽 lane（i2/i4/i8）签名同形：输入浮点向量 + 打包字节权重 + 按组标度，输出浮点。
-/// 算术入口按 lane 注入，拆视图与错误口径只写一份；位宽差异留在 `op` 格式契约里。
+/// 一行（decode 口径）走 `single`：此时 `m` 就是权重行宽，没有可复用的行块。多行（prefill 口径）
+/// 走 `batch`：输出行在外、输入行在内，一行权重只解包一次。两条路径的累加顺序相同，批结果与逐行
+/// 调用逐位一致；差别只在权重的读取次数（1 遍 vs `rows` 遍）。
 fn gemv_quant(
+    launch: Launch,
     x: &[f32],
     weights: &[u8],
     scales: &[f32],
     out: &mut [f32],
-    run: GemvQuantFn,
+    single: GemvQuantFn,
+    batch: GemvQuantBatchFn,
 ) -> Result<()> {
-    run(x, weights, scales, out)
+    let m = launch.block[1] as usize;
+    if m == 0 || x.len() == m {
+        return single(x, weights, scales, out);
+    }
+    batch(
+        x,
+        weights,
+        scales,
+        x.len() / m,
+        m,
+        launch.block[0] as usize,
+        out,
+    )
 }
 
 /// 量化 GEMV 桥接适配：第 0 路 x、第 1 路打包权重、第 2 路标度、第 0 路输出。
+///
+/// 每条 lane 只需给出两个算术入口（单行 / 行批），拆视图、位宽差异与分流都在 [`gemv_quant`] 一处。
 macro_rules! gemv_quant_kernel {
-    ($($run:ident),*) => {$(
-        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+    ($($run:ident => $batch:path),*) => {$(
+        fn $run(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
             let name = stringify!($run);
             let x = input_f32(name, inputs, 0)?;
             let weights = input_u8(name, inputs, 1)?;
             let scales = input_f32(name, inputs, 2)?;
             let out = output_f32(name, outputs, 0)?;
-            gemv_quant(x, weights, scales, out, op::$run::forward)
+            gemv_quant(launch, x, weights, scales, out, op::$run::forward, $batch)
         }
     )*};
 }
 
-gemv_quant_kernel!(gemv_i2, gemv_i4, gemv_i8);
+gemv_quant_kernel!(
+    gemv_i2 => op::gemv_i2::forward_batch,
+    gemv_i4 => op::gemv_i4::forward_batch,
+    gemv_i8 => op::gemv_i8::forward_batch
+);
 
 /// 反量化桥接：打包字节 lane（i2/i4）输入 u8；i8 逐元素 lane 输入 f32。
 ///

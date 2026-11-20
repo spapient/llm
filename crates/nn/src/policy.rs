@@ -131,7 +131,7 @@ impl<S: Scalar> Gating<S> {
         [om.mul(self.pi), om.mul(S::ONE.sub(self.pi)), self.gamma]
     }
 
-    /// 按 §1.5 合成律混合三通道输出（[`crate::synthesize`] 的唯一入口）。
+    /// 按 §1.5 合成律混合三通道输出（`mix::synthesize` 是唯一入口，这里不另写一份加权和）。
     pub fn mix(&self, alpha: &[S], beta: &[S], event: &[S]) -> Vec<S> {
         crate::mix::synthesize(alpha, beta, event, self.pi, self.gamma)
     }

@@ -2328,3 +2328,33 @@ fn the_prompt_is_encoded_by_the_tokenizer_not_by_the_endpoint() {
     assert_eq!(tokens.len(), 3, "字节级参考实现每个字节一个 token");
     assert_eq!(Bytes.decode(&tokens).expect("解码"), "hé");
 }
+
+#[test]
+fn a_row_batch_projection_equals_row_by_row_gemv() {
+    // 权重 `[n, k]` = `[4, 5]`，3 行输入：多行走线性层分块核，必须与逐行点积同值。
+    let (m, n, rows) = (5usize, 4usize, 3usize);
+    let x: Vec<f32> = (0..rows * m)
+        .map(|i| (i as f32 * 0.25 - 1.5).sin())
+        .collect();
+    let weights: Vec<f32> = (0..n * m).map(|i| (i as f32 * 0.5 + 0.25).cos()).collect();
+
+    let mut batched = vec![0.0f32; rows * n];
+    project_rows(&x, &weights, &mut batched, m, n).expect("行批投影");
+    let mut row_by_row = vec![0.0f32; rows * n];
+    for row in 0..rows {
+        op::gemv_f32::forward(
+            &x[row * m..(row + 1) * m],
+            &weights,
+            &mut row_by_row[row * n..(row + 1) * n],
+        )
+        .expect("单行投射");
+    }
+    assert_close(&batched, &row_by_row);
+
+    // 一行仍走 `gemv`：decode 口径与直接调用逐位相同，不受分块核影响。
+    let mut single = vec![0.0f32; n];
+    project_rows(&x[..m], &weights, &mut single, m, n).expect("单行投影");
+    let mut reference = vec![0.0f32; n];
+    op::gemv_f32::forward(&x[..m], &weights, &mut reference).expect("gemv");
+    assert_eq!(single, reference, "decode 口径必须与 gemv 逐位一致");
+}

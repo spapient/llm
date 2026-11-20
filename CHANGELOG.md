@@ -6,6 +6,23 @@
 ## [Unreleased]
 ### Changed
 
+- **性能：矩阵乘与注意力全部走分块内核，实测各提速 1.8× / 1.7×**。此前"走 tile"只到调用点——
+  线性层 `matmul_tn_tiled` 的收缩块仅 32 宽、内层是单链标量归约，实测（256×256、k=4096）**比逐行 `gemv`
+  慢 8.9%**（36.8ms vs 33.8ms）；注意力两条内核也各自写着单链点积。
+  **线性层**：收缩块 `TILE_K` 32 → `TN_K` 256（累加器"读出→加→写回"次数从 `k/32` 降到 `k/256`）、
+  列块独立成 `TN_COLS = 32`、行块 `TN_ROWS = 16`；**注意力**：`attention::dot` 与 `attention_tiled`
+  的内层归约改调同一份多链点积。
+  **单一来源**：多链点积只有 `matmul::dot_lanes` 一份（`LANES = 8` 条独立累加链，尾数并入标量尾部），
+  矩阵乘 tile 与两条注意力内核共用——同一个归约循环不再被写成四份、向量化程度也不再四份不一样。
+  恒等变换类的改动保持输出语义：线性层 tile 与逐行 `gemv` 逐位一致、注意力两条内核的逐位对拍用例不变。
+  **实测**（macOS aarch64，criterion，100 样本）：线性层 35.6ms → **19.4ms（1.83×，27.4 GFLOP/s）**；
+  注意力 online 31.1ms → **18.4ms（1.69×）**、tiled 22.4ms → **12.0ms（1.87×）**。基准见
+  `crates/benches/criterion/{matmul_f32,attention_prefill_f32}.rs`（线性层新增"逐行 vs tile"对照组）。
+- **量化内核行批入口**：`op::{gemv_i2,gemv_i4,gemv_i8}::forward_batch` 让一次调用算 `rows` 行，
+  权重按行块只解包一遍（此前 prefill 里逐行调用会把同一份打包权重解包 `rows` 次）。服务侧
+  `gemv_quant` 跳板按批行数分流——一行仍走单行入口（`m` 即权重行宽），多行才走行批；两条路径累加
+  顺序相同，行批结果与逐行调用逐位一致（`packed_gemv_batch_tests!` 对 i2/i4/i8 三档各钉一次）。
+
 - **全仓深度重构（ADR 0048/0049）**：src 文件 255 → 195（-23.5%）、外部测试文件 49 → 38（-22.4%），
   全部为纯移动内联 + `pub use` 保持公开路径，公开项计数逐 crate 核对一致，测试数 1,779 不跌。
   配置文件层恢复（`cutile.toml` 四层优先级：内置默认 < 配置文件 < `CUTILE_*` < `--set`，`toml` 为
@@ -33,6 +50,10 @@
   **实测**：`cargo test -p llm-nn --all-features` **241 条 + 2 doctest**（`latent` 13 条：改未来过去逐位不变
   （四组块因子与滑窗）、单行只见自己、零权重是恒等、遍数即 patch 数、空列、全局几何五拒、字节读不到更晚的 patch、
   字节读得到自己的 patch、零查询等权、层数闭集、字节/表示行数不符被拒、`f64` 同算术）；工作区全门禁通过。
+  **收口**：`Backread::forward` 的几何校验抽成 `check`（`glyph_stride` 只求一次，报错文案不再重算同一份算式），
+  `op::matmul::matmul_tiled` 的块内累加抽成 `accumulate_tile`（三条区间包成 `Tile`，块内不必知道自己是第几块），
+  两处分属静态质量门的圈复杂度与代码行上限；`policy` 里指向已不存在的 `crate::synthesize` 的链接改为说明
+  `mix::synthesize` 是唯一入口，`RUSTDOCFLAGS=-D warnings cargo doc -p llm-nn -p llm-op` 因此转绿。
 - **逐字节自回归生成循环与 CUDA 驱动骨架合并（`lld.md` 第十步）**。第 11 款标杆的三段此前只到
   「切分 + 两端」，缺的是把它们串成**一次生成**的那一层；本步补上，并把三处「同一件事写两遍」的
   CUDA 驱动样板收成一份。

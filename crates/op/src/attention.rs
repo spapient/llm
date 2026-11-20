@@ -89,12 +89,11 @@ fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
 }
 
 /// 行 `row` 与行 `col` 的点积：四个朴素/flash 实现共用，免得每处重写 `d` 长的累加循环。
+///
+/// 归约本身走 [`crate::matmul::dot_lanes`]——同一个多链点积在 `op` 里只有一份，否则注意力与
+/// 矩阵乘的向量化程度会各自漂移（实测：单链标量归约在 1024×64 注意力上比多链慢 1.4×）。
 fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
-    let mut sum = 0.0f32;
-    for h in 0..d {
-        sum += x[row * d + h] * y[col * d + h];
-    }
-    sum
+    crate::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
 }
 
 /// 头宽不能为 0：`√d` 作分数除数，`d=0` 会让每条分数除零成 NaN。
@@ -155,11 +154,14 @@ impl<'a> Rows<'a> {
         }
     }
 
-    /// online（flash）路径的一行：跑一遍 `j` 维护最大值、归一化分母与累加向量，返回 `(acc, sum)`。
-    fn online(&self, row: usize) -> (Vec<f32>, f32) {
+    /// online（flash）路径的一行：跑一遍 `col` 维护最大值、归一化分母与累加向量。
+    ///
+    /// 累加向量写进调用方传入的 `acc`（先清零再写回），返回归一化分母 `sum`。缓冲由
+    /// [`run_rows`] 预分配复用，避免热路径每行一次堆分配。
+    fn online(&self, row: usize, acc: &mut [f32]) -> f32 {
         let mut max = f32::MIN;
         let mut sum = 0.0f32;
-        let mut acc = vec![0.0f32; self.d];
+        acc.fill(0.0);
         for col in 0..self.cols {
             let score = dot(self.q, self.k, row, col, self.d) / self.scale;
             let new_max = max.max(score);
@@ -171,7 +173,7 @@ impl<'a> Rows<'a> {
             }
             max = new_max;
         }
-        (acc, sum)
+        sum
     }
 }
 
@@ -193,8 +195,11 @@ fn run_rows(rows: &Rows<'_>, rows_count: usize, out: &mut [f32], mode: Mode) {
             }
         }
         Mode::Online => {
+            // 预分配一条累加缓冲，所有行复用；online 每行 fill 清零后写回。
+            // 消除热路径上「每行一次堆分配」，prefill（rows_count = s）收益随序列长增长。
+            let mut acc = vec![0.0f32; rows.d];
             for row in 0..rows_count {
-                let (acc, sum) = rows.online(row);
+                let sum = rows.online(row, &mut acc);
                 for h in 0..rows.d {
                     out[row * rows.d + h] = acc[h] / sum;
                 }
@@ -274,7 +279,7 @@ fn check_pair(first: &[f32], second: &[f32], expect: usize, what: &str) -> diagn
     Ok(())
 }
 
-fn check_decode_len(
+pub(crate) fn check_decode_len(
     q: &[f32],
     k: &[f32],
     v: &[f32],
@@ -670,6 +675,26 @@ mod tests {
         )
         .expect("flash 内核");
         assert!(testkit::approx_eq(&flash_out, &flash, 1e-5));
+    }
+
+    #[test]
+    fn tiled_flash_matches_online_bitwise() {
+        // tile 整数倍、非整数倍边界、大序列；tiled 的 col 累加顺序与 online 相同，必须逐位一致。
+        for &(s, d) in &[(8, 8), (64, 16), (100, 64), (256, 32), (512, 32)] {
+            let sample = sample(s, d);
+            let q = sample.f32("q").unwrap();
+            let k = sample.f32("k").unwrap();
+            let v = sample.f32("v").unwrap();
+            let mut online = vec![0.0f32; s * d];
+            let mut tiled = vec![0.0f32; s * d];
+            flash_forward(q, k, v, &mut online, s, d).expect("flash online");
+            crate::attention_tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
+                .expect("flash tiled");
+            assert_eq!(
+                tiled, online,
+                "s={s},d={d} 分块 tile 必须与 online 逐位一致"
+            );
+        }
     }
 
     /// 行主序确定性向量：`rows × d`，第 `i` 个元素取 `base + i·step`，便于逐行核对。

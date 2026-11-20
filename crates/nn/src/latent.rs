@@ -272,6 +272,19 @@ impl<S: Scalar> Backread<S> {
     /// 表示行数与 patch 数不等、字节数或本地向量的行数对不上、宽度为零、某层方阵尺寸不符——返回
     /// `Code::Invalid`。宽了是把别的层的数喂进来，窄了内积照算却是另一个数。
     pub fn forward(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<Vec<S>> {
+        self.check(reps, glyphs, patches)?;
+        let mut states = glyphs.to_vec();
+        for layer in &self.layers {
+            states = self.read(layer, &states, reps, patches)?;
+        }
+        Ok(states)
+    }
+
+    /// 入口几何：表示一行一个 patch、本地向量一行一个字节，宽度由栈给出。
+    ///
+    /// 两处长度都先算成应有的值再比较：`glyph_stride` 只求一次，报错文案里也就不会再问一次（那里
+    /// 再问一次等于把同一份算式写成两处，且第二次还可能以同样的错因失败）。
+    fn check(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<()> {
         let visible = rows(reps.len(), self.width)?;
         if visible != patches.len() {
             return Err(Error::new(
@@ -283,24 +296,20 @@ impl<S: Scalar> Backread<S> {
             )
             .with(SITE));
         }
-        if glyphs.len() != glyph_stride(patches, self.width)? {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "本地向量有 {} 个元素，应当是 bytes × width = {} × {} = {}",
-                    glyphs.len(),
-                    patches.bytes(),
-                    self.width,
-                    glyph_stride(patches, self.width)?
-                ),
-            )
-            .with(SITE));
+        let expected = glyph_stride(patches, self.width)?;
+        if glyphs.len() == expected {
+            return Ok(());
         }
-        let mut states = glyphs.to_vec();
-        for layer in &self.layers {
-            states = self.read(layer, &states, reps, patches)?;
-        }
-        Ok(states)
+        Err(Error::new(
+            Code::Invalid,
+            format!(
+                "本地向量有 {} 个元素，应当是 bytes × width = {} × {} = {expected}",
+                glyphs.len(),
+                patches.bytes(),
+                self.width
+            ),
+        )
+        .with(SITE))
     }
 
     /// 一层：每个字节的查询回读可见 patch，读到的值与自己的状态相加（残差）。

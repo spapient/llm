@@ -442,6 +442,94 @@ fn forward_scaled<C: Plain>(
     forward_scaled_rows(x, weights, scales, out, scaled_dot::<C>)
 }
 
+/// 行批骨架：输出行在外、输入行在里，一行权重只读一遍。
+///
+/// 与 [`forward_scaled_rows`] 是同一个遍历的两种嵌套：那里输入是向量（一层），这里输入是
+/// `rows × m` 的行批（两层）。输入行放内层就是"权重复用"的全部内容——权重行只从内存读一遍、
+/// 解包一遍，而不是按行数重复；逐行调用单行入口会把同一份权重读 `rows` 遍。
+fn forward_batch_rows<E>(
+    x: &[f32],
+    weights: &[E],
+    scales: &[f32],
+    rows: usize,
+    m: usize,
+    n: usize,
+    out: &mut [f32],
+    row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
+) -> diagnostic::Result<()> {
+    let (groups, group) =
+        batch_rows_context(x.len(), out.len(), scales, weights.len(), rows, m, n)?;
+    for j in 0..n {
+        let w_row = &weights[j * m..][..m];
+        let s_row = &scales[j * groups..][..groups];
+        for r in 0..rows {
+            out[r * n + j] = row_dot(w_row, &x[r * m..][..m], s_row, group);
+        }
+    }
+    Ok(())
+}
+
+/// 行批骨架的守卫收口：几何、分组、标度与权重长度四项一次判齐，返回 `(groups, group)`。
+fn batch_rows_context(
+    x: usize,
+    out: usize,
+    scales: &[f32],
+    weights: usize,
+    rows: usize,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(usize, usize)> {
+    batch_geometry(x, out, rows, m, n)?;
+    let (groups, group) = scaled_groups(m, n, scales.len())?;
+    finite_scales(scales, groups)?;
+    required_weights(weights, n, m)?;
+    Ok((groups, group))
+}
+
+/// 行批逐元素入口：按配置选择带标度 / 无标度两条骨架，与 [`Format::forward`] 同一分叉。
+pub fn forward_plain_batch<C: Plain>(
+    x: &[f32],
+    weights: &[C::Elem],
+    scales: &[f32],
+    rows: usize,
+    m: usize,
+    n: usize,
+    out: &mut [f32],
+) -> diagnostic::Result<()> {
+    if C::SCALES.is_some() {
+        forward_batch_rows(x, weights, scales, rows, m, n, out, scaled_dot::<C>)
+    } else {
+        if !scales.is_empty() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("稠密格式没有标度，收到 {} 个", scales.len()),
+            ));
+        }
+        forward_batch_rows(x, weights, scales, rows, m, n, out, |w, x, _, _| {
+            dense_dot::<C>(w, x)
+        })
+    }
+}
+
+/// 行批几何：行数非零，输入与输出的长度分别对上 `rows × m` 与 `rows × n`。
+///
+/// 三处一起判而不分判：批次调用时三个数必须同时自洽，单独对上一个没有意义。
+fn batch_geometry(x: usize, out: usize, rows: usize, m: usize, n: usize) -> diagnostic::Result<()> {
+    if rows == 0 {
+        return Err(Error::new(Code::Invalid, "行批至少一行"));
+    }
+    let (want_x, want_out) = (rows.saturating_mul(m), rows.saturating_mul(n));
+    if x != want_x || out != want_out {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "行批尺寸不符：x={x}，out={out}，期望 {rows}×{m}={want_x}、{rows}×{n}={want_out}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// 无标度逐元素格式的行遍历：换错算子（给了标度）必须报错，而不是静默忽略。
 fn forward_dense<C: Plain>(
     x: &[f32],
@@ -618,117 +706,7 @@ pub(crate) fn finite_scales(scales: &[f32], groups: usize) -> Result<(), Error> 
     Ok(())
 }
 
-pub mod packed {
-    //! 打包权重（每字节 `cpb` 个码）的取样、分组校验与解包点积助手。
-    //!
-    //! int2（4 码/字节）与 int4（2 码/字节）只在码宽、查表与粒度倍数上不同；打包位域的字节布局、
-    //! 分组推导与按行点积收口到这里，避免两条打包格式各抄一遍。int8 不打包，不走本模块。
-
-    use super::{finite_scales, required_weights, scaled_groups};
-    use diagnostic::{Code, Error};
-
-    /// 确定性打包权重：`n` 行、每行 `m / cpb` 个字节，同一形状取值可复现。
-    pub fn weights(m: usize, n: usize, cpb: usize) -> Vec<u8> {
-        (0..n * (m / cpb))
-            .map(|index| ((index * 37) % 251) as u8)
-            .collect()
-    }
-
-    /// 分组推导 + "分组必须是 `cpb` 的倍数" + 打包权重长度下界。
-    ///
-    /// 返回 `(groups, group)`：每行多少组、每组多少元素。
-    pub fn groups(
-        m: usize,
-        n: usize,
-        scales: usize,
-        weights: usize,
-        cpb: usize,
-    ) -> Result<(usize, usize), Error> {
-        let (groups, group) = scaled_groups(m, n, scales)?;
-        if !group.is_multiple_of(cpb) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("分组 {group} 必须是 {cpb} 的倍数"),
-            ));
-        }
-        required_weights(weights, n, m / cpb)?;
-        Ok((groups, group))
-    }
-
-    /// 一行的点积：按分组推进，组内解包 `cpb` 个码查 `dequant` 表，整组共用同一个标度。
-    ///
-    /// 累加顺序与朴素写法逐位一致（同一字节的低位码在前）；每组 `group` 为 `cpb` 倍数，
-    /// 解包只读整组码，不触碰补齐位。
-    pub fn dot_row(
-        packed_row: &[u8],
-        x: &[f32],
-        s_row: &[f32],
-        per_group: usize,
-        group: usize,
-        cpb: usize,
-        dequant: &[f32],
-    ) -> f32 {
-        // 位宽走配置表派生：`width = 8 / cpb`，与 [`crate::quant::width_cpb`] 同一公式，不在这里第二份除法。
-        let width = crate::quant::width_cpb(cpb);
-        let mask = (1u8 << width) - 1;
-        let mut acc = 0.0f32;
-        for ((packed, scale), xs) in packed_row
-            .chunks_exact(per_group)
-            .zip(s_row)
-            .zip(x.chunks_exact(group))
-        {
-            let mut dot = 0.0f32;
-            for (byte, codes) in packed.iter().zip(xs.chunks(cpb)) {
-                for (slot, &code_slot) in codes.iter().enumerate() {
-                    let code = usize::from((byte >> (slot * width)) & mask);
-                    dot += dequant[code] * code_slot;
-                }
-            }
-            acc += dot * scale;
-        }
-        acc
-    }
-
-    /// 打包格式的行遍历：分组与长度守卫通过后，每行解包点积一次写回调用方缓冲。
-    ///
-    /// 行切片、分组推进与格式无关；格式只给每字节码数 `cpb` 与反量化表 `dequant`。
-    /// 解包位域与累加顺序和 [`dot_row`] 同一套算术，参考与内核对拍逐位一致。
-    pub fn forward_rows(
-        x: &[f32],
-        weights: &[u8],
-        scales: &[f32],
-        out: &mut [f32],
-        cpb: usize,
-        dequant: &[f32],
-    ) -> diagnostic::Result<()> {
-        let m = x.len();
-        let n = out.len();
-        let (groups, group) = groups(m, n, scales.len(), weights.len(), cpb)?;
-        finite_scales(scales, groups)?;
-        let row_bytes = m / cpb;
-        let per_group = group / cpb;
-        for (row, value) in out.iter_mut().enumerate() {
-            let w_row = &weights[row * row_bytes..][..row_bytes];
-            let s_row = &scales[row * groups..][..groups];
-            *value = dot_row(w_row, x, s_row, per_group, group, cpb, dequant);
-        }
-        Ok(())
-    }
-
-    /// 逐元素（不打包）格式的行遍历：守卫与行切片收口到骨架，每行点积算术由闭包给出。
-    ///
-    /// 与 [`forward_rows`] 对称，差别只是权重不按字节打包、一行即 `m` 个元素；格式只给
-    /// 逐行点积函数，不在自己的 `forward` 里再抄一遍分组/标度/权重长度守卫。
-    pub fn forward_plain(
-        x: &[f32],
-        weights: &[u8],
-        scales: &[f32],
-        out: &mut [f32],
-        row_dot: impl Fn(&[u8], &[f32], &[f32], usize) -> f32,
-    ) -> diagnostic::Result<()> {
-        super::forward_scaled_rows(x, weights, scales, out, row_dot)
-    }
-}
+pub mod packed;
 
 /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
 ///
@@ -842,6 +820,24 @@ macro_rules! gemv_packed {
             <$alias as $crate::gemv::Format>::forward(x, weights, scales, out)
         }
 
+        /// 行批内核：`x` 是 `rows × m`、`out` 是 `rows × n`，一行权重只解包一次服务所有输入行。
+        ///
+        /// 与 [`forward`] 同一套算术与累加顺序，所以批结果与逐行调用逐位相同；差别只在权重的
+        /// 读取次数：这里是 1 遍，逐行调用是 `rows` 遍。
+        pub fn forward_batch(
+            x: &[f32],
+            weights: &[u8],
+            scales: &[f32],
+            rows: usize,
+            m: usize,
+            n: usize,
+            out: &mut [f32],
+        ) -> diagnostic::Result<()> {
+            $crate::gemv::packed::forward_batch(
+                x, weights, scales, rows, m, n, out, $row.cpb, $row.table,
+            )
+        }
+
         #[cfg(test)]
         mod tests {
             use super::*;
@@ -857,6 +853,12 @@ macro_rules! gemv_packed {
                 $w_note,
                 $dequant_vals,
                 $dequant_expect
+            );
+            $crate::gemv::packed_test_support::packed_gemv_batch_tests!(
+                forward,
+                forward_batch,
+                $row.cpb,
+                GROUP
             );
             $crate::gemv::packed_test_support::packed_gemv_value_tests!(
                 $alias,
@@ -1003,6 +1005,21 @@ pub mod gemv_i8 {
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
         <I8 as gemv::Format>::forward(x, weights, scales, out)
+    }
+
+    /// 行批内核：`x` 是 `rows × m`、`out` 是 `rows × n`，一行权重只读一遍。
+    ///
+    /// 与 [`forward`] 同一份 `scaled_dot` 算术，批结果与逐行调用逐位相同；省掉的是权重行的重复读。
+    pub fn forward_batch(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        rows: usize,
+        m: usize,
+        n: usize,
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        gemv::forward_plain_batch::<gemv::SymI8<GROUP>>(x, weights, scales, rows, m, n, out)
     }
 
     #[cfg(test)]

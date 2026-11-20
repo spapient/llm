@@ -51,6 +51,7 @@
 extern crate self as llm_op;
 
 pub mod attention;
+pub mod attention_tiled;
 pub mod decl;
 pub mod dequant;
 pub mod einsum;
@@ -58,6 +59,7 @@ pub mod elementwise;
 pub mod gemm;
 pub mod gemv;
 pub mod matmul;
+pub mod matmul_i8;
 pub mod model;
 pub mod softmax;
 pub(crate) use tpl::parse;

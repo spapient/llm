@@ -82,6 +82,44 @@ fn quantized_logits_keep_cosine_with_the_f32_reference() {
     );
 }
 
+/// 行批与逐行调用：同一份权重与输入，两条路径必须逐位相同。
+///
+/// 差别只在权重读取次数（行批 1 遍、逐行 `rows` 遍）；解包、分组与累加次序都走同一份 `dot_row`。
+#[test]
+fn a_row_batch_equals_row_by_row_calls() {
+    let (m, n, rows) = (64usize, 3usize, 4usize);
+    let weights: Vec<u8> = (0..n * m)
+        .map(|i| ((i as i32 % 251) - 125) as i8 as u8)
+        .collect();
+    let scales = vec![0.25f32; n * (m / GROUP)];
+    let x: Vec<f32> = (0..rows * m).map(|i| (i as f32 * 0.125).sin()).collect();
+
+    let mut batched = vec![0.0f32; rows * n];
+    forward_batch(&x, &weights, &scales, rows, m, n, &mut batched).expect("行批可算");
+    let mut stepwise = vec![0.0f32; rows * n];
+    for row in 0..rows {
+        forward(
+            &x[row * m..(row + 1) * m],
+            &weights,
+            &scales,
+            &mut stepwise[row * n..(row + 1) * n],
+        )
+        .expect("单行可算");
+    }
+    assert_eq!(batched, stepwise, "行批必须与逐行调用逐位相同");
+}
+
+/// 行批几何：`x` 与 `out` 的长度必须分别对上 `rows × m` 与 `rows × n`。
+#[test]
+fn a_row_batch_with_mismatched_buffers_is_an_error() {
+    let weights = vec![0u8; 2 * 64];
+    let scales = vec![1.0f32; 2 * (64 / GROUP)];
+    let mut out = vec![0.0f32; 4];
+    let error = forward_batch(&[1.0f32; 3 * 64], &weights, &scales, 4, 64, 2, &mut out)
+        .expect_err("行数与缓冲不符必须拒绝");
+    assert_eq!(error.code(), diagnostic::Code::Invalid);
+}
+
 /// 标度负例：非有限标度在分组守卫后、解包前拦下，不允许把整组乘积带进 NaN/Inf。
 #[test]
 fn gemv_i8_rejects_non_finite_scales() {

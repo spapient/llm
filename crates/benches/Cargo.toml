@@ -80,8 +80,23 @@ path = "criterion/attention_f32.rs"
 harness = false
 
 [[bench]]
+name = "attention_prefill_f32"
+path = "criterion/attention_prefill_f32.rs"
+harness = false
+
+[[bench]]
 name = "gemm_f32"
 path = "criterion/gemm_f32.rs"
+harness = false
+
+[[bench]]
+name = "matmul_f32"
+path = "criterion/matmul_f32.rs"
+harness = false
+
+[[bench]]
+name = "matmul_i8"
+path = "criterion/matmul_i8.rs"
 harness = false
 
 [[bench]]

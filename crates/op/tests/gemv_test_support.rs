@@ -30,6 +30,54 @@ pub fn at<T: Format>(m: usize, n: usize) -> Result<Cost, Error> {
     cost::<T>(&ShapeContext::new([('m', m), ('n', n)])?)
 }
 
+/// 生成 i2/i4 打包 GEMV 共有的行批测试：批结果逐位等于逐行调用、行批几何不符被拒。
+///
+/// 两条用例都只用"同一份权重与输入"这一个判据：解包、分组与累加次序若在批路径上被改动，
+/// 逐位比较立刻失败——它不需要 f32 容差，因此不会把真实差额藏进舍入里。
+macro_rules! packed_gemv_batch_tests {
+    ($forward:ident, $forward_batch:ident, $cpb:expr, $group:expr) => {
+        #[test]
+        fn a_row_batch_equals_row_by_row_calls() {
+            let (m, n, rows) = (4 * $group, 3usize, 4usize);
+            let weights = $crate::gemv::packed::weights(m, n, $cpb);
+            let scales = vec![0.25f32; n * (m / $group)];
+            let x: Vec<f32> = (0..rows * m).map(|i| (i as f32 * 0.125).sin()).collect();
+
+            let mut batched = vec![0.0f32; rows * n];
+            $forward_batch(&x, &weights, &scales, rows, m, n, &mut batched).expect("行批可算");
+            let mut stepwise = vec![0.0f32; rows * n];
+            for row in 0..rows {
+                $forward(
+                    &x[row * m..(row + 1) * m],
+                    &weights,
+                    &scales,
+                    &mut stepwise[row * n..(row + 1) * n],
+                )
+                .expect("单行可算");
+            }
+            assert_eq!(batched, stepwise, "行批必须与逐行调用逐位相同");
+        }
+
+        #[test]
+        fn a_row_batch_with_mismatched_buffers_is_an_error() {
+            let weights = $crate::gemv::packed::weights(4 * $group, 2, $cpb);
+            let scales = vec![1.0f32; 2 * 4];
+            let mut out = vec![0.0f32; 4];
+            let error = $forward_batch(
+                &[1.0f32; 3 * 4 * $group],
+                &weights,
+                &scales,
+                4,
+                4 * $group,
+                2,
+                &mut out,
+            )
+            .expect_err("行数与缓冲不符必须拒绝");
+            assert_eq!(error.code(), ::diagnostic::Code::Invalid);
+        }
+    };
+}
+
 /// 生成 i2/i4 打包 GEMV 共有的四则测试：负例拒绝、生产形状合法、非整组报错、样本确定性。
 macro_rules! packed_gemv_tests {
     ($ty:ty, $model:ident, $group:ident, $forward:ident, $w_bytes:expr, $sample_w:expr) => {
@@ -293,4 +341,5 @@ macro_rules! packed_gemv_value_tests {
         }
     };
 }
+pub(crate) use packed_gemv_batch_tests;
 pub(crate) use packed_gemv_value_tests;

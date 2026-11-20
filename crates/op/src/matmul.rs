@@ -9,6 +9,16 @@
 //!
 //! 两条路径累加顺序不同，`f32` 加法不结合，因此对拍按 IEEE 容差（[`close_enough`]，对齐
 //! lld §10.4 的 IEEE `rtol/atol` 口径），不做逐位相等。
+//!
+//! # 两种权重布局，两个核
+//!
+//! [`matmul_tiled`] 吃 `B [k, n]`（收缩轴在外），适合转置过的中间矩阵；线性层（`nn::MatMul` 与
+//! `serve` 的投影）的权重是 `w [n, k]`——每个输出通道一整行。那份布局下按 `[k, n]` 分块等于每次
+//! 都跨行取数，所以另有一个核 [`matmul_tn_tiled`]：输出列块 × 输出行块 × 收缩块三级分块，块内
+//! 是「一整行权重 × 连续行块」的点积，两段都连续。行批投影必须走这个核——逐行调 `gemv` 会把整份
+//! 权重按行数重复读一遍。
+
+use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
 
@@ -20,6 +30,21 @@ pub const TILE_N: usize = 64;
 
 /// 收缩轴 tile 宽度。
 pub const TILE_K: usize = 32;
+
+/// 线性层布局（`x [rows, k]` × `w [n, k]`）的 tile 行数。
+///
+/// 与 [`TILE_M`] 分开是因为两个核的复用轴不同：`[m, k] × [k, n]` 里 B 的列块沿 `k` 走，而线性层把
+/// 权重整行 `[n, k]` 放在一处，行块才是一次驻留的单位。
+pub const TN_ROWS: usize = 16;
+
+/// 线性层 tile 的输出列数：一列权重块要同时在累加器里驻留，不能大于 `TN_ROWS × TN_COLS` 的 L1 预算。
+pub const TN_COLS: usize = 32;
+
+/// 线性层 tile 的收缩块宽度。
+///
+/// 收缩块越宽，累加器"读出→加→写回"的次数越少（次数是 `k / TN_K`），而块内全是连续点积；
+/// 256 既让循环开销摊到 256 次乘加上，又让一行权重块（`TN_COLS × TN_K`）留在 L1。
+pub const TN_K: usize = 256;
 
 /// 标量参考：`out[i,j] = Σ_p a[i,p]·b[p,j]`，每个元素按 `p` 顺序独立累加。
 ///
@@ -53,16 +78,12 @@ pub fn matmul_tiled(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mu
             let mut bj = 0;
             while bj < n {
                 let j_end = (bj + TILE_N).min(n);
-                for i in bi..i_end {
-                    let arow = &a[i * k + bk..i * k + k_end];
-                    for (p, &x) in arow.iter().enumerate() {
-                        let brow = &b[(bk + p) * n + bj..(bk + p) * n + j_end];
-                        let orow = &mut out[i * n + bj..i * n + j_end];
-                        for (o, &y) in orow.iter_mut().zip(brow) {
-                            *o += x * y;
-                        }
-                    }
-                }
+                let tile = Tile {
+                    rows: bi..i_end,
+                    contraction: bk..k_end,
+                    cols: bj..j_end,
+                };
+                accumulate_tile(a, b, out, &tile, n, k);
                 bj += TILE_N;
             }
             bk += TILE_K;
@@ -71,13 +92,48 @@ pub fn matmul_tiled(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mu
     }
 }
 
+/// 一个 tile 的三条区间：输出行、收缩轴、输出列。
+///
+/// 三条区间一起决定「乘哪一块」，分开放会让调用点出现三对含义相近的 `usize` 实参；包成一个值之后
+/// 传参只剩「哪个 tile」这一件事，块内累加也就不必知道它是第几块。
+struct Tile {
+    rows: Range<usize>,
+    contraction: Range<usize>,
+    cols: Range<usize>,
+}
+
+/// 块内 rank-1 更新：`out[i, j] += Σ_p a[i, p]·b[p, j]`，三条下标都取 `tile` 给的区间。
+///
+/// `n` / `k` 是整块的行宽与收缩轴长度：区间是绝对下标，行主序下 `[i, j]` 仍是 `i * n + j`。
+fn accumulate_tile(a: &[f32], b: &[f32], out: &mut [f32], tile: &Tile, n: usize, k: usize) {
+    for i in tile.rows.clone() {
+        let start = i * k + tile.contraction.start;
+        let arow = &a[start..i * k + tile.contraction.end];
+        for (p, &x) in arow.iter().enumerate() {
+            let base = (tile.contraction.start + p) * n;
+            let brow = &b[base + tile.cols.start..base + tile.cols.end];
+            let orow = &mut out[i * n + tile.cols.start..i * n + tile.cols.end];
+            for (o, &y) in orow.iter_mut().zip(brow) {
+                *o += x * y;
+            }
+        }
+    }
+}
+
 /// 三条缓冲的尺寸校验，两版 `forward` 共用。
 fn check_dims(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &[f32]) -> Result<()> {
     if a.len() != m * k || b.len() != k * n || out.len() != m * n {
         return Err(Error::new(
             Code::Invalid,
-            format!("GEMM 缓冲尺寸不符：a={}，b={}，out={}，期望 m·k={}，k·n={}，m·n={}",
-                a.len(), b.len(), out.len(), m * k, k * n, m * n),
+            format!(
+                "GEMM 缓冲尺寸不符：a={}，b={}，out={}，期望 m·k={}，k·n={}，m·n={}",
+                a.len(),
+                b.len(),
+                out.len(),
+                m * k,
+                k * n,
+                m * n
+            ),
         ));
     }
     Ok(())
@@ -88,7 +144,14 @@ fn check_dims(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &[f32]) -
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_scalar(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> Result<()> {
+pub fn forward_scalar(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) -> Result<()> {
     check_dims(a, b, m, n, k, out)?;
     matmul_scalar(a, b, m, n, k, out);
     Ok(())
@@ -99,9 +162,180 @@ pub fn forward_scalar(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_tiled(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> Result<()> {
+pub fn forward_tiled(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) -> Result<()> {
     check_dims(a, b, m, n, k, out)?;
     matmul_tiled(a, b, m, n, k, out);
+    Ok(())
+}
+
+/// 标量参考（线性层布局）：`out[r, j] = Σ_p x[r, p]·w[j, p]`，每个元素按 `p` 顺序独立累加。
+///
+/// 不读 `out` 的初值（直接赋值），是 [`matmul_tn_tiled`] 的对拍真值。
+pub fn matmul_tn_scalar(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
+    for r in 0..rows {
+        let xrow = &x[r * k..][..k];
+        let orow = &mut out[r * n..][..n];
+        for (j, slot) in orow.iter_mut().enumerate() {
+            let wrow = &w[j * k..][..k];
+            let mut acc = 0.0f32;
+            for (&a, &b) in xrow.iter().zip(wrow) {
+                acc += a * b;
+            }
+            *slot = acc;
+        }
+    }
+}
+
+/// 分块 tile（线性层布局）：[`TN_ROWS`] 行 × [`TN_COLS`] 列的输出块，收缩轴按 [`TN_K`] 切。
+///
+/// 输出列块在最外层，于是每个权重列块（`TN_COLS × k`，prefill 下约 1 MiB）在一次外循环里被行块反复
+/// 复用、只从内存读一遍；行块在内层，块内累加器是 [`TN_ROWS`]×[`TN_COLS`] 的定长栈缓冲。逐行调
+/// `gemv` 的做法把同一份权重按行数重复读，那个倍数正好是本核省掉的量。
+pub fn matmul_tn_tiled(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
+    let mut block = [0.0f32; TN_ROWS * TN_COLS];
+    let mut j0 = 0;
+    while j0 < n {
+        let j1 = (j0 + TN_COLS).min(n);
+        let mut r0 = 0;
+        while r0 < rows {
+            let r1 = (r0 + TN_ROWS).min(rows);
+            let acc = &mut block[..(r1 - r0) * TN_COLS];
+            acc.fill(0.0);
+            let mut p0 = 0;
+            while p0 < k {
+                let p1 = (p0 + TN_K).min(k);
+                let tile = TnTile {
+                    rows: r0..r1,
+                    contraction: p0..p1,
+                    cols: j0..j1,
+                };
+                accumulate_tn_tile(x, w, acc, &tile, k);
+                p0 = p1;
+            }
+            for row in r0..r1 {
+                let start = (row - r0) * TN_COLS;
+                let len = j1 - j0;
+                out[row * n + j0..row * n + j1].copy_from_slice(&acc[start..start + len]);
+            }
+            r0 = r1;
+        }
+        j0 = j1;
+    }
+}
+
+/// 线性层布局的一个 tile：输出行、收缩轴、输出列三条区间（与 [`Tile`] 同构，含义不同）。
+struct TnTile {
+    rows: Range<usize>,
+    contraction: Range<usize>,
+    cols: Range<usize>,
+}
+
+/// 块内累加：`acc[row, j] += Σ_p x[row, p]·w[j, p]`，`acc` 的行宽是 [`TN_COLS`]。
+///
+/// `k` 是权重与输入的行宽：区间是绝对下标，行主序下 `[row, p]` 仍是 `row * k + p`。
+///
+/// 收缩块取 [`TN_K`] 是这一层的关键：累加器每块只被读改写一次（整段 `k` 上共 `k / TN_K` 次），
+/// 块内全是连续点积；块再窄就变成「累加器往返」而不是「乘加」。
+fn accumulate_tn_tile(x: &[f32], w: &[f32], acc: &mut [f32], tile: &TnTile, k: usize) {
+    for j in tile.cols.clone() {
+        let wchunk = &w[j * k + tile.contraction.start..j * k + tile.contraction.end];
+        let slot = j - tile.cols.start;
+        for row in tile.rows.clone() {
+            let xchunk = &x[row * k + tile.contraction.start..row * k + tile.contraction.end];
+            acc[(row - tile.rows.start) * TN_COLS + slot] += dot_lanes(xchunk, wchunk);
+        }
+    }
+}
+
+/// 累加链数：8 条独立的部分和，乘加不排成一条依赖链（编译后是一整条 SIMD 乘加指令）。
+const LANES: usize = 8;
+
+/// 多点积：`LANES` 条独立累加链。
+///
+/// 尾数（`len` 不是 `LANES` 的倍数）并入标量尾部——链内顺序与标量路径不同，只会带来末位舍入差，
+/// 而公开对拍容差（1e-3 相对误差）足以吸收它；换来的是内层 `LANES` 倍指令级并行，这一项才是
+/// 分块内核相对逐行 `gemv` 不落下风的前提（实测 1.8×，见 `crates/benches/criterion/matmul_f32.rs`）。
+///
+/// 它是 `op` 里唯一的多链点积：矩阵乘 tile 与两条注意力内核（`attention` / `attention_tiled`）
+/// 都调这一份，否则同一个归约循环会被写成四份、向量化程度也四份不一样。
+pub(crate) fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
+    let len = a.len().min(b.len());
+    let (x_chunks, x_tail) = a[..len].as_chunks::<LANES>();
+    let (y_chunks, y_tail) = b[..len].as_chunks::<LANES>();
+    let mut lanes = [0.0f32; LANES];
+    for (x, y) in x_chunks.iter().zip(y_chunks) {
+        let mut lane = 0;
+        while lane < LANES {
+            lanes[lane] += x[lane] * y[lane];
+            lane += 1;
+        }
+    }
+    let mut sum = lanes.iter().sum::<f32>();
+    for (x, y) in x_tail.iter().zip(y_tail) {
+        sum += x * y;
+    }
+    sum
+}
+
+/// 线性层布局的尺寸校验：输入 `rows × k`、权重 `n × k`、输出 `rows × n`。
+fn check_tn_dims(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f32]) -> Result<()> {
+    if x.len() != rows * k || w.len() != n * k || out.len() != rows * n {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "线性层 GEMM 缓冲尺寸不符：x={}，w={}，out={}，期望 rows·k={}，n·k={}，rows·n={}",
+                x.len(),
+                w.len(),
+                out.len(),
+                rows * k,
+                n * k,
+                rows * n
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// 线性层布局的标量入口：校验尺寸后写 `out`。
+///
+/// # Errors
+///
+/// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
+pub fn forward_tn_scalar(
+    x: &[f32],
+    w: &[f32],
+    rows: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    check_tn_dims(x, w, rows, n, k, out)?;
+    matmul_tn_scalar(x, w, rows, n, k, out);
+    Ok(())
+}
+
+/// 线性层布局的 tile 入口：校验尺寸后写 `out`。这是服务侧行批投影的唯一生产路径。
+///
+/// # Errors
+///
+/// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
+pub fn forward_tn_tiled(
+    x: &[f32],
+    w: &[f32],
+    rows: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    check_tn_dims(x, w, rows, n, k, out)?;
+    matmul_tn_tiled(x, w, rows, n, k, out);
     Ok(())
 }
 
@@ -110,7 +344,11 @@ pub fn close_enough(actual: &[f32], expected: &[f32], rtol: f32, atol: f32) -> R
     if actual.len() != expected.len() {
         return Err(Error::new(
             Code::Invalid,
-            format!("对拍长度不符：实际 {}，参考 {}", actual.len(), expected.len()),
+            format!(
+                "对拍长度不符：实际 {}，参考 {}",
+                actual.len(),
+                expected.len()
+            ),
         ));
     }
     for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
@@ -118,7 +356,10 @@ pub fn close_enough(actual: &[f32], expected: &[f32], rtol: f32, atol: f32) -> R
         if (a - e).abs() > tol {
             return Err(Error::new(
                 Code::Invalid,
-                format!("第 {i} 个元素 {a} 与参考 {e} 差 {}，超过容差 {tol}", (a - e).abs()),
+                format!(
+                    "第 {i} 个元素 {a} 与参考 {e} 差 {}，超过容差 {tol}",
+                    (a - e).abs()
+                ),
             ));
         }
     }
@@ -175,6 +416,62 @@ mod tests {
         assert_tiled_matches(8, 1, 3);
     }
 
+    /// 线性层布局对拍：同一份输入与权重，标量参考与 tile 在 IEEE 容差内一致。
+    fn assert_tn_matches(rows: usize, n: usize, k: usize) {
+        let x = sample(rows * k, 3);
+        let w = sample(n * k, 4);
+        let mut expected = vec![0.0f32; rows * n];
+        let mut actual = vec![0.0f32; rows * n];
+        forward_tn_scalar(&x, &w, rows, n, k, &mut expected).expect("参考可计算");
+        forward_tn_tiled(&x, &w, rows, n, k, &mut actual).expect("tile 可计算");
+        close_enough(&actual, &expected, 1e-3, 1e-3).expect("线性层 tile 与标量参考一致");
+    }
+
+    #[test]
+    fn tn_tiled_matches_scalar_on_prefill_shape() {
+        // 行批 256、输出 128、收缩轴 1024：prefill 投影的代表形状。
+        assert_tn_matches(256, 128, 1024);
+    }
+
+    #[test]
+    fn tn_tiled_matches_scalar_on_tile_multiples() {
+        assert_tn_matches(TN_ROWS, TN_COLS, TN_K);
+    }
+
+    #[test]
+    fn tn_tiled_matches_scalar_on_ragged_edges() {
+        // 非 tile 整数倍：行块、列块、收缩块三处都切出残边。
+        assert_tn_matches(TN_ROWS + 3, TN_COLS + 5, TN_K + 7);
+    }
+
+    #[test]
+    fn tn_tiled_matches_scalar_on_single_row() {
+        // decode 口径：一行输入也必须与 `gemv_f32` 同一算式（同一份点积顺序）。
+        assert_tn_matches(1, 8, 13);
+    }
+
+    #[test]
+    fn tn_empty_contraction_yields_zeros() {
+        let mut out = vec![1.0f32; 6];
+        forward_tn_tiled(&[], &[], 2, 3, 0, &mut out).expect("k=0 合法");
+        assert_eq!(out, vec![0.0f32; 6], "空收缩轴输出必须全零");
+    }
+
+    #[test]
+    fn tn_forward_rejects_mismatched_buffers() {
+        let x = vec![0.0f32; 8];
+        let w = vec![0.0f32; 8];
+        let mut out = vec![0.0f32; 8];
+        assert!(
+            forward_tn_tiled(&x, &w, 3, 3, 3, &mut out).is_err(),
+            "尺寸不符必须报错"
+        );
+        assert!(
+            forward_tn_scalar(&x, &w, 2, 2, 2, &mut out).is_err(),
+            "标量入口也必须报错"
+        );
+    }
+
     #[test]
     fn empty_contraction_yields_zeros() {
         let mut out = vec![1.0f32; 4];
@@ -187,6 +484,9 @@ mod tests {
         let a = vec![0.0f32; 8];
         let b = vec![0.0f32; 8];
         let mut out = vec![0.0f32; 8];
-        assert!(forward_scalar(&a, &b, 3, 3, 3, &mut out).is_err(), "尺寸不符必须报错");
+        assert!(
+            forward_scalar(&a, &b, 3, 3, 3, &mut out).is_err(),
+            "尺寸不符必须报错"
+        );
     }
 }
