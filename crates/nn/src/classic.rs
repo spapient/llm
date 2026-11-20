@@ -311,7 +311,7 @@ impl MaxPool1d {
         nonzero(c, "channels", layer)?;
         let pool = OpPool1 { k, s, p };
         let ol = pool.len(l)?;
-        let spec = Spec::new(name, crate::Shape::new([ol, c]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([ol, c]), vec!["max_pool1d_f32".to_string()])?;
         Ok(Self { spec, pool, ol, c })
     }
 
@@ -328,6 +328,10 @@ impl MaxPool1d {
 
 impl Contract for MaxPool1d {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("max_pool1d_f32", self.ol, self.c).map(Some)
+    }
 }
 
 /// 二维最大池化层：`[h, w, c]` → `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
@@ -351,7 +355,7 @@ impl MaxPool2d {
         nonzero(c, "channels", layer)?;
         let pool = OpPool2 { geom };
         let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["max_pool2d_f32".to_string()])?;
         Ok(Self {
             spec,
             pool,
@@ -374,6 +378,10 @@ impl MaxPool2d {
 
 impl Contract for MaxPool2d {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("max_pool2d_f32", self.oh * self.ow, self.c).map(Some)
+    }
 }
 
 /// 二维平均池化层：口径同 [`MaxPool2d`]，`count_include_pad` 决定补零是否计入分母。
@@ -403,7 +411,7 @@ impl AvgPool2d {
         nonzero(c, "channels", layer)?;
         let pool = op::conv::AvgPool2d { geom, count_include_pad };
         let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["avg_pool2d_f32".to_string()])?;
         Ok(Self {
             spec,
             oh,
@@ -425,6 +433,10 @@ impl AvgPool2d {
 
 impl Contract for AvgPool2d {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("avg_pool2d_f32", self.oh * self.ow, self.c).map(Some)
+    }
 }
 
 /// 自适应平均池化层：任意输入压到固定 `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
@@ -447,7 +459,7 @@ impl AdaptiveAvgPool2d {
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
         let pool = OpAdaptive { oh, ow };
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["adaptive_pool_f32".to_string()])?;
         Ok(Self { spec, pool, c })
     }
 
@@ -464,6 +476,10 @@ impl AdaptiveAvgPool2d {
 
 impl Contract for AdaptiveAvgPool2d {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("adaptive_pool_f32", self.pool.oh * self.pool.ow, self.c).map(Some)
+    }
 }
 
 /// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`op::conv::Sampler`]。规格构造口径同 [`MaxPool1d`]。
@@ -492,7 +508,7 @@ impl Interpolate {
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
         let interp = OpInterp { sampler, oh, ow };
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["interpolate_f32".to_string()])?;
         Ok(Self { spec, interp, c })
     }
 
@@ -509,6 +525,10 @@ impl Interpolate {
 
 impl Contract for Interpolate {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("interpolate_f32", self.interp.oh * self.interp.ow, self.c).map(Some)
+    }
 }
 
 /// 批归一化层（NHWC，最后维 `channels`）。
@@ -545,7 +565,7 @@ impl BatchNorm2d {
             eps,
             momentum,
         };
-        let spec = Spec::new(name, crate::Shape::new([channels]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([channels]), vec!["batch_norm_f32".to_string()])?;
         Ok(Self {
             spec,
             norm,
@@ -561,6 +581,10 @@ impl BatchNorm2d {
 
 impl Contract for BatchNorm2d {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("batch_norm_f32", self.channels, 1).map(Some)
+    }
 }
 
 /// 组归一化层：`(n, group)` 内按 `(C/G, spatial)` 统计。规格构造口径同 [`BatchNorm2d`]。
@@ -596,7 +620,7 @@ impl GroupNorm {
             channels,
             eps,
         };
-        let spec = Spec::new(name, crate::Shape::new([channels]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([channels]), vec!["group_norm_f32".to_string()])?;
         Ok(Self {
             spec,
             norm,
@@ -612,6 +636,10 @@ impl GroupNorm {
 
 impl Contract for GroupNorm {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("group_norm_f32", self.channels, 1).map(Some)
+    }
 }
 
 /// 实例归一化层：等价于 `GroupNorm(groups = channels)`。规格构造口径同 [`BatchNorm2d`]。
@@ -635,7 +663,7 @@ impl InstanceNorm {
             return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
         }
         let norm = OpInst { channels, eps };
-        let spec = Spec::new(name, crate::Shape::new([channels]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([channels]), vec!["instance_norm_f32".to_string()])?;
         Ok(Self {
             spec,
             norm,
@@ -651,6 +679,10 @@ impl InstanceNorm {
 
 impl Contract for InstanceNorm {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("instance_norm_f32", self.channels, 1).map(Some)
+    }
 }
 
 /// 层归一化层：逐行在最后一维 `width` 上统计。规格构造口径同 [`BatchNorm2d`]。
@@ -674,7 +706,7 @@ impl LayerNorm {
             return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
         }
         let norm = OpLayer { width, eps };
-        let spec = Spec::new(name, crate::Shape::new([width]), Vec::new())?;
+        let spec = Spec::new(name, crate::Shape::new([width]), vec!["layer_norm_f32".to_string()])?;
         Ok(Self { spec, norm, width })
     }
 
@@ -686,6 +718,10 @@ impl LayerNorm {
 
 impl Contract for LayerNorm {
     spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_context("layer_norm_f32", self.width, 1).map(Some)
+    }
 }
 
 /// 输出形状的静态检查：每层的 `out` 维数必须与 `Shape::new` 接受的一致。
@@ -745,31 +781,37 @@ mod tests {
     }
 
     #[test]
-    fn pool_and_interpolate_layers_are_registered_without_operators() {
+    fn pool_and_interpolate_layers_bind_one_real_operator() {
         let pool = MaxPool1d::new("p1", 2, 2, 0, 8, 4).expect("合法");
         assert_eq!(pool.output().dims(), [4, 4]);
-        assert!(pool.spca().ops().is_empty());
-        // 没有可代理算子 -> 明确"无法计价"，而不是凑一个数。
-        assert!(pool.bounds().expect("合法").is_none());
+        assert_eq!(pool.spca().ops(), ["max_pool1d_f32"]);
+        // 有真算子就能推出下界：读一遍输入、写一遍输出。
+        let lower = pool.bounds().expect("合法").expect("可计价");
+        assert!(lower.read() > 0 && lower.write() > 0 && lower.flops() > 0.0);
 
         let pool2 = MaxPool2d::new("p2", geom3(), 8, 8, 4).expect("合法");
         assert_eq!(pool2.output().dims(), [8, 8, 4]);
+        assert_eq!(pool2.spca().ops(), ["max_pool2d_f32"]);
 
-        let pool2 = AvgPool2d::new("p3", geom3(), false, 8, 8, 4).expect("合法");
-        assert_eq!(pool2.output().dims(), [8, 8, 4]);
+        let avg = AvgPool2d::new("p3", geom3(), false, 8, 8, 4).expect("合法");
+        assert_eq!(avg.output().dims(), [8, 8, 4]);
+        assert_eq!(avg.spca().ops(), ["avg_pool2d_f32"]);
 
-        let pool2 = AdaptiveAvgPool2d::new("p4", 2, 2, 4).expect("合法");
-        assert_eq!(pool2.output().dims(), [2, 2, 4]);
+        let adp = AdaptiveAvgPool2d::new("p4", 2, 2, 4).expect("合法");
+        assert_eq!(adp.output().dims(), [2, 2, 4]);
+        assert_eq!(adp.spca().ops(), ["adaptive_pool_f32"]);
 
-        let interp = Interpolate::new("i", op::conv::Sampler::Linear, 16, 16, 4).expect("合法");
-        assert_eq!(interp.output().dims(), [16, 16, 4]);
+        let up = Interpolate::new("i", op::conv::Sampler::Linear, 16, 16, 4).expect("合法");
+        assert_eq!(up.output().dims(), [16, 16, 4]);
+        assert_eq!(up.spca().ops(), ["interpolate_f32"]);
     }
 
     #[test]
     fn norm_layers_check_their_geometry() {
         let bn = BatchNorm2d::new("bn", 64, 1e-5, 0.1).expect("合法");
         assert_eq!(bn.output().dims(), [64]);
-        assert!(bn.bounds().expect("合法").is_none());
+        assert_eq!(bn.spca().ops(), ["batch_norm_f32"]);
+        assert!(bn.bounds().expect("合法").is_some());
         assert!(BatchNorm2d::new("bn", 64, 0.0, 0.1).is_err());
         assert!(BatchNorm2d::new("bn", 64, 1e-5, 1.5).is_err());
 

@@ -1,0 +1,12 @@
+# max_pool2d_f32：y[i,j] = max(x[窗口])，补零不入窗口。
+# 归到 elementwise 骨架（声明档几何固定，真窗口/真统计走标量参考），算术在模板里展开。
+base = "silu_f32"
+
+[op]
+name     = "max_pool2d_f32"
+skeleton = "elementwise"
+summary  = "y[i,j] = max(x[窗口])，补零不入窗口"
+
+[layouts]
+x = "row"
+y = "row"

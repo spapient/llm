@@ -13,9 +13,10 @@ use op::sig::Signature;
 
 use cutile::harness::output_name;
 
-use crate::codegen::{
-    bind_chunk_loop, cuda_device, cuda_host_buffers_grid, cuda_launch_params, cuda_readback,
-    cuda_release, inject_chunk_preamble, launch_args, scalar_name, thread_param_typed,
+use crate::cuda::{cuda_host_buffers_grid, cuda_launch_params, cuda_readback, cuda_release};
+use crate::dialect::{
+    Cuda, Dialect, bind_chunk_loop, inject_chunk_preamble, launch_args, length_scalar, scalar_name,
+    thread_param_typed,
 };
 use crate::norm::{launch, length_usize, program_head};
 
@@ -38,7 +39,7 @@ pub(crate) fn cuda_chunk_scan(
     decay: f32,
 ) -> Result<Vec<String>> {
     let scalar = scalar_name(signature)?;
-    let len = crate::codegen::length_scalar(signature, sample)?;
+    let len = length_scalar(signature, sample)?;
     let local = scan_local(kernel_source, signature, sample, chunk, scalar)?;
     let correct = scan_correct(output_name(signature)?, chunk, len, decay);
     Ok(vec![local, correct])
@@ -54,7 +55,7 @@ fn scan_local(
     scalar: &str,
 ) -> Result<String> {
     let kernel = signature.kernel();
-    let mut body = cuda_device(kernel_source, &kernel);
+    let mut body = Cuda::prelude(kernel_source, &kernel);
     body = thread_param_typed(&body, &kernel, "int3 tid")?;
     body = inject_chunk_preamble(&body, &kernel, chunk, scalar)?;
     body = bind_chunk_loop(&body, scalar)?;

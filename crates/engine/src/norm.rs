@@ -19,11 +19,8 @@ use op::sig::Signature;
 
 use cutile::harness::output_name;
 
-use crate::codegen::{
-    buffer_args, chunk_reduce_entry_dialect, cuda_host_buffers_grid, cuda_readback, cuda_release,
-    dialect_buffers, kernel_entry_dialect, length_scalar, scalar_name,
-};
-use crate::dialect::Cuda;
+use crate::cuda::{buffer_args, cuda_host_buffers_grid, cuda_readback, cuda_release};
+use crate::dialect::{Cuda, Dialect, length_scalar, scalar_name};
 
 /// 部分归约段入口（部分平方和 / 部分最大值）。
 pub(crate) const PARTIAL: &str = "kernel_partial";
@@ -44,7 +41,7 @@ pub(crate) fn cuda_chunk_rmsnorm(
     sample: &Sample,
     chunk: usize,
 ) -> Result<Vec<String>> {
-    let partial = chunk_reduce_entry_dialect::<Cuda>(
+    let partial = Cuda::chunk_reduce_entry(
         kernel_source,
         signature,
         sample,
@@ -67,7 +64,7 @@ pub(crate) fn cuda_chunk_softmax(
     sample: &Sample,
     chunk: usize,
 ) -> Result<Vec<String>> {
-    let max = chunk_reduce_entry_dialect::<Cuda>(
+    let max = Cuda::chunk_reduce_entry(
         kernel_source,
         signature,
         sample,
@@ -139,24 +136,24 @@ fn chunk_head(chunk: usize, len: i64) -> String {
 
 /// 一个分块 map 入口：签名缓冲形参 + 额外标量（`rms` / `max` / `sum`），入口名由调用方给。
 fn map_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
-    let buffers = cuda_buffers(signature);
+    let buffers = Cuda::buffers(signature);
     let buffers = if extra.is_empty() {
         buffers
     } else {
         format!("{buffers},\n    {extra}")
     };
-    kernel_entry(&CUDA, "", "", &buffers, ("", CUDA.grid_stmt), body, entry)
+    Cuda::kernel_entry("", "", &buffers, ("", Cuda::GRID_STMT), body, entry)
 }
 
-/// 一个逐元素网格入口：每线程一个元素，线程下标符号是 `n`（[`CUDA`] 的 `point_stmt`）。
+/// 一个逐元素网格入口：每线程一个元素，线程下标符号是 `n`（[`Cuda`] 的 [`Dialect::POINT_STMT`]）。
 fn point_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
-    let buffers = cuda_buffers(signature);
+    let buffers = Cuda::buffers(signature);
     let buffers = if extra.is_empty() {
         buffers
     } else {
         format!("{buffers},\n    {extra}")
     };
-    kernel_entry(&CUDA, "", "", &buffers, ("", CUDA.point_stmt), body, entry)
+    Cuda::kernel_entry("", "", &buffers, ("", Cuda::POINT_STMT), body, entry)
 }
 
 /// 只读缓冲名，按签名顺序。

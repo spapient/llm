@@ -4,11 +4,11 @@
 //! 断言对外承诺：准入回答"能不能进"，推进回答"生成没生成"，`Blocked` 不修改状态且可原样重试，
 //! 三个状态不会互相越界。
 //!
-//! 另含 vendor codegen 白盒对拍：CUDA harness 与 Metal 网格内核的文本判据。
+//! 另含 vendor 内核白盒对拍：CUDA harness 与 Metal 网格内核的文本判据。
 
 use diagnostic::Code;
-use llm_engine::codegen::cuda_harness;
-use llm_engine::codegen::metal_grid_kernel;
+use llm_engine::cuda::cuda_harness;
+use llm_engine::msl::metal_grid_kernel;
 use llm_engine::exec::Stream;
 use llm_engine::kv::{Cache, Pager};
 use llm_engine::{Progress, Scheduler, Sequence};
@@ -250,10 +250,10 @@ fn a_reused_page_does_not_leak_the_previous_sequences_kv() {
 }
 
 // ---------------------------------------------------------------------------
-// vendor codegen 白盒对拍
+// vendor 内核白盒对拍
 // ---------------------------------------------------------------------------
 //
-// 生产态 Metal / CUDA 内核 lowering 已从 cutile 搬到 `engine::codegen`（M3 治理：机制层
+// 生产态 Metal / CUDA 内核 lowering 已从 cutile 搬到 `engine::dialect`（M3 治理：机制层
 // 不出现厂商字面量），这些文本判据随之迁来。签名 / 样本夹具不再各自复制：它与
 // `crates/cutile/src/harness.rs` 的单测共用 `testkit` 的 `tests/support/cutile_x_kernel.rs`
 // 一份取值。共用夹具不改变两个调用点测的是不同层产物这一事实——cutile 测 C 宿主基准封装，

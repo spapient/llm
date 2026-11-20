@@ -106,7 +106,7 @@ fn pointwise_wrap(
     Ok((
         [len.div_ceil(256), 1, 1],
         [256, 1, 1],
-        crate::codegen::buffer_args(signature),
+        crate::cuda::buffer_args(signature),
     ))
 }
 
@@ -119,7 +119,7 @@ fn loop_wrap(
     Ok((
         benchmark_grid(grid, sample)?,
         [1, 1, 1],
-        crate::codegen::launch_args(sample, signature.params())?,
+        crate::dialect::launch_args(sample, signature.params())?,
     ))
 }
 
@@ -133,7 +133,7 @@ fn warp_wrap(
     Ok((
         [rows, 1, 1],
         [warp_lanes(threads)?, 1, 1],
-        crate::codegen::launch_args(sample, signature.params())?,
+        crate::dialect::launch_args(sample, signature.params())?,
     ))
 }
 
@@ -182,7 +182,7 @@ impl Codegen for MetalBackend {
         metal_lower(kernel, signature, sample, kind)
     }
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        let (device, host) = crate::codegen::metal_harness(kernel, signature, sample)?;
+        let (device, host) = crate::msl::metal_harness(kernel, signature, sample)?;
         Ok(Source::Pair { device, host })
     }
     fn parallel(
@@ -212,7 +212,7 @@ impl Codegen for MetalBackend {
         };
         let (grid, threads) = metal_bench_geometry(signature, sample, kind)?;
         let host =
-            crate::codegen::metal_benchmark_driver(signature, sample, grid, threads, repeat)?;
+            crate::msl::metal_benchmark_driver(signature, sample, grid, threads, repeat)?;
         Ok(Source::Pair {
             device: device.clone(),
             host,
@@ -265,13 +265,13 @@ fn metal_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::codegen::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
+        Pointwise => crate::msl::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
         QuantizedGemvI4 { .. } => Err(Error::new(
             Code::Unsupported,
             "合作式 int4 GEMV 当前仅落地在 CUDA/MUSA",
         )),
         Loop(grid) => {
-            crate::codegen::metal_loop_kernel(kernel, signature, sample, grid).map(|s| vec![s])
+            crate::msl::metal_loop_kernel(kernel, signature, sample, grid).map(|s| vec![s])
         }
         ChunkReduce { .. } | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => {
             metal_chunk_lower(kernel, signature, sample, kind)
@@ -375,19 +375,19 @@ fn metal_chunk_lower(
     use cutile::backend::Lower::*;
     match kind {
         ChunkReduce { chunk, func } => {
-            crate::codegen::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
+            crate::msl::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
                 .map(|s| vec![s])
         }
         ChunkScan { chunk, decay } => {
-            crate::codegen::metal_chunk_scan(kernel, signature, sample, *chunk, *decay)
+            crate::msl::metal_chunk_scan(kernel, signature, sample, *chunk, *decay)
                 .map(|(local, correct)| vec![local, correct])
         }
         ChunkRmsnorm { chunk } => {
-            crate::codegen::metal_chunk_rmsnorm(kernel, signature, sample, *chunk)
+            crate::msl::metal_chunk_rmsnorm(kernel, signature, sample, *chunk)
                 .map(|(partial, map)| vec![partial, map])
         }
         ChunkSoftmax { chunk } => {
-            crate::codegen::metal_chunk_softmax(kernel, signature, sample, *chunk)
+            crate::msl::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
         Pointwise
@@ -468,7 +468,7 @@ impl Codegen for CudaBackend {
         cuda_lower(kernel, signature, sample, kind)
     }
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        Ok(Source::Single(crate::codegen::cuda_harness(
+        Ok(Source::Single(crate::cuda::cuda_harness(
             kernel, signature, sample,
         )?))
     }
@@ -498,7 +498,7 @@ impl Codegen for CudaBackend {
             ));
         };
         let (grid, threads, args) = cuda_bench_geometry(signature, sample, kind)?;
-        let source = crate::codegen::cuda_benchmark_driver(
+        let source = crate::cuda::cuda_benchmark_driver(
             device,
             signature,
             sample,
@@ -577,7 +577,7 @@ fn cuda_lower(
             crate::scan::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
         }
         QuantizedGemvI4 { threads } => {
-            crate::codegen::cuda_quantized_gemv_i4(signature, *threads).map(single_file)
+            crate::cuda::cuda_quantized_gemv_i4(signature, *threads).map(single_file)
         }
         // 其余骨架都只吐一段源码；分派单独一层，是为了让这一层只回答「哪一族」。
         _ => cuda_single_source(kind, kernel, signature, sample).map(single_file),
@@ -596,11 +596,11 @@ fn cuda_single_source(
 ) -> Result<String> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::codegen::cuda_grid_kernel(kernel, signature, sample),
+        Pointwise => crate::cuda::cuda_grid_kernel(kernel, signature, sample),
         ChunkReduce { chunk, func } => {
-            crate::codegen::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
+            crate::cuda::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
         }
-        Loop(grid) => crate::codegen::cuda_loop_kernel(kernel, signature, sample, grid),
+        Loop(grid) => crate::cuda::cuda_loop_kernel(kernel, signature, sample, grid),
         WmmaGemm => crate::wmma::gemm_kernel(signature, sample),
         _ => Err(Error::new(
             Code::Internal,
@@ -791,7 +791,7 @@ impl Codegen for AscendBackend {
     /// 必然 `Unsupported`，“与参考对拍通过”就只能靠人手贴一张图。它与 `lower` / `parallel` 不同——
     /// 单块标量执行不粉饰性能，只回答“算得对不对”，所以现在就能给。
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        crate::ascend_codegen::ascend_harness(kernel, signature, sample).map(Source::Single)
+        crate::ascend::ascend_harness(kernel, signature, sample).map(Source::Single)
     }
 }
 
@@ -818,7 +818,7 @@ impl Driver for AscendBackend {
     /// 这里如实不支持，调用方按"已声明但没有并行实现"回落——等 P3 的 `DataCopy` / `Mmad` 特化落地。
     ///
     /// 语义门 [`harness`] 是**例外**：它不走这条入口，而是自己拼一份单源 AscendC 程序
-    /// （[`crate::ascend_codegen::ascend_harness`]），所以走的是上一个分支。
+    /// （[`crate::ascend::ascend_harness`]），所以走的是上一个分支。
     fn compile_run(
         &self,
         profile: &Profile,
@@ -889,10 +889,10 @@ fn push_ascend_kernel(program: &mut String, max: usize, selected: &[Selected<'_>
 /// host 驱动：AscendCL 分配 GM、同步发射、回读。回读口径与 CUDA 版逐字一致（位模式 + `witness N`），
 /// 否则同一个 `driver::readback` 在两台设备上会读出两种东西。
 ///
-/// 调用守卫取自 [`crate::ascend_codegen::ACL_GUARD`]：语义门 harness 用的是同一份，两处各写一套时，
+/// 调用守卫取自 [`crate::ascend::ACL_GUARD`]：语义门 harness 用的是同一份，两处各写一套时，
 /// 加一个 API 调用就会漏掉其中一处。
 fn push_ascend_main(program: &mut String, max: usize, total: usize) {
-    program.push_str(crate::ascend_codegen::ACL_GUARD);
+    program.push_str(crate::ascend::ACL_GUARD);
     program.push_str(&format!(
         "\nint main() {{\n\
          \x20   const int total = {total};\n\

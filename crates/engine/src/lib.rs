@@ -65,16 +65,10 @@
 
 #![deny(unsafe_code)]
 
-// `#[annotation::dialect]` 生成的代码用 `::llm_engine::dialect::Dialect` 指回本 crate（与 `op` 的
-// `extern crate self as llm_op`、`nn` 的 `extern crate self as nn` 同一条约定：注解绑定它所属契约
-// 的路径，而不是硬编码调用方的名字）。
-extern crate self as llm_engine;
-
-mod ascend_codegen;
+mod ascend;
 pub mod backends;
 pub mod batch;
-pub mod codegen;
-mod cuda_codegen;
+pub mod cuda;
 mod dialect;
 pub mod exec;
 pub mod ifb;
@@ -83,6 +77,7 @@ pub mod kv;
 pub mod metal;
 pub mod metal_host;
 pub mod metal_pipeline;
+pub mod msl;
 pub mod norm;
 pub mod platform;
 pub mod program;

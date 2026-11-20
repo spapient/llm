@@ -17,7 +17,7 @@ use op::sig::Signature;
 
 use cutile::harness::output_name;
 
-use crate::codegen::{Driver, buffer_args, cuda_head, cuda_launch};
+use crate::cuda::{Driver, buffer_args, cuda_head, cuda_launch};
 
 /// 输出块边长。
 const TILE: usize = 64;
@@ -246,7 +246,7 @@ fn scalar_of(param: &op::sig::Param, sample: &Sample) -> Result<usize> {
 }
 
 /// WMMA GEMM 的 host 驱动：`dim3(ceil(M/64), ceil(N/64))`、128 线程，分配/回读与
-/// [`cuda_grid_driver`](crate::codegen::cuda_grid_driver) 同口径（输出长度取样本值）。
+/// [`cuda_grid_driver`](crate::cuda::cuda_grid_driver) 同口径（输出长度取样本值）。
 ///
 /// # Errors
 ///

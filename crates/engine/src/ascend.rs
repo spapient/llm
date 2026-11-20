@@ -1,7 +1,7 @@
 //! 昇腾侧的设备源与主机驱动拼装：`__aicore__` 单源翻译单元、`<<<blocks, nullptr, stream>>>`
 //! 发射、`aclrtMalloc` / `aclrtMemcpy` / `aclrtFree` 骨架与回读。
 //!
-//! 与 [`crate::cuda_codegen`] 是同一层的一件事：那里把 `.k` 循环体换成 `__device__` 单线程内核、
+//! 与 [`crate::cuda`] 是同一层的一件事：那里把 `.k` 循环体换成 `__device__` 单线程内核、
 //! 用 `cudaMalloc` 驱动；这里换成 `__aicore__` 内核、用 AscendCL 驱动。只换方言，不改语义：
 //! 回读口径（`float` 位模式逐行打印）必须与 CUDA 逐字一致，否则共用同一份
 //! [`cutile::runner::parse_bits`] 的两台设备会读出两种东西。
@@ -66,7 +66,7 @@ pub fn ascend_harness(
 ///
 /// 只改**函数**，不改变量：命名空间里的 `static const float` 是编译期可折叠的常量，给它加
 /// `__aicore__`（那是函数属性）只会把本来能编的源码改坏。与 CUDA 的
-/// [`crate::codegen::cuda_device`] 同一套写法，只是属性换名。
+/// [`crate::dialect::Dialect::device_fn`] 同一套写法，只是属性换名。
 pub(crate) fn ascend_device(text: &str, kernel: &str) -> String {
     text.replace(
         &format!("void {kernel}("),

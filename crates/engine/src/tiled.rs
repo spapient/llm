@@ -2,10 +2,10 @@
 //!
 //! **拥有**：中性 [`cutile::backend::Lower::TiledGemm`] 的 Metal 落地——把 GEMM 骨架的标量三重
 //! 循环换成 threadgroup 共享内存分块。**不拥有**：骨架分派（`cutile::execution`）、逐点/循环/
-//! 归约/扫描 lowering（`codegen`）、张量核 WMMA（`wmma`，CUDA）。
+//! 归约/扫描 lowering（`dialect` / `cuda` / `msl`）、张量核 WMMA（`wmma`，CUDA）。
 //!
-//! 与 `codegen` 分开的理由：`codegen` 的方言表与 harness 已接近单文件上限，而分块内核是独立的
-//! codegen 家族（共享内存 + 线程组屏障），把错误处理与索引算术收在一处更可读。
+//! 与 `dialect` 分开的理由：`dialect` 的方言表与 vendor 驱动已接近单文件上限，而分块内核是
+//! 独立的 tiled 家族（共享内存 + 线程组屏障），把错误处理与索引算术收在一处更可读。
 
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;

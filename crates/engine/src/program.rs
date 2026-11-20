@@ -46,17 +46,17 @@ fn cuda_single(
     launch: &Launch,
 ) -> Result<String> {
     let Lower::Loop(grid) = &launch.kind else {
-        let device = crate::codegen::cuda_grid_kernel(kernel, signature, sample)?;
+        let device = crate::cuda::cuda_grid_kernel(kernel, signature, sample)?;
         // CUDA 的网格是**块数**：工作项按线程组大小折算，块内再放 `group` 个线程。
         let blocks = launch.items[0].div_ceil(launch.group);
-        return crate::codegen::cuda_point_driver(&device, signature, sample, blocks, launch.group);
+        return crate::cuda::cuda_point_driver(&device, signature, sample, blocks, launch.group);
     };
     // 零维网格就是串行：语义门那一份单线程 harness 已是它的并行程序（1 个线程）。
     if grid.dims.is_empty() {
-        return crate::codegen::cuda_harness(kernel, signature, sample);
+        return crate::cuda::cuda_harness(kernel, signature, sample);
     }
-    let device = crate::codegen::cuda_loop_kernel(kernel, signature, sample, grid)?;
-    crate::codegen::cuda_loop_driver(&device, signature, sample, &launch.items[..grid.dims.len()])
+    let device = crate::cuda::cuda_loop_kernel(kernel, signature, sample, grid)?;
+    crate::cuda::cuda_loop_driver(&device, signature, sample, &launch.items[..grid.dims.len()])
 }
 
 /// 归约族：单段设备源 + 主机折叠，折叠算子在 [`fold_of`] 一处派生。
@@ -68,8 +68,8 @@ fn cuda_reduce(
     chunk: usize,
     func: &str,
 ) -> Result<String> {
-    let device = crate::codegen::cuda_chunk_reduce(kernel, signature, sample, chunk, func)?;
-    crate::codegen::cuda_chunk_reduce_driver(
+    let device = crate::cuda::cuda_chunk_reduce(kernel, signature, sample, chunk, func)?;
+    crate::cuda::cuda_chunk_reduce_driver(
         &device,
         signature,
         sample,
@@ -158,7 +158,7 @@ fn metal_dispatch(
     launch: &Launch,
 ) -> Result<Source> {
     let (device, block) = metal_device(kernel, signature, sample, launch)?;
-    let host = crate::codegen::metal_dispatch_driver(
+    let host = crate::msl::metal_dispatch_driver(
         signature,
         sample,
         "kernel_main",
@@ -193,7 +193,7 @@ fn metal_pointwise(
     sample: &Sample,
     group: usize,
 ) -> Result<(String, [usize; 3])> {
-    let device = crate::codegen::metal_grid_kernel(kernel, signature, sample)?;
+    let device = crate::msl::metal_grid_kernel(kernel, signature, sample)?;
     Ok((device, [group, 1, 1]))
 }
 
@@ -214,7 +214,7 @@ fn metal_loop(
         )
         .with("engine::program"));
     }
-    let device = crate::codegen::metal_loop_kernel(kernel, signature, sample, grid)?;
+    let device = crate::msl::metal_loop_kernel(kernel, signature, sample, grid)?;
     Ok((device, [1, 1, 1]))
 }
 

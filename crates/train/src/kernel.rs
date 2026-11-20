@@ -74,6 +74,18 @@ macro_rules! binary {
     )*};
 }
 
+/// 归一化 `[x, gamma, beta] → [y]` 适配：三个 f32 输入、一个 f32 输出；
+/// 声明档几何（通道数、空间、批大小）固定在算子模块里，由层侧的真实几何另行决定。
+macro_rules! norm {
+    ($($run:ident),* $(,)?) => {$(
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (x, gamma, beta) =
+                <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
+            op::$run::forward(x, gamma, beta, output_slice::<f32>(stringify!($run), output)?)
+        }
+    )*};
+}
+
 /// 矩阵乘适配：`m` 由 `K` 与缓冲长度推导（`i4` 每字节两个 nibble），`n` 由输出长度推导。
 macro_rules! gemm {
     ($(($run:ident, $lane:ident, $div:expr)),* $(,)?) => {$(
@@ -88,11 +100,16 @@ macro_rules! gemm {
 }
 
 unary!(
+    adaptive_pool_f32,
+    avg_pool2d_f32,
     exp_f32,
     gelu_f32,
     hard_sigmoid_f32,
     leaky_relu_f32,
+    interpolate_f32,
     log_f32,
+    max_pool1d_f32,
+    max_pool2d_f32,
     silu_f32,
     softmax_f32,
     reduce_max_f32,
@@ -110,6 +127,13 @@ binary!(
     rmsnorm_f32,
     residual_add_f32,
     sub_f32
+);
+
+norm!(
+    batch_norm_f32,
+    group_norm_f32,
+    instance_norm_f32,
+    layer_norm_f32
 );
 
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
@@ -253,8 +277,11 @@ fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
 
 /// 标量内核表：长度就是 [`op::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。
 const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
+    adaptive_pool_f32,
     add_f32,
     attention_f32,
+    avg_pool2d_f32,
+    batch_norm_f32,
     decode_attention_f32,
     decode_flash_attention_f32,
     dequant_i2,
@@ -273,12 +300,18 @@ const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
     gemv_i2,
     gemv_i4,
     gemv_i8,
+    group_norm_f32,
     hard_sigmoid_f32,
+    instance_norm_f32,
+    interpolate_f32,
+    layer_norm_f32,
     leaky_relu_f32,
     log_f32,
     matmul_f32,
     matmul_i8,
     max_f32,
+    max_pool1d_f32,
+    max_pool2d_f32,
     min_f32,
     mul_f32,
     reduce_max_f32,

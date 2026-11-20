@@ -1,10 +1,9 @@
 //! CUDA 侧的设备源与主机驱动拼装：`__device__` 翻译单元、`<<<grid, block>>>` 发射、
 //! `cudaMalloc` / `cudaMemcpy` / `cudaFree` 骨架与回读。
 //!
-//! 与 [`crate::codegen`] 的分家：那里只放「[`crate::dialect::Dialect`] 方言 + 两端共用的 lowering
-//! 原语」，这里只写 CUDA 一侧的驱动骨架（发射 / 分配 / 回读 / 释放）。两条 lowering 从同一份方言
-//! 派生，同一条 kernel body 只拼一次；`codegen` 把本模块再导出，所以 `crate::codegen::cuda_*` 这条
-//! 路径与拆分前一致。
+//! 后端无关的 lowering 原语住在 [`crate::dialect::Dialect`] trait 的**默认方法**里，这里只写
+//! CUDA 一侧的驱动骨架（发射 / 分配 / 回读 / 释放）。两条 lowering 从同一份方言派生，同一条
+//! kernel body 只拼一次；调用点写 `crate::cuda::cuda_*`，本模块即为 CUDA vendor 驱动。
 //!
 //! # 为什么驱动只有一个 `Driver`
 //!
@@ -19,11 +18,7 @@ use op::sig::{Param, Signature};
 
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 
-use crate::codegen::{
-    chunk_reduce_dialect, dialect_buffers, dialect_prelude, grid_kernel_dialect,
-    injected_kernel_dialect, launch_args, length_scalar, serial_kernel_dialect,
-};
-use crate::dialect::Cuda;
+use crate::dialect::{Cuda, Dialect, launch_args, length_scalar};
 // ---------------------------------------------------------------------------
 // CUDA lowering：声明式骨架 → CUDA 源（逐点网格 / 分块归约）+ verify 单线程 harness。
 // ---------------------------------------------------------------------------
@@ -65,7 +60,7 @@ fn cuda_params(params: &[Param]) -> String {
 
 /// 文件头：CUDA 头、身份注释，以及整体转成 `__device__` 的内核源码。
 fn cuda_prelude(kernel_source: &str, kernel: &str, sample: &Sample) -> String {
-    let device = dialect_prelude::<Cuda>(kernel_source, kernel);
+    let device = Cuda::prelude(kernel_source, kernel);
     let mut text = format!(
         "#include <cuda_runtime.h>\n#include <cstdio>\n/* cutile cuda harness | kernel={kernel} m={} n={} | 单线程设备执行（语义门，非并行性能门） */\n{device}",
         sample.m, sample.n
@@ -272,13 +267,13 @@ fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: us
     text
 }
 
-/// 生产态 CUDA 逐点网格内核（[`grid_kernel_dialect`] 的 CUDA 方言）。
+/// 生产态 CUDA 逐点网格内核（[`Dialect::grid_kernel`] 的 CUDA 方言）。
 pub fn cuda_grid_kernel(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
 ) -> Result<String> {
-    grid_kernel_dialect::<Cuda>(
+    Cuda::grid_kernel(
         kernel_source,
         signature,
         Some(length_scalar(signature, sample)?),
@@ -295,7 +290,7 @@ pub(crate) fn cuda_launch_params(signature: &Signature) -> String {
         .map(|param| format!("{} {}", param.ctype.c_name(), param.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let buffers = dialect_buffers::<Cuda>(signature);
+    let buffers = Cuda::buffers(signature);
     if scalars.is_empty() {
         buffers
     } else {
@@ -342,9 +337,9 @@ pub fn cuda_loop_kernel(
     grid: &Grid,
 ) -> Result<String> {
     if grid.dims.is_empty() {
-        return serial_kernel_dialect::<Cuda>(kernel_source, signature, sample);
+        return Cuda::serial_kernel(kernel_source, signature, sample);
     }
-    injected_kernel_dialect::<Cuda>(kernel_source, signature, sample, grid)
+    Cuda::injected_kernel(kernel_source, signature, sample, grid)
 }
 
 /// 生产态 CUDA 合作式 int4 GEMV 内核：一个 warp（32 lane）协作算一行，K 轴按 lane 跨步，
@@ -378,8 +373,8 @@ __global__ void kernel_main({params}) {{
     ))
 }
 
-/// CUDA 串行（零维网格）与循环注入：由 [`serial_kernel_dialect`] / [`injected_kernel_dialect`]
-/// 以 `Cuda` 方言落地，缓冲声明取 [`dialect_buffers`]，标量由 `launch_args` 内联进内部内核，
+/// CUDA 串行（零维网格）与循环注入：由 [`Dialect::serial_kernel`] / [`Dialect::injected_kernel`]
+/// 以 `Cuda` 方言落地，缓冲声明取 [`Dialect::buffers`]，标量由 `launch_args` 内联进内部内核，
 /// `kernel_main` 不再重复声明标量形参。
 
 /// 生产态 CUDA 循环注入的 host 驱动：按 `dims` 组成 `dim3` 网格发射 `kernel_main`，
@@ -501,7 +496,7 @@ pub(crate) fn cuda_release(signature: &Signature) -> String {
     text
 }
 
-/// 生产态 CUDA 分块归约内核（[`chunk_reduce_dialect`] 的 CUDA 方言）。
+/// 生产态 CUDA 分块归约内核（[`Dialect::chunk_reduce`] 的 CUDA 方言）。
 pub fn cuda_chunk_reduce(
     kernel_source: &str,
     signature: &Signature,
@@ -509,7 +504,7 @@ pub fn cuda_chunk_reduce(
     chunk: usize,
     reduce_func: &str,
 ) -> Result<String> {
-    chunk_reduce_dialect::<Cuda>(kernel_source, signature, sample, chunk, reduce_func)
+    Cuda::chunk_reduce(kernel_source, signature, sample, chunk, reduce_func)
 }
 
 /// 生产态驱动共用的错误检查宏与 `main` 起点。

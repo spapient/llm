@@ -9,7 +9,7 @@
 //! `a^len` 用平方乘而不是 `pow`，块长最多 `chunk` 次乘法）。
 //!
 //! 段与入口名一一对应（`kernel_partial` / `kernel_expsum` / `kernel_norm` / `kernel_scan_*`），
-//! 由 [`crate::codegen`] 在生成段时定死；这里只按序发射，不再判断「该几段」。
+//! 由 [`crate::dialect`] 在生成段时定死；这里只按序发射，不再判断「该几段」。
 
 use cutile::backend::Source;
 use cutile::harness::output_name;
@@ -17,9 +17,10 @@ use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::Signature;
 
-use crate::codegen::{
-    EXPSUM, MetalStage, NORM, PARTIAL, SCAN_CORRECT, SCAN_LOCAL, length_scalar, metal_chunk_reduce,
-    metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax, metal_multistage_driver,
+use crate::dialect::{EXPSUM, NORM, PARTIAL, SCAN_CORRECT, SCAN_LOCAL, length_scalar};
+use crate::msl::{
+    MetalStage, metal_chunk_reduce, metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax,
+    metal_multistage_driver,
 };
 
 /// RMSNorm 的分母稳定项：与 `.k` 模板、CUDA 折叠同口径。

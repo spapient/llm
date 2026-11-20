@@ -99,12 +99,12 @@ fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
     op.signature.check(&sample).expect("样本与签名一致");
 
     let i4 = catalogue.op("gemv_i4").expect("gemv_i4 声明");
-    let cuda_kernel = crate::codegen::cuda_quantized_gemv_i4(&i4.signature, 32).expect("CUDA 内核");
+    let cuda_kernel = crate::cuda::cuda_quantized_gemv_i4(&i4.signature, 32).expect("CUDA 内核");
     assert!(cuda_kernel.contains("__shfl_down_sync"));
 
     let cuda_args =
-        crate::codegen::launch_args(&sample, op.signature.params()).expect("CUDA 启动实参");
-    let cuda = crate::codegen::cuda_benchmark_driver(
+        crate::dialect::launch_args(&sample, op.signature.params()).expect("CUDA 启动实参");
+    let cuda = crate::cuda::cuda_benchmark_driver(
         "__global__ void kernel_main() {}",
         &op.signature,
         &sample,
@@ -119,7 +119,7 @@ fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
     assert!(cuda.contains("cudaEventElapsedTime"));
     assert!(cuda.contains("for (int sample = 0; sample < 3; ++sample)"));
     assert!(cuda.contains("ns %.3f"));
-    let musa = crate::codegen::cuda_benchmark_driver(
+    let musa = crate::cuda::cuda_benchmark_driver(
         "__global__ void kernel_main() {}",
         &op.signature,
         &sample,
@@ -134,7 +134,7 @@ fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
     assert!(musa.contains("#define cudaEventRecord musaEventRecord"));
 
     let metal =
-        crate::codegen::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
+        crate::msl::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
             .expect("Metal 驱动");
     assert!(metal.contains("GPUStartTime"));
     assert!(metal.contains("GPUEndTime"));

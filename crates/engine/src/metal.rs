@@ -166,7 +166,7 @@ impl MetalDevice {
 
     /// 把一段 MSL 源码编译成计算管线（+1 保留，`Drop` 释放）；入口函数名由源码自己说。
     ///
-    /// 单段程序仍是 `kernel_main`，多段程序各段用 [`crate::codegen`] 定死的具名入口
+    /// 单段程序仍是 `kernel_main`，多段程序各段用 [`crate::dialect`] 定死的具名入口
     /// （`kernel_partial` / `kernel_norm` / …）——同一翻译单元里两个 `kernel_main` 会撞重定义，
     /// 所以这里不能写死名字。编译失败（源码非法 / 找不到入口函数）返回 `None`；本刀不把
     /// `NSError` 文本带回 Rust 侧。
