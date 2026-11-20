@@ -5,7 +5,7 @@
 //! 先把每个 8 行块转置成 `[p][8]` 面板，微内核每条 `p` 只做两次**连续**向量加载，再用 `lane` 广播
 //! 到 8 个累加器；`unsafe` 只在 aarch64 的 NEON 微内核这一小段（`#[allow(unsafe_code)]`）。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex, OnceLock};
 use std::thread;
 
@@ -290,12 +290,21 @@ unsafe impl Send for Job {}
 #[allow(unsafe_code)]
 unsafe impl Sync for Job {}
 
+/// 一个 worker 的私有槽：只装一个任务 `(job, 本槽在 job 里的编号)`。
+struct Cell {
+    job: Mutex<Option<(Arc<Job>, usize)>>,
+    cv: Condvar,
+}
+
 struct Pool {
-    /// 任务串行锁：并发调用（如测试并行）会争同一槽位，必须一次只放一个 job。
-    busy: Mutex<()>,
-    slot: Mutex<Option<Arc<Job>>>,
-    start: Condvar,
-    epoch: AtomicUsize,
+    /// 每个常驻 worker 一个私有槽，多槽互不争抢——并发调用可各租一组空闲槽真并行。
+    cells: Vec<Cell>,
+    /// 空闲槽位图：bit `i` 为 1 表示 worker `i` 空闲；并发发布靠 CAS 租借，杜绝重叠。
+    free: AtomicU64,
+    /// 保护「等空闲槽」的休眠/唤醒。
+    free_lock: Mutex<()>,
+    free_cv: Condvar,
+    /// 实际起成功的 worker 数（≤ `cells.len()`，也 ≤ 64）。
     live: AtomicUsize,
 }
 
@@ -307,15 +316,22 @@ fn pool() -> &'static Pool {
         let want = thread::available_parallelism()
             .map(|x| x.get())
             .unwrap_or(1)
-            .saturating_sub(1);
+            .saturating_sub(1)
+            .min(64);
+        let cells = (0..want)
+            .map(|_| Cell {
+                job: Mutex::new(None),
+                cv: Condvar::new(),
+            })
+            .collect();
         let p: &'static Pool = Box::leak(Box::new(Pool {
-            busy: Mutex::new(()),
-            slot: Mutex::new(None),
-            start: Condvar::new(),
-            epoch: AtomicUsize::new(0),
+            cells,
+            free: AtomicU64::new(0),
+            free_lock: Mutex::new(()),
+            free_cv: Condvar::new(),
             live: AtomicUsize::new(0),
         }));
-        let mut live = 0;
+        let mut live = 0usize;
         for id in 0..want {
             if thread::Builder::new()
                 .name(format!("llm-gemm-{id}"))
@@ -326,32 +342,47 @@ fn pool() -> &'static Pool {
             }
         }
         p.live.store(live, Ordering::Release);
+        p.free.store((1u64 << live) - 1, Ordering::Release);
         p
     })
 }
 
-/// worker 主循环：等代号变化、取走任务、按 `id+1` 算自己那一份。
+/// worker 主循环：等自己的槽有任务 → 取走 → 执行 → 归还槽位并唤醒等槽者。
 fn spin(id: usize, pool: &'static Pool) {
-    let mut seen = 0usize;
+    let cell = &pool.cells[id];
     loop {
-        let job = {
-            let mut g = pool.slot.lock().unwrap_or_else(|e| e.into_inner());
-            loop {
-                if pool.epoch.load(Ordering::Acquire) != seen {
-                    break;
-                }
-                g = pool.start.wait(g).unwrap_or_else(|e| e.into_inner());
+        let task = {
+            let mut g = cell.job.lock().unwrap_or_else(|e| e.into_inner());
+            while g.is_none() {
+                g = cell.cv.wait(g).unwrap_or_else(|e| e.into_inner());
             }
-            g.clone()
+            g.take()
         };
-        seen += 1;
-        if let Some(j) = job
-            && id + 1 < j.p
+        let (j, slot) = task.expect("槽被唤醒必有任务");
+        part(&j, slot);
+        j.done.fetch_add(1, Ordering::AcqRel);
+        // 归还槽位：先置回空闲位，再通知等待空闲槽的发布者。
+        pool.free.fetch_or(1u64 << id, Ordering::AcqRel);
         {
-            part(&j, id + 1);
-            j.done.fetch_add(1, Ordering::AcqRel);
+            let _g = pool.free_lock.lock().unwrap_or_else(|e| e.into_inner());
+            pool.free_cv.notify_all();
         }
     }
+}
+
+/// 从空闲位图里挑 `need` 个置位，返回这些位的掩码（不足返回 `None`）。
+fn pick_free(free: u64, need: usize) -> Option<u64> {
+    let mut mask = 0u64;
+    let mut f = free;
+    for _ in 0..need {
+        if f == 0 {
+            return None;
+        }
+        let bit = 1u64 << f.trailing_zeros();
+        mask |= bit;
+        f &= !bit;
+    }
+    Some(mask)
 }
 
 /// 一次任务里单个参与者的全部工作：打包自己那份 B 组 → Barrier → 算自己那段行。
@@ -425,11 +456,32 @@ fn run_pooled(
     t: usize,
 ) -> bool {
     let Shape { m, n, k, npad } = shape;
-    let p = t.min(pool.live.load(Ordering::Acquire) + 1);
+    let live = pool.live.load(Ordering::Acquire);
+    let p = t.min(live + 1);
     if p < 2 {
         return false;
     }
-    let _busy = pool.busy.lock().unwrap_or_else(|e| e.into_inner());
+    let need = p - 1;
+
+    // 从空闲位图租 `need` 个 worker 槽；不足则睡到有槽归还。多调用并发时各自租不同组。
+    let mut free = pool.free.load(Ordering::Acquire);
+    let mask = loop {
+        match pick_free(free, need) {
+            Some(m) => match pool
+                .free
+                .compare_exchange(free, free & !m, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break m,
+                Err(actual) => free = actual,
+            },
+            None => {
+                let g = pool.free_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let _g = pool.free_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                free = pool.free.load(Ordering::Acquire);
+            }
+        }
+    };
+
     let mut bpack = vec![0i8; npad * k];
     let rows_per = m.div_ceil(p).div_ceil(I8_MR) * I8_MR;
     let job = Arc::new(Job {
@@ -446,19 +498,24 @@ fn run_pooled(
         barrier: Barrier::new(p),
         done: AtomicUsize::new(0),
     });
-    {
-        let mut g = pool.slot.lock().unwrap_or_else(|e| e.into_inner());
-        *g = Some(job.clone());
-        pool.epoch.fetch_add(1, Ordering::Release);
+
+    // 把任务发到租来的每个槽；槽号 1..=need 对应 worker 在 job 里的分片编号。
+    let mut mm = mask;
+    let mut slot = 1usize;
+    while mm != 0 {
+        let id = mm.trailing_zeros() as usize;
+        mm &= mm - 1;
+        {
+            let mut g = pool.cells[id].job.lock().unwrap_or_else(|e| e.into_inner());
+            *g = Some((job.clone(), slot));
+        }
+        pool.cells[id].cv.notify_one();
+        slot += 1;
     }
-    pool.start.notify_all();
+
     part(&job, 0);
     while job.done.load(Ordering::Acquire) < p - 1 {
         std::hint::spin_loop();
-    }
-    {
-        let mut g = pool.slot.lock().unwrap_or_else(|e| e.into_inner());
-        *g = None;
     }
     true
 }
@@ -781,6 +838,27 @@ mod tests {
     #[test]
     fn i8_matches_on_prefill_shape() {
         check_i8(256, 256, 4096);
+    }
+
+    #[test]
+    fn i8_concurrent_calls_are_isolated() {
+        // 多槽池：并发调用各租一组空闲槽，必须互不干扰且不挂死。
+        let shapes = [(64usize, 64usize, 96usize), (80, 32, 128), (96, 48, 64)];
+        thread::scope(|s| {
+            for (m, n, k) in shapes {
+                let a = sample_i8(m * k, 1);
+                let b = sample_i8(k * n, 2);
+                let mut want = vec![0i32; m * n];
+                crate::matmul_i8::forward_tiled(&a, &b, m, n, k, &mut want).unwrap();
+                s.spawn(move || {
+                    for _ in 0..200 {
+                        let mut got = vec![0i32; m * n];
+                        gemm_i8(&a, &b, m, n, k, &mut got);
+                        assert_eq!(got, want);
+                    }
+                });
+            }
+        });
     }
 
     fn sample(len: usize, salt: u32) -> Vec<f32> {
