@@ -37,7 +37,7 @@ impl CpuModel {
     /// 从权重文件就地装配：打开头部 → 推出层栈 → 装载驻留参数表 → 装配图与内核执行器。
     ///
     /// 字节来源按后端类别在类型上可见分流（ADR 0036 §1），不立平行 `Source` 聚合 trait：
-    /// - Unix + `mmap` feature：[`weights::MmapSource`] 实现 [`weights::Reader`]，条目字节从映射区
+    /// - Unix + `mmap` feature：`weights::MmapSource` 实现 [`weights::Reader`]，条目字节从映射区
     ///   借用、不经过 `Vec<u8>` 中转，走 [`Params::from_reader_stack`]；
     /// - 其余平台或未开 feature：[`weights::safetensors::File`] 实现 [`weights::Loader`]，按条目
     ///   seek+read 拷进缓冲，走 [`Params::from_stack`]。

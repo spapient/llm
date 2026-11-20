@@ -540,7 +540,7 @@ impl OpDecl {
         Ok(op_decl)
     }
 
-    /// 逐点网格判定：无归约/点积、单标量的 Elementwise 算子走 [`crate::harness`] 的逐点网格快路径——
+    /// 逐点网格判定：无归约/点积、单标量的 Elementwise 算子走 `crate::harness` 的逐点网格快路径——
     /// 线程下标就是元素下标、标量槽透传 `1`，网格必须覆盖整行。该判定是 lowering 分派的单一事实源，
     /// 机制层（cutile）与 cli 编排共用，避免两处各写一遍分派条件。
     pub fn pointwise(&self) -> bool {

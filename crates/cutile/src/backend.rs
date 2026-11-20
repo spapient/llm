@@ -151,7 +151,7 @@ pub trait Backend: Codegen + Driver + Sync {}
 /// 装配一台后端：L7（`cli`）在启动时注入 Metal / CUDA；cutile 已内置 host C 参考后端。
 ///
 /// 后端注册进 cutile 的进程级表后，机制层（`witness` / `verify`）按 `emit` 从表里取，不硬编码
-/// 后端清单。注册是幂等的（同一条后端重复注册只留一份，见 [`crate::device::register`]）。
+/// 后端清单。注册是幂等的（同一条后端重复注册只留一份，见 `crate::device::register`）。
 pub fn register(backend: &'static dyn Backend) {
     crate::device::register(backend);
 }

@@ -219,7 +219,7 @@ pub fn flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     Ok(out)
 }
 
-/// 朴素内核本体：prefill 自注意力是 [`decode`] 的 `q_rows = hist = s` 特例，结果写进 `out`。
+/// 朴素内核本体：prefill 自注意力是 `decode` 的 `q_rows = hist = s` 特例，结果写进 `out`。
 ///
 /// # Errors
 ///

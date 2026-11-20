@@ -262,7 +262,7 @@ int main(void) { printf(\"%u\\n\", (unsigned)FLAG_MARK); return 0; }\n";
 pub mod driver {
     //! 编译 / 执行 / 回读的共享机制原语：装载见证源、拼程序文本、起子进程、解码回读。
     //!
-    //! 这是 cutile 的「机制」层，不认识任何设备厂商：C 宿主参考后端（[`crate::device`]）与
+    //! 这是 cutile 的「机制」层，不认识任何设备厂商：C 宿主参考后端（`crate::device`）与
     //! `engine` 里的 Metal / CUDA 后端都从这取同一套原语，避免三段后端各写一份「写文件 / 起进程 /
     //! 解回读」。厂商差异只落在「源文本怎么拼」与「哪条工具链来编」，不进这层。
 
@@ -388,7 +388,7 @@ pub mod driver {
     }
 
     /// 回读解码：个数走 stderr（`witness N`），值走 stdout 的 f32 位模式；两条通道必须分开，
-    /// 否则 [`crate::runner::parse_bits`] 会把计数当成值解出来。
+    /// 否则 `crate::runner::parse_bits` 会把计数当成值解出来。
     pub fn readback(stdout: &str, stderr: &str) -> Readback {
         (parse_counts(stderr), super::parse_bits(stdout))
     }

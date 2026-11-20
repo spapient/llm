@@ -134,8 +134,8 @@ impl<'a> Template<'a> {
 
 /// 模板拼接错误（只给行号，不给列）。
 ///
-/// 模板是输入，所以类别固定为 [`Code::Invalid`]；行号作为一层上下文，文件由调用方补。
-/// 报错构造只有 [`crate::parse::line_error`] 一份，这里是 `op::tpl::error` 的公开入口。
+/// 模板是输入，所以类别固定为 [`diagnostic::Code::Invalid`]；行号作为一层上下文，文件由调用方补。
+/// 报错构造只有 `crate::parse::line_error` 一份，这里是 `op::tpl::error` 的公开入口。
 pub fn error(line: usize, message: impl Into<String>) -> Error {
     crate::parse::line_error(line, message)
 }

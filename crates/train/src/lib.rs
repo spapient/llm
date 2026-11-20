@@ -2,7 +2,7 @@
 //!
 //! **拥有**：`Schedule`、`Anneal`、`Step`、`Checkpoint`、`Buffers`、`Kernel`、`Reference`、`Data`、
 //! `View`、`ViewMut`，以及承载静态契约的 `Kind`、`Lane`、`Inputs`；训练样本的三件套
-//! [`Batch`]、[`Dataset`]、[`Chunks`] 也在本 crate（[`samples`]）；`offload` 只留
+//! [`Batch`]、[`Dataset`]、[`Chunks`] 也在本 crate（`samples`）；`offload` 只留
 //! [`WeightOffload`] 暂缓接缝，真实换入换出通路未建。
 //! **不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
 //! 计划（`autograd::Plan`）、分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义
@@ -11,7 +11,7 @@
 //!
 //! 检查点的**字节格式**也在本 crate（[`snapshot`]）：它原是一个独立成员（`llm-checkpoint`），
 //! 唯一消费者就是这里的 [`Checkpoint`]；合并后"恢复需要知道哪些事实"只有一处定义。
-//! 训练样本也一样（`llm-data` → [`samples`]，ADR 0038 §修订）：唯一消费者是 [`Learner`]，
+//! 训练样本也一样（`llm-data` → `samples`，ADR 0038 §修订）：唯一消费者是 [`Learner`]，
 //! "批几何与批总数在哪算"因此也只有一处。
 //!
 //! 这一层回答两件事：**训练到哪了、能不能恢复**——学习率是完全确定的函数，检查点记录的是

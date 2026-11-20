@@ -127,14 +127,14 @@ pub fn forward_packed(
 
 /// 生成一份「打包反量化」精度变体的完整公开面：`SCALE`/`ZERO` 常量、代价/样本/参考/
 /// `forward` 入口、[`annotation::model`] 别名与测试挂载。`dequant_i2`/`dequant_i4` 只差一行
-/// [`Row`]；新增一档打包反量化加一次调用即可。
+/// [`crate::quant::Row`]；新增一档打包反量化加一次调用即可。
 #[macro_export]
 macro_rules! dequant_packed {
     ($name:ident, $alias:ident, $op:tt, $neg:expr, $nonfinite:expr, $row:ident) => {
         /// 反量化标度（2 的负幂网格，f32 精确）。
         pub const SCALE: f32 = $crate::dequant::SCALE;
 
-        /// 打包对称零点（取自配置表 [`$row`]）。
+        /// 打包对称零点（取自配置表 `$row`）。
         pub const ZERO: f32 = $row.zero as f32;
 
         // 单轴定义与形状投影复用打包骨架。
