@@ -894,19 +894,19 @@ fn tensor_gemm_msl(
          \x20    uint3 tgp [[threadgroup_position_in_grid]],\n\
          \x20    uint tiitg [[thread_index_in_threadgroup]]) {{\n\
          \x20    constexpr int M = {m}, N = {n}, K = {k};\n\
-         \x20    constexpr int TS = {tile}, TK = {k_tile}, SG = {simdgroups};\n\
-         \x20    constexpr int NRN = TS, KP = TK + 4, NT = 32 * SG;\n\
+         \x20    constexpr int TSM = {tile_m}, TSN = {tile_n}, TK = {k_tile}, SG = {simdgroups};\n\
+         \x20    constexpr int NRN = TSN, KP = TK + 4, NT = 32 * SG;\n\
          \x20    constexpr int IPR = TK / 16, WI = NRN * IPR;\n\
-         \x20    const int ra = int(tgp.y) * TS, rb = int(tgp.x) * NRN;\n\
+         \x20    const int ra = int(tgp.y) * TSM, rb = int(tgp.x) * NRN;\n\
          \x20    threadgroup half sb[NRN * KP];\n\
          \x20    auto tA = tensor((device float*)d_{a} + (size_t)ra * K,\n\
-         \x20                     dextents<int32_t, 2>(K, TS), array<int, 2>{{1, K}});\n\
+         \x20                     dextents<int32_t, 2>(K, TSM), array<int, 2>{{1, K}});\n\
          \x20    auto tB = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
          \x20    using D = mpp::tensor_ops::matmul2d_descriptor;\n\
          \x20    constexpr auto MA = D::mode::multiply_accumulate;\n\
-         \x20    mpp::tensor_ops::matmul2d<D(NRN, TS, TK, false, true, true, MA),\n\
+         \x20    mpp::tensor_ops::matmul2d<D(NRN, TSM, TK, false, true, true, MA),\n\
          \x20        execution_simdgroups<SG>> mm_full;\n\
-         \x20    mpp::tensor_ops::matmul2d<D(NRN, TS, static_cast<int>(dynamic_extent), false, true, true, MA),\n\
+         \x20    mpp::tensor_ops::matmul2d<D(NRN, TSM, static_cast<int>(dynamic_extent), false, true, true, MA),\n\
          \x20        execution_simdgroups<SG>> mm_tail;\n\
          \x20    auto cT = mm_full.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>();\n\
          \x20    for (uint16_t i = 0; i < cT.get_capacity(); ++i) cT[i] = 0.0f;\n\
@@ -927,20 +927,20 @@ fn tensor_gemm_msl(
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20        if (k0 + TK <= K) {{\n\
          \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-         \x20                              dextents<int32_t, 2>(TK, TS), array<int, 2>{{1, K}});\n\
+         \x20                              dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
          \x20            auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
          \x20            mm_full.run(av, bv, cT);\n\
          \x20        }} else {{\n\
          \x20            const int ke = K - k0;\n\
          \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-         \x20                              dextents<int32_t, 2>(ke, TS), array<int, 2>{{1, K}});\n\
+         \x20                              dextents<int32_t, 2>(ke, TSM), array<int, 2>{{1, K}});\n\
          \x20            auto bv = tensor(sb, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});\n\
          \x20            mm_tail.run(av, bv, cT);\n\
          \x20        }}\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20    }}\n\
          \x20    auto tD = tensor(d_{y} + (size_t)ra * N + rb,\n\
-         \x20                     dextents<int32_t, 2>(min(NRN, N - rb), TS), array<int, 2>{{1, N}});\n\
+         \x20                     dextents<int32_t, 2>(min(NRN, N - rb), TSM), array<int, 2>{{1, N}});\n\
          \x20    cT.store(tD);\n\
          }}"
     )
