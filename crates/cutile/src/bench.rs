@@ -4,11 +4,13 @@
 //! 计时。达成率按 `p50` 而非 `min`——单次抖动与 CPU 频率状态会把 `min` 抬成"最好情况"，那不是这条
 //! 判据要回答的问题；工作集装得下缓存时测到的是缓存带宽而不是主存峰值，判定时被排除。
 
+use crate::backend::Lower;
 use crate::build;
 use crate::builtin::{AUTO_DEVICE, Catalogue};
+use crate::device;
 use crate::dirs::Dirs;
 use crate::pipeline::{self, Run, model_for};
-use crate::prof::Profile;
+use crate::prof::{Emit, Profile};
 use crate::runner;
 use crate::toolchain;
 use crate::witness::{self, Evidence};
@@ -51,7 +53,11 @@ pub struct Bench {
     /// 缓存目录。
     pub cache_dir: Option<PathBuf>,
     /// 这次跑的那份编译产物：`reused` 为真表示没调用编译器。
-    pub artifact: crate::cache::Artifact,
+    pub artifact: Option<crate::cache::Artifact>,
+    /// 本次运行使用的编译器身份；设备基准不缓存，仍需报告实际工具链。
+    pub toolchain: Option<String>,
+    /// 设备/host 输出与标量参考的最大相对误差。
+    pub max_rel_err: f64,
     /// 这次跑通的见证条数：计时之前必须已有证据，否则测的是一条未经确认的能力。
     pub proven: usize,
     /// 这次编译用的参数（档案的 `[compile].flags`）：计时与产物都属于这一组。
@@ -198,6 +204,7 @@ fn verified<'a>(
     // `--device` 与 `doctor` 同一套取值（`auto` 或缺省 = 按本机指纹挑），因为"测哪台设备"与
     // "审计哪台设备"必须是同一个选择器，否则台账里的名字会对不上 `doctor` 的首档。
     let profile = catalogue.resolve(device.unwrap_or(AUTO_DEVICE))?;
+    require_bench_backend(profile)?;
     // 计时之前必须先有证据：否则测的是"档案说它能跑"，不是"这台机器能跑"。
     let evidence = witness::establish(profile, dirs);
     if let Some(error) = &evidence.failure {
@@ -215,6 +222,32 @@ fn verified<'a>(
     Ok((profile, evidence))
 }
 
+/// 当前 harness 只计时串行 C 语义路径；不能把它的耗时拿来除以设备的峰值带宽。
+fn require_bench_backend(profile: &Profile) -> diagnostic::Result<()> {
+    if profile.meta.emit == Emit::C {
+        return Ok(());
+    }
+    let Some(backend) = device::spec(profile.meta.emit) else {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "`bench` 的 `{}` 设备后端尚未注册，不能报告设备吞吐",
+                profile.meta.emit
+            ),
+        ));
+    };
+    if !backend.available(profile) {
+        return Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "`bench` 的 `{}` 设备工具链或运行时不可用",
+                profile.meta.emit
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// 判据：测了什么、测到多少（形状、样本数、耗时、工作集与产物）；不回答"离档案峰值差多少"。
 struct Timed {
     shape: (u64, u64),
@@ -224,7 +257,9 @@ struct Timed {
     p95_ns: f64,
     working_set: u64,
     plan: crate::plan::Plan,
-    artifact: crate::cache::Artifact,
+    artifact: Option<crate::cache::Artifact>,
+    toolchain: Option<String>,
+    max_rel_err: f64,
     cache_dir: Option<PathBuf>,
 }
 
@@ -237,14 +272,64 @@ fn run_sample(
 ) -> diagnostic::Result<Timed> {
     let prepared = prepare(run, dirs, m, n)?;
     let sample = (run.model.sample)(m, n);
-    // 重复次数也是产物身份的一部分：换 `--repeat` 就换一份产物。
-    let harness = prepared.harness(run.op, &sample, repeat)?;
-    // 命中产物时连编译器都不需要：工具链只是"能重新编译"的前提，不是跑 bench 的前提。
-    // 但**要哪个编译器**由档案决定：`emit = "cuda"` 的档案必须是它声明的 `nvcc` / `mcc`。
-    let tool = toolchain::for_profile(run.profile);
-    let (outcome, artifact) =
-        build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
+    run.op.signature.check(&sample)?;
+    let (outcome, artifact, cache_dir, compiler) = if run.profile.meta.emit == Emit::C {
+        // 重复次数也是产物身份的一部分：换 `--repeat` 就换一份产物。
+        let harness = prepared.harness(run.op, &sample, repeat)?;
+        // host C 可以复用缓存；设备基准下方每次都实际编译并执行生产态 kernel。
+        let tool = toolchain::for_profile(run.profile);
+        let (outcome, artifact) =
+            build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
+        let compiler = Some(artifact.key.tool.clone());
+        (
+            outcome,
+            Some(artifact),
+            build::dir(&prepared.key, dirs),
+            compiler,
+        )
+    } else {
+        let backend = device::spec(run.profile.meta.emit)
+            .ok_or_else(|| Error::new(Code::Unsupported, "设备计时后端未注册"))?;
+        let kind = production_lower(run.op, run.profile.meta.emit)?;
+        let harness = backend.benchmark_harness(
+            run.profile,
+            &prepared.source.text,
+            &run.op.signature,
+            &sample,
+            &kind,
+            repeat,
+        )?;
+        let (stdout, stderr) = backend.compile_run(run.profile, dirs, &harness, "bench")?;
+        let outcome = runner::Outcome {
+            bits: runner::parse_bits(&stdout),
+            timing: runner::parse_timing(&stderr),
+            stderr,
+        };
+        let compiler = match run.profile.meta.emit {
+            Emit::Cuda => toolchain::for_profile(run.profile).map(|tool| tool.id()),
+            _ => backend.toolchain().map(|tool| tool.id()),
+        };
+        (outcome, None, None, compiler)
+    };
     let (per_run_ns, p50_ns, p95_ns) = timings(&outcome)?;
+    if outcome.timing.samples_ns.len() != repeat {
+        return Err(Error::new(
+            Code::Internal,
+            format!(
+                "计时样本数不匹配：期望 {repeat}，得到 {}",
+                outcome.timing.samples_ns.len()
+            ),
+        ));
+    }
+    let expected = (run.model.reference)(&sample)?;
+    let max_rel_err = crate::reference::max_rel_err(&outcome.bits, &expected);
+    let tolerance = crate::reference::tolerance(run.model.dtype);
+    if max_rel_err > tolerance {
+        return Err(Error::new(
+            Code::Internal,
+            format!("基准结果与标量参考不一致：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"),
+        ));
+    }
     Ok(Timed {
         shape: (m as u64, n as u64),
         repeat,
@@ -252,10 +337,30 @@ fn run_sample(
         p50_ns,
         p95_ns,
         working_set: working_set(&sample, run.op.signature.output().unwrap_or_default()),
-        cache_dir: build::dir(&prepared.key, dirs),
+        cache_dir,
         plan: prepared.plan,
         artifact,
+        toolchain: compiler,
+        max_rel_err,
     })
+}
+
+fn production_lower(op: &OpDecl, emit: Emit) -> diagnostic::Result<Lower> {
+    if op.name == "gemv_i4" && emit == Emit::Cuda {
+        return Ok(Lower::QuantizedGemvI4 { threads: 32 });
+    }
+    match op.skeleton {
+        op::decl::Skeleton::Elementwise if op.pointwise() => Ok(Lower::Pointwise),
+        op::decl::Skeleton::Elementwise | op::decl::Skeleton::Gemm => op
+            .grid
+            .clone()
+            .map(Lower::Loop)
+            .ok_or_else(|| Error::new(Code::Unsupported, "该算子没有生产态并行网格")),
+        _ => Err(Error::new(
+            Code::Unsupported,
+            format!("`{}` 的生产态 lowering 尚无设备计时路径", op.name),
+        )),
+    }
 }
 
 /// 判据：选了哪条变体、按什么形状编哪份源文本；不回答"它编不编得过"——编译在 [`run_sample`]。
@@ -308,6 +413,8 @@ fn assemble(op_name: &str, timed: Timed, profile: &Profile, evidence: &Evidence)
         fast_bytes: profile.mem.fast_bytes,
         cache_dir: timed.cache_dir,
         artifact: timed.artifact,
+        toolchain: timed.toolchain,
+        max_rel_err: timed.max_rel_err,
         proven: evidence.device,
         flags: profile.flags.join(" "),
     }
@@ -367,6 +474,23 @@ mod tests {
     }
 
     #[test]
+    fn unregistered_device_profiles_are_not_reported_as_gpu_benchmarks() {
+        let catalogue = Catalogue::try_builtin().expect("内置档案可解析");
+        let cpu = catalogue.resolve("cpu").expect("CPU 档案存在");
+        assert!(require_bench_backend(cpu).is_ok());
+
+        for device in ["metal", "nvidia", "musa"] {
+            let profile = catalogue.resolve(device).expect("设备档案存在");
+            let error = require_bench_backend(profile).expect_err("设备计时后端尚未接入");
+            assert_eq!(error.code(), Code::Unsupported, "{device}: {error}");
+            assert!(
+                error.to_string().contains("不能报告设备吞吐"),
+                "{device}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn bandwidth_attainment_is_a_byte_ratio_not_a_gigabyte_one() {
         // 0.7 MB / 1.467 ms ≈ 0.477 GB/s，占 68 GB/s 的 0.7%；除以 GB/s 会算出 0.0%。
         let measured = throughput(700_000, 2.1e6, 1.467e6, Some(68.0e9));
@@ -374,6 +498,20 @@ mod tests {
         assert!((measured.gflops - 1.43).abs() < 0.01, "{measured:?}");
         assert!((measured.bandwidth_ratio.expect("有峰值") - 0.0070).abs() < 1e-4);
         assert_eq!(throughput(1, 1.0, 0.0, Some(1.0)).bandwidth_ratio, None);
+    }
+
+    #[test]
+    fn gemv_i4_selects_the_cooperative_device_lowering() {
+        let catalogue = Catalogue::try_builtin().expect("内置档案可解析");
+        let op = catalogue.op("gemv_i4").expect("gemv_i4 已登记");
+        assert_eq!(
+            production_lower(op, Emit::Cuda).expect("CUDA 有生产态 lowering"),
+            Lower::QuantizedGemvI4 { threads: 32 }
+        );
+        assert!(matches!(
+            production_lower(op, Emit::Metal).expect("Metal 有生产态 lowering"),
+            Lower::Loop(_)
+        ));
     }
 
     #[test]

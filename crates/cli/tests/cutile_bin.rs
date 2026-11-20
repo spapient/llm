@@ -287,6 +287,10 @@ fn bench(
         measured.proven
     ));
     out.push_str(&format!(
+        "  对拍  max_rel_err {:.3e}（与标量参考）\n",
+        measured.max_rel_err
+    ));
+    out.push_str(&format!(
         "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s\n",
         tool::per_run(measured.per_run_ns),
         tool::per_run(measured.p50_ns),

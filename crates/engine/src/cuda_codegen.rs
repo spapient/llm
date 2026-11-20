@@ -349,6 +349,37 @@ pub fn cuda_loop_kernel(
     cuda_injected_kernel(kernel_source, signature, sample, grid)
 }
 
+/// 生产态 CUDA 合作式 int4 GEMV 内核：一个 warp（32 lane）协作算一行，K 轴按 lane 跨步，
+/// 归约走 `__shfl_down_sync`。当前只落地 `gemv_i4`。
+///
+/// # Errors：算子不是 `gemv_i4` 或线程数不是 32 时返回说明。
+pub fn cuda_quantized_gemv_i4(signature: &Signature, threads: usize) -> Result<String> {
+    if signature.op() != "gemv_i4" || threads != 32 {
+        return Err(Error::new(
+            Code::Unsupported,
+            "CUDA 合作式 GEMV 当前仅支持 gemv_i4 与 32-lane warp",
+        ));
+    }
+    let params = cuda_launch_params(signature);
+    Ok(format!(
+        r#"typedef unsigned char u8;
+__global__ void kernel_main({params}) {{
+    const int row = (int)blockIdx.x;
+    const int lane = (int)threadIdx.x;
+    float acc = 0.0f;
+    for (int k = lane; k < M; k += 32) {{
+        const unsigned int packed = (unsigned int)d_w[row * (M / 2) + (k / 2)];
+        const int code = ((k & 1) == 0 ? (packed & 0x0f) : (packed >> 4)) - 8;
+        const float scale = d_scales[row * (M / 32) + (k / 32)];
+        acc = fmaf((float)code * scale, d_x[k], acc);
+    }}
+    for (int offset = 16; offset > 0; offset >>= 1)
+        acc += __shfl_down_sync(0xffffffff, acc, offset);
+    if (lane == 0) d_y[row] = acc;
+}}"#
+    ))
+}
+
 /// CUDA 串行（零维网格）：不追加 `tid`，一次调用跑完整条循环。
 fn cuda_serial_kernel(
     kernel_source: &str,
@@ -442,6 +473,113 @@ pub(crate) fn buffer_args(signature: &Signature) -> String {
         .map(|param| format!("d_{}", param.name))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// 生产态 CUDA/MUSA 基准驱动：每次采样用 `cudaEvent` 记一对时间戳，热身后按 `repeat` 轮
+/// 各跑 16 批，`stderr` 每轮打一行 `ns`。
+///
+/// # Errors：缺输出缓冲、输出不是 f32，或缓存参数与样本不一致时返回说明。
+pub fn cuda_benchmark_driver(
+    device_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    grid: [usize; 3],
+    threads: [usize; 3],
+    launch_args: &str,
+    repeat: usize,
+    musa: bool,
+) -> Result<String> {
+    let output = output_name(signature)?;
+    let output_values = sample
+        .buffer(output)
+        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
+    if !matches!(&output_values.values, Values::F32(_)) {
+        return Err(Error::new(
+            Code::Unsupported,
+            "设备基准回读当前要求 f32 输出",
+        ));
+    }
+    let mut source = cuda_prologue(device_source);
+    if musa {
+        source.push_str(
+            "#define cudaEvent_t musaEvent_t\n\
+             #define cudaEventCreate musaEventCreate\n\
+             #define cudaEventRecord musaEventRecord\n\
+             #define cudaEventSynchronize musaEventSynchronize\n\
+             #define cudaEventElapsedTime musaEventElapsedTime\n\
+             #define cudaEventDestroy musaEventDestroy\n\
+             #define cudaGetLastError musaGetLastError\n",
+        );
+    }
+    source.push_str(
+        r#"
+#define CUTILE_CUDA_CHECK(expr) do { \
+    cudaError_t cutile_error = (expr); \
+    if (cutile_error != cudaSuccess) { \
+        fprintf(stderr, "cuda: %s\n", cudaGetErrorString(cutile_error)); \
+        return 1; \
+    } \
+} while (0)
+int main() {
+"#,
+    );
+    source.push_str(&cuda_host_buffers_grid(
+        sample,
+        signature.params(),
+        output,
+        output_values.values.len(),
+    )?);
+    for param in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+    {
+        source.push_str(&format!(
+            "    if (!d_{}) {{ fprintf(stderr, \"CUDA 缓冲分配失败: {}\\n\"); return 1; }}\n",
+            param.name, param.name
+        ));
+    }
+    source.push_str("    CUTILE_CUDA_CHECK(cudaGetLastError());\n");
+    source.push_str(&format!(
+        r#"    const dim3 grid({}, {}, {});
+    const dim3 block({}, {}, {});
+    cudaEvent_t start, stop;
+    CUTILE_CUDA_CHECK(cudaEventCreate(&start));
+    CUTILE_CUDA_CHECK(cudaEventCreate(&stop));
+    for (int warm = 0; warm < 2; ++warm) {{
+        for (int batch = 0; batch < 16; ++batch) kernel_main<<<grid, block>>>({launch_args});
+    }}
+    CUTILE_CUDA_CHECK(cudaGetLastError());
+    CUTILE_CUDA_CHECK(cudaDeviceSynchronize());
+    for (int sample = 0; sample < {repeat}; ++sample) {{
+        CUTILE_CUDA_CHECK(cudaEventRecord(start));
+        for (int batch = 0; batch < 16; ++batch) kernel_main<<<grid, block>>>({launch_args});
+        CUTILE_CUDA_CHECK(cudaGetLastError());
+        CUTILE_CUDA_CHECK(cudaEventRecord(stop));
+        CUTILE_CUDA_CHECK(cudaEventSynchronize(stop));
+        float elapsed_ms = 0.0f;
+        CUTILE_CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
+        if (!(elapsed_ms > 0.0f)) {{ fprintf(stderr, "CUDA event 时间戳不可用\n"); return 2; }}
+        fprintf(stderr, "ns %.3f\n", (double)elapsed_ms * 1.0e6 / 16.0);
+    }}
+"#,
+        grid[0], grid[1], grid[2], threads[0], threads[1], threads[2],
+    ));
+    source.push_str(&format!(
+        "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n\
+         \x20   for (int i = 0; i < {len}; ++i) {{\n\
+         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
+         \x20       printf(\"%u\\n\", v.u);\n\
+         \x20   }}\n",
+        len = output_values.values.len()
+    ));
+    source.push_str(&cuda_release(signature));
+    source.push_str(
+        "    CUTILE_CUDA_CHECK(cudaEventDestroy(start));\n\
+         \x20   CUTILE_CUDA_CHECK(cudaEventDestroy(stop));\n\
+         \x20   return 0;\n}\n",
+    );
+    Ok(source)
 }
 
 /// 收尾：释放每个缓冲参数对应的设备端指针（只释放真分配过的，标量是值传递）。

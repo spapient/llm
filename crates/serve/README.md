@@ -28,6 +28,9 @@ and where a decode step actually computes.
   chunked prefill gets its block tail from one place.
 - **Quantized weights are unpacked once per call.** `kernels::gemv_quant` splits by row count so a
   batch reuses a single decode of the packed stream.
+- **Token-only prediction requires an embedding first layer.** A model whose first layer consumes
+  hidden vectors is rejected by `CpuModel::logits`; this API has token IDs but no external vector
+  source, so it never fabricates a zero-vector input.
 
 ## Status boundary
 

@@ -10,7 +10,7 @@
 
 use diagnostic::{Code, Error, Result};
 use op::decl::Grid;
-use op::model::Sample;
+use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
 use cutile::harness::{c_literal, output_name, output_of};
@@ -761,6 +761,138 @@ pub fn metal_dispatch_driver(
     ))
 }
 
+/// 生产态 Metal 基准驱动：host 只负责输入上传与派发，样本计时取自 command buffer 的 GPU 时间戳。
+pub fn metal_benchmark_driver(
+    signature: &Signature,
+    sample: &Sample,
+    grid: [usize; 3],
+    threads: [usize; 3],
+    repeat: usize,
+) -> Result<String> {
+    let output = output_name(signature)?;
+    let output_values = sample
+        .buffer(output)
+        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
+    if !matches!(&output_values.values, Values::F32(_)) || output_values.values.is_empty() {
+        return Err(Error::new(
+            Code::Unsupported,
+            "设备基准回读当前要求非空 f32 输出",
+        ));
+    }
+    let mut data = String::new();
+    let mut allocs = String::new();
+    let mut sets = String::new();
+    let out_len = output_values.values.len();
+    for (slot, param) in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+    {
+        let buffer = sample
+            .buffer(&param.name)
+            .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+        let base = param.ctype.c_name();
+        let len = buffer.values.len();
+        if param.mutable {
+            allocs.push_str(&format!(
+                "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n\
+                 \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输出缓冲分配失败\\n\"); return 7; }}\n",
+                name = param.name,
+            ));
+        } else {
+            data.push_str(&format!(
+                "static const {base} init_{name}[] = {{{lit}}};\n",
+                base = base,
+                name = param.name,
+                lit = c_literal(&buffer.values)
+            ));
+            allocs.push_str(&format!(
+                "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n\
+                 \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输入缓冲分配失败\\n\"); return 7; }}\n",
+                name = param.name,
+            ));
+        }
+        sets.push_str(&format!(
+            "            [encoder setBuffer:b_{name} offset:0 atIndex:{slot}];\n",
+            name = param.name,
+        ));
+    }
+
+    let source = r#"#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <stdio.h>
+
+@DATA@
+int main(int argc, const char **argv) {
+    @autoreleasepool {
+        if (argc < 2) { fprintf(stderr, "usage: driver <metallib>\n"); return 2; }
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device) { fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }
+        NSError *error = nil;
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        if (!library) { fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }
+        id<MTLFunction> function = [library newFunctionWithName:@"kernel_main"];
+        if (!function) { fprintf(stderr, "metallib 里没有 kernel_main\n"); return 5; }
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) { fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }
+@ALLOCS@        id<MTLCommandQueue> queue = [device newCommandQueue];
+        if (!queue) { fprintf(stderr, "Metal 命令队列创建失败\n"); return 7; }
+        for (int warm = 0; warm < 2; ++warm) {
+            id<MTLCommandBuffer> buffer = [queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+            [encoder setComputePipelineState:pipeline];
+@SETS@            for (int batch = 0; batch < 16; ++batch) {
+                [encoder dispatchThreads:MTLSizeMake(@GRID_X@, @GRID_Y@, @GRID_Z@)
+                    threadsPerThreadgroup:MTLSizeMake(@THREAD_X@, @THREAD_Y@, @THREAD_Z@)];
+            }
+            [encoder endEncoding];
+            [buffer commit];
+            [buffer waitUntilCompleted];
+            if (buffer.error) { fprintf(stderr, "内核预热失败：%s\n", buffer.error.localizedDescription.UTF8String); return 8; }
+        }
+        for (int sample = 0; sample < @REPEAT@; ++sample) {
+            id<MTLCommandBuffer> buffer = [queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+            [encoder setComputePipelineState:pipeline];
+@SETS@            for (int batch = 0; batch < 16; ++batch) {
+                [encoder dispatchThreads:MTLSizeMake(@GRID_X@, @GRID_Y@, @GRID_Z@)
+                    threadsPerThreadgroup:MTLSizeMake(@THREAD_X@, @THREAD_Y@, @THREAD_Z@)];
+            }
+            [encoder endEncoding];
+            [buffer commit];
+            [buffer waitUntilCompleted];
+            if (buffer.error) { fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 9; }
+            double elapsed = (buffer.GPUEndTime - buffer.GPUStartTime) * 1.0e9;
+            if (!(elapsed > 0.0)) { fprintf(stderr, "Metal GPU 时间戳不可用\n"); return 10; }
+            fprintf(stderr, "ns %.3f\n", elapsed / 16.0);
+        }
+        const float *out = (const float *)b_@OUTPUT@.contents;
+        for (int i = 0; i < @OUT_LEN@; ++i) {
+            union { float f; unsigned int u; } value;
+            value.f = out[i];
+            printf("%u\n", value.u);
+        }
+    }
+    return 0;
+}
+"#
+    .replace("@DATA@", &data)
+    .replace("@ALLOCS@", &allocs)
+    .replace("@SETS@", &sets)
+    .replace("@GRID_X@", &grid[0].to_string())
+    .replace("@GRID_Y@", &grid[1].to_string())
+    .replace("@GRID_Z@", &grid[2].to_string())
+    .replace("@THREAD_X@", &threads[0].to_string())
+    .replace("@THREAD_Y@", &threads[1].to_string())
+    .replace("@THREAD_Z@", &threads[2].to_string())
+    .replace("@REPEAT@", &repeat.to_string())
+    .replace("@OUTPUT@", output)
+    .replace("@OUT_LEN@", &out_len.to_string());
+    Ok(source)
+}
+
 /// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 [`metal_driver`]）。
 #[allow(clippy::too_many_arguments)]
 fn metal_driver_template(
@@ -830,3 +962,4 @@ int main(int argc, const char **argv) {{
 // CUDA 侧（设备源 + 主机驱动）整体住在 `cuda_codegen`，这里只把路径接续上：
 // 调用点仍写 `crate::codegen::cuda_*` / `crate::codegen::Driver`，不必知道文件怎么分家。
 pub use crate::cuda_codegen::*;
+

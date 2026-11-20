@@ -1,6 +1,6 @@
 //! 被测内核的宿主 C 基准封装：把一份 `.k` 内核与样本拼成可计时的 `main()`。
 //!
-//! 计量口径见 README §12.1：墙钟取样、warmup 不计入，批量校准在 C 侧、`min`/`p50` 在 Rust 侧。
+//! 计量口径见 README §12.1：单调时钟取样（POSIX 或 Windows）、warmup 不计入，批量校准在 C 侧、`min`/`p50` 在 Rust 侧。
 //! 样本由 `op::model` 给出、实参顺序由 `op::sig` 给出：本模块只按名字与类型把缓冲渲染成 C 数组，
 //! 不认识任何算子。Metal / CUDA 的语义对拍方言与生产态 lowering 已搬到 `engine`（L6），cutile 只留
 //! 这条宿主 C 参考车道与签名/样本渲染原语（后者也供 `engine` 的 vendor 后端复用）。
@@ -77,7 +77,7 @@ pub fn output_name(signature: &Signature) -> diagnostic::Result<&str> {
     Ok(output)
 }
 
-/// 文件头：POSIX 声明、身份注释、内核源码与计时运行时。
+/// 文件头：POSIX 声明、身份注释、内核源码与跨平台计时运行时。
 fn prelude(
     kernel_source: &str,
     kernel: &str,
@@ -101,12 +101,24 @@ fn prelude(
 }
 
 /// 计时运行时：`CLOCK_MONOTONIC` 取样、编译器屏障、`f32` 位模式回读。
-const RUNTIME: &str = "\n#include <stdio.h>\n#include <time.h>\n\n\
+const RUNTIME: &str = "\n#include <stdio.h>\n\
+#ifdef _WIN32\n\
+#include <windows.h>\n\
+static double cutile_now_ns(void) {\n\
+    static LARGE_INTEGER frequency;\n\
+    LARGE_INTEGER counter;\n\
+    if (frequency.QuadPart == 0) QueryPerformanceFrequency(&frequency);\n\
+    QueryPerformanceCounter(&counter);\n\
+    return (double)counter.QuadPart * 1e9 / (double)frequency.QuadPart;\n\
+}\n\
+#else\n\
+#include <time.h>\n\
 static double cutile_now_ns(void) {\n\
     struct timespec ts;\n\
     clock_gettime(CLOCK_MONOTONIC, &ts);\n\
     return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;\n\
-}\n\n\
+}\n\
+#endif\n\n\
 /* 编译器屏障：没有它，优化器可以把“输入相同”的重复调用提到循环外或整段删掉，\n\
  * 量到的是空循环。clang/gcc 都支持；其他编译器退化为空操作。 */\n\
 #if defined(__GNUC__) || defined(__clang__)\n\
@@ -305,6 +317,7 @@ mod tests {
         assert!(source.contains("cutile_x_kernel(x, w, scales, y, 4, 2, 4);"));
         assert!(source.contains("for (int cutile_r = 0; cutile_r < 3; ++cutile_r)"));
         assert!(source.contains("clock_gettime(CLOCK_MONOTONIC"));
+        assert!(source.contains("QueryPerformanceCounter(&counter)"));
         assert!(
             source.contains("for (int cutile_warm = 0; cutile_warm < 1; ++cutile_warm)"),
             "warmup 至少一次，且不能与缓冲名撞车"

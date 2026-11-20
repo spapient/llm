@@ -127,12 +127,14 @@ impl<E: Executor> CpuModel<E> {
         self.assembly.descriptors()
     }
 
-    /// 按准入序把各行的 `context[at]` 折成整批索引缓冲；非查表层首层走向量主链占位。
+    /// 按准入序把各行 `context[at]` 折成索引缓冲；非 Embedding 首层拒绝缺失的外部向量输入。
     fn predict_input_batch(&self, rows: &[Row<'_>]) -> Result<Vec<f32>> {
         if self.assembly.input_kind != LayerKind::Embedding {
-            // 向量主链：投影/点wise/归一化/注意力首层收隐向量，序列只持 token id，给不出真实嵌入；
-            // 按设计稿在 serve 层造零向量占位（真实嵌入由外部/后续通路供给），先让非查表层首层可跑。
-            return Ok(vec![0.0; self.assembly.input_len * rows.len()]);
+            return Err(Error::new(
+                Code::Unsupported,
+                "token-only Predict 无法为非 Embedding 首层提供真实向量输入",
+            )
+            .with(SITE));
         }
         rows.iter().map(Row::token).collect()
     }

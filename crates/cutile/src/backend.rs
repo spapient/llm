@@ -62,6 +62,11 @@ pub enum Lower {
     Pointwise,
     /// 循环注入 / 串行：`dims` 为空即串行兜底（零维网格）。
     Loop(Grid),
+    /// CUDA/MUSA int4 GEMV：一个 32-lane warp 协作完成一行，并行解包、缩放与规约。
+    QuantizedGemvI4 {
+        /// 协作线程数；当前落地要求完整的 32-lane warp。
+        threads: usize,
+    },
     /// 分块归约：每线程归约一块、主机折叠部分结果。
     ChunkReduce {
         /// 每块元素数。
@@ -177,6 +182,24 @@ pub trait Codegen {
         Err(Error::new(
             Code::Unsupported,
             "该后端没有并行网格程序".to_string(),
+        ))
+    }
+    /// 生产态计时封装：把 lowered kernel 和设备专属 launch geometry 变成带设备计时的程序。
+    ///
+    /// 与 [`Self::harness`] 的语义验证不同，此入口必须使用 [`Self::lower`] 的并行 kernel，
+    /// 并在设备上采样；不得用 host 侧串行语义实现冒充设备吞吐。
+    fn benchmark_harness(
+        &self,
+        _profile: &Profile,
+        _kernel: &str,
+        _signature: &Signature,
+        _sample: &Sample,
+        _kind: &Lower,
+        _repeat: usize,
+    ) -> Result<Source> {
+        Err(Error::new(
+            Code::Unsupported,
+            "该后端没有生产态设备计时封装".to_string(),
         ))
     }
 }
