@@ -12,8 +12,9 @@
 //! 这些算子当前标 `differentiable = false`：`train` 的反向公式目录里还没有池化/插值的梯度，
 //! 标 true 会立刻撞上"可微算子必须有反向公式"的编译期断言。
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
 use crate::conv::ConvGeom;
+use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
+use crate::unary::{AXES, project_shape};
 use diagnostic::Error;
 
 /// 一次算子装配：标记类型、语义别名与 [`crate::operator_here`] 的基座实现，外加 `#[annotation::model]`
@@ -35,11 +36,86 @@ macro_rules! classic_op {
     };
 }
 
+/// 窗口骨架的确定性样本：`x`（长 `in_len`）与 `y`（长 `out_len`），`N` 记输出长度。
+///
+/// 池化 / 自适应 / 插值五类算子共享这一份：几何不同，但样本结构同构。
+fn window_sample(in_len: usize, out_len: usize) -> Sample {
+    Sample {
+        m: out_len,
+        n: out_len,
+        scalars: vec![("N", out_len as i64)],
+        buffers: vec![
+            x_buffer(in_len),
+            Buffer {
+                name: "y",
+                values: Values::F32(vec![0.0; out_len]),
+            },
+        ],
+    }
+}
+
+/// 窗口骨架的标量参考：读 `x`、跑 `run`、返回 `y`。算术在 `run` 里，这里只做缓冲搬运。
+fn window_reference(
+    sample: &Sample,
+    out_len: usize,
+    run: impl Fn(&[f32], &mut [f32]) -> diagnostic::Result<()>,
+) -> diagnostic::Result<Vec<f32>> {
+    let x = sample.f32("x")?;
+    let mut out = vec![0.0f32; out_len];
+    run(x, &mut out)?;
+    Ok(out)
+}
+
+/// 归一化骨架的确定性样本：`x`（总长 `total`）、`gamma`/`beta`（各 `channels` 个）、`y`。
+///
+/// 批 / 组 / 实例 / 层四类归一化共享这一份：标量键与 `gamma`/`beta` 取值不同，结构同构。
+fn norm_sample(
+    total: usize,
+    channels: usize,
+    scalars: Vec<(&'static str, i64)>,
+    gamma: f32,
+    beta: f32,
+) -> Sample {
+    Sample {
+        m: total,
+        n: total,
+        scalars,
+        buffers: vec![
+            x_buffer(total),
+            Buffer {
+                name: "gamma",
+                values: Values::F32(vec![gamma; channels]),
+            },
+            Buffer {
+                name: "beta",
+                values: Values::F32(vec![beta; channels]),
+            },
+            Buffer {
+                name: "y",
+                values: Values::F32(vec![0.0; total]),
+            },
+        ],
+    }
+}
+
+/// 归一化骨架的标量参考：读 `x`/`gamma`/`beta`、跑 `run`、返回 `y`。
+fn norm_reference(
+    sample: &Sample,
+    total: usize,
+    run: impl Fn(&[f32], &[f32], &[f32], &mut [f32]) -> diagnostic::Result<()>,
+) -> diagnostic::Result<Vec<f32>> {
+    let x = sample.f32("x")?;
+    let gamma = sample.f32("gamma")?;
+    let beta = sample.f32("beta")?;
+    let mut out = vec![0.0f32; total];
+    run(x, gamma, beta, &mut out)?;
+    Ok(out)
+}
+
 /// 二维卷积（声明档 `4×4, cin 2, cout 3, k=3, s=1, p=1`，same 输出）。
 pub mod conv2d {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档输入高。
     pub const H: usize = 4;
@@ -88,7 +164,9 @@ pub mod conv2d {
                 Buffer {
                     name: "weight",
                     values: Values::F32(
-                        (0..PATCH * COUT).map(|i| 0.05 + (i % 7) as f32 * 0.03).collect(),
+                        (0..PATCH * COUT)
+                            .map(|i| 0.05 + (i % 7) as f32 * 0.03)
+                            .collect(),
                     ),
                 },
                 Buffer {
@@ -135,40 +213,29 @@ pub mod conv2d {
 pub mod max_pool1d {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档输出位置数。
     pub const OL: usize = 8;
     /// 声明档输入长度：`(OL − 1)·S + K = 16`。
     pub const L: usize = 16;
 
+    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        crate::conv::MaxPool1d { k: 2, s: 2, p: 0 }.forward(x, 1, L, 1, out)
+    }
+
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: OL,
-            n: OL,
-            scalars: vec![("N", OL as i64)],
-            buffers: vec![
-                x_buffer(L),
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; OL]),
-                },
-            ],
-        }
+        window_sample(L, OL)
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let mut out = vec![0.0f32; OL];
-        crate::conv::MaxPool1d { k: 2, s: 2, p: 0 }.forward(x, 1, L, 1, &mut out)?;
-        Ok(out)
+        window_reference(sample, OL, run)
     }
 
     /// 声明档前向：单通道 `L → OL`（几何与样本一致）。
     pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        crate::conv::MaxPool1d { k: 2, s: 2, p: 0 }.forward(x, 1, L, 1, out)
+        run(x, out)
     }
 
     /// 标量代价：每输出读两个输入元素、写一个；读两遍字节、写一遍。
@@ -183,7 +250,6 @@ pub mod max_pool1d {
 pub mod max_pool2d {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档边长。
     pub const H: usize = 4;
@@ -201,33 +267,23 @@ pub mod max_pool2d {
         }
     }
 
+    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        crate::conv::MaxPool2d { geom: geom() }.forward(x, 1, H, W, 1, out)
+    }
+
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: H * W,
-            n: H * W,
-            scalars: vec![("N", (H * W) as i64)],
-            buffers: vec![
-                x_buffer(H * W),
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; H * W]),
-                },
-            ],
-        }
+        window_sample(H * W, H * W)
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let mut out = vec![0.0f32; H * W];
-        crate::conv::MaxPool2d { geom: geom() }.forward(x, 1, H, W, 1, &mut out)?;
-        Ok(out)
+        window_reference(sample, H * W, run)
     }
 
     /// 声明档前向：单通道 `H×W`，same 输出。
     pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        crate::conv::MaxPool2d { geom: geom() }.forward(x, 1, H, W, 1, out)
+        run(x, out)
     }
 
     /// 标量代价：窗口 9 次比较、读 9 倍字节上界、写一遍。
@@ -242,7 +298,6 @@ pub mod max_pool2d {
 pub mod avg_pool2d {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档输入边长。
     pub const H: usize = 4;
@@ -263,33 +318,23 @@ pub mod avg_pool2d {
         }
     }
 
+    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        pool().forward(x, 1, H, W, 1, out)
+    }
+
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: H * W,
-            n: H * W,
-            scalars: vec![("N", (H * W) as i64)],
-            buffers: vec![
-                x_buffer(H * W),
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; H * W]),
-                },
-            ],
-        }
+        window_sample(H * W, H * W)
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let mut out = vec![0.0f32; H * W];
-        pool().forward(x, 1, H, W, 1, &mut out)?;
-        Ok(out)
+        window_reference(sample, H * W, run)
     }
 
     /// 声明档前向：单通道 `H×W`，补零不计入分母。
     pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        pool().forward(x, 1, H, W, 1, out)
+        run(x, out)
     }
 
     /// 标量代价：窗口 9 次加法 + 1 次除法，读 4 倍、写一遍。
@@ -304,7 +349,6 @@ pub mod avg_pool2d {
 pub mod adaptive_pool {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档输入边长。
     pub const H: usize = 4;
@@ -315,33 +359,23 @@ pub mod adaptive_pool {
     /// 声明档输出宽。
     pub const OW: usize = 2;
 
+    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        crate::conv::AdaptiveAvgPool2d { oh: OH, ow: OW }.forward(x, 1, H, W, 1, out)
+    }
+
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: OH * OW,
-            n: OH * OW,
-            scalars: vec![("N", (OH * OW) as i64)],
-            buffers: vec![
-                x_buffer(H * W),
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; OH * OW]),
-                },
-            ],
-        }
+        window_sample(H * W, OH * OW)
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let mut out = vec![0.0f32; OH * OW];
-        crate::conv::AdaptiveAvgPool2d { oh: OH, ow: OW }.forward(x, 1, H, W, 1, &mut out)?;
-        Ok(out)
+        window_reference(sample, OH * OW, run)
     }
 
     /// 声明档前向：单通道 `H×W → OH×OW`。
     pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        crate::conv::AdaptiveAvgPool2d { oh: OH, ow: OW }.forward(x, 1, H, W, 1, out)
+        run(x, out)
     }
 
     /// 标量代价：每格 4 元素求和 + 平均，读 2 倍、写一遍。
@@ -349,14 +383,20 @@ pub mod adaptive_pool {
         crate::model::cost_n(shape, "adaptive_pool_f32", 5.0, 2)
     }
 
-    classic_op!(AdaptivePoolModel, AdaptivePool, "adaptive_pool_f32", 1, 64, 64);
+    classic_op!(
+        AdaptivePoolModel,
+        AdaptivePool,
+        "adaptive_pool_f32",
+        1,
+        64,
+        64
+    );
 }
 
 /// 双线性插值（声明档 2×2 → 4×4，`align_corners = false`）。
 pub mod interpolate {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档输入边长。
     pub const H: usize = 2;
@@ -367,47 +407,28 @@ pub mod interpolate {
     /// 声明档输出宽。
     pub const OW: usize = 4;
 
-    fn sampler() -> crate::conv::Sampler {
-        crate::conv::Sampler::Linear
-    }
-
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: OH * OW,
-            n: OH * OW,
-            scalars: vec![("N", (OH * OW) as i64)],
-            buffers: vec![
-                x_buffer(H * W),
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; OH * OW]),
-                },
-            ],
-        }
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let mut out = vec![0.0f32; OH * OW];
+    fn run(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
         crate::conv::Interpolate {
-            sampler: sampler(),
-            oh: OH,
-            ow: OW,
-        }
-        .forward(x, 1, H, W, 1, &mut out)?;
-        Ok(out)
-    }
-
-    /// 声明档前向：单通道 `H×W → OH×OW`（双线性）。
-    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        crate::conv::Interpolate {
-            sampler: sampler(),
+            sampler: crate::conv::Sampler::Linear,
             oh: OH,
             ow: OW,
         }
         .forward(x, 1, H, W, 1, out)
+    }
+
+    /// 声明档样本：固定几何下的输入与输出缓冲。
+    pub fn sample(_: usize, _: usize) -> Sample {
+        window_sample(H * W, OH * OW)
+    }
+
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
+    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+        window_reference(sample, OH * OW, run)
+    }
+
+    /// 声明档前向：单通道 `H×W → OH×OW`（双线性）。
+    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        run(x, out)
     }
 
     /// 标量代价：每输出 4 邻 2 次线性插值，读 4 倍、写一遍。
@@ -422,7 +443,6 @@ pub mod interpolate {
 pub mod batch_norm {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档通道数。
     pub const C: usize = 4;
@@ -441,48 +461,37 @@ pub mod batch_norm {
         }
     }
 
+    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        let mut mean = vec![0.0f32; C];
+        let mut var = vec![1.0f32; C];
+        // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
+        norm().forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, out)
+    }
+
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: N * S * C,
-            n: N * S * C,
-            scalars: vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
-            buffers: vec![
-                x_buffer(N * S * C),
-                Buffer {
-                    name: "gamma",
-                    values: Values::F32(vec![1.5; C]),
-                },
-                Buffer {
-                    name: "beta",
-                    values: Values::F32(vec![0.25; C]),
-                },
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; N * S * C]),
-                },
-            ],
-        }
+        norm_sample(
+            N * S * C,
+            C,
+            vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
+            1.5,
+            0.25,
+        )
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let gamma = sample.f32("gamma")?;
-        let beta = sample.f32("beta")?;
-        let mut out = vec![0.0f32; N * S * C];
-        let mut mean = vec![0.0f32; C];
-        let mut var = vec![1.0f32; C];
-        // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
-        norm().forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, &mut out)?;
-        Ok(out)
+        norm_reference(sample, N * S * C, run)
     }
 
     /// 声明档前向：批统计走训练口径（`running` 缓冲就地构造、不外露）。
-    pub fn forward(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        let mut mean = vec![0.0f32; C];
-        let mut var = vec![1.0f32; C];
-        norm().forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, out)
+    pub fn forward(
+        x: &[f32],
+        gamma: &[f32],
+        beta: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        run(x, gamma, beta, out)
     }
 
     /// 标量代价：两趟读 x（均值、方差）+ 读 gamma/beta + 写 y，每元素约 4 次运算。
@@ -497,7 +506,6 @@ pub mod batch_norm {
 pub mod group_norm {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档组数。
     pub const G: usize = 2;
@@ -518,48 +526,39 @@ pub mod group_norm {
         }
     }
 
+    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        norm().forward(x, gamma, beta, N, S, out)
+    }
+
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: N * S * C,
-            n: N * S * C,
-            scalars: vec![
+        norm_sample(
+            N * S * C,
+            C,
+            vec![
                 ("N", (N * S * C) as i64),
                 ("G", G as i64),
                 ("C", C as i64),
                 ("S", S as i64),
             ],
-            buffers: vec![
-                x_buffer(N * S * C),
-                Buffer {
-                    name: "gamma",
-                    values: Values::F32(vec![1.25; C]),
-                },
-                Buffer {
-                    name: "beta",
-                    values: Values::F32(vec![0.5; C]),
-                },
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; N * S * C]),
-                },
-            ],
-        }
+            1.25,
+            0.5,
+        )
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let gamma = sample.f32("gamma")?;
-        let beta = sample.f32("beta")?;
-        let mut out = vec![0.0f32; N * S * C];
-        norm().forward(x, gamma, beta, N, S, &mut out)?;
-        Ok(out)
+        norm_reference(sample, N * S * C, run)
     }
 
     /// 声明档前向：`G` 组、每组 `(C/G, S)` 统计。
-    pub fn forward(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        norm().forward(x, gamma, beta, N, S, out)
+    pub fn forward(
+        x: &[f32],
+        gamma: &[f32],
+        beta: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        run(x, gamma, beta, out)
     }
 
     /// 标量代价：两趟统计 + 一趟归一化，读 3 遍、写一遍。
@@ -574,7 +573,6 @@ pub mod group_norm {
 pub mod instance_norm {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档通道数。
     pub const C: usize = 4;
@@ -592,43 +590,34 @@ pub mod instance_norm {
         }
     }
 
+    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        norm().forward(x, gamma, beta, N, S, out)
+    }
+
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: N * S * C,
-            n: N * S * C,
-            scalars: vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
-            buffers: vec![
-                x_buffer(N * S * C),
-                Buffer {
-                    name: "gamma",
-                    values: Values::F32(vec![0.75; C]),
-                },
-                Buffer {
-                    name: "beta",
-                    values: Values::F32(vec![-0.25; C]),
-                },
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; N * S * C]),
-                },
-            ],
-        }
+        norm_sample(
+            N * S * C,
+            C,
+            vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
+            0.75,
+            -0.25,
+        )
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let gamma = sample.f32("gamma")?;
-        let beta = sample.f32("beta")?;
-        let mut out = vec![0.0f32; N * S * C];
-        norm().forward(x, gamma, beta, N, S, &mut out)?;
-        Ok(out)
+        norm_reference(sample, N * S * C, run)
     }
 
     /// 声明档前向：`C` 个独立通道实例统计。
-    pub fn forward(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        norm().forward(x, gamma, beta, N, S, out)
+    pub fn forward(
+        x: &[f32],
+        gamma: &[f32],
+        beta: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        run(x, gamma, beta, out)
     }
 
     /// 标量代价：与组归一化同构（统计域更小、次数不变）。
@@ -636,14 +625,20 @@ pub mod instance_norm {
         crate::model::cost_n(shape, "instance_norm_f32", 4.0, 3)
     }
 
-    classic_op!(InstanceNormModel, InstanceNorm, "instance_norm_f32", 3, 64, 64);
+    classic_op!(
+        InstanceNormModel,
+        InstanceNorm,
+        "instance_norm_f32",
+        3,
+        64,
+        64
+    );
 }
 
 /// 层归一化（声明档 `3 行 × 4 宽`）：逐行在最后一维统计。
 pub mod layer_norm {
 
     use super::*;
-    pub use crate::unary::{AXES, project_shape};
 
     /// 声明档行数。
     pub const R: usize = 3;
@@ -653,49 +648,37 @@ pub mod layer_norm {
     pub const EPS: f32 = 1e-5;
 
     fn norm() -> crate::norm::LayerNorm<f32> {
-        crate::norm::LayerNorm {
-            width: W,
-            eps: EPS,
-        }
+        crate::norm::LayerNorm { width: W, eps: EPS }
+    }
+
+    fn run(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        norm().forward(x, gamma, beta, out)
     }
 
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
-        Sample {
-            m: R * W,
-            n: R * W,
-            scalars: vec![("N", (R * W) as i64), ("R", R as i64), ("W", W as i64)],
-            buffers: vec![
-                x_buffer(R * W),
-                Buffer {
-                    name: "gamma",
-                    values: Values::F32(vec![1.0; W]),
-                },
-                Buffer {
-                    name: "beta",
-                    values: Values::F32(vec![0.0; W]),
-                },
-                Buffer {
-                    name: "y",
-                    values: Values::F32(vec![0.0; R * W]),
-                },
-            ],
-        }
+        norm_sample(
+            R * W,
+            W,
+            vec![("N", (R * W) as i64), ("R", R as i64), ("W", W as i64)],
+            1.0,
+            0.0,
+        )
     }
 
     /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let x = sample.f32("x")?;
-        let gamma = sample.f32("gamma")?;
-        let beta = sample.f32("beta")?;
-        let mut out = vec![0.0f32; R * W];
-        norm().forward(x, gamma, beta, &mut out)?;
-        Ok(out)
+        norm_reference(sample, R * W, run)
     }
 
     /// 声明档前向：`R` 行、每行 `W` 宽。
-    pub fn forward(x: &[f32], gamma: &[f32], beta: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        norm().forward(x, gamma, beta, out)
+    pub fn forward(
+        x: &[f32],
+        gamma: &[f32],
+        beta: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        run(x, gamma, beta, out)
     }
 
     /// 标量代价：两趟行内统计 + 一趟归一化，读 3 遍、写一遍。
