@@ -10,7 +10,7 @@ submission contract — and the one place that asks "can this machine run this r
 | `kv` | where do a sequence's tokens live? (`Page` / `Table` / `Cache` / `Pager`, refcounted) |
 | `radix` | which prefix is already computed? (radix block tree over page tables) |
 | `ifb` | which three constraints are being decided? (`Budget` / `Candidate` / `Phase` / `pack`) |
-| `codegen` | what source runs this family? (Metal + CUDA, shared driver skeleton; Metal multi-stage driver) |
+| `dialect` / `cuda` / `msl` | what source runs this family? (`Dialect` lowering primitives; CUDA + Metal vendor drivers) |
 | `metal_host` | how does a Metal kernel reach the GPU? (`xcrun metal` → `metallib` → host driver → readback) |
 | `metal_pipeline` | which stages and host folds does a chunked family need? (`reduce` / `rmsnorm` / `softmax` / `scan`) |
 | `tiled` | how is a launch shaped? (`Flash { seq, dim, threads, block }`, `lanes` / `tail`) |
@@ -42,7 +42,7 @@ submission contract — and the one place that asks "can this machine run this r
 
 ## Where the numbers come from
 
-The launch geometry (`tiled`) and the source text (`codegen`) are mechanism; the measurements that
+The launch geometry (`tiled`) and the source text (`dialect` / `cuda` / `msl`) are mechanism; the measurements that
 judge them (`E10` predictability, `E12` page access) live in `#[ignore]` probes on the modules they
 measure, and their verdicts belong to `tool::card`. A mechanism probe reports a quantity, never a
 PASS.

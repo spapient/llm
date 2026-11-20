@@ -47,7 +47,7 @@ space = ["GM", "FAST", "REG"]
 # 工具链参数与前置声明。`preamble` 是模板 `@reduce` 的 `$func` 与几个软件数学函数在**设备源码**里
 # 的定义：缺了它，片段一旦真的调用 `_cutile_sum_f32`（与 cpu/nvidia 同构），汇编出的内核就编不过。
 # 内容与 `cpu` 档案同源——P0 片段的语义就是标量 C（`load` 是指针赋值、`bar` 是空表达式），前置声明
-# 跟着片段语言走。语义门（`engine::ascend_codegen`）会把这里**每个函数**补上 `__aicore__`（不补就是
+# 跟着片段语言走。语义门（`engine::ascend`）会把这里**每个函数**补上 `__aicore__`（不补就是
 # "AI Core 函数调用了宿主函数"，ccec 编译期拒），所以下面的纯算术实现（`_cutile_exp_f32`、四个归约
 # 入口）可以直接落设备；`logf` / `sqrtf` / `sinf` / `cosf` / `powf` 那五个仍指向宿主编译器的 libm，
 # 是第一次上机时最先会被卡住的地方——把它们换成 `AscendC::Log` / `Sqrt` / `Sin` / `Cos` / `Power`，

@@ -593,7 +593,7 @@ pub fn cuda_softmax_program(
 ///
 /// 返回 `(设备源, 各维网格大小)`：网格大小按 `[grid]` 声明的标量从样本取值（`dims[i]` 对应
 /// `kernel_main<<<dim3(dims[0], dims[1], dims[2]), 1>>>` 的 x/y/z）；host 驱动由调用方用
-/// `engine::codegen::cuda_loop_driver` 拼——设备段与驱动分属两层，机制层不生成 host C 文本。
+/// `engine::cuda::cuda_loop_driver` 拼——设备段与驱动分属两层，机制层不生成 host C 文本。
 ///
 /// # Errors
 ///

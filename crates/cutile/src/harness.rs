@@ -245,7 +245,7 @@ pub fn c_literal(values: &Values) -> String {
     }
 }
 
-/// `cutile_x_kernel` 的签名与样本：与 `engine` 的 vendor codegen 对拍共用 `testkit` 的一份取值。
+/// `cutile_x_kernel` 的签名与样本：与 `engine` 的 vendor 内核对拍共用 `testkit` 的一份取值。
 #[cfg(test)]
 #[path = "../../testkit/tests/support/cutile_x_kernel.rs"]
 mod cutile_x_kernel;
