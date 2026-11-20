@@ -611,7 +611,7 @@ fn flash_weight(tail: bool) -> &'static str {
 /// 一个寄存器输出维 `acc_n` 的在线更新：先按 `alpha` 缩放旧累加，再加当前键块的 `P·V`。
 fn flash_acc_update(v: &str, n: usize, shape: Flash, tail: bool) -> String {
     let h = n * shape.threads;
-    let add = format!("a += scores[j] * d_{v}[j * D + h];");
+    let add = format!("a += scores[j] * d_{v}[(kb + j) * D + h];");
     let value = if tail {
         format!("if (kb + j < S) {add}")
     } else {

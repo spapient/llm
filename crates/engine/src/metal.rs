@@ -734,7 +734,7 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
         crate::backends::install();
         let device = MetalDevice::system_default().expect("Metal");
         let queue = device.new_command_queue().expect("队列");
-        let (s, d, threads, block) = (64usize, 8usize, 32usize, 64usize);
+        let (s, d, threads, block) = (512usize, 64usize, 64usize, 512usize);
         let q: Vec<f32> = (0..s * d).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
         let k: Vec<f32> = (0..s * d).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
         let v: Vec<f32> = (0..s * d).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
@@ -1054,6 +1054,21 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
                 &[&q_buf, &k_buf, &v_buf, &y_buf],
                 tiled_grid,
                 [THREADS as u32, 1, 1],
+            );
+            let (dbg, _) = y_buf.as_mut_bytes().as_chunks::<4>();
+            let mut worst = (0usize, 0.0f32);
+            for (idx, (c, want)) in dbg.iter().zip(reference.iter()).enumerate() {
+                let g = f32::from_ne_bytes(*c);
+                if (g - want).abs() > worst.1 {
+                    worst = (idx, (g - want).abs());
+                }
+            }
+            eprintln!(
+                "  [debug] worst idx={} abs={} got={} want={}",
+                worst.0,
+                worst.1,
+                f32::from_ne_bytes(dbg[worst.0]),
+                reference[worst.0]
             );
             assert_matmul_matches("attn-flash", &reference, y_buf.as_mut_bytes());
             let flash_ns = measure(
