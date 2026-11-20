@@ -75,6 +75,7 @@ pub mod kv;
 pub mod metal;
 pub mod norm;
 pub mod scan;
+pub mod wmma;
 pub mod radix;
 
 pub use batch::{Admission, Batch, SequenceOutcome};

@@ -226,6 +226,10 @@ fn metal_lower(
         ChunkReduce { .. } | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => {
             metal_chunk_lower(kernel, signature, sample, kind)
         }
+        WmmaGemm => Err(Error::new(
+            Code::Unsupported,
+            "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),
+        )),
     }
 }
 
@@ -255,7 +259,7 @@ fn metal_chunk_lower(
             crate::codegen::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
-        Pointwise | Loop(_) => Err(Error::new(
+        Pointwise | Loop(_) | WmmaGemm => Err(Error::new(
             Code::Internal,
             "非分块算子不应进入 Metal 分块 lowering",
         )),
@@ -580,9 +584,13 @@ fn cuda_source(
         Loop(grid) => single(crate::codegen::cuda_loop_kernel(
             kernel, signature, sample, grid,
         )),
-        _ => Err(Error::new(
-            Code::Unsupported,
-            "CUDA 生产态 lowering 尚未覆盖该骨架".to_string(),
+        ChunkScan { chunk, decay } => {
+            crate::scan::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
+        }
+        WmmaGemm => single(crate::wmma::gemm_kernel(signature, sample)),
+        ChunkRmsnorm { .. } | ChunkSoftmax { .. } => Err(Error::new(
+            Code::Internal,
+            "归一化两族应在 cuda_lower 分派，不应落到单源兜底".to_string(),
         )),
     }
 }

@@ -360,6 +360,29 @@ fn dim_size(scalar: &str, sample: &Sample) -> diagnostic::Result<usize> {
     })
 }
 
+/// 生产态 CUDA 张量核（WMMA）GEMM 内核源：`64×64` 输出块、`BK=8`、4 个 `32×32×8` 片段。
+///
+/// 形状在生成期写死（每形状一份产物）：`M`/`N` 整除 `64` 时无守卫，否则载入/写出带行列守卫。
+/// host 驱动由调用方用 `engine::wmma::gemm_driver` 生成；`K % 8 != 0` 时回落
+/// [`cuda_gemm_program`] 的循环注入路径。
+///
+/// # Errors
+///
+/// 算子不是 `Gemm` 骨架、`nvidia` 档案缺失、设备缺执行证据、协商失败、形状非法或 `K % 8 != 0`。
+pub fn cuda_wmma_gemm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
+    single(
+        lower_sources(Emit::Cuda, &Lower::WmmaGemm, &run, &prepared, m, n)?,
+        "cuda wmma gemm",
+    )
+}
+
 /// 生产态 CUDA 分块扫描内核源：两段（局部扫描 + 校正），主机在两次派发间折叠携带前缀
 /// `C_{g+1} = a^len·C_g + 尾态`。与 [`metal_scan_program`] 同语义，仅后端方言差异。
 ///
@@ -372,19 +395,14 @@ pub fn cuda_scan_program(
     op_name: &str,
     m: usize,
     n: usize,
-) -> diagnostic::Result<(String, String)> {
+) -> diagnostic::Result<(String, String, f32)> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
-    pair(
-        lower_sources(
-            Emit::Cuda,
-            &scan_kind(run.op)?,
-            &run,
-            &prepared,
-            m,
-            n,
-        )?,
+    let decay = scan_decay(run.op)?;
+    let (local, correct) = pair(
+        lower_sources(Emit::Cuda, &scan_kind(run.op)?, &run, &prepared, m, n)?,
         "cuda scan",
-    )
+    )?;
+    Ok((local, correct, decay))
 }
 
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。

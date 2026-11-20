@@ -7,7 +7,7 @@
 //! 折叠在 C 里做（CUDA 的一次执行是单个 host 程序），`a^len` 用逐次乘法而不是 `pow`——
 //! 不引入 `math.h`/`-lm` 依赖，且块长在此处最多 `chunk` 次乘法。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
 use op::model::Sample;
 use op::sig::Signature;
 
@@ -17,7 +17,7 @@ use crate::codegen::{
     bind_chunk_loop, cuda_device, cuda_host_buffers_grid, cuda_launch_params, cuda_readback,
     inject_chunk_preamble, launch_args, scalar_name, thread_param_typed,
 };
-use crate::norm::{free_buffers, launch, length_usize, partial_copy, program_head};
+use crate::norm::{free_buffers, launch, length_usize, program_head};
 
 /// 校正段入口（把携带前缀的衰减贡献加回块内）。
 pub(crate) const CORRECT: &str = "kernel_correct";
@@ -40,7 +40,7 @@ pub(crate) fn cuda_chunk_scan(
     let scalar = scalar_name(signature)?;
     let len = crate::codegen::length_scalar(signature, sample)?;
     let local = scan_local(kernel_source, signature, sample, chunk, scalar)?;
-    let correct = scan_correct(&output_name(signature)?, chunk, len, decay);
+    let correct = scan_correct(output_name(signature)?, chunk, len, decay);
     Ok(vec![local, correct])
 }
 
@@ -86,7 +86,7 @@ fn scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
 ///
 /// 折叠序与 `.k` 模板同口径：`C_0 = 0`、`C_{g+1} = a^len · C_g + y[start+len-1]`（f64 计算，
 /// 写回设备前收窄为 f32）。
-pub(crate) fn cuda_scan_driver(
+pub fn cuda_scan_driver(
     segments: &[String],
     signature: &Signature,
     sample: &Sample,
@@ -113,14 +113,12 @@ pub(crate) fn cuda_scan_driver(
         "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n"
     ));
     text.push_str(&fold_carry(output, chunk, len as i64, decay));
-    text.push_str(&format!(
-        "    cudaMemcpy(d_c, h_c, G * sizeof(float), cudaMemcpyHostToDevice);\n"
-    ));
+    text.push_str("    cudaMemcpy(d_c, h_c, G * sizeof(float), cudaMemcpyHostToDevice);\n");
     text.push_str(&format!(
         "    {CORRECT}<<<G, 1>>>(d_c, d_{output});\n    CUTILE_CUDA_CHECK();\n"
     ));
     text.push_str(&cuda_readback(output, len));
-    text.push_str("    free(h_c);\n    cudaFree(d_c);\n");
+    text.push_str("    cudaFree(d_c);\n");
     text.push_str(&free_buffers(signature));
     text.push_str("    return 0;\n}\n");
     Ok(text)
