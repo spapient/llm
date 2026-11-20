@@ -18,7 +18,8 @@ a = "row"
 
 # 分块归约：与 reduce_sum 同构，只改折叠运算；每线程归约一块写部分值 y[g]，主机取最大。
 [chunk]
-size = 256
+# 32 而不是 256：网格 = ceil(N/32)，小 N 下也够占满 SM；部分和更细，主机折叠 O(G) 只是加法。
+size = 32
 
 [[variants]]
 name      = "direct"
