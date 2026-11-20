@@ -117,73 +117,73 @@ macro_rules! kernel_table {
     };
 }
 
-/// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => MODEL 常量路径, 可微, 模板`。
+/// 生成编译期内嵌的算子注册表：一行一个算子类型 + 模板 stem。
 ///
-/// 名字是 `ops/<name>.toml` 的文件名，`MODEL` 路径是语义常量的完整路径（多数是
-/// `<模块>::MODEL`，多算子同模块时用 `#[model(const = "..")]` 分名后写 `<模块>::<常量名>`）；
-/// 模板是 `ops/<模板>.k` 的文件 stem（`include_str!` 由它拼出路径），多数与名字同名，多算子
-/// 共用一份泛型模板时填共享 stem（如 `gemv_i2`/`gemv_i4` 共用 `gemv_packed`）。
+/// 名字与可微性不再手写：它们取自 [`Operator::NAME`](operator::Operator::NAME) /
+/// [`Operator::DIFFERENTIABLE`](operator::Operator::DIFFERENTIABLE)，语义表是 [`model_of`] 的投影。
+/// 一行的可变部分只剩类型与 `ops/<模板>.k` 的 stem——注册名、形状、代价、样本都与类型同源，
+/// "注册表说 true、Operator 说 false"这种漂移在编译期就没有落点。
 ///
-/// 一条注册原本要写五句、把同一份结构逐字抄 22 遍，而能变的只有这四列。加一个算子仍然只改
-/// 本调用里的一行 + `ops/` 两个文件 + 一个模块。
+/// 模板仍是独立字面量：多算子共用一份泛型模板（`gemv_i2`/`gemv_i4` → `gemv_packed`）时，
+/// 模板名与注册名本来就不是同一个事实。
 macro_rules! registry {
-    ($($name:literal => $model:path, $differentiable:literal, $template:literal),* $(,)?) => {
+    ($($ty:ty => $template:literal),* $(,)?) => {
         /// 编译期内嵌的算子注册表。
         ///
         /// 新增算子在这里补一行，否则发布出去的二进制里没有它；
         /// `the_registry_covers_the_generated_table_exactly` 把"生成表里有、注册表里没有"（或反过来）
         /// 直接判为失败。数组长度由表本身数出来，不另写一个常数——那是第二个会漂移的数字。
-        pub const REGISTRY: [Registration; <[()]>::len(&[$(registry!(@one $name)),*])] = [
+        pub const REGISTRY: [Registration; <[()]>::len(&[$(registry!(@one $ty)),*])] = [
             $(
                 Registration {
-                    name: $name,
+                    name: <$ty as crate::operator::Operator>::NAME,
                     template: include_str!(concat!("../ops/", $template, ".k")),
-                    model: $model,
-                    differentiable: $differentiable,
+                    model: crate::operator::model_of::<$ty>(),
+                    differentiable: <$ty as crate::operator::Operator>::DIFFERENTIABLE,
                 }
             ),*
         ];
     };
-    (@one $name:literal) => { () };
+    (@one $ty:ty) => { () };
 }
 
 registry! {
-    "add_f32" => add_f32::MODEL, true, "binary",
-    "attention_f32" => attention::MODEL, true, "attention_f32",
-    "decode_attention_f32" => decode_attention::MODEL, true, "decode_attention_f32",
-    "decode_flash_attention_f32" => decode_attention::DECODE_FLASH_MODEL, true, "decode_flash_attention_f32",
-    "dequant_i2" => dequant_i2::MODEL, false, "dequant_packed",
-    "dequant_i4" => dequant_i4::MODEL, false, "dequant_packed",
-    "dequant_i8" => dequant_i8::MODEL, false, "dequant_i8",
-    "div_f32" => div_f32::MODEL, true, "binary",
-    "embed_f32" => embed_f32::MODEL, true, "embed_f32",
-    "exp_f32" => exp_f32::MODEL, true, "exp_f32",
-    "flash_attention_f32" => attention::FLASH_MODEL, true, "flash_attention_f32",
-    "gelu_f32" => gelu_f32::MODEL, true, "gelu_f32",
-    "gemm_f32" => gemm_f32::MODEL, true, "gemm_f32",
-    "gemm_i2" => gemm_i2::MODEL, false, "gemm_packed",
-    "gemm_i4" => gemm_i4::MODEL, false, "gemm_packed",
-    "gemm_i8" => gemm_i8::MODEL, false, "gemm_i8",
-    "gemv_f32" => gemv_f32::MODEL, true, "gemv_f32",
-    "gemv_i2" => gemv_i2::MODEL, false, "gemv_packed",
-    "gemv_i4" => gemv_i4::MODEL, false, "gemv_packed",
-    "gemv_i8" => gemv_i8::MODEL, false, "gemv_i8",
-    "log_f32" => log_f32::MODEL, true, "log_f32",
-    "matmul_f32" => matmul::MODEL, false, "matmul_f32",
-    "matmul_i8" => matmul_i8::MODEL, false, "matmul_i8",
-    "max_f32" => max_f32::MODEL, true, "max_f32",
-    "min_f32" => min_f32::MODEL, true, "min_f32",
-    "mul_f32" => mul_f32::MODEL, true, "binary",
-    "reduce_max_f32" => reduce_max_f32::MODEL, true, "reduce_max_f32",
-    "reduce_sum_f32" => reduce_sum_f32::MODEL, true, "reduce_sum_f32",
-    "residual_add_f32" => residual_add_f32::MODEL, true, "binary",
-    "rmsnorm_f32" => rmsnorm_f32::MODEL, true, "rmsnorm_f32",
-    "rope_f32" => rope_f32::MODEL, true, "rope_f32",
-    "scale_f32" => scale_f32::MODEL, true, "scale_f32",
-    "scan_f32" => scan_f32::MODEL, false, "scan_f32",
-    "silu_f32" => silu_f32::MODEL, true, "silu_f32",
-    "softmax_f32" => softmax_f32::MODEL, true, "softmax_f32",
-    "sub_f32" => sub_f32::MODEL, true, "binary",
+    add_f32::AddF32 => "binary",
+    attention::AttentionF32 => "attention_f32",
+    attention::decode_attention::DecodeAttentionF32 => "decode_attention_f32",
+    attention::decode_attention::DecodeFlashAttentionF32 => "decode_flash_attention_f32",
+    dequant_i2::DequantI2F32 => "dequant_packed",
+    dequant_i4::DequantI4F32 => "dequant_packed",
+    dequant_i8::DequantI8F32 => "dequant_i8",
+    div_f32::DivF32 => "binary",
+    embed_f32::EmbedF32 => "embed_f32",
+    exp_f32::ExpF32 => "exp_f32",
+    attention::FlashAttentionF32 => "flash_attention_f32",
+    gelu_f32::GeluF32 => "gelu_f32",
+    gemm_f32::GemmF32 => "gemm_f32",
+    gemm_i2::GemmI2Model => "gemm_packed",
+    gemm_i4::GemmI4Model => "gemm_packed",
+    gemm_i8::GemmI8Model => "gemm_i8",
+    gemv_f32::F32 => "gemv_f32",
+    gemv_i2::I2 => "gemv_packed",
+    gemv_i4::I4 => "gemv_packed",
+    gemv_i8::I8 => "gemv_i8",
+    log_f32::LogF32 => "log_f32",
+    matmul::MatmulF32 => "matmul_f32",
+    matmul_i8::MatmulI8 => "matmul_i8",
+    max_f32::MaxF32 => "max_f32",
+    min_f32::MinF32 => "min_f32",
+    mul_f32::MulF32 => "binary",
+    reduce_max_f32::ReduceMaxF32 => "reduce_max_f32",
+    reduce_sum_f32::ReduceSumF32 => "reduce_sum_f32",
+    residual_add_f32::ResidualAddF32 => "binary",
+    rmsnorm_f32::RmsNormF32 => "rmsnorm_f32",
+    rope_f32::RopeF32 => "rope_f32",
+    scale_f32::ScaleF32 => "scale_f32",
+    scan_f32::ScanF32 => "scan_f32",
+    silu_f32::SiluF32 => "silu_f32",
+    softmax_f32::SoftmaxF32 => "softmax_f32",
+    sub_f32::SubF32 => "binary",
 }
 
 /// 名字是否在注册表里；const 上下文可用。

@@ -4,7 +4,7 @@
 //! 容器查找、正则回溯或引入重型初始化。下面两条测试把这几类回退挡在合并之前：
 //!
 //! - 生产源码不出现关联容器、正则或惰性/全局初始化；
-//! - 运行期依赖只保留 `dtype` 这个 L1 零依赖基座（不引入 `syn` / `quote` / `proc-macro2`）。
+//! - 运行期依赖为空（`MODEL` 改为投影 `Operator` 后，连 `dtype` 基座也不再需要）。
 
 use std::fs;
 use std::path::PathBuf;
@@ -79,12 +79,15 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
     keys
 }
 
-/// 运行期依赖只有 `dtype`：注解文法手写解析，不拉任何解析器宏库。
+/// 运行期依赖为空：注解文法手写解析，`MODEL` 由 `Operator` 投影，不再需要任何基座 crate。
 #[test]
-fn runtime_dependency_is_only_the_dtype_foundation() {
+fn runtime_dependency_surface_is_empty() {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("manifest 可读");
     let mut dependencies = section_keys(&manifest, "[dependencies]");
     dependencies.sort_unstable();
-    assert_eq!(dependencies, ["dtype"], "运行期依赖面只允许 L1 基座 dtype");
+    assert!(
+        dependencies.is_empty(),
+        "运行期依赖面必须为空：{dependencies:?}"
+    );
 }

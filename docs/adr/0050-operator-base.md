@@ -1,6 +1,6 @@
 # 0050：算子基座——`Operator` 契约收口六族语义,装配宏退化为投影
 
-- 状态：已采纳（本轮落地 `op::operator` 契约与全部 36 个在册算子的 `impl`；`#[model]` 改生成 `model_of` 是下一步）
+- 状态：已采纳（`op::operator` 契约、全部 36 个在册算子的 `impl`、以及 `#[model]` 改生成 `model_of` 均已完成）
 - 日期：2026-11-20
 - 相关：[0002](0002-single-owner-per-type.md)（单一主人）、[0005](0005-annotations-as-contracts.md)（注解即契约）、[0013](0013-dense-projection-operator.md)（加算子只加数据）、[0026](0026-gemm-generic-skeleton.md)（GEMM 泛型骨架）、[0031](0031-kernel-macro-derived-table.md)（宏派生表）、[0047](0047-2bit-quantized-lane.md)（量化 lane 的配置表）、[0049](0049-refactor-summary-2026-11.md)（上一轮重构结论）
 
@@ -49,9 +49,9 @@ pub trait Operator {
 ```
 
 - 六族 trait **保留**为族内骨架配置（`EXPR` / `OPERANDS` / `cache()` / `forward` 等），每个具体算子同时 `impl` 族 trait 与 `Operator`；`Operator` 的方法体**转发**到族 trait，不写第二份算术。
-- `Model` 由 `Operator` 投影（`operator::model_of::<T>()`）；`#[model]` 注解仍是语法糖，生成物改为对 `model_of` 的调用（下一轮，见 §5）。
+- `Model` 由 `Operator` 投影（`operator::model_of::<T>()`）；`#[model]` 注解已是语法糖，生成物就是对 `model_of` 的调用（§5 已落地）。
 - **单一主人不变**：`Model` 的字段仍只有一个主人（`op::model`），`Operator` 是它的行为侧投影；族 trait 的算术不变、`reference` 仍是唯一标量参考。
-- 由 `testkit` 的一条契约测试锁住:每个在册算子的 `Operator` 投影与 `#[model]` 生成常量在 `cost/sample/reference` 上逐位一致（过度期双写不许漂移）。
+- 注解的注册名、生产形状与 `Operator::NAME` / `SHAPE` / `GROUP` 在编译期对齐（`gemv` 额外求值 `Format::CHECK`）；生成的 `__model_check_*` 测试再把注册表、`.k` 签名与 `dtype` 字符串对齐。`operator_tests.rs` 保留注册表 ↔ `Operator` 的接线检查。
 
 ### 3. 装配宏退化为投影
 
@@ -71,7 +71,7 @@ pub trait Operator {
 
 ## 迁移顺序（每族独立可验证，测试数不跌）
 
-进度（2026-11-20）：第 1–4 步已落地，全部 36 个在册算子实现 `Operator`；第 5 步（注解改投影）未做。
+进度（2026-11-20）：第 1–5 步已落地，全部 36 个在册算子实现 `Operator`，注解 `MODEL` 已改为投影。
 
 1. **reduce 族（本轮示范）**：`Operator` 契约 + `reduce_sum/max` 两个 impl + 投影一致性测试。
 2. unary / binary / dequant：三族形状同构，照 reduce 范式。

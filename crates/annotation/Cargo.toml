@@ -14,7 +14,6 @@ autotests = false
 proc-macro = true
 
 [dependencies]
-dtype = { path = "../dtype", package = "llm-dtype" }
 
 [lints]
 workspace = true

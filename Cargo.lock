@@ -390,9 +390,6 @@ dependencies = [
 [[package]]
 name = "llm-annotation"
 version = "0.1.0"
-dependencies = [
- "llm-dtype",
-]
 
 [[package]]
 name = "llm-autograd"

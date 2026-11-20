@@ -195,35 +195,39 @@ fn model(text: &str) -> ModelDecl {
 }
 
 #[test]
-fn the_model_renderer_binds_the_constant_to_the_annotated_alias() {
+fn the_model_renderer_projects_the_operator_contract() {
     let code = render_model(
         &model(r#"name = "gemv_i4", shape = [4096, 4096], dtype = "f32""#),
         "I4",
     );
     assert!(
-        code.contains("pub const MODEL: ::llm_op::model::Model"),
-        "{code}"
+        code.contains(
+            "pub const MODEL: ::llm_op::model::Model = ::llm_op::operator::model_of::<I4>();"
+        ),
+        "MODEL 必须是 Operator 的投影：{code}"
     );
     assert!(
-        code.contains("group: <I4 as ::llm_op::gemv::Format>::GRAIN as u32"),
-        "粒度必须取类型上的常量，而不是注解里再写一个数：{code}"
-    );
-    assert!(code.contains("cost: ::llm_op::gemv::cost::<I4>"), "{code}");
-    assert!(
-        code.contains("dtype: ::llm_op::model::DType::F32"),
-        "{code}"
+        code.contains(
+            r#"::llm_op::same_bytes(<I4 as ::llm_op::operator::Operator>::NAME, "gemv_i4")"#
+        ),
+        "注解注册名必须在编译期与 Operator::NAME 对齐：{code}"
     );
     assert!(
-    code.contains("4096usize / <I4 as ::llm_op::gemv::Format>::GRAIN * <I4 as ::llm_op::gemv::Format>::GRAIN == 4096usize"),
-    "生产形状与粒度的关系必须是编译期断言：{code}"
-);
+        code.contains("<I4 as ::llm_op::operator::Operator>::SHAPE.0 == 4096usize"),
+        "注解生产形状必须在编译期与 Operator::SHAPE 对齐：{code}"
+    );
+    assert!(
+        code.contains("let group = <I4 as ::llm_op::operator::Operator>::GROUP as usize;")
+            && code.contains("4096usize / group * group == 4096usize"),
+        "粒度来自 Operator::GROUP，生产形状整除性仍是编译期断言：{code}"
+    );
     assert!(
         code.contains("const _: () = <I4 as ::llm_op::gemv::Format>::CHECK;"),
-        "格式自证要由格式自己声明、在别名上被求值，宏不另抄一份规则：{code}"
+        "格式自证要由格式自己声明、在别名上被求值：{code}"
     );
     assert!(
-        !code.contains("GRAIN > 0"),
-        "粒度与派生轴的规则属于 `Format::CHECK`，生成代码不该再写第二遍：{code}"
+        !code.contains("group: <I4"),
+        "MODEL 不再逐字段渲染，粒度不该出现第二份：{code}"
     );
     assert!(
         code.contains("signature.output_type().and_then(|ctype| ctype.dtype())")
@@ -271,7 +275,7 @@ fn a_named_const_gives_two_models_distinct_names_in_one_module() {
 /// 闭集里的每个骨架都必须有生成分支：加一个骨架名却忘了加分支，会在用户 crate 里变成
 /// 一条 `compile_error!`，而这条测试让它先在注解层自己红掉。
 #[test]
-fn every_skeleton_has_a_branch() {
+fn every_skeleton_projects_through_the_same_contract() {
     for skeleton in syntax::SKELETONS {
         let name = if skeleton == "gemm" {
             "gemm_f32"
@@ -286,82 +290,12 @@ fn every_skeleton_has_a_branch() {
         );
         assert!(
             !code.contains("compile_error!"),
-            "骨架 `{skeleton}` 在 `render_model` 里没有分支：{code}"
+            "骨架 `{skeleton}` 没有投影出 MODEL：{code}"
         );
         assert!(
-            code.contains("    axes: ::llm_op::") && code.contains("AXES,\n"),
-            "骨架 `{skeleton}` 必须绑定一份轴表：{code}"
+            code.contains("::llm_op::operator::model_of::<M>()"),
+            "所有骨架走同一条投影：{code}"
         );
-    }
-    for row in SKELETON_TABLE {
-        assert!(
-            syntax::SKELETONS.contains(&row.name),
-            "骨架表里的 `{}` 不在闭集里：闭集是可选值的唯一来源，反向漏一行就等于允许了它",
-            row.name
-        );
-    }
-    assert_eq!(
-        SKELETON_TABLE.len(),
-        syntax::SKELETONS.len(),
-        "表与闭集必须一一对应：多一行是死数据，少一行是生成不出 MODEL 的骨架"
-    );
-}
-
-/// 表里四行不显然的事实各钉一条：具体骨架**不带** turbofish、`dequant_i4` 的粒度是 2、
-/// `dequant_i2` 的粒度是 4、flash attention 走另一条参考实现。四条都是"改一个字符就静默
-/// 换掉生成代码"的点——它们原本散在三段 `else if` 里，现在集中在表里，所以判据也集中在这里。
-#[test]
-fn the_table_keeps_the_rows_that_are_easy_to_get_wrong() {
-    let concrete = render_model(
-        &model(r#"name = "rmsnorm_f32", shape = [8, 4], dtype = "f32", skeleton = "rmsnorm""#),
-        "M",
-    );
-    assert!(
-        concrete.contains("    cost: ::llm_op::rmsnorm_f32::cost,\n")
-            && concrete.contains("    reference: ::llm_op::rmsnorm_f32::reference,\n"),
-        "具体骨架的函数不是泛型的，不能带 `::<T>`：{concrete}"
-    );
-    let packed = render_model(
-        &model(r#"name = "dequant_i4", shape = [8, 4], dtype = "f32", skeleton = "dequant_i4""#),
-        "M",
-    );
-    assert!(
-        packed.contains("    group: 2u32,\n"),
-        "int4 每 2 个输出元素占一个字节，粒度写 1 会让 `verify` 从奇数形状起步：{packed}"
-    );
-    let packed_i2 = render_model(
-        &model(r#"name = "dequant_i2", shape = [8, 4], dtype = "f32", skeleton = "dequant_i2""#),
-        "M",
-    );
-    assert!(
-        packed_i2.contains("    group: 4u32,\n"),
-        "int2 每 4 个输出元素占一个字节，粒度写错会让 `verify` 形状起步错位：{packed_i2}"
-    );
-    let flash = render_model(
-        &model(
-            r#"name = "flash_attention_f32", shape = [8, 4], dtype = "f32", skeleton = "attention""#,
-        ),
-        "M",
-    );
-    assert!(
-        flash.contains("    reference: ::llm_op::attention::flash_reference,\n")
-            && !flash.contains("    reference: ::llm_op::attention::reference,\n"),
-        "flash 版与朴素版共用骨架，只有 `reference` 分叉：{flash}"
-    );
-    let plain = render_model(
-        &model(r#"name = "attention_f32", shape = [8, 4], dtype = "f32", skeleton = "attention""#),
-        "M",
-    );
-    assert!(
-        plain.contains("    reference: ::llm_op::attention::reference,\n"),
-        "非 flash 的 attention 走朴素实现：{plain}"
-    );
-}
-
-#[test]
-fn every_dtype_name_maps_to_the_expected_variant() {
-    for (name, variant) in [("f16", "F16"), ("bf16", "BF16"), ("f32", "F32")] {
-        assert_eq!(dtype_variant(name).as_deref(), Some(variant), "{name}");
     }
 }
 

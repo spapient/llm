@@ -348,41 +348,25 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
     let lib = fs::read_to_string(root().join("crates/op/src/lib.rs"))
         .expect("`crates/op/src/lib.rs` 必须存在");
-    // 注册表是一张表：`registry! { "名字" => 语义模块, 是否可微, .. }`，一行三列。字段由宏
-    // 展开成 `Registration { name, template, model: <模块>::MODEL, differentiable }`，其中
-    // "哪条算子用哪个模块的 `MODEL`"正是本测试要核对的那件事；`differentiable` 是可微标记，
-    // 由 `train::backprop` 的编译期断言消费，不参与本镜像核对。
+    // 注册表现在是 `类型路径 => 模板`：名字、可微性与语义表都由 `Operator` 派生
+    // （`Operator::NAME` / `DIFFERENTIABLE` / `model_of`），文本里不再有手写的注册名与
+    // `Model` 字面量。本测试核对「注解仍是语义表的唯一生产者」这条事实没有被表结构改变。
     let start = lib
         .find("registry! {")
         .expect("`REGISTRY` 不见了：它是语义表的唯一入口");
     let open = start + lib[start..].find('{').expect("注册表必须是一张表");
     let close = open + lib[open..].find("\n}").expect("注册表必须闭合");
-    let mut names: Vec<String> = Vec::new();
-    let mut models: Vec<String> = Vec::new();
+    let mut types: Vec<String> = Vec::new();
     for line in lib[open..close].lines() {
-        let Some((name, rest)) = line.trim().split_once("=>") else {
+        let Some((ty, _template)) = line.trim().split_once("=>") else {
             continue;
         };
-        let name = name
-            .trim()
-            .trim_end_matches(',')
-            .trim_matches('"')
-            .to_string();
-        // 模型路径是第一列（`模块::常量`，如 `add_f32::MODEL`、`attention::FLASH_MODEL`），
-        // 后面跟着 `是否可微` 标记列：只取 `=>` 之后到第一个逗号为止，原样保留。
-        let model = rest.trim().split(',').next().unwrap_or_default().trim();
-        models.push(model.to_string());
-        names.push(name);
+        types.push(ty.trim().trim_end_matches(',').to_string());
     }
-    assert_eq!(
-        names.len(),
-        models.len(),
-        "注册表的条目必須同时写 `name` 与 `model`：{names:?} vs {models:?}"
-    );
     assert!(
-        names.len() >= 2,
+        types.len() >= 2,
         "只看到 {} 条注册：扫描逻辑坏了",
-        names.len()
+        types.len()
     );
 
     // 注解侧：`name` 是第一个键（参数顺序由 `annotation::syntax` 定死，这里只读不猜）。
@@ -420,10 +404,17 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         annotated.len()
     );
 
-    // 方向一：注解 → 注册表。
+    let names: Vec<&str> = op::REGISTRY.iter().map(|entry| entry.name).collect();
+    assert_eq!(
+        names.len(),
+        types.len(),
+        "注册表每行必须是一份 `类型 => 模板`：{types:?}"
+    );
+
+    // 方向一：注解 → 注册表（名字取自 `Operator::NAME`，不是文本）。
     let mut failures: Vec<String> = Vec::new();
     for (name, at) in &annotated {
-        if !names.contains(name) {
+        if !names.contains(&name.as_str()) {
             failures.push(format!(
                 "{at}: 标了 `#[annotation::model]` 生成 `MODEL`，但 `REGISTRY` 里没有 `{name}`：\
                  发布出去的二进制里没有这条算子"
@@ -431,36 +422,30 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         }
     }
 
-    // 方向二：注册表 → 注解生成的常量。宏算子（`binary_f32!` / `unary_f32!` / …）在模块文件里
-    // 没有字面量注解，而是调用一个会展开出 `#[annotation::model]` 的宏：注解仍是唯一生产者，
-    // 只是隔着宏一层。这里补认这一路，避免把宏算子误判成"手写 Model"。
+    // 方向二：注册表 → 注解生成的语义表。类型路径的模块文件里必须有字面量注解，或调用一个
+    // 会展开出 `#[annotation::model]` 的宏；`model_of` 的路径正确性由编译期 bound 保证。
     let model_macros = model_macros();
-    for (name, model) in names.iter().zip(&models) {
-        // `模块::常量` 拆出模块文件；常量名可以是 `MODEL` 或注解里 `const = ".."` 的自定义名
-        // （如 `FLASH_MODEL` / `DECODE_FLASH_MODEL`），其正确性由编译期路径检查兜底，这里只认模块。
-        let Some((module, _)) = model.rsplit_once("::") else {
+    for (name, ty) in names.iter().zip(&types) {
+        let Some((module_path, _ty)) = ty.rsplit_once("::") else {
             failures.push(format!(
-                "`{name}` 的语义表是 `{model}`，不是 `模块::常量` 形式：\
-                 语义表必须有唯一生产者（注解生成），不能是手写的 `Model {{ .. }}`"
+                "`{name}` 的类型 `{ty}` 不是 `模块::类型` 形式：注册表必须指向 Operator 实现"
             ));
             continue;
         };
-        let file = locate_module(module).unwrap_or_else(|| {
-            panic!("`{name}` 的语义表指向 `{model}`，但 `pub mod {module}` 读不到")
-        });
+        let module = module_path.split("::").next().unwrap_or(module_path);
+        let file = locate_module(module)
+            .unwrap_or_else(|| panic!("`{name}` 指向 `{ty}`，但 `pub mod {module}` 读不到"));
         let text = fs::read_to_string(&file).expect("读模块文件");
         let via_macro = invokes_model_macro(&text, &model_macros);
         if !PRODUCERS.iter().any(|producer| text.contains(producer)) && !via_macro {
             failures.push(format!(
-                "`{name}` 的 `MODEL` 在 {} 里不是注解生成的：\
-                 `#[annotation::model]` 是它与注册表之间唯一的绑定点",
+                "`{name}` 的类型在 {} 里没有注解：`#[annotation::model]` 是语义表的唯一生产者",
                 file.display()
             ));
         }
         if !annotated.iter().any(|(annotated, _)| annotated == name) && !via_macro {
             failures.push(format!(
-                "`{name}` 在 `REGISTRY` 里，但它指向的 `MODEL` 没有同名注解：\
-                 注解是语义表的唯一生产者"
+                "`{name}` 在 `REGISTRY` 里，但它的模块没有同名注解：注解是语义表的唯一生产者"
             ));
         }
     }
