@@ -65,7 +65,7 @@ pub use generate::{
 pub use http::Httpd;
 pub use request::Request;
 pub use router::Router;
-pub use speculate::{Verdict, accept};
+pub use speculate::{Drafter, Verdict, accept};
 pub use vocab::tokenizer_from_segment;
 
 /// 兼容旧路径：CPU 模型内核桥与装配宿主。

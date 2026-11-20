@@ -126,6 +126,32 @@ impl Batch {
         self.scheduler.fits(sequence)
     }
 
+    /// 这一轮按 IFB 预算该跑哪些行：`Packed.rows` 是**本轮的行与序**（生成在前、上下文在后）。
+    ///
+    /// 相位由序列自身的事实决定，不由调用方挑：提示段没算完就是上下文（块大小走
+    /// [`ifb::chunk`] 的页对齐算式），算完了就是生成（一轮一行）。于是"先跑谁"不是调度参数，
+    /// 而是 [`ifb::pack`] 在预算下的一条算式——挤压时只挤上下文，生成行一条不丢。
+    ///
+    /// 零行的候选不进结果：`chunk` 返回 0 是"这一轮不做上下文"（剩余不足一整页），把它当成
+    /// 一条 0 行候选排进来，调用方就得自己再判一次"这行要不要跑"。
+    #[must_use]
+    pub fn round(&self, budget: crate::ifb::Budget) -> crate::ifb::Verdict {
+        let candidates: Vec<crate::ifb::Candidate> = self
+            .sequences
+            .iter()
+            .map(|sequence| {
+                let remaining = sequence.prompt_len().saturating_sub(sequence.prefilled());
+                if remaining == 0 {
+                    return crate::ifb::Candidate::generation(sequence.id());
+                }
+                let rows = crate::ifb::chunk(remaining, sequence.page_size(), budget.tokens());
+                crate::ifb::Candidate::context(sequence.id(), rows)
+            })
+            .filter(|candidate| candidate.rows() > 0)
+            .collect();
+        crate::ifb::pack(budget, &candidates)
+    }
+
     /// 推进批里的一条序列一步（页不够时返回 [`Progress::Blocked`] 且什么都不改）。
     ///
     /// # Errors
@@ -1018,5 +1044,96 @@ mod tests {
             1,
             "两页池只空闲一页"
         );
+    }
+
+    /// 这一轮的行由相位定序：提示段还没算完的在后面，能解码的在前。
+    ///
+    /// 相位不是调用方给的标签，而是序列自己的事实（`prefilled < prompt_len`），所以"谁先进批"
+    /// 与"谁先跑"是两件事。
+    #[test]
+    fn a_round_runs_generation_before_context() {
+        use crate::ifb::{Budget, Verdict};
+
+        let mut batch = Batch::new(pool(8, 4));
+        batch.admit(sequence(1, 8, 4, 4)).expect("准入");
+        batch.admit(sequence(2, 0, 4, 4)).expect("准入");
+
+        let Verdict::Packed { rows, tokens } = batch.round(Budget::unlimited()) else {
+            panic!("不限预算必须装得下");
+        };
+        assert_eq!(
+            rows.iter().map(|row| row.id()).collect::<Vec<_>>(),
+            [2, 1],
+            "能解码的在前，提示段在后"
+        );
+        assert_eq!(rows[1].rows(), 8, "8 个 token 的提示段一轮算完");
+        assert_eq!(tokens, 9);
+    }
+
+    /// 挤压时只挤上下文：生成行留着，上下文整块推到下一轮。
+    ///
+    /// 块大小由 [`crate::ifb::chunk`] 按页对齐给出，所以"少跑一点"只能是整页少跑，不会出现
+    /// 半页的块——那种块既不进前缀树，也换不来一次干净的对齐。
+    #[test]
+    fn a_tight_budget_pushes_the_context_block_to_the_next_round() {
+        use crate::ifb::{Budget, Verdict};
+
+        let mut batch = Batch::new(pool(8, 4));
+        batch.admit(sequence(1, 8, 4, 4)).expect("准入");
+        batch.admit(sequence(2, 0, 4, 4)).expect("准入");
+
+        let Verdict::Packed { rows, tokens } = batch.round(Budget::new(2, 2)) else {
+            panic!("生成行只要 1 行，装得下");
+        };
+        assert_eq!(
+            rows.iter().map(|row| row.id()).collect::<Vec<_>>(),
+            [2],
+            "2 个 token 的预算连一整页上下文都放不下，只跑生成"
+        );
+        assert_eq!(tokens, 1);
+
+        let Verdict::Packed { rows, tokens } = batch.round(Budget::new(2, 5)) else {
+            panic!("1 生成 + 4 上下文正好 5 行");
+        };
+        assert_eq!(
+            rows.iter().map(|row| (row.id(), row.rows())).collect::<Vec<_>>(),
+            [(2, 1), (1, 4)],
+            "预算够了就按整页推进一块"
+        );
+        assert_eq!(tokens, 5);
+    }
+
+    /// 两类"装不下"各报各的：序列数超了可等一条结束，生成行自己超预算重试无用。
+    #[test]
+    fn a_round_separates_the_two_over_budget_cases() {
+        use crate::ifb::{Budget, Verdict};
+
+        let mut batch = Batch::new(pool(8, 4));
+        batch.admit(sequence(1, 0, 4, 4)).expect("准入");
+        batch.admit(sequence(2, 0, 4, 4)).expect("准入");
+
+        assert_eq!(
+            batch.round(Budget::new(1, 4)),
+            Verdict::OverSeqs {
+                seqs: 2,
+                max: 1
+            }
+        );
+        assert_eq!(
+            batch.round(Budget::new(2, 1)),
+            Verdict::OverTokens {
+                tokens: 2,
+                max: 1
+            }
+        );
+    }
+
+    /// 空批不排任何行：`Idle` 与"被预算挤掉"是两件事，调用方据此决定要不要继续等。
+    #[test]
+    fn an_empty_batch_has_nothing_to_round() {
+        use crate::ifb::{Budget, Verdict};
+
+        let batch = Batch::new(pool(4, 4));
+        assert_eq!(batch.round(Budget::unlimited()), Verdict::Idle);
     }
 }

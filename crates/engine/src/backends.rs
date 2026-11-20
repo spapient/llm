@@ -226,13 +226,17 @@ fn metal_lower(
         ChunkReduce { .. } | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => {
             metal_chunk_lower(kernel, signature, sample, kind)
         }
-        TiledGemm { .. } | TiledAttention { .. } | WmmaGemm => {
+        TiledGemm { .. }
+        | SimdGroupGemm { .. }
+        | TiledAttention { .. }
+        | FlashAttention { .. }
+        | WmmaGemm => {
             metal_special(kernel, signature, sample, kind)
         }
     }
 }
 
-/// 特殊 lowering 家族（分块 GEMM / 分块注意力 / WMMA）：单独一个 match 让 [`metal_lower`] 的
+/// 特殊 lowering 家族（分块 / simdgroup GEMM、分块 / flash 注意力、WMMA）：单独一个 match 让 [`metal_lower`] 的
 /// 骨架分派保持在门禁臂数内。
 fn metal_special(
     kernel: &str,
@@ -242,20 +246,74 @@ fn metal_special(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        TiledGemm { tile } => {
-            crate::tiled::metal_tiled_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
+        TiledGemm { .. } | SimdGroupGemm { .. } | WmmaGemm => {
+            metal_gemm_lower(kernel, signature, sample, kind)
         }
-        TiledAttention { threads } => {
-            crate::tiled::metal_tiled_attention(kernel, signature, sample, *threads)
+        TiledAttention { .. } | FlashAttention { .. } => {
+            metal_attention_lower(kernel, signature, sample, kind)
+        }
+        _ => Err(Error::new(
+            Code::Internal,
+            "非特殊 lowering 不应进入 metal_special".to_string(),
+        )),
+    }
+}
+
+/// GEMM 家族（共享内存分块 / simdgroup 矩阵指令 / WMMA 张量核）的 Metal 落地。
+fn metal_gemm_lower(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<Vec<String>> {
+    use cutile::backend::Lower::*;
+    match kind {
+        TiledGemm { tile, per_thread } => {
+            crate::tiled::metal_tiled_gemm(kernel, signature, sample, *tile, *per_thread)
                 .map(|s| vec![s])
         }
+        SimdGroupGemm {
+            row_frags,
+            col_frags,
+        } => crate::tiled::metal_simdgroup_gemm(
+            kernel,
+            signature,
+            sample,
+            *row_frags,
+            *col_frags,
+        )
+        .map(|s| vec![s]),
         WmmaGemm => Err(Error::new(
             Code::Unsupported,
             "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),
         )),
         _ => Err(Error::new(
             Code::Internal,
-            "非特殊 lowering 不应进入 metal_special".to_string(),
+            "非 GEMM lowering 不应进入 metal_gemm_lower".to_string(),
+        )),
+    }
+}
+
+/// 注意力家族（共享内存分块 / flash 在线 softmax）的 Metal 落地。
+fn metal_attention_lower(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<Vec<String>> {
+    use cutile::backend::Lower::*;
+    match kind {
+        TiledAttention { threads } => {
+            crate::tiled::metal_tiled_attention(kernel, signature, sample, *threads)
+                .map(|s| vec![s])
+        }
+        FlashAttention { threads, block } => {
+            crate::tiled::metal_flash_attention(kernel, signature, sample, *threads, *block)
+                .map(|s| vec![s])
+        }
+        _ => Err(Error::new(
+            Code::Internal,
+            "非注意力 lowering 不应进入 metal_attention_lower".to_string(),
         )),
     }
 }
@@ -286,9 +344,16 @@ fn metal_chunk_lower(
             crate::codegen::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
-        Pointwise | Loop(_) | TiledGemm { .. } | TiledAttention { .. } | WmmaGemm => Err(
-            Error::new(Code::Internal, "非分块算子不应进入 Metal 分块 lowering"),
-        ),
+        Pointwise
+        | Loop(_)
+        | TiledGemm { .. }
+        | SimdGroupGemm { .. }
+        | TiledAttention { .. }
+        | FlashAttention { .. }
+        | WmmaGemm => Err(Error::new(
+            Code::Internal,
+            "非分块算子不应进入 Metal 分块 lowering",
+        )),
     }
 }
 

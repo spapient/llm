@@ -28,15 +28,16 @@ pub fn metal_tiled_gemm(
     signature: &Signature,
     sample: &Sample,
     tile: usize,
+    per_thread: usize,
 ) -> Result<String> {
-    if tile == 0 {
+    if tile == 0 || per_thread == 0 {
         return Err(
             Error::new(Code::Invalid, "分块大小必须大于 0").with("engine::tiled::metal_tiled_gemm")
         );
     }
     let (a, b, y) = gemm_buffers(signature)?;
     let (_, n, k) = gemm_dims(signature, sample)?;
-    Ok(tiled_gemm_msl(a, b, y, n, k, tile))
+    Ok(tiled_gemm_msl(a, b, y, n, k, tile, per_thread))
 }
 
 /// 三条缓冲名（按签名序：A、B、Y）。
@@ -89,8 +90,130 @@ fn dim(sample: &Sample, param: &Param) -> Result<usize> {
         .map_err(|error| error.with("engine::tiled::metal_tiled_gemm"))
 }
 
-/// 分块 GEMM 的 MSL 正文：只拼字面与已解出的维度，不含错误处理（那些留在 [`metal_tiled_gemm`]）。
-fn tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: usize) -> String {
+/// 按每线程输出块大小选简单分块（`1`）或 4×4 寄存器分块（`4`）。
+fn tiled_gemm_msl(
+    a: &str,
+    b: &str,
+    y: &str,
+    n: usize,
+    k: usize,
+    tile: usize,
+    per_thread: usize,
+) -> String {
+    if per_thread == 1 {
+        return simple_tiled_gemm_msl(a, b, y, n, k, tile);
+    }
+    register_blocked_gemm_msl(a, b, y, n, k, tile, per_thread)
+}
+
+/// 生产态 simdgroup 矩阵乘 GEMM（Metal）：每个 simdgroup 用 `8×8×8` 矩阵乘指令算
+/// `row_frags × col_frags` 个输出片段。
+///
+/// 语义与模板逐元素相同（`Y[i][j] = Σ_p A[i][p]·B[p][j]`）。前置条件由调用方保证
+/// （`K % 8 == 0`、`M` 被 `8·row_frags` 整除、`N` 被 `8·col_frags` 整除）。
+///
+/// 派发几何：`grid = [(M/(8·row_frags))·32, N/(8·col_frags)]`、`block = [32]`；每个
+/// 线程组是一个 simdgroup，`gid.x / 32` 是输出行块、`gid.y` 是输出列块。
+///
+/// # Errors
+///
+/// 签名不足三条缓冲或三个整数标量、样本缺标量、片段数不在 `1..=4`、或 `K` 不是 8 的倍数时返回说明。
+pub fn metal_simdgroup_gemm(
+    _kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    row_frags: usize,
+    col_frags: usize,
+) -> Result<String> {
+    if !(1..=4).contains(&row_frags) || !(1..=4).contains(&col_frags) {
+        return Err(
+            Error::new(Code::Invalid, "simdgroup 片段数必须在 1..=4").with(
+                "engine::tiled::metal_simdgroup_gemm",
+            ),
+        );
+    }
+    let (a, b, y) = gemm_buffers(signature)?;
+    let (_, n, k) = gemm_dims(signature, sample)?;
+    if k == 0 || !k.is_multiple_of(8) {
+        return Err(
+            Error::new(Code::Invalid, "simdgroup GEMM 要求 K 是 8 的正整数倍")
+                .with("engine::tiled::metal_simdgroup_gemm"),
+        );
+    }
+    Ok(simdgroup_gemm_msl(a, b, y, n, k, row_frags, col_frags))
+}
+
+/// simdgroup GEMM 的 MSL 正文：片段数组按下标展开成具名寄存器，避免动态下标把矩阵落到线程栈。
+fn simdgroup_gemm_msl(
+    a: &str,
+    b: &str,
+    y: &str,
+    n: usize,
+    k: usize,
+    row_frags: usize,
+    col_frags: usize,
+) -> String {
+    let mut src = format!(
+        "#include <metal_stdlib>\n\
+         using namespace metal;\n\
+         kernel void kernel_main(\n\
+         \x20    device const float* d_{a} [[buffer(0)]],\n\
+         \x20    device const float* d_{b} [[buffer(1)]],\n\
+         \x20    device float* d_{y} [[buffer(2)]],\n\
+         \x20    uint3 gid [[thread_position_in_grid]],\n\
+         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
+         \x20    const uint N = {n}, K = {k}, R = {row_frags}, C = {col_frags};\n\
+         \x20    threadgroup float zeros[64];\n\
+         \x20    for (uint i = lid.x; i < 64; i += 32) zeros[i] = 0.0f;\n\
+         \x20    threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20    const uint row0 = (gid.x / 32) * (8 * R), col0 = gid.y * (8 * C);\n"
+    );
+    for r in 0..row_frags {
+        for c in 0..col_frags {
+            src.push_str(&format!(
+                "    simdgroup_float8x8 acc_{r}_{c};\n\
+                 \x20   simdgroup_load(acc_{r}_{c}, zeros, 8);\n"
+            ));
+        }
+    }
+    src.push_str("    for (uint kk = 0; kk < K; kk += 8) {\n");
+    for r in 0..row_frags {
+        src.push_str(&format!(
+            "        simdgroup_float8x8 fa_{r};\n\
+             \x20       simdgroup_load(fa_{r}, d_{a} + (row0 + {}) * K + kk, K);\n",
+            r * 8,
+        ));
+    }
+    for c in 0..col_frags {
+        src.push_str(&format!(
+            "        simdgroup_float8x8 fb_{c};\n\
+             \x20       simdgroup_load(fb_{c}, d_{b} + kk * N + col0 + {}, N);\n",
+            c * 8,
+        ));
+    }
+    for r in 0..row_frags {
+        for c in 0..col_frags {
+            src.push_str(&format!(
+                "        simdgroup_multiply_accumulate(acc_{r}_{c}, fa_{r}, fb_{c}, acc_{r}_{c});\n"
+            ));
+        }
+    }
+    src.push_str("    }\n");
+    for r in 0..row_frags {
+        for c in 0..col_frags {
+            src.push_str(&format!(
+                "    simdgroup_store(acc_{r}_{c}, d_{y} + (row0 + {}) * N + col0 + {}, N);\n",
+                r * 8,
+                c * 8,
+            ));
+        }
+    }
+    src.push_str("}");
+    src
+}
+
+/// 简单分块 GEMM（每线程一输出）的 MSL 正文。
+fn simple_tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: usize) -> String {
     format!(
         "#include <metal_stdlib>\n\
          using namespace metal;\n\
@@ -113,6 +236,59 @@ fn tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: usize) ->
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20    }}\n\
          \x20    d_{y}[i * N + j] = acc;\n\
+         }}"
+    )
+}
+
+/// 4×4 寄存器分块 GEMM：每线程算 `per_thread × per_thread` 个输出，共享块按 `tile` 一次搬运。
+///
+/// 派发几何：`grid = [M/per_thread, N/per_thread]`、`block = [tile/per_thread, tile/per_thread]`；
+/// 组内 `tid = lid.x·TT + lid.y` 协同搬运 `tile×tile` 的 A/B 块。要求 `M/N/K` 均被 `tile` 整除。
+fn register_blocked_gemm_msl(
+    a: &str,
+    b: &str,
+    y: &str,
+    n: usize,
+    k: usize,
+    tile: usize,
+    per_thread: usize,
+) -> String {
+    let threads = tile / per_thread;
+    format!(
+        "#include <metal_stdlib>\n\
+         using namespace metal;\n\
+         kernel void kernel_main(\n\
+         \x20    device float* d_{a} [[buffer(0)]],\n\
+         \x20    device float* d_{b} [[buffer(1)]],\n\
+         \x20    device float* d_{y} [[buffer(2)]],\n\
+         \x20    uint3 gid [[thread_position_in_grid]],\n\
+         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
+         \x20    const uint N = {n}, K = {k}, T = {tile}, PT = {per_thread}, TT = {threads};\n\
+         \x20    threadgroup float As[{tile}][{tile}];\n\
+         \x20    threadgroup float Bs[{tile}][{tile}];\n\
+         \x20    const uint gr = (gid.x - lid.x) * PT, gc = (gid.y - lid.y) * PT;\n\
+         \x20    const uint r0 = gid.x * PT, c0 = gid.y * PT;\n\
+         \x20    float acc[{per_thread}][{per_thread}];\n\
+         \x20    for (uint ii = 0; ii < PT; ++ii)\n\
+         \x20        for (uint jj = 0; jj < PT; ++jj) acc[ii][jj] = 0.0f;\n\
+         \x20    const uint tid = lid.x * TT + lid.y;\n\
+         \x20    for (uint kk = 0; kk < K; kk += T) {{\n\
+         \x20        for (uint idx = tid; idx < T * T; idx += TT * TT) {{\n\
+         \x20            uint rr = idx / T, cc = idx % T;\n\
+         \x20            As[rr][cc] = d_{a}[(gr + rr) * K + kk + cc];\n\
+         \x20            Bs[rr][cc] = d_{b}[(kk + rr) * N + gc + cc];\n\
+         \x20        }}\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        for (uint p = 0; p < T; ++p) {{\n\
+         \x20            for (uint ii = 0; ii < PT; ++ii) {{\n\
+         \x20                float av = As[lid.x * PT + ii][p];\n\
+         \x20                for (uint jj = 0; jj < PT; ++jj) acc[ii][jj] += av * Bs[p][lid.y * PT + jj];\n\
+         \x20            }}\n\
+         \x20        }}\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20    }}\n\
+         \x20    for (uint ii = 0; ii < PT; ++ii)\n\
+         \x20        for (uint jj = 0; jj < PT; ++jj) d_{y}[(r0 + ii) * N + c0 + jj] = acc[ii][jj];\n\
          }}"
     )
 }
@@ -245,6 +421,154 @@ fn tiled_attention_msl(
          \x20        float acc = 0.0f;\n\
          \x20        for (uint j = 0; j < S; ++j) acc += scores[j] * d_{v}[j * D + h];\n\
          \x20        d_{y}[i * D + h] = acc / prob_sum;\n\
+         \x20    }}\n\
+         }}"
+    )
+}
+
+/// 生产态 flash attention（Metal）：一个线程组负责一个查询行，K/V 按 `block` 个键分块
+/// 流式扫描，在线 softmax（running max/sum）把输出累加在每线程寄存器，不保留完整分数向量。
+///
+/// 语义与 `O = softmax(QKᵀ/√D)·V` 逐元素相同，只是把「先算完整行、再归一化」改成
+/// 「逐块修正」：每块先求块内 max，与 running max 合并得到新的 max，指数与输出按
+/// `exp(m_old - m_new)` 缩放后并入。内存从 `O(S)` 降到 `O(block)`，因而可流式处理长序列。
+///
+/// 派发几何：`grid = [S·threads]`、`block = [threads]`；每组的 `gid / threads` 是查询行。
+///
+/// # Errors
+///
+/// 签名不足 4 缓冲（q/k/v/y）或 2 整数标量（S/D）、样本缺标量、线程/块几何非法、
+/// 或头宽 `D` 不在 `1..=64` 时返回说明。
+pub fn metal_flash_attention(
+    _kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    threads: usize,
+    block: usize,
+) -> Result<String> {
+    if !flash_geometry_ok(threads, block) {
+        return Err(
+            Error::new(Code::Invalid, "flash attention 线程数须为 2 的幂、块为线程数倍数")
+                .with("engine::tiled::metal_flash_attention"),
+        );
+    }
+    let (q, k, v, y) = attention_buffers(signature)?;
+    let (s, d) = attention_dims(signature, sample)?;
+    if !(1..=64).contains(&d) {
+        return Err(
+            Error::new(Code::Invalid, "flash attention 要求头宽 D 在 1..=64")
+                .with("engine::tiled::metal_flash_attention"),
+        );
+    }
+    Ok(flash_attention_msl(q, k, v, y, s, d, threads, block))
+}
+
+/// 线程/块几何：线程数为 2 的幂且至少 2，块非零且是线程数倍数。
+fn flash_geometry_ok(threads: usize, block: usize) -> bool {
+    threads.is_power_of_two() && threads >= 2 && block != 0 && block.is_multiple_of(threads)
+}
+
+/// flash attention 的 MSL 正文：在线 softmax 的块内归约 + 寄存器输出累加。
+fn flash_attention_msl(
+    q: &str,
+    k: &str,
+    v: &str,
+    y: &str,
+    s: usize,
+    d: usize,
+    threads: usize,
+    block: usize,
+) -> String {
+    let nd = d.div_ceil(threads);
+    let tail = !s.is_multiple_of(block);
+    let score = if tail {
+        format!(
+            "            if (kb + j < S) {{\n\
+             \x20               float dot = 0.0f;\n\
+             \x20               for (uint p = 0; p < D; ++p) dot += d_{q}[i * D + p] * d_{k}[(kb + j) * D + p];\n\
+             \x20               sc = dot / scale;\n\
+             \x20           }}\n"
+        )
+    } else {
+        format!(
+            "            float dot = 0.0f;\n\
+             \x20           for (uint p = 0; p < D; ++p) dot += d_{q}[i * D + p] * d_{k}[(kb + j) * D + p];\n\
+             \x20           sc = dot / scale;\n"
+        )
+    };
+    let weight = if tail {
+        "(kb + j < S) ? exp(scores[j] - mn) : 0.0f"
+    } else {
+        "exp(scores[j] - mn)"
+    };
+    let value = if tail {
+        "                    if (kb + j < S) a += scores[j] * d_v[(kb + j) * D + h];\n"
+    } else {
+        "                    a += scores[j] * d_v[(kb + j) * D + h];\n"
+    };
+    format!(
+        "#include <metal_stdlib>\n\
+         using namespace metal;\n\
+         kernel void kernel_main(\n\
+         \x20    device const float* d_{q} [[buffer(0)]],\n\
+         \x20    device const float* d_{k} [[buffer(1)]],\n\
+         \x20    device const float* d_{v} [[buffer(2)]],\n\
+         \x20    device float* d_{y} [[buffer(3)]],\n\
+         \x20    uint3 gid [[thread_position_in_grid]],\n\
+         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
+         \x20    const uint S = {s}, D = {d}, T = {threads}, BK = {block}, ND = {nd};\n\
+         \x20    threadgroup float scores[BK];\n\
+         \x20    threadgroup float red[T];\n\
+         \x20    const uint i = gid.x / T, t = lid.x;\n\
+         \x20    const float scale = sqrt((float)D);\n\
+         \x20    float m = -3.402823466e38f, l = 0.0f;\n\
+         \x20    float acc[ND];\n\
+         \x20    for (uint n = 0; n < ND; ++n) acc[n] = 0.0f;\n\
+         \x20    for (uint kb = 0; kb < S; kb += BK) {{\n\
+         \x20        float tmax = -3.402823466e38f;\n\
+         \x20        for (uint j = t; j < BK; j += T) {{\n\
+         \x20            float sc = -3.402823466e38f;\n\
+         {score}\
+         \x20            scores[j] = sc;\n\
+         \x20            tmax = max(tmax, sc);\n\
+         \x20        }}\n\
+         \x20        red[t] = tmax;\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        for (uint st = T / 2; st > 0; st >>= 1) {{\n\
+         \x20            if (t < st) red[t] = max(red[t], red[t + st]);\n\
+         \x20            threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        }}\n\
+         \x20        const float mn = max(m, red[0]);\n\
+         \x20        const float alpha = exp(m - mn);\n\
+         \x20        float tsum = 0.0f;\n\
+         \x20        for (uint j = t; j < BK; j += T) {{\n\
+         \x20            float e = {weight};\n\
+         \x20            scores[j] = e;\n\
+         \x20            tsum += e;\n\
+         \x20        }}\n\
+         \x20        red[t] = tsum;\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        for (uint st = T / 2; st > 0; st >>= 1) {{\n\
+         \x20            if (t < st) red[t] += red[t + st];\n\
+         \x20            threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        }}\n\
+         \x20        l = l * alpha + red[0];\n\
+         \x20        for (uint n = 0; n < ND; ++n) {{\n\
+         \x20            const uint h = t + n * T;\n\
+         \x20            if (h < D) {{\n\
+         \x20                float a = acc[n] * alpha;\n\
+         \x20                for (uint j = 0; j < BK; ++j) {{\n\
+         {value}\
+         \x20                }}\n\
+         \x20                acc[n] = a;\n\
+         \x20            }}\n\
+         \x20        }}\n\
+         \x20        m = mn;\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20    }}\n\
+         \x20    for (uint n = 0; n < ND; ++n) {{\n\
+         \x20        const uint h = t + n * T;\n\
+         \x20        if (h < D) d_{y}[i * D + h] = acc[n] / l;\n\
          \x20    }}\n\
          }}"
     )

@@ -75,6 +75,8 @@ pub enum Lower {
     TiledGemm {
         /// 输出块边长（同时是每维 threadgroup 线程数）。
         tile: usize,
+        /// 每个线程计算的输出块边长（`1` = 每线程一输出；`4` = 4×4 寄存器分块）。
+        per_thread: usize,
     },
     /// threadgroup 协作的分块注意力：一个线程组负责一个查询行，线程分摊 S 个分数与 D 个输出维，
     /// 行内最大值/指数和走线程组树归约，完整分数留在 threadgroup 内存。要求线程数为 2 的幂，
@@ -82,6 +84,24 @@ pub enum Lower {
     TiledAttention {
         /// 每个查询行使用的线程数（2 的幂）。
         threads: usize,
+    },
+    /// simdgroup 矩阵指令 GEMM：每个 simdgroup（32 线程）用 `8×8×8` 矩阵乘指令算
+    /// `row_frags × col_frags` 个 `8×8` 输出片段，K 轴每次前进 8。要求 `K % 8 == 0`、
+    /// `M` 被 `8·row_frags` 整除、`N` 被 `8·col_frags` 整除；不满足时由调用方回落。
+    SimdGroupGemm {
+        /// 每个 simdgroup 沿 M 的输出片段数（每片段 8 行）。
+        row_frags: usize,
+        /// 每个 simdgroup 沿 N 的输出片段数（每片段 8 列）。
+        col_frags: usize,
+    },
+    /// flash attention 分块：一个线程组负责一个查询行，K/V 按 `block` 个键分块流式扫描，
+    /// 在线 softmax（running max/sum）把输出累加在寄存器，不保留完整分数向量。
+    /// 要求线程数为 2 的幂、`block` 是线程数的倍数、`D ≤ 64`；不满足时由调用方回落。
+    FlashAttention {
+        /// 每个查询行使用的线程数（2 的幂）。
+        threads: usize,
+        /// 每次流式扫描的键块大小（线程数的倍数）。
+        block: usize,
     },
     /// 张量核特化的 f32 GEMM（WMMA）：整块 `64×64`、`BK=8`、每 CTA 4 个 `32×32×8` 累积片段。
     /// 形状在生成期已知，越界访问在展开时按整除性决定是否加守卫；不满足 `K % 8 == 0` 的

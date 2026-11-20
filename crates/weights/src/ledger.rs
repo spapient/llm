@@ -327,9 +327,8 @@ pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Resu
         ),
         (low.len() == rest.len(), "两段长度不等，截断误差无从重算"),
     ];
-    match facts.iter().find(|(holds, _)| !*holds) {
-        Some((_, why)) => return Err(bad(why)),
-        None => {}
+    if let Some((_, why)) = facts.iter().find(|(holds, _)| !*holds) {
+        return Err(bad(why));
     }
     let truncation = norm(rest.iter().map(|&v| f64::from(v)));
     let weight = norm(

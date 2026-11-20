@@ -113,15 +113,16 @@ pub fn metal_tiled_gemm_program(
     m: usize,
     n: usize,
     tile: usize,
+    per_thread: usize,
 ) -> diagnostic::Result<String> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
-    if !tile_ready(&run, m, n, tile) {
+    if !tile_ready(&run, m, n, tile, per_thread) {
         return lower(&run, &prepared, m, n);
     }
     single(
         lower_sources(
             Emit::Metal,
-            &Lower::TiledGemm { tile },
+            &Lower::TiledGemm { tile, per_thread },
             &run,
             &prepared,
             m,
@@ -131,9 +132,12 @@ pub fn metal_tiled_gemm_program(
     )
 }
 
-/// 分块 GEMM 的前置条件：Gemm 骨架、`tile > 0`、`M/N/K` 都能被 `tile` 整除。
-fn tile_ready(run: &Run<'_>, m: usize, n: usize, tile: usize) -> bool {
+/// 分块 GEMM 的前置条件：Gemm 骨架、块几何合法、`M/N/K` 都能被 `tile` 整除。
+fn tile_ready(run: &Run<'_>, m: usize, n: usize, tile: usize, per_thread: usize) -> bool {
     if !is_gemm(run, tile) {
+        return false;
+    }
+    if !valid_block(tile, per_thread) {
         return false;
     }
     let k = (run.model.sample)(m, n).scalar("K").unwrap_or(0);
@@ -145,6 +149,15 @@ fn is_gemm(run: &Run<'_>, tile: usize) -> bool {
     tile != 0 && run.op.skeleton == Skeleton::Gemm
 }
 
+/// 块几何：每线程输出 `1`（简单分块）或 `4`（4×4 寄存器分块），且线程组每维在 `[2, 32]`。
+fn valid_block(tile: usize, per_thread: usize) -> bool {
+    if per_thread != 1 && per_thread != 4 {
+        return false;
+    }
+    let threads = tile / per_thread;
+    (2..=32).contains(&threads) && tile.is_multiple_of(per_thread)
+}
+
 /// 形状能否整除分块：`M/N/K` 都是 `tile` 的正整数倍。
 fn divisible_shape(m: usize, n: usize, k: i64, tile: usize) -> bool {
     k > 0 && divides(m, tile) && divides(n, tile) && divides(k as usize, tile)
@@ -152,7 +165,7 @@ fn divisible_shape(m: usize, n: usize, k: i64, tile: usize) -> bool {
 
 /// `value` 能否被 `tile` 整除（`tile == 0` 时恒假，避免除零）。
 fn divides(value: usize, tile: usize) -> bool {
-    tile != 0 && value % tile == 0
+    tile != 0 && value.is_multiple_of(tile)
 }
 
 /// 生产态 Metal 分块注意力内核源：一个 threadgroup 负责一个查询行，`threads` 个线程分摊 S 个
@@ -187,6 +200,115 @@ pub fn metal_tiled_attention_program(
         )?,
         "分块 attention",
     )
+}
+
+/// 生产态 Metal simdgroup GEMM 内核源：每个 simdgroup 用 `8×8×8` 矩阵乘指令算
+/// `row_frags × col_frags` 个 `8×8` 输出片段，K 轴按 8 前进。
+///
+/// 只对「Gemm 骨架 + `K % 8 == 0` + `M` 被 `8·row_frags` 整除 + `N` 被 `8·col_frags`
+/// 整除」的形状走 simdgroup；片段数不在 `1..=4` 或形状不满足时回落到 [`metal_grid_program`]。
+///
+/// # Errors
+///
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_simdgroup_gemm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+    row_frags: usize,
+    col_frags: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
+    if !simdgroup_ready(&run, m, n, row_frags, col_frags) {
+        return lower(&run, &prepared, m, n);
+    }
+    single(
+        lower_sources(
+            Emit::Metal,
+            &Lower::SimdGroupGemm {
+                row_frags,
+                col_frags,
+            },
+            &run,
+            &prepared,
+            m,
+            n,
+        )?,
+        "simdgroup gemm",
+    )
+}
+
+/// simdgroup GEMM 的前置条件：片段数合法且 `M/N/K` 满足 8 的整除约束。
+fn simdgroup_ready(run: &Run<'_>, m: usize, n: usize, row_frags: usize, col_frags: usize) -> bool {
+    fragment_span(row_frags, col_frags) && fragment_shape(run, m, n, row_frags, col_frags)
+}
+
+/// 每个 simdgroup 沿 M/N 的输出片段数限定在 `1..=4`（`8×8` 片段，最多 `32×32` 输出）。
+fn fragment_span(row_frags: usize, col_frags: usize) -> bool {
+    (1..=4).contains(&row_frags) && (1..=4).contains(&col_frags)
+}
+
+/// Gemm 骨架 + K 轴能被 8 整除 + M/N 分别能被 `8·片段数` 整除。
+fn fragment_shape(run: &Run<'_>, m: usize, n: usize, row_frags: usize, col_frags: usize) -> bool {
+    if run.op.skeleton != Skeleton::Gemm {
+        return false;
+    }
+    let k = (run.model.sample)(m, n).scalar("K").unwrap_or(0);
+    k > 0
+        && (k as usize).is_multiple_of(8)
+        && divides(m, 8 * row_frags)
+        && divides(n, 8 * col_frags)
+}
+
+/// 生产态 Metal flash attention 内核源：一个 threadgroup 负责一个查询行，K/V 按 `block`
+/// 个键分块流式扫描，在线 softmax 的 running max/sum 让输出累加在每线程寄存器里，
+/// 不保留完整 `S` 长度的分数向量。
+///
+/// 只对「elementwise 骨架 + 4 缓冲 q/k/v/y + 2 标量 S/D + 线程数为 2 的幂 + block 为线程数
+/// 倍数 + `D ≤ 64`」的形状走 flash；不满足时回落到 [`metal_grid_program`]。
+///
+/// # Errors
+///
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_flash_attention_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    s: usize,
+    d: usize,
+    threads: usize,
+    block: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", s, d)?;
+    if !flash_ready(&run, s, d, threads, block) {
+        return lower(&run, &prepared, s, d);
+    }
+    single(
+        lower_sources(
+            Emit::Metal,
+            &Lower::FlashAttention { threads, block },
+            &run,
+            &prepared,
+            s,
+            d,
+        )?,
+        "flash attention",
+    )
+}
+
+/// flash attention 的前置条件：线程/块几何合法、elementwise 骨架、注意力签名与形状。
+fn flash_ready(run: &Run<'_>, s: usize, d: usize, threads: usize, block: usize) -> bool {
+    tileable_threads(threads)
+        && batching_block(threads, block)
+        && run.op.skeleton == Skeleton::Elementwise
+        && attention_shape(run, s, d)
+}
+
+/// 键块大小：`[32, 1024]` 内且是线程数的整数倍，保证每轮线程负载均匀。
+fn batching_block(threads: usize, block: usize) -> bool {
+    (32..=1024).contains(&block) && block.is_multiple_of(threads)
 }
 
 /// 分块 attention 的前置条件：线程数合法、elementwise 骨架、4 缓冲 + 2 标量的注意力签名。

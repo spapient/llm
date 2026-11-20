@@ -651,7 +651,55 @@ kernel void kernel_main(device float* in [[buffer(0)]],
         assert_eq!(output, vec![2.0f32, 4.0, 6.0, 8.0], "GPU 应把输入翻倍写回");
     }
 
-    /// Metal 真机 matmul 前向基准：同一份 `M×N×K` 稠密 f32 在三种路径上跑同一算术，
+    /// simdgroup 矩阵指令探测：编译并派发 8×8×8 矩阵乘（`simdgroup_float8x8` /
+    /// `simdgroup_load` / `simdgroup_multiply_accumulate` / `simdgroup_store`），与 CPU 参考对拍。
+    /// 探测失败只报原因，后续路线退回寄存器分块。
+    #[test]
+    #[ignore = "Metal simdgroup 探测：cargo test -p llm-engine --lib -- metal_simdgroup --release --ignored --nocapture"]
+    fn metal_simdgroup_probe() {
+        let Some(device) = MetalDevice::system_default() else {
+            eprintln!("Metal 设备不在本机，simdgroup 探测未运行");
+            return;
+        };
+        let Some(queue) = device.new_command_queue() else {
+            panic!("有设备必有命令队列");
+        };
+        let source = r#"#include <metal_stdlib>
+using namespace metal;
+kernel void kernel_main(device const float* A [[buffer(0)]],
+                        device const float* B [[buffer(1)]],
+                        device float* C [[buffer(2)]],
+                        uint3 lid [[thread_position_in_threadgroup]]) {
+    threadgroup float zeros[64];
+    for (uint i = lid.x; i < 64; i += 32) zeros[i] = 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_float8x8 a, b, acc;
+    simdgroup_load(a, A, 8);
+    simdgroup_load(b, B, 8);
+    simdgroup_load(acc, zeros, 8);
+    simdgroup_multiply_accumulate(acc, a, b, acc);
+    simdgroup_store(acc, C, 8);
+}
+"#;
+        let Some(pipeline) = device.compile(source) else {
+            eprintln!("simdgroup 探测：MSL 编译失败，本机走寄存器分块路线");
+            return;
+        };
+        let a: Vec<f32> = (0..64).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+        let b: Vec<f32> = (0..64).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+        let reference = cpu_matmul(&a, &b, 8, 8, 8);
+        let mut a_buf = device.new_buffer(64 * 4).expect("A 缓冲");
+        let mut b_buf = device.new_buffer(64 * 4).expect("B 缓冲");
+        let mut c_buf = device.new_buffer(64 * 4).expect("C 缓冲");
+        a_buf.as_mut_bytes().copy_from_slice(&as_bytes(&a));
+        b_buf.as_mut_bytes().copy_from_slice(&as_bytes(&b));
+        let ok = queue.execute(&pipeline, &[&a_buf, &b_buf, &c_buf], [32, 1, 1], [32, 1, 1]);
+        assert!(ok, "simdgroup 探测派发失败");
+        assert_matmul_matches("simdgroup-8x8", &reference, c_buf.as_mut_bytes());
+        eprintln!("simdgroup 探测通过：8×8×8 矩阵乘 32 线程单线程组，输出与 CPU 参考一致");
+    }
+
+    /// Metal 真机 matmul 前向基准：同一份 `M×N×K` 稠密 f32 在两条路径上跑同一算术，
     /// 对拍 GPU 与 CPU 参考、并报 naive（每线程一输出）与 tiled（threadgroup 共享内存分块）
     /// 的真实端到端延迟与 GFLOP/s。
     ///
@@ -765,7 +813,7 @@ kernel void kernel_main(device float* in [[buffer(0)]],
             "Metal 生产态 GEMM 256×256×4096：网格标量={grid_ns:.1} ns（{:.2} GFLOP/s）",
             flop / grid_ns,
         );
-        for tile in [8usize, 16, 32] {
+        for (tile, per_thread) in [(8usize, 1usize), (16, 1), (32, 1), (32, 4)] {
             let msl = cutile::execution::metal_tiled_gemm_program(
                 &catalogue,
                 &dirs,
@@ -773,15 +821,57 @@ kernel void kernel_main(device float* in [[buffer(0)]],
                 M,
                 N,
                 tile,
+                per_thread,
             )
             .expect("分块 MSL 应能生成");
             let pipe = device.compile(&msl).expect("分块 MSL 应能编译");
-            let block = [tile as u32, tile as u32, 1];
-            queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+            let threads = tile / per_thread;
+            let (launch_grid, block) = if per_thread == 1 {
+                (grid, [tile as u32, tile as u32, 1])
+            } else {
+                (
+                    [(M / per_thread) as u32, (N / per_thread) as u32, 1],
+                    [threads as u32, threads as u32, 1],
+                )
+            };
+            queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], launch_grid, block);
             assert_matmul_matches("tiled", &reference, y_buf.as_mut_bytes());
-            let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+            let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], launch_grid, block);
             eprintln!(
-                "  分块 tile={tile}：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
+                "  分块 tile={tile} pt={per_thread}：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
+                flop / ns,
+                grid_ns / ns,
+            );
+        }
+        for (row_frags, col_frags) in [(1usize, 1usize), (2, 2), (4, 4)] {
+            let msl = cutile::execution::metal_simdgroup_gemm_program(
+                &catalogue,
+                &dirs,
+                "matmul_f32",
+                M,
+                N,
+                row_frags,
+                col_frags,
+            )
+            .expect("simdgroup MSL 应能生成");
+            let pipe = device.compile(&msl).expect("simdgroup MSL 应能编译");
+            let simd_grid = [
+                ((M / (8 * row_frags)) * 32) as u32,
+                (N / (8 * col_frags)) as u32,
+                1,
+            ];
+            let block = [32, 1, 1];
+            queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
+            assert_matmul_matches("simdgroup", &reference, y_buf.as_mut_bytes());
+            let ns = measure(
+                &queue,
+                &pipe,
+                &[&a_buf, &b_buf, &y_buf],
+                simd_grid,
+                block,
+            );
+            eprintln!(
+                "  simdgroup {row_frags}×{col_frags} 片段：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
                 flop / ns,
                 grid_ns / ns,
             );
@@ -874,6 +964,124 @@ kernel void kernel_main(device float* in [[buffer(0)]],
             "Metal 生产态 attention 512×64：网格行线程={grid_ns:.1} ns 分块线程组={tiled_ns:.1} ns（每行 {THREADS} 线程） 加速={:.2}×",
             grid_ns / tiled_ns,
         );
+        for block in [64usize, 128, 256] {
+            let flash_msl = cutile::execution::metal_flash_attention_program(
+                &catalogue,
+                &dirs,
+                "attention_f32",
+                S,
+                D,
+                THREADS,
+                block,
+            )
+            .expect("flash attention MSL 应能生成");
+            let flash_pipe = device
+                .compile(&flash_msl)
+                .expect("flash attention MSL 应能编译");
+            queue.execute(
+                &flash_pipe,
+                &[&q_buf, &k_buf, &v_buf, &y_buf],
+                tiled_grid,
+                [THREADS as u32, 1, 1],
+            );
+            assert_matmul_matches("attn-flash", &reference, y_buf.as_mut_bytes());
+            let flash_ns = measure(
+                &queue,
+                &flash_pipe,
+                &[&q_buf, &k_buf, &v_buf, &y_buf],
+                tiled_grid,
+                [THREADS as u32, 1, 1],
+            );
+            eprintln!(
+                "  flash block={block}：{flash_ns:.1} ns（每行 {THREADS} 线程） 对网格={:.2}× 对分块={:.2}×",
+                grid_ns / flash_ns,
+                tiled_ns / flash_ns,
+            );
+        }
+    }
+
+    /// 长序列 flash attention：S=2048、D=64，验证 K/V 分块流式扫描不保留完整分数向量，
+    /// 与「整行分数留在 threadgroup 内存」的分块路径对拍并报延迟。
+    ///
+    /// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_flash_attention_long --release --ignored --nocapture`。
+    #[test]
+    #[ignore = "Metal 长序列 flash attention：cargo test -p llm-engine --lib -- metal_flash_attention_long --release --ignored --nocapture"]
+    fn metal_flash_attention_long() {
+        let Some(device) = MetalDevice::system_default() else {
+            eprintln!("Metal 设备不在本机，长序列 flash attention 基准未运行");
+            return;
+        };
+        let Some(queue) = device.new_command_queue() else {
+            panic!("有设备必有命令队列");
+        };
+        crate::backends::install();
+
+        const S: usize = 2048;
+        const D: usize = 64;
+        const THREADS: usize = 64;
+
+        let q: Vec<f32> = (0..S * D).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+        let k: Vec<f32> = (0..S * D).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+        let v: Vec<f32> = (0..S * D).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
+        let reference = cpu_attention(&q, &k, &v, S, D);
+
+        let mut q_buf = device.new_buffer(S * D * 4).expect("Q 缓冲");
+        let mut k_buf = device.new_buffer(S * D * 4).expect("K 缓冲");
+        let mut v_buf = device.new_buffer(S * D * 4).expect("V 缓冲");
+        q_buf.as_mut_bytes().copy_from_slice(&as_bytes(&q));
+        k_buf.as_mut_bytes().copy_from_slice(&as_bytes(&k));
+        v_buf.as_mut_bytes().copy_from_slice(&as_bytes(&v));
+        let mut y_buf = device.new_buffer(S * D * 4).expect("Y 缓冲");
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-flash-long"));
+        let grid_msl =
+            cutile::execution::metal_grid_program(&catalogue, &dirs, "attention_f32", S, D)
+                .expect("网格注意力 MSL 应能生成");
+        let grid_pipe = device.compile(&grid_msl).expect("网格注意力 MSL 应能编译");
+        let launch = [(S * THREADS) as u32, 1, 1];
+        let block = [THREADS as u32, 1, 1];
+        queue.execute(
+            &grid_pipe,
+            &[&q_buf, &k_buf, &v_buf, &y_buf],
+            [S as u32, 1, 1],
+            [1, 1, 1],
+        );
+        assert_matmul_matches("attn-long-grid", &reference, y_buf.as_mut_bytes());
+        let grid_ns = measure(
+            &queue,
+            &grid_pipe,
+            &[&q_buf, &k_buf, &v_buf, &y_buf],
+            [S as u32, 1, 1],
+            [1, 1, 1],
+        );
+        eprintln!("Metal 长序列 attention {S}×{D}：网格行线程={grid_ns:.1} ns");
+
+        for key_block in [64usize, 128, 256] {
+            let msl = cutile::execution::metal_flash_attention_program(
+                &catalogue,
+                &dirs,
+                "attention_f32",
+                S,
+                D,
+                THREADS,
+                key_block,
+            )
+            .expect("flash attention MSL 应能生成");
+            let pipe = device.compile(&msl).expect("flash attention MSL 应能编译");
+            queue.execute(
+                &pipe,
+                &[&q_buf, &k_buf, &v_buf, &y_buf],
+                launch,
+                block,
+            );
+            assert_matmul_matches("attn-long-flash", &reference, y_buf.as_mut_bytes());
+            let ns = measure(&queue, &pipe, &[&q_buf, &k_buf, &v_buf, &y_buf], launch, block);
+            eprintln!(
+                "  flash block={key_block}：{ns:.1} ns 对网格={:.2}×",
+                grid_ns / ns,
+            );
+        }
     }
 
     /// 注意力 CPU 参考：分数 f64 累加、行内 max/exp 归一化、输出 f64 累加。

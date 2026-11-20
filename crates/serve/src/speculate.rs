@@ -40,6 +40,17 @@ impl Verdict {
             self.accepted
         }
     }
+
+    /// 这一步真正走出来的 token：被接受的草稿前缀 + 第一个不一致处目标模型的补位。
+    ///
+    /// 取 `accepted` 个而不是"草稿里等于目标的那几个"：接受判定是**前缀**语义，被接受的一定是
+    /// 从头连续的一段，中间一旦断开，后面的草稿即使碰巧对上也不再采信。
+    #[must_use]
+    pub fn produced(&self, draft: &[u32]) -> Vec<u32> {
+        let mut out: Vec<u32> = draft.iter().take(self.accepted).copied().collect();
+        out.extend(self.fallback);
+        out
+    }
 }
 
 /// 一次投机：`draft` 是草稿猜的 token，`rows[i]` 是目标模型在第 `i` 个草稿位置的分布。
@@ -65,6 +76,91 @@ pub fn accept(draft: &[u32], rows: &[Vec<f32>]) -> Result<Verdict> {
         accepted: draft.len(),
         fallback: None,
     })
+}
+
+/// 提示查找草稿器：拿历史里**最近一次**的相同后缀续写，不训草稿模型、也不引入第二个 argmax。
+///
+/// 只看已经算出来的历史：草稿要么来自"之前出现过同一段后缀"，要么干脆不给（空草稿）。于是它
+/// 不会把还没发生的 token 当成已知——与 [`nn::slot_of`]、`nn::Emitter` 是同一句判据。
+///
+/// 它不承诺"猜得准"：接受几个由 [`accept`] 按目标模型的 argmax 判，被拒的那一段一律作废。
+/// 草稿器的质量只影响"这一步走多远"，不影响"走出来的是不是目标模型自己的序列"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Drafter {
+    order: usize,
+    max: usize,
+}
+
+impl Drafter {
+    /// `order` 是匹配后缀的长度（≥ 2：1-gram 只是把上一个 token 抄一遍），`max` 是最多猜几个。
+    ///
+    /// # Errors
+    ///
+    /// `order < 2` 或 `max == 0`——后者会让"投机"退化成必然空转。
+    pub fn new(order: usize, max: usize) -> Result<Self> {
+        if order < 2 {
+            return Err(bad(format!("匹配后缀长度必须 ≥ 2（order = {order}）")));
+        }
+        if max == 0 {
+            return Err(bad("草稿上限必须为正：0 个草稿的投机是必然空转".to_owned()));
+        }
+        Ok(Self { order, max })
+    }
+
+    /// 匹配后缀长度。
+    #[must_use]
+    pub const fn order(&self) -> usize {
+        self.order
+    }
+
+    /// 草稿上限。
+    #[must_use]
+    pub const fn max(&self) -> usize {
+        self.max
+    }
+
+    /// 按历史出草稿：最近一次相同后缀之后的那一段，最多 [`max`](Self::max) 个 token。
+    ///
+    /// 当前位置自己不算"上一次"：只在 `[0, len − order)` 里找，否则永远只匹配到自己。
+    #[must_use]
+    pub fn draft(&self, history: &[u32]) -> Vec<u32> {
+        let Some(tail) = history.len().checked_sub(self.order) else {
+            return Vec::new();
+        };
+        let pattern = &history[tail..];
+        let Some(start) = (0..tail)
+            .rev()
+            .find(|&at| history[at..at + self.order] == *pattern)
+        else {
+            return Vec::new();
+        };
+        let from = start + self.order;
+        let to = history.len().min(from + self.max);
+        history[from..to].to_vec()
+    }
+
+    /// 一步投机：按历史出草稿，按目标分布在草稿位置上判定，返回这一步真正走出来的 token。
+    ///
+    /// 行数与草稿保持一致由调用方负责（行是"按这份草稿算出来的"）。草稿为空时要求没有行，
+    /// 返回空——这一层只回答"投机带来了什么"，常规前向仍归调用方。
+    ///
+    /// # Errors
+    ///
+    /// 行数与草稿不一致，或 [`accept`] 的失败条件。
+    pub fn walk(&self, history: &[u32], rows: &[Vec<f32>]) -> Result<Vec<u32>> {
+        let draft = self.draft(history);
+        if rows.len() != draft.len() {
+            return Err(bad(format!(
+                "校验行数 {} 与草稿长度 {} 不一致：行要按这份草稿算",
+                rows.len(),
+                draft.len()
+            )));
+        }
+        if draft.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(accept(&draft, rows)?.produced(&draft))
+    }
 }
 
 /// 草稿与校验行必须一一对上：位置错了就判不了「第几个被接受」。
