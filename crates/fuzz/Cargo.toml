@@ -86,6 +86,12 @@ harness = false
 required-features = ["engine"]
 
 [[test]]
+name = "fuzz_http_head"
+path = "tests/fuzz_http_head.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
 name = "fuzz_wire_sealed"
 path = "tests/fuzz_wire_sealed.rs"
 harness = false

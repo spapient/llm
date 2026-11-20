@@ -62,7 +62,7 @@ pub use completion::Completion;
 pub use generate::{
     Classical, Ending, Generation, Greedy, Multinomial, Predict, Sampling, SamplingParams,
 };
-pub use http::Httpd;
+pub use http::{Httpd, fuzz_http_head};
 pub use request::Request;
 pub use router::Router;
 pub use speculate::{Drafter, Verdict, accept};
