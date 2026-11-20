@@ -1084,10 +1084,11 @@ fn metal_tensor_gemm() {
     // llm.u 的默认档：128 输出块 / 96 规约块 / 8 simdgroup。
     let (tile, k_tile, simdgroups) = (128, 96, 8);
 
+    // `matmul_f32` 的规约轴由算子语义固定为 4096，故形状只放开 M/N。
     for (m, n, k) in [
-        (512, 512, 512),
-        (1024, 1024, 1024),
-        (2048, 2048, 2048),
+        (512, 512, 4096),
+        (1024, 1024, 4096),
+        (2048, 2048, 4096),
         (4096, 4096, 4096),
     ] {
         let (a, b) = matmul_values(m, n, k);
@@ -1120,6 +1121,9 @@ fn metal_tensor_gemm() {
             simdgroups,
         )
         .expect("张量核 MSL 应能生成");
+        if m == 512 {
+            std::fs::write("/tmp/tensor_gemm.metal", &msl).unwrap();
+        }
         assert!(
             msl.contains("mpp::tensor_ops::matmul2d"),
             "Gemm 骨架应走张量核 lowering"
