@@ -192,6 +192,15 @@ impl MetalDevice {
         result
     }
 
+    /// 依据是否抬到 Metal 4.0 选择编译选项：非 4.0 传空指针（沿用设备默认版本）。
+    fn compile_options(metal4: bool) -> *mut c_void {
+        if metal4 {
+            unsafe { metal4_options() }
+        } else {
+            null_mut()
+        }
+    }
+
     /// 池内的编译主体：`newLibraryWithSource → newFunctionWithName → newComputePipelineState`。
     ///
     /// `metal4` 为真时挂一个 `MTLCompileOptions` 并把 `languageVersion` 抬到 4.0——张量核心内建
@@ -205,7 +214,7 @@ impl MetalDevice {
     ) -> Option<MetalPipeline> {
         unsafe {
             let source = nsstring(src);
-            let options = if metal4 { metal4_options() } else { null_mut() };
+            let options = Self::compile_options(metal4);
             let mut error: *mut c_void = null_mut();
             let library = msg_id_3p(
                 self.raw,

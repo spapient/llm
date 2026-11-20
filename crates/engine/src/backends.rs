@@ -331,14 +331,22 @@ fn metal_gemm_lower(
         Int8Gemm { tile } => {
             crate::tiled::metal_int8_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
         }
-        WmmaGemm => Err(Error::new(
+        other => Err(gemm_unsupported(other)),
+    }
+}
+
+/// GEMM lowering 不在 Metal 生产态内的错误：WMMA 属未覆盖，其余是调用方走错入口。
+fn gemm_unsupported(kind: &Lower) -> Error {
+    use cutile::backend::Lower::*;
+    match kind {
+        WmmaGemm => Error::new(
             Code::Unsupported,
             "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),
-        )),
-        _ => Err(Error::new(
+        ),
+        _ => Error::new(
             Code::Internal,
             "非 GEMM lowering 不应进入 metal_gemm_lower".to_string(),
-        )),
+        ),
     }
 }
 

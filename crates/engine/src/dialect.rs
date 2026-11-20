@@ -95,7 +95,7 @@ pub(crate) fn f32_output_shape(signature: &Signature, sample: &Sample) -> Result
     let output = output_name(signature)?;
     let values = sample
         .buffer(output)
-        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
+        .ok_or(Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
     if !matches!(&values.values, Values::F32(_)) || values.values.is_empty() {
         return Err(Error::new(
             Code::Unsupported,
