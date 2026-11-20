@@ -60,6 +60,7 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 | 设备 | 现状 | 说明 |
 |---|---|---|
 | `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `crates/op` 的标量参考对拍 `max_rel_err = 0` |
+| `musa` | **L2** | MTT S4000（mp_22）真机实测：11 个算子用 `mcc` 编成、执行、与 `op` 的标量参考对拍 `max_rel_err ≤ 2.97e-7`；`bench` 如实报出 0.1% 达成率与“需要特化代码” |
 | `nvidia` / `intel` / `metal` | L1 | 仅有档案、片段与见证；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
 
 `metal` 的设备侧代码还能在构建期编成 `metallib` 并嵌进二进制：`cargo build -p llm-cli --features device-image`
@@ -112,6 +113,7 @@ cargo run -p llm-cli --bin cutile -- --config ./cutile.toml verify --devices cpu
 .
 ├── Cargo.toml            # 纯 workspace 根：[workspace]/[workspace.package]/[lints]/[profile.*]，无 package/bin
 ├── docs/                 # 见 docs/README.md（架构契约 / 规格 / ADR）
+├── benchmarks/           # 对照夹具（独立 workspace）：Burn 运行时探针，不进主依赖图
 └── crates/
     ├── annotation/       # #[spec] 属性宏：注解 → 校验过的 Contract 实现（零外部依赖）
     ├── cli/              # 组合根（lib + 两个 bin）：文法解析、`cmd/` 编排入口

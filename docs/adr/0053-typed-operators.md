@@ -85,15 +85,21 @@ gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
   Burn 快 1.6× 与 1.1×；`rmsnorm` 快 1.2×。本仓稳态不分配大块缓冲，Burn 每步新建一个 Tensor。
 - **内核面有明确差距**：`softmax` 慢 1.6×，`matmul` 慢 3.7×（28.5 vs 106.1 GFLOP/s）。
   这是 `Reference`（单线程分块标量）对 burn-flex SIMD `gemm` 微内核的差距，不能归因于类型化 API；
-  设备侧 tile 内核（Metal simdgroup GEMM，512×512×4096 实测 2 782.91 GFLOP/s）是另一条路径。
+  设备侧 tile 内核是另一条路径，见下。
+
+同设备 Metal 对照（512×512×4096 f32，本仓 `metal_simdgroup_gemm_512` vs Burn `metal` 后端，
+三次交替运行取中位）：本仓 simdgroup 4×4 为 768 417 ns（2 794.69 GFLOP/s），Burn Metal 为
+1 420 000 ns（1 512.31 GFLOP/s），本仓约 **1.85×**；Burn 输出与 Flex CPU 参考
+`max_abs = 7e-6`。靶机与并发构建共享，单次中位在 0.55–0.91 ms 与 1.08–1.43 ms 间波动，
+因此只报区间与中位，不报数量级。
 
 顺带修正一个旧说法：Burn 0.23 的 Tensor 已不是单态化静态派发——`Tensor<D, K>` 持有类型擦除的
 `BridgeTensor`，`Device` 也是运行期 `DispatchDevice` 句柄（`burn-tensor-0.23.0-pre.2` 的
 `tensor/api/base.rs` 与 `device.rs`）。本仓是单态化 trait 默认方法 + 一次名字查表；实测查表没有
 可测惩罚。
 
-**未测**：Burn 的 Metal/wgpu 后端同设备对照；本仓 Metal 数字是 GPU 数字，不能与上表 CPU 数字
-直接比倍数。
+**未测**：Metal 对照只覆盖 f32 matmul，不含 attention、量化与反向；CPU 与 GPU 两张表不能
+互相折算倍数。
 
 ## 验证
 
@@ -102,8 +108,10 @@ gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
 - 漂移演练（E1）：把清单里的方法名改成与 `Operator::NAME` 不同的拼写 → 编译期 `const` 断言失败；
   把某个算子的 `ARITY` 改错 → `arity_matches_the_samples` 失败。
 - `cargo test -p llm-tool --test gate`：静态门禁通过。
-- Burn 运行时对照（E1/E3）：`benchmarks/burn-runtime/` 两套探针各 3 轮，原始输出见
+- Burn 运行时对照（E1/E3）：`benchmarks/burn-runtime/` 三套探针各 3 轮，原始输出见
   `results/2026-11-20-m5pro.txt`；两侧输出校验和一致（matmul 相对差 < 1e-5）。
+- Metal 同设备对照（E1/E3）：`metal_simdgroup_gemm_512` 与 `burn-side-metal` 交替 3 轮，
+  Burn 输出与 Flex CPU 参考 `max_abs = 7e-6`；区间与中位见上。
 
 ## 后果
 

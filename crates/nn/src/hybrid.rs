@@ -228,6 +228,307 @@ fn commit<S: Scalar>(streams: &mut [Vec<S>], mixed: Vec<Vec<S>>) {
     }
 }
 
+/// K3 的层配比：每 `MEMORY_PER_ATTENTION` 个通道记忆层配 1 个混合层。
+///
+/// 配比是**结构**而不是超参：三个记忆层读到的东西进同一条主路，第四个混合层才有注意力与专家，
+/// 于是「这一组里出现过几次注意力」在 [`Tower::order`] 上可以逐格读出来，不靠注释承诺。
+pub const MEMORY_PER_ATTENTION: usize = 3;
+
+/// 一个记忆层一步的输入：逐通道遗忘门、写入强度、键、值与读出查询。
+///
+/// 五段都由装配侧的投影给出，本层不持参数——与 [`crate::kda::Kda`] 的分工一样：它算「一步怎么写」，
+/// 谁给出这几段数不归它管。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryStep<'a, S> {
+    /// 逐通道遗忘门，宽 `d_k`，取值 `[0, 1]`。
+    pub gate: &'a [S],
+    /// 写入强度 `β ∈ [0, 1]`：0 只遗忘不写。
+    pub write: S,
+    /// 写入的键，宽 `d_k`（入口归一，零键拒绝）。
+    pub key: &'a [S],
+    /// 写入的值，宽 `d_v`。
+    pub value: &'a [S],
+    /// 读出查询，宽 `d_k`。
+    pub query: &'a [S],
+}
+
+/// 层栈里的一格形态（闭集，码位稳定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    /// 通道记忆层：状态在 [`State`] 里，只把读数加回主路。
+    Memory = 0,
+    /// 混合层：MLA 注意力 + MoE 前馈 + mHC 多流残差。
+    Attend = 1,
+}
+
+/// 层栈的随序列状态：每个记忆层一份，没有别的。
+///
+/// KV 缓存**不在**这里——它住 [`Latent`]，按页账走；本状态只跟着序列长度累积，与页无关。两份状态
+/// 分开的后果是：`Tower::step` 不需要页号，`write_kv` 不需要记忆几何。
+#[derive(Debug, Clone, PartialEq)]
+pub struct State<S: Scalar = f32> {
+    memories: Vec<crate::kda::Memory<S>>,
+}
+
+impl<S: Scalar> State<S> {
+    /// 某记忆层的当前记忆（只读）。
+    pub fn memory(&self, layer: usize) -> Option<&crate::kda::Memory<S>> {
+        self.memories.get(layer)
+    }
+
+    /// 记忆层个数。
+    pub fn layers(&self) -> usize {
+        self.memories.len()
+    }
+
+    /// 全部记忆都还是一个 token 都没写过：装配后的初始态。
+    pub fn is_pristine(&self) -> bool {
+        self.memories
+            .iter()
+            .all(|memory| memory.cells().iter().all(|&cell| cell == S::ZERO))
+    }
+}
+
+/// 层栈里的一格：记忆层持有几何（`Kda` 不持参数），混合层持有三件。
+#[derive(Debug, Clone, PartialEq)]
+enum Gear<S: Scalar> {
+    Memory(crate::kda::Kda),
+    Attend(Hybrid<S>),
+}
+
+/// 按 K3 配比堆起来的层栈：每 [`MEMORY_PER_ATTENTION`] 个记忆层后接 1 个混合层。
+///
+/// 本层只做装配，算术全部落在被调的三处唯一入口上（[`crate::kda::Kda::step`]/[`read`]、[`Hybrid::step`]）。
+/// 一次 [`Tower::step`] 要么让整栈推进一个 token，要么一格都不动——流与记忆都在副本上算、末尾一次性提交，
+/// 于是「第 5 个记忆层参数错了」不会留下前 4 层已写过、后 2 层没写的状态。
+///
+/// [`read`]: crate::kda::Kda::read
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tower<S: Scalar = f32> {
+    layers: Vec<Gear<S>>,
+    width: usize,
+    streams: usize,
+}
+
+impl<S: Scalar> Tower<S> {
+    /// 按配比装配：`memory.len()` 必须是 `MEMORY_PER_ATTENTION × attention.len()`。
+    ///
+    /// 记忆层按给出的次序落在每组的前三格，混合层落在第四格；层序只由这里决定一次。
+    ///
+    /// # Errors
+    ///
+    /// - 混合层一个都没有（没有宽度可依，也没有注意力可跑）；
+    /// - 记忆层个数不是 `3 × 混合层个数`（配比不是注释而是构造条件）；
+    /// - 任一记忆层的读出宽 `d_v` 不等于混合层宽度（读数要加回主路，宽度不齐就是两张不同的表）；
+    /// - 混合层之间宽度或流条数不一致（同一栈里各层几何必须同源）。
+    pub fn new(attention: Vec<Hybrid<S>>, memory: Vec<crate::kda::Kda>) -> Result<Self> {
+        let first = attention.first().ok_or_else(|| {
+            Error::new(Code::Invalid, "层栈至少需要一个混合层：没有注意力就没有可推进的主路")
+                .with(SITE)
+        })?;
+        let width = first.width();
+        let streams = first.streams();
+        if let Some(bad) = attention
+            .iter()
+            .find(|layer| layer.width() != width || layer.streams() != streams)
+        {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "混合层几何不一致：本栈是宽 {width} × {streams} 流，遇到宽 {} × {} 流",
+                    bad.width(),
+                    bad.streams()
+                ),
+            )
+            .with(SITE));
+        }
+        let want = attention.len() * MEMORY_PER_ATTENTION;
+        if memory.len() != want {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "配比必须是每 {MEMORY_PER_ATTENTION} 个记忆层配 1 个混合层：{} 个混合层要 {want} 个记忆层，得到 {}",
+                    attention.len(),
+                    memory.len()
+                ),
+            )
+            .with(SITE));
+        }
+        if let Some((index, bad)) = memory
+            .iter()
+            .enumerate()
+            .find(|(_, kda)| kda.value_dim() != width)
+        {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "第 {index} 个记忆层读出宽 {} ≠ 混合层宽 {width}：读数要加回主路，宽度不齐会拼起两张不同的表",
+                    bad.value_dim()
+                ),
+            )
+            .with(SITE));
+        }
+        let mut layers = Vec::with_capacity(want + attention.len());
+        let mut memory = memory.into_iter();
+        for layer in attention {
+            for kda in memory.by_ref().take(MEMORY_PER_ATTENTION) {
+                layers.push(Gear::Memory(kda));
+            }
+            layers.push(Gear::Attend(layer));
+        }
+        Ok(Self {
+            layers,
+            width,
+            streams,
+        })
+    }
+
+    /// 本栈宽度（= 混合层的 `n_h · d_h` = 记忆层读出宽 = 主路宽）。
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// 残差流条数 `M`。
+    pub fn streams(&self) -> usize {
+        self.streams
+    }
+
+    /// 层序的形态视图：`Memory` 与 `Attend` 的序列。
+    pub fn order(&self) -> impl Iterator<Item = Kind> + '_ {
+        self.layers.iter().map(|layer| match layer {
+            Gear::Memory(_) => Kind::Memory,
+            Gear::Attend(_) => Kind::Attend,
+        })
+    }
+
+    /// 层数。
+    pub fn depth(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// 装配后的初始状态：每个记忆层一份零记忆。
+    pub fn state(&self) -> State<S> {
+        State {
+            memories: self
+                .layers
+                .iter()
+                .filter_map(|layer| match layer {
+                    Gear::Memory(kda) => Some(kda.memory::<S>()),
+                    Gear::Attend(_) => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// 本 token 的查询铺成 `M` 条流：初值就是同一个值，混合之后才分开。
+    ///
+    /// # Errors
+    ///
+    /// `hidden` 宽度不是本栈宽度时返回 `Code::Invalid`。
+    pub fn seed(&self, hidden: &[S]) -> Result<Vec<Vec<S>>> {
+        if hidden.len() != self.width {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("初值宽度是 {}，本栈宽度是 {}", hidden.len(), self.width),
+            )
+            .with(SITE));
+        }
+        Ok(vec![hidden.to_vec(); self.streams])
+    }
+
+    /// 一次推进：按层序把记忆层与混合层各走一遍，末尾一次性提交。
+    ///
+    /// 记忆层先把本 token 写进**该层自己**的记忆，再读——与 [`crate::kda::Kda::read`] 的口径一致：
+    /// 单个 token 写进去、立刻读得出来。读数只加回主路（第 0 条流），理由与 [`Hybrid::step`] 相同：
+    /// 同一份增量加给每条流会让多流退化成单流。
+    ///
+    /// 缓存在整次推进里**只读**：位置取 `cache.seq() - 1`，先 `push` 再 `step` 由调用方保证。
+    ///
+    /// # Errors
+    ///
+    /// 流几何不符、记忆输入条数与记忆层不等、任一记忆层的门/键/值/查询几何或取值越界、查询几何不符、
+    /// 缓存为空——都返回 `Code::Invalid`，且 `streams` 与 `state` **都没有被改动**。
+    pub fn step(
+        &self,
+        streams: &mut [Vec<S>],
+        state: &mut State<S>,
+        cache: &Latent<S>,
+        query: &Query<'_, S>,
+        memories: &[MemoryStep<'_, S>],
+        path: Path,
+    ) -> Result<()> {
+        cursor(cache)?;
+        let mut staged = streams.to_vec();
+        self.check_streams(&staged)?;
+        let mut staged_state = state.clone();
+        let mut inputs = memories.iter();
+        let mut index = 0usize;
+        for gear in &self.layers {
+            match gear {
+                Gear::Memory(kda) => {
+                    let input = inputs.next().ok_or_else(|| {
+                        Error::new(
+                            Code::Invalid,
+                            format!(
+                                "第 {index} 个记忆层没有输入：每一格要一份门/键/值/查询，少一份就是错位"
+                            ),
+                        )
+                        .with(SITE)
+                    })?;
+                    kda.step(
+                        &mut staged_state.memories[index],
+                        input.gate,
+                        input.write,
+                        input.key,
+                        input.value,
+                    )?;
+                    let read = kda.read(&staged_state.memories[index], input.query)?;
+                    accumulate(&mut staged[0], &read, S::ONE);
+                    index += 1;
+                }
+                Gear::Attend(layer) => layer.step(&mut staged, cache, query, path)?,
+            }
+        }
+        if inputs.next().is_some() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "记忆输入比记忆层多：本栈 {index} 个记忆层，收到 {} 份输入",
+                    memories.len()
+                ),
+            )
+            .with(SITE));
+        }
+        commit(streams, staged);
+        *state = staged_state;
+        Ok(())
+    }
+
+    /// 流条数与各流宽度必须正好是本栈的：多一条会在混流里被当成第 `M+1` 条流，窄一格会让
+    /// [`accumulate`] 静默只加重叠部分。
+    fn check_streams(&self, streams: &[Vec<S>]) -> Result<()> {
+        if streams.len() != self.streams {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("流条数是 {}，本栈是 {}", streams.len(), self.streams),
+            )
+            .with(SITE));
+        }
+        match streams.iter().position(|row| row.len() != self.width) {
+            Some(bad) => Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "第 {bad} 条流宽度是 {}，本栈宽度是 {}",
+                    streams[bad].len(),
+                    self.width
+                ),
+            )
+            .with(SITE)),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +798,285 @@ mod tests {
         assert_eq!(layer.streams(), 3);
         assert_eq!(
             layer.seed(&[1.0, 2.0, 3.0]).expect_err("宽度不对").code(),
+            Code::Invalid
+        );
+    }
+
+    /// 记忆层的几何：键维 2（门与查询宽）、值维 = 本栈宽度。
+    fn kda() -> crate::kda::Kda {
+        crate::kda::Kda::new(2, WIDTH).expect("键维 2、值维 4")
+    }
+
+    /// 一栈：`groups` 组「三记忆 + 一混合」，流条数由 `streams` 定。
+    fn tower(groups: usize, streams: usize) -> Tower<f64> {
+        let attention = (0..groups).map(|_| layer(ffn(), streams)).collect();
+        let memory = (0..groups * MEMORY_PER_ATTENTION).map(|_| kda()).collect();
+        Tower::new(attention, memory).expect("配比与宽度都合法")
+    }
+
+    /// 一份「门全开、写强度 1」的记忆输入：键与查询都取 `key`，值取 `value`。
+    fn full_write<'a>(key: &'a [f64], value: &'a [f64]) -> MemoryStep<'a, f64> {
+        MemoryStep {
+            gate: &[1.0; 2],
+            write: 1.0,
+            key,
+            value,
+            query: key,
+        }
+    }
+
+    /// 写强度 0：只遗忘、不写。零记忆上于是什么都不发生。
+    fn quiet<'a>(key: &'a [f64], value: &'a [f64]) -> MemoryStep<'a, f64> {
+        MemoryStep {
+            write: 0.0,
+            ..full_write(key, value)
+        }
+    }
+
+    /// 层序是「三记忆 + 一混合」重复：配比是构造条件，不是注释。
+    #[test]
+    fn the_order_is_three_memory_layers_then_one_mixed_layer() {
+        let tower = tower(2, 1);
+        assert_eq!(tower.depth(), 2 * (MEMORY_PER_ATTENTION + 1));
+        assert_eq!(
+            tower.order().collect::<Vec<_>>(),
+            vec![
+                Kind::Memory,
+                Kind::Memory,
+                Kind::Memory,
+                Kind::Attend,
+                Kind::Memory,
+                Kind::Memory,
+                Kind::Memory,
+                Kind::Attend,
+            ]
+        );
+        assert_eq!(tower.state().layers(), 2 * MEMORY_PER_ATTENTION);
+        assert!(tower.state().is_pristine());
+    }
+
+    /// 零记忆 + 写强度 0 时，整栈与单独跑混合层逐位相同：记忆层的存在不改主路。
+    #[test]
+    fn a_pristine_memory_with_no_writes_leaves_the_mixed_layer_untouched() {
+        let tower = tower(1, 1);
+        let cache = cache();
+        let query = query();
+        let key = [0.0, 1.0];
+        let value = [0.0; WIDTH];
+        let steps: Vec<MemoryStep<'_, f64>> = (0..MEMORY_PER_ATTENTION)
+            .map(|_| quiet(&key, &value))
+            .collect();
+
+        let mut state = tower.state();
+        let mut streams = vec![vec![1.0, 2.0, 3.0, 4.0]];
+        tower
+            .step(&mut streams, &mut state, &cache, &query, &steps, Path::Absorb)
+            .expect("推进");
+
+        let mut expected = vec![vec![1.0, 2.0, 3.0, 4.0]];
+        layer(ffn(), 1)
+            .step(&mut expected, &cache, &query, Path::Absorb)
+            .expect("推进");
+        assert_eq!(streams, expected, "记忆层没写就不该留下任何痕迹");
+        assert!(state.is_pristine(), "写强度 0 只遗忘零记忆，仍然是零");
+    }
+
+    /// 写进去立刻读得出来，且记忆跨格保留：写的一栈从第一格起就与只遗忘的一栈分叉。
+    #[test]
+    fn a_memory_written_once_is_read_back_on_the_next_step() {
+        let tower = tower(1, 1);
+        let cache = cache();
+        let query = query();
+        let key = [0.0, 1.0];
+        let value = [0.25, -0.5, 1.0, 0.75];
+        let writes: Vec<MemoryStep<'_, f64>> = (0..MEMORY_PER_ATTENTION)
+            .map(|_| full_write(&key, &value))
+            .collect();
+        let quiet: Vec<MemoryStep<'_, f64>> = (0..MEMORY_PER_ATTENTION)
+            .map(|_| quiet(&key, &value))
+            .collect();
+
+        let mut written = tower.state();
+        let mut first = vec![vec![0.0; WIDTH]];
+        tower
+            .step(&mut first, &mut written, &cache, &query, &writes, Path::Absorb)
+            .expect("推进");
+        assert!(!written.is_pristine(), "写强度 1 必须留下记忆");
+
+        let mut pristine = tower.state();
+        let mut blank = vec![vec![0.0; WIDTH]];
+        tower
+            .step(&mut blank, &mut pristine, &cache, &query, &quiet, Path::Absorb)
+            .expect("推进");
+        assert!(pristine.is_pristine(), "门全开、写强度 0 不改零记忆");
+        assert_ne!(first, blank, "同一格写进去、立刻读得出来，记忆当步就进主路");
+
+        // 第二格不再写：记忆仍在，读数继续把两栈拉开。
+        let mut continued = first.clone();
+        tower
+            .step(&mut continued, &mut written, &cache, &query, &quiet, Path::Absorb)
+            .expect("推进");
+        let mut never = blank.clone();
+        tower
+            .step(&mut never, &mut pristine, &cache, &query, &quiet, Path::Absorb)
+            .expect("推进");
+        assert_ne!(continued, never, "记忆跨格保留，第二格仍读得出来");
+    }
+
+    /// 每个记忆层各持一份状态：三层写不同的值维，各自只留下自己那一行。
+    #[test]
+    fn each_memory_layer_owns_its_state() {
+        let tower = tower(1, 1);
+        let cache = cache();
+        let key = [0.0, 1.0];
+        let values = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0, 0.0],
+            [0.0, 0.0, 3.0, 0.0],
+        ];
+        let steps: Vec<MemoryStep<'_, f64>> = values
+            .iter()
+            .map(|value| full_write(&key, value))
+            .collect();
+
+        let mut state = tower.state();
+        let mut streams = vec![vec![0.0; WIDTH]];
+        tower
+            .step(&mut streams, &mut state, &cache, &query(), &steps, Path::Absorb)
+            .expect("推进");
+
+        // 记忆是 `[值维, 键维]`：写 `v·e_i` 且 `β = 1`、键是单位向量时，第 `i` 行就是 `v_i · k̂`。
+        for (layer, value) in values.iter().enumerate() {
+            let memory = state.memory(layer).expect("记忆层存在");
+            let written = value.iter().position(|&v| v != 0.0).expect("只有一行非零");
+            assert_eq!(
+                memory.row(written).expect("行在值维内"),
+                &[0.0, value[written]],
+                "第 {layer} 层只该记住自己写入的那一行"
+            );
+            for other in (0..WIDTH).filter(|&row| row != written) {
+                assert_eq!(memory.row(other).expect("行在值维内"), &[0.0, 0.0]);
+            }
+        }
+    }
+
+    /// 层栈只读缓存：`seq` 与缓存元素都不动。
+    #[test]
+    fn the_tower_never_touches_the_cache() {
+        let tower = tower(2, 2);
+        let cache = cache();
+        let before = (cache.seq(), cache.cache_elements());
+        let key = [0.0, 1.0];
+        let value = [1.0; WIDTH];
+        let steps: Vec<MemoryStep<'_, f64>> = (0..2 * MEMORY_PER_ATTENTION)
+            .map(|_| full_write(&key, &value))
+            .collect();
+
+        let mut state = tower.state();
+        let mut streams = tower.seed(&[1.0, 2.0, 3.0, 4.0]).expect("宽度合法");
+        tower
+            .step(&mut streams, &mut state, &cache, &query(), &steps, Path::Absorb)
+            .expect("推进");
+        assert_eq!((cache.seq(), cache.cache_elements()), before);
+    }
+
+    /// 某一格失败时，流与全部记忆都原样退回：前几层写过的也不留。
+    #[test]
+    fn a_bad_memory_input_rolls_the_whole_layer_stack_back() {
+        let tower = tower(1, 1);
+        let cache = cache();
+        let key = [0.0, 1.0];
+        let value = [1.0; WIDTH];
+        let mut steps: Vec<MemoryStep<'_, f64>> = (0..MEMORY_PER_ATTENTION)
+            .map(|_| full_write(&key, &value))
+            .collect();
+        steps[2] = MemoryStep {
+            gate: &[1.0, 1.0, 1.0],
+            ..steps[2]
+        };
+
+        let mut state = tower.state();
+        let mut streams = vec![vec![1.0, 2.0, 3.0, 4.0]];
+        let original = streams.clone();
+        let err = tower
+            .step(&mut streams, &mut state, &cache, &query(), &steps, Path::Absorb)
+            .expect_err("门宽 3 不等于键维 2");
+        assert_eq!(err.code(), Code::Invalid);
+        assert_eq!(streams, original, "失败之后流必须原样退回");
+        assert!(state.is_pristine(), "前两层写过的记忆也不能留下");
+    }
+
+    /// 记忆输入的份数必须等于记忆层个数：少一份是错位，多一份是无主数据。
+    #[test]
+    fn the_number_of_memory_inputs_must_match_the_memory_layers() {
+        let tower = tower(1, 1);
+        let cache = cache();
+        let key = [0.0, 1.0];
+        let value = [1.0; WIDTH];
+        for count in [MEMORY_PER_ATTENTION - 1, MEMORY_PER_ATTENTION + 1] {
+            let steps: Vec<MemoryStep<'_, f64>> = (0..count)
+                .map(|_| full_write(&key, &value))
+                .collect();
+            let mut state = tower.state();
+            let mut streams = vec![vec![1.0, 2.0, 3.0, 4.0]];
+            let original = streams.clone();
+            let err = tower
+                .step(&mut streams, &mut state, &cache, &query(), &steps, Path::Absorb)
+                .expect_err("份数不对不该通过");
+            assert_eq!(err.code(), Code::Invalid);
+            assert_eq!(streams, original);
+            assert!(state.is_pristine());
+        }
+    }
+
+    /// 流几何在入口判定：条数与宽度都必须正好是本栈的。
+    #[test]
+    fn stream_geometry_is_checked_before_the_first_memory_write() {
+        let tower = tower(1, 2);
+        let cache = cache();
+        let key = [0.0, 1.0];
+        let value = [1.0; WIDTH];
+        let steps: Vec<MemoryStep<'_, f64>> = (0..MEMORY_PER_ATTENTION)
+            .map(|_| full_write(&key, &value))
+            .collect();
+        for case in [
+            vec![vec![1.0; WIDTH]],
+            vec![vec![1.0; WIDTH], vec![2.0; WIDTH - 1]],
+        ] {
+            let mut state = tower.state();
+            let mut streams = case.clone();
+            let err = tower
+                .step(&mut streams, &mut state, &cache, &query(), &steps, Path::Absorb)
+                .expect_err("几何不对不该通过");
+            assert_eq!(err.code(), Code::Invalid);
+            assert_eq!(streams, case);
+            assert!(state.is_pristine());
+        }
+    }
+
+    /// 配比与几何在装配期拒绝：不是 3:1、没有混合层、读出宽不齐、混合层之间几何不同源。
+    #[test]
+    fn assembly_enforces_the_recipe_and_the_geometry() {
+        let short = Tower::new(vec![layer(ffn(), 1)], vec![kda(), kda()]);
+        assert_eq!(short.expect_err("少一个记忆层").code(), Code::Invalid);
+        assert_eq!(
+            Tower::<f64>::new(Vec::new(), Vec::new())
+                .expect_err("没有混合层")
+                .code(),
+            Code::Invalid
+        );
+        let narrow = crate::kda::Kda::new(2, WIDTH - 1).expect("键维 2、值维 3");
+        assert_eq!(
+            Tower::new(vec![layer(ffn(), 1)], vec![kda(), kda(), narrow])
+                .expect_err("读出宽不齐")
+                .code(),
+            Code::Invalid
+        );
+        let memory: Vec<_> = (0..2 * MEMORY_PER_ATTENTION).map(|_| kda()).collect();
+        assert_eq!(
+            Tower::new(vec![layer(ffn(), 1), layer(ffn(), 2)], memory)
+                .expect_err("流条数不同源")
+                .code(),
             Code::Invalid
         );
     }

@@ -28,9 +28,9 @@
 | 维度 | 本文目标 | 当前实测 | 复核命令 |
 |---|---|---|---|
 | 算子声明 | 12 | **22** | `ls crates/op/ops/*.toml \| wc -l` |
-| 设备档案 | 8 | **5**：nvidia / intel / metal / ascend / cpu | `ls crates/prof/devices/*.toml` |
+| 设备档案 | 8 | **6**：nvidia / intel / metal / ascend / musa / cpu | `ls crates/prof/devices/*.toml` |
 | 原语闭集 | 16 | 16 | `prof::atom::Prim::ALL` |
-| 片段 | 16 × ≤8 | 5 厂商 × 9 段片段 + 见证 | `ls crates/prim/<vendor>/` |
+| 片段 | 16 × ≤8 | 6 厂商 × 9 段片段 + 见证 | `ls crates/prim/<vendor>/` |
 | 布局 / 调度 | 4 / 4 | 4 / 4 | `op::layout::LayoutSpec` / `op::sch::Schedule` |
 | 机制代码 | 9,520（预算） | 9,403 行（含内联测试；剔除后 6,455） | `wc -l crates/cutile/src/*.rs` |
 | 用例 | — | 149 单测 + 2 doctest | `cargo test -p cutile --all-features` |
@@ -157,7 +157,7 @@ crates/prof/                    # 档案层：纯数据，不含机制
 ├── Cargo.toml
 ├── README.md                   # 一份档案写什么、如何新增设备
 ├── build.rs                    # devices/*.toml → $OUT_DIR/embedded.rs
-├── devices/                    # 5 份档案（目标 8）：ascend / cpu / intel / metal / nvidia
+├── devices/                    # 6 份档案（目标 8）：ascend / cpu / intel / metal / musa / nvidia
 └── src/
     ├── lib.rs                  # BUILTIN 内嵌档案与索引
     ├── prof.rs                 # schema：指纹、存储、能力、证据等级
@@ -171,7 +171,7 @@ crates/prim/                    # 片段层：纯数据，不含机制
 │   ├── dot.c
 │   ├── reduce.c
 │   └── witness.c               # 见证源码（L2 证据），装载片段时跳过
-├── nvidia/  intel/  metal/  ascend/   # 同构：cu / cl / metal / cpp
+├── nvidia/  intel/  metal/  ascend/   # 同构：cu / cl / metal / cpp（musa 同 cu）
 └── src/
     ├── lib.rs                  # BUILTIN / WITNESS 查表、Fragment::parse（签名声明）
     ├── device.rs               # 设备镜像：这次构建带上的源码与可选设备侧二进制
@@ -805,15 +805,17 @@ witness = { file = "cpu/witness.c", func = "witness_quant", expect = [-4.0, 3.5]
 设备前端，否则走 host 自检），任何一条不过就整台设备失败；
 通过后才跑形状矩阵（最小合法、多行非方形、生产形状）与标量参考对拍。
 
-因此 `grade` 不是作者的自述，而是这次执行的结论；协商只接受 `grade ≥ L2` 的供给——**未验证的能力视为不具备**，
-这是把旧工程 R5 风险（"声明有 TMA 实际没有"）前移成构建期问题的关键一条。
+因此 `grade` 不是作者的自述，而是这次执行的结论。协商看的是**这次有没有证据**：自述模式
+（`Basis::Declared`）只接受 `grade ≥ L2`，设备在本机时只接受本次跑通的 `(原语, 实现)`——
+**未验证的能力视为不具备**，这是把旧工程 R5 风险（"声明有 TMA 实际没有"）前移成构建期问题的
+关键一条。
 "执行结论"这条要求对三条命令一致：`doctor` 与 `bench` 也先跑证据（见本节末"证据只算一次"），
 只读档案的 `negotiate` 只服务于解释性报告。
 
 `grade < L2` 的供给另有**本机自检**（`witness::self_check`，结论的 `scope = Host`）：见证的 ABI 是
 host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble` 与 `flags`，用 host 编译器把
 `<vendor>/witness.<ext>` 编成可执行文件并逐条执行。它把“见证写没写、期望值算不算得对”变成
-今天就能跑的判据（`nvidia` / `intel` / `ascend` / `metal` 的 71 条 L0/L1 见证因此不再是纯文本），但**不**
+今天就能跑的判据（`nvidia` / `intel` / `ascend` / `metal` / `musa` 的 88 条 L0/L1 见证因此不再是纯文本），但**不**
 证明设备具备该能力：自检不改写任何 `grade`。把 host 自检通过写成 `L2`，等于用主机替设备作证。
 
 两个范围**互补**：设备在本机时 `run_all` 跑全部声明，自检一条不跑；设备不在本机时全部声明进
@@ -853,11 +855,12 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 是什么算法"，共用会让"每条 provides 都有见证"退化成"每条都指向同一份证据"，执行通过的结论
 也无法归属（`mmad` 与 `scalar_fma` 是两种算法）。`Profile::validate` 在装载期拒绝共用。
 
-**见证矩阵**：闭集的 16 个原语在**每台设备**上都要有带见证的签名——四台加速器（`nvidia` 17
-条、`intel` 17 条、`ascend` 20 条、`metal` 17 条）加 `cpu` 14 条，共 85 条。加速器除 P0 用到的
+**见证矩阵**：闭集的 16 个原语在**每台设备**上都要有带见证的签名——五台加速器（`nvidia` 17
+条、`intel` 17 条、`ascend` 20 条、`metal` 17 条、`musa` 17 条）加 `cpu` 14 条，共 102 条。加速器除 P0 用到的
 9 个之外，补的是设备自称有的能力：张量核 `mma`、lane 交换/广播/前缀扫描、`exp2`/`rcp`，以及
 `intel` 原先缺的 `atomic`；这些签名没有片段文本（P0 模板不调用），等级停在 `L0`——矩阵补的
-是覆盖，不是等级。`cpu` 补的是它真能算的四条（标量分块 `mma`、`scan`、`exp2`、`rcp`）与原先
+是覆盖，不是等级。唯一到过 `L2` 的是 `musa`：那 17 条在 S4000 上真机执行过，其中 9 段片段对应的
+算子与参考对拍通过。`cpu` 补的是它真能算的四条（标量分块 `mma`、`scan`、`exp2`、`rcp`）与原先
 无见证的 `atomic`，并把它从 `L1` 降为 `L0`：单线程只有读改写，没有原子语义。
 
 空白格必须能被数据解释：`shuffle`/`broadcast` 要求 `[simt].group > 1`，`cpu` 的

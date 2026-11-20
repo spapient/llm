@@ -204,7 +204,7 @@ pub use embed::Embedding;
 pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
 
 #[doc(inline)]
-pub use hybrid::{Hybrid, Query};
+pub use hybrid::{Hybrid, Kind, MEMORY_PER_ATTENTION, MemoryStep, Query, State, Tower};
 
 #[doc(inline)]
 pub use kda::{Kda, Memory};

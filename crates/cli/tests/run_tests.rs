@@ -263,8 +263,8 @@ struct ChunkSetup {
     grid_size: u32,
 }
 
-/// 从签名里取唯一非缓冲标量作为分块轴长度（scan / 归约共用）。
-#[cfg(target_os = "macos")]
+/// 从签名里取唯一非缓冲标量作为分块轴长度（Metal 扫描与 CUDA 归约共用）。
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn scalar_len(decl: &op::decl::OpDecl, sample: &op::model::Sample) -> u32 {
     decl.signature
         .params()
@@ -565,15 +565,8 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
         return;
     };
 
-    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
-    let len = decl
-        .signature
-        .params()
-        .iter()
-        .find(|param| !param.ctype.is_buffer())
-        .and_then(|param| sample.scalar(&param.name))
-        .expect("归约长度标量") as usize;
-    let grid = len.div_ceil(chunk);
+    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
+    let grid = scalar_len(&decl, &sample).div_ceil(chunk) as usize;
 
     let device = cutile::execution::cuda_reduce_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");

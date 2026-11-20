@@ -689,3 +689,62 @@ fn flash_acc_update(v: &str, n: usize, shape: Flash, tail: bool) -> String {
          \x20           }} }}\n"
     )
 }
+
+/// 生产态 int8 分块 GEMM（Metal）：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 累加、`f32` 输出。
+///
+/// 语义与 [`op::matmul_i8`] 的参考实现逐元素相同（整数累加，结果精确）。每个线程组把
+/// `tile×tile` 的 A/B 块搬进线程组内存，收缩轴在共享块上复用；要求 `M/N/K` 都能被
+/// `tile` 整除。派发几何：`grid = [M, N]`、`block = [tile, tile]`。
+///
+/// # Errors
+///
+/// `tile == 0` 或任一维度不能被 `tile` 整除时返回说明。
+pub fn metal_int8_gemm_program(m: usize, n: usize, k: usize, tile: usize) -> Result<String> {
+    check_int8_shape(m, n, k, tile)?;
+    Ok(int8_gemm_msl(n, k, tile))
+}
+
+/// int8 GEMM 的形状前置条件：分块必须整除三个维度，否则尾块会读越界。
+fn check_int8_shape(m: usize, n: usize, k: usize, tile: usize) -> Result<()> {
+    if tile == 0 {
+        return Err(Error::new(Code::Invalid, "分块大小必须大于 0").with(INT8_SITE));
+    }
+    if [m, n, k].iter().all(|&dim| dim.is_multiple_of(tile)) {
+        return Ok(());
+    }
+    Err(
+        Error::new(Code::Invalid, "int8 GEMM 要求 M/N/K 都能被分块整除")
+            .with(INT8_SITE),
+    )
+}
+
+/// int8 GEMM 的报错出处。
+const INT8_SITE: &str = "engine::tiled::metal_int8_gemm_program";
+
+/// int8 GEMM 的 MSL 正文：共享块以 `int` 存放，避免每次乘加重复做符号扩展。
+fn int8_gemm_msl(n: usize, k: usize, tile: usize) -> String {
+    format!(
+        "#include <metal_stdlib>\n\
+         using namespace metal;\n\
+         kernel void kernel_main(\n\
+         \x20    device const char* d_a [[buffer(0)]],\n\
+         \x20    device const char* d_b [[buffer(1)]],\n\
+         \x20    device float* d_y [[buffer(2)]],\n\
+         \x20    uint3 gid [[thread_position_in_grid]],\n\
+         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
+         \x20    const uint N = {n}, K = {k}, T = {tile};\n\
+         \x20    threadgroup int As[{tile}][{tile}];\n\
+         \x20    threadgroup int Bs[{tile}][{tile}];\n\
+         \x20    const uint i = gid.x, j = gid.y, li = lid.x, lj = lid.y;\n\
+         \x20    int acc = 0;\n\
+         \x20    for (uint kk = 0; kk < K; kk += T) {{\n\
+         \x20        As[li][lj] = int(d_a[i * K + kk + lj]);\n\
+         \x20        Bs[li][lj] = int(d_b[(kk + li) * N + j]);\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        for (uint p = 0; p < T; ++p) acc += As[li][p] * Bs[p][lj];\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20    }}\n\
+         \x20    d_y[i * N + j] = float(acc);\n\
+         }}"
+    )
+}

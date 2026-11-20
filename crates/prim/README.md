@@ -24,6 +24,7 @@ crates/prim/
 ├── intel/                # 扩展名 = cl（emit = opencl）：同样 9 段 + witness.cl
 ├── ascend/               # 扩展名 = cpp（emit = ascendc）：同样 9 段 + witness.cpp
 ├── metal/                # 扩展名 = metal（emit = metal）：同样 9 段 + witness.metal
+├── musa/                 # 扩展名 = cu（emit = cuda，工具链 = mcc）：同样 9 段 + witness.cu
 └── src/
     ├── lib.rs            # builtin 查表 / load 目录装载 / dir 与 layer_root / 片段解析
     ├── device.rs         # Device / Image / Status：源码 + 可选的设备镜像
@@ -63,7 +64,7 @@ crates/prim/
 缓存指纹。因此给已有片段补这一行不会改动已落盘的产物，`verify` 打印的 `片段 N 行` 与缓存键
 逐字不变。
 
-因此 `nvidia` / `intel` / `ascend` / `metal` 的 9 段片段与 `cpu` 一样是标量语义的自包含 C：语言外壳不同，
+因此 `nvidia` / `intel` / `ascend` / `metal` / `musa` 的 9 段片段与 `cpu` 一样是标量语义的自包含 C：语言外壳不同，
 调用约定相同（`@load`、`@quant`、`@dot` … 的位置参数与命名参数一一对上）。`cutile` 的
 `every_device_fragment_set_splices_the_p0_template` 把这条约定变成判据：台架上的档案只要能
 协商出变体，它的片段就必须能把 P0 模板拼出来——参数个数或命名参数写错不必等到构建期。
@@ -105,8 +106,8 @@ witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
 算法"，共用会让"每条签名都有见证"退化成"每条都指向同一份证据"；`ascend` 的 `quant` /
 `load` / `load_async` 因此各有两份函数。`profile.validate` 把这条规则做成装载期判据。
 
-四台加速器的见证覆盖整个原语闭集（16 × 4：`nvidia` 17 条、`intel` 17 条、`ascend` 20 条、
-`metal` 17 条）：除了 P0 用到的 9 个，还包括张量核 `mma`、`shuffle` / `broadcast` / `scan` 与
+五台加速器的见证覆盖整个原语闭集（16 × 5：`nvidia` 17 条、`intel` 17 条、`ascend` 20 条、
+`metal` 17 条、`musa` 17 条）：除了 P0 用到的 9 个，还包括张量核 `mma`、`shuffle` / `broadcast` / `scan` 与
 `exp2` / `rcp` 的标量等价实现。这些签名没有片段文本（P0 模板不调用它们），等级停在 `L0`。
 
 `cpu` 的 `witness.c` 同样是 14 条：P0 用到的 9 个（`L2`）、`atomic` 与 `mma` / `scan` / `exp2` /

@@ -4,7 +4,55 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Added
+
+- **MUSA 后端（MTT S4000 / `mp_22`）从"只有档案"走到真机 `L2`：新增 `crates/prof/devices/musa.toml` 与
+  `crates/prim/musa/` 的 9 段片段、17 条见证，11 个算子在真机上编成、执行并与 `op` 的标量参考对拍
+  （`max_rel_err ≤ 2.97e-7`）**。它是第一台"档案与 `nvidia` 同构、工具链不同"的加速器：`[meta].emit`
+  仍是 `cuda`（同一门输出语言），`[meta].tool = "mcc"` 决定命令名与运行时头——`engine` 的 CUDA 后端
+  不再写死 `nvcc`，编译命令与 `<cuda_runtime.h>` / `<cuda_fp16.h>` 的转发垫片都从档案派生，于是同一份
+  `.cu` 换一台机器只需换档案。峰值不凭记忆：`flops_f32` 与 `bw` 写成可求值 `src`
+  （`56*128*2*1.791e9`、`384/8*2*8.012e9`），由装载期判据与 `value` 对齐。**波宽 128 而不是 32**：
+  档案 `[simt].group = 128`，`reduce` / `scan` / `shuffle` 的偏移一律从 `threadIdx` 派生，按 32 写死在这张卡上会算错。
+  **同时修掉协商的一处真实缺陷**：`cap::Offer::satisfied` 原本要求 `grade ≥ L2` **且**本次有执行证据，
+  这让"档案诚实写 `L1`、设备就在本机"永远升不上来（要 `L2` 才能协商，却要协商过才能跑出 `L2`）；
+  现在自述模式只认 `L2`、执行模式只认本次跑通的 `(原语, 实现)`，两条各挡一类错。
+  **如实报告**：`bench` 的达成率远低于 70% 门槛，结论行按 §16 写"需要特化代码"，档案峰值未改小。
+  文档同批更新：根 `README` 设备表与 `crates/{prim,prof,cutile}/README.md` 的档案数、见证矩阵、等级口径。
+
 ### Changed
+
+- **可复制片段清零：重复率 0.34% → 0.00%（40 处克隆 → 0），`jscpd` 硬门从 0.48 收到 0**。此前剩下的
+  40 处集中在两类：**同文件的测试脚手架**（`engine/src/metal_tests.rs` 5 处、`train/tests/backprop_tests.rs`
+  4 处、`autograd/src/replay.rs` 3 处、`cli/tests/run_tests.rs` 3 处、`op/src/attention.rs` 2 处、
+  `serve/tests/model_tests.rs` 2 处，以及 `nn/src/kda.rs`、`train/src/optimizer.rs`、`engine/src/tiled.rs`、
+  `engine/src/batch.rs`、`weights/src/archive.rs`、`nn/src/hybrid.rs` 各 1 处）与**跨 crate 抄了同一份规则**
+  （`tool`↔`weights` 的 JSON 读写、`cutile`↔`engine` 的 `cutile_x_kernel` 夹具、`op`↔`prof` 的标量渲染、
+  `serve`↔`tokenizer` 的词表样例、bench↔`train::store` 的链构造、bench 三目标之间的样例张量与合成模型）。
+  收口分三层：
+  - **规则上移到被依赖的一侧**：字节读取骨架落 `diagnostic::scan::Cursor`（`tool` 与 `weights` 都只依赖
+    `diagnostic`，方向单一、无环）；标量渲染落 `prof::prof::scalar_texts`（`op` 依赖 `prof`）；词表样例落
+    `tokenizer::fixtures`（`serve` 依赖 `tokenizer`）；`op::same_bytes` 成为逐字节比对的唯一出处，
+    `operator::same_str` 那份同体副本删除。
+  - **测试夹具只留一份源文件**：`crates/benches/support/{attention,model}.rs` 由四个 target 以 `#[path]`
+    取用（这两份此前不在版本控制里，干净检出会因取不到而编不过，现已一并入库）；`crates/train/tests/support.rs`
+    由 `src/lib.rs` 以 `#[cfg(test)]` 挂载，测试、`learner` 与 bench 共用同一份建图；
+    `crates/testkit/tests/support/cutile_x_kernel.rs` 同时喂 `cutile` 单测与 `engine` 的签名快照用例
+    （夹具取值逐字未变）。
+  - **同文件内参数化或抽助手**：`engine::norm` 的两副驱动合成一副 `driver(..)` + `Stage` 骨架（RMSNorm
+    原先手写的求和改调 `fold_sum`，Softmax 仍是 `partial_pass` / `fold_max` / `fold_sum` /
+    `normalized_pass` 的次序）；`metal_tests.rs` 的基准开头收成 `bench_device` / `catalogue_and_dirs` /
+    `grid_pipeline` / `AttentionBench` 等助手（无设备时的静默跳过语义与 `eprintln` 文案逐字保留）；
+    `optimizer` 的 `advance_columns` / `advance_rows` 合成 `advance(.., Side)`（累加顺序与
+    `gram × value` 的乘法次序未改）。
+  **边界**：全部是装配、夹具与脚手架的合并，MSL/CUDA 生成文本、数值累加顺序与断言口径一行未动；
+  唯一的行为面改动是 `crates/cutile/src/runner.rs` 里一个指向私有模块的文档链接降级为代码体，以让
+  `cargo doc -D warnings` 通过。**验证**：`nextest` 2105 通过 / 14 跳过，`fmt --check`、
+  `clippy -D warnings`、`cargo test --doc`、`RUSTDOCFLAGS="-D warnings" cargo doc`、`cargo deny check`、
+  `cargo machete`、`cargo bench --no-run` 全绿；`jscpd` **0 克隆 / 0.00%**，硬门阈值同步改为 `0`，扫描路径从
+  `crates` 扩到 `crates` + `tools`（287 个文件）——`tools/musa-harness/gen-cuda` 那个仓库外独立 crate 的
+  生成器此前不在门禁视野内，它与 `cli` 的 CUDA 归约用例各写了一份「分块轴长度 = 签名里唯一非缓冲标量」
+  的推导，现由该测试文件内的 `scalar_len` 一处承担。
 
 - **GEMV 的 forward 骨架只剩一副：打包与不打包共用同一份守卫、行切片与遍历，`packed` 退回
   「解包点积 + 两层薄适配」（净减 59 行；`gemv/packed.rs` 146 → 84 行）**。此前 `forward_scaled_rows` /
@@ -48,30 +96,15 @@
     · simdgroup matrix + 同构 ABI）、`arm covered`（aarch64 · NEON/SME 有序点积）、`cuda`/`hip`/`gpu`/`x86`
     全部 `open` 带 `no-device`——本机没有的**照实写没有**，不拿「未测」冒充「不支持」。
   - 文档：新建 `docs/adr/0052-execution-platform-contract.md`；`docs/ARCHITECTURE.md` 所有权表新增该行、边表
-    `engine → prof` 补齐（109 → 110 条）；补 `crates/{engine,nn,serve}/README.md`——静态质量门要数文档条数
-    （下限 30），此前树里只有 27 份，这三份既是门禁口径也是三个千行级 crate 的入口。
-
-- **六平台执行合同落地：`engine::platform` 把「这台机器能不能跑这一行」变成六行三态裁决 +
-  `llm platform` 一条命令（ADR 0052）**。此前"六平台支持到什么程度"只有两种半成品：`cutile` 的设备档案
-  是**声明**（声明不等于可执行），`backends::{probe_metal, probe_cuda}` 是 `bool`（说不清「设备在、编译器
-  不在」），`cutile::doctor` 则是逐档案逐阶段而非「平台 × 角色」。于是这一格只能靠翻代码回答。
-  **六行是闭集**：`Row::ALL` 即 CPU-x86 / CPU-ARM / Metal / CUDA / ROCm-HIP / GPU 六条，Vulkan 与 SYCL
-  是同一个 GPU 行的两条提交路径（`Arch::Gpu` 同时接受这两个标签），新增一个 GPU 族后端**不改行数**。
-  **设备行要两件证据**：设备在 + 编译器在，且身份串由证据算（`xcrun metal@… · simdgroup matrix + 同构 ABI`）；
-  CPU 行只要架构一件；GPU 行的一等原语「厂商 MMA + 同构 ABI」在设备证据成立时自证，不把同一件事写两遍。
-  **`Why` 是两值闭集**：`NoDevice` 与 `NoToolchain` 分开报——前者换机器、后者装工具链，混成一句"未覆盖"
-  就丢掉了唯一能指导动作的信息。
-  **`audit` 永不失败、`require` 才报告**：`audit` 六行恒出（少一行会让"未覆盖"与"根本没问"同形），
-  `require` 只判**资格**并在缺证据时给 `E-PLAT`——它不判正确性，那仍归 `cutile::verify` 与 `tool::card`。
-  `Host` 是注入缝（`arch` + `toolchain`），工具链复用 `backends` 的进程级缓存，测试用假机器摆出九种组合。
-  **实测**（`cargo run --bin llm -- platform`，macOS aarch64）：`metal covered — xcrun metal@32023.922 ·
-  simdgroup matrix + 同构 ABI`、`arm covered — aarch64 · NEON/SME 有序点积`；`cuda` / `hip` / `gpu` /
-  `x86` 四行 `open` 且理由为 `no-device`——即 Metal 与 CUDA/ROCm/Vulkan/SYCL 之间仍有真实设备缺口，
-  这里不虚构覆盖。`engine::platform` 11 条用例、`cli::platform` 2 条、解析 1 条。
-  **同轮文档欠账**：静态质量门的「扫描文档数 ≥ 30」在本树被裁剪后只剩 26（含新建 ADR 才 27），
-  故补 `crates/{engine,nn,serve}/README.md` 三份成员入口——分别写清引擎的六个状态机模块与准入/页账/
-  平台裁决的保证、`nn` 十一款标杆各自的可测不变量与状态不跨层的口径、`serve` 的单 argmax 与
-  "门是乘不是选路"的边界。
+    `engine → prof` 补齐，同时从 `train` 行去掉只活在注释里的 `annotation` 边（110 条，架构门按 Cargo.toml
+    重算后一致）；补 `crates/{engine,nn,serve}/README.md`——静态质量门要数文档条数（下限 30），此前树里
+    只有 27 份，这三份既是门禁口径也是三个千行级 crate 的入口。
+  - **同轮收口**：训练侧夹具 `tests/support.rs` 改由 crate 根按 `#[path]` 挂一次（内联测试模块的 `#[path]`
+    基准是虚拟目录，跨级上跳编不过）；`train::store` 的 `QuantChain` 只在测试构建里存在——零生产消费者，
+    四个只被自身测试读取的转发访问器一并删除，一个不进发布二进制的夹具不该占公开面；`diagnostic::scan`
+    的游标 doctest 改为真的走到末尾（原例的 `"  {}"` 里 eat `}` 本会成功）；`lints/vocabulary.toml` 删掉
+    过期的 `wire` 所有权基线条目、`train` 的公开面换成实际存在的 `OperatorSetOps`。工作区 2142 条 +
+    doctest 44 条全绿。
 
 - **`op` 的收缩轴可变 GEMM 收成一副骨架：`matmul.rs` 与 `matmul_i8.rs` 两份同构分块代码合成一份
   （净减 85 行、少 1 个文件；重复率 0.41% → 0.36%，`matmul` 相关克隆从 3 处 58 行清零）**。此前
