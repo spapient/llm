@@ -248,7 +248,7 @@ pub fn cuda_softmax_driver(
 }
 
 /// 长度标量的 `usize` 视图；负值或超长返回 `Invalid`。
-fn length_usize(signature: &Signature, sample: &Sample) -> Result<usize> {
+pub(crate) fn length_usize(signature: &Signature, sample: &Sample) -> Result<usize> {
     let len = length_scalar(signature, sample)?;
     usize::try_from(len).map_err(|_| {
         Error::new(
@@ -278,7 +278,7 @@ fn buffer_args(signature: &Signature) -> String {
 ///
 /// 设备 preamble（`_cutile_*` 软件原语）在第一段完整出现；后续段从各自的 `__global__`
 /// 入口起截断——同一翻译单元里重复定义 preamble 会编译失败。
-fn program_head(segments: &[String]) -> String {
+pub(crate) fn program_head(segments: &[String]) -> String {
     let mut text = String::from(
         "#include <cuda_runtime.h>\n#include <cstdio>\n\
          #define CUTILE_CUDA_CHECK() do { cudaError_t error = cudaDeviceSynchronize(); \
@@ -314,7 +314,7 @@ fn partial_scaffold(grid: usize) -> String {
 }
 
 /// 一次派发 + 同步检查；`extra` 是追加的标量实参（`rms` / `max` / `sum`），空则不追加。
-fn launch(entry: &str, grid: usize, args: &str, extra: &str) -> String {
+pub(crate) fn launch(entry: &str, grid: usize, args: &str, extra: &str) -> String {
     let extra = if extra.is_empty() {
         String::new()
     } else {
@@ -324,7 +324,7 @@ fn launch(entry: &str, grid: usize, args: &str, extra: &str) -> String {
 }
 
 /// 把 `y` 前 `G` 个槽的部分结果回读到 `h_tmp`。
-fn partial_copy(output: &str, grid: usize) -> String {
+pub(crate) fn partial_copy(output: &str, grid: usize) -> String {
     format!("    cudaMemcpy(h_tmp, d_{output}, {grid} * sizeof(float), cudaMemcpyDeviceToHost);\n")
 }
 
@@ -341,7 +341,7 @@ fn fold_sum() -> String {
 }
 
 /// 释放全部设备缓冲。
-fn free_buffers(signature: &Signature) -> String {
+pub(crate) fn free_buffers(signature: &Signature) -> String {
     let mut text = String::new();
     for param in signature
         .params()

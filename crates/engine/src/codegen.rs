@@ -498,7 +498,7 @@ fn kernel_span(body: &str, kernel: &str) -> Result<(usize, usize)> {
 }
 
 /// 给内部内核函数体注入块头：`g`/`start`/`len` 三个局部量，供循环头改写与分块寻址引用。
-fn inject_chunk_preamble(body: &str, kernel: &str, chunk: usize, scalar: &str) -> Result<String> {
+pub(crate) fn inject_chunk_preamble(body: &str, kernel: &str, chunk: usize, scalar: &str) -> Result<String> {
     let (_, body_at) = kernel_span(body, kernel)?;
     let preamble = format!(
         "    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {scalar} - start);\n"
@@ -512,7 +512,7 @@ fn inject_chunk_preamble(body: &str, kernel: &str, chunk: usize, scalar: &str) -
 
 /// 把以 `scalar` 为上界的串行循环头改写到块内边界：`for (int v = 0; v < {scalar}; ++v)` →
 /// `for (int v = start; v < start + len; ++v)`。循环变量从模板读出，不对名字硬编码。
-fn bind_chunk_loop(body: &str, scalar: &str) -> Result<String> {
+pub(crate) fn bind_chunk_loop(body: &str, scalar: &str) -> Result<String> {
     let bound = format!(" < {scalar}; ");
     let Some(bound_at) = body.find(&bound) else {
         return Err(Error::new(
@@ -616,7 +616,7 @@ fn thread_param(body: &str, kernel: &str) -> Result<String> {
 
 /// [`thread_param`] 的方言版：Metal 的线程下标是 `uint3`，CUDA 侧用 `int3`（由 kernel_main 从
 /// `blockIdx` 装配，见 [`cuda_injected_kernel`]），其余改写规则一致。
-fn thread_param_typed(body: &str, kernel: &str, param: &str) -> Result<String> {
+pub(crate) fn thread_param_typed(body: &str, kernel: &str, param: &str) -> Result<String> {
     let (paren_at, _) = kernel_span(body, kernel)?;
     let mut out = String::with_capacity(body.len() + param.len() + 2);
     out.push_str(&body[..paren_at]);
@@ -932,7 +932,7 @@ pub fn cuda_grid_kernel(kernel_source: &str, signature: &Signature) -> Result<St
 
 /// `kernel_main` 的完整形参表：缓冲 + 标量（模板里的 `M` / `N` / `K` 是运行时值，循环注入与
 /// 串行都要把它们透传给内部内核）。
-fn cuda_launch_params(signature: &Signature) -> String {
+pub(crate) fn cuda_launch_params(signature: &Signature) -> String {
     let scalars = signature
         .params()
         .iter()
