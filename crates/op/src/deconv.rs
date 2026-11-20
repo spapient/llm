@@ -77,35 +77,23 @@ impl ConvTranspose2d {
         let ow = self.ow(w)?;
         let (cin, cout) = (self.cin, self.cout);
         let karea = self.geom.kh * self.geom.kw;
-        check(x.len(), n * h * w * cin, "x")?;
-        check(weight.len(), cin * cout * karea, "weight")?;
-        check(bias.len(), cout, "bias")?;
-        check(out.len(), n * oh * ow * cout, "out")?;
+        check_all(&[
+            (x.len(), n * h * w * cin, "x"),
+            (weight.len(), cin * cout * karea, "weight"),
+            (bias.len(), cout, "bias"),
+            (out.len(), n * oh * ow * cout, "out"),
+        ])?;
 
         let rows = n * h * w;
         let cols = cout * karea;
-        // 权重转置：`[cin, cout, kh, kw]` → `[cin, cout·kh·kw]`。
         let mut wt = vec![0.0f32; cin * cols];
-        for ci in 0..cin {
-            for co in 0..cout {
-                for ki in 0..self.geom.kh {
-                    for kj in 0..self.geom.kw {
-                        let src = ((ci * cout + co) * self.geom.kh + ki) * self.geom.kw + kj;
-                        wt[ci * cols + (ki * self.geom.kw + kj) * cout + co] = weight[src];
-                    }
-                }
-            }
-        }
+        transpose_weight_2d(weight, &mut wt, cin, cout, self.geom.kh, self.geom.kw);
         let mut col = vec![0.0f32; rows * cols];
         fast::gemm_f32(x, &wt, rows, cols, cin, &mut col);
 
         out[..n * oh * ow * cout].fill(0.0);
         scatter(&col, out, n, (h, w), (oh, ow), self, cout);
-        for p in 0..n * oh * ow {
-            for co in 0..cout {
-                out[p * cout + co] += bias[co];
-            }
-        }
+        add_bias_2d(out, bias, n, oh, ow, cout);
         Ok(())
     }
 
@@ -129,34 +117,23 @@ impl ConvTranspose2d {
         let ow = self.ow(w)?;
         let (cin, cout) = (self.cin, self.cout);
         let karea = self.geom.kh * self.geom.kw;
-        check(x.len(), n * h * w * cin, "x")?;
-        check(weight.len(), cin * cout * karea, "weight")?;
-        check(bias.len(), cout, "bias")?;
-        check(out.len(), n * oh * ow * cout, "out")?;
+        check_all(&[
+            (x.len(), n * h * w * cin, "x"),
+            (weight.len(), cin * cout * karea, "weight"),
+            (bias.len(), cout, "bias"),
+            (out.len(), n * oh * ow * cout, "out"),
+        ])?;
 
         let rows = n * h * w;
         let cols = cout * karea;
         let mut wt = vec![0i8; cin * cols];
-        for ci in 0..cin {
-            for co in 0..cout {
-                for ki in 0..self.geom.kh {
-                    for kj in 0..self.geom.kw {
-                        let src = ((ci * cout + co) * self.geom.kh + ki) * self.geom.kw + kj;
-                        wt[ci * cols + (ki * self.geom.kw + kj) * cout + co] = weight[src];
-                    }
-                }
-            }
-        }
+        transpose_weight_2d_i8(weight, &mut wt, cin, cout, self.geom.kh, self.geom.kw);
         let mut col = vec![0i32; rows * cols];
         fast::gemm_i8(x, &wt, rows, cols, cin, &mut col);
 
         out[..n * oh * ow * cout].fill(0);
         scatter_i8(&col, out, n, (h, w), (oh, ow), self, cout);
-        for p in 0..n * oh * ow {
-            for co in 0..cout {
-                out[p * cout + co] += bias[co];
-            }
-        }
+        add_bias_2d_i8(out, bias, n, oh, ow, cout);
         Ok(())
     }
 }
@@ -172,28 +149,12 @@ fn scatter(
     cout: usize,
 ) {
     let g = conv.geom;
+    let karea = cout * g.kh * g.kw;
     for ni in 0..n {
         for hi in 0..h {
             for wi in 0..w {
-                let row =
-                    &col[((ni * h + hi) * w + wi) * (cout * g.kh * g.kw)..][..cout * g.kh * g.kw];
-                for ki in 0..g.kh {
-                    let ii = (hi * g.sh + ki) as isize - g.ph as isize;
-                    if ii < 0 || ii as usize >= oh {
-                        continue;
-                    }
-                    for kj in 0..g.kw {
-                        let jj = (wi * g.sw + kj) as isize - g.pw as isize;
-                        if jj < 0 || jj as usize >= ow {
-                            continue;
-                        }
-                        let dst = ((ni * oh + ii as usize) * ow + jj as usize) * cout;
-                        let src = (ki * g.kw + kj) * cout;
-                        for co in 0..cout {
-                            out[dst + co] += row[src + co];
-                        }
-                    }
-                }
+                let row = &col[((ni * h + hi) * w + wi) * karea..][..karea];
+                scatter_row_2d(row, out, g, oh, ow, cout, ni, hi, wi);
             }
         }
     }
@@ -210,28 +171,12 @@ fn scatter_i8(
     cout: usize,
 ) {
     let g = conv.geom;
+    let karea = cout * g.kh * g.kw;
     for ni in 0..n {
         for hi in 0..h {
             for wi in 0..w {
-                let row =
-                    &col[((ni * h + hi) * w + wi) * (cout * g.kh * g.kw)..][..cout * g.kh * g.kw];
-                for ki in 0..g.kh {
-                    let ii = (hi * g.sh + ki) as isize - g.ph as isize;
-                    if ii < 0 || ii as usize >= oh {
-                        continue;
-                    }
-                    for kj in 0..g.kw {
-                        let jj = (wi * g.sw + kj) as isize - g.pw as isize;
-                        if jj < 0 || jj as usize >= ow {
-                            continue;
-                        }
-                        let dst = ((ni * oh + ii as usize) * ow + jj as usize) * cout;
-                        let src = (ki * g.kw + kj) * cout;
-                        for co in 0..cout {
-                            out[dst + co] += row[src + co];
-                        }
-                    }
-                }
+                let row = &col[((ni * h + hi) * w + wi) * karea..][..karea];
+                scatter_row_2d_i8(row, out, g, oh, ow, cout, ni, hi, wi);
             }
         }
     }
@@ -244,6 +189,14 @@ fn check(actual: usize, required: usize, what: &str) -> Result<()> {
             Code::Invalid,
             format!("{what}: 缓冲 {actual}，需要 {required}"),
         ));
+    }
+    Ok(())
+}
+
+/// 批量缓冲校验：把一组 `check` 折成一次调用，逐项短路。
+fn check_all(bounds: &[(usize, usize, &str)]) -> Result<()> {
+    for &(actual, required, what) in bounds {
+        check(actual, required, what)?;
     }
     Ok(())
 }
@@ -285,7 +238,7 @@ impl ConvTranspose1d {
         let base = l
             .checked_sub(1)
             .and_then(|v| v.checked_mul(self.s))
-            .ok_or_else(|| Error::new(Code::Invalid, "反卷积输出长度溢出"))?;
+            .ok_or(Error::new(Code::Invalid, "反卷积输出长度溢出"))?;
         let span = base + self.k;
         let pad = 2 * self.p;
         // 输出必须严格为正：`span − pad ≥ 1`。
@@ -319,30 +272,21 @@ impl ConvTranspose1d {
         let ol = self.len(l)?;
         let (cin, cout, k) = (self.cin, self.cout, self.k);
         let cols = cout * k;
-        check(x.len(), n * l * cin, "x")?;
-        check(weight.len(), cin * cols, "weight")?;
-        check(bias.len(), cout, "bias")?;
-        check(out.len(), n * ol * cout, "out")?;
+        check_all(&[
+            (x.len(), n * l * cin, "x"),
+            (weight.len(), cin * cols, "weight"),
+            (bias.len(), cout, "bias"),
+            (out.len(), n * ol * cout, "out"),
+        ])?;
 
-        // 权重 `[cin, cout, k]` → `[cin, cout·k]`，列块按 `ki·cout + co` 排。
         let mut wt = vec![0.0f32; cin * cols];
-        for ci in 0..cin {
-            for co in 0..cout {
-                for ki in 0..k {
-                    wt[ci * cols + ki * cout + co] = weight[(ci * cout + co) * k + ki];
-                }
-            }
-        }
+        transpose_weight_1d(weight, &mut wt, cin, cout, k);
         let mut col = vec![0.0f32; n * l * cols];
         fast::gemm_f32(x, &wt, n * l, cols, cin, &mut col);
 
         out[..n * ol * cout].fill(0.0);
         scatter1(&col, out, n, l, ol, self, cout);
-        for pos in 0..n * ol {
-            for co in 0..cout {
-                out[pos * cout + co] += bias[co];
-            }
-        }
+        add_bias_1d(out, bias, n, ol, cout);
         Ok(())
     }
 
@@ -364,29 +308,21 @@ impl ConvTranspose1d {
         let ol = self.len(l)?;
         let (cin, cout, k) = (self.cin, self.cout, self.k);
         let cols = cout * k;
-        check(x.len(), n * l * cin, "x")?;
-        check(weight.len(), cin * cols, "weight")?;
-        check(bias.len(), cout, "bias")?;
-        check(out.len(), n * ol * cout, "out")?;
+        check_all(&[
+            (x.len(), n * l * cin, "x"),
+            (weight.len(), cin * cols, "weight"),
+            (bias.len(), cout, "bias"),
+            (out.len(), n * ol * cout, "out"),
+        ])?;
 
         let mut wt = vec![0i8; cin * cols];
-        for ci in 0..cin {
-            for co in 0..cout {
-                for ki in 0..k {
-                    wt[ci * cols + ki * cout + co] = weight[(ci * cout + co) * k + ki];
-                }
-            }
-        }
+        transpose_weight_1d_i8(weight, &mut wt, cin, cout, k);
         let mut col = vec![0i32; n * l * cols];
         fast::gemm_i8(x, &wt, n * l, cols, cin, &mut col);
 
         out[..n * ol * cout].fill(0);
         scatter1_i8(&col, out, n, l, ol, self, cout);
-        for pos in 0..n * ol {
-            for co in 0..cout {
-                out[pos * cout + co] += bias[co];
-            }
-        }
+        add_bias_1d_i8(out, bias, n, ol, cout);
         Ok(())
     }
 }
@@ -405,17 +341,7 @@ fn scatter1(
     for ni in 0..n {
         for i in 0..l {
             let src = (ni * l + i) * cout * conv.k;
-            for ki in 0..conv.k {
-                let dst = (i * conv.s + ki) as isize - conv.p as isize;
-                if dst < 0 || dst as usize >= ol {
-                    continue;
-                }
-                let d = ((ni * ol + dst as usize) * cout) as usize;
-                let src_k = src + ki * cout;
-                for co in 0..cout {
-                    out[d + co] += col[src_k + co];
-                }
-            }
+            scatter1_at(col, out, ol, conv, cout, ni, i, src);
         }
     }
 }
@@ -433,17 +359,264 @@ fn scatter1_i8(
     for ni in 0..n {
         for i in 0..l {
             let src = (ni * l + i) * cout * conv.k;
-            for ki in 0..conv.k {
-                let dst = (i * conv.s + ki) as isize - conv.p as isize;
-                if dst < 0 || dst as usize >= ol {
-                    continue;
-                }
-                let d = ((ni * ol + dst as usize) * cout) as usize;
-                let src_k = src + ki * cout;
-                for co in 0..cout {
-                    out[d + co] += col[src_k + co];
+            scatter1_at_i8(col, out, ol, conv, cout, ni, i, src);
+        }
+    }
+}
+
+/// `0 <= idx < n`：散射越界裁剪共用的边界谓词。
+fn in_range(idx: isize, n: usize) -> bool {
+    idx >= 0 && idx < n as isize
+}
+
+/// 二维权重转置 `[cin,cout,kh,kw]` → `[cin, cout·kh·kw]`（f32）。
+fn transpose_weight_2d(
+    weight: &[f32],
+    wt: &mut [f32],
+    cin: usize,
+    cout: usize,
+    kh: usize,
+    kw: usize,
+) {
+    let cols = cout * kh * kw;
+    for ci in 0..cin {
+        for co in 0..cout {
+            for ki in 0..kh {
+                for kj in 0..kw {
+                    let src = ((ci * cout + co) * kh + ki) * kw + kj;
+                    wt[ci * cols + (ki * kw + kj) * cout + co] = weight[src];
                 }
             }
+        }
+    }
+}
+
+/// 二维权重转置（i8，口径同 [`transpose_weight_2d`]）。
+fn transpose_weight_2d_i8(
+    weight: &[i8],
+    wt: &mut [i8],
+    cin: usize,
+    cout: usize,
+    kh: usize,
+    kw: usize,
+) {
+    let cols = cout * kh * kw;
+    for ci in 0..cin {
+        for co in 0..cout {
+            for ki in 0..kh {
+                for kj in 0..kw {
+                    let src = ((ci * cout + co) * kh + ki) * kw + kj;
+                    wt[ci * cols + (ki * kw + kj) * cout + co] = weight[src];
+                }
+            }
+        }
+    }
+}
+
+/// 二维偏置累加：`out[n,oh,ow,cout] += bias[cout]`（f32）。
+fn add_bias_2d(out: &mut [f32], bias: &[f32], n: usize, oh: usize, ow: usize, cout: usize) {
+    for p in 0..n * oh * ow {
+        for co in 0..cout {
+            out[p * cout + co] += bias[co];
+        }
+    }
+}
+
+/// 二维偏置累加（i32，口径同 [`add_bias_2d`]）。
+fn add_bias_2d_i8(out: &mut [i32], bias: &[i32], n: usize, oh: usize, ow: usize, cout: usize) {
+    for p in 0..n * oh * ow {
+        for co in 0..cout {
+            out[p * cout + co] += bias[co];
+        }
+    }
+}
+
+/// 单个输入行的散射：沿核高 `kh` 散射，越界行裁掉。
+#[allow(clippy::too_many_arguments)]
+fn scatter_row_2d(
+    row: &[f32],
+    out: &mut [f32],
+    g: ConvGeom,
+    oh: usize,
+    ow: usize,
+    cout: usize,
+    ni: usize,
+    hi: usize,
+    wi: usize,
+) {
+    for ki in 0..g.kh {
+        let ii = (hi * g.sh + ki) as isize - g.ph as isize;
+        if !in_range(ii, oh) {
+            continue;
+        }
+        scatter_kernel_2d(row, out, g, oh, ow, cout, ni, ii as usize, wi, ki);
+    }
+}
+
+/// i8 版行散射：累加在 i32，口径同 [`scatter_row_2d`]。
+#[allow(clippy::too_many_arguments)]
+fn scatter_row_2d_i8(
+    row: &[i32],
+    out: &mut [i32],
+    g: ConvGeom,
+    oh: usize,
+    ow: usize,
+    cout: usize,
+    ni: usize,
+    hi: usize,
+    wi: usize,
+) {
+    for ki in 0..g.kh {
+        let ii = (hi * g.sh + ki) as isize - g.ph as isize;
+        if !in_range(ii, oh) {
+            continue;
+        }
+        scatter_kernel_2d_i8(row, out, g, oh, ow, cout, ni, ii as usize, wi, ki);
+    }
+}
+
+/// 单个核位置的散射：沿核宽 `kw` 散射，越界列裁掉，`cout` 通道逐个累加。
+#[allow(clippy::too_many_arguments)]
+fn scatter_kernel_2d(
+    row: &[f32],
+    out: &mut [f32],
+    g: ConvGeom,
+    oh: usize,
+    ow: usize,
+    cout: usize,
+    ni: usize,
+    ii: usize,
+    wi: usize,
+    ki: usize,
+) {
+    for kj in 0..g.kw {
+        let jj = (wi * g.sw + kj) as isize - g.pw as isize;
+        if !in_range(jj, ow) {
+            continue;
+        }
+        let dst = ((ni * oh + ii) * ow + jj as usize) * cout;
+        let src = (ki * g.kw + kj) * cout;
+        for co in 0..cout {
+            out[dst + co] += row[src + co];
+        }
+    }
+}
+
+/// i8 版核散射：累加在 i32，口径同 [`scatter_kernel_2d`]。
+#[allow(clippy::too_many_arguments)]
+fn scatter_kernel_2d_i8(
+    row: &[i32],
+    out: &mut [i32],
+    g: ConvGeom,
+    oh: usize,
+    ow: usize,
+    cout: usize,
+    ni: usize,
+    ii: usize,
+    wi: usize,
+    ki: usize,
+) {
+    for kj in 0..g.kw {
+        let jj = (wi * g.sw + kj) as isize - g.pw as isize;
+        if !in_range(jj, ow) {
+            continue;
+        }
+        let dst = ((ni * oh + ii) * ow + jj as usize) * cout;
+        let src = (ki * g.kw + kj) * cout;
+        for co in 0..cout {
+            out[dst + co] += row[src + co];
+        }
+    }
+}
+
+/// 一维权重转置 `[cin,cout,k]` → `[cin, cout·k]`（f32）。
+fn transpose_weight_1d(weight: &[f32], wt: &mut [f32], cin: usize, cout: usize, k: usize) {
+    let cols = cout * k;
+    for ci in 0..cin {
+        for co in 0..cout {
+            for ki in 0..k {
+                wt[ci * cols + ki * cout + co] = weight[(ci * cout + co) * k + ki];
+            }
+        }
+    }
+}
+
+/// 一维权重转置（i8，口径同 [`transpose_weight_1d`]）。
+fn transpose_weight_1d_i8(weight: &[i8], wt: &mut [i8], cin: usize, cout: usize, k: usize) {
+    let cols = cout * k;
+    for ci in 0..cin {
+        for co in 0..cout {
+            for ki in 0..k {
+                wt[ci * cols + ki * cout + co] = weight[(ci * cout + co) * k + ki];
+            }
+        }
+    }
+}
+
+/// 一维偏置累加：`out[n,ol,cout] += bias[cout]`（f32）。
+fn add_bias_1d(out: &mut [f32], bias: &[f32], n: usize, ol: usize, cout: usize) {
+    for pos in 0..n * ol {
+        for co in 0..cout {
+            out[pos * cout + co] += bias[co];
+        }
+    }
+}
+
+/// 一维偏置累加（i32，口径同 [`add_bias_1d`]）。
+fn add_bias_1d_i8(out: &mut [i32], bias: &[i32], n: usize, ol: usize, cout: usize) {
+    for pos in 0..n * ol {
+        for co in 0..cout {
+            out[pos * cout + co] += bias[co];
+        }
+    }
+}
+
+/// 一维单个输入位置的散射：沿窗口 `k` 散射，越界位置裁掉。
+#[allow(clippy::too_many_arguments)]
+fn scatter1_at(
+    col: &[f32],
+    out: &mut [f32],
+    ol: usize,
+    conv: &ConvTranspose1d,
+    cout: usize,
+    ni: usize,
+    i: usize,
+    src: usize,
+) {
+    for ki in 0..conv.k {
+        let dst = (i * conv.s + ki) as isize - conv.p as isize;
+        if !in_range(dst, ol) {
+            continue;
+        }
+        let d = (ni * ol + dst as usize) * cout;
+        let src_k = src + ki * cout;
+        for co in 0..cout {
+            out[d + co] += col[src_k + co];
+        }
+    }
+}
+
+/// i8 版一维散射：累加在 i32，口径同 [`scatter1_at`]。
+#[allow(clippy::too_many_arguments)]
+fn scatter1_at_i8(
+    col: &[i32],
+    out: &mut [i32],
+    ol: usize,
+    conv: &ConvTranspose1d,
+    cout: usize,
+    ni: usize,
+    i: usize,
+    src: usize,
+) {
+    for ki in 0..conv.k {
+        let dst = (i * conv.s + ki) as isize - conv.p as isize;
+        if !in_range(dst, ol) {
+            continue;
+        }
+        let d = (ni * ol + dst as usize) * cout;
+        let src_k = src + ki * cout;
+        for co in 0..cout {
+            out[d + co] += col[src_k + co];
         }
     }
 }

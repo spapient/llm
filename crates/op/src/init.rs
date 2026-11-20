@@ -61,7 +61,7 @@ pub fn orthogonal(rows: usize, cols: usize, gain: f32, seed: u64) -> Result<Vec<
     let big = rows.max(cols);
     let small = rows.min(cols);
     let mat = orthonormalize(big, small, gain, seed);
-    Ok(reshape_orthogonal(&mat, big, small, rows, cols))
+    Ok(reshape_orthogonal(&mat, small, rows, cols))
 }
 
 /// 按 `[big, small]` 生成高斯列并用改进 Gram–Schmidt 正交化。
@@ -104,7 +104,7 @@ fn normalize_column(mat: &mut [f32], big: usize, small: usize, col: usize, gain:
 }
 
 /// `[big, small]` → `[rows, cols]`：`rows ≥ cols` 时列正交可直接拷贝，否则转置成行正交。
-fn reshape_orthogonal(mat: &[f32], big: usize, small: usize, rows: usize, cols: usize) -> Vec<f32> {
+fn reshape_orthogonal(mat: &[f32], small: usize, rows: usize, cols: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; rows * cols];
     if rows >= cols {
         out.copy_from_slice(mat);
