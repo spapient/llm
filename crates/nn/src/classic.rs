@@ -68,7 +68,7 @@ impl Conv1d {
         let layer = "nn::Conv1d::new";
         nonzero(cin, "cin", layer)?;
         nonzero(cout, "cout", layer)?;
-        let kernel = OpConv1::new(cin, cout, geom);
+        let kernel = OpConv1::new(cin, cout, geom.kw, geom.sw, geom.pw);
         let ol = kernel.len(l)?;
         let spec = __layer_spec_Conv1d!(name, ol, cout, GEMM)?;
         Ok(Self {
@@ -515,7 +515,7 @@ impl Contract for Interpolate {
 ///
 /// 规格构造口径同 [`MaxPool1d`]：归一化没有可代理的已注册算子（RMSNorm 不含减均值，语义不同），
 /// 因此登记为 0 算子层。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BatchNorm2d {
     spec: ContractSpec,
     norm: OpBatch,
@@ -564,7 +564,7 @@ impl Contract for BatchNorm2d {
 }
 
 /// 组归一化层：`(n, group)` 内按 `(C/G, spatial)` 统计。规格构造口径同 [`BatchNorm2d`]。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupNorm {
     spec: ContractSpec,
     norm: OpGroup,
@@ -615,7 +615,7 @@ impl Contract for GroupNorm {
 }
 
 /// 实例归一化层：等价于 `GroupNorm(groups = channels)`。规格构造口径同 [`BatchNorm2d`]。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InstanceNorm {
     spec: ContractSpec,
     norm: OpInst,
@@ -654,7 +654,7 @@ impl Contract for InstanceNorm {
 }
 
 /// 层归一化层：逐行在最后一维 `width` 上统计。规格构造口径同 [`BatchNorm2d`]。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayerNorm {
     spec: ContractSpec,
     norm: OpLayer,

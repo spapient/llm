@@ -65,7 +65,7 @@ fn cuda_params(params: &[Param]) -> String {
 
 /// 文件头：CUDA 头、身份注释，以及整体转成 `__device__` 的内核源码。
 fn cuda_prelude(kernel_source: &str, kernel: &str, sample: &Sample) -> String {
-    let device = cuda_device(kernel_source, kernel);
+    let device = dialect_prelude::<Cuda>(kernel_source, kernel);
     let mut text = format!(
         "#include <cuda_runtime.h>\n#include <cstdio>\n/* cutile cuda harness | kernel={kernel} m={} n={} | 单线程设备执行（语义门，非并行性能门） */\n{device}",
         sample.m, sample.n
@@ -272,16 +272,15 @@ fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: us
     text
 }
 
-/// 生产态 CUDA 逐点网格内核（`grid_kernel` 的 CUDA 方言）。
+/// 生产态 CUDA 逐点网格内核（[`grid_kernel_dialect`] 的 CUDA 方言）。
 pub fn cuda_grid_kernel(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
 ) -> Result<String> {
-    grid_kernel(
+    grid_kernel_dialect::<Cuda>(
         kernel_source,
         signature,
-        &CUDA,
         Some(length_scalar(signature, sample)?),
     )
 }
@@ -296,7 +295,7 @@ pub(crate) fn cuda_launch_params(signature: &Signature) -> String {
         .map(|param| format!("{} {}", param.ctype.c_name(), param.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let buffers = cuda_buffers(signature);
+    let buffers = dialect_buffers::<Cuda>(signature);
     if scalars.is_empty() {
         buffers
     } else {
