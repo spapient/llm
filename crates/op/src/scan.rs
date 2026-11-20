@@ -15,7 +15,7 @@
 
 use core::fmt::Debug;
 
-/// 浮点标量闭集：`f32` / `f64` 满足；`nn` 的脉冲 / 合成 / 决策头复用本 trait。
+/// 浮点标量闭集：`f32` / `f64` / `half::f16` / `half::bf16` 满足；`nn` 的脉冲 / 合成 / 决策头复用本 trait。
 ///
 /// 运算符超 trait（`Add/Sub/Mul/Div`）让上层代码能写 `a + b`、`a * b` 而不再逐方法调用，
 /// 否则「泛型化」只把 `as f32` 换成了 `S::mul`，读起来反而更绕。
@@ -74,66 +74,107 @@ pub trait Scalar:
     fn to_f64(self) -> f64;
 }
 
-/// 一份算术骨架为 `f32` / `f64` 两个标量实现，能变的部分只有类型、负无穷与 `f64` 降级式；
-/// 逐字写两份会把 14 个方法的加/减/乘/除与超越函数复制成孪生（jscpd 的 15 行克隆源）。
+/// 一份算术骨架为 `f32` / `f64` / `half::f16` / `half::bf16` 四个标量实现，能变的部分只有类型、
+/// 零/一/负无穷常量与 `f64`/`usize` 的进出转换式；逐字写四份会把 14 个方法的加/减/乘/除与
+/// 超越函数复制成四胞胎（jscpd 的克隆源）。数学函数统一走 [`num_traits::Float`]：`f32`/`f64`
+/// 由该 trait 直接委托给原生实现，`half` 类型由 half 自带实现经 `f32` 往返得到，语义与精度由
+/// half 侧保证，`op` 侧不复制任何一份算术。
 macro_rules! impl_scalar {
-    ($ty:ty, $neg_inf:expr, $from_f64:expr) => {
+    ($ty:ty, $zero:expr, $one:expr, $neg_inf:expr, $from_f64:expr, $from_usize:expr, $to_f64:expr, $to_usize:expr) => {
         impl Scalar for $ty {
-            const ZERO: Self = 0.0;
-            const ONE: Self = 1.0;
+            const ZERO: Self = $zero;
+            const ONE: Self = $one;
             const NEG_INFINITY: Self = $neg_inf;
 
             fn exp(self) -> Self {
-                <$ty>::exp(self)
+                num_traits::Float::exp(self)
             }
             fn exp_m1(self) -> Self {
-                <$ty>::exp_m1(self)
+                num_traits::Float::exp_m1(self)
             }
             fn sqrt(self) -> Self {
-                <$ty>::sqrt(self)
+                num_traits::Float::sqrt(self)
             }
             fn abs(self) -> Self {
-                <$ty>::abs(self)
+                num_traits::Float::abs(self)
             }
             fn max(self, rhs: Self) -> Self {
-                <$ty>::max(self, rhs)
+                num_traits::Float::max(self, rhs)
             }
             fn min(self, rhs: Self) -> Self {
-                <$ty>::min(self, rhs)
+                num_traits::Float::min(self, rhs)
             }
             fn floor(self) -> Self {
-                <$ty>::floor(self)
+                num_traits::Float::floor(self)
             }
             fn ln(self) -> Self {
-                <$ty>::ln(self)
+                num_traits::Float::ln(self)
             }
             fn sin(self) -> Self {
-                <$ty>::sin(self)
+                num_traits::Float::sin(self)
             }
             fn cos(self) -> Self {
-                <$ty>::cos(self)
+                num_traits::Float::cos(self)
             }
             fn from_f64(v: f64) -> Self {
                 ($from_f64)(v)
             }
             fn from_usize(v: usize) -> Self {
-                v as $ty
+                ($from_usize)(v)
             }
             fn round(self) -> Self {
-                <$ty>::round(self)
+                num_traits::Float::round(self)
             }
             fn to_f64(self) -> f64 {
-                self as f64
+                ($to_f64)(self)
             }
             fn to_usize(self) -> usize {
-                self as usize
+                ($to_usize)(self)
             }
         }
     };
 }
 
-impl_scalar!(f32, f32::NEG_INFINITY, |v| v as f32);
-impl_scalar!(f64, f64::NEG_INFINITY, |v| v);
+impl_scalar!(
+    f32,
+    0.0_f32,
+    1.0_f32,
+    f32::NEG_INFINITY,
+    |v| v as f32,
+    |v| v as f32,
+    |v| v as f64,
+    |v| v as usize
+);
+impl_scalar!(
+    f64,
+    0.0_f64,
+    1.0_f64,
+    f64::NEG_INFINITY,
+    |v| v,
+    |v| v as f64,
+    |v| v,
+    |v| v as usize
+);
+impl_scalar!(
+    half::f16,
+    half::f16::ZERO,
+    half::f16::ONE,
+    half::f16::NEG_INFINITY,
+    half::f16::from_f64,
+    |v| half::f16::from_f64(v as f64),
+    half::f16::to_f64,
+    |v| half::f16::to_f64(v) as usize
+);
+impl_scalar!(
+    half::bf16,
+    half::bf16::ZERO,
+    half::bf16::ONE,
+    half::bf16::NEG_INFINITY,
+    half::bf16::from_f64,
+    |v| half::bf16::from_f64(v as f64),
+    half::bf16::to_f64,
+    |v| half::bf16::to_f64(v) as usize
+);
 
 /// 幺半群：`combine` 满足结合律，[`Monoid::IDENT`] 是幺元。
 ///

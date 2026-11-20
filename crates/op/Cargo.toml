@@ -13,6 +13,8 @@ autotests = false
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+half = { workspace = true, features = ["num-traits"] }
+num-traits = { workspace = true }
 prof = { path = "../prof", package = "llm-prof" }
 
 [lints]
