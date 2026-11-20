@@ -36,6 +36,71 @@ macro_rules! classic_op {
     };
 }
 
+/// 窗口族（池化 / 自适应 / 插值）的公开面：`sample` / `reference` / `forward` / `cost` 四个入口
+/// 由本宏统一生成。算术在模块自带的 `run` 里（不藏进宏），缓冲搬运与代价口径复用
+/// [`window_sample`] / [`window_reference`] / [`crate::model::cost_n`]。
+macro_rules! window_op {
+    ($ty:ident, $alias:ident, $op:tt, $m:tt, $n:tt, $in_len:expr, $out_len:expr,
+     $flops:expr, $reads:expr) => {
+        /// 声明档样本：`x` 与 `y` 的长度由模块几何常量给出。
+        pub fn sample(_: usize, _: usize) -> Sample {
+            window_sample($in_len, $out_len)
+        }
+
+        /// 标量参考：读 `x`、跑模块的 `run`、返回 `y`（真窗口）。
+        pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+            window_reference(sample, $out_len, run)
+        }
+
+        /// 声明档前向：与参考共用同一条 `run`，几何与样本一致。
+        pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+            run(x, out)
+        }
+
+        /// 标量代价：每输出 `$flops` 次浮点运算，读 `$reads` 遍字节、写一遍。
+        pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+            crate::model::cost_n(shape, $op, $flops, $reads)
+        }
+
+        classic_op!($ty, $alias, $op, 1, $m, $n);
+    };
+}
+
+/// 归一化族（批 / 组 / 实例 / 层）的公开面：与 [`window_op!`] 同构，但 `sample` / `reference`
+/// 多带 `gamma` / `beta` 两个参数缓冲，`forward` 签名多两个入参。
+macro_rules! norm_op {
+    ($ty:ident, $alias:ident, $op:tt, $m:tt, $n:tt,
+     $total:expr, $channels:expr, $scalars:expr, $gamma:expr, $beta:expr,
+     $flops:expr, $reads:expr) => {
+        /// 声明档样本：`x` 与 `gamma`/`beta` 的长度由模块几何常量给出。
+        pub fn sample(_: usize, _: usize) -> Sample {
+            norm_sample($total, $channels, $scalars, $gamma, $beta)
+        }
+
+        /// 标量参考：读 `x`/`gamma`/`beta`、跑模块的 `run`、返回 `y`（真统计）。
+        pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+            norm_reference(sample, $total, run)
+        }
+
+        /// 声明档前向：与参考共用同一条 `run`，几何与样本一致。
+        pub fn forward(
+            x: &[f32],
+            gamma: &[f32],
+            beta: &[f32],
+            out: &mut [f32],
+        ) -> diagnostic::Result<()> {
+            run(x, gamma, beta, out)
+        }
+
+        /// 标量代价：每输出 `$flops` 次浮点运算，读 `$reads` 遍字节、写一遍。
+        pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+            crate::model::cost_n(shape, $op, $flops, $reads)
+        }
+
+        classic_op!($ty, $alias, $op, 3, $m, $n);
+    };
+}
+
 /// 窗口骨架的确定性样本：`x`（长 `in_len`）与 `y`（长 `out_len`），`N` 记输出长度。
 ///
 /// 池化 / 自适应 / 插值五类算子共享这一份：几何不同，但样本结构同构。
@@ -223,27 +288,8 @@ pub mod max_pool1d {
         crate::conv::MaxPool1d { k: 2, s: 2, p: 0 }.forward(x, 1, L, 1, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        window_sample(L, OL)
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        window_reference(sample, OL, run)
-    }
-
-    /// 声明档前向：单通道 `L → OL`（几何与样本一致）。
-    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        run(x, out)
-    }
-
-    /// 标量代价：每输出读两个输入元素、写一个；读两遍字节、写一遍。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "max_pool1d_f32", 2.0, 2)
-    }
-
-    classic_op!(MaxPool1dModel, MaxPool1d, "max_pool1d_f32", 1, 64, 64);
+    // 每输出读两个输入元素、写一个；读两遍字节、写一遍。
+    window_op!(MaxPool1dModel, MaxPool1d, "max_pool1d_f32", 64, 64, L, OL, 2.0, 2);
 }
 
 /// 二维最大池化（声明档几何 `3×3, s=1, p=1`，4×4 输入、same 输出）。
@@ -271,27 +317,8 @@ pub mod max_pool2d {
         crate::conv::MaxPool2d { geom: geom() }.forward(x, 1, H, W, 1, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        window_sample(H * W, H * W)
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        window_reference(sample, H * W, run)
-    }
-
-    /// 声明档前向：单通道 `H×W`，same 输出。
-    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        run(x, out)
-    }
-
-    /// 标量代价：窗口 9 次比较、读 9 倍字节上界、写一遍。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "max_pool2d_f32", 8.0, 4)
-    }
-
-    classic_op!(MaxPool2dModel, MaxPool2d, "max_pool2d_f32", 1, 64, 64);
+    // 窗口 9 次比较、读 9 倍字节上界、写一遍。
+    window_op!(MaxPool2dModel, MaxPool2d, "max_pool2d_f32", 64, 64, H * W, H * W, 8.0, 4);
 }
 
 /// 二维平均池化（声明档几何 `3×3, s=1, p=1`，补零不计入分母）。
@@ -322,27 +349,8 @@ pub mod avg_pool2d {
         pool().forward(x, 1, H, W, 1, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        window_sample(H * W, H * W)
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        window_reference(sample, H * W, run)
-    }
-
-    /// 声明档前向：单通道 `H×W`，补零不计入分母。
-    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        run(x, out)
-    }
-
-    /// 标量代价：窗口 9 次加法 + 1 次除法，读 4 倍、写一遍。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "avg_pool2d_f32", 10.0, 4)
-    }
-
-    classic_op!(AvgPool2dModel, AvgPool2d, "avg_pool2d_f32", 1, 64, 64);
+    // 窗口 9 次加法 + 1 次除法，读 4 倍、写一遍。
+    window_op!(AvgPool2dModel, AvgPool2d, "avg_pool2d_f32", 64, 64, H * W, H * W, 10.0, 4);
 }
 
 /// 自适应平均池化（声明档 4×4 → 2×2）。
@@ -363,33 +371,17 @@ pub mod adaptive_pool {
         crate::conv::AdaptiveAvgPool2d { oh: OH, ow: OW }.forward(x, 1, H, W, 1, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        window_sample(H * W, OH * OW)
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        window_reference(sample, OH * OW, run)
-    }
-
-    /// 声明档前向：单通道 `H×W → OH×OW`。
-    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        run(x, out)
-    }
-
-    /// 标量代价：每格 4 元素求和 + 平均，读 2 倍、写一遍。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "adaptive_pool_f32", 5.0, 2)
-    }
-
-    classic_op!(
+    // 每格 4 元素求和 + 平均，读 2 倍、写一遍。
+    window_op!(
         AdaptivePoolModel,
         AdaptivePool,
         "adaptive_pool_f32",
-        1,
         64,
-        64
+        64,
+        H * W,
+        OH * OW,
+        5.0,
+        2
     );
 }
 
@@ -416,27 +408,18 @@ pub mod interpolate {
         .forward(x, 1, H, W, 1, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        window_sample(H * W, OH * OW)
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        window_reference(sample, OH * OW, run)
-    }
-
-    /// 声明档前向：单通道 `H×W → OH×OW`（双线性）。
-    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        run(x, out)
-    }
-
-    /// 标量代价：每输出 4 邻 2 次线性插值，读 4 倍、写一遍。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "interpolate_f32", 8.0, 4)
-    }
-
-    classic_op!(InterpolateModel, Interpolate, "interpolate_f32", 1, 64, 64);
+    // 每输出 4 邻 2 次线性插值，读 4 倍、写一遍。
+    window_op!(
+        InterpolateModel,
+        Interpolate,
+        "interpolate_f32",
+        64,
+        64,
+        H * W,
+        OH * OW,
+        8.0,
+        4
+    );
 }
 
 /// 批归一化（声明档 `C=4, spatial=2, n=2`，训练口径：批统计自上而下、滑动统计按动量混入）。
