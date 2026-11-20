@@ -9,7 +9,7 @@
 
 use diagnostic::{Code, Error, Result};
 use op::decl::Grid;
-use op::model::Sample;
+use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
 use cutile::harness::output_name;
@@ -76,6 +76,33 @@ pub(crate) fn launch_args(sample: &Sample, params: &[Param]) -> Result<String> {
         }
     }
     Ok(args.join(", "))
+}
+
+/// 回读的浮点位模式打印循环：`union` 保持 float→uint 位级保真，`src[i]` 是第 i 个元素的取值
+/// 表达式（CUDA/昇腾是 `h_<name>[i]`，Metal 是 `out[i]`）。三端共用：回读口径必须逐字一致，
+/// 否则 `cutile::runner::parse_bits` 会读出不同的位模式。
+pub(crate) fn readback_bits(src: &str, len: usize, indent: &str) -> String {
+    format!(
+        "{indent}for (int i = 0; i < {len}; ++i) {{\n\
+         {indent}    union {{ float f; unsigned int u; }} v; v.f = {src}[i];\n\
+         {indent}    printf(\"%u\\n\", v.u);\n\
+         {indent}}}\n"
+    )
+}
+
+/// 输出缓冲的（名字，元素数）：只接受非空 f32，回读路径按 float 解释字节。三端 benchmark/回读共用。
+pub(crate) fn f32_output_shape(signature: &Signature, sample: &Sample) -> Result<(String, usize)> {
+    let output = output_name(signature)?;
+    let values = sample
+        .buffer(output)
+        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
+    if !matches!(&values.values, Values::F32(_)) || values.values.is_empty() {
+        return Err(Error::new(
+            Code::Unsupported,
+            "设备回读当前要求非空 f32 输出",
+        ));
+    }
+    Ok((output.to_owned(), values.values.len()))
 }
 
 /// 生产态实参：缓冲取 `d_{name} + n`（线程处理的元素）、标量取 `1`（每线程一个元素）。

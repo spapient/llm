@@ -13,12 +13,14 @@
 
 use diagnostic::{Code, Error, Result};
 use op::decl::Grid;
-use op::model::{Sample, Values};
+use op::model::Sample;
 use op::sig::{Param, Signature};
 
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 
-use crate::dialect::{Cuda, Dialect, launch_args, length_scalar};
+use crate::dialect::{
+    Cuda, Dialect, f32_output_shape, launch_args, length_scalar, readback_bits,
+};
 // ---------------------------------------------------------------------------
 // CUDA lowering：声明式骨架 → CUDA 源（逐点网格 / 分块归约）+ verify 单线程 harness。
 // ---------------------------------------------------------------------------
@@ -147,14 +149,12 @@ pub(crate) fn cuda_launch(kernel: &str, grid: &str, threads: usize, args: &str) 
     )
 }
 
-/// 结果回读：设备 → 主机，再按 `float` 位模式逐元素打印。
+/// 结果回读：设备 → 主机，再按 `float` 位模式逐元素打印（打印循环下沉到
+/// [`readback_bits`]，三端共用同一份 `union` 位级保真代码）。
 pub(crate) fn cuda_readback(output: &str, len: usize) -> String {
     format!(
-        "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n\
-         \x20   for (int i = 0; i < {len}; ++i) {{\n\
-         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
-         \x20       printf(\"%u\\n\", v.u);\n\
-         \x20   }}\n"
+        "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n{}",
+        readback_bits(&format!("h_{output}"), len, "    ")
     )
 }
 
@@ -464,7 +464,7 @@ pub fn cuda_benchmark_driver(
     repeat: usize,
     musa: bool,
 ) -> Result<String> {
-    let (output, out_len) = bench_output_shape(signature, sample)?;
+    let (output, out_len) = f32_output_shape(signature, sample)?;
     let mut source = cuda_prologue(device_source);
     source.push_str(musa_shims(musa));
     source.push_str(CUDA_CHECK_PROLOGUE);
@@ -555,14 +555,11 @@ fn alloc_guards(signature: &Signature) -> String {
     out
 }
 
-/// 回读块：把输出缓冲拷回主机并按位打印（`union` 保证 float→uint 的位级保真）。
+/// 回读块：把输出缓冲拷回主机并按位打印（打印循环下沉到 [`readback_bits`]）。
 fn readback_block(output: &str, len: usize) -> String {
     format!(
-        "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n\
-         \x20   for (int i = 0; i < {len}; ++i) {{\n\
-         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
-         \x20       printf(\"%u\\n\", v.u);\n\
-         \x20   }}\n"
+        "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n{}",
+        readback_bits(&format!("h_{output}"), len, "    ")
     )
 }
 
@@ -593,19 +590,4 @@ fn timing_loop(grid: [usize; 3], threads: [usize; 3], launch_args: &str, repeat:
 "#,
         grid[0], grid[1], grid[2], threads[0], threads[1], threads[2],
     )
-}
-
-/// 输出缓冲的（名字，元素数）：只接受 f32 输出，回读路径按 float 解释字节。
-fn bench_output_shape(signature: &Signature, sample: &Sample) -> Result<(String, usize)> {
-    let output = output_name(signature)?;
-    let values = sample
-        .buffer(output)
-        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
-    match &values.values {
-        Values::F32(_) => Ok((output.to_owned(), values.values.len())),
-        _ => Err(Error::new(
-            Code::Unsupported,
-            "设备基准回读当前要求 f32 输出",
-        )),
-    }
 }

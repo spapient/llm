@@ -15,6 +15,8 @@ use diagnostic::{Code, Error, Result};
 use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
+use crate::dialect::readback_bits;
+
 /// AscendCL 的调用守卫：失败时报出是哪个调用并返回非零。
 ///
 /// 见证程序（`backends` 的 `push_ascend_main`）与本模块的语义门 harness 共用这一份：两处各写
@@ -152,12 +154,9 @@ fn ascend_main(
         "    cutile_launch<<<1, nullptr, stream>>>({});\n\
          \x20   CUTILE_ACL(aclrtSynchronizeStream(stream));\n\
          \x20   CUTILE_ACL(aclrtMemcpy(h_{output}, {output_len} * sizeof(float), d_{output}, \
-         {output_len} * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));\n\
-         \x20   for (int i = 0; i < {output_len}; ++i) {{\n\
-         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
-         \x20       printf(\"%u\\n\", v.u);\n\
-         \x20   }}\n",
-        ascend_launch_args(signature, sample)?
+         {output_len} * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST));\n{}",
+        ascend_launch_args(signature, sample)?,
+        readback_bits(&format!("h_{output}"), output_len, "    ")
     ));
     for param in signature
         .params()
