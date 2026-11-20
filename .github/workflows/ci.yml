@@ -76,6 +76,28 @@ jobs:
             echo "No skipped-test records."
           fi
 
+  metal-macos:
+    name: Metal ABI (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-01"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p llm-engine --lib --locked metal
+
+  address-sanitizer-macos:
+    name: address sanitizer (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-01"
+      - uses: Swatinem/rust-cache@v2
+      - run: RUSTFLAGS="-Zsanitizer=address" cargo test -p llm-engine --lib --locked
+
   msrv:
     name: msrv (1.100.0)
     runs-on: ubuntu-latest
@@ -212,7 +234,7 @@ jobs:
       FUZZ_TARGETS: >-
         fuzz_cli fuzz_weights_json fuzz_weights_safetensors fuzz_weights_archive
         fuzz_train_snapshot fuzz_serve_frames fuzz_wire_sealed fuzz_wire_leb
-        fuzz_lex
+      fuzz_http_head fuzz_lex
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

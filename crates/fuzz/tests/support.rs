@@ -140,6 +140,19 @@ pub mod drivers {
         }
     }
 
+    /// HTTP/1.1 P0 请求头：任意字节只能得到稳定拒绝或已解析的请求行和长度。
+    pub struct HttpHead;
+
+    impl Target for HttpHead {
+        fn name(&self) -> &str {
+            "serve::http::head"
+        }
+
+        fn run(&self, input: &[u8]) -> Result<(), Error> {
+            serve::fuzz_http_head(input)
+        }
+    }
+
     /// LEB128 变长整数游标：一段字节里读一个规范无符号整数。
     ///
     /// 非规范编码（前导零字节、超 `u64` 容量、第 10 字节越界）与字节不足都返回错误；游标本身
@@ -283,7 +296,7 @@ pub mod seeds {
     pub const LEX: &[u8] = b"fn f() { let x = 1; }";
 
     /// harness 目标名 → 合法范例；顺序与 CI 的 `FUZZ_TARGETS`、`drivers.rs` 的驱动一一对应。
-    pub fn exemplars() -> [(&'static str, Vec<u8>); 9] {
+    pub fn exemplars() -> [(&'static str, Vec<u8>); 10] {
         [
             ("fuzz_cli", ARGS.to_vec()),
             ("fuzz_weights_json", HEADER.as_bytes().to_vec()),
@@ -291,6 +304,10 @@ pub mod seeds {
             ("fuzz_weights_archive", u_container()),
             ("fuzz_train_snapshot", snapshot()),
             ("fuzz_serve_frames", frame()),
+            (
+                "fuzz_http_head",
+                b"POST /v1/echo HTTP/1.1\r\nContent-Length: 2\r\n\r\n".to_vec(),
+            ),
             ("fuzz_wire_sealed", frame()),
             ("fuzz_wire_leb", leb()),
             ("fuzz_lex", LEX.to_vec()),
