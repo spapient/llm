@@ -312,13 +312,6 @@ fn name_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Resu
     Ok(Value::Text(text))
 }
 
-/// 纯字符串键值（允许空串）：`#[dialect]` 的八键共用——`device_fn = ""` / `point_stmt = ""` 这类
-/// 「这一维没有 vendor 差异」必须写成空字符串，而不是缺省值，因此不能走 [`name_value`] 的非空校验。
-fn string_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
-    let text = text_value(cursor, at, spec)?;
-    Ok(Value::Text(text))
-}
-
 /// 非零轴数组：括号与元素的措辞由键名推出，零宽轴那一句由调用方给。
 fn axes(cursor: &mut Cursor<'_>, spec: &KeySpec<'_>, zero: &str) -> Result<Value, Error> {
     let group_what = format!("`{} = [..]` 的方括号", spec.name);
@@ -565,102 +558,6 @@ fn check_gemm_name(skeleton: &str, name: &str) -> Result<(), Error> {
     ))
 }
 
-/// `#[dialect(..)]` 解析后的八件事：入口关键字、地址空间限定词、设备函数限定词、缓冲模板、
-/// 逐点 / 网格线程形参与线程下标语句。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DialectDecl {
-    /// 内核入口关键字（`kernel` / `__global__`）。
-    pub(crate) entry: String,
-    /// 地址空间限定词（Metal `device`；CUDA 空）。
-    pub(crate) address_space: String,
-    /// 设备函数限定词（CUDA `__device__`；Metal 空）。
-    pub(crate) device_fn: String,
-    /// 缓冲声明模板，含 `{ctype}` / `{name}` / `{slot}` 三个占位符。
-    pub(crate) buffer: String,
-    /// 逐点网格线程形参。
-    pub(crate) point_param: String,
-    /// 逐点网格线程下标语句。
-    pub(crate) point_stmt: String,
-    /// 分块 / 循环网格线程形参。
-    pub(crate) grid_param: String,
-    /// 分块 / 循环网格线程下标语句。
-    pub(crate) grid_stmt: String,
-}
-
-/// `#[dialect(..)]` 的键表：八键全必填、顺序即「未知键」提示里的顺序。
-///
-/// 每个键都是普通字符串字面量（含空串）：`device_fn = ""` / `point_stmt = ""` 是「这一维没有
-/// vendor 差异」的显式写法，不能当缺省——少写一个键就是少一条事实，宁可编译失败也不悄悄拼出
-/// 一份错后端。
-const DIALECT: [KeySpec<'static>; 8] = [
-    row(
-        "entry",
-        string_value,
-        "入口关键字只能声明一次",
-        Some(" = \"..\""),
-    ),
-    row(
-        "address_space",
-        string_value,
-        "地址空间限定词只能声明一次",
-        Some(" = \"..\""),
-    ),
-    row(
-        "device_fn",
-        string_value,
-        "设备函数限定词只能声明一次",
-        Some(" = \"..\""),
-    ),
-    row(
-        "buffer",
-        string_value,
-        "缓冲声明模板只能声明一次",
-        Some(" = \"..\""),
-    ),
-    row(
-        "point_param",
-        string_value,
-        "逐点线程形参只能声明一次",
-        Some(" = \"..\""),
-    ),
-    row(
-        "point_stmt",
-        string_value,
-        "逐点线程下标语句只能声明一次",
-        Some(" = \"..\""),
-    ),
-    row(
-        "grid_param",
-        string_value,
-        "网格线程形参只能声明一次",
-        Some(" = \"..\""),
-    ),
-    row(
-        "grid_stmt",
-        string_value,
-        "网格线程下标语句只能声明一次",
-        Some(" = \"..\""),
-    ),
-];
-
-/// 解析 `#[dialect(entry = "..", address_space = "..", device_fn = "..", buffer = "..",
-/// point_param = "..", point_stmt = "..", grid_param = "..", grid_stmt = "..")]`。
-/// 八键全必填、键序随意，值一律是普通字符串字面量（允许空串）。
-pub(crate) fn parse_dialect(tokens: &[Token]) -> Result<DialectDecl, Error> {
-    let values = collect(tokens, &DIALECT)?;
-    require(&values, &DIALECT)?;
-    Ok(DialectDecl {
-        entry: values[0].text().to_string(),
-        address_space: values[1].text().to_string(),
-        device_fn: values[2].text().to_string(),
-        buffer: values[3].text().to_string(),
-        point_param: values[4].text().to_string(),
-        point_stmt: values[5].text().to_string(),
-        grid_param: values[6].text().to_string(),
-        grid_stmt: values[7].text().to_string(),
-    })
-}
-
 /// 一项里的关键字闭集：注解只看这些词，`pub`、名字与宏名一律跳过。
 const KEYWORDS: [&str; 10] = [
     "struct", "enum", "fn", "trait", "impl", "mod", "union", "type", "static", "const",
@@ -756,26 +653,6 @@ fn named(
         ));
     }
     Ok(name.clone())
-}
-
-/// `#[dialect]` 标注的是一个**厂商方言标记**：`struct Metal;` / `struct Cuda;`。与 [`target_name`]
-/// 的差别只在于拒绝 `enum`——方言是单例标记，enum 没有意义。
-pub(crate) fn dialect_target(tokens: &[Token], attribute: &str) -> Result<String, Error> {
-    let Some((position, word)) = keyword(tokens) else {
-        return Err(Error::at(
-            0,
-            format!("`#[{attribute}]` 只能标注 struct：找不到类型定义"),
-        ));
-    };
-    if word != "struct" {
-        return Err(Error::at(
-            position,
-            format!(
-                "`#[{attribute}]` 只能标注 struct，得到 `{word}`：方言是一个单例标记类型"
-            ),
-        ));
-    }
-    named(tokens, position, word, attribute)
 }
 
 /// 数组元素：`元素 (, 元素)*`，允许尾随逗号；任何错误都指回方括号组。
