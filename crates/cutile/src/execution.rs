@@ -119,7 +119,14 @@ pub fn metal_tiled_gemm_program(
         return lower(&run, &prepared, m, n);
     }
     single(
-        lower_sources(Emit::Metal, &Lower::TiledGemm { tile }, &run, &prepared, m, n)?,
+        lower_sources(
+            Emit::Metal,
+            &Lower::TiledGemm { tile },
+            &run,
+            &prepared,
+            m,
+            n,
+        )?,
         "分块 gemm",
     )
 }

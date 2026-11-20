@@ -443,10 +443,8 @@ pub fn metal_tiled_gemm(
     tile: usize,
 ) -> Result<String> {
     if tile == 0 {
-        return Err(
-            Error::new(Code::Invalid, "分块大小必须大于 0")
-                .with("engine::codegen::metal_tiled_gemm"),
-        );
+        return Err(Error::new(Code::Invalid, "分块大小必须大于 0")
+            .with("engine::codegen::metal_tiled_gemm"));
     }
     let (a, b, y) = gemm_buffers(signature)?;
     let (_, n, k) = gemm_dims(signature, sample)?;
@@ -487,8 +485,11 @@ fn gemm_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize, us
             .scalar(&param.name)
             .and_then(|value| usize::try_from(value).ok())
             .ok_or_else(|| {
-                Error::new(Code::Invalid, format!("标量 `{}` 缺非负样本取值", param.name))
-                    .with("engine::codegen::metal_tiled_gemm")
+                Error::new(
+                    Code::Invalid,
+                    format!("标量 `{}` 缺非负样本取值", param.name),
+                )
+                .with("engine::codegen::metal_tiled_gemm")
             })
     };
     Ok((dim(m)?, dim(n)?, dim(k)?))
