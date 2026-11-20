@@ -732,12 +732,8 @@ kernel void kernel_main(device float* in [[buffer(0)]],
         const N: usize = 256;
         const K: usize = 4096;
 
-        let a: Vec<f32> = (0..M * K)
-            .map(|i| ((i % 5) as f32) * 0.25 - 0.5)
-            .collect();
-        let b: Vec<f32> = (0..K * N)
-            .map(|i| ((i % 7) as f32) * 0.2 - 0.4)
-            .collect();
+        let a: Vec<f32> = (0..M * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+        let b: Vec<f32> = (0..K * N).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
         let reference = cpu_matmul(&a, &b, M, N, K);
 
         let mut a_buf = device.new_buffer(M * K * 4).expect("A 缓冲");
@@ -747,7 +743,8 @@ kernel void kernel_main(device float* in [[buffer(0)]],
         let mut y_buf = device.new_buffer(M * N * 4).expect("Y 缓冲");
 
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-matmul-k4096"));
+        let dirs =
+            cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-matmul-k4096"));
         let grid_msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "matmul_f32", M, N)
             .expect("标量网格 MSL 应能生成");
         let tiled_msl =
@@ -764,8 +761,20 @@ kernel void kernel_main(device float* in [[buffer(0)]],
         assert_matmul_matches("tiled", &reference, y_buf.as_mut_bytes());
 
         let flop = 2.0 * (M * N * K) as f64;
-        let grid_ns = measure(&queue, &grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
-        let tiled_ns = measure(&queue, &tiled_pipe, &[&a_buf, &b_buf, &y_buf], grid, [16, 16, 1]);
+        let grid_ns = measure(
+            &queue,
+            &grid_pipe,
+            &[&a_buf, &b_buf, &y_buf],
+            grid,
+            [1, 1, 1],
+        );
+        let tiled_ns = measure(
+            &queue,
+            &tiled_pipe,
+            &[&a_buf, &b_buf, &y_buf],
+            grid,
+            [16, 16, 1],
+        );
         eprintln!(
             "Metal 生产态 GEMM 256×256×4096：网格标量={grid_ns:.1} ns（{:.2} GFLOP/s） 分块={tiled_ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
             flop / grid_ns,
