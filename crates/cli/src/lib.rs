@@ -599,7 +599,15 @@ const TRAIN: &[(&str, &str)] = &[
 ];
 
 /// `inspect` / `check` 的选项：只有 `--in`，必需。
-const INSPECT: &[(&str, &str)] = &[("--in", "文件")];
+///
+/// 表即文法：这两条都只说一个文件，与 `SINGLE` 的差别只在“必填”——构造器因此吃 `String`
+/// 而不是 `Option<String>`，类型上就区分了“可以有默认”与“必须点名文件”。
+const PATHS: &[(&str, &str, &str, fn(String) -> Command)] = &[
+    ("inspect", "--in", "文件", |input| Command::Inspect {
+        input,
+    }),
+    ("check", "--in", "文件", |input| Command::Check { input }),
+];
 
 /// `import` 的选项：`--in`（safetensors 源）与 `--out`（`.u` 容器），两者都必需。
 const IMPORT: &[(&str, &str)] = &[("--in", "源"), ("--out", "文件")];
@@ -653,28 +661,22 @@ fn command(name: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
 fn archive_command(name: &str, words: &mut Words<'_>) -> Result<Command> {
     match name {
         "import" => import(words),
-        "inspect" => single_required(words, INSPECT, "inspect", |input| Command::Inspect {
-            input,
-        }),
-        "check" => single_required(words, INSPECT, "check", |input| Command::Check { input }),
         "settle" => settle(words),
         "audit" => audit(words),
-        known => single(known, words),
+        known => path_command(known, words),
     }
 }
 
-/// 单选项必需命令：表内唯一槽位，缺省即 [`missing_required`]；`--in` 不允许悬空。
-fn single_required(
-    words: &mut Words<'_>,
-    table: &[(&str, &str)],
-    command: &str,
-    build: fn(String) -> Command,
-) -> Result<Command> {
-    let slots = parse_slots(words, table, command)?;
-    let input = slots[0]
-        .clone()
-        .ok_or_else(|| missing_required(table[0].0, command))?;
-    Ok(build(input))
+/// 表内单路径命令；表外名字再交给 `SINGLE`。
+///
+/// “表外”不是错：`SINGLE` 里的名字各有默认，两者合起来才是全部归档命令。
+fn path_command(name: &str, words: &mut Words<'_>) -> Result<Command> {
+    let Some((.., flag, what, build)) = PATHS.iter().find(|(candidate, ..)| *candidate == name)
+    else {
+        return single(name, words);
+    };
+    let slots = parse_slots(words, &[(flag, what)], name)?;
+    Ok(build(required_slot(&slots, 0, flag, name)?))
 }
 
 /// `platform`：零选项命令，多给一个词就是写错了（不静默忽略）。
@@ -841,12 +843,20 @@ fn entry_compute(command: &Command) -> Result<()> {
 fn entry_archive_or_train(command: &Command) -> Result<()> {
     match command {
         Command::Import { input, output } => archive::import(input, output),
-        Command::Inspect { input } => archive::inspect(input),
-        Command::Check { input } => archive::check(input),
+        Command::Inspect { input } | Command::Check { input } => container(input, command),
         Command::Settle { input, output } => archive::settle(input, output.as_deref()),
         Command::Audit { input, ledger } => archive::audit(input, ledger),
         other => entry_train(other),
     }
+}
+
+/// `inspect` 与 `check` 都只说一个文件：差别只在 `check` 多跑一遍验码，入口因此只问一次
+/// “是不是验码”，而不是各写一臂。
+fn container(input: &str, command: &Command) -> Result<()> {
+    if matches!(command, Command::Check { .. }) {
+        return archive::check(input);
+    }
+    archive::inspect(input)
 }
 
 /// 训练闭环只有 `train` 一个命令：走到这里还不是它，就是"没接入编排"而不是配置错误。

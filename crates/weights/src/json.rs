@@ -450,22 +450,10 @@ impl<'a> Reader<'a> {
     /// 一个数字：整数走 `i64`，小数与指数（只有账本模式接受）按原文保留。
     fn number(&mut self) -> Result<Value> {
         let start = self.cursor.pos();
-        self.cursor
-            .advance(usize::from(self.cursor.peek() == Some(b'-')));
-        let digits = self.cursor.pos();
-        while matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
-            self.cursor.advance(1);
-        }
-        if self.cursor.pos() == digits {
-            return Err(self.cursor.fail_at(start, "数字缺少整数部分"));
-        }
+        let digits = self.integer(start)?;
         if !matches!(self.cursor.peek(), Some(b'.' | b'e' | b'E')) {
-            return integer_value(
-                &self.cursor,
-                start,
-                &self.cursor.bytes()[start..self.cursor.pos()],
-            )
-            .map(Value::Integer);
+            let text = &self.cursor.bytes()[start..self.cursor.pos()];
+            return integer_value(&self.cursor, start, text).map(Value::Integer);
         }
         if !self.fractional {
             return Err(self
@@ -474,36 +462,63 @@ impl<'a> Reader<'a> {
         }
         let whole = self.cursor.pos();
         self.fraction(start)?;
+        self.decimal(start, digits, whole).map(Value::Decimal)
+    }
+
+    /// 整数部分：可选负号 + 至少一位数字，返回数字起点。
+    fn integer(&mut self, start: usize) -> Result<usize> {
+        self.cursor
+            .advance(usize::from(self.cursor.peek() == Some(b'-')));
+        let digits = self.cursor.pos();
+        if self.mantissa() {
+            return Ok(digits);
+        }
+        Err(self.cursor.fail_at(start, "数字缺少整数部分"))
+    }
+
+    /// 小数与指数部分：`.` 后至少一位数字，`e`/`E` 后可带符号、同样至少一位数字。
+    fn fraction(&mut self, start: usize) -> Result<()> {
+        self.dot(start)?;
+        self.exponent(start)
+    }
+
+    /// 小数部分（可缺）：`.` 之后必须至少一位数字。
+    fn dot(&mut self, start: usize) -> Result<()> {
+        if self.cursor.peek() != Some(b'.') {
+            return Ok(());
+        }
+        self.cursor.advance(1);
+        if self.mantissa() {
+            return Ok(());
+        }
+        Err(self.cursor.fail_at(start, "小数点后缺少数字"))
+    }
+
+    /// 指数部分（可缺）：`e`/`E` 后可带符号，同样必须至少一位数字。
+    fn exponent(&mut self, start: usize) -> Result<()> {
+        if !matches!(self.cursor.peek(), Some(b'e' | b'E')) {
+            return Ok(());
+        }
+        self.cursor.advance(1);
+        self.cursor
+            .advance(usize::from(matches!(self.cursor.peek(), Some(b'+' | b'-'))));
+        if self.mantissa() {
+            return Ok(());
+        }
+        Err(self.cursor.fail_at(start, "指数缺少数字"))
+    }
+
+    /// 数字原文，顺带挡掉前导零（`0.5` 合法，`01.5` 不合法）。
+    fn decimal(&self, start: usize, digits: usize, whole: usize) -> Result<String> {
         let text = &self.cursor.bytes()[start..self.cursor.pos()];
-        if text[digits - start..whole - start].len() > 1
-            && text[digits - start..whole - start].starts_with(b"0")
-        {
+        let head = &text[digits - start..whole - start];
+        if head.len() > 1 && head.starts_with(b"0") {
             let shown = String::from_utf8_lossy(text);
             return Err(self
                 .cursor
                 .fail_at(start, format!("数字 `{shown}` 不能有前导零")));
         }
-        Ok(Value::Decimal(String::from_utf8_lossy(text).into_owned()))
-    }
-
-    /// 小数与指数部分：`.` 后至少一位数字，`e`/`E` 后可带符号、同样至少一位数字。
-    fn fraction(&mut self, start: usize) -> Result<()> {
-        if self.cursor.peek() == Some(b'.') {
-            self.cursor.advance(1);
-            if !self.mantissa() {
-                return Err(self.cursor.fail_at(start, "小数点后缺少数字"));
-            }
-        }
-        if matches!(self.cursor.peek(), Some(b'e' | b'E')) {
-            self.cursor.advance(1);
-            if matches!(self.cursor.peek(), Some(b'+' | b'-')) {
-                self.cursor.advance(1);
-            }
-            if !self.mantissa() {
-                return Err(self.cursor.fail_at(start, "指数缺少数字"));
-            }
-        }
-        Ok(())
+        Ok(String::from_utf8_lossy(text).into_owned())
     }
 
     /// 连续数字段；至少吃到一个才返回 `true`。

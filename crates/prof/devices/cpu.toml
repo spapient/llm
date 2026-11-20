@@ -138,6 +138,14 @@ static inline float _cutile_exp_f32(float t) {
 /* log 与 exp 不同：定义域 (0,+∞)，域内 libm logf 相对误差 <1 ulp，远小于阈值 1e-5，
    无需位精确软件实现；与 Rust 参考 `f32::ln` 同走 libm，主机侧逐位一致。 */
 static inline float _cutile_log_f32(float x) { return logf(x); }
+/* sqrt / sin / cos / pow：与 log 同理走 libm。sqrtf 在 IEEE 下要求正确舍入（误差 ≤0.5 ulp），
+   与设备侧的 `sqrt` 逐位一致；sin/cos/pow 的 libm 与 Metal 的 `metal::sin/cos/pow` 都是 1 ulp
+   量级，比阈值 1e-5 小三个数量级。rope 与两个注意力算子用得上，早先缺口在这四个名字上，
+   C 参考因此根本编不过——参考车道不通，真机结论就无从判定对错。 */
+static inline float _cutile_sqrt_f32(float x) { return sqrtf(x); }
+static inline float _cutile_sin_f32(float x) { return sinf(x); }
+static inline float _cutile_cos_f32(float x) { return cosf(x); }
+static inline float _cutile_pow_f32(float x, float y) { return powf(x, y); }
 #if defined(__aarch64__)
 static inline float32x4_t _cutile_exp4_f32(float32x4_t x) {
     float32x4_t kv = vrndaq_f32(vmulq_f32(x, vdupq_n_f32(_cutile_exp_log2e)));

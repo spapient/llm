@@ -726,21 +726,34 @@ pub const POINT_THREADS: usize = 256;
 /// 网格维或长度标量在样本里取不到合法值，或分块族缺 `[chunk]` / 扫描衰减。
 pub fn launch(op: &OpDecl, sample: &Sample) -> diagnostic::Result<Launch> {
     let kind = kind(op)?;
-    let grid = grid_of_kind(&kind, op, sample)?;
-    Ok(Launch { kind, grid })
+    let items = items_of(&kind, op, sample)?;
+    // 逐点才成组（一元素一线程、块内 `POINT_THREADS` 线程）；分块与循环注入是「一块/一维一线程」，
+    // 组内再塞线程只会让同一块被多算几遍。
+    let group = match kind {
+        Lower::Pointwise => POINT_THREADS,
+        _ => 1,
+    };
+    Ok(Launch { kind, items, group })
 }
 
 /// 骨架分派：串行兜底 + 网格快路径 + 分块族。不回答派发几何（那是 [`grid_of_kind`]）。
 fn kind(op: &OpDecl) -> diagnostic::Result<Lower> {
     match op.skeleton {
-        Skeleton::Reduce if op.chunk.is_some() => reduce_kind(op),
-        Skeleton::Scan if op.chunk.is_some() => scan_kind(op),
         Skeleton::Gemm => Ok(grid_kind(op)),
-        Skeleton::Elementwise if op.pointwise() => Ok(Lower::Pointwise),
         Skeleton::Elementwise => Ok(chunked_elementwise(op)),
-        // 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
-        // 归约未声明 `[chunk]` 时同理：串行（`grid = [1,1,1]`）。
-        Skeleton::Reduce | Skeleton::Scan => Ok(serial_kind()),
+        _ => chunked_kind(op),
+    }
+}
+
+/// 非逐元素、非 gemm 的两族：声明了 `[chunk]` 就分块降级，否则串行。
+///
+/// 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
+/// 归约未声明 `[chunk]` 时同理：串行（`grid = [1,1,1]`）。
+fn chunked_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
+    match (op.skeleton, op.chunk.is_some()) {
+        (Skeleton::Reduce, true) => reduce_kind(op),
+        (Skeleton::Scan, true) => scan_kind(op),
+        _ => Ok(serial_kind()),
     }
 }
 
@@ -756,10 +769,15 @@ fn grid_kind(op: &OpDecl) -> Lower {
         .map_or_else(serial_kind, |grid| Lower::Loop(grid.clone()))
 }
 
+/// 逐元素族：纯逐点直接开线程，其余按 `[chunk]` 分块降级（[`chunked_elementwise`]）。
+///
 /// 分块逐元素：`[chunk]` 遇上 `[needs] reduce` 的 `max` 是三趟 softmax（最大 → 指数和 → 归一化），
 /// 遇上 `[needs] dot` 是两趟 rmsnorm（平方和 → 归一化）；其余正文已沿轴走完或下标依赖行 gather，
 /// 并行按元素拆会算错，退串行。
 fn chunked_elementwise(op: &OpDecl) -> Lower {
+    if op.pointwise() {
+        return Lower::Pointwise;
+    }
     let Some(chunk) = op.chunk.as_ref() else {
         return grid_kind(op);
     };
@@ -772,18 +790,34 @@ fn chunked_elementwise(op: &OpDecl) -> Lower {
     serial_kind()
 }
 
-/// 派发几何：逐点按元素数 ÷ 块大小、循环注入按 `[grid]` 各维取值、分块族按块数。
-fn grid_of_kind(kind: &Lower, op: &OpDecl, sample: &Sample) -> diagnostic::Result<[usize; 3]> {
-    let along = |len: usize| [len.max(1), 1, 1];
+/// 派发几何（工作项数）：逐点是元素数、循环注入按 `[grid]` 各维取值、分块族按块数。
+fn items_of(kind: &Lower, op: &OpDecl, sample: &Sample) -> diagnostic::Result<[usize; 3]> {
+    if let Lower::Loop(grid) = kind {
+        return Ok(pad(&grid_dims(grid, sample)?));
+    }
+    match slab(kind) {
+        Some(chunk) => Ok(along(length_of(op, sample)?.div_ceil(chunk))),
+        None => Ok([1, 1, 1]),
+    }
+}
+
+/// 沿长度轴展开的块大小：逐点一族格即元素、分块族按 `[chunk]` 声明。
+///
+/// `None` 是「这一形态不沿长度轴」——gather 一类的下标依赖行不能按元素拆，几何固定为一格。
+fn slab(kind: &Lower) -> Option<usize> {
     match kind {
-        Lower::Pointwise => Ok(along(length_of(op, sample)?.div_ceil(POINT_THREADS))),
-        Lower::Loop(grid) => Ok(pad(&grid_dims(grid, sample)?)),
+        Lower::Pointwise => Some(1),
         Lower::ChunkReduce { chunk, .. }
         | Lower::ChunkRmsnorm { chunk }
         | Lower::ChunkSoftmax { chunk }
-        | Lower::ChunkScan { chunk, .. } => Ok(along(length_of(op, sample)?.div_ceil(*chunk))),
-        _ => Ok([1, 1, 1]),
+        | Lower::ChunkScan { chunk, .. } => Some(*chunk),
+        _ => None,
     }
+}
+
+/// 沿长度轴的一维几何：空长仍给一格，否则网格为零既不执行也不报错。
+fn along(len: usize) -> [usize; 3] {
+    [len.max(1), 1, 1]
 }
 
 /// 三维补一：`[d0, d1]` → `[d0, d1, 1]`；空网格是 `[1, 1, 1]`。`[grid]` 声明层已限三维修。

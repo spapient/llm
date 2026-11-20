@@ -557,6 +557,25 @@ impl OpDecl {
                 .filter(|param| !param.ctype.is_buffer())
                 .count()
                 == 1
+            && self.same_element_type()
+    }
+
+    /// 全部缓冲同型：`y[n] = f(x[n])` 只有在此情形下才「线程下标就是元素下标」。
+    ///
+    /// 打包反量化是反例——`u8` 字节输入按 `cpb` 个 `f32` 输出展开，两侧元素计数不是 1:1，
+    /// 按元素拆线程会把每个字节解 0 次、结果全零。判据取「同型」而非「无打包常量」：同型是
+    /// 逐点成立的充分条件，打包族因此回落到整段串行（语义不变，只是不并行）。
+    fn same_element_type(&self) -> bool {
+        let mut types = self
+            .signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buffer())
+            .map(|param| param.ctype);
+        let Some(first) = types.next() else {
+            return false;
+        };
+        types.all(|ctype| ctype == first)
     }
 
     /// 声明本体：头、四个段与签名。模板侧校验不在这里（见 [`Self::verified`]）。

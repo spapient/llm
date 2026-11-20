@@ -43,8 +43,13 @@ pub enum Source {
 pub struct Launch {
     /// 降低形态。
     pub kind: Lower,
-    /// 派发网格（x/y/z）：逐点与分块族是元素数 / 块数，循环注入是 `[grid]` 各维的样本取值。
-    pub grid: [usize; 3],
+    /// 每个维度的工作项数：逐点是元素数、分块族是块数、循环注入是 `[grid]` 各维的样本取值。
+    ///
+    /// 它**不**等于 CUDA 的网格维（那是块数）：块数由后端用自己的线程组大小折算，两种方言的
+    /// 「网格」含义不同，混用会让末块越界或只跑一部分元素。
+    pub items: [usize; 3],
+    /// 一个线程组里放几个工作项：逐点取 [`crate::execution::POINT_THREADS`]，其余族一工作项一线程。
+    pub group: usize,
 }
 
 /// 生产态内核 lowering 请求：骨架分派后的中性描述，vendor 后端据此生成设备源。

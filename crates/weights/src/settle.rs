@@ -252,22 +252,36 @@ impl Settlement {
 
 /// 顶层三格 + 条目数：多一格、少一格、数目不符都在这里作答。
 fn verify_root(root: &[(String, Value)], settled: &Settlement) -> Result<()> {
-    only(root, &["schema", "file_len", "tensors"], "账本")?;
-    check(root, "schema", SCHEMA, "账本")?;
-    check(root, "file_len", &settled.file_len.to_string(), "账本")?;
+    verify_header(root, settled)?;
     let listed = field(root, "tensors", "账本")?.array()?;
-    if listed.len() != settled.tensors.len() {
-        return Err(bad(&format!(
-            "账本列了 {} 个张量，这份字节有 {} 段",
-            listed.len(),
-            settled.tensors.len()
-        )));
-    }
-    settled
-        .tensors
+    verify_count(listed, settled.tensors.len())?;
+    verify_rows(listed, &settled.tensors)
+}
+
+/// 段表逐条比对：数目已在本层之前对齐，这里只问「每条账与它那一行是否同源」。
+fn verify_rows(listed: &[Value], entries: &[Settled]) -> Result<()> {
+    entries
         .iter()
         .zip(listed)
         .try_for_each(|(entry, row)| verify_row(row.object()?, entry))
+}
+
+/// 顶层的两个标量格：`schema` 与 `file_len` 都得按规范写法与这份字节相等。
+fn verify_header(root: &[(String, Value)], settled: &Settlement) -> Result<()> {
+    only(root, &["schema", "file_len", "tensors"], "账本")?;
+    check(root, "schema", SCHEMA, "账本")?;
+    check(root, "file_len", &settled.file_len.to_string(), "账本")
+}
+
+/// 条目数必须与段表一致：多一条、少一条都是错位的账。
+fn verify_count(listed: &[Value], actual: usize) -> Result<()> {
+    if listed.len() == actual {
+        return Ok(());
+    }
+    Err(bad(&format!(
+        "账本列了 {} 个张量，这份字节有 {actual} 段",
+        listed.len()
+    )))
 }
 
 /// 一个条目的十二格：先挡掉多余的格，再逐格比规范写法。

@@ -444,8 +444,8 @@ impl Sweep<'_> {
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         match self.lane {
             Lane::Host => self.host(sample, prepared),
-            Lane::Cuda => self.cuda(sample, prepared),
-            Lane::Metal => self.metal(sample, prepared),
+            Lane::Cuda => self.device(sample, prepared, Emit::Cuda),
+            Lane::Metal => self.device(sample, prepared, Emit::Metal),
         }
     }
 
@@ -466,32 +466,57 @@ impl Sweep<'_> {
         Ok((outcome.bits, Some(artifact)))
     }
 
-    /// CUDA 通道：nvcc 临时编译、GPU 执行、回读；签名与样本先对齐（与 C 通道同一条判据）。
-    fn cuda(
+    /// 设备通道：nvcc / xcrun metal 临时编译、GPU 执行、回读；签名与样本先对齐（与 C 通道同一条判据）。
+    ///
+    /// CUDA 与 Metal 只差取哪个后端，所以共用这一份次序：两条通道若各写一遍，
+    /// “先试并行、再回落语义门”就会有两份口径。
+    fn device(
         &self,
         sample: &Sample,
         prepared: &Prepared,
+        emit: Emit,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
-        self.run.op.signature.check(sample)?;
-        let cuda = backend(Emit::Cuda)?;
-        let program = cuda.harness(&prepared.source.text, &self.run.op.signature, sample)?;
+        let (backend, launch) = self.channel(emit, sample)?;
+        let program = self.program(backend, sample, prepared, &launch)?;
         let (stdout, _stderr) =
-            cuda.compile_run(self.run.profile, self.dirs, &program, "verify")?;
+            backend.compile_run(self.run.profile, self.dirs, &program, "verify")?;
         Ok((runner::parse_bits(&stdout), None))
     }
 
-    /// Metal 通道：xcrun metal + metallib 临时编译、Apple GPU 执行、回读；签名与样本先对齐。
-    fn metal(
+    /// 通道前置：签名与样本先对齐（与 C 通道同一条判据），再取后端与派发几何。
+    ///
+    /// 这一份次序只写一次：两条设备通道若各自校验、各自算几何，那么“对齐了签名”这件事
+    /// 就会有两种说法，而几何漂移正是 harness 最难查的那类错。
+    fn channel(
         &self,
+        emit: Emit,
+        sample: &Sample,
+    ) -> diagnostic::Result<(&'static dyn crate::backend::Backend, crate::backend::Launch)> {
+        self.run.op.signature.check(sample)?;
+        let backend = backend(emit)?;
+        let launch = crate::execution::launch(self.run.op, sample)?;
+        Ok((backend, launch))
+    }
+
+    /// 要编译的那份程序：并行网格（生产态形态）优先，该形态没有实现时显式回落单线程语义门。
+    ///
+    /// 回落必须显式，因为“并行实现缺失”和“并行跑对了”都会写进同一份台账，两者不能混为一谈。
+    fn program(
+        &self,
+        backend: &dyn crate::backend::Backend,
         sample: &Sample,
         prepared: &Prepared,
-    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
-        self.run.op.signature.check(sample)?;
-        let metal = backend(Emit::Metal)?;
-        let program = metal.harness(&prepared.source.text, &self.run.op.signature, sample)?;
-        let (stdout, _stderr) =
-            metal.compile_run(self.run.profile, self.dirs, &program, "verify")?;
-        Ok((runner::parse_bits(&stdout), None))
+        launch: &crate::backend::Launch,
+    ) -> diagnostic::Result<crate::backend::Source> {
+        let signature = &self.run.op.signature;
+        let source = &prepared.source.text;
+        match backend.parallel(source, signature, sample, launch) {
+            Ok(program) => Ok(program),
+            Err(error) if error.code() == Code::Unsupported => {
+                backend.harness(source, signature, sample)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

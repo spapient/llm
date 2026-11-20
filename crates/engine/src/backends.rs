@@ -7,7 +7,7 @@
 //! 双源说明：Metal 是「设备源（.metal）+ host 驱动（.m）」两段文本，CUDA 是单段 `.cu`；这个差异
 //! 收在 [`cutile::backend::Source`] 里，由各自的 [`Driver::compile_run`] 解包，不外泄到机制层。
 
-use cutile::backend::{Backend, Codegen, Driver, Lower, Readback, Source};
+use cutile::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use cutile::dirs::Dirs;
 use cutile::driver;
 use cutile::prof::{Emit, Profile};
@@ -199,6 +199,15 @@ impl Codegen for MetalBackend {
         let (device, host) = crate::codegen::metal_harness(kernel, signature, sample)?;
         Ok(Source::Pair { device, host })
     }
+    fn parallel(
+        &self,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        launch: &Launch,
+    ) -> Result<Source> {
+        crate::program::metal(kernel, signature, sample, launch)
+    }
 }
 
 impl Driver for MetalBackend {
@@ -246,7 +255,7 @@ fn metal_lower(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => crate::codegen::metal_grid_kernel(kernel, signature).map(|s| vec![s]),
+        Pointwise => crate::codegen::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
         Loop(grid) => {
             crate::codegen::metal_loop_kernel(kernel, signature, sample, grid).map(|s| vec![s])
         }
@@ -614,6 +623,15 @@ impl Codegen for CudaBackend {
         Ok(Source::Single(crate::codegen::cuda_harness(
             kernel, signature, sample,
         )?))
+    }
+    fn parallel(
+        &self,
+        kernel: &str,
+        signature: &Signature,
+        sample: &Sample,
+        launch: &Launch,
+    ) -> Result<Source> {
+        crate::program::cuda(kernel, signature, sample, launch).map(Source::Single)
     }
 }
 
