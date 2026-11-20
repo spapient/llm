@@ -638,7 +638,7 @@ mod tests {
                 best1 = best1.min(t.elapsed().as_nanos() as f64);
             }
             println!(
-                "  i8 {m}x{n}x{k}: fast {mt:.1} GF/s | fast单 {:.1} GF/s | 扩展 {:.1}x",
+                "  i8 {m}x{n}x{k}: fast {mt:.1} GF/s | fast单 {:.1} GF/s | 单/多 {:.2}",
                 g(best1, m, n, k),
                 g(best1, m, n, k) / mt
             );
