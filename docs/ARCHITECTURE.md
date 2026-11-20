@@ -91,11 +91,11 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Closed` / `Set` / `KernelKey` | `prof` | 词汇表契约、全仓唯一位集（容量在单态化时由 `const FITS` 断言）、以及一条内核实现的登记键（[ADR 0027](adr/0027-kernel-registry-and-fragment-contract.md) 七元组，只承载身份） |
 | `FragmentSet` / `Device` / `Image` / `Status` | `prim` | 原语片段与见证源码、每台设备这次构建带上的设备侧代码、编译产物与其结局；三张内嵌表由 `build.rs` 扫描生成，`src/` 里只有类型 |
 | `Catalogue` | `cutile` | 已装载的三层数据（声明 + 档案 + 片段）与它们的交叉校验 |
-| `Backend` / `Codegen` / `Driver` / `Readback` / `Source` / `Lower` | `cutile` | 设备后端契约（`Backend = Codegen + Driver`）：`Codegen` 是纯函数，`Driver` 是唯一碰工具链 / FFI 的一半，运行期只经 `dyn` 分派；Metal / CUDA 的 `Driver` 由 `engine` 实现、`cli` 注入；`Lower` 是生产态 lowering 的中性请求 |
+| `Backend` / `Codegen` / `Driver` / `Readback` / `Source` / `Lower` / `Launch` | `cutile` | 设备后端契约（`Backend = Codegen + Driver`）：`Codegen` 是纯函数，`Driver` 是唯一碰工具链 / FFI 的一半，运行期只经 `dyn` 分派；Metal / CUDA 的 `Driver` 由 `engine` 实现、`cli` 注入；`Lower` 是生产态 lowering 的中性请求，`Launch` 把「工作项数」`items` 与「每点线程数」`group` 拆成两个字段（合成一个数会让总线程数与工作项数无法同时表达），两者都只由 `execution::launch` 一处从声明与样本推出。`Backend::parallel` 的默认实现是 `Unsupported`——「这个后端没有并行网格程序」是一句诚实的回答，默认给一份逐点源会让「缺实现」伪装成「实现过」 |
 | `Plan` / `Path` / `NoPath` / `VariantCheck` / `Proof` / `Source` / `Usage` | `cutile` | kernel 层中间产物，全部可见、无 IR；只有 `NoPath` 自带文本（错误契约）；`Proof` 记这次真正执行过的供给，`Proof::declared` 只给解释性报告 |
 | `Toolchain` / `CacheKey` / `Cache` / `Entry` / `State` / `Changed` / `Residue` / `Gc` / `ArtifactKey` / `Artifact` | `cutile` | 缓存指纹、编译产物与存量：`CacheKey::fields` 是哈希与差异比较的唯一来源且**不含工具链**，`ArtifactKey` 含实测工具链与编译参数，参数一变就换一份产物 |
 | `Doctor` / `OpInfo` / `DeviceInfo` / `LayoutRow` / `Storage` / `Declared` / `Built` / `CacheWhy` / `CacheState` | `cutile` | `doctor` 的结构化结论：每步产物都是数据，排版在前端 |
-| `VerifyReport` / `VerifyEntry` / `Verified` / `Execution` / `WitnessRun` / `Evidence` / `Basis` | `cutile` | `verify` 的逐设备结果与见证执行；失败如实记录，不写成"跳过"；`Evidence` 是三条命令共用的那一份证据 |
+| `VerifyReport` / `VerifyEntry` / `Verified` / `Execution` / `WitnessRun` / `Evidence` / `Basis` | `cutile` | `verify` 的逐设备结果与见证执行；失败如实记录，不写成"跳过"；`Evidence` 是三条命令共用的那一份证据。设备车道先问 `Backend::parallel`：拿到源就按 `Launch.items` / `group` 真发射网格，只在它明确答 `Unsupported` 时才回落语义门 harness——回落与否是证据里的一个字段而不是"反正都过了"的沉默，否则并行实现缺失会被读成设备已验证 |
 | `LedgerCell` / `BackendRow` | `cutile` | `ledger` 跨档案能力台账：只聚合 `witness` 已跑出的证据，不产生新证据 |
 | `Negotiation` | `cutile` | 一台设备的协商结论（首档 / 降级 / 无路径 / 无档案）：只读声明与档案，与执行成败分开记 |
 | `Fragment` | `cutile` | 一份生成片段的行数与 §16 口径（`FRAGMENT_LIMIT` 上限管成败，`FRAGMENT_GOAL` 只是余量） |

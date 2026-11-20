@@ -3,32 +3,15 @@
 //! 输入轴 `n` 被规约消掉，输出轴 `o` 长度恒为 1。`reduce_sum_f32` / `reduce_max_f32` 是同一副
 //! 骨架的两种 [`Reduce`] 实现，骨架（表达式缓存、代价、样本、校验、遍历）只有一份，按类型单态化。
 
-use crate::einsum::{Formula, FormulaCache, OperandSpec};
+use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
 /// 归约算子随语义变化的部分。
-pub trait Reduce {
-    /// 表达式各项的位宽与方向（表达式固定为 `n,o->o`）。
-    ///
-    /// 默认 f32 一读一写；位宽不同的格式在实现里覆盖。
-    const OPERANDS: &'static [OperandSpec] = &crate::einsum::f32_io_operands();
-
-    /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
-    fn cache() -> &'static FormulaCache;
-
-    /// 表达式：固定的 `n,o->o`，第一次调用时解析并校验，之后复用。
-    ///
-    /// 表达式不随实现变化，所以它不是关联常量：多一份可以写歪的事实，而这条骨架本来就只有
-    /// 一种求和形状（输出轴长度恒为 1）。
-    ///
-    /// # Errors
-    ///
-    /// 表达式与操作数表不自洽时返回说明（带 `op::reduce::formula` 帧）。
-    fn formula() -> Result<&'static Formula, Error> {
-        Self::cache().get("n,o->o", Self::OPERANDS, "op::reduce::formula")
-    }
-
+///
+/// 表达式（`n,o->o`）、操作数表与缓存由 [`FormulaOwner`] 给出：这条骨架只有一种求和形状
+/// （输出轴长度恒为 1），由装配宏统一声明，实现只决定初值与折叠。
+pub trait Reduce: FormulaOwner {
     /// 累加初值。
     fn start() -> f32;
 
@@ -127,12 +110,20 @@ macro_rules! reduce_f32 {
         #[doc = concat!("`", $op, "` 的标记类型：初值与折叠见 `start`/`fold`，骨架见 `crate::reduce`。")]
         pub struct $name;
 
-        impl $crate::reduce::Reduce for $name {
-            fn cache() -> &'static $crate::einsum::FormulaCache {
-                static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
-                &CACHE
-            }
+        impl $crate::formula::FormulaOwner for $name {
+            const EXPR: &'static str = "n,o->o";
 
+            const OPERANDS: &'static [$crate::einsum::OperandSpec] =
+                &$crate::einsum::f32_io_operands();
+
+            const FRAME: &'static str = "op::reduce::formula";
+
+            fn cache() -> &'static $crate::einsum::FormulaCache {
+                $crate::formula_cell!()
+            }
+        }
+
+        impl $crate::reduce::Reduce for $name {
             fn start() -> f32 {
                 $start
             }

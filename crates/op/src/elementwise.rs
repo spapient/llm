@@ -4,7 +4,7 @@
 //! 写一个数。`add_f32` / `mul_f32` 是同一副骨架的两种 [`Binary`] 实现，骨架（表达式缓存、代价、
 //! 样本、校验、遍历）只有一份，按实现类型单态化，`Model` 里仍是三个 `fn` 指针而不是热路径分发。
 
-use crate::einsum::{Formula, FormulaCache, OperandSpec};
+use crate::formula::FormulaOwner;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
@@ -12,29 +12,10 @@ use diagnostic::{Code, Error};
 pub use crate::unary::{AXES, project_shape};
 
 /// 逐元素二元算子随语义变化的那部分。
-pub trait Binary {
-    /// 一条 einsum 表达式：箭头左三项（两个读、一个写），共享一条轴。
-    ///
-    /// 二元逐元素形状只有这一种，默认值即标准规格；需要别的表达式时在实现里覆盖。
-    const EXPR: &'static str = "n,n,n->n";
-
-    /// 表达式各项的位宽与方向，顺序与 [`Binary::EXPR`] 一一对应。
-    ///
-    /// 默认 f32 两读一写；位宽不同的格式在实现里覆盖。
-    const OPERANDS: &'static [OperandSpec] = &crate::einsum::f32_binary_operands();
-
-    /// 缓存单元格（每个实现一份），见 [`crate::gemv::Format::cache`]。
-    fn cache() -> &'static FormulaCache;
-
-    /// 表达式：第一次调用时解析并校验，之后复用。
-    ///
-    /// # Errors
-    ///
-    /// 表达式与操作数表不自洽时返回说明（带 `op::elementwise::formula` 帧）。
-    fn formula() -> Result<&'static Formula, Error> {
-        Self::cache().get(Self::EXPR, Self::OPERANDS, "op::elementwise::formula")
-    }
-
+///
+/// 表达式（`n,n,n->n`）、操作数表与缓存由 [`FormulaOwner`] 给出：二元逐元素形状只有这一种，
+/// 由装配宏统一声明，实现只决定算术。
+pub trait Binary: FormulaOwner {
     /// 逐元素运算：两个输入值，一个输出值。
     fn apply(x: f32, y: f32) -> f32;
 
@@ -132,12 +113,20 @@ macro_rules! binary_f32 {
         #[doc = concat!("`", $op, "` 的标记类型：逐元素二元运算见 `apply`，骨架见 `crate::elementwise`。")]
         pub struct $name;
 
-        impl $crate::elementwise::Binary for $name {
-            fn cache() -> &'static $crate::einsum::FormulaCache {
-                static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
-                &CACHE
-            }
+        impl $crate::formula::FormulaOwner for $name {
+            const EXPR: &'static str = "n,n,n->n";
 
+            const OPERANDS: &'static [$crate::einsum::OperandSpec] =
+                &$crate::einsum::f32_binary_operands();
+
+            const FRAME: &'static str = "op::elementwise::formula";
+
+            fn cache() -> &'static $crate::einsum::FormulaCache {
+                $crate::formula_cell!()
+            }
+        }
+
+        impl $crate::elementwise::Binary for $name {
             fn apply(x: f32, y: f32) -> f32 {
                 const APPLY: fn(f32, f32) -> f32 = $apply;
                 APPLY(x, y)
