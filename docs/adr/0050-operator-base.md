@@ -1,6 +1,6 @@
 # 0050：算子基座——`Operator` 契约收口六族语义,装配宏退化为投影
 
-- 状态：已采纳（本轮落地 `op::operator` 契约与 reduce 族示范；其余族按 §5 顺序迁移）
+- 状态：已采纳（本轮落地 `op::operator` 契约与全部 36 个在册算子的 `impl`；`#[model]` 改生成 `model_of` 是下一步）
 - 日期：2026-11-20
 - 相关：[0002](0002-single-owner-per-type.md)（单一主人）、[0005](0005-annotations-as-contracts.md)（注解即契约）、[0013](0013-dense-projection-operator.md)（加算子只加数据）、[0026](0026-gemm-generic-skeleton.md)（GEMM 泛型骨架）、[0031](0031-kernel-macro-derived-table.md)（宏派生表）、[0047](0047-2bit-quantized-lane.md)（量化 lane 的配置表）、[0049](0049-refactor-summary-2026-11.md)（上一轮重构结论）
 
@@ -59,6 +59,10 @@ pub trait Operator {
 **名字与顺序不再手写**：由 `Operator::NAME` 的表驱动生成（`operator_table!`），每一行只剩适配函数名。
 `op::kernel_table!`（本轮已收口）继续作为行展开。
 
+模块自带具体入口的算子（softmax / rmsnorm / rope / embed / scan / attention / matmul）由
+`operator_here!` 生成 `Operator` 实现：装配行只剩类型、注册名、生产形状、可微性与参考入口，
+`AXES` / `project_shape` / `cost` / `sample` 取调用模块的同名项，不再各抄一遍 trait 样板。
+
 ### 4. 不做的事
 
 - 不引入运行期注册表（ADR 0005）：`Operator` 是 trait，表仍是编译期常量。
@@ -66,6 +70,8 @@ pub trait Operator {
 - 不删族 trait：它们是骨架配置的唯一声明处；`Operator` 是它们之上的统一契约，不是替代。
 
 ## 迁移顺序（每族独立可验证，测试数不跌）
+
+进度（2026-11-20）：第 1–4 步已落地，全部 36 个在册算子实现 `Operator`；第 5 步（注解改投影）未做。
 
 1. **reduce 族（本轮示范）**：`Operator` 契约 + `reduce_sum/max` 两个 impl + 投影一致性测试。
 2. unary / binary / dequant：三族形状同构，照 reduce 范式。
