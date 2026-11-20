@@ -17,9 +17,10 @@
 
 use std::fmt::Write as _;
 
-use diagnostic::Result;
+use diagnostic::{Code, Error, Result};
 
 use crate::archive::lossless_entry;
+use crate::json::{self, Value};
 use crate::ledger::SCHEMA;
 use crate::{Archive, Codec, Stored};
 
@@ -221,6 +222,136 @@ impl Settlement {
         out.push_str("}\n");
         out
     }
+
+    /// 读回一份账本文本，并与同一份落盘字节现算的账**逐格**核对。
+    ///
+    /// 这是账本唯一的消费方式：[`Settlement::render`] 写出的每一格都得能被这里核回，否则那一格
+    /// 就只是「写入者说了什么」。两处判据都是硬的：
+    ///
+    /// - **按规范写法比，不按数值比**：`volume_ratio` 与 `entropy_H` 是 `{:.6}` 的产物，读回的
+    ///   `0.5` 与写出的 `0.500000` 不算相等。账本是同一份字节的规范产物，不是可自由排版的配置，
+    ///   所以「差一点点也算对」在这里没有位置。
+    /// - **条目与段表一一对应**：多一条、少一条、换次序都是 [`Code::Invalid`]。账本描述的是这一份
+    ///   字节，错位的账没有意义。
+    /// - **多一格也不行**：条目里出现现算不出的键（例如手写的 `"note"`），就是描述了这份字节里
+    ///   不存在的东西；「不能少」与「不能多」是同一个判据的两面。
+    ///
+    /// 键序与空白不参与比对（按名取键），这是它比逐字节比对宽松的唯一一处。
+    ///
+    /// # Errors
+    ///
+    /// 文本不是合法 JSON、缺键、某格与现算不符，或容器本身解不开，一律 [`Code::Invalid`]；消息里
+    /// 带上出错的那一格与它的主人，避免「账本有问题」这种无法定位的结论。
+    pub fn verify(text: &str, bytes: &[u8]) -> Result<Self> {
+        let settled = Self::settle(bytes)?;
+        let parsed = json::parse_ledger(text)?;
+        verify_root(parsed.object()?, &settled)?;
+        Ok(settled)
+    }
+}
+
+/// 顶层三格 + 条目数：多一格、少一格、数目不符都在这里作答。
+fn verify_root(root: &[(String, Value)], settled: &Settlement) -> Result<()> {
+    only(root, &["schema", "file_len", "tensors"], "账本")?;
+    check(root, "schema", SCHEMA, "账本")?;
+    check(root, "file_len", &settled.file_len.to_string(), "账本")?;
+    let listed = field(root, "tensors", "账本")?.array()?;
+    if listed.len() != settled.tensors.len() {
+        return Err(bad(&format!(
+            "账本列了 {} 个张量，这份字节有 {} 段",
+            listed.len(),
+            settled.tensors.len()
+        )));
+    }
+    settled
+        .tensors
+        .iter()
+        .zip(listed)
+        .try_for_each(|(entry, row)| verify_row(row.object()?, entry))
+}
+
+/// 一个条目的十二格：先挡掉多余的格，再逐格比规范写法。
+fn verify_row(fields: &[(String, Value)], entry: &Settled) -> Result<()> {
+    let want = expected(entry);
+    let names: Vec<&str> = want.iter().map(|(key, _)| *key).collect();
+    only(fields, &names, entry.name())?;
+    for (key, value) in &want {
+        check(fields, key, value, entry.name())?;
+    }
+    Ok(())
+}
+
+/// 键集合不得超出 `allowed`：账本只能描述这份字节里有的格。
+fn only(fields: &[(String, Value)], allowed: &[&str], owner: &str) -> Result<()> {
+    match fields
+        .iter()
+        .find(|(name, _)| !allowed.contains(&name.as_str()))
+    {
+        None => Ok(()),
+        Some((extra, _)) => Err(bad(&format!(
+            "{owner} 的账本多出 `{extra}`：这份字节没有这一格"
+        ))),
+    }
+}
+
+/// 一格账的比对：键必须在、且按**规范写法**逐字等于现算值。
+fn check(fields: &[(String, Value)], key: &str, want: &str, owner: &str) -> Result<()> {
+    let text = written(field(fields, key, owner)?)?;
+    if text == want {
+        return Ok(());
+    }
+    Err(bad(&format!(
+        "{owner} 的 `{key}` 是 `{text}`，这份字节现算的是 `{want}`"
+    )))
+}
+
+/// 按名取一格；缺键就是账本不完整（不是「这格可以不写」）。
+fn field<'a>(fields: &'a [(String, Value)], key: &str, owner: &str) -> Result<&'a Value> {
+    fields
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value)
+        .ok_or_else(|| bad(&format!("{owner} 的账本缺 `{key}`")))
+}
+
+/// 值在文本里的写法：字符串取内容、布尔与 `null` 取字面、数字取原文。
+///
+/// 与 [`Settled::render`] 的写法是同一份约定——两边各写一套，逐格比对就变成两种格式之争。
+fn written(value: &Value) -> Result<String> {
+    match value {
+        Value::String(text) => Ok(text.clone()),
+        Value::Bool(flag) => Ok(flag.to_string()),
+        Value::Null => Ok("null".to_string()),
+        Value::Integer(_) | Value::Decimal(_) => value.number_text(),
+        other => Err(bad(&format!(
+            "账本的这一格必须是标量，得到{}",
+            other.kind()
+        ))),
+    }
+}
+
+/// 一条目期望的十二格：键名与 [`Settled::render`] 同源同序，值按规范写法成文。
+fn expected(entry: &Settled) -> [(&'static str, String); 12] {
+    let (bits, group) = entry.quant().unwrap_or((0, 0));
+    [
+        ("name", entry.name().to_string()),
+        ("layer", layer_json(entry.layer())),
+        ("raw_len", entry.raw_len().to_string()),
+        ("volume_bytes", entry.volume().to_string()),
+        ("volume_ratio", format!("{:.6}", entry.volume_ratio())),
+        ("entropy_H", format!("{:.6}", entry.entropy())),
+        ("quant_bits", bits.to_string()),
+        ("quant_group_size", group.to_string()),
+        ("verify_bitwise_equal", entry.bitwise().to_string()),
+        ("is_lossless", entry.lossless().to_string()),
+        ("decision", entry.decision().to_string()),
+        ("codec_reason", entry.reason().as_str().to_string()),
+    ]
+}
+
+/// 账本类错误：全部 [`Code::Invalid`]，来源标 `weights::settle`。
+fn bad(message: &str) -> Error {
+    Error::new(Code::Invalid, message).with("weights::settle")
 }
 
 impl Settled {
@@ -403,13 +534,19 @@ mod tests {
 
     /// 写入并 settle：`compress` 决定写侧是否尝试熵编码。
     fn settled(segments: Vec<Segment>, compress: bool) -> Settlement {
+        container(segments, compress).0
+    }
+
+    /// 落盘、记账，并把字节一起留下：核账必须比的是同一份字节。
+    fn container(segments: Vec<Segment>, compress: bool) -> (Settlement, Vec<u8>) {
         let mut writer = Writer::new();
         writer.compress(compress);
         for segment in segments {
             writer.push(segment).expect("入写");
         }
         let bytes = writer.finish(6).expect("落盘");
-        Settlement::settle(&bytes).expect("记账")
+        let settlement = Settlement::settle(&bytes).expect("记账");
+        (settlement, bytes)
     }
 
     /// 0/1 交替的 f32 流：重复度高，写侧会选中熵编码。
@@ -549,6 +686,97 @@ mod tests {
     fn the_ledger_refuses_bytes_that_are_not_a_container() {
         let error = Settlement::settle(&[0u8; 8]).expect_err("不是容器");
         assert_eq!(error.code(), diagnostic::Code::Invalid);
+    }
+
+    #[test]
+    fn a_cell_this_bytes_cannot_produce_is_rejected() {
+        let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
+        let text = settlement.render();
+
+        // 条目里多一格：`note` 现算不出来，账本却在描述它。
+        let forged = text.replace(
+            "\"codec_reason\": ",
+            "\"note\": \"ok\",\n      \"codec_reason\": ",
+        );
+        assert_ne!(forged, text, "必须真插入一格");
+        let error = Settlement::verify(&forged, &bytes).expect_err("条目多一格");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("note"), "{error}");
+
+        // 顶层多一格同理：整份账只有那三个整体字段。
+        let forged = text.replacen(
+            "{\n  \"schema\"",
+            "{\n  \"author\": \"nobody\",\n  \"schema\"",
+            1,
+        );
+        assert_ne!(forged, text, "必须真插入一格");
+        let error = Settlement::verify(&forged, &bytes).expect_err("顶层多一格");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("author"), "{error}");
+    }
+
+    #[test]
+    fn the_book_reads_back_as_itself() {
+        let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
+        let text = settlement.render();
+        let read = Settlement::verify(&text, &bytes).expect("原样读回必须通过");
+        assert_eq!(read.render(), text, "读回的就是同一份账");
+        assert_eq!(read.tensors().len(), settlement.tensors().len());
+    }
+
+    #[test]
+    fn one_altered_cell_is_rejected_and_named() {
+        let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
+        let forged = settlement
+            .render()
+            .replace("\"volume_ratio\": ", "\"volume_ratio\": 9");
+        let error = Settlement::verify(&forged, &bytes).expect_err("改了一格");
+        assert_eq!(error.code(), Code::Invalid);
+        // 消息要点名出错的那一格与它的主人，否则「账本有问题」无从修起。
+        let message = error.to_string();
+        assert!(message.contains("volume_ratio"), "{message}");
+        assert!(message.contains("a 的"), "{message}");
+    }
+
+    #[test]
+    fn a_decimal_written_another_way_is_not_the_same_book() {
+        // 账本是同一份字节的规范产物：`1` 与 `1.000000` 不是同一格，哪怕数值相等。
+        let values: Vec<f32> = (1..=64).map(|i| i as f32).collect();
+        let (settlement, bytes) = container(vec![f32_segment("a", &values)], false);
+        let text = settlement.render();
+        let spelled = "\"volume_ratio\": 1.000000";
+        assert!(text.contains(spelled), "原样落盘的体积比应当是 1.000000");
+        let forged = text.replace(spelled, "\"volume_ratio\": 1");
+        let error = Settlement::verify(&forged, &bytes).expect_err("写法不同");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("1.000000"), "{error}");
+    }
+
+    #[test]
+    fn a_book_missing_a_cell_is_incomplete_rather_than_lenient() {
+        let (settlement, bytes) = container(vec![f32_segment("a", &compressible(256))], true);
+        let text = settlement
+            .render()
+            .replace("      \"is_lossless\": true,\n", "")
+            .replace("      \"is_lossless\": false,\n", "");
+        let error = Settlement::verify(&text, &bytes).expect_err("缺一格");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("is_lossless"), "{error}");
+    }
+
+    #[test]
+    fn a_book_for_another_container_is_rejected() {
+        let (one, _) = container(vec![f32_segment("a", &compressible(256))], true);
+        let (_, two) = container(
+            vec![
+                f32_segment("a", &compressible(256)),
+                f32_segment("b", &compressible(256)),
+            ],
+            true,
+        );
+        let error = Settlement::verify(&one.render(), &two).expect_err("条目数不符");
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("2 段"), "{error}");
     }
 
     #[test]

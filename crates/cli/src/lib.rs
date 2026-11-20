@@ -453,13 +453,15 @@ pub const USAGE: &str = "\
   inspect --in <文件>     读 `.u` 容器：条目清单与现场现算的度量
   check --in <文件>       逐段解码还原 `.u` 容器，校验完整性
   settle --in <文件> [--out <文件>]  逐张量沉降账本（体积 / 原因 / 无损）；`--out` 落成 JSON
+  audit  --in <文件> --ledger <账本> 把落盘账本读回，与同一份字节现算的账逐格核对
   help                   打印本说明
 
 选项：
   --op <算子>             算子名（`verify` / `bench` 用，缺省为 `gemv_i4`）
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
-  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `settle` 的 `.u` 容器；四者都必需）
+  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `settle` / `audit` 的 `.u` 容器；五者都必需）
   --out <文件>            输出路径（`import` 的 `.u` 容器，必需）；`settle` 的账本文件（可选）
+  --ledger <文件>         `audit` 待复核的账本（必需）：`settle --out` 写下的那一份
   --input <a,b,c>         `run` 的输入向量（逗号分隔 f32；不给则用确定性图案）
   --device <设备>         `run` 的设备名（缺省 `auto`，按指纹选）
   --lr <数值>             训练峰值学习率（`train` 用；缺省由调度表定）
@@ -537,6 +539,13 @@ pub enum Command {
         /// 账本 JSON 的输出路径；`None` 表示打到 stdout（不猜产物目录旁的默认文件名）。
         output: Option<String>,
     },
+    /// 账本复核：落盘账本与同一份字节现算的账逐格比对，不符即错。
+    Audit {
+        /// 待复核 `.u` 容器路径。
+        input: String,
+        /// 待复核的账本路径（`settle --out` 写下的那一份）。
+        ledger: String,
+    },
     /// 打印六平台执行合同的六行裁决；零选项。
     Platform,
     /// 打印用法。
@@ -598,6 +607,10 @@ const IMPORT: &[(&str, &str)] = &[("--in", "源"), ("--out", "文件")];
 /// `settle` 的选项：`--in` 必需，`--out` 可选——不给就把账本打到 stdout。
 const SETTLE: &[(&str, &str)] = &[("--in", "文件"), ("--out", "文件")];
 
+/// `audit` 的选项：`--in`（容器）与 `--ledger`（账本）都必需——缺要么是漏了账本，要么是漏了被
+/// 复核的那份字节，两种都算不出来。
+const AUDIT: &[(&str, &str)] = &[("--in", "文件"), ("--ledger", "账本")];
+
 impl Invocation {
     /// 解析参数（不含 `argv[0]`）。
     ///
@@ -645,6 +658,7 @@ fn archive_command(name: &str, words: &mut Words<'_>) -> Result<Command> {
         }),
         "check" => single_required(words, INSPECT, "check", |input| Command::Check { input }),
         "settle" => settle(words),
+        "audit" => audit(words),
         known => single(known, words),
     }
 }
@@ -687,6 +701,14 @@ fn settle(words: &mut Words<'_>) -> Result<Command> {
         input,
         output: slots[1].clone(),
     })
+}
+
+/// `audit`：`--in` / `--ledger` 顺序自由，两者都必需。
+fn audit(words: &mut Words<'_>) -> Result<Command> {
+    let slots = parse_slots(words, AUDIT, "audit")?;
+    let input = required_slot(&slots, 0, AUDIT[0].0, "audit")?;
+    let ledger = required_slot(&slots, 1, AUDIT[1].0, "audit")?;
+    Ok(Command::Audit { input, ledger })
 }
 
 /// 取一个必需槽位；缺省点名对应开关，不替调用方补默认值。
@@ -822,6 +844,7 @@ fn entry_archive_or_train(command: &Command) -> Result<()> {
         Command::Inspect { input } => archive::inspect(input),
         Command::Check { input } => archive::check(input),
         Command::Settle { input, output } => archive::settle(input, output.as_deref()),
+        Command::Audit { input, ledger } => archive::audit(input, ledger),
         other => entry_train(other),
     }
 }
@@ -1081,7 +1104,40 @@ mod tests {
                 output: Some("config.json".to_string()),
             }
         );
+        assert_eq!(
+            Invocation::parse(&args(&[
+                "audit",
+                "--in",
+                "model.u",
+                "--ledger",
+                "ledger.json"
+            ]))
+            .expect("合法")
+            .command(),
+            &Command::Audit {
+                input: "model.u".to_string(),
+                ledger: "ledger.json".to_string(),
+            }
+        );
+        assert_eq!(
+            Invocation::parse(&args(&[
+                "audit",
+                "--ledger",
+                "ledger.json",
+                "--in",
+                "model.u"
+            ]))
+            .expect("顺序自由")
+            .command(),
+            &Command::Audit {
+                input: "model.u".to_string(),
+                ledger: "ledger.json".to_string(),
+            }
+        );
 
+        let no_ledger =
+            Invocation::parse(&args(&["audit", "--in", "model.u"])).expect_err("缺 --ledger");
+        assert!(no_ledger.to_string().contains("--ledger"), "{no_ledger}");
         let missing_out = Invocation::parse(&args(&["import", "--in", "model.safetensors"]))
             .expect_err("缺 --out");
         assert!(missing_out.to_string().contains("--out"), "{missing_out}");
@@ -1109,7 +1165,7 @@ mod tests {
     fn the_usage_text_lists_every_command() {
         for command in [
             "status", "platform", "run", "verify", "bench", "train", "import", "inspect", "check",
-            "settle", "help",
+            "settle", "audit", "help",
         ] {
             assert!(USAGE.contains(command), "{command}");
         }

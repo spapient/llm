@@ -170,6 +170,7 @@ pub mod archive {
     //!   输出解码条目数。坏文件按既有 [`diagnostic::Code`] 口径落成非零退出码。
     //! - `settle`：同一份字节 → 逐张量体积 / 熵 / 量化档位 / 无损与原因（`weights::settle`
     //!   现算）。账本 JSON 的文本只有一个来源，写盘与 stdout 用的是同一份。
+    //! - `audit`：把落盘的账本读回，与同一份字节再算一遍的账逐格核对——账本唯一的消费方式。
 
     use std::path::Path;
 
@@ -299,6 +300,32 @@ pub mod archive {
         std::fs::write(path, text).map_err(|error| {
             Error::new(Code::Io, format!("写出 {} 失败：{error}", path.display()))
                 .with("llm settle")
+        })
+    }
+
+    /// `audit`：落盘账本 × 同一份字节 → 每格复核。
+    ///
+    /// 报告里的数一律取自**读回并通过复核**的那份账（`Settlement::verify` 返回它），不是重新生成
+    /// 一份“看起来一样”的账：核账与记账因此不可能是两条各自算路径。
+    pub(crate) fn audit(input: &str, ledger: &str) -> Result<()> {
+        let bytes = read_container(input, "llm audit")?;
+        let text = read_ledger(ledger)?;
+        let checked = Settlement::verify(&text, &bytes).map_err(|error| error.with("llm audit"))?;
+        let report = Report::new("llm —— 账本复核")
+            .row("容器", input)
+            .row("账本", ledger)
+            .row("条目数", format!("{} 段", checked.tensors().len()))
+            .row("体积比", format!("{:.3}", checked.total_ratio()))
+            .row("lossless", lossless_label(checked.lossless()))
+            .row("结论", "一致：每一格都由这份字节现算得到");
+        print!("{}", report.render());
+        Ok(())
+    }
+
+    /// 读账本文本：读不到或不是合法 UTF-8 都按 `Code::Io`——那是“读不出来”，不是“账本写错了”。
+    fn read_ledger(path: &str) -> Result<String> {
+        std::fs::read_to_string(path).map_err(|error| {
+            Error::new(Code::Io, format!("读取账本 {path} 失败：{error}")).with("llm audit")
         })
     }
 
