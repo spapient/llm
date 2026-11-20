@@ -18,6 +18,28 @@ pub const EPS: f32 = op::batch_norm_f32::EPS;
 /// BatchNorm 的滑动统计动量：只用于更新 running，不参与输出。
 const MOMENTUM: f32 = 0.1;
 
+/// BatchNorm 的滚动统计：训练期按 batch 统计与动量递推，推理期直接用这一份。
+///
+/// 更新口径与 `op::norm::BatchNorm2d::forward_train` 一致：方差按无偏值进滑动统计，
+/// 归一化本身仍用有偏方差。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Running {
+    /// 每通道滚动均值。
+    pub mean: Vec<f32>,
+    /// 每通道滚动方差（无偏口径）。
+    pub var: Vec<f32>,
+}
+
+impl Running {
+    /// 初始口径：均值 0、方差 1。
+    pub fn fresh(channels: usize) -> Self {
+        Self {
+            mean: vec![0.0; channels],
+            var: vec![1.0; channels],
+        }
+    }
+}
+
 /// 一次算子调用的实例化几何。字段即前向/反向所需的全部形状信息。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Geometry {
@@ -346,6 +368,22 @@ impl Geometry {
     ///
     /// 形状与实例不符、或底层算子报错时返回说明。
     pub fn forward(self, inputs: &[&[f32]], out: &mut [f32]) -> Result<()> {
+        self.forward_with(inputs, out, None)
+    }
+
+    /// 带滚动统计的前向：只有 [`Geometry::Norm`] 消费 `running`，其余变体忽略。
+    ///
+    /// 传 `None` 等价于每次前向从"均值 0、方差 1"起算，输出与 [`Geometry::forward`] 逐位一致。
+    ///
+    /// # Errors
+    ///
+    /// 形状与实例不符、或底层算子报错时返回说明。
+    pub fn forward_with(
+        self,
+        inputs: &[&[f32]],
+        out: &mut [f32],
+        running: Option<&mut Running>,
+    ) -> Result<()> {
         self.expect(&inputs.iter().map(|x| x.len()).collect::<Vec<_>>(), out.len())?;
         match self {
             Self::Pool1d { k, s, p, l, c } => {
@@ -370,11 +408,16 @@ impl Geometry {
                 Interpolate { sampler, oh, ow }.forward(inputs[0], n, h, w, c, out)
             }
             Self::Norm { n, spatial, channels } => {
-                let mut mean = vec![0.0f32; channels];
-                let mut var = vec![1.0f32; channels];
-                BatchNorm2d { channels, eps: EPS, momentum: MOMENTUM }.forward_train(
-                    inputs[0], inputs[1], inputs[2], n, 1, spatial, &mut mean, &mut var, out,
-                )
+                // 有滚动统计就原地递推（训练语义）；没有就用一次性局部统计，不改外部状态。
+                let mut local = (vec![0.0f32; channels], vec![1.0f32; channels]);
+                let (mean, var) = match running {
+                    Some(stats) if stats.mean.len() == channels && stats.var.len() == channels => {
+                        (&mut stats.mean, &mut stats.var)
+                    }
+                    _ => (&mut local.0, &mut local.1),
+                };
+                BatchNorm2d { channels, eps: EPS, momentum: MOMENTUM }
+                    .forward_train(inputs[0], inputs[1], inputs[2], n, 1, spatial, mean, var, out)
             }
             Self::Group { groups, n, spatial, channels } => GroupNorm { groups, channels, eps: EPS }
                 .forward(inputs[0], inputs[1], inputs[2], n, spatial, out),
@@ -382,6 +425,28 @@ impl Geometry {
                 LayerNorm { width, eps: EPS }.forward(inputs[0], inputs[1], inputs[2], out)
             }
         }
+    }
+
+    /// 推理前向：`Norm` 用给定的滚动统计归一化、不改状态；其余变体与训练一致。
+    ///
+    /// # Errors
+    ///
+    /// 形状与实例不符、统计通道数不匹配、或底层算子报错时返回说明。
+    pub fn forward_eval(self, inputs: &[&[f32]], out: &mut [f32], running: &Running) -> Result<()> {
+        let Self::Norm { n, spatial, channels } = self else {
+            return self.forward(inputs, out);
+        };
+        self.expect(&inputs.iter().map(|x| x.len()).collect::<Vec<_>>(), out.len())?;
+        if running.mean.len() != channels || running.var.len() != channels {
+            return Err(invalid(format!(
+                "滚动统计有 {} 个均值 / {} 个方差，实例几何要 {channels} 个通道",
+                running.mean.len(),
+                running.var.len()
+            )));
+        }
+        BatchNorm2d { channels, eps: EPS, momentum: MOMENTUM }.forward_eval(
+            inputs[0], inputs[1], inputs[2], n, 1, spatial, &running.mean, &running.var, out,
+        )
     }
 
     /// 按实例几何反向：贡献顺序与输入对齐（一元给 `dx`，三种归一化给 `dx/dgamma/dbeta`）。
@@ -788,6 +853,80 @@ mod tests {
     }
 
     /// 任意几何也要自洽：非声明档的窗口/分组必须能前向，且形状校验拦住不成立的几何。
+    /// 滚动统计按动量递推，同时不改变训练前向的输出（训练语义与数值参考同源）。
+    /// 推理用滚动统计归一化：`(x - m) / sqrt(v + eps) * gamma + beta`，与手算逐位一致。
+    #[test]
+    fn evaluation_normalizes_with_the_given_rolling_statistics() {
+        let (n, spatial, channels) = (1usize, 2usize, 2usize);
+        let len = n * spatial * channels;
+        let geom = Geometry::Norm { n, spatial, channels };
+        let x: Vec<f32> = (0..len).map(|i| 0.4 + i as f32 * 0.3).collect();
+        let gain = vec![1.5f32, 0.5];
+        let shift = vec![0.2f32, -0.1];
+        let running = Running { mean: vec![0.3, -0.2], var: vec![2.0, 0.5] };
+
+        let mut out = vec![0.0f32; len];
+        geom.forward_eval(&[&x, &gain, &shift], &mut out, &running).expect("推理前向");
+        for (index, got) in out.iter().enumerate() {
+            let ci = index % channels;
+            let want = (x[index] - running.mean[ci]) / (running.var[ci] + EPS).sqrt() * gain[ci]
+                + shift[ci];
+            assert!((got - want).abs() <= 1e-6, "第 {index} 个输出 {got} vs {want}");
+        }
+        // 通道数不匹配要在形状层报错，不静默套用错位统计。
+        let wrong = Running::fresh(channels + 1);
+        let error = geom
+            .forward_eval(&[&x, &gain, &shift], &mut out, &wrong)
+            .expect_err("通道数不符");
+        assert_eq!(error.code(), Code::Invalid);
+    }
+
+    #[test]
+    fn running_statistics_update_by_momentum_without_changing_the_output() {
+        let (n, spatial, channels) = (2usize, 3usize, 2usize);
+        let len = n * spatial * channels;
+        let geom = Geometry::Norm { n, spatial, channels };
+        let gain = vec![1.0f32; channels];
+        let shift = vec![0.0f32; channels];
+        let first: Vec<f32> = (0..len).map(|i| 0.3 + i as f32 * 0.1).collect();
+        let second: Vec<f32> = (0..len).map(|i| 1.4 - i as f32 * 0.06).collect();
+
+        let mut stats = Running::fresh(channels);
+        for batch in [&first, &second] {
+            let mut out = vec![0.0f32; len];
+            geom.forward_with(&[batch, &gain, &shift], &mut out, Some(&mut stats))
+                .expect("带统计的前向");
+            let mut plain = vec![0.0f32; len];
+            geom.forward(&[batch, &gain, &shift], &mut plain).expect("无统计的前向");
+            for (index, (a, b)) in out.iter().zip(&plain).enumerate() {
+                assert!((a - b).abs() <= 1e-6, "第 {index} 个输出被统计影响：{a} vs {b}");
+            }
+        }
+
+        // 手动复算两批的滑动口径：`m = 0.9 * m + 0.1 * batch_mean`，方差用无偏值。
+        let count = n * spatial;
+        let mut mean = vec![0.0f32; channels];
+        let mut var = vec![1.0f32; channels];
+        for batch in [&first, &second] {
+            for ci in 0..channels {
+                let values: Vec<f32> = (0..count).map(|p| batch[p * channels + ci]).collect();
+                let batch_mean = values.iter().sum::<f32>() / count as f32;
+                let batch_var = values
+                    .iter()
+                    .map(|v| (v - batch_mean).powi(2))
+                    .sum::<f32>()
+                    / count as f32;
+                let unbiased = batch_var * count as f32 / (count - 1) as f32;
+                mean[ci] = 0.9 * mean[ci] + 0.1 * batch_mean;
+                var[ci] = 0.9 * var[ci] + 0.1 * unbiased;
+            }
+        }
+        for ci in 0..channels {
+            assert!((stats.mean[ci] - mean[ci]).abs() <= 1e-5, "通道 {ci} 均值 {} vs {}", stats.mean[ci], mean[ci]);
+            assert!((stats.var[ci] - var[ci]).abs() <= 1e-5, "通道 {ci} 方差 {} vs {}", stats.var[ci], var[ci]);
+        }
+    }
+
     #[test]
     fn arbitrary_geometries_forward_and_reject_bad_shapes() {
         let pool = Geometry::Pool2d { k: 3, s: 2, p: 0, h: 5, w: 5, c: 2 };

@@ -1404,3 +1404,44 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     assert!(shift.iter().all(|&b| b < -0.5), "偏置没有实质下降：{shift:?}");
     Ok(())
 }
+
+/// 跨步常驻：同一 `Buffers` 上两轮带几何的归一化，滚动统计按动量递推并可读回。
+///
+/// 初始 `(0, 1)`、动量 0.1，同一批数据过两次：`mean` 应为 `0.1 * μ` 再 `0.19 * μ`，
+/// `var` 应为 `0.9 + 0.1 * u` 再 `0.81 + 0.19 * u`（`u` 是无偏 batch 方差）。
+#[test]
+fn rolling_statistics_persist_across_steps_in_the_buffers() -> Result<()> {
+    let (n, spatial, channels) = (2usize, 3usize, 2usize);
+    let len = n * spatial * channels;
+    let count = n * spatial;
+    let geom = Geometry::Norm { n, spatial, channels };
+    let feed: Vec<f32> = (0..len).map(|i| 0.2 + i as f32 * 0.13).collect();
+
+    let mut tape = Tape::new();
+    let x = tape.leaf();
+    let g = tape.leaf();
+    let b = tape.leaf();
+    let y = tape.record("batch_norm_f32", &[x, g, b]).expect("记录归一化");
+    let sizes = support::sizes_of(&tape, &[(x, len), (g, channels), (b, channels), (y, len)]);
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.buffers().load(x, Data::F32(feed.clone()))?;
+    session.buffers().load(g, Data::F32(vec![1.0; channels]))?;
+    session.buffers().load(b, Data::F32(vec![0.0; channels]))?;
+
+    session.buffers().compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
+    let once = session.buffers().running(y).expect("第一轮应留下统计").clone();
+    session.buffers().compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
+    let twice = session.buffers().running(y).expect("第二轮应继续递推").clone();
+
+    for ci in 0..channels {
+        let values: Vec<f32> = (0..count).map(|p| feed[p * channels + ci]).collect();
+        let mean = values.iter().sum::<f32>() / count as f32;
+        let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / count as f32;
+        let unbiased = var * count as f32 / (count - 1) as f32;
+        assert!((once.mean[ci] - 0.1 * mean).abs() <= 1e-5, "一步均值 {} vs {}", once.mean[ci], 0.1 * mean);
+        assert!((twice.mean[ci] - 0.19 * mean).abs() <= 1e-5, "两步均值 {} vs {}", twice.mean[ci], 0.19 * mean);
+        assert!((once.var[ci] - (0.9 + 0.1 * unbiased)).abs() <= 1e-5, "一步方差 {}", once.var[ci]);
+        assert!((twice.var[ci] - (0.81 + 0.19 * unbiased)).abs() <= 1e-5, "两步方差 {}", twice.var[ci]);
+    }
+    Ok(())
+}

@@ -20,8 +20,9 @@ pub trait Kernel {
         inputs: &[View<'_>],
         output: &mut ViewMut<'_>,
         geometry: Option<&crate::Geometry>,
+        running: Option<&mut crate::Running>,
     ) -> Result<()> {
-        let _ = geometry;
+        let _ = (geometry, running);
         self.compute(op, inputs, output)
     }
 }
@@ -37,9 +38,10 @@ impl Kernel for Reference {
         inputs: &[View<'_>],
         output: &mut ViewMut<'_>,
         geometry: Option<&crate::Geometry>,
+        running: Option<&mut crate::Running>,
     ) -> Result<()> {
         match geometry {
-            Some(geometry) => self.shaped(op, inputs, output, geometry),
+            Some(geometry) => self.shaped(op, inputs, output, geometry, running),
             None => self.compute(op, inputs, output),
         }
     }
@@ -67,6 +69,7 @@ impl Reference {
         inputs: &[View<'_>],
         output: &mut ViewMut<'_>,
         geometry: &crate::Geometry,
+        running: Option<&mut crate::Running>,
     ) -> Result<()> {
         let mut slices = Vec::with_capacity(inputs.len());
         for (index, view) in inputs.iter().enumerate() {
@@ -79,7 +82,7 @@ impl Reference {
             })?;
             slices.push(slice);
         }
-        geometry.forward(&slices, output_slice::<f32>(op, output)?)
+        geometry.forward_with(&slices, output_slice::<f32>(op, output)?, running)
     }
 }
 

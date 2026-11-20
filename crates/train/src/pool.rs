@@ -3,7 +3,7 @@
 //! 块本身来自内部空闲表，稳定态不再向系统要内存；分配走 `try_reserve_exact`，形状可能来自
 //! 不受信任的权重文件头，分配失败是一条错误而不是 abort。
 
-use crate::geometry::Geometry;
+use crate::geometry::{Geometry, Running};
 use crate::kernel::Kernel;
 use crate::shape::{Data, Kind, View, no_storage, zeroed};
 use crate::store::SITE;
@@ -110,6 +110,8 @@ pub struct Buffers<K: Kernel> {
     pool: Pool,
     /// 每个输出变量登记的算子实例几何：反向按同一个实例回传，前向/反向不各持一套几何。
     instances: Vec<Option<Geometry>>,
+    /// 归一化的滚动统计：按输出变量常驻，训练期逐步递推（推理期直接取这一份）。
+    running: Vec<Option<Running>>,
     live: u64,
     peak: u64,
 }
@@ -122,6 +124,7 @@ impl<K: Kernel> Buffers<K> {
             slots: vec![None; slots],
             gradients: vec![None; slots],
             instances: vec![None; slots],
+            running: vec![None; slots],
             sizes,
             kernel,
             pool: Pool::default(),
@@ -150,6 +153,11 @@ impl<K: Kernel> Buffers<K> {
         self.instances.get(var.id() as usize).copied().flatten()
     }
 
+    /// 读某个输出变量上归一化的滚动统计；没跑过带几何的归一化即为 `None`。
+    pub fn running(&self, var: Var) -> Option<&Running> {
+        self.running.get(var.id() as usize).and_then(Option::as_ref)
+    }
+
     /// 前向的单一实现：登记几何、取目标槽、算、装回。声明档与实例化只差 `geometry`。
     fn run(
         &mut self,
@@ -164,12 +172,31 @@ impl<K: Kernel> Buffers<K> {
             *slot = Some(geometry);
         }
         let (slot, shape, dtype) = self.target(output)?;
+        // 滚动统计先取出来（裸值），内核算完再写回：内核调用期间不与 `running` 槽位交叠借用。
+        let mut stats = match geometry {
+            Some(Geometry::Norm { channels, .. }) => Some(
+                self.running
+                    .get_mut(output.id() as usize)
+                    .and_then(Option::take)
+                    .unwrap_or_else(|| Running::fresh(channels)),
+            ),
+            _ => None,
+        };
         let views = views(&self.slots, output, inputs)?;
         let mut block = self.pool.block(dtype, &shape)?;
-        if let Err(error) = self
-            .kernel
-            .compute_shaped(op, &views, &mut block.view_mut(), geometry.as_ref())
+        let result = self.kernel.compute_shaped(
+            op,
+            &views,
+            &mut block.view_mut(),
+            geometry.as_ref(),
+            stats.as_mut(),
+        );
+        if let Some(stats) = stats
+            && let Some(held) = self.running.get_mut(output.id() as usize)
         {
+            *held = Some(stats);
+        }
+        if let Err(error) = result {
             self.pool.recycle(block);
             return Err(error);
         }
