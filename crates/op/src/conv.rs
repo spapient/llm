@@ -1091,4 +1091,86 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn maxpool1d_matches_naive() {
+        // NHWC，l=6、c=1，窗口 3 步长 2 补零 1 → 输出长 4。
+        let x = [1.0f32, 5.0, 2.0, 8.0, 3.0, 0.5];
+        let pool = MaxPool1d { k: 3, s: 2, p: 1 };
+        let mut out = [0.0f32; 4];
+        pool.forward(&x, 1, 6, 1, &mut out).unwrap();
+        // 窗口：[0,1,2]→5；[2,3,4]→8；[4,5,6]→3；[6,7,8]→0.5
+        assert_eq!(out, [5.0, 8.0, 3.0, 0.5]);
+        // 多通道：各通道独立，不串味。
+        let x = [1.0f32, 9.0, 3.0, 2.0, 0.0, 4.0];
+        let pool = MaxPool1d { k: 2, s: 1, p: 0 };
+        let mut out = [0.0f32; 10];
+        pool.forward(&x, 1, 3, 2, &mut out).unwrap();
+        assert_eq!(out, [3.0, 9.0, 3.0, 4.0, 0.0, 4.0, 0.0, 4.0, 0.0, 0.0][..6]);
+        assert!(MaxPool1d { k: 0, s: 1, p: 0 }.len(4).is_err());
+    }
+
+    #[test]
+    fn adaptive_avg_pool_matches_block_means() {
+        // 4×4 单通道压到 2×2：每格正好 2×2 块。
+        let x: Vec<f32> = (0..16).map(|v| v as f32).collect();
+        let pool = AdaptiveAvgPool2d { oh: 2, ow: 2 };
+        let mut out = [0.0f32; 4];
+        pool.forward(&x, 1, 4, 4, 1, &mut out).unwrap();
+        assert_eq!(out, [2.5, 4.5, 10.5, 12.5]);
+        // 5×5 压到 2×2：窗口按 floor/ceil 划分，末格覆盖 [2,5)×[2,5)。
+        let pool = AdaptiveAvgPool2d { oh: 2, ow: 2 };
+        let mut out = [0.0f32; 4];
+        pool.forward(&x[..25], 1, 5, 5, 1, &mut out).unwrap();
+        let mut want = [0.0f32; 4];
+        for oi in 0..2 {
+            let h0 = oi * 5 / 2;
+            let h1 = ((oi + 1) * 5).div_ceil(2);
+            for oj in 0..2 {
+                let w0 = oj * 5 / 2;
+                let w1 = ((oj + 1) * 5).div_ceil(2);
+                let area = (h1 - h0) * (w1 - w0);
+                let mut sum = 0.0f32;
+                for ii in h0..h1 {
+                    for jj in w0..w1 {
+                        sum += (ii * 5 + jj) as f32;
+                    }
+                }
+                want[oi * 2 + oj] = sum / area as f32;
+            }
+        }
+        for (got, exp) in out.iter().zip(want.iter()) {
+            assert!((got - exp).abs() < 1e-5, "{got} vs {exp}");
+        }
+        assert!(AdaptiveAvgPool2d { oh: 0, ow: 1 }.forward(&x, 1, 4, 4, 1, &mut out).is_err());
+    }
+
+    #[test]
+    fn interpolate_nearest_and_bilinear() {
+        // 2×2 单通道升到 4×4：最近邻严格复制左上角。
+        let x = [1.0f32, 2.0, 3.0, 4.0];
+        let up = Interpolate { sampler: Sampler::Nearest, oh: 4, ow: 4 };
+        let mut out = [0.0f32; 16];
+        up.forward(&x, 1, 2, 2, 1, &mut out).unwrap();
+        for oi in 0..4 {
+            for oj in 0..4 {
+                assert_eq!(out[oi * 4 + oj], x[(oi * 2 / 4) * 2 + (oj * 2 / 4)]);
+            }
+        }
+        // 双线性在 4×4 上：中心附近的点应是四邻的加权，边界被夹住。
+        let up = Interpolate { sampler: Sampler::Linear, oh: 4, ow: 4 };
+        up.forward(&x, 1, 2, 2, 1, &mut out).unwrap();
+        // 左上角 (0,0)：源坐标 (−0.25,−0.25) → 夹到 (0,0) → 值 1.0。
+        assert!((out[0] - 1.0).abs() < 1e-6);
+        // 右下角 (3,3)：源坐标 (1.25,1.25) → 夹到 (1,1) → 值 4.0。
+        assert!((out[15] - 4.0).abs() < 1e-6);
+        // 内部 (1,1)：源 (0.25,0.25) → 四邻均值 2.5。
+        assert!((out[5] - 2.5).abs() < 1e-6, "{}", out[5]);
+        // 恒等（同尺寸）时两种取样都必须逐元素一致。
+        let id = Interpolate { sampler: Sampler::Linear, oh: 2, ow: 2 };
+        let mut same = [0.0f32; 4];
+        id.forward(&x, 1, 2, 2, 1, &mut same).unwrap();
+        assert_eq!(same, x);
+        assert!(Interpolate { sampler: Sampler::Nearest, oh: 0, ow: 2 }.forward(&x, 1, 2, 2, 1, &mut out).is_err());
+    }
 }
