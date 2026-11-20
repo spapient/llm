@@ -83,7 +83,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Dirs` | `cutile` | 内核要的三个目录（缓存根 / 工作目录 / 可选数据根）——纯数据，不带默认值、不读环境变量、不认识命令行 |
 | `Settings` / `Roots` / `SettingValue` | `cli` | 配置键的解析策略：来源分层与追踪、平台默认目录、相对路径基准；键表一行一个，`describe` 与"未登记键"都从同一张表派生 |
 | `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` / `Buffer` | `op` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；`Buffer` 是内核样本的具名缓冲。不认识设备、tile 或片段 |
-| `Op` / `Signature` / `Sample` / `Model` | `op` | 算子声明与语义（签名 / 样本 / 标量参考）；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生；`bind` 是真实数据进入样本的唯一入口 |
+| `Op` / `Signature` / `Sample` / `Model` / `Precision` | `op` | 算子声明与语义（签名 / 样本 / 标量参考）；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生；`bind` 是真实数据进入样本的唯一入口；`Precision` 是收缩轴可变 GEMM 的精度契约（元素类型 + 累加器 + 一次乘加），遍历与尺寸校验只写一份 |
 | `Format` / `OperandSpec` / `Element` / `FormulaCache` / `Row` / `Conf` / `Operator` | `op` | 打包格式的静态表与派生配置（`Row` 全 `const`，`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）、表达式缓存、样本缓冲元素闭集，以及六族骨架之上的统一语义契约（[ADR 0050](adr/0050-operator-base.md)） |
 | `OpDecl` / `Template` / `Segment` / `Registration` / `LayoutSpec` / `Schedule` / `Masking` | `op` | 声明解析结果与三张闭集（模板词法 / 布局构造子 / 调度模板），以及唯一注册表 `REGISTRY`；`cutile` 只消费，不持第二份 |
 | `Scalar` / `Monoid` / `SsmStep` / `PlaneStep` / `Scan` | `op` | β 指数梯形扫描的数学底座与 `scan_f32` 算子：半群、两种离散化（`exp_zero_order` / `exp_trapezoid`）、复值状态的 2×2 实值块 |

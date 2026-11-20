@@ -17,7 +17,15 @@
 //! 都跨行取数，所以另有一个核 [`matmul_tn_tiled`]：输出列块 × 输出行块 × 收缩块三级分块，块内
 //! 是「一整行权重 × 连续行块」的点积，两段都连续。行批投影必须走这个核——逐行调 `gemv` 会把整份
 //! 权重按行数重复读一遍。
+//!
+//! # 一副骨架，两档精度
+//!
+//! 收缩轴可变的 GEMM 有两档：[`Precision for f32`] 稠密（累加器 `f32`，对拍按 IEEE 容差）与
+//! [`Precision for i8`] 对称 int8（累加器 `i32`，对拍逐位相等，见 [`matmul_i8`]）。两者的分块遍历、
+//! 尺寸校验、轴表与生产形状全同，只差「元素类型 + 累加器 + 一次乘加」，因此骨架只写这一份、
+//! 按元素类型单态化——[`Precision`] 是那份差异的唯一出处。
 
+use std::mem::size_of;
 use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
@@ -48,17 +56,58 @@ pub const TN_COLS: usize = 32;
 /// 256 既让循环开销摊到 256 次乘加上，又让一行权重块（`TN_COLS × TN_K`）留在 L1。
 pub const TN_K: usize = 256;
 
-/// 标量参考：`out[i,j] = Σ_p a[i,p]·b[p,j]`，每个元素按 `p` 顺序独立累加。
+/// 收缩轴可变 GEMM 的精度契约：两档只差元素类型、累加器与一次乘加。
+///
+/// 标量参考、tile 遍历、块内 rank-1 更新与尺寸校验都只写一份，按元素类型单态化；加一档精度
+/// 只需再写这三件事。骨架不感知取整与提升规则——`i8` 档的 `i32` 精确累加就落在
+/// [`Precision::mac`] 里，遍历次序怎么换都不改结果。
+pub trait Precision: Copy {
+    /// 累加器与输出元素：`f32` 档就是 [`f32`]，`i8` 档是 [`i32`]（转回 f32 由注册侧做）。
+    type Acc: Copy + Default;
+
+    /// 注册名：尺寸校验与代价标签都取它，入口不必再传一遍名字。
+    const NAME: &'static str;
+
+    /// 一次乘加：`*acc += a·b`。
+    fn mac(acc: &mut Self::Acc, a: Self, b: Self);
+}
+
+impl Precision for f32 {
+    type Acc = f32;
+    const NAME: &'static str = "matmul_f32";
+
+    fn mac(acc: &mut f32, a: f32, b: f32) {
+        *acc += a * b;
+    }
+}
+
+impl Precision for i8 {
+    type Acc = i32;
+    const NAME: &'static str = "matmul_i8";
+
+    fn mac(acc: &mut i32, a: i8, b: i8) {
+        *acc += i32::from(a) * i32::from(b);
+    }
+}
+
+/// 标量参考：`out[i,j] = Σ_p a[i,p]·b[p,j]`，每个元素按 `p` 顺序独立累加；两档精度共用。
 ///
 /// 不读 `out` 的初值（直接赋值），是 tile 实现与后续 kernel 的对拍真值。
-pub fn matmul_scalar(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
+pub fn matmul_scalar<P: Precision>(
+    a: &[P],
+    b: &[P],
+    m: usize,
+    n: usize,
+    k: usize,
+    out: &mut [P::Acc],
+) {
     for i in 0..m {
         let arow = &a[i * k..][..k];
         let orow = &mut out[i * n..][..n];
         for j in 0..n {
-            let mut acc = 0.0f32;
+            let mut acc = P::Acc::default();
             for (p, &x) in arow.iter().enumerate() {
-                acc += x * b[p * n + j];
+                P::mac(&mut acc, x, b[p * n + j]);
             }
             orow[j] = acc;
         }
@@ -69,8 +118,15 @@ pub fn matmul_scalar(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &m
 ///
 /// 先清空 `out` 再逐块累加。A 行块（TILE_M×TILE_K）在 `bj` 循环内复用、B 列块
 /// （TILE_K×TILE_N）在 `i` 循环内复用，把跨块 cache miss 压到 tile 边界。
-pub fn matmul_tiled(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
-    out.fill(0.0);
+pub fn matmul_tiled<P: Precision>(
+    a: &[P],
+    b: &[P],
+    m: usize,
+    n: usize,
+    k: usize,
+    out: &mut [P::Acc],
+) {
+    out.fill(P::Acc::default());
     let mut bi = 0;
     while bi < m {
         let i_end = (bi + TILE_M).min(m);
@@ -107,7 +163,14 @@ struct Tile {
 /// 块内 rank-1 更新：`out[i, j] += Σ_p a[i, p]·b[p, j]`，三条下标都取 `tile` 给的区间。
 ///
 /// `n` / `k` 是整块的行宽与收缩轴长度：区间是绝对下标，行主序下 `[i, j]` 仍是 `i * n + j`。
-fn accumulate_tile(a: &[f32], b: &[f32], out: &mut [f32], tile: &Tile, n: usize, k: usize) {
+fn accumulate_tile<P: Precision>(
+    a: &[P],
+    b: &[P],
+    out: &mut [P::Acc],
+    tile: &Tile,
+    n: usize,
+    k: usize,
+) {
     for i in tile.rows.clone() {
         let start = i * k + tile.contraction.start;
         let arow = &a[start..i * k + tile.contraction.end];
@@ -116,19 +179,27 @@ fn accumulate_tile(a: &[f32], b: &[f32], out: &mut [f32], tile: &Tile, n: usize,
             let brow = &b[base + tile.cols.start..base + tile.cols.end];
             let orow = &mut out[i * n + tile.cols.start..i * n + tile.cols.end];
             for (o, &y) in orow.iter_mut().zip(brow) {
-                *o += x * y;
+                P::mac(o, x, y);
             }
         }
     }
 }
 
-/// 三条缓冲的尺寸校验，两版 `forward` 共用。
-fn check_dims(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &[f32]) -> Result<()> {
+/// 三条缓冲的尺寸校验，两档精度的四个 `forward` 共用；算子名取自 [`Precision::NAME`]。
+fn check_dims<P: Precision>(
+    a: &[P],
+    b: &[P],
+    m: usize,
+    n: usize,
+    k: usize,
+    out: &[P::Acc],
+) -> Result<()> {
     if a.len() != m * k || b.len() != k * n || out.len() != m * n {
         return Err(Error::new(
             Code::Invalid,
             format!(
-                "GEMM 缓冲尺寸不符：a={}，b={}，out={}，期望 m·k={}，k·n={}，m·n={}",
+                "{} 缓冲尺寸不符：a={}，b={}，out={}，期望 m·k={}，k·n={}，m·n={}",
+                P::NAME,
                 a.len(),
                 b.len(),
                 out.len(),
@@ -146,13 +217,13 @@ fn check_dims(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &[f32]) -
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_scalar(
-    a: &[f32],
-    b: &[f32],
+pub fn forward_scalar<P: Precision>(
+    a: &[P],
+    b: &[P],
     m: usize,
     n: usize,
     k: usize,
-    out: &mut [f32],
+    out: &mut [P::Acc],
 ) -> Result<()> {
     check_dims(a, b, m, n, k, out)?;
     matmul_scalar(a, b, m, n, k, out);
@@ -164,13 +235,13 @@ pub fn forward_scalar(
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_tiled(
-    a: &[f32],
-    b: &[f32],
+pub fn forward_tiled<P: Precision>(
+    a: &[P],
+    b: &[P],
     m: usize,
     n: usize,
     k: usize,
-    out: &mut [f32],
+    out: &mut [P::Acc],
 ) -> Result<()> {
     check_dims(a, b, m, n, k, out)?;
     matmul_tiled(a, b, m, n, k, out);
@@ -399,29 +470,42 @@ pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext> {
     ShapeContext::new([('m', m), ('k', K), ('n', n)])
 }
 
-/// 标量代价：`2·m·K·n` FLOP，读 `(m·K + K·n)·4` 字节，写 `m·n·4` 字节。
+/// 标量代价：`2·m·K·n` FLOP，读 `(m·K + K·n)·size_of::<P>()` 字节，写 `m·n·4` 字节。
+///
+/// 读数由精度定（`f32` 每元素 4 字节、`i8` 1 字节），写出恒为 f32；轴名与算子名取自
+/// [`Precision::NAME`]。
 ///
 /// # Errors
 ///
 /// 形状上下文缺轴时返回带算子名的说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost> {
+fn cost_of<P: Precision>(shape: &ShapeContext) -> Result<Cost> {
     let axis = |label: char| {
         shape
             .get(label)
-            .ok_or_else(|| Error::new(Code::Invalid, format!("matmul_f32 形状缺轴 `{label}`")))
+            .ok_or_else(|| Error::new(Code::Invalid, format!("{} 形状缺轴 `{label}`", P::NAME)))
     };
     let m = axis('m')?;
     let k = axis('k')?;
     let n = axis('n')?;
     Ok(Cost {
         flops: (2 * m * k * n) as f64,
-        read: ((m * k + k * n) * 4) as u64,
+        read: ((m * k + k * n) * size_of::<P>()) as u64,
         write: (m * n * 4) as u64,
     })
 }
 
-/// 确定性样本：`a` / `b` 由同一份采样序列给出，`y` 为零缓冲，标量 `M`/`K`/`N` 与 `.k` 签名一致。
-pub fn sample(m: usize, n: usize) -> Sample {
+/// 稠密档的代价：输入每元素 4 字节，口径见 `cost_of`。
+///
+/// # Errors
+///
+/// 形状上下文缺轴时返回带算子名的说明。
+pub fn cost(shape: &ShapeContext) -> Result<Cost> {
+    cost_of::<f32>(shape)
+}
+
+/// 三缓冲样本的公共骨架：`a` / `b` 的取值由精度给，`y` 恒为 f32 零缓冲，标量 `M`/`K`/`N`
+/// 与 `.k` 签名一致。
+fn sample_of(m: usize, n: usize, a: Values, b: Values) -> Sample {
     Sample {
         m,
         n,
@@ -429,11 +513,11 @@ pub fn sample(m: usize, n: usize) -> Sample {
         buffers: vec![
             Buffer {
                 name: "a",
-                values: Values::F32(deterministic(m * K, 1)),
+                values: a,
             },
             Buffer {
                 name: "b",
-                values: Values::F32(deterministic(K * n, 2)),
+                values: b,
             },
             Buffer {
                 name: "y",
@@ -441,6 +525,16 @@ pub fn sample(m: usize, n: usize) -> Sample {
             },
         ],
     }
+}
+
+/// 确定性样本：`a` / `b` 由同一份采样序列给出，`y` 为零缓冲。
+pub fn sample(m: usize, n: usize) -> Sample {
+    sample_of(
+        m,
+        n,
+        Values::F32(deterministic(m * K, 1)),
+        Values::F32(deterministic(K * n, 2)),
+    )
 }
 
 /// 标量参考：读 `a` / `b`，按 [`matmul_scalar`] 计算输出。
@@ -589,7 +683,7 @@ mod tests {
     #[test]
     fn empty_contraction_yields_zeros() {
         let mut out = vec![1.0f32; 4];
-        forward_tiled(&[], &[], 2, 2, 0, &mut out).expect("k=0 合法");
+        forward_tiled::<f32>(&[], &[], 2, 2, 0, &mut out).expect("k=0 合法");
         assert_eq!(out, vec![0.0f32; 4], "空收缩轴输出必须全零");
     }
 
@@ -650,5 +744,143 @@ mod tests {
             q(0.95) * 1e3,
             q(0.99) * 1e3,
         );
+    }
+}
+
+/// 大 K 对称 int8 GEMM 的语义与精度档：`Y[m, n] = Σ_k A[m, k] · B[k, n]`，累加器 `i32`。
+///
+/// 骨架在 [`crate::matmul`]：标量参考、tile 遍历、尺寸校验、轴表与生产形状都只有一份。本模块
+/// 只给「元素是 `i8`、累加器是 `i32`」这一档（[`Precision`] 的 `i8` 实现）、语义表，以及两件与
+/// 精度绑在一起的事：样本缓冲用 `u8` 承载有符号码，代价按每元素 1 字节读。累加是整数加法，
+/// 所以 tile 与标量参考逐位相等（对应 CUDA `dp4a`），不像 `f32` 档要留容差。
+pub mod matmul_i8 {
+    use diagnostic::Result;
+
+    use crate::model::{Cost, Sample, ShapeContext, Values};
+
+    pub use super::{
+        AXES, K, TILE_K, TILE_M, TILE_N, forward_scalar, forward_tiled, matmul_scalar,
+        matmul_tiled, project_shape,
+    };
+
+    /// 标量代价：`2·m·K·n` FLOP；输入为 i8（每元素 1 字节），输出 f32（每元素 4 字节）。
+    ///
+    /// # Errors
+    ///
+    /// 形状上下文缺轴时返回带算子名的说明。
+    pub fn cost(shape: &ShapeContext) -> Result<Cost> {
+        super::cost_of::<i8>(shape)
+    }
+
+    /// 确定性样本：`a` / `b` 为对称 i8（u8 字节承载有符号码），`y` 为 f32 零缓冲。
+    pub fn sample(m: usize, n: usize) -> Sample {
+        super::sample_of(
+            m,
+            n,
+            Values::U8(deterministic_i8(m * K, 1)),
+            Values::U8(deterministic_i8(K * n, 2)),
+        )
+    }
+
+    /// 标量参考：读 `a` / `b`（u8 承载的有符号码），i32 精确累加后转 f32 输出。
+    ///
+    /// # Errors
+    ///
+    /// 样本缺 `a` / `b` 时返回说明。
+    pub fn reference(sample: &Sample) -> Result<Vec<f32>> {
+        let a: Vec<i8> = sample.u8("a")?.iter().map(|&x| x as i8).collect();
+        let b: Vec<i8> = sample.u8("b")?.iter().map(|&x| x as i8).collect();
+        let mut acc = vec![0i32; sample.m * sample.n];
+        matmul_scalar(&a, &b, sample.m, sample.n, K, &mut acc);
+        Ok(acc.into_iter().map(|x| x as f32).collect())
+    }
+
+    /// 对称 int8 矩阵乘标记类型：只用来承载语义表，没有实例。
+    pub struct MatmulI8Op;
+
+    /// 语义表由注解生成：生产形状 `256×256`，收缩轴 [`K`]，`i32` 精确累加后输出 f32。
+    ///
+    /// 与稠密版共用 `matmul` 骨架，但模块必须是自己那一份（注解层为注册名 `matmul_i8`
+    /// 登记了模块覆盖），否则参考实现会去找稠密版而把有符号码当浮点算。
+    #[annotation::model(name = "matmul_i8", shape = [256, 256], dtype = "f32", skeleton = "matmul")]
+    pub type MatmulI8 = MatmulI8Op;
+
+    crate::operator_here!(MatmulI8Op, "matmul_i8", (256, 256), false, reference);
+
+    /// 确定性 i8 采样：覆盖正负与零，`(len, salt)` 固定即序列固定。
+    fn deterministic_i8(len: usize, salt: u32) -> Vec<u8> {
+        (0..len)
+            .map(|i| {
+                let x = (i as u32)
+                    .wrapping_mul(2654435761)
+                    .wrapping_add(salt.wrapping_mul(40503));
+                ((x % 251) as i32 - 125) as i8 as u8
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 确定性 i8 样本：覆盖正负与零，(len, salt) 固定即序列固定。
+        fn sample(len: usize, salt: i32) -> Vec<i8> {
+            (0..len)
+                .map(|i| {
+                    let x = (i as i32).wrapping_mul(31).wrapping_add(salt);
+                    (x % 64 - 32) as i8
+                })
+                .collect()
+        }
+
+        fn assert_tiled_matches(m: usize, n: usize, k: usize) {
+            let a = sample(m * k, 7);
+            let b = sample(k * n, 11);
+            let mut expected = vec![0i32; m * n];
+            let mut actual = vec![0i32; m * n];
+            forward_scalar(&a, &b, m, n, k, &mut expected).expect("参考可计算");
+            forward_tiled(&a, &b, m, n, k, &mut actual).expect("tile 可计算");
+            assert_eq!(actual, expected, "i8 tile 必须与标量参考逐位一致");
+        }
+
+        #[test]
+        fn tiled_matches_scalar_on_standard_shape() {
+            assert_tiled_matches(256, 256, 4096);
+        }
+
+        #[test]
+        fn tiled_matches_scalar_on_tile_multiples() {
+            assert_tiled_matches(128, 64, 96);
+        }
+
+        #[test]
+        fn tiled_matches_scalar_on_ragged_edges() {
+            assert_tiled_matches(100, 70, 4093);
+        }
+
+        #[test]
+        fn tiled_matches_scalar_on_trivial_shapes() {
+            assert_tiled_matches(1, 1, 1);
+            assert_tiled_matches(1, 8, 3);
+            assert_tiled_matches(8, 1, 3);
+        }
+
+        #[test]
+        fn empty_contraction_yields_zeros() {
+            let mut out = vec![1i32; 4];
+            forward_tiled::<i8>(&[], &[], 2, 2, 0, &mut out).expect("k=0 合法");
+            assert_eq!(out, vec![0i32; 4], "空收缩轴输出必须全零");
+        }
+
+        #[test]
+        fn forward_rejects_mismatched_buffers() {
+            let a = vec![0i8; 8];
+            let b = vec![0i8; 8];
+            let mut out = vec![0i32; 8];
+            assert!(
+                forward_scalar(&a, &b, 3, 3, 3, &mut out).is_err(),
+                "尺寸不符必须报错"
+            );
+        }
     }
 }

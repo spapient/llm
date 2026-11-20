@@ -207,7 +207,7 @@ pub fn decode(artifact: &[u8]) -> Result<Vec<f32>> {
 /// 只读证书：不解码权重也能拿到秩轴那张证书（其余轴返回 `None`）。
 ///
 /// [`decode`] 本来就会复核证书，这里给的是另一条路：审计与工具只想问「凭什么这么压」时，
-/// 不必先落地一张张量。两边读的都是 [`rank_head`]，因此“证书长什么样”只有一种解析。
+/// 不必先落地一张张量。两边读的都是私有的 `rank_head`，因此“证书长什么样”只有一种解析。
 pub fn certificate(artifact: &[u8]) -> Result<Option<ledger::Note>> {
     let (axis, _, _) = head(artifact)?;
     if axis != Axis::Rank {
