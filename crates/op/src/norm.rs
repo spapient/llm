@@ -1,4 +1,4 @@
-//! 归一化层：`BatchNorm2d`、`GroupNorm`、`InstanceNorm`、`LayerNorm`（f32，NHWC）。
+//! 归一化层：`BatchNorm2d`、`GroupNorm`、`InstanceNorm`、`LayerNorm`（NHWC，精度由 `S: Scalar` 决定）。
 //!
 //! 四种归一化只差"统计在哪些轴上做"：BatchNorm 在 `(N,H,W)` 上按通道统计，GroupNorm 在
 //! `(C/G,H,W)` 上按组统计，InstanceNorm 是 `G = C` 的 GroupNorm，LayerNorm 在最后一维统计。
@@ -7,50 +7,51 @@
 //! BatchNorm 的 `train` 路径用批内统计并更新滑动统计，`eval` 路径只用滑动统计——两条路径
 //! 分开成两个函数，避免一个 `bool` 参数把"是否改状态"藏进签名里。
 
+use crate::Scalar;
 use diagnostic::{Code, Error, Result};
 
 /// 二维批归一化：通道数、数值稳定项与滑动统计的动量。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BatchNorm2d {
+pub struct BatchNorm2d<S: Scalar> {
     /// 通道数。
     pub channels: usize,
     /// `sqrt(var + eps)` 的稳定项。
-    pub eps: f32,
+    pub eps: S,
     /// 滑动统计的动量：`new = (1−m)·old + m·batch`。
-    pub momentum: f32,
+    pub momentum: S,
 }
 
 /// 组归一化：把通道分成 `groups` 组，每组在自己的 `(C/G,H,W)` 内统计。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GroupNorm {
+pub struct GroupNorm<S: Scalar> {
     /// 组数（必须整除通道数）。
     pub groups: usize,
     /// 通道数。
     pub channels: usize,
     /// 数值稳定项。
-    pub eps: f32,
+    pub eps: S,
 }
 
 /// 实例归一化：`GroupNorm` 在 `groups == channels` 时的特例，单独列出是为了让调用方不必
 /// 记住"传 C 个组"这件事。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InstanceNorm {
+pub struct InstanceNorm<S: Scalar> {
     /// 通道数。
     pub channels: usize,
     /// 数值稳定项。
-    pub eps: f32,
+    pub eps: S,
 }
 
 /// 层归一化：在最后一维（宽度 `width`）上统计，逐行独立。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LayerNorm {
+pub struct LayerNorm<S: Scalar> {
     /// 归一化宽度（最后一维）。
     pub width: usize,
     /// 数值稳定项。
-    pub eps: f32,
+    pub eps: S,
 }
 
-impl BatchNorm2d {
+impl<S: Scalar> BatchNorm2d<S> {
     /// 训练期：用批内统计归一化，并把批统计按 `momentum` 混入滑动统计。
     ///
     /// # Errors
@@ -59,28 +60,29 @@ impl BatchNorm2d {
     #[allow(clippy::too_many_arguments)]
     pub fn forward_train(
         &self,
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
         n: usize,
         h: usize,
         w: usize,
-        running_mean: &mut [f32],
-        running_var: &mut [f32],
-        out: &mut [f32],
+        running_mean: &mut [S],
+        running_var: &mut [S],
+        out: &mut [S],
     ) -> Result<()> {
         let (c, count) = self.geometry(x, gamma, beta, n, h, w, out)?;
         let (mean, var) = batch_stats(x, c, count);
         for ci in 0..c {
             running_mean[ci] =
-                (1.0 - self.momentum) * running_mean[ci] + self.momentum * mean[ci];
+                (S::ONE - self.momentum) * running_mean[ci] + self.momentum * mean[ci];
             // 方差用无偏口径进滑动统计（与 PyTorch 一致），归一化本身用有偏方差。
             let unbiased = if count > 1 {
-                var[ci] * count as f32 / (count - 1) as f32
+                var[ci] * S::from_usize(count) / S::from_usize(count - 1)
             } else {
                 var[ci]
             };
-            running_var[ci] = (1.0 - self.momentum) * running_var[ci] + self.momentum * unbiased;
+            running_var[ci] =
+                (S::ONE - self.momentum) * running_var[ci] + self.momentum * unbiased;
         }
         affine(x, gamma, beta, &mean, &var, self.eps, c, count, out);
         Ok(())
@@ -94,15 +96,15 @@ impl BatchNorm2d {
     #[allow(clippy::too_many_arguments)]
     pub fn forward_eval(
         &self,
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
         n: usize,
         h: usize,
         w: usize,
-        running_mean: &[f32],
-        running_var: &[f32],
-        out: &mut [f32],
+        running_mean: &[S],
+        running_var: &[S],
+        out: &mut [S],
     ) -> Result<()> {
         let (c, count) = self.geometry(x, gamma, beta, n, h, w, out)?;
         let mean = running_mean.to_vec();
@@ -113,13 +115,13 @@ impl BatchNorm2d {
 
     fn geometry(
         &self,
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
         n: usize,
         h: usize,
         w: usize,
-        out: &[f32],
+        out: &[S],
     ) -> Result<(usize, usize)> {
         let c = self.channels;
         let count = n * h * w;
@@ -134,7 +136,7 @@ impl BatchNorm2d {
     }
 }
 
-impl GroupNorm {
+impl<S: Scalar> GroupNorm<S> {
     /// 前向：按组统计后归一化。
     ///
     /// # Errors
@@ -143,12 +145,12 @@ impl GroupNorm {
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
         n: usize,
         spatial: usize,
-        out: &mut [f32],
+        out: &mut [S],
     ) -> Result<()> {
         let c = self.channels;
         if self.groups == 0 || c % self.groups != 0 {
@@ -166,19 +168,19 @@ impl GroupNorm {
         for bi in 0..n {
             for g in 0..self.groups {
                 let c0 = g * per;
-                let mut sum = 0.0f32;
-                let mut sq = 0.0f32;
-                let len = (per * spatial) as f32;
+                let mut sum = S::ZERO;
+                let mut sq = S::ZERO;
+                let len = S::from_usize(per * spatial);
                 for s in 0..spatial {
                     for ci in c0..c0 + per {
                         let v = x[(bi * spatial + s) * c + ci];
-                        sum += v;
-                        sq += v * v;
+                        sum = sum + v;
+                        sq = sq + v * v;
                     }
                 }
                 let mean = sum / len;
-                let var = (sq / len - mean * mean).max(0.0);
-                let inv = 1.0 / (var + self.eps).sqrt();
+                let var = (sq / len - mean * mean).max(S::ZERO);
+                let inv = S::ONE / (var + self.eps).sqrt();
                 for s in 0..spatial {
                     for ci in c0..c0 + per {
                         let idx = (bi * spatial + s) * c + ci;
@@ -191,7 +193,7 @@ impl GroupNorm {
     }
 }
 
-impl InstanceNorm {
+impl<S: Scalar> InstanceNorm<S> {
     /// 前向：等价于 `GroupNorm{groups: channels}`。
     ///
     /// # Errors
@@ -199,12 +201,12 @@ impl InstanceNorm {
     /// 形状不符时返回说明。
     pub fn forward(
         &self,
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
         n: usize,
         spatial: usize,
-        out: &mut [f32],
+        out: &mut [S],
     ) -> Result<()> {
         let gn = GroupNorm {
             groups: self.channels,
@@ -215,7 +217,7 @@ impl InstanceNorm {
     }
 }
 
-impl LayerNorm {
+impl<S: Scalar> LayerNorm<S> {
     /// 前向：逐行在最后一维上减均值除标准差。
     ///
     /// # Errors
@@ -223,10 +225,10 @@ impl LayerNorm {
     /// 缓冲长度不是 `width` 整数倍或仿射参数长度不符时返回说明。
     pub fn forward(
         &self,
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
-        out: &mut [f32],
+        x: &[S],
+        gamma: &[S],
+        beta: &[S],
+        out: &mut [S],
     ) -> Result<()> {
         let width = self.width;
         if width == 0 || x.len() % width != 0 {
@@ -242,16 +244,16 @@ impl LayerNorm {
             let src = &x[row * width..(row + 1) * width];
             let dst = &mut out[row * width..(row + 1) * width];
             // 方差用 f64 累加：f32 前缀和在宽度上千时会掉到 1e-4 级精度。
-            let sum: f64 = src.iter().map(|v| f64::from(*v)).sum();
-            let mean = (sum / width as f64) as f32;
+            let sum: f64 = src.iter().map(|v| v.to_f64()).sum();
+            let mean = S::from_f64(sum / width as f64);
             let sq: f64 = src
                 .iter()
                 .map(|v| {
-                    let d = f64::from(*v) - f64::from(mean);
+                    let d = v.to_f64() - mean.to_f64();
                     d * d
                 })
                 .sum();
-            let inv = 1.0 / ((sq / width as f64) as f32 + self.eps).sqrt();
+            let inv = S::ONE / (S::from_f64(sq / width as f64) + self.eps).sqrt();
             for i in 0..width {
                 dst[i] = (src[i] - mean) * inv * gamma[i] + beta[i];
             }
@@ -261,37 +263,38 @@ impl LayerNorm {
 }
 
 /// 批内按通道的均值与（有偏）方差。
-fn batch_stats(x: &[f32], c: usize, count: usize) -> (Vec<f32>, Vec<f32>) {
-    let mut mean = vec![0.0f32; c];
-    let mut sq = vec![0.0f32; c];
+fn batch_stats<S: Scalar>(x: &[S], c: usize, count: usize) -> (Vec<S>, Vec<S>) {
+    let mut mean = vec![S::ZERO; c];
+    let mut sq = vec![S::ZERO; c];
     for p in 0..count {
         for ci in 0..c {
             let v = x[p * c + ci];
-            mean[ci] += v;
-            sq[ci] += v * v;
+            mean[ci] = mean[ci] + v;
+            sq[ci] = sq[ci] + v * v;
         }
     }
+    let count_s = S::from_usize(count);
     for ci in 0..c {
-        mean[ci] /= count as f32;
-        let m2 = sq[ci] / count as f32 - mean[ci] * mean[ci];
-        sq[ci] = m2.max(0.0);
+        mean[ci] = mean[ci] / count_s;
+        let m2 = sq[ci] / count_s - mean[ci] * mean[ci];
+        sq[ci] = m2.max(S::ZERO);
     }
     (mean, sq)
 }
 
 /// 统一仿射：`(x−mean)/√(var+eps)·γ+β`，`mean`/`var` 按通道索引。
-fn affine(
-    x: &[f32],
-    gamma: &[f32],
-    beta: &[f32],
-    mean: &[f32],
-    var: &[f32],
-    eps: f32,
+fn affine<S: Scalar>(
+    x: &[S],
+    gamma: &[S],
+    beta: &[S],
+    mean: &[S],
+    var: &[S],
+    eps: S,
     c: usize,
     count: usize,
-    out: &mut [f32],
+    out: &mut [S],
 ) {
-    let inv: Vec<f32> = var.iter().map(|v| 1.0 / (v + eps).sqrt()).collect();
+    let inv: Vec<S> = var.iter().map(|v| S::ONE / (*v + eps).sqrt()).collect();
     for p in 0..count {
         for ci in 0..c {
             let idx = p * c + ci;

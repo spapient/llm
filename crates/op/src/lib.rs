@@ -84,8 +84,8 @@ pub mod unary;
 pub use attention::decode_attention;
 pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use classic::{
-    adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
-    layer_norm, max_pool1d, max_pool2d,
+    adaptive_pool_f32, avg_pool2d_f32, batch_norm_f32, conv2d_f32, group_norm_f32,
+    instance_norm_f32, interpolate_f32, layer_norm_f32, max_pool1d_f32, max_pool2d_f32,
 };
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};

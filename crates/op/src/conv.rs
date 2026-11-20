@@ -11,6 +11,7 @@ use std::thread;
 use diagnostic::{Code, Error, Result};
 
 use crate::fast;
+use crate::Scalar;
 
 /// 卷积的公共几何：核、步长、补零。通道数不在这里——1d 与 2d 共用同一套核参数。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,14 +386,14 @@ impl MaxPool2d {
     /// # Errors
     ///
     /// 缓冲长度不符时返回说明。
-    pub fn forward(
+    pub fn forward<S: Scalar>(
         &self,
-        x: &[f32],
+        x: &[S],
         n: usize,
         h: usize,
         w: usize,
         c: usize,
-        out: &mut [f32],
+        out: &mut [S],
     ) -> Result<()> {
         let (oh, ow) = self.shape(h, w)?;
         check(x.len(), n * h * w * c, "输入")?;
@@ -401,7 +402,7 @@ impl MaxPool2d {
             for oi in 0..oh {
                 for oj in 0..ow {
                     for ci in 0..c {
-                        let mut best = f32::NEG_INFINITY;
+                        let mut best = S::NEG_INFINITY;
                         for ki in 0..self.geom.kh {
                             let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
                             if ii < 0 || ii as usize >= h {
@@ -442,14 +443,14 @@ impl AvgPool2d {
     /// # Errors
     ///
     /// 缓冲长度不符时返回说明。
-    pub fn forward(
+    pub fn forward<S: Scalar>(
         &self,
-        x: &[f32],
+        x: &[S],
         n: usize,
         h: usize,
         w: usize,
         c: usize,
-        out: &mut [f32],
+        out: &mut [S],
     ) -> Result<()> {
         let (oh, ow) = self.shape(h, w)?;
         check(x.len(), n * h * w * c, "输入")?;
@@ -458,7 +459,7 @@ impl AvgPool2d {
             for oi in 0..oh {
                 for oj in 0..ow {
                     for ci in 0..c {
-                        let mut sum = 0.0f32;
+                        let mut sum = S::ZERO;
                         let mut count = 0usize;
                         for ki in 0..self.geom.kh {
                             let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
@@ -470,14 +471,14 @@ impl AvgPool2d {
                                 if jj < 0 || jj as usize >= w {
                                     continue;
                                 }
-                                sum += x[((ni * h + ii as usize) * w + jj as usize) * c + ci];
+                                sum = sum + x[((ni * h + ii as usize) * w + jj as usize) * c + ci];
                                 count += 1;
                             }
                         }
                         let denom = if self.count_include_pad {
-                            (self.geom.kh * self.geom.kw) as f32
+                            S::from_usize(self.geom.kh * self.geom.kw)
                         } else {
-                            count.max(1) as f32
+                            S::from_usize(count.max(1))
                         };
                         out[((ni * oh + oi) * ow + oj) * c + ci] = sum / denom;
                     }
@@ -744,13 +745,13 @@ impl MaxPool1d {
     /// # Errors
     ///
     /// 缓冲长度不符时返回说明。
-    pub fn forward(
+    pub fn forward<S: Scalar>(
         &self,
-        x: &[f32],
+        x: &[S],
         n: usize,
         l: usize,
         c: usize,
-        out: &mut [f32],
+        out: &mut [S],
     ) -> Result<()> {
         let ol = self.len(l)?;
         check(x.len(), n * l * c, "输入")?;
@@ -759,7 +760,7 @@ impl MaxPool1d {
             for oi in 0..ol {
                 let base = oi * self.s;
                 for ci in 0..c {
-                    let mut best = f32::NEG_INFINITY;
+                    let mut best = S::NEG_INFINITY;
                     for ki in 0..self.k {
                         let src = base + ki;
                         if src < self.p || src - self.p >= l {
@@ -771,7 +772,8 @@ impl MaxPool1d {
                         }
                     }
                     // 整窗都落在补零上（只会在极端几何下出现）按 0 处理。
-                    out[(ni * ol + oi) * c + ci] = if best == f32::NEG_INFINITY { 0.0 } else { best };
+                    out[(ni * ol + oi) * c + ci] =
+                        if best == S::NEG_INFINITY { S::ZERO } else { best };
                 }
             }
         }
@@ -796,14 +798,14 @@ impl AdaptiveAvgPool2d {
     /// # Errors
     ///
     /// 输出尺寸为 0 或缓冲长度不符时返回说明。
-    pub fn forward(
+    pub fn forward<S: Scalar>(
         &self,
-        x: &[f32],
+        x: &[S],
         n: usize,
         h: usize,
         w: usize,
         c: usize,
-        out: &mut [f32],
+        out: &mut [S],
     ) -> Result<()> {
         if self.oh == 0 || self.ow == 0 {
             return Err(Error::new(Code::Invalid, "自适应池化输出尺寸必须大于 0"));
@@ -817,12 +819,12 @@ impl AdaptiveAvgPool2d {
                 for oj in 0..self.ow {
                     let w0 = oj * w / self.ow;
                     let w1 = ((oj + 1) * w).div_ceil(self.ow).min(w);
-                    let area = ((h1 - h0) * (w1 - w0)) as f32;
+                    let area = S::from_usize((h1 - h0) * (w1 - w0));
                     for ci in 0..c {
-                        let mut sum = 0.0f32;
+                        let mut sum = S::ZERO;
                         for ii in h0..h1 {
                             for jj in w0..w1 {
-                                sum += x[((ni * h + ii) * w + jj) * c + ci];
+                                sum = sum + x[((ni * h + ii) * w + jj) * c + ci];
                             }
                         }
                         out[((ni * self.oh + oi) * self.ow + oj) * c + ci] = sum / area;
@@ -860,14 +862,14 @@ impl Interpolate {
     /// # Errors
     ///
     /// 目标尺寸为 0 或缓冲长度不符时返回说明。
-    pub fn forward(
+    pub fn forward<S: Scalar>(
         &self,
-        x: &[f32],
+        x: &[S],
         n: usize,
         h: usize,
         w: usize,
         c: usize,
-        out: &mut [f32],
+        out: &mut [S],
     ) -> Result<()> {
         if self.oh == 0 || self.ow == 0 {
             return Err(Error::new(Code::Invalid, "插值目标尺寸必须大于 0"));
@@ -894,15 +896,21 @@ impl Interpolate {
             Sampler::Linear => {
                 for ni in 0..n {
                     for oi in 0..self.oh {
-                        let fy = ((oi as f32 + 0.5) * h as f32 / self.oh as f32 - 0.5).max(0.0);
-                        let y0 = fy.floor().min((h - 1) as f32) as usize;
+                        let fy = ((S::from_usize(oi) + S::from_f64(0.5)) * S::from_usize(h)
+                            / S::from_usize(self.oh)
+                            - S::from_f64(0.5))
+                        .max(S::ZERO);
+                        let y0 = fy.floor().min(S::from_usize(h - 1)).to_usize();
                         let y1 = (y0 + 1).min(h - 1);
-                        let ly = if y0 == y1 { 0.0 } else { fy - y0 as f32 };
+                        let ly = if y0 == y1 { S::ZERO } else { fy - S::from_usize(y0) };
                         for oj in 0..self.ow {
-                            let fx = ((oj as f32 + 0.5) * w as f32 / self.ow as f32 - 0.5).max(0.0);
-                            let x0 = fx.floor().min((w - 1) as f32) as usize;
+                            let fx = ((S::from_usize(oj) + S::from_f64(0.5)) * S::from_usize(w)
+                                / S::from_usize(self.ow)
+                                - S::from_f64(0.5))
+                            .max(S::ZERO);
+                            let x0 = fx.floor().min(S::from_usize(w - 1)).to_usize();
                             let x1 = (x0 + 1).min(w - 1);
-                            let lx = if x0 == x1 { 0.0 } else { fx - x0 as f32 };
+                            let lx = if x0 == x1 { S::ZERO } else { fx - S::from_usize(x0) };
                             let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
                             for ci in 0..c {
                                 let a = x[((ni * h + y0) * w + x0) * c + ci];

@@ -15,6 +15,9 @@ const MR: usize = 8;
 /// 微内核列数（两个 NEON 向量）。
 const NR: usize = 8;
 
+/// 内积分块长度：`K = 4096` 时整段 B 面板有 4MB，按 256 切块让 A 面板与 B 瓦片同时驻留 L1/L2。
+const KB: usize = 256;
+
 /// 多线程稠密 f32 GEMM：`out[m,n] = a[m,k] · b[k,n]`。
 ///
 /// # Panics
@@ -64,18 +67,29 @@ fn compute(
 ) {
     let full = rows / MR;
     let apack = pack_panels(a, full, k);
-    sweep_columns(
-        Sweep {
-            a,
-            apack: &apack,
-            bpack,
-            b,
-            full,
-            n,
-            k,
-        },
-        out,
-    );
+    let mut first = true;
+    let mut k0 = 0;
+    while k0 < k {
+        let kb = KB.min(k - k0);
+        sweep_columns(
+            Sweep {
+                a,
+                apack: &apack,
+                bpack,
+                b,
+                full,
+                n,
+                k,
+            },
+            out,
+            k0,
+            kb,
+            first,
+        );
+        first = false;
+        k0 += kb;
+    }
+    // 残行只占 ≤7 行，一次把整段 K 走完，不参与分块累加。
     let tail = full * MR;
     if tail < rows {
         edge(
@@ -89,7 +103,10 @@ fn compute(
                 nr: n,
                 n,
                 k,
+                stride: k,
             },
+            0,
+            true,
         );
     }
 }
@@ -161,7 +178,7 @@ fn pack_b_f32_span(chunk: &mut [f32], b: &[f32], n: usize, k: usize, blk0: usize
 }
 
 /// 沿列块扫描整行块：整块走微内核，最后一段残列走标量边（`edge` 读未打包的 `a`）。
-fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32]) {
+fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first: bool) {
     let Sweep {
         a,
         apack,
@@ -175,9 +192,19 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32]) {
     while j < n {
         let nr = NR.min(n - j);
         if nr == NR {
-            let tile = &bpack[(j / NR) * k * NR..];
+            let start = (j / NR) * k * NR + k0 * NR;
+            let tile = &bpack[start..start + kb * NR];
             for blk in 0..full {
-                micro_packed(&apack[blk * k * MR..], tile, out, blk * MR, j, n, k);
+                micro_packed(
+                    &apack[blk * k * MR + k0 * MR..],
+                    tile,
+                    out,
+                    blk * MR,
+                    j,
+                    n,
+                    kb,
+                    first,
+                );
             }
         } else {
             edge(
@@ -190,8 +217,11 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32]) {
                     mr: full * MR,
                     nr,
                     n,
-                    k,
+                    k: kb,
+                    stride: k,
                 },
+                k0,
+                first,
             );
         }
         j += NR;
@@ -220,7 +250,8 @@ fn micro_packed(
     row0: usize,
     j: usize,
     n: usize,
-    k: usize,
+    kb: usize,
+    first: bool,
 ) {
     use std::arch::aarch64::*;
     unsafe {
@@ -228,7 +259,28 @@ fn micro_packed(
         let mut acc = [zero; 16];
         let pp = panel.as_ptr();
         let bp = b.as_ptr();
-        for p in 0..k {
+        // 后续内积分块接着上一块的累加器算：先读回 `out` 的 16 个向量，首块用 0 起手。
+        if !first {
+            let prev = out.as_ptr();
+            let r = row0;
+            acc[0] = vld1q_f32(prev.add(r * n + j));
+            acc[1] = vld1q_f32(prev.add(r * n + j + 4));
+            acc[2] = vld1q_f32(prev.add((r + 1) * n + j));
+            acc[3] = vld1q_f32(prev.add((r + 1) * n + j + 4));
+            acc[4] = vld1q_f32(prev.add((r + 2) * n + j));
+            acc[5] = vld1q_f32(prev.add((r + 2) * n + j + 4));
+            acc[6] = vld1q_f32(prev.add((r + 3) * n + j));
+            acc[7] = vld1q_f32(prev.add((r + 3) * n + j + 4));
+            acc[8] = vld1q_f32(prev.add((r + 4) * n + j));
+            acc[9] = vld1q_f32(prev.add((r + 4) * n + j + 4));
+            acc[10] = vld1q_f32(prev.add((r + 5) * n + j));
+            acc[11] = vld1q_f32(prev.add((r + 5) * n + j + 4));
+            acc[12] = vld1q_f32(prev.add((r + 6) * n + j));
+            acc[13] = vld1q_f32(prev.add((r + 6) * n + j + 4));
+            acc[14] = vld1q_f32(prev.add((r + 7) * n + j));
+            acc[15] = vld1q_f32(prev.add((r + 7) * n + j + 4));
+        }
+        for p in 0..kb {
             let av0 = vld1q_f32(pp.add(p * MR));
             let av1 = vld1q_f32(pp.add(p * MR + 4));
             let bv0 = vld1q_f32(bp.add(p * NR));
@@ -280,15 +332,17 @@ fn micro_packed(
     row0: usize,
     j: usize,
     n: usize,
-    k: usize,
+    kb: usize,
+    first: bool,
 ) {
     for r in 0..MR {
         for c in 0..NR {
-            let mut acc = 0.0f32;
-            for p in 0..k {
+            let slot = (row0 + r) * n + j + c;
+            let mut acc = if first { 0.0f32 } else { out[slot] };
+            for p in 0..kb {
                 acc += panel[p * MR + r] * b[p * NR + c];
             }
-            out[(row0 + r) * n + j + c] = acc;
+            out[slot] = acc;
         }
     }
 }
@@ -305,17 +359,20 @@ struct Span {
     nr: usize,
     n: usize,
     k: usize,
+    /// `a` 的整行宽：内积分块时 `k` 只是当前块，跨块偏移要按整行宽算。
+    stride: usize,
 }
 
 /// 标量尾块：`out[i..i+mr, j..j+nr]` 逐元素点积（与微内核同一组累加口径，容差内一致）。
-fn edge(a: &[f32], b: &[f32], out: &mut [f32], span: Span) {
+fn edge(a: &[f32], b: &[f32], out: &mut [f32], span: Span, k0: usize, first: bool) {
     for r in 0..span.mr {
         for c in 0..span.nr {
-            let mut acc = 0.0f32;
+            let slot = (span.i + r) * span.n + span.j + c;
+            let mut acc = if first { 0.0f32 } else { out[slot] };
             for p in 0..span.k {
-                acc += a[(span.i + r) * span.k + p] * b[p * span.n + span.j + c];
+                acc += a[(span.i + r) * span.stride + k0 + p] * b[(k0 + p) * span.n + span.j + c];
             }
-            out[(span.i + r) * span.n + span.j + c] = acc;
+            out[slot] = acc;
         }
     }
 }
