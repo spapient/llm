@@ -85,10 +85,14 @@ fmaf、多 tile。硬件边界:S4000(mp_22)**无 cp.async**(SINCE_MP_43);5.2 工
 | `mul_f32` | 逐点 | OK | 0 |
 | `rmsnorm_f32` | 两段分块(4 块折叠) | OK(1024 元素) | 1.17e-07 |
 | `softmax_f32` | 三段分块(4 块折叠) | OK(1024 元素) | 1.19e-07 |
+| `gemv_f32` | 一维循环注入(`[grid] dims=["n:N"]`) | OK(64×64) | **0(逐位)** |
+| `gemm_f32` | 二维循环注入(`[grid] dims=["i:M","j:N"]`) | OK(16×16) | 2.79e-10 |
 
 归一化由 `engine::norm::cuda_rmsnorm_driver` / `cuda_softmax_driver` 把多段设备源与 host
 串联驱动拼成单文件(部分和/最大值回读到 CPU 折叠后再派发);`gen-cuda` 已内置这条分支。
-仍报 `Unsupported` 的形态:循环注入(`Loop`)与分块扫描(`ChunkScan`)的 CUDA 镜像未落地。
+循环注入(`Loop`)已落地:设备源由 `cutile::execution::cuda_gemm_program` 返回(含各维网格大小),
+host 驱动用 `engine::codegen::cuda_loop_driver` 按 `dim3` 发射——gemv 一维、gemm 二维共用同一条
+lowering。仍报 `Unsupported` 的形态只剩分块扫描(`ChunkScan`)。
 
 ### 意义
 
