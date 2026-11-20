@@ -783,6 +783,125 @@ kernel void kernel_main(device float* in [[buffer(0)]],
         );
     }
 
+    /// 生产态分块注意力对照：同一份 `attention_f32`（S=512、D=64）分别经
+    /// [`cutile::execution::metal_grid_program`]（每查询行一线程）与
+    /// [`cutile::execution::metal_tiled_attention_program`]（每行一个 threadgroup）生成 MSL，
+    /// 在真机 GPU 上跑同一组 Q/K/V、对拍 CPU 参考并报延迟与吞吐。
+    ///
+    /// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_tiled_attention_s512 --release --ignored --nocapture`。
+    #[test]
+    #[ignore = "Metal 生产态分块注意力：cargo test -p llm-engine --lib -- metal_tiled_attention_s512 --release --ignored --nocapture"]
+    fn metal_tiled_attention_s512() {
+        let Some(device) = MetalDevice::system_default() else {
+            eprintln!("Metal 设备不在本机，分块注意力基准未运行");
+            return;
+        };
+        let Some(queue) = device.new_command_queue() else {
+            panic!("有设备必有命令队列");
+        };
+        crate::backends::install();
+
+        const S: usize = 512;
+        const D: usize = 64;
+        const THREADS: usize = 64;
+
+        let q: Vec<f32> = (0..S * D).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+        let k: Vec<f32> = (0..S * D).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+        let v: Vec<f32> = (0..S * D).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
+        let reference = cpu_attention(&q, &k, &v, S, D);
+
+        let mut q_buf = device.new_buffer(S * D * 4).expect("Q 缓冲");
+        let mut k_buf = device.new_buffer(S * D * 4).expect("K 缓冲");
+        let mut v_buf = device.new_buffer(S * D * 4).expect("V 缓冲");
+        q_buf.as_mut_bytes().copy_from_slice(&as_bytes(&q));
+        k_buf.as_mut_bytes().copy_from_slice(&as_bytes(&k));
+        v_buf.as_mut_bytes().copy_from_slice(&as_bytes(&v));
+        let mut y_buf = device.new_buffer(S * D * 4).expect("Y 缓冲");
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-attn-s512"));
+        let grid_msl =
+            cutile::execution::metal_grid_program(&catalogue, &dirs, "attention_f32", S, D)
+                .expect("网格注意力 MSL 应能生成");
+        let tiled_msl = cutile::execution::metal_tiled_attention_program(
+            &catalogue,
+            &dirs,
+            "attention_f32",
+            S,
+            D,
+            THREADS,
+        )
+        .expect("分块注意力 MSL 应能生成");
+        let grid_pipe = device.compile(&grid_msl).expect("网格注意力 MSL 应能编译");
+        let tiled_pipe = device.compile(&tiled_msl).expect("分块注意力 MSL 应能编译");
+
+        queue.execute(
+            &grid_pipe,
+            &[&q_buf, &k_buf, &v_buf, &y_buf],
+            [S as u32, 1, 1],
+            [1, 1, 1],
+        );
+        assert_matmul_matches("attn-grid", &reference, y_buf.as_mut_bytes());
+        let tiled_grid = [(S * THREADS) as u32, 1, 1];
+        queue.execute(
+            &tiled_pipe,
+            &[&q_buf, &k_buf, &v_buf, &y_buf],
+            tiled_grid,
+            [THREADS as u32, 1, 1],
+        );
+        assert_matmul_matches("attn-tiled", &reference, y_buf.as_mut_bytes());
+
+        let grid_ns = measure(
+            &queue,
+            &grid_pipe,
+            &[&q_buf, &k_buf, &v_buf, &y_buf],
+            [S as u32, 1, 1],
+            [1, 1, 1],
+        );
+        let tiled_ns = measure(
+            &queue,
+            &tiled_pipe,
+            &[&q_buf, &k_buf, &v_buf, &y_buf],
+            tiled_grid,
+            [THREADS as u32, 1, 1],
+        );
+        eprintln!(
+            "Metal 生产态 attention 512×64：网格行线程={grid_ns:.1} ns 分块线程组={tiled_ns:.1} ns（每行 {THREADS} 线程） 加速={:.2}×",
+            grid_ns / tiled_ns,
+        );
+    }
+
+    /// 注意力 CPU 参考：分数 f64 累加、行内 max/exp 归一化、输出 f64 累加。
+    fn cpu_attention(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> Vec<f32> {
+        let scale = (d as f32).sqrt();
+        let mut out = vec![0.0f32; s * d];
+        let mut scores = vec![0.0f32; s];
+        for i in 0..s {
+            let mut row_max = f32::MIN;
+            for j in 0..s {
+                let mut dot = 0.0f64;
+                for p in 0..d {
+                    dot += f64::from(q[i * d + p]) * f64::from(k[j * d + p]);
+                }
+                scores[j] = (dot as f32) / scale;
+                row_max = row_max.max(scores[j]);
+            }
+            let mut sum = 0.0f64;
+            for score in &mut scores {
+                *score = (*score - row_max).exp();
+                sum += f64::from(*score);
+            }
+            for h in 0..d {
+                let mut acc = 0.0f64;
+                for j in 0..s {
+                    acc += f64::from(scores[j]) * f64::from(v[j * d + h]);
+                }
+                out[i * d + h] = (acc / sum) as f32;
+            }
+        }
+        out
+    }
+
     /// 朴素 MSL：每线程算一个输出元素；`tiled` 为真时用 threadgroup 共享内存把 A/B 按 16×16 分块，
     /// 每个线程组 16×16 线程协同搬运一次整块，规约轴复用共享块，避免反复从设备全局内存重读。
     fn matmul_msl(tiled: bool, m: usize, n: usize, k: usize) -> String {

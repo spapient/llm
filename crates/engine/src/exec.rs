@@ -327,10 +327,11 @@ impl Device {
     }
 }
 
-/// 后端要实现的东西：把一张图提交到一条流。
+/// 后端要实现的东西：把一张图提交到一条流，并按编号登记内核与宿主缓冲。
 ///
 /// 实现放在后端（CPU 线程池 / CUDA / Metal …）；调度与模型代码只认这个 trait，
-/// 因此换后端不改上层。
+/// 因此换后端不改上层。它是本仓的 **Backend 基座**（ADR 0051）：Burn 的 `Backend` 在
+/// llm 里由本 trait 承担，装饰器（[`Trace`] 等）以同样的方式实现它并转发。
 pub trait Executor {
     /// 该执行器绑定的设备。
     fn device(&self) -> &Device;
@@ -344,6 +345,116 @@ pub trait Executor {
     /// 在此做事件同步。跳过它就去读结果，看到的是未初始化的缓冲。
     fn sync(&mut self, _stream: Stream) -> Result<()> {
         Ok(())
+    }
+
+    /// 登记一段内核体；执行时按 [`Program::name`] 查找。
+    ///
+    /// 默认拒绝：只记账的队列执行器没有内核表，静默接受会让"提交成功、同步才发现没实现"
+    /// 变成一种运行期惊喜。
+    fn register_program(&mut self, _program: Box<dyn Program>) -> Result<()> {
+        Err(Error::new(
+            Code::Unsupported,
+            "该执行器没有内核表".to_string(),
+        ))
+    }
+
+    /// 绑定一块 `f32` 操作数；返回被替换掉的旧块。
+    ///
+    /// 默认返回 `None`：没有宿主缓冲的执行器不拥有这个编号，调用方按缺失处理。
+    fn bind_f32(&mut self, _id: u32, _values: Vec<f32>) -> Option<Vec<f32>> {
+        None
+    }
+
+    /// 绑定一块打包字节操作数；返回被替换掉的旧块。
+    fn bind_bytes(&mut self, _id: u32, _values: Vec<u8>) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// 按编号取 `f32` 操作数；缺失或形态不符为 `None`。
+    fn fetch_f32(&self, _id: u32) -> Option<&[f32]> {
+        None
+    }
+
+    /// 按编号取打包字节操作数；缺失或形态不符为 `None`。
+    fn fetch_bytes(&self, _id: u32) -> Option<&[u8]> {
+        None
+    }
+}
+
+/// 执行基座的装饰器：包住任意 [`Executor`]，记录每次提交的节点名，其余方法原样转发。
+///
+/// 这是"装饰器叠在基座上"的第一个实例（ADR 0051）：上层只认 `E: Executor`，因此换成
+/// `Trace<CpuExecutor>` 不需要改模型代码；审计拿到的是**真实提交序**，不是装配侧另记的一份。
+/// 本装饰器不改变执行语义、不做重排或融合（ADR 0017 无 IR 冻结）。
+#[derive(Debug)]
+pub struct Trace<E> {
+    inner: E,
+    submitted: Vec<Vec<String>>,
+}
+
+impl<E> Trace<E> {
+    /// 包住一个执行器；记录从空开始。
+    pub fn new(inner: E) -> Self {
+        Self {
+            inner,
+            submitted: Vec::new(),
+        }
+    }
+
+    /// 每次 [`Executor::submit`] 记录到的节点名（按提交序，含空图）。
+    pub fn submitted(&self) -> &[Vec<String>] {
+        &self.submitted
+    }
+
+    /// 被装饰的执行器（只读）。
+    pub fn inner(&self) -> &E {
+        &self.inner
+    }
+
+    /// 被装饰的执行器（可写）；配置内核表等一次性装配走这里。
+    pub fn inner_mut(&mut self) -> &mut E {
+        &mut self.inner
+    }
+}
+
+impl<E: Executor> Executor for Trace<E> {
+    fn device(&self) -> &Device {
+        self.inner.device()
+    }
+
+    fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()> {
+        self.submitted.push(
+            graph
+                .nodes()
+                .iter()
+                .map(|node| node.name().to_owned())
+                .collect(),
+        );
+        self.inner.submit(graph, stream)
+    }
+
+    fn sync(&mut self, stream: Stream) -> Result<()> {
+        self.inner.sync(stream)
+    }
+
+    fn register_program(&mut self, program: Box<dyn Program>) -> Result<()> {
+        self.inner.register_program(program)
+    }
+
+    fn bind_f32(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
+        self.inner.bind_f32(id, values)
+    }
+
+    fn bind_bytes(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
+        self.inner.bind_bytes(id, values)
+    }
+
+    fn fetch_f32(&self, id: u32) -> Option<&[f32]> {
+        self.inner.fetch_f32(id)
+    }
+
+    fn fetch_bytes(&self, id: u32) -> Option<&[u8]> {
+        self.inner.fetch_bytes(id)
     }
 }
 
@@ -867,6 +978,26 @@ impl Executor for CpuExecutor {
     fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()> {
         enqueue(&mut self.queue, graph, stream);
         Ok(())
+    }
+
+    fn register_program(&mut self, program: Box<dyn Program>) -> Result<()> {
+        CpuExecutor::register(self, program)
+    }
+
+    fn bind_f32(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
+        CpuExecutor::bind(self, id, values)
+    }
+
+    fn bind_bytes(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
+        CpuExecutor::bind_u8(self, id, values)
+    }
+
+    fn fetch_f32(&self, id: u32) -> Option<&[f32]> {
+        CpuExecutor::get(self, id)
+    }
+
+    fn fetch_bytes(&self, id: u32) -> Option<&[u8]> {
+        CpuExecutor::get_u8(self, id)
     }
 
     /// 排这一条流上已提交的节点：按入队顺序执行，成功一条才出队一条。

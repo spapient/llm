@@ -4,7 +4,7 @@
 //! K/V 写回，不另存模型侧 KV 账。
 
 use diagnostic::{Code, Error, Result};
-use engine::exec::{CpuExecutor, Device};
+use engine::exec::{CpuExecutor, Device, Executor};
 use engine::{Batch, Sequence};
 use nn::Stack;
 use std::path::Path;
@@ -16,22 +16,21 @@ use crate::assembly::{
 use crate::kernels::SITE;
 
 /// CPU 模型宿主：驻留权重 + 装配好的图 + 登记了内核的执行器。
+///
+/// 执行器是 [`Executor`] 基座上的任意实现（`E`）；CPU 是默认值，装饰器（如
+/// [`engine::exec::Trace`]）以同一 trait 叠在它上面，模型代码不改（ADR 0051）。
 #[derive(Debug)]
-pub struct CpuModel {
-    executor: CpuExecutor,
+pub struct CpuModel<E: Executor = CpuExecutor> {
+    executor: E,
     assembly: Assembly,
 }
 
-impl CpuModel {
+impl CpuModel<CpuExecutor> {
     /// 由层栈与驻留参数表装配；形状、宽度、权重缺失都在构造期报出。
     pub fn new(stack: &Stack, params: &Params) -> Result<Self> {
         let mut executor = CpuExecutor::new(Device::new("cpu", "generic"));
         crate::kernels::register_cpu(&mut executor)?;
-        let assembly = assemble(stack, params)?;
-        bind_weights(&mut executor, &assembly, params)?;
-        bind_activations(&mut executor, &assembly);
-
-        Ok(Self { executor, assembly })
+        Self::with_executor(stack, params, executor)
     }
 
     /// 从权重文件就地装配：打开头部 → 推出层栈 → 装载驻留参数表 → 装配图与内核执行器。
@@ -76,6 +75,19 @@ impl CpuModel {
         let params = Params::from_stack(&stack, file.header(), &file)?;
         Self::new(&stack, &params)
     }
+}
+
+impl<E: Executor> CpuModel<E> {
+    /// 用一个已经配好的执行器装配：图、权重与激活缓冲都绑到它的编号表。
+    ///
+    /// 内核登记是执行器自己的装配步骤（CPU 走 [`register_cpu`](crate::kernels::register_cpu)），
+    /// 本函数不替后端决定内核表——同一构造因此对测试替身与装饰器都成立。
+    pub fn with_executor(stack: &Stack, params: &Params, mut executor: E) -> Result<Self> {
+        let assembly = assemble(stack, params)?;
+        bind_weights(&mut executor, &assembly, params)?;
+        bind_activations(&mut executor, &assembly);
+        Ok(Self { executor, assembly })
+    }
 
     /// 一步张量级前向；输入长度必须等于首层输入宽度，返回末层激活。
     ///
@@ -92,7 +104,7 @@ impl CpuModel {
             )
             .with(SITE));
         }
-        self.executor.bind(self.assembly.input, input.to_vec());
+        self.executor.bind_f32(self.assembly.input, input.to_vec());
         // 张量级前向没有序列位置：rope 位置取 0（角度为 0 的恒等旋转）。
         self.assembly.set_rope_positions(0);
         submit_and_fetch(&mut self.executor, &self.assembly)

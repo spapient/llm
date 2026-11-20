@@ -519,11 +519,7 @@ fn rank_head(all: &[u8]) -> Result<RankHead> {
         return Err(bad("rank 证书有多余字节"));
     }
     let low_len = word(all, &mut at, "rank 头截断")? as usize;
-    Ok(RankHead {
-        note,
-        low_len,
-        at,
-    })
+    Ok(RankHead { note, low_len, at })
 }
 
 /// 低秩两段：`low` 由头部的长度界定，`rest` 一直取到末尾。
@@ -703,6 +699,83 @@ mod tests {
         assert_ne!(search(&row, 1, 64).expect("搜索").axis, Axis::Rank);
         let got = decode(&search(&zeros, 64, 64).expect("搜索").artifact).expect("解码");
         assert!(got.iter().all(|x| x.to_bits() == 0.0f32.to_bits()));
+    }
+
+    /// 证书随载荷落盘：不解码权重也能读到它，读到的就是写端那一张（不是重新算的）。
+    #[test]
+    fn the_rank_payload_carries_its_certificate() {
+        let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
+        let cert = ledger::certify(&w, 64, 64)
+            .expect("认证")
+            .expect("谱隙存在");
+        let artifact = frame(Axis::Rank, 64, 64, rank_payload(&w, 64, 64).expect("候选")).artifact;
+        let note = certificate(&artifact).expect("解析").expect("秩轴");
+        assert_eq!(note, cert.note, "落盘的是认证那一次，不是读端重算的另一张");
+        // 其余轴没有证书这一说：返回 `None` 而不是编一张空证书。
+        let raw = frame(Axis::Raw, 64, 64, pack_bytes(&f32_bytes(&w))).artifact;
+        assert!(certificate(&raw).expect("解析").is_none());
+    }
+
+    /// 证书被改写就解不出来：读端把截断误差当断言，而不是相信写端的声称。
+    ///
+    /// 伪造的两处都落在「证书 + 载荷」两方对质能查出、而单看证书自身 `check` 查不出的位置：
+    /// 改写 `decomp`（`check` 只看它有限且与 `lossless` 一致），把 `stable` 翻成 `Fail`
+    /// （`check` 允许 `Fail`，但一条 `Fail` 的证书根本不该被落盘）。
+    #[test]
+    fn a_tampered_certificate_is_rejected_on_read() {
+        let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
+        let cert = ledger::certify(&w, 64, 64)
+            .expect("认证")
+            .expect("谱隙存在");
+        let low = pack_bytes(&f32_bytes(&cert.low));
+        let rest = pack_bytes(&f32_bytes(&cert.rest));
+        let framed = |note: Vec<u8>| {
+            let mut p = u32::try_from(note.len())
+                .expect("证书长度")
+                .to_le_bytes()
+                .to_vec();
+            p.extend(note);
+            p.extend_from_slice(&(low.len() as u32).to_le_bytes());
+            p.extend(low.clone());
+            p.extend(rest.clone());
+            frame(Axis::Rank, 64, 64, p).artifact
+        };
+
+        let honest = framed(cert.note.to_bytes());
+        let got = decode(&honest).expect("原证书可读");
+        assert!(got.iter().zip(&w).all(|(a, b)| a.to_bits() == b.to_bits()));
+
+        // 按字段伪造而不是改字节：`to_bytes` 的长度前缀是变长编码，偏移量不该在测试里写死。
+        // 这张矩阵精确低秩，`decomp` 本就是 0（乘任何系数都不动），所以按加法伪造。
+        let mut wrong_error = cert.note.clone();
+        wrong_error.decomp += 1.0;
+        assert!(
+            decode(&framed(wrong_error.to_bytes())).is_err(),
+            "截断误差被改写必须被拒"
+        );
+
+        // 稳定性翻成 `Fail`：`Fail` 本身合法，但一条没放行的证书不该出现在载荷里。
+        let mut not_passed = cert.note.clone();
+        not_passed.stable = ledger::Stable::Fail;
+        assert!(
+            decode(&framed(not_passed.to_bytes())).is_err(),
+            "没放行的证书不能落盘"
+        );
+    }
+
+    /// 旧布局（秩裸数字在最前）不再是合法载荷：第一段被读成证书长度，随后的字节读不成证书。
+    #[test]
+    fn the_rank_payload_requires_a_certificate() {
+        let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
+        let cert = ledger::certify(&w, 64, 64)
+            .expect("认证")
+            .expect("谱隙存在");
+        let low = pack_bytes(&f32_bytes(&cert.low));
+        let mut old = (cert.note.rank).to_le_bytes().to_vec();
+        old.extend_from_slice(&(low.len() as u32).to_le_bytes());
+        old.extend(low);
+        old.extend(pack_bytes(&f32_bytes(&cert.rest)));
+        assert!(decode(&frame(Axis::Rank, 64, 64, old).artifact).is_err());
     }
 
     #[test]

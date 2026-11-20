@@ -226,15 +226,36 @@ fn metal_lower(
         ChunkReduce { .. } | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => {
             metal_chunk_lower(kernel, signature, sample, kind)
         }
+        TiledGemm { .. } | TiledAttention { .. } | WmmaGemm => {
+            metal_special(kernel, signature, sample, kind)
+        }
+    }
+}
+
+/// 特殊 lowering 家族（分块 GEMM / 分块注意力 / WMMA）：单独一个 match 让 [`metal_lower`] 的
+/// 骨架分派保持在门禁臂数内。
+fn metal_special(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    kind: &Lower,
+) -> Result<Vec<String>> {
+    use cutile::backend::Lower::*;
+    match kind {
         TiledGemm { tile } => {
             crate::tiled::metal_tiled_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
         }
         TiledAttention { threads } => {
-            crate::tiled::metal_tiled_attention(kernel, signature, sample, *threads).map(|s| vec![s])
+            crate::tiled::metal_tiled_attention(kernel, signature, sample, *threads)
+                .map(|s| vec![s])
         }
         WmmaGemm => Err(Error::new(
             Code::Unsupported,
             "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),
+        )),
+        _ => Err(Error::new(
+            Code::Internal,
+            "非特殊 lowering 不应进入 metal_special".to_string(),
         )),
     }
 }
@@ -265,10 +286,9 @@ fn metal_chunk_lower(
             crate::codegen::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
-        Pointwise | Loop(_) | TiledGemm { .. } | TiledAttention { .. } | WmmaGemm => Err(Error::new(
-            Code::Internal,
-            "非分块算子不应进入 Metal 分块 lowering",
-        )),
+        Pointwise | Loop(_) | TiledGemm { .. } | TiledAttention { .. } | WmmaGemm => Err(
+            Error::new(Code::Internal, "非分块算子不应进入 Metal 分块 lowering"),
+        ),
     }
 }
 

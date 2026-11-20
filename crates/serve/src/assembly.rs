@@ -5,7 +5,7 @@
 //! K/V 读写在 [`model_host`](crate::model_host)，不认识算子内核算式。
 
 use diagnostic::{Code, Error, Result};
-use engine::exec::{CpuExecutor, Executor, Graph, Launch, Node, Stream};
+use engine::exec::{Executor, Graph, Launch, Node, Stream};
 use nn::{Contract, Stack};
 
 pub(crate) use crate::block::BlockBinding;
@@ -556,8 +556,8 @@ pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
 }
 
 /// 把驻留权重整块绑进执行器编号表：稠密块绑 f32，量化打包块绑 u8。
-pub(crate) fn bind_weights(
-    executor: &mut CpuExecutor,
+pub(crate) fn bind_weights<E: Executor>(
+    executor: &mut E,
     assembly: &Assembly,
     params: &Params,
 ) -> Result<()> {
@@ -567,10 +567,10 @@ pub(crate) fn bind_weights(
         })?;
         match block {
             Block::Dense(values) => {
-                executor.bind(*id, values.to_vec());
+                executor.bind_f32(*id, values.to_vec());
             }
             Block::Packed(bytes) => {
-                executor.bind_u8(*id, bytes.to_vec());
+                executor.bind_bytes(*id, bytes.to_vec());
             }
         }
     }
@@ -578,22 +578,22 @@ pub(crate) fn bind_weights(
 }
 
 /// 预绑输入与各逐层激活的零缓冲：执行时只覆写，不在图运行期分配。
-pub(crate) fn bind_activations(executor: &mut CpuExecutor, assembly: &Assembly) {
-    executor.bind(assembly.input, vec![0.0; assembly.input_len]);
+pub(crate) fn bind_activations<E: Executor>(executor: &mut E, assembly: &Assembly) {
+    executor.bind_f32(assembly.input, vec![0.0; assembly.input_len]);
     for (id, len) in &assembly.activations {
-        executor.bind(*id, vec![0.0; *len]);
+        executor.bind_f32(*id, vec![0.0; *len]);
     }
 }
 
 /// 提交图、同步执行并取回末层激活缓冲。
-pub(crate) fn submit_and_fetch(
-    executor: &mut CpuExecutor,
+pub(crate) fn submit_and_fetch<E: Executor>(
+    executor: &mut E,
     assembly: &Assembly,
 ) -> Result<Vec<f32>> {
     executor.submit(&assembly.graph, Stream::new(0))?;
     executor.sync(Stream::new(0))?;
     let output = executor
-        .get(assembly.output)
+        .fetch_f32(assembly.output)
         .ok_or_else(|| Error::new(Code::Internal, "输出缓冲已预绑，取回失败").with(SITE))?;
     Ok(output.to_vec())
 }

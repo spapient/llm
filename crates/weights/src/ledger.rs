@@ -313,9 +313,18 @@ pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Resu
     let rank = note.rank as usize;
     let facts = [
         (note.used, "证书没记录秩选择，却出现在秩载荷里"),
-        (note.mode == Mode::Residual, "显式残差载荷不能声明纯截断模式"),
-        (note.stable == Stable::Pass, "证书没过 L0 门，却被当作载荷落盘"),
-        (1..m.min(n)).contains(&rank), "受认证秩越出 1 <= r < min(m,n)"),
+        (
+            note.mode == Mode::Residual,
+            "显式残差载荷不能声明纯截断模式",
+        ),
+        (
+            note.stable == Stable::Pass,
+            "证书没过 L0 门，却被当作载荷落盘",
+        ),
+        (
+            (1..m.min(n)).contains(&rank),
+            "受认证秩越出 1 <= r < min(m,n)",
+        ),
         (low.len() == rest.len(), "两段长度不等，截断误差无从重算"),
     ];
     match facts.iter().find(|(holds, _)| !*holds) {
@@ -323,7 +332,11 @@ pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Resu
         None => {}
     }
     let truncation = norm(rest.iter().map(|&v| f64::from(v)));
-    let weight = norm(low.iter().zip(rest).map(|(&l, &r)| f64::from(l) + f64::from(r)));
+    let weight = norm(
+        low.iter()
+            .zip(rest)
+            .map(|(&l, &r)| f64::from(l) + f64::from(r)),
+    );
     if (truncation - note.decomp).abs() > 1e-6 * (note.decomp.abs() + weight) {
         return Err(bad(&format!(
             "截断误差与载荷不符：证书 {}，载荷 {truncation}",

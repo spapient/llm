@@ -204,8 +204,8 @@ fn tiled_attention_msl(
          \x20    uint gid [[thread_position_in_grid]],\n\
          \x20    uint lid [[thread_position_in_threadgroup]]) {{\n\
          \x20    const uint S = {s}, D = {d}, T = {threads};\n\
-         \x20    threadgroup float scores[S];\n\
-         \x20    threadgroup float red[T];\n\
+         \x20    threadgroup float scores[{s}];\n\
+         \x20    threadgroup float red[{threads}];\n\
          \x20    threadgroup float stats[2];\n\
          \x20    const uint i = gid / T, t = lid;\n\
          \x20    const float scale = sqrt((float)D);\n\

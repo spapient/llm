@@ -28,7 +28,7 @@
 //! 随块链整批刀落地。
 
 use diagnostic::{Code, Error, Result};
-use engine::exec::{CpuExecutor, Launch, Program, View, ViewMut};
+use engine::exec::{Executor, Launch, Program, View, ViewMut};
 
 pub(crate) const SITE: &str = "serve::model";
 
@@ -542,12 +542,12 @@ impl Program for Kernel {
     }
 }
 
-/// 把表内全部 CPU 内核登记进执行器；重名由 [`CpuExecutor::register`] 拒绝。
+/// 把表内全部 CPU 内核登记进执行器；重名由 [`Executor::register_program`] 拒绝。
 ///
 /// 装配侧在构造 CPU 模型宿主时调用一次；之后执行器只收图与操作数编号，不再改内核表。
-pub fn register_cpu(executor: &mut CpuExecutor) -> Result<()> {
+pub fn register_cpu<E: Executor>(executor: &mut E) -> Result<()> {
     for entry in KERNELS {
-        executor.register(Box::new(Kernel { entry }))?;
+        executor.register_program(Box::new(Kernel { entry }))?;
     }
     Ok(())
 }
