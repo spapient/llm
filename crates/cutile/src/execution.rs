@@ -360,6 +360,33 @@ fn dim_size(scalar: &str, sample: &Sample) -> diagnostic::Result<usize> {
     })
 }
 
+/// 生产态 CUDA 分块扫描内核源：两段（局部扫描 + 校正），主机在两次派发间折叠携带前缀
+/// `C_{g+1} = a^len·C_g + 尾态`。与 [`metal_scan_program`] 同语义，仅后端方言差异。
+///
+/// # Errors
+///
+/// 算子没声明 `[chunk]`、`nvidia` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn cuda_scan_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, String)> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
+    pair(
+        lower_sources(
+            Emit::Cuda,
+            &scan_kind(run.op)?,
+            &run,
+            &prepared,
+            m,
+            n,
+        )?,
+        "cuda scan",
+    )
+}
+
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(
     catalogue: &'a Catalogue,
