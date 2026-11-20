@@ -171,6 +171,7 @@ pub(crate) fn grid_kernel(
     kernel_source: &str,
     signature: &Signature,
     wrap: &Wrap,
+    guard_len: Option<i64>,
 ) -> Result<String> {
     let scalars = signature
         .params()
@@ -189,7 +190,14 @@ pub(crate) fn grid_kernel(
     }
     let call = grid_args(signature.params());
     let buffers = (wrap.buffers)(signature);
-    let body = format!("    {}({call});", signature.kernel());
+    // 网格可大于元素数（块内多线程时末块不满）：带守卫时越界线程直接跳过。
+    let body = match guard_len {
+        Some(len) => format!(
+            "    if (n < {len}) {{\n        {}({call});\n    }}",
+            signature.kernel()
+        ),
+        None => format!("    {}({call});", signature.kernel()),
+    };
     Ok(kernel_main(
         wrap,
         kernel_source,
@@ -342,7 +350,7 @@ pub fn metal_harness(
 
 /// 生产态 Metal 逐点网格内核（`grid_kernel` 的 Metal 方言）。
 pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> Result<String> {
-    grid_kernel(kernel_source, signature, &METAL)
+    grid_kernel(kernel_source, signature, &METAL, None)
 }
 
 /// 生产态循环注入网格内核：把模板里的串行循环头绑定到线程下标（N 维网格，`tid.x` / `tid.y` …）。
@@ -498,7 +506,12 @@ fn kernel_span(body: &str, kernel: &str) -> Result<(usize, usize)> {
 }
 
 /// 给内部内核函数体注入块头：`g`/`start`/`len` 三个局部量，供循环头改写与分块寻址引用。
-pub(crate) fn inject_chunk_preamble(body: &str, kernel: &str, chunk: usize, scalar: &str) -> Result<String> {
+pub(crate) fn inject_chunk_preamble(
+    body: &str,
+    kernel: &str,
+    chunk: usize,
+    scalar: &str,
+) -> Result<String> {
     let (_, body_at) = kernel_span(body, kernel)?;
     let preamble = format!(
         "    int g = (int)tid.x;\n    int start = g * {chunk};\n    int len = min({chunk}, {scalar} - start);\n"
@@ -926,8 +939,17 @@ fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: us
 }
 
 /// 生产态 CUDA 逐点网格内核（`grid_kernel` 的 CUDA 方言）。
-pub fn cuda_grid_kernel(kernel_source: &str, signature: &Signature) -> Result<String> {
-    grid_kernel(kernel_source, signature, &CUDA)
+pub fn cuda_grid_kernel(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<String> {
+    grid_kernel(
+        kernel_source,
+        signature,
+        &CUDA,
+        Some(length_scalar(signature, sample)?),
+    )
 }
 
 /// `kernel_main` 的完整形参表：缓冲 + 标量（模板里的 `M` / `N` / `K` 是运行时值，循环注入与
@@ -947,6 +969,55 @@ pub(crate) fn cuda_launch_params(signature: &Signature) -> String {
         format!("{buffers},\n    {scalars}")
     }
 }
+
+/// 逐点算子的 host 驱动：块内 256 线程、网格 `ceil(N/256)`，分配/回读与 [`cuda_grid_driver`]
+/// 同口径（输出长度取样本值）。kernel 侧由 [`cuda_grid_kernel`] 的守卫挡住末块多余线程。
+///
+/// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲时返回说明。
+pub fn cuda_point_driver(
+    device_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<String> {
+    let (output, values) = output_of(signature, sample)?;
+    let len = values.len();
+    let blocks = len.div_ceil(POINT_THREADS);
+    let mut text = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
+    text.push_str(device_source);
+    if !device_source.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("\nint main(void) {\n");
+    text.push_str(&cuda_host_buffers_grid(
+        sample,
+        signature.params(),
+        output,
+        len,
+    )?);
+    let launch = signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .map(|param| format!("d_{}", param.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    text.push_str(&format!(
+        "    kernel_main<<<{blocks}, {POINT_THREADS}>>>({launch});\n    cudaError_t error = cudaDeviceSynchronize();\n    if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
+    ));
+    text.push_str(&cuda_readback(output, len));
+    for param in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+    {
+        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
+    }
+    text.push_str("    return 0;\n}\n");
+    Ok(text)
+}
+
+/// 逐点驱动每块线程数（128 线程下 16K 元素实测 -12%）。
+const POINT_THREADS: usize = 256;
 
 /// 生产态 CUDA 循环注入网格内核（`[grid]` 骨架的 CUDA 方言）：gemv 一维、gemm 二维共用。
 ///

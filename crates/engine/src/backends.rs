@@ -577,7 +577,7 @@ fn cuda_source(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        Pointwise => single(crate::codegen::cuda_grid_kernel(kernel, signature)),
+        Pointwise => single(crate::codegen::cuda_grid_kernel(kernel, signature, sample)),
         ChunkReduce { chunk, func } => single(crate::codegen::cuda_chunk_reduce(
             kernel, signature, sample, *chunk, func,
         )),

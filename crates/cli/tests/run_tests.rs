@@ -497,14 +497,10 @@ fn op_matches_reference_cuda(op_name: &str) {
     let sample = (model.sample)(m, n);
     let decl = catalogue.op(op_name).expect("算子声明");
     let output = decl.signature.output().expect("可写输出");
-    let output_len = sample.f32(output).expect("f32 输出").len();
-    let grid = output_len;
-
     let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
-    let program =
-        engine::codegen::cuda_grid_driver(&device, &decl.signature, &sample, grid, output_len)
-            .expect("host 驱动应能生成");
+    let program = engine::codegen::cuda_point_driver(&device, &decl.signature, &sample)
+        .expect("host 驱动应能生成");
     let (_counts, bits) =
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
 

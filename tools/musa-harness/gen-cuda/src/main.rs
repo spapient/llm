@@ -35,6 +35,19 @@ fn main() -> diagnostic::Result<()> {
                 cutile::execution::cuda_wmma_gemm_program(&catalogue, &dirs, &name, m, n)?;
             engine::wmma::gemm_driver(&device, &decl.signature, &sample)?
         }
+        "reduce_sum_f32" | "reduce_max_f32" => {
+            let device = cutile::execution::cuda_reduce_program(&catalogue, &dirs, &name, m, n)?;
+            let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
+            let len = decl
+                .signature
+                .params()
+                .iter()
+                .find(|param| !param.ctype.is_buffer())
+                .and_then(|param| sample.scalar(&param.name))
+                .expect("归约长度标量") as usize;
+            let grid = len.div_ceil(chunk);
+            engine::codegen::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)?
+        }
         "scan_f32" => {
             let (local, correct, decay) =
                 cutile::execution::cuda_scan_program(&catalogue, &dirs, &name, m, n)?;
@@ -48,9 +61,7 @@ fn main() -> diagnostic::Result<()> {
         }
         _ => {
             let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, &name, m, n)?;
-            engine::codegen::cuda_grid_driver(
-                &device, &decl.signature, &sample, out_len, out_len,
-            )?
+            engine::codegen::cuda_point_driver(&device, &decl.signature, &sample)?
         }
     };
     std::fs::write("C:/Users/fei/fw.cu", &program)
