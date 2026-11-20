@@ -915,3 +915,62 @@ fn a_silu_op_runs_on_cuda_and_matches_the_reference() {
 fn a_reduce_sum_op_runs_on_cuda_and_matches_the_reference() {
     op_chunked_reduce_matches_reference_cuda("reduce_sum_f32");
 }
+
+/// CUDA 分块归一化（RMSNorm 两段 / Softmax 三段）真机对拍：设备段来自公开流水线
+/// （`cuda_rmsnorm_program` / `cuda_softmax_program`），host 串联驱动在 C 里折叠部分和，
+/// 一次编译执行整条链路，输出与标量参考逐元素对拍。
+#[cfg(target_os = "windows")]
+fn op_normalized_matches_reference_cuda(op_name: &str) {
+    let Some((catalogue, dirs)) = cuda_harness("norm") else {
+        return;
+    };
+    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
+
+    let model = op::model(op_name).expect("语义表");
+    let (m, n) = model.shape;
+    let sample = (model.sample)(m, n);
+    let decl = catalogue.op(op_name).expect("算子声明");
+    let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
+
+    let program = match op_name {
+        "rmsnorm_f32" => {
+            let (partial, norm) =
+                cutile::execution::cuda_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
+                    .expect("分块 rmsnorm 两段应能生成");
+            engine::norm::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)
+                .expect("host 串联驱动应能生成")
+        }
+        "softmax_f32" => {
+            let (max, expsum, norm) =
+                cutile::execution::cuda_softmax_program(&catalogue, &dirs, op_name, m, n)
+                    .expect("分块 softmax 三段应能生成");
+            engine::norm::cuda_softmax_driver(
+                &[max, expsum, norm],
+                &decl.signature,
+                &sample,
+                chunk,
+            )
+            .expect("host 串联驱动应能生成")
+        }
+        other => panic!("`{other}` 不是归一化算子"),
+    };
+
+    let (_counts, bits) =
+        cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
+    let expected = (model.reference)(&sample).expect("参考值");
+    assert_close("CUDA 分块归一化", op_name, &bits, &expected, model.dtype);
+}
+
+/// RMSNorm 走 CUDA 两段（部分平方和 → 主机折叠 rms → 归一化），真机对拍。
+#[cfg(target_os = "windows")]
+#[test]
+fn a_rmsnorm_op_runs_on_cuda_and_matches_the_reference() {
+    op_normalized_matches_reference_cuda("rmsnorm_f32");
+}
+
+/// Softmax 走 CUDA 三段（部分最大 → 部分指数和 → 归一化），真机对拍。
+#[cfg(target_os = "windows")]
+#[test]
+fn a_softmax_op_runs_on_cuda_and_matches_the_reference() {
+    op_normalized_matches_reference_cuda("softmax_f32");
+}

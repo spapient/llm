@@ -62,6 +62,29 @@ pub(crate) fn kernel_main(
     tid_stmt: &str,
     body: &str,
 ) -> String {
+    kernel_entry(
+        wrap,
+        source,
+        kernel,
+        buffers,
+        (tid_param, tid_stmt),
+        body,
+        "kernel_main",
+    )
+}
+
+/// [`kernel_main`] 的具名版本：多段设备源同处一个文件时，各段入口名必须不同（`kernel_partial` /
+/// `kernel_expsum` / `kernel_norm` 等）。其余拼装规则与 [`kernel_main`] 完全一致，只有一处。
+pub(crate) fn kernel_entry(
+    wrap: &Wrap,
+    source: &str,
+    kernel: &str,
+    buffers: &str,
+    tid: (&str, &str),
+    body: &str,
+    entry: &str,
+) -> String {
+    let (tid_param, tid_stmt) = tid;
     let param = if tid_param.is_empty() {
         String::new()
     } else {
@@ -73,7 +96,7 @@ pub(crate) fn kernel_main(
         format!("    {tid_stmt}\n")
     };
     format!(
-        "{}\n\n{} void kernel_main(\n{buffers}{param}) {{\n{stmt}{body}\n}}",
+        "{}\n\n{} void {entry}(\n{buffers}{param}) {{\n{stmt}{body}\n}}",
         (wrap.prelude)(source, kernel),
         wrap.decl,
     )
@@ -85,7 +108,7 @@ fn metal_prelude(text: &str, _kernel: &str) -> String {
 }
 
 /// CUDA 缓冲声明：`{ctype}* d_{name}`（无地址空间、无槽位标签，指针即全局内存）。
-fn cuda_buffers(signature: &Signature) -> String {
+pub(crate) fn cuda_buffers(signature: &Signature) -> String {
     signature
         .params()
         .iter()
@@ -204,6 +227,27 @@ pub(crate) fn chunk_reduce(
     reduce_func: &str,
     wrap: &Wrap,
 ) -> Result<String> {
+    chunk_reduce_entry(
+        kernel_source,
+        signature,
+        sample,
+        chunk,
+        reduce_func,
+        wrap,
+        "kernel_main",
+    )
+}
+
+/// [`chunk_reduce`] 的具名版本：多段归一化 lowering 里部分归约段的入口名必须与其他段区分。
+pub(crate) fn chunk_reduce_entry(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+    wrap: &Wrap,
+    entry: &str,
+) -> Result<String> {
     let input = read_input(signature)?;
     let output = output_name(signature)?;
     let len = length_scalar(signature, sample)?;
@@ -211,14 +255,14 @@ pub(crate) fn chunk_reduce(
     let body = format!(
         "    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    d_{output}[g] = {reduce_func}(d_{input} + start, len, 1);"
     );
-    Ok(kernel_main(
+    Ok(kernel_entry(
         wrap,
         kernel_source,
         &signature.kernel(),
         &buffers,
-        wrap.grid_param,
-        wrap.grid_stmt,
+        (wrap.grid_param, wrap.grid_stmt),
         &body,
+        entry,
     ))
 }
 
@@ -777,7 +821,7 @@ fn cuda_wrapper(kernel: &str, params: &[Param], launch_args: &str) -> String {
 }
 
 /// 结果回读：设备 → 主机，再按 `float` 位模式逐元素打印。
-fn cuda_readback(output: &str, len: usize) -> String {
+pub(crate) fn cuda_readback(output: &str, len: usize) -> String {
     format!(
         "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n\
          \x20   for (int i = 0; i < {len}; ++i) {{\n\
@@ -827,7 +871,7 @@ pub fn cuda_grid_driver(
 
 /// host 侧缓冲声明、设备分配与只读入向拷贝；输出缓冲长度用显式 `output_len`（分块归约的部分
 /// 结果数），而非样本里的单元素。
-fn cuda_host_buffers_grid(
+pub(crate) fn cuda_host_buffers_grid(
     sample: &Sample,
     params: &[Param],
     output: &str,

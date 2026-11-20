@@ -18,12 +18,109 @@
 
 ### Added
 
+- **专家轴与残差轴落地：稀疏路由（MoE）与双随机多流混合（mHC）（`lld.md` 第八步）**。
+  `nn::moe` 与 `nn::mhc` 把 §5.8.2 的另两根柱子接到执行路径上：前者管「这一次前向算哪一部分 θ」，
+  后者管「多条残差流怎么在层间重组」。
+  **MoE**：`K3_EXPERTS` / `K3_ACTIVE` = 896 取 16；路由**不新开决策逻辑**，分数 → 分布仍走唯一端口
+  `policy::Calib`（`DecisionHead`、专家与层间路由是同一个候选集合），top-k 只在该分布上取，选中集
+  **重新归一**——不归一的话丢掉的质量会让输出整体缩小，`k` 一改就换了尺度。共享专家恒参与、不占 top-k
+  名额、不被路由权重缩放，`forward` 因此是「共享输出 + 选中专家的加权重归一」；专家这一层只是一张
+  `[width, width]` 映射，真实 FFN 的两层与非线性属于外层 `Contract`。
+  **mHC**：`MHC_STREAMS = 4`（Engram-27B / V4），`B_l` 由 `sinkhorn` 归一（与 CSA 块权重同一份实现）、
+  `‖B‖₂` 由 `spectral_norm` 实测后留在 `sigma` 上，于是「非扩张」是可复核的测量值。**非负性是入口硬条件**，
+  两条理由都是实测出来的：带负号的双随机阵也能放大信号（`[[1.5, −0.5], [−0.5, 1.5]]` 真谱范数 2）；
+  且 `spectral_norm` 的幂法从全 1 起步，全 1 正是那个矩阵特征值 1 的特征方向，实测只报 `1.0`——「实测 ≤ 1」
+  会假通过，而非负阵由 Perron–Frobenius 保证主特征向量同号、不会被骗。几何（流条数、各流宽度）、取值
+  （非有限、负项、全零行列）一律在入口报 `Code::Invalid`。
+  **实测**：`cargo test -p llm-nn --all-features` **183 条 + 2 doctest 全绿**（`moe` 与 `mhc` 共新增 23 条：
+  单流空操作、选中集权重和为 1、`k = 1` 只留最优、`forward` 等于手算加权和、改未选中专家不动输出、
+  共享专家贡献恰为 `1·(1·x)`、全专家路由两两不同、几何在入口失败；单位混合不改流、单流归一成 `[[1]]`、
+  输出落在输入凸包内、`‖B⊗I‖₁ = 1` 不放大、Sinkhorn 结果与 CSA 同一份、实测谱范数 ≤ 1、置换阵只换位置、
+  负项/全零/非有限项一律拒、几何在入口失败）；架构门 `llm-testkit --test architecture` 8/8（所有权表新增
+  `Moe` / `Mhc` 两行）、静态质量门 `llm-tool --test gate` 2/2、`RUSTDOCFLAGS="-D warnings" cargo doc -p llm-nn`
+  干净。
+  专家内部的 FFN 形状、门控标量（`mix` 的一步合成）与多流残差的写侧训练仍不在这一层；Muon / KDA / AttnRes
+  与六平台执行合同仍未开始，E1–E15 也无新增实测数。
+
+- **byte-latent 的两端落地：N-gram 表示的编码侧与 256-way 解码侧（`lld.md` 第七步）**。
+  `nn::codec` 新增 `ByteEncoder` / `ByteDecoder`，把 §5.17 第 11 款标杆除切分外的两层接到执行路径上：
+  一次 byte-latent 前向是 **字节 → 动态 patch → latent transformer → 逐字节解码**，而 `patch` 只回答第一个问题。
+  `ByteEncoder` 每字节取 `n = 3..=8` 的哈希 N-gram 桶向量（阶闭集 `ORDERS`，`seed ^ 阶` 当种子），
+  **桶表复用 `engram::Table`**——表长取素数、`O(1)` 槽寻址、哈希与查表都不另写一份；窗口取**已有后缀**、
+  不补零也不补 BOS 符号（补零会让首字节的表示与"前面真有一个 0 字节"混成同一份输入，与 `Bypass`
+  "历史不足就不加、不拿零向量补位"同一条判据）。于是窗口是回看的、一个字节的影响是**前向的**：
+  它只进自己与之后至多 `WIDEST − 1` 个字节的窗口。patch 内以**边界字节的向量**为查询做注意力池化
+  （边界字节就是这条切分的决策点，不需要再引入一份可学习查询；键值只取本 patch，于是"一个 patch 一行"
+  是寻址本身而不是约定），一 patch 一行、行数即全局 transformer 的遍数。
+  `ByteDecoder` 是 local decoder 的输出头：一次 `[BYTES, dim]` 行主序投影给出 256-way 分布与贪心字节，
+  行下标就是字节值（不需要码本把通道映射回字节）。`byte` 走**分数**而不是分布（softmax 单调、argmax 相同，
+  少一次指数），并列取**最小字节值**——同一份表示不会在不同运行里给出不同字节。
+  切分覆盖的字节数与输入不等、投影长度不是 `BYTES × width`、表示宽度不符，一律在入口报 `Code::Invalid`
+  （宽了是把别的层的数据喂进来，窄了内积照算不误、结果却是另一个数）。
+  顺手把 `Patches` 的遍历收成一处：新增 `Patches::ranges`，`get` 与它共用私有 `span`，
+  于是"第 i 个区间"与"逐个区间"只有一份算式，编码侧按 `ranges` 给每个 patch 分一行。
+  **实测**：`cargo test -p llm-nn --all-features` **160 条 + 2 doctest 全绿**（`codec` 新增 12 条：
+  窗口只取已有后缀（六个窗口都以当前字节结尾）、每 patch 一行且行数少于字节数、空输入零行、
+  前缀稳定（24 字节的每个前缀都比一遍，已完成 patch 的表示逐位不变）、局部性（改第 4 个字节只动第一个 patch）、
+  池化是注意力加权和而非取边界字节、均匀 patch 池化回它自己、切分来自另一次输入即拒、256-way 分布归一且
+  贪心与之一致、并列取最小字节值、三处几何在入口失败、`f64` 与 `f32` 同一份算术）；`cargo test --workspace`
+  **1908 条**、`cargo test --doc --workspace --all-features` **43 条**全绿；静态质量门
+  `llm-tool --test gate` 2/2（新增函数的圈复杂度 ≤ 5）、架构门 `llm-testkit --test architecture` 8/8
+  （所有权表新增 `ByteEncoder` / `ByteDecoder` 一行）、`clippy -D warnings`、`fmt --check`、`cargo machete`、
+  `RUSTDOCFLAGS="-D warnings" cargo doc -p llm-nn` 逐项通过。
+  逐字节自回归循环、local decoder 的其余层（逆向 cross-attention、6–9 层）与全局 transformer
+  （`Attention` / `BlockTable`）仍不在这一层，E1–E15 也无新增实测数。
+
+- **byte-latent 的编码侧落地：字节按信息量切成动态 patch，两套边界规则都只看过去（`lld.md` 第六步）**。
+  `nn::patch` 新增 `Boundary` / `Patches`：第 11 款标杆不是换 tokenizer 而是换前向——**字节 → 动态 patch →
+  latent transformer → 逐字节解码**，"哪些字节该被同一次全局前向一起看"必须先由一条因果规则决定，本模块只做这一步。
+  `Boundary` 是边界规则闭集，**参数随变体走**（熵规则持 `θ_g` / `θ_r`、编码率规则持 `window` / `top`），
+  于是"规则是熵却带着 window"在类型上就不存在，不是靠校验挡住的。两套规则都来自 §5.17：BLT 的
+  `H_i > θ_g` 或 `H_i − H_{i−1} > θ_r`（严格大于，取等不算越界）；ByteFlow 的 Top-K 落成**尾窗内的秩判定**
+  （最近 `window` 个分数里排进前 `top` 名）——真实 ByteFlow 的 K 在整块上算，那要用到还没到的字节，
+  而 §5.17 把**增量性**列为第一性质（同一前缀在生成的每一步必须仍是同一个切分，否则 KV 与 patch 一起重算），
+  所以同一句话只能读过去的字节。
+  `Patches` 只存起点与总字节数，于是"区间首尾相接、无空 patch"由**构造**保证、不是要维护的断言；
+  `len()` 就是全局 transformer 的遍数（每 patch 一次，不是每字节一次），`mean_len()` 是 §5.17
+  "patch 平均 8 字节"那条记账的左边；空输入没有 patch 且 `mean_len` 记 `0` 而不是 `NaN`
+  （没有 patch 时平均值不存在，写成 `NaN` 会让上游的求和与比较全部静默传播）。
+  非有限分数与退化的 `window` / `top` 在入口报 `Code::Invalid`：任何比较对 `NaN` 都是 `false`，
+  放行会把一整段字节静默并进同一个 patch，出错的地方离原因很远。
+  **实测**：`cargo test -p llm-nn --all-features` **148 条 + 2 doctest 全绿**（`patch` 新增 12 条：
+  覆盖完整与末段收口、前缀稳定（对 16 字节的每个前缀都比一遍，两套规则各一轮）、全局阈值、突增阈值、
+  取等不断、尾窗秩判定、噪声段切得比平坦段细、空输入、平均长度算式、参数与分数六类拒绝、规则短名、
+  `f64` 与 `f32` 切在同一处）；架构门 `llm-testkit --test architecture` 8/8（所有权表新增
+  `Boundary` / `Patches` 一行），`RUSTDOCFLAGS="-D warnings" cargo doc -p llm-nn` 干净。
+  前缀稳定这条测试的初版按整段区间比较而失败：落在前缀末尾的 patch 只是**被截短**（终点改为前缀长），
+  并不会被撤销，"能撤销"才是边界看了未来的证据——判据因此改为比较起点。全局 transformer 与逐字节解码器
+  仍不在这一层（复用 `Attention` / `BlockTable`，接线在装配侧），E1–E15 也无新增实测数。
+
 - **`tools/musa-harness/`**：MUSA S4000（MUSA 5.2 / muBLAS 5.2）真机测量通道——WMMA wave128 正确形态
   （10.60/13.24/10.18/8.61 TF）、FP32 SIMT 八变体、3xTF32、精度对拍（长 K 口径）与全部教训。
   muBLAS 5.2 基线 6.55/14.40/17.77/15.64 TF @ FP32 级精度（1.56e-6）；cube 1024³ 领先 62%。
 
-
-### Added
+- **MLA 潜在 KV 有了执行侧：缓存只存 `(c^KV, k^R)`，吸收式与升维参考逐元素对拍（`lld.md` 第五步）**。
+  `nn::mla` 新增 `Mla` / `Latent` / `Path`：`Mla` 持超参 `(n_h, d_h, d_c, d_h^R)` 与两条低秩投影
+  `W^{UK}` / `W^{UV}`（行主序 `[n_h · d_h, d_c]`，第 `h` 头一块，两头共用同一个 `c` 不必切子矩阵）；
+  `Latent` 是缓存本身，每 token 只有 `c^KV`（`d_c`）与解耦 RoPE 键 `k^R`（`d_h^R`）两段，
+  **没有** `k^{no-nope}` 也没有 `V`——`k_h = W^{UK}_h c`、`v_h = W^{UV}_h c` 都能现算，存它们等于把
+  低秩投影的结果又存一遍。这是 §5.8.1 那条 Must 的可核对形态：`Latent::cache_elements() = seq · (d_c + d_h^R)`。
+  同一次注意力给两条**数学等价**的算法：`Path::Upref` 每 token 把 `c` 还原成 `k_h` / `v_h` 再走标准注意力
+  （参考式，对拍用）；`Path::Absorb` 用 `q^T k_h = (W^{UK}_h{}^T q)^T c` 把 `W^{UK}` 吸到查询侧、
+  `W^{UV}` 吸到输出侧（解码真跑的那条，每 token 只做一次 `d_c` 点积与一次 `d_h^R` 点积，`V` 始终不必还原）。
+  两者按 `1e-5` 逐元素对拍、`f64` 下按 `1e-12`——这是"潜在缓存到底等不等价"唯一能验证的形态，
+  缺了它"只缓存潜在量"就只是记账而不是证据。因果性来自寻址本身（只累加 `0..=t`，`t` 之后的行根本不读），
+  单测用"未来行改 7 倍不影响位置 2、位置 0 改 3 倍就影响位置 2"钉住两条路径。行宽记账走模块级函数
+  `row_width` / `dense_width` / `ratio`（与 `csa::effective_len` 同形）：V3 是 `576 / 32768 = 1.76%`、
+  61 层 × 576 × 2 字节 = **70272 字节/token**，与 §5.8.1 的记账一致；这些量算得出来就不该先分配 8M 个权重。
+  `csa` 的 `dot` / `accumulate` / `softmax_row` 改为 `pub(crate)` 复用，不给 softmax 第二个定义。
+  **实测**：`cargo test -p llm-nn --all-features` **136 条 + 2 doctest 全绿**（`mla` 新增 9 条：
+  V3 行宽记账、缓存只有两段、吸收式对升维参考（f32/f64）、未来不可达过去、RoPE 查询直接进分数、
+  位置与查询宽度越界、构造期五处长度校验、失败的追加不推进一半缓存、路径短名稳定）；
+  架构门 `llm-testkit --test architecture` 8/8（所有权表新增 `Mla`/`Latent`/`Path` 一行），
+  `RUSTDOCFLAGS="-D warnings" cargo doc -p llm-nn` 干净。与 `BlockTable`（压序列）、`Attention`（压头数）
+  不叠加：一次前向只选一条（规则 0.9）。E1–E15 仍无实测数：本步给的是结构证据（每 token 每层缓存宽度），
+  不是"KV 显存降到 x%"那样的实测卡——后者要等设备后端按这个行宽真跑长上下文。
 
 - **实测卡：`lld` §10.10 的协议卡落成三态判定，真实 decode 采样第一次判出结论（`lld.md` 第四步）**。
   `tool::card` 新增 `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card`：一份协议卡收

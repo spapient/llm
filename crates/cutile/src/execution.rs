@@ -231,6 +231,62 @@ pub fn cuda_reduce_program(
     )
 }
 
+/// 生产态 CUDA 分块 RMSNorm 内核源：两段（部分平方和 + 归一化），主机在两次派发间折叠出
+/// `rms` 再跑第二段。与 [`metal_rmsnorm_program`] 同语义，仅后端方言差异。
+///
+/// # Errors
+///
+/// 算子没声明 `[chunk]`、`nvidia` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn cuda_rmsnorm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, String)> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
+    let chunk = chunk_size(run.op, "cutile::execution::cuda_rmsnorm_program")?;
+    pair(
+        lower_sources(
+            Emit::Cuda,
+            &Lower::ChunkRmsnorm { chunk },
+            &run,
+            &prepared,
+            m,
+            n,
+        )?,
+        "cuda rmsnorm",
+    )
+}
+
+/// 生产态 CUDA 分块 Softmax 内核源：三段（部分最大 + 部分指数和 + 归一化），主机在派发间折叠
+/// `max` 与 `sum`。与 [`metal_softmax_program`] 同语义，仅后端方言差异。
+///
+/// # Errors
+///
+/// 算子没声明 `[chunk]`、`nvidia` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn cuda_softmax_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> diagnostic::Result<(String, String, String)> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "nvidia", m, n)?;
+    let chunk = chunk_size(run.op, "cutile::execution::cuda_softmax_program")?;
+    triple(
+        lower_sources(
+            Emit::Cuda,
+            &Lower::ChunkSoftmax { chunk },
+            &run,
+            &prepared,
+            m,
+            n,
+        )?,
+        "cuda softmax",
+    )
+}
+
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(
     catalogue: &'a Catalogue,

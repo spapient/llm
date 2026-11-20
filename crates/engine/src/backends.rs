@@ -554,7 +554,13 @@ fn cuda_lower(
             crate::codegen::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
                 .map(|s| vec![s])
         }
-        Loop(_) | ChunkScan { .. } | ChunkRmsnorm { .. } | ChunkSoftmax { .. } => Err(Error::new(
+        ChunkRmsnorm { chunk } => {
+            crate::norm::cuda_chunk_rmsnorm(kernel, signature, sample, *chunk)
+        }
+        ChunkSoftmax { chunk } => {
+            crate::norm::cuda_chunk_softmax(kernel, signature, sample, *chunk)
+        }
+        Loop(_) | ChunkScan { .. } => Err(Error::new(
             Code::Unsupported,
             "CUDA 生产态 lowering 尚未覆盖该骨架".to_string(),
         )),

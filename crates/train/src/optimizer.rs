@@ -1,15 +1,19 @@
 //! 优化器：对象安全 trait、矩状态按参数编号自持、按 [`ParamRole`](llm_nn::ParamRole) 取组。
 //!
-//! **拥有**：[`Optimizer`] trait、[`Group`] 分组闭集、[`Slot`] 槽位视图与 [`Sgd`] / [`Adam`]
-//! 两种实现。**不拥有**：学习率调度（[`crate::Schedule`]）、梯度缓冲（[`crate::Buffers`] 扩展）、
-//! 快照格式（[`crate::snapshot`]）。**依赖**：`nn`（角色闭集）、`diagnostic`。
+//! **拥有**：[`Optimizer`] trait、[`Group`] 分组闭集、[`Slot`] 槽位视图与 [`Sgd`] / [`Adam`] /
+//! [`Muon`] 三种实现。**不拥有**：学习率调度（[`crate::Schedule`]）、梯度缓冲
+//! （[`crate::Buffers`] 扩展）、快照格式（[`crate::snapshot`]）。**依赖**：`nn`（角色闭集）、
+//! `diagnostic`。
 //!
-//! 两条收口口径：
+//! 三条收口口径：
 //!
 //! - 组归属只从角色派生：[`Group::from_role`] 是角色 → 组的唯一映射，优化器不按字段名、层名
 //!   前缀猜组；权重衰减豁免同样从 [`ParamRole::wd_exempt`] 派生。
 //! - 矩状态由优化器自己按槽位编号自持：autograd 只出 tape / plan / Replay，不持梯度存储；
 //!   优化器实例就是矩状态的唯一存放处，快照在 T1-4 从这里导出。
+//! - 矩阵形状随槽一起走（[`Slot::shape`]）：`Sgd` / `Adam` 逐元素更新、用不上形状，但 [`Muon`]
+//!   要在矩阵上做正交化——形状不在槽里，就只能靠调用方和优化器对暗号，而暗号对错了没人报错。
+//!   非矩阵槽的 `shape` 是 `None`，矩阵槽的 `rows × cols` 必须等于参数长度。
 
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
@@ -68,10 +72,17 @@ pub struct Slot<'a> {
     pub grads: &'a mut [f32],
     /// 参数角色：分组与衰减豁免的派生依据。
     pub role: ParamRole,
+    /// 矩阵形状 `(rows, cols)`：参数在图上登记为二阶张量时给出，否则 `None`。
+    ///
+    /// `Sgd` / `Adam` 用不上它（逐元素更新），[`Muon`] 的正交化只在矩阵上有定义——形状因此是
+    /// 更新口径的一部分，而不是调用方的私事。
+    pub shape: Option<(usize, usize)>,
 }
 
 impl Slot<'_> {
-    /// 参数与梯度长度必须一致；不一致是调用方接线错误（[`Code::Invalid`]）。
+    /// 参数与梯度长度必须一致，且矩阵槽的行列积必须等于参数长度。
+    ///
+    /// 不一致是调用方接线错误（[`Code::Invalid`]）：长度错了的梯度会整体错位，而不会有任何一处报错。
     fn check_len(&self) -> Result<()> {
         if self.params.len() != self.grads.len() {
             let message = format!(
@@ -81,6 +92,16 @@ impl Slot<'_> {
                 self.role.as_str()
             );
             return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        if let Some((rows, cols)) = self.shape {
+            let expected = rows.checked_mul(cols);
+            if expected != Some(self.params.len()) {
+                let message = format!(
+                    "参数槽声明为 [{rows}, {cols}] 矩阵，但长度是 {}：行列积与元素数不符",
+                    self.params.len()
+                );
+                return Err(Error::new(Code::Invalid, message).with(SITE));
+            }
         }
         Ok(())
     }
@@ -94,6 +115,8 @@ pub struct OwnedSlot {
     pub grads: Vec<f32>,
     /// 参数角色。
     pub role: ParamRole,
+    /// 矩阵形状；非矩阵槽为 `None`（口径见 [`Slot::shape`]）。
+    pub shape: Option<(usize, usize)>,
 }
 
 impl OwnedSlot {
@@ -103,6 +126,7 @@ impl OwnedSlot {
             params: &mut self.params,
             grads: &mut self.grads,
             role: self.role,
+            shape: self.shape,
         }
     }
 }
@@ -394,6 +418,302 @@ impl Optimizer for Adam {
     }
 }
 
+/// Muon（MomentUm Orthogonalized by Newton–Schulz）：矩阵参数的近似正交化更新。
+///
+/// 出处是 Keller Jordan 的 Muon（第 10 款标杆 K3 的训练侧，§5.8.2 把 muon 与 mHC 一起列为**共用**项）。
+/// 它只对**矩阵**参数有定义：偏置与归一化增益不在它的作用域里，这类槽的 [`Slot::shape`] 是 `None`，
+/// 本优化器**拒绝**它们而不是悄悄跳过——跳过是「这一步没更新」，跑一万步就是某个组从未被训练过，
+/// 而训练曲线不会告诉你少了谁。矩阵/向量的分派在装配侧（真实配方是 Muon 管矩阵、AdamW 管其余），
+/// `Session` 每步只调一种优化器。
+///
+/// 一步的口径：
+///
+/// 1. 动量缓冲 `u ← μ·u + g`；Nesterov 变体再取 `g + μ·u` 当方向。
+/// 2. 把 `u / (‖u‖_F + ε)` 用五次 Newton–Schulz 迭代推向正交阵——奇异值全部落在 1 附近，梯度谱再烂
+///    也不会让某几个方向独占步长。这是「保持更新不被少数方向垄断」的唯一手段，不是数值技巧。
+/// 3. `W ← W − lr·0.2·√max(rows, cols)·O − lr·decay·W`；缩放因子把正交更新的 RMS 拉回与 AdamW
+///    同量级（Muon 参考实现的 `match_rms_adamw` 口径），否则同一条学习率曲线在两族参数上不是一个意思。
+///
+/// 关键性质：更新量只由**方向**决定，与梯度的尺度无关（先按 Frobenius 范数归一）。梯度整体乘 1000，
+/// 一步走多远不变——这条有单测钉着（`the_update_ignores_the_gradient_scale`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Muon {
+    momentum: f32,
+    nesterov: bool,
+    eps: f32,
+    weight_decay: f32,
+    clip_norm: Option<f32>,
+    step: u64,
+    velocity: Vec<Vec<f32>>,
+}
+
+/// Newton–Schulz 的迭代次数：Muon 参考实现取 5，够把 `[0.3, 3]` 的谱压到 1 附近。
+const NS_STEPS: usize = 5;
+
+/// 五次迭代的多项式系数 `(a, b, c)`：`X ← aX + b(XA) + c(XA²)`，`A` 是小边上的 Gram。
+const NS_COEF: (f32, f32, f32) = (3.4445, -4.7750, 2.0315);
+
+/// 步长缩放的系数：与参考实现一致，把正交更新的尺度对齐 AdamW。
+const SCALE_COEF: f32 = 0.2;
+
+impl Muon {
+    /// 默认超参：`μ = 0.95`、Nesterov、`ε = 1e-7`，不衰减、不裁剪。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 设置动量系数 `μ`。
+    pub fn with_momentum(mut self, momentum: f32) -> Self {
+        self.momentum = momentum;
+        self
+    }
+
+    /// 关掉 Nesterov 前瞻（默认开）。
+    pub fn without_nesterov(mut self) -> Self {
+        self.nesterov = false;
+        self
+    }
+
+    /// 设置归一化保护项 `ε`。
+    pub fn with_eps(mut self, eps: f32) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    /// 确保槽位 `index` 的动量缓冲长度等于参数长度；首次见到的槽位分配零向量。
+    fn velocity(&mut self, index: usize, len: usize) -> &mut Vec<f32> {
+        if index >= self.velocity.len() {
+            let missing = index - self.velocity.len() + 1;
+            self.velocity
+                .resize_with(self.velocity.len() + missing, Vec::new);
+        }
+        let buffer = &mut self.velocity[index];
+        if buffer.len() != len {
+            buffer.resize(len, 0.0);
+        }
+        buffer
+    }
+
+    /// 动量表（按槽位编号）：快照导出走这里，优化器之外不另存一份状态。
+    pub fn momentum_table(&self) -> &[Vec<f32>] {
+        &self.velocity
+    }
+
+    /// 优化器全局步数。
+    pub fn step_count(&self) -> u64 {
+        self.step
+    }
+}
+
+decay_clip!(Muon);
+
+impl Default for Muon {
+    fn default() -> Self {
+        Self {
+            momentum: 0.95,
+            nesterov: true,
+            eps: 1e-7,
+            weight_decay: 0.0,
+            clip_norm: None,
+            step: 0,
+            velocity: Vec::new(),
+        }
+    }
+}
+
+impl Optimizer for Muon {
+    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
+        check_slots(slots)?;
+        // 形状与取值先全部查完再动手：查到第 7 个槽才发现它不是矩阵时，前 6 个已经写回去了。
+        let mut shapes = Vec::with_capacity(slots.len());
+        for (index, slot) in slots.iter().enumerate() {
+            shapes.push(matrix_of(index, slot)?);
+        }
+        let scale = clip_scale(global_norm(slots), self.clip_norm);
+        self.step = self.step.saturating_add(1);
+        let (beta, nesterov, eps, weight_decay) =
+            (self.momentum, self.nesterov, self.eps, self.weight_decay);
+        for (index, (slot, (rows, cols))) in slots.iter_mut().zip(shapes).enumerate() {
+            let velocity = self.velocity(index, rows * cols);
+            for (tracked, &grad) in velocity.iter_mut().zip(slot.grads.iter()) {
+                *tracked = beta * *tracked + scale * grad;
+            }
+            let direction: Vec<f32> = if nesterov {
+                velocity
+                    .iter()
+                    .zip(slot.grads.iter())
+                    .map(|(&tracked, &grad)| scale * grad + beta * tracked)
+                    .collect()
+            } else {
+                velocity.clone()
+            };
+            let orthogonal = orthogonalize(&direction, rows, cols, eps);
+            let factor = lr * scale_factor(rows, cols);
+            let decay = decay_rate(slot.role, weight_decay);
+            for (param, &step) in slot.params.iter_mut().zip(&orthogonal) {
+                *param -= factor * step;
+                *param -= lr * decay * *param;
+            }
+        }
+        Ok(())
+    }
+
+    fn restore(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        step: u64,
+    ) -> Result<()> {
+        if !variance.is_empty() {
+            let message = format!(
+                "Muon 只持一阶动量：快照带回 {} 个二阶矩槽，无法回载",
+                variance.len()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        self.velocity = momentum;
+        self.step = step;
+        Ok(())
+    }
+}
+
+/// 一个槽的矩阵形状：非矩阵、零维或梯度非有限都在这里拒绝。
+///
+/// 形状错、长度错、`NaN` 都会让正交化给出一个"看起来正常"的方向，报错点却离原因很远。
+fn matrix_of(index: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
+    let Some((rows, cols)) = slot.shape else {
+        let message = format!(
+            "第 {index} 槽（角色 {}）不是矩阵：Muon 的正交化只在矩阵上有定义，\
+             偏置/归一化增益按角色分派给 AdamW",
+            slot.role.as_str()
+        );
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    };
+    if rows == 0 || cols == 0 {
+        let message = format!("第 {index} 槽声明为 [{rows}, {cols}]：两边都必须非零");
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    }
+    if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
+        let message = format!("第 {index} 槽梯度第 {bad} 项非有限：正交化会把它铺满整个方向");
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    }
+    Ok((rows, cols))
+}
+
+/// 步长缩放 `0.2·√max(rows, cols)`：正交后奇异值为 1，不缩放的话更新量随矩阵阶数增长。
+fn scale_factor(rows: usize, cols: usize) -> f32 {
+    SCALE_COEF * (rows.max(cols) as f32).sqrt()
+}
+
+/// 近似正交化：先按 Frobenius 范数归一，再迭代 [`NS_STEPS`] 次 Newton–Schulz。
+///
+/// 每次迭代用**小边**上的 Gram（`rows ≥ cols` 取 `XᵀX`，否则 `X Xᵀ`）：两条路径在数学上是同一个
+/// 迭代（`X(XᵀX) = (XXᵀ)X`），差别只是乘在左边还是右边、以及临时矩阵的阶数。零矩阵归一后仍是零，
+/// 于是「这一步没有梯度」自然给出零更新，不需要另开一个分支。
+fn orthogonalize(grad: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
+    let norm = grad.iter().fold(0.0_f32, |acc, v| acc + v * v).sqrt();
+    let scale = 1.0 / (norm + eps);
+    let mut x: Vec<f32> = grad.iter().map(|v| v * scale).collect();
+    for _ in 0..NS_STEPS {
+        x = if rows >= cols {
+            let gram = gram_of_columns(&x, rows, cols);
+            let squared = square(&gram, cols);
+            advance_columns(&x, rows, cols, &gram, &squared)
+        } else {
+            let gram = gram_of_rows(&x, rows, cols);
+            let squared = square(&gram, rows);
+            advance_rows(&x, rows, cols, &gram, &squared)
+        };
+    }
+    x
+}
+
+/// `XᵀX`（`cols × cols`）：行数不少于列数时的小边。
+fn gram_of_columns(x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut gram = vec![0.0_f32; cols * cols];
+    for row in 0..rows {
+        let lane = &x[row * cols..(row + 1) * cols];
+        for col in 0..cols {
+            let left = lane[col];
+            if left == 0.0 {
+                continue;
+            }
+            for inner in 0..cols {
+                gram[col * cols + inner] += left * lane[inner];
+            }
+        }
+    }
+    gram
+}
+
+/// `X Xᵀ`（`rows × rows`）：列数多于行数时的小边。
+fn gram_of_rows(x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut gram = vec![0.0_f32; rows * rows];
+    for outer in 0..rows {
+        for inner in 0..rows {
+            let mut acc = 0.0_f32;
+            for col in 0..cols {
+                acc += x[outer * cols + col] * x[inner * cols + col];
+            }
+            gram[outer * rows + inner] = acc;
+        }
+    }
+    gram
+}
+
+/// 方阵自乘 `M·M`（行主序）。Gram 对称且阶数是小边，直接写三重循环。
+fn square(matrix: &[f32], order: usize) -> Vec<f32> {
+    let mut out = vec![0.0_f32; order * order];
+    for row in 0..order {
+        for inner in 0..order {
+            let left = matrix[row * order + inner];
+            if left == 0.0 {
+                continue;
+            }
+            for col in 0..order {
+                out[row * order + col] += left * matrix[inner * order + col];
+            }
+        }
+    }
+    out
+}
+
+/// `X ← aX + b(XA) + c(XA²)`：`A` 是 `cols × cols`（乘在右边）。
+fn advance_columns(x: &[f32], rows: usize, cols: usize, gram: &[f32], squared: &[f32]) -> Vec<f32> {
+    let (a, b, c) = NS_COEF;
+    let mut out = vec![0.0_f32; rows * cols];
+    for row in 0..rows {
+        for col in 0..cols {
+            let mut acc = a * x[row * cols + col];
+            for inner in 0..cols {
+                let value = x[row * cols + inner];
+                let slot = inner * cols + col;
+                acc += b * value * gram[slot] + c * value * squared[slot];
+            }
+            out[row * cols + col] = acc;
+        }
+    }
+    out
+}
+
+/// `X ← aX + b(AX) + c(A²X)`：`A` 是 `rows × rows`（乘在左边）。与 [`advance_columns`] 是同一个迭代。
+fn advance_rows(x: &[f32], rows: usize, cols: usize, gram: &[f32], squared: &[f32]) -> Vec<f32> {
+    let (a, b, c) = NS_COEF;
+    let mut out = vec![0.0_f32; rows * cols];
+    for row in 0..rows {
+        for col in 0..cols {
+            let mut acc = a * x[row * cols + col];
+            for inner in 0..rows {
+                let value = x[inner * cols + col];
+                let slot = row * rows + inner;
+                acc += b * gram[slot] * value + c * squared[slot] * value;
+            }
+            out[row * cols + col] = acc;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +734,27 @@ mod tests {
                 params,
                 grads,
                 role: *role,
+                shape: None,
+            })
+            .collect()
+    }
+
+    /// 带矩阵形状的槽视图：Muon 的入口要求形状随槽一起给出。
+    fn matrix_slots<'a>(
+        params: &'a mut [Vec<f32>],
+        grads: &'a mut [Vec<f32>],
+        roles: &[ParamRole],
+        shape: (usize, usize),
+    ) -> Vec<Slot<'a>> {
+        params
+            .iter_mut()
+            .zip(grads.iter_mut())
+            .zip(roles.iter())
+            .map(|((params, grads), role)| Slot {
+                params,
+                grads,
+                role: *role,
+                shape: Some(shape),
             })
             .collect()
     }
@@ -595,5 +936,187 @@ mod tests {
             .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
             .expect("长度一致");
         assert!((params[0][0] - 0.95).abs() < 1e-7);
+    }
+
+    /// 正交化后的方向满足 `O·Oᵀ ≈ I`：奇异值被压到 1，方向不再被少数谱分量独占。
+    #[test]
+    fn the_orthogonalized_direction_is_an_isometry() {
+        // 对角谱 1 / 2 / 3：不处理的话，更新量会按 3 : 2 : 1 分配。
+        let grad = vec![1.0_f32, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
+        let out = orthogonalize(&grad, 3, 3, 1e-7);
+        for row in 0..3 {
+            for col in 0..3 {
+                let dot: f32 = (0..3).map(|i| out[row * 3 + i] * out[col * 3 + i]).sum();
+                let want = if row == col { 1.0 } else { 0.0 };
+                assert!(
+                    (dot - want).abs() < 0.05,
+                    "第 ({row}, {col}) 项是 {dot}，正交阵该是 {want}"
+                );
+            }
+        }
+    }
+
+    /// 更新量与梯度尺度无关：整体乘 1000，一步走多远不变。
+    #[test]
+    fn the_update_ignores_the_gradient_scale() {
+        let base = vec![1.0_f32, -2.0, 0.5, 3.0, 0.0, -1.0];
+        let mut params_small = [vec![1.0_f32; 6]];
+        let mut params_large = [vec![1.0_f32; 6]];
+        let mut grads_small = [base.clone()];
+        let mut grads_large = [base.iter().map(|value| value * 1000.0).collect()];
+        let roles = [ParamRole::Trainable];
+
+        Muon::new()
+            .without_nesterov()
+            .step(&mut matrix_slots(&mut params_small, &mut grads_small, &roles, (2, 3)), 0.1)
+            .expect("几何合法");
+        Muon::new()
+            .without_nesterov()
+            .step(&mut matrix_slots(&mut params_large, &mut grads_large, &roles, (2, 3)), 0.1)
+            .expect("几何合法");
+
+        for (index, (small, large)) in params_small[0].iter().zip(&params_large[0]).enumerate() {
+            assert!(
+                (small - large).abs() < 1e-3,
+                "第 {index} 项：小梯度 {small} 与大梯度 {large} 该给出同一步"
+            );
+            assert!((small - 1.0).abs() > 1e-9, "第 {index} 项根本没被更新");
+        }
+    }
+
+    /// 非矩阵槽被拒且一步都不写回：跳过它等于让某个组永远不被训练。
+    #[test]
+    fn a_flat_slot_is_refused_before_any_update() {
+        let mut params = [vec![1.0_f32, 2.0, 3.0]];
+        let mut grads = [vec![0.5_f32, 0.5, 0.5]];
+        let roles = [ParamRole::Bias];
+        let error = Muon::new()
+            .step(&mut slots(&mut params, &mut grads, &roles), 0.1)
+            .expect_err("偏置不是矩阵");
+        assert_eq!(error.code(), Code::Invalid);
+        assert_eq!(params[0], [1.0, 2.0, 3.0], "拒绝前不改写参数");
+    }
+
+    /// 声明的行列积与参数长度不符：接线错误，在槽校验处就失败。
+    #[test]
+    fn a_shape_that_does_not_match_the_length_is_refused() {
+        let mut params = [vec![1.0_f32, 2.0, 3.0, 4.0]];
+        let mut grads = [vec![0.5_f32; 4]];
+        let roles = [ParamRole::Trainable];
+        let error = Muon::new()
+            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (3, 3)), 0.1)
+            .expect_err("3 × 3 不是 4 个元素");
+        assert_eq!(error.code(), Code::Invalid);
+    }
+
+    /// 非有限梯度在入口被拒：正交化会把 `NaN` 铺满整个方向。
+    #[test]
+    fn a_non_finite_gradient_is_refused() {
+        let mut params = [vec![1.0_f32; 4]];
+        let mut grads = [vec![1.0_f32, f32::NAN, 0.0, 0.0]];
+        let roles = [ParamRole::Trainable];
+        let error = Muon::new()
+            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+            .expect_err("梯度含 NaN");
+        assert_eq!(error.code(), Code::Invalid);
+        assert_eq!(params[0], [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    /// 零梯度给出零更新：没有方向就没有正交化的东西，也不需要另开分支。
+    #[test]
+    fn a_zero_gradient_leaves_the_matrix_alone() {
+        let mut params = [vec![1.0_f32, -2.0, 3.0, 0.5]];
+        let mut grads = [vec![0.0_f32; 4]];
+        let roles = [ParamRole::Trainable];
+        Muon::new()
+            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+            .expect("几何合法");
+        assert_eq!(params[0], [1.0, -2.0, 3.0, 0.5], "零方向不该动参数");
+    }
+
+    /// 解耦衰减跳过豁免角色：偏置原样保留，可训练权重按 `lr·decay` 缩。
+    #[test]
+    fn the_decay_still_follows_the_role() {
+        let mut params = [vec![1.0_f32; 4], vec![1.0_f32; 4]];
+        let mut grads = [vec![0.0_f32; 4], vec![0.0_f32; 4]];
+        let roles = [ParamRole::Trainable, ParamRole::Bias];
+        Muon::new()
+            .with_weight_decay(0.1)
+            .step(
+                &mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)),
+                0.5,
+            )
+            .expect("几何合法");
+        assert!((params[0][0] - (1.0 - 0.5 * 0.1)).abs() < 1e-7, "可训练权重按衰减缩");
+        assert_eq!(params[1][0], 1.0, "偏置豁免权重衰减");
+    }
+
+    /// 动量跨步累积：两步同梯度后缓冲为 `μ(μ·g + g) + g`。
+    #[test]
+    fn the_velocity_accumulates_across_steps() {
+        let mut params = [vec![1.0_f32; 4]];
+        let mut grads = [vec![0.0_f32, 1.0, 0.0, 0.0]];
+        let roles = [ParamRole::Trainable];
+        let mut optimizer = Muon::new().with_momentum(0.5);
+        for _ in 0..2 {
+            optimizer
+                .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+                .expect("几何合法");
+        }
+        let velocity = &optimizer.momentum_table()[0][1];
+        let want = 0.5 * (0.5 * 1.0 + 1.0) + 1.0;
+        assert!((velocity - want).abs() < 1e-6, "缓冲是 {velocity}，手算是 {want}");
+        assert_eq!(optimizer.step_count(), 2);
+    }
+
+    /// 回载后轨迹逐位对齐；二阶矩非空时拒绝（Muon 只持一阶动量）。
+    #[test]
+    fn the_restore_round_trip_matches_the_source() {
+        let mut params = [vec![1.0_f32; 4]];
+        let mut grads = [vec![0.25_f32, -1.0, 2.0, 0.0]];
+        let roles = [ParamRole::Trainable];
+        let mut source = Muon::new();
+        source
+            .step(&mut matrix_slots(&mut params, &mut grads, &roles, (2, 2)), 0.1)
+            .expect("第一步");
+        let table = source.momentum_table().to_vec();
+
+        let mut restored = Muon::new();
+        restored.restore(table, Vec::new(), 1).expect("表一致");
+        let mut params_restored = [params[0].clone()];
+        let mut params_source = [params[0].clone()];
+        restored
+            .step(&mut matrix_slots(&mut params_restored, &mut grads, &roles, (2, 2)), 0.1)
+            .expect("回载后第一步");
+        source
+            .step(&mut matrix_slots(&mut params_source, &mut grads, &roles, (2, 2)), 0.1)
+            .expect("源优化器同一步");
+        assert_eq!(params_restored[0], params_source[0], "回载后轨迹逐位对齐");
+
+        let error = Muon::new()
+            .restore(Vec::new(), vec![vec![1.0]], 1)
+            .expect_err("Muon 没有二阶矩");
+        assert_eq!(error.code(), Code::Invalid);
+    }
+
+    /// 高瘦与矮宽走的是同一个迭代：转置后的方向就是转置。
+    #[test]
+    fn the_tall_and_wide_branches_are_the_same_iteration() {
+        let tall = vec![0.5_f32, -1.0, 2.0, 0.25, 3.0, -0.5];
+        let mut wide = Vec::with_capacity(tall.len());
+        for col in 0..2 {
+            for row in 0..3 {
+                wide.push(tall[row * 2 + col]);
+            }
+        }
+        let tall_out = orthogonalize(&tall, 3, 2, 1e-7);
+        let wide_out = orthogonalize(&wide, 2, 3, 1e-7);
+        for row in 0..3 {
+            for col in 0..2 {
+                let lhs = tall_out[row * 2 + col];
+                let rhs = wide_out[col * 3 + row];
+                assert!((lhs - rhs).abs() < 1e-6, "({row}, {col})：{lhs} 对 {rhs}");
+            }
+        }
     }
 }

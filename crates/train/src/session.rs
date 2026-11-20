@@ -126,6 +126,7 @@ pub struct ParamSlot {
     var: Var,
     role: ParamRole,
     params: Vec<f32>,
+    matrix: Option<(usize, usize)>,
 }
 
 impl ParamSlot {
@@ -137,6 +138,14 @@ impl ParamSlot {
     /// 参数角色：分组与衰减豁免的派生依据。
     pub fn role(&self) -> ParamRole {
         self.role
+    }
+
+    /// 矩阵形状 `(rows, cols)`：登记形状是二阶张量时给出，否则 `None`。
+    ///
+    /// 它随参数槽一起走，因为 [`Optimizer`] 的矩阵类实现（[`crate::Muon`]）要在矩阵上做正交化；
+    /// 形状只从图上的登记形状派生，不从参数长度反推（`4` 既可以是 `2 × 2`，也可以是 `4 × 1`）。
+    pub fn matrix(&self) -> Option<(usize, usize)> {
+        self.matrix
     }
 
     /// 当前参数值（只读）。
@@ -248,6 +257,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         self.require_grad_endpoint(var)?;
         let (shape, dtype) = self.shape_for(var)?;
         self.require_f32_initial(var, shape, dtype, &initial)?;
+        let matrix = matrix_of(shape);
         self.buffers
             .load(var, Data::F32(initial.clone()))
             .map_err(|error| error.with(SITE))?;
@@ -255,6 +265,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             var,
             role,
             params: initial,
+            matrix,
         });
         Ok(())
     }
@@ -670,9 +681,12 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 梯度向量按槽整块取走（[`Buffers::take_gradient`]），步进结束后在
     /// [`Self::return_views`] 归还；参数槽与梯度表因此各只建立一条可变借用。
     fn collect_views(slots: &mut [ParamSlot], buffers: &mut Buffers<K>) -> Result<Vec<OwnedSlot>> {
-        let meta: Vec<(Var, ParamRole)> = slots.iter().map(|s| (s.var(), s.role())).collect();
+        let meta: Vec<(Var, ParamRole, Option<(usize, usize)>)> = slots
+            .iter()
+            .map(|slot| (slot.var(), slot.role(), slot.matrix()))
+            .collect();
         let mut views = Vec::with_capacity(meta.len());
-        for (index, (var, role)) in meta.into_iter().enumerate() {
+        for (index, (var, role, shape)) in meta.into_iter().enumerate() {
             let Some(grads) = buffers.take_gradient(var) else {
                 // 中途归还已取走的梯度：失败路径不留悬空向量。
                 Self::return_views_prefix(slots, buffers, views);
@@ -687,6 +701,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
                 params,
                 grads,
                 role,
+                shape,
             });
         }
         Ok(views)

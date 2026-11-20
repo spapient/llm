@@ -50,12 +50,14 @@ use diagnostic::{Code, Error, Result};
 
 mod attention;
 mod attention_block;
+mod attnres;
 mod axis;
 mod bounds;
 mod csa;
 mod embed;
 mod engram;
 mod format;
+mod kda;
 mod lm_head {
     //! `lm_head`：由注解声明的固定形状层。
     //!
@@ -74,7 +76,10 @@ mod lm_head {
     pub struct LmHead;
 }
 mod matmul;
+mod mhc;
 mod mix;
+mod mla;
+mod moe;
 mod param_role {
     //! 参数角色闭集：一个参数槽归哪个优化器组（D11 / ADR 0037）。
     //!
@@ -154,9 +159,14 @@ mod param_role {
         }
     }
 }
+mod codec;
+mod patch;
 mod pointwise;
 mod policy;
 mod stack;
+
+#[doc(inline)]
+pub use attnres::{AttnRes, Sources, splice};
 
 #[doc(inline)]
 pub use attention::{Attention, AttentionAlgo};
@@ -166,6 +176,9 @@ pub use attention_block::AttentionBlock;
 
 #[doc(inline)]
 pub use bounds::Bounds;
+
+#[doc(inline)]
+pub use codec::{BYTES, ByteDecoder, ByteEncoder, ORDERS};
 
 #[doc(inline)]
 pub use csa::{
@@ -183,19 +196,37 @@ pub use embed::Embedding;
 pub use engram::{Bypass, Table, allocate, next_prime, phi, slots};
 
 #[doc(inline)]
+pub use kda::{Kda, Memory};
+
+#[doc(inline)]
 pub use lm_head::LmHead;
 
 #[doc(inline)]
 pub use matmul::MatMul;
 
 #[doc(inline)]
+pub use mhc::{MHC_STREAMS, Mhc};
+
+#[doc(inline)]
 pub use mix::{cont, gate, synthesize};
+
+#[doc(inline)]
+pub use mla::{
+    Latent, Mla, Path, V3_HEAD_DIM, V3_HEADS, V3_LATENT, V3_LAYERS, V3_ROPE, dense_width, ratio,
+    row_width,
+};
+
+#[doc(inline)]
+pub use moe::{K3_ACTIVE, K3_EXPERTS, Moe};
 
 #[doc(inline)]
 pub use format::WeightFormat;
 
 #[doc(inline)]
 pub use param_role::ParamRole;
+
+#[doc(inline)]
+pub use patch::{Boundary, Patches};
 
 #[doc(inline)]
 pub use pointwise::{Add, Gelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax};

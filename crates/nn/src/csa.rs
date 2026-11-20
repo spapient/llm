@@ -74,7 +74,10 @@ pub fn dense_softmax<S: Scalar>(scores: &mut [S], rows: usize, cols: usize) {
 }
 
 /// 单行 softmax：先减最大值再指数，和为零时保持原值（全 `-inf` 的退化行）。
-fn softmax_row<S: Scalar>(row: &mut [S]) {
+///
+/// `pub(crate)` 而不是私有：[`crate::mla`] 的潜在注意力要在同一口径上归一化，
+/// 再写一份就等于给 softmax 两个定义。
+pub(crate) fn softmax_row<S: Scalar>(row: &mut [S]) {
     let max = row
         .iter()
         .copied()
@@ -341,15 +344,23 @@ fn keep_topk<S: Scalar>(scores: &mut [S], k: usize) {
     }
 }
 
-/// 点积 `a·b`（等长，由调用方保证）。
-fn dot<S: Scalar>(a: &[S], b: &[S]) -> S {
+/// 是否有限：`NaN` 与 `±∞` 都让 `v − v` 不等于零。
+///
+/// `pub(crate)` 而不是私有：MoE 的路由分布、mHC 的混合矩阵、byte-latent 的分数与 KDA 的门都要在入口
+/// 挡非有限值，再各写一份判据就等于给「有限」两个定义。
+pub(crate) fn finite<S: Scalar>(v: S) -> bool {
+    v.sub(v) == S::ZERO
+}
+
+/// 点积 `a·b`（等长，由调用方保证），[`crate::mla`] 的分数也走这一份。
+pub(crate) fn dot<S: Scalar>(a: &[S], b: &[S]) -> S {
     a.iter()
         .zip(b)
         .fold(S::ZERO, |acc, (&x, &y)| acc.add(x.mul(y)))
 }
 
-/// `acc += weight · v`。
-fn accumulate<S: Scalar>(acc: &mut [S], v: &[S], weight: S) {
+/// `acc += weight · v`，[`crate::mla`] 的加权求和也走这一份。
+pub(crate) fn accumulate<S: Scalar>(acc: &mut [S], v: &[S], weight: S) {
     for (slot, &value) in acc.iter_mut().zip(v) {
         *slot = slot.add(weight.mul(value));
     }
