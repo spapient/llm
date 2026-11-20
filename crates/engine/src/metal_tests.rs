@@ -1034,6 +1034,20 @@ fn half_precision(value: f32) -> f32 {
     f32::from_bits(exponent | (kept << 13))
 }
 
+/// half 位型 → f32（临时调试用）。
+fn half_value(bits: u16) -> f32 {
+    let sign = bits >> 15;
+    let exponent = (bits >> 10) & 0x1f;
+    let mantissa = bits & 0x3ff;
+    let magnitude = match (exponent, mantissa) {
+        (0, 0) => 0.0,
+        (0, _) => mantissa as f32 * 2f32.powi(-24),
+        (0x1f, _) => f32::NAN,
+        _ => f32::from_bits((exponent as u32 + 112) << 23 | (mantissa as u32) << 13),
+    };
+    if sign == 1 { -magnitude } else { magnitude }
+}
+
 /// 张量核 `relaxed` 口径的对拍阈值：输入只有 10 位尾数、硬件还可能低精度累加，故放到 5e-3；
 /// 同形的全 f32 路径（分块 / simdgroup）仍按 1e-3 判。
 const TENSOR_TOLERANCE: f64 = 5e-3;
@@ -1079,7 +1093,7 @@ fn metal_tensor_gemm() {
         let (a, b) = matmul_values(m, n, k);
         let a_buf = upload(&device, &a, "A");
         let b_buf = upload(&device, &b, "B");
-        let bt_buf = device.new_buffer(n * k * 2).expect("Bt 缓冲");
+        let mut bt_buf = device.new_buffer(n * k * 2).expect("Bt 缓冲");
         let mut y_buf = output_buffer(&device, m * n, "Y");
 
         // 布局前置：`B[K][N]` 的 f32 → `Bt[N][K]` 的 half，整个基准只跑一次。
@@ -1130,6 +1144,24 @@ fn metal_tensor_gemm() {
                 let got = read_back(y_buf.as_mut_bytes());
                 let aq: Vec<f32> = a.iter().copied().map(half_precision).collect();
                 let bq: Vec<f32> = b.iter().copied().map(half_precision).collect();
+                let (hc, _) = bt_buf.as_mut_bytes().as_chunks::<2>();
+                let hv: Vec<f32> = hc
+                    .iter()
+                    .map(|c| half_value(u16::from_ne_bytes(*c)))
+                    .collect();
+                let nan = hv.iter().filter(|v| v.is_nan()).count();
+                eprintln!(
+                    "Bt NaN {} / {}；Bt[0..8]={:?}；期望 Bt[0..8]={:?}",
+                    nan,
+                    hv.len(),
+                    &hv[..8],
+                    (0..8).map(|i| b[(i % k) * n + i / k]).collect::<Vec<f32>>()
+                );
+                eprintln!(
+                    "Y NaN {}；Y[1000..1008]={:?}",
+                    got.iter().filter(|v| v.is_nan()).count(),
+                    &got[1000..1008]
+                );
                 let worst = got
                     .iter()
                     .zip(&reference)
