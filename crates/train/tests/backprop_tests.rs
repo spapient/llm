@@ -937,3 +937,209 @@ fn hard_sigmoid_is_flat_outside_the_linear_band() -> Result<()> {
     assert_eq!(grad[2], 0.0, "上饱和梯度");
     Ok(())
 }
+
+/// 一元"长度会变"的算子：`loss = Σ op(p)`，对 `p` 逐元素中心差分。
+fn check_shaped_grad(
+    op: &str,
+    input: &[f32],
+    output: usize,
+    loss: impl Fn(&[f32]) -> f32,
+) -> Result<()> {
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let y = tape.record(op, &[p]).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+    let sizes = support::sizes_of(&tape, &[(p, input.len()), (y, output), (out, 1)]);
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(p, ParamRole::Trainable, input.to_vec())?;
+    session.buffers().compute(op, &[p], y)?;
+    sum_backward(&mut session, y, out)?;
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        input,
+        "p",
+        loss,
+    );
+    Ok(())
+}
+
+/// 三元仿射归一化：`loss = Σ op(x, gamma, beta)`，三个输入各做一次中心差分。
+fn check_affine_grad(
+    op: &str,
+    x0: &[f32],
+    g0: &[f32],
+    b0: &[f32],
+    total: usize,
+    loss: impl Fn(&[f32], &[f32], &[f32]) -> f32,
+) -> Result<()> {
+    let mut tape = Tape::new();
+    let x = tape.parameter();
+    let g = tape.parameter();
+    let b = tape.parameter();
+    let y = tape.record(op, &[x, g, b]).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+    let sizes = support::sizes_of(
+        &tape,
+        &[
+            (x, x0.len()),
+            (g, g0.len()),
+            (b, b0.len()),
+            (y, total),
+            (out, 1),
+        ],
+    );
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(x, ParamRole::Trainable, x0.to_vec())?;
+    session.register_parameter(g, ParamRole::Trainable, g0.to_vec())?;
+    session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
+    session.buffers().compute(op, &[x, g, b], y)?;
+    sum_backward(&mut session, y, out)?;
+
+    let f = &loss;
+    check_grad(
+        session.buffers().gradient(x).expect("x 梯度应在场"),
+        x0,
+        "x",
+        |px| f(px, g0, b0),
+    );
+    check_grad(
+        session.buffers().gradient(g).expect("gamma 梯度应在场"),
+        g0,
+        "gamma",
+        |pg| f(x0, pg, b0),
+    );
+    check_grad(
+        session.buffers().gradient(b).expect("beta 梯度应在场"),
+        b0,
+        "beta",
+        |pb| f(x0, g0, pb),
+    );
+    Ok(())
+}
+
+/// 16 个互不相同的值：让池化的 argmax 落在可辨识的位置，也避免平手。
+fn ramp(len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|i| (i as f32) * 0.37 - 2.1 + ((i % 5) as f32) * 0.11)
+        .collect()
+}
+
+/// 4 个通道的仿射参数。
+fn gain() -> Vec<f32> {
+    vec![1.5, 0.8, 1.2, 0.6]
+}
+
+/// 4 个通道的偏置参数。
+fn shift() -> Vec<f32> {
+    vec![0.25, -0.4, 0.1, 0.3]
+}
+
+#[test]
+fn max_pool1d_matches_central_differences() -> Result<()> {
+    let total = op::max_pool1d_f32::L;
+    let out = op::max_pool1d_f32::OL;
+    let x0 = ramp(total);
+    check_shaped_grad("max_pool1d_f32", &x0, out, |px| {
+        let mut y = vec![0.0f32; out];
+        op::max_pool1d_f32::forward(px, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn max_pool2d_matches_central_differences() -> Result<()> {
+    let side = op::max_pool2d_f32::H;
+    let x0 = ramp(side * side);
+    check_shaped_grad("max_pool2d_f32", &x0, side * side, |px| {
+        let mut y = vec![0.0f32; side * side];
+        op::max_pool2d_f32::forward(px, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn avg_pool2d_matches_central_differences() -> Result<()> {
+    let side = op::avg_pool2d_f32::H;
+    let x0 = ramp(side * side);
+    check_shaped_grad("avg_pool2d_f32", &x0, side * side, |px| {
+        let mut y = vec![0.0f32; side * side];
+        op::avg_pool2d_f32::forward(px, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn adaptive_pool_matches_central_differences() -> Result<()> {
+    let (side, out) = (op::adaptive_pool_f32::H, op::adaptive_pool_f32::OH);
+    let x0 = ramp(side * side);
+    check_shaped_grad("adaptive_pool_f32", &x0, out * out, |px| {
+        let mut y = vec![0.0f32; out * out];
+        op::adaptive_pool_f32::forward(px, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn interpolate_matches_central_differences() -> Result<()> {
+    let (h, w, out) = (
+        op::interpolate_f32::H,
+        op::interpolate_f32::W,
+        op::interpolate_f32::OH,
+    );
+    let x0 = ramp(h * w);
+    check_shaped_grad("interpolate_f32", &x0, out * out, |px| {
+        let mut y = vec![0.0f32; out * out];
+        op::interpolate_f32::forward(px, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn batch_norm_matches_central_differences() -> Result<()> {
+    use op::batch_norm_f32 as decl;
+    let total = decl::C * decl::S * decl::N;
+    let (x0, g0, b0) = (ramp(total), gain(), shift());
+    check_affine_grad("batch_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
+        let mut y = vec![0.0f32; total];
+        op::batch_norm_f32::forward(px, pg, pb, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn group_norm_matches_central_differences() -> Result<()> {
+    use op::group_norm_f32 as decl;
+    let total = decl::C * decl::S * decl::N;
+    let (x0, g0, b0) = (ramp(total), gain(), shift());
+    check_affine_grad("group_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
+        let mut y = vec![0.0f32; total];
+        op::group_norm_f32::forward(px, pg, pb, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn instance_norm_matches_central_differences() -> Result<()> {
+    use op::instance_norm_f32 as decl;
+    let total = decl::C * decl::S * decl::N;
+    let (x0, g0, b0) = (ramp(total), gain(), shift());
+    check_affine_grad("instance_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
+        let mut y = vec![0.0f32; total];
+        op::instance_norm_f32::forward(px, pg, pb, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn layer_norm_matches_central_differences() -> Result<()> {
+    use op::layer_norm_f32 as decl;
+    let total = decl::R * decl::W;
+    let x0 = ramp(total);
+    let g0 = gain();
+    let b0 = shift();
+    check_affine_grad("layer_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
+        let mut y = vec![0.0f32; total];
+        op::layer_norm_f32::forward(px, pg, pb, &mut y).expect("前向");
+        y.iter().sum()
+    })
+}

@@ -424,7 +424,7 @@ fn closed(
 
 /// `skeleton` 闭集：决定生成的 `MODEL` 走哪副算子骨架。
 ///
-/// 每个成员在 `codegen` 的骨架表里都有**自己的一行**（`every_skeleton_has_a_branch` 逐项渲染核对）；
+/// 每个成员在 `render` 的骨架表里都有**自己的一行**（`every_skeleton_has_a_branch` 逐项渲染核对）；
 /// `gemm` 特殊：模块名用注册名，名字必须先在 [`GEMM_SKELETON_NAMES`] 里。缺省值是 `gemv`：早期版本把
 /// 缺省写成 `gemm`，而 `gemm` 又靠「名字不是 `gemm_*` 就落到 gemv」收尾——声明与行为各说一套。
 pub(crate) const SKELETONS: [&str; 15] = [

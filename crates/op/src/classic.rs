@@ -26,7 +26,7 @@ macro_rules! classic_op {
         #[derive(Debug, Clone, Copy)]
         pub struct $ty;
 
-        crate::operator_here!($ty, $op, $arity, $shape, false, reference);
+        crate::operator_here!($ty, $op, $arity, $shape, true, reference);
     };
 }
 
@@ -37,9 +37,9 @@ pub mod max_pool1d_f32 {
     pub use crate::unary::{AXES, project_shape};
 
     /// 声明档输出位置数。
-    const OL: usize = 8;
+    pub const OL: usize = 8;
     /// 声明档输入长度：`(OL − 1)·S + K = 16`。
-    const L: usize = 16;
+    pub const L: usize = 16;
 
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
@@ -88,8 +88,8 @@ pub mod max_pool2d_f32 {
     pub use crate::unary::{AXES, project_shape};
 
     /// 声明档边长。
-    const H: usize = 4;
-    const W: usize = 4;
+    pub const H: usize = 4;
+    pub const W: usize = 4;
 
     fn geom() -> ConvGeom {
         ConvGeom {
@@ -148,8 +148,8 @@ pub mod avg_pool2d_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
-    const H: usize = 4;
-    const W: usize = 4;
+    pub const H: usize = 4;
+    pub const W: usize = 4;
 
     fn pool() -> crate::conv::AvgPool2d {
         crate::conv::AvgPool2d {
@@ -211,10 +211,10 @@ pub mod adaptive_pool_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
-    const H: usize = 4;
-    const W: usize = 4;
-    const OH: usize = 2;
-    const OW: usize = 2;
+    pub const H: usize = 4;
+    pub const W: usize = 4;
+    pub const OH: usize = 2;
+    pub const OW: usize = 2;
 
     /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
@@ -262,10 +262,10 @@ pub mod interpolate_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
-    const H: usize = 2;
-    const W: usize = 2;
-    const OH: usize = 4;
-    const OW: usize = 4;
+    pub const H: usize = 2;
+    pub const W: usize = 2;
+    pub const OH: usize = 4;
+    pub const OW: usize = 4;
 
     fn sampler() -> crate::conv::Sampler {
         crate::conv::Sampler::Linear
@@ -327,14 +327,16 @@ pub mod batch_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
-    const C: usize = 4;
-    const S: usize = 2;
-    const N: usize = 2;
+    pub const C: usize = 4;
+    pub const S: usize = 2;
+    pub const N: usize = 2;
+    /// 归一化分母的稳定项（前向与反向共用同一份常量）。
+    pub const EPS: f32 = 1e-5;
 
     fn norm() -> crate::norm::BatchNorm2d {
         crate::norm::BatchNorm2d {
             channels: C,
-            eps: 1e-5,
+            eps: EPS,
             momentum: 0.1,
         }
     }
@@ -400,16 +402,18 @@ pub mod group_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
-    const G: usize = 2;
-    const C: usize = 4;
-    const S: usize = 2;
-    const N: usize = 2;
+    pub const G: usize = 2;
+    pub const C: usize = 4;
+    pub const S: usize = 2;
+    pub const N: usize = 2;
+    /// 归一化分母的稳定项（前向与反向共用同一份常量）。
+    pub const EPS: f32 = 1e-5;
 
     fn norm() -> crate::norm::GroupNorm {
         crate::norm::GroupNorm {
             groups: G,
             channels: C,
-            eps: 1e-5,
+            eps: EPS,
         }
     }
 
@@ -474,14 +478,16 @@ pub mod instance_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
-    const C: usize = 4;
-    const S: usize = 2;
-    const N: usize = 2;
+    pub const C: usize = 4;
+    pub const S: usize = 2;
+    pub const N: usize = 2;
+    /// 归一化分母的稳定项（前向与反向共用同一份常量）。
+    pub const EPS: f32 = 1e-5;
 
     fn norm() -> crate::norm::InstanceNorm {
         crate::norm::InstanceNorm {
             channels: C,
-            eps: 1e-5,
+            eps: EPS,
         }
     }
 
@@ -541,13 +547,15 @@ pub mod layer_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
-    const R: usize = 3;
-    const W: usize = 4;
+    pub const R: usize = 3;
+    pub const W: usize = 4;
+    /// 归一化分母的稳定项（前向与反向共用同一份常量）。
+    pub const EPS: f32 = 1e-5;
 
     fn norm() -> crate::norm::LayerNorm {
         crate::norm::LayerNorm {
             width: W,
-            eps: 1e-5,
+            eps: EPS,
         }
     }
 

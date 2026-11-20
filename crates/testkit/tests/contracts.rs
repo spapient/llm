@@ -296,7 +296,7 @@ fn bitsets_have_exactly_one_implementation() {
 /// 注解能写出的输出类型必须正好是对拍能给结论的那些：多一个，`verify` 会拿 0 当阈值，
 /// 少一个，那门输出就永远无法被声明成算子。
 ///
-/// 变体名再核一遍：`codegen` 按 `DType::variant` 把名字翻成变体，
+/// 变体名再核一遍：`render` 按 `DType::variant` 把名字翻成变体，
 /// 名字与变体一旦分家，生成代码会指向不存在的变体——错误会出现在被标注的 crate 里，
 /// 而不是写错字的那张表上。
 #[test]

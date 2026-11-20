@@ -23,7 +23,7 @@
 | 层 | 文件 | 职责 | 可测性 |
 |---|---|---|---|
 | 文法 | `src/syntax.rs`（共享键机器）、`src/syntax/runtime.rs`（运行时形态） | token 模型、键表驱动的解析、全部错误路径 | 纯函数，不接触 `proc_macro` |
-| 渲染 | `src/codegen.rs` | 声明 → `impl` / 常量 / 校验测试的文本拼接 | 纯字符串拼接 |
+| 渲染 | `src/render.rs` | 声明 → `impl` / 常量 / 校验测试的文本拼接 | 纯字符串拼接 |
 | 适配 | `src/lib.rs` | `TokenStream` ↔ token 模型、错误映射回 span；`Streams` 依赖倒置 | 字符串替身实现同一 trait |
 | 夹具 | `src/fixture.rs`（`cfg(test)`） | 注解文本 → token 模型的最小词法器 | 仅供单元测试 |
 

@@ -34,7 +34,7 @@
 //! | 层 | 文件 | 职责 | 能否单元测试 |
 //! |---|---|---|---|
 //! | 文法 | `syntax` | token 模型、文法解析、全部错误路径 | **能**，不接触 `proc_macro` |
-//! | 渲染 | `codegen` | 把声明渲染成 `impl` + 校验测试 | **能**，只做字符串拼接 |
+//! | 渲染 | `render` | 把声明渲染成 `impl` + 校验测试 | **能**，只做字符串拼接 |
 //! | 适配 | 本文件 | `TokenStream` ↔ token 模型、把错误映射回 span | 经由 `Streams` 抽象，**能** |
 //!
 //! 把文法与 `proc_macro` 解耦是这一层的核心决定：`proc_macro::TokenStream` 只在展开期可用，
@@ -100,7 +100,7 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-mod codegen;
+mod render;
 mod syntax;
 
 #[cfg(test)]
@@ -128,7 +128,7 @@ pub fn spec(attribute: TokenStream, item: TokenStream) -> TokenStream {
             item,
             "spec",
             syntax::parse,
-            codegen::render,
+            render::render,
             syntax::target_name,
         )
     }
@@ -228,7 +228,7 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
         item,
         "model",
         syntax::parse_model,
-        codegen::render_model,
+        render::render_model,
         syntax::model_target,
     )
 }
@@ -291,7 +291,7 @@ fn expand_runtime<S: Streams>(attribute: S, item: S) -> S {
         Err(output) => output,
         Ok((declaration, ty, item)) => {
             let item = item.insert_field("spec: ::nn::ContractSpec,");
-            attach(item, &codegen::render_runtime(&declaration, &ty))
+            attach(item, &render::render_runtime(&declaration, &ty))
         }
     }
 }

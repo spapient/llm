@@ -57,7 +57,7 @@ fn a_rejected_annotation_keeps_the_annotated_item() {
         text("pub struct Head;"),
         "spec",
         syntax::parse,
-        codegen::render,
+        render::render,
         syntax::target_name,
     );
     assert!(expanded.0.contains("compile_error!"), "{}", expanded.0);

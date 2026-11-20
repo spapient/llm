@@ -1,4 +1,4 @@
-//! 代码生成：把 [`Declaration`] 渲染成 `impl nn::Contract` 与一条校验测试。
+//! 渲染：把 [`Declaration`] 渲染成 `impl nn::Contract` 与一条校验测试。
 //!
 //! 这里只做字符串拼接、不维护任何状态，也不接触 `proc_macro`，因此可以用纯文本断言测试。
 //! 生成的代码是确定的三块（被标注项由调用方原样拼接）：
@@ -348,5 +348,5 @@ fn literal(text: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "codegen_tests.rs"]
+#[path = "render_tests.rs"]
 mod tests;
