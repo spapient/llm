@@ -85,8 +85,12 @@ impl<S: Scalar> Layer<S> {
 
     /// 四张方阵都必须是 `[width, width]`：宽了是把别的层的数喂进来，窄了内积照算却是另一个数。
     fn check(&self, width: usize, stride: usize) -> Result<()> {
-        for (label, matrix) in [("q", &self.q), ("k", &self.k), ("v", &self.v), ("o", &self.o)]
-        {
+        for (label, matrix) in [
+            ("q", &self.q),
+            ("k", &self.k),
+            ("v", &self.v),
+            ("o", &self.o),
+        ] {
             if matrix.len() != stride {
                 return Err(Error::new(
                     Code::Invalid,
@@ -363,7 +367,7 @@ fn stride(width: usize) -> Result<usize> {
 
 /// 一行一个 patch：列长必须是宽度的整数倍，否则「第几行是哪个 patch」无从谈起。
 fn rows(len: usize, width: usize) -> Result<usize> {
-    if width == 0 || len % width != 0 {
+    if width == 0 || !len.is_multiple_of(width) {
         return Err(Error::new(
             Code::Invalid,
             format!("表示列有 {len} 个元素，不是宽度 {width} 的整数倍"),
@@ -375,15 +379,12 @@ fn rows(len: usize, width: usize) -> Result<usize> {
 
 /// 逐字节本地向量的元素数（`bytes × width`），溢出即入口错误。
 fn glyph_stride(patches: &Patches, width: usize) -> Result<usize> {
-    patches
-        .bytes()
-        .checked_mul(width)
-        .ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("{} 个字节 × {width} 溢出", patches.bytes()),
-            )
-        })
+    patches.bytes().checked_mul(width).ok_or_else(|| {
+        Error::new(
+            Code::Invalid,
+            format!("{} 个字节 × {width} 溢出", patches.bytes()),
+        )
+    })
 }
 
 /// 行主序方阵乘向量：不引第三个转置视角，`[r, c]` 就是 `r * width + c`。
@@ -405,7 +406,11 @@ fn project<S: Scalar>(matrix: &[S], width: usize, column: &[S]) -> Vec<S> {
 fn push_row<S: Scalar>(out: &mut Vec<S>, x: &[S], t: usize, width: usize, o: &[S], mixed: &[S]) {
     let row = &x[t * width..(t + 1) * width];
     let update = apply(o, width, mixed);
-    out.extend(row.iter().zip(&update).map(|(&base, &delta)| base.add(delta)));
+    out.extend(
+        row.iter()
+            .zip(&update)
+            .map(|(&base, &delta)| base.add(delta)),
+    );
 }
 
 #[cfg(test)]
@@ -428,7 +433,12 @@ mod tests {
     }
 
     fn layer(width: usize) -> Layer<f32> {
-        Layer::new(identity(width), identity(width), identity(width), identity(width))
+        Layer::new(
+            identity(width),
+            identity(width),
+            identity(width),
+            identity(width),
+        )
     }
 
     /// 六层（闭集下界）的非零栈。
@@ -449,15 +459,16 @@ mod tests {
             global: 2.0,
             rise: 1.0e9,
         };
-        let scores: Vec<f32> = (0..bytes).map(|i| if i % 2 == 0 { 2.5 } else { 0.0 }).collect();
+        let scores: Vec<f32> = (0..bytes)
+            .map(|i| if i % 2 == 0 { 2.5 } else { 0.0 })
+            .collect();
         rule.split(&scores).expect("分数有限、参数合法")
     }
 
     #[test]
     fn a_row_never_reads_the_rows_after_it() {
         for (factor, window) in [(1, 1), (2, 1), (2, 3), (4, 2)] {
-            let global =
-                Global::new(2, factor, window, vec![layer(2)]).expect("几何合法");
+            let global = Global::new(2, factor, window, vec![layer(2)]).expect("几何合法");
             let before = column(5, 2);
             let mut after = before.clone();
             after[4 * 2] += 7.0;
@@ -465,9 +476,16 @@ mod tests {
             let seen = global.forward(&before).expect("列长是宽度的整数倍");
             let shifted = global.forward(&after).expect("列长是宽度的整数倍");
             for cell in 0..4 * 2 {
-                assert_eq!(seen[cell], shifted[cell], "factor={factor} 第 {cell} 格被未来改了");
+                assert_eq!(
+                    seen[cell], shifted[cell],
+                    "factor={factor} 第 {cell} 格被未来改了"
+                );
             }
-            assert_ne!(seen[8..], shifted[8..], "factor={factor} 最后一行没被自己的数影响");
+            assert_ne!(
+                seen[8..],
+                shifted[8..],
+                "factor={factor} 最后一行没被自己的数影响"
+            );
         }
     }
 
@@ -515,7 +533,6 @@ mod tests {
         assert!(global.forward(&[1.0, 2.0, 3.0]).is_err(), "列长不是整数倍");
     }
 
-
     #[test]
     fn a_byte_never_reads_a_later_patch() {
         let cuts = patches(4);
@@ -528,8 +545,16 @@ mod tests {
         let seen = read.forward(&reps, &glyphs, &cuts).expect("几何合法");
         let shifted = read.forward(&further, &glyphs, &cuts).expect("几何合法");
         let head = cuts.ranges().next().expect("首段存在").end * 2;
-        assert_eq!(seen[..head], shifted[..head], "前面的字节被后面的 patch 改了");
-        assert_ne!(seen[head..], shifted[head..], "最后一段没读到自己那个 patch");
+        assert_eq!(
+            seen[..head],
+            shifted[..head],
+            "前面的字节被后面的 patch 改了"
+        );
+        assert_ne!(
+            seen[head..],
+            shifted[head..],
+            "最后一段没读到自己那个 patch"
+        );
     }
 
     #[test]
@@ -591,7 +616,10 @@ mod tests {
 
     #[test]
     fn the_local_stack_rejects_impossible_geometry() {
-        assert!(Backread::new(0, vec![layer(2); LOCAL_MIN]).is_err(), "宽度为零");
+        assert!(
+            Backread::new(0, vec![layer(2); LOCAL_MIN]).is_err(),
+            "宽度为零"
+        );
         let short = Layer::new(vec![0.0; 3], identity(2), identity(2), identity(2));
         assert!(
             Backread::new(2, vec![short; LOCAL_MIN]).is_err(),
@@ -601,7 +629,10 @@ mod tests {
         let read = backread(2);
         let glyphs = column(4, 2);
         let reps = column(cuts.len(), 2);
-        assert!(read.forward(&reps, &glyphs[..6], &cuts).is_err(), "字节少了");
+        assert!(
+            read.forward(&reps, &glyphs[..6], &cuts).is_err(),
+            "字节少了"
+        );
         assert!(
             read.forward(&reps[..2], &glyphs, &cuts).is_err(),
             "表示少了一行"
@@ -628,8 +659,8 @@ mod tests {
             )
         };
         let read = backread(width);
-        let double = Backread::new(width, read.layers.iter().map(widen).collect())
-            .expect("六层在闭集内");
+        let double =
+            Backread::new(width, read.layers.iter().map(widen).collect()).expect("六层在闭集内");
         let wide_reps = reps64(&cuts64, width);
         let wide_glyphs: Vec<f64> = column(4, width).into_iter().map(f64::from).collect();
         let single = read

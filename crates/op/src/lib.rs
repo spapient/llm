@@ -57,6 +57,7 @@ pub mod einsum;
 pub mod elementwise;
 pub mod gemm;
 pub mod gemv;
+pub mod matmul;
 pub mod model;
 pub mod softmax;
 pub(crate) use tpl::parse;
