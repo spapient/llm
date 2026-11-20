@@ -32,7 +32,6 @@ macro_rules! classic_op {
 
 /// 一维最大池化（声明档几何 `k=2, s=2, p=0`，单通道）。
 pub mod max_pool1d_f32 {
-    //! `y[o] = max(x[2o], x[2o+1])`，输出 8 位、输入 16 位。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -42,6 +41,7 @@ pub mod max_pool1d_f32 {
     /// 声明档输入长度：`(OL − 1)·S + K = 16`。
     const L: usize = 16;
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: OL,
@@ -57,6 +57,7 @@ pub mod max_pool1d_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let mut out = vec![0.0f32; OL];
@@ -82,7 +83,6 @@ pub mod max_pool1d_f32 {
 
 /// 二维最大池化（声明档几何 `3×3, s=1, p=1`，4×4 输入、same 输出）。
 pub mod max_pool2d_f32 {
-    //! `y[i,j] = max(x[i−1..i+2, j−1..j+2])`，补零位不参与比较。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -102,6 +102,7 @@ pub mod max_pool2d_f32 {
         }
     }
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: H * W,
@@ -117,6 +118,7 @@ pub mod max_pool2d_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let mut out = vec![0.0f32; H * W];
@@ -142,7 +144,6 @@ pub mod max_pool2d_f32 {
 
 /// 二维平均池化（声明档几何 `3×3, s=1, p=1`，补零不计入分母）。
 pub mod avg_pool2d_f32 {
-    //! `y[i,j] = Σ窗口 x / 有效元素数`。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -164,6 +165,7 @@ pub mod avg_pool2d_f32 {
         }
     }
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: H * W,
@@ -179,6 +181,7 @@ pub mod avg_pool2d_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let mut out = vec![0.0f32; H * W];
@@ -204,7 +207,6 @@ pub mod avg_pool2d_f32 {
 
 /// 自适应平均池化（声明档 4×4 → 2×2）。
 pub mod adaptive_pool_f32 {
-    //! 每个输出格取覆盖窗口的平均，窗口 `[floor(i·h/oh), ceil((i+1)·h/oh))`。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -214,6 +216,7 @@ pub mod adaptive_pool_f32 {
     const OH: usize = 2;
     const OW: usize = 2;
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: OH * OW,
@@ -229,6 +232,7 @@ pub mod adaptive_pool_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let mut out = vec![0.0f32; OH * OW];
@@ -254,7 +258,6 @@ pub mod adaptive_pool_f32 {
 
 /// 双线性插值（声明档 2×2 → 4×4，`align_corners = false`）。
 pub mod interpolate_f32 {
-    //! 源坐标 `(i+0.5)·h/oh − 0.5`，夹边界后做四邻加权。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -268,6 +271,7 @@ pub mod interpolate_f32 {
         crate::conv::Sampler::Linear
     }
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: OH * OW,
@@ -283,6 +287,7 @@ pub mod interpolate_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let mut out = vec![0.0f32; OH * OW];
@@ -318,7 +323,6 @@ pub mod interpolate_f32 {
 
 /// 批归一化（声明档 `C=4, spatial=2, n=2`，训练口径：批统计自上而下、滑动统计按动量混入）。
 pub mod batch_norm_f32 {
-    //! `y = gamma·(x−μ)/√(σ²+eps) + beta`，μ/σ² 取批内统计。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -335,6 +339,7 @@ pub mod batch_norm_f32 {
         }
     }
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: N * S * C,
@@ -358,6 +363,7 @@ pub mod batch_norm_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let gamma = sample.f32("gamma")?;
@@ -390,7 +396,6 @@ pub mod batch_norm_f32 {
 
 /// 组归一化（声明档 `G=2, C=4, spatial=2, n=2`）。
 pub mod group_norm_f32 {
-    //! 每 `(n, group)` 在 `(C/G, spatial)` 内做均值-方差归一化。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -408,6 +413,7 @@ pub mod group_norm_f32 {
         }
     }
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: N * S * C,
@@ -436,6 +442,7 @@ pub mod group_norm_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let gamma = sample.f32("gamma")?;
@@ -463,7 +470,6 @@ pub mod group_norm_f32 {
 
 /// 实例归一化（声明档 `C=4, spatial=2, n=2`）：等价于 `GroupNorm(G = C)`。
 pub mod instance_norm_f32 {
-    //! 每个样本每个通道独立统计，窗口是该样本该通道的整个空间。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -479,6 +485,7 @@ pub mod instance_norm_f32 {
         }
     }
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: N * S * C,
@@ -502,6 +509,7 @@ pub mod instance_norm_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let gamma = sample.f32("gamma")?;
@@ -529,7 +537,6 @@ pub mod instance_norm_f32 {
 
 /// 层归一化（声明档 `3 行 × 4 宽`）：逐行在最后一维统计。
 pub mod layer_norm_f32 {
-    //! `y = gamma·(x−μ_row)/√(σ²_row+eps) + beta`。
 
     use super::*;
     pub use crate::unary::{AXES, project_shape};
@@ -544,6 +551,7 @@ pub mod layer_norm_f32 {
         }
     }
 
+    /// 声明档样本：固定几何下的输入与输出缓冲。
     pub fn sample(_: usize, _: usize) -> Sample {
         Sample {
             m: R * W,
@@ -567,6 +575,7 @@ pub mod layer_norm_f32 {
         }
     }
 
+    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let x = sample.f32("x")?;
         let gamma = sample.f32("gamma")?;

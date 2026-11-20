@@ -96,6 +96,7 @@ impl Conv1d {
     }
 
     /// 输出长度。
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.ol
     }
@@ -212,6 +213,7 @@ impl ConvTranspose1d {
     }
 
     /// 输出长度。
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.ol
     }
@@ -316,6 +318,7 @@ impl MaxPool1d {
     }
 
     /// 输出长度。
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.ol
     }
@@ -551,7 +554,7 @@ impl BatchNorm2d {
     pub fn new(name: impl Into<String>, channels: usize, eps: f32, momentum: f32) -> Result<Self> {
         let layer = "nn::BatchNorm2d::new";
         nonzero(channels, "channels", layer)?;
-        if !(eps > 0.0) {
+        if eps <= 0.0 || eps.is_nan() {
             return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
         }
         if !(0.0..=1.0).contains(&momentum) {
@@ -605,7 +608,7 @@ impl GroupNorm {
         let layer = "nn::GroupNorm::new";
         nonzero(groups, "groups", layer)?;
         nonzero(channels, "channels", layer)?;
-        if !(eps > 0.0) {
+        if eps <= 0.0 || eps.is_nan() {
             return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
         }
         if channels % groups != 0 {
@@ -659,7 +662,7 @@ impl InstanceNorm {
     pub fn new(name: impl Into<String>, channels: usize, eps: f32) -> Result<Self> {
         let layer = "nn::InstanceNorm::new";
         nonzero(channels, "channels", layer)?;
-        if !(eps > 0.0) {
+        if eps <= 0.0 || eps.is_nan() {
             return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
         }
         let norm = OpInst { channels, eps };
@@ -702,7 +705,7 @@ impl LayerNorm {
     pub fn new(name: impl Into<String>, width: usize, eps: f32) -> Result<Self> {
         let layer = "nn::LayerNorm::new";
         nonzero(width, "width", layer)?;
-        if !(eps > 0.0) {
+        if eps <= 0.0 || eps.is_nan() {
             return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
         }
         let norm = OpLayer { width, eps };
