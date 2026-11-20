@@ -55,9 +55,14 @@ pub trait Operator {
 
 ### 3. 装配宏退化为投影
 
-`train::kernel_table!` / `serve::kernels` 的适配行宏只保留"函数签名适配"（`&[View] → ViewMut`），
-**名字与顺序不再手写**：由 `Operator::NAME` 的表驱动生成（`operator_table!`），每一行只剩适配函数名。
-`op::kernel_table!`（本轮已收口）继续作为行展开。
+`train::kernel_table!` / `serve::kernels` 的适配行宏只保留"函数签名适配"（`&[View] → ViewMut`）：
+`op::kernel_table!` 从适配函数标识符派生算子名，每一行只剩适配函数名。名字与顺序不靠人眼守——
+`train::KERNELS` 用 `same_order` 编译期断言与 `REGISTRY` 同名同序，`serve::KERNELS` 用
+`all_in_registry` 锁定子集。
+
+**否决 `operator_table!`（类型路径 => 适配函数）**：它只把 `Operator` 的类型路径抄进 train/serve
+的每一行，行数不减、耦合反增，而"名字与顺序正确"已由上述两条 `const` 断言保证。按 ADR 0049 的
+"无行数收益即不做"原则，不再引入第二个装配宏。
 
 模块自带具体入口的算子（softmax / rmsnorm / rope / embed / scan / attention / matmul）由
 `operator_here!` 生成 `Operator` 实现：装配行只剩类型、注册名、生产形状、可微性与参考入口，
