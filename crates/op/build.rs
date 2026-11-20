@@ -79,12 +79,16 @@ fn run() -> diagnostic::Result<()> {
 ///
 /// 兄弟继承（如 `gemv_i2` → `gemv_i4`）只差 `[op]`/`[consts]`/个别 `[needs]` 叶子，`[needs]`/
 /// `[layouts]`/`[[variants]]` 一大段逐字相同，写在 base 里由继承共享；当前表只写真正不同的那几行。
+///
+/// 递归解析 base 的 base：继承链可多级（如 `adaptive_pool_f32` → `silu_f32` → `gelu_f32`），
+/// 每一级都先展开自己的 base，再由当前表覆盖，避免 `[axes]`/`[needs]`/`[[variants]]` 在中间层
+/// 被截断。声明语料无环，递归深度 ≤ 3。
 fn resolve(ops: &Path, mut table: toml::Table) -> diagnostic::Result<toml::Table> {
     let Some(toml::Value::String(base)) = table.get("base").cloned() else {
         return Ok(table);
     };
     table.remove("base");
-    let base = buildgen::read(&ops.join(format!("{base}.toml")))?;
+    let base = resolve(ops, buildgen::read(&ops.join(format!("{base}.toml")))?)?;
     Ok(merge(base, table))
 }
 
