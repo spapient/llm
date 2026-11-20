@@ -205,7 +205,7 @@ fn simdgroup_gemm_msl(
             ));
         }
     }
-    src.push_str("}");
+    src.push('}');
     src
 }
 
@@ -458,7 +458,18 @@ pub fn metal_flash_attention(
                 .with("engine::tiled::metal_flash_attention"),
         );
     }
-    Ok(flash_attention_msl(q, k, v, y, s, d, threads, block))
+    Ok(flash_attention_msl(
+        q,
+        k,
+        v,
+        y,
+        Flash {
+            seq: s,
+            dim: d,
+            threads,
+            block,
+        },
+    ))
 }
 
 /// 线程/块几何：线程数为 2 的幂且至少 2，块非零且是线程数倍数。
@@ -466,26 +477,45 @@ fn flash_geometry_ok(threads: usize, block: usize) -> bool {
     threads.is_power_of_two() && threads >= 2 && block != 0 && block.is_multiple_of(threads)
 }
 
-/// flash attention 的 MSL 正文：在线 softmax 的块内归约 + 寄存器输出累加。
-fn flash_attention_msl(
-    q: &str,
-    k: &str,
-    v: &str,
-    y: &str,
-    s: usize,
-    d: usize,
+/// 派发几何：序列长、头宽、线程数与键块。四个数在正文里只当常量用，收在一处以免每个
+/// 生成函数都重算一遍 `div_ceil` 与“除不除得尽”。
+#[derive(Clone, Copy)]
+struct Flash {
+    seq: usize,
+    dim: usize,
     threads: usize,
     block: usize,
-) -> String {
-    let nd = d.div_ceil(threads);
-    let tail = !s.is_multiple_of(block);
+}
+
+impl Flash {
+    /// 每线程承担的寄存器输出维数。
+    fn lanes(self) -> usize {
+        self.dim.div_ceil(self.threads)
+    }
+
+    /// 键块是否除不尽序列：除不尽才需要尾块守卫。
+    fn tail(self) -> bool {
+        !self.seq.is_multiple_of(self.block)
+    }
+}
+
+/// flash attention 的 MSL 正文：在线 softmax 的块内归约 + 寄存器输出累加。
+fn flash_attention_msl(q: &str, k: &str, v: &str, y: &str, shape: Flash) -> String {
+    let Flash {
+        seq: s,
+        dim: d,
+        threads,
+        block,
+    } = shape;
+    let nd = shape.lanes();
+    let tail = shape.tail();
     let score = flash_score_body(q, k, tail);
     let weight = flash_weight(tail);
     let decls: String = (0..nd)
         .map(|n| format!("    float acc_{n} = 0.0f;\n"))
         .collect();
     let updates: String = (0..nd)
-        .map(|n| flash_acc_update(v, n, threads, d, block, tail))
+        .map(|n| flash_acc_update(v, n, shape, tail))
         .collect();
     let writes: String = (0..nd)
         .map(|n| {
@@ -579,15 +609,8 @@ fn flash_weight(tail: bool) -> &'static str {
 }
 
 /// 一个寄存器输出维 `acc_n` 的在线更新：先按 `alpha` 缩放旧累加，再加当前键块的 `P·V`。
-fn flash_acc_update(
-    v: &str,
-    n: usize,
-    threads: usize,
-    d: usize,
-    block: usize,
-    tail: bool,
-) -> String {
-    let h = n * threads;
+fn flash_acc_update(v: &str, n: usize, shape: Flash, tail: bool) -> String {
+    let h = n * shape.threads;
     let add = format!("a += scores[j] * d_{v}[j * D + h];");
     let value = if tail {
         format!("if (kb + j < S) {add}")

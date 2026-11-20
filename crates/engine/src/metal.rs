@@ -702,6 +702,7 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
     #[test]
     #[ignore]
     fn dump_attention_msl() {
+        crate::backends::install();
         let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
         let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("dump-attn"));
         let flash = cutile::execution::metal_flash_attention_program(
@@ -725,6 +726,54 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
         )
         .expect("tiled");
         std::fs::write("/tmp/tiled.msl", tiled).expect("写 tiled");
+    }
+
+    #[test]
+    #[ignore]
+    fn debug_flash_small() {
+        crate::backends::install();
+        let device = MetalDevice::system_default().expect("Metal");
+        let queue = device.new_command_queue().expect("队列");
+        let (s, d, threads, block) = (64usize, 8usize, 32usize, 64usize);
+        let q: Vec<f32> = (0..s * d).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+        let k: Vec<f32> = (0..s * d).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+        let v: Vec<f32> = (0..s * d).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
+        let reference = cpu_attention(&q, &k, &v, s, d);
+        let mut qb = device.new_buffer(s * d * 4).expect("q");
+        let mut kb = device.new_buffer(s * d * 4).expect("k");
+        let mut vb = device.new_buffer(s * d * 4).expect("v");
+        let mut yb = device.new_buffer(s * d * 4).expect("y");
+        qb.as_mut_bytes().copy_from_slice(&as_bytes(&q));
+        kb.as_mut_bytes().copy_from_slice(&as_bytes(&k));
+        vb.as_mut_bytes().copy_from_slice(&as_bytes(&v));
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("debug-flash"));
+        let msl = cutile::execution::metal_flash_attention_program(
+            &catalogue, &dirs, "attention_f32", s, d, threads, block,
+        )
+        .expect("flash");
+        let pipe = device.compile(&msl).expect("编译");
+        queue.execute(
+            &pipe,
+            &[&qb, &kb, &vb, &yb],
+            [(s * threads) as u32, 1, 1],
+            [threads as u32, 1, 1],
+        );
+        let (chunks, _) = yb.as_mut_bytes().as_chunks::<4>();
+        let got: Vec<f32> = chunks.iter().map(|c| f32::from_ne_bytes(*c)).collect();
+        let mut worst = (0usize, 0.0f32);
+        for (idx, (g, w)) in got.iter().zip(reference.iter()).enumerate() {
+            let diff = (g - w).abs();
+            if diff > worst.1 {
+                worst = (idx, diff);
+            }
+        }
+        eprintln!(
+            "debug flash worst idx={} abs={} got={} want={}",
+            worst.0, worst.1, got[worst.0], reference[worst.0]
+        );
+        eprintln!("got[0..4]={:?}", &got[..4]);
+        eprintln!("want[0..4]={:?}", &reference[..4]);
     }
 
     /// Metal 真机 matmul 前向基准：同一份 `M×N×K` 稠密 f32 在两条路径上跑同一算术，
