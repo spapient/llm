@@ -16,7 +16,19 @@
 use core::fmt::Debug;
 
 /// 浮点标量闭集：`f32` / `f64` 满足；`nn` 的脉冲 / 合成 / 决策头复用本 trait。
-pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
+///
+/// 运算符超 trait（`Add/Sub/Mul/Div`）让上层代码能写 `a + b`、`a * b` 而不再逐方法调用，
+/// 否则「泛型化」只把 `as f32` 换成了 `S::mul`，读起来反而更绕。
+pub trait Scalar:
+    Copy
+    + PartialEq
+    + PartialOrd
+    + Debug
+    + core::ops::Add<Output = Self>
+    + core::ops::Sub<Output = Self>
+    + core::ops::Mul<Output = Self>
+    + core::ops::Div<Output = Self>
+{
     /// 加法幺元。
     const ZERO: Self;
     /// 乘法幺元。
@@ -40,6 +52,12 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
     fn sqrt(self) -> Self;
     /// 绝对值。
     fn abs(self) -> Self;
+    /// 取两数较大者。
+    fn max(self, rhs: Self) -> Self;
+    /// 取两数较小者。
+    fn min(self, rhs: Self) -> Self;
+    /// 向下取整（池化/插值的坐标下取整）。
+    fn floor(self) -> Self;
     /// 自然对数（自信息 `−ln p` 与交叉熵的唯一来源，不另写近似）。
     fn ln(self) -> Self;
     /// 正弦（复值状态的相位，单位弧度）。
@@ -48,6 +66,10 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
     fn cos(self) -> Self;
     /// 由 `f64` 字面量构造（仅用于常量，`f32` 下可能有损）。
     fn from_f64(v: f64) -> Self;
+    /// 由 `usize` 构造：形状/索引数学（步长、核尺寸、面积）的通用入口，不绕道 `f64`。
+    fn from_usize(v: usize) -> Self;
+    /// 取回 `usize`（截断向零）：只用于形状/索引数学，调用方保证值非负且落在 `usize` 范围内。
+    fn to_usize(self) -> usize;
     /// 就近取整，半分远离零（`f64::round` 的口径）。
     ///
     /// 量化到码位要用它：截断会把分布整体压向零，于是码表不是以零为中心的对称表，
@@ -93,6 +115,15 @@ macro_rules! impl_scalar {
             fn abs(self) -> Self {
                 <$ty>::abs(self)
             }
+            fn max(self, rhs: Self) -> Self {
+                <$ty>::max(self, rhs)
+            }
+            fn min(self, rhs: Self) -> Self {
+                <$ty>::min(self, rhs)
+            }
+            fn floor(self) -> Self {
+                <$ty>::floor(self)
+            }
             fn ln(self) -> Self {
                 <$ty>::ln(self)
             }
@@ -105,11 +136,17 @@ macro_rules! impl_scalar {
             fn from_f64(v: f64) -> Self {
                 ($from_f64)(v)
             }
+            fn from_usize(v: usize) -> Self {
+                v as $ty
+            }
             fn round(self) -> Self {
                 <$ty>::round(self)
             }
             fn to_f64(self) -> f64 {
                 self as f64
+            }
+            fn to_usize(self) -> usize {
+                self as usize
             }
         }
     };

@@ -84,9 +84,8 @@ pub mod unary;
 pub use attention::decode_attention;
 pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use classic::{
-    adaptive_pool_f32, avg_pool2d_f32, batch_norm_f32, conv2d_f32, group_norm_f32,
-    instance_norm_f32,
-    interpolate_f32, layer_norm_f32, max_pool1d_f32, max_pool2d_f32,
+    adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
+    layer_norm, max_pool1d, max_pool2d,
 };
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};
@@ -94,7 +93,7 @@ pub use gemv::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
 pub use matmul::matmul_i8;
 pub use model::quant;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
-pub use scan::scan_f32;
+pub use scan::{scan_f32, Scalar};
 pub use sch::layout;
 pub use softmax::{embed_f32, rmsnorm_f32, rope_f32, softmax_f32};
 pub use unary::{exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32};
