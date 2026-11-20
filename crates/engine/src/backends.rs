@@ -926,8 +926,8 @@ fn push_ascend_main(program: &mut String, max: usize, total: usize) {
          \x20   CUTILE_ACL(aclrtResetDevice(0));\n\
          \x20   CUTILE_ACL(aclFinalize());\n\
          \x20   return 0;\n\
-         }}\n"
-    ));
+         }}\n",
+    );
 }
 
 /// 编译并运行任意 AscendC 程序，返回 `(stdout, stderr)` 原文：临时目录、ccec、执行。
