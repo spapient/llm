@@ -331,6 +331,57 @@ pub mod silu_f32 {
     );
 }
 
+pub mod leaky_relu_f32 {
+    //! 逐元素 LeakyReLU：`y[n] = a[n]`（非负）或 `slope·a[n]`（负）。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`LeakyRelu`] 单态化。
+
+    /// 斜率常量：与内核模板、PyTorch 默认值一致。
+    pub const SLOPE: f32 = 0.01;
+
+    crate::unary_f32!(
+        LeakyRelu,
+        LeakyReluF32,
+        "leaky_relu_f32",
+        unary_op_tests,
+        {
+            // 三个锚点：正区恒等、负区按 slope 缩放、零点两侧连续。
+            let mut out = [0.0; 3];
+            assert!(forward(&[-2.0, 0.0, 2.0], &mut out).is_ok(), "等长");
+            assert!((out[0] - (-2.0 * SLOPE)).abs() < 1e-6, "负区 {}", out[0]);
+            assert_eq!(out[1], 0.0, "零点");
+            assert_eq!(out[2], 2.0, "正区恒等");
+        },
+        |x| if x >= 0.0 { x } else { SLOPE * x }
+    );
+}
+
+pub mod hard_sigmoid_f32 {
+    //! 逐元素 HardSigmoid：`y[n] = clamp(a[n] / 6 + 0.5, 0, 1)`。
+    //!
+    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`HardSigmoid`] 单态化。
+
+    crate::unary_f32!(
+        HardSigmoid,
+        HardSigmoidF32,
+        "hard_sigmoid_f32",
+        unary_op_tests,
+        {
+            // 三段：下饱和 0、中心 0.5、上饱和 1，以及两端斜率 1/6。
+            let mut out = [0.0; 4];
+            assert!(forward(&[-6.0, 0.0, 6.0, 3.0], &mut out).is_ok(), "等长");
+            assert_eq!(out[0], 0.0, "下饱和");
+            assert_eq!(out[1], 0.5, "中心");
+            assert_eq!(out[2], 1.0, "上饱和");
+            assert!((out[3] - 1.0).abs() < 1e-6, "3 落在上饱和 {}", out[3]);
+        },
+        |x| {
+            let v = x / 6.0 + 0.5;
+            v.clamp(0.0, 1.0)
+        }
+    );
+}
+
 pub mod scale_f32 {
     //! 标量缩放：`y[n] = alpha * a[n]`。
     //!

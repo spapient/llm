@@ -61,6 +61,32 @@ layer_delegate!(
     ParamRole::Trainable
 );
 
+/// LeakyReLU 激活：`y = x`（非负）或 `0.01·x`（负区）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeakyRelu {
+    inner: AxisCore,
+}
+layer_delegate!(
+    LeakyRelu,
+    "leaky_relu_f32",
+    "单轴层",
+    OutputShape::Single,
+    ParamRole::Trainable
+);
+
+/// HardSigmoid 激活：`y = clamp(x/6 + 0.5, 0, 1)`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardSigmoid {
+    inner: AxisCore,
+}
+layer_delegate!(
+    HardSigmoid,
+    "hard_sigmoid_f32",
+    "单轴层",
+    OutputShape::Single,
+    ParamRole::Trainable
+);
+
 /// RoPE 旋转位置编码：成对分量按位置做二维旋转；`len` 为头宽，奇数末尾原样透传。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rope {

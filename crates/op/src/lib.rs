@@ -91,7 +91,7 @@ pub use reduce::{reduce_max_f32, reduce_sum_f32};
 pub use scan::scan_f32;
 pub use sch::layout;
 pub use softmax::{embed_f32, rmsnorm_f32, rope_f32, softmax_f32};
-pub use unary::{exp_f32, gelu_f32, log_f32, scale_f32, silu_f32};
+pub use unary::{exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32};
 
 use diagnostic::data::Table;
 
@@ -151,6 +151,7 @@ macro_rules! for_each_operator {
             exp_f32: $crate::exp_f32::ExpF32 => "exp_f32",
             flash_attention_f32: $crate::attention::FlashAttentionF32 => "flash_attention_f32",
             gelu_f32: $crate::gelu_f32::GeluF32 => "gelu_f32",
+            hard_sigmoid_f32: $crate::hard_sigmoid_f32::HardSigmoidF32 => "hard_sigmoid_f32",
             gemm_f32: $crate::gemm_f32::GemmF32 => "gemm_f32",
             gemm_i2: $crate::gemm_i2::GemmI2Model => "gemm_packed",
             gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
@@ -159,6 +160,7 @@ macro_rules! for_each_operator {
             gemv_i2: $crate::gemv_i2::I2 => "gemv_packed",
             gemv_i4: $crate::gemv_i4::I4 => "gemv_packed",
             gemv_i8: $crate::gemv_i8::I8 => "gemv_i8",
+            leaky_relu_f32: $crate::leaky_relu_f32::LeakyReluF32 => "leaky_relu_f32",
             log_f32: $crate::log_f32::LogF32 => "log_f32",
             matmul_f32: $crate::matmul::MatmulF32 => "matmul_f32",
             matmul_i8: $crate::matmul_i8::MatmulI8 => "matmul_i8",

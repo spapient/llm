@@ -165,6 +165,7 @@ mod emit;
 mod hybrid;
 mod latent;
 mod patch;
+mod classic;
 mod pointwise;
 mod policy;
 mod spike;
@@ -243,7 +244,9 @@ pub use param_role::ParamRole;
 pub use patch::{Boundary, Patches};
 
 #[doc(inline)]
-pub use pointwise::{Add, Gelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax};
+pub use pointwise::{
+    Add, Gelu, HardSigmoid, LeakyRelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax,
+};
 
 #[doc(inline)]
 pub use policy::{

@@ -246,6 +246,209 @@ fn check(actual: usize, required: usize, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// 一维反卷积：NHWC，权重布局对齐 PyTorch `[Cin, Cout, k]`。
+///
+/// 输出长度 `(l − 1)·s − 2p + k`；每个输入位置的 `cin` 向量乘上 `Cout×k` 的权重块，
+/// 再按 `i·s − p + ki` 散射累加。GEMM 与二维版同一支（列矩阵 `[l, cout·k]`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConvTranspose1d {
+    /// 输入通道。
+    pub cin: usize,
+    /// 输出通道。
+    pub cout: usize,
+    /// 窗口长。
+    pub k: usize,
+    /// 步长。
+    pub s: usize,
+    /// 两端补零（等价于输出两侧裁掉的量）。
+    pub p: usize,
+}
+
+impl ConvTranspose1d {
+    /// 构造：通道、窗口与步长都必须非零。
+    #[must_use]
+    pub fn new(cin: usize, cout: usize, k: usize, s: usize, p: usize) -> Self {
+        Self {
+            cin,
+            cout,
+            k,
+            s,
+            p,
+        }
+    }
+
+    /// 输出长度 `(l − 1)·s − 2p + k`。
+    ///
+    /// # Errors
+    ///
+    /// 步长/窗口为 0，或 `(l − 1)·s < 2p − k + 1`（输出长度非正）时返回说明。
+    pub fn len(&self, l: usize) -> Result<usize> {
+        if self.s == 0 || self.k == 0 {
+            return Err(Error::new(Code::Invalid, "反卷积窗口与步长必须大于 0"));
+        }
+        let base = l
+            .checked_sub(1)
+            .and_then(|v| v.checked_mul(self.s))
+            .ok_or_else(|| Error::new(Code::Invalid, "反卷积输出长度溢出"))?;
+        let span = base + self.k;
+        let pad = 2 * self.p;
+        // 输出必须严格为正：`span − pad ≥ 1`。
+        if span < pad + 1 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("反卷积输出长度非正（l={l}, s={}, p={}, k={}）", self.s, self.p, self.k),
+            ));
+        }
+        Ok(span - pad)
+    }
+
+    /// f32 前向：GEMM 得列矩阵，再散射累加。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲长度与几何不符时返回说明。
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_f32(
+        &self,
+        x: &[f32],
+        weight: &[f32],
+        bias: &[f32],
+        n: usize,
+        l: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let ol = self.len(l)?;
+        let (cin, cout, k) = (self.cin, self.cout, self.k);
+        let cols = cout * k;
+        check(x.len(), n * l * cin, "x")?;
+        check(weight.len(), cin * cols, "weight")?;
+        check(bias.len(), cout, "bias")?;
+        check(out.len(), n * ol * cout, "out")?;
+
+        // 权重 `[cin, cout, k]` → `[cin, cout·k]`，列块按 `ki·cout + co` 排。
+        let mut wt = vec![0.0f32; cin * cols];
+        for ci in 0..cin {
+            for co in 0..cout {
+                for ki in 0..k {
+                    wt[ci * cols + ki * cout + co] = weight[(ci * cout + co) * k + ki];
+                }
+            }
+        }
+        let mut col = vec![0.0f32; n * l * cols];
+        fast::gemm_f32(x, &wt, n * l, cols, cin, &mut col);
+
+        out[..n * ol * cout].fill(0.0);
+        scatter1(&col, out, n, l, ol, self, cout);
+        for pos in 0..n * ol {
+            for co in 0..cout {
+                out[pos * cout + co] += bias[co];
+            }
+        }
+        Ok(())
+    }
+
+    /// i8 前向：GEMM 走多槽池，散射累加在 i32 上。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲长度与几何不符时返回说明。
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_i8(
+        &self,
+        x: &[i8],
+        weight: &[i8],
+        bias: &[i32],
+        n: usize,
+        l: usize,
+        out: &mut [i32],
+    ) -> Result<()> {
+        let ol = self.len(l)?;
+        let (cin, cout, k) = (self.cin, self.cout, self.k);
+        let cols = cout * k;
+        check(x.len(), n * l * cin, "x")?;
+        check(weight.len(), cin * cols, "weight")?;
+        check(bias.len(), cout, "bias")?;
+        check(out.len(), n * ol * cout, "out")?;
+
+        let mut wt = vec![0i8; cin * cols];
+        for ci in 0..cin {
+            for co in 0..cout {
+                for ki in 0..k {
+                    wt[ci * cols + ki * cout + co] = weight[(ci * cout + co) * k + ki];
+                }
+            }
+        }
+        let mut col = vec![0i32; n * l * cols];
+        fast::gemm_i8(x, &wt, n * l, cols, cin, &mut col);
+
+        out[..n * ol * cout].fill(0);
+        scatter1_i8(&col, out, n, l, ol, self, cout);
+        for pos in 0..n * ol {
+            for co in 0..cout {
+                out[pos * cout + co] += bias[co];
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 列矩阵 `[n·l, cout·k]` 散射累加到 `[n, ol, cout]`：越界位置裁掉。
+#[allow(clippy::too_many_arguments)]
+fn scatter1(
+    col: &[f32],
+    out: &mut [f32],
+    n: usize,
+    l: usize,
+    ol: usize,
+    conv: &ConvTranspose1d,
+    cout: usize,
+) {
+    for ni in 0..n {
+        for i in 0..l {
+            let src = (ni * l + i) * cout * conv.k;
+            for ki in 0..conv.k {
+                let dst = (i * conv.s + ki) as isize - conv.p as isize;
+                if dst < 0 || dst as usize >= ol {
+                    continue;
+                }
+                let d = ((ni * ol + dst as usize) * cout) as usize;
+                let src_k = src + ki * cout;
+                for co in 0..cout {
+                    out[d + co] += col[src_k + co];
+                }
+            }
+        }
+    }
+}
+
+/// i8 版散射：累加在 i32 上。
+fn scatter1_i8(
+    col: &[i32],
+    out: &mut [i32],
+    n: usize,
+    l: usize,
+    ol: usize,
+    conv: &ConvTranspose1d,
+    cout: usize,
+) {
+    for ni in 0..n {
+        for i in 0..l {
+            let src = (ni * l + i) * cout * conv.k;
+            for ki in 0..conv.k {
+                let dst = (i * conv.s + ki) as isize - conv.p as isize;
+                if dst < 0 || dst as usize >= ol {
+                    continue;
+                }
+                let d = ((ni * ol + dst as usize) * cout) as usize;
+                let src_k = src + ki * cout;
+                for co in 0..cout {
+                    out[d + co] += col[src_k + co];
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +621,117 @@ mod tests {
             ConvGeom { kh: 1, kw: 1, sh: 1, sw: 1, ph: 3, pw: 3 },
         );
         assert!(de.oh(1).is_err());
+    }
+
+    /// 一维朴素转置卷积：逐输入位置、逐核元素散射累加后加偏置。
+    #[allow(clippy::too_many_arguments)]
+    fn naive1(
+        x: &[f32],
+        weight: &[f32],
+        bias: &[f32],
+        de: &ConvTranspose1d,
+        n: usize,
+        l: usize,
+        out: &mut [f32],
+    ) {
+        let ol = de.len(l).unwrap();
+        out.fill(0.0);
+        for ni in 0..n {
+            for i in 0..l {
+                for ki in 0..de.k {
+                    let dst = (i * de.s + ki) as isize - de.p as isize;
+                    if dst < 0 || dst as usize >= ol {
+                        continue;
+                    }
+                    for ci in 0..de.cin {
+                        let xv = x[(ni * l + i) * de.cin + ci];
+                        for co in 0..de.cout {
+                            let wv = weight[(ci * de.cout + co) * de.k + ki];
+                            out[((ni * ol + dst as usize) * de.cout) + co] += xv * wv;
+                        }
+                    }
+                }
+            }
+        }
+        for pos in 0..n * ol {
+            for co in 0..de.cout {
+                out[pos * de.cout + co] += bias[co];
+            }
+        }
+    }
+
+    #[test]
+    fn conv_transpose1d_matches_naive() {
+        // 三组几何：same（k3/s1/p1）、放大（k4/s2/p1）、不合补零（k2/s2/p0）。
+        let cases = [(3usize, 1usize, 1usize, 4usize, 5usize, 2usize), (4, 2, 1, 3, 6, 3), (2, 2, 0, 5, 4, 2)];
+        for (index, (k, s, p, cin, cout, l)) in cases.iter().enumerate() {
+            let de = ConvTranspose1d::new(*cin, *cout, *k, *s, *p);
+            let ol = de.len(*l).unwrap();
+            let x = sample(*l * *cin, 1 + index as u32);
+            let w = sample(*cin * *cout * *k, 7 + index as u32);
+            let b = sample(*cout, 3);
+            let mut got = vec![0.0f32; ol * *cout];
+            de.forward_f32(&x, &w, &b, 1, *l, &mut got).unwrap();
+            let mut want = vec![0.0f32; ol * *cout];
+            naive1(&x, &w, &b, &de, 1, *l, &mut want);
+            for (a, e) in got.iter().zip(want.iter()) {
+                assert!((a - e).abs() < 1e-4, "case {index}: {a} vs {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn conv_transpose1d_stride_doubles_length() {
+        let de = ConvTranspose1d::new(1, 1, 2, 2, 0);
+        assert_eq!(de.len(4).unwrap(), 8);
+        assert_eq!(de.len(1).unwrap(), 2);
+        // 上采样后的每个输入样本落在偶数位，奇数位是相邻样本的核重叠。
+        let x = [1.0f32, 2.0, 3.0, 4.0];
+        let w = [1.0f32, 0.0];
+        let mut out = [0.0f32; 8];
+        de.forward_f32(&x, &w, &[0.0], 1, 4, &mut out).unwrap();
+        assert_eq!(out, [1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0]);
+    }
+
+    #[test]
+    fn conv_transpose1d_i8_matches_integer_reference() {
+        let de = ConvTranspose1d::new(3, 2, 3, 2, 1);
+        let l = 5;
+        let ol = de.len(l).unwrap();
+        let x = sample_i8(l * 3, 2);
+        let w = sample_i8(3 * 2 * 3, 5);
+        let b = [3i32, -2];
+        let mut got = vec![0i32; ol * 2];
+        de.forward_i8(&x, &w, &b, 1, l, &mut got).unwrap();
+        // 整数直算：等价于把 f32 朴素式在 i32 上重跑。
+        let mut want = vec![0i32; ol * 2];
+        for i in 0..l {
+            for ki in 0..de.k {
+                let dst = i * de.s + ki;
+                if dst < de.p || dst - de.p >= ol {
+                    continue;
+                }
+                for ci in 0..3 {
+                    for co in 0..2 {
+                        want[((dst - de.p) * 2) + co] +=
+                            i32::from(x[i * 3 + ci]) * i32::from(w[(ci * 2 + co) * 3 + ki]);
+                    }
+                }
+            }
+        }
+        for pos in 0..ol {
+            for co in 0..2 {
+                want[pos * 2 + co] += b[co];
+            }
+        }
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn conv_transpose1d_rejects_bad_geometry() {
+        let de = ConvTranspose1d::new(1, 1, 1, 0, 0);
+        assert!(de.len(2).is_err());
+        let de = ConvTranspose1d::new(1, 1, 1, 1, 3);
+        assert!(de.len(1).is_err());
     }
 }
