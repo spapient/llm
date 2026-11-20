@@ -56,6 +56,7 @@ pub mod decl;
 pub mod dequant;
 pub mod einsum;
 pub mod elementwise;
+pub mod formula;
 pub mod gemm;
 pub mod gemv;
 pub mod matmul;

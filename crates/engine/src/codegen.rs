@@ -827,43 +827,13 @@ pub fn metal_benchmark_driver(
 int main(int argc, const char **argv) {
     @autoreleasepool {
         if (argc < 2) { fprintf(stderr, "usage: driver <metallib>\n"); return 2; }
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device) { fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }
-        NSError *error = nil;
-        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
-        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
-        if (!library) { fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }
-        id<MTLFunction> function = [library newFunctionWithName:@"kernel_main"];
-        if (!function) { fprintf(stderr, "metallib 里没有 kernel_main\n"); return 5; }
-        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
-        if (!pipeline) { fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }
-@ALLOCS@        id<MTLCommandQueue> queue = [device newCommandQueue];
+@PROLOGUE@@ALLOCS@        id<MTLCommandQueue> queue = [device newCommandQueue];
         if (!queue) { fprintf(stderr, "Metal 命令队列创建失败\n"); return 7; }
         for (int warm = 0; warm < 2; ++warm) {
-            id<MTLCommandBuffer> buffer = [queue commandBuffer];
-            id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
-            [encoder setComputePipelineState:pipeline];
-@SETS@            for (int batch = 0; batch < 16; ++batch) {
-                [encoder dispatchThreads:MTLSizeMake(@GRID_X@, @GRID_Y@, @GRID_Z@)
-                    threadsPerThreadgroup:MTLSizeMake(@THREAD_X@, @THREAD_Y@, @THREAD_Z@)];
-            }
-            [encoder endEncoding];
-            [buffer commit];
-            [buffer waitUntilCompleted];
-            if (buffer.error) { fprintf(stderr, "内核预热失败：%s\n", buffer.error.localizedDescription.UTF8String); return 8; }
+@ROUND@            if (buffer.error) { fprintf(stderr, "内核预热失败：%s\n", buffer.error.localizedDescription.UTF8String); return 8; }
         }
         for (int sample = 0; sample < @REPEAT@; ++sample) {
-            id<MTLCommandBuffer> buffer = [queue commandBuffer];
-            id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
-            [encoder setComputePipelineState:pipeline];
-@SETS@            for (int batch = 0; batch < 16; ++batch) {
-                [encoder dispatchThreads:MTLSizeMake(@GRID_X@, @GRID_Y@, @GRID_Z@)
-                    threadsPerThreadgroup:MTLSizeMake(@THREAD_X@, @THREAD_Y@, @THREAD_Z@)];
-            }
-            [encoder endEncoding];
-            [buffer commit];
-            [buffer waitUntilCompleted];
-            if (buffer.error) { fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 9; }
+@ROUND@            if (buffer.error) { fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 9; }
             double elapsed = (buffer.GPUEndTime - buffer.GPUStartTime) * 1.0e9;
             if (!(elapsed > 0.0)) { fprintf(stderr, "Metal GPU 时间戳不可用\n"); return 10; }
             fprintf(stderr, "ns %.3f\n", elapsed / 16.0);
@@ -880,6 +850,8 @@ int main(int argc, const char **argv) {
 "#
     .replace("@DATA@", &data)
     .replace("@ALLOCS@", &allocs)
+    .replace("@ROUND@", METAL_ROUND)
+    .replace("@PROLOGUE@", &host_prologue("kernel_main"))
     .replace("@SETS@", &sets)
     .replace("@GRID_X@", &grid[0].to_string())
     .replace("@GRID_Y@", &grid[1].to_string())
@@ -892,6 +864,42 @@ int main(int argc, const char **argv) {
     .replace("@OUT_LEN@", &out_len.to_string());
     Ok(source)
 }
+
+/// host 驱动共用的前导：取默认设备、装载 metallib、取入口函数、建管线。
+///
+/// 没有设备时的返回码与三段诊断文本是 host 侧约定，[`crate::backends`] 的见证驱动与本节
+/// 生成的基准驱动因此逐字一致：两份宿主程序只有尾巴（预热与计时 / 读回）不同。
+pub(crate) fn host_prologue(entry: &str) -> String {
+    format!(
+        r#"        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device) {{ fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }}
+        NSError *error = nil;
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        if (!library) {{ fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }}
+        id<MTLFunction> function = [library newFunctionWithName:@"{entry}"];
+        if (!function) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
+"#
+    )
+}
+
+/// 一轮调度：建 command buffer、设缓冲与管线、按 16 批发射、提交并等待。
+///
+/// 预热与计时两段只在尾巴上分叉（错误文本与返回码），所以这一轮本身只写一份：
+/// 占位符在插入后由同一批 [`str::replace`] 补齐（`@ROUND@` 先于 `@SETS@` 等）。
+const METAL_ROUND: &str = r#"            id<MTLCommandBuffer> buffer = [queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+            [encoder setComputePipelineState:pipeline];
+@SETS@            for (int batch = 0; batch < 16; ++batch) {
+                [encoder dispatchThreads:MTLSizeMake(@GRID_X@, @GRID_Y@, @GRID_Z@)
+                    threadsPerThreadgroup:MTLSizeMake(@THREAD_X@, @THREAD_Y@, @THREAD_Z@)];
+            }
+            [encoder endEncoding];
+            [buffer commit];
+            [buffer waitUntilCompleted];
+"#;
 
 /// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 `metal_driver`）。
 #[allow(clippy::too_many_arguments)]
@@ -915,17 +923,7 @@ fn metal_driver_template(
 int main(int argc, const char **argv) {{
     @autoreleasepool {{
         if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device) {{ fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }}
-        NSError *error = nil;
-        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
-        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
-        if (!library) {{ fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }}
-        id<MTLFunction> function = [library newFunctionWithName:@"{entry}"];
-        if (!function) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
-        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
-        if (!pipeline) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
-{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
+{prologue}{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
         id<MTLCommandBuffer> buffer = [queue commandBuffer];
         id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
         [encoder setComputePipelineState:pipeline];
@@ -946,10 +944,10 @@ int main(int argc, const char **argv) {{
 "#,
         data = data,
         allocs = allocs,
+        prologue = host_prologue(entry),
         sets = sets,
         output = output,
         out_len = out_len,
-        entry = entry,
         gx = grid[0],
         gy = grid[1],
         gz = grid[2],

@@ -15,7 +15,7 @@
 //!
 //! | 事实 | 落在哪 | 理由 |
 //! |---|---|---|
-//! | 权重元素类型、位宽、解包方式 | [`Format::Elem`] / [`Format::OPERANDS`] / `forward` | 只有代码能表达，且必须进单态化 |
+//! | 权重元素类型、位宽、解包方式 | [`Format::Elem`] / [`FormulaOwner::OPERANDS`] / `forward` | 只有代码能表达，且必须进单态化 |
 //! | 稠密格式的分块宽度 | [`Dense`] 的 const 参数 | 它出现在最内层循环的 `chunks` 上，是真正的热路径常数 |
 //! | 量化格式的声明粒度 | [`Quantized`] 的 const 参数 | 它决定派生轴除数与样本里的标度个数（代价与样本，冷路径） |
 //! | 实际分组大小 | 运行时数据（`scales` 长度 / `gsz` 实参） | 模板本身就是 `int gsz` 的运行时参数，钉进类型会让训练侧按 8 元素分组的调用编译不过 |
@@ -23,7 +23,8 @@
 //! 最后一行是刻意的：把"内核已经做成运行时参数"的东西改成类型参数，换来的是每次不同分组都要
 //! 一份单态化副本与一次调用点上的匹配，而不是省下一条分支。
 
-use crate::einsum::{Bits, Formula, FormulaCache, OperandSpec};
+use crate::einsum::{Bits, FormulaCache, OperandSpec};
+use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use crate::quant::Row;
 use diagnostic::{Code, Error};
@@ -145,16 +146,23 @@ pub const fn scaled_operands(bits: Bits) -> [OperandSpec; 4] {
     ]
 }
 
-/// 带标度格式的公共关联常量：操作数表、粒度、派生轴、标度取值与步长。
+/// 带标度格式的操作数表：权重位宽取配置，其余三项恒为 32 位浮点。
 ///
-/// [`Packed`] 与 [`SymI8`] 的这组常量只差「权重位宽 + 粒度」，抄两遍就会让 `DERIVED` 的除数与
-/// `GRAIN` 各自漂移（判据见 [`derived_matches_grain`]）。展开一次，两条格式各传两个数。
-macro_rules! scaled_format {
-    ($bits:expr, $grain:expr) => {
+/// 展开在 [`FormulaOwner`] 的实现里；[`Packed`] 与 [`SymI8`] 只差这一个数。
+macro_rules! scaled_operands {
+    ($bits:expr) => {
         /// 三个输入都是读、只有输出是写；权重位宽取配置，其余为 32 位浮点。
         const OPERANDS: &'static [$crate::einsum::OperandSpec] =
             &$crate::gemv::scaled_operands($bits);
+    };
+}
 
+/// 带标度格式的量化几何：粒度、派生轴、标度取值与步长。
+///
+/// 展开在 [`Format`] 与 [`Plain`] 的实现里。四条都从粒度算出来，调用方只给粒度：抄两遍就会让
+/// `DERIVED` 的除数与 `GRAIN` 各自漂移（判据见 [`derived_matches_grain`]）。
+macro_rules! scaled_grain {
+    ($grain:expr) => {
         const GRAIN: usize = $grain;
 
         const DERIVED: Option<(char, char, usize)> = Some(('g', 'm', $grain));
@@ -167,17 +175,12 @@ macro_rules! scaled_format {
 
 /// 权重格式：一条 GEMV 里随精度变化的那部分。
 ///
-/// 实现者只写"这份格式怎么表达、怎么解包"，骨架（[`cost`] / [`sample`] / [`reference()`]）由
-/// 本模块提供。所有关联项都是编译期常量：没有一件需要运行期再判断一次。
-pub trait Format {
+/// 实现者只写"这份格式怎么表达、怎么解包"：表达式在 [`FormulaOwner`]，行切片与守卫由本 trait
+/// 声明，骨架（[`cost`] / [`sample`] / [`reference()`]）由本模块提供。所有关联项都是编译期
+/// 常量：没有一件需要运行期再判断一次。
+pub trait Format: FormulaOwner {
     /// 权重在样本里的元素类型。
     type Elem: Element;
-
-    /// 一条 einsum 求和表达式。
-    const EXPR: &'static str;
-
-    /// 表达式各项的位宽与方向，顺序与 [`Format::EXPR`] 的项一一对应。
-    const OPERANDS: &'static [OperandSpec];
 
     /// 形状粒度：`m` 必须是它的正整数倍；`1` 表示任意宽度。
     ///
@@ -201,7 +204,7 @@ pub trait Format {
     ///
     /// 这是一个**编译期**判据，不是运行期检查：`#[annotation::model]` 把它抄进
     /// `const _: () = <名字 as Format>::CHECK;`，于是写错粒度或派生轴除数的格式别名直接编译不过。
-    /// 放在 trait 里而不是宏里，是因为规则属于格式契约，注解只负责让它被求值。
+    /// 放在 trait 里而不是宏里，是因为规则属于格式几何，注解只负责让它被求值。
     const CHECK: () = {
         assert!(Self::GRAIN > 0, "形状粒度必须大于 0");
         assert!(
@@ -209,22 +212,6 @@ pub trait Format {
             "派生轴的除数必须等于形状粒度：代价里的分组与样本里的分组必须同源"
         );
     };
-
-    /// 这份格式的缓存单元格（每个格式一份）。
-    ///
-    /// 实现者写成函数体里的 `static CACHE: FormulaCache = FormulaCache::new(); &CACHE`。缓存必须
-    /// 按**格式**分开：写在骨架泛型里的 `static` 在 Rust 里只有一份，两种格式会共用同一个单元格，
-    /// 先跑的那一份会让另一份拿到错误的轴表。
-    fn cache() -> &'static FormulaCache;
-
-    /// 这份格式的表达式：第一次调用时解析并校验，之后复用。
-    ///
-    /// # Errors
-    ///
-    /// 表达式与操作数表不自洽时返回说明（带 `op::gemv::formula` 帧）。
-    fn formula() -> Result<&'static Formula, Error> {
-        Self::cache().get(Self::EXPR, Self::OPERANDS, "op::gemv::formula")
-    }
 
     /// 一行权重占多少个元素。
     fn row(m: usize) -> usize;
@@ -250,9 +237,8 @@ pub struct QuantI4;
 impl PackedRow for QuantI4 {
     const ROW: Row = crate::quant::I4;
 
-    fn cell() -> &'static FormulaCache {
-        static CACHE: FormulaCache = FormulaCache::new();
-        &CACHE
+    fn cache() -> &'static FormulaCache {
+        crate::formula_cell!()
     }
 }
 
@@ -289,7 +275,7 @@ pub trait PackedRow {
     /// 单元格，两种精度会共用同一个 OnceLock，先解析的那份 operands 被后跑的格式复用（流量
     /// 位宽串档）。与 [`FormulaCache`] 文档里"缓存留在各骨架
     /// 类型上"的口径一致。
-    fn cell() -> &'static FormulaCache;
+    fn cache() -> &'static FormulaCache;
 }
 
 /// 配置驱动的打包权重格式：`GRAIN` 个元素共用一条标度，打包密度由 [`PackedRow::ROW`] 给出。
@@ -301,18 +287,24 @@ pub struct Packed<P: PackedRow, const G: usize> {
     _config: core::marker::PhantomData<P>,
 }
 
-impl<P: PackedRow, const G: usize> Format for Packed<P, G> {
-    type Elem = u8;
-
+impl<P: PackedRow, const G: usize> FormulaOwner for Packed<P, G> {
     /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 `G` 个元素切出来的派生轴。
     const EXPR: &'static str = "nm,m,ng,n->n";
 
-    scaled_format!(P::ROW.bits, G);
+    scaled_operands!(P::ROW.bits);
+
+    const FRAME: &'static str = "op::gemv::formula";
 
     fn cache() -> &'static FormulaCache {
         // 缓存单元格由标记类型各自持有，避免泛型 static 被合并成跨配置共享的一份。
-        P::cell()
+        P::cache()
     }
+}
+
+impl<P: PackedRow, const G: usize> Format for Packed<P, G> {
+    type Elem = u8;
+
+    scaled_grain!(G);
 
     fn row(m: usize) -> usize {
         // 粒度必须是打包码数的倍数，否则"每行 m/cpb 字节"没有意义；单态化时求值。
@@ -339,20 +331,14 @@ impl<P: PackedRow, const G: usize> Format for Packed<P, G> {
     }
 }
 
-/// 逐元素（不打包）GEMV 的静态配置：元素类型、表达式、粒度/标度事实、样本与元素反量化。
+/// 逐元素（不打包）GEMV 的静态配置：元素类型、量化几何、样本与元素反量化。
 ///
 /// `i8`（`u8` 承载 int8、带分组标度）与 `f32`（稠密、无标度）只在元素类型、标度有无与
-/// 反量化上不同；这些事实收敛到这里，[`PlainFmt`] 的一份泛型 [`Format`] impl 负责缓存、行
-/// 切片、守卫与逐行点积遍历。新增一档逐元素精度加一条 `impl Plain` 即可。
-pub trait Plain {
+/// 反量化上不同；表达式在 [`FormulaOwner`]，[`PlainFmt`] 的一份泛型 [`Format`] impl 负责
+/// 行切片、守卫与逐行点积遍历。新增一档逐元素精度加一条 `impl Plain` 即可。
+pub trait Plain: FormulaOwner {
     /// 权重元素类型。
     type Elem: Element;
-
-    /// einsum 表达式（带 / 不带派生轴）。
-    const EXPR: &'static str;
-
-    /// 表达式各项位宽与方向。
-    const OPERANDS: &'static [OperandSpec];
 
     /// 形状粒度：`m` 必须是它的正整数倍；`1` 表示任意宽度。
     const GRAIN: usize;
@@ -365,9 +351,6 @@ pub trait Plain {
 
     /// 模板每轮推进元素数（样本 `gsz`；稠密同时是累加分块）。
     const STEP: usize;
-
-    /// 本配置自己的表达式缓存单元格。
-    fn cell() -> &'static FormulaCache;
 
     /// 确定性权重。
     fn weights(m: usize, n: usize) -> Vec<Self::Elem>;
@@ -384,12 +367,21 @@ pub struct PlainFmt<C: Plain> {
     _config: core::marker::PhantomData<C>,
 }
 
-impl<C: Plain> Format for PlainFmt<C> {
-    type Elem = C::Elem;
-
+impl<C: Plain> FormulaOwner for PlainFmt<C> {
     const EXPR: &'static str = C::EXPR;
 
     const OPERANDS: &'static [OperandSpec] = C::OPERANDS;
+
+    const FRAME: &'static str = C::FRAME;
+
+    fn cache() -> &'static FormulaCache {
+        // 缓存单元格由配置各自持有，避免泛型 static 被合并成跨配置共享的一份。
+        C::cache()
+    }
+}
+
+impl<C: Plain> Format for PlainFmt<C> {
+    type Elem = C::Elem;
 
     const GRAIN: usize = C::GRAIN;
 
@@ -398,11 +390,6 @@ impl<C: Plain> Format for PlainFmt<C> {
     const SCALES: Option<fn(usize) -> f32> = C::SCALES;
 
     const STEP: usize = C::STEP;
-
-    fn cache() -> &'static FormulaCache {
-        // 缓存单元格由配置各自持有，避免泛型 static 被合并成跨配置共享的一份。
-        C::cell()
-    }
 
     fn row(m: usize) -> usize {
         // 逐元素不打包：一行权重就是 m 个元素。
@@ -639,7 +626,7 @@ pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
     ShapeContext::new([('m', m), ('n', n)])
 }
 
-/// 标量代价：完全由 [`Format::EXPR`] 与操作数位宽推出，本函数不含任何流量常数。
+/// 标量代价：完全由 [`FormulaOwner::EXPR`] 与操作数位宽推出，本函数不含任何流量常数。
 ///
 /// 调用方只给基本轴；派生轴由格式自己声明——分组是算子语义，不是每个层都该抄一遍的常数。
 ///
@@ -841,9 +828,8 @@ macro_rules! gemv_packed {
         impl $crate::gemv::PackedRow for $conf {
             const ROW: $crate::quant::Row = $row;
 
-            fn cell() -> &'static $crate::einsum::FormulaCache {
-                static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
-                &CACHE
+            fn cache() -> &'static $crate::einsum::FormulaCache {
+                $crate::formula_cell!()
             }
         }
 
@@ -1001,19 +987,25 @@ pub mod gemv_i8 {
     pub const GROUP: usize = gemv::GROUP;
 
     /// 逐元素对称 int8 的配置：`u8` 承载位模式、按 `i8` 反量化、每 [`GROUP`] 个元素一条标度。
-    impl<const G: usize> Plain for gemv::SymI8<G> {
-        type Elem = u8;
-
+    impl<const G: usize> crate::formula::FormulaOwner for gemv::SymI8<G> {
         /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 [`GROUP`] 个元素切出的派生轴。
         const EXPR: &'static str = "nm,m,ng,n->n";
 
-        // 权重是 8 位（每元素 1 字节），其余同打包格式：表与粒度常量走同一条展开。
-        scaled_format!(I8.bits, G);
+        // 权重是 8 位（每元素 1 字节），其余同打包格式：操作数表走同一条展开。
+        scaled_operands!(I8.bits);
 
-        fn cell() -> &'static FormulaCache {
-            static CACHE: FormulaCache = FormulaCache::new();
-            &CACHE
+        const FRAME: &'static str = "op::gemv::formula";
+
+        fn cache() -> &'static FormulaCache {
+            crate::formula_cell!()
         }
+    }
+
+    /// 逐元素对称 int8 的配置：样本取对称小整数，反量化按 `i8` 解释位模式。
+    impl<const G: usize> Plain for gemv::SymI8<G> {
+        type Elem = u8;
+
+        scaled_grain!(G);
 
         fn weights(m: usize, n: usize) -> Vec<u8> {
             // 取对称小整数（-8..7）的 int8 位模式，避免大整数在 f32 网格外引入舍入。
@@ -1078,9 +1070,7 @@ pub mod gemv_f32 {
     pub const BLOCK: usize = 32;
 
     /// 稠密逐元素的配置：`f32` 权重、无标度、任意输入宽度，按 [`BLOCK`] 分块累加。
-    impl<const B: usize> Plain for gemv::Dense<B> {
-        type Elem = f32;
-
+    impl<const B: usize> crate::formula::FormulaOwner for gemv::Dense<B> {
         /// `w[nm] · x[m] → y[n]`：无派生轴，宽度不参与分组。
         const EXPR: &'static str = "nm,m,n->n";
 
@@ -1091,6 +1081,17 @@ pub mod gemv_f32 {
             OperandSpec::write("y", Bits::ThirtyTwo),
         ];
 
+        const FRAME: &'static str = "op::gemv::formula";
+
+        fn cache() -> &'static FormulaCache {
+            crate::formula_cell!()
+        }
+    }
+
+    /// 稠密 f32 的样本与反量化（恒等）：骨架的一切算术都由 [`PlainFmt`] 那一份给出。
+    impl<const B: usize> Plain for gemv::Dense<B> {
+        type Elem = f32;
+
         /// 稠密算子的形状粒度是 1：一条只为对齐 nibble 的约束不该溢出到 f32 权重上。
         const GRAIN: usize = 1;
 
@@ -1098,12 +1099,8 @@ pub mod gemv_f32 {
 
         const SCALES: Option<fn(usize) -> f32> = None;
 
+        /// 模板每轮推进的元素数就是分块宽度（样本里的 `gsz` 与分块累加的宽度同源）。
         const STEP: usize = B;
-
-        fn cell() -> &'static FormulaCache {
-            static CACHE: FormulaCache = FormulaCache::new();
-            &CACHE
-        }
 
         fn weights(m: usize, n: usize) -> Vec<f32> {
             (0..n * m)
