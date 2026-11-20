@@ -52,7 +52,7 @@ pub(crate) fn cuda_chunk_rmsnorm(
         &CUDA,
         PARTIAL,
     )?;
-    let norm = rmsnorm_map(signature, sample, chunk)?;
+    let norm = rmsnorm_map(signature)?;
     Ok(vec![partial, norm])
 }
 
@@ -77,13 +77,12 @@ pub(crate) fn cuda_chunk_softmax(
         PARTIAL,
     )?;
     let expsum = softmax_expsum_map(signature, sample, chunk)?;
-    let norm = softmax_norm_map(signature, sample, chunk)?;
+    let norm = softmax_norm_map(signature)?;
     Ok(vec![max, expsum, norm])
 }
 
 /// RMSNorm 归一化段：每线程一块，`y[start + j] = gamma[start + j] * x[start + j] / rms`。
-fn rmsnorm_map(signature: &Signature, sample: &Sample, chunk: usize) -> Result<String> {
-    let len = length_scalar(signature, sample)?;
+fn rmsnorm_map(signature: &Signature) -> Result<String> {
     let reads = readonly_buffers(signature);
     let (Some(x), Some(gamma)) = (reads.first(), reads.get(1)) else {
         return Err(Error::new(
@@ -94,13 +93,12 @@ fn rmsnorm_map(signature: &Signature, sample: &Sample, chunk: usize) -> Result<S
     };
     let y = output_name(signature)?;
     let body = format!(
-        "{head}    for (int j = 0; j < len; ++j) {{\n        d_{y}[start + j] = d_{gamma}[start + j] * d_{x}[start + j] / rms;\n    }}",
-        head = chunk_head(chunk, len),
+        "    d_{y}[n] = d_{gamma}[n] * d_{x}[n] / rms;",
         x = x,
         gamma = gamma,
         y = y,
     );
-    Ok(map_entry(signature, NORM, "float rms", &body))
+    Ok(point_entry(signature, NORM, "float rms", &body))
 }
 
 /// Softmax 第二段：`y[g] = Σ exp(x - max)` 的部分和（`max` 由主机折叠传入）。
@@ -118,17 +116,15 @@ fn softmax_expsum_map(signature: &Signature, sample: &Sample, chunk: usize) -> R
 }
 
 /// Softmax 第三段：`y[start + j] = exp(x - max) / sum`。
-fn softmax_norm_map(signature: &Signature, sample: &Sample, chunk: usize) -> Result<String> {
-    let len = length_scalar(signature, sample)?;
+fn softmax_norm_map(signature: &Signature) -> Result<String> {
     let x = single_read(signature, "Softmax")?;
     let y = output_name(signature)?;
     let body = format!(
-        "{head}    _cutile_exp_norm_f32(d_{y} + start, d_{x} + start, len, 1, max, sum);",
-        head = chunk_head(chunk, len),
+        "    d_{y}[n] = _cutile_exp_f32(d_{x}[n] - max) / sum;",
         x = x,
         y = y,
     );
-    Ok(map_entry(signature, NORM, "float max, float sum", &body))
+    Ok(point_entry(signature, NORM, "float max, float sum", &body))
 }
 
 /// 分块 map 段的公共头：块起点与块内长度（末块可能不足 `chunk`）。
@@ -147,6 +143,17 @@ fn map_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> Str
         format!("{buffers},\n    {extra}")
     };
     kernel_entry(&CUDA, "", "", &buffers, ("", CUDA.grid_stmt), body, entry)
+}
+
+/// 一个逐元素网格入口：每线程一个元素，线程下标符号是 `n`（[`CUDA`] 的 `point_stmt`）。
+fn point_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
+    let buffers = cuda_buffers(signature);
+    let buffers = if extra.is_empty() {
+        buffers
+    } else {
+        format!("{buffers},\n    {extra}")
+    };
+    kernel_entry(&CUDA, "", "", &buffers, ("", CUDA.point_stmt), body, entry)
 }
 
 /// 只读缓冲名，按签名顺序。
@@ -200,7 +207,7 @@ pub fn cuda_rmsnorm_driver(
     text.push_str(&format!(
         "    float rms = sqrtf(sum / (float){len} + 1e-6f);\n"
     ));
-    text.push_str(&launch(NORM, grid, &args, "rms"));
+    text.push_str(&launch(NORM, len, &args, "rms"));
     text.push_str(&cuda_readback(output, len));
     text.push_str(&free_buffers(signature));
     text.push_str("    return 0;\n}\n");
@@ -233,7 +240,7 @@ pub fn cuda_softmax_driver(
     text.push_str(&launch(EXPSUM, grid, &args, "max"));
     text.push_str(&partial_copy(output, grid));
     text.push_str(&fold_sum());
-    text.push_str(&launch(NORM, grid, &args, "max, sum"));
+    text.push_str(&launch(NORM, len, &args, "max, sum"));
     text.push_str(&cuda_readback(output, len));
     text.push_str(&free_buffers(signature));
     text.push_str("    return 0;\n}\n");
