@@ -75,6 +75,9 @@ pub use ptq::svd;
 // —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——
 pub mod settle;
 
+// —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
+pub mod l3;
+
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
@@ -146,6 +149,7 @@ pub use crate::archive::VOCAB_NAME;
 
 pub use archive::{Archive, Metrics, Stored};
 pub use dtype::DType as Wire;
+pub use l3::{Bracket, Chain, Ruling, Rung};
 pub use proof::Proof;
 pub use ptq::{
     Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,

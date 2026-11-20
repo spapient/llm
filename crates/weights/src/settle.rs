@@ -34,7 +34,7 @@ pub const MAX_ENTROPY: f64 = 7.9;
 
 /// `codec_reason` 闭集：**为什么**这一条占了现在这些字节。
 ///
-/// 判别值即 [`NAMES`] 的下标，于是"名字只有一份表"：增删变体时编译器会要求同时改表长，
+/// 判别值即 `NAMES` 的下标，于是"名字只有一份表"：增删变体时编译器会要求同时改表长，
 /// 不会出现"加了变体忘了写名字"那种只有账本产物才看得见的偏差。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -397,13 +397,9 @@ fn push_char(out: &mut String, ch: char) {
 mod tests {
     use super::*;
     use crate::seg::Segment;
+    use crate::testutil::f32_segment;
     use crate::writer::Writer;
     use crate::{Quant, Wire};
-
-    fn f32_seg(name: &str, vals: &[f32]) -> Segment {
-        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        Segment::new(name, Wire::F32, vec![vals.len() as u64], None, bytes).expect("段")
-    }
 
     /// 写入并 settle：`compress` 决定写侧是否尝试熵编码。
     fn settled(segments: Vec<Segment>, compress: bool) -> Settlement {
@@ -432,7 +428,7 @@ mod tests {
     #[test]
     fn a_stored_tensor_reports_its_dense_length_and_no_gain() {
         let values: Vec<f32> = (1..=64).map(|i| i as f32).collect();
-        let settlement = settled(vec![f32_seg("backbone.layers.3.mlp.w", &values)], false);
+        let settlement = settled(vec![f32_segment("backbone.layers.3.mlp.w", &values)], false);
         let entry = only(&settlement);
         assert_eq!(entry.name(), "backbone.layers.3.mlp.w");
         assert_eq!(entry.layer(), Some(3), "层号取名字里第一个整数分量");
@@ -446,7 +442,7 @@ mod tests {
 
     #[test]
     fn a_compressed_tensor_reports_the_measured_gain() {
-        let settlement = settled(vec![f32_seg("w", &compressible(1024))], true);
+        let settlement = settled(vec![f32_segment("w", &compressible(1024))], true);
         let entry = only(&settlement);
         assert_eq!(entry.reason(), Reason::Rans);
         assert_eq!(entry.decision(), "compress");
@@ -459,7 +455,7 @@ mod tests {
 
     #[test]
     fn a_tiny_tensor_is_passed_through_instead_of_coded() {
-        let settlement = settled(vec![f32_seg("bias", &[1.0, 2.0, 3.0])], true);
+        let settlement = settled(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
         let entry = only(&settlement);
         assert_eq!(entry.raw_len(), 12);
         assert_eq!(entry.reason(), Reason::Small);
@@ -471,7 +467,7 @@ mod tests {
     fn a_deduplicated_tensor_occupies_no_bytes_and_says_so() {
         let values = compressible(512);
         let settlement = settled(
-            vec![f32_seg("w", &values), f32_seg("w.tied", &values)],
+            vec![f32_segment("w", &values), f32_segment("w.tied", &values)],
             true,
         );
         assert_eq!(settlement.tensors().len(), 2);
@@ -497,7 +493,7 @@ mod tests {
 
     #[test]
     fn entropy_is_measured_on_the_logical_bytes() {
-        let settlement = settled(vec![f32_seg("zeros", &[0.0; 64])], false);
+        let settlement = settled(vec![f32_segment("zeros", &[0.0; 64])], false);
         let entry = only(&settlement);
         assert!(
             entry.entropy() < 1.0,
@@ -519,7 +515,7 @@ mod tests {
 
     #[test]
     fn the_ledger_carries_every_contracted_key_in_a_stable_order() {
-        let settlement = settled(vec![f32_seg("l.0.w", &compressible(256))], true);
+        let settlement = settled(vec![f32_segment("l.0.w", &compressible(256))], true);
         let text = settlement.render();
         assert_eq!(text, settlement.render(), "同一份账要给出同一份文本");
         assert!(text.starts_with("{\n  \"schema\": \"llm.cert.v1\",\n  \"file_len\": "));
@@ -544,7 +540,7 @@ mod tests {
 
     #[test]
     fn a_name_without_a_layer_index_maps_to_null() {
-        let settlement = settled(vec![f32_seg("embed", &compressible(64))], true);
+        let settlement = settled(vec![f32_segment("embed", &compressible(64))], true);
         assert_eq!(only(&settlement).layer(), None);
         assert!(settlement.render().contains("\"layer\": null"));
     }
@@ -560,9 +556,9 @@ mod tests {
         let values = compressible(1024);
         let mut writer = Writer::new();
         writer
-            .push(f32_seg("a", &values))
+            .push(f32_segment("a", &values))
             .expect("入写")
-            .push(f32_seg("b", &values))
+            .push(f32_segment("b", &values))
             .expect("入写");
         let bytes = writer.finish(6).expect("落盘");
         let settlement = Settlement::settle(&bytes).expect("记账");
