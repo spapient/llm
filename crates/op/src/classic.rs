@@ -89,6 +89,7 @@ pub mod max_pool2d_f32 {
 
     /// 声明档边长。
     pub const H: usize = 4;
+    /// 声明档输入宽（或行主序的行宽）。
     pub const W: usize = 4;
 
     fn geom() -> ConvGeom {
@@ -148,7 +149,9 @@ pub mod avg_pool2d_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
+    /// 声明档输入边长。
     pub const H: usize = 4;
+    /// 声明档输入宽（或行主序的行宽）。
     pub const W: usize = 4;
 
     fn pool() -> crate::conv::AvgPool2d {
@@ -211,9 +214,13 @@ pub mod adaptive_pool_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
+    /// 声明档输入边长。
     pub const H: usize = 4;
+    /// 声明档输入宽（或行主序的行宽）。
     pub const W: usize = 4;
+    /// 声明档输出边长。
     pub const OH: usize = 2;
+    /// 声明档输出宽。
     pub const OW: usize = 2;
 
     /// 声明档样本：固定几何下的输入与输出缓冲。
@@ -262,9 +269,13 @@ pub mod interpolate_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
+    /// 声明档输入边长。
     pub const H: usize = 2;
+    /// 声明档输入宽（或行主序的行宽）。
     pub const W: usize = 2;
+    /// 声明档输出边长。
     pub const OH: usize = 4;
+    /// 声明档输出宽。
     pub const OW: usize = 4;
 
     fn sampler() -> crate::conv::Sampler {
@@ -327,8 +338,11 @@ pub mod batch_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
+    /// 声明档通道数。
     pub const C: usize = 4;
+    /// 声明档空间元素数。
     pub const S: usize = 2;
+    /// 声明档批大小（或总元素数）。
     pub const N: usize = 2;
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
@@ -402,9 +416,13 @@ pub mod group_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
+    /// 声明档组数。
     pub const G: usize = 2;
+    /// 声明档通道数。
     pub const C: usize = 4;
+    /// 声明档空间元素数。
     pub const S: usize = 2;
+    /// 声明档批大小（或总元素数）。
     pub const N: usize = 2;
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
@@ -478,8 +496,11 @@ pub mod instance_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
+    /// 声明档通道数。
     pub const C: usize = 4;
+    /// 声明档空间元素数。
     pub const S: usize = 2;
+    /// 声明档批大小（或总元素数）。
     pub const N: usize = 2;
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
@@ -547,7 +568,9 @@ pub mod layer_norm_f32 {
     use super::*;
     pub use crate::unary::{AXES, project_shape};
 
+    /// 声明档行数。
     pub const R: usize = 3;
+    /// 声明档输入宽（或行主序的行宽）。
     pub const W: usize = 4;
     /// 归一化分母的稳定项（前向与反向共用同一份常量）。
     pub const EPS: f32 = 1e-5;
