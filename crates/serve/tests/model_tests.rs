@@ -1061,12 +1061,15 @@ fn a_decorated_executor_runs_the_same_model_and_records_submissions() {
 
     let mut plain = CpuModel::new(&stack, &params).expect("装配");
     let expected = plain.forward(&x).expect("前向");
-    let mut decorated =
-        CpuModel::with_executor(&stack, &params, Trace::new(cpu())).expect("装配");
+    let mut decorated = CpuModel::with_executor(&stack, &params, Trace::new(cpu())).expect("装配");
     let produced = decorated.forward(&x).expect("前向");
 
     assert_eq!(produced, expected, "装饰器不改执行语义");
-    assert_eq!(decorated.executor().submitted().len(), 1, "一次前向一次提交");
+    assert_eq!(
+        decorated.executor().submitted().len(),
+        1,
+        "一次前向一次提交"
+    );
     assert!(
         decorated.executor().submitted()[0]
             .iter()

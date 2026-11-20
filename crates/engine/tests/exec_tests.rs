@@ -152,10 +152,7 @@ fn trace_decorates_any_executor_and_records_submissions() {
 
     assert_eq!(
         traced.submitted(),
-        [
-            vec!["a".to_owned(), "b".to_owned()],
-            vec!["c".to_owned()],
-        ],
+        [vec!["a".to_owned(), "b".to_owned()], vec!["c".to_owned()],],
         "记录的是每次提交的节点名与顺序"
     );
     traced.sync(Stream::new(0)).expect("同步转发");
