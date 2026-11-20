@@ -236,7 +236,8 @@ fn assert_quantized<E: std::fmt::Debug>(
     weights: &[f32],
     reference: &[f32],
 ) {
-    let mut packed = Vec::with_capacity(N * M.div_ceil(scheme.cpb));
+    // 容量按 `Scheme::packed_len` 一次算清：字节数算式只留 `Scheme` 那一份（`cpb` 已收成 `bits`）。
+    let mut packed = Vec::with_capacity(scheme.packed_len(N * M));
     let mut scales = Vec::with_capacity(N * M.div_ceil(GROUP));
     for row in 0..N {
         let (p, s) =

@@ -144,7 +144,10 @@ pub use crate::archive::VOCAB_NAME;
 pub use archive::{Archive, Metrics, Stored};
 pub use dtype::DType as Wire;
 pub use proof::Proof;
-pub use ptq::{Compensated, I2, I4, I8, Scheme, compensate, dequantize, quantize};
+pub use ptq::{
+    Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,
+    compensate, compensate_adaptive, dequantize, quantize,
+};
 pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;

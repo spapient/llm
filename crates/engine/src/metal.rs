@@ -650,4 +650,161 @@ kernel void kernel_main(device float* in [[buffer(0)]],
         let output: Vec<f32> = chunks.iter().map(|c| f32::from_ne_bytes(*c)).collect();
         assert_eq!(output, vec![2.0f32, 4.0, 6.0, 8.0], "GPU 应把输入翻倍写回");
     }
+
+    /// Metal 真机 matmul 前向基准：同一份 `M×N×K` 稠密 f32 在三种路径上跑同一算术，
+    /// 对拍 GPU 与 CPU 参考、并报 naive（每线程一输出）与 tiled（threadgroup 共享内存分块）
+    /// 的真实端到端延迟与 GFLOP/s。
+    ///
+    /// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_matmul_forward --release --ignored --nocapture`。
+    /// 无 Metal 设备时静默跳过；产品级 E1/E3（7B / 100K / NVIDIA A800·3090·T600）不在本机、保持 OPEN。
+    #[test]
+    #[ignore = "Metal matmul 前向基准：cargo test -p llm-engine --lib -- metal_matmul_forward --release --ignored --nocapture"]
+    fn metal_matmul_forward() {
+        let Some(device) = MetalDevice::system_default() else {
+            eprintln!("Metal 设备不在本机，matmul 前向基准未运行");
+            return;
+        };
+        let Some(queue) = device.new_command_queue() else {
+            panic!("有设备必有命令队列");
+        };
+
+        const M: usize = 512;
+        const N: usize = 512;
+        const K: usize = 512;
+
+        let a: Vec<f32> = (0..M * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+        let b: Vec<f32> = (0..K * N).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+        let reference = cpu_matmul(&a, &b, M, N, K);
+
+        let mut a_buf = device.new_buffer(a.len() * 4).expect("A 缓冲");
+        let mut b_buf = device.new_buffer(b.len() * 4).expect("B 缓冲");
+        a_buf.as_mut_bytes().copy_from_slice(&as_bytes(&a));
+        b_buf.as_mut_bytes().copy_from_slice(&as_bytes(&b));
+
+        let naive = device
+            .compile(&matmul_msl(false, M, N, K))
+            .expect("naive matmul 应能编译");
+        let tiled = device
+            .compile(&matmul_msl(true, M, N, K))
+            .expect("tiled matmul 应能编译");
+
+        let mut c_buf = device.new_buffer(M * N * 4).expect("C 缓冲");
+        let grid = [N as u32, M as u32, 1];
+
+        // 先各跑一次对拍，再进入计时轮。
+        queue.execute(&naive, &[&a_buf, &b_buf, &c_buf], grid, [1, 1, 1]);
+        assert_matmul_matches("naive", &reference, c_buf.as_mut_bytes());
+        queue.execute(&tiled, &[&a_buf, &b_buf, &c_buf], grid, [16, 16, 1]);
+        assert_matmul_matches("tiled", &reference, c_buf.as_mut_bytes());
+
+        let flop = 2.0 * (M * N * K) as f64;
+        let naive_ns = measure(&queue, &naive, &[&a_buf, &b_buf, &c_buf], grid, [1, 1, 1]);
+        let tiled_ns = measure(&queue, &tiled, &[&a_buf, &b_buf, &c_buf], grid, [16, 16, 1]);
+
+        eprintln!(
+            "Metal matmul 512×512×512：naive={naive_ns:.1} ns（{:.2} GFLOP/s） tiled={tiled_ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
+            flop / naive_ns,
+            flop / tiled_ns,
+            naive_ns / tiled_ns,
+        );
+    }
+
+    /// 朴素 MSL：每线程算一个输出元素；`tiled` 为真时用 threadgroup 共享内存把 A/B 按 16×16 分块，
+    /// 每个线程组 16×16 线程协同搬运一次整块，规约轴复用共享块，避免反复从设备全局内存重读。
+    fn matmul_msl(tiled: bool, m: usize, n: usize, k: usize) -> String {
+        if !tiled {
+            return format!(
+                "#include <metal_stdlib>\n\
+                 using namespace metal;\n\
+                 kernel void kernel_main(\n\
+                 \x20    device const float* A [[buffer(0)]],\n\
+                 \x20    device const float* B [[buffer(1)]],\n\
+                 \x20    device float* C [[buffer(2)]],\n\
+                 \x20    uint2 gid [[thread_position_in_grid]]) {{\n\
+                 \x20    const uint M = {m}, N = {n}, K = {k};\n\
+                 \x20    float acc = 0.0f;\n\
+                 \x20    for (uint p = 0; p < K; ++p) acc += A[gid.y * K + p] * B[p * N + gid.x];\n\
+                 \x20    C[gid.y * N + gid.x] = acc;\n\
+                 }}"
+            );
+        }
+        format!(
+            "#include <metal_stdlib>\n\
+             using namespace metal;\n\
+             kernel void kernel_main(\n\
+             \x20    device const float* A [[buffer(0)]],\n\
+             \x20    device const float* B [[buffer(1)]],\n\
+             \x20    device float* C [[buffer(2)]],\n\
+             \x20    uint2 gid [[thread_position_in_grid]],\n\
+             \x20    uint2 lid [[thread_position_in_threadgroup]]) {{\n\
+             \x20    const uint M = {m}, N = {n}, K = {k};\n\
+             \x20    threadgroup float As[16][16];\n\
+             \x20    threadgroup float Bs[16][16];\n\
+             \x20    float acc = 0.0f;\n\
+             \x20    for (uint kk = 0; kk < K; kk += 16) {{\n\
+             \x20        As[lid.y][lid.x] = A[gid.y * K + kk + lid.x];\n\
+             \x20        Bs[lid.y][lid.x] = B[(kk + lid.y) * N + gid.x];\n\
+             \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+             \x20        for (uint p = 0; p < 16; ++p) acc += As[lid.y][p] * Bs[p][lid.x];\n\
+             \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+             \x20    }}\n\
+             \x20    C[gid.y * N + gid.x] = acc;\n\
+             }}"
+        )
+    }
+
+    /// 同一算术的 CPU 参考（f64 累加，保证对拍基准的精度只受量化级控制，不引入累加顺序差异）。
+    fn cpu_matmul(a: &[f32], b: &[f32], m: usize, n: usize, k: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut acc = 0.0f64;
+                for p in 0..k {
+                    acc += f64::from(a[i * k + p]) * f64::from(b[p * n + j]);
+                }
+                out[i * n + j] = acc as f32;
+            }
+        }
+        out
+    }
+
+    fn as_bytes(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|f| f.to_ne_bytes()).collect()
+    }
+
+    fn assert_matmul_matches(label: &str, reference: &[f32], output: &[u8]) {
+        let (chunks, _) = output.as_chunks::<4>();
+        let mut max_rel = 0.0f32;
+        for (got, want) in chunks
+            .iter()
+            .map(|c| f32::from_ne_bytes(*c))
+            .zip(reference.iter())
+        {
+            let denom = want.abs().max(1.0f32);
+            max_rel = max_rel.max((got - want).abs() / denom);
+        }
+        assert!(
+            max_rel < 1e-3,
+            "{label} GPU 输出与 CPU 参考偏差过大：max_rel_err={max_rel}"
+        );
+    }
+
+    /// 同一内核连跑 50 次，返回中位数延迟（ns）；预热一次不计入。
+    fn measure(
+        queue: &MetalCommandQueue,
+        pipeline: &MetalPipeline,
+        buffers: &[&MetalBuffer],
+        grid: [u32; 3],
+        block: [u32; 3],
+    ) -> f64 {
+        queue.execute(pipeline, buffers, grid, block);
+        let mut samples = [0u128; 50];
+        for slot in &mut samples {
+            let start = std::time::Instant::now();
+            queue.execute(pipeline, buffers, grid, block);
+            *slot = start.elapsed().as_nanos();
+        }
+        samples.sort_unstable();
+        samples[samples.len() / 2] as f64
+    }
 }

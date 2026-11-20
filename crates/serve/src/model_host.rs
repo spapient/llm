@@ -145,6 +145,7 @@ impl CpuModel {
         self.executor.bind(self.assembly.input, input);
         // 无块链没有 rope 节点：位置取 0（角度为 0 的恒等旋转）。
         self.assembly.set_rope_positions(0);
+        self.fill_memory(rows);
         let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
         self.split_batch_output(flat, batch)
     }
@@ -220,6 +221,38 @@ impl CpuModel {
         }
     }
 
+    /// 回填记忆层两张批表：各行尾部 N-gram 的槽号与逐行门控。
+    ///
+    /// 槽号沿查表算子的下标通道（`f32` 承载，精确到 `2^24`），表槽数的硬上界因此在装配期就定下；
+    /// 历史不足 `order` 的行门控记 0，与 [`nn::slot_of`] 返回 `None` 是同一句判据——「不猜记忆」
+    /// 只有一种语义，那一行也不是“换到另一个槽”而是不被使用。
+    fn fill_memory(&mut self, rows: &[Row<'_>]) {
+        let memories = self.assembly.memories.clone();
+        for binding in memories {
+            let mut slots = Vec::with_capacity(rows.len());
+            let mut gate = Vec::with_capacity(rows.len() * binding.width);
+            for row in rows {
+                let context = row.sequence.context();
+                let history = context.get(..row.settled()).unwrap_or(context);
+                let slot = nn::slot_of(
+                    history,
+                    binding.spec.order,
+                    binding.spec.seed,
+                    binding.spec.buckets,
+                );
+                slots.push(slot.map_or(0.0, |at| at as f32));
+                let gain = if slot.is_some() {
+                    binding.spec.gate
+                } else {
+                    0.0
+                };
+                gate.extend(std::iter::repeat_n(gain, binding.width));
+            }
+            self.executor.bind(binding.slots, slots);
+            self.executor.bind(binding.gate, gate);
+        }
+    }
+
     /// 批当前步写回：逐块把各段 K/V 行拼成页行，写回各自的写回行。
     fn write_current_kv_batch(&mut self, rows: &[Row<'_>], batch: &mut Batch) -> Result<()> {
         let blocks = self.assembly.blocks.clone();
@@ -260,6 +293,7 @@ impl CpuModel {
         self.resize_for_batch(batch_n);
         self.executor.bind(self.assembly.input, input);
         self.fill_batch_tables(rows);
+        self.fill_memory(rows);
         self.load_history_batch(rows, batch)?;
         let flat = submit_and_fetch(&mut self.executor, &self.assembly)?;
         self.write_current_kv_batch(rows, batch)?;

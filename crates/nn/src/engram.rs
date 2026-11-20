@@ -9,7 +9,7 @@
 use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
 
-use crate::{Contract, ContractSpec, Shape};
+use crate::{Contract, ContractSpec, ParamRole, Shape};
 
 /// 乘-XOR 终混（64 位全雪崩，splitmix64 finalizer）。
 fn mix(mut x: u64) -> u64 {
@@ -252,6 +252,50 @@ pub struct MemoryBlock {
 /// 记忆层报错的出处。
 const MEMORY_SITE: &str = "nn::engram::MemoryBlock";
 
+/// 行宽与槽数：两者都是查表节点的建表几何，为 0 会建出一张空表或零宽行。
+fn check_shape(width: usize, buckets: usize) -> Result<()> {
+    if width == 0 {
+        return Err(
+            Error::new(Code::Invalid, "条件记忆的行宽必须为正".to_string()).with(MEMORY_SITE),
+        );
+    }
+    if buckets == 0 {
+        return Err(
+            Error::new(Code::Invalid, "条件记忆的表槽数必须为正".to_string()).with(MEMORY_SITE),
+        );
+    }
+    if buckets > MAX_BUCKETS {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("表槽数 {buckets} 超出下标通道的精确上界 {MAX_BUCKETS}"),
+        )
+        .with(MEMORY_SITE));
+    }
+    Ok(())
+}
+
+/// 阶与门控强度：前者决定「有没有上下文可查」，后者决定「加回去还看得见主链」。
+fn check_params(order: usize, gate: f32) -> Result<()> {
+    if order < 2 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("N-gram 阶必须 ≥ 2（order = {order}）"),
+        )
+        .with(MEMORY_SITE));
+    }
+    if !gate.is_finite() {
+        return Err(
+            Error::new(Code::Invalid, format!("门控强度必须是有限值，得到 {gate}"))
+                .with(MEMORY_SITE),
+        );
+    }
+    Ok(())
+}
+
+/// 表槽数上界：槽号经查表算子的下标通道传输，`2^24` 以上的整数会被静默合并到相邻槽——表
+/// 看起来建成了，实际两个槽共用同一行，读回来的记忆属于别的 N-gram。
+const MAX_BUCKETS: usize = 1 << 24;
+
 impl MemoryBlock {
     /// 查表节点算子名：`[slots, table] → [width]`。
     pub const EMBED: &'static str = "embed_f32";
@@ -276,32 +320,9 @@ impl MemoryBlock {
         buckets: usize,
         gate: f32,
     ) -> Result<Self> {
-        if width == 0 {
-            return Err(Error::new(Code::Invalid, "条件记忆的行宽必须为正".to_string())
-                .with(MEMORY_SITE));
-        }
-        if buckets == 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                "条件记忆的表槽数必须为正".to_string(),
-            )
-            .with(MEMORY_SITE));
-        }
-        if order < 2 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("N-gram 阶必须 ≥ 2（order = {order}）"),
-            )
-            .with(MEMORY_SITE));
-        }
-        if !gate.is_finite() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("门控强度必须是有限值，得到 {gate}"),
-            )
-            .with(MEMORY_SITE));
-        }
-        let spec = ContractSpec::new(
+        check_shape(width, buckets)?;
+        check_params(order, gate)?;
+        let spec = ContractSpec::new_with_role(
             name,
             Shape::new([width]),
             vec![
@@ -309,7 +330,8 @@ impl MemoryBlock {
                 Self::SCALE.to_string(),
                 Self::RESIDUAL.to_string(),
             ],
-        );
+            ParamRole::Embedding,
+        )?;
         Ok(Self {
             spec,
             width,
@@ -459,6 +481,42 @@ mod tests {
         let mut untouched = [1.0f32, 2.0];
         assert!(off.apply(&mut untouched, &[1, 2, 3]).expect("合法宽度"));
         assert_eq!(untouched, [1.0, 2.0], "gate = 0 时残差为零");
+    }
+
+    /// 装配视图的参数格与 [`Bypass`] 同一套判据，另加一条下标通道上界。
+    #[test]
+    fn a_memory_block_rejects_params_outside_the_lattice() {
+        assert_eq!(
+            MemoryBlock::new("mem", 0, 2, 1, 8, 1.0).unwrap_err().code(),
+            Code::Invalid
+        );
+        assert_eq!(
+            MemoryBlock::new("mem", 4, 2, 1, 0, 1.0).unwrap_err().code(),
+            Code::Invalid
+        );
+        assert_eq!(
+            MemoryBlock::new("mem", 4, 2, 1, MAX_BUCKETS + 1, 1.0)
+                .unwrap_err()
+                .code(),
+            Code::Invalid,
+            "超过 2^24 的槽号在 f32 下标通道上会被静默合并"
+        );
+        assert_eq!(
+            MemoryBlock::new("mem", 4, 1, 1, 8, 1.0).unwrap_err().code(),
+            Code::Invalid
+        );
+        assert_eq!(
+            MemoryBlock::new("mem", 4, 2, 1, 8, f32::NAN)
+                .unwrap_err()
+                .code(),
+            Code::Invalid
+        );
+        let block = MemoryBlock::new("mem", 4, 2, 0x5eed, 1 << 24, 0.5).expect("上界本身合法");
+        assert_eq!(block.width(), 4);
+        assert_eq!(block.order(), 2);
+        assert_eq!(block.seed(), 0x5eed);
+        assert_eq!(block.buckets(), 1 << 24);
+        assert_eq!(block.gate(), 0.5);
     }
 
     /// 阶 < 2 与嵌入宽度不符都在入口失败。

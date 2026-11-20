@@ -199,7 +199,7 @@ pub use policy::{Calib, HEAD_LAYERS_TOKEN, brier};
 pub use embed::Embedding;
 
 #[doc(inline)]
-pub use engram::{Bypass, Table, allocate, next_prime, phi, slots};
+pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
 
 #[doc(inline)]
 pub use kda::{Kda, Memory};
@@ -391,6 +391,14 @@ pub trait Contract {
     /// 默认 `None`：装配侧经此取回 Q/K/V/注意力/输出投影五个子层与块几何，不在外层按层名前缀
     /// 分组扇出。
     fn attention_block(&self) -> Option<&crate::attention_block::AttentionBlock> {
+        None
+    }
+
+    /// 若这一层是条件记忆层，返回它的类型化视图。
+    ///
+    /// 默认 `None`：与 [`linear`](Self::linear) 同一类类型化访问器。装配侧经此取回槽数/行宽/
+    /// 阶/种子/门控五元几何，不在外层按层名或算子猜"这层是不是旁路"。
+    fn memory(&self) -> Option<&crate::engram::MemoryBlock> {
         None
     }
 }

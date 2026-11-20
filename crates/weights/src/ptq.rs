@@ -1,33 +1,35 @@
-//! 2/4/8-bit 对称训练后量化（PTQ）：把 f32 权重按组量化并打包，以及它的反解。
+//! 2/3/4/8-bit 对称训练后量化（PTQ）：把 f32 权重按组量化并打包，以及它的反解。
 //!
 //! 与 [`super::quant`] 的分工：`quant` 是**磁盘方案描述符与分组推断**（读已有量化文件的形状与
 //! 标度，不做数值）；本模块是**把 f32 真正算成打包码**的正向算法与其逆变换，供离线 PTQ 与
 //! round-trip 验证使用。换算算法按 ADR 0018 留在 `weights`，不进入设备内核注册表。
 //!
-//! 三个格式的运行时事实（位宽、对称零点、每字节码数、正码上限）与 `op::quant::Row` 的
-//! `I2`/`I4`/`I8` **逐项同源**（低码在前的打包位序、对称零点一致）。本模块不自建到 `op` 的依赖边：
-//! 离线换算按 ADR 0018 留在 `weights`，不需要内核层；两处常量是同一事实的离线视角与内核视角，
-//! 若未来要硬性单一事实源，可加 `weights → op` 的 dev 依赖用交叉测试锁死（需同步更新架构边表）。
+//! `I2`/`I4`/`I8` 的运行时事实（位宽、对称零点、正码上限）与 `op::quant::Row` **逐项同源**
+//! （低码在前的打包位序、对称零点一致）；`I3` 是离线侧新增档位（3 码位宽），无内核对应。本模块
+//! 不自建到 `op` 的依赖边：离线换算按 ADR 0018 留在 `weights`，不需要内核层。
 //!
 //! 对称口径：`scale = max_abs / max_code`，`signed = round(x/scale)` 夹取到 `[-max_code, max_code]`，
 //! 码的线格式与反量化公式 `y = scale * (code - zero)` 完全一致。i2/i4 是**偏移码**（`code = signed + zero`，
 //! 无符号 nibble），i8 是**二补码字节**（`zero = 0`，`code = signed` 直接按 `i8` 解释）。
 
+mod adaptive;
+
+pub use adaptive::{Adaptive, AdaptiveCompensated, adaptive_quantize, compensate_adaptive};
+
 use diagnostic::{Code, Error, Result};
 
 /// 一档对称量化格式的运行时事实。
 ///
-/// 四个字段都能回答“这一档怎么量化/怎么打包”，与 `op::quant::Row`（`I2`/`I4`/`I8`）逐项一致：
-/// `bits` 对应 `Row::width`，`zero` 对应 `Row::zero`，`cpb` 对应 `Row::cpb`，`max_code` 是
-/// 对称码域的正码上限（`2^(bits-1) - 1`，i8 取 127 避开 -128 的非对称）。
+/// 三个字段回答“这一档怎么量化/怎么打包”，与 `op::quant::Row`（`I2`/`I4`/`I8`）逐项一致：
+/// `bits` 对应 `Row::width`，`zero` 对应 `Row::zero`，`max_code` 是对称码域的正码上限
+/// （`2^(bits-1) - 1`，i8 取 127 避开 -128 的非对称）。打包长度由 `bits` 直接推出，
+/// 不单设每字节码数——3 位档每码 3 bit，不整除字节。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scheme {
-    /// 元素位宽：2 / 4 / 8。
+    /// 元素位宽：2 / 3 / 4 / 8。
     pub bits: u8,
-    /// 对称零点：偏移码（i2/i4）的 `signed + zero` 平移量；i8 为 0。
+    /// 对称零点：偏移码（i2/i3/i4）的 `signed + zero` 平移量；i8 为 0。
     pub zero: i32,
-    /// 每字节码数：`8 / bits`；逐元素（i8）为 1。
-    pub cpb: usize,
     /// 正码上限：`scale = max_abs / max_code` 的分母。
     pub max_code: f32,
 }
@@ -38,9 +40,14 @@ impl Scheme {
         1 << self.bits
     }
 
-    /// 每个码占的位数：`8 / cpb`。
+    /// 每个码占的位数。
     pub const fn width(self) -> usize {
-        8 / self.cpb
+        self.bits as usize
+    }
+
+    /// 打包字节数：`ceil(len * bits / 8)`。
+    pub fn packed_len(self, len: usize) -> usize {
+        len.saturating_mul(self.bits as usize).div_ceil(8)
     }
 }
 
@@ -48,15 +55,20 @@ impl Scheme {
 pub const I2: Scheme = Scheme {
     bits: 2,
     zero: 2,
-    cpb: 4,
     max_code: 1.0,
+};
+
+/// 3 位打包：8 码/3 字节，零点 3，码表 `{-3..=3}`，正码上限 3。
+pub const I3: Scheme = Scheme {
+    bits: 3,
+    zero: 3,
+    max_code: 3.0,
 };
 
 /// 4 位打包：2 码/字节，零点 8，码表 `{-8..=7}`，正码上限 7。
 pub const I4: Scheme = Scheme {
     bits: 4,
     zero: 8,
-    cpb: 2,
     max_code: 7.0,
 };
 
@@ -64,14 +76,13 @@ pub const I4: Scheme = Scheme {
 pub const I8: Scheme = Scheme {
     bits: 8,
     zero: 0,
-    cpb: 1,
     max_code: 127.0,
 };
 
 /// 按组对称量化：把 `x` 按 `group` 个元素一组，每组独立 `scale = max_abs / max_code`，
 /// 逐元素 `signed = round(x/scale)` 夹取到 `[-max_code, max_code]`，再按低码在前打包。
 ///
-/// 返回 `(packed, scales)`：`packed` 长度 `ceil(len / cpb)`，`scales` 长度 `ceil(len / group)`。
+/// 返回 `(packed, scales)`：`packed` 长度 `ceil(len * bits / 8)`，`scales` 长度 `ceil(len / group)`。
 /// 全零组取 `scale = 1.0`（码全为对称零点 `zero`），反解仍精确归零，同时避开零 scale 被反解侧拒绝。
 ///
 /// # Errors
@@ -81,7 +92,7 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
     validate_quantize(scheme, group, x)?;
 
     let groups = x.len().div_ceil(group);
-    let mut packed = vec![0u8; x.len().div_ceil(scheme.cpb)];
+    let mut packed = vec![0u8; scheme.packed_len(x.len())];
     let mut scales = Vec::with_capacity(groups);
 
     for g in 0..groups {
@@ -94,7 +105,12 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
         for (i, &v) in slice.iter().enumerate() {
             let signed = (v / scale).round() as i32;
             let signed = signed.clamp(-(scheme.max_code as i32), scheme.max_code as i32);
-            pack_into(scheme, &mut packed, lo + i, (signed + scheme.zero) as u8);
+            pack_bits(
+                &mut packed,
+                lo + i,
+                scheme.bits,
+                (signed + scheme.zero) as u8,
+            );
         }
     }
 
@@ -127,8 +143,8 @@ fn group_scale(scheme: Scheme, slice: &[f32]) -> f32 {
 
 /// 按组反解：`y = scale * (code - zero)`，与反量化公式一致，供 round-trip 对拍。
 ///
-/// `packed` 长度必须为 `ceil(len / cpb)`，`scales` 长度必须为 `ceil(len / group)`，`out` 长度
-/// 为元素数。i2/i4 的码是无符号 nibble（减 `zero` 得符号值），i8 的码是二补码字节（`zero = 0`）。
+/// `packed` 长度必须为 `ceil(len * bits / 8)`，`scales` 长度必须为 `ceil(len / group)`，`out` 长度
+/// 为元素数。i2/i3/i4 的码是无符号偏移码（减 `zero` 得符号值），i8 的码是二补码字节（`zero = 0`）。
 ///
 /// # Errors
 ///
@@ -142,12 +158,8 @@ pub fn dequantize(
 ) -> Result<()> {
     validate_dequantize(scheme, packed, scales, group, out)?;
 
-    // width == 8 时 `1u8 << 8` 会溢出：用 u16 求掩码再截断，`255` 对 i8 是整字节。
-    let mask = ((1u16 << scheme.width()) - 1) as u8;
     for (i, slot) in out.iter_mut().enumerate() {
-        let byte = packed[i / scheme.cpb];
-        let shift = (i % scheme.cpb) * scheme.width();
-        let field = (byte >> shift) & mask;
+        let field = unpack_bits(packed, i, scheme.bits);
         *slot = scales[i / group] * decode_code(scheme, field);
     }
     Ok(())
@@ -164,7 +176,7 @@ fn validate_dequantize(
     if group == 0 {
         return Err(invalid("反解分组必须大于 0"));
     }
-    if packed.len() != out.len().div_ceil(scheme.cpb) {
+    if packed.len() != scheme.packed_len(out.len()) {
         return Err(invalid("打包字节数与输出长度不一致"));
     }
     if scales.len() != out.len().div_ceil(group) {
@@ -173,7 +185,7 @@ fn validate_dequantize(
     Ok(())
 }
 
-/// 码 → 符号值：i8（`zero == 0`）按二补码解释，i2/i4 是无符号码减零点。
+/// 码 → 符号值：i8（`zero == 0`）按二补码解释，i2/i3/i4 是无符号偏移码减零点。
 fn decode_code(scheme: Scheme, field: u8) -> f32 {
     if scheme.zero == 0 {
         field as i8 as f32
@@ -182,10 +194,30 @@ fn decode_code(scheme: Scheme, field: u8) -> f32 {
     }
 }
 
-/// 把第 `index` 个码写入对应字节的对应位段（低码在前）；字节已按 `vec![0]` 初始化，按位或累加。
-fn pack_into(scheme: Scheme, packed: &mut [u8], index: usize, code: u8) {
-    let shift = (index % scheme.cpb) * scheme.width();
-    packed[index / scheme.cpb] |= code << shift;
+/// 把第 `index` 个 `width` 位码写入位流（低码在前）；跨字节边界时高位溢到下一字节。
+///
+/// `code` 必须落在 `[0, 2^width)`；调用方（[`quantize`]）已按 `signed + zero` 把它夹在该区间。
+fn pack_bits(packed: &mut [u8], index: usize, width: u8, code: u8) {
+    let bit = index * width as usize;
+    let byte = bit / 8;
+    let shift = (bit % 8) as u32;
+    let value = (code as u32) << shift;
+    packed[byte] |= value as u8;
+    if shift + width as u32 > 8 {
+        packed[byte + 1] |= (value >> 8) as u8;
+    }
+}
+
+/// 从位流读出第 `index` 个 `width` 位码；跨字节边界时低位溢到下一字节。
+fn unpack_bits(packed: &[u8], index: usize, width: u8) -> u8 {
+    let bit = index * width as usize;
+    let byte = bit / 8;
+    let shift = (bit % 8) as u32;
+    let mut value = (packed[byte] as u32) >> shift;
+    if shift + width as u32 > 8 {
+        value |= (packed[byte + 1] as u32) << (8 - shift);
+    }
+    (value & ((1u32 << width) - 1)) as u8
 }
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -249,31 +281,56 @@ fn rebuild(
     m: usize,
     n: usize,
 ) -> Result<Option<Compensated>> {
-    let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
-    let d = svd::compute(&a, m, n)?;
-    let Some(r) = svd::signal_rank(&d.sigma) else {
+    let Some(parts) = decompose(w, m, n)? else {
         return Ok(None);
     };
-    let gap = spectral_gap(&d.sigma, r);
-    let low64 = d.reconstruct(r);
-    let low: Vec<f32> = low64.iter().map(|&x| x as f32).collect();
-    let rest: Vec<f32> = a
-        .iter()
-        .zip(&low64)
-        .map(|(orig, l)| (orig - l) as f32)
-        .collect();
-
-    let (packed, scales, qrest) = pack_residual(scheme, group, &rest)?;
-    let recon: Vec<f32> = low.iter().zip(&qrest).map(|(l, q)| l + q).collect();
-
+    let (packed, scales, qrest) = pack_residual(scheme, group, &parts.rest)?;
+    let recon: Vec<f32> = parts.low.iter().zip(&qrest).map(|(l, q)| l + q).collect();
     Ok(Some(Compensated {
-        rank: r,
-        sigma1: d.sigma[0],
-        gap,
-        low,
+        rank: parts.rank,
+        sigma1: parts.sigma1,
+        gap: parts.gap,
+        low: parts.low,
         packed,
         scales,
         recon,
+    }))
+}
+
+/// 一次分解的产物：秩、谱隙、低秩项、显式残差与整体范数同出一门。
+///
+/// 两条补偿路径（固定档 [`rebuild`] 与自适应档 `adaptive::compensate_adaptive`）据此共用同一次
+/// 分解：分别算一遍不只是慢，还会让「秩」与「残差」在某些输入上来自两个不同的分解。
+struct Components {
+    rank: usize,
+    sigma1: f64,
+    gap: f64,
+    low: Vec<f32>,
+    rest: Vec<f32>,
+    norm: f64,
+}
+
+/// 一次 f64 SVD → 秩 / 低秩项 `L_r` / 显式残差 `C = W − L_r`；无谱隙即拒压。
+fn decompose(w: &[f32], m: usize, n: usize) -> Result<Option<Components>> {
+    let a: Vec<f64> = w.iter().map(|&x| f64::from(x)).collect();
+    let d = svd::compute(&a, m, n)?;
+    let Some(rank) = svd::signal_rank(&d.sigma) else {
+        return Ok(None);
+    };
+    let rows = d.reconstruct(rank);
+    let low: Vec<f32> = rows.iter().map(|&x| x as f32).collect();
+    let rest: Vec<f32> = a
+        .iter()
+        .zip(&rows)
+        .map(|(orig, l)| (orig - l) as f32)
+        .collect();
+    Ok(Some(Components {
+        rank,
+        sigma1: d.sigma[0],
+        gap: spectral_gap(&d.sigma, rank),
+        low,
+        rest,
+        norm: a.iter().map(|v| v * v).sum::<f64>().sqrt(),
     }))
 }
 
@@ -646,7 +703,9 @@ pub mod svd {
 
 #[cfg(test)]
 mod tests {
-    use super::{I2, I4, I8, compensate, dequantize, quantize};
+    use super::{
+        I2, I3, I4, I8, adaptive_quantize, compensate, compensate_adaptive, dequantize, quantize,
+    };
 
     /// 打包位序：i4 低 nibble 在前，`[7, -7]` → 码 `[15, 1]` → 字节 `0x1F`。
     #[test]
@@ -668,6 +727,49 @@ mod tests {
         let mut out = [0.0; 4];
         dequantize(I2, &packed, &scales, 32, &mut out).expect("合法反解");
         assert_eq!(out, [1.0, -1.0, 0.0, 0.0]);
+    }
+
+    /// 打包位序：i3 每字节不整除，`[3, -3, 1, 0]` → 码 `[6, 0, 4, 3]` → 三个字节的位流。
+    #[test]
+    fn i3_packs_three_bits_per_code() {
+        let (packed, scales) = quantize(I3, 32, &[3.0, -3.0, 1.0, 0.0]).expect("合法输入");
+        assert_eq!(scales, vec![1.0]);
+        let mut out = [0.0; 4];
+        dequantize(I3, &packed, &scales, 32, &mut out).expect("合法反解");
+        assert_eq!(out, [3.0, -3.0, 1.0, 0.0]);
+        // 位宽不整除：4 码 × 3 bit = 12 bit → 2 字节。
+        assert_eq!(packed.len(), 2);
+        // 码 [6,0,4,3] 低 3 位在前：位置 0..2 码 6、3..5 码 0、6..8 码 4（跨字节）、9..11 码 3。
+        assert_eq!(packed[0], 6, "码 6 在 0..2，码 4 的低 2 位 0 在 6..7");
+        assert_eq!(
+            packed[1],
+            1 | (3 << 1),
+            "码 4 的第 3 位在 byte1 位 0，码 3 在 1..3"
+        );
+    }
+
+    /// 自适应分配按误差预算选位宽：极紧预算停在全 8bit 且不达标，极松预算一路降到 2bit。
+    #[test]
+    fn adaptive_quantize_assigns_bits_by_error_budget() {
+        let x: Vec<f32> = (0..256).map(|i| ((i as f32).sin()) * 3.7).collect();
+        let norm: f64 = x
+            .iter()
+            .map(|v| (*v as f64) * (*v as f64))
+            .sum::<f64>()
+            .sqrt();
+
+        let tight = adaptive_quantize(32, &x, 1e-9).expect("合法");
+        assert!(tight.widths.iter().all(|&w| w == 8));
+        assert!(!tight.met, "预算低于 8bit 可达误差，必须如实报未达标");
+
+        let loose = adaptive_quantize(32, &x, norm * 2.0).expect("合法");
+        assert!(
+            loose.widths.iter().all(|&w| w == 2),
+            "松预算应降到最低档：{:?}",
+            loose.widths
+        );
+        assert!(loose.met);
+        assert!((loose.bpw - 2.0).abs() < 1e-9);
     }
 
     /// i8 逐元素二补码：`[127, -127]` → 字节 `[127, 129]`，反解归位。
@@ -886,6 +988,46 @@ mod tests {
             ),
             None => println!("M4 满秩高斯 拒压（无谱隙，不冒充 4bit）"),
         }
+    }
+
+    /// E5 2–8bit 自适应分配（`#[ignore]`：
+    /// `cargo test -p llm-weights --lib -- e5_adaptive_allocation_snr --release --ignored --nocapture`）。
+    ///
+    /// 谱隙选秩 + 残差 `{2,3,4,8}` 自适应量化，目标 44 dB：σn 越大残差越难压，分配器自动多给
+    /// 8bit 组，平均码位随 σn 上升——σn=0.3 也达到 ≥44 dB（代价是 bpw 从 4 升到 ~6）。
+    #[test]
+    #[ignore = "E5 自适应基准：cargo test -p llm-weights --lib -- e5_adaptive_allocation_snr --release --ignored --nocapture"]
+    fn e5_adaptive_allocation_snr() {
+        let (m, n, r) = (512usize, 512usize, 10usize);
+        for sigma_n in [0.1f32, 0.2, 0.3] {
+            let w = low_rank_plus_noise(m, n, r, sigma_n, 0xfeed_0001);
+            // 目标取 46 dB：输出空间 SNR 对随机 x 有 ~±1–2 dB 的投影波动，Frobenius 46 dB
+            // 给 44 dB 门禁留出裕量，保证配对输出 SNR 的下界也 ≥44。
+            match compensate_adaptive(32, &w, m, n, 46.0).expect("自适应补偿") {
+                Some(comp) => {
+                    let mut snrs = Vec::new();
+                    for seed in [0xace_0005u64, 0xace_0006, 0xace_0007] {
+                        let x = gaussian(n, 1, seed);
+                        let (num, den) = output_snr(&w, &comp.recon, &x, m, n);
+                        snrs.push(20.0 * (num / den).log10());
+                    }
+                    snrs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let frob = frob_snr(&w, &comp.recon);
+                    let (c2, c3, c4, c8) = width_histogram(&comp.widths);
+                    println!(
+                        "E5 结构化 σn={sigma_n} 自适应 秩={} bpw={:.3} met={} 位宽[2:{c2} 3:{c3} 4:{c4} 8:{c8}] 输出SNR(P50={:.3},min={:.3}) dB FrobeniusSNR={frob:.3} dB",
+                        comp.rank, comp.bpw, comp.met, snrs[1], snrs[0],
+                    );
+                }
+                None => println!("E5 结构化 σn={sigma_n} 拒压（无谱隙）"),
+            }
+        }
+    }
+
+    /// 位宽直方图：`(2bit 组数, 3bit 组数, 4bit 组数, 8bit 组数)`。
+    fn width_histogram(widths: &[u8]) -> (usize, usize, usize, usize) {
+        let count = |w: u8| widths.iter().filter(|&&x| x == w).count();
+        (count(2), count(3), count(4), count(8))
     }
 
     /// Frobenius 口径 SNR：`20·log10(‖W‖_F / ‖W − Ŵ‖_F)`。

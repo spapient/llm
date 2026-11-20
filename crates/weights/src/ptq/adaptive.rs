@@ -410,12 +410,9 @@ mod tests {
         let (m, n, group) = (512usize, 512usize, 32usize);
         let w = synthetic(m, n, 8, 0.01);
         let energy: f64 = w.iter().map(|&v| f64::from(v) * f64::from(v)).sum();
-        println!(
-            "E5 探针：{m}×{n}（rank-8 + 噪声），group={group}，‖W‖²_F={energy:.1}"
-        );
+        println!("E5 探针：{m}×{n}（rank-8 + 噪声），group={group}，‖W‖²_F={energy:.1}");
         for target in [30.0f64, 40.0, 50.0, 60.0] {
-            let Some(card) =
-                compensate_adaptive(group, &w, m, n, target).expect("合法输入")
+            let Some(card) = compensate_adaptive(group, &w, m, n, target).expect("合法输入")
             else {
                 println!("  target {target} dB：无谱隙，拒压");
                 continue;
@@ -453,7 +450,10 @@ mod tests {
                 histogram[2],
                 histogram[3]
             );
-            assert!(card.met, "目标 {target} dB 未达标：位宽图仍给出，但预算没满足");
+            assert!(
+                card.met,
+                "目标 {target} dB 未达标：位宽图仍给出，但预算没满足"
+            );
         }
     }
 }

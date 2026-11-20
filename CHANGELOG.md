@@ -6,6 +6,38 @@
 ## [Unreleased]
 ### Changed
 
+- **条件记忆层接进服务路径 + 2–8bit 自适应组量化（E5 的「自适应策略」有了可复跑探针：30–50 dB
+  预算全组落到 2bit、bpw 2.000、权重空间 SNR 61.91 dB）**。此前 `nn::engram::MemoryBlock` 只有契约
+  与纯函数，`weights::ptq` 也只有固定档位——「层能装配吗」与「每组该用几 bit」两件事都停在机制层。
+  **条件记忆层是第七个层族**：`serve::plan` 新增 `LayerKind::Memory` 与 `MemorySpec`（表条目、阶、
+  buckets、gate 在规划期就定死），`assembly::NodeSink::push_memory` 出三节点旁路（查表
+  `[槽表, 驻留表] → [width]` → 门控缩放 → 加回主链），`MemoryBinding` 记该层的槽表与门控两张**批
+  表**；`model_host::fill_memory` 每步按历史（与 `nn::engram::slot_of` 同一份槽映射）覆写这两张表而
+  图结构不变，权重复用与其它层同一份 `Params` 台账。门是**乘**不是选路，γ = 0 时加回零向量、主链
+  逐位不变，与 `Bypass` 返回「这一行没有记忆」同一结果；三条用例分别钉住「记忆层不能开栈」「宽度
+  不符在装配期被拒」「历史达到阶之后门控行只加一次（此前一步加两次也能对上宽度）」。
+  **2–8bit 自适应组量化**：`weights::ptq::adaptive` 新增 `Adaptive` / `AdaptiveCompensated` /
+  `adaptive_quantize` / `compensate_adaptive`。候选位宽闭集 `{2,3,4,8}` 只是对 `Scheme` 的索引表，
+  码位与打包仍只走父模块那两份 `quantize` / `dequantize`；降档是**误差驱动贪心**（所有组从 `I8`
+  起，每步把「每省 1 bit 增误最少」的组降一档，直到再降就越 Frobenius 预算），产物是逐组位宽图 +
+  平均码位 + 是否达标 + 重构。`met = false` 时位宽图照样给出（调用方据此拒压，而不是拿到空结果）；
+  误差是解析估计 `n·scale²/12`，所以**零预算下没有一档算达标**——把它读成「8bit 无损」会把「停在
+  最宽档」与「达标」混为一谈。补偿形态与 `compensate` 同一条低秩分解（`decompose` / `signal_rank`
+  已收成共用实现），差别只在残差走自适应位宽。
+  **E5 探针**：`ptq::adaptive::e5_width_map`（`#[ignore]`，命令写在用例文档里）在 512×512、rank-8
+  加噪声的**合成**矩阵上（E5 明确禁止拿合成矩阵代替模型级结果，故只作机制探针、不出判决）实测：
+  30 / 40 / 50 dB 预算下 8192 组**全部**停在 2bit、bpw **2.000**、权重空间 SNR **61.91 dB**；60 dB
+  预算下 418 组升到 3bit、bpw **2.051**、SNR **62.45 dB**，秩 8、截断处谱隙 2.089e2、`sigma1`
+  312.3——低秩项之后残差本就很淡，所以 2bit 就够，这条单调关系与预算方向一致。
+  **规范**：静态门四条圈复杂度红灯按「一个助手只答一个问题」拆开（`compensate_adaptive` →
+  `validate` / `adaptive_for` / `assemble`，`plan::view_plan` → `match`，`assembly::push_memory` 8 与
+  `advance_layer` 7 → `memory_slots` / `emit_memory_embed` / `planned_bypass` / `memory_entry` /
+  `attach` / `push_single`）；四个大件的测试按仓库布局外移成同目录文件（`annotation/codegen_tests.rs`
+  403 行、`cutile/ast_tests.rs` 131 行、`op/{softmax_f32,rmsnorm_f32,embed_f32,rope_f32}_tests.rs`
+  374 行，嵌套 inline 模块里改用 `include!` 相对源文件解析）；`train` / `serve` 两份逐字相同的
+  `kernel_table!` 收口到 `op::kernel_table!`（宏定义 54 → 53 处，`Entry` 按调用点解析，字段契约
+  不变），各表仍各留自己的名字/顺序断言。
+
 - **能效臂补上事件侧，并把 E10 / E12 从「待测」变成可复跑的探针（实测 CV 1.23%、查表 0.35 ns
   与历史长度无关）**。此前三条能效维（E13 / E14 / E15）只有 `Lif` 这个神经元原语——γ 通道的
   非恒等形态一直没有对应的编码算子，「事件驱动省在哪」没有任何可测物。
