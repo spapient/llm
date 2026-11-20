@@ -778,28 +778,14 @@ pub fn cuda_harness(kernel_source: &str, signature: &Signature, sample: &Sample)
     let (output, values) = output_of(signature, sample)?;
     let kernel = signature.kernel();
     let params = signature.params();
-    let launch_args = launch_args(sample, params)?;
-    let mut text = cuda_prelude(kernel_source, &kernel, sample);
-    text.push_str(&cuda_wrapper(&kernel, params, &launch_args));
-    text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
-        sample,
-        params,
-        output,
-        values.len(),
-    )?);
-    // 设备侧报错就打印 `cuda:` 一行并以 1 退出。
-    text.push_str(&format!(
-        "    cutile_launch<<<1, 1>>>({launch_args});\n\
-         \x20   cudaError_t error = cudaDeviceSynchronize();\n\
-         \x20   if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
-    ));
-    text.push_str(&cuda_readback(output, values.len()));
-    for param in params.iter().filter(|param| param.ctype.is_buffer()) {
-        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
-    }
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
+    let args = launch_args(sample, params)?;
+    let head = format!(
+        "{}{}",
+        cuda_prelude(kernel_source, &kernel, sample),
+        cuda_wrapper(&kernel, params, &args)
+    );
+    let emit = cuda_launch("cutile_launch", "1", 1, &args);
+    Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
 }
 
 /// `__global__` 包装的形参声明：缓冲是设备指针，用 `d_` 前缀与 host 侧 `cuda_host_buffers` 的
@@ -835,8 +821,63 @@ fn cuda_prelude(kernel_source: &str, kernel: &str, sample: &Sample) -> String {
 /// 设备侧包装：单线程 `<<<1,1>>>` 调内核，入口定义只有一处。
 fn cuda_wrapper(kernel: &str, params: &[Param], launch_args: &str) -> String {
     format!(
-        "\n__global__ void cutile_launch({}) {{\n    {kernel}({launch_args});\n}}\n\n",
+        "\n__global__ void cutile_launch({}) {{\n    {kernel}({launch_args});\n}}\n",
         cuda_params(params)
+    )
+}
+
+/// host 驱动的公共骨架：文件头 → `main` → 缓冲分配 → 一次派发 → 回读 → 释放 → 返回。
+///
+/// 六个驱动（单线程语义门、逐点网格、循环注入、分块归约、分块归一化、分块扫描）只在「文件头」
+/// 与「派发那一行」上不同；同步报错、回读与释放清单必须逐字同源——各写一份时，加一个 include
+/// 就会漏掉其中一族。
+pub(crate) struct Driver<'a> {
+    signature: &'a Signature,
+    sample: &'a Sample,
+    output: &'a str,
+    output_len: usize,
+}
+
+impl<'a> Driver<'a> {
+    /// 由签名、样本与输出缓冲长度（分块归约取部分结果数，其余取样本长度）装配。
+    pub(crate) fn new(
+        signature: &'a Signature,
+        sample: &'a Sample,
+        output: &'a str,
+        output_len: usize,
+    ) -> Self {
+        Self {
+            signature,
+            sample,
+            output,
+            output_len,
+        }
+    }
+
+    /// 拼完整程序：`head` 是文件头（include + 身份注释 + 设备源，方言由调用方给），`emit` 是派发那一行。
+    pub(crate) fn assemble(&self, head: &str, emit: &str) -> Result<String> {
+        let mut text = String::from(head);
+        text.push_str("\nint main(void) {\n");
+        text.push_str(&cuda_host_buffers_grid(
+            self.sample,
+            self.signature.params(),
+            self.output,
+            self.output_len,
+        )?);
+        text.push_str(emit);
+        text.push_str(&cuda_readback(self.output, self.output_len));
+        text.push_str(&cuda_release(self.signature));
+        text.push_str("    return 0;\n}\n");
+        Ok(text)
+    }
+}
+
+/// 一次派发 + 同步失败即报错：内核名、网格、线程数与实参由调用方给，报错那一行只有这一份。
+pub(crate) fn cuda_launch(kernel: &str, grid: &str, threads: usize, args: &str) -> String {
+    format!(
+        "    {kernel}<<<{grid}, {threads}>>>({args});\n\
+         \x20   cudaError_t error = cudaDeviceSynchronize();\n\
+         \x20   if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
     )
 }
 
@@ -862,31 +903,9 @@ pub fn cuda_grid_driver(
     output_len: usize,
 ) -> Result<String> {
     let output = output_name(signature)?;
-    let params = signature.params();
-    let launch = params
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .map(|param| format!("d_{}", param.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut text = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
-    text.push_str(device_source);
-    if !device_source.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str("\nint main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(sample, params, output, output_len)?);
-    text.push_str(&format!(
-        "    kernel_main<<<{grid}, 1>>>({launch});\n\
-         \x20   cudaError_t error = cudaDeviceSynchronize();\n\
-         \x20   if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
-    ));
-    text.push_str(&cuda_readback(output, output_len));
-    for param in params.iter().filter(|param| param.ctype.is_buffer()) {
-        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
-    }
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
+    let emit = cuda_launch("kernel_main", &grid.to_string(), 1, &buffer_args(signature));
+    let head = cuda_prologue(device_source);
+    Driver::new(signature, sample, output, output_len).assemble(&head, &emit)
 }
 
 /// host 侧缓冲声明、设备分配与只读入向拷贝；输出缓冲长度用显式 `output_len`（分块归约的部分
@@ -980,40 +999,18 @@ pub fn cuda_point_driver(
     sample: &Sample,
 ) -> Result<String> {
     let (output, values) = output_of(signature, sample)?;
-    let len = values.len();
-    let blocks = len.div_ceil(POINT_THREADS);
-    let mut text = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
-    text.push_str(device_source);
-    if !device_source.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str("\nint main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
-        sample,
-        signature.params(),
-        output,
-        len,
-    )?);
-    let launch = signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .map(|param| format!("d_{}", param.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    text.push_str(&format!(
-        "    kernel_main<<<{blocks}, {POINT_THREADS}>>>({launch});\n    cudaError_t error = cudaDeviceSynchronize();\n    if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n"
-    ));
-    text.push_str(&cuda_readback(output, len));
-    for param in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-    {
-        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
-    }
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
+    let blocks = values.len().div_ceil(POINT_THREADS);
+    let emit = cuda_launch(
+        "kernel_main",
+        &blocks.to_string(),
+        POINT_THREADS,
+        &buffer_args(signature),
+    );
+    let head = cuda_head(
+        "#include <cuda_runtime.h>\n#include <cstdio>\n",
+        device_source,
+    );
+    Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
 }
 
 /// 逐点驱动每块线程数（128 线程下 16K 元素实测 -12%）。
@@ -1086,37 +1083,34 @@ pub fn cuda_loop_driver(
     dims: &[usize],
 ) -> Result<String> {
     let (output, values) = output_of(signature, sample)?;
-    let len = values.len();
     let grid = cuda_grid(dims);
-    let mut text = cuda_prologue(device_source);
-    text.push_str("\nint main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
-        sample,
-        signature.params(),
-        output,
-        len,
-    )?);
-    text.push_str(&format!(
-        "    kernel_main<<<dim3({}, {}, {}), 1>>>({});\n    cudaError_t error = cudaDeviceSynchronize();\n    if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n",
-        grid[0],
-        grid[1],
-        grid[2],
-        launch_args(sample, signature.params())?,
-    ));
-    text.push_str(&cuda_readback(output, len));
-    text.push_str(&cuda_release(signature));
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
+    let args = launch_args(sample, signature.params())?;
+    let emit = cuda_launch(
+        "kernel_main",
+        &format!("dim3({}, {}, {})", grid[0], grid[1], grid[2]),
+        1,
+        &args,
+    );
+    let head = cuda_prologue(device_source);
+    Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
 }
 
-/// 前导两行 include + 设备源码；设备源码缺尾换行时补一个，免得 `main` 粘在最后一行上。
-fn cuda_prologue(device_source: &str) -> String {
-    let mut text = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
+/// 文件头一行 include 段 + 设备源码；设备源码缺尾换行时补一个，免得 `main` 粘在最后一行上。
+pub(crate) fn cuda_head(includes: &str, device_source: &str) -> String {
+    let mut text = String::from(includes);
     text.push_str(device_source);
     if !device_source.ends_with('\n') {
         text.push('\n');
     }
     text
+}
+
+/// CUDA 前导：运行时与 stdio 两行 include + 设备源。
+fn cuda_prologue(device_source: &str) -> String {
+    cuda_head(
+        "#include <cuda_runtime.h>\n#include <cstdio>\n",
+        device_source,
+    )
 }
 
 /// `[grid]` 求出的各维大小 → `dim3` 的三维；缺的维保持 1（`dim3` 的缺省就是 1）。
@@ -1128,8 +1122,19 @@ fn cuda_grid(dims: &[usize]) -> [usize; 3] {
     grid
 }
 
+/// 启动实参：只传缓冲（形状是编译期常量，不进内核形参）。
+pub(crate) fn buffer_args(signature: &Signature) -> String {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .map(|param| format!("d_{}", param.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// 收尾：释放每个缓冲参数对应的设备端指针（只释放真分配过的，标量是值传递）。
-fn cuda_release(signature: &Signature) -> String {
+pub(crate) fn cuda_release(signature: &Signature) -> String {
     let mut text = String::new();
     for param in signature
         .params()

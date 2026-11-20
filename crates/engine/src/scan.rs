@@ -15,9 +15,9 @@ use cutile::harness::output_name;
 
 use crate::codegen::{
     bind_chunk_loop, cuda_device, cuda_host_buffers_grid, cuda_launch_params, cuda_readback,
-    inject_chunk_preamble, launch_args, scalar_name, thread_param_typed,
+    cuda_release, inject_chunk_preamble, launch_args, scalar_name, thread_param_typed,
 };
-use crate::norm::{free_buffers, launch, length_usize, program_head};
+use crate::norm::{launch, length_usize, program_head};
 
 /// 校正段入口（把携带前缀的衰减贡献加回块内）。
 pub(crate) const CORRECT: &str = "kernel_correct";
@@ -119,7 +119,7 @@ pub fn cuda_scan_driver(
     ));
     text.push_str(&cuda_readback(output, len));
     text.push_str("    cudaFree(d_c);\n");
-    text.push_str(&free_buffers(signature));
+    text.push_str(&cuda_release(signature));
     text.push_str("    return 0;\n}\n");
     Ok(text)
 }
@@ -132,8 +132,9 @@ fn fold_carry(output: &str, chunk: usize, len: i64, decay: f32) -> String {
          int start = g * {chunk};\n        \
          int rest = {len} - start;\n        \
          int len = ({chunk} < rest) ? {chunk} : rest;\n        \
-         double p = 1.0;\n        \
-         for (int j = 0; j < len; ++j) {{ p *= (double){decay}f; }}\n        \
+         double p = 1.0, base = (double){decay}f;\n        \
+         int e = len;\n        \
+         while (e > 0) {{ if (e & 1) p *= base; base *= base; e >>= 1; }}\n        \
          h_c[g] = (float)carry;\n        \
          carry = p * carry + (double)h_{output}[start + len - 1];\n    }}\n"
     )

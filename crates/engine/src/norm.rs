@@ -20,8 +20,8 @@ use op::sig::Signature;
 use cutile::harness::output_name;
 
 use crate::codegen::{
-    CUDA, chunk_reduce_entry, cuda_buffers, cuda_host_buffers_grid, cuda_readback, kernel_entry,
-    length_scalar, scalar_name,
+    CUDA, buffer_args, chunk_reduce_entry, cuda_buffers, cuda_host_buffers_grid, cuda_readback,
+    cuda_release, kernel_entry, length_scalar, scalar_name,
 };
 
 /// 部分归约段入口（部分平方和 / 部分最大值）。
@@ -52,7 +52,7 @@ pub(crate) fn cuda_chunk_rmsnorm(
         &CUDA,
         PARTIAL,
     )?;
-    let norm = rmsnorm_map(signature)?;
+    let norm = rmsnorm_map(signature, sample)?;
     Ok(vec![partial, norm])
 }
 
@@ -77,12 +77,13 @@ pub(crate) fn cuda_chunk_softmax(
         PARTIAL,
     )?;
     let expsum = softmax_expsum_map(signature, sample, chunk)?;
-    let norm = softmax_norm_map(signature)?;
+    let norm = softmax_norm_map(signature, sample)?;
     Ok(vec![max, expsum, norm])
 }
 
 /// RMSNorm 归一化段：每线程一块，`y[start + j] = gamma[start + j] * x[start + j] / rms`。
-fn rmsnorm_map(signature: &Signature) -> Result<String> {
+fn rmsnorm_map(signature: &Signature, sample: &Sample) -> Result<String> {
+    let len = length_scalar(signature, sample)?;
     let reads = readonly_buffers(signature);
     let (Some(x), Some(gamma)) = (reads.first(), reads.get(1)) else {
         return Err(Error::new(
@@ -93,7 +94,8 @@ fn rmsnorm_map(signature: &Signature) -> Result<String> {
     };
     let y = output_name(signature)?;
     let body = format!(
-        "    d_{y}[n] = d_{gamma}[n] * d_{x}[n] / rms;",
+        "    if (n < {len}) {{\n        d_{y}[n] = d_{gamma}[n] * d_{x}[n] / rms;\n    }}",
+        len = len,
         x = x,
         gamma = gamma,
         y = y,
@@ -116,11 +118,13 @@ fn softmax_expsum_map(signature: &Signature, sample: &Sample, chunk: usize) -> R
 }
 
 /// Softmax 第三段：`y[start + j] = exp(x - max) / sum`。
-fn softmax_norm_map(signature: &Signature) -> Result<String> {
+fn softmax_norm_map(signature: &Signature, sample: &Sample) -> Result<String> {
+    let len = length_scalar(signature, sample)?;
     let x = single_read(signature, "Softmax")?;
     let y = output_name(signature)?;
     let body = format!(
-        "    d_{y}[n] = _cutile_exp_f32(d_{x}[n] - max) / sum;",
+        "    if (n < {len}) {{\n        d_{y}[n] = _cutile_exp_f32(d_{x}[n] - max) / sum;\n    }}",
+        len = len,
         x = x,
         y = y,
     );
@@ -207,9 +211,9 @@ pub fn cuda_rmsnorm_driver(
     text.push_str(&format!(
         "    float rms = sqrtf(sum / (float){len} + 1e-6f);\n"
     ));
-    text.push_str(&launch(NORM, len, &args, "rms"));
+    text.push_str(&launch_threads(NORM, len.div_ceil(256), 256, &args, "rms"));
     text.push_str(&cuda_readback(output, len));
-    text.push_str(&free_buffers(signature));
+    text.push_str(&cuda_release(signature));
     text.push_str("    return 0;\n}\n");
     Ok(text)
 }
@@ -240,9 +244,15 @@ pub fn cuda_softmax_driver(
     text.push_str(&launch(EXPSUM, grid, &args, "max"));
     text.push_str(&partial_copy(output, grid));
     text.push_str(&fold_sum());
-    text.push_str(&launch(NORM, len, &args, "max, sum"));
+    text.push_str(&launch_threads(
+        NORM,
+        len.div_ceil(256),
+        256,
+        &args,
+        "max, sum",
+    ));
     text.push_str(&cuda_readback(output, len));
-    text.push_str(&free_buffers(signature));
+    text.push_str(&cuda_release(signature));
     text.push_str("    return 0;\n}\n");
     Ok(text)
 }
@@ -260,18 +270,6 @@ pub(crate) fn length_usize(signature: &Signature, sample: &Sample) -> Result<usi
         )
         .with("engine::norm::length_usize")
     })
-}
-
-/// 设备内核的启动实参：只有缓冲（`d_<name>`）。归一化各段的内核形参里没有长度标量——
-/// 块长与总长在生成期已知，编译进 body。
-fn buffer_args(signature: &Signature) -> String {
-    signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .map(|param| format!("d_{}", param.name))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// 程序头：CUDA include、错误检查宏、多段设备源。
@@ -314,13 +312,25 @@ fn partial_scaffold(grid: usize) -> String {
 }
 
 /// 一次派发 + 同步检查；`extra` 是追加的标量实参（`rms` / `max` / `sum`），空则不追加。
+/// （分块段每线程一块，块大小固定为 1。）
 pub(crate) fn launch(entry: &str, grid: usize, args: &str, extra: &str) -> String {
+    launch_threads(entry, grid, 1, args, extra)
+}
+
+/// 带块内线程数的派发（归一化段逐元素，块内 256 线程；kernel 侧自带 `n < N` 守卫）。
+pub(crate) fn launch_threads(
+    entry: &str,
+    blocks: usize,
+    threads: usize,
+    args: &str,
+    extra: &str,
+) -> String {
     let extra = if extra.is_empty() {
         String::new()
     } else {
         format!(", {extra}")
     };
-    format!("    {entry}<<<{grid}, 1>>>({args}{extra});\n    CUTILE_CUDA_CHECK();\n")
+    format!("    {entry}<<<{blocks}, {threads}>>>({args}{extra});\n    CUTILE_CUDA_CHECK();\n")
 }
 
 /// 把 `y` 前 `G` 个槽的部分结果回读到 `h_tmp`。
@@ -338,17 +348,4 @@ fn fold_max() -> String {
 /// 主机折叠部分指数和。
 fn fold_sum() -> String {
     String::from("    float sum = 0.0f;\n    for (int i = 0; i < G; ++i) { sum += h_tmp[i]; }\n")
-}
-
-/// 释放全部设备缓冲。
-pub(crate) fn free_buffers(signature: &Signature) -> String {
-    let mut text = String::new();
-    for param in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-    {
-        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
-    }
-    text
 }

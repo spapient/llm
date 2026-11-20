@@ -17,7 +17,7 @@ use op::sig::Signature;
 
 use cutile::harness::output_name;
 
-use crate::codegen::{cuda_host_buffers_grid, cuda_readback};
+use crate::codegen::{Driver, buffer_args, cuda_head, cuda_launch};
 
 /// 输出块边长。
 const TILE: usize = 64;
@@ -39,14 +39,8 @@ pub fn gemm_kernel(signature: &Signature, sample: &Sample) -> Result<String> {
     let (a, b) = input_pair(signature)?;
     let y = output_name(signature)?;
     let (m, n, k) = shape(signature, sample)?;
-    if k == 0 || k % BK != 0 {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!("WMMA GEMM 要求 K 是 {BK} 的正整数倍，得到 {k}"),
-        )
-        .with("engine::wmma::gemm_kernel"));
-    }
-    let exact = m % TILE == 0 && n % TILE == 0;
+    require_k(k)?;
+    let exact = tiles_exactly(m, n);
     let mut text = String::from(
         "#define __MUSA_QY2_MMA__ 1\n#include <musa_runtime.h>\n#include <cuda_runtime.h>\n#include <mma.h>\n\nusing namespace mtmusa::wmma;\n",
     );
@@ -196,6 +190,23 @@ fn input_pair(signature: &Signature) -> Result<(&str, &str)> {
     }
 }
 
+/// `K` 必须是 `BK` 的正整数倍：否则一片不齐，由调用方回落通用路径。
+fn require_k(k: usize) -> Result<()> {
+    if k != 0 && k.is_multiple_of(BK) {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Unsupported,
+        format!("WMMA GEMM 要求 K 是 {BK} 的正整数倍，得到 {k}"),
+    )
+    .with("engine::wmma::gemm_kernel"))
+}
+
+/// `M`/`N` 都整除块边长时载入与写出都不带守卫（编译器把分支整体消掉）。
+fn tiles_exactly(m: usize, n: usize) -> bool {
+    m.is_multiple_of(TILE) && n.is_multiple_of(TILE)
+}
+
 /// 形状 `(M, N, K)`：三个标量的样本值（`gemm` 签名的 `M`/`N`/`K`）。
 fn shape(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)> {
     let mut values = Vec::with_capacity(3);
@@ -204,20 +215,7 @@ fn shape(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)
         .iter()
         .filter(|param| !param.ctype.is_buffer())
     {
-        let value = sample.scalar(&param.name).ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("WMMA GEMM 的标量 `{}` 没有样本取值", param.name),
-            )
-            .with("engine::wmma::shape")
-        })?;
-        values.push(usize::try_from(value).map_err(|_| {
-            Error::new(
-                Code::Invalid,
-                format!("WMMA GEMM 的标量 `{}` = {value} 不是非负 usize", param.name),
-            )
-            .with("engine::wmma::shape")
-        })?);
+        values.push(scalar_of(param, sample)?);
     }
     match values.as_slice() {
         [m, n, k] => Ok((*m, *n, *k)),
@@ -227,6 +225,24 @@ fn shape(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)
         )
         .with("engine::wmma::shape")),
     }
+}
+
+/// 单个形状标量的样本值：缺取值或不是非负 `usize` 都在这里报，不留给几何算式去越界。
+fn scalar_of(param: &op::sig::Param, sample: &Sample) -> Result<usize> {
+    let value = sample.scalar(&param.name).ok_or_else(|| {
+        Error::new(
+            Code::Invalid,
+            format!("WMMA GEMM 的标量 `{}` 没有样本取值", param.name),
+        )
+        .with("engine::wmma::shape")
+    })?;
+    usize::try_from(value).map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!("WMMA GEMM 的标量 `{}` = {value} 不是非负 usize", param.name),
+        )
+        .with("engine::wmma::shape")
+    })
 }
 
 /// WMMA GEMM 的 host 驱动：`dim3(ceil(M/64), ceil(N/64))`、128 线程，分配/回读与
@@ -240,44 +256,12 @@ pub fn gemm_driver(device_source: &str, signature: &Signature, sample: &Sample) 
     let (m, n, _) = shape(signature, sample)?;
     let (output, values) = cutile::harness::output_of(signature, sample)?;
     debug_assert_eq!(output, y);
-    let out_len = values.len();
-    let mut text = String::from("#include <cstdio>\n");
-    text.push_str(device_source);
-    if !device_source.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str("\nint main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
-        sample,
-        signature.params(),
-        output,
-        out_len,
-    )?);
-    text.push_str(&format!(
-        "    kernel_main<<<dim3({}, {}), {THREADS}>>>({});\n    cudaError_t error = cudaDeviceSynchronize();\n    if (error != cudaSuccess) {{ fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; }}\n",
-        n.div_ceil(TILE),
-        m.div_ceil(TILE),
-        buffer_args(signature),
-    ));
-    text.push_str(&cuda_readback(output, out_len));
-    for param in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-    {
-        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
-    }
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
-}
-
-/// 启动实参：只传缓冲（形状是生成期常量，不进 kernel 形参）。
-fn buffer_args(signature: &Signature) -> String {
-    signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .map(|param| format!("d_{}", param.name))
-        .collect::<Vec<_>>()
-        .join(", ")
+    let emit = cuda_launch(
+        "kernel_main",
+        &format!("dim3({}, {})", n.div_ceil(TILE), m.div_ceil(TILE)),
+        THREADS,
+        &buffer_args(signature),
+    );
+    let head = cuda_head("#include <cstdio>\n", device_source);
+    Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
 }
