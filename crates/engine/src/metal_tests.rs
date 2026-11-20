@@ -1070,19 +1070,11 @@ fn metal_tensor_gemm() {
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-tensor");
 
     // 形状只放开 M/N：`matmul_f32` 的规约轴由算子语义固定为 4096。
-    // 候选几何覆盖 llm.u 的三个 variant（128·96·8 / 128·64·8 / 64·64·4）外加更宽的规约块。
-    let geometries = [
-        (64, 64, 4),
-        (64, 64, 8),
-        (64, 32, 4),
-        (64, 48, 4),
-        (64, 112, 4),
-        (128, 64, 8),
-        (128, 32, 8),
-        (128, 96, 8),
-    ];
+    let shapes = [(512, 512, 4096), (1024, 1024, 4096), (2048, 2048, 4096), (4096, 4096, 4096)];
+    // 候选几何：输出块 / 规约块 / simdgroup 数。
+    let geometries = [(64, 64, 4), (64, 64, 8), (128, 64, 8), (128, 96, 8)];
 
-    for (m, n, k) in [(512, 512, 4096)] {
+    for (m, n, k) in shapes {
         let (a, b) = matmul_values(m, n, k);
         let a_buf = upload(&device, &a, "A");
         let b_buf = upload(&device, &b, "B");
@@ -1102,7 +1094,7 @@ fn metal_tensor_gemm() {
             "转置派发应成功"
         );
 
-        // 正确性参考只在能负担的形状上算一次：把两路输入都按 half 舍入后再乘。
+        // 正确性参考只在能负担的形状上算一次：两路输入都按 half 舍入后再乘。
         let reference = (m * n * k <= 1024 * 1024 * 1024).then(|| {
             cpu_matmul(
                 &a.iter().copied().map(half_precision).collect::<Vec<f32>>(),
@@ -1113,16 +1105,10 @@ fn metal_tensor_gemm() {
             )
         });
 
+        let mut pipes = Vec::new();
         for (tile, k_tile, simdgroups) in geometries {
             let msl = cutile::execution::metal_tensor_gemm_program(
-                &catalogue,
-                &dirs,
-                "matmul_f32",
-                m,
-                n,
-                tile,
-                k_tile,
-                simdgroups,
+                &catalogue, &dirs, "matmul_f32", m, n, tile, k_tile, simdgroups,
             )
             .expect("张量核 MSL 应能生成");
             assert!(
@@ -1136,19 +1122,35 @@ fn metal_tensor_gemm() {
                 queue.execute(&pipe, &[&a_buf, &bt_buf, &y_buf], grid, block),
                 "GEMM 派发应成功"
             );
-
+            let label = format!("{tile}·{k_tile}·{simdgroups}");
             let error = reference.as_ref().map_or(f64::NAN, |want| {
                 assert_relaxed_matches(
-                    &format!("张量核 {m}×{n}×{k}（{tile}·{k_tile}·{simdgroups}）"),
+                    &format!("张量核 {m}×{n}×{k} {label}"),
                     want,
                     y_buf.as_mut_bytes(),
                 )
             });
-            let ns = measure(&queue, &pipe, &[&a_buf, &bt_buf, &y_buf], grid, block);
+            println!("张量核 {m}×{n}×{k} {label} 误差 {error:.2e}");
+            pipes.push((label, pipe, grid, block, error));
+        }
+
+        // GPU 频率漂移会让"先测"的档位虚高，故各档交替采样后统一取中位。
+        let mut samples = vec![Vec::new(); pipes.len()];
+        for _ in 0..6 {
+            for (slot, (_, pipe, grid, block, _)) in samples.iter_mut().zip(&pipes) {
+                for _ in 0..4 {
+                    let start = std::time::Instant::now();
+                    queue.execute(pipe, &[&a_buf, &bt_buf, &y_buf], *grid, *block);
+                    slot.push(start.elapsed().as_nanos());
+                }
+            }
+        }
+        for (slot, (label, _, _, _, _)) in samples.iter_mut().zip(&pipes) {
+            slot.sort_unstable();
+            let ns = slot[slot.len() / 2] as f64;
             let gflops = 2.0 * (m * n * k) as f64 / ns;
             println!(
-                "张量核 {m}×{n}×{k} {tile}·{k_tile}·{simdgroups}: {:.3} ms → {gflops:.0} GF/s\
-                 （最大相对误差 {error:.2e}）",
+                "张量核 {m}×{n}×{k} {label}: {:.3} ms → {gflops:.0} GF/s",
                 ns / 1e6
             );
         }
