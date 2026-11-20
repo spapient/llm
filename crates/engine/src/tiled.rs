@@ -481,31 +481,17 @@ fn flash_attention_msl(
 ) -> String {
     let nd = d.div_ceil(threads);
     let tail = !s.is_multiple_of(block);
-    let score = if tail {
-        format!(
-            "            if (kb + j < S) {{\n\
-             \x20               float dot = 0.0f;\n\
-             \x20               for (uint p = 0; p < D; ++p) dot += d_{q}[i * D + p] * d_{k}[(kb + j) * D + p];\n\
-             \x20               sc = dot / scale;\n\
-             \x20           }}\n"
-        )
-    } else {
-        format!(
-            "            float dot = 0.0f;\n\
-             \x20           for (uint p = 0; p < D; ++p) dot += d_{q}[i * D + p] * d_{k}[(kb + j) * D + p];\n\
-             \x20           sc = dot / scale;\n"
-        )
-    };
-    let weight = if tail {
-        "(kb + j < S) ? exp(scores[j] - mn) : 0.0f"
-    } else {
-        "exp(scores[j] - mn)"
-    };
-    let value = if tail {
-        "                    if (kb + j < S) a += scores[j] * d_v[(kb + j) * D + h];\n"
-    } else {
-        "                    a += scores[j] * d_v[(kb + j) * D + h];\n"
-    };
+    let score = flash_score_body(q, k, tail);
+    let weight = flash_weight(tail);
+    let decls: String = (0..nd)
+        .map(|n| format!("    float acc_{n} = 0.0f;\n"))
+        .collect();
+    let updates: String = (0..nd)
+        .map(|n| flash_acc_update(v, n, threads, d, block, tail))
+        .collect();
+    let writes: String = (0..nd)
+        .map(|n| format!("    {{ const uint h = t + {}; if (h < D) d_{y}[i * D + h] = acc_{n} / l; }}\n", n * threads))
+        .collect();
     format!(
         "#include <metal_stdlib>\n\
          using namespace metal;\n\
@@ -522,8 +508,7 @@ fn flash_attention_msl(
          \x20    const uint i = gid.x / T, t = lid.x;\n\
          \x20    const float scale = sqrt((float)D);\n\
          \x20    float m = -3.402823466e38f, l = 0.0f;\n\
-         \x20    float acc[ND];\n\
-         \x20    for (uint n = 0; n < ND; ++n) acc[n] = 0.0f;\n\
+         {decls}\
          \x20    for (uint kb = 0; kb < S; kb += BK) {{\n\
          \x20        float tmax = -3.402823466e38f;\n\
          \x20        for (uint j = t; j < BK; j += T) {{\n\
@@ -553,23 +538,64 @@ fn flash_attention_msl(
          \x20            threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20        }}\n\
          \x20        l = l * alpha + red[0];\n\
-         \x20        for (uint n = 0; n < ND; ++n) {{\n\
-         \x20            const uint h = t + n * T;\n\
-         \x20            if (h < D) {{\n\
-         \x20                float a = acc[n] * alpha;\n\
-         \x20                for (uint j = 0; j < BK; ++j) {{\n\
-         {value}\
-         \x20                }}\n\
-         \x20                acc[n] = a;\n\
-         \x20            }}\n\
-         \x20        }}\n\
+         {updates}\
          \x20        m = mn;\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20    }}\n\
-         \x20    for (uint n = 0; n < ND; ++n) {{\n\
-         \x20        const uint h = t + n * T;\n\
-         \x20        if (h < D) d_{y}[i * D + h] = acc[n] / l;\n\
-         \x20    }}\n\
+         {writes}\
          }}"
+    )
+}
+
+/// 分数块的单键计算体：`S` 不是块大小整数倍时带尾块守卫。
+fn flash_score_body(q: &str, k: &str, tail: bool) -> String {
+    let dot = format!(
+        "float dot = 0.0f;\n\
+         \x20               for (uint p = 0; p < D; ++p) dot += d_{q}[i * D + p] * d_{k}[(kb + j) * D + p];\n\
+         \x20               sc = dot / scale;\n"
+    );
+    if tail {
+        format!(
+            "            if (kb + j < S) {{\n\
+             \x20               {dot}\
+             \x20           }}\n"
+        )
+    } else {
+        format!("            {dot}")
+    }
+}
+
+/// 指数权重：无尾块守卫时省掉逐键分支。
+fn flash_weight(tail: bool) -> &'static str {
+    if tail {
+        "(kb + j < S) ? exp(scores[j] - mn) : 0.0f"
+    } else {
+        "exp(scores[j] - mn)"
+    }
+}
+
+/// 一个寄存器输出维 `acc_n` 的在线更新：先按 `alpha` 缩放旧累加，再加当前键块的 `P·V`。
+fn flash_acc_update(
+    v: &str,
+    n: usize,
+    threads: usize,
+    d: usize,
+    block: usize,
+    tail: bool,
+) -> String {
+    let h = n * threads;
+    let add = format!("a += scores[j] * d_{v}[j * D + h];");
+    let value = if tail {
+        format!("if (kb + j < S) {add}")
+    } else {
+        add
+    };
+    format!(
+        "        {{ const uint h = t + {h};\n\
+         \x20           if (h < D) {{\n\
+         \x20               float a = acc_{n} * alpha;\n\
+         \x20               for (uint j = 0; j < BK; ++j) {{ {value} }}\n\
+         \x20               acc_{n} = a;\n\
+         \x20           }} }}\n"
     )
 }

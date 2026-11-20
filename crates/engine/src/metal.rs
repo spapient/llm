@@ -964,7 +964,7 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
             "Metal 生产态 attention 512×64：网格行线程={grid_ns:.1} ns 分块线程组={tiled_ns:.1} ns（每行 {THREADS} 线程） 加速={:.2}×",
             grid_ns / tiled_ns,
         );
-        for block in [64usize, 128, 256] {
+        for block in [64usize, 128, 256, 512] {
             let flash_msl = cutile::execution::metal_flash_attention_program(
                 &catalogue,
                 &dirs,
