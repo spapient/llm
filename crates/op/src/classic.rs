@@ -451,38 +451,21 @@ pub mod batch_norm {
         norm().forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        norm_sample(
-            N * S * C,
-            C,
-            vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
-            1.5,
-            0.25,
-        )
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        norm_reference(sample, N * S * C, run)
-    }
-
-    /// 声明档前向：批统计走训练口径（`running` 缓冲就地构造、不外露）。
-    pub fn forward(
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
-        out: &mut [f32],
-    ) -> diagnostic::Result<()> {
-        run(x, gamma, beta, out)
-    }
-
-    /// 标量代价：两趟读 x（均值、方差）+ 读 gamma/beta + 写 y，每元素约 4 次运算。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "batch_norm_f32", 4.0, 3)
-    }
-
-    classic_op!(BatchNormModel, BatchNorm, "batch_norm_f32", 3, 64, 64);
+    // 两趟读 x（均值、方差）+ 读 gamma/beta + 写 y，每元素约 4 次运算。
+    norm_op!(
+        BatchNormModel,
+        BatchNorm,
+        "batch_norm_f32",
+        64,
+        64,
+        N * S * C,
+        C,
+        vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
+        1.5,
+        0.25,
+        4.0,
+        3
+    );
 }
 
 /// 组归一化（声明档 `G=2, C=4, spatial=2, n=2`）。
