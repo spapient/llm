@@ -1081,11 +1081,7 @@ fn adaptive_pool_matches_central_differences() -> Result<()> {
 
 #[test]
 fn interpolate_matches_central_differences() -> Result<()> {
-    let (h, w, out) = (
-        op::interpolate::H,
-        op::interpolate::W,
-        op::interpolate::OH,
-    );
+    let (h, w, out) = (op::interpolate::H, op::interpolate::W, op::interpolate::OH);
     let x0 = ramp(h * w);
     check_shaped_grad("interpolate_f32", &x0, out * out, |px| {
         let mut y = vec![0.0f32; out * out];
@@ -1200,7 +1196,9 @@ fn check_geometry_affine(
     session.register_parameter(x, ParamRole::Trainable, x0.to_vec())?;
     session.register_parameter(g, ParamRole::Trainable, g0.to_vec())?;
     session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
-    session.buffers().compute_shaped(op, &[x, g, b], y, geometry)?;
+    session
+        .buffers()
+        .compute_shaped(op, &[x, g, b], y, geometry)?;
     sum_backward(&mut session, y, out)?;
 
     let f = &loss;
@@ -1227,7 +1225,13 @@ fn check_geometry_affine(
 
 #[test]
 fn shaped_max_pool1d_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Pool1d { k: 3, s: 1, p: 1, l: 7, c: 1 };
+    let geometry = Geometry::Pool1d {
+        k: 3,
+        s: 1,
+        p: 1,
+        l: 7,
+        c: 1,
+    };
     let x0 = ramp(7);
     check_geometry_grad("max_pool1d_f32", geometry, &x0, |px| {
         let mut y = vec![0.0f32; geometry.outputs()];
@@ -1238,7 +1242,14 @@ fn shaped_max_pool1d_matches_central_differences() -> Result<()> {
 
 #[test]
 fn shaped_max_pool2d_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Pool2d { k: 3, s: 2, p: 0, h: 5, w: 5, c: 2 };
+    let geometry = Geometry::Pool2d {
+        k: 3,
+        s: 2,
+        p: 0,
+        h: 5,
+        w: 5,
+        c: 2,
+    };
     let x0 = ramp(5 * 5 * 2);
     check_geometry_grad("max_pool2d_f32", geometry, &x0, |px| {
         let mut y = vec![0.0f32; geometry.outputs()];
@@ -1268,7 +1279,13 @@ fn shaped_avg_pool2d_matches_central_differences() -> Result<()> {
 
 #[test]
 fn shaped_adaptive_pool_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Adaptive { oh: 3, ow: 3, h: 6, w: 6, c: 1 };
+    let geometry = Geometry::Adaptive {
+        oh: 3,
+        ow: 3,
+        h: 6,
+        w: 6,
+        c: 1,
+    };
     let x0 = ramp(36);
     check_geometry_grad("adaptive_pool_f32", geometry, &x0, |px| {
         let mut y = vec![0.0f32; geometry.outputs()];
@@ -1279,7 +1296,14 @@ fn shaped_adaptive_pool_matches_central_differences() -> Result<()> {
 
 #[test]
 fn shaped_interpolate_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Interp { oh: 5, ow: 5, h: 3, w: 3, c: 1, linear: true };
+    let geometry = Geometry::Interp {
+        oh: 5,
+        ow: 5,
+        h: 3,
+        w: 3,
+        c: 1,
+        linear: true,
+    };
     let x0 = ramp(9);
     check_geometry_grad("interpolate_f32", geometry, &x0, |px| {
         let mut y = vec![0.0f32; geometry.outputs()];
@@ -1290,7 +1314,11 @@ fn shaped_interpolate_matches_central_differences() -> Result<()> {
 
 #[test]
 fn shaped_batch_norm_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Norm { n: 2, spatial: 3, channels: 5 };
+    let geometry = Geometry::Norm {
+        n: 2,
+        spatial: 3,
+        channels: 5,
+    };
     let (x0, g0, b0) = (ramp(30), gain5(), shift5());
     check_geometry_affine("batch_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
         let mut y = vec![0.0f32; geometry.outputs()];
@@ -1301,7 +1329,12 @@ fn shaped_batch_norm_matches_central_differences() -> Result<()> {
 
 #[test]
 fn shaped_group_norm_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Group { groups: 3, n: 2, spatial: 3, channels: 6 };
+    let geometry = Geometry::Group {
+        groups: 3,
+        n: 2,
+        spatial: 3,
+        channels: 6,
+    };
     let (x0, g0, b0) = (ramp(36), gain6(), shift6());
     check_geometry_affine("group_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
         let mut y = vec![0.0f32; geometry.outputs()];
@@ -1354,17 +1387,29 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     let (n, spatial, channels) = (2usize, 3usize, 4usize);
     let len = n * spatial * channels;
     let feed: Vec<f32> = (0..len).map(|i| 0.25 + (i as f32 * 0.37).sin()).collect();
-    let geom = Geometry::Norm { n, spatial, channels };
+    let geom = Geometry::Norm {
+        n,
+        spatial,
+        channels,
+    };
 
     let mut tape = Tape::new();
     let x = tape.leaf();
     let gamma = tape.parameter();
     let beta = tape.parameter();
-    let y = tape.record("batch_norm_f32", &[x, gamma, beta]).expect("记录归一化");
+    let y = tape
+        .record("batch_norm_f32", &[x, gamma, beta])
+        .expect("记录归一化");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录损失");
     let sizes = support::sizes_of(
         &tape,
-        &[(x, len), (gamma, channels), (beta, channels), (y, len), (loss, 1)],
+        &[
+            (x, len),
+            (gamma, channels),
+            (beta, channels),
+            (y, len),
+            (loss, 1),
+        ],
     );
     // 总步数放大，让学习率调度在 100 步内几乎不动（默认 `max_steps = 1` 会在第 1 步后归零）。
     let mut cfg = config();
@@ -1382,7 +1427,9 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     let mut last_shift = 0.0f32;
     for t in 0..100u32 {
         session.buffers().load(x, Data::F32(feed.clone()))?;
-        session.buffers().compute_shaped("batch_norm_f32", &[x, gamma, beta], y, geom)?;
+        session
+            .buffers()
+            .compute_shaped("batch_norm_f32", &[x, gamma, beta], y, geom)?;
         session.buffers().compute("reduce_sum_f32", &[y], loss)?;
         let now = session.record_loss(loss)?;
         let shift = session.slots()[1].params()[0];
@@ -1390,7 +1437,11 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
             assert!(now < last, "第 {t} 步损失没有下降：{last} → {now}");
             let predicted = slope * (shift - last_shift);
             assert!((now - last).abs() > 1e-3, "第 {t} 步损失没有实质变化");
-            assert!((now - last - predicted).abs() <= 1e-4, "第 {t} 步 Δloss 与 Δbeta 不成比例：{} vs {predicted}", now - last);
+            assert!(
+                (now - last - predicted).abs() <= 1e-4,
+                "第 {t} 步 Δloss 与 Δbeta 不成比例：{} vs {predicted}",
+                now - last
+            );
         }
         last = now;
         last_shift = shift;
@@ -1400,8 +1451,14 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     assert!(last < -13.0, "100 步后损失只有 {last}，更新量不足");
     // 各通道的 beta 梯度恒为 `n * spatial`，所以四个通道必须同步下降。
     let shift = session.slots()[1].params();
-    assert!(shift.windows(2).all(|w| (w[0] - w[1]).abs() <= 1e-6), "偏置通道不同步：{shift:?}");
-    assert!(shift.iter().all(|&b| b < -0.5), "偏置没有实质下降：{shift:?}");
+    assert!(
+        shift.windows(2).all(|w| (w[0] - w[1]).abs() <= 1e-6),
+        "偏置通道不同步：{shift:?}"
+    );
+    assert!(
+        shift.iter().all(|&b| b < -0.5),
+        "偏置没有实质下降：{shift:?}"
+    );
     Ok(())
 }
 
@@ -1414,34 +1471,70 @@ fn rolling_statistics_persist_across_steps_in_the_buffers() -> Result<()> {
     let (n, spatial, channels) = (2usize, 3usize, 2usize);
     let len = n * spatial * channels;
     let count = n * spatial;
-    let geom = Geometry::Norm { n, spatial, channels };
+    let geom = Geometry::Norm {
+        n,
+        spatial,
+        channels,
+    };
     let feed: Vec<f32> = (0..len).map(|i| 0.2 + i as f32 * 0.13).collect();
 
     let mut tape = Tape::new();
     let x = tape.leaf();
     let g = tape.leaf();
     let b = tape.leaf();
-    let y = tape.record("batch_norm_f32", &[x, g, b]).expect("记录归一化");
+    let y = tape
+        .record("batch_norm_f32", &[x, g, b])
+        .expect("记录归一化");
     let sizes = support::sizes_of(&tape, &[(x, len), (g, channels), (b, channels), (y, len)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.buffers().load(x, Data::F32(feed.clone()))?;
     session.buffers().load(g, Data::F32(vec![1.0; channels]))?;
     session.buffers().load(b, Data::F32(vec![0.0; channels]))?;
 
-    session.buffers().compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
-    let once = session.buffers().running(y).expect("第一轮应留下统计").clone();
-    session.buffers().compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
-    let twice = session.buffers().running(y).expect("第二轮应继续递推").clone();
+    session
+        .buffers()
+        .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
+    let once = session
+        .buffers()
+        .running(y)
+        .expect("第一轮应留下统计")
+        .clone();
+    session
+        .buffers()
+        .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
+    let twice = session
+        .buffers()
+        .running(y)
+        .expect("第二轮应继续递推")
+        .clone();
 
     for ci in 0..channels {
         let values: Vec<f32> = (0..count).map(|p| feed[p * channels + ci]).collect();
         let mean = values.iter().sum::<f32>() / count as f32;
         let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / count as f32;
         let unbiased = var * count as f32 / (count - 1) as f32;
-        assert!((once.mean[ci] - 0.1 * mean).abs() <= 1e-5, "一步均值 {} vs {}", once.mean[ci], 0.1 * mean);
-        assert!((twice.mean[ci] - 0.19 * mean).abs() <= 1e-5, "两步均值 {} vs {}", twice.mean[ci], 0.19 * mean);
-        assert!((once.var[ci] - (0.9 + 0.1 * unbiased)).abs() <= 1e-5, "一步方差 {}", once.var[ci]);
-        assert!((twice.var[ci] - (0.81 + 0.19 * unbiased)).abs() <= 1e-5, "两步方差 {}", twice.var[ci]);
+        assert!(
+            (once.mean[ci] - 0.1 * mean).abs() <= 1e-5,
+            "一步均值 {} vs {}",
+            once.mean[ci],
+            0.1 * mean
+        );
+        assert!(
+            (twice.mean[ci] - 0.19 * mean).abs() <= 1e-5,
+            "两步均值 {} vs {}",
+            twice.mean[ci],
+            0.19 * mean
+        );
+        assert!(
+            (once.var[ci] - (0.9 + 0.1 * unbiased)).abs() <= 1e-5,
+            "一步方差 {}",
+            once.var[ci]
+        );
+        assert!(
+            (twice.var[ci] - (0.81 + 0.19 * unbiased)).abs() <= 1e-5,
+            "两步方差 {}",
+            twice.var[ci]
+        );
     }
     Ok(())
 }
@@ -1462,10 +1555,15 @@ fn conv2d_gradients_match_central_differences_on_any_geometry() -> Result<()> {
         },
     ];
     for geom in shapes {
-        let Geometry::Conv2d { k, h, w, cin, cout, .. } = geom else {
+        let Geometry::Conv2d {
+            k, h, w, cin, cout, ..
+        } = geom
+        else {
             unreachable!("本测试只跑卷积几何");
         };
-        let x: Vec<f32> = (0..h * w * cin).map(|i| 0.2 + (i as f32 * 0.31).sin()).collect();
+        let x: Vec<f32> = (0..h * w * cin)
+            .map(|i| 0.2 + (i as f32 * 0.31).sin())
+            .collect();
         let weight: Vec<f32> = (0..k * k * cin * cout)
             .map(|i| 0.1 + (i as f32 * 0.17).cos() * 0.2)
             .collect();

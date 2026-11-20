@@ -393,43 +393,53 @@ fn lookup(op: &str) -> Result<Formula> {
 /// 这样声明档与实例化共用同一份算术——声明档就是 `Geometry::declared` 的取值，不存在
 /// "前向一套、反向另一套"的可能。
 fn max_pool1d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("max_pool1d_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("max_pool1d_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn max_pool2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("max_pool2d_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("max_pool2d_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn avg_pool2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("avg_pool2d_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("avg_pool2d_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn adaptive_pool(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("adaptive_pool_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("adaptive_pool_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn interpolate(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("interpolate_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("interpolate_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn batch_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("batch_norm_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("batch_norm_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn conv2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("conv2d_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("conv2d_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn group_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("group_norm_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("group_norm_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn instance_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("instance_norm_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("instance_norm_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 fn layer_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("layer_norm_f32")?.backward(ctx.inputs, ctx.incoming)
+    ctx.instance("layer_norm_f32")?
+        .backward(ctx.inputs, ctx.incoming)
 }
 
 /// y = a + b：两条路径都原样回传上游梯度。
