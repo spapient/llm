@@ -558,7 +558,7 @@ pub(crate) mod test_support {
 macro_rules! gemm_variant {
     (
         $name:ident, $alias:ident,
-        $op:tt, $kind:ident,
+        $op:tt, $kind:ident, $differentiable:literal,
         $elem:ty, $bits:expr,
         $( $methods:item ),* $(,)?
     ) => {
@@ -573,6 +573,36 @@ macro_rules! gemm_variant {
             const BITS: $crate::einsum::Bits = $bits;
 
             $( $methods )*
+        }
+
+        // 基座契约（ADR 0050）：三条行为从 `Gemm` 骨架转发，粒度由注解的骨架默认值给出。
+        impl $crate::operator::Operator for $name {
+            const NAME: &'static str = $op;
+            const SHAPE: (usize, usize) = (16, 16);
+            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const AXES: &'static [$crate::model::AxisSpec] = $crate::gemm::AXES;
+            const DIFFERENTIABLE: bool = $differentiable;
+
+            fn shape_ctx(
+                m: usize,
+                n: usize,
+            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+                $crate::gemm::project_shape(m, n)
+            }
+
+            fn cost(
+                shape: &$crate::model::ShapeContext,
+            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
+                $crate::gemm::cost::<Self>(shape)
+            }
+
+            fn sample(m: usize, n: usize) -> $crate::model::Sample {
+                $crate::gemm::sample::<Self>(m, n)
+            }
+
+            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+                $crate::gemm::reference::<Self>(sample)
+            }
         }
 
         #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
@@ -612,6 +642,7 @@ pub mod gemm_i2 {
         GemmI2Model,
         "gemm_i2",
         gemm_packed_tests,
+        false,
         u8,
         I2.bits,
         fn config() -> Option<crate::quant::Row> {
@@ -637,6 +668,7 @@ pub mod gemm_i4 {
         GemmI4Model,
         "gemm_i4",
         gemm_packed_tests,
+        false,
         u8,
         I4.bits,
         fn config() -> Option<crate::quant::Row> {
@@ -662,6 +694,7 @@ pub mod gemm_i8 {
         GemmI8Model,
         "gemm_i8",
         gemm_packed_tests,
+        false,
         u8,
         I8.bits,
         fn sample_a(m: usize) -> Vec<u8> {
@@ -712,6 +745,7 @@ pub mod gemm_f32 {
         GemmF32,
         "gemm_f32",
         gemm_dense_tests,
+        true,
         f32,
         crate::einsum::Bits::ThirtyTwo,
         fn sample_a(m: usize) -> Vec<f32> {

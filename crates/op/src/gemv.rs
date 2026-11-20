@@ -825,6 +825,37 @@ macro_rules! gemv_packed {
             }
         }
 
+        // 基座契约（ADR 0050）：粒度与三条行为全部从格式契约转发。
+        impl $crate::operator::Operator for $crate::gemv::Packed<$conf, { $crate::gemv::GROUP }> {
+            const NAME: &'static str = $op;
+            const SHAPE: (usize, usize) = (4096, 4096);
+            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const AXES: &'static [$crate::model::AxisSpec] = $crate::gemv::AXES;
+            const DIFFERENTIABLE: bool = false;
+            const GROUP: u32 = <Self as $crate::gemv::Format>::GRAIN as u32;
+
+            fn shape_ctx(
+                m: usize,
+                n: usize,
+            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+                $crate::gemv::project_shape(m, n)
+            }
+
+            fn cost(
+                shape: &$crate::model::ShapeContext,
+            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
+                $crate::gemv::cost::<Self>(shape)
+            }
+
+            fn sample(m: usize, n: usize) -> $crate::model::Sample {
+                $crate::gemv::sample::<Self>(m, n)
+            }
+
+            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+                $crate::gemv::reference::<Self>(sample)
+            }
+        }
+
         #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32")]
         #[doc = concat!("`", $op, "` 的语义类型：声明粒度 [`GROUP`]、每行按位宽打包。")]
         pub type $alias = $crate::gemv::Packed<$conf, GROUP>;
@@ -1012,6 +1043,32 @@ pub mod gemv_i8 {
     #[annotation::model(name = "gemv_i8", shape = [4096, 4096], dtype = "f32")]
     pub type I8 = PlainFmt<gemv::SymI8<GROUP>>;
 
+    // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发；量化算子不可微。
+    impl crate::operator::Operator for I8 {
+        const NAME: &'static str = "gemv_i8";
+        const SHAPE: (usize, usize) = (4096, 4096);
+        const DTYPE: crate::model::DType = crate::model::DType::F32;
+        const AXES: &'static [crate::model::AxisSpec] = gemv::AXES;
+        const DIFFERENTIABLE: bool = false;
+        const GROUP: u32 = <I8 as gemv::Format>::GRAIN as u32;
+
+        fn shape_ctx(m: usize, n: usize) -> Result<gemv::ShapeContext, diagnostic::Error> {
+            gemv::project_shape(m, n)
+        }
+
+        fn cost(shape: &gemv::ShapeContext) -> Result<gemv::Cost, diagnostic::Error> {
+            gemv::cost::<Self>(shape)
+        }
+
+        fn sample(m: usize, n: usize) -> gemv::Sample {
+            gemv::sample::<Self>(m, n)
+        }
+
+        fn reference(sample: &gemv::Sample) -> diagnostic::Result<Vec<f32>> {
+            gemv::reference::<Self>(sample)
+        }
+    }
+
     /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
     pub fn forward(
         x: &[f32],
@@ -1096,6 +1153,32 @@ pub mod gemv_f32 {
     /// 稠密格式的语义类型：分块宽度 [`BLOCK`]、任意输入宽度都合法。
     #[annotation::model(name = "gemv_f32", shape = [4096, 4096], dtype = "f32")]
     pub type F32 = PlainFmt<gemv::Dense<BLOCK>>;
+
+    // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发。
+    impl crate::operator::Operator for F32 {
+        const NAME: &'static str = "gemv_f32";
+        const SHAPE: (usize, usize) = (4096, 4096);
+        const DTYPE: crate::model::DType = crate::model::DType::F32;
+        const AXES: &'static [crate::model::AxisSpec] = gemv::AXES;
+        const DIFFERENTIABLE: bool = true;
+        const GROUP: u32 = <F32 as gemv::Format>::GRAIN as u32;
+
+        fn shape_ctx(m: usize, n: usize) -> Result<gemv::ShapeContext, diagnostic::Error> {
+            gemv::project_shape(m, n)
+        }
+
+        fn cost(shape: &gemv::ShapeContext) -> Result<gemv::Cost, diagnostic::Error> {
+            gemv::cost::<Self>(shape)
+        }
+
+        fn sample(m: usize, n: usize) -> gemv::Sample {
+            gemv::sample::<Self>(m, n)
+        }
+
+        fn reference(sample: &gemv::Sample) -> diagnostic::Result<Vec<f32>> {
+            gemv::reference::<Self>(sample)
+        }
+    }
 
     /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
     pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {

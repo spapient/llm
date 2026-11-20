@@ -19,9 +19,9 @@ fn assert_projection_matches_registry<T: Operator>() {
 
 /// 代价、样本与参考：同一形状上下文的输出逐位相等。
 fn assert_behavior_matches(projected: Model, registered: Model, name: &str) {
-    let shape = (projected.shape_ctx)(64, 1).expect("形状上下文可构造");
-    let sample = (projected.sample)(64, 1);
-    assert_eq!(sample, (registered.sample)(64, 1), "{name}: sample");
+    let shape = (projected.shape_ctx)(64, 8).expect("形状上下文可构造");
+    let sample = (projected.sample)(64, 8);
+    assert_eq!(sample, (registered.sample)(64, 8), "{name}: sample");
     assert_eq!(
         (projected.cost)(&shape).expect("投影代价可计算"),
         (registered.cost)(&shape).expect("注册表代价可计算"),
@@ -65,4 +65,20 @@ fn dequant_projection_matches_the_registered_model() {
     assert_projection_matches_registry::<crate::dequant_i2::DequantI2>();
     assert_projection_matches_registry::<crate::dequant_i4::DequantI4>();
     assert_projection_matches_registry::<crate::dequant_i8::DequantI8>();
+}
+
+#[test]
+fn gemv_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::gemv::gemv_i2::I2>();
+    assert_projection_matches_registry::<crate::gemv::gemv_i4::I4>();
+    assert_projection_matches_registry::<crate::gemv::gemv_i8::I8>();
+    assert_projection_matches_registry::<crate::gemv::gemv_f32::F32>();
+}
+
+#[test]
+fn gemm_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::gemm::gemm_i2::GemmI2>();
+    assert_projection_matches_registry::<crate::gemm::gemm_i4::GemmI4>();
+    assert_projection_matches_registry::<crate::gemm::gemm_i8::GemmI8>();
+    assert_projection_matches_registry::<crate::gemm::gemm_f32::Dense>();
 }
