@@ -168,82 +168,80 @@ fn signed(bytes: &[u8]) -> Vec<i8> {
     bytes.iter().map(|&x| x as i8).collect()
 }
 
-/// `[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i2::forward` 同一段算术。
-fn gemv_i2(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, "gemv_i2")?;
-    op::gemv_i2::forward(x, w, scales, output_slice::<f32>("gemv_i2", output)?)
+/// 稠密自注意力内核入口：`q/k/v → out`，查询行数 `heads` 与头宽 `d` 随几何传入。
+type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> Result<()>;
+
+/// decode 注意力内核入口：`q/k/v → out`，查询行数 `q_rows`、历史行数 `hist` 与头宽 `d` 随几何传入。
+type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
+
+/// 量化 GEMV 适配：`[x: f32, w: u8, scales: f32] → y: f32`。三档位宽同一条形参表，
+/// 只差一行算术入口，因此适配只写一份。
+macro_rules! quant_gemv {
+    ($($run:ident),* $(,)?) => {$(
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, stringify!($run))?;
+            op::$run::forward(x, w, scales, output_slice::<f32>(stringify!($run), output)?)
+        }
+    )*};
 }
 
-/// `[x: f32, w: u8, scales: f32] → y: f32`，与 `op::gemv_i4::forward` 同一段算术。
-fn gemv_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, "gemv_i4")?;
-    op::gemv_i4::forward(x, w, scales, output_slice::<f32>("gemv_i4", output)?)
-}
+quant_gemv!(gemv_i2, gemv_i4, gemv_i8);
 
-/// 同上，量化 8 位：`op::gemv_i8::forward`。
-fn gemv_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, "gemv_i8")?;
-    op::gemv_i8::forward(x, w, scales, output_slice::<f32>("gemv_i8", output)?)
-}
-
-/// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
-fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+/// 自注意力三路适配的公共几何：头宽取声明宽度，`heads` 由 q 长按头宽分段；两版只差算术入口。
+fn attention_paths(
+    inputs: &[View<'_>],
+    output: &mut ViewMut<'_>,
+    run: AttentionKernel,
+) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = op::attention::MODEL.shape.1;
     let heads = batches("attention_f32", q.len(), d)?;
-    op::attention_tiled::forward(q, k, v, out, heads, d)
+    run(q, k, v, out, heads, d)
+}
+
+/// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
+fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    attention_paths(inputs, output, op::attention_tiled::forward)
 }
 
 /// 同形参，走 online softmax 的分块 tile 版（`op::attention_tiled::flash_tiled_forward`）。
 fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "flash_attention_f32")?;
-    let out = output_slice::<f32>("flash_attention_f32", output)?;
-    let d = op::attention::MODEL.shape.1;
-    let heads = batches("flash_attention_f32", q.len(), d)?;
-    op::attention_tiled::flash_tiled_forward(q, k, v, out, heads, d)
+    attention_paths(inputs, output, op::attention_tiled::flash_tiled_forward)
 }
 
-/// decode 注意力：`q/k/v → out`；`q_rows` 由 q 长、`hist` 由 k 长按头宽 `d` 推出。
-fn decode_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+/// decode 注意力适配的公共几何：`q_rows` 由 q 长、`hist` 由 k 长按头宽 `d` 推出。
+fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: DecodeKernel) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_attention_f32")?;
     let out = output_slice::<f32>("decode_attention_f32", output)?;
     let d = op::decode_attention::MODEL.shape.1;
     let q_rows = batches("decode_attention_f32", q.len(), d)?;
     let hist = batches("decode_attention_f32", k.len(), d)?;
-    op::attention::decode_forward(q, k, v, out, q_rows, hist, d)
+    run(q, k, v, out, q_rows, hist, d)
+}
+
+/// decode 注意力：`q/k/v → out`。
+fn decode_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    decode_paths(inputs, output, op::attention::decode_forward)
 }
 
 /// 同 decode 几何，走 online softmax 版 `op::attention::decode_flash_forward`。
 fn decode_flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_flash_attention_f32")?;
-    let out = output_slice::<f32>("decode_flash_attention_f32", output)?;
-    let d = op::decode_attention::MODEL.shape.1;
-    let q_rows = batches("decode_flash_attention_f32", q.len(), d)?;
-    let hist = batches("decode_flash_attention_f32", k.len(), d)?;
-    op::attention::decode_flash_forward(q, k, v, out, q_rows, hist, d)
+    decode_paths(inputs, output, op::attention::decode_flash_forward)
 }
 
-/// `[q: u8] → y: f32`：打包字节每字节四个 2 位码，参数取样本常量。
-fn dequant_i2(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (q,) = <(u8,) as Inputs>::unpack(inputs, "dequant_i2")?;
-    let out = output_slice::<f32>("dequant_i2", output)?;
-    op::dequant_i2::forward(op::dequant_i2::SCALE, op::dequant_i2::ZERO, q, out)
+/// 反量化适配：`[q] → y: f32`，scale/zero 取样本常量；打包与逐元素两档只差输入 lane。
+macro_rules! dequant {
+    ($(($run:ident, $lane:ty)),* $(,)?) => {$(
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (q,) = <($lane,) as Inputs>::unpack(inputs, stringify!($run))?;
+            let out = output_slice::<f32>(stringify!($run), output)?;
+            op::$run::forward(op::$run::SCALE, op::$run::ZERO, q, out)
+        }
+    )*};
 }
 
-/// `[q: u8] → y: f32`：打包字节每字节两个 nibble，参数取样本常量。
-fn dequant_i4(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (q,) = <(u8,) as Inputs>::unpack(inputs, "dequant_i4")?;
-    let out = output_slice::<f32>("dequant_i4", output)?;
-    op::dequant_i4::forward(op::dequant_i4::SCALE, op::dequant_i4::ZERO, q, out)
-}
-
-/// `[q: f32] → y: f32`：参数取样本常量。
-fn dequant_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (q,) = <(f32,) as Inputs>::unpack(inputs, "dequant_i8")?;
-    let out = output_slice::<f32>("dequant_i8", output)?;
-    op::dequant_i8::forward(op::dequant_i8::SCALE, op::dequant_i8::ZERO, q, out)
-}
+dequant!((dequant_i2, u8), (dequant_i4, u8), (dequant_i8, f32));
 
 /// `[a: f32] → y: f32`：位置取样本约定的 7。
 fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {

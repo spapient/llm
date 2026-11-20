@@ -66,11 +66,6 @@ names = ["CutileCommand"]
 reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command`，文法稳定后再进表"
 
 [[ownership.unlisted]]
-crate = "diagnostic"
-names = ["Value"]
-reason = "声明数据树的值（ADR 0022：语料在构建期被解析成 `diagnostic::data` 的表，运行期没有解析器）；`Table` 已在所有权表（`engine` 的 KV 页表同名，按名字判）"
-
-[[ownership.unlisted]]
 crate = "cutile"
 names = ["CallArg", "ChainStep", "FragmentGap", "LanguageGate", "Lock", "NeedReport", "PrimCall", "Scope", "SpaceUse", "Timing", "Unlock"]
 reason = "内核 DSL 的协商、执行前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表"
@@ -122,7 +117,7 @@ reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Re
 
 [[ownership.unlisted]]
 crate = "weights"
-names = ["Axis", "Bin", "Gguf", "Pick", "Sha256", "Svd", "Value"]
+names = ["Axis", "Bin", "Gguf", "Pick", "Sha256", "Svd"]
 reason = "格式适配器与选码内部件：bin/gguf 解析件、五轴选码的候选与结果（`axes` 的 `Axis`/`Pick`）、`svd` 分解件与哈希内部件；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型"
 
 [[ownership.unlisted]]

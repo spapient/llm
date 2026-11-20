@@ -2,7 +2,7 @@
 
 - 状态：草案（M1-B7 落地 serve 侧描述表与装配期校验；engine `Bindings` 保持纯编号 → 缓冲）
 - 日期：2026-11-17
-- 相关：[0032](0032-assembly-family-descriptor.md)（装配族别描述符）；设计取证见 [`../backend-runtime-design.md`](../backend-runtime-design.md) §5.2 D10、[`../llmu-parity-optimization-design.md`](../llmu-parity-optimization-design.md) §1.5 P6/§4.2 M1-B7
+- 相关：ADR 0032（装配族别描述符）
 
 ## 背景
 

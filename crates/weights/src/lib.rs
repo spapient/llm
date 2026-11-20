@@ -2,7 +2,7 @@
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自有的 `.u`
-//! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`，见 ADR 0024），以及只能由
+//! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`）以及只能由
 //! 本层判断的格式适配器与量化方案（`bin` 栈机含 ZIP_STORED 读取、`gguf`、`json`、`quant`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
 //! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`storage` 经可选 `mmap` feature 引入，
@@ -79,11 +79,11 @@ pub use lifecycle::import;
 pub mod json;
 pub mod safetensors;
 
-// 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛（ADR 0036）。
+// 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛。
 #[cfg(all(feature = "mmap", unix))]
 mod mmap;
 
-// 纯字节码基础件归 L1 `wire`（ADR 0024）；这里只做薄转发，保持容器内部路径不变。
+// 纯字节码基础件归 L1 `wire`；这里只做薄转发，保持容器内部路径不变。
 /// CRC-32（转发自 `wire::crc`）。
 pub mod crc {
     pub use wire::crc::*;

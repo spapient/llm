@@ -2,7 +2,7 @@
 
 - 状态：草案（M1-B6 落地槽位结构与 Node/Launch 承载；rope 算子接线与标量注入闭包随对应刀落地；§5 定形变长批逐序列位置表通道归属）
 - 日期：2026-11-17（2026-11-18 补 §5：变长批逐序列位置表通道）
-- 相关：[0027](0027-kernel-registry-and-fragment-contract.md)（注册表与算子挂载）；设计取证见 [`../backend-runtime-design.md`](../backend-runtime-design.md) §5.1 D9、[`../llmu-parity-optimization-design.md`](../llmu-parity-optimization-design.md) §1.5 P5/§4.2 M1-B6
+- 相关：[0027](0027-kernel-registry-and-fragment-contract.md)（注册表与算子挂载）
 
 ## 背景
 

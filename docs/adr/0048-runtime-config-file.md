@@ -2,7 +2,7 @@
 
 - 状态：已采纳（实现随本轮落在 `cli::settings`；回传主树后并入门禁基线）
 - 日期：2026-11-19
-- 相关：[0022](0022-build-time-corpora.md)（删除第四层配置与运行期 TOML 解析）、[0023](0023-settings-to-cli.md)（设置策略上移 `cli`）、[0006](0006-config-mechanism-vs-identity.md)（配置机制与身份分离）；决策看板 D5 修订见 [`../implementation-task-plan.md`](../implementation-task-plan.md) §4
+- 相关：[0022](0022-build-time-corpora.md)（删除第四层配置与运行期 TOML 解析）、[0023](0023-settings-to-cli.md)（设置策略上移 `cli`）、ADR 0006（配置机制与身份分离）
 
 ## 背景
 

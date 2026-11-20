@@ -1,7 +1,7 @@
 # MUSA S4000 真机测量 harness
 
 2026-11-19/20 在 autodl 容器(sha1,MTT S4000 / MUSA 5.2.0 / muBLAS 5.2)上建立的测量通道。
-全部数据与结论见记忆 `musa-5.2-measurements`(会话外)与 [../docs/adr/0049-refactor-summary-2026-11.md](../docs/adr/0049-refactor-summary-2026-11.md)。
+全部数据与结论见记忆 `musa-5.2-measurements`(会话外)；本目录只放复现通道，不是结论归档。
 
 ## 编译(5.2 工具链要点)
 

@@ -1,9 +1,9 @@
 # ADR 0023：配置策略上移到命令行层，内核只收三个目录
 
 - **状态**：接受（2026-11-14）
-- **取代**：[ADR 0020](0020-settings-layer-absorption.md) 的落点（`crates/cutile/src/settings/`）与
+- **取代**：ADR 0020 的落点（`crates/cutile/src/settings/`）与
   [ADR 0022](0022-build-time-corpora.md) 中「`cutile::settings` 只剩三层」的定位；两份 ADR 的其余结论不变
-- **相关**：[ADR 0006](0006-config-mechanism-vs-identity.md)（四层优先级的出处）、[ADR 0019](0019-packaging-merge.md)（合并判据）
+- **相关**：ADR 0006（四层优先级的出处）、ADR 0019（合并判据）
 
 ## 背景
 

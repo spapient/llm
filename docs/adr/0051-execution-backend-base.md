@@ -2,7 +2,7 @@
 
 - 状态：已采纳（本轮落地基座扩展、`Trace` 装饰器与 `serve` 装配泛化；Metal/CUDA 的每步表面随 M3-2 补）
 - 日期：2026-11-20
-- 相关：[0025](0025-runtime-backend-abstraction.md)（运行时后端三件套）、[0017](0017-kernel-ast-and-ir-freeze.md)（无 IR 冻结）、[0035](0035-unsafe-ffi-boundary.md)（边界 crate 实现四个 trait）、[0050](0050-operator-base.md)（算子语义基座）、[0002](0002-single-owner-per-type.md)（单一主人）
+- 相关：[0025](0025-runtime-backend-abstraction.md)（运行时后端三件套）、[0017](0017-kernel-ast-and-ir-freeze.md)（无 IR 冻结）、[0035](0035-unsafe-ffi-boundary.md)（边界 crate 实现四个 trait）、[0050](0050-operator-base.md)（算子语义基座）、ADR 0002（单一主人）
 
 ## 背景
 

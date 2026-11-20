@@ -6,6 +6,73 @@
 ## [Unreleased]
 ### Changed
 
+- **文档收敛为四类活文档：`README` 与 `docs/ARCHITECTURE.md` 重写、文档地图新增、一次性报告退场
+  （`docs/ARCHITECTURE.md` 94.8 KB → 32.2 KB、根 `README` 13.4 KB → 9.3 KB，净减约 2/3；写作规则从"评审清单"变成代码判据）**。此前同一份事实
+  有三处副本：根 `README` 复述层表与算子数（"22 条"已过期）、`ARCHITECTURE` 把所有权表按"新增轮次"拆成
+  两张（P0 与运行时各一张，读者要跳读）、`docs/` 里散落着当轮评审报告与任务分解。**一份事实只写一次**：
+  成员数、边数、算子数只在 `ARCHITECTURE` 出现，其余文档引用不复述；所有权表按主人分组、一张表到底，
+  合并同名概念的不同轮次条目（`engine::Executor` 与 `LocalExecutor` 基座、`train::Batch` 与 `engine::Batch`
+  等相邻项各自注明"同名不同物"）。**门禁先于文字**：新表把漏登记的 `nn::Spiking` / `nn::Membrane`
+  （`src/spike.rs`，脉冲前向执行侧）补进表，`lints/vocabulary.toml` 里因此过期的 `diagnostic:Value` /
+  `weights:Value` 基线条目一并删除——`architecture.rs` 的 8 条与 `contracts.rs` 的 6 条用例全绿。
+  **新增 `docs/README.md`**：文档地图（谁回答"是什么 / 允许什么 / 怎么实现"）、五条写作规则（能守住的写进
+  测试、守不住的写进 ADR；一次性报告不长期存放；删文档同一次提交改完引用方）与 48 条 ADR 的主题索引。
+  **路径**：`README.md`、`docs/README.md`、`docs/ARCHITECTURE.md`、`.config/lints/vocabulary.toml`；
+  `docs/lld.md` 与 `docs/adr/` 未动——前者是冻结规格、章号与行号被代码与外部计划按引用锚定，后者只追加。
+
+- **`op` 的算子契约只剩一个生成点：9 份 `impl Operator` 收成一处，`train` 适配层的 11 处手写转发收成 3 条装配规则，
+  `operator_tests.rs` 并回模块（净减 149 行、少 1 个文件；重复率 0.43% → 0.41%）**。此前同一个「名字 + 生产形状 +
+  代价/样本/参考」的 impl 被抄了 9 遍：`unary_f32` / `binary_f32` / `reduce_f32` / `dequant_packed` / `gemm_variant` /
+  `gemv_packed` 六族装配宏各内嵌一份，`gemv_i8` / `gemv_f32` / `dequant_i8` 又各手写一份，彼此只差模块前缀。
+  **契约一份**：`operator::operator_via!` 成为唯一生成点，四条行为由调用方给四个入口路径（族骨架取 `$crate::$skel::*`
+  的泛型入口，模块自带入口取 `self::*`），粒度按 `grained` 形态从 `Format::GRAIN` 求或显式给；`operator_here!`
+  退化成一次转发。加精度变体不再有第二处语义表要同步——`gemv_f32` / `gemv_i8` 那两份手写 impl（23 行逐字相同，
+  重复率硬门原本就报了这一处）由此消失。
+  **适配一条规则**：`train::kernel` 的 `gemv_i2/i4/i8`、`dequant_i2/i4/i8`、`attention_f32` + `flash_attention_f32`、
+  `decode_attention_f32` + `decode_flash_attention_f32` 是同一段「拆视图 → 转发」抄三遍/两遍，收成 `quant_gemv!`、
+  `dequant!` 两条宏与 `attention_paths` / `decode_paths` 两个公共几何入口——两个注意力版本只差一个函数指针。
+  **文件数**：`op/src/operator_tests.rs` 并回 `operator.rs`（265 行）。测试外移的动因是 `file_max_lines = 1200`，
+  把一个百行文件的测试切出去只是多一个要打开的碎文件，不是这里要防的东西。
+  **边界**：纯装配，算术与调度一行未动；`nextest` 功能用例全绿，clippy `-D warnings`、doc-test、重复率硬门同绿。
+
+- **SpikingBrain 2.0 的脉冲臂落地：int8 权重 × 三元脉冲的整数累加 + SSE 事件路径，两条路径逐位相同
+  （`nn` 13 条新用例 + 1 条 `#[ignore]` 实测探针）**。此前这一款只有神经元原语（`mix::Lif`）与事件编码
+  （`mix::Encoder` / `mix::Events`），缺的是「一层脉冲线性怎么算」——于是十一款标杆里这一款只有零件、
+  没有执行路径。
+  **一层脉冲线性**：新增 `nn::Spiking`（参数：i8 权重 `[outputs, inputs]`、逐行反量化尺度、LIF 动力学）
+  与 `nn::Membrane`（状态：每通道膜电位 + 复用的整数累加缓冲）。一步 = 三元脉冲累加进 `i32` → 按行反
+  量化 → 交给 `Lif` 推进，发放判据仍只由 `Lif` 定义，这里不写第二个阈值。缓冲留在状态里而不是每步
+  `vec!`：`drive` 的稀疏性不该被一次分配抹平。
+  **两条路径共用一份算术**：`step` 吃稠密三元脉冲、`drive` 吃 `Events`（SSE 只记发放位置）——后者取事件
+  码的符号后落进同一个 `fire`。`i8 × {−1,0,+1}` 是整数加法，所以「编码后 `drive`」与「解码取符号后
+  `step`」逐位相同（用例逐位比对膜电位与输出，不是近似相等）。差别只在索引：`step` 按宽度逐个看、
+  `drive` 只走发放记录，因此「省了多少乘加」由 `Events::sparsity` 给，「省了多少遍历」才是墙钟之差。
+  **溢出是可证的而不是靠饱和分支**：`|w| ≤ 127` 且构造期要求 `inputs ≤ i32::MAX / 127`，每行至多累加
+  `127·inputs` 次、恒在 `i32` 内；放行更宽的输入会让「结果对不对」取决于宽度，所以在入口就拒。
+  码位门槛决定稀疏度、与 `scale` 解耦，换步长不会顺手换掉稀疏度。
+  **状态不可跨层**：`Membrane` 只能由 `Spiking::membrane` 构造，输出通道数不同的层在入口被拒——与
+  `Kda::memory`、`Mamba::Carry` 同一口径。
+  **实测**（`cargo test -p llm-nn --lib --release -- spike_arm_costs --ignored --nocapture`；1024 → 1024，
+  固定种子权重与激活，码位门槛 3）：稀疏度 **S = 0.6182**（active 391/1024），一次前向的乘加
+  **1,048,576 → 400,384（0.3818）**；同一份整数算术下，事件路径的墙钟是稠密路径的 **1/3 左右**
+  （两轮 2.95× / 3.53×，机器相关）。这与 SpB2.0 公开的 64.31% 稀疏同量级，但**不是同装置对照**——
+  本层实测只证明「稀疏度由码位门槛决定且可测」，E14 的判决仍归协议卡；E13（能效 ≥ 6×）要目标设备。
+  **边界**：STE 代理梯度 / 脉冲反传不在本层（`train` 侧无此路径），层配方、批调度与设备后端也未接；
+  `docs/ARCHITECTURE.md` 所有权表新增该行，写明与 `Calib` / `Lif` / `Encoder` / `Events` 那一行的分工。
+
+- **`engine` 侧三处结构性收口：生成器不再逐个透传派发几何，两个超长源文件的测试段移出（1302 → 525 行、
+  1215 → 808 行），静态质量门与文档门重新转绿**。此前 `tiled::flash_attention_msl` / `flash_acc_update`
+  各自接 4 个几何标量，每个生成函数都重算一遍 `div_ceil` 与「除不除得尽」；`metal.rs` / `backends.rs`
+  连同内联测试一起超过 `file_max_lines = 1200` 的上限，`tiled.rs` 又把 `"}"` 当字符串 `push_str`。
+  **生成器**：派发几何收成 `Flash { seq, dim, threads, block }` 并带 `lanes`（每线程寄存器输出维数）与
+  `tail`（键块除不尽序列才需尾块守卫），四个显式参数不再沿生成函数逐个传递，`push_str("}")` 改
+  `push('}')`；同时修掉 `[32,1024]` 被当成 intra-doc 链接导致的 `-D warnings` 文档门失败（改
+  `` `32..=1024` ``）。
+  **测试归属**：`metal` / `backends` 的 `#[cfg(test)] mod tests` 按仓库既有惯例移成同目录
+  `metal_tests.rs`（782 行）/ `backends_tests.rs`（407 行），两个源文件回到 525 / 808 行——门槛要的是
+  「源文件别无限长」，把设备 FFI 与生成器的正文与它们的用例分开读，比给阈值加豁免更贴原意。
+  **边界**：纯搬迁与去重，无行为变化；Metal 设备用例仍按「无设备则跳过而非失败」跑，E1–E15 无新增实测数。
+
 - **服务三轴收口：排批预算真正决定每轮跑哪些行，投机解码补上草稿器（`engine` 4 条 + `serve` 8 条新用例）**。
   此前 `ifb::pack` 只做「这一轮塞得下几行」的纯函数判定，`Batch` 仍按准入顺序整批推进；投机只有
   「接受几个」的判定，草稿从哪来没有答案。
@@ -556,15 +623,14 @@
   ③ 报告新增 `read_bytes` / `write_bytes` / `flops` / `working_set_bytes` / `cache_tier` /
   `roofline_ns` / `bottleneck_side` / `achieved_percent` / `mflops` / `bottleneck`，分子由
   `nn::Bounds` 从算子语义推出（不写第二份流量公式），分母取同机同档位的实测值。后端标识也从常量
-  改成 `SCENARIOS` 的一列：新增后端是加一行数据，不是改报告代码。定位结论见
-  `docs/bench-roofline-analysis.md`——七条基准没有一条达到 85% 带宽门槛（`gemv` 36% 最近、
+  改成 `SCENARIOS` 的一列：新增后端是加一行数据，不是改报告代码。定位结论：七条基准没有一条达到 85% 带宽门槛（`gemv` 36% 最近、
   `attention` 0.15% 最远），「四算子内存型」只在「算术强度 <1 flop/字节」的意义上成立，
   在「实测卡在带宽上」的意义上不被数据支持。
 
-- **`cutile` 整体分析落档，本轮零代码改动**：[`docs/cutile-analysis.md`](docs/cutile-analysis.md) 逐块判完 25 个模块
-  （7077 行：唯一机制 12 / 命令策略 5 / 设备编排 5 / 纯数据 3），取证 CPU 从 `.k` 模板 → `prim/cpu` 片段 →
+- **`cutile` 整体分析落档，本轮零代码改动**：逐块判完 25 个模块
+  （约 7000 行：唯一机制 12 / 命令策略 5 / 设备编排 5 / 纯数据 3），取证 CPU 从 `.k` 模板 → `prim/cpu` 片段 →
   `cpu.toml` 前导 → 见证 → 子进程对拍的完整链路，并给出五设备 × 十六原语矩阵与 Metal 缺口的三类拆分；
-  边界裁决落在 [ADR 0028](docs/adr/0028-device-data-vs-mechanism-boundary.md)：设备数据归 L2（`prim` / `prof`），
+  边界裁决：设备数据归 L2（`prim` / `prof`），
   机制留 L3（`cutile`），真设备运行时后端不进 `cutile`；显式记录本轮偏离 roadmap §5/P3「独立后端边界 crate」
   （不新建成员），落点与触发条件随 P3 动工前的边界 ADR 复核。`crates/**` 无 `.rs` / `.toml` 改动。
 
@@ -655,7 +721,7 @@
   `cache`/`device`/`backend`/`verify`/`witness` 五个最大文件逐一下降；`cargo test -p llm-tool --test gate` 绿且
   报告"已达标，删除基线条目"的 45 条全部结清（`cutile` 成员不再有任何复杂度/行长/裸调用豁免）。
 
-- **质量门成为真正的棘轮（细节见 `docs/audit.md` §22）**。`crates/tool` 的静态质量门在实现里违反了自己的
+- **质量门成为真正的棘轮**。`crates/tool` 的静态质量门在实现里违反了自己的
   三条声明，本轮全部收口：① 限值只有 `Gate::limit(Metric)` 一个出口，阈值字段转私有，`Over` 不再携带
   调用方可任意填的 `limit`，测量方（`tests/gate.rs`）只报"测到多少"；② 棘轮按（身份, 度量）结清——
   `Gate::stale` 改收 `BTreeMap<String, BTreeSet<Metric>>`，一个函数改好 `ccn` 却还超标 `nloc` 时不再能
@@ -705,27 +771,27 @@
   `[[gate.debt]]` 251 → 250（删 `crates/cutile/src/settings/source.rs:cli_override#0`，未新增未抬高）；
   用例 59 目标 / 1 074 → **1 068 通过 / 0 失败 / 1 忽略**（19 → 13 条，6 条只覆盖随第四层消失的行为）。
   用户可见行为逐字不变：三层标题、`← 内置默认值` / `← CUTILE_WORK_DIR（env）` / `← --set …（cli）`
-  三行排版、兼容名、空值与未登记键拒绝、`invalid` → 2。详见 `docs/audit.md` §21。
+  三行排版、兼容名、空值与未登记键拒绝、`invalid` → 2。
 
-- **两张 22 条的注册表各收成"一行一对"**（§8.2 第二梯队第 7 项）。`op::REGISTRY` 原本逐条手写 `Registration { name, template: include_str!(..), model: .. }`（110 行），现在是一张 `registry! { "名字" => 语义模块 }`（22 行 + 15 行宏），数组长度由表本身数出（`<[()]>::len(&[..])`），不再另写一个会漂移的 `22`；`train::KERNELS` 原本每行把同一个名字写两遍（`Entry { op: "gemv_i4", run: gemv_i4 }`，88 行），现在只有一列标识符，名字由 `stringify!` 派生——判据没有省掉：`const _: () = same_order(&KERNELS, &op::REGISTRY)` 仍在，本轮把两行对调验证过，编译期报"名字或顺序漂移"。`op/src/lib.rs` 479 → 431、`train/src/store.rs` 1531 → 1479、`crates/*/src` 55 138 → 55 086 行。`tests/contracts.rs` 的"注册表与注解互为镜像"门禁随之改为解析新形状（仍检查注解→注册表、注册表→注解、`MODEL` 必须由注解生成三个方向，断言一条未减）。新增 1 条用例（注册表与生成表逐条互查）。**"22 个 `forward` shim 宏化"这一半经实测撤回**：24 个 `pub fn forward` 里真正单行委托的只有 9 个，宏化只省 18 行却把 9 个公开签名藏进宏；`train` 的 22 个逐算子转接段属"内容差异"不属"结构重复"，一并保留。`[[gate.debt]]` 仍 250 条，`store.rs` 的 `lines` 基线 1529 → 1479（只降）。详见 `docs/audit.md` §20。
+- **两张 22 条的注册表各收成"一行一对"**（§8.2 第二梯队第 7 项）。`op::REGISTRY` 原本逐条手写 `Registration { name, template: include_str!(..), model: .. }`（110 行），现在是一张 `registry! { "名字" => 语义模块 }`（22 行 + 15 行宏），数组长度由表本身数出（`<[()]>::len(&[..])`），不再另写一个会漂移的 `22`；`train::KERNELS` 原本每行把同一个名字写两遍（`Entry { op: "gemv_i4", run: gemv_i4 }`，88 行），现在只有一列标识符，名字由 `stringify!` 派生——判据没有省掉：`const _: () = same_order(&KERNELS, &op::REGISTRY)` 仍在，本轮把两行对调验证过，编译期报"名字或顺序漂移"。`op/src/lib.rs` 479 → 431、`train/src/store.rs` 1531 → 1479、`crates/*/src` 55 138 → 55 086 行。`tests/contracts.rs` 的"注册表与注解互为镜像"门禁随之改为解析新形状（仍检查注解→注册表、注册表→注解、`MODEL` 必须由注解生成三个方向，断言一条未减）。新增 1 条用例（注册表与生成表逐条互查）。**"22 个 `forward` shim 宏化"这一半经实测撤回**：24 个 `pub fn forward` 里真正单行委托的只有 9 个，宏化只省 18 行却把 9 个公开签名藏进宏；`train` 的 22 个逐算子转接段属"内容差异"不属"结构重复"，一并保留。`[[gate.debt]]` 仍 250 条，`store.rs` 的 `lines` 基线 1529 → 1479（只降）。
 
-- **`#[model]` 的十二段同形分支改成一张骨架表**（§8.2 第二梯队第 8 项）。`annotation/src/codegen.rs` 原先每个骨架各写 8 行逐字相同的字段列表（`group`/`shape`/`dtype`/`axes`/`shape_ctx`/`cost`/`sample`/`reference`），合起来是 152 行 `else if`，而真实差异只有四类：模块名、`group` 的写法、入口是否泛型、是否附带粒度断言。现在是一张 12 行的 `SKELETON_TABLE`（`codegen.rs:262-286`）加 6 个小函数，加一个骨架 = 加一行数据。`render_model` 实测 **ccn 15 → 2、nloc 233 → 19**，全仓最长函数因此从它变成 `prof/src/prof.rs:validate`（202 行）。三个例外留在数据里而不是回到分支：`gemv` 的粒度取 `Format::GRAIN` 并生成两条编译期断言、`gemm` 的模块名就是注册名（`module = None`）、`flash_attention_f32` 的 `reference` 由一张按注册名的改写表给出——后者就是 P1-5「宏知道算子名」的全部剩余。**行数没有下降**：`codegen.rs` 761 → 794（+33），因为表从两列变成五列、每一件新东西都带一段"为什么"；本轮买的是单函数复杂度与"加骨架只加一行"，已按实测记录，不按预估的 −80 记。`crates/annotation` 用例 53 → 54（新增锁表测试，并在既有测试里加了两条反向断言：表里每行必须在闭集内、表长必须等于闭集长度）；`[[gate.debt]]` 251 → 250（`render_model#0` 实测 2/19，删除成立）。顺带修 `syntax.rs:452` 的"缺省为 `gemm`"（实际是 `gemv`）与 `syntax.rs:384-387` 的"自己的分支"（现在是"自己的一行"）。详见 `docs/audit.md` §19。
+- **`#[model]` 的十二段同形分支改成一张骨架表**（§8.2 第二梯队第 8 项）。`annotation/src/codegen.rs` 原先每个骨架各写 8 行逐字相同的字段列表（`group`/`shape`/`dtype`/`axes`/`shape_ctx`/`cost`/`sample`/`reference`），合起来是 152 行 `else if`，而真实差异只有四类：模块名、`group` 的写法、入口是否泛型、是否附带粒度断言。现在是一张 12 行的 `SKELETON_TABLE`（`codegen.rs:262-286`）加 6 个小函数，加一个骨架 = 加一行数据。`render_model` 实测 **ccn 15 → 2、nloc 233 → 19**，全仓最长函数因此从它变成 `prof/src/prof.rs:validate`（202 行）。三个例外留在数据里而不是回到分支：`gemv` 的粒度取 `Format::GRAIN` 并生成两条编译期断言、`gemm` 的模块名就是注册名（`module = None`）、`flash_attention_f32` 的 `reference` 由一张按注册名的改写表给出——后者就是 P1-5「宏知道算子名」的全部剩余。**行数没有下降**：`codegen.rs` 761 → 794（+33），因为表从两列变成五列、每一件新东西都带一段"为什么"；本轮买的是单函数复杂度与"加骨架只加一行"，已按实测记录，不按预估的 −80 记。`crates/annotation` 用例 53 → 54（新增锁表测试，并在既有测试里加了两条反向断言：表里每行必须在闭集内、表长必须等于闭集长度）；`[[gate.debt]]` 251 → 250（`render_model#0` 实测 2/19，删除成立）。顺带修 `syntax.rs:452` 的"缺省为 `gemm`"（实际是 `gemv`）与 `syntax.rs:384-387` 的"自己的分支"（现在是"自己的一行"）。
 
 - **`data` 的可执行代码覆盖率收敛到 100%**。逐行覆盖报告暴露 `Dataset` 的三个 trait 方法（`cols`/`batches`/`remaining_batches`）在具体类型上的同名调用全部解析到 inherent 方法，trait 转发路径从未被执行（区域覆盖 96.3%）。新增一个通过 `&mut dyn Dataset` 取数的测试，走完整对象安全路径，验证三个转发与 `next_batch` 流；`batch`/`dataset`/`split` 三个含逻辑文件的行与区域覆盖均为 100%（`lib.rs` 仅含 `mod`/`pub use` 与文档，无可执行体，其 0% 是工具对纯声明模块的已知现象）。Miri 复测零 UB，全 workspace clippy（`-D warnings`）、测试零失败。
 
 - **elementwise 的计时不再手写在测试里，改为 criterion 基准**。`crates/benches/tests/elementwise_regress.rs` 原先用 `WARMUP = 8` / `TIMED = 64` 加 `Instant` 自己实现了一遍预热与计时——而预热多久、采样多少次、测多久正是 criterion 的配置项（`--warm-up-time` / `--measurement-time` / `--sample-size`），手写这套既不可配置也没有统计口径。现在该文件删除，`crates/benches/criterion/elementwise.rs` 只声明"一次迭代是什么"（`bench_function`）与"一次迭代处理多少元素"（`Throughput::Elements`，报告直接给 elems/s），测量细节交给 criterion；`llm-benches` 因此不再需要 `tool` 这个 dev 依赖（回退判定仍由 `tool::regress` 的单元测试锁住，固定硬件上的 bench job 再接线）。同步：`docs/ARCHITECTURE.md` 的边表 75 → 74、`+dev` 11 → 10，`span_parse` 文档里已不存在的 `llm-regress` 改为 `tool::regress`。
 
-- **算子层的四份表达式缓存收敛为一份，`gemv` 的三份输入校验上提**（§8.2 第二梯队第 5、6 项）。四条骨架原先各写一份 `OnceLock<Result<Formula, Error>>`——`gemv::Cache`、`elementwise::BinCache`、`unary::UnaryCache`、`reduce::ReduceCache` 逐字同构（139 行），差别只有表达式文本、操作数表与错误帧；现在只剩 `einsum::FormulaCache`（`crates/op/src/einsum/cache.rs`，61 行），三件事都成了 `get` 的参数，`site` 由**骨架**给出（同一条骨架的所有精度共享一个位置，重复写在每个实现里只会多出几份可以写歪的事实）。**没有做"泛型 `static`"**：`static` 仍留在各实现的 `cache()` 里——写在泛型作用域里的 `static` 在 Rust 里只有一份，`Dense<B>` 与 `Quantized<G>` 会共用同一个单元格，先跑的那一份会让另一份拿到错误的轴表（`gemv.rs` 原注释记录过这次实测）。资产是"一份逻辑"，不是"一份单元格"。同一轮里 `OperandSpec` 从 `gemv` 搬回 `einsum::formula`：它描述的是表达式，而 `elementwise`/`unary`/`reduce` 三条兄弟骨架原先都在反向依赖 `gemv`。校验侧：骨架的 `reference()` 一直声称"输出非空、输入够长、权重够长由骨架负责"，但三条 `forward` 各抄了一遍，`gemv_i8` 还为此专门写了一个 `layout()`（32 行、ccn 6）；现在收成 `non_empty` / `scaled_groups` / `required_weights` 三个 helper（错误文案逐字保留，上界改成饱和乘，溢出即判"长度不足"而不是回绕成轻松满足的小数），`gemv_i8::layout` 整段删除，格式只保留真正的差异（int4 的偶分组、稠密格式不该收到标度）。**实测**：`crates/*/src` 55 221 → **55 137** 行（−84），文件 172 → **173**（+1 为 `cache.rs`），`[[gate.debt]]` 252 → **251**（`layout` 消失；`gemv_i8::forward` 一度因 "3 个 `for` + 2 个 `?`" 被门禁判 ccn 6，把内层点积改成一次 `map().sum()`（与原循环同为从左到右折叠，逐位相同）后回到 5），**没有新增或抬高任何基线**；用例 **60 目标 / 1 066 通过** 与改动前逐项相同；`docs/ARCHITECTURE.md` 的所有权条目 `Cache` → `FormulaCache`，`[[ownership.unlisted]]` 里三个已不存在的类型名一并删除。详见 `docs/audit.md` §18。
+- **算子层的四份表达式缓存收敛为一份，`gemv` 的三份输入校验上提**（§8.2 第二梯队第 5、6 项）。四条骨架原先各写一份 `OnceLock<Result<Formula, Error>>`——`gemv::Cache`、`elementwise::BinCache`、`unary::UnaryCache`、`reduce::ReduceCache` 逐字同构（139 行），差别只有表达式文本、操作数表与错误帧；现在只剩 `einsum::FormulaCache`（`crates/op/src/einsum/cache.rs`，61 行），三件事都成了 `get` 的参数，`site` 由**骨架**给出（同一条骨架的所有精度共享一个位置，重复写在每个实现里只会多出几份可以写歪的事实）。**没有做"泛型 `static`"**：`static` 仍留在各实现的 `cache()` 里——写在泛型作用域里的 `static` 在 Rust 里只有一份，`Dense<B>` 与 `Quantized<G>` 会共用同一个单元格，先跑的那一份会让另一份拿到错误的轴表（`gemv.rs` 原注释记录过这次实测）。资产是"一份逻辑"，不是"一份单元格"。同一轮里 `OperandSpec` 从 `gemv` 搬回 `einsum::formula`：它描述的是表达式，而 `elementwise`/`unary`/`reduce` 三条兄弟骨架原先都在反向依赖 `gemv`。校验侧：骨架的 `reference()` 一直声称"输出非空、输入够长、权重够长由骨架负责"，但三条 `forward` 各抄了一遍，`gemv_i8` 还为此专门写了一个 `layout()`（32 行、ccn 6）；现在收成 `non_empty` / `scaled_groups` / `required_weights` 三个 helper（错误文案逐字保留，上界改成饱和乘，溢出即判"长度不足"而不是回绕成轻松满足的小数），`gemv_i8::layout` 整段删除，格式只保留真正的差异（int4 的偶分组、稠密格式不该收到标度）。**实测**：`crates/*/src` 55 221 → **55 137** 行（−84），文件 172 → **173**（+1 为 `cache.rs`），`[[gate.debt]]` 252 → **251**（`layout` 消失；`gemv_i8::forward` 一度因 "3 个 `for` + 2 个 `?`" 被门禁判 ccn 6，把内层点积改成一次 `map().sum()`（与原循环同为从左到右折叠，逐位相同）后回到 5），**没有新增或抬高任何基线**；用例 **60 目标 / 1 066 通过** 与改动前逐项相同；`docs/ARCHITECTURE.md` 的所有权条目 `Cache` → `FormulaCache`，`[[ownership.unlisted]]` 里三个已不存在的类型名一并删除。
 
 - **`diagnostic` 正交拆分并收敛构建期内核**。错误类型按职责拆为 `code.rs`（`Code` 闭集与退出码契约）与 `error.rs`（`Error`/`Result`/`from_io`），`lib.rs` 只声明模块并 `pub use` 原路径，20 个下游 `use diagnostic::...` 零改动。三个构建脚本重复的扫描/读取/表达式生成收敛到 `diagnostic::buildgen`（`collect`/`read`/`emit`/`relative`），`toml` 作为可选依赖关在非默认 `build` feature 后，默认构建仍是纯 std、零依赖（`cargo tree -e normal` 无 toml），运行期无解析器（ADR 0022）。buildgen 位于 `src` 内，为满足「禁止 panic/裸 unwrap」调用门，失败一律以 `diagnostic::Result` 返回、panic 边界留在各 build.rs；并把 `collect`/`value`/`scalar` 拆成小函数，将圈复杂度压进阈值，删除已达标的 `lib.rs:fmt#1` 基线。另清理 `cutile` 无构建脚本却残留的 `[build-dependencies] toml`。三个生成产物字节级对拍一致（除被删除的基线），`docs/ARCHITECTURE.md` 标注 `diagnostic::toml` 已在 ADR 0022 移除。
 
 ### Fixed
 
-- **同族长度缺陷收口：文件里的偏移不再参与未检查的加减**。上一轮修完四条 P0 时留下四条"同族未复核"，本轮按同一判据（长度只要来自文件，就不许参与未检查的加/减）处理完，并在过程中发现第五条同类违例。① `zip::slice` 的 `bytes.get(at..at + len)` 原先在 `at` 是 ZIP64 的 `u64` 原样转成的 `usize` 时会算术溢出 panic（`at = usize::MAX` 时 `attempt to add with overflow`），release 下回绕成 `get(start..start-4)` 再落成 `None`；改为 `checked_add` 并报「ZIP 字段偏移溢出」，保留"偏移本身溢出"这个事实而不是退化成"越界"。② `zip::zip64_extra` 的 `stop = extra_start + extra_len`、`at = body + size` 未检查，且按 `field * 8` 取 u64 时**不看子字段声明的 `size`**——声明 8 字节的字段能读到下一段的 8 字节并返回 `Ok(错值)`；现在推进用 `saturating_add`，取值交给新函数 `zip64_field`，后者要求 `(field+1)*8 <= size`，否则报「ZIP64 extra 声明长度不足，字段被截断」。③ `gguf::raw` 的 `data + offset` 用了 `checked_add` 但随后的 `start + len` 没有（`offset` 是文件里的 `u64`，取到 `usize::MAX - data` 即 debug panic），改 `saturating_add`。④ `gguf::Reader::array_count` 的 `len - pos` 改 `saturating_sub`：不变式确实成立，但改法把"依赖别处的正确性"变成"本处自证"。⑤ `axes::search` 末尾的 `assert!(verified(..), "raw 基线必须逐位还原")` 改为 `verified(..).then_some(best).ok_or_else(baseline_broken)`——公开函数本来就返回 `Result`，库内 panic 没有理由。**四条回归测试是先红后绿的**：`gguf.rs:386`、`zip.rs:167`、`zip.rs:130` 三处报的是 `attempt to add with overflow` 原文（证明踩在真实溢出路径上），第四条报的是"字段 1 超出声明的 8 字节"（证明旧代码把邻居数据当成了字段值）。写法上有一条被门禁逼出来的结论：`ok_or_else(|| ..)` 里的 `||` 会被复杂度门禁记成一个布尔分支，第一次改动因此把 `axes::search` 从 ccn 8 推到 9 并被拦回，最终改为传函数项；与此同时 `zip64_extra` 抽出字段读取后 ccn 降到限额内，棘轮主动要求删除其基线条目（`[[gate.debt]]` 253 → **252**，本轮没有任何限额被抬高）。实测：`cargo test -p llm-weights --lib` **174 通过**（原 170 + 4）、`cargo test --workspace --all-features` **60 目标 / 1 066 通过 / 0 失败 / 1 忽略**、`crates/*/src` 172 文件 / **55 221** 行、clippy 与 rustdoc 各 0 告警、`cutile doctor --device cpu` 退出码 0。**有意不改**：`zip::data`、`reader::read` 等处的直接索引（不变量由构造函数建立）、循环内自增偏移（上限由成功的切片给出）、`dsa::Xof::take`（内部类型、偏移不可由外部给定，记为已知 panic 面）、`rans` 的全局分配上限（属策略而非长度校验）、ZIP64 的字段顺序假设（现为"要么正确、要么报错"，按 sentinel 重排字段留待真实样本）。详见 `docs/audit.md` §17。
+- **同族长度缺陷收口：文件里的偏移不再参与未检查的加减**。上一轮修完四条 P0 时留下四条"同族未复核"，本轮按同一判据（长度只要来自文件，就不许参与未检查的加/减）处理完，并在过程中发现第五条同类违例。① `zip::slice` 的 `bytes.get(at..at + len)` 原先在 `at` 是 ZIP64 的 `u64` 原样转成的 `usize` 时会算术溢出 panic（`at = usize::MAX` 时 `attempt to add with overflow`），release 下回绕成 `get(start..start-4)` 再落成 `None`；改为 `checked_add` 并报「ZIP 字段偏移溢出」，保留"偏移本身溢出"这个事实而不是退化成"越界"。② `zip::zip64_extra` 的 `stop = extra_start + extra_len`、`at = body + size` 未检查，且按 `field * 8` 取 u64 时**不看子字段声明的 `size`**——声明 8 字节的字段能读到下一段的 8 字节并返回 `Ok(错值)`；现在推进用 `saturating_add`，取值交给新函数 `zip64_field`，后者要求 `(field+1)*8 <= size`，否则报「ZIP64 extra 声明长度不足，字段被截断」。③ `gguf::raw` 的 `data + offset` 用了 `checked_add` 但随后的 `start + len` 没有（`offset` 是文件里的 `u64`，取到 `usize::MAX - data` 即 debug panic），改 `saturating_add`。④ `gguf::Reader::array_count` 的 `len - pos` 改 `saturating_sub`：不变式确实成立，但改法把"依赖别处的正确性"变成"本处自证"。⑤ `axes::search` 末尾的 `assert!(verified(..), "raw 基线必须逐位还原")` 改为 `verified(..).then_some(best).ok_or_else(baseline_broken)`——公开函数本来就返回 `Result`，库内 panic 没有理由。**四条回归测试是先红后绿的**：`gguf.rs:386`、`zip.rs:167`、`zip.rs:130` 三处报的是 `attempt to add with overflow` 原文（证明踩在真实溢出路径上），第四条报的是"字段 1 超出声明的 8 字节"（证明旧代码把邻居数据当成了字段值）。写法上有一条被门禁逼出来的结论：`ok_or_else(|| ..)` 里的 `||` 会被复杂度门禁记成一个布尔分支，第一次改动因此把 `axes::search` 从 ccn 8 推到 9 并被拦回，最终改为传函数项；与此同时 `zip64_extra` 抽出字段读取后 ccn 降到限额内，棘轮主动要求删除其基线条目（`[[gate.debt]]` 253 → **252**，本轮没有任何限额被抬高）。实测：`cargo test -p llm-weights --lib` **174 通过**（原 170 + 4）、`cargo test --workspace --all-features` **60 目标 / 1 066 通过 / 0 失败 / 1 忽略**、`crates/*/src` 172 文件 / **55 221** 行、clippy 与 rustdoc 各 0 告警、`cutile doctor --device cpu` 退出码 0。**有意不改**：`zip::data`、`reader::read` 等处的直接索引（不变量由构造函数建立）、循环内自增偏移（上限由成功的切片给出）、`dsa::Xof::take`（内部类型、偏移不可由外部给定，记为已知 panic 面）、`rans` 的全局分配上限（属策略而非长度校验）、ZIP64 的字段顺序假设（现为"要么正确、要么报错"，按 sentinel 重排字段留待真实样本）。
 
 - **四条 P0 崩溃路径修复，外加 `dsa` 提示位解包的第五处越界**。原则只有一条：长度由调用方契约给出，不由被解析的字节自报。① `rans::decode` 不再拿帧头自报的 4 字节长度当分配依据：`declared_len`（`rans.rs:380`）先与调用方上限比较，上限来自段描述符的类型与形状（`reader.rs:84-86`）或元素数推出的 `payload_cap`（`axes.rs:173`）；② `bin::pop_pairs`（`:448`）在 `chunks(2)` 前判奇偶（`:450-452`），奇数 `SETITEMS` 返回 `invalid`；③ `Snapshot` 的标签表改为一次判完（`tags()`，`train/src/snapshot/mod.rs:346`），`encoded_len`/`encode`/`encode_into` 都走 `tags()?`，不支持的 `DType` 现在是 `unsupported` 而不是 `expect`；④ `dsa::pk_decode`（`:378`）要求长度等于 `pk_len()`、`sig_decode`（`:415`）不小于 `sig_len_min()`（`:359`），截断的侧车不再进切片；⑤ 新发现：`hint_unpack_dyn`（`:715`）的 stop 计数可与段长自相矛盾，原写法 `y[index..total]` 会以 `start > end` panic，改为 `get(index..total).is_none_or(..)`。两条修法各自把该函数 ccn 推到 9，都被静态门拦回，最终落到登记值 8——`[[gate.debt]]` 未抬高。五条回归测试：`rans.rs:470`、`bin.rs:582`、`snapshot/tests.rs:22`、`envelope.rs:161`、`dsa.rs:766`，其中 P0-4b 做了「删掉修复即 panic `slice index starts at 4 but ends at 0`」的反向验证。实测：`crates/*/src` 54 519 → **54 717** 行、`[[gate.debt]]` 255 → **254**、用例 **1 057 通过 / 0 失败 / 1 忽略**、`cutile doctor --device cpu` 退出码 0。残余风险（未做）：`rans` 的上限仍由文件里的形状推出、没有全局封顶；`gguf.rs:199,358`、`zip.rs:128-142`、`axes.rs:89` 四条同族缺陷未复核。
 
-- **平台门禁补齐：`storage` 的 `mmap` feature 现在只在 Unix 编译**。全仓唯一的 `unsafe` 岛是 `mmap(2)` 的薄封装，模块门禁却只看 feature 不看目标，于是 Windows 上 `cargo test --workspace --all-features` 必红——本轮用交叉目标把它从「推断」变成「已确认」：`cargo check -p llm-storage --features mmap --target x86_64-pc-windows-msvc` 报 `unresolved import std::os::unix`（`mmap.rs:14`）与 `no method named as_raw_fd`（`:71`）。修法是 `cfg(all(feature = "mmap", unix))`（`storage/src/lib.rs:29-32`，模块与再导出同改），唯一消费者 `weights/tests/round_trip.rs:162` 加 `#[cfg(unix)]` 而**不是**在非 Unix 上 `return`（那会变成可空转的绿）。验证：`cargo check --workspace --exclude llm-benches --all-targets --all-features --target x86_64-pc-windows-msvc` 退出码 0——这是全仓第一次在 Windows 目标上整体通过类型检查，因此「`mmap` 是唯一缺口」也有证据；`llm-benches` 被排除是因为 `criterion → alloca` 的构建脚本需要目标平台的 C 编译器，且只做了类型检查、没在 Windows 上运行测试。顺带修三处文档漂移：`docs/ARCHITECTURE.md:99` 的「现有两条算子」按 `op/src/lib.rs:111` 的 `[Registration; 22]` 改为 22 条；`crates/op/README.md:108` 整节（标题就是「现有的两条算子」、表只有 2 行）改为按族 7 行表并写明「清单不在这里维护，`REGISTRY` 是唯一事实源」，避免 README 成为第二份算子清单；`crates/op/README.md:147-151` 的依赖段（`llm → cutile → op → einsum`、`diagnostic` 的 `toml` 子模块）与 `crates/weights/src/lib.rs:4-10` 的拥有/依赖段按 `Cargo.toml` 与 `pub mod` 实况重写。另删 `weights/src/seg.rs` 里 `validate` 的空循环（`for axis in &self.shape { let _ = axis; }`），把「轴长允许 0」的决策移进文档注释；复核发现 `tool/src/ccn.rs:138-142` 的死递归与 13 处 `pack::*` 诊断锚点在更早的提交里已消失。实测（**本轮自身改动**）：`crates/*/src` 54 717 → **54 727** 行、用例 **1 057 通过 / 0 失败 / 1 忽略**（不变）、`[[gate.debt]]` 254（不变）、成员 25 与边 75（不变）；复核时全仓为 **1 062 通过 / 0 失败 / 1 忽略**、172 个源文件 / 54 980 行——差额来自同期另一个进行中的 `diagnostic` 拆分（新增 `code.rs`/`error.rs`/`buildgen.rs`），不是本轮改动；`docs/audit.md` §16.6 按时间戳记录了那次并发改动中途两次红灯的原始报错。`cutile doctor --device cpu` 退出码 0。
+- **平台门禁补齐：`storage` 的 `mmap` feature 现在只在 Unix 编译**。全仓唯一的 `unsafe` 岛是 `mmap(2)` 的薄封装，模块门禁却只看 feature 不看目标，于是 Windows 上 `cargo test --workspace --all-features` 必红——本轮用交叉目标把它从「推断」变成「已确认」：`cargo check -p llm-storage --features mmap --target x86_64-pc-windows-msvc` 报 `unresolved import std::os::unix`（`mmap.rs:14`）与 `no method named as_raw_fd`（`:71`）。修法是 `cfg(all(feature = "mmap", unix))`（`storage/src/lib.rs:29-32`，模块与再导出同改），唯一消费者 `weights/tests/round_trip.rs:162` 加 `#[cfg(unix)]` 而**不是**在非 Unix 上 `return`（那会变成可空转的绿）。验证：`cargo check --workspace --exclude llm-benches --all-targets --all-features --target x86_64-pc-windows-msvc` 退出码 0——这是全仓第一次在 Windows 目标上整体通过类型检查，因此「`mmap` 是唯一缺口」也有证据；`llm-benches` 被排除是因为 `criterion → alloca` 的构建脚本需要目标平台的 C 编译器，且只做了类型检查、没在 Windows 上运行测试。顺带修三处文档漂移：`docs/ARCHITECTURE.md:99` 的「现有两条算子」按 `op/src/lib.rs:111` 的 `[Registration; 22]` 改为 22 条；`crates/op/README.md:108` 整节（标题就是「现有的两条算子」、表只有 2 行）改为按族 7 行表并写明「清单不在这里维护，`REGISTRY` 是唯一事实源」，避免 README 成为第二份算子清单；`crates/op/README.md:147-151` 的依赖段（`llm → cutile → op → einsum`、`diagnostic` 的 `toml` 子模块）与 `crates/weights/src/lib.rs:4-10` 的拥有/依赖段按 `Cargo.toml` 与 `pub mod` 实况重写。另删 `weights/src/seg.rs` 里 `validate` 的空循环（`for axis in &self.shape { let _ = axis; }`），把「轴长允许 0」的决策移进文档注释；复核发现 `tool/src/ccn.rs:138-142` 的死递归与 13 处 `pack::*` 诊断锚点在更早的提交里已消失。实测（**本轮自身改动**）：`crates/*/src` 54 717 → **54 727** 行、用例 **1 057 通过 / 0 失败 / 1 忽略**（不变）、`[[gate.debt]]` 254（不变）、成员 25 与边 75（不变）；复核时全仓为 **1 062 通过 / 0 失败 / 1 忽略**、172 个源文件 / 54 980 行——差额来自同期另一个进行中的 `diagnostic` 拆分（新增 `code.rs`/`error.rs`/`buildgen.rs`），不是本轮改动；那次并发改动中途的两次红灯已随一次性审计文档一并归档删除，此处只保留结论。`cutile doctor --device cpu` 退出码 0。
 
 ### Added
 
@@ -813,8 +879,8 @@
 - **配置身份参数化**：`llm_config::App`（`DIR` / `FILE` / `ENV_PREFIX`）与 `Settings<A: App = Cutile>`；`Key` 只登记环境变量**后缀**，完整变量名由前缀拼出；`Roots` 只拼目录，不认识产品名（ADR 0006）。新增测试证明第二个应用读自己的 `demo.toml` / `DEMO_*`、读不到 `CUTILE_*`、默认目录互不干扰。
 - `llm` 组装点新增两行摘要：注解声明的层（`nn::LmHead` → `[4096]`，算子 `gemv_i4`）与零拷贝视图（借用调用方 4 个元素求和）。
 - 架构文档同步：`annotation` 作为工具成员列在 L1，`tensor` 的所有权扩展到 `View` / `Element`，`llm-config` 扩展到 `App`；当前 31 个成员 / 77 条依赖边（`einsum` 归位到 L2 最左，`audit` 作为独立成员列在 L3）。
-- **架构契约**：`docs/ARCHITECTURE.md`（七层表 + 依赖规则 + 所有权表 + 新增成员三步）、`docs/adr/0001..0004`（分层序、单一主人、kernel 与运行时类型、占位策略）；每成员至少一条边、全部 `publish = false`、仓库只有一个 `target/`；P0-3 起由 `tests/architecture.rs` 在 `cargo test` 里执行。
-- **16 个占位成员改成接口形状**（ADR 0004）：`diagnostic`（`Error`/`Code`/`Result`）、`testkit`（`approx_eq`/`device_enabled`/`scratch_dir`）、`mem`（`Arena`/`Region`）、`tensor`（`Tensor`/`DType`/`Shape`/`Strides`）、`storage`（`Layout`/`Order`/`remap`）、`exec`（`Stream`/`Graph`/`Launch`/`Executor`）、`tokenizer`（`Tokenizer`/`Token`/`Bytes`）、`weights`（`Header`/`Entry`/`Reader`）、`kv`（`Page`/`Table`/`Cache`）、`autograd`（`Tape`/`Var`）、`comm`（`Group`/`Reduce`/`Collective`）、`proto`（`Envelope`/`Kind`/`Version`）、`data`（`Batch`/`Split`/`Dataset`）、`nn`（`Layer`/`LayerSpec`/`Linear`，层定义必须引用 `op` 已声明的算子）、`shard`（`Topology`/`Partition`，rank 布局与并行组）、`train`（`Schedule`/`Step`/`Checkpoint` + 恢复拓扑校验）、`engine`（`Sequence`/`Scheduler`，准入即占页）、`serve`（`Route`/`Endpoint`/`Response`）。
+- **架构契约**：`docs/ARCHITECTURE.md`（七层表 + 依赖规则 + 所有权表 + 新增成员三步）；每成员至少一条边、全部 `publish = false`、仓库只有一个 `target/`；P0-3 起由 `tests/architecture.rs` 在 `cargo test` 里执行。
+- **16 个占位成员改成接口形状**（占位口径现见 `docs/ARCHITECTURE.md` 第五节）：`diagnostic`（`Error`/`Code`/`Result`）、`testkit`（`approx_eq`/`device_enabled`/`scratch_dir`）、`mem`（`Arena`/`Region`）、`tensor`（`Tensor`/`DType`/`Shape`/`Strides`）、`storage`（`Layout`/`Order`/`remap`）、`exec`（`Stream`/`Graph`/`Launch`/`Executor`）、`tokenizer`（`Tokenizer`/`Token`/`Bytes`）、`weights`（`Header`/`Entry`/`Reader`）、`kv`（`Page`/`Table`/`Cache`）、`autograd`（`Tape`/`Var`）、`comm`（`Group`/`Reduce`/`Collective`）、`proto`（`Envelope`/`Kind`/`Version`）、`data`（`Batch`/`Split`/`Dataset`）、`nn`（`Layer`/`LayerSpec`/`Linear`，层定义必须引用 `op` 已声明的算子）、`shard`（`Topology`/`Partition`，rank 布局与并行组）、`train`（`Schedule`/`Step`/`Checkpoint` + 恢复拓扑校验）、`engine`（`Sequence`/`Scheduler`，准入即占页）、`serve`（`Route`/`Endpoint`/`Response`）。
 - `tool` 成员（目录 `crates/tool`）：`Report` / `join_names`，把人可读输出从组装点里抽出来，避免三处各写一套排版。
 - `benches` 成员（目录 `crates/benches`）：`Case` / `Baseline` / `Judgement` / `Direction`，把“方向 / 相对预算 / 回退与改进”写进类型，供后续 bench job 直接判定。
 - 根包 `llm` 变成真正的组装点：逐层构造最小实例并打印一份摘要（`op` / `prof` / `tensor` / `weights` / `train` / `serve` / `tokenizer` / `kv` / `engine` / `exec` / `tool` / `diagnostic`），这也是“依赖图能编译且公共 API 可用”的端到端证据。

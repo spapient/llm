@@ -125,19 +125,42 @@ pub fn metal_simdgroup_gemm(
     row_frags: usize,
     col_frags: usize,
 ) -> Result<String> {
-    if !(1..=4).contains(&row_frags) || !(1..=4).contains(&col_frags) {
-        return Err(Error::new(Code::Invalid, "simdgroup 片段数必须在 1..=4")
-            .with("engine::tiled::metal_simdgroup_gemm"));
-    }
+    check_fragments(row_frags, col_frags)?;
     let (a, b, y) = gemm_buffers(signature)?;
     let (_, n, k) = gemm_dims(signature, sample)?;
-    if k == 0 || !k.is_multiple_of(8) {
-        return Err(
-            Error::new(Code::Invalid, "simdgroup GEMM 要求 K 是 8 的正整数倍")
-                .with("engine::tiled::metal_simdgroup_gemm"),
-        );
-    }
+    check_k(k)?;
     Ok(simdgroup_gemm_msl(a, b, y, n, k, row_frags, col_frags))
+}
+
+/// simdgroup 路径的报错出处。
+const SIMD_SITE: &str = "engine::tiled::metal_simdgroup_gemm";
+
+/// 片段数闭集 `1..=4`：一片是 8×8，超过四片就把线程组预算吃光。
+fn check_fragments(row_frags: usize, col_frags: usize) -> Result<()> {
+    if (1..=4).contains(&row_frags) && (1..=4).contains(&col_frags) {
+        return Ok(());
+    }
+    Err(Error::new(Code::Invalid, "simdgroup 片段数必须在 1..=4").with(SIMD_SITE))
+}
+
+/// `simdgroup_load(.., 8)` 隐含 8×8 片段：K 不是 8 的正整数倍时尾片段会读越界。
+fn check_k(k: usize) -> Result<()> {
+    if k != 0 && k.is_multiple_of(8) {
+        return Ok(());
+    }
+    Err(Error::new(Code::Invalid, "simdgroup GEMM 要求 K 是 8 的正整数倍").with(SIMD_SITE))
+}
+
+/// 逐对展开 `row_frags × col_frags`：声明、乘加、写回三段共用同一遍历次序。
+///
+/// 收成一处是因为"哪些片段存在"只能有一个答案——三段各写一遍循环，改片段数就得改三处，
+/// 而少改一处生成的内核要么漏写一个片段、要么读一个未声明的 `acc_r_c`。
+fn each_pair(row_frags: usize, col_frags: usize, mut emit: impl FnMut(usize, usize)) {
+    for r in 0..row_frags {
+        for c in 0..col_frags {
+            emit(r, c);
+        }
+    }
 }
 
 /// simdgroup GEMM 的 MSL 正文：片段数组按下标展开成具名寄存器，避免动态下标把矩阵落到线程栈。
@@ -165,14 +188,12 @@ fn simdgroup_gemm_msl(
          \x20    threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20    const uint row0 = (gid.x / 32) * (8 * R), col0 = gid.y * (8 * C);\n"
     );
-    for r in 0..row_frags {
-        for c in 0..col_frags {
-            src.push_str(&format!(
-                "    simdgroup_float8x8 acc_{r}_{c};\n\
-                 \x20   simdgroup_load(acc_{r}_{c}, zeros, 8);\n"
-            ));
-        }
-    }
+    each_pair(row_frags, col_frags, |r, c| {
+        src.push_str(&format!(
+            "    simdgroup_float8x8 acc_{r}_{c};\n\
+             \x20   simdgroup_load(acc_{r}_{c}, zeros, 8);\n"
+        ));
+    });
     src.push_str("    for (uint kk = 0; kk < K; kk += 8) {\n");
     for r in 0..row_frags {
         src.push_str(&format!(
@@ -188,23 +209,19 @@ fn simdgroup_gemm_msl(
             c * 8,
         ));
     }
-    for r in 0..row_frags {
-        for c in 0..col_frags {
-            src.push_str(&format!(
-                "        simdgroup_multiply_accumulate(acc_{r}_{c}, fa_{r}, fb_{c}, acc_{r}_{c});\n"
-            ));
-        }
-    }
+    each_pair(row_frags, col_frags, |r, c| {
+        src.push_str(&format!(
+            "        simdgroup_multiply_accumulate(acc_{r}_{c}, fa_{r}, fb_{c}, acc_{r}_{c});\n"
+        ));
+    });
     src.push_str("    }\n");
-    for r in 0..row_frags {
-        for c in 0..col_frags {
-            src.push_str(&format!(
-                "    simdgroup_store(acc_{r}_{c}, d_{y} + (row0 + {}) * N + col0 + {}, N);\n",
-                r * 8,
-                c * 8,
-            ));
-        }
-    }
+    each_pair(row_frags, col_frags, |r, c| {
+        src.push_str(&format!(
+            "    simdgroup_store(acc_{r}_{c}, d_{y} + (row0 + {}) * N + col0 + {}, N);\n",
+            r * 8,
+            c * 8,
+        ));
+    });
     src.push('}');
     src
 }
@@ -294,7 +311,7 @@ fn register_blocked_gemm_msl(
 ///
 /// `threads` 个线程分摊 S 个分数与 D 个输出维；行内 max 与指数和走线程组树归约，完整分数块留在
 /// threadgroup 内存，避免每个查询行被单线程串行扫完整条序列。语义与
-/// `O = softmax(QKᵀ/√D)·V` 逐元素相同。前置条件由调用方保证（线程数为 [32,1024] 内的 2 的幂、
+/// `O = softmax(QKᵀ/√D)·V` 逐元素相同。前置条件由调用方保证（线程数为 `32..=1024` 内的 2 的幂、
 /// `S·4` 字节的分数块不超过线程组内存上限、`D ≤ 64`）。
 ///
 /// 派发几何：`grid = [S·threads]`、`block = [threads]`；每组的 `gid / threads` 是查询行。
@@ -501,85 +518,121 @@ impl Flash {
 
 /// flash attention 的 MSL 正文：在线 softmax 的块内归约 + 寄存器输出累加。
 fn flash_attention_msl(q: &str, k: &str, v: &str, y: &str, shape: Flash) -> String {
-    let Flash {
-        seq: s,
-        dim: d,
-        threads,
-        block,
-    } = shape;
     let nd = shape.lanes();
     let tail = shape.tail();
-    let score = flash_score_body(q, k, tail);
-    let weight = flash_weight(tail);
+    let (s, d) = (shape.seq.to_string(), shape.dim.to_string());
+    let (threads, block) = (shape.threads.to_string(), shape.block.to_string());
+    let nds = nd.to_string();
     let decls: String = (0..nd)
         .map(|n| format!("    float acc_{n} = 0.0f;\n"))
         .collect();
     let updates: String = (0..nd)
         .map(|n| flash_acc_update(v, n, shape, tail))
         .collect();
-    let writes: String = (0..nd)
-        .map(|n| {
-            format!(
-                "    {{ const uint h = t + {}; if (h < D) d_{y}[i * D + h] = acc_{n} / l; }}\n",
-                n * threads
-            )
+    let writes: String = (0..nd).map(|n| flash_output(y, n, shape)).collect();
+    fill(
+        FLASH_KERNEL,
+        &[
+            ("q", q),
+            ("k", k),
+            ("v", v),
+            ("y", y),
+            ("seq", &s),
+            ("dim", &d),
+            ("threads", &threads),
+            ("block", &block),
+            ("nd", &nds),
+            ("score", &flash_score_body(q, k, tail)),
+            ("weight", flash_weight(tail)),
+            ("decls", &decls),
+            ("updates", &updates),
+            ("writes", &writes),
+        ],
+    )
+}
+
+/// 模板填空：`@name` 逐个替换成对应文本。
+///
+/// 缺项不会被静默放过——剩下的 `@name` 会原样进入内核，由 Metal 编译报错指向模板本身，
+/// 而不是让"少填一项"变成一个能启动却算错的内核。
+fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .fold(template.to_string(), |text, (name, value)| {
+            text.replace(&format!("@{name}"), value)
         })
-        .collect();
+}
+
+/// 一个寄存器输出维的回写：除以 `l` 后只写本线程负责的那一维。
+fn flash_output(y: &str, n: usize, shape: Flash) -> String {
+    if shape.dim.is_multiple_of(shape.threads) {
+        return format!(
+            "    {{ const uint h = t + {}; d_{y}[i * D + h] = acc_{n} / l; }}\n",
+            n * shape.threads
+        );
+    }
     format!(
-        "#include <metal_stdlib>\n\
+        "    {{ const uint h = t + {}; if (h < D) d_{y}[i * D + h] = acc_{n} / l; }}\n",
+        n * shape.threads
+    )
+}
+
+/// flash 内核模板：`@name` 占位由 [`fill`] 替换。
+///
+/// 正文与"传什么参数"分开，是因为这段内核没有分支——真正需要读的是占位符那几行，
+/// 而把 60 余行正文和参数拼装塞进同一个函数只会一起越过函数长度上限。
+const FLASH_KERNEL: &str = "#include <metal_stdlib>\n\
          using namespace metal;\n\
          kernel void kernel_main(\n\
-         \x20    device const float* d_{q} [[buffer(0)]],\n\
-         \x20    device const float* d_{k} [[buffer(1)]],\n\
-         \x20    device const float* d_{v} [[buffer(2)]],\n\
-         \x20    device float* d_{y} [[buffer(3)]],\n\
+         \x20    device const float* d_@q [[buffer(0)]],\n\
+         \x20    device const float* d_@k [[buffer(1)]],\n\
+         \x20    device const float* d_@v [[buffer(2)]],\n\
+         \x20    device float* d_@y [[buffer(3)]],\n\
          \x20    uint3 gid [[thread_position_in_grid]],\n\
-         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
-         \x20    const uint S = {s}, D = {d}, T = {threads}, BK = {block}, ND = {nd};\n\
+         \x20    uint3 lid [[thread_position_in_threadgroup]]) {\n\
+         \x20    const uint S = @seq, D = @dim, T = @threads, BK = @block, ND = @nd;\n\
          \x20    threadgroup float scores[BK];\n\
          \x20    threadgroup float red[T];\n\
          \x20    threadgroup float red_sum[T];\n\
          \x20    const uint i = gid.x / T, t = lid.x;\n\
          \x20    const float scale = sqrt((float)D);\n\
          \x20    float m = -3.402823466e38f, l = 0.0f;\n\
-         {decls}\
-         \x20    for (uint kb = 0; kb < S; kb += BK) {{\n\
+         @decls\
+         \x20    for (uint kb = 0; kb < S; kb += BK) {\n\
          \x20        float tmax = -3.402823466e38f;\n\
-         \x20        for (uint j = t; j < BK; j += T) {{\n\
+         \x20        for (uint j = t; j < BK; j += T) {\n\
          \x20            float sc = -3.402823466e38f;\n\
-         {score}\
+         @score\
          \x20            scores[j] = sc;\n\
          \x20            tmax = max(tmax, sc);\n\
-         \x20        }}\n\
+         \x20        }\n\
          \x20        red[t] = tmax;\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20        for (uint st = T / 2; st > 0; st >>= 1) {{\n\
+         \x20        for (uint st = T / 2; st > 0; st >>= 1) {\n\
          \x20            if (t < st) red[t] = max(red[t], red[t + st]);\n\
          \x20            threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20        }}\n\
+         \x20        }\n\
          \x20        const float mn = max(m, red[0]);\n\
          \x20        const float alpha = exp(m - mn);\n\
          \x20        float tsum = 0.0f;\n\
-         \x20        for (uint j = t; j < BK; j += T) {{\n\
-         \x20            float e = {weight};\n\
+         \x20        for (uint j = t; j < BK; j += T) {\n\
+         \x20            float e = @weight;\n\
          \x20            scores[j] = e;\n\
          \x20            tsum += e;\n\
-         \x20        }}\n\
+         \x20        }\n\
          \x20        red_sum[t] = tsum;\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20        for (uint st = T / 2; st > 0; st >>= 1) {{\n\
+         \x20        for (uint st = T / 2; st > 0; st >>= 1) {\n\
          \x20            if (t < st) red_sum[t] += red_sum[t + st];\n\
          \x20            threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20        }}\n\
+         \x20        }\n\
          \x20        l = l * alpha + red_sum[0];\n\
-         {updates}\
+         @updates\
          \x20        m = mn;\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20    }}\n\
-         {writes}\
-         }}"
-    )
-}
+         \x20    }\n\
+         @writes\
+         }";
 
 /// 分数块的单键计算体：`S` 不是块大小整数倍时带尾块守卫。
 fn flash_score_body(q: &str, k: &str, tail: bool) -> String {
@@ -617,6 +670,14 @@ fn flash_acc_update(v: &str, n: usize, shape: Flash, tail: bool) -> String {
     } else {
         add
     };
+    if shape.dim.is_multiple_of(shape.threads) {
+        return format!(
+            "        {{ const uint h = t + {h};\n\
+             \x20           float a = acc_{n} * alpha;\n\
+             \x20           for (uint j = 0; j < BK; ++j) {{ {value} }}\n\
+             \x20           acc_{n} = a; }}\n"
+        );
+    }
     format!(
         "        {{ const uint h = t + {h};\n\
          \x20           if (h < D) {{\n\

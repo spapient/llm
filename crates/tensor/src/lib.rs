@@ -4,7 +4,7 @@
 //! **拥有**：[`Tensor`]、[`OwnedTensor`]、[`View`]、[`Shape`]、[`Strides`]、[`Order`]、
 //! [`Element`] 与计算层子集 [`SUPPORTED`]。**不拥有**：元素类型闭集（L1 `dtype`，这里只再导出
 //! `DType`）、kernel 侧的操作数视图（DSL 的宿主 API，两者语义不同，见
-//! `docs/adr/0003-kernel-and-runtime-types.md`）、布局搬运（`storage`）、设备句柄（ADR 0025）。
+//! `docs/ARCHITECTURE.md` 第三节）、布局搬运（`storage`）、设备句柄（ADR 0025）。
 //! **依赖**：`dtype`、`diagnostic`。**被依赖**：`storage`、`weights`、`kv`、`autograd`、
 //! `data`、`nn`、`engine`、`llm`。
 //!

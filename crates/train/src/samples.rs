@@ -1,7 +1,7 @@
 //! 训练样本：[`Batch`]、[`Dataset`] 与最简实现 [`Chunks`]。
 //!
 //! 这三件套原来是独立成员 `llm-data`：唯一消费者就是本 crate（[`crate::Learner`] 经
-//! `&mut dyn Dataset` 取批、[`crate::Checkpoint`] 记录批形状），因此按 ADR 0038 的"单一消费者"
+//! `&mut dyn Dataset` 取批、[`crate::Checkpoint`] 记录批形状），因此按"单一消费者"
 //! 判据并入本 crate——样本与训练循环状态同居一个成员，`train → data` 与 `data → diagnostic`
 //! 两条边一起消失，也不再有一个只为 `train` 存在的成员。
 //!

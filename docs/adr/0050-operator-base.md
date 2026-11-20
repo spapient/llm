@@ -2,7 +2,7 @@
 
 - 状态：已采纳（`op::operator` 契约、全部 36 个在册算子的 `impl`、以及 `#[model]` 改生成 `model_of` 均已完成）
 - 日期：2026-11-20
-- 相关：[0002](0002-single-owner-per-type.md)（单一主人）、[0005](0005-annotations-as-contracts.md)（注解即契约）、[0013](0013-dense-projection-operator.md)（加算子只加数据）、[0026](0026-gemm-generic-skeleton.md)（GEMM 泛型骨架）、[0031](0031-kernel-macro-derived-table.md)（宏派生表）、[0047](0047-2bit-quantized-lane.md)（量化 lane 的配置表）、[0049](0049-refactor-summary-2026-11.md)（上一轮重构结论）
+- 相关：ADR 0002（单一主人）、[0005](0005-annotations-as-contracts.md)（注解即契约）、ADR 0013（加算子只加数据）、ADR 0026（GEMM 泛型骨架）、ADR 0031（宏派生表）、ADR 0047（量化 lane 的配置表）、ADR 0049（上一轮重构结论）
 
 ## 背景
 
@@ -61,7 +61,7 @@ pub trait Operator {
 `all_in_registry` 锁定子集。
 
 **否决 `operator_table!`（类型路径 => 适配函数）**：它只把 `Operator` 的类型路径抄进 train/serve
-的每一行，行数不减、耦合反增，而"名字与顺序正确"已由上述两条 `const` 断言保证。按 ADR 0049 的
+的每一行，行数不减、耦合反增，而"名字与顺序正确"已由上述两条 `const` 断言保证。按"行数不减就不改"的同一判据
 "无行数收益即不做"原则，不再引入第二个装配宏。
 
 模块自带具体入口的算子（softmax / rmsnorm / rope / embed / scan / attention / matmul）由

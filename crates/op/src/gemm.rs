@@ -576,34 +576,7 @@ macro_rules! gemm_variant {
         }
 
         // 基座契约（ADR 0050）：三条行为从 `Gemm` 骨架转发，粒度由注解的骨架默认值给出。
-        impl $crate::operator::Operator for $name {
-            const NAME: &'static str = $op;
-            const SHAPE: (usize, usize) = (16, 16);
-            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
-            const AXES: &'static [$crate::model::AxisSpec] = $crate::gemm::AXES;
-            const DIFFERENTIABLE: bool = $differentiable;
-
-            fn shape_ctx(
-                m: usize,
-                n: usize,
-            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
-                $crate::gemm::project_shape(m, n)
-            }
-
-            fn cost(
-                shape: &$crate::model::ShapeContext,
-            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
-                $crate::gemm::cost::<Self>(shape)
-            }
-
-            fn sample(m: usize, n: usize) -> $crate::model::Sample {
-                $crate::gemm::sample::<Self>(m, n)
-            }
-
-            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
-                $crate::gemm::reference::<Self>(sample)
-            }
-        }
+        $crate::operator_via!($name, $op, (16, 16), $differentiable, gemm, $crate::gemm::AXES);
 
         #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
         pub fn forward(

@@ -1,8 +1,9 @@
 //! CPU 推理内核桥：把 `op` 的标量参考适配成 engine 可登记的 [`Program`]。
 //!
-//! 落点裁决见 [`backend-runtime-design.md`](../../docs/backend-runtime-design.md) §4：
+//! 落点裁决见 [ADR 0025](../../docs/adr/0025-runtime-backend-abstraction.md)；设备数据与机制的边界见
+//! [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) 第一、二节。
 //! 端点契约、路由与线格式保持模型无关；CPU 模型实现作为注入 [`Predict`](crate::Predict)
-//! 的提供者收在本模块内，真设备后端仍按 ADR 0025 收在独立边界 crate，不回流这里。
+//! 的提供者收在本模块内，真设备后端仍收在独立边界 crate，不回流这里。
 //!
 //! # 职责
 //!

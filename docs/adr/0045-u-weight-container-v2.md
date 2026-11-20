@@ -2,7 +2,7 @@
 
 - 状态：已采纳（实现随本轮落在 `weights`；回传主树后并入门禁基线）
 - 日期：2026-11-17
-- 相关：[0015](0015-pack-weight-container.md)（LLPK v1 字节布局与能力基线）、[0036](0036-reader-loader-mmap-source.md)（Reader/Loader 双契约）；旧基线 `.u`（LLMU v4）机制取证见 [`../lld.md`](../lld.md) §E8.2，对照口径见 [`../llmu-parity-optimization-design.md`](../llmu-parity-optimization-design.md)
+- 相关：ADR 0015（LLPK v1 字节布局与能力基线）、ADR 0036（Reader/Loader 双契约）
 
 ## 背景
 
@@ -117,4 +117,3 @@ ADR-0015 的 LLPK v1 解决了"读写对称、全精度 wire 闭集、显式量�
 
 - ADR-0015：LLPK v1 字节布局、wire 闭集、仿射量化、对齐与两级 CRC
 - `docs/lld.md` §E8.2：旧 v4 REF 去重、V_FP16/V_artifact/ratio 口径、`import`/`deploy`/`verify` CLI 与历史证人（历史数字不回填为本轮结论）
-- `docs/llmu-parity-optimization-design.md`：不退化清单与对标口径

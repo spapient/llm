@@ -2,7 +2,7 @@
 
 - 状态：Accepted（2026-11-18 评审通过，G1/G2/G3 三处订正已并入；作为 M3-1 前置约束，边界 crate 实现随 M3 填入）
 - 日期：2026-11-17
-- 相关：[0025](0025-runtime-backend-abstraction.md)（后端三件套、trait 归属与依赖方向、§9 unsafe/FFI 预告）、[0028](0028-device-data-vs-mechanism-boundary.md)（运行时后端落点与触发条件）、[0001](0001-layered-dependency-order.md)（依赖方向）；设计取证见 [`../backend-runtime-design.md`](../backend-runtime-design.md) §3.3 G13、§5、§7 P3 前置步骤
+- 相关：[0025](0025-runtime-backend-abstraction.md)（后端三件套、trait 归属与依赖方向、§9 unsafe/FFI 预告）、ADR 0028（运行时后端落点与触发条件）、ADR 0001（依赖方向）
 
 ## 背景
 
@@ -81,4 +81,4 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 ## 修订
 
 - 2026-11-17：初稿，回应 G13；白名单四类、allow 收敛点、依赖方向、unsafe 块最小化规则落档，实现随 P3 边界 crate。
-- 2026-11-18：评审通过（0035-review，G1/G2/G3）并置 Accepted：① trait 清单订正为四 trait（`Executor`/`Program`/`Allocator`/`Collective`）且 `Device` 为 struct；② 白名单增第 5 类「通信/进程级库句柄」；③ 补 FFI 绑定默认策略（手写 `extern "C"`、零依赖）。
+- 2026-11-18：评审通过（G1/G2/G3）并置 Accepted：① trait 清单订正为四 trait（`Executor`/`Program`/`Allocator`/`Collective`）且 `Device` 为 struct；② 白名单增第 5 类「通信/进程级库句柄」；③ 补 FFI 绑定默认策略（手写 `extern "C"`、零依赖）。

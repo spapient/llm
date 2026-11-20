@@ -2,7 +2,7 @@
 
 - 状态：接受（P1 地基 trait 形状与 CPU 安全实现已落地；真实 CPU 内核、P3 Metal/CUDA 边界实现随后续阶段填入）
 - 日期：2026-11-15
-- 相关：[0003](0003-kernel-and-runtime-types.md)（kernel 侧与运行时类型分离）、[0012](0012-quantized-weights.md)（量化权重同源）、[0017](0017-kernel-ast-and-ir-freeze.md)（无 IR 冻结）；路线见 [`../engine-benchmark-roadmap.md`](../engine-benchmark-roadmap.md) §5、§6
+- 相关：ADR 0003（kernel 侧与运行时类型分离）、ADR 0012（量化权重同源）、[0017](0017-kernel-ast-and-ir-freeze.md)（无 IR 冻结）
 
 ## 背景
 

@@ -2,7 +2,7 @@
 
 - 状态：提议（P0 落档抽象形状；注册表实现与后端内核随 P1 CPU、P3 Metal/CUDA 落地）
 - 日期：2026-11-15
-- 相关：[0025](0025-runtime-backend-abstraction.md)（后端三件套、算子多后端挂载）、[0026](0026-gemm-generic-skeleton.md)（算子泛型骨架）、[0012](0012-quantized-weights.md)（量化权重同源）；评审见 [`../prim-layer-review.md`](../prim-layer-review.md)；路线见 [`../engine-benchmark-roadmap.md`](../engine-benchmark-roadmap.md) §5、§6
+- 相关：[0025](0025-runtime-backend-abstraction.md)（后端三件套、算子多后端挂载）、ADR 0026（算子泛型骨架）、ADR 0012（量化权重同源）
 
 ## 背景
 

@@ -5,7 +5,7 @@
 //! 算子同时实现族 trait 与本 trait，方法体只转发，不写第二份算术。
 //!
 //! `#[annotation::model]` 生成的 `MODEL` 是这一契约的一份实例。迁移期两份并存，由
-//! `operator_tests.rs` 的投影一致性测试锁住漂移；每族迁移完成后 `MODEL` 改由 [`model_of`] 生成。
+//! 本文件末尾的投影一致性测试锁住漂移；每族迁移完成后 `MODEL` 改由 [`model_of`] 生成。
 
 use crate::model::{AxisSpec, Cost, DType, Model, Sample, ShapeContext};
 
@@ -54,36 +54,91 @@ pub const fn model_of<T: Operator>() -> Model {
     }
 }
 
-/// 为「模块自带具体入口」的算子生成 [`Operator`] 实现（ADR 0050 §3 的装配层）。
-///
-/// 只在**算子模块内部**调用：`AXES` / `project_shape` / `cost` / `sample` / `reference` 都取
-/// 当前模块的同名项，装配行只剩类型、注册名、生产形状、可微性与参考入口。族骨架的泛型入口
-/// （reduce / unary / binary / gemv / gemm）仍由各自装配宏直接生成，不走这里。
+/// 为「模块自带具体入口」的算子装配 [`Operator`]（ADR 0050 §3）：`AXES` / `project_shape` /
+/// `cost` / `sample` / `reference` 都取当前模块的同名项，装配行只剩类型、注册名、生产形状、
+/// 可微性与参考入口。族骨架的泛型入口（reduce / unary / binary / gemv / gemm）走
+/// [`operator_via!`](crate::operator_via)。
 #[macro_export]
 macro_rules! operator_here {
-    ($ty:ty, $op:tt, $shape:expr, $differentiable:literal, $reference:ident) => {
+    ($ty:ty, $op:tt, $shape:expr, $differentiable:literal, $reference:path) => {
+        $crate::operator_via!(
+            @impl $ty,
+            $op,
+            $shape,
+            $differentiable,
+            1,
+            AXES,
+            project_shape,
+            self::cost,
+            self::sample,
+            $reference
+        );
+    };
+}
+
+/// [`Operator`] 的唯一生成点：名字、生产形状、精度、轴与三条行为全部由四个入口路径给出。
+///
+/// 两种形态：`grained` 把粒度对齐到骨架的 [`Format::GRAIN`](crate::gemv::Format::GRAIN)，
+/// 其余按稠密算子取 `1`；入口路径由调用方给（族骨架取 `$crate::$skel::*` 的泛型入口，
+/// 模块自带入口时取 `self::*`，见 [`operator_here!`](crate::operator_here)）。装配宏因此都不必再写
+/// 第二份 impl。
+#[macro_export]
+macro_rules! operator_via {
+    ($ty:ty, $op:tt, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
+        $crate::operator_via!(
+            @impl $ty,
+            $op,
+            $shape,
+            $differentiable,
+            1,
+            $axes,
+            $crate::$skel::project_shape,
+            $crate::$skel::cost::<$ty>,
+            $crate::$skel::sample::<$ty>,
+            $crate::$skel::reference::<$ty>
+        );
+    };
+    (grained $ty:ty, $op:tt, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
+        $crate::operator_via!(
+            @impl $ty,
+            $op,
+            $shape,
+            $differentiable,
+            <$ty as $crate::$skel::Format>::GRAIN as u32,
+            $axes,
+            $crate::$skel::project_shape,
+            $crate::$skel::cost::<$ty>,
+            $crate::$skel::sample::<$ty>,
+            $crate::$skel::reference::<$ty>
+        );
+    };
+    (
+        @impl $ty:ty, $op:tt, $shape:expr, $differentiable:literal, $group:expr,
+        $axes:expr, $project:path, $cost:path, $sample:path, $reference:path
+    ) => {
         impl $crate::operator::Operator for $ty {
             const NAME: &'static str = $op;
             const SHAPE: (usize, usize) = $shape;
             const DTYPE: $crate::model::DType = $crate::model::DType::F32;
-            const AXES: &'static [$crate::model::AxisSpec] = AXES;
+            const AXES: &'static [$crate::model::AxisSpec] = $axes;
             const DIFFERENTIABLE: bool = $differentiable;
+            const GROUP: u32 = $group;
 
             fn shape_ctx(
                 m: usize,
                 n: usize,
             ) -> ::core::result::Result<$crate::model::ShapeContext, ::diagnostic::Error> {
-                project_shape(m, n)
+                $project(m, n)
             }
 
             fn cost(
                 shape: &$crate::model::ShapeContext,
             ) -> ::core::result::Result<$crate::model::Cost, ::diagnostic::Error> {
-                self::cost(shape)
+                $cost(shape)
             }
 
             fn sample(m: usize, n: usize) -> $crate::model::Sample {
-                self::sample(m, n)
+                $sample(m, n)
             }
 
             fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
@@ -95,5 +150,113 @@ macro_rules! operator_here {
 
 #[cfg(test)]
 mod tests {
-    include!("operator_tests.rs");
+    // [`Operator`](crate::operator::Operator) 投影与注册表的一致性（ADR 0050 §2）。
+    //
+    // 过渡期 `MODEL` 仍由 `#[model]` 注解生成；本测试逐字段比对 `model_of::<T>()` 与注册表里的
+    // 那一份，任何一侧漂移都在这里失败，而不是等到 `verify` 用错语义表。
+
+    use crate::model::Model;
+    use crate::operator::{Operator, model_of};
+
+    /// 投影与注册表逐字段一致：常量字段直接比，行为字段在同一个形状上比输出。
+    fn assert_projection_matches_registry<T: Operator>() {
+        let projected = model_of::<T>();
+        let registered = crate::model(T::NAME).expect("算子必须已注册");
+        assert_eq!(projected.group, registered.group, "{}: group", T::NAME);
+        assert_eq!(projected.shape, registered.shape, "{}: shape", T::NAME);
+        assert_eq!(projected.dtype, registered.dtype, "{}: dtype", T::NAME);
+        assert_eq!(projected.axes, registered.axes, "{}: axes", T::NAME);
+        assert_behavior_matches(projected, registered, T::NAME);
+    }
+
+    /// 代价、样本与参考：同一形状上下文的输出逐位相等。
+    fn assert_behavior_matches(projected: Model, registered: Model, name: &str) {
+        let shape = (projected.shape_ctx)(64, 8).expect("形状上下文可构造");
+        let sample = (projected.sample)(64, 8);
+        assert_eq!(sample, (registered.sample)(64, 8), "{name}: sample");
+        assert_eq!(
+            (projected.cost)(&shape).expect("投影代价可计算"),
+            (registered.cost)(&shape).expect("注册表代价可计算"),
+            "{name}: cost"
+        );
+        assert_eq!(
+            (projected.reference)(&sample).expect("投影参考可计算"),
+            (registered.reference)(&sample).expect("注册表参考可计算"),
+            "{name}: reference"
+        );
+    }
+
+    #[test]
+    fn reduce_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::reduce_sum_f32::Sum>();
+        assert_projection_matches_registry::<crate::reduce_max_f32::Max>();
+    }
+
+    #[test]
+    fn unary_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::unary::exp_f32::Exp>();
+        assert_projection_matches_registry::<crate::unary::log_f32::Log>();
+        assert_projection_matches_registry::<crate::unary::gelu_f32::Gelu>();
+        assert_projection_matches_registry::<crate::unary::silu_f32::Silu>();
+        assert_projection_matches_registry::<crate::unary::scale_f32::Scale>();
+    }
+
+    #[test]
+    fn binary_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::elementwise::add_f32::Add>();
+        assert_projection_matches_registry::<crate::elementwise::sub_f32::Sub>();
+        assert_projection_matches_registry::<crate::elementwise::mul_f32::Mul>();
+        assert_projection_matches_registry::<crate::elementwise::div_f32::Div>();
+        assert_projection_matches_registry::<crate::elementwise::max_f32::Max>();
+        assert_projection_matches_registry::<crate::elementwise::min_f32::Min>();
+        assert_projection_matches_registry::<crate::elementwise::residual_add_f32::Residual>();
+    }
+
+    #[test]
+    fn dequant_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::dequant_i2::DequantI2>();
+        assert_projection_matches_registry::<crate::dequant_i4::DequantI4>();
+        assert_projection_matches_registry::<crate::dequant_i8::DequantI8>();
+    }
+
+    #[test]
+    fn gemv_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::gemv::gemv_i2::I2>();
+        assert_projection_matches_registry::<crate::gemv::gemv_i4::I4>();
+        assert_projection_matches_registry::<crate::gemv::gemv_i8::I8>();
+        assert_projection_matches_registry::<crate::gemv::gemv_f32::F32>();
+    }
+
+    #[test]
+    fn gemm_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::gemm::gemm_i2::GemmI2>();
+        assert_projection_matches_registry::<crate::gemm::gemm_i4::GemmI4>();
+        assert_projection_matches_registry::<crate::gemm::gemm_i8::GemmI8>();
+        assert_projection_matches_registry::<crate::gemm::gemm_f32::Dense>();
+    }
+
+    #[test]
+    fn normalization_and_shape_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::softmax::softmax_f32::Softmax>();
+        assert_projection_matches_registry::<crate::softmax::rmsnorm_f32::RmsNorm>();
+        assert_projection_matches_registry::<crate::softmax::rope_f32::Rope>();
+        assert_projection_matches_registry::<crate::softmax::embed_f32::Embed>();
+        assert_projection_matches_registry::<crate::scan::scan_f32::Scan>();
+    }
+
+    #[test]
+    fn attention_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::attention::Attention>();
+        assert_projection_matches_registry::<crate::attention::FlashAttention>();
+        assert_projection_matches_registry::<crate::attention::decode_attention::DecodeAttention>();
+        assert_projection_matches_registry::<
+            crate::attention::decode_attention::DecodeFlashAttention,
+        >();
+    }
+
+    #[test]
+    fn matmul_projection_matches_the_registered_model() {
+        assert_projection_matches_registry::<crate::matmul::Matmul>();
+        assert_projection_matches_registry::<crate::matmul_i8::MatmulI8Op>();
+    }
 }

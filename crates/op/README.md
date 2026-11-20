@@ -108,7 +108,7 @@ crates/op/
 
 清单**不在这里维护**：`REGISTRY`（`src/lib.rs`）是唯一事实源，`cargo test -p llm-op` 的
 `every_builtin_entry_declares_an_operator` 与 `declared_names_are_sorted` 会把注册表、`build.rs` 从
-`ops/` 生成的声明表与模板三者逐条对齐。当前 22 条注册，按族看：
+`ops/` 生成的声明表与模板三者逐条对齐。条数以 `REGISTRY` 为准（当前 36 条），按族看：
 
 | 族 | 注册 | 共同点 / 差别 |
 |---|---|---|
@@ -121,7 +121,7 @@ crates/op/
 | 解量化 | `dequant_i4` / `dequant_i8` | 打包粒度 2 / 1，各占一个模块 |
 
 GEMV 那三条**只差数据**：同一副骨架、同一批 CPU 原语（9 条 L2 见证）、同一条 lowering 流水线；
-`cutile` 与 `prim` 在加入 `gemv_f32` 时一行未改（ADR 0013）。它们的代价不能互相顶替——同一份
+`cutile` 与 `prim` 在加入 `gemv_f32` 时一行未改。它们的代价不能互相顶替——同一份
 `[4096, 4096]` 权重，f32 的读下界是 int4 的 8 倍，所以"格式 → 算子名"是 `nn::WeightFormat` 的映射，
 不是一个全局默认值。
 
@@ -147,5 +147,5 @@ GEMV 那三条**只差数据**：同一副骨架、同一批 CPU 原语（9 条 
   `llm → cutile → op`。`op` 的依赖只有三条：`annotation`（`#[model]` 等注解）、`diagnostic`（错误类
   型：`invalid` / `missing` / `io`，与 `Code::exit_code` 的退出码同一套）与同层的 `prof`（能力词汇表
   `atom`），不出现任何机制代码。求和表达式那一层（`Expr` / `Formula` / `Extents`）已并入本 crate 的
-  `op::einsum`（ADR 0019），不再是独立成员。命令行的参数文法也不在这里，在 `llm-cli::cutile`。
+  `op::einsum`，不再是独立成员。命令行的参数文法也不在这里，在 `llm-cli::cutile`。
 - 构建与工具链配置：见根目录的 `Cargo.toml`、`clippy.toml`、`rustfmt.toml`。

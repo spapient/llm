@@ -82,7 +82,7 @@ mod mix;
 mod mla;
 mod moe;
 mod param_role {
-    //! 参数角色闭集：一个参数槽归哪个优化器组（D11 / ADR 0037）。
+    //! 参数角色闭集：一个参数槽归哪个优化器组（D11；权重衰减豁免与可训练判定由角色派生）。
     //!
     //! 角色由层构造器写进 [`crate::ContractSpec`]；权重衰减豁免与可训练判定都从角色派生，优化器按
     //! 角色取组，不按字段名或层名前缀猜。闭集之外的角色在编译期不存在——新增一类参数必须先扩这个
@@ -166,6 +166,7 @@ mod latent;
 mod patch;
 mod pointwise;
 mod policy;
+mod spike;
 mod stack;
 
 #[doc(inline)]
@@ -252,9 +253,12 @@ pub use mix::{Audit, Encoder, Events, Lif, accumulate, encode_id, steepest};
 pub use pointwise::{ReduceMax, ReduceSum};
 
 #[doc(inline)]
+pub use spike::{Membrane, Spiking};
+
+#[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
 
-/// 形状由 `tensor` 拥有（`docs/adr/0002`），这里再导出：`Contract::output` 本来就返回它，
+/// 形状由 `tensor` 拥有（见 `docs/ARCHITECTURE.md` 第三节），这里再导出：`Contract::output` 本来就返回它，
 /// 消费者与 `#[spec]` 生成的代码都不该为此额外依赖 `tensor`。
 pub use tensor::Shape;
 
