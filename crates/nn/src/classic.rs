@@ -47,6 +47,35 @@ fn nonzero(value: usize, field: &str, layer: &str) -> Result<usize> {
     Ok(value)
 }
 
+/// 校验 `eps` 为正且有限：所有归一化层共用。
+fn check_eps(eps: f32, layer: &str) -> Result<()> {
+    if eps <= 0.0 || eps.is_nan() {
+        return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
+    }
+    Ok(())
+}
+
+/// 校验组归一化的结构：组数/通道非零且通道能被组数整除。
+fn check_group_norm(groups: usize, channels: usize, layer: &str) -> Result<()> {
+    nonzero(groups, "groups", layer)?;
+    nonzero(channels, "channels", layer)?;
+    if channels % groups != 0 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("{layer}: `channels`({channels}) 不能被 `groups`({groups}) 整除"),
+        )
+        .with(layer));
+    }
+    Ok(())
+}
+
+/// 校验反卷积层的输入/输出通道非零：1d/2d 共用。
+fn nonzero_channels(cin: usize, cout: usize, layer: &str) -> Result<()> {
+    nonzero(cin, "cin", layer)?;
+    nonzero(cout, "cout", layer)?;
+    Ok(())
+}
+
 /// 一维卷积层：NHWC 输入 `[l, cin]`，输出 `[ol, cout]`。
 #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,8 +238,7 @@ impl ConvTranspose1d {
         l: usize,
     ) -> Result<Self> {
         let layer = "nn::ConvTranspose1d::new";
-        nonzero(cin, "cin", layer)?;
-        nonzero(cout, "cout", layer)?;
+        nonzero_channels(cin, cout, layer)?;
         let deconv = OpDeconv1::new(cin, cout, k, s, p);
         let ol = deconv.len(l)?;
         let spec = __layer_spec_ConvTranspose1d!(name, ol, cout, GEMM)?;
@@ -261,8 +289,7 @@ impl ConvTranspose2d {
         w: usize,
     ) -> Result<Self> {
         let layer = "nn::ConvTranspose2d::new";
-        nonzero(cin, "cin", layer)?;
-        nonzero(cout, "cout", layer)?;
+        nonzero_channels(cin, cout, layer)?;
         let deconv = OpDeconv2::new(cin, cout, geom);
         let oh = deconv.oh(h)?;
         let ow = deconv.ow(w)?;
@@ -559,9 +586,7 @@ impl BatchNorm2d {
     pub fn new(name: impl Into<String>, channels: usize, eps: f32, momentum: f32) -> Result<Self> {
         let layer = "nn::BatchNorm2d::new";
         nonzero(channels, "channels", layer)?;
-        if eps <= 0.0 || eps.is_nan() {
-            return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
-        }
+        check_eps(eps, layer)?;
         if !(0.0..=1.0).contains(&momentum) {
             return Err(
                 Error::new(Code::Invalid, format!("{layer}: `momentum` 必须落在 [0, 1]"))
@@ -611,18 +636,8 @@ impl GroupNorm {
     /// 组数/通道为零、不能整除或 `eps ≤ 0` 时返回说明。
     pub fn new(name: impl Into<String>, groups: usize, channels: usize, eps: f32) -> Result<Self> {
         let layer = "nn::GroupNorm::new";
-        nonzero(groups, "groups", layer)?;
-        nonzero(channels, "channels", layer)?;
-        if eps <= 0.0 || eps.is_nan() {
-            return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
-        }
-        if channels % groups != 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("{layer}: `channels`({channels}) 不能被 `groups`({groups}) 整除"),
-            )
-            .with(layer));
-        }
+        check_group_norm(groups, channels, layer)?;
+        check_eps(eps, layer)?;
         let norm = OpGroup {
             groups,
             channels,
@@ -667,9 +682,7 @@ impl InstanceNorm {
     pub fn new(name: impl Into<String>, channels: usize, eps: f32) -> Result<Self> {
         let layer = "nn::InstanceNorm::new";
         nonzero(channels, "channels", layer)?;
-        if eps <= 0.0 || eps.is_nan() {
-            return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
-        }
+        check_eps(eps, layer)?;
         let norm = OpInst { channels, eps };
         let spec = Spec::new(name, crate::Shape::new([channels]), vec!["instance_norm_f32".to_string()])?;
         Ok(Self {
@@ -710,9 +723,7 @@ impl LayerNorm {
     pub fn new(name: impl Into<String>, width: usize, eps: f32) -> Result<Self> {
         let layer = "nn::LayerNorm::new";
         nonzero(width, "width", layer)?;
-        if eps <= 0.0 || eps.is_nan() {
-            return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
-        }
+        check_eps(eps, layer)?;
         let norm = OpLayer { width, eps };
         let spec = Spec::new(name, crate::Shape::new([width]), vec!["layer_norm_f32".to_string()])?;
         Ok(Self { spec, norm, width })
