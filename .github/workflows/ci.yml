@@ -194,7 +194,7 @@ jobs:
       # 回退判定本身也要被编译与执行一次：没有本机基线/没有测量时它登记跳过（`llm-testkit[skip]`），
       # 有基线的固定靶机上才会真的判 pass/regressed。判定规则只有 `tool::regress` 一份。
       - name: Judge the gemv_f32 baseline
-        run: cargo test -p llm-benches --test regress --locked -- --nocapture
+        run: cargo test -p llm-benchmarks --test regress --locked -- --nocapture
       - name: Upload bench report
         if: always()
         uses: actions/upload-artifact@v4

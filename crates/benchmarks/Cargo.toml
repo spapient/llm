@@ -1,5 +1,5 @@
 [package]
-name = "llm-benches"
+name = "llm-benchmarks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

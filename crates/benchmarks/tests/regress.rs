@@ -250,7 +250,7 @@ struct Baseline {
     host: &'static str,
     backend: &'static str,
     scenario: &'static str,
-    /// 基线 ns/iter：`cargo bench -p llm-benches --bench <group>` 的 mean 点估计，取整到 ns。
+    /// 基线 ns/iter：`cargo bench -p llm-benchmarks --bench <group>` 的 mean 点估计，取整到 ns。
     ns: f64,
     /// 允许的相对回退百分比。
     budget_percent: f64,
@@ -575,7 +575,7 @@ struct Ceiling {
     budget_percent: f64,
 }
 
-/// 各主机登记的三档读 / 写上界；数值来自 `cargo bench -p llm-benches --bench mem_stream`。
+/// 各主机登记的三档读 / 写上界；数值来自 `cargo bench -p llm-benchmarks --bench mem_stream`。
 const CEILINGS: &[Ceiling] = &[
     // Apple M5 Pro（2026-11-16）：16 KiB 读 64 趟 = 1 MiB / 迭代。
     Ceiling {
@@ -714,7 +714,7 @@ fn mean_ns(text: &str) -> Option<f64> {
 
 /// criterion 的输出目录：`target/criterion/<group>/<benchmark>/new/estimates.json`。
 ///
-/// 目标目录在**工作区根**（`crates/benches/../..`），不在本成员的目录下：criterion 由
+/// 目标目录在**工作区根**（`crates/benchmarks/../..`），不在本成员的目录下：criterion 由
 /// `cargo bench` 调用，写的是调用方的 `target/`。
 fn estimates(manifest: &Path, group: &str, benchmark: &str) -> PathBuf {
     manifest
@@ -729,7 +729,7 @@ fn estimates(manifest: &Path, group: &str, benchmark: &str) -> PathBuf {
 fn observed_ns(path: &Path) -> Option<f64> {
     let Ok(text) = std::fs::read_to_string(path) else {
         testkit::skip(format!(
-            "benches: 还没有基准测量（{}），先跑 cargo bench -p llm-benches",
+            "benchmarks: 还没有基准测量（{}），先跑 cargo bench -p llm-benchmarks",
             path.display()
         ));
         return None;
@@ -909,14 +909,14 @@ impl Roofline {
         let read = ceiling_for(host.host, tier, "read").unwrap_or_else(|| {
             panic!(
                 "主机 `{}` 没有登记 {tier} 档的读上界：\
-                 先跑 cargo bench -p llm-benches --bench mem_stream",
+                 先跑 cargo bench -p llm-benchmarks --bench mem_stream",
                 host.host
             )
         });
         let write = ceiling_for(host.host, tier, "write").unwrap_or_else(|| {
             panic!(
                 "主机 `{}` 没有登记 {tier} 档的写上界：\
-                 先跑 cargo bench -p llm-benches --bench mem_stream",
+                 先跑 cargo bench -p llm-benchmarks --bench mem_stream",
                 host.host
             )
         });
@@ -1474,7 +1474,7 @@ fn registered_baselines_stay_within_their_budget() {
     let host = host();
     let Some(profile) = local_profile(&host) else {
         testkit::skip(format!(
-            "benches: 主机 `{host}` 没有建档（跨机绝对值不可比），先在靶机上跑 cargo bench 后建档"
+            "benchmarks: 主机 `{host}` 没有建档（跨机绝对值不可比），先在靶机上跑 cargo bench 后建档"
         ));
         return;
     };
@@ -1485,7 +1485,7 @@ fn registered_baselines_stay_within_their_budget() {
         .collect();
     if ready.is_empty() {
         testkit::skip(format!(
-            "benches: 主机 `{host}` 没有登记任何基线，先在靶机上跑 cargo bench 后登记"
+            "benchmarks: 主机 `{host}` 没有登记任何基线，先在靶机上跑 cargo bench 后登记"
         ));
         return;
     }
@@ -1503,7 +1503,7 @@ fn registered_ceilings_stay_within_their_budget() {
     let host = host();
     let Some(profile) = local_profile(&host) else {
         testkit::skip(format!(
-            "benches: 主机 `{host}` 没有建档，上界无从判定（跨机绝对值不可比）"
+            "benchmarks: 主机 `{host}` 没有建档，上界无从判定（跨机绝对值不可比）"
         ));
         return;
     };
@@ -1511,7 +1511,7 @@ fn registered_ceilings_stay_within_their_budget() {
     let ready: Vec<&Ceiling> = CEILINGS.iter().filter(|c| c.host == host).collect();
     if ready.is_empty() {
         testkit::skip(format!(
-            "benches: 主机 `{host}` 没有登记搬运上界，roofline 的达成率无法计算"
+            "benchmarks: 主机 `{host}` 没有登记搬运上界，roofline 的达成率无法计算"
         ));
         return;
     }
@@ -1630,7 +1630,7 @@ fn registered_load_records_archive_when_measured() {
     let host = host();
     let Some(profile) = local_profile(&host) else {
         testkit::skip(format!(
-            "benches: 主机 `{host}` 没有建档，装载记录无从归档（跨机绝对值不可比）"
+            "benchmarks: 主机 `{host}` 没有建档，装载记录无从归档（跨机绝对值不可比）"
         ));
         return;
     };
@@ -1705,7 +1705,7 @@ fn registered_model_records_archive_when_measured() {
     let host = host();
     let Some(profile) = local_profile(&host) else {
         testkit::skip(format!(
-            "benches: 主机 `{host}` 没有建档，模型记录无从归档（跨机绝对值不可比）"
+            "benchmarks: 主机 `{host}` 没有建档，模型记录无从归档（跨机绝对值不可比）"
         ));
         return;
     };
