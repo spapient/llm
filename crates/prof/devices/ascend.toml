@@ -1,4 +1,5 @@
-# 昇腾档案（P0 只有 L0：形状、执行单元与见证已声明，真机执行待补）。
+# 昇腾档案（P0 只有 L0：形状、执行单元与见证已声明；执行路径已接到 ccec + AscendCL，
+# 但那三项编译参数与 AscendC 产物本身都还没在任何 910B 上核对过）。
 # 这份档案的用途是证明"设备差异只写在数据里"：三级存储映射到 GM / L1 / L0，
 # 执行单元（cube / vector / mte / fixpipe / scalar）以及"某个单元访问得到哪几层存储"
 # 全部是本文件里的声明，`cutile` 不认识其中任何一个名字。
@@ -46,12 +47,20 @@ space = ["GM", "FAST", "REG"]
 # 工具链参数与前置声明。`preamble` 是模板 `@reduce` 的 `$func` 与几个软件数学函数在**设备源码**里
 # 的定义：缺了它，片段一旦真的调用 `_cutile_sum_f32`（与 cpu/nvidia 同构），汇编出的内核就编不过。
 # 内容与 `cpu` 档案同源——P0 片段的语义就是标量 C（`load` 是指针赋值、`bar` 是空表达式），前置声明
-# 跟着片段语言走；AscendC 特化（P3：`DataCopy`/`TPipe`/`Mmad`）落地时再换成 `__aicore__` 版本。
+# 跟着片段语言走。语义门（`engine::ascend_codegen`）会把这里**每个函数**补上 `__aicore__`（不补就是
+# "AI Core 函数调用了宿主函数"，ccec 编译期拒），所以下面的纯算术实现（`_cutile_exp_f32`、四个归约
+# 入口）可以直接落设备；`logf` / `sqrtf` / `sinf` / `cosf` / `powf` 那五个仍指向宿主编译器的 libm，
+# 是第一次上机时最先会被卡住的地方——把它们换成 `AscendC::Log` / `Sqrt` / `Sin` / `Cos` / `Power`，
+# 属于 P3 的 AscendC 特化，与 `DataCopy`/`TPipe`/`Mmad` 同一批。
 # `exp` 用位精确的软件实现，其余走 libm（相对误差 <1 ulp，远小于 P0 阈值 1e-5）。
-# 核架构参数（`dav-c220`）等 `ccec` 到位后按实测补：本机没有这个编译器，猜一个拼写进档案，
-# 只会让"参数"这一格从空变成错的。
+#
+# 设备语言与核芯：`-xcce` 让 ccec 把这份翻译单元按 AscendC 编（不带它，`__aicore__` /
+# `AscendC::GetBlockIdx()` 在宿主 C++ 里就是未定义标识符）；`--cce-aicore-arch=dav-c220` 是
+# `id = "910b"` 那一档的核芯名；`-lascendcl` 是 host 侧发射 / 显存管理的运行库（单源 `<<<>>>`
+# 流程也要连它）。本机没有 ccec，这三项拼写取自 CANN 的编译文档、未经真机核对：第一次上机
+# 若报"未知架构"，先核对 `--cce-aicore-arch` 的取值再改档案，别在数据里留第二个猜测。
 [compile]
-flags = ["-O2"]
+flags = ["-xcce", "--cce-aicore-arch=dav-c220", "-O2", "-lascendcl"]
 preamble = """
 #include <math.h>
 #include <stdint.h>

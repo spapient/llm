@@ -26,7 +26,3 @@ diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["
 [[test]]
 name = "gate"
 path = "tests/gate.rs"
-
-[[test]]
-name = "zz_probe_tmp"
-path = "tests/zz_probe_tmp.rs"

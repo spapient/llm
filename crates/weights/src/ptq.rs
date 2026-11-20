@@ -405,6 +405,12 @@ pub mod svd {
             self.sigma.len()
         }
 
+        /// 矩阵形状 `(m, n)`：因子化存储要按它算 `UΣ` 与 `Vᵀ` 的行宽。
+        #[must_use]
+        pub fn shape(&self) -> (usize, usize) {
+            (self.m, self.n)
+        }
+
         /// 秩-r 截断重构（行主序 `m×n`）：`U[:, :r] Σ[:r] V[:, :r]ᵀ`。
         #[must_use]
         pub fn reconstruct(&self, r: usize) -> Vec<f64> {

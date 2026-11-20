@@ -405,11 +405,16 @@ fn serial_kernel(kernel_source: &str, signature: &Signature, sample: &Sample) ->
 
 /// 带线程下标的内核包裹：给内部内核透传 `tid`、声明 `uint3 tid [[thread_position_in_grid]]`，
 /// 循环注入与分块扫描两条 lowering 共用（串行零维用 [`serial_kernel`]，不追加 `tid`）。
-fn tid_kernel_main(body: &str, signature: &Signature, sample: &Sample) -> Result<String> {
+fn tid_kernel_main(
+    body: &str,
+    signature: &Signature,
+    sample: &Sample,
+    entry: &str,
+) -> Result<String> {
     let call = format!("{}, tid", launch_args(sample, signature.params())?);
     let buffers = buffer_decls(signature);
     Ok(format!(
-        "{body}\n\nkernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
+        "{body}\n\nkernel void {entry}(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    {}({call});\n}}",
         signature.kernel(),
     ))
 }
@@ -424,7 +429,7 @@ fn injected_kernel(
     let mut body = msl_address_space(kernel_source);
     body = thread_param(&body, &signature.kernel())?;
     body = bind_grid_loops(body, grid)?;
-    tid_kernel_main(&body, signature, sample)
+    tid_kernel_main(&body, signature, sample, "kernel_main")
 }
 
 /// 生产态 Metal 分块归约内核（`chunk_reduce` 的 Metal 方言）。
@@ -436,6 +441,26 @@ pub fn metal_chunk_reduce(
     reduce_func: &str,
 ) -> Result<String> {
     chunk_reduce(kernel_source, signature, sample, chunk, reduce_func, &METAL)
+}
+
+/// [`metal_chunk_reduce`] 的具名版本：多段程序里部分归约段要与其他段区分入口名。
+pub fn metal_chunk_reduce_entry(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce_func: &str,
+    entry: &str,
+) -> Result<String> {
+    chunk_reduce_entry(
+        kernel_source,
+        signature,
+        sample,
+        chunk,
+        reduce_func,
+        &METAL,
+        entry,
+    )
 }
 
 /// 生产态分块扫描内核：把时间轴串行递推切成 `chunk` 元素一块，返回两段内核源 `(局部扫描, 校正)`。
@@ -471,20 +496,35 @@ fn chunk_scan_local(
     body = thread_param(&body, &kernel)?;
     body = inject_chunk_preamble(&body, &kernel, chunk, scalar)?;
     body = bind_chunk_loop(&body, scalar)?;
-    tid_kernel_main(&body, signature, sample)
+    tid_kernel_main(&body, signature, sample, SCAN_LOCAL)
 }
+
+/// 分块多段程序的入口名：同一份 MSL 里每个核只能出现一次，因此段与段必须分开命名——
+/// 与 CUDA 侧的 `PARTIAL` / `EXPSUM` / `NORM` 同义，多段驱动按这些名字取 pipeline。
+pub(crate) const PARTIAL: &str = "kernel_partial";
+pub(crate) const EXPSUM: &str = "kernel_expsum";
+pub(crate) const NORM: &str = "kernel_norm";
+pub(crate) const SCAN_LOCAL: &str = "kernel_scan_local";
+pub(crate) const SCAN_CORRECT: &str = "kernel_scan_correct";
 
 /// 分块 map 内核：每线程 `g` 处理一块 `[start, start+len)`，块头（`g`/`start`/`rest`/`len`）与
 /// `kernel_main` 包裹只写这一份；扫描校正、RMSNorm 归一化、Softmax 指数和/归一化四段共用，
 /// 差异只在缓冲声明与块内正文。
-fn chunk_map_kernel(preamble: &str, buffers: &str, chunk: usize, len: i64, body: &str) -> String {
+fn chunk_map_kernel(
+    preamble: &str,
+    entry: &str,
+    buffers: &str,
+    chunk: usize,
+    len: i64,
+    body: &str,
+) -> String {
     let head = if preamble.is_empty() {
         String::new()
     } else {
         format!("{preamble}\n\n")
     };
     format!(
-        "{head}kernel void kernel_main(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n{body}\n}}"
+        "{head}kernel void {entry}(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n{body}\n}}"
     )
 }
 
@@ -496,7 +536,7 @@ fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> Strin
     let body = format!(
         "    float c = d_c[g];\n    float pow = {decay}f;\n    for (int j = 0; j < len; ++j) {{\n        d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}"
     );
-    chunk_map_kernel("", &buffers, chunk, len, &body)
+    chunk_map_kernel("", SCAN_CORRECT, &buffers, chunk, len, &body)
 }
 
 /// 定位内核签名：返回 `(右括号位置, 函数体起始位置)`，供追加形参（[`thread_param`]）与
@@ -580,10 +620,18 @@ pub fn metal_chunk_rmsnorm(
     sample: &Sample,
     chunk: usize,
 ) -> Result<(String, String)> {
-    let partial = metal_chunk_reduce(kernel_source, signature, sample, chunk, "_cutile_sumsq_f32")?;
+    let partial = metal_chunk_reduce_entry(
+        kernel_source,
+        signature,
+        sample,
+        chunk,
+        "_cutile_sumsq_f32",
+        PARTIAL,
+    )?;
     let len = length_scalar(signature, sample)?;
     let map = chunk_map_kernel(
         &msl_address_space(kernel_source),
+        NORM,
         "    device float* d_rms [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_gamma [[buffer(2)]],\n    device float* d_y [[buffer(3)]]",
         chunk,
         len,
@@ -603,11 +651,19 @@ pub fn metal_chunk_softmax(
     sample: &Sample,
     chunk: usize,
 ) -> Result<(String, String, String)> {
-    let max = metal_chunk_reduce(kernel_source, signature, sample, chunk, "_cutile_max_f32")?;
+    let max = metal_chunk_reduce_entry(
+        kernel_source,
+        signature,
+        sample,
+        chunk,
+        "_cutile_max_f32",
+        PARTIAL,
+    )?;
     let len = length_scalar(signature, sample)?;
     let preamble = msl_address_space(kernel_source);
     let expsum = chunk_map_kernel(
         &preamble,
+        EXPSUM,
         "    device float* d_max [[buffer(0)]],\n    device float* d_x [[buffer(1)]],\n    device float* d_y [[buffer(2)]]",
         chunk,
         len,
@@ -615,6 +671,7 @@ pub fn metal_chunk_softmax(
     );
     let map = chunk_map_kernel(
         &preamble,
+        NORM,
         "    device float* d_max [[buffer(0)]],\n    device float* d_sum [[buffer(1)]],\n    device float* d_x [[buffer(2)]],\n    device float* d_y [[buffer(3)]]",
         chunk,
         len,
@@ -898,17 +955,167 @@ fn input_alloc(name: &str) -> String {
 /// 生成的基准驱动因此逐字一致：两份宿主程序只有尾巴（预热与计时 / 读回）不同。
 pub(crate) fn host_prologue(entry: &str) -> String {
     format!(
-        r#"        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device) {{ fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }}
-        NSError *error = nil;
-        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
-        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
-        if (!library) {{ fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }}
-        id<MTLFunction> function = [library newFunctionWithName:@"{entry}"];
+        r#"{library}        id<MTLFunction> function = [library newFunctionWithName:@"{entry}"];
         if (!function) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
         id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
         if (!pipeline) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
+"#,
+        library = host_library()
+    )
+}
+
+/// host 前导的公共半截：取默认设备、装载 metallib。单段驱动取一次入口函数，多段驱动每段各取一次，
+/// 因此这一半单独成文，返回码与诊断文本只有这一处。
+pub(crate) fn host_library() -> &'static str {
+    r#"        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device) { fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }
+        NSError *error = nil;
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        if (!library) { fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }
 "#
+}
+
+/// 多段驱动的一段：入口名、按 `buffer(i)` 顺序的缓冲变量名（带 `b_` 前缀）、派发几何、段后主机代码。
+///
+/// `fold` 是这一段落定之后、下一段之前的主机折叠（部分和 → 总和、部分平方和 → `rms`、
+/// 携带前缀推进），空串表示这一段不需要折叠。几何按「工作项数」给，线程组恒为 `(1,1,1)`：
+/// 分块族是每线程一块，块内串行走完。
+pub(crate) struct MetalStage<'a> {
+    pub entry: &'a str,
+    pub buffers: &'a [&'a str],
+    pub grid: [usize; 3],
+    pub fold: &'a str,
+}
+
+/// 多段并行驱动：装载一次 metallib，按段依次发射，段间插入主机折叠，最后回读输出。
+///
+/// `capacity` 是**输出缓冲按元素开的长度**：分块族的部分结果先写进输出缓冲（`y[g]`），
+/// 块数可能大于最终输出长度（归约是 1 个标量），因此分配与回读分开给。
+/// `scratch` 是折叠用的中间缓冲（`rms` / `max` / `sum` / 携带态），一律 f32。
+///
+/// # Errors
+///
+/// 签名与样本不一致、或某段找不到入口函数时返回说明（入口函数缺失由 host 侧返回码 5 报出）。
+pub(crate) fn metal_multistage_driver(
+    signature: &Signature,
+    sample: &Sample,
+    capacity: usize,
+    read: usize,
+    scratch: &[(&str, usize)],
+    stages: &[MetalStage<'_>],
+) -> Result<String> {
+    let output = output_name(signature)?;
+    let (data, allocs) = metal_buffers(signature, sample, capacity, scratch)?;
+    let body = metal_stages(stages);
+    Ok(format!(
+        r#"#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <stdio.h>
+#include <math.h>
+
+{data}
+int main(int argc, const char **argv) {{
+    @autoreleasepool {{
+        if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
+{library}{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
+{body}        const float *out = (const float *)b_{output}.contents;
+        for (int i = 0; i < {read}; ++i) {{
+            union {{ float f; unsigned int u; }} v;
+            v.f = out[i];
+            printf("%u\n", v.u);
+        }}
+    }}
+    return 0;
+}}
+"#,
+        data = data,
+        library = host_library(),
+        allocs = allocs,
+        body = body,
+        output = output,
+        read = read,
+    ))
+}
+
+/// 缓冲装载：只读缓冲落字面量、可写缓冲按 `capacity` 开满，折叠用的中间缓冲另开 f32。
+fn metal_buffers(
+    signature: &Signature,
+    sample: &Sample,
+    capacity: usize,
+    scratch: &[(&str, usize)],
+) -> Result<(String, String)> {
+    let mut data = String::new();
+    let mut allocs = String::new();
+    for param in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+    {
+        let (literal, alloc) = metal_param(param, sample, capacity)?;
+        data.push_str(&literal);
+        allocs.push_str(&alloc);
+    }
+    for (name, len) in scratch {
+        allocs.push_str(&output_alloc(name, "float", *len));
+    }
+    Ok((data, allocs))
+}
+
+/// 段体：每段一份发射 + 该段自己的主机折叠（折叠串由调用方给，不在驱动里拼第二份算式）。
+fn metal_stages(stages: &[MetalStage<'_>]) -> String {
+    let mut body = String::new();
+    for (index, stage) in stages.iter().enumerate() {
+        body.push_str(&metal_stage(index, stage));
+        body.push_str(stage.fold);
+    }
+    body
+}
+
+/// 一个缓冲参数的两段：只读的落地为字面量，可写的按 `capacity` 开满。
+fn metal_param(param: &Param, sample: &Sample, capacity: usize) -> Result<(String, String)> {
+    let base = param.ctype.c_name();
+    if param.mutable {
+        return Ok((String::new(), output_alloc(&param.name, base, capacity)));
+    }
+    let buffer = sample
+        .buffer(&param.name)
+        .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+    Ok((
+        literal_decl(&param.name, base, &buffer.values),
+        input_alloc(&param.name),
+    ))
+}
+
+/// 单段发射：取入口函数、建管线、设缓冲、派发、提交并等待。
+fn metal_stage(index: usize, stage: &MetalStage<'_>) -> String {
+    let mut sets = String::new();
+    for (slot, name) in stage.buffers.iter().enumerate() {
+        sets.push_str(&format!(
+            "            [encoder{index} setBuffer:b_{name} offset:0 atIndex:{slot}];\n"
+        ));
+    }
+    format!(
+        r#"        {{
+            id<MTLFunction> function{index} = [library newFunctionWithName:@"{entry}"];
+            if (!function{index}) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
+            id<MTLComputePipelineState> pipeline{index} = [device newComputePipelineStateWithFunction:function{index} error:&error];
+            if (!pipeline{index}) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
+            id<MTLCommandBuffer> buffer{index} = [queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder{index} = [buffer{index} computeCommandEncoder];
+            [encoder{index} setComputePipelineState:pipeline{index}];
+{sets}            [encoder{index} dispatchThreads:MTLSizeMake({gx}, {gy}, {gz}) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+            [encoder{index} endEncoding];
+            [buffer{index} commit];
+            [buffer{index} waitUntilCompleted];
+            if (buffer{index}.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer{index}.error.localizedDescription.UTF8String); return 7; }}
+        }}
+"#,
+        entry = stage.entry,
+        sets = sets,
+        gx = stage.grid[0],
+        gy = stage.grid[1],
+        gz = stage.grid[2],
     )
 }
 

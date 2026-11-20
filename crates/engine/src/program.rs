@@ -99,15 +99,59 @@ fn cuda_segments(
     }
 }
 
-/// Metal 并行程序：逐点与循环注入各有一份 `kernel_main`，按 `launch.items` 发射。
+/// Metal 并行程序：单源族（逐点 / 循环注入）各有一份 `kernel_main`，分块族是多段源 + 主机折叠。
 ///
-/// 分块族（归一化 / 扫描 / 归约）是多段源 + 主机折叠，Metal 侧的落点是各自的 `metal_*_program`，
-/// 不走这条单源装配——这里显式拒绝，调用方据此回落到语义门，而不是拿错的段数硬拼。
+/// 分块族的段数与折叠是一体的，因此每臂只调 [`crate::metal_pipeline`] 里各自的合成入口，
+/// 与 CUDA 侧的 `cuda_segments` 分法一致：这层只管「什么形态配哪份程序」。
 ///
 /// # Errors
 ///
-/// 该形态没有单源 Metal 并行实现，或样本与签名不一致。
+/// 该形态没有 Metal 并行实现（调用方据此回落到语义门），或样本与签名不一致。
 pub fn metal(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    launch: &Launch,
+) -> Result<Source> {
+    match metal_segments(kernel, signature, sample, launch) {
+        Some(source) => source,
+        None => metal_dispatch(kernel, signature, sample, launch),
+    }
+}
+
+/// 分块族的四份合成入口；不属分块族时 `None`（交给单源族）。
+fn metal_segments(
+    kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    launch: &Launch,
+) -> Option<Result<Source>> {
+    let kind = &launch.kind;
+    if let Lower::ChunkReduce { chunk, func } = kind {
+        return Some(crate::metal_pipeline::reduce(
+            kernel, signature, sample, *chunk, func,
+        ));
+    }
+    if let Lower::ChunkRmsnorm { chunk } = kind {
+        return Some(crate::metal_pipeline::rmsnorm(
+            kernel, signature, sample, *chunk,
+        ));
+    }
+    if let Lower::ChunkSoftmax { chunk } = kind {
+        return Some(crate::metal_pipeline::softmax(
+            kernel, signature, sample, *chunk,
+        ));
+    }
+    if let Lower::ChunkScan { chunk, decay } = kind {
+        return Some(crate::metal_pipeline::scan(
+            kernel, signature, sample, *chunk, *decay,
+        ));
+    }
+    None
+}
+
+/// 单源族：设备源 + 按网格发射的驱动。
+fn metal_dispatch(
     kernel: &str,
     signature: &Signature,
     sample: &Sample,
@@ -332,9 +376,9 @@ mod tests {
     }
 
     #[test]
-    fn a_block_family_is_unsupported_on_metal() {
-        // 分块族在 Metal 侧的落点是各自的 `metal_*_program`，单源装配不冒充它们。
-        let error = metal(
+    fn a_block_family_on_metal_is_stages_plus_a_host_fold() {
+        // 分块族在 Metal 侧的落点是 [`crate::metal_pipeline`]：段与折叠一体，不是「不支持」。
+        let Source::Pair { device, host } = metal(
             cutile_x_kernel::SOURCE,
             &gemv().0,
             &gemv().1,
@@ -347,8 +391,12 @@ mod tests {
                 1,
             ),
         )
-        .expect_err("分块归约不是单源 Metal 程序");
-        assert_eq!(error.code(), Code::Unsupported, "{error}");
+        .expect("分块归约在 Metal 上是多段程序") else {
+            panic!("Metal 分块程序是设备源 + 主机驱动两份");
+        };
+        assert!(device.contains("kernel void kernel_main("), "{device}");
+        // 单段归约的折叠由主机做：部分结果留在输出缓冲里，按声明的 `_cutile_sum_f32` 求和。
+        assert!(host.contains("acc += parts[g];"), "{host}");
     }
 
     #[test]

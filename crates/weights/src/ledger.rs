@@ -154,6 +154,14 @@ pub struct Certified {
     pub low: Vec<f32>,
     /// 显式残差 `C = W − L`（行主序 `m*n` f32）。
     pub rest: Vec<f32>,
+    /// 低秩项的因子：`L = left[m,r] · right[r,n]`，按行主序 `m*r` 与 `r*n`。
+    ///
+    /// 落盘存的是这两个因子而不是 `L` 本身——`L` 是整张 `m×n`，把它存一遍等于没省；因子只有
+    /// `(m+n)·r`。因子以 `f64` 保留分解的原始精度，读端用同一个 [`factor_low`] 重算即可逐位复现
+    /// `low`（`f32` 因子会把 `Σ uσv` 舍入两次，逐位判据因此过不了）。
+    pub(crate) left: Vec<f64>,
+    /// 右因子，行主序 `r*n`（见 [`Certified::left`]）。
+    pub(crate) right: Vec<f64>,
     /// 这次选择的证书。
     pub note: Note,
 }
@@ -181,18 +189,24 @@ fn decompose(w: &[f32], m: usize, n: usize, k: usize) -> Result<Option<Certified
     let Some(rank) = certified_rank(&d.sigma, eps) else {
         return Ok(None);
     };
-    assemble(w, &a, &d, rank, eps).map(Some)
+    assemble(w, &d, (m, n), rank, eps).map(Some)
 }
 
 /// 受认证秩处的产物与自证证书：低秩项、显式残差、逐位往返与 [`Note`] 都出自同一次分解。
-fn assemble(w: &[f32], a: &[f64], d: &svd::Svd, rank: usize, eps: f64) -> Result<Certified> {
-    let low64 = d.reconstruct(rank);
+fn assemble(
+    w: &[f32],
+    d: &svd::Svd,
+    (m, n): (usize, usize),
+    rank: usize,
+    eps: f64,
+) -> Result<Certified> {
+    let (left, right) = factors(d, rank);
+    let low64 = factor_low(&left, &right, (m, n), rank);
+    // 低秩项一旦落盘就只剩 `f32` 精度，所以显式残差也必须在 `f32` 世界里取差：拿 `f64` 的差去
+    // 存，残差里装的是分解的舍入噪声（每个元素一个非零 ulp），整张残差因此不可压，因子化的
+    // 收益被它整块吃掉。取 `f32` 的差则「能精确表示的矩阵残差恰好为零」。
     let low: Vec<f32> = low64.iter().map(|&l| l as f32).collect();
-    let rest: Vec<f32> = a
-        .iter()
-        .zip(&low64)
-        .map(|(orig, l)| (orig - l) as f32)
-        .collect();
+    let rest: Vec<f32> = w.iter().zip(&low).map(|(orig, l)| orig - l).collect();
     // 无损判据与 rank 轴同源：`low + rest` 必须逐位返回原矩阵，然后才谈得上证书。
     let equal = w
         .iter()
@@ -209,7 +223,7 @@ fn assemble(w: &[f32], a: &[f64], d: &svd::Svd, rank: usize, eps: f64) -> Result
         bound: Bound::Diagnostic,
         gap,
         eps,
-        decomp: residual(a, &low64),
+        decomp: residual32(w, &low),
         // 残差 `C` 以 `f32` 原样落盘，补偿侧没有再编码一次，所以它这里的误差精确为零。
         comp: 0.0,
         equal,
@@ -220,8 +234,50 @@ fn assemble(w: &[f32], a: &[f64], d: &svd::Svd, rank: usize, eps: f64) -> Result
         rank,
         low,
         rest,
+        left,
+        right,
         note,
     })
+}
+
+/// 秩-`rank` 的两个因子：`left[i,j] = u[i,j]·σ_j`（`m×r`）、`right[j,c] = v[c,j]`（`r×n`）。
+///
+/// 这是 `UΣ` 与 `Vᵀ` 的显式形式，落盘只需 `(m+n)·r` 个 `f64`；重构交给 [`factor_low`]，
+/// 写端与读端因此只有一份乘积算式。
+fn factors(d: &svd::Svd, rank: usize) -> (Vec<f64>, Vec<f64>) {
+    let ((m, n), k) = (d.shape(), d.sigma.len());
+    let mut left = Vec::with_capacity(m * rank);
+    for i in 0..m {
+        left.extend((0..rank).map(|j| d.u[i * k + j] * d.sigma[j]));
+    }
+    let mut right = Vec::with_capacity(rank * n);
+    for j in 0..rank {
+        right.extend((0..n).map(|c| d.v[c * k + j]));
+    }
+    (left, right)
+}
+
+/// `left · right` 的 `m×n` 重构，行主序 `f64`。
+///
+/// 累加次序固定为「行 → 列 → 秩」且不做分块：写端用它算 `low`、读端用它还原 `low`，
+/// 任何一方换次序都会让逐位判据失效——所以这里不是性能热点，是**同一份算术**。
+pub(crate) fn factor_low(
+    left: &[f64],
+    right: &[f64],
+    (m, n): (usize, usize),
+    rank: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; m * n];
+    for i in 0..m {
+        for c in 0..n {
+            let mut sum = 0.0;
+            for j in 0..rank {
+                sum += left[i * rank + j] * right[j * n + c];
+            }
+            out[i * n + c] = sum;
+        }
+    }
+    out
 }
 
 /// 可判秩域内的最大秩：`σ_r − σ_{r+1} > 2ε` 的最后一点。
@@ -243,6 +299,11 @@ fn certified_rank(sigma: &[f64], eps: f64) -> Option<usize> {
 /// 后验残差 `‖A − B‖_F`：`ε_alg` 的实测值。
 fn residual(a: &[f64], b: &[f64]) -> f64 {
     norm(a.iter().zip(b).map(|(x, y)| x - y))
+}
+
+/// 落盘精度上的差范数：`decomp` 记的是「`f32` 低秩项与原矩阵之间还剩多少」，与 `rest` 同源。
+fn residual32(a: &[f32], b: &[f32]) -> f64 {
+    norm(a.iter().zip(b).map(|(&x, &y)| f64::from(x) - f64::from(y)))
 }
 
 /// Frobenius 范数：`ε`、截断误差与它在读端的复核都走这一份定义。

@@ -144,5 +144,10 @@ name = "model_decode"
 path = "criterion/model_decode.rs"
 harness = false
 
+[[bench]]
+name = "gemm_threads"
+path = "criterion/gemm_threads.rs"
+harness = false
+
 [lints]
 workspace = true

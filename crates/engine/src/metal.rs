@@ -164,12 +164,16 @@ impl MetalDevice {
         })
     }
 
-    /// 把一段 MSL 源码编译成计算管线（+1 保留，`Drop` 释放）；入口函数名固定 `kernel_main`。
+    /// 把一段 MSL 源码编译成计算管线（+1 保留，`Drop` 释放）；入口函数名由源码自己说。
     ///
-    /// 编译失败（源码非法 / 无 `kernel_main`）返回 `None`；本刀不把 `NSError` 文本带回 Rust 侧。
+    /// 单段程序仍是 `kernel_main`，多段程序各段用 [`crate::codegen`] 定死的具名入口
+    /// （`kernel_partial` / `kernel_norm` / …）——同一翻译单元里两个 `kernel_main` 会撞重定义，
+    /// 所以这里不能写死名字。编译失败（源码非法 / 找不到入口函数）返回 `None`；本刀不把
+    /// `NSError` 文本带回 Rust 侧。
     pub fn compile(&self, source: &str) -> Option<MetalPipeline> {
+        let entry = entry_of(source)?;
         let src = CString::new(source).ok()?;
-        let fname = CString::new("kernel_main").ok()?;
+        let fname = CString::new(entry).ok()?;
         // `stringWithUTF8String:` 返回自动释放对象，编译路径包一层池，池弹栈时统一释放。
         let pool = unsafe { objc_autoreleasePoolPush() };
         let result = self.compile_with_pool(src.as_ptr(), fname.as_ptr());
@@ -209,6 +213,17 @@ impl MetalDevice {
             (!pipeline.is_null()).then_some(MetalPipeline { raw: pipeline })
         }
     }
+}
+
+/// 源码里的入口函数名：`kernel void <name>(` 的 `<name>`。
+///
+/// 一段 MSL 只有一个 kernel，取第一个即可。找不到 `kernel void` 或名字为空都返回 `None`——
+/// 那说明生成侧漂移了，编译无从谈起。
+fn entry_of(source: &str) -> Option<&str> {
+    const MARK: &str = "kernel void ";
+    let rest = source.split_once(MARK)?.1.trim_start();
+    let name = rest[..rest.find('(')?].trim();
+    (!name.is_empty()).then_some(name)
 }
 
 impl Drop for MetalDevice {
@@ -387,8 +402,8 @@ impl MetalExecutor {
 
     /// 登记一段 MSL 内核源：进程内编译成计算管线并按 `name` 索引；同名已登记返回 `Invalid`。
     ///
-    /// 编译入口函数名固定 `kernel_main`（[`MetalDevice::compile`] 的口径）；源由装配层注入，
-    /// 本方法不生成任何算子内核。
+    /// 入口函数名取源码里那个（[`MetalDevice::compile`] 的口径），因此单段与具名多段同一入口；
+    /// 源由装配层注入，本方法不生成任何算子内核。
     pub fn register(&mut self, name: &str, source: &str) -> Result<()> {
         if self.kernels.contains_key(name) {
             return Err(Error::new(Code::Invalid, format!("内核 `{name}` 已登记"))

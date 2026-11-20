@@ -20,8 +20,9 @@ use std::fmt::Write as _;
 use diagnostic::{Code, Error, Result};
 
 use crate::archive::lossless_entry;
+use crate::axes;
 use crate::json::{self, Value};
-use crate::ledger::SCHEMA;
+use crate::ledger::{self, SCHEMA};
 use crate::{Archive, Codec, Stored};
 
 /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。
@@ -77,6 +78,35 @@ impl Reason {
     }
 }
 
+/// 证书列：这条量的压缩有没有一张自洽的证书背书（LLD §4.7 的账本要说清「凭什么这么压」）。
+///
+/// 判别值即 `CERT_NAMES` 的下标，与 [`Reason`] 同一口径：名字只有一份表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Cert {
+    /// 不是秩轴段：这条量没经过谱隙证书，其余轴本来就不签发。
+    None = 0,
+    /// 秩轴段且证书自洽：界是 L0 诊断、`ε` 来自实测残差，不变式全部通过。
+    Diagnostic = 1,
+    /// 秩轴段却读不出自洽证书：自称压了但背书缺失或自相矛盾。
+    Refused = 2,
+}
+
+/// 证书列的规范短名，下标即判别值。
+const CERT_NAMES: [&str; 3] = ["none", "l0_diagnostic", "refused"];
+
+impl Cert {
+    /// 账本里的字符串写法（闭集，码位稳定）。
+    pub const fn as_str(self) -> &'static str {
+        CERT_NAMES[self as usize]
+    }
+
+    /// 是否构成拒压：证书不是装饰，矛盾就退回原样。
+    pub const fn refused(self) -> bool {
+        matches!(self, Self::Refused)
+    }
+}
+
 /// 一张量的账：全部字段都在 [`Settlement::settle`] 里由落盘字节现算。
 #[derive(Clone, Debug)]
 pub struct Settled {
@@ -89,6 +119,7 @@ pub struct Settled {
     bitwise: bool,
     lossless: bool,
     reason: Reason,
+    cert: Cert,
 }
 
 impl Settled {
@@ -146,12 +177,20 @@ impl Settled {
         self.reason
     }
 
-    /// 账本里的判定：确实比原样小才叫 `compress`，否则 `reject`。
+    /// 这张量是否带一张自洽的谱隙证书。
+    pub fn cert(&self) -> Cert {
+        self.cert
+    }
+
+    /// 账本里的判定：确实比原样小、且证书不自相矛盾，才叫 `compress`。
+    ///
+    /// 「省了字节」是度量事实，「有证书背书」是判决前提，两者缺一都退回 `reject`——否则一条
+    /// 自称秩压缩却读不出证书的段，会因为字节更小就在账本上冒充「压成了」。
     pub fn decision(&self) -> &'static str {
-        if self.volume < self.raw_len {
-            "compress"
-        } else {
+        if self.cert.refused() || self.volume >= self.raw_len {
             "reject"
+        } else {
+            "compress"
         }
     }
 }
@@ -344,8 +383,8 @@ fn written(value: &Value) -> Result<String> {
     }
 }
 
-/// 一条目期望的十二格：键名与 [`Settled::render`] 同源同序，值按规范写法成文。
-fn expected(entry: &Settled) -> [(&'static str, String); 12] {
+/// 一条目期望的十三格：键名与 [`Settled::render`] 同源同序，值按规范写法成文。
+fn expected(entry: &Settled) -> [(&'static str, String); 13] {
     let (bits, group) = entry.quant().unwrap_or((0, 0));
     [
         ("name", entry.name().to_string()),
@@ -360,6 +399,7 @@ fn expected(entry: &Settled) -> [(&'static str, String); 12] {
         ("is_lossless", entry.lossless().to_string()),
         ("decision", entry.decision().to_string()),
         ("codec_reason", entry.reason().as_str().to_string()),
+        ("cert", entry.cert().as_str().to_string()),
     ]
 }
 
@@ -385,7 +425,8 @@ impl Settled {
         let _ = writeln!(out, "      \"verify_bitwise_equal\": {},", self.bitwise);
         let _ = writeln!(out, "      \"is_lossless\": {},", self.lossless);
         let _ = writeln!(out, "      \"decision\": \"{}\",", self.decision());
-        let _ = writeln!(out, "      \"codec_reason\": \"{}\"", self.reason.as_str());
+        let _ = writeln!(out, "      \"codec_reason\": \"{}\",", self.reason.as_str());
+        let _ = writeln!(out, "      \"cert\": \"{}\"", self.cert.as_str());
         out.push_str("    }");
         out
     }
@@ -421,7 +462,40 @@ fn settle_one(archive: &Archive<'_>, seg: &Stored) -> Result<Settled> {
         bitwise,
         lossless: lossless_entry(seg) && bitwise,
         reason: reason_of(seg, raw_len, volume, entropy, bitwise),
+        cert: certificate_of(archive, seg),
     })
+}
+
+/// 证书列：段里带的证书自己说不说得通，与“省了多少字节”是两件事。
+///
+/// 只有秩轴段会签发证书，其余轴（字典 / 稀疏 / 量化）与去重引用本来就没有证书可言，记 `none`
+/// 不是“没查到”而是“本不该有”。秩轴段却读不出自洽证书时记 `refused`：那条压缩自称有谱隙
+/// 背书，而背书缺失或自相矛盾，字节再小也不能算“压成了”。
+fn certificate_of(archive: &Archive<'_>, seg: &Stored) -> Cert {
+    if seg.is_ref() || seg.codec() != Codec::Axes {
+        return Cert::None;
+    }
+    match axes::certificate(archive.read(seg)) {
+        Ok(Some(note)) => sound_cert(&note),
+        // 能解成别的轴，说明这条根本没用秩选择。
+        Ok(None) => Cert::None,
+        // 自己的帧都读不成轴，而 `load` 又成功了：证书不在段里。
+        Err(_) => Cert::Refused,
+    }
+}
+
+/// 证书自洽才记 `l0_diagnostic`：不变式全过，且方法与界都是能当上界的那两种。
+///
+/// 写侧只产出这一种口径，所以读侧不再细分：落盘的不是实测残差或不是 L0 诊断界，都只可能是
+/// 别人改过或写坏了，一律按“背不住”处理。
+fn sound_cert(note: &ledger::Note) -> Cert {
+    let usable =
+        note.method == ledger::EpsMethod::Residual && note.bound == ledger::Bound::Diagnostic;
+    if usable && ledger::check(note).is_ok() {
+        Cert::Diagnostic
+    } else {
+        Cert::Refused
+    }
 }
 
 /// 每元素实际占的位数：按打包后的字节数四舍五入，不读方案里的"名义位宽"。
@@ -542,7 +616,7 @@ fn push_char(out: &mut String, ch: char) {
 mod tests {
     use super::*;
     use crate::seg::Segment;
-    use crate::testutil::f32_segment;
+    use crate::testutil::{f32_matrix, f32_segment};
     use crate::writer::Writer;
     use crate::{Quant, Wire};
 
@@ -563,6 +637,19 @@ mod tests {
         (settlement, bytes)
     }
 
+    /// 精确秩 2 的矩阵：两对伪随机因子外积相加，谱隙没有噪声撑腰，证书签得出。
+    ///
+    /// 因子刻意不取线性序列——线性矩阵的重复度高，熵编码会压得比秩轴更小，写侧也就不会选中秩轴。
+    fn values_low_rank(m: usize, n: usize) -> Vec<f32> {
+        let lane = |i: usize, salt: usize| ((i * 37 + salt * 11) % 97) as f32 - 48.0;
+        (0..m * n)
+            .map(|i| {
+                let (r, c) = (i / n, i % n);
+                lane(r, 1) * lane(c, 3) + lane(r, 5) * lane(c, 7)
+            })
+            .collect()
+    }
+
     /// 0/1 交替的 f32 流：重复度高，写侧会选中熵编码。
     fn compressible(len: usize) -> Vec<f32> {
         (0..len).map(|i| (i % 2) as f32).collect()
@@ -574,6 +661,83 @@ mod tests {
             panic!("应当只有一条，实际 {}", settlement.tensors().len());
         };
         entry
+    }
+
+    #[test]
+    fn a_rank_compressed_tensor_carries_a_sound_certificate() {
+        // 精确 rank-2 且边长足够：因子化存的是 `(m+n)·r` 个数，整张 `L` 是 `m·n` 个数，收益随
+        // 边长增长——16×16 这种小矩阵上熵编码反而更小，写侧不选秩轴是本分之内的正确选择。
+        let settlement = settled(
+            vec![f32_matrix(
+                "blk.0.attn_q.weight",
+                &values_low_rank(128, 128),
+                (128, 128),
+            )],
+            true,
+        );
+        let entry = only(&settlement);
+        assert_eq!(entry.reason(), Reason::Axes, "恰好低秩的矩阵应走轴帧");
+        assert_eq!(entry.cert(), Cert::Diagnostic, "秩轴段必须带自洽证书");
+        assert!(entry.render().contains("\"cert\": \"l0_diagnostic\""));
+    }
+
+    #[test]
+    fn a_tensor_that_never_used_rank_reports_no_certificate() {
+        // 满秩且含噪声：五种轴都不更小，落成 `store`/`rans`，本来就没有证书可言。
+        let values: Vec<f32> = (0..64).map(|i| ((i * 37) % 101) as f32 * 0.5).collect();
+        let settlement = settled(vec![f32_segment("blk.0.mlp.w", &values)], true);
+        assert_eq!(only(&settlement).cert(), Cert::None, "没走秩轴就没有证书");
+        assert_eq!(only(&settlement).cert().as_str(), "none");
+    }
+
+    #[test]
+    fn a_certificate_that_names_another_measurement_is_refused() {
+        let cert = crate::ledger::certify(&values_low_rank(4, 4), 4, 4)
+            .expect("可认证")
+            .expect("有谱隙");
+        assert_eq!(sound_cert(&cert.note), Cert::Diagnostic, "签发端本来就自洽");
+
+        for tampered in [
+            ledger::Note {
+                method: ledger::EpsMethod::Candidate,
+                ..cert.note.clone()
+            },
+            ledger::Note {
+                bound: ledger::Bound::Candidate,
+                stable: ledger::Stable::Open,
+                equal: false,
+                lossless: false,
+                ..cert.note.clone()
+            },
+            ledger::Note {
+                comp: 1e-9,
+                ..cert.note.clone()
+            },
+        ] {
+            assert_eq!(sound_cert(&tampered), Cert::Refused, "{tampered:?}");
+        }
+    }
+
+    #[test]
+    fn a_refused_certificate_forbids_the_book_from_calling_it_compressed() {
+        // 判决只看两件事：省了字节、证书不矛盾。缺后者，字节再小也不叫 `compress`。
+        let settlement = settled(
+            vec![f32_segment("blk.0.attn_q.weight", &values_low_rank(16, 16))],
+            true,
+        );
+        let mut entry = only(&settlement).clone();
+        assert_eq!(entry.decision(), "compress", "有证书且更小");
+        entry.cert = Cert::Refused;
+        assert_eq!(entry.decision(), "reject", "证书背不住就退回原样");
+    }
+
+    #[test]
+    fn certificate_column_names_are_stable() {
+        let names: Vec<&str> = [Cert::None, Cert::Diagnostic, Cert::Refused]
+            .into_iter()
+            .map(Cert::as_str)
+            .collect();
+        assert_eq!(names, ["none", "l0_diagnostic", "refused"]);
     }
 
     #[test]

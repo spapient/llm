@@ -537,7 +537,7 @@ witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 | AMD | `gfx = gfx9..gfx12` | `lds` | `hip` / `opencl` | hipcc / clang | 真机（RDNA） |
 | Intel GPU | `name contains Intel`、`arch = gen12+` | `slm` | `opencl` / `spirv` | IGC / oneAPI | 真机 |
 | Apple | `name contains: Apple M`、`gpu_cores 10..80` | `threadgroup` | `metal` | xcrun metal | 真机 |
-| 昇腾 | `soc = Ascend 910B..` | `L1`（MTE 搬运） | `ascendc` | CANN | 文档（L0/L1） |
+| 昇腾 | `soc = Ascend 910B..` | `L1`（MTE 搬运） | `ascendc` | ccec（CANN） | 文档（L0/L1） |
 | MUSA | `name contains MTT S` | `shared` | `cuda`（源码兼容） | mcc | 文档 + 模拟 |
 | CPU | `arch = x86_64 / aarch64`、`features = <arch>+avx2…`（运行期 cpuid，不是编译目标） | `L2`（分块） | `c` | cc / clang | 真机 |
 | 可移植 GPU | `api = vulkan / webgpu` | `workgroup` | `spirv` / `wgsl` | glslang / naga | 模拟 |
@@ -792,6 +792,12 @@ pub struct CacheKey {
 
 `capability` 台账（`<work.dir>/ledger/<vendor>.capability.md`）由 `cutile verify --emit-ledger` 生成，人不再手填。**缺设备即失败**：`verify` 遇到本机不支持的设备直接返回非零码并列出缺失项，不写"跳过"（这是旧工程 `clblast` 用例静默通过的直接修正）。
 
+**通道是台账的一栏，不是日志**（`Channel`）：同一条 "L2" 可能是三种形态之一——`Parallel`（按 `[grid]` / `[chunk]`
+发射并行网格，每线程一元素或每块一线程）、`Harness`（该形态尚无并行实现，回落单线程语义门）、`Reference`
+（C 参考通道本身就是串行语义基准：串行是它的定义，不是缺口，并行形态由设备通道证）。三者混记会让
+"该形态缺并行实现"这条缺口永久隐身，因此它随结论一起打印。判据不是自述：`Parallel` 只在生产态设备源
+真的按声明发射并通过对拍时成立，`verify` 逐算子记录，报告里可以直接数出"36 个算子里有几条不是并行"。
+
 ### 11.3 见证
 
 每条 `provides` 附一个可执行的见证（`<vendor>/witness.<ext>`）：一段只调用该原语的最小函数 + 档案里写明的期望值。
@@ -828,13 +834,32 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 `metallib` → host 驱动发射到 GPU → 回读；等级仍停在 `L1`，因为 `L2` 要的是**内核**跑通并对拍，
 见证执行只完成其中的见证那一段。
 
+`ascendc` 与 `metal` / `cuda` 走同一条路：后端在 `engine`（`AscendBackend`），可用性要求 `ccec` 与
+`npu-smi` 都在，生成的是**单源** `.cpp`——`extern "C" __global__ __aicore__` 核函数 + AscendCL 驱动，
+显存指针用 `GM_ADDR` / `__gm__`，见证函数加 `__aicore__` 后一条占一个 AI Core。编译参数全取自档案
+`[compile].flags`（`-xcce` / `--cce-aicore-arch=dav-c220` 是"哪门设备语言、哪个核芯"的声明，本层不猜），
+`-l` 类参数排在源文件之后（ccec 把它们转给链接器，顺序反了就是"undefined reference to aclInit"）。
+`verify` 这边它与 `cuda` / `metal` 平级：`Lane::Ascend` 一行把它接进形状矩阵（此前 `ascendc` 在选通道时
+就报"内核执行路径尚未接通"，后端注册了也走不到），`AscendBackend::harness` 把 `.k` 内核拼成**单块**
+`<<<1, nullptr, stream>>>` 的 AscendC 程序——档案 preamble 里的 `_cutile_sum_f32` 一族同时转成
+`__aicore__`（`@reduce` 的 `$func` 落在那里，不给它设备性就是"AI Core 函数调用了宿主函数"），回读与
+CUDA 共用同一份位模式口径。没有并行内核时 `parallel` 如实 `Unsupported`，报告里的通道因此写"语义门"
+而不是"并行"。仍未接通的是 `lower` / `benchmark_harness`（与 `Source::Pair` 的生产态入口）：P0 片段只到
+标量 C 语义，把它编成 AscendC 只会得到"能跑但和 CPU 一样慢"的核函数，`DataCopy` / `Mmad` 的落点属 P3。
+等级仍是 `L0`：这条路径还没在任何 910B 上跑过。
+
 **第三种结论是语言门**（`LanguageGate`）：自检只证明“这段代码在 C 里成立”，而
 `metal/witness.metal` 曾写成 `float *out`——host `cc` 绿灯、`xcrun metal` 编不过，那份见证从未
 在自己声称的语言里存在过。于是设备不在本机时，见证还要交给**它自己语言的解析器**只解析一遍：
 `cuda` → `clang -x cuda --cuda-host-only`（只 host 那一半，`__syncthreads()` 在 host 函数里必须
 被拒），`opencl` → `clang -x cl -cl-std=CL3.0`（函数指针在 OpenCL C 中被明确禁止），`ascendc`
-没有开源前端就 `Absent`。语法前端与执行前端同构：`const GATES` 表一行一个 `GateSpec`
-（`emit` / `tool` / `check`），加一门语言就是加一行，没有独立的前端类型，也没有按语言单态化的函数。门不执行任何一行，所以不改 `grade`；但
+→ `ccec -xcce --cce-aicore-arch=dav-c220 -fsyntax-only`（`-xcce` 让 ccec 按设备语言解析这份翻译
+单元，核芯名跟 `id = "910b"` 走——换了核芯，这一行也要跟着换）。每行声明的解析器**只认那一格**：
+`clang` 行指本机的 clang 前端（先 `clang`、再名字里带 clang 的 `cc`），其余按 `[meta].tool` 的写法
+原样探测；`ccec` 随 CANN 安装，宿主 `cc` 不认识上面这些开关，拿它去解析只会把「没装 CANN」报成一条
+C 语法错误。缺席因此是 `Absent` 并点名缺哪个程序，而不是 `Rejected`。语法前端与执行前端同构：
+`const GATES` 表一行一个 `GateSpec`（`emit` / `tool` / `check`），加一门语言就是加一行，没有独立的
+前端类型，也没有按语言单态化的函数。门不执行任何一行，所以不改 `grade`；但
 `Rejected` 会进 `Evidence::failure`——被自己的语言拒绝是证据缺陷，不是“本机没有这台设备”。
 
 **证据只算一次，三条命令同一结论**：`witness::establish` 把设备执行与自检合成一份 `Evidence`

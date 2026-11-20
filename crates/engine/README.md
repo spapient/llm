@@ -10,7 +10,9 @@ submission contract — and the one place that asks "can this machine run this r
 | `kv` | where do a sequence's tokens live? (`Page` / `Table` / `Cache` / `Pager`, refcounted) |
 | `radix` | which prefix is already computed? (radix block tree over page tables) |
 | `ifb` | which three constraints are being decided? (`Budget` / `Candidate` / `Phase` / `pack`) |
-| `codegen` | what source runs this family? (Metal + CUDA, shared driver skeleton) |
+| `codegen` | what source runs this family? (Metal + CUDA, shared driver skeleton; Metal multi-stage driver) |
+| `metal_host` | how does a Metal kernel reach the GPU? (`xcrun metal` → `metallib` → host driver → readback) |
+| `metal_pipeline` | which stages and host folds does a chunked family need? (`reduce` / `rmsnorm` / `softmax` / `scan`) |
 | `tiled` | how is a launch shaped? (`Flash { seq, dim, threads, block }`, `lanes` / `tail`) |
 | `backends` | which compiler and device exist here? (`nvcc` / `xcrun metal` / MSVC probe) |
 | `metal` | how is the process-internal Metal executor driven? (the only `unsafe` island) |
@@ -34,6 +36,9 @@ submission contract — and the one place that asks "can this machine run this r
 - **The vendor boundary stays behind one FFI island.** `engine` owns the probe, the source generation
   and the launch shape; the `unsafe` calls that actually reach a device live in `metal` and nowhere
   else (ADR 0035).
+- **A chunked family is one program, not one kernel.** Partial results land in the output buffer per
+  block, the host folds them (f64 sums, `a^len` by squaring) and the next stage re-launches on the
+  same grid — so a family cannot claim "parallel" from its device segments alone.
 
 ## Where the numbers come from
 

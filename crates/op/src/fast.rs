@@ -50,7 +50,19 @@ fn compute(a: &[f32], b: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32
     sweep_columns(a, &apack, b, out, full, n, k);
     let tail = full * MR;
     if tail < rows {
-        edge(a, b, out, tail, 0, rows - tail, n, n, k);
+        edge(
+            a,
+            b,
+            out,
+            Span {
+                i: tail,
+                j: 0,
+                mr: rows - tail,
+                nr: n,
+                n,
+                k,
+            },
+        );
     }
 }
 
@@ -87,7 +99,19 @@ fn sweep_columns(
                 micro_packed(&apack[blk * k * MR..], b, out, blk * MR, j, n, k);
             }
         } else {
-            edge(a, b, out, 0, j, full * MR, nr, n, k);
+            edge(
+                a,
+                b,
+                out,
+                Span {
+                    i: 0,
+                    j,
+                    mr: full * MR,
+                    nr,
+                    n,
+                    k,
+                },
+            );
         }
         j += NR;
     }
@@ -183,25 +207,29 @@ fn micro_packed(
     }
 }
 
-/// 标量尾块：`out[i..i+mr, j..j+nr]` 逐元素点积（与微内核同一组累加口径，容差内一致）。
-fn edge(
-    a: &[f32],
-    b: &[f32],
-    out: &mut [f32],
+/// 一个待算的标量尾块：左上角 `(i, j)`、覆盖 `mr × nr`，矩阵列宽 `n`、内积长 `k`。
+///
+/// 六个数合起来才描述得清「哪一块」，所以它们同行进出一个值——拆回参数会让每处调用把同一组
+/// 坐标重拼一遍，也让「块多大」这件事在两处各写一份。
+#[derive(Clone, Copy)]
+struct Span {
     i: usize,
     j: usize,
     mr: usize,
     nr: usize,
     n: usize,
     k: usize,
-) {
-    for r in 0..mr {
-        for c in 0..nr {
+}
+
+/// 标量尾块：`out[i..i+mr, j..j+nr]` 逐元素点积（与微内核同一组累加口径，容差内一致）。
+fn edge(a: &[f32], b: &[f32], out: &mut [f32], span: Span) {
+    for r in 0..span.mr {
+        for c in 0..span.nr {
             let mut acc = 0.0f32;
-            for p in 0..k {
-                acc += a[(i + r) * k + p] * b[p * n + j + c];
+            for p in 0..span.k {
+                acc += a[(span.i + r) * span.k + p] * b[p * span.n + span.j + c];
             }
-            out[(i + r) * n + j + c] = acc;
+            out[(span.i + r) * span.n + span.j + c] = acc;
         }
     }
 }
@@ -293,27 +321,36 @@ fn pack_b_par(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
     thread::scope(|s| {
         for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
             let blk0 = gi * per;
-            s.spawn(move || {
-                let blocks = chunk.len() / (I8_NR * k);
-                for bi in 0..blocks {
-                    let blk = blk0 + bi;
-                    for nb in 0..I8_NR {
-                        let jj = blk * I8_NR + nb;
-                        if jj < n {
-                            let dst =
-                                &mut chunk[bi * I8_NR * k + nb * k..bi * I8_NR * k + (nb + 1) * k];
-                            let mut p = 0;
-                            while p < k {
-                                dst[p] = b[p * n + jj];
-                                p += 1;
-                            }
-                        }
-                    }
-                }
-            });
+            s.spawn(move || pack_b_span(chunk, b, n, k, blk0));
         }
     });
     (bpack, npad)
+}
+
+/// 一段连续的列组：`blk0` 起、`chunk` 覆盖的每组 8 列各搬一块。
+fn pack_b_span(chunk: &mut [i8], b: &[i8], n: usize, k: usize, blk0: usize) {
+    let blocks = chunk.len() / (I8_NR * k);
+    for bi in 0..blocks {
+        let tile = &mut chunk[bi * I8_NR * k..(bi + 1) * I8_NR * k];
+        pack_b_tile(tile, b, n, k, (blk0 + bi) * I8_NR);
+    }
+}
+
+/// 一组 8 列瓦片的转置写：`b`（行主、`n` 列）的第 `first..first+8` 列搬到 `dst`（列主块内偏移）。
+/// 越界的列（`n` 不是 8 的倍数）留 0——打包缓冲本来就按 `npad` 补齐，乘加时该列权重为 0。
+fn pack_b_tile(dst: &mut [i8], b: &[i8], n: usize, k: usize, first: usize) {
+    for nb in 0..I8_NR {
+        let jj = first + nb;
+        if jj >= n {
+            continue;
+        }
+        let off = nb * k;
+        let mut p = 0;
+        while p < k {
+            dst[off + p] = b[p * n + jj];
+            p += 1;
+        }
+    }
 }
 
 /// 单线程块计算（B 面板已备）：**N 分组在最外层**，每组 8×k 的 B 瓦片常驻 L1，
@@ -332,7 +369,7 @@ fn compute_i8_packed(
     while blk < npad {
         let mut r = 0;
         while r + I8_MR <= rows {
-            pair_one(a, bpack, out, r, blk, n, k, kvec);
+            pair_one(a, bpack, out, Gram { r, blk, n, k, kvec });
             r += I8_MR;
         }
         while r < rows {
@@ -343,49 +380,44 @@ fn compute_i8_packed(
     }
 }
 
-/// 单个 8 列块、两行微内核分派：dotprod 可用且 k≥16 走向量，否则标量两行。
-#[allow(unsafe_code)]
-fn pair_one(
-    a: &[i8],
-    bpack: &[i8],
-    out: &mut [i32],
+/// 一个 8 列块的两行：起点行 `r`、列块起点 `blk`，矩阵列宽 `n`、内积长 `k` 与向量化长 `kvec`。
+///
+/// 五个数合起来才说清「算哪一块」，所以同行进出一个值；`kvec` 与 `k` 分开是为了让标量尾段有
+/// 一处明确的边界，而不是在微内核里再算一遍。
+#[derive(Clone, Copy)]
+struct Gram {
     r: usize,
     blk: usize,
     n: usize,
     k: usize,
     kvec: usize,
-) {
+}
+
+/// 单个 8 列块、两行微内核分派：dotprod 可用且 k≥16 走向量，否则标量两行。
+#[allow(unsafe_code)]
+fn pair_one(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) {
     #[cfg(target_arch = "aarch64")]
     {
-        if kvec >= 16 && std::arch::is_aarch64_feature_detected!("dotprod") {
+        if g.kvec >= 16 && std::arch::is_aarch64_feature_detected!("dotprod") {
             // 安全性：dotprod 已运行时探测。
-            unsafe { dot_one(a, bpack, out, r, blk, n, k, kvec) };
+            unsafe { dot_one(a, bpack, out, g) };
             return;
         }
     }
-    scalar_row_group(a, bpack, out, r, blk, n, k);
-    scalar_row_group(a, bpack, out, r + 1, blk, n, k);
+    scalar_row_group(a, bpack, out, g.r, g.blk, g.n, g.k);
+    scalar_row_group(a, bpack, out, g.r + 1, g.blk, g.n, g.k);
 }
 
 /// aarch64 dotprod：一个 8 列块的两行（`unsafe` 岛）。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
 #[allow(unsafe_code)]
-unsafe fn dot_one(
-    a: &[i8],
-    bpack: &[i8],
-    out: &mut [i32],
-    r: usize,
-    blk: usize,
-    n: usize,
-    k: usize,
-    kvec: usize,
-) {
+unsafe fn dot_one(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) {
     unsafe {
-        let ap = a.as_ptr().add(r * k);
+        let ap = a.as_ptr().add(g.r * g.k);
         let bp = bpack.as_ptr();
-        let accs = dot_block(ap, bp, blk, k, kvec);
-        harvest(ap, bp, out, (r, n, k, kvec), blk, accs);
+        let accs = dot_block(ap, bp, g.blk, g.k, g.kvec);
+        harvest(ap, bp, out, (g.r, g.n, g.k, g.kvec), g.blk, accs);
     }
 }
 

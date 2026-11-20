@@ -70,15 +70,17 @@ pub struct Verified {
 
 /// 设备通道跑的是哪一份程序。
 ///
-/// 两种都是「算对了」，但证据强度不同：并行网格程序证的是生产态形态（每线程一元素 / 每块一线程 /
-/// `[grid]` 各维一线程），回落单线程只证语义。台账混记会让「该形态缺并行实现」这条缺口永久隐身，
-/// 因此它是报告字段，不是日志噪声。
+/// 三种都是「算对了」，但证据强度不同：并行网格程序证的是生产态形态（每线程一元素 / 每块一线程 /
+/// `[grid]` 各维一线程），回落单线程只证语义，C 参考通道则是串行语义的定义本身。台账混记会让
+/// 「该形态缺并行实现」这条缺口永久隐身，因此它是报告字段，不是日志噪声。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     /// 并行网格程序（按 `[chunk]` / `[grid]` 声明发射）。
     Parallel,
     /// 单线程语义门（该形态尚无并行实现，或本来就是串行骨架）。
     Harness,
+    /// C 参考通道：串行是它的定义，不是缺口——并行形态由设备通道证。
+    Reference,
 }
 
 impl Channel {
@@ -88,6 +90,7 @@ impl Channel {
         match self {
             Self::Parallel => "并行",
             Self::Harness => "回落单线程",
+            Self::Reference => "语义基准",
         }
     }
 }
@@ -381,6 +384,8 @@ enum Lane {
     Cuda,
     /// xcrun metal + metallib 临时编译、Apple GPU 执行、回读；不进产物缓存。
     Metal,
+    /// ccec 临时编译、NPU 执行、AscendCL 回读；不进产物缓存。
+    Ascend,
 }
 
 impl Lane {
@@ -390,6 +395,7 @@ impl Lane {
             Emit::C => Ok((Self::Host, toolchain::detect())),
             Emit::Cuda => Self::ready_device(profile, Self::Cuda),
             Emit::Metal => Self::ready_device(profile, Self::Metal),
+            Emit::Ascendc => Self::ready_device(profile, Self::Ascend),
             _ => Err(Error::new(Code::Unsupported, unsupported_emit(profile))),
         }
     }
@@ -454,24 +460,31 @@ impl Sweep<'_> {
         Ok((sample, prepared))
     }
 
-    /// 输出个数该是多少：C 通道看样本声明的 `y`，CUDA/Metal 通道看参考输出的长度。
+    /// 输出个数该是多少：C 通道看样本声明的 `y`，设备通道（CUDA / Metal / 昇腾）看参考输出的长度。
     fn expected(&self, sample: &Sample, want: &[f32]) -> usize {
         match self.lane {
             Lane::Host => sample.buffer("y").map_or(sample.n, |y| y.values.len()),
-            Lane::Cuda | Lane::Metal => want.len(),
+            Lane::Cuda | Lane::Metal | Lane::Ascend => want.len(),
         }
     }
 
-    /// 一格怎么跑：返回回读的输出与产物记录（CUDA/Metal 通道每次临时编译，没有产物）。
+    /// 一格怎么跑：返回回读的输出与产物记录（CUDA / Metal / 昇腾 通道每次临时编译，没有产物）。
     fn kernel(
         &mut self,
         sample: &Sample,
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         match self.lane {
-            Lane::Host => self.host(sample, prepared),
+            Lane::Host => {
+                // C 参考通道本身就是串行语义基准：不参与「形态是否并行」的判定，也不该被读成缺口。
+                self.verified.channel = Channel::Reference;
+                self.host(sample, prepared)
+            }
             Lane::Cuda => self.device(sample, prepared, Emit::Cuda),
             Lane::Metal => self.device(sample, prepared, Emit::Metal),
+            // 昇腾没有并行内核（P0 片段只到标量 C）：`parallel` 如实 `Unsupported`，回落后由
+            // `AscendBackend::harness` 给那份单源 AscendC 程序，报告里的通道写“语义门”。
+            Lane::Ascend => self.device(sample, prepared, Emit::Ascendc),
         }
     }
 
@@ -492,10 +505,10 @@ impl Sweep<'_> {
         Ok((outcome.bits, Some(artifact)))
     }
 
-    /// 设备通道：nvcc / xcrun metal 临时编译、GPU 执行、回读；签名与样本先对齐（与 C 通道同一条判据）。
+    /// 设备通道：nvcc / xcrun metal / ccec 临时编译、设备执行、回读；签名与样本先对齐（与 C 通道同一条判据）。
     ///
-    /// CUDA 与 Metal 只差取哪个后端，所以共用这一份次序：两条通道若各写一遍，
-    /// “先试并行、再回落语义门”就会有两份口径。
+    /// 三条通道只差取哪个后端，所以共用这一份次序：若各写一遍，
+    /// “先试并行、再回落语义门”就会有三份口径。
     fn device(
         &mut self,
         sample: &Sample,
@@ -610,8 +623,8 @@ fn unsupported_emit(profile: &Profile) -> String {
         .collect();
     let why = if witness::device_available(profile) {
         format!(
-            "设备在本机（`emit = {}`），内核执行路径尚未接通（CUDA 已接，其余仍只有见证）：\
-             见证已经在这台设备上跑过，内核文本还没有对应的编译/回读路径",
+            "设备在本机（`emit = {}`），内核执行路径尚未接通（`c` / `cuda` / `metal` / `ascendc` 已接，\
+             其余仍只有见证）：见证已经在这台设备上跑过，内核文本还没有对应的编译/回读路径",
             profile.meta.emit
         )
     } else {
@@ -654,6 +667,39 @@ mod tests {
             reason: "第一行报错".to_string(),
         };
         assert!(witness_note(0, 0, &rejected).is_none());
+    }
+
+    /// 昇腾的 `emit` 走的是**设备通道**（与 `cuda` / `metal` 同构），不是“这条 emit 还没接通”那一句：
+    /// 登记 `Lane::Ascend` 之后，`verify --devices ascend` 的结论只由“本机有没有这台设备”决定。
+    ///
+    /// 本用例在 `cutile` 里跑，引擎后端没有注册，所以期望的就是 [`NO_DEVICE`]——如果 `Lane::ready`
+    /// 又退回 `unsupported_emit`，那条分支会打印“内核执行路径尚未接通”，把这台设备说成连通道都
+    /// 没有，而实际缺的只是机器。
+    #[test]
+    fn the_ascend_emit_takes_the_device_lane() {
+        let profile = crate::builtin::Catalogue::try_builtin()
+            .expect("内置数据")
+            .profile("ascend")
+            .cloned()
+            .expect("ascend 档案");
+        let error = Lane::ready(&profile).expect_err("本机没有昇腾执行前端");
+        assert_eq!(error.code(), Code::Unsupported);
+        assert_eq!(error.message(), NO_DEVICE);
+    }
+
+    /// 再往外一层：整条 [`verify_one`] 的结论也必须落在"本机没有这台设备"上。次序有讲究——通道判据
+    /// 在协商之前（`Lane::ready` 先于 `Run::negotiate`），否则 `L0 < L2` 会先报"无可行变体"，把
+    /// "缺一台机器"说成"这台设备连声明都不够"，而后者是要改数据才能解决的。
+    #[test]
+    fn verifying_ascend_without_the_device_reports_the_missing_device() {
+        let catalogue = crate::builtin::Catalogue::try_builtin().expect("内置数据");
+        let profile = catalogue.profile("ascend").cloned().expect("ascend 档案");
+        let op = catalogue.op("gemv_i4").expect("gemv_i4 声明");
+        let dirs = Dirs::under(std::env::temp_dir().join("cutile-verify-ascend"));
+        let error = verify_one(op, &profile, &dirs, &crate::cap::Proof::none())
+            .expect_err("本机没有昇腾设备");
+        assert_eq!(error.code(), Code::Unsupported);
+        assert_eq!(error.message(), NO_DEVICE);
     }
 
     #[test]
@@ -729,28 +775,5 @@ mod tests {
         };
         assert_eq!(report.failures().len(), 2, "两个 Failed 条目各给出一条错误");
         assert_eq!(report.head_hits(), (1, 2), "两台设备里一台命中首档");
-    }
-}
-
-#[cfg(test)]
-mod tmp_probe {
-    #[test]
-    fn tmp_probe_launch() {
-        let catalogue = crate::builtin::Catalogue::try_builtin().expect("内置数据");
-        for name in [
-            "gemm_i4",
-            "gemm_i8",
-            "matmul_i8",
-            "gemm_i2",
-            "embed_f32",
-            "rope_f32",
-            "dequant_i4",
-        ] {
-            let op = catalogue.op(name).expect("算子");
-            let model = op::model(name).expect("语义表");
-            let sample = (model.sample)(2, 3);
-            let launch = crate::execution::launch(op, &sample).expect("launch");
-            println!("{name:12} -> {launch:?}");
-        }
     }
 }

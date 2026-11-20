@@ -21,7 +21,42 @@
   `nextest -p llm-tool -p llm-testkit` 110 条（含静态门与所有权表）全绿。工作区源码一行未动；该目录本就不在
   `jscpd` 的扫描路径（`crates` + `tools`）内，重复率不受影响。
 
+### Fixed
+
+- **合入分支后回归的三处入口配置补齐，`cargo nextest run --workspace` 与静态门恢复可跑**。
+  `crates/fuzz/tests/fuzz_http_head.rs`（HTTP 头解析 harness）未登记进 `.config/nextest.toml` 的
+  `default-filter`，而它的 libFuzzer 主函数不接受 `--list --format terse`，于是 nextest 在**列举测试**阶段
+  整体失败（`The required directory "terse" does not exist`），全仓用例一条都跑不起来；`crates/tool/Cargo.toml`
+  里指向已删除临时探针的 `[[test]] zz_probe_tmp` 让 `cargo test -p llm-tool` 直接因缺文件编不过；
+  `engine::cuda_codegen` 的 `cuda_benchmark_driver` 文档在合并时把一节 `# Errors` 串进了四段模板清单中间，
+  整理回「摘要 → 四段清单 → `# Errors`」的顺序。**验证**：`cargo nextest run --workspace --all-features --locked`
+  **2213 通过 / 17 跳过 / 0 失败**（含静态门 `every_source_passes_the_static_gate`）；`cargo clippy --workspace
+  --all-targets --all-features -D warnings`、`cargo fmt --all --check`、`cargo test --doc --workspace`、
+  `RUSTDOCFLAGS="-D warnings" cargo doc`、`cargo machete` 全通过；`npx jscpd` **0 克隆**（296 文件 / 126 277 行）；
+  Metal 侧 22 条设备用例（含 6 个 `#[ignore]` 基准）真机全绿。
+
 ### Added
+
+- **36 个算子全部换成并行网格核：Metal 的分块族补齐「多段发射 + 主机折叠」，六族声明补 `[grid]`，真机重跑 36/36
+  走并行通道**。此前 Metal 只有单源逐点 / 循环注入两族有驱动，分块族（归约 / RMSNorm / Softmax / 扫描）只生成了
+  设备段、没有 host 串联，于是只能回落单线程语义门——**算得对但形态没证**。本轮新增 `engine::metal_host`
+  （`xcrun metal` → `metallib` → host 驱动 → 回读，从 1301 行的 `backends` 拆出）与 `engine::metal_pipeline`
+  （四族的分段装配与 f64 折叠：`sqrt(Σx²/N + 1e-6)`、`max`/`exp` 求和、`C_{g+1} = a^len·C_g + 尾态`，`a^len` 用
+  平方乘），`codegen` 增加多段驱动生成器并把段入口名参数化（`kernel_partial` / `kernel_expsum` / `kernel_norm` /
+  `kernel_scan_*`，同一份 MSL 里不能再有第二个 `kernel_main`）。声明侧给 `gemm_i2/i4/i8`、`matmul_i8`、`embed_f32`、
+  `rope_f32`、`dequant_i2/i4` 补上 `[grid]`，`rope` / `dequant` 的循环头改成「上界就是标量 + 守卫」，因为网格注入只
+  能绑这种循环，表达式上界会让每个线程各跑一整遍把结果写坏（`dequant` 的 `b >= N/cpb` 与 `rope` 的 `2*i+1 >= N`
+  守卫把多出来的线程直接送回，奇数长度的尾元素只由 `2*i == N-1` 那一个线程搬运）。**`verify` 新增
+  `Channel::Reference`**：C 参考通道的串行是语义的定义，不该被读成「回落」；台账因此分「并行 / 回落单线程 /
+  语义基准」三栏，「该形态缺并行实现」不再隐身。**实测**（Metal）：36 个算子全部 `L2` 且通道全为并行，
+  `bench --op gemv_i4 --device metal --repeat 50` 连跑三次为 p50 0.049–0.059 ms、177–213 GB/s、带宽达成率
+  **57.6%–69.3%**（峰值 307.2 GB/s）——**仍低于 70% 门槛，按 §16 承认这台设备需要特化代码**；单次采样曾到
+  0.044 ms / 77.6%，波动说明那是偏乐观样本，不写进结论。`cpu` 36/36 记为语义基准。
+  MUSA 那台机器本轮**没有设备**，`verify --devices musa` 按「缺设备即失败」如实缺席，不记为通过；上一轮的
+  36/36 真机 `L2`（`max_rel_err ≤ 3.88e-7`）作为历史前提保留在设备表里。
+  **验证**：`cargo test --workspace` 全绿（含静态门、复杂度门与架构契约），
+  `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 退出码 0、零 error（`weights::ledger`
+  的 `Certified::left/right` 有一条 rustc `dead_code` 告警，属并行改动尚未接线，不在本轮范围）；文档相对链接无断链。
 
 - **验证有了设备通道：声明里降得出并行网格就真上设备跑，降不出才回落语义门，且回落是显式记录而不是
   静默通过**。此前 `Backend` 只有一个单源入口，`verify` 的设备车道实际跑的仍是「一个串行 harness」，
@@ -1253,7 +1288,12 @@
 - **设备档案探测的不是它自己声明的那个编译器**：`toolchain::for_profile` 只有 `Emit::Cuda` 才 `probe(meta.tool)`，其余一律 `detect()`（宿主 `cc`/`clang`/`gcc`）。于是 `ascend` 声明 `ccec` 却拿宿主 C 编译器去编——`doctor` 的"实测"一栏报"未知"（看着像没探测），`bench` 真编出来的却是 gcc 的产物并按 910B 报数。现在只有便携 C 走 `detect()`（它的登记值 `cc` 与 `*` 本来就是"按 cc → clang → gcc 探测"），其余按 `[meta].tool` 探测且**不退回宿主编译器**：新增 `toolchain::probe_declared` 按空白切命令与固定前缀参数（`metal` 的 `xcrun metal` 因此可探），身份保留声明原文，报告能与档案逐字对账。`doctor` 与 `for_profile` 共用这一条，`ascend` 现在与 `nvidia` 一样如实说"没有编译器"。副产物：装了 Xcode 的机器上 metal 的"实测"从"未知"变成 `xcrun metal@32023.922`。**验证**：`cutile` 167 条（`toolchain` 新增两条：带前缀参数的声明可探且身份保留原文、设备档案只探自己声明的编译器；`doctor` 的 ascend 用例补上"身份不能是宿主编译器"断言）、`llm-cli` 88 条全绿；`doctor --op gemv_i4 --device ascend` 仍是"本机没有该设备"，只是这一栏不再自相矛盾。
 - **`reduce` 片段把归约退化成"取首元素"，且只有 `gemv` 的 `&v, 1, 1` 恰好正确**：`ascend/reduce.cpp` 与 `intel/reduce.cl` 都写成 `($0) = ($1)`，不引用 `$func` / `$op` / `$axis`，对 `softmax`（`GMAX` 最大值）与 `reduce_*`、`rmsnorm` 的多元素归约会**静默返回首元素**且编译期不报错。两处都改成与 `cpu` / `nvidia` 同源的 `$func($1, $2, $3)`（长度双通道与遍历封在 `$func` 里）。`intel` 侧同时补上 `[compile].preamble`：`sub_group_reduce` 早先只是"文本上像归约"，空 preamble 下真的调用 `$func` 无处定义；现在挂了 `_cutile_sum_f32` / `_cutile_max_f32` / `_cutile_exp_*` 全套软件接口（`exp`/`log`/`sqrt`/`sin`/`cos`/`pow` 按 OpenCL C 的 gentype 重载写）。`prim` 新增用例 `a_reduction_fragment_must_fold_through_func` 钉住这条语义——按 `impl` 分组的文本同构判定看不到它（`scalar_loop` / `shfl.bfly` / `sub_group_reduce` 是三个不同的 impl 名）。**验证**：`llm-prim` 20 条、`llm-prof` 57 条全绿；`intel` 的 preamble 另以 `clang -x cl -cl-std=CL2.0 -fsyntax-only` 单独过了一遍语法门。
 - **`ascend` 的 `quant` 片段硬编码 4 位，i2 结构性缺席**：片段里写死 `0x0F` 掩码与 `-8` 零点，忽略模板注入的 `$cpb` / `$width` / `$zero`，于是 `gemv_i2` / `gemm_i2` 在 `ascend` 上不是"等级不足"而是"dt 缺 i2"。现在掩码按位宽派生（`(1 << $width) - 1`），与 `cpu/quant.c`、`nvidia/quant.cu` 同源，档案的 `scalar_dequant` 同步补 `i2`。**验证**：`prof` 档案装载（`llm-prof` 57 条）与 `cutile` 协商用例全绿；`prof` 侧新增 `a_dequant_signature_covers_both_packed_widths` 钉住这条（档案改回 i4-only 即失败）；`doctor --op gemv_i2 --device ascend` 的九条需求现在只报 `L0 < L2`，不再出现 `dt 缺 i2`。
-- **`ascend` 档案缺 `[compile]`**：`doctor` 打印"参数 无"，且 `@reduce` 的 `$func` 在设备源码里无处定义——这是条定时炸弹：归约片段一改对，编译期立刻炸。现在补 `flags = ["-O2"]` 与 preamble（`_cutile_sum_f32` / `_cutile_max_f32` / `_cutile_exp_sum_f32` / `_cutile_exp_norm_f32` 及软件数学接口，与 `cpu` 同源；`exp` 走位精确实现，其余 libm）。核架构参数（`dav-c220`）刻意不写：本机没有 `ccec`，猜一个拼写进档案只会让"参数"这一格从空变成错的。`[mem]` / `[peak]` / `[simt]` 三段同样留空并在文件里写明理由（前两者是实测值，没有真机不写数字；昇腾的 lane 交换由向量单元承担，不是 SIMT，写 `group = 1` 会把它错报成单 lane 设备）。**验证**：`doctor --op gemv_i4 --device ascend` 的参数栏从"无"变为 `-O2`，其余结论不变（仍全 L0、仍无可行变体——这三条修复不动证据等级，只让片段与声明对得上）。
+- **`ascend` 档案缺 `[compile]`**：`doctor` 打印"参数 无"，且 `@reduce` 的 `$func` 在设备源码里无处定义——这是条定时炸弹：归约片段一改对，编译期立刻炸。现在补 `flags = ["-O2"]` 与 preamble（`_cutile_sum_f32` / `_cutile_max_f32` / `_cutile_exp_sum_f32` / `_cutile_exp_norm_f32` 及软件数学接口，与 `cpu` 同源；`exp` 走位精确实现，其余 libm）。核架构参数（`dav-c220`）当时刻意没写：本机没有 `ccec`，猜一个拼写进档案只会让"参数"这一格从空变成错的；它随语法门与执行后端一并补上（见本版接下来两条），并在档案注释里标明"未经真机核对"。`[mem]` / `[peak]` / `[simt]` 三段同样留空并在文件里写明理由（前两者是实测值，没有真机不写数字；昇腾的 lane 交换由向量单元承担，不是 SIMT，写 `group = 1` 会把它错报成单 lane 设备）。**验证**：`doctor --op gemv_i4 --device ascend` 的参数栏从"无"变为 `-O2`（设备语言与核芯名随后补齐），其余结论不变（仍全 L0、仍无可行变体——这三条修复不动证据等级，只让片段与声明对得上）。
+
+- **`ascendc` 的语言门永远是关的，理由还写成了"没有开源前端"**：`gate::GATES` 里没有 `Ascendc` 这一行，`language_gate` 对它恒返回 `Absent{本机没有 ascendc 的语法前端（接了 cuda / opencl）}`——把"没登记"说成了"没有这种东西"，而 ccec 本来就带语法前端（`-fsyntax-only`）。现在表里多一行 `Emit::Ascendc`：`ccec -xcce --cce-aicore-arch=dav-c220 -fsyntax-only`（`-xcce` 让 ccec 按设备语言解析这份翻译单元，核芯名跟 `id = "910b"` 走——换核芯要改这一行）。表行的解析器同时改成 `front(spec)`：`clang` 行仍指本机 clang 前端（`clang` → 名字里带 clang 的 `cc`），其余按 `[meta].tool` 的写法原样探测、**不退回宿主编译器**——拿 `cc` 去解析 AscendC 只会把"没装 CANN"报成一条 C 语法错误，即把缺席伪装成拒绝（`Rejected` 比 `Absent` 严厉得多）。**验证**：`cutile` 新增两条（表行的三条判据逐项钉住；本机没有 `ccec` 时门是 `Absent` 且点名 `ccec`，不是 `Rejected`），`cutile` 170 条全绿；`doctor --op gemv_i4 --device ascend` 的语言门一行从"本机没有 `ascendc` 的语法前端（接了 cuda / opencl）"变为"本机没有 `ascendc` 的语法前端：`ccec` 不在本机"。
+- **`ascendc` 没有执行后端：搬来一台 910B 也跑不了**：`device::spec(Emit::Ascendc)` 恒 `None`，`emit = "ascendc"` 只决定 `.cpp` 后缀——产出里没有 `__aicore__`、没有 `GM_ADDR` / `__gm__`、没有 AscendCL，所以即使 ccec 与 NPU 都在场，见证也只会落回"本机没有该设备"。现在 `engine::backends` 里有 `AscendBackend`（与 `CudaBackend` 同形，注册进同一张进程级表）：可用性要求 `ccec` 与 `npu-smi info -l` **都在**（`detect_cce` / `ascend_device` 各自探测、合取才叫可用——缺的是编译器还是设备，报告里读得出来：装 CANN 还是换机器）；生成的是**单源** `.cpp`——`extern "C" __global__ __aicore__ void cutile_witness(GM_ADDR, GM_ADDR, int)` 核函数 + `AscendC::GetBlockIdx()`（一条见证一个 AI Core，与 `blockIdx.x` 同位）+ 见证函数前置 `__aicore__` + AscendCL host 驱动（`aclInit` / `aclrtMalloc` / `<<<>>>` / `aclrtMemcpy`），回读口径与 CUDA 版逐字一致（位模式 + `witness N`），否则同一个 `driver::readback` 在两台设备上会读出两种东西。编译参数全取自档案 `[compile].flags`，只有一处分拣：`-l` 类挪到源文件之后（ccec 把它们转给链接器，排在源前就是 `undefined reference to aclInit`）；`ascend.toml` 的 `flags` 因此补成 `["-xcce", "--cce-aicore-arch=dav-c220", "-O2", "-lascendcl"]`。`lower` / `harness` 那几条生产态入口明确报 `Unsupported`：P0 片段只到标量 C 语义，编成 AscendC 只会得到"能跑但和 CPU 一样慢"的核函数，`DataCopy` / `Mmad` 的落点属 P3。等级仍是 `L0`——这条路径还没在任何 910B 上跑过。**验证**：`llm-engine` 新增三条（单源文本的形状：核函数前缀 / `GM_ADDR` / `__gm__` / `GetBlockIdx` / AscendCL / `<<<>>>` / preamble 进翻译单元 / 每条见证都真的带 `__aicore__`；可用性 = 编译器 ∧ 设备且注册表与后端判定一致；缺 `ccec` 时错误点名 `ccec` 而不是一条 C++ 语法错误），`llm-engine` 157 条、`llm-prim` 20 条、`llm-prof` 57 条全绿。
+
+- **`ascend` 拿不到 `L2` 的最后一段：`verify` 的语义门在昇腾上是空的**。上一条修完执行后端，见证能在 NPU 上跑了，但 `verify` 里 `Lane::ready` 只认 `c` / `cuda` / `metal` 三种 `emit`——`ascendc` 落到 `unsupported_emit` 那句"内核执行路径尚未接通"，于是后端注册了也走不到，形状矩阵永远得不出"与参考对拍通过"，`L2` 这条证据在昇腾上结构性地不可能。现在 `Lane::Ascend` 把它接进同一张表（与 `Cuda` / `Metal` 并列，可用性只由"本机有没有这台设备"决定），新增的 `engine::ascend_codegen` 把 `.k` 模板拼成**单源** AscendC 程序：内核与档案 preamble 里的 `_cutile_sum_f32` 一族一律加 `__aicore__`（`@reduce` 的 `$func` 落在 preamble 里，只给内核加属性等于让 AI Core 调宿主函数，ccec 会拒），`extern "C" __global__ __aicore__ void cutile_launch(GM_ADDR …)` 形参与 `<<<1, nullptr, stream>>>` 单块发射同 CUDA 的 `<<<1,1>>>` 同位，缓冲实参补回 `__gm__` 元素类型，host 走 `aclrtMalloc` / `aclrtMemcpy` / `aclrtSynchronizeStream`，回读与 CUDA 逐字一致（位模式逐行）——同一个 `driver::readback` 因此不会在两台设备上读出两种东西。AscendCL 的调用守卫 `ACL_GUARD` 收成一处，见证程序与语义门共用（两处各写一套时，新加一个 API 调用漏掉的那处会以"回读全是 0"的形式失败）。仍是 `L0`、仍缺真机：`lower` / `benchmark_harness` 与 `Source::Pair` 的生产态入口继续如实 `Unsupported`（P0 片段只到标量 C，`DataCopy` / `Mmad` 属 P3），没有并行内核时报告里的通道写"语义门"而不是"并行"。**验证**：`llm-engine` 新增一条（对 `gemv_i4` 拼出的程序逐项断言：核函数前缀与 `GM_ADDR` 形参、内核与 preamble 的 `__aicore__`、`__gm__ const` 补类型、`<<<1, nullptr, stream>>>`、往返拷贝、位模式回读），`cutile` 新增两条（`ascendc` 走设备通道；整条 `verify_one` 对 ascend 报的是 `NO_DEVICE` 而不是先撞上 `L0 < L2` 的协商结论——通道判据先于协商，缺机器与声明不足是两件要修不同东西的事），`cutile` 171 条与 `llm-engine` 148 条（另 `tests/schedule.rs` 14 条、文档用例 3 条）全绿。
 
 ## [0.1.0] - 2026-11-11
 

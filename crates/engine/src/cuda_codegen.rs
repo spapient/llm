@@ -478,9 +478,7 @@ pub(crate) fn buffer_args(signature: &Signature) -> String {
 /// 生产态 CUDA/MUSA 基准驱动：每次采样用 `cudaEvent` 记一对时间戳，热身后按 `repeat` 轮
 /// 各跑 16 批，`stderr` 每轮打一行 `ns`。
 ///
-/// # Errors：缺输出缓冲、输出不是 f32，或缓存参数与样本不一致时返回说明。
-#[allow(clippy::too_many_arguments)]
-/// 生产态 CUDA/MUSA 基准驱动的四段模板全部在这里之外命名：
+/// 四段模板全部在这里之外命名：
 ///
 /// 1. 缓冲区（`cuda_host_buffers_grid` + `alloc_guards`）
 /// 2. 计时（`timing_loop`，先热身再按轮计时）
@@ -488,6 +486,10 @@ pub(crate) fn buffer_args(signature: &Signature) -> String {
 /// 4. 释放（`cuda_release`）
 ///
 /// 本函数只负责按上述顺序拼装，不含任何格式串。
+///
+/// # Errors
+///
+/// 缺输出缓冲、输出不是 f32，或缓存参数与样本不一致时返回说明。
 #[allow(clippy::too_many_arguments)]
 pub fn cuda_benchmark_driver(
     device_source: &str,

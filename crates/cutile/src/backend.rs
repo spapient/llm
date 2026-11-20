@@ -167,7 +167,8 @@ pub trait Codegen {
         ))
     }
     /// 基准封装：把一份 `.k` 内核 + 签名 + 样本降成「跑一次并回读」的完整程序源（verify 的
-    /// 加速器车道）。host C 后端不实现（C 基准走产物缓存，不经 [`Driver::compile_run`]）。
+    /// 加速器车道）。host C 后端不实现（C 基准走产物缓存，不经 [`Driver::compile_run`]；
+    /// 设备侧 `Metal` / `Cuda` / `Ascendc` 实现）。
     ///
     /// 它是**语义门**：单线程、`grid = 1`，回答「这个算子算得对不对」，不回答「跑得多快」。
     fn harness(&self, _kernel: &str, _signature: &Signature, _sample: &Sample) -> Result<Source> {

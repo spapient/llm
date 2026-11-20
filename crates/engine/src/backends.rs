@@ -1,167 +1,27 @@
 //! Metal / CUDA 设备后端：实现 [`cutile::backend::Backend`]（`Codegen` 出源 + `Driver` 跑源）。
 //!
 //! 这是 L6 的设备落地：唯一碰 `nvcc` / `xcrun metal` / `metallib` / MSVC `cl.exe` 的地方。
+//! 厂商编译器的**探测**在 `crate::toolchain`，本模块只按档案取探测结果、拼命令行、跑源。
 //! cutile（L3 机制层）只认 [`cutile::backend::Backend`] 缝，不认识这里的任何厂商符号；本模块经
 //! [`install`] 把 Metal / CUDA 后端注册进 cutile 的进程级表，由 L7（`cli`）在启动时调用。
 //!
 //! 双源说明：Metal 是「设备源（.metal）+ host 驱动（.m）」两段文本，CUDA 是单段 `.cu`；这个差异
 //! 收在 [`cutile::backend::Source`] 里，由各自的 [`Driver::compile_run`] 解包，不外泄到机制层。
 
+use crate::toolchain::{
+    ascend_device, detect_cce, detect_metal, detect_musa, detect_nvcc, find_cl, musa_device,
+};
 use cutile::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use cutile::dirs::Dirs;
 use cutile::driver;
 use cutile::prof::{Emit, Profile};
-use cutile::toolchain::{Toolchain, parse_version, probe};
+use cutile::toolchain::Toolchain;
 use cutile::witness::{MAX_OUT, Scope, Selected};
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::Signature;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
-
-// ---------------------------------------------------------------------------
-// 厂商工具链探测：nvcc / xcrun metal / MSVC cl.exe。
-// ---------------------------------------------------------------------------
-
-static NVCC: OnceLock<Option<Toolchain>> = OnceLock::new();
-static METAL: OnceLock<Option<Toolchain>> = OnceLock::new();
-static MUSA: OnceLock<Option<Toolchain>> = OnceLock::new();
-
-/// 探测 nvcc（CUDA 编译器）：`nvcc --version` 只打印版本、不调用宿主 cl，故可独立成功；宿主编译器由
-/// 调用方用 `-ccbin` 另行指定。
-pub(crate) fn detect_nvcc() -> Option<Toolchain> {
-    NVCC.get_or_init(|| probe("nvcc")).clone()
-}
-
-/// 探测 mcc（MUSA 编译器，clang-14 驱动）。
-///
-/// MUSA 与 CUDA 是**同一门输出语言**（`Emit::Cuda`）的两个工具链：生成的 `.cu` 只差运行时头，
-/// 因此后端只按档案的 `[meta].tool` 选命令名，不为它单开一个 `Emit` 变体。
-pub(crate) fn detect_musa() -> Option<Toolchain> {
-    MUSA.get_or_init(|| probe("mcc")).clone()
-}
-
-/// 这台机器上有没有 MUSA 设备：`mthreads-gmi -L`（摩尔线程的 `nvidia-smi -L` 同构物）能列出卡就算有。
-///
-/// 与 [`detect_musa`] 分开：工具链在、设备不在（或反之）都会出现，混成一个布尔就丢掉了唯一的
-/// 行动信息（装编译器 vs 换机器）。
-pub(crate) fn musa_device() -> bool {
-    let Ok(output) = Command::new("mthreads-gmi").arg("-L").output() else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-        line.split(':')
-            .next()
-            .is_some_and(|head| head.starts_with("GPU"))
-    })
-}
-
-/// 探测 Metal 编译器（`xcrun metal --version`）：命令可用、能自报版本时才算数。
-pub(crate) fn detect_metal() -> Option<Toolchain> {
-    METAL.get_or_init(probe_metal).clone()
-}
-
-fn probe_metal() -> Option<Toolchain> {
-    let output = Command::new("xcrun")
-        .args(["-sdk", "macosx", "metal", "--version"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).to_string()
-        + &String::from_utf8_lossy(&output.stderr);
-    Some(Toolchain {
-        command: "xcrun metal".to_string(),
-        version: parse_version(&text),
-        banner: text
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())?
-            .to_string(),
-    })
-}
-
-/// 定位 MSVC cl.exe（Windows 上 nvcc 的宿主编译器）：先问 `vswhere`，再退回环境变量登记的两个
-/// 安装根，多版本共存时按**数值**取最新。
-fn find_cl() -> Option<PathBuf> {
-    if std::env::consts::OS != "windows" {
-        return None;
-    }
-    candidates().into_iter().max_by_key(|cl| msvc_version(cl))
-}
-
-fn candidates() -> Vec<PathBuf> {
-    let mut found = vswhere_cls();
-    for key in ["VCINSTALLDIR", "VSINSTALLDIR"] {
-        if let Some(root) = std::env::var_os(key) {
-            found.extend(msvc_cls(Path::new(&root)));
-        }
-    }
-    found
-}
-
-fn vswhere_cls() -> Vec<PathBuf> {
-    let Some(program_files) = std::env::var_os("ProgramFiles(x86)") else {
-        return Vec::new();
-    };
-    let vswhere = Path::new(&program_files).join("Microsoft Visual Studio/Installer/vswhere.exe");
-    let Ok(output) = Command::new(vswhere)
-        .args([
-            "-latest",
-            "-products",
-            "*",
-            "-find",
-            r"VC\Tools\MSVC\**\bin\Hostx64\x64\cl.exe",
-        ])
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| PathBuf::from(line.trim()))
-        .filter(|cl| cl.is_file())
-        .collect()
-}
-
-fn msvc_cls(root: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    for base in [root.join("Tools/MSVC"), root.join("VC/Tools/MSVC")] {
-        let Ok(entries) = std::fs::read_dir(base) else {
-            continue;
-        };
-        found.extend(
-            entries
-                .flatten()
-                .map(|entry| entry.path().join("bin/Hostx64/x64/cl.exe")),
-        );
-    }
-    found.into_iter().filter(|cl| cl.is_file()).collect()
-}
-
-fn msvc_version(cl: &Path) -> Vec<u32> {
-    let text = cl.to_string_lossy().replace('/', "\\");
-    let Some((_, rest)) = text.rsplit_once("MSVC\\") else {
-        return Vec::new();
-    };
-    rest.split('\\')
-        .next()
-        .map(|version| {
-            version
-                .split('.')
-                .map(|part| part.parse::<u32>().unwrap_or(0))
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 // ---------------------------------------------------------------------------
 // Metal 后端
@@ -571,168 +431,12 @@ fn push_metal_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]
     driver::push_dispatch(program, max, selected, "}\n");
 }
 
-fn run_metal(program: &str, count: usize, flags: &[String], dirs: &Dirs) -> Result<Readback> {
-    let dir = driver::scratch(dirs, "witness-metal");
-    let outcome = metal_in_dir(&dir, program, count, flags);
-    let _ = std::fs::remove_dir_all(&dir);
-    outcome
-}
+// Metal 主机侧胶水在 [`crate::metal_host`]：设备源 → `metallib` → host 驱动 → 回读。
+// 与 CUDA 那条链并列留在本模块会把单文件撑过行数上限，两套厂商工具链之间也没有共享状态，
+// 因此单独成模块；对外入口仍从这里 re-export，原路径不变。
+pub use crate::metal_host::{compile_run_metal, metal_driver, metal_kernel};
 
-fn metal_in_dir(dir: &Path, program: &str, count: usize, flags: &[String]) -> Result<Readback> {
-    let metalib = metal_kernel(dir, program, flags)?;
-    let exe = metal_driver_exe(dir)?;
-    metal_readback(&exe, &metalib, count)
-}
-
-/// 写 MSL 并编成 `metallib`：`xcrun metal` 管语言层、`metallib` 管链接；诊断里带 `.metal` 路径。
-pub fn metal_kernel(dir: &Path, program: &str, flags: &[String]) -> Result<PathBuf> {
-    let msl = dir.join("witness.metal");
-    let air = dir.join("witness.air");
-    let metalib = dir.join("witness.metallib");
-    driver::write_text(&msl, program)?;
-    let mut compile = xcrun("metal", flags);
-    compile.arg("-c").arg(&msl).arg("-o").arg(&air);
-    driver::run_tool("xcrun metal", &mut compile, &msl)?;
-    let mut link = xcrun("metallib", &[]);
-    link.arg(&air).arg("-o").arg(&metalib);
-    driver::run_tool("xcrun metallib", &mut link, &msl)?;
-    Ok(metalib)
-}
-
-/// 编译并执行一次 Metal 生产态内核（设备源 + host 驱动），返回 `(stdout, stderr)` 原文。
-/// 与 [`cutile::backend::Driver::compile_run`] 同口径：一次性目录，用完即删。
-pub fn compile_run_metal(
-    profile: &Profile,
-    dirs: &Dirs,
-    msl: &str,
-    host: &str,
-    label: &str,
-) -> Result<(String, String)> {
-    let dir = driver::scratch(dirs, &format!("{label}-metal"));
-    let outcome = metal_kernel_in_dir(&dir, msl, host, &profile.flags);
-    let _ = std::fs::remove_dir_all(&dir);
-    outcome
-}
-
-fn metal_kernel_in_dir(
-    dir: &Path,
-    msl: &str,
-    driver: &str,
-    flags: &[String],
-) -> Result<(String, String)> {
-    let metalib = metal_kernel(dir, msl, flags)?;
-    let exe = metal_driver_exe_from(dir, driver, "kernel_driver", "内核对拍")?;
-    let mut command = Command::new(&exe);
-    command.arg(&metalib);
-    driver::run_exe(&mut command, &exe, "Metal 内核执行失败")
-}
-
-fn metal_driver_exe_from(
-    dir: &Path,
-    driver_source: &str,
-    stem: &str,
-    role: &str,
-) -> Result<PathBuf> {
-    let Some(compiler) = cutile::toolchain::detect() else {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!("缺少 host C 编译器：Metal {role}需要一个 host 驱动把内核发射到 GPU"),
-        ));
-    };
-    let driver = dir.join(format!("{stem}.m"));
-    let exe = dir.join(stem);
-    driver::write_text(&driver, driver_source)?;
-    let mut clang = Command::new(&compiler.command);
-    clang
-        .args(["-fobjc-arc", "-O2", "-o"])
-        .arg(&exe)
-        .arg(&driver);
-    clang.args(["-framework", "Foundation", "-framework", "Metal"]);
-    driver::run_tool(&compiler.command, &mut clang, &driver)?;
-    Ok(exe)
-}
-
-fn xcrun(tool: &str, flags: &[String]) -> Command {
-    let mut command = Command::new("xcrun");
-    command.args(["-sdk", "macosx"]).arg(tool).args(flags);
-    command
-}
-
-fn metal_driver_exe(dir: &Path) -> Result<PathBuf> {
-    metal_driver_exe_from(dir, &metal_driver(MAX_OUT), "driver", "见证")
-}
-
-fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<Readback> {
-    let mut command = Command::new(exe);
-    command.arg(metalib).arg(count.to_string());
-    let (stdout, stderr) = driver::run_exe(&mut command, exe, "Metal 见证执行失败")?;
-    Ok(driver::readback(&stdout, &stderr))
-}
-
-/// 见证驱动的 host 侧文本：把 `metallib` 里的 `cutile_witness` 发射到 GPU 并回读；缓冲宽度由
-/// [`MAX_OUT`] 注入。供测试与 `metal_driver_exe_from` 共用，不重复写驱动文本。
-pub fn metal_driver(max: usize) -> String {
-    format!(
-        "#define WITNESS_MAX_OUT {max}\n{METAL_HEAD}{prologue}{METAL_TAIL}",
-        prologue = crate::codegen::host_prologue("cutile_witness")
-    )
-}
-
-/// 见证驱动的 head：入口、参数与见证宽度用法；与 [`crate::codegen`] 的基准驱动共用同一段前导。
-const METAL_HEAD: &str = r#"#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-int main(int argc, const char **argv) {
-    @autoreleasepool {
-        if (argc < 3) {
-            fprintf(stderr, "usage: driver <metallib> <count>\n");
-            return 2;
-        }
-        const int count = atoi(argv[2]);
-"#;
-
-/// 见证驱动的 tail：两条缓冲、一次发射与「见证宽度」回读。
-const METAL_TAIL: &str = r#"        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * WITNESS_MAX_OUT * sizeof(float)
-                                                  options:MTLResourceStorageModeShared];
-        id<MTLBuffer> counts = [device newBufferWithLength:(NSUInteger)count * sizeof(int)
-                                                   options:MTLResourceStorageModeShared];
-        id<MTLCommandQueue> queue = [device newCommandQueue];
-        id<MTLCommandBuffer> buffer = [queue commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
-        [encoder setComputePipelineState:pipeline];
-        [encoder setBuffer:values offset:0 atIndex:0];
-        [encoder setBuffer:counts offset:0 atIndex:1];
-        [encoder dispatchThreads:MTLSizeMake((NSUInteger)count, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake((NSUInteger)count, 1, 1)];
-        [encoder endEncoding];
-        [buffer commit];
-        [buffer waitUntilCompleted];
-        if (buffer.error) {
-            fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String);
-            return 7;
-        }
-        const int *written = (const int *)counts.contents;
-        const float *out = (const float *)values.contents;
-        for (int i = 0; i < count; ++i) {
-            fprintf(stderr, "witness %d\n", written[i]);
-        }
-        fflush(stderr);
-        for (int i = 0; i < count; ++i) {
-            int n = written[i];
-            if (n < 0) n = 0;
-            if (n > WITNESS_MAX_OUT) n = WITNESS_MAX_OUT;
-            for (int j = 0; j < n; ++j) {
-                union { float f; unsigned int u; } v;
-                v.f = out[i * WITNESS_MAX_OUT + j];
-                printf("%u\n", v.u);
-            }
-        }
-    }
-    return 0;
-}
-"#;
+use crate::metal_host::run_metal;
 
 // ---------------------------------------------------------------------------
 // CUDA 后端
@@ -1041,16 +745,243 @@ fn cuda_ccbin(tool: &str, command: &mut Command) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// 昇腾（AscendC）后端
+// ---------------------------------------------------------------------------
+
+/// 昇腾的可用性：编译器与设备都在（`ccec` 认得出设备，但没有 NPU 也发射不了）。
+fn ascend_ready() -> bool {
+    detect_cce().is_some() && ascend_device()
+}
+
+/// AscendC 是**单源**方言：host 驱动与核函数在同一个翻译单元里，`<<<>>>` 由 ccec 拆成两段。
+/// 它与 CUDA 的差别只在三处——核函数前缀（`extern "C" __global__ __aicore__`）、显存指针
+/// （`GM_ADDR` / `__gm__`）、以及 host 侧用 AscendCL 而不是 `cudaMalloc` / `cudaMemcpy`。
+struct AscendBackend;
+
+impl Codegen for AscendBackend {
+    fn emit(&self) -> Emit {
+        Emit::Ascendc
+    }
+    fn program(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        selected: &[Selected<'_>],
+        scope: Scope,
+    ) -> Result<String> {
+        let _ = scope; // 与 CUDA 同：见证只有设备执行这一条范围
+        ascend_program(profile, dirs, selected)
+    }
+
+    /// 语义门：`.k` 内核 → `__aicore__` 单源 AscendC 程序（内核 + 单块发射 + AscendCL 回读）。
+    ///
+    /// 这是 `L2` 那条证据链在昇腾上的最后一段：少这一处，`verify` 的加速器车道在 `ascend` 上
+    /// 必然 `Unsupported`，“与参考对拍通过”就只能靠人手贴一张图。它与 `lower` / `parallel` 不同——
+    /// 单块标量执行不粉饰性能，只回答“算得对不对”，所以现在就能给。
+    fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
+        crate::ascend_codegen::ascend_harness(kernel, signature, sample).map(Source::Single)
+    }
+}
+
+impl Driver for AscendBackend {
+    fn available(&self, _profile: &Profile) -> bool {
+        ascend_ready()
+    }
+    fn run(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        program: &str,
+        _count: usize,
+        _scope: Scope,
+    ) -> Result<Readback> {
+        let (stdout, stderr) = compile_run_ascend(profile, dirs, program, "witness")?;
+        Ok(driver::readback(&stdout, &stderr))
+    }
+    fn toolchain(&self) -> Option<Toolchain> {
+        detect_cce()
+    }
+    /// 生产态内核（`lower` / `harness` / `parallel`）仍是空：P0 片段只到标量 C 语义，没有一条
+    /// 触及 MTE / Cube / Vector，把它们编成 AscendC 只会得到"能跑但和 CPU 一样慢"的核函数。
+    /// 这里如实不支持，调用方按"已声明但没有并行实现"回落——等 P3 的 `DataCopy` / `Mmad` 特化落地。
+    ///
+    /// 语义门 [`harness`] 是**例外**：它不走这条入口，而是自己拼一份单源 AscendC 程序
+    /// （[`crate::ascend_codegen::ascend_harness`]），所以走的是上一个分支。
+    fn compile_run(
+        &self,
+        profile: &Profile,
+        dirs: &Dirs,
+        source: &Source,
+        label: &str,
+    ) -> Result<(String, String)> {
+        match source {
+            Source::Single(text) => compile_run_ascend(profile, dirs, text, label),
+            Source::Pair { .. } => Err(Error::new(
+                Code::Unsupported,
+                "昇腾后端需要单源（host 驱动 + 核函数在同一份 .cpp）".to_string(),
+            )),
+        }
+    }
+}
+
+impl Backend for AscendBackend {}
+
+fn ascend_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
+    let mut program = ascend_head(profile);
+    let files = as_ascend_device(driver::witness_files(selected, dirs, driver::C_PARAMS)?);
+    driver::push_sources(&mut program, &files);
+    push_ascend_kernel(&mut program, MAX_OUT, selected);
+    push_ascend_main(&mut program, MAX_OUT, selected.len());
+    Ok(program)
+}
+
+/// 头：AscendCL（host 侧分配 / 发射 / 回读）与 AscendC 的内核入口（`__aicore__` / `GM_ADDR` /
+/// `GetBlockIdx`）。与 CUDA 的 `<cuda_runtime.h>` 是同一位置的一件事。
+fn ascend_head(profile: &Profile) -> String {
+    let mut head = String::from(
+        "#include \"acl/acl.h\"\n\
+         #include \"kernel_operator.h\"\n\
+         #include <cstdio>\n\
+         #include <cstdlib>\n",
+    );
+    if !profile.preamble.is_empty() {
+        head.push_str(&profile.preamble);
+        head.push('\n');
+    }
+    head
+}
+
+/// 见证函数改成 AscendC 设备函数：与 CUDA 的 `__device__` 同一个位置。不加这一层，函数只有宿主
+/// 链接性，核函数里调用它会被当成未声明的设备符号；见证本身是纯标量 C，不需要别的改写。
+fn as_ascend_device(files: driver::Sources) -> driver::Sources {
+    files
+        .into_iter()
+        .map(|(file, text)| (file, text.replace("int witness", "__aicore__ int witness")))
+        .collect()
+}
+
+/// 一个见证占一个 AI Core：`GetBlockIdx()` 就是见证序号（与 CUDA 的 `blockIdx.x` 同位）。
+fn push_ascend_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]) {
+    program.push_str(&format!(
+        "extern \"C\" __global__ __aicore__ void cutile_witness(GM_ADDR out_raw, GM_ADDR counts_raw,\n\
+         \x20   int total) {{\n\
+         \x20   const int tid = (int)AscendC::GetBlockIdx();\n\
+         \x20   if (tid >= total) return;\n\
+         \x20   __gm__ float *out = (__gm__ float *)out_raw;\n\
+         \x20   __gm__ int *counts = (__gm__ int *)counts_raw;\n\
+         \x20   float local[{max}];\n"
+    ));
+    driver::push_dispatch(program, max, selected, "}\n\n");
+}
+
+/// host 驱动：AscendCL 分配 GM、同步发射、回读。回读口径与 CUDA 版逐字一致（位模式 + `witness N`），
+/// 否则同一个 `driver::readback` 在两台设备上会读出两种东西。
+///
+/// 调用守卫取自 [`crate::ascend_codegen::ACL_GUARD`]：语义门 harness 用的是同一份，两处各写一套时，
+/// 加一个 API 调用就会漏掉其中一处。
+fn push_ascend_main(program: &mut String, max: usize, total: usize) {
+    program.push_str(crate::ascend_codegen::ACL_GUARD);
+    program.push_str(&format!(
+        "\nint main() {{\n\
+         \x20   const int total = {total};\n\
+         \x20   const size_t out_bytes = (size_t)total * {max} * sizeof(float);\n\
+         \x20   const size_t cnt_bytes = (size_t)total * sizeof(int);\n\
+         \x20   CUTILE_ACL(aclInit(nullptr));\n\
+         \x20   CUTILE_ACL(aclrtSetDevice(0));\n\
+         \x20   aclrtStream stream = nullptr;\n\
+         \x20   CUTILE_ACL(aclrtCreateStream(&stream));\n\
+         \x20   uint8_t *d_out = nullptr;\n\
+         \x20   uint8_t *d_counts = nullptr;\n\
+         \x20   CUTILE_ACL(aclrtMalloc((void **)&d_out, out_bytes, ACL_MEM_MALLOC_HUGE_FIRST));\n\
+         \x20   CUTILE_ACL(aclrtMalloc((void **)&d_counts, cnt_bytes, ACL_MEM_MALLOC_HUGE_FIRST));\n\
+         \x20   cutile_witness<<<total, nullptr, stream>>>((GM_ADDR)d_out, (GM_ADDR)d_counts, total);\n\
+         \x20   CUTILE_ACL(aclrtSynchronizeStream(stream));\n\
+         \x20   float *h_out = (float *)malloc(out_bytes);\n\
+         \x20   int *h_counts = (int *)malloc(cnt_bytes);\n\
+         \x20   if (h_out == nullptr || h_counts == nullptr) {{\n\
+         \x20       fprintf(stderr, \"host malloc\\n\");\n\
+         \x20       return 1;\n\
+         \x20   }}\n\
+         \x20   CUTILE_ACL(aclrtMemcpy(h_out, out_bytes, d_out, out_bytes, ACL_MEMCPY_DEVICE_TO_HOST));\n\
+         \x20   CUTILE_ACL(aclrtMemcpy(h_counts, cnt_bytes, d_counts, cnt_bytes, ACL_MEMCPY_DEVICE_TO_HOST));\n\
+         \x20   for (int t = 0; t < total; ++t) {{\n\
+         \x20       for (int i = 0; i < h_counts[t]; ++i) {{\n\
+         \x20           union {{ float f; unsigned int u; }} v;\n\
+         \x20           v.f = h_out[t * {max} + i];\n\
+         \x20           printf(\"%u\\n\", v.u);\n\
+         \x20       }}\n\
+         \x20       fprintf(stderr, \"witness %d\\n\", h_counts[t]);\n\
+         \x20   }}\n\
+         \x20   free(h_out); free(h_counts);\n\
+         \x20   CUTILE_ACL(aclrtFree(d_out));\n\
+         \x20   CUTILE_ACL(aclrtFree(d_counts));\n\
+         \x20   CUTILE_ACL(aclrtDestroyStream(stream));\n\
+         \x20   CUTILE_ACL(aclrtResetDevice(0));\n\
+         \x20   CUTILE_ACL(aclFinalize());\n\
+         \x20   return 0;\n\
+         }}\n"
+    ));
+}
+
+/// 编译并运行任意 AscendC 程序，返回 `(stdout, stderr)` 原文：临时目录、ccec、执行。
+pub fn compile_run_ascend(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    label: &str,
+) -> Result<(String, String)> {
+    let dir = driver::scratch(dirs, &format!("{label}-ascend"));
+    let outcome = ascend_in_dir(&dir, profile, program, label, dirs);
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
+fn ascend_in_dir(
+    dir: &Path,
+    profile: &Profile,
+    program: &str,
+    label: &str,
+    dirs: &Dirs,
+) -> Result<(String, String)> {
+    let src = dir.join(format!("{label}.cpp"));
+    let exe = dir.join(format!("{label}.exe"));
+    driver::write_text(&src, program)?;
+    ascend_compile(&exe, &src, profile, dirs)?;
+    let mut command = Command::new(&exe);
+    driver::run_exe(&mut command, &exe, "昇腾执行失败")
+}
+
+fn ascend_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Result<()> {
+    let tool = profile.meta.tool.as_str();
+    let mut command = Command::new(tool);
+    // `-xcce` / `--cce-aicore-arch` 归档案的 `[compile].flags`：那是"哪个核芯"的声明，本层不猜
+    // （`dav-c220` 只对 `id = "910b"` 成立）。唯一的分拣是顺序：`-l` 类参数被转给链接器，排在源
+    // 文件之前就是"undefined reference to aclInit"，所以它们挪到源文件之后。
+    let flags = cutile::compile_flags(profile, dirs)?;
+    let (links, options): (Vec<String>, Vec<String>) =
+        flags.into_iter().partition(|flag| flag.starts_with("-l"));
+    command
+        .args(options)
+        .arg(src)
+        .arg("-o")
+        .arg(exe)
+        .args(links);
+    driver::run_tool(tool, &mut command, src)
+}
+
+// ---------------------------------------------------------------------------
 // 装配
 // ---------------------------------------------------------------------------
 
 static METAL_BACKEND: MetalBackend = MetalBackend;
 static CUDA_BACKEND: CudaBackend = CudaBackend;
+static ASCEND_BACKEND: AscendBackend = AscendBackend;
 
-/// 把 Metal / CUDA 后端注册进 cutile 的进程级表（幂等）。L7（`cli`）在启动时调用一次。
+/// 把 Metal / CUDA / 昇腾后端注册进 cutile 的进程级表（幂等）。L7（`cli`）在启动时调用一次。
 pub fn install() {
     cutile::backend::register(&METAL_BACKEND);
     cutile::backend::register(&CUDA_BACKEND);
+    cutile::backend::register(&ASCEND_BACKEND);
 }
 
 #[cfg(test)]

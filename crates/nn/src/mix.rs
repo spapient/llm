@@ -79,20 +79,32 @@ mod pulse {
             }
         }
 
-        /// 推进一步：`mem = mem·(1−leak) + u`，超阈值发放并重置。
+        /// 推进后的膜电位 `mem·(1−leak) + u`：只算、不提交、不判发放。
         ///
-        /// 返回本步发放（`ONE` = 发放，`ZERO` = 未发放）。
-        pub fn step(&mut self, u: S) -> S {
-            self.mem = self.mem.mul(S::ONE.sub(self.leak)).add(u);
-            let spike = if self.mem >= self.threshold {
+        /// 拆出来的唯一理由是「发放前那一刻的电位」本身要被观测：反传的代理梯度按它判窗，
+        /// 而 [`Lif::step`] 一提交就把发放过的通道改写成 `reset`，那个值当场没了。让前向顺手
+        /// 记下 `peek` 的返回值，比事后按 `reset` 猜一遍要准。
+        pub fn peek(&self, u: S) -> S {
+            self.mem.mul(S::ONE.sub(self.leak)).add(u)
+        }
+
+        /// 按已算出的膜电位提交：达到阈值则发放并把膜电位重置，返回本步发放（`ONE`/`ZERO`）。
+        pub(crate) fn commit(&mut self, potential: S) -> S {
+            let spike = if potential >= self.threshold {
                 S::ONE
             } else {
                 S::ZERO
             };
-            if spike == S::ONE {
-                self.mem = self.reset;
-            }
+            self.mem = if spike == S::ONE { self.reset } else { potential };
             spike
+        }
+
+        /// 推进一步：`mem = mem·(1−leak) + u`，超阈值发放并重置。
+        ///
+        /// 返回本步发放（`ONE` = 发放，`ZERO` = 未发放）。
+        pub fn step(&mut self, u: S) -> S {
+            let potential = self.peek(u);
+            self.commit(potential)
         }
 
         /// 当前膜电位（观测用）。

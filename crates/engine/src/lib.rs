@@ -65,6 +65,7 @@
 
 #![deny(unsafe_code)]
 
+mod ascend_codegen;
 pub mod backends;
 pub mod batch;
 pub mod codegen;
@@ -74,12 +75,15 @@ pub mod ifb;
 pub mod kv;
 #[cfg(target_os = "macos")]
 pub mod metal;
+pub mod metal_host;
+pub mod metal_pipeline;
 pub mod norm;
 pub mod platform;
 pub mod program;
 pub mod radix;
 pub mod scan;
 pub mod tiled;
+mod toolchain;
 pub mod wmma;
 
 pub use batch::{Admission, Batch, SequenceOutcome};

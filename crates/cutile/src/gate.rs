@@ -8,7 +8,7 @@ use crate::atom::Witness;
 use crate::dirs::Dirs;
 use crate::prof::{Emit, Profile};
 use crate::runner::driver::{scratch, write_text};
-use crate::toolchain::clang;
+use crate::toolchain::{Toolchain, clang, probe_declared};
 use crate::witness::{Selected, declared_witnesses, device_available, source};
 use diagnostic::{Code, Error};
 use std::collections::BTreeSet;
@@ -37,7 +37,7 @@ pub enum LanguageGate {
     },
     /// 本机没有这门语言的解析器：门开不了，也不拿 host 自检冒充。
     Absent {
-        /// 为什么开不了（缺哪个程序、或这门语言没有开源前端）。
+        /// 为什么开不了（缺哪个程序，或这门语言的前端还没有登记）。
         reason: String,
     },
     /// 见证被自己的语言拒绝：要改的是证据，不是机器。
@@ -65,7 +65,8 @@ impl fmt::Display for LanguageGate {
 struct GateSpec {
     /// 这门语言。
     emit: Emit,
-    /// 解析器：程序名 + 固定前缀参数（`["clang"]`）。
+    /// 解析器：程序名 + 固定前缀参数（`["clang"]`）。`["clang"]` 指本机的 clang 前端；其余名字按档案
+    /// 里的写法原样探测——`ccec` 随 CANN 安装，宿主 `cc` 不认识昇腾的设备语言开关。
     tool: &'static [&'static str],
     /// 只做语法检查的参数；源文件路径由执行器追加在末尾。
     check: &'static [&'static str],
@@ -90,7 +91,26 @@ const GATES: &[GateSpec] = &[
         tool: &["clang"],
         check: &["-x", "cl", "-cl-std=CL3.0", "-fsyntax-only"],
     },
+    GateSpec {
+        emit: Emit::Ascendc,
+        // `-xcce` 让 ccec 按昇腾设备语言解析这份翻译单元（不带它，ccec 只当普通宿主 C++ 编，
+        // 见证里的 `__aicore__` 会被无声忽略）；`dav-c220` 是 `id = "910b"` 那一档的核芯名。
+        // 认证别的核芯时这一行要按 arch 拆开登记，不能沿用 910B 的名字。
+        tool: &["ccec"],
+        check: &["-xcce", "--cce-aicore-arch=dav-c220", "-fsyntax-only"],
+    },
 ];
+
+/// 表行声明的解析器：`clang` 行指「本机的 clang 前端」（先问 `clang`，再退到名字里带 clang 的
+/// `cc`）；其余按声明原样探测，不退回宿主编译器——拿 `cc` 去解析 AscendC 只会把「本机没有 CANN」
+/// 报成一条 C 语法错误。
+fn front(spec: &GateSpec) -> Option<Toolchain> {
+    let declared = spec.tool.join(" ");
+    if declared == "clang" {
+        return clang();
+    }
+    probe_declared(&declared)
+}
 
 /// 用一台设备**自己声称的语言**把它的全部已声明见证过一遍。
 ///
@@ -105,7 +125,7 @@ pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
         let known: Vec<String> = GATES.iter().map(|entry| entry.emit.to_string()).collect();
         return LanguageGate::Absent {
             reason: format!(
-                "本机没有 `{}` 的语法前端（接了 {}）",
+                "`{}` 的语法前端没有登记（已登记 {}）",
                 profile.meta.emit,
                 known.join(" / ")
             ),
@@ -132,9 +152,13 @@ fn parse_all(spec: &GateSpec, profile: &Profile, dirs: &Dirs) -> diagnostic::Res
             reason: "没有已声明的见证：门没有对象可开".to_string(),
         });
     }
-    let Some(toolchain) = clang() else {
+    let Some(toolchain) = front(spec) else {
         return Ok(LanguageGate::Absent {
-            reason: format!("`{}` 不在本机", spec.tool.join(" ")),
+            reason: format!(
+                "本机没有 `{}` 的语法前端：`{}` 不在本机",
+                spec.emit,
+                spec.tool.join(" ")
+            ),
         });
     };
     let dir = scratch(dirs, "gate");
@@ -253,5 +277,51 @@ mod tests {
             .expect("跑 host C 编译器");
         assert!(status.success(), "前提：同一份源码在 host C 里合法");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 昇腾前端的三条判据缺一条，解析的就不是同一门语言：`-xcce` 决定设备语言、`dav-c220` 决定
+    /// 核芯（`id = "910b"`）、`-fsyntax-only` 决定只解析不产出。
+    #[test]
+    fn the_ascend_front_is_ccec_for_the_910b_core() {
+        let entry = GATES
+            .iter()
+            .find(|entry| entry.emit == Emit::Ascendc)
+            .expect("AscendC 语法前端已登记");
+        assert_eq!(entry.tool, ["ccec"], "昇腾的前端是 CANN 的 ccec");
+        for flag in ["-xcce", "--cce-aicore-arch=dav-c220", "-fsyntax-only"] {
+            assert!(
+                entry.check.contains(&flag),
+                "缺 `{flag}`：{:?}",
+                entry.check
+            );
+        }
+    }
+
+    /// 前端是档案声明的那一个，不是宿主 C 编译器：本机没有 `ccec` 时门只能是 `Absent`（且指出缺的
+    /// 是哪个程序），拿 `cc` 去解析只会把「没装 CANN」报成一条 C 语法错误——那是 `Rejected`。
+    #[test]
+    fn a_missing_declared_front_is_absent_not_rejected() {
+        if toolchain::probe("ccec").is_some() {
+            eprintln!("skip: 本机装了 `ccec`，缺席分支无从构造");
+            return;
+        }
+        let ascend = GATES
+            .iter()
+            .find(|entry| entry.emit == Emit::Ascendc)
+            .expect("AscendC 语法前端已登记");
+        assert!(front(ascend).is_none(), "`ccec` 不在本机时解析器就不在场");
+        let profile = crate::builtin::Catalogue::try_builtin()
+            .expect("内置数据")
+            .profile("ascend")
+            .cloned()
+            .expect("ascend 档案");
+        let dirs = Dirs::under(std::env::temp_dir().join("cutile-gate-ascend"));
+        match language_gate(&profile, &dirs) {
+            LanguageGate::Absent { reason } => {
+                assert!(reason.contains("ccec"), "缺席要点名缺哪个程序：{reason}");
+                assert!(reason.contains("不在本机"), "{reason}");
+            }
+            other => panic!("缺 `ccec` 时门不该是 `{other}`"),
+        }
     }
 }

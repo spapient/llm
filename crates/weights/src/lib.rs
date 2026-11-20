@@ -127,6 +127,12 @@ mod testutil {
         Segment::new(name, Wire::F32, vec![vals.len() as u64], None, bytes).expect("段")
     }
 
+    /// 由 f32 值构造一个二维 F32 段：五轴选码只认二维稠密权重，形状因此必须给全。
+    pub(crate) fn f32_matrix(name: &str, vals: &[f32], (m, n): (usize, usize)) -> Segment {
+        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        Segment::new(name, Wire::F32, vec![m as u64, n as u64], None, bytes).expect("段")
+    }
+
     /// 把段依次写进归档，返回对齐到 `2^6` 的字节。
     pub(crate) fn archive(segments: Vec<Segment>) -> Vec<u8> {
         let mut w = Writer::new();

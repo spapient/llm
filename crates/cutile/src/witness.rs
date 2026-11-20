@@ -632,7 +632,7 @@ mod tests {
                 reason.contains("ascendc"),
                 "缺席也要说清是哪门语言：{reason}"
             ),
-            other => panic!("AscendC 没有开源前端，门不该开成 `{other}`"),
+            other => panic!("本机没有 `ccec` 时 AscendC 的门只能是缺席：`{other}`"),
         }
     }
 

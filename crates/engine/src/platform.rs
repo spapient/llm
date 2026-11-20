@@ -318,7 +318,7 @@ pub trait Host {
 /// 真实本机：设备与工具链都走**已有**的探测，不新写第二份。
 ///
 /// Metal 走 `metal::MetalDevice::system_default`（进程内默认设备），CUDA / Metal 的编译器走
-/// `backends::detect_nvcc` / `detect_metal`（`nvcc --version`、`xcrun -sdk macosx metal --version`）。
+/// `toolchain::detect_nvcc` / `detect_metal`（`nvcc --version`、`xcrun -sdk macosx metal --version`）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Machine;
 
@@ -338,8 +338,8 @@ impl Host for Machine {
 
     fn toolchain(&self, row: Row) -> Option<String> {
         match row {
-            Row::Cuda => crate::backends::detect_nvcc().map(|found| found.id()),
-            Row::Metal => crate::backends::detect_metal().map(|found| found.id()),
+            Row::Cuda => crate::toolchain::detect_nvcc().map(|found| found.id()),
+            Row::Metal => crate::toolchain::detect_metal().map(|found| found.id()),
             // HIP / GPU 没有编译器探测位。要让它们从 OPEN 变成 COVERED，得先有探测，而不是先有结论。
             _ => None,
         }

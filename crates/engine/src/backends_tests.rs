@@ -1,4 +1,5 @@
 use super::*;
+use crate::toolchain::msvc_version;
 use std::path::Path;
 
 /// 装配 Metal / CUDA 后端（幂等，进程级只装一次）。引擎测试直接调 `MetalBackend`/`CudaBackend` 的
@@ -15,6 +16,14 @@ fn metal_profile() -> Profile {
         .profile("metal")
         .cloned()
         .expect("metal 档案")
+}
+
+fn ascend_profile() -> Profile {
+    cutile::builtin::Catalogue::try_builtin()
+        .expect("内置数据")
+        .profile("ascend")
+        .cloned()
+        .expect("ascend 档案")
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +195,7 @@ fn generated_device_program_braces_are_balanced() {
     for (vendor, front) in [
         ("nvidia", &CUDA_BACKEND as &dyn Codegen),
         ("metal", &METAL_BACKEND as &dyn Codegen),
+        ("ascend", &ASCEND_BACKEND as &dyn Codegen),
     ] {
         let Some(profile) = catalogue.profile(vendor).cloned() else {
             continue;
@@ -201,6 +211,208 @@ fn generated_device_program_braces_are_balanced() {
             "{vendor} 生成文本花括号不配对：{open} != {close}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 昇腾后端：AscendC 单源文本的形状，以及“缺编译器就如实说缺谁”。
+// ---------------------------------------------------------------------------
+
+/// 昇腾的见证程序必须是一份**能被 ccec 处理的 AscendC 翻译单元**：缺 `__aicore__` 的设备函数、
+/// 缺 `GM_ADDR` / `__gm__` 的显存指针、或缺 AscendCL 的 host 驱动，产出就不属于任何设备，
+/// 只是把字段 `emit = "ascendc"` 贴在了件普通 C++ 上。
+#[test]
+fn an_ascend_program_is_a_single_ascendc_translation_unit() {
+    ensure_backends();
+    let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-program"));
+    let profile = ascend_profile();
+    let selected = cutile::witness::declared_witnesses(&profile).expect("见证");
+    let text = ASCEND_BACKEND
+        .program(&profile, &dirs, &selected, Scope::Device)
+        .expect("可生成");
+
+    // 单源：host 驱动与核函数在同一份文本里，`<<<>>>` 由 ccec 拆成两段。
+    assert!(
+        text.contains("extern \"C\" __global__ __aicore__ void cutile_witness("),
+        "核函数入口缺 AscendC 前缀：{text}"
+    );
+    assert!(text.contains("GM_ADDR"), "核函数入口没有 GM 指针：{text}");
+    assert!(
+        text.contains("__gm__ float *out"),
+        "返回值缓冲区不是全局内存：{text}"
+    );
+    assert!(
+        text.contains("AscendC::GetBlockIdx()"),
+        "核索引不是 AscendC 的读法：{text}"
+    );
+    assert!(
+        text.contains("#include \"acl/acl.h\""),
+        "host 侧没有 AscendCL：{text}"
+    );
+    assert!(
+        text.contains("aclrtMalloc") && text.contains("aclrtMemcpy"),
+        "host 驱动没有分配 / 回读：{text}"
+    );
+    assert!(
+        text.contains("<<<total, nullptr, stream>>>"),
+        "发射不是单源的 `<<<>>>`：{text}"
+    );
+    // 档案 preamble 与见证在同一份翻译单元里：`@reduce` 的 `$func` 就指到这里。
+    assert!(
+        text.contains("_cutile_sum_f32"),
+        "preamble 没进翻译单元：{text}"
+    );
+    // 一条见证一个设备函数：分派调到的每个函数都要真的带 `__aicore__`，否则它只是宿主函数。
+    assert_eq!(
+        text.matches("n = witness_").count(),
+        selected.len(),
+        "分派条数与见证条数不一致"
+    );
+    for (_, _, witness) in &selected {
+        assert!(
+            text.contains(&format!("__aicore__ int {}(", witness.func)),
+            "`{}` 没有改成设备函数",
+            witness.func
+        );
+    }
+}
+
+/// 昇腾可用性是两个独立事实的合取：编译器在、设备也在。合成一个布尔就丢掉了唯一的行动信息
+/// （装 CANN 还是换机器）；把缺的那个报成另一个也是假绿——`ascend` 的等级仍因此恒不可用。
+#[test]
+fn the_ascend_backend_needs_both_the_compiler_and_the_device() {
+    ensure_backends();
+    let profile = ascend_profile();
+    let ready = detect_cce().is_some() && ascend_device();
+    assert_eq!(ASCEND_BACKEND.available(&profile), ready);
+    assert_eq!(
+        cutile::witness::device_available(&profile),
+        ready,
+        "注册表里的可用性要与后端自己的判定一致"
+    );
+    assert!(
+        ASCEND_BACKEND
+            .toolchain()
+            .is_none_or(|tool| tool.command == "ccec"),
+        "缓存的指纹只能是档案声明的 `ccec`"
+    );
+    if !ready {
+        // 注册是进程级的一张表：没注册时 `device::spec(ascendc)` 是 `None`，报的是"本机没有该设备"
+        // 并列出已接的前端。注册之后同一台机器仍不可用，只可能因为它自己判定的那个理由。
+        let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-registry"));
+        let error = cutile::witness::run_all(&profile, &dirs).expect_err("本机没有 ccec / NPU");
+        let text = error.to_string();
+        assert!(
+            !text.contains("本机没有该设备"),
+            "AscendBackend 没注册进 cutile 的后端表：{text}"
+        );
+        assert!(text.contains("ccec"), "要报缺哪个程序：{text}");
+    }
+}
+
+/// 本机没有 `ccec` 时，报的必须是「编译器不在」而不是一条 C++ 语法错误：那是 `nvcc` 那一类
+/// “把缺工具链伪装成编译失败”的旧病。
+#[test]
+fn an_ascend_run_without_ccec_names_the_missing_compiler() {
+    ensure_backends();
+    if detect_cce().is_some() {
+        testkit::skip("engine: 本机装了 `ccec`，缺席分支无从构造");
+        return;
+    }
+    let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-missing"));
+    let error = ASCEND_BACKEND
+        .run(
+            &ascend_profile(),
+            &dirs,
+            "int main() { return 0; }",
+            1,
+            Scope::Device,
+        )
+        .expect_err("缺 ccec 就编不出来");
+    let text = error.to_string();
+    assert!(text.contains("ccec"), "要报缺哪个程序：{text}");
+}
+
+/// 语义门的产物也必须是 AscendC：`verify` 的 `L2` 就靠它把"算得对不对"钉在设备上。见证只证明
+/// 片段跑得起来，这里证明**内核**在设备上被调用一次并回读。
+///
+/// 内核源不需要真装配也能断言这件事：装配器（`build::source`）要一条协商出来的 `Path`，而 `ascend`
+/// 现在全 `L0`、协商给不出路径（也正因为如此这条链才需要先升等级）。所以这里按装配后的**形状**
+/// 手写一段：真档案 preamble + 真签名 + 一段调用 `$func` 的内核体。机制层要证的就是这个形状——
+/// `@prim` 换完之后剩下的东西是否仍然是一个可编译的 AscendC 翻译单元。
+#[test]
+fn an_ascend_harness_is_a_single_ascendc_translation_unit() {
+    ensure_backends();
+    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+    let profile = ascend_profile();
+    let decl = catalogue.op("gemv_i4").expect("gemv_i4 声明").clone();
+    let model = op::model("gemv_i4").expect("gemv_i4 语义表");
+    let (m, n) = model.shape;
+    let sample = (model.sample)(m, n);
+    // 装配后的内核体：`@load` / `@dot` / `@reduce` 都已换成片段，只剩 C。
+    let body = "typedef unsigned char u8;\n\
+         \n\
+         void cutile_gemv_i4_kernel(const float *x, const u8 *w, const float *scales,\n\
+         \x20                          float *y, int M, int N, int gsz) {\n\
+         \x20   for (int n = 0; n < N; ++n) {\n\
+         \x20       const u8 *row = w + (long)n * (M / 2);\n\
+         \x20       float acc = _cutile_sum_f32(x, M / gsz, 1);\n\
+         \x20       y[n] = acc * (float)(row[0] & 0x0F) * scales[n];\n\
+         \x20   }\n\
+         }\n";
+    let kernel_source = format!("{}\n{}", profile.preamble, body);
+    let program = match ASCEND_BACKEND
+        .harness(&kernel_source, &decl.signature, &sample)
+        .expect("语义门应能拼出单源 AscendC")
+    {
+        Source::Single(text) => text,
+        Source::Pair { .. } => panic!("昇腾是单源方言，host 驱动与核函数必须同在一份翻译单元里"),
+    };
+
+    // 入口：`extern "C" __global__ __aicore__` + `GM_ADDR` 形参（形参名跟签名走）。
+    assert!(
+        program.contains("extern \"C\" __global__ __aicore__ void cutile_launch(GM_ADDR d_"),
+        "设备入口不是 AscendC 核函数：{program}"
+    );
+    // 内核本体与 preamble 里的软件实现同样要落在 AI Core 上。
+    assert!(
+        program.contains(&format!("__aicore__ void {}(", decl.signature.kernel())),
+        "内核 `{}` 没转成设备函数：{program}",
+        decl.signature.kernel()
+    );
+    assert!(
+        program.contains("static __aicore__ inline float _cutile_sum_f32("),
+        "preamble 的 `$func` 落点没转成设备函数：{program}"
+    );
+    // 只改函数，别的一概不动：`typedef` 与 `static const` 不是函数，给它们加 `__aicore__`
+    // 会把本来能编的源码改坏（也是 CUDA 那边同一条边界）。
+    assert!(
+        program.contains("typedef unsigned char u8;"),
+        "`typedef` 被改动了：{program}"
+    );
+    assert!(
+        program.contains("static const float _cutile_exp_log2e"),
+        "编译期常量被改动了：{program}"
+    );
+    // 显存指针：`GM_ADDR` 只是 `__gm__ uint8_t *`，交给 P0 内核前要补回元素类型。
+    assert!(
+        program.contains("(__gm__ const float *)d_"),
+        "只读缓冲没有补回 `__gm__` 类型：{program}"
+    );
+    // 发射与回读：单块 `<<<1, nullptr, stream>>>`（与 CUDA 的 `<<<1,1>>>` 同位），AscendCL 回读。
+    assert!(
+        program.contains("cutile_launch<<<1, nullptr, stream>>>("),
+        "发射不是单源 `<<<>>>`：{program}"
+    );
+    assert!(
+        program.contains("ACL_MEMCPY_HOST_TO_DEVICE")
+            && program.contains("ACL_MEMCPY_DEVICE_TO_HOST"),
+        "缓冲没有入向 / 回读：{program}"
+    );
+    // 回读口径必须与 CUDA 逐字一致：位模式逐行打印，共用同一份 `driver::readback`。
+    assert!(
+        program.contains("printf(\"%u\\n\", v.u)"),
+        "回读不是位模式：{program}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -259,10 +471,13 @@ fn production_scan_kernel_compiles_for_a_real_op() {
     let (local, correct) =
         cutile::execution::metal_scan_program(&catalogue, &dirs, "scan_f32", m, n)
             .expect("分块扫描内核应能生成");
-    assert!(local.contains("kernel_main"), "{local}");
+    assert!(local.contains("kernel void kernel_scan_local"), "{local}");
     assert!(local.contains("thread_position_in_grid"), "{local}");
     assert!(local.contains("start + len"), "{local}");
-    assert!(correct.contains("kernel_main"), "{correct}");
+    assert!(
+        correct.contains("kernel void kernel_scan_correct"),
+        "{correct}"
+    );
     assert!(correct.contains("d_c"), "{correct}");
     assert_metal_compiles("engine-metal-scan", &local, &profile.flags);
     assert_metal_compiles("engine-metal-scan", &correct, &profile.flags);

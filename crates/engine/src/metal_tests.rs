@@ -483,6 +483,77 @@ fn metal_simdgroup_gemm_512() {
     }
 }
 
+/// int8 GEMM 基准的固定几何与输入：64×256×4096，`i8` 输入、`i32` 精确累加、`f32` 参考。
+///
+/// 两个 int8 用例共用同一份样本，它们对拍的对象因此逐位相同——换一组数不该改变结论。
+struct Int8Gemm {
+    m: usize,
+    n: usize,
+    k: usize,
+    a: Vec<u8>,
+    b: Vec<u8>,
+    reference: Vec<f32>,
+}
+
+/// 一次 CPU 参考（`op::matmul_i8::forward_tiled`）给出 `f32` 参考列，设备侧只与它比。
+fn int8_gemm() -> Int8Gemm {
+    let (m, n, k) = (64usize, 256usize, 4096usize);
+    let a: Vec<u8> = (0..m * k)
+        .map(|i| (((i % 17) as i32 - 8) as i8) as u8)
+        .collect();
+    let b: Vec<u8> = (0..k * n)
+        .map(|i| (((i % 19) as i32 - 9) as i8) as u8)
+        .collect();
+    let (sa, sb): (Vec<i8>, Vec<i8>) = (
+        a.iter().map(|&x| x as i8).collect(),
+        b.iter().map(|&x| x as i8).collect(),
+    );
+    let mut acc = vec![0i32; m * n];
+    op::matmul_i8::forward_tiled(&sa, &sb, m, n, k, &mut acc).expect("CPU 参考");
+    Int8Gemm {
+        m,
+        n,
+        k,
+        a,
+        b,
+        reference: acc.iter().map(|&v| v as f32).collect(),
+    }
+}
+
+/// int8 GEMM 基准的设备侧：`int8_gemm` 的 A/B/Y 三路缓冲 + 网格。
+///
+/// 两个 int8 用例的输入、输出与网格完全一致，只是 MSL 来源不同（本地生成 / cutile 生产入口），
+/// 因此缓冲与网格只在这里建一次。
+struct Int8GemmBench {
+    m: usize,
+    n: usize,
+    k: usize,
+    reference: Vec<f32>,
+    a: MetalBuffer,
+    b: MetalBuffer,
+    y: MetalBuffer,
+    grid: [u32; 3],
+}
+
+/// 上传 [`int8_gemm`] 的 A/B，再开一路只有 GPU 写的 Y 输出。
+fn int8_gemm_bench(device: &MetalDevice) -> Int8GemmBench {
+    let fixture = int8_gemm();
+    let (m, n, k) = (fixture.m, fixture.n, fixture.k);
+    let a = upload_bytes(device, &fixture.a, "A-int8");
+    let b = upload_bytes(device, &fixture.b, "B-int8");
+    let y = output_buffer(device, m * n, "Y-int8");
+    Int8GemmBench {
+        m,
+        n,
+        k,
+        reference: fixture.reference,
+        a,
+        b,
+        y,
+        grid: [m as u32, n as u32, 1],
+    }
+}
+
 /// int8 分块 GEMM 真机基准：64×256×4096，`i8` 输入、`i32` 精确累加、`f32` 输出。
 ///
 /// 同一输入先跑 CPU 参考（`op::matmul_i8::forward_tiled`）逐元素对拍，再对 tile=8/16/32
@@ -496,40 +567,20 @@ fn metal_int8_gemm_k4096() {
         return;
     };
 
-    const M: usize = 64;
-    const N: usize = 256;
-    const K: usize = 4096;
-
-    let a: Vec<u8> = (0..M * K)
-        .map(|i| (((i % 17) as i32 - 8) as i8) as u8)
-        .collect();
-    let b: Vec<u8> = (0..K * N)
-        .map(|i| (((i % 19) as i32 - 9) as i8) as u8)
-        .collect();
-    let (sa, sb): (Vec<i8>, Vec<i8>) = (
-        a.iter().map(|&x| x as i8).collect(),
-        b.iter().map(|&x| x as i8).collect(),
-    );
-    let mut acc = vec![0i32; M * N];
-    op::matmul_i8::forward_tiled(&sa, &sb, M, N, K, &mut acc).expect("CPU 参考");
-    let reference: Vec<f32> = acc.iter().map(|&v| v as f32).collect();
-
-    let a_buf = upload_bytes(&device, &a, "A-int8");
-    let b_buf = upload_bytes(&device, &b, "B-int8");
-    let mut y_buf = output_buffer(&device, M * N, "Y-int8");
-    let grid = [M as u32, N as u32, 1];
+    let mut bench = int8_gemm_bench(&device);
+    let (m, n, k) = (bench.m, bench.n, bench.k);
 
     for tile in [8usize, 16, 32] {
         let msl =
-            crate::tiled::metal_int8_gemm_program(M, N, K, tile).expect("int8 GEMM MSL 应能生成");
+            crate::tiled::metal_int8_gemm_program(m, n, k, tile).expect("int8 GEMM MSL 应能生成");
         let pipe = device.compile(&msl).expect("int8 GEMM MSL 应能编译");
         let block = [tile as u32, tile as u32, 1];
-        queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
-        assert_matmul_matches("int8", &reference, y_buf.as_mut_bytes());
-        let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+        queue.execute(&pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
+        assert_matmul_matches("int8", &bench.reference, bench.y.as_mut_bytes());
+        let ns = measure(&queue, &pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
         eprintln!(
             "Metal int8 GEMM 64×256×4096 tile={tile}：{ns:.1} ns（{:.2} G int-op/s）",
-            (M * N * K) as f64 / ns
+            (m * n * k) as f64 / ns
         );
     }
 }
@@ -549,48 +600,27 @@ fn metal_int8_gemm_cutile_k4096() {
     };
     crate::backends::install();
 
-    const M: usize = 64;
-    const N: usize = 256;
-    const K: usize = 4096;
-
-    let a: Vec<u8> = (0..M * K)
-        .map(|i| (((i % 17) as i32 - 8) as i8) as u8)
-        .collect();
-    let b: Vec<u8> = (0..K * N)
-        .map(|i| (((i % 19) as i32 - 9) as i8) as u8)
-        .collect();
-    let (sa, sb): (Vec<i8>, Vec<i8>) = (
-        a.iter().map(|&x| x as i8).collect(),
-        b.iter().map(|&x| x as i8).collect(),
-    );
-    let mut acc = vec![0i32; M * N];
-    op::matmul_i8::forward_tiled(&sa, &sb, M, N, K, &mut acc).expect("CPU 参考");
-    let reference: Vec<f32> = acc.iter().map(|&v| v as f32).collect();
-
+    let mut bench = int8_gemm_bench(&device);
+    let (m, n, k) = (bench.m, bench.n, bench.k);
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-int8-cutile");
     let fallback =
-        cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_f32", M, N, 16)
+        cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_f32", m, n, 16)
             .expect("非 int8 算子应回落到网格/串行路径");
     assert!(
         !fallback.contains("threadgroup int As"),
         "非 int8 签名不得走 int8 分块 lowering"
     );
     let ragged =
-        cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_i8", M, N, 24)
+        cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_i8", m, n, 24)
             .expect("K 不整除时应回落到网格/串行路径");
     assert!(
         !ragged.contains("threadgroup int As"),
         "K 不被 tile 整除时不得走 int8 分块 lowering"
     );
 
-    let a_buf = upload_bytes(&device, &a, "A-int8");
-    let b_buf = upload_bytes(&device, &b, "B-int8");
-    let mut y_buf = output_buffer(&device, M * N, "Y-int8");
-    let grid = [M as u32, N as u32, 1];
-
     for tile in [8usize, 16, 32] {
         let msl =
-            cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_i8", M, N, tile)
+            cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_i8", m, n, tile)
                 .unwrap_or_else(|error| panic!("tile={tile} 的 MSL 应能生成：{error}"));
         assert!(
             msl.contains("threadgroup int As"),
@@ -600,12 +630,12 @@ fn metal_int8_gemm_cutile_k4096() {
             .compile(&msl)
             .unwrap_or_else(|| panic!("tile={tile} 的 MSL 应能编译"));
         let block = [tile as u32, tile as u32, 1];
-        queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
-        assert_matmul_matches("int8-cutile", &reference, y_buf.as_mut_bytes());
-        let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+        queue.execute(&pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
+        assert_matmul_matches("int8-cutile", &bench.reference, bench.y.as_mut_bytes());
+        let ns = measure(&queue, &pipe, &[&bench.a, &bench.b, &bench.y], bench.grid, block);
         eprintln!(
             "cutile→Metal int8 GEMM 64×256×4096 tile={tile}：{ns:.1} ns（{:.2} G int-op/s）",
-            (M * N * K) as f64 / ns
+            (m * n * k) as f64 / ns
         );
     }
 }

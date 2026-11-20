@@ -18,8 +18,8 @@ use diagnostic::{Code, Error, Result};
 use crate::leb::Cursor;
 use crate::{ledger, rans};
 
-/// artifact 魔数（v3：`rank` 载荷的证书多了 `ε_alg` 方法与界类型两码与补偿误差，v1/v2 不再可读）。
-const MAGIC: [u8; 4] = *b"AX03";
+/// artifact 魔数（v4：`rank` 载荷改存低秩项的两个因子而非整张 `L`，v1–v3 不再可读）。
+const MAGIC: [u8; 4] = *b"AX04";
 
 /// 固定头长度：magic(4) + axis(1) + m(4) + n(4)。
 const HEAD: usize = 13;
@@ -467,57 +467,107 @@ fn decode_quant(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
 /// 这里不再自己挑秩（旧版取 `min(m,n)/2`，与谱隙无关）：[`ledger::certify`] 用一次分解同时给出
 /// 受认证的秩与 `L`、`C`，`None` 就是「拒压」——秩轴对这张矩阵不适用，让给别的轴。
 ///
-/// 布局：`note_len | note | low_len | low | rest`。秩不再是一个裸数字：证书自带秩，并且多带
-/// 「凭什么」——模式、稳定性、谱隙、扰动、截断误差、逐位往返。伪造一个更大的秩就得同时伪造
-/// 谱隙，而谱隙那一条在读端会被载荷重算（[`ledger::audit`]）。
+/// 布局：`note_len | note | left_len | left | right_len | right | rest`。低秩项不落 `L` 本身，
+/// 落它的两个因子 `left[m,r]`（`UΣ`）与 `right[r,n]`（`Vᵀ`）——`L` 是整张 `m×n`，存一遍等于没省；
+/// 因子只有 `(m+n)·r`，读端用 [`ledger::factor_low`] 这一份算式还原。
+///
+/// 秩不再是一个裸数字：证书自带秩，并且多带「凭什么」——模式、稳定性、谱隙、扰动、截断误差、
+/// 逐位往返。伪造一个更大的秩就得同时伪造谱隙，而谱隙那一条在读端会被载荷重算
+/// （[`ledger::audit`]）。
 fn rank_payload(w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {
     let cert = ledger::certify(w, m, n).ok().flatten()?;
-    let note = cert.note.to_bytes();
-    let low = pack_bytes(&f32_bytes(&cert.low));
-    let mut p = u32::try_from(note.len()).ok()?.to_le_bytes().to_vec();
-    p.extend(note);
-    p.extend_from_slice(&(low.len() as u32).to_le_bytes());
-    p.extend(low);
+    let mut p = framed(&cert.note.to_bytes());
+    p.extend(framed(&pack_bytes(&f64_bytes(&cert.left))));
+    p.extend(framed(&pack_bytes(&f64_bytes(&cert.right))));
     p.extend(pack_bytes(&f32_bytes(&cert.rest)));
     Some(p)
+}
+
+/// 长度前缀 + 本体：两段的边界由长度给出，`rest` 一直取到末尾故不带前缀。
+fn framed(body: &[u8]) -> Vec<u8> {
+    let mut out = u32::try_from(body.len())
+        .map(|len| len.to_le_bytes().to_vec())
+        .unwrap_or_default();
+    out.extend_from_slice(body);
+    out
 }
 
 fn decode_rank(cur: &mut Cursor<'_>, (m, n): (usize, usize)) -> Result<Vec<f32>> {
     let all = cur.remaining();
     let head = rank_head(all)?;
-    let (low, rest) = rank_parts(all, &head, m, n)?;
+    let (low, rest) = rank_parts(all, &head, (m, n))?;
     Ok(low.iter().zip(&rest).map(|(a, b)| a + b).collect())
 }
 
-/// 解两段低秩分量并对质证书：与 [`decode_rank`] 的单段算术分开，`?` 预算留在门禁内。
-fn rank_parts(all: &[u8], head: &RankHead, m: usize, n: usize) -> Result<(Vec<f32>, Vec<f32>)> {
-    let (low, rest) = rank_frames(all, head.at, head.low_len)?;
+/// 解两段因子与残差、还原低秩项并对质证书：`?` 预算因此留在门禁内。
+fn rank_parts(all: &[u8], head: &RankHead, (m, n): (usize, usize)) -> Result<(Vec<f32>, Vec<f32>)> {
+    let rank = head.note.rank as usize;
     let want = area((m, n));
-    let cap = want.saturating_mul(4);
-    let low = rank_part(low, cap, want)?;
-    let rest = rank_part(rest, cap, want)?;
+    let (left, right, at) = factors_of(all, head, (m, n), rank)?;
+    let rest = rank_part(&all[at..], payload_cap(want), want)?;
+    let low = low_of(&left, &right, (m, n), rank);
     // 证书与它认证的两段对质：这一行才是「可证」——读到的载荷自己能把它重算一遍，
     // 而不是要读者相信写端曾经的声称。
     ledger::audit(&head.note, m, n, &low, &rest)?;
     Ok((low, rest))
 }
 
-/// 秩载荷的头：证书本体、`low` 段长度，以及 `low` 段在载荷内的起点。
-struct RankHead {
-    note: ledger::Note,
-    low_len: usize,
-    /// `low` 段起点（证书长度前缀与证书本体之后）。
-    at: usize,
+/// 一对因子：左因子区间由头给出，右因子紧随其后；第三个返回值是残差段起点。
+fn factors_of(
+    all: &[u8],
+    head: &RankHead,
+    (m, n): (usize, usize),
+    rank: usize,
+) -> Result<(Vec<f64>, Vec<f64>, usize)> {
+    let left = factor_part(&all[head.left.clone()], m * rank)?;
+    let mut at = head.left.end;
+    let right = factor_part(&all[sliced(all, &mut at, "rank 右因子")?], rank * n)?;
+    Ok((left, right, at))
 }
 
-/// rank 头判据：证书长度前缀、证书本体（必须恰好读完）、`low` 段长度。
+/// 因子 → 低秩项（`f32`）：与写端同一个 [`ledger::factor_low`]，读端不另算一遍。
+fn low_of(left: &[f64], right: &[f64], (m, n): (usize, usize), rank: usize) -> Vec<f32> {
+    ledger::factor_low(left, right, (m, n), rank)
+        .iter()
+        .map(|&v| v as f32)
+        .collect()
+}
+
+/// 秩载荷的头：证书本体与左因子段（右因子长度在它之后读）。
+struct RankHead {
+    note: ledger::Note,
+    /// 左因子段在载荷内的区间。
+    left: std::ops::Range<usize>,
+}
+
+/// rank 头判据：证书长度前缀、证书本体（必须恰好读完）、左因子长度。
 fn rank_head(all: &[u8]) -> Result<RankHead> {
     let mut at = 0;
-    let len = word(all, &mut at, "rank 证书长度截断")? as usize;
-    let note = rank_note(all, at, len)?;
-    at += len;
-    let low_len = word(all, &mut at, "rank 头截断")? as usize;
-    Ok(RankHead { note, low_len, at })
+    let note = sliced(all, &mut at, "rank 证书")?;
+    let left = sliced(all, &mut at, "rank 左因子")?;
+    Ok(RankHead {
+        note: rank_note(all, note.start, note.len())?,
+        left,
+    })
+}
+
+/// 读侧的长度前缀段：先读 `u32` 长度，再按它切出紧随其后的字节区间；越界一律按截断报错。
+///
+/// 秩载荷里的每段都走这一处，读端「区间越界」的算式因此只有一份；写侧对应的封装是 [`framed`]。
+fn sliced(all: &[u8], at: &mut usize, what: &str) -> Result<std::ops::Range<usize>> {
+    let len = word(all, at, what)? as usize;
+    let end = at
+        .checked_add(len)
+        .filter(|&e| e <= all.len())
+        .ok_or_else(|| {
+            bad(&format!(
+                "{what} 越界：长 {len}，余 {}",
+                all.len().saturating_sub(*at)
+            ))
+        })?;
+    let range = *at..end;
+    *at = end;
+    Ok(range)
 }
 
 /// 解证书本体：切片必须恰好是 `len` 字节，且证书解码必须恰好读完。
@@ -532,13 +582,6 @@ fn rank_note(all: &[u8], at: usize, len: usize) -> Result<ledger::Note> {
         return Err(bad("rank 证书有多余字节"));
     }
     Ok(note)
-}
-
-/// 低秩两段：`low` 由头部的长度界定，`rest` 一直取到末尾。
-fn rank_frames(all: &[u8], at: usize, low_len: usize) -> Result<(&[u8], &[u8])> {
-    all.get(at..)
-        .and_then(|tail| tail.split_at_checked(low_len))
-        .ok_or_else(|| bad("rank low 截断"))
 }
 
 /// 解一段带标记的低秩分量。
@@ -562,6 +605,25 @@ fn word(buf: &[u8], at: &mut usize, missing: &str) -> Result<u32> {
 
 fn f32_bytes(w: &[f32]) -> Vec<u8> {
     w.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// 因子的字节形式：`f64` 保留分解的原始精度，`f32` 因子会让 `Σ uσv` 舍入两次而丢掉逐位判据。
+fn f64_bytes(values: &[f64]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// 解一段带标记的因子（`f64`）。
+fn factor_part(frame: &[u8], want: usize) -> Result<Vec<f64>> {
+    let bytes = unpack_marked(frame, payload_cap(want * 2))?;
+    if bytes.len() != want * 8 {
+        return Err(bad(&format!(
+            "因子字节 {} != 期望 {}",
+            bytes.len(),
+            want * 8
+        )));
+    }
+    let (chunks, _) = bytes.as_chunks::<8>();
+    Ok(chunks.iter().map(|c| f64::from_le_bytes(*c)).collect())
 }
 
 fn bytes_to_f32(bytes: &[u8], want: usize) -> Result<Vec<f32>> {
@@ -641,8 +703,12 @@ mod tests {
 
     #[test]
     fn dict_wins_on_low_cardinality() {
-        let vals = [0.1f32, 0.3, 0.7, -0.2];
-        let w: Vec<f32> = (0..4096).map(|i| vals[i % vals.len()]).collect();
+        // 200 个互不相同、尾数随机的 f32 周期排布：同一尺度网格上量化不着、64×64 上秩轴要给
+        // 两万个字节的因子，只有字典帧（200 个数 + 每元素 1 字节）真正更小。
+        let vals: Vec<f32> = (0..200u32)
+            .map(|i| f32::from_bits(0x3f80_0000 | (i.wrapping_mul(2_654_435_761) & 0x007f_ffff)))
+            .collect();
+        let w: Vec<f32> = (0..4096).map(|i| vals[(i * 37) % 200]).collect();
         let pick = search(&w, 64, 64).expect("搜索");
         assert_eq!(pick.axis, Axis::Dict);
         assert!(pick.len() < w.len() * 4);
@@ -739,16 +805,13 @@ mod tests {
         let cert = ledger::certify(&w, 64, 64)
             .expect("认证")
             .expect("谱隙存在");
-        let low = pack_bytes(&f32_bytes(&cert.low));
+        let left = pack_bytes(&f64_bytes(&cert.left));
+        let right = pack_bytes(&f64_bytes(&cert.right));
         let rest = pack_bytes(&f32_bytes(&cert.rest));
         let framed = |note: Vec<u8>| {
-            let mut p = u32::try_from(note.len())
-                .expect("证书长度")
-                .to_le_bytes()
-                .to_vec();
-            p.extend(note);
-            p.extend_from_slice(&(low.len() as u32).to_le_bytes());
-            p.extend(low.clone());
+            let mut p = framed(&note);
+            p.extend(framed(&left));
+            p.extend(framed(&right));
             p.extend(rest.clone());
             frame(Axis::Rank, 64, 64, p).artifact
         };
@@ -782,8 +845,9 @@ mod tests {
         let cert = ledger::certify(&w, 64, 64)
             .expect("认证")
             .expect("谱隙存在");
+        // v3 布局：证书之后是一整张 `low`，它的长度前缀此刻被读成左因子长度。
         let low = pack_bytes(&f32_bytes(&cert.low));
-        let mut old = (cert.note.rank).to_le_bytes().to_vec();
+        let mut old = framed(&cert.note.to_bytes());
         old.extend_from_slice(&(low.len() as u32).to_le_bytes());
         old.extend(low);
         old.extend(pack_bytes(&f32_bytes(&cert.rest)));

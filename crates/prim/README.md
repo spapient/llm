@@ -98,7 +98,7 @@ witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
 会前置一行 `#define thread`，设备前端不经过这一行。
 
 同一件事对另外三台设备也成立：`nvidia/witness.cu` 与 `intel/witness.cl` 由 clang 的 `-x cuda` /
-`-x cl` 前端各解析一遍（`ascendc` 没有开源前端，门如实缺席）。解析器比 host `cc` 严格：`double`
+`-x cl` 前端各解析一遍（`ascendc` 由 CANN 的 `ccec -xcce` 前端解析）。解析器比 host `cc` 严格：`double`
 在没开 `cl_khr_fp64` 的 OpenCL C 里是错误，而 `cc` 照收。所以写见证时按**它自己那门语言**的
 规则写，不要只按“`cc` 能过”写。
 
