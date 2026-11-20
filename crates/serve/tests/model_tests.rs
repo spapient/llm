@@ -5,7 +5,7 @@ use crate::model_host::CpuModel;
 use crate::proto::{Decoder, Envelope, HEADER_LEN, Kind, MAX_PAYLOAD, TRAILER_LEN, Version};
 use crate::{Response, Route, Status};
 use diagnostic::Code;
-use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream};
+use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream, Trace};
 use engine::kv::{Cache, Pager};
 use engine::{Batch, Scheduler, Sequence};
 use nn::{
@@ -1044,6 +1044,36 @@ fn a_two_layer_chain_forward_matches_the_reference() {
     let params = params_of(&[("blk.0.weight", w1.to_vec()), ("blk.1.weight", w2.to_vec())]);
 
     forward_close(stack, params, &x, &reference);
+}
+
+/// 装饰器叠在执行基座上：同一个模型换 `Trace<CpuExecutor>`，前向逐位不变，提交序可审计。
+#[test]
+fn a_decorated_executor_runs_the_same_model_and_records_submissions() {
+    let x = [1.0, 2.0, 3.0];
+    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let w2 = [1.0, 1.0, 2.0, 0.0];
+    let stack = Stack::new(vec![
+        Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
+        Linear::with_format("blk.1", WeightFormat::F32, 2, 2).expect("层"),
+    ])
+    .expect("栈");
+    let params = params_of(&[("blk.0.weight", w1.to_vec()), ("blk.1.weight", w2.to_vec())]);
+
+    let mut plain = CpuModel::new(&stack, &params).expect("装配");
+    let expected = plain.forward(&x).expect("前向");
+    let mut decorated =
+        CpuModel::with_executor(&stack, &params, Trace::new(cpu())).expect("装配");
+    let produced = decorated.forward(&x).expect("前向");
+
+    assert_eq!(produced, expected, "装饰器不改执行语义");
+    assert_eq!(decorated.executor().submitted().len(), 1, "一次前向一次提交");
+    assert!(
+        decorated.executor().submitted()[0]
+            .iter()
+            .any(|name| name == "gemv_f32"),
+        "记录的是真实提交的节点名：{:?}",
+        decorated.executor().submitted()
+    );
 }
 
 /// 描述表把编号映射回条目名与声明形状；激活缓冲没有条目名，形状只记单轴长度（D10 / ADR 0044）。

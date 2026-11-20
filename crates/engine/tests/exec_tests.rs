@@ -138,6 +138,34 @@ fn local_executor_reports_bound_device() {
     assert_eq!(executor.device().arch(), "aarch64");
 }
 
+/// 装饰器叠在基座上：转发不改语义，提交序被测到，同步只排被装饰执行器的那条流。
+#[test]
+fn trace_decorates_any_executor_and_records_submissions() {
+    let inner = LocalExecutor::new(Device::new("cpu", "generic"), Box::new(CpuAllocator::new()));
+    let mut traced = Trace::new(inner);
+    traced
+        .submit(&graph(&["a", "b"]), Stream::new(0))
+        .expect("提交第一幅图");
+    traced
+        .submit(&graph(&["c"]), Stream::new(1))
+        .expect("提交第二幅图");
+
+    assert_eq!(
+        traced.submitted(),
+        [
+            vec!["a".to_owned(), "b".to_owned()],
+            vec!["c".to_owned()],
+        ],
+        "记录的是每次提交的节点名与顺序"
+    );
+    traced.sync(Stream::new(0)).expect("同步转发");
+    assert_eq!(
+        traced.inner().pending().len(),
+        1,
+        "流 1 的节点原样留在被装饰执行器里"
+    );
+}
+
 #[test]
 fn local_executor_bounds_injected_allocator() {
     let mut executor =

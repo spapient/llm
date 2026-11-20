@@ -115,6 +115,11 @@ impl<E: Executor> CpuModel<E> {
         self.assembly.output_len
     }
 
+    /// 被持有的执行器（只读）：审计与测试读它的装饰器状态，不改执行语义。
+    pub fn executor(&self) -> &E {
+        &self.executor
+    }
+
     /// 编号 ↔ 形状/条目名描述表（只读，D10 / ADR 0044）：形状事实留在装配侧，引擎不解释编号含义。
     /// 仅装配自检与测试读取；生产前向不读这张表。
     #[cfg(test)]
