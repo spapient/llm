@@ -170,6 +170,37 @@ macro_rules! dequant_packed {
         #[doc = concat!("`", $op, "` 的标记类型：位宽与零点见配置表，骨架见 `crate::dequant`。")]
         pub struct $name;
 
+        // 基座契约（ADR 0050）：转发本模块的骨架入口；粒度直接取配置表的每字节码数。
+        impl $crate::operator::Operator for $name {
+            const NAME: &'static str = $op;
+            const SHAPE: (usize, usize) = (4096, 4096);
+            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const AXES: &'static [$crate::model::AxisSpec] = self::AXES;
+            const DIFFERENTIABLE: bool = false;
+            const GROUP: u32 = $crate::quant::$row.cpb as u32;
+
+            fn shape_ctx(
+                m: usize,
+                n: usize,
+            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+                self::project_shape(m, n)
+            }
+
+            fn cost(
+                shape: &$crate::model::ShapeContext,
+            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
+                self::cost(shape)
+            }
+
+            fn sample(m: usize, n: usize) -> $crate::model::Sample {
+                self::sample(m, n)
+            }
+
+            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+                self::reference(sample)
+            }
+        }
+
         #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = $op)]
         #[doc = concat!("`", $op, "` 的语义别名。")]
         pub type $alias = $name;
@@ -353,6 +384,31 @@ pub mod dequant_i8 {
 
     /// 标记类型：承载 `#[model]` 语义。
     pub struct DequantI8;
+
+    // 基座契约（ADR 0050）：本模块自带具体入口，直接转发。
+    impl crate::operator::Operator for DequantI8 {
+        const NAME: &'static str = "dequant_i8";
+        const SHAPE: (usize, usize) = (4096, 4096);
+        const DTYPE: crate::model::DType = crate::model::DType::F32;
+        const AXES: &'static [crate::model::AxisSpec] = AXES;
+        const DIFFERENTIABLE: bool = false;
+
+        fn shape_ctx(m: usize, n: usize) -> Result<ShapeContext, diagnostic::Error> {
+            project_shape(m, n)
+        }
+
+        fn cost(shape: &ShapeContext) -> Result<Cost, diagnostic::Error> {
+            self::cost(shape)
+        }
+
+        fn sample(m: usize, n: usize) -> Sample {
+            self::sample(m, n)
+        }
+
+        fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+            self::reference(sample)
+        }
+    }
 
     /// 反量化的具体语义别名。
     #[annotation::model(name = "dequant_i8", shape = [4096, 4096], dtype = "f32", skeleton = "dequant")]

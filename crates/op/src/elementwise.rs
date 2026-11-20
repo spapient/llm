@@ -154,6 +154,36 @@ macro_rules! binary_f32 {
             } )?
         }
 
+        // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。
+        impl $crate::operator::Operator for $name {
+            const NAME: &'static str = $op;
+            const SHAPE: (usize, usize) = (4096, 4096);
+            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const AXES: &'static [$crate::model::AxisSpec] = $crate::elementwise::AXES;
+            const DIFFERENTIABLE: bool = true;
+
+            fn shape_ctx(
+                m: usize,
+                n: usize,
+            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+                $crate::elementwise::project_shape(m, n)
+            }
+
+            fn cost(
+                shape: &$crate::model::ShapeContext,
+            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
+                $crate::elementwise::cost::<Self>(shape)
+            }
+
+            fn sample(m: usize, n: usize) -> $crate::model::Sample {
+                $crate::elementwise::sample::<Self>(m, n)
+            }
+
+            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+                $crate::elementwise::reference::<Self>(sample)
+            }
+        }
+
         #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = "elementwise")]
         #[doc = concat!("`", $op, "` 的语义别名。")]
         pub type $alias = $name;

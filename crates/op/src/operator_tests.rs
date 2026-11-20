@@ -39,3 +39,30 @@ fn reduce_projection_matches_the_registered_model() {
     assert_projection_matches_registry::<crate::reduce_sum_f32::Sum>();
     assert_projection_matches_registry::<crate::reduce_max_f32::Max>();
 }
+
+#[test]
+fn unary_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::unary::exp_f32::Exp>();
+    assert_projection_matches_registry::<crate::unary::log_f32::Log>();
+    assert_projection_matches_registry::<crate::unary::gelu_f32::Gelu>();
+    assert_projection_matches_registry::<crate::unary::silu_f32::Silu>();
+    assert_projection_matches_registry::<crate::unary::scale_f32::Scale>();
+}
+
+#[test]
+fn binary_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::elementwise::add_f32::Add>();
+    assert_projection_matches_registry::<crate::elementwise::sub_f32::Sub>();
+    assert_projection_matches_registry::<crate::elementwise::mul_f32::Mul>();
+    assert_projection_matches_registry::<crate::elementwise::div_f32::Div>();
+    assert_projection_matches_registry::<crate::elementwise::max_f32::Max>();
+    assert_projection_matches_registry::<crate::elementwise::min_f32::Min>();
+    assert_projection_matches_registry::<crate::elementwise::residual_add_f32::Residual>();
+}
+
+#[test]
+fn dequant_projection_matches_the_registered_model() {
+    assert_projection_matches_registry::<crate::dequant_i2::DequantI2>();
+    assert_projection_matches_registry::<crate::dequant_i4::DequantI4>();
+    assert_projection_matches_registry::<crate::dequant_i8::DequantI8>();
+}
