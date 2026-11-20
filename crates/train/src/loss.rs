@@ -148,10 +148,80 @@ pub fn argmax_hits(logits: &[f32], labels: &[f32], vocab: usize) -> Result<(usiz
     Ok((correct, rows))
 }
 
+/// 均方误差：`mean((pred − target)²)`。
+///
+/// # Errors
+///
+/// 两缓冲等长且非空，否则返回 [`Code::Invalid`]。
+pub fn mse(pred: &[f32], target: &[f32]) -> Result<f32> {
+    if pred.len() != target.len() || pred.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("mse: 形状不一致 {} vs {}", pred.len(), target.len()),
+        ));
+    }
+    let sum: f64 = pred
+        .iter()
+        .zip(target.iter())
+        .map(|(p, t)| {
+            let d = (p - t) as f64;
+            d * d
+        })
+        .sum();
+    Ok((sum / pred.len() as f64) as f32)
+}
+
+/// 二分类交叉熵（带 logits 的数值稳定式）。
+///
+/// 逐元素 `max(x,0) − x·y + ln(1+exp(−|x|))`：`x` 为 logit，`y ∈ {0,1}`。
+/// 直接对概率取 log 会在 `softmax` 饱和处溢出，这里不先过 sigmoid。
+///
+/// # Errors
+///
+/// 两缓冲等长且非空，否则返回 [`Code::Invalid`]。
+pub fn bce_with_logits(logits: &[f32], target: &[f32]) -> Result<f32> {
+    if logits.len() != target.len() || logits.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("bce: 形状不一致 {} vs {}", logits.len(), target.len()),
+        ));
+    }
+    let sum: f64 = logits
+        .iter()
+        .zip(target.iter())
+        .map(|(x, y)| {
+            let x = *x as f64;
+            let y = *y as f64;
+            x.max(0.0) - x * y + (1.0 + (-x.abs()).exp()).ln()
+        })
+        .sum();
+    Ok((sum / logits.len() as f64) as f32)
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{argmax_hits, cross_entropy};
+    use crate::{argmax_hits, bce_with_logits, cross_entropy, mse};
     use diagnostic::{Code, Result};
+
+    #[test]
+    fn mse_is_zero_for_identical_buffers() -> Result<()> {
+        let a = [1.0f32, -2.0, 3.5];
+        assert!(mse(&a, &a)? == 0.0);
+        let b = [1.0f32, -2.0, 4.5];
+        assert!((mse(&a, &b)? - 1.0 / 3.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn bce_is_stable_at_saturation() -> Result<()> {
+        // logit 100 且标签 1：损失应趋 0；标签 0 时应趋 100，且不出现 NaN/Inf。
+        let logits = [100.0f32];
+        assert!(bce_with_logits(&logits, &[1.0])? < 1e-6);
+        assert!((bce_with_logits(&logits, &[0.0])? - 100.0).abs() < 1e-3);
+        // 对称点：logit 0 与任意标签都应得到 ln2。
+        assert!((bce_with_logits(&[0.0], &[1.0])? - 0.693_147_2).abs() < 1e-5);
+        Ok(())
+    }
 
     /// 对齐类别的 NLL 应趋近 0：logits 把类别 1 顶到 10，softmax(1)≈1。
     #[test]
@@ -477,4 +547,5 @@ pub mod objective {
             ));
         }
     }
+
 }

@@ -65,7 +65,7 @@ pub use checkpoint::{Checkpoint, Step, operators, resume};
 pub use dist::{Distributed, Local, Remote};
 pub use distill::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
 pub use learner::{ForwardOut, Learner, Metric};
-pub use loss::{argmax_hits, cross_entropy};
+pub use loss::{argmax_hits, bce_with_logits, cross_entropy, mse};
 pub use metrics::{MetricPoint, MetricsBoard};
 pub use objective::{Loss, Outcome};
 pub use offload::{DeferredOffload, WeightOffload};
