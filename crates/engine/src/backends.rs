@@ -387,7 +387,7 @@ fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<Readback> 
 }
 
 /// 见证驱动的 host 侧文本：把 `metallib` 里的 `cutile_witness` 发射到 GPU 并回读；缓冲宽度由
-/// [`MAX_OUT`] 注入。供测试与 [`metal_driver_exe_from`] 共用，不重复写驱动文本。
+/// [`MAX_OUT`] 注入。供测试与 `metal_driver_exe_from` 共用，不重复写驱动文本。
 pub fn metal_driver(max: usize) -> String {
     format!("#define WITNESS_MAX_OUT {max}\n{METAL_DRIVER}")
 }

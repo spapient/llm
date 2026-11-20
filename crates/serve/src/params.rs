@@ -162,7 +162,7 @@ impl Params {
     }
 
     /// 按层栈与权重头部，经拷贝后端（`File`）把条目解码进驻留表；量化权重装成
-    /// [`Block::Packed`] + 标度条目，非 F32 稠密条目不填块，留给装配期按格式拒绝。
+    /// `Block::Packed` + 标度条目，非 F32 稠密条目不填块，留给装配期按格式拒绝。
     pub fn from_stack(stack: &Stack, header: &Header, loader: &impl Loader) -> Result<Self> {
         Self::assemble(stack, header, &LoaderSource(loader))
     }

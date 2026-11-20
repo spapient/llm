@@ -560,7 +560,6 @@ impl Cache {
 /// 满块前缀树（实现见 [`crate::radix`]）：页池只记「谁在看」，树记「哪段前缀对应哪一页」。
 pub use crate::radix::Radix;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -888,5 +887,4 @@ mod tests {
             "两段各写各的，读回时拼成一行"
         );
     }
-
 }

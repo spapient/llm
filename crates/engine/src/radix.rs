@@ -11,7 +11,6 @@ use diagnostic::{Code, Error, Result};
 
 use crate::kv::{Page, Pager};
 
-
 /// 满块前缀树：token 块 → 那一页的 KV，跨请求复用。
 ///
 /// 此前前缀复用只有[批内线性扫描](crate::Batch)：源序列一结束、页一归还，就再没有第二个请求

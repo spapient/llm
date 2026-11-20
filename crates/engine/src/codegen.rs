@@ -1,7 +1,7 @@
 //! 生产态设备 codegen 方言与后端无关的 lowering 原语。
 //!
-//! 后端差异收进 [`Wrap`] 方言表——同一条 kernel body 只拼一次、只换语法；Metal / CUDA 的 lowering
-//! （[`metal`] / [`cuda`]）只从这里取方言，不各自持有语法差异。骨架分派留在 `cutile` 的机制层，
+//! 后端差异收进 `Wrap` 方言表——同一条 kernel body 只拼一次、只换语法；`metal` / `cuda` 两条
+//! lowering 只从这里取方言，不各自持有语法差异。骨架分派留在 `cutile` 的机制层，
 //! 它把算子降成中性的 [`cutile::backend::Lower`] 描述，经 [`cutile::backend::Codegen::lower`] 缝交给
 //! 这里落地成 MSL / CUDA——机制层不出现厂商字面量（L3 契约），vendor 语法只在此处（L6）。
 //!
@@ -296,7 +296,7 @@ pub fn metal_harness(
     Ok((msl, metal_driver(signature, sample, output)?))
 }
 
-/// 生产态 Metal 逐点网格内核（[`grid_kernel`] 的 Metal 方言）。
+/// 生产态 Metal 逐点网格内核（`grid_kernel` 的 Metal 方言）。
 pub fn metal_grid_kernel(kernel_source: &str, signature: &Signature) -> Result<String> {
     grid_kernel(kernel_source, signature, &METAL)
 }
@@ -361,7 +361,7 @@ fn injected_kernel(
     tid_kernel_main(&body, signature, sample)
 }
 
-/// 生产态 Metal 分块归约内核（[`chunk_reduce`] 的 Metal 方言）。
+/// 生产态 Metal 分块归约内核（`chunk_reduce` 的 Metal 方言）。
 pub fn metal_chunk_reduce(
     kernel_source: &str,
     signature: &Signature,
@@ -874,12 +874,12 @@ fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: us
     text
 }
 
-/// 生产态 CUDA 逐点网格内核（[`grid_kernel`] 的 CUDA 方言）。
+/// 生产态 CUDA 逐点网格内核（`grid_kernel` 的 CUDA 方言）。
 pub fn cuda_grid_kernel(kernel_source: &str, signature: &Signature) -> Result<String> {
     grid_kernel(kernel_source, signature, &CUDA)
 }
 
-/// 生产态 CUDA 分块归约内核（[`chunk_reduce`] 的 CUDA 方言）。
+/// 生产态 CUDA 分块归约内核（`chunk_reduce` 的 CUDA 方言）。
 pub fn cuda_chunk_reduce(
     kernel_source: &str,
     signature: &Signature,

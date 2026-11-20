@@ -51,16 +51,7 @@ impl Verdict {
 ///
 /// 草稿为空（投机至少猜一个）、行数与草稿不一致、或某一行 logits 不可用（空 / NaN / 无穷）。
 pub fn accept(draft: &[u32], rows: &[Vec<f32>]) -> Result<Verdict> {
-    if draft.is_empty() {
-        return Err(bad("草稿为空：每次投机至少猜一个 token".to_owned()));
-    }
-    if rows.len() != draft.len() {
-        return Err(bad(format!(
-            "校验行数 {} 与草稿长度 {} 不一致：位置对不上就判不了接受",
-            rows.len(),
-            draft.len()
-        )));
-    }
+    agree(draft, rows)?;
     for (position, (&guess, row)) in draft.iter().zip(rows).enumerate() {
         let target = crate::generate::best(row)?;
         if target != guess {
@@ -74,6 +65,21 @@ pub fn accept(draft: &[u32], rows: &[Vec<f32>]) -> Result<Verdict> {
         accepted: draft.len(),
         fallback: None,
     })
+}
+
+/// 草稿与校验行必须一一对上：位置错了就判不了「第几个被接受」。
+fn agree(draft: &[u32], rows: &[Vec<f32>]) -> Result<()> {
+    if draft.is_empty() {
+        return Err(bad("草稿为空：每次投机至少猜一个 token".to_owned()));
+    }
+    if rows.len() != draft.len() {
+        return Err(bad(format!(
+            "校验行数 {} 与草稿长度 {} 不一致：位置对不上就判不了接受",
+            rows.len(),
+            draft.len()
+        )));
+    }
+    Ok(())
 }
 
 fn bad(message: String) -> Error {

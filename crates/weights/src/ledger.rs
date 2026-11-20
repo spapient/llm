@@ -112,13 +112,7 @@ fn decompose(w: &[f32], m: usize, n: usize, k: usize) -> Result<Option<Certified
 }
 
 /// 受认证秩处的产物与自证证书：低秩项、显式残差、逐位往返与 [`Note`] 都出自同一次分解。
-fn assemble(
-    w: &[f32],
-    a: &[f64],
-    d: &svd::Svd,
-    rank: usize,
-    eps: f64,
-) -> Result<Certified> {
+fn assemble(w: &[f32], a: &[f64], d: &svd::Svd, rank: usize, eps: f64) -> Result<Certified> {
     let low64 = d.reconstruct(rank);
     let low: Vec<f32> = low64.iter().map(|&l| l as f32).collect();
     let rest: Vec<f32> = a

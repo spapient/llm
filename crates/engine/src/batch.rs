@@ -218,7 +218,7 @@ impl Batch {
     /// 登记却按 [`Sequence::prefilled`] 而不是按写到的行——写提前一格（第 `at` 步写第
     /// `at + 1` 行），登记若跟着写走就会把还没算的块当成算好的。
     ///
-    /// `to` 不超过提示长度、也不倒退，由 [`Sequence::prefill_to`] 校验。
+    /// `to` 不超过提示长度、也不倒退，由 `Sequence::prefill_to` 校验。
     ///
     /// # Errors
     ///

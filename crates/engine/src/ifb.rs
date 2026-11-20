@@ -155,27 +155,38 @@ pub fn pack(budget: Budget, candidates: &[Candidate]) -> Verdict {
     let mut ordered = candidates.to_vec();
     // 生成优先：`Phase` 的 `Ord` 就是这条次序，稳定排序保留同相位的输入序。
     ordered.sort_by_key(|candidate| candidate.phase);
-    let generation: usize = ordered
-        .iter()
-        .filter(|candidate| candidate.phase == Phase::Generation)
-        .map(Candidate::rows)
-        .sum();
+    let generation = generation_rows(&ordered);
     if generation > budget.tokens {
         return Verdict::OverTokens {
             tokens: generation,
             max: budget.tokens,
         };
     }
+    let (rows, tokens) = fill(ordered, budget.tokens);
+    Verdict::Packed { rows, tokens }
+}
+
+/// 生成行的合计：只有它们进 `OverTokens` 判定——上下文行超预算能从下一轮补，生成行不能。
+fn generation_rows(ordered: &[Candidate]) -> usize {
+    ordered
+        .iter()
+        .filter(|candidate| candidate.phase == Phase::Generation)
+        .map(Candidate::rows)
+        .sum()
+}
+
+/// 按已排好的次序装箱：整行进或不进，不切割、不留 padding；返回选中的行与实占 token。
+fn fill(ordered: Vec<Candidate>, tokens_max: usize) -> (Vec<Candidate>, usize) {
     let mut rows = Vec::with_capacity(ordered.len());
     let mut tokens = 0;
     for candidate in ordered {
         let next = tokens + candidate.rows;
-        if next <= budget.tokens {
+        if next <= tokens_max {
             tokens = next;
             rows.push(candidate);
         }
     }
-    Verdict::Packed { rows, tokens }
+    (rows, tokens)
 }
 
 /// 本轮上下文能推进几行：除末块外 `C ≡ 0 (mod page_size)`。

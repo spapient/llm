@@ -167,6 +167,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 标的是 `type 名字 = <具体格式>`，生成 `MODEL`（`cost` / `sample` / `reference` 都是 `<名字 as Format>` 的单态化实例、`group` 取 `Format::GRAIN`）与"生产形状是粒度整数倍"的 `const` 断言，于是注解与泛型 bound 强绑定：别名不实现 `Format` 就编译不过。语言身份不走注解：设备执行是 `cutile` 的 `const SPECS` 描述符表按 `Emit` 登记探测、程序生成、执行回读三个函数指针，新增设备 = 表里加一行；语法门 `const GATES` 表行只带工具名与语法检查参数，"见证必须在它自己声称的语言里编得过"做成第三种结论——它不执行任何一行、不改等级，但被拒绝就是证据缺陷 |
 | `Case` / `Baseline` / `Judgement` | `tool` | 回退判定（`tool::regress`）；不做测量（测量集中在工具成员 `benches`）。名字刻意避开 `Verdict`，见下节第三条 |
 | `EntryKind` / `Harness` / `Roofline` / `Geometry` / `BenchRecord` | `tool` | 统一基准记录结构（`tool::bench`）：`EntryKind` 是条目层级闭集（算子 / 层 / 整模型），`Harness` 是硬件与工具链身份，`Roofline` 是峰值带宽 / 算力上界，`Geometry` 是形状 / 批次 / 精度三元几何，`BenchRecord` 是一条基准记录（身份 + 几何 + 后端 + roofline + 可选实测）。只持有记录、不测量不写性能结论；实测值由调用方跑完后填入，基线是否登记由 `regress` 判定，未测得的峰值留 `None` 不预填 |
+| `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tool` | 实测卡三态判定（`tool::card`）：`Protocol` 是协议卡本身（判哪个量、怎么聚、门槛、样本下限、主机闭集），`Statistic` 是聚合方式闭集（均值 / 变异系数），`Tally` 是一列样本的摘要（计数 / 中心与离散 / 三个分位 / **统计量自己**的重采样区间——区间必须与统计量同坐标，否则「判这个量过不过门」会用另一个量的分位来回答），`Standing` 是 `pass` / `fail` / `open` 三态，`Shortfall` 是 OPEN 的四种理由（主机不在闭集 / 样本不够 / 统计量无定义 / 区间跨门槛），`Card` 把协议、装置身份、摘要与结论收在一处并能落成 JSON。判定次序有意的：装置闭集 → 样本量 → 统计量定义 → 区间与门槛的关系，闭集排在最前是因为闭集外机器上的数样本再多也不是这份协议的证据。与 `regress::Judgement` 分工：那个判「与基线相比回退了没有」（相对），这个判「这一格成立了没有」（绝对门槛）；三态名刻意用 `Standing` 而不是 `Verdict`，理由同上节第三条。**不拥有**样本本身与时钟来源：预热、稳态窗口由 `benches` 决定 |
 
 三个容易混淆、但**不是重复**的东西：
 
@@ -185,6 +186,10 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
   与 `tool::regress::Judgement`（基准回退判定：`pass` / `regressed` / `improved`）**不是同一件事**：
   前者判定“这次测量能不能与档案峰值比较”，后者判定“与基线相比是否回退”。两者会同时出现在
   一份 CI 报告里，所以名字必须不同——`tool::regress` 里的类型因此叫 `Judgement`。
+- `tool::card::Standing`（实测卡三态：`pass` / `fail` / `open`）与 `cutile::bench::Verdict`（达成率四态）、`tool::regress::Judgement`（回退三态）**不是同一件事**：
+  三者依次回答「这一格成立了没有」「这次测量能不能与档案峰值比较」「与基线相比回退了没有」。
+  `open` 还带一条 `Shortfall`（主机不在闭集 / 样本不够 / 统计量无定义 / 区间跨门槛），
+  因为 `lld` 的规则 0.3 钉死了 **OPEN ≠ 降 Must**——把「没测出来」写成 PASS 或 FAIL 都会让下一轮拿不到该补的那一格。
 
 ### 运行时实现新增的类型
 

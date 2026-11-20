@@ -713,7 +713,8 @@ mod tests {
     /// 与"页不够"同口径。把满批判成请求非法，会让客户端在容量压力下永久放弃本可成功的请求。
     #[test]
     fn a_full_batch_turns_new_requests_away_until_one_finishes() {
-        let endpoint = endpoint(Fixed(vec![1.0]), Greedy, 8).with_budget(engine::ifb::Budget::new(1, 32));
+        let endpoint =
+            endpoint(Fixed(vec![1.0]), Greedy, 8).with_budget(engine::ifb::Budget::new(1, 32));
         // 占住唯一的位置：手工准入一条，让批恒满（`call` 自己会跑完并归还，留不下驻留序列）。
         let sequence = Sequence::new(9, &[1, 2], 2, 4, Stream::new(0)).expect("序列");
         endpoint

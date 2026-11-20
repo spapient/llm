@@ -71,9 +71,9 @@ pub mod codegen;
 pub mod exec;
 pub mod ifb;
 pub mod kv;
-pub mod radix;
 #[cfg(target_os = "macos")]
 pub mod metal;
+pub mod radix;
 
 pub use batch::{Admission, Batch, SequenceOutcome};
 pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};
@@ -477,7 +477,12 @@ impl Scheduler {
     ) -> Result<crate::kv::Table> {
         let mut table = crate::kv::Table::new(needed)?;
         self.link_prefix(&mut table, prefix)?;
-        Self::fill(&mut self.pager, &mut table, fresh, "engine::Scheduler::admit")?;
+        Self::fill(
+            &mut self.pager,
+            &mut table,
+            fresh,
+            "engine::Scheduler::admit",
+        )?;
         Ok(table)
     }
 

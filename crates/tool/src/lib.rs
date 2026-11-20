@@ -2,7 +2,7 @@
 //!
 //! **拥有**：词法分析（[`lex`]）、圈复杂度与函数长度（[`ccn`]）、文件行数（[`dup`]）、
 //! 禁止调用形态（[`call`]）、文档漂移（[`docs`]）、测试代码剔除（[`strip`]）、质量门阈值（[`gate`]）、
-//! 回退判定（[`regress`]）、统一基准记录（[`mod@bench`]）、人可读排版（[`Report`]）。
+//! 回退判定（[`regress`]）、统一基准记录（[`mod@bench`]）、实测卡三态判定（[`card`]）、人可读排版（[`Report`]）。
 //! **不拥有**：任何运行时领域数据类型、退出码（由调用方映射）。
 //! **依赖**：`diagnostic`（错误契约与数据树）。
 //!
@@ -17,6 +17,7 @@
 
 pub mod bench;
 pub mod bench_json;
+pub mod card;
 pub mod ccn;
 pub mod gate;
 pub mod lex;

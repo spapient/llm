@@ -7,6 +7,54 @@
 
 ### Added
 
+- **实测卡：`lld` §10.10 的协议卡落成三态判定，真实 decode 采样第一次判出结论（`lld.md` 第四步）**。
+  `tool::card` 新增 `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card`：一份协议卡收
+  「判哪个量 + 怎么聚 + 门槛与方向 + 样本下限 + 主机闭集」，`Card::judge` 把一列样本聚成摘要再落成
+  `pass` / `fail` / `open` 三态。口径三条：区间是对**统计量**（均值 / 变异系数）重采样得到的 95% 区间，
+  不是对样本取分位——要判的是「这个统计量过不过门」，区间必须与统计量同坐标；`open` 必带理由
+  （`host` / `samples` / `degenerate` / `straddle`），因为 `lld` 规则 0.3 写死 **OPEN ≠ 降 Must**，
+  把「没测出来」写成 PASS 或 FAIL 都会让下一轮拿不到该补的那一格；判定次序是装置闭集 → 样本量 →
+  统计量定义 → 区间与门槛的关系（闭集外机器上的数样本再多也不是这份协议的证据）。重采样种子固定，
+  同一列样本只得到一份卡，复核可逐位对拍；样本里混进非有限数报 `Invalid` 而不是静默跳过——那是采集坏了，
+  不是「这一格没测出来」。
+  `crates/benches/tests/cards.rs` 用合成栈真跑 32 步 decode（4 步热身不计入）取每步墙钟，按 `lld` E10
+  判「变异系数 95% 区间上界 < 5%」并归档到 `target/bench-report/<host>/card-E10.json`。
+  **实测**（归档 `target/bench-report/macos-aarch64/card-E10.json`）：`macos-aarch64` 上这条合成栈
+  （2 层、`d = 8`）一步 decode 的 32 个窗口是均值 **9410 ns**、`σ = 1781 ns`、**变异系数 0.189**，
+  95% 区间 **[0.097, 0.267]**，整段高于门槛 0.05 → 结论 **`fail`**；同一份协议早一轮跑出的是
+  `open (straddle)`（点估计落在门槛附近、区间跨着 5%）。两份结论都按规则给，测试不断言判成哪个——
+  这台机器当时的抖动是**测量结果**，不是用例前提；卡片的价值正在于它既不会把 19% 的抖动写成 PASS，
+  也不会把「差一点」写成 FAIL。注意这条数探的是**本机噪声底**（合成小栈的绝对 ns 不代表模型），
+  `lld` E10 的 Must 仍要看预注册目标装置上的那组窗口。
+  `cargo test -p llm-tool` **71 条**（`card` 新增 14 条：样本不足 / 闭集外 / 稳定列 PASS / 抖动列 FAIL /
+  区间跨门槛 / 变异系数无定义 / 非有限样本拒绝 / 构造器三处校验 / 命名稳定 / JSON 形状与转义 /
+  同列样本摘要只算一次），`cargo test -p llm-benches --test cards` **3 条**（真实采样归档、
+  同列样本换门槛分别 PASS 与 FAIL、差一个窗口与闭集外都是 OPEN）。设备侧本步无新增：`engine::backends`
+  的子进程 Metal/CUDA 与 `engine::metal` 的进程内执行器在 HEAD 已能出达成率与回退判定，这一步补的是
+  「测出来的数怎么被判成三态」。E1–E15 仍无实测数：卡片只把「有一列样本」变成「一条可复核结论」，
+  不会凭空造数。
+
+- **服务三轴收口：一轮的可行域（IFB 三约束）落成独立模型，投机接受判定与贪心共用同一处 argmax（`lld.md` 第三步）**。
+  `engine::ifb` 新增 `Budget` / `Phase` / `Candidate` / `Verdict` 与唯一算式 `pack` / `chunk`：`B ≤ B_max` 与
+  `Σ T_i ≤ T_max` 在这一层判，第三条 `N_need ≤ N_free` 仍由页账给——`Scheduler::admit` 回答"这条序列这辈子跑不跑得完"，
+  `pack` 回答"**这一轮**塞得下几行"，把两者混成一个错误就会让"这轮挤不下"退回客户端，而它下一轮会自动好。
+  口径钉三条：packed 无 padding（一行的 token 数只由它自己决定，补位要算进 `T_max`）、生成优先上下文在后
+  （上下文行可整体推到下一轮，已生成 token 回不去）、`OverSeqs` 与 `OverTokens` 分开（前者是"批满了"、后者是
+  "生成行本身超预算，重试没用"）。分块预填充的对齐也收到这一层：`ifb::chunk` 是唯一算式
+  （除末块外 `C ≡ 0 (mod P)`），端点不再自己 `min` 一次；`Completion` 因此多了 `with_budget`，且 `B_max` 撞上
+  走 503（与"页不够"同口径，可重试）而不是 400。
+  `serve::speculate` 新增 `Verdict` / `accept`：草稿一次猜 `K` 个 token，目标模型按同一批位置出分布取最长一致前缀，
+  第一个不一致的位置由目标模型补一个——接受数只影响这一步走了多远，不影响序列是不是目标模型的序列；argmax 与
+  `Greedy` 同源（共用 `generate::best`），草稿与校验不会各按一套判。本层只判"接受几个"、不写 KV：
+  "接受了 3 个却写了 4 行"这类错因此没有从这一层漏出的路径。
+  **实测**：`cargo test -p llm-serve` **173 条 + 3 doctest 全绿**（`speculate` 新增 5 条：全接受、首位不一致即回退、
+  中途不一致只留一致前缀、长度不一致报 `Invalid`、不可用 logits 报错；`ifb` 新增 7 条：生成先于上下文、紧预算只挤上下文、
+  序列上限、生成行超预算不是挤压、空候选、整页对齐与末块不补齐、零预算不读成不限）；`cargo test -p llm-testkit
+  --test architecture` 8/8（所有权表新增 `Budget`/`Candidate`/`Phase`/`Verdict`、`Verdict`/`accept` 两行）。
+  服务三轴现状：radix（`kv::Radix` 满块前缀树 + 跨请求页复用）与前缀页账已在 HEAD；chunked prefill 由 `ifb::chunk`
+  给对齐、`advance_prompt` 逐块推进；投机只到"接受判定"这一层，草稿模型本身仍缺（EAGLE-3/MTP 未实现），
+  因此 E3 ≥ 12× 依旧无实测数。
+
 - **分块预填充把提示段算进页账，前缀页跨请求复用（`lld.md` 第三步：服务侧 radix + chunked prefill）**。
   此前解码只算当前位置、历史从页里读，提示段的 K/V 永远停在零填充——长提示与短提示的解码看到的历史
   其实一样多。现在 `Predict::prefill` 逐位把提示段算进它该在的行，`Serve` 端点在准入后按
