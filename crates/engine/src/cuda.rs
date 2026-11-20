@@ -13,7 +13,7 @@
 
 use diagnostic::{Code, Error, Result};
 use op::decl::Grid;
-use op::model::Sample;
+use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
 use cutile::harness::{c_literal, c_type, output_name, output_of};

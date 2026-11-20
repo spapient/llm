@@ -1373,19 +1373,20 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
 
     let lr = config().learning_rate;
     let positions = (n * spatial) as f32;
-    let mut last = 0.0f32;
-    for t in 1..=100u32 {
+    let mut last = f32::INFINITY;
+    for t in 0..100u32 {
         session.buffers().load(x, Data::F32(feed.clone()))?;
         session.buffers().compute_shaped("batch_norm_f32", &[x, gamma, beta], y, geom)?;
         session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+        // 前向值反映的是本轮优化前的参数：`t` 次更新后必为解析式那一点。
+        let now = session.record_loss(loss)?;
+        let expected = -(channels as f32) * t as f32 * lr * positions * positions;
+        assert!(now < last, "第 {t} 步损失没有下降：{last} → {now}");
+        assert!((now - expected).abs() <= 2e-3, "第 {t} 步损失 {now}，解析式 {expected}");
+        last = now;
         session.backward()?;
         session.optimize()?;
-        let now = session.record_loss(loss)?;
-        assert!(now < last, "第 {t} 步损失没有下降：{last} → {now}");
-        last = now;
     }
-    let expected = -(channels as f32) * 100.0 * lr * positions * positions;
-    assert!((last - expected).abs() <= 5e-3, "100 步损失 {last}，解析式 {expected}");
     let mut shift = session.slots()[1].params().to_vec();
     shift.iter_mut().for_each(|b| *b += 100.0 * lr * positions);
     assert!(shift.iter().all(|b| b.abs() <= 5e-4), "偏置偏离解析式：{shift:?}");
