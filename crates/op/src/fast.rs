@@ -64,7 +64,18 @@ fn compute(
 ) {
     let full = rows / MR;
     let apack = pack_panels(a, full, k);
-    sweep_columns(a, &apack, bpack, b, out, full, n, k);
+    sweep_columns(
+        Sweep {
+            a,
+            apack: &apack,
+            bpack,
+            b,
+            full,
+            n,
+            k,
+        },
+        out,
+    );
     let tail = full * MR;
     if tail < rows {
         edge(
@@ -150,16 +161,16 @@ fn pack_b_f32_span(chunk: &mut [f32], b: &[f32], n: usize, k: usize, blk0: usize
 }
 
 /// 沿列块扫描整行块：整块走微内核，最后一段残列走标量边（`edge` 读未打包的 `a`）。
-fn sweep_columns(
-    a: &[f32],
-    apack: &[f32],
-    bpack: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    full: usize,
-    n: usize,
-    k: usize,
-) {
+fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32]) {
+    let Sweep {
+        a,
+        apack,
+        bpack,
+        b,
+        full,
+        n,
+        k,
+    } = sweep;
     let mut j = 0;
     while j < n {
         let nr = NR.min(n - j);
@@ -187,6 +198,18 @@ fn sweep_columns(
     }
 }
 
+/// 一次整行块扫描的只读侧：指针、面板与三个尺寸一次带走（实参不散成一长串）。
+#[derive(Clone, Copy)]
+struct Sweep<'a> {
+    a: &'a [f32],
+    apack: &'a [f32],
+    bpack: &'a [f32],
+    b: &'a [f32],
+    full: usize,
+    n: usize,
+    k: usize,
+}
+
 /// 打包面板上的 NEON 8×8 微内核（A 面板 `[p][8]`、B 面板 `[p][8]`，一次算 8 行 8 列）。
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
@@ -210,30 +233,23 @@ fn micro_packed(
             let av1 = vld1q_f32(pp.add(p * MR + 4));
             let bv0 = vld1q_f32(bp.add(p * NR));
             let bv1 = vld1q_f32(bp.add(p * NR + 4));
-            let s0 = vdupq_laneq_f32::<0>(av0);
-            acc[0] = vfmaq_f32(acc[0], s0, bv0);
-            acc[1] = vfmaq_f32(acc[1], s0, bv1);
-            let s1 = vdupq_laneq_f32::<1>(av0);
-            acc[2] = vfmaq_f32(acc[2], s1, bv0);
-            acc[3] = vfmaq_f32(acc[3], s1, bv1);
-            let s2 = vdupq_laneq_f32::<2>(av0);
-            acc[4] = vfmaq_f32(acc[4], s2, bv0);
-            acc[5] = vfmaq_f32(acc[5], s2, bv1);
-            let s3 = vdupq_laneq_f32::<3>(av0);
-            acc[6] = vfmaq_f32(acc[6], s3, bv0);
-            acc[7] = vfmaq_f32(acc[7], s3, bv1);
-            let s4 = vdupq_laneq_f32::<0>(av1);
-            acc[8] = vfmaq_f32(acc[8], s4, bv0);
-            acc[9] = vfmaq_f32(acc[9], s4, bv1);
-            let s5 = vdupq_laneq_f32::<1>(av1);
-            acc[10] = vfmaq_f32(acc[10], s5, bv0);
-            acc[11] = vfmaq_f32(acc[11], s5, bv1);
-            let s6 = vdupq_laneq_f32::<2>(av1);
-            acc[12] = vfmaq_f32(acc[12], s6, bv0);
-            acc[13] = vfmaq_f32(acc[13], s6, bv1);
-            let s7 = vdupq_laneq_f32::<3>(av1);
-            acc[14] = vfmaq_f32(acc[14], s7, bv0);
-            acc[15] = vfmaq_f32(acc[15], s7, bv1);
+            // lane-indexed FMA 把广播并进乘加：每条 `p` 从 24 条指令降到 20 条（省 8 条 dup）。
+            acc[0] = vfmaq_laneq_f32::<0>(acc[0], bv0, av0);
+            acc[1] = vfmaq_laneq_f32::<0>(acc[1], bv1, av0);
+            acc[2] = vfmaq_laneq_f32::<1>(acc[2], bv0, av0);
+            acc[3] = vfmaq_laneq_f32::<1>(acc[3], bv1, av0);
+            acc[4] = vfmaq_laneq_f32::<2>(acc[4], bv0, av0);
+            acc[5] = vfmaq_laneq_f32::<2>(acc[5], bv1, av0);
+            acc[6] = vfmaq_laneq_f32::<3>(acc[6], bv0, av0);
+            acc[7] = vfmaq_laneq_f32::<3>(acc[7], bv1, av0);
+            acc[8] = vfmaq_laneq_f32::<0>(acc[8], bv0, av1);
+            acc[9] = vfmaq_laneq_f32::<0>(acc[9], bv1, av1);
+            acc[10] = vfmaq_laneq_f32::<1>(acc[10], bv0, av1);
+            acc[11] = vfmaq_laneq_f32::<1>(acc[11], bv1, av1);
+            acc[12] = vfmaq_laneq_f32::<2>(acc[12], bv0, av1);
+            acc[13] = vfmaq_laneq_f32::<2>(acc[13], bv1, av1);
+            acc[14] = vfmaq_laneq_f32::<3>(acc[14], bv0, av1);
+            acc[15] = vfmaq_laneq_f32::<3>(acc[15], bv1, av1);
         }
         let op = out.as_mut_ptr();
         let r = row0;
