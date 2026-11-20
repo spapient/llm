@@ -1130,6 +1130,25 @@ fn metal_tensor_gemm() {
                 let got = read_back(y_buf.as_mut_bytes());
                 let aq: Vec<f32> = a.iter().copied().map(half_precision).collect();
                 let bq: Vec<f32> = b.iter().copied().map(half_precision).collect();
+                let worst = got
+                    .iter()
+                    .zip(&reference)
+                    .enumerate()
+                    .max_by(|x, y| {
+                        (x.1 .0 - x.1 .1).abs().total_cmp(&(y.1 .0 - y.1 .1).abs())
+                    })
+                    .expect("非空");
+                let bad = got.iter().filter(|v| !v.abs().lt(&1e3)).count();
+                eprintln!(
+                    "最坏 idx={} → (行 {}, 列 {}) got={} ref={}；|got|≥1e3 的元素 {} / {}",
+                    worst.0,
+                    worst.0 / n,
+                    worst.0 % n,
+                    worst.1 .0,
+                    worst.1 .1,
+                    bad,
+                    got.len()
+                );
                 for kk in [1usize, 16, 32, 96, 192, 512] {
                     let bs: Vec<f32> =
                         (0..kk).flat_map(|p| bq[p * n..(p + 1) * n].iter().copied()).collect();
