@@ -9,16 +9,16 @@
 //! 几何是声明档常量（窗口 2×2、3×3、4×4→2×2、2×2→4×4 等），内核模板按该档几何写；层侧的
 //! 实际几何由 `op::conv` / `op::norm` 在计算时决定，两者不共享这份常量。
 //!
-//! 这些算子当前标 `differentiable = false`：`train` 的反向公式目录里还没有池化/插值的梯度，
-//! 标 true 会立刻撞上"可微算子必须有反向公式"的编译期断言。
+//! 这些算子都标 `differentiable = true`：`train` 的反向公式目录（`train::backprop`）已为池化 /
+//! 插值 / 归一化 / 二维卷积补齐梯度，与 `classic_op!` 传给 [`crate::operator_here`] 的 `true` 一致。
 //!
 //! 精度轴：每个窗口/归一化模块的 `run` 是 `<S: Scalar>` 泛型，四种精度（f32/f64/f16/bf16）
 //! 共用同一条算术；公开的 `forward`/`reference` 仍以 f32 挂在算子注册表上（`DTYPE` 与参考缓冲
 //! 都是 f32）。二维卷积暂不泛型：它下沉到 im2col + GEMM 的 f32/i8 路径，f16/bf16 无对应 GEMM。
 
+use crate::Scalar;
 use crate::conv::ConvGeom;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
-use crate::Scalar;
 use crate::unary::{AXES, project_shape};
 use diagnostic::Error;
 
@@ -843,7 +843,10 @@ mod tests {
     fn norm_run_is_precision_consistent() {
         norm_precisions!(batch_norm, batch_norm::N * batch_norm::S * batch_norm::C);
         norm_precisions!(group_norm, group_norm::N * group_norm::S * group_norm::C);
-        norm_precisions!(instance_norm, instance_norm::N * instance_norm::S * instance_norm::C);
+        norm_precisions!(
+            instance_norm,
+            instance_norm::N * instance_norm::S * instance_norm::C
+        );
         norm_precisions!(layer_norm, layer_norm::R * layer_norm::W);
     }
 }
