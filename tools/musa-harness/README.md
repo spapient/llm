@@ -55,3 +55,40 @@ fmaf、多 tile。硬件边界:S4000(mp_22)**无 cp.async**(SINCE_MP_43);5.2 工
 | 3xTF32 | 1.23e-5 | 1.64e-4 | 2.98e-2 ✗ | 13× 超线性——**主场景出局** |
 
 主场景(14336 长度)精度合格的唯一路线 = FP32 SIMT v4(全精度)。
+
+
+## 框架产出 → MUSA(2026-11-20,里程碑)
+
+本仓框架(cutile 流水线 + engine CUDA codegen)产出的 GPU 程序,经 mcc 编译后在 S4000 真机
+执行,与框架标量参考**逐位对拍通过**——首次证明「框架 → MUSA」通道存在且成本极低。
+
+### 通道
+
+1. **生成**(Windows,有 nvcc 使能 nvidia 设备协商):`gen-cuda/` 调公开 API
+   `cutile::execution::cuda_grid_program`(设备源)+ `engine::codegen::cuda_grid_driver`(host 驱动)
+   → 单文件 + `(model.reference)` 标量参考。
+   - 注意:生成器 Cargo.toml 末尾的 `[workspace]` 是必需的——win 家目录存在旧版
+     `C:\Users\fei\Cargo.toml` workspace 根,不加会被误当成员。
+   - 用法:`cargo run -- <op> [m] [n]`(默认 64×1)。
+2. **编译**(S4000):`mcc -O3 -x musa -Ishim fw.cu -o fw -L/usr/local/musa/lib -lmusart`。
+   `cuda-shim/` 提供两个转发头:`cuda_runtime.h`(cuda→musa 的 API/类型/错误码宏)、
+   `cuda_fp16.h`(→ `musa_fp16.h`)。**仅需这两个垫片**。
+3. **对拍**:程序打印 f32 位模式,`check_bits.py` 与参考逐项比较。
+
+### 覆盖与结果(64 元素,64×1)
+
+| 算子 | 结果 | max_rel |
+|---|---|---|
+| `silu_f32` | OK | 1.15e-07 |
+| `gelu_f32` | OK | 3.86e-07 |
+| `add_f32` | OK | 0 |
+| `mul_f32` | OK | 0 |
+
+`softmax_f32` / `rmsnorm_f32` 报 `Unsupported`:CUDA 逐点网格只覆盖纯逐点形,归约/归一化的
+CUDA 镜像(循环注入/串行兜底)尚未落地(源码注释已载明)。
+
+### 意义
+
+- 框架生成的设备代码与 MUSA 的 CUDA 方言二进制兼容;两种垫片头即可跨工具链。
+- 这是「第三后端」落地的可行性证据:接入点不在 crate 结构,而在**编译器与两个转发头**。
+- 与裸 harness 线(上方数据矩阵)互补:那条线探 kernel 性能上限,这条线证框架链路可用。
