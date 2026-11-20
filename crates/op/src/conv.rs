@@ -6,6 +6,8 @@
 //!
 //! **拥有**：本模块的四个层结构。**不拥有**：GEMM 微核（`fast`）、张量元数据（`tensor`）。
 
+use std::thread;
+
 use diagnostic::{Code, Error, Result};
 
 use crate::fast;
@@ -215,6 +217,42 @@ impl Conv2d {
     /// # Errors
     ///
     /// 缓冲长度与形状不符时返回说明。
+    /// 复用外部 `col` 缓冲的 i8 卷积：大形状下省掉每轮 37.7MB 的零页分配与缺页。
+    ///
+    /// `col` 只需足够长（`rows * patch`）；不足时按需扩容，内容由 im2col 全量覆盖。
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_i8_with(
+        &self,
+        x: &[i8],
+        weight: &[i8],
+        bias: &[i32],
+        n: usize,
+        h: usize,
+        w: usize,
+        out: &mut [i32],
+        col: &mut Vec<i8>,
+    ) -> Result<()> {
+        let (oh, ow) = self.shape(h, w)?;
+        let cout = self.cout;
+        let patch = self.geom.patch(self.cin);
+        check(x.len(), n * h * w * self.cin, "输入")?;
+        check(weight.len(), patch * cout, "权重")?;
+        check(bias.len(), cout, "偏置")?;
+        check(out.len(), n * oh * ow * cout, "输出")?;
+
+        let rows = n * oh * ow;
+        col.resize(rows * patch, 0);
+        im2col2d_i8(x, col, n, (h, w), self, (oh, ow));
+        fast::gemm_i8(col, weight, rows, cout, patch, out);
+        for r in 0..rows {
+            for c in 0..cout {
+                out[r * cout + c] += bias[c];
+            }
+        }
+        Ok(())
+    }
+
+    /// i8 卷积：`col` 内部现分配，单次调用；批量场景用 [`Self::forward_i8_with`] 复用缓冲。
     pub fn forward_i8(
         &self,
         x: &[i8],
@@ -234,16 +272,18 @@ impl Conv2d {
         check(bias.len(), cout, "偏置")?;
         check(out.len(), n * oh * ow * cout, "输出")?;
 
-        let rows = n * oh * ow;
-        let mut col = vec![0i8; rows * patch];
-        im2col2d_i8(x, &mut col, n, (h, w), self, (oh, ow));
-        fast::gemm_i8(&col, weight, rows, cout, patch, out);
-        for r in 0..rows {
-            for c in 0..cout {
-                out[r * cout + c] += bias[c];
-            }
+        thread_local! {
+            /// 大形状下 im2col 缓冲达几十 MB，跨调用复用可以省掉每次的零页分配与缺页。
+            static COL: std::cell::RefCell<Vec<i8>> = const { std::cell::RefCell::new(Vec::new()) };
         }
-        Ok(())
+        COL.with(|cell| {
+            let mut loan = cell.try_borrow_mut();
+            match loan.as_mut() {
+                Ok(col) => self.forward_i8_with(x, weight, bias, n, h, w, out, col),
+                // 同线程嵌套调用（借出中）时才退回一次性缓冲。
+                Err(_) => self.forward_i8_with(x, weight, bias, n, h, w, out, &mut Vec::new()),
+            }
+        })
     }
 }
 
@@ -382,6 +422,8 @@ impl AvgPool2d {
 }
 
 /// f32 im2col：行 = `(n, oh, ow)`，列 = `(kh, kw, cin)`。
+///
+/// 行块之间互不重叠，直接按行切给线程；小矩阵不并行（一次 `scope` 的固定开销会超过拷贝本身）。
 fn im2col2d(
     x: &[f32],
     col: &mut [f32],
@@ -390,31 +432,79 @@ fn im2col2d(
     conv: &Conv2d,
     (oh, ow): (usize, usize),
 ) {
-    let cin = conv.cin;
-    let patch = conv.geom.patch(cin);
-    for ni in 0..n {
-        for oi in 0..oh {
-            for oj in 0..ow {
-                let row = &mut col[((ni * oh + oi) * ow + oj) * patch..][..patch];
-                for ki in 0..conv.geom.kh {
-                    let ii = (oi * conv.geom.sh + ki) as isize - conv.geom.ph as isize;
-                    for kj in 0..conv.geom.kw {
-                        let jj = (oj * conv.geom.sw + kj) as isize - conv.geom.pw as isize;
-                        let tail = (ki * conv.geom.kw + kj) * cin;
-                        if ii < 0 || ii as usize >= h || jj < 0 || jj as usize >= w {
-                            row[tail..tail + cin].fill(0.0);
-                        } else {
-                            let src = ((ni * h + ii as usize) * w + jj as usize) * cin;
-                            row[tail..tail + cin].copy_from_slice(&x[src..src + cin]);
-                        }
-                    }
+    let patch = conv.geom.patch(conv.cin);
+    let rows = n * oh * ow;
+    let threads = if rows * patch < (1 << 16) {
+        1
+    } else {
+        thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(1)
+            .min(rows)
+    };
+    if threads <= 1 {
+        for r in 0..rows {
+            fill_row(x, &mut col[r * patch..(r + 1) * patch], r, n, (h, w), conv, (oh, ow));
+        }
+        return;
+    }
+    let per = rows.div_ceil(threads);
+    thread::scope(|s| {
+        for (bi, chunk) in col.chunks_mut(per * patch).enumerate() {
+            let r0 = bi * per;
+            s.spawn(move || {
+                let cnt = chunk.len() / patch;
+                for base in 0..cnt {
+                    let row_idx = r0 + base;
+                    fill_row(
+                        x,
+                        &mut chunk[base * patch..(base + 1) * patch],
+                        row_idx,
+                        n,
+                        (h, w),
+                        conv,
+                        (oh, ow),
+                    );
                 }
+            });
+        }
+    });
+}
+
+/// 展开一行：`row_idx = (ni, oi, oj)` 对应的一整块 `(kh, kw, cin)` 拷贝。
+#[allow(clippy::too_many_arguments)]
+fn fill_row(
+    x: &[f32],
+    row: &mut [f32],
+    row_idx: usize,
+    n: usize,
+    (h, w): (usize, usize),
+    conv: &Conv2d,
+    (oh, ow): (usize, usize),
+) {
+    let cin = conv.cin;
+    let g = conv.geom;
+    let ni = row_idx / (oh * ow);
+    let rem = row_idx % (oh * ow);
+    let oi = rem / ow;
+    let oj = rem % ow;
+    let _ = n;
+    for ki in 0..g.kh {
+        let ii = (oi * g.sh + ki) as isize - g.ph as isize;
+        for kj in 0..g.kw {
+            let jj = (oj * g.sw + kj) as isize - g.pw as isize;
+            let tail = (ki * g.kw + kj) * cin;
+            if ii < 0 || ii as usize >= h || jj < 0 || jj as usize >= w {
+                row[tail..tail + cin].fill(0.0);
+            } else {
+                let src = ((ni * h + ii as usize) * w + jj as usize) * cin;
+                row[tail..tail + cin].copy_from_slice(&x[src..src + cin]);
             }
         }
     }
 }
 
-/// i8 im2col：口径与 [`im2col2d`] 一致，补零位置为 `i8` 的 0。
+/// i8 im2col：口径与 [`im2col2d`] 一致，补零位置为 `i8` 的 0，同样按行块并行。
 fn im2col2d_i8(
     x: &[i8],
     col: &mut [i8],
@@ -423,25 +513,69 @@ fn im2col2d_i8(
     conv: &Conv2d,
     (oh, ow): (usize, usize),
 ) {
-    let cin = conv.cin;
-    let patch = conv.geom.patch(cin);
-    for ni in 0..n {
-        for oi in 0..oh {
-            for oj in 0..ow {
-                let row = &mut col[((ni * oh + oi) * ow + oj) * patch..][..patch];
-                for ki in 0..conv.geom.kh {
-                    let ii = (oi * conv.geom.sh + ki) as isize - conv.geom.ph as isize;
-                    for kj in 0..conv.geom.kw {
-                        let jj = (oj * conv.geom.sw + kj) as isize - conv.geom.pw as isize;
-                        let tail = (ki * conv.geom.kw + kj) * cin;
-                        if ii < 0 || ii as usize >= h || jj < 0 || jj as usize >= w {
-                            row[tail..tail + cin].fill(0);
-                        } else {
-                            let src = ((ni * h + ii as usize) * w + jj as usize) * cin;
-                            row[tail..tail + cin].copy_from_slice(&x[src..src + cin]);
-                        }
-                    }
+    let patch = conv.geom.patch(conv.cin);
+    let rows = n * oh * ow;
+    let threads = if rows * patch < (1 << 16) {
+        1
+    } else {
+        thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(1)
+            .min(rows)
+    };
+    if threads <= 1 {
+        for r in 0..rows {
+            fill_row_i8(x, &mut col[r * patch..(r + 1) * patch], r, (h, w), conv, (oh, ow));
+        }
+        return;
+    }
+    let per = rows.div_ceil(threads);
+    thread::scope(|s| {
+        for (bi, chunk) in col.chunks_mut(per * patch).enumerate() {
+            let r0 = bi * per;
+            s.spawn(move || {
+                let cnt = chunk.len() / patch;
+                for base in 0..cnt {
+                    let row_idx = r0 + base;
+                    fill_row_i8(
+                        x,
+                        &mut chunk[base * patch..(base + 1) * patch],
+                        row_idx,
+                        (h, w),
+                        conv,
+                        (oh, ow),
+                    );
                 }
+            });
+        }
+    });
+}
+
+/// i8 版单行展开。
+fn fill_row_i8(
+    x: &[i8],
+    row: &mut [i8],
+    row_idx: usize,
+    (h, w): (usize, usize),
+    conv: &Conv2d,
+    (oh, ow): (usize, usize),
+) {
+    let cin = conv.cin;
+    let g = conv.geom;
+    let ni = row_idx / (oh * ow);
+    let rem = row_idx % (oh * ow);
+    let oi = rem / ow;
+    let oj = rem % ow;
+    for ki in 0..g.kh {
+        let ii = (oi * g.sh + ki) as isize - g.ph as isize;
+        for kj in 0..g.kw {
+            let jj = (oj * g.sw + kj) as isize - g.pw as isize;
+            let tail = (ki * g.kw + kj) * cin;
+            if ii < 0 || ii as usize >= h || jj < 0 || jj as usize >= w {
+                row[tail..tail + cin].fill(0);
+            } else {
+                let src = ((ni * h + ii as usize) * w + jj as usize) * cin;
+                row[tail..tail + cin].copy_from_slice(&x[src..src + cin]);
             }
         }
     }
@@ -470,6 +604,216 @@ fn check(actual: usize, required: usize, what: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// 一维最大池化：NHWC，`(k, s, p)` 与二维同口径，补零位不参与比较。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaxPool1d {
+    /// 窗口长。
+    pub k: usize,
+    /// 步长。
+    pub s: usize,
+    /// 两端补零。
+    pub p: usize,
+}
+
+impl MaxPool1d {
+    /// 输出长度 `(l + 2p − k) / s + 1`。
+    ///
+    /// # Errors
+    ///
+    /// 窗口/步长为 0，或窗口比补零后的输入还长时返回说明。
+    pub fn len(&self, l: usize) -> Result<usize> {
+        if self.k == 0 || self.s == 0 {
+            return Err(Error::new(Code::Invalid, "池化窗口与步长必须大于 0"));
+        }
+        if l + 2 * self.p < self.k {
+            return Err(Error::new(Code::Invalid, "池化窗口大于补零后的输入"));
+        }
+        Ok((l + 2 * self.p - self.k) / self.s + 1)
+    }
+
+    /// 前向：逐窗口取最大。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲长度不符时返回说明。
+    pub fn forward(
+        &self,
+        x: &[f32],
+        n: usize,
+        l: usize,
+        c: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let ol = self.len(l)?;
+        check(x.len(), n * l * c, "输入")?;
+        check(out.len(), n * ol * c, "输出")?;
+        for ni in 0..n {
+            for oi in 0..ol {
+                let base = oi * self.s;
+                for ci in 0..c {
+                    let mut best = f32::NEG_INFINITY;
+                    for ki in 0..self.k {
+                        let src = base + ki;
+                        if src < self.p || src - self.p >= l {
+                            continue;
+                        }
+                        let v = x[(ni * l + src - self.p) * c + ci];
+                        if v > best {
+                            best = v;
+                        }
+                    }
+                    // 整窗都落在补零上（只会在极端几何下出现）按 0 处理。
+                    out[(ni * ol + oi) * c + ci] = if best == f32::NEG_INFINITY { 0.0 } else { best };
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 二维自适应平均池化：任意输入尺寸都压到 `(oh, ow)`。
+///
+/// 第 `i` 格的窗口是 `[floor(i·h/oh), ceil((i+1)·h/oh))`，与 PyTorch 同口径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdaptiveAvgPool2d {
+    /// 输出高。
+    pub oh: usize,
+    /// 输出宽。
+    pub ow: usize,
+}
+
+impl AdaptiveAvgPool2d {
+    /// 前向：每个输出格取覆盖窗口的平均。
+    ///
+    /// # Errors
+    ///
+    /// 输出尺寸为 0 或缓冲长度不符时返回说明。
+    pub fn forward(
+        &self,
+        x: &[f32],
+        n: usize,
+        h: usize,
+        w: usize,
+        c: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        if self.oh == 0 || self.ow == 0 {
+            return Err(Error::new(Code::Invalid, "自适应池化输出尺寸必须大于 0"));
+        }
+        check(x.len(), n * h * w * c, "输入")?;
+        check(out.len(), n * self.oh * self.ow * c, "输出")?;
+        for ni in 0..n {
+            for oi in 0..self.oh {
+                let h0 = oi * h / self.oh;
+                let h1 = ((oi + 1) * h).div_ceil(self.oh).min(h);
+                for oj in 0..self.ow {
+                    let w0 = oj * w / self.ow;
+                    let w1 = ((oj + 1) * w).div_ceil(self.ow).min(w);
+                    let area = ((h1 - h0) * (w1 - w0)) as f32;
+                    for ci in 0..c {
+                        let mut sum = 0.0f32;
+                        for ii in h0..h1 {
+                            for jj in w0..w1 {
+                                sum += x[((ni * h + ii) * w + jj) * c + ci];
+                            }
+                        }
+                        out[((ni * self.oh + oi) * self.ow + oj) * c + ci] = sum / area;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 插值取样方式：最近邻（`align_corners=False` 的 floor 口径）或双线性。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sampler {
+    /// 取左上角样本，源坐标 `floor(i·h/oh)`。
+    Nearest,
+    /// 双线性，源坐标 `(i+0.5)·h/oh − 0.5` 后夹到边界。
+    Linear,
+}
+
+/// 二维上/下采样，NHWC。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interpolate {
+    /// 取样方式。
+    pub sampler: Sampler,
+    /// 目标高。
+    pub oh: usize,
+    /// 目标宽。
+    pub ow: usize,
+}
+
+impl Interpolate {
+    /// 前向。
+    ///
+    /// # Errors
+    ///
+    /// 目标尺寸为 0 或缓冲长度不符时返回说明。
+    pub fn forward(
+        &self,
+        x: &[f32],
+        n: usize,
+        h: usize,
+        w: usize,
+        c: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        if self.oh == 0 || self.ow == 0 {
+            return Err(Error::new(Code::Invalid, "插值目标尺寸必须大于 0"));
+        }
+        if h == 0 || w == 0 {
+            return Err(Error::new(Code::Invalid, "插值输入尺寸必须大于 0"));
+        }
+        check(x.len(), n * h * w * c, "输入")?;
+        check(out.len(), n * self.oh * self.ow * c, "输出")?;
+        match self.sampler {
+            Sampler::Nearest => {
+                for ni in 0..n {
+                    for oi in 0..self.oh {
+                        let ii = (oi * h / self.oh).min(h - 1);
+                        for oj in 0..self.ow {
+                            let jj = (oj * w / self.ow).min(w - 1);
+                            let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
+                            let src = ((ni * h + ii) * w + jj) * c;
+                            out[dst..dst + c].copy_from_slice(&x[src..src + c]);
+                        }
+                    }
+                }
+            }
+            Sampler::Linear => {
+                for ni in 0..n {
+                    for oi in 0..self.oh {
+                        let fy = ((oi as f32 + 0.5) * h as f32 / self.oh as f32 - 0.5).max(0.0);
+                        let y0 = fy.floor().min((h - 1) as f32) as usize;
+                        let y1 = (y0 + 1).min(h - 1);
+                        let ly = if y0 == y1 { 0.0 } else { fy - y0 as f32 };
+                        for oj in 0..self.ow {
+                            let fx = ((oj as f32 + 0.5) * w as f32 / self.ow as f32 - 0.5).max(0.0);
+                            let x0 = fx.floor().min((w - 1) as f32) as usize;
+                            let x1 = (x0 + 1).min(w - 1);
+                            let lx = if x0 == x1 { 0.0 } else { fx - x0 as f32 };
+                            let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
+                            for ci in 0..c {
+                                let a = x[((ni * h + y0) * w + x0) * c + ci];
+                                let b = x[((ni * h + y0) * w + x1) * c + ci];
+                                let d = x[((ni * h + y1) * w + x0) * c + ci];
+                                let e = x[((ni * h + y1) * w + x1) * c + ci];
+                                let top = a + (b - a) * lx;
+                                let bot = d + (e - d) * lx;
+                                out[dst + ci] = top + (bot - top) * ly;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -699,14 +1043,35 @@ mod tests {
             let mut o8 = vec![0i32; rows * cout];
             conv.forward_i8(&x8, &w8, &b8, n, h, w, &mut o8).unwrap();
             let mut best = f64::INFINITY;
+            let mut bestcol = f64::INFINITY;
+            let mut buf = Vec::new();
             for _ in 0..5 {
                 let t = Instant::now();
                 conv.forward_i8(&x8, &w8, &b8, n, h, w, &mut o8).unwrap();
                 best = best.min(t.elapsed().as_nanos() as f64);
+                let t = Instant::now();
+                conv.forward_i8_with(&x8, &w8, &b8, n, h, w, &mut o8, &mut buf).unwrap();
+                bestcol = bestcol.min(t.elapsed().as_nanos() as f64);
+            }
+            // 拆两段看谁在吃时间。
+            let mut tcol = f64::INFINITY;
+            let mut tgemm = f64::INFINITY;
+            for col in 0..5 {
+                let _ = col;
+                let t = Instant::now();
+                im2col2d_i8(&x8, &mut buf, n, (h, w), &conv, (oh, ow));
+                tcol = tcol.min(t.elapsed().as_nanos() as f64);
+                let t = Instant::now();
+                fast::gemm_i8(&buf, &w8, rows, cout, patch, &mut o8);
+                tgemm = tgemm.min(t.elapsed().as_nanos() as f64);
             }
             println!(
-                "  conv2d_i8 {n}x{h}x{w} cin{cin} cout{cout} k{k}: {:.1} GF/s",
-                flops / best
+                "  conv2d_i8 {n}x{h}x{w} cin{cin} cout{cout} k{k}: 新分配 {:.1} / 复用 {:.1} GF/s \
+                 (im2col {:.2} ms, gemm {:.2} ms)",
+                flops / best,
+                flops / bestcol,
+                tcol / 1e6,
+                tgemm / 1e6
             );
 
             let x32 = sample(n * h * w * cin, 1);

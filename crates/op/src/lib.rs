@@ -59,6 +59,8 @@ pub mod elementwise;
 pub mod fast;
 pub mod formula;
 pub mod conv;
+pub mod deconv;
+pub mod norm;
 pub mod dropout;
 pub mod init;
 pub mod rnd;

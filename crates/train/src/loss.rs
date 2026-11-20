@@ -198,9 +198,56 @@ pub fn bce_with_logits(logits: &[f32], target: &[f32]) -> Result<f32> {
     Ok((sum / logits.len() as f64) as f32)
 }
 
+/// Huber（smooth L1）：`|d| ≤ δ` 走平方段，超出后线性接续，取均值。
+///
+/// # Errors
+///
+/// 形状不一致、空输入或 `delta ≤ 0` 时返回说明。
+pub fn huber(pred: &[f32], target: &[f32], delta: f32) -> Result<f32> {
+    if pred.len() != target.len() || pred.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("huber: 形状不一致 {} vs {}", pred.len(), target.len()),
+        ));
+    }
+    if !(delta > 0.0) {
+        return Err(Error::new(Code::Invalid, "huber: delta 必须为正"));
+    }
+    let d = delta as f64;
+    let sum: f64 = pred
+        .iter()
+        .zip(target.iter())
+        .map(|(p, t)| {
+            let e = (*p as f64 - *t as f64).abs();
+            if e <= d { 0.5 * e * e } else { d * (e - 0.5 * d) }
+        })
+        .sum();
+    Ok((sum / pred.len() as f64) as f32)
+}
+
+/// Hinge（`margin = 1`）：`mean(max(0, 1 − y·p))`，`y` 取 `−1/+1`。
+///
+/// # Errors
+///
+/// 形状不一致或空输入时返回说明。
+pub fn hinge(pred: &[f32], target: &[f32]) -> Result<f32> {
+    if pred.len() != target.len() || pred.is_empty() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("hinge: 形状不一致 {} vs {}", pred.len(), target.len()),
+        ));
+    }
+    let sum: f64 = pred
+        .iter()
+        .zip(target.iter())
+        .map(|(p, t)| (1.0 - *t as f64 * *p as f64).max(0.0))
+        .sum();
+    Ok((sum / pred.len() as f64) as f32)
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{argmax_hits, bce_with_logits, cross_entropy, mse};
+    use crate::{argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
     use diagnostic::{Code, Result};
 
     #[test]
@@ -209,6 +256,31 @@ mod tests {
         assert!(mse(&a, &a)? == 0.0);
         let b = [1.0f32, -2.0, 4.5];
         assert!((mse(&a, &b)? - 1.0 / 3.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn huber_matches_piecewise_formula() -> Result<()> {
+        let pred = [0.0f32, 3.0, -1.5, 10.0];
+        let target = [0.0f32, 1.0, -1.0, 0.0];
+        // 误差 0 / 2 / 0.5 / 10，δ=1：0 + 1×(2−0.5) + 0.5×0.25 + 1×(10−0.5)，再除以 4。
+        let want = (0.0f64 + 1.5 + 0.125 + 9.5) / 4.0;
+        let got = huber(&pred, &target, 1.0)?;
+        assert!((f64::from(got) - want).abs() < 1e-6, "huber {got} vs {want}");
+        // δ 大到盖住全部误差时退化为 0.5×MSE。
+        let got = huber(&[0.5f32, -0.25], &[0.0f32, 0.0], 100.0)?;
+        assert!((f64::from(got) - (0.25f64 + 0.0625) / 4.0).abs() < 1e-6);
+        assert!(huber(&[1.0f32], &[0.0f32], 0.0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn hinge_is_zero_when_margin_is_satisfied() -> Result<()> {
+        // y·p = 2 与 3 都过了 margin；y·p = −1 的样本贡献 1−(−1) = 2。
+        let got = hinge(&[2.0f32, 3.0, -1.0], &[1.0f32, 1.0, 1.0])?;
+        assert!((f64::from(got) - 2.0 / 3.0).abs() < 1e-6, "hinge {got}");
+        // 负样本 y=−1、p=0.5 → 1 − (−0.5) = 1.5。
+        assert!((f64::from(hinge(&[0.5f32], &[-1.0f32])?) - 1.5).abs() < 1e-6);
         Ok(())
     }
 

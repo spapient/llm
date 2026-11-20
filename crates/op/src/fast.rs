@@ -646,18 +646,26 @@ fn compute_i8_packed(
     out: &mut [i32],
 ) {
     let kvec = k - k % 16;
-    let mut blk = 0;
-    while blk < npad {
-        let mut r = 0;
-        while r + I8_MR <= rows {
-            pair_one(a, bpack, out, Gram { r, blk, n, k, kvec });
-            r += I8_MR;
+    // 行块要让 A 的 `rc × k` 字节留在 L1（约 128KB），否则每个列块都要从 L2 重拉整块 A。
+    let rc = ((1usize << 17) / k.max(1)).clamp(I8_MR, 256);
+    let rc = (rc / I8_MR) * I8_MR;
+    let mut r0 = 0;
+    while r0 < rows {
+        let rend = (r0 + rc).min(rows);
+        let mut blk = 0;
+        while blk < npad {
+            let mut r = r0;
+            while r + I8_MR <= rend {
+                pair_one(a, bpack, out, Gram { r, blk, n, k, kvec });
+                r += I8_MR;
+            }
+            while r < rend {
+                scalar_row_group(a, bpack, out, r, blk, n, k);
+                r += 1;
+            }
+            blk += I8_NR;
         }
-        while r < rows {
-            scalar_row_group(a, bpack, out, r, blk, n, k);
-            r += 1;
-        }
-        blk += I8_NR;
+        r0 = rend;
     }
 }
 
