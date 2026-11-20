@@ -395,13 +395,14 @@ impl Geometry {
             Self::Pool1d { k, s, p, l, c } => {
                 let ol = pool_len(l, k, s, p)?;
                 let n = inputs[0].len() / (l * c);
+                let win = Window { k, s, p };
                 let mut dx = vec![0.0f32; inputs[0].len()];
                 for ni in 0..n {
                     for oi in 0..ol {
                         for ci in 0..c {
                             let g = incoming[(ni * ol + oi) * c + ci];
-                            let pick = window(&inputs[0], ni, l, c, oi, s, p, k, ci);
-                            dx[pick[0]] += g;
+                            let pick = window1d(&inputs[0], ni * l * c, l, oi, win, ci);
+                            dx[pick] += g;
                         }
                     }
                 }
@@ -410,14 +411,22 @@ impl Geometry {
             Self::Pool2d { k, s, p, h, w, c } => {
                 let (oh, ow) = (pool_len(h, k, s, p)?, pool_len(w, k, s, p)?);
                 let n = inputs[0].len() / (h * w * c);
+                let win = Window { k, s, p };
                 let mut dx = vec![0.0f32; inputs[0].len()];
                 for ni in 0..n {
                     for oi in 0..oh {
                         for oj in 0..ow {
                             for ci in 0..c {
                                 let g = incoming[((ni * oh + oi) * ow + oj) * c + ci];
-                                let pick = window2d(&inputs[0], ni, (h, w), c, (oi, oj), s, p, k, ci);
-                                dx[pick[0]] += g;
+                                let pick = window2d(
+                                    &inputs[0],
+                                    ni * h * w * c,
+                                    (h, w, c),
+                                    (oi, oj),
+                                    win,
+                                    ci,
+                                );
+                                dx[pick] += g;
                             }
                         }
                     }
@@ -597,57 +606,62 @@ fn bounds(out: usize, s: usize, p: usize, k: usize, len: usize) -> (usize, usize
     (lo.min(len - 1), hi)
 }
 
+/// 方形窗口参数：`k/s/p` 三个数一起走，避免每个调用点再摊成三个实参。
+#[derive(Clone, Copy)]
+struct Window {
+    k: usize,
+    s: usize,
+    p: usize,
+}
+
 /// 一维最大池化窗口里的最大值位置（与前向同一判定：严格更大才替换，平手取先遇到的）。
-fn window(x: &[f32], ni: usize, l: usize, c: usize, oi: usize, s: usize, p: usize, k: usize, ci: usize) -> [usize; 1] {
+fn window1d(x: &[f32], base: usize, l: usize, oi: usize, win: Window, ci: usize) -> usize {
     let mut best = f32::MIN;
-    let mut pick = ((ni * l) * c + ci, (ni * l) * c + ci);
-    for ki in 0..k {
-        let ii = oi as i64 * s as i64 - p as i64 + ki as i64;
+    let mut pick = base + ci;
+    for ki in 0..win.k {
+        let ii = oi as i64 * win.s as i64 - win.p as i64 + ki as i64;
         if !(0..l as i64).contains(&ii) {
             continue;
         }
-        let at = (ni * l + ii as usize) * c + ci;
-        let v = x[at];
-        if v > best {
-            best = v;
-            pick = (at, at);
+        let at = base + ii as usize + ci;
+        if x[at] > best {
+            best = x[at];
+            pick = at;
         }
     }
-    [pick.0]
+    pick
 }
 
-/// 二维最大池化窗口里的最大值位置（`(h, w)` 与 `(oi, oj)` 两个轴）。
+/// 二维最大池化窗口里的最大值位置；`plane` 是 `(h, w, c)` 三轴，`base` 是本样本起点。
 fn window2d(
     x: &[f32],
-    ni: usize,
-    (h, w): (usize, usize),
-    c: usize,
-    (oi, oj): (usize, usize),
-    s: usize,
-    p: usize,
-    k: usize,
+    base: usize,
+    plane: (usize, usize, usize),
+    at: (usize, usize),
+    win: Window,
     ci: usize,
-) -> [usize; 1] {
+) -> usize {
+    let (h, w, c) = plane;
     let mut best = f32::MIN;
-    let mut pick = (ni * h * w) * c + ci;
-    for di in 0..k {
-        let ii = oi as i64 * s as i64 - p as i64 + di as i64;
+    let mut pick = base + ci;
+    for di in 0..win.k {
+        let ii = at.0 as i64 * win.s as i64 - win.p as i64 + di as i64;
         if !(0..h as i64).contains(&ii) {
             continue;
         }
-        for dj in 0..k {
-            let jj = oj as i64 * s as i64 - p as i64 + dj as i64;
+        for dj in 0..win.k {
+            let jj = at.1 as i64 * win.s as i64 - win.p as i64 + dj as i64;
             if !(0..w as i64).contains(&jj) {
                 continue;
             }
-            let at = ((ni * h + ii as usize) * w + jj as usize) * c + ci;
-            if x[at] > best {
-                best = x[at];
-                pick = at;
+            let slot = base + (ii as usize * w + jj as usize) * c + ci;
+            if x[slot] > best {
+                best = x[slot];
+                pick = slot;
             }
         }
     }
-    [pick]
+    pick
 }
 
 /// 归一化反向的公共骨架：对一组元素按 `(均值, 方差)` 求 `dx`，并把 `dgamma`/`dbeta` 累加进
