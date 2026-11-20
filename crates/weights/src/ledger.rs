@@ -165,11 +165,12 @@ fn certified_rank(sigma: &[f64], eps: f64) -> Option<usize> {
 
 /// 后验残差 `‖A − B‖_F`：`ε_alg` 的实测值。
 fn residual(a: &[f64], b: &[f64]) -> f64 {
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y) * (x - y))
-        .sum::<f64>()
-        .sqrt()
+    norm(a.iter().zip(b).map(|(x, y)| x - y))
+}
+
+/// Frobenius 范数：`ε`、截断误差与它在读端的复核都走这一份定义。
+fn norm(values: impl Iterator<Item = f64>) -> f64 {
+    values.map(|v| v * v).sum::<f64>().sqrt()
 }
 
 /// 形状判据：`m`、`n` 非零且元素数与乘积一致；返回奇异值个数 `min(m,n)`。
@@ -290,6 +291,46 @@ pub fn check(n: &Note) -> Result<()> {
         Some((_, why)) => Err(bad(why)),
         None => Ok(()),
     }
+}
+
+/// 读取侧复核：证书里凡是能从载荷自身重算的，都要重算一遍。
+///
+/// 写端把 [`Note`] 随载荷落盘（`axes` 的 `rank` 段），读端就有义务把它当**断言**而不是注释来查：
+/// [`check`] 管内部一致性，这里接三件只有「证书 + 载荷」两方对质才能问的事——
+///
+/// - 这条载荷存在，就说明门确实放行了（`used`、`Residual`、`Pass` 三条同时成立）；
+/// - 受认证秩落在可判域 `1 <= r < min(m,n)`；
+/// - 截断误差等于载荷里 `low` 与 `rest` 算出来的那个值。
+///
+/// 任一条不符都是 `Invalid`：一张与载荷不符的证书比没有证书更糟，它会把「可证压缩」变成空话。
+///
+/// 容差按 `f32` 往返的上界给：`rest` 是 `A − L` 逐元素舍入到 `f32` 的结果，误差在 `2^24`
+/// 分之一量级，所以取 `1e-6 · (|decomp| + ‖W‖_F)`——两个尺度同增同减，退化到极小矩阵时也不会
+/// 把舍入当成篡改。`equal` / `lossless` 不在复核范围：它们说的是「与原始矩阵逐位一致」，
+/// 而读取侧没有原始矩阵，那两条只能由写端的逐位验证承担。
+pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Result<()> {
+    check(note)?;
+    let rank = note.rank as usize;
+    let facts = [
+        (note.used, "证书没记录秩选择，却出现在秩载荷里"),
+        (note.mode == Mode::Residual, "显式残差载荷不能声明纯截断模式"),
+        (note.stable == Stable::Pass, "证书没过 L0 门，却被当作载荷落盘"),
+        (1..m.min(n)).contains(&rank), "受认证秩越出 1 <= r < min(m,n)"),
+        (low.len() == rest.len(), "两段长度不等，截断误差无从重算"),
+    ];
+    match facts.iter().find(|(holds, _)| !*holds) {
+        Some((_, why)) => return Err(bad(why)),
+        None => {}
+    }
+    let truncation = norm(rest.iter().map(|&v| f64::from(v)));
+    let weight = norm(low.iter().zip(rest).map(|(&l, &r)| f64::from(l) + f64::from(r)));
+    if (truncation - note.decomp).abs() > 1e-6 * (note.decomp.abs() + weight) {
+        return Err(bad(&format!(
+            "截断误差与载荷不符：证书 {}，载荷 {truncation}",
+            note.decomp
+        )));
+    }
+    Ok(())
 }
 
 fn read_f64(cur: &mut Cursor<'_>) -> Result<f64> {

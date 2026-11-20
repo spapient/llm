@@ -8,14 +8,18 @@
 //! `rank` 轴比其余四轴多一道门：[`ledger::certify`] 先判谱隙，判定不过（无谱隙、形状退化）就
 //! 整轴不参与，秩与证书出自同一次分解——于是「证书不过就拒压回退」不是文档里的口号，而是
 //! [`search`] 里 `encode` 返回 `None` 的那条分支。
+//!
+//! 证书本身随载荷落盘（布局 `note_len | note | low_len | low | rest`）：它不再是写完就丢的事后
+//! 账目，而是与两段残差同受一条 CRC 保护的载荷内容，读端 [`decode`] 用载荷自己把证书的断言重算
+//! 一遍（[`ledger::audit`]），对不上就拒绝——「可证压缩」因此有一个可执行的判据。
 
 use diagnostic::{Code, Error, Result};
 
 use crate::leb::Cursor;
 use crate::{ledger, rans};
 
-/// artifact 魔数。
-const MAGIC: [u8; 4] = *b"AX01";
+/// artifact 魔数（v2：`rank` 载荷自带证书，v1 的纯秩数字不再可读）。
+const MAGIC: [u8; 4] = *b"AX02";
 
 /// 固定头长度：magic(4) + axis(1) + m(4) + n(4)。
 const HEAD: usize = 13;
@@ -44,8 +48,11 @@ trait AxisCfg {
     fn kind(&self) -> Axis;
     /// 编码为载荷；`None` 表示该轴对输入不适用。
     fn encode(&self, w: &[f32], m: usize, n: usize) -> Option<Vec<u8>>;
-    /// 从载荷游标解码 `want` 个 f32（游标已越过 [`HEAD`]）。
-    fn decode(&self, cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>>;
+    /// 从载荷游标解码一张 `shape = (m, n)` 的矩阵（游标已越过 [`HEAD`]）。
+    ///
+    /// 传形状而不是只传元素数：秩轴的载荷自带证书，复核「秩落在 `1 <= r < min(m,n)`」要用原始
+    /// 形状，而元素数已经把它丢了。
+    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>>;
 }
 
 /// 原始字节轴。
@@ -66,7 +73,8 @@ impl AxisCfg for Raw {
     fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
         Some(pack_bytes(&f32_bytes(w)))
     }
-    fn decode(&self, cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
+    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
+        let want = area(shape);
         bytes_to_f32(&unpack_bytes(cur, payload_cap(want))?, want)
     }
 }
@@ -78,8 +86,8 @@ impl AxisCfg for Dict {
     fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
         dict_payload(w)
     }
-    fn decode(&self, cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
-        decode_dict(cur, want)
+    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
+        decode_dict(cur, area(shape))
     }
 }
 
@@ -90,8 +98,8 @@ impl AxisCfg for Sparse {
     fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
         sparse_payload(w)
     }
-    fn decode(&self, cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
-        decode_sparse(cur, want)
+    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
+        decode_sparse(cur, area(shape))
     }
 }
 
@@ -102,8 +110,8 @@ impl AxisCfg for Quant {
     fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
         quant_payload(w)
     }
-    fn decode(&self, cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
-        decode_quant(cur, want)
+    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
+        decode_quant(cur, area(shape))
     }
 }
 
@@ -114,8 +122,8 @@ impl AxisCfg for Rank {
     fn encode(&self, w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {
         rank_payload(w, m, n)
     }
-    fn decode(&self, cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
-        decode_rank(cur, want)
+    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
+        decode_rank(cur, shape)
     }
 }
 
@@ -183,16 +191,29 @@ pub fn expand(artifact: &[u8]) -> Result<Vec<u8>> {
     Ok(f32_bytes(&decode(artifact)?))
 }
 
-/// 解码 artifact 为 f32 权重；任何截断/未知轴/长度不符显式报错。
+/// 解码 artifact 为 f32 权重；任何截断/未知轴/长度不符/证书与载荷不符显式报错。
 pub fn decode(artifact: &[u8]) -> Result<Vec<f32>> {
-    let (axis, want) = head(artifact)?;
+    let (axis, m, n) = head(artifact)?;
+    let want = area((m, n));
     let cfg = AXES[axis as usize];
     let mut cur = Cursor::new(&artifact[HEAD..]);
-    let out = cfg.decode(&mut cur, want)?;
+    let out = cfg.decode(&mut cur, (m, n))?;
     if out.len() != want {
         return Err(bad("解码长度与形状不符"));
     }
     Ok(out)
+}
+
+/// 只读证书：不解码权重也能拿到秩轴那张证书（其余轴返回 `None`）。
+///
+/// [`decode`] 本来就会复核证书，这里给的是另一条路：审计与工具只想问「凭什么这么压」时，
+/// 不必先落地一张张量。两边读的都是 [`rank_head`]，因此“证书长什么样”只有一种解析。
+pub fn certificate(artifact: &[u8]) -> Result<Option<ledger::Note>> {
+    let (axis, _, _) = head(artifact)?;
+    if axis != Axis::Rank {
+        return Ok(None);
+    }
+    rank_head(&artifact[HEAD..]).map(|head| Some(head.note))
 }
 
 /// 形状判据：`m`、`n` 非零且元素数与乘积一致；不回答权重内容。
@@ -204,15 +225,20 @@ fn check_shape(w: &[f32], m: usize, n: usize) -> Result<()> {
 }
 
 /// 头判据：长度至少 `HEAD`、魔数匹配；返回轴与形状（乘积溢出即报错，不回绕）。
-fn head(artifact: &[u8]) -> Result<(Axis, usize)> {
+fn head(artifact: &[u8]) -> Result<(Axis, usize, usize)> {
     if artifact.len() < HEAD || artifact[..4] != MAGIC {
         return Err(bad("artifact 头无效"));
     }
     let axis = Axis::from_code(artifact[4])?;
     let m = u32::from_le_bytes([artifact[5], artifact[6], artifact[7], artifact[8]]) as usize;
     let n = u32::from_le_bytes([artifact[9], artifact[10], artifact[11], artifact[12]]) as usize;
-    let want = m.checked_mul(n).ok_or_else(shape_overflow)?;
-    Ok((axis, want))
+    m.checked_mul(n).ok_or_else(shape_overflow)?;
+    Ok((axis, m, n))
+}
+
+/// 元素数：`head` 已判过乘积不溢出，这里的乘法不会回绕。
+fn area((m, n): (usize, usize)) -> usize {
+    m * n
 }
 
 /// 形状乘积溢出。
@@ -436,48 +462,75 @@ fn decode_quant(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
     Ok(codes.iter().map(|&c| min + c as f32 * step).collect())
 }
 
-/// 低秩载荷：秩由证书给出，证书不通过就不压。
+/// 低秩载荷：秩由证书给出，证书不通过就不压，证书本身随载荷落盘。
 ///
 /// 这里不再自己挑秩（旧版取 `min(m,n)/2`，与谱隙无关）：[`ledger::certify`] 用一次分解同时给出
 /// 受认证的秩与 `L`、`C`，`None` 就是「拒压」——秩轴对这张矩阵不适用，让给别的轴。
+///
+/// 布局：`note_len | note | low_len | low | rest`。秩不再是一个裸数字：证书自带秩，并且多带
+/// 「凭什么」——模式、稳定性、谱隙、扰动、截断误差、逐位往返。伪造一个更大的秩就得同时伪造
+/// 谱隙，而谱隙那一条在读端会被载荷重算（[`ledger::audit`]）。
 fn rank_payload(w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {
     let cert = ledger::certify(w, m, n).ok().flatten()?;
+    let note = cert.note.to_bytes();
     let low = pack_bytes(&f32_bytes(&cert.low));
-    let mut p = (cert.rank as u32).to_le_bytes().to_vec();
+    let mut p = u32::try_from(note.len()).ok()?.to_le_bytes().to_vec();
+    p.extend(note);
     p.extend_from_slice(&(low.len() as u32).to_le_bytes());
     p.extend(low);
     p.extend(pack_bytes(&f32_bytes(&cert.rest)));
     Some(p)
 }
 
-fn decode_rank(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
+fn decode_rank(cur: &mut Cursor<'_>, (m, n): (usize, usize)) -> Result<Vec<f32>> {
     let all = cur.remaining();
-    let low_len = rank_head(all)?;
-    let (low, rest) = rank_frames(all, low_len)?;
+    let head = rank_head(all)?;
+    let (low, rest) = rank_frames(all, head.at, head.low_len)?;
+    let want = area((m, n));
     let cap = want.saturating_mul(4);
     let low = rank_part(low, cap, want)?;
     let rest = rank_part(rest, cap, want)?;
+    // 证书与它认证的两段对质：这一行才是「可证」——读到的载荷自己能把它重算一遍，
+    // 而不是要读者相信写端曾经的声称。
+    ledger::audit(&head.note, m, n, &low, &rest)?;
     Ok(low.iter().zip(&rest).map(|(a, b)| a + b).collect())
 }
 
-/// rank 头判据：秩不能为 0；返回 `low` 段的字节长度。
-fn rank_head(all: &[u8]) -> Result<usize> {
+/// 秩载荷的头：证书本体、`low` 段长度，以及 `low` 段在载荷内的起点。
+struct RankHead {
+    note: ledger::Note,
+    low_len: usize,
+    /// `low` 段起点（证书长度前缀与证书本体之后）。
+    at: usize,
+}
+
+/// rank 头判据：证书长度前缀、证书本体（必须恰好读完）、`low` 段长度。
+fn rank_head(all: &[u8]) -> Result<RankHead> {
     let mut at = 0;
-    if word(all, &mut at, "rank 头截断")? == 0 {
-        return Err(bad("rank r=0"));
+    let len = word(all, &mut at, "rank 证书长度截断")? as usize;
+    let bytes = all
+        .get(at..)
+        .and_then(|tail| tail.get(..len))
+        .ok_or_else(|| bad("rank 证书截断"))?;
+    at += len;
+    let mut cur = Cursor::new(bytes);
+    let note = ledger::Note::decode(&mut cur)?;
+    if !cur.remaining().is_empty() {
+        return Err(bad("rank 证书有多余字节"));
     }
-    word(all, &mut at, "rank 头截断").map(|len| len as usize)
+    let low_len = word(all, &mut at, "rank 头截断")? as usize;
+    Ok(RankHead {
+        note,
+        low_len,
+        at,
+    })
 }
 
 /// 低秩两段：`low` 由头部的长度界定，`rest` 一直取到末尾。
-fn rank_frames(all: &[u8], low_len: usize) -> Result<(&[u8], &[u8])> {
-    let low = all
-        .get(8..8 + low_len)
-        .ok_or_else(|| bad("rank low 截断"))?;
-    let rest = all
-        .get(8 + low_len..)
-        .ok_or_else(|| bad("rank rest 截断"))?;
-    Ok((low, rest))
+fn rank_frames(all: &[u8], at: usize, low_len: usize) -> Result<(&[u8], &[u8])> {
+    all.get(at..)
+        .and_then(|tail| tail.split_at_checked(low_len))
+        .ok_or_else(|| bad("rank low 截断"))
 }
 
 /// 解一段带标记的低秩分量。

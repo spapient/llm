@@ -229,6 +229,9 @@ fn metal_lower(
         TiledGemm { tile } => {
             crate::tiled::metal_tiled_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
         }
+        TiledAttention { threads } => {
+            crate::tiled::metal_tiled_attention(kernel, signature, sample, *threads).map(|s| vec![s])
+        }
         WmmaGemm => Err(Error::new(
             Code::Unsupported,
             "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),
@@ -262,7 +265,7 @@ fn metal_chunk_lower(
             crate::codegen::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
-        Pointwise | Loop(_) | TiledGemm { .. } | WmmaGemm => Err(Error::new(
+        Pointwise | Loop(_) | TiledGemm { .. } | TiledAttention { .. } | WmmaGemm => Err(Error::new(
             Code::Internal,
             "非分块算子不应进入 Metal 分块 lowering",
         )),

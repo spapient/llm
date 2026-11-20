@@ -155,6 +155,69 @@ fn divides(value: usize, tile: usize) -> bool {
     tile != 0 && value % tile == 0
 }
 
+/// 生产态 Metal 分块注意力内核源：一个 threadgroup 负责一个查询行，`threads` 个线程分摊 S 个
+/// 分数与 D 个输出维，行内 max/sum 走线程组树归约，完整分数留在 threadgroup 内存。
+///
+/// 只对「elementwise 骨架 + 4 缓冲 q/k/v/y + 2 标量 S/D」的注意力形走分块；线程数不是 2 的幂、
+/// 分数块超出线程组内存上限、或签名不符时回落到 [`metal_grid_program`] 的网格/串行路径。
+///
+/// # Errors
+///
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_tiled_attention_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    s: usize,
+    d: usize,
+    threads: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", s, d)?;
+    if !attention_ready(&run, s, d, threads) {
+        return lower(&run, &prepared, s, d);
+    }
+    single(
+        lower_sources(
+            Emit::Metal,
+            &Lower::TiledAttention { threads },
+            &run,
+            &prepared,
+            s,
+            d,
+        )?,
+        "分块 attention",
+    )
+}
+
+/// 分块 attention 的前置条件：线程数合法、elementwise 骨架、4 缓冲 + 2 标量的注意力签名。
+fn attention_ready(run: &Run<'_>, s: usize, d: usize, threads: usize) -> bool {
+    if !tileable_threads(threads) {
+        return false;
+    }
+    if run.op.skeleton != Skeleton::Elementwise {
+        return false;
+    }
+    attention_shape(run, s, d)
+}
+
+/// 线程数必须是 [32, 1024] 内的 2 的幂（树归约与线程组上限）。
+fn tileable_threads(threads: usize) -> bool {
+    threads.is_power_of_two() && (32..=1024).contains(&threads)
+}
+
+/// 注意力签名与形状：4 缓冲（q/k/v/y）+ 2 标量（S/D），且形状落在共享内存/头宽上限内。
+fn attention_shape(run: &Run<'_>, s: usize, d: usize) -> bool {
+    let params = run.op.signature.params();
+    let buffers = params.iter().filter(|p| p.ctype.is_buffer()).count();
+    let scalars = params.iter().filter(|p| !p.ctype.is_buffer()).count();
+    buffers == 4 && scalars == 2 && in_bounds(s, d)
+}
+
+/// `S·4` 字节的分数块不超过 32 KiB 线程组内存，头宽不超过模板的 64。
+fn in_bounds(s: usize, d: usize) -> bool {
+    s > 0 && d > 0 && s <= 8192 && d <= 64
+}
+
 /// 生产态分块扫描内核源：走完整条流水线后把时间轴递推切成块，返回两段 MSL `(局部扫描, 校正)`，
 /// 主机在两次派发间做块级携带前缀。扫描是线性递推，分块天然需要两段内核，故不并入单内核的
 /// [`metal_grid_program`]；串行（未声明 `[chunk]`）仍走 [`metal_grid_program`]。
