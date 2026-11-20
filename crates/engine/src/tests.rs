@@ -1,5 +1,6 @@
 use super::*;
 use crate::kv::{Cache, Pager};
+use diagnostic::Code;
 use testkit::Rng;
 
 fn sequence(id: u64, prompt: usize, max_new: usize) -> Sequence {
