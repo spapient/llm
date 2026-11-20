@@ -152,7 +152,7 @@ struct Entry {
 /// 已接反向公式的可微算子目录；其余算子（量化权重 / 反量化）在 [`apply_formula`] 处回
 /// [`Code::Unsupported`]。与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应，由下方 `const`
 /// 断言在编译期守住。
-const FORMULAS: [Entry; 24] = [
+const FORMULAS: [Entry; 26] = [
     Entry {
         op: "add_f32",
         formula: passthrough,
@@ -200,6 +200,14 @@ const FORMULAS: [Entry; 24] = [
     Entry {
         op: "gelu_f32",
         formula: gelu,
+    },
+    Entry {
+        op: "hard_sigmoid_f32",
+        formula: hard_sigmoid,
+    },
+    Entry {
+        op: "leaky_relu_f32",
+        formula: leaky_relu,
     },
     Entry {
         op: "reduce_sum_f32",
@@ -441,6 +449,35 @@ fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
         .map(|(&g, &v)| {
             let sigmoid = 1.0 / (1.0 + (-v).exp());
             g * (sigmoid + v * sigmoid * (1.0 - sigmoid))
+        })
+        .collect();
+    Ok(vec![da])
+}
+
+/// y = x（x ≥ 0）或 slope·x：y′ = 1 或 slope，dA = in·y′。
+fn leaky_relu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let x = &ctx.inputs[0];
+    let slope = op::leaky_relu_f32::SLOPE;
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(x)
+        .map(|(&g, &v)| g * if v >= 0.0 { 1.0 } else { slope })
+        .collect();
+    Ok(vec![da])
+}
+
+/// y = clamp(x/6 + 0.5, 0, 1)：饱和区梯度为 0，线性区为 1/6。
+fn hard_sigmoid(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let x = &ctx.inputs[0];
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(x)
+        .map(|(&g, &v)| {
+            let v = v as f64;
+            let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
+            g * if inside { 1.0 / 6.0 } else { 0.0 }
         })
         .collect();
     Ok(vec![da])

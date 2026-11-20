@@ -90,6 +90,8 @@ macro_rules! gemm {
 unary!(
     exp_f32,
     gelu_f32,
+    hard_sigmoid_f32,
+    leaky_relu_f32,
     log_f32,
     silu_f32,
     softmax_f32,
@@ -271,6 +273,8 @@ const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
     gemv_i2,
     gemv_i4,
     gemv_i8,
+    hard_sigmoid_f32,
+    leaky_relu_f32,
     log_f32,
     matmul_f32,
     matmul_i8,

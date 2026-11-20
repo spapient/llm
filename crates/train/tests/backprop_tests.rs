@@ -852,3 +852,88 @@ fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
     );
     Ok(())
 }
+
+/// `loss = reduce_sum(leaky_relu(p))`：正区梯度 1、负区梯度 slope，逐元素对拍。
+#[test]
+fn leaky_relu_chain_matches_central_differences() -> Result<()> {
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let h = tape.record("leaky_relu_f32", &[p]).expect("记录 h");
+    let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
+
+    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
+    let slope = op::leaky_relu_f32::SLOPE;
+    let p0 = vec![-1.2_f32, 0.4, 1.1];
+    let chain_loss = |params: &[f32]| {
+        params
+            .iter()
+            .map(|&x| if x >= 0.0 { x } else { slope * x })
+            .sum::<f32>()
+    };
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
+    session.buffers().compute("leaky_relu_f32", &[p], h)?;
+    sum_backward(&mut session, h, loss)?;
+
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        &p0,
+        "p",
+        chain_loss,
+    );
+    Ok(())
+}
+
+/// `loss = reduce_sum(hard_sigmoid(p))`：线性区梯度恒为 1/6；饱和点解析梯度为 0。
+#[test]
+fn hard_sigmoid_chain_matches_central_differences() -> Result<()> {
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let h = tape.record("hard_sigmoid_f32", &[p]).expect("记录 h");
+    let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
+
+    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
+    let p0 = vec![-1.5_f32, 0.4, 1.1];
+    let chain_loss = |params: &[f32]| {
+        params
+            .iter()
+            .map(|&x| (x / 6.0 + 0.5).clamp(0.0, 1.0))
+            .sum::<f32>()
+    };
+
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
+    session.buffers().compute("hard_sigmoid_f32", &[p], h)?;
+    sum_backward(&mut session, h, loss)?;
+
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        &p0,
+        "p",
+        chain_loss,
+    );
+    Ok(())
+}
+
+/// 饱和点（|x| > 3）的解析梯度必须为 0，且不是差分近似能测得的小数。
+#[test]
+fn hard_sigmoid_is_flat_outside_the_linear_band() -> Result<()> {
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let h = tape.record("hard_sigmoid_f32", &[p]).expect("记录 h");
+    let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
+
+    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
+    let p0 = vec![-4.0_f32, 0.0, 4.0];
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(p, ParamRole::Trainable, p0)?;
+    session.buffers().compute("hard_sigmoid_f32", &[p], h)?;
+    sum_backward(&mut session, h, loss)?;
+
+    let grad = session.buffers().gradient(p).expect("参数梯度应在场");
+    assert_eq!(grad[0], 0.0, "下饱和梯度");
+    assert!((grad[1] - 1.0 / 6.0).abs() < 1e-6, "中心梯度 {}", grad[1]);
+    assert_eq!(grad[2], 0.0, "上饱和梯度");
+    Ok(())
+}

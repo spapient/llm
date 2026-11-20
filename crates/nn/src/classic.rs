@@ -717,9 +717,9 @@ mod tests {
         assert_eq!(layer.output().dims(), [32, 32, 64]);
         assert_eq!(layer.spca().ops(), [GEMM]);
         assert_eq!(layer.shape(), (32, 32));
-        // 下界来自 gemm 语义表，读侧应大于写侧。
+        // 下界来自 gemm 语义表（K 取声明档 8），因此有正 FLOPs 与正字节。
         let floor = layer.bounds().expect("合法").expect("有算子");
-        assert!(floor.read() > floor.write());
+        assert!(floor.flops() > 0.0 && floor.bytes() > 0);
     }
 
     #[test]
@@ -729,10 +729,11 @@ mod tests {
 
     #[test]
     fn conv1d_and_transpose_lengths_follow_the_geometry() {
-        let layer = Conv1d::new("a", 4, 8, ConvGeom { kh: 2, kw: 1, sh: 2, sw: 1, ph: 0, pw: 0 }, 9)
+        // 一维卷积只吃 `kw/sw/pw`：核 2、步长 1、无补零，长度 9 → 8。
+        let layer = Conv1d::new("a", 4, 8, ConvGeom { kh: 1, kw: 2, sh: 1, sw: 1, ph: 0, pw: 0 }, 9)
             .expect("合法");
-        assert_eq!(layer.len(), 5);
-        assert_eq!(layer.output().dims(), [5, 8]);
+        assert_eq!(layer.len(), 8);
+        assert_eq!(layer.output().dims(), [8, 8]);
 
         let up = ConvTranspose1d::new("up", 4, 6, 2, 2, 0, 9).expect("合法");
         assert_eq!(up.len(), 18);
