@@ -19,7 +19,11 @@ use op::conv::{
     AdaptiveAvgPool2d as OpAdaptive, Conv1d as OpConv1, Conv2d as OpConv2, Interpolate as OpInterp,
     MaxPool1d as OpPool1, MaxPool2d as OpPool2,
 };
-use op::norm::{BatchNorm2d as OpBatch, GroupNorm as OpGroup, InstanceNorm as OpInst, LayerNorm as OpLayer};
+// 归一化层现在是 `Scalar` 泛型；经典层登记只针对 `f32` 声明档，这里给出一份具体别名。
+type OpBatch = op::norm::BatchNorm2d<f32>;
+type OpGroup = op::norm::GroupNorm<f32>;
+type OpInst = op::norm::InstanceNorm<f32>;
+type OpLayer = op::norm::LayerNorm<f32>;
 use tensor::Shape;
 
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};

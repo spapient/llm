@@ -794,3 +794,191 @@ fn int8_gemm_msl(n: usize, k: usize, tile: usize) -> String {
          }}"
     )
 }
+
+/// 生产态张量核心 GEMM（Metal 4 的 `mpp::tensor_ops::matmul2d`）：一个 `tile × tile` 输出块由
+/// `32·simdgroups` 个线程协同算完，规约轴按 `k_tile` 切片。
+///
+/// 语义与模板逐元素相同（`Y[i][j] = Σ_p A[i][p]·B[p][j]`），但乘加走 GPU 的矩阵乘单元而不是
+/// 标量 FMA。前置条件由调用方保证：`M % tile == 0`；B 必须是**布局前置过的** `N×K` half
+/// （见 [`metal_transpose_half`]），A 仍是 `M×K` 的 f32 行主序。
+///
+/// 派发几何：线程组 `(tile/NRN, ·)` 按 `[N/tile, M/tile]` 铺开，组内 `32·SG` 个线程；
+/// `tgp.x` 是输出列块、`tgp.y` 是输出行块。
+///
+/// # Errors
+///
+/// 签名不足三条缓冲或三个整数标量、样本缺标量、或几何参数越界时返回说明。
+pub fn metal_tensor_gemm(
+    _kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    tile: usize,
+    k_tile: usize,
+    simdgroups: usize,
+) -> Result<String> {
+    let (a, b, y) = gemm_buffers(signature)?;
+    let (m, n, k) = gemm_dims(signature, sample)?;
+    check_tensor_geometry(m, n, k, tile, k_tile, simdgroups)?;
+    Ok(tensor_gemm_msl(a, b, y, m, n, k, tile, k_tile, simdgroups))
+}
+
+/// 张量核路径的报错出处。
+const TENSOR_SITE: &str = "engine::tiled::metal_tensor_gemm";
+
+/// 张量核 GEMM 的几何前提：输出块尺寸、规约块尺寸、simdgroup 数，以及 R 维必须整块对齐。
+///
+/// `M % tile == 0` 是硬约束：`matmul2d` 按整块读 A，尾块会把设备缓冲读越界（N 维不必对齐，
+/// 装载阶段零填、写回按 `min` 裁边）。
+fn check_tensor_geometry(
+    m: usize,
+    n: usize,
+    k: usize,
+    tile: usize,
+    k_tile: usize,
+    simdgroups: usize,
+) -> Result<()> {
+    let bad = |why: &str| Err(Error::new(Code::Invalid, why).with(TENSOR_SITE));
+    if !matches!(tile, 64 | 128) {
+        return bad("张量核输出块必须是 64 或 128");
+    }
+    if k_tile < 32 || !k_tile.is_multiple_of(16) {
+        return bad("张量核规约块必须是 ≥32 的 16 的倍数（装载按 16 元素一组）");
+    }
+    if !matches!(simdgroups, 4 | 8) {
+        return bad("张量核 simdgroup 数必须是 4 或 8");
+    }
+    // 共享内存按 half 存 B 片，超过 32 KiB 的线程组内存设备直接拒绝编译。
+    if tile * (k_tile + 4) * 2 > 32 * 1024 {
+        return bad("张量核 B 片超出 32 KiB 线程组内存");
+    }
+    if m == 0 || n == 0 || k == 0 || !m.is_multiple_of(tile) {
+        return bad("张量核要求 M 是输出块的正整数倍，且 N/K 非零");
+    }
+    Ok(())
+}
+
+/// 张量核 GEMM 的 MSL 正文：`M/N/K` 与几何全部烘成编译期常量，故无标量缓冲绑定。
+///
+/// 主循环每个 `k_tile` 把 B 的一竖条（`k_tile × tile`）搬进线程组内存，再让 `matmul2d` 在
+/// A、B 两块张量视图上累加；末块走 `dynamic_extent` 版本，规约轴长度是实际剩余。
+fn tensor_gemm_msl(
+    a: &str,
+    b: &str,
+    y: &str,
+    m: usize,
+    n: usize,
+    k: usize,
+    tile: usize,
+    k_tile: usize,
+    simdgroups: usize,
+) -> String {
+    format!(
+        "#include <metal_stdlib>\n\
+         #include <metal_tensor>\n\
+         #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n\
+         using namespace metal;\n\
+         \n\
+         kernel void kernel_main(\n\
+         \x20    device const float* d_{a} [[buffer(0)]],\n\
+         \x20    device const half* d_{b} [[buffer(1)]],\n\
+         \x20    device float* d_{y} [[buffer(2)]],\n\
+         \x20    uint3 tgp [[threadgroup_position_in_grid]],\n\
+         \x20    uint tiitg [[thread_index_in_threadgroup]]) {{\n\
+         \x20    constexpr int M = {m}, N = {n}, K = {k};\n\
+         \x20    constexpr int TS = {tile}, TK = {k_tile}, SG = {simdgroups};\n\
+         \x20    constexpr int NRN = TS, KP = TK + 4, NT = 32 * SG;\n\
+         \x20    constexpr int IPR = TK / 16, WI = NRN * IPR;\n\
+         \x20    const int ra = int(tgp.y) * TS, rb = int(tgp.x) * NRN;\n\
+         \x20    threadgroup half sb[NRN * KP];\n\
+         \x20    auto tA = tensor((device float*)d_{a} + (size_t)ra * K,\n\
+         \x20                     dextents<int32_t, 2>(K, TS), array<int, 2>{{1, K}});\n\
+         \x20    auto tB = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
+         \x20    using D = mpp::tensor_ops::matmul2d_descriptor;\n\
+         \x20    constexpr auto MA = D::mode::multiply_accumulate;\n\
+         \x20    mpp::tensor_ops::matmul2d<D(NRN, TS, TK, false, true, true, MA),\n\
+         \x20        execution_simdgroups<SG>> mm_full;\n\
+         \x20    mpp::tensor_ops::matmul2d<D(NRN, TS, static_cast<int>(dynamic_extent), false, true, true, MA),\n\
+         \x20        execution_simdgroups<SG>> mm_tail;\n\
+         \x20    auto cT = mm_full.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>();\n\
+         \x20    for (uint16_t i = 0; i < cT.get_capacity(); ++i) cT[i] = 0.0f;\n\
+         \x20    for (int k0 = 0; k0 < K; k0 += TK) {{\n\
+         \x20        for (int w = int(tiitg); w < WI; w += NT) {{\n\
+         \x20            const int row = w / IPR, col = (w % IPR) * 16, kp = k0 + col;\n\
+         \x20            const size_t base = (size_t)(rb + row) * K + kp;\n\
+         \x20            threadgroup half* dst = sb + row * KP + col;\n\
+         \x20            if (rb + row < N && kp + 15 < K && (base & 3) == 0) {{\n\
+         \x20                const device half4* src = (const device half4*)(d_{b} + base);\n\
+         \x20                threadgroup half4* out = (threadgroup half4*)dst;\n\
+         \x20                out[0] = src[0]; out[1] = src[1]; out[2] = src[2]; out[3] = src[3];\n\
+         \x20            }} else {{\n\
+         \x20                for (int i = 0; i < 16; ++i)\n\
+         \x20                    dst[i] = (rb + row < N && kp + i < K) ? d_{b}[base + (size_t)i] : (half)0;\n\
+         \x20            }}\n\
+         \x20        }}\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        if (k0 + TK <= K) {{\n\
+         \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+         \x20                              dextents<int32_t, 2>(TK, TS), array<int, 2>{{1, K}});\n\
+         \x20            auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
+         \x20            mm_full.run(av, bv, cT);\n\
+         \x20        }} else {{\n\
+         \x20            const int ke = K - k0;\n\
+         \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+         \x20                              dextents<int32_t, 2>(ke, TS), array<int, 2>{{1, K}});\n\
+         \x20            auto bv = tensor(sb, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});\n\
+         \x20            mm_tail.run(av, bv, cT);\n\
+         \x20        }}\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20    }}\n\
+         \x20    auto tD = tensor(d_{y} + (size_t)ra * N + rb,\n\
+         \x20                     dextents<int32_t, 2>(min(NRN, N - rb), TS), array<int, 2>{{1, N}});\n\
+         \x20    cT.store(tD);\n\
+         }}"
+    )
+}
+
+/// 张量核 GEMM 的 B 布局前置：把行主序 `rows × cols` 的 f32 转成 `cols × rows` 的 half。
+///
+/// 张量核要的 B 是 `N×K`（规约轴连续）且按 half 存，两者都不是模板里 `K×N` f32 的形状，所以
+/// 权重上传后先跑一遍这个内核，之后每次 GEMM 只读转好的缓冲。32×32 分块走线程组内存，
+/// 全局读、全局写都按行连续，与标量逐元素转置相比不牺牲合并访存。
+///
+/// 派发几何：线程组 `[⌈cols/32⌉, ⌈rows/32⌉]`，组内 `32×8` 个线程。
+///
+/// # Errors
+///
+/// `rows` 或 `cols` 为 0 时返回说明。
+pub fn metal_transpose_half(rows: usize, cols: usize) -> Result<String> {
+    if rows == 0 || cols == 0 {
+        return Err(Error::new(Code::Invalid, "转置要求行列均非零")
+            .with("engine::tiled::metal_transpose_half"));
+    }
+    Ok(format!(
+        "#include <metal_stdlib>\n\
+         using namespace metal;\n\
+         \n\
+         kernel void kernel_main(\n\
+         \x20    device const float* d_src [[buffer(0)]],\n\
+         \x20    device half* d_dst [[buffer(1)]],\n\
+         \x20    uint3 tgp [[threadgroup_position_in_grid]],\n\
+         \x20    uint3 tid [[thread_position_in_threadgroup]]) {{\n\
+         \x20    constexpr int R = {rows}, C = {cols};\n\
+         \x20    threadgroup float tile[32][33];\n\
+         \x20    const int sx = int(tgp.x) * 32 + int(tid.x);\n\
+         \x20    const int sy = int(tgp.y) * 32 + int(tid.y);\n\
+         \x20    for (int j = 0; j < 32; j += 8) {{\n\
+         \x20        const int y = sy + j;\n\
+         \x20        tile[int(tid.y) + j][int(tid.x)] =\n\
+         \x20            (y < R && sx < C) ? d_src[(size_t)y * C + sx] : 0.0f;\n\
+         \x20    }}\n\
+         \x20    threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20    const int dx = int(tgp.y) * 32 + int(tid.x);\n\
+         \x20    const int dy = int(tgp.x) * 32 + int(tid.y);\n\
+         \x20    for (int j = 0; j < 32; j += 8) {{\n\
+         \x20        const int y = dy + j;\n\
+         \x20        if (y < C && dx < R)\n\
+         \x20            d_dst[(size_t)y * R + dx] = half(tile[int(tid.x)][int(tid.y) + j]);\n\
+         \x20    }}\n\
+         }}"
+    ))
+}

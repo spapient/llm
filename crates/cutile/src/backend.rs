@@ -116,6 +116,19 @@ pub enum Lower {
         /// 每个 simdgroup 沿 N 的输出片段数（每片段 8 列）。
         col_frags: usize,
     },
+    /// 张量核矩阵乘 GEMM：一个 `tile × tile` 输出块由 `32·simdgroups` 个线程协同算完，
+    /// 规约轴按 `k_tile` 切片，B 片经线程组内存中转。乘加走硬件的矩阵乘单元而非标量 FMA，
+    /// 因此要求 B 预先转成 `N×K` 的低精度布局（布局前置不属于 lowering 本身）。
+    /// 要求 `M` 被 `tile` 整除、`tile ∈ {64, 128}`、`k_tile` 是 16 的倍数、`simdgroups ∈ {4, 8}`；
+    /// 不满足时由调用方回落。
+    TensorGemm {
+        /// 输出块边长（同时也是线程组负责的 N 方向跨度）。
+        tile: usize,
+        /// 规约轴每次前进的长度（装载按 16 元素一组）。
+        k_tile: usize,
+        /// 参与协同的 simdgroup 数（`8` 用于 `128` 块，`4` 用于 `64` 块）。
+        simdgroups: usize,
+    },
     /// flash attention 分块：一个线程组负责一个查询行，K/V 按 `block` 个键分块流式扫描，
     /// 在线 softmax（running max/sum）把输出累加在寄存器，不保留完整分数向量。
     /// 要求线程数为 2 的幂、`block` 是线程数的倍数、`D ≤ 64`；不满足时由调用方回落。

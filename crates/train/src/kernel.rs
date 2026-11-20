@@ -109,10 +109,10 @@ struct Entry {
 /// 标量内核表：算子名由适配函数的标识符派生（两者同名是同一条判据）。
 /// 一元 `[f32] → [f32]` 适配：套用算子的标量实现。
 macro_rules! unary {
-    ($($run:ident),* $(,)?) => {$(
+    ($($run:ident => $module:ident),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
-            op::$run::forward(a, output_slice::<f32>(stringify!($run), output)?)
+            op::$module::forward(a, output_slice::<f32>(stringify!($run), output)?)
         }
     )*};
 }
@@ -130,11 +130,11 @@ macro_rules! binary {
 /// 归一化 `[x, gamma, beta] → [y]` 适配：三个 f32 输入、一个 f32 输出；
 /// 声明档几何（通道数、空间、批大小）固定在算子模块里，由层侧的真实几何另行决定。
 macro_rules! norm {
-    ($($run:ident),* $(,)?) => {$(
+    ($($run:ident => $module:ident),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (x, gamma, beta) =
                 <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            op::$run::forward(x, gamma, beta, output_slice::<f32>(stringify!($run), output)?)
+            op::$module::forward(x, gamma, beta, output_slice::<f32>(stringify!($run), output)?)
         }
     )*};
 }
@@ -153,22 +153,22 @@ macro_rules! gemm {
 }
 
 unary!(
-    adaptive_pool_f32,
-    avg_pool2d_f32,
-    exp_f32,
-    gelu_f32,
-    hard_sigmoid_f32,
-    leaky_relu_f32,
-    interpolate_f32,
-    log_f32,
-    max_pool1d_f32,
-    max_pool2d_f32,
-    silu_f32,
-    softmax_f32,
-    reduce_max_f32,
-    reduce_sum_f32,
-    scale_f32,
-    scan_f32
+    adaptive_pool_f32 => adaptive_pool,
+    avg_pool2d_f32 => avg_pool2d,
+    exp_f32 => exp_f32,
+    gelu_f32 => gelu_f32,
+    hard_sigmoid_f32 => hard_sigmoid_f32,
+    leaky_relu_f32 => leaky_relu_f32,
+    interpolate_f32 => interpolate,
+    log_f32 => log_f32,
+    max_pool1d_f32 => max_pool1d,
+    max_pool2d_f32 => max_pool2d,
+    silu_f32 => silu_f32,
+    softmax_f32 => softmax_f32,
+    reduce_max_f32 => reduce_max_f32,
+    reduce_sum_f32 => reduce_sum_f32,
+    scale_f32 => scale_f32,
+    scan_f32 => scan_f32
 );
 binary!(
     add_f32,
@@ -183,16 +183,16 @@ binary!(
 );
 
 norm!(
-    batch_norm_f32,
-    group_norm_f32,
-    instance_norm_f32,
-    layer_norm_f32
+    batch_norm_f32 => batch_norm,
+    group_norm_f32 => group_norm,
+    instance_norm_f32 => instance_norm,
+    layer_norm_f32 => layer_norm
 );
 
 /// 二维卷积适配：`[x, weight, bias] → y`，声明档单样本几何由算子模块定。
 fn conv2d_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (x, weight, bias) = <(f32, f32, f32) as Inputs>::unpack(inputs, "conv2d_f32")?;
-    op::conv2d_f32::forward(x, weight, bias, output_slice::<f32>("conv2d_f32", output)?)
+    op::conv2d::forward(x, weight, bias, output_slice::<f32>("conv2d_f32", output)?)
 }
 
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。

@@ -16,7 +16,7 @@ use op::conv::{
 use op::norm::{BatchNorm2d, GroupNorm, LayerNorm};
 
 /// 归一化 eps：与 `op::classic` 四个声明档模块的 `EPS` 同值（算术来源留在 op 侧）。
-pub const EPS: f32 = op::batch_norm_f32::EPS;
+pub const EPS: f32 = op::batch_norm::EPS;
 
 /// BatchNorm 的滑动统计动量：只用于更新 running，不参与输出。
 const MOMENTUM: f32 = 0.1;
@@ -212,71 +212,71 @@ impl Geometry {
                 k: 2,
                 s: 2,
                 p: 0,
-                l: op::max_pool1d_f32::L,
+                l: op::max_pool1d::L,
                 c: 1,
             }),
             "max_pool2d_f32" => Ok(Self::Pool2d {
                 k: 3,
                 s: 1,
                 p: 1,
-                h: op::max_pool2d_f32::H,
-                w: op::max_pool2d_f32::W,
+                h: op::max_pool2d::H,
+                w: op::max_pool2d::W,
                 c: 1,
             }),
             "avg_pool2d_f32" => Ok(Self::Avg2d {
                 k: 3,
                 s: 1,
                 p: 1,
-                h: op::avg_pool2d_f32::H,
-                w: op::avg_pool2d_f32::W,
+                h: op::avg_pool2d::H,
+                w: op::avg_pool2d::W,
                 c: 1,
                 count_include_pad: false,
             }),
             "adaptive_pool_f32" => Ok(Self::Adaptive {
-                oh: op::adaptive_pool_f32::OH,
-                ow: op::adaptive_pool_f32::OW,
-                h: op::adaptive_pool_f32::H,
-                w: op::adaptive_pool_f32::W,
+                oh: op::adaptive_pool::OH,
+                ow: op::adaptive_pool::OW,
+                h: op::adaptive_pool::H,
+                w: op::adaptive_pool::W,
                 c: 1,
             }),
             "interpolate_f32" => Ok(Self::Interp {
-                oh: op::interpolate_f32::OH,
-                ow: op::interpolate_f32::OW,
-                h: op::interpolate_f32::H,
-                w: op::interpolate_f32::W,
+                oh: op::interpolate::OH,
+                ow: op::interpolate::OW,
+                h: op::interpolate::H,
+                w: op::interpolate::W,
                 c: 1,
                 linear: true,
             }),
             "conv2d_f32" => Ok(Self::Conv2d {
-                k: op::conv2d_f32::K,
-                s: op::conv2d_f32::S,
-                p: op::conv2d_f32::P,
-                h: op::conv2d_f32::H,
-                w: op::conv2d_f32::W,
-                cin: op::conv2d_f32::CIN,
-                cout: op::conv2d_f32::COUT,
+                k: op::conv2d::K,
+                s: op::conv2d::S,
+                p: op::conv2d::P,
+                h: op::conv2d::H,
+                w: op::conv2d::W,
+                cin: op::conv2d::CIN,
+                cout: op::conv2d::COUT,
             }),
             "batch_norm_f32" => Ok(Self::Norm {
-                n: op::batch_norm_f32::N,
-                spatial: op::batch_norm_f32::S,
-                channels: op::batch_norm_f32::C,
+                n: op::batch_norm::N,
+                spatial: op::batch_norm::S,
+                channels: op::batch_norm::C,
             }),
             "group_norm_f32" => Ok(Self::Group {
-                groups: op::group_norm_f32::G,
-                n: op::group_norm_f32::N,
-                spatial: op::group_norm_f32::S,
-                channels: op::group_norm_f32::C,
+                groups: op::group_norm::G,
+                n: op::group_norm::N,
+                spatial: op::group_norm::S,
+                channels: op::group_norm::C,
             }),
             // 实例归一化在 op 侧就是 `GroupNorm(groups = channels)`，这里不再单开变体。
             "instance_norm_f32" => Ok(Self::Group {
-                groups: op::instance_norm_f32::C,
-                n: op::instance_norm_f32::N,
-                spatial: op::instance_norm_f32::S,
-                channels: op::instance_norm_f32::C,
+                groups: op::instance_norm::C,
+                n: op::instance_norm::N,
+                spatial: op::instance_norm::S,
+                channels: op::instance_norm::C,
             }),
             "layer_norm_f32" => Ok(Self::Layer {
-                rows: op::layer_norm_f32::R,
-                width: op::layer_norm_f32::W,
+                rows: op::layer_norm::R,
+                width: op::layer_norm::W,
             }),
             other => Err(Error::new(
                 Code::Unsupported,
@@ -893,16 +893,16 @@ mod tests {
     #[test]
     fn declared_geometries_match_the_sample_lengths() {
         for (op, sample) in [
-            ("max_pool1d_f32", op::max_pool1d_f32::sample(1, 1)),
-            ("max_pool2d_f32", op::max_pool2d_f32::sample(1, 1)),
-            ("avg_pool2d_f32", op::avg_pool2d_f32::sample(1, 1)),
-            ("adaptive_pool_f32", op::adaptive_pool_f32::sample(1, 1)),
-            ("interpolate_f32", op::interpolate_f32::sample(1, 1)),
-            ("batch_norm_f32", op::batch_norm_f32::sample(1, 1)),
-            ("conv2d_f32", op::conv2d_f32::sample(1, 1)),
-            ("group_norm_f32", op::group_norm_f32::sample(1, 1)),
-            ("instance_norm_f32", op::instance_norm_f32::sample(1, 1)),
-            ("layer_norm_f32", op::layer_norm_f32::sample(1, 1)),
+            ("max_pool1d_f32", op::max_pool1d::sample(1, 1)),
+            ("max_pool2d_f32", op::max_pool2d::sample(1, 1)),
+            ("avg_pool2d_f32", op::avg_pool2d::sample(1, 1)),
+            ("adaptive_pool_f32", op::adaptive_pool::sample(1, 1)),
+            ("interpolate_f32", op::interpolate::sample(1, 1)),
+            ("batch_norm_f32", op::batch_norm::sample(1, 1)),
+            ("conv2d_f32", op::conv2d::sample(1, 1)),
+            ("group_norm_f32", op::group_norm::sample(1, 1)),
+            ("instance_norm_f32", op::instance_norm::sample(1, 1)),
+            ("layer_norm_f32", op::layer_norm::sample(1, 1)),
         ] {
             let g = Geometry::declared(op).expect("声明档实例");
             let y = sample.f32("y").expect("y");
@@ -916,16 +916,16 @@ mod tests {
     #[test]
     fn declared_forward_matches_the_reference() {
         for (op, sample) in [
-            ("max_pool1d_f32", op::max_pool1d_f32::sample(1, 1)),
-            ("max_pool2d_f32", op::max_pool2d_f32::sample(1, 1)),
-            ("avg_pool2d_f32", op::avg_pool2d_f32::sample(1, 1)),
-            ("adaptive_pool_f32", op::adaptive_pool_f32::sample(1, 1)),
-            ("interpolate_f32", op::interpolate_f32::sample(1, 1)),
-            ("batch_norm_f32", op::batch_norm_f32::sample(1, 1)),
-            ("conv2d_f32", op::conv2d_f32::sample(1, 1)),
-            ("group_norm_f32", op::group_norm_f32::sample(1, 1)),
-            ("instance_norm_f32", op::instance_norm_f32::sample(1, 1)),
-            ("layer_norm_f32", op::layer_norm_f32::sample(1, 1)),
+            ("max_pool1d_f32", op::max_pool1d::sample(1, 1)),
+            ("max_pool2d_f32", op::max_pool2d::sample(1, 1)),
+            ("avg_pool2d_f32", op::avg_pool2d::sample(1, 1)),
+            ("adaptive_pool_f32", op::adaptive_pool::sample(1, 1)),
+            ("interpolate_f32", op::interpolate::sample(1, 1)),
+            ("batch_norm_f32", op::batch_norm::sample(1, 1)),
+            ("conv2d_f32", op::conv2d::sample(1, 1)),
+            ("group_norm_f32", op::group_norm::sample(1, 1)),
+            ("instance_norm_f32", op::instance_norm::sample(1, 1)),
+            ("layer_norm_f32", op::layer_norm::sample(1, 1)),
         ] {
             let g = Geometry::declared(op).expect("声明档实例");
             let mut out = vec![0.0f32; g.outputs()];

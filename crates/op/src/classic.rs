@@ -22,7 +22,7 @@ use diagnostic::Error;
 /// 模块内必须提供同名 `cost` / `sample` / `reference` 与 `project_shape` / `AXES`：基座宏按路径取，
 /// 不在这里再抄一份。
 macro_rules! classic_op {
-    ($ty:ident, $alias:ident, $op:literal, $arity:literal, $m:literal, $n:literal) => {
+    ($ty:ident, $alias:ident, $op:tt, $arity:literal, $m:tt, $n:tt) => {
         #[doc = concat!("`", $op, "` 的标记类型。")]
         #[derive(Debug, Clone, Copy)]
         pub struct $ty;

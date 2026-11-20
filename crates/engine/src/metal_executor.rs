@@ -73,6 +73,13 @@ macro_rules! msg {
             unsafe { send(receiver, selector $(, $arg)*) }
         }
     };
+    (usize $name:ident, []) => {
+        unsafe fn $name(receiver: *mut c_void, selector: *mut c_void) -> usize {
+            let send: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
+                unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+            unsafe { send(receiver, selector) }
+        }
+    };
     (void $name:ident, [$($arg:ident: $ty:ty),*]) => {
         unsafe fn $name(receiver: *mut c_void, selector: *mut c_void, $($arg: $ty,)*) {
             let send: unsafe extern "C" fn(*mut c_void, *mut c_void $(, $ty)*) =
@@ -100,6 +107,8 @@ msg!(void msg_void_1p, [p: *mut c_void]);
 msg!(void msg_void_p2u, [p: *mut c_void, a: usize, b: usize]);
 // `(id, SEL, usize) -> void`：一个 NSUInteger 参数（如 setLanguageVersion:）。
 msg!(void msg_void_1u, [a: usize]);
+// `(id, SEL) -> usize`：返回 NSUInteger 的 0 参方法（如 -status）。
+msg!(usize msg_usize, []);
 // `(id, SEL, MTLSize, MTLSize) -> void`：dispatchThreads:threadsPerThreadgroup:。
 // MTLSize 24 字节（>16），arm64/x86_64 下 extern "C" 按间接指针传参，无需 objc_msgSend_stret。
 msg!(void msg_void_2size, [a: MTLSize, b: MTLSize]);
@@ -240,6 +249,9 @@ fn metal4(source: &str) -> bool {
     source.contains("<metal_tensor>") || source.contains("mpp::tensor_ops")
 }
 
+/// `MTLCommandBufferStatusCompleted`：命令缓冲正常跑完的唯一取值。
+const COMMAND_BUFFER_COMPLETED: usize = 4;
+
 /// Metal 4.0 对应的 `MTLLanguageVersion` 数值（`MTLLanguageVersion4_0`）。
 const METAL4_VERSION: usize = 0x0004_0000;
 
@@ -376,7 +388,13 @@ impl MetalCommandQueue {
             msg_void(encoder, selector(b"endEncoding\0"));
             msg_void(cmd, selector(b"commit\0"));
             msg_void(cmd, selector(b"waitUntilCompleted\0"));
-            true
+            // 派发本身成功不代表内核跑成了：越界、共享内存超限、张量布局不合法都会让命令
+            // 缓冲以 error 收场，而缓冲内容保持原样。不查状态就会把「没写」当成「写错」。
+            if msg_usize(cmd, selector(b"status\0")) == COMMAND_BUFFER_COMPLETED {
+                return true;
+            }
+            report(&msg_id(cmd, selector(b"error\0")));
+            false
         }
     }
 }

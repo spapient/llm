@@ -36,14 +36,6 @@ pub trait Scalar:
     /// 负无穷（DSA top-k 掩码：`softmax(−∞)=0`，实现真稀疏注意力）。
     const NEG_INFINITY: Self;
 
-    /// 加法。
-    fn add(self, rhs: Self) -> Self;
-    /// 减法。
-    fn sub(self, rhs: Self) -> Self;
-    /// 乘法。
-    fn mul(self, rhs: Self) -> Self;
-    /// 除法。
-    fn div(self, rhs: Self) -> Self;
     /// 自然指数 `exp(x)`。
     fn exp(self) -> Self;
     /// `exp(x) - 1`（无 `x≈0` 时的灾难性消去）。
@@ -91,18 +83,6 @@ macro_rules! impl_scalar {
             const ONE: Self = 1.0;
             const NEG_INFINITY: Self = $neg_inf;
 
-            fn add(self, rhs: Self) -> Self {
-                self + rhs
-            }
-            fn sub(self, rhs: Self) -> Self {
-                self - rhs
-            }
-            fn mul(self, rhs: Self) -> Self {
-                self * rhs
-            }
-            fn div(self, rhs: Self) -> Self {
-                self / rhs
-            }
             fn exp(self) -> Self {
                 <$ty>::exp(self)
             }
@@ -255,7 +235,7 @@ impl<S: Scalar> SsmStep<S> {
 
     /// 施加一步：`s' = a·s + b`。
     pub fn apply(self, state: S) -> S {
-        self.a.mul(state).add(self.b)
+        self.a * state + self.b
     }
 }
 
@@ -267,8 +247,8 @@ impl<S: Scalar> Monoid for SsmStep<S> {
 
     fn combine(self, next: Self) -> Self {
         SsmStep {
-            a: next.a.mul(self.a),
-            b: next.a.mul(self.b).add(next.b),
+            a: next.a * self.a,
+            b: next.a * self.b + next.b,
         }
     }
 }
@@ -281,11 +261,11 @@ impl<S: Scalar> Monoid for SsmStep<S> {
 ///
 /// 对 `d×N` 状态逐维调用即可得到整层一步的 `d·N` 个半群步。
 pub fn exp_zero_order<S: Scalar>(lam: S, b: S, dt: S) -> SsmStep<S> {
-    let a = lam.mul(dt).exp();
+    let a = (lam * dt).exp();
     let b = if lam == S::ZERO {
-        dt.mul(b)
+        dt * b
     } else {
-        lam.mul(dt).exp_m1().div(lam).mul(b)
+        (lam * dt).exp_m1() / lam * b
     };
     SsmStep { a, b }
 }
@@ -318,8 +298,8 @@ impl<S: Scalar> PlaneStep<S> {
         let [b_re, b_im] = self.b;
         let [re, im] = state;
         [
-            a_re.mul(re).sub(a_im.mul(im)).add(b_re.mul(select)),
-            a_im.mul(re).add(a_re.mul(im)).add(b_im.mul(select)),
+            a_re * re - a_im * im + b_re * select,
+            a_im * re + a_re * im + b_im * select,
         ]
     }
 }
@@ -333,14 +313,14 @@ impl<S: Scalar> PlaneStep<S> {
 /// `ω = 0` 时 `ā` 退化为实衰减、`b̄` 的虚部为零，`PlaneStep` 与 [`exp_zero_order`] 的实值口径同形；
 /// 但两条式子**数值不同**（梯形用两端平均，零阶保持用左端常数），别把其中一个当成另一个的等价物。
 pub fn exp_trapezoid<S: Scalar>(lam_re: S, omega: S, dt: S, prev: S, cur: S) -> PlaneStep<S> {
-    let decay = lam_re.mul(dt);
-    let phase = omega.mul(dt);
+    let decay = lam_re * dt;
+    let phase = omega * dt;
     let magnitude = decay.exp();
     let [sin, cos] = [phase.sin(), phase.cos()];
-    let [a_re, a_im] = [magnitude.mul(cos), magnitude.mul(sin)];
+    let [a_re, a_im] = [magnitude * cos, magnitude * sin];
     // (dt/2)·(ā·x_{t−1} + x_t)：`ā·x_{t−1}` 是复值，`x_t` 只进实部。
-    let half = dt.div(S::ONE.add(S::ONE));
-    let b = [half.mul(a_re.mul(prev).add(cur)), half.mul(a_im.mul(prev))];
+    let half = dt / (S::ONE + S::ONE);
+    let b = [half * (a_re * prev + cur), half * (a_im * prev)];
     PlaneStep { a: [a_re, a_im], b }
 }
 

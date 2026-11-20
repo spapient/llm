@@ -277,6 +277,7 @@ fn metal_lower(
         }
         TiledGemm { .. }
         | SimdGroupGemm { .. }
+        | TensorGemm { .. }
         | Int8Gemm { .. }
         | TiledAttention { .. }
         | FlashAttention { .. }
@@ -294,9 +295,8 @@ fn metal_special(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        TiledGemm { .. } | SimdGroupGemm { .. } | Int8Gemm { .. } | WmmaGemm => {
-            metal_gemm_lower(kernel, signature, sample, kind)
-        }
+        TiledGemm { .. } | SimdGroupGemm { .. } | TensorGemm { .. } | Int8Gemm { .. }
+        | WmmaGemm => metal_gemm_lower(kernel, signature, sample, kind),
         TiledAttention { .. } | FlashAttention { .. } => {
             metal_attention_lower(kernel, signature, sample, kind)
         }
@@ -325,6 +325,14 @@ fn metal_gemm_lower(
             col_frags,
         } => crate::tiled::metal_simdgroup_gemm(kernel, signature, sample, *row_frags, *col_frags)
             .map(|s| vec![s]),
+        TensorGemm {
+            tile,
+            k_tile,
+            simdgroups,
+        } => crate::tiled::metal_tensor_gemm(
+            kernel, signature, sample, *tile, *k_tile, *simdgroups,
+        )
+        .map(|s| vec![s]),
         Int8Gemm { tile } => {
             crate::tiled::metal_int8_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
         }
@@ -394,6 +402,7 @@ fn metal_chunk_lower(
         | QuantizedGemvI4 { .. }
         | TiledGemm { .. }
         | SimdGroupGemm { .. }
+        | TensorGemm { .. }
         | Int8Gemm { .. }
         | TiledAttention { .. }
         | FlashAttention { .. }

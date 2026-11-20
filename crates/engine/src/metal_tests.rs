@@ -151,10 +151,16 @@ fn catalogue_and_dirs(cache: &str) -> (cutile::builtin::Catalogue, cutile::dirs:
 
 /// matmul 测点的确定性输入 + CPU 参考：A、B 各取一套固定取模模式，参考由 f64 累加给出。
 fn matmul_inputs(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let a: Vec<f32> = (0..m * k).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
-    let b: Vec<f32> = (0..k * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+    let (a, b) = matmul_values(m, n, k);
     let reference = cpu_matmul(&a, &b, m, n, k);
     (a, b, reference)
+}
+
+/// matmul 测点的确定性输入（不含参考）：大形状的 f64 参考要跑上分钟，吞吐测点只要输入。
+fn matmul_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>) {
+    let a: Vec<f32> = (0..m * k).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+    let b: Vec<f32> = (0..k * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+    (a, b)
 }
 
 /// 注意力测点的确定性输入 + CPU 参考：Q/K/V 各取一套固定取模模式，参考由 [`cpu_attention`] 给出。
@@ -966,11 +972,7 @@ fn as_bytes(values: &[f32]) -> Vec<u8> {
 /// 整批口径会把注意力输出上 1e-5 的绝对差放大成 1e0 的相对误差，那不是「算错了」而是「分母选错了」。
 /// `Unit` 给每元素留 1 的绝对地板，正对这两类输出的共同下限；最差元素的下标与两侧取值仍由夹具层报出。
 fn assert_matmul_matches(label: &str, reference: &[f32], output: &[u8]) {
-    let (chunks, _) = output.as_chunks::<4>();
-    let got: Vec<f32> = chunks
-        .iter()
-        .map(|chunk| f32::from_ne_bytes(*chunk))
-        .collect();
+    let got = read_back(output);
     testkit::assert_rel_with(
         testkit::Scale::Unit,
         &got,
@@ -978,6 +980,23 @@ fn assert_matmul_matches(label: &str, reference: &[f32], output: &[u8]) {
         1e-3,
         &format!("{label} 的 GPU 输出与 CPU 参考"),
     );
+}
+
+/// 把设备缓冲回读成 f32 序列（缓冲按 f32 分配、按 4 字节切块）。
+fn read_back(output: &[u8]) -> Vec<f32> {
+    let (chunks, _) = output.as_chunks::<4>();
+    chunks
+        .iter()
+        .map(|chunk| f32::from_ne_bytes(*chunk))
+        .collect()
+}
+
+/// 每元素相对误差的最大值，分母按 `max(|want|, 1)`（[`testkit::Scale::Unit`] 口径），只用于打印。
+fn max_relative(got: &[f32], want: &[f32]) -> f64 {
+    got.iter()
+        .zip(want)
+        .map(|(got, want)| f64::from((got - want).abs()) / f64::from(want.abs()).max(1.0))
+        .fold(0.0, f64::max)
 }
 
 /// 同一内核连跑 50 次，返回中位数延迟（ns）；预热一次不计入。
@@ -997,4 +1016,140 @@ fn measure(
     }
     samples.sort_unstable();
     samples[samples.len() / 2] as f64
+}
+
+/// 把 `value` 按张量核输入精度舍入：10 位尾数、就近取偶，等价于 f32→half→f32 的往返。
+///
+/// 只用于造 CPU 参考——`relaxed` 路径的 A、B 都只有 10 位尾数（half / tf32 同级），拿全精度
+/// 参考去对拍只会把「精度档不同」误报成「算错了」。指数域不动：测点取值落在 half 正规区间。
+fn half_precision(value: f32) -> f32 {
+    let bits = value.to_bits();
+    let exponent = bits & 0x7f80_0000;
+    let mantissa = bits & 0x007f_ffff;
+    let dropped = mantissa & 0x1fff;
+    let mut kept = mantissa >> 13;
+    if dropped > 0x1000 || (dropped == 0x1000 && kept & 1 == 1) {
+        kept += 1;
+    }
+    f32::from_bits(exponent | (kept << 13))
+}
+
+/// 张量核 `relaxed` 口径的对拍阈值：输入只有 10 位尾数、硬件还可能低精度累加，故放到 5e-3；
+/// 同形的全 f32 路径（分块 / simdgroup）仍按 1e-3 判。
+const TENSOR_TOLERANCE: f64 = 5e-3;
+
+/// 张量核输出与「按同精度舍入后的 f64 参考」对拍。
+fn assert_relaxed_matches(label: &str, reference: &[f32], output: &[u8]) -> f64 {
+    let got = read_back(output);
+    let error = max_relative(&got, reference);
+    assert!(
+        error < TENSOR_TOLERANCE,
+        "{label} 的 GPU 输出与 CPU 参考偏差 {error:.2e} 超过 {TENSOR_TOLERANCE:.0e}"
+    );
+    error
+}
+
+/// 张量核 GEMM 打通验证 + 吞吐测量：先跑一次 B 的布局前置（`K×N` f32 → `N×K` half），
+/// 再对主内核连跑 50 次取中位数。
+///
+/// 计时口径与 `llm.u` 的 `measure_kernel` 一致——区间里只有 GEMM 派发本身，不含上传、下载和
+/// 布局前置；`GF/s = 2·M·N·K / 中位延迟`。四档形状对标 `llm.u/docs/perf.md` 的
+/// `1024³ ≈ 5.2–8.5`、`2048³ ≈ 18.3`、`4096³ ≈ 24.5` TF/s（同机 M5 Pro、20 核）。
+///
+/// 正确性只在 `M·N·K ≤ 1024³` 的形状上对拍：更大的 f64 参考要跑上分钟，而吞吐测点只需要输入。
+///
+/// 运行：`cargo test --release -p llm-engine --lib -- metal_tensor_gemm --ignored --nocapture`
+#[test]
+#[ignore = "Metal 张量核 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_gemm --ignored --nocapture"]
+fn metal_tensor_gemm() {
+    let Some((device, queue)) = bench_device("张量核 GEMM") else {
+        return;
+    };
+    crate::backends::install();
+    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-tensor");
+    // llm.u 的默认档：128 输出块 / 96 规约块 / 8 simdgroup。
+    let (tile, k_tile, simdgroups) = (128, 96, 8);
+
+    for (m, n, k) in [
+        (512, 512, 512),
+        (1024, 1024, 1024),
+        (2048, 2048, 2048),
+        (4096, 4096, 4096),
+    ] {
+        let (a, b) = matmul_values(m, n, k);
+        let a_buf = upload(&device, &a, "A");
+        let b_buf = upload(&device, &b, "B");
+        let bt_buf = device.new_buffer(n * k * 2).expect("Bt 缓冲");
+        let mut y_buf = output_buffer(&device, m * n, "Y");
+
+        // 布局前置：`B[K][N]` 的 f32 → `Bt[N][K]` 的 half，整个基准只跑一次。
+        let transpose = crate::tiled::metal_transpose_half(k, n).expect("转置 MSL 应能生成");
+        let transpose = device.compile(&transpose).expect("转置 MSL 应能编译");
+        assert!(
+            queue.execute(
+                &transpose,
+                &[&b_buf, &bt_buf],
+                [(n as u32).div_ceil(32) * 32, (k as u32).div_ceil(32) * 8, 1],
+                [32, 8, 1],
+            ),
+            "转置派发应成功"
+        );
+
+        let msl = cutile::execution::metal_tensor_gemm_program(
+            &catalogue,
+            &dirs,
+            "matmul_f32",
+            m,
+            n,
+            tile,
+            k_tile,
+            simdgroups,
+        )
+        .expect("张量核 MSL 应能生成");
+        assert!(
+            msl.contains("mpp::tensor_ops::matmul2d"),
+            "Gemm 骨架应走张量核 lowering"
+        );
+        let pipe = device.compile(&msl).expect("张量核 MSL 应能编译");
+        let grid = [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1];
+        let block = [32, simdgroups as u32, 1];
+        assert!(
+            queue.execute(&pipe, &[&a_buf, &bt_buf, &y_buf], grid, block),
+            "GEMM 派发应成功"
+        );
+
+        let error = if m * n * k <= 1024 * 1024 * 1024 {
+            let reference = cpu_matmul(
+                &a.iter().copied().map(half_precision).collect::<Vec<f32>>(),
+                &b.iter().copied().map(half_precision).collect::<Vec<f32>>(),
+                m,
+                n,
+                k,
+            );
+            if m == 512 {
+                let got = read_back(y_buf.as_mut_bytes());
+                let aq: Vec<f32> = a.iter().copied().map(half_precision).collect();
+                let bq: Vec<f32> = b.iter().copied().map(half_precision).collect();
+                for kk in [1usize, 16, 32, 96, 192, 512] {
+                    let bs: Vec<f32> =
+                        (0..kk).flat_map(|p| bq[p * n..(p + 1) * n].iter().copied()).collect();
+                    let as_: Vec<f32> = (0..m)
+                        .flat_map(|i| aq[i * k..i * k + kk].iter().copied())
+                        .collect();
+                    let r = cpu_matmul(&as_, &bs, m, n, kk);
+                    eprintln!("K={kk:4} 最大相对误差 {:.3e}", max_relative(&got, &r));
+                }
+            }
+            assert_relaxed_matches(&format!("张量核 {m}×{n}×{k}"), &reference, y_buf.as_mut_bytes())
+        } else {
+            f64::NAN
+        };
+
+        let ns = measure(&queue, &pipe, &[&a_buf, &bt_buf, &y_buf], grid, block);
+        let gflops = 2.0 * (m * n * k) as f64 / ns;
+        println!(
+            "张量核 {m}×{n}×{k}: {:.3} ms → {gflops:.0} GF/s（最大相对误差 {error:.2e}）",
+            ns / 1e6
+        );
+    }
 }

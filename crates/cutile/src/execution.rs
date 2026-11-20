@@ -263,6 +263,72 @@ fn fragment_shape(run: &Run<'_>, m: usize, n: usize, row_frags: usize, col_frags
         && divides(n, 8 * col_frags)
 }
 
+/// 生产态 Metal 张量核 GEMM 内核源：一个 `tile × tile` 输出块由 `32·simdgroups` 个线程协同
+/// 算完，规约轴按 `k_tile` 切片，乘加走硬件的矩阵乘单元。
+///
+/// **布局前置**：张量核要的 B 是「规则约轴连续、按 half 存」的 `N×K` 权重（见
+/// `engine::tiled::metal_transpose_half`），与模板里 `K×N` 的 f32 B 不同形。调用方必须先跑
+/// 一遍布局前置，再拿本入口生成的主内核反复派发；本入口只负责描述乘加本身。
+///
+/// 只对「Gemm 骨架 + `M` 被 `tile` 整除 + 几何参数合法」的形状走张量核，其余回落到
+/// [`metal_grid_program`]，因此本入口对全部骨架都有定义。
+///
+/// # Errors
+///
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_tensor_gemm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+    tile: usize,
+    k_tile: usize,
+    simdgroups: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
+    if !tensor_ready(&run, m, n, tile, k_tile, simdgroups) {
+        return lower(&run, &prepared, m, n);
+    }
+    single(
+        lower_sources(
+            Emit::Metal,
+            &Lower::TensorGemm {
+                tile,
+                k_tile,
+                simdgroups,
+            },
+            &run,
+            &prepared,
+            m,
+            n,
+        )?,
+        "张量核 gemm",
+    )
+}
+
+/// 张量核 GEMM 的前置条件：Gemm 骨架、几何参数成闭集、`M` 被 `tile` 整除。
+///
+/// `M` 的整除性是硬约束——`matmul2d` 按整块读 A，尾块会读越界；N 维不必对齐（装载零填、
+/// 写回裁边），K 维不必对齐（末块走 `dynamic_extent`）。
+fn tensor_ready(
+    run: &Run<'_>,
+    m: usize,
+    n: usize,
+    tile: usize,
+    k_tile: usize,
+    simdgroups: usize,
+) -> bool {
+    run.op.skeleton == Skeleton::Gemm
+        && n > 0
+        && divides(m, tile)
+        && matches!(tile, 64 | 128)
+        && k_tile >= 32
+        && k_tile.is_multiple_of(16)
+        && matches!(simdgroups, 4 | 8)
+        && tile * (k_tile + 4) * 2 <= 32 * 1024
+}
+
 /// 生产态 Metal int8 分块 GEMM 内核源：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 精确累加、`f32` 输出。
 ///
 /// 只对「Gemm 骨架 + 两个 `u8` 输入、一个 `f32` 输出、三个整数标量 + `M/N/K` 均能被 `tile`
