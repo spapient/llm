@@ -105,6 +105,17 @@ pub struct Registration {
     pub differentiable: bool,
 }
 
+/// 内核表装配：一行一个「算子名 → 适配函数」，展开成 `Entry { op, run }` 的数组字面量。
+///
+/// `Entry` 由调用方定义（字段名固定为 `op` / `run`）；`train` 的全量参考表与 `serve` 的
+/// f32 子集表共用这一份展开规则，名字与顺序的断言留在各自 crate（前者同序锁注册表、后者只查存在性）。
+#[macro_export]
+macro_rules! kernel_table {
+    ($($run:ident),* $(,)?) => {
+        [$( Entry { op: stringify!($run), run: $run } ),*]
+    };
+}
+
 /// 生成编译期内嵌的算子注册表：一行一个算子，`"名字" => MODEL 常量路径, 可微, 模板`。
 ///
 /// 名字是 `ops/<name>.toml` 的文件名，`MODEL` 路径是语义常量的完整路径（多数是

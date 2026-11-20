@@ -478,18 +478,12 @@ fn rope_single(launch: &Launch, x: &[f32], out: &mut [f32], head_dim: usize) -> 
 }
 
 /// 内核表展开：每条例子取适配函数标识符，算子名由 `stringify!` 派生，避免名字与函数名各写一份。
-macro_rules! kernel_table {
-    ($( $run:ident ),* $(,)?) => {
-        &[ $( Entry { op: stringify!($run), run: $run } ),* ]
-    };
-}
-
 /// CPU 内核表：`op::REGISTRY` 的 f32 纯切片子集，不是全覆盖。
 ///
 /// 对照 `train` 的参考全覆盖表（24/24 同序锁死）：本表只登记 serve CPU 通路实际用到的纯切片
 /// f32 适配器，未覆盖的算子执行时由 [`CpuExecutor`](engine::exec::CpuExecutor) 按名拒绝。
 /// 新算子进注册表时，两处表的职责不要混写——train 补参考覆盖，serve 只接自己通路用到的。
-const KERNELS: &[Entry] = kernel_table![
+const KERNELS: &[Entry] = &op::kernel_table![
     add_f32,
     attention_f32,
     decode_attention_f32,

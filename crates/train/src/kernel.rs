@@ -54,12 +54,6 @@ struct Entry {
 }
 
 /// 标量内核表：算子名由适配函数的标识符派生（两者同名是同一条判据）。
-macro_rules! kernel_table {
-    ($($run:ident),* $(,)?) => {
-        [$(Entry { op: stringify!($run), run: $run }),*]
-    };
-}
-
 /// 一元 `[f32] → [f32]` 适配：套用算子的标量实现。
 macro_rules! unary {
     ($($run:ident),* $(,)?) => {$(
@@ -258,7 +252,7 @@ fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
 }
 
 /// 标量内核表：长度就是 [`op::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。
-const KERNELS: [Entry; op::REGISTRY.len()] = kernel_table![
+const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
     add_f32,
     attention_f32,
     decode_attention_f32,
