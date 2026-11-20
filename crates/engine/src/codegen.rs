@@ -743,7 +743,7 @@ fn metal_driver(signature: &Signature, sample: &Sample, output: &str) -> Result<
     ))
 }
 
-/// host 驱动（网格发射）：初值与绑定同 [`metal_driver`]，入口名与几何由调用方给——逐点与循环注入
+/// host 驱动（网格发射）：初值与绑定同 `metal_driver`，入口名与几何由调用方给——逐点与循环注入
 /// 的入口是 `kernel_main`，线程组与总线程数分别由 `block` / `grid` 给出。
 ///
 /// # Errors：缺输出缓冲、签名与样本不一致时返回说明。
@@ -893,7 +893,7 @@ int main(int argc, const char **argv) {
     Ok(source)
 }
 
-/// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 [`metal_driver`]）。
+/// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 `metal_driver`）。
 #[allow(clippy::too_many_arguments)]
 fn metal_driver_template(
     data: &str,
@@ -962,4 +962,3 @@ int main(int argc, const char **argv) {{
 // CUDA 侧（设备源 + 主机驱动）整体住在 `cuda_codegen`，这里只把路径接续上：
 // 调用点仍写 `crate::codegen::cuda_*` / `crate::codegen::Driver`，不必知道文件怎么分家。
 pub use crate::cuda_codegen::*;
-

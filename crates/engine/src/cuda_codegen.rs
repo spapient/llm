@@ -479,6 +479,7 @@ pub(crate) fn buffer_args(signature: &Signature) -> String {
 /// 各跑 16 批，`stderr` 每轮打一行 `ns`。
 ///
 /// # Errors：缺输出缓冲、输出不是 f32，或缓存参数与样本不一致时返回说明。
+#[allow(clippy::too_many_arguments)]
 pub fn cuda_benchmark_driver(
     device_source: &str,
     signature: &Signature,
