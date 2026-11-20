@@ -116,12 +116,6 @@ impl QuantChain {
     }
 }
 
-// 测试白盒可见：形状表下标与登记元数据经入口再导出，`super::*` 仍能解析。
-#[cfg(test)]
-pub(crate) use autograd::{Sizes, Var};
-#[cfg(test)]
-pub(crate) use tensor::{DType, Shape};
-
 pub use crate::kernel::{Kernel, Reference};
 pub use crate::pool::Buffers;
 #[cfg(test)]

@@ -343,9 +343,6 @@ mod tests {
     use nn::ParamRole;
     use tensor::{DType, Shape};
 
-    #[path = "../../../tests/support.rs"]
-    mod support;
-
     /// 夹具参数宽度。
     const N: usize = 4;
     /// 词表宽度。
@@ -353,7 +350,7 @@ mod tests {
 
     /// 造一张夹具图：`loss = add(p, x)`，`logits` 是独立叶子用于评估；返回图、形状表与四个变量。
     fn fixture() -> (Tape, Sizes, Var, Var, Var, Var) {
-        let (mut tape, mut sizes, p, x, loss) = support::add_graph(N);
+        let (mut tape, mut sizes, p, x, loss) = crate::support::add_graph(N);
         let logits = tape.leaf();
         sizes.set(logits, Shape::new([VOCAB]), DType::F32);
         (tape, sizes, p, x, logits, loss)

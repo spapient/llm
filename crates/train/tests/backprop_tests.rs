@@ -6,8 +6,7 @@ use diagnostic::{Code, Result};
 use nn::ParamRole;
 use tensor::{DType, Shape};
 
-#[path = "../tests/support.rs"]
-mod support;
+use crate::support;
 
 /// 夹具向量宽度。
 const N: usize = 3;
@@ -314,7 +313,15 @@ fn embed_table_gradient_matches_central_differences() -> Result<()> {
     let y = tape.record("embed_f32", &[idx, table]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let sizes = support::sizes_of(&tape, &[(table, rows * dim), (idx, tokens), (y, tokens * dim), (loss, 1)]);
+    let sizes = support::sizes_of(
+        &tape,
+        &[
+            (table, rows * dim),
+            (idx, tokens),
+            (y, tokens * dim),
+            (loss, 1),
+        ],
+    );
 
     let table0: Vec<f32> = (0..rows * dim).map(|i| 0.2 * i as f32 - 0.6).collect();
     let idx0 = vec![0.0_f32, 2.0];
@@ -631,7 +638,10 @@ fn decode_attention_matches_central_differences() -> Result<()> {
         .expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let sizes = support::sizes_of(&tape, &[(q, q_len), (k, kv_len), (v, kv_len), (y, q_len), (loss, 1)]);
+    let sizes = support::sizes_of(
+        &tape,
+        &[(q, q_len), (k, kv_len), (v, kv_len), (y, q_len), (loss, 1)],
+    );
 
     let q0: Vec<f32> = (0..q_len).map(|i| 0.11 * i as f32 - 0.4).collect();
     let k0: Vec<f32> = (0..kv_len).map(|i| -0.08 * i as f32 + 0.5).collect();

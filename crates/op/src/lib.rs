@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn arity_matches_the_samples() {
         macro_rules! check {
-            ($($name:ident: $ty:ty => $template:literal),*) => {
+            ($($name:ident: $ty:ty => $template:literal),* $(,)?) => {
                 $(
                     let shape = <$ty as crate::operator::Operator>::SHAPE;
                     let sample = <$ty as crate::operator::Operator>::sample(shape.0, shape.1);

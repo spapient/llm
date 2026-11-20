@@ -8,8 +8,7 @@ use nn::ParamRole;
 use tensor::{DType, Shape};
 use weights::Header;
 
-#[path = "../tests/support.rs"]
-mod support;
+use crate::support;
 
 /// 夹具向量宽度。
 const N: usize = 4;

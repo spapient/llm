@@ -55,6 +55,12 @@ pub(crate) use kernel::shape;
 pub mod snapshot;
 mod store;
 
+/// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，
+/// 而不是在自己的内联模块里另写一份相对路径——内联模块的 `#[path]` 基准是虚拟目录，跨级上跳会失败。
+#[cfg(test)]
+#[path = "../tests/support.rs"]
+mod support;
+
 pub use checkpoint::{Checkpoint, Step, operators, resume};
 pub use dist::{Distributed, Local, Remote};
 pub use distill::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};

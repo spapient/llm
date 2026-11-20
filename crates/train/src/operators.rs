@@ -90,7 +90,12 @@ mod tests {
             .expect("b");
         store.add_f32(&[a, b], typed).expect("类型化调用");
         Store::compute(&mut store, "add_f32", &[a, b], raw).expect("字符串调用");
-        let typed = store.value(typed).expect("有值").f32().expect("f32").to_vec();
+        let typed = store
+            .value(typed)
+            .expect("有值")
+            .f32()
+            .expect("f32")
+            .to_vec();
         let raw = store.value(raw).expect("有值").f32().expect("f32").to_vec();
         assert_eq!(typed, raw);
         assert_eq!(typed, vec![1.5, 2.5, 3.5, 4.5]);
