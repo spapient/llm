@@ -189,6 +189,12 @@ norm!(
     layer_norm_f32
 );
 
+/// 二维卷积适配：`[x, weight, bias] → y`，声明档单样本几何由算子模块定。
+fn conv2d_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (x, weight, bias) = <(f32, f32, f32) as Inputs>::unpack(inputs, "conv2d_f32")?;
+    op::conv2d_f32::forward(x, weight, bias, output_slice::<f32>("conv2d_f32", output)?)
+}
+
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
 fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (weights, x) = <(f32, f32) as Inputs>::unpack(inputs, "gemv_f32")?;
@@ -335,6 +341,7 @@ const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
     attention_f32,
     avg_pool2d_f32,
     batch_norm_f32,
+    conv2d_f32,
     decode_attention_f32,
     decode_flash_attention_f32,
     dequant_i2,

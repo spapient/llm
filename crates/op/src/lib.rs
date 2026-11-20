@@ -84,7 +84,8 @@ pub mod unary;
 pub use attention::decode_attention;
 pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use classic::{
-    adaptive_pool_f32, avg_pool2d_f32, batch_norm_f32, group_norm_f32, instance_norm_f32,
+    adaptive_pool_f32, avg_pool2d_f32, batch_norm_f32, conv2d_f32, group_norm_f32,
+    instance_norm_f32,
     interpolate_f32, layer_norm_f32, max_pool1d_f32, max_pool2d_f32,
 };
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
@@ -149,6 +150,7 @@ macro_rules! for_each_operator {
             attention_f32: $crate::attention::AttentionF32 => "attention_f32",
             avg_pool2d_f32: $crate::avg_pool2d_f32::AvgPool2dModel => "avg_pool2d_f32",
             batch_norm_f32: $crate::batch_norm_f32::BatchNormModel => "batch_norm_f32",
+            conv2d_f32: $crate::conv2d_f32::Conv2dModel => "conv2d_f32",
             decode_attention_f32: $crate::attention::decode_attention::DecodeAttentionF32 => "decode_attention_f32",
             decode_flash_attention_f32: $crate::attention::decode_attention::DecodeFlashAttentionF32 => "decode_flash_attention_f32",
             dequant_i2: $crate::dequant_i2::DequantI2F32 => "dequant_packed",
