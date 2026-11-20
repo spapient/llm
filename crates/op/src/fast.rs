@@ -34,7 +34,24 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
         gemm_f32_single(a, b, m, n, k, out);
         return;
     }
-    // B 只打包一次、全部线程共享：每线程各转置一遍会让冗余带宽吞掉扩展性（256×256×4096 尤其明显）。
+    // 常驻池：打包与计算共用一次发布（一次 Barrier 隔开两阶段），无重复 spawn。
+    let npad = n.div_ceil(NR) * NR;
+    let mut buf = vec![0.0f32; npad * k];
+    if run_pooled(
+        pool(),
+        a.as_ptr() as *const u8,
+        b.as_ptr() as *const u8,
+        buf.as_mut_ptr() as *mut u8,
+        out.as_mut_ptr() as *mut u8,
+        Shape { m, n, k, npad },
+        MR,
+        t,
+        f32_pack,
+        f32_calc,
+    ) {
+        return;
+    }
+    // 兜底（池不可用）：B 打包一次后 shared 给 scope 线程。
     let (bpack, _npad) = pack_b_f32_par(b, n, k);
     // 行块按 MR 对齐：否则 18 线程切 256 行会得到 15 行/线程，8 行走微内核、7 行掉回标量尾块。
     let per = blocks.div_ceil(t) * MR;
@@ -410,16 +427,20 @@ fn threads_override() -> usize {
 // `unsafe` 仅用于把本次调用的裸指针交给 worker（主线程自旋等全部完成才返回）。
 
 struct Job {
-    a: *const i8,
-    b: *const i8,
-    bpack: *mut i8,
-    out: *mut i32,
+    a: *const u8,
+    b: *const u8,
+    /// 打包后的 B 面板（i8 或 f32，由 `stage`/`calc` 决定解释方式）。
+    buf: *mut u8,
+    out: *mut u8,
     m: usize,
     n: usize,
     k: usize,
     npad: usize,
     rows_per: usize,
     p: usize,
+    /// 打包阶段的分片体；类型差异只落在这两个函数里，池机制完全共享。
+    stage: fn(&Job, usize),
+    calc: fn(&Job, usize),
     barrier: Barrier,
     done: AtomicUsize,
 }
@@ -528,19 +549,19 @@ fn pick_free(free: u64, need: usize) -> Option<u64> {
 
 /// 一次任务里单个参与者的全部工作：打包自己那份 B 组 → Barrier → 算自己那段行。
 fn part(j: &Job, slot: usize) {
-    pack_part(j, slot);
+    (j.stage)(j, slot);
     j.barrier.wait();
-    compute_part(j, slot);
+    (j.calc)(j, slot);
 }
 
 /// 打包阶段：本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包。
-fn pack_part(j: &Job, slot: usize) {
+fn i8_pack(j: &Job, slot: usize) {
     let p = j.p;
     let groups = j.npad / I8_NR;
     #[allow(unsafe_code)]
     unsafe {
-        let b = j.b;
-        let bp = j.bpack;
+        let b = j.b as *const i8;
+        let bp = j.buf as *mut i8;
         let n = j.n;
         let k = j.k;
         let mut g = slot;
@@ -562,7 +583,7 @@ fn pack_part(j: &Job, slot: usize) {
 }
 
 /// 计算阶段：只算本槽的行段，`bpack` 由 Barrier 保证整块就绪。
-fn compute_part(j: &Job, slot: usize) {
+fn i8_calc(j: &Job, slot: usize) {
     let r0 = slot * j.rows_per;
     if r0 >= j.m {
         return;
@@ -570,10 +591,57 @@ fn compute_part(j: &Job, slot: usize) {
     let rows = (j.m - r0).min(j.rows_per);
     #[allow(unsafe_code)]
     unsafe {
-        let a_l = std::slice::from_raw_parts(j.a.add(r0 * j.k), rows * j.k);
-        let b_l = std::slice::from_raw_parts(j.bpack as *const i8, j.npad * j.k);
-        let out_l = std::slice::from_raw_parts_mut(j.out.add(r0 * j.n), rows * j.n);
+        let a_l = std::slice::from_raw_parts(j.a as *const i8, j.m * j.k);
+        let a_l = &a_l[r0 * j.k..(r0 + rows) * j.k];
+        let b_l = std::slice::from_raw_parts(j.buf as *const i8, j.npad * j.k);
+        let out_l = std::slice::from_raw_parts_mut(j.out as *mut i32, j.m * j.n);
+        let out_l = &mut out_l[r0 * j.n..(r0 + rows) * j.n];
         compute_i8_packed(a_l, b_l, j.npad, rows, j.n, j.k, out_l);
+    }
+}
+
+/// f32 打包体：本槽负责的 8 列组按 `p` 步长轮转，写入 `[jblk][p][NR]`（零初始化覆盖补零列）。
+#[allow(unsafe_code)]
+fn f32_pack(j: &Job, slot: usize) {
+    let p = j.p;
+    let groups = j.npad / NR;
+    unsafe {
+        let b = j.b as *const f32;
+        let dst = j.buf as *mut f32;
+        let (n, k) = (j.n, j.k);
+        let mut g = slot;
+        while g < groups {
+            let first = g * NR;
+            let cols = if first < n { NR.min(n - first) } else { 0 };
+            let base = g * k * NR;
+            for q in 0..k {
+                let src = b.add(q * n + first);
+                let d = dst.add(base + q * NR);
+                for c in 0..cols {
+                    *d.add(c) = *src.add(c);
+                }
+            }
+            g += p;
+        }
+    }
+}
+
+/// f32 计算体：只算本槽的行段；B 面板由 Barrier 保证整块就绪。
+#[allow(unsafe_code)]
+fn f32_calc(j: &Job, slot: usize) {
+    let r0 = slot * j.rows_per;
+    if r0 >= j.m {
+        return;
+    }
+    let rows = (j.m - r0).min(j.rows_per);
+    unsafe {
+        let a = std::slice::from_raw_parts(j.a as *const f32, j.m * j.k);
+        let a_l = &a[r0 * j.k..(r0 + rows) * j.k];
+        let bp = std::slice::from_raw_parts(j.buf as *const f32, j.npad * j.k);
+        let b = std::slice::from_raw_parts(j.b as *const f32, j.k * j.n);
+        let out = std::slice::from_raw_parts_mut(j.out as *mut f32, j.m * j.n);
+        let out_l = &mut out[r0 * j.n..(r0 + rows) * j.n];
+        compute(a_l, bp, b, rows, j.n, j.k, out_l);
     }
 }
 
@@ -590,11 +658,15 @@ struct Shape {
 #[allow(unsafe_code)]
 fn run_pooled(
     pool: &'static Pool,
-    a: &[i8],
-    b: &[i8],
-    out: &mut [i32],
+    a: *const u8,
+    b: *const u8,
+    buf: *mut u8,
+    out: *mut u8,
     shape: Shape,
+    mr: usize,
     t: usize,
+    stage: fn(&Job, usize),
+    calc: fn(&Job, usize),
 ) -> bool {
     let Shape { m, n, k, npad } = shape;
     let live = pool.live.load(Ordering::Acquire);
@@ -623,19 +695,20 @@ fn run_pooled(
         }
     };
 
-    let mut bpack = vec![0i8; npad * k];
-    let rows_per = m.div_ceil(p).div_ceil(I8_MR) * I8_MR;
+    let rows_per = m.div_ceil(p).div_ceil(mr) * mr;
     let job = Arc::new(Job {
-        a: a.as_ptr(),
-        b: b.as_ptr(),
-        bpack: bpack.as_mut_ptr(),
-        out: out.as_mut_ptr(),
+        a,
+        b,
+        buf,
+        out,
         m,
         n,
         k,
         npad,
         rows_per,
         p,
+        stage,
+        calc,
         barrier: Barrier::new(p),
         done: AtomicUsize::new(0),
     });
@@ -680,7 +753,19 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
         return;
     }
     // 常驻池：一次发布 + 一次 Barrier，无 spawn 成本。
-    if run_pooled(pool(), a, b, out, Shape { m, n, k, npad }, t) {
+    let mut bpack = vec![0i8; npad * k];
+    if run_pooled(
+        pool(),
+        a.as_ptr() as *const u8,
+        b.as_ptr() as *const u8,
+        bpack.as_mut_ptr() as *mut u8,
+        out.as_mut_ptr() as *mut u8,
+        Shape { m, n, k, npad },
+        I8_MR,
+        t,
+        i8_pack,
+        i8_calc,
+    ) {
         return;
     }
     scoped_i8(a, b, out, m, n, k, t);
