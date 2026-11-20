@@ -17,14 +17,13 @@ use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::Signature;
 
-use crate::dialect::{EXPSUM, NORM, PARTIAL, SCAN_CORRECT, SCAN_LOCAL, length_scalar};
+use crate::dialect::{
+    EXPSUM, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold, length_scalar,
+};
 use crate::metal::{
     MetalStage, metal_chunk_reduce, metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax,
     metal_multistage_driver,
 };
-
-/// RMSNorm 的分母稳定项：与 `.k` 模板、CUDA 折叠同口径。
-const EPS: f32 = 1e-6;
 
 /// 折叠的一步：与 `.k` 模板的 `reduce.op` 同口径，`sum` / `max` 两个闭集表达。
 const SUM_STEP: &str = "acc += parts[g];";
@@ -333,7 +332,7 @@ fn only_read(signature: &Signature) -> Result<&str> {
 fn rms_fold(output: &str, blocks: usize, len: usize) -> String {
     format!(
         "        {{\n            const float *parts = (const float *)b_{output}.contents;\n            double acc = 0.0;\n            for (int g = 0; g < {blocks}; ++g) {{ acc += (double)parts[g]; }}\n            ((float *)b_rms.contents)[0] = (float)sqrt(acc / (double){len} + (double){eps}f);\n        }}\n",
-        eps = EPS
+        eps = RMS_EPS
     )
 }
 
@@ -376,23 +375,9 @@ fn fold_into(parts: &str, target: &str, blocks: usize, step: &str) -> String {
 
 /// 携带前缀折叠（f64）：`C_0 = 0`、`C_{g+1} = a^len·C_g + y[start+len-1]`，`a^len` 用平方乘。
 fn fold_carry(output: &str, chunk: usize, len: usize, decay: f32) -> String {
+    let blocks = len.div_ceil(chunk.max(1));
     format!(
-        r#"        {{
-            const float *y = (const float *)b_{output}.contents;
-            float *c = (float *)b_c.contents;
-            double carry = 0.0;
-            for (int g = 0; g < {blocks}; ++g) {{
-                int start = g * {chunk};
-                int rest = {len} - start;
-                int len = ({chunk} < rest) ? {chunk} : rest;
-                double p = 1.0, base = (double){decay}f;
-                int e = len;
-                while (e > 0) {{ if (e & 1) p *= base; base *= base; e >>= 1; }}
-                c[g] = (float)carry;
-                carry = p * carry + (double)y[start + len - 1];
-            }}
-        }}
-"#,
-        blocks = len.div_ceil(chunk.max(1)),
+        "        {{\n            const float *y = (const float *)b_{output}.contents;\n            float *c = (float *)b_c.contents;\n{fold}        }}\n",
+        fold = carry_fold("y", "c", &blocks.to_string(), chunk, len as i64, decay, "            "),
     )
 }

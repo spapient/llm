@@ -15,8 +15,8 @@ use cutile::harness::output_name;
 
 use crate::cuda::{cuda_host_buffers_grid, cuda_launch_params, cuda_readback, cuda_release};
 use crate::dialect::{
-    Cuda, Dialect, bind_chunk_loop, inject_chunk_preamble, launch_args, length_scalar, scalar_name,
-    thread_param_typed,
+    Cuda, Dialect, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble, launch_args,
+    length_scalar, scalar_name, scan_correct_body, thread_param_typed,
 };
 use crate::norm::{launch, length_usize, program_head};
 
@@ -70,16 +70,13 @@ fn scan_local(
 /// 校正段：每线程 `g` 把 `C_g · a^(j+1)` 加回块内每个元素（就地累加），块头与归一化 map 段
 /// 同一口径（`g`/`start`/`rest`/`len`）。
 fn scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
+    let head = chunk_head(chunk, len, "    ");
+    let body = scan_correct_body(output, decay, "    ");
     format!(
-        "__global__ void {CORRECT}(\n    const float* d_c,\n    float* d_{output}) {{\n    \
-         int g = blockIdx.x * blockDim.x + threadIdx.x;\n    \
-         int start = g * {chunk};\n    \
-         int rest = {len} - start;\n    \
-         int len = ({chunk} < rest) ? {chunk} : rest;\n    \
-         float c = d_c[g];\n    \
-         float pow = {decay}f;\n    \
-         for (int j = 0; j < len; ++j) {{\n        \
-         d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}\n}}"
+        "__global__ void {CORRECT}(\n    const float* d_c,\n    float* d_{output}) {{\n    int g = blockIdx.x * blockDim.x + threadIdx.x;\n{head}{body}\n}}",
+        head = head,
+        body = body,
+        output = output,
     )
 }
 
@@ -143,16 +140,5 @@ pub fn cuda_scan_driver(
 
 /// 主机折叠（f64）：`C_{g+1} = a^len · C_g + y[start+len-1]`；`a^len` 用逐次乘法。
 fn fold_carry(output: &str, chunk: usize, len: i64, decay: f32) -> String {
-    format!(
-        "    double carry = 0.0;\n    \
-         for (int g = 0; g < G; ++g) {{\n        \
-         int start = g * {chunk};\n        \
-         int rest = {len} - start;\n        \
-         int len = ({chunk} < rest) ? {chunk} : rest;\n        \
-         double p = 1.0, base = (double){decay}f;\n        \
-         int e = len;\n        \
-         while (e > 0) {{ if (e & 1) p *= base; base *= base; e >>= 1; }}\n        \
-         h_c[g] = (float)carry;\n        \
-         carry = p * carry + (double)h_{output}[start + len - 1];\n    }}\n"
-    )
+    carry_fold(&format!("h_{output}"), "h_c", "G", chunk, len, decay, "    ")
 }

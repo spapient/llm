@@ -20,7 +20,7 @@ use op::sig::Signature;
 use cutile::harness::output_name;
 
 use crate::cuda::{buffer_args, cuda_host_buffers_grid, cuda_readback, cuda_release};
-use crate::dialect::{Cuda, Dialect, length_scalar, scalar_name};
+use crate::dialect::{Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, scalar_name};
 
 /// 部分归约段入口（部分平方和 / 部分最大值）。
 pub(crate) const PARTIAL: &str = "kernel_partial";
@@ -106,7 +106,7 @@ fn softmax_expsum_map(signature: &Signature, sample: &Sample, chunk: usize) -> R
     let y = output_name(signature)?;
     let body = format!(
         "{head}    d_{y}[g] = _cutile_exp_sum_f32(d_{x} + start, len, 1, max);",
-        head = chunk_head(chunk, len),
+        head = chunk_head(chunk, len, "    "),
         x = x,
         y = y,
     );
@@ -125,13 +125,6 @@ fn softmax_norm_map(signature: &Signature, sample: &Sample) -> Result<String> {
         y = y,
     );
     Ok(point_entry(signature, NORM, "float max, float sum", &body))
-}
-
-/// 分块 map 段的公共头：块起点与块内长度（末块可能不足 `chunk`）。
-fn chunk_head(chunk: usize, len: i64) -> String {
-    format!(
-        "    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n"
-    )
 }
 
 /// 一个分块 map 入口：签名缓冲形参 + 额外标量（`rms` / `max` / `sum`），入口名由调用方给。
@@ -288,8 +281,9 @@ pub fn cuda_rmsnorm_driver(
         partial_pass(text, &stage);
         text.push_str(&fold_sum());
         text.push_str(&format!(
-            "    float rms = sqrtf(sum / (float){len} + 1e-6f);\n",
-            len = stage.len
+            "    float rms = sqrtf(sum / (float){len} + {eps}f);\n",
+            len = stage.len,
+            eps = RMS_EPS
         ));
         normalized_pass(text, &stage, "rms");
     })

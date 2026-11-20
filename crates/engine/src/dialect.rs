@@ -105,6 +105,62 @@ pub(crate) fn f32_output_shape(signature: &Signature, sample: &Sample) -> Result
     Ok((output.to_owned(), values.values.len()))
 }
 
+/// RMSNorm 分母稳定项：与 `.k` 模板、CUDA/Metal 折叠同口径（`sqrt(Σx²/N + ε)`）。
+pub(crate) const RMS_EPS: f32 = 1e-6;
+
+/// 分块循环的块头：块起点 `start`、块内长度 `len`（末块可能不足 `chunk`）。与 `.k` 模板、
+/// CUDA/Metal 的逐字同口径，三端共用；`indent` 是每行缩进（设备侧 4 空格，宿主折叠更深）。
+pub(crate) fn chunk_head(chunk: usize, len: i64, indent: &str) -> String {
+    format!(
+        "{indent}int start = g * {chunk};\n\
+         {indent}int rest = {len} - start;\n\
+         {indent}int len = ({chunk} < rest) ? {chunk} : rest;\n"
+    )
+}
+
+/// 携带前缀折叠的 C 循环体（f64）：`C_0 = 0`、`C_{g+1} = a^len·C_g + y[start+len-1]`。
+///
+/// 与 `.k` 模板同口径；`a^len` 用平方乘（块长最多 `chunk` 次乘法），不引入 `math.h`/`-lm`。
+/// `y` / `c` 是已绑定的 C 数组名（CUDA 传 `h_<out>`/`h_c`，Metal 传局部指针 `y`/`c`），
+/// `blocks` 是块数的 C 表达式（CUDA 是变量 `G`，Metal 是代入的数字），`indent` 是循环体缩进。
+pub(crate) fn carry_fold(
+    y: &str,
+    c: &str,
+    blocks: &str,
+    chunk: usize,
+    len: i64,
+    decay: f32,
+    indent: &str,
+) -> String {
+    let inner = format!("{indent}    ");
+    let mut s = format!("{indent}double carry = 0.0;\n");
+    s.push_str(&format!("{indent}for (int g = 0; g < {blocks}; ++g) {{\n"));
+    s.push_str(&chunk_head(chunk, len, &inner));
+    s.push_str(&format!(
+        "{inner}double p = 1.0, base = (double){decay}f;\n\
+         {inner}int e = len;\n\
+         {inner}while (e > 0) {{ if (e & 1) p *= base; base *= base; e >>= 1; }}\n\
+         {inner}{c}[g] = (float)carry;\n\
+         {inner}carry = p * carry + (double){y}[start + len - 1];\n"
+    ));
+    s.push_str(&format!("{indent}}}\n"));
+    s
+}
+
+/// 校正段正文：`c = d_c[g]` 起，把携带态 `C_g·a^(j+1)` 按几何级数 `pow *= a` 加回
+/// `d_{output}[start+j]`（就地累加）。CUDA 与 Metal 的校正内核共用同一份，`indent` 是每行缩进，
+/// 末行（`for` 的 `}`）**不带**尾换行，由调用方补。
+pub(crate) fn scan_correct_body(output: &str, decay: f32, indent: &str) -> String {
+    format!(
+        r#"{indent}float c = d_c[g];
+{indent}float pow = {decay}f;
+{indent}for (int j = 0; j < len; ++j) {{
+{indent}    d_{output}[start + j] += c * pow;
+{indent}    pow *= {decay}f;
+{indent}}}"#
+    )
+}
+
 /// 生产态实参：缓冲取 `d_{name} + n`（线程处理的元素）、标量取 `1`（每线程一个元素）。
 fn grid_args(params: &[Param]) -> String {
     params

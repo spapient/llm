@@ -14,8 +14,8 @@ use op::sig::{Param, Signature};
 use cutile::harness::{c_literal, output_name, output_of};
 
 use crate::dialect::{
-    Dialect, Metal, EXPSUM, NORM, PARTIAL, SCAN_CORRECT, f32_output_shape, launch_args,
-    length_scalar, readback_bits, scalar_name,
+    Dialect, Metal, EXPSUM, NORM, PARTIAL, SCAN_CORRECT, chunk_head, f32_output_shape, launch_args,
+    length_scalar, readback_bits, scalar_name, scan_correct_body,
 };
 
 // ---------------------------------------------------------------------------
@@ -143,8 +143,9 @@ fn chunk_map_kernel(
     } else {
         format!("{preamble}\n\n")
     };
+    let chunk_lines = chunk_head(chunk, len, "    ");
     format!(
-        "{head}kernel void {entry}(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n    int start = g * {chunk};\n    int rest = {len} - start;\n    int len = ({chunk} < rest) ? {chunk} : rest;\n{body}\n}}"
+        "{head}kernel void {entry}(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n{chunk_lines}{body}\n}}"
     )
 }
 
@@ -153,9 +154,7 @@ fn chunk_map_kernel(
 fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
     let buffers =
         format!("    device float* d_c [[buffer(0)]],\n    device float* d_{output} [[buffer(1)]]");
-    let body = format!(
-        "    float c = d_c[g];\n    float pow = {decay}f;\n    for (int j = 0; j < len; ++j) {{\n        d_{output}[start + j] += c * pow;\n        pow *= {decay}f;\n    }}"
-    );
+    let body = scan_correct_body(output, decay, "    ");
     chunk_map_kernel("", SCAN_CORRECT, &buffers, chunk, len, &body)
 }
 
