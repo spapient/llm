@@ -124,10 +124,12 @@ impl<S: Scalar> BatchNorm2d<S> {
     ) -> Result<(usize, usize)> {
         let c = self.channels;
         let count = n * h * w;
-        check(x.len(), n * h * w * c, "x")?;
-        check(gamma.len(), c, "gamma")?;
-        check(beta.len(), c, "beta")?;
-        check(out.len(), n * h * w * c, "out")?;
+        check_all(&[
+            (x.len(), count * c, "x"),
+            (gamma.len(), c, "gamma"),
+            (beta.len(), c, "beta"),
+            (out.len(), count * c, "out"),
+        ])?;
         if count == 0 {
             return Err(Error::new(Code::Invalid, "BatchNorm 不接受 0 个空间位置"));
         }
@@ -158,36 +160,24 @@ impl<S: Scalar> GroupNorm<S> {
                 format!("GroupNorm: {c} 个通道不能分成 {} 组", self.groups),
             ));
         }
-        check(x.len(), n * spatial * c, "x")?;
-        check(gamma.len(), c, "gamma")?;
-        check(beta.len(), c, "beta")?;
-        check(out.len(), n * spatial * c, "out")?;
-
-        let per = c / self.groups;
-        for bi in 0..n {
-            for g in 0..self.groups {
-                let c0 = g * per;
-                let mut sum = S::ZERO;
-                let mut sq = S::ZERO;
-                let len = S::from_usize(per * spatial);
-                for s in 0..spatial {
-                    for ci in c0..c0 + per {
-                        let v = x[(bi * spatial + s) * c + ci];
-                        sum = sum + v;
-                        sq = sq + v * v;
-                    }
-                }
-                let mean = sum / len;
-                let var = (sq / len - mean * mean).max(S::ZERO);
-                let inv = S::ONE / (var + self.eps).sqrt();
-                for s in 0..spatial {
-                    for ci in c0..c0 + per {
-                        let idx = (bi * spatial + s) * c + ci;
-                        out[idx] = (x[idx] - mean) * inv * gamma[ci] + beta[ci];
-                    }
-                }
-            }
-        }
+        check_all(&[
+            (x.len(), n * spatial * c, "x"),
+            (gamma.len(), c, "gamma"),
+            (beta.len(), c, "beta"),
+            (out.len(), n * spatial * c, "out"),
+        ])?;
+        normalize_groups(
+            x,
+            gamma,
+            beta,
+            out,
+            n,
+            spatial,
+            c,
+            c / self.groups,
+            self.groups,
+            self.eps,
+        );
         Ok(())
     }
 }
@@ -230,26 +220,13 @@ impl<S: Scalar> LayerNorm<S> {
                 format!("LayerNorm: {} 不是宽度 {width} 的整数倍", x.len()),
             ));
         }
-        check(gamma.len(), width, "gamma")?;
-        check(beta.len(), width, "beta")?;
-        check(out.len(), x.len(), "out")?;
+        check_all(&[
+            (gamma.len(), width, "gamma"),
+            (beta.len(), width, "beta"),
+            (out.len(), x.len(), "out"),
+        ])?;
         for row in 0..x.len() / width {
-            let src = &x[row * width..(row + 1) * width];
-            let dst = &mut out[row * width..(row + 1) * width];
-            // 方差用 f64 累加：f32 前缀和在宽度上千时会掉到 1e-4 级精度。
-            let sum: f64 = src.iter().map(|v| v.to_f64()).sum();
-            let mean = S::from_f64(sum / width as f64);
-            let sq: f64 = src
-                .iter()
-                .map(|v| {
-                    let d = v.to_f64() - mean.to_f64();
-                    d * d
-                })
-                .sum();
-            let inv = S::ONE / (S::from_f64(sq / width as f64) + self.eps).sqrt();
-            for i in 0..width {
-                dst[i] = (src[i] - mean) * inv * gamma[i] + beta[i];
-            }
+            normalize_row(x, gamma, beta, out, width, row, self.eps);
         }
         Ok(())
     }
@@ -305,6 +282,95 @@ fn check(actual: usize, required: usize, what: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// 一组 `(实际, 需要, 名称)` 长度约束，一次失败即短路；把逐条 `?` 收进一条出口。
+fn check_all(constraints: &[(usize, usize, &str)]) -> Result<()> {
+    for &(actual, required, what) in constraints {
+        check(actual, required, what)?;
+    }
+    Ok(())
+}
+
+/// 按组遍历并逐组归一化（`GroupNorm` 的骨架）。
+fn normalize_groups<S: Scalar>(
+    x: &[S],
+    gamma: &[S],
+    beta: &[S],
+    out: &mut [S],
+    n: usize,
+    spatial: usize,
+    c: usize,
+    per: usize,
+    groups: usize,
+    eps: S,
+) {
+    for bi in 0..n {
+        for g in 0..groups {
+            normalize_group(x, gamma, beta, out, spatial, c, per, bi, g * per, eps);
+        }
+    }
+}
+
+/// 单组 `(C/G,H,W)` 内的减均值、除标准差、仿射。
+fn normalize_group<S: Scalar>(
+    x: &[S],
+    gamma: &[S],
+    beta: &[S],
+    out: &mut [S],
+    spatial: usize,
+    c: usize,
+    per: usize,
+    bi: usize,
+    c0: usize,
+    eps: S,
+) {
+    let mut sum = S::ZERO;
+    let mut sq = S::ZERO;
+    let len = S::from_usize(per * spatial);
+    for s in 0..spatial {
+        for ci in c0..c0 + per {
+            let v = x[(bi * spatial + s) * c + ci];
+            sum = sum + v;
+            sq = sq + v * v;
+        }
+    }
+    let mean = sum / len;
+    let var = (sq / len - mean * mean).max(S::ZERO);
+    let inv = S::ONE / (var + eps).sqrt();
+    for s in 0..spatial {
+        for ci in c0..c0 + per {
+            let idx = (bi * spatial + s) * c + ci;
+            out[idx] = (x[idx] - mean) * inv * gamma[ci] + beta[ci];
+        }
+    }
+}
+
+/// 单行 LayerNorm；方差用 f64 累加以保 f32 在宽行上的精度。
+fn normalize_row<S: Scalar>(
+    x: &[S],
+    gamma: &[S],
+    beta: &[S],
+    out: &mut [S],
+    width: usize,
+    row: usize,
+    eps: S,
+) {
+    let src = &x[row * width..(row + 1) * width];
+    let dst = &mut out[row * width..(row + 1) * width];
+    let sum: f64 = src.iter().map(|v| v.to_f64()).sum();
+    let mean = S::from_f64(sum / width as f64);
+    let sq: f64 = src
+        .iter()
+        .map(|v| {
+            let d = v.to_f64() - mean.to_f64();
+            d * d
+        })
+        .sum();
+    let inv = S::ONE / (S::from_f64(sq / width as f64) + eps).sqrt();
+    for i in 0..width {
+        dst[i] = (src[i] - mean) * inv * gamma[i] + beta[i];
+    }
 }
 
 #[cfg(test)]

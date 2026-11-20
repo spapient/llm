@@ -24,6 +24,12 @@ pub fn dropout(x: &mut [f32], p: f32, seed: u64, train: bool) -> Result<()> {
             format!("dropout 概率 {p} 应在 [0,1)"),
         ));
     }
+    apply_mask(x, p, seed);
+    Ok(())
+}
+
+/// 用 [`SplitMix64`] 抽同一掩码：低于 `p` 置零，否则乘 `1/(1-p)` 保均值。
+fn apply_mask(x: &mut [f32], p: f32, seed: u64) {
     let keep = 1.0 / (1.0 - p);
     let mut rng = SplitMix64::new(seed);
     for v in x.iter_mut() {
@@ -33,7 +39,6 @@ pub fn dropout(x: &mut [f32], p: f32, seed: u64, train: bool) -> Result<()> {
             *v *= keep;
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

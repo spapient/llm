@@ -52,16 +52,16 @@ impl Rnn {
         out: &mut [f32],
     ) -> Result<()> {
         let (i, hd) = (self.input, self.hidden);
-        check(x.len(), batch * i, "x")?;
-        check(w_ih.len(), i * hd, "w_ih")?;
-        check(w_hh.len(), hd * hd, "w_hh")?;
-        check(b.len(), hd, "b")?;
-        check(h.len(), batch * hd, "h")?;
-        check(out.len(), batch * hd, "out")?;
+        check_all(&[
+            (x.len(), batch * i, "x"),
+            (w_ih.len(), i * hd, "w_ih"),
+            (w_hh.len(), hd * hd, "w_hh"),
+            (b.len(), hd, "b"),
+            (h.len(), batch * hd, "h"),
+            (out.len(), batch * hd, "out"),
+        ])?;
         linear(x, w_ih, h, w_hh, b, batch, i, hd, hd, out);
-        for v in out.iter_mut() {
-            *v = v.tanh();
-        }
+        tanh_in_place(out);
         Ok(())
     }
 
@@ -115,14 +115,16 @@ impl Lstm {
     ) -> Result<()> {
         let (i, hd) = (self.input, self.hidden);
         let gates = 4 * hd;
-        check(x.len(), batch * i, "x")?;
-        check(w_ih.len(), i * gates, "w_ih")?;
-        check(w_hh.len(), hd * gates, "w_hh")?;
-        check(b.len(), gates, "b")?;
-        check(h.len(), batch * hd, "h")?;
-        check(c.len(), batch * hd, "c")?;
-        check(out_h.len(), batch * hd, "out_h")?;
-        check(out_c.len(), batch * hd, "out_c")?;
+        check_all(&[
+            (x.len(), batch * i, "x"),
+            (w_ih.len(), i * gates, "w_ih"),
+            (w_hh.len(), hd * gates, "w_hh"),
+            (b.len(), gates, "b"),
+            (h.len(), batch * hd, "h"),
+            (c.len(), batch * hd, "c"),
+            (out_h.len(), batch * hd, "out_h"),
+            (out_c.len(), batch * hd, "out_c"),
+        ])?;
 
         let mut pre = vec![0.0f32; batch * gates];
         linear(x, w_ih, h, w_hh, b, batch, i, hd, gates, &mut pre);
@@ -160,21 +162,19 @@ impl Gru {
     ) -> Result<()> {
         let (i, hd) = (self.input, self.hidden);
         let gates = 3 * hd;
-        check(x.len(), batch * i, "x")?;
-        check(w_ih.len(), i * gates, "w_ih")?;
-        check(w_hh.len(), hd * gates, "w_hh")?;
-        check(b.len(), gates, "b")?;
-        check(h.len(), batch * hd, "h")?;
-        check(out.len(), batch * hd, "out")?;
+        check_all(&[
+            (x.len(), batch * i, "x"),
+            (w_ih.len(), i * gates, "w_ih"),
+            (w_hh.len(), hd * gates, "w_hh"),
+            (b.len(), gates, "b"),
+            (h.len(), batch * hd, "h"),
+            (out.len(), batch * hd, "out"),
+        ])?;
 
         // x 侧三门一次算完；h 侧只需 r、n 两门（z 直接作用于最终插值）。
         let mut pre = vec![0.0f32; batch * gates];
         fast::gemm_f32(x, w_ih, batch, gates, i, &mut pre);
-        for bi in 0..batch {
-            for j in 0..gates {
-                pre[bi * gates + j] += b[j];
-            }
-        }
+        add_bias(&mut pre, b, batch, gates);
         // h·Wₕₕ，取出 3·hidden 列后再逐列处理。
         let mut hpre = vec![0.0f32; batch * gates];
         fast::gemm_f32(h, w_hh, batch, gates, hd, &mut hpre);
@@ -226,6 +226,22 @@ fn sigmoid(v: f32) -> f32 {
     1.0 / (1.0 + (-v).exp())
 }
 
+/// 就地把 `out` 逐元素过 `tanh`。
+fn tanh_in_place(out: &mut [f32]) {
+    for v in out.iter_mut() {
+        *v = v.tanh();
+    }
+}
+
+/// 把 `pre` 的每一行加上偏置 `b`。
+fn add_bias(pre: &mut [f32], b: &[f32], batch: usize, gates: usize) {
+    for bi in 0..batch {
+        for j in 0..gates {
+            pre[bi * gates + j] += b[j];
+        }
+    }
+}
+
 /// 缓冲长度校验。
 fn check(actual: usize, required: usize, what: &str) -> Result<()> {
     if actual < required {
@@ -233,6 +249,14 @@ fn check(actual: usize, required: usize, what: &str) -> Result<()> {
             Code::Invalid,
             format!("{what}: 缓冲 {actual}，需要 {required}"),
         ));
+    }
+    Ok(())
+}
+
+/// 一组 `(实际, 需要, 名称)` 长度约束，一次失败即短路；把逐条 `?` 收进一条出口。
+fn check_all(constraints: &[(usize, usize, &str)]) -> Result<()> {
+    for &(actual, required, what) in constraints {
+        check(actual, required, what)?;
     }
     Ok(())
 }

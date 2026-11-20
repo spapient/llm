@@ -60,43 +60,62 @@ pub fn orthogonal(rows: usize, cols: usize, gain: f32, seed: u64) -> Result<Vec<
     }
     let big = rows.max(cols);
     let small = rows.min(cols);
-    // 先按 `[big, small]` 生成高斯列，再正交化列向量。
+    let mat = orthonormalize(big, small, gain, seed);
+    Ok(reshape_orthogonal(&mat, big, small, rows, cols))
+}
+
+/// 按 `[big, small]` 生成高斯列并用改进 Gram–Schmidt 正交化。
+fn orthonormalize(big: usize, small: usize, gain: f32, seed: u64) -> Vec<f32> {
     let mut mat = vec![0.0f32; big * small];
     let mut rng = SplitMix64::new(seed);
     for v in mat.iter_mut() {
         *v = rng.next_normal();
     }
     for col in 0..small {
-        for prev in 0..col {
-            let mut dot = 0.0f32;
-            for r in 0..big {
-                dot += mat[r * small + col] * mat[r * small + prev];
-            }
-            for r in 0..big {
-                mat[r * small + col] -= dot * mat[r * small + prev];
-            }
-        }
-        let mut norm = 0.0f32;
+        subtract_prior(&mut mat, big, small, col);
+        normalize_column(&mut mat, big, small, col, gain);
+    }
+    mat
+}
+
+/// 把列 `col` 对前面所有列做一次 Gram–Schmidt 减法。
+fn subtract_prior(mat: &mut [f32], big: usize, small: usize, col: usize) {
+    for prev in 0..col {
+        let mut dot = 0.0f32;
         for r in 0..big {
-            norm += mat[r * small + col] * mat[r * small + col];
+            dot += mat[r * small + col] * mat[r * small + prev];
         }
-        let inv = if norm > 0.0 { gain / norm.sqrt() } else { 0.0 };
         for r in 0..big {
-            mat[r * small + col] *= inv;
+            mat[r * small + col] -= dot * mat[r * small + prev];
         }
     }
-    // `[big, small]` → `[rows, cols]`：rows ≥ cols 时直接就是列正交；否则转置成行正交。
+}
+
+/// 把列 `col` 归一化并乘 `gain`；零范数列保持为零。
+fn normalize_column(mat: &mut [f32], big: usize, small: usize, col: usize, gain: f32) {
+    let mut norm = 0.0f32;
+    for r in 0..big {
+        norm += mat[r * small + col] * mat[r * small + col];
+    }
+    let inv = if norm > 0.0 { gain / norm.sqrt() } else { 0.0 };
+    for r in 0..big {
+        mat[r * small + col] *= inv;
+    }
+}
+
+/// `[big, small]` → `[rows, cols]`：`rows ≥ cols` 时列正交可直接拷贝，否则转置成行正交。
+fn reshape_orthogonal(mat: &[f32], big: usize, small: usize, rows: usize, cols: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; rows * cols];
     if rows >= cols {
-        out.copy_from_slice(&mat);
-    } else {
-        for r in 0..rows {
-            for c in 0..cols {
-                out[r * cols + c] = mat[c * small + r];
-            }
+        out.copy_from_slice(mat);
+        return out;
+    }
+    for r in 0..rows {
+        for c in 0..cols {
+            out[r * cols + c] = mat[c * small + r];
         }
     }
-    Ok(out)
+    out
 }
 
 /// Xavier 的界 `sqrt(6/(fan_in+fan_out))`。
