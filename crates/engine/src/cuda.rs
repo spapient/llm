@@ -236,6 +236,25 @@ pub(crate) fn cuda_host_buffers_grid(
     Ok(text)
 }
 
+/// C 系 host 侧缓冲声明：只读落静态初值、可写开数组。CUDA 与昇腾逐字同源（`h_` 主机数组 +
+/// 设备侧 `d_` 指针），Metal 的 ObjC host 不用这套（见 [`crate::metal`]）。
+pub(crate) fn host_buffer_decl(
+    param: &Param,
+    values: &Values,
+    ctype: &str,
+    size: usize,
+) -> String {
+    if param.mutable {
+        format!("    {ctype} h_{}[{size}];\n", param.name)
+    } else {
+        format!(
+            "    static const {ctype} h_{}[{size}] = {{{}}};\n",
+            param.name,
+            c_literal(values)
+        )
+    }
+}
+
 /// 单个缓冲的 host 声明 + 设备分配 + （只读时）入向拷贝；`output` 与 `output_len` 只用于把输出
 /// 缓冲的尺寸换成部分结果数，其余缓冲尺寸取样本原值。
 fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: usize) -> String {
@@ -245,15 +264,7 @@ fn cuda_buffer_host(param: &Param, values: &Values, output: &str, output_len: us
     } else {
         values.len()
     };
-    let mut text = if param.mutable {
-        format!("    {ctype} h_{}[{size}];\n", param.name)
-    } else {
-        format!(
-            "    static const {ctype} h_{}[{size}] = {{{}}};\n",
-            param.name,
-            c_literal(values)
-        )
-    };
+    let mut text = host_buffer_decl(param, values, ctype, size);
     text.push_str(&format!(
         "    {ctype} *d_{} = 0;\n    cudaMalloc((void **)&d_{}, {size} * sizeof({ctype}));\n",
         param.name, param.name

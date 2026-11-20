@@ -10,11 +10,12 @@
 //! `verify` 的形状矩阵走的是这里——内核 + 单块发射 + 回读。等级仍是 `L0`：这份文本还没在
 //! 任何 910B 上编过，本节只是把那条证据链的最后一段接上。
 
-use cutile::harness::{c_literal, c_type, output_of};
+use cutile::harness::{c_type, output_of};
 use diagnostic::{Code, Error, Result};
 use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
+use crate::cuda::host_buffer_decl;
 use crate::dialect::readback_bits;
 
 /// AscendCL 的调用守卫：失败时报出是哪个调用并返回非零。
@@ -193,15 +194,7 @@ fn ascend_buffer(
     } else {
         values.len()
     };
-    let mut text = if param.mutable {
-        format!("    {ctype} h_{}[{size}];\n", param.name)
-    } else {
-        format!(
-            "    static const {ctype} h_{}[{size}] = {{{}}};\n",
-            param.name,
-            c_literal(values)
-        )
-    };
+    let mut text = host_buffer_decl(param, values, ctype, size);
     text.push_str(&format!(
         "    {ctype} *d_{} = nullptr;\n\
          \x20   CUTILE_ACL(aclrtMalloc((void **)&d_{}, {size} * sizeof({ctype}), \
