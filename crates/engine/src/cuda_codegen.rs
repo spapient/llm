@@ -330,12 +330,9 @@ pub fn cuda_point_driver(
 
 /// 生产态 CUDA 循环注入网格内核（`[grid]` 骨架的 CUDA 方言）：gemv 一维、gemm 二维共用。
 ///
-/// 与 Metal 版同一条文本改写（循环头绑到线程下标、正文跨步原样保留），差异只有三处语法：
-/// - 内部内核追加的是 `int3 tid`；
-/// - `kernel_main` 里用 `blockIdx` 装配 `tid`；
-/// - 设备函数用 `__device__` 而非 `device` 地址空间。
-///
-/// 空网格（`dims` 为空）退化为串行：不追加 `tid`、不绑循环、缓冲与标量原样透传。
+/// 与 Metal 版同一条文本改写（循环头绑到线程下标、正文跨步原样保留），差异只在方言
+/// [`crate::dialect::Cuda`] 里三处语法：内部内核追加 `int3 tid`、`kernel_main` 用 `blockIdx` 装配
+/// `tid`、设备函数用 `__device__`。空网格（`dims` 为空）退化为串行：不追加 `tid`、不绑循环。
 ///
 /// # Errors：模板里找不到声明的循环、签名与样本不一致时返回说明。
 pub fn cuda_loop_kernel(
@@ -345,9 +342,9 @@ pub fn cuda_loop_kernel(
     grid: &Grid,
 ) -> Result<String> {
     if grid.dims.is_empty() {
-        return cuda_serial_kernel(kernel_source, signature, sample);
+        return serial_kernel_dialect::<Cuda>(kernel_source, signature, sample);
     }
-    cuda_injected_kernel(kernel_source, signature, sample, grid)
+    injected_kernel_dialect::<Cuda>(kernel_source, signature, sample, grid)
 }
 
 /// 生产态 CUDA 合作式 int4 GEMV 内核：一个 warp（32 lane）协作算一行，K 轴按 lane 跨步，
@@ -381,39 +378,9 @@ __global__ void kernel_main({params}) {{
     ))
 }
 
-/// CUDA 串行（零维网格）：不追加 `tid`，一次调用跑完整条循环。
-fn cuda_serial_kernel(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-) -> Result<String> {
-    let call = launch_args(sample, signature.params())?;
-    let buffers = cuda_launch_params(signature);
-    Ok(format!(
-        "{}\n\n__global__ void kernel_main(\n{buffers}) {{\n    {}({call});\n}}",
-        cuda_device(kernel_source, &signature.kernel()),
-        signature.kernel(),
-    ))
-}
-
-/// CUDA 循环注入：内部内核追加 `int3 tid`、绑循环头，`kernel_main` 用 `blockIdx` 装配 `tid` 并透传。
-fn cuda_injected_kernel(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-    grid: &Grid,
-) -> Result<String> {
-    let mut body = cuda_device(kernel_source, &signature.kernel());
-    body = thread_param_typed(&body, &signature.kernel(), "int3 tid")?;
-    body = bind_grid_loops(body, grid)?;
-    let call = format!("{}, tid", launch_args(sample, signature.params())?);
-    let buffers = cuda_launch_params(signature);
-    let init = "    int3 tid; tid.x = blockIdx.x; tid.y = blockIdx.y; tid.z = blockIdx.z;\n";
-    Ok(format!(
-        "{body}\n\n__global__ void kernel_main(\n{buffers}) {{\n{init}    {}({call});\n}}",
-        signature.kernel(),
-    ))
-}
+/// CUDA 串行（零维网格）与循环注入：由 [`serial_kernel_dialect`] / [`injected_kernel_dialect`]
+/// 以 `Cuda` 方言落地，缓冲声明取 [`dialect_buffers`]，标量由 `launch_args` 内联进内部内核，
+/// `kernel_main` 不再重复声明标量形参。
 
 /// 生产态 CUDA 循环注入的 host 驱动：按 `dims` 组成 `dim3` 网格发射 `kernel_main`，
 /// 分配/拷贝/回读与 [`cuda_grid_driver`] 同一口径（输出长度取样本值）。
@@ -534,7 +501,7 @@ pub(crate) fn cuda_release(signature: &Signature) -> String {
     text
 }
 
-/// 生产态 CUDA 分块归约内核（`chunk_reduce` 的 CUDA 方言）。
+/// 生产态 CUDA 分块归约内核（[`chunk_reduce_dialect`] 的 CUDA 方言）。
 pub fn cuda_chunk_reduce(
     kernel_source: &str,
     signature: &Signature,
@@ -542,7 +509,7 @@ pub fn cuda_chunk_reduce(
     chunk: usize,
     reduce_func: &str,
 ) -> Result<String> {
-    chunk_reduce(kernel_source, signature, sample, chunk, reduce_func, &CUDA)
+    chunk_reduce_dialect::<Cuda>(kernel_source, signature, sample, chunk, reduce_func)
 }
 
 /// 生产态驱动共用的错误检查宏与 `main` 起点。

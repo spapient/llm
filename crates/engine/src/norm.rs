@@ -20,9 +20,10 @@ use op::sig::Signature;
 use cutile::harness::output_name;
 
 use crate::codegen::{
-    CUDA, buffer_args, chunk_reduce_entry, cuda_buffers, cuda_host_buffers_grid, cuda_readback,
-    cuda_release, kernel_entry, length_scalar, scalar_name,
+    buffer_args, chunk_reduce_entry_dialect, cuda_host_buffers_grid, cuda_readback, cuda_release,
+    dialect_buffers, kernel_entry_dialect, length_scalar, scalar_name,
 };
+use crate::dialect::Cuda;
 
 /// 部分归约段入口（部分平方和 / 部分最大值）。
 pub(crate) const PARTIAL: &str = "kernel_partial";
@@ -43,13 +44,12 @@ pub(crate) fn cuda_chunk_rmsnorm(
     sample: &Sample,
     chunk: usize,
 ) -> Result<Vec<String>> {
-    let partial = chunk_reduce_entry(
+    let partial = chunk_reduce_entry_dialect::<Cuda>(
         kernel_source,
         signature,
         sample,
         chunk,
         "_cutile_sumsq_f32",
-        &CUDA,
         PARTIAL,
     )?;
     let norm = rmsnorm_map(signature, sample)?;
@@ -67,13 +67,12 @@ pub(crate) fn cuda_chunk_softmax(
     sample: &Sample,
     chunk: usize,
 ) -> Result<Vec<String>> {
-    let max = chunk_reduce_entry(
+    let max = chunk_reduce_entry_dialect::<Cuda>(
         kernel_source,
         signature,
         sample,
         chunk,
         "_cutile_max_f32",
-        &CUDA,
         PARTIAL,
     )?;
     let expsum = softmax_expsum_map(signature, sample, chunk)?;
