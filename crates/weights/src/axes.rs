@@ -485,6 +485,12 @@ fn rank_payload(w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {
 fn decode_rank(cur: &mut Cursor<'_>, (m, n): (usize, usize)) -> Result<Vec<f32>> {
     let all = cur.remaining();
     let head = rank_head(all)?;
+    let (low, rest) = rank_parts(all, &head, m, n)?;
+    Ok(low.iter().zip(&rest).map(|(a, b)| a + b).collect())
+}
+
+/// 解两段低秩分量并对质证书：与 [`decode_rank`] 的单段算术分开，`?` 预算留在门禁内。
+fn rank_parts(all: &[u8], head: &RankHead, m: usize, n: usize) -> Result<(Vec<f32>, Vec<f32>)> {
     let (low, rest) = rank_frames(all, head.at, head.low_len)?;
     let want = area((m, n));
     let cap = want.saturating_mul(4);
@@ -493,7 +499,7 @@ fn decode_rank(cur: &mut Cursor<'_>, (m, n): (usize, usize)) -> Result<Vec<f32>>
     // 证书与它认证的两段对质：这一行才是「可证」——读到的载荷自己能把它重算一遍，
     // 而不是要读者相信写端曾经的声称。
     ledger::audit(&head.note, m, n, &low, &rest)?;
-    Ok(low.iter().zip(&rest).map(|(a, b)| a + b).collect())
+    Ok((low, rest))
 }
 
 /// 秩载荷的头：证书本体、`low` 段长度，以及 `low` 段在载荷内的起点。
@@ -508,18 +514,24 @@ struct RankHead {
 fn rank_head(all: &[u8]) -> Result<RankHead> {
     let mut at = 0;
     let len = word(all, &mut at, "rank 证书长度截断")? as usize;
+    let note = rank_note(all, at, len)?;
+    at += len;
+    let low_len = word(all, &mut at, "rank 头截断")? as usize;
+    Ok(RankHead { note, low_len, at })
+}
+
+/// 解证书本体：切片必须恰好是 `len` 字节，且证书解码必须恰好读完。
+fn rank_note(all: &[u8], at: usize, len: usize) -> Result<ledger::Note> {
     let bytes = all
         .get(at..)
         .and_then(|tail| tail.get(..len))
         .ok_or_else(|| bad("rank 证书截断"))?;
-    at += len;
     let mut cur = Cursor::new(bytes);
     let note = ledger::Note::decode(&mut cur)?;
     if !cur.remaining().is_empty() {
         return Err(bad("rank 证书有多余字节"));
     }
-    let low_len = word(all, &mut at, "rank 头截断")? as usize;
-    Ok(RankHead { note, low_len, at })
+    Ok(note)
 }
 
 /// 低秩两段：`low` 由头部的长度界定，`rest` 一直取到末尾。
