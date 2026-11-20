@@ -1024,6 +1024,7 @@ fn measure(
 /// 参考去对拍只会把「精度档不同」误报成「算错了」。指数域不动：测点取值落在 half 正规区间。
 fn half_precision(value: f32) -> f32 {
     let bits = value.to_bits();
+    let sign = bits & 0x8000_0000;
     let exponent = bits & 0x7f80_0000;
     let mantissa = bits & 0x007f_ffff;
     let dropped = mantissa & 0x1fff;
@@ -1031,7 +1032,7 @@ fn half_precision(value: f32) -> f32 {
     if dropped > 0x1000 || (dropped == 0x1000 && kept & 1 == 1) {
         kept += 1;
     }
-    f32::from_bits(exponent | (kept << 13))
+    f32::from_bits(sign | exponent | (kept << 13))
 }
 
 /// half 位型 → f32（临时调试用）。
@@ -1135,6 +1136,33 @@ fn metal_tensor_gemm() {
             let lo = pv.iter().copied().fold(f32::INFINITY, f32::min);
             let hi = pv.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             eprintln!("全 1 判据：Y 取值范围 [{lo}, {hi}]，应为 {k}；样本 {:?}", &pv[..8]);
+
+            // 索引探针：A 取单位阵，正确输出应逐元素等于 B（`b[i·n + j]`）。
+            let mut eye = vec![0.0f32; m * k];
+            for i in 0..m {
+                eye[i * k + i] = 1.0;
+            }
+            let eye_a = upload(&device, &eye, "eye A");
+            let mut eye_y = output_buffer(&device, m * n, "eye Y");
+            assert!(
+                queue.execute(
+                    &probe,
+                    &[&eye_a, &bt_buf, &eye_y],
+                    [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1],
+                    [32, simdgroups as u32, 1],
+                ),
+                "索引探针派发"
+            );
+            let ev = read_back(eye_y.as_mut_bytes());
+            let row_major = (0..m * n).map(|i| b[i]).collect::<Vec<f32>>();
+            let transposed = (0..m * n).map(|i| b[(i % n) * n + i / n]).collect::<Vec<f32>>();
+            eprintln!(
+                "索引探针：对 B 行主序误差 {:.3e}，对 B 转置误差 {:.3e}；Y[0..6]={:?} B[0..6]={:?}",
+                max_relative(&ev, &row_major),
+                max_relative(&ev, &transposed),
+                &ev[..6],
+                &b[..6]
+            );
         }
 
         let msl = cutile::execution::metal_tensor_gemm_program(
@@ -1192,6 +1220,20 @@ fn metal_tensor_gemm() {
                     "Y NaN {}；Y[1000..1008]={:?}",
                     got.iter().filter(|v| v.is_nan()).count(),
                     &got[1000..1008]
+                );
+                let part = |upto: usize, from: usize| -> f64 {
+                    (from..upto)
+                        .map(|p| f64::from(a[p]) * f64::from(b[p * n]))
+                        .sum()
+                };
+                eprintln!(
+                    "稠密对照 Y[0][0]={} ref={}；部分和 p<96={:.3} p<512={:.3} p<4096={:.3}；末块 p∈[4032,4096)={:.3}",
+                    got[0],
+                    reference[0],
+                    part(96, 0),
+                    part(512, 0),
+                    part(4096, 0),
+                    part(4096, 4032)
                 );
                 let worst = got
                     .iter()
