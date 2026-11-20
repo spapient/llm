@@ -133,11 +133,26 @@ pub fn metal_tiled_gemm_program(
 
 /// 分块 GEMM 的前置条件：Gemm 骨架、`tile > 0`、`M/N/K` 都能被 `tile` 整除。
 fn tile_ready(run: &Run<'_>, m: usize, n: usize, tile: usize) -> bool {
-    if tile == 0 || run.op.skeleton != Skeleton::Gemm {
+    if !is_gemm(run, tile) {
         return false;
     }
     let k = (run.model.sample)(m, n).scalar("K").unwrap_or(0);
-    m % tile == 0 && n % tile == 0 && k > 0 && (k as usize) % tile == 0
+    divisible_shape(m, n, k, tile)
+}
+
+/// 算子是否是可分块 GEMM，且块边长合法（`tile == 0` 恒假，避免除零）。
+fn is_gemm(run: &Run<'_>, tile: usize) -> bool {
+    tile != 0 && run.op.skeleton == Skeleton::Gemm
+}
+
+/// 形状能否整除分块：`M/N/K` 都是 `tile` 的正整数倍。
+fn divisible_shape(m: usize, n: usize, k: i64, tile: usize) -> bool {
+    k > 0 && divides(m, tile) && divides(n, tile) && divides(k as usize, tile)
+}
+
+/// `value` 能否被 `tile` 整除（`tile == 0` 时恒假，避免除零）。
+fn divides(value: usize, tile: usize) -> bool {
+    tile != 0 && value % tile == 0
 }
 
 /// 生产态分块扫描内核源：走完整条流水线后把时间轴递推切成块，返回两段 MSL `(局部扫描, 校正)`，
