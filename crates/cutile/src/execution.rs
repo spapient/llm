@@ -97,6 +97,42 @@ pub fn metal_grid_program(
     lower(&run, &prepared, m, n)
 }
 
+/// 生产态 Metal 分块 GEMM 内核源：把 Gemm 骨架按 `tile×tile` 共享内存分块降成 MSL。
+///
+/// 只对 `M/N/K` 均能被 `tile` 整除的形状走分块（部分线程组会破坏 `threadgroup_barrier` 的
+/// 统一控制流）；非 Gemm 骨架、`tile == 0` 或形状不整除时回落到 [`metal_grid_program`] 的
+/// 网格/串行路径，因此本入口对全部骨架都有定义。语义与模板逐元素相同（`Y = A·B`），只换遍历。
+///
+/// # Errors
+///
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_tiled_gemm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+    tile: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
+    if !tile_ready(&run, m, n, tile) {
+        return lower(&run, &prepared, m, n);
+    }
+    single(
+        lower_sources(Emit::Metal, &Lower::TiledGemm { tile }, &run, &prepared, m, n)?,
+        "分块 gemm",
+    )
+}
+
+/// 分块 GEMM 的前置条件：Gemm 骨架、`tile > 0`、`M/N/K` 都能被 `tile` 整除。
+fn tile_ready(run: &Run<'_>, m: usize, n: usize, tile: usize) -> bool {
+    if tile == 0 || run.op.skeleton != Skeleton::Gemm {
+        return false;
+    }
+    let k = (run.model.sample)(m, n).scalar("K").unwrap_or(0);
+    m % tile == 0 && n % tile == 0 && k > 0 && (k as usize) % tile == 0
+}
+
 /// 生产态分块扫描内核源：走完整条流水线后把时间轴递推切成块，返回两段 MSL `(局部扫描, 校正)`，
 /// 主机在两次派发间做块级携带前缀。扫描是线性递推，分块天然需要两段内核，故不并入单内核的
 /// [`metal_grid_program`]；串行（未声明 `[chunk]`）仍走 [`metal_grid_program`]。

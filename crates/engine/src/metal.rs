@@ -709,6 +709,71 @@ kernel void kernel_main(device float* in [[buffer(0)]],
         );
     }
 
+    /// 生产态分块 GEMM 对照：同一份 `matmul_f32`（K=4096）分别经
+    /// [`cutile::execution::metal_grid_program`]（标量网格基线）与
+    /// [`cutile::execution::metal_tiled_gemm_program`]（共享内存分块）生成 MSL，在真机 GPU 上跑
+    /// 同一组输入、对拍 CPU 参考并报延迟与 GFLOP/s。
+    ///
+    /// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_tiled_gemm_k4096 --release --ignored --nocapture`。
+    /// 无 Metal 设备时静默跳过；产品级 E1/E3 不在本机、保持 OPEN。
+    #[test]
+    #[ignore = "Metal 生产态分块 GEMM：cargo test -p llm-engine --lib -- metal_tiled_gemm_k4096 --release --ignored --nocapture"]
+    fn metal_tiled_gemm_k4096() {
+        let Some(device) = MetalDevice::system_default() else {
+            eprintln!("Metal 设备不在本机，分块 GEMM 基准未运行");
+            return;
+        };
+        let Some(queue) = device.new_command_queue() else {
+            panic!("有设备必有命令队列");
+        };
+        crate::backends::install();
+
+        const M: usize = 256;
+        const N: usize = 256;
+        const K: usize = 4096;
+
+        let a: Vec<f32> = (0..M * K)
+            .map(|i| ((i % 5) as f32) * 0.25 - 0.5)
+            .collect();
+        let b: Vec<f32> = (0..K * N)
+            .map(|i| ((i % 7) as f32) * 0.2 - 0.4)
+            .collect();
+        let reference = cpu_matmul(&a, &b, M, N, K);
+
+        let mut a_buf = device.new_buffer(M * K * 4).expect("A 缓冲");
+        let mut b_buf = device.new_buffer(K * N * 4).expect("B 缓冲");
+        a_buf.as_mut_bytes().copy_from_slice(&as_bytes(&a));
+        b_buf.as_mut_bytes().copy_from_slice(&as_bytes(&b));
+        let mut y_buf = device.new_buffer(M * N * 4).expect("Y 缓冲");
+
+        let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+        let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-matmul-k4096"));
+        let grid_msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "matmul_f32", M, N)
+            .expect("标量网格 MSL 应能生成");
+        let tiled_msl =
+            cutile::execution::metal_tiled_gemm_program(&catalogue, &dirs, "matmul_f32", M, N, 16)
+                .expect("分块 MSL 应能生成");
+
+        let grid_pipe = device.compile(&grid_msl).expect("标量网格 MSL 应能编译");
+        let tiled_pipe = device.compile(&tiled_msl).expect("分块 MSL 应能编译");
+
+        let grid = [M as u32, N as u32, 1];
+        queue.execute(&grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
+        assert_matmul_matches("grid", &reference, y_buf.as_mut_bytes());
+        queue.execute(&tiled_pipe, &[&a_buf, &b_buf, &y_buf], grid, [16, 16, 1]);
+        assert_matmul_matches("tiled", &reference, y_buf.as_mut_bytes());
+
+        let flop = 2.0 * (M * N * K) as f64;
+        let grid_ns = measure(&queue, &grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
+        let tiled_ns = measure(&queue, &tiled_pipe, &[&a_buf, &b_buf, &y_buf], grid, [16, 16, 1]);
+        eprintln!(
+            "Metal 生产态 GEMM 256×256×4096：网格标量={grid_ns:.1} ns（{:.2} GFLOP/s） 分块={tiled_ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
+            flop / grid_ns,
+            flop / tiled_ns,
+            grid_ns / tiled_ns,
+        );
+    }
+
     /// 朴素 MSL：每线程算一个输出元素；`tiled` 为真时用 threadgroup 共享内存把 A/B 按 16×16 分块，
     /// 每个线程组 16×16 线程协同搬运一次整块，规约轴复用共享块，避免反复从设备全局内存重读。
     fn matmul_msl(tiled: bool, m: usize, n: usize, k: usize) -> String {
