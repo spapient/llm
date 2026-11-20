@@ -72,13 +72,13 @@ macro_rules! operator_here {
             fn shape_ctx(
                 m: usize,
                 n: usize,
-            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+            ) -> ::core::result::Result<$crate::model::ShapeContext, ::diagnostic::Error> {
                 project_shape(m, n)
             }
 
             fn cost(
                 shape: &$crate::model::ShapeContext,
-            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
+            ) -> ::core::result::Result<$crate::model::Cost, ::diagnostic::Error> {
                 self::cost(shape)
             }
 

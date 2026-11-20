@@ -1162,7 +1162,13 @@ pub mod decode_attention {
     pub type DecodeFlashAttentionF32 = DecodeFlashAttention;
 
     // 基座契约（ADR 0050）：同上一对，只把参考入口换成 flash 版本。
-    crate::operator_here!(DecodeAttention, "decode_attention_f32", (1, 8), true, reference);
+    crate::operator_here!(
+        DecodeAttention,
+        "decode_attention_f32",
+        (1, 8),
+        true,
+        reference
+    );
     crate::operator_here!(
         DecodeFlashAttention,
         "decode_flash_attention_f32",
