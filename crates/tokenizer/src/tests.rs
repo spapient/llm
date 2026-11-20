@@ -1,4 +1,5 @@
 use super::*;
+use crate::fixtures::unigram_source;
 use diagnostic::Code;
 
 #[test]
@@ -402,29 +403,6 @@ fn fingerprint_separates_unigram_scores() {
         second.fingerprint().digest(),
         "分数内容不同必须得到不同指纹"
     );
-}
-
-/// 合成 Unigram 词表：单字母 -1.0，`ab` -0.1（更优），`abc` -2.0，`<unk>` 0.0（编号 5）。
-fn unigram_source(register_unk: bool) -> VocabSource {
-    let special = SpecialTokens::empty().with_unk(5);
-    VocabSource {
-        family: VocabFamily::Unigram,
-        pieces: vec![
-            b"a".to_vec(),
-            b"b".to_vec(),
-            b"c".to_vec(),
-            b"ab".to_vec(),
-            b"abc".to_vec(),
-            b"<unk>".to_vec(),
-        ],
-        scores: vec![-1.0, -1.0, -1.0, -0.1, -2.0, 0.0],
-        special: if register_unk {
-            special
-        } else {
-            SpecialTokens::EMPTY
-        },
-        ..VocabSource::default()
-    }
 }
 
 fn unigram_vocab() -> Vocab {

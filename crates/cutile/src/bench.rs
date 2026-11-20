@@ -25,6 +25,8 @@ pub const L3_THRESHOLD: f64 = 0.7;
 pub struct Bench {
     /// 算子名。
     pub op: String,
+    /// 被测设备身份（`vendor:id`）：多设备机器上"测得多少"必须绑在设备上，否则台账无法归属。
+    pub device: String,
     /// 形状 `(m, n)`。
     pub shape: (u64, u64),
     /// 重复次数（= 计时样本数；warmup 不计入）。
@@ -164,10 +166,11 @@ pub fn bench(
     dirs: &Dirs,
     op_name: &str,
     shape: Option<&str>,
+    device: Option<&str>,
     repeat: usize,
 ) -> diagnostic::Result<Bench> {
     let (op, (m, n)) = target(catalogue, op_name, shape)?;
-    let (profile, evidence) = verified(catalogue, dirs)?;
+    let (profile, evidence) = verified(catalogue, dirs, device)?;
     let run = Run::new(op, profile, evidence.proof(profile))?;
     let timed = run_sample(&run, dirs, (m as usize, n as usize), repeat.max(1))?;
     Ok(assemble(op_name, timed, profile, &evidence))
@@ -190,8 +193,11 @@ fn target<'a>(
 fn verified<'a>(
     catalogue: &'a Catalogue,
     dirs: &Dirs,
+    device: Option<&str>,
 ) -> diagnostic::Result<(&'a Profile, Evidence)> {
-    let profile = catalogue.resolve(AUTO_DEVICE)?;
+    // `--device` 与 `doctor` 同一套取值（`auto` 或缺省 = 按本机指纹挑），因为"测哪台设备"与
+    // "审计哪台设备"必须是同一个选择器，否则台账里的名字会对不上 `doctor` 的首档。
+    let profile = catalogue.resolve(device.unwrap_or(AUTO_DEVICE))?;
     // 计时之前必须先有证据：否则测的是"档案说它能跑"，不是"这台机器能跑"。
     let evidence = witness::establish(profile, dirs);
     if let Some(error) = &evidence.failure {
@@ -234,7 +240,8 @@ fn run_sample(
     // 重复次数也是产物身份的一部分：换 `--repeat` 就换一份产物。
     let harness = prepared.harness(run.op, &sample, repeat)?;
     // 命中产物时连编译器都不需要：工具链只是"能重新编译"的前提，不是跑 bench 的前提。
-    let tool = toolchain::detect();
+    // 但**要哪个编译器**由档案决定：`emit = "cuda"` 的档案必须是它声明的 `nvcc` / `mcc`。
+    let tool = toolchain::for_profile(run.profile);
     let (outcome, artifact) =
         build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
     let (per_run_ns, p50_ns, p95_ns) = timings(&outcome)?;
@@ -283,6 +290,7 @@ fn assemble(op_name: &str, timed: Timed, profile: &Profile, evidence: &Evidence)
     });
     Bench {
         op: op_name.to_string(),
+        device: format!("{}:{}", profile.meta.vendor, profile.meta.id),
         shape: timed.shape,
         repeat: timed.repeat,
         measured: throughput(

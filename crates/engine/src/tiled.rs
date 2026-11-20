@@ -226,8 +226,8 @@ fn simdgroup_gemm_msl(
     src
 }
 
-/// 简单分块 GEMM（每线程一输出）的 MSL 正文。
-fn simple_tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: usize) -> String {
+/// 分块 GEMM 各形态共用的 MSL 前导：三路设备缓冲接口 + 网格/线程组下标；常量行由调用方续写。
+fn tiled_gemm_head(a: &str, b: &str, y: &str) -> String {
     format!(
         "#include <metal_stdlib>\n\
          using namespace metal;\n\
@@ -236,8 +236,15 @@ fn simple_tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: us
          \x20    device float* d_{b} [[buffer(1)]],\n\
          \x20    device float* d_{y} [[buffer(2)]],\n\
          \x20    uint3 gid [[thread_position_in_grid]],\n\
-         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
-         \x20    const uint N = {n}, K = {k}, T = {tile};\n\
+         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n"
+    )
+}
+
+/// 简单分块 GEMM（每线程一输出）的 MSL 正文。
+fn simple_tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: usize) -> String {
+    let mut src = tiled_gemm_head(a, b, y);
+    src.push_str(&format!(
+        "\x20    const uint N = {n}, K = {k}, T = {tile};\n\
          \x20    threadgroup float As[{tile}][{tile}];\n\
          \x20    threadgroup float Bs[{tile}][{tile}];\n\
          \x20    const uint i = gid.x, j = gid.y, li = lid.x, lj = lid.y;\n\
@@ -251,7 +258,8 @@ fn simple_tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: us
          \x20    }}\n\
          \x20    d_{y}[i * N + j] = acc;\n\
          }}"
-    )
+    ));
+    src
 }
 
 /// 4×4 寄存器分块 GEMM：每线程算 `per_thread × per_thread` 个输出，共享块按 `tile` 一次搬运。
@@ -268,16 +276,9 @@ fn register_blocked_gemm_msl(
     per_thread: usize,
 ) -> String {
     let threads = tile / per_thread;
-    format!(
-        "#include <metal_stdlib>\n\
-         using namespace metal;\n\
-         kernel void kernel_main(\n\
-         \x20    device float* d_{a} [[buffer(0)]],\n\
-         \x20    device float* d_{b} [[buffer(1)]],\n\
-         \x20    device float* d_{y} [[buffer(2)]],\n\
-         \x20    uint3 gid [[thread_position_in_grid]],\n\
-         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
-         \x20    const uint N = {n}, K = {k}, T = {tile}, PT = {per_thread}, TT = {threads};\n\
+    let mut src = tiled_gemm_head(a, b, y);
+    src.push_str(&format!(
+        "\x20    const uint N = {n}, K = {k}, T = {tile}, PT = {per_thread}, TT = {threads};\n\
          \x20    threadgroup float As[{tile}][{tile}];\n\
          \x20    threadgroup float Bs[{tile}][{tile}];\n\
          \x20    const uint gr = (gid.x - lid.x) * PT, gc = (gid.y - lid.y) * PT;\n\
@@ -304,7 +305,8 @@ fn register_blocked_gemm_msl(
          \x20    for (uint ii = 0; ii < PT; ++ii)\n\
          \x20        for (uint jj = 0; jj < PT; ++jj) d_{y}[(r0 + ii) * N + c0 + jj] = acc[ii][jj];\n\
          }}"
-    )
+    ));
+    src
 }
 
 /// 生产态 threadgroup 协作分块注意力（Metal）：一个线程组负责一个查询行。

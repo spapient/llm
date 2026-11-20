@@ -145,7 +145,7 @@ macro_rules! reduce_f32 {
 
         // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。迁移期与 `#[model]` 生成的
         // `MODEL` 并存，两者一致性由 `operator::tests` 逐字段锁住。
-        $crate::operator_via!($name, $op, (4096, 1), true, reduce, $crate::reduce::AXES);
+        $crate::operator_via!($name, $op, 1, (4096, 1), true, reduce, $crate::reduce::AXES);
 
         #[annotation::model(name = $op, shape = [4096, 1], dtype = "f32", skeleton = "reduce")]
         #[doc = concat!("`", $op, "` 的语义别名。")]

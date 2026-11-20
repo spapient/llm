@@ -4,8 +4,8 @@
 //! 非法 UTF-8 与越界编号必须报错而不是替换，以及 `vocab_size` 与可接受编号范围一致。
 
 use llm_tokenizer::{
-    Bpe, Bytes, DecoderStream, Merge, SpecialTokens, Token, Tokenizer, Unigram, Vocab, VocabFamily,
-    VocabSource,
+    Bpe, Bytes, DecoderStream, Merge, Token, Tokenizer, Unigram, Vocab, VocabFamily, VocabSource,
+    fixtures::unigram_source,
 };
 
 /// 合成 BPE 词表：`a b c` 单字节 + `ab`/`bc` 合并片；秩按 merges 表内顺序。
@@ -37,21 +37,7 @@ fn bpe_fixture() -> Bpe {
 
 /// 合成 Unigram 词表：单字母 -1.0，`ab` -0.1，`abc` -2.0，`<unk>` 编号 5。
 fn unigram_fixture() -> Unigram {
-    let source = VocabSource {
-        family: VocabFamily::Unigram,
-        pieces: vec![
-            b"a".to_vec(),
-            b"b".to_vec(),
-            b"c".to_vec(),
-            b"ab".to_vec(),
-            b"abc".to_vec(),
-            b"<unk>".to_vec(),
-        ],
-        scores: vec![-1.0, -1.0, -1.0, -0.1, -2.0, 0.0],
-        special: SpecialTokens::empty().with_unk(5),
-        ..VocabSource::default()
-    };
-    let vocab = Vocab::try_new(source).expect("合成 Unigram 词表构造");
+    let vocab = Vocab::try_new(unigram_source(true)).expect("合成 Unigram 词表构造");
     Unigram::new(vocab).expect("合成 Unigram 实例")
 }
 

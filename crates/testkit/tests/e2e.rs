@@ -210,9 +210,8 @@ const GROUP: usize = 32;
 #[test]
 fn ptq_quantized_gemv_keeps_cosine_with_the_f32_reference() {
     let mut rng = Rng::new(2026_1118);
-    let between = |rng: &mut Rng| (rng.below(2001) as f32 / 1000.0) - 1.0;
-    let x: Vec<f32> = (0..M).map(|_| between(&mut rng)).collect();
-    let weights: Vec<f32> = (0..N * M).map(|_| between(&mut rng)).collect();
+    let x: Vec<f32> = (0..M).map(|_| rng.signed_unit()).collect();
+    let weights: Vec<f32> = (0..N * M).map(|_| rng.signed_unit()).collect();
 
     let mut reference = vec![0.0f32; N];
     gemv_f32::forward(&x, &weights, &mut reference).expect("稠密参考可算");

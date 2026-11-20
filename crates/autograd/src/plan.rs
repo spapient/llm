@@ -943,19 +943,8 @@ mod tests {
         for round in 0..200 {
             let mut tape = Tape::new();
             let mut vars: Vec<Var> = (0..1 + rng.below(4)).map(|_| tape.parameter()).collect();
-            for _ in 0..1 + rng.below(24) {
-                let width = 1 + rng.below(3) as usize;
-                let inputs: Vec<Var> = (0..width)
-                    .map(|_| vars[rng.below(vars.len() as u32) as usize])
-                    .collect();
-                let recorded = match rng.below(10) {
-                    0 => tape.record_with("detach", &inputs, Requirement::None),
-                    _ => tape.record("edge", &inputs),
-                };
-                if let Ok(var) = recorded {
-                    vars.push(var);
-                }
-            }
+            let rounds = 1 + rng.below(24);
+            crate::testutil::random_edges(&mut tape, &mut vars, &mut rng, rounds, false);
             let Some(schedule) = crate::testutil::schedule_of(&tape, &vars) else {
                 continue;
             };

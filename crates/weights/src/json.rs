@@ -19,6 +19,7 @@
 //! assert!(json::parse(r#"{"a": 1.5}"#).is_err(), "头部里的数字必须是整数");
 //! ```
 
+use diagnostic::scan::Cursor;
 use diagnostic::{Code, Error, Result};
 
 /// 嵌套上限：头部只有"对象 → 条目对象 → 数组"三层，超过它的一定是输入有问题。
@@ -139,83 +140,49 @@ impl Value {
 pub fn parse(text: &str) -> Result<Value> {
     let mut reader = Reader::new(text);
     let value = reader.value(0)?;
-    reader.skip_space();
-    if reader.pos != reader.bytes.len() {
-        return Err(reader.fail("值之后还有多余内容"));
+    reader.cursor.skip_space();
+    if reader.cursor.pos() != reader.cursor.bytes().len() {
+        return Err(reader.cursor.fail("值之后还有多余内容"));
     }
     Ok(value)
 }
 
-/// 逐字节推进的读取器：`pos` 同时是报错位置，所以不缓存、不跳读。
+/// 逐字节推进的读取器：[`Cursor`] 负责字节与位置（位置同时是报错坐标），这里只有文法。
 struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+    cursor: Cursor<'a>,
 }
 
 impl<'a> Reader<'a> {
     fn new(text: &'a str) -> Self {
         Self {
-            bytes: text.as_bytes(),
-            pos: 0,
-        }
-    }
-
-    fn fail(&self, message: impl AsRef<str>) -> Error {
-        self.fail_at(self.pos, message)
-    }
-
-    fn fail_at(&self, position: usize, message: impl AsRef<str>) -> Error {
-        located(position, message.as_ref())
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
-    }
-
-    fn bump(&mut self) -> Option<u8> {
-        let byte = self.peek()?;
-        self.pos += 1;
-        Some(byte)
-    }
-
-    fn skip_space(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.pos += 1;
-        }
-    }
-
-    /// 吃一个必需的字节；不一致与已到末尾两种失败带不同文案。
-    fn eat(&mut self, wanted: u8) -> Result<()> {
-        let at = self.pos;
-        match self.bump() {
-            Some(byte) if byte == wanted => Ok(()),
-            Some(_) => Err(self.fail_at(at, format!("期望 `{}`", wanted as char))),
-            None => Err(self.fail_at(at, format!("期望 `{}`，但已到末尾", wanted as char))),
+            cursor: Cursor::new(text, "weights::json::parse"),
         }
     }
 
     fn literal(&mut self, word: &str, value: Value) -> Result<Value> {
-        let at = self.pos;
+        let at = self.cursor.pos();
         let end = at + word.len();
         let slice = self
-            .bytes
+            .cursor
+            .bytes()
             .get(at..end)
-            .ok_or_else(|| self.fail_at(at, format!("期望 `{word}`，但内容不足")))?;
+            .ok_or_else(|| self.cursor.fail_at(at, format!("期望 `{word}`，但内容不足")))?;
         if slice != word.as_bytes() {
-            return Err(self.fail_at(at, format!("期望 `{word}`")));
+            return Err(self.cursor.fail_at(at, format!("期望 `{word}`")));
         }
-        self.pos = end;
+        self.cursor.seek(end);
         Ok(value)
     }
 
     fn value(&mut self, depth: usize) -> Result<Value> {
         if depth > MAX_DEPTH {
-            return Err(self.fail(format!("嵌套超过 {MAX_DEPTH} 层")));
+            return Err(self.cursor.fail(format!("嵌套超过 {MAX_DEPTH} 层")));
         }
-        self.skip_space();
+        self.cursor.skip_space();
         let opened = self
+            .cursor
             .peek()
-            .ok_or_else(|| self.fail("期望一个值，但已到末尾"))?;
+            .ok_or_else(|| self.cursor.fail("期望一个值，但已到末尾"))?;
         self.dispatch(opened, depth)
     }
 
@@ -243,13 +210,13 @@ impl<'a> Reader<'a> {
             b't' => self.literal("true", Value::Bool(true)),
             b'f' => self.literal("false", Value::Bool(false)),
             b'n' => self.literal("null", Value::Null),
-            _ => Err(self.fail("无法识别值的开头")),
+            _ => Err(self.cursor.fail("无法识别值的开头")),
         }
     }
 
     fn object(&mut self, depth: usize) -> Result<Value> {
-        let open = self.pos;
-        self.eat(b'{')?;
+        let open = self.cursor.pos();
+        self.cursor.eat(b'{')?;
         let mut fields: Vec<(String, Value)> = Vec::new();
         if self.close(b'}') {
             return Ok(Value::Object(fields));
@@ -264,8 +231,8 @@ impl<'a> Reader<'a> {
     }
 
     fn array(&mut self, depth: usize) -> Result<Value> {
-        let open = self.pos;
-        self.eat(b'[')?;
+        let open = self.cursor.pos();
+        self.cursor.eat(b'[')?;
         let mut items = Vec::new();
         if self.close(b']') {
             return Ok(Value::Array(items));
@@ -298,45 +265,45 @@ impl<'a> Reader<'a> {
 
     /// 空容器：`skip_space` 后紧跟闭合符就吃掉它。
     fn close(&mut self, closing: u8) -> bool {
-        self.skip_space();
-        if self.peek() != Some(closing) {
+        self.cursor.skip_space();
+        if self.cursor.peek() != Some(closing) {
             return false;
         }
-        self.pos += 1;
+        self.cursor.advance(1);
         true
     }
 
     /// 一个键值对：键、`:`、值；重复键在这里拒（与 [`crate::Header`] 拒绝重名条目同一原则）。
     fn field(&mut self, depth: usize, seen: &[(String, Value)]) -> Result<(String, Value)> {
-        self.skip_space();
-        let at = self.pos;
+        self.cursor.skip_space();
+        let at = self.cursor.pos();
         let key = self.string()?;
         if seen.iter().any(|(existing, _)| *existing == key) {
-            return Err(self.fail_at(at, format!("对象里出现重复键 `{key}`")));
+            return Err(self.cursor.fail_at(at, format!("对象里出现重复键 `{key}`")));
         }
-        self.skip_space();
-        self.eat(b':')?;
+        self.cursor.skip_space();
+        self.cursor.eat(b':')?;
         let value = self.value(depth)?;
         Ok((key, value))
     }
 
     /// 元素之间的分隔：`,` 继续，闭合符收尾，其余（含输入结束）按 `what` 报错。
     fn separator(&mut self, open: usize, close: u8, what: &str) -> Result<bool> {
-        self.skip_space();
-        match self.bump() {
+        self.cursor.skip_space();
+        match self.cursor.bump() {
             Some(b',') => Ok(true),
             Some(byte) if byte == close => Ok(false),
-            Some(_) => Err(self.fail_at(
-                self.pos - 1,
+            Some(_) => Err(self.cursor.fail_at(
+                self.cursor.pos() - 1,
                 format!("{what}里期望 `,` 或 `{}`", close as char),
             )),
-            None => Err(self.fail_at(open, format!("{what}没有闭合"))),
+            None => Err(self.cursor.fail_at(open, format!("{what}没有闭合"))),
         }
     }
 
     fn string(&mut self) -> Result<String> {
-        let open = self.pos;
-        self.eat(b'"')?;
+        let open = self.cursor.pos();
+        self.cursor.eat(b'"')?;
         let mut text = String::new();
         while let Some(chunk) = self.chunk(open)? {
             text.push_str(&chunk);
@@ -346,10 +313,10 @@ impl<'a> Reader<'a> {
 
     /// 字符串的一段：闭合引号返回 `None`，否则返回这一段贡献的文本。
     fn chunk(&mut self, open: usize) -> Result<Option<String>> {
-        let at = self.pos;
+        let at = self.cursor.pos();
         let byte = self
-            .bump()
-            .ok_or_else(|| self.fail_at(open, "字符串没有闭合"))?;
+            .cursor.bump()
+            .ok_or_else(|| self.cursor.fail_at(open, "字符串没有闭合"))?;
         if byte == b'"' {
             return Ok(None);
         }
@@ -361,7 +328,7 @@ impl<'a> Reader<'a> {
     fn fragment(&mut self, open: usize, at: usize, byte: u8) -> Result<String> {
         match byte {
             b'\\' => self.escape(open, at).map(String::from),
-            0x00..=0x1f => Err(self.fail_at(at, "控制字符必须转义")),
+            0x00..=0x1f => Err(self.cursor.fail_at(at, "控制字符必须转义")),
             _ => self.utf8(at),
         }
     }
@@ -369,55 +336,57 @@ impl<'a> Reader<'a> {
     /// 一个转义序列：`\` 之后的一个字节；`u` 走四位十六进制与代理对。
     fn escape(&mut self, open: usize, at: usize) -> Result<char> {
         let escaped = self
+            .cursor
             .bump()
-            .ok_or_else(|| self.fail_at(at, "转义序列不完整"))?;
+            .ok_or_else(|| self.cursor.fail_at(at, "转义序列不完整"))?;
         if escaped == b'u' {
             return self.unicode_escape(open);
         }
         simple_escape(escaped)
-            .ok_or_else(|| self.fail_at(at, format!("未知转义 `\\{}`", escaped as char)))
+            .ok_or_else(|| self.cursor.fail_at(at, format!("未知转义 `\\{}`", escaped as char)))
     }
 
     /// 一个多字节字符：按起始字节定宽度，切片必须是合法 UTF-8。
     fn utf8(&mut self, at: usize) -> Result<String> {
-        let Some(width) = sequence_width(self.bytes[at]) else {
-            return Err(self.fail_at(at, "非法的 UTF-8 起始字节"));
+        let Some(width) = sequence_width(self.cursor.bytes()[at]) else {
+            return Err(self.cursor.fail_at(at, "非法的 UTF-8 起始字节"));
         };
         let end = at + width;
-        let Some(slice) = self.bytes.get(at..end) else {
-            return Err(self.fail_at(at, "多字节字符被截断"));
+        let Some(slice) = self.cursor.bytes().get(at..end) else {
+            return Err(self.cursor.fail_at(at, "多字节字符被截断"));
         };
-        let text = std::str::from_utf8(slice).map_err(|_| self.fail_at(at, "非法的 UTF-8 序列"))?;
-        self.pos = end;
+        let text = std::str::from_utf8(slice).map_err(|_| self.cursor.fail_at(at, "非法的 UTF-8 序列"))?;
+        self.cursor.seek(end);
         Ok(text.to_string())
     }
 
     fn unicode_escape(&mut self, open: usize) -> Result<char> {
         let high = self.hex4()?;
         if is_high_surrogate(high) {
-            return code_point(open, self.pair_surrogate(high)?);
+            let code = self.pair_surrogate(high)?;
+            return code_point(&self.cursor, open, code);
         }
         if is_low_surrogate(high) {
-            return Err(self.fail_at(open, "孤立的低位代理"));
+            return Err(self.cursor.fail_at(open, "孤立的低位代理"));
         }
-        code_point(open, high)
+        code_point(&self.cursor, open, high)
     }
 
     /// 高位代理之后必须紧跟 `\u` 低位代理：两者合成一个补充平面码位。
     fn pair_surrogate(&mut self, high: u32) -> Result<u32> {
-        let at = self.pos;
-        if self.bump() != Some(b'\\') || self.bump() != Some(b'u') {
-            return Err(self.fail_at(at, "高位代理后必须紧跟 `\\u` 低位代理"));
+        let at = self.cursor.pos();
+        if self.cursor.bump() != Some(b'\\') || self.cursor.bump() != Some(b'u') {
+            return Err(self.cursor.fail_at(at, "高位代理后必须紧跟 `\\u` 低位代理"));
         }
         let low = self.hex4()?;
         if !is_low_surrogate(low) {
-            return Err(self.fail_at(at, "低位代理必须落在 U+DC00..U+DFFF"));
+            return Err(self.cursor.fail_at(at, "低位代理必须落在 U+DC00..U+DFFF"));
         }
         Ok(0x1_0000 + ((high - 0xd800) << 10) + (low - 0xdc00))
     }
 
     fn hex4(&mut self) -> Result<u32> {
-        let at = self.pos;
+        let at = self.cursor.pos();
         let mut value = 0u32;
         for _ in 0..4 {
             value = value * 16 + self.hex_digit(at)?;
@@ -428,33 +397,34 @@ impl<'a> Reader<'a> {
     /// 一位十六进制：不足 4 位与非十六进制字符用同一句报错（`at` 是 `\u` 之后的起点）。
     fn hex_digit(&mut self, at: usize) -> Result<u32> {
         let byte = self
+            .cursor
             .bump()
-            .ok_or_else(|| self.fail_at(at, "`\\u` 需要 4 位十六进制"))?;
+            .ok_or_else(|| self.cursor.fail_at(at, "`\\u` 需要 4 位十六进制"))?;
         (byte as char)
             .to_digit(16)
-            .ok_or_else(|| self.fail_at(at, "`\\u` 需要 4 位十六进制"))
+            .ok_or_else(|| self.cursor.fail_at(at, "`\\u` 需要 4 位十六进制"))
     }
 
     fn integer(&mut self) -> Result<i64> {
-        let start = self.pos;
-        self.pos += usize::from(self.peek() == Some(b'-'));
-        let digits = self.pos;
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.pos += 1;
+        let start = self.cursor.pos();
+        self.cursor
+            .advance(usize::from(self.cursor.peek() == Some(b'-')));
+        let digits = self.cursor.pos();
+        while matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
+            self.cursor.advance(1);
         }
-        if self.pos == digits {
-            return Err(self.fail_at(start, "整数缺少数字"));
+        if self.cursor.pos() == digits {
+            return Err(self.cursor.fail_at(start, "整数缺少数字"));
         }
-        if matches!(self.peek(), Some(b'.' | b'e' | b'E')) {
-            return Err(self.fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
+        if matches!(self.cursor.peek(), Some(b'.' | b'e' | b'E')) {
+            return Err(self.cursor.fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
         }
-        integer_value(start, &self.bytes[start..self.pos])
+        integer_value(
+            &self.cursor,
+            start,
+            &self.cursor.bytes()[start..self.cursor.pos()],
+        )
     }
-}
-
-/// 带位置前缀的解析错误：读取器的方法与不持有读取器的辅助函数共用同一句前缀。
-fn located(at: usize, message: impl std::fmt::Display) -> Error {
-    Error::new(Code::Invalid, format!("位置 {at}：{message}")).with("weights::json::parse")
 }
 
 /// 简单转义表：`\X` 的第二个字节 → 字符，`'\0'` 表示不是简单转义（`u` 另行处理）。
@@ -488,8 +458,8 @@ fn sequence_width(byte: u8) -> Option<usize> {
 }
 
 /// 码位 → 字符：代理区之外并不都是合法标量值，所以这一步也可能失败。
-fn code_point(at: usize, code: u32) -> Result<char> {
-    char::from_u32(code).ok_or_else(|| located(at, format!("U+{code:04X} 不是合法字符")))
+fn code_point(cursor: &Cursor<'_>, at: usize, code: u32) -> Result<char> {
+    char::from_u32(code).ok_or_else(|| cursor.fail_at(at, format!("U+{code:04X} 不是合法字符")))
 }
 
 /// 高位代理：`U+D800..=U+DBFF`，后面必须跟一个低位代理。
@@ -503,15 +473,15 @@ fn is_low_surrogate(code: u32) -> bool {
 }
 
 /// 整数字节 → `i64`：前导零在本地拒，范围与解析口径交给 `str::parse`。
-fn integer_value(at: usize, bytes: &[u8]) -> Result<i64> {
+fn integer_value(cursor: &Cursor<'_>, at: usize, bytes: &[u8]) -> Result<i64> {
     let Ok(text) = std::str::from_utf8(bytes) else {
-        return Err(located(at, "整数不是 ASCII"));
+        return Err(cursor.fail_at(at, "整数不是 ASCII"));
     };
     if text.len() > 1 && text.trim_start_matches('-').starts_with('0') {
-        return Err(located(at, format!("整数 `{text}` 不能有前导零")));
+        return Err(cursor.fail_at(at, format!("整数 `{text}` 不能有前导零")));
     }
     text.parse::<i64>()
-        .map_err(|_| located(at, format!("整数 `{text}` 超出 i64 范围")))
+        .map_err(|_| cursor.fail_at(at, format!("整数 `{text}` 超出 i64 范围")))
 }
 
 #[cfg(test)]

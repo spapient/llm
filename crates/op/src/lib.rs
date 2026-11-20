@@ -117,23 +117,71 @@ macro_rules! kernel_table {
     };
 }
 
-/// 生成编译期内嵌的算子注册表：一行一个算子类型 + 模板 stem。
+/// 全量算子清单：**唯一一次**声明。注册表与上层类型化 API 都从这张表展开。
 ///
-/// 名字与可微性不再手写：它们取自 [`Operator::NAME`](operator::Operator::NAME) /
-/// [`Operator::DIFFERENTIABLE`](operator::Operator::DIFFERENTIABLE)，语义表是 [`model_of`] 的投影。
-/// 一行的可变部分只剩类型与 `ops/<模板>.k` 的 stem——注册名、形状、代价、样本都与类型同源，
-/// "注册表说 true、Operator 说 false"这种漂移在编译期就没有落点。
+/// 一行一个算子：`方法名: 类型路径 => 模板 stem`。方法名与
+/// [`Operator::NAME`](operator::Operator::NAME) 在编译期逐字节对拍（见 `registry_impl!`），
+/// 因此"清单写了一个名字、类型说另一个"无法通过编译；输入个数取 `Operator::ARITY`，
+/// 由 `arity_matches_the_samples` 再与样本对拍。
 ///
 /// 模板仍是独立字面量：多算子共用一份泛型模板（`gemv_i2`/`gemv_i4` → `gemv_packed`）时，
 /// 模板名与注册名本来就不是同一个事实。
-macro_rules! registry {
-    ($($ty:ty => $template:literal),* $(,)?) => {
+#[macro_export]
+macro_rules! for_each_operator {
+    ($m:ident) => {
+        $m! {
+            add_f32: $crate::add_f32::AddF32 => "binary",
+            attention_f32: $crate::attention::AttentionF32 => "attention_f32",
+            decode_attention_f32: $crate::attention::decode_attention::DecodeAttentionF32 => "decode_attention_f32",
+            decode_flash_attention_f32: $crate::attention::decode_attention::DecodeFlashAttentionF32 => "decode_flash_attention_f32",
+            dequant_i2: $crate::dequant_i2::DequantI2F32 => "dequant_packed",
+            dequant_i4: $crate::dequant_i4::DequantI4F32 => "dequant_packed",
+            dequant_i8: $crate::dequant_i8::DequantI8F32 => "dequant_i8",
+            div_f32: $crate::div_f32::DivF32 => "binary",
+            embed_f32: $crate::embed_f32::EmbedF32 => "embed_f32",
+            exp_f32: $crate::exp_f32::ExpF32 => "exp_f32",
+            flash_attention_f32: $crate::attention::FlashAttentionF32 => "flash_attention_f32",
+            gelu_f32: $crate::gelu_f32::GeluF32 => "gelu_f32",
+            gemm_f32: $crate::gemm_f32::GemmF32 => "gemm_f32",
+            gemm_i2: $crate::gemm_i2::GemmI2Model => "gemm_packed",
+            gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
+            gemm_i8: $crate::gemm_i8::GemmI8Model => "gemm_i8",
+            gemv_f32: $crate::gemv_f32::F32 => "gemv_f32",
+            gemv_i2: $crate::gemv_i2::I2 => "gemv_packed",
+            gemv_i4: $crate::gemv_i4::I4 => "gemv_packed",
+            gemv_i8: $crate::gemv_i8::I8 => "gemv_i8",
+            log_f32: $crate::log_f32::LogF32 => "log_f32",
+            matmul_f32: $crate::matmul::MatmulF32 => "matmul_f32",
+            matmul_i8: $crate::matmul_i8::MatmulI8 => "matmul_i8",
+            max_f32: $crate::max_f32::MaxF32 => "max_f32",
+            min_f32: $crate::min_f32::MinF32 => "min_f32",
+            mul_f32: $crate::mul_f32::MulF32 => "binary",
+            reduce_max_f32: $crate::reduce_max_f32::ReduceMaxF32 => "reduce_max_f32",
+            reduce_sum_f32: $crate::reduce_sum_f32::ReduceSumF32 => "reduce_sum_f32",
+            residual_add_f32: $crate::residual_add_f32::ResidualAddF32 => "binary",
+            rmsnorm_f32: $crate::rmsnorm_f32::RmsNormF32 => "rmsnorm_f32",
+            rope_f32: $crate::rope_f32::RopeF32 => "rope_f32",
+            scale_f32: $crate::scale_f32::ScaleF32 => "scale_f32",
+            scan_f32: $crate::scan_f32::ScanF32 => "scan_f32",
+            silu_f32: $crate::silu_f32::SiluF32 => "silu_f32",
+            softmax_f32: $crate::softmax_f32::SoftmaxF32 => "softmax_f32",
+            sub_f32: $crate::sub_f32::SubF32 => "binary",
+        }
+    };
+}
+
+/// 生成编译期内嵌的算子注册表：一行一个算子类型 + 模板 stem。
+///
+/// 名字、可微性、输入个数全部取自 [`Operator`](operator::Operator)，语义表是 [`model_of`] 的投影；
+/// 一行的可变部分只剩方法名、类型与 `ops/<模板>.k` 的 stem。
+macro_rules! registry_impl {
+    ($($name:ident: $ty:ty => $template:literal),* $(,)?) => {
         /// 编译期内嵌的算子注册表。
         ///
         /// 新增算子在这里补一行，否则发布出去的二进制里没有它；
         /// `the_registry_covers_the_generated_table_exactly` 把"生成表里有、注册表里没有"（或反过来）
         /// 直接判为失败。数组长度由表本身数出来，不另写一个常数——那是第二个会漂移的数字。
-        pub const REGISTRY: [Registration; <[()]>::len(&[$(registry!(@one $ty)),*])] = [
+        pub const REGISTRY: [Registration; <[()]>::len(&[$(registry_impl!(@one $ty)),*])] = [
             $(
                 Registration {
                     name: <$ty as crate::operator::Operator>::NAME,
@@ -143,48 +191,24 @@ macro_rules! registry {
                 }
             ),*
         ];
+
+        /// 清单里的方法名必须与 `Operator::NAME` 逐字节相同（编译期）。
+        const _: () = {
+            $(
+                ::core::assert!(
+                    crate::operator::same_str(
+                        stringify!($name),
+                        <$ty as crate::operator::Operator>::NAME,
+                    ),
+                    "算子清单的方法名与 Operator::NAME 不一致"
+                );
+            )*
+        };
     };
     (@one $ty:ty) => { () };
 }
 
-registry! {
-    add_f32::AddF32 => "binary",
-    attention::AttentionF32 => "attention_f32",
-    attention::decode_attention::DecodeAttentionF32 => "decode_attention_f32",
-    attention::decode_attention::DecodeFlashAttentionF32 => "decode_flash_attention_f32",
-    dequant_i2::DequantI2F32 => "dequant_packed",
-    dequant_i4::DequantI4F32 => "dequant_packed",
-    dequant_i8::DequantI8F32 => "dequant_i8",
-    div_f32::DivF32 => "binary",
-    embed_f32::EmbedF32 => "embed_f32",
-    exp_f32::ExpF32 => "exp_f32",
-    attention::FlashAttentionF32 => "flash_attention_f32",
-    gelu_f32::GeluF32 => "gelu_f32",
-    gemm_f32::GemmF32 => "gemm_f32",
-    gemm_i2::GemmI2Model => "gemm_packed",
-    gemm_i4::GemmI4Model => "gemm_packed",
-    gemm_i8::GemmI8Model => "gemm_i8",
-    gemv_f32::F32 => "gemv_f32",
-    gemv_i2::I2 => "gemv_packed",
-    gemv_i4::I4 => "gemv_packed",
-    gemv_i8::I8 => "gemv_i8",
-    log_f32::LogF32 => "log_f32",
-    matmul::MatmulF32 => "matmul_f32",
-    matmul_i8::MatmulI8 => "matmul_i8",
-    max_f32::MaxF32 => "max_f32",
-    min_f32::MinF32 => "min_f32",
-    mul_f32::MulF32 => "binary",
-    reduce_max_f32::ReduceMaxF32 => "reduce_max_f32",
-    reduce_sum_f32::ReduceSumF32 => "reduce_sum_f32",
-    residual_add_f32::ResidualAddF32 => "binary",
-    rmsnorm_f32::RmsNormF32 => "rmsnorm_f32",
-    rope_f32::RopeF32 => "rope_f32",
-    scale_f32::ScaleF32 => "scale_f32",
-    scan_f32::ScanF32 => "scan_f32",
-    silu_f32::SiluF32 => "silu_f32",
-    softmax_f32::SoftmaxF32 => "softmax_f32",
-    sub_f32::SubF32 => "binary",
-}
+crate::for_each_operator!(registry_impl);
 
 /// 名字是否在注册表里；const 上下文可用。
 ///
@@ -312,6 +336,27 @@ mod tests {
             assert!(op.declaration().table("op").is_some(), "{}", op.name());
             assert!(!op.template().is_empty(), "{}", op.name());
         }
+    }
+
+    /// `Operator::ARITY` 必须等于样本里非输出缓冲（`y`）的个数：类型化 API 的定长输入以此为准。
+    #[test]
+    fn arity_matches_the_samples() {
+        macro_rules! check {
+            ($($name:ident: $ty:ty => $template:literal),*) => {
+                $(
+                    let shape = <$ty as crate::operator::Operator>::SHAPE;
+                    let sample = <$ty as crate::operator::Operator>::sample(shape.0, shape.1);
+                    let inputs = sample.buffers.iter().filter(|buffer| buffer.name != "y").count();
+                    assert_eq!(
+                        <$ty as crate::operator::Operator>::ARITY,
+                        inputs,
+                        "算子 `{}` 的 ARITY 与样本输入个数不同",
+                        stringify!($name)
+                    );
+                )*
+            };
+        }
+        crate::for_each_operator!(check);
     }
 
     /// 生成表按文件名升序（旧的 `op::load(dir)` 也这样排序）。

@@ -642,15 +642,13 @@ fn orthogonalize(grad: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
     let scale = 1.0 / (norm + eps);
     let mut x: Vec<f32> = grad.iter().map(|v| v * scale).collect();
     for _ in 0..NS_STEPS {
-        x = if rows >= cols {
-            let gram = gram_of_columns(&x, rows, cols);
-            let squared = square(&gram, cols);
-            advance_columns(&x, rows, cols, &gram, &squared)
+        let (gram, side) = if rows >= cols {
+            (gram_of_columns(&x, rows, cols), Side::Right)
         } else {
-            let gram = gram_of_rows(&x, rows, cols);
-            let squared = square(&gram, rows);
-            advance_rows(&x, rows, cols, &gram, &squared)
+            (gram_of_rows(&x, rows, cols), Side::Left)
         };
+        let squared = square(&gram, side.order(rows, cols));
+        x = advance(&x, rows, cols, &gram, &squared, side);
     }
     x
 }
@@ -705,35 +703,46 @@ fn square(matrix: &[f32], order: usize) -> Vec<f32> {
     out
 }
 
-/// `X ← aX + b(XA) + c(XA²)`：`A` 是 `cols × cols`（乘在右边）。
-fn advance_columns(x: &[f32], rows: usize, cols: usize, gram: &[f32], squared: &[f32]) -> Vec<f32> {
-    let (a, b, c) = NS_COEF;
-    let mut out = vec![0.0_f32; rows * cols];
-    for row in 0..rows {
-        for col in 0..cols {
-            let mut acc = a * x[row * cols + col];
-            for inner in 0..cols {
-                let value = x[row * cols + inner];
-                let slot = inner * cols + col;
-                acc += b * value * gram[slot] + c * value * squared[slot];
-            }
-            out[row * cols + col] = acc;
-        }
-    }
-    out
+/// Gram 乘在 `X` 的哪一边：小边是列时乘在右边（`XA`），小边是行时乘在左边（`AX`）。
+#[derive(Clone, Copy)]
+enum Side {
+    /// `A` 是 `rows × rows`（小边是行），乘在 `X` 左边。
+    Left,
+    /// `A` 是 `cols × cols`（小边是列），乘在 `X` 右边。
+    Right,
 }
 
-/// `X ← aX + b(AX) + c(A²X)`：`A` 是 `rows × rows`（乘在左边）。与 [`advance_columns`] 是同一个迭代。
-fn advance_rows(x: &[f32], rows: usize, cols: usize, gram: &[f32], squared: &[f32]) -> Vec<f32> {
+impl Side {
+    /// 小边的阶数：Gram 与 `A²` 都是这个阶数的方阵。
+    fn order(self, rows: usize, cols: usize) -> usize {
+        match self {
+            Side::Left => rows,
+            Side::Right => cols,
+        }
+    }
+}
+
+/// 一步 `X ← aX + b(AX) + c(A²X)`；`side` 为 [`Side::Right`] 时是 `X ← aX + b(XA) + c(XA²)`。
+/// 两者遍历的是同一块 `X`，只是 `A` 乘在另一侧：沿哪条轴收缩、Gram 槽位怎么排跟着 `side` 变。
+fn advance(
+    x: &[f32],
+    rows: usize,
+    cols: usize,
+    gram: &[f32],
+    squared: &[f32],
+    side: Side,
+) -> Vec<f32> {
     let (a, b, c) = NS_COEF;
     let mut out = vec![0.0_f32; rows * cols];
     for row in 0..rows {
         for col in 0..cols {
             let mut acc = a * x[row * cols + col];
-            for inner in 0..rows {
-                let value = x[inner * cols + col];
-                let slot = row * rows + inner;
-                acc += b * gram[slot] * value + c * squared[slot] * value;
+            for inner in 0..side.order(rows, cols) {
+                let (value, slot) = match side {
+                    Side::Left => (x[inner * cols + col], row * rows + inner),
+                    Side::Right => (x[row * cols + inner], inner * cols + col),
+                };
+                acc += b * value * gram[slot] + c * value * squared[slot];
             }
             out[row * cols + col] = acc;
         }

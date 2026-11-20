@@ -83,6 +83,8 @@ mod delegates {
 mod bpe;
 mod bytes;
 mod encoding;
+#[doc(hidden)]
+pub mod fixtures;
 mod special;
 mod strategy;
 mod unigram;

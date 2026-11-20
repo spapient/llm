@@ -183,6 +183,55 @@ fn single_read<'a>(signature: &'a Signature, family: &str) -> Result<&'a str> {
     }
 }
 
+/// 分块归一化驱动骨架：多段设备源（仅首段带 preamble）→ host 串联程序的几何、主机缓冲、
+/// 部分结果脚手架与收尾（回读、释放、`return 0`）只有这一份。
+///
+/// 两族的差别只在 `reduce`：哪几段归约、每次回读后怎么折叠、末段带哪些标量。`reduce` 拿到的
+/// [`Stage`] 是骨架已算好的几何与实参，`text` 已写到 `main` 体内、部分结果脚手架之后。
+fn driver(
+    segments: &[String],
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+    reduce: impl FnOnce(&mut String, Stage<'_>),
+) -> Result<String> {
+    let len = length_usize(signature, sample)?;
+    let grid = len.div_ceil(chunk);
+    let output = output_name(signature)?;
+    let args = buffer_args(signature);
+    let mut text = program_head(segments);
+    text.push_str("int main(void) {\n");
+    text.push_str(&cuda_host_buffers_grid(
+        sample,
+        signature.params(),
+        output,
+        len,
+    )?);
+    text.push_str(&partial_scaffold(grid));
+    reduce(
+        &mut text,
+        Stage {
+            len,
+            grid,
+            output,
+            args: &args,
+        },
+    );
+    text.push_str(&cuda_readback(output, len));
+    text.push_str(&cuda_release(signature));
+    text.push_str("    return 0;\n}\n");
+    Ok(text)
+}
+
+/// 驱动中段拿到的几何与实参：`len` 是归约长度，`grid` 是块数，`output` 是输出缓冲名，
+/// `args` 是签名的缓冲实参（追加标量由各段自己给 `extra`）。
+struct Stage<'a> {
+    len: usize,
+    grid: usize,
+    output: &'a str,
+    args: &'a str,
+}
+
 /// 分块归一化的完整 CUDA 程序：多段设备源（仅首段带 preamble）+ host 串联驱动。
 ///
 /// RMSNorm：部分平方和 → 主机折叠 `sqrt(sum/N + 1e-6)` → 归一化。
@@ -192,30 +241,22 @@ pub fn cuda_rmsnorm_driver(
     sample: &Sample,
     chunk: usize,
 ) -> Result<String> {
-    let len = length_usize(signature, sample)?;
-    let grid = len.div_ceil(chunk);
-    let output = output_name(signature)?;
-    let args = buffer_args(signature);
-    let mut text = program_head(segments);
-    text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
-        sample,
-        signature.params(),
-        output,
-        len,
-    )?);
-    text.push_str(&partial_scaffold(grid));
-    text.push_str(&launch(PARTIAL, grid, &args, ""));
-    text.push_str(&partial_copy(output, grid));
-    text.push_str("    float sum = 0.0f;\n    for (int i = 0; i < G; ++i) { sum += h_tmp[i]; }\n");
-    text.push_str(&format!(
-        "    float rms = sqrtf(sum / (float){len} + 1e-6f);\n"
-    ));
-    text.push_str(&launch_threads(NORM, len.div_ceil(256), 256, &args, "rms"));
-    text.push_str(&cuda_readback(output, len));
-    text.push_str(&cuda_release(signature));
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
+    driver(segments, signature, sample, chunk, |text, stage| {
+        text.push_str(&launch(PARTIAL, stage.grid, stage.args, ""));
+        text.push_str(&partial_copy(stage.output, stage.grid));
+        text.push_str(&fold_sum());
+        text.push_str(&format!(
+            "    float rms = sqrtf(sum / (float){len} + 1e-6f);\n",
+            len = stage.len
+        ));
+        text.push_str(&launch_threads(
+            NORM,
+            stage.len.div_ceil(256),
+            256,
+            stage.args,
+            "rms",
+        ));
+    })
 }
 
 /// 分块 Softmax 的完整 CUDA 程序：部分最大 → 折叠 max → 部分指数和 → 折叠 sum → 归一化。
@@ -225,36 +266,21 @@ pub fn cuda_softmax_driver(
     sample: &Sample,
     chunk: usize,
 ) -> Result<String> {
-    let len = length_usize(signature, sample)?;
-    let grid = len.div_ceil(chunk);
-    let output = output_name(signature)?;
-    let args = buffer_args(signature);
-    let mut text = program_head(segments);
-    text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
-        sample,
-        signature.params(),
-        output,
-        len,
-    )?);
-    text.push_str(&partial_scaffold(grid));
-    text.push_str(&launch(PARTIAL, grid, &args, ""));
-    text.push_str(&partial_copy(output, grid));
-    text.push_str(&fold_max());
-    text.push_str(&launch(EXPSUM, grid, &args, "max"));
-    text.push_str(&partial_copy(output, grid));
-    text.push_str(&fold_sum());
-    text.push_str(&launch_threads(
-        NORM,
-        len.div_ceil(256),
-        256,
-        &args,
-        "max, sum",
-    ));
-    text.push_str(&cuda_readback(output, len));
-    text.push_str(&cuda_release(signature));
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
+    driver(segments, signature, sample, chunk, |text, stage| {
+        text.push_str(&launch(PARTIAL, stage.grid, stage.args, ""));
+        text.push_str(&partial_copy(stage.output, stage.grid));
+        text.push_str(&fold_max());
+        text.push_str(&launch(EXPSUM, stage.grid, stage.args, "max"));
+        text.push_str(&partial_copy(stage.output, stage.grid));
+        text.push_str(&fold_sum());
+        text.push_str(&launch_threads(
+            NORM,
+            stage.len.div_ceil(256),
+            256,
+            stage.args,
+            "max, sum",
+        ));
+    })
 }
 
 /// 长度标量的 `usize` 视图；负值或超长返回 `Invalid`。

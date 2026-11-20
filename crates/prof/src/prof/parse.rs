@@ -542,13 +542,7 @@ fn attr_values(index: usize, key: &str, value: &Value) -> Result<Vec<String>, Pr
 }
 /// 单个标量属性值：字符串原样，整数/浮点/布尔按字面写。
 fn one_scalar(path: &str, value: &Value) -> Result<Vec<String>, ProfileError> {
-    match value {
-        Value::Str(text) => Ok(vec![text.clone()]),
-        Value::Int(number) => Ok(vec![number.to_string()]),
-        Value::Float(number) => Ok(vec![number.to_string()]),
-        Value::Bool(flag) => Ok(vec![flag.to_string()]),
-        _ => Err(bad(path, "属性不能是表")),
-    }
+    scalar_texts(value).ok_or_else(|| bad(path, "属性不能是表"))
 }
 fn one_string(path: &str, item: &Value) -> Result<String, ProfileError> {
     match item {

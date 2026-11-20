@@ -139,7 +139,7 @@ macro_rules! unary_f32 {
         }
 
         // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。
-        $crate::operator_via!($name, $op, (4096, 4096), true, unary, $crate::unary::AXES);
+        $crate::operator_via!($name, $op, 1, (4096, 4096), true, unary, $crate::unary::AXES);
 
         #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = "unary")]
         #[doc = concat!("`", $op, "` 的语义别名。")]

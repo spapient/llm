@@ -34,6 +34,7 @@
 #![deny(unsafe_code)]
 
 pub(crate) use self::train::archive;
+mod platform;
 mod run;
 mod status;
 mod train;
@@ -66,6 +67,7 @@ pub mod cutile_command {
   --emit-ledger           把能力台账写到 `<work_dir>/ledger/`
   --out <文件>            ledger 用；给出后把 markdown 台账写到该文件
   --shape <MxN>           bench 用（缺省：算子的生产形状）
+  --device <设备>          bench 用（缺省 auto：按本机指纹挑；也可写 cpu / nvidia / musa …）
   --repeat <次数>         bench 用（缺省 50）
   --limit <字节>          cache gc 用（缺省 2 GiB）
   -h, --help              打印本说明
@@ -101,6 +103,8 @@ pub mod cutile_command {
             op: String,
             /// 形状 `MxN`；`None` 表示用算子的生产形状。
             shape: Option<String>,
+            /// 设备名或缺省（`auto` 按本机指纹挑）；与 `doctor --device` 同一套取值。
+            device: Option<String>,
             /// 重复次数。
             repeat: usize,
         },
@@ -141,8 +145,13 @@ pub mod cutile_command {
         ("--emit-ledger", Switch),
     ];
 
-    /// `bench` 的选项文法。
-    const BENCH: Grammar = &[("--op", Value), ("--shape", Value), ("--repeat", Value)];
+    /// `bench` 的选项文法：`--device` 与 `doctor` 同义（缺省 `auto`，按本机指纹挑）。
+    const BENCH: Grammar = &[
+        ("--op", Value),
+        ("--shape", Value),
+        ("--device", Value),
+        ("--repeat", Value),
+    ];
 
     /// `ledger` 的选项文法。
     const LEDGER: Grammar = &[("--out", Value)];
@@ -214,6 +223,7 @@ pub mod cutile_command {
         Ok(CutileCommand::Bench {
             op: flags.text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
             shape: flags.text("--shape"),
+            device: flags.text("--device"),
             repeat: flags
                 .number("--repeat", "`--repeat` 需要正整数")?
                 .unwrap_or(50),
@@ -367,6 +377,7 @@ pub mod cutile_command {
                 CutileCommand::Bench {
                     op: DEFAULT_OP.to_string(),
                     shape: Some("1024x64".to_string()),
+                    device: None,
                     repeat: 3
                 }
             );
@@ -380,6 +391,7 @@ pub mod cutile_command {
                 CutileCommand::Bench {
                     op: DEFAULT_OP.to_string(),
                     shape: None,
+                    device: None,
                     repeat: 50
                 }
             );
@@ -432,6 +444,7 @@ pub const USAGE: &str = "\
 
 命令：
   status                 打印各层状态（默认）
+  platform               打印六平台执行合同的六行裁决（设备 + 编译器两件证据）
   run    --weights <文件> 用真实权重算一次前向（每条链一层内核）
   verify --op <算子>      校验一个算子的协商与对拍
   bench  --op <算子>      测量一个算子的带宽与达成率
@@ -516,6 +529,8 @@ pub enum Command {
         /// 待校验 `.u` 容器路径。
         input: String,
     },
+    /// 打印六平台执行合同的六行裁决；零选项。
+    Platform,
     /// 打印用法。
     Help,
 }
@@ -603,6 +618,7 @@ fn command(name: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
     let name = name.unwrap_or("status");
     match name {
         "help" | "-h" | "--help" => Ok(Command::Help),
+        "platform" => platform(words),
         "run" => run(words),
         "train" => train(words),
         other => archive_command(other, words),
@@ -633,6 +649,14 @@ fn single_required(
         .clone()
         .ok_or_else(|| missing_required(table[0].0, command))?;
     Ok(build(input))
+}
+
+/// `platform`：零选项命令，多给一个词就是写错了（不静默忽略）。
+fn platform(words: &mut Words<'_>) -> Result<Command> {
+    match words.next() {
+        Some(word) => Err(invalid(format!("`platform` 不接受参数，得到 `{word}`"))),
+        None => Ok(Command::Platform),
+    }
 }
 
 /// `import`：`--in` / `--out` 顺序自由，两者都必需——缺源或缺输出都是写错了，不猜默认路径。
@@ -749,18 +773,27 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
             print!("{USAGE}");
             Ok(())
         }
-        Command::Status { weights } => status::status(weights.as_deref()),
-        Command::Run {
-            weights,
-            input,
-            device,
-        } => run::run(weights, input.as_deref(), device.as_deref()),
+        Command::Platform => platform::report(),
+        Command::Status { .. } | Command::Run { .. } => entry_compute(invocation.command()),
         Command::Verify { .. } | Command::Bench { .. } => audit_note(),
         other => entry_archive_or_train(other),
     }
 }
 
 /// 归档容器命令与训练闭环的分派；其余命令已在 [`entry`] 主匹配里收口。
+/// 两条读权重却不写状态的命令：`status` 只报各层几何、`run` 真跑一次前向。
+fn entry_compute(command: &Command) -> Result<()> {
+    match command {
+        Command::Status { weights } => status::status(weights.as_deref()),
+        Command::Run {
+            weights,
+            input,
+            device,
+        } => run::run(weights, input.as_deref(), device.as_deref()),
+        other => Err(invalid(format!("命令 `{other:?}` 不是计算命令"))),
+    }
+}
+
 fn entry_archive_or_train(command: &Command) -> Result<()> {
     match command {
         Command::Import { input, output } => archive::import(input, output),
@@ -817,6 +850,19 @@ mod tests {
                 .command(),
             &Command::Status { weights: None }
         );
+    }
+
+    #[test]
+    fn platform_is_a_zero_option_command() {
+        assert_eq!(
+            Invocation::parse(&args(&["platform"]))
+                .expect("零选项")
+                .command(),
+            &Command::Platform
+        );
+        let extra =
+            Invocation::parse(&args(&["platform", "--op", "gemv_i4"])).expect_err("不接受参数");
+        assert!(extra.to_string().contains("platform"), "{extra}");
     }
 
     #[test]

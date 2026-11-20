@@ -26,15 +26,42 @@ use std::sync::OnceLock;
 
 static NVCC: OnceLock<Option<Toolchain>> = OnceLock::new();
 static METAL: OnceLock<Option<Toolchain>> = OnceLock::new();
+static MUSA: OnceLock<Option<Toolchain>> = OnceLock::new();
 
 /// 探测 nvcc（CUDA 编译器）：`nvcc --version` 只打印版本、不调用宿主 cl，故可独立成功；宿主编译器由
 /// 调用方用 `-ccbin` 另行指定。
-fn detect_nvcc() -> Option<Toolchain> {
+pub(crate) fn detect_nvcc() -> Option<Toolchain> {
     NVCC.get_or_init(|| probe("nvcc")).clone()
 }
 
+/// 探测 mcc（MUSA 编译器，clang-14 驱动）。
+///
+/// MUSA 与 CUDA 是**同一门输出语言**（`Emit::Cuda`）的两个工具链：生成的 `.cu` 只差运行时头，
+/// 因此后端只按档案的 `[meta].tool` 选命令名，不为它单开一个 `Emit` 变体。
+pub(crate) fn detect_musa() -> Option<Toolchain> {
+    MUSA.get_or_init(|| probe("mcc")).clone()
+}
+
+/// 这台机器上有没有 MUSA 设备：`mthreads-gmi -L`（摩尔线程的 `nvidia-smi -L` 同构物）能列出卡就算有。
+///
+/// 与 [`detect_musa`] 分开：工具链在、设备不在（或反之）都会出现，混成一个布尔就丢掉了唯一的
+/// 行动信息（装编译器 vs 换机器）。
+pub(crate) fn musa_device() -> bool {
+    let Ok(output) = Command::new("mthreads-gmi").arg("-L").output() else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.split(':')
+            .next()
+            .is_some_and(|head| head.starts_with("GPU"))
+    })
+}
+
 /// 探测 Metal 编译器（`xcrun metal --version`）：命令可用、能自报版本时才算数。
-fn detect_metal() -> Option<Toolchain> {
+pub(crate) fn detect_metal() -> Option<Toolchain> {
     METAL.get_or_init(probe_metal).clone()
 }
 
@@ -591,8 +618,14 @@ impl Codegen for CudaBackend {
 }
 
 impl Driver for CudaBackend {
-    fn available(&self, _: &Profile) -> bool {
-        detect_nvcc().is_some() && (std::env::consts::OS != "windows" || find_cl().is_some())
+    /// 可用性按**档案声明的工具名**判，不按厂商判：同一份 `Emit::Cuda` 后端既是 `nvcc` 的落地，
+    /// 也是 `mcc` 的落地。`nvcc` 在 Windows 上还要 MSVC 宿主；`mcc` 不调宿主 cl（它自己就是 clang）。
+    fn available(&self, profile: &Profile) -> bool {
+        match profile.meta.tool.as_str() {
+            "nvcc" => nvcc_ready(),
+            "mcc" => musa_ready(),
+            _ => false,
+        }
     }
     fn run(
         &self,
@@ -605,8 +638,10 @@ impl Driver for CudaBackend {
         let (stdout, stderr) = compile_run_cuda(profile, dirs, program, "witness")?;
         Ok(driver::readback(&stdout, &stderr))
     }
+    /// 缓存指纹里的工具链：按现有工具选一份（同一台机器上不会同时是 CUDA 与 MUSA 的编译机，
+    /// 真同时有时取先命中的那份，两个档案的缓存键因此天然分开）。
     fn toolchain(&self) -> Option<Toolchain> {
-        detect_nvcc()
+        detect_nvcc().or_else(detect_musa)
     }
     fn compile_run(
         &self,
@@ -774,20 +809,88 @@ fn cuda_in_dir(
     driver::run_exe(&mut command, &exe, "CUDA 执行失败")
 }
 
-fn cuda_compile(exe: &Path, src: &Path, profile: &Profile) -> Result<()> {
-    let mut command = Command::new("nvcc");
-    command.args(&profile.flags);
-    if std::env::consts::OS == "windows" {
-        let Some(cl) = find_cl() else {
-            return Err(Error::new(
-                Code::Unsupported,
-                "找不到 MSVC cl.exe：nvcc 设备编译需要它".to_string(),
-            ));
-        };
-        command.arg("-ccbin").arg(cl);
+/// CUDA 运行时头的 MUSA 转发垫片：生成的 `.cu` 只 `#include <cuda_runtime.h>` 与 `<cuda_fp16.h>`，
+/// 映射关系全在工具链侧。垫片写在源文件旁（不读仓库布局），因此发布出去的二进制自带这一行知识。
+const MUSA_SHIM_RUNTIME: &str = "\
+#pragma once\n\
+#include <musa_runtime.h>\n\
+#define cudaError_t musaError_t\n\
+#define cudaSuccess musaSuccess\n\
+#define cudaMalloc musaMalloc\n\
+#define cudaFree musaFree\n\
+#define cudaMemcpy musaMemcpy\n\
+#define cudaMemcpyHostToDevice musaMemcpyHostToDevice\n\
+#define cudaMemcpyDeviceToHost musaMemcpyDeviceToHost\n\
+#define cudaDeviceSynchronize musaDeviceSynchronize\n\
+#define cudaGetErrorString musaGetErrorString\n";
+
+const MUSA_SHIM_FP16: &str = "\
+#pragma once\n\
+#include <musa_fp16.h>\n";
+
+/// 把垫片写到源文件旁，返回 `-I` 需要的目录。
+fn write_musa_shims(src: &Path) -> Result<PathBuf> {
+    let dir = src
+        .parent()
+        .ok_or_else(|| Error::new(Code::Io, "源文件没有父目录".to_string()))?;
+    for (name, text) in [
+        ("cuda_runtime.h", MUSA_SHIM_RUNTIME),
+        ("cuda_fp16.h", MUSA_SHIM_FP16),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, text).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("写 MUSA 垫片 {name} 到 {}：{error}", path.display()),
+            )
+        })?;
     }
+    Ok(dir.to_path_buf())
+}
+
+fn cuda_compile(exe: &Path, src: &Path, profile: &Profile) -> Result<()> {
+    let tool = profile.meta.tool.as_str();
+    let mut command = Command::new(tool);
+    musa_shims(tool, src, &mut command)?;
+    command.args(&profile.flags);
+    cuda_ccbin(tool, &mut command)?;
     command.arg("-o").arg(exe).arg(src);
-    driver::run_tool("nvcc", &mut command, src)
+    driver::run_tool(tool, &mut command, src)
+}
+
+/// nvcc 的可用性：编译器在，且 Windows 上还能找到 MSVC 的 `cl.exe`。
+fn nvcc_ready() -> bool {
+    detect_nvcc().is_some() && (std::env::consts::OS != "windows" || find_cl().is_some())
+}
+
+/// MUSA 的可用性：编译器与设备都在。
+fn musa_ready() -> bool {
+    detect_musa().is_some() && musa_device()
+}
+
+/// MUSA 的头文件名与 CUDA 不同，垫片只在这一支出现。
+fn musa_shims(tool: &str, src: &Path, command: &mut Command) -> Result<()> {
+    if tool != "mcc" {
+        return Ok(());
+    }
+    let dir = write_musa_shims(src)?;
+    command.arg(format!("-I{}", dir.display()));
+    Ok(())
+}
+
+/// Windows 上的 nvcc 需要显式指定 MSVC 编译器。
+fn cuda_ccbin(tool: &str, command: &mut Command) -> Result<()> {
+    if !(tool == "nvcc" && std::env::consts::OS == "windows") {
+        return Ok(());
+    }
+    let Some(cl) = find_cl() else {
+        return Err(Error::new(
+            Code::Unsupported,
+            "找不到 MSVC cl.exe：nvcc 设备编译需要它".to_string(),
+        ));
+    };
+    command.arg("-ccbin").arg(cl);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

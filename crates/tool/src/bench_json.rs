@@ -7,6 +7,7 @@
 //!
 //! **不拥有**：采样、基线结论、跨机对照；数值口径沿用 [`bench`](crate::bench) 各类型的构造自检。
 
+use diagnostic::scan::Cursor;
 use diagnostic::{Code, Error, Result};
 
 use crate::bench::{BenchRecord, EntryKind, Geometry, Harness, Roofline};
@@ -134,9 +135,9 @@ fn write_control(out: &mut String, ch: char) {
 pub fn from_json(text: &str) -> Result<BenchRecord> {
     let mut reader = Reader::new(text);
     let record = reader.read_record()?;
-    reader.skip_space();
-    if reader.pos != reader.bytes.len() {
-        return Err(reader.fail("记录之后还有多余内容"));
+    reader.cursor.skip_space();
+    if reader.cursor.pos() != reader.cursor.bytes().len() {
+        return Err(reader.cursor.fail("记录之后还有多余内容"));
     }
     Ok(record)
 }
@@ -287,102 +288,68 @@ impl HarnessDraft {
     }
 }
 
-/// 逐字节推进的读取器：`pos` 同时是报错位置，所以不缓存、不跳读。
+/// 逐字节推进的读取器：[`Cursor`] 负责字节与位置（位置同时是报错坐标），这里只多记一层
+/// 容器深度。
 struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+    cursor: Cursor<'a>,
     depth: usize,
 }
 
 impl<'a> Reader<'a> {
     fn new(text: &'a str) -> Self {
         Self {
-            bytes: text.as_bytes(),
-            pos: 0,
+            cursor: Cursor::new(text, "tool::bench_json::from_json"),
             depth: 0,
-        }
-    }
-
-    fn fail(&self, message: impl Into<String>) -> Error {
-        self.fail_at(self.pos, message)
-    }
-
-    fn fail_at(&self, position: usize, message: impl Into<String>) -> Error {
-        located(position, message)
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.pos).copied()
-    }
-
-    fn bump(&mut self) -> Option<u8> {
-        let byte = self.peek()?;
-        self.pos += 1;
-        Some(byte)
-    }
-
-    fn skip_space(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.pos += 1;
-        }
-    }
-
-    fn eat(&mut self, wanted: u8) -> Result<()> {
-        let at = self.pos;
-        match self.bump() {
-            Some(byte) if byte == wanted => Ok(()),
-            Some(_) => Err(self.fail_at(at, format!("期望 `{}`", wanted as char))),
-            None => Err(self.fail_at(at, format!("期望 `{}`，但已到末尾", wanted as char))),
         }
     }
 
     /// 开一个容器：先查深度，再消费开头字节；离开容器时调用方把 `depth` 减回。
     fn open_container(&mut self, opening: u8) -> Result<()> {
         if self.depth >= MAX_DEPTH {
-            return Err(self.fail(format!("嵌套超过 {MAX_DEPTH} 层")));
+            return Err(self.cursor.fail(format!("嵌套超过 {MAX_DEPTH} 层")));
         }
         self.depth += 1;
-        self.eat(opening)
+        self.cursor.eat(opening)
     }
 
     /// 容器已结束：跳过空白后若撞上收尾字节就消费掉，返回 `false`；否则返回 `true` 继续。
     fn close(&mut self, closing: u8) -> bool {
-        self.skip_space();
-        if self.peek() != Some(closing) {
+        self.cursor.skip_space();
+        if self.cursor.peek() != Some(closing) {
             return false;
         }
-        self.pos += 1;
+        self.cursor.advance(1);
         true
     }
 
     /// 成员键：读字符串、查重、消费冒号，键名留在草稿分派。
     fn member_key(&mut self, seen: &mut Vec<String>) -> Result<String> {
-        self.skip_space();
-        let at = self.pos;
+        self.cursor.skip_space();
+        let at = self.cursor.pos();
         let key = self.read_string()?;
         if seen.iter().any(|existing| existing == &key) {
-            return Err(self.fail_at(at, format!("对象里出现重复键 `{key}`")));
+            return Err(self.cursor.fail_at(at, format!("对象里出现重复键 `{key}`")));
         }
         seen.push(key.clone());
-        self.skip_space();
-        self.eat(b':')?;
-        self.skip_space();
+        self.cursor.skip_space();
+        self.cursor.eat(b':')?;
+        self.cursor.skip_space();
         Ok(key)
     }
 
     /// 成员之间：逗号续读；收尾括号留给循环的 `close` 消费，这里只做预判。
     fn require_next(&mut self, close: u8, what: &str) -> Result<()> {
-        self.skip_space();
-        match self.peek() {
+        self.cursor.skip_space();
+        match self.cursor.peek() {
             Some(b',') => {
-                self.pos += 1;
+                self.cursor.advance(1);
                 Ok(())
             }
             Some(byte) if byte == close => Ok(()),
             Some(_) => {
-                Err(self.fail_at(self.pos, format!("{what}里期望 `,` 或 `{}`", close as char)))
+                Err(self.cursor.fail_at(self.cursor.pos(), format!("{what}里期望 `,` 或 `{}`", close as char)))
             }
-            None => Err(self.fail_at(self.pos, format!("{what}没有闭合"))),
+            None => Err(self.cursor.fail_at(self.cursor.pos(), format!("{what}没有闭合"))),
         }
     }
 
@@ -619,7 +586,7 @@ impl<'a> Reader<'a> {
 
     /// 可选数值：`null` 取回 `None`，有限数取回 `Some`；类型不符或非有限数报错。
     fn read_optional_number(&mut self) -> Result<Option<f64>> {
-        if self.peek() == Some(b'n') {
+        if self.cursor.peek() == Some(b'n') {
             self.read_null()?;
             return Ok(None);
         }
@@ -627,29 +594,29 @@ impl<'a> Reader<'a> {
     }
 
     fn read_null(&mut self) -> Result<()> {
-        let at = self.pos;
+        let at = self.cursor.pos();
         let end = at + 4;
-        let Some(slice) = self.bytes.get(at..end) else {
-            return Err(self.fail_at(at, "`null` 不完整"));
+        let Some(slice) = self.cursor.bytes().get(at..end) else {
+            return Err(self.cursor.fail_at(at, "`null` 不完整"));
         };
         if slice != b"null" {
-            return Err(self.fail_at(
+            return Err(self.cursor.fail_at(
                 at,
                 "无法识别的值开头（归档记录不接受布尔、NaN / Infinity 或裸标识符）",
             ));
         }
-        self.pos = end;
+        self.cursor.seek(end);
         Ok(())
     }
 
     /// 读一个 JSON 字符串；转义与 UTF-8 就地解码，不先落通用值树。
     fn read_string(&mut self) -> Result<String> {
-        let open = self.pos;
-        self.eat(b'"')?;
+        let open = self.cursor.pos();
+        self.cursor.eat(b'"')?;
         let mut text = String::new();
         loop {
-            let Some(byte) = self.bump() else {
-                return Err(self.fail_at(open, "字符串没有闭合"));
+            let Some(byte) = self.cursor.bump() else {
+                return Err(self.cursor.fail_at(open, "字符串没有闭合"));
             };
             if self.advance_string(&mut text, byte)? {
                 break;
@@ -663,7 +630,7 @@ impl<'a> Reader<'a> {
         match byte {
             b'"' => Ok(true),
             b'\\' => self.push_escape(text),
-            0x00..=0x1f => Err(self.fail_at(self.pos - 1, "控制字符必须转义")),
+            0x00..=0x1f => Err(self.cursor.fail_at(self.cursor.pos() - 1, "控制字符必须转义")),
             _ => self.push_utf8(text, byte),
         }
     }
@@ -679,43 +646,43 @@ impl<'a> Reader<'a> {
     }
 
     fn read_escape(&mut self) -> Result<char> {
-        let at = self.pos;
-        let Some(byte) = self.bump() else {
-            return Err(self.fail_at(at, "转义序列不完整"));
+        let at = self.cursor.pos();
+        let Some(byte) = self.cursor.bump() else {
+            return Err(self.cursor.fail_at(at, "转义序列不完整"));
         };
         match byte {
-            b'u' => Err(self.fail_at(at, "本记录字符串不接受 `\\u` 转义")),
+            b'u' => Err(self.cursor.fail_at(at, "本记录字符串不接受 `\\u` 转义")),
             _ => simple_escape(byte)
-                .ok_or_else(|| self.fail_at(at, format!("未知转义 `\\{}`", byte as char))),
+                .ok_or_else(|| self.cursor.fail_at(at, format!("未知转义 `\\{}`", byte as char))),
         }
     }
 
     /// 取出自当前 `pos` 起的一个合法 UTF-8 字符片段，并把指针推到片段末尾。
     fn utf8_run(&mut self, first: u8) -> Result<&str> {
         let Some(width) = sequence_width(first) else {
-            return Err(self.fail_at(self.pos - 1, "非法的 UTF-8 起始字节"));
+            return Err(self.cursor.fail_at(self.cursor.pos() - 1, "非法的 UTF-8 起始字节"));
         };
-        let end = self.pos - 1 + width;
-        let Some(slice) = self.bytes.get(self.pos - 1..end) else {
-            return Err(self.fail_at(self.pos - 1, "多字节字符被截断"));
+        let end = self.cursor.pos() - 1 + width;
+        let Some(slice) = self.cursor.bytes().get(self.cursor.pos() - 1..end) else {
+            return Err(self.cursor.fail_at(self.cursor.pos() - 1, "多字节字符被截断"));
         };
         let text = std::str::from_utf8(slice)
-            .map_err(|_| self.fail_at(self.pos - 1, "非法的 UTF-8 序列"))?;
-        self.pos = end;
+            .map_err(|_| self.cursor.fail_at(self.cursor.pos() - 1, "非法的 UTF-8 序列"))?;
+        self.cursor.seek(end);
         Ok(text)
     }
 
     /// 读一个 JSON 数值：按文法切片，`f64` 解析后必须有限。
     fn read_number(&mut self) -> Result<f64> {
-        self.skip_space();
+        self.cursor.skip_space();
         let text = self.number_text()?;
         self.parse_finite(&text)
     }
 
     fn number_text(&mut self) -> Result<String> {
-        let start = self.pos;
-        if self.peek() == Some(b'-') {
-            self.pos += 1;
+        let start = self.cursor.pos();
+        if self.cursor.peek() == Some(b'-') {
+            self.cursor.advance(1);
         }
         self.consume_int(start)?;
         self.consume_fraction()?;
@@ -724,70 +691,70 @@ impl<'a> Reader<'a> {
     }
 
     fn slice_text(&self, start: usize) -> Result<String> {
-        let text = std::str::from_utf8(self.bytes.get(start..self.pos).unwrap_or_default())
-            .map_err(|_| self.fail_at(start, "数值不是 ASCII"))?;
+        let text = std::str::from_utf8(self.cursor.bytes().get(start..self.cursor.pos()).unwrap_or_default())
+            .map_err(|_| self.cursor.fail_at(start, "数值不是 ASCII"))?;
         Ok(text.to_string())
     }
 
     fn parse_finite(&self, text: &str) -> Result<f64> {
-        let at = self.pos;
+        let at = self.cursor.pos();
         let number: f64 = text
             .parse()
-            .map_err(|_| self.fail_at(at, format!("数值 `{text}` 无法解析")))?;
+            .map_err(|_| self.cursor.fail_at(at, format!("数值 `{text}` 无法解析")))?;
         if !number.is_finite() {
-            return Err(self.fail_at(at, "数值必须是有限数（不接受 NaN / Infinity）"));
+            return Err(self.cursor.fail_at(at, "数值必须是有限数（不接受 NaN / Infinity）"));
         }
         Ok(number)
     }
 
     fn consume_int(&mut self, start: usize) -> Result<()> {
-        let at = self.pos;
-        let Some(first) = self.peek() else {
-            return Err(self.fail_at(at, "数值整数部分缺少数字"));
+        let at = self.cursor.pos();
+        let Some(first) = self.cursor.peek() else {
+            return Err(self.cursor.fail_at(at, "数值整数部分缺少数字"));
         };
         match first {
             b'0' => {
-                self.pos += 1;
-                if matches!(self.peek(), Some(b'0'..=b'9')) {
-                    return Err(self.fail_at(start, "数值整数部分不能有前导零"));
+                self.cursor.advance(1);
+                if matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
+                    return Err(self.cursor.fail_at(start, "数值整数部分不能有前导零"));
                 }
             }
             b'1'..=b'9' => self.consume_digits(),
-            _ => return Err(self.fail_at(at, "数值整数部分缺少数字")),
+            _ => return Err(self.cursor.fail_at(at, "数值整数部分缺少数字")),
         }
         Ok(())
     }
 
     fn consume_digits(&mut self) {
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.pos += 1;
+        while matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
+            self.cursor.advance(1);
         }
     }
 
     fn consume_fraction(&mut self) -> Result<()> {
-        if self.peek() != Some(b'.') {
+        if self.cursor.peek() != Some(b'.') {
             return Ok(());
         }
-        self.pos += 1;
-        let at = self.pos;
-        if !matches!(self.peek(), Some(b'0'..=b'9')) {
-            return Err(self.fail_at(at, "小数部分缺少数字"));
+        self.cursor.advance(1);
+        let at = self.cursor.pos();
+        if !matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
+            return Err(self.cursor.fail_at(at, "小数部分缺少数字"));
         }
         self.consume_digits();
         Ok(())
     }
 
     fn consume_exponent(&mut self) -> Result<()> {
-        if !matches!(self.peek(), Some(b'e' | b'E')) {
+        if !matches!(self.cursor.peek(), Some(b'e' | b'E')) {
             return Ok(());
         }
-        self.pos += 1;
-        if matches!(self.peek(), Some(b'+' | b'-')) {
-            self.pos += 1;
+        self.cursor.advance(1);
+        if matches!(self.cursor.peek(), Some(b'+' | b'-')) {
+            self.cursor.advance(1);
         }
-        let at = self.pos;
-        if !matches!(self.peek(), Some(b'0'..=b'9')) {
-            return Err(self.fail_at(at, "指数部分缺少数字"));
+        let at = self.cursor.pos();
+        if !matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
+            return Err(self.cursor.fail_at(at, "指数部分缺少数字"));
         }
         self.consume_digits();
         Ok(())
@@ -815,11 +782,6 @@ fn require<T>(option: Option<T>, field: &str) -> Result<T> {
 }
 
 /// 带位置前缀的解析错误；台账层错误不带位置，另走 [`invalid`]。
-fn located(at: usize, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, format!("位置 {at}：{}", message.into()))
-        .with("tool::bench_json::from_json")
-}
-
 /// 台账 / 类型校验错误；类别与上下文沿用 bench 层口径。
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("tool::bench_json::from_json")

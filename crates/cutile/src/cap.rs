@@ -243,9 +243,14 @@ impl<'a> Offer<'a> {
         }
     }
 
-    /// 需求被这条供给真正满足：签名全覆盖、等级已验证、这次有见证。
+    /// 需求被这条供给真正满足：签名全覆盖 + 这次有证据。
+    ///
+    /// 这里**不再**叠加 `grade.is_verified()`：`proven` 的两种来源已经把两件事分开了——
+    /// 自述模式（[`Proof::declared`]）里 `holds` 只认 `grade ≥ L2`，执行模式里只认本次跑过的
+    /// `(原语, 实现)`。两者再与等级求交，会让"档案诚实写 L1、设备就在本机"的首次验证永远过不了
+    /// 协商（要先有 L2 才能跑、要跑过才能有 L2）；而设备上刚跑通的见证，效力本来就强于一份写作时的自述。
     fn satisfied(&self) -> bool {
-        self.diff.is_empty() && self.have.grade.is_verified() && self.proven
+        self.diff.is_empty() && self.proven
     }
 }
 
@@ -340,7 +345,8 @@ fn failing_report(prof: &Profile, need: &Need, proof: &Proof) -> Option<NeedRepo
     }
     Some(NeedReport {
         need: need.clone(),
-        blocked_by_grade: !verified,
+        // 自述不到 L2、且本次也没跑过，才是真的缺证据。两者的交集正是"首次提升"要放行的那个缺口。
+        blocked_by_grade: !verified && !offer.proven,
         unproven: verified && !offer.proven,
         have: Some(offer.have.clone()),
         mismatches: offer.diff,
@@ -360,7 +366,8 @@ pub(crate) fn check_need(prof: &Profile, need: &Need, proof: &Proof) -> NeedRepo
         },
         Some(offer) => NeedReport {
             need: need.clone(),
-            blocked_by_grade: !offer.have.grade.is_verified(),
+            // "自述不足 + 本次也没跑"才是真的缺证据；只卡自述会让刚跑通的那条被报成不具备。
+            blocked_by_grade: !offer.have.grade.is_verified() && !offer.proven,
             unproven: offer.have.grade.is_verified() && !offer.proven,
             have: Some(offer.have.clone()),
             mismatches: offer.diff,

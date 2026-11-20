@@ -132,6 +132,39 @@ pub const fn derived_matches_grain(grain: usize, derived: Option<(char, char, us
     }
 }
 
+/// 带分组标度的操作数表：权重按 `bits` 读，输入与标度都是 32 位浮点，输出写 32 位。
+///
+/// 打包格式（[`Packed`]）与不打包的对称 int8 格式（[`SymI8`]）只差权重的位宽，其余三项逐字
+/// 相同；写成一条 [`const fn`] 让两份实现共用同一张表，位宽成为唯一参数。
+pub const fn scaled_operands(bits: Bits) -> [OperandSpec; 4] {
+    [
+        OperandSpec::read("w", bits),
+        OperandSpec::read("x", Bits::ThirtyTwo),
+        OperandSpec::read("scales", Bits::ThirtyTwo),
+        OperandSpec::write("y", Bits::ThirtyTwo),
+    ]
+}
+
+/// 带标度格式的公共关联常量：操作数表、粒度、派生轴、标度取值与步长。
+///
+/// [`Packed`] 与 [`SymI8`] 的这组常量只差「权重位宽 + 粒度」，抄两遍就会让 `DERIVED` 的除数与
+/// `GRAIN` 各自漂移（判据见 [`derived_matches_grain`]）。展开一次，两条格式各传两个数。
+macro_rules! scaled_format {
+    ($bits:expr, $grain:expr) => {
+        /// 三个输入都是读、只有输出是写；权重位宽取配置，其余为 32 位浮点。
+        const OPERANDS: &'static [$crate::einsum::OperandSpec] =
+            &$crate::gemv::scaled_operands($bits);
+
+        const GRAIN: usize = $grain;
+
+        const DERIVED: Option<(char, char, usize)> = Some(('g', 'm', $grain));
+
+        const SCALES: Option<fn(usize) -> f32> = Some($crate::gemv::scale_of);
+
+        const STEP: usize = $grain;
+    };
+}
+
 /// 权重格式：一条 GEMV 里随精度变化的那部分。
 ///
 /// 实现者只写"这份格式怎么表达、怎么解包"，骨架（[`cost`] / [`sample`] / [`reference()`]）由
@@ -274,21 +307,7 @@ impl<P: PackedRow, const G: usize> Format for Packed<P, G> {
     /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 `G` 个元素切出来的派生轴。
     const EXPR: &'static str = "nm,m,ng,n->n";
 
-    /// 三个输入都是读，只有输出是写；权重位宽取配置表，其余为 32 位浮点。
-    const OPERANDS: &'static [OperandSpec] = &[
-        OperandSpec::read("w", P::ROW.bits),
-        OperandSpec::read("x", Bits::ThirtyTwo),
-        OperandSpec::read("scales", Bits::ThirtyTwo),
-        OperandSpec::write("y", Bits::ThirtyTwo),
-    ];
-
-    const GRAIN: usize = G;
-
-    const DERIVED: Option<(char, char, usize)> = Some(('g', 'm', G));
-
-    const SCALES: Option<fn(usize) -> f32> = Some(scale_of);
-
-    const STEP: usize = G;
+    scaled_format!(P::ROW.bits, G);
 
     fn cache() -> &'static FormulaCache {
         // 缓存单元格由标记类型各自持有，避免泛型 static 被合并成跨配置共享的一份。
@@ -402,62 +421,57 @@ impl<C: Plain> Format for PlainFmt<C> {
     ) -> diagnostic::Result<()> {
         non_empty(out.len())?;
         if C::SCALES.is_some() {
-            forward_scaled::<C>(x, weights, scales, out)
+            forward_rows(x, weights, scales, out, 1, scaled_dot::<C>)
         } else {
             forward_dense::<C>(x, weights, scales, out)
         }
     }
 }
 
-/// 带标度行遍历骨架：分组、标度、权重守卫与行切片统一收口，逐行点积由 `row_dot` 给出。
+/// 带标度行骨架：分组、粒度、权重与标度守卫连同行切片统一收口，逐行点积由 `row_dot` 给出。
 ///
-/// `E` 是权重元素类型：逐元素稠密格式传 `C::Elem`，不打包的量化格式传 `u8`；两者只差
-/// 逐行点积算术，守卫与遍历只有这一份。
-fn forward_scaled_rows<E>(
+/// `cpb` 是「一个权重单位里有多少个元素」：打包格式给每字节码数（`2` / `4`），不打包的逐元素
+/// 格式给 `1`——那时行宽就是 `m` 个元素，粒度倍数守卫恒真。于是打包与不打包只差这一处行宽
+/// 折算和一份逐行算术，守卫、切片与遍历是同一份代码，按元素类型单态化。
+fn forward_rows<E>(
     x: &[f32],
     weights: &[E],
     scales: &[f32],
     out: &mut [f32],
+    cpb: usize,
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
     let (m, n) = (x.len(), out.len());
-    let (groups, group) = scaled_groups(m, n, scales.len())?;
-    finite_scales(scales, groups)?;
-    required_weights(weights.len(), n, m)?;
-    for (row, value) in out.iter_mut().enumerate() {
-        let w_row = &weights[row * m..][..m];
-        let s_row = &scales[row * groups..][..groups];
+    let (groups, group) = scaled_row_context(m, n, scales, weights.len(), cpb)?;
+    let row = m / cpb;
+    for (index, value) in out.iter_mut().enumerate() {
+        let w_row = &weights[index * row..][..row];
+        let s_row = &scales[index * groups..][..groups];
         *value = row_dot(w_row, x, s_row, group);
     }
     Ok(())
 }
 
-/// 带标度逐元素格式的行遍历：点积固定为 [`scaled_dot`]，守卫与切片走 [`forward_scaled_rows`]。
-fn forward_scaled<C: Plain>(
-    x: &[f32],
-    weights: &[C::Elem],
-    scales: &[f32],
-    out: &mut [f32],
-) -> diagnostic::Result<()> {
-    forward_scaled_rows(x, weights, scales, out, scaled_dot::<C>)
-}
-
 /// 行批骨架：输出行在外、输入行在里，一行权重只读一遍。
 ///
-/// 与 [`forward_scaled_rows`] 是同一个遍历的两种嵌套：那里输入是向量（一层），这里输入是
+/// 与 [`forward_rows`] 是同一个遍历的两种嵌套：那里输入是向量（一层），这里输入是
 /// `rows × m` 的行批（两层）。输入行放内层就是"权重复用"的全部内容——权重行只从内存读一遍、
-/// 解包一遍，而不是按行数重复；逐行调用单行入口会把同一份权重读 `rows` 遍。
+/// 解包一遍，而不是按行数重复；逐行调用单行入口会把同一份权重读 `rows` 遍。`cpb` 见
+/// [`forward_rows`]：打包与不打包共用这一副嵌套。
 fn forward_batch_rows<E>(
     x: &[f32],
     weights: &[E],
     scales: &[f32],
     geo: Geometry,
     out: &mut [f32],
+    cpb: usize,
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
-    let (groups, group) = batch_rows_context(x.len(), out.len(), scales, weights.len(), geo)?;
+    batch_geometry(x.len(), out.len(), geo)?;
+    let (groups, group) = scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
+    let row = geo.m / cpb;
     for j in 0..geo.n {
-        let w_row = &weights[j * geo.m..][..geo.m];
+        let w_row = &weights[j * row..][..row];
         let s_row = &scales[j * groups..][..groups];
         for r in 0..geo.rows {
             out[r * geo.n + j] = row_dot(w_row, &x[r * geo.m..][..geo.m], s_row, group);
@@ -466,18 +480,26 @@ fn forward_batch_rows<E>(
     Ok(())
 }
 
-/// 行批骨架的守卫收口：几何、分组、标度与权重长度四项一次判齐，返回 `(groups, group)`。
-fn batch_rows_context(
-    x: usize,
-    out: usize,
+/// 带标度格式的行守卫：分组、粒度倍数、权重长度与标度有限四项一次判齐，返回 `(groups, group)`。
+///
+/// 单行与行批两条入口共用这一处：批入口只是先判几何。先判结构（分组、倍数、长度）再判取值
+/// （标度有限），于是报错指向第一处真正不对的地方；`cpb = 1` 时不打包格式的倍数守卫恒真。
+fn scaled_row_context(
+    m: usize,
+    n: usize,
     scales: &[f32],
     weights: usize,
-    geo: Geometry,
+    cpb: usize,
 ) -> diagnostic::Result<(usize, usize)> {
-    batch_geometry(x, out, geo)?;
-    let (groups, group) = scaled_groups(geo.m, geo.n, scales.len())?;
+    let (groups, group) = scaled_groups(m, n, scales.len())?;
+    if !group.is_multiple_of(cpb) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("分组 {group} 必须是 {cpb} 的倍数"),
+        ));
+    }
+    required_weights(weights, n, m / cpb)?;
     finite_scales(scales, groups)?;
-    required_weights(weights, geo.n, geo.m)?;
     Ok((groups, group))
 }
 
@@ -490,7 +512,7 @@ pub fn forward_plain_batch<C: Plain>(
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
     if C::SCALES.is_some() {
-        forward_batch_rows(x, weights, scales, geo, out, scaled_dot::<C>)
+        forward_batch_rows(x, weights, scales, geo, out, 1, scaled_dot::<C>)
     } else {
         if !scales.is_empty() {
             return Err(Error::new(
@@ -498,7 +520,7 @@ pub fn forward_plain_batch<C: Plain>(
                 format!("稠密格式没有标度，收到 {} 个", scales.len()),
             ));
         }
-        forward_batch_rows(x, weights, scales, geo, out, |w, x, _, _| {
+        forward_batch_rows(x, weights, scales, geo, out, 1, |w, x, _, _| {
             dense_dot::<C>(w, x)
         })
     }
@@ -829,6 +851,7 @@ macro_rules! gemv_packed {
         $crate::operator_via!(
             grained $crate::gemv::Packed<$conf, { $crate::gemv::GROUP }>,
             $op,
+            3,
             (4096, 4096),
             false,
             gemv,
@@ -970,7 +993,7 @@ pub mod gemv_i8 {
     //! 标度取值与元素反量化。模板在 `ops/gemv_i8.k`，片段只与这里对拍。`u8` 承载 int8 位模式，
     //! 算术时按 `i8` 解释。
 
-    use crate::einsum::{Bits, FormulaCache, OperandSpec};
+    use crate::einsum::FormulaCache;
     use crate::gemv::{self, Plain, PlainFmt};
     use crate::quant::I8;
 
@@ -984,21 +1007,8 @@ pub mod gemv_i8 {
         /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 [`GROUP`] 个元素切出的派生轴。
         const EXPR: &'static str = "nm,m,ng,n->n";
 
-        /// 权重是 8 位（每元素 1 字节），其余同 4 位格式。
-        const OPERANDS: &'static [OperandSpec] = &[
-            OperandSpec::read("w", I8.bits),
-            OperandSpec::read("x", Bits::ThirtyTwo),
-            OperandSpec::read("scales", Bits::ThirtyTwo),
-            OperandSpec::write("y", Bits::ThirtyTwo),
-        ];
-
-        const GRAIN: usize = G;
-
-        const DERIVED: Option<(char, char, usize)> = Some(('g', 'm', G));
-
-        const SCALES: Option<fn(usize) -> f32> = Some(gemv::scale_of);
-
-        const STEP: usize = G;
+        // 权重是 8 位（每元素 1 字节），其余同打包格式：表与粒度常量走同一条展开。
+        scaled_format!(I8.bits, G);
 
         fn cell() -> &'static FormulaCache {
             static CACHE: FormulaCache = FormulaCache::new();
@@ -1023,7 +1033,7 @@ pub mod gemv_i8 {
     pub type I8 = PlainFmt<gemv::SymI8<GROUP>>;
 
     // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发；量化算子不可微。
-    crate::operator_via!(grained I8, "gemv_i8", (4096, 4096), false, gemv, gemv::AXES);
+    crate::operator_via!(grained I8, "gemv_i8", 3, (4096, 4096), false, gemv, gemv::AXES);
 
     /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
     pub fn forward(
@@ -1111,7 +1121,7 @@ pub mod gemv_f32 {
     pub type F32 = PlainFmt<gemv::Dense<BLOCK>>;
 
     // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发。
-    crate::operator_via!(grained F32, "gemv_f32", (4096, 4096), true, gemv, gemv::AXES);
+    crate::operator_via!(grained F32, "gemv_f32", 2, (4096, 4096), true, gemv, gemv::AXES);
 
     /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
     pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {

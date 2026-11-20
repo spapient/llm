@@ -1,37 +1,15 @@
-//! 打包权重（每字节 `cpb` 个码）的取样、分组校验与解包点积助手。
+//! 打包权重（每字节 `cpb` 个码）的取样与解包点积助手。
 //!
-//! int2（4 码/字节）与 int4（2 码/字节）只在码宽、查表与粒度倍数上不同；打包位域的字节布局、
-//! 分组推导与按行点积收口到这里，避免两条打包格式各抄一遍。int8 不打包，不走本模块。
-
-use super::{finite_scales, required_weights, scaled_groups};
-use diagnostic::{Code, Error};
+//! int2（4 码/字节）与 int4（2 码/字节）只在码宽、查表与粒度倍数上不同；打包位域的字节布局
+//! 与按行点积收口到这里，避免两条打包格式各抄一遍。行遍历、守卫与行切片在骨架
+//! `gemv::forward_rows` 里只有一份——本模块只把“行宽按 `cpb` 折算”接上去。
+//! int8 不打包，不走本模块。
 
 /// 确定性打包权重：`n` 行、每行 `m / cpb` 个字节，同一形状取值可复现。
 pub fn weights(m: usize, n: usize, cpb: usize) -> Vec<u8> {
     (0..n * (m / cpb))
         .map(|index| ((index * 37) % 251) as u8)
         .collect()
-}
-
-/// 分组推导 + "分组必须是 `cpb` 的倍数" + 打包权重长度下界。
-///
-/// 返回 `(groups, group)`：每行多少组、每组多少元素。
-pub fn groups(
-    m: usize,
-    n: usize,
-    scales: usize,
-    weights: usize,
-    cpb: usize,
-) -> Result<(usize, usize), Error> {
-    let (groups, group) = scaled_groups(m, n, scales)?;
-    if !group.is_multiple_of(cpb) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("分组 {group} 必须是 {cpb} 的倍数"),
-        ));
-    }
-    required_weights(weights, n, m / cpb)?;
-    Ok((groups, group))
 }
 
 /// 一行的点积：按分组推进，组内解包 `cpb` 个码查 `dequant` 表，整组共用同一个标度。
@@ -68,10 +46,16 @@ pub fn dot_row(
     acc
 }
 
-/// 打包格式的行遍历：分组与长度守卫通过后，每行解包点积一次写回调用方缓冲。
+/// 把骨架的逐行点积接口接到 [`dot_row`]：骨架只给分组元素数 `group`，解包点积还要每组字节数
+/// `group / cpb`、每字节码数与反量化表。
+fn row_dot(cpb: usize, dequant: &[f32]) -> impl Fn(&[u8], &[f32], &[f32], usize) -> f32 + '_ {
+    move |w_row, x, s_row, group| dot_row(w_row, x, s_row, group / cpb, group, cpb, dequant)
+}
+
+/// 打包格式的单行入口：行宽按 `cpb` 折算，逐行点积走 `row_dot`。
 ///
-/// 行切片、分组推进与格式无关；格式只给每字节码数 `cpb` 与反量化表 `dequant`。
-/// 解包位域与累加顺序和 [`dot_row`] 同一套算术，参考与内核对拍逐位一致。
+/// 守卫、行切片与遍历都在骨架 `gemv::forward_rows` 里；这里只接上“一行 `m / cpb` 个字节”
+/// 与解包算术，解包位域与累加顺序和 [`dot_row`] 同一套，参考与内核对拍逐位一致。
 pub fn forward_rows(
     x: &[f32],
     weights: &[u8],
@@ -80,25 +64,13 @@ pub fn forward_rows(
     cpb: usize,
     dequant: &[f32],
 ) -> diagnostic::Result<()> {
-    let m = x.len();
-    let n = out.len();
-    let (groups, group) = groups(m, n, scales.len(), weights.len(), cpb)?;
-    finite_scales(scales, groups)?;
-    let row_bytes = m / cpb;
-    let per_group = group / cpb;
-    for (row, value) in out.iter_mut().enumerate() {
-        let w_row = &weights[row * row_bytes..][..row_bytes];
-        let s_row = &scales[row * groups..][..groups];
-        *value = dot_row(w_row, x, s_row, per_group, group, cpb, dequant);
-    }
-    Ok(())
+    super::forward_rows(x, weights, scales, out, cpb, row_dot(cpb, dequant))
 }
 
-/// 打包格式的行批：一行权重解包一遍，服务 `rows` 行输入，写进 `rows × n` 的行主序输出。
+/// 打包格式的行批入口：与 [`forward_rows`] 同一套算术与同一份 `row_dot`，只换遍历嵌套。
 ///
-/// 与 [`forward_rows`] 同一套算术与同一份 [`dot_row`]，只换遍历嵌套：输出行 `j` 在外（权重行
-/// `j` 由此只解包一次），输入行 `r` 在内。于是量化权重在 prefill 下不会被按行数重复读，
-/// 而每个元素仍是同一累加顺序——批结果与逐行调用的结果逐位相同。
+/// 输出行 `j` 在外（权重行 `j` 由此只解包一次），输入行 `r` 在内——量化权重在 prefill 下不会
+/// 被按行数重复读，而每个元素仍是同一累加顺序，批结果与逐行调用逐位相同。
 pub fn forward_batch(
     x: &[f32],
     weights: &[u8],
@@ -108,53 +80,5 @@ pub fn forward_batch(
     cpb: usize,
     dequant: &[f32],
 ) -> diagnostic::Result<()> {
-    let (groups, group) =
-        batch_packed_context(x.len(), out.len(), scales, weights.len(), geo, cpb)?;
-    let row_bytes = geo.m / cpb;
-    let per_group = group / cpb;
-    for j in 0..geo.n {
-        let w_row = &weights[j * row_bytes..][..row_bytes];
-        let s_row = &scales[j * groups..][..groups];
-        for r in 0..geo.rows {
-            out[r * geo.n + j] = dot_row(
-                w_row,
-                &x[r * geo.m..][..geo.m],
-                s_row,
-                per_group,
-                group,
-                cpb,
-                dequant,
-            );
-        }
-    }
-    Ok(())
-}
-
-/// 打包行批的守卫收口：几何、分组与标度三项一次判齐，返回 `(groups, group)`。
-fn batch_packed_context(
-    x: usize,
-    out: usize,
-    scales: &[f32],
-    weights: usize,
-    geo: super::Geometry,
-    cpb: usize,
-) -> diagnostic::Result<(usize, usize)> {
-    super::batch_geometry(x, out, geo)?;
-    let (groups, group) = groups(geo.m, geo.n, scales.len(), weights, cpb)?;
-    finite_scales(scales, groups)?;
-    Ok((groups, group))
-}
-
-/// 逐元素（不打包）格式的行遍历：守卫与行切片收口到骨架，每行点积算术由闭包给出。
-///
-/// 与 [`forward_rows`] 对称，差别只是权重不按字节打包、一行即 `m` 个元素；格式只给
-/// 逐行点积函数，不在自己的 `forward` 里再抄一遍分组/标度/权重长度守卫。
-pub fn forward_plain(
-    x: &[f32],
-    weights: &[u8],
-    scales: &[f32],
-    out: &mut [f32],
-    row_dot: impl Fn(&[u8], &[f32], &[f32], usize) -> f32,
-) -> diagnostic::Result<()> {
-    super::forward_scaled_rows(x, weights, scales, out, row_dot)
+    super::forward_batch_rows(x, weights, scales, geo, out, cpb, row_dot(cpb, dequant))
 }

@@ -73,9 +73,12 @@ fn run(command: &CutileCommand, settings: &Settings) -> diagnostic::Result<Strin
             devices,
             ledger,
         } => verify(settings, op, devices, *ledger),
-        CutileCommand::Bench { op, shape, repeat } => {
-            bench(settings, op, shape.as_deref(), *repeat)
-        }
+        CutileCommand::Bench {
+            op,
+            shape,
+            device,
+            repeat,
+        } => bench(settings, op, shape.as_deref(), device.as_deref(), *repeat),
         CutileCommand::Ledger { out } => ledger(settings, out.as_deref()),
         CutileCommand::Cache { limit } => cache_gc(settings, *limit),
     }
@@ -265,14 +268,19 @@ fn bench(
     settings: &Settings,
     op: &str,
     shape: Option<&str>,
+    device: Option<&str>,
     repeat: usize,
 ) -> diagnostic::Result<String> {
     let dirs = settings.dirs();
     let catalogue = Catalogue::load(&dirs)?;
-    let measured: Bench = bench::bench(&catalogue, &dirs, op, shape, repeat)?;
+    let measured: Bench = bench::bench(&catalogue, &dirs, op, shape, device, repeat)?;
     let (m, n) = measured.shape;
 
-    let mut out = format!("bench {} {m}x{n} repeat={}\n", measured.op, measured.repeat);
+    // 设备身份进首行：多设备机器上同一份台账会被并排读，缺了它无法归属。
+    let mut out = format!(
+        "bench {} {m}x{n} repeat={} [{}]\n",
+        measured.op, measured.repeat, measured.device
+    );
     out.push_str(&format!("  plan  {}\n", measured.plan));
     out.push_str(&format!(
         "  证据  {} 条见证（这次执行，协商用的就是它）\n",

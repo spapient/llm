@@ -33,8 +33,15 @@ impl Toolchain {
     }
 
     /// 档案登记的版本是否与实测相容：只比**主版本号**（`clang-17` 的族名不算差异），不改判定等级。
+    ///
+    /// `"*"` 是显式的"任意版本"：`cpu` 档案登记的是 `cc`，而 `cc` 在 macOS 上是 clang、在
+    /// 多数 Linux 上是 gcc，同一个可移植档案不可能写死一个主版本号。写死的结果是每台机器都报
+    /// "不一致"——一条永远为真的告警等于没有告警。设备档案（`nvcc` / `mcc` / `xcrun`）仍记实测值。
     #[must_use]
     pub fn agrees_with(&self, declared: &str) -> bool {
+        if declared.trim() == "*" {
+            return true;
+        }
         let Some(actual) = self.version.as_deref() else {
             return false;
         };
@@ -85,6 +92,17 @@ pub fn detect() -> Option<Toolchain> {
         .clone()
 }
 
+/// 按**档案声明的工具名**探测：`emit = "cuda"` 的产物只能由 `nvcc` / `mcc` 编，宿主的 `cc`
+/// 不认识 `--cuda-gpu-arch`，拿它去编只会把"这台设备没有工具链"报成一条 C 语法错误。
+/// 声明不可用时返回 `None`（如实"没有"），不退回合主编译器——那会把缺工具链伪装成编译失败。
+#[must_use]
+pub fn for_profile(profile: &crate::prof::Profile) -> Option<Toolchain> {
+    if profile.meta.emit == crate::prof::Emit::Cuda {
+        return probe(&profile.meta.tool);
+    }
+    detect()
+}
+
 /// 本机的 clang：先问 `clang`，再退到 `cc`（macOS 与多数发行版的 `cc` 就是 clang）。判据是
 /// "这个程序是不是 clang"：`-x cuda` / `-x cl` 是 clang 的前端，gcc 没有。
 #[must_use]
@@ -130,6 +148,18 @@ pub(crate) fn skip_without_host_compiler() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_portable_profile_may_declare_any_version() {
+        let tool = Toolchain {
+            command: "cc".to_string(),
+            version: Some("11.4.0".to_string()),
+            banner: "cc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0".to_string(),
+        };
+        assert!(tool.agrees_with("*"), "便携档案的 `*` 不能被报成不一致");
+        assert!(tool.agrees_with("cc-11"), "同主版本相容");
+        assert!(!tool.agrees_with("clang-17"), "跨主版本仍要说出来");
+    }
 
     #[test]
     fn versions_are_read_from_what_the_compilers_actually_print() {

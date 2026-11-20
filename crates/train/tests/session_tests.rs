@@ -8,20 +8,15 @@ use nn::ParamRole;
 use tensor::{DType, Shape};
 use weights::Header;
 
+#[path = "../tests/support.rs"]
+mod support;
+
 /// 夹具向量宽度。
 const N: usize = 4;
 
 /// `loss = add_f32(p, x)`：`p` 是梯度终点参数，`x` 是常量输入叶子。
 fn fixture() -> (Tape, Sizes, Var, Var, Var) {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let x = tape.leaf();
-    let loss = tape.record("add_f32", &[p, x]).expect("记录");
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(x, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([N]), DType::F32);
-    (tape, sizes, p, x, loss)
+    support::add_graph(N)
 }
 
 /// 两层共享权重夹具：`h = add(x, w_source)`，`t = add(h, w_tied)`，`loss = add(t, u)`；

@@ -848,17 +848,13 @@ mod tests {
         use crate::Codec;
         use crate::crc;
         use crate::leb;
+        use crate::testutil::f32_segment;
         use crate::writer::{GLOBAL_CRC, MAGIC, SEG_CRC, VERSION};
 
         /// 手拼描述符条目：内联段带存储帧，引用段只带代表段下标。
         enum Raw {
             Inline(Segment, Vec<u8>),
             Ref(Segment, u32),
-        }
-
-        fn f32(name: &str, vals: &[f32]) -> Segment {
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Segment::new(name, Wire::F32, vec![vals.len() as u64], None, bytes).expect("段")
         }
 
         fn f16(name: &str) -> Segment {
@@ -893,8 +889,8 @@ mod tests {
 
         #[test]
         fn equal_segments_share_one_inline_frame() {
-            let a = f32("a", &[1.0, 2.0]);
-            let b = f32("b", &[1.0, 2.0]);
+            let a = f32_segment("a", &[1.0, 2.0]);
+            let b = f32_segment("b", &[1.0, 2.0]);
             let bytes = crate::testutil::archive(vec![a.clone(), b]);
             let archive = Archive::parse(&bytes).expect("合法容器");
 
@@ -918,8 +914,8 @@ mod tests {
         #[test]
         fn dangling_reference_is_rejected() {
             let raw = [
-                Raw::Inline(f32("a", &[1.0]), f32("a", &[1.0]).data),
-                Raw::Ref(f32("b", &[1.0]), 5),
+                Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
+                Raw::Ref(f32_segment("b", &[1.0]), 5),
             ];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("悬空下标必须报错");
             assert_eq!(error.code(), Code::Invalid);
@@ -929,8 +925,8 @@ mod tests {
         #[test]
         fn self_reference_is_rejected() {
             let raw = [
-                Raw::Inline(f32("a", &[1.0]), f32("a", &[1.0]).data),
-                Raw::Ref(f32("b", &[1.0]), 1),
+                Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
+                Raw::Ref(f32_segment("b", &[1.0]), 1),
             ];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("自引用必须报错");
             assert_eq!(error.code(), Code::Invalid);
@@ -940,9 +936,9 @@ mod tests {
         #[test]
         fn reference_to_reference_is_rejected() {
             let raw = [
-                Raw::Inline(f32("a", &[1.0]), f32("a", &[1.0]).data),
-                Raw::Ref(f32("b", &[1.0]), 0),
-                Raw::Ref(f32("c", &[1.0]), 1),
+                Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
+                Raw::Ref(f32_segment("b", &[1.0]), 0),
+                Raw::Ref(f32_segment("c", &[1.0]), 1),
             ];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("代表段是引用必须报错");
             assert_eq!(error.code(), Code::Invalid);
@@ -951,7 +947,7 @@ mod tests {
 
         #[test]
         fn reference_cycle_is_rejected() {
-            let raw = [Raw::Ref(f32("a", &[1.0]), 1), Raw::Ref(f32("b", &[1.0]), 0)];
+            let raw = [Raw::Ref(f32_segment("a", &[1.0]), 1), Raw::Ref(f32_segment("b", &[1.0]), 0)];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("引用成环必须报错");
             assert_eq!(error.code(), Code::Invalid);
         }
@@ -959,7 +955,7 @@ mod tests {
         #[test]
         fn mismatched_reference_metadata_is_rejected() {
             let raw = [
-                Raw::Inline(f32("a", &[1.0, 2.0]), f32("a", &[1.0, 2.0]).data),
+                Raw::Inline(f32_segment("a", &[1.0, 2.0]), f32_segment("a", &[1.0, 2.0]).data),
                 Raw::Ref(f16("b"), 0),
             ];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("元数据不一致必须报错");
@@ -970,8 +966,8 @@ mod tests {
         #[test]
         fn duplicate_names_are_rejected() {
             let raw = [
-                Raw::Inline(f32("w", &[1.0]), f32("w", &[1.0]).data),
-                Raw::Inline(f32("w", &[2.0]), f32("w", &[2.0]).data),
+                Raw::Inline(f32_segment("w", &[1.0]), f32_segment("w", &[1.0]).data),
+                Raw::Inline(f32_segment("w", &[2.0]), f32_segment("w", &[2.0]).data),
             ];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("重名必须报错");
             assert_eq!(error.code(), Code::Invalid);

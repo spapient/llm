@@ -400,6 +400,17 @@ fn entries<T>(
 ) -> Result<Vec<T>, ProfileError> {
     table.entries().iter().map(|(k, v)| each(k, v)).collect()
 }
+/// 标量的字符串渲染：字符串原样，整数/浮点/布尔按十进制写；数组与表不是标量，返回 `None`
+/// （错误由调用方按自己的字段路径给）。档案层与声明层的标量通道都走这一条。
+pub fn scalar_texts(value: &Value) -> Option<Vec<String>> {
+    match value {
+        Value::Str(text) => Some(vec![text.clone()]),
+        Value::Int(number) => Some(vec![number.to_string()]),
+        Value::Float(number) => Some(vec![number.to_string()]),
+        Value::Bool(flag) => Some(vec![flag.to_string()]),
+        _ => None,
+    }
+}
 /// 主维度只接受区间字符串。
 const EXTENT_DETAIL: &str = "主维度只能是区间字符串（如 `<=4096`）";
 /// `n` / `k` 只接受区间字符串。

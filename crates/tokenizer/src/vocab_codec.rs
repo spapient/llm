@@ -293,16 +293,7 @@ mod tests {
 
     #[test]
     fn bpe_with_merges_and_special_round_trips() {
-        roundtrip(VocabSource {
-            family: VocabFamily::Bpe,
-            pieces: vec![b"a".to_vec(), b"b".to_vec(), b"ab".to_vec()],
-            special: SpecialTokens::EMPTY.with_bos(0).with_eos(2),
-            scores: Vec::new(),
-            merges: vec![Merge {
-                left: b"a".to_vec(),
-                right: b"b".to_vec(),
-            }],
-        });
+        roundtrip(crate::fixtures::bpe_source());
     }
 
     #[test]

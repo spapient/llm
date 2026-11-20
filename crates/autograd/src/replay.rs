@@ -434,6 +434,16 @@ mod tests {
         (tape, loss)
     }
 
+    /// 链式图 + 执行序 + 计划：预算 96 字节必然分段重算，`1 << 20` 则一路全留。
+    fn chained(length: usize, budget: u64) -> (Tape, Schedule, Vec<u64>, Plan) {
+        let (tape, loss) = chain(length);
+        let schedule = tape.backward(loss).expect("在图上");
+        let bytes = vec![8u64; tape.vars() as usize];
+        let plan =
+            Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(budget)).expect("可计划");
+        (tape, schedule, bytes, plan)
+    }
+
     fn run_once(tape: &Tape, schedule: &Schedule, plan: &Plan, bytes: &[u64]) -> (u64, Table) {
         let seeds = [1.0, 1.0];
         let truth = forward(tape, &seeds);
@@ -448,10 +458,7 @@ mod tests {
 
     #[test]
     fn a_tight_budget_replays_exactly_what_the_plan_promised() {
-        let (tape, loss) = chain(16);
-        let schedule = tape.backward(loss).expect("在图上");
-        let bytes = vec![8u64; tape.vars() as usize];
-        let plan = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(96)).expect("可分段");
+        let (tape, schedule, bytes, plan) = chained(16, 96);
         assert_eq!(plan.choice(), Choice::Recompute);
 
         let (computed, table) = run_once(&tape, &schedule, &plan, &bytes);
@@ -469,10 +476,7 @@ mod tests {
 
     #[test]
     fn replay_counts_listed_instructions() {
-        let (tape, loss) = chain(16);
-        let schedule = tape.backward(loss).expect("在图上");
-        let bytes = vec![8u64; tape.vars() as usize];
-        let plan = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(96)).expect("可分段");
+        let (tape, schedule, _, plan) = chained(16, 96);
         let replay = Replay::of(&tape, &schedule, &plan).expect("可执行");
         assert_eq!(replay.compute_count(), plan.replayed() as usize);
         assert!(
@@ -480,11 +484,7 @@ mod tests {
             "到寿激活逐块交还，至少一条释放指令"
         );
 
-        let (tape, loss) = chain(4);
-        let schedule = tape.backward(loss).expect("在图上");
-        let bytes = vec![8u64; tape.vars() as usize];
-        let plan =
-            Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("放得下");
+        let (tape, schedule, _, plan) = chained(4, 1 << 20);
         let replay = Replay::of(&tape, &schedule, &plan).expect("可执行");
         assert_eq!(replay.compute_count(), 0, "全留路径不编入重算");
         assert!(replay.free_count() > 0, "不重放也要按时编入释放");
@@ -492,11 +492,7 @@ mod tests {
 
     #[test]
     fn a_plan_that_fits_replays_nothing_but_still_frees_on_time() {
-        let (tape, loss) = chain(4);
-        let schedule = tape.backward(loss).expect("在图上");
-        let bytes = vec![8u64; tape.vars() as usize];
-        let plan =
-            Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("放得下");
+        let (tape, schedule, bytes, plan) = chained(4, 1 << 20);
         assert_eq!(plan.choice(), Choice::KeepAll);
 
         let (computed, table) = run_once(&tape, &schedule, &plan, &bytes);
@@ -579,11 +575,7 @@ mod tests {
 
     #[test]
     fn a_deep_chain_neither_recurses_nor_blows_the_budget() {
-        let (tape, loss) = chain(20_000);
-        let schedule = tape.backward(loss).expect("在图上");
-        let bytes = vec![8u64; tape.vars() as usize];
-        let plan =
-            Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(16_000)).expect("可分段");
+        let (tape, schedule, bytes, plan) = chained(20_000, 16_000);
         let (computed, table) = run_once(&tape, &schedule, &plan, &bytes);
         assert!(computed > 0);
         assert!(computed <= plan.replayed());
@@ -598,15 +590,7 @@ mod tests {
 
     #[test]
     fn a_sequence_from_another_schedule_is_rejected() {
-        let (tape, loss) = chain(3);
-        let schedule = tape.backward(loss).expect("在图上");
-        let plan = Plan::of(
-            &tape,
-            &schedule,
-            vec![8u64; tape.vars() as usize],
-            Budget::new(1 << 20),
-        )
-        .expect("放得下");
+        let (tape, schedule, _, plan) = chained(3, 1 << 20);
         let replay = Replay::of(&tape, &schedule, &plan).expect("可执行");
 
         let mut other = Tape::new();
@@ -633,10 +617,7 @@ mod tests {
             fn free(&mut self, _: Var) {}
         }
 
-        let (tape, loss) = chain(16);
-        let schedule = tape.backward(loss).expect("在图上");
-        let bytes = vec![8u64; tape.vars() as usize];
-        let plan = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(96)).expect("可分段");
+        let (tape, schedule, _, plan) = chained(16, 96);
         let replay = Replay::of(&tape, &schedule, &plan).expect("可执行");
         let error = replay
             .run(&tape, &schedule, &mut Refuse, |_, _| Ok(()))

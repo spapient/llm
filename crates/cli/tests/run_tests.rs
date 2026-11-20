@@ -212,6 +212,40 @@ fn cuda_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::
     Some((catalogue, dirs))
 }
 
+/// CUDA 真机对拍的公共装备：目录 + nvidia 档案 + 语义表 + 样本 + 声明；`shape` 缺省取算子声明
+/// 形状。逐点 / 分块归约 / 分块归一化 / 循环注入四条对拍共用这份装配，只在发射与回读处分叉。
+#[cfg(target_os = "windows")]
+struct CudaSetup {
+    catalogue: cutile::builtin::Catalogue,
+    dirs: cutile::dirs::Dirs,
+    profile: cutile::prof::Profile,
+    model: op::model::Model,
+    sample: op::model::Sample,
+    decl: op::decl::OpDecl,
+    m: usize,
+    n: usize,
+}
+
+#[cfg(target_os = "windows")]
+fn cuda_setup(op_name: &str, tag: &str, shape: Option<(usize, usize)>) -> Option<CudaSetup> {
+    let (catalogue, dirs) = cuda_harness(tag)?;
+    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
+    let model = op::model(op_name).expect("语义表");
+    let (m, n) = shape.unwrap_or(model.shape);
+    let sample = (model.sample)(m, n);
+    let decl = catalogue.op(op_name).expect("算子声明").clone();
+    Some(CudaSetup {
+        catalogue,
+        dirs,
+        profile,
+        model,
+        sample,
+        decl,
+        m,
+        n,
+    })
+}
+
 /// 分块内核对拍的公共装备：语义表 + 样本 + 参考 + 声明 + 分块网格。`len_of` 给出分块轴长度
 /// （scan / reduce 从签名里找非缓冲标量，rmsnorm / softmax 直接取 `N`），分块对拍共用这份装配。
 #[cfg(target_os = "macos")]
@@ -487,16 +521,20 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 /// 与 Metal 侧的 [`op_matches_reference`] 同口径，只是发射/回读经 `compile_run_cuda`。
 #[cfg(target_os = "windows")]
 fn op_matches_reference_cuda(op_name: &str) {
-    let Some((catalogue, dirs)) = cuda_harness("grid") else {
+    let Some(CudaSetup {
+        catalogue,
+        dirs,
+        profile,
+        model,
+        sample,
+        decl,
+        m,
+        n,
+    }) = cuda_setup(op_name, "grid", None)
+    else {
         return;
     };
-    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
 
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = model.shape;
-    let sample = (model.sample)(m, n);
-    let decl = catalogue.op(op_name).expect("算子声明");
-    let output = decl.signature.output().expect("可写输出");
     let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
     let program = engine::codegen::cuda_point_driver(&device, &decl.signature, &sample)
@@ -513,15 +551,20 @@ fn op_matches_reference_cuda(op_name: &str) {
 /// [`op_chunked_reduce_matches_reference`] 同一口径：f32 串行参考对 4096 递增值误差已 ~1e-4）。
 #[cfg(target_os = "windows")]
 fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
-    let Some((catalogue, dirs)) = cuda_harness("reduce") else {
+    let Some(CudaSetup {
+        catalogue,
+        dirs,
+        profile,
+        model,
+        sample,
+        decl,
+        m,
+        n,
+    }) = cuda_setup(op_name, "reduce", None)
+    else {
         return;
     };
-    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
 
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = model.shape;
-    let sample = (model.sample)(m, n);
-    let decl = catalogue.op(op_name).expect("算子声明");
     let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
     let len = decl
         .signature
@@ -917,15 +960,20 @@ fn a_reduce_sum_op_runs_on_cuda_and_matches_the_reference() {
 /// 一次编译执行整条链路，输出与标量参考逐元素对拍。
 #[cfg(target_os = "windows")]
 fn op_normalized_matches_reference_cuda(op_name: &str) {
-    let Some((catalogue, dirs)) = cuda_harness("norm") else {
+    let Some(CudaSetup {
+        catalogue,
+        dirs,
+        profile,
+        model,
+        sample,
+        decl,
+        m,
+        n,
+    }) = cuda_setup(op_name, "norm", None)
+    else {
         return;
     };
-    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
 
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = model.shape;
-    let sample = (model.sample)(m, n);
-    let decl = catalogue.op(op_name).expect("算子声明");
     let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size;
 
     let program = match op_name {
@@ -957,15 +1005,19 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
 /// 输出与标量参考逐元素对拍。小形状（64×64）避免样本内嵌体积膨胀。
 #[cfg(target_os = "windows")]
 fn op_looped_matches_reference_cuda(op_name: &str) {
-    let Some((catalogue, dirs)) = cuda_harness("looped") else {
+    let Some(CudaSetup {
+        catalogue,
+        dirs,
+        profile,
+        model,
+        sample,
+        decl,
+        m,
+        n,
+    }) = cuda_setup(op_name, "looped", Some((64, 64)))
+    else {
         return;
     };
-    let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
-
-    let model = op::model(op_name).expect("语义表");
-    let (m, n) = (64usize, 64usize);
-    let sample = (model.sample)(m, n);
-    let decl = catalogue.op(op_name).expect("算子声明");
 
     let (device, dims) = cutile::execution::cuda_gemm_program(&catalogue, &dirs, op_name, m, n)
         .expect("循环注入内核应能生成");

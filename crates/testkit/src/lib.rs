@@ -95,6 +95,11 @@ pub mod rng {
         pub fn next_f32(&mut self) -> f32 {
             self.below(1_000_000) as f32 / 1_000_000.0
         }
+
+        /// `[-1, 1)` 内的确定性 f32：千分网格上取值，有符号夹具（权重、输入）共用一份。
+        pub fn signed_unit(&mut self) -> f32 {
+            self.below(2_001) as f32 / 1_000.0 - 1.0
+        }
     }
 
     #[cfg(test)]
@@ -129,6 +134,15 @@ pub mod rng {
                 let value = rng.next_f32();
                 assert!((0.0..1.0).contains(&value));
             }
+        }
+
+        #[test]
+        fn rng_signed_unit_covers_both_signs_inside_the_band() {
+            let mut rng = Rng::new(9);
+            let draws: Vec<f32> = (0..64).map(|_| rng.signed_unit()).collect();
+            assert!(draws.iter().all(|value| (-1.0..1.0).contains(value)));
+            assert!(draws.iter().any(|value| *value < 0.0));
+            assert!(draws.iter().any(|value| *value >= 0.0));
         }
     }
 }

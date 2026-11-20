@@ -162,6 +162,7 @@ mod param_role {
 }
 mod codec;
 mod emit;
+mod hybrid;
 mod latent;
 mod patch;
 mod pointwise;
@@ -201,6 +202,9 @@ pub use embed::Embedding;
 
 #[doc(inline)]
 pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
+
+#[doc(inline)]
+pub use hybrid::{Hybrid, Query};
 
 #[doc(inline)]
 pub use kda::{Kda, Memory};

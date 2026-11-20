@@ -74,6 +74,7 @@ pub mod kv;
 #[cfg(target_os = "macos")]
 pub mod metal;
 pub mod norm;
+pub mod platform;
 pub mod radix;
 pub mod scan;
 pub mod tiled;
@@ -81,6 +82,7 @@ pub mod wmma;
 
 pub use batch::{Admission, Batch, SequenceOutcome};
 pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};
+pub use platform::{Abi, Arch, Host, Machine, Row, Standing, Why, audit, require, standing};
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;

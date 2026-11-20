@@ -34,8 +34,87 @@
 //! assert!(store.value(y).and_then(|view| view.f32()).is_some());
 //! ```
 
+use autograd::{Sizes, Tape, Var};
+use tensor::{DType, Shape};
+
 /// 本模块的诊断站点：出错时用它标明"是这一层拒绝了这次请求"。
 pub(crate) const SITE: &str = "train::Buffers";
+
+/// 一条量化链的骨架：`x`（参数）经 `layers` 次 `gemv_i4(x, w, scales)` 得到链尾。
+///
+/// 叶子、链尾与形状表一次给齐，调用方只负责装载常驻值。基准与 `store` 的测试都从这里
+/// 取形状，"链有多宽、权重按什么形态声明"于是只有一处说法。
+pub struct QuantChain {
+    tape: Tape,
+    sizes: Sizes,
+    x: Var,
+    w: Var,
+    scales: Var,
+    loss: Var,
+}
+
+impl QuantChain {
+    /// 组一条 `layers` 层、宽度 `width` 的 `gemv_i4` 链：`x` 是参数，`w` / `scales` 是叶子。
+    ///
+    /// `w` 声明为 `[width, width]` 的 `U4`（按位打包的 4bit 权重），`scales` 与每层输出
+    /// 都是 `[width]` 的 `F32`。
+    ///
+    /// # Panics
+    ///
+    /// `Tape::record` 只在算子未注册或输入个数不符时失败；这里两样都是常量，不会发生。
+    pub fn new(mut tape: Tape, layers: usize, width: usize) -> Self {
+        let (x, w, scales) = (tape.parameter(), tape.leaf(), tape.leaf());
+        let mut loss = x;
+        for _ in 0..layers {
+            loss = tape.record("gemv_i4", &[loss, w, scales]).expect("记录");
+        }
+        let mut sizes = Sizes::new(tape.vars());
+        sizes.set(x, Shape::new([width]), DType::F32);
+        sizes.set(w, Shape::new([width, width]), DType::U4);
+        sizes.set(scales, Shape::new([width]), DType::F32);
+        for node in tape.nodes() {
+            sizes.set(node.output(), Shape::new([width]), DType::F32);
+        }
+        Self {
+            tape,
+            sizes,
+            x,
+            w,
+            scales,
+            loss,
+        }
+    }
+
+    /// 图本身。
+    pub fn tape(&self) -> &Tape {
+        &self.tape
+    }
+
+    /// 形状表。
+    pub fn sizes(&self) -> &Sizes {
+        &self.sizes
+    }
+
+    /// 链首输入（参数）。
+    pub fn x(&self) -> Var {
+        self.x
+    }
+
+    /// 打包成 `U4` 的权重（叶子）。
+    pub fn w(&self) -> Var {
+        self.w
+    }
+
+    /// 每组一档的缩放（叶子）。
+    pub fn scales(&self) -> Var {
+        self.scales
+    }
+
+    /// 链尾：最后一层 `gemv_i4` 的输出。
+    pub fn loss(&self) -> Var {
+        self.loss
+    }
+}
 
 // 测试白盒可见：形状表下标与登记元数据经入口再导出，`super::*` 仍能解析。
 #[cfg(test)]
@@ -104,19 +183,14 @@ mod tests {
 
     impl Fixture {
         fn new(layers: usize) -> Self {
-            let mut tape = Tape::new();
-            let (x, w, scales) = (tape.parameter(), tape.leaf(), tape.leaf());
-            let mut loss = x;
-            for _ in 0..layers {
-                loss = tape.record("gemv_i4", &[loss, w, scales]).expect("记录");
-            }
-            let mut sizes = Sizes::new(tape.vars());
-            sizes.set(x, Shape::new([WIDTH]), DType::F32);
-            sizes.set(w, Shape::new([WIDTH, WIDTH]), DType::U4);
-            sizes.set(scales, Shape::new([WIDTH]), DType::F32);
-            for node in tape.nodes() {
-                sizes.set(node.output(), Shape::new([WIDTH]), DType::F32);
-            }
+            let QuantChain {
+                tape,
+                sizes,
+                x,
+                w,
+                scales,
+                loss,
+            } = QuantChain::new(Tape::new(), layers, WIDTH);
             Self {
                 tape,
                 sizes,

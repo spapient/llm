@@ -6,6 +6,85 @@
 ## [Unreleased]
 ### Changed
 
+- **GEMV 的 forward 骨架只剩一副：打包与不打包共用同一份守卫、行切片与遍历，`packed` 退回
+  「解包点积 + 两层薄适配」（净减 59 行；`gemv/packed.rs` 146 → 84 行）**。此前 `forward_scaled_rows` /
+  `forward_batch_rows`（不打包）与 `packed::{forward_rows, forward_batch}`（打包）是两副并行的骨架：
+  同一个「分组推导 → 粒度倍数 → 权重长度 → 标度有限」四连守卫写了两遍（`batch_rows_context` 与
+  `batch_packed_context` 各自一份），同一个「输出行在外、输入行在内」的双层遍历也写了两遍，差别只有
+  **行宽 `m` vs `m / cpb`** 与一份逐行点积算术。**合流方式**：骨架收一个 `cpb` 参数——「一个权重单位
+  里有多少个元素」，打包格式给每字节码数（`2` / `4`），不打包的逐元素格式给 `1`，此时行宽就是 `m`
+  个元素、"分组必须是 `cpb` 的倍数"恒真，于是两条格式走同一条路径、按元素类型单态化；四条守卫收成
+  `scaled_row_context` 一处，单行与行批只差先判几何。`packed` 只留 `row_dot(cpb, dequant)` 这层适配
+  （骨架给 `group`，解包点积还要 `group / cpb` 与码表）与两个转发。**报错次序归一为「先判结构、再判
+  取值」**：权重长度先于标度有限，两处都是 `Code::Invalid`，且原打包路径本就是这一次序。
+  **边界**：解包位域、分组推进、累加顺序与行批嵌套一行未动，批结果仍与逐行调用逐位相同；
+  `op` 326 条 + `train` + `testkit` 共 548 条用例、clippy `-D warnings`、doc 全绿。
+
+- **`op` 的 GEMV 量化路径收成一条格式契约：`gemv.rs` 与 `gemv_i8` 的公共常量只剩一份，三档量化的
+  「非有限标度」与行批判据各由一条宏生成（净减 43 行；重复率 0.36% → 0.34%，`gemv` 相关克隆清零）**。
+  此前 `Packed` 与 `SymI8` 各自手抄同一张操作数表与同一组粒度常量（`GRAIN` / `DERIVED` / `SCALES` /
+  `STEP`），两份 `DERIVED` 的除数与 `GRAIN` 靠人工保持一致——正是 `derived_matches_grain` 要防的那种
+  漂移（代价按一个分组算、样本按另一个分组给，对拍比的却是两种语义）。**差异收成一个函数 + 一次展开**：
+  新增 `gemv::scaled_operands(bits)` 给操作数表（权重按位宽读，输入/标度/输出恒 32 位），
+  `scaled_format!(bits, grain)` 展开那五个常量，两条格式只传「权重位宽 + 粒度」两个数。**测试侧**：
+  `non_finite_scale_test!(bits)` 与 `packed_gemv_batch_tests!(…; cpb = 1)` 让 i2/i4/i8 共用同一份
+  守卫与行批判据（`i8` 的行批用例本是宏展开结果的手抄版），`Rng::signed_unit` 收掉 `op` 与 `testkit`
+  各写一遍的 `[-1, 1)` 取值闭包。**边界**：纯装配与夹具收敛，解包、分组、累加顺序一行未动；
+  `op` 326 条 + `testkit` 37 条用例、clippy `-D warnings`、doc、重复率硬门全绿。
+
+- **六平台执行合同落成裁决层（`engine::platform`，ADR 0052）+ `llm platform` 子命令**。此前「六平台」只
+  在文档里是一张表，代码里找不到「这台机器能不能跑这一行」的答案：`backends` 探的是编译器在不在、
+  `metal` 探的是设备在不在，两件事分头回答，于是「没有设备」与「没有工具链」在调用方看起来一样。
+  - `Row` 是六行闭集（`Cuda` / `RocmHip` / `Metal` / `Gpu(Vulkan|Sycl)` / `X86-64` / `Arm64`，设备行在前），
+    一行只有**集齐设备与编译器两件证据**才算 `Covered`，否则 `Open` 且必带理由——少一行会让「未覆盖」
+    与「根本没问」变成同一种输出，所以 `audit` 恒出六行，`require` 只对点名的行报 `E-PLAT`。
+    `Why::{NoDevice, NoToolchain, Uncompiled, NoRow}` 是闭集：换机器与装编译器是两个不同的修法，不合成
+    一句自由文本。判定只看**这一行能不能跑**，不代替 `cutile::verify`（算得对不对）与 `tool::card`（够不够 Must）。
+  - `Machine` 是唯一的主机事实源（`Arch`/`Abi` 编译期常量，`Metal`/`Cuda`/`Rocm`/`Vulkan`/`Sycl` 运行期探针，
+    逐项缓存）；`Host` 在运行期提供同样的六行，于是「探针看到的」与「文档说的」不能再漂移。
+  - CLI 新增零选项命令 `platform`（`cli::platform` 只排版，判定全在 `engine::platform`；多给一个词即报错）；
+    `cli::entry` 顺手抽出 `entry_compute`，把「读权重但不写状态」的 `status`/`run` 归到一处。
+  - **实测**（macOS aarch64，`cargo run -p llm-cli --bin llm -- platform`）：`metal covered`（`xcrun metal@32023.922`
+    · simdgroup matrix + 同构 ABI）、`arm covered`（aarch64 · NEON/SME 有序点积）、`cuda`/`hip`/`gpu`/`x86`
+    全部 `open` 带 `no-device`——本机没有的**照实写没有**，不拿「未测」冒充「不支持」。
+  - 文档：新建 `docs/adr/0052-execution-platform-contract.md`；`docs/ARCHITECTURE.md` 所有权表新增该行、边表
+    `engine → prof` 补齐（109 → 110 条）；补 `crates/{engine,nn,serve}/README.md`——静态质量门要数文档条数
+    （下限 30），此前树里只有 27 份，这三份既是门禁口径也是三个千行级 crate 的入口。
+
+- **六平台执行合同落地：`engine::platform` 把「这台机器能不能跑这一行」变成六行三态裁决 +
+  `llm platform` 一条命令（ADR 0052）**。此前"六平台支持到什么程度"只有两种半成品：`cutile` 的设备档案
+  是**声明**（声明不等于可执行），`backends::{probe_metal, probe_cuda}` 是 `bool`（说不清「设备在、编译器
+  不在」），`cutile::doctor` 则是逐档案逐阶段而非「平台 × 角色」。于是这一格只能靠翻代码回答。
+  **六行是闭集**：`Row::ALL` 即 CPU-x86 / CPU-ARM / Metal / CUDA / ROCm-HIP / GPU 六条，Vulkan 与 SYCL
+  是同一个 GPU 行的两条提交路径（`Arch::Gpu` 同时接受这两个标签），新增一个 GPU 族后端**不改行数**。
+  **设备行要两件证据**：设备在 + 编译器在，且身份串由证据算（`xcrun metal@… · simdgroup matrix + 同构 ABI`）；
+  CPU 行只要架构一件；GPU 行的一等原语「厂商 MMA + 同构 ABI」在设备证据成立时自证，不把同一件事写两遍。
+  **`Why` 是两值闭集**：`NoDevice` 与 `NoToolchain` 分开报——前者换机器、后者装工具链，混成一句"未覆盖"
+  就丢掉了唯一能指导动作的信息。
+  **`audit` 永不失败、`require` 才报告**：`audit` 六行恒出（少一行会让"未覆盖"与"根本没问"同形），
+  `require` 只判**资格**并在缺证据时给 `E-PLAT`——它不判正确性，那仍归 `cutile::verify` 与 `tool::card`。
+  `Host` 是注入缝（`arch` + `toolchain`），工具链复用 `backends` 的进程级缓存，测试用假机器摆出九种组合。
+  **实测**（`cargo run --bin llm -- platform`，macOS aarch64）：`metal covered — xcrun metal@32023.922 ·
+  simdgroup matrix + 同构 ABI`、`arm covered — aarch64 · NEON/SME 有序点积`；`cuda` / `hip` / `gpu` /
+  `x86` 四行 `open` 且理由为 `no-device`——即 Metal 与 CUDA/ROCm/Vulkan/SYCL 之间仍有真实设备缺口，
+  这里不虚构覆盖。`engine::platform` 11 条用例、`cli::platform` 2 条、解析 1 条。
+  **同轮文档欠账**：静态质量门的「扫描文档数 ≥ 30」在本树被裁剪后只剩 26（含新建 ADR 才 27），
+  故补 `crates/{engine,nn,serve}/README.md` 三份成员入口——分别写清引擎的六个状态机模块与准入/页账/
+  平台裁决的保证、`nn` 十一款标杆各自的可测不变量与状态不跨层的口径、`serve` 的单 argmax 与
+  "门是乘不是选路"的边界。
+
+- **`op` 的收缩轴可变 GEMM 收成一副骨架：`matmul.rs` 与 `matmul_i8.rs` 两份同构分块代码合成一份
+  （净减 85 行、少 1 个文件；重复率 0.41% → 0.36%，`matmul` 相关克隆从 3 处 58 行清零）**。此前
+  `f32` 与对称 `int8` 两档各写一遍 `matmul_scalar` / `matmul_tiled` / `accumulate_tile` / `check_dims` /
+  `cost` / `sample` 与两条 `forward`，jscpd 报出 25 + 23 + 10 行逐字重复，差别只有「元素类型、累加器、
+  一次乘加」。**差异收成一个契约**：新增 `matmul::Precision`（`type Acc`、`const NAME`、`fn mac`），
+  `i8` 档的 `i32` 精确累加就落在那一次乘加上——遍历次序怎么换都不改结果，于是两档共用同一份标量参考、
+  tile 遍历与尺寸校验，按元素类型单态化成两个入口；加一档精度只需再写这三件事。**文件数**：
+  `op/src/matmul_i8.rs`（317 行）作为 `pub mod matmul_i8` 并进 `matmul.rs`，模块路径
+  `op::matmul_i8::*` 不变（注册表与注解本就按模块扫描），`matmul.rs` 落 886 行，低于
+  `file_max_lines = 1200`。**边界**：纯合并，算术与调度一行未动；`op` 与 `train` 511 条用例、
+  `testkit::contracts` 6 条、clippy `-D warnings`、doc、重复率硬门全绿。
+
 - **ADR 从 49 个文件（48 个编号）收敛到 15 条（`docs/adr` 278 KB → 100 KB，净删 34 个文件）**。判据只有一条：
   这条决策的结论**是否已被代码或门禁接管**。沿用旧链接就能查到的"显式层表""一个概念一个主人"
   "代价来自求和表达式""层下界由语义推出"等，已经被 `architecture.rs`（成员 / 边 / 所有权三向比对）、

@@ -280,24 +280,56 @@ fn block_zero_params() -> Params {
     ])
 }
 
-/// 参考注意力块核心链：q/k/v 投影 → RoPE（按头宽分段）→ decode 多头 → o 投影 → 残差。
-/// 稠密（`gemv_f32`）与量化（`gemv_i4`）只差投影闭包，其余链同族，故此收敛。
-/// 返回残差输出、旋转后 K 与明文 V（写回页行对拍用）。`head_dim` 为单头头宽，头数 = `kv/head_dim`。
-#[allow(clippy::too_many_arguments)]
-fn reference_block_core(
-    embedded: &[f32],
-    hist_k: &[f32],
-    hist_v: &[f32],
+/// 参考块的输入束：嵌入行、KV 历史与几何（历史行数、宽度、头宽、当前步位置）。
+///
+/// 这些参数在两族参考块之间完全相同，收成一束后核心链只需一处转发。
+#[derive(Clone, Copy)]
+struct BlockInput<'a> {
+    embedded: &'a [f32],
+    hist_k: &'a [f32],
+    hist_v: &'a [f32],
     hist: usize,
     kv: usize,
     head_dim: usize,
     hidden: usize,
     pos: usize,
+}
+
+/// 参考块的投影权重：稠密 f32 四路，或 int4 打包码 + 标度四路。
+///
+/// 两族的数值链其余部分（RoPE / decode 注意力 / 残差）逐位同族，只有一次 gemv 的调用形状不同。
+enum BlockWeights<'a> {
+    /// 稠密 f32：q/k/v/o 四路行主序权重。
+    Dense((&'a [f32], &'a [f32], &'a [f32], &'a [f32])),
+    /// int4 打包：每路一份码字节与一条按 32 元素分组的标度。
+    Int4(
+        (&'a [u8], &'a [f32]),
+        (&'a [u8], &'a [f32]),
+        (&'a [u8], &'a [f32]),
+        (&'a [u8], &'a [f32]),
+    ),
+}
+
+/// 参考注意力块核心链：q/k/v 投影 → RoPE（按头宽分段）→ decode 多头 → o 投影 → 残差。
+/// 稠密（`gemv_f32`）与量化（`gemv_i4`）只差投影闭包，其余链同族，故此收敛。
+/// 返回残差输出、旋转后 K 与明文 V（写回页行对拍用）。`head_dim` 为单头头宽，头数 = `kv/head_dim`。
+fn reference_block_core(
+    input: BlockInput<'_>,
     project_q: impl Fn(&mut [f32]),
     project_k: impl Fn(&mut [f32]),
     project_v: impl Fn(&mut [f32]),
     project_o: impl Fn(&[f32], &mut [f32]),
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let BlockInput {
+        embedded,
+        hist_k,
+        hist_v,
+        hist,
+        kv,
+        head_dim,
+        hidden,
+        pos,
+    } = input;
     let mut q = vec![0.0; kv];
     project_q(&mut q);
     let mut k = vec![0.0; kv];
@@ -318,11 +350,12 @@ fn reference_block_core(
     (residual, k_rot, v)
 }
 
-/// 稠密 f32 参考块：四路投影走 `gemv_f32`。
+/// 参考块：四路投影按 `weights` 走 `gemv_f32` 或 `gemv_i4`，其余链交给
+/// [`reference_block_core`]。
 #[allow(clippy::too_many_arguments)]
 fn reference_block(
     embedded: &[f32],
-    (wq, wk, wv, wo): (&[f32], &[f32], &[f32], &[f32]),
+    weights: BlockWeights<'_>,
     (hist_k, hist_v): (&[f32], &[f32]),
     hist: usize,
     kv: usize,
@@ -330,7 +363,7 @@ fn reference_block(
     hidden: usize,
     pos: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    reference_block_core(
+    let input = BlockInput {
         embedded,
         hist_k,
         hist_v,
@@ -339,11 +372,23 @@ fn reference_block(
         head_dim,
         hidden,
         pos,
-        |q| op::gemv_f32::forward(embedded, wq, q).expect("参考 q"),
-        |k| op::gemv_f32::forward(embedded, wk, k).expect("参考 k"),
-        |v| op::gemv_f32::forward(embedded, wv, v).expect("参考 v"),
-        |attn, o| op::gemv_f32::forward(attn, wo, o).expect("参考 o"),
-    )
+    };
+    match weights {
+        BlockWeights::Dense((wq, wk, wv, wo)) => reference_block_core(
+            input,
+            |q| op::gemv_f32::forward(embedded, wq, q).expect("参考 q"),
+            |k| op::gemv_f32::forward(embedded, wk, k).expect("参考 k"),
+            |v| op::gemv_f32::forward(embedded, wv, v).expect("参考 v"),
+            |attn, o| op::gemv_f32::forward(attn, wo, o).expect("参考 o"),
+        ),
+        BlockWeights::Int4((wq, sq), (wk, sk), (wv, sv), (wo, so)) => reference_block_core(
+            input,
+            |q| op::gemv_i4::forward(embedded, wq, sq, q).expect("参考 q"),
+            |k| op::gemv_i4::forward(embedded, wk, sk, k).expect("参考 k"),
+            |v| op::gemv_i4::forward(embedded, wv, sv, v).expect("参考 v"),
+            |attn, o| op::gemv_i4::forward(attn, wo, so, o).expect("参考 o"),
+        ),
+    }
 }
 
 /// 对拍一条批内序列：参考块残差与生产 logits 对齐，当前步 K/V 页行拆半行核对写回归属。
@@ -364,7 +409,7 @@ fn assert_batch_row(
     let (wq, wk, wv, wo) = projections;
     let (reference, k_rot, v) = reference_block(
         embedded,
-        (wq, wk, wv, wo),
+        BlockWeights::Dense((wq, wk, wv, wo)),
         history,
         hist,
         kv,
@@ -1023,25 +1068,30 @@ fn an_uncovered_operator_is_refused_by_name() {
     assert!(error.to_string().contains("gemm_f32"), "{error}");
 }
 
-/// 两层 F32 线性链：装配出的图串行跑通，参考路径用同一批权重串行 gemv 重算。
-#[test]
-fn a_two_layer_chain_forward_matches_the_reference() {
-    let x = [1.0, 2.0, 3.0];
+/// 两层 F32 线性栈 `3 → 2 → 2`：返回栈、配套参数表与两份行主序权重，参考链与装配吃同一份权重。
+fn two_layer_f32_fixture() -> (Stack, Params, [f32; 6], [f32; 4]) {
     // [2, 3] 行主序：行 0 取 x[0]，行 1 取 x[1]
     let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     // [2, 2] 行主序
     let w2 = [1.0, 1.0, 2.0, 0.0];
-
-    let hidden = gemv_hidden(&x, &w1);
-    let mut reference = vec![0.0; 2];
-    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
-
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
         Linear::with_format("blk.1", WeightFormat::F32, 2, 2).expect("层"),
     ])
     .expect("栈");
     let params = params_of(&[("blk.0.weight", w1.to_vec()), ("blk.1.weight", w2.to_vec())]);
+    (stack, params, w1, w2)
+}
+
+/// 两层 F32 线性链：装配出的图串行跑通，参考路径用同一批权重串行 gemv 重算。
+#[test]
+fn a_two_layer_chain_forward_matches_the_reference() {
+    let x = [1.0, 2.0, 3.0];
+    let (stack, params, w1, w2) = two_layer_f32_fixture();
+
+    let hidden = gemv_hidden(&x, &w1);
+    let mut reference = vec![0.0; 2];
+    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
 
     forward_close(stack, params, &x, &reference);
 }
@@ -1050,14 +1100,7 @@ fn a_two_layer_chain_forward_matches_the_reference() {
 #[test]
 fn a_decorated_executor_runs_the_same_model_and_records_submissions() {
     let x = [1.0, 2.0, 3.0];
-    let w1 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-    let w2 = [1.0, 1.0, 2.0, 0.0];
-    let stack = Stack::new(vec![
-        Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层"),
-        Linear::with_format("blk.1", WeightFormat::F32, 2, 2).expect("层"),
-    ])
-    .expect("栈");
-    let params = params_of(&[("blk.0.weight", w1.to_vec()), ("blk.1.weight", w2.to_vec())]);
+    let (stack, params, ..) = two_layer_f32_fixture();
 
     let mut plain = CpuModel::new(&stack, &params).expect("装配");
     let expected = plain.forward(&x).expect("前向");
@@ -1812,7 +1855,7 @@ fn an_attention_block_decodes_against_the_reference_and_roundtrips_kv() {
     // q/k 先按当前步位置过 RoPE 旋转，再进注意力；写回页行的 K 同样取旋转后一路。
     let (reference, k_rot, v) = reference_block(
         embedded,
-        (&wq, &wk, &wv, &wo),
+        BlockWeights::Dense((&wq, &wk, &wv, &wo)),
         (&hist_k, &hist_v),
         hist,
         kv,
@@ -2027,37 +2070,6 @@ fn quant_projection(out: usize, in_width: usize, seed: i8) -> (Vec<u8>, Vec<f32>
     (pack_codes(4, &codes), scales)
 }
 
-/// 量化块参考链：q/k/v/o 走 `gemv_i4`，RoPE/注意力/残差与稠密参考同族；返回残差、旋转 K、明文 V。
-#[allow(clippy::too_many_arguments)]
-fn reference_block_quant(
-    embedded: &[f32],
-    (wq, sq): (&[u8], &[f32]),
-    (wk, sk): (&[u8], &[f32]),
-    (wv, sv): (&[u8], &[f32]),
-    (wo, so): (&[u8], &[f32]),
-    (hist_k, hist_v): (&[f32], &[f32]),
-    hist: usize,
-    kv: usize,
-    head_dim: usize,
-    hidden: usize,
-    pos: usize,
-) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    reference_block_core(
-        embedded,
-        hist_k,
-        hist_v,
-        hist,
-        kv,
-        head_dim,
-        hidden,
-        pos,
-        |q| op::gemv_i4::forward(embedded, wq, sq, q).expect("参考 q"),
-        |k| op::gemv_i4::forward(embedded, wk, sk, k).expect("参考 k"),
-        |v| op::gemv_i4::forward(embedded, wv, sv, v).expect("参考 v"),
-        |attn, o| op::gemv_i4::forward(attn, wo, so, o).expect("参考 o"),
-    )
-}
-
 /// 量化 int4 注意力块 decode：四路投影走打包字节 + 标度，q/k/v/o 输出仍是 f32（`gemv_i4` 输出
 /// 浮点），KV 页行写回不交叠；与独立 `gemv_i4`/RoPE/注意力/残差串行参考对拍。
 #[test]
@@ -2122,12 +2134,9 @@ fn a_quantized_attention_block_decodes_against_the_reference() {
     let produced = model.logits(&sequence, &mut batch).expect("一步 decode");
 
     let embedded = &table[2 * hidden..3 * hidden];
-    let (reference, k_rot, v) = reference_block_quant(
+    let (reference, k_rot, v) = reference_block(
         embedded,
-        (&wq, &sq),
-        (&wk, &sk),
-        (&wv, &sv),
-        (&wo, &so),
+        BlockWeights::Int4((&wq, &sq), (&wk, &sk), (&wv, &sv), (&wo, &so)),
         (&hist_k, &hist_v),
         hist,
         kv,
@@ -2183,7 +2192,7 @@ fn a_multi_head_block_decodes_against_the_reference() {
     let embedded = &table[2 * hidden..3 * hidden];
     let (reference, k_rot, v) = reference_block(
         embedded,
-        (&wq, &wk, &wv, &wo),
+        BlockWeights::Dense((&wq, &wk, &wv, &wo)),
         (&hist_k, &hist_v),
         hist,
         kv,
@@ -2246,7 +2255,7 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
     let embedded = &table[2 * hidden..3 * hidden];
     let (residual, _, _) = reference_block(
         embedded,
-        (&wq, &wk, &wv, &wo),
+        BlockWeights::Dense((&wq, &wk, &wv, &wo)),
         (&hist_k, &hist_v),
         hist,
         kv,

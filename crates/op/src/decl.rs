@@ -11,6 +11,7 @@ use core::fmt;
 use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
 use prof::atom::{Attr, AttrKey, Closed, DTypeSet, Need, Prim, Set, SpaceSet, Span};
+use prof::prof::scalar_texts;
 
 /// 变体数上限（cutile README §4.1）。
 pub const MAX_VARIANTS: usize = 8;
@@ -908,13 +909,7 @@ fn string_list(path: &str, value: &Value) -> Result<Vec<String>, Error> {
 
 /// 非数组写法：字符串原样；整数/浮点/布尔按十进制渲染；表不能当列表。
 fn scalar_list(path: &str, value: &Value) -> Result<Vec<String>, Error> {
-    match value {
-        Value::Str(text) => Ok(vec![text.clone()]),
-        Value::Int(number) => Ok(vec![number.to_string()]),
-        Value::Float(number) => Ok(vec![number.to_string()]),
-        Value::Bool(flag) => Ok(vec![flag.to_string()]),
-        _ => Err(field(path, "不能是表")),
-    }
+    scalar_texts(value).ok_or_else(|| field(path, "不能是表"))
 }
 
 /// 数组里的一个元素：只能是字符串。

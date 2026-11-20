@@ -254,35 +254,16 @@ fn a_reused_page_does_not_leak_the_previous_sequences_kv() {
 // ---------------------------------------------------------------------------
 //
 // 生产态 Metal / CUDA 内核 lowering 已从 cutile 搬到 `engine::codegen`（M3 治理：机制层
-// 不出现厂商字面量），这些文本判据随之迁来。签名 / 样本夹具在本地复制，不依赖 cutile 的
-// harness 内部夹具——两者测的是不同层的产物：cutile 测 C 宿主基准，这里测 vendor 生产态源。
+// 不出现厂商字面量），这些文本判据随之迁来。签名 / 样本夹具不再各自复制：它与
+// `crates/cutile/src/harness.rs` 的单测共用 `testkit` 的 `tests/support/cutile_x_kernel.rs`
+// 一份取值。共用夹具不改变两个调用点测的是不同层产物这一事实——cutile 测 C 宿主基准封装，
+// 这里测 vendor 生产态源文本。
 
-fn signature() -> Signature {
-    Signature::parse(
-        "x",
-        "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
-         float *y, int M, int N, int gsz) {}\n",
-    )
-    .expect("签名")
-}
+/// 夹具模块：共享文件里的 `signature()` / `sample()`，本文件不另外给出一份。
+#[path = "../../testkit/tests/support/cutile_x_kernel.rs"]
+mod cutile_x_kernel;
 
-fn sample() -> Sample {
-    let buffers = [
-        ("x", Values::F32(vec![1.0, 1.0, 1.0, 1.0])),
-        ("w", Values::U8(vec![0x98, 0x76])),
-        ("scales", Values::F32(vec![0.5, 0.5])),
-        ("y", Values::F32(vec![0.0, 0.0])),
-    ];
-    Sample {
-        m: 4,
-        n: 2,
-        scalars: vec![("M", 4), ("N", 2), ("gsz", 4)],
-        buffers: buffers
-            .into_iter()
-            .map(|(name, values)| Buffer { name, values })
-            .collect(),
-    }
-}
+use cutile_x_kernel::{sample, signature};
 
 #[test]
 fn cuda_harness_makes_device_kernel_launch_and_readback() {

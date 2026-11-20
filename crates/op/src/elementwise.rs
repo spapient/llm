@@ -158,6 +158,7 @@ macro_rules! binary_f32 {
         $crate::operator_via!(
             $name,
             $op,
+            2,
             (4096, 4096),
             true,
             elementwise,

@@ -127,18 +127,130 @@ kernel void kernel_main(device float* in [[buffer(0)]],
     assert_eq!(output, vec![2.0f32, 4.0, 6.0, 8.0], "GPU 应把输入翻倍写回");
 }
 
+/// 基准的共同开工：系统默认设备 + 命令队列。
+///
+/// 无 Metal 的本机打印 `hint` 的跳过原因并返回 `None`，用例据此走
+/// `let Some(..) = .. else { return; }` 静默跳过；跳过路径不 panic。
+fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue)> {
+    let Some(device) = MetalDevice::system_default() else {
+        eprintln!("Metal 设备不在本机，{hint}未运行");
+        return None;
+    };
+    let Some(queue) = device.new_command_queue() else {
+        panic!("有设备必有命令队列");
+    };
+    Some((device, queue))
+}
+
+/// 内置算子目录 + 该基准自己的临时工作目录：一次基准里的所有 MSL 生成都落在这上面。
+fn catalogue_and_dirs(cache: &str) -> (cutile::builtin::Catalogue, cutile::dirs::Dirs) {
+    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join(cache));
+    (catalogue, dirs)
+}
+
+/// matmul 测点的确定性输入 + CPU 参考：A、B 各取一套固定取模模式，参考由 f64 累加给出。
+fn matmul_inputs(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let a: Vec<f32> = (0..m * k).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+    let b: Vec<f32> = (0..k * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+    let reference = cpu_matmul(&a, &b, m, n, k);
+    (a, b, reference)
+}
+
+/// 注意力测点的确定性输入 + CPU 参考：Q/K/V 各取一套固定取模模式，参考由 [`cpu_attention`] 给出。
+fn attention_inputs(s: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    let q: Vec<f32> = (0..s * d).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+    let k: Vec<f32> = (0..s * d).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+    let v: Vec<f32> = (0..s * d).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
+    let reference = cpu_attention(&q, &k, &v, s, d);
+    (q, k, v, reference)
+}
+
+/// 注意力基准的缓冲套件：Q/K/V 输入缓冲、Y 输出缓冲与 CPU 参考。
+struct AttentionBench(MetalBuffer, MetalBuffer, MetalBuffer, MetalBuffer, Vec<f32>);
+
+/// 上传 [`attention_inputs`] 的 Q/K/V，再开一路只有 GPU 写的 Y 输出。
+fn attention_bench(device: &MetalDevice, s: usize, d: usize) -> AttentionBench {
+    let (q, k, v, reference) = attention_inputs(s, d);
+    AttentionBench(
+        upload(device, &q, "Q"),
+        upload(device, &k, "K"),
+        upload(device, &v, "V"),
+        output_buffer(device, s * d, "Y"),
+        reference,
+    )
+}
+
+/// 上传一路输入：共享缓冲按元素数 × 4 分配，`values` 原样拷进去（`label` 只进失败消息）。
+fn upload(device: &MetalDevice, values: &[f32], label: &str) -> MetalBuffer {
+    let mut buf = device
+        .new_buffer(values.len() * 4)
+        .unwrap_or_else(|| panic!("{label} 缓冲"));
+    buf.as_mut_bytes().copy_from_slice(&as_bytes(values));
+    buf
+}
+
+/// 开一路只由 GPU 写的输出缓冲：`len` 个 f32，内容留白（`label` 只进失败消息）。
+fn output_buffer(device: &MetalDevice, len: usize, label: &str) -> MetalBuffer {
+    device
+        .new_buffer(len * 4)
+        .unwrap_or_else(|| panic!("{label} 缓冲"))
+}
+
+/// 标量网格程序：按 `kernel` 与 `m×n` 生成 MSL 再编译成管线；`what` 只进失败消息。
+fn grid_pipeline(
+    device: &MetalDevice,
+    catalogue: &cutile::builtin::Catalogue,
+    dirs: &cutile::dirs::Dirs,
+    kernel: &str,
+    m: usize,
+    n: usize,
+    what: &str,
+) -> MetalPipeline {
+    let msl = cutile::execution::metal_grid_program(catalogue, dirs, kernel, m, n)
+        .unwrap_or_else(|_| panic!("{what} MSL 应能生成"));
+    device
+        .compile(&msl)
+        .unwrap_or_else(|| panic!("{what} MSL 应能编译"))
+}
+
+/// simdgroup GEMM 的一个片段形状：生成 MSL、编译成管线，并给出对应的网格（每线程组 32 线程）。
+fn simdgroup_gemm_pipeline(
+    device: &MetalDevice,
+    catalogue: &cutile::builtin::Catalogue,
+    dirs: &cutile::dirs::Dirs,
+    m: usize,
+    n: usize,
+    row_frags: usize,
+    col_frags: usize,
+) -> (MetalPipeline, [u32; 3]) {
+    let msl = cutile::execution::metal_simdgroup_gemm_program(
+        catalogue,
+        dirs,
+        "matmul_f32",
+        m,
+        n,
+        row_frags,
+        col_frags,
+    )
+    .expect("simdgroup MSL 应能生成");
+    let pipe = device.compile(&msl).expect("simdgroup MSL 应能编译");
+    let grid = [
+        ((m / (8 * row_frags)) * 32) as u32,
+        (n / (8 * col_frags)) as u32,
+        1,
+    ];
+    (pipe, grid)
+}
+
 /// simdgroup 矩阵指令探测：编译并派发 8×8×8 矩阵乘（`simdgroup_float8x8` /
 /// `simdgroup_load` / `simdgroup_multiply_accumulate` / `simdgroup_store`），与 CPU 参考对拍。
 /// 探测失败只报原因，后续路线退回寄存器分块。
 #[test]
 #[ignore = "Metal simdgroup 探测：cargo test -p llm-engine --lib -- metal_simdgroup --release --ignored --nocapture"]
 fn metal_simdgroup_probe() {
-    let Some(device) = MetalDevice::system_default() else {
-        eprintln!("Metal 设备不在本机，simdgroup 探测未运行");
+    let Some((device, queue)) = bench_device("simdgroup 探测") else {
         return;
-    };
-    let Some(queue) = device.new_command_queue() else {
-        panic!("有设备必有命令队列");
     };
     let source = r#"#include <metal_stdlib>
 using namespace metal;
@@ -161,14 +273,10 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
         eprintln!("simdgroup 探测：MSL 编译失败，本机走寄存器分块路线");
         return;
     };
-    let a: Vec<f32> = (0..64).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
-    let b: Vec<f32> = (0..64).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
-    let reference = cpu_matmul(&a, &b, 8, 8, 8);
-    let mut a_buf = device.new_buffer(64 * 4).expect("A 缓冲");
-    let mut b_buf = device.new_buffer(64 * 4).expect("B 缓冲");
-    let mut c_buf = device.new_buffer(64 * 4).expect("C 缓冲");
-    a_buf.as_mut_bytes().copy_from_slice(&as_bytes(&a));
-    b_buf.as_mut_bytes().copy_from_slice(&as_bytes(&b));
+    let (a, b, reference) = matmul_inputs(8, 8, 8);
+    let a_buf = upload(&device, &a, "A");
+    let b_buf = upload(&device, &b, "B");
+    let mut c_buf = output_buffer(&device, 64, "C");
     let ok = queue.execute(&pipeline, &[&a_buf, &b_buf, &c_buf], [32, 1, 1], [32, 1, 1]);
     assert!(ok, "simdgroup 探测派发失败");
     assert_matmul_matches("simdgroup-8x8", &reference, c_buf.as_mut_bytes());
@@ -184,26 +292,17 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
 #[test]
 #[ignore = "Metal matmul 前向基准：cargo test -p llm-engine --lib -- metal_matmul_forward --release --ignored --nocapture"]
 fn metal_matmul_forward() {
-    let Some(device) = MetalDevice::system_default() else {
-        eprintln!("Metal 设备不在本机，matmul 前向基准未运行");
+    let Some((device, queue)) = bench_device("matmul 前向基准") else {
         return;
-    };
-    let Some(queue) = device.new_command_queue() else {
-        panic!("有设备必有命令队列");
     };
 
     const M: usize = 512;
     const N: usize = 512;
     const K: usize = 512;
 
-    let a: Vec<f32> = (0..M * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
-    let b: Vec<f32> = (0..K * N).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
-    let reference = cpu_matmul(&a, &b, M, N, K);
-
-    let mut a_buf = device.new_buffer(a.len() * 4).expect("A 缓冲");
-    let mut b_buf = device.new_buffer(b.len() * 4).expect("B 缓冲");
-    a_buf.as_mut_bytes().copy_from_slice(&as_bytes(&a));
-    b_buf.as_mut_bytes().copy_from_slice(&as_bytes(&b));
+    let (a, b, reference) = matmul_inputs(M, N, K);
+    let a_buf = upload(&device, &a, "A");
+    let b_buf = upload(&device, &b, "B");
 
     let naive = device
         .compile(&matmul_msl(false, M, N, K))
@@ -212,7 +311,7 @@ fn metal_matmul_forward() {
         .compile(&matmul_msl(true, M, N, K))
         .expect("tiled matmul 应能编译");
 
-    let mut c_buf = device.new_buffer(M * N * 4).expect("C 缓冲");
+    let mut c_buf = output_buffer(&device, M * N, "C");
     let grid = [N as u32, M as u32, 1];
 
     // 先各跑一次对拍，再进入计时轮。
@@ -243,12 +342,8 @@ fn metal_matmul_forward() {
 #[test]
 #[ignore = "Metal 生产态分块 GEMM：cargo test -p llm-engine --lib -- metal_tiled_gemm_k4096 --release --ignored --nocapture"]
 fn metal_tiled_gemm_k4096() {
-    let Some(device) = MetalDevice::system_default() else {
-        eprintln!("Metal 设备不在本机，分块 GEMM 基准未运行");
+    let Some((device, queue)) = bench_device("分块 GEMM 基准") else {
         return;
-    };
-    let Some(queue) = device.new_command_queue() else {
-        panic!("有设备必有命令队列");
     };
     crate::backends::install();
 
@@ -256,21 +351,13 @@ fn metal_tiled_gemm_k4096() {
     const N: usize = 256;
     const K: usize = 4096;
 
-    let a: Vec<f32> = (0..M * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
-    let b: Vec<f32> = (0..K * N).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
-    let reference = cpu_matmul(&a, &b, M, N, K);
+    let (a, b, reference) = matmul_inputs(M, N, K);
+    let a_buf = upload(&device, &a, "A");
+    let b_buf = upload(&device, &b, "B");
+    let mut y_buf = output_buffer(&device, M * N, "Y");
 
-    let mut a_buf = device.new_buffer(M * K * 4).expect("A 缓冲");
-    let mut b_buf = device.new_buffer(K * N * 4).expect("B 缓冲");
-    a_buf.as_mut_bytes().copy_from_slice(&as_bytes(&a));
-    b_buf.as_mut_bytes().copy_from_slice(&as_bytes(&b));
-    let mut y_buf = device.new_buffer(M * N * 4).expect("Y 缓冲");
-
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-matmul-k4096"));
-    let grid_msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "matmul_f32", M, N)
-        .expect("标量网格 MSL 应能生成");
-    let grid_pipe = device.compile(&grid_msl).expect("标量网格 MSL 应能编译");
+    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-matmul-k4096");
+    let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", M, N, "标量网格");
 
     let grid = [M as u32, N as u32, 1];
     queue.execute(&grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
@@ -319,22 +406,8 @@ fn metal_tiled_gemm_k4096() {
         );
     }
     for (row_frags, col_frags) in [(1usize, 1usize), (2, 2), (4, 4)] {
-        let msl = cutile::execution::metal_simdgroup_gemm_program(
-            &catalogue,
-            &dirs,
-            "matmul_f32",
-            M,
-            N,
-            row_frags,
-            col_frags,
-        )
-        .expect("simdgroup MSL 应能生成");
-        let pipe = device.compile(&msl).expect("simdgroup MSL 应能编译");
-        let simd_grid = [
-            ((M / (8 * row_frags)) * 32) as u32,
-            (N / (8 * col_frags)) as u32,
-            1,
-        ];
+        let (pipe, simd_grid) =
+            simdgroup_gemm_pipeline(&device, &catalogue, &dirs, M, N, row_frags, col_frags);
         let block = [32, 1, 1];
         queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
         assert_matmul_matches("simdgroup", &reference, y_buf.as_mut_bytes());
@@ -354,12 +427,8 @@ fn metal_tiled_gemm_k4096() {
 #[test]
 #[ignore = "Metal simdgroup GEMM 512×512×4096：cargo test -p llm-engine --lib -- metal_simdgroup_gemm_512 --release --ignored --nocapture"]
 fn metal_simdgroup_gemm_512() {
-    let Some(device) = MetalDevice::system_default() else {
-        eprintln!("Metal 设备不在本机，simdgroup GEMM 基准未运行");
+    let Some((device, queue)) = bench_device("simdgroup GEMM 基准") else {
         return;
-    };
-    let Some(queue) = device.new_command_queue() else {
-        panic!("有设备必有命令队列");
     };
     crate::backends::install();
 
@@ -367,20 +436,13 @@ fn metal_simdgroup_gemm_512() {
     const N: usize = 512;
     const K: usize = 4096;
 
-    let a: Vec<f32> = (0..M * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
-    let b: Vec<f32> = (0..K * N).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
-    let reference = cpu_matmul(&a, &b, M, N, K);
-    let mut a_buf = device.new_buffer(M * K * 4).expect("A 缓冲");
-    let mut b_buf = device.new_buffer(K * N * 4).expect("B 缓冲");
-    a_buf.as_mut_bytes().copy_from_slice(&as_bytes(&a));
-    b_buf.as_mut_bytes().copy_from_slice(&as_bytes(&b));
-    let mut y_buf = device.new_buffer(M * N * 4).expect("Y 缓冲");
+    let (a, b, reference) = matmul_inputs(M, N, K);
+    let a_buf = upload(&device, &a, "A");
+    let b_buf = upload(&device, &b, "B");
+    let mut y_buf = output_buffer(&device, M * N, "Y");
 
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-simd-512"));
-    let grid_msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "matmul_f32", M, N)
-        .expect("标量网格 MSL 应能生成");
-    let grid_pipe = device.compile(&grid_msl).expect("标量网格 MSL 应能编译");
+    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-simd-512");
+    let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", M, N, "标量网格");
     let grid = [M as u32, N as u32, 1];
     queue.execute(&grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
     assert_matmul_matches("grid-512", &reference, y_buf.as_mut_bytes());
@@ -398,22 +460,8 @@ fn metal_simdgroup_gemm_512() {
     );
 
     for (row_frags, col_frags) in [(1usize, 1usize), (4, 4)] {
-        let msl = cutile::execution::metal_simdgroup_gemm_program(
-            &catalogue,
-            &dirs,
-            "matmul_f32",
-            M,
-            N,
-            row_frags,
-            col_frags,
-        )
-        .expect("simdgroup MSL 应能生成");
-        let pipe = device.compile(&msl).expect("simdgroup MSL 应能编译");
-        let simd_grid = [
-            ((M / (8 * row_frags)) * 32) as u32,
-            (N / (8 * col_frags)) as u32,
-            1,
-        ];
+        let (pipe, simd_grid) =
+            simdgroup_gemm_pipeline(&device, &catalogue, &dirs, M, N, row_frags, col_frags);
         let block = [32, 1, 1];
         queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
         assert_matmul_matches("simdgroup-512", &reference, y_buf.as_mut_bytes());
@@ -435,12 +483,8 @@ fn metal_simdgroup_gemm_512() {
 #[test]
 #[ignore = "Metal 生产态分块注意力：cargo test -p llm-engine --lib -- metal_tiled_attention_s512 --release --ignored --nocapture"]
 fn metal_tiled_attention_s512() {
-    let Some(device) = MetalDevice::system_default() else {
-        eprintln!("Metal 设备不在本机，分块注意力基准未运行");
+    let Some((device, queue)) = bench_device("分块注意力基准") else {
         return;
-    };
-    let Some(queue) = device.new_command_queue() else {
-        panic!("有设备必有命令队列");
     };
     crate::backends::install();
 
@@ -448,23 +492,18 @@ fn metal_tiled_attention_s512() {
     const D: usize = 64;
     const THREADS: usize = 64;
 
-    let q: Vec<f32> = (0..S * D).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
-    let k: Vec<f32> = (0..S * D).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
-    let v: Vec<f32> = (0..S * D).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
-    let reference = cpu_attention(&q, &k, &v, S, D);
+    let AttentionBench(q_buf, k_buf, v_buf, mut y_buf, reference) = attention_bench(&device, S, D);
 
-    let mut q_buf = device.new_buffer(S * D * 4).expect("Q 缓冲");
-    let mut k_buf = device.new_buffer(S * D * 4).expect("K 缓冲");
-    let mut v_buf = device.new_buffer(S * D * 4).expect("V 缓冲");
-    q_buf.as_mut_bytes().copy_from_slice(&as_bytes(&q));
-    k_buf.as_mut_bytes().copy_from_slice(&as_bytes(&k));
-    v_buf.as_mut_bytes().copy_from_slice(&as_bytes(&v));
-    let mut y_buf = device.new_buffer(S * D * 4).expect("Y 缓冲");
-
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-attn-s512"));
-    let grid_msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "attention_f32", S, D)
-        .expect("网格注意力 MSL 应能生成");
+    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-attn-s512");
+    let grid_pipe = grid_pipeline(
+        &device,
+        &catalogue,
+        &dirs,
+        "attention_f32",
+        S,
+        D,
+        "网格注意力",
+    );
     let tiled_msl = cutile::execution::metal_tiled_attention_program(
         &catalogue,
         &dirs,
@@ -474,7 +513,6 @@ fn metal_tiled_attention_s512() {
         THREADS,
     )
     .expect("分块注意力 MSL 应能生成");
-    let grid_pipe = device.compile(&grid_msl).expect("网格注意力 MSL 应能编译");
     let tiled_pipe = device.compile(&tiled_msl).expect("分块注意力 MSL 应能编译");
 
     queue.execute(
@@ -554,12 +592,8 @@ fn metal_tiled_attention_s512() {
 #[test]
 #[ignore = "Metal 长序列 flash attention：cargo test -p llm-engine --lib -- metal_flash_attention_long --release --ignored --nocapture"]
 fn metal_flash_attention_long() {
-    let Some(device) = MetalDevice::system_default() else {
-        eprintln!("Metal 设备不在本机，长序列 flash attention 基准未运行");
+    let Some((device, queue)) = bench_device("长序列 flash attention 基准") else {
         return;
-    };
-    let Some(queue) = device.new_command_queue() else {
-        panic!("有设备必有命令队列");
     };
     crate::backends::install();
 
@@ -567,24 +601,18 @@ fn metal_flash_attention_long() {
     const D: usize = 64;
     const THREADS: usize = 64;
 
-    let q: Vec<f32> = (0..S * D).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
-    let k: Vec<f32> = (0..S * D).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
-    let v: Vec<f32> = (0..S * D).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
-    let reference = cpu_attention(&q, &k, &v, S, D);
+    let AttentionBench(q_buf, k_buf, v_buf, mut y_buf, reference) = attention_bench(&device, S, D);
 
-    let mut q_buf = device.new_buffer(S * D * 4).expect("Q 缓冲");
-    let mut k_buf = device.new_buffer(S * D * 4).expect("K 缓冲");
-    let mut v_buf = device.new_buffer(S * D * 4).expect("V 缓冲");
-    q_buf.as_mut_bytes().copy_from_slice(&as_bytes(&q));
-    k_buf.as_mut_bytes().copy_from_slice(&as_bytes(&k));
-    v_buf.as_mut_bytes().copy_from_slice(&as_bytes(&v));
-    let mut y_buf = device.new_buffer(S * D * 4).expect("Y 缓冲");
-
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("engine-metal-flash-long"));
-    let grid_msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "attention_f32", S, D)
-        .expect("网格注意力 MSL 应能生成");
-    let grid_pipe = device.compile(&grid_msl).expect("网格注意力 MSL 应能编译");
+    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-flash-long");
+    let grid_pipe = grid_pipeline(
+        &device,
+        &catalogue,
+        &dirs,
+        "attention_f32",
+        S,
+        D,
+        "网格注意力",
+    );
     let launch = [(S * THREADS) as u32, 1, 1];
     let block = [THREADS as u32, 1, 1];
     queue.execute(
@@ -692,47 +720,45 @@ fn cpu_attention(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> Vec<f32
     out
 }
 
+/// 两版 matmul MSL 共用的前导：A、B、C 三路接口声明，`M`/`N`/`K` 由调用方随后内联。
+const MATMUL_MSL_HEAD: &str = "#include <metal_stdlib>\n\
+     using namespace metal;\n\
+     kernel void kernel_main(\n\
+     \x20    device const float* A [[buffer(0)]],\n\
+     \x20    device const float* B [[buffer(1)]],\n\
+     \x20    device float* C [[buffer(2)]],\n";
+
 /// 朴素 MSL：每线程算一个输出元素；`tiled` 为真时用 threadgroup 共享内存把 A/B 按 16×16 分块，
 /// 每个线程组 16×16 线程协同搬运一次整块，规约轴复用共享块，避免反复从设备全局内存重读。
 fn matmul_msl(tiled: bool, m: usize, n: usize, k: usize) -> String {
     if !tiled {
         return format!(
-            "#include <metal_stdlib>\n\
-                 using namespace metal;\n\
-                 kernel void kernel_main(\n\
-                 \x20    device const float* A [[buffer(0)]],\n\
-                 \x20    device const float* B [[buffer(1)]],\n\
-                 \x20    device float* C [[buffer(2)]],\n\
-                 \x20    uint2 gid [[thread_position_in_grid]]) {{\n\
-                 \x20    const uint M = {m}, N = {n}, K = {k};\n\
-                 \x20    float acc = 0.0f;\n\
-                 \x20    for (uint p = 0; p < K; ++p) acc += A[gid.y * K + p] * B[p * N + gid.x];\n\
-                 \x20    C[gid.y * N + gid.x] = acc;\n\
-                 }}"
+            "{MATMUL_MSL_HEAD}\
+             \x20    uint2 gid [[thread_position_in_grid]]) {{\n\
+             \x20    const uint M = {m}, N = {n}, K = {k};\n\
+             \x20    float acc = 0.0f;\n\
+             \x20    for (uint p = 0; p < K; ++p) acc += A[gid.y * K + p] * B[p * N + gid.x];\n\
+             \x20    C[gid.y * N + gid.x] = acc;\n\
+             }}"
         );
     }
     format!(
-        "#include <metal_stdlib>\n\
-             using namespace metal;\n\
-             kernel void kernel_main(\n\
-             \x20    device const float* A [[buffer(0)]],\n\
-             \x20    device const float* B [[buffer(1)]],\n\
-             \x20    device float* C [[buffer(2)]],\n\
-             \x20    uint2 gid [[thread_position_in_grid]],\n\
-             \x20    uint2 lid [[thread_position_in_threadgroup]]) {{\n\
-             \x20    const uint M = {m}, N = {n}, K = {k};\n\
-             \x20    threadgroup float As[16][16];\n\
-             \x20    threadgroup float Bs[16][16];\n\
-             \x20    float acc = 0.0f;\n\
-             \x20    for (uint kk = 0; kk < K; kk += 16) {{\n\
-             \x20        As[lid.y][lid.x] = A[gid.y * K + kk + lid.x];\n\
-             \x20        Bs[lid.y][lid.x] = B[(kk + lid.y) * N + gid.x];\n\
-             \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-             \x20        for (uint p = 0; p < 16; ++p) acc += As[lid.y][p] * Bs[p][lid.x];\n\
-             \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-             \x20    }}\n\
-             \x20    C[gid.y * N + gid.x] = acc;\n\
-             }}"
+        "{MATMUL_MSL_HEAD}\
+         \x20    uint2 gid [[thread_position_in_grid]],\n\
+         \x20    uint2 lid [[thread_position_in_threadgroup]]) {{\n\
+         \x20    const uint M = {m}, N = {n}, K = {k};\n\
+         \x20    threadgroup float As[16][16];\n\
+         \x20    threadgroup float Bs[16][16];\n\
+         \x20    float acc = 0.0f;\n\
+         \x20    for (uint kk = 0; kk < K; kk += 16) {{\n\
+         \x20        As[lid.y][lid.x] = A[gid.y * K + kk + lid.x];\n\
+         \x20        Bs[lid.y][lid.x] = B[(kk + lid.y) * N + gid.x];\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20        for (uint p = 0; p < 16; ++p) acc += As[lid.y][p] * Bs[p][lid.x];\n\
+         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
+         \x20    }}\n\
+         \x20    C[gid.y * N + gid.x] = acc;\n\
+         }}"
     )
 }
 

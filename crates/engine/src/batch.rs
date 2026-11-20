@@ -457,6 +457,14 @@ mod tests {
         Sequence::new(id, tokens, max_new, page_size, Stream::new(0)).expect("序列")
     }
 
+    /// 混跑一轮的夹具：8 页、页宽 4 的批里一条 8 token 的提示段 + 一条 0 token 的纯解码。
+    fn prompt_and_decode_batch() -> Batch {
+        let mut batch = Batch::new(pool(8, 4));
+        batch.admit(sequence(1, 8, 4, 4)).expect("准入");
+        batch.admit(sequence(2, 0, 4, 4)).expect("准入");
+        batch
+    }
+
     #[test]
     fn an_admitted_sequence_is_owned_by_the_batch() {
         let mut batch = Batch::new(pool(4, 4));
@@ -1054,9 +1062,7 @@ mod tests {
     fn a_round_runs_generation_before_context() {
         use crate::ifb::{Budget, Verdict};
 
-        let mut batch = Batch::new(pool(8, 4));
-        batch.admit(sequence(1, 8, 4, 4)).expect("准入");
-        batch.admit(sequence(2, 0, 4, 4)).expect("准入");
+        let batch = prompt_and_decode_batch();
 
         let Verdict::Packed { rows, tokens } = batch.round(Budget::unlimited()) else {
             panic!("不限预算必须装得下");
@@ -1078,9 +1084,7 @@ mod tests {
     fn a_tight_budget_pushes_the_context_block_to_the_next_round() {
         use crate::ifb::{Budget, Verdict};
 
-        let mut batch = Batch::new(pool(8, 4));
-        batch.admit(sequence(1, 8, 4, 4)).expect("准入");
-        batch.admit(sequence(2, 0, 4, 4)).expect("准入");
+        let batch = prompt_and_decode_batch();
 
         let Verdict::Packed { rows, tokens } = batch.round(Budget::new(2, 2)) else {
             panic!("生成行只要 1 行，装得下");

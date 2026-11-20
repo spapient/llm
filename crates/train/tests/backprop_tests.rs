@@ -6,6 +6,9 @@ use diagnostic::{Code, Result};
 use nn::ParamRole;
 use tensor::{DType, Shape};
 
+#[path = "../tests/support.rs"]
+mod support;
+
 /// 夹具向量宽度。
 const N: usize = 3;
 /// 中心差分步长：f32 下在舍入与截断误差之间。
@@ -91,11 +94,7 @@ fn mul_then_reduce_matches_central_differences() -> Result<()> {
     let z = tape.record("mul_f32", &[p, w]).expect("记录 z");
     let loss = tape.record("reduce_sum_f32", &[z]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(w, Shape::new([N]), DType::F32);
-    sizes.set(z, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(p, N), (w, N), (z, N), (loss, 1)]);
 
     let p0 = vec![0.3_f32, -0.5, 0.8];
     let w0 = vec![1.0_f32, -0.2, 0.6];
@@ -124,11 +123,7 @@ fn scale_silu_chain_matches_central_differences() -> Result<()> {
     let y = tape.record("silu_f32", &[h]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(h, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (y, N), (loss, 1)]);
 
     let p0 = vec![-0.6_f32, 0.4, 1.2];
     let chain_loss = |params: &[f32]| params.iter().map(|&x| silu(0.5 * x)).sum::<f32>();
@@ -151,15 +146,7 @@ fn scale_silu_chain_matches_central_differences() -> Result<()> {
 /// 图外常量叶子不收梯度：add(p, x) 中 x 是 detached 叶子，梯度槽保持空；参数 p 收到上游 1。
 #[test]
 fn detached_leaf_receives_no_gradient() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let x = tape.leaf();
-    let loss = tape.record("add_f32", &[p, x]).expect("记录 loss");
-
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(x, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([N]), DType::F32);
+    let (tape, sizes, p, x, loss) = support::add_graph(N);
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
@@ -188,10 +175,7 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
     let h = tape.record("gelu_f32", &[p]).expect("记录 h");
     let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(h, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
 
     let p0 = vec![-1.2_f32, 0.4, 1.1];
     let chain_loss = |params: &[f32]| {
@@ -223,10 +207,7 @@ fn reduce_max_matches_central_differences() -> Result<()> {
     let h = tape.record("reduce_max_f32", &[p]).expect("记录 h");
     let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(h, Shape::new([1]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(p, N), (h, 1), (loss, 1)]);
 
     let p0 = vec![-0.7_f32, 1.3, 0.2];
     let chain_loss = |params: &[f32]| params.iter().copied().fold(f32::MIN, f32::max);
@@ -257,11 +238,7 @@ fn gemv_matches_central_differences() -> Result<()> {
     let y = tape.record("gemv_f32", &[w, x]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(w, Shape::new([rows * cols]), DType::F32);
-    sizes.set(x, Shape::new([cols]), DType::F32);
-    sizes.set(y, Shape::new([rows]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(w, rows * cols), (x, cols), (y, rows), (loss, 1)]);
 
     let w0: Vec<f32> = (0..rows * cols).map(|i| 0.1 * i as f32 - 0.5).collect();
     let x0 = vec![0.3_f32, -0.2, 0.8];
@@ -298,11 +275,7 @@ fn gemm_matches_central_differences() -> Result<()> {
     let y = tape.record("gemm_f32", &[a, b]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(a, Shape::new([m * k]), DType::F32);
-    sizes.set(b, Shape::new([k * n]), DType::F32);
-    sizes.set(y, Shape::new([m * n]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(a, m * k), (b, k * n), (y, m * n), (loss, 1)]);
 
     let a0: Vec<f32> = (0..m * k).map(|i| 0.1 * i as f32 - 0.3).collect();
     let b0: Vec<f32> = (0..k * n).map(|i| 0.08 * i as f32 - 0.4).collect();
@@ -341,11 +314,7 @@ fn embed_table_gradient_matches_central_differences() -> Result<()> {
     let y = tape.record("embed_f32", &[idx, table]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(table, Shape::new([rows * dim]), DType::F32);
-    sizes.set(idx, Shape::new([tokens]), DType::F32);
-    sizes.set(y, Shape::new([tokens * dim]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(table, rows * dim), (idx, tokens), (y, tokens * dim), (loss, 1)]);
 
     let table0: Vec<f32> = (0..rows * dim).map(|i| 0.2 * i as f32 - 0.6).collect();
     let idx0 = vec![0.0_f32, 2.0];
@@ -381,9 +350,7 @@ fn unsupported_operator_backward_is_rejected() -> Result<()> {
     let p = tape.parameter();
     let y = tape.record("dequant_i8", &[p]).expect("记录 y");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(p, N), (y, N)]);
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
@@ -429,11 +396,7 @@ fn check_binary_grad(
     let y = tape.record(op, &[a, b]).expect("记录 y");
     let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(a, Shape::new([N]), DType::F32);
-    sizes.set(b, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(out, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(a, N), (b, N), (y, N), (out, 1)]);
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(a, ParamRole::Trainable, a0.to_vec())?;
@@ -466,10 +429,7 @@ fn check_unary_grad(op: &str, p0: &[f32], loss: impl Fn(&[f32]) -> f32) -> Resul
     let y = tape.record(op, &[p]).expect("记录 y");
     let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(p, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(out, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(p, N), (y, N), (out, 1)]);
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
@@ -544,11 +504,7 @@ fn rmsnorm_matches_central_differences() -> Result<()> {
     let y = tape.record("rmsnorm_f32", &[x, gamma]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(x, Shape::new([N]), DType::F32);
-    sizes.set(gamma, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(x, N), (gamma, N), (y, N), (loss, 1)]);
 
     let x0 = vec![0.4_f32, -0.9, 1.3];
     let gamma0 = vec![0.7_f32, 1.1, 0.5];
@@ -582,10 +538,7 @@ fn rope_matches_central_differences() -> Result<()> {
     let y = tape.record("rope_f32", &[x]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(x, Shape::new([N]), DType::F32);
-    sizes.set(y, Shape::new([N]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(x, N), (y, N), (loss, 1)]);
 
     let x0 = vec![0.5_f32, -0.7, 1.1];
 
@@ -603,6 +556,20 @@ fn rope_matches_central_differences() -> Result<()> {
     Ok(())
 }
 
+/// 注意力三路对拍共用的会话装配：开裸会话后把 `q` / `k` / `v` 按初值登记成可训练参数。
+fn attention_session(
+    tape: Tape,
+    sizes: Sizes,
+    params: [Var; 3],
+    values: [&[f32]; 3],
+) -> Result<Session<Reference, Sgd>> {
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    for (param, value) in params.into_iter().zip(values) {
+        session.register_parameter(param, ParamRole::Trainable, value.to_vec())?;
+    }
+    Ok(session)
+}
+
 /// `loss = reduce_sum(attention(q,k,v))`：`dq` / `dk` / `dv` 三路闭式对拍（头宽固定 8）。
 #[test]
 fn attention_matches_central_differences() -> Result<()> {
@@ -616,21 +583,13 @@ fn attention_matches_central_differences() -> Result<()> {
     let y = tape.record("attention_f32", &[q, k, v]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(q, Shape::new([len]), DType::F32);
-    sizes.set(k, Shape::new([len]), DType::F32);
-    sizes.set(v, Shape::new([len]), DType::F32);
-    sizes.set(y, Shape::new([len]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(q, len), (k, len), (v, len), (y, len), (loss, 1)]);
 
     let q0: Vec<f32> = (0..len).map(|i| 0.07 * i as f32 - 0.5).collect();
     let k0: Vec<f32> = (0..len).map(|i| -0.05 * i as f32 + 0.4).collect();
     let v0: Vec<f32> = (0..len).map(|i| 0.09 * i as f32 - 0.3).collect();
 
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(q, ParamRole::Trainable, q0.clone())?;
-    session.register_parameter(k, ParamRole::Trainable, k0.clone())?;
-    session.register_parameter(v, ParamRole::Trainable, v0.clone())?;
+    let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
     session.buffers().compute("attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
@@ -672,21 +631,13 @@ fn decode_attention_matches_central_differences() -> Result<()> {
         .expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
-    let mut sizes = Sizes::new(tape.vars());
-    sizes.set(q, Shape::new([q_len]), DType::F32);
-    sizes.set(k, Shape::new([kv_len]), DType::F32);
-    sizes.set(v, Shape::new([kv_len]), DType::F32);
-    sizes.set(y, Shape::new([q_len]), DType::F32);
-    sizes.set(loss, Shape::new([1]), DType::F32);
+    let sizes = support::sizes_of(&tape, &[(q, q_len), (k, kv_len), (v, kv_len), (y, q_len), (loss, 1)]);
 
     let q0: Vec<f32> = (0..q_len).map(|i| 0.11 * i as f32 - 0.4).collect();
     let k0: Vec<f32> = (0..kv_len).map(|i| -0.08 * i as f32 + 0.5).collect();
     let v0: Vec<f32> = (0..kv_len).map(|i| 0.12 * i as f32 - 0.2).collect();
 
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(q, ParamRole::Trainable, q0.clone())?;
-    session.register_parameter(k, ParamRole::Trainable, k0.clone())?;
-    session.register_parameter(v, ParamRole::Trainable, v0.clone())?;
+    let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
     session
         .buffers()
         .compute("decode_attention_f32", &[q, k, v], y)?;

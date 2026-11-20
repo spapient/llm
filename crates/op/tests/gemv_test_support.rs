@@ -30,10 +30,11 @@ pub fn at<T: Format>(m: usize, n: usize) -> Result<Cost, Error> {
     cost::<T>(&ShapeContext::new([('m', m), ('n', n)])?)
 }
 
-/// 生成 i2/i4 打包 GEMV 共有的行批测试：批结果逐位等于逐行调用、行批几何不符被拒。
+/// 生成三档量化 GEMV（i2 / i4 / i8）共有的行批测试：批结果逐位等于逐行调用、行批几何不符被拒。
 ///
 /// 两条用例都只用"同一份权重与输入"这一个判据：解包、分组与累加次序若在批路径上被改动，
-/// 逐位比较立刻失败——它不需要 f32 容差，因此不会把真实差额藏进舍入里。
+/// 逐位比较立刻失败——它不需要 f32 容差，因此不会把真实差额藏进舍入里。打包与否只由 `$cpb`
+/// 体现（`i8` 取 1），守卫与遍历都是同一份骨架。
 macro_rules! packed_gemv_batch_tests {
     ($forward:ident, $forward_batch:ident, $cpb:expr, $group:expr) => {
         #[test]
@@ -149,6 +150,27 @@ pub fn multi_group(
 /// 把 `bits` 位有符号码按低 `bits` 位落在字节内（实现与跨 crate 夹具共用 [`testkit::pack_codes`]）。
 pub use testkit::pack_codes as pack;
 
+/// 生成「非有限标度必须在分组守卫后、解包前拦下」的一则测试。
+///
+/// `i2` / `i4` / `i8` 三档的这条守卫都在骨架里（[`crate::gemv::finite_scales`]），判据与错误码
+/// 完全相同：非有限标度会把整组乘积带进 NaN/Inf，任何一档都不能放过去。`$bits` 只决定一行 `m`
+/// 个元素占多少字节。
+macro_rules! non_finite_scale_test {
+    ($bits:expr) => {
+        #[test]
+        fn gemv_rejects_non_finite_scales() {
+            let m = 4;
+            let w = vec![0u8; m / (8 / $bits)];
+            let x = vec![1.0; m];
+            for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let error = forward(&x, &w, &[bad], &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
+                assert_eq!(error.code(), ::diagnostic::Code::Invalid);
+            }
+        }
+    };
+}
+pub(crate) use non_finite_scale_test;
+
 /// 生成 i2/i4 打包 GEMV 共有、数值可由位宽推导的五则测试：
 /// 解包点积、非有限标度、大/小形状代价、模板签名。
 macro_rules! packed_gemv_config_tests {
@@ -162,16 +184,7 @@ macro_rules! packed_gemv_config_tests {
             assert!((y[0] - $dequant_expect).abs() < 1e-6, "解包点积 = {}", y[0]);
         }
 
-        #[test]
-        fn gemv_rejects_non_finite_scales() {
-            let m = 4;
-            let w = vec![0u8; m / (8 / $bits)];
-            let x = vec![1.0; m];
-            for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-                let error = forward(&x, &w, &[bad], &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
-                assert_eq!(error.code(), diagnostic::Code::Invalid);
-            }
-        }
+        $crate::gemv::packed_test_support::non_finite_scale_test!($bits);
 
         #[test]
         fn cost_comes_from_the_declared_expression_without_hand_written_constants() {

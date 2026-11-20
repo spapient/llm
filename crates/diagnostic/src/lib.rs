@@ -5,8 +5,10 @@
 //! - [`code`]：错误类别闭集 [`Code`]，其短名与退出码是写进 shell 的稳定契约。
 //! - [`error`]：带类别、上下文与同级诊断的 [`Error`]，以及统一别名 [`Result`]。
 //! - [`data`]：编译期语料在运行期的形状（`Table` / `Value`），**没有解析器**。
+//! - [`scan`]：带字节位置的逐字节游标（`Cursor`），只做读字节 / 跳空白 / 吃必需字节，
+//!   文法仍在各自 crate 里。
 //!
-//! **拥有**：`Error`、`Code`、`Result` 与 `data` 的 `Table` / `Value`。**不拥有**：任何领域
+//! **拥有**：`Error`、`Code`、`Result`、`data` 的 `Table` / `Value` 与 `scan` 的 `Cursor`。**不拥有**：任何领域
 //! 的错误码字面量——各层用自己的语义填 `Code`，但类型只有这一个；也不解释任何领域语义
 //! （`ops/` 属于 `op`，`devices/` 属于 `prof`，`prim/` 属于 `prim`，设置层属于
 //! `cli::settings`），更不认识 TOML：语料由各 crate 的 `build.rs` 在编译期解析成 `data`
@@ -33,6 +35,7 @@
 pub mod code;
 pub mod data;
 pub mod error;
+pub mod scan;
 
 #[cfg(feature = "build")]
 pub mod buildgen;

@@ -280,13 +280,7 @@ mod tests {
     /// 深度相同的步骤按编号降序排，顺序可复现。
     #[test]
     fn steps_are_ordered_by_depth_then_by_id() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let left = tape.record("relu", &[x]).expect("记录");
-        let right = tape.record("relu", &[x]).expect("记录");
-        let joined = tape.record("add", &[left, right]).expect("记录");
-        let loss = tape.record("reduce_sum", &[joined]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
+        let (_, left, right, joined, loss, schedule) = crate::testutil::diamond();
         assert_eq!(
             schedule
                 .steps()
@@ -580,20 +574,8 @@ mod tests {
         let mut tape = Tape::new();
         let mut vars: Vec<Var> = (0..1 + rng.below(5)).map(|_| tape.parameter()).collect();
         vars.extend((0..rng.below(4)).map(|_| tape.leaf()));
-        for _ in 0..rng.below(20) {
-            let width = 1 + rng.below(3) as usize;
-            let inputs: Vec<Var> = (0..width)
-                .map(|_| vars[rng.below(vars.len() as u32) as usize])
-                .collect();
-            let recorded = match rng.below(10) {
-                0 => tape.record_with("detach", &inputs, Requirement::None),
-                1 => tape.record_with("retain", &inputs, Requirement::Grad),
-                _ => tape.record("edge", &inputs),
-            };
-            if let Ok(var) = recorded {
-                vars.push(var);
-            }
-        }
+        let rounds = rng.below(20);
+        crate::testutil::random_edges(&mut tape, &mut vars, rng, rounds, true);
         let loss = *vars
             .iter()
             .rev()

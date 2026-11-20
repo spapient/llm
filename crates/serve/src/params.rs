@@ -378,20 +378,8 @@ pub mod vocab {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use tokenizer::{Merge, SpecialTokens, VocabFamily, VocabSource};
-
-        fn bpe_source() -> VocabSource {
-            VocabSource {
-                family: VocabFamily::Bpe,
-                pieces: vec![b"a".to_vec(), b"b".to_vec(), b"ab".to_vec()],
-                special: SpecialTokens::EMPTY.with_bos(0).with_eos(2),
-                scores: Vec::new(),
-                merges: vec![Merge {
-                    left: b"a".to_vec(),
-                    right: b"b".to_vec(),
-                }],
-            }
-        }
+        use tokenizer::VocabSource;
+        use tokenizer::fixtures::bpe_source;
 
         /// 按真实装配路径造段：词表重算指纹作为段尾摘要，再中性编码。
         fn segment(source: &VocabSource) -> Vec<u8> {

@@ -181,13 +181,7 @@ mod tests {
     /// 菱形图：两条路径的贡献都到齐，x 的梯度才算齐全。
     #[test]
     fn a_diamond_waits_for_every_contribution() {
-        let mut tape = Tape::new();
-        let x = tape.parameter();
-        let left = tape.record("relu", &[x]).expect("记录");
-        let right = tape.record("relu", &[x]).expect("记录");
-        let joined = tape.record("add", &[left, right]).expect("记录");
-        let loss = tape.record("reduce_sum", &[joined]).expect("记录");
-        let schedule = tape.backward(loss).expect("在图上");
+        let (x, left, right, joined, _, schedule) = crate::testutil::diamond();
         let mut account = schedule.account();
         assert_eq!(account.pending(x), 2);
         let steps = schedule.steps();

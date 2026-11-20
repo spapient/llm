@@ -639,10 +639,11 @@ pub struct FlashAttention;
 pub type FlashAttentionF32 = FlashAttention;
 
 // 基座契约（ADR 0050）：两条算子共用形状/代价/样本，只有参考入口分叉。
-crate::operator_here!(Attention, "attention_f32", (8, 8), true, reference);
+crate::operator_here!(Attention, "attention_f32", 3, (8, 8), true, reference);
 crate::operator_here!(
     FlashAttention,
     "flash_attention_f32",
+    3,
     (8, 8),
     true,
     flash_reference
@@ -689,23 +690,36 @@ mod tests {
         assert!(testkit::approx_eq(&flash_out, &flash, 1e-5));
     }
 
+    /// 逐组 `(s, d)` 取确定性样本，把 `q`/`k`/`v` 交给 `run`：两套 tile 用例共用这一层取样。
+    fn for_each_dense_case(
+        cases: &[(usize, usize)],
+        mut run: impl FnMut(usize, usize, &[f32], &[f32], &[f32]),
+    ) {
+        for &(s, d) in cases {
+            let sample = sample(s, d);
+            let q = sample.f32("q").unwrap();
+            let k = sample.f32("k").unwrap();
+            let v = sample.f32("v").unwrap();
+            run(s, d, q, k, v);
+        }
+    }
+
     /// 稠密分块 tile 与朴素路径：K/V 列块 + 查询行块，两个方向都切，结果必须逐位相同。
     ///
     /// 覆盖 tile 整数倍、非整数倍（`s = 17` 同时不是行块与列块的倍数）与大序列；行块按预算收窄的
     /// 分支（`s > SCORE_BUDGET / TILE_ROWS`）由最后一组 `s = 512` 之外的小 `d` 组合天然走过。
     #[test]
     fn tiled_dense_matches_naive_bitwise() {
-        for &(s, d) in &[(8, 8), (17, 5), (64, 16), (100, 64), (256, 32), (512, 32)] {
-            let sample = sample(s, d);
-            let q = sample.f32("q").unwrap();
-            let k = sample.f32("k").unwrap();
-            let v = sample.f32("v").unwrap();
-            let mut naive = vec![0.0f32; s * d];
-            forward(q, k, v, &mut naive, s, d).expect("朴素内核");
-            let mut tiled = vec![0.0f32; s * d];
-            crate::attention_tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
-            assert_eq!(tiled, naive, "s={s},d={d} 稠密 tile 必须与朴素路径逐位一致");
-        }
+        for_each_dense_case(
+            &[(8, 8), (17, 5), (64, 16), (100, 64), (256, 32), (512, 32)],
+            |s, d, q, k, v| {
+                let mut naive = vec![0.0f32; s * d];
+                forward(q, k, v, &mut naive, s, d).expect("朴素内核");
+                let mut tiled = vec![0.0f32; s * d];
+                crate::attention_tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
+                assert_eq!(tiled, naive, "s={s},d={d} 稠密 tile 必须与朴素路径逐位一致");
+            },
+        );
     }
 
     /// 稠密 tile 的几何拒绝：头宽 0、序列长 0、缓冲长度不符都在入口拦下。
@@ -723,21 +737,20 @@ mod tests {
     #[test]
     fn tiled_flash_matches_online_bitwise() {
         // tile 整数倍、非整数倍边界、大序列；tiled 的 col 累加顺序与 online 相同，必须逐位一致。
-        for &(s, d) in &[(8, 8), (64, 16), (100, 64), (256, 32), (512, 32)] {
-            let sample = sample(s, d);
-            let q = sample.f32("q").unwrap();
-            let k = sample.f32("k").unwrap();
-            let v = sample.f32("v").unwrap();
-            let mut online = vec![0.0f32; s * d];
-            let mut tiled = vec![0.0f32; s * d];
-            flash_forward(q, k, v, &mut online, s, d).expect("flash online");
-            crate::attention_tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
-                .expect("flash tiled");
-            assert_eq!(
-                tiled, online,
-                "s={s},d={d} 分块 tile 必须与 online 逐位一致"
-            );
-        }
+        for_each_dense_case(
+            &[(8, 8), (64, 16), (100, 64), (256, 32), (512, 32)],
+            |s, d, q, k, v| {
+                let mut online = vec![0.0f32; s * d];
+                let mut tiled = vec![0.0f32; s * d];
+                flash_forward(q, k, v, &mut online, s, d).expect("flash online");
+                crate::attention_tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
+                    .expect("flash tiled");
+                assert_eq!(
+                    tiled, online,
+                    "s={s},d={d} 分块 tile 必须与 online 逐位一致"
+                );
+            },
+        );
     }
 
     /// 行主序确定性向量：`rows × d`，第 `i` 个元素取 `base + i·step`，便于逐行核对。
@@ -942,17 +955,24 @@ mod tests {
         assert_constant_v(&plain, q_seq, batch);
     }
 
-    #[test]
-    fn batch_one_entry_matches_the_multi_head_kernel() {
-        let (q_rows, hist, heads, d) = (2, 4, 2, 3);
+    /// 单段经批量入口必须与多头入口逐元素等价；`batch_entry` 给出这一侧的跑法。
+    fn single_batch_matches_multi_head(
+        (q_rows, hist, heads, d): (usize, usize, usize, usize),
+        batch_entry: impl Fn((usize, usize, usize, usize), &[f32], &[f32], &[f32], &mut [f32]),
+    ) {
         let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
-
         let mut multi = vec![0.0; heads * q_rows * d];
         decode_forward_heads(&q, &k, &v, &mut multi, q_rows, hist, d).expect("多头朴素");
         let mut batch = vec![0.0; heads * q_rows * d];
-        decode_forward_batch(&q, &k, &v, &mut batch, q_rows, hist, d, heads, 1)
-            .expect("单段经批量入口");
+        batch_entry((q_rows, hist, heads, d), &q, &k, &v, &mut batch);
         assert_eq!(multi, batch, "batch=1 必须与多头入口逐元素等价");
+    }
+
+    #[test]
+    fn batch_one_entry_matches_the_multi_head_kernel() {
+        single_batch_matches_multi_head((2, 4, 2, 3), |(q_rows, hist, heads, d), q, k, v, out| {
+            decode_forward_batch(q, k, v, out, q_rows, hist, d, heads, 1).expect("单段经批量入口");
+        });
     }
 
     #[test]
@@ -1011,15 +1031,10 @@ mod tests {
 
     #[test]
     fn batch_var_one_entry_matches_the_multi_head_kernel() {
-        let (q_rows, hist, heads, d) = (1, 4, 2, 3);
-        let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
-
-        let mut multi = vec![0.0; heads * q_rows * d];
-        decode_forward_heads(&q, &k, &v, &mut multi, q_rows, hist, d).expect("多头朴素");
-        let mut batch = vec![0.0; heads * q_rows * d];
-        decode_forward_batch_var(&q, &k, &v, &mut batch, q_rows, &[hist], d, heads)
-            .expect("变长入口单段");
-        assert_eq!(multi, batch, "batch=1 变长入口必须与多头入口逐元素等价");
+        single_batch_matches_multi_head((1, 4, 2, 3), |(q_rows, hist, heads, d), q, k, v, out| {
+            decode_forward_batch_var(q, k, v, out, q_rows, &[hist], d, heads)
+                .expect("变长入口单段");
+        });
     }
 
     #[test]
@@ -1165,6 +1180,7 @@ pub mod decode_attention {
     crate::operator_here!(
         DecodeAttention,
         "decode_attention_f32",
+        3,
         (1, 8),
         true,
         reference
@@ -1172,6 +1188,7 @@ pub mod decode_attention {
     crate::operator_here!(
         DecodeFlashAttention,
         "decode_flash_attention_f32",
+        3,
         (1, 8),
         true,
         decode_flash_reference

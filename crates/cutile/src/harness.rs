@@ -233,37 +233,16 @@ pub fn c_literal(values: &Values) -> String {
     }
 }
 
+/// `cutile_x_kernel` 的签名与样本：与 `engine` 的 vendor codegen 对拍共用 `testkit` 的一份取值。
+#[cfg(test)]
+#[path = "../../testkit/tests/support/cutile_x_kernel.rs"]
+mod cutile_x_kernel;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::cutile_x_kernel::{sample, signature};
     use op::model::{Buffer, Values};
-
-    fn signature() -> Signature {
-        Signature::parse(
-            "x",
-            "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
-         float *y, int M, int N, int gsz) {}\n",
-        )
-        .expect("签名")
-    }
-
-    fn sample() -> Sample {
-        let buffers = [
-            ("x", Values::F32(vec![1.0, 1.0, 1.0, 1.0])),
-            ("w", Values::U8(vec![0x98, 0x76])),
-            ("scales", Values::F32(vec![0.5, 0.5])),
-            ("y", Values::F32(vec![0.0, 0.0])),
-        ];
-        Sample {
-            m: 4,
-            n: 2,
-            scalars: vec![("M", 4), ("N", 2), ("gsz", 4)],
-            buffers: buffers
-                .into_iter()
-                .map(|(name, values)| Buffer { name, values })
-                .collect(),
-        }
-    }
 
     /// 生成 C 封装文本；`CUTILE_CAPTURE_GOLDEN` 显式打开时才把副本写到 `/tmp/cutile-golden`。
     #[test]

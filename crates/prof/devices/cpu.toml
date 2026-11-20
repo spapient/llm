@@ -11,7 +11,9 @@ vendor   = "cpu"
 id       = "portable"
 emit     = "c"
 tool     = "cc"
-tool_ver = "clang-17"
+# `cc` 在 macOS 上是 clang、在多数 Linux 上是 gcc：可移植档案不能写死主版本号。`*` 是显式的
+# "任意版本"（`Toolchain::agrees_with`），实测值仍进产物身份与报告。
+tool_ver = "*"
 checked  = "2026-11-11"
 
 [fingerprint]

@@ -174,6 +174,7 @@ macro_rules! dequant_packed {
         $crate::operator_via!(
             @impl $name,
             $op,
+            1,
             (4096, 4096),
             false,
             $crate::quant::$row.cpb as u32,
@@ -372,6 +373,7 @@ pub mod dequant_i8 {
     crate::operator_here!(
         DequantI8,
         "dequant_i8",
+        1,
         (4096, 4096),
         false,
         self::reference
