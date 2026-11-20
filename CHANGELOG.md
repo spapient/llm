@@ -4,6 +4,24 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Changed
+
+- **全仓深度重构（ADR 0048/0049）**：src 文件 255 → 195（-23.5%）、外部测试文件 49 → 38（-22.4%），
+  全部为纯移动内联 + `pub use` 保持公开路径，公开项计数逐 crate 核对一致，测试数 1,779 不跌。
+  配置文件层恢复（`cutile.toml` 四层优先级：内置默认 < 配置文件 < `CUTILE_*` < `--set`，`toml` 为
+  L7 唯一外部依赖例外）；`settings` 键值泛型化（`SettingValue`）；测试合并硬门（测试函数零改名零删除）。
+  五起回退裁决（gemv/nn 宏化、snapshot/cursor、无消费配置键、`#[backward]`）落档 ADR 0049。
+- **Windows cfg 修复**：`run_tests.rs` 的 Metal 专属 helper 补 `#[cfg(target_os = "macos")]`、CUDA
+  对拍补 nvidia 档案定义——Windows 原生全仓 check 通过、CUDA 真机对拍（T600/nvcc）2/2 全绿。
+- **`#[spec]` 运行时形态**：属性值支持 `$` 参数洞（与静态路径共用解析框架），Embedding/Attention/
+  MatMul 三层统一到注解路径；annotation 测试 +7 条。
+
+### Added
+
+- **`tools/musa-harness/`**：MUSA S4000（MUSA 5.2 / muBLAS 5.2）真机测量通道——WMMA wave128 正确形态
+  （10.60/13.24/10.18/8.61 TF）、FP32 SIMT 八变体、3xTF32、精度对拍（长 K 口径）与全部教训。
+  muBLAS 5.2 基线 6.55/14.40/17.77/15.64 TF @ FP32 级精度（1.56e-6）；cube 1024³ 领先 62%。
+
 
 ### Added
 
