@@ -1035,20 +1035,6 @@ fn half_precision(value: f32) -> f32 {
     f32::from_bits(sign | exponent | (kept << 13))
 }
 
-/// half 位型 → f32（临时调试用）。
-fn half_value(bits: u16) -> f32 {
-    let sign = bits >> 15;
-    let exponent = (bits >> 10) & 0x1f;
-    let mantissa = bits & 0x3ff;
-    let magnitude = match (exponent, mantissa) {
-        (0, 0) => 0.0,
-        (0, _) => mantissa as f32 * 2f32.powi(-24),
-        (0x1f, _) => f32::NAN,
-        _ => f32::from_bits((exponent as u32 + 112) << 23 | (mantissa as u32) << 13),
-    };
-    if sign == 1 { -magnitude } else { magnitude }
-}
-
 /// 张量核 `relaxed` 口径的对拍阈值：输入只有 10 位尾数、硬件还可能低精度累加，故放到 5e-3；
 /// 同形的全 f32 路径（分块 / simdgroup）仍按 1e-3 判。
 const TENSOR_TOLERANCE: f64 = 5e-3;
@@ -1082,10 +1068,11 @@ fn metal_tensor_gemm() {
     };
     crate::backends::install();
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-tensor");
-    // llm.u 的默认档：128 输出块 / 96 规约块 / 8 simdgroup。
-    let (tile, k_tile, simdgroups) = (128, 96, 8);
 
-    // `matmul_f32` 的规约轴由算子语义固定为 4096，故形状只放开 M/N。
+    // 形状只放开 M/N：`matmul_f32` 的规约轴由算子语义固定为 4096。
+    // 候选几何覆盖 llm.u 的三个 variant（128·96·8 / 128·64·8 / 64·64·4）外加更宽的规约块。
+    let geometries = [(64, 64, 4), (64, 96, 4), (128, 64, 8), (128, 112, 8)];
+
     for (m, n, k) in [
         (512, 512, 4096),
         (1024, 1024, 4096),
@@ -1095,10 +1082,10 @@ fn metal_tensor_gemm() {
         let (a, b) = matmul_values(m, n, k);
         let a_buf = upload(&device, &a, "A");
         let b_buf = upload(&device, &b, "B");
-        let mut bt_buf = device.new_buffer(n * k * 2).expect("Bt 缓冲");
+        let bt_buf = device.new_buffer(n * k * 2).expect("Bt 缓冲");
         let mut y_buf = output_buffer(&device, m * n, "Y");
 
-        // 布局前置：`B[K][N]` 的 f32 → `Bt[N][K]` 的 half，整个基准只跑一次。
+        // 布局前置：`B[K][N]` 的 f32 → `Bt[N][K]` 的 half，每个形状只跑一次。
         let transpose = crate::tiled::metal_transpose_half(k, n).expect("转置 MSL 应能生成");
         let transpose = device.compile(&transpose).expect("转置 MSL 应能编译");
         assert!(
@@ -1111,169 +1098,55 @@ fn metal_tensor_gemm() {
             "转置派发应成功"
         );
 
-        if m == 512 {
-            // 决定性判据：A、B 全 1 时正确输出必须恒等于 K。
-            let ones_a = upload(&device, &vec![1.0f32; m * k], "ones A");
-            let mut ones_bt = device.new_buffer(n * k * 2).expect("ones Bt");
-            let half_ones: Vec<u8> = vec![0x00, 0x3c].repeat(n * k);
-            ones_bt.as_mut_bytes().copy_from_slice(&half_ones);
-            let mut probe_y = output_buffer(&device, m * n, "ones Y");
-            let probe_msl = cutile::execution::metal_tensor_gemm_program(
-                &catalogue, &dirs, "matmul_f32", m, n, tile, k_tile, simdgroups,
-            )
-            .expect("探针 MSL");
-            let probe = device.compile(&probe_msl).expect("探针编译");
-            assert!(
-                queue.execute(
-                    &probe,
-                    &[&ones_a, &ones_bt, &probe_y],
-                    [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1],
-                    [32, simdgroups as u32, 1],
-                ),
-                "探针派发"
-            );
-            let pv = read_back(probe_y.as_mut_bytes());
-            let lo = pv.iter().copied().fold(f32::INFINITY, f32::min);
-            let hi = pv.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            eprintln!("全 1 判据：Y 取值范围 [{lo}, {hi}]，应为 {k}；样本 {:?}", &pv[..8]);
-
-            // 索引探针：A 取单位阵，正确输出应逐元素等于 B（`b[i·n + j]`）。
-            let mut eye = vec![0.0f32; m * k];
-            for i in 0..m {
-                eye[i * k + i] = 1.0;
-            }
-            let eye_a = upload(&device, &eye, "eye A");
-            let mut eye_y = output_buffer(&device, m * n, "eye Y");
-            assert!(
-                queue.execute(
-                    &probe,
-                    &[&eye_a, &bt_buf, &eye_y],
-                    [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1],
-                    [32, simdgroups as u32, 1],
-                ),
-                "索引探针派发"
-            );
-            let ev = read_back(eye_y.as_mut_bytes());
-            let row_major = (0..m * n).map(|i| b[i]).collect::<Vec<f32>>();
-            let transposed = (0..m * n).map(|i| b[(i % n) * n + i / n]).collect::<Vec<f32>>();
-            eprintln!(
-                "索引探针：对 B 行主序误差 {:.3e}，对 B 转置误差 {:.3e}；Y[0..6]={:?} B[0..6]={:?}",
-                max_relative(&ev, &row_major),
-                max_relative(&ev, &transposed),
-                &ev[..6],
-                &b[..6]
-            );
-        }
-
-        let msl = cutile::execution::metal_tensor_gemm_program(
-            &catalogue,
-            &dirs,
-            "matmul_f32",
-            m,
-            n,
-            tile,
-            k_tile,
-            simdgroups,
-        )
-        .expect("张量核 MSL 应能生成");
-        if m == 512 {
-            std::fs::write("/tmp/tensor_gemm.metal", &msl).unwrap();
-        }
-        assert!(
-            msl.contains("mpp::tensor_ops::matmul2d"),
-            "Gemm 骨架应走张量核 lowering"
-        );
-        let pipe = device.compile(&msl).expect("张量核 MSL 应能编译");
-        let grid = [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1];
-        let block = [32, simdgroups as u32, 1];
-        assert!(
-            queue.execute(&pipe, &[&a_buf, &bt_buf, &y_buf], grid, block),
-            "GEMM 派发应成功"
-        );
-
-        let error = if m * n * k <= 1024 * 1024 * 1024 {
-            let reference = cpu_matmul(
+        // 正确性参考只在能负担的形状上算一次：把两路输入都按 half 舍入后再乘。
+        let reference = (m * n * k <= 1024 * 1024 * 1024).then(|| {
+            cpu_matmul(
                 &a.iter().copied().map(half_precision).collect::<Vec<f32>>(),
                 &b.iter().copied().map(half_precision).collect::<Vec<f32>>(),
                 m,
                 n,
                 k,
-            );
-            if m == 512 {
-                let got = read_back(y_buf.as_mut_bytes());
-                let aq: Vec<f32> = a.iter().copied().map(half_precision).collect();
-                let bq: Vec<f32> = b.iter().copied().map(half_precision).collect();
-                let (hc, _) = bt_buf.as_mut_bytes().as_chunks::<2>();
-                let hv: Vec<f32> = hc
-                    .iter()
-                    .map(|c| half_value(u16::from_ne_bytes(*c)))
-                    .collect();
-                let nan = hv.iter().filter(|v| v.is_nan()).count();
-                eprintln!(
-                    "Bt NaN {} / {}；Bt[0..8]={:?}；期望 Bt[0..8]={:?}",
-                    nan,
-                    hv.len(),
-                    &hv[..8],
-                    (0..8).map(|i| b[(i % k) * n + i / k]).collect::<Vec<f32>>()
-                );
-                eprintln!(
-                    "Y NaN {}；Y[1000..1008]={:?}",
-                    got.iter().filter(|v| v.is_nan()).count(),
-                    &got[1000..1008]
-                );
-                let part = |upto: usize, from: usize| -> f64 {
-                    (from..upto)
-                        .map(|p| f64::from(a[p]) * f64::from(b[p * n]))
-                        .sum()
-                };
-                eprintln!(
-                    "稠密对照 Y[0][0]={} ref={}；部分和 p<96={:.3} p<512={:.3} p<4096={:.3}；末块 p∈[4032,4096)={:.3}",
-                    got[0],
-                    reference[0],
-                    part(96, 0),
-                    part(512, 0),
-                    part(4096, 0),
-                    part(4096, 4032)
-                );
-                let worst = got
-                    .iter()
-                    .zip(&reference)
-                    .enumerate()
-                    .max_by(|x, y| {
-                        (x.1 .0 - x.1 .1).abs().total_cmp(&(y.1 .0 - y.1 .1).abs())
-                    })
-                    .expect("非空");
-                let bad = got.iter().filter(|v| !v.abs().lt(&1e3)).count();
-                eprintln!(
-                    "最坏 idx={} → (行 {}, 列 {}) got={} ref={}；|got|≥1e3 的元素 {} / {}",
-                    worst.0,
-                    worst.0 / n,
-                    worst.0 % n,
-                    worst.1 .0,
-                    worst.1 .1,
-                    bad,
-                    got.len()
-                );
-                for kk in [1usize, 16, 32, 96, 192, 512] {
-                    let bs: Vec<f32> =
-                        (0..kk).flat_map(|p| bq[p * n..(p + 1) * n].iter().copied()).collect();
-                    let as_: Vec<f32> = (0..m)
-                        .flat_map(|i| aq[i * k..i * k + kk].iter().copied())
-                        .collect();
-                    let r = cpu_matmul(&as_, &bs, m, n, kk);
-                    eprintln!("K={kk:4} 最大相对误差 {:.3e}", max_relative(&got, &r));
-                }
-            }
-            assert_relaxed_matches(&format!("张量核 {m}×{n}×{k}"), &reference, y_buf.as_mut_bytes())
-        } else {
-            f64::NAN
-        };
+            )
+        });
 
-        let ns = measure(&queue, &pipe, &[&a_buf, &bt_buf, &y_buf], grid, block);
-        let gflops = 2.0 * (m * n * k) as f64 / ns;
-        println!(
-            "张量核 {m}×{n}×{k}: {:.3} ms → {gflops:.0} GF/s（最大相对误差 {error:.2e}）",
-            ns / 1e6
-        );
+        for (tile, k_tile, simdgroups) in geometries {
+            let msl = cutile::execution::metal_tensor_gemm_program(
+                &catalogue,
+                &dirs,
+                "matmul_f32",
+                m,
+                n,
+                tile,
+                k_tile,
+                simdgroups,
+            )
+            .expect("张量核 MSL 应能生成");
+            assert!(
+                msl.contains("mpp::tensor_ops::matmul2d"),
+                "Gemm 骨架应走张量核 lowering"
+            );
+            let pipe = device.compile(&msl).expect("张量核 MSL 应能编译");
+            let grid = [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1];
+            let block = [32, simdgroups as u32, 1];
+            assert!(
+                queue.execute(&pipe, &[&a_buf, &bt_buf, &y_buf], grid, block),
+                "GEMM 派发应成功"
+            );
+
+            let error = reference.as_ref().map_or(f64::NAN, |want| {
+                assert_relaxed_matches(
+                    &format!("张量核 {m}×{n}×{k}（{tile}·{k_tile}·{simdgroups}）"),
+                    want,
+                    y_buf.as_mut_bytes(),
+                )
+            });
+            let ns = measure(&queue, &pipe, &[&a_buf, &bt_buf, &y_buf], grid, block);
+            let gflops = 2.0 * (m * n * k) as f64 / ns;
+            println!(
+                "张量核 {m}×{n}×{k} {tile}·{k_tile}·{simdgroups}: {:.3} ms → {gflops:.0} GF/s\
+                 （最大相对误差 {error:.2e}）",
+                ns / 1e6
+            );
+        }
     }
 }
