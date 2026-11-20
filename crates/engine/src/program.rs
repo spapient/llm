@@ -14,6 +14,10 @@ use op::decl::Grid;
 use op::model::Sample;
 use op::sig::Signature;
 
+#[cfg(test)]
+#[path = "../../testkit/tests/support/cutile_x_kernel.rs"]
+mod cutile_x_kernel;
+
 /// CUDA 并行程序：按形态装配设备源与 host 驱动，整份可直接 `mcc` / `nvcc` 编译执行。
 ///
 /// # Errors
@@ -194,32 +198,12 @@ mod tests {
 
     const POINT_SOURCE: &str = "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n";
 
-    /// gemv 形内核文本：与 [`gemv`] 的签名逐字同源（签名就是解析它得来的）。
-    const GEMV_SOURCE: &str = "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
-                              float *y, int M, int N, int gsz) {}\n";
-
-    /// gemv 形签名与样本：`x` / `w` / `scales` 进、`y` 出，另有 `M` / `N` / `gsz` 三个整数标量。
+    /// gemv 形签名与样本：与 `crates/testkit/tests/support/cutile_x_kernel.rs` 共用一份取值。
     ///
     /// 用它是因为它的声明是**零维网格**（串行语义门那一档）且属可被拒绝的族，正好覆盖
     /// 「没有并行实现」的两条分支；逐点那条另用 [`pointwise`]，两者签名宽度不同。
     fn gemv() -> (Signature, Sample) {
-        let signature = Signature::parse("x", GEMV_SOURCE).expect("签名");
-        let buffers = [
-            ("x", Values::F32(vec![1.0, 1.0, 1.0, 1.0])),
-            ("w", Values::U8(vec![0x98, 0x76])),
-            ("scales", Values::F32(vec![0.5, 0.5])),
-            ("y", Values::F32(vec![0.0, 0.0])),
-        ];
-        let sample = Sample {
-            m: 4,
-            n: 2,
-            scalars: vec![("M", 4), ("N", 2), ("gsz", 4)],
-            buffers: buffers
-                .into_iter()
-                .map(|(name, values)| Buffer { name, values })
-                .collect(),
-        };
-        (signature, sample)
+        (cutile_x_kernel::signature(), cutile_x_kernel::sample())
     }
 
     /// 逐点签名与它自己的样本：签名里的缓冲名必须在样本里存在，否则装配先报“漂移”。
@@ -276,7 +260,7 @@ mod tests {
     fn a_loop_launch_without_dims_is_the_serial_harness() {
         // 零维网格 = 串行：它的「并行程序」就是那一份单线程语义门，而不是另一份文本。
         let program = cuda(
-            GEMV_SOURCE,
+            cutile_x_kernel::SOURCE,
             &gemv().0,
             &gemv().1,
             &launch(Lower::Loop(Grid { dims: Vec::new() }), [1, 1, 1], 1),
@@ -308,7 +292,7 @@ mod tests {
     #[test]
     fn a_loop_launch_without_dims_has_no_metal_thread_shape() {
         let error = metal(
-            GEMV_SOURCE,
+            cutile_x_kernel::SOURCE,
             &gemv().0,
             &gemv().1,
             &launch(Lower::Loop(Grid { dims: Vec::new() }), [1, 1, 1], 1),
@@ -338,10 +322,10 @@ mod tests {
             Lower::WmmaGemm,
         ] {
             let launch = launch(kind, [1, 1, 1], 1);
-            let cuda_error = cuda(GEMV_SOURCE, &gemv().0, &gemv().1, &launch)
+            let cuda_error = cuda(cutile_x_kernel::SOURCE, &gemv().0, &gemv().1, &launch)
                 .expect_err("CUDA 没有该形态的并行程序");
             assert_eq!(cuda_error.code(), Code::Unsupported, "{cuda_error}");
-            let metal_error = metal(GEMV_SOURCE, &gemv().0, &gemv().1, &launch)
+            let metal_error = metal(cutile_x_kernel::SOURCE, &gemv().0, &gemv().1, &launch)
                 .expect_err("Metal 没有该形态的并行程序");
             assert_eq!(metal_error.code(), Code::Unsupported, "{metal_error}");
         }
@@ -351,7 +335,7 @@ mod tests {
     fn a_block_family_is_unsupported_on_metal() {
         // 分块族在 Metal 侧的落点是各自的 `metal_*_program`，单源装配不冒充它们。
         let error = metal(
-            GEMV_SOURCE,
+            cutile_x_kernel::SOURCE,
             &gemv().0,
             &gemv().1,
             &launch(

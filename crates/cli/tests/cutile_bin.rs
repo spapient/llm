@@ -463,6 +463,7 @@ mod tests {
         let profile = catalogue.resolve("cpu").expect("cpu 档案");
         let verified = Verified {
             device: "cpu".to_string(),
+            channel: cutile::verify::Channel::Parallel,
             vendor: profile.meta.vendor.to_string(),
             id: profile.meta.id.to_string(),
             variant: "pipe2".to_string(),

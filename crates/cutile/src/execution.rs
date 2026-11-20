@@ -18,6 +18,7 @@ use crate::witness;
 use diagnostic::{Code, Error};
 use op::decl::{Grid, OpDecl};
 use op::model::Sample;
+use op::sig::CType;
 
 /// 一次真机执行：调用方给的样本 → 编译 → 跑一次 → 与标量参考对拍。
 #[derive(Debug, Clone, PartialEq)]
@@ -260,6 +261,64 @@ fn fragment_shape(run: &Run<'_>, m: usize, n: usize, row_frags: usize, col_frags
         && (k as usize).is_multiple_of(8)
         && divides(m, 8 * row_frags)
         && divides(n, 8 * col_frags)
+}
+
+/// 生产态 Metal int8 分块 GEMM 内核源：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 精确累加、`f32` 输出。
+///
+/// 只对「Gemm 骨架 + 两个 `u8` 输入、一个 `f32` 输出、三个整数标量 + `M/N/K` 均能被 `tile`
+/// 整除」的签名走 int8 共享内存分块；`tile` 越界、骨架或签名不符、形状不整除时回落到
+/// [`metal_grid_program`] 的网格/串行路径，因此本入口对全部骨架都有定义。
+///
+/// # Errors
+///
+/// 算子没有声明、`metal` 档案缺失、设备缺执行证据、协商失败或形状非法时返回说明。
+pub fn metal_int8_gemm_program(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+    tile: usize,
+) -> diagnostic::Result<String> {
+    let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
+    if !int8_ready(&run, m, n, tile) {
+        return lower(&run, &prepared, m, n);
+    }
+    single(
+        lower_sources(
+            Emit::Metal,
+            &Lower::Int8Gemm { tile },
+            &run,
+            &prepared,
+            m,
+            n,
+        )?,
+        "int8 分块 gemm",
+    )
+}
+
+/// int8 GEMM 的前置条件：块边长合法、Gemm 骨架、int8 签名、`M/N/K` 都能被 `tile` 整除。
+fn int8_ready(run: &Run<'_>, m: usize, n: usize, tile: usize) -> bool {
+    if !(2..=32).contains(&tile) || run.op.skeleton != Skeleton::Gemm {
+        return false;
+    }
+    if !int8_signature(run) {
+        return false;
+    }
+    let k = (run.model.sample)(m, n).scalar("K").unwrap_or(0);
+    divisible_shape(m, n, k, tile)
+}
+
+/// 签名是不是 int8 GEMM：`(u8 *a, u8 *b, float *y, int M, int N, int K)`。
+///
+/// 按位置核对类型而不是按参数名：ABI 的顺序就是绑定顺序，名字只用于样本取值。
+fn int8_signature(run: &Run<'_>) -> bool {
+    let params = run.op.signature.params();
+    matches!(params, [a, b, y, m, n, k]
+        if a.ctype == CType::U8
+            && b.ctype == CType::U8
+            && y.ctype == CType::F32
+            && [m, n, k].iter().all(|param| param.ctype == CType::Int))
 }
 
 /// 生产态 Metal flash attention 内核源：一个 threadgroup 负责一个查询行，K/V 按 `block`

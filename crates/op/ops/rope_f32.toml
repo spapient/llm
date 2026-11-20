@@ -16,6 +16,11 @@ store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 [layouts]
 x = "row"
 
+# 网格映射：每个分量对一线程（`i:N` 绑定模板里的 `for (int i = 0; i < N; ++i)`，模板块内自带
+# 「下标越过对数即返回」的守卫——见 `rope_f32.k` 的末位说明）。
+[grid]
+dims = ["i:N"]
+
 [[variants]]
 name      = "direct"
 order     = 1

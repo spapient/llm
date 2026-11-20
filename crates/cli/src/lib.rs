@@ -602,7 +602,14 @@ const TRAIN: &[(&str, &str)] = &[
 ///
 /// 表即文法：这两条都只说一个文件，与 `SINGLE` 的差别只在“必填”——构造器因此吃 `String`
 /// 而不是 `Option<String>`，类型上就区分了“可以有默认”与“必须点名文件”。
-const PATHS: &[(&str, &str, &str, fn(String) -> Command)] = &[
+type PathRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    fn(String) -> Command,
+);
+
+const PATHS: &[PathRow] = &[
     ("inspect", "--in", "文件", |input| Command::Inspect {
         input,
     }),

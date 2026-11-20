@@ -480,6 +480,15 @@ pub(crate) fn buffer_args(signature: &Signature) -> String {
 ///
 /// # Errors：缺输出缓冲、输出不是 f32，或缓存参数与样本不一致时返回说明。
 #[allow(clippy::too_many_arguments)]
+/// 生产态 CUDA/MUSA 基准驱动的四段模板全部在这里之外命名：
+///
+/// 1. 缓冲区（`cuda_host_buffers_grid` + `alloc_guards`）
+/// 2. 计时（`timing_loop`，先热身再按轮计时）
+/// 3. 回读（`readback_block`，按位打印）
+/// 4. 释放（`cuda_release`）
+///
+/// 本函数只负责按上述顺序拼装，不含任何格式串。
+#[allow(clippy::too_many_arguments)]
 pub fn cuda_benchmark_driver(
     device_source: &str,
     signature: &Signature,
@@ -490,96 +499,22 @@ pub fn cuda_benchmark_driver(
     repeat: usize,
     musa: bool,
 ) -> Result<String> {
-    let output = output_name(signature)?;
-    let output_values = sample
-        .buffer(output)
-        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
-    if !matches!(&output_values.values, Values::F32(_)) {
-        return Err(Error::new(
-            Code::Unsupported,
-            "设备基准回读当前要求 f32 输出",
-        ));
-    }
+    let (output, out_len) = bench_output_shape(signature, sample)?;
     let mut source = cuda_prologue(device_source);
-    if musa {
-        source.push_str(
-            "#define cudaEvent_t musaEvent_t\n\
-             #define cudaEventCreate musaEventCreate\n\
-             #define cudaEventRecord musaEventRecord\n\
-             #define cudaEventSynchronize musaEventSynchronize\n\
-             #define cudaEventElapsedTime musaEventElapsedTime\n\
-             #define cudaEventDestroy musaEventDestroy\n\
-             #define cudaGetLastError musaGetLastError\n",
-        );
-    }
-    source.push_str(
-        r#"
-#define CUTILE_CUDA_CHECK(expr) do { \
-    cudaError_t cutile_error = (expr); \
-    if (cutile_error != cudaSuccess) { \
-        fprintf(stderr, "cuda: %s\n", cudaGetErrorString(cutile_error)); \
-        return 1; \
-    } \
-} while (0)
-int main() {
-"#,
-    );
+    source.push_str(musa_shims(musa));
+    source.push_str(CUDA_CHECK_PROLOGUE);
     source.push_str(&cuda_host_buffers_grid(
         sample,
         signature.params(),
-        output,
-        output_values.values.len(),
+        &output,
+        out_len,
     )?);
-    for param in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-    {
-        source.push_str(&format!(
-            "    if (!d_{}) {{ fprintf(stderr, \"CUDA 缓冲分配失败: {}\\n\"); return 1; }}\n",
-            param.name, param.name
-        ));
-    }
+    source.push_str(&alloc_guards(signature));
     source.push_str("    CUTILE_CUDA_CHECK(cudaGetLastError());\n");
-    source.push_str(&format!(
-        r#"    const dim3 grid({}, {}, {});
-    const dim3 block({}, {}, {});
-    cudaEvent_t start, stop;
-    CUTILE_CUDA_CHECK(cudaEventCreate(&start));
-    CUTILE_CUDA_CHECK(cudaEventCreate(&stop));
-    for (int warm = 0; warm < 2; ++warm) {{
-        for (int batch = 0; batch < 16; ++batch) kernel_main<<<grid, block>>>({launch_args});
-    }}
-    CUTILE_CUDA_CHECK(cudaGetLastError());
-    CUTILE_CUDA_CHECK(cudaDeviceSynchronize());
-    for (int sample = 0; sample < {repeat}; ++sample) {{
-        CUTILE_CUDA_CHECK(cudaEventRecord(start));
-        for (int batch = 0; batch < 16; ++batch) kernel_main<<<grid, block>>>({launch_args});
-        CUTILE_CUDA_CHECK(cudaGetLastError());
-        CUTILE_CUDA_CHECK(cudaEventRecord(stop));
-        CUTILE_CUDA_CHECK(cudaEventSynchronize(stop));
-        float elapsed_ms = 0.0f;
-        CUTILE_CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
-        if (!(elapsed_ms > 0.0f)) {{ fprintf(stderr, "CUDA event 时间戳不可用\n"); return 2; }}
-        fprintf(stderr, "ns %.3f\n", (double)elapsed_ms * 1.0e6 / 16.0);
-    }}
-"#,
-        grid[0], grid[1], grid[2], threads[0], threads[1], threads[2],
-    ));
-    source.push_str(&format!(
-        "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n\
-         \x20   for (int i = 0; i < {len}; ++i) {{\n\
-         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
-         \x20       printf(\"%u\\n\", v.u);\n\
-         \x20   }}\n",
-        len = output_values.values.len()
-    ));
+    source.push_str(&timing_loop(grid, threads, launch_args, repeat));
+    source.push_str(&readback_block(&output, out_len));
     source.push_str(&cuda_release(signature));
-    source.push_str(
-        "    CUTILE_CUDA_CHECK(cudaEventDestroy(start));\n\
-         \x20   CUTILE_CUDA_CHECK(cudaEventDestroy(stop));\n\
-         \x20   return 0;\n}\n",
-    );
+    source.push_str(CUDA_EPILOGUE);
     Ok(source)
 }
 
@@ -605,4 +540,107 @@ pub fn cuda_chunk_reduce(
     reduce_func: &str,
 ) -> Result<String> {
     chunk_reduce(kernel_source, signature, sample, chunk, reduce_func, &CUDA)
+}
+
+/// 生产态驱动共用的错误检查宏与 `main` 起点。
+const CUDA_CHECK_PROLOGUE: &str = r#"
+#define CUTILE_CUDA_CHECK(expr) do { \
+    cudaError_t cutile_error = (expr); \
+    if (cutile_error != cudaSuccess) { \
+        fprintf(stderr, "cuda: %s\n", cudaGetErrorString(cutile_error)); \
+        return 1; \
+    } \
+} while (0)
+int main() {
+"#;
+
+/// 生产态驱动的收尾：事件对象销毁 + 正常返回。
+const CUDA_EPILOGUE: &str = "    CUTILE_CUDA_CHECK(cudaEventDestroy(start));\n\
+     \x20   CUTILE_CUDA_CHECK(cudaEventDestroy(stop));\n\
+     \x20   return 0;\n}\n";
+
+/// MUSA 兼容层：把 CUDA event / error API 映射到 MUSA 同名接口；非 MUSA 目标返回空串。
+fn musa_shims(musa: bool) -> &'static str {
+    if musa {
+        "#define cudaEvent_t musaEvent_t\n\
+         #define cudaEventCreate musaEventCreate\n\
+         #define cudaEventRecord musaEventRecord\n\
+         #define cudaEventSynchronize musaEventSynchronize\n\
+         #define cudaEventElapsedTime musaEventElapsedTime\n\
+         #define cudaEventDestroy musaEventDestroy\n\
+         #define cudaGetLastError musaGetLastError\n"
+    } else {
+        ""
+    }
+}
+
+/// 每个缓冲参数的分配失败检查：任何一次分配失败都必须立刻返回 1，不能让后续 launch 读到空指针。
+fn alloc_guards(signature: &Signature) -> String {
+    let mut out = String::new();
+    for param in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+    {
+        out.push_str(&format!(
+            "    if (!d_{}) {{ fprintf(stderr, \"CUDA 缓冲分配失败: {}\\n\"); return 1; }}\n",
+            param.name, param.name
+        ));
+    }
+    out
+}
+
+/// 回读块：把输出缓冲拷回主机并按位打印（`union` 保证 float→uint 的位级保真）。
+fn readback_block(output: &str, len: usize) -> String {
+    format!(
+        "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n\
+         \x20   for (int i = 0; i < {len}; ++i) {{\n\
+         \x20       union {{ float f; unsigned int u; }} v; v.f = h_{output}[i];\n\
+         \x20       printf(\"%u\\n\", v.u);\n\
+         \x20   }}\n"
+    )
+}
+
+/// 计时循环：先热身两轮，再按 `repeat` 轮计时，每轮固定 16 次 launch 后报单次纳秒。
+fn timing_loop(grid: [usize; 3], threads: [usize; 3], launch_args: &str, repeat: usize) -> String {
+    format!(
+        r#"    const dim3 grid({}, {}, {});
+    const dim3 block({}, {}, {});
+    cudaEvent_t start, stop;
+    CUTILE_CUDA_CHECK(cudaEventCreate(&start));
+    CUTILE_CUDA_CHECK(cudaEventCreate(&stop));
+    for (int warm = 0; warm < 2; ++warm) {{
+        for (int batch = 0; batch < 16; ++batch) kernel_main<<<grid, block>>>({launch_args});
+    }}
+    CUTILE_CUDA_CHECK(cudaGetLastError());
+    CUTILE_CUDA_CHECK(cudaDeviceSynchronize());
+    for (int sample = 0; sample < {repeat}; ++sample) {{
+        CUTILE_CUDA_CHECK(cudaEventRecord(start));
+        for (int batch = 0; batch < 16; ++batch) kernel_main<<<grid, block>>>({launch_args});
+        CUTILE_CUDA_CHECK(cudaGetLastError());
+        CUTILE_CUDA_CHECK(cudaEventRecord(stop));
+        CUTILE_CUDA_CHECK(cudaEventSynchronize(stop));
+        float elapsed_ms = 0.0f;
+        CUTILE_CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
+        if (!(elapsed_ms > 0.0f)) {{ fprintf(stderr, "CUDA event 时间戳不可用\n"); return 2; }}
+        fprintf(stderr, "ns %.3f\n", (double)elapsed_ms * 1.0e6 / 16.0);
+    }}
+"#,
+        grid[0], grid[1], grid[2], threads[0], threads[1], threads[2],
+    )
+}
+
+/// 输出缓冲的（名字，元素数）：只接受 f32 输出，回读路径按 float 解释字节。
+fn bench_output_shape(signature: &Signature, sample: &Sample) -> Result<(String, usize)> {
+    let output = output_name(signature)?;
+    let values = sample
+        .buffer(output)
+        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
+    match &values.values {
+        Values::F32(_) => Ok((output.to_owned(), values.values.len())),
+        _ => Err(Error::new(
+            Code::Unsupported,
+            "设备基准回读当前要求 f32 输出",
+        )),
+    }
 }

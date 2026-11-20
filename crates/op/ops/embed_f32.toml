@@ -19,6 +19,11 @@ idx   = "row"
 table = "row"
 y     = "row"
 
+# 网格映射：每行一线程（`n:N` 绑定模板里的 `for (int n = 0; n < N; ++n)`），行内 `d` 循环留在线程内。
+# gather 的随机访问只在表行首，行内是连续拷贝，按行拆线程不会把一次读放大成多次。
+[grid]
+dims = ["n:N"]
+
 [[variants]]
 name      = "direct"
 order     = 1

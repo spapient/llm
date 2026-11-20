@@ -243,33 +243,75 @@ fn request_line(line: Option<&str>) -> std::result::Result<(String, String), Htt
 fn content_length<'a>(
     lines: impl Iterator<Item = &'a str>,
 ) -> std::result::Result<usize, HttpError> {
-    let mut content_len: Option<usize> = None;
-    let mut transfer_encoding = false;
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim();
-        if name.eq_ignore_ascii_case("transfer-encoding") {
-            transfer_encoding = true;
-        }
-        if name.eq_ignore_ascii_case("content-length") {
-            for piece in value.split(',') {
-                let piece = piece.trim();
-                let parsed = piece
-                    .parse::<usize>()
-                    .map_err(|_| HttpError::bad("Content-Length 不是整数"))?;
-                if content_len.is_some_and(|current| current != parsed) {
-                    return Err(HttpError::bad("冲突的 Content-Length"));
-                }
-                content_len = Some(parsed);
-            }
-        }
+    let (length, transfer_encoding) = lines.filter_map(|line| line.split_once(':')).try_fold(
+        (None, false),
+        |(length, transfer), (name, value)| {
+            let (length, declared) = apply_header(length, name.trim(), value)?;
+            Ok::<_, HttpError>((length, transfer || declared))
+        },
+    )?;
+    finish(length, transfer_encoding)
+}
+
+/// 应用一行头：返回（合并后的长度，这一行是否声明了 `Transfer-Encoding`）。
+fn apply_header(
+    length: Option<usize>,
+    name: &str,
+    value: &str,
+) -> std::result::Result<(Option<usize>, bool), HttpError> {
+    match header(name) {
+        Header::TransferEncoding => Ok((length, true)),
+        Header::ContentLength => Ok((merged(length, value)?, false)),
+        Header::Other => Ok((length, false)),
     }
+}
+
+/// 并列值合并后仍是「有长度」而不是「无长度」：`merge_lengths` 只判冲突。
+fn merged(current: Option<usize>, value: &str) -> std::result::Result<Option<usize>, HttpError> {
+    merge_lengths(current, value).map(Some)
+}
+
+/// 本层关心的两类头，其余一律忽略（闭集：新增关注点必须显式加一个变体）。
+enum Header {
+    ContentLength,
+    TransferEncoding,
+    Other,
+}
+
+/// 头名大小写不敏感：`Content-Length` 与 `content-length` 是同一个头。
+fn header(name: &str) -> Header {
+    if name.eq_ignore_ascii_case("transfer-encoding") {
+        Header::TransferEncoding
+    } else if name.eq_ignore_ascii_case("content-length") {
+        Header::ContentLength
+    } else {
+        Header::Other
+    }
+}
+
+/// 一条头行里可以并列多个 `Content-Length`：合并后必须只剩一个值。
+fn merge_lengths(current: Option<usize>, value: &str) -> std::result::Result<usize, HttpError> {
+    let mut merged = current;
+    for piece in value.split(',') {
+        let parsed = piece
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| HttpError::bad("Content-Length 不是整数"))?;
+        if merged.is_some_and(|known| known != parsed) {
+            return Err(HttpError::bad("冲突的 Content-Length"));
+        }
+        merged = Some(parsed);
+    }
+    // `split` 至少产出一段，所以合并后一定有值。
+    Ok(merged.unwrap_or(0))
+}
+
+/// 收尾：`Transfer-Encoding` 一来就没有定长可言，未声明长度按 0 算。
+fn finish(length: Option<usize>, transfer_encoding: bool) -> std::result::Result<usize, HttpError> {
     if transfer_encoding {
         return Err(HttpError::bad("本适配器不支持 Transfer-Encoding"));
     }
-    Ok(content_len.unwrap_or(0))
+    Ok(length.unwrap_or(0))
 }
 
 /// 写最小响应：状态行 + `Content-Length` + `Connection: close` + 主体字节。
@@ -343,38 +385,38 @@ mod tests {
     ///
     /// `connect` 在用户态 `accept` 之前就已由内核完成握手，数据也会先进接收缓冲，因此
     /// 无需另起线程即可测完整 `socket → Router → socket` 链路。
-    fn exchange(request: &[u8]) -> Vec<u8> {
-        let httpd = Httpd::bind("127.0.0.1:0").expect("绑定");
+    ///
+    /// 三个用例只差 `timeout`（短超时验证 408）与 `half_close`（请求结束不靠长度），其余
+    /// 步骤逐字相同：绑定方式随 `timeout` 分岔，半关闭发生在写完请求之后。
+    fn exchange_with(timeout: Option<Duration>, half_close: bool, request: &[u8]) -> Vec<u8> {
+        let httpd = match timeout {
+            Some(limit) => {
+                Httpd::bind_with_timeout("127.0.0.1:0", limit).expect("绑定短超时测试服务")
+            }
+            None => Httpd::bind("127.0.0.1:0").expect("绑定"),
+        };
         let addr = httpd.local_addr().expect("地址");
         let mut client = TcpStream::connect(addr).expect("连接");
         client.write_all(request).expect("写");
+        if half_close {
+            client.shutdown(std::net::Shutdown::Write).expect("半关闭");
+        }
         httpd.serve_once(&router()).expect("处理");
         let mut raw = Vec::new();
         client.read_to_end(&mut raw).expect("读");
         raw
+    }
+
+    fn exchange(request: &[u8]) -> Vec<u8> {
+        exchange_with(None, false, request)
     }
 
     fn exchange_with_timeout(timeout: Duration, request: &[u8]) -> Vec<u8> {
-        let httpd = Httpd::bind_with_timeout("127.0.0.1:0", timeout).expect("绑定短超时测试服务");
-        let addr = httpd.local_addr().expect("地址");
-        let mut client = TcpStream::connect(addr).expect("连接");
-        client.write_all(request).expect("写");
-        httpd.serve_once(&router()).expect("处理");
-        let mut raw = Vec::new();
-        client.read_to_end(&mut raw).expect("读");
-        raw
+        exchange_with(Some(timeout), false, request)
     }
 
     fn exchange_closed_write(request: &[u8]) -> Vec<u8> {
-        let httpd = Httpd::bind("127.0.0.1:0").expect("绑定");
-        let addr = httpd.local_addr().expect("地址");
-        let mut client = TcpStream::connect(addr).expect("连接");
-        client.write_all(request).expect("写");
-        client.shutdown(std::net::Shutdown::Write).expect("半关闭");
-        httpd.serve_once(&router()).expect("处理");
-        let mut raw = Vec::new();
-        client.read_to_end(&mut raw).expect("读");
-        raw
+        exchange_with(None, true, request)
     }
 
     #[test]
@@ -432,7 +474,7 @@ mod tests {
 
     #[test]
     fn head_limit_has_a_specific_status() {
-        assert!(MAX_HEAD >= 8 * 1024);
+        const { assert!(MAX_HEAD >= 8 * 1024) };
         assert_eq!(reason(431), "Request Header Fields Too Large");
     }
 

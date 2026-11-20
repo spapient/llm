@@ -92,15 +92,29 @@ pub fn detect() -> Option<Toolchain> {
         .clone()
 }
 
-/// 按**档案声明的工具名**探测：`emit = "cuda"` 的产物只能由 `nvcc` / `mcc` 编，宿主的 `cc`
-/// 不认识 `--cuda-gpu-arch`，拿它去编只会把"这台设备没有工具链"报成一条 C 语法错误。
-/// 声明不可用时返回 `None`（如实"没有"），不退回合主编译器——那会把缺工具链伪装成编译失败。
+/// 按**档案声明的工具**探测：除便携 C 之外，产物只能由档案里写的那个编译器编（`nvcc` / `mcc` /
+/// `ccec` / `xcrun metal`），宿主的 `cc` 不认识 `--cuda-gpu-arch`，拿它去编只会把"这台设备没有
+/// 工具链"报成一条 C 语法错误。声明不可用时返回 `None`（如实"没有"），不退回合主编译器——那会把
+/// 缺工具链伪装成编译失败。
 #[must_use]
 pub fn for_profile(profile: &crate::prof::Profile) -> Option<Toolchain> {
-    if profile.meta.emit == crate::prof::Emit::Cuda {
-        return probe(&profile.meta.tool);
+    match profile.meta.emit {
+        // 便携 C 的登记值是 `cc` 且版本记作 `*`：探测顺序（cc → clang → gcc）本身就是它的语义。
+        crate::prof::Emit::C => detect(),
+        _ => probe_declared(&profile.meta.tool),
     }
-    detect()
+}
+
+/// 按 `[meta].tool` 的**声明**探测：声明可以带固定前缀参数（`xcrun metal`），这仍是档案写的那条
+/// 命令，不是退回合主编译器。命令名与参数以空白分隔，身份里保留声明原文，报告才能与档案对账。
+#[must_use]
+pub fn probe_declared(declared: &str) -> Option<Toolchain> {
+    let mut parts = declared.split_whitespace();
+    let program = parts.next()?;
+    let leading: Vec<&str> = parts.collect();
+    let mut tool = probe_with(program, &leading)?;
+    tool.command = declared.trim().to_string();
+    Some(tool)
 }
 
 /// 本机的 clang：先问 `clang`，再退到 `cc`（macOS 与多数发行版的 `cc` 就是 clang）。判据是
@@ -112,7 +126,16 @@ pub fn clang() -> Option<Toolchain> {
 
 /// 探测指定命令：跑一次 `--version`，成功才返回（版本解析不出也算可用）。
 pub fn probe(command: &str) -> Option<Toolchain> {
-    let output = Command::new(command).arg("--version").output().ok()?;
+    probe_with(command, &[])
+}
+
+/// 探测的实作：`program` 之后先放档案声明的固定前缀参数，再问版本。
+fn probe_with(program: &str, leading: &[&str]) -> Option<Toolchain> {
+    let output = Command::new(program)
+        .args(leading)
+        .arg("--version")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -128,7 +151,7 @@ pub fn probe(command: &str) -> Option<Toolchain> {
         .find(|line| !line.is_empty())?
         .to_string();
     Some(Toolchain {
-        command: command.to_string(),
+        command: program.to_string(),
         version: parse_version(&text),
         banner,
     })
@@ -224,6 +247,54 @@ mod tests {
         assert_eq!(tool.version.as_deref(), Some("99.1.2"));
         assert_eq!(tool.id(), format!("{}@99.1.2", fake.to_string_lossy()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 档案里可以写带前缀参数的命令（`xcrun metal`）：探测要把参数一起交给程序，身份保留声明原文。
+    #[cfg(unix)]
+    #[test]
+    fn a_declared_command_may_carry_prefix_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("cutile-declared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("临时目录");
+        let fake = root.join("fake-xcrun.sh");
+        // 只有前缀参数真的被传进来才自报版本：探测丢掉参数时这里就只剩 `None`。
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = metal ]; then echo 'Apple metal version 32023.922'; fi\n",
+        )
+        .expect("写脚本");
+        let mut perms = std::fs::metadata(&fake).expect("脚本").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake, perms).expect("可执行");
+        let declared = format!("{} metal", fake.display());
+        let tool = probe_declared(&declared).expect("带前缀参数的命令可探测");
+        assert_eq!(tool.version.as_deref(), Some("32023.922"));
+        assert_eq!(
+            tool.id(),
+            format!("{declared}@32023.922"),
+            "身份保留声明原文"
+        );
+        assert!(
+            probe_declared("cutile-no-such-compiler-0x").is_none(),
+            "装不上的声明如实说没有，不退回合主编译器"
+        );
+        assert!(probe_declared("   ").is_none(), "空声明不是命令");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 设备档案只能探测它自己声明的编译器：本机没装就不能报成宿主的 `cc`。
+    #[test]
+    fn a_device_profile_probes_the_tool_it_declares() {
+        let ascend = crate::prof::Profile::parse(prof::embedded("ascend").expect("ascend 档案"))
+            .expect("档案可解析");
+        match for_profile(&ascend) {
+            Some(tool) => assert_eq!(tool.command, "ccec", "只认档案声明的编译器"),
+            None => assert!(
+                probe_declared("ccec").is_none(),
+                "`ccec` 探得到就不能报成没有"
+            ),
+        }
     }
 
     #[test]

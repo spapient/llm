@@ -1,4 +1,4 @@
-//! `cutile_x_kernel` 的签名与配套样本：两个白盒对拍共用一份取值，免得各写一份后静默漂移。
+//! `cutile_x_kernel` 的签名与配套样本：三处白盒对拍共用一份取值，免得各写一份后静默漂移。
 //!
 //! 调用点（都以 `#[path]` 取用本文件）：
 //!
@@ -16,14 +16,13 @@
 use op::model::{Buffer, Sample, Values};
 use op::sig::Signature;
 
+/// 签名文本：解析与装配吃同一份源，源码不抄第二遍。
+pub const SOURCE: &str = "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
+         float *y, int M, int N, int gsz) {}\n";
+
 /// 三缓冲 GEMV 形签名：`x` / `w` / `scales` 进、`y` 出，另有 `M` / `N` / `gsz` 三个整数标量。
 pub fn signature() -> Signature {
-    Signature::parse(
-        "x",
-        "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
-         float *y, int M, int N, int gsz) {}\n",
-    )
-    .expect("签名")
+    Signature::parse("x", SOURCE).expect("签名")
 }
 
 /// 与 [`signature`] 配套的样本：`m = 4`、`n = 2`，四个缓冲各自给出确定取值。

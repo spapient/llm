@@ -341,9 +341,10 @@ pub(super) fn passed_line(verified: &Verified) -> String {
     let toolchain = toolchain_line(verified);
     let checked = checked_text(verified);
     format!(
-        "  {}({}): ✓ L2 | variant {} | tile {} | 形状 {} | 见证 {} 条{checked} | max_rel_err {:.3e} | {} | {artifacts}{toolchain} | key {}\n",
+        "  {}({}): ✓ L2 | 通道 {} | variant {} | tile {} | 形状 {} | 见证 {} 条{checked} | max_rel_err {:.3e} | {} | {artifacts}{toolchain} | key {}\n",
         verified.vendor,
         verified.id,
+        verified.channel.as_str(),
         verified.variant,
         verified.tile,
         shapes,

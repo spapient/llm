@@ -703,3 +703,23 @@ fn a_need_can_demand_an_execution_unit() {
     // 只有 L0：形状与单元都对得上，但仍然"不具备"。
     assert!(!profile.satisfies(&Need::of(Prim::Dot).with_attr(exec(&["cube"]))));
 }
+
+/// 一条 dequant 签名覆盖 i2 / i4 两种打包宽度：片段里位宽由 `$width` / `$cpb` / `$zero` 派生，
+/// 所以不需要第二条签名。签名缺 i2 时 i2 系列 op 是"dt 缺 i2"的结构性缺席，永远协商不上——
+/// 那不是证据等级问题，改 grade 也修不好。
+#[test]
+fn a_dequant_signature_covers_both_packed_widths() {
+    let profile = ascend_profile();
+    let dequant = profile
+        .providers(Prim::Quant)
+        .find(|provide| provide.impl_name == "scalar_dequant")
+        .expect("P0 模板用的是 scalar_dequant");
+    for dt in [DType::I2, DType::I4] {
+        let need = Need::of(Prim::Quant).with_dt(DTypeSet::of([dt]));
+        assert!(
+            dequant.covers(&need),
+            "scalar_dequant 缺 {dt:?}：{:?}",
+            dequant.diff(&need)
+        );
+    }
+}

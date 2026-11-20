@@ -23,6 +23,13 @@ cpb   = 2
 width = 4
 zero  = 8
 
+# 网格映射：与 `gemm_f32` / `matmul_f32` 同一降低路径——按输出元素拆线程（二维网格 [M, N]），
+# `i:M` / `j:N` 绑定模板里的 `for (int i = 0; i < M; ++i)` 与 `for (int j = 0; j < N; ++j)`，
+# 规约维 `p` 保留。打包族此前没声明这一块，于是同一份模板只能串行跑：并行与否不该由
+# 声明里「有没有写这四行」决定。`gemm_i2` 继承本文件，一并生效。
+[grid]
+dims = ["i:M", "j:N"]
+
 [[variants]]
 name      = "direct"
 order     = 1

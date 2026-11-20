@@ -34,6 +34,8 @@ fn backend(emit: Emit) -> diagnostic::Result<&'static dyn crate::backend::Backen
 pub struct Verified {
     /// 用户给的设备名（`auto` 或档案名）。
     pub device: String,
+    /// 这一台走的是并行网格程序还是回落单线程语义门。
+    pub channel: Channel,
     /// 厂商。
     pub vendor: String,
     /// 档案 id。
@@ -64,6 +66,30 @@ pub struct Verified {
     pub key: String,
     /// 编译产物：形状矩阵的每一项一份（`reused` 为真表示那次没调用编译器）。
     pub artifacts: Vec<Artifact>,
+}
+
+/// 设备通道跑的是哪一份程序。
+///
+/// 两种都是「算对了」，但证据强度不同：并行网格程序证的是生产态形态（每线程一元素 / 每块一线程 /
+/// `[grid]` 各维一线程），回落单线程只证语义。台账混记会让「该形态缺并行实现」这条缺口永久隐身，
+/// 因此它是报告字段，不是日志噪声。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// 并行网格程序（按 `[chunk]` / `[grid]` 声明发射）。
+    Parallel,
+    /// 单线程语义门（该形态尚无并行实现，或本来就是串行骨架）。
+    Harness,
+}
+
+impl Channel {
+    /// 报告用的一栏。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Parallel => "并行",
+            Self::Harness => "回落单线程",
+        }
+    }
 }
 
 /// 一台设备的结果。
@@ -438,7 +464,7 @@ impl Sweep<'_> {
 
     /// 一格怎么跑：返回回读的输出与产物记录（CUDA/Metal 通道每次临时编译，没有产物）。
     fn kernel(
-        &self,
+        &mut self,
         sample: &Sample,
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
@@ -471,15 +497,17 @@ impl Sweep<'_> {
     /// CUDA 与 Metal 只差取哪个后端，所以共用这一份次序：两条通道若各写一遍，
     /// “先试并行、再回落语义门”就会有两份口径。
     fn device(
-        &self,
+        &mut self,
         sample: &Sample,
         prepared: &Prepared,
         emit: Emit,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
         let (backend, launch) = self.channel(emit, sample)?;
-        let program = self.program(backend, sample, prepared, &launch)?;
+        let (program, channel) = self.program(backend, sample, prepared, &launch)?;
         let (stdout, _stderr) =
             backend.compile_run(self.run.profile, self.dirs, &program, "verify")?;
+        // 只有真跑通了才写「并行」：回落的单线程执行不得借此升级。
+        self.verified.channel = channel;
         Ok((runner::parse_bits(&stdout), None))
     }
 
@@ -507,14 +535,15 @@ impl Sweep<'_> {
         sample: &Sample,
         prepared: &Prepared,
         launch: &crate::backend::Launch,
-    ) -> diagnostic::Result<crate::backend::Source> {
+    ) -> diagnostic::Result<(crate::backend::Source, Channel)> {
         let signature = &self.run.op.signature;
         let source = &prepared.source.text;
         match backend.parallel(source, signature, sample, launch) {
-            Ok(program) => Ok(program),
-            Err(error) if error.code() == Code::Unsupported => {
-                backend.harness(source, signature, sample)
-            }
+            Ok(program) => Ok((program, Channel::Parallel)),
+            Err(error) if error.code() == Code::Unsupported => Ok((
+                backend.harness(source, signature, sample)?,
+                Channel::Harness,
+            )),
             Err(error) => Err(error),
         }
     }
@@ -524,6 +553,8 @@ impl Sweep<'_> {
 fn blank(run: &Run<'_>, tool: Option<&toolchain::Toolchain>) -> Verified {
     Verified {
         device: String::new(),
+        // 缺省是语义门：`Parallel` 必须由确实跑通的并行程序写进去，不能靠缺省拿到。
+        channel: Channel::Harness,
         vendor: run.profile.meta.vendor.to_string(),
         id: run.profile.meta.id.to_string(),
         variant: String::new(),
@@ -698,5 +729,28 @@ mod tests {
         };
         assert_eq!(report.failures().len(), 2, "两个 Failed 条目各给出一条错误");
         assert_eq!(report.head_hits(), (1, 2), "两台设备里一台命中首档");
+    }
+}
+
+#[cfg(test)]
+mod tmp_probe {
+    #[test]
+    fn tmp_probe_launch() {
+        let catalogue = crate::builtin::Catalogue::try_builtin().expect("内置数据");
+        for name in [
+            "gemm_i4",
+            "gemm_i8",
+            "matmul_i8",
+            "gemm_i2",
+            "embed_f32",
+            "rope_f32",
+            "dequant_i4",
+        ] {
+            let op = catalogue.op(name).expect("算子");
+            let model = op::model(name).expect("语义表");
+            let sample = (model.sample)(2, 3);
+            let launch = crate::execution::launch(op, &sample).expect("launch");
+            println!("{name:12} -> {launch:?}");
+        }
     }
 }

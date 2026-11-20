@@ -110,6 +110,25 @@
 
 ### Changed
 
+- **分支合并带来的重复复归零：`jscpd` 296 文件 / 125 470 行上 0 克隆 / 0.00%，三处同源文本各收成唯一出处**。
+  合并进来的代码让重复重新抬头：`engine/src/backends.rs` 的见证驱动与 `engine/src/codegen.rs` 的基准驱动
+  各写了一份 Metal host 前导，`engine/src/program.rs` 的 gemv 夹具又与 `testkit` 的共享夹具各写了一份
+  `cutile_x_kernel` 声明与样本，`serve/src/http.rs` 的 `exchange` / `exchange_with_timeout` /
+  `exchange_closed_write` 是三份只有两个开关不同的往返骨架。落点：**Metal host 前导与一轮调度**收成
+  `codegen::host_prologue(entry)` 与 `codegen::METAL_ROUND`，见证驱动只剩 head / tail 两段字面，
+  基准驱动的预热与计时共用同一份前导与轮次；**gemv 夹具**由 `engine::program` 以 `#[path]` 取用
+  `crates/testkit/tests/support/cutile_x_kernel.rs`，并新增 `SOURCE` 常量让 `Signature::parse` 与待降级的
+  内核文本不再各抄一份；**服务端往返**收成 `exchange_with(timeout, half_close, request)`，三个用例只在这
+  两个开关上分岔（绑定方式随 `timeout`，半关闭发生在写完请求之后）。行为面未动：生成的 Metal 宿主文本、
+  错误文本与返回码、夹具取值（`m = 4`、`n = 2`、`x` 4×1.0、`w` `[0x98, 0x76]`、`scales` 2×0.5、`y` 2×0.0）
+  以及三个往返用例的断言逐字保留。顺带修两处存量 lint：`serve::http` 的常量断言改用 `const { assert!(..) }`，
+  `cli::lib` 的选项表用 `type PathRow` 替掉内联元组类型。**验证**：`jscpd` 0 克隆，
+  `cargo fmt --all --check`、`clippy --workspace --all-targets --all-features -D warnings`、
+  `cargo test --doc`、`cargo machete`、`cargo bench --no-run` 全绿；`nextest --workspace` 2188/2189 通过，
+  唯一红灯是静态质量门对**合并进来的** `metal_benchmark_driver` / `cuda_benchmark_driver` /
+  `benchmark_grid` / `cuda_bench_geometry` / `run_sample` / `production_lower` / `content_length` 七个函数的
+  复杂度登记缺口（这些函数在 HEAD 里就已超标、本轮一行未动）。
+
 - **批调度改由 IFB 打包拍板：`serve::Completion` 一轮跑哪些行、跑几行，现在是 `engine::ifb::pack`
   的结论而不是"按准入次序全跑"**。`State::round` 先把本层一次提交的粒度（`PREFILL_CHUNK`）收进
   `Budget`，再把 `Verdict::Packed` 的行原样交给下面两层：上下文候选各算自己分到的那一块、生成行一次
@@ -1228,6 +1247,13 @@
 - `plan.dir` 与 `log.level`：没有任何消费方，已从键闭集移除（`CUTILE_PLAN_DIR` / `CUTILE_LOG` 一并失效）。
 - `cutile::host` 模块（`src/host.rs`，152 行 + 4 个测试）：`Tensor::partition` 与网格推导全仓零调用，也没有对外 API 落地。DESIGN §4.4 改为"P0 未实现"，ADR 0003 补修订段，`tensor` / `exec` / `ARCHITECTURE.md` 的引用同步。
 - `cutile` 里没有输入的死代码：`layout::check` / `Verdict`（判定要两个正规形，而片段尚不声明布局）、`LayoutNF::{bytes, elements}`、`cap::unmet_prims`（只被测试调用）。`DESIGN §6.2` 与 §12.2 的 `@repack` 预算相应改写为构建期存储契约。
+
+### Fixed
+
+- **设备档案探测的不是它自己声明的那个编译器**：`toolchain::for_profile` 只有 `Emit::Cuda` 才 `probe(meta.tool)`，其余一律 `detect()`（宿主 `cc`/`clang`/`gcc`）。于是 `ascend` 声明 `ccec` 却拿宿主 C 编译器去编——`doctor` 的"实测"一栏报"未知"（看着像没探测），`bench` 真编出来的却是 gcc 的产物并按 910B 报数。现在只有便携 C 走 `detect()`（它的登记值 `cc` 与 `*` 本来就是"按 cc → clang → gcc 探测"），其余按 `[meta].tool` 探测且**不退回宿主编译器**：新增 `toolchain::probe_declared` 按空白切命令与固定前缀参数（`metal` 的 `xcrun metal` 因此可探），身份保留声明原文，报告能与档案逐字对账。`doctor` 与 `for_profile` 共用这一条，`ascend` 现在与 `nvidia` 一样如实说"没有编译器"。副产物：装了 Xcode 的机器上 metal 的"实测"从"未知"变成 `xcrun metal@32023.922`。**验证**：`cutile` 167 条（`toolchain` 新增两条：带前缀参数的声明可探且身份保留原文、设备档案只探自己声明的编译器；`doctor` 的 ascend 用例补上"身份不能是宿主编译器"断言）、`llm-cli` 88 条全绿；`doctor --op gemv_i4 --device ascend` 仍是"本机没有该设备"，只是这一栏不再自相矛盾。
+- **`reduce` 片段把归约退化成"取首元素"，且只有 `gemv` 的 `&v, 1, 1` 恰好正确**：`ascend/reduce.cpp` 与 `intel/reduce.cl` 都写成 `($0) = ($1)`，不引用 `$func` / `$op` / `$axis`，对 `softmax`（`GMAX` 最大值）与 `reduce_*`、`rmsnorm` 的多元素归约会**静默返回首元素**且编译期不报错。两处都改成与 `cpu` / `nvidia` 同源的 `$func($1, $2, $3)`（长度双通道与遍历封在 `$func` 里）。`intel` 侧同时补上 `[compile].preamble`：`sub_group_reduce` 早先只是"文本上像归约"，空 preamble 下真的调用 `$func` 无处定义；现在挂了 `_cutile_sum_f32` / `_cutile_max_f32` / `_cutile_exp_*` 全套软件接口（`exp`/`log`/`sqrt`/`sin`/`cos`/`pow` 按 OpenCL C 的 gentype 重载写）。`prim` 新增用例 `a_reduction_fragment_must_fold_through_func` 钉住这条语义——按 `impl` 分组的文本同构判定看不到它（`scalar_loop` / `shfl.bfly` / `sub_group_reduce` 是三个不同的 impl 名）。**验证**：`llm-prim` 20 条、`llm-prof` 57 条全绿；`intel` 的 preamble 另以 `clang -x cl -cl-std=CL2.0 -fsyntax-only` 单独过了一遍语法门。
+- **`ascend` 的 `quant` 片段硬编码 4 位，i2 结构性缺席**：片段里写死 `0x0F` 掩码与 `-8` 零点，忽略模板注入的 `$cpb` / `$width` / `$zero`，于是 `gemv_i2` / `gemm_i2` 在 `ascend` 上不是"等级不足"而是"dt 缺 i2"。现在掩码按位宽派生（`(1 << $width) - 1`），与 `cpu/quant.c`、`nvidia/quant.cu` 同源，档案的 `scalar_dequant` 同步补 `i2`。**验证**：`prof` 档案装载（`llm-prof` 57 条）与 `cutile` 协商用例全绿；`prof` 侧新增 `a_dequant_signature_covers_both_packed_widths` 钉住这条（档案改回 i4-only 即失败）；`doctor --op gemv_i2 --device ascend` 的九条需求现在只报 `L0 < L2`，不再出现 `dt 缺 i2`。
+- **`ascend` 档案缺 `[compile]`**：`doctor` 打印"参数 无"，且 `@reduce` 的 `$func` 在设备源码里无处定义——这是条定时炸弹：归约片段一改对，编译期立刻炸。现在补 `flags = ["-O2"]` 与 preamble（`_cutile_sum_f32` / `_cutile_max_f32` / `_cutile_exp_sum_f32` / `_cutile_exp_norm_f32` 及软件数学接口，与 `cpu` 同源；`exp` 走位精确实现，其余 libm）。核架构参数（`dav-c220`）刻意不写：本机没有 `ccec`，猜一个拼写进档案只会让"参数"这一格从空变成错的。`[mem]` / `[peak]` / `[simt]` 三段同样留空并在文件里写明理由（前两者是实测值，没有真机不写数字；昇腾的 lane 交换由向量单元承担，不是 SIMT，写 `group = 1` 会把它错报成单 lane 设备）。**验证**：`doctor --op gemv_i4 --device ascend` 的参数栏从"无"变为 `-O2`，其余结论不变（仍全 L0、仍无可行变体——这三条修复不动证据等级，只让片段与声明对得上）。
 
 ## [0.1.0] - 2026-11-11
 

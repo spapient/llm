@@ -534,6 +534,82 @@ fn metal_int8_gemm_k4096() {
     }
 }
 
+/// 端到端 int8 GEMM：cutile 生产入口（`resolve` 档案协商 → `Lower::Int8Gemm` → engine lowering）
+/// 生成 MSL，在真机 GPU 上与 CPU i32 参考逐元素对拍并报延迟。
+///
+/// 同时验证两条回落契约：非 int8 签名、`K` 不被 `tile` 整除时都必须回到网格/串行路径，
+/// 不允许把「没走 int8 分块」冒充成已落地。
+///
+/// 本用例只出测量：`cargo test --release -p llm-engine --lib -- metal_int8_gemm_cutile_k4096 --ignored --nocapture`。
+#[test]
+#[ignore = "Metal int8 GEMM cutile 端到端：cargo test --release -p llm-engine --lib -- metal_int8_gemm_cutile_k4096 --ignored --nocapture"]
+fn metal_int8_gemm_cutile_k4096() {
+    let Some((device, queue)) = bench_device("int8 GEMM cutile 端到端") else {
+        return;
+    };
+    crate::backends::install();
+
+    const M: usize = 64;
+    const N: usize = 256;
+    const K: usize = 4096;
+
+    let a: Vec<u8> = (0..M * K)
+        .map(|i| (((i % 17) as i32 - 8) as i8) as u8)
+        .collect();
+    let b: Vec<u8> = (0..K * N)
+        .map(|i| (((i % 19) as i32 - 9) as i8) as u8)
+        .collect();
+    let (sa, sb): (Vec<i8>, Vec<i8>) = (
+        a.iter().map(|&x| x as i8).collect(),
+        b.iter().map(|&x| x as i8).collect(),
+    );
+    let mut acc = vec![0i32; M * N];
+    op::matmul_i8::forward_tiled(&sa, &sb, M, N, K, &mut acc).expect("CPU 参考");
+    let reference: Vec<f32> = acc.iter().map(|&v| v as f32).collect();
+
+    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-int8-cutile");
+    let fallback =
+        cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_f32", M, N, 16)
+            .expect("非 int8 算子应回落到网格/串行路径");
+    assert!(
+        !fallback.contains("threadgroup int As"),
+        "非 int8 签名不得走 int8 分块 lowering"
+    );
+    let ragged =
+        cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_i8", M, N, 24)
+            .expect("K 不整除时应回落到网格/串行路径");
+    assert!(
+        !ragged.contains("threadgroup int As"),
+        "K 不被 tile 整除时不得走 int8 分块 lowering"
+    );
+
+    let a_buf = upload_bytes(&device, &a, "A-int8");
+    let b_buf = upload_bytes(&device, &b, "B-int8");
+    let mut y_buf = output_buffer(&device, M * N, "Y-int8");
+    let grid = [M as u32, N as u32, 1];
+
+    for tile in [8usize, 16, 32] {
+        let msl =
+            cutile::execution::metal_int8_gemm_program(&catalogue, &dirs, "matmul_i8", M, N, tile)
+                .unwrap_or_else(|error| panic!("tile={tile} 的 MSL 应能生成：{error}"));
+        assert!(
+            msl.contains("threadgroup int As"),
+            "tile={tile} 应走 int8 分块 lowering"
+        );
+        let pipe = device
+            .compile(&msl)
+            .unwrap_or_else(|| panic!("tile={tile} 的 MSL 应能编译"));
+        let block = [tile as u32, tile as u32, 1];
+        queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+        assert_matmul_matches("int8-cutile", &reference, y_buf.as_mut_bytes());
+        let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+        eprintln!(
+            "cutile→Metal int8 GEMM 64×256×4096 tile={tile}：{ns:.1} ns（{:.2} G int-op/s）",
+            (M * N * K) as f64 / ns
+        );
+    }
+}
+
 /// 生产态分块注意力对照：同一份 `attention_f32`（S=512、D=64）分别经
 /// [`cutile::execution::metal_grid_program`]（每查询行一线程）与
 /// [`cutile::execution::metal_tiled_attention_program`]（每行一个 threadgroup）生成 MSL，

@@ -9,7 +9,7 @@
 
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
-use op::sig::{Param, Signature};
+use op::sig::{CType, Param, Signature};
 
 /// 生产态共享内存分块 f32 GEMM（Metal）：把标量三重循环换成 threadgroup 分块。
 ///
@@ -691,6 +691,55 @@ fn flash_acc_update(v: &str, n: usize, shape: Flash, tail: bool) -> String {
 }
 
 /// 生产态 int8 分块 GEMM（Metal）：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 累加、`f32` 输出。
+///
+/// 签名驱动入口：缓冲与维度的取法与 f32 分块 GEMM 相同（前三条缓冲、三个整数标量），额外的
+/// 校验是元素类型必须是 `u8/u8/f32`——`Lower::Int8Gemm` 只该被 int8 GEMM 走到。
+///
+/// # Errors
+///
+/// 签名不是 `(u8 a, u8 b, float y, int M, int N, int K)`、样本缺标量，或形状不满足分块整除时返回说明。
+pub fn metal_int8_gemm(
+    _kernel: &str,
+    signature: &Signature,
+    sample: &Sample,
+    tile: usize,
+) -> Result<String> {
+    check_int8_signature(signature)?;
+    let (m, n, k) = gemm_dims(signature, sample)?;
+    metal_int8_gemm_program(m, n, k, tile)
+}
+
+/// 签名是不是 `(u8 *a, u8 *b, float *y, int M, int N, int K)`；类型不符是分派错误，不是形状错误。
+fn check_int8_signature(signature: &Signature) -> Result<()> {
+    int8_signature(signature)
+        .then_some(())
+        .ok_or_else(int8_mismatch)
+}
+
+/// 签名不符时的诊断：与判定分开，各只回答一个问题。
+fn int8_mismatch() -> Error {
+    Error::new(
+        Code::Internal,
+        "int8 GEMM 签名需要 (u8 a, u8 b, float y, int M, int N, int K)",
+    )
+    .with(INT8_SITE)
+}
+
+/// 逐位核对 int8 GEMM 的形参类型（与 `cutile::execution` 的同一判据保持一致）。
+fn int8_signature(signature: &Signature) -> bool {
+    let types: Vec<CType> = signature.params().iter().map(|param| param.ctype).collect();
+    types
+        == [
+            CType::U8,
+            CType::U8,
+            CType::F32,
+            CType::Int,
+            CType::Int,
+            CType::Int,
+        ]
+}
+
+/// int8 分块 GEMM 的 MSL：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 累加、`f32` 输出。
 ///
 /// 语义与 [`op::matmul_i8`] 的参考实现逐元素相同（整数累加，结果精确）。每个线程组把
 /// `tile×tile` 的 A/B 块搬进线程组内存，收缩轴在共享块上复用；要求 `M/N/K` 都能被

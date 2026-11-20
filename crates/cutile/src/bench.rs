@@ -270,58 +270,157 @@ fn run_sample(
     (m, n): (usize, usize),
     repeat: usize,
 ) -> diagnostic::Result<Timed> {
+    let (prepared, sample) = prepare_sample(run, dirs, (m, n))?;
+    let measured = measure(run, dirs, &prepared, &sample, repeat)?;
+    let (per_run_ns, p50_ns, p95_ns, max_rel_err) =
+        readings(run, &sample, repeat, &measured.outcome)?;
+    Ok(Timed {
+        shape: (m as u64, n as u64),
+        repeat,
+        per_run_ns,
+        p50_ns,
+        p95_ns,
+        working_set: working_set(&sample, run.op.signature.output().unwrap_or_default()),
+        cache_dir: measured.cache_dir,
+        plan: prepared.plan,
+        artifact: measured.artifact,
+        toolchain: measured.compiler,
+        max_rel_err,
+    })
+}
+
+/// 装配一段：先确定变体与源文本，再取样本；拼装期签名不符在编译之前就被拒。
+fn prepare_sample(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    (m, n): (usize, usize),
+) -> diagnostic::Result<(pipeline::Prepared, Sample)> {
     let prepared = prepare(run, dirs, m, n)?;
     let sample = (run.model.sample)(m, n);
     run.op.signature.check(&sample)?;
-    let (outcome, artifact, cache_dir, compiler) = if run.profile.meta.emit == Emit::C {
-        // 重复次数也是产物身份的一部分：换 `--repeat` 就换一份产物。
-        let harness = prepared.harness(run.op, &sample, repeat)?;
-        // host C 可以复用缓存；设备基准下方每次都实际编译并执行生产态 kernel。
-        let tool = toolchain::for_profile(run.profile);
-        let (outcome, artifact) =
-            build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
-        let compiler = Some(artifact.key.tool.clone());
-        (
-            outcome,
-            Some(artifact),
-            build::dir(&prepared.key, dirs),
-            compiler,
-        )
+    Ok((prepared, sample))
+}
+
+/// 一次测量的读数：计时三档与两处校验（样本数、精度）。任一不成立就不产温度数。
+fn readings(
+    run: &Run<'_>,
+    sample: &Sample,
+    repeat: usize,
+    outcome: &runner::Outcome,
+) -> diagnostic::Result<(f64, f64, f64, f64)> {
+    let (per_run_ns, p50_ns, p95_ns) = timings(outcome)?;
+    check_samples(repeat, outcome)?;
+    let max_rel_err = check_accuracy(run, sample, outcome)?;
+    Ok((per_run_ns, p50_ns, p95_ns, max_rel_err))
+}
+
+/// 一次测量走哪条通道只由 emit 决定：宿主 C 走本机编译，其余走注册过的设备后端。
+fn measure(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    prepared: &pipeline::Prepared,
+    sample: &Sample,
+    repeat: usize,
+) -> diagnostic::Result<Measured> {
+    if run.profile.meta.emit == Emit::C {
+        host_measure(run, dirs, prepared, sample, repeat)
     } else {
-        let backend = device::spec(run.profile.meta.emit)
-            .ok_or_else(|| Error::new(Code::Unsupported, "设备计时后端未注册"))?;
-        let kind = production_lower(run.op, run.profile.meta.emit)?;
-        let harness = backend.benchmark_harness(
-            run.profile,
-            &prepared.source.text,
-            &run.op.signature,
-            &sample,
-            &kind,
-            repeat,
-        )?;
-        let (stdout, stderr) = backend.compile_run(run.profile, dirs, &harness, "bench")?;
-        let outcome = runner::Outcome {
+        device_measure(run, dirs, sample, repeat, &prepared.source.text)
+    }
+}
+
+/// 一次测量的原始产物：计时读数、可选缓存产物、其目录与编译器标识。
+struct Measured {
+    outcome: runner::Outcome,
+    artifact: Option<crate::cache::Artifact>,
+    cache_dir: Option<PathBuf>,
+    compiler: Option<String>,
+}
+
+/// 主机 C 基准：重复次数也是产物身份的一部分（换 `--repeat` 就换一份产物），产物可复用缓存。
+fn host_measure(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    prepared: &pipeline::Prepared,
+    sample: &Sample,
+    repeat: usize,
+) -> diagnostic::Result<Measured> {
+    let harness = prepared.harness(run.op, sample, repeat)?;
+    let tool = toolchain::for_profile(run.profile);
+    let (outcome, artifact) =
+        build::execute(run.profile, tool.as_ref(), &prepared.key, &harness, dirs)?;
+    Ok(Measured {
+        compiler: Some(artifact.key.tool.clone()),
+        cache_dir: build::dir(&prepared.key, dirs),
+        outcome,
+        artifact: Some(artifact),
+    })
+}
+
+/// 设备基准：每次都实际编译并执行生产态 kernel，没有可复用产物。
+fn device_measure(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    sample: &Sample,
+    repeat: usize,
+    source: &str,
+) -> diagnostic::Result<Measured> {
+    let backend = device_backend(run.profile)?;
+    let kind = production_lower(run.op, run.profile.meta.emit)?;
+    let harness = backend.benchmark_harness(
+        run.profile,
+        source,
+        &run.op.signature,
+        sample,
+        &kind,
+        repeat,
+    )?;
+    let (stdout, stderr) = backend.compile_run(run.profile, dirs, &harness, "bench")?;
+    Ok(Measured {
+        outcome: runner::Outcome {
             bits: runner::parse_bits(&stdout),
             timing: runner::parse_timing(&stderr),
             stderr,
-        };
-        let compiler = match run.profile.meta.emit {
-            Emit::Cuda => toolchain::for_profile(run.profile).map(|tool| tool.id()),
-            _ => backend.toolchain().map(|tool| tool.id()),
-        };
-        (outcome, None, None, compiler)
-    };
-    let (per_run_ns, p50_ns, p95_ns) = timings(&outcome)?;
-    if outcome.timing.samples_ns.len() != repeat {
+        },
+        artifact: None,
+        cache_dir: None,
+        compiler: compiler_id(run.profile, backend),
+    })
+}
+
+/// 设备计时后端必须已注册：没注册是装配缺失，不是「这个 emit 不支持」。
+fn device_backend(profile: &Profile) -> diagnostic::Result<&'static dyn crate::backend::Backend> {
+    device::spec(profile.meta.emit)
+        .ok_or_else(|| Error::new(Code::Unsupported, "设备计时后端未注册"))
+}
+
+/// CUDA 走 nvcc 族的档案，其余走设备后端自己的工具链；两处都拿不到就如实记「无」。
+fn compiler_id(profile: &Profile, backend: &'static dyn crate::backend::Backend) -> Option<String> {
+    match profile.meta.emit {
+        Emit::Cuda => toolchain::for_profile(profile).map(|tool| tool.id()),
+        _ => backend.toolchain().map(|tool| tool.id()),
+    }
+}
+
+/// 样本数就是重复次数：少一条就不能拿 p50/p95 说事。
+fn check_samples(repeat: usize, outcome: &runner::Outcome) -> diagnostic::Result<()> {
+    let got = outcome.timing.samples_ns.len();
+    if got != repeat {
         return Err(Error::new(
             Code::Internal,
-            format!(
-                "计时样本数不匹配：期望 {repeat}，得到 {}",
-                outcome.timing.samples_ns.len()
-            ),
+            format!("计时样本数不匹配：期望 {repeat}，得到 {got}"),
         ));
     }
-    let expected = (run.model.reference)(&sample)?;
+    Ok(())
+}
+
+/// 与标量参考逐项对拍：相对误差超过该 dtype 的容差即失败，返回这次的最大误差。
+fn check_accuracy(
+    run: &Run<'_>,
+    sample: &Sample,
+    outcome: &runner::Outcome,
+) -> diagnostic::Result<f64> {
+    let expected = (run.model.reference)(sample)?;
     let max_rel_err = crate::reference::max_rel_err(&outcome.bits, &expected);
     let tolerance = crate::reference::tolerance(run.model.dtype);
     if max_rel_err > tolerance {
@@ -330,37 +429,43 @@ fn run_sample(
             format!("基准结果与标量参考不一致：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"),
         ));
     }
-    Ok(Timed {
-        shape: (m as u64, n as u64),
-        repeat,
-        per_run_ns,
-        p50_ns,
-        p95_ns,
-        working_set: working_set(&sample, run.op.signature.output().unwrap_or_default()),
-        cache_dir,
-        plan: prepared.plan,
-        artifact,
-        toolchain: compiler,
-        max_rel_err,
-    })
+    Ok(max_rel_err)
 }
 
 fn production_lower(op: &OpDecl, emit: Emit) -> diagnostic::Result<Lower> {
     if op.name == "gemv_i4" && emit == Emit::Cuda {
         return Ok(Lower::QuantizedGemvI4 { threads: 32 });
     }
+    skeleton_lower(op)
+}
+
+/// 只有逐点与 GEMM 骨架有生产态计时路径：逐点优先走逐点核，其余走声明里的网格。
+fn skeleton_lower(op: &OpDecl) -> diagnostic::Result<Lower> {
     match op.skeleton {
-        op::decl::Skeleton::Elementwise if op.pointwise() => Ok(Lower::Pointwise),
-        op::decl::Skeleton::Elementwise | op::decl::Skeleton::Gemm => op
-            .grid
-            .clone()
-            .map(Lower::Loop)
-            .ok_or_else(|| Error::new(Code::Unsupported, "该算子没有生产态并行网格")),
+        op::decl::Skeleton::Elementwise => pointwise_or_grid(op),
+        op::decl::Skeleton::Gemm => grid_lower(op),
         _ => Err(Error::new(
             Code::Unsupported,
             format!("`{}` 的生产态 lowering 尚无设备计时路径", op.name),
         )),
     }
+}
+
+/// 逐点算子不读邻居，因此不需要网格；一旦它声明了网格之外的并行形态就退回网格路径。
+fn pointwise_or_grid(op: &OpDecl) -> diagnostic::Result<Lower> {
+    if op.pointwise() {
+        Ok(Lower::Pointwise)
+    } else {
+        grid_lower(op)
+    }
+}
+
+/// 逐点之外的并行形态都走声明里的网格：没有网格就没有生产态计时路径。
+fn grid_lower(op: &OpDecl) -> diagnostic::Result<Lower> {
+    op.grid
+        .clone()
+        .map(Lower::Loop)
+        .ok_or_else(|| Error::new(Code::Unsupported, "该算子没有生产态并行网格"))
 }
 
 /// 判据：选了哪条变体、按什么形状编哪份源文本；不回答"它编不编得过"——编译在 [`run_sample`]。

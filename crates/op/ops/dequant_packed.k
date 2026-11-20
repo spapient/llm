@@ -7,7 +7,13 @@
 void cutile_{{op}}_kernel(const unsigned char *q, float *y, int N) {
     const float scale = 0.25f;
     const float zero = {{zero}};
-    for (int b = 0; b < N / {{cpb}}; ++b) {
+    // 循环头写成 `b < N` 而不是 `b < N/cpb`：网格注入只能绑「上界就是标量」的循环，上界是表达式时
+    // 每线程各跑一整遍、同一段结果被重复解包。非字节线程（`b >= N/cpb`）在这里直接返回，
+    // 语义与原来的 `b < N/cpb` 一致。
+    for (int b = 0; b < N; ++b) {
+        if (b >= N / {{cpb}}) {
+            return;
+        }
         const unsigned char *qp = 0;
         @load(qp, q + b);
         const unsigned char packed = qp[0];

@@ -17,6 +17,10 @@ cvt   = { dt = ["f32", "i32"], sat = ["off"] }
 a = "row"
 b = "row"
 
+# 网格映射：与 `matmul_f32` 同一路径（输出元素二维网格，K 维循环留在线程内）。
+[grid]
+dims = ["i:M", "j:N"]
+
 [[variants]]
 name      = "direct"
 order     = 1

@@ -769,56 +769,8 @@ pub fn metal_benchmark_driver(
     threads: [usize; 3],
     repeat: usize,
 ) -> Result<String> {
-    let output = output_name(signature)?;
-    let output_values = sample
-        .buffer(output)
-        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
-    if !matches!(&output_values.values, Values::F32(_)) || output_values.values.is_empty() {
-        return Err(Error::new(
-            Code::Unsupported,
-            "设备基准回读当前要求非空 f32 输出",
-        ));
-    }
-    let mut data = String::new();
-    let mut allocs = String::new();
-    let mut sets = String::new();
-    let out_len = output_values.values.len();
-    for (slot, param) in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer())
-        .enumerate()
-    {
-        let buffer = sample
-            .buffer(&param.name)
-            .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-        let base = param.ctype.c_name();
-        let len = buffer.values.len();
-        if param.mutable {
-            allocs.push_str(&format!(
-                "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n\
-                 \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输出缓冲分配失败\\n\"); return 7; }}\n",
-                name = param.name,
-            ));
-        } else {
-            data.push_str(&format!(
-                "static const {base} init_{name}[] = {{{lit}}};\n",
-                base = base,
-                name = param.name,
-                lit = c_literal(&buffer.values)
-            ));
-            allocs.push_str(&format!(
-                "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n\
-                 \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输入缓冲分配失败\\n\"); return 7; }}\n",
-                name = param.name,
-            ));
-        }
-        sets.push_str(&format!(
-            "            [encoder setBuffer:b_{name} offset:0 atIndex:{slot}];\n",
-            name = param.name,
-        ));
-    }
-
+    let (output, out_len) = bench_output(signature, sample)?;
+    let (data, allocs, sets) = bench_wiring(signature, sample)?;
     let source = r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <stdio.h>
@@ -860,9 +812,84 @@ int main(int argc, const char **argv) {
     .replace("@THREAD_Y@", &threads[1].to_string())
     .replace("@THREAD_Z@", &threads[2].to_string())
     .replace("@REPEAT@", &repeat.to_string())
-    .replace("@OUTPUT@", output)
+    .replace("@OUTPUT@", &output)
     .replace("@OUT_LEN@", &out_len.to_string());
     Ok(source)
+}
+
+/// 基准回读的形状：输出名与输出元素数（只接受非空 `f32`，别的类型回读不出数）。
+fn bench_output(signature: &Signature, sample: &Sample) -> Result<(String, usize)> {
+    let output = output_name(signature)?;
+    let len = bench_values(output, sample)?;
+    Ok((output.to_owned(), len))
+}
+
+/// 回读路径按 `float` 解释字节，因此只认非空 `f32` 输出：别的类型或空缓冲没有可打印的元素。
+fn bench_values(output: &str, sample: &Sample) -> Result<usize> {
+    let buffer = sample
+        .buffer(output)
+        .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
+    if !matches!(&buffer.values, Values::F32(_)) || buffer.values.is_empty() {
+        return Err(Error::new(
+            Code::Unsupported,
+            "设备基准回读当前要求非空 f32 输出",
+        ));
+    }
+    Ok(buffer.values.len())
+}
+
+/// 按签名顺序给每条缓冲写「声明 / 分配 / 绑定」三份文本：可变的是输出，不可变的先落成静态初值。
+fn bench_wiring(signature: &Signature, sample: &Sample) -> Result<(String, String, String)> {
+    let mut data = String::new();
+    let mut allocs = String::new();
+    let mut sets = String::new();
+    for (slot, param) in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+        .enumerate()
+    {
+        let buffer = sample
+            .buffer(&param.name)
+            .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+        let base = param.ctype.c_name();
+        let name = param.name.as_ref();
+        let len = buffer.values.len();
+        if param.mutable {
+            allocs.push_str(&output_alloc(name, base, len));
+        } else {
+            data.push_str(&literal_decl(name, base, &buffer.values));
+            allocs.push_str(&input_alloc(name));
+        }
+        sets.push_str(&format!(
+            "            [encoder setBuffer:b_{name} offset:0 atIndex:{slot}];\n",
+        ));
+    }
+    Ok((data, allocs, sets))
+}
+
+/// 输入缓冲的静态初值：一份数值表，与参数同名的数组。
+fn literal_decl(name: &str, base: &str, values: &Values) -> String {
+    format!(
+        "static const {base} init_{name}[] = {{{}}};\n",
+        c_literal(values)
+    )
+}
+
+/// 输出缓冲的分配：可变、按元素数一次开满。
+fn output_alloc(name: &str, base: &str, len: usize) -> String {
+    format!(
+        "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n\
+         \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输出缓冲分配失败\\n\"); return 7; }}\n",
+    )
+}
+
+/// 输入缓冲的分配：按静态初值的长度原样拷入。
+fn input_alloc(name: &str) -> String {
+    format!(
+        "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n\
+         \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输入缓冲分配失败\\n\"); return 7; }}\n",
+    )
 }
 
 /// host 驱动共用的前导：取默认设备、装载 metallib、取入口函数、建管线。

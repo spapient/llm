@@ -220,3 +220,24 @@ fn same_primitive_bodies_are_isomorphic_across_vendors() {
         }
     }
 }
+
+/// 归约片段必须真的折叠：`($0) = ($1)` 只在"归约长度 = 1"时成立，对 `softmax` / `reduce_*` 的
+/// 多元素归约会静默返回首元素。它与实现名无关（`scalar_loop` / `shfl.bfly` / `sub_group_reduce`
+/// 都是同一条语义），所以单列一条用例——按 `impl` 分组的同构判定看不到这种漂移。
+#[test]
+fn a_reduction_fragment_must_fold_through_func() {
+    for device in devices() {
+        let Some(set) = builtin(device.vendor, device.ext) else {
+            continue;
+        };
+        let Some(body) = set.get(Prim::Reduce) else {
+            continue;
+        };
+        let normalized = normalize_body(body);
+        assert!(
+            normalized.contains("$func("),
+            "{} 的 reduce 片段没有走 `$func`：{normalized}",
+            device.vendor
+        );
+    }
+}

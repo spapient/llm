@@ -17,6 +17,10 @@ cvt   = { dt = ["f32", "i32"], sat = ["off"] }
 a = "row"
 b = "row"
 
+# 网格映射：与 `gemm_i4` / `gemm_f32` 同为按输出元素拆线程的二维网格（`i:M`、`j:N`）。
+[grid]
+dims = ["i:M", "j:N"]
+
 [[variants]]
 name      = "direct"
 order     = 1

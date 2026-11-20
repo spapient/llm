@@ -187,19 +187,20 @@ fn benchmark_grid(grid: &op::decl::Grid, sample: &Sample) -> Result<[usize; 3]> 
     }
     let mut dims = [1usize; 3];
     for (index, (_, scalar)) in grid.dims.iter().enumerate() {
-        let value = sample.scalar(scalar).ok_or_else(|| {
-            Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值"))
-        })?;
-        dims[index] = usize::try_from(value)
-            .map_err(|_| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 必须为正数")))?;
-        if dims[index] == 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("网格标量 `{scalar}` 必须为正数"),
-            ));
-        }
+        dims[index] = grid_extent(scalar, sample)?;
     }
     Ok(dims)
+}
+
+/// 一个网格标量就是这一维的长度：必须是正数的样本取值。
+fn grid_extent(scalar: &str, sample: &Sample) -> Result<usize> {
+    let value = sample
+        .scalar(scalar)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值")))?;
+    usize::try_from(value)
+        .ok()
+        .filter(|extent| *extent > 0)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 必须为正数")))
 }
 
 fn metal_bench_geometry(
@@ -226,42 +227,73 @@ fn cuda_bench_geometry(
     kind: &Lower,
 ) -> Result<([usize; 3], [usize; 3], String)> {
     match kind {
-        Lower::Pointwise => {
-            let len = benchmark_output_len(signature, sample)?;
-            Ok((
-                [len.div_ceil(256), 1, 1],
-                [256, 1, 1],
-                crate::codegen::buffer_args(signature),
-            ))
-        }
-        Lower::Loop(grid) => Ok((
-            benchmark_grid(grid, sample)?,
-            [1, 1, 1],
-            crate::codegen::launch_args(sample, signature.params())?,
-        )),
-        Lower::QuantizedGemvI4 { threads } => {
-            if *threads != 32 {
-                return Err(Error::new(Code::Unsupported, "CUDA GEMV 要求 32-lane warp"));
-            }
-            let rows = sample
-                .scalar("N")
-                .ok_or_else(|| Error::new(Code::Invalid, "gemv_i4 样本缺少输出宽度 N"))?;
-            let rows = usize::try_from(rows)
-                .map_err(|_| Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"))?;
-            if rows == 0 {
-                return Err(Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"));
-            }
-            Ok((
-                [rows, 1, 1],
-                [*threads, 1, 1],
-                crate::codegen::launch_args(sample, signature.params())?,
-            ))
-        }
+        Lower::Pointwise => pointwise_wrap(signature, sample),
+        Lower::Loop(grid) => loop_wrap(signature, sample, grid),
+        Lower::QuantizedGemvI4 { threads } => warp_wrap(signature, sample, *threads),
         _ => Err(Error::new(
             Code::Unsupported,
             "该 lowering 尚无单 kernel 设备计时封装",
         )),
     }
+}
+
+/// 逐点族：一条线程一个输出元素，块宽 256。
+fn pointwise_wrap(
+    signature: &Signature,
+    sample: &Sample,
+) -> Result<([usize; 3], [usize; 3], String)> {
+    let len = benchmark_output_len(signature, sample)?;
+    Ok((
+        [len.div_ceil(256), 1, 1],
+        [256, 1, 1],
+        crate::codegen::buffer_args(signature),
+    ))
+}
+
+/// 多段族：网格就是声明里的网格，一个线程一段。
+fn loop_wrap(
+    signature: &Signature,
+    sample: &Sample,
+    grid: &op::decl::Grid,
+) -> Result<([usize; 3], [usize; 3], String)> {
+    Ok((
+        benchmark_grid(grid, sample)?,
+        [1, 1, 1],
+        crate::codegen::launch_args(sample, signature.params())?,
+    ))
+}
+
+/// i4 GEMV 一行一个 warp：`grid = [N, 1, 1]`、`block = [threads, 1, 1]`。
+fn warp_wrap(
+    signature: &Signature,
+    sample: &Sample,
+    threads: usize,
+) -> Result<([usize; 3], [usize; 3], String)> {
+    let rows = warp_rows(sample)?;
+    Ok((
+        [rows, 1, 1],
+        [warp_lanes(threads)?, 1, 1],
+        crate::codegen::launch_args(sample, signature.params())?,
+    ))
+}
+
+/// GEMV 的规约按 lane 展开，因此 32-lane warp 是硬条件而非默认值。
+fn warp_lanes(threads: usize) -> Result<usize> {
+    if threads != 32 {
+        return Err(Error::new(Code::Unsupported, "CUDA GEMV 要求 32-lane warp"));
+    }
+    Ok(threads)
+}
+
+/// 输出宽度 `N` 必须存在且为正整数：零行或负行没有可写的输出。
+fn warp_rows(sample: &Sample) -> Result<usize> {
+    let rows = sample
+        .scalar("N")
+        .ok_or_else(|| Error::new(Code::Invalid, "gemv_i4 样本缺少输出宽度 N"))?;
+    usize::try_from(rows)
+        .ok()
+        .filter(|rows| *rows > 0)
+        .ok_or_else(|| Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"))
 }
 
 struct MetalBackend;
@@ -386,6 +418,7 @@ fn metal_lower(
         }
         TiledGemm { .. }
         | SimdGroupGemm { .. }
+        | Int8Gemm { .. }
         | TiledAttention { .. }
         | FlashAttention { .. }
         | WmmaGemm => metal_special(kernel, signature, sample, kind),
@@ -402,7 +435,7 @@ fn metal_special(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        TiledGemm { .. } | SimdGroupGemm { .. } | WmmaGemm => {
+        TiledGemm { .. } | SimdGroupGemm { .. } | Int8Gemm { .. } | WmmaGemm => {
             metal_gemm_lower(kernel, signature, sample, kind)
         }
         TiledAttention { .. } | FlashAttention { .. } => {
@@ -433,6 +466,9 @@ fn metal_gemm_lower(
             col_frags,
         } => crate::tiled::metal_simdgroup_gemm(kernel, signature, sample, *row_frags, *col_frags)
             .map(|s| vec![s]),
+        Int8Gemm { tile } => {
+            crate::tiled::metal_int8_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
+        }
         WmmaGemm => Err(Error::new(
             Code::Unsupported,
             "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),
@@ -499,6 +535,7 @@ fn metal_chunk_lower(
         | QuantizedGemvI4 { .. }
         | TiledGemm { .. }
         | SimdGroupGemm { .. }
+        | Int8Gemm { .. }
         | TiledAttention { .. }
         | FlashAttention { .. }
         | WmmaGemm => Err(Error::new(
@@ -635,10 +672,14 @@ fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<Readback> 
 /// 见证驱动的 host 侧文本：把 `metallib` 里的 `cutile_witness` 发射到 GPU 并回读；缓冲宽度由
 /// [`MAX_OUT`] 注入。供测试与 `metal_driver_exe_from` 共用，不重复写驱动文本。
 pub fn metal_driver(max: usize) -> String {
-    format!("#define WITNESS_MAX_OUT {max}\n{METAL_DRIVER}")
+    format!(
+        "#define WITNESS_MAX_OUT {max}\n{METAL_HEAD}{prologue}{METAL_TAIL}",
+        prologue = crate::codegen::host_prologue("cutile_witness")
+    )
 }
 
-const METAL_DRIVER: &str = r#"#import <Foundation/Foundation.h>
+/// 见证驱动的 head：入口、参数与见证宽度用法；与 [`crate::codegen`] 的基准驱动共用同一段前导。
+const METAL_HEAD: &str = r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -650,30 +691,10 @@ int main(int argc, const char **argv) {
             return 2;
         }
         const int count = atoi(argv[2]);
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device) {
-            fprintf(stderr, "本机没有 Metal 设备\n");
-            return 3;
-        }
-        NSError *error = nil;
-        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
-        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
-        if (!library) {
-            fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String);
-            return 4;
-        }
-        id<MTLFunction> function = [library newFunctionWithName:@"cutile_witness"];
-        if (!function) {
-            fprintf(stderr, "metallib 里没有 cutile_witness\n");
-            return 5;
-        }
-        id<MTLComputePipelineState> pipeline =
-            [device newComputePipelineStateWithFunction:function error:&error];
-        if (!pipeline) {
-            fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String);
-            return 6;
-        }
-        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * WITNESS_MAX_OUT * sizeof(float)
+"#;
+
+/// 见证驱动的 tail：两条缓冲、一次发射与「见证宽度」回读。
+const METAL_TAIL: &str = r#"        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * WITNESS_MAX_OUT * sizeof(float)
                                                   options:MTLResourceStorageModeShared];
         id<MTLBuffer> counts = [device newBufferWithLength:(NSUInteger)count * sizeof(int)
                                                    options:MTLResourceStorageModeShared];

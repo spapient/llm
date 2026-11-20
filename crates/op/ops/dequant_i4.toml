@@ -22,6 +22,11 @@ cpb   = 2
 width = 4
 zero  = 8
 
+# 网格映射：每字节一线程（`b:N` 绑定模板里的 `for (int b = 0; b < N; ++b)`，非字节线程由模板内的
+# 范围守卫自己返回）。反量化是纯流量算子，一字节一线程正好把 `N/cpb` 次独立读摊到网格上。
+[grid]
+dims = ["b:N"]
+
 [[variants]]
 name      = "direct"
 order     = 1

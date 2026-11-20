@@ -99,8 +99,8 @@ pub struct DeviceInfo {
     pub tool: String,
     /// 档案登记的工具版本（人写的证据出处，不参与缓存键）。
     pub tool_ver: String,
-    /// 实测的工具链身份（`命令@版本`）：探测的是档案声明的那个命令（`[meta].tool`），本机没装它时
-    /// 为 `None`。`verify` 报的是另一件事——真正编出产物的那条（`toolchain::detect`）。
+    /// 实测的工具链身份（`命令@版本`）：探测的是档案声明的那个命令（`[meta].tool`，可带固定前缀
+    /// 参数），本机没装它时为 `None`。`verify` 报的是另一件事——真正编出产物的那条。
     pub toolchain: Option<String>,
     /// 编译参数（档案的 `[compile].flags`）：能力是「片段 + 工具链 + 参数」三元组。
     pub flags: String,
@@ -195,7 +195,7 @@ fn device_info(profile: &Profile) -> DeviceInfo {
         emit: profile.meta.emit.to_string(),
         tool: profile.meta.tool.to_string(),
         tool_ver: profile.meta.tool_ver.to_string(),
-        toolchain: toolchain::probe(&profile.meta.tool).map(|tool| tool.id()),
+        toolchain: toolchain::probe_declared(&profile.meta.tool).map(|tool| tool.id()),
         flags: profile.flags.join(" "),
         spaces: [
             space::physical(profile, Space::Gm).to_string(),
@@ -419,6 +419,15 @@ mod tests {
         assert!(
             report.evidence.host > 0,
             "自检仍要跑：见证源码算得对不对在这里是可验证的"
+        );
+        assert!(
+            report
+                .device
+                .toolchain
+                .as_deref()
+                .is_none_or(|id| id.starts_with("ccec@")),
+            "工具链身份只能是档案声明的 `ccec`，不能是宿主编译器：{:?}",
+            report.device.toolchain
         );
     }
 
