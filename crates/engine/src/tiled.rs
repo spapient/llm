@@ -505,6 +505,7 @@ fn flash_attention_msl(
          \x20    const uint S = {s}, D = {d}, T = {threads}, BK = {block}, ND = {nd};\n\
          \x20    threadgroup float scores[BK];\n\
          \x20    threadgroup float red[T];\n\
+         \x20    threadgroup float red_sum[T];\n\
          \x20    const uint i = gid.x / T, t = lid.x;\n\
          \x20    const float scale = sqrt((float)D);\n\
          \x20    float m = -3.402823466e38f, l = 0.0f;\n\
@@ -531,13 +532,13 @@ fn flash_attention_msl(
          \x20            scores[j] = e;\n\
          \x20            tsum += e;\n\
          \x20        }}\n\
-         \x20        red[t] = tsum;\n\
+         \x20        red_sum[t] = tsum;\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20        for (uint st = T / 2; st > 0; st >>= 1) {{\n\
-         \x20            if (t < st) red[t] += red[t + st];\n\
+         \x20            if (t < st) red_sum[t] += red_sum[t + st];\n\
          \x20            threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20        }}\n\
-         \x20        l = l * alpha + red[0];\n\
+         \x20        l = l * alpha + red_sum[0];\n\
          {updates}\
          \x20        m = mn;\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
