@@ -638,6 +638,16 @@ pub struct FlashAttention;
 #[annotation::model(name = "flash_attention_f32", shape = [8, 8], dtype = "f32", skeleton = "attention", const = "FLASH_MODEL")]
 pub type FlashAttentionF32 = FlashAttention;
 
+// 基座契约（ADR 0050）：两条算子共用形状/代价/样本，只有参考入口分叉。
+crate::operator_here!(Attention, "attention_f32", (8, 8), true, reference);
+crate::operator_here!(
+    FlashAttention,
+    "flash_attention_f32",
+    (8, 8),
+    true,
+    flash_reference
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1150,4 +1160,14 @@ pub mod decode_attention {
     /// Flash decode 注意力语义别名；codegen 按注册名选 [`decode_flash_reference`]。
     #[annotation::model(name = "decode_flash_attention_f32", shape = [1, 8], dtype = "f32", skeleton = "attention", const = "DECODE_FLASH_MODEL")]
     pub type DecodeFlashAttentionF32 = DecodeFlashAttention;
+
+    // 基座契约（ADR 0050）：同上一对，只把参考入口换成 flash 版本。
+    crate::operator_here!(DecodeAttention, "decode_attention_f32", (1, 8), true, reference);
+    crate::operator_here!(
+        DecodeFlashAttention,
+        "decode_flash_attention_f32",
+        (1, 8),
+        true,
+        decode_flash_reference
+    );
 }

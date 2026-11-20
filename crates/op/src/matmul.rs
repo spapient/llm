@@ -466,6 +466,8 @@ pub struct Matmul;
 #[annotation::model(name = "matmul_f32", shape = [256, 256], dtype = "f32", skeleton = "matmul")]
 pub type MatmulF32 = Matmul;
 
+crate::operator_here!(Matmul, "matmul_f32", (256, 256), false, reference);
+
 /// 确定性采样（与测试同源）：`(len, salt)` 决定序列，不引入外部依赖。
 fn deterministic(len: usize, salt: u32) -> Vec<f32> {
     (0..len)

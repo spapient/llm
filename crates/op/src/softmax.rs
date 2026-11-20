@@ -101,6 +101,8 @@ pub mod softmax_f32 {
     #[annotation::model(name = "softmax_f32", shape = [4096, 4096], dtype = "f32", skeleton = "softmax")]
     pub type SoftmaxF32 = Softmax;
 
+    crate::operator_here!(Softmax, "softmax_f32", (4096, 4096), true, reference);
+
     #[cfg(test)]
     mod tests {
         include!("softmax_f32_tests.rs");
@@ -291,6 +293,8 @@ pub mod rmsnorm_f32 {
     #[annotation::model(name = "rmsnorm_f32", shape = [4096, 4096], dtype = "f32", skeleton = "rmsnorm")]
     pub type RmsNormF32 = RmsNorm;
 
+    crate::operator_here!(RmsNorm, "rmsnorm_f32", (4096, 4096), true, reference);
+
     /// 标记类型：`#[model]` 需要一个类型别名承载语义，这里用单元结构。
     pub struct RmsNorm;
 
@@ -446,6 +450,8 @@ pub mod embed_f32 {
     /// Embedding 的具体语义别名。
     #[annotation::model(name = "embed_f32", shape = [8, 64], dtype = "f32", skeleton = "embed")]
     pub type EmbedF32 = Embed;
+
+    crate::operator_here!(Embed, "embed_f32", (8, 64), true, reference);
 
     #[cfg(test)]
     mod tests {
@@ -644,6 +650,8 @@ pub mod rope_f32 {
     /// RoPE 的具体语义别名。
     #[annotation::model(name = "rope_f32", shape = [4096, 4096], dtype = "f32", skeleton = "rope")]
     pub type RopeF32 = Rope;
+
+    crate::operator_here!(Rope, "rope_f32", (4096, 4096), true, reference);
 
     #[cfg(test)]
     mod tests {

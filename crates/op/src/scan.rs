@@ -717,6 +717,8 @@ pub mod scan_f32 {
     #[annotation::model(name = "scan_f32", shape = [4096, 4096], dtype = "f32", skeleton = "scan")]
     pub type ScanF32 = Scan;
 
+    crate::operator_here!(Scan, "scan_f32", (4096, 4096), false, reference);
+
     #[cfg(test)]
     mod tests {
         use super::*;

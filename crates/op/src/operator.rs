@@ -54,6 +54,45 @@ pub const fn model_of<T: Operator>() -> Model {
     }
 }
 
+/// 为「模块自带具体入口」的算子生成 [`Operator`] 实现（ADR 0050 §3 的装配层）。
+///
+/// 只在**算子模块内部**调用：`AXES` / `project_shape` / `cost` / `sample` / `reference` 都取
+/// 当前模块的同名项，装配行只剩类型、注册名、生产形状、可微性与参考入口。族骨架的泛型入口
+/// （reduce / unary / binary / gemv / gemm）仍由各自装配宏直接生成，不走这里。
+#[macro_export]
+macro_rules! operator_here {
+    ($ty:ty, $op:tt, $shape:expr, $differentiable:literal, $reference:ident) => {
+        impl $crate::operator::Operator for $ty {
+            const NAME: &'static str = $op;
+            const SHAPE: (usize, usize) = $shape;
+            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const AXES: &'static [$crate::model::AxisSpec] = AXES;
+            const DIFFERENTIABLE: bool = $differentiable;
+
+            fn shape_ctx(
+                m: usize,
+                n: usize,
+            ) -> Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+                project_shape(m, n)
+            }
+
+            fn cost(
+                shape: &$crate::model::ShapeContext,
+            ) -> Result<$crate::model::Cost, ::diagnostic::Error> {
+                self::cost(shape)
+            }
+
+            fn sample(m: usize, n: usize) -> $crate::model::Sample {
+                self::sample(m, n)
+            }
+
+            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+                $reference(sample)
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     include!("operator_tests.rs");

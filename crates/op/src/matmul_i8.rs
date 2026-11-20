@@ -237,6 +237,8 @@ pub struct MatmulI8Op;
 #[annotation::model(name = "matmul_i8", shape = [256, 256], dtype = "f32", skeleton = "matmul")]
 pub type MatmulI8 = MatmulI8Op;
 
+crate::operator_here!(MatmulI8Op, "matmul_i8", (256, 256), false, reference);
+
 /// 确定性 i8 采样：覆盖正负与零，`(len, salt)` 固定即序列固定。
 fn deterministic_i8(len: usize, salt: u32) -> Vec<u8> {
     (0..len)
