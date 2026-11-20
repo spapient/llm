@@ -1,6 +1,6 @@
 //! 反向数值对拍：自动回算的解析梯度与中心差分逐参数比对，并核对图外叶子不收梯度。
 
-use crate::{Data, Reference, Session, Sgd, TrainConfig};
+use crate::{Data, Geometry, Reference, Session, Sgd, TrainConfig};
 use autograd::{Sizes, Store, Tape, Var};
 use diagnostic::{Code, Result};
 use nn::ParamRole;
@@ -1142,4 +1142,203 @@ fn layer_norm_matches_central_differences() -> Result<()> {
         op::layer_norm_f32::forward(px, pg, pb, &mut y).expect("前向");
         y.iter().sum()
     })
+}
+
+/// 实例几何的一元对拍：前向走 `compute_shaped`，反向按同一实例回传，再对 `p` 做中心差分。
+fn check_geometry_grad(
+    op: &str,
+    geometry: Geometry,
+    x0: &[f32],
+    loss: impl Fn(&[f32]) -> f32,
+) -> Result<()> {
+    let total = geometry.outputs();
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let y = tape.record(op, &[p]).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+    let sizes = support::sizes_of(&tape, &[(p, x0.len()), (y, total), (out, 1)]);
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(p, ParamRole::Trainable, x0.to_vec())?;
+    session.buffers().compute_shaped(op, &[p], y, geometry)?;
+    sum_backward(&mut session, y, out)?;
+    check_grad(
+        session.buffers().gradient(p).expect("参数梯度应在场"),
+        x0,
+        "p",
+        loss,
+    );
+    Ok(())
+}
+
+/// 实例几何的三元对拍：`(x, gamma, beta)` 各自中心差分。
+fn check_geometry_affine(
+    op: &str,
+    geometry: Geometry,
+    x0: &[f32],
+    g0: &[f32],
+    b0: &[f32],
+    loss: impl Fn(&[f32], &[f32], &[f32]) -> f32,
+) -> Result<()> {
+    let total = geometry.outputs();
+    let mut tape = Tape::new();
+    let x = tape.parameter();
+    let g = tape.parameter();
+    let b = tape.parameter();
+    let y = tape.record(op, &[x, g, b]).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+    let sizes = support::sizes_of(
+        &tape,
+        &[
+            (x, x0.len()),
+            (g, g0.len()),
+            (b, b0.len()),
+            (y, total),
+            (out, 1),
+        ],
+    );
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(x, ParamRole::Trainable, x0.to_vec())?;
+    session.register_parameter(g, ParamRole::Trainable, g0.to_vec())?;
+    session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
+    session.buffers().compute_shaped(op, &[x, g, b], y, geometry)?;
+    sum_backward(&mut session, y, out)?;
+
+    let f = &loss;
+    check_grad(
+        session.buffers().gradient(x).expect("x 梯度应在场"),
+        x0,
+        "x",
+        |px| f(px, g0, b0),
+    );
+    check_grad(
+        session.buffers().gradient(g).expect("gamma 梯度应在场"),
+        g0,
+        "gamma",
+        |pg| f(x0, pg, b0),
+    );
+    check_grad(
+        session.buffers().gradient(b).expect("beta 梯度应在场"),
+        b0,
+        "beta",
+        |pb| f(x0, g0, pb),
+    );
+    Ok(())
+}
+
+#[test]
+fn shaped_max_pool1d_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Pool1d { k: 3, s: 1, p: 1, l: 7, c: 1 };
+    let x0 = ramp(7);
+    check_geometry_grad("max_pool1d_f32", geometry, &x0, |px| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn shaped_max_pool2d_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Pool2d { k: 3, s: 2, p: 0, h: 5, w: 5, c: 2 };
+    let x0 = ramp(5 * 5 * 2);
+    check_geometry_grad("max_pool2d_f32", geometry, &x0, |px| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn shaped_avg_pool2d_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Avg2d {
+        k: 3,
+        s: 2,
+        p: 1,
+        h: 5,
+        w: 5,
+        c: 1,
+        count_include_pad: false,
+    };
+    let x0 = ramp(5 * 5);
+    check_geometry_grad("avg_pool2d_f32", geometry, &x0, |px| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn shaped_adaptive_pool_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Adaptive { oh: 3, ow: 3, h: 6, w: 6, c: 1 };
+    let x0 = ramp(36);
+    check_geometry_grad("adaptive_pool_f32", geometry, &x0, |px| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn shaped_interpolate_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Interp { oh: 5, ow: 5, h: 3, w: 3, c: 1, linear: true };
+    let x0 = ramp(9);
+    check_geometry_grad("interpolate_f32", geometry, &x0, |px| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn shaped_batch_norm_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Norm { n: 2, spatial: 3, channels: 5 };
+    let (x0, g0, b0) = (ramp(30), gain5(), shift5());
+    check_geometry_affine("batch_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px, pg, pb], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn shaped_group_norm_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Group { groups: 3, n: 2, spatial: 3, channels: 6 };
+    let (x0, g0, b0) = (ramp(36), gain6(), shift6());
+    check_geometry_affine("group_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px, pg, pb], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+#[test]
+fn shaped_layer_norm_matches_central_differences() -> Result<()> {
+    let geometry = Geometry::Layer { rows: 2, width: 5 };
+    let x0 = ramp(10);
+    let g0 = gain5();
+    let b0 = shift5();
+    check_geometry_affine("layer_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px, pg, pb], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
+/// 5 个通道的仿射参数。
+fn gain5() -> Vec<f32> {
+    (0..5).map(|i| 0.6 + i as f32 * 0.2).collect()
+}
+
+/// 5 个通道的偏置参数。
+fn shift5() -> Vec<f32> {
+    (0..5).map(|i| 0.3 - i as f32 * 0.15).collect()
+}
+
+/// 6 个通道的仿射参数。
+fn gain6() -> Vec<f32> {
+    (0..6).map(|i| 0.5 + i as f32 * 0.18).collect()
+}
+
+/// 6 个通道的偏置参数。
+fn shift6() -> Vec<f32> {
+    (0..6).map(|i| 0.4 - i as f32 * 0.12).collect()
 }
