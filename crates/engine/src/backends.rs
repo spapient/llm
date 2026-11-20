@@ -227,7 +227,7 @@ fn metal_lower(
             metal_chunk_lower(kernel, signature, sample, kind)
         }
         TiledGemm { tile } => {
-            crate::codegen::metal_tiled_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
+            crate::tiled::metal_tiled_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
         }
         WmmaGemm => Err(Error::new(
             Code::Unsupported,
