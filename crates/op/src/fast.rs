@@ -25,31 +25,46 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
         a.len() >= m * k && b.len() >= k * n && out.len() >= m * n,
         "gemm_f32 尺寸不符"
     );
-    let cpu = thread::available_parallelism()
-        .map(|x| x.get())
-        .unwrap_or(1);
-    let t = cpu.min(m.div_ceil(MR)).max(1);
-    let rows_per = m.div_ceil(t);
+    let blocks = m.div_ceil(MR);
+    let t = threads_override().min(blocks).max(1);
+    if t <= 1 {
+        gemm_f32_single(a, b, m, n, k, out);
+        return;
+    }
+    // B 只打包一次、全部线程共享：每线程各转置一遍会让冗余带宽吞掉扩展性（256×256×4096 尤其明显）。
+    let (bpack, _npad) = pack_b_f32_par(b, n, k);
+    // 行块按 MR 对齐：否则 18 线程切 256 行会得到 15 行/线程，8 行走微内核、7 行掉回标量尾块。
+    let per = blocks.div_ceil(t) * MR;
     thread::scope(|s| {
-        for (ti, block) in out[..m * n].chunks_mut(rows_per * n).enumerate() {
-            let r0 = ti * rows_per;
+        for (ti, block) in out[..m * n].chunks_mut(per * n).enumerate() {
+            let r0 = ti * per;
             let rows = block.len() / n;
             let a_t = &a[r0 * k..(r0 + rows) * k];
-            s.spawn(move || compute(a_t, b, rows, n, k, block));
+            let bp = &bpack;
+            s.spawn(move || compute(a_t, bp, b, rows, n, k, block));
         }
     });
 }
 
 /// 单线程稠密 f32 GEMM（基准确认内核质量用）：`out[m,n] = a[m,k] · b[k,n]`。
 pub fn gemm_f32_single(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
-    compute(a, b, m, n, k, out);
+    let (bpack, _npad) = pack_b_f32(b, n, k);
+    compute(a, &bpack, b, m, n, k, out);
 }
 
 /// 单线程块计算：A 打包成 8 行面板，再 j 外层、面板内层跑微内核；残尾走标量。
-fn compute(a: &[f32], b: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
+fn compute(
+    a: &[f32],
+    bpack: &[f32],
+    b: &[f32],
+    rows: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) {
     let full = rows / MR;
     let apack = pack_panels(a, full, k);
-    sweep_columns(a, &apack, b, out, full, n, k);
+    sweep_columns(a, &apack, bpack, b, out, full, n, k);
     let tail = full * MR;
     if tail < rows {
         edge(
@@ -83,10 +98,62 @@ fn pack_panels(a: &[f32], full: usize, k: usize) -> Vec<f32> {
     apack
 }
 
+/// B 打包成 `[jblk][p][NR]`：微内核每条 `p` 只需两次连续向量加载（行主序 B 是每 `p` 跨一条行）。
+///
+/// 返回 `(面板, n 补齐到 NR)`；`n` 不整除的部分补 0，只有列残尾（`nr < NR`）才回退到 `edge`。
+fn pack_b_f32(b: &[f32], n: usize, k: usize) -> (Vec<f32>, usize) {
+    let npad = n.div_ceil(NR) * NR;
+    let mut bpack = vec![0.0f32; npad * k];
+    for jb in 0..npad / NR {
+        let first = jb * NR;
+        let cols = if first < n { NR.min(n - first) } else { 0 };
+        for p in 0..k {
+            let dst = (jb * k + p) * NR;
+            bpack[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
+        }
+    }
+    (bpack, npad)
+}
+
+/// 并行 B 打包：按 8 列组切线程。`k·n` 小的时候串行更划算（线程创建比转置贵）。
+fn pack_b_f32_par(b: &[f32], n: usize, k: usize) -> (Vec<f32>, usize) {
+    let npad = n.div_ceil(NR) * NR;
+    let groups = npad / NR;
+    let t = threads_override().min(groups);
+    if t <= 1 || npad * k < (1 << 16) {
+        return pack_b_f32(b, n, k);
+    }
+    let mut bpack = vec![0.0f32; npad * k];
+    let per = groups.div_ceil(t);
+    let span = per * NR * k;
+    thread::scope(|s| {
+        for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
+            let blk0 = gi * per;
+            s.spawn(move || pack_b_f32_span(chunk, b, n, k, blk0));
+        }
+    });
+    (bpack, npad)
+}
+
+/// 一段连续的列组打包：`blk0` 起，每块 `NR · k`。
+fn pack_b_f32_span(chunk: &mut [f32], b: &[f32], n: usize, k: usize, blk0: usize) {
+    let blocks = chunk.len() / (NR * k);
+    for bi in 0..blocks {
+        let first = (blk0 + bi) * NR;
+        let cols = if first < n { NR.min(n - first) } else { 0 };
+        let tile = &mut chunk[bi * NR * k..(bi + 1) * NR * k];
+        for p in 0..k {
+            let dst = p * NR;
+            tile[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
+        }
+    }
+}
+
 /// 沿列块扫描整行块：整块走微内核，最后一段残列走标量边（`edge` 读未打包的 `a`）。
 fn sweep_columns(
     a: &[f32],
     apack: &[f32],
+    bpack: &[f32],
     b: &[f32],
     out: &mut [f32],
     full: usize,
@@ -97,8 +164,9 @@ fn sweep_columns(
     while j < n {
         let nr = NR.min(n - j);
         if nr == NR {
+            let tile = &bpack[(j / NR) * k * NR..];
             for blk in 0..full {
-                micro_packed(&apack[blk * k * MR..], b, out, blk * MR, j, n, k);
+                micro_packed(&apack[blk * k * MR..], tile, out, blk * MR, j, n, k);
             }
         } else {
             edge(
@@ -119,7 +187,7 @@ fn sweep_columns(
     }
 }
 
-/// 打包面板上的 NEON 8×8 微内核（A 面板布局 `[p][8]`，一次算 8 行 8 列）。
+/// 打包面板上的 NEON 8×8 微内核（A 面板 `[p][8]`、B 面板 `[p][8]`，一次算 8 行 8 列）。
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 fn micro_packed(
@@ -140,8 +208,8 @@ fn micro_packed(
         for p in 0..k {
             let av0 = vld1q_f32(pp.add(p * MR));
             let av1 = vld1q_f32(pp.add(p * MR + 4));
-            let bv0 = vld1q_f32(bp.add(p * n + j));
-            let bv1 = vld1q_f32(bp.add(p * n + j + 4));
+            let bv0 = vld1q_f32(bp.add(p * NR));
+            let bv1 = vld1q_f32(bp.add(p * NR + 4));
             let s0 = vdupq_laneq_f32::<0>(av0);
             acc[0] = vfmaq_f32(acc[0], s0, bv0);
             acc[1] = vfmaq_f32(acc[1], s0, bv1);
@@ -202,7 +270,7 @@ fn micro_packed(
         for c in 0..NR {
             let mut acc = 0.0f32;
             for p in 0..k {
-                acc += panel[p * MR + r] * b[p * n + j + c];
+                acc += panel[p * MR + r] * b[p * NR + c];
             }
             out[(row0 + r) * n + j + c] = acc;
         }
