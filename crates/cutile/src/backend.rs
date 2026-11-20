@@ -52,6 +52,60 @@ pub struct Launch {
     pub group: usize,
 }
 
+/// 张量核 GEMM 的几何：输出块的行/列跨度、规约块尺寸，以及每组挂几个 simdgroup。
+///
+/// 四个量互相牵制——线程组内存只随 `tile_n` 与 `k_tile` 涨，线程组数随 `tile_m`、`tile_n`
+/// 反向变——故捆成一个值对象一起传，调用点只谈「几何」而不散装四个数。具体取哪一档由后端
+/// 按形状实测选型（`engine::tiled::tensor_geometry`），本类型只描述「是什么」。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TensorGeometry {
+    /// 输出块的行跨度（`M` 方向）。
+    pub tile_m: usize,
+    /// 输出块的列跨度（`N` 方向），也是线程组内存的唯一占用方。
+    pub tile_n: usize,
+    /// 规约轴切片长度（装载按 16 元素一组）。
+    pub k_tile: usize,
+    /// 每个线程组挂的 simdgroup 数，组内线程数为 `32·simdgroups`。
+    pub simdgroups: usize,
+}
+
+impl TensorGeometry {
+    /// 显式指定四要素：后端选型、基准对照与专用形状都从这里进来。
+    #[must_use]
+    pub const fn new(tile_m: usize, tile_n: usize, k_tile: usize, simdgroups: usize) -> Self {
+        Self {
+            tile_m,
+            tile_n,
+            k_tile,
+            simdgroups,
+        }
+    }
+
+    /// 规约块是否整除 `K`：整除时生成的内核没有尾块分支。
+    #[must_use]
+    pub const fn exact(&self, k: usize) -> bool {
+        k.is_multiple_of(self.k_tile)
+    }
+
+    /// 输出块跨度是否落在矩阵乘单元支持的档位里（`32`、`64`、`128`）。
+    #[must_use]
+    pub fn spans_ok(&self) -> bool {
+        matches!(self.tile_m, 32 | 64 | 128) && matches!(self.tile_n, 32 | 64 | 128)
+    }
+
+    /// 规约块形状与 simdgroup 数是否合法。
+    #[must_use]
+    pub fn block_ok(&self) -> bool {
+        self.k_tile >= 32 && self.k_tile.is_multiple_of(16) && matches!(self.simdgroups, 4 | 8)
+    }
+
+    /// B 片（`tile_n × k_tile` 的 half，按 4 元素补齐）是否装得进 32 KiB 线程组内存。
+    #[must_use]
+    pub fn fits_threadgroup_memory(&self) -> bool {
+        self.tile_n * (self.k_tile + 4) * 2 <= 32 * 1024
+    }
+}
+
 /// 生产态内核 lowering 请求：骨架分派后的中性描述，vendor 后端据此生成设备源。
 ///
 /// 它只描述「怎么降」（网格 / 分块 / 串行），不含任何厂商语法；Metal / CUDA 的语法差异收在
@@ -123,16 +177,10 @@ pub enum Lower {
     /// `simdgroups ∈ {4, 8}`；不满足时由调用方回落。
     ///
     /// 行/列跨度分开给：线程组内存只随 `tile_n` 增长，压小 `tile_m` 在同一份共享内存下换来
-    /// 更多线程组，尾部波次更满。
+    /// 更多线程组，尾部波次更满（详见 [`TensorGeometry`]）。
     TensorGemm {
-        /// 输出块在 M 方向的跨度（占用线程组更多与否只由它决定）。
-        tile_m: usize,
-        /// 输出块在 N 方向的跨度（同时是线程组负责的 B 片行数，决定共享内存占用）。
-        tile_n: usize,
-        /// 规约轴每次前进的长度（装载按 16 元素一组）。
-        k_tile: usize,
-        /// 参与协同的 simdgroup 数（`8` 用于 `128` 的列跨度，`4` 用于 `64`）。
-        simdgroups: usize,
+        /// 输出块跨度、规约块与 simdgroup 数。
+        geometry: TensorGeometry,
     },
     /// flash attention 分块：一个线程组负责一个查询行，K/V 按 `block` 个键分块流式扫描，
     /// 在线 softmax（running max/sum）把输出累加在寄存器，不保留完整分数向量。

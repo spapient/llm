@@ -7,6 +7,7 @@
 //! 与 `dialect` 分开的理由：`dialect` 的方言表与 vendor 驱动已接近单文件上限，而分块内核是
 //! 独立的 tiled 家族（共享内存 + 线程组屏障），把错误处理与索引算术收在一处更可读。
 
+use cutile::backend::TensorGeometry;
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::{CType, Param, Signature};
@@ -795,6 +796,46 @@ fn int8_gemm_msl(n: usize, k: usize, tile: usize) -> String {
     )
 }
 
+/// 张量核 GEMM 的几何选型：按输出规模在两组实测配置间取优，并让规约块尽量整除 `K`。
+///
+/// 中小输出（`m·n ≤ 4 Mi`，即到 2048² 为止）在 20 核级别 GPU 上线程组数不足，占用率优先：
+/// `N` 跨度 64、4 个 simdgroup（128 线程/组），线程组数比大块几何翻倍。整块都很小时尾块分支
+/// 的占比最高，故这类形状优先挑能整除 `K` 的规约块（整除时生成无分支内核）。行跨度取能整除
+/// `M` 的最大档（`128` 优先，小 `M` 依次降到 `64`、`32`）。
+///
+/// 更大的输出本身线程组就够多，改取 `N` 跨度 128 配 8 个 simdgroup，换每块更高的 A/B 重用；
+/// 此时尾块开销被块数摊薄，规约块直接取装得下的最大档（`96`），不迁就整除。
+///
+/// 两组实测（M5 Pro，`GF/s`）：`1024³` 中小几何 `8.5–9.1k` 对大块几何 `8.3–8.4k`；
+/// `4096³` 大块几何 `23.6k`（`96`）对 `23.2k`（整除的 `64`）对中小几何 `22.9k`。
+#[must_use]
+pub fn tensor_geometry(m: usize, n: usize, k: usize) -> TensorGeometry {
+    let small = m * n <= 4 * 1024 * 1024;
+    // 行跨度必须整除 `M`（`matmul2d` 整块读 A），小 `M` 时逐档降到能整除的最大跨度；
+    // 一个都不整除说明这个形状走不了张量核，留给调用方回落，这里仍给 128 让校验报错。
+    let tile_m = [128usize, 64, 32]
+        .into_iter()
+        .find(|t| m.is_multiple_of(*t))
+        .unwrap_or(128);
+    let (tile_n, simdgroups) = if small { (64, 4) } else { (128, 8) };
+    let fits = |t: usize| tile_n * (t + 4) * 2 <= 32 * 1024;
+    let k_tile = if small {
+        [128usize, 96, 64]
+            .into_iter()
+            .find(|t| fits(*t) && k.is_multiple_of(*t))
+    } else {
+        None
+    }
+    .or_else(|| [96usize, 64].into_iter().find(|t| fits(*t)))
+    .unwrap_or(64);
+    TensorGeometry {
+        tile_m,
+        tile_n,
+        k_tile,
+        simdgroups,
+    }
+}
+
 /// 生产态张量核心 GEMM（Metal 4 的 `mpp::tensor_ops::matmul2d`）：一个 `tile_m × tile_n`
 /// 输出块由 `32·simdgroups` 个线程协同算完，规约轴按 `k_tile` 切片。
 ///
@@ -816,17 +857,12 @@ pub fn metal_tensor_gemm(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,
-    tile_m: usize,
-    tile_n: usize,
-    k_tile: usize,
-    simdgroups: usize,
+    geometry: TensorGeometry,
 ) -> Result<String> {
     let (a, b, y) = gemm_buffers(signature)?;
     let (m, n, k) = gemm_dims(signature, sample)?;
-    check_tensor_geometry(m, n, k, tile_m, tile_n, k_tile, simdgroups)?;
-    Ok(tensor_gemm_msl(
-        a, b, y, m, n, k, tile_m, tile_n, k_tile, simdgroups,
-    ))
+    check_tensor_geometry(m, n, k, geometry)?;
+    Ok(tensor_gemm_msl(a, b, y, m, n, k, geometry))
 }
 
 /// 张量核路径的报错出处。
@@ -836,30 +872,18 @@ const TENSOR_SITE: &str = "engine::tiled::metal_tensor_gemm";
 ///
 /// `M % tile_m == 0` 是硬约束：`matmul2d` 按整块读 A，尾块会把设备缓冲读越界（N 维不必对齐，
 /// 装载阶段零填、写回按 `min` 裁边）。
-fn check_tensor_geometry(
-    m: usize,
-    n: usize,
-    k: usize,
-    tile_m: usize,
-    tile_n: usize,
-    k_tile: usize,
-    simdgroups: usize,
-) -> Result<()> {
+fn check_tensor_geometry(m: usize, n: usize, k: usize, geometry: TensorGeometry) -> Result<()> {
     let bad = |why: &str| Err(Error::new(Code::Invalid, why).with(TENSOR_SITE));
-    if !matches!(tile_m, 32 | 64 | 128) || !matches!(tile_n, 32 | 64 | 128) {
+    if !geometry.spans_ok() {
         return bad("张量核输出块的行/列跨度都必须是 32、64 或 128");
     }
-    if k_tile < 32 || !k_tile.is_multiple_of(16) {
-        return bad("张量核规约块必须是 ≥32 的 16 的倍数（装载按 16 元素一组）");
+    if !geometry.block_ok() {
+        return bad("张量核规约块必须是 ≥32 的 16 的倍数，simdgroup 数必须是 4 或 8");
     }
-    if !matches!(simdgroups, 4 | 8) {
-        return bad("张量核 simdgroup 数必须是 4 或 8");
-    }
-    // 共享内存按 half 存 B 片，只被 N 方向跨度占用；超过 32 KiB 的设备线程组内存直接拒绝编译。
-    if tile_n * (k_tile + 4) * 2 > 32 * 1024 {
+    if !geometry.fits_threadgroup_memory() {
         return bad("张量核 B 片超出 32 KiB 线程组内存");
     }
-    if m == 0 || n == 0 || k == 0 || !m.is_multiple_of(tile_m) {
+    if m == 0 || n == 0 || k == 0 || !m.is_multiple_of(geometry.tile_m) {
         return bad("张量核要求 M 是输出块行跨度的正整数倍，且 N/K 非零");
     }
     Ok(())
@@ -876,14 +900,17 @@ fn tensor_gemm_msl(
     m: usize,
     n: usize,
     k: usize,
-    tile_m: usize,
-    tile_n: usize,
-    k_tile: usize,
-    simdgroups: usize,
+    geometry: TensorGeometry,
 ) -> String {
+    let TensorGeometry {
+        tile_m,
+        tile_n,
+        k_tile,
+        simdgroups,
+    } = geometry;
     // 规约轴被 `k_tile` 整除时没有尾块可走：直接生成单描述符、无分支的主循环，
     // 省掉逐轮的边界判断与动态 extent 版本（小形状上这段开销不可忽略）。
-    let exact = k.is_multiple_of(k_tile);
+    let exact = geometry.exact(k);
     let tail_decl = if exact {
         String::new()
     } else {
@@ -1010,3 +1037,7 @@ pub fn metal_transpose_half(rows: usize, cols: usize) -> Result<String> {
          }}"
     ))
 }
+
+#[cfg(test)]
+#[path = "../tests/tiled.rs"]
+mod tests;

@@ -1069,16 +1069,20 @@ fn metal_tensor_gemm() {
     let Some((device, queue)) = bench_device("张量核 GEMM") else {
         return;
     };
+    use cutile::backend::TensorGeometry;
+
     crate::backends::install();
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-tensor");
 
     // 形状只放开 M/N：`matmul_f32` 的规约轴由算子语义固定为 4096。
     let shapes = [(512, 512, 4096), (1024, 1024, 4096), (2048, 2048, 4096), (4096, 4096, 4096)];
-    // 候选几何：(M 跨度, N 跨度, 规约块, simdgroup 数)。线程组内存只随 N 跨度增长，
-    // 故 N 取 128 配 TK=96，M 取 64 换两倍线程组；小形状另试方阵 64 块。
-    let geometries = [(64, 128, 96, 8), (128, 128, 96, 8), (64, 64, 64, 4)];
-
     for (m, n, k) in shapes {
+        // 首项是 `tensor_geometry` 的自适应选型，另两档留作对照（大块几何 / 小方块几何）。
+        let geometries = [
+            crate::tiled::tensor_geometry(m, n, k),
+            TensorGeometry::new(128, 128, 96, 8),
+            TensorGeometry::new(64, 128, 64, 8),
+        ];
         let (a, b) = matmul_values(m, n, k);
         let a_buf = upload(&device, &a, "A");
         let b_buf = upload(&device, &b, "B");
@@ -1110,9 +1114,15 @@ fn metal_tensor_gemm() {
         });
 
         let mut pipes = Vec::new();
-        for (tile_m, tile_n, k_tile, simdgroups) in geometries {
+        for geometry in geometries {
+            let TensorGeometry {
+                tile_m,
+                tile_n,
+                k_tile,
+                simdgroups,
+            } = geometry;
             let msl = cutile::execution::metal_tensor_gemm_program(
-                &catalogue, &dirs, "matmul_f32", m, n, tile_m, tile_n, k_tile, simdgroups,
+                &catalogue, &dirs, "matmul_f32", m, n, geometry,
             )
             .expect("张量核 MSL 应能生成");
             assert!(
@@ -1171,6 +1181,7 @@ fn metal_tensor_gemm() {
 #[test]
 #[ignore = "Metal 张量核立方 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture"]
 fn metal_tensor_kernel_gemm() {
+    use cutile::backend::TensorGeometry;
     use op::model::Sample;
     use op::sig::Signature;
 
@@ -1180,19 +1191,13 @@ fn metal_tensor_kernel_gemm() {
     let declaration =
         "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
     let signature = Signature::parse("bench", declaration).expect("自建签名应能解析");
-    // 64·128·96·8 与 llm.u 的生产档同构（BM=64、BN=128、TK=96、8 个 simdgroup）；其余为对照。
-    // 1024³ 这类小形状的瓶颈是占用率而非单块吞吐，故小跨度 + 少 simdgroup 的档位一并扫。
-    let geometries = [
-        (128, 64, 128, 4),
-        (64, 64, 128, 4),
-        (128, 32, 128, 4),
-        (64, 32, 128, 4),
-        (128, 32, 256, 4),
-        (128, 128, 96, 8),
-        (64, 128, 64, 8),
-    ];
-
     for (m, n, k) in [(1024, 1024, 1024), (2048, 2048, 2048), (4096, 4096, 4096)] {
+        // 首项是 `tensor_geometry` 的自适应选型；另两档为对照（大块几何 / 与 llm.u 同构的档位）。
+        let geometries = [
+            crate::tiled::tensor_geometry(m, n, k),
+            TensorGeometry::new(128, 128, 96, 8),
+            TensorGeometry::new(64, 128, 96, 8),
+        ];
         let sample = Sample {
             m,
             n,
@@ -1227,11 +1232,15 @@ fn metal_tensor_kernel_gemm() {
         });
 
         let mut pipes = Vec::new();
-        for (tile_m, tile_n, k_tile, simdgroups) in geometries {
-            let msl = crate::tiled::metal_tensor_gemm(
-                "bench", &signature, &sample, tile_m, tile_n, k_tile, simdgroups,
-            )
-            .expect("张量核 MSL 应能生成");
+        for geometry in geometries {
+            let TensorGeometry {
+                tile_m,
+                tile_n,
+                k_tile,
+                simdgroups,
+            } = geometry;
+            let msl = crate::tiled::metal_tensor_gemm("bench", &signature, &sample, geometry)
+                .expect("张量核 MSL 应能生成");
             let pipe = device.compile(&msl).expect("张量核 MSL 应能编译");
             let grid = [
                 ((n / tile_n) * 32) as u32,

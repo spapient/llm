@@ -5,7 +5,7 @@
 //! `pipeline`，因此不存在第二套执行路径。
 
 use crate::atom::{AttrKey, Prim};
-use crate::backend::{Launch, Lower};
+use crate::backend::{Launch, Lower, TensorGeometry};
 use crate::build;
 use crate::builtin::Catalogue;
 use crate::cap::{Path, Proof};
@@ -282,24 +282,14 @@ pub fn metal_tensor_gemm_program(
     op_name: &str,
     m: usize,
     n: usize,
-    tile_m: usize,
-    tile_n: usize,
-    k_tile: usize,
-    simdgroups: usize,
+    geometry: TensorGeometry,
 ) -> diagnostic::Result<String> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, "metal", m, n)?;
-    if !tensor_ready(&run, m, n, tile_m, tile_n, k_tile, simdgroups) {
+    if !tensor_ready(&run, m, n, geometry) {
         return lower(&run, &prepared, m, n);
     }
     single(
-        lower_sources(
-            Emit::Metal,
-            &Lower::TensorGemm {
-                tile_m,
-                tile_n,
-                k_tile,
-                simdgroups,
-            },
+        lower_sources(Emit::Metal, &Lower::TensorGemm { geometry },
             &run,
             &prepared,
             m,
@@ -313,24 +303,13 @@ pub fn metal_tensor_gemm_program(
 ///
 /// `M` 的整除性是硬约束——`matmul2d` 按整块读 A，尾块会读越界；N 维不必对齐（装载零填、
 /// 写回裁边），K 维不必对齐（末块走 `dynamic_extent`）。线程组内存只随 `tile_n` 增长。
-fn tensor_ready(
-    run: &Run<'_>,
-    m: usize,
-    n: usize,
-    tile_m: usize,
-    tile_n: usize,
-    k_tile: usize,
-    simdgroups: usize,
-) -> bool {
+fn tensor_ready(run: &Run<'_>, m: usize, n: usize, geometry: TensorGeometry) -> bool {
     run.op.skeleton == Skeleton::Gemm
         && n > 0
-        && divides(m, tile_m)
-        && matches!(tile_m, 32 | 64 | 128)
-        && matches!(tile_n, 32 | 64 | 128)
-        && k_tile >= 32
-        && k_tile.is_multiple_of(16)
-        && matches!(simdgroups, 4 | 8)
-        && tile_n * (k_tile + 4) * 2 <= 32 * 1024
+        && divides(m, geometry.tile_m)
+        && geometry.spans_ok()
+        && geometry.block_ok()
+        && geometry.fits_threadgroup_memory()
 }
 
 /// 生产态 Metal int8 分块 GEMM 内核源：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 精确累加、`f32` 输出。
